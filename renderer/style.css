@@ -158,12 +158,12 @@ html, body {
 .btn {
   background: none;
   border: none;
-  color: #484f58;
+  color: #768390;
   cursor: pointer;
   padding: 0;
-  width: 22px;
-  height: 22px;
-  font-size: 13px;
+  width: 26px;
+  height: 26px;
+  font-size: 15px;
   border-radius: 4px;
   display: flex;
   align-items: center;

@@ -54,6 +54,13 @@ function compareSemver(a, b) {
   return (aMajor - bMajor) || (aMinor - bMinor) || (aPatch - bPatch);
 }
 
+/** すべての PTY プロセスを終了する */
+function cleanupPtys() {
+  for (const [, p] of ptys) {
+    try { p.kill(); } catch (e) {}
+  }
+}
+
 /**
  * 起動時に新バージョンがあるか確認し、あれば git pull して再起動を促す
  */
@@ -80,7 +87,9 @@ async function checkAndUpdate() {
       const { stdout } = await execFileAsync(
         'git', ['describe', '--tags', '--abbrev=0'], opts
       );
-      currentTag = stdout.trim();
+      const trimmed = stdout.trim();
+      // 非semverタグでcompareSemverが壊れないようにv.X.Y.Z形式を検証する
+      currentTag = /^v?\d+\.\d+\.\d+$/.test(trimmed) ? trimmed : 'v0.0.0';
     } catch {
       // タグが一つもない場合は v0.0.0 として扱い、最初のタグでも更新対象にする
       currentTag = 'v0.0.0';
@@ -111,9 +120,7 @@ async function checkAndUpdate() {
 
     if (response === 0) {
       // app.exit(0) は通常の終了フックを通らないため、PTY を明示的にクリーンアップする
-      for (const [, p] of ptys) {
-        try { p.kill(); } catch (e) {}
-      }
+      cleanupPtys();
       app.relaunch();
       app.exit(0);
     }
@@ -157,16 +164,12 @@ app.whenReady().then(async () => {
 });
 
 app.on('window-all-closed', () => {
-  for (const [, p] of ptys) {
-    try { p.kill(); } catch (e) {}
-  }
+  cleanupPtys();
   if (process.platform !== 'darwin') app.quit();
 });
 
 app.on('before-quit', () => {
-  for (const [, p] of ptys) {
-    try { p.kill(); } catch (e) {}
-  }
+  cleanupPtys();
 });
 
 ipcMain.handle('terminal:create', (event, cwd) => {

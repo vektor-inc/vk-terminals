@@ -2,11 +2,41 @@ const { app, BrowserWindow, ipcMain, screen } = require('electron');
 const pty = require('node-pty');
 const path = require('path');
 const os = require('os');
+const fs = require('fs');
 
 let win;
 const ptys = new Map();
 let nextId = 1;
 let firstTerminalCreated = false;
+
+/**
+ * ユーザー設定を読み込む。
+ * 読み込み順:
+ *   1. ~/.claude/terminals-config.json（ユーザー固有設定）
+ *   2. {appDir}/config.json（リポジトリローカル設定）
+ * どちらも存在しない場合は空オブジェクトを返す。
+ *
+ * @returns {{ initialCommand?: string }} 設定オブジェクト
+ */
+function loadUserConfig() {
+  const candidates = [
+    path.join(os.homedir(), '.claude', 'terminals-config.json'),
+    path.join(__dirname, 'config.json'),
+  ];
+
+  for (const configPath of candidates) {
+    if (fs.existsSync(configPath)) {
+      try {
+        const raw = fs.readFileSync(configPath, 'utf8');
+        return JSON.parse(raw);
+      } catch (e) {
+        console.error(`[claude-terminals] Failed to parse config: ${configPath}`, e);
+      }
+    }
+  }
+
+  return {};
+}
 
 function createWindow() {
   const { workAreaSize } = screen.getPrimaryDisplay();
@@ -86,14 +116,17 @@ ipcMain.handle('terminal:create', (event, cwd) => {
     }
   }, 200);
 
-  // claude起動後にタスク管理スキルを呼び出す（最初の1回のみ）
+  // 起動後に initialCommand を実行する（最初の1回のみ）
   if (!firstTerminalCreated) {
     firstTerminalCreated = true;
-    setTimeout(() => {
-      if (ptys.has(id)) {
-        ptyProcess.write('スキルでタスク管理を呼び出して\r');
-      }
-    }, 4000);
+    const config = loadUserConfig();
+    if (config.initialCommand) {
+      setTimeout(() => {
+        if (ptys.has(id)) {
+          ptyProcess.write(config.initialCommand + '\r');
+        }
+      }, 4000);
+    }
   }
 
   return { id, cwd: resolvedCwd };

@@ -65,11 +65,11 @@ async function checkAndUpdate() {
 
     // リモートタグのみを取得して最新バージョンを確認する（ローカル専用タグを除外）
     const { stdout: lsRemoteOut } = await execFileAsync(
-      'git', ['ls-remote', '--tags', 'origin'], opts
+      'git', ['ls-remote', '--tags', 'origin'], { ...opts, timeout: 10000 }
     );
     const latestTag = lsRemoteOut
       .split('\n')
-      .map((l) => l.match(/refs\/tags\/(v[\d.]+)$/)?.[1])
+      .map((l) => l.match(/refs\/tags\/(v\d+\.\d+\.\d+)$/)?.[1])
       .filter(Boolean)
       .sort((a, b) => compareSemver(b, a))[0];
 

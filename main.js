@@ -3,7 +3,9 @@ const pty = require('node-pty');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
-const { execSync } = require('child_process');
+const { execFile } = require('child_process');
+const { promisify } = require('util');
+const execFileAsync = promisify(execFile);
 
 let win;
 const ptys = new Map();
@@ -57,22 +59,28 @@ function compareSemver(a, b) {
  */
 async function checkAndUpdate() {
   const appDir = __dirname;
+  const opts = { cwd: appDir };
   try {
-    execSync('git fetch --tags', { cwd: appDir, timeout: 10000 });
+    await execFileAsync('git', ['fetch', '--tags'], { ...opts, timeout: 10000 });
 
-    const latestTag = execSync('git tag --sort=-v:refname', { cwd: appDir })
-      .toString()
-      .trim()
+    // リモートタグのみを取得して最新バージョンを確認する（ローカル専用タグを除外）
+    const { stdout: lsRemoteOut } = await execFileAsync(
+      'git', ['ls-remote', '--tags', 'origin'], opts
+    );
+    const latestTag = lsRemoteOut
       .split('\n')
-      .filter(Boolean)[0];
+      .map((l) => l.match(/refs\/tags\/(v[\d.]+)$/)?.[1])
+      .filter(Boolean)
+      .sort((a, b) => compareSemver(b, a))[0];
 
     if (!latestTag) return;
 
     let currentTag;
     try {
-      currentTag = execSync('git describe --tags --abbrev=0', { cwd: appDir })
-        .toString()
-        .trim();
+      const { stdout } = await execFileAsync(
+        'git', ['describe', '--tags', '--abbrev=0'], opts
+      );
+      currentTag = stdout.trim();
     } catch {
       // タグが一つもない場合は v0.0.0 として扱い、最初のタグでも更新対象にする
       currentTag = 'v0.0.0';
@@ -80,8 +88,17 @@ async function checkAndUpdate() {
 
     if (compareSemver(latestTag, currentTag) <= 0) return;
 
-    // 新しいバージョンがある場合は git pull して再起動を促す
-    execSync('git pull', { cwd: appDir, timeout: 30000 });
+    // 作業ツリーが汚れていれば pull をスキップ
+    const { stdout: statusOut } = await execFileAsync(
+      'git', ['status', '--porcelain'], opts
+    );
+    if (statusOut.trim().length > 0) {
+      console.warn('[claude-terminals] Working tree is dirty, skipping pull.');
+      return;
+    }
+
+    // fast-forward のみで git pull（マージコミットを防ぐ）
+    await execFileAsync('git', ['pull', '--ff-only'], { ...opts, timeout: 30000 });
 
     const { response } = await dialog.showMessageBox({
       type: 'info',
@@ -93,6 +110,10 @@ async function checkAndUpdate() {
     });
 
     if (response === 0) {
+      // app.exit(0) は通常の終了フックを通らないため、PTY を明示的にクリーンアップする
+      for (const [, p] of ptys) {
+        try { p.kill(); } catch (e) {}
+      }
       app.relaunch();
       app.exit(0);
     }

@@ -1,0 +1,267 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #0d1117;
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ─── Titlebar ─────────────────────────────────────────────────────────────── */
+.titlebar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 38px;
+  -webkit-app-region: drag;
+  background: #0d1117;
+  border-bottom: 1px solid #21262d;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  flex-shrink: 0;
+}
+
+.app-title {
+  color: #6e7681;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  -webkit-user-select: none;
+}
+
+/* ─── Root layout ──────────────────────────────────────────────────────────── */
+#root {
+  position: fixed;
+  top: 38px;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+}
+
+/* ─── Split containers ─────────────────────────────────────────────────────── */
+.split {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.split-h {
+  flex-direction: row;
+}
+
+.split-v {
+  flex-direction: column;
+}
+
+/* ─── Pane ─────────────────────────────────────────────────────────────────── */
+.pane {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  border: 1px solid #21262d;
+  transition: border-color 0.15s;
+  overflow: hidden;
+}
+
+.pane.focused {
+  border-color: #388bfd;
+}
+
+.pane.waiting {
+  border-color: #d29922;
+  animation: waiting-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes waiting-pulse {
+  0%, 100% {
+    border-color: #d29922;
+    box-shadow: 0 0 0 0 rgba(210, 153, 34, 0);
+  }
+  50% {
+    border-color: #e3b341;
+    box-shadow: 0 0 8px 2px rgba(210, 153, 34, 0.35);
+  }
+}
+
+/* ─── Pane header ──────────────────────────────────────────────────────────── */
+.pane-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 8px;
+  height: 28px;
+  background: #161b22;
+  border-bottom: 1px solid #21262d;
+  flex-shrink: 0;
+  -webkit-app-region: no-drag;
+  gap: 8px;
+}
+
+.pane-cwd {
+  color: #6e7681;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.pane.focused .pane-cwd {
+  color: #8b949e;
+}
+
+.pane-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+/* ─── Waiting badge ────────────────────────────────────────────────────────── */
+.waiting-badge {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  color: #d29922;
+  font-size: 10px;
+  font-weight: 600;
+  background: rgba(210, 153, 34, 0.15);
+  border: 1px solid rgba(210, 153, 34, 0.3);
+  padding: 0 5px;
+  height: 18px;
+  border-radius: 3px;
+  animation: badge-pulse 1.2s ease-in-out infinite;
+  margin-right: 2px;
+}
+
+@keyframes badge-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+/* ─── Buttons ──────────────────────────────────────────────────────────────── */
+.btn {
+  background: none;
+  border: none;
+  color: #484f58;
+  cursor: pointer;
+  padding: 0;
+  width: 22px;
+  height: 22px;
+  font-size: 13px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.12s, background 0.12s;
+  -webkit-app-region: no-drag;
+  flex-shrink: 0;
+}
+
+.btn:hover {
+  color: #e6edf3;
+  background: #30363d;
+}
+
+.btn-close:hover {
+  color: #f85149;
+  background: rgba(248, 81, 73, 0.12);
+}
+
+/* ─── Terminal viewport ────────────────────────────────────────────────────── */
+.term-container {
+  flex: 1;
+  overflow: hidden;
+  min-height: 0;
+  min-width: 0;
+}
+
+.term-viewport {
+  width: 100%;
+  height: 100%;
+}
+
+/* xterm overrides */
+.xterm {
+  height: 100%;
+  padding: 4px 6px;
+}
+
+.xterm-viewport {
+  background-color: transparent !important;
+}
+
+.xterm-screen {
+  width: 100% !important;
+}
+
+/* ─── Resize handles ───────────────────────────────────────────────────────── */
+.resize-handle {
+  background: #21262d;
+  flex-shrink: 0;
+  transition: background 0.15s;
+  z-index: 10;
+  position: relative;
+}
+
+.resize-handle::after {
+  content: '';
+  position: absolute;
+  background: transparent;
+}
+
+.resize-handle-h {
+  width: 4px;
+  cursor: col-resize;
+}
+
+.resize-handle-h::after {
+  top: 0;
+  bottom: 0;
+  left: -4px;
+  right: -4px;
+}
+
+.resize-handle-v {
+  height: 4px;
+  cursor: row-resize;
+}
+
+.resize-handle-v::after {
+  left: 0;
+  right: 0;
+  top: -4px;
+  bottom: -4px;
+}
+
+.resize-handle:hover {
+  background: #388bfd;
+}
+
+/* ─── Drag cursor override ─────────────────────────────────────────────────── */
+body.resizing-h,
+body.resizing-h * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+
+body.resizing-v,
+body.resizing-v * {
+  cursor: row-resize !important;
+  user-select: none !important;
+}

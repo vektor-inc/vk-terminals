@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm install)",
+      "Bash(npm install @xterm/xterm @xterm/addon-fit)",
+      "Bash(osascript -e 'tell application \"\"Electron\"\" to activate')",
+      "Bash(screencapture -x /tmp/app_screenshot2.png)",
+      "Bash(osascript:*)",
+      "Bash(screencapture -x /tmp/app4.png)",
+      "Bash(screencapture -x -R \"0,0,800,600\" /tmp/app5.png)",
+      "Bash(screencapture -x /tmp/app6.png)",
+      "Bash(screencapture -x /tmp/app8.png)",
+      "Bash(screencapture -x -R \"0,1850,3360,250\" /tmp/dock3.png)",
+      "Bash(screencapture -x -R \"0,900,1400,200\" /tmp/dock4.png)",
+      "Bash(screencapture -x -R \"700,0,700,700\" /tmp/right_side.png)",
+      "Bash(/tmp/wininfo)",
+      "Bash(screencapture -x -R \"140,63,1400,80\" /tmp/header.png)",
+      "Bash(pkill -f \"node.*electron\")",
+      "Bash(chmod +x:*)"
+    ]
+  }
+}

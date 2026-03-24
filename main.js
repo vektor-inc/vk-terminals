@@ -1,8 +1,9 @@
-const { app, BrowserWindow, ipcMain, screen } = require('electron');
+const { app, BrowserWindow, ipcMain, screen, dialog } = require('electron');
 const pty = require('node-pty');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
+const { execSync } = require('child_process');
 
 let win;
 const ptys = new Map();
@@ -38,6 +39,69 @@ function loadUserConfig() {
   return {};
 }
 
+/**
+ * semver文字列を比較する（v接頭辞あり/なし両対応）
+ * @param {string} a
+ * @param {string} b
+ * @returns {number} a > b なら正、a < b なら負、同じなら0
+ */
+function compareSemver(a, b) {
+  const normalize = (v) => v.replace(/^v/, '').split('.').map(Number);
+  const [aMajor, aMinor, aPatch] = normalize(a);
+  const [bMajor, bMinor, bPatch] = normalize(b);
+  return (aMajor - bMajor) || (aMinor - bMinor) || (aPatch - bPatch);
+}
+
+/**
+ * 起動時に新バージョンがあるか確認し、あれば git pull して再起動を促す
+ */
+async function checkAndUpdate() {
+  const appDir = __dirname;
+  try {
+    execSync('git fetch --tags', { cwd: appDir, timeout: 10000 });
+
+    const latestTag = execSync('git tag --sort=-v:refname', { cwd: appDir })
+      .toString()
+      .trim()
+      .split('\n')
+      .filter(Boolean)[0];
+
+    if (!latestTag) return;
+
+    let currentTag;
+    try {
+      currentTag = execSync('git describe --tags --abbrev=0', { cwd: appDir })
+        .toString()
+        .trim();
+    } catch {
+      // タグが一つもない場合は v0.0.0 として扱い、最初のタグでも更新対象にする
+      currentTag = 'v0.0.0';
+    }
+
+    if (compareSemver(latestTag, currentTag) <= 0) return;
+
+    // 新しいバージョンがある場合は git pull して再起動を促す
+    execSync('git pull', { cwd: appDir, timeout: 30000 });
+
+    const { response } = await dialog.showMessageBox({
+      type: 'info',
+      title: 'アップデート完了',
+      message: `Terminals を ${currentTag} → ${latestTag} に更新しました。`,
+      detail: '変更を反映するにはアプリを再起動してください。',
+      buttons: ['今すぐ再起動', 'あとで'],
+      defaultId: 0,
+    });
+
+    if (response === 0) {
+      app.relaunch();
+      app.exit(0);
+    }
+  } catch (e) {
+    // ネットワーク不通などは無視
+    console.error('[claude-terminals] Update check failed:', e.message);
+  }
+}
+
 function createWindow() {
   const { workAreaSize } = screen.getPrimaryDisplay();
   const winW = Math.min(1400, workAreaSize.width);
@@ -66,7 +130,10 @@ function createWindow() {
   // win.webContents.openDevTools(); // uncomment to debug
 }
 
-app.whenReady().then(createWindow);
+app.whenReady().then(async () => {
+  createWindow();
+  await checkAndUpdate();
+});
 
 app.on('window-all-closed', () => {
   for (const [, p] of ptys) {

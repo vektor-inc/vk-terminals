@@ -50,6 +50,33 @@ npm start
 - `⚠ 待機中` バッジが表示される
 - 通知音が鳴る
 
+## 起動時の初期コマンド設定
+
+アプリ起動後、最初のターミナルで claude が起動した直後に自動実行するコマンドを設定できます。
+
+設定ファイルを以下のいずれかのパスに配置してください（上が優先）：
+
+1. `~/.claude/terminals-config.json` — ユーザー固有設定（推奨）
+2. `config.json`（リポジトリ直下）— ローカル設定（`.gitignore` 対象）
+
+`config.example.json` をコピーして編集してください：
+
+```bash
+cp config.example.json config.json
+# または
+cp config.example.json ~/.claude/terminals-config.json
+```
+
+設定例（`config.json` / `~/.claude/terminals-config.json`）：
+
+```json
+{
+  "initialCommand": "スキルでタスク管理を呼び出して"
+}
+```
+
+`initialCommand` を省略または空にすると、自動実行は行われません。
+
 ## 技術スタック
 
 - [Electron](https://www.electronjs.org/)

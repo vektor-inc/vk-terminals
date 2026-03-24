@@ -1,8 +1,11 @@
-const { app, BrowserWindow, ipcMain, screen } = require('electron');
+const { app, BrowserWindow, ipcMain, screen, dialog } = require('electron');
 const pty = require('node-pty');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
+const { execFile } = require('child_process');
+const { promisify } = require('util');
+const execFileAsync = promisify(execFile);
 
 let win;
 const ptys = new Map();
@@ -38,6 +41,95 @@ function loadUserConfig() {
   return {};
 }
 
+/**
+ * semver文字列を比較する（v接頭辞あり/なし両対応）
+ * @param {string} a
+ * @param {string} b
+ * @returns {number} a > b なら正、a < b なら負、同じなら0
+ */
+function compareSemver(a, b) {
+  const normalize = (v) => v.replace(/^v/, '').split('.').map(Number);
+  const [aMajor, aMinor, aPatch] = normalize(a);
+  const [bMajor, bMinor, bPatch] = normalize(b);
+  return (aMajor - bMajor) || (aMinor - bMinor) || (aPatch - bPatch);
+}
+
+/** すべての PTY プロセスを終了する */
+function cleanupPtys() {
+  for (const [, p] of ptys) {
+    try { p.kill(); } catch (e) {}
+  }
+}
+
+/**
+ * 起動時に新バージョンがあるか確認し、あれば git pull して再起動を促す
+ */
+async function checkAndUpdate() {
+  const appDir = __dirname;
+  const opts = { cwd: appDir };
+  try {
+    await execFileAsync('git', ['fetch', '--tags'], { ...opts, timeout: 10000 });
+
+    // リモートタグのみを取得して最新バージョンを確認する（ローカル専用タグを除外）
+    const { stdout: lsRemoteOut } = await execFileAsync(
+      'git', ['ls-remote', '--tags', 'origin'], { ...opts, timeout: 10000 }
+    );
+    const latestTag = lsRemoteOut
+      .split('\n')
+      .map((l) => l.match(/refs\/tags\/(v\d+\.\d+\.\d+)$/)?.[1])
+      .filter(Boolean)
+      .sort((a, b) => compareSemver(b, a))[0];
+
+    if (!latestTag) return;
+
+    let currentTag;
+    try {
+      const { stdout } = await execFileAsync(
+        'git', ['describe', '--tags', '--abbrev=0'], opts
+      );
+      const trimmed = stdout.trim();
+      // 非semverタグでcompareSemverが壊れないようにv.X.Y.Z形式を検証する
+      currentTag = /^v?\d+\.\d+\.\d+$/.test(trimmed) ? trimmed : 'v0.0.0';
+    } catch {
+      // タグが一つもない場合は v0.0.0 として扱い、最初のタグでも更新対象にする
+      currentTag = 'v0.0.0';
+    }
+
+    if (compareSemver(latestTag, currentTag) <= 0) return;
+
+    // 作業ツリーが汚れていれば pull をスキップ
+    const { stdout: statusOut } = await execFileAsync(
+      'git', ['status', '--porcelain'], opts
+    );
+    if (statusOut.trim().length > 0) {
+      console.warn('[claude-terminals] Working tree is dirty, skipping pull.');
+      return;
+    }
+
+    // fast-forward のみで git pull（マージコミットを防ぐ）
+    await execFileAsync('git', ['pull', '--ff-only'], { ...opts, timeout: 30000 });
+
+    const { response } = await dialog.showMessageBox({
+      type: 'info',
+      title: 'アップデート完了',
+      message: `Terminals を ${currentTag} → ${latestTag} に更新しました。`,
+      detail: '変更を反映するにはアプリを再起動してください。',
+      buttons: ['今すぐ再起動', 'あとで'],
+      defaultId: 0,
+    });
+
+    if (response === 0) {
+      // app.exit(0) は通常の終了フックを通らないため、PTY を明示的にクリーンアップする
+      cleanupPtys();
+      app.relaunch();
+      app.exit(0);
+    }
+  } catch (e) {
+    // ネットワーク不通などは無視
+    console.error('[claude-terminals] Update check failed:', e.message);
+  }
+}
+
 function createWindow() {
   const { workAreaSize } = screen.getPrimaryDisplay();
   const winW = Math.min(1400, workAreaSize.width);
@@ -66,19 +158,18 @@ function createWindow() {
   // win.webContents.openDevTools(); // uncomment to debug
 }
 
-app.whenReady().then(createWindow);
+app.whenReady().then(async () => {
+  createWindow();
+  await checkAndUpdate();
+});
 
 app.on('window-all-closed', () => {
-  for (const [, p] of ptys) {
-    try { p.kill(); } catch (e) {}
-  }
+  cleanupPtys();
   if (process.platform !== 'darwin') app.quit();
 });
 
 app.on('before-quit', () => {
-  for (const [, p] of ptys) {
-    try { p.kill(); } catch (e) {}
-  }
+  cleanupPtys();
 });
 
 ipcMain.handle('terminal:create', (event, cwd) => {

@@ -94,12 +94,22 @@ async function createTerminal(paneId, cwd) {
   const fitAddon = new FitAddon();
   term.loadAddon(fitAddon);
 
+  // 共通の入力送信ヘルパー（waiting バッジのクリアを含む）
+  function sendTerminalInput(data) {
+    ipcRenderer.send('terminal:input', termId, data);
+    if (terminals[paneId]?.waiting) {
+      terminals[paneId].waiting = false;
+      terminals[paneId].lastLines = '';
+      updatePaneStatus(paneId);
+    }
+  }
+
   // Shift+Enter を改行として送信（Claude Code の keybindings.json 対応）
   term.attachCustomKeyEventHandler((ev) => {
     if (ev.key === 'Enter' && ev.shiftKey && !ev.ctrlKey && !ev.altKey && !ev.metaKey) {
       if (ev.type === 'keydown') {
         // CSI u エンコーディングで Shift+Enter を送信
-        ipcRenderer.send('terminal:input', termId, '\x1b[13;2u');
+        sendTerminalInput('\x1b[13;2u');
       }
       return false; // keydown / keypress 両方でデフォルト処理を抑止
     }
@@ -112,13 +122,7 @@ async function createTerminal(paneId, cwd) {
 
   // Input: terminal -> pty
   term.onData((data) => {
-    ipcRenderer.send('terminal:input', termId, data);
-    // Clear waiting on any keystroke
-    if (terminals[paneId]?.waiting) {
-      terminals[paneId].waiting = false;
-      terminals[paneId].lastLines = '';
-      updatePaneStatus(paneId);
-    }
+    sendTerminalInput(data);
   });
 
   const shortCwd = formatCwd(initialCwd);

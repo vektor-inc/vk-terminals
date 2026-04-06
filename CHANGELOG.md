@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.2.0
+
+- [ 機能追加 ] Shift+Enter で改行を送信できる機能を追加（Claude Code の keybindings.json 対応）
+
 ## 1.1.0
 
 - [ 機能追加 ] 起動時に新バージョン（git タグ）があるか確認し、あれば自動で `git pull` して再起動を促す機能を追加

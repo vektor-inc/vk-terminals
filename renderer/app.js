@@ -94,6 +94,18 @@ async function createTerminal(paneId, cwd) {
   const fitAddon = new FitAddon();
   term.loadAddon(fitAddon);
 
+  // Shift+Enter を改行として送信（Claude Code の keybindings.json 対応）
+  term.attachCustomKeyEventHandler((ev) => {
+    if (ev.key === 'Enter' && ev.shiftKey && !ev.ctrlKey && !ev.altKey && !ev.metaKey) {
+      if (ev.type === 'keydown') {
+        // CSI u エンコーディングで Shift+Enter を送信
+        ipcRenderer.send('terminal:input', termId, '\x1b[13;2u');
+      }
+      return false; // keydown / keypress 両方でデフォルト処理を抑止
+    }
+    return true;
+  });
+
   const element = document.createElement('div');
   element.className = 'term-viewport';
   // NOTE: term.open(element) is called later, after element is attached to DOM

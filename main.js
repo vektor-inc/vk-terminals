@@ -82,18 +82,9 @@ async function checkAndUpdate() {
 
     if (!latestTag) return;
 
-    let currentTag;
-    try {
-      const { stdout } = await execFileAsync(
-        'git', ['describe', '--tags', '--abbrev=0'], opts
-      );
-      const trimmed = stdout.trim();
-      // 非semverタグでcompareSemverが壊れないようにv.X.Y.Z形式を検証する
-      currentTag = /^v?\d+\.\d+\.\d+$/.test(trimmed) ? trimmed : 'v0.0.0';
-    } catch {
-      // タグが一つもない場合は v0.0.0 として扱い、最初のタグでも更新対象にする
-      currentTag = 'v0.0.0';
-    }
+    // package.json の version をバージョンの正とする
+    const pkg = require('./package.json');
+    const currentTag = `v${pkg.version}`;
 
     if (compareSemver(latestTag, currentTag) <= 0) return;
 

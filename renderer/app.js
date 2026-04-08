@@ -334,6 +334,8 @@ function renderLeaf(node) {
       <button class="btn btn-close" title="閉じる">✕</button>
     </div>
   `;
+  // ドラッグ中に複数ファイルのヒントを表示
+  header.setAttribute('title', 'ファイルをドラッグ&ドロップでパスを入力（複数ファイル可）');
 
   const termContainer = document.createElement('div');
   termContainer.className = 'term-container';
@@ -359,6 +361,7 @@ function renderLeaf(node) {
   el.addEventListener('dragover', e => {
     e.preventDefault();
     e.stopPropagation();
+    e.dataTransfer.dropEffect = 'copy';
     el.classList.add('drag-over');
   });
 
@@ -391,6 +394,10 @@ function renderLeaf(node) {
     if (t) {
       ipcRenderer.send('terminal:input', t.termId, text);
     }
+
+    // ドロップ完了フラッシュフィードバック
+    el.classList.add('drop-flash');
+    el.addEventListener('animationend', () => el.classList.remove('drop-flash'), { once: true });
   });
 
   return el;
@@ -434,6 +441,41 @@ function renderSplit(node) {
 
   return el;
 }
+
+// ─── Global file drag handler: drag-ready state for all panes ────────────────
+// ファイルをドラッグ開始したとき、全ペインに drag-ready クラスを付与してドロップ可能を示す
+let _fileDragCount = 0;
+
+document.addEventListener('dragenter', e => {
+  if (!e.dataTransfer.types.includes('Files')) return;
+  _fileDragCount++;
+  if (_fileDragCount === 1) {
+    document.body.classList.add('file-dragging');
+    document.querySelectorAll('.pane').forEach(el => el.classList.add('drag-ready'));
+  }
+});
+
+document.addEventListener('dragleave', e => {
+  if (!e.dataTransfer.types.includes('Files')) return;
+  // relatedTarget が null のときウィンドウ外へ出た
+  if (e.relatedTarget === null) {
+    _fileDragCount = 0;
+    document.body.classList.remove('file-dragging');
+    document.querySelectorAll('.pane').forEach(el => el.classList.remove('drag-ready'));
+  } else {
+    _fileDragCount = Math.max(0, _fileDragCount - 1);
+    if (_fileDragCount === 0) {
+      document.body.classList.remove('file-dragging');
+      document.querySelectorAll('.pane').forEach(el => el.classList.remove('drag-ready'));
+    }
+  }
+});
+
+document.addEventListener('drop', e => {
+  _fileDragCount = 0;
+  document.body.classList.remove('file-dragging');
+  document.querySelectorAll('.pane').forEach(el => el.classList.remove('drag-ready'));
+});
 
 // ─── Global drag handler ──────────────────────────────────────────────────────
 document.addEventListener('mousemove', e => {

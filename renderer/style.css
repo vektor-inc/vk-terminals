@@ -73,7 +73,9 @@ html, body {
   min-width: 0;
   min-height: 0;
   border: 1px solid #21262d;
-  transition: border-color 0.15s;
+  box-shadow: none;
+  /* transition は border-color・box-shadow のみ。drag-over と競合しないよう明示 */
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
   overflow: hidden;
 }
 
@@ -84,6 +86,29 @@ html, body {
 .pane.waiting {
   border-color: #d29922;
   animation: waiting-pulse 1.5s ease-in-out infinite;
+}
+
+/* ドラッグ操作が開始されたとき（ペインの外にいる状態）にハイライト */
+.pane.drag-ready {
+  border-color: #3d8fd9;
+  box-shadow: 0 0 0 1px rgba(88, 166, 255, 0.2);
+}
+
+/* ドラッグがペイン上に乗ったとき（drag-ready より優先） */
+.pane.drag-over {
+  border-color: #56d364;
+  box-shadow: 0 0 0 2px rgba(86, 211, 100, 0.35);
+  /* drag-over 時も同じ transition を使用 → 競合なし */
+}
+
+/* ドロップ完了後の一時フラッシュフィードバック */
+.pane.drop-flash {
+  animation: drop-flash 0.4s ease-out forwards;
+}
+
+@keyframes drop-flash {
+  0%   { border-color: #56d364; box-shadow: 0 0 0 4px rgba(86, 211, 100, 0.5); }
+  100% { border-color: #21262d; box-shadow: none; }
 }
 
 @keyframes waiting-pulse {
@@ -264,4 +289,9 @@ body.resizing-v,
 body.resizing-v * {
   cursor: row-resize !important;
   user-select: none !important;
+}
+
+/* ファイルをドラッグ中はペインに copy カーソルを表示 */
+body.file-dragging .pane {
+  cursor: copy;
 }

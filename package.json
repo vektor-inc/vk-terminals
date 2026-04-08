@@ -1,6 +1,6 @@
 {
   "name": "claude-terminals",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "description": "複数ターミナルを並べて表示するデスクトップアプリ",
   "main": "main.js",
   "scripts": {

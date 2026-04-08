@@ -379,9 +379,11 @@ function renderLeaf(node) {
 
     const paths = files.map(f => {
       const p = f.path;
-      // Wrap in single quotes if path contains spaces (Mac Terminal compatible)
-      return p.includes(' ') ? `'${p}'` : p;
-    });
+      if (!p) return null;
+      const escaped = p.replace(/'/g, "'\\''");
+      // Wrap in single quotes if path contains spaces or single quotes (Mac Terminal compatible)
+      return (p.includes(' ') || p.includes("'")) ? `'${escaped}'` : p;
+    }).filter(Boolean);
 
     const text = paths.join(' ');
     focusPane(node.id);

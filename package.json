@@ -5,7 +5,7 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "postinstall": "electron-rebuild -f -w node-pty"
+    "postinstall": "CXXFLAGS=\"-I$(ls -d /Library/Developer/CommandLineTools/SDKs/MacOSX1[0-9]*.sdk 2>/dev/null | sort -V | tail -1)/usr/include/c++/v1\" electron-rebuild -f -w node-pty || electron-rebuild -f -w node-pty"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.11.0",

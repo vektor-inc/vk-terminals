@@ -175,7 +175,7 @@ app.on('before-quit', () => {
 ipcMain.handle('terminal:create', (event, cwd) => {
   const id = String(nextId++);
   const shell = process.env.SHELL || '/bin/zsh';
-  const resolvedCwd = cwd || '/Users/kurudrive/.claude';
+  const resolvedCwd = cwd || process.env.HOME || '/tmp';
 
   const ptyProcess = pty.spawn(shell, [], {
     name: 'xterm-256color',

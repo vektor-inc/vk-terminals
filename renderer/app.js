@@ -355,6 +355,42 @@ function renderLeaf(node) {
   });
   el.addEventListener('mousedown', () => focusPane(node.id));
 
+  // ─── Drag & Drop: file path insertion ─────────────────────────────────────
+  el.addEventListener('dragover', e => {
+    e.preventDefault();
+    e.stopPropagation();
+    el.classList.add('drag-over');
+  });
+
+  el.addEventListener('dragleave', e => {
+    // Only remove highlight when leaving the pane element itself
+    if (!el.contains(e.relatedTarget)) {
+      el.classList.remove('drag-over');
+    }
+  });
+
+  el.addEventListener('drop', e => {
+    e.preventDefault();
+    e.stopPropagation();
+    el.classList.remove('drag-over');
+
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length === 0) return;
+
+    const paths = files.map(f => {
+      const p = f.path;
+      // Wrap in single quotes if path contains spaces (Mac Terminal compatible)
+      return p.includes(' ') ? `'${p}'` : p;
+    });
+
+    const text = paths.join(' ');
+    focusPane(node.id);
+    const t = terminals[node.id];
+    if (t) {
+      ipcRenderer.send('terminal:input', t.termId, text);
+    }
+  });
+
   return el;
 }
 

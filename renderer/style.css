@@ -86,6 +86,12 @@ html, body {
   animation: waiting-pulse 1.5s ease-in-out infinite;
 }
 
+.pane.drag-over {
+  border-color: #56d364;
+  box-shadow: 0 0 0 2px rgba(86, 211, 100, 0.25);
+  transition: border-color 0.1s, box-shadow 0.1s;
+}
+
 @keyframes waiting-pulse {
   0%, 100% {
     border-color: #d29922;

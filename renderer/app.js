@@ -359,6 +359,7 @@ function renderLeaf(node) {
 
   // ─── Drag & Drop: file path insertion ─────────────────────────────────────
   el.addEventListener('dragover', e => {
+    if (!e.dataTransfer.types.includes('Files')) return;
     e.preventDefault();
     e.stopPropagation();
     e.dataTransfer.dropEffect = 'copy';
@@ -373,20 +374,19 @@ function renderLeaf(node) {
   });
 
   el.addEventListener('drop', e => {
+    if (!e.dataTransfer.types.includes('Files')) return;
     e.preventDefault();
     e.stopPropagation();
-    el.classList.remove('drag-over');
+    resetFileDragState();
 
     const files = Array.from(e.dataTransfer.files);
     if (files.length === 0) return;
 
-    const paths = files.map(f => {
-      const p = f.path;
-      if (!p) return null;
-      const escaped = p.replace(/'/g, "'\\''");
-      // Wrap in single quotes if path contains spaces or single quotes (Mac Terminal compatible)
-      return (p.includes(' ') || p.includes("'")) ? `'${escaped}'` : p;
-    }).filter(Boolean);
+    // Always wrap in single quotes for shell safety (handles spaces, quotes, and all metacharacters)
+    const paths = files
+      .map(f => f.path)
+      .filter(Boolean)
+      .map(p => `'${p.replace(/'/g, "'\\''")}'`);
 
     const text = paths.join(' ');
     focusPane(node.id);
@@ -446,6 +446,15 @@ function renderSplit(node) {
 // ファイルをドラッグ開始したとき、全ペインに drag-ready クラスを付与してドロップ可能を示す
 let _fileDragCount = 0;
 
+function resetFileDragState() {
+  _fileDragCount = 0;
+  document.body.classList.remove('file-dragging');
+  document.querySelectorAll('.pane').forEach(el => {
+    el.classList.remove('drag-ready');
+    el.classList.remove('drag-over');
+  });
+}
+
 document.addEventListener('dragenter', e => {
   if (!e.dataTransfer.types.includes('Files')) return;
   _fileDragCount++;
@@ -459,22 +468,25 @@ document.addEventListener('dragleave', e => {
   if (!e.dataTransfer.types.includes('Files')) return;
   // relatedTarget が null のときウィンドウ外へ出た
   if (e.relatedTarget === null) {
-    _fileDragCount = 0;
-    document.body.classList.remove('file-dragging');
-    document.querySelectorAll('.pane').forEach(el => el.classList.remove('drag-ready'));
+    resetFileDragState();
   } else {
     _fileDragCount = Math.max(0, _fileDragCount - 1);
     if (_fileDragCount === 0) {
-      document.body.classList.remove('file-dragging');
-      document.querySelectorAll('.pane').forEach(el => el.classList.remove('drag-ready'));
+      resetFileDragState();
     }
   }
 });
 
+// ペイン外へのmiss-dropでBrowserWindowがファイルに遷移しないよう防止
+document.addEventListener('dragover', e => {
+  e.preventDefault();
+  e.stopPropagation();
+});
+
 document.addEventListener('drop', e => {
-  _fileDragCount = 0;
-  document.body.classList.remove('file-dragging');
-  document.querySelectorAll('.pane').forEach(el => el.classList.remove('drag-ready'));
+  e.preventDefault();
+  e.stopPropagation();
+  resetFileDragState();
 });
 
 // ─── Global drag handler ──────────────────────────────────────────────────────

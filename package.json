@@ -1,5 +1,5 @@
 {
-  "name": "claude-terminals",
+  "name": "vk-terminals",
   "version": "1.3.0",
   "description": "複数ターミナルを並べて表示するデスクトップアプリ",
   "main": "main.js",

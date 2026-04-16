@@ -15,7 +15,7 @@ let firstTerminalCreated = false;
 
 // ─── Terminal state & HTTP API ───────────────────────────────────────────────
 const API_PORT = 13847;
-const DATA_DIR = path.join(os.homedir(), '.claude-terminals');
+const DATA_DIR = path.join(os.homedir(), '.vk-terminals');
 const STATE_FILE = path.join(DATA_DIR, 'states.json');
 let cachedStates = {};  // renderer から受け取った状態キャッシュ
 let httpServer = null;
@@ -23,16 +23,18 @@ let httpServer = null;
 /**
  * ユーザー設定を読み込む。
  * 読み込み順:
- *   1. ~/.claude/terminals-config.json（ユーザー固有設定）
+ *   1. ~/.vk-terminals/config.json（ユーザー固有設定）
  *   2. {appDir}/config.json（リポジトリローカル設定）
+ *   3. ~/.claude/terminals-config.json（後方互換）
  * どちらも存在しない場合は空オブジェクトを返す。
  *
  * @returns {{ initialCommand?: string }} 設定オブジェクト
  */
 function loadUserConfig() {
   const candidates = [
-    path.join(os.homedir(), '.claude', 'terminals-config.json'),
+    path.join(DATA_DIR, 'config.json'),
     path.join(__dirname, 'config.json'),
+    path.join(os.homedir(), '.claude', 'terminals-config.json'), // 後方互換
   ];
 
   for (const configPath of candidates) {
@@ -41,7 +43,7 @@ function loadUserConfig() {
         const raw = fs.readFileSync(configPath, 'utf8');
         return JSON.parse(raw);
       } catch (e) {
-        console.error(`[claude-terminals] Failed to parse config: ${configPath}`, e);
+        console.error(`[vk-terminals] Failed to parse config: ${configPath}`, e);
       }
     }
   }
@@ -101,7 +103,7 @@ async function checkAndUpdate() {
       'git', ['status', '--porcelain'], opts
     );
     if (statusOut.trim().length > 0) {
-      console.warn('[claude-terminals] Working tree is dirty, skipping pull.');
+      console.warn('[vk-terminals] Working tree is dirty, skipping pull.');
       return;
     }
 
@@ -111,7 +113,7 @@ async function checkAndUpdate() {
     const { response } = await dialog.showMessageBox({
       type: 'info',
       title: 'アップデート完了',
-      message: `Terminals を ${currentTag} → ${latestTag} に更新しました。`,
+      message: `VK Terminals を ${currentTag} → ${latestTag} に更新しました。`,
       detail: '変更を反映するにはアプリを再起動してください。',
       buttons: ['今すぐ再起動', 'あとで'],
       defaultId: 0,
@@ -125,7 +127,7 @@ async function checkAndUpdate() {
     }
   } catch (e) {
     // ネットワーク不通などは無視
-    console.error('[claude-terminals] Update check failed:', e.message);
+    console.error('[vk-terminals] Update check failed:', e.message);
   }
 }
 
@@ -150,7 +152,7 @@ function createWindow() {
     titleBarStyle: 'hiddenInset',
     trafficLightPosition: { x: 16, y: 12 },
     backgroundColor: '#0d1117',
-    title: 'Terminals',
+    title: 'VK Terminals',
   });
 
   win.loadFile('renderer/index.html');
@@ -184,7 +186,7 @@ ipcMain.handle('terminal:create', (event, cwd) => {
     cols: 80,
     rows: 24,
     cwd: resolvedCwd,
-    env: { ...process.env, TERM_PROGRAM: 'ClaudeTerminals' },
+    env: { ...process.env, TERM_PROGRAM: 'VKTerminals' },
   });
 
   ptyProcess.onData((data) => {
@@ -324,14 +326,14 @@ function startHttpApi() {
   });
 
   httpServer.listen(API_PORT, '127.0.0.1', () => {
-    console.log(`[claude-terminals] API server listening on http://127.0.0.1:${API_PORT}`);
+    console.log(`[vk-terminals] API server listening on http://127.0.0.1:${API_PORT}`);
   });
 
   httpServer.on('error', (e) => {
     if (e.code === 'EADDRINUSE') {
-      console.warn(`[claude-terminals] Port ${API_PORT} in use, API server disabled.`);
+      console.warn(`[vk-terminals] Port ${API_PORT} in use, API server disabled.`);
     } else {
-      console.error('[claude-terminals] API server error:', e);
+      console.error('[vk-terminals] API server error:', e);
     }
   });
 }

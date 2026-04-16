@@ -193,6 +193,8 @@ ipcMain.handle('terminal:create', (event, cwd) => {
   // initialCommand 送信用のプロンプト検知フック（最初の 1 ターミナルのみ）
   const shouldWatchForPrompt = !firstTerminalCreated;
   let promptWatcher = null;
+  // ターミナル終了時にクリアできるよう、タイムアウト ID を外側スコープで保持する
+  let promptWatcherTimeoutId = null;
   if (shouldWatchForPrompt) {
     firstTerminalCreated = true;
     const config = loadUserConfig();
@@ -202,7 +204,7 @@ ipcMain.handle('terminal:create', (event, cwd) => {
       let buffer = '';
       // Claude Code が入力受付状態になったことを検知するパターン
       // バージョンにより文言が揺れるため複数表現に対応
-      const READY_PATTERN = /\?\s*for\s*shortcuts|\?\s*to\s*show\s*shortcuts|for\s*shortcuts|Welcome to Claude|Try\s*["']?\/help|Bypass(ing)?\s*Permissions|accept edits|cwd:/i;
+      const READY_PATTERN = /\?\s*for\s*shortcuts|\?\s*to\s*show\s*shortcuts|for\s*shortcuts|Welcome to Claude|Try\s*["']?\/help|Bypass(ing)?\s*Permissions|accept edits/i;
       // 新規ディレクトリで起動した際の信頼確認プロンプト（デフォルトで Yes が選択されているので Enter で承認）
       // Claude Code のバージョンによって文言が揺れるため、複数表現に対応
       // 例: "Do you trust the files in this folder?" / "Do you trust this folder?" / 選択肢の "Yes, I trust this folder"
@@ -219,7 +221,7 @@ ipcMain.handle('terminal:create', (event, cwd) => {
         }
       };
 
-      let timeoutId = setTimeout(() => {
+      promptWatcherTimeoutId = setTimeout(() => {
         if (!sent) {
           console.warn(`${LOG_PREFIX} Claude ready prompt not detected within ${WATCH_TIMEOUT_MS}ms, sending initialCommand as fallback`);
           sendInitialCommand('timeout fallback');
@@ -242,8 +244,8 @@ ipcMain.handle('terminal:create', (event, cwd) => {
             ptyProcess.write('\r');
           }
           // 信頼承認後は Claude の起動に時間がかかるため、タイムアウトをリセット
-          clearTimeout(timeoutId);
-          timeoutId = setTimeout(() => {
+          clearTimeout(promptWatcherTimeoutId);
+          promptWatcherTimeoutId = setTimeout(() => {
             if (!sent) {
               console.warn(`${LOG_PREFIX} Claude ready prompt not detected after trust confirmation, sending initialCommand as fallback`);
               sendInitialCommand('timeout fallback after trust');
@@ -253,7 +255,8 @@ ipcMain.handle('terminal:create', (event, cwd) => {
         }
 
         if (READY_PATTERN.test(buffer)) {
-          clearTimeout(timeoutId);
+          clearTimeout(promptWatcherTimeoutId);
+          promptWatcherTimeoutId = null;
           sendInitialCommand('ready detected');
         }
       };
@@ -268,6 +271,11 @@ ipcMain.handle('terminal:create', (event, cwd) => {
   });
 
   ptyProcess.onExit(() => {
+    // ターミナル終了時に未発火のタイムアウトが残らないようクリアする
+    if (promptWatcherTimeoutId) {
+      clearTimeout(promptWatcherTimeoutId);
+      promptWatcherTimeoutId = null;
+    }
     ptys.delete(id);
     if (win && !win.isDestroyed()) {
       win.webContents.send('terminal:exit', id);

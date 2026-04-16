@@ -3,6 +3,7 @@ const pty = require('node-pty');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
+const http = require('http');
 const { execFile } = require('child_process');
 const { promisify } = require('util');
 const execFileAsync = promisify(execFile);
@@ -11,6 +12,12 @@ let win;
 const ptys = new Map();
 let nextId = 1;
 let firstTerminalCreated = false;
+
+// ─── Terminal state & HTTP API ───────────────────────────────────────────────
+const API_PORT = 13847;
+const STATE_FILE = path.join(os.homedir(), '.claude', 'terminal-states.json');
+let cachedStates = {};  // renderer から受け取った状態キャッシュ
+let httpServer = null;
 
 /**
  * ユーザー設定を読み込む。
@@ -152,6 +159,7 @@ function createWindow() {
 app.whenReady().then(async () => {
   createWindow();
   await checkAndUpdate();
+  startHttpApi();
 });
 
 app.on('window-all-closed', () => {
@@ -232,4 +240,93 @@ ipcMain.on('terminal:kill', (event, id) => {
     try { p.kill(); } catch (e) {}
     ptys.delete(id);
   }
+});
+
+// ─── State reporting from renderer ───────────────────────────────────────────
+ipcMain.on('terminal:report-states', (event, states) => {
+  cachedStates = states;
+  // 状態ファイルに書き出し（非同期、エラーは無視）
+  const payload = JSON.stringify({ updatedAt: new Date().toISOString(), terminals: states }, null, 2);
+  fs.writeFile(STATE_FILE, payload, 'utf8', () => {});
+});
+
+// ─── HTTP API ────────────────────────────────────────────────────────────────
+function startHttpApi() {
+  httpServer = http.createServer((req, res) => {
+    // CORS（ローカルのみ）
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
+
+    const url = new URL(req.url, `http://127.0.0.1:${API_PORT}`);
+
+    // GET /api/health
+    if (req.method === 'GET' && url.pathname === '/api/health') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+
+    // GET /api/states
+    if (req.method === 'GET' && url.pathname === '/api/states') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ updatedAt: new Date().toISOString(), terminals: cachedStates }));
+      return;
+    }
+
+    // POST /api/send  { termId: "1", input: "y" }
+    if (req.method === 'POST' && url.pathname === '/api/send') {
+      let body = '';
+      req.on('data', chunk => { body += chunk; });
+      req.on('end', () => {
+        try {
+          const { termId, input } = JSON.parse(body);
+          if (!termId || typeof input !== 'string') {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'termId and input required' }));
+            return;
+          }
+          const p = ptys.get(String(termId));
+          if (!p) {
+            res.writeHead(404, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: `terminal ${termId} not found` }));
+            return;
+          }
+          p.write(input);
+          // renderer に通知（バッジ表示用）
+          if (win && !win.isDestroyed()) {
+            win.webContents.send('terminal:auto-input', termId);
+          }
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, termId }));
+        } catch (e) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'invalid JSON' }));
+        }
+      });
+      return;
+    }
+
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'not found' }));
+  });
+
+  httpServer.listen(API_PORT, '127.0.0.1', () => {
+    console.log(`[claude-terminals] API server listening on http://127.0.0.1:${API_PORT}`);
+  });
+
+  httpServer.on('error', (e) => {
+    if (e.code === 'EADDRINUSE') {
+      console.warn(`[claude-terminals] Port ${API_PORT} in use, API server disabled.`);
+    } else {
+      console.error('[claude-terminals] API server error:', e);
+    }
+  });
+}
+
+// 終了時にステートファイルを削除
+app.on('before-quit', () => {
+  try { fs.unlinkSync(STATE_FILE); } catch (e) {}
+  if (httpServer) httpServer.close();
 });

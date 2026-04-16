@@ -179,6 +179,33 @@ html, body {
   50% { opacity: 0.6; }
 }
 
+/* ─── Auto-input badge ────────────────────────────────────────────────────── */
+.auto-input-badge {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  color: #58a6ff;
+  font-size: 10px;
+  font-weight: 600;
+  background: rgba(88, 166, 255, 0.15);
+  border: 1px solid rgba(88, 166, 255, 0.3);
+  padding: 0 5px;
+  height: 18px;
+  border-radius: 3px;
+  margin-right: 2px;
+  white-space: nowrap;
+  animation: auto-input-flash 0.5s ease-out;
+}
+
+@keyframes auto-input-flash {
+  0% { background: rgba(88, 166, 255, 0.4); }
+  100% { background: rgba(88, 166, 255, 0.15); }
+}
+
+.pane.auto-input {
+  border-color: #58a6ff;
+}
+
 /* ─── Buttons ──────────────────────────────────────────────────────────────── */
 .btn {
   background: none;

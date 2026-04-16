@@ -2,6 +2,7 @@
 const { ipcRenderer, shell } = require('electron');
 const { Terminal } = require('@xterm/xterm');
 const { FitAddon } = require('@xterm/addon-fit');
+const os = require('os');
 
 // ─── State ────────────────────────────────────────────────────────────────────
 let tree = null;       // Layout tree root
@@ -97,6 +98,9 @@ async function createTerminal(paneId, cwd) {
   // 共通の入力送信ヘルパー（waiting バッジのクリアを含む）
   function sendTerminalInput(data) {
     ipcRenderer.send('terminal:input', termId, data);
+    if (terminals[paneId]) {
+      terminals[paneId].lastInputTime = Date.now();
+    }
     if (terminals[paneId]?.waiting) {
       terminals[paneId].waiting = false;
       terminals[paneId].lastLines = '';
@@ -137,6 +141,8 @@ async function createTerminal(paneId, cwd) {
     cwdFull: initialCwd,
     waiting: false,
     lastLines: '',
+    lastOutputTime: Date.now(),
+    lastInputTime: 0,
   };
 
   return paneId;
@@ -171,6 +177,7 @@ ipcRenderer.on('terminal:data', (event, id, data) => {
   // Accumulate last lines for waiting detection
   const stripped = stripAnsi(data);
   t.lastLines = (t.lastLines + stripped).split('\n').slice(-15).join('\n');
+  t.lastOutputTime = Date.now();
   checkWaiting(paneId);
 });
 
@@ -344,6 +351,7 @@ function renderLeaf(node) {
   header.innerHTML = `
     <span class="pane-cwd" title="${cwd}">${cwd}</span>
     <div class="pane-actions">
+      <span class="auto-input-badge" style="display:none"></span>
       <span class="waiting-badge" style="display:${waiting ? 'flex' : 'none'}">⚠ 待機中</span>
       <button class="btn btn-split-h" title="左右に分割">⇔</button>
       <button class="btn btn-split-v" title="上下に分割">⇕</button>
@@ -564,3 +572,39 @@ async function initApp() {
 }
 
 initApp();
+
+// ─── State reporting to main process ─────────────────────────────────────────
+setInterval(() => {
+  const states = {};
+  for (const [paneId, t] of Object.entries(terminals)) {
+    if (!t) continue;
+    states[paneId] = {
+      termId: t.termId,
+      cwd: t.cwdFull || '',
+      cwdShort: t.cwd || '~',
+      waiting: t.waiting,
+      lastOutputTime: t.lastOutputTime,
+      lastInputTime: t.lastInputTime,
+      lastLines: t.lastLines,
+    };
+  }
+  ipcRenderer.send('terminal:report-states', states);
+}, 2000);
+
+// ─── Auto-input notification from main (HTTP API経由の入力時) ─────────────────
+ipcRenderer.on('terminal:auto-input', (event, termId) => {
+  const paneId = Object.keys(terminals).find(k => terminals[k]?.termId === termId);
+  if (!paneId) return;
+  const paneEl = document.querySelector(`.pane[data-id="${paneId}"]`);
+  if (!paneEl) return;
+  const badge = paneEl.querySelector('.auto-input-badge');
+  if (badge) {
+    badge.textContent = '🤖 自動入力';
+    badge.style.display = 'flex';
+    paneEl.classList.add('auto-input');
+    setTimeout(() => {
+      badge.style.display = 'none';
+      paneEl.classList.remove('auto-input');
+    }, 3000);
+  }
+});

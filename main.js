@@ -231,8 +231,10 @@ ipcMain.handle('terminal:create', (event, cwd) => {
       promptWatcher = (data) => {
         if (sent) return;
         // ANSI エスケープ（CSI / OSC）を除去してから末尾 4KB だけ保持
+        // 標準 CSI: ESC[ + パラメータ(0x30-0x3F) + 中間バイト(0x20-0x2F) + 最終バイト(0x40-0x7E)
+        // 英字終端に限定すると ESC[1~ のような非英字終端が残るため最終バイト全体を許容する
         const stripped = data
-          .replace(/\x1b\[[\d;?]*[a-zA-Z]/g, '')
+          .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
           .replace(/\x1b\]\d+;[^\x07\x1b]*(?:\x07|\x1b\\)/g, '');
         buffer = (buffer + stripped).slice(-4096);
 

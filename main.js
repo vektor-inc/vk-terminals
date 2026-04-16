@@ -15,7 +15,8 @@ let firstTerminalCreated = false;
 
 // ─── Terminal state & HTTP API ───────────────────────────────────────────────
 const API_PORT = 13847;
-const STATE_FILE = path.join(os.homedir(), '.claude', 'terminal-states.json');
+const DATA_DIR = path.join(os.homedir(), '.claude-terminals');
+const STATE_FILE = path.join(DATA_DIR, 'states.json');
 let cachedStates = {};  // renderer から受け取った状態キャッシュ
 let httpServer = null;
 
@@ -243,6 +244,9 @@ ipcMain.on('terminal:kill', (event, id) => {
 });
 
 // ─── State reporting from renderer ───────────────────────────────────────────
+// データディレクトリを確保
+fs.mkdirSync(DATA_DIR, { recursive: true });
+
 ipcMain.on('terminal:report-states', (event, states) => {
   cachedStates = states;
   // 状態ファイルに書き出し（非同期、エラーは無視）

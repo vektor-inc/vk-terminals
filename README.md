@@ -145,7 +145,7 @@ curl -s -X POST http://127.0.0.1:13847/api/send \
 
 ### 状態ファイル
 
-`~/.claude/terminal-states.json` に2秒ごとに全ターミナルの状態が書き出されます。HTTP API と同じ内容です。アプリ終了時に自動削除されます。
+`~/.claude-terminals/states.json` に2秒ごとに全ターミナルの状態が書き出されます。HTTP API と同じ内容です。アプリ終了時に自動削除されます。
 
 ## 技術スタック
 

@@ -190,7 +190,78 @@ ipcMain.handle('terminal:create', (event, cwd) => {
     env: { ...process.env, TERM_PROGRAM: 'VKTerminals' },
   });
 
+  // initialCommand 送信用のプロンプト検知フック（最初の 1 ターミナルのみ）
+  const shouldWatchForPrompt = !firstTerminalCreated;
+  let promptWatcher = null;
+  if (shouldWatchForPrompt) {
+    firstTerminalCreated = true;
+    const config = loadUserConfig();
+    if (config.initialCommand) {
+      let sent = false;
+      let trustHandled = false;
+      let buffer = '';
+      // Claude Code が入力受付状態になったことを検知するパターン
+      // バージョンにより文言が揺れるため複数表現に対応
+      const READY_PATTERN = /\?\s*for\s*shortcuts|\?\s*to\s*show\s*shortcuts|for\s*shortcuts|Welcome to Claude|Try\s*["']?\/help|Bypass(ing)?\s*Permissions|accept edits|cwd:/i;
+      // 新規ディレクトリで起動した際の信頼確認プロンプト（デフォルトで Yes が選択されているので Enter で承認）
+      // Claude Code のバージョンによって文言が揺れるため、複数表現に対応
+      // 例: "Do you trust the files in this folder?" / "Do you trust this folder?" / 選択肢の "Yes, I trust this folder"
+      const TRUST_PATTERN = /Do you trust.{0,40}folder|Yes,\s*I\s*trust\s*(the\s*files\s*in\s*)?this\s*folder/i;
+      // Claude の起動には通常 2〜4 秒程度。READY_PATTERN が検知できなくてもフォールバック送信する
+      const WATCH_TIMEOUT_MS = 10000;
+
+      const sendInitialCommand = (reason) => {
+        if (sent) return;
+        sent = true;
+        if (ptys.has(id)) {
+          ptyProcess.write(config.initialCommand + '\r');
+          console.log(`${LOG_PREFIX} initialCommand sent (${reason})`);
+        }
+      };
+
+      let timeoutId = setTimeout(() => {
+        if (!sent) {
+          console.warn(`${LOG_PREFIX} Claude ready prompt not detected within ${WATCH_TIMEOUT_MS}ms, sending initialCommand as fallback`);
+          sendInitialCommand('timeout fallback');
+        }
+      }, WATCH_TIMEOUT_MS);
+
+      promptWatcher = (data) => {
+        if (sent) return;
+        // ANSI エスケープ（CSI / OSC）を除去してから末尾 4KB だけ保持
+        const stripped = data
+          .replace(/\x1b\[[\d;?]*[a-zA-Z]/g, '')
+          .replace(/\x1b\]\d+;[^\x07\x1b]*(?:\x07|\x1b\\)/g, '');
+        buffer = (buffer + stripped).slice(-4096);
+
+        // 信頼確認プロンプトが出ていたら Enter を送って承認（1回だけ）
+        if (!trustHandled && TRUST_PATTERN.test(buffer)) {
+          trustHandled = true;
+          buffer = '';
+          if (ptys.has(id)) {
+            ptyProcess.write('\r');
+          }
+          // 信頼承認後は Claude の起動に時間がかかるため、タイムアウトをリセット
+          clearTimeout(timeoutId);
+          timeoutId = setTimeout(() => {
+            if (!sent) {
+              console.warn(`${LOG_PREFIX} Claude ready prompt not detected after trust confirmation, sending initialCommand as fallback`);
+              sendInitialCommand('timeout fallback after trust');
+            }
+          }, WATCH_TIMEOUT_MS);
+          return;
+        }
+
+        if (READY_PATTERN.test(buffer)) {
+          clearTimeout(timeoutId);
+          sendInitialCommand('ready detected');
+        }
+      };
+    }
+  }
+
   ptyProcess.onData((data) => {
+    if (promptWatcher) promptWatcher(data);
     if (win && !win.isDestroyed()) {
       win.webContents.send('terminal:data', id, data);
     }
@@ -211,19 +282,6 @@ ipcMain.handle('terminal:create', (event, cwd) => {
       ptyProcess.write('claude\r');
     }
   }, 200);
-
-  // 起動後に initialCommand を実行する（最初の1回のみ）
-  if (!firstTerminalCreated) {
-    firstTerminalCreated = true;
-    const config = loadUserConfig();
-    if (config.initialCommand) {
-      setTimeout(() => {
-        if (ptys.has(id)) {
-          ptyProcess.write(config.initialCommand + '\r');
-        }
-      }, 4000);
-    }
-  }
 
   return { id, cwd: resolvedCwd };
 });

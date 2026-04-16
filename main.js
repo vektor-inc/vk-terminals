@@ -17,6 +17,7 @@ let firstTerminalCreated = false;
 const API_PORT = 13847;
 const DATA_DIR = path.join(os.homedir(), '.vk-terminals');
 const STATE_FILE = path.join(DATA_DIR, 'states.json');
+const LOG_PREFIX = '[vk-terminals]';
 let cachedStates = {};  // renderer から受け取った状態キャッシュ
 let httpServer = null;
 
@@ -43,7 +44,7 @@ function loadUserConfig() {
         const raw = fs.readFileSync(configPath, 'utf8');
         return JSON.parse(raw);
       } catch (e) {
-        console.error(`[vk-terminals] Failed to parse config: ${configPath}`, e);
+        console.error(`${LOG_PREFIX} Failed to parse config: ${configPath}`, e);
       }
     }
   }
@@ -103,7 +104,7 @@ async function checkAndUpdate() {
       'git', ['status', '--porcelain'], opts
     );
     if (statusOut.trim().length > 0) {
-      console.warn('[vk-terminals] Working tree is dirty, skipping pull.');
+      console.warn(`${LOG_PREFIX} Working tree is dirty, skipping pull.`);
       return;
     }
 
@@ -127,7 +128,7 @@ async function checkAndUpdate() {
     }
   } catch (e) {
     // ネットワーク不通などは無視
-    console.error('[vk-terminals] Update check failed:', e.message);
+    console.error(`${LOG_PREFIX} Update check failed:`, e.message);
   }
 }
 
@@ -326,14 +327,14 @@ function startHttpApi() {
   });
 
   httpServer.listen(API_PORT, '127.0.0.1', () => {
-    console.log(`[vk-terminals] API server listening on http://127.0.0.1:${API_PORT}`);
+    console.log(`${LOG_PREFIX} API server listening on http://127.0.0.1:${API_PORT}`);
   });
 
   httpServer.on('error', (e) => {
     if (e.code === 'EADDRINUSE') {
-      console.warn(`[vk-terminals] Port ${API_PORT} in use, API server disabled.`);
+      console.warn(`${LOG_PREFIX} Port ${API_PORT} in use, API server disabled.`);
     } else {
-      console.error('[vk-terminals] API server error:', e);
+      console.error(`${LOG_PREFIX} API server error:`, e);
     }
   });
 }

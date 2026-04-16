@@ -3,6 +3,7 @@ const pty = require('node-pty');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
+const http = require('http');
 const { execFile } = require('child_process');
 const { promisify } = require('util');
 const execFileAsync = promisify(execFile);
@@ -11,6 +12,13 @@ let win;
 const ptys = new Map();
 let nextId = 1;
 let firstTerminalCreated = false;
+
+// ─── Terminal state & HTTP API ───────────────────────────────────────────────
+const API_PORT = 13847;
+const DATA_DIR = path.join(os.homedir(), '.claude-terminals');
+const STATE_FILE = path.join(DATA_DIR, 'states.json');
+let cachedStates = {};  // renderer から受け取った状態キャッシュ
+let httpServer = null;
 
 /**
  * ユーザー設定を読み込む。
@@ -152,6 +160,7 @@ function createWindow() {
 app.whenReady().then(async () => {
   createWindow();
   await checkAndUpdate();
+  startHttpApi();
 });
 
 app.on('window-all-closed', () => {
@@ -161,6 +170,8 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   cleanupPtys();
+  try { fs.unlinkSync(STATE_FILE); } catch (e) {}
+  if (httpServer) httpServer.close();
 });
 
 ipcMain.handle('terminal:create', (event, cwd) => {
@@ -233,3 +244,95 @@ ipcMain.on('terminal:kill', (event, id) => {
     ptys.delete(id);
   }
 });
+
+// ─── State reporting from renderer ───────────────────────────────────────────
+// データディレクトリを確保
+fs.mkdirSync(DATA_DIR, { recursive: true });
+
+ipcMain.on('terminal:report-states', (event, states) => {
+  cachedStates = states;
+  // 状態ファイルに書き出し（非同期、エラーは無視）
+  const payload = JSON.stringify({ updatedAt: new Date().toISOString(), terminals: states }, null, 2);
+  fs.writeFile(STATE_FILE, payload, 'utf8', () => {});
+});
+
+// ─── HTTP API ────────────────────────────────────────────────────────────────
+function startHttpApi() {
+  httpServer = http.createServer((req, res) => {
+    const url = new URL(req.url, `http://127.0.0.1:${API_PORT}`);
+
+    // GET /api/health
+    if (req.method === 'GET' && url.pathname === '/api/health') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+
+    // GET /api/states
+    if (req.method === 'GET' && url.pathname === '/api/states') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ updatedAt: new Date().toISOString(), terminals: cachedStates }));
+      return;
+    }
+
+    // POST /api/send  { termId: "1", input: "y" }
+    if (req.method === 'POST' && url.pathname === '/api/send') {
+      const MAX_BODY = 10 * 1024; // 10KB
+      let body = '';
+      let aborted = false;
+      req.on('data', chunk => {
+        body += chunk;
+        if (body.length > MAX_BODY) {
+          aborted = true;
+          res.writeHead(413, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'payload too large' }));
+          req.destroy();
+        }
+      });
+      req.on('end', () => {
+        if (aborted) return;
+        try {
+          const { termId, input } = JSON.parse(body);
+          if (!termId || typeof input !== 'string') {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'termId and input required' }));
+            return;
+          }
+          const p = ptys.get(String(termId));
+          if (!p) {
+            res.writeHead(404, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: `terminal ${termId} not found` }));
+            return;
+          }
+          p.write(input);
+          // renderer に通知（バッジ表示用）
+          if (win && !win.isDestroyed()) {
+            win.webContents.send('terminal:auto-input', termId);
+          }
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, termId }));
+        } catch (e) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'invalid JSON' }));
+        }
+      });
+      return;
+    }
+
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'not found' }));
+  });
+
+  httpServer.listen(API_PORT, '127.0.0.1', () => {
+    console.log(`[claude-terminals] API server listening on http://127.0.0.1:${API_PORT}`);
+  });
+
+  httpServer.on('error', (e) => {
+    if (e.code === 'EADDRINUSE') {
+      console.warn(`[claude-terminals] Port ${API_PORT} in use, API server disabled.`);
+    } else {
+      console.error('[claude-terminals] API server error:', e);
+    }
+  });
+}
+

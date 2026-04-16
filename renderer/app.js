@@ -2,7 +2,6 @@
 const { ipcRenderer, shell } = require('electron');
 const { Terminal } = require('@xterm/xterm');
 const { FitAddon } = require('@xterm/addon-fit');
-const os = require('os');
 
 // ─── State ────────────────────────────────────────────────────────────────────
 let tree = null;       // Layout tree root
@@ -603,8 +602,11 @@ ipcRenderer.on('terminal:auto-input', (event, termId) => {
     badge.style.display = 'flex';
     paneEl.classList.add('auto-input');
     setTimeout(() => {
-      badge.style.display = 'none';
-      paneEl.classList.remove('auto-input');
+      const el = document.querySelector(`.pane[data-id="${paneId}"]`);
+      if (!el) return;
+      const b = el.querySelector('.auto-input-badge');
+      if (b) b.style.display = 'none';
+      el.classList.remove('auto-input');
     }, 3000);
   }
 });

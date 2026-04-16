@@ -170,6 +170,8 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   cleanupPtys();
+  try { fs.unlinkSync(STATE_FILE); } catch (e) {}
+  if (httpServer) httpServer.close();
 });
 
 ipcMain.handle('terminal:create', (event, cwd) => {
@@ -257,12 +259,6 @@ ipcMain.on('terminal:report-states', (event, states) => {
 // ─── HTTP API ────────────────────────────────────────────────────────────────
 function startHttpApi() {
   httpServer = http.createServer((req, res) => {
-    // CORS（ローカルのみ）
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-    if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
-
     const url = new URL(req.url, `http://127.0.0.1:${API_PORT}`);
 
     // GET /api/health
@@ -281,9 +277,20 @@ function startHttpApi() {
 
     // POST /api/send  { termId: "1", input: "y" }
     if (req.method === 'POST' && url.pathname === '/api/send') {
+      const MAX_BODY = 10 * 1024; // 10KB
       let body = '';
-      req.on('data', chunk => { body += chunk; });
+      let aborted = false;
+      req.on('data', chunk => {
+        body += chunk;
+        if (body.length > MAX_BODY) {
+          aborted = true;
+          res.writeHead(413, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'payload too large' }));
+          req.destroy();
+        }
+      });
       req.on('end', () => {
+        if (aborted) return;
         try {
           const { termId, input } = JSON.parse(body);
           if (!termId || typeof input !== 'string') {
@@ -329,8 +336,3 @@ function startHttpApi() {
   });
 }
 
-// 終了時にステートファイルを削除
-app.on('before-quit', () => {
-  try { fs.unlinkSync(STATE_FILE); } catch (e) {}
-  if (httpServer) httpServer.close();
-});

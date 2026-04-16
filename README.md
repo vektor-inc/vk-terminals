@@ -1,4 +1,4 @@
-# claude-terminals
+# vk-terminals
 
 複数のターミナルを並べて表示できる Electron 製デスクトップアプリです。
 起動すると自動的に `claude` コマンドが実行されます。
@@ -56,7 +56,7 @@ npm start
 
 設定ファイルを以下のいずれかのパスに配置してください（上が優先）：
 
-1. `~/.claude/terminals-config.json` — ユーザー固有設定（推奨）
+1. `~/.vk-terminals/config.json` — ユーザー固有設定（推奨）
 2. `config.json`（リポジトリ直下）— ローカル設定（`.gitignore` 対象）
 
 `config.example.json` をコピーして編集してください：
@@ -64,10 +64,11 @@ npm start
 ```bash
 cp config.example.json config.json
 # または
-cp config.example.json ~/.claude/terminals-config.json
+mkdir -p ~/.vk-terminals
+cp config.example.json ~/.vk-terminals/config.json
 ```
 
-設定例（`config.json` / `~/.claude/terminals-config.json`）：
+設定例：
 
 ```json
 {
@@ -76,6 +77,8 @@ cp config.example.json ~/.claude/terminals-config.json
 ```
 
 `initialCommand` を省略または空にすると、自動実行は行われません。
+
+> **移行メモ**: 旧パス `~/.claude/terminals-config.json` も後方互換として読み込まれます。
 
 ## HTTP API（外部連携用）
 
@@ -145,7 +148,7 @@ curl -s -X POST http://127.0.0.1:13847/api/send \
 
 ### 状態ファイル
 
-`~/.claude-terminals/states.json` に2秒ごとに全ターミナルの状態が書き出されます。HTTP API と同じ内容です。アプリ終了時に自動削除されます。
+`~/.vk-terminals/states.json` に2秒ごとに全ターミナルの状態が書き出されます。HTTP API と同じ内容です。アプリ終了時に自動削除されます。
 
 ## 技術スタック
 

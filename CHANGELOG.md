@@ -1,6 +1,8 @@
 # Changelog
 
-- [ 機能追加 ] 各ターミナルの状態を `~/.claude/terminal-states.json` に定期書き出しする機能を追加
+- [ 仕様変更 ] アプリ名を claude-terminals から vk-terminals に変更
+- [ 仕様変更 ] 設定・データディレクトリを `~/.vk-terminals/` に変更（旧パス `~/.claude/terminals-config.json` も後方互換で読み込み）
+- [ 機能追加 ] 各ターミナルの状態を `~/.vk-terminals/states.json` に定期書き出しする機能を追加
 - [ 機能追加 ] ローカル HTTP API（port 13847）を追加し、外部からターミナルの状態取得・コマンド送信が可能に
 
 ## 1.3.0
@@ -15,4 +17,4 @@
 - [ デザイン不具合修正 ] ボタンのサイズ・文字サイズ・色を調整
 
 ## 1.0.0
-- [ 機能追加 ] 起動時に自動実行するコマンドをユーザー設定ファイル（`~/.claude/terminals-config.json` または `config.json`）で指定できる機能を追加
+- [ 機能追加 ] 起動時に自動実行するコマンドをユーザー設定ファイル（`~/.vk-terminals/config.json` または `config.json`）で指定できる機能を追加

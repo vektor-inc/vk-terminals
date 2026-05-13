@@ -51,7 +51,7 @@ const WAITING_PATTERNS = [
   /\[\s*A\s*\]llow/i,
   /\[\s*D\s*\]eny/i,
   /approve.*\(y\/n\)/i,
-  /permission/i,
+  // NOTE: /permission/i は削除 — Claude Code の UI フッター "bypass permissions on" に誤反応するため
 ];
 
 function stripAnsi(str) {
@@ -233,7 +233,7 @@ function getAllLeafIds(node) {
 // ─── Pane actions ─────────────────────────────────────────────────────────────
 async function splitPane(paneId, direction) {
   const node = findNode(tree, paneId);
-  if (!node) return;
+  if (!node) return null;
 
   const newPaneId = newId();
   // Inherit cwd from current pane if available
@@ -254,6 +254,9 @@ async function splitPane(paneId, direction) {
     fitTerminal(newPaneId);
     focusPane(newPaneId);
   });
+
+  // 新ペインの情報を返す（focusedPaneId の更新を待たずに確定値を返す）
+  return { paneId: newPaneId, termId: terminals[newPaneId]?.termId };
 }
 
 function closePane(paneId) {
@@ -597,10 +600,12 @@ ipcRenderer.on('terminal:request-new-pane', async () => {
     ipcRenderer.send('terminal:new-pane-created', { error: 'no pane available' });
     return;
   }
-  await splitPane(targetPaneId, 'h');
-  // splitPane は新しいペインにフォーカスを移すので focusedPaneId が新ペイン
-  const termId = terminals[focusedPaneId]?.termId;
-  ipcRenderer.send('terminal:new-pane-created', { termId });
+  const result = await splitPane(targetPaneId, 'h');
+  if (!result || !result.termId) {
+    ipcRenderer.send('terminal:new-pane-created', { error: 'split failed or termId unavailable' });
+    return;
+  }
+  ipcRenderer.send('terminal:new-pane-created', { termId: result.termId });
 });
 
 // ─── Auto-input notification from main (HTTP API経由の入力時) ─────────────────

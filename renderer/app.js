@@ -590,6 +590,19 @@ setInterval(() => {
   ipcRenderer.send('terminal:report-states', states);
 }, 2000);
 
+// ─── New pane request from HTTP API ──────────────────────────────────────────
+ipcRenderer.on('terminal:request-new-pane', async () => {
+  const targetPaneId = focusedPaneId || (tree ? getAllLeafIds(tree)[0] : null);
+  if (!targetPaneId) {
+    ipcRenderer.send('terminal:new-pane-created', { error: 'no pane available' });
+    return;
+  }
+  await splitPane(targetPaneId, 'h');
+  // splitPane は新しいペインにフォーカスを移すので focusedPaneId が新ペイン
+  const termId = terminals[focusedPaneId]?.termId;
+  ipcRenderer.send('terminal:new-pane-created', { termId });
+});
+
 // ─── Auto-input notification from main (HTTP API経由の入力時) ─────────────────
 ipcRenderer.on('terminal:auto-input', (event, termId) => {
   const paneId = Object.keys(terminals).find(k => terminals[k]?.termId === termId);

@@ -13,6 +13,9 @@ const ptys = new Map();
 let nextId = 1;
 let firstTerminalCreated = false;
 
+// /api/new-pane の HTTP レスポンスを待つコールバックキュー
+const pendingNewPaneCallbacks = [];
+
 // ─── Terminal state & HTTP API ───────────────────────────────────────────────
 const API_PORT = 13847;
 const DATA_DIR = path.join(os.homedir(), '.vk-terminals');
@@ -316,6 +319,12 @@ ipcMain.on('terminal:kill', (event, id) => {
   }
 });
 
+// renderer が新規ペインを作成し終えたら HTTP レスポンスを返す
+ipcMain.on('terminal:new-pane-created', (event, result) => {
+  const resolve = pendingNewPaneCallbacks.shift();
+  if (resolve) resolve(result);
+});
+
 // ─── State reporting from renderer ───────────────────────────────────────────
 // データディレクトリを確保
 fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -387,6 +396,37 @@ function startHttpApi() {
           res.end(JSON.stringify({ error: 'invalid JSON' }));
         }
       });
+      return;
+    }
+
+    // POST /api/new-pane  — 新規ペインを作成して termId を返す
+    if (req.method === 'POST' && url.pathname === '/api/new-pane') {
+      if (!win || win.isDestroyed()) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'window not available' }));
+        return;
+      }
+      let resolve;
+      const timeoutId = setTimeout(() => {
+        const idx = pendingNewPaneCallbacks.indexOf(resolve);
+        if (idx !== -1) {
+          pendingNewPaneCallbacks.splice(idx, 1);
+          res.writeHead(504, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'timeout waiting for new pane' }));
+        }
+      }, 15000);
+      resolve = (result) => {
+        clearTimeout(timeoutId);
+        if (result.error) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: result.error }));
+        } else {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, termId: result.termId }));
+        }
+      };
+      pendingNewPaneCallbacks.push(resolve);
+      win.webContents.send('terminal:request-new-pane');
       return;
     }
 

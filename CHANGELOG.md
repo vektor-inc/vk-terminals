@@ -1,5 +1,6 @@
 # Changelog
 
+- [ 機能追加 ] HTTP API に `POST /api/new-pane` エンドポイントを追加（新規ペインを作成して termId を返す）
 - [ 不具合修正 ] Claude の初期化が 4 秒以内に終わらない場合に initialCommand（起動時自動実行コマンド）が無視されてしまう不具合を、Claude のプロンプト（`? for shortcuts`）検知方式に変更して修正
 - [ 不具合修正 ] 新規ディレクトリで起動した際の信頼確認プロンプト（`Do you trust the files in this folder?`）で待機して initialCommand が送信されない不具合を修正（Enter を自動送信して承認）
 - [ 仕様変更 ] アプリ名を claude-terminals から vk-terminals に変更

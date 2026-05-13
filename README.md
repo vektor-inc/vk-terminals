@@ -146,6 +146,22 @@ curl -s -X POST http://127.0.0.1:13847/api/send \
 
 送信成功時、対象ペインに「🤖 自動入力」バッジが3秒間表示されます。
 
+#### `POST /api/new-pane`
+
+新規ペインを作成し、作成されたターミナルの `termId` を返します。フォーカス中のペインを水平分割して新規ペインを生成します。
+
+```bash
+curl -s -X POST http://127.0.0.1:13847/api/new-pane
+# => {"ok":true,"termId":"3"}
+```
+
+レスポンス:
+
+- 成功時: `200 {"ok": true, "termId": "<新規ターミナルID>"}`
+- ウィンドウが利用できない: `503 {"error": "window not available"}`
+- タイムアウト（15秒）: `504 {"error": "timeout waiting for new pane"}`
+- renderer 側でペイン作成に失敗（既存ペインなし／分割失敗など）: `500 {"error": "<renderer からのエラーメッセージ>"}`
+
 ### 状態ファイル
 
 `~/.vk-terminals/states.json` に2秒ごとに全ターミナルの状態が書き出されます。HTTP API と同じ内容です。アプリ終了時に自動削除されます。

@@ -13,6 +13,11 @@ const ptys = new Map();
 let nextId = 1;
 let firstTerminalCreated = false;
 
+// /api/new-pane の HTTP レスポンスを待つコールバック（requestId → resolver）
+// 並行リクエストでも取り違えが起きないように requestId で相関付ける
+const pendingNewPaneCallbacks = new Map();
+let nextNewPaneRequestId = 1;
+
 // ─── Terminal state & HTTP API ───────────────────────────────────────────────
 const API_PORT = 13847;
 const DATA_DIR = path.join(os.homedir(), '.vk-terminals');
@@ -190,62 +195,67 @@ ipcMain.handle('terminal:create', (event, cwd) => {
     env: { ...process.env, TERM_PROGRAM: 'VKTerminals' },
   });
 
-  // initialCommand 送信用のプロンプト検知フック（最初の 1 ターミナルのみ）
-  const shouldWatchForPrompt = !firstTerminalCreated;
+  // initialCommand は最初の 1 ターミナルのみ送信
+  const isFirstTerminal = !firstTerminalCreated;
+  if (isFirstTerminal) firstTerminalCreated = true;
+
   let promptWatcher = null;
-  // ターミナル終了時にクリアできるよう、タイムアウト ID を外側スコープで保持する
   let promptWatcherTimeoutId = null;
-  if (shouldWatchForPrompt) {
-    firstTerminalCreated = true;
-    const config = loadUserConfig();
-    if (config.initialCommand) {
-      let sent = false;
-      let trustHandled = false;
-      let buffer = '';
-      // Claude Code が入力受付状態になったことを検知するパターン
-      // バージョンにより文言が揺れるため複数表現に対応
-      const READY_PATTERN = /\?\s*for\s*shortcuts|\?\s*to\s*show\s*shortcuts|for\s*shortcuts|Welcome to Claude|Try\s*["']?\/help|Bypass(ing)?\s*Permissions|accept edits/i;
-      // 新規ディレクトリで起動した際の信頼確認プロンプト（デフォルトで Yes が選択されているので Enter で承認）
-      // Claude Code のバージョンによって文言が揺れるため、複数表現に対応
-      // 例: "Do you trust the files in this folder?" / "Do you trust this folder?" / 選択肢の "Yes, I trust this folder"
-      const TRUST_PATTERN = /Do you trust.{0,40}folder|Yes,\s*I\s*trust\s*(the\s*files\s*in\s*)?this\s*folder/i;
-      // Claude の起動には通常 2〜4 秒程度。READY_PATTERN が検知できなくてもフォールバック送信する
-      const WATCH_TIMEOUT_MS = 10000;
 
-      const sendInitialCommand = (reason) => {
-        if (sent) return;
-        sent = true;
-        if (ptys.has(id)) {
-          ptyProcess.write(config.initialCommand + '\r');
-          console.log(`${LOG_PREFIX} initialCommand sent (${reason})`);
-        }
-      };
+  // ANSI エスケープを除去するユーティリティ
+  const stripAnsi = (data) => data
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
+    .replace(/\x1b\]\d+;[^\x07\x1b]*(?:\x07|\x1b\\)/g, '');
 
+  // 信頼確認プロンプトの検知パターン（全ターミナル共通）
+  // 「Enter to confirm」が出た時点でメニュー描画済みなので、そこで \r を送る
+  // 旧UI: "Do you trust the files in this folder?" / "Yes, I trust this folder"
+  // 新UI: "Quick safety check..." → "Enter to confirm · Esc to cancel"
+  const TRUST_PATTERN = /Enter to confirm|Do you trust.{0,40}folder|Yes,\s*I\s*trust\s*(the\s*files\s*in\s*)?this\s*folder/i;
+
+  // Claude Code が入力受付状態になったことを検知するパターン
+  const READY_PATTERN = /\?\s*for\s*shortcuts|\?\s*to\s*show\s*shortcuts|for\s*shortcuts|Welcome to Claude|Try\s*["']?\/help|Bypass(ing)?\s*Permissions|accept edits/i;
+
+  const WATCH_TIMEOUT_MS = 10000;
+
+  {
+    const config = isFirstTerminal ? loadUserConfig() : {};
+    let sent = false;
+    let trustHandled = false;
+    let buffer = '';
+
+    const sendInitialCommand = (reason) => {
+      if (sent || !config.initialCommand) return;
+      sent = true;
+      if (ptys.has(id)) {
+        ptyProcess.write(config.initialCommand + '\r');
+        console.log(`${LOG_PREFIX} initialCommand sent (${reason})`);
+      }
+    };
+
+    if (isFirstTerminal && config.initialCommand) {
       promptWatcherTimeoutId = setTimeout(() => {
         if (!sent) {
           console.warn(`${LOG_PREFIX} Claude ready prompt not detected within ${WATCH_TIMEOUT_MS}ms, sending initialCommand as fallback`);
           sendInitialCommand('timeout fallback');
         }
       }, WATCH_TIMEOUT_MS);
+    }
 
-      promptWatcher = (data) => {
-        if (sent) return;
-        // ANSI エスケープ（CSI / OSC）を除去してから末尾 4KB だけ保持
-        // 標準 CSI: ESC[ + パラメータ(0x30-0x3F) + 中間バイト(0x20-0x2F) + 最終バイト(0x40-0x7E)
-        // 英字終端に限定すると ESC[1~ のような非英字終端が残るため最終バイト全体を許容する
-        const stripped = data
-          .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
-          .replace(/\x1b\]\d+;[^\x07\x1b]*(?:\x07|\x1b\\)/g, '');
-        buffer = (buffer + stripped).slice(-4096);
+    promptWatcher = (data) => {
+      const stripped = stripAnsi(data);
+      buffer = (buffer + stripped).slice(-4096);
 
-        // 信頼確認プロンプトが出ていたら Enter を送って承認（1回だけ）
-        if (!trustHandled && TRUST_PATTERN.test(buffer)) {
-          trustHandled = true;
-          buffer = '';
-          if (ptys.has(id)) {
-            ptyProcess.write('\r');
-          }
-          // 信頼承認後は Claude の起動に時間がかかるため、タイムアウトをリセット
+      // 信頼確認プロンプト → Enter で承認（全ターミナル共通）
+      if (!trustHandled && TRUST_PATTERN.test(buffer)) {
+        trustHandled = true;
+        buffer = '';
+        console.log(`${LOG_PREFIX} trust prompt detected, sending Enter (terminal ${id})`);
+        if (ptys.has(id)) {
+          ptyProcess.write('\r');
+        }
+        // 信頼承認後はタイムアウトをリセット（initialCommand 待ち継続）
+        if (isFirstTerminal && config.initialCommand && !sent) {
           clearTimeout(promptWatcherTimeoutId);
           promptWatcherTimeoutId = setTimeout(() => {
             if (!sent) {
@@ -253,16 +263,17 @@ ipcMain.handle('terminal:create', (event, cwd) => {
               sendInitialCommand('timeout fallback after trust');
             }
           }, WATCH_TIMEOUT_MS);
-          return;
         }
+        return;
+      }
 
-        if (READY_PATTERN.test(buffer)) {
-          clearTimeout(promptWatcherTimeoutId);
-          promptWatcherTimeoutId = null;
-          sendInitialCommand('ready detected');
-        }
-      };
-    }
+      // initialCommand 送信（最初のターミナルのみ）
+      if (isFirstTerminal && !sent && READY_PATTERN.test(buffer)) {
+        clearTimeout(promptWatcherTimeoutId);
+        promptWatcherTimeoutId = null;
+        sendInitialCommand('ready detected');
+      }
+    };
   }
 
   ptyProcess.onData((data) => {
@@ -314,6 +325,16 @@ ipcMain.on('terminal:kill', (event, id) => {
     try { p.kill(); } catch (e) {}
     ptys.delete(id);
   }
+});
+
+// renderer が新規ペインを作成し終えたら HTTP レスポンスを返す
+ipcMain.on('terminal:new-pane-created', (event, payload = {}) => {
+  const { requestId, ...result } = payload;
+  if (!requestId) return;
+  const resolve = pendingNewPaneCallbacks.get(requestId);
+  if (!resolve) return;
+  pendingNewPaneCallbacks.delete(requestId);
+  resolve(result);
 });
 
 // ─── State reporting from renderer ───────────────────────────────────────────
@@ -387,6 +408,36 @@ function startHttpApi() {
           res.end(JSON.stringify({ error: 'invalid JSON' }));
         }
       });
+      return;
+    }
+
+    // POST /api/new-pane  — 新規ペインを作成して termId を返す
+    if (req.method === 'POST' && url.pathname === '/api/new-pane') {
+      if (!win || win.isDestroyed()) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'window not available' }));
+        return;
+      }
+      const requestId = String(nextNewPaneRequestId++);
+      const timeoutId = setTimeout(() => {
+        if (pendingNewPaneCallbacks.has(requestId)) {
+          pendingNewPaneCallbacks.delete(requestId);
+          res.writeHead(504, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'timeout waiting for new pane' }));
+        }
+      }, 15000);
+      const resolve = (result) => {
+        clearTimeout(timeoutId);
+        if (result.error) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: result.error }));
+        } else {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, termId: result.termId }));
+        }
+      };
+      pendingNewPaneCallbacks.set(requestId, resolve);
+      win.webContents.send('terminal:request-new-pane', { requestId });
       return;
     }
 

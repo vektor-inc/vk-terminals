@@ -51,7 +51,7 @@ const WAITING_PATTERNS = [
   /\[\s*A\s*\]llow/i,
   /\[\s*D\s*\]eny/i,
   /approve.*\(y\/n\)/i,
-  /permission/i,
+  // NOTE: /permission/i は削除 — Claude Code の UI フッター "bypass permissions on" に誤反応するため
 ];
 
 function stripAnsi(str) {
@@ -233,7 +233,7 @@ function getAllLeafIds(node) {
 // ─── Pane actions ─────────────────────────────────────────────────────────────
 async function splitPane(paneId, direction) {
   const node = findNode(tree, paneId);
-  if (!node) return;
+  if (!node) return null;
 
   const newPaneId = newId();
   // Inherit cwd from current pane if available
@@ -254,6 +254,9 @@ async function splitPane(paneId, direction) {
     fitTerminal(newPaneId);
     focusPane(newPaneId);
   });
+
+  // 新ペインの情報を返す（focusedPaneId の更新を待たずに確定値を返す）
+  return { paneId: newPaneId, termId: terminals[newPaneId]?.termId };
 }
 
 function closePane(paneId) {
@@ -589,6 +592,27 @@ setInterval(() => {
   }
   ipcRenderer.send('terminal:report-states', states);
 }, 2000);
+
+// ─── New pane request from HTTP API ──────────────────────────────────────────
+ipcRenderer.on('terminal:request-new-pane', async (event, payload = {}) => {
+  const { requestId } = payload;
+  const reply = (result) => ipcRenderer.send('terminal:new-pane-created', { requestId, ...result });
+  const targetPaneId = focusedPaneId || (tree ? getAllLeafIds(tree)[0] : null);
+  if (!targetPaneId) {
+    reply({ error: 'no pane available' });
+    return;
+  }
+  try {
+    const result = await splitPane(targetPaneId, 'h');
+    if (!result || !result.termId) {
+      reply({ error: 'split failed or termId unavailable' });
+      return;
+    }
+    reply({ termId: result.termId });
+  } catch (e) {
+    reply({ error: e?.message || 'failed to create pane' });
+  }
+});
 
 // ─── Auto-input notification from main (HTTP API経由の入力時) ─────────────────
 ipcRenderer.on('terminal:auto-input', (event, termId) => {

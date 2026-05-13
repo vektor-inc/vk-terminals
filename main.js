@@ -13,8 +13,10 @@ const ptys = new Map();
 let nextId = 1;
 let firstTerminalCreated = false;
 
-// /api/new-pane の HTTP レスポンスを待つコールバックキュー
-const pendingNewPaneCallbacks = [];
+// /api/new-pane の HTTP レスポンスを待つコールバック（requestId → resolver）
+// 並行リクエストでも取り違えが起きないように requestId で相関付ける
+const pendingNewPaneCallbacks = new Map();
+let nextNewPaneRequestId = 1;
 
 // ─── Terminal state & HTTP API ───────────────────────────────────────────────
 const API_PORT = 13847;
@@ -326,9 +328,13 @@ ipcMain.on('terminal:kill', (event, id) => {
 });
 
 // renderer が新規ペインを作成し終えたら HTTP レスポンスを返す
-ipcMain.on('terminal:new-pane-created', (event, result) => {
-  const resolve = pendingNewPaneCallbacks.shift();
-  if (resolve) resolve(result);
+ipcMain.on('terminal:new-pane-created', (event, payload = {}) => {
+  const { requestId, ...result } = payload;
+  if (!requestId) return;
+  const resolve = pendingNewPaneCallbacks.get(requestId);
+  if (!resolve) return;
+  pendingNewPaneCallbacks.delete(requestId);
+  resolve(result);
 });
 
 // ─── State reporting from renderer ───────────────────────────────────────────
@@ -412,16 +418,15 @@ function startHttpApi() {
         res.end(JSON.stringify({ error: 'window not available' }));
         return;
       }
-      let resolve;
+      const requestId = String(nextNewPaneRequestId++);
       const timeoutId = setTimeout(() => {
-        const idx = pendingNewPaneCallbacks.indexOf(resolve);
-        if (idx !== -1) {
-          pendingNewPaneCallbacks.splice(idx, 1);
+        if (pendingNewPaneCallbacks.has(requestId)) {
+          pendingNewPaneCallbacks.delete(requestId);
           res.writeHead(504, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'timeout waiting for new pane' }));
         }
       }, 15000);
-      resolve = (result) => {
+      const resolve = (result) => {
         clearTimeout(timeoutId);
         if (result.error) {
           res.writeHead(500, { 'Content-Type': 'application/json' });
@@ -431,8 +436,8 @@ function startHttpApi() {
           res.end(JSON.stringify({ ok: true, termId: result.termId }));
         }
       };
-      pendingNewPaneCallbacks.push(resolve);
-      win.webContents.send('terminal:request-new-pane');
+      pendingNewPaneCallbacks.set(requestId, resolve);
+      win.webContents.send('terminal:request-new-pane', { requestId });
       return;
     }
 

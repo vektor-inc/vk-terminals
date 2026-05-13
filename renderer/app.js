@@ -594,18 +594,24 @@ setInterval(() => {
 }, 2000);
 
 // ─── New pane request from HTTP API ──────────────────────────────────────────
-ipcRenderer.on('terminal:request-new-pane', async () => {
+ipcRenderer.on('terminal:request-new-pane', async (event, payload = {}) => {
+  const { requestId } = payload;
+  const reply = (result) => ipcRenderer.send('terminal:new-pane-created', { requestId, ...result });
   const targetPaneId = focusedPaneId || (tree ? getAllLeafIds(tree)[0] : null);
   if (!targetPaneId) {
-    ipcRenderer.send('terminal:new-pane-created', { error: 'no pane available' });
+    reply({ error: 'no pane available' });
     return;
   }
-  const result = await splitPane(targetPaneId, 'h');
-  if (!result || !result.termId) {
-    ipcRenderer.send('terminal:new-pane-created', { error: 'split failed or termId unavailable' });
-    return;
+  try {
+    const result = await splitPane(targetPaneId, 'h');
+    if (!result || !result.termId) {
+      reply({ error: 'split failed or termId unavailable' });
+      return;
+    }
+    reply({ termId: result.termId });
+  } catch (e) {
+    reply({ error: e?.message || 'failed to create pane' });
   }
-  ipcRenderer.send('terminal:new-pane-created', { termId: result.termId });
 });
 
 // ─── Auto-input notification from main (HTTP API経由の入力時) ─────────────────

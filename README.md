@@ -157,9 +157,10 @@ curl -s -X POST http://127.0.0.1:13847/api/new-pane
 
 レスポンス:
 
-- 成功時: `{"ok": true, "termId": "<新規ターミナルID>"}`
+- 成功時: `200 {"ok": true, "termId": "<新規ターミナルID>"}`
 - ウィンドウが利用できない: `503 {"error": "window not available"}`
 - タイムアウト（15秒）: `504 {"error": "timeout waiting for new pane"}`
+- renderer 側でペイン作成に失敗（既存ペインなし／分割失敗など）: `500 {"error": "<renderer からのエラーメッセージ>"}`
 
 ### 状態ファイル
 

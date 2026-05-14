@@ -1,5 +1,6 @@
 # Changelog
 
+- [ 機能追加 ] ペインヘッダに上下左右の移動ボタン（◀ ▼ ▲ ▶）を追加。クリックで該当方向にある隣接ペインと位置を入れ替え（PTY セッションは維持・termId 紐付けも変わらない）
 - [ 機能追加 ] 起動時 CLI フラグ `--no-claude`（`--plain` も同義）を追加。指定すると新規ペインで claude を自動起動せず素のシェルとして開く（`initialCommand` も送信しない）。`additionalPanes` 設定で個別に `noClaude: true` も指定可能
 - [ 機能追加 ] HTTP API（`POST /api/new-pane`）のリクエストボディで `noClaude: true` を指定できるように変更（指定された場合、新規ペインで claude を自動起動せず素のシェルとして開く）
 - [ 機能追加 ] HTTP API（`POST /api/new-pane`）のリクエストボディで `cwd` を指定できるように変更（指定があればそのディレクトリ、未指定ならホームディレクトリで新規ペインを開く）

@@ -230,6 +230,30 @@ function getAllLeafIds(node) {
   return [...getAllLeafIds(node.first), ...getAllLeafIds(node.second)];
 }
 
+function getPaneRect(paneId) {
+  const paneEl = document.querySelector(`.pane[data-id="${paneId}"]`);
+  const rect = paneEl?.getBoundingClientRect();
+  if (!rect || rect.width <= 0 || rect.height <= 0) return null;
+  return rect;
+}
+
+function findLargestVisiblePaneId() {
+  if (!tree) return null;
+
+  let bestPaneId = null;
+  let bestArea = -1;
+  for (const paneId of getAllLeafIds(tree)) {
+    const rect = getPaneRect(paneId);
+    if (!rect) continue;
+    const area = rect.width * rect.height;
+    if (area > bestArea) {
+      bestPaneId = paneId;
+      bestArea = area;
+    }
+  }
+  return bestPaneId;
+}
+
 // ─── Pane actions ─────────────────────────────────────────────────────────────
 async function splitPane(paneId, direction, overrideCwd) {
   const node = findNode(tree, paneId);
@@ -602,15 +626,14 @@ setInterval(() => {
 ipcRenderer.on('terminal:request-new-pane', async (event, payload = {}) => {
   const { requestId, cwd } = payload;
   const reply = (result) => ipcRenderer.send('terminal:new-pane-created', { requestId, ...result });
-  const targetPaneId = focusedPaneId || (tree ? getAllLeafIds(tree)[0] : null);
+  const targetPaneId = findLargestVisiblePaneId() || focusedPaneId || (tree ? getAllLeafIds(tree)[0] : null);
   if (!targetPaneId) {
     reply({ error: 'no pane available' });
     return;
   }
   try {
-    // 対象ペインの長辺方向に分割することで、横にだけ広がらずグリッド状に増える
-    const paneEl = document.querySelector(`.pane[data-id="${targetPaneId}"]`);
-    const rect = paneEl?.getBoundingClientRect();
+    // 表示面積が最大のペインを長辺方向に分割し、全体の空きが大きい場所へ追加する
+    const rect = getPaneRect(targetPaneId);
     const direction = (rect && rect.height > rect.width) ? 'v' : 'h';
     const result = await splitPane(targetPaneId, direction, cwd);
     if (!result || !result.termId) {

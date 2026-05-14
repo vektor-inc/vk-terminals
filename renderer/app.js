@@ -248,19 +248,24 @@ function removeNode(node, id) {
   return { ...node, first: newFirst, second: newSecond };
 }
 
-// tree 内の leaf 2つの「位置」を入れ替える（leaf.id 文字列をスワップすることで等価に実現）。
+// tree 内の leaf 2つの「位置」を入れ替える。
+// leaf オブジェクト一式（id + collapsed 等の付随フィールド）を入れ替えるため、
+// 折り畳み状態などの leaf 固有フィールドはペインと一緒に移動する。
 // terminals マップは paneId キーのまま不変なので、HTTP API / states.json の termId 紐付けには影響しない。
 function swapLeavesInTree(node, idA, idB) {
-  if (node.type === 'leaf') {
-    if (node.id === idA) return { type: 'leaf', id: idB };
-    if (node.id === idB) return { type: 'leaf', id: idA };
-    return node;
+  const leafA = findNode(node, idA);
+  const leafB = findNode(node, idB);
+  if (!leafA || !leafB) return node;
+  function walk(n) {
+    if (n.type === 'leaf') {
+      // idA の位置に leafB 一式を、idB の位置に leafA 一式を置く
+      if (n.id === idA) return { ...leafB };
+      if (n.id === idB) return { ...leafA };
+      return n;
+    }
+    return { ...n, first: walk(n.first), second: walk(n.second) };
   }
-  return {
-    ...node,
-    first: swapLeavesInTree(node.first, idA, idB),
-    second: swapLeavesInTree(node.second, idA, idB),
-  };
+  return walk(node);
 }
 
 function getAllLeafIds(node) {
@@ -352,6 +357,10 @@ function findLargestVisiblePaneId() {
 // 兄弟側に flex を寄せて自身は自然高さ（pane-task-title + pane-header）に縮める。
 // expand 時は savedRatio から元の比率を復元（未保存なら 0.5）。
 // ※ tree のルート leaf（親 split がない）は対象外。
+//
+// render() を呼ばずに既存 DOM を直接書き換えるのは、`.pane.collapsed { transition: max-height ... }`
+// を効かせるため。render() は innerHTML 入れ替えで要素を再生成してしまい、新しい要素が
+// 最初から .collapsed 状態で生まれるため transition が走らない。
 function toggleCollapse(paneId) {
   const leaf = findNode(tree, paneId);
   if (!leaf || leaf.type !== 'leaf') return;
@@ -360,12 +369,11 @@ function toggleCollapse(paneId) {
   const parent = found.parent;
 
   const willCollapse = !leaf.collapsed;
+  // 1) データ構造の更新
   if (willCollapse) {
-    // 現在の ratio を退避してから collapse
     parent.savedRatio = parent.ratio;
     leaf.collapsed = true;
   } else {
-    // 元の ratio を復元
     leaf.collapsed = false;
     if (typeof parent.savedRatio === 'number') {
       parent.ratio = parent.savedRatio;
@@ -375,7 +383,51 @@ function toggleCollapse(paneId) {
     }
   }
 
-  render();
+  // 2) DOM を in-place 更新（element 同一性を保って transition を走らせる）
+  const paneEl = document.querySelector(`.pane[data-id="${paneId}"]`);
+  if (paneEl) {
+    paneEl.classList.toggle('collapsed', willCollapse);
+
+    // 親 .split の DOM を取得（必ず .split.split-v）。
+    const splitEl = paneEl.parentElement;
+    if (splitEl && splitEl.classList.contains('split')) {
+      splitEl.classList.toggle('collapsed-pair', willCollapse);
+
+      // 兄弟要素（自分以外の .pane または .split 子）を取得して flex を更新する。
+      // resize-handle を挟むため previousElementSibling / nextElementSibling のうち
+      // .resize-handle でない方が兄弟ノード。
+      const sibling = [splitEl.firstElementChild, splitEl.lastElementChild]
+        .find(el => el && el !== paneEl);
+      if (willCollapse) {
+        paneEl.style.flex = '0 0 auto';
+        if (sibling) sibling.style.flex = '1 1 auto';
+      } else {
+        // 復元された ratio を data 側から読み取って按分（自分が parent.first か second かで分岐）
+        const ratio = parent.ratio;
+        if (found.side === 'first') {
+          paneEl.style.flex = String(ratio);
+          if (sibling) sibling.style.flex = String(1 - ratio);
+        } else {
+          paneEl.style.flex = String(1 - ratio);
+          if (sibling) sibling.style.flex = String(ratio);
+        }
+      }
+    }
+
+    // ボタンのテキスト / aria を更新
+    const btn = paneEl.querySelector('.btn-collapse');
+    if (btn) {
+      btn.textContent = willCollapse ? '▴' : '▾';
+      btn.setAttribute('aria-expanded', String(!willCollapse));
+      btn.setAttribute('aria-label', willCollapse ? 'ペインを展開' : 'ペインを折り畳む');
+      btn.setAttribute('title', willCollapse ? '展開する' : '折り畳む');
+    }
+  }
+
+  // 3) サイズ反映と focus
+  // collapse 中は fitTerminal がスキップされる（fitTerminal 側で leaf.collapsed を見ている）。
+  // expand 後は transition 完了を待ってから fit したいが、xterm は ResizeObserver でも
+  // 自動 fit がかかるため、ここでは即時 fitAll() で十分（collapse 中はスキップされる）。
   requestAnimationFrame(() => {
     fitAll();
     if (!willCollapse) focusPane(paneId);

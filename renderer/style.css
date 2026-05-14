@@ -72,10 +72,14 @@ html, body {
   flex: 1;
   min-width: 0;
   min-height: 0;
+  /* max-height を明示しておくのは折り畳みアニメーション用。
+   * max-height は none と数値の間で transition が走らないため、ベースを 100vh で固定し、
+   * .pane.collapsed で 60px に縮める。実高さは flex で決まるので 100vh は単なる上限値。 */
+  max-height: 100vh;
   border: 1px solid #21262d;
   box-shadow: none;
-  /* transition は border-color・box-shadow のみ。drag-over と競合しないよう明示 */
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  /* border-color・box-shadow は focus/drag-over 用、max-height は collapsed/expand 用 */
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, max-height 0.18s ease;
   overflow: hidden;
 }
 
@@ -276,9 +280,9 @@ html, body {
 
 /* ─── Collapsed pane ──────────────────────────────────────────────────────── */
 /* .pane.collapsed はヘッダ部分（pane-task-title + pane-header）のみ表示し、
- * xterm 領域を display:none で隠す。flex は親 split 側で 0 0 auto を当てているため、
+ * xterm 領域を display:none で隠す。flex はインラインスタイルで 0 0 auto を当てているため、
  * 自然な高さ（ヘッダ群の合計）にフィットする。
- * max-height の transition でアコーディオン風に折り畳まれる。
+ * max-height の transition は .pane ベース側で 100vh ↔ 60px の補間が定義済。
  * height ではなく max-height を使うのは、xterm の reflow（ResizeObserver 経由）と
  * 干渉しにくく、展開時のサイズ計算も flex に委ねられるため。 */
 .pane.collapsed {
@@ -287,8 +291,6 @@ html, body {
    * タスクタイトル空時は .pane-task-title が display:none になり高さは縮むが、
    * max-height は実コンテンツより大きければよいので 60px で固定。 */
   max-height: 60px;
-  transition: max-height 0.18s ease;
-  overflow: hidden;
 }
 
 .pane.collapsed .term-container {

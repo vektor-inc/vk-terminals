@@ -1,5 +1,6 @@
 # Changelog
 
+- [ 仕様変更 ] HTTP API（`POST /api/new-pane`）経由で新規ペインを作成する際、対象ペインの長辺方向に分割するよう変更（横にだけ広がらず、縦横バランスよくグリッド状に増える挙動に）
 - [ 不具合修正 ] 2 つ目以降のターミナルで信頼確認プロンプトが自動承認されず待機状態のままになる不具合を修正（Claude Code の新 UI 文言 "Enter to confirm" にも対応）
 - [ 不具合修正 ] Claude Code フッターの "bypass permissions on" 表示によってターミナルが入力待ち状態として誤判定される不具合を修正
 - [ 機能追加 ] HTTP API に `POST /api/new-pane` エンドポイントを追加（新規ペインを作成して termId を返す）

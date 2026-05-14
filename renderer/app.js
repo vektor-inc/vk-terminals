@@ -227,6 +227,21 @@ function removeNode(node, id) {
   return { ...node, first: newFirst, second: newSecond };
 }
 
+// tree 内の leaf 2つの「位置」を入れ替える（leaf.id 文字列をスワップすることで等価に実現）。
+// terminals マップは paneId キーのまま不変なので、HTTP API / states.json の termId 紐付けには影響しない。
+function swapLeavesInTree(node, idA, idB) {
+  if (node.type === 'leaf') {
+    if (node.id === idA) return { type: 'leaf', id: idB };
+    if (node.id === idB) return { type: 'leaf', id: idA };
+    return node;
+  }
+  return {
+    ...node,
+    first: swapLeavesInTree(node.first, idA, idB),
+    second: swapLeavesInTree(node.second, idA, idB),
+  };
+}
+
 function getAllLeafIds(node) {
   if (node.type === 'leaf') return [node.id];
   return [...getAllLeafIds(node.first), ...getAllLeafIds(node.second)];
@@ -237,6 +252,49 @@ function getPaneRect(paneId) {
   const rect = paneEl?.getBoundingClientRect();
   if (!rect || rect.width <= 0 || rect.height <= 0) return null;
   return rect;
+}
+
+// フォーカスペインから方向 dir にある最も近い隣接ペインを座標ベースで探す。
+// 無ければ null。dir は 'left' | 'right' | 'up' | 'down'。
+function findNeighborPane(fromPaneId, dir) {
+  const fromRect = getPaneRect(fromPaneId);
+  if (!fromRect) return null;
+  const fromCx = fromRect.left + fromRect.width / 2;
+  const fromCy = fromRect.top + fromRect.height / 2;
+  let best = null;
+  // 主軸ギャップ（共有辺への近さ）を最優先、同値なら直交軸の中心ずれが小さい方を選ぶ
+  let bestGap = Infinity;
+  let bestCross = Infinity;
+  for (const id of getAllLeafIds(tree)) {
+    if (id === fromPaneId) continue;
+    const r = getPaneRect(id);
+    if (!r) continue;
+    const cx = r.left + r.width / 2;
+    const cy = r.top + r.height / 2;
+    // dir 方向の主軸ギャップ（候補の手前辺と fromRect の対辺の隙間）
+    const axisGap =
+      dir === 'left'  ? fromRect.left - r.right  :
+      dir === 'right' ? r.left - fromRect.right  :
+      dir === 'up'    ? fromRect.top - r.bottom  :
+                        r.top - fromRect.bottom;
+    // 候補が dir 方向側に存在しない（手前 or 重なっている）場合は除外
+    if (axisGap < -1) continue;
+    // 直交軸でオーバーラップしているペインのみを隣接候補とする（対角線上の非隣接ペイン除外）
+    const orthOverlap =
+      (dir === 'left' || dir === 'right')
+        ? (r.top < fromRect.bottom && r.bottom > fromRect.top)
+        : (r.left < fromRect.right && r.right > fromRect.left);
+    if (!orthOverlap) continue;
+    const cross = (dir === 'left' || dir === 'right')
+      ? Math.abs(cy - fromCy)
+      : Math.abs(cx - fromCx);
+    if (axisGap < bestGap || (axisGap === bestGap && cross < bestCross)) {
+      bestGap = axisGap;
+      bestCross = cross;
+      best = id;
+    }
+  }
+  return best;
 }
 
 function findLargestVisiblePaneId() {
@@ -318,6 +376,18 @@ function closePane(paneId) {
   requestAnimationFrame(fitAll);
 }
 
+// ペインを方向 dir の隣接ペインと入れ替える。隣が無ければ何もしない。
+function movePane(paneId, dir) {
+  const target = findNeighborPane(paneId, dir);
+  if (!target) return;
+  tree = swapLeavesInTree(tree, paneId, target);
+  render();
+  requestAnimationFrame(() => {
+    fitAll();
+    focusPane(paneId);
+  });
+}
+
 function focusPane(paneId) {
   focusedPaneId = paneId;
   document.querySelectorAll('.pane').forEach(el => {
@@ -386,6 +456,10 @@ function renderLeaf(node) {
     <div class="pane-actions">
       <span class="auto-input-badge" style="display:none"></span>
       <span class="waiting-badge" style="display:${waiting ? 'flex' : 'none'}">⚠ 待機中</span>
+      <button class="btn btn-move btn-move-left" title="左へ移動">◀</button>
+      <button class="btn btn-move btn-move-down" title="下へ移動">▼</button>
+      <button class="btn btn-move btn-move-up" title="上へ移動">▲</button>
+      <button class="btn btn-move btn-move-right" title="右へ移動">▶</button>
       <button class="btn btn-split-h" title="左右に分割">⇔</button>
       <button class="btn btn-split-v" title="上下に分割">⇕</button>
       <button class="btn btn-close" title="閉じる">✕</button>
@@ -400,6 +474,22 @@ function renderLeaf(node) {
   el.appendChild(header);
   el.appendChild(termContainer);
 
+  header.querySelector('.btn-move-left').addEventListener('click', e => {
+    e.stopPropagation();
+    movePane(node.id, 'left');
+  });
+  header.querySelector('.btn-move-right').addEventListener('click', e => {
+    e.stopPropagation();
+    movePane(node.id, 'right');
+  });
+  header.querySelector('.btn-move-up').addEventListener('click', e => {
+    e.stopPropagation();
+    movePane(node.id, 'up');
+  });
+  header.querySelector('.btn-move-down').addEventListener('click', e => {
+    e.stopPropagation();
+    movePane(node.id, 'down');
+  });
   header.querySelector('.btn-split-h').addEventListener('click', e => {
     e.stopPropagation();
     splitPane(node.id, 'h');

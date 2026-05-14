@@ -260,8 +260,10 @@ async function splitPane(paneId, direction, overrideCwd) {
   if (!node) return null;
 
   const newPaneId = newId();
-  // overrideCwd が指定されていればそれを使い、なければ分割元ペインの cwd を継承する
-  const targetCwd = overrideCwd || terminals[paneId]?.cwdFull || null;
+  // overrideCwd が指定されていればそれを使い、未指定ならホームディレクトリ（main 側でフォールバック）で開く。
+  // 分割元ペインの cwd は継承しない（task-queue 等の特定ディレクトリにいるペインから分割しても
+  // 新ペインはデフォルト位置で開かせる方針）。
+  const targetCwd = overrideCwd || null;
   await createTerminal(newPaneId, targetCwd);
 
   tree = replaceNode(tree, paneId, {

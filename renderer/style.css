@@ -188,21 +188,42 @@ html, body {
   flex-shrink: 0;
 }
 
-/* ─── Waiting badge ────────────────────────────────────────────────────────── */
-.waiting-badge {
-  display: flex;
+/* ─── Pane status indicator (issue #23) ─────────────────────────────────────
+ * ヘッダ最左に常時挿入されるバッジ。data-status で表示を切り替える。
+ *   - idle    : display:none で要素ごと非表示（ユーザー要望：idle ラベルは出さない）
+ *   - running : 緑（PTY 出力中）
+ *   - waiting : 黄（WAITING_PATTERNS ヒット、点滅アニメで注意喚起）
+ * 旧 .waiting-badge はこのバッジに役割を一本化したため削除済。 */
+.pane-status {
+  display: inline-flex;
   align-items: center;
   gap: 3px;
-  color: #d29922;
   font-size: 10px;
   font-weight: 600;
-  background: rgba(210, 153, 34, 0.15);
-  border: 1px solid rgba(210, 153, 34, 0.3);
-  padding: 0 5px;
+  padding: 0 6px;
   height: 18px;
   border-radius: 3px;
+  margin-right: 6px;
+  white-space: nowrap;
+  transition: color 0.15s, background 0.15s;
+  flex-shrink: 0;
+}
+
+.pane-status[data-status="idle"] {
+  display: none;
+}
+
+.pane-status[data-status="running"] {
+  color: #56d364;
+  background: rgba(86, 211, 100, 0.15);
+  border: 1px solid rgba(86, 211, 100, 0.3);
+}
+
+.pane-status[data-status="waiting"] {
+  color: #d29922;
+  background: rgba(210, 153, 34, 0.15);
+  border: 1px solid rgba(210, 153, 34, 0.3);
   animation: badge-pulse 1.2s ease-in-out infinite;
-  margin-right: 2px;
 }
 
 @keyframes badge-pulse {

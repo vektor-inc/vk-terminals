@@ -34,7 +34,7 @@ let httpServer = null;
  *   3. ~/.claude/terminals-config.json（後方互換）
  * どちらも存在しない場合は空オブジェクトを返す。
  *
- * @returns {{ initialCommand?: string }} 設定オブジェクト
+ * @returns {{ initialCommand?: string, additionalPanes?: Array<{cwd: string}> }} 設定オブジェクト
  */
 function loadUserConfig() {
   const candidates = [
@@ -335,6 +335,47 @@ ipcMain.on('terminal:new-pane-created', (event, payload = {}) => {
   if (!resolve) return;
   pendingNewPaneCallbacks.delete(requestId);
   resolve(result);
+});
+
+/**
+ * 指定された cwd で追加ペインを 1 枚作成する。
+ * 内部的には renderer の splitPane を呼び出すのと同じ経路（pendingNewPaneCallbacks）を使う。
+ */
+function createAdditionalPane(cwd) {
+  return new Promise((resolve) => {
+    if (!win || win.isDestroyed()) {
+      resolve({ error: 'window not available' });
+      return;
+    }
+    const requestId = String(nextNewPaneRequestId++);
+    const timeoutId = setTimeout(() => {
+      if (pendingNewPaneCallbacks.has(requestId)) {
+        pendingNewPaneCallbacks.delete(requestId);
+        resolve({ error: 'timeout waiting for new pane' });
+      }
+    }, 15000);
+    pendingNewPaneCallbacks.set(requestId, (result) => {
+      clearTimeout(timeoutId);
+      resolve(result);
+    });
+    win.webContents.send('terminal:request-new-pane', { requestId, cwd });
+  });
+}
+
+// renderer 初期化完了 → config.additionalPanes に従って追加ペインを順次作成
+let additionalPanesCreated = false;
+ipcMain.on('terminal:renderer-ready', async () => {
+  if (additionalPanesCreated) return; // closePane で最後のペインを閉じて再 initApp された場合は再生成しない
+  additionalPanesCreated = true;
+  const config = loadUserConfig();
+  const panes = Array.isArray(config.additionalPanes) ? config.additionalPanes : [];
+  for (const pane of panes) {
+    if (!pane || typeof pane.cwd !== 'string' || !pane.cwd.trim()) continue;
+    const result = await createAdditionalPane(pane.cwd);
+    if (result && result.error) {
+      console.warn(`${LOG_PREFIX} additionalPane (${pane.cwd}) failed: ${result.error}`);
+    }
+  }
 });
 
 // ─── State reporting from renderer ───────────────────────────────────────────

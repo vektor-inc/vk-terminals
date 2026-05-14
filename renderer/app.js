@@ -231,14 +231,14 @@ function getAllLeafIds(node) {
 }
 
 // ─── Pane actions ─────────────────────────────────────────────────────────────
-async function splitPane(paneId, direction) {
+async function splitPane(paneId, direction, overrideCwd) {
   const node = findNode(tree, paneId);
   if (!node) return null;
 
   const newPaneId = newId();
-  // Inherit cwd from current pane if available
-  const inheritCwd = terminals[paneId]?.cwdFull || null;
-  await createTerminal(newPaneId, inheritCwd);
+  // overrideCwd が指定されていればそれを使い、なければ分割元ペインの cwd を継承する
+  const targetCwd = overrideCwd || terminals[paneId]?.cwdFull || null;
+  await createTerminal(newPaneId, targetCwd);
 
   tree = replaceNode(tree, paneId, {
     type: 'split',
@@ -272,7 +272,9 @@ function closePane(paneId) {
   const newTree = removeNode(tree, paneId);
   if (!newTree) {
     // Last pane closed → start fresh
-    initApp();
+    initApp().then(() => {
+      ipcRenderer.send('terminal:renderer-ready');
+    });
     return;
   }
   tree = newTree;
@@ -573,7 +575,10 @@ async function initApp() {
   });
 }
 
-initApp();
+initApp().then(() => {
+  // 起動完了を main プロセスに通知（main 側で additionalPanes を順次作成する）
+  ipcRenderer.send('terminal:renderer-ready');
+});
 
 // ─── State reporting to main process ─────────────────────────────────────────
 setInterval(() => {
@@ -595,7 +600,7 @@ setInterval(() => {
 
 // ─── New pane request from HTTP API ──────────────────────────────────────────
 ipcRenderer.on('terminal:request-new-pane', async (event, payload = {}) => {
-  const { requestId } = payload;
+  const { requestId, cwd } = payload;
   const reply = (result) => ipcRenderer.send('terminal:new-pane-created', { requestId, ...result });
   const targetPaneId = focusedPaneId || (tree ? getAllLeafIds(tree)[0] : null);
   if (!targetPaneId) {
@@ -607,7 +612,7 @@ ipcRenderer.on('terminal:request-new-pane', async (event, payload = {}) => {
     const paneEl = document.querySelector(`.pane[data-id="${targetPaneId}"]`);
     const rect = paneEl?.getBoundingClientRect();
     const direction = (rect && rect.height > rect.width) ? 'v' : 'h';
-    const result = await splitPane(targetPaneId, direction);
+    const result = await splitPane(targetPaneId, direction, cwd);
     if (!result || !result.termId) {
       reply({ error: 'split failed or termId unavailable' });
       return;

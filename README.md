@@ -72,11 +72,15 @@ cp config.example.json ~/.vk-terminals/config.json
 
 ```json
 {
-  "initialCommand": "スキルでタスク管理を呼び出して"
+  "initialCommand": "スキルでタスク管理を呼び出して",
+  "additionalPanes": [
+    { "cwd": "/Users/you/Documents/git/your-project" }
+  ]
 }
 ```
 
-`initialCommand` を省略または空にすると、自動実行は行われません。
+- `initialCommand`：1 ペイン目で claude が起動した直後に自動実行されるコマンド。省略または空にすると自動実行は行われません。
+- `additionalPanes`：起動時に追加で開くペインのリスト。各要素の `cwd`（絶対パス）でペインが分割作成され、その作業ディレクトリで claude が立ち上がります。複数指定可。省略または空配列の場合は 1 ペインのみで起動します。
 
 > **移行メモ**: 旧パス `~/.claude/terminals-config.json` も後方互換として読み込まれます。
 

@@ -275,6 +275,12 @@ function findNeighborPane(fromPaneId, dir) {
       (dir === 'up'    && r.bottom <= fromRect.top   + 1) ||
       (dir === 'down'  && r.top    >= fromRect.bottom - 1);
     if (!inDir) continue;
+    // 直交軸でオーバーラップしているペインのみを隣接候補とする（対角線上の非隣接ペイン除外）
+    const orthOverlap =
+      (dir === 'left' || dir === 'right')
+        ? (r.top < fromRect.bottom && r.bottom > fromRect.top)
+        : (r.left < fromRect.right && r.right > fromRect.left);
+    if (!orthOverlap) continue;
     const dist = Math.hypot(cx - fromCx, cy - fromCy);
     if (dist < bestDist) {
       bestDist = dist;

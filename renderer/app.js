@@ -588,9 +588,15 @@ function renderLeaf(node, parentDirection) {
   const header = document.createElement('div');
   header.className = 'pane-header';
   // .btn-collapse は親 split が split-v のときだけ表示（canCollapse）。
-  // chevron: 展開中は ▾（下向き = 中身が見えている）、折り畳み中は ▸（右向き = 閉じている）。
+  // chevron は上下分割のメンタルモデルに合わせる:
+  //   展開中（open）  : ▾（下向き = 中身が下に出ている）
+  //   折り畳み中（closed）: ▴（上向き = 上に巻き上げて閉じている）
+  // aria-expanded で支援技術にも開閉状態を伝える。
   const collapseBtnHtml = canCollapse
-    ? `<button class="btn btn-collapse" title="${collapsed ? '展開する' : '折り畳む'}">${collapsed ? '▸' : '▾'}</button>`
+    ? `<button class="btn btn-collapse"
+         aria-label="${collapsed ? 'ペインを展開' : 'ペインを折り畳む'}"
+         aria-expanded="${!collapsed}"
+         title="${collapsed ? '展開する' : '折り畳む'}">${collapsed ? '▴' : '▾'}</button>`
     : '';
   header.innerHTML = `
     <span class="pane-cwd" title="${cwd}">${cwd}</span>
@@ -733,6 +739,10 @@ function renderSplit(node) {
   el.appendChild(second);
 
   handle.addEventListener('mousedown', e => {
+    // 片側 collapsed の split では handle 操作を無効化する。
+    // CSS では cursor: not-allowed で「無効」状態を視覚表現するため、pointer-events は外して
+    // mousedown 側で早期 return する方式に統一。
+    if (hasCollapsedChild) return;
     e.preventDefault();
     e.stopPropagation();
     const rect1 = first.getBoundingClientRect();

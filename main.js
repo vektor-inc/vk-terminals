@@ -452,33 +452,62 @@ function startHttpApi() {
       return;
     }
 
-    // POST /api/new-pane  — 新規ペインを作成して termId を返す
+    // POST /api/new-pane  { cwd?: "/path/to/dir" } — 新規ペインを作成して termId を返す
+    //   cwd を指定すればそのディレクトリで開く。未指定なら HOME で開く。
     if (req.method === 'POST' && url.pathname === '/api/new-pane') {
       if (!win || win.isDestroyed()) {
         res.writeHead(503, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'window not available' }));
         return;
       }
-      const requestId = String(nextNewPaneRequestId++);
-      const timeoutId = setTimeout(() => {
-        if (pendingNewPaneCallbacks.has(requestId)) {
-          pendingNewPaneCallbacks.delete(requestId);
-          res.writeHead(504, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'timeout waiting for new pane' }));
+      const MAX_BODY = 10 * 1024;
+      let body = '';
+      let aborted = false;
+      req.on('data', chunk => {
+        body += chunk;
+        if (body.length > MAX_BODY) {
+          aborted = true;
+          res.writeHead(413, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'payload too large' }));
+          req.destroy();
         }
-      }, 15000);
-      const resolve = (result) => {
-        clearTimeout(timeoutId);
-        if (result.error) {
-          res.writeHead(500, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: result.error }));
-        } else {
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ ok: true, termId: result.termId }));
+      });
+      req.on('end', () => {
+        if (aborted) return;
+        let requestedCwd = null;
+        if (body.length > 0) {
+          try {
+            const parsed = JSON.parse(body);
+            if (typeof parsed?.cwd === 'string' && parsed.cwd.trim()) {
+              requestedCwd = parsed.cwd;
+            }
+          } catch {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'invalid JSON' }));
+            return;
+          }
         }
-      };
-      pendingNewPaneCallbacks.set(requestId, resolve);
-      win.webContents.send('terminal:request-new-pane', { requestId });
+        const requestId = String(nextNewPaneRequestId++);
+        const timeoutId = setTimeout(() => {
+          if (pendingNewPaneCallbacks.has(requestId)) {
+            pendingNewPaneCallbacks.delete(requestId);
+            res.writeHead(504, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'timeout waiting for new pane' }));
+          }
+        }, 15000);
+        const resolve = (result) => {
+          clearTimeout(timeoutId);
+          if (result.error) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: result.error }));
+          } else {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: true, termId: result.termId }));
+          }
+        };
+        pendingNewPaneCallbacks.set(requestId, resolve);
+        win.webContents.send('terminal:request-new-pane', { requestId, cwd: requestedCwd });
+      });
       return;
     }
 

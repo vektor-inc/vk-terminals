@@ -496,21 +496,14 @@ function movePane(paneId, dir) {
 }
 
 function focusPane(paneId) {
-  // 折り畳まれているペインに focus が来たら自動展開してから focus する。
-  // キーボード移動・HTTP API 経由のフォーカスでも同じ挙動になる。
-  const expanded = expandIfCollapsed(paneId);
+  // 折り畳まれているペインに focus が当たっても自動展開はしない（明示操作のみで展開する方針）。
+  // フォーカス枠は当てるが xterm への入力フォーカスはスキップする（ヘッダだけ見える状態のまま）。
   focusedPaneId = paneId;
-  if (expanded) {
-    render();
-    requestAnimationFrame(() => {
-      fitAll();
-      terminals[paneId]?.term.focus();
-    });
-    return;
-  }
   document.querySelectorAll('.pane').forEach(el => {
     el.classList.toggle('focused', el.dataset.id === paneId);
   });
+  const leaf = tree ? findNode(tree, paneId) : null;
+  if (leaf && leaf.collapsed) return;
   terminals[paneId]?.term.focus();
 }
 

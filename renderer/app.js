@@ -248,24 +248,41 @@ function removeNode(node, id) {
   return { ...node, first: newFirst, second: newSecond };
 }
 
-// tree 内の leaf 2つの「位置」を入れ替える（leaf.id 文字列をスワップすることで等価に実現）。
+// tree 内の leaf 2つの「位置」を入れ替える。
+// leaf オブジェクト一式（id + collapsed 等の付随フィールド）を入れ替えるため、
+// 折り畳み状態などの leaf 固有フィールドはペインと一緒に移動する。
 // terminals マップは paneId キーのまま不変なので、HTTP API / states.json の termId 紐付けには影響しない。
 function swapLeavesInTree(node, idA, idB) {
-  if (node.type === 'leaf') {
-    if (node.id === idA) return { type: 'leaf', id: idB };
-    if (node.id === idB) return { type: 'leaf', id: idA };
-    return node;
+  const leafA = findNode(node, idA);
+  const leafB = findNode(node, idB);
+  if (!leafA || !leafB) return node;
+  function walk(n) {
+    if (n.type === 'leaf') {
+      // idA の位置に leafB 一式を、idB の位置に leafA 一式を置く
+      if (n.id === idA) return { ...leafB };
+      if (n.id === idB) return { ...leafA };
+      return n;
+    }
+    return { ...n, first: walk(n.first), second: walk(n.second) };
   }
-  return {
-    ...node,
-    first: swapLeavesInTree(node.first, idA, idB),
-    second: swapLeavesInTree(node.second, idA, idB),
-  };
+  return walk(node);
 }
 
 function getAllLeafIds(node) {
   if (node.type === 'leaf') return [node.id];
   return [...getAllLeafIds(node.first), ...getAllLeafIds(node.second)];
+}
+
+// tree 内で指定 leaf を直接の子に持つ split ノードと、そのどちら側にいるか（'first' or 'second'）を返す。
+// 親が存在しない（ルートが leaf 自身）場合は null。
+function findParentSplit(node, leafId, parent = null, side = null) {
+  if (node.type === 'leaf') {
+    return node.id === leafId ? { parent, side } : null;
+  }
+  return (
+    findParentSplit(node.first, leafId, node, 'first') ||
+    findParentSplit(node.second, leafId, node, 'second')
+  );
 }
 
 function getPaneRect(paneId) {
@@ -335,10 +352,128 @@ function findLargestVisiblePaneId() {
   return bestPaneId;
 }
 
+// ─── Collapse / expand ────────────────────────────────────────────────────────
+// leaf.collapsed をトグルする。collapse 時は親 split の現在 ratio を savedRatio に退避し、
+// 兄弟側に flex を寄せて自身は自然高さ（pane-task-title + pane-header）に縮める。
+// expand 時は savedRatio から元の比率を復元（未保存なら 0.5）。
+// ※ tree のルート leaf（親 split がない）は対象外。
+//
+// render() を呼ばずに既存 DOM を直接書き換えるのは、`.pane.collapsed { transition: max-height ... }`
+// を効かせるため。render() は innerHTML 入れ替えで要素を再生成してしまい、新しい要素が
+// 最初から .collapsed 状態で生まれるため transition が走らない。
+function toggleCollapse(paneId) {
+  const leaf = findNode(tree, paneId);
+  if (!leaf || leaf.type !== 'leaf') return;
+  const found = findParentSplit(tree, paneId);
+  if (!found || !found.parent) return; // ルート leaf は折り畳まない
+  const parent = found.parent;
+
+  const willCollapse = !leaf.collapsed;
+  // 1) データ構造の更新
+  if (willCollapse) {
+    parent.savedRatio = parent.ratio;
+    leaf.collapsed = true;
+  } else {
+    leaf.collapsed = false;
+    if (typeof parent.savedRatio === 'number') {
+      parent.ratio = parent.savedRatio;
+      delete parent.savedRatio;
+    } else {
+      parent.ratio = 0.5;
+    }
+  }
+
+  // 2) DOM を in-place 更新（element 同一性を保って transition を走らせる）
+  const paneEl = document.querySelector(`.pane[data-id="${paneId}"]`);
+  if (paneEl) {
+    paneEl.classList.toggle('collapsed', willCollapse);
+
+    // 親 .split の DOM を取得（必ず .split.split-v）。
+    const splitEl = paneEl.parentElement;
+    if (splitEl && splitEl.classList.contains('split')) {
+      splitEl.classList.toggle('collapsed-pair', willCollapse);
+
+      // 兄弟要素（自分以外の .pane または .split 子）を取得して flex を更新する。
+      // resize-handle を挟むため previousElementSibling / nextElementSibling のうち
+      // .resize-handle でない方が兄弟ノード。
+      const sibling = [splitEl.firstElementChild, splitEl.lastElementChild]
+        .find(el => el && el !== paneEl);
+      if (willCollapse) {
+        paneEl.style.flex = '0 0 auto';
+        if (sibling) sibling.style.flex = '1 1 auto';
+      } else {
+        // 復元された ratio を data 側から読み取って按分（自分が parent.first か second かで分岐）
+        const ratio = parent.ratio;
+        if (found.side === 'first') {
+          paneEl.style.flex = String(ratio);
+          if (sibling) sibling.style.flex = String(1 - ratio);
+        } else {
+          paneEl.style.flex = String(1 - ratio);
+          if (sibling) sibling.style.flex = String(ratio);
+        }
+      }
+    }
+
+    // ボタンのテキスト / aria を更新
+    const btn = paneEl.querySelector('.btn-collapse');
+    if (btn) {
+      btn.textContent = willCollapse ? '▴' : '▾';
+      btn.setAttribute('aria-expanded', String(!willCollapse));
+      btn.setAttribute('aria-label', willCollapse ? 'ペインを展開' : 'ペインを折り畳む');
+      btn.setAttribute('title', willCollapse ? '展開する' : '折り畳む');
+    }
+  }
+
+  // 3) サイズ反映と focus
+  // collapse 中は fitTerminal がスキップされる（fitTerminal 側で leaf.collapsed を見ている）。
+  // expand 後は transition 完了を待ってから fit したいが、xterm は ResizeObserver でも
+  // 自動 fit がかかるため、ここでは即時 fitAll() で十分（collapse 中はスキップされる）。
+  requestAnimationFrame(() => {
+    fitAll();
+    if (!willCollapse) focusPane(paneId);
+  });
+}
+
+// tree を走査し、「折り畳む意味がない位置にいる collapsed leaf」を強制展開する。
+// 具体的には親 split が split-v でない leaf に collapsed=true が残っているケースを補正する。
+// closePane で removeNode により leaf がルートに昇格したり、split-h の中に取り残された場合の保護。
+function sanitizeCollapsedFlags(node, parentDirection = null) {
+  if (node.type === 'leaf') {
+    if (node.collapsed && parentDirection !== 'v') {
+      node.collapsed = false;
+    }
+    return;
+  }
+  sanitizeCollapsedFlags(node.first, node.direction);
+  sanitizeCollapsedFlags(node.second, node.direction);
+}
+
+// 折り畳まれていた場合に展開だけ行う（focus はしない）。focusPane / splitPane から内部利用。
+function expandIfCollapsed(paneId) {
+  const leaf = findNode(tree, paneId);
+  if (!leaf || leaf.type !== 'leaf' || !leaf.collapsed) return false;
+  const found = findParentSplit(tree, paneId);
+  leaf.collapsed = false;
+  if (found && found.parent) {
+    const parent = found.parent;
+    if (typeof parent.savedRatio === 'number') {
+      parent.ratio = parent.savedRatio;
+      delete parent.savedRatio;
+    } else {
+      parent.ratio = 0.5;
+    }
+  }
+  return true;
+}
+
 // ─── Pane actions ─────────────────────────────────────────────────────────────
 async function splitPane(paneId, direction, overrideCwd, options = {}) {
   const node = findNode(tree, paneId);
   if (!node) return null;
+
+  // 折り畳まれているペインを分割対象にすると分割後も縮んだままで操作不能になるため、
+  // 分割前に必ず展開しておく（render() は最後の render で一括反映）。
+  expandIfCollapsed(paneId);
 
   const newPaneId = newId();
   // overrideCwd が指定されていればそれを使い、未指定ならホームディレクトリ（main 側でフォールバック）で開く。
@@ -386,6 +521,9 @@ function closePane(paneId) {
     return;
   }
   tree = newTree;
+  // 兄弟ペインを削除した結果、collapsed leaf がルートに昇格したり split-h の中に
+  // 取り残されたりして自力では展開できなくなるケースを補正する。
+  sanitizeCollapsedFlags(tree);
 
   // Focus another pane
   const remaining = getAllLeafIds(tree);
@@ -410,16 +548,24 @@ function movePane(paneId, dir) {
 }
 
 function focusPane(paneId) {
+  // 折り畳まれているペインに focus が当たっても自動展開はしない（明示操作のみで展開する方針）。
+  // フォーカス枠は当てるが xterm への入力フォーカスはスキップする（ヘッダだけ見える状態のまま）。
   focusedPaneId = paneId;
   document.querySelectorAll('.pane').forEach(el => {
     el.classList.toggle('focused', el.dataset.id === paneId);
   });
+  const leaf = tree ? findNode(tree, paneId) : null;
+  if (leaf && leaf.collapsed) return;
   terminals[paneId]?.term.focus();
 }
 
 function fitTerminal(paneId) {
   const t = terminals[paneId];
   if (!t) return;
+  // 折り畳み中のペインは高さ 0 になっており、fitAddon.fit() が NaN を返して例外を吐くため明示的にスキップする。
+  // PTY 側のサイズは展開時に再 fit されるので、ここで送らなくても問題ない。
+  const leaf = tree ? findNode(tree, paneId) : null;
+  if (leaf && leaf.collapsed) return;
   try {
     t.fitAddon.fit();
     ipcRenderer.send('terminal:resize', t.termId, t.term.cols, t.term.rows);
@@ -456,19 +602,31 @@ function render() {
   observePanes();
 }
 
-function renderNode(node) {
-  return node.type === 'leaf' ? renderLeaf(node) : renderSplit(node);
+// parentDirection: 親 split の direction ('h' | 'v') または null（ルート leaf の場合）。
+// renderLeaf 側で .btn-collapse を表示するか（親が split-v のときだけ）の判定に使う。
+function renderNode(node, parentDirection = null) {
+  return node.type === 'leaf'
+    ? renderLeaf(node, parentDirection)
+    : renderSplit(node);
 }
 
-function renderLeaf(node) {
+function renderLeaf(node, parentDirection) {
   const t = terminals[node.id];
   const cwd = t?.cwd || '~';
   const waiting = t?.waiting || false;
   const focused = node.id === focusedPaneId;
   const taskTitle = t?.taskTitle || '';
+  const collapsed = !!node.collapsed;
+  // 親 split が split-v（上下分割）の場合のみ折り畳みボタンを表示する。
+  // 親 split-h（横並び）の場合は折り畳むと縦のストリップになるが、今回はスコープ外。
+  // ルート leaf（親 split がない）は折り畳めない（兄弟が無いため）。
+  const canCollapse = parentDirection === 'v';
 
   const el = document.createElement('div');
-  el.className = 'pane' + (focused ? ' focused' : '') + (waiting ? ' waiting' : '');
+  el.className = 'pane'
+    + (focused ? ' focused' : '')
+    + (waiting ? ' waiting' : '')
+    + (collapsed ? ' collapsed' : '');
   el.dataset.id = node.id;
 
   // タスクタイトル行（OSC 0/2 または POST /api/set-title で設定された文字列を表示）。
@@ -481,6 +639,17 @@ function renderLeaf(node) {
 
   const header = document.createElement('div');
   header.className = 'pane-header';
+  // .btn-collapse は親 split が split-v のときだけ表示（canCollapse）。
+  // chevron は上下分割のメンタルモデルに合わせる:
+  //   展開中（open）  : ▾（下向き = 中身が下に出ている）
+  //   折り畳み中（closed）: ▴（上向き = 上に巻き上げて閉じている）
+  // aria-expanded で支援技術にも開閉状態を伝える。
+  const collapseBtnHtml = canCollapse
+    ? `<button class="btn btn-collapse"
+         aria-label="${collapsed ? 'ペインを展開' : 'ペインを折り畳む'}"
+         aria-expanded="${!collapsed}"
+         title="${collapsed ? '展開する' : '折り畳む'}">${collapsed ? '▴' : '▾'}</button>`
+    : '';
   header.innerHTML = `
     <span class="pane-cwd" title="${cwd}">${cwd}</span>
     <div class="pane-actions">
@@ -492,6 +661,7 @@ function renderLeaf(node) {
       <button class="btn btn-move btn-move-right" title="右へ移動">▶</button>
       <button class="btn btn-split-h" title="左右に分割">⇔</button>
       <button class="btn btn-split-v" title="上下に分割">⇕</button>
+      ${collapseBtnHtml}
       <button class="btn btn-close" title="閉じる">✕</button>
     </div>
   `;
@@ -528,6 +698,12 @@ function renderLeaf(node) {
     e.stopPropagation();
     splitPane(node.id, 'v');
   });
+  if (canCollapse) {
+    header.querySelector('.btn-collapse').addEventListener('click', e => {
+      e.stopPropagation();
+      toggleCollapse(node.id);
+    });
+  }
   header.querySelector('.btn-close').addEventListener('click', e => {
     e.stopPropagation();
     closePane(node.id);
@@ -581,22 +757,44 @@ function renderLeaf(node) {
 }
 
 function renderSplit(node) {
-  const el = document.createElement('div');
-  el.className = `split split-${node.direction}`;
+  // 直下の子が collapsed leaf かどうかを判定（split-v のときのみ意味を持つ）。
+  // split-h 側では .btn-collapse を出さない仕様のため、collapsed leaf は通常発生しない。
+  const firstCollapsed = node.first.type === 'leaf' && node.first.collapsed;
+  const secondCollapsed = node.second.type === 'leaf' && node.second.collapsed;
+  const hasCollapsedChild = firstCollapsed || secondCollapsed;
 
-  const first = renderNode(node.first);
+  const el = document.createElement('div');
+  el.className = `split split-${node.direction}`
+    + (hasCollapsedChild ? ' collapsed-pair' : '');
+
+  // 子に親 split の direction を渡して、leaf 側で .btn-collapse の表示可否を判定できるようにする
+  const first = renderNode(node.first, node.direction);
   const handle = document.createElement('div');
   handle.className = `resize-handle resize-handle-${node.direction}`;
-  const second = renderNode(node.second);
+  const second = renderNode(node.second, node.direction);
 
-  first.style.flex = String(node.ratio);
-  second.style.flex = String(1 - node.ratio);
+  // 片側が collapsed の場合は flex を固定し、もう片方に空きを吸収させる。
+  // どちらも展開中なら通常通り ratio で按分する。
+  if (firstCollapsed && !secondCollapsed) {
+    first.style.flex = '0 0 auto';
+    second.style.flex = '1 1 auto';
+  } else if (secondCollapsed && !firstCollapsed) {
+    first.style.flex = '1 1 auto';
+    second.style.flex = '0 0 auto';
+  } else {
+    first.style.flex = String(node.ratio);
+    second.style.flex = String(1 - node.ratio);
+  }
 
   el.appendChild(first);
   el.appendChild(handle);
   el.appendChild(second);
 
   handle.addEventListener('mousedown', e => {
+    // 片側 collapsed の split では handle 操作を無効化する。
+    // CSS では cursor: not-allowed で「無効」状態を視覚表現するため、pointer-events は外して
+    // mousedown 側で早期 return する方式に統一。
+    if (hasCollapsedChild) return;
     e.preventDefault();
     e.stopPropagation();
     const rect1 = first.getBoundingClientRect();
@@ -734,6 +932,8 @@ setInterval(() => {
   const states = {};
   for (const [paneId, t] of Object.entries(terminals)) {
     if (!t) continue;
+    // 折り畳み状態は tree 側に持っているので、レポート時に leaf を引いて取り出す
+    const leaf = tree ? findNode(tree, paneId) : null;
     states[paneId] = {
       termId: t.termId,
       cwd: t.cwdFull || '',
@@ -743,6 +943,7 @@ setInterval(() => {
       lastInputTime: t.lastInputTime,
       lastLines: t.lastLines,
       taskTitle: t.taskTitle || '',
+      collapsed: !!(leaf && leaf.collapsed),
     };
   }
   ipcRenderer.send('terminal:report-states', states);

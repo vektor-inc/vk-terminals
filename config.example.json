@@ -1,3 +1,6 @@
 {
-  "initialCommand": "スキルでタスク管理を呼び出して"
+  "initialCommand": "",
+  "additionalPanes": [
+    { "cwd": "/absolute/path/to/another/project" }
+  ]
 }

@@ -6,6 +6,7 @@ const fs = require('fs');
 const http = require('http');
 const { execFile } = require('child_process');
 const { promisify } = require('util');
+const { stripAnsiForPattern } = require('./utils/stripAnsi');
 const execFileAsync = promisify(execFile);
 
 let win;
@@ -211,11 +212,6 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
   let promptWatcher = null;
   let promptWatcherTimeoutId = null;
 
-  // ANSI エスケープを除去するユーティリティ
-  const stripAnsi = (data) => data
-    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
-    .replace(/\x1b\]\d+;[^\x07\x1b]*(?:\x07|\x1b\\)/g, '');
-
   // 信頼確認プロンプトの検知パターン（全ターミナル共通）
   // 「Enter to confirm」が出た時点でメニュー描画済みなので、そこで \r を送る
   // 旧UI: "Do you trust the files in this folder?" / "Yes, I trust this folder"
@@ -253,7 +249,7 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
     }
 
     promptWatcher = (data) => {
-      const stripped = stripAnsi(data);
+      const stripped = stripAnsiForPattern(data);
       buffer = (buffer + stripped).slice(-4096);
 
       // 信頼確認プロンプト → Enter で承認（全ターミナル共通）

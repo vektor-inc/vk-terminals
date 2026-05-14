@@ -262,28 +262,35 @@ function findNeighborPane(fromPaneId, dir) {
   const fromCx = fromRect.left + fromRect.width / 2;
   const fromCy = fromRect.top + fromRect.height / 2;
   let best = null;
-  let bestDist = Infinity;
+  // 主軸ギャップ（共有辺への近さ）を最優先、同値なら直交軸の中心ずれが小さい方を選ぶ
+  let bestGap = Infinity;
+  let bestCross = Infinity;
   for (const id of getAllLeafIds(tree)) {
     if (id === fromPaneId) continue;
     const r = getPaneRect(id);
     if (!r) continue;
     const cx = r.left + r.width / 2;
     const cy = r.top + r.height / 2;
-    const inDir =
-      (dir === 'left'  && r.right  <= fromRect.left  + 1) ||
-      (dir === 'right' && r.left   >= fromRect.right - 1) ||
-      (dir === 'up'    && r.bottom <= fromRect.top   + 1) ||
-      (dir === 'down'  && r.top    >= fromRect.bottom - 1);
-    if (!inDir) continue;
+    // dir 方向の主軸ギャップ（候補の手前辺と fromRect の対辺の隙間）
+    const axisGap =
+      dir === 'left'  ? fromRect.left - r.right  :
+      dir === 'right' ? r.left - fromRect.right  :
+      dir === 'up'    ? fromRect.top - r.bottom  :
+                        r.top - fromRect.bottom;
+    // 候補が dir 方向側に存在しない（手前 or 重なっている）場合は除外
+    if (axisGap < -1) continue;
     // 直交軸でオーバーラップしているペインのみを隣接候補とする（対角線上の非隣接ペイン除外）
     const orthOverlap =
       (dir === 'left' || dir === 'right')
         ? (r.top < fromRect.bottom && r.bottom > fromRect.top)
         : (r.left < fromRect.right && r.right > fromRect.left);
     if (!orthOverlap) continue;
-    const dist = Math.hypot(cx - fromCx, cy - fromCy);
-    if (dist < bestDist) {
-      bestDist = dist;
+    const cross = (dir === 'left' || dir === 'right')
+      ? Math.abs(cy - fromCy)
+      : Math.abs(cx - fromCx);
+    if (axisGap < bestGap || (axisGap === bestGap && cross < bestCross)) {
+      bestGap = axisGap;
+      bestCross = cross;
       best = id;
     }
   }

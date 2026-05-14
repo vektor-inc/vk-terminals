@@ -469,6 +469,50 @@ function startHttpApi() {
       return;
     }
 
+    // POST /api/set-title  { termId: "1", title: "タスク名" } — ペイン上部のタスクタイトル行に表示する文字列を設定
+    //   空文字や null を指定するとタイトル行を非表示に戻す。
+    if (req.method === 'POST' && url.pathname === '/api/set-title') {
+      const MAX_BODY = 10 * 1024;
+      let body = '';
+      let aborted = false;
+      req.on('data', chunk => {
+        body += chunk;
+        if (body.length > MAX_BODY) {
+          aborted = true;
+          res.writeHead(413, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'payload too large' }));
+          req.destroy();
+        }
+      });
+      req.on('end', () => {
+        if (aborted) return;
+        try {
+          const parsed = JSON.parse(body);
+          const termId = parsed?.termId != null ? String(parsed.termId) : '';
+          if (!termId) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'termId required' }));
+            return;
+          }
+          if (!ptys.has(termId)) {
+            res.writeHead(404, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: `terminal ${termId} not found` }));
+            return;
+          }
+          const title = typeof parsed?.title === 'string' ? parsed.title : '';
+          if (win && !win.isDestroyed()) {
+            win.webContents.send('terminal:title', termId, title);
+          }
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, termId, title }));
+        } catch (e) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'invalid JSON' }));
+        }
+      });
+      return;
+    }
+
     // POST /api/new-pane  { cwd?: "/path/to/dir", noClaude?: boolean } — 新規ペインを作成して termId を返す
     //   cwd を指定すればそのディレクトリで開く。未指定なら HOME で開く。
     //   noClaude: true を指定すると、新規ペインで claude を自動起動せず素のシェルとして開く。

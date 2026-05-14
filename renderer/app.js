@@ -603,7 +603,11 @@ ipcRenderer.on('terminal:request-new-pane', async (event, payload = {}) => {
     return;
   }
   try {
-    const result = await splitPane(targetPaneId, 'h');
+    // 対象ペインの長辺方向に分割することで、横にだけ広がらずグリッド状に増える
+    const paneEl = document.querySelector(`.pane[data-id="${targetPaneId}"]`);
+    const rect = paneEl?.getBoundingClientRect();
+    const direction = (rect && rect.height > rect.width) ? 'v' : 'h';
+    const result = await splitPane(targetPaneId, direction);
     if (!result || !result.termId) {
       reply({ error: 'split failed or termId unavailable' });
       return;

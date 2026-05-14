@@ -98,6 +98,8 @@ async function createTerminal(paneId, cwd, options = {}) {
 
   // OSC 0 / OSC 2 のタイトル変更を購読してペイン上部のタスクタイトル行に反映する。
   // 例: `printf '\033]0;ビルド中\007'` をシェルで実行すると "ビルド中" がここに表示される。
+  // ここで書き込むのは OSC 由来の taskTitle のみ。API（POST /api/set-title）由来の
+  // apiTitle が設定されている間はそちらが優先表示される（updatePaneTitle 参照）。
   term.onTitleChange((title) => {
     const t = terminals[paneId];
     if (!t) return;
@@ -153,7 +155,13 @@ async function createTerminal(paneId, cwd, options = {}) {
     lastLines: '',
     lastOutputTime: Date.now(),
     lastInputTime: 0,
+    // taskTitle: xterm の OSC 0/2 由来のタイトル（claude TUI 等が継続的に発行する）
+    // apiTitle:  HTTP API（POST /api/set-title）で明示的にセットされたタイトル
+    // 表示時は apiTitle を優先し、空のときに taskTitle へフォールバックする。
+    // これにより task-queue 等が指定した issue タイトルが OSC 由来の文字列で
+    // 上書きされなくなる（issue #22）。
     taskTitle: '',
+    apiTitle: '',
   };
 
   return paneId;
@@ -203,12 +211,20 @@ function updatePaneCwd(paneId, cwd) {
   if (el) el.textContent = cwd;
 }
 
+// API（POST /api/set-title）由来のタイトルを最優先で表示し、未設定なら OSC 0/2 由来の
+// taskTitle にフォールバックする。空文字を API に送れば apiTitle がクリアされ、OSC
+// タイトルがそのまま見えるようになる（後方互換）。
+function getDisplayTitle(t) {
+  if (!t) return '';
+  return t.apiTitle || t.taskTitle || '';
+}
+
 function updatePaneTitle(paneId) {
   const t = terminals[paneId];
   if (!t) return;
   const el = document.querySelector(`.pane[data-id="${paneId}"] .pane-task-title`);
   if (!el) return;
-  const title = t.taskTitle || '';
+  const title = getDisplayTitle(t);
   el.textContent = title;
   el.title = title;
   el.classList.toggle('empty', title.length === 0);
@@ -615,7 +631,8 @@ function renderLeaf(node, parentDirection) {
   const cwd = t?.cwd || '~';
   const waiting = t?.waiting || false;
   const focused = node.id === focusedPaneId;
-  const taskTitle = t?.taskTitle || '';
+  // apiTitle（API 由来）優先、無ければ taskTitle（OSC 由来）にフォールバック。
+  const taskTitle = getDisplayTitle(t);
   const collapsed = !!node.collapsed;
   // 親 split が split-v（上下分割）の場合のみ折り畳みボタンを表示する。
   // 親 split-h（横並び）の場合は折り畳むと縦のストリップになるが、今回はスコープ外。
@@ -942,7 +959,12 @@ setInterval(() => {
       lastOutputTime: t.lastOutputTime,
       lastInputTime: t.lastInputTime,
       lastLines: t.lastLines,
+      // taskTitle: OSC 0/2 由来のタイトル（後方互換のため既存キーを維持）
+      // apiTitle:  POST /api/set-title 由来のタイトル（issue #22 で分離）
+      // displayTitle: 実際にペイン上部に表示している値（apiTitle || taskTitle）
       taskTitle: t.taskTitle || '',
+      apiTitle: t.apiTitle || '',
+      displayTitle: getDisplayTitle(t),
       collapsed: !!(leaf && leaf.collapsed),
     };
   }
@@ -975,10 +997,13 @@ ipcRenderer.on('terminal:request-new-pane', async (event, payload = {}) => {
 });
 
 // ─── Title update from main (HTTP API POST /api/set-title) ──────────────────
+// API 由来のタイトルは apiTitle に保存し、OSC 由来の taskTitle とは別フィールドで管理する。
+// これにより claude TUI が継続的に発行する OSC 0/2 で API 設定タイトルが上書きされない。
+// 空文字を送ると apiTitle がクリアされ、OSC 由来の taskTitle にフォールバックする。
 ipcRenderer.on('terminal:title', (event, termId, title) => {
   const paneId = Object.keys(terminals).find(k => terminals[k]?.termId === termId);
   if (!paneId) return;
-  terminals[paneId].taskTitle = title || '';
+  terminals[paneId].apiTitle = title || '';
   updatePaneTitle(paneId);
 });
 

@@ -5,9 +5,24 @@ const { FitAddon } = require('@xterm/addon-fit');
 
 // ─── State ────────────────────────────────────────────────────────────────────
 let tree = null;       // Layout tree root
-let terminals = {};    // paneId -> { termId, term, fitAddon, element, cwd, cwdFull, waiting, lastLines }
+// terminals[paneId] のフィールド概要（status / runningTimer は issue #23 で追加）:
+//   - waiting (bool): 内部判定用フラグ。WAITING_PATTERNS ヒットで true。
+//     states.json 後方互換のために残してある（task-queue 等の外部連携が参照している）。
+//   - status ('idle'|'running'|'waiting'): 表示用の派生値。
+//     waiting が true なら 'waiting' を最優先。
+//     waiting でなく直近 1500ms 以内に PTY 出力があり、かつ直近 200ms 以内に入力がなければ 'running'。
+//     どちらでもなければ 'idle'（DOM 側で要素ごと非表示）。
+//   - runningTimer (number|null): 'running' を 1500ms 後に 'idle' へ戻すための setTimeout id。
+//     bumpRunning() が出力イベントごとに張り直し、closePane() で必ず clearTimeout する。
+let terminals = {};    // paneId -> { termId, term, fitAddon, element, cwd, cwdFull, waiting, status, runningTimer, lastLines, ... }
 let focusedPaneId = null;
 let dragState = null;
+
+// status 判定で使う閾値（ms）。
+//   - RUNNING_IDLE_TIMEOUT_MS: 最後の PTY 出力から何 ms 経ったら idle に戻すか
+//   - RUNNING_INPUT_GUARD_MS:  入力直後（タイプ中）はエコー出力で running 扱いしないためのガード時間
+const RUNNING_IDLE_TIMEOUT_MS = 1500;
+const RUNNING_INPUT_GUARD_MS = 200;
 
 // ─── ID generation ────────────────────────────────────────────────────────────
 let _idCounter = 0;
@@ -69,10 +84,63 @@ function checkWaiting(paneId) {
   const waiting = WAITING_PATTERNS.some(p => p.test(clean));
   if (waiting !== t.waiting) {
     t.waiting = waiting;
-    updatePaneStatus(paneId);
+    // waiting フラグが変わったら status も再計算（waiting 復帰時は running/idle に戻すため）
+    recomputeStatus(paneId);
     // 待機状態になったときに通知音を鳴らす
     if (waiting) shell.beep();
   }
+}
+
+// status を waiting フラグ・最終出力時刻・最終入力時刻から再計算してセットする。
+// 派生フィールドのため、ここ以外から t.status を直接書き換えないこと。
+function recomputeStatus(paneId) {
+  const t = terminals[paneId];
+  if (!t) return;
+  let next;
+  if (t.waiting) {
+    next = 'waiting';
+  } else {
+    const now = Date.now();
+    const recentOutput = now - (t.lastOutputTime || 0) <= RUNNING_IDLE_TIMEOUT_MS;
+    const recentInput = now - (t.lastInputTime || 0) <= RUNNING_INPUT_GUARD_MS;
+    next = (recentOutput && !recentInput) ? 'running' : 'idle';
+  }
+  if (next !== t.status) {
+    t.status = next;
+    updatePaneStatus(paneId);
+  }
+}
+
+// PTY 出力があったときに呼ぶ。waiting でなく、入力直後でなければ 'running' に切り替え、
+// 1500ms 後に idle へ戻すタイマーを張る。既存タイマーがあれば張り直す（polling 不要）。
+function bumpRunning(paneId) {
+  const t = terminals[paneId];
+  if (!t) return;
+  // waiting は最優先のため running に上書きしない
+  if (t.waiting) return;
+  // タイマーは出力ごとに張り直す
+  if (t.runningTimer) {
+    clearTimeout(t.runningTimer);
+    t.runningTimer = null;
+  }
+  const now = Date.now();
+  const recentInput = now - (t.lastInputTime || 0) <= RUNNING_INPUT_GUARD_MS;
+  // 入力直後（タイプ中のエコー）は running と見なさない。idle のまま据え置く。
+  if (recentInput) return;
+  if (t.status !== 'running') {
+    t.status = 'running';
+    updatePaneStatus(paneId);
+  }
+  t.runningTimer = setTimeout(() => {
+    const cur = terminals[paneId];
+    if (!cur) return;
+    cur.runningTimer = null;
+    // タイマー満了時に waiting に変わっていたらそのまま、そうでなければ idle に戻す
+    if (!cur.waiting && cur.status === 'running') {
+      cur.status = 'idle';
+      updatePaneStatus(paneId);
+    }
+  }, RUNNING_IDLE_TIMEOUT_MS);
 }
 
 // ─── Create terminal ──────────────────────────────────────────────────────────
@@ -116,8 +184,9 @@ async function createTerminal(paneId, cwd, options = {}) {
     if (terminals[paneId]?.waiting) {
       terminals[paneId].waiting = false;
       terminals[paneId].lastLines = '';
-      updatePaneStatus(paneId);
     }
+    // waiting がクリアされていなくても、入力タイミングを反映した status を再計算する
+    if (terminals[paneId]) recomputeStatus(paneId);
   }
 
   // Shift+Enter を改行として送信（Claude Code の keybindings.json 対応）
@@ -152,6 +221,12 @@ async function createTerminal(paneId, cwd, options = {}) {
     cwd: shortCwd,
     cwdFull: initialCwd,
     waiting: false,
+    // status: 表示用ステータス。issue #23 で追加。
+    // 初期値 'idle' は何も表示しない（.pane-status[data-status="idle"] は display:none）。
+    status: 'idle',
+    // runningTimer: 'running' を 1500ms 後に 'idle' に戻すタイマー id。
+    // 出力イベントごとに bumpRunning() が張り直す。closePane() で必ず clearTimeout する。
+    runningTimer: null,
     lastLines: '',
     lastOutputTime: Date.now(),
     lastInputTime: 0,
@@ -198,6 +273,8 @@ ipcRenderer.on('terminal:data', (event, id, data) => {
   t.lastLines = (t.lastLines + stripped).split('\n').slice(-15).join('\n');
   t.lastOutputTime = Date.now();
   checkWaiting(paneId);
+  // 出力があったので running を bump（waiting / 入力直後はスキップされる）
+  bumpRunning(paneId);
 });
 
 ipcRenderer.on('terminal:exit', (event, id) => {
@@ -230,14 +307,28 @@ function updatePaneTitle(paneId) {
   el.classList.toggle('empty', title.length === 0);
 }
 
+// .pane-status バッジ（ヘッダ最左）と .pane.waiting 枠点滅の両方を更新する。
+// status は派生フィールドのため、t.waiting / t.status は呼び出し側で先にセット済みである前提。
 function updatePaneStatus(paneId) {
   const t = terminals[paneId];
   if (!t) return;
   const paneEl = document.querySelector(`.pane[data-id="${paneId}"]`);
   if (!paneEl) return;
+  // 枠の点滅アニメ（周辺視野での気付き用、issue #23 でも残置）は waiting フラグ準拠
   paneEl.classList.toggle('waiting', t.waiting);
-  const badge = paneEl.querySelector('.waiting-badge');
-  if (badge) badge.style.display = t.waiting ? 'flex' : 'none';
+
+  const badge = paneEl.querySelector('.pane-status');
+  if (!badge) return;
+  const status = t.status || 'idle';
+  badge.dataset.status = status;
+  // 色覚配慮: 絵文字＋テキストで明示。idle は CSS 側で display:none になるので textContent は空でも可。
+  if (status === 'waiting') {
+    badge.textContent = '🟡 入力待ち';
+  } else if (status === 'running') {
+    badge.textContent = '🟢 実行中';
+  } else {
+    badge.textContent = '';
+  }
 }
 
 // ─── Tree operations ──────────────────────────────────────────────────────────
@@ -523,6 +614,12 @@ function closePane(paneId) {
 
   const t = terminals[paneId];
   if (t) {
+    // status の自動 idle 復帰タイマーが残っているとクロージャ経由で terminals[paneId] を
+    // 参照し続けてしまうため、必ず破棄する（リーク防止）。
+    if (t.runningTimer) {
+      clearTimeout(t.runningTimer);
+      t.runningTimer = null;
+    }
     t.term.dispose();
     ipcRenderer.send('terminal:kill', t.termId);
     delete terminals[paneId];
@@ -630,6 +727,11 @@ function renderLeaf(node, parentDirection) {
   const t = terminals[node.id];
   const cwd = t?.cwd || '~';
   const waiting = t?.waiting || false;
+  // 表示用ステータス（issue #23）。idle は CSS で display:none、それ以外は label を表示。
+  const status = t?.status || 'idle';
+  const statusLabel = status === 'waiting' ? '🟡 入力待ち'
+                    : status === 'running' ? '🟢 実行中'
+                    : '';
   const focused = node.id === focusedPaneId;
   // apiTitle（API 由来）優先、無ければ taskTitle（OSC 由来）にフォールバック。
   const taskTitle = getDisplayTitle(t);
@@ -667,11 +769,13 @@ function renderLeaf(node, parentDirection) {
          aria-expanded="${!collapsed}"
          title="${collapsed ? '展開する' : '折り畳む'}">${collapsed ? '▴' : '▾'}</button>`
     : '';
+  // .pane-status はヘッダ最左に常時挿入し、CSS の data-status="idle" で見えなくする方式。
+  // 旧 .waiting-badge は role を .pane-status に一本化したため削除済（issue #23）。
   header.innerHTML = `
+    <span class="pane-status" data-status="${status}">${statusLabel}</span>
     <span class="pane-cwd" title="${cwd}">${cwd}</span>
     <div class="pane-actions">
       <span class="auto-input-badge" style="display:none"></span>
-      <span class="waiting-badge" style="display:${waiting ? 'flex' : 'none'}">⚠ 待機中</span>
       <button class="btn btn-move btn-move-left" title="左へ移動">◀</button>
       <button class="btn btn-move btn-move-down" title="下へ移動">▼</button>
       <button class="btn btn-move btn-move-up" title="上へ移動">▲</button>
@@ -955,7 +1059,11 @@ setInterval(() => {
       termId: t.termId,
       cwd: t.cwdFull || '',
       cwdShort: t.cwd || '~',
+      // waiting は内部判定フラグ。後方互換のため引き続き出力（task-queue 連携などが参照）。
       waiting: t.waiting,
+      // status は issue #23 で追加した表示用ステータス（'idle' | 'running' | 'waiting'）。
+      // 既存フィールドは破壊せず、新規追加のみ。
+      status: t.status || 'idle',
       lastOutputTime: t.lastOutputTime,
       lastInputTime: t.lastInputTime,
       lastLines: t.lastLines,

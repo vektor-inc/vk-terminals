@@ -24,6 +24,20 @@ npm install
 npm start
 ```
 
+### 素のターミナルモード（claude を自動起動しない）
+
+通常起動では各ペインで自動的に `claude` が実行されますが、`--no-claude`（または `--plain`）フラグを付けると claude を起動せず、素のシェルとしてペインを開きます。`initialCommand` の送信もスキップされます。
+
+```bash
+npm start -- --no-claude
+# または
+electron . --no-claude
+```
+
+設定ファイルの `additionalPanes` 各エントリに `noClaude: true` を指定すると、そのペインだけ素のシェルとして開けます（CLI フラグ未指定時の挙動）。
+
+HTTP API（`POST /api/new-pane`）でも `noClaude: true` を指定可能です（後述）。
+
 ## 使い方
 
 ### ペインの分割
@@ -74,13 +88,15 @@ cp config.example.json ~/.vk-terminals/config.json
 {
   "initialCommand": "スキルでタスク管理を呼び出して",
   "additionalPanes": [
-    { "cwd": "/Users/you/Documents/git/your-project" }
+    { "cwd": "/Users/you/Documents/git/your-project" },
+    { "cwd": "/Users/you/Documents/git/other-project", "noClaude": true }
   ]
 }
 ```
 
-- `initialCommand`：1 ペイン目で claude が起動した直後に自動実行されるコマンド。省略または空にすると自動実行は行われません。
+- `initialCommand`：1 ペイン目で claude が起動した直後に自動実行されるコマンド。省略または空にすると自動実行は行われません。`--no-claude` 起動時は送信されません。
 - `additionalPanes`：起動時に追加で開くペインのリスト。各要素の `cwd`（絶対パス）でペインが分割作成され、その作業ディレクトリで claude が立ち上がります。複数指定可。省略または空配列の場合は 1 ペインのみで起動します。
+  - `noClaude: true` を指定すると、そのペインのみ claude を自動起動せず素のシェルとして開きます（省略時は CLI フラグの設定に従う）。
 
 > **移行メモ**: 旧パス `~/.claude/terminals-config.json` も後方互換として読み込まれます。
 
@@ -157,7 +173,22 @@ curl -s -X POST http://127.0.0.1:13847/api/send \
 ```bash
 curl -s -X POST http://127.0.0.1:13847/api/new-pane
 # => {"ok":true,"termId":"3"}
+
+# cwd を指定して開く
+curl -s -X POST http://127.0.0.1:13847/api/new-pane \
+  -H 'Content-Type: application/json' \
+  -d '{"cwd": "/Users/you/Documents/git/your-project"}'
+
+# claude を起動せず素のシェルとして開く
+curl -s -X POST http://127.0.0.1:13847/api/new-pane \
+  -H 'Content-Type: application/json' \
+  -d '{"noClaude": true}'
 ```
+
+リクエストボディ（任意）:
+
+- `cwd`：新規ペインのカレントディレクトリ（絶対パス）。未指定ならホームディレクトリ。
+- `noClaude`：`true` の場合、新規ペインで claude を自動起動せず素のシェルとして開く。未指定なら起動時の `--no-claude` フラグの値に従う。
 
 レスポンス:
 

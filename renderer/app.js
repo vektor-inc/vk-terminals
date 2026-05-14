@@ -76,8 +76,10 @@ function checkWaiting(paneId) {
 }
 
 // ─── Create terminal ──────────────────────────────────────────────────────────
-async function createTerminal(paneId, cwd) {
-  const result = await ipcRenderer.invoke('terminal:create', cwd || null);
+// options.noClaude が true の場合、main 側で claude の自動起動をスキップする。
+// 未指定の場合は main 側のグローバル設定（CLI フラグ）にフォールバックする。
+async function createTerminal(paneId, cwd, options = {}) {
+  const result = await ipcRenderer.invoke('terminal:create', cwd || null, options);
   const { id: termId, cwd: initialCwd } = result;
 
   const term = new Terminal({
@@ -255,7 +257,7 @@ function findLargestVisiblePaneId() {
 }
 
 // ─── Pane actions ─────────────────────────────────────────────────────────────
-async function splitPane(paneId, direction, overrideCwd) {
+async function splitPane(paneId, direction, overrideCwd, options = {}) {
   const node = findNode(tree, paneId);
   if (!node) return null;
 
@@ -264,7 +266,8 @@ async function splitPane(paneId, direction, overrideCwd) {
   // 分割元ペインの cwd は継承しない（task-queue 等の特定ディレクトリにいるペインから分割しても
   // 新ペインはデフォルト位置で開かせる方針）。
   const targetCwd = overrideCwd || null;
-  await createTerminal(newPaneId, targetCwd);
+  // options.noClaude が指定されていればそのまま main に渡す。未指定なら main 側のグローバル設定に従う。
+  await createTerminal(newPaneId, targetCwd, options);
 
   tree = replaceNode(tree, paneId, {
     type: 'split',
@@ -626,7 +629,7 @@ setInterval(() => {
 
 // ─── New pane request from HTTP API ──────────────────────────────────────────
 ipcRenderer.on('terminal:request-new-pane', async (event, payload = {}) => {
-  const { requestId, cwd } = payload;
+  const { requestId, cwd, noClaude } = payload;
   const reply = (result) => ipcRenderer.send('terminal:new-pane-created', { requestId, ...result });
   const targetPaneId = findLargestVisiblePaneId() || focusedPaneId || (tree ? getAllLeafIds(tree)[0] : null);
   if (!targetPaneId) {
@@ -637,7 +640,8 @@ ipcRenderer.on('terminal:request-new-pane', async (event, payload = {}) => {
     // 表示面積が最大のペインを長辺方向に分割し、全体の空きが大きい場所へ追加する
     const rect = getPaneRect(targetPaneId);
     const direction = (rect && rect.height > rect.width) ? 'v' : 'h';
-    const result = await splitPane(targetPaneId, direction, cwd);
+    const splitOptions = typeof noClaude === 'boolean' ? { noClaude } : {};
+    const result = await splitPane(targetPaneId, direction, cwd, splitOptions);
     if (!result || !result.termId) {
       reply({ error: 'split failed or termId unavailable' });
       return;

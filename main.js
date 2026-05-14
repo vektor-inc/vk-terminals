@@ -13,6 +13,11 @@ const ptys = new Map();
 let nextId = 1;
 let firstTerminalCreated = false;
 
+// CLI フラグ: `--no-claude`（または `--plain`）が指定された場合、
+// 新規ペインで claude を自動起動せず素のシェルとして開く。
+// 起動方法: `npm start -- --no-claude` または `electron . --no-claude`
+const globalPlainMode = process.argv.includes('--no-claude') || process.argv.includes('--plain');
+
 // /api/new-pane の HTTP レスポンスを待つコールバック（requestId → resolver）
 // 並行リクエストでも取り違えが起きないように requestId で相関付ける
 const pendingNewPaneCallbacks = new Map();
@@ -182,10 +187,14 @@ app.on('before-quit', () => {
   if (httpServer) httpServer.close();
 });
 
-ipcMain.handle('terminal:create', (event, cwd) => {
+ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
   const id = String(nextId++);
   const shell = process.env.SHELL || '/bin/zsh';
   const resolvedCwd = cwd || process.env.HOME || '/tmp';
+
+  // `options.noClaude` が明示指定されていればそれを優先、未指定なら CLI フラグの値を継承。
+  // `noClaude` が true の場合、claude を自動起動せず素のシェルとして開く。
+  const noClaude = typeof options.noClaude === 'boolean' ? options.noClaude : globalPlainMode;
 
   const ptyProcess = pty.spawn(shell, [], {
     name: 'xterm-256color',
@@ -218,7 +227,8 @@ ipcMain.handle('terminal:create', (event, cwd) => {
 
   const WATCH_TIMEOUT_MS = 10000;
 
-  {
+  // 素のターミナルモードでは claude を起動しないため、信頼確認や initialCommand の監視も不要
+  if (!noClaude) {
     const config = isFirstTerminal ? loadUserConfig() : {};
     let sent = false;
     let trustHandled = false;
@@ -297,12 +307,14 @@ ipcMain.handle('terminal:create', (event, cwd) => {
 
   ptys.set(id, ptyProcess);
 
-  // 起動後に自動でclaudeを実行
-  setTimeout(() => {
-    if (ptys.has(id)) {
-      ptyProcess.write('claude\r');
-    }
-  }, 200);
+  // 起動後に自動でclaudeを実行（素のターミナルモード時はスキップ）
+  if (!noClaude) {
+    setTimeout(() => {
+      if (ptys.has(id)) {
+        ptyProcess.write('claude\r');
+      }
+    }, 200);
+  }
 
   return { id, cwd: resolvedCwd };
 });
@@ -340,8 +352,9 @@ ipcMain.on('terminal:new-pane-created', (event, payload = {}) => {
 /**
  * 指定された cwd で追加ペインを 1 枚作成する。
  * 内部的には renderer の splitPane を呼び出すのと同じ経路（pendingNewPaneCallbacks）を使う。
+ * options.noClaude が true の場合、新ペインで claude を自動起動しない。
  */
-function createAdditionalPane(cwd) {
+function createAdditionalPane(cwd, options = {}) {
   return new Promise((resolve) => {
     if (!win || win.isDestroyed()) {
       resolve({ error: 'window not available' });
@@ -358,7 +371,9 @@ function createAdditionalPane(cwd) {
       clearTimeout(timeoutId);
       resolve(result);
     });
-    win.webContents.send('terminal:request-new-pane', { requestId, cwd });
+    const payload = { requestId, cwd };
+    if (typeof options.noClaude === 'boolean') payload.noClaude = options.noClaude;
+    win.webContents.send('terminal:request-new-pane', payload);
   });
 }
 
@@ -371,7 +386,9 @@ ipcMain.on('terminal:renderer-ready', async () => {
   const panes = Array.isArray(config.additionalPanes) ? config.additionalPanes : [];
   for (const pane of panes) {
     if (!pane || typeof pane.cwd !== 'string' || !pane.cwd.trim()) continue;
-    const result = await createAdditionalPane(pane.cwd);
+    // pane.noClaude が指定されていれば優先、未指定なら CLI フラグの値を使う（terminal:create 側で解決）
+    const paneOptions = typeof pane.noClaude === 'boolean' ? { noClaude: pane.noClaude } : {};
+    const result = await createAdditionalPane(pane.cwd, paneOptions);
     if (result && result.error) {
       console.warn(`${LOG_PREFIX} additionalPane (${pane.cwd}) failed: ${result.error}`);
     }
@@ -452,8 +469,9 @@ function startHttpApi() {
       return;
     }
 
-    // POST /api/new-pane  { cwd?: "/path/to/dir" } — 新規ペインを作成して termId を返す
+    // POST /api/new-pane  { cwd?: "/path/to/dir", noClaude?: boolean } — 新規ペインを作成して termId を返す
     //   cwd を指定すればそのディレクトリで開く。未指定なら HOME で開く。
+    //   noClaude: true を指定すると、新規ペインで claude を自動起動せず素のシェルとして開く。
     if (req.method === 'POST' && url.pathname === '/api/new-pane') {
       if (!win || win.isDestroyed()) {
         res.writeHead(503, { 'Content-Type': 'application/json' });
@@ -475,11 +493,15 @@ function startHttpApi() {
       req.on('end', () => {
         if (aborted) return;
         let requestedCwd = null;
+        let requestedNoClaude;
         if (body.length > 0) {
           try {
             const parsed = JSON.parse(body);
             if (typeof parsed?.cwd === 'string' && parsed.cwd.trim()) {
               requestedCwd = parsed.cwd;
+            }
+            if (typeof parsed?.noClaude === 'boolean') {
+              requestedNoClaude = parsed.noClaude;
             }
           } catch {
             res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -506,7 +528,9 @@ function startHttpApi() {
           }
         };
         pendingNewPaneCallbacks.set(requestId, resolve);
-        win.webContents.send('terminal:request-new-pane', { requestId, cwd: requestedCwd });
+        const payload = { requestId, cwd: requestedCwd };
+        if (typeof requestedNoClaude === 'boolean') payload.noClaude = requestedNoClaude;
+        win.webContents.send('terminal:request-new-pane', payload);
       });
       return;
     }

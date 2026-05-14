@@ -122,6 +122,33 @@ html, body {
   }
 }
 
+/* ─── Pane task title (上部固定のタスク表示行) ─────────────────────────────── */
+.pane-task-title {
+  display: flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 10px;
+  background: #1c2128;
+  border-bottom: 1px solid #21262d;
+  color: #adbac7;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.pane-task-title.empty {
+  display: none;
+}
+
+.pane.focused .pane-task-title {
+  color: #e6edf3;
+  background: #22282f;
+}
+
 /* ─── Pane header ──────────────────────────────────────────────────────────── */
 .pane-header {
   display: flex;

@@ -96,6 +96,15 @@ async function createTerminal(paneId, cwd, options = {}) {
   const fitAddon = new FitAddon();
   term.loadAddon(fitAddon);
 
+  // OSC 0 / OSC 2 のタイトル変更を購読してペイン上部のタスクタイトル行に反映する。
+  // 例: `printf '\033]0;ビルド中\007'` をシェルで実行すると "ビルド中" がここに表示される。
+  term.onTitleChange((title) => {
+    const t = terminals[paneId];
+    if (!t) return;
+    t.taskTitle = title || '';
+    updatePaneTitle(paneId);
+  });
+
   // 共通の入力送信ヘルパー（waiting バッジのクリアを含む）
   function sendTerminalInput(data) {
     ipcRenderer.send('terminal:input', termId, data);
@@ -144,6 +153,7 @@ async function createTerminal(paneId, cwd, options = {}) {
     lastLines: '',
     lastOutputTime: Date.now(),
     lastInputTime: 0,
+    taskTitle: '',
   };
 
   return paneId;
@@ -191,6 +201,17 @@ ipcRenderer.on('terminal:exit', (event, id) => {
 function updatePaneCwd(paneId, cwd) {
   const el = document.querySelector(`.pane[data-id="${paneId}"] .pane-cwd`);
   if (el) el.textContent = cwd;
+}
+
+function updatePaneTitle(paneId) {
+  const t = terminals[paneId];
+  if (!t) return;
+  const el = document.querySelector(`.pane[data-id="${paneId}"] .pane-task-title`);
+  if (!el) return;
+  const title = t.taskTitle || '';
+  el.textContent = title;
+  el.title = title;
+  el.classList.toggle('empty', title.length === 0);
 }
 
 function updatePaneStatus(paneId) {
@@ -444,10 +465,19 @@ function renderLeaf(node) {
   const cwd = t?.cwd || '~';
   const waiting = t?.waiting || false;
   const focused = node.id === focusedPaneId;
+  const taskTitle = t?.taskTitle || '';
 
   const el = document.createElement('div');
   el.className = 'pane' + (focused ? ' focused' : '') + (waiting ? ' waiting' : '');
   el.dataset.id = node.id;
+
+  // タスクタイトル行（OSC 0/2 または POST /api/set-title で設定された文字列を表示）。
+  // 空のときは .empty クラスで非表示にし、xterm の表示領域を圧迫しない。
+  const taskTitleEl = document.createElement('div');
+  taskTitleEl.className = 'pane-task-title' + (taskTitle ? '' : ' empty');
+  taskTitleEl.textContent = taskTitle;
+  if (taskTitle) taskTitleEl.title = taskTitle;
+  el.appendChild(taskTitleEl);
 
   const header = document.createElement('div');
   header.className = 'pane-header';
@@ -712,6 +742,7 @@ setInterval(() => {
       lastOutputTime: t.lastOutputTime,
       lastInputTime: t.lastInputTime,
       lastLines: t.lastLines,
+      taskTitle: t.taskTitle || '',
     };
   }
   ipcRenderer.send('terminal:report-states', states);
@@ -740,6 +771,14 @@ ipcRenderer.on('terminal:request-new-pane', async (event, payload = {}) => {
   } catch (e) {
     reply({ error: e?.message || 'failed to create pane' });
   }
+});
+
+// ─── Title update from main (HTTP API POST /api/set-title) ──────────────────
+ipcRenderer.on('terminal:title', (event, termId, title) => {
+  const paneId = Object.keys(terminals).find(k => terminals[k]?.termId === termId);
+  if (!paneId) return;
+  terminals[paneId].taskTitle = title || '';
+  updatePaneTitle(paneId);
 });
 
 // ─── Auto-input notification from main (HTTP API経由の入力時) ─────────────────

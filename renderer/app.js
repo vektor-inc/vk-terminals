@@ -2,6 +2,7 @@
 const { ipcRenderer, shell } = require('electron');
 const { Terminal } = require('@xterm/xterm');
 const { FitAddon } = require('@xterm/addon-fit');
+const { stripAnsiForDisplay } = require('../utils/stripAnsi');
 
 // ─── State ────────────────────────────────────────────────────────────────────
 let tree = null;       // Layout tree root
@@ -69,18 +70,10 @@ const WAITING_PATTERNS = [
   // NOTE: /permission/i は削除 — Claude Code の UI フッター "bypass permissions on" に誤反応するため
 ];
 
-function stripAnsi(str) {
-  return str
-    .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '')
-    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
-    .replace(/\x1b[^[\]]/g, '')
-    .replace(/\r/g, '\n');  // \r を \n に変換して行バッファに乗せる
-}
-
 function checkWaiting(paneId) {
   const t = terminals[paneId];
   if (!t) return;
-  const clean = stripAnsi(t.lastLines);
+  const clean = stripAnsiForDisplay(t.lastLines);
   const waiting = WAITING_PATTERNS.some(p => p.test(clean));
   if (waiting !== t.waiting) {
     t.waiting = waiting;
@@ -269,7 +262,7 @@ ipcRenderer.on('terminal:data', (event, id, data) => {
   }
 
   // Accumulate last lines for waiting detection
-  const stripped = stripAnsi(data);
+  const stripped = stripAnsiForDisplay(data);
   t.lastLines = (t.lastLines + stripped).split('\n').slice(-15).join('\n');
   t.lastOutputTime = Date.now();
   checkWaiting(paneId);

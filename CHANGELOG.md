@@ -1,5 +1,6 @@
 # Changelog
 
+- [ その他 ] `main.js` と `renderer/app.js` に重複していた `stripAnsi` を `utils/stripAnsi.js` に共通化（用途別に表示用 `stripAnsiForDisplay` とパターンマッチング用 `stripAnsiForPattern` の 2 関数をエクスポート。正規表現は両方の意図を維持したまま据え置き）
 - [ 機能追加 ] ペイン上部のヘッダ左側に動作ステータスインジケータ（🟢 実行中／🟡 入力待ち）を追加。PTY 出力中は緑、入力待ち（既存の WAITING_PATTERNS ヒット時）は黄、それ以外は非表示。`states.json` および `GET /api/states` のレスポンスに `status` フィールド（`'idle' | 'running' | 'waiting'`）を追加（既存 `waiting` フィールドは後方互換のため維持）
 - [ 仕様変更 ] 旧 `.waiting-badge`（⚠ 待機中）を新ステータスインジケータに統合して削除。入力待ち表示は `🟡 入力待ち` バッジに一本化（`.pane.waiting` 枠の点滅アニメーションは引き続き動作）
 - [ 機能追加 ] 上下分割されたペインを折り畳めるように変更。ヘッダの ▾ ボタン（折り畳み中は ▴）で展開・折り畳みを切り替え。折り畳み中はタスクタイトル行とヘッダのみ表示し、xterm 領域を隠して兄弟ペインを広げる（PTY プロセスは生存し続けるため、出力や waiting バッジは継続）

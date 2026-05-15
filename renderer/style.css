@@ -176,7 +176,7 @@ html, body {
 }
 
 .pane-task-title-link:hover {
-  color: #79c0ff;
+  color: #000;
   text-decoration: underline;
   text-decoration-thickness: 1px;
   text-underline-offset: 2px;

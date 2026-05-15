@@ -424,14 +424,12 @@ function updatePaneStatus(paneId) {
   // 視覚: ラベルテキスト（ドットは CSS の ::before で描画）。
   // a11y: aria-label でステータスを明示し、aria-live="polite" により変化のみ読み上げ。
   //       idle は visibility:hidden により読み上げ対象外（aria-live 非発火）。
-  if (status === 'waiting') {
-    badge.textContent = '入力待ち';
-    badge.setAttribute('aria-label', 'ステータス: 入力待ち');
-  } else if (status === 'running') {
-    badge.textContent = '実行中';
-    badge.setAttribute('aria-label', 'ステータス: 実行中');
+  // ラベル / aria-label のマッピングは getStatusPresentation に集約（renderLeaf と共用）。
+  const { label, ariaLabel } = getStatusPresentation(status);
+  badge.textContent = label;
+  if (ariaLabel) {
+    badge.setAttribute('aria-label', ariaLabel);
   } else {
-    badge.textContent = '';
     badge.removeAttribute('aria-label');
   }
 }
@@ -828,20 +826,23 @@ function renderNode(node, parentDirection = null) {
     : renderSplit(node);
 }
 
+// status → { label, ariaLabel } のマッピングを一元化する（updatePaneStatus / renderLeaf 共用）。
+// 'idle' および未知の値は空文字を返し、呼び出し側で「非表示・aria-label 除去」相当の扱いになる。
+function getStatusPresentation(status) {
+  if (status === 'waiting') return { label: '入力待ち', ariaLabel: 'ステータス: 入力待ち' };
+  if (status === 'running') return { label: '実行中',   ariaLabel: 'ステータス: 実行中' };
+  return { label: '', ariaLabel: '' };
+}
+
 function renderLeaf(node, parentDirection) {
   const t = terminals[node.id];
   const cwd = t?.cwd || '~';
   const waiting = t?.waiting || false;
   // 表示用ステータス（issue #23, #27）。idle 時は CSS の visibility:hidden で不可視のまま幅は保持。
   // ドットは CSS の .pane-status::before（currentColor）で描画するため、ラベルはテキストのみ。
+  // ラベル / aria-label の対応は getStatusPresentation に集約（updatePaneStatus と共用）。
   const status = t?.status || 'idle';
-  const statusLabel = status === 'waiting' ? '入力待ち'
-                    : status === 'running' ? '実行中'
-                    : '';
-  // aria-label は updatePaneStatus と同じフォーマットで静的にも生成しておく（初期描画時の SR 用）。
-  const statusAriaLabel = status === 'waiting' ? 'ステータス: 入力待ち'
-                        : status === 'running' ? 'ステータス: 実行中'
-                        : '';
+  const { label: statusLabel, ariaLabel: statusAriaLabel } = getStatusPresentation(status);
   const focused = node.id === focusedPaneId;
   // apiTitle（API 由来）優先、無ければ taskTitle（OSC 由来）にフォールバック。
   const taskTitle = getDisplayTitle(t);

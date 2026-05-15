@@ -337,8 +337,10 @@ function renderTaskTitleContent(el, title, url) {
   link.href = '#'; // 実 URL は入れない（Electron の target="_blank" 経由の新 BrowserWindow 防止）
   link.setAttribute('role', 'link');
   link.setAttribute('aria-label', `${title}（外部ブラウザで開く）`);
-  // ホバー時のツールチップで URL を確認できるようにする
-  link.title = url;
+  // ホバー時のツールチップにはタイトル本文と URL の両方を改行区切りで含める。
+  // 親要素 .pane-task-title の title 属性は has-link 時に外して競合を避ける
+  // （ブラウザ実装により親子 title の優先順位が不定なため。updatePaneTitle / renderLeaf 側で制御）。
+  link.title = title ? `${title}\n${url}` : url;
 
   const labelSpan = document.createElement('span');
   labelSpan.className = 'pane-task-title-text';
@@ -385,8 +387,14 @@ function updatePaneTitle(paneId) {
   const title = getDisplayTitle(t);
   const url = getDisplayUrl(t);
   renderTaskTitleContent(el, title, url);
-  // ホバー時のツールチップは「タイトル本文」を表示（URL は <a> 側の title で別途見える）
-  el.title = title;
+  // ホバー時のツールチップは has-link 時は子 <a> 側に集約して親子競合を避ける。
+  //   - URL 無し: 親 .pane-task-title に title 属性をセット（従来挙動）
+  //   - URL 有り: 親 title 属性を削除し、<a> 側の title（タイトル + URL）のみに任せる
+  if (url) {
+    el.removeAttribute('title');
+  } else {
+    el.title = title;
+  }
   el.classList.toggle('empty', title.length === 0);
   el.classList.toggle('has-link', !!url);
 }
@@ -842,7 +850,8 @@ function renderLeaf(node, parentDirection) {
     + (taskTitle ? '' : ' empty')
     + (taskUrl ? ' has-link' : '');
   renderTaskTitleContent(taskTitleEl, taskTitle, taskUrl);
-  if (taskTitle) taskTitleEl.title = taskTitle;
+  // URL 有りのときは子 <a> 側の title 属性に集約するため、親には付けない（親子競合回避）。
+  if (taskTitle && !taskUrl) taskTitleEl.title = taskTitle;
   el.appendChild(taskTitleEl);
 
   const header = document.createElement('div');

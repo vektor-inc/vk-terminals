@@ -212,6 +212,28 @@ curl -s -X POST http://127.0.0.1:13847/api/set-title \
 - `400 {"error": "url too long (max 2048 chars)"}` — 2048 文字超過
 - `404 {"error": "terminal <id> not found"}` — 指定 `termId` のペインが存在しない
 
+バリデーション動作確認用のリクエスト例（リグレッション検知用）:
+
+```bash
+# 大文字スキーム（`new URL()` がプロトコルを小文字化するため http(s) 判定で弾かれる）
+curl -i -s -X POST http://127.0.0.1:13847/api/set-title \
+  -H 'Content-Type: application/json' \
+  -d '{"termId":"1","title":"x","url":"JAVASCRIPT:alert(1)"}'
+# => 400 {"error":"url must be http(s)"}
+
+# javascript: スキーム
+curl -i -s -X POST http://127.0.0.1:13847/api/set-title \
+  -H 'Content-Type: application/json' \
+  -d '{"termId":"1","title":"x","url":"javascript:alert(1)"}'
+# => 400 {"error":"url must be http(s)"}
+
+# data: スキーム
+curl -i -s -X POST http://127.0.0.1:13847/api/set-title \
+  -H 'Content-Type: application/json' \
+  -d '{"termId":"1","title":"x","url":"data:text/html,<script>alert(1)</script>"}'
+# => 400 {"error":"url must be http(s)"}
+```
+
 設定された値は `GET /api/states` のレスポンス（および `~/.vk-terminals/states.json`）の各ペインオブジェクトに `apiTitle` / `apiUrl` フィールドとして含まれます。
 
 #### `POST /api/new-pane`

@@ -2,13 +2,14 @@
   box-sizing: border-box;
   margin: 0;
   padding: 0;
+  --vktm--border-radius--md:5px;
 }
 
 html, body {
   width: 100%;
   height: 100%;
   overflow: hidden;
-  background: #0d1117;
+  background: #333;
   font-family: -apple-system, BlinkMacSystemFont, sans-serif;
   -webkit-font-smoothing: antialiased;
 }
@@ -81,6 +82,8 @@ html, body {
   /* border-color・box-shadow は focus/drag-over 用、max-height は collapsed/expand 用 */
   transition: border-color 0.15s ease, box-shadow 0.15s ease, max-height 0.18s ease;
   overflow: hidden;
+  margin: 6px;
+  border-radius: var(--vktm--border-radius--md);
 }
 
 .pane.focused {
@@ -131,11 +134,11 @@ html, body {
   display: flex;
   align-items: center;
   height: 22px;
-  padding: 10px;
-  background: #1c2128;
+  padding: 15px 10px;
+  background: #aaa;
   border-bottom: 1px solid #21262d;
-  color: #adbac7;
-  font-size: 12px;
+  color: #000;
+  font-size: 14px;
   font-weight: 600;
   letter-spacing: 0.01em;
   overflow: hidden;
@@ -146,11 +149,6 @@ html, body {
 
 .pane-task-title.empty {
   display: none;
-}
-
-.pane.focused .pane-task-title {
-  color: #e6edf3;
-  background: #22282f;
 }
 
 /* ─── Pane task title link (issue #29) ─────────────────────────────────────
@@ -173,7 +171,7 @@ html, body {
 }
 
 .pane-task-title-link:hover {
-  color: #79c0ff;
+  color: #000;
   text-decoration: underline;
   text-decoration-thickness: 1px;
   text-underline-offset: 2px;
@@ -401,11 +399,16 @@ html, body {
 }
 
 /* ─── Terminal viewport ────────────────────────────────────────────────────── */
+/* background は xterm.js が文字グリッドの整数倍でしか描画できないため container 下端に
+ * 残る隙間（数 px）を埋める用途。TERM_THEME.background と同色にしておくことで、
+ * body 背景がペイン下部に透けて見えるのを防ぐ。 */
 .term-container {
   flex: 1;
   overflow: hidden;
   min-height: 0;
   min-width: 0;
+  background: #0d1117;
+  border-radius: var(--vktm--border-radius--md);
 }
 
 .term-viewport {

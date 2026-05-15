@@ -1,5 +1,6 @@
 # Changelog
 
+- [ デザイン不具合修正 ] ペイン上部ステータスインジケータ（issue #27）について、`.pane.drag-over` の緑（#3fb950）と衝突していた running 色を同系統に統一、idle ↔ 表示の切替で発生していた cwd 位置のジッタを `visibility: hidden` + `min-width` 予約で解消、`role="status" aria-live="polite"` と `aria-label` 動的更新で SR 対応、絵文字（🟢🟡）を `::before` で描画する 6×6 の currentColor ドットに置換、`.pane-badge` 共通クラスへ `.pane-status` / `.auto-input-badge` の共通プロパティを集約、`badge-pulse` の周期を `1.5s` に揃え `.pane.waiting` 枠と位相を同期するよう修正
 - [ 機能追加 ] 入力待ち判定（WAITING_PATTERNS）に日本語パターンを追加。vk-kore など Claude が確認を求めて中断するケース（「ご確認をお願いします」「続行しますか」「進めてよろしい」「〜よろしいでしょうか」）と、PR 作成後のマージ判断委譲（「マージ判断」「マージ〜ご判断/お任せ/お願い」等）で「🟡 入力待ち」インジケータが点灯するように
 - [ 機能追加 ] ペイン上部のタスクタイトル行に外部リンクを指定できるように変更。`POST /api/set-title` に `url` フィールド（任意・`http(s):` のみ・2048 文字以内）を追加し、API 由来タイトル（`apiTitle`）表示時かつ `url` が設定されているときに限り、タイトル全体を `<a>` 化（末尾に外部リンクマーク `↗` を表示）。クリックすると `shell.openExternal()` で OS の既定ブラウザを開く。`url` を省略すると従来通り URL なし表示、空文字 `""` で既存 URL をクリア。`url` のバリデーション違反は `400` を返す。`states.json` および `GET /api/states` のレスポンスに `apiUrl` フィールドを追加（後方互換のため既存フィールドは維持）
 - [ その他 ] `main.js` と `renderer/app.js` に重複していた `stripAnsi` を `utils/stripAnsi.js` に共通化（用途別に表示用 `stripAnsiForDisplay` とパターンマッチング用 `stripAnsiForPattern` の 2 関数をエクスポート。正規表現は両方の意図を維持したまま据え置き）

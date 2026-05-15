@@ -421,13 +421,18 @@ function updatePaneStatus(paneId) {
   if (!badge) return;
   const status = t.status || 'idle';
   badge.dataset.status = status;
-  // 色覚配慮: 絵文字＋テキストで明示。idle は CSS 側で display:none になるので textContent は空でも可。
+  // 視覚: ラベルテキスト（ドットは CSS の ::before で描画）。
+  // a11y: aria-label でステータスを明示し、aria-live="polite" により変化のみ読み上げ。
+  //       idle は visibility:hidden により読み上げ対象外（aria-live 非発火）。
   if (status === 'waiting') {
-    badge.textContent = '🟡 入力待ち';
+    badge.textContent = '入力待ち';
+    badge.setAttribute('aria-label', 'ステータス: 入力待ち');
   } else if (status === 'running') {
-    badge.textContent = '🟢 実行中';
+    badge.textContent = '実行中';
+    badge.setAttribute('aria-label', 'ステータス: 実行中');
   } else {
     badge.textContent = '';
+    badge.removeAttribute('aria-label');
   }
 }
 
@@ -827,11 +832,16 @@ function renderLeaf(node, parentDirection) {
   const t = terminals[node.id];
   const cwd = t?.cwd || '~';
   const waiting = t?.waiting || false;
-  // 表示用ステータス（issue #23）。idle は CSS で display:none、それ以外は label を表示。
+  // 表示用ステータス（issue #23, #27）。idle 時は CSS の visibility:hidden で不可視のまま幅は保持。
+  // ドットは CSS の .pane-status::before（currentColor）で描画するため、ラベルはテキストのみ。
   const status = t?.status || 'idle';
-  const statusLabel = status === 'waiting' ? '🟡 入力待ち'
-                    : status === 'running' ? '🟢 実行中'
+  const statusLabel = status === 'waiting' ? '入力待ち'
+                    : status === 'running' ? '実行中'
                     : '';
+  // aria-label は updatePaneStatus と同じフォーマットで静的にも生成しておく（初期描画時の SR 用）。
+  const statusAriaLabel = status === 'waiting' ? 'ステータス: 入力待ち'
+                        : status === 'running' ? 'ステータス: 実行中'
+                        : '';
   const focused = node.id === focusedPaneId;
   // apiTitle（API 由来）優先、無ければ taskTitle（OSC 由来）にフォールバック。
   const taskTitle = getDisplayTitle(t);
@@ -875,13 +885,15 @@ function renderLeaf(node, parentDirection) {
          aria-expanded="${!collapsed}"
          title="${collapsed ? '展開する' : '折り畳む'}">${collapsed ? '▴' : '▾'}</button>`
     : '';
-  // .pane-status はヘッダ最左に常時挿入し、CSS の data-status="idle" で見えなくする方式。
+  // .pane-status はヘッダ最左に常時挿入し、CSS の data-status="idle" を visibility:hidden で扱う。
+  // role="status" + aria-live="polite" で SR にステータス変化を通知（aria-label は動的更新）。
+  // 共通バッジ basis は .pane-badge（issue #27）、固有スタイルは .pane-status / .auto-input-badge。
   // 旧 .waiting-badge は role を .pane-status に一本化したため削除済（issue #23）。
   header.innerHTML = `
-    <span class="pane-status" data-status="${status}">${statusLabel}</span>
+    <span class="pane-badge pane-status" data-status="${status}" role="status" aria-live="polite"${statusAriaLabel ? ` aria-label="${statusAriaLabel}"` : ''}>${statusLabel}</span>
     <span class="pane-cwd" title="${cwd}">${cwd}</span>
     <div class="pane-actions">
-      <span class="auto-input-badge" style="display:none"></span>
+      <span class="pane-badge auto-input-badge" style="display:none"></span>
       <button class="btn btn-move btn-move-left" title="左へ移動">◀</button>
       <button class="btn btn-move btn-move-down" title="下へ移動">▼</button>
       <button class="btn btn-move btn-move-up" title="上へ移動">▲</button>

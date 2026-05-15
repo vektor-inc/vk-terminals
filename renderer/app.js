@@ -921,7 +921,7 @@ function renderLeaf(node, parentDirection) {
     <span class="pane-badge pane-status" data-status="${status}" role="status" aria-live="polite"${statusAriaLabel ? ` aria-label="${statusAriaLabel}"` : ''}>${statusLabel}</span>
     <span class="pane-cwd" title="${cwd}">${cwd}</span>
     <div class="pane-actions">
-      <span class="pane-badge auto-input-badge" style="display:none"></span>
+      <span class="pane-badge auto-input-badge" hidden></span>
       <button class="btn btn-move btn-move-left" title="左へ移動">◀</button>
       <button class="btn btn-move btn-move-down" title="下へ移動">▼</button>
       <button class="btn btn-move btn-move-up" title="上へ移動">▲</button>
@@ -1281,13 +1281,15 @@ ipcRenderer.on('terminal:auto-input', (event, termId) => {
   const badge = paneEl.querySelector('.auto-input-badge');
   if (badge) {
     badge.textContent = '🤖 自動入力';
-    badge.style.display = 'flex';
+    // インラインスタイルではなく hidden 属性でトグルし、共通バッジ basis
+    // (.pane-badge の display: inline-flex) を活かす（issue #35）
+    badge.hidden = false;
     paneEl.classList.add('auto-input');
     setTimeout(() => {
       const el = document.querySelector(`.pane[data-id="${paneId}"]`);
       if (!el) return;
       const b = el.querySelector('.auto-input-badge');
-      if (b) b.style.display = 'none';
+      if (b) b.hidden = true;
       el.classList.remove('auto-input');
     }, 3000);
   }

@@ -254,6 +254,14 @@ html, body {
   flex-shrink: 0;
 }
 
+/* hidden 属性で非表示にできるよう、クラスセレクタと同詳細度の UA スタイル
+ * (`[hidden] { display: none }`) ではなく、`.pane-badge[hidden]` (0,2,0) で
+ * 明示的に上書きする。これにより JS 側はインラインスタイルではなく
+ * `element.hidden = true/false` でトグルできる（issue #35）。 */
+.pane-badge[hidden] {
+  display: none;
+}
+
 /* ─── Pane status indicator (issue #23, refined in #27) ───────────────────
  * ヘッダ最左に常時挿入されるバッジ。data-status で表示を切り替える。
  *   - idle    : visibility:hidden でレイアウト幅を保ったまま不可視（cwd ジッタ防止）

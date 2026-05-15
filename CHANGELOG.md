@@ -1,5 +1,6 @@
 # Changelog
 
+- [ 機能追加 ] 入力待ち判定（WAITING_PATTERNS）に日本語パターンを追加。vk-kore など Claude が確認を求めて中断するケース（「ご確認をお願いします」「続行しますか」「進めてよろしい」「〜よろしいでしょうか」）と、PR 作成後のマージ判断委譲（「マージ判断」「マージ〜ご判断/お任せ/お願い」等）で「🟡 入力待ち」インジケータが点灯するように
 - [ 機能追加 ] ペイン上部のタスクタイトル行に外部リンクを指定できるように変更。`POST /api/set-title` に `url` フィールド（任意・`http(s):` のみ・2048 文字以内）を追加し、API 由来タイトル（`apiTitle`）表示時かつ `url` が設定されているときに限り、タイトル全体を `<a>` 化（末尾に外部リンクマーク `↗` を表示）。クリックすると `shell.openExternal()` で OS の既定ブラウザを開く。`url` を省略すると従来通り URL なし表示、空文字 `""` で既存 URL をクリア。`url` のバリデーション違反は `400` を返す。`states.json` および `GET /api/states` のレスポンスに `apiUrl` フィールドを追加（後方互換のため既存フィールドは維持）
 - [ その他 ] `main.js` と `renderer/app.js` に重複していた `stripAnsi` を `utils/stripAnsi.js` に共通化（用途別に表示用 `stripAnsiForDisplay` とパターンマッチング用 `stripAnsiForPattern` の 2 関数をエクスポート。正規表現は両方の意図を維持したまま据え置き）
 - [ 機能追加 ] ペイン上部のヘッダ左側に動作ステータスインジケータ（🟢 実行中／🟡 入力待ち）を追加。PTY 出力中は緑、入力待ち（既存の WAITING_PATTERNS ヒット時）は黄、それ以外は非表示。`states.json` および `GET /api/states` のレスポンスに `status` フィールド（`'idle' | 'running' | 'waiting'`）を追加（既存 `waiting` フィールドは後方互換のため維持）

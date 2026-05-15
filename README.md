@@ -166,6 +166,76 @@ curl -s -X POST http://127.0.0.1:13847/api/send \
 
 送信成功時、対象ペインに「🤖 自動入力」バッジが3秒間表示されます。
 
+#### `POST /api/set-title`
+
+指定ペイン上部の「タスクタイトル行」に表示する文字列を設定します。任意で外部リンクの URL を渡すと、タイトル全体がリンク化され、クリックで OS の既定ブラウザで開きます。
+
+```bash
+# タイトルだけ設定（リンクなし）
+curl -s -X POST http://127.0.0.1:13847/api/set-title \
+  -H 'Content-Type: application/json' \
+  -d '{"termId": "1", "title": "issue #29 対応中"}'
+
+# タイトルとリンク URL をセットで設定
+curl -s -X POST http://127.0.0.1:13847/api/set-title \
+  -H 'Content-Type: application/json' \
+  -d '{"termId": "1", "title": "issue #29", "url": "https://github.com/vektor-inc/vk-terminals/issues/29"}'
+
+# タイトルと URL をクリア（空文字で消す）
+curl -s -X POST http://127.0.0.1:13847/api/set-title \
+  -H 'Content-Type: application/json' \
+  -d '{"termId": "1", "title": "", "url": ""}'
+```
+
+リクエストボディ:
+
+- `termId`: 対象のターミナル ID（必須）
+- `title`: 表示する文字列。空文字 `""` を渡すと API 由来タイトルがクリアされ、OSC 由来タイトル（`taskTitle`）にフォールバックします。
+- `url`（任意）: タイトル全体をリンク化するための URL。`http(s):` スキームのみ許可、2048 文字以内、`new URL()` で parse 可能であることが必須。違反時は `400` を返します。空文字 `""` を渡すと既存の URL がクリアされます。省略すると URL なしになります。
+
+| 挙動 |
+|---|
+| `title` と `url` はペアで都度送る**置換セマンティクス**です（patch 形式ではありません）。`title` だけ更新したい場合も、その都度 `url` を一緒に送る必要があります（送らなければ URL なし扱いになります）。 |
+| `url` が設定されている間のみ、ペインのタイトル文字列全体が `<a>` として描画され、末尾に外部リンクマーク `↗` が付きます。クリックすると `shell.openExternal()` で OS の既定ブラウザを開きます。 |
+| OSC 0 / OSC 2 由来のタイトル（`taskTitle`）が表示されている間は URL を表示しません。API 由来のタイトル（`apiTitle`）が選択されているときだけリンク化されます。 |
+
+レスポンス例:
+
+```json
+{ "ok": true, "termId": "1", "title": "issue #29", "url": "https://github.com/vektor-inc/vk-terminals/issues/29" }
+```
+
+エラー例:
+
+- `400 {"error": "url must be http(s)"}` — `file:` などの非 http(s) スキーム
+- `400 {"error": "invalid url"}` — `new URL()` で parse 失敗
+- `400 {"error": "url too long (max 2048 chars)"}` — 2048 文字超過
+- `404 {"error": "terminal <id> not found"}` — 指定 `termId` のペインが存在しない
+
+バリデーション動作確認用のリクエスト例（リグレッション検知用）:
+
+```bash
+# 大文字スキーム（`new URL()` がプロトコルを小文字化するため http(s) 判定で弾かれる）
+curl -i -s -X POST http://127.0.0.1:13847/api/set-title \
+  -H 'Content-Type: application/json' \
+  -d '{"termId":"1","title":"x","url":"JAVASCRIPT:alert(1)"}'
+# => 400 {"error":"url must be http(s)"}
+
+# javascript: スキーム
+curl -i -s -X POST http://127.0.0.1:13847/api/set-title \
+  -H 'Content-Type: application/json' \
+  -d '{"termId":"1","title":"x","url":"javascript:alert(1)"}'
+# => 400 {"error":"url must be http(s)"}
+
+# data: スキーム
+curl -i -s -X POST http://127.0.0.1:13847/api/set-title \
+  -H 'Content-Type: application/json' \
+  -d '{"termId":"1","title":"x","url":"data:text/html,<script>alert(1)</script>"}'
+# => 400 {"error":"url must be http(s)"}
+```
+
+設定された値は `GET /api/states` のレスポンス（および `~/.vk-terminals/states.json`）の各ペインオブジェクトに `apiTitle` / `apiUrl` フィールドとして含まれます。
+
 #### `POST /api/new-pane`
 
 新規ペインを作成し、作成されたターミナルの `termId` を返します。表示面積が一番大きいペインを対象に、そのペインの長辺方向へ分割して新規ペインを生成します。

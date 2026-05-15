@@ -153,6 +153,59 @@ html, body {
   background: #22282f;
 }
 
+/* ─── Pane task title link (issue #29) ─────────────────────────────────────
+ * apiTitle + apiUrl が設定されているときだけ、タイトル全体を <a> として描画する。
+ * 通常時はタイトル文字色に同化（color: inherit）、hover/focus で軽く色を変えつつ下線。
+ * ↗ アイコンは flex-shrink: 0 で長文タイトル省略時にも必ず残す。
+ * テキストは省略表示（ellipsis）を維持するため min-width: 0 を当てる。 */
+.pane-task-title-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  min-width: 0;
+  color: inherit;
+  text-decoration: none;
+  cursor: pointer;
+  border-radius: 3px;
+  /* リンクのフォーカスリングと色変化のみの transition。 */
+  transition: color 0.12s ease, text-decoration-color 0.12s ease;
+}
+
+.pane-task-title-link:hover {
+  color: #79c0ff;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
+.pane-task-title-link:focus-visible {
+  outline: 2px solid #58a6ff;
+  outline-offset: 2px;
+}
+
+/* タイトル本文側だけ省略表示にする（↗ アイコンは省略させない）。
+ * .pane-task-title 自体にも overflow:hidden / text-overflow:ellipsis が当たっているが、
+ * <a> 内の inline-flex 構造では子要素ごとに ellipsis を効かせる必要がある。 */
+.pane-task-title-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.pane-task-title-icon {
+  flex-shrink: 0;
+  font-size: 10px;
+  opacity: 0.75;
+  /* ↗ は emoji 系フォントで大きく描画されることがあるため line-height を抑える */
+  line-height: 1;
+}
+
+.pane-task-title-link:hover .pane-task-title-icon {
+  opacity: 1;
+}
+
 /* ─── Pane header ──────────────────────────────────────────────────────────── */
 .pane-header {
   display: flex;

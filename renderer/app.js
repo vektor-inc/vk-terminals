@@ -225,11 +225,15 @@ async function createTerminal(paneId, cwd, options = {}) {
     lastInputTime: 0,
     // taskTitle: xterm の OSC 0/2 由来のタイトル（claude TUI 等が継続的に発行する）
     // apiTitle:  HTTP API（POST /api/set-title）で明示的にセットされたタイトル
+    // apiUrl:    HTTP API（POST /api/set-title）で渡された URL（issue #29）。
+    //            apiTitle が表示されているときのみ、タイトル全体をリンク化する。
+    //            taskTitle（OSC 由来）の表示時は URL を一切表示しない。
     // 表示時は apiTitle を優先し、空のときに taskTitle へフォールバックする。
     // これにより task-queue 等が指定した issue タイトルが OSC 由来の文字列で
     // 上書きされなくなる（issue #22）。
     taskTitle: '',
     apiTitle: '',
+    apiUrl: '',
   };
 
   return paneId;
@@ -289,15 +293,102 @@ function getDisplayTitle(t) {
   return t.apiTitle || t.taskTitle || '';
 }
 
+// 表示中のタイトルにリンクを付けるべきか判定する。
+//   - apiTitle が選ばれている（apiTitle が非空）かつ
+//   - apiUrl が設定されている（http(s) スキームは main 側で検証済み）
+// 時のみ true。OSC 由来の taskTitle 表示時はリンク化しない。
+function getDisplayUrl(t) {
+  if (!t) return '';
+  if (!t.apiTitle) return '';
+  return t.apiUrl || '';
+}
+
+// http(s): スキームのチェック（renderer 側の二段構えバリデーション）。
+// main 側で検証済みでも shell.openExternal 直前に念のため再チェックする。
+function isSafeExternalUrl(url) {
+  if (typeof url !== 'string' || !url) return false;
+  if (url.length > 2048) return false;
+  try {
+    const u = new URL(url);
+    return u.protocol === 'http:' || u.protocol === 'https:';
+  } catch (_e) {
+    return false;
+  }
+}
+
+// .pane-task-title 要素の中身を、URL の有無に応じて
+// プレーンテキスト or <a>（外部リンクマーク付き）で再構築する。
+//   - URL 無し: テキストノードのみ（従来通り、見た目は完全互換）
+//   - URL 有り: <a role="link" href="#"> + <span>title</span> + <span aria-hidden>↗</span>
+// href には URL を直接入れない（Electron の <a target="_blank"> が新 BrowserWindow を
+// 開く危険挙動を回避するため）。クリック時は preventDefault → shell.openExternal で
+// OS の既定ブラウザを開く。
+function renderTaskTitleContent(el, title, url) {
+  // 既存の子要素を全消去（innerHTML は使わずに DOM API で組み立てる）
+  while (el.firstChild) el.removeChild(el.firstChild);
+
+  if (!url) {
+    el.textContent = title;
+    return;
+  }
+
+  const link = document.createElement('a');
+  link.className = 'pane-task-title-link';
+  link.href = '#'; // 実 URL は入れない（Electron の target="_blank" 経由の新 BrowserWindow 防止）
+  link.setAttribute('role', 'link');
+  link.setAttribute('aria-label', `${title}（外部ブラウザで開く）`);
+  // ホバー時のツールチップで URL を確認できるようにする
+  link.title = url;
+
+  const labelSpan = document.createElement('span');
+  labelSpan.className = 'pane-task-title-text';
+  labelSpan.textContent = title;
+  link.appendChild(labelSpan);
+
+  const iconSpan = document.createElement('span');
+  iconSpan.className = 'pane-task-title-icon';
+  iconSpan.setAttribute('aria-hidden', 'true');
+  iconSpan.textContent = '↗';
+  link.appendChild(iconSpan);
+
+  // クリック: ペインのアクティブ化（mousedown 経路）は止めない。click のみ抑止し
+  // shell.openExternal でブラウザを開く。
+  link.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    // main 側で検証済みでも二段構えで再チェック（http(s): 以外は無視）
+    if (!isSafeExternalUrl(url)) return;
+    try {
+      // Electron の shell.openExternal は Promise を返すが、reject 時にハンドラがないと
+      // unhandled rejection になるため明示的にハンドリングする。同期 throw もありうるので
+      // 念のため try/catch でラップしておく。
+      const p = shell.openExternal(url);
+      if (p && typeof p.catch === 'function') {
+        p.catch(() => { /* 失敗時は何もしない */ });
+      }
+    } catch (_e) {
+      /* 同期エラー時も無視 */
+    }
+  });
+  // mousedown は止めない（ペインのフォーカス移譲は通常通り）
+  // ただしリンク自体のテキスト選択は意図しないドラッグを起こしやすいので、
+  // ユーザビリティのため pointer 系イベントの伝搬は維持しつつ、別操作とは衝突しない。
+
+  el.appendChild(link);
+}
+
 function updatePaneTitle(paneId) {
   const t = terminals[paneId];
   if (!t) return;
   const el = document.querySelector(`.pane[data-id="${paneId}"] .pane-task-title`);
   if (!el) return;
   const title = getDisplayTitle(t);
-  el.textContent = title;
+  const url = getDisplayUrl(t);
+  renderTaskTitleContent(el, title, url);
+  // ホバー時のツールチップは「タイトル本文」を表示（URL は <a> 側の title で別途見える）
   el.title = title;
   el.classList.toggle('empty', title.length === 0);
+  el.classList.toggle('has-link', !!url);
 }
 
 // .pane-status バッジ（ヘッダ最左）と .pane.waiting 枠点滅の両方を更新する。
@@ -728,6 +819,8 @@ function renderLeaf(node, parentDirection) {
   const focused = node.id === focusedPaneId;
   // apiTitle（API 由来）優先、無ければ taskTitle（OSC 由来）にフォールバック。
   const taskTitle = getDisplayTitle(t);
+  // apiTitle 表示時かつ apiUrl があるときのみリンク化（OSC 由来時は URL を出さない）
+  const taskUrl = getDisplayUrl(t);
   const collapsed = !!node.collapsed;
   // 親 split が split-v（上下分割）の場合のみ折り畳みボタンを表示する。
   // 親 split-h（横並び）の場合は折り畳むと縦のストリップになるが、今回はスコープ外。
@@ -743,9 +836,12 @@ function renderLeaf(node, parentDirection) {
 
   // タスクタイトル行（OSC 0/2 または POST /api/set-title で設定された文字列を表示）。
   // 空のときは .empty クラスで非表示にし、xterm の表示領域を圧迫しない。
+  // apiUrl があるときは .has-link を付与し、内部を <a> 化する（renderTaskTitleContent）。
   const taskTitleEl = document.createElement('div');
-  taskTitleEl.className = 'pane-task-title' + (taskTitle ? '' : ' empty');
-  taskTitleEl.textContent = taskTitle;
+  taskTitleEl.className = 'pane-task-title'
+    + (taskTitle ? '' : ' empty')
+    + (taskUrl ? ' has-link' : '');
+  renderTaskTitleContent(taskTitleEl, taskTitle, taskUrl);
   if (taskTitle) taskTitleEl.title = taskTitle;
   el.appendChild(taskTitleEl);
 
@@ -1062,9 +1158,11 @@ setInterval(() => {
       lastLines: t.lastLines,
       // taskTitle: OSC 0/2 由来のタイトル（後方互換のため既存キーを維持）
       // apiTitle:  POST /api/set-title 由来のタイトル（issue #22 で分離）
+      // apiUrl:    POST /api/set-title 由来の URL（issue #29）。apiTitle 表示時のみリンク化される
       // displayTitle: 実際にペイン上部に表示している値（apiTitle || taskTitle）
       taskTitle: t.taskTitle || '',
       apiTitle: t.apiTitle || '',
+      apiUrl: t.apiUrl || '',
       displayTitle: getDisplayTitle(t),
       collapsed: !!(leaf && leaf.collapsed),
     };
@@ -1101,10 +1199,19 @@ ipcRenderer.on('terminal:request-new-pane', async (event, payload = {}) => {
 // API 由来のタイトルは apiTitle に保存し、OSC 由来の taskTitle とは別フィールドで管理する。
 // これにより claude TUI が継続的に発行する OSC 0/2 で API 設定タイトルが上書きされない。
 // 空文字を送ると apiTitle がクリアされ、OSC 由来の taskTitle にフォールバックする。
-ipcRenderer.on('terminal:title', (event, termId, title) => {
+// 第3引数 url（issue #29）: タイトル全体をリンク化するための URL。
+//   - undefined → 後方互換のため URL 変更なしと解釈（ただし main 側は常に第3引数を送る）
+//   - 空文字  → apiUrl をクリア
+//   - 文字列 → http(s): スキームのみ（main 側で検証済み）。apiUrl にセット
+// title と url はペアで都度送る置換セマンティクス。
+ipcRenderer.on('terminal:title', (event, termId, title, url) => {
   const paneId = Object.keys(terminals).find(k => terminals[k]?.termId === termId);
   if (!paneId) return;
   terminals[paneId].apiTitle = title || '';
+  // url が string で渡ってきた場合のみ書き換える（旧来の 2 引数呼び出しとの後方互換のため）
+  if (typeof url === 'string') {
+    terminals[paneId].apiUrl = url;
+  }
   updatePaneTitle(paneId);
 });
 

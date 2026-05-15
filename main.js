@@ -465,8 +465,13 @@ function startHttpApi() {
       return;
     }
 
-    // POST /api/set-title  { termId: "1", title: "タスク名" } — ペイン上部のタスクタイトル行に表示する文字列を設定
-    //   空文字や null を指定するとタイトル行を非表示に戻す。
+    // POST /api/set-title  { termId: "1", title: "タスク名", url?: "https://..." }
+    //   — ペイン上部のタスクタイトル行に表示する文字列を設定。
+    //   空文字や null を title に指定するとタイトル行を非表示に戻す。
+    //   url を指定するとタイトル全体をリンク化（クリックで OS の既定ブラウザで開く）。
+    //   url を省略すると URL なし扱い、空文字 "" を渡すと既存 URL をクリアする扱い。
+    //   url は http(s): スキームのみ許可・new URL() で parse 可能・2048 文字以内の制約あり。
+    //   title と url はペアで都度送る置換セマンティクス（patch ではない）。
     if (req.method === 'POST' && url.pathname === '/api/set-title') {
       const MAX_BODY = 10 * 1024;
       let body = '';
@@ -496,11 +501,47 @@ function startHttpApi() {
             return;
           }
           const title = typeof parsed?.title === 'string' ? parsed.title : '';
+
+          // url のバリデーション。
+          //   - 未指定（undefined）→ 後方互換のため URL なし扱い（空文字を送る）
+          //   - 空文字 "" → クリア扱い（renderer 側で apiUrl をクリア）
+          //   - それ以外 → 文字列必須、長さ 2048 以内、new URL() parse 必須、http(s): のみ
+          let urlValue = '';
+          if (parsed && Object.prototype.hasOwnProperty.call(parsed, 'url')) {
+            const rawUrl = parsed.url;
+            if (rawUrl === '' || rawUrl == null) {
+              urlValue = '';
+            } else if (typeof rawUrl !== 'string') {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'url must be a string' }));
+              return;
+            } else if (rawUrl.length > 2048) {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'url too long (max 2048 chars)' }));
+              return;
+            } else {
+              let parsedUrl;
+              try {
+                parsedUrl = new URL(rawUrl);
+              } catch (_e) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'invalid url' }));
+                return;
+              }
+              if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'url must be http(s)' }));
+                return;
+              }
+              urlValue = rawUrl;
+            }
+          }
+
           if (win && !win.isDestroyed()) {
-            win.webContents.send('terminal:title', termId, title);
+            win.webContents.send('terminal:title', termId, title, urlValue);
           }
           res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ ok: true, termId, title }));
+          res.end(JSON.stringify({ ok: true, termId, title, url: urlValue }));
         } catch (e) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'invalid JSON' }));

@@ -241,42 +241,64 @@ html, body {
   flex-shrink: 0;
 }
 
-/* ─── Pane status indicator (issue #23) ─────────────────────────────────────
- * ヘッダ最左に常時挿入されるバッジ。data-status で表示を切り替える。
- *   - idle    : display:none で要素ごと非表示（ユーザー要望：idle ラベルは出さない）
- *   - running : 緑（PTY 出力中）
- *   - waiting : 黄（WAITING_PATTERNS ヒット、点滅アニメで注意喚起）
- * 旧 .waiting-badge はこのバッジに役割を一本化したため削除済。 */
-.pane-status {
+/* ─── Pane badge (共通バッジ basis, issue #27) ──────────────────────────────
+ * .pane-status / .auto-input-badge 共通の見た目（サイズ・タイポ・配置）を集約。
+ * 個別バッジ固有の padding / margin-right / 色 / アニメは各クラスで上書きする。 */
+.pane-badge {
   display: inline-flex;
   align-items: center;
   gap: 3px;
   font-size: 10px;
   font-weight: 600;
-  padding: 0 6px;
   height: 18px;
   border-radius: 3px;
-  margin-right: 6px;
   white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* ─── Pane status indicator (issue #23, refined in #27) ───────────────────
+ * ヘッダ最左に常時挿入されるバッジ。data-status で表示を切り替える。
+ *   - idle    : visibility:hidden でレイアウト幅を保ったまま不可視（cwd ジッタ防止）
+ *   - running : 緑（PTY 出力中, .pane.drag-over の #3fb950 と同系統に統一）
+ *   - waiting : 黄（WAITING_PATTERNS ヒット、点滅アニメで注意喚起）
+ * 旧 .waiting-badge はこのバッジに役割を一本化したため削除済。
+ * ::before で 6×6 のドットを currentColor で描画し、絵文字依存を排除した。 */
+.pane-status {
+  padding: 0 6px;
+  margin-right: 6px;
+  /* 最長ラベル「入力待ち」基準で min-width を予約（idle 時もレイアウトを保つ） */
+  min-width: 6ch;
   transition: color 0.15s, background 0.15s;
+}
+
+.pane-status::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentcolor;
   flex-shrink: 0;
 }
 
 .pane-status[data-status="idle"] {
-  display: none;
+  /* visibility:hidden により (1) レイアウト幅維持 (2) フォーカス対象外
+   * (3) aria-live 非発火 を同時に満たす。display:none だと cwd 位置がジッタする。 */
+  visibility: hidden;
 }
 
 .pane-status[data-status="running"] {
-  color: #56d364;
-  background: rgba(86, 211, 100, 0.15);
-  border: 1px solid rgba(86, 211, 100, 0.3);
+  /* .pane.drag-over の緑（#3fb950）と同系統に揃え、衝突を回避 */
+  color: #3fb950;
+  background: rgba(63, 185, 80, 0.15);
+  border: 1px solid rgba(63, 185, 80, 0.3);
 }
 
 .pane-status[data-status="waiting"] {
   color: #d29922;
   background: rgba(210, 153, 34, 0.15);
   border: 1px solid rgba(210, 153, 34, 0.3);
-  animation: badge-pulse 1.2s ease-in-out infinite;
+  /* .pane.waiting 枠の waiting-pulse(1.5s) と位相を揃える */
+  animation: badge-pulse 1.5s ease-in-out infinite;
 }
 
 @keyframes badge-pulse {
@@ -286,19 +308,11 @@ html, body {
 
 /* ─── Auto-input badge ────────────────────────────────────────────────────── */
 .auto-input-badge {
-  display: flex;
-  align-items: center;
-  gap: 3px;
   color: #58a6ff;
-  font-size: 10px;
-  font-weight: 600;
   background: rgba(88, 166, 255, 0.15);
   border: 1px solid rgba(88, 166, 255, 0.3);
   padding: 0 5px;
-  height: 18px;
-  border-radius: 3px;
   margin-right: 2px;
-  white-space: nowrap;
   animation: auto-input-flash 0.5s ease-out;
 }
 

@@ -25,6 +25,17 @@ let dragState = null;
 const RUNNING_IDLE_TIMEOUT_MS = 1500;
 const RUNNING_INPUT_GUARD_MS = 200;
 
+// waiting 判定用 lastLines バッファの上限（issue #32 対応）。
+//   - LASTLINES_MAX_LINES: 直近 N 行を保持する。
+//     旧実装は 15 行だったが、Claude Code TUI はウィンドウリサイズや recap 表示で
+//     プロンプト枠・「✻ Worked for ...」などの再描画行を数十行単位で吐き出すため、
+//     肝心の確認待ち文（例: 「ご確認をお願いします。…」）がウィンドウから押し出されてしまい
+//     検知できなくなっていた。十分大きめのウィンドウを取って取りこぼしを防ぐ。
+//   - LASTLINES_MAX_CHARS: 行数だけだと「空行が大量に積まれる」状態でもメモリを食わないが、
+//     1 行が極端に長い場合に備えて文字数の上限も設ける（保険）。
+const LASTLINES_MAX_LINES = 80;
+const LASTLINES_MAX_CHARS = 8000;
+
 // ─── ID generation ────────────────────────────────────────────────────────────
 let _idCounter = 0;
 const newId = () => `pane-${++_idCounter}`;
@@ -76,6 +87,14 @@ const WAITING_PATTERNS = [
   // マージ待ちパターン（vk-kore の PR 作成後・マージ判断委譲のタイミング）
   /マージ(?:判断|してください|してもよろしい)/,
   /マージ.{0,30}(?:ご判断|お願い|よろしい|お任せ)/,
+  // recap / 追加の確認待ち文言（issue #32）。
+  // Claude Code が "※ recap: …承認待ちです。…(disable recaps in /config)" のような
+  // 振り返りメッセージを最後に挟むケースで、本文末尾が "承認待ち" や "委任します"
+  // のような形になる。これらの「次アクションをユーザーに委ねている」言い回しを拾う。
+  /(?:承認|回答|ご判断|ご返答|お返事|ご指示|ご連絡)(?:を)?(?:お)?待ち/,
+  /(?:いただけ|いただい)たら.{0,30}(?:委任|お願い|進め|実装)/,
+  /(?:お任せ|ご判断)(?:します|ください|いただけ)/,
+  /(?:お待ち|待って)(?:しています|います|ます)/,
 ];
 
 function checkWaiting(paneId) {
@@ -274,8 +293,16 @@ ipcRenderer.on('terminal:data', (event, id, data) => {
   }
 
   // Accumulate last lines for waiting detection
+  // issue #32: 直近 N 行のウィンドウが小さすぎると、Claude Code TUI のプロンプト枠や
+  // recap メッセージの再描画で本来の確認文が押し出されて検知できなくなる。
+  // 行数とトータル文字数の両方で上限を設けてメモリ膨張も防ぎつつ十分なウィンドウを確保する。
   const stripped = stripAnsiForDisplay(data);
-  t.lastLines = (t.lastLines + stripped).split('\n').slice(-15).join('\n');
+  let merged = (t.lastLines + stripped).split('\n').slice(-LASTLINES_MAX_LINES).join('\n');
+  if (merged.length > LASTLINES_MAX_CHARS) {
+    // 行を跨いだ単純な末尾切り出し（マルチバイトでも安全）。
+    merged = merged.slice(-LASTLINES_MAX_CHARS);
+  }
+  t.lastLines = merged;
   t.lastOutputTime = Date.now();
   checkWaiting(paneId);
   // 出力があったので running を bump（waiting / 入力直後はスキップされる）

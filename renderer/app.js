@@ -68,6 +68,14 @@ const WAITING_PATTERNS = [
   /\[\s*D\s*\]eny/i,
   /approve.*\(y\/n\)/i,
   // NOTE: /permission/i は削除 — Claude Code の UI フッター "bypass permissions on" に誤反応するため
+  // 日本語の確認待ちパターン（vk-kore など、Claude が確認を求めて中断する場面で出る文言）
+  /ご確認(?:を|ください|お願い)/,
+  /続行しますか/,
+  /進めて(?:よろしい|よい)/,
+  /(?:よろしい|いかが)(?:でしょうか|ですか)[。？?]?\s*$/m,
+  // マージ待ちパターン（vk-kore の PR 作成後・マージ判断委譲のタイミング）
+  /マージ(?:判断|してください|してもよろしい)/,
+  /マージ.{0,30}(?:ご判断|お願い|よろしい|お任せ)/,
 ];
 
 function checkWaiting(paneId) {

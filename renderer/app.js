@@ -6,6 +6,14 @@ const { stripAnsiForDisplay } = require('../utils/stripAnsi');
 
 // ─── State ────────────────────────────────────────────────────────────────────
 let tree = null;       // Layout tree root
+// ペイン D&D 中の状態（issue #40）。リサイズ用の dragState とは別変数で衝突回避。
+//   - srcId: ドラッグ中のペイン id
+//   - lastTargetId / lastDir: 直前フレームで描画したオーバーレイの対象と方向（再描画スキップ判定用）
+let paneDragState = null;
+// pane D&D 用の独自 MIME。既存のファイル D&D（パス挿入）と分岐するためのキー（issue #40）
+const PANE_DRAG_MIME = 'application/x-vk-pane';
+// 中央デッドゾーンの比率（issue #40）。0.2 = 中央 20% を無効ゾーンとして扱う
+const PANE_DROP_DEADZONE = 0.2;
 // terminals[paneId] のフィールド概要（status / runningTimer は issue #23 で追加）:
 //   - waiting (bool): 内部判定用フラグ。WAITING_PATTERNS ヒットで true。
 //     states.json 後方互換のために残してある（task-queue 等の外部連携が参照している）。
@@ -404,6 +412,8 @@ function renderTaskTitleContent(el, title, url) {
   link.href = '#'; // 実 URL は入れない（Electron の target="_blank" 経由の新 BrowserWindow 防止）
   link.setAttribute('role', 'link');
   link.setAttribute('aria-label', `${title}（外部ブラウザで開く）`);
+  // ペイン D&D 起点は親 .pane-task-title 側。リンクの URL drag（href のドラッグ）が割り込まないよう抑止（issue #40）。
+  link.draggable = false;
   // ホバー時のツールチップにはタイトル本文と URL の両方を改行区切りで含める。
   // 親要素 .pane-task-title の title 属性は has-link 時に外して競合を避ける
   // （ブラウザ実装により親子 title の優先順位が不定なため。updatePaneTitle / renderLeaf 側で制御）。
@@ -540,6 +550,31 @@ function swapLeavesInTree(node, idA, idB) {
 function getAllLeafIds(node) {
   if (node.type === 'leaf') return [node.id];
   return [...getAllLeafIds(node.first), ...getAllLeafIds(node.second)];
+}
+
+// tree 内の targetId（leaf）の位置を、srcLeaf を dir 方向に挿入した split で置き換える（issue #40）。
+//   dir = 'left'  : 新 split は split-h、srcLeaf が左 / target が右
+//   dir = 'right' : 新 split は split-h、target が左 / srcLeaf が右
+//   dir = 'up'    : 新 split は split-v、srcLeaf が上 / target が下
+//   dir = 'down'  : 新 split は split-v、target が上 / srcLeaf が下
+// 新規 split の ratio は 0.5 固定（ドロップ位置から動的算出は UX が裏切られやすいため）。
+function insertBesideLeaf(node, targetId, srcLeaf, dir) {
+  if (!srcLeaf || (dir !== 'left' && dir !== 'right' && dir !== 'up' && dir !== 'down')) {
+    return node;
+  }
+  const direction = (dir === 'left' || dir === 'right') ? 'h' : 'v';
+  const targetNode = findNode(node, targetId);
+  if (!targetNode) return node;
+  // src と target の順序を dir から決める
+  const srcFirst = (dir === 'left' || dir === 'up');
+  const newSplit = {
+    type: 'split',
+    direction,
+    ratio: 0.5,
+    first: srcFirst ? srcLeaf : targetNode,
+    second: srcFirst ? targetNode : srcLeaf,
+  };
+  return replaceNode(node, targetId, newSplit);
 }
 
 // tree 内で指定 leaf を直接の子に持つ split ノードと、そのどちら側にいるか（'first' or 'second'）を返す。
@@ -830,6 +865,133 @@ function movePane(paneId, dir) {
   });
 }
 
+// ─── Pane D&D helpers (issue #40) ────────────────────────────────────────────
+// dragover の event 座標から、対象ペイン内のドロップ方向を算出する。
+//   - 中央 PANE_DROP_DEADZONE (= 0.2) 範囲は無効（null を返す）
+//   - 外周は最も端に近い辺（左/右/上/下）を選ぶ
+// 引数は対象ペインの DOM 要素と dragover イベント。
+function computePaneDropDir(paneEl, event) {
+  const rect = paneEl.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return null;
+  // offsetX/Y は paneEl 基準ではない場合があるので getBoundingClientRect ベースで再計算する
+  const x = event.clientX - rect.left;
+  const y = event.clientY - rect.top;
+  const fx = x / rect.width;   // 0..1
+  const fy = y / rect.height;  // 0..1
+  // 中央デッドゾーン: 中心からの距離が PANE_DROP_DEADZONE/2 以内
+  const dz = PANE_DROP_DEADZONE / 2;
+  if (Math.abs(fx - 0.5) <= dz && Math.abs(fy - 0.5) <= dz) return null;
+  // 各辺までの距離（正規化後）
+  const distLeft = fx;
+  const distRight = 1 - fx;
+  const distTop = fy;
+  const distBottom = 1 - fy;
+  const min = Math.min(distLeft, distRight, distTop, distBottom);
+  if (min === distLeft) return 'left';
+  if (min === distRight) return 'right';
+  if (min === distTop) return 'up';
+  return 'down';
+}
+
+// `#pane-drop-indicator` を body 直下にグローバル 1 個だけ用意して使い回す。
+// `dragover` で対象ペインの矩形 + dir からその半分を半透明アクセントカラーで塗りつぶす。
+// pointer-events: none 必須（オーバーレイ自身が dragover を奪わないため）。
+function getPaneDropIndicator() {
+  let el = document.getElementById('pane-drop-indicator');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'pane-drop-indicator';
+    document.body.appendChild(el);
+  }
+  return el;
+}
+
+function updatePaneDropIndicator(paneEl, dir) {
+  const indicator = getPaneDropIndicator();
+  if (!dir) {
+    indicator.style.display = 'none';
+    return;
+  }
+  const r = paneEl.getBoundingClientRect();
+  let top = r.top;
+  let left = r.left;
+  let width = r.width;
+  let height = r.height;
+  // dir 方向の半分の矩形に縮める
+  if (dir === 'left') {
+    width = r.width / 2;
+  } else if (dir === 'right') {
+    left = r.left + r.width / 2;
+    width = r.width / 2;
+  } else if (dir === 'up') {
+    height = r.height / 2;
+  } else if (dir === 'down') {
+    top = r.top + r.height / 2;
+    height = r.height / 2;
+  }
+  indicator.style.display = 'block';
+  indicator.style.top = `${top}px`;
+  indicator.style.left = `${left}px`;
+  indicator.style.width = `${width}px`;
+  indicator.style.height = `${height}px`;
+}
+
+function removePaneDropIndicator() {
+  const el = document.getElementById('pane-drop-indicator');
+  if (el) el.style.display = 'none';
+}
+
+// drop 完了後 / dragend / キャンセル時の共通クリーンアップ。
+function cleanupPaneDrag() {
+  document.body.classList.remove('pane-dragging');
+  document.querySelectorAll('.pane.pane-drag-source').forEach(el => {
+    el.classList.remove('pane-drag-source');
+  });
+  removePaneDropIndicator();
+  paneDragState = null;
+}
+
+// 実際のツリー再構築（issue #40）。
+//   1. src / target 両方に expandIfCollapsed（畳まれたまま新 split に入って操作不能ペインになるのを防止）
+//   2. removeNode(tree, srcId) でドラッグ元を抜く（親 split が単一子になるケースは removeNode 側で自動処理）
+//   3. insertBesideLeaf で target の位置に srcLeaf を dir 方向で挿入
+//   4. render() → requestAnimationFrame(() => { fitAll(); focusPane(srcId); })
+//   5. sanitizeCollapsedFlags(tree) を必ず実行（split-h 配下に collapsed leaf が紛れ込むケースの補正）
+function handlePaneDrop(srcId, targetId, dir) {
+  if (!tree) return;
+  if (!srcId || !targetId || srcId === targetId) return;
+  const srcLeaf = findNode(tree, srcId);
+  if (!srcLeaf || srcLeaf.type !== 'leaf') return;
+
+  // 折り畳み状態のまま動かすと新 split で操作不能ペインになるため、両方とも展開しておく
+  expandIfCollapsed(srcId);
+  expandIfCollapsed(targetId);
+
+  // 動かす leaf のスナップショット（collapsed 等の付随フィールドごと持ち運ぶ。
+  // ただし上で expandIfCollapsed を通したので collapsed は false 化されている）
+  const srcSnapshot = { ...findNode(tree, srcId) };
+
+  // src を抜いた tree を作る
+  const removed = removeNode(tree, srcId);
+  if (!removed) return; // 想定外（leaf が 1 枚しかなかった等）
+  // 抜いた結果 target が消えるケースは無いはずだが、念のためチェック
+  if (!findNode(removed, targetId)) return;
+
+  // target の位置に srcSnapshot を dir 方向で挿入
+  const next = insertBesideLeaf(removed, targetId, srcSnapshot, dir);
+  if (!next) return;
+  tree = next;
+
+  // split-h 配下に collapsed leaf が紛れ込むなどの不整合を補正
+  sanitizeCollapsedFlags(tree);
+
+  render();
+  requestAnimationFrame(() => {
+    fitAll();
+    focusPane(srcId);
+  });
+}
+
 function focusPane(paneId) {
   // 折り畳まれているペインに focus が当たっても自動展開はしない（明示操作のみで展開する方針）。
   // フォーカス枠は当てるが xterm への入力フォーカスはスキップする（ヘッダだけ見える状態のまま）。
@@ -931,13 +1093,34 @@ function renderLeaf(node, parentDirection) {
   // タスクタイトル行（OSC 0/2 または POST /api/set-title で設定された文字列を表示）。
   // 空のときは .empty クラスで非表示にし、xterm の表示領域を圧迫しない。
   // apiUrl があるときは .has-link を付与し、内部を <a> 化する（renderTaskTitleContent）。
+  // ペイン D&D の可否判定（issue #40）。leaf が 2 つ以上ある時のみ drag 起点になれる。
+  // ルート leaf（ペイン 1 枚状態）は移動先が無いため drag 不可。
+  // 空タイトル時も D&D 可なら .empty を付けず、ハンドルとして掴める高さを確保する。
+  const canDragPane = !!(tree && getAllLeafIds(tree).length > 1);
   const taskTitleEl = document.createElement('div');
   taskTitleEl.className = 'pane-task-title'
-    + (taskTitle ? '' : ' empty')
+    + (taskTitle || canDragPane ? '' : ' empty')
     + (taskUrl ? ' has-link' : '');
   renderTaskTitleContent(taskTitleEl, taskTitle, taskUrl);
   // URL 有りのときは子 <a> 側の title 属性に集約するため、親には付けない（親子競合回避）。
   if (taskTitle && !taskUrl) taskTitleEl.title = taskTitle;
+  if (canDragPane) {
+    taskTitleEl.draggable = true;
+    taskTitleEl.addEventListener('dragstart', e => {
+      // 独自 MIME に paneId を載せる。これにより受け側はファイル D&D と分岐できる。
+      try {
+        e.dataTransfer.setData(PANE_DRAG_MIME, node.id);
+      } catch (_e) { /* setData が失敗しても続行 */ }
+      e.dataTransfer.effectAllowed = 'move';
+      paneDragState = { srcId: node.id, lastTargetId: null, lastDir: null };
+      document.body.classList.add('pane-dragging');
+      el.classList.add('pane-drag-source');
+    });
+    taskTitleEl.addEventListener('dragend', () => {
+      // 念のための後始末。drop ハンドラが先に動いていればここはすべて no-op になる。
+      cleanupPaneDrag();
+    });
+  }
   el.appendChild(taskTitleEl);
 
   const header = document.createElement('div');
@@ -1022,6 +1205,70 @@ function renderLeaf(node, parentDirection) {
     closePane(node.id);
   });
   el.addEventListener('mousedown', () => focusPane(node.id));
+
+  // ─── Drag & Drop: pane insertion (issue #40) ─────────────────────────────
+  // 別ペインのタスクタイトル行をドラッグして、このペインの上下左右にドロップすると
+  // その方向に再分割して挿入する。同一ペインへのドロップは no-op。
+  // ファイル D&D（パス挿入）とは独自 MIME（PANE_DRAG_MIME）で分岐する。
+  el.addEventListener('dragover', e => {
+    if (!e.dataTransfer.types.includes(PANE_DRAG_MIME)) return;
+    if (!paneDragState) return;
+    // 同一ペインへのドロップは無効化（インジケータも出さない）
+    if (paneDragState.srcId === node.id) {
+      e.preventDefault();
+      e.stopPropagation();
+      e.dataTransfer.dropEffect = 'none';
+      // 同一ペイン上ではオーバーレイを消しておく
+      if (paneDragState.lastTargetId !== null) {
+        removePaneDropIndicator();
+        paneDragState.lastTargetId = null;
+        paneDragState.lastDir = null;
+      }
+      return;
+    }
+    e.preventDefault();
+    e.stopPropagation();
+    const dir = computePaneDropDir(el, e);
+    // 中央デッドゾーン（dir=null）はカーソルを no-drop に。オーバーレイも消す。
+    e.dataTransfer.dropEffect = dir ? 'move' : 'none';
+    // 前フレームと同じ判定ならオーバーレイ更新スキップ（負荷低減）
+    if (paneDragState.lastTargetId === node.id && paneDragState.lastDir === dir) return;
+    paneDragState.lastTargetId = node.id;
+    paneDragState.lastDir = dir;
+    updatePaneDropIndicator(el, dir);
+  });
+  el.addEventListener('dragleave', e => {
+    if (!paneDragState) return;
+    if (!e.dataTransfer.types.includes(PANE_DRAG_MIME)) return;
+    // ペイン要素の外（自要素内の子から親自身は relatedTarget が自要素になりうるので除外）
+    if (!el.contains(e.relatedTarget)) {
+      if (paneDragState.lastTargetId === node.id) {
+        removePaneDropIndicator();
+        paneDragState.lastTargetId = null;
+        paneDragState.lastDir = null;
+      }
+    }
+  });
+  el.addEventListener('drop', e => {
+    if (!e.dataTransfer.types.includes(PANE_DRAG_MIME)) return;
+    if (!paneDragState) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const srcId = e.dataTransfer.getData(PANE_DRAG_MIME) || paneDragState.srcId;
+    // 同一ペインは no-op
+    if (!srcId || srcId === node.id) {
+      cleanupPaneDrag();
+      return;
+    }
+    const dir = computePaneDropDir(el, e);
+    if (!dir) {
+      // デッドゾーン（中央20%）は何もしない
+      cleanupPaneDrag();
+      return;
+    }
+    handlePaneDrop(srcId, node.id, dir);
+    cleanupPaneDrag();
+  });
 
   // ─── Drag & Drop: file path insertion ─────────────────────────────────────
   el.addEventListener('dragover', e => {
@@ -1175,6 +1422,23 @@ document.addEventListener('drop', e => {
   e.preventDefault();
   e.stopPropagation();
   resetFileDragState();
+  // ペイン D&D が進行中のまま、ペイン外でドロップされた場合の保険（issue #40）。
+  // ペイン側 drop ハンドラはバブリングを stopPropagation するため通常はここまで来ない。
+  if (paneDragState) cleanupPaneDrag();
+});
+
+// ESC キャンセル / ウィンドウ外ドロップ / ブラウザによる中断時の保険（issue #40）。
+// dragend は dragstart した element に届くが、render() で要素が差し替わるケース等を考慮して
+// document レベルにも保険を仕掛けておく。
+document.addEventListener('dragend', () => {
+  if (paneDragState) cleanupPaneDrag();
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  if (!paneDragState) return;
+  e.preventDefault();
+  cleanupPaneDrag();
 });
 
 // ─── Global drag handler ──────────────────────────────────────────────────────

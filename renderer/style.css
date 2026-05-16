@@ -498,3 +498,59 @@ body.resizing-v * {
 body.file-dragging .pane {
   cursor: copy;
 }
+
+/* ─── Pane drag & drop (issue #40) ─────────────────────────────────────────
+ * ペインタイトル行をドラッグ起点として、他ペインの上下左右にドロップして
+ * その方向に再分割して挿入する機能。
+ *
+ *   - .pane-task-title の cursor を grab に（draggable 属性が付いているときのみ）
+ *   - ドラッグ中は body.pane-dragging が付き、.term-container を pointer-events:none
+ *     にして xterm の領域上でも dragover が中断されないようにする
+ *   - ドラッグ元ペインは opacity:0.5 でうっすら見せる
+ *   - ドロップ予定の半分（または1/2矩形）は #pane-drop-indicator を body 直下に
+ *     position:fixed で出してアクセントカラーで塗りつぶす（pointer-events:none 必須） */
+.pane-task-title[draggable="true"] {
+  cursor: grab;
+}
+
+.pane-task-title[draggable="true"]:active {
+  cursor: grabbing;
+}
+
+body.pane-dragging .pane-task-title[draggable="true"] {
+  cursor: grabbing;
+}
+
+/* ドラッグ中は xterm 領域で dragover が止まらないように pointer-events を切る。
+ * .pane-task-title / .pane-header は引き続きイベントを受け取れる必要がある。 */
+body.pane-dragging .term-container {
+  pointer-events: none;
+}
+
+/* ドラッグ中はテキスト選択を抑止（既存の resizing 系と同じパターン）。
+ * タイトル行を掴んだ際の選択ハイライト残りを防ぐ。 */
+body.pane-dragging * {
+  user-select: none;
+}
+
+/* ドラッグ元ペインのうっすら表示。ペイン全体ではなく xterm 本体のみに絞ることで、
+ * タイトル行・ヘッダの識別性（どのペインを掴んでいるか）を確保する。 */
+.pane.pane-drag-source .term-container {
+  opacity: 0.5;
+}
+
+/* ドロップ予定領域のオーバーレイ（body 直下にグローバル 1 個）。
+ * 位置とサイズは JS が dragover で毎フレーム top/left/width/height を更新する。
+ * pointer-events:none を当てないとオーバーレイ自身が dragover を奪う。
+ * z-index はタイトルバー（1000）の一段上に揃え、最前面意図を明示。
+ * dir 切替時のアニメは斜めに伸縮して紛らわしいので transition は付けず即時スナップ。
+ * border-radius も実際の split 結果（角は四角）と齟齬が出ないよう 0。 */
+#pane-drop-indicator {
+  position: fixed;
+  display: none;
+  pointer-events: none;
+  z-index: 1100;
+  background: rgba(88, 166, 255, 0.18);
+  border: 2px solid #58a6ff;
+  border-radius: 0;
+}

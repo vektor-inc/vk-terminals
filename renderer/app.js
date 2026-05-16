@@ -750,6 +750,14 @@ function closePane(paneId) {
       clearTimeout(t.runningTimer);
       t.runningTimer = null;
     }
+    // auto-input バッジの自動非表示タイマーも残っていればクリアする
+    // （runningTimer と一貫させた防御的なクリーンアップ／issue #38）
+    const paneEl = document.querySelector(`.pane[data-id="${paneId}"]`);
+    const autoInputTimer = paneEl?.dataset.autoInputTimer;
+    if (autoInputTimer) {
+      clearTimeout(Number(autoInputTimer));
+      delete paneEl.dataset.autoInputTimer;
+    }
     t.term.dispose();
     ipcRenderer.send('terminal:kill', t.termId);
     delete terminals[paneId];
@@ -1285,12 +1293,17 @@ ipcRenderer.on('terminal:auto-input', (event, termId) => {
     // (.pane-badge の display: inline-flex) を活かす（issue #35）
     badge.hidden = false;
     paneEl.classList.add('auto-input');
-    setTimeout(() => {
+    // 先発の自動非表示タイマーが残っていればクリアしてから新規予約する
+    // （短時間に複数回イベントが来た際に後発のバッジが 3 秒より早く消える問題対策／issue #38）
+    const existing = paneEl.dataset.autoInputTimer;
+    if (existing) clearTimeout(Number(existing));
+    paneEl.dataset.autoInputTimer = String(setTimeout(() => {
       const el = document.querySelector(`.pane[data-id="${paneId}"]`);
       if (!el) return;
       const b = el.querySelector('.auto-input-badge');
       if (b) b.hidden = true;
       el.classList.remove('auto-input');
-    }, 3000);
+      delete el.dataset.autoInputTimer;
+    }, 3000));
   }
 });

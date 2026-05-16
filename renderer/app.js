@@ -1434,6 +1434,13 @@ document.addEventListener('dragend', () => {
   if (paneDragState) cleanupPaneDrag();
 });
 
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  if (!paneDragState) return;
+  e.preventDefault();
+  cleanupPaneDrag();
+});
+
 // ─── Global drag handler ──────────────────────────────────────────────────────
 document.addEventListener('mousemove', e => {
   if (!dragState) return;

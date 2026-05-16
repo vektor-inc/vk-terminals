@@ -1,5 +1,6 @@
 # Changelog
 
+- [ 機能追加 ] ペインのタスクタイトル行をドラッグして他ペインの上下左右にドロップすると、その方向に再分割して挿入できる機能を追加（タスクタイトル行に `cursor: grab` / `grabbing`、ドロップ予定領域を半透明アクセントカラーで塗りつぶす視覚フィードバック、中央 20% はデッドゾーンとして無効化、ペイン1枚状態ではドラッグ不可）（[#40](https://github.com/vektor-inc/vk-terminals/issues/40)）
 - [ セキュリティ修正 ] `renderer/app.js` の `renderLeaf()` で `innerHTML` テンプレートリテラル経由でペインヘッダを組み立てる際、`cwd`（OS ファイルシステム由来）や `statusAriaLabel` などの動的文字列を属性値・テキスト内容にエスケープせず挿入していたため、ディレクトリ名に `"` や `<` を含むパスでヘッダ DOM が壊れ任意の HTML が注入されうる問題を修正（属性値用 `escAttr` / テキスト用 `escText` のエスケープヘルパーを導入し、`data-status` / `aria-label` / `pane-cwd` の `title` 属性とテキストノードに適用）（[#39](https://github.com/vektor-inc/vk-terminals/issues/39)）
 - [ 不具合修正 ] 自動入力バッジ（`🤖 自動入力`）の自動非表示用 `setTimeout` のタイマー ID を保持していなかったため、短時間に複数回 `terminal:auto-input` イベントが発火すると先発タイマーが残ったままになり、後発の表示が想定の 3 秒より早く消える不具合を修正（[#38](https://github.com/vektor-inc/vk-terminals/issues/38)）
 - [ 仕様変更 ] ペインを角丸カード状デザインに変更（`margin: 6px` ＋ `border-radius` を `.pane` / `.term-container` に付与、body 背景を `#333` に変更）。あわせて共通利用想定の CSS カスタムプロパティ `--vktm--border-radius--md` を導入

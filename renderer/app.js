@@ -1093,16 +1093,18 @@ function renderLeaf(node, parentDirection) {
   // タスクタイトル行（OSC 0/2 または POST /api/set-title で設定された文字列を表示）。
   // 空のときは .empty クラスで非表示にし、xterm の表示領域を圧迫しない。
   // apiUrl があるときは .has-link を付与し、内部を <a> 化する（renderTaskTitleContent）。
+  // ペイン D&D の可否判定（issue #40）。leaf が 2 つ以上ある時のみ drag 起点になれる。
+  // ルート leaf（ペイン 1 枚状態）は移動先が無いため drag 不可。
+  // 空タイトル時も D&D 可なら .empty を付けず、ハンドルとして掴める高さを確保する。
+  const canDragPane = !!(tree && getAllLeafIds(tree).length > 1);
   const taskTitleEl = document.createElement('div');
   taskTitleEl.className = 'pane-task-title'
-    + (taskTitle ? '' : ' empty')
+    + (taskTitle || canDragPane ? '' : ' empty')
     + (taskUrl ? ' has-link' : '');
   renderTaskTitleContent(taskTitleEl, taskTitle, taskUrl);
   // URL 有りのときは子 <a> 側の title 属性に集約するため、親には付けない（親子競合回避）。
   if (taskTitle && !taskUrl) taskTitleEl.title = taskTitle;
-  // ペイン D&D 起点（issue #40）。leaf が 2 つ以上ある時のみ draggable を付与する。
-  // ルート leaf（ペイン 1 枚状態）は移動先が無いため drag 不可。
-  if (tree && getAllLeafIds(tree).length > 1) {
+  if (canDragPane) {
     taskTitleEl.draggable = true;
     taskTitleEl.addEventListener('dragstart', e => {
       // 独自 MIME に paneId を載せる。これにより受け側はファイル D&D と分岐できる。

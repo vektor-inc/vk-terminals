@@ -275,6 +275,38 @@ function formatCwd(fullPath) {
   return '~/' + parts.slice(-2).join('/');
 }
 
+// ─── HTML escape helpers ──────────────────────────────────────────────────────
+// renderLeaf() などで innerHTML テンプレートリテラルに外部由来の文字列を挿入する際の
+// XSS 対策ヘルパー（issue #39）。
+//
+// なぜ必要か:
+//   - cwd は OS ファイルシステム由来（通常は安全だがディレクトリ名に `"` や `<` を含めることは技術的に可能）
+//   - statusAriaLabel は現状内部状態のみだが、将来 API 連携等で外部入力と統合される可能性があるため
+//     防御的にエスケープしておく
+//
+// 設計方針:
+//   - escText: テキストコンテンツ用（`<`, `>`, `&` をエスケープ）
+//   - escAttr: 属性値用（`<`, `>`, `&`, `"`, `'` をエスケープ。属性は常にダブルクォートで囲む前提）
+//   - 入力が文字列でない場合は空文字を返す（null/undefined の安全側フォールバック）
+//   - 既知の安全な静的リテラル（ボタンの title 属性など）には適用しない（差分最小化）
+function escText(value) {
+  if (typeof value !== 'string') return '';
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function escAttr(value) {
+  if (typeof value !== 'string') return '';
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 // ─── IPC: data from pty ───────────────────────────────────────────────────────
 ipcRenderer.on('terminal:data', (event, id, data) => {
   const paneId = Object.keys(terminals).find(k => terminals[k]?.termId === id);
@@ -925,9 +957,15 @@ function renderLeaf(node, parentDirection) {
   // role="status" + aria-live="polite" で SR にステータス変化を通知（aria-label は動的更新）。
   // 共通バッジ basis は .pane-badge（issue #27）、固有スタイルは .pane-status / .auto-input-badge。
   // 旧 .waiting-badge は role を .pane-status に一本化したため削除済（issue #23）。
+  //
+  // セキュリティ: テンプレートリテラル経由で innerHTML に挿入する外部由来の文字列は
+  // escAttr / escText でエスケープする（issue #39）。
+  //   - status / statusAriaLabel: 内部状態だが将来の外部入力統合を想定し防御的にエスケープ
+  //   - cwd: OS ファイルシステム由来。ディレクトリ名に `"` や `<` を含めることは技術的に可能
+  //   - statusLabel: getStatusPresentation() からの静的文字列だが、念のためエスケープ
   header.innerHTML = `
-    <span class="pane-badge pane-status" data-status="${status}" role="status" aria-live="polite"${statusAriaLabel ? ` aria-label="${statusAriaLabel}"` : ''}>${statusLabel}</span>
-    <span class="pane-cwd" title="${cwd}">${cwd}</span>
+    <span class="pane-badge pane-status" data-status="${escAttr(status)}" role="status" aria-live="polite"${statusAriaLabel ? ` aria-label="${escAttr(statusAriaLabel)}"` : ''}>${escText(statusLabel)}</span>
+    <span class="pane-cwd" title="${escAttr(cwd)}">${escText(cwd)}</span>
     <div class="pane-actions">
       <span class="pane-badge auto-input-badge" hidden></span>
       <button class="btn btn-move btn-move-left" title="左へ移動">◀</button>

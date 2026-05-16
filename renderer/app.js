@@ -750,6 +750,14 @@ function closePane(paneId) {
       clearTimeout(t.runningTimer);
       t.runningTimer = null;
     }
+    // auto-input バッジの自動非表示タイマーも残っていればクリアする
+    // （runningTimer と一貫させた防御的なクリーンアップ／issue #38）
+    const paneEl = document.querySelector(`.pane[data-id="${paneId}"]`);
+    const autoInputTimer = paneEl?.dataset.autoInputTimer;
+    if (autoInputTimer) {
+      clearTimeout(Number(autoInputTimer));
+      delete paneEl.dataset.autoInputTimer;
+    }
     t.term.dispose();
     ipcRenderer.send('terminal:kill', t.termId);
     delete terminals[paneId];

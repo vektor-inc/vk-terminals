@@ -1226,8 +1226,9 @@ function renderLeaf(node, parentDirection) {
     }
     e.preventDefault();
     e.stopPropagation();
-    e.dataTransfer.dropEffect = 'move';
     const dir = computePaneDropDir(el, e);
+    // 中央デッドゾーン（dir=null）はカーソルを no-drop に。オーバーレイも消す。
+    e.dataTransfer.dropEffect = dir ? 'move' : 'none';
     // 前フレームと同じ判定ならオーバーレイ更新スキップ（負荷低減）
     if (paneDragState.lastTargetId === node.id && paneDragState.lastDir === dir) return;
     paneDragState.lastTargetId = node.id;

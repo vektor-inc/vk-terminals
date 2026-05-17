@@ -162,12 +162,20 @@ html, body {
   gap: 4px;
   max-width: 100%;
   min-width: 0;
+  /* flex 子としても伸縮を許可（PR ボタン同居時にタイトルが伸びすぎないよう shrink を効かせる） */
+  flex: 0 1 auto;
   color: inherit;
   text-decoration: none;
   cursor: pointer;
   border-radius: 3px;
   /* リンクのフォーカスリングと色変化のみの transition。 */
   transition: color 0.12s ease, text-decoration-color 0.12s ease;
+}
+
+/* PR ボタン同居時はタイトルが画面外に PR ボタンを押し出さないよう min-width: 0 を保証
+ * （inline-flex の子として shrink を効かせるため）。タイトル本文側は元々 ellipsis 設定済み。 */
+.pane-task-title.has-pr .pane-task-title-link {
+  min-width: 0;
 }
 
 .pane-task-title-link:hover {
@@ -201,6 +209,57 @@ html, body {
 }
 
 .pane-task-title-link:hover .pane-task-title-icon {
+  opacity: 1;
+}
+
+/* ─── Pane task title PR button (issue #44) ────────────────────────────────
+ * タイトル行の右端に独立して表示する [ PR ↗ ] ボタン。
+ *   - `.pane-badge` 共通基底（h18 / font-size 10 / radius 3px）に乗せる
+ *   - `margin-left: auto` で右寄せ。`flex-shrink: 0` でタイトル省略時にも縮まない
+ *   - 色: GitHub PR グリーン系（背景 rgba(63,185,80,.15) / border rgba(63,185,80,.3)）
+ *   - フォーカスリングは既存 `.pane-task-title-link` と同じ #58a6ff 2px
+ * `.pane-task-title` 親側は背景 #aaa（明るい灰）なので、視認性のため文字色を濃い緑に倒す。
+ */
+.pane-task-title-pr {
+  margin-left: auto;
+  padding: 0 6px;
+  /* badge gap (3px) はやや詰まり気味なのでラベル + ↗ 用に 4px に上書き */
+  gap: 4px;
+  background: rgba(63, 185, 80, 0.15);
+  border: 1px solid rgba(63, 185, 80, 0.3);
+  /* `.pane-task-title` の高さ（22px）に対し badge は 18px。
+   * border 1px 込みでも親の line-height をはみ出さない。 */
+  /* 文字色: `.pane-task-title` 背景 `#aaa`（明るい灰）上で WCAG 2.1 AA テキスト基準
+   * （4.5:1）を満たすように濃い緑へ落とす。`#0a3d1b` で `#aaa` に対し実測コントラスト比
+   * 約 5.4:1 で AA 達成。
+   * （植草レビューで `#1a7f37`（約 3.0:1）→ `#0f5f29` に修正したが、
+   *  麗美の実測で `#0f5f29` は約 3.36:1 で AA 不達と判明し、最終的に `#0a3d1b` に再調整した経緯）。 */
+  color: #0a3d1b;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+
+.pane-task-title-pr:hover {
+  background: rgba(63, 185, 80, 0.25);
+  border-color: rgba(63, 185, 80, 0.5);
+  color: #0a3d1b;
+  text-decoration: none;
+}
+
+.pane-task-title-pr:focus-visible {
+  outline: 2px solid #58a6ff;
+  outline-offset: 2px;
+}
+
+.pane-task-title-pr-icon {
+  font-size: 10px;
+  opacity: 0.85;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.pane-task-title-pr:hover .pane-task-title-pr-icon {
   opacity: 1;
 }
 

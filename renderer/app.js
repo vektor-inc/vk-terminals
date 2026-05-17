@@ -263,12 +263,16 @@ async function createTerminal(paneId, cwd, options = {}) {
     // apiUrl:    HTTP API（POST /api/set-title）で渡された URL（issue #29）。
     //            apiTitle が表示されているときのみ、タイトル全体をリンク化する。
     //            taskTitle（OSC 由来）の表示時は URL を一切表示しない。
+    // apiPrUrl:  HTTP API（POST /api/set-title）で渡された PR URL（issue #44）。
+    //            タスクタイトル行の右側に独立した [ PR ↗ ] ボタンとして表示する。
+    //            apiTitle / taskTitle のいずれが表示中でも常時表示する（採用: 案A）。
     // 表示時は apiTitle を優先し、空のときに taskTitle へフォールバックする。
     // これにより task-queue 等が指定した issue タイトルが OSC 由来の文字列で
     // 上書きされなくなる（issue #22）。
     taskTitle: '',
     apiTitle: '',
     apiUrl: '',
+    apiPrUrl: '',
   };
 
   return paneId;
@@ -391,6 +395,24 @@ function isSafeExternalUrl(url) {
   }
 }
 
+// shell.openExternal を共通化したヘルパー。
+// http(s) 二段チェック → shell.openExternal を呼ぶ。失敗時は何もしない。
+// click ハンドラ用に preventDefault / stopPropagation 済みである前提。
+function openExternalUrlSafe(url) {
+  if (!isSafeExternalUrl(url)) return;
+  try {
+    // Electron の shell.openExternal は Promise を返すが、reject 時にハンドラがないと
+    // unhandled rejection になるため明示的にハンドリングする。同期 throw もありうるので
+    // 念のため try/catch でラップしておく。
+    const p = shell.openExternal(url);
+    if (p && typeof p.catch === 'function') {
+      p.catch(() => { /* 失敗時は何もしない */ });
+    }
+  } catch (_e) {
+    /* 同期エラー時も無視 */
+  }
+}
+
 // .pane-task-title 要素の中身を、URL の有無に応じて
 // プレーンテキスト or <a>（外部リンクマーク付き）で再構築する。
 //   - URL 無し: テキストノードのみ（従来通り、見た目は完全互換）
@@ -398,62 +420,93 @@ function isSafeExternalUrl(url) {
 // href には URL を直接入れない（Electron の <a target="_blank"> が新 BrowserWindow を
 // 開く危険挙動を回避するため）。クリック時は preventDefault → shell.openExternal で
 // OS の既定ブラウザを開く。
-function renderTaskTitleContent(el, title, url) {
+// 第4引数 prUrl（issue #44）: 非空のとき、タイトル右側に独立した PR ボタン（<a class="pane-task-title-pr">）を追加する。
+//   apiTitle / taskTitle のいずれが表示中でも、prUrl があれば常時表示する（採用: 案A）。
+function renderTaskTitleContent(el, title, url, prUrl) {
   // 既存の子要素を全消去（innerHTML は使わずに DOM API で組み立てる）
   while (el.firstChild) el.removeChild(el.firstChild);
 
+  // ── タイトル本文（リンク化される場合と平文の場合） ────────────────────
   if (!url) {
-    el.textContent = title;
-    return;
+    // 平文のタイトルでも、prUrl がある場合は PR ボタンを右寄せできるよう
+    // タイトル部分を span にラップする（flex の margin-left: auto を効かせるため）。
+    if (prUrl) {
+      const titleSpan = document.createElement('span');
+      titleSpan.className = 'pane-task-title-text';
+      titleSpan.textContent = title;
+      el.appendChild(titleSpan);
+    } else {
+      el.textContent = title;
+    }
+  } else {
+    const link = document.createElement('a');
+    link.className = 'pane-task-title-link';
+    link.href = '#'; // 実 URL は入れない（Electron の target="_blank" 経由の新 BrowserWindow 防止）
+    link.setAttribute('role', 'link');
+    link.setAttribute('aria-label', `${title}（外部ブラウザで開く）`);
+    // ペイン D&D 起点は親 .pane-task-title 側。リンクの URL drag（href のドラッグ）が割り込まないよう抑止（issue #40）。
+    link.draggable = false;
+    // ホバー時のツールチップにはタイトル本文と URL の両方を改行区切りで含める。
+    // 親要素 .pane-task-title の title 属性は has-link 時に外して競合を避ける
+    // （ブラウザ実装により親子 title の優先順位が不定なため。updatePaneTitle / renderLeaf 側で制御）。
+    link.title = title ? `${title}\n${url}` : url;
+
+    const labelSpan = document.createElement('span');
+    labelSpan.className = 'pane-task-title-text';
+    labelSpan.textContent = title;
+    link.appendChild(labelSpan);
+
+    const iconSpan = document.createElement('span');
+    iconSpan.className = 'pane-task-title-icon';
+    iconSpan.setAttribute('aria-hidden', 'true');
+    iconSpan.textContent = '↗';
+    link.appendChild(iconSpan);
+
+    // クリック: ペインのアクティブ化（mousedown 経路）は止めない。click のみ抑止し
+    // shell.openExternal でブラウザを開く。
+    link.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openExternalUrlSafe(url);
+    });
+    // mousedown は止めない（ペインのフォーカス移譲は通常通り）
+    // ただしリンク自体のテキスト選択は意図しないドラッグを起こしやすいので、
+    // ユーザビリティのため pointer 系イベントの伝搬は維持しつつ、別操作とは衝突しない。
+
+    el.appendChild(link);
   }
 
-  const link = document.createElement('a');
-  link.className = 'pane-task-title-link';
-  link.href = '#'; // 実 URL は入れない（Electron の target="_blank" 経由の新 BrowserWindow 防止）
-  link.setAttribute('role', 'link');
-  link.setAttribute('aria-label', `${title}（外部ブラウザで開く）`);
-  // ペイン D&D 起点は親 .pane-task-title 側。リンクの URL drag（href のドラッグ）が割り込まないよう抑止（issue #40）。
-  link.draggable = false;
-  // ホバー時のツールチップにはタイトル本文と URL の両方を改行区切りで含める。
-  // 親要素 .pane-task-title の title 属性は has-link 時に外して競合を避ける
-  // （ブラウザ実装により親子 title の優先順位が不定なため。updatePaneTitle / renderLeaf 側で制御）。
-  link.title = title ? `${title}\n${url}` : url;
+  // ── PR ボタン（issue #44） ──────────────────────────────────────────────
+  // タイトル文字列の有無・apiTitle/taskTitle の選択状態に関わらず、prUrl があれば常時表示。
+  // .pane-badge（issue #27 で導入した共通バッジ basis）に乗せて見た目を統一する。
+  if (prUrl) {
+    const prLink = document.createElement('a');
+    prLink.className = 'pane-badge pane-task-title-pr';
+    prLink.href = '#'; // 実 URL は入れない（タイトルリンクと同じ理由）
+    prLink.setAttribute('role', 'link');
+    prLink.setAttribute('aria-label', 'プルリクエストを開く（外部ブラウザ）');
+    prLink.title = prUrl;
+    prLink.draggable = false;
 
-  const labelSpan = document.createElement('span');
-  labelSpan.className = 'pane-task-title-text';
-  labelSpan.textContent = title;
-  link.appendChild(labelSpan);
+    const prLabel = document.createElement('span');
+    prLabel.className = 'pane-task-title-pr-label';
+    prLabel.textContent = 'PR';
+    prLink.appendChild(prLabel);
 
-  const iconSpan = document.createElement('span');
-  iconSpan.className = 'pane-task-title-icon';
-  iconSpan.setAttribute('aria-hidden', 'true');
-  iconSpan.textContent = '↗';
-  link.appendChild(iconSpan);
+    const prIcon = document.createElement('span');
+    prIcon.className = 'pane-task-title-pr-icon';
+    prIcon.setAttribute('aria-hidden', 'true');
+    prIcon.textContent = '↗';
+    prLink.appendChild(prIcon);
 
-  // クリック: ペインのアクティブ化（mousedown 経路）は止めない。click のみ抑止し
-  // shell.openExternal でブラウザを開く。
-  link.addEventListener('click', (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    // main 側で検証済みでも二段構えで再チェック（http(s): 以外は無視）
-    if (!isSafeExternalUrl(url)) return;
-    try {
-      // Electron の shell.openExternal は Promise を返すが、reject 時にハンドラがないと
-      // unhandled rejection になるため明示的にハンドリングする。同期 throw もありうるので
-      // 念のため try/catch でラップしておく。
-      const p = shell.openExternal(url);
-      if (p && typeof p.catch === 'function') {
-        p.catch(() => { /* 失敗時は何もしない */ });
-      }
-    } catch (_e) {
-      /* 同期エラー時も無視 */
-    }
-  });
-  // mousedown は止めない（ペインのフォーカス移譲は通常通り）
-  // ただしリンク自体のテキスト選択は意図しないドラッグを起こしやすいので、
-  // ユーザビリティのため pointer 系イベントの伝搬は維持しつつ、別操作とは衝突しない。
+    prLink.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openExternalUrlSafe(prUrl);
+    });
 
-  el.appendChild(link);
+    el.appendChild(prLink);
+  }
 }
 
 function updatePaneTitle(paneId) {
@@ -463,7 +516,15 @@ function updatePaneTitle(paneId) {
   if (!el) return;
   const title = getDisplayTitle(t);
   const url = getDisplayUrl(t);
-  renderTaskTitleContent(el, title, url);
+  // ペイン D&D 起点としての可用性（issue #40）。複数 leaf がある時のみドラッグ可。
+  // renderLeaf() 側の `canDragPane` 判定と同一の式に合わせる。
+  // ここで考慮しないと、タイトル / PR をクリアした後に `.pane-task-title` が
+  // empty 扱いで消え、ドラッグ起点を失う（CodeRabbit PR #45 指摘）。
+  const canDragPane = !!(tree && getAllLeafIds(tree).length > 1);
+  // PR ボタンは apiPrUrl があれば常時表示（採用: 案A）。
+  // renderer 側でも http(s) 二段チェックを通してから採用する。
+  const prUrl = isSafeExternalUrl(t.apiPrUrl) ? t.apiPrUrl : '';
+  renderTaskTitleContent(el, title, url, prUrl);
   // ホバー時のツールチップは has-link 時は子 <a> 側に集約して親子競合を避ける。
   //   - URL 無し: 親 .pane-task-title に title 属性をセット（従来挙動）
   //   - URL 有り: 親 title 属性を削除し、<a> 側の title（タイトル + URL）のみに任せる
@@ -472,8 +533,12 @@ function updatePaneTitle(paneId) {
   } else {
     el.title = title;
   }
-  el.classList.toggle('empty', title.length === 0);
+  // タイトル本文・PR ボタン・ドラッグ可のいずれもない場合だけ "empty" 扱い。
+  // PR ボタンだけのとき / 複数ペインのドラッグハンドルとして掴みたいときは
+  // 高さを保つために empty クラスを付けない（renderLeaf() の初期描画と整合）。
+  el.classList.toggle('empty', title.length === 0 && !prUrl && !canDragPane);
   el.classList.toggle('has-link', !!url);
+  el.classList.toggle('has-pr', !!prUrl);
 }
 
 // .pane-status バッジ（ヘッダ最左）と .pane.waiting 枠点滅の両方を更新する。
@@ -1077,6 +1142,8 @@ function renderLeaf(node, parentDirection) {
   const taskTitle = getDisplayTitle(t);
   // apiTitle 表示時かつ apiUrl があるときのみリンク化（OSC 由来時は URL を出さない）
   const taskUrl = getDisplayUrl(t);
+  // PR ボタン用 URL（issue #44）。renderer 側でも http(s) 二段チェックを通す。
+  const taskPrUrl = isSafeExternalUrl(t?.apiPrUrl) ? t.apiPrUrl : '';
   const collapsed = !!node.collapsed;
   // 親 split が split-v（上下分割）の場合のみ折り畳みボタンを表示する。
   // 親 split-h（横並び）の場合は折り畳むと縦のストリップになるが、今回はスコープ外。
@@ -1098,10 +1165,14 @@ function renderLeaf(node, parentDirection) {
   // 空タイトル時も D&D 可なら .empty を付けず、ハンドルとして掴める高さを確保する。
   const canDragPane = !!(tree && getAllLeafIds(tree).length > 1);
   const taskTitleEl = document.createElement('div');
+  // empty 判定はタイトル本文・ドラッグ可・PR ボタンのいずれもないとき。
+  // PR ボタンだけでも表示するためにこの条件で扱う（issue #44）。
+  const isEmpty = !taskTitle && !canDragPane && !taskPrUrl;
   taskTitleEl.className = 'pane-task-title'
-    + (taskTitle || canDragPane ? '' : ' empty')
-    + (taskUrl ? ' has-link' : '');
-  renderTaskTitleContent(taskTitleEl, taskTitle, taskUrl);
+    + (isEmpty ? ' empty' : '')
+    + (taskUrl ? ' has-link' : '')
+    + (taskPrUrl ? ' has-pr' : '');
+  renderTaskTitleContent(taskTitleEl, taskTitle, taskUrl, taskPrUrl);
   // URL 有りのときは子 <a> 側の title 属性に集約するため、親には付けない（親子競合回避）。
   if (taskTitle && !taskUrl) taskTitleEl.title = taskTitle;
   if (canDragPane) {
@@ -1526,10 +1597,12 @@ setInterval(() => {
       // taskTitle: OSC 0/2 由来のタイトル（後方互換のため既存キーを維持）
       // apiTitle:  POST /api/set-title 由来のタイトル（issue #22 で分離）
       // apiUrl:    POST /api/set-title 由来の URL（issue #29）。apiTitle 表示時のみリンク化される
+      // apiPrUrl:  POST /api/set-title 由来の PR URL（issue #44）。タイトル右の独立ボタン用
       // displayTitle: 実際にペイン上部に表示している値（apiTitle || taskTitle）
       taskTitle: t.taskTitle || '',
       apiTitle: t.apiTitle || '',
       apiUrl: t.apiUrl || '',
+      apiPrUrl: t.apiPrUrl || '',
       displayTitle: getDisplayTitle(t),
       collapsed: !!(leaf && leaf.collapsed),
     };
@@ -1570,14 +1643,22 @@ ipcRenderer.on('terminal:request-new-pane', async (event, payload = {}) => {
 //   - undefined → 後方互換のため URL 変更なしと解釈（ただし main 側は常に第3引数を送る）
 //   - 空文字  → apiUrl をクリア
 //   - 文字列 → http(s): スキームのみ（main 側で検証済み）。apiUrl にセット
-// title と url はペアで都度送る置換セマンティクス。
-ipcRenderer.on('terminal:title', (event, termId, title, url) => {
+// 第4引数 prUrl（issue #44）: タイトル右側の独立した [ PR ↗ ] ボタン用 URL。
+//   - undefined → 後方互換のため prUrl 変更なしと解釈（ただし main 側は常に第4引数を送る）
+//   - 空文字  → apiPrUrl をクリア（PR ボタン非表示）
+//   - 文字列 → http(s): スキームのみ（main 側で検証済み）。apiPrUrl にセット
+// title / url / prUrl はペアで都度送る置換セマンティクス。
+ipcRenderer.on('terminal:title', (event, termId, title, url, prUrl) => {
   const paneId = Object.keys(terminals).find(k => terminals[k]?.termId === termId);
   if (!paneId) return;
   terminals[paneId].apiTitle = title || '';
   // url が string で渡ってきた場合のみ書き換える（旧来の 2 引数呼び出しとの後方互換のため）
   if (typeof url === 'string') {
     terminals[paneId].apiUrl = url;
+  }
+  // prUrl も同様。後方互換のため string 以外は無視する。
+  if (typeof prUrl === 'string') {
+    terminals[paneId].apiPrUrl = prUrl;
   }
   updatePaneTitle(paneId);
 });

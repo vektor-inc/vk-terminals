@@ -465,13 +465,16 @@ function startHttpApi() {
       return;
     }
 
-    // POST /api/set-title  { termId: "1", title: "タスク名", url?: "https://..." }
+    // POST /api/set-title  { termId: "1", title: "タスク名", url?: "https://...", prUrl?: "https://..." }
     //   — ペイン上部のタスクタイトル行に表示する文字列を設定。
     //   空文字や null を title に指定するとタイトル行を非表示に戻す。
     //   url を指定するとタイトル全体をリンク化（クリックで OS の既定ブラウザで開く）。
     //   url を省略すると URL なし扱い、空文字 "" を渡すと既存 URL をクリアする扱い。
     //   url は http(s): スキームのみ許可・new URL() で parse 可能・2048 文字以内の制約あり。
     //   title と url はペアで都度送る置換セマンティクス（patch ではない）。
+    //   prUrl（issue #44）: タイトル右側の独立した [ PR ↗ ] ボタンに紐づける URL。
+    //   省略 → PR ボタンなし扱い、空文字 "" → 既存 prUrl をクリア。
+    //   バリデーションは url と同一規約（http(s):・2048 文字以内・new URL() parse 可）。
     if (req.method === 'POST' && url.pathname === '/api/set-title') {
       const MAX_BODY = 10 * 1024;
       let body = '';
@@ -502,46 +505,66 @@ function startHttpApi() {
           }
           const title = typeof parsed?.title === 'string' ? parsed.title : '';
 
-          // url のバリデーション。
-          //   - 未指定（undefined）→ 後方互換のため URL なし扱い（空文字を送る）
-          //   - 空文字 "" → クリア扱い（renderer 側で apiUrl をクリア）
+          // url / prUrl の共通バリデーション。
+          //   - フィールド未指定（undefined）→ 後方互換のため URL なし扱い（空文字を送る）
+          //   - 空文字 "" / null → クリア扱い（renderer 側で対応フィールドをクリア）
           //   - それ以外 → 文字列必須、長さ 2048 以内、new URL() parse 必須、http(s): のみ
+          //
+          // フィールド名（'url' / 'prUrl'）はエラーメッセージにも反映するため引数で受け取る。
+          // 戻り値:
+          //   { ok: true, value: string } バリデーション成功（value はそのままレンダラに渡す文字列）
+          //   { ok: false, error: string } バリデーション失敗（error は 400 で返すエラーメッセージ）
+          //   { ok: true, missing: true } フィールド未指定（このときは value を使わない）
+          const validateUrlField = (raw, fieldName) => {
+            if (raw === '' || raw == null) {
+              return { ok: true, value: '' };
+            }
+            if (typeof raw !== 'string') {
+              return { ok: false, error: `${fieldName} must be a string` };
+            }
+            if (raw.length > 2048) {
+              return { ok: false, error: `${fieldName} too long (max 2048 chars)` };
+            }
+            let parsedUrl;
+            try {
+              parsedUrl = new URL(raw);
+            } catch (_e) {
+              return { ok: false, error: `invalid ${fieldName}` };
+            }
+            if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+              return { ok: false, error: `${fieldName} must be http(s)` };
+            }
+            return { ok: true, value: raw };
+          };
+
           let urlValue = '';
           if (parsed && Object.prototype.hasOwnProperty.call(parsed, 'url')) {
-            const rawUrl = parsed.url;
-            if (rawUrl === '' || rawUrl == null) {
-              urlValue = '';
-            } else if (typeof rawUrl !== 'string') {
+            const r = validateUrlField(parsed.url, 'url');
+            if (!r.ok) {
               res.writeHead(400, { 'Content-Type': 'application/json' });
-              res.end(JSON.stringify({ error: 'url must be a string' }));
+              res.end(JSON.stringify({ error: r.error }));
               return;
-            } else if (rawUrl.length > 2048) {
-              res.writeHead(400, { 'Content-Type': 'application/json' });
-              res.end(JSON.stringify({ error: 'url too long (max 2048 chars)' }));
-              return;
-            } else {
-              let parsedUrl;
-              try {
-                parsedUrl = new URL(rawUrl);
-              } catch (_e) {
-                res.writeHead(400, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ error: 'invalid url' }));
-                return;
-              }
-              if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
-                res.writeHead(400, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ error: 'url must be http(s)' }));
-                return;
-              }
-              urlValue = rawUrl;
             }
+            urlValue = r.value;
+          }
+
+          // prUrl（issue #44）: 独立した PR ボタン用 URL。url と同一規約。
+          let prUrlValue = '';
+          if (parsed && Object.prototype.hasOwnProperty.call(parsed, 'prUrl')) {
+            const r = validateUrlField(parsed.prUrl, 'prUrl');
+            if (!r.ok) {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: r.error }));
+              return;
+            }
+            prUrlValue = r.value;
           }
 
           if (win && !win.isDestroyed()) {
-            win.webContents.send('terminal:title', termId, title, urlValue);
+            win.webContents.send('terminal:title', termId, title, urlValue, prUrlValue);
           }
           res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ ok: true, termId, title, url: urlValue }));
+          res.end(JSON.stringify({ ok: true, termId, title, url: urlValue, prUrl: prUrlValue }));
         } catch (e) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'invalid JSON' }));

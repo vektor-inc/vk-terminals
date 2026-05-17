@@ -168,7 +168,7 @@ curl -s -X POST http://127.0.0.1:13847/api/send \
 
 #### `POST /api/set-title`
 
-指定ペイン上部の「タスクタイトル行」に表示する文字列を設定します。任意で外部リンクの URL を渡すと、タイトル全体がリンク化され、クリックで OS の既定ブラウザで開きます。
+指定ペイン上部の「タスクタイトル行」に表示する文字列を設定します。任意で外部リンクの URL を渡すと、タイトル全体がリンク化され、クリックで OS の既定ブラウザで開きます。あわせて `prUrl` を渡すと、タイトル行の右端に独立した `PR ↗` ボタンが表示されます。
 
 ```bash
 # タイトルだけ設定（リンクなし）
@@ -181,10 +181,15 @@ curl -s -X POST http://127.0.0.1:13847/api/set-title \
   -H 'Content-Type: application/json' \
   -d '{"termId": "1", "title": "issue #29", "url": "https://github.com/vektor-inc/vk-terminals/issues/29"}'
 
-# タイトルと URL をクリア（空文字で消す）
+# タイトル・issue リンク・PR ボタンをまとめて設定
 curl -s -X POST http://127.0.0.1:13847/api/set-title \
   -H 'Content-Type: application/json' \
-  -d '{"termId": "1", "title": "", "url": ""}'
+  -d '{"termId": "1", "title": "issue #44", "url": "https://github.com/vektor-inc/vk-terminals/issues/44", "prUrl": "https://github.com/vektor-inc/vk-terminals/pull/99"}'
+
+# タイトル・URL・PR ボタンをクリア（空文字で消す）
+curl -s -X POST http://127.0.0.1:13847/api/set-title \
+  -H 'Content-Type: application/json' \
+  -d '{"termId": "1", "title": "", "url": "", "prUrl": ""}'
 ```
 
 リクエストボディ:
@@ -192,17 +197,19 @@ curl -s -X POST http://127.0.0.1:13847/api/set-title \
 - `termId`: 対象のターミナル ID（必須）
 - `title`: 表示する文字列。空文字 `""` を渡すと API 由来タイトルがクリアされ、OSC 由来タイトル（`taskTitle`）にフォールバックします。
 - `url`（任意）: タイトル全体をリンク化するための URL。`http(s):` スキームのみ許可、2048 文字以内、`new URL()` で parse 可能であることが必須。違反時は `400` を返します。空文字 `""` を渡すと既存の URL がクリアされます。省略すると URL なしになります。
+- `prUrl`（任意・issue #44）: タイトル行の右端に独立して表示する `PR ↗` ボタンに紐づける URL。バリデーションは `url` と完全同一（`http(s):` のみ・2048 文字以内・`new URL()` で parse 可）。空文字 `""` を渡すと PR ボタンが消えます。省略すると PR ボタンなしになります。
 
 | 挙動 |
 |---|
-| `title` と `url` はペアで都度送る**置換セマンティクス**です（patch 形式ではありません）。`title` だけ更新したい場合も、その都度 `url` を一緒に送る必要があります（送らなければ URL なし扱いになります）。 |
+| `title` / `url` / `prUrl` はペアで都度送る**置換セマンティクス**です（patch 形式ではありません）。一部だけ更新したい場合でも、必要な値はその都度すべて一緒に送る必要があります（送らないフィールドは「なし」扱いになります）。 |
 | `url` が設定されている間のみ、ペインのタイトル文字列全体が `<a>` として描画され、末尾に外部リンクマーク `↗` が付きます。クリックすると `shell.openExternal()` で OS の既定ブラウザを開きます。 |
-| OSC 0 / OSC 2 由来のタイトル（`taskTitle`）が表示されている間は URL を表示しません。API 由来のタイトル（`apiTitle`）が選択されているときだけリンク化されます。 |
+| OSC 0 / OSC 2 由来のタイトル（`taskTitle`）が表示されている間は `url` のリンク化は無効になります。API 由来のタイトル（`apiTitle`）が選択されているときだけリンク化されます。 |
+| `prUrl` で表示される `PR ↗` ボタンは `apiTitle` / `taskTitle` のどちらが表示されている間でも常時表示されます（issue リンクが消える場面でも PR ボタンは独立に出続けます）。 |
 
 レスポンス例:
 
 ```json
-{ "ok": true, "termId": "1", "title": "issue #29", "url": "https://github.com/vektor-inc/vk-terminals/issues/29" }
+{ "ok": true, "termId": "1", "title": "issue #44", "url": "https://github.com/vektor-inc/vk-terminals/issues/44", "prUrl": "https://github.com/vektor-inc/vk-terminals/pull/99" }
 ```
 
 エラー例:
@@ -210,6 +217,9 @@ curl -s -X POST http://127.0.0.1:13847/api/set-title \
 - `400 {"error": "url must be http(s)"}` — `file:` などの非 http(s) スキーム
 - `400 {"error": "invalid url"}` — `new URL()` で parse 失敗
 - `400 {"error": "url too long (max 2048 chars)"}` — 2048 文字超過
+- `400 {"error": "prUrl must be http(s)"}` — `prUrl` フィールドのスキーム違反
+- `400 {"error": "invalid prUrl"}` — `prUrl` フィールドが `new URL()` で parse 失敗
+- `400 {"error": "prUrl too long (max 2048 chars)"}` — `prUrl` フィールドが 2048 文字超過
 - `404 {"error": "terminal <id> not found"}` — 指定 `termId` のペインが存在しない
 
 バリデーション動作確認用のリクエスト例（リグレッション検知用）:
@@ -234,7 +244,7 @@ curl -i -s -X POST http://127.0.0.1:13847/api/set-title \
 # => 400 {"error":"url must be http(s)"}
 ```
 
-設定された値は `GET /api/states` のレスポンス（および `~/.vk-terminals/states.json`）の各ペインオブジェクトに `apiTitle` / `apiUrl` フィールドとして含まれます。
+設定された値は `GET /api/states` のレスポンス（および `~/.vk-terminals/states.json`）の各ペインオブジェクトに `apiTitle` / `apiUrl` / `apiPrUrl` フィールドとして含まれます。
 
 #### `POST /api/new-pane`
 

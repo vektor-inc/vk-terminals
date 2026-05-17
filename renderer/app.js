@@ -516,6 +516,11 @@ function updatePaneTitle(paneId) {
   if (!el) return;
   const title = getDisplayTitle(t);
   const url = getDisplayUrl(t);
+  // ペイン D&D 起点としての可用性（issue #40）。複数 leaf がある時のみドラッグ可。
+  // renderLeaf() 側の `canDragPane` 判定と同一の式に合わせる。
+  // ここで考慮しないと、タイトル / PR をクリアした後に `.pane-task-title` が
+  // empty 扱いで消え、ドラッグ起点を失う（CodeRabbit PR #45 指摘）。
+  const canDragPane = !!(tree && getAllLeafIds(tree).length > 1);
   // PR ボタンは apiPrUrl があれば常時表示（採用: 案A）。
   // renderer 側でも http(s) 二段チェックを通してから採用する。
   const prUrl = isSafeExternalUrl(t.apiPrUrl) ? t.apiPrUrl : '';
@@ -528,9 +533,10 @@ function updatePaneTitle(paneId) {
   } else {
     el.title = title;
   }
-  // タイトル本文も PR ボタンもない場合だけ "empty" 扱い（PR ボタンだけのときは
-  // ハンドル高さを保つ意味でも空にしない）。
-  el.classList.toggle('empty', title.length === 0 && !prUrl);
+  // タイトル本文・PR ボタン・ドラッグ可のいずれもない場合だけ "empty" 扱い。
+  // PR ボタンだけのとき / 複数ペインのドラッグハンドルとして掴みたいときは
+  // 高さを保つために empty クラスを付けない（renderLeaf() の初期描画と整合）。
+  el.classList.toggle('empty', title.length === 0 && !prUrl && !canDragPane);
   el.classList.toggle('has-link', !!url);
   el.classList.toggle('has-pr', !!prUrl);
 }

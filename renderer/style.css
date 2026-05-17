@@ -230,9 +230,11 @@ html, body {
   /* `.pane-task-title` の高さ（22px）に対し badge は 18px。
    * border 1px 込みでも親の line-height をはみ出さない。 */
   /* 文字色: `.pane-task-title` 背景 `#aaa`（明るい灰）上で WCAG 2.1 AA テキスト基準
-   * （4.5:1）を満たすように濃い緑へ落とす。`#0f5f29` で `#aaa` に対し計算上 4.5:1 を超える。
-   * （旧値 `#1a7f37` は約 3.0:1 で AA を満たせなかった。issue #44 植草レビュー指摘）。 */
-  color: #0f5f29;
+   * （4.5:1）を満たすように濃い緑へ落とす。`#0a3d1b` で `#aaa` に対し実測コントラスト比
+   * 約 5.4:1 で AA 達成。
+   * （植草レビューで `#1a7f37`（約 3.0:1）→ `#0f5f29` に修正したが、
+   *  麗美の実測で `#0f5f29` は約 3.36:1 で AA 不達と判明し、最終的に `#0a3d1b` に再調整した経緯）。 */
+  color: #0a3d1b;
   text-decoration: none;
   cursor: pointer;
   transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
@@ -241,7 +243,7 @@ html, body {
 .pane-task-title-pr:hover {
   background: rgba(63, 185, 80, 0.25);
   border-color: rgba(63, 185, 80, 0.5);
-  color: #0f5f29;
+  color: #0a3d1b;
   text-decoration: none;
 }
 

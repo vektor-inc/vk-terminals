@@ -112,12 +112,13 @@ const WAITING_PATTERNS = [
   /Esc\s+to\s+cancel/i,
   /❯\s*\d+\.\s/,  // `❯ 1. ラベル` 形式（任意ラベルの数字選択肢）
   // 全角「？」で終わる質問文。AskUserQuestion 以外の TUI / 日本語プロンプト
-  // でも全角？で終わるケースを広く拾う。Claude Code の AskUserQuestion 自体は
-  // 上の `Enter to select` フッターでほぼ確定検知できるため、ここは網羅性優先で
-  // 行末全角？を採用（issue 提案の `(?:どう|何|...).*？` より広いが、平文末尾に
-  // 全角？が来るケースは稀で、`lastLines` バッファ末尾に対するマッチのみ働くため
-  // 誤検知リスクは限定的と判断）。
-  /[？]\s*$/m,
+  // でも全角？で末尾するケースを拾うための補助パターン。
+  // Claude Code の AskUserQuestion 自体は上の `Enter to select` フッターで
+  // 確定検知できるため、ここは網羅性ではなく **誤検知抑制** を優先して
+  // `m` フラグ無しでバッファ全体の末尾にのみアンカーする。
+  // `m` を付けると `lastLines` バッファ（最大 80 行）に残る過去の質問行に
+  // 反応して running 中も waiting に張り付くため、その挙動を避ける。
+  /[？]\s*$/,
 ];
 
 function checkWaiting(paneId) {

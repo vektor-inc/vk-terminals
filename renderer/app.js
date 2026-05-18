@@ -103,6 +103,21 @@ const WAITING_PATTERNS = [
   /(?:いただけ|いただい)たら.{0,30}(?:委任|お願い|進め|実装)/,
   /(?:お任せ|ご判断)(?:します|ください|いただけ)/,
   /(?:お待ち|待って)(?:しています|います|ます)/,
+  // AskUserQuestion / 数字選択肢の UI 検知（issue #46）。
+  // Claude Code の AskUserQuestion は「❯ 1. … / 2. …」の選択肢と
+  // 「Enter to select / ↑/↓ to navigate / Esc to cancel」のフッターが固定で出る。
+  // 既存パターンは ASCII `?` と `❯ Yes|No|Allow|Deny` しか拾えず取りこぼしていた。
+  /Enter\s+to\s+select/i,
+  /[↑↓]\/[↑↓]\s+to\s+navigate/,
+  /Esc\s+to\s+cancel/i,
+  /❯\s*\d+\.\s/,  // `❯ 1. ラベル` 形式（任意ラベルの数字選択肢）
+  // 全角「？」で終わる質問文。AskUserQuestion 以外の TUI / 日本語プロンプト
+  // でも全角？で終わるケースを広く拾う。Claude Code の AskUserQuestion 自体は
+  // 上の `Enter to select` フッターでほぼ確定検知できるため、ここは網羅性優先で
+  // 行末全角？を採用（issue 提案の `(?:どう|何|...).*？` より広いが、平文末尾に
+  // 全角？が来るケースは稀で、`lastLines` バッファ末尾に対するマッチのみ働くため
+  // 誤検知リスクは限定的と判断）。
+  /[？]\s*$/m,
 ];
 
 function checkWaiting(paneId) {

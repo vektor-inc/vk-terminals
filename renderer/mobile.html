@@ -215,7 +215,11 @@ function render(data) {
     c.dot.className = "dot " + st;
     c.badge.className = "badge " + st;
     c.badge.textContent = st;
-    c.name.textContent = (t.title && t.title.trim()) ? t.title : ("Terminal " + termId);
+    // displayTitle = apiTitle || taskTitle（main 側 getDisplayTitle と同じ値）。
+    // 旧 t.title は存在しないフィールドで常に空だったため、必ず "Terminal N" に
+    // フォールバックしていた不具合を修正（issue: モバイル側でタスク名が出ない）。
+    var title = t.displayTitle || t.apiTitle || t.taskTitle || "";
+    c.name.textContent = title.trim() ? title : ("Terminal " + termId);
     c.cwd.textContent = t.cwdShort || t.cwd || "";
     c.pre.textContent = tail(stripAnsi(t.lastLines || ""), 1400).replace(/\n{3,}/g, "\n\n").trim();
     // DOM 並び替え

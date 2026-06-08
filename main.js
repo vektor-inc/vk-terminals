@@ -160,6 +160,11 @@ function createWindow() {
     webPreferences: {
       nodeIntegration: true,
       contextIsolation: false,
+      // ウィンドウがオクルード（背面/最小化）状態になっても renderer のタイマーを
+      // 間引かせない。スマホ等から監視している間 Mac 側ウィンドウは背面になりがちで、
+      // 既定の backgroundThrottling: true だと状態レポート用 setInterval(2s) が約1分に1回まで
+      // 間引かれ、cachedStates が古いまま固定 → モバイルページの同期が止まるため無効化する。
+      backgroundThrottling: false,
     },
     titleBarStyle: 'hiddenInset',
     trafficLightPosition: { x: 16, y: 12 },
@@ -404,6 +409,24 @@ ipcMain.on('terminal:report-states', (event, states) => {
 
 // ─── HTTP API ────────────────────────────────────────────────────────────────
 function startHttpApi() {
+  // ブラウザ起点の cross-origin リクエストを弾く CSRF 対策。
+  //   Origin ヘッダはブラウザが cross-origin の POST 等で必ず送る。同一オリジンの
+  //   モバイルページや、curl 等の非ブラウザクライアント（Origin なし）は素通りさせ、
+  //   悪意あるサイトから http://<apiHost>:13847/api/send への CSRF だけを拒否する。
+  //   Host ヘッダ（apiHost が 127.0.0.1 でも Tailscale IP でも実際の接続先が入る）と
+  //   Origin のホストを突き合わせ、不一致なら拒否。
+  const isForbiddenOrigin = (req) => {
+    const origin = req.headers.origin;
+    if (!origin) return false; // 非ブラウザ or 同一オリジン GET 等 → 許可
+    let originHost;
+    try {
+      originHost = new URL(origin).host;
+    } catch (_e) {
+      return true; // パース不能な Origin は拒否
+    }
+    return originHost !== req.headers.host;
+  };
+
   httpServer = http.createServer((req, res) => {
     const url = new URL(req.url, `http://127.0.0.1:${API_PORT}`);
 
@@ -414,15 +437,35 @@ function startHttpApi() {
       return;
     }
 
+    // GET /  — スマホ等から状態確認・応答するモバイルページ
+    //   tailscale serve 等で 127.0.0.1:13847 を tailnet に公開して使う想定。
+    if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {
+      fs.readFile(path.join(__dirname, 'renderer', 'mobile.html'), (err, data) => {
+        if (err) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'mobile page not found' }));
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(data);
+      });
+      return;
+    }
+
     // GET /api/states
     if (req.method === 'GET' && url.pathname === '/api/states') {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
       res.end(JSON.stringify({ updatedAt: new Date().toISOString(), terminals: cachedStates }));
       return;
     }
 
     // POST /api/send  { termId: "1", input: "y" }
     if (req.method === 'POST' && url.pathname === '/api/send') {
+      if (isForbiddenOrigin(req)) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'forbidden origin' }));
+        return;
+      }
       const MAX_BODY = 10 * 1024; // 10KB
       let body = '';
       let aborted = false;
@@ -476,6 +519,11 @@ function startHttpApi() {
     //   省略 → PR ボタンなし扱い、空文字 "" → 既存 prUrl をクリア。
     //   バリデーションは url と同一規約（http(s):・2048 文字以内・new URL() parse 可）。
     if (req.method === 'POST' && url.pathname === '/api/set-title') {
+      if (isForbiddenOrigin(req)) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'forbidden origin' }));
+        return;
+      }
       const MAX_BODY = 10 * 1024;
       let body = '';
       let aborted = false;
@@ -577,6 +625,11 @@ function startHttpApi() {
     //   cwd を指定すればそのディレクトリで開く。未指定なら HOME で開く。
     //   noClaude: true を指定すると、新規ペインで claude を自動起動せず素のシェルとして開く。
     if (req.method === 'POST' && url.pathname === '/api/new-pane') {
+      if (isForbiddenOrigin(req)) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'forbidden origin' }));
+        return;
+      }
       if (!win || win.isDestroyed()) {
         res.writeHead(503, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'window not available' }));
@@ -643,16 +696,36 @@ function startHttpApi() {
     res.end(JSON.stringify({ error: 'not found' }));
   });
 
-  httpServer.listen(API_PORT, '127.0.0.1', () => {
-    console.log(`${LOG_PREFIX} API server listening on http://127.0.0.1:${API_PORT}`);
-  });
+  // バインド先ホスト。config.json の apiHost で変更可能（既定 127.0.0.1）。
+  //   例: Tailscale IP（100.x.x.x）を指定すると tailnet 内からのみ到達可能になり、
+  //   スマホ等から http://<apiHost>:13847/ で状態確認・応答できる（LAN/公開には出さない）。
+  //   '0.0.0.0' を指定すると LAN を含む全 I/F で待ち受ける（信頼できる NW でのみ推奨）。
+  const apiHostRaw = loadUserConfig().apiHost;
+  const apiHost = (typeof apiHostRaw === 'string' && apiHostRaw.trim())
+    ? apiHostRaw.trim()
+    : '127.0.0.1';
+
+  let triedFallback = false;
+  const listen = (host) => {
+    httpServer.listen(API_PORT, host, () => {
+      console.log(`${LOG_PREFIX} API server listening on http://${host}:${API_PORT}`);
+    });
+  };
 
   httpServer.on('error', (e) => {
     if (e.code === 'EADDRINUSE') {
       console.warn(`${LOG_PREFIX} Port ${API_PORT} in use, API server disabled.`);
+    } else if (e.code === 'EADDRNOTAVAIL' && !triedFallback && apiHost !== '127.0.0.1') {
+      // apiHost（例: Tailscale IP）が未割り当て（Tailscale 未接続など）の場合は
+      // ローカルのみで起動して API を死なせない。
+      triedFallback = true;
+      console.warn(`${LOG_PREFIX} apiHost ${apiHost} unavailable, falling back to 127.0.0.1.`);
+      listen('127.0.0.1');
     } else {
       console.error(`${LOG_PREFIX} API server error:`, e);
     }
   });
+
+  listen(apiHost);
 }
 

@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="color-scheme" content="dark">
+<title>VK Terminals - Remote</title>
+<style>
+  :root {
+    --bg: #14171c;
+    --card: #1d2127;
+    --card-border: #2c323b;
+    --fg: #e6e8eb;
+    --muted: #8b939e;
+    --idle: #5a6573;
+    --running: #3b82f6;
+    --waiting: #f5a623;
+    --accent: #2563eb;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Helvetica Neue", Arial, sans-serif; }
+  header {
+    position: sticky; top: 0; z-index: 5; background: rgba(20,23,28,0.92);
+    backdrop-filter: blur(8px); padding: 10px 14px; border-bottom: 1px solid var(--card-border);
+    display: flex; align-items: center; gap: 8px;
+  }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; flex: 1; }
+  header .meta { font-size: 11px; color: var(--muted); }
+  #list { padding: 10px; display: flex; flex-direction: column; gap: 10px; }
+  .card { background: var(--card); border: 1px solid var(--card-border); border-radius: 12px;
+    overflow: hidden; }
+  .card-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+  .dot.idle { background: var(--idle); }
+  .dot.running { background: var(--running); box-shadow: 0 0 0 3px rgba(59,130,246,0.18); }
+  .dot.waiting { background: var(--waiting); box-shadow: 0 0 0 3px rgba(245,166,35,0.22);
+    animation: pulse 1.2s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.45; } }
+  .card-title { flex: 1; min-width: 0; }
+  .card-title .name { font-size: 13px; font-weight: 600; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; }
+  .card-title .cwd { font-size: 11px; color: var(--muted); white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; }
+  .badge { font-size: 10px; font-weight: 700; padding: 3px 7px; border-radius: 6px;
+    text-transform: uppercase; letter-spacing: 0.04em; flex: none; }
+  .badge.idle { background: #2a2f37; color: #9aa3ae; }
+  .badge.running { background: rgba(59,130,246,0.15); color: #7fb0ff; }
+  .badge.waiting { background: rgba(245,166,35,0.18); color: #ffce7a; }
+  pre.lines { margin: 0; padding: 10px 12px; background: #0d0f13; color: #c8ccd2;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11px; line-height: 1.45;
+    white-space: pre-wrap; word-break: break-word; max-height: 180px; overflow-y: auto;
+    border-top: 1px solid var(--card-border); }
+  .actions { padding: 8px 10px 10px; display: flex; flex-direction: column; gap: 7px; }
+  .row { display: flex; gap: 6px; flex-wrap: wrap; }
+  button.k { flex: 1 1 auto; min-width: 44px; padding: 9px 6px; border-radius: 8px;
+    border: 1px solid var(--card-border); background: #262b33; color: var(--fg);
+    font-size: 13px; font-weight: 600; cursor: pointer; }
+  button.k:active { background: #323843; }
+  button.k.yes { border-color: #2f6b3f; color: #8fe0a6; }
+  button.k.no  { border-color: #6b2f2f; color: #f0a3a3; }
+  button.k.stop { border-color: #6b5a2f; color: #e8d08a; }
+  .sendrow { display: flex; gap: 6px; }
+  .sendrow input { flex: 1; padding: 9px 10px; border-radius: 8px; border: 1px solid var(--card-border);
+    background: #0d0f13; color: var(--fg); font-size: 14px; font-family: ui-monospace, Menlo, monospace; }
+  .sendrow button { padding: 9px 14px; border-radius: 8px; border: none; background: var(--accent);
+    color: #fff; font-weight: 700; font-size: 14px; }
+  .empty { color: var(--muted); text-align: center; padding: 40px 20px; font-size: 13px; }
+  .nl-toggle { font-size: 11px; color: var(--muted); display: flex; align-items: center; gap: 5px;
+    padding: 2px; }
+  #err { display: none; background: #4a1e1e; color: #ffb4b4; font-size: 12px; padding: 6px 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>VK Terminals</h1>
+  <span class="meta" id="meta">接続中…</span>
+</header>
+<div id="err"></div>
+<div id="list"></div>
+
+<script>
+"use strict";
+// ANSI エスケープ / 一部制御文字を除去（表示用）
+function stripAnsi(s) {
+  if (!s) return "";
+  return s
+    .replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]/g, "")  // CSI シーケンス
+    .replace(/\x1b\][^\x07\x1b]*(\x07|\x1b\\)/g, "") // OSC
+    .replace(/\x1b[PX^_].*?(\x1b\\|\x07)/g, "")
+    .replace(/\x1b[@-Z\\-_]/g, "")
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, ""); // その他制御文字（改行・タブは残す）
+}
+function tail(s, n) { return s.length > n ? s.slice(s.length - n) : s; }
+
+var errEl = document.getElementById("err");
+function showErr(msg) {
+  if (!msg) { errEl.style.display = "none"; return; }
+  errEl.textContent = msg; errEl.style.display = "block";
+}
+
+async function send(termId, input) {
+  try {
+    var res = await fetch("/api/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ termId: termId, input: input })
+    });
+    if (!res.ok) {
+      var j = await res.json().catch(function(){ return {}; });
+      showErr("送信失敗: " + (j.error || res.status));
+    } else {
+      showErr("");
+    }
+  } catch (e) {
+    showErr("送信失敗: " + e.message);
+  }
+}
+
+// quick ボタン定義: ラベルと送る文字列
+var QUICK = [
+  [
+    { label: "1", input: "1", cls: "" },
+    { label: "2", input: "2", cls: "" },
+    { label: "3", input: "3", cls: "" },
+    { label: "↵ Enter", input: "\r", cls: "" }
+  ],
+  [
+    { label: "Yes (y↵)", input: "y\r", cls: "yes" },
+    { label: "No (n↵)", input: "n\r", cls: "no" },
+    { label: "Esc", input: "\x1b", cls: "" },
+    { label: "Ctrl-C", input: "\x03", cls: "stop" }
+  ]
+];
+
+var list = document.getElementById("list");
+var cards = {}; // termId -> { root, pre, name, cwd, dot, badge }
+
+function ensureCard(termId) {
+  if (cards[termId]) return cards[termId];
+  var root = document.createElement("div"); root.className = "card";
+
+  var head = document.createElement("div"); head.className = "card-head";
+  var dot = document.createElement("span"); dot.className = "dot idle";
+  var title = document.createElement("div"); title.className = "card-title";
+  var name = document.createElement("div"); name.className = "name";
+  var cwd = document.createElement("div"); cwd.className = "cwd";
+  title.appendChild(name); title.appendChild(cwd);
+  var badge = document.createElement("span"); badge.className = "badge idle"; badge.textContent = "idle";
+  head.appendChild(dot); head.appendChild(title); head.appendChild(badge);
+
+  var pre = document.createElement("pre"); pre.className = "lines";
+
+  var actions = document.createElement("div"); actions.className = "actions";
+  QUICK.forEach(function(grp) {
+    var row = document.createElement("div"); row.className = "row";
+    grp.forEach(function(b) {
+      var btn = document.createElement("button");
+      btn.className = "k " + b.cls; btn.textContent = b.label;
+      btn.addEventListener("click", function() { send(termId, b.input); });
+      row.appendChild(btn);
+    });
+    actions.appendChild(row);
+  });
+  // 自由入力
+  var sendrow = document.createElement("div"); sendrow.className = "sendrow";
+  var inp = document.createElement("input");
+  inp.type = "text"; inp.placeholder = "コマンド/テキスト"; inp.autocapitalize = "off";
+  inp.autocomplete = "off"; inp.spellcheck = false;
+  var sbtn = document.createElement("button"); sbtn.textContent = "送信";
+  function doSend() {
+    var v = inp.value;
+    if (v === "") return;
+    send(termId, nlToggle.checked ? v + "\r" : v);
+    inp.value = "";
+  }
+  sbtn.addEventListener("click", doSend);
+  inp.addEventListener("keydown", function(e) { if (e.key === "Enter") doSend(); });
+  sendrow.appendChild(inp); sendrow.appendChild(sbtn);
+  var nlLabel = document.createElement("label"); nlLabel.className = "nl-toggle";
+  var nlToggle = document.createElement("input"); nlToggle.type = "checkbox"; nlToggle.checked = true;
+  nlLabel.appendChild(nlToggle);
+  nlLabel.appendChild(document.createTextNode("末尾に改行(↵)を付ける"));
+
+  actions.appendChild(sendrow);
+  actions.appendChild(nlLabel);
+
+  root.appendChild(head); root.appendChild(pre); root.appendChild(actions);
+  list.appendChild(root);
+
+  cards[termId] = { root: root, pre: pre, name: name, cwd: cwd, dot: dot, badge: badge };
+  return cards[termId];
+}
+
+function render(data) {
+  var terms = data.terminals || {};
+  var keys = Object.keys(terms);
+  // 並び順: waiting > running > idle、その中は termId 昇順
+  var rank = { waiting: 0, running: 1, idle: 2 };
+  keys.sort(function(a, b) {
+    var ra = rank[terms[a].status] != null ? rank[terms[a].status] : 3;
+    var rb = rank[terms[b].status] != null ? rank[terms[b].status] : 3;
+    if (ra !== rb) return ra - rb;
+    return String(terms[a].termId).localeCompare(String(terms[b].termId), undefined, { numeric: true });
+  });
+
+  var seen = {};
+  keys.forEach(function(paneId) {
+    var t = terms[paneId];
+    var termId = String(t.termId);
+    seen[termId] = true;
+    var c = ensureCard(termId);
+    var st = t.status || "idle";
+    c.dot.className = "dot " + st;
+    c.badge.className = "badge " + st;
+    c.badge.textContent = st;
+    c.name.textContent = (t.title && t.title.trim()) ? t.title : ("Terminal " + termId);
+    c.cwd.textContent = t.cwdShort || t.cwd || "";
+    c.pre.textContent = tail(stripAnsi(t.lastLines || ""), 1400).replace(/\n{3,}/g, "\n\n").trim();
+    // DOM 並び替え
+    list.appendChild(c.root);
+  });
+  // 消えた端末のカードを削除
+  Object.keys(cards).forEach(function(termId) {
+    if (!seen[termId]) { cards[termId].root.remove(); delete cards[termId]; }
+  });
+
+  if (keys.length === 0) {
+    if (!document.getElementById("empty")) {
+      var e = document.createElement("div"); e.className = "empty"; e.id = "empty";
+      e.textContent = "稼働中のターミナルがありません";
+      list.appendChild(e);
+    }
+  } else {
+    var e = document.getElementById("empty"); if (e) e.remove();
+  }
+
+  var d = new Date(data.updatedAt || Date.now());
+  var hh = String(d.getHours()).padStart(2, "0");
+  var mm = String(d.getMinutes()).padStart(2, "0");
+  var ss = String(d.getSeconds()).padStart(2, "0");
+  document.getElementById("meta").textContent = keys.length + "台 · " + hh + ":" + mm + ":" + ss;
+}
+
+async function poll() {
+  try {
+    var res = await fetch("/api/states", { cache: "no-store" });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    var data = await res.json();
+    render(data);
+    showErr("");
+  } catch (e) {
+    document.getElementById("meta").textContent = "接続エラー";
+    showErr("状態取得に失敗: " + e.message);
+  }
+}
+
+poll();
+setInterval(poll, 2000);
+</script>
+</body>
+</html>

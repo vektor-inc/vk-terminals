@@ -414,6 +414,21 @@ function startHttpApi() {
       return;
     }
 
+    // GET /  — スマホ等から状態確認・応答するモバイルページ
+    //   tailscale serve 等で 127.0.0.1:13847 を tailnet に公開して使う想定。
+    if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {
+      fs.readFile(path.join(__dirname, 'renderer', 'mobile.html'), (err, data) => {
+        if (err) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'mobile page not found' }));
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(data);
+      });
+      return;
+    }
+
     // GET /api/states
     if (req.method === 'GET' && url.pathname === '/api/states') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -643,16 +658,36 @@ function startHttpApi() {
     res.end(JSON.stringify({ error: 'not found' }));
   });
 
-  httpServer.listen(API_PORT, '127.0.0.1', () => {
-    console.log(`${LOG_PREFIX} API server listening on http://127.0.0.1:${API_PORT}`);
-  });
+  // バインド先ホスト。config.json の apiHost で変更可能（既定 127.0.0.1）。
+  //   例: Tailscale IP（100.x.x.x）を指定すると tailnet 内からのみ到達可能になり、
+  //   スマホ等から http://<apiHost>:13847/ で状態確認・応答できる（LAN/公開には出さない）。
+  //   '0.0.0.0' を指定すると LAN を含む全 I/F で待ち受ける（信頼できる NW でのみ推奨）。
+  const apiHostRaw = loadUserConfig().apiHost;
+  const apiHost = (typeof apiHostRaw === 'string' && apiHostRaw.trim())
+    ? apiHostRaw.trim()
+    : '127.0.0.1';
+
+  let triedFallback = false;
+  const listen = (host) => {
+    httpServer.listen(API_PORT, host, () => {
+      console.log(`${LOG_PREFIX} API server listening on http://${host}:${API_PORT}`);
+    });
+  };
 
   httpServer.on('error', (e) => {
     if (e.code === 'EADDRINUSE') {
       console.warn(`${LOG_PREFIX} Port ${API_PORT} in use, API server disabled.`);
+    } else if (e.code === 'EADDRNOTAVAIL' && !triedFallback && apiHost !== '127.0.0.1') {
+      // apiHost（例: Tailscale IP）が未割り当て（Tailscale 未接続など）の場合は
+      // ローカルのみで起動して API を死なせない。
+      triedFallback = true;
+      console.warn(`${LOG_PREFIX} apiHost ${apiHost} unavailable, falling back to 127.0.0.1.`);
+      listen('127.0.0.1');
     } else {
       console.error(`${LOG_PREFIX} API server error:`, e);
     }
   });
+
+  listen(apiHost);
 }
 

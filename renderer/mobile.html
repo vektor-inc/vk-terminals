@@ -30,7 +30,15 @@
   #list { padding: 10px; display: flex; flex-direction: column; gap: 10px; }
   .card { background: var(--card); border: 1px solid var(--card-border); border-radius: 12px;
     overflow: hidden; }
-  .card-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px; }
+  .card-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px;
+    min-height: 44px; cursor: pointer; user-select: none; -webkit-user-select: none; }
+  .card-head:active { background: #232830; }
+  .chevron { flex: none; color: var(--muted); font-size: 13px; line-height: 1;
+    transition: transform 0.12s ease; }
+  .card.collapsed .chevron { transform: rotate(-90deg); }
+  @media (prefers-reduced-motion: reduce) {
+    .chevron { transition: none; }
+  }
   .dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
   .dot.idle { background: var(--idle); }
   .dot.running { background: var(--running); box-shadow: 0 0 0 3px rgba(59,130,246,0.18); }
@@ -49,8 +57,9 @@
   .badge.waiting { background: rgba(245,166,35,0.18); color: #ffce7a; }
   pre.lines { margin: 0; padding: 10px 12px; background: #0d0f13; color: #c8ccd2;
     font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11px; line-height: 1.45;
-    white-space: pre-wrap; word-break: break-word; max-height: 180px; overflow-y: auto;
+    white-space: pre-wrap; word-break: break-word; max-height: 240px; overflow-y: auto;
     border-top: 1px solid var(--card-border); }
+  .card.collapsed pre.lines, .card.collapsed .actions { display: none; }
   .actions { padding: 8px 10px 10px; display: flex; flex-direction: column; gap: 7px; }
   .row { display: flex; gap: 6px; flex-wrap: wrap; }
   button.k { flex: 1 1 auto; min-width: 44px; padding: 9px 6px; border-radius: 8px;
@@ -135,7 +144,44 @@ var QUICK = [
 ];
 
 var list = document.getElementById("list");
-var cards = {}; // termId -> { root, pre, name, cwd, dot, badge }
+var cards = {}; // termId -> { root, pre, name, cwd, dot, badge, head, chevron }
+
+// 折り畳み状態は cards とは独立した plain object で持つ（termId -> bool）。
+// 理由: render() 末尾で states から消えた端末は cards[termId].root.remove() され
+// cards から消える。端末が一瞬消えて復活すると ensureCard がまっさらな DOM を
+// 作り直すため、DOM の classList を状態の真実にすると吹き飛ぶ。collapsed を
+// 別管理し、render のカード更新ループで毎回 classList を当て直すことで
+// 再描画・復活をまたいで状態を一致させる。
+var COLLAPSE_KEY = "vkt.collapsed";
+var collapsed = {}; // termId -> bool
+try {
+  var saved = localStorage.getItem(COLLAPSE_KEY);
+  if (saved) {
+    var parsed = JSON.parse(saved);
+    if (parsed && typeof parsed === "object") collapsed = parsed;
+  }
+} catch (e) { /* 壊れた JSON でも落とさない */ }
+
+function saveCollapsed() {
+  try { localStorage.setItem(COLLAPSE_KEY, JSON.stringify(collapsed)); }
+  catch (e) { /* 保存失敗は無視（プライベートモード等） */ }
+}
+
+// chevron / aria-expanded を collapsed 状態に同期
+function syncCollapseUI(c, termId) {
+  var isCollapsed = !!collapsed[termId];
+  c.root.classList.toggle("collapsed", isCollapsed);
+  c.head.setAttribute("aria-expanded", isCollapsed ? "false" : "true");
+  // chevron のグリフは ▾ 固定。向きは CSS の rotate(-90deg) で表現する。
+}
+
+function toggleCollapse(termId) {
+  var c = cards[termId];
+  if (!c) return;
+  collapsed[termId] = !collapsed[termId];
+  syncCollapseUI(c, termId);
+  saveCollapsed();
+}
 
 function ensureCard(termId) {
   if (cards[termId]) return cards[termId];
@@ -148,7 +194,25 @@ function ensureCard(termId) {
   var cwd = document.createElement("div"); cwd.className = "cwd";
   title.appendChild(name); title.appendChild(cwd);
   var badge = document.createElement("span"); badge.className = "badge idle"; badge.textContent = "idle";
-  head.appendChild(dot); head.appendChild(title); head.appendChild(badge);
+  var chevron = document.createElement("span"); chevron.className = "chevron";
+  chevron.setAttribute("aria-hidden", "true"); chevron.textContent = "▾";
+  head.appendChild(dot); head.appendChild(title); head.appendChild(badge); head.appendChild(chevron);
+
+  // ヘッダ帯全体をタップで開閉トグル。将来ヘッダ内に
+  // ボタン/入力/リンクを置いた場合の保険で、それらをタップした時はトグルしない。
+  head.setAttribute("role", "button");
+  head.setAttribute("tabindex", "0");
+  function onHeadToggle(e) {
+    if (e.target.closest("button, input, a")) return;
+    toggleCollapse(termId);
+  }
+  head.addEventListener("click", onHeadToggle);
+  head.addEventListener("keydown", function(e) {
+    if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") {
+      e.preventDefault();
+      onHeadToggle(e);
+    }
+  });
 
   var pre = document.createElement("pre"); pre.className = "lines";
 
@@ -189,7 +253,10 @@ function ensureCard(termId) {
   root.appendChild(head); root.appendChild(pre); root.appendChild(actions);
   list.appendChild(root);
 
-  cards[termId] = { root: root, pre: pre, name: name, cwd: cwd, dot: dot, badge: badge };
+  cards[termId] = { root: root, pre: pre, name: name, cwd: cwd, dot: dot, badge: badge,
+    head: head, chevron: chevron };
+  // 復活時を含め、現在の collapsed 状態を初期反映
+  syncCollapseUI(cards[termId], termId);
   return cards[termId];
 }
 
@@ -222,6 +289,8 @@ function render(data) {
     c.name.textContent = title.trim() ? title : ("Terminal " + termId);
     c.cwd.textContent = t.cwdShort || t.cwd || "";
     c.pre.textContent = tail(stripAnsi(t.lastLines || ""), 1400).replace(/\n{3,}/g, "\n\n").trim();
+    // 折り畳み状態を毎回当て直す（再描画・端末の消失→復活をまたいで一致させる）
+    syncCollapseUI(c, termId);
     // DOM 並び替え
     list.appendChild(c.root);
   });

@@ -160,6 +160,11 @@ function createWindow() {
     webPreferences: {
       nodeIntegration: true,
       contextIsolation: false,
+      // ウィンドウがオクルード（背面/最小化）状態になっても renderer のタイマーを
+      // 間引かせない。スマホ等から監視している間 Mac 側ウィンドウは背面になりがちで、
+      // 既定の backgroundThrottling: true だと状態レポート用 setInterval(2s) が約1分に1回まで
+      // 間引かれ、cachedStates が古いまま固定 → モバイルページの同期が止まるため無効化する。
+      backgroundThrottling: false,
     },
     titleBarStyle: 'hiddenInset',
     trafficLightPosition: { x: 16, y: 12 },
@@ -449,7 +454,7 @@ function startHttpApi() {
 
     // GET /api/states
     if (req.method === 'GET' && url.pathname === '/api/states') {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
       res.end(JSON.stringify({ updatedAt: new Date().toISOString(), terminals: cachedStates }));
       return;
     }

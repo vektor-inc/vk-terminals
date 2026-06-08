@@ -404,6 +404,24 @@ ipcMain.on('terminal:report-states', (event, states) => {
 
 // ─── HTTP API ────────────────────────────────────────────────────────────────
 function startHttpApi() {
+  // ブラウザ起点の cross-origin リクエストを弾く CSRF 対策。
+  //   Origin ヘッダはブラウザが cross-origin の POST 等で必ず送る。同一オリジンの
+  //   モバイルページや、curl 等の非ブラウザクライアント（Origin なし）は素通りさせ、
+  //   悪意あるサイトから http://<apiHost>:13847/api/send への CSRF だけを拒否する。
+  //   Host ヘッダ（apiHost が 127.0.0.1 でも Tailscale IP でも実際の接続先が入る）と
+  //   Origin のホストを突き合わせ、不一致なら拒否。
+  const isForbiddenOrigin = (req) => {
+    const origin = req.headers.origin;
+    if (!origin) return false; // 非ブラウザ or 同一オリジン GET 等 → 許可
+    let originHost;
+    try {
+      originHost = new URL(origin).host;
+    } catch (_e) {
+      return true; // パース不能な Origin は拒否
+    }
+    return originHost !== req.headers.host;
+  };
+
   httpServer = http.createServer((req, res) => {
     const url = new URL(req.url, `http://127.0.0.1:${API_PORT}`);
 
@@ -438,6 +456,11 @@ function startHttpApi() {
 
     // POST /api/send  { termId: "1", input: "y" }
     if (req.method === 'POST' && url.pathname === '/api/send') {
+      if (isForbiddenOrigin(req)) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'forbidden origin' }));
+        return;
+      }
       const MAX_BODY = 10 * 1024; // 10KB
       let body = '';
       let aborted = false;
@@ -491,6 +514,11 @@ function startHttpApi() {
     //   省略 → PR ボタンなし扱い、空文字 "" → 既存 prUrl をクリア。
     //   バリデーションは url と同一規約（http(s):・2048 文字以内・new URL() parse 可）。
     if (req.method === 'POST' && url.pathname === '/api/set-title') {
+      if (isForbiddenOrigin(req)) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'forbidden origin' }));
+        return;
+      }
       const MAX_BODY = 10 * 1024;
       let body = '';
       let aborted = false;

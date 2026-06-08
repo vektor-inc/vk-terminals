@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
 <title>VK Terminals - Remote</title>
 <style>
@@ -85,6 +85,7 @@
 function stripAnsi(s) {
   if (!s) return "";
   return s
+    .replace(/\r\n?/g, "\n")  // CR / CRLF を LF に正規化（上書き系ログの表示安定化）
     .replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]/g, "")  // CSI シーケンス
     .replace(/\x1b\][^\x07\x1b]*(\x07|\x1b\\)/g, "") // OSC
     .replace(/\x1b[PX^_].*?(\x1b\\|\x07)/g, "")
@@ -255,8 +256,11 @@ async function poll() {
   }
 }
 
-poll();
-setInterval(poll, 2000);
+// 自己再帰 setTimeout で逐次実行を保証（setInterval だと前回 fetch 完了前に
+// 次が走り、古い結果が新しい結果を上書きしうるため）。
+(function loop() {
+  poll().finally(function () { setTimeout(loop, 2000); });
+})();
 </script>
 </body>
 </html>

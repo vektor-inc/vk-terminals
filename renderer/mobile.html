@@ -103,6 +103,61 @@ function stripAnsi(s) {
 }
 function tail(s, n) { return s.length > n ? s.slice(s.length - n) : s; }
 
+// スクロール位置の保存・復元。
+// このページは Cache-Control: no-store で配信され、#list の中身は読み込み後に
+// fetch('/api/states') 完了を待って非同期に描画される（poll() → render()）。
+// そのためブラウザ標準の自動スクロール復元は #list がまだ空（ドキュメント高さ≒0）の
+// 段階で走り、深い位置を復元できず最上部に戻ってしまう。標準復元を切り、自前で
+// sessionStorage（タブ単位・再読込で保持・タブを閉じると消える）に scrollY を保存し、
+// 初回描画でカードが入った後に一度だけ復元する。
+if ("scrollRestoration" in history) { history.scrollRestoration = "manual"; }
+var SCROLL_KEY = "vkt.scrollY";
+var restoredScroll = false; // 復元は一度きり（毎回の再描画でスクロールを飛ばさない）
+var scrollSaveScheduled = false;
+// 復元の再試行上限。初回 render() でドキュメント高さが保存位置に届かない場合、
+// 次回以降の poll() で再試行する（端末カードの描画完了が遅れるケースの保険）。
+// ただし無制限に再試行すると、高さが永久に届かない状況（端末数が減った等）で
+// ずっと後にコンテンツが伸びた瞬間 scrollTo が走りユーザーを引き戻す回帰を招く。
+// 目的はあくまでリロード直後の復元なので、最初の数回（≒数秒）だけ再試行して諦める。
+var SCROLL_RESTORE_MAX_TRIES = 5;
+var scrollRestoreTries = 0;
+
+function saveScrollY() {
+  // scroll イベントは高頻度に発火するため requestAnimationFrame で 1 フレーム 1 回に間引く。
+  if (scrollSaveScheduled) return;
+  scrollSaveScheduled = true;
+  requestAnimationFrame(function () {
+    scrollSaveScheduled = false;
+    try { sessionStorage.setItem(SCROLL_KEY, String(window.scrollY)); }
+    catch (e) { /* 保存失敗は無視（プライベートモード等） */ }
+  });
+}
+window.addEventListener("scroll", saveScrollY, { passive: true });
+
+function restoreScrollOnce() {
+  if (restoredScroll) return;
+  var saved;
+  try { saved = sessionStorage.getItem(SCROLL_KEY); }
+  catch (e) { saved = null; }
+  // 復元すべき値が無い／不正なら、これ以上試す意味がないので確定して終了。
+  if (saved == null) { restoredScroll = true; return; }
+  var y = parseInt(saved, 10);
+  if (isNaN(y) || y <= 0) { restoredScroll = true; return; }
+  // まだドキュメント高さが保存位置 y に届いていない場合は、復元フラグを立てずに
+  // return して次回 poll() で再試行する（カード描画完了が初回に間に合わないケースの保険）。
+  var maxY = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+  if (maxY < y) {
+    // ただし再試行は上限まで。超えたら高さは永久に届かないとみなし諦める
+    // （無制限再試行による「後からの引き戻し」回帰を防ぐ）。
+    if (++scrollRestoreTries >= SCROLL_RESTORE_MAX_TRIES) restoredScroll = true;
+    return;
+  }
+  // ここまで来たら復元できる。フラグを確定してからレイアウト確定後に復元する
+  // （window.scrollTo は最大スクロール量に自動クランプされる）。
+  restoredScroll = true;
+  requestAnimationFrame(function () { window.scrollTo(0, y); });
+}
+
 var errEl = document.getElementById("err");
 function showErr(msg) {
   if (!msg) { errEl.style.display = "none"; return; }
@@ -322,6 +377,9 @@ async function poll() {
     if (!res.ok) throw new Error("HTTP " + res.status);
     var data = await res.json();
     render(data);
+    // 初回描画でカードが #list に入った後に一度だけスクロール位置を復元する。
+    // 2 回目以降のポーリング再描画では呼ばない（ユーザーのスクロール操作と競合させない）。
+    restoreScrollOnce();
     showErr("");
   } catch (e) {
     document.getElementById("meta").textContent = "接続エラー";

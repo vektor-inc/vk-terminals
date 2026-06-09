@@ -55,6 +55,18 @@
   .badge.idle { background: #2a2f37; color: #9aa3ae; }
   .badge.running { background: rgba(59,130,246,0.15); color: #7fb0ff; }
   .badge.waiting { background: rgba(245,166,35,0.18); color: #ffce7a; }
+  /* PR リンク（issue #53）。PC 版の [ PR ↗ ] バッジ（GitHub PR グリーン系）に寄せる。
+     ヘッダ帯（暗背景 var(--card)）上に置くため、PC の濃緑ではなく明るい緑文字にする。
+     .badge と同じ角丸・font-size に調和させつつ、タップ領域確保のため min-height 32px・
+     padding 縦広めにして指で押しやすくする（ヘッダ自体は min-height 44px）。 */
+  a.pr-link { display: none; align-items: center; gap: 4px; flex: none;
+    font-size: 10px; font-weight: 700; padding: 4px 8px; min-height: 32px; border-radius: 6px;
+    text-transform: uppercase; letter-spacing: 0.04em; text-decoration: none;
+    background: rgba(63,185,80,0.15); border: 1px solid rgba(63,185,80,0.3); color: #6fd58a; }
+  a.pr-link.show { display: inline-flex; }
+  a.pr-link:active { background: rgba(63,185,80,0.28); border-color: rgba(63,185,80,0.5); }
+  a.pr-link:focus-visible { outline: 2px solid #58a6ff; outline-offset: 2px; }
+  a.pr-link .pr-icon { font-size: 10px; opacity: 0.85; line-height: 1; flex: none; }
   pre.lines { margin: 0; padding: 10px 12px; background: #0d0f13; color: #c8ccd2;
     font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11px; line-height: 1.45;
     white-space: pre-wrap; word-break: break-word; max-height: 240px; overflow-y: auto;
@@ -102,6 +114,20 @@ function stripAnsi(s) {
     .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, ""); // その他制御文字（改行・タブは残す）
 }
 function tail(s, n) { return s.length > n ? s.slice(s.length - n) : s; }
+
+// href に入れる URL を http(s) のみに制限する防御（issue #53）。
+// new URL() で parse し protocol が http:/https: のときだけ true を返す。
+// javascript: / data: 等のスキーム注入を防ぐ。これを通った URL だけ href にセットする。
+function isSafeHttpUrl(u) {
+  if (typeof u !== "string" || !u) return false;
+  if (u.length > 2048) return false;
+  try {
+    var parsed = new URL(u);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch (e) {
+    return false;
+  }
+}
 
 // スクロール位置の保存・復元。
 // このページは Cache-Control: no-store で配信され、#list の中身は読み込み後に
@@ -249,9 +275,22 @@ function ensureCard(termId) {
   var cwd = document.createElement("div"); cwd.className = "cwd";
   title.appendChild(name); title.appendChild(cwd);
   var badge = document.createElement("span"); badge.className = "badge idle"; badge.textContent = "idle";
+  // PR リンク（issue #53）。ヘッダ帯に置くことで折り畳んでも残り、PC の「常時表示」方針と整合する。
+  // モバイルは通常ブラウザなので実 URL を href に入れた通常リンク（target=_blank）にする。
+  // href へのセットは render() 側で isSafeHttpUrl() を通った値だけ行う。
+  var prLink = document.createElement("a");
+  prLink.className = "pr-link"; // 初期は display:none。.show 付与で表示
+  prLink.target = "_blank";
+  prLink.rel = "noopener noreferrer";
+  prLink.setAttribute("aria-label", "プルリクエストを開く");
+  var prLabel = document.createElement("span"); prLabel.textContent = "PR";
+  var prIcon = document.createElement("span"); prIcon.className = "pr-icon";
+  prIcon.setAttribute("aria-hidden", "true"); prIcon.textContent = "↗";
+  prLink.appendChild(prLabel); prLink.appendChild(prIcon);
   var chevron = document.createElement("span"); chevron.className = "chevron";
   chevron.setAttribute("aria-hidden", "true"); chevron.textContent = "▾";
-  head.appendChild(dot); head.appendChild(title); head.appendChild(badge); head.appendChild(chevron);
+  head.appendChild(dot); head.appendChild(title); head.appendChild(badge);
+  head.appendChild(prLink); head.appendChild(chevron);
 
   // ヘッダ帯全体をタップで開閉トグル。将来ヘッダ内に
   // ボタン/入力/リンクを置いた場合の保険で、それらをタップした時はトグルしない。
@@ -309,7 +348,7 @@ function ensureCard(termId) {
   list.appendChild(root);
 
   cards[termId] = { root: root, pre: pre, name: name, cwd: cwd, dot: dot, badge: badge,
-    head: head, chevron: chevron };
+    prLink: prLink, head: head, chevron: chevron };
   // 復活時を含め、現在の collapsed 状態を初期反映
   syncCollapseUI(cards[termId], termId);
   return cards[termId];
@@ -343,6 +382,17 @@ function render(data) {
     var title = t.displayTitle || t.apiTitle || t.taskTitle || "";
     c.name.textContent = title.trim() ? title : ("Terminal " + termId);
     c.cwd.textContent = t.cwdShort || t.cwd || "";
+    // PR リンク（issue #53）。安全な http(s) URL のときだけ href にセットして表示、
+    // そうでなければ href を空にして非表示にする。
+    if (isSafeHttpUrl(t.apiPrUrl)) {
+      c.prLink.href = t.apiPrUrl;
+      c.prLink.title = t.apiPrUrl;
+      c.prLink.classList.add("show");
+    } else {
+      c.prLink.removeAttribute("href");
+      c.prLink.removeAttribute("title");
+      c.prLink.classList.remove("show");
+    }
     c.pre.textContent = tail(stripAnsi(t.lastLines || ""), 1400).replace(/\n{3,}/g, "\n\n").trim();
     // 折り畳み状態を毎回当て直す（再描画・端末の消失→復活をまたいで一致させる）
     syncCollapseUI(c, termId);

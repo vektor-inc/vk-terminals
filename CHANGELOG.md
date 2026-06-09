@@ -1,5 +1,6 @@
 # Changelog
 
+- [ 機能追加 ] モバイルページ（`renderer/mobile.html`）の各ターミナルカードのヘッダに PR リンク（PR ↗）を表示できるように変更。`apiPrUrl` が設定され安全な http(s) URL のときだけ表示し、タップで GitHub の PR を新規タブで開く（[#53](https://github.com/vektor-inc/vk-terminals/issues/53)）
 - [ 機能追加 ] モバイルページ（`renderer/mobile.html`）の各ターミナルカードを、ヘッダをタップして折り畳めるように変更。折り畳むと出力・操作ボタンが隠れ、状態は再読込をまたいで保持（[#49](https://github.com/vektor-inc/vk-terminals/issues/49)）
 - [ セキュリティ修正 ] HTTP API の更新系エンドポイント（`POST /api/send`・`POST /api/set-title`・`POST /api/new-pane`）に Origin 検証を追加。ブラウザが cross-origin POST 時に必ず送る `Origin` ヘッダと `Host` を突き合わせ、不一致なら `403` を返す。悪意あるサイトから `http://<apiHost>:13847/api/send` へ CSRF でターミナルへ任意入力を流す攻撃を防ぐ。`Origin` ヘッダを持たない非ブラウザクライアント（curl 等）や同一オリジンのモバイルページは従来どおり素通り（後方互換）
 - [ 機能追加 ] スマホ等のリモート端末から状態確認・応答するためのモバイルページを追加。HTTP API に `GET /`（`/index.html` も同義）を追加し、`renderer/mobile.html` を配信する。ページは既存の `GET /api/states` を 2 秒ごとにポーリングして各ターミナルをカード表示（`status` を `idle`／`running`／`waiting` で色分け・ドット表示、`waiting` を点滅、`waiting` > `running` > `idle` の順でソート）、`lastLines` は ANSI 制御コードを除去して末尾を表示する。各カードに quick ボタン（`1`／`2`／`3`／`↵`／`Yes(y↵)`／`No(n↵)`／`Esc`／`Ctrl-C`）と自由入力欄（末尾改行トグル付き）を備え、`POST /api/send` で応答できる

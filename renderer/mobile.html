@@ -367,7 +367,7 @@ function render(data) {
   });
 
   var seen = {};
-  keys.forEach(function(paneId) {
+  keys.forEach(function(paneId, idx) {
     var t = terms[paneId];
     var termId = String(t.termId);
     seen[termId] = true;
@@ -396,8 +396,8 @@ function render(data) {
     c.pre.textContent = tail(stripAnsi(t.lastLines || ""), 1400).replace(/\n{3,}/g, "\n\n").trim();
     // 折り畳み状態を毎回当て直す（再描画・端末の消失→復活をまたいで一致させる）
     syncCollapseUI(c, termId);
-    // DOM 並び替え
-    list.appendChild(c.root);
+    // CSS order で並び替え（DOM移動をやめてモバイルでの入力フォーカス消失を防ぐ）
+    c.root.style.order = String(idx);
   });
   // 消えた端末のカードを削除
   Object.keys(cards).forEach(function(termId) {

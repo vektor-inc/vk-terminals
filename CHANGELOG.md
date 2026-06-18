@@ -1,5 +1,6 @@
 # Changelog
 
+- [ 不具合修正 ] `POST /api/send` で「本文 + 末尾 Enter（`\r`）」を 1 リクエストで受け取ると、Claude Code の TUI がペースト扱いして末尾 `\r` を入力欄の改行として吸収し Enter 確定にならず入力待ちのまま止まる不具合を修正（URL など長い入力で特に再現）。サーバ側で本文と Enter を分割し、本文を送って `150ms` 待ってから Enter を送るよう変更。スマホUI・terminal-monitor 等の全送信経路に適用
 - [ 不具合修正 ] モバイルページでテキスト入力中にポーリングが走るたびに DOM が移動されソフトキーボードが消える不具合を修正。`render()` 内の `list.appendChild()` による DOM 移動をやめ、CSS `order` プロパティで視覚的な並び替えのみを行うよう変更（[#55](https://github.com/vektor-inc/vk-terminals/issues/55)）
 
 - [ 機能追加 ] モバイルページ（`renderer/mobile.html`）の各ターミナルカードのヘッダに PR リンク（PR ↗）を表示できるように変更。`apiPrUrl` が設定され安全な http(s) URL のときだけ表示し、タップで GitHub の PR を新規タブで開く（[#53](https://github.com/vektor-inc/vk-terminals/issues/53)）

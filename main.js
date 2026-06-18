@@ -29,6 +29,12 @@ const API_PORT = 13847;
 const DATA_DIR = path.join(os.homedir(), '.vk-terminals');
 const STATE_FILE = path.join(DATA_DIR, 'states.json');
 const LOG_PREFIX = '[vk-terminals]';
+// /api/send で「本文 + 末尾 Enter」を 1 リクエストで受け取ったとき、本文と Enter を
+// 分割して送るまでの待機時間（ms）。本文と \r を 1 回の write でまとめて流すと、
+// Claude Code の TUI がペースト（複数行入力）扱いして末尾 \r を入力欄の改行として
+// 吸収し Enter 確定にならない（URL のような長い入力で特に再現しやすい）。
+// 本文を先に流して TUI の再描画が落ち着いてから Enter を送ることで確実に確定させる。
+const SEND_ENTER_SPLIT_DELAY_MS = 150;
 let cachedStates = {};  // renderer から受け取った状態キャッシュ
 let httpServer = null;
 
@@ -493,7 +499,23 @@ function startHttpApi() {
             res.end(JSON.stringify({ error: `terminal ${termId} not found` }));
             return;
           }
-          p.write(input);
+          // 「本文 + 末尾 Enter」を 1 リクエストで受け取った場合は、本文と Enter を
+          // 別々の write に分割して送る（まとめて送ると Claude Code が末尾 \r を
+          // ペーストの改行として吸収し Enter 確定にならないため。SEND_ENTER_SPLIT_DELAY_MS 参照）。
+          const trailingNewline = input.match(/[\r\n]+$/);
+          const hasBodyBeforeNewline = trailingNewline && input.length > trailingNewline[0].length;
+          if (hasBodyBeforeNewline) {
+            const bodyPart = input.slice(0, input.length - trailingNewline[0].length);
+            p.write(bodyPart);
+            setTimeout(() => {
+              // 待機中にターミナルが閉じられている可能性があるので存在を再確認する
+              if (ptys.get(String(termId)) === p) {
+                p.write(trailingNewline[0]);
+              }
+            }, SEND_ENTER_SPLIT_DELAY_MS);
+          } else {
+            p.write(input);
+          }
           // renderer に通知（バッジ表示用）
           if (win && !win.isDestroyed()) {
             win.webContents.send('terminal:auto-input', termId);

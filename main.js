@@ -199,6 +199,13 @@ app.on('before-quit', () => {
   if (httpServer) httpServer.close();
 });
 
+// renderer がエージェントルーム（issue #58）の有効/無効を知るための設定取得。
+//   config.json の `agentroom: true` のときだけ各ペイン下部にアコーディオンを表示する。
+ipcMain.handle('app:get-config', () => {
+  const config = loadUserConfig();
+  return { agentroom: config.agentroom === true };
+});
+
 ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
   const id = String(nextId++);
   const shell = process.env.SHELL || '/bin/zsh';
@@ -635,6 +642,95 @@ function startHttpApi() {
           }
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ ok: true, termId, title, url: urlValue, prUrl: prUrlValue }));
+        } catch (e) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'invalid JSON' }));
+        }
+      });
+      return;
+    }
+
+    // POST /api/agentroom  { termId: "1", agents?: {"和田":"working", ...}, agent?: "麗美", state?: "consulting" }
+    //   — エージェントルーム（issue #58）の稼働状況を更新する。config.json の `agentroom: true` 時のみ表示に反映。
+    //   `agents` オブジェクトを渡すとそのペインのルーム状態を丸ごと置換する（置換セマンティクス）。
+    //   `agent` + `state` を渡すと該当 1 人だけ更新する（マージセマンティクス）。
+    //   state の語彙: 'consulting'（相談中）/ 'working'（作業中）/ 'idle'（待機中）/ 'off'（離席）。
+    //   表記ゆれ（日本語・大文字等）は renderer 側で正規化する。
+    //   agents の値・state は文字列のみ許可（最大 64 文字）。それ以外は 400。
+    if (req.method === 'POST' && url.pathname === '/api/agentroom') {
+      if (isForbiddenOrigin(req)) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'forbidden origin' }));
+        return;
+      }
+      const MAX_BODY = 10 * 1024;
+      let body = '';
+      let aborted = false;
+      req.on('data', chunk => {
+        body += chunk;
+        if (body.length > MAX_BODY) {
+          aborted = true;
+          res.writeHead(413, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'payload too large' }));
+          req.destroy();
+        }
+      });
+      req.on('end', () => {
+        if (aborted) return;
+        try {
+          const parsed = JSON.parse(body);
+          const termId = parsed?.termId != null ? String(parsed.termId) : '';
+          if (!termId) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'termId required' }));
+            return;
+          }
+          if (!ptys.has(termId)) {
+            res.writeHead(404, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: `terminal ${termId} not found` }));
+            return;
+          }
+
+          const isValidStateValue = (v) => typeof v === 'string' && v.length > 0 && v.length <= 64;
+
+          // 1 人だけ更新（agent + state）。replace=false でマージ。
+          if (typeof parsed?.agent === 'string') {
+            if (!isValidStateValue(parsed.state)) {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'state must be a non-empty string (<=64 chars)' }));
+              return;
+            }
+            const agents = { [parsed.agent]: parsed.state };
+            if (win && !win.isDestroyed()) {
+              win.webContents.send('terminal:agentroom', termId, agents, false);
+            }
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: true, termId, agents, replace: false }));
+            return;
+          }
+
+          // ルーム状態を丸ごと置換（agents オブジェクト）。
+          const agentsRaw = parsed?.agents;
+          if (agentsRaw == null || typeof agentsRaw !== 'object' || Array.isArray(agentsRaw)) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'agents object or agent+state required' }));
+            return;
+          }
+          const agents = {};
+          for (const [k, v] of Object.entries(agentsRaw)) {
+            if (typeof k !== 'string' || k.length === 0 || k.length > 64) continue;
+            if (!isValidStateValue(v)) {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: `state for "${k}" must be a non-empty string (<=64 chars)` }));
+              return;
+            }
+            agents[k] = v;
+          }
+          if (win && !win.isDestroyed()) {
+            win.webContents.send('terminal:agentroom', termId, agents, true);
+          }
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, termId, agents, replace: true }));
         } catch (e) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'invalid JSON' }));

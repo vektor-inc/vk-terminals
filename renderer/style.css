@@ -613,3 +613,233 @@ body.pane-dragging * {
   border: 2px solid #58a6ff;
   border-radius: 0;
 }
+
+/* ─── エージェントルーム（issue #58） ──────────────────────────────────────────
+ * config.json の `agentroom: true` のときだけ、各ペイン下部に開閉式で表示する。
+ * サブエージェントの稼働状況をドラクエ風ドット絵キャラで可視化する。
+ * <details>/<summary> ベース。閉じている間はサマリ行（高さ最小）だけ残す。 */
+.agent-room {
+  flex-shrink: 0;
+  border-top: 1px solid #21262d;
+  background: #0d1117;
+  border-bottom-left-radius: var(--vktm--border-radius--md);
+  border-bottom-right-radius: var(--vktm--border-radius--md);
+  font-size: 12px;
+}
+
+/* 折り畳みペインではルームも隠して、上部ストリップを最小に保つ */
+.pane.collapsed .agent-room {
+  display: none;
+}
+
+.agent-room-summary {
+  list-style: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  color: #8b949e;
+  user-select: none;
+  font-weight: 600;
+}
+.agent-room-summary::-webkit-details-marker { display: none; }
+.agent-room-summary:hover { color: #c9d1d9; background: #161b22; }
+.agent-room-summary::after {
+  content: '▸';
+  margin-left: auto;
+  font-size: 10px;
+  transition: transform 0.15s ease;
+}
+.agent-room[open] > .agent-room-summary::after { transform: rotate(90deg); }
+.agent-room-icon { font-size: 13px; }
+
+/* シーン本体。床（チェック模様）の上にゾーンを横並びにする。 */
+.agent-room-body {
+  max-height: 280px;
+  overflow: auto;
+  padding: 10px 8px 12px;
+  /* ドラクエ風の床: 暗いタイルのチェッカー */
+  background-color: #11161f;
+  background-image:
+    linear-gradient(45deg, #161d2a 25%, transparent 25%, transparent 75%, #161d2a 75%),
+    linear-gradient(45deg, #161d2a 25%, transparent 25%, transparent 75%, #161d2a 75%);
+  background-size: 24px 24px;
+  background-position: 0 0, 12px 12px;
+}
+
+.ar-stage {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 14px;
+}
+
+/* 各ゾーン（相談テーブル / デスク / 休憩） */
+.ar-zone {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  padding: 4px 10px 18px;
+  border-radius: 8px;
+  background: rgba(13, 17, 23, 0.45);
+  box-shadow: inset 0 0 0 1px rgba(48, 54, 61, 0.6);
+}
+
+/* ゾーン名タグ（左下に小さく） */
+.ar-zone-tag {
+  position: absolute;
+  left: 8px;
+  bottom: 3px;
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  color: #6e7681;
+  pointer-events: none;
+}
+
+/* 相談テーブル: キャラを上に並べ、その下に木目のテーブル天板を敷く */
+.ar-zone-table .ar-around {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+}
+.ar-table-top {
+  position: relative;
+  height: 12px;
+  margin-top: -2px;
+  border-radius: 3px;
+  background: repeating-linear-gradient(90deg, #6b4422 0 6px, #7a4f29 6px 12px);
+  box-shadow: 0 2px 0 #4a2f17;
+}
+.ar-zone-table .ar-table-top .ar-zone-tag { bottom: -1px; }
+
+/* 1 キャラ */
+.ar-char {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 60px;
+}
+.ar-figure {
+  position: relative;
+  width: 50px;
+  height: 68px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+.ar-sprite-svg {
+  width: 46px;
+  height: 64px;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  filter: drop-shadow(0 2px 0 rgba(0, 0, 0, 0.3));
+}
+.ar-name {
+  margin-top: 2px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #c9d1d9;
+  text-shadow: 0 1px 0 #000;
+}
+
+/* 小道具: コーヒー（待機）を手元（右下）に重ねる */
+.ar-coffee {
+  position: absolute;
+  right: 2px;
+  bottom: 10px;
+  width: 18px;
+  height: 18px;
+}
+.ar-coffee .ar-prop-svg { width: 18px; height: 18px; }
+/* 湯気 */
+.ar-coffee::before {
+  content: '';
+  position: absolute;
+  left: 5px;
+  top: -6px;
+  width: 2px;
+  height: 6px;
+  background: rgba(201, 209, 217, 0.5);
+  border-radius: 2px;
+  animation: ar-steam 1.8s ease-in-out infinite;
+}
+
+/* 小道具: モニタ（作業）をキャラの下に置く */
+.ar-desk {
+  margin-top: -6px;
+  width: 38px;
+  height: 28px;
+  display: flex;
+  justify-content: center;
+}
+.ar-desk .ar-prop-svg { width: 38px; height: 28px; }
+
+/* 吹き出し（相談） */
+.ar-bubble {
+  position: absolute;
+  top: -10px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #f0f6fc;
+  color: #24292f;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 2px 5px 3px;
+  border-radius: 6px;
+  white-space: nowrap;
+  animation: ar-bubble-pop 1.4s ease-in-out infinite;
+  z-index: 1;
+}
+.ar-bubble::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: -3px;
+  transform: translateX(-50%);
+  border-left: 3px solid transparent;
+  border-right: 3px solid transparent;
+  border-top: 4px solid #f0f6fc;
+}
+
+/* ─── キャラの状態別アニメーション ─────────────────────────────────────────── */
+/* 待機: ゆっくり上下に揺れる */
+.ar-state-idle .ar-sprite-svg { animation: ar-bob 2.6s ease-in-out infinite; }
+/* 作業: 小刻みにタイピングするように細かく揺れる */
+.ar-state-working .ar-sprite-svg { animation: ar-type 0.5s steps(2, end) infinite; }
+/* 相談: わずかに首を振る */
+.ar-state-consulting .ar-sprite-svg { animation: ar-nod 1.4s ease-in-out infinite; }
+/* 離席: 薄く・グレースケール気味に */
+.ar-state-off { opacity: 0.35; filter: grayscale(0.8); }
+
+@keyframes ar-bob {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-2px); }
+}
+@keyframes ar-type {
+  0%   { transform: translateY(0); }
+  100% { transform: translateY(-1px); }
+}
+@keyframes ar-nod {
+  0%, 100% { transform: translateY(0) rotate(0deg); }
+  50%      { transform: translateY(-1px) rotate(-2deg); }
+}
+@keyframes ar-steam {
+  0%   { opacity: 0;   transform: translateY(2px) scaleY(0.6); }
+  50%  { opacity: 0.7; transform: translateY(-1px) scaleY(1); }
+  100% { opacity: 0;   transform: translateY(-4px) scaleY(0.6); }
+}
+@keyframes ar-bubble-pop {
+  0%, 100% { transform: translateX(-50%) translateY(0); opacity: 0.85; }
+  50%      { transform: translateX(-50%) translateY(-2px); opacity: 1; }
+}
+
+/* アニメーション抑制設定を尊重 */
+@media (prefers-reduced-motion: reduce) {
+  .ar-sprite-svg,
+  .ar-bubble,
+  .ar-coffee::before { animation: none !important; }
+}

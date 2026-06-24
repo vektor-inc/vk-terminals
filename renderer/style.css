@@ -698,7 +698,13 @@ body.pane-dragging * {
   pointer-events: none;
 }
 
-/* 相談テーブル: キャラを上に並べ、その下に木目のテーブル天板を敷く */
+/* 相談テーブル: キャラを上に並べ、その下に木目のテーブル天板を敷く。
+   .ar-zone は既定で横並び（flex-end）なので、このゾーンだけ縦積みに上書きして
+   around（キャラ列）の下に天板が来るようにする。 */
+.ar-zone-table {
+  flex-direction: column;
+  align-items: center;
+}
 .ar-zone-table .ar-around {
   display: flex;
   align-items: flex-end;
@@ -706,6 +712,8 @@ body.pane-dragging * {
 }
 .ar-table-top {
   position: relative;
+  width: 100%;
+  min-width: 96px;
   height: 12px;
   margin-top: -2px;
   border-radius: 3px;

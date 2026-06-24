@@ -425,14 +425,43 @@ function resolveAgentStatesFromOutput(recentText) {
   return out;
 }
 
-// state 文字列を正規化する。外部（HTTP API）からの表記ゆれを吸収する。
-function normalizeState(raw) {
-  if (typeof raw !== 'string') return 'idle';
+// canonical な state 語彙（この 4 つのみ）。
+const CANONICAL_STATES = ['consulting', 'working', 'idle', 'off'];
+
+// state 文字列を canonical 値に変換する。明確にいずれかへ写像できれば canonical を、
+// できなければ null を返す（呼び出し側で「不正として reject」か「idle にフォールバック」かを選べる）。
+// 表記ゆれ（日本語・大文字・前後空白等）は吸収するが、'wroking' のような誤記は null にする。
+function canonicalizeState(raw) {
+  if (typeof raw !== 'string') return null;
   const s = raw.trim().toLowerCase();
+  if (CANONICAL_STATES.includes(s)) return s; // 既に canonical（idle 含む）
   if (/^(consult|consulting|meeting|discuss|talk)/.test(s) || /相談|会議|打ち合わせ|打合せ/.test(raw)) return 'consulting';
   if (/^(work|working|busy|coding|implement|implementing|test|testing|run|running)/.test(s) || /作業|実装|テスト|稼働/.test(raw)) return 'working';
   if (/^(off|away|gone|absent)/.test(s) || /離席|不在|退室/.test(raw)) return 'off';
-  return 'idle';
+  if (/^(idle|wait|waiting|free|break|rest)/.test(s) || /待機|休憩|空き/.test(raw)) return 'idle';
+  return null;
+}
+
+// 既知のエージェント名か（前後空白は許容）。AGENT_ORDER（司を含む全員）が正。
+function isKnownAgent(name) {
+  return typeof name === 'string' && AGENT_ORDER.includes(name.trim());
+}
+
+// state 文字列を正規化する。外部（HTTP API）からの表記ゆれを吸収する。
+// 表示用なので未知・不正は 'idle' に倒す（描画を止めない）。reject 用途には canonicalizeState を使う。
+function normalizeState(raw) {
+  return canonicalizeState(raw) || 'idle';
+}
+
+// ラウンジゾーン（idle / off 混在）のゾーンタグ文言を決める。
+// 全員 idle → 「休憩中」 / 全員 off → 「離席中」 / 混在 → 「休憩 / 離席」。
+function loungeLabel(states) {
+  const list = Array.isArray(states) ? states : [];
+  const hasIdle = list.some(s => s !== 'off'); // off 以外（idle 等）を休憩扱い
+  const hasOff = list.some(s => s === 'off');
+  if (hasIdle && hasOff) return '休憩 / 離席';
+  if (hasOff) return '離席中';
+  return '休憩中';
 }
 
 function stateLabel(state) {
@@ -527,7 +556,7 @@ function buildScene(agents) {
     lounge.forEach(n => zone.appendChild(buildCharEl(n, resolved[n])));
     const tag = document.createElement('span');
     tag.className = 'ar-zone-tag';
-    tag.textContent = '休憩中';
+    tag.textContent = loungeLabel(lounge.map(n => resolved[n]));
     zone.appendChild(tag);
     stage.appendChild(zone);
   }
@@ -540,7 +569,11 @@ module.exports = {
   AGENT_HANDLES,
   SUBAGENT_ORDER,
   AGENT_META,
+  CANONICAL_STATES,
   normalizeState,
+  canonicalizeState,
+  isKnownAgent,
+  loungeLabel,
   resolveAgentStatesFromOutput,
   buildScene,
 };

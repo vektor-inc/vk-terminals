@@ -7,6 +7,9 @@ const http = require('http');
 const { execFile } = require('child_process');
 const { promisify } = require('util');
 const { stripAnsiForPattern } = require('./utils/stripAnsi');
+// エージェントルーム（issue #58）の agent 名・state 検証を renderer 側と共有する。
+// canonicalizeState / isKnownAgent は DOM 非依存なので main プロセスから require して使える。
+const { canonicalizeState, isKnownAgent } = require('./renderer/agentRoom');
 const execFileAsync = promisify(execFile);
 
 let win;
@@ -440,6 +443,32 @@ function startHttpApi() {
     return originHost !== req.headers.host;
   };
 
+  // POST リクエスト body を読み取り、UTF-8 文字列にして onBody(body) を呼ぶ。
+  //   - chunk は Buffer のまま貯めて最後に一度だけ decode する（日本語がチャンク境界で
+  //     割れて文字化け→JSON 破損するのを防ぐ）。
+  //   - サイズ制限はバイト数で判定し、超過したら 413 を返して破棄する（onBody は呼ばない）。
+  const readJsonBody = (req, res, maxBytes, onBody) => {
+    const chunks = [];
+    let size = 0;
+    let aborted = false;
+    req.on('data', chunk => {
+      if (aborted) return;
+      size += chunk.length; // chunk は Buffer なので length はバイト数
+      if (size > maxBytes) {
+        aborted = true;
+        res.writeHead(413, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'payload too large' }));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => {
+      if (aborted) return;
+      onBody(Buffer.concat(chunks).toString('utf8'));
+    });
+  };
+
   httpServer = http.createServer((req, res) => {
     const url = new URL(req.url, `http://127.0.0.1:${API_PORT}`);
 
@@ -480,19 +509,7 @@ function startHttpApi() {
         return;
       }
       const MAX_BODY = 10 * 1024; // 10KB
-      let body = '';
-      let aborted = false;
-      req.on('data', chunk => {
-        body += chunk;
-        if (body.length > MAX_BODY) {
-          aborted = true;
-          res.writeHead(413, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'payload too large' }));
-          req.destroy();
-        }
-      });
-      req.on('end', () => {
-        if (aborted) return;
+      readJsonBody(req, res, MAX_BODY, (body) => {
         try {
           const { termId, input } = JSON.parse(body);
           if (!termId || typeof input !== 'string') {
@@ -554,19 +571,7 @@ function startHttpApi() {
         return;
       }
       const MAX_BODY = 10 * 1024;
-      let body = '';
-      let aborted = false;
-      req.on('data', chunk => {
-        body += chunk;
-        if (body.length > MAX_BODY) {
-          aborted = true;
-          res.writeHead(413, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'payload too large' }));
-          req.destroy();
-        }
-      });
-      req.on('end', () => {
-        if (aborted) return;
+      readJsonBody(req, res, MAX_BODY, (body) => {
         try {
           const parsed = JSON.parse(body);
           const termId = parsed?.termId != null ? String(parsed.termId) : '';
@@ -655,8 +660,9 @@ function startHttpApi() {
     //   `agents` オブジェクトを渡すとそのペインのルーム状態を丸ごと置換する（置換セマンティクス）。
     //   `agent` + `state` を渡すと該当 1 人だけ更新する（マージセマンティクス）。
     //   state の語彙: 'consulting'（相談中）/ 'working'（作業中）/ 'idle'（待機中）/ 'off'（離席）。
-    //   表記ゆれ（日本語・大文字等）は renderer 側で正規化する。
-    //   agents の値・state は文字列のみ許可（最大 64 文字）。それ以外は 400。
+    //   agent は既知（司/和田/安藤/麗美/植草）のみ受理。state は表記ゆれ（日本語・大文字等）を
+    //   canonical へ正規化し、いずれにも写像できない値（誤記等）は 400 で reject する。
+    //   renderer へは正規化済みの canonical state を送る。
     if (req.method === 'POST' && url.pathname === '/api/agentroom') {
       if (isForbiddenOrigin(req)) {
         res.writeHead(403, { 'Content-Type': 'application/json' });
@@ -664,19 +670,7 @@ function startHttpApi() {
         return;
       }
       const MAX_BODY = 10 * 1024;
-      let body = '';
-      let aborted = false;
-      req.on('data', chunk => {
-        body += chunk;
-        if (body.length > MAX_BODY) {
-          aborted = true;
-          res.writeHead(413, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'payload too large' }));
-          req.destroy();
-        }
-      });
-      req.on('end', () => {
-        if (aborted) return;
+      readJsonBody(req, res, MAX_BODY, (body) => {
         try {
           const parsed = JSON.parse(body);
           const termId = parsed?.termId != null ? String(parsed.termId) : '';
@@ -691,16 +685,25 @@ function startHttpApi() {
             return;
           }
 
-          const isValidStateValue = (v) => typeof v === 'string' && v.length > 0 && v.length <= 64;
+          // agent 名は既知（司/和田/安藤/麗美/植草、前後空白許容）のみ受理。
+          // state は canonical（consulting/working/idle/off）へ正規化し、写像できなければ reject。
+          // 正規化した値を renderer へ送ることで、未知 state が idle 扱いされて fallback を
+          // 不本意に抑制する事故を防ぐ。
 
           // 1 人だけ更新（agent + state）。replace=false でマージ。
           if (typeof parsed?.agent === 'string') {
-            if (!isValidStateValue(parsed.state)) {
+            if (!isKnownAgent(parsed.agent)) {
               res.writeHead(400, { 'Content-Type': 'application/json' });
-              res.end(JSON.stringify({ error: 'state must be a non-empty string (<=64 chars)' }));
+              res.end(JSON.stringify({ error: `unknown agent "${parsed.agent}"` }));
               return;
             }
-            const agents = { [parsed.agent]: parsed.state };
+            const state = canonicalizeState(parsed.state);
+            if (!state) {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'state must be one of consulting/working/idle/off' }));
+              return;
+            }
+            const agents = { [parsed.agent.trim()]: state };
             if (win && !win.isDestroyed()) {
               win.webContents.send('terminal:agentroom', termId, agents, false);
             }
@@ -718,13 +721,18 @@ function startHttpApi() {
           }
           const agents = {};
           for (const [k, v] of Object.entries(agentsRaw)) {
-            if (typeof k !== 'string' || k.length === 0 || k.length > 64) continue;
-            if (!isValidStateValue(v)) {
+            if (!isKnownAgent(k)) {
               res.writeHead(400, { 'Content-Type': 'application/json' });
-              res.end(JSON.stringify({ error: `state for "${k}" must be a non-empty string (<=64 chars)` }));
+              res.end(JSON.stringify({ error: `unknown agent "${k}"` }));
               return;
             }
-            agents[k] = v;
+            const state = canonicalizeState(v);
+            if (!state) {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: `state for "${k}" must be one of consulting/working/idle/off` }));
+              return;
+            }
+            agents[k.trim()] = state;
           }
           if (win && !win.isDestroyed()) {
             win.webContents.send('terminal:agentroom', termId, agents, true);
@@ -754,19 +762,7 @@ function startHttpApi() {
         return;
       }
       const MAX_BODY = 10 * 1024;
-      let body = '';
-      let aborted = false;
-      req.on('data', chunk => {
-        body += chunk;
-        if (body.length > MAX_BODY) {
-          aborted = true;
-          res.writeHead(413, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'payload too large' }));
-          req.destroy();
-        }
-      });
-      req.on('end', () => {
-        if (aborted) return;
+      readJsonBody(req, res, MAX_BODY, (body) => {
         let requestedCwd = null;
         let requestedNoClaude;
         if (body.length > 0) {

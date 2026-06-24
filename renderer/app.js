@@ -1215,7 +1215,22 @@ function updateAgentRoom(paneId) {
   const t = terminals[paneId];
   if (!t) return;
   const body = document.querySelector(`.pane[data-id="${paneId}"] .agent-room-body`);
-  if (body) renderRoomInto(body, t);
+  if (body) {
+    renderRoomInto(body, t);
+    t.agentRoomSig = JSON.stringify(resolveRoomAgents(t)); // 直近描画した状態を記録（差分判定用）
+  }
+}
+
+// 定期再評価用（2000ms interval から呼ぶ）。
+// API 失効（AGENTROOM_API_TTL_MS 超過）後、出力が止まったペインでも古い表示が残り続ける問題（issue #58）
+// への対処。解決後の状態が前回描画と変わったときだけ再描画し、無駄な再描画を避ける。
+function refreshAgentRoomIfChanged(paneId) {
+  if (!agentRoomEnabled) return;
+  const t = terminals[paneId];
+  if (!t) return;
+  const sig = JSON.stringify(resolveRoomAgents(t));
+  if (sig === t.agentRoomSig) return; // 変化なし → 再描画しない
+  updateAgentRoom(paneId);
 }
 
 function renderLeaf(node, parentDirection) {
@@ -1704,6 +1719,9 @@ setInterval(() => {
   const states = {};
   for (const [paneId, t] of Object.entries(terminals)) {
     if (!t) continue;
+    // エージェントルーム（issue #58）: API 失効後の取り残しを防ぐため、ここで TTL を含めて
+    // 定期再評価する（updatePaneStatus / API 受信以外の契機を補う）。変化時のみ再描画。
+    if (agentRoomEnabled) refreshAgentRoomIfChanged(paneId);
     // 折り畳み状態は tree 側に持っているので、レポート時に leaf を引いて取り出す
     const leaf = tree ? findNode(tree, paneId) : null;
     states[paneId] = {

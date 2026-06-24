@@ -400,16 +400,27 @@ const MONITOR_SVG =
   '<rect x="3" y="10" width="10" height="2" fill="#3b2f3f"/>' +
   '</svg>';
 
+// 1 ハンドルが直近出力に「単語として」出現するか（任意で先頭に @ が付く）を判定する。
+// 単語境界で囲むことで "ando" が "andouble" に部分一致する誤検出を防ぐ。
+function handleAppears(text, handle) {
+  // 例: @wada / wada / "○ wada # …" にマッチし、andouble などにはマッチしない。
+  const re = new RegExp(`(?:^|[^A-Za-z0-9_])@?${handle}(?![A-Za-z0-9_])`, 'i');
+  return re.test(text);
+}
+
 // 直近の PTY 出力テキストから、サブエージェントの稼働状態 { 和田: 'working'|'idle', … } を判定する。
 // API（POST /api/agentroom）未通知時のフォールバック用。DOM 非依存の純粋関数なのでユニットテスト可能。
 // recentText は ANSI 除去済みのプレーンテキストを想定する（呼び出し側で stripAnsiForDisplay 済み）。
 //
-// 判定: 各サブエージェントの英語ハンドルが直近出力に「単語として」出現すれば working、無ければ idle。
+// 判定: サブエージェントは Claude Code 上で英語ハンドル（wada / ando / remi / uekusa）で
+// 起動されるため、直近出力に日本語名ではなくハンドルが現れる。ハンドルが単語として
+// 出現すれば working、無ければ idle とする（司は対象外。pane status で別途決める）。
 function resolveAgentStatesFromOutput(recentText) {
   const text = typeof recentText === 'string' ? recentText : '';
   const out = {};
   for (const name of SUBAGENT_ORDER) {
-    out[name] = (text && text.indexOf(name) !== -1) ? 'working' : 'idle';
+    const handles = AGENT_HANDLES[name] || [];
+    out[name] = (text && handles.some(h => handleAppears(text, h))) ? 'working' : 'idle';
   }
   return out;
 }

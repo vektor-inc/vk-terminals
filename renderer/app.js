@@ -4,7 +4,7 @@ const { Terminal } = require('@xterm/xterm');
 const { FitAddon } = require('@xterm/addon-fit');
 const { stripAnsiForDisplay } = require('../utils/stripAnsi');
 // エージェントルーム（issue #58）。サブエージェントの稼働状況をドット絵キャラで可視化する。
-const { AGENT_ORDER, buildScene } = require('./agentRoom');
+const { AGENT_ORDER, buildScene, resolveAgentStatesFromOutput } = require('./agentRoom');
 
 // ─── State ────────────────────────────────────────────────────────────────────
 let tree = null;       // Layout tree root
@@ -1184,12 +1184,14 @@ function resolveRoomAgents(t) {
     : status === 'running' ? 'working'
     : 'idle';
   // フォールバック時のみ直近出力をスキャンする（API 新鮮時は不要）。
+  // サブエージェントの稼働判定は agentRoom.js の純粋関数に委譲（英語ハンドル基準・issue #60）。
   const recent = fresh ? '' : stripAnsiForDisplay((t && t.lastLines) || '');
+  const subStates = resolveAgentStatesFromOutput(recent);
 
   const out = {};
   for (const name of AGENT_ORDER) {
     if (name === '司') out[name] = directorState;
-    else out[name] = (recent && recent.indexOf(name) !== -1) ? 'working' : 'idle';
+    else out[name] = subStates[name] || 'idle';
   }
   // API 報告分で上書き（未報告の人はフォールバック値のまま残る）。
   if (fresh) {

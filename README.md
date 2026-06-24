@@ -97,6 +97,7 @@ cp config.example.json ~/.vk-terminals/config.json
 - `initialCommand`：1 ペイン目で claude が起動した直後に自動実行されるコマンド。省略または空にすると自動実行は行われません。`--no-claude` 起動時は送信されません。
 - `additionalPanes`：起動時に追加で開くペインのリスト。各要素の `cwd`（絶対パス）でペインが分割作成され、その作業ディレクトリで claude が立ち上がります。複数指定可。省略または空配列の場合は 1 ペインのみで起動します。
   - `noClaude: true` を指定すると、そのペインのみ claude を自動起動せず素のシェルとして開きます（省略時は CLI フラグの設定に従う）。
+- `agentroom`：`true` にすると、各ペイン下部に開閉式の「エージェントルーム」を表示します（後述の[エージェントルーム](#エージェントルームissue-58)を参照）。省略時は `false`（非表示）。
 
 > **移行メモ**: 旧パス `~/.claude/terminals-config.json` も後方互換として読み込まれます。
 
@@ -277,9 +278,51 @@ curl -s -X POST http://127.0.0.1:13847/api/new-pane \
 - タイムアウト（15秒）: `504 {"error": "timeout waiting for new pane"}`
 - renderer 側でペイン作成に失敗（既存ペインなし／分割失敗など）: `500 {"error": "<renderer からのエラーメッセージ>"}`
 
+#### `POST /api/agentroom`
+
+エージェントルーム（後述）の各キャラの稼働状況を更新します。`config.json` の `agentroom: true` のときだけ表示に反映されます。
+
+```bash
+# ルーム状態を丸ごと置換（agents オブジェクト）
+curl -s -X POST http://127.0.0.1:13847/api/agentroom \
+  -H 'Content-Type: application/json' \
+  -d '{"termId": "1", "agents": {"司": "consulting", "和田": "working", "麗美": "working"}}'
+
+# 1 人だけ更新（agent + state のマージ）
+curl -s -X POST http://127.0.0.1:13847/api/agentroom \
+  -H 'Content-Type: application/json' \
+  -d '{"termId": "1", "agent": "麗美", "state": "idle"}'
+```
+
+リクエストボディ:
+
+- `termId`：対象のターミナル ID（必須）。
+- `agents`：`{ "<キャラ名>": "<state>" }` のオブジェクト。指定するとそのペインのルーム状態を**丸ごと置換**します。
+- `agent` + `state`：1 人だけ更新（既存状態にマージ）。`agents` と `agent` のどちらかは必須。
+- `state` の語彙：`consulting`（相談中）／`working`（作業中）／`idle`（待機中）／`off`（離席）。日本語（「相談」「作業」「テスト」「待機」「離席」等）や大文字でも受け付け、表示側で正規化します。
+- キャラ名は `司` / `和田` / `安藤` / `麗美` / `植草`。未知の名前は無視されます。
+
+更新は最終受信から 90 秒間「新鮮」として優先表示され、それを過ぎると PTY 出力ベースのフォールバック表示に切り替わります（[エージェントルーム](#エージェントルームissue-58)を参照）。
+
 ### 状態ファイル
 
-`~/.vk-terminals/states.json` に2秒ごとに全ターミナルの状態が書き出されます。HTTP API と同じ内容です。アプリ終了時に自動削除されます。
+`~/.vk-terminals/states.json` に2秒ごとに全ターミナルの状態が書き出されます。HTTP API と同じ内容です。アプリ終了時に自動削除されます。`agentroom: true` のときは各ペインに解決済みのルーム状態 `agentRoom`（`{ "<キャラ名>": "<state>" }`）も含まれます。
+
+## エージェントルーム（issue #58）
+
+`config.json` で `agentroom: true` にすると、各ペイン下部に開閉式（アコーディオン）の「エージェントルーム」が表示されます。司／和田／安藤／麗美／植草の 5 キャラを、Gather / WorkAdventure 風のチビキャラ（ドット絵）で次のように描き分けます。
+
+| state | 表示 |
+|---|---|
+| `consulting`（相談中） | テーブルを囲み、吹き出しを出す |
+| `working`（作業中） | デスクで PC（モニタ）に向かう |
+| `idle`（待機中） | コーヒーを飲む |
+| `off`（離席） | 薄く表示 |
+
+状態は 2 系統で供給されます。
+
+1. **HTTP API（正確）**: 上記 `POST /api/agentroom` で各キャラの状態を通知します。スキル（staff-director など）からサブエージェントの起動・終了時に ping する想定です。
+2. **PTY 出力ベースのフォールバック**: API 未通知 / 古い場合、司（メイン Claude）はペインの稼働ステータス（実行中→作業中／入力待ち→相談中／それ以外→待機中）を写像し、その他のキャラは直近の出力にその名前が出ていれば作業中とみなします（ベストエフォート）。
 
 ## 技術スタック
 

@@ -22,9 +22,9 @@ const AGENT_ORDER = ['司', '和田', '安藤', '麗美', '植草'];
 // 日本語表示名 → Claude Code 上の英語ハンドル（worktree ルールで name は英数字必須）。
 // サブエージェントは英語ハンドルで起動されるため、TUI 出力には日本語名ではなく
 // このハンドル（@wada / wada / "○ wada # 和田 …" 等）が現れる。
-// 司＝メイン Claude はサブエージェントではないのでハンドル判定の対象外（pane status で決める）。
+// 司＝メイン Claude はサブエージェントではなく pane status で状態を決めるため、ここには載せない
+//（ハンドル 'main' は git/ブランチ出力に頻出し、流用時に working 誤検出を招くトラップになるため）。
 const AGENT_HANDLES = {
-  '司': ['tsukasa', 'main'],
   '和田': ['wada'],
   '安藤': ['ando'],
   '麗美': ['remi'],

@@ -19,6 +19,21 @@ const path = require('path');
 // 表示順（固定）。司＝メイン Claude（ディレクター）、以降はサブエージェント。
 const AGENT_ORDER = ['司', '和田', '安藤', '麗美', '植草'];
 
+// 日本語表示名 → Claude Code 上の英語ハンドル（worktree ルールで name は英数字必須）。
+// サブエージェントは英語ハンドルで起動されるため、TUI 出力には日本語名ではなく
+// このハンドル（@wada / wada / "○ wada # 和田 …" 等）が現れる。
+// 司＝メイン Claude はサブエージェントではないのでハンドル判定の対象外（pane status で決める）。
+const AGENT_HANDLES = {
+  '司': ['tsukasa', 'main'],
+  '和田': ['wada'],
+  '安藤': ['ando'],
+  '麗美': ['remi'],
+  '植草': ['uekusa'],
+};
+
+// ハンドル判定の対象となるサブエージェント（司を除く全員）。
+const SUBAGENT_ORDER = AGENT_ORDER.filter(n => n !== '司');
+
 // 用意されたドット絵スプライト（renderer/sprites/*.svg）。
 // ここに登録があるキャラは手続き生成より優先してその SVG を使う。無ければ makeChar で生成。
 const SPRITE_FILES = {
@@ -385,6 +400,20 @@ const MONITOR_SVG =
   '<rect x="3" y="10" width="10" height="2" fill="#3b2f3f"/>' +
   '</svg>';
 
+// 直近の PTY 出力テキストから、サブエージェントの稼働状態 { 和田: 'working'|'idle', … } を判定する。
+// API（POST /api/agentroom）未通知時のフォールバック用。DOM 非依存の純粋関数なのでユニットテスト可能。
+// recentText は ANSI 除去済みのプレーンテキストを想定する（呼び出し側で stripAnsiForDisplay 済み）。
+//
+// 判定: 各サブエージェントの英語ハンドルが直近出力に「単語として」出現すれば working、無ければ idle。
+function resolveAgentStatesFromOutput(recentText) {
+  const text = typeof recentText === 'string' ? recentText : '';
+  const out = {};
+  for (const name of SUBAGENT_ORDER) {
+    out[name] = (text && text.indexOf(name) !== -1) ? 'working' : 'idle';
+  }
+  return out;
+}
+
 // state 文字列を正規化する。外部（HTTP API）からの表記ゆれを吸収する。
 function normalizeState(raw) {
   if (typeof raw !== 'string') return 'idle';
@@ -497,7 +526,10 @@ function buildScene(agents) {
 
 module.exports = {
   AGENT_ORDER,
+  AGENT_HANDLES,
+  SUBAGENT_ORDER,
   AGENT_META,
   normalizeState,
+  resolveAgentStatesFromOutput,
   buildScene,
 };

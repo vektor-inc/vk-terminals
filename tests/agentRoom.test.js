@@ -84,9 +84,9 @@ test('isKnownAgent: 既知名のみ true（前後空白許容・未知名は fal
 });
 
 // ── loungeLabel（issue #58 ⑤: idle / off 混在のラベル分け） ─────────────────
-test('loungeLabel: idle のみ → 休憩中 / off のみ → 離席中 / 混在 → 休憩 / 離席', () => {
+test('loungeLabel: idle のみ → 休憩中 / off のみ → 離席中 / 混在 → 休憩・離席中', () => {
   assert.equal(loungeLabel(['idle', 'idle']), '休憩中');
   assert.equal(loungeLabel(['off', 'off']), '離席中');
-  assert.equal(loungeLabel(['idle', 'off']), '休憩 / 離席');
+  assert.equal(loungeLabel(['idle', 'off']), '休憩・離席中');
   assert.equal(loungeLabel([]), '休憩中'); // 空（呼ばれない想定だが安全側）
 });

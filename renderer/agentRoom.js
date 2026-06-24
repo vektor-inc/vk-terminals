@@ -454,12 +454,12 @@ function normalizeState(raw) {
 }
 
 // ラウンジゾーン（idle / off 混在）のゾーンタグ文言を決める。
-// 全員 idle → 「休憩中」 / 全員 off → 「離席中」 / 混在 → 「休憩 / 離席」。
+// 全員 idle → 「休憩中」 / 全員 off → 「離席中」 / 混在 → 「休憩・離席中」（語尾「中」を揃える）。
 function loungeLabel(states) {
   const list = Array.isArray(states) ? states : [];
   const hasIdle = list.some(s => s !== 'off'); // off 以外（idle 等）を休憩扱い
   const hasOff = list.some(s => s === 'off');
-  if (hasIdle && hasOff) return '休憩 / 離席';
+  if (hasIdle && hasOff) return '休憩・離席中';
   if (hasOff) return '離席中';
   return '休憩中';
 }

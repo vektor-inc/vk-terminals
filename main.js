@@ -235,12 +235,12 @@ function resolveOwnConfigTargetPath() {
   return path.join(__dirname, 'config.json');
 }
 
-// env 未指定（スタンドアロン起動）時に使う組み込みディスクリプタ。vk-terminals 自身の
+// env 未指定（スタンドアロン起動）時に使う組み込みディスクリプタ。VK Terminals 自身の
 // config.json（apiHost / initialCommand / agentroom / additionalPanes）を GUI から編集できる。
 function builtinSettingsDescriptor() {
   return {
-    title: 'vk-terminals 設定',
-    note: '保存後、vk-terminals を再起動すると反映されます。',
+    title: 'VK Terminals 設定',
+    note: '保存後、VK Terminals を再起動すると反映されます。',
     targetPath: resolveOwnConfigTargetPath(),
     groups: [
       {

@@ -1681,6 +1681,169 @@ function observePanes() {
 
 window.addEventListener('resize', debouncedFitAll);
 
+// ─── 設定パネル（汎用）────────────────────────────────────────────────────────
+// main プロセス（settings:describe / settings:save）経由で、呼び出し側が env
+// VK_TERMINALS_SETTINGS で指定した config ファイルをこの GUI から編集する。
+// describe が available:false（未指定）を返す場合はボタンごと非表示のままにする。
+
+// 起動時に describe を叩き、利用可能なら設定ボタンを表示して click を配線する。
+async function setupSettingsPanel() {
+  const btn = document.getElementById('settings-btn');
+  if (!btn) return;
+  let desc;
+  try {
+    desc = await ipcRenderer.invoke('settings:describe');
+  } catch (_e) {
+    return;
+  }
+  if (!desc || !desc.available) return;
+  btn.hidden = false;
+  btn.addEventListener('click', () => openSettingsModal());
+}
+
+// 1 フィールド分の入力 HTML を組み立てる。
+// id は描画順で採番したユニークな値を呼び出し側から受け取る（キーから id を導出すると
+// "a.b" と "a_b" のような別キーがサニタイズ後に衝突しうるため、キー由来にしない）。
+function renderSettingsField(f, value, id) {
+  const label = escText(f.label || f.key);
+  const help = f.help ? `<span class="settings-help">${escText(f.help)}</span>` : '';
+
+  if (f.type === 'boolean') {
+    return `<label class="settings-row settings-row-check">
+      <input type="checkbox" id="${id}" ${value ? 'checked' : ''}>
+      <span class="settings-label">${label}</span>${help}
+    </label>`;
+  }
+
+  const strVal = value === null || value === undefined
+    ? ''
+    : (f.type === 'json'
+        ? escAttr(JSON.stringify(value, null, 2))
+        : escAttr(String(value)));
+
+  if (f.type === 'json') {
+    // textarea の中身は要素内容なので escText 側でよいが、値は文字列前提なので escAttr で統一。
+    const body = value === null || value === undefined ? '' : escText(JSON.stringify(value, null, 2));
+    return `<div class="settings-row">
+      <label class="settings-label" for="${id}">${label}</label>${help}
+      <textarea id="${id}" rows="4" spellcheck="false">${body}</textarea>
+    </div>`;
+  }
+
+  if (f.type === 'password') {
+    return `<div class="settings-row">
+      <label class="settings-label" for="${id}">${label}</label>${help}
+      <div class="settings-pwd">
+        <input type="password" id="${id}" value="${strVal}" autocomplete="off" spellcheck="false">
+        <button type="button" class="settings-reveal" data-target="${id}" title="表示切替">👁</button>
+      </div>
+    </div>`;
+  }
+
+  const inputType = f.type === 'number' ? 'number' : 'text';
+  const ph = f.placeholder ? ` placeholder="${escAttr(f.placeholder)}"` : '';
+  return `<div class="settings-row">
+    <label class="settings-label" for="${id}">${label}</label>${help}
+    <input type="${inputType}" id="${id}" value="${strVal}"${ph} spellcheck="false">
+  </div>`;
+}
+
+// モーダルを開いて現在値を読み込み、保存を配線する。
+async function openSettingsModal() {
+  let desc;
+  try {
+    desc = await ipcRenderer.invoke('settings:describe');
+  } catch (e) {
+    alert('設定の読み込みに失敗しました: ' + e.message);
+    return;
+  }
+  if (!desc || !desc.available) return;
+
+  // 二重オープン防止
+  if (document.querySelector('.settings-overlay')) return;
+
+  // 描画順に採番したユニーク id と field を対応付ける（保存時もこの対応で走査する）。
+  const entries = [];
+  const groupsHtml = desc.groups.map(g => {
+    const rows = (g.fields || []).map(f => {
+      const id = 'set-field-' + entries.length;
+      entries.push({ field: f, id });
+      return renderSettingsField(f, desc.values[f.key], id);
+    }).join('');
+    return `<fieldset class="settings-group">
+      <legend>${escText(g.label || '')}</legend>${rows}</fieldset>`;
+  }).join('');
+
+  const overlay = document.createElement('div');
+  overlay.className = 'settings-overlay';
+  overlay.innerHTML = `
+    <div class="settings-modal" role="dialog" aria-modal="true">
+      <div class="settings-header">
+        <h2>${escText(desc.title || '設定')}</h2>
+        <button class="settings-close" title="閉じる">✕</button>
+      </div>
+      ${desc.note ? `<p class="settings-note">${escText(desc.note)}</p>` : ''}
+      <p class="settings-target">保存先: <code>${escText(desc.targetPath || '')}</code></p>
+      <form class="settings-form" onsubmit="return false">${groupsHtml}</form>
+      <div class="settings-footer">
+        <span class="settings-msg" role="status"></span>
+        <button type="button" class="settings-cancel">キャンセル</button>
+        <button type="button" class="settings-save">保存</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+
+  const modal = overlay.querySelector('.settings-modal');
+  const msg = modal.querySelector('.settings-msg');
+
+  const close = () => {
+    document.removeEventListener('keydown', onKey);
+    overlay.remove();
+  };
+  const onKey = (e) => { if (e.key === 'Escape') close(); };
+  document.addEventListener('keydown', onKey);
+
+  overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) close(); });
+  modal.querySelector('.settings-close').addEventListener('click', close);
+  modal.querySelector('.settings-cancel').addEventListener('click', close);
+
+  // password の表示/非表示トグル
+  modal.querySelectorAll('.settings-reveal').forEach(rev => {
+    rev.addEventListener('click', () => {
+      const input = modal.querySelector('#' + rev.dataset.target);
+      if (!input) return;
+      const show = input.type === 'password';
+      input.type = show ? 'text' : 'password';
+      rev.textContent = show ? '🙈' : '👁';
+    });
+  });
+
+  modal.querySelector('.settings-save').addEventListener('click', async () => {
+    const out = {};
+    for (const { field, id } of entries) {
+      const input = modal.querySelector('#' + id);
+      if (!input) continue;
+      out[field.key] = field.type === 'boolean' ? input.checked : input.value;
+    }
+    msg.textContent = '保存中...';
+    msg.className = 'settings-msg';
+    try {
+      const res = await ipcRenderer.invoke('settings:save', out);
+      if (res && res.ok) {
+        msg.textContent = '保存しました';
+        msg.classList.add('ok');
+        setTimeout(close, 800);
+      } else {
+        msg.textContent = 'エラー: ' + (res && res.error ? res.error : '不明なエラー');
+        msg.classList.add('err');
+      }
+    } catch (e) {
+      msg.textContent = 'エラー: ' + e.message;
+      msg.classList.add('err');
+    }
+  });
+}
+
 // ─── Init ─────────────────────────────────────────────────────────────────────
 async function initApp() {
   // エージェントルーム（issue #58）の有効/無効を main から取得（最初の render より前に確定させる）。
@@ -1713,6 +1876,9 @@ initApp().then(() => {
   // 起動完了を main プロセスに通知（main 側で additionalPanes を順次作成する）
   ipcRenderer.send('terminal:renderer-ready');
 });
+
+// 設定パネル（汎用）の有効/無効を判定してボタンを出す。
+setupSettingsPanel();
 
 // ─── State reporting to main process ─────────────────────────────────────────
 setInterval(() => {

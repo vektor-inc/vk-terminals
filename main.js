@@ -209,6 +209,198 @@ ipcMain.handle('app:get-config', () => {
   return { agentroom: config.agentroom === true };
 });
 
+// ─── 設定パネル（汎用）────────────────────────────────────────────────────────
+// 呼び出し側（例: vk-orchestrator）が環境変数 VK_TERMINALS_SETTINGS に「設定ディスク
+// リプタ JSON」のパスを渡すと、renderer の設定パネルからそのディスクリプタが指す
+// config ファイルを GUI 上で編集・保存できる。vk-terminals 自身は特定ツールの設定
+// 内容を知らず、ディスクリプタ（項目スキーマ + targetPath）に従って読み書きするだけの
+// 汎用実装にすることで、スタンドアロン利用時は影響を受けない（env 未指定なら
+// settings:describe が available:false を返し、ボタンごと非表示になる）。
+function settingsDescriptorPath() {
+  const p = process.env.VK_TERMINALS_SETTINGS;
+  return p && p.trim() ? p : null;
+}
+
+// 組み込みディスクリプタが編集する「vk-terminals 自身の config.json」のパスを解決する。
+// loadUserConfig() の読み込み順に合わせ、既存の候補があればそれを、無ければ appDir 直下
+// （README の `cp config.example.json config.json` の既定先）を対象にする。
+function resolveOwnConfigTargetPath() {
+  const candidates = [
+    path.join(DATA_DIR, 'config.json'),
+    path.join(__dirname, 'config.json'),
+  ];
+  for (const c of candidates) {
+    if (fs.existsSync(c)) return c;
+  }
+  return path.join(__dirname, 'config.json');
+}
+
+// env 未指定（スタンドアロン起動）時に使う組み込みディスクリプタ。VK Terminals 自身の
+// config.json（apiHost / initialCommand / agentroom / additionalPanes）を GUI から編集できる。
+function builtinSettingsDescriptor() {
+  return {
+    title: 'VK Terminals 設定',
+    note: '保存後、VK Terminals を再起動すると反映されます。',
+    targetPath: resolveOwnConfigTargetPath(),
+    groups: [
+      {
+        label: '基本',
+        fields: [
+          { key: 'apiHost',        label: 'API ホスト',            type: 'text',    help: '既定 127.0.0.1' },
+          { key: 'initialCommand', label: '初期コマンド',          type: 'text',    help: '1 ペイン目で claude 起動直後に自動実行させたいコマンドがあれば記入してください。' },
+          { key: 'agentroom',      label: 'エージェントルーム（β）表示', type: 'boolean' },
+          { key: 'additionalPanes', label: '追加ペイン (JSON 配列)', type: 'json',   help: '例: [{"cwd":"/path"}]' },
+        ],
+      },
+    ],
+  };
+}
+
+// ディスクリプタを解決する。env VK_TERMINALS_SETTINGS が指す有効なディスクリプタが
+// あればそれを優先し（vk-orchestrator など呼び出し側の設定を編集）、無い／不正な場合は
+// 組み込みディスクリプタ（vk-terminals 自身の config.json を編集）にフォールバックする。
+// これにより単体起動でも常に設定パネルを表示できる。
+function loadSettingsDescriptor() {
+  const p = settingsDescriptorPath();
+  if (p && fs.existsSync(p)) {
+    try {
+      const d = JSON.parse(fs.readFileSync(p, 'utf8'));
+      if (d && typeof d === 'object' && typeof d.targetPath === 'string' && Array.isArray(d.groups)) {
+        return d;
+      }
+      console.error(`${LOG_PREFIX} Invalid settings descriptor (missing targetPath/groups): ${p}`);
+    } catch (e) {
+      console.error(`${LOG_PREFIX} Failed to parse settings descriptor: ${p}`, e);
+    }
+    // env 指定が不正でも、単体編集用の組み込みディスクリプタにフォールバックする。
+  }
+  return builtinSettingsDescriptor();
+}
+
+// ディスクリプタの全 groups からフィールド定義を平坦化して集める。
+function descriptorFields(descriptor) {
+  const fields = [];
+  for (const g of descriptor.groups) {
+    if (g && Array.isArray(g.fields)) fields.push(...g.fields);
+  }
+  return fields.filter(f => f && typeof f.key === 'string');
+}
+
+// "a.b.c" 形式のドットキーで入れ子オブジェクトから値を取り出す。
+function deepGet(obj, dottedKey) {
+  return dottedKey.split('.').reduce(
+    (acc, k) => (acc == null ? undefined : acc[k]),
+    obj,
+  );
+}
+
+// "a.b.c" 形式のドットキーで入れ子オブジェクトに値を設定する（中間は生成）。
+function deepSet(obj, dottedKey, value) {
+  const keys = dottedKey.split('.');
+  let cur = obj;
+  for (let i = 0; i < keys.length - 1; i++) {
+    const k = keys[i];
+    if (cur[k] == null || typeof cur[k] !== 'object') cur[k] = {};
+    cur = cur[k];
+  }
+  cur[keys[keys.length - 1]] = value;
+}
+
+// renderer 用: ディスクリプタと targetPath の現在値を返す。VK_TERMINALS_SETTINGS が
+// 未設定なら available:false（renderer 側は設定ボタンを表示しない）。
+ipcMain.handle('settings:describe', () => {
+  const descriptor = loadSettingsDescriptor();
+  if (!descriptor) return { available: false };
+
+  let current = {};
+  try {
+    if (fs.existsSync(descriptor.targetPath)) {
+      current = JSON.parse(fs.readFileSync(descriptor.targetPath, 'utf8'));
+    }
+  } catch (e) {
+    console.error(`${LOG_PREFIX} Failed to read target config: ${descriptor.targetPath}`, e);
+  }
+  if (!current || typeof current !== 'object') current = {};
+
+  const values = {};
+  for (const f of descriptorFields(descriptor)) {
+    const v = deepGet(current, f.key);
+    values[f.key] = v === undefined ? null : v;
+  }
+  return {
+    available: true,
+    title: descriptor.title || '設定',
+    note: descriptor.note || '',
+    targetPath: descriptor.targetPath,
+    groups: descriptor.groups,
+    values,
+  };
+});
+
+// renderer からの保存。ディスクリプタに載っているキーだけを型変換して書き戻す
+// （未知のキーは既存 config から保持する。書き込み先は必ず descriptor.targetPath）。
+ipcMain.handle('settings:save', (event, incoming) => {
+  const descriptor = loadSettingsDescriptor();
+  if (!descriptor) return { ok: false, error: '設定ディスクリプタが見つかりません' };
+
+  const fields = descriptorFields(descriptor);
+  const values = incoming && typeof incoming === 'object' ? incoming : {};
+
+  // 既存 config を読み、ディスクリプタに載っていないキーは保持したまま更新する。
+  let config = {};
+  try {
+    if (fs.existsSync(descriptor.targetPath)) {
+      config = JSON.parse(fs.readFileSync(descriptor.targetPath, 'utf8'));
+    }
+  } catch (e) {
+    return { ok: false, error: `既存設定の読み込みに失敗: ${e.message}` };
+  }
+  if (!config || typeof config !== 'object') config = {};
+
+  for (const f of fields) {
+    if (!(f.key in values)) continue;
+    const raw = values[f.key];
+    const label = f.label || f.key;
+    let coerced;
+    switch (f.type) {
+      case 'number': {
+        if (raw === '' || raw === null || raw === undefined) { coerced = null; break; }
+        const n = Number(raw);
+        if (!Number.isFinite(n)) return { ok: false, error: `${label}: 数値として不正です` };
+        coerced = n;
+        break;
+      }
+      case 'boolean':
+        coerced = !!raw;
+        break;
+      case 'json': {
+        if (raw === '' || raw === null || raw === undefined) {
+          coerced = f.emptyToNull ? null : [];
+          break;
+        }
+        try {
+          coerced = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        } catch (e) {
+          return { ok: false, error: `${label}: JSON として不正です（${e.message}）` };
+        }
+        break;
+      }
+      default: { // text / password
+        const s = raw == null ? '' : String(raw);
+        coerced = (s === '' && f.emptyToNull) ? null : s;
+      }
+    }
+    deepSet(config, f.key, coerced);
+  }
+
+  try {
+    fs.writeFileSync(descriptor.targetPath, JSON.stringify(config, null, 2) + '\n');
+  } catch (e) {
+    return { ok: false, error: `保存に失敗: ${e.message}` };
+  }
+  return { ok: true, targetPath: descriptor.targetPath };
+});
+
 ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
   const id = String(nextId++);
   const shell = process.env.SHELL || '/bin/zsh';

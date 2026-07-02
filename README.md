@@ -101,6 +101,39 @@ cp config.example.json ~/.vk-terminals/config.json
 
 > **移行メモ**: 旧パス `~/.claude/terminals-config.json` も後方互換として読み込まれます。
 
+## 設定パネル
+
+タイトルバー右端の ⚙ ボタンから、設定を GUI 上で編集・保存できます。単体起動でも常に表示されます。
+
+- **単体起動時**（`VK_TERMINALS_SETTINGS` 未指定）：vk-terminals 自身の `config.json`（`apiHost` / `initialCommand` / `agentroom` / `additionalPanes`）を編集します。編集対象は `loadUserConfig()` と同じ探索順で、既存の `config.json` があればそれ、無ければリポジトリ直下 `config.json` を作成します。
+- **呼び出し側から渡された場合**（`VK_TERMINALS_SETTINGS` に「設定ディスクリプタ JSON」のパスを指定）：そのディスクリプタが指す任意の config ファイルを編集します（vk-orchestrator が自身の統合 `config.json` を編集させる用途など）。vk-terminals 自身は編集対象の設定内容を知らず、ディスクリプタ（編集対象パス + 項目スキーマ）に従って読み書きするだけの汎用実装です。
+
+いずれの場合も、保存後の反映には再起動が必要です（設定は起動時に読み込むため）。
+
+ディスクリプタの形式:
+
+```jsonc
+{
+  "title": "○○ 設定",                       // パネル上部の見出し
+  "note": "保存後に再起動で反映されます",    // 任意の注意書き（省略可）
+  "targetPath": "/abs/path/to/config.json",  // 読み書きする対象ファイル（絶対パス）
+  "groups": [
+    {
+      "label": "GitHub",
+      "fields": [
+        { "key": "github.token", "label": "Token", "type": "password", "emptyToNull": true },
+        { "key": "github.owner", "label": "Owner", "type": "text" }
+      ]
+    }
+  ]
+}
+```
+
+- `key`：ドット区切りで対象 JSON の入れ子キーを指す（例 `github.token`）。
+- `type`：`text` / `password` / `number` / `boolean` / `json` のいずれか。`json` は配列・オブジェクトを textarea で編集します。
+- `emptyToNull`（任意）：`text` / `password` で空欄を `null` として書き出します。
+- 保存時はディスクリプタに載っているキーだけを型変換して書き戻し、**載っていない既存キーは保持**します。書き込み先は必ず `targetPath` に限定されます。
+
 ## HTTP API（外部連携用）
 
 アプリ起動時にローカル HTTP API サーバーが `http://127.0.0.1:13847` で起動します。外部スクリプトや Claude Code の監視スキルからターミナルを操作できます。

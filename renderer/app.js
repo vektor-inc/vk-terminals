@@ -605,90 +605,38 @@ function updatePaneStatus(paneId) {
   updateAgentRoom(paneId);
 }
 
-// ─── Tree operations ──────────────────────────────────────────────────────────
-function findNode(node, id) {
-  if (node.type === 'leaf') return node.id === id ? node : null;
-  return findNode(node.first, id) || findNode(node.second, id);
+// ─── Grid layout operations ──────────────────────────────────────────────────
+// レイアウトはフラットなグリッド（tree.type === 'grid'）で管理する。
+//   tree = { type:'grid', order:[paneId,...], colFr:null|number[], rowFr:null|number[] }
+// 全ペインは grid 直下の兄弟であり、ペインがペインの中に入れ子になることはない。
+// colFr / rowFr は手動リサイズ時のトラック比率（null = 均等）。ペイン増減時は null にリセットする。
+
+// グリッドの列数（自動）。ほぼ正方形になるよう ceil(sqrt(n)) を採用し、行方向に折り返す。
+function gridColCount(n) {
+  if (n <= 1) return 1;
+  return Math.ceil(Math.sqrt(n));
 }
 
-function replaceNode(node, id, replacement) {
-  if (node.type === 'leaf') return node.id === id ? replacement : node;
-  return {
-    ...node,
-    first: replaceNode(node.first, id, replacement),
-    second: replaceNode(node.second, id, replacement),
-  };
+// 現在のグリッド寸法 { cols, rows } を返す。
+function gridDims(t = tree) {
+  const n = (t && Array.isArray(t.order)) ? t.order.length : 0;
+  const cols = gridColCount(n);
+  const rows = Math.max(1, Math.ceil(n / cols));
+  return { cols, rows };
 }
 
-function removeNode(node, id) {
-  if (node.type === 'leaf') return node.id === id ? null : node;
-  const newFirst = removeNode(node.first, id);
-  const newSecond = removeNode(node.second, id);
-  if (newFirst === null) return newSecond;
-  if (newSecond === null) return newFirst;
-  return { ...node, first: newFirst, second: newSecond };
+// 手動リサイズ比率をクリア（ペイン増減で寸法が変わったとき均等に戻す）。
+function resetGridSizing() {
+  if (tree) { tree.colFr = null; tree.rowFr = null; }
 }
 
-// tree 内の leaf 2つの「位置」を入れ替える。
-// leaf オブジェクト一式（id + collapsed 等の付随フィールド）を入れ替えるため、
-// 折り畳み状態などの leaf 固有フィールドはペインと一緒に移動する。
-// terminals マップは paneId キーのまま不変なので、HTTP API / states.json の termId 紐付けには影響しない。
-function swapLeavesInTree(node, idA, idB) {
-  const leafA = findNode(node, idA);
-  const leafB = findNode(node, idB);
-  if (!leafA || !leafB) return node;
-  function walk(n) {
-    if (n.type === 'leaf') {
-      // idA の位置に leafB 一式を、idB の位置に leafA 一式を置く
-      if (n.id === idA) return { ...leafB };
-      if (n.id === idB) return { ...leafA };
-      return n;
-    }
-    return { ...n, first: walk(n.first), second: walk(n.second) };
-  }
-  return walk(node);
+// 全ペイン ID を表示順で返す（後方互換のため名前を維持）。
+function getAllLeafIds(t = tree) {
+  return (t && Array.isArray(t.order)) ? t.order.slice() : [];
 }
 
-function getAllLeafIds(node) {
-  if (node.type === 'leaf') return [node.id];
-  return [...getAllLeafIds(node.first), ...getAllLeafIds(node.second)];
-}
-
-// tree 内の targetId（leaf）の位置を、srcLeaf を dir 方向に挿入した split で置き換える（issue #40）。
-//   dir = 'left'  : 新 split は split-h、srcLeaf が左 / target が右
-//   dir = 'right' : 新 split は split-h、target が左 / srcLeaf が右
-//   dir = 'up'    : 新 split は split-v、srcLeaf が上 / target が下
-//   dir = 'down'  : 新 split は split-v、target が上 / srcLeaf が下
-// 新規 split の ratio は 0.5 固定（ドロップ位置から動的算出は UX が裏切られやすいため）。
-function insertBesideLeaf(node, targetId, srcLeaf, dir) {
-  if (!srcLeaf || (dir !== 'left' && dir !== 'right' && dir !== 'up' && dir !== 'down')) {
-    return node;
-  }
-  const direction = (dir === 'left' || dir === 'right') ? 'h' : 'v';
-  const targetNode = findNode(node, targetId);
-  if (!targetNode) return node;
-  // src と target の順序を dir から決める
-  const srcFirst = (dir === 'left' || dir === 'up');
-  const newSplit = {
-    type: 'split',
-    direction,
-    ratio: 0.5,
-    first: srcFirst ? srcLeaf : targetNode,
-    second: srcFirst ? targetNode : srcLeaf,
-  };
-  return replaceNode(node, targetId, newSplit);
-}
-
-// tree 内で指定 leaf を直接の子に持つ split ノードと、そのどちら側にいるか（'first' or 'second'）を返す。
-// 親が存在しない（ルートが leaf 自身）場合は null。
-function findParentSplit(node, leafId, parent = null, side = null) {
-  if (node.type === 'leaf') {
-    return node.id === leafId ? { parent, side } : null;
-  }
-  return (
-    findParentSplit(node.first, leafId, node, 'first') ||
-    findParentSplit(node.second, leafId, node, 'second')
-  );
+function paneExists(id) {
+  return !!(tree && Array.isArray(tree.order) && tree.order.includes(id));
 }
 
 function getPaneRect(paneId) {
@@ -696,49 +644,6 @@ function getPaneRect(paneId) {
   const rect = paneEl?.getBoundingClientRect();
   if (!rect || rect.width <= 0 || rect.height <= 0) return null;
   return rect;
-}
-
-// フォーカスペインから方向 dir にある最も近い隣接ペインを座標ベースで探す。
-// 無ければ null。dir は 'left' | 'right' | 'up' | 'down'。
-function findNeighborPane(fromPaneId, dir) {
-  const fromRect = getPaneRect(fromPaneId);
-  if (!fromRect) return null;
-  const fromCx = fromRect.left + fromRect.width / 2;
-  const fromCy = fromRect.top + fromRect.height / 2;
-  let best = null;
-  // 主軸ギャップ（共有辺への近さ）を最優先、同値なら直交軸の中心ずれが小さい方を選ぶ
-  let bestGap = Infinity;
-  let bestCross = Infinity;
-  for (const id of getAllLeafIds(tree)) {
-    if (id === fromPaneId) continue;
-    const r = getPaneRect(id);
-    if (!r) continue;
-    const cx = r.left + r.width / 2;
-    const cy = r.top + r.height / 2;
-    // dir 方向の主軸ギャップ（候補の手前辺と fromRect の対辺の隙間）
-    const axisGap =
-      dir === 'left'  ? fromRect.left - r.right  :
-      dir === 'right' ? r.left - fromRect.right  :
-      dir === 'up'    ? fromRect.top - r.bottom  :
-                        r.top - fromRect.bottom;
-    // 候補が dir 方向側に存在しない（手前 or 重なっている）場合は除外
-    if (axisGap < -1) continue;
-    // 直交軸でオーバーラップしているペインのみを隣接候補とする（対角線上の非隣接ペイン除外）
-    const orthOverlap =
-      (dir === 'left' || dir === 'right')
-        ? (r.top < fromRect.bottom && r.bottom > fromRect.top)
-        : (r.left < fromRect.right && r.right > fromRect.left);
-    if (!orthOverlap) continue;
-    const cross = (dir === 'left' || dir === 'right')
-      ? Math.abs(cy - fromCy)
-      : Math.abs(cx - fromCx);
-    if (axisGap < bestGap || (axisGap === bestGap && cross < bestCross)) {
-      bestGap = axisGap;
-      bestCross = cross;
-      best = id;
-    }
-  }
-  return best;
 }
 
 function findLargestVisiblePaneId() {
@@ -759,127 +664,14 @@ function findLargestVisiblePaneId() {
 }
 
 // ─── Collapse / expand ────────────────────────────────────────────────────────
-// leaf.collapsed をトグルする。collapse 時は親 split の現在 ratio を savedRatio に退避し、
-// 兄弟側に flex を寄せて自身は自然高さ（pane-task-title + pane-header）に縮める。
-// expand 時は savedRatio から元の比率を復元（未保存なら 0.5）。
-// ※ tree のルート leaf（親 split がない）は対象外。
-//
-// render() を呼ばずに既存 DOM を直接書き換えるのは、`.pane.collapsed { transition: max-height ... }`
-// を効かせるため。render() は innerHTML 入れ替えで要素を再生成してしまい、新しい要素が
-// 最初から .collapsed 状態で生まれるため transition が走らない。
-function toggleCollapse(paneId) {
-  const leaf = findNode(tree, paneId);
-  if (!leaf || leaf.type !== 'leaf') return;
-  const found = findParentSplit(tree, paneId);
-  if (!found || !found.parent) return; // ルート leaf は折り畳まない
-  const parent = found.parent;
-
-  const willCollapse = !leaf.collapsed;
-  // 1) データ構造の更新
-  if (willCollapse) {
-    parent.savedRatio = parent.ratio;
-    leaf.collapsed = true;
-  } else {
-    leaf.collapsed = false;
-    if (typeof parent.savedRatio === 'number') {
-      parent.ratio = parent.savedRatio;
-      delete parent.savedRatio;
-    } else {
-      parent.ratio = 0.5;
-    }
-  }
-
-  // 2) DOM を in-place 更新（element 同一性を保って transition を走らせる）
-  const paneEl = document.querySelector(`.pane[data-id="${paneId}"]`);
-  if (paneEl) {
-    paneEl.classList.toggle('collapsed', willCollapse);
-
-    // 親 .split の DOM を取得（必ず .split.split-v）。
-    const splitEl = paneEl.parentElement;
-    if (splitEl && splitEl.classList.contains('split')) {
-      splitEl.classList.toggle('collapsed-pair', willCollapse);
-
-      // 兄弟要素（自分以外の .pane または .split 子）を取得して flex を更新する。
-      // resize-handle を挟むため previousElementSibling / nextElementSibling のうち
-      // .resize-handle でない方が兄弟ノード。
-      const sibling = [splitEl.firstElementChild, splitEl.lastElementChild]
-        .find(el => el && el !== paneEl);
-      if (willCollapse) {
-        paneEl.style.flex = '0 0 auto';
-        if (sibling) sibling.style.flex = '1 1 auto';
-      } else {
-        // 復元された ratio を data 側から読み取って按分（自分が parent.first か second かで分岐）
-        const ratio = parent.ratio;
-        if (found.side === 'first') {
-          paneEl.style.flex = String(ratio);
-          if (sibling) sibling.style.flex = String(1 - ratio);
-        } else {
-          paneEl.style.flex = String(1 - ratio);
-          if (sibling) sibling.style.flex = String(ratio);
-        }
-      }
-    }
-
-    // ボタンのテキスト / aria を更新
-    const btn = paneEl.querySelector('.btn-collapse');
-    if (btn) {
-      btn.textContent = willCollapse ? '▴' : '▾';
-      btn.setAttribute('aria-expanded', String(!willCollapse));
-      btn.setAttribute('aria-label', willCollapse ? 'ペインを展開' : 'ペインを折り畳む');
-      btn.setAttribute('title', willCollapse ? '展開する' : '折り畳む');
-    }
-  }
-
-  // 3) サイズ反映と focus
-  // collapse 中は fitTerminal がスキップされる（fitTerminal 側で leaf.collapsed を見ている）。
-  // expand 後は transition 完了を待ってから fit したいが、xterm は ResizeObserver でも
-  // 自動 fit がかかるため、ここでは即時 fitAll() で十分（collapse 中はスキップされる）。
-  requestAnimationFrame(() => {
-    fitAll();
-    if (!willCollapse) focusPane(paneId);
-  });
-}
-
-// tree を走査し、「折り畳む意味がない位置にいる collapsed leaf」を強制展開する。
-// 具体的には親 split が split-v でない leaf に collapsed=true が残っているケースを補正する。
-// closePane で removeNode により leaf がルートに昇格したり、split-h の中に取り残された場合の保護。
-function sanitizeCollapsedFlags(node, parentDirection = null) {
-  if (node.type === 'leaf') {
-    if (node.collapsed && parentDirection !== 'v') {
-      node.collapsed = false;
-    }
-    return;
-  }
-  sanitizeCollapsedFlags(node.first, node.direction);
-  sanitizeCollapsedFlags(node.second, node.direction);
-}
-
-// 折り畳まれていた場合に展開だけ行う（focus はしない）。focusPane / splitPane から内部利用。
-function expandIfCollapsed(paneId) {
-  const leaf = findNode(tree, paneId);
-  if (!leaf || leaf.type !== 'leaf' || !leaf.collapsed) return false;
-  const found = findParentSplit(tree, paneId);
-  leaf.collapsed = false;
-  if (found && found.parent) {
-    const parent = found.parent;
-    if (typeof parent.savedRatio === 'number') {
-      parent.ratio = parent.savedRatio;
-      delete parent.savedRatio;
-    } else {
-      parent.ratio = 0.5;
-    }
-  }
-  return true;
-}
+// （グリッドレイアウト化により折り畳み機能は撤去。行の高さは同一行の全ペインで共有されるため、
+//   単一ペインだけを縦に畳む操作がグリッドでは成立しないため。）
 
 // ─── Pane actions ─────────────────────────────────────────────────────────────
+// グリッド化により「分割」は入れ子を作らず、新ペインをグリッド末尾に追加する操作になった。
+// direction は後方互換のため引数として残すが、配置には影響しない（自動折返しグリッド）。
 async function splitPane(paneId, direction, overrideCwd, options = {}) {
-  const node = findNode(tree, paneId);
-  if (!node) return null;
-
-  // 折り畳まれているペインを分割対象にすると分割後も縮んだままで操作不能になるため、
-  // 分割前に必ず展開しておく（render() は最後の render で一括反映）。
-  expandIfCollapsed(paneId);
+  if (!paneExists(paneId)) return null;
 
   const newPaneId = newId();
   // overrideCwd が指定されていればそれを使い、未指定ならホームディレクトリ（main 側でフォールバック）で開く。
@@ -889,18 +681,13 @@ async function splitPane(paneId, direction, overrideCwd, options = {}) {
   // options.noClaude が指定されていればそのまま main に渡す。未指定なら main 側のグローバル設定に従う。
   await createTerminal(newPaneId, targetCwd, options);
 
-  tree = replaceNode(tree, paneId, {
-    type: 'split',
-    direction,
-    ratio: 0.5,
-    first: node,
-    second: { type: 'leaf', id: newPaneId },
-  });
+  tree.order.push(newPaneId);
+  // ペイン数が変わりグリッド寸法が変化するため、手動リサイズ比率は均等にリセットする。
+  resetGridSizing();
 
   render();
   requestAnimationFrame(() => {
-    fitTerminal(paneId);
-    fitTerminal(newPaneId);
+    fitAll();
     focusPane(newPaneId);
   });
 
@@ -909,7 +696,7 @@ async function splitPane(paneId, direction, overrideCwd, options = {}) {
 }
 
 function closePane(paneId) {
-  if (!findNode(tree, paneId)) return;
+  if (!paneExists(paneId)) return;
 
   const t = terminals[paneId];
   if (t) {
@@ -932,21 +719,19 @@ function closePane(paneId) {
     delete terminals[paneId];
   }
 
-  const newTree = removeNode(tree, paneId);
-  if (!newTree) {
+  tree.order = tree.order.filter(id => id !== paneId);
+  if (tree.order.length === 0) {
     // Last pane closed → start fresh
     initApp().then(() => {
       ipcRenderer.send('terminal:renderer-ready');
     });
     return;
   }
-  tree = newTree;
-  // 兄弟ペインを削除した結果、collapsed leaf がルートに昇格したり split-h の中に
-  // 取り残されたりして自力では展開できなくなるケースを補正する。
-  sanitizeCollapsedFlags(tree);
+  // ペイン数が変わりグリッド寸法が変化するため、手動リサイズ比率は均等にリセットする。
+  resetGridSizing();
 
   // Focus another pane
-  const remaining = getAllLeafIds(tree);
+  const remaining = getAllLeafIds();
   if (remaining.length > 0 && (!focusedPaneId || focusedPaneId === paneId)) {
     focusedPaneId = remaining[remaining.length - 1];
   }
@@ -955,11 +740,21 @@ function closePane(paneId) {
   requestAnimationFrame(fitAll);
 }
 
-// ペインを方向 dir の隣接ペインと入れ替える。隣が無ければ何もしない。
+// ペインをグリッド上で dir 方向の隣と入れ替える。端で隣が無ければ何もしない。
+//   left/right … 同一行内の隣（行をまたがない）
+//   up/down    … 上下の行の同じ列
 function movePane(paneId, dir) {
-  const target = findNeighborPane(paneId, dir);
-  if (!target) return;
-  tree = swapLeavesInTree(tree, paneId, target);
+  const order = tree.order;
+  const i = order.indexOf(paneId);
+  if (i < 0) return;
+  const { cols } = gridDims();
+  let j = -1;
+  if (dir === 'left'  && i % cols !== 0) j = i - 1;
+  else if (dir === 'right' && i % cols !== cols - 1 && i + 1 < order.length) j = i + 1;
+  else if (dir === 'up'    && i - cols >= 0) j = i - cols;
+  else if (dir === 'down'  && i + cols < order.length) j = i + cols;
+  if (j < 0) return;
+  [order[i], order[j]] = [order[j], order[i]];
   render();
   requestAnimationFrame(() => {
     fitAll();
@@ -1053,39 +848,25 @@ function cleanupPaneDrag() {
   paneDragState = null;
 }
 
-// 実際のツリー再構築（issue #40）。
-//   1. src / target 両方に expandIfCollapsed（畳まれたまま新 split に入って操作不能ペインになるのを防止）
-//   2. removeNode(tree, srcId) でドラッグ元を抜く（親 split が単一子になるケースは removeNode 側で自動処理）
-//   3. insertBesideLeaf で target の位置に srcLeaf を dir 方向で挿入
-//   4. render() → requestAnimationFrame(() => { fitAll(); focusPane(srcId); })
-//   5. sanitizeCollapsedFlags(tree) を必ず実行（split-h 配下に collapsed leaf が紛れ込むケースの補正）
+// ペイン D&D による並べ替え（issue #40 → グリッド化で「並べ替え」に変更）。
+// src ペインを order から抜き、target の位置へ挿入する。
+//   dir が left/up  … target の直前へ
+//   dir が right/down … target の直後へ
 function handlePaneDrop(srcId, targetId, dir) {
   if (!tree) return;
   if (!srcId || !targetId || srcId === targetId) return;
-  const srcLeaf = findNode(tree, srcId);
-  if (!srcLeaf || srcLeaf.type !== 'leaf') return;
+  if (!paneExists(srcId) || !paneExists(targetId)) return;
 
-  // 折り畳み状態のまま動かすと新 split で操作不能ペインになるため、両方とも展開しておく
-  expandIfCollapsed(srcId);
-  expandIfCollapsed(targetId);
+  const order = tree.order;
+  const from = order.indexOf(srcId);
+  order.splice(from, 1);
 
-  // 動かす leaf のスナップショット（collapsed 等の付随フィールドごと持ち運ぶ。
-  // ただし上で expandIfCollapsed を通したので collapsed は false 化されている）
-  const srcSnapshot = { ...findNode(tree, srcId) };
+  let ti = order.indexOf(targetId);
+  if (dir === 'right' || dir === 'down') ti += 1;
+  order.splice(ti, 0, srcId);
 
-  // src を抜いた tree を作る
-  const removed = removeNode(tree, srcId);
-  if (!removed) return; // 想定外（leaf が 1 枚しかなかった等）
-  // 抜いた結果 target が消えるケースは無いはずだが、念のためチェック
-  if (!findNode(removed, targetId)) return;
-
-  // target の位置に srcSnapshot を dir 方向で挿入
-  const next = insertBesideLeaf(removed, targetId, srcSnapshot, dir);
-  if (!next) return;
-  tree = next;
-
-  // split-h 配下に collapsed leaf が紛れ込むなどの不整合を補正
-  sanitizeCollapsedFlags(tree);
+  // 並べ替えで各行の割り当てが変わるため、手動リサイズ比率は均等にリセットする。
+  resetGridSizing();
 
   render();
   requestAnimationFrame(() => {
@@ -1095,24 +876,16 @@ function handlePaneDrop(srcId, targetId, dir) {
 }
 
 function focusPane(paneId) {
-  // 折り畳まれているペインに focus が当たっても自動展開はしない（明示操作のみで展開する方針）。
-  // フォーカス枠は当てるが xterm への入力フォーカスはスキップする（ヘッダだけ見える状態のまま）。
   focusedPaneId = paneId;
   document.querySelectorAll('.pane').forEach(el => {
     el.classList.toggle('focused', el.dataset.id === paneId);
   });
-  const leaf = tree ? findNode(tree, paneId) : null;
-  if (leaf && leaf.collapsed) return;
   terminals[paneId]?.term.focus();
 }
 
 function fitTerminal(paneId) {
   const t = terminals[paneId];
   if (!t) return;
-  // 折り畳み中のペインは高さ 0 になっており、fitAddon.fit() が NaN を返して例外を吐くため明示的にスキップする。
-  // PTY 側のサイズは展開時に再 fit されるので、ここで送らなくても問題ない。
-  const leaf = tree ? findNode(tree, paneId) : null;
-  if (leaf && leaf.collapsed) return;
   try {
     t.fitAddon.fit();
     ipcRenderer.send('terminal:resize', t.termId, t.term.cols, t.term.rows);
@@ -1126,7 +899,7 @@ function fitAll() {
 // ─── Rendering ────────────────────────────────────────────────────────────────
 function render() {
   const root = document.getElementById('root');
-  const newContent = renderNode(tree);
+  const newContent = renderGrid(tree);
   root.innerHTML = '';
   root.appendChild(newContent);
 
@@ -1149,12 +922,64 @@ function render() {
   observePanes();
 }
 
-// parentDirection: 親 split の direction ('h' | 'v') または null（ルート leaf の場合）。
-// renderLeaf 側で .btn-collapse を表示するか（親が split-v のときだけ）の判定に使う。
-function renderNode(node, parentDirection = null) {
-  return node.type === 'leaf'
-    ? renderLeaf(node, parentDirection)
-    : renderSplit(node);
+// フラットなグリッドを描画する。全ペインは .grid の直接の子として並ぶ。
+//   - 列数は gridColCount(n)（自動折返し）。
+//   - colFr / rowFr があれば fr トラックに反映（手動リサイズ結果）。無ければ均等。
+//   - 最終行がフルでない場合、最後のペインを残りの列に広げてスキマを埋める。
+//   - 列間・行間にドラッグ用リサイズハンドルをオーバーレイする。
+function renderGrid(t) {
+  const order = (t && Array.isArray(t.order)) ? t.order : [];
+  const { cols, rows } = gridDims(t);
+
+  const grid = document.createElement('div');
+  grid.className = 'grid';
+  grid.style.gridTemplateColumns = (t.colFr && t.colFr.length === cols)
+    ? t.colFr.map(f => `${f}fr`).join(' ')
+    : `repeat(${cols}, 1fr)`;
+  grid.style.gridTemplateRows = (t.rowFr && t.rowFr.length === rows)
+    ? t.rowFr.map(f => `${f}fr`).join(' ')
+    : `repeat(${rows}, 1fr)`;
+
+  const lastRowCount = order.length % cols || cols;
+  order.forEach((id, idx) => {
+    const pane = renderLeaf({ type: 'leaf', id });
+    // 最終行がフルでないとき、最後のペインを余った列ぶんだけ広げてスキマを埋める。
+    if (idx === order.length - 1 && lastRowCount < cols) {
+      pane.style.gridColumn = `span ${cols - lastRowCount + 1}`;
+    }
+    grid.appendChild(pane);
+  });
+
+  appendGridHandles(grid, t, cols, rows);
+  return grid;
+}
+
+// 列間（縦線）・行間（横線）にリサイズハンドルを絶対配置で重ねる。
+// 位置は fr トラックの累積比率（%）で計算する（gap ぶんの微小なズレはハンドル幅で吸収）。
+function appendGridHandles(grid, t, cols, rows) {
+  const colFr = (t.colFr && t.colFr.length === cols) ? t.colFr : Array(cols).fill(1);
+  const rowFr = (t.rowFr && t.rowFr.length === rows) ? t.rowFr : Array(rows).fill(1);
+  const colTotal = colFr.reduce((a, b) => a + b, 0);
+  const rowTotal = rowFr.reduce((a, b) => a + b, 0);
+
+  let acc = 0;
+  for (let i = 0; i < cols - 1; i++) {
+    acc += colFr[i];
+    const h = document.createElement('div');
+    h.className = 'grid-handle grid-handle-col';
+    h.style.left = `${(acc / colTotal) * 100}%`;
+    h.addEventListener('mousedown', e => startGridResize(e, grid, 'col', i, cols, rows));
+    grid.appendChild(h);
+  }
+  let accR = 0;
+  for (let j = 0; j < rows - 1; j++) {
+    accR += rowFr[j];
+    const h = document.createElement('div');
+    h.className = 'grid-handle grid-handle-row';
+    h.style.top = `${(accR / rowTotal) * 100}%`;
+    h.addEventListener('mousedown', e => startGridResize(e, grid, 'row', j, cols, rows));
+    grid.appendChild(h);
+  }
 }
 
 // status → { label, ariaLabel } のマッピングを一元化する（updatePaneStatus / renderLeaf 共用）。
@@ -1233,7 +1058,7 @@ function refreshAgentRoomIfChanged(paneId) {
   updateAgentRoom(paneId);
 }
 
-function renderLeaf(node, parentDirection) {
+function renderLeaf(node) {
   const t = terminals[node.id];
   const cwd = t?.cwd || '~';
   const waiting = t?.waiting || false;
@@ -1249,17 +1074,11 @@ function renderLeaf(node, parentDirection) {
   const taskUrl = getDisplayUrl(t);
   // PR ボタン用 URL（issue #44）。renderer 側でも http(s) 二段チェックを通す。
   const taskPrUrl = isSafeExternalUrl(t?.apiPrUrl) ? t.apiPrUrl : '';
-  const collapsed = !!node.collapsed;
-  // 親 split が split-v（上下分割）の場合のみ折り畳みボタンを表示する。
-  // 親 split-h（横並び）の場合は折り畳むと縦のストリップになるが、今回はスコープ外。
-  // ルート leaf（親 split がない）は折り畳めない（兄弟が無いため）。
-  const canCollapse = parentDirection === 'v';
 
   const el = document.createElement('div');
   el.className = 'pane'
     + (focused ? ' focused' : '')
-    + (waiting ? ' waiting' : '')
-    + (collapsed ? ' collapsed' : '');
+    + (waiting ? ' waiting' : '');
   el.dataset.id = node.id;
 
   // タスクタイトル行（OSC 0/2 または POST /api/set-title で設定された文字列を表示）。
@@ -1268,7 +1087,7 @@ function renderLeaf(node, parentDirection) {
   // ペイン D&D の可否判定（issue #40）。leaf が 2 つ以上ある時のみ drag 起点になれる。
   // ルート leaf（ペイン 1 枚状態）は移動先が無いため drag 不可。
   // 空タイトル時も D&D 可なら .empty を付けず、ハンドルとして掴める高さを確保する。
-  const canDragPane = !!(tree && getAllLeafIds(tree).length > 1);
+  const canDragPane = !!(tree && getAllLeafIds().length > 1);
   const taskTitleEl = document.createElement('div');
   // empty 判定はタイトル本文・ドラッグ可・PR ボタンのいずれもないとき。
   // PR ボタンだけでも表示するためにこの条件で扱う（issue #44）。
@@ -1301,17 +1120,6 @@ function renderLeaf(node, parentDirection) {
 
   const header = document.createElement('div');
   header.className = 'pane-header';
-  // .btn-collapse は親 split が split-v のときだけ表示（canCollapse）。
-  // chevron は上下分割のメンタルモデルに合わせる:
-  //   展開中（open）  : ▾（下向き = 中身が下に出ている）
-  //   折り畳み中（closed）: ▴（上向き = 上に巻き上げて閉じている）
-  // aria-expanded で支援技術にも開閉状態を伝える。
-  const collapseBtnHtml = canCollapse
-    ? `<button class="btn btn-collapse"
-         aria-label="${collapsed ? 'ペインを展開' : 'ペインを折り畳む'}"
-         aria-expanded="${!collapsed}"
-         title="${collapsed ? '展開する' : '折り畳む'}">${collapsed ? '▴' : '▾'}</button>`
-    : '';
   // .pane-status はヘッダ最左に常時挿入し、CSS の data-status="idle" を visibility:hidden で扱う。
   // role="status" + aria-live="polite" で SR にステータス変化を通知（aria-label は動的更新）。
   // 共通バッジ basis は .pane-badge（issue #27）、固有スタイルは .pane-status / .auto-input-badge。
@@ -1331,9 +1139,7 @@ function renderLeaf(node, parentDirection) {
       <button class="btn btn-move btn-move-down" title="下へ移動">▼</button>
       <button class="btn btn-move btn-move-up" title="上へ移動">▲</button>
       <button class="btn btn-move btn-move-right" title="右へ移動">▶</button>
-      <button class="btn btn-split-h" title="左右に分割">⇔</button>
-      <button class="btn btn-split-v" title="上下に分割">⇕</button>
-      ${collapseBtnHtml}
+      <button class="btn btn-split" title="ペインを追加">＋</button>
       <button class="btn btn-close" title="閉じる">✕</button>
     </div>
   `;
@@ -1390,29 +1196,19 @@ function renderLeaf(node, parentDirection) {
     e.stopPropagation();
     movePane(node.id, 'down');
   });
-  header.querySelector('.btn-split-h').addEventListener('click', e => {
+  header.querySelector('.btn-split').addEventListener('click', e => {
     e.stopPropagation();
     splitPane(node.id, 'h');
   });
-  header.querySelector('.btn-split-v').addEventListener('click', e => {
-    e.stopPropagation();
-    splitPane(node.id, 'v');
-  });
-  if (canCollapse) {
-    header.querySelector('.btn-collapse').addEventListener('click', e => {
-      e.stopPropagation();
-      toggleCollapse(node.id);
-    });
-  }
   header.querySelector('.btn-close').addEventListener('click', e => {
     e.stopPropagation();
     closePane(node.id);
   });
   el.addEventListener('mousedown', () => focusPane(node.id));
 
-  // ─── Drag & Drop: pane insertion (issue #40) ─────────────────────────────
-  // 別ペインのタスクタイトル行をドラッグして、このペインの上下左右にドロップすると
-  // その方向に再分割して挿入する。同一ペインへのドロップは no-op。
+  // ─── Drag & Drop: pane reordering (issue #40 → グリッド化で並べ替えに変更) ──
+  // 別ペインのタスクタイトル行をドラッグして、このペインの左/上（前）・右/下（後）に
+  // ドロップすると、グリッド内の並び順を入れ替える。同一ペインへのドロップは no-op。
   // ファイル D&D（パス挿入）とは独自 MIME（PANE_DRAG_MIME）で分岐する。
   el.addEventListener('dragover', e => {
     if (!e.dataTransfer.types.includes(PANE_DRAG_MIME)) return;
@@ -1520,65 +1316,40 @@ function renderLeaf(node, parentDirection) {
   return el;
 }
 
-function renderSplit(node) {
-  // 直下の子が collapsed leaf かどうかを判定（split-v のときのみ意味を持つ）。
-  // split-h 側では .btn-collapse を出さない仕様のため、collapsed leaf は通常発生しない。
-  const firstCollapsed = node.first.type === 'leaf' && node.first.collapsed;
-  const secondCollapsed = node.second.type === 'leaf' && node.second.collapsed;
-  const hasCollapsedChild = firstCollapsed || secondCollapsed;
+// グリッドのトラックリサイズ開始。axis は 'col' | 'row'、index は境界のインデックス
+// （index と index+1 のトラック間を動かす）。現在の fr 配列（無ければ均等）を基準に dragState を作る。
+function startGridResize(e, grid, axis, index, cols, rows) {
+  e.preventDefault();
+  e.stopPropagation();
+  const rect = grid.getBoundingClientRect();
+  const size = axis === 'col' ? rect.width : rect.height;
+  const cur = axis === 'col'
+    ? ((tree.colFr && tree.colFr.length === cols) ? tree.colFr.slice() : Array(cols).fill(1))
+    : ((tree.rowFr && tree.rowFr.length === rows) ? tree.rowFr.slice() : Array(rows).fill(1));
+  dragState = {
+    grid,
+    axis,
+    index,
+    size,
+    startPos: axis === 'col' ? e.clientX : e.clientY,
+    fr: cur,
+    total: cur.reduce((a, b) => a + b, 0),
+  };
+  document.body.classList.add(axis === 'col' ? 'resizing-h' : 'resizing-v');
+}
 
-  const el = document.createElement('div');
-  el.className = `split split-${node.direction}`
-    + (hasCollapsedChild ? ' collapsed-pair' : '');
-
-  // 子に親 split の direction を渡して、leaf 側で .btn-collapse の表示可否を判定できるようにする
-  const first = renderNode(node.first, node.direction);
-  const handle = document.createElement('div');
-  handle.className = `resize-handle resize-handle-${node.direction}`;
-  const second = renderNode(node.second, node.direction);
-
-  // 片側が collapsed の場合は flex を固定し、もう片方に空きを吸収させる。
-  // どちらも展開中なら通常通り ratio で按分する。
-  if (firstCollapsed && !secondCollapsed) {
-    first.style.flex = '0 0 auto';
-    second.style.flex = '1 1 auto';
-  } else if (secondCollapsed && !firstCollapsed) {
-    first.style.flex = '1 1 auto';
-    second.style.flex = '0 0 auto';
-  } else {
-    first.style.flex = String(node.ratio);
-    second.style.flex = String(1 - node.ratio);
-  }
-
-  el.appendChild(first);
-  el.appendChild(handle);
-  el.appendChild(second);
-
-  handle.addEventListener('mousedown', e => {
-    // 片側 collapsed の split では handle 操作を無効化する。
-    // CSS では cursor: not-allowed で「無効」状態を視覚表現するため、pointer-events は外して
-    // mousedown 側で早期 return する方式に統一。
-    if (hasCollapsedChild) return;
-    e.preventDefault();
-    e.stopPropagation();
-    const rect1 = first.getBoundingClientRect();
-    const rect2 = second.getBoundingClientRect();
-    const totalSize = node.direction === 'h'
-      ? rect1.width + rect2.width
-      : rect1.height + rect2.height;
-
-    dragState = {
-      node,
-      startPos: node.direction === 'h' ? e.clientX : e.clientY,
-      startRatio: node.ratio,
-      totalSize,
-      firstEl: first,
-      secondEl: second,
-    };
-    document.body.classList.add(node.direction === 'h' ? 'resizing-h' : 'resizing-v');
+// ドラッグ中に同一軸のハンドル位置（累積 %）を追従させる。
+function repositionGridHandles(grid, fr, axis) {
+  const total = fr.reduce((a, b) => a + b, 0);
+  const sel = axis === 'col' ? '.grid-handle-col' : '.grid-handle-row';
+  const handles = grid.querySelectorAll(sel);
+  let acc = 0;
+  handles.forEach((h, i) => {
+    acc += fr[i];
+    const pct = `${(acc / total) * 100}%`;
+    if (axis === 'col') h.style.left = pct;
+    else h.style.top = pct;
   });
-
-  return el;
 }
 
 // ─── Global file drag handler: drag-ready state for all panes ────────────────
@@ -1645,16 +1416,27 @@ document.addEventListener('keydown', (e) => {
   cleanupPaneDrag();
 });
 
-// ─── Global drag handler ──────────────────────────────────────────────────────
+// ─── Global drag handler（グリッドのトラックリサイズ）─────────────────────────
 document.addEventListener('mousemove', e => {
   if (!dragState) return;
-  const { node, startPos, startRatio, totalSize, firstEl, secondEl } = dragState;
-  const currentPos = node.direction === 'h' ? e.clientX : e.clientY;
-  const delta = currentPos - startPos;
-  const newRatio = Math.max(0.05, Math.min(0.95, startRatio + delta / totalSize));
-  node.ratio = newRatio;
-  firstEl.style.flex = String(newRatio);
-  secondEl.style.flex = String(1 - newRatio);
+  const { grid, axis, index, size, startPos, fr, total } = dragState;
+  const currentPos = axis === 'col' ? e.clientX : e.clientY;
+  const deltaFrac = ((currentPos - startPos) / size) * total;
+  const pairSum = fr[index] + fr[index + 1];
+  const minFr = total * 0.05;
+  let a = fr[index] + deltaFrac;
+  a = Math.max(minFr, Math.min(pairSum - minFr, a));
+  const next = fr.slice();
+  next[index] = a;
+  next[index + 1] = pairSum - a;
+  if (axis === 'col') {
+    tree.colFr = next;
+    grid.style.gridTemplateColumns = next.map(f => `${f}fr`).join(' ');
+  } else {
+    tree.rowFr = next;
+    grid.style.gridTemplateRows = next.map(f => `${f}fr`).join(' ');
+  }
+  repositionGridHandles(grid, next, axis);
   debouncedFitAll();
 });
 
@@ -1861,7 +1643,7 @@ async function initApp() {
   focusedPaneId = null;
 
   const paneId = newId();
-  tree = { type: 'leaf', id: paneId };
+  tree = { type: 'grid', order: [paneId], colFr: null, rowFr: null };
   await createTerminal(paneId, null);
   focusedPaneId = paneId;
 
@@ -1888,8 +1670,6 @@ setInterval(() => {
     // エージェントルーム（issue #58）: API 失効後の取り残しを防ぐため、ここで TTL を含めて
     // 定期再評価する（updatePaneStatus / API 受信以外の契機を補う）。変化時のみ再描画。
     if (agentRoomEnabled) refreshAgentRoomIfChanged(paneId);
-    // 折り畳み状態は tree 側に持っているので、レポート時に leaf を引いて取り出す
-    const leaf = tree ? findNode(tree, paneId) : null;
     states[paneId] = {
       termId: t.termId,
       cwd: t.cwdFull || '',
@@ -1912,7 +1692,8 @@ setInterval(() => {
       apiUrl: t.apiUrl || '',
       apiPrUrl: t.apiPrUrl || '',
       displayTitle: getDisplayTitle(t),
-      collapsed: !!(leaf && leaf.collapsed),
+      // collapsed: グリッド化で折り畳み機能を撤去したため常に false（後方互換のためキーは維持）。
+      collapsed: false,
       // agentRoom（issue #58）: 解決済みのルーム状態 { name: state }。
       // agentroom 有効時のみ出力（モバイルページ等の将来連携用）。
       ...(agentRoomEnabled ? { agentRoom: resolveRoomAgents(t) } : {}),

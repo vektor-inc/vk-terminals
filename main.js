@@ -247,8 +247,8 @@ function builtinSettingsDescriptor() {
         label: '基本',
         fields: [
           { key: 'apiHost',        label: 'API ホスト',            type: 'text',    help: '既定 127.0.0.1' },
-          { key: 'initialCommand', label: '初期コマンド',          type: 'text',    help: '1 ペイン目で claude 起動直後に自動実行' },
-          { key: 'agentroom',      label: 'エージェントルーム表示', type: 'boolean' },
+          { key: 'initialCommand', label: '初期コマンド',          type: 'text',    help: '1 ペイン目で claude 起動直後に自動実行させたいコマンドがあれば記入してください。' },
+          { key: 'agentroom',      label: 'エージェントルーム（β）表示', type: 'boolean' },
           { key: 'additionalPanes', label: '追加ペイン (JSON 配列)', type: 'json',   help: '例: [{"cwd":"/path"}]' },
         ],
       },

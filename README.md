@@ -101,11 +101,14 @@ cp config.example.json ~/.vk-terminals/config.json
 
 > **移行メモ**: 旧パス `~/.claude/terminals-config.json` も後方互換として読み込まれます。
 
-## 設定パネル（汎用）
+## 設定パネル
 
-環境変数 `VK_TERMINALS_SETTINGS` に「設定ディスクリプタ JSON」のパスを渡して起動すると、タイトルバー右端に ⚙ ボタンが表示され、そこから任意の config ファイルを GUI 上で編集・保存できます。vk-terminals 自身は編集対象の設定内容を知らず、ディスクリプタ（編集対象パス + 項目スキーマ）に従って読み書きするだけの汎用実装です。`VK_TERMINALS_SETTINGS` を指定しない通常のスタンドアロン起動では ⚙ ボタンは表示されず、挙動は一切変わりません。
+タイトルバー右端の ⚙ ボタンから、設定を GUI 上で編集・保存できます。単体起動でも常に表示されます。
 
-主に vk-orchestrator のような呼び出し側が、自身の `config.json` をこの GUI から手編集せずに設定できるようにするための仕組みです。
+- **単体起動時**（`VK_TERMINALS_SETTINGS` 未指定）：vk-terminals 自身の `config.json`（`apiHost` / `initialCommand` / `agentroom` / `additionalPanes`）を編集します。編集対象は `loadUserConfig()` と同じ探索順で、既存の `config.json` があればそれ、無ければリポジトリ直下 `config.json` を作成します。
+- **呼び出し側から渡された場合**（`VK_TERMINALS_SETTINGS` に「設定ディスクリプタ JSON」のパスを指定）：そのディスクリプタが指す任意の config ファイルを編集します（vk-orchestrator が自身の統合 `config.json` を編集させる用途など）。vk-terminals 自身は編集対象の設定内容を知らず、ディスクリプタ（編集対象パス + 項目スキーマ）に従って読み書きするだけの汎用実装です。
+
+いずれの場合も、保存後の反映には再起動が必要です（設定は起動時に読み込むため）。
 
 ディスクリプタの形式:
 

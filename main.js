@@ -221,20 +221,60 @@ function settingsDescriptorPath() {
   return p && p.trim() ? p : null;
 }
 
-// ディスクリプタを読み込む。未指定・不正・最低限のキー（targetPath / groups）を
-// 欠く場合は null を返す（呼び出し側で「機能なし」として扱う）。
+// 組み込みディスクリプタが編集する「vk-terminals 自身の config.json」のパスを解決する。
+// loadUserConfig() の読み込み順に合わせ、既存の候補があればそれを、無ければ appDir 直下
+// （README の `cp config.example.json config.json` の既定先）を対象にする。
+function resolveOwnConfigTargetPath() {
+  const candidates = [
+    path.join(DATA_DIR, 'config.json'),
+    path.join(__dirname, 'config.json'),
+  ];
+  for (const c of candidates) {
+    if (fs.existsSync(c)) return c;
+  }
+  return path.join(__dirname, 'config.json');
+}
+
+// env 未指定（スタンドアロン起動）時に使う組み込みディスクリプタ。vk-terminals 自身の
+// config.json（apiHost / initialCommand / agentroom / additionalPanes）を GUI から編集できる。
+function builtinSettingsDescriptor() {
+  return {
+    title: 'vk-terminals 設定',
+    note: '保存後、vk-terminals を再起動すると反映されます。',
+    targetPath: resolveOwnConfigTargetPath(),
+    groups: [
+      {
+        label: '基本',
+        fields: [
+          { key: 'apiHost',        label: 'API ホスト',            type: 'text',    help: '既定 127.0.0.1' },
+          { key: 'initialCommand', label: '初期コマンド',          type: 'text',    help: '1 ペイン目で claude 起動直後に自動実行' },
+          { key: 'agentroom',      label: 'エージェントルーム表示', type: 'boolean' },
+          { key: 'additionalPanes', label: '追加ペイン (JSON 配列)', type: 'json',   help: '例: [{"cwd":"/path"}]' },
+        ],
+      },
+    ],
+  };
+}
+
+// ディスクリプタを解決する。env VK_TERMINALS_SETTINGS が指す有効なディスクリプタが
+// あればそれを優先し（vk-orchestrator など呼び出し側の設定を編集）、無い／不正な場合は
+// 組み込みディスクリプタ（vk-terminals 自身の config.json を編集）にフォールバックする。
+// これにより単体起動でも常に設定パネルを表示できる。
 function loadSettingsDescriptor() {
   const p = settingsDescriptorPath();
-  if (!p || !fs.existsSync(p)) return null;
-  try {
-    const d = JSON.parse(fs.readFileSync(p, 'utf8'));
-    if (!d || typeof d !== 'object') return null;
-    if (typeof d.targetPath !== 'string' || !Array.isArray(d.groups)) return null;
-    return d;
-  } catch (e) {
-    console.error(`${LOG_PREFIX} Failed to parse settings descriptor: ${p}`, e);
-    return null;
+  if (p && fs.existsSync(p)) {
+    try {
+      const d = JSON.parse(fs.readFileSync(p, 'utf8'));
+      if (d && typeof d === 'object' && typeof d.targetPath === 'string' && Array.isArray(d.groups)) {
+        return d;
+      }
+      console.error(`${LOG_PREFIX} Invalid settings descriptor (missing targetPath/groups): ${p}`);
+    } catch (e) {
+      console.error(`${LOG_PREFIX} Failed to parse settings descriptor: ${p}`, e);
+    }
+    // env 指定が不正でも、単体編集用の組み込みディスクリプタにフォールバックする。
   }
+  return builtinSettingsDescriptor();
 }
 
 // ディスクリプタの全 groups からフィールド定義を平坦化して集める。

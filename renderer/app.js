@@ -1686,11 +1686,6 @@ window.addEventListener('resize', debouncedFitAll);
 // VK_TERMINALS_SETTINGS で指定した config ファイルをこの GUI から編集する。
 // describe が available:false（未指定）を返す場合はボタンごと非表示のままにする。
 
-// キーからフォーム入力要素の id を作る（ドット等を安全な文字へ）。
-function settingsFieldId(key) {
-  return 'set-field-' + String(key).replace(/[^a-zA-Z0-9_-]/g, '_');
-}
-
 // 起動時に describe を叩き、利用可能なら設定ボタンを表示して click を配線する。
 async function setupSettingsPanel() {
   const btn = document.getElementById('settings-btn');
@@ -1707,8 +1702,9 @@ async function setupSettingsPanel() {
 }
 
 // 1 フィールド分の入力 HTML を組み立てる。
-function renderSettingsField(f, value) {
-  const id = settingsFieldId(f.key);
+// id は描画順で採番したユニークな値を呼び出し側から受け取る（キーから id を導出すると
+// "a.b" と "a_b" のような別キーがサニタイズ後に衝突しうるため、キー由来にしない）。
+function renderSettingsField(f, value, id) {
   const label = escText(f.label || f.key);
   const help = f.help ? `<span class="settings-help">${escText(f.help)}</span>` : '';
 
@@ -1766,8 +1762,14 @@ async function openSettingsModal() {
   // 二重オープン防止
   if (document.querySelector('.settings-overlay')) return;
 
+  // 描画順に採番したユニーク id と field を対応付ける（保存時もこの対応で走査する）。
+  const entries = [];
   const groupsHtml = desc.groups.map(g => {
-    const rows = (g.fields || []).map(f => renderSettingsField(f, desc.values[f.key])).join('');
+    const rows = (g.fields || []).map(f => {
+      const id = 'set-field-' + entries.length;
+      entries.push({ field: f, id });
+      return renderSettingsField(f, desc.values[f.key], id);
+    }).join('');
     return `<fieldset class="settings-group">
       <legend>${escText(g.label || '')}</legend>${rows}</fieldset>`;
   }).join('');
@@ -1818,12 +1820,10 @@ async function openSettingsModal() {
 
   modal.querySelector('.settings-save').addEventListener('click', async () => {
     const out = {};
-    for (const g of desc.groups) {
-      for (const f of (g.fields || [])) {
-        const input = modal.querySelector('#' + settingsFieldId(f.key));
-        if (!input) continue;
-        out[f.key] = f.type === 'boolean' ? input.checked : input.value;
-      }
+    for (const { field, id } of entries) {
+      const input = modal.querySelector('#' + id);
+      if (!input) continue;
+      out[field.key] = field.type === 'boolean' ? input.checked : input.value;
     }
     msg.textContent = '保存中...';
     msg.className = 'settings-msg';

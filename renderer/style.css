@@ -240,40 +240,57 @@ html, body {
   display: flex;
 }
 
-/* ─── Split containers ─────────────────────────────────────────────────────── */
-.split {
-  display: flex;
+/* ─── Grid container ───────────────────────────────────────────────────────── */
+/* 全ペインをフラットに並べる自動折返しグリッド。position:relative はリサイズハンドル
+ * （.grid-handle）の絶対配置基準として必要。トラックは fr で、gap がペイン間の余白。 */
+.grid {
+  position: relative;
   flex: 1;
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+  display: grid;
+  gap: 6px;
+  padding: 6px;
 }
 
-.split-h {
-  flex-direction: row;
+/* ─── Grid resize handles ──────────────────────────────────────────────────── */
+/* 列間（縦線）・行間（横線）に重ねるドラッグ用ハンドル。gap の上に薄く重なり、
+ * ホバー時のみアクセントカラーで可視化する。 */
+.grid-handle {
+  position: absolute;
+  z-index: 6;
+  background: transparent;
+  transition: background-color 0.12s ease;
 }
-
-.split-v {
-  flex-direction: column;
+.grid-handle-col {
+  top: 0;
+  bottom: 0;
+  width: 12px;
+  transform: translateX(-50%);
+  cursor: col-resize;
+}
+.grid-handle-row {
+  left: 0;
+  right: 0;
+  height: 12px;
+  transform: translateY(-50%);
+  cursor: row-resize;
+}
+.grid-handle:hover {
+  background: rgba(88, 166, 255, 0.35);
 }
 
 /* ─── Pane ─────────────────────────────────────────────────────────────────── */
 .pane {
   display: flex;
   flex-direction: column;
-  flex: 1;
   min-width: 0;
   min-height: 0;
-  /* max-height を明示しておくのは折り畳みアニメーション用。
-   * max-height は none と数値の間で transition が走らないため、ベースを 100vh で固定し、
-   * .pane.collapsed で 60px に縮める。実高さは flex で決まるので 100vh は単なる上限値。 */
-  max-height: 100vh;
   border: 1px solid #21262d;
   box-shadow: none;
-  /* border-color・box-shadow は focus/drag-over 用、max-height は collapsed/expand 用 */
-  transition: border-color 0.15s ease, box-shadow 0.15s ease, max-height 0.18s ease;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
   overflow: hidden;
-  margin: 6px;
   border-radius: var(--vktm--border-radius--md);
 }
 
@@ -610,52 +627,6 @@ html, body {
   background: rgba(248, 81, 73, 0.12);
 }
 
-/* ─── Collapse button ─────────────────────────────────────────────────────── */
-/* chevron はフォント依存で大きく見えがちなので少し詰める */
-.btn-collapse {
-  font-size: 12px;
-}
-
-/* 折り畳みボタンと閉じるボタンの間にスペースを入れて誤クリックを防ぐ。
- * 隣接セレクタを使い、.btn-collapse が表示されない split-h のペインでは効かない（影響なし）。 */
-.btn-collapse + .btn-close {
-  margin-left: 4px;
-}
-
-/* ─── Collapsed pane ──────────────────────────────────────────────────────── */
-/* .pane.collapsed はヘッダ部分（pane-task-title + pane-header）のみ表示し、
- * xterm 領域を display:none で隠す。flex はインラインスタイルで 0 0 auto を当てているため、
- * 自然な高さ（ヘッダ群の合計）にフィットする。
- * max-height の transition は .pane ベース側で 100vh ↔ 60px の補間が定義済。
- * height ではなく max-height を使うのは、xterm の reflow（ResizeObserver 経由）と
- * 干渉しにくく、展開時のサイズ計算も flex に委ねられるため。 */
-.pane.collapsed {
-  /* max-height は実コンテンツの合計（pane-task-title 22px + pane-header 28px
-   * + .pane の上下 border 各 1px = 52px）に対する余裕値。
-   * タスクタイトル空時は .pane-task-title が display:none になり高さは縮むが、
-   * max-height は実コンテンツより大きければよいので 60px で固定。 */
-  max-height: 60px;
-}
-
-.pane.collapsed .term-container {
-  display: none;
-}
-
-/* 片側 collapsed の split では resize-handle 操作を無効化する。
- * 比率を変えても collapsed 側は flex: 0 0 auto なので意味がないため。
- * pointer-events: none を当てると cursor も効かなくなるので、cursor: not-allowed で
- * 「無効」を視覚表現する。実際の操作抑止は renderSplit 内の mousedown ハンドラで早期 return。 */
-.split.collapsed-pair > .resize-handle {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
-/* 上記 cursor を resizing 中のグローバル cursor 上書きで踏み潰されないように、
- * collapsed-pair の handle hover でも色を変えないようにする。 */
-.split.collapsed-pair > .resize-handle:hover {
-  background: #21262d;
-}
-
 /* ─── Terminal viewport ────────────────────────────────────────────────────── */
 /* background は xterm.js が文字グリッドの整数倍でしか描画できないため container 下端に
  * 残る隙間（数 px）を埋める用途。TERM_THEME.background と同色にしておくことで、
@@ -686,49 +657,6 @@ html, body {
 
 .xterm-screen {
   width: 100% !important;
-}
-
-/* ─── Resize handles ───────────────────────────────────────────────────────── */
-.resize-handle {
-  background: #21262d;
-  flex-shrink: 0;
-  transition: background 0.15s;
-  z-index: 10;
-  position: relative;
-}
-
-.resize-handle::after {
-  content: '';
-  position: absolute;
-  background: transparent;
-}
-
-.resize-handle-h {
-  width: 4px;
-  cursor: col-resize;
-}
-
-.resize-handle-h::after {
-  top: 0;
-  bottom: 0;
-  left: -4px;
-  right: -4px;
-}
-
-.resize-handle-v {
-  height: 4px;
-  cursor: row-resize;
-}
-
-.resize-handle-v::after {
-  left: 0;
-  right: 0;
-  top: -4px;
-  bottom: -4px;
-}
-
-.resize-handle:hover {
-  background: #388bfd;
 }
 
 /* ─── Drag cursor override ─────────────────────────────────────────────────── */
@@ -816,11 +744,6 @@ body.pane-dragging * {
   border-bottom-left-radius: var(--vktm--border-radius--md);
   border-bottom-right-radius: var(--vktm--border-radius--md);
   font-size: 12px;
-}
-
-/* 折り畳みペインではルームも隠して、上部ストリップを最小に保つ */
-.pane.collapsed .agent-room {
-  display: none;
 }
 
 .agent-room-summary {

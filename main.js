@@ -209,6 +209,158 @@ ipcMain.handle('app:get-config', () => {
   return { agentroom: config.agentroom === true };
 });
 
+// ─── 設定パネル（汎用）────────────────────────────────────────────────────────
+// 呼び出し側（例: vk-orchestrator）が環境変数 VK_TERMINALS_SETTINGS に「設定ディスク
+// リプタ JSON」のパスを渡すと、renderer の設定パネルからそのディスクリプタが指す
+// config ファイルを GUI 上で編集・保存できる。vk-terminals 自身は特定ツールの設定
+// 内容を知らず、ディスクリプタ（項目スキーマ + targetPath）に従って読み書きするだけの
+// 汎用実装にすることで、スタンドアロン利用時は影響を受けない（env 未指定なら
+// settings:describe が available:false を返し、ボタンごと非表示になる）。
+function settingsDescriptorPath() {
+  const p = process.env.VK_TERMINALS_SETTINGS;
+  return p && p.trim() ? p : null;
+}
+
+// ディスクリプタを読み込む。未指定・不正・最低限のキー（targetPath / groups）を
+// 欠く場合は null を返す（呼び出し側で「機能なし」として扱う）。
+function loadSettingsDescriptor() {
+  const p = settingsDescriptorPath();
+  if (!p || !fs.existsSync(p)) return null;
+  try {
+    const d = JSON.parse(fs.readFileSync(p, 'utf8'));
+    if (!d || typeof d !== 'object') return null;
+    if (typeof d.targetPath !== 'string' || !Array.isArray(d.groups)) return null;
+    return d;
+  } catch (e) {
+    console.error(`${LOG_PREFIX} Failed to parse settings descriptor: ${p}`, e);
+    return null;
+  }
+}
+
+// ディスクリプタの全 groups からフィールド定義を平坦化して集める。
+function descriptorFields(descriptor) {
+  const fields = [];
+  for (const g of descriptor.groups) {
+    if (g && Array.isArray(g.fields)) fields.push(...g.fields);
+  }
+  return fields.filter(f => f && typeof f.key === 'string');
+}
+
+// "a.b.c" 形式のドットキーで入れ子オブジェクトから値を取り出す。
+function deepGet(obj, dottedKey) {
+  return dottedKey.split('.').reduce(
+    (acc, k) => (acc == null ? undefined : acc[k]),
+    obj,
+  );
+}
+
+// "a.b.c" 形式のドットキーで入れ子オブジェクトに値を設定する（中間は生成）。
+function deepSet(obj, dottedKey, value) {
+  const keys = dottedKey.split('.');
+  let cur = obj;
+  for (let i = 0; i < keys.length - 1; i++) {
+    const k = keys[i];
+    if (cur[k] == null || typeof cur[k] !== 'object') cur[k] = {};
+    cur = cur[k];
+  }
+  cur[keys[keys.length - 1]] = value;
+}
+
+// renderer 用: ディスクリプタと targetPath の現在値を返す。VK_TERMINALS_SETTINGS が
+// 未設定なら available:false（renderer 側は設定ボタンを表示しない）。
+ipcMain.handle('settings:describe', () => {
+  const descriptor = loadSettingsDescriptor();
+  if (!descriptor) return { available: false };
+
+  let current = {};
+  try {
+    if (fs.existsSync(descriptor.targetPath)) {
+      current = JSON.parse(fs.readFileSync(descriptor.targetPath, 'utf8'));
+    }
+  } catch (e) {
+    console.error(`${LOG_PREFIX} Failed to read target config: ${descriptor.targetPath}`, e);
+  }
+  if (!current || typeof current !== 'object') current = {};
+
+  const values = {};
+  for (const f of descriptorFields(descriptor)) {
+    const v = deepGet(current, f.key);
+    values[f.key] = v === undefined ? null : v;
+  }
+  return {
+    available: true,
+    title: descriptor.title || '設定',
+    note: descriptor.note || '',
+    targetPath: descriptor.targetPath,
+    groups: descriptor.groups,
+    values,
+  };
+});
+
+// renderer からの保存。ディスクリプタに載っているキーだけを型変換して書き戻す
+// （未知のキーは既存 config から保持する。書き込み先は必ず descriptor.targetPath）。
+ipcMain.handle('settings:save', (event, incoming) => {
+  const descriptor = loadSettingsDescriptor();
+  if (!descriptor) return { ok: false, error: '設定ディスクリプタが見つかりません' };
+
+  const fields = descriptorFields(descriptor);
+  const values = incoming && typeof incoming === 'object' ? incoming : {};
+
+  // 既存 config を読み、ディスクリプタに載っていないキーは保持したまま更新する。
+  let config = {};
+  try {
+    if (fs.existsSync(descriptor.targetPath)) {
+      config = JSON.parse(fs.readFileSync(descriptor.targetPath, 'utf8'));
+    }
+  } catch (e) {
+    return { ok: false, error: `既存設定の読み込みに失敗: ${e.message}` };
+  }
+  if (!config || typeof config !== 'object') config = {};
+
+  for (const f of fields) {
+    if (!(f.key in values)) continue;
+    const raw = values[f.key];
+    const label = f.label || f.key;
+    let coerced;
+    switch (f.type) {
+      case 'number': {
+        if (raw === '' || raw === null || raw === undefined) { coerced = null; break; }
+        const n = Number(raw);
+        if (!Number.isFinite(n)) return { ok: false, error: `${label}: 数値として不正です` };
+        coerced = n;
+        break;
+      }
+      case 'boolean':
+        coerced = !!raw;
+        break;
+      case 'json': {
+        if (raw === '' || raw === null || raw === undefined) {
+          coerced = f.emptyToNull ? null : [];
+          break;
+        }
+        try {
+          coerced = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        } catch (e) {
+          return { ok: false, error: `${label}: JSON として不正です（${e.message}）` };
+        }
+        break;
+      }
+      default: { // text / password
+        const s = raw == null ? '' : String(raw);
+        coerced = (s === '' && f.emptyToNull) ? null : s;
+      }
+    }
+    deepSet(config, f.key, coerced);
+  }
+
+  try {
+    fs.writeFileSync(descriptor.targetPath, JSON.stringify(config, null, 2) + '\n');
+  } catch (e) {
+    return { ok: false, error: `保存に失敗: ${e.message}` };
+  }
+  return { ok: true, targetPath: descriptor.targetPath };
+});
+
 ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
   const id = String(nextId++);
   const shell = process.env.SHELL || '/bin/zsh';

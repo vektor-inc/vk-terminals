@@ -1,5 +1,6 @@
 # Changelog
 
+- [ 機能追加 ] 環境変数 `VK_TERMINALS_SETTINGS` に「設定ディスクリプタ JSON」（編集対象ファイルの `targetPath` + 項目スキーマ `groups`）のパスを渡すと、タイトルバーの ⚙ ボタンから任意の config ファイルを GUI 上で編集・保存できる汎用設定パネルを追加。text／password／number／boolean／json の各項目に対応し、未知のキーは保持したまま書き戻す。env 未指定時はボタン非表示でスタンドアロン利用には影響なし
 - [ 機能追加 ] サブエージェント（司／和田／安藤／麗美／植草）の稼働状況をドット絵キャラで可視化する「エージェントルーム」を追加。`config.json` の `agentroom: true` で各ペイン下部に開閉表示し、状態は `POST /api/agentroom` か PTY 出力から取得（[#58](https://github.com/vektor-inc/vk-terminals/issues/58)）
 - [ 不具合修正 ] `POST /api/send` で「本文 + 末尾 Enter（`\r`）」を 1 リクエストで受け取ると、Claude Code の TUI がペースト扱いして末尾 `\r` を入力欄の改行として吸収し Enter 確定にならず入力待ちのまま止まる不具合を修正（URL など長い入力で特に再現）。サーバ側で本文と Enter を分割し、本文を送って `150ms` 待ってから Enter を送るよう変更。スマホUI・terminal-monitor 等の全送信経路に適用
 - [ 不具合修正 ] モバイルページでテキスト入力中にポーリングが走るたびに DOM が移動されソフトキーボードが消える不具合を修正。`render()` 内の `list.appendChild()` による DOM 移動をやめ、CSS `order` プロパティで視覚的な並び替えのみを行うよう変更（[#55](https://github.com/vektor-inc/vk-terminals/issues/55)）

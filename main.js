@@ -336,6 +336,7 @@ ipcMain.handle('settings:describe', () => {
     targetPath: descriptor.targetPath,
     groups: descriptor.groups,
     values,
+    appVersion: require('./package.json').version,
   };
 });
 

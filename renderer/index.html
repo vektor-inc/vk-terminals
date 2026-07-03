@@ -3,7 +3,9 @@
 <head>
   <meta charset="UTF-8">
   <title>VK Terminals</title>
-  <link rel="stylesheet" href="../node_modules/@xterm/xterm/css/xterm.css">
+  <!-- xterm.css は相対パス <link> では読み込まない（app.js が require.resolve で注入する）。
+       npm 依存としてインストールされた場合、依存が上位の node_modules へホイストされて
+       相対パスが 404 になるため（詳細は app.js の「xterm.css の注入」コメントを参照）。 -->
   <link rel="stylesheet" href="style.css">
 </head>
 <body>

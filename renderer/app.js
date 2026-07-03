@@ -1568,7 +1568,7 @@ async function openSettingsModal() {
   overlay.innerHTML = `
     <div class="settings-modal" role="dialog" aria-modal="true">
       <div class="settings-header">
-        <h2>${escText(desc.title || '設定')}</h2>
+        <h2>${escText(desc.title || '設定')}${desc.appVersion ? `<span class="settings-version">VK Terminals v${escText(desc.appVersion)}</span>` : ''}</h2>
         <button class="settings-close" title="閉じる">✕</button>
       </div>
       ${desc.note ? `<p class="settings-note">${escText(desc.note)}</p>` : ''}

@@ -1,5 +1,7 @@
 # Changelog
 
+## 1.4.0
+
 - [ 仕様変更 ] ペインのレイアウトを入れ子分割の二分木方式から、全ペインが常に最上位に並ぶ自動折返しグリッド方式に変更。ペインが他ペインの内側に入れ子にならなくなり、折り畳み機能は撤去
 - [ 機能追加 ] タイトルバー右端の ⚙ ボタンから設定を GUI 上で編集・保存できる設定パネルを追加。単体起動時は vk-terminals 自身の `config.json`（`apiHost`／`initialCommand`／`agentroom`／`additionalPanes`）を編集し、環境変数 `VK_TERMINALS_SETTINGS` に「設定ディスクリプタ JSON」を渡すとその対象ファイル（呼び出し側の任意の config）を編集する。text／password／number／boolean／json に対応し、未知のキーは保持したまま書き戻す
 - [ 機能追加 ] サブエージェント（司／和田／安藤／麗美／植草）の稼働状況をドット絵キャラで可視化する「エージェントルーム」を追加。`config.json` の `agentroom: true` で各ペイン下部に開閉表示し、状態は `POST /api/agentroom` か PTY 出力から取得（[#58](https://github.com/vektor-inc/vk-terminals/issues/58)）

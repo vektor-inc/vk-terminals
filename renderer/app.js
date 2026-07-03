@@ -6,6 +6,35 @@ const { stripAnsiForDisplay } = require('../utils/stripAnsi');
 // エージェントルーム（issue #58）。サブエージェントの稼働状況をドット絵キャラで可視化する。
 const { AGENT_ORDER, buildScene, resolveAgentStatesFromOutput } = require('./agentRoom');
 
+// ─── xterm.css の注入 ─────────────────────────────────────────────────────────
+// xterm.css は index.html の相対パス <link> ではなく、Node のモジュール解決
+// （require.resolve）で実体を探して <style> として注入する。
+//
+// なぜ必要か:
+//   vk-terminals が npm 依存としてインストールされた場合（例: vk-orchestrator の
+//   node_modules 内から起動）、依存パッケージは上位の node_modules へホイストされ、
+//   自身の node_modules ディレクトリが存在しない。require() は上位へ遡って解決できるが、
+//   <link href="../node_modules/..."> の相対パスは遡れず 404 になる。
+//   xterm.css には IME 用 textarea を画面外へ逃がす必須スタイル
+//   （.xterm-helper-textarea の position: absolute / opacity: 0 / left: -9999em 等）が
+//   含まれており、欠落すると textarea が文書フロー上（ペイン左上）に可視状態で置かれ、
+//   日本語入力の変換候補ウィンドウがペイン左上に表示される・合成中の文字列が
+//   ペイン上部に見えてしまう。
+(() => {
+  const fs = require('fs');
+  try {
+    const css = fs.readFileSync(require.resolve('@xterm/xterm/css/xterm.css'), 'utf8');
+    const style = document.createElement('style');
+    style.textContent = css;
+    // アプリ側 style.css より前に挿入し、既存の上書き関係（style.css が後勝ち）を維持する
+    const appCss = document.querySelector('link[href="style.css"]');
+    document.head.insertBefore(style, appCss);
+  } catch (e) {
+    // 読み込み失敗時もアプリ自体は起動させる（従来の <link> 404 と同等の状態に留める）
+    console.error('xterm.css の読み込みに失敗しました', e);
+  }
+})();
+
 // ─── State ────────────────────────────────────────────────────────────────────
 let tree = null;       // Layout tree root
 // ペイン D&D 中の状態（issue #40）。リサイズ用の dragState とは別変数で衝突回避。
@@ -261,12 +290,13 @@ async function createTerminal(paneId, cwd, options = {}) {
 
   // IME 合成開始時にビューポートを最下部（入力行）へスクロールし、カーソルを可視領域に入れる。
   // xterm の updateCompositionElements() は isCursorInViewport（ybase+y-ydisp が可視範囲内）が
-  // 真のときだけ .xterm-helper-textarea をカーソル位置へ動かす。偽のときは textarea が画面外の
-  // 既定位置に残り、macOS の変換候補ウィンドウが左上に出てしまう。orchestrator 起動時は GUI 起動直後の
-  // /api/new-pane による 2 枚目作成で render()（innerHTML='' による detach→再 attach）と fitAll() が
-  // 連続し、1 枚目（Claude Code）のビューポートがカーソル行からずれて isCursorInViewport が偽になり再発する。
-  // 祖先要素の capture フェーズで拾うことで xterm 自身の textarea ハンドラより先にスクロールを確定させ、
-  // 直後に走る xterm の配置処理でカーソル位置へ正しく置かれるようにする。
+  // 真のときだけ .xterm-helper-textarea をカーソル位置へ動かすため、通常バッファのシェルで
+  // スクロールアップしたまま日本語入力を始めると textarea が画面外の既定位置に残り、変換候補
+  // ウィンドウが入力行から離れた場所に出てしまう。これを防ぐ防御的措置（claude 等の代替バッファ
+  // アプリでは ydisp=0 で常に可視のため no-op）。祖先要素の capture フェーズで拾うことで xterm
+  // 自身の textarea ハンドラより先にスクロールを確定させる。
+  // ※「変換候補がペイン左上に出る」不具合の本因は xterm.css の読み込み失敗（ファイル冒頭の
+  //   「xterm.css の注入」コメント参照）であり、このリスナはその修正ではない。
   element.addEventListener('compositionstart', () => {
     try { term.scrollToBottom(); } catch (_e) {}
   }, true);

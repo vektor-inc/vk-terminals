@@ -105,9 +105,11 @@ async function checkAndUpdate() {
     const { stdout: lsRemoteOut } = await execFileAsync(
       'git', ['ls-remote', '--tags', 'origin'], { ...opts, timeout: 10000 }
     );
+    // `v` プレフィックスは任意。リリースタグは v なし（例: 1.4.1）と v あり（例: v1.1.0）が
+    // 混在しているため、両形式を拾う。バージョン比較は compareSemver が `v` を除去して行う。
     const latestTag = lsRemoteOut
       .split('\n')
-      .map((l) => l.match(/refs\/tags\/(v\d+\.\d+\.\d+)$/)?.[1])
+      .map((l) => l.match(/refs\/tags\/(v?\d+\.\d+\.\d+)$/)?.[1])
       .filter(Boolean)
       .sort((a, b) => compareSemver(b, a))[0];
 

@@ -259,6 +259,18 @@ async function createTerminal(paneId, cwd, options = {}) {
   element.className = 'term-viewport';
   // NOTE: term.open(element) is called later, after element is attached to DOM
 
+  // IME 合成開始時にビューポートを最下部（入力行）へスクロールし、カーソルを可視領域に入れる。
+  // xterm の updateCompositionElements() は isCursorInViewport（ybase+y-ydisp が可視範囲内）が
+  // 真のときだけ .xterm-helper-textarea をカーソル位置へ動かす。偽のときは textarea が画面外の
+  // 既定位置に残り、macOS の変換候補ウィンドウが左上に出てしまう。orchestrator 起動時は GUI 起動直後の
+  // /api/new-pane による 2 枚目作成で render()（innerHTML='' による detach→再 attach）と fitAll() が
+  // 連続し、1 枚目（Claude Code）のビューポートがカーソル行からずれて isCursorInViewport が偽になり再発する。
+  // 祖先要素の capture フェーズで拾うことで xterm 自身の textarea ハンドラより先にスクロールを確定させ、
+  // 直後に走る xterm の配置処理でカーソル位置へ正しく置かれるようにする。
+  element.addEventListener('compositionstart', () => {
+    try { term.scrollToBottom(); } catch (_e) {}
+  }, true);
+
   // Input: terminal -> pty
   term.onData((data) => {
     sendTerminalInput(data);

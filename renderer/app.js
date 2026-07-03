@@ -1456,9 +1456,16 @@ function debouncedFitAll() {
 
 const resizeObserver = new ResizeObserver(debouncedFitAll);
 
+// xterm の実際の描画領域は .term-container なので、.pane ではなく .term-container を監視する。
+// .pane を監視すると、ペイン自体のサイズは変わらないのに内側の割り当てだけが変わるケース
+// —— 例: エージェントルーム（<details>）の開閉で .agent-room-body が伸縮し、flex:1 の
+// .term-container だけが縮む —— を拾えず、ターミナルが再フィットされない。その結果カーソル
+// 行（Claude の入力欄）が可視領域外に押し出され、IME 合成中の textarea / composition-view も
+// 旧サイズ基準の座標に取り残されて左上等の誤った位置に出てしまう。
+// .term-container は .pane 内で flex:1 のため、ペインのリサイズでも必ず追従して変化する。
 function observePanes() {
   resizeObserver.disconnect();
-  document.querySelectorAll('.pane').forEach(el => resizeObserver.observe(el));
+  document.querySelectorAll('.term-container').forEach(el => resizeObserver.observe(el));
 }
 
 window.addEventListener('resize', debouncedFitAll);

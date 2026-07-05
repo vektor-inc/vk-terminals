@@ -205,10 +205,14 @@ app.on('before-quit', () => {
 });
 
 // renderer がエージェントルーム（issue #58）の有効/無効を知るための設定取得。
-//   config.json の `agentroom: true` のときだけ各ペイン下部にアコーディオンを表示する。
+//   本来は config.json の `agentroom: true` のときだけ各ペイン下部にアコーディオンを
+//   表示するが、issue #70 でエージェントルーム（β）を一旦無効化するため、config.json の
+//   値によらず常に false を返す。復帰時は下記を
+//     const config = loadUserConfig();
+//     return { agentroom: config.agentroom === true };
+//   に戻せばよい。
 ipcMain.handle('app:get-config', () => {
-  const config = loadUserConfig();
-  return { agentroom: config.agentroom === true };
+  return { agentroom: false };
 });
 
 // ─── 設定パネル（汎用）────────────────────────────────────────────────────────
@@ -250,7 +254,9 @@ function builtinSettingsDescriptor() {
         fields: [
           { key: 'apiHost',        label: 'API ホスト',            type: 'text',    help: '既定 127.0.0.1' },
           { key: 'initialCommand', label: '初期コマンド',          type: 'text',    help: '1 ペイン目で claude 起動直後に自動実行させたいコマンドがあれば記入してください。' },
-          { key: 'agentroom',      label: 'エージェントルーム（β）表示', type: 'boolean' },
+          // issue #70 でエージェントルーム（β）を一旦無効化するため設定項目を非表示にする。
+          // 復帰時は下記コメントを解除する。
+          // { key: 'agentroom',      label: 'エージェントルーム（β）表示', type: 'boolean' },
           { key: 'additionalPanes', label: '追加ペイン (JSON 配列)', type: 'json',   help: '例: [{"cwd":"/path"}]' },
         ],
       },

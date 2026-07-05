@@ -1532,6 +1532,31 @@ async function setupSettingsPanel() {
   btn.addEventListener('click', () => openSettingsModal());
 }
 
+// ─── トークン使用量インジケータ（issue #69）──────────────────────────────────
+// main の usage:get を 15 秒ごとにポーリングし、タイトルバー左端に表示する。
+// 無効・データ無し・取得失敗のときは要素ごと隠す（アプリ本体に影響を与えない）。
+function setupUsageIndicator() {
+  const el = document.getElementById('usage-indicator');
+  if (!el) return;
+  const refresh = async () => {
+    try {
+      const u = await ipcRenderer.invoke('usage:get');
+      if (u && u.titleText) {
+        el.textContent = u.titleText;
+        el.title = u.mobileText || u.titleText;
+        el.hidden = false;
+      } else {
+        el.textContent = '';
+        el.hidden = true;
+      }
+    } catch (_e) {
+      el.hidden = true;
+    }
+  };
+  refresh();
+  setInterval(refresh, 15000);
+}
+
 // 1 フィールド分の入力 HTML を組み立てる。
 // id は描画順で採番したユニークな値を呼び出し側から受け取る（キーから id を導出すると
 // "a.b" と "a_b" のような別キーがサニタイズ後に衝突しうるため、キー由来にしない）。
@@ -1710,6 +1735,9 @@ initApp().then(() => {
 
 // 設定パネル（汎用）の有効/無効を判定してボタンを出す。
 setupSettingsPanel();
+
+// タイトルバーのトークン使用量インジケータ（issue #69）を配線する。
+setupUsageIndicator();
 
 // ─── State reporting to main process ─────────────────────────────────────────
 setInterval(() => {

@@ -39,6 +39,27 @@ html, body {
   -webkit-user-select: none;
 }
 
+/* タイトルバー左端のトークン使用量インジケータ（issue #69）。
+   app-title は中央寄せなので、これは絶対配置で左端に置く（ドラッグ領域からは除外しない
+   ＝クリックは特に無いのでウィンドウドラッグを妨げない）。狭幅では省略記号で切る。 */
+.usage-indicator {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: #7d8590;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  -webkit-user-select: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 40vw;
+  pointer-events: none;
+}
+.usage-indicator[hidden] { display: none; }
+
 /* タイトルバー右端の設定ボタン（ドラッグ領域から除外する） */
 .titlebar-btn {
   position: absolute;

@@ -90,6 +90,17 @@
   .nl-toggle { font-size: 11px; color: var(--muted); display: flex; align-items: center; gap: 5px;
     padding: 2px; }
   #err { display: none; background: #4a1e1e; color: #ffb4b4; font-size: 12px; padding: 6px 12px; }
+  /* トークン使用量カード（issue #69）。data.usage があるときだけ #list の先頭に表示する。 */
+  #usage-card { display: none; margin: 10px 10px 0; padding: 11px 13px; background: var(--card);
+    border: 1px solid var(--card-border); border-radius: 12px; }
+  #usage-card.show { display: block; }
+  #usage-card .u-line { font-size: 12px; color: var(--fg); font-weight: 600;
+    display: flex; align-items: center; gap: 6px; }
+  #usage-card .u-line .u-bolt { font-size: 13px; }
+  #usage-card .u-bar { margin-top: 6px; font-size: 12px; color: var(--muted);
+    font-family: ui-monospace, "SF Mono", Menlo, monospace; letter-spacing: 1px;
+    display: flex; align-items: center; gap: 8px; }
+  #usage-card .u-bar .u-marks { color: var(--running); letter-spacing: 2px; }
 </style>
 </head>
 <body>
@@ -98,6 +109,10 @@
   <span class="meta" id="meta">接続中…</span>
 </header>
 <div id="err"></div>
+<div id="usage-card">
+  <div class="u-line"><span class="u-bolt">⚡</span><span id="usage-text"></span></div>
+  <div class="u-bar"><span class="u-marks" id="usage-marks"></span><span id="usage-percent"></span></div>
+</div>
 <div id="list"></div>
 
 <script>
@@ -354,7 +369,23 @@ function ensureCard(termId) {
   return cards[termId];
 }
 
+// 使用量カード（issue #69）。data.usage（main が整形済みの文字列群）があれば表示する。
+// 無い（無効・データ無し）ときは隠す。文字列は textContent で入れるので XSS 面も安全。
+var usageCard = document.getElementById("usage-card");
+function renderUsage(usage) {
+  if (!usageCard) return;
+  if (!usage || !usage.mobileText) {
+    usageCard.classList.remove("show");
+    return;
+  }
+  document.getElementById("usage-text").textContent = usage.mobileText;
+  document.getElementById("usage-marks").textContent = usage.bar || "";
+  document.getElementById("usage-percent").textContent = usage.barText || "";
+  usageCard.classList.add("show");
+}
+
 function render(data) {
+  renderUsage(data.usage);
   var terms = data.terminals || {};
   var keys = Object.keys(terms);
   // 並び順: waiting > running > idle、その中は termId 昇順

@@ -26,6 +26,11 @@ const SESSION_DURATION_MS = 5 * HOUR_MS; // 5 時間ブロック
 const CLOCK_SKEW_MS = 5 * 60 * 1000;     // 未来方向の許容（これを超える未来 ts は除外）
 const RECENT_WINDOW_MS = 6 * HOUR_MS;    // mtime でファイルを絞る窓（ブロック 5h + 余裕 1h）
 const SWR_STALE_MS = 10 * 1000;          // これより新しいスナップショットはそのまま返す
+const MAX_READ_BYTES = 50 * 1024 * 1024; // 1 ファイル 1 回あたりの読取上限（巨大/破損 .jsonl 対策）
+
+// UI 表示ラベル（タイトルバー・モバイルで同一語に統一する。UX レビュー UX-1）。
+const PEAK_LABEL = 'ピーク比';
+const PEAK_NOTE = 'これまで最も使った5hブロックとの比';
 
 // ─── 純粋関数コア ────────────────────────────────────────────────────────────
 
@@ -37,7 +42,8 @@ const SWR_STALE_MS = 10 * 1000;          // これより新しいスナップシ
  */
 function tokensFromUsage(usage) {
   if (!usage || typeof usage !== 'object') return 0;
-  const n = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+  // 破損した usage に負値が混じっても合計を過少にしないよう 0 でクランプする。
+  const n = (v) => (typeof v === 'number' && Number.isFinite(v) ? Math.max(0, v) : 0);
   return (
     n(usage.input_tokens) +
     n(usage.output_tokens) +
@@ -253,13 +259,19 @@ function describeUsage(snapshot, nowMs) {
   const hasUtil = typeof snapshot.utilization === 'number' && Number.isFinite(snapshot.utilization);
   const percent = hasUtil ? Math.round(snapshot.utilization * 100) : null;
   const percentText = percent != null ? `${percent}%` : null;
-  const bar = progressBar(hasUtil ? snapshot.utilization : 0);
+  const bar = hasUtil ? progressBar(snapshot.utilization) : null;
 
-  const titleText = percentText
-    ? `⚡ ${tokensText} tok · リセット ${resetText} · 目安${percentText}`
+  // 「ピーク比」ラベルは PEAK_LABEL に一元化し、タイトルバー・モバイル・バーで同一語にする（UX-1）。
+  // タイトルバーは重要度順（トークン量 → ピーク比 → リセット時刻）。狭幅では末尾（リセット）から
+  // 欠けるので、割合を時刻より前に置く（UX-2）。
+  const peakText = percentText ? `${PEAK_LABEL}${percentText}` : null;
+  const titleText = peakText
+    ? `⚡ ${tokensText} tok · ${peakText} · リセット ${resetText}`
     : `⚡ ${tokensText} tok · リセット ${resetText}`;
-  const mobileText = `5hブロック: ${tokensText} tok · リセット ${resetText}（残り${remainingText}）`;
-  const barText = percentText ? `過去最大比${percentText}` : '過去最大比—';
+  // モバイルは字数に余裕があるので「トークン」と明示する（任意対応）。
+  const mobileText = `5hブロック: ${tokensText} トークン · リセット ${resetText}（残り${remainingText}）`;
+  // バー行のラベル。utilization 無しのときは null（モバイル側で行ごと出さない）。
+  const barText = peakText;
 
   return {
     source: snapshot.source,
@@ -277,6 +289,8 @@ function describeUsage(snapshot, nowMs) {
     titleText,
     mobileText,
     barText,
+    peakLabel: PEAK_LABEL,
+    peakNote: PEAK_NOTE,
   };
 }
 
@@ -327,24 +341,38 @@ async function listRecentFiles(dirs, nowMs, windowMs) {
 }
 
 /**
+ * 読み取り開始位置を「1 回あたり maxBytes まで」にクランプする（純粋・SEC-1）。
+ * [start, end) が maxBytes を超える場合は末尾 maxBytes だけを読むよう start を前進させる。
+ * こうすることで巨大/破損 .jsonl でも Buffer 確保量が maxBytes を超えず、かつ現在ブロックに
+ * 効く最新行（末尾）を優先して取り込める。先頭が行途中になった分は JSON.parse 失敗で捨てられる。
+ * @returns {number} 実際に読み始めるバイトオフセット
+ */
+function clampReadStart(start, end, maxBytes = MAX_READ_BYTES) {
+  if (end - start > maxBytes) return end - maxBytes;
+  return start;
+}
+
+/**
  * ファイルの [start, end) バイトを読み、最後の改行までの完全な行だけを返す。
  * 書き込み途中の末尾（改行未満）は捨て、consumed に「確定した末尾オフセット」を返す。
+ * 1 回の読取は maxBytes までにクランプする（clampReadStart 参照）。
  * @returns {Promise<{text:string, consumed:number}>}
  */
-async function readSliceComplete(filePath, start, end) {
-  const len = end - start;
-  if (len <= 0) return { text: '', consumed: start };
+async function readSliceComplete(filePath, start, end, maxBytes = MAX_READ_BYTES) {
+  const effStart = clampReadStart(start, end, maxBytes);
+  const len = end - effStart;
+  if (len <= 0) return { text: '', consumed: end };
   const fh = await fsp.open(filePath, 'r');
   try {
     const buf = Buffer.alloc(len);
-    const { bytesRead } = await fh.read(buf, 0, len, start);
+    const { bytesRead } = await fh.read(buf, 0, len, effStart);
     const chunk = buf.subarray(0, bytesRead);
     const lastNl = chunk.lastIndexOf(0x0a); // '\n'
     if (lastNl === -1) {
-      return { text: '', consumed: start }; // 完全な行がまだ無い
+      return { text: '', consumed: effStart }; // 完全な行がまだ無い（読み始め位置は確定）
     }
     const consumedBytes = lastNl + 1;
-    return { text: chunk.subarray(0, consumedBytes).toString('utf8'), consumed: start + consumedBytes };
+    return { text: chunk.subarray(0, consumedBytes).toString('utf8'), consumed: effStart + consumedBytes };
   } finally {
     await fh.close();
   }
@@ -471,9 +499,14 @@ module.exports = {
   // fs 層
   createUsageTracker,
   listRecentFiles,
+  readSliceComplete,
+  clampReadStart,
   defaultProjectsDirs,
   // 定数
   SESSION_DURATION_MS,
   RECENT_WINDOW_MS,
   CLOCK_SKEW_MS,
+  MAX_READ_BYTES,
+  PEAK_LABEL,
+  PEAK_NOTE,
 };

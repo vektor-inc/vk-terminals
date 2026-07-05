@@ -100,7 +100,11 @@
   #usage-card .u-bar { margin-top: 6px; font-size: 12px; color: var(--muted);
     font-family: ui-monospace, "SF Mono", Menlo, monospace; letter-spacing: 1px;
     display: flex; align-items: center; gap: 8px; }
+  #usage-card .u-bar[hidden] { display: none; }
   #usage-card .u-bar .u-marks { color: var(--running); letter-spacing: 2px; }
+  /* ピーク比の意味をモバイルにだけ一度添える補足（UX-1）。 */
+  #usage-card .u-note { margin-top: 4px; font-size: 10px; color: var(--muted); }
+  #usage-card .u-note[hidden] { display: none; }
 </style>
 </head>
 <body>
@@ -111,7 +115,8 @@
 <div id="err"></div>
 <div id="usage-card">
   <div class="u-line"><span class="u-bolt">⚡</span><span id="usage-text"></span></div>
-  <div class="u-bar"><span class="u-marks" id="usage-marks"></span><span id="usage-percent"></span></div>
+  <div class="u-bar" id="usage-bar"><span class="u-marks" id="usage-marks"></span><span id="usage-percent"></span></div>
+  <div class="u-note" id="usage-note"></div>
 </div>
 <div id="list"></div>
 
@@ -379,8 +384,19 @@ function renderUsage(usage) {
     return;
   }
   document.getElementById("usage-text").textContent = usage.mobileText;
-  document.getElementById("usage-marks").textContent = usage.bar || "";
-  document.getElementById("usage-percent").textContent = usage.barText || "";
+  // ピーク比（バー）行は utilization がある時だけ表示。無い時は 0% 誤読を避けて行ごと隠す。
+  var barRow = document.getElementById("usage-bar");
+  var noteRow = document.getElementById("usage-note");
+  if (usage.barText) {
+    document.getElementById("usage-marks").textContent = usage.bar || "";
+    document.getElementById("usage-percent").textContent = usage.barText;
+    noteRow.textContent = usage.peakNote || "";
+    barRow.hidden = false;
+    noteRow.hidden = !usage.peakNote;
+  } else {
+    barRow.hidden = true;
+    noteRow.hidden = true;
+  }
   usageCard.classList.add("show");
 }
 

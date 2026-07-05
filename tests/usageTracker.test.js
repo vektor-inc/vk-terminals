@@ -6,6 +6,9 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 
 const {
   tokensFromUsage,
@@ -18,6 +21,8 @@ const {
   formatDuration,
   progressBar,
   describeUsage,
+  clampReadStart,
+  readSliceComplete,
   SESSION_DURATION_MS,
 } = require('../usageTracker');
 
@@ -40,6 +45,11 @@ test('tokensFromUsage: 欠損フィールドは 0 扱い / 非オブジェクト
   assert.equal(tokensFromUsage(null), 0);
   assert.equal(tokensFromUsage(undefined), 0);
   assert.equal(tokensFromUsage('x'), 0);
+});
+
+test('tokensFromUsage: 負値は 0 にクランプする（破損 usage 対策・SEC-2）', () => {
+  assert.equal(tokensFromUsage({ input_tokens: -100, output_tokens: 50 }), 50);
+  assert.equal(tokensFromUsage({ input_tokens: -5, cache_read_input_tokens: -5 }), 0);
 });
 
 // ── parseRecord ──────────────────────────────────────────────────────────────
@@ -238,17 +248,70 @@ test('describeUsage: タイトル / モバイル / バー文字列を組み立�
   assert.equal(d.remainingText, '1h27m');
   assert.equal(d.percentText, '43%');
   assert.equal(d.bar, '▰▰▱▱▱');
+  // ラベルはタイトル・モバイル・バーで「ピーク比」に統一（UX-1）。
   assert.ok(d.titleText.includes('12.3M tok'));
-  assert.ok(d.titleText.includes('目安43%'));
+  assert.ok(d.titleText.includes('ピーク比43%'));
+  assert.equal(d.barText, 'ピーク比43%');
+  assert.ok(!d.titleText.includes('目安'));
+  assert.ok(!d.barText.includes('過去最大比'));
+  // タイトルは重要度順（トークン量 → ピーク比 → リセット時刻）。ピーク比がリセットより前（UX-2）。
+  assert.ok(d.titleText.indexOf('ピーク比') < d.titleText.indexOf('リセット'));
+  // モバイルは「トークン」明示・残り時間つき。
+  assert.ok(d.mobileText.includes('12.3M トークン'));
   assert.ok(d.mobileText.includes('残り1h27m'));
-  assert.ok(d.barText.includes('過去最大比43%'));
 });
 
-test('describeUsage: utilization が null なら 目安/過去最大比を伏せる', () => {
+test('describeUsage: utilization が null なら ピーク比・バーを伏せる', () => {
   const now = Date.parse('2026-07-06T05:00:00.000Z');
   const snap = { source: 'transcript', utilization: null, totalTokens: 1000, resetAtMs: now + HOUR, isActive: true };
   const d = describeUsage(snap, now);
   assert.equal(d.percentText, null);
-  assert.ok(!d.titleText.includes('目安'));
-  assert.equal(d.barText, '過去最大比—');
+  assert.equal(d.barText, null);
+  assert.equal(d.bar, null);
+  assert.ok(!d.titleText.includes('ピーク比'));
+  // リセット時刻は残る（トークン量とリセットのみ）。
+  assert.ok(d.titleText.includes('リセット'));
+});
+
+// ── clampReadStart（SEC-1: 1 回の読取上限） ──────────────────────────────────
+test('clampReadStart: 上限内はそのまま / 超過なら末尾 maxBytes に切り詰める', () => {
+  assert.equal(clampReadStart(0, 100, 1000), 0);        // 上限内
+  assert.equal(clampReadStart(0, 5000, 1000), 4000);    // 末尾 1000 のみ → start=end-max
+  assert.equal(clampReadStart(200, 1200, 1000), 200);   // ちょうど上限
+  assert.equal(clampReadStart(200, 1300, 1000), 300);   // 超過 → 前進
+});
+
+// ── readSliceComplete（fs: 差分読み・改行境界・上限） ──────────────────────────
+test('readSliceComplete: 完全な行だけ返し consumed が改行直後を指す', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vkt-usage-'));
+  const file = path.join(dir, 'a.jsonl');
+  try {
+    // 2 行完結 + 改行未満の書き込み途中行
+    const content = 'line1\nline2\npartial';
+    fs.writeFileSync(file, content);
+    const size = fs.statSync(file).size;
+    const { text, consumed } = await readSliceComplete(file, 0, size);
+    assert.equal(text, 'line1\nline2\n');            // partial は含まない
+    assert.equal(consumed, Buffer.byteLength('line1\nline2\n')); // 改行直後
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('readSliceComplete: maxBytes 超過時は末尾のみ読む（Buffer 確保を上限内に抑える）', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vkt-usage-'));
+  const file = path.join(dir, 'big.jsonl');
+  try {
+    // "AAAA\n" を多数 + 末尾に "TAIL\n"。maxBytes を小さくして末尾だけ拾えることを確認。
+    const body = 'AAAA\n'.repeat(100) + 'TAIL\n';
+    fs.writeFileSync(file, body);
+    const size = fs.statSync(file).size;
+    const { text, consumed } = await readSliceComplete(file, 0, size, 12); // 末尾 12 バイトのみ
+    // 読取は maxBytes 以内に収まり（＝Buffer 確保も上限内）、末尾の完全行は取れる。
+    assert.ok(Buffer.byteLength(text) <= 12);
+    assert.ok(text.includes('TAIL'));
+    assert.equal(consumed, size); // 末尾まで消費（改行で終わっているため）
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

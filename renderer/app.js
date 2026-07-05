@@ -1542,8 +1542,9 @@ function setupUsageIndicator() {
     try {
       const u = await ipcRenderer.invoke('usage:get');
       if (u && u.titleText) {
+        // 重要度順（トークン量 → ピーク比 → リセット時刻）で、狭幅では末尾から欠ける。
+        // ツールチップ（title）には頼らない（ドラッグ領域の関係で hover が出ないため）。
         el.textContent = u.titleText;
-        el.title = u.mobileText || u.titleText;
         el.hidden = false;
       } else {
         el.textContent = '';

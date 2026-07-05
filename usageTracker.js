@@ -294,6 +294,28 @@ function describeUsage(snapshot, nowMs) {
   };
 }
 
+// ─── 短TTLメモ化（純粋・clock 注入可）────────────────────────────────────────
+/**
+ * loader() の結果を ttlMs だけメモ化する小さなラッパ（CR-1）。
+ * ホットパス（GET /api/states の ~2s ポーリング）で同期 I/O を繰り返さないために使う。
+ * clock を注入できるのでテストで時刻を固定できる。
+ * @param {() => any} loader 実際に値を読む関数（例: loadUserConfig）
+ * @param {number} ttlMs メモの有効期間（ms）
+ * @param {() => number} [clock] 現在時刻を返す関数（既定 Date.now）
+ * @returns {() => any} メモ化された取得関数
+ */
+function createTtlMemo(loader, ttlMs, clock = Date.now) {
+  let value;
+  let at = -Infinity;
+  return () => {
+    const now = clock();
+    if (now - at < ttlMs) return value;
+    value = loader();
+    at = now;
+    return value;
+  };
+}
+
 // ─── fs / IO 層（stale-while-revalidate キャッシュ付き） ──────────────────────
 
 /** 既定の Claude projects ディレクトリ。 */
@@ -496,6 +518,8 @@ module.exports = {
   formatDuration,
   progressBar,
   describeUsage,
+  // ユーティリティ
+  createTtlMemo,
   // fs 層
   createUsageTracker,
   listRecentFiles,

@@ -21,6 +21,7 @@ const {
   formatDuration,
   progressBar,
   describeUsage,
+  createTtlMemo,
   clampReadStart,
   readSliceComplete,
   SESSION_DURATION_MS,
@@ -271,6 +272,25 @@ test('describeUsage: utilization が null なら ピーク比・バーを伏せ�
   assert.ok(!d.titleText.includes('ピーク比'));
   // リセット時刻は残る（トークン量とリセットのみ）。
   assert.ok(d.titleText.includes('リセット'));
+});
+
+// ── createTtlMemo（CR-1: usage 判定ホットパスの短TTLメモ化） ─────────────────
+test('createTtlMemo: TTL 内は再読込せず、TTL 経過で再読込する', () => {
+  let calls = 0;
+  let clock = 1000;
+  const memo = createTtlMemo(() => { calls++; return `v${calls}`; }, 5000, () => clock);
+
+  assert.equal(memo(), 'v1'); // 初回ロード
+  assert.equal(calls, 1);
+  clock = 3000;               // +2s（TTL 内）
+  assert.equal(memo(), 'v1'); // 再利用
+  assert.equal(calls, 1);
+  clock = 6001;               // 初回から 5001ms（TTL 経過）
+  assert.equal(memo(), 'v2'); // 再ロード
+  assert.equal(calls, 2);
+  clock = 6002;               // 直後（TTL 内）
+  assert.equal(memo(), 'v2'); // 再利用
+  assert.equal(calls, 2);
 });
 
 // ── clampReadStart（SEC-1: 1 回の読取上限） ──────────────────────────────────

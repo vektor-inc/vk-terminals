@@ -11,7 +11,7 @@ const { stripAnsiForPattern } = require('./utils/stripAnsi');
 // canonicalizeState / isKnownAgent は DOM 非依存なので main プロセスから require して使える。
 const { canonicalizeState, isKnownAgent } = require('./renderer/agentRoom');
 // トークン使用量トラッカー（issue #69）。トランスクリプト集計＋整形はすべて usageTracker 側。
-const { createUsageTracker } = require('./usageTracker');
+const { createUsageTracker, createTtlMemo } = require('./usageTracker');
 const execFileAsync = promisify(execFile);
 
 let win;
@@ -75,16 +75,26 @@ function loadUserConfig() {
 }
 
 // ─── トークン使用量（issue #69）────────────────────────────────────────────────
+// GET /api/states（モバイルページが ~2s ごとにポーリング）のホットパスで usage 判定の
+// たびに loadUserConfig() の同期 I/O（readFileSync + JSON.parse）を走らせないよう、
+// usage 系ヘルパー専用に config を短TTL（5s）でメモ化する（CR-1）。
+//   - このメモは usage 判定（usageEnabled / usageProjectsDirs）だけが使う。settings:describe /
+//     settings:save / app:get-config は従来どおり loadUserConfig() を直接呼ぶ（設定変更を即時反映
+//     させるため、loadUserConfig 自体はグローバルキャッシュしない）。
+//   - TTL 5s なので、設定変更後も遅くとも 5 秒で usage 表示に反映される。
+const USAGE_CONFIG_TTL_MS = 5000;
+const usageConfig = createTtlMemo(loadUserConfig, USAGE_CONFIG_TTL_MS);
+
 // showUsage は opt-out（既定 ON）。config.json で明示的に false のときだけ無効化する。
 // （settings descriptor 側でも default:true を持たせ、GUI の未設定→false 化を防ぐ。）
 function usageEnabled() {
-  return loadUserConfig().showUsage !== false;
+  return usageConfig().showUsage !== false;
 }
 
 // 集計対象の Claude projects ディレクトリ。複数アカウントは config.claudeProjectsDirs で
 // 複数指定できる。未指定なら usageTracker 側の既定（~/.claude/projects）を使う。
 function usageProjectsDirs() {
-  const raw = loadUserConfig().claudeProjectsDirs;
+  const raw = usageConfig().claudeProjectsDirs;
   if (Array.isArray(raw)) {
     const dirs = raw.filter((d) => typeof d === 'string' && d.trim());
     if (dirs.length) return dirs;

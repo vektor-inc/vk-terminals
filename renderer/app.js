@@ -1583,9 +1583,15 @@ function buildOauthUsageSection(title, entry, resetMode) {
 
   const track = document.createElement('div');
   track.className = 'usage-bar-track';
+  const width = Number.isFinite(entry.percent) ? Math.min(100, Math.max(0, entry.percent)) : 0;
+  // SR 向けにバーを progressbar として公開する（数値ラベル併記に加えた a11y 対応）。
+  track.setAttribute('role', 'progressbar');
+  track.setAttribute('aria-label', title);
+  track.setAttribute('aria-valuemin', '0');
+  track.setAttribute('aria-valuemax', '100');
+  track.setAttribute('aria-valuenow', String(Math.round(width)));
   const fill = document.createElement('div');
   fill.className = `usage-bar-fill ${usageLevelClass(entry.percent)}`.trim();
-  const width = Number.isFinite(entry.percent) ? Math.min(100, Math.max(0, entry.percent)) : 0;
   fill.style.width = `${width}%`;
   track.appendChild(fill);
   sec.appendChild(track);
@@ -1628,11 +1634,18 @@ function buildTranscriptUsageSection(u) {
 
   // 自己ピーク比バー（utilization が無いときはバー行ごと出さない）
   if (typeof u.utilization === 'number' && Number.isFinite(u.utilization)) {
+    const width = Math.min(100, Math.max(0, u.utilization * 100));
     const track = document.createElement('div');
     track.className = 'usage-bar-track';
+    // SR 向け progressbar。ラベルは「使用済み」ではなく既存の「ピーク比」語彙を使う。
+    track.setAttribute('role', 'progressbar');
+    track.setAttribute('aria-label', u.peakLabel || 'ピーク比');
+    track.setAttribute('aria-valuemin', '0');
+    track.setAttribute('aria-valuemax', '100');
+    track.setAttribute('aria-valuenow', String(Math.round(width)));
     const fill = document.createElement('div');
     fill.className = 'usage-bar-fill'; // 単色青（閾値カラーなし・誤解防止）
-    fill.style.width = `${Math.min(100, Math.max(0, u.utilization * 100))}%`;
+    fill.style.width = `${width}%`;
     track.appendChild(fill);
     sec.appendChild(track);
   }
@@ -1678,6 +1691,13 @@ function renderUsageView(container, usage) {
 // 公式の使用率（セッション・週間のいずれか）が 80% を超えたときだけドットを重ねる
 // （80〜90%: アンバー / 90%〜: 赤）。フォールバック（自己ピーク比）は上限比ではないため
 // バッジ対象にしない。ポーリングは 60 秒間隔で main 側 60s TTL キャッシュに相乗りする。
+// 色のみの表現にしないよう、警告レベルに応じて title / aria-label も切り替える（a11y）。
+const USAGE_BADGE_LABELS = {
+  '':     '設定',
+  'warn': '設定（使用状況: 警告）',
+  'crit': '設定（使用状況: 危険）',
+};
+
 function setupUsageBadge() {
   const btn = document.getElementById('settings-btn');
   if (!btn) return;
@@ -1696,6 +1716,9 @@ function setupUsageBadge() {
     }
     btn.classList.toggle('usage-alert-warn', level === 'warn');
     btn.classList.toggle('usage-alert-crit', level === 'crit');
+    const label = USAGE_BADGE_LABELS[level] || USAGE_BADGE_LABELS[''];
+    btn.title = label;
+    btn.setAttribute('aria-label', label);
   };
   refresh();
   setInterval(refresh, USAGE_POLL_INTERVAL_MS);

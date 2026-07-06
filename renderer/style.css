@@ -225,8 +225,10 @@ html, body {
 }
 .usage-note {
   margin-top: 3px;
-  font-size: 10px;
-  color: #6e7681;
+  /* モーダル背景 #0d1117 上で WCAG AA（4.5:1）を満たすよう .usage-reset と同じ
+   * #8b949e / 11px に揃える（旧 #6e7681 / 10px は約 4.1:1 で AA 不達のため変更）。 */
+  font-size: 11px;
+  color: #8b949e;
 }
 .usage-empty {
   margin: 0;

@@ -270,7 +270,8 @@ module.exports = {
   parseResetAt,
   parseUsageResponse,
   // IO 層
-  readCredentialsFileRaw,
+  // NOTE: readCredentialsFileRaw は refreshToken を含む生 JSON を返すため export しない
+  //       （モジュール内部専用。トークンをこのモジュールの外に出さない設計の徹底）。
   loadUsageSnapshot,
   createOauthUsageProvider,
   // 定数

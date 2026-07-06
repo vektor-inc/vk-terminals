@@ -135,12 +135,14 @@
   <div id="usage-oauth" hidden>
     <div class="u-sec" id="uo-session-sec" hidden>
       <div class="u-sec-head"><span>現在のセッション</span><span class="u-pct" id="uo-session-pct"></span></div>
-      <div class="u-track"><div class="u-fill" id="uo-session-fill"></div></div>
+      <div class="u-track" id="uo-session-track" role="progressbar" aria-label="現在のセッション"
+        aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="u-fill" id="uo-session-fill"></div></div>
       <div class="u-reset" id="uo-session-reset"></div>
     </div>
     <div class="u-sec" id="uo-weekly-sec" hidden>
       <div class="u-sec-head"><span>週間制限（すべてのモデル）</span><span class="u-pct" id="uo-weekly-pct"></span></div>
-      <div class="u-track"><div class="u-fill" id="uo-weekly-fill"></div></div>
+      <div class="u-track" id="uo-weekly-track" role="progressbar" aria-label="週間制限（すべてのモデル）"
+        aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="u-fill" id="uo-weekly-fill"></div></div>
       <div class="u-reset" id="uo-weekly-reset"></div>
     </div>
   </div>
@@ -447,6 +449,9 @@ function renderOauthRow(prefix, entry, mode) {
   fill.style.width = pct + "%";
   // 公式% のみ閾値カラー（〜70% 青 / 70〜90% アンバー / 90%〜 赤）
   fill.className = "u-fill" + (pct >= 90 ? " level-crit" : pct >= 70 ? " level-warn" : "");
+  // SR 向け progressbar の現在値を更新（role / min / max は HTML 側で静的付与済み）
+  var track = document.getElementById(prefix + "-track");
+  if (track) track.setAttribute("aria-valuenow", String(Math.round(pct)));
   var resetEl = document.getElementById(prefix + "-reset");
   if (entry.resetAtMs && isFinite(entry.resetAtMs)) {
     resetEl.textContent = mode === "remaining"

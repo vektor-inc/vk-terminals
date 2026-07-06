@@ -10,9 +10,11 @@
 </head>
 <body>
   <div class="titlebar">
-    <span id="usage-indicator" class="usage-indicator" hidden></span>
     <span class="app-title">VK Terminals</span>
-    <button id="settings-btn" class="titlebar-btn" title="設定" hidden>⚙</button>
+    <!-- 歯車は常時表示（issue #73）。使用状況ビューは設定ディスクリプタの有無に
+         かかわらず開けるため、hidden にしない。使用率 80% 超過時は app.js が
+         .usage-alert-warn / .usage-alert-crit を付与して警告ドットを重ねる。 -->
+    <button id="settings-btn" class="titlebar-btn" title="設定">⚙</button>
   </div>
   <div id="root"></div>
   <script src="app.js"></script>

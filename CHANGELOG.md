@@ -1,5 +1,9 @@
 # Changelog
 
+- [ 機能追加 ] Claude の利用状況（セッション%・週間制限%・リセット時刻）を公式 usage API から取得し、設定モーダルの「Claude使用状況」タブに表示。取得不可時は従来のトランスクリプト集計表示へ自動フォールバック（[#73](https://github.com/vektor-inc/vk-terminals/issues/73)）
+- [ 機能追加 ] 使用率が 80% を超えたとき、歯車ボタンに警告ドットバッジを表示（[#73](https://github.com/vektor-inc/vk-terminals/issues/73)）
+- [ 仕様変更 ] タイトルバー左の使用量表示を廃止し、設定モーダルを「Claude使用状況｜設定」のタブ構成に変更（歯車ボタンは常時表示・モバイルページも公式データの2バー表示に対応）（[#73](https://github.com/vektor-inc/vk-terminals/issues/73)）
+
 ## 1.6.0
 
 - [ 機能追加 ] Claude のトークン使用量（5 時間ブロックの消費状況・リセット時刻・過去最大比の目安）をタイトルバーとモバイルステータスページに表示（[#69](https://github.com/vektor-inc/vk-terminals/issues/69)）

@@ -24,9 +24,9 @@ html, body {
   -webkit-app-region: drag;
   background: #0d1117;
   border-bottom: 1px solid #21262d;
-  /* 左（使用量）/ 中央（アプリ名）/ 右（設定ボタン）の 3 レーン。中央は auto 幅で
-     常に中央寄せになり、左右の 1fr が均等に押し合うので、使用量とアプリ名が
-     狭幅でも別セルに分かれて重ならない（UX-3）。設定ボタンは右セルに絶対配置で載る。 */
+  /* 左（空き）/ 中央（アプリ名）/ 右（設定ボタン）の 3 レーン。中央は auto 幅で常に
+     中央寄せ。左レーンの使用量インジケータは issue #73 で廃止（使用状況は設定モーダルの
+     「Claude使用状況」タブへ移動）。設定ボタンは右セルに絶対配置で載る。 */
   display: grid;
   grid-template-columns: 1fr auto 1fr;
   align-items: center;
@@ -43,29 +43,6 @@ html, body {
   -webkit-user-select: none;
   white-space: nowrap;
 }
-
-/* タイトルバー左レーンのトークン使用量インジケータ（issue #69）。
-   グリッドの左セル（1fr）に収まり、狭幅ではセル幅を超えた分を省略記号で切る。
-   重要度順（トークン量 → ピーク比 → リセット時刻）で並び、末尾から欠ける（UX-2）。
-   ツールチップには頼らない設計なので pointer-events は無効化し、ウィンドウドラッグを妨げない。 */
-.usage-indicator {
-  grid-column: 1;
-  justify-self: start;
-  min-width: 0;         /* grid セル内で ellipsis を効かせるため */
-  max-width: 100%;
-  padding-left: 12px;
-  box-sizing: border-box;
-  color: #7d8590;
-  font-size: 11px;
-  font-weight: 500;
-  letter-spacing: 0.01em;
-  -webkit-user-select: none;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  pointer-events: none;
-}
-.usage-indicator[hidden] { display: none; }
 
 /* タイトルバー右端の設定ボタン（ドラッグ領域から除外する） */
 .titlebar-btn {
@@ -88,6 +65,24 @@ html, body {
   background: #21262d;
   color: #e6edf3;
 }
+
+/* 歯車ボタンの警告ドットバッジ（issue #73）。
+   公式の使用率（セッション・週間のいずれか）が 80% を超えたときだけ app.js が
+   .usage-alert-warn（80〜90%: アンバー）/ .usage-alert-crit（90%〜: 赤）を付与する。
+   タイトルバー背景（#0d1117）と同色の縁取りで、⚙ グリフと視覚的に分離する。 */
+.titlebar-btn.usage-alert-warn::after,
+.titlebar-btn.usage-alert-crit::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1px solid #0d1117;
+}
+.titlebar-btn.usage-alert-warn::after { background: #d29922; }
+.titlebar-btn.usage-alert-crit::after { background: #f85149; }
 
 /* ─── 設定パネル（モーダル）──────────────────────────────────────────────────── */
 .settings-overlay {
@@ -142,6 +137,106 @@ html, body {
   border-radius: 5px;
 }
 .settings-close:hover { background: #21262d; color: #e6edf3; }
+
+/* ─── 設定モーダルのタブ（Claude使用状況｜設定, issue #73）─────────────────────
+ * ヘッダー直下のセグメント切替。既定タブは「Claude使用状況」（読み取り専用ビュー）。
+ * 設定ディスクリプタが使えない環境では「設定」タブ自体を描画しない。 */
+.settings-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 8px 18px 0;
+  border-bottom: 1px solid #21262d;
+}
+.settings-tab {
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: #8b949e;
+  padding: 6px 10px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.settings-tab:hover { color: #e6edf3; }
+.settings-tab.active {
+  color: #e6edf3;
+  border-bottom-color: #58a6ff;
+}
+
+/* タブで切り替わるビュー。モーダル（flex column・max-height 制限）内で
+ * ビュー単位にスクロールさせる。hidden 属性で非表示切替。 */
+.settings-view {
+  overflow-y: auto;
+  min-height: 0;
+}
+.settings-view[hidden] { display: none; }
+/* 使用状況ビュー表示中はフッター（保存/キャンセル）ごと隠す（読み取り専用）。 */
+.settings-footer[hidden] { display: none; }
+
+/* ─── 使用状況ビュー（issue #73）───────────────────────────────────────────────
+ * バーの色はダークテーマの既存トークンを流用する。
+ *   トラック: #21262d / 公式% のみ閾値カラー（〜70% 青 #58a6ff / 70〜90% アンバー
+ *   #d29922 / 90%〜 赤 #f85149）。緑は「実行中」の意味で使用済みのため使わない。
+ *   フォールバック（自己ピーク比）のバーは単色青・閾値カラーなし（上限比ではないため）。
+ *   バーには必ず数値ラベルを併記し、色だけに依存しない。 */
+.settings-view-usage {
+  padding: 14px 18px;
+}
+.usage-section {
+  margin-bottom: 18px;
+}
+.usage-section:last-child { margin-bottom: 6px; }
+.usage-section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.usage-section-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #c9d1d9;
+}
+.usage-value {
+  font-size: 12px;
+  font-weight: 600;
+  color: #e6edf3;
+  white-space: nowrap;
+}
+.usage-bar-track {
+  height: 8px;
+  border-radius: 4px;
+  background: #21262d;
+  overflow: hidden;
+}
+.usage-bar-fill {
+  height: 100%;
+  border-radius: 4px;
+  background: #58a6ff;
+  transition: width 0.3s ease;
+}
+.usage-bar-fill.level-warn { background: #d29922; }
+.usage-bar-fill.level-crit { background: #f85149; }
+.usage-reset {
+  margin-top: 5px;
+  font-size: 11px;
+  color: #8b949e;
+}
+.usage-note {
+  margin-top: 3px;
+  /* モーダル背景 #0d1117 上で WCAG AA（4.5:1）を満たすよう .usage-reset と同じ
+   * #8b949e / 11px に揃える（旧 #6e7681 / 10px は約 4.1:1 で AA 不達のため変更）。 */
+  font-size: 11px;
+  color: #8b949e;
+}
+.usage-empty {
+  margin: 0;
+  padding: 6px 0;
+  font-size: 12px;
+  color: #8b949e;
+  line-height: 1.6;
+}
 .settings-note {
   margin: 0;
   padding: 10px 18px 0;

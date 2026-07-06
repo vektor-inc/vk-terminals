@@ -1515,47 +1515,213 @@ window.addEventListener('resize', debouncedFitAll);
 // ─── 設定パネル（汎用）────────────────────────────────────────────────────────
 // main プロセス（settings:describe / settings:save）経由で、呼び出し側が env
 // VK_TERMINALS_SETTINGS で指定した config ファイルをこの GUI から編集する。
-// describe が available:false（未指定）を返す場合はボタンごと非表示のままにする。
-
-// 起動時に describe を叩き、利用可能なら設定ボタンを表示して click を配線する。
-async function setupSettingsPanel() {
+// issue #73 で歯車ボタンは常時表示になった。使用状況ビューは descriptor の有無に
+// かかわらず開けるため、describe の結果を待たずに click を配線する（describe が
+// 使えない環境ではモーダル側で設定タブを描画しない）。
+function setupSettingsPanel() {
   const btn = document.getElementById('settings-btn');
   if (!btn) return;
-  let desc;
-  try {
-    desc = await ipcRenderer.invoke('settings:describe');
-  } catch (_e) {
-    return;
-  }
-  if (!desc || !desc.available) return;
-  btn.hidden = false;
   btn.addEventListener('click', () => openSettingsModal());
 }
 
-// ─── トークン使用量インジケータ（issue #69）──────────────────────────────────
-// main の usage:get を 15 秒ごとにポーリングし、タイトルバー左端に表示する。
-// 無効・データ無し・取得失敗のときは要素ごと隠す（アプリ本体に影響を与えない）。
-function setupUsageIndicator() {
-  const el = document.getElementById('usage-indicator');
-  if (!el) return;
+// ─── 使用状況（issue #73）─────────────────────────────────────────────────────
+// main の usage:get が返す統一構造:
+//   - source: 'oauth'      … 公式 usage API。session / weekly = { percent, resetAtMs }
+//   - source: 'transcript' … トランスクリプト集計（describeUsage の整形済み値）
+// percent は百分率（17 = 17%）。トークン等の秘匿情報は main から一切渡らない。
+
+const USAGE_POLL_INTERVAL_MS = 60000; // モーダル表示中・バッジ共通（main 側 60s TTL に相乗り）
+
+// 公式% の閾値カラー（〜70% 青 / 70〜90% アンバー / 90%〜 赤）。
+// フォールバックの自己ピーク比バーには適用しない（上限比ではないため）。
+function usageLevelClass(percent) {
+  if (!Number.isFinite(percent)) return '';
+  if (percent >= 90) return 'level-crit';
+  if (percent >= 70) return 'level-warn';
+  return '';
+}
+
+/** 残り時間（ms）を「◯時間◯分後にリセット」形式にする。 */
+function formatRemainingJa(ms) {
+  if (!Number.isFinite(ms) || ms <= 0) return 'まもなくリセット';
+  const totalMin = Math.floor(ms / 60000);
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  if (h > 0) return `${h}時間${m}分後にリセット`;
+  if (m > 0) return `${m}分後にリセット`;
+  return 'まもなくリセット';
+}
+
+/** リセット日時を「金 18:59 にリセット」形式（ローカル時刻）にする。 */
+function formatResetDateTimeJa(ms) {
+  const d = new Date(ms);
+  const wd = ['日', '月', '火', '水', '木', '金', '土'][d.getDay()];
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  return `${wd} ${hh}:${mm} にリセット`;
+}
+
+// 公式データ 1 区分（セッション / 週間）のセクションを組み立てる。
+//   resetMode: 'remaining' … 「◯時間◯分後にリセット」。data-reset-at を付け、
+//              モーダルの毎秒ティッカーがポーリングを待たずライブ再計算する。
+//   resetMode: 'datetime'  … 「金 18:59 にリセット」（週間制限向け・静的表示）。
+function buildOauthUsageSection(title, entry, resetMode) {
+  const sec = document.createElement('div');
+  sec.className = 'usage-section';
+
+  const head = document.createElement('div');
+  head.className = 'usage-section-head';
+  const titleEl = document.createElement('span');
+  titleEl.className = 'usage-section-title';
+  titleEl.textContent = title;
+  const valueEl = document.createElement('span');
+  valueEl.className = 'usage-value';
+  valueEl.textContent = Number.isFinite(entry.percent) ? `${Math.round(entry.percent)}% 使用済み` : '—';
+  head.appendChild(titleEl);
+  head.appendChild(valueEl);
+  sec.appendChild(head);
+
+  const track = document.createElement('div');
+  track.className = 'usage-bar-track';
+  const width = Number.isFinite(entry.percent) ? Math.min(100, Math.max(0, entry.percent)) : 0;
+  // SR 向けにバーを progressbar として公開する（数値ラベル併記に加えた a11y 対応）。
+  track.setAttribute('role', 'progressbar');
+  track.setAttribute('aria-label', title);
+  track.setAttribute('aria-valuemin', '0');
+  track.setAttribute('aria-valuemax', '100');
+  track.setAttribute('aria-valuenow', String(Math.round(width)));
+  const fill = document.createElement('div');
+  fill.className = `usage-bar-fill ${usageLevelClass(entry.percent)}`.trim();
+  fill.style.width = `${width}%`;
+  track.appendChild(fill);
+  sec.appendChild(track);
+
+  const reset = document.createElement('div');
+  reset.className = 'usage-reset';
+  if (Number.isFinite(entry.resetAtMs)) {
+    if (resetMode === 'remaining') {
+      reset.dataset.resetAt = String(entry.resetAtMs);
+      reset.textContent = formatRemainingJa(entry.resetAtMs - Date.now());
+    } else {
+      reset.textContent = formatResetDateTimeJa(entry.resetAtMs);
+    }
+  }
+  sec.appendChild(reset);
+  return sec;
+}
+
+// フォールバック（source: 'transcript'）のセクション。「現在の5時間ブロック」のみ表示し、
+// 週間セクションは出さない（データが無いものを 0% バーで見せない）。
+// ラベルは既存の「ピーク比」語彙（peakLabel）を維持し「使用済み」とは書かない
+// （上限比ではなく自己ピーク比のため）。バーは単色青・閾値カラーなし。
+function buildTranscriptUsageSection(u) {
+  const sec = document.createElement('div');
+  sec.className = 'usage-section';
+
+  const head = document.createElement('div');
+  head.className = 'usage-section-head';
+  const titleEl = document.createElement('span');
+  titleEl.className = 'usage-section-title';
+  titleEl.textContent = '現在の5時間ブロック';
+  const valueEl = document.createElement('span');
+  valueEl.className = 'usage-value';
+  valueEl.textContent = u.percentText
+    ? `${u.tokensText} トークン · ${u.peakLabel || 'ピーク比'}${u.percentText}`
+    : `${u.tokensText} トークン`;
+  head.appendChild(titleEl);
+  head.appendChild(valueEl);
+  sec.appendChild(head);
+
+  // 自己ピーク比バー（utilization が無いときはバー行ごと出さない）
+  if (typeof u.utilization === 'number' && Number.isFinite(u.utilization)) {
+    const width = Math.min(100, Math.max(0, u.utilization * 100));
+    const track = document.createElement('div');
+    track.className = 'usage-bar-track';
+    // SR 向け progressbar。ラベルは「使用済み」ではなく既存の「ピーク比」語彙を使う。
+    track.setAttribute('role', 'progressbar');
+    track.setAttribute('aria-label', u.peakLabel || 'ピーク比');
+    track.setAttribute('aria-valuemin', '0');
+    track.setAttribute('aria-valuemax', '100');
+    track.setAttribute('aria-valuenow', String(Math.round(width)));
+    const fill = document.createElement('div');
+    fill.className = 'usage-bar-fill'; // 単色青（閾値カラーなし・誤解防止）
+    fill.style.width = `${width}%`;
+    track.appendChild(fill);
+    sec.appendChild(track);
+  }
+
+  const reset = document.createElement('div');
+  reset.className = 'usage-reset';
+  reset.textContent = `リセット ${u.resetText}（残り${u.remainingText}）`;
+  sec.appendChild(reset);
+
+  if (u.peakNote) {
+    const note = document.createElement('div');
+    note.className = 'usage-note';
+    note.textContent = u.peakNote;
+    sec.appendChild(note);
+  }
+  return sec;
+}
+
+// 使用状況ビュー全体を描画する（読み取り専用）。
+function renderUsageView(container, usage) {
+  container.innerHTML = '';
+  if (!usage) {
+    const p = document.createElement('p');
+    p.className = 'usage-empty';
+    p.textContent = '使用状況データを取得できません。Claude Code に未ログイン・オフラインの場合や、設定「トークン使用量を表示」が無効の場合はここには何も表示されません。';
+    container.appendChild(p);
+    return;
+  }
+  if (usage.source === 'oauth') {
+    if (usage.session) {
+      container.appendChild(buildOauthUsageSection('現在のセッション', usage.session, 'remaining'));
+    }
+    if (usage.weekly) {
+      container.appendChild(buildOauthUsageSection('週間制限（すべてのモデル）', usage.weekly, 'datetime'));
+    }
+    return;
+  }
+  // フォールバック（トランスクリプト集計）
+  container.appendChild(buildTranscriptUsageSection(usage));
+}
+
+// 歯車ボタンの警告ドットバッジ（issue #73）。
+// 公式の使用率（セッション・週間のいずれか）が 80% を超えたときだけドットを重ねる
+// （80〜90%: アンバー / 90%〜: 赤）。フォールバック（自己ピーク比）は上限比ではないため
+// バッジ対象にしない。ポーリングは 60 秒間隔で main 側 60s TTL キャッシュに相乗りする。
+// 色のみの表現にしないよう、警告レベルに応じて title / aria-label も切り替える（a11y）。
+const USAGE_BADGE_LABELS = {
+  '':     '設定',
+  'warn': '設定（Claude使用状況: 警告）',
+  'crit': '設定（Claude使用状況: 危険）',
+};
+
+function setupUsageBadge() {
+  const btn = document.getElementById('settings-btn');
+  if (!btn) return;
   const refresh = async () => {
+    let level = '';
     try {
       const u = await ipcRenderer.invoke('usage:get');
-      if (u && u.titleText) {
-        // 重要度順（トークン量 → ピーク比 → リセット時刻）で、狭幅では末尾から欠ける。
-        // ツールチップ（title）には頼らない（ドラッグ領域の関係で hover が出ないため）。
-        el.textContent = u.titleText;
-        el.hidden = false;
-      } else {
-        el.textContent = '';
-        el.hidden = true;
+      if (u && u.source === 'oauth') {
+        const pcts = [u.session && u.session.percent, u.weekly && u.weekly.percent]
+          .filter((p) => Number.isFinite(p));
+        const max = pcts.length ? Math.max(...pcts) : null;
+        if (max !== null && max > 80) level = max >= 90 ? 'crit' : 'warn';
       }
     } catch (_e) {
-      el.hidden = true;
+      level = ''; // 取得失敗時はバッジを消す（古い警告を残さない）
     }
+    btn.classList.toggle('usage-alert-warn', level === 'warn');
+    btn.classList.toggle('usage-alert-crit', level === 'crit');
+    const label = USAGE_BADGE_LABELS[level] || USAGE_BADGE_LABELS[''];
+    btn.title = label;
+    btn.setAttribute('aria-label', label);
   };
   refresh();
-  setInterval(refresh, 15000);
+  setInterval(refresh, USAGE_POLL_INTERVAL_MS);
 }
 
 // 1 フィールド分の入力 HTML を組み立てる。
@@ -1605,23 +1771,27 @@ function renderSettingsField(f, value, id) {
   </div>`;
 }
 
-// モーダルを開いて現在値を読み込み、保存を配線する。
+// モーダルを開き、「Claude使用状況｜設定」のタブ構成で描画する（issue #73）。
+//   - 既定タブは「Claude使用状況」（読み取り専用。フッターの保存/キャンセルは出さない）
+//   - 「設定」タブは settings:describe が使えるときだけ描画し、従来どおり保存できる
+//   - 使用状況のポーリングは「Claude使用状況タブ表示中のみ」初回即時＋60秒間隔。
+//     残り時間表示（◯時間◯分後にリセット）は毎秒ライブ再計算する
 async function openSettingsModal() {
-  let desc;
-  try {
-    desc = await ipcRenderer.invoke('settings:describe');
-  } catch (e) {
-    alert('設定の読み込みに失敗しました: ' + e.message);
-    return;
-  }
-  if (!desc || !desc.available) return;
-
   // 二重オープン防止
   if (document.querySelector('.settings-overlay')) return;
 
+  // describe が失敗しても使用状況ビューだけのモーダルとして開く。
+  let desc = null;
+  try {
+    desc = await ipcRenderer.invoke('settings:describe');
+  } catch (_e) {
+    desc = null;
+  }
+  const settingsAvailable = !!(desc && desc.available);
+
   // 描画順に採番したユニーク id と field を対応付ける（保存時もこの対応で走査する）。
   const entries = [];
-  const groupsHtml = desc.groups.map(g => {
+  const groupsHtml = settingsAvailable ? desc.groups.map(g => {
     const rows = (g.fields || []).map(f => {
       const id = 'set-field-' + entries.length;
       entries.push({ field: f, id });
@@ -1629,20 +1799,30 @@ async function openSettingsModal() {
     }).join('');
     return `<fieldset class="settings-group">
       <legend>${escText(g.label || '')}</legend>${rows}</fieldset>`;
-  }).join('');
+  }).join('') : '';
 
+  const appVersion = (desc && desc.appVersion) ? desc.appVersion : '';
   const overlay = document.createElement('div');
   overlay.className = 'settings-overlay';
   overlay.innerHTML = `
     <div class="settings-modal" role="dialog" aria-modal="true">
       <div class="settings-header">
-        <h2>${escText(desc.title || '設定')}${desc.appVersion ? `<span class="settings-version">VK Terminals v${escText(desc.appVersion)}</span>` : ''}</h2>
+        <h2>${escText((settingsAvailable && desc.title) || 'VK Terminals')}${appVersion ? `<span class="settings-version">VK Terminals v${escText(appVersion)}</span>` : ''}</h2>
         <button class="settings-close" title="閉じる">✕</button>
       </div>
-      ${desc.note ? `<p class="settings-note">${escText(desc.note)}</p>` : ''}
-      <p class="settings-target">保存先: <code>${escText(desc.targetPath || '')}</code></p>
-      <form class="settings-form" onsubmit="return false">${groupsHtml}</form>
-      <div class="settings-footer">
+      <div class="settings-tabs" role="tablist">
+        <button type="button" class="settings-tab" data-tab="usage" role="tab" aria-selected="false">Claude使用状況</button>
+        ${settingsAvailable ? '<button type="button" class="settings-tab" data-tab="config" role="tab" aria-selected="false">設定</button>' : ''}
+      </div>
+      <div class="settings-view settings-view-usage" role="tabpanel" hidden>
+        <p class="usage-empty">Claude の使用状況を取得中…</p>
+      </div>
+      <div class="settings-view settings-view-config" role="tabpanel" hidden>
+        ${settingsAvailable && desc.note ? `<p class="settings-note">${escText(desc.note)}</p>` : ''}
+        ${settingsAvailable ? `<p class="settings-target">保存先: <code>${escText(desc.targetPath || '')}</code></p>` : ''}
+        <form class="settings-form" onsubmit="return false">${groupsHtml}</form>
+      </div>
+      <div class="settings-footer" hidden>
         <span class="settings-msg" role="status"></span>
         <button type="button" class="settings-cancel">キャンセル</button>
         <button type="button" class="settings-save">保存</button>
@@ -1652,8 +1832,59 @@ async function openSettingsModal() {
 
   const modal = overlay.querySelector('.settings-modal');
   const msg = modal.querySelector('.settings-msg');
+  const usageView = modal.querySelector('.settings-view-usage');
+  const configView = modal.querySelector('.settings-view-config');
+  const footer = modal.querySelector('.settings-footer');
+  const tabs = Array.from(modal.querySelectorAll('.settings-tab'));
+
+  // ── 使用状況のポーリング（Claude使用状況タブ表示中のみ）──────────────────
+  let usagePollTimer = null; // 60 秒間隔の再取得（main 側 60s TTL キャッシュに相乗り）
+  let usageTickTimer = null; // 「◯時間◯分後にリセット」の毎秒ライブ再計算
+  const refreshUsage = async () => {
+    let u = null;
+    try {
+      u = await ipcRenderer.invoke('usage:get');
+    } catch (_e) {
+      u = null;
+    }
+    if (!overlay.isConnected) return; // 取得中に閉じられたら何もしない
+    renderUsageView(usageView, u);
+  };
+  const startUsagePolling = () => {
+    if (usagePollTimer) return;
+    refreshUsage(); // 初回即時（ポーリング待ちにしない）
+    usagePollTimer = setInterval(refreshUsage, USAGE_POLL_INTERVAL_MS);
+    usageTickTimer = setInterval(() => {
+      usageView.querySelectorAll('[data-reset-at]').forEach((el) => {
+        const at = Number(el.dataset.resetAt);
+        if (Number.isFinite(at)) el.textContent = formatRemainingJa(at - Date.now());
+      });
+    }, 1000);
+  };
+  const stopUsagePolling = () => {
+    if (usagePollTimer) { clearInterval(usagePollTimer); usagePollTimer = null; }
+    if (usageTickTimer) { clearInterval(usageTickTimer); usageTickTimer = null; }
+  };
+
+  // ── タブ切替 ──────────────────────────────────────────────────────────────
+  const selectTab = (name) => {
+    tabs.forEach((t) => {
+      const on = t.dataset.tab === name;
+      t.classList.toggle('active', on);
+      t.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+    usageView.hidden = name !== 'usage';
+    configView.hidden = name !== 'config';
+    // 使用状況ビューは読み取り専用のため、保存/キャンセルのフッターごと隠す（閉じるのみ）。
+    footer.hidden = name !== 'config';
+    if (name === 'usage') startUsagePolling();
+    else stopUsagePolling();
+  };
+  tabs.forEach((t) => t.addEventListener('click', () => selectTab(t.dataset.tab)));
+  selectTab('usage'); // 既定タブは「Claude使用状況」
 
   const close = () => {
+    stopUsagePolling();
     document.removeEventListener('keydown', onKey);
     overlay.remove();
   };
@@ -1734,11 +1965,11 @@ initApp().then(() => {
   ipcRenderer.send('terminal:renderer-ready');
 });
 
-// 設定パネル（汎用）の有効/無効を判定してボタンを出す。
+// 設定パネル（Claude使用状況｜設定モーダル）の歯車ボタンを配線する（issue #73 で常時表示）。
 setupSettingsPanel();
 
-// タイトルバーのトークン使用量インジケータ（issue #69）を配線する。
-setupUsageIndicator();
+// 歯車ボタンの使用率警告ドットバッジ（issue #73）を配線する。
+setupUsageBadge();
 
 // ─── State reporting to main process ─────────────────────────────────────────
 setInterval(() => {

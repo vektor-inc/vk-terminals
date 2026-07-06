@@ -96,6 +96,7 @@
   #usage-card.show { display: block; }
   #usage-card .u-line { font-size: 12px; color: var(--fg); font-weight: 600;
     display: flex; align-items: center; gap: 6px; }
+  #usage-card .u-line[hidden] { display: none; }
   #usage-card .u-line .u-bolt { font-size: 13px; }
   #usage-card .u-bar { margin-top: 6px; font-size: 12px; color: var(--muted);
     font-family: ui-monospace, "SF Mono", Menlo, monospace; letter-spacing: 1px;
@@ -105,6 +106,22 @@
   /* ピーク比の意味をモバイルにだけ一度添える補足（UX-1）。 */
   #usage-card .u-note { margin-top: 4px; font-size: 10px; color: var(--muted); }
   #usage-card .u-note[hidden] { display: none; }
+  /* 公式 usage API のセッション% / 週間% 2 バー表示（issue #73）。
+     公式% のみ閾値カラー（〜70% 青 / 70〜90% アンバー / 90%〜 赤）。
+     数値ラベルを必ず併記し、色だけに依存しない。トラックは PC 側と同じ #21262d。 */
+  #usage-oauth[hidden] { display: none; }
+  #usage-oauth .u-sec { margin-top: 10px; }
+  #usage-oauth .u-sec:first-child { margin-top: 0; }
+  #usage-oauth .u-sec[hidden] { display: none; }
+  #usage-oauth .u-sec-head { display: flex; align-items: baseline; justify-content: space-between;
+    gap: 8px; font-size: 12px; font-weight: 600; color: var(--fg); }
+  #usage-oauth .u-sec-head .u-pct { white-space: nowrap; }
+  #usage-oauth .u-track { margin-top: 5px; height: 7px; border-radius: 4px;
+    background: #21262d; overflow: hidden; }
+  #usage-oauth .u-fill { height: 100%; border-radius: 4px; background: #58a6ff; }
+  #usage-oauth .u-fill.level-warn { background: #d29922; }
+  #usage-oauth .u-fill.level-crit { background: #f85149; }
+  #usage-oauth .u-reset { margin-top: 4px; font-size: 10px; color: var(--muted); }
 </style>
 </head>
 <body>
@@ -114,7 +131,23 @@
 </header>
 <div id="err"></div>
 <div id="usage-card">
-  <div class="u-line"><span class="u-bolt">⚡</span><span id="usage-text"></span></div>
+  <!-- 公式 usage API 取得時（issue #73）: セッション% / 週間% の 2 バー表示 -->
+  <div id="usage-oauth" hidden>
+    <div class="u-sec" id="uo-session-sec" hidden>
+      <div class="u-sec-head"><span>現在のセッション</span><span class="u-pct" id="uo-session-pct"></span></div>
+      <div class="u-track" id="uo-session-track" role="progressbar" aria-label="現在のセッション"
+        aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="u-fill" id="uo-session-fill"></div></div>
+      <div class="u-reset" id="uo-session-reset"></div>
+    </div>
+    <div class="u-sec" id="uo-weekly-sec" hidden>
+      <div class="u-sec-head"><span>週間制限（すべてのモデル）</span><span class="u-pct" id="uo-weekly-pct"></span></div>
+      <div class="u-track" id="uo-weekly-track" role="progressbar" aria-label="週間制限（すべてのモデル）"
+        aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="u-fill" id="uo-weekly-fill"></div></div>
+      <div class="u-reset" id="uo-weekly-reset"></div>
+    </div>
+  </div>
+  <!-- フォールバック（トランスクリプト集計）時: 従来表示（issue #69） -->
+  <div class="u-line" id="usage-line"><span class="u-bolt">⚡</span><span id="usage-text"></span></div>
   <div class="u-bar" id="usage-bar"><span class="u-marks" id="usage-marks"></span><span id="usage-percent"></span></div>
   <div class="u-note" id="usage-note"></div>
 </div>
@@ -374,19 +407,89 @@ function ensureCard(termId) {
   return cards[termId];
 }
 
-// 使用量カード（issue #69）。data.usage（main が整形済みの文字列群）があれば表示する。
-// 無い（無効・データ無し）ときは隠す。文字列は textContent で入れるので XSS 面も安全。
+// 使用量カード（issue #69 → #73）。data.usage があれば表示、無ければカードごと隠す。
+//   - source === 'oauth'（公式 usage API）: セッション% / 週間% の 2 バー表示。
+//     percent は百分率（17 = 17%）、resetAtMs は epoch ms。2 秒ポーリングに相乗りして
+//     残り時間表示も自然に追従する。
+//   - それ以外（source === 'transcript' フォールバック）: 従来表示のまま。
+// 文字列は textContent で入れるので XSS 面も安全。
 var usageCard = document.getElementById("usage-card");
+
+// 残り時間（ms）→「◯時間◯分後にリセット」
+function fmtRemainingJa(ms) {
+  if (typeof ms !== "number" || !isFinite(ms) || ms <= 0) return "まもなくリセット";
+  var totalMin = Math.floor(ms / 60000);
+  var h = Math.floor(totalMin / 60);
+  var m = totalMin % 60;
+  if (h > 0) return h + "時間" + m + "分後にリセット";
+  if (m > 0) return m + "分後にリセット";
+  return "まもなくリセット";
+}
+
+// epoch ms →「金 18:59 にリセット」（ローカル時刻）
+function fmtResetDayTimeJa(ms) {
+  var d = new Date(ms);
+  var wd = ["日", "月", "火", "水", "木", "金", "土"][d.getDay()];
+  var hh = String(d.getHours()).padStart(2, "0");
+  var mm = String(d.getMinutes()).padStart(2, "0");
+  return wd + " " + hh + ":" + mm + " にリセット";
+}
+
+// 公式データ 1 区分（セッション / 週間）の行を更新する。
+// mode: "remaining" は残り時間表示、"datetime" はリセット日時表示。
+function renderOauthRow(prefix, entry, mode) {
+  var sec = document.getElementById(prefix + "-sec");
+  if (!sec) return;
+  var pct = entry && typeof entry.percent === "number" && isFinite(entry.percent)
+    ? Math.max(0, Math.min(100, entry.percent)) : null;
+  if (pct === null) { sec.hidden = true; return; }
+  sec.hidden = false;
+  document.getElementById(prefix + "-pct").textContent = Math.round(pct) + "% 使用済み";
+  var fill = document.getElementById(prefix + "-fill");
+  fill.style.width = pct + "%";
+  // 公式% のみ閾値カラー（〜70% 青 / 70〜90% アンバー / 90%〜 赤）
+  fill.className = "u-fill" + (pct >= 90 ? " level-crit" : pct >= 70 ? " level-warn" : "");
+  // SR 向け progressbar の現在値を更新（role / min / max は HTML 側で静的付与済み）
+  var track = document.getElementById(prefix + "-track");
+  if (track) track.setAttribute("aria-valuenow", String(Math.round(pct)));
+  var resetEl = document.getElementById(prefix + "-reset");
+  if (entry.resetAtMs && isFinite(entry.resetAtMs)) {
+    resetEl.textContent = mode === "remaining"
+      ? fmtRemainingJa(entry.resetAtMs - Date.now())
+      : fmtResetDayTimeJa(entry.resetAtMs);
+  } else {
+    resetEl.textContent = "";
+  }
+}
+
 function renderUsage(usage) {
   if (!usageCard) return;
+  var oauthBox = document.getElementById("usage-oauth");
+  var lineRow = document.getElementById("usage-line");
+  var barRow = document.getElementById("usage-bar");
+  var noteRow = document.getElementById("usage-note");
+
+  // 公式 usage API 取得時: 2 バー表示（フォールバック行は隠す）
+  if (usage && usage.source === "oauth" && (usage.session || usage.weekly)) {
+    renderOauthRow("uo-session", usage.session, "remaining");
+    renderOauthRow("uo-weekly", usage.weekly, "datetime");
+    oauthBox.hidden = false;
+    lineRow.hidden = true;
+    barRow.hidden = true;
+    noteRow.hidden = true;
+    usageCard.classList.add("show");
+    return;
+  }
+
+  // フォールバック（トランスクリプト集計）: 従来表示
+  oauthBox.hidden = true;
   if (!usage || !usage.mobileText) {
     usageCard.classList.remove("show");
     return;
   }
+  lineRow.hidden = false;
   document.getElementById("usage-text").textContent = usage.mobileText;
   // ピーク比（バー）行は utilization がある時だけ表示。無い時は 0% 誤読を避けて行ごと隠す。
-  var barRow = document.getElementById("usage-bar");
-  var noteRow = document.getElementById("usage-note");
   if (usage.barText) {
     document.getElementById("usage-marks").textContent = usage.bar || "";
     document.getElementById("usage-percent").textContent = usage.barText;

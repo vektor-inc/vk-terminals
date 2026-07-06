@@ -12,6 +12,9 @@ const { stripAnsiForPattern } = require('./utils/stripAnsi');
 const { canonicalizeState, isKnownAgent } = require('./renderer/agentRoom');
 // トークン使用量トラッカー（issue #69）。トランスクリプト集計＋整形はすべて usageTracker 側。
 const { createUsageTracker, createTtlMemo } = require('./usageTracker');
+// 公式 usage API（issue #73）。OAuth トークンは oauthUsage モジュール（main プロセス）内で
+// のみ扱い、ここから先へは正規化済みの数値（%・リセット時刻・source 種別）だけを渡す。
+const { createOauthUsageProvider } = require('./oauthUsage');
 const execFileAsync = promisify(execFile);
 
 let win;
@@ -116,6 +119,30 @@ function getUsageForDisplay() {
     console.error(`${LOG_PREFIX} usage snapshot failed:`, e && e.message);
     return null;
   }
+}
+
+// 公式 usage API のプロバイダ（issue #73）。60 秒 TTL キャッシュを内包し、renderer の
+// ポーリング（設定モーダルの使用状況ビュー・歯車バッジ）やモバイルページの /api/states
+// ポーリングが重なっても API / Keychain への問い合わせは 60 秒に 1 回に抑えられる。
+const oauthUsage = createOauthUsageProvider();
+
+// 使用状況の統一構造を返す（issue #73）。
+//   - 公式 usage API（source: 'oauth'、session / weekly の % とリセット時刻）を主とする。
+//   - 取得不可（未ログイン・期限切れ・オフライン・Keychain 拒否・API 変更等）のときは
+//     既存のトランスクリプト集計（source: 'transcript'、describeUsage の整形済み値）へ
+//     フォールバックする。どちらも無ければ null。
+//   - opt-out 設定 showUsage=false のときは常に null。
+async function getUsageUnified() {
+  if (!usageEnabled()) return null;
+  try {
+    const oauth = await oauthUsage.get();
+    if (oauth) return oauth;
+  } catch (e) {
+    // oauthUsage 側で握りつぶしているため通常ここには来ないが、念のための保険。
+    // トークン等の秘匿情報はエラーメッセージに含まれない設計（oauthUsage.js 参照）。
+    console.error(`${LOG_PREFIX} oauth usage failed:`, e && e.message);
+  }
+  return getUsageForDisplay();
 }
 
 /**
@@ -263,9 +290,11 @@ ipcMain.handle('app:get-config', () => {
   return { agentroom: false };
 });
 
-// タイトルバーのトークン使用量インジケータ（issue #69）が 15 秒ごとにポーリングする。
-// 無効時・データ無し・失敗時は null を返し、renderer 側はインジケータを隠す。
-ipcMain.handle('usage:get', () => getUsageForDisplay());
+// 使用状況の取得（issue #69 → #73 で公式 API 主・トランスクリプト従の統一構造に変更）。
+// renderer（設定モーダルの使用状況ビュー: 表示中のみ初回即時＋60秒間隔 / 歯車の警告
+// ドットバッジ: 60秒間隔）がポーリングする。main 側 60 秒 TTL キャッシュに相乗りするため
+// 実際の API 問い合わせは増えない。無効時・データ無し・失敗時は null。
+ipcMain.handle('usage:get', () => getUsageUnified());
 
 // ─── 設定パネル（汎用）────────────────────────────────────────────────────────
 // 呼び出し側（例: vk-orchestrator）が環境変数 VK_TERMINALS_SETTINGS に「設定ディスク
@@ -308,7 +337,7 @@ function builtinSettingsDescriptor() {
           { key: 'initialCommand', label: '初期コマンド',          type: 'text',    help: '1 ペイン目で claude 起動直後に自動実行させたいコマンドがあれば記入してください。' },
           // showUsage（issue #69）は opt-out（既定 ON）。default:true で「未設定 boolean が
           // 保存時に false になる」問題を避ける（settings:describe / settings:save が default 尊重）。
-          { key: 'showUsage',      label: 'トークン使用量を表示',   type: 'boolean', default: true, help: 'Claude の 5 時間ブロックの消費状況をタイトルバー・モバイルページに表示します。' },
+          { key: 'showUsage',      label: 'トークン使用量を表示',   type: 'boolean', default: true, help: 'Claude の利用状況（セッション% / 週間制限%）を設定モーダルの使用状況タブ・モバイルページに表示します。' },
           // issue #70 でエージェントルーム（β）を一旦無効化するため設定項目を非表示にする。
           // 復帰時は下記コメントを解除する。
           // { key: 'agentroom',      label: 'エージェントルーム（β）表示', type: 'boolean' },
@@ -762,13 +791,20 @@ function startHttpApi() {
 
     // GET /api/states
     if (req.method === 'GET' && url.pathname === '/api/states') {
-      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
       // usage（issue #69）はモバイルページの既存ポーリングに相乗りで additive に追加する。
-      res.end(JSON.stringify({
-        updatedAt: new Date().toISOString(),
-        terminals: cachedStates,
-        usage: getUsageForDisplay(),
-      }));
+      // issue #73 で公式 API（source:'oauth'）主・トランスクリプト（source:'transcript'）従の
+      // 統一構造になった。oauth 取得は非同期（main 側 60s TTL キャッシュ済み）のため、
+      // ここだけ Promise を待ってからレスポンスする。失敗時は usage: null（後方互換）。
+      Promise.resolve(getUsageUnified())
+        .catch(() => null)
+        .then((usage) => {
+          res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+          res.end(JSON.stringify({
+            updatedAt: new Date().toISOString(),
+            terminals: cachedStates,
+            usage,
+          }));
+        });
       return;
     }
 

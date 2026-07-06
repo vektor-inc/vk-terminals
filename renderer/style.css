@@ -24,20 +24,48 @@ html, body {
   -webkit-app-region: drag;
   background: #0d1117;
   border-bottom: 1px solid #21262d;
-  display: flex;
+  /* 左（使用量）/ 中央（アプリ名）/ 右（設定ボタン）の 3 レーン。中央は auto 幅で
+     常に中央寄せになり、左右の 1fr が均等に押し合うので、使用量とアプリ名が
+     狭幅でも別セルに分かれて重ならない（UX-3）。設定ボタンは右セルに絶対配置で載る。 */
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
   align-items: center;
-  justify-content: center;
   z-index: 1000;
   flex-shrink: 0;
 }
 
 .app-title {
+  grid-column: 2;
   color: #6e7681;
   font-size: 12px;
   font-weight: 500;
   letter-spacing: 0.02em;
   -webkit-user-select: none;
+  white-space: nowrap;
 }
+
+/* タイトルバー左レーンのトークン使用量インジケータ（issue #69）。
+   グリッドの左セル（1fr）に収まり、狭幅ではセル幅を超えた分を省略記号で切る。
+   重要度順（トークン量 → ピーク比 → リセット時刻）で並び、末尾から欠ける（UX-2）。
+   ツールチップには頼らない設計なので pointer-events は無効化し、ウィンドウドラッグを妨げない。 */
+.usage-indicator {
+  grid-column: 1;
+  justify-self: start;
+  min-width: 0;         /* grid セル内で ellipsis を効かせるため */
+  max-width: 100%;
+  padding-left: 12px;
+  box-sizing: border-box;
+  color: #7d8590;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  -webkit-user-select: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+.usage-indicator[hidden] { display: none; }
 
 /* タイトルバー右端の設定ボタン（ドラッグ領域から除外する） */
 .titlebar-btn {

@@ -10,6 +10,8 @@ const { stripAnsiForPattern } = require('./utils/stripAnsi');
 // エージェントルーム（issue #58）の agent 名・state 検証を renderer 側と共有する。
 // canonicalizeState / isKnownAgent は DOM 非依存なので main プロセスから require して使える。
 const { canonicalizeState, isKnownAgent } = require('./renderer/agentRoom');
+// トークン使用量トラッカー（issue #69）。トランスクリプト集計＋整形はすべて usageTracker 側。
+const { createUsageTracker, createTtlMemo } = require('./usageTracker');
 const execFileAsync = promisify(execFile);
 
 let win;
@@ -70,6 +72,50 @@ function loadUserConfig() {
   }
 
   return {};
+}
+
+// ─── トークン使用量（issue #69）────────────────────────────────────────────────
+// GET /api/states（モバイルページが ~2s ごとにポーリング）のホットパスで usage 判定の
+// たびに loadUserConfig() の同期 I/O（readFileSync + JSON.parse）を走らせないよう、
+// usage 系ヘルパー専用に config を短TTL（5s）でメモ化する（CR-1）。
+//   - このメモは usage 判定（usageEnabled / usageProjectsDirs）だけが使う。settings:describe /
+//     settings:save / app:get-config は従来どおり loadUserConfig() を直接呼ぶ（設定変更を即時反映
+//     させるため、loadUserConfig 自体はグローバルキャッシュしない）。
+//   - TTL 5s なので、設定変更後も遅くとも 5 秒で usage 表示に反映される。
+const USAGE_CONFIG_TTL_MS = 5000;
+const usageConfig = createTtlMemo(loadUserConfig, USAGE_CONFIG_TTL_MS);
+
+// showUsage は opt-out（既定 ON）。config.json で明示的に false のときだけ無効化する。
+// （settings descriptor 側でも default:true を持たせ、GUI の未設定→false 化を防ぐ。）
+function usageEnabled() {
+  return usageConfig().showUsage !== false;
+}
+
+// 集計対象の Claude projects ディレクトリ。複数アカウントは config.claudeProjectsDirs で
+// 複数指定できる。未指定なら usageTracker 側の既定（~/.claude/projects）を使う。
+function usageProjectsDirs() {
+  const raw = usageConfig().claudeProjectsDirs;
+  if (Array.isArray(raw)) {
+    const dirs = raw.filter((d) => typeof d === 'string' && d.trim());
+    if (dirs.length) return dirs;
+  }
+  return null; // null → usageTracker のデフォルト
+}
+
+// トラッカーは 1 個だけ生成し、差分読み・SWR キャッシュを内包させる。
+const usageTracker = createUsageTracker({
+  getDirs: () => usageProjectsDirs(),
+});
+
+// 表示用に整形したスナップショットを返す。無効時・失敗時は null（アプリ本体に影響させない）。
+function getUsageForDisplay() {
+  try {
+    if (!usageEnabled()) return null;
+    return usageTracker.getDescribed();
+  } catch (e) {
+    console.error(`${LOG_PREFIX} usage snapshot failed:`, e && e.message);
+    return null;
+  }
 }
 
 /**
@@ -191,6 +237,8 @@ app.whenReady().then(async () => {
   createWindow();
   await checkAndUpdate();
   startHttpApi();
+  // 使用量スナップショットを起動時に温めておく（初回ポーリングで null が返るのを避ける）。
+  if (usageEnabled()) usageTracker.warmup().catch(() => {});
 });
 
 app.on('window-all-closed', () => {
@@ -214,6 +262,10 @@ app.on('before-quit', () => {
 ipcMain.handle('app:get-config', () => {
   return { agentroom: false };
 });
+
+// タイトルバーのトークン使用量インジケータ（issue #69）が 15 秒ごとにポーリングする。
+// 無効時・データ無し・失敗時は null を返し、renderer 側はインジケータを隠す。
+ipcMain.handle('usage:get', () => getUsageForDisplay());
 
 // ─── 設定パネル（汎用）────────────────────────────────────────────────────────
 // 呼び出し側（例: vk-orchestrator）が環境変数 VK_TERMINALS_SETTINGS に「設定ディスク
@@ -254,6 +306,9 @@ function builtinSettingsDescriptor() {
         fields: [
           { key: 'apiHost',        label: 'API ホスト',            type: 'text',    help: '既定 127.0.0.1' },
           { key: 'initialCommand', label: '初期コマンド',          type: 'text',    help: '1 ペイン目で claude 起動直後に自動実行させたいコマンドがあれば記入してください。' },
+          // showUsage（issue #69）は opt-out（既定 ON）。default:true で「未設定 boolean が
+          // 保存時に false になる」問題を避ける（settings:describe / settings:save が default 尊重）。
+          { key: 'showUsage',      label: 'トークン使用量を表示',   type: 'boolean', default: true, help: 'Claude の 5 時間ブロックの消費状況をタイトルバー・モバイルページに表示します。' },
           // issue #70 でエージェントルーム（β）を一旦無効化するため設定項目を非表示にする。
           // 復帰時は下記コメントを解除する。
           // { key: 'agentroom',      label: 'エージェントルーム（β）表示', type: 'boolean' },
@@ -333,7 +388,12 @@ ipcMain.handle('settings:describe', () => {
   const values = {};
   for (const f of descriptorFields(descriptor)) {
     const v = deepGet(current, f.key);
-    values[f.key] = v === undefined ? null : v;
+    // 未設定（undefined）のフィールドは descriptor の default を尊重する。
+    // これがないと boolean（例: showUsage=opt-out）が GUI 上で未チェック表示になり、
+    // ユーザーが何も触らず保存しただけで false に固定されてしまう（issue #69 で同時修正）。
+    values[f.key] = v === undefined
+      ? (f.default !== undefined ? f.default : null)
+      : v;
   }
   return {
     available: true,
@@ -380,7 +440,12 @@ ipcMain.handle('settings:save', (event, incoming) => {
         break;
       }
       case 'boolean':
-        coerced = !!raw;
+        // 値が来ていない（null/undefined）場合は default を尊重する。
+        // checkbox は通常 true/false を送るが、未描画・欠損時に !!undefined=false へ
+        // 落として opt-out 既定を潰さないための保険（settings:describe の default 尊重と対）。
+        coerced = (raw === null || raw === undefined)
+          ? (f.default !== undefined ? !!f.default : false)
+          : !!raw;
         break;
       case 'json': {
         if (raw === '' || raw === null || raw === undefined) {
@@ -698,7 +763,12 @@ function startHttpApi() {
     // GET /api/states
     if (req.method === 'GET' && url.pathname === '/api/states') {
       res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-      res.end(JSON.stringify({ updatedAt: new Date().toISOString(), terminals: cachedStates }));
+      // usage（issue #69）はモバイルページの既存ポーリングに相乗りで additive に追加する。
+      res.end(JSON.stringify({
+        updatedAt: new Date().toISOString(),
+        terminals: cachedStates,
+        usage: getUsageForDisplay(),
+      }));
       return;
     }
 

@@ -1,5 +1,7 @@
 # Changelog
 
+## 1.6.0
+
 - [ 機能追加 ] Claude のトークン使用量（5 時間ブロックの消費状況・リセット時刻・過去最大比の目安）をタイトルバーとモバイルステータスページに表示（[#69](https://github.com/vektor-inc/vk-terminals/issues/69)）
 - [ 仕様変更 ] エージェントルーム（β）を一旦無効化。設定項目とペイン表示の両方を非表示に（[#70](https://github.com/vektor-inc/vk-terminals/issues/70)）
 

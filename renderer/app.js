@@ -1694,8 +1694,8 @@ function renderUsageView(container, usage) {
 // 色のみの表現にしないよう、警告レベルに応じて title / aria-label も切り替える（a11y）。
 const USAGE_BADGE_LABELS = {
   '':     '設定',
-  'warn': '設定（使用状況: 警告）',
-  'crit': '設定（使用状況: 危険）',
+  'warn': '設定（Claude使用状況: 警告）',
+  'crit': '設定（Claude使用状況: 危険）',
 };
 
 function setupUsageBadge() {
@@ -1771,10 +1771,10 @@ function renderSettingsField(f, value, id) {
   </div>`;
 }
 
-// モーダルを開き、「使用状況｜設定」のタブ構成で描画する（issue #73）。
-//   - 既定タブは「使用状況」（読み取り専用。フッターの保存/キャンセルは出さない）
+// モーダルを開き、「Claude使用状況｜設定」のタブ構成で描画する（issue #73）。
+//   - 既定タブは「Claude使用状況」（読み取り専用。フッターの保存/キャンセルは出さない）
 //   - 「設定」タブは settings:describe が使えるときだけ描画し、従来どおり保存できる
-//   - 使用状況のポーリングは「使用状況タブ表示中のみ」初回即時＋60秒間隔。
+//   - 使用状況のポーリングは「Claude使用状況タブ表示中のみ」初回即時＋60秒間隔。
 //     残り時間表示（◯時間◯分後にリセット）は毎秒ライブ再計算する
 async function openSettingsModal() {
   // 二重オープン防止
@@ -1811,11 +1811,11 @@ async function openSettingsModal() {
         <button class="settings-close" title="閉じる">✕</button>
       </div>
       <div class="settings-tabs" role="tablist">
-        <button type="button" class="settings-tab" data-tab="usage" role="tab" aria-selected="false">使用状況</button>
+        <button type="button" class="settings-tab" data-tab="usage" role="tab" aria-selected="false">Claude使用状況</button>
         ${settingsAvailable ? '<button type="button" class="settings-tab" data-tab="config" role="tab" aria-selected="false">設定</button>' : ''}
       </div>
       <div class="settings-view settings-view-usage" role="tabpanel" hidden>
-        <p class="usage-empty">使用状況を取得中…</p>
+        <p class="usage-empty">Claude の使用状況を取得中…</p>
       </div>
       <div class="settings-view settings-view-config" role="tabpanel" hidden>
         ${settingsAvailable && desc.note ? `<p class="settings-note">${escText(desc.note)}</p>` : ''}
@@ -1837,7 +1837,7 @@ async function openSettingsModal() {
   const footer = modal.querySelector('.settings-footer');
   const tabs = Array.from(modal.querySelectorAll('.settings-tab'));
 
-  // ── 使用状況のポーリング（使用状況タブ表示中のみ）────────────────────────
+  // ── 使用状況のポーリング（Claude使用状況タブ表示中のみ）──────────────────
   let usagePollTimer = null; // 60 秒間隔の再取得（main 側 60s TTL キャッシュに相乗り）
   let usageTickTimer = null; // 「◯時間◯分後にリセット」の毎秒ライブ再計算
   const refreshUsage = async () => {
@@ -1881,7 +1881,7 @@ async function openSettingsModal() {
     else stopUsagePolling();
   };
   tabs.forEach((t) => t.addEventListener('click', () => selectTab(t.dataset.tab)));
-  selectTab('usage'); // 既定タブは「使用状況」
+  selectTab('usage'); // 既定タブは「Claude使用状況」
 
   const close = () => {
     stopUsagePolling();
@@ -1965,7 +1965,7 @@ initApp().then(() => {
   ipcRenderer.send('terminal:renderer-ready');
 });
 
-// 設定パネル（使用状況｜設定モーダル）の歯車ボタンを配線する（issue #73 で常時表示）。
+// 設定パネル（Claude使用状況｜設定モーダル）の歯車ボタンを配線する（issue #73 で常時表示）。
 setupSettingsPanel();
 
 // 歯車ボタンの使用率警告ドットバッジ（issue #73）を配線する。

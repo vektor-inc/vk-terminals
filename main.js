@@ -337,7 +337,7 @@ function builtinSettingsDescriptor() {
           { key: 'initialCommand', label: '初期コマンド',          type: 'text',    help: '1 ペイン目で claude 起動直後に自動実行させたいコマンドがあれば記入してください。' },
           // showUsage（issue #69）は opt-out（既定 ON）。default:true で「未設定 boolean が
           // 保存時に false になる」問題を避ける（settings:describe / settings:save が default 尊重）。
-          { key: 'showUsage',      label: 'トークン使用量を表示',   type: 'boolean', default: true, help: 'Claude の利用状況（セッション% / 週間制限%）を設定モーダルの使用状況タブ・モバイルページに表示します。' },
+          { key: 'showUsage',      label: 'トークン使用量を表示',   type: 'boolean', default: true, help: 'Claude の利用状況（セッション% / 週間制限%）を設定モーダルの「Claude使用状況」タブ・モバイルページに表示します。' },
           // issue #70 でエージェントルーム（β）を一旦無効化するため設定項目を非表示にする。
           // 復帰時は下記コメントを解除する。
           // { key: 'agentroom',      label: 'エージェントルーム（β）表示', type: 'boolean' },

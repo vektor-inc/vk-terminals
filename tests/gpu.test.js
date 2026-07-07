@@ -55,6 +55,10 @@ test('resolveGpuMode: config が未知値なら次候補（プラットフォー
   assert.equal(resolveGpuMode({}, 'darwin', ''), 'default');
 });
 
+test('resolveGpuMode: env が未知値でも config に有効値があればそちらを採用する', () => {
+  assert.equal(resolveGpuMode({ VK_TERMINALS_GPU: 'turbo' }, 'linux', 'default'), 'default');
+});
+
 test('applyGpuMode: configMode を採用する（env 未指定時・プラットフォーム既定を上書き）', () => {
   const called = [];
   const fakeApp = { commandLine: { appendSwitch: (...a) => called.push(a) } };

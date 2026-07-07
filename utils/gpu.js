@@ -31,10 +31,26 @@ function defaultGpuMode(platform = process.platform) {
 let warnedUnknownGpuMode = false;
 
 /**
+ * 非空の未知値（例: 撤去した旧 'hardware'）が来た場合、挙動変更に気づけるよう
+ * 一度だけ警告する（起動は止めない）。
+ * @param {string} value 未知の値
+ * @param {string} platform process.platform 互換の値
+ */
+function warnUnknownGpuMode(value, platform) {
+  if (warnedUnknownGpuMode) return;
+  warnedUnknownGpuMode = true;
+  console.warn(
+    `[vk-terminals] 未知の GPU モード "${value}" は無視し、既定 "${defaultGpuMode(platform)}" を使用します` +
+    `（有効値: ${GPU_MODES.join(' / ')}、空=自動）。`,
+  );
+}
+
+/**
  * GPU 起動モードを解決する。
  * 優先順位: 環境変数 VK_TERMINALS_GPU > config.json の gpu > プラットフォーム既定。
- * いずれも空文字・未知の値の場合は次の候補へフォールバックする。撤去した 'hardware' など
- * 非空の未知値が来た場合は、挙動変更に気づけるよう一度だけ警告する（起動は止めない）。
+ * いずれも空文字・未知の値の場合は次の候補へフォールバックする。環境変数が非空の未知値
+ * （例: 旧 'hardware'）の場合は、config に有効な値があって上書き解決されても気づけるよう
+ * その場で警告する（config 側が未知値の場合も同様）。
  * @param {NodeJS.ProcessEnv} [env]
  * @param {string} [platform]
  * @param {string} [configMode] config.json 由来の gpu 値（任意）
@@ -42,18 +58,13 @@ let warnedUnknownGpuMode = false;
  */
 function resolveGpuMode(env = process.env, platform = process.platform, configMode) {
   const fromEnv = String(env.VK_TERMINALS_GPU ?? '').trim().toLowerCase();
+  if (fromEnv !== '' && !GPU_MODES.includes(fromEnv)) warnUnknownGpuMode(fromEnv, platform);
   if (GPU_MODES.includes(fromEnv)) return fromEnv;
+
   const fromConfig = String(configMode ?? '').trim().toLowerCase();
+  if (fromConfig !== '' && !GPU_MODES.includes(fromConfig)) warnUnknownGpuMode(fromConfig, platform);
   if (GPU_MODES.includes(fromConfig)) return fromConfig;
-  // 空（＝自動）以外の未知値（例: 旧 'hardware'）は既定にフォールバック。一度だけ警告。
-  const unknown = fromEnv || fromConfig;
-  if (unknown !== '' && !warnedUnknownGpuMode) {
-    warnedUnknownGpuMode = true;
-    console.warn(
-      `[vk-terminals] 未知の GPU モード "${unknown}" は無視し、既定 "${defaultGpuMode(platform)}" を使用します` +
-      `（有効値: ${GPU_MODES.join(' / ')}、空=自動）。`,
-    );
-  }
+
   return defaultGpuMode(platform);
 }
 

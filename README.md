@@ -66,6 +66,44 @@ VK_TERMINALS_GPU=off npm start
 
 > `electron . --disable-gpu` のように GPU 関連スイッチを直接指定して起動した場合は、そちらを尊重して `VK_TERMINALS_GPU` / `config.json` の自動適用は行いません（呼び出し側の指定を優先。VK Orchestrator 経由の起動もこの経路）。
 
+## WSLg での起動
+
+Windows 上の WSL2（WSLg）でも動作します。GUI が Windows 側にそのまま表示されます。
+
+### 1. 前提パッケージ
+
+WSL 側（Ubuntu 等）に以下が必要です。
+
+```bash
+sudo apt update
+sudo apt install -y build-essential python3
+```
+
+`node-pty` はネイティブモジュールのため、`npm install` 時に自動でビルドされます（上記ビルドツールが前提）。
+
+### 2. `claude` コマンドの用意
+
+WSL 側のシェルに `claude`（Claude Code CLI）をインストールしてください。Windows 側にインストールしたものは共有されません。
+
+```bash
+npm install -g @anthropic-ai/claude-code
+```
+
+### 3. 起動
+
+```bash
+npm start
+```
+
+既定（`VK_TERMINALS_GPU` 未設定）では GPU を無効化して起動するため、`Exiting GPU process` / `kTransientFailure` / `VK_ERROR_INCOMPATIBLE_DRIVER` などのエラーログは出ません（詳細は[GPU 起動モード](#gpu-起動モードvk_terminals_gpu)を参照）。
+
+起動後、ログに `[vk-terminals] API server listening on http://127.0.0.1:13847` が出ていれば正常です。以下で疎通確認できます。
+
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:13847/
+# => 200
+```
+
 ## Windows での起動
 
 macOS 前提の部分があるため、まっさらな Windows 環境でセットアップする場合は以下を確認してください。

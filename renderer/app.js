@@ -1675,6 +1675,14 @@ function renderUsageView(container, usage) {
     return;
   }
   if (usage.source === 'oauth') {
+    // スクリーンリーダーが「直近取得値（古い可能性あり）」の前置きを数値より先に
+    // 読み上げられるよう、stale 注記はブロック先頭に置く（a11y 改善）。
+    if (usage.stale === true) {
+      const note = document.createElement('div');
+      note.className = 'usage-note';
+      note.textContent = '直近に取得した値を表示しています（最新の取得に一時的に失敗しました）';
+      container.appendChild(note);
+    }
     if (usage.session) {
       container.appendChild(buildOauthUsageSection('現在のセッション', usage.session, 'remaining'));
     }

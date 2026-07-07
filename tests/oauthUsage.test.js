@@ -13,6 +13,7 @@ const {
   normalizePercent,
   parseResetAt,
   parseUsageResponse,
+  isStickyUsable,
   createOauthUsageProvider,
 } = require('../oauthUsage');
 
@@ -190,6 +191,20 @@ test('parseUsageResponse: セッションのみ・週間のみでも成立する
   assert.equal(wOnly.weekly.percent, 70.0);
 });
 
+// ── isStickyUsable（直近成功値のスティッキー表示判定）────────────────────────
+test('isStickyUsable: 有効な oauth スナップショットが期限内なら true', () => {
+  const snapshot = { source: 'oauth', session: { percent: 12, resetAtMs: null }, weekly: null, fetchedAtMs: NOW };
+  assert.equal(isStickyUsable(snapshot, NOW + 1000, 5000), true);
+});
+
+test('isStickyUsable: 期限超過・null・fetchedAtMs 欠落/非数値は false', () => {
+  const base = { source: 'oauth', session: { percent: 12, resetAtMs: null }, weekly: null, fetchedAtMs: NOW };
+  assert.equal(isStickyUsable(base, NOW + 5001, 5000), false);
+  assert.equal(isStickyUsable(null, NOW, 5000), false);
+  assert.equal(isStickyUsable({ source: 'oauth', session: null, weekly: null }, NOW, 5000), false);
+  assert.equal(isStickyUsable({ source: 'oauth', session: null, weekly: null, fetchedAtMs: '1000' }, NOW, 5000), false);
+});
+
 // ── createOauthUsageProvider（60s TTL キャッシュ・load 注入）─────────────────
 test('createOauthUsageProvider: TTL 内は load を 1 回しか呼ばず、TTL 超過で再取得する', async () => {
   let now = NOW;
@@ -221,4 +236,41 @@ test('createOauthUsageProvider: load の失敗（reject）は null に落ち、�
     load: async () => { throw new Error('network down'); },
   });
   assert.equal(await provider.get(), null);
+});
+
+test('createOauthUsageProvider: 一時失敗時は stickyMaxMs 以内だけ直近成功値を stale として返す', async () => {
+  let now = NOW;
+  let calls = 0;
+  const firstSnapshot = {
+    source: 'oauth',
+    session: { percent: 25, resetAtMs: NOW + 60 * 60 * 1000 },
+    weekly: null,
+    fetchedAtMs: NOW,
+  };
+  const provider = createOauthUsageProvider({
+    ttlMs: 1000,
+    stickyMaxMs: 5000,
+    clock: () => now,
+    load: async () => {
+      calls += 1;
+      return calls === 1 ? firstSnapshot : null;
+    },
+  });
+
+  const fresh = await provider.get();
+  assert.equal(fresh.source, 'oauth');
+  assert.equal(fresh.session.percent, 25);
+  assert.equal(fresh.stale, undefined);
+
+  now += 1001; // TTL 超過後の再取得が null でも stickyMaxMs 以内なら直近成功値を使う
+  const stale = await provider.get();
+  assert.equal(calls, 2);
+  assert.equal(stale.source, 'oauth');
+  assert.equal(stale.session.percent, 25);
+  assert.equal(stale.stale, true);
+
+  now = NOW + 5001; // stickyMaxMs 超過後はフォールバックへ渡すため null
+  const expired = await provider.get();
+  assert.equal(calls, 3);
+  assert.equal(expired, null);
 });

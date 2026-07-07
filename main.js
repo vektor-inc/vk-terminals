@@ -15,7 +15,16 @@ const { createUsageTracker, createTtlMemo } = require('./usageTracker');
 // 公式 usage API（issue #73）。OAuth トークンは oauthUsage モジュール（main プロセス）内で
 // のみ扱い、ここから先へは正規化済みの数値（%・リセット時刻・source 種別）だけを渡す。
 const { createOauthUsageProvider } = require('./oauthUsage');
+// GUI(Electron) の GPU 起動モード。WSLg 等の Linux では Chromium の GPU 初期化が
+// 失敗して起動時にエラーが多発するため、既定で GPU を無効化する。VK_TERMINALS_GPU で
+// off/hardware/default を選べる。呼び出し側（VK Orchestrator 等）が argv で GPU
+// スイッチを明示している場合は介入しない。詳細は utils/gpu.js を参照。
+const { applyGpuMode } = require('./utils/gpu');
 const execFileAsync = promisify(execFile);
+
+// app が ready になる前に GPU スイッチを適用する（appendSwitch は ready 前に呼ぶ必要がある）。
+const appliedGpuMode = applyGpuMode(app);
+if (appliedGpuMode) console.log(`[vk-terminals] GPU mode: ${appliedGpuMode}`);
 
 let win;
 const ptys = new Map();
@@ -486,6 +495,16 @@ ipcMain.handle('settings:save', (event, incoming) => {
         } catch (e) {
           return { ok: false, error: `${label}: JSON として不正です（${e.message}）` };
         }
+        break;
+      }
+      case 'select': {
+        // 許可された値以外は保存させない（GUI の制約に加えた保険。API 直叩き対策）。
+        const allowed = (Array.isArray(f.options) ? f.options : []).map((o) => String(o.value ?? ''));
+        const s = raw == null ? '' : String(raw);
+        if (allowed.length && !allowed.includes(s)) {
+          return { ok: false, error: `${label}: 不正な値です（${allowed.join(' / ')} のいずれか）` };
+        }
+        coerced = (s === '' && f.emptyToNull) ? null : s;
         break;
       }
       default: { // text / password

@@ -38,6 +38,23 @@ electron . --no-claude
 
 HTTP API（`POST /api/new-pane`）でも `noClaude: true` を指定可能です（後述）。
 
+### GPU 起動モード（`VK_TERMINALS_GPU`）
+
+VK Terminals は Electron アプリのため、macOS 以外（WSLg などの Linux）では Chromium の GPU 初期化が失敗し、起動時に `Exiting GPU process` / `kTransientFailure` などのエラーログが大量に出ます（利用可能な Vulkan ICD がソフトウェア実装のみで SwiftShader へフォールバックするため）。環境変数 `VK_TERMINALS_GPU` で挙動を選べます。
+
+| 値 | 挙動 |
+|---|---|
+| 未設定（自動） | macOS は通常起動、それ以外は `off` 相当 |
+| `off` | GPU を無効化してエラーログを抑制（描画はソフトウェア。ターミナル用途で実害なし） |
+| `hardware` | HW OpenGL を使う（WSLg では Mesa の d3d12 ドライバ経由で Windows 側 GPU に届く）。⚠ `/dev/dxg` アクセスのため **GPU サンドボックスを無効化**し **GPU ブロックリストを無視**するため保護が下がる。Vulkan は HW ICD が無いため対象外 |
+| `default` | フラグを足さず Chromium 任せ（元の挙動） |
+
+```bash
+VK_TERMINALS_GPU=hardware npm start
+```
+
+> `electron . --disable-gpu` のように GPU 関連スイッチを直接指定して起動した場合は、そちらを尊重して `VK_TERMINALS_GPU` の自動適用は行いません（呼び出し側の指定を優先。VK Orchestrator 経由の起動もこの経路）。
+
 ## 使い方
 
 ### ペインの追加・並べ替え

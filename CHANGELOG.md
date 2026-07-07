@@ -1,5 +1,9 @@
 # Changelog
 
+- [ 機能追加 ] 環境変数 `VK_TERMINALS_GPU` で GUI の GPU 起動モード（`off` / `hardware` / `default`）を選択可能に。`hardware` は WSLg の d3d12 ドライバ経由で HW OpenGL を使う（GPU サンドボックス無効化・ブロックリスト無視を伴う）
+- [ 機能追加 ] 設定パネルのフィールドに選択式（`select`）型を追加し、許可された値のみ選べる制約付きピッカーに対応
+- [ 不具合修正 ] macOS 以外（WSLg 等）で Chromium の GPU 初期化失敗により起動時に `Exiting GPU process` / `kTransientFailure` 等のエラーログが大量に出る不具合を修正（既定で GPU を無効化して抑制）
+
 ## 1.7.0
 
 - [ 機能追加 ] Claude の利用状況（セッション%・週間制限%・リセット時刻）を公式 usage API から取得し、設定モーダルの「Claude使用状況」タブに表示。取得不可時は従来のトランスクリプト集計表示へ自動フォールバック（[#73](https://github.com/vektor-inc/vk-terminals/issues/73)）

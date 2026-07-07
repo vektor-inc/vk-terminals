@@ -146,6 +146,12 @@ npm start
 
 Windows では各ペインのデフォルトシェルとして `%COMSPEC%`（通常 `cmd.exe`）または `powershell.exe` が、デフォルト作業ディレクトリとして `%USERPROFILE%` が使われます（`SHELL` / `HOME` 環境変数が設定されていればそちらを優先）。
 
+### 5. パス指定の注意点
+
+- `config.json` の `additionalPanes[].cwd` に Windows パスを書く場合、JSON 文字列内の `\` はエスケープが必要です（例: `"C:\\Users\\you\\project"`）。エスケープ不要な `/` 区切り（例: `"C:/Users/you/project"`）でも Node.js 上では問題なく解決されます。
+- ユーザー名やインストール先にスペースを含むパス（例: `C:\Users\First Last\...`）は、コマンドラインから直接実行するツールやシムスクリプトで引用符の扱いが原因で正しく解決されないことがあります（実例: Volta の `.cmd` シムがスペース入りパスで壊れるケース）。PATH に追加するディレクトリや実行ファイルのパスにスペースが含まれる場合は注意してください。
+- ユーザー設定ファイルの探索先 `~/.vk-terminals/config.json` は、Windows では `os.homedir()`（`%USERPROFILE%`）配下、つまり `%USERPROFILE%\.vk-terminals\config.json` に読み替えられます。
+
 ## 使い方
 
 ### ペインの追加・並べ替え

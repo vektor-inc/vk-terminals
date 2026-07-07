@@ -18,7 +18,8 @@ const GPU_MODES = ['off', 'hardware', 'default'];
 /**
  * GPU 起動モードのプラットフォーム既定値を返す。
  * macOS は HW アクセラがそのまま効くためスイッチ不要（'default'）。
- * それ以外（WSLg 等の Linux）は GPU 初期化失敗によるエラーを抑制するため 'off'。
+ * それ以外（WSLg 等の Linux、およびネイティブ Windows を含む darwin 以外の全て）は
+ * GPU 初期化失敗によるエラーを抑制するため 'off'。
  * @param {string} [platform] process.platform 互換の値
  * @returns {'off'|'default'}
  */
@@ -27,15 +28,20 @@ function defaultGpuMode(platform = process.platform) {
 }
 
 /**
- * 環境変数から GPU 起動モードを解決する。
- * 空文字・未知の値はプラットフォーム既定にフォールバックする。
+ * GPU 起動モードを解決する。
+ * 優先順位: 環境変数 VK_TERMINALS_GPU > config.json の gpu > プラットフォーム既定。
+ * いずれも空文字・未知の値の場合は次の候補へフォールバックする。
  * @param {NodeJS.ProcessEnv} [env]
  * @param {string} [platform]
+ * @param {string} [configMode] config.json 由来の gpu 値（任意）
  * @returns {'off'|'hardware'|'default'}
  */
-function resolveGpuMode(env = process.env, platform = process.platform) {
-  const raw = String(env.VK_TERMINALS_GPU ?? '').trim().toLowerCase();
-  return GPU_MODES.includes(raw) ? raw : defaultGpuMode(platform);
+function resolveGpuMode(env = process.env, platform = process.platform, configMode) {
+  const fromEnv = String(env.VK_TERMINALS_GPU ?? '').trim().toLowerCase();
+  if (GPU_MODES.includes(fromEnv)) return fromEnv;
+  const fromConfig = String(configMode ?? '').trim().toLowerCase();
+  if (GPU_MODES.includes(fromConfig)) return fromConfig;
+  return defaultGpuMode(platform);
 }
 
 /**
@@ -88,11 +94,12 @@ function gpuSwitches(mode) {
  * @param {string[]} [opts.argv]
  * @param {NodeJS.ProcessEnv} [opts.env]
  * @param {string} [opts.platform]
+ * @param {string} [opts.configMode] config.json 由来の gpu 値（env 未指定時に採用）
  * @returns {string|null} 適用したモード（介入しなかった場合は null）
  */
-function applyGpuMode(app, { argv = process.argv, env = process.env, platform = process.platform } = {}) {
+function applyGpuMode(app, { argv = process.argv, env = process.env, platform = process.platform, configMode } = {}) {
   if (hasExplicitGpuSwitch(argv)) return null;
-  const mode = resolveGpuMode(env, platform);
+  const mode = resolveGpuMode(env, platform, configMode);
   const { switches, env: extraEnv } = gpuSwitches(mode);
   // 追加 env は未設定のときだけ入れる（利用者が明示した値を尊重する）。
   for (const [k, v] of Object.entries(extraEnv)) {

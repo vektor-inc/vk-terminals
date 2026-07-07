@@ -53,7 +53,15 @@ VK Terminals は Electron アプリのため、macOS 以外（WSLg などの Lin
 VK_TERMINALS_GPU=hardware npm start
 ```
 
-> `electron . --disable-gpu` のように GPU 関連スイッチを直接指定して起動した場合は、そちらを尊重して `VK_TERMINALS_GPU` の自動適用は行いません（呼び出し側の指定を優先。VK Orchestrator 経由の起動もこの経路）。
+`config.json` の `gpu` キーでも同じ値を指定できます（永続設定向け）。
+
+```json
+{ "gpu": "hardware" }
+```
+
+モードの優先順位は **環境変数 `VK_TERMINALS_GPU` > `config.json` の `gpu` > プラットフォーム既定** です（環境変数がその場の上書きとして config を上回ります）。
+
+> `electron . --disable-gpu` のように GPU 関連スイッチを直接指定して起動した場合は、そちらを尊重して `VK_TERMINALS_GPU` / `config.json` の自動適用は行いません（呼び出し側の指定を優先。VK Orchestrator 経由の起動もこの経路）。
 
 ## 使い方
 

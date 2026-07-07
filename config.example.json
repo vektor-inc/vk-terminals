@@ -1,6 +1,7 @@
 {
   "apiHost": "127.0.0.1",
   "initialCommand": "",
+  "gpu": "off",
   "agentroom": false,
   "additionalPanes": [
     { "cwd": "/absolute/path/to/another/project" },

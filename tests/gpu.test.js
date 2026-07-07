@@ -41,6 +41,29 @@ test('resolveGpuMode: 未知値・空文字は既定にフォールバック', (
   assert.equal(resolveGpuMode({ VK_TERMINALS_GPU: '' }, 'darwin'), 'default');
 });
 
+test('resolveGpuMode: config.json の gpu を採用し正規化する（env 未指定時）', () => {
+  assert.equal(resolveGpuMode({}, 'linux', 'hardware'), 'hardware');
+  assert.equal(resolveGpuMode({}, 'darwin', ' Off '), 'off');
+});
+
+test('resolveGpuMode: env が config を上回る', () => {
+  assert.equal(resolveGpuMode({ VK_TERMINALS_GPU: 'off' }, 'linux', 'hardware'), 'off');
+});
+
+test('resolveGpuMode: config が未知値なら次候補（プラットフォーム既定）へ', () => {
+  assert.equal(resolveGpuMode({}, 'linux', 'turbo'), 'off');
+  assert.equal(resolveGpuMode({}, 'darwin', ''), 'default');
+});
+
+test('applyGpuMode: configMode を採用する（env 未指定時）', () => {
+  const called = [];
+  const fakeApp = { commandLine: { appendSwitch: (...a) => called.push(a) } };
+  const env = {};
+  const mode = applyGpuMode(fakeApp, { argv: ['electron', '.'], env, platform: 'linux', configMode: 'hardware' });
+  assert.equal(mode, 'hardware');
+  assert.equal(env.GALLIUM_DRIVER, 'd3d12');
+});
+
 test('hasExplicitGpuSwitch: GPU 関連スイッチの有無を検出する', () => {
   assert.equal(hasExplicitGpuSwitch(['electron', '.', '--disable-gpu']), true);
   assert.equal(hasExplicitGpuSwitch(['electron', '.', '--use-gl=angle']), true);

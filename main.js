@@ -16,15 +16,12 @@ const { createUsageTracker, createTtlMemo } = require('./usageTracker');
 // のみ扱い、ここから先へは正規化済みの数値（%・リセット時刻・source 種別）だけを渡す。
 const { createOauthUsageProvider } = require('./oauthUsage');
 // GUI(Electron) の GPU 起動モード。WSLg 等の Linux では Chromium の GPU 初期化が
-// 失敗して起動時にエラーが多発するため、既定で GPU を無効化する。VK_TERMINALS_GPU で
-// off/hardware/default を選べる。呼び出し側（VK Orchestrator 等）が argv で GPU
-// スイッチを明示している場合は介入しない。詳細は utils/gpu.js を参照。
+// 失敗して起動時にエラーが多発するため、既定で GPU を無効化する。モードは
+// VK_TERMINALS_GPU（環境変数）または config.json の gpu で off/hardware/default を
+// 選べる（優先順位は env > config > プラットフォーム既定）。呼び出し側（VK Orchestrator
+// 等）が argv で GPU スイッチを明示している場合は介入しない。詳細は utils/gpu.js を参照。
 const { applyGpuMode } = require('./utils/gpu');
 const execFileAsync = promisify(execFile);
-
-// app が ready になる前に GPU スイッチを適用する（appendSwitch は ready 前に呼ぶ必要がある）。
-const appliedGpuMode = applyGpuMode(app);
-if (appliedGpuMode) console.log(`[vk-terminals] GPU mode: ${appliedGpuMode}`);
 
 let win;
 const ptys = new Map();
@@ -85,6 +82,11 @@ function loadUserConfig() {
 
   return {};
 }
+
+// app が ready になる前に GPU スイッチを適用する（appendSwitch は ready 前に呼ぶ必要がある）。
+// config.json の gpu も見るため loadUserConfig 定義後に実行する（env 未指定時に config を採用）。
+const appliedGpuMode = applyGpuMode(app, { configMode: loadUserConfig().gpu });
+if (appliedGpuMode) console.log(`${LOG_PREFIX} GPU mode: ${appliedGpuMode}`);
 
 // ─── トークン使用量（issue #69）────────────────────────────────────────────────
 // GET /api/states（モバイルページが ~2s ごとにポーリング）のホットパスで usage 判定の

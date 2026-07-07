@@ -154,6 +154,7 @@ Windows では各ペインのデフォルトシェルとして `%COMSPEC%`（通
 - `cwd`（`additionalPanes[].cwd` や HTTP API `/api/new-pane` の `cwd`）は必ず **Windows ネイティブ形式**（`C:\Users\you\project` または `C:/Users/you/project`）で指定してください。`node-pty` 内部で Node.js の `path.resolve()` を通すため、Git Bash / WSL 由来の POSIX 形式パス（`/c/Users/you/project` など）を渡すとドライブレターが正しく解決されず、意図しないディレクトリが開かれます。
 - リポジトリ自体は `C:\` 以外のドライブ（例: `D:\dev\vk-terminals`）に置いても問題なく動作します。ただし `C:\Program Files\...` のような管理者権限が必要なディレクトリや、OneDrive 同期対象フォルダ（既定の `ドキュメント` / `デスクトップ` が同期対象になっている場合あり）に置くと、`npm install` 時のネイティブビルド（`node-pty`）が権限エラーやファイルロックで失敗することがあります。`C:\dev\...` のような同期対象外の短いパスを推奨します。
 - リポジトリを配置するディレクトリ自体にスペースが含まれる場合（例: `C:\Users\Taro Yamada\Documents\vk-terminals`）、`node-pty` の `node-gyp` 経由のネイティブビルドがパス中のスペースが原因で失敗することがあります（`npm install` / `electron-rebuild` がビルドツールへの引数展開でパスを分割してしまうケース）。ビルドエラーが出た場合は、まずスペースを含まないパス（例: `C:\dev\vk-terminals`）に配置し直して切り分けてください。
+- （セキュリティ向け補足）Windows は既定で、実行ファイル名の解決時に **カレントディレクトリを PATH より先に検索**します。vk-terminals の各ペインは `cwd` を作業ディレクトリとしてシェルを起動するため、信頼できないリポジトリ（`cwd` に指定したフォルダ）に `claude.exe` など正規コマンドと同名の実行ファイルが紛れ込んでいると、そちらが誤って実行される恐れがあります。気になる場合は環境変数 `NoDefaultCurrentDirectoryInExePath=1` を設定すると、カレントディレクトリ検索を無効化し PATH のみから解決されるようになります（`setx NoDefaultCurrentDirectoryInExePath 1` 等）。
 
 ## 使い方
 

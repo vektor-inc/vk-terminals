@@ -16,8 +16,8 @@ const {
   applyGpuMode,
 } = require('../utils/gpu');
 
-test('GPU_MODES: 取りうる値の一覧', () => {
-  assert.deepEqual(GPU_MODES, ['off', 'hardware', 'default']);
+test('GPU_MODES: 取りうる値の一覧（off / default の2択）', () => {
+  assert.deepEqual(GPU_MODES, ['off', 'default']);
 });
 
 test('defaultGpuMode: macOS は default、それ以外は off', () => {
@@ -32,7 +32,7 @@ test('resolveGpuMode: 未設定はプラットフォーム既定にフォール�
 });
 
 test('resolveGpuMode: VK_TERMINALS_GPU を採用し正規化する', () => {
-  assert.equal(resolveGpuMode({ VK_TERMINALS_GPU: 'hardware' }, 'linux'), 'hardware');
+  assert.equal(resolveGpuMode({ VK_TERMINALS_GPU: 'off' }, 'darwin'), 'off');
   assert.equal(resolveGpuMode({ VK_TERMINALS_GPU: '  Default ' }, 'linux'), 'default');
 });
 
@@ -42,12 +42,12 @@ test('resolveGpuMode: 未知値・空文字は既定にフォールバック', (
 });
 
 test('resolveGpuMode: config.json の gpu を採用し正規化する（env 未指定時）', () => {
-  assert.equal(resolveGpuMode({}, 'linux', 'hardware'), 'hardware');
-  assert.equal(resolveGpuMode({}, 'darwin', ' Off '), 'off');
+  assert.equal(resolveGpuMode({}, 'darwin', 'off'), 'off');
+  assert.equal(resolveGpuMode({}, 'linux', ' Default '), 'default');
 });
 
 test('resolveGpuMode: env が config を上回る', () => {
-  assert.equal(resolveGpuMode({ VK_TERMINALS_GPU: 'off' }, 'linux', 'hardware'), 'off');
+  assert.equal(resolveGpuMode({ VK_TERMINALS_GPU: 'default' }, 'linux', 'off'), 'default');
 });
 
 test('resolveGpuMode: config が未知値なら次候補（プラットフォーム既定）へ', () => {
@@ -55,13 +55,14 @@ test('resolveGpuMode: config が未知値なら次候補（プラットフォー
   assert.equal(resolveGpuMode({}, 'darwin', ''), 'default');
 });
 
-test('applyGpuMode: configMode を採用する（env 未指定時）', () => {
+test('applyGpuMode: configMode を採用する（env 未指定時・プラットフォーム既定を上書き）', () => {
   const called = [];
   const fakeApp = { commandLine: { appendSwitch: (...a) => called.push(a) } };
   const env = {};
-  const mode = applyGpuMode(fakeApp, { argv: ['electron', '.'], env, platform: 'linux', configMode: 'hardware' });
-  assert.equal(mode, 'hardware');
-  assert.equal(env.GALLIUM_DRIVER, 'd3d12');
+  // darwin の既定は 'default' だが、config で 'off' を指定すれば off になる
+  const mode = applyGpuMode(fakeApp, { argv: ['electron', '.'], env, platform: 'darwin', configMode: 'off' });
+  assert.equal(mode, 'off');
+  assert.deepEqual(called, [['disable-gpu'], ['disable-software-rasterizer']]);
 });
 
 test('hasExplicitGpuSwitch: GPU 関連スイッチの有無を検出する', () => {
@@ -79,16 +80,6 @@ test('gpuSwitches: off は GPU 無効スイッチ、追加 env は無し', () =>
   assert.deepEqual(env, {});
 });
 
-test('gpuSwitches: hardware は ANGLE(GL)＋サンドボックス無効＋ブロックリスト無視、env に GALLIUM_DRIVER', () => {
-  const { switches, env } = gpuSwitches('hardware');
-  const names = switches.map((s) => s.join('='));
-  assert.ok(names.includes('use-gl=angle'));
-  assert.ok(names.includes('use-angle=gl'));
-  assert.ok(names.includes('ignore-gpu-blocklist'));
-  assert.ok(names.includes('disable-gpu-sandbox'));
-  assert.equal(env.GALLIUM_DRIVER, 'd3d12');
-});
-
 test('gpuSwitches: default はスイッチ・env とも空', () => {
   assert.deepEqual(gpuSwitches('default'), { switches: [], env: {} });
 });
@@ -102,19 +93,6 @@ test('applyGpuMode: off モードで appendSwitch を呼ぶ（env 追加なし�
   assert.deepEqual(called, [['disable-gpu'], ['disable-software-rasterizer']]);
 });
 
-test('applyGpuMode: hardware で GALLIUM_DRIVER を設定し ANGLE スイッチを適用', () => {
-  const called = [];
-  const fakeApp = { commandLine: { appendSwitch: (...a) => called.push(a) } };
-  const env = { VK_TERMINALS_GPU: 'hardware' };
-  const mode = applyGpuMode(fakeApp, { argv: ['electron', '.'], env, platform: 'linux' });
-  assert.equal(mode, 'hardware');
-  assert.equal(env.GALLIUM_DRIVER, 'd3d12');
-  const names = called.map((s) => s.join('='));
-  assert.ok(names.includes('use-gl=angle'));
-  assert.ok(names.includes('ignore-gpu-blocklist'));
-  assert.ok(names.includes('disable-gpu-sandbox'));
-});
-
 test('applyGpuMode: argv に GPU スイッチがあれば介入しない（null 返し・appendSwitch 未呼び出し）', () => {
   const called = [];
   const fakeApp = { commandLine: { appendSwitch: (...a) => called.push(a) } };
@@ -122,11 +100,4 @@ test('applyGpuMode: argv に GPU スイッチがあれば介入しない（null 
   const mode = applyGpuMode(fakeApp, { argv: ['electron', '.', '--use-gl=angle'], env, platform: 'linux' });
   assert.equal(mode, null);
   assert.deepEqual(called, []);
-});
-
-test('applyGpuMode: 既存の GALLIUM_DRIVER は上書きしない', () => {
-  const fakeApp = { commandLine: { appendSwitch: () => {} } };
-  const env = { VK_TERMINALS_GPU: 'hardware', GALLIUM_DRIVER: 'zink' };
-  applyGpuMode(fakeApp, { argv: ['electron', '.'], env, platform: 'linux' });
-  assert.equal(env.GALLIUM_DRIVER, 'zink');
 });

@@ -13,7 +13,7 @@
 // そちらを尊重してこのモジュールは介入しない（二重指定による競合を避ける）。
 
 /** GPU 起動モードの取りうる値。 */
-const GPU_MODES = ['off', 'hardware', 'default'];
+const GPU_MODES = ['off', 'default'];
 
 /**
  * GPU 起動モードのプラットフォーム既定値を返す。
@@ -34,7 +34,7 @@ function defaultGpuMode(platform = process.platform) {
  * @param {NodeJS.ProcessEnv} [env]
  * @param {string} [platform]
  * @param {string} [configMode] config.json 由来の gpu 値（任意）
- * @returns {'off'|'hardware'|'default'}
+ * @returns {'off'|'default'}
  */
 function resolveGpuMode(env = process.env, platform = process.platform, configMode) {
   const fromEnv = String(env.VK_TERMINALS_GPU ?? '').trim().toLowerCase();
@@ -62,23 +62,18 @@ function hasExplicitGpuSwitch(argv = process.argv) {
  * switches は [name] または [name, value] の配列で返す（appendSwitch にそのまま渡せる形）。
  *  - 'off'      : GPU を無効化してエラーログを抑制する（描画はソフトウェア。
  *                 ターミナル用途では実害なし）。
- *  - 'hardware' : ANGLE(GL) 経由で HW OpenGL を使う。WSLg では Mesa の d3d12 ドライバ
- *                 （GALLIUM_DRIVER=d3d12）経由で Windows 側 GPU に届く。/dev/dxg への
- *                 アクセスのため GPU サンドボックスを外し、GPU ブロックリストを無視する
- *                 （その分 GPU プロセスの保護は下がる）。Vulkan は HW ICD が無いため対象外。
  *  - 'default'  : スイッチ・env を足さず Chromium 任せ（macOS 既定 / 明示的に素の挙動）。
- * @param {string} mode 'off'|'hardware'|'default'
+ *
+ * ※ WSLg での HW アクセラ（HW OpenGL / Vulkan）は対応しない。Vulkan は HW ICD
+ *    （dzn 等）が WSLg に無く、OpenGL も体感差が無いうえ Mesa/Dawn 由来の警告が出るため。
+ *    env フィールドは将来のモード拡張用に残してある（現状はどのモードも空）。
+ * @param {string} mode 'off'|'default'
  * @returns {{ switches: string[][], env: Record<string,string> }}
  */
 function gpuSwitches(mode) {
   switch (mode) {
     case 'off':
       return { switches: [['disable-gpu'], ['disable-software-rasterizer']], env: {} };
-    case 'hardware':
-      return {
-        switches: [['use-gl', 'angle'], ['use-angle', 'gl'], ['ignore-gpu-blocklist'], ['disable-gpu-sandbox']],
-        env: { GALLIUM_DRIVER: 'd3d12' },
-      };
     case 'default':
     default:
       return { switches: [], env: {} };

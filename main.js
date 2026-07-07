@@ -17,7 +17,7 @@ const { createUsageTracker, createTtlMemo } = require('./usageTracker');
 const { createOauthUsageProvider } = require('./oauthUsage');
 // GUI(Electron) の GPU 起動モード。WSLg 等の Linux では Chromium の GPU 初期化が
 // 失敗して起動時にエラーが多発するため、既定で GPU を無効化する。モードは
-// VK_TERMINALS_GPU（環境変数）または config.json の gpu で off/hardware/default を
+// VK_TERMINALS_GPU（環境変数）または config.json の gpu で off/default を
 // 選べる（優先順位は env > config > プラットフォーム既定）。呼び出し側（VK Orchestrator
 // 等）が argv で GPU スイッチを明示している場合は介入しない。詳細は utils/gpu.js を参照。
 const { applyGpuMode } = require('./utils/gpu');
@@ -351,10 +351,9 @@ function builtinSettingsDescriptor() {
           { key: 'showUsage',      label: 'トークン使用量を表示',   type: 'boolean', default: true, help: 'Claude の利用状況（セッション% / 週間制限%）を設定モーダルの「Claude使用状況」タブ・モバイルページに表示します。' },
           // GPU 起動モード（utils/gpu.js）。環境変数 VK_TERMINALS_GPU を優先し、未指定時にこの値を使う。
           // 空（自動）はプラットフォーム既定（macOS=default / それ以外=off）。反映には再起動が必要（note に記載）。
-          { key: 'gpu', label: 'GPU 起動モード', type: 'select', emptyToNull: true, default: '', help: 'GUI(Electron) の GPU 初期化方法。WSLg 等ではエラー抑制のため既定で無効化されます。hardware は実験的（GPU サンドボックス無効化・ブロックリスト無視を伴う）。環境変数 VK_TERMINALS_GPU 指定時はそちらが優先されます。', options: [
+          { key: 'gpu', label: 'GPU 起動モード', type: 'select', emptyToNull: true, default: '', help: 'GUI(Electron) の GPU 初期化方法。WSLg 等ではエラー抑制のため既定で無効化されます。環境変数 VK_TERMINALS_GPU 指定時はそちらが優先されます。', options: [
             { value: '',         label: '自動（プラットフォーム既定）' },
             { value: 'off',      label: 'GPU 無効（エラー抑制・推奨）' },
-            { value: 'hardware', label: 'HW アクセラ（WSLg 実験的）' },
             { value: 'default',  label: 'Chromium 任せ' },
           ] },
           // issue #70 でエージェントルーム（β）を一旦無効化するため設定項目を非表示にする。

@@ -86,6 +86,8 @@ test('gpuSwitches: hardware は ANGLE(GL)＋サンドボックス無効＋ブロ
   assert.ok(names.includes('use-angle=gl'));
   assert.ok(names.includes('ignore-gpu-blocklist'));
   assert.ok(names.includes('disable-gpu-sandbox'));
+  // 未対応の Vulkan / WebGPU 探索を無効化し WSLg の警告を抑制する
+  assert.ok(names.includes('disable-features=Vulkan,WebGPU'));
   assert.equal(env.GALLIUM_DRIVER, 'd3d12');
 });
 

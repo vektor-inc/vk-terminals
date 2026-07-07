@@ -1,5 +1,7 @@
 # Changelog
 
+- [ その他 ] WSLg で `off` でも出る Dawn(WebGPU) 由来の `vkCreateInstance: Found no drivers` / `Failed to load libEGL.so` 警告が無害である旨の説明を README に追記
+
 ## 1.8.0
 
 - [ 機能追加 ] GUI の GPU 起動モード（`off` / `default`）を環境変数 `VK_TERMINALS_GPU`・`config.json` の `gpu`・設定パネルのいずれからも選択可能に（既定は非 macOS で `off`＝エラー抑制）

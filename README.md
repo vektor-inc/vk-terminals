@@ -50,6 +50,27 @@ VK Terminals は Electron アプリのため、macOS 以外（WSLg などの Lin
 
 > WSLg での HW アクセラ（HW OpenGL / Vulkan）は対応しません。Vulkan は HW ICD（dzn 等）が WSLg に無く、OpenGL も体感差が無いうえ Mesa/Dawn 由来の警告が出るためです。
 
+#### WSLg で出る `vkCreateInstance` / `libEGL.so` 警告について（無害）
+
+`off` で起動しても、claude 起動後（起動から数分後のこともある）に次のような警告が stderr に出ることがあります。
+
+```
+Warning: loader_get_json: Failed to open JSON file lvp_icd.json
+（他の *_icd.json も同様）
+Warning: vkCreateInstance: Found no drivers!
+Warning: vkCreateInstance failed with VK_ERROR_INCOMPATIBLE_DRIVER
+    at ... third_party/dawn/src/dawn/native/vulkan/BackendVk.cpp ...
+Warning: Failed to load libEGL.so
+    at DiscoverPhysicalDevices (../../third_party/dawn/src/dawn/native/opengl/BackendGL.cpp:74)
+```
+
+これは Chromium がバックグラウンドで行う GPU 情報収集で、**WebGPU 実装の Dawn が Vulkan / OpenGL アダプタを探索**した際のログです。WSLg では次の理由で探索に失敗しますが、**いずれも完全に無害**で、描画はソフトウェアにフォールバックしてアプリは正常動作します（`--disable-gpu` とは別経路のため `off` でも出ます）。
+
+- **Vulkan**: ICD マニフェスト（`/usr/share/vulkan/icd.d/*.json`）や実ドライバ（例: lavapipe の `libvulkan_lvp.so`）自体は存在するが、サンドボックス化された GPU プロセスからは読めず「ドライバ無し」となる。
+- **OpenGL**: Dawn が `libEGL.so`（バージョン無し）を `dlopen` するが、WSLg には `libEGL.so.1` しか無く symlink が無いため失敗する。
+
+このアプリは WebGPU を使わないため実害はありません。`VK_TERMINALS_GPU`・`config.json`・設定パネルのどのモードでも、また `--disable-features=Vulkan,WebGPU` 等の Chromium フラグでもこのバックグラウンド探索は止められない（この Electron/Chromium バージョンの挙動）ため、**この警告は無視して問題ありません**。
+
 ```bash
 VK_TERMINALS_GPU=off npm start
 ```

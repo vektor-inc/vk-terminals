@@ -349,6 +349,14 @@ function builtinSettingsDescriptor() {
           // showUsage（issue #69）は opt-out（既定 ON）。default:true で「未設定 boolean が
           // 保存時に false になる」問題を避ける（settings:describe / settings:save が default 尊重）。
           { key: 'showUsage',      label: 'トークン使用量を表示',   type: 'boolean', default: true, help: 'Claude の利用状況（セッション% / 週間制限%）を設定モーダルの「Claude使用状況」タブ・モバイルページに表示します。' },
+          // GPU 起動モード（utils/gpu.js）。環境変数 VK_TERMINALS_GPU を優先し、未指定時にこの値を使う。
+          // 空（自動）はプラットフォーム既定（macOS=default / それ以外=off）。反映には再起動が必要（note に記載）。
+          { key: 'gpu', label: 'GPU 起動モード', type: 'select', emptyToNull: true, default: '', help: 'GUI(Electron) の GPU 初期化方法。WSLg 等ではエラー抑制のため既定で無効化されます。hardware は実験的（GPU サンドボックス無効化・ブロックリスト無視を伴う）。環境変数 VK_TERMINALS_GPU 指定時はそちらが優先されます。', options: [
+            { value: '',         label: '自動（プラットフォーム既定）' },
+            { value: 'off',      label: 'GPU 無効（エラー抑制・推奨）' },
+            { value: 'hardware', label: 'HW アクセラ（WSLg 実験的）' },
+            { value: 'default',  label: 'Chromium 任せ' },
+          ] },
           // issue #70 でエージェントルーム（β）を一旦無効化するため設定項目を非表示にする。
           // 復帰時は下記コメントを解除する。
           // { key: 'agentroom',      label: 'エージェントルーム（β）表示', type: 'boolean' },

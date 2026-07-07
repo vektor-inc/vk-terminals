@@ -1,6 +1,7 @@
 # Changelog
 
 - [ 不具合修正 ] Claude使用状況の公式表示が一時的な取得失敗のたびにトークン集計表示へ切り替わり不安定になる問題を修正（直近の公式値を一定時間保持してフォールバックへの頻繁な切替を防止）（[vektor-inc/vk-orchestrator#31](https://github.com/vektor-inc/vk-orchestrator/issues/31)）
+- [ 不具合修正 ] postinstall が bash 前提のシェル構文だったため Windows で `node-pty` の自動ビルドが失敗する不具合を修正（Node スクリプトに切り出し OS ごとに分岐）（[#76](https://github.com/vektor-inc/vk-terminals/issues/76)）
 
 ## 1.8.1
 

@@ -135,7 +135,7 @@ macOS 前提の部分があるため、まっさらな Windows 環境でセッ�
 - `node-pty` のネイティブビルドに必要な C++ ビルドツール
   - [Visual Studio Build Tools](https://visualstudio.microsoft.com/ja/downloads/)（「C++ によるデスクトップ開発」ワークロード）
   - もしくは `npm install -g windows-build-tools`（環境によっては非推奨）
-- `npm install` 後、ビルドが必要な場合は `npx electron-rebuild -f -w node-pty` を実行
+- `npm install` 時に `node-pty` のビルド（`electron-rebuild`）が postinstall で自動実行されます。失敗した場合は `npx electron-rebuild -f -w node-pty` を手動で実行してください
 
 ### 2. `claude` コマンドの用意
 

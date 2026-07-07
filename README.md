@@ -151,6 +151,8 @@ Windows では各ペインのデフォルトシェルとして `%COMSPEC%`（通
 - `config.json` の `additionalPanes[].cwd` に Windows パスを書く場合、JSON 文字列内の `\` はエスケープが必要です（例: `"C:\\Users\\you\\project"`）。エスケープ不要な `/` 区切り（例: `"C:/Users/you/project"`）でも Node.js 上では問題なく解決されます。
 - ユーザー名やインストール先にスペースを含むパス（例: `C:\Users\First Last\...`）は、コマンドラインから直接実行するツールやシムスクリプトで引用符の扱いが原因で正しく解決されないことがあります（実例: Volta の `.cmd` シムがスペース入りパスで壊れるケース）。PATH に追加するディレクトリや実行ファイルのパスにスペースが含まれる場合は注意してください。
 - ユーザー設定ファイルの探索先 `~/.vk-terminals/config.json` は、Windows では `os.homedir()`（`%USERPROFILE%`）配下、つまり `%USERPROFILE%\.vk-terminals\config.json` に読み替えられます。
+- `cwd`（`additionalPanes[].cwd` や HTTP API `/api/new-pane` の `cwd`）は必ず **Windows ネイティブ形式**（`C:\Users\you\project` または `C:/Users/you/project`）で指定してください。`node-pty` 内部で Node.js の `path.resolve()` を通すため、Git Bash / WSL 由来の POSIX 形式パス（`/c/Users/you/project` など）を渡すとドライブレターが正しく解決されず、意図しないディレクトリが開かれます。
+- リポジトリ自体は `C:\` 以外のドライブ（例: `D:\dev\vk-terminals`）に置いても問題なく動作します。ただし `C:\Program Files\...` のような管理者権限が必要なディレクトリや、OneDrive 同期対象フォルダ（既定の `ドキュメント` / `デスクトップ` が同期対象になっている場合あり）に置くと、`npm install` 時のネイティブビルド（`node-pty`）が権限エラーやファイルロックで失敗することがあります。`C:\dev\...` のような同期対象外の短いパスを推奨します。
 
 ## 使い方
 

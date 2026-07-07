@@ -1681,6 +1681,12 @@ function renderUsageView(container, usage) {
     if (usage.weekly) {
       container.appendChild(buildOauthUsageSection('週間制限（すべてのモデル）', usage.weekly, 'datetime'));
     }
+    if (usage.stale === true) {
+      const note = document.createElement('div');
+      note.className = 'usage-note';
+      note.textContent = '直近に取得した値を表示しています（最新の取得に一時的に失敗しました）';
+      container.appendChild(note);
+    }
     return;
   }
   // フォールバック（トランスクリプト集計）

@@ -39,6 +39,9 @@ const USAGE_API_URL = 'https://api.anthropic.com/api/oauth/usage';
 const FETCH_TIMEOUT_MS = 8000;    // API 応答待ちの上限（仕様: 5〜10 秒）
 const KEYCHAIN_TIMEOUT_MS = 5000; // security コマンドの応答待ち上限
 const USAGE_TTL_MS = 60 * 1000;   // main 側キャッシュ TTL（API 問い合わせの抑制）
+// 公式取得が一時失敗しても、直近成功値をこの時間だけ出し続けて
+// トランスクリプト集計への切替（パタパタ）を防ぐ。
+const STICKY_MAX_MS = 15 * 60 * 1000;
 
 // ─── 純粋関数コア（node --test 対象）────────────────────────────────────────────
 
@@ -156,6 +159,22 @@ function parseUsageResponse(json, nowMs) {
   return { source: 'oauth', session, weekly, fetchedAtMs: nowMs };
 }
 
+/**
+ * 直近成功した公式 usage スナップショットを表示継続してよいか判定する（純粋）。
+ * source: 'oauth' かつ fetchedAtMs を持つ値だけを対象にし、未来時刻や期限超過は使わない。
+ * @param {*} snapshot 直近成功した正規化済み usage スナップショット
+ * @param {number} nowMs 現在時刻（epoch ms）
+ * @param {number} maxMs スティッキー表示を許容する最大時間（ms）
+ * @returns {boolean}
+ */
+function isStickyUsable(snapshot, nowMs, maxMs) {
+  if (!snapshot || typeof snapshot !== 'object' || snapshot.source !== 'oauth') return false;
+  if (!Number.isFinite(snapshot.fetchedAtMs)) return false;
+  if (!Number.isFinite(nowMs) || !Number.isFinite(maxMs)) return false;
+  const elapsed = nowMs - snapshot.fetchedAtMs;
+  return elapsed >= 0 && elapsed <= maxMs;
+}
+
 // ─── IO 層（main プロセス専用・トークンはこの層の外に出さない）──────────────────
 
 /**
@@ -249,17 +268,33 @@ async function loadUsageSnapshot() {
  * Keychain / API への問い合わせを抑制する。取得失敗（null）も TTL の間はキャッシュし、
  * 失敗のたびに Keychain へアクセスして許可ダイアログを乱発しないようにする。
  * main プロセスから 1 個だけ生成して使う。
- * @param {{ ttlMs?: number, clock?: () => number, load?: () => Promise<any> }} [options]
+ * @param {{ ttlMs?: number, stickyMaxMs?: number, clock?: () => number, load?: () => Promise<any> }} [options]
  * @returns {{ get: () => Promise<ReturnType<typeof parseUsageResponse>> }}
  */
 function createOauthUsageProvider(options = {}) {
   const ttlMs = options.ttlMs != null ? options.ttlMs : USAGE_TTL_MS;
+  const stickyMaxMs = options.stickyMaxMs != null ? options.stickyMaxMs : STICKY_MAX_MS;
   const clock = options.clock || Date.now;
   const load = typeof options.load === 'function' ? options.load : loadUsageSnapshot;
+  let lastGood = null;
+  // memo は API / Keychain 問い合わせを 60s に抑えるスロットル。
   // createTtlMemo は Promise をそのままメモ化する。同時呼び出しは同じ Promise を共有し、
   // reject は load 側で握りつぶして null 解決にしているため rejection は漏れない。
   const memo = createTtlMemo(() => Promise.resolve(load()).catch(() => null), ttlMs, clock);
-  return { get: () => memo() };
+  return {
+    get: async () => {
+      const fresh = await memo();
+      if (fresh) {
+        lastGood = fresh;
+        return fresh;
+      }
+      // lastGood は表示安定化用の直近成功スナップショット。
+      if (isStickyUsable(lastGood, clock(), stickyMaxMs)) {
+        return { ...lastGood, stale: true };
+      }
+      return null;
+    },
+  };
 }
 
 module.exports = {
@@ -269,6 +304,7 @@ module.exports = {
   normalizePercent,
   parseResetAt,
   parseUsageResponse,
+  isStickyUsable,
   // IO 層
   // NOTE: readCredentialsFileRaw は refreshToken を含む生 JSON を返すため export しない
   //       （モジュール内部専用。トークンをこのモジュールの外に出さない設計の徹底）。
@@ -276,5 +312,6 @@ module.exports = {
   createOauthUsageProvider,
   // 定数
   USAGE_TTL_MS,
+  STICKY_MAX_MS,
   FETCH_TIMEOUT_MS,
 };

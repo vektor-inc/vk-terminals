@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 不具合修正 ] Claude使用状況の公式表示が一時的な取得失敗のたびにトークン集計表示へ切り替わり不安定になる問題を修正（直近の公式値を一定時間保持してフォールバックへの頻繁な切替を防止）（[vektor-inc/vk-orchestrator#31](https://github.com/vektor-inc/vk-orchestrator/issues/31)）
+
 ## 1.8.1
 
 - [ その他 ] WSLg で `off` でも出る Dawn(WebGPU) 由来の `vkCreateInstance: Found no drivers` / `Failed to load libEGL.so` 警告が無害である旨の説明を README に追記

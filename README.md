@@ -10,7 +10,7 @@
 ## 必要環境
 
 - Node.js 18 以上
-- macOS（`node-pty` のビルドが必要）
+- macOS / Windows（`node-pty` のネイティブビルドが必要。Windows でのセットアップは[後述](#windows-での起動)）
 
 ## セットアップ
 
@@ -37,6 +37,124 @@ electron . --no-claude
 設定ファイルの `additionalPanes` 各エントリに `noClaude: true` を指定すると、そのペインだけ素のシェルとして開けます（CLI フラグ未指定時の挙動）。
 
 HTTP API（`POST /api/new-pane`）でも `noClaude: true` を指定可能です（後述）。
+
+### GPU 起動モード（`VK_TERMINALS_GPU`）
+
+VK Terminals は Electron アプリのため、macOS 以外（WSLg などの Linux）では Chromium の GPU 初期化が失敗し、起動時に `Exiting GPU process` / `kTransientFailure` などのエラーログが大量に出ます（利用可能な Vulkan ICD がソフトウェア実装のみで SwiftShader へフォールバックするため）。環境変数 `VK_TERMINALS_GPU` で挙動を選べます。
+
+| 値 | 挙動 |
+|---|---|
+| 未設定（自動） | macOS は通常起動、それ以外は `off` 相当 |
+| `off` | GPU を無効化してエラーログを抑制（描画はソフトウェア。ターミナル用途で実害なし） |
+| `default` | フラグを足さず Chromium 任せ（元の挙動。macOS 以外では GPU 初期化エラーが出る場合あり） |
+
+> WSLg での HW アクセラ（HW OpenGL / Vulkan）は対応しません。Vulkan は HW ICD（dzn 等）が WSLg に無く、OpenGL も体感差が無いうえ Mesa/Dawn 由来の警告が出るためです。
+
+```bash
+VK_TERMINALS_GPU=off npm start
+```
+
+`config.json` の `gpu` キーでも同じ値を指定できます（永続設定向け）。
+
+```json
+{ "gpu": "off" }
+```
+
+設定パネル（歯車 → 「設定」タブ → 「GPU 起動モード」）からも選択できます（保存後の再起動で反映）。
+
+モードの優先順位は **環境変数 `VK_TERMINALS_GPU` > `config.json` の `gpu`（＝設定パネル） > プラットフォーム既定** です（環境変数がその場の上書きとして config を上回ります）。
+
+> `electron . --disable-gpu` のように GPU 関連スイッチを直接指定して起動した場合は、そちらを尊重して `VK_TERMINALS_GPU` / `config.json` の自動適用は行いません（呼び出し側の指定を優先。VK Orchestrator 経由の起動もこの経路）。
+
+## WSLg での起動
+
+Windows 上の WSL2（WSLg）でも動作します。GUI が Windows 側にそのまま表示されます。
+
+### 1. 前提パッケージ
+
+WSL 側（Ubuntu 等）に以下が必要です。
+
+```bash
+sudo apt update
+sudo apt install -y build-essential python3
+```
+
+`node-pty` はネイティブモジュールのため、`npm install` 時に自動でビルドされます（上記ビルドツールが前提）。
+
+### 2. `claude` コマンドの用意
+
+WSL 側のシェルに `claude`（Claude Code CLI）をインストールしてください。Windows 側にインストールしたものは共有されません。
+
+```bash
+npm install -g @anthropic-ai/claude-code
+```
+
+### 3. 起動
+
+```bash
+npm start
+```
+
+既定（`VK_TERMINALS_GPU` 未設定）では GPU を無効化して起動するため、`Exiting GPU process` / `kTransientFailure` / `VK_ERROR_INCOMPATIBLE_DRIVER` などのエラーログは出ません（詳細は[GPU 起動モード](#gpu-起動モードvk_terminals_gpu)を参照）。
+
+起動後、ログに `[vk-terminals] API server listening on http://127.0.0.1:13847` が出ていれば正常です。以下で疎通確認できます。
+
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:13847/
+# => 200
+```
+
+## Windows での起動
+
+macOS 前提の部分があるため、まっさらな Windows 環境でセットアップする場合は以下を確認してください。
+
+### 1. 前提ツール
+
+- Node.js 18 以上（[Volta](https://volta.sh/) や [nvm-windows](https://github.com/coreybutler/nvm-windows) 経由でも可）
+- `node-pty` のネイティブビルドに必要な C++ ビルドツール
+  - [Visual Studio Build Tools](https://visualstudio.microsoft.com/ja/downloads/)（「C++ によるデスクトップ開発」ワークロード）
+  - もしくは `npm install -g windows-build-tools`（環境によっては非推奨）
+- `npm install` 後、ビルドが必要な場合は `npx electron-rebuild -f -w node-pty` を実行
+
+### 2. `claude` コマンドの用意
+
+起動時に各ペインで自動実行される `claude` コマンド（Claude Code CLI）が必要です。
+
+```powershell
+npm install -g @anthropic-ai/claude-code
+```
+
+インストール後に `claude` が見つからない場合は、PATH の反映漏れが原因のことが多いです。
+
+- **PowerShell / コマンドプロンプトを開き直しても `claude` が見つからない場合**：VSCode などのエディタ内蔵ターミナルから `npm install -g` した場合、そのプロセスツリーは起動時点の古い PATH を引き継いだままのことがあります。**VSCode やターミナルアプリ自体を再起動**すると解消します。
+- Volta 環境でユーザー名にスペースが含まれる場合、Volta が生成する `.cmd` シムが正しく動かないことがあります。その場合は `volta list all` で実体パッケージの格納先を確認し、`bin/claude.exe` を直接 PATH に追加してください。
+
+### 3. VSCode 統合ターミナルから `npm start` する場合の注意
+
+VSCode 自体が Electron 製アプリであるため、その内蔵ターミナルには `ELECTRON_RUN_AS_NODE=1` が環境変数として設定されています。この変数を継承したまま `npm start`（内部的に `electron .`）を実行すると、Electron がプレーンな Node.js として起動してしまい `TypeError: Cannot read properties of undefined (reading 'whenReady')` で失敗します。
+
+回避策：
+
+```powershell
+Remove-Item Env:\ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
+npm start
+```
+
+もしくは VSCode ではなく通常の PowerShell / コマンドプロンプトから起動してください。
+
+### 4. デフォルトシェル・作業ディレクトリ
+
+Windows では各ペインのデフォルトシェルとして `%COMSPEC%`（通常 `cmd.exe`）または `powershell.exe` が、デフォルト作業ディレクトリとして `%USERPROFILE%` が使われます（`SHELL` / `HOME` 環境変数が設定されていればそちらを優先）。
+
+### 5. パス指定の注意点
+
+- `config.json` の `additionalPanes[].cwd` に Windows パスを書く場合、JSON 文字列内の `\` はエスケープが必要です（例: `"C:\\Users\\you\\project"`）。エスケープ不要な `/` 区切り（例: `"C:/Users/you/project"`）でも Node.js 上では問題なく解決されます。
+- ユーザー名やインストール先にスペースを含むパス（例: `C:\Users\First Last\...`）は、コマンドラインから直接実行するツールやシムスクリプトで引用符の扱いが原因で正しく解決されないことがあります（実例: Volta の `.cmd` シムがスペース入りパスで壊れるケース）。PATH に追加するディレクトリや実行ファイルのパスにスペースが含まれる場合は注意してください。
+- ユーザー設定ファイルの探索先 `~/.vk-terminals/config.json` は、Windows では `os.homedir()`（`%USERPROFILE%`）配下、つまり `%USERPROFILE%\.vk-terminals\config.json` に読み替えられます。
+- `cwd`（`additionalPanes[].cwd` や HTTP API `/api/new-pane` の `cwd`）は必ず **Windows ネイティブ形式**（`C:\Users\you\project` または `C:/Users/you/project`）で指定してください。`node-pty` 内部で Node.js の `path.resolve()` を通すため、Git Bash / WSL 由来の POSIX 形式パス（`/c/Users/you/project` など）を渡すとドライブレターが正しく解決されず、意図しないディレクトリが開かれます。
+- リポジトリ自体は `C:\` 以外のドライブ（例: `D:\dev\vk-terminals`）に置いても問題なく動作します。ただし `C:\Program Files\...` のような管理者権限が必要なディレクトリや、OneDrive 同期対象フォルダ（既定の `ドキュメント` / `デスクトップ` が同期対象になっている場合あり）に置くと、`npm install` 時のネイティブビルド（`node-pty`）が権限エラーやファイルロックで失敗することがあります。`C:\dev\...` のような同期対象外の短いパスを推奨します。
+- リポジトリを配置するディレクトリ自体にスペースが含まれる場合（例: `C:\Users\Taro Yamada\Documents\vk-terminals`）、`node-pty` の `node-gyp` 経由のネイティブビルドがパス中のスペースが原因で失敗することがあります（`npm install` / `electron-rebuild` がビルドツールへの引数展開でパスを分割してしまうケース）。ビルドエラーが出た場合は、まずスペースを含まないパス（例: `C:\dev\vk-terminals`）に配置し直して切り分けてください。
+- （セキュリティ向け補足）Windows は既定で、実行ファイル名の解決時に **カレントディレクトリを PATH より先に検索**します。vk-terminals の各ペインは `cwd` を作業ディレクトリとしてシェルを起動するため、信頼できないリポジトリ（`cwd` に指定したフォルダ）に `claude.exe` など正規コマンドと同名の実行ファイルが紛れ込んでいると、そちらが誤って実行される恐れがあります。気になる場合は環境変数 `NoDefaultCurrentDirectoryInExePath=1` を設定すると、カレントディレクトリ検索を無効化し PATH のみから解決されるようになります（`setx NoDefaultCurrentDirectoryInExePath 1` 等）。
 
 ## 使い方
 

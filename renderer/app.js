@@ -1763,6 +1763,23 @@ function renderSettingsField(f, value, id) {
     </div>`;
   }
 
+  if (f.type === 'select') {
+    // 許可された値だけを選べる制約付きピッカー。f.options は {value,label} の配列。
+    const cur = value === null || value === undefined ? '' : String(value);
+    const opts = (Array.isArray(f.options) ? f.options : [])
+      .map((o) => {
+        const ov = escAttr(String(o.value ?? ''));
+        const ol = escText(String(o.label ?? o.value ?? ''));
+        const sel = String(o.value ?? '') === cur ? ' selected' : '';
+        return `<option value="${ov}"${sel}>${ol}</option>`;
+      })
+      .join('');
+    return `<div class="settings-row">
+      <label class="settings-label" for="${id}">${label}</label>${help}
+      <select id="${id}">${opts}</select>
+    </div>`;
+  }
+
   const inputType = f.type === 'number' ? 'number' : 'text';
   const ph = f.placeholder ? ` placeholder="${escAttr(f.placeholder)}"` : '';
   return `<div class="settings-row">

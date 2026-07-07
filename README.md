@@ -46,7 +46,7 @@ VK Terminals は Electron アプリのため、macOS 以外（WSLg などの Lin
 |---|---|
 | 未設定（自動） | macOS は通常起動、それ以外は `off` 相当 |
 | `off` | GPU を無効化してエラーログを抑制（描画はソフトウェア。ターミナル用途で実害なし） |
-| `hardware` | HW OpenGL を使う（WSLg では Mesa の d3d12 ドライバ経由で Windows 側 GPU に届く）。⚠ `/dev/dxg` アクセスのため **GPU サンドボックスを無効化**し **GPU ブロックリストを無視**するため保護が下がる。Vulkan は HW ICD が無いため対象外。あわせて未対応の Vulkan / WebGPU 探索を無効化し WSLg の警告（asahi ICD / Dawn robustness）を抑制 |
+| `hardware` | HW OpenGL を使う（WSLg では Mesa の d3d12 ドライバ経由で Windows 側 GPU に届く）。⚠ `/dev/dxg` アクセスのため **GPU サンドボックスを無効化**し **GPU ブロックリストを無視**するため保護が下がる。Vulkan は HW ICD が無いため対象外 |
 | `default` | フラグを足さず Chromium 任せ（元の挙動） |
 
 ```bash

@@ -66,10 +66,6 @@ function hasExplicitGpuSwitch(argv = process.argv) {
  *                 （GALLIUM_DRIVER=d3d12）経由で Windows 側 GPU に届く。/dev/dxg への
  *                 アクセスのため GPU サンドボックスを外し、GPU ブロックリストを無視する
  *                 （その分 GPU プロセスの保護は下がる）。Vulkan は HW ICD が無いため対象外。
- *                 加えて Vulkan / WebGPU(Dawn) のバックエンド探索を無効化する
- *                 （WSLg では未対応で、asahi ICD の `VK_ERROR_INCOMPATIBLE_DRIVER` や
- *                 Dawn の `EGL_EXT_create_context_robustness` 警告を吐くだけのため。
- *                 OpenGL 描画には不要）。
  *  - 'default'  : スイッチ・env を足さず Chromium 任せ（macOS 既定 / 明示的に素の挙動）。
  * @param {string} mode 'off'|'hardware'|'default'
  * @returns {{ switches: string[][], env: Record<string,string> }}
@@ -80,13 +76,7 @@ function gpuSwitches(mode) {
       return { switches: [['disable-gpu'], ['disable-software-rasterizer']], env: {} };
     case 'hardware':
       return {
-        switches: [
-          ['use-gl', 'angle'],
-          ['use-angle', 'gl'],
-          ['ignore-gpu-blocklist'],
-          ['disable-gpu-sandbox'],
-          ['disable-features', 'Vulkan,WebGPU'],
-        ],
+        switches: [['use-gl', 'angle'], ['use-angle', 'gl'], ['ignore-gpu-blocklist'], ['disable-gpu-sandbox']],
         env: { GALLIUM_DRIVER: 'd3d12' },
       };
     case 'default':

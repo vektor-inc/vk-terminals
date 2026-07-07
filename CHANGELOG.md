@@ -1,5 +1,7 @@
 # Changelog
 
+## 1.8.1
+
 - [ その他 ] WSLg で `off` でも出る Dawn(WebGPU) 由来の `vkCreateInstance: Found no drivers` / `Failed to load libEGL.so` 警告が無害である旨の説明を README に追記
 
 ## 1.8.0

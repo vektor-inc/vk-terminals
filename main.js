@@ -534,8 +534,8 @@ ipcMain.handle('settings:save', (event, incoming) => {
 
 ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
   const id = String(nextId++);
-  const shell = process.env.SHELL || '/bin/zsh';
-  const resolvedCwd = cwd || process.env.HOME || '/tmp';
+  const shell = process.env.SHELL || (process.platform === 'win32' ? (process.env.COMSPEC || 'powershell.exe') : '/bin/zsh');
+  const resolvedCwd = cwd || process.env.HOME || process.env.USERPROFILE || os.tmpdir();
 
   // `options.noClaude` が明示指定されていればそれを優先、未指定なら CLI フラグの値を継承。
   // `noClaude` が true の場合、claude を自動起動せず素のシェルとして開く。

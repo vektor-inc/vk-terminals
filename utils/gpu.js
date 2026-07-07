@@ -27,10 +27,14 @@ function defaultGpuMode(platform = process.platform) {
   return platform === 'darwin' ? 'default' : 'off';
 }
 
+// 未知の GPU モードを警告済みか（プロセス内で一度だけ通知するためのフラグ）。
+let warnedUnknownGpuMode = false;
+
 /**
  * GPU 起動モードを解決する。
  * 優先順位: 環境変数 VK_TERMINALS_GPU > config.json の gpu > プラットフォーム既定。
- * いずれも空文字・未知の値の場合は次の候補へフォールバックする。
+ * いずれも空文字・未知の値の場合は次の候補へフォールバックする。撤去した 'hardware' など
+ * 非空の未知値が来た場合は、挙動変更に気づけるよう一度だけ警告する（起動は止めない）。
  * @param {NodeJS.ProcessEnv} [env]
  * @param {string} [platform]
  * @param {string} [configMode] config.json 由来の gpu 値（任意）
@@ -41,6 +45,15 @@ function resolveGpuMode(env = process.env, platform = process.platform, configMo
   if (GPU_MODES.includes(fromEnv)) return fromEnv;
   const fromConfig = String(configMode ?? '').trim().toLowerCase();
   if (GPU_MODES.includes(fromConfig)) return fromConfig;
+  // 空（＝自動）以外の未知値（例: 旧 'hardware'）は既定にフォールバック。一度だけ警告。
+  const unknown = fromEnv || fromConfig;
+  if (unknown !== '' && !warnedUnknownGpuMode) {
+    warnedUnknownGpuMode = true;
+    console.warn(
+      `[vk-terminals] 未知の GPU モード "${unknown}" は無視し、既定 "${defaultGpuMode(platform)}" を使用します` +
+      `（有効値: ${GPU_MODES.join(' / ')}、空=自動）。`,
+    );
+  }
   return defaultGpuMode(platform);
 }
 

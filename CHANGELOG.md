@@ -1,5 +1,7 @@
 # Changelog
 
+## 1.9.1
+
 - [ 不具合修正 ] vk-terminals を依存として組み込んだ際、npm ホイスティングでネストした node_modules に electron-rebuild が無く postinstall が ENOENT で失敗する不具合を修正（bin 解決を上方探索で堅牢化）（[#82](https://github.com/vektor-inc/vk-terminals/issues/82)）
 
 ## 1.9.0

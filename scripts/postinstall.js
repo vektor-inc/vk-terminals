@@ -34,9 +34,10 @@ function getMacCxxFlagsInclude() {
     return null;
   }
 
-  // 例: MacOSX10.15.sdk, MacOSX14.sdk, MacOSX14.4.sdk など。
+  // 例: MacOSX10.15.sdk, MacOSX14.sdk, MacOSX14.4.sdk, MacOSX26.0.sdk など。
   // 元のシェル実装（`sort -V | tail -1`）に合わせ、バージョン順で最大のものを選ぶ。
-  const sdkPattern = /^MacOSX1[0-9][0-9.]*\.sdk$/;
+  // メジャーバージョンの桁数は固定しない（macOS 26 以降の MacOSX26.sdk 等も拾う）。
+  const sdkPattern = /^MacOSX\d+(?:\.\d+)*\.sdk$/;
   const sdkNames = entries.filter((name) => sdkPattern.test(name));
 
   if (sdkNames.length === 0) {
@@ -113,17 +114,30 @@ function runElectronRebuild(cxxflags) {
   });
 }
 
+/**
+ * spawnSync の結果に spawn 自体の失敗（例: 実行ファイル未検出の ENOENT）が含まれていれば
+ * その内容を出力する。stdio:'inherit' では子プロセスを起動できなかった理由は標準出力に
+ * 現れないため、これを出さないと失敗原因が全く分からないまま再試行・終了に進んでしまう。
+ */
+function logSpawnError(result) {
+  if (result && result.error) {
+    console.error('[postinstall] electron-rebuild の起動に失敗しました:', result.error);
+  }
+}
+
 function main() {
   // macOS のみ、Command Line Tools の libc++ ヘッダを CXXFLAGS に付与して試す。
   // Windows / Linux では最初から追加フラグなしでビルドする。
   const cxxflags = process.platform === 'darwin' ? getMacCxxFlagsInclude() : null;
 
   let result = runElectronRebuild(cxxflags);
+  logSpawnError(result);
 
   // CXXFLAGS 付きでの実行が失敗した場合（未検出時含む）、CXXFLAGS なしで再試行する。
   // 元のシェル実装（`... || electron-rebuild -f -w node-pty`）のフォールバックを踏襲。
   if (result.status !== 0 && cxxflags) {
     result = runElectronRebuild(null);
+    logSpawnError(result);
   }
 
   if (result.status !== 0) {

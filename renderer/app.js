@@ -1988,10 +1988,12 @@ function renderSettingsField(f, value, id) {
   const help = f.help ? `<span class="settings-help">${escText(f.help)}</span>` : '';
 
   if (f.type === 'boolean') {
-    return `<label class="settings-row settings-row-check">
-      <input type="checkbox" id="${id}" ${value ? 'checked' : ''}>
-      <span class="settings-label">${label}</span>${help}
-    </label>`;
+    return `<div class="settings-row settings-row-check">
+      <label class="settings-check">
+        <input type="checkbox" id="${id}" ${value ? 'checked' : ''}>
+        <span class="settings-label">${label}</span>
+      </label>${help}
+    </div>`;
   }
 
   const strVal = value === null || value === undefined

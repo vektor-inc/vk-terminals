@@ -97,11 +97,19 @@ function runElectronRebuild(cxxflags) {
     env.CXXFLAGS = env.CXXFLAGS ? `${cxxflags} ${env.CXXFLAGS}` : cxxflags;
   }
 
-  return spawnSync(bin, ['-f', '-w', 'node-pty'], {
+  // Windows の .cmd は shell 経由でないと直接実行できないため shell:true が必要。
+  const useShell = process.platform === 'win32';
+
+  // shell:true 時、Windows の spawnSync は file/args を単純に空白連結するだけで
+  // クォートしないため、パスにスペースを含みうる実行ファイル側（C:\Users\John Doe\... や
+  // OneDrive 配下など）は自前でダブルクォートで囲む。引数（-f / -w / node-pty）は
+  // スペースを含まないためクォート不要。
+  const command = useShell ? `"${bin}"` : bin;
+
+  return spawnSync(command, ['-f', '-w', 'node-pty'], {
     stdio: 'inherit',
     env,
-    // Windows の .cmd は shell 経由でないと直接実行できないため必要。
-    shell: process.platform === 'win32',
+    shell: useShell,
   });
 }
 

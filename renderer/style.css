@@ -284,7 +284,7 @@ html, body {
   border: 1px solid #21262d;
   border-radius: 6px;
   padding: 8px 12px 12px;
-  margin: 0 0 14px;
+  margin: 0 0 18px;
 }
 .settings-group legend {
   padding: 0 6px;
@@ -296,21 +296,23 @@ html, body {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  margin-top: 10px;
+  margin-top: 14px;
 }
 .settings-row:first-of-type { margin-top: 2px; }
 .settings-label {
   color: #c9d1d9;
   font-size: 12px;
   font-weight: 500;
+  white-space: nowrap;
 }
 .settings-help {
-  color: #6e7681;
+  color: #8b949e;
   font-size: 11px;
 }
 .settings-row input[type="text"],
 .settings-row input[type="number"],
 .settings-row input[type="password"],
+.settings-row select,
 .settings-row textarea {
   width: 100%;
   box-sizing: border-box;
@@ -322,21 +324,33 @@ html, body {
   font-size: 12px;
   font-family: inherit;
 }
+.settings-row select {
+  appearance: none;
+  -webkit-appearance: none;
+  color-scheme: dark;
+  padding-right: 28px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M2 4.5l4 4 4-4' fill='none' stroke='%238b949e' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+}
 .settings-row textarea {
   resize: vertical;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 .settings-row input:focus,
+.settings-row select:focus,
 .settings-row textarea:focus {
   outline: none;
   border-color: #58a6ff;
 }
-.settings-row-check {
+.settings-check {
+  display: flex;
   flex-direction: row;
   align-items: center;
   gap: 8px;
+  cursor: pointer;
 }
-.settings-row-check input { -webkit-app-region: no-drag; }
+.settings-check input { -webkit-app-region: no-drag; }
 .settings-pwd {
   display: flex;
   gap: 6px;

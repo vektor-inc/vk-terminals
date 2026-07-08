@@ -161,18 +161,26 @@ function logMissingElectronRebuildBin(searchedPaths) {
   }
 }
 
+const loggedMissingElectronRebuildBins = new WeakSet();
+
+function logMissingElectronRebuildBinOnce(resolvedBin) {
+  if (resolvedBin.found || loggedMissingElectronRebuildBins.has(resolvedBin)) {
+    return;
+  }
+
+  loggedMissingElectronRebuildBins.add(resolvedBin);
+  logMissingElectronRebuildBin(resolvedBin.searchedPaths);
+}
+
 /**
  * electron-rebuild を実行する。CXXFLAGS を追加指定したい場合は cxxflags を渡す。
  * 戻り値は spawnSync の結果（status に終了コードが入る）。
  */
-function runElectronRebuild(cxxflags) {
-  const resolvedBin = resolveElectronRebuildBinDetails();
+function runElectronRebuild(cxxflags, resolvedBin = resolveElectronRebuildBinDetails()) {
   const bin = resolvedBin.bin;
   const env = Object.assign({}, process.env);
 
-  if (!resolvedBin.found) {
-    logMissingElectronRebuildBin(resolvedBin.searchedPaths);
-  }
+  logMissingElectronRebuildBinOnce(resolvedBin);
 
   if (cxxflags) {
     // 既存の CXXFLAGS があれば前置きして温存する（元のシェル実装と同じ挙動）。
@@ -219,14 +227,15 @@ function main() {
   // macOS のみ、Command Line Tools の libc++ ヘッダを CXXFLAGS に付与して試す。
   // Windows / Linux では最初から追加フラグなしでビルドする。
   const cxxflags = process.platform === 'darwin' ? getMacCxxFlagsInclude() : null;
+  const resolvedBin = resolveElectronRebuildBinDetails();
 
-  let result = runElectronRebuild(cxxflags);
+  let result = runElectronRebuild(cxxflags, resolvedBin);
   logSpawnError(result);
 
   // CXXFLAGS 付きでの実行が失敗した場合（未検出時含む）、CXXFLAGS なしで再試行する。
   // 元のシェル実装（`... || electron-rebuild -f -w node-pty`）のフォールバックを踏襲。
   if (result.status !== 0 && cxxflags) {
-    result = runElectronRebuild(null);
+    result = runElectronRebuild(null, resolvedBin);
     logSpawnError(result);
   }
 

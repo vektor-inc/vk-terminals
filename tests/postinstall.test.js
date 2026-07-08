@@ -21,7 +21,7 @@ test('resolveElectronRebuildBin: hoisted electron-rebuild bin を親 node_module
     const packageDir = path.join(appDir, 'node_modules', 'vk-terminals');
     const scriptsDir = path.join(packageDir, 'scripts');
     const hoistedBinDir = path.join(appDir, 'node_modules', '.bin');
-    const binName = process.platform === 'win32' ? 'electron-rebuild.cmd' : 'electron-rebuild';
+    const binName = getElectronRebuildBinName();
     const hoistedBin = path.join(hoistedBinDir, binName);
     const nestedBin = path.join(packageDir, 'node_modules', '.bin', binName);
 

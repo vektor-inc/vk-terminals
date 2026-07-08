@@ -84,18 +84,103 @@ function compareSdkVersions(a, b) {
  * node_modules/.bin 配下の electron-rebuild 実行ファイルの絶対パスを返す。
  * Windows では拡張子 .cmd 付きの wrapper が生成されるため、プラットフォームで拡張子を切り替える。
  */
-function resolveElectronRebuildBin() {
-  const binName = process.platform === 'win32' ? 'electron-rebuild.cmd' : 'electron-rebuild';
-  return path.join(__dirname, '..', 'node_modules', '.bin', binName);
+function getElectronRebuildBinName(platform = process.platform) {
+  return platform === 'win32' ? 'electron-rebuild.cmd' : 'electron-rebuild';
+}
+
+/**
+ * startDir から親方向へ、electron-rebuild の npm bin が置かれうるパスを列挙する。
+ */
+function getElectronRebuildBinCandidates(startDir = __dirname, platform = process.platform) {
+  const binName = getElectronRebuildBinName(platform);
+  const candidates = [];
+  const seen = new Set();
+  let currentDir = path.resolve(startDir);
+
+  const addCandidate = (candidate) => {
+    const normalized = path.normalize(candidate);
+    if (!seen.has(normalized)) {
+      seen.add(normalized);
+      candidates.push(normalized);
+    }
+  };
+
+  while (true) {
+    addCandidate(path.join(currentDir, 'node_modules', '.bin', binName));
+
+    const parentDir = path.dirname(currentDir);
+    if (path.basename(currentDir) === 'node_modules') {
+      addCandidate(path.join(currentDir, '.bin', binName));
+    }
+    if (path.basename(parentDir) === 'node_modules') {
+      addCandidate(path.join(parentDir, '.bin', binName));
+    }
+
+    if (parentDir === currentDir) {
+      break;
+    }
+    currentDir = parentDir;
+  }
+
+  return candidates;
+}
+
+/**
+ * electron-rebuild の解決結果と探索したパスを返す。
+ * 見つからない場合は PATH 解決に委ねるため、binName のみを返す。
+ */
+function resolveElectronRebuildBinDetails(startDir = __dirname, platform = process.platform) {
+  const binName = getElectronRebuildBinName(platform);
+  const searchedPaths = getElectronRebuildBinCandidates(startDir, platform);
+  const foundPath = searchedPaths.find((candidate) => fs.existsSync(candidate));
+
+  if (foundPath) {
+    return {
+      bin: foundPath,
+      found: true,
+      searchedPaths,
+    };
+  }
+
+  return {
+    bin: binName,
+    found: false,
+    searchedPaths,
+  };
+}
+
+function resolveElectronRebuildBin(startDir = __dirname) {
+  return resolveElectronRebuildBinDetails(startDir).bin;
+}
+
+function logMissingElectronRebuildBin(searchedPaths) {
+  console.error('[postinstall] electron-rebuild の npm bin が見つかりませんでした。PATH 上の electron-rebuild にフォールバックします。');
+  console.error('[postinstall] 探索したパス:');
+  for (const searchedPath of searchedPaths) {
+    console.error(`[postinstall] - ${searchedPath}`);
+  }
+}
+
+const loggedMissingElectronRebuildBins = new WeakSet();
+
+function logMissingElectronRebuildBinOnce(resolvedBin) {
+  if (resolvedBin.found || loggedMissingElectronRebuildBins.has(resolvedBin)) {
+    return;
+  }
+
+  loggedMissingElectronRebuildBins.add(resolvedBin);
+  logMissingElectronRebuildBin(resolvedBin.searchedPaths);
 }
 
 /**
  * electron-rebuild を実行する。CXXFLAGS を追加指定したい場合は cxxflags を渡す。
  * 戻り値は spawnSync の結果（status に終了コードが入る）。
  */
-function runElectronRebuild(cxxflags) {
-  const bin = resolveElectronRebuildBin();
+function runElectronRebuild(cxxflags, resolvedBin = resolveElectronRebuildBinDetails()) {
+  const bin = resolvedBin.bin;
   const env = Object.assign({}, process.env);
+
+  logMissingElectronRebuildBinOnce(resolvedBin);
 
   if (cxxflags) {
     // 既存の CXXFLAGS があれば前置きして温存する（元のシェル実装と同じ挙動）。
@@ -142,14 +227,15 @@ function main() {
   // macOS のみ、Command Line Tools の libc++ ヘッダを CXXFLAGS に付与して試す。
   // Windows / Linux では最初から追加フラグなしでビルドする。
   const cxxflags = process.platform === 'darwin' ? getMacCxxFlagsInclude() : null;
+  const resolvedBin = resolveElectronRebuildBinDetails();
 
-  let result = runElectronRebuild(cxxflags);
+  let result = runElectronRebuild(cxxflags, resolvedBin);
   logSpawnError(result);
 
   // CXXFLAGS 付きでの実行が失敗した場合（未検出時含む）、CXXFLAGS なしで再試行する。
   // 元のシェル実装（`... || electron-rebuild -f -w node-pty`）のフォールバックを踏襲。
   if (result.status !== 0 && cxxflags) {
-    result = runElectronRebuild(null);
+    result = runElectronRebuild(null, resolvedBin);
     logSpawnError(result);
   }
 
@@ -158,4 +244,19 @@ function main() {
   }
 }
 
-main();
+if (require.main === module) {
+  main();
+}
+
+module.exports = {
+  compareSdkVersions,
+  getElectronRebuildBinCandidates,
+  getElectronRebuildBinName,
+  getMacCxxFlagsInclude,
+  logMissingElectronRebuildBin,
+  logSpawnError,
+  main,
+  resolveElectronRebuildBin,
+  resolveElectronRebuildBinDetails,
+  runElectronRebuild,
+};

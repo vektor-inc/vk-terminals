@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 不具合修正 ] vk-terminals を依存として組み込んだ際、npm ホイスティングでネストした node_modules に electron-rebuild が無く postinstall が ENOENT で失敗する不具合を修正（bin 解決を上方探索で堅牢化）（[#82](https://github.com/vektor-inc/vk-terminals/issues/82)）
+
 ## 1.9.0
 
 - [ 機能追加 ] Claude Desktop 風のサイドバーメニューを追加。設定項目・config.json の `menuItems`・HTTP API `POST /api/menu` から外部リンクや設定モーダル起動項目を表示可能に（[#80](https://github.com/vektor-inc/vk-terminals/issues/80)）

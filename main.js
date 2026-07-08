@@ -52,7 +52,7 @@ const SEND_ENTER_SPLIT_DELAY_MS = 150;
 let cachedStates = {};  // renderer から受け取った状態キャッシュ
 let httpServer = null;
 
-const MENU_ACTION_TYPES = new Set(['open-settings', 'open-url']);
+const MENU_ACTION_TYPES = new Set(['open-settings', 'open-usage', 'open-url']);
 const MENU_MAX_SECTIONS = 20;
 const MENU_MAX_ITEMS = 50;
 const MENU_MAX_CHILDREN = 20;
@@ -133,6 +133,8 @@ function validateMenuItem(raw, source, depth, seenIds) {
     }
     if (raw.action.type === 'open-settings') {
       item.action = { type: 'open-settings' };
+    } else if (raw.action.type === 'open-usage') {
+      item.action = { type: 'open-usage' };
     } else if (raw.action.type === 'open-url') {
       const r = validateUrlField(raw.action.url, 'action.url');
       if (!r.ok || !r.value) {
@@ -226,6 +228,12 @@ function builtinMenuSection() {
   return {
     source: 'builtin',
     items: [
+      {
+        id: 'usage',
+        label: 'Claude使用量',
+        icon: '📊',
+        action: { type: 'open-usage' },
+      },
       {
         id: 'settings',
         label: '設定',
@@ -549,7 +557,7 @@ function builtinSettingsDescriptor() {
           { key: 'initialCommand', label: '初期コマンド',          type: 'text',    help: '1 ペイン目で claude 起動直後に自動実行させたいコマンドがあれば記入してください。' },
           // showUsage（issue #69）は opt-out（既定 ON）。default:true で「未設定 boolean が
           // 保存時に false になる」問題を避ける（settings:describe / settings:save が default 尊重）。
-          { key: 'showUsage',      label: 'トークン使用量を表示',   type: 'boolean', default: true, help: 'Claude の利用状況（セッション% / 週間制限%）を設定モーダルの「Claude使用状況」タブ・モバイルページに表示します。' },
+          { key: 'showUsage',      label: 'トークン使用量を表示',   type: 'boolean', default: true, help: 'Claude の利用状況（セッション% / 週間制限%）をサイドバーの「Claude使用量」・モバイルページに表示します。' },
           // GPU 起動モード（utils/gpu.js）。環境変数 VK_TERMINALS_GPU を優先し、未指定時にこの値を使う。
           // 空（自動）はプラットフォーム既定（macOS=default / それ以外=off）。反映には再起動が必要（note に記載）。
           { key: 'gpu', label: 'GPU 起動モード', type: 'select', emptyToNull: true, default: '', help: 'GUI(Electron) の GPU 初期化方法。WSLg 等ではエラー抑制のため既定で無効化されます。環境変数 VK_TERMINALS_GPU 指定時はそちらが優先されます。', options: [

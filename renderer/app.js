@@ -528,6 +528,10 @@ function runMenuAction(action) {
     openSettingsModal();
     return;
   }
+  if (action.type === 'open-usage') {
+    openUsageModal();
+    return;
+  }
   if (action.type === 'open-url') {
     openExternalUrlSafe(action.url);
   }
@@ -544,10 +548,11 @@ function createMenuActionElement(item) {
       event.preventDefault();
       runMenuAction(action);
     });
-  } else if (action?.type === 'open-settings') {
+  } else if (action?.type === 'open-settings' || action?.type === 'open-usage') {
     el = document.createElement('button');
     el.className = 'sidebar-menu-button';
     el.type = 'button';
+    el.dataset.menuAction = action.type;
     el.addEventListener('click', () => runMenuAction(action));
   } else {
     el = document.createElement('span');
@@ -622,6 +627,7 @@ function renderSidebarMenu() {
   }
 
   nav.appendChild(inner);
+  applyUsageBadge(); // 再描画で消えた使用率警告ドットを貼り直す
 }
 
 function createSidebarMenu() {
@@ -1738,9 +1744,9 @@ window.addEventListener('resize', debouncedFitAll);
 // ─── 設定パネル（汎用）────────────────────────────────────────────────────────
 // main プロセス（settings:describe / settings:save）経由で、呼び出し側が env
 // VK_TERMINALS_SETTINGS で指定した config ファイルをこの GUI から編集する。
-// issue #73 で歯車ボタンは常時表示になった。使用状況ビューは descriptor の有無に
-// かかわらず開けるため、describe の結果を待たずに click を配線する（describe が
-// 使えない環境ではモーダル側で設定タブを描画しない）。
+// 歯車ボタンは設定モーダル（設定項目のみ）を開く。Claude の使用状況はサイドバーの
+// 「Claude使用量」項目（openUsageModal）へ分離した。describe が使えない環境では
+// モーダル側で「設定項目なし」を表示する。
 function setupSettingsPanel() {
   const btn = document.getElementById('settings-btn');
   if (!btn) return;
@@ -1923,15 +1929,37 @@ function renderUsageView(container, usage) {
 // （80〜90%: アンバー / 90%〜: 赤）。フォールバック（自己ピーク比）は上限比ではないため
 // バッジ対象にしない。ポーリングは 60 秒間隔で main 側 60s TTL キャッシュに相乗りする。
 // 色のみの表現にしないよう、警告レベルに応じて title / aria-label も切り替える（a11y）。
-const USAGE_BADGE_LABELS = {
-  '':     '設定',
-  'warn': '設定（Claude使用状況: 警告）',
-  'crit': '設定（Claude使用状況: 危険）',
+const USAGE_ALERT_LABELS = {
+  '':     '',
+  'warn': 'Claude使用量: 警告（80%超）',
+  'crit': 'Claude使用量: 危険（90%超）',
 };
 
+// 直近の使用率警告レベル（'' / 'warn' / 'crit'）。サイドバーは menu:update で
+// 作り直されるため、レベルはモジュール変数で保持し renderSidebarMenu から貼り直す。
+let usageAlertLevel = '';
+
+// 使用率の警告ドットを ☰ メニューボタン（常時表示）とサイドバーの「Claude使用量」
+// 項目の両方に反映する。サイドバー閉時でも ☰ 側で警告に気付けるようにする。
+function applyUsageBadge() {
+  const level = usageAlertLevel;
+  const menuBtn = document.getElementById('menu-btn');
+  const targets = [];
+  if (menuBtn) targets.push(menuBtn);
+  document.querySelectorAll('[data-menu-action="open-usage"]').forEach((el) => targets.push(el));
+  for (const el of targets) {
+    el.classList.toggle('usage-alert-warn', level === 'warn');
+    el.classList.toggle('usage-alert-crit', level === 'crit');
+  }
+  if (menuBtn) {
+    const extra = USAGE_ALERT_LABELS[level];
+    const label = extra ? `メニュー（${extra}）` : 'メニュー';
+    menuBtn.title = label;
+    menuBtn.setAttribute('aria-label', label);
+  }
+}
+
 function setupUsageBadge() {
-  const btn = document.getElementById('settings-btn');
-  if (!btn) return;
   const refresh = async () => {
     let level = '';
     try {
@@ -1945,11 +1973,8 @@ function setupUsageBadge() {
     } catch (_e) {
       level = ''; // 取得失敗時はバッジを消す（古い警告を残さない）
     }
-    btn.classList.toggle('usage-alert-warn', level === 'warn');
-    btn.classList.toggle('usage-alert-crit', level === 'crit');
-    const label = USAGE_BADGE_LABELS[level] || USAGE_BADGE_LABELS[''];
-    btn.title = label;
-    btn.setAttribute('aria-label', label);
+    usageAlertLevel = level;
+    applyUsageBadge();
   };
   refresh();
   setInterval(refresh, USAGE_POLL_INTERVAL_MS);
@@ -2024,11 +2049,80 @@ function renderSettingsField(f, value, id) {
 //   - 「設定」タブは settings:describe が使えるときだけ描画し、従来どおり保存できる
 //   - 使用状況のポーリングは「Claude使用状況タブ表示中のみ」初回即時＋60秒間隔。
 //     残り時間表示（◯時間◯分後にリセット）は毎秒ライブ再計算する
-async function openSettingsModal() {
-  // 二重オープン防止
-  if (document.querySelector('.settings-overlay')) return;
+// 設定モーダル・使用量モーダルの同時オープンを防ぐ共有ロック。settings:describe の
+// await 中は overlay がまだ DOM に無いため、.settings-overlay の有無チェックだけでは
+// もう一方のモーダルがすり抜けて二重生成されうる。await より前に同期で立てるこのフラグ
+// で「チェック〜生成」を原子的に守り、モーダルを閉じた／生成に失敗した時に必ず戻す。
+let modalOpen = false;
 
-  // describe が失敗しても使用状況ビューだけのモーダルとして開く。
+// ─── Claude使用量モーダル ─────────────────────────────────────────────────────
+// 設定から切り離した読み取り専用の使用状況ビュー。サイドバーの「Claude使用量」項目
+// （builtin メニューの open-usage アクション）から起動する。設定モーダルとは別物で、
+// 保存フッターは持たず、表示中のみ 60 秒ポーリング＋リセット残時間の毎秒再計算を行う。
+async function openUsageModal() {
+  // 二重オープン防止（設定モーダルと共通の同期ロックで 1 枚に限定）
+  if (modalOpen) return;
+  modalOpen = true;
+
+  const overlay = document.createElement('div');
+  overlay.className = 'settings-overlay usage-overlay';
+  overlay.innerHTML = `
+    <div class="settings-modal usage-modal" role="dialog" aria-modal="true" aria-label="Claude使用量">
+      <div class="settings-header">
+        <h2>Claude使用量</h2>
+        <button class="settings-close" title="閉じる">✕</button>
+      </div>
+      <div class="settings-view settings-view-usage" role="region">
+        <p class="usage-empty">Claude の使用状況を取得中…</p>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+
+  const modal = overlay.querySelector('.usage-modal');
+  const usageView = modal.querySelector('.settings-view-usage');
+
+  // 使用状況のポーリング（main 側 60s TTL キャッシュに相乗り）と、リセット残時間の
+  // 毎秒ライブ再計算。モーダルを閉じたら両方止める。
+  let usagePollTimer = null;
+  let usageTickTimer = null;
+  const refreshUsage = async () => {
+    let u = null;
+    try {
+      u = await ipcRenderer.invoke('usage:get');
+    } catch (_e) {
+      u = null;
+    }
+    if (!overlay.isConnected) return; // 取得中に閉じられたら何もしない
+    renderUsageView(usageView, u);
+  };
+  refreshUsage(); // 初回即時（ポーリング待ちにしない）
+  usagePollTimer = setInterval(refreshUsage, USAGE_POLL_INTERVAL_MS);
+  usageTickTimer = setInterval(() => {
+    usageView.querySelectorAll('[data-reset-at]').forEach((el) => {
+      const at = Number(el.dataset.resetAt);
+      if (Number.isFinite(at)) el.textContent = formatRemainingJa(at - Date.now());
+    });
+  }, 1000);
+
+  const close = () => {
+    if (usagePollTimer) { clearInterval(usagePollTimer); usagePollTimer = null; }
+    if (usageTickTimer) { clearInterval(usageTickTimer); usageTickTimer = null; }
+    document.removeEventListener('keydown', onKey);
+    overlay.remove();
+    modalOpen = false;
+  };
+  const onKey = (e) => { if (e.key === 'Escape') close(); };
+  document.addEventListener('keydown', onKey);
+  overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) close(); });
+  modal.querySelector('.settings-close').addEventListener('click', close);
+}
+
+async function openSettingsModal() {
+  // 二重オープン防止（使用量モーダルと共通の同期ロック。describe の await より前に立てる）
+  if (modalOpen) return;
+  modalOpen = true;
+
+  // 設定ディスクリプタが無い環境でも空の設定モーダルとして開く（使用量は別モーダル）。
   let desc = null;
   try {
     desc = await ipcRenderer.invoke('settings:describe');
@@ -2058,89 +2152,38 @@ async function openSettingsModal() {
         <h2>${escText((settingsAvailable && desc.title) || 'VK Terminals')}${appVersion ? `<span class="settings-version">VK Terminals v${escText(appVersion)}</span>` : ''}</h2>
         <button class="settings-close" title="閉じる">✕</button>
       </div>
-      <div class="settings-tabs" role="tablist">
-        <button type="button" class="settings-tab" data-tab="usage" role="tab" aria-selected="false">Claude使用状況</button>
-        ${settingsAvailable ? '<button type="button" class="settings-tab" data-tab="config" role="tab" aria-selected="false">設定</button>' : ''}
-      </div>
-      <div class="settings-view settings-view-usage" role="tabpanel" hidden>
-        <p class="usage-empty">Claude の使用状況を取得中…</p>
-      </div>
-      <div class="settings-view settings-view-config" role="tabpanel" hidden>
+      <div class="settings-view settings-view-config" role="region">
         ${settingsAvailable && desc.note ? `<p class="settings-note">${escText(desc.note)}</p>` : ''}
         ${settingsAvailable ? `<p class="settings-target">保存先: <code>${escText(desc.targetPath || '')}</code></p>` : ''}
-        <form class="settings-form" onsubmit="return false">${groupsHtml}</form>
+        ${settingsAvailable
+          ? `<form class="settings-form" onsubmit="return false">${groupsHtml}</form>`
+          : '<p class="settings-empty">この環境では編集できる設定項目がありません。</p>'}
       </div>
-      <div class="settings-footer" hidden>
+      ${settingsAvailable ? `<div class="settings-footer">
         <span class="settings-msg" role="status"></span>
         <button type="button" class="settings-cancel">キャンセル</button>
         <button type="button" class="settings-save">保存</button>
-      </div>
+      </div>` : ''}
     </div>`;
   document.body.appendChild(overlay);
 
   const modal = overlay.querySelector('.settings-modal');
-  const msg = modal.querySelector('.settings-msg');
-  const usageView = modal.querySelector('.settings-view-usage');
-  const configView = modal.querySelector('.settings-view-config');
-  const footer = modal.querySelector('.settings-footer');
-  const tabs = Array.from(modal.querySelectorAll('.settings-tab'));
-
-  // ── 使用状況のポーリング（Claude使用状況タブ表示中のみ）──────────────────
-  let usagePollTimer = null; // 60 秒間隔の再取得（main 側 60s TTL キャッシュに相乗り）
-  let usageTickTimer = null; // 「◯時間◯分後にリセット」の毎秒ライブ再計算
-  const refreshUsage = async () => {
-    let u = null;
-    try {
-      u = await ipcRenderer.invoke('usage:get');
-    } catch (_e) {
-      u = null;
-    }
-    if (!overlay.isConnected) return; // 取得中に閉じられたら何もしない
-    renderUsageView(usageView, u);
-  };
-  const startUsagePolling = () => {
-    if (usagePollTimer) return;
-    refreshUsage(); // 初回即時（ポーリング待ちにしない）
-    usagePollTimer = setInterval(refreshUsage, USAGE_POLL_INTERVAL_MS);
-    usageTickTimer = setInterval(() => {
-      usageView.querySelectorAll('[data-reset-at]').forEach((el) => {
-        const at = Number(el.dataset.resetAt);
-        if (Number.isFinite(at)) el.textContent = formatRemainingJa(at - Date.now());
-      });
-    }, 1000);
-  };
-  const stopUsagePolling = () => {
-    if (usagePollTimer) { clearInterval(usagePollTimer); usagePollTimer = null; }
-    if (usageTickTimer) { clearInterval(usageTickTimer); usageTickTimer = null; }
-  };
-
-  // ── タブ切替 ──────────────────────────────────────────────────────────────
-  const selectTab = (name) => {
-    tabs.forEach((t) => {
-      const on = t.dataset.tab === name;
-      t.classList.toggle('active', on);
-      t.setAttribute('aria-selected', on ? 'true' : 'false');
-    });
-    usageView.hidden = name !== 'usage';
-    configView.hidden = name !== 'config';
-    // 使用状況ビューは読み取り専用のため、保存/キャンセルのフッターごと隠す（閉じるのみ）。
-    footer.hidden = name !== 'config';
-    if (name === 'usage') startUsagePolling();
-    else stopUsagePolling();
-  };
-  tabs.forEach((t) => t.addEventListener('click', () => selectTab(t.dataset.tab)));
-  selectTab('usage'); // 既定タブは「Claude使用状況」
 
   const close = () => {
-    stopUsagePolling();
     document.removeEventListener('keydown', onKey);
     overlay.remove();
+    modalOpen = false;
   };
   const onKey = (e) => { if (e.key === 'Escape') close(); };
   document.addEventListener('keydown', onKey);
 
   overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) close(); });
   modal.querySelector('.settings-close').addEventListener('click', close);
+
+  // 設定項目が無い環境ではフォーム関連の配線は不要（閉じるだけ）。
+  if (!settingsAvailable) return;
+
+  const msg = modal.querySelector('.settings-msg');
   modal.querySelector('.settings-cancel').addEventListener('click', close);
 
   // password の表示/非表示トグル
@@ -2216,10 +2259,10 @@ initApp().then(() => {
   ipcRenderer.send('terminal:renderer-ready');
 });
 
-// 設定パネル（Claude使用状況｜設定モーダル）の歯車ボタンを配線する（issue #73 で常時表示）。
+// 設定モーダルの歯車ボタンを配線する（設定のみ。使用量はサイドバーの別モーダルへ）。
 setupSettingsPanel();
 
-// 歯車ボタンの使用率警告ドットバッジ（issue #73）を配線する。
+// 使用率警告ドットバッジ（☰ メニューボタン＋サイドバーの「Claude使用量」項目）を配線する。
 setupUsageBadge();
 
 // ─── State reporting to main process ─────────────────────────────────────────

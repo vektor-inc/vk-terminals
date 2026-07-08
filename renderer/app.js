@@ -492,6 +492,7 @@ function openExternalUrlSafe(url) {
 // ─── Sidebar menu ────────────────────────────────────────────────────────────
 let sidebarMenuSections = [];
 let sidebarOpen = false;
+let sidebarTransitionCleanup = null;
 
 function isReducedMotion() {
   return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
@@ -515,7 +516,9 @@ function createMenuIcon(icon) {
 function createMenuLabel(label) {
   const el = document.createElement('span');
   el.className = 'sidebar-menu-label';
-  el.textContent = typeof label === 'string' ? label : '';
+  const text = typeof label === 'string' ? label : '';
+  el.textContent = text;
+  if (text) el.title = text;
   return el;
 }
 
@@ -588,23 +591,36 @@ function renderSidebarMenu() {
   nav.replaceChildren();
   const inner = document.createElement('div');
   inner.className = 'sidebar-menu-inner';
-  const list = document.createElement('ul');
-  list.className = 'sidebar-menu-list';
 
-  for (const section of sidebarMenuSections) {
-    if (section?.title) {
-      const title = document.createElement('li');
-      title.className = 'sidebar-section-title';
-      title.textContent = section.title;
-      list.appendChild(title);
-    }
+  for (let sectionIndex = 0; sectionIndex < sidebarMenuSections.length; sectionIndex++) {
+    const section = sidebarMenuSections[sectionIndex];
+    const list = document.createElement('ul');
+    list.className = 'sidebar-menu-list';
     const items = Array.isArray(section?.items) ? section.items : [];
-    for (const item of items) {
-      list.appendChild(createMenuItem(item));
+
+    if (section?.title) {
+      const sectionEl = document.createElement('div');
+      sectionEl.className = 'sidebar-section';
+      const title = document.createElement('div');
+      const titleId = `sidebar-section-title-${sectionIndex}`;
+      title.className = 'sidebar-section-title';
+      title.id = titleId;
+      title.textContent = section.title;
+      list.setAttribute('aria-labelledby', titleId);
+      sectionEl.appendChild(title);
+      for (const item of items) {
+        list.appendChild(createMenuItem(item));
+      }
+      sectionEl.appendChild(list);
+      inner.appendChild(sectionEl);
+    } else {
+      for (const item of items) {
+        list.appendChild(createMenuItem(item));
+      }
+      inner.appendChild(list);
     }
   }
 
-  inner.appendChild(list);
   nav.appendChild(inner);
 }
 
@@ -633,6 +649,10 @@ function setSidebarOpen(open, options = {}) {
   const root = document.getElementById('root');
   const btn = document.getElementById('menu-btn');
   const nav = root ? ensureSidebarMenu(root) : null;
+  if (sidebarTransitionCleanup) {
+    sidebarTransitionCleanup();
+    sidebarTransitionCleanup = null;
+  }
   sidebarOpen = !!open;
   root?.classList.toggle('sidebar-open', sidebarOpen);
   btn?.setAttribute('aria-expanded', sidebarOpen ? 'true' : 'false');
@@ -652,14 +672,25 @@ function setSidebarOpen(open, options = {}) {
   }
 
   let done = false;
-  const onEnd = (event) => {
-    if (event.target !== nav || event.propertyName !== 'transform') return;
-    if (done) return;
+  let timeoutId = null;
+  const cleanup = () => {
     done = true;
     nav.removeEventListener('transitionend', onEnd);
+    if (timeoutId !== null) clearTimeout(timeoutId);
+    if (sidebarTransitionCleanup === cleanup) sidebarTransitionCleanup = null;
+  };
+  const finish = () => {
+    if (done) return;
+    cleanup();
     afterLayout();
   };
+  const onEnd = (event) => {
+    if (event.target !== nav || event.propertyName !== 'transform') return;
+    finish();
+  };
+  sidebarTransitionCleanup = cleanup;
   nav.addEventListener('transitionend', onEnd);
+  timeoutId = setTimeout(finish, 220);
 }
 
 function setupSidebarMenu() {

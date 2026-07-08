@@ -1307,6 +1307,11 @@ function startHttpApi() {
           if (items.length === 0) {
             menuSources.delete(source);
           } else {
+            if (!menuSources.has(source) && menuSources.size >= MENU_MAX_SECTIONS) {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: `too many menu sources (max ${MENU_MAX_SECTIONS})` }));
+              return;
+            }
             menuSources.set(source, r.section);
           }
           pushMenuUpdate();

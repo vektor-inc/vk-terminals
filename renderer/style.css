@@ -91,12 +91,22 @@ html, body {
   outline-offset: 2px;
 }
 
-/* 歯車ボタンの警告ドットバッジ（issue #73）。
-   公式の使用率（セッション・週間のいずれか）が 80% を超えたときだけ app.js が
-   .usage-alert-warn（80〜90%: アンバー）/ .usage-alert-crit（90%〜: 赤）を付与する。
-   タイトルバー背景（#0d1117）と同色の縁取りで、⚙ グリフと視覚的に分離する。 */
+/* 使用率の警告ドットバッジ。公式の使用率（セッション・週間のいずれか）が 80% を
+   超えたときだけ app.js が .usage-alert-warn（80〜90%: アンバー）/ .usage-alert-crit
+   （90%〜: 赤）を付与する。使用量表示を設定から分離したため、常時見える ☰ メニュー
+   ボタンと、サイドバーの「Claude使用量」項目の両方に表示する。 */
+.titlebar-menu-btn.usage-alert-warn,
+.titlebar-menu-btn.usage-alert-crit,
+.sidebar-menu-button.usage-alert-warn,
+.sidebar-menu-button.usage-alert-crit {
+  position: relative;
+}
 .titlebar-btn.usage-alert-warn::after,
-.titlebar-btn.usage-alert-crit::after {
+.titlebar-btn.usage-alert-crit::after,
+.titlebar-menu-btn.usage-alert-warn::after,
+.titlebar-menu-btn.usage-alert-crit::after,
+.sidebar-menu-button.usage-alert-warn::after,
+.sidebar-menu-button.usage-alert-crit::after {
   content: "";
   position: absolute;
   top: 3px;
@@ -106,8 +116,12 @@ html, body {
   border-radius: 50%;
   border: 1px solid #0d1117;
 }
-.titlebar-btn.usage-alert-warn::after { background: #d29922; }
-.titlebar-btn.usage-alert-crit::after { background: #f85149; }
+.titlebar-btn.usage-alert-warn::after,
+.titlebar-menu-btn.usage-alert-warn::after,
+.sidebar-menu-button.usage-alert-warn::after { background: #d29922; }
+.titlebar-btn.usage-alert-crit::after,
+.titlebar-menu-btn.usage-alert-crit::after,
+.sidebar-menu-button.usage-alert-crit::after { background: #f85149; }
 
 /* ─── 設定パネル（モーダル）──────────────────────────────────────────────────── */
 .settings-overlay {
@@ -166,30 +180,8 @@ html, body {
 /* ─── 設定モーダルのタブ（Claude使用状況｜設定, issue #73）─────────────────────
  * ヘッダー直下のセグメント切替。既定タブは「Claude使用状況」（読み取り専用ビュー）。
  * 設定ディスクリプタが使えない環境では「設定」タブ自体を描画しない。 */
-.settings-tabs {
-  display: flex;
-  gap: 2px;
-  padding: 8px 18px 0;
-  border-bottom: 1px solid #21262d;
-}
-.settings-tab {
-  background: transparent;
-  border: none;
-  border-bottom: 2px solid transparent;
-  color: #8b949e;
-  padding: 6px 10px 8px;
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-}
-.settings-tab:hover { color: #e6edf3; }
-.settings-tab.active {
-  color: #e6edf3;
-  border-bottom-color: #58a6ff;
-}
-
-/* タブで切り替わるビュー。モーダル（flex column・max-height 制限）内で
- * ビュー単位にスクロールさせる。hidden 属性で非表示切替。 */
+/* モーダル（flex column・max-height 制限）内でビュー単位にスクロールさせる。
+ * hidden 属性で非表示切替。 */
 .settings-view {
   overflow-y: auto;
   min-height: 0;
@@ -277,6 +269,13 @@ html, body {
   word-break: break-all;
 }
 .settings-target code { color: #8b949e; }
+.settings-empty {
+  margin: 0;
+  padding: 18px;
+  color: #8b949e;
+  font-size: 13px;
+  line-height: 1.6;
+}
 .settings-form {
   padding: 12px 18px;
   overflow-y: auto;

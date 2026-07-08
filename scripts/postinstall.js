@@ -35,25 +35,29 @@ function getMacCxxFlagsInclude() {
   }
 
   // 例: MacOSX10.15.sdk, MacOSX14.sdk, MacOSX14.4.sdk, MacOSX26.0.sdk など。
-  // 元のシェル実装（`sort -V | tail -1`）に合わせ、バージョン順で最大のものを選ぶ。
+  // 元のシェル実装（`sort -V | tail -1`）に合わせ、バージョン順で新しいものを優先する。
   // メジャーバージョンの桁数は固定しない（macOS 26 以降の MacOSX26.sdk 等も拾う）。
   const sdkPattern = /^MacOSX\d+(?:\.\d+)*\.sdk$/;
-  const sdkNames = entries.filter((name) => sdkPattern.test(name));
+  const versionedSdks = entries
+    .filter((name) => sdkPattern.test(name))
+    .sort((a, b) => compareSdkVersions(b, a)); // 新しい順
 
-  if (sdkNames.length === 0) {
-    return null;
+  // バージョン付き SDK を新しい順に、最後に MacOSX.sdk シンボリックリンクを候補にする。
+  // 最新 SDK に libc++ ヘッダが無くても、古い SDK 側にあればそちらを使えるよう、
+  // 存在チェックは候補ごとに行い、最初に見つかった有効なパスを返す。
+  const candidates = versionedSdks.slice();
+  if (entries.includes('MacOSX.sdk')) {
+    candidates.push('MacOSX.sdk');
   }
 
-  sdkNames.sort((a, b) => compareSdkVersions(a, b));
-  const latestSdk = sdkNames[sdkNames.length - 1];
-
-  const includeDir = path.join(sdkDir, latestSdk, 'usr', 'include', 'c++', 'v1');
-
-  if (!fs.existsSync(includeDir)) {
-    return null;
+  for (const sdk of candidates) {
+    const includeDir = path.join(sdkDir, sdk, 'usr', 'include', 'c++', 'v1');
+    if (fs.existsSync(includeDir)) {
+      return `-I${includeDir}`;
+    }
   }
 
-  return `-I${includeDir}`;
+  return null;
 }
 
 /**

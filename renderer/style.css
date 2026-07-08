@@ -66,6 +66,31 @@ html, body {
   color: #e6edf3;
 }
 
+.titlebar-menu-btn {
+  grid-column: 1;
+  justify-self: start;
+  -webkit-app-region: no-drag;
+  width: 32px;
+  height: 32px;
+  margin-left: 76px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #8b949e;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+}
+.titlebar-menu-btn:hover,
+.titlebar-menu-btn:focus-visible {
+  background: #21262d;
+  color: #e6edf3;
+}
+.titlebar-menu-btn:focus-visible {
+  outline: 2px solid #58a6ff;
+  outline-offset: 2px;
+}
+
 /* 歯車ボタンの警告ドットバッジ（issue #73）。
    公式の使用率（セッション・週間のいずれか）が 80% を超えたときだけ app.js が
    .usage-alert-warn（80〜90%: アンバー）/ .usage-alert-crit（90%〜: 赤）を付与する。
@@ -369,6 +394,103 @@ html, body {
   right: 0;
   bottom: 0;
   display: flex;
+  overflow: hidden;
+}
+
+/* ─── Sidebar menu ─────────────────────────────────────────────────────────── */
+.sidebar-menu {
+  flex: 0 0 0;
+  width: 252px;
+  min-width: 0;
+  height: 100%;
+  overflow: hidden auto;
+  transform: translateX(-100%);
+  transition: flex-basis 0.18s ease, transform 0.18s ease;
+  z-index: 900;
+  background: #0d1117;
+  border-right: 1px solid #21262d;
+  color: #e6edf3;
+}
+#root.sidebar-open .sidebar-menu {
+  flex-basis: 252px;
+  transform: translateX(0);
+}
+.sidebar-menu-inner {
+  width: 252px;
+  padding: 10px 8px;
+}
+.sidebar-menu-list,
+.sidebar-submenu-list {
+  list-style: none;
+}
+.sidebar-section-title {
+  padding: 10px 8px 5px;
+  color: #8b949e;
+  font-size: 11px;
+  font-weight: 600;
+}
+.sidebar-menu-item {
+  margin: 2px 0;
+}
+.sidebar-menu-link,
+.sidebar-menu-button,
+.sidebar-menu-text,
+.sidebar-menu-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 32px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #c9d1d9;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.4;
+  text-align: left;
+  text-decoration: none;
+}
+.sidebar-menu-link,
+.sidebar-menu-button,
+.sidebar-menu-summary {
+  cursor: pointer;
+}
+.sidebar-menu-link:hover,
+.sidebar-menu-button:hover,
+.sidebar-menu-summary:hover {
+  background: #21262d;
+  color: #e6edf3;
+}
+.sidebar-menu-link:focus-visible,
+.sidebar-menu-button:focus-visible,
+.sidebar-menu-summary:focus-visible {
+  outline: 2px solid #58a6ff;
+  outline-offset: 2px;
+}
+.sidebar-menu-icon {
+  flex: 0 0 20px;
+  width: 20px;
+  text-align: center;
+}
+.sidebar-menu-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sidebar-submenu {
+  margin: 2px 0;
+}
+.sidebar-submenu-list {
+  margin-left: 20px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar-menu {
+    transition: none;
+  }
 }
 
 /* ─── Grid container ───────────────────────────────────────────────────────── */

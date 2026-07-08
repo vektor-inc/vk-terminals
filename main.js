@@ -52,6 +52,204 @@ const SEND_ENTER_SPLIT_DELAY_MS = 150;
 let cachedStates = {};  // renderer から受け取った状態キャッシュ
 let httpServer = null;
 
+const MENU_ACTION_TYPES = new Set(['open-settings', 'open-url']);
+const MENU_MAX_SECTIONS = 20;
+const MENU_MAX_ITEMS = 50;
+const MENU_MAX_CHILDREN = 20;
+const MENU_MAX_TEXT = 200;
+const MENU_MAX_SOURCE = 100;
+const MENU_MAX_ICON = 8;
+const menuSources = new Map();
+
+function validateUrlField(raw, fieldName) {
+  if (raw === '' || raw == null) {
+    return { ok: true, value: '' };
+  }
+  if (typeof raw !== 'string') {
+    return { ok: false, error: `${fieldName} must be a string` };
+  }
+  if (raw.length > 2048) {
+    return { ok: false, error: `${fieldName} too long (max 2048 chars)` };
+  }
+  let parsedUrl;
+  try {
+    parsedUrl = new URL(raw);
+  } catch (_e) {
+    return { ok: false, error: `invalid ${fieldName}` };
+  }
+  if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+    return { ok: false, error: `${fieldName} must be http(s)` };
+  }
+  return { ok: true, value: raw };
+}
+
+function isSafeMenuIcon(icon) {
+  if (typeof icon !== 'string') return false;
+  const value = icon.trim();
+  if (!value || value.length > MENU_MAX_ICON || /[<>&]/.test(value)) return false;
+  return /^(?:\p{Extended_Pictographic}(?:\uFE0F|\uFE0E)?)(?:\s?(?:\p{Extended_Pictographic}(?:\uFE0F|\uFE0E)?))?$/u.test(value);
+}
+
+function validateMenuItem(raw, source, depth, seenIds) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { ok: false, error: 'menu item must be an object' };
+  }
+  if (typeof raw.id !== 'string' || !raw.id.trim()) {
+    return { ok: false, error: 'menu item id required' };
+  }
+  if (raw.id.length > MENU_MAX_TEXT) {
+    return { ok: false, error: 'menu item id too long' };
+  }
+  const itemKey = `${source}:${raw.id}`;
+  if (seenIds.has(itemKey)) {
+    return { ok: false, error: `duplicate menu item id "${raw.id}"` };
+  }
+  seenIds.add(itemKey);
+
+  if (typeof raw.label !== 'string' || !raw.label.trim()) {
+    return { ok: false, error: 'menu item label required' };
+  }
+  if (raw.label.length > MENU_MAX_TEXT) {
+    return { ok: false, error: 'menu item label too long' };
+  }
+
+  const item = {
+    id: raw.id.trim(),
+    label: raw.label,
+  };
+  if (raw.icon != null && raw.icon !== '') {
+    if (!isSafeMenuIcon(raw.icon)) {
+      return { ok: false, error: 'menu item icon must be emoji only' };
+    }
+    item.icon = raw.icon.trim();
+  }
+
+  if (raw.action != null) {
+    if (!raw.action || typeof raw.action !== 'object' || Array.isArray(raw.action)) {
+      return { ok: false, error: 'menu item action must be an object' };
+    }
+    if (!MENU_ACTION_TYPES.has(raw.action.type)) {
+      return { ok: false, error: `unsupported menu action "${raw.action.type}"` };
+    }
+    if (raw.action.type === 'open-settings') {
+      item.action = { type: 'open-settings' };
+    } else if (raw.action.type === 'open-url') {
+      const r = validateUrlField(raw.action.url, 'action.url');
+      if (!r.ok || !r.value) {
+        return { ok: false, error: r.error || 'action.url required' };
+      }
+      item.action = { type: 'open-url', url: r.value };
+    }
+  }
+
+  if (raw.children != null) {
+    if (!Array.isArray(raw.children)) {
+      return { ok: false, error: 'menu item children must be an array' };
+    }
+    if (depth >= 1) {
+      return { ok: false, error: 'menu item children depth exceeded' };
+    }
+    if (raw.children.length > MENU_MAX_CHILDREN) {
+      return { ok: false, error: `menu item children too many (max ${MENU_MAX_CHILDREN})` };
+    }
+    const children = [];
+    for (const child of raw.children) {
+      const r = validateMenuItem(child, source, depth + 1, seenIds);
+      if (!r.ok) return r;
+      children.push(r.item);
+    }
+    item.children = children;
+  }
+
+  return { ok: true, item };
+}
+
+function validateMenuSection(raw, options = {}) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { ok: false, error: 'menu section must be an object' };
+  }
+  const sourceRaw = typeof raw.source === 'string' ? raw.source : options.defaultSource;
+  if (typeof sourceRaw !== 'string' || !sourceRaw.trim()) {
+    return { ok: false, error: 'source required' };
+  }
+  if (sourceRaw.length > MENU_MAX_SOURCE) {
+    return { ok: false, error: `source too long (max ${MENU_MAX_SOURCE} chars)` };
+  }
+  if (!Array.isArray(raw.items)) {
+    return { ok: false, error: 'items array required' };
+  }
+  if (raw.items.length > MENU_MAX_ITEMS) {
+    return { ok: false, error: `items too many (max ${MENU_MAX_ITEMS})` };
+  }
+  const source = sourceRaw.trim();
+  const section = { source, items: [] };
+  if (raw.title != null) {
+    if (typeof raw.title !== 'string') {
+      return { ok: false, error: 'title must be a string' };
+    }
+    if (raw.title.length > MENU_MAX_TEXT) {
+      return { ok: false, error: 'title too long' };
+    }
+    section.title = raw.title;
+  }
+
+  const seenIds = new Set();
+  for (const item of raw.items) {
+    const r = validateMenuItem(item, source, 0, seenIds);
+    if (!r.ok) return r;
+    section.items.push(r.item);
+  }
+  return { ok: true, section };
+}
+
+function getConfigMenuSections() {
+  const config = loadUserConfig();
+  const rawSections = Array.isArray(config.menuItems) ? config.menuItems : [];
+  if (!rawSections.length) return [];
+  if (rawSections.length > MENU_MAX_SECTIONS) {
+    console.error(`${LOG_PREFIX} config menuItems too many (max ${MENU_MAX_SECTIONS})`);
+    return [];
+  }
+  const sections = [];
+  for (const raw of rawSections) {
+    const r = validateMenuSection(raw, { defaultSource: 'config' });
+    if (!r.ok) {
+      console.error(`${LOG_PREFIX} invalid config menu item: ${r.error}`);
+      return [];
+    }
+    sections.push(r.section);
+  }
+  return sections;
+}
+
+function builtinMenuSection() {
+  return {
+    source: 'builtin',
+    items: [
+      {
+        id: 'settings',
+        label: '設定',
+        icon: '⚙',
+        action: { type: 'open-settings' },
+      },
+    ],
+  };
+}
+
+function mergedMenuSections() {
+  return [
+    ...getConfigMenuSections(),
+    ...Array.from(menuSources.values()),
+    builtinMenuSection(),
+  ];
+}
+
+function pushMenuUpdate() {
+  if (win && !win.isDestroyed()) {
+    win.webContents.send('menu:update', mergedMenuSections());
+  }
+}
+
 /**
  * ユーザー設定を読み込む。
  * 読み込み順:
@@ -267,6 +465,9 @@ function createWindow() {
     title: 'VK Terminals',
   });
 
+  win.webContents.on('did-finish-load', () => {
+    pushMenuUpdate();
+  });
   win.loadFile('renderer/index.html');
   // win.webContents.openDevTools(); // uncomment to debug
 }
@@ -359,6 +560,7 @@ function builtinSettingsDescriptor() {
           // issue #70 でエージェントルーム（β）を一旦無効化するため設定項目を非表示にする。
           // 復帰時は下記コメントを解除する。
           // { key: 'agentroom',      label: 'エージェントルーム（β）表示', type: 'boolean' },
+          { key: 'menuItems', label: 'サイドバーメニュー (JSON 配列)', type: 'json', help: '例: [{"source":"config","title":"Links","items":[{"id":"issues","label":"Issues","icon":"📋","action":{"type":"open-url","url":"https://github.com/"}}]}]' },
           { key: 'additionalPanes', label: '追加ペイン (JSON 配列)', type: 'json',   help: '例: [{"cwd":"/path"}]' },
         ],
       },
@@ -720,6 +922,7 @@ function createAdditionalPane(cwd, options = {}) {
 // renderer 初期化完了 → config.additionalPanes に従って追加ペインを順次作成
 let additionalPanesCreated = false;
 ipcMain.on('terminal:renderer-ready', async () => {
+  pushMenuUpdate();
   if (additionalPanesCreated) return; // closePane で最後のペインを閉じて再 initApp された場合は再生成しない
   additionalPanesCreated = true;
   const config = loadUserConfig();
@@ -1082,6 +1285,41 @@ function startHttpApi() {
       return;
     }
 
+    // POST /api/menu  { source: "vk-orchestrator", title?: "...", items: [...] }
+    //   — サイドバーメニューを source 単位で置換する。items: [] は該当 source のクリア。
+    if (req.method === 'POST' && url.pathname === '/api/menu') {
+      if (isForbiddenOrigin(req)) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'forbidden origin' }));
+        return;
+      }
+      const MAX_BODY = 10 * 1024;
+      readJsonBody(req, res, MAX_BODY, (body) => {
+        try {
+          const parsed = JSON.parse(body);
+          const r = validateMenuSection(parsed);
+          if (!r.ok) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: r.error }));
+            return;
+          }
+          const { source, items } = r.section;
+          if (items.length === 0) {
+            menuSources.delete(source);
+          } else {
+            menuSources.set(source, r.section);
+          }
+          pushMenuUpdate();
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, source }));
+        } catch (e) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'invalid JSON' }));
+        }
+      });
+      return;
+    }
+
     // POST /api/new-pane  { cwd?: "/path/to/dir", noClaude?: boolean } — 新規ペインを作成して termId を返す
     //   cwd を指定すればそのディレクトリで開く。未指定なら HOME で開く。
     //   noClaude: true を指定すると、新規ペインで claude を自動起動せず素のシェルとして開く。
@@ -1177,4 +1415,3 @@ function startHttpApi() {
 
   listen(apiHost);
 }
-

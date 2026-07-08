@@ -489,6 +489,197 @@ function openExternalUrlSafe(url) {
   }
 }
 
+// ─── Sidebar menu ────────────────────────────────────────────────────────────
+let sidebarMenuSections = [];
+let sidebarOpen = false;
+
+function isReducedMotion() {
+  return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
+}
+
+function isSafeMenuIcon(icon) {
+  if (typeof icon !== 'string') return false;
+  const value = icon.trim();
+  if (!value || value.length > 8 || /[<>&]/.test(value)) return false;
+  return /^(?:\p{Extended_Pictographic}(?:\uFE0F|\uFE0E)?)(?:\s?(?:\p{Extended_Pictographic}(?:\uFE0F|\uFE0E)?))?$/u.test(value);
+}
+
+function createMenuIcon(icon) {
+  const el = document.createElement('span');
+  el.className = 'sidebar-menu-icon';
+  el.setAttribute('aria-hidden', 'true');
+  el.textContent = isSafeMenuIcon(icon) ? icon.trim() : '';
+  return el;
+}
+
+function createMenuLabel(label) {
+  const el = document.createElement('span');
+  el.className = 'sidebar-menu-label';
+  el.textContent = typeof label === 'string' ? label : '';
+  return el;
+}
+
+function runMenuAction(action) {
+  if (!action || typeof action !== 'object') return;
+  if (action.type === 'open-settings') {
+    openSettingsModal();
+    return;
+  }
+  if (action.type === 'open-url') {
+    openExternalUrlSafe(action.url);
+  }
+}
+
+function createMenuActionElement(item) {
+  const action = item && typeof item.action === 'object' ? item.action : null;
+  let el;
+  if (action?.type === 'open-url' && isSafeExternalUrl(action.url)) {
+    el = document.createElement('a');
+    el.className = 'sidebar-menu-link';
+    el.href = '#';
+    el.addEventListener('click', (event) => {
+      event.preventDefault();
+      runMenuAction(action);
+    });
+  } else if (action?.type === 'open-settings') {
+    el = document.createElement('button');
+    el.className = 'sidebar-menu-button';
+    el.type = 'button';
+    el.addEventListener('click', () => runMenuAction(action));
+  } else {
+    el = document.createElement('span');
+    el.className = 'sidebar-menu-text';
+  }
+  el.appendChild(createMenuIcon(item.icon));
+  el.appendChild(createMenuLabel(item.label));
+  return el;
+}
+
+function createMenuItem(item) {
+  const li = document.createElement('li');
+  li.className = 'sidebar-menu-item';
+  const children = Array.isArray(item?.children) ? item.children : [];
+  if (children.length) {
+    const details = document.createElement('details');
+    details.className = 'sidebar-submenu';
+    const summary = document.createElement('summary');
+    summary.className = 'sidebar-menu-summary';
+    summary.appendChild(createMenuIcon(item.icon));
+    summary.appendChild(createMenuLabel(item.label));
+    details.appendChild(summary);
+
+    const childList = document.createElement('ul');
+    childList.className = 'sidebar-submenu-list';
+    for (const child of children) {
+      childList.appendChild(createMenuItem(child));
+    }
+    details.appendChild(childList);
+    li.appendChild(details);
+    return li;
+  }
+
+  li.appendChild(createMenuActionElement(item || {}));
+  return li;
+}
+
+function renderSidebarMenu() {
+  const nav = document.getElementById('sidebar-menu');
+  if (!nav) return;
+  nav.replaceChildren();
+  const inner = document.createElement('div');
+  inner.className = 'sidebar-menu-inner';
+  const list = document.createElement('ul');
+  list.className = 'sidebar-menu-list';
+
+  for (const section of sidebarMenuSections) {
+    if (section?.title) {
+      const title = document.createElement('li');
+      title.className = 'sidebar-section-title';
+      title.textContent = section.title;
+      list.appendChild(title);
+    }
+    const items = Array.isArray(section?.items) ? section.items : [];
+    for (const item of items) {
+      list.appendChild(createMenuItem(item));
+    }
+  }
+
+  inner.appendChild(list);
+  nav.appendChild(inner);
+}
+
+function createSidebarMenu() {
+  const nav = document.createElement('nav');
+  nav.id = 'sidebar-menu';
+  nav.className = 'sidebar-menu';
+  nav.setAttribute('aria-label', 'メインメニュー');
+  return nav;
+}
+
+function ensureSidebarMenu(root) {
+  const existing = root.querySelector('#sidebar-menu');
+  const nav = existing || createSidebarMenu();
+  if (!existing) renderSidebarMenu();
+  return nav;
+}
+
+function focusFirstSidebarItem() {
+  const nav = document.getElementById('sidebar-menu');
+  const first = nav?.querySelector('a, button, summary');
+  if (first && typeof first.focus === 'function') first.focus();
+}
+
+function setSidebarOpen(open, options = {}) {
+  const root = document.getElementById('root');
+  const btn = document.getElementById('menu-btn');
+  const nav = root ? ensureSidebarMenu(root) : null;
+  sidebarOpen = !!open;
+  root?.classList.toggle('sidebar-open', sidebarOpen);
+  btn?.setAttribute('aria-expanded', sidebarOpen ? 'true' : 'false');
+
+  const afterLayout = () => {
+    fitAll();
+    if (sidebarOpen && options.focusFirst !== false) {
+      focusFirstSidebarItem();
+    } else if (!sidebarOpen && options.focusToggle) {
+      btn?.focus();
+    }
+  };
+
+  if (!nav || isReducedMotion()) {
+    requestAnimationFrame(afterLayout);
+    return;
+  }
+
+  let done = false;
+  const onEnd = (event) => {
+    if (event.target !== nav || event.propertyName !== 'transform') return;
+    if (done) return;
+    done = true;
+    nav.removeEventListener('transitionend', onEnd);
+    afterLayout();
+  };
+  nav.addEventListener('transitionend', onEnd);
+}
+
+function setupSidebarMenu() {
+  const root = document.getElementById('root');
+  if (root) ensureSidebarMenu(root);
+  const btn = document.getElementById('menu-btn');
+  if (btn) {
+    btn.addEventListener('click', () => setSidebarOpen(!sidebarOpen, { focusFirst: true }));
+  }
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape' || !sidebarOpen) return;
+    event.preventDefault();
+    setSidebarOpen(false, { focusToggle: true });
+  });
+  ipcRenderer.on('menu:update', (_event, sections) => {
+    sidebarMenuSections = Array.isArray(sections) ? sections : [];
+    renderSidebarMenu();
+  });
+}
+
 // .pane-task-title 要素の中身を、URL の有無に応じて
 // プレーンテキスト or <a>（外部リンクマーク付き）で再構築する。
 //   - URL 無し: テキストノードのみ（従来通り、見た目は完全互換）
@@ -941,9 +1132,10 @@ function fitAll() {
 // ─── Rendering ────────────────────────────────────────────────────────────────
 function render() {
   const root = document.getElementById('root');
+  const sidebar = ensureSidebarMenu(root);
   const newContent = renderGrid(tree);
-  root.innerHTML = '';
-  root.appendChild(newContent);
+  root.replaceChildren(sidebar, newContent);
+  root.classList.toggle('sidebar-open', sidebarOpen);
 
   // Reattach terminal elements (moved, not recreated)
   getAllLeafIds(tree).forEach(paneId => {
@@ -1984,6 +2176,9 @@ async function initApp() {
     terminals[paneId]?.term.focus();
   });
 }
+
+// サイドバーは root の flex 子として常駐させるため、初回 render 前に配線する。
+setupSidebarMenu();
 
 initApp().then(() => {
   // 起動完了を main プロセスに通知（main 側で additionalPanes を順次作成する）

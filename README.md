@@ -140,16 +140,26 @@ macOS 前提の部分があるため、まっさらな Windows 環境でセッ�
 
 ### 2. `claude` コマンドの用意
 
-起動時に各ペインで自動実行される `claude` コマンド（Claude Code CLI）が必要です。
+起動時に各ペインで自動実行される `claude` コマンド（Claude Code CLI）が必要です。**ネイティブインストーラ（推奨）**が最も簡単で、npm / Volta のシムを介さない単体 `claude.exe` を導入します。
+
+```powershell
+irm https://claude.ai/install.ps1 | iex
+```
+
+- インストール先は `%USERPROFILE%\.local\bin\claude.exe`。インストーラの案内どおり、このディレクトリを**ユーザー PATH に追加**してください（未追加の場合は警告が出ます）。追加後は**ターミナル / VSCode を再起動**して反映させます。
+- アップデートは `claude update` で完結します。
+- npm や Volta のシムを使わないため、**ユーザー名にスペースを含む環境（例: `C:\Users\First Last\...`）でも問題なく動作**します（vk-terminals が各ペインで実行する裸の `claude` コマンドがそのまま解決されます）。
+
+代替として npm グローバルインストールも利用できます。
 
 ```powershell
 npm install -g @anthropic-ai/claude-code
 ```
 
-インストール後に `claude` が見つからない場合は、PATH の反映漏れが原因のことが多いです。
+こちらを使う場合、`claude` が見つからない・起動しないときは以下を確認してください。
 
 - **PowerShell / コマンドプロンプトを開き直しても `claude` が見つからない場合**：VSCode などのエディタ内蔵ターミナルから `npm install -g` した場合、そのプロセスツリーは起動時点の古い PATH を引き継いだままのことがあります。**VSCode やターミナルアプリ自体を再起動**すると解消します。
-- Volta 環境でユーザー名にスペースが含まれる場合、Volta が生成する `.cmd` シムが正しく動かないことがあります。その場合は `volta list all` で実体パッケージの格納先を確認し、`bin/claude.exe` を直接 PATH に追加してください。
+- **Volta 環境でユーザー名にスペースが含まれる場合**、Volta が生成する `.cmd` シムがパスをスペースで分断し `'C:\Users\First' は認識されていません` のように失敗することがあります。この場合は上記のネイティブインストーラへの切り替えを推奨します（`volta uninstall @anthropic-ai/claude-code` で Volta 版を外してから導入してください）。
 
 ### 3. VSCode 統合ターミナルから `npm start` する場合の注意
 

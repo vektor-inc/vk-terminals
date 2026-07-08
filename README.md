@@ -135,20 +135,31 @@ macOS 前提の部分があるため、まっさらな Windows 環境でセッ�
 - `node-pty` のネイティブビルドに必要な C++ ビルドツール
   - [Visual Studio Build Tools](https://visualstudio.microsoft.com/ja/downloads/)（「C++ によるデスクトップ開発」ワークロード）
   - もしくは `npm install -g windows-build-tools`（環境によっては非推奨）
-- `npm install` 後、ビルドが必要な場合は `npx electron-rebuild -f -w node-pty` を実行
+- `npm install` 時に `node-pty` のビルド（`electron-rebuild`）が postinstall で自動実行されます。失敗した場合は `npx electron-rebuild -f -w node-pty` を手動で実行してください
+  - 環境変数 `NoDefaultCurrentDirectoryInExePath` が設定されていると、`node-pty` 同梱の winpty のビルドが `'GetCommitHash.bat' ... 認識されていません` で失敗します（winpty の `winpty.gyp` がバッチをファイル名だけで呼び出すため、カレントディレクトリ検索が無効化されていると解決できないのが原因）。この変数を（後述の 5. のセキュリティ目的で）有効化している場合は、ビルド中だけ一時的に無効化してください。例: PowerShell で `$env:NoDefaultCurrentDirectoryInExePath=$null; npm install`
 
 ### 2. `claude` コマンドの用意
 
-起動時に各ペインで自動実行される `claude` コマンド（Claude Code CLI）が必要です。
+起動時に各ペインで自動実行される `claude` コマンド（Claude Code CLI）が必要です。**ネイティブインストーラ（推奨）**が最も簡単で、npm / Volta のシムを介さない単体 `claude.exe` を導入します。
+
+```powershell
+irm https://claude.ai/install.ps1 | iex
+```
+
+- インストール先は `%USERPROFILE%\.local\bin\claude.exe`。インストーラの案内どおり、このディレクトリを**ユーザー PATH に追加**してください（未追加の場合は警告が出ます）。追加後は**ターミナル / VSCode を再起動**して反映させます。
+- アップデートは `claude update` で完結します。
+- npm や Volta のシムを使わないため、**ユーザー名にスペースを含む環境（例: `C:\Users\First Last\...`）でも問題なく動作**します（vk-terminals が各ペインで実行する裸の `claude` コマンドがそのまま解決されます）。
+
+代替として npm グローバルインストールも利用できます。
 
 ```powershell
 npm install -g @anthropic-ai/claude-code
 ```
 
-インストール後に `claude` が見つからない場合は、PATH の反映漏れが原因のことが多いです。
+こちらを使う場合、`claude` が見つからない・起動しないときは以下を確認してください。
 
 - **PowerShell / コマンドプロンプトを開き直しても `claude` が見つからない場合**：VSCode などのエディタ内蔵ターミナルから `npm install -g` した場合、そのプロセスツリーは起動時点の古い PATH を引き継いだままのことがあります。**VSCode やターミナルアプリ自体を再起動**すると解消します。
-- Volta 環境でユーザー名にスペースが含まれる場合、Volta が生成する `.cmd` シムが正しく動かないことがあります。その場合は `volta list all` で実体パッケージの格納先を確認し、`bin/claude.exe` を直接 PATH に追加してください。
+- **Volta 環境でユーザー名にスペースが含まれる場合**、Volta が生成する `.cmd` シムがパスをスペースで分断し `'C:\Users\First' は認識されていません` のように失敗することがあります。この場合は上記のネイティブインストーラへの切り替えを推奨します（`volta uninstall @anthropic-ai/claude-code` で Volta 版を外してから導入してください）。
 
 ### 3. VSCode 統合ターミナルから `npm start` する場合の注意
 
@@ -175,7 +186,7 @@ Windows では各ペインのデフォルトシェルとして `%COMSPEC%`（通
 - `cwd`（`additionalPanes[].cwd` や HTTP API `/api/new-pane` の `cwd`）は必ず **Windows ネイティブ形式**（`C:\Users\you\project` または `C:/Users/you/project`）で指定してください。`node-pty` 内部で Node.js の `path.resolve()` を通すため、Git Bash / WSL 由来の POSIX 形式パス（`/c/Users/you/project` など）を渡すとドライブレターが正しく解決されず、意図しないディレクトリが開かれます。
 - リポジトリ自体は `C:\` 以外のドライブ（例: `D:\dev\vk-terminals`）に置いても問題なく動作します。ただし `C:\Program Files\...` のような管理者権限が必要なディレクトリや、OneDrive 同期対象フォルダ（既定の `ドキュメント` / `デスクトップ` が同期対象になっている場合あり）に置くと、`npm install` 時のネイティブビルド（`node-pty`）が権限エラーやファイルロックで失敗することがあります。`C:\dev\...` のような同期対象外の短いパスを推奨します。
 - リポジトリを配置するディレクトリ自体にスペースが含まれる場合（例: `C:\Users\Taro Yamada\Documents\vk-terminals`）、`node-pty` の `node-gyp` 経由のネイティブビルドがパス中のスペースが原因で失敗することがあります（`npm install` / `electron-rebuild` がビルドツールへの引数展開でパスを分割してしまうケース）。ビルドエラーが出た場合は、まずスペースを含まないパス（例: `C:\dev\vk-terminals`）に配置し直して切り分けてください。
-- （セキュリティ向け補足）Windows は既定で、実行ファイル名の解決時に **カレントディレクトリを PATH より先に検索**します。vk-terminals の各ペインは `cwd` を作業ディレクトリとしてシェルを起動するため、信頼できないリポジトリ（`cwd` に指定したフォルダ）に `claude.exe` など正規コマンドと同名の実行ファイルが紛れ込んでいると、そちらが誤って実行される恐れがあります。気になる場合は環境変数 `NoDefaultCurrentDirectoryInExePath=1` を設定すると、カレントディレクトリ検索を無効化し PATH のみから解決されるようになります（`setx NoDefaultCurrentDirectoryInExePath 1` 等）。
+- （セキュリティ向け補足）Windows は既定で、実行ファイル名の解決時に **カレントディレクトリを PATH より先に検索**します。vk-terminals の各ペインは `cwd` を作業ディレクトリとしてシェルを起動するため、信頼できないリポジトリ（`cwd` に指定したフォルダ）に `claude.exe` など正規コマンドと同名の実行ファイルが紛れ込んでいると、そちらが誤って実行される恐れがあります。気になる場合は環境変数 `NoDefaultCurrentDirectoryInExePath=1` を設定すると、カレントディレクトリ検索を無効化し PATH のみから解決されるようになります（`setx NoDefaultCurrentDirectoryInExePath 1` 等）。`setx` はユーザー環境変数としてレジストリに恒久保存されますが、**反映されるのは次回以降に開くコマンドウィンドウのみで、実行した現在のセッションには反映されません**（現在のセッションだけで即座に有効化したい場合は `$env:NoDefaultCurrentDirectoryInExePath=1` を使います）。なお、この変数を有効化すると `node-pty`（winpty）のネイティブビルドが失敗するため、`npm install` の際は一時的に無効化する必要があります（詳細は「1. 前提ツール」を参照）。セキュリティ目的で恒久的に有効化するのではなく一時的な検証として設定しただけの場合は、`reg delete "HKCU\Environment" /F /V NoDefaultCurrentDirectoryInExePath` で削除して元に戻せます（削除も同様に次回以降のウィンドウから反映されます）。
 
 ## 使い方
 

@@ -100,17 +100,26 @@ function runElectronRebuild(cxxflags) {
 
   // Windows の .cmd は shell 経由でないと直接実行できないため shell:true が必要。
   const useShell = process.platform === 'win32';
+  const args = ['-f', '-w', 'node-pty'];
 
-  // shell:true 時、Windows の spawnSync は file/args を単純に空白連結するだけで
-  // クォートしないため、パスにスペースを含みうる実行ファイル側（C:\Users\John Doe\... や
-  // OneDrive 配下など）は自前でダブルクォートで囲む。引数（-f / -w / node-pty）は
-  // スペースを含まないためクォート不要。
-  const command = useShell ? `"${bin}"` : bin;
+  if (useShell) {
+    // shell:true と args 配列の併用は Node v22+ で DEP0190 警告の対象になるため、
+    // shell 経由のときはコマンド全体を 1 本の文字列として渡す。
+    // Windows の spawnSync は shell:true 時に file/args を単純に空白連結するだけで
+    // クォートしないため、パスにスペースを含みうる実行ファイル側（C:\Users\John Doe\... や
+    // OneDrive 配下など）は自前でダブルクォートで囲む。引数（-f / -w / node-pty）は
+    // スペースを含まないためクォート不要。
+    const command = `"${bin}" ${args.join(' ')}`;
+    return spawnSync(command, {
+      stdio: 'inherit',
+      env,
+      shell: true,
+    });
+  }
 
-  return spawnSync(command, ['-f', '-w', 'node-pty'], {
+  return spawnSync(bin, args, {
     stdio: 'inherit',
     env,
-    shell: useShell,
   });
 }
 

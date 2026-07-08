@@ -1,5 +1,6 @@
 # Changelog
 
+- [ 機能追加 ] Claude Desktop 風のサイドバーメニューを追加。設定項目・config.json の `menuItems`・HTTP API `POST /api/menu` から外部リンクや設定モーダル起動項目を表示可能に（[#80](https://github.com/vektor-inc/vk-terminals/issues/80)）
 - [ 不具合修正 ] Claude使用状況の公式表示が一時的な取得失敗のたびにトークン集計表示へ切り替わり不安定になる問題を修正（直近の公式値を一定時間保持してフォールバックへの頻繁な切替を防止）（[vektor-inc/vk-orchestrator#31](https://github.com/vektor-inc/vk-orchestrator/issues/31)）
 
 ## 1.8.1

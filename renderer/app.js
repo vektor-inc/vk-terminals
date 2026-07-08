@@ -2049,13 +2049,20 @@ function renderSettingsField(f, value, id) {
 //   - 「設定」タブは settings:describe が使えるときだけ描画し、従来どおり保存できる
 //   - 使用状況のポーリングは「Claude使用状況タブ表示中のみ」初回即時＋60秒間隔。
 //     残り時間表示（◯時間◯分後にリセット）は毎秒ライブ再計算する
+// 設定モーダル・使用量モーダルの同時オープンを防ぐ共有ロック。settings:describe の
+// await 中は overlay がまだ DOM に無いため、.settings-overlay の有無チェックだけでは
+// もう一方のモーダルがすり抜けて二重生成されうる。await より前に同期で立てるこのフラグ
+// で「チェック〜生成」を原子的に守り、モーダルを閉じた／生成に失敗した時に必ず戻す。
+let modalOpen = false;
+
 // ─── Claude使用量モーダル ─────────────────────────────────────────────────────
 // 設定から切り離した読み取り専用の使用状況ビュー。サイドバーの「Claude使用量」項目
 // （builtin メニューの open-usage アクション）から起動する。設定モーダルとは別物で、
 // 保存フッターは持たず、表示中のみ 60 秒ポーリング＋リセット残時間の毎秒再計算を行う。
 async function openUsageModal() {
-  // 二重オープン防止（設定モーダルとも共通の .settings-overlay で 1 枚に限定）
-  if (document.querySelector('.settings-overlay')) return;
+  // 二重オープン防止（設定モーダルと共通の同期ロックで 1 枚に限定）
+  if (modalOpen) return;
+  modalOpen = true;
 
   const overlay = document.createElement('div');
   overlay.className = 'settings-overlay usage-overlay';
@@ -2102,6 +2109,7 @@ async function openUsageModal() {
     if (usageTickTimer) { clearInterval(usageTickTimer); usageTickTimer = null; }
     document.removeEventListener('keydown', onKey);
     overlay.remove();
+    modalOpen = false;
   };
   const onKey = (e) => { if (e.key === 'Escape') close(); };
   document.addEventListener('keydown', onKey);
@@ -2110,8 +2118,9 @@ async function openUsageModal() {
 }
 
 async function openSettingsModal() {
-  // 二重オープン防止
-  if (document.querySelector('.settings-overlay')) return;
+  // 二重オープン防止（使用量モーダルと共通の同期ロック。describe の await より前に立てる）
+  if (modalOpen) return;
+  modalOpen = true;
 
   // 設定ディスクリプタが無い環境でも空の設定モーダルとして開く（使用量は別モーダル）。
   let desc = null;
@@ -2163,6 +2172,7 @@ async function openSettingsModal() {
   const close = () => {
     document.removeEventListener('keydown', onKey);
     overlay.remove();
+    modalOpen = false;
   };
   const onKey = (e) => { if (e.key === 'Escape') close(); };
   document.addEventListener('keydown', onKey);

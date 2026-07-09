@@ -1010,9 +1010,7 @@ function closePane(paneId) {
   requestAnimationFrame(fitAll);
 }
 
-// ペインをグリッド上で dir 方向の隣と入れ替える。端で隣が無ければ何もしない。
-//   left/right … 同一行内の隣（行をまたがない）
-//   up/down    … 上下の行の同じ列
+// ペインをグリッド上で左右の隣と入れ替える。端で隣が無ければ何もしない。
 function movePane(paneId, dir) {
   const order = tree.order;
   const i = order.indexOf(paneId);
@@ -1021,8 +1019,6 @@ function movePane(paneId, dir) {
   let j = -1;
   if (dir === 'left'  && i % cols !== 0) j = i - 1;
   else if (dir === 'right' && i % cols !== cols - 1 && i + 1 < order.length) j = i + 1;
-  else if (dir === 'up'    && i - cols >= 0) j = i - cols;
-  else if (dir === 'down'  && i + cols < order.length) j = i + cols;
   if (j < 0) return;
   [order[i], order[j]] = [order[j], order[i]];
   render();
@@ -1407,8 +1403,6 @@ function renderLeaf(node) {
     <div class="pane-actions">
       <span class="pane-badge auto-input-badge" hidden></span>
       <button class="btn btn-move btn-move-left" title="左へ移動">◀</button>
-      <button class="btn btn-move btn-move-down" title="下へ移動">▼</button>
-      <button class="btn btn-move btn-move-up" title="上へ移動">▲</button>
       <button class="btn btn-move btn-move-right" title="右へ移動">▶</button>
       <button class="btn btn-split" title="ペインを追加">＋</button>
       <button class="btn btn-close" title="閉じる">✕</button>
@@ -1458,14 +1452,6 @@ function renderLeaf(node) {
   header.querySelector('.btn-move-right').addEventListener('click', e => {
     e.stopPropagation();
     movePane(node.id, 'right');
-  });
-  header.querySelector('.btn-move-up').addEventListener('click', e => {
-    e.stopPropagation();
-    movePane(node.id, 'up');
-  });
-  header.querySelector('.btn-move-down').addEventListener('click', e => {
-    e.stopPropagation();
-    movePane(node.id, 'down');
   });
   header.querySelector('.btn-split').addEventListener('click', e => {
     e.stopPropagation();

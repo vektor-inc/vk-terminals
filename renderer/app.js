@@ -727,7 +727,10 @@ function sidebarMaxWidth() {
 }
 
 function clampSidebarWidth(w) {
-  return Math.max(SIDEBAR_MIN_WIDTH, Math.min(sidebarMaxWidth(), Math.round(w)));
+  // 数値化できない値（NaN / undefined / 文字列など）は既定幅にフォールバックする。
+  const n = Number(w);
+  if (!Number.isFinite(n)) return DEFAULT_SIDEBAR_WIDTH;
+  return Math.max(SIDEBAR_MIN_WIDTH, Math.min(sidebarMaxWidth(), Math.round(n)));
 }
 
 // 現在のサイドバー幅（セッション内保持値、無ければ既定）をクランプして返す。
@@ -787,8 +790,14 @@ function renderPaneStash() {
   });
 }
 
+// xterm 表示トグル（― ボタン）のグリフ / ラベルを開閉状態から返す。
+// aria-expanded に加えて視覚グリフも切り替える（表示中=下向き▾ / 非表示=右向き▸）。
+// 並べ替えの ▲▼ とは向き（縦↔横起点）で区別する。
+function stashToggleGlyph(open) { return open ? '▾' : '▸'; }
+function stashToggleLabel(open) { return open ? 'ターミナルを隠す' : 'ターミナルを表示'; }
+
 // 格納ペイン 1 件分（コンパクトカード）を生成する。
-//   - ヘッダ: 状態バッジ + タスク名 + アクション（▲ ▼ ―(表示トグル) →(復帰) ✕）
+//   - ヘッダ: 状態バッジ + タスク名 + アクション（▲ ▼ 表示トグル(▸/▾) →(復帰) ✕）
 //   - cwd 行
 //   - term-container（xterm。既定は非表示、― で開閉）
 function renderStashItem(id, idx, count) {
@@ -815,7 +824,7 @@ function renderStashItem(id, idx, count) {
     <div class="stash-item-actions">
       <button class="btn btn-stash-up" title="上へ移動" aria-label="上へ移動">▲</button>
       <button class="btn btn-stash-down" title="下へ移動" aria-label="下へ移動">▼</button>
-      <button class="btn btn-stash-toggle" title="ターミナルの表示を切り替え" aria-label="ターミナルの表示を切り替え" aria-expanded="${xtermOpen ? 'true' : 'false'}">―</button>
+      <button class="btn btn-stash-toggle" title="${escAttr(stashToggleLabel(xtermOpen))}" aria-label="${escAttr(stashToggleLabel(xtermOpen))}" aria-expanded="${xtermOpen ? 'true' : 'false'}">${escText(stashToggleGlyph(xtermOpen))}</button>
       <span class="stash-actions-sep" aria-hidden="true"></span>
       <button class="btn btn-stash-restore" title="グリッドへ戻す" aria-label="グリッドへ戻す">→</button>
       <button class="btn btn-close" title="閉じる" aria-label="閉じる">✕</button>
@@ -1055,7 +1064,7 @@ function updatePaneTitle(paneId) {
   // renderLeaf() 側の `canDragPane` 判定と同一の式に合わせる。
   // ここで考慮しないと、タイトル / PR をクリアした後に `.pane-task-title` が
   // empty 扱いで消え、ドラッグ起点を失う（CodeRabbit PR #45 指摘）。
-  const canDragPane = !!(tree && Array.isArray(tree.order) && tree.order.length > 1);
+  const canDragPane = canDragGridPane();
   // PR ボタンは apiPrUrl があれば常時表示（採用: 案A）。
   // renderer 側でも http(s) 二段チェックを通してから採用する。
   const prUrl = isSafeExternalUrl(t.apiPrUrl) ? t.apiPrUrl : '';
@@ -1143,6 +1152,13 @@ function getAllLeafIds(t = tree) {
   return grid.concat(stash);
 }
 
+// グリッド上でペイン D&D の起点になれるか（issue #40）。
+// D&D はグリッド内限定のため、格納分を含まないグリッドの order 件数で判定する（issue #89）。
+// グリッドに 2 枚以上あるときのみドラッグ可（1 枚だと移動先が無い）。
+function canDragGridPane() {
+  return !!(tree && Array.isArray(tree.order) && tree.order.length > 1);
+}
+
 // ペインがグリッド・格納のいずれかに存在するか（issue #89 で格納分も含める）。
 function paneExists(id) {
   if (!tree) return false;
@@ -1182,17 +1198,15 @@ function findLargestVisiblePaneId() {
 // ─── Pane actions ─────────────────────────────────────────────────────────────
 // グリッド化により「分割」は入れ子を作らず、新ペインをグリッド末尾に追加する操作になった。
 // direction は後方互換のため引数として残すが、配置には影響しない（自動折返しグリッド）。
-async function splitPane(paneId, direction, overrideCwd, options = {}) {
-  if (!paneExists(paneId)) return null;
-
+// 新規ペインをグリッド末尾に追加する（基準ペイン不要）。
+// splitPane（＋ボタン）と空グリッドのプレースホルダ「新規ペインを追加」で共有する生成経路（issue #89）。
+//   - overrideCwd が指定されていればそれを使い、未指定ならホームディレクトリ（main 側でフォールバック）で開く。
+//   - options.noClaude が指定されていればそのまま main に渡す。未指定なら main 側のグローバル設定に従う。
+async function addPane(overrideCwd = null, options = {}) {
   const newPaneId = newId();
-  // overrideCwd が指定されていればそれを使い、未指定ならホームディレクトリ（main 側でフォールバック）で開く。
-  // 分割元ペインの cwd は継承しない（task-queue 等の特定ディレクトリにいるペインから分割しても
-  // 新ペインはデフォルト位置で開かせる方針）。
-  const targetCwd = overrideCwd || null;
-  // options.noClaude が指定されていればそのまま main に渡す。未指定なら main 側のグローバル設定に従う。
-  await createTerminal(newPaneId, targetCwd, options);
+  await createTerminal(newPaneId, overrideCwd || null, options);
 
+  if (!Array.isArray(tree.order)) tree.order = [];
   tree.order.push(newPaneId);
   // ペイン数が変わりグリッド寸法が変化するため、手動リサイズ比率は均等にリセットする。
   resetGridSizing();
@@ -1205,6 +1219,14 @@ async function splitPane(paneId, direction, overrideCwd, options = {}) {
 
   // 新ペインの情報を返す（focusedPaneId の更新を待たずに確定値を返す）
   return { paneId: newPaneId, termId: terminals[newPaneId]?.termId };
+}
+
+// グリッド化により「分割」は入れ子を作らず、新ペインをグリッド末尾に追加する操作。
+// 分割元ペインの cwd は継承しない（task-queue 等の特定ディレクトリにいるペインから分割しても
+// 新ペインはデフォルト位置で開かせる方針）。
+async function splitPane(paneId, direction, overrideCwd, options = {}) {
+  if (!paneExists(paneId)) return null;
+  return addPane(overrideCwd, options);
 }
 
 function closePane(paneId) {
@@ -1343,7 +1365,13 @@ function toggleStashXterm(paneId) {
   if (li) {
     li.classList.toggle('stash-xterm-open', t.stashXtermOpen);
     const btn = li.querySelector('.btn-stash-toggle');
-    if (btn) btn.setAttribute('aria-expanded', t.stashXtermOpen ? 'true' : 'false');
+    if (btn) {
+      btn.setAttribute('aria-expanded', t.stashXtermOpen ? 'true' : 'false');
+      // 開閉状態に応じてグリフ・ラベルも切り替える（視覚状態の可視化）。
+      btn.textContent = stashToggleGlyph(t.stashXtermOpen);
+      btn.title = stashToggleLabel(t.stashXtermOpen);
+      btn.setAttribute('aria-label', stashToggleLabel(t.stashXtermOpen));
+    }
   }
   if (t.stashXtermOpen) {
     requestAnimationFrame(() => {
@@ -1533,8 +1561,55 @@ function render() {
 //   - colFr / rowFr があれば fr トラックに反映（手動リサイズ結果）。無ければ均等。
 //   - 最終行がフルでない場合、最後のペインを残りの列に広げてスキマを埋める。
 //   - 列間・行間にドラッグ用リサイズハンドルをオーバーレイする。
+// グリッドが空（全ペイン格納中など）のときのプレースホルダ（issue #89）。
+// 空セルだけで行き止まりにならないよう、復帰導線を明示する。
+//   - 「新規ペインを追加」: ＋ と同じ生成経路（addPane）で新規ペインを作る。
+//   - 「サイドバーを開いて戻す」: ドロワーを開き、格納ペインを戻せるようにする。
+function renderEmptyGrid() {
+  const wrap = document.createElement('div');
+  wrap.className = 'grid grid-empty';
+
+  const box = document.createElement('div');
+  box.className = 'grid-empty-box';
+
+  const title = document.createElement('div');
+  title.className = 'grid-empty-title';
+  title.textContent = 'すべてのペインを格納中です';
+
+  const desc = document.createElement('div');
+  desc.className = 'grid-empty-desc';
+  desc.textContent = 'グリッドに表示するペインがありません。新規ペインを追加するか、サイドバーから格納したペインを戻してください。';
+
+  const actions = document.createElement('div');
+  actions.className = 'grid-empty-actions';
+
+  const addBtn = document.createElement('button');
+  addBtn.type = 'button';
+  addBtn.className = 'grid-empty-btn';
+  addBtn.textContent = '新規ペインを追加';
+  addBtn.setAttribute('aria-label', '新規ペインを追加');
+  addBtn.addEventListener('click', () => { addPane(); });
+
+  const openBtn = document.createElement('button');
+  openBtn.type = 'button';
+  openBtn.className = 'grid-empty-btn grid-empty-btn-secondary';
+  openBtn.textContent = 'サイドバーを開いて戻す';
+  openBtn.setAttribute('aria-label', 'サイドバーを開いて格納したペインを戻す');
+  openBtn.addEventListener('click', () => setSidebarOpen(true, { focusFirst: true }));
+
+  actions.appendChild(addBtn);
+  actions.appendChild(openBtn);
+  box.appendChild(title);
+  box.appendChild(desc);
+  box.appendChild(actions);
+  wrap.appendChild(box);
+  return wrap;
+}
+
 function renderGrid(t) {
   const order = (t && Array.isArray(t.order)) ? t.order : [];
+  // グリッドが空のときは行き止まり回避のプレースホルダを返す（issue #89）。
+  if (order.length === 0) return renderEmptyGrid();
   const { cols, rows } = gridDims(t);
 
   const grid = document.createElement('div');
@@ -1690,10 +1765,9 @@ function renderLeaf(node) {
   // タスクタイトル行（OSC 0/2 または POST /api/set-title で設定された文字列を表示）。
   // 空のときは .empty クラスで非表示にし、xterm の表示領域を圧迫しない。
   // apiUrl があるときは .has-link を付与し、内部を <a> 化する（renderTaskTitleContent）。
-  // ペイン D&D の可否判定（issue #40）。グリッド上のペインが 2 つ以上ある時のみ drag 起点になれる。
-  // D&D はグリッド内限定のため、格納分を含む getAllLeafIds ではなくグリッドの order 件数で判定する（issue #89）。
+  // ペイン D&D の可否判定（issue #40 / #89）。判定式は canDragGridPane に集約。
   // 空タイトル時も D&D 可なら .empty を付けず、ハンドルとして掴める高さを確保する。
-  const canDragPane = !!(tree && Array.isArray(tree.order) && tree.order.length > 1);
+  const canDragPane = canDragGridPane();
   const taskTitleEl = document.createElement('div');
   // empty 判定はタイトル本文・ドラッグ可・PR ボタンのいずれもないとき。
   // PR ボタンだけでも表示するためにこの条件で扱う（issue #44）。

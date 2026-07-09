@@ -1,5 +1,7 @@
 # Changelog
 
+## 1.12.0
+
 - [ 機能追加 ] HTTP API `POST /api/new-pane` に `stashed` オプションを追加し、`stashed: true` で生成ペインをサイドバー格納＋折りたたみ状態で開けるように（[#93](https://github.com/vektor-inc/vk-terminals/issues/93)）
 
 ## 1.11.1

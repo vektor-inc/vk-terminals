@@ -410,13 +410,16 @@ html, body {
   overflow: hidden;
 }
 
-/* ─── Sidebar menu ─────────────────────────────────────────────────────────── */
-.sidebar-menu {
+/* ─── Sidebar ──────────────────────────────────────────────────────────────── */
+/* ラッパー（.sidebar）が flex 子・開閉トランジション・可変幅（--vktm-sidebar-width）の基準。
+ * 内側の nav（.sidebar-menu）がメニューと格納ペインをスクロール表示し、
+ * 右端の .sidebar-resizer で幅をドラッグ変更する（issue #89）。 */
+.sidebar {
+  position: relative;
   flex: 0 0 0;
-  width: 252px;
+  width: var(--vktm-sidebar-width, 330px);
   min-width: 0;
   height: 100%;
-  overflow: hidden auto;
   transform: translateX(-100%);
   transition: flex-basis 0.18s ease, transform 0.18s ease;
   z-index: 900;
@@ -424,13 +427,43 @@ html, body {
   border-right: 1px solid #21262d;
   color: #e6edf3;
 }
-#root.sidebar-open .sidebar-menu {
-  flex-basis: 252px;
+#root.sidebar-open .sidebar {
+  flex-basis: var(--vktm-sidebar-width, 330px);
   transform: translateX(0);
 }
+/* リサイズ中は追従を即時にするためトランジションを切る。 */
+body.resizing-sidebar .sidebar {
+  transition: none;
+}
+.sidebar-menu {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  overflow: hidden auto;
+}
 .sidebar-menu-inner {
-  width: 252px;
+  width: 100%;
   padding: 10px 8px;
+}
+
+/* サイドバー右端の幅リサイズハンドル。グリッドの .grid-handle と同じく、
+ * 通常は透明・hover/focus 時のみアクセントカラーで可視化する。 */
+.sidebar-resizer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 8px;
+  height: 100%;
+  transform: translateX(50%);
+  cursor: col-resize;
+  z-index: 910;
+  background: transparent;
+  transition: background-color 0.12s ease;
+}
+.sidebar-resizer:hover,
+.sidebar-resizer:focus-visible {
+  background: rgba(88, 166, 255, 0.35);
+  outline: none;
 }
 .sidebar-menu-list,
 .sidebar-submenu-list {
@@ -501,9 +534,112 @@ html, body {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .sidebar-menu {
+  .sidebar {
     transition: none;
   }
+}
+
+/* ─── Pane stash（サイドバーへの格納, issue #89）───────────────────────────────
+ * メニューリストの下に、格納ペインをコンパクトカードで縦積みする。 */
+.pane-stash {
+  margin: 10px 8px 0;
+  padding-top: 10px;
+  border-top: 1px solid #21262d;
+}
+.pane-stash[hidden] {
+  display: none;
+}
+.pane-stash-title {
+  padding: 0 4px 6px;
+  color: #8b949e;
+  font-size: 11px;
+  font-weight: 600;
+}
+.pane-stash-list {
+  list-style: none;
+}
+.stash-item {
+  margin-bottom: 8px;
+  border: 1px solid #21262d;
+  border-radius: var(--vktm--border-radius--md);
+  background: #0d1117;
+  overflow: hidden;
+}
+.stash-item.focused {
+  border-color: #388bfd;
+}
+.stash-item.waiting {
+  border-color: #d29922;
+  animation: waiting-pulse 1.5s ease-in-out infinite;
+}
+.stash-item-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  background: #161b22;
+}
+/* コンパクトカードでは幅が限られるため、idle 時のステータスバッジは
+ * （グリッドのように幅を予約せず）畳んでタスク名の表示幅を優先する。 */
+.stash-item-head .pane-status[data-status="idle"] {
+  display: none;
+}
+.stash-item-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #c9d1d9;
+  font-size: 12px;
+  font-weight: 600;
+}
+.stash-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  flex-shrink: 0;
+}
+/* 格納カードはコンパクトなのでボタンをやや小さめにする。 */
+.stash-item-actions .btn {
+  width: 22px;
+  height: 22px;
+  font-size: 13px;
+}
+.stash-item-actions .btn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+.stash-item-actions .btn:disabled:hover {
+  color: #768390;
+  background: none;
+}
+.stash-item-cwd {
+  padding: 3px 8px 5px;
+  color: #6e7681;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 格納中の xterm は既定で非表示。― トグルで開いたときのみ固定高で表示する。 */
+.stash-item .term-container {
+  display: none;
+  flex: none;
+  height: 200px;
+}
+.stash-item.stash-xterm-open .term-container {
+  display: block;
+}
+
+/* 格納/復帰（←→）と並べ替え（◀▶ / ▲▼）を視覚的に分ける区切り線。 */
+.pane-actions-sep,
+.stash-actions-sep {
+  width: 1px;
+  height: 16px;
+  margin: 0 3px;
+  background: #30363d;
+  flex-shrink: 0;
 }
 
 /* ─── Grid container ───────────────────────────────────────────────────────── */

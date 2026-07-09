@@ -438,6 +438,12 @@ ipcRenderer.on('terminal:exit', (event, id) => {
 function updatePaneCwd(paneId, cwd) {
   const el = document.querySelector(`.pane[data-id="${paneId}"] .pane-cwd`);
   if (el) el.textContent = cwd;
+  // 格納中のコンパクト表示の cwd も同期する（issue #89）。
+  const stashCwd = document.querySelector(`.stash-item[data-id="${paneId}"] .stash-item-cwd`);
+  if (stashCwd) {
+    stashCwd.textContent = cwd;
+    stashCwd.title = cwd;
+  }
 }
 
 // API（POST /api/set-title）由来のタイトルを最優先で表示し、未設定なら OSC 0/2 由来の
@@ -493,6 +499,12 @@ function openExternalUrlSafe(url) {
 let sidebarMenuSections = [];
 let sidebarOpen = false;
 let sidebarTransitionCleanup = null;
+// サイドバー幅リサイズ（issue #89）。ドラッグ中の一時状態。
+let sidebarResizeState = null;
+// サイドバー幅の既定値・下限（px）。上限はウィンドウ幅比で動的に決める（sidebarMaxWidth）。
+// 従来の 252px から約 1.3 倍に拡張した既定幅。永続化はしない（再起動で既定に戻る）。
+const DEFAULT_SIDEBAR_WIDTH = 330;
+const SIDEBAR_MIN_WIDTH = 200;
 
 function isReducedMotion() {
   return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
@@ -593,9 +605,16 @@ function createMenuItem(item) {
 function renderSidebarMenu() {
   const nav = document.getElementById('sidebar-menu');
   if (!nav) return;
-  nav.replaceChildren();
-  const inner = document.createElement('div');
-  inner.className = 'sidebar-menu-inner';
+  // メニューは専用の内側コンテナ（.sidebar-menu-inner）だけを作り直す。
+  // 格納ペイン（#pane-stash）は nav の別の子として同居させ、ここでは touch しない。
+  // これにより格納ペインの xterm 要素がメニュー再描画のたびに detach されるのを防ぐ（issue #89）。
+  let inner = nav.querySelector('.sidebar-menu-inner');
+  if (!inner) {
+    inner = document.createElement('div');
+    inner.className = 'sidebar-menu-inner';
+    nav.insertBefore(inner, nav.firstChild);
+  }
+  inner.replaceChildren();
 
   for (let sectionIndex = 0; sectionIndex < sidebarMenuSections.length; sectionIndex++) {
     const section = sidebarMenuSections[sectionIndex];
@@ -626,23 +645,232 @@ function renderSidebarMenu() {
     }
   }
 
-  nav.appendChild(inner);
   applyUsageBadge(); // 再描画で消えた使用率警告ドットを貼り直す
 }
 
-function createSidebarMenu() {
+// サイドバーのラッパー（.sidebar）を組み立てる（issue #89）。
+// 中身は「スクロールする nav（メニュー内側 + 格納ペインセクション）」と「幅リサイズハンドル」。
+// 開閉トランジション・可変幅の基準はこのラッパー側に持たせる。
+function createSidebar() {
+  const aside = document.createElement('aside');
+  aside.id = 'sidebar';
+  aside.className = 'sidebar';
+
   const nav = document.createElement('nav');
   nav.id = 'sidebar-menu';
   nav.className = 'sidebar-menu';
   nav.setAttribute('aria-label', 'メインメニュー');
-  return nav;
+
+  // メニュー内側（renderSidebarMenu が作り直す対象）
+  const inner = document.createElement('div');
+  inner.className = 'sidebar-menu-inner';
+  nav.appendChild(inner);
+
+  // 格納ペインセクション（renderSidebarMenu の再構築対象外・別管理）
+  nav.appendChild(createPaneStashContainer());
+
+  aside.appendChild(nav);
+  aside.appendChild(createSidebarResizer());
+  return aside;
 }
 
-function ensureSidebarMenu(root) {
-  const existing = root.querySelector('#sidebar-menu');
-  const nav = existing || createSidebarMenu();
-  if (!existing) renderSidebarMenu();
-  return nav;
+// 格納ペインを収めるセクション（見出し＋リスト）。中身は renderPaneStash が更新する。
+function createPaneStashContainer() {
+  const section = document.createElement('section');
+  section.id = 'pane-stash';
+  section.className = 'pane-stash';
+  section.hidden = true;
+  section.setAttribute('aria-label', '格納したペイン');
+
+  const title = document.createElement('div');
+  title.className = 'pane-stash-title';
+  title.textContent = '格納したペイン';
+
+  const list = document.createElement('ul');
+  list.className = 'pane-stash-list';
+
+  section.appendChild(title);
+  section.appendChild(list);
+  return section;
+}
+
+// サイドバー右端の幅リサイズハンドル（グリッドの .grid-handle 相当のアクセシブル版）。
+function createSidebarResizer() {
+  const h = document.createElement('div');
+  h.className = 'sidebar-resizer';
+  h.setAttribute('role', 'separator');
+  h.setAttribute('aria-orientation', 'vertical');
+  h.setAttribute('aria-label', 'サイドバーの幅を変更');
+  h.setAttribute('tabindex', '0');
+  h.setAttribute('aria-valuemin', String(SIDEBAR_MIN_WIDTH));
+  h.setAttribute('aria-valuemax', String(sidebarMaxWidth()));
+  h.setAttribute('aria-valuenow', String(getSidebarWidth()));
+  h.addEventListener('mousedown', startSidebarResize);
+  h.addEventListener('keydown', onSidebarResizerKey);
+  return h;
+}
+
+function ensureSidebar(root) {
+  let el = root.querySelector('#sidebar');
+  if (!el) {
+    el = createSidebar();
+    renderSidebarMenu();
+    renderPaneStash();
+  }
+  return el;
+}
+
+// ─── Sidebar width（issue #89）────────────────────────────────────────────────
+// 上限はウィンドウ幅の約 45%（40〜50% の範囲）。狭いウィンドウでもグリッドを潰さない。
+function sidebarMaxWidth() {
+  return Math.max(SIDEBAR_MIN_WIDTH, Math.round(window.innerWidth * 0.45));
+}
+
+function clampSidebarWidth(w) {
+  return Math.max(SIDEBAR_MIN_WIDTH, Math.min(sidebarMaxWidth(), Math.round(w)));
+}
+
+// 現在のサイドバー幅（セッション内保持値、無ければ既定）をクランプして返す。
+function getSidebarWidth() {
+  const w = tree && typeof tree.sidebarWidth === 'number' ? tree.sidebarWidth : DEFAULT_SIDEBAR_WIDTH;
+  return clampSidebarWidth(w);
+}
+
+// 幅を確定し、CSS カスタムプロパティ・aria 値・セッション保持値を更新する。
+function setSidebarWidth(w) {
+  const width = clampSidebarWidth(w);
+  if (tree) tree.sidebarWidth = width;
+  const aside = document.getElementById('sidebar');
+  if (aside) aside.style.setProperty('--vktm-sidebar-width', `${width}px`);
+  const handle = document.querySelector('.sidebar-resizer');
+  if (handle) {
+    handle.setAttribute('aria-valuemin', String(SIDEBAR_MIN_WIDTH));
+    handle.setAttribute('aria-valuemax', String(sidebarMaxWidth()));
+    handle.setAttribute('aria-valuenow', String(width));
+  }
+}
+
+function startSidebarResize(e) {
+  e.preventDefault();
+  e.stopPropagation();
+  sidebarResizeState = { startX: e.clientX, startWidth: getSidebarWidth() };
+  document.body.classList.add('resizing-sidebar');
+}
+
+// 左右矢印キーで幅を増減する（Shift で大きめステップ）。
+function onSidebarResizerKey(e) {
+  const step = e.shiftKey ? 40 : 16;
+  let w = getSidebarWidth();
+  if (e.key === 'ArrowLeft') w -= step;
+  else if (e.key === 'ArrowRight') w += step;
+  else return;
+  e.preventDefault();
+  setSidebarWidth(w);
+  debouncedFitAll();
+  requestAnimationFrame(fitAll);
+}
+
+// ─── Pane stash rendering（issue #89）─────────────────────────────────────────
+// 格納ペインのコンパクト表示を stashOrder に従って組み立てる。
+// xterm 要素の再取り付けは render() の共通ループが担う（ここでは器だけ作る）。
+function renderPaneStash() {
+  const section = document.getElementById('pane-stash');
+  if (!section) return;
+  const stash = (tree && Array.isArray(tree.stashOrder)) ? tree.stashOrder : [];
+  // 0 件のときはセクションごと隠す。
+  section.hidden = stash.length === 0;
+  const list = section.querySelector('.pane-stash-list');
+  if (!list) return;
+  list.replaceChildren();
+  stash.forEach((id, idx) => {
+    list.appendChild(renderStashItem(id, idx, stash.length));
+  });
+}
+
+// 格納ペイン 1 件分（コンパクトカード）を生成する。
+//   - ヘッダ: 状態バッジ + タスク名 + アクション（▲ ▼ ―(表示トグル) →(復帰) ✕）
+//   - cwd 行
+//   - term-container（xterm。既定は非表示、― で開閉）
+function renderStashItem(id, idx, count) {
+  const t = terminals[id];
+  const li = document.createElement('li');
+  li.className = 'stash-item'
+    + (id === focusedPaneId ? ' focused' : '')
+    + (t?.waiting ? ' waiting' : '');
+  li.dataset.id = id;
+  const xtermOpen = !!(t && t.stashXtermOpen);
+  if (xtermOpen) li.classList.add('stash-xterm-open');
+
+  const status = t?.status || 'idle';
+  const { label: statusLabel, ariaLabel: statusAriaLabel } = getStatusPresentation(status);
+  const title = getDisplayTitle(t) || '(無題)';
+  const cwd = t?.cwd || '~';
+
+  const head = document.createElement('div');
+  head.className = 'stash-item-head';
+  // セキュリティ: cwd（OS 由来）・status 等は escAttr / escText でエスケープする（renderLeaf と同流儀）。
+  head.innerHTML = `
+    <span class="pane-badge pane-status" data-status="${escAttr(status)}" role="status" aria-live="polite"${statusAriaLabel ? ` aria-label="${escAttr(statusAriaLabel)}"` : ''}>${escText(statusLabel)}</span>
+    <span class="stash-item-title" title="${escAttr(title)}">${escText(title)}</span>
+    <div class="stash-item-actions">
+      <button class="btn btn-stash-up" title="上へ移動" aria-label="上へ移動">▲</button>
+      <button class="btn btn-stash-down" title="下へ移動" aria-label="下へ移動">▼</button>
+      <button class="btn btn-stash-toggle" title="ターミナルの表示を切り替え" aria-label="ターミナルの表示を切り替え" aria-expanded="${xtermOpen ? 'true' : 'false'}">―</button>
+      <span class="stash-actions-sep" aria-hidden="true"></span>
+      <button class="btn btn-stash-restore" title="グリッドへ戻す" aria-label="グリッドへ戻す">→</button>
+      <button class="btn btn-close" title="閉じる" aria-label="閉じる">✕</button>
+    </div>
+  `;
+
+  const cwdEl = document.createElement('div');
+  cwdEl.className = 'stash-item-cwd';
+  cwdEl.title = cwd;
+  cwdEl.textContent = cwd;
+
+  const termContainer = document.createElement('div');
+  termContainer.className = 'term-container';
+
+  li.appendChild(head);
+  li.appendChild(cwdEl);
+  li.appendChild(termContainer);
+
+  const upBtn = head.querySelector('.btn-stash-up');
+  const downBtn = head.querySelector('.btn-stash-down');
+  if (idx === 0) upBtn.disabled = true;
+  if (idx === count - 1) downBtn.disabled = true;
+  upBtn.addEventListener('click', e => { e.stopPropagation(); moveStashPane(id, 'up'); });
+  downBtn.addEventListener('click', e => { e.stopPropagation(); moveStashPane(id, 'down'); });
+  head.querySelector('.btn-stash-toggle').addEventListener('click', e => { e.stopPropagation(); toggleStashXterm(id); });
+  head.querySelector('.btn-stash-restore').addEventListener('click', e => { e.stopPropagation(); unstashPane(id); });
+  head.querySelector('.btn-close').addEventListener('click', e => { e.stopPropagation(); closePane(id); });
+  li.addEventListener('mousedown', () => focusPane(id));
+
+  return li;
+}
+
+// 格納ペイン（サイドバー内）のコンパクト表示を最新状態へ更新する。
+// グリッド用の update* 関数は .pane[data-id] しか見ないため、格納中はこちらで反映する。
+function updateStashItem(paneId) {
+  const li = document.querySelector(`.stash-item[data-id="${paneId}"]`);
+  if (!li) return;
+  const t = terminals[paneId];
+  if (!t) return;
+  li.classList.toggle('waiting', !!t.waiting);
+  const badge = li.querySelector('.pane-status');
+  if (badge) {
+    const status = t.status || 'idle';
+    badge.dataset.status = status;
+    const { label, ariaLabel } = getStatusPresentation(status);
+    badge.textContent = label;
+    if (ariaLabel) badge.setAttribute('aria-label', ariaLabel);
+    else badge.removeAttribute('aria-label');
+  }
+  const titleEl = li.querySelector('.stash-item-title');
+  if (titleEl) {
+    const title = getDisplayTitle(t) || '(無題)';
+    titleEl.textContent = title;
+    titleEl.title = title;
+  }
 }
 
 function focusFirstSidebarItem() {
@@ -654,7 +882,8 @@ function focusFirstSidebarItem() {
 function setSidebarOpen(open, options = {}) {
   const root = document.getElementById('root');
   const btn = document.getElementById('menu-btn');
-  const nav = root ? ensureSidebarMenu(root) : null;
+  // 開閉トランジション（transform）はラッパー .sidebar 側に付いている（issue #89）。
+  const aside = root ? ensureSidebar(root) : null;
   if (sidebarTransitionCleanup) {
     sidebarTransitionCleanup();
     sidebarTransitionCleanup = null;
@@ -672,7 +901,7 @@ function setSidebarOpen(open, options = {}) {
     }
   };
 
-  if (!nav || isReducedMotion()) {
+  if (!aside || isReducedMotion()) {
     requestAnimationFrame(afterLayout);
     return;
   }
@@ -681,7 +910,7 @@ function setSidebarOpen(open, options = {}) {
   let timeoutId = null;
   const cleanup = () => {
     done = true;
-    nav.removeEventListener('transitionend', onEnd);
+    aside.removeEventListener('transitionend', onEnd);
     if (timeoutId !== null) clearTimeout(timeoutId);
     if (sidebarTransitionCleanup === cleanup) sidebarTransitionCleanup = null;
   };
@@ -691,17 +920,17 @@ function setSidebarOpen(open, options = {}) {
     afterLayout();
   };
   const onEnd = (event) => {
-    if (event.target !== nav || event.propertyName !== 'transform') return;
+    if (event.target !== aside || event.propertyName !== 'transform') return;
     finish();
   };
   sidebarTransitionCleanup = cleanup;
-  nav.addEventListener('transitionend', onEnd);
+  aside.addEventListener('transitionend', onEnd);
   timeoutId = setTimeout(finish, 220);
 }
 
 function setupSidebarMenu() {
   const root = document.getElementById('root');
-  if (root) ensureSidebarMenu(root);
+  if (root) ensureSidebar(root);
   const btn = document.getElementById('menu-btn');
   if (btn) {
     btn.addEventListener('click', () => setSidebarOpen(!sidebarOpen, { focusFirst: true }));
@@ -816,6 +1045,8 @@ function renderTaskTitleContent(el, title, url, prUrl) {
 function updatePaneTitle(paneId) {
   const t = terminals[paneId];
   if (!t) return;
+  // 格納中ならコンパクト表示のタスク名を更新する（.pane が無いため下の処理は素通りする）。
+  updateStashItem(paneId);
   const el = document.querySelector(`.pane[data-id="${paneId}"] .pane-task-title`);
   if (!el) return;
   const title = getDisplayTitle(t);
@@ -824,7 +1055,7 @@ function updatePaneTitle(paneId) {
   // renderLeaf() 側の `canDragPane` 判定と同一の式に合わせる。
   // ここで考慮しないと、タイトル / PR をクリアした後に `.pane-task-title` が
   // empty 扱いで消え、ドラッグ起点を失う（CodeRabbit PR #45 指摘）。
-  const canDragPane = !!(tree && getAllLeafIds(tree).length > 1);
+  const canDragPane = !!(tree && Array.isArray(tree.order) && tree.order.length > 1);
   // PR ボタンは apiPrUrl があれば常時表示（採用: 案A）。
   // renderer 側でも http(s) 二段チェックを通してから採用する。
   const prUrl = isSafeExternalUrl(t.apiPrUrl) ? t.apiPrUrl : '';
@@ -850,6 +1081,8 @@ function updatePaneTitle(paneId) {
 function updatePaneStatus(paneId) {
   const t = terminals[paneId];
   if (!t) return;
+  // 格納中ならコンパクト表示の状態バッジを更新する（.pane が無いため下の処理は素通りする）。
+  updateStashItem(paneId);
   const paneEl = document.querySelector(`.pane[data-id="${paneId}"]`);
   if (!paneEl) return;
   // 枠の点滅アニメ（周辺視野での気付き用、issue #23 でも残置）は waiting フラグ準拠
@@ -900,13 +1133,22 @@ function resetGridSizing() {
   if (tree) { tree.colFr = null; tree.rowFr = null; }
 }
 
-// 全ペイン ID を表示順で返す（後方互換のため名前を維持）。
+// 全ペイン ID を返す（グリッド order ＋ サイドバー格納 stashOrder の和集合）。
+// fitAll・状態レポート・closePane の残ペイン算出などが依存するため、
+// グリッドと格納の両方を必ず走査対象に含める（issue #89）。
 function getAllLeafIds(t = tree) {
-  return (t && Array.isArray(t.order)) ? t.order.slice() : [];
+  if (!t) return [];
+  const grid = Array.isArray(t.order) ? t.order : [];
+  const stash = Array.isArray(t.stashOrder) ? t.stashOrder : [];
+  return grid.concat(stash);
 }
 
+// ペインがグリッド・格納のいずれかに存在するか（issue #89 で格納分も含める）。
 function paneExists(id) {
-  return !!(tree && Array.isArray(tree.order) && tree.order.includes(id));
+  if (!tree) return false;
+  const inGrid = Array.isArray(tree.order) && tree.order.includes(id);
+  const inStash = Array.isArray(tree.stashOrder) && tree.stashOrder.includes(id);
+  return inGrid || inStash;
 }
 
 function getPaneRect(paneId) {
@@ -989,9 +1231,12 @@ function closePane(paneId) {
     delete terminals[paneId];
   }
 
+  // グリッド・格納のどちらに居ても取り除く（issue #89）。
   tree.order = tree.order.filter(id => id !== paneId);
-  if (tree.order.length === 0) {
+  tree.stashOrder = (Array.isArray(tree.stashOrder) ? tree.stashOrder : []).filter(id => id !== paneId);
+  if (tree.order.length === 0 && tree.stashOrder.length === 0) {
     // Last pane closed → start fresh
+    // 格納ペインが 1 枚でも生き残っている場合は巻き込んで作り直さない（issue #89）。
     initApp().then(() => {
       ipcRenderer.send('terminal:renderer-ready');
     });
@@ -1026,6 +1271,86 @@ function movePane(paneId, dir) {
     fitAll();
     focusPane(paneId);
   });
+}
+
+// ─── Pane stash: サイドバーへの格納 / 復帰（issue #89）──────────────────────────
+// グリッド order とは別配列 stashOrder で管理する。xterm 要素（t.element）は破棄せず、
+// render() の appendChild 付け替えで格納コンテナ／グリッドコンテナ間を移動させる。
+
+// グリッドのペインをサイドバーへ格納する。
+function stashPane(paneId) {
+  if (!tree || !Array.isArray(tree.order)) return;
+  const i = tree.order.indexOf(paneId);
+  if (i < 0) return;
+  tree.order.splice(i, 1);
+  tree.stashOrder = Array.isArray(tree.stashOrder) ? tree.stashOrder : [];
+  tree.stashOrder.push(paneId);
+  // 格納直後は xterm を折り畳んだコンパクト表示にする。
+  const t = terminals[paneId];
+  if (t) t.stashXtermOpen = false;
+  // グリッドの寸法が変わるため手動リサイズ比率を均等に戻す。
+  resetGridSizing();
+  // 格納したペインにフォーカスがあった場合はグリッドの残ペインへ移す。
+  if (focusedPaneId === paneId) {
+    focusedPaneId = tree.order.length > 0 ? tree.order[tree.order.length - 1] : paneId;
+  }
+  render();
+  // 格納先を知らせるためサイドバーを開く（フォーカスはグリッドに残す）。
+  setSidebarOpen(true, { focusFirst: false });
+  requestAnimationFrame(() => {
+    fitAll();
+    if (tree.order.length > 0) focusPane(focusedPaneId);
+  });
+}
+
+// 格納中のペインをグリッドへ戻す。
+function unstashPane(paneId) {
+  if (!tree) return;
+  tree.stashOrder = Array.isArray(tree.stashOrder) ? tree.stashOrder : [];
+  const i = tree.stashOrder.indexOf(paneId);
+  if (i < 0) return;
+  tree.stashOrder.splice(i, 1);
+  if (!Array.isArray(tree.order)) tree.order = [];
+  tree.order.push(paneId);
+  resetGridSizing();
+  render();
+  requestAnimationFrame(() => {
+    fitAll();
+    focusPane(paneId);
+  });
+}
+
+// 格納エリア内でペインを上下に入れ替える（stashOrder の index swap）。
+function moveStashPane(paneId, dir) {
+  const arr = tree && tree.stashOrder;
+  if (!Array.isArray(arr)) return;
+  const i = arr.indexOf(paneId);
+  if (i < 0) return;
+  const j = dir === 'up' ? i - 1 : i + 1;
+  if (j < 0 || j >= arr.length) return;
+  [arr[i], arr[j]] = [arr[j], arr[i]];
+  render();
+  requestAnimationFrame(fitAll);
+}
+
+// 格納ペインの xterm 表示/非表示をトグルする（― ボタン）。
+// 非表示（display:none）からの復帰時は 0 サイズ基準のままになるため再フィットする。
+function toggleStashXterm(paneId) {
+  const t = terminals[paneId];
+  if (!t) return;
+  t.stashXtermOpen = !t.stashXtermOpen;
+  const li = document.querySelector(`.stash-item[data-id="${paneId}"]`);
+  if (li) {
+    li.classList.toggle('stash-xterm-open', t.stashXtermOpen);
+    const btn = li.querySelector('.btn-stash-toggle');
+    if (btn) btn.setAttribute('aria-expanded', t.stashXtermOpen ? 'true' : 'false');
+  }
+  if (t.stashXtermOpen) {
+    requestAnimationFrame(() => {
+      fitTerminal(paneId);
+      focusPane(paneId);
+    });
+  }
 }
 
 // ─── Pane D&D helpers (issue #40) ────────────────────────────────────────────
@@ -1146,12 +1471,19 @@ function focusPane(paneId) {
   document.querySelectorAll('.pane').forEach(el => {
     el.classList.toggle('focused', el.dataset.id === paneId);
   });
+  // 格納ペイン（サイドバー内）のフォーカスリングも同期する（issue #89）。
+  document.querySelectorAll('.stash-item').forEach(el => {
+    el.classList.toggle('focused', el.dataset.id === paneId);
+  });
   terminals[paneId]?.term.focus();
 }
 
 function fitTerminal(paneId) {
   const t = terminals[paneId];
   if (!t) return;
+  // 非表示（格納中で xterm を折り畳み中など、祖先が display:none）のときは
+  // 0 サイズでのフィット→pty への誤リサイズを避けるためスキップする（issue #89）。
+  if (t.element && t.element.offsetParent === null) return;
   try {
     t.fitAddon.fit();
     ipcRenderer.send('terminal:resize', t.termId, t.term.cols, t.term.rows);
@@ -1165,16 +1497,23 @@ function fitAll() {
 // ─── Rendering ────────────────────────────────────────────────────────────────
 function render() {
   const root = document.getElementById('root');
-  const sidebar = ensureSidebarMenu(root);
+  const sidebar = ensureSidebar(root);
   const newContent = renderGrid(tree);
   root.replaceChildren(sidebar, newContent);
   root.classList.toggle('sidebar-open', sidebarOpen);
 
+  // 格納ペインのコンパクト表示を作り直す（nav が root に付いた後に実行する）。
+  renderPaneStash();
+  // 現在のサイドバー幅を CSS 変数・aria へ反映（issue #89）。
+  setSidebarWidth(getSidebarWidth());
+
   // Reattach terminal elements (moved, not recreated)
+  // グリッド側（.pane）と格納側（.stash-item）のどちらのコンテナへも付け替える。
   getAllLeafIds(tree).forEach(paneId => {
     const t = terminals[paneId];
     if (!t) return;
-    const container = root.querySelector(`.pane[data-id="${paneId}"] .term-container`);
+    const container = root.querySelector(`.pane[data-id="${paneId}"] .term-container`)
+      || root.querySelector(`.stash-item[data-id="${paneId}"] .term-container`);
     if (container) {
       container.appendChild(t.element);
       // Open xterm after element is in the DOM (required for correct sizing)
@@ -1351,10 +1690,10 @@ function renderLeaf(node) {
   // タスクタイトル行（OSC 0/2 または POST /api/set-title で設定された文字列を表示）。
   // 空のときは .empty クラスで非表示にし、xterm の表示領域を圧迫しない。
   // apiUrl があるときは .has-link を付与し、内部を <a> 化する（renderTaskTitleContent）。
-  // ペイン D&D の可否判定（issue #40）。leaf が 2 つ以上ある時のみ drag 起点になれる。
-  // ルート leaf（ペイン 1 枚状態）は移動先が無いため drag 不可。
+  // ペイン D&D の可否判定（issue #40）。グリッド上のペインが 2 つ以上ある時のみ drag 起点になれる。
+  // D&D はグリッド内限定のため、格納分を含む getAllLeafIds ではなくグリッドの order 件数で判定する（issue #89）。
   // 空タイトル時も D&D 可なら .empty を付けず、ハンドルとして掴める高さを確保する。
-  const canDragPane = !!(tree && getAllLeafIds().length > 1);
+  const canDragPane = !!(tree && Array.isArray(tree.order) && tree.order.length > 1);
   const taskTitleEl = document.createElement('div');
   // empty 判定はタイトル本文・ドラッグ可・PR ボタンのいずれもないとき。
   // PR ボタンだけでも表示するためにこの条件で扱う（issue #44）。
@@ -1402,10 +1741,12 @@ function renderLeaf(node) {
     <span class="pane-cwd" title="${escAttr(cwd)}">${escText(cwd)}</span>
     <div class="pane-actions">
       <span class="pane-badge auto-input-badge" hidden></span>
-      <button class="btn btn-move btn-move-left" title="左へ移動">◀</button>
-      <button class="btn btn-move btn-move-right" title="右へ移動">▶</button>
-      <button class="btn btn-split" title="ペインを追加">＋</button>
-      <button class="btn btn-close" title="閉じる">✕</button>
+      <button class="btn btn-stash" title="サイドバーに格納" aria-label="サイドバーに格納">←</button>
+      <span class="pane-actions-sep" aria-hidden="true"></span>
+      <button class="btn btn-move btn-move-left" title="左へ移動" aria-label="左へ移動">◀</button>
+      <button class="btn btn-move btn-move-right" title="右へ移動" aria-label="右へ移動">▶</button>
+      <button class="btn btn-split" title="ペインを追加" aria-label="ペインを追加">＋</button>
+      <button class="btn btn-close" title="閉じる" aria-label="閉じる">✕</button>
     </div>
   `;
   // ドラッグ中に複数ファイルのヒントを表示
@@ -1445,6 +1786,10 @@ function renderLeaf(node) {
     el.appendChild(room);
   }
 
+  header.querySelector('.btn-stash').addEventListener('click', e => {
+    e.stopPropagation();
+    stashPane(node.id);
+  });
   header.querySelector('.btn-move-left').addEventListener('click', e => {
     e.stopPropagation();
     movePane(node.id, 'left');
@@ -1704,6 +2049,21 @@ document.addEventListener('mouseup', () => {
   fitAll();
 });
 
+// ─── Global drag handler（サイドバー幅リサイズ, issue #89）─────────────────────
+document.addEventListener('mousemove', e => {
+  if (!sidebarResizeState) return;
+  const dx = e.clientX - sidebarResizeState.startX;
+  setSidebarWidth(sidebarResizeState.startWidth + dx);
+  debouncedFitAll();
+});
+
+document.addEventListener('mouseup', () => {
+  if (!sidebarResizeState) return;
+  sidebarResizeState = null;
+  document.body.classList.remove('resizing-sidebar');
+  fitAll();
+});
+
 // ─── Resize observer ──────────────────────────────────────────────────────────
 let _fitTimer = null;
 function debouncedFitAll() {
@@ -1726,6 +2086,8 @@ function observePanes() {
 }
 
 window.addEventListener('resize', debouncedFitAll);
+// ウィンドウ幅が縮んだときにサイドバー幅の上限（幅比）を超えないよう再クランプする（issue #89）。
+window.addEventListener('resize', () => setSidebarWidth(getSidebarWidth()));
 
 // ─── 設定パネル（汎用）────────────────────────────────────────────────────────
 // main プロセス（settings:describe / settings:save）経由で、呼び出し側が env
@@ -2228,7 +2590,8 @@ async function initApp() {
   focusedPaneId = null;
 
   const paneId = newId();
-  tree = { type: 'grid', order: [paneId], colFr: null, rowFr: null };
+  // stashOrder: サイドバー格納ペインの並び（issue #89）。sidebarWidth: セッション内の可変幅。
+  tree = { type: 'grid', order: [paneId], colFr: null, rowFr: null, stashOrder: [], sidebarWidth: DEFAULT_SIDEBAR_WIDTH };
   await createTerminal(paneId, null);
   focusedPaneId = paneId;
 
@@ -2285,6 +2648,8 @@ setInterval(() => {
       displayTitle: getDisplayTitle(t),
       // collapsed: グリッド化で折り畳み機能を撤去したため常に false（後方互換のためキーは維持）。
       collapsed: false,
+      // stashed: サイドバーへ格納中かどうか（issue #89）。外部監視ツール向けの新規フィールド。
+      stashed: !!(tree && Array.isArray(tree.stashOrder) && tree.stashOrder.includes(paneId)),
       // agentRoom（issue #58）: 解決済みのルーム状態 { name: state }。
       // agentroom 有効時のみ出力（モバイルページ等の将来連携用）。
       ...(agentRoomEnabled ? { agentRoom: resolveRoomAgents(t) } : {}),

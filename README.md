@@ -432,7 +432,7 @@ curl -i -s -X POST http://127.0.0.1:13847/api/set-title \
 
 #### `POST /api/new-pane`
 
-新規ペインを作成し、作成されたターミナルの `termId` を返します。ペインはグリッドの末尾に追加され、全体は自動折返しグリッドで再配置されます。
+新規ペインを作成し、作成されたターミナルの `termId` を返します。ペインは通常グリッドの末尾に追加され、全体は自動折返しグリッドで再配置されます。`stashed: true` を指定した場合はサイドバー格納＋折りたたみ状態で作成されます。
 
 ```bash
 curl -s -X POST http://127.0.0.1:13847/api/new-pane
@@ -447,12 +447,18 @@ curl -s -X POST http://127.0.0.1:13847/api/new-pane \
 curl -s -X POST http://127.0.0.1:13847/api/new-pane \
   -H 'Content-Type: application/json' \
   -d '{"noClaude": true}'
+
+# サイドバーに格納して折りたたみ状態で開く
+curl -s -X POST http://127.0.0.1:13847/api/new-pane \
+  -H 'Content-Type: application/json' \
+  -d '{"stashed": true}'
 ```
 
 リクエストボディ（任意）:
 
 - `cwd`：新規ペインのカレントディレクトリ（絶対パス）。未指定ならホームディレクトリ。
 - `noClaude`：`true` の場合、新規ペインで claude を自動起動せず素のシェルとして開く。未指定なら起動時の `--no-claude` フラグの値に従う。
+- `stashed`：`true` の場合、新規ペインをサイドバー格納＋折りたたみ状態で開く。未指定または `false` ならグリッドに追加。
 
 レスポンス:
 

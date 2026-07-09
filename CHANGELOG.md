@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 機能追加 ] HTTP API `POST /api/new-pane` に `stashed` オプションを追加し、`stashed: true` で生成ペインをサイドバー格納＋折りたたみ状態で開けるように（[#93](https://github.com/vektor-inc/vk-terminals/issues/93)）
+
 ## 1.11.1
 
 - [ 不具合修正 ] ペインをリサイズすると「🟡 入力待ち」インジケータが消える不具合を修正。入力待ち状態を入力まで保持し、リサイズ起因の再描画（確認文の折り返し変化）による誤解除を防止（[#91](https://github.com/vektor-inc/vk-terminals/issues/91)）

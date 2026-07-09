@@ -2707,7 +2707,7 @@ ipcRenderer.on('terminal:agentroom', (event, termId, agents, replace) => {
 
 // ─── New pane request from HTTP API ──────────────────────────────────────────
 ipcRenderer.on('terminal:request-new-pane', async (event, payload = {}) => {
-  const { requestId, cwd, noClaude } = payload;
+  const { requestId, cwd, noClaude, stashed } = payload;
   const reply = (result) => ipcRenderer.send('terminal:new-pane-created', { requestId, ...result });
   const targetPaneId = findLargestVisiblePaneId() || focusedPaneId || (tree ? getAllLeafIds(tree)[0] : null);
   if (!targetPaneId) {
@@ -2723,6 +2723,9 @@ ipcRenderer.on('terminal:request-new-pane', async (event, payload = {}) => {
     if (!result || !result.termId) {
       reply({ error: 'split failed or termId unavailable' });
       return;
+    }
+    if (stashed === true) {
+      stashPane(result.paneId);
     }
     reply({ termId: result.termId });
   } catch (e) {

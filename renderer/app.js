@@ -1268,9 +1268,13 @@ function closePane(paneId) {
   resetGridSizing();
 
   // Focus another pane
-  const remaining = getAllLeafIds();
-  if (remaining.length > 0 && (!focusedPaneId || focusedPaneId === paneId)) {
-    focusedPaneId = remaining[remaining.length - 1];
+  // フォーカス先は可視グリッド（tree.order）の末尾を優先する。getAllLeafIds は格納分も
+  // 含むため、その末尾を選ぶと非表示の格納ペインにフォーカスが移り、キー入力が見えない
+  // ターミナルへ流れてしまう。可視ペインが 1 つも無い（全て格納中）ときはどこにも
+  // フォーカスしない（null）（issue #89 / CodeRabbit 指摘）。
+  if (!focusedPaneId || focusedPaneId === paneId) {
+    const visible = Array.isArray(tree.order) ? tree.order : [];
+    focusedPaneId = visible.length > 0 ? visible[visible.length - 1] : null;
   }
 
   render();

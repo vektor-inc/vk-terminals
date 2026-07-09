@@ -424,12 +424,14 @@ html, body {
   transition: flex-basis 0.18s ease, transform 0.18s ease;
   z-index: 900;
   background: #0d1117;
-  border-right: 1px solid #21262d;
   color: #e6edf3;
 }
+/* 閉時（実幅 0）は境界線・リサイズハンドルが画面左端に残って見えるため、
+ * どちらも開いているときだけ有効化する（CodeRabbit 指摘）。 */
 #root.sidebar-open .sidebar {
   flex-basis: var(--vktm-sidebar-width, 330px);
   transform: translateX(0);
+  border-right: 1px solid #21262d;
 }
 /* リサイズ中は追従を即時にするためトランジションを切る。 */
 body.resizing-sidebar .sidebar {
@@ -459,6 +461,11 @@ body.resizing-sidebar .sidebar {
   z-index: 910;
   background: transparent;
   transition: background-color 0.12s ease;
+  /* 閉時は非表示（フォーカス対象からも外す）。開いているときだけ表示する。 */
+  display: none;
+}
+#root.sidebar-open .sidebar-resizer {
+  display: block;
 }
 .sidebar-resizer:hover {
   background: rgba(88, 166, 255, 0.35);
@@ -563,6 +570,8 @@ body.resizing-sidebar .sidebar {
 }
 .pane-stash-list {
   list-style: none;
+  margin: 0;
+  padding: 0;
 }
 .stash-item {
   margin-bottom: 8px;

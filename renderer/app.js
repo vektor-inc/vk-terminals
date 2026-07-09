@@ -119,6 +119,19 @@ function checkWaiting(paneId) {
   }
 }
 
+// 入力（ユーザー入力・ドロップ送信・API 送信）があったペインの入力待ち状態を解除する。
+// スティッキー化した waiting の唯一の解除経路。全入力エントリポイントから呼ぶこと。
+function markPaneInput(paneId) {
+  const t = terminals[paneId];
+  if (!t) return;
+  t.lastInputTime = Date.now();
+  if (t.waiting) {
+    t.waiting = false;
+    t.lastLines = '';
+  }
+  recomputeStatus(paneId);
+}
+
 // status を waiting フラグ・最終出力時刻・最終入力時刻から再計算してセットする。
 // 派生フィールドのため、ここ以外から t.status を直接書き換えないこと。
 function recomputeStatus(paneId) {
@@ -206,15 +219,7 @@ async function createTerminal(paneId, cwd, options = {}) {
   // 共通の入力送信ヘルパー（waiting バッジのクリアを含む）
   function sendTerminalInput(data) {
     ipcRenderer.send('terminal:input', termId, data);
-    if (terminals[paneId]) {
-      terminals[paneId].lastInputTime = Date.now();
-    }
-    if (terminals[paneId]?.waiting) {
-      terminals[paneId].waiting = false;
-      terminals[paneId].lastLines = '';
-    }
-    // waiting がクリアされていなくても、入力タイミングを反映した status を再計算する
-    if (terminals[paneId]) recomputeStatus(paneId);
+    markPaneInput(paneId);
   }
 
   // Shift+Enter を改行として送信（Claude Code の keybindings.json 対応）
@@ -1931,6 +1936,7 @@ function renderLeaf(node) {
     const t = terminals[node.id];
     if (t) {
       ipcRenderer.send('terminal:input', t.termId, text);
+      markPaneInput(node.id);
     }
 
     // ドロップ完了フラッシュフィードバック
@@ -2756,6 +2762,7 @@ ipcRenderer.on('terminal:title', (event, termId, title, url, prUrl) => {
 ipcRenderer.on('terminal:auto-input', (event, termId) => {
   const paneId = Object.keys(terminals).find(k => terminals[k]?.termId === termId);
   if (!paneId) return;
+  markPaneInput(paneId);
   const paneEl = document.querySelector(`.pane[data-id="${paneId}"]`);
   if (!paneEl) return;
   const badge = paneEl.querySelector('.auto-input-badge');

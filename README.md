@@ -318,6 +318,8 @@ curl -s http://127.0.0.1:13847/api/states | python3 -m json.tool
       "cwd": "/Users/you/project",
       "cwdShort": "~/project",
       "waiting": false,
+      "externalWaiting": false,
+      "status": "idle",
       "lastOutputTime": 1713340800000,
       "lastInputTime": 1713340790000,
       "lastLines": "最近の出力15行分..."
@@ -331,6 +333,8 @@ curl -s http://127.0.0.1:13847/api/states | python3 -m json.tool
 | `termId` | ターミナル ID（`/api/send` で使用） |
 | `cwd` / `cwdShort` | カレントディレクトリ（フルパス / 短縮表示） |
 | `waiting` | 入力待ち状態（権限確認プロンプト等）かどうか |
+| `externalWaiting` | `POST /api/set-status` で設定された外部権威の入力待ち状態 |
+| `status` | 表示用ステータス（`idle` / `running` / `waiting`） |
 | `lastOutputTime` | 最後に出力があった時刻（Unix ms） |
 | `lastInputTime` | 最後にユーザーが入力した時刻（Unix ms） |
 | `lastLines` | 最近の出力テキスト（ANSI除去済み、最大15行） |
@@ -429,6 +433,47 @@ curl -i -s -X POST http://127.0.0.1:13847/api/set-title \
 ```
 
 設定された値は `GET /api/states` のレスポンス（および `~/.vk-terminals/states.json`）の各ペインオブジェクトに `apiTitle` / `apiUrl` / `apiPrUrl` フィールドとして含まれます。
+
+#### `POST /api/set-status`
+
+指定ペインの入力待ち状態を外部権威として設定します。オーケストレーター等が GitHub status などの外部状態をもとに、ローカル PTY のパターン検知とは別レイヤーで `waiting` 表示を制御するための API です。
+
+```bash
+# 外部権威の入力待ちフラグを立てる
+curl -s -X POST http://127.0.0.1:13847/api/set-status \
+  -H 'Content-Type: application/json' \
+  -d '{"termId": "1", "waiting": true}'
+
+# 外部権威の入力待ちフラグを解除する
+curl -s -X POST http://127.0.0.1:13847/api/set-status \
+  -H 'Content-Type: application/json' \
+  -d '{"termId": "1", "waiting": false}'
+```
+
+リクエストボディ:
+
+- `termId`: 対象のターミナル ID（必須）
+- `waiting`: 外部権威の入力待ち状態（真偽値必須）。文字列 `"true"` / `"false"` は受け付けません。
+
+挙動:
+
+- `waiting: true` を送ると、ローカル PTY 検知の `waiting` が false でも表示用 `status` は `waiting` になります。
+- `waiting: false` を送ると、外部権威フラグだけを解除します。ローカル PTY 検知の `waiting` が true の場合、表示用 `status` は引き続き `waiting` です。
+- 外部権威フラグは自動入力（`POST /api/send`）・リサイズ・再描画では解除されず、`POST /api/set-status` で `waiting: false` が明示 push されたときだけ解除されます。
+
+レスポンス例:
+
+```json
+{ "ok": true, "termId": "1", "waiting": true }
+```
+
+エラー例:
+
+- `400 {"error": "termId required"}` — `termId` 未指定
+- `400 {"error": "waiting must be a boolean"}` — `waiting` が真偽値以外
+- `404 {"error": "terminal <id> not found"}` — 指定 `termId` のペインが存在しない
+
+設定された値は `GET /api/states` のレスポンス（および `~/.vk-terminals/states.json`）の各ペインオブジェクトに `externalWaiting` フィールドとして含まれます。表示用 `status` はローカル `waiting` と `externalWaiting` の OR で `waiting` になります。
 
 #### `POST /api/new-pane`
 

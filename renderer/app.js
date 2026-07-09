@@ -6,6 +6,7 @@ const { stripAnsiForDisplay } = require('../utils/stripAnsi');
 // エージェントルーム（issue #58）。サブエージェントの稼働状況をドット絵キャラで可視化する。
 const { AGENT_ORDER, buildScene, resolveAgentStatesFromOutput } = require('./agentRoom');
 const { matchesWaiting, nextWaitingState } = require('./waitingState');
+const { deriveStatus } = require('./statusState');
 
 // ─── xterm.css の注入 ─────────────────────────────────────────────────────────
 // xterm.css は index.html の相対パス <link> ではなく、Node のモジュール解決
@@ -49,12 +50,14 @@ const PANE_DROP_DEADZONE = 0.2;
 // terminals[paneId] のフィールド概要（status / runningTimer は issue #23 で追加）:
 //   - waiting (bool): 内部判定用フラグ。WAITING_PATTERNS ヒットで true になり、入力まで保持。
 //     states.json 後方互換のために残してある（task-queue 等の外部連携が参照している）。
+//   - externalWaiting (bool): 外部権威の入力待ちフラグ。POST /api/set-status の明示 push だけで更新。
+//     自動入力・リサイズ・再描画では解除せず、waiting と OR で status に合流する。
 //   - status ('idle'|'running'|'waiting'): 表示用の派生値。
-//     waiting が true なら 'waiting' を最優先。
-//     waiting でなく直近 1500ms 以内に PTY 出力があり、かつ直近 200ms 以内に入力がなければ 'running'。
+//     waiting または externalWaiting が true なら 'waiting' を最優先。
+//     どちらも false で直近 1500ms 以内に PTY 出力があり、かつ直近 200ms 以内に入力がなければ 'running'。
 //     どちらでもなければ 'idle'（DOM 側で要素ごと非表示）。
 //   - runningTimer (number|null): 'running' を 1500ms 後に 'idle' へ戻すための setTimeout id。
-//     bumpRunning() が出力イベントごとに張り直し、closePane() で必ず clearTimeout する。
+//     recomputeStatus() / bumpRunning() が張り直し、closePane() で必ず clearTimeout する。
 let terminals = {};    // paneId -> { termId, term, fitAddon, element, cwd, cwdFull, waiting, status, runningTimer, lastLines, ... }
 let focusedPaneId = null;
 let dragState = null;
@@ -119,8 +122,8 @@ function checkWaiting(paneId) {
   }
 }
 
-// 入力（ユーザー入力・ドロップ送信・API 送信）があったペインの入力待ち状態を解除する。
-// スティッキー化した waiting の唯一の解除経路。全入力エントリポイントから呼ぶこと。
+// 入力（ユーザー入力・ドロップ送信・API 送信）があったペインのローカル入力待ち状態を解除する。
+// スティッキー化した waiting の唯一の解除経路。externalWaiting は外部の明示 false push だけで解除する。
 function markPaneInput(paneId) {
   const t = terminals[paneId];
   if (!t) return;
@@ -132,19 +135,47 @@ function markPaneInput(paneId) {
   recomputeStatus(paneId);
 }
 
-// status を waiting フラグ・最終出力時刻・最終入力時刻から再計算してセットする。
+function clearRunningIdleTimer(t) {
+  if (!t?.runningTimer) return;
+  clearTimeout(t.runningTimer);
+  t.runningTimer = null;
+}
+
+// running 表示の自動 idle 復帰タイマーを張り直す。
+function armRunningIdleTimer(paneId) {
+  const t = terminals[paneId];
+  if (!t) return;
+  clearRunningIdleTimer(t);
+  t.runningTimer = setTimeout(() => {
+    const cur = terminals[paneId];
+    if (!cur) return;
+    cur.runningTimer = null;
+    // タイマー満了時に waiting に変わっていたらそのまま、そうでなければ idle に戻す。
+    if (!cur.waiting && !cur.externalWaiting && cur.status === 'running') {
+      cur.status = 'idle';
+      updatePaneStatus(paneId);
+    }
+  }, RUNNING_IDLE_TIMEOUT_MS);
+}
+
+// status を waiting フラグ・外部権威フラグ・最終出力時刻・最終入力時刻から再計算してセットする。
 // 派生フィールドのため、ここ以外から t.status を直接書き換えないこと。
 function recomputeStatus(paneId) {
   const t = terminals[paneId];
   if (!t) return;
-  let next;
-  if (t.waiting) {
-    next = 'waiting';
+  const next = deriveStatus({
+    localWaiting: t.waiting,
+    externalWaiting: t.externalWaiting,
+    now: Date.now(),
+    lastOutputTime: t.lastOutputTime,
+    lastInputTime: t.lastInputTime,
+    runningIdleTimeoutMs: RUNNING_IDLE_TIMEOUT_MS,
+    runningInputGuardMs: RUNNING_INPUT_GUARD_MS,
+  });
+  if (next === 'running') {
+    armRunningIdleTimer(paneId);
   } else {
-    const now = Date.now();
-    const recentOutput = now - (t.lastOutputTime || 0) <= RUNNING_IDLE_TIMEOUT_MS;
-    const recentInput = now - (t.lastInputTime || 0) <= RUNNING_INPUT_GUARD_MS;
-    next = (recentOutput && !recentInput) ? 'running' : 'idle';
+    clearRunningIdleTimer(t);
   }
   if (next !== t.status) {
     t.status = next;
@@ -158,12 +189,9 @@ function bumpRunning(paneId) {
   const t = terminals[paneId];
   if (!t) return;
   // waiting は最優先のため running に上書きしない
-  if (t.waiting) return;
+  if (t.waiting || t.externalWaiting) return;
   // タイマーは出力ごとに張り直す
-  if (t.runningTimer) {
-    clearTimeout(t.runningTimer);
-    t.runningTimer = null;
-  }
+  clearRunningIdleTimer(t);
   const now = Date.now();
   const recentInput = now - (t.lastInputTime || 0) <= RUNNING_INPUT_GUARD_MS;
   // 入力直後（タイプ中のエコー）は running と見なさない。idle のまま据え置く。
@@ -172,16 +200,7 @@ function bumpRunning(paneId) {
     t.status = 'running';
     updatePaneStatus(paneId);
   }
-  t.runningTimer = setTimeout(() => {
-    const cur = terminals[paneId];
-    if (!cur) return;
-    cur.runningTimer = null;
-    // タイマー満了時に waiting に変わっていたらそのまま、そうでなければ idle に戻す
-    if (!cur.waiting && cur.status === 'running') {
-      cur.status = 'idle';
-      updatePaneStatus(paneId);
-    }
-  }, RUNNING_IDLE_TIMEOUT_MS);
+  armRunningIdleTimer(paneId);
 }
 
 // ─── Create terminal ──────────────────────────────────────────────────────────
@@ -267,11 +286,15 @@ async function createTerminal(paneId, cwd, options = {}) {
     cwd: shortCwd,
     cwdFull: initialCwd,
     waiting: false,
+    // externalWaiting: オーケストレーター等が POST /api/set-status で明示 push する外部権威の入力待ちフラグ。
+    // ローカル PTY 検知(waiting)と OR で status に合流する。markPaneInput / リサイズ / 再描画 /
+    // 自動入力では解除されず、明示的な false push でのみ解除される。
+    externalWaiting: false,
     // status: 表示用ステータス。issue #23 で追加。
     // 初期値 'idle' は何も表示しない（.pane-status[data-status="idle"] は display:none）。
     status: 'idle',
     // runningTimer: 'running' を 1500ms 後に 'idle' に戻すタイマー id。
-    // 出力イベントごとに bumpRunning() が張り直す。closePane() で必ず clearTimeout する。
+    // recomputeStatus() / bumpRunning() が張り直す。closePane() で必ず clearTimeout する。
     runningTimer: null,
     lastLines: '',
     lastOutputTime: Date.now(),
@@ -752,10 +775,11 @@ function stashToggleLabel(open) { return open ? 'ターミナルを隠す' : '�
 //   - term-container（xterm。既定は非表示、― で開閉）
 function renderStashItem(id, idx, count) {
   const t = terminals[id];
+  const waiting = !!(t && (t.waiting || t.externalWaiting));
   const li = document.createElement('li');
   li.className = 'stash-item'
     + (id === focusedPaneId ? ' focused' : '')
-    + (t?.waiting ? ' waiting' : '');
+    + (waiting ? ' waiting' : '');
   li.dataset.id = id;
   const xtermOpen = !!(t && t.stashXtermOpen);
   if (xtermOpen) li.classList.add('stash-xterm-open');
@@ -814,7 +838,7 @@ function updateStashItem(paneId) {
   if (!li) return;
   const t = terminals[paneId];
   if (!t) return;
-  li.classList.toggle('waiting', !!t.waiting);
+  li.classList.toggle('waiting', !!(t.waiting || t.externalWaiting));
   const badge = li.querySelector('.pane-status');
   if (badge) {
     const status = t.status || 'idle';
@@ -1036,7 +1060,7 @@ function updatePaneTitle(paneId) {
 }
 
 // .pane-status バッジ（ヘッダ最左）と .pane.waiting 枠点滅の両方を更新する。
-// status は派生フィールドのため、t.waiting / t.status は呼び出し側で先にセット済みである前提。
+// status は派生フィールドのため、waiting 系フラグ / t.status は呼び出し側で先にセット済みである前提。
 function updatePaneStatus(paneId) {
   const t = terminals[paneId];
   if (!t) return;
@@ -1044,8 +1068,8 @@ function updatePaneStatus(paneId) {
   updateStashItem(paneId);
   const paneEl = document.querySelector(`.pane[data-id="${paneId}"]`);
   if (!paneEl) return;
-  // 枠の点滅アニメ（周辺視野での気付き用、issue #23 でも残置）は waiting フラグ準拠
-  paneEl.classList.toggle('waiting', t.waiting);
+  // 枠の点滅アニメ（周辺視野での気付き用、issue #23 でも残置）は派生 waiting 準拠
+  paneEl.classList.toggle('waiting', !!(t.waiting || t.externalWaiting));
 
   const badge = paneEl.querySelector('.pane-status');
   if (!badge) return;
@@ -1186,10 +1210,7 @@ function closePane(paneId) {
   if (t) {
     // status の自動 idle 復帰タイマーが残っているとクロージャ経由で terminals[paneId] を
     // 参照し続けてしまうため、必ず破棄する（リーク防止）。
-    if (t.runningTimer) {
-      clearTimeout(t.runningTimer);
-      t.runningTimer = null;
-    }
+    clearRunningIdleTimer(t);
     // auto-input バッジの自動非表示タイマーも残っていればクリアする
     // （runningTimer と一貫させた防御的なクリーンアップ／issue #38）
     const paneEl = document.querySelector(`.pane[data-id="${paneId}"]`);
@@ -1696,7 +1717,7 @@ function refreshAgentRoomIfChanged(paneId) {
 function renderLeaf(node) {
   const t = terminals[node.id];
   const cwd = t?.cwd || '~';
-  const waiting = t?.waiting || false;
+  const waiting = !!(t && (t.waiting || t.externalWaiting));
   // 表示用ステータス（issue #23, #27）。idle 時は CSS の visibility:hidden で不可視のまま幅は保持。
   // ドットは CSS の .pane-status::before（currentColor）で描画するため、ラベルはテキストのみ。
   // ラベル / aria-label の対応は getStatusPresentation に集約（updatePaneStatus と共用）。
@@ -2659,6 +2680,8 @@ setInterval(() => {
       cwdShort: t.cwd || '~',
       // waiting は内部判定フラグ。後方互換のため引き続き出力（task-queue 連携などが参照）。
       waiting: t.waiting,
+      // externalWaiting は POST /api/set-status 由来の外部権威フラグ。
+      externalWaiting: t.externalWaiting || false,
       // status は issue #23 で追加した表示用ステータス（'idle' | 'running' | 'waiting'）。
       // 既存フィールドは破壊せず、新規追加のみ。
       status: t.status || 'idle',
@@ -2759,6 +2782,17 @@ ipcRenderer.on('terminal:title', (event, termId, title, url, prUrl) => {
     terminals[paneId].apiPrUrl = prUrl;
   }
   updatePaneTitle(paneId);
+});
+
+// ─── Status update from main (HTTP API POST /api/set-status) ────────────────
+// 外部権威の入力待ちフラグを明示的に設定する。markPaneInput / 自動入力では解除しない。
+ipcRenderer.on('terminal:set-status', (event, termId, waiting) => {
+  const paneId = Object.keys(terminals).find(k => terminals[k]?.termId === termId);
+  if (!paneId) return;
+  const t = terminals[paneId];
+  if (!t) return;
+  t.externalWaiting = !!waiting;
+  recomputeStatus(paneId);
 });
 
 // ─── Auto-input notification from main (HTTP API経由の入力時) ─────────────────

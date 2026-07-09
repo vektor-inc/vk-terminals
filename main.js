@@ -1201,6 +1201,51 @@ function startHttpApi() {
       return;
     }
 
+    // POST /api/set-status  { termId: "1", waiting: true }
+    //   — オーケストレーター等の外部権威が、そのペインの入力待ち状態を明示設定する。
+    //   waiting: true で外部権威フラグを立て、waiting: false で解除する。
+    //   ローカル PTY 検知とは別レイヤーとして renderer 側で OR 合流し、自動入力・再描画では解除しない。
+    //   termId は必須、waiting は真偽値のみ許可する（文字列 "true" 等は 400）。
+    if (req.method === 'POST' && url.pathname === '/api/set-status') {
+      if (isForbiddenOrigin(req)) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'forbidden origin' }));
+        return;
+      }
+      const MAX_BODY = 10 * 1024;
+      readJsonBody(req, res, MAX_BODY, (body) => {
+        try {
+          const parsed = JSON.parse(body);
+          const termId = parsed?.termId != null ? String(parsed.termId) : '';
+          if (!termId) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'termId required' }));
+            return;
+          }
+          if (!ptys.has(termId)) {
+            res.writeHead(404, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: `terminal ${termId} not found` }));
+            return;
+          }
+          if (typeof parsed?.waiting !== 'boolean') {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'waiting must be a boolean' }));
+            return;
+          }
+          const waiting = parsed.waiting;
+          if (win && !win.isDestroyed()) {
+            win.webContents.send('terminal:set-status', termId, waiting);
+          }
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, termId, waiting }));
+        } catch (e) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'invalid JSON' }));
+        }
+      });
+      return;
+    }
+
     // POST /api/agentroom  { termId: "1", agents?: {"和田":"working", ...}, agent?: "麗美", state?: "consulting" }
     //   — エージェントルーム（issue #58）の稼働状況を更新する。config.json の `agentroom: true` 時のみ表示に反映。
     //   `agents` オブジェクトを渡すとそのペインのルーム状態を丸ごと置換する（置換セマンティクス）。

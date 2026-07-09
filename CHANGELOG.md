@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 仕様変更 ] ペインヘッダの上下移動ボタン（▲▼）を削除。Flex Grid レイアウトで上下移動が機能しないため（[#87](https://github.com/vektor-inc/vk-terminals/issues/87)）
+
 ## 1.10.1
 
 - [ デザイン不具合修正 ] 設定ダイアログの select がダークテーマで白地に浮く問題・boolean 行のフォーム様式の不揃い・ラベルの語中改行・余白のグルーピングを修正（[vektor-inc/vk-orchestrator#48](https://github.com/vektor-inc/vk-orchestrator/issues/48)）

@@ -1,5 +1,7 @@
 # Changelog
 
+## 1.13.0
+
 - [ 機能追加 ] HTTP API `POST /api/set-status` を追加し、オーケストレーター等が入力待ち状態を外部から権威的に設定/解除できるように。外部権威フラグは自動入力・リサイズ・再描画では解除されず、明示 push でのみ解除（[#95](https://github.com/vektor-inc/vk-terminals/issues/95)）
 
 ## 1.12.0

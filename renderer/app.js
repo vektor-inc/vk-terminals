@@ -57,7 +57,7 @@ const PANE_DROP_DEADZONE = 0.2;
 //     どちらも false で直近 1500ms 以内に PTY 出力があり、かつ直近 200ms 以内に入力がなければ 'running'。
 //     どちらでもなければ 'idle'（DOM 側で要素ごと非表示）。
 //   - runningTimer (number|null): 'running' を 1500ms 後に 'idle' へ戻すための setTimeout id。
-//     bumpRunning() が出力イベントごとに張り直し、closePane() で必ず clearTimeout する。
+//     recomputeStatus() / bumpRunning() が張り直し、closePane() で必ず clearTimeout する。
 let terminals = {};    // paneId -> { termId, term, fitAddon, element, cwd, cwdFull, waiting, status, runningTimer, lastLines, ... }
 let focusedPaneId = null;
 let dragState = null;
@@ -135,6 +135,29 @@ function markPaneInput(paneId) {
   recomputeStatus(paneId);
 }
 
+function clearRunningIdleTimer(t) {
+  if (!t?.runningTimer) return;
+  clearTimeout(t.runningTimer);
+  t.runningTimer = null;
+}
+
+// running 表示の自動 idle 復帰タイマーを張り直す。
+function armRunningIdleTimer(paneId) {
+  const t = terminals[paneId];
+  if (!t) return;
+  clearRunningIdleTimer(t);
+  t.runningTimer = setTimeout(() => {
+    const cur = terminals[paneId];
+    if (!cur) return;
+    cur.runningTimer = null;
+    // タイマー満了時に waiting に変わっていたらそのまま、そうでなければ idle に戻す。
+    if (!cur.waiting && !cur.externalWaiting && cur.status === 'running') {
+      cur.status = 'idle';
+      updatePaneStatus(paneId);
+    }
+  }, RUNNING_IDLE_TIMEOUT_MS);
+}
+
 // status を waiting フラグ・外部権威フラグ・最終出力時刻・最終入力時刻から再計算してセットする。
 // 派生フィールドのため、ここ以外から t.status を直接書き換えないこと。
 function recomputeStatus(paneId) {
@@ -149,6 +172,11 @@ function recomputeStatus(paneId) {
     runningIdleTimeoutMs: RUNNING_IDLE_TIMEOUT_MS,
     runningInputGuardMs: RUNNING_INPUT_GUARD_MS,
   });
+  if (next === 'running') {
+    armRunningIdleTimer(paneId);
+  } else {
+    clearRunningIdleTimer(t);
+  }
   if (next !== t.status) {
     t.status = next;
     updatePaneStatus(paneId);
@@ -163,10 +191,7 @@ function bumpRunning(paneId) {
   // waiting は最優先のため running に上書きしない
   if (t.waiting || t.externalWaiting) return;
   // タイマーは出力ごとに張り直す
-  if (t.runningTimer) {
-    clearTimeout(t.runningTimer);
-    t.runningTimer = null;
-  }
+  clearRunningIdleTimer(t);
   const now = Date.now();
   const recentInput = now - (t.lastInputTime || 0) <= RUNNING_INPUT_GUARD_MS;
   // 入力直後（タイプ中のエコー）は running と見なさない。idle のまま据え置く。
@@ -175,16 +200,7 @@ function bumpRunning(paneId) {
     t.status = 'running';
     updatePaneStatus(paneId);
   }
-  t.runningTimer = setTimeout(() => {
-    const cur = terminals[paneId];
-    if (!cur) return;
-    cur.runningTimer = null;
-    // タイマー満了時に waiting に変わっていたらそのまま、そうでなければ idle に戻す
-    if (!cur.waiting && !cur.externalWaiting && cur.status === 'running') {
-      cur.status = 'idle';
-      updatePaneStatus(paneId);
-    }
-  }, RUNNING_IDLE_TIMEOUT_MS);
+  armRunningIdleTimer(paneId);
 }
 
 // ─── Create terminal ──────────────────────────────────────────────────────────
@@ -278,7 +294,7 @@ async function createTerminal(paneId, cwd, options = {}) {
     // 初期値 'idle' は何も表示しない（.pane-status[data-status="idle"] は display:none）。
     status: 'idle',
     // runningTimer: 'running' を 1500ms 後に 'idle' に戻すタイマー id。
-    // 出力イベントごとに bumpRunning() が張り直す。closePane() で必ず clearTimeout する。
+    // recomputeStatus() / bumpRunning() が張り直す。closePane() で必ず clearTimeout する。
     runningTimer: null,
     lastLines: '',
     lastOutputTime: Date.now(),
@@ -1194,10 +1210,7 @@ function closePane(paneId) {
   if (t) {
     // status の自動 idle 復帰タイマーが残っているとクロージャ経由で terminals[paneId] を
     // 参照し続けてしまうため、必ず破棄する（リーク防止）。
-    if (t.runningTimer) {
-      clearTimeout(t.runningTimer);
-      t.runningTimer = null;
-    }
+    clearRunningIdleTimer(t);
     // auto-input バッジの自動非表示タイマーも残っていればクリアする
     // （runningTimer と一貫させた防御的なクリーンアップ／issue #38）
     const paneEl = document.querySelector(`.pane[data-id="${paneId}"]`);

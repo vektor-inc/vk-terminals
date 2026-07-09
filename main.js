@@ -39,7 +39,11 @@ const pendingNewPaneCallbacks = new Map();
 let nextNewPaneRequestId = 1;
 
 // ─── Terminal state & HTTP API ───────────────────────────────────────────────
-const API_PORT = 13847;
+// テストや並列起動時にポートを隔離できるよう、環境変数で上書き可能にする（既定 13847）。
+const API_PORT = (() => {
+  const raw = Number(process.env.VK_TERMINALS_API_PORT);
+  return Number.isInteger(raw) && raw >= 1 && raw <= 65535 ? raw : 13847;
+})();
 const DATA_DIR = path.join(os.homedir(), '.vk-terminals');
 const STATE_FILE = path.join(DATA_DIR, 'states.json');
 const LOG_PREFIX = '[vk-terminals]';

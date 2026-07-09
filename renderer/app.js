@@ -5,6 +5,7 @@ const { FitAddon } = require('@xterm/addon-fit');
 const { stripAnsiForDisplay } = require('../utils/stripAnsi');
 // エージェントルーム（issue #58）。サブエージェントの稼働状況をドット絵キャラで可視化する。
 const { AGENT_ORDER, buildScene, resolveAgentStatesFromOutput } = require('./agentRoom');
+const { matchesWaiting, nextWaitingState } = require('./waitingState');
 
 // ─── xterm.css の注入 ─────────────────────────────────────────────────────────
 // xterm.css は index.html の相対パス <link> ではなく、Node のモジュール解決
@@ -46,7 +47,7 @@ const PANE_DRAG_MIME = 'application/x-vk-pane';
 // 中央デッドゾーンの比率（issue #40）。0.2 = 中央 20% を無効ゾーンとして扱う
 const PANE_DROP_DEADZONE = 0.2;
 // terminals[paneId] のフィールド概要（status / runningTimer は issue #23 で追加）:
-//   - waiting (bool): 内部判定用フラグ。WAITING_PATTERNS ヒットで true。
+//   - waiting (bool): 内部判定用フラグ。WAITING_PATTERNS ヒットで true になり、入力まで保持。
 //     states.json 後方互換のために残してある（task-queue 等の外部連携が参照している）。
 //   - status ('idle'|'running'|'waiting'): 表示用の派生値。
 //     waiting が true なら 'waiting' を最優先。
@@ -104,70 +105,14 @@ const TERM_THEME = {
   white: '#b1bac4', brightWhite: '#f0f6fc',
 };
 
-// ─── Waiting detection ────────────────────────────────────────────────────────
-const WAITING_PATTERNS = [
-  /\[y\/N\]/i, /\[Y\/n\]/i, /\(y\/n\)/i,
-  /Press Enter/i,
-  /Continue\?/i,
-  /Do you want to/i,
-  /Would you like/i,
-  /Proceed\?/i,
-  /\? .{1,60}[›>❯]\s*$/m,  // inquirer / Claude Code prompts
-  // Claude Code 承認待ちパターン
-  /Yes,?\s+allow/i,
-  /No,?\s+don['']t allow/i,
-  /Allow\s+(once|always|this)/i,
-  /\bAllow\b.{0,40}\?/i,
-  /Deny\b/i,
-  /Yes\s*\/\s*No/i,
-  /❯\s*(Yes|No|Allow|Deny)/,
-  /›\s*(Yes|No|Allow|Deny)/,
-  /\[\s*A\s*\]llow/i,
-  /\[\s*D\s*\]eny/i,
-  /approve.*\(y\/n\)/i,
-  // NOTE: /permission/i は削除 — Claude Code の UI フッター "bypass permissions on" に誤反応するため
-  // 日本語の確認待ちパターン（vk-kore など、Claude が確認を求めて中断する場面で出る文言）
-  /ご確認(?:を|ください|お願い)/,
-  /続行しますか/,
-  /進めて(?:よろしい|よい)/,
-  /(?:よろしい|いかが)(?:でしょうか|ですか)[。？?]?\s*$/m,
-  // マージ待ちパターン（vk-kore の PR 作成後・マージ判断委譲のタイミング）
-  /マージ(?:判断|してください|してもよろしい)/,
-  /マージ.{0,30}(?:ご判断|お願い|よろしい|お任せ)/,
-  // recap / 追加の確認待ち文言（issue #32）。
-  // Claude Code が "※ recap: …承認待ちです。…(disable recaps in /config)" のような
-  // 振り返りメッセージを最後に挟むケースで、本文末尾が "承認待ち" や "委任します"
-  // のような形になる。これらの「次アクションをユーザーに委ねている」言い回しを拾う。
-  /(?:承認|回答|ご判断|ご返答|お返事|ご指示|ご連絡)(?:を)?(?:お)?待ち/,
-  /(?:いただけ|いただい)たら.{0,30}(?:委任|お願い|進め|実装)/,
-  /(?:お任せ|ご判断)(?:します|ください|いただけ)/,
-  /(?:お待ち|待って)(?:しています|います|ます)/,
-  // AskUserQuestion / 数字選択肢の UI 検知（issue #46）。
-  // Claude Code の AskUserQuestion は「❯ 1. … / 2. …」の選択肢と
-  // 「Enter to select / ↑/↓ to navigate / Esc to cancel」のフッターが固定で出る。
-  // 既存パターンは ASCII `?` と `❯ Yes|No|Allow|Deny` しか拾えず取りこぼしていた。
-  /Enter\s+to\s+select/i,
-  /[↑↓]\/[↑↓]\s+to\s+navigate/,
-  /Esc\s+to\s+cancel/i,
-  /❯\s*\d+\.\s/,  // `❯ 1. ラベル` 形式（任意ラベルの数字選択肢）
-  // 全角「？」で終わる質問文。AskUserQuestion 以外の TUI / 日本語プロンプト
-  // でも全角？で末尾するケースを拾うための補助パターン。
-  // Claude Code の AskUserQuestion 自体は上の `Enter to select` フッターで
-  // 確定検知できるため、ここは網羅性ではなく **誤検知抑制** を優先して
-  // `m` フラグ無しでバッファ全体の末尾にのみアンカーする。
-  // `m` を付けると `lastLines` バッファ（最大 80 行）に残る過去の質問行に
-  // 反応して running 中も waiting に張り付くため、その挙動を避ける。
-  /[？]\s*$/,
-];
-
 function checkWaiting(paneId) {
   const t = terminals[paneId];
   if (!t) return;
-  const clean = stripAnsiForDisplay(t.lastLines);
-  const waiting = WAITING_PATTERNS.some(p => p.test(clean));
+  const matches = matchesWaiting(stripAnsiForDisplay(t.lastLines));
+  const waiting = nextWaitingState({ prev: t.waiting, matches });
   if (waiting !== t.waiting) {
     t.waiting = waiting;
-    // waiting フラグが変わったら status も再計算（waiting 復帰時は running/idle に戻すため）
+    // waiting フラグが変わったら status も再計算する
     recomputeStatus(paneId);
     // 待機状態になったときに通知音を鳴らす
     if (waiting) shell.beep();

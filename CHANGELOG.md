@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 開発環境 ] Playwright + Electron による e2e スモークテスト基盤を追加し、`POST /api/set-status` から renderer のステータス反映までを実行時に検証
+
 ## 1.13.0
 
 - [ 機能追加 ] HTTP API `POST /api/set-status` を追加し、オーケストレーター等が入力待ち状態を外部から権威的に設定/解除できるように。外部権威フラグは自動入力・リサイズ・再描画では解除されず、明示 push でのみ解除（[#95](https://github.com/vektor-inc/vk-terminals/issues/95)）

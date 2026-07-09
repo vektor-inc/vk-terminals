@@ -1,5 +1,7 @@
 # Changelog
 
+## 1.10.1
+
 - [ デザイン不具合修正 ] 設定ダイアログの select がダークテーマで白地に浮く問題・boolean 行のフォーム様式の不揃い・ラベルの語中改行・余白のグルーピングを修正（[vektor-inc/vk-orchestrator#48](https://github.com/vektor-inc/vk-orchestrator/issues/48)）
 
 ## 1.10.0

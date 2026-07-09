@@ -1,5 +1,7 @@
 # Changelog
 
+## 1.11.0
+
 - [ 機能追加 ] グリッドのペインをサイドバーに格納して表示エリアを空け、必要なときにグリッドへ戻せる機能を追加。格納中もターミナルは稼働を継続し、サイドバー幅のドラッグ変更にも対応（[#89](https://github.com/vektor-inc/vk-terminals/issues/89)）
 - [ 仕様変更 ] ペインヘッダの上下移動ボタン（▲▼）を削除。Flex Grid レイアウトで上下移動が機能しないため（[#87](https://github.com/vektor-inc/vk-terminals/issues/87)）
 

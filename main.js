@@ -1333,9 +1333,10 @@ function startHttpApi() {
       return;
     }
 
-    // POST /api/new-pane  { cwd?: "/path/to/dir", noClaude?: boolean } — 新規ペインを作成して termId を返す
+    // POST /api/new-pane  { cwd?: "/path/to/dir", noClaude?: boolean, stashed?: boolean } — 新規ペインを作成して termId を返す
     //   cwd を指定すればそのディレクトリで開く。未指定なら HOME で開く。
     //   noClaude: true を指定すると、新規ペインで claude を自動起動せず素のシェルとして開く。
+    //   stashed: true を指定すると、サイドバー格納＋折りたたみ状態で開く。
     if (req.method === 'POST' && url.pathname === '/api/new-pane') {
       if (isForbiddenOrigin(req)) {
         res.writeHead(403, { 'Content-Type': 'application/json' });
@@ -1351,6 +1352,7 @@ function startHttpApi() {
       readJsonBody(req, res, MAX_BODY, (body) => {
         let requestedCwd = null;
         let requestedNoClaude;
+        let requestedStashed;
         if (body.length > 0) {
           try {
             const parsed = JSON.parse(body);
@@ -1359,6 +1361,9 @@ function startHttpApi() {
             }
             if (typeof parsed?.noClaude === 'boolean') {
               requestedNoClaude = parsed.noClaude;
+            }
+            if (typeof parsed?.stashed === 'boolean') {
+              requestedStashed = parsed.stashed;
             }
           } catch {
             res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -1387,6 +1392,7 @@ function startHttpApi() {
         pendingNewPaneCallbacks.set(requestId, resolve);
         const payload = { requestId, cwd: requestedCwd };
         if (typeof requestedNoClaude === 'boolean') payload.noClaude = requestedNoClaude;
+        if (typeof requestedStashed === 'boolean') payload.stashed = requestedStashed;
         win.webContents.send('terminal:request-new-pane', payload);
       });
       return;

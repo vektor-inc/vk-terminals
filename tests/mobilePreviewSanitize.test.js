@@ -6,6 +6,11 @@ const test = require('node:test');
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
 
+const {
+  appendAnsiForDisplay,
+  stripAnsiForDisplay,
+} = require('../utils/stripAnsi');
+
 function loadSanitizeMobilePreviewText() {
   const html = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'mobile.html'), 'utf8');
   const match = html.match(/\/\/ Claude Code[\s\S]*?\nfunction tail/);
@@ -62,4 +67,34 @@ test('sanitizeMobilePreviewText: 半角カナと全角英数だけの本文行�
   ].join('\n');
 
   assert.equal(sanitizeMobilePreviewText(input), input);
+});
+
+test('mobile preview: CR で再描画された日本語行を途中改行として残さない', () => {
+  const sanitizeMobilePreviewText = loadSanitizeMobilePreviewText();
+  const redraw = [
+    'ペイン',
+    'ペインの',
+    'ペインのリンク付き',
+    'ペインのリンク付きの部分、B',
+  ].join('\r');
+
+  const preview = sanitizeMobilePreviewText(stripAnsiForDisplay(redraw))
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+
+  assert.equal(preview, 'ペインのリンク付きの部分、B');
+});
+
+test('mobile preview: PTY イベントをまたぐ CR 再描画も同一行として扱う', () => {
+  const sanitizeMobilePreviewText = loadSanitizeMobilePreviewText();
+  const lastLines = appendAnsiForDisplay(
+    stripAnsiForDisplay('ペイン'),
+    '\rペインのリンク付きの部分、B'
+  );
+
+  const preview = sanitizeMobilePreviewText(lastLines)
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+
+  assert.equal(preview, 'ペインのリンク付きの部分、B');
 });

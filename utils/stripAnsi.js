@@ -4,7 +4,7 @@
 // 単一の関数に統合せず用途別に複数の関数をエクスポートする。
 //
 // - stripAnsiForDisplay: renderer 側（xterm 表示・WAITING_PATTERNS 判定）用。
-//   CR を LF に正規化し、ESC<single-char>（CSI/OSC 以外の単発 ESC シーケンス）も除去する。
+//   CR の行頭復帰を反映し、ESC<single-char>（CSI/OSC 以外の単発 ESC シーケンス）も除去する。
 //   CSI は `[A-Za-z]` で終端する一般的な範囲のみを対象にする。
 //
 // - stripAnsiForPattern: main.js 側（信頼確認 / READY パターン検知）用。
@@ -12,12 +12,38 @@
 //   CSI の終端文字を非英字（`[@-~]`）まで含めて広く除去する（PR #10 対応）。
 //   OSC は `\d+;...` 形式のみを対象にする。
 
+function applyCarriageReturns(str) {
+  const lines = [''];
+
+  for (let i = 0; i < str.length; i += 1) {
+    const ch = str[i];
+    if (ch === '\r') {
+      if (str[i + 1] === '\n') {
+        lines.push('');
+        i += 1;
+      } else {
+        lines[lines.length - 1] = '';
+      }
+      continue;
+    }
+    if (ch === '\n') {
+      lines.push('');
+      continue;
+    }
+    lines[lines.length - 1] += ch;
+  }
+
+  return lines.join('\n');
+}
+
 const stripAnsiForDisplay = (str) =>
-  str
+  applyCarriageReturns(str
     .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '')
     .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
-    .replace(/\x1b[^[\]]/g, '')
-    .replace(/\r/g, '\n'); // \r を \n に変換して行バッファに乗せる
+    .replace(/\x1b[^[\]]/g, ''));
+
+const appendAnsiForDisplay = (buffer, data) =>
+  stripAnsiForDisplay(`${buffer || ''}${data || ''}`);
 
 const stripAnsiForPattern = (data) =>
   data
@@ -25,6 +51,7 @@ const stripAnsiForPattern = (data) =>
     .replace(/\x1b\]\d+;[^\x07\x1b]*(?:\x07|\x1b\\)/g, '');
 
 module.exports = {
+  appendAnsiForDisplay,
   stripAnsiForDisplay,
   stripAnsiForPattern,
 };

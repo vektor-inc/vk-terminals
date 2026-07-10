@@ -1,5 +1,7 @@
 # Changelog
 
+- [ その他 ] モバイルページの閲覧・操作のセットアップ手順（apiHost 設定・スマートフォンからのアクセス方法・セキュリティ注意）を README に追記（[#128](https://github.com/vektor-inc/vk-terminals/issues/128)）
+
 ## 1.15.3
 
 - [ デザイン不具合修正 ] 設定ダイアログ入力欄のプレースホルダー文字色をダーク背景で読める配色に調整（[#116](https://github.com/vektor-inc/vk-terminals/issues/116)）

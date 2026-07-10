@@ -1,5 +1,6 @@
 # Changelog
 
+- [ 機能追加 ] モバイル版で各ターミナル（ペイン）を終了するボタンを追加（[#100](https://github.com/vektor-inc/vk-terminals/issues/100)）
 - [ 開発環境 ] Playwright + Electron による e2e スモークテスト基盤を追加し、`POST /api/set-status` から renderer のステータス反映までを実行時に検証
 
 ## 1.13.0

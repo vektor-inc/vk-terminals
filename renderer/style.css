@@ -411,6 +411,9 @@ html, body {
   background: #0d1117;
   color: #e6edf3;
 }
+#root:not(.sidebar-open) .sidebar {
+  overflow: hidden;
+}
 /* 閉時（実幅 0）は境界線・リサイズハンドルが画面左端に残って見えるため、
  * どちらも開いているときだけ有効化する（CodeRabbit 指摘）。 */
 #root.sidebar-open .sidebar {

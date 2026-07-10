@@ -73,11 +73,17 @@ test('デスクトップの Claude 使用量はサイドバー最上部に常時
 
     const usage = win.locator('#sidebar-usage');
     await expect(usage).toBeVisible();
+    await expect(usage.locator('.sidebar-usage-body')).toHaveAttribute('aria-live', 'polite');
     await expect(usage).toContainText('Claude使用量');
     await expect(usage.locator('.usage-section-title').nth(0)).toHaveText('セッション');
     await expect(usage.locator('.usage-section-title').nth(0)).toHaveAttribute('title', '現在のセッション');
     await expect(usage.locator('.usage-section-title').nth(1)).toHaveText('週間');
     await expect(usage.locator('.usage-section-title').nth(1)).toHaveAttribute('title', '週間制限（すべてのモデル）');
+    const resetLabels = await usage.locator('.usage-reset').evaluateAll((els) => els.map((el) => ({
+      text: el.textContent,
+      title: el.getAttribute('title'),
+    })));
+    expect(resetLabels.every(({ text, title }) => text === title)).toBe(true);
 
     const sidebarOrder = await win.evaluate(() => {
       const sidebar = document.getElementById('sidebar');
@@ -87,6 +93,39 @@ test('デスクトップの Claude 使用量はサイドバー最上部に常時
 
     await expect(win.locator('[data-menu-action="open-usage"]')).toHaveCount(0);
     await expect(win.locator('.usage-overlay, .usage-modal')).toHaveCount(0);
+  } finally {
+    if (app) await app.close();
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+test('使用量データが null のときサイドバー使用量カードは hidden になる', async () => {
+  const port = await getFreePort();
+  const { app, win, tmpRoot } = await launchApp(port);
+  try {
+    await win.waitForSelector('#sidebar', { state: 'attached' });
+
+    await win.evaluate(() => {
+      window.renderSidebarUsage({
+        source: 'transcript',
+        tokensText: '1,234',
+        percentText: '42%',
+        resetText: '18:59',
+        remainingText: '2時間',
+        peakNote: '直近の履歴から推定しています',
+      });
+    });
+    const usage = win.locator('#sidebar-usage');
+    await expect(usage).toBeVisible();
+    await expect(usage.locator('.usage-reset')).toHaveAttribute('title', 'リセット 18:59（残り2時間）');
+    await expect(usage.locator('.usage-note')).toHaveAttribute('title', '直近の履歴から推定しています');
+
+    await win.evaluate(() => {
+      window.renderSidebarUsage(null);
+    });
+
+    await expect(usage).toHaveAttribute('hidden', '');
+    await expect(usage).toBeHidden();
   } finally {
     if (app) await app.close();
     fs.rmSync(tmpRoot, { recursive: true, force: true });

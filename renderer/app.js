@@ -658,6 +658,7 @@ function createSidebarUsageCard() {
 
   const body = document.createElement('div');
   body.className = 'sidebar-usage-body';
+  body.setAttribute('aria-live', 'polite');
 
   section.appendChild(title);
   section.appendChild(body);
@@ -2207,6 +2208,11 @@ function formatResetDateTimeJa(ms) {
   return `${wd} ${hh}:${mm} にリセット`;
 }
 
+function setTextWithTitle(el, text) {
+  el.textContent = text;
+  el.title = text;
+}
+
 // 公式データ 1 区分（セッション / 週間）のセクションを組み立てる。
 //   resetMode: 'remaining' … 「◯時間◯分後にリセット」。data-reset-at を付け、
 //              サイドバーの低頻度ティッカーがポーリングを待たず再計算する。
@@ -2251,9 +2257,9 @@ function buildOauthUsageSection(title, entry, resetMode, options = {}) {
   if (Number.isFinite(entry.resetAtMs)) {
     if (resetMode === 'remaining') {
       reset.dataset.resetAt = String(entry.resetAtMs);
-      reset.textContent = formatRemainingJa(entry.resetAtMs - Date.now());
+      setTextWithTitle(reset, formatRemainingJa(entry.resetAtMs - Date.now()));
     } else {
-      reset.textContent = formatResetDateTimeJa(entry.resetAtMs);
+      setTextWithTitle(reset, formatResetDateTimeJa(entry.resetAtMs));
     }
   }
   sec.appendChild(reset);
@@ -2302,13 +2308,13 @@ function buildTranscriptUsageSection(u) {
 
   const reset = document.createElement('div');
   reset.className = 'usage-reset';
-  reset.textContent = `リセット ${u.resetText}（残り${u.remainingText}）`;
+  setTextWithTitle(reset, `リセット ${u.resetText}（残り${u.remainingText}）`);
   sec.appendChild(reset);
 
   if (u.peakNote) {
     const note = document.createElement('div');
     note.className = 'usage-note';
-    note.textContent = u.peakNote;
+    setTextWithTitle(note, u.peakNote);
     sec.appendChild(note);
   }
   return sec;
@@ -2330,7 +2336,7 @@ function renderUsageView(container, usage, options = {}) {
     if (usage.stale === true) {
       const note = document.createElement('div');
       note.className = 'usage-note';
-      note.textContent = '直近に取得した値を表示しています（最新の取得に一時的に失敗しました）';
+      setTextWithTitle(note, '直近に取得した値を表示しています（最新の取得に一時的に失敗しました）');
       container.appendChild(note);
     }
     if (usage.session) {
@@ -2371,7 +2377,7 @@ function tickSidebarUsageReset() {
   if (!section || section.hidden) return;
   section.querySelectorAll('[data-reset-at]').forEach((el) => {
     const at = Number(el.dataset.resetAt);
-    if (Number.isFinite(at)) el.textContent = formatRemainingJa(at - Date.now());
+    if (Number.isFinite(at)) setTextWithTitle(el, formatRemainingJa(at - Date.now()));
   });
 }
 

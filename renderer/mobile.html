@@ -88,8 +88,9 @@
     background: #20242b; cursor: default; opacity: 0.62; }
   .pane-order-button:disabled:active { background: #20242b; }
   pre.lines { margin: 0; padding: 10px 12px; background: #0d0f13; color: #c8ccd2;
-    font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11px; line-height: 1.45;
-    white-space: pre-wrap; word-break: break-word; max-height: 240px; overflow-y: auto;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; line-height: 1.5;
+    white-space: pre-wrap; word-break: break-word; max-height: min(50vh, 520px); overflow-y: auto;
+    -webkit-overflow-scrolling: touch; overscroll-behavior: contain;
     border-top: 1px solid var(--card-border); }
   .card.collapsed pre.lines, .card.collapsed .actions { display: none; }
   .actions { padding: 8px 10px 10px; display: flex; flex-direction: column; gap: 7px; }
@@ -598,6 +599,7 @@ function toggleCollapse(termId) {
   if (!c) return;
   collapsed[termId] = !collapsed[termId];
   syncCollapseUI(c, termId);
+  if (!collapsed[termId]) c.pre.scrollTop = c.pre.scrollHeight;
   saveCollapsed();
 }
 
@@ -859,7 +861,17 @@ function render(data) {
       c.title.classList.remove("is-link");
       c.title.removeAttribute("aria-label");
     }
-    c.pre.textContent = sanitizeMobilePreviewText(tail(stripAnsi(t.lastLines || ""), 1400)).replace(/\n{3,}/g, "\n\n").trim();
+    // 罫線・装飾行を除去してから末尾を切り出し、読める直近出力を残す。
+    var cleaned = sanitizeMobilePreviewText(stripAnsi(t.lastLines || ""))
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+    var next = tail(cleaned, 4000);
+    if (next !== c.lastText) {
+      var stick = (c.pre.scrollHeight - c.pre.scrollTop - c.pre.clientHeight) <= 24;
+      c.pre.textContent = next;
+      c.lastText = next;
+      if (stick) c.pre.scrollTop = c.pre.scrollHeight;
+    }
     // 折り畳み状態を毎回当て直す（再描画・端末の消失→復活をまたいで一致させる）
     syncCollapseUI(c, termId);
   });

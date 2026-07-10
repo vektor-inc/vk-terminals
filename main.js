@@ -37,6 +37,8 @@ const globalPlainMode = process.argv.includes('--no-claude') || process.argv.inc
 // 並行リクエストでも取り違えが起きないように requestId で相関付ける
 const pendingNewPaneCallbacks = new Map();
 let nextNewPaneRequestId = 1;
+const pendingClosePaneCallbacks = new Map();
+let nextClosePaneRequestId = 1;
 
 // ─── Terminal state & HTTP API ───────────────────────────────────────────────
 // テストや並列起動時にポートを隔離できるよう、環境変数で上書き可能にする（既定 13847）。
@@ -903,6 +905,15 @@ ipcMain.on('terminal:new-pane-created', (event, payload = {}) => {
   resolve(result);
 });
 
+ipcMain.on('terminal:close-pane-done', (event, payload = {}) => {
+  const { requestId, ...result } = payload;
+  if (!requestId) return;
+  const resolve = pendingClosePaneCallbacks.get(requestId);
+  if (!resolve) return;
+  pendingClosePaneCallbacks.delete(requestId);
+  resolve(result);
+});
+
 /**
  * 指定された cwd で追加ペインを 1 枚作成する。
  * 内部的には renderer の splitPane を呼び出すのと同じ経路（pendingNewPaneCallbacks）を使う。
@@ -1443,6 +1454,61 @@ function startHttpApi() {
         if (typeof requestedNoClaude === 'boolean') payload.noClaude = requestedNoClaude;
         if (typeof requestedStashed === 'boolean') payload.stashed = requestedStashed;
         win.webContents.send('terminal:request-new-pane', payload);
+      });
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/close-pane') {
+      if (isForbiddenOrigin(req)) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'forbidden origin' }));
+        return;
+      }
+      if (!win || win.isDestroyed()) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'window not available' }));
+        return;
+      }
+      readJsonBody(req, res, 10 * 1024, (body) => {
+        let termId;
+        try {
+          const parsed = JSON.parse(body);
+          termId = parsed?.termId;
+        } catch {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'invalid JSON' }));
+          return;
+        }
+        if (!termId) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'termId required' }));
+          return;
+        }
+        if (!ptys.has(String(termId))) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'terminal ' + termId + ' not found' }));
+          return;
+        }
+        const requestId = String(nextClosePaneRequestId++);
+        const timeoutId = setTimeout(() => {
+          if (pendingClosePaneCallbacks.has(requestId)) {
+            pendingClosePaneCallbacks.delete(requestId);
+            res.writeHead(504, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'timeout waiting for close pane' }));
+          }
+        }, 15000);
+        const resolve = (result) => {
+          clearTimeout(timeoutId);
+          if (result.error) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: result.error }));
+          } else {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: true, termId: result.termId }));
+          }
+        };
+        pendingClosePaneCallbacks.set(requestId, resolve);
+        win.webContents.send('terminal:request-close-pane', { requestId, termId: String(termId) });
       });
       return;
     }

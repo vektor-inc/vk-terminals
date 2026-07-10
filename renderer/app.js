@@ -2756,6 +2756,23 @@ ipcRenderer.on('terminal:request-new-pane', async (event, payload = {}) => {
   }
 });
 
+ipcRenderer.on('terminal:request-close-pane', (event, payload = {}) => {
+  const { requestId, termId } = payload;
+  const reply = (result) => ipcRenderer.send('terminal:close-pane-done', { requestId, ...result });
+  // termId → paneId 逆引き（既存の terminal:title / set-status ハンドラと同じパターン）
+  const paneId = Object.keys(terminals).find(k => String(terminals[k]?.termId) === String(termId));
+  if (!paneId) {
+    reply({ error: 'terminal not found' });
+    return;
+  }
+  try {
+    closePane(paneId);
+    reply({ ok: true, termId: termId });
+  } catch (e) {
+    reply({ error: e?.message || 'failed to close pane' });
+  }
+});
+
 // ─── Title update from main (HTTP API POST /api/set-title) ──────────────────
 // API 由来のタイトルは apiTitle に保存し、OSC 由来の taskTitle とは別フィールドで管理する。
 // これにより claude TUI が継続的に発行する OSC 0/2 で API 設定タイトルが上書きされない。

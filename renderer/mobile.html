@@ -81,6 +81,14 @@
   button.k.yes { border-color: #2f6b3f; color: #8fe0a6; }
   button.k.no  { border-color: #6b2f2f; color: #f0a3a3; }
   button.k.stop { border-color: #6b5a2f; color: #e8d08a; }
+  /* ペイン終了（issue #100）。実行中プロセスを kill する不可逆操作なので、
+     クイックボタン（アウトライン様式）と格を変えた「塗りの赤」にし、
+     .actions 最下段に独立した全幅ボタンとして高頻度操作から分離する。 */
+  .actions .danger-row { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--card-border); }
+  button.k.kill { flex: 1 1 100%; width: 100%; min-height: 44px;
+    background: #b03636; border-color: #b03636; color: #fff; font-weight: 700; }
+  button.k.kill:active { background: #8f2a2a; border-color: #8f2a2a; }
+  button.k.kill:focus-visible { outline: 2px solid #58a6ff; outline-offset: 2px; }
   .sendrow { display: flex; gap: 6px; }
   .sendrow input { flex: 1; padding: 9px 10px; border-radius: 8px; border: 1px solid var(--card-border);
     background: #0d0f13; color: var(--fg); font-size: 14px; font-family: ui-monospace, Menlo, monospace; }
@@ -261,6 +269,26 @@ async function send(termId, input) {
   }
 }
 
+async function closeTerm(termId, label) {
+  var nm = (label && label.trim()) ? label : ("Terminal " + termId);
+  if (!window.confirm("「" + nm + "」を終了しますか？\n実行中のプロセス（claude 等）が停止し、元に戻せません。")) return;
+  try {
+    var res = await fetch("/api/close-pane", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ termId: termId })
+    });
+    if (!res.ok) {
+      var j = await res.json().catch(function(){ return {}; });
+      showErr("終了失敗: " + (j.error || res.status));
+    } else {
+      showErr("");
+    }
+  } catch (e) {
+    showErr("終了失敗: " + e.message);
+  }
+}
+
 // quick ボタン定義: ラベルと送る文字列
 var QUICK = [
   [
@@ -397,11 +425,19 @@ function ensureCard(termId) {
   actions.appendChild(sendrow);
   actions.appendChild(nlLabel);
 
+  // ペイン終了ボタン（issue #100）。破壊的操作なので最下段・独立行・全幅・塗り赤。
+  var killRow = document.createElement("div"); killRow.className = "row danger-row";
+  var killBtn = document.createElement("button");
+  killBtn.className = "k kill"; killBtn.textContent = "✕ ターミナルを終了";
+  killBtn.addEventListener("click", function() { closeTerm(termId, name.textContent); });
+  killRow.appendChild(killBtn);
+  actions.appendChild(killRow);
+
   root.appendChild(head); root.appendChild(pre); root.appendChild(actions);
   list.appendChild(root);
 
   cards[termId] = { root: root, pre: pre, name: name, cwd: cwd, dot: dot, badge: badge,
-    prLink: prLink, head: head, chevron: chevron };
+    prLink: prLink, head: head, chevron: chevron, killBtn: killBtn };
   // 復活時を含め、現在の collapsed 状態を初期反映
   syncCollapseUI(cards[termId], termId);
   return cards[termId];
@@ -531,6 +567,7 @@ function render(data) {
     // フォールバックしていた不具合を修正（issue: モバイル側でタスク名が出ない）。
     var title = t.displayTitle || t.apiTitle || t.taskTitle || "";
     c.name.textContent = title.trim() ? title : ("Terminal " + termId);
+    c.killBtn.setAttribute("aria-label", (c.name.textContent || ("Terminal " + termId)) + " を終了する（実行中プロセスを停止）");
     c.cwd.textContent = t.cwdShort || t.cwd || "";
     // PR リンク（issue #53）。安全な http(s) URL のときだけ href にセットして表示、
     // そうでなければ href を空にして非表示にする。

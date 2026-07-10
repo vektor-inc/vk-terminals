@@ -513,10 +513,6 @@ function runMenuAction(action) {
     openSettingsModal();
     return;
   }
-  if (action.type === 'open-usage') {
-    openUsageModal();
-    return;
-  }
   if (action.type === 'open-url') {
     openExternalUrlSafe(action.url);
   }
@@ -533,7 +529,7 @@ function createMenuActionElement(item) {
       event.preventDefault();
       runMenuAction(action);
     });
-  } else if (action?.type === 'open-settings' || action?.type === 'open-usage') {
+  } else if (action?.type === 'open-settings') {
     el = document.createElement('button');
     el.className = 'sidebar-menu-button';
     el.type = 'button';
@@ -618,16 +614,18 @@ function renderSidebarMenu() {
     }
   }
 
-  applyUsageBadge(); // 再描画で消えた使用率警告ドットを貼り直す
+  applyUsageBadge();
 }
 
 // サイドバーのラッパー（.sidebar）を組み立てる（issue #89）。
-// 中身は「スクロールする nav（メニュー内側 + 格納ペインセクション）」と「幅リサイズハンドル」。
-// 開閉トランジション・可変幅の基準はこのラッパー側に持たせる。
+// 中身は「固定ヘッダーの使用量カード」「スクロールする nav（メニュー内側 + 格納ペイン
+// セクション）」と「幅リサイズハンドル」。開閉トランジション・可変幅の基準はこのラッパー側に持たせる。
 function createSidebar() {
   const aside = document.createElement('aside');
   aside.id = 'sidebar';
   aside.className = 'sidebar';
+
+  aside.appendChild(createSidebarUsageCard());
 
   const nav = document.createElement('nav');
   nav.id = 'sidebar-menu';
@@ -645,6 +643,26 @@ function createSidebar() {
   aside.appendChild(nav);
   aside.appendChild(createSidebarResizer());
   return aside;
+}
+
+function createSidebarUsageCard() {
+  const section = document.createElement('section');
+  section.id = 'sidebar-usage';
+  section.className = 'sidebar-usage';
+  section.hidden = true;
+  section.setAttribute('aria-label', 'Claude使用量');
+
+  const title = document.createElement('div');
+  title.className = 'sidebar-usage-title';
+  title.textContent = 'Claude使用量';
+
+  const body = document.createElement('div');
+  body.className = 'sidebar-usage-body';
+  body.setAttribute('aria-live', 'polite');
+
+  section.appendChild(title);
+  section.appendChild(body);
+  return section;
 }
 
 // 格納ペインを収めるセクション（見出し＋リスト）。中身は renderPaneStash が更新する。
@@ -688,6 +706,7 @@ function ensureSidebar(root) {
   if (!el) {
     el = createSidebar();
     renderSidebarMenu();
+    renderSidebarUsage(lastUsageSnapshot);
     renderPaneStash();
   }
   return el;
@@ -2142,9 +2161,8 @@ window.addEventListener('resize', () => setSidebarWidth(getSidebarWidth()));
 // ─── 設定パネル（汎用）────────────────────────────────────────────────────────
 // main プロセス（settings:describe / settings:save）経由で、呼び出し側が env
 // VK_TERMINALS_SETTINGS で指定した config ファイルをこの GUI から編集する。
-// 歯車ボタンは設定モーダル（設定項目のみ）を開く。Claude の使用状況はサイドバーの
-// 「Claude使用量」項目（openUsageModal）へ分離した。describe が使えない環境では
-// モーダル側で「設定項目なし」を表示する。
+// 歯車ボタンは設定モーダル（設定項目のみ）を開く。Claude の使用状況はサイドバー上部の
+// 常時表示カードへ統合した。describe が使えない環境ではモーダル側で「設定項目なし」を表示する。
 function setupSettingsPanel() {
   const btn = document.getElementById('settings-btn');
   if (!btn) return;
@@ -2157,7 +2175,9 @@ function setupSettingsPanel() {
 //   - source: 'transcript' … トランスクリプト集計（describeUsage の整形済み値）
 // percent は百分率（17 = 17%）。トークン等の秘匿情報は main から一切渡らない。
 
-const USAGE_POLL_INTERVAL_MS = 60000; // モーダル表示中・バッジ共通（main 側 60s TTL に相乗り）
+const USAGE_POLL_INTERVAL_MS = 60000; // 使用量バッジ・サイドバーカード共通（main 側 60s TTL に相乗り）
+const USAGE_SIDEBAR_TICK_INTERVAL_MS = 30000;
+let lastUsageSnapshot = null;
 
 // 公式% の閾値カラー（〜70% 青 / 70〜90% アンバー / 90%〜 赤）。
 // フォールバックの自己ピーク比バーには適用しない（上限比ではないため）。
@@ -2188,11 +2208,16 @@ function formatResetDateTimeJa(ms) {
   return `${wd} ${hh}:${mm} にリセット`;
 }
 
+function setTextWithTitle(el, text) {
+  el.textContent = text;
+  el.title = text;
+}
+
 // 公式データ 1 区分（セッション / 週間）のセクションを組み立てる。
 //   resetMode: 'remaining' … 「◯時間◯分後にリセット」。data-reset-at を付け、
-//              モーダルの毎秒ティッカーがポーリングを待たずライブ再計算する。
+//              サイドバーの低頻度ティッカーがポーリングを待たず再計算する。
 //   resetMode: 'datetime'  … 「金 18:59 にリセット」（週間制限向け・静的表示）。
-function buildOauthUsageSection(title, entry, resetMode) {
+function buildOauthUsageSection(title, entry, resetMode, options = {}) {
   const sec = document.createElement('div');
   sec.className = 'usage-section';
 
@@ -2200,7 +2225,11 @@ function buildOauthUsageSection(title, entry, resetMode) {
   head.className = 'usage-section-head';
   const titleEl = document.createElement('span');
   titleEl.className = 'usage-section-title';
-  titleEl.textContent = title;
+  titleEl.textContent = options.titleLabel || title;
+  if (options.titleLabel && options.titleLabel !== title) {
+    titleEl.title = title;
+    titleEl.setAttribute('aria-label', title);
+  }
   const valueEl = document.createElement('span');
   valueEl.className = 'usage-value';
   valueEl.textContent = Number.isFinite(entry.percent) ? `${Math.round(entry.percent)}% 使用済み` : '—';
@@ -2228,9 +2257,9 @@ function buildOauthUsageSection(title, entry, resetMode) {
   if (Number.isFinite(entry.resetAtMs)) {
     if (resetMode === 'remaining') {
       reset.dataset.resetAt = String(entry.resetAtMs);
-      reset.textContent = formatRemainingJa(entry.resetAtMs - Date.now());
+      setTextWithTitle(reset, formatRemainingJa(entry.resetAtMs - Date.now()));
     } else {
-      reset.textContent = formatResetDateTimeJa(entry.resetAtMs);
+      setTextWithTitle(reset, formatResetDateTimeJa(entry.resetAtMs));
     }
   }
   sec.appendChild(reset);
@@ -2279,20 +2308,20 @@ function buildTranscriptUsageSection(u) {
 
   const reset = document.createElement('div');
   reset.className = 'usage-reset';
-  reset.textContent = `リセット ${u.resetText}（残り${u.remainingText}）`;
+  setTextWithTitle(reset, `リセット ${u.resetText}（残り${u.remainingText}）`);
   sec.appendChild(reset);
 
   if (u.peakNote) {
     const note = document.createElement('div');
     note.className = 'usage-note';
-    note.textContent = u.peakNote;
+    setTextWithTitle(note, u.peakNote);
     sec.appendChild(note);
   }
   return sec;
 }
 
 // 使用状況ビュー全体を描画する（読み取り専用）。
-function renderUsageView(container, usage) {
+function renderUsageView(container, usage, options = {}) {
   container.innerHTML = '';
   if (!usage) {
     const p = document.createElement('p');
@@ -2307,14 +2336,18 @@ function renderUsageView(container, usage) {
     if (usage.stale === true) {
       const note = document.createElement('div');
       note.className = 'usage-note';
-      note.textContent = '直近に取得した値を表示しています（最新の取得に一時的に失敗しました）';
+      setTextWithTitle(note, '直近に取得した値を表示しています（最新の取得に一時的に失敗しました）');
       container.appendChild(note);
     }
     if (usage.session) {
-      container.appendChild(buildOauthUsageSection('現在のセッション', usage.session, 'remaining'));
+      container.appendChild(buildOauthUsageSection('現在のセッション', usage.session, 'remaining', {
+        titleLabel: options.compact ? 'セッション' : '',
+      }));
     }
     if (usage.weekly) {
-      container.appendChild(buildOauthUsageSection('週間制限（すべてのモデル）', usage.weekly, 'datetime'));
+      container.appendChild(buildOauthUsageSection('週間制限（すべてのモデル）', usage.weekly, 'datetime', {
+        titleLabel: options.compact ? '週間' : '',
+      }));
     }
     return;
   }
@@ -2322,7 +2355,33 @@ function renderUsageView(container, usage) {
   container.appendChild(buildTranscriptUsageSection(usage));
 }
 
-// 歯車ボタンの警告ドットバッジ（issue #73）。
+function renderSidebarUsage(usage) {
+  lastUsageSnapshot = usage || null;
+  const section = document.getElementById('sidebar-usage');
+  if (!section) return;
+  const body = section.querySelector('.sidebar-usage-body');
+  if (!body) return;
+
+  if (!usage) {
+    section.hidden = true;
+    body.replaceChildren();
+    return;
+  }
+
+  renderUsageView(body, usage, { compact: true });
+  section.hidden = false;
+}
+
+function tickSidebarUsageReset() {
+  const section = document.getElementById('sidebar-usage');
+  if (!section || section.hidden) return;
+  section.querySelectorAll('[data-reset-at]').forEach((el) => {
+    const at = Number(el.dataset.resetAt);
+    if (Number.isFinite(at)) setTextWithTitle(el, formatRemainingJa(at - Date.now()));
+  });
+}
+
+// ☰ メニューボタンの警告ドットバッジ（issue #73）。
 // 公式の使用率（セッション・週間のいずれか）が 80% を超えたときだけドットを重ねる
 // （80〜90%: アンバー / 90%〜: 赤）。フォールバック（自己ピーク比）は上限比ではないため
 // バッジ対象にしない。ポーリングは 60 秒間隔で main 側 60s TTL キャッシュに相乗りする。
@@ -2333,18 +2392,16 @@ const USAGE_ALERT_LABELS = {
   'crit': 'Claude使用量: 危険（90%超）',
 };
 
-// 直近の使用率警告レベル（'' / 'warn' / 'crit'）。サイドバーは menu:update で
-// 作り直されるため、レベルはモジュール変数で保持し renderSidebarMenu から貼り直す。
+// 直近の使用率警告レベル（'' / 'warn' / 'crit'）。
 let usageAlertLevel = '';
 
-// 使用率の警告ドットを ☰ メニューボタン（常時表示）とサイドバーの「Claude使用量」
-// 項目の両方に反映する。サイドバー閉時でも ☰ 側で警告に気付けるようにする。
+// 使用率の警告ドットを ☰ メニューボタン（常時表示）に反映する。
+// サイドバー閉時でも警告に気付けるようにし、開いているときは使用量カードのバー色で示す。
 function applyUsageBadge() {
   const level = usageAlertLevel;
   const menuBtn = document.getElementById('menu-btn');
   const targets = [];
   if (menuBtn) targets.push(menuBtn);
-  document.querySelectorAll('[data-menu-action="open-usage"]').forEach((el) => targets.push(el));
   for (const el of targets) {
     el.classList.toggle('usage-alert-warn', level === 'warn');
     el.classList.toggle('usage-alert-crit', level === 'crit');
@@ -2360,10 +2417,11 @@ function applyUsageBadge() {
 function setupUsageBadge() {
   const refresh = async () => {
     let level = '';
+    let usage = null;
     try {
-      const u = await ipcRenderer.invoke('usage:get');
-      if (u && u.source === 'oauth') {
-        const pcts = [u.session && u.session.percent, u.weekly && u.weekly.percent]
+      usage = await ipcRenderer.invoke('usage:get');
+      if (usage && usage.source === 'oauth') {
+        const pcts = [usage.session && usage.session.percent, usage.weekly && usage.weekly.percent]
           .filter((p) => Number.isFinite(p));
         const max = pcts.length ? Math.max(...pcts) : null;
         if (max !== null && max > 80) level = max >= 90 ? 'crit' : 'warn';
@@ -2371,11 +2429,13 @@ function setupUsageBadge() {
     } catch (_e) {
       level = ''; // 取得失敗時はバッジを消す（古い警告を残さない）
     }
+    renderSidebarUsage(usage);
     usageAlertLevel = level;
     applyUsageBadge();
   };
   refresh();
   setInterval(refresh, USAGE_POLL_INTERVAL_MS);
+  setInterval(tickSidebarUsageReset, USAGE_SIDEBAR_TICK_INTERVAL_MS);
 }
 
 // 1 フィールド分の入力 HTML を組み立てる。
@@ -2444,85 +2504,18 @@ function renderSettingsField(f, value, id) {
   </div>`;
 }
 
-// モーダルを開き、「Claude使用状況｜設定」のタブ構成で描画する（issue #73）。
-//   - 既定タブは「Claude使用状況」（読み取り専用。フッターの保存/キャンセルは出さない）
-//   - 「設定」タブは settings:describe が使えるときだけ描画し、従来どおり保存できる
-//   - 使用状況のポーリングは「Claude使用状況タブ表示中のみ」初回即時＋60秒間隔。
-//     残り時間表示（◯時間◯分後にリセット）は毎秒ライブ再計算する
-// 設定モーダル・使用量モーダルの同時オープンを防ぐ共有ロック。settings:describe の
-// await 中は overlay がまだ DOM に無いため、.settings-overlay の有無チェックだけでは
-// もう一方のモーダルがすり抜けて二重生成されうる。await より前に同期で立てるこのフラグ
-// で「チェック〜生成」を原子的に守り、モーダルを閉じた／生成に失敗した時に必ず戻す。
+// 設定モーダルの二重オープンを防ぐロック。settings:describe の await 中は overlay がまだ
+// DOM に無いため、.settings-overlay の有無チェックだけでは二重生成されうる。await より前に
+// 同期で立てるこのフラグで「チェック〜生成」を原子的に守り、モーダルを閉じた／生成に
+// 失敗した時に必ず戻す。
 let modalOpen = false;
 
-// ─── Claude使用量モーダル ─────────────────────────────────────────────────────
-// 設定から切り離した読み取り専用の使用状況ビュー。サイドバーの「Claude使用量」項目
-// （builtin メニューの open-usage アクション）から起動する。設定モーダルとは別物で、
-// 保存フッターは持たず、表示中のみ 60 秒ポーリング＋リセット残時間の毎秒再計算を行う。
-async function openUsageModal() {
-  // 二重オープン防止（設定モーダルと共通の同期ロックで 1 枚に限定）
-  if (modalOpen) return;
-  modalOpen = true;
-
-  const overlay = document.createElement('div');
-  overlay.className = 'settings-overlay usage-overlay';
-  overlay.innerHTML = `
-    <div class="settings-modal usage-modal" role="dialog" aria-modal="true" aria-label="Claude使用量">
-      <div class="settings-header">
-        <h2>Claude使用量</h2>
-        <button class="settings-close" title="閉じる">✕</button>
-      </div>
-      <div class="settings-view settings-view-usage" role="region">
-        <p class="usage-empty">Claude の使用状況を取得中…</p>
-      </div>
-    </div>`;
-  document.body.appendChild(overlay);
-
-  const modal = overlay.querySelector('.usage-modal');
-  const usageView = modal.querySelector('.settings-view-usage');
-
-  // 使用状況のポーリング（main 側 60s TTL キャッシュに相乗り）と、リセット残時間の
-  // 毎秒ライブ再計算。モーダルを閉じたら両方止める。
-  let usagePollTimer = null;
-  let usageTickTimer = null;
-  const refreshUsage = async () => {
-    let u = null;
-    try {
-      u = await ipcRenderer.invoke('usage:get');
-    } catch (_e) {
-      u = null;
-    }
-    if (!overlay.isConnected) return; // 取得中に閉じられたら何もしない
-    renderUsageView(usageView, u);
-  };
-  refreshUsage(); // 初回即時（ポーリング待ちにしない）
-  usagePollTimer = setInterval(refreshUsage, USAGE_POLL_INTERVAL_MS);
-  usageTickTimer = setInterval(() => {
-    usageView.querySelectorAll('[data-reset-at]').forEach((el) => {
-      const at = Number(el.dataset.resetAt);
-      if (Number.isFinite(at)) el.textContent = formatRemainingJa(at - Date.now());
-    });
-  }, 1000);
-
-  const close = () => {
-    if (usagePollTimer) { clearInterval(usagePollTimer); usagePollTimer = null; }
-    if (usageTickTimer) { clearInterval(usageTickTimer); usageTickTimer = null; }
-    document.removeEventListener('keydown', onKey);
-    overlay.remove();
-    modalOpen = false;
-  };
-  const onKey = (e) => { if (e.key === 'Escape') close(); };
-  document.addEventListener('keydown', onKey);
-  overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) close(); });
-  modal.querySelector('.settings-close').addEventListener('click', close);
-}
-
 async function openSettingsModal() {
-  // 二重オープン防止（使用量モーダルと共通の同期ロック。describe の await より前に立てる）
+  // 二重オープン防止（describe の await より前に立てる）
   if (modalOpen) return;
   modalOpen = true;
 
-  // 設定ディスクリプタが無い環境でも空の設定モーダルとして開く（使用量は別モーダル）。
+  // 設定ディスクリプタが無い環境でも空の設定モーダルとして開く（使用量はサイドバー上部）。
   let desc = null;
   try {
     desc = await ipcRenderer.invoke('settings:describe');
@@ -2660,10 +2653,10 @@ initApp().then(() => {
   ipcRenderer.send('terminal:renderer-ready');
 });
 
-// 設定モーダルの歯車ボタンを配線する（設定のみ。使用量はサイドバーの別モーダルへ）。
+// 設定モーダルの歯車ボタンを配線する（設定のみ。使用量はサイドバー上部へ常時表示）。
 setupSettingsPanel();
 
-// 使用率警告ドットバッジ（☰ メニューボタン＋サイドバーの「Claude使用量」項目）を配線する。
+// 使用率警告ドットバッジ（☰ メニューボタン）とサイドバー使用量カードを配線する。
 setupUsageBadge();
 
 // ─── State reporting to main process ─────────────────────────────────────────

@@ -93,20 +93,13 @@ html, body {
 
 /* 使用率の警告ドットバッジ。公式の使用率（セッション・週間のいずれか）が 80% を
    超えたときだけ app.js が .usage-alert-warn（80〜90%: アンバー）/ .usage-alert-crit
-   （90%〜: 赤）を付与する。使用量表示を設定から分離したため、常時見える ☰ メニュー
-   ボタンと、サイドバーの「Claude使用量」項目の両方に表示する。 */
+   （90%〜: 赤）を ☰ メニューボタンに付与する。 */
 .titlebar-menu-btn.usage-alert-warn,
-.titlebar-menu-btn.usage-alert-crit,
-.sidebar-menu-button.usage-alert-warn,
-.sidebar-menu-button.usage-alert-crit {
+.titlebar-menu-btn.usage-alert-crit {
   position: relative;
 }
-.titlebar-btn.usage-alert-warn::after,
-.titlebar-btn.usage-alert-crit::after,
 .titlebar-menu-btn.usage-alert-warn::after,
-.titlebar-menu-btn.usage-alert-crit::after,
-.sidebar-menu-button.usage-alert-warn::after,
-.sidebar-menu-button.usage-alert-crit::after {
+.titlebar-menu-btn.usage-alert-crit::after {
   content: "";
   position: absolute;
   top: 3px;
@@ -116,12 +109,8 @@ html, body {
   border-radius: 50%;
   border: 1px solid #0d1117;
 }
-.titlebar-btn.usage-alert-warn::after,
-.titlebar-menu-btn.usage-alert-warn::after,
-.sidebar-menu-button.usage-alert-warn::after { background: #d29922; }
-.titlebar-btn.usage-alert-crit::after,
-.titlebar-menu-btn.usage-alert-crit::after,
-.sidebar-menu-button.usage-alert-crit::after { background: #f85149; }
+.titlebar-menu-btn.usage-alert-warn::after { background: #d29922; }
+.titlebar-menu-btn.usage-alert-crit::after { background: #f85149; }
 
 /* ─── 設定パネル（モーダル）──────────────────────────────────────────────────── */
 .settings-overlay {
@@ -177,9 +166,6 @@ html, body {
 }
 .settings-close:hover { background: #21262d; color: #e6edf3; }
 
-/* ─── 設定モーダルのタブ（Claude使用状況｜設定, issue #73）─────────────────────
- * ヘッダー直下のセグメント切替。既定タブは「Claude使用状況」（読み取り専用ビュー）。
- * 設定ディスクリプタが使えない環境では「設定」タブ自体を描画しない。 */
 /* モーダル（flex column・max-height 制限）内でビュー単位にスクロールさせる。
  * hidden 属性で非表示切替。 */
 .settings-view {
@@ -196,9 +182,6 @@ html, body {
  *   #d29922 / 90%〜 赤 #f85149）。緑は「実行中」の意味で使用済みのため使わない。
  *   フォールバック（自己ピーク比）のバーは単色青・閾値カラーなし（上限比ではないため）。
  *   バーには必ず数値ラベルを併記し、色だけに依存しない。 */
-.settings-view-usage {
-  padding: 14px 18px;
-}
 .usage-section {
   margin-bottom: 18px;
 }
@@ -242,7 +225,7 @@ html, body {
 }
 .usage-note {
   margin-top: 3px;
-  /* モーダル背景 #0d1117 上で WCAG AA（4.5:1）を満たすよう .usage-reset と同じ
+  /* ダーク背景 #0d1117 上で WCAG AA（4.5:1）を満たすよう .usage-reset と同じ
    * #8b949e / 11px に揃える（旧 #6e7681 / 10px は約 4.1:1 で AA 不達のため変更）。 */
   font-size: 11px;
   color: #8b949e;
@@ -412,14 +395,16 @@ html, body {
 
 /* ─── Sidebar ──────────────────────────────────────────────────────────────── */
 /* ラッパー（.sidebar）が flex 子・開閉トランジション・可変幅（--vktm-sidebar-width）の基準。
- * 内側の nav（.sidebar-menu）がメニューと格納ペインをスクロール表示し、
- * 右端の .sidebar-resizer で幅をドラッグ変更する（issue #89）。 */
+ * 固定ヘッダーの使用量カードの下で、内側の nav（.sidebar-menu）がメニューと格納ペインを
+ * スクロール表示し、右端の .sidebar-resizer で幅をドラッグ変更する（issue #89）。 */
 .sidebar {
   position: relative;
   flex: 0 0 0;
   width: var(--vktm-sidebar-width, 330px);
   min-width: 0;
   height: 100%;
+  display: flex;
+  flex-direction: column;
   transform: translateX(-100%);
   transition: flex-basis 0.18s ease, transform 0.18s ease;
   z-index: 900;
@@ -438,14 +423,67 @@ body.resizing-sidebar .sidebar {
   transition: none;
 }
 .sidebar-menu {
+  flex: 1 1 auto;
   width: 100%;
-  height: 100%;
+  min-height: 0;
   min-width: 0;
   overflow: hidden auto;
 }
 .sidebar-menu-inner {
   width: 100%;
   padding: 10px 8px;
+}
+
+.sidebar-usage {
+  flex: 0 0 auto;
+  width: 100%;
+  padding: 10px 12px 12px;
+  border-bottom: 1px solid #21262d;
+  background: #0d1117;
+}
+.sidebar-usage[hidden] {
+  display: none;
+}
+.sidebar-usage-title {
+  margin-bottom: 8px;
+  color: #8b949e;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+.sidebar-usage .usage-section {
+  margin-bottom: 12px;
+}
+.sidebar-usage .usage-section:last-child {
+  margin-bottom: 0;
+}
+.sidebar-usage .usage-section-head {
+  gap: 6px;
+  margin-bottom: 5px;
+}
+.sidebar-usage .usage-section-title,
+.sidebar-usage .usage-value,
+.sidebar-usage .usage-reset,
+.sidebar-usage .usage-note {
+  white-space: nowrap;
+}
+.sidebar-usage .usage-section-title,
+.sidebar-usage .usage-value {
+  font-size: 11px;
+}
+.sidebar-usage .usage-section-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sidebar-usage .usage-value {
+  flex: 0 0 auto;
+}
+.sidebar-usage .usage-reset,
+.sidebar-usage .usage-note {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* サイドバー右端の幅リサイズハンドル。グリッドの .grid-handle と同じく、

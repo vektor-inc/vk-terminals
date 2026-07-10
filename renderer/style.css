@@ -628,29 +628,42 @@ body.resizing-sidebar .sidebar {
 .stash-item-head {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 6px;
   padding: 4px 6px;
   background: #161b22;
+}
+/* 1段目タイトル行を格納カード（暗背景・コンパクト）向けに派生させる。 */
+.stash-item .pane-task-title {
+  background: #161b22;
+  color: #c9d1d9;
+  height: 20px;
+  padding: 10px 8px;
+  font-size: 12px;
+  letter-spacing: 0;
 }
 /* コンパクトカードでは幅が限られるため、idle 時のステータスバッジは
  * （グリッドのように幅を予約せず）畳んでタスク名の表示幅を優先する。 */
 .stash-item-head .pane-status[data-status="idle"] {
   display: none;
 }
-.stash-item-title {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: #c9d1d9;
-  font-size: 12px;
-  font-weight: 600;
+.stash-item .pane-task-title-pr {
+  color: #3fb950;
+}
+/* hover 時、基底クラスが背景オーバーレイを rgba(63,185,80,.15)→.25 に強める分
+ * 文字色 #3fb950 では実効コントラストが約 4.37:1 に落ち AA（4.5:1）未達になる。
+ * hover 時だけ文字色を明るい緑 #56d364 に上げて AA を確保する（暗背景で約 5.7:1）。 */
+.stash-item .pane-task-title-pr:hover {
+  color: #56d364;
+}
+.stash-item .pane-task-title-link:hover {
+  color: #58a6ff;
 }
 .stash-item-actions {
   display: flex;
   align-items: center;
   gap: 0;
+  margin-left: auto;
   flex-shrink: 0;
 }
 /* 格納カードはコンパクトなのでボタンをやや小さめにする。 */

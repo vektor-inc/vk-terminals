@@ -789,7 +789,8 @@ function stashToggleGlyph(open) { return open ? '▾' : '▸'; }
 function stashToggleLabel(open) { return open ? 'ターミナルを隠す' : 'ターミナルを表示'; }
 
 // 格納ペイン 1 件分（コンパクトカード）を生成する。
-//   - ヘッダ: 状態バッジ + タスク名 + アクション（▲ ▼ 表示トグル(▸/▾) →(復帰) ✕）
+//   - タイトル行: タスク名 / タイトルリンク / PR リンク
+//   - 操作行: 状態バッジ + アクション（▲ ▼ 表示トグル(▸/▾) →(復帰) ✕）
 //   - cwd 行
 //   - term-container（xterm。既定は非表示、― で開閉）
 function renderStashItem(id, idx, count) {
@@ -805,15 +806,28 @@ function renderStashItem(id, idx, count) {
 
   const status = t?.status || 'idle';
   const { label: statusLabel, ariaLabel: statusAriaLabel } = getStatusPresentation(status);
-  const title = getDisplayTitle(t) || '(無題)';
+  const title = getDisplayTitle(t);
+  const taskUrl = getDisplayUrl(t);
+  const taskPrUrl = isSafeExternalUrl(t?.apiPrUrl) ? t.apiPrUrl : '';
   const cwd = t?.cwd || '~';
+
+  const titleEl = document.createElement('div');
+  titleEl.className = 'pane-task-title stash-item-title-row'
+    + (!title && !taskPrUrl ? ' empty' : '')
+    + (taskUrl ? ' has-link' : '')
+    + (taskPrUrl ? ' has-pr' : '');
+  renderTaskTitleContent(titleEl, title, taskUrl, taskPrUrl);
+  if (taskUrl) {
+    titleEl.removeAttribute('title');
+  } else {
+    titleEl.title = title;
+  }
 
   const head = document.createElement('div');
   head.className = 'stash-item-head';
   // セキュリティ: cwd（OS 由来）・status 等は escAttr / escText でエスケープする（renderLeaf と同流儀）。
   head.innerHTML = `
     <span class="pane-badge pane-status" data-status="${escAttr(status)}" role="status" aria-live="polite"${statusAriaLabel ? ` aria-label="${escAttr(statusAriaLabel)}"` : ''}>${escText(statusLabel)}</span>
-    <span class="stash-item-title" title="${escAttr(title)}">${escText(title)}</span>
     <div class="stash-item-actions">
       <button class="btn btn-stash-up" title="上へ移動" aria-label="上へ移動">▲</button>
       <button class="btn btn-stash-down" title="下へ移動" aria-label="下へ移動">▼</button>
@@ -832,6 +846,7 @@ function renderStashItem(id, idx, count) {
   const termContainer = document.createElement('div');
   termContainer.className = 'term-container';
 
+  li.appendChild(titleEl);
   li.appendChild(head);
   li.appendChild(cwdEl);
   li.appendChild(termContainer);
@@ -867,11 +882,20 @@ function updateStashItem(paneId) {
     if (ariaLabel) badge.setAttribute('aria-label', ariaLabel);
     else badge.removeAttribute('aria-label');
   }
-  const titleEl = li.querySelector('.stash-item-title');
+  const titleEl = li.querySelector('.stash-item-title-row');
   if (titleEl) {
-    const title = getDisplayTitle(t) || '(無題)';
-    titleEl.textContent = title;
-    titleEl.title = title;
+    const title = getDisplayTitle(t);
+    const url = getDisplayUrl(t);
+    const prUrl = isSafeExternalUrl(t.apiPrUrl) ? t.apiPrUrl : '';
+    renderTaskTitleContent(titleEl, title, url, prUrl);
+    if (url) {
+      titleEl.removeAttribute('title');
+    } else {
+      titleEl.title = title;
+    }
+    titleEl.classList.toggle('empty', title.length === 0 && !prUrl);
+    titleEl.classList.toggle('has-link', !!url);
+    titleEl.classList.toggle('has-pr', !!prUrl);
   }
 }
 

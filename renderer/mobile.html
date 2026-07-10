@@ -174,6 +174,25 @@ function stripAnsi(s) {
     .replace(/\x1b[@-Z\\-_]/g, "")
     .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, ""); // その他制御文字（改行・タブは残す）
 }
+
+// Claude Code などの CLI スピナー / プログレス描画で残りやすい装飾グリフ。
+// 入力待ち検知と共有する lastLines には影響させず、モバイルプレビュー表示だけで除去する。
+var MOBILE_PREVIEW_DECORATIVE_GLYPH_RE = /[✻✽✶✷✴✳✢✥✦✧✩✪✫✬✭✮✯✰✱✲✵✸✹✺✼✾✿·]/g;
+var MOBILE_PREVIEW_READABLE_LINE_RE = /[A-Za-z぀-ヿ㐀-䶿一-鿿豈-﫿가-힯０-９Ａ-Ｚａ-ｚｦ-ﾟ]/;
+
+function sanitizeMobilePreviewText(s) {
+  if (!s) return "";
+  return s.split("\n").reduce(function(lines, line) {
+    var cleaned = line.replace(MOBILE_PREVIEW_DECORATIVE_GLYPH_RE, "");
+    if (cleaned.trim() === "") {
+      if (line.trim() === "") lines.push(cleaned);
+      return lines;
+    }
+    if (MOBILE_PREVIEW_READABLE_LINE_RE.test(cleaned)) lines.push(cleaned);
+    return lines;
+  }, []).join("\n");
+}
+
 function tail(s, n) { return s.length > n ? s.slice(s.length - n) : s; }
 
 // href に入れる URL を http(s) のみに制限する防御（issue #53）。
@@ -580,7 +599,7 @@ function render(data) {
       c.prLink.removeAttribute("title");
       c.prLink.classList.remove("show");
     }
-    c.pre.textContent = tail(stripAnsi(t.lastLines || ""), 1400).replace(/\n{3,}/g, "\n\n").trim();
+    c.pre.textContent = sanitizeMobilePreviewText(tail(stripAnsi(t.lastLines || ""), 1400)).replace(/\n{3,}/g, "\n\n").trim();
     // 折り畳み状態を毎回当て直す（再描画・端末の消失→復活をまたいで一致させる）
     syncCollapseUI(c, termId);
     // CSS order で並び替え（DOM移動をやめてモバイルでの入力フォーカス消失を防ぐ）

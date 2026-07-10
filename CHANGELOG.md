@@ -1,6 +1,7 @@
 # Changelog
 
 - [ 機能追加 ] モバイル版でペインの並び順を ▲▼ ボタンで手動変更できるように変更。ステータス変化による自動並び替えを廃止し、指定順を localStorage に保存して維持（[#106](https://github.com/vektor-inc/vk-terminals/issues/106)）
+- [ 仕様変更 ] Claude 使用量表示をサイドバー最上部の常時表示に統合し、クリックで開く使用量モーダルを廃止（[#109](https://github.com/vektor-inc/vk-terminals/issues/109)）
 - [ デザイン不具合修正 ] 設定ダイアログの入力欄の境界線色をダーク背景で WCAG 2.1 AA（3:1）を満たす明度（#6e7681）に変更（[#86](https://github.com/vektor-inc/vk-terminals/issues/86)）
 
 ## 1.14.0
@@ -8,7 +9,6 @@
 - [ 機能追加 ] モバイル版でペインのタイトルをタップすると、リンク指定（PR URL）がある場合に別タブで開くように変更（[#103](https://github.com/vektor-inc/vk-terminals/issues/103)）
 - [ 機能追加 ] モバイル版で各ターミナル（ペイン）を終了するボタンを追加（[#100](https://github.com/vektor-inc/vk-terminals/issues/100)）
 - [ 仕様変更 ] モバイル版でペインヘッダーをタイトル行と操作行の2段表示に変更（[#105](https://github.com/vektor-inc/vk-terminals/issues/105)）
-- [ 仕様変更 ] Claude 使用量表示をサイドバー最上部の常時表示に統合し、クリックで開く使用量モーダルを廃止（[#109](https://github.com/vektor-inc/vk-terminals/issues/109)）
 - [ 不具合修正 ] モバイル版のペインプレビューにスピナー記号や数字断片だけの意味がない行が表示される不具合を修正（[#102](https://github.com/vektor-inc/vk-terminals/issues/102)）
 - [ 開発環境 ] Playwright + Electron による e2e スモークテスト基盤を追加し、`POST /api/set-status` から renderer のステータス反映までを実行時に検証
 

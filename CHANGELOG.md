@@ -1,5 +1,7 @@
 # Changelog
 
+## 1.15.3
+
 - [ デザイン不具合修正 ] 設定ダイアログ入力欄のプレースホルダー文字色をダーク背景で読める配色に調整（[#116](https://github.com/vektor-inc/vk-terminals/issues/116)）
 - [ デザイン不具合修正 ] 設定ダイアログの文字サイズ・コントラストをダーク背景で読みやすいように調整（[#125](https://github.com/vektor-inc/vk-terminals/issues/125)）
 

@@ -12,27 +12,32 @@
 //   CSI の終端文字を非英字（`[@-~]`）まで含めて広く除去する（PR #10 対応）。
 //   OSC は `\d+;...` 形式のみを対象にする。
 // CR は TUI の全行書き換え型の再描画として扱う。
-// 裸の `\r` は現在行をクリアし、`\r\n` は改行 1 個にする。
-// 行内の部分上書きやバックスペースまでは再現しない簡易実装。
+// 裸の `\r` は行頭復帰として扱い、後続文字で現在行を列単位に上書きする。
+// `\r\n` は改行 1 個にする。バックスペースまでは再現しない簡易実装。
 function applyCarriageReturns(str) {
   const lines = [''];
+  let col = 0;
 
   for (let i = 0; i < str.length; i += 1) {
     const ch = str[i];
     if (ch === '\r') {
       if (str[i + 1] === '\n') {
         lines.push('');
+        col = 0;
         i += 1;
       } else {
-        lines[lines.length - 1] = '';
+        col = 0;
       }
       continue;
     }
     if (ch === '\n') {
       lines.push('');
+      col = 0;
       continue;
     }
-    lines[lines.length - 1] += ch;
+    const cur = lines[lines.length - 1];
+    lines[lines.length - 1] = cur.slice(0, col) + ch + cur.slice(col + 1);
+    col += 1;
   }
 
   return lines.join('\n');

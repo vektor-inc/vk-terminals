@@ -184,26 +184,31 @@
 <script>
 "use strict";
 // ANSI エスケープ / 一部制御文字を除去（表示用）
-// CR は TUI の全行再描画向けに扱う。裸の CR は現在行をクリアし、CRLF は改行 1 個にする。
+// CR は TUI の全行再描画向けに扱う。裸の CR は行頭復帰として扱い、後続文字で現在行を列単位に上書きする。CRLF は改行 1 個にする。
 function applyCarriageReturns(s) {
   var lines = [""];
+  var col = 0;
 
   for (var i = 0; i < s.length; i += 1) {
     var ch = s[i];
     if (ch === "\r") {
       if (s[i + 1] === "\n") {
         lines.push("");
+        col = 0;
         i += 1;
       } else {
-        lines[lines.length - 1] = "";
+        col = 0;
       }
       continue;
     }
     if (ch === "\n") {
       lines.push("");
+      col = 0;
       continue;
     }
-    lines[lines.length - 1] += ch;
+    var cur = lines[lines.length - 1];
+    lines[lines.length - 1] = cur.slice(0, col) + ch + cur.slice(col + 1);
+    col += 1;
   }
 
   return lines.join("\n");

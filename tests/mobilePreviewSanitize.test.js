@@ -112,6 +112,16 @@ test('mobile stripAnsi: 生の CR 再描画を途中改行として残さない'
   assert.equal(preview, 'ペインのリンク付きの部分、B');
 });
 
+test('stripAnsiForDisplay: CR は現在行を部分上書きする', () => {
+  assert.equal(stripAnsiForDisplay('abc\rXY'), 'XYc');
+});
+
+test('mobile stripAnsi: CR は現在行を部分上書きする', () => {
+  const stripAnsi = loadMobileStripAnsi();
+
+  assert.equal(stripAnsi('abc\rXY'), 'XYc');
+});
+
 test('mobile preview: PTY イベントをまたぐ CR 再描画も同一行として扱う', () => {
   const sanitizeMobilePreviewText = loadSanitizeMobilePreviewText();
   const lastLines = appendAnsiForDisplay(
@@ -124,4 +134,8 @@ test('mobile preview: PTY イベントをまたぐ CR 再描画も同一行と�
     .trim();
 
   assert.equal(preview, 'ペインのリンク付きの部分、B');
+});
+
+test('appendAnsiForDisplay: PTY イベントをまたぐ CR は既存行を部分上書きする', () => {
+  assert.equal(appendAnsiForDisplay(stripAnsiForDisplay('abc'), '\rXY'), 'XYc');
 });

@@ -2,7 +2,7 @@
 const { ipcRenderer, shell } = require('electron');
 const { Terminal } = require('@xterm/xterm');
 const { FitAddon } = require('@xterm/addon-fit');
-const { stripAnsiForDisplay } = require('../utils/stripAnsi');
+const { appendAnsiForDisplay, stripAnsiForDisplay } = require('../utils/stripAnsi');
 // エージェントルーム（issue #58）。サブエージェントの稼働状況をドット絵キャラで可視化する。
 const { AGENT_ORDER, buildScene, resolveAgentStatesFromOutput } = require('./agentRoom');
 const { matchesWaiting, nextWaitingState } = require('./waitingState');
@@ -392,8 +392,7 @@ ipcRenderer.on('terminal:data', (event, id, data) => {
   // issue #32: 直近 N 行のウィンドウが小さすぎると、Claude Code TUI のプロンプト枠や
   // recap メッセージの再描画で本来の確認文が押し出されて検知できなくなる。
   // 行数とトータル文字数の両方で上限を設けてメモリ膨張も防ぎつつ十分なウィンドウを確保する。
-  const stripped = stripAnsiForDisplay(data);
-  let merged = (t.lastLines + stripped).split('\n').slice(-LASTLINES_MAX_LINES).join('\n');
+  let merged = appendAnsiForDisplay(t.lastLines, data).split('\n').slice(-LASTLINES_MAX_LINES).join('\n');
   if (merged.length > LASTLINES_MAX_CHARS) {
     // 行を跨いだ単純な末尾切り出し（マルチバイトでも安全）。
     merged = merged.slice(-LASTLINES_MAX_CHARS);

@@ -1,6 +1,6 @@
 # Changelog
 
-- [ 不具合修正 ] モバイル版のペインプレビューで CR 再描画が改行として残り、日本語出力が数文字ごとに分断される不具合を修正（[#121](https://github.com/vektor-inc/vk-terminals/issues/121)）
+- [ 不具合修正 ] モバイル版のペインプレビューでターミナルの再描画が改行として残り、日本語出力が数文字ごとに分断されて表示される不具合を修正（[#121](https://github.com/vektor-inc/vk-terminals/issues/121)）
 
 ## 1.15.1
 

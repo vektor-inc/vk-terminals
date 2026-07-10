@@ -1107,7 +1107,7 @@ function startHttpApi() {
       return;
     }
 
-    // POST /api/set-title  { termId: "1", title: "タスク名", url?: "https://...", prUrl?: "https://..." }
+    // POST /api/set-title  { termId: "1", title: "タスク名", url?: "https://...", prUrl?: "https://...", prMerged?: true }
     //   — ペイン上部のタスクタイトル行に表示する文字列を設定。
     //   空文字や null を title に指定するとタイトル行を非表示に戻す。
     //   url を指定するとタイトル全体をリンク化（クリックで OS の既定ブラウザで開く）。
@@ -1117,6 +1117,7 @@ function startHttpApi() {
     //   prUrl（issue #44）: タイトル右側の独立した [ PR ↗ ] ボタンに紐づける URL。
     //   省略 → PR ボタンなし扱い、空文字 "" → 既存 prUrl をクリア。
     //   バリデーションは url と同一規約（http(s):・2048 文字以内・new URL() parse 可）。
+    //   prMerged: PR ボタンをマージ済み表示にする真偽値。厳密な true のみ true、それ以外は false。
     if (req.method === 'POST' && url.pathname === '/api/set-title') {
       if (isForbiddenOrigin(req)) {
         res.writeHead(403, { 'Content-Type': 'application/json' });
@@ -1194,12 +1195,13 @@ function startHttpApi() {
             }
             prUrlValue = r.value;
           }
+          const prMergedValue = parsed?.prMerged === true;
 
           if (win && !win.isDestroyed()) {
-            win.webContents.send('terminal:title', termId, title, urlValue, prUrlValue);
+            win.webContents.send('terminal:title', termId, title, urlValue, prUrlValue, prMergedValue);
           }
           res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ ok: true, termId, title, url: urlValue, prUrl: prUrlValue }));
+          res.end(JSON.stringify({ ok: true, termId, title, url: urlValue, prUrl: prUrlValue, prMerged: prMergedValue }));
         } catch (e) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'invalid JSON' }));

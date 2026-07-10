@@ -970,6 +970,23 @@ body.resizing-sidebar .sidebar {
   text-decoration: none;
 }
 
+.pane-task-title-pr.merged {
+  background: rgba(130, 80, 223, 0.15);
+  border-color: rgba(130, 80, 223, 0.3);
+  /* GitHub の merged 紫 `#8250df` 系。`.pane-task-title` 背景 `#aaa` 上で
+   * WCAG 2.1 AA テキスト基準（4.5:1）を満たす濃い紫へ落とす。
+   * 実背景は `#aaa` に badge 塗り `rgba(130,80,223,0.15)` を合成した
+   * 約 rgb(164,157,178) で、`#3a1a63` に対し実測コントラスト比 約 5.3:1（AA 達成）。
+   * hover（塗り 0.25）でも約 4.9:1 で 4.5:1 を確保する。 */
+  color: #3a1a63;
+}
+
+.pane-task-title-pr.merged:hover {
+  background: rgba(130, 80, 223, 0.25);
+  border-color: rgba(130, 80, 223, 0.5);
+  color: #3a1a63;
+}
+
 .pane-task-title-pr:focus-visible {
   outline: 2px solid #58a6ff;
   outline-offset: 2px;

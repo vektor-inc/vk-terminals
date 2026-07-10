@@ -7,6 +7,7 @@ const { stripAnsiForDisplay } = require('../utils/stripAnsi');
 const { AGENT_ORDER, buildScene, resolveAgentStatesFromOutput } = require('./agentRoom');
 const { matchesWaiting, nextWaitingState } = require('./waitingState');
 const { deriveStatus } = require('./statusState');
+const { getPrBadgePresentation } = require('./prBadge');
 
 // ─── xterm.css の注入 ─────────────────────────────────────────────────────────
 // xterm.css は index.html の相対パス <link> ではなく、Node のモジュール解決
@@ -314,6 +315,8 @@ async function createTerminal(paneId, cwd, options = {}) {
     apiTitle: '',
     apiUrl: '',
     apiPrUrl: '',
+    // apiPrMerged: HTTP API（POST /api/set-title）で渡された PR のマージ済み状態。
+    apiPrMerged: false,
     // agentRoom（issue #58）: POST /api/agentroom で受け取ったルーム状態 { name: state }。
     //   null のままなら API 未通知。API が古い（AGENTROOM_API_TTL_MS 超過）場合は
     //   resolveRoomAgents() が PTY 出力ベースのフォールバック表示に切り替える。
@@ -957,7 +960,8 @@ function setupSidebarMenu() {
 // OS の既定ブラウザを開く。
 // 第4引数 prUrl（issue #44）: 非空のとき、タイトル右側に独立した PR ボタン（<a class="pane-task-title-pr">）を追加する。
 //   apiTitle / taskTitle のいずれが表示中でも、prUrl があれば常時表示する（採用: 案A）。
-function renderTaskTitleContent(el, title, url, prUrl) {
+// 第5引数 prMerged: true のとき、PR ボタンをマージ済み表示（紫 + 非色アイコン）にする。
+function renderTaskTitleContent(el, title, url, prUrl, prMerged = false) {
   // 既存の子要素を全消去（innerHTML は使わずに DOM API で組み立てる）
   while (el.firstChild) el.removeChild(el.firstChild);
 
@@ -1015,11 +1019,12 @@ function renderTaskTitleContent(el, title, url, prUrl) {
   // タイトル文字列の有無・apiTitle/taskTitle の選択状態に関わらず、prUrl があれば常時表示。
   // .pane-badge（issue #27 で導入した共通バッジ basis）に乗せて見た目を統一する。
   if (prUrl) {
+    const prPresentation = getPrBadgePresentation(prMerged === true);
     const prLink = document.createElement('a');
-    prLink.className = 'pane-badge pane-task-title-pr';
+    prLink.className = prPresentation.className;
     prLink.href = '#'; // 実 URL は入れない（タイトルリンクと同じ理由）
     prLink.setAttribute('role', 'link');
-    prLink.setAttribute('aria-label', 'プルリクエストを開く（外部ブラウザ）');
+    prLink.setAttribute('aria-label', prPresentation.ariaLabel);
     prLink.title = prUrl;
     prLink.draggable = false;
 
@@ -1031,7 +1036,7 @@ function renderTaskTitleContent(el, title, url, prUrl) {
     const prIcon = document.createElement('span');
     prIcon.className = 'pane-task-title-pr-icon';
     prIcon.setAttribute('aria-hidden', 'true');
-    prIcon.textContent = '↗';
+    prIcon.textContent = prPresentation.icon;
     prLink.appendChild(prIcon);
 
     prLink.addEventListener('click', (e) => {
@@ -1061,7 +1066,8 @@ function updatePaneTitle(paneId) {
   // PR ボタンは apiPrUrl があれば常時表示（採用: 案A）。
   // renderer 側でも http(s) 二段チェックを通してから採用する。
   const prUrl = isSafeExternalUrl(t.apiPrUrl) ? t.apiPrUrl : '';
-  renderTaskTitleContent(el, title, url, prUrl);
+  const prMerged = !!t.apiPrMerged;
+  renderTaskTitleContent(el, title, url, prUrl, prMerged);
   // ホバー時のツールチップは has-link 時は子 <a> 側に集約して親子競合を避ける。
   //   - URL 無し: 親 .pane-task-title に title 属性をセット（従来挙動）
   //   - URL 有り: 親 title 属性を削除し、<a> 側の title（タイトル + URL）のみに任せる
@@ -1749,6 +1755,7 @@ function renderLeaf(node) {
   const taskUrl = getDisplayUrl(t);
   // PR ボタン用 URL（issue #44）。renderer 側でも http(s) 二段チェックを通す。
   const taskPrUrl = isSafeExternalUrl(t?.apiPrUrl) ? t.apiPrUrl : '';
+  const taskPrMerged = !!t?.apiPrMerged;
 
   const el = document.createElement('div');
   el.className = 'pane'
@@ -1770,7 +1777,7 @@ function renderLeaf(node) {
     + (isEmpty ? ' empty' : '')
     + (taskUrl ? ' has-link' : '')
     + (taskPrUrl ? ' has-pr' : '');
-  renderTaskTitleContent(taskTitleEl, taskTitle, taskUrl, taskPrUrl);
+  renderTaskTitleContent(taskTitleEl, taskTitle, taskUrl, taskPrUrl, taskPrMerged);
   // URL 有りのときは子 <a> 側の title 属性に集約するため、親には付けない（親子競合回避）。
   if (taskTitle && !taskUrl) taskTitleEl.title = taskTitle;
   if (canDragPane) {
@@ -2690,6 +2697,7 @@ setInterval(() => {
       apiTitle: t.apiTitle || '',
       apiUrl: t.apiUrl || '',
       apiPrUrl: t.apiPrUrl || '',
+      apiPrMerged: !!t.apiPrMerged,
       displayTitle: getDisplayTitle(t),
       // collapsed: グリッド化で折り畳み機能を撤去したため常に false（後方互換のためキーは維持）。
       collapsed: false,
@@ -2778,8 +2786,9 @@ ipcRenderer.on('terminal:request-close-pane', (event, payload = {}) => {
 //   - undefined → 後方互換のため prUrl 変更なしと解釈（ただし main 側は常に第4引数を送る）
 //   - 空文字  → apiPrUrl をクリア（PR ボタン非表示）
 //   - 文字列 → http(s): スキームのみ（main 側で検証済み）。apiPrUrl にセット
-// title / url / prUrl はペアで都度送る置換セマンティクス。
-ipcRenderer.on('terminal:title', (event, termId, title, url, prUrl) => {
+// 第5引数 prMerged: PR ボタンのマージ済み表示フラグ。boolean のときのみ apiPrMerged に反映する。
+// title / url / prUrl / prMerged はペアで都度送る置換セマンティクス。
+ipcRenderer.on('terminal:title', (event, termId, title, url, prUrl, prMerged) => {
   const paneId = Object.keys(terminals).find(k => terminals[k]?.termId === termId);
   if (!paneId) return;
   terminals[paneId].apiTitle = title || '';
@@ -2790,6 +2799,10 @@ ipcRenderer.on('terminal:title', (event, termId, title, url, prUrl) => {
   // prUrl も同様。後方互換のため string 以外は無視する。
   if (typeof prUrl === 'string') {
     terminals[paneId].apiPrUrl = prUrl;
+  }
+  // prMerged も同様。後方互換のため boolean 以外は無視する。
+  if (typeof prMerged === 'boolean') {
+    terminals[paneId].apiPrMerged = prMerged;
   }
   updatePaneTitle(paneId);
 });

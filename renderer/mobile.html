@@ -448,8 +448,11 @@ function movePane(termId, delta) {
   visiblePaneOrder.splice(nextIdx, 0, id);
   var visible = {};
   visiblePaneOrder.forEach(function(visibleId) { visible[visibleId] = true; });
-  var hidden = paneOrder.filter(function(orderId) { return !visible[orderId]; });
-  paneOrder = visiblePaneOrder.concat(hidden);
+  var nextVisibleIndex = 0;
+  paneOrder = paneOrder.map(function(orderId) {
+    if (!visible[orderId]) return orderId;
+    return visiblePaneOrder[nextVisibleIndex++];
+  });
   savePaneOrder();
   applyPaneOrder();
 }

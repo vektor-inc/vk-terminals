@@ -30,8 +30,11 @@
   #list { padding: 10px; display: flex; flex-direction: column; gap: 10px; }
   .card { background: var(--card); border: 1px solid var(--card-border); border-radius: 12px;
     overflow: hidden; }
-  .card-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px;
+  .card-head { display: flex; flex-direction: column; align-items: stretch; gap: 6px; padding: 10px 12px;
     min-height: 44px; cursor: pointer; user-select: none; -webkit-user-select: none; }
+  .card-head-main { display: flex; align-items: center; gap: 8px; flex: 1 1 auto; min-width: 0; }
+  .card-head-meta { display: flex; align-items: center; gap: 8px; flex: none; }
+  .card-head-meta .chevron { margin-left: auto; }
   .card-head:active { background: #232830; }
   .chevron { flex: none; color: var(--muted); font-size: 13px; line-height: 1;
     transition: transform 0.12s ease; }
@@ -369,6 +372,8 @@ function ensureCard(termId) {
   var root = document.createElement("div"); root.className = "card";
 
   var head = document.createElement("div"); head.className = "card-head";
+  var headMain = document.createElement("div"); headMain.className = "card-head-main";
+  var headMeta = document.createElement("div"); headMeta.className = "card-head-meta";
   var dot = document.createElement("span"); dot.className = "dot idle";
   var title = document.createElement("div"); title.className = "card-title";
   var name = document.createElement("div"); name.className = "name";
@@ -389,8 +394,9 @@ function ensureCard(termId) {
   prLink.appendChild(prLabel); prLink.appendChild(prIcon);
   var chevron = document.createElement("span"); chevron.className = "chevron";
   chevron.setAttribute("aria-hidden", "true"); chevron.textContent = "▾";
-  head.appendChild(dot); head.appendChild(title); head.appendChild(badge);
-  head.appendChild(prLink); head.appendChild(chevron);
+  headMain.appendChild(dot); headMain.appendChild(title);
+  headMeta.appendChild(badge); headMeta.appendChild(prLink); headMeta.appendChild(chevron);
+  head.appendChild(headMain); head.appendChild(headMeta);
 
   // ヘッダ帯全体をタップで開閉トグル。将来ヘッダ内に
   // ボタン/入力/リンクを置いた場合の保険で、それらをタップした時はトグルしない。

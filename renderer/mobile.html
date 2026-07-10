@@ -60,10 +60,10 @@
   .badge.waiting { background: rgba(245,166,35,0.18); color: #ffce7a; }
   /* PR リンク（issue #53）。PC 版の [ PR ↗ ] バッジ（GitHub PR グリーン系）に寄せる。
      ヘッダ帯（暗背景 var(--card)）上に置くため、PC の濃緑ではなく明るい緑文字にする。
-     .badge と同じ角丸・font-size に調和させつつ、タップ領域確保のため min-height 44px・
+     .badge と同じ角丸・font-size に調和させつつ、タップ領域確保のため min-height 32px・
      padding 縦広めにして指で押しやすくする（ヘッダ自体は min-height 44px）。 */
   a.pr-link { display: none; align-items: center; gap: 4px; flex: none;
-    font-size: 10px; font-weight: 700; padding: 4px 8px; min-height: 44px; border-radius: 6px;
+    font-size: 10px; font-weight: 700; padding: 4px 8px; min-height: 32px; border-radius: 6px;
     text-transform: uppercase; letter-spacing: 0.04em; text-decoration: none;
     background: rgba(63,185,80,0.15); border: 1px solid rgba(63,185,80,0.3); color: #6fd58a; }
   a.pr-link.show { display: inline-flex; }

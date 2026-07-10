@@ -1,5 +1,7 @@
 # Changelog
 
+- [ デザイン不具合修正 ] 設定ダイアログの入力欄の境界線色をダーク背景で WCAG 2.1 AA（3:1）を満たす明度（#6e7681）に変更（[#86](https://github.com/vektor-inc/vk-terminals/issues/86)）
+
 ## 1.14.0
 
 - [ 機能追加 ] モバイル版でペインのタイトルをタップすると、リンク指定（PR URL）がある場合に別タブで開くように変更（[#103](https://github.com/vektor-inc/vk-terminals/issues/103)）

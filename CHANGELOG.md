@@ -1,6 +1,7 @@
 # Changelog
 
 - [ 機能追加 ] モバイル版で各ターミナル（ペイン）を終了するボタンを追加（[#100](https://github.com/vektor-inc/vk-terminals/issues/100)）
+- [ 仕様変更 ] モバイル版でペインヘッダーをタイトル行と操作行の2段表示に変更（[#105](https://github.com/vektor-inc/vk-terminals/issues/105)）
 - [ 開発環境 ] Playwright + Electron による e2e スモークテスト基盤を追加し、`POST /api/set-status` から renderer のステータス反映までを実行時に検証
 
 ## 1.13.0

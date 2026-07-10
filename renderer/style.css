@@ -918,7 +918,7 @@ body.resizing-sidebar .sidebar {
 }
 
 .pane-task-title-link:hover {
-  color: #000;
+  color: #fff;
   text-decoration: underline;
   text-decoration-thickness: 1px;
   text-underline-offset: 2px;

@@ -1,5 +1,6 @@
 # Changelog
 
+- [ デザイン不具合修正 ] ペインのタスクタイトルリンクのホバー時の文字色がダーク背景で黒く沈んで読みづらい問題を、白に変更して修正
 - [ その他 ] README を現行実装に同期。Node.js 要件を 20 以上に修正し、HTTP API の `POST /api/menu`・`POST /api/close-pane`・`/api/set-title` の `prMerged`・`/api/states` の `usage` を追記、サイドバー格納／サイドバーメニュー・Claude 使用量表示・モバイルページの節を追加、エージェントルームが β 無効化中である旨を明記
 
 ## 1.15.0

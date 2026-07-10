@@ -58,7 +58,7 @@ const SEND_ENTER_SPLIT_DELAY_MS = 150;
 let cachedStates = {};  // renderer から受け取った状態キャッシュ
 let httpServer = null;
 
-const MENU_ACTION_TYPES = new Set(['open-settings', 'open-usage', 'open-url']);
+const MENU_ACTION_TYPES = new Set(['open-settings', 'open-url']);
 const MENU_MAX_SECTIONS = 20;
 const MENU_MAX_ITEMS = 50;
 const MENU_MAX_CHILDREN = 20;
@@ -139,8 +139,6 @@ function validateMenuItem(raw, source, depth, seenIds) {
     }
     if (raw.action.type === 'open-settings') {
       item.action = { type: 'open-settings' };
-    } else if (raw.action.type === 'open-usage') {
-      item.action = { type: 'open-usage' };
     } else if (raw.action.type === 'open-url') {
       const r = validateUrlField(raw.action.url, 'action.url');
       if (!r.ok || !r.value) {
@@ -234,12 +232,6 @@ function builtinMenuSection() {
   return {
     source: 'builtin',
     items: [
-      {
-        id: 'usage',
-        label: 'Claude使用量',
-        icon: '📊',
-        action: { type: 'open-usage' },
-      },
       {
         id: 'settings',
         label: '設定',

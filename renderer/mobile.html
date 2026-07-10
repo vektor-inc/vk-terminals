@@ -184,15 +184,39 @@
 <script>
 "use strict";
 // ANSI エスケープ / 一部制御文字を除去（表示用）
+// CR は TUI の全行再描画向けに扱う。裸の CR は現在行をクリアし、CRLF は改行 1 個にする。
+function applyCarriageReturns(s) {
+  var lines = [""];
+
+  for (var i = 0; i < s.length; i += 1) {
+    var ch = s[i];
+    if (ch === "\r") {
+      if (s[i + 1] === "\n") {
+        lines.push("");
+        i += 1;
+      } else {
+        lines[lines.length - 1] = "";
+      }
+      continue;
+    }
+    if (ch === "\n") {
+      lines.push("");
+      continue;
+    }
+    lines[lines.length - 1] += ch;
+  }
+
+  return lines.join("\n");
+}
+
 function stripAnsi(s) {
   if (!s) return "";
-  return s
-    .replace(/\r\n?/g, "\n")  // CR / CRLF を LF に正規化（上書き系ログの表示安定化）
+  return applyCarriageReturns(s
     .replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]/g, "")  // CSI シーケンス
     .replace(/\x1b\][^\x07\x1b]*(\x07|\x1b\\)/g, "") // OSC
     .replace(/\x1b[PX^_].*?(\x1b\\|\x07)/g, "")
     .replace(/\x1b[@-Z\\-_]/g, "")
-    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, ""); // その他制御文字（改行・タブは残す）
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, "")); // その他制御文字（改行・タブは残す）
 }
 
 // Claude Code などの CLI スピナー / プログレス描画で残りやすい装飾グリフ。

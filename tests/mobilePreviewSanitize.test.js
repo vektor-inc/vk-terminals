@@ -21,6 +21,16 @@ function loadSanitizeMobilePreviewText() {
   return context.sanitizeMobilePreviewText;
 }
 
+function loadMobileStripAnsi() {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'mobile.html'), 'utf8');
+  const match = html.match(/"use strict";[\s\S]*?\n\/\/ Claude Code/);
+  assert.ok(match, 'stripAnsi の定義を renderer/mobile.html から抽出できる');
+
+  const context = {};
+  vm.runInNewContext(match[0].replace(/\n\/\/ Claude Code$/, ''), context);
+  return context.stripAnsi;
+}
+
 test('sanitizeMobilePreviewText: スピナー記号だけの行と数字断片行を除去する', () => {
   const sanitizeMobilePreviewText = loadSanitizeMobilePreviewText();
   const input = [
@@ -79,6 +89,23 @@ test('mobile preview: CR で再描画された日本語行を途中改行とし�
   ].join('\r');
 
   const preview = sanitizeMobilePreviewText(stripAnsiForDisplay(redraw))
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+
+  assert.equal(preview, 'ペインのリンク付きの部分、B');
+});
+
+test('mobile stripAnsi: 生の CR 再描画を途中改行として残さない', () => {
+  const sanitizeMobilePreviewText = loadSanitizeMobilePreviewText();
+  const stripAnsi = loadMobileStripAnsi();
+  const redraw = [
+    'ペイン',
+    'ペインの',
+    'ペインのリンク付き',
+    'ペインのリンク付きの部分、B',
+  ].join('\r');
+
+  const preview = sanitizeMobilePreviewText(stripAnsi(redraw))
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 

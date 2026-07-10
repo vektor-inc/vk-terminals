@@ -307,6 +307,13 @@ html, body {
   font-size: 12px;
   font-family: inherit;
 }
+.settings-row input[type="text"]::placeholder,
+.settings-row input[type="number"]::placeholder,
+.settings-row input[type="password"]::placeholder,
+.settings-row textarea::placeholder {
+  color: #8b949e;
+  opacity: 1;
+}
 .settings-row select {
   appearance: none;
   -webkit-appearance: none;

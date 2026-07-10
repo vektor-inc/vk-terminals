@@ -1,5 +1,7 @@
 # Changelog
 
+- [ デザイン不具合修正 ] 設定ダイアログ入力欄のプレースホルダー文字色をダーク背景で読める配色に調整（[#116](https://github.com/vektor-inc/vk-terminals/issues/116)）
+
 ## 1.15.2
 
 - [ 不具合修正 ] モバイル版のペインプレビューでターミナルの再描画が改行として残り、日本語出力が数文字ごとに分断されて表示される不具合を修正（[#121](https://github.com/vektor-inc/vk-terminals/issues/121)）

@@ -6,8 +6,6 @@
 - [ 機能追加 ] HTTP API `POST /api/set-title` に `prMerged` を追加し、マージ済み PR のラベルを紫で表示できるように（[#113](https://github.com/vektor-inc/vk-terminals/issues/113)）
 - [ 仕様変更 ] Claude 使用量表示をサイドバー最上部の常時表示に統合し、クリックで開く使用量モーダルを廃止（[#109](https://github.com/vektor-inc/vk-terminals/issues/109)）
 - [ デザイン不具合修正 ] 設定ダイアログの入力欄の境界線色をダーク背景で WCAG 2.1 AA（3:1）を満たす明度（#6e7681）に変更（[#86](https://github.com/vektor-inc/vk-terminals/issues/86)）
-- [ デザイン不具合修正 ] サイドバーを閉じた状態でも使用量カードがメイン領域に重なって表示される不具合を修正（[#118](https://github.com/vektor-inc/vk-terminals/issues/118)）
-
 ## 1.14.0
 
 - [ 機能追加 ] モバイル版でペインのタイトルをタップすると、リンク指定（PR URL）がある場合に別タブで開くように変更（[#103](https://github.com/vektor-inc/vk-terminals/issues/103)）

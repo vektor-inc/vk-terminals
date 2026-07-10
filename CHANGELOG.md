@@ -1,5 +1,6 @@
 # Changelog
 
+- [ 機能追加 ] モバイル版でペインのタイトルをタップすると、リンク指定（PR URL）がある場合に別タブで開くように変更（[#103](https://github.com/vektor-inc/vk-terminals/issues/103)）
 - [ 機能追加 ] モバイル版で各ターミナル（ペイン）を終了するボタンを追加（[#100](https://github.com/vektor-inc/vk-terminals/issues/100)）
 - [ 仕様変更 ] モバイル版でペインヘッダーをタイトル行と操作行の2段表示に変更（[#105](https://github.com/vektor-inc/vk-terminals/issues/105)）
 - [ 不具合修正 ] モバイル版のペインプレビューにスピナー記号や数字断片だけの意味がない行が表示される不具合を修正（[#102](https://github.com/vektor-inc/vk-terminals/issues/102)）

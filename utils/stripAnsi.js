@@ -13,13 +13,95 @@
 //   OSC は `\d+;...` 形式のみを対象にする。
 // CR は TUI の全行書き換え型の再描画として扱う。
 // 裸の `\r` は行頭復帰として扱い、後続文字で現在行を列単位に上書きする。
-// `\r\n` は改行 1 個にする。バックスペースまでは再現しない簡易実装。
-function applyCarriageReturns(str) {
+// `\r\n` は改行 1 個にする。
+// erase-in-line CSI は列位置に応じて反映するが、カーソル横移動 CSI までは再現しない簡易実装。
+function applyDisplayControls(str) {
   const lines = [''];
   let col = 0;
 
+  const writeChar = (ch) => {
+    let cur = lines[lines.length - 1];
+    if (col > cur.length) {
+      cur += ' '.repeat(col - cur.length);
+    }
+    lines[lines.length - 1] = cur.slice(0, col) + ch + cur.slice(col + 1);
+    col += 1;
+  };
+
+  const eraseInLine = (mode) => {
+    const cur = lines[lines.length - 1];
+    if (mode === '2') {
+      lines[lines.length - 1] = '';
+      return;
+    }
+    if (mode === '1') {
+      lines[lines.length - 1] = ' '.repeat(col) + cur.slice(col);
+      return;
+    }
+    lines[lines.length - 1] = cur.slice(0, col);
+  };
+
   for (let i = 0; i < str.length; i += 1) {
     const ch = str[i];
+    if (ch === '\x1b') {
+      const next = str[i + 1];
+      if (next === '[') {
+        let j = i + 2;
+        while (j < str.length && !/[\x40-\x7e]/.test(str[j])) {
+          j += 1;
+        }
+        if (j >= str.length) {
+          break;
+        }
+        const params = str.slice(i + 2, j);
+        const final = str[j];
+        if (final === 'K') {
+          eraseInLine(params === '' ? '0' : params);
+        }
+        i = j;
+        continue;
+      }
+      if (next === ']') {
+        let j = i + 2;
+        while (j < str.length) {
+          if (str[j] === '\x07') {
+            break;
+          }
+          if (str[j] === '\x1b' && str[j + 1] === '\\') {
+            j += 1;
+            break;
+          }
+          j += 1;
+        }
+        if (j >= str.length) {
+          break;
+        }
+        i = j;
+        continue;
+      }
+      if (next === 'P' || next === 'X' || next === '^' || next === '_') {
+        let j = i + 2;
+        while (j < str.length) {
+          if (str[j] === '\x07') {
+            break;
+          }
+          if (str[j] === '\x1b' && str[j + 1] === '\\') {
+            j += 1;
+            break;
+          }
+          j += 1;
+        }
+        if (j >= str.length) {
+          break;
+        }
+        i = j;
+        continue;
+      }
+      if (next) {
+        i += 1;
+      }
+      continue;
+    }
     if (ch === '\r') {
       if (str[i + 1] === '\n') {
         lines.push('');
@@ -35,19 +117,16 @@ function applyCarriageReturns(str) {
       col = 0;
       continue;
     }
-    const cur = lines[lines.length - 1];
-    lines[lines.length - 1] = cur.slice(0, col) + ch + cur.slice(col + 1);
-    col += 1;
+    if (/[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(ch)) {
+      continue;
+    }
+    writeChar(ch);
   }
 
   return lines.join('\n');
 }
 
-const stripAnsiForDisplay = (str) =>
-  applyCarriageReturns(str
-    .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '')
-    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
-    .replace(/\x1b[^[\]]/g, ''));
+const stripAnsiForDisplay = (str) => applyDisplayControls(str);
 
 const appendAnsiForDisplay = (buffer, data) =>
   stripAnsiForDisplay(`${buffer || ''}${data || ''}`);

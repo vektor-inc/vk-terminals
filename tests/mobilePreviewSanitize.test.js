@@ -122,6 +122,34 @@ test('mobile stripAnsi: CR は現在行を部分上書きする', () => {
   assert.equal(stripAnsi('abc\rXY'), 'XYc');
 });
 
+test('stripAnsiForDisplay: erase-in-line CSI を CR 再描画に反映する', () => {
+  assert.equal(stripAnsiForDisplay('経過 120秒 5000トークン\r\x1b[2K経過 5秒'), '経過 5秒');
+  assert.equal(stripAnsiForDisplay('abcdef\rXY\x1b[K'), 'XY');
+  assert.equal(stripAnsiForDisplay('abcdef\rXY\x1b[0K'), 'XY');
+  assert.equal(stripAnsiForDisplay('abcdef\rXY\x1b[1K'), '  cdef');
+  assert.equal(stripAnsiForDisplay('abc\rXY'), 'XYc');
+  assert.equal(
+    stripAnsiForDisplay(['ペイン', 'ペインの', 'ペインのリンク付き', 'ペインのリンク付きの部分、B'].join('\r')),
+    'ペインのリンク付きの部分、B'
+  );
+  assert.equal(stripAnsiForDisplay('\x1b[31mred\x1b[0m'), 'red');
+});
+
+test('mobile stripAnsi: erase-in-line CSI を CR 再描画に反映する', () => {
+  const stripAnsi = loadMobileStripAnsi();
+
+  assert.equal(stripAnsi('経過 120秒 5000トークン\r\x1b[2K経過 5秒'), '経過 5秒');
+  assert.equal(stripAnsi('abcdef\rXY\x1b[K'), 'XY');
+  assert.equal(stripAnsi('abcdef\rXY\x1b[0K'), 'XY');
+  assert.equal(stripAnsi('abcdef\rXY\x1b[1K'), '  cdef');
+  assert.equal(stripAnsi('abc\rXY'), 'XYc');
+  assert.equal(
+    stripAnsi(['ペイン', 'ペインの', 'ペインのリンク付き', 'ペインのリンク付きの部分、B'].join('\r')),
+    'ペインのリンク付きの部分、B'
+  );
+  assert.equal(stripAnsi('\x1b[31mred\x1b[0m'), 'red');
+});
+
 test('mobile preview: PTY イベントをまたぐ CR 再描画も同一行として扱う', () => {
   const sanitizeMobilePreviewText = loadSanitizeMobilePreviewText();
   const lastLines = appendAnsiForDisplay(

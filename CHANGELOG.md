@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 仕様変更 ] モバイル版のペインプレビュー表示領域を拡大し、展開時・新着時に最新位置を見やすいように変更（[#130](https://github.com/vektor-inc/vk-terminals/issues/130)）
+- [ 不具合修正 ] モバイル版のペインプレビューで末尾の罫線再描画により直近の出力がほとんど表示されない不具合を修正（[#130](https://github.com/vektor-inc/vk-terminals/issues/130)）
 - [ その他 ] モバイルページの閲覧・操作のセットアップ手順（apiHost 設定・スマートフォンからのアクセス方法・セキュリティ注意）を README に追記（[#128](https://github.com/vektor-inc/vk-terminals/issues/128)）
 
 ## 1.15.3

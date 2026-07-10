@@ -51,3 +51,15 @@ test('sanitizeMobilePreviewText: 英字と日本語を含む本文行は残す',
 
   assert.equal(sanitizeMobilePreviewText(input), input);
 });
+
+test('sanitizeMobilePreviewText: 半角カナと全角英数だけの本文行は残す', () => {
+  const sanitizeMobilePreviewText = loadSanitizeMobilePreviewText();
+  const input = [
+    'ﾆﾎﾝｺﾞ',
+    '２０２０',
+    'ＡＢＣ',
+    'ａｂｃ',
+  ].join('\n');
+
+  assert.equal(sanitizeMobilePreviewText(input), input);
+});

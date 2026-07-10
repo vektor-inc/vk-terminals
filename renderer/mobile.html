@@ -178,7 +178,7 @@ function stripAnsi(s) {
 // Claude Code などの CLI スピナー / プログレス描画で残りやすい装飾グリフ。
 // 入力待ち検知と共有する lastLines には影響させず、モバイルプレビュー表示だけで除去する。
 var MOBILE_PREVIEW_DECORATIVE_GLYPH_RE = /[✻✽✶✷✴✳✢✥✦✧✩✪✫✬✭✮✯✰✱✲✵✸✹✺✼✾✿·]/g;
-var MOBILE_PREVIEW_READABLE_LINE_RE = /[A-Za-z\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]/;
+var MOBILE_PREVIEW_READABLE_LINE_RE = /[A-Za-z぀-ヿ㐀-䶿一-鿿豈-﫿가-힯０-９Ａ-Ｚａ-ｚｦ-ﾟ]/;
 
 function sanitizeMobilePreviewText(s) {
   if (!s) return "";

@@ -9,7 +9,7 @@
 
 ## 必要環境
 
-- Node.js 18 以上
+- Node.js 20 以上
 - macOS / Windows（`node-pty` のネイティブビルドが必要。Windows でのセットアップは[後述](#windows-での起動)）
 
 ## セットアップ
@@ -131,7 +131,7 @@ macOS 前提の部分があるため、まっさらな Windows 環境でセッ�
 
 ### 1. 前提ツール
 
-- Node.js 18 以上（[Volta](https://volta.sh/) や [nvm-windows](https://github.com/coreybutler/nvm-windows) 経由でも可）
+- Node.js 20 以上（[Volta](https://volta.sh/) や [nvm-windows](https://github.com/coreybutler/nvm-windows) 経由でも可）
 - `node-pty` のネイティブビルドに必要な C++ ビルドツール
   - [Visual Studio Build Tools](https://visualstudio.microsoft.com/ja/downloads/)（「C++ によるデスクトップ開発」ワークロード）
   - もしくは `npm install -g windows-build-tools`（環境によっては非推奨）
@@ -214,6 +214,38 @@ Windows では各ペインのデフォルトシェルとして `%COMSPEC%`（通
 - `⚠ 待機中` バッジが表示される
 - 通知音が鳴る
 
+### サイドバーへのペイン格納
+
+グリッド上のペインは、サイドバーに「格納」して表示エリアを空けられます（issue #89）。格納中もターミナルは稼働を継続し、必要になったらグリッドへ戻せます。サイドバーの幅はドラッグで変更できます。HTTP API `POST /api/new-pane` に `stashed: true` を指定すると、最初から格納＋折りたたみ状態でペインを開けます。
+
+格納したペインのヘッダーも、メインエリアと同様にタイトル行＋操作アイコン行の2段表示で、`PR ↗` リンクやタイトルリンクが表示されます（issue #112）。
+
+## サイドバーメニュー
+
+Claude Desktop 風のサイドバーに、外部リンクや設定モーダル起動などの項目を追加表示できます（issue #80）。項目は次の 2 系統から供給できます。
+
+- `config.json` の `menuItems`（永続設定）
+- HTTP API `POST /api/menu`（外部から動的に登録・置換。前述の[`POST /api/menu`](#post-apimenu)を参照）
+
+各項目は `id` / `label` / `icon`（任意）/ `action` を持ち、`action.type` は `open-url`（URL を OS の既定ブラウザで開く）または `open-settings`（設定モーダルを開く）に対応します。`config.json` の記述例は [`config.example.json`](config.example.json) を参照してください。
+
+## Claude 使用量表示
+
+Claude の利用状況（セッション使用率 / 週間制限の使用率とリセット時刻）を、サイドバー最上部の「Claude使用量」として常時表示します（issue #69 / #73 / #109）。
+
+- 表示は opt-out 方式で既定 ON です。`config.json` の `showUsage: false`（または設定パネルの「トークン使用量を表示」をオフ）で無効化できます。
+- 値は公式 usage API（`source: 'oauth'`）を主とし、取得できない場合はローカルのトランスクリプト集計（`source: 'transcript'`）にフォールバックします。
+- 同じ使用量スナップショットは `GET /api/states` レスポンスのトップレベル `usage` にも含まれ、モバイルページ（後述）でも表示されます。
+
+## モバイルページ
+
+HTTP API サーバーのルート（`GET http://<apiHost>:13847/`）は、全ペインの状態を一覧できるモバイル向け Web ページを返します。スマートフォン等のブラウザから、各ペインのタスクタイトル・稼働ステータス・直近の出力プレビュー・Claude 使用量を確認できます。
+
+- ページは `/api/states` を約 2 秒ごとにポーリングして表示を更新します。
+- 各ペインのタイトルをタップすると、PR URL などのリンクが設定されている場合に別タブで開きます（issue #103）。
+- ペインの並び順は ▲▼ ボタンで手動変更でき、順序は端末の localStorage に保存されます（issue #106）。各ペインを終了するボタンもあります（issue #100）。
+- LAN 内の別端末からアクセスさせる場合は、`config.json` の `apiHost` を待受にしたいホストの IP などに設定してください。
+
 ## 起動時の初期コマンド設定
 
 アプリ起動後、最初のターミナルで claude が起動した直後に自動実行するコマンドを設定できます。
@@ -247,7 +279,11 @@ cp config.example.json ~/.vk-terminals/config.json
 - `initialCommand`：1 ペイン目で claude が起動した直後に自動実行されるコマンド。省略または空にすると自動実行は行われません。`--no-claude` 起動時は送信されません。
 - `additionalPanes`：起動時に追加で開くペインのリスト。各要素の `cwd`（絶対パス）でペインが分割作成され、その作業ディレクトリで claude が立ち上がります。複数指定可。省略または空配列の場合は 1 ペインのみで起動します。
   - `noClaude: true` を指定すると、そのペインのみ claude を自動起動せず素のシェルとして開きます（省略時は CLI フラグの設定に従う）。
-- `agentroom`：`true` にすると、各ペイン下部に開閉式の「エージェントルーム」を表示します（後述の[エージェントルーム](#エージェントルームissue-58)を参照）。省略時は `false`（非表示）。
+- `showUsage`：Claude の使用量表示（サイドバー最上部の「Claude使用量」・モバイルページ）の ON/OFF。opt-out 方式で、省略時は ON。明示的に `false` にしたときだけ無効化されます（後述の[Claude 使用量表示](#claude-使用量表示)を参照）。
+- `menuItems`：サイドバーに表示する追加メニュー項目（外部リンク・設定モーダル起動）のリスト。省略時は表示なし（後述の[サイドバーメニュー](#サイドバーメニュー)を参照）。
+- `apiHost`：HTTP API サーバーの待受ホスト。省略時は `127.0.0.1`。LAN やモバイル端末からアクセスさせたい場合に自ホストの IP などを指定します。
+- `gpu`：GPU 起動モード（`off` / `default` / 未設定）。詳細は[GPU 起動モード](#gpu-起動モードvk_terminals_gpu)を参照。
+- `agentroom`：`true` にすると、各ペイン下部に開閉式の「エージェントルーム」を表示します（後述の[エージェントルーム](#エージェントルームissue-58)を参照）。省略時は `false`（非表示）。**現在は β 扱いで一旦無効化されており、設定パネルからは編集できません**（#70）。利用する場合は config.json に直接 `agentroom: true` を記述してください。
 
 > **移行メモ**: 旧パス `~/.claude/terminals-config.json` も後方互換として読み込まれます。
 
@@ -255,7 +291,7 @@ cp config.example.json ~/.vk-terminals/config.json
 
 タイトルバー右端の ⚙ ボタンから、設定を GUI 上で編集・保存できます。単体起動でも常に表示されます。
 
-- **単体起動時**（`VK_TERMINALS_SETTINGS` 未指定）：vk-terminals 自身の `config.json`（`apiHost` / `initialCommand` / `agentroom` / `additionalPanes`）を編集します。編集対象は `loadUserConfig()` と同じ探索順で、既存の `config.json` があればそれ、無ければリポジトリ直下 `config.json` を作成します。
+- **単体起動時**（`VK_TERMINALS_SETTINGS` 未指定）：vk-terminals 自身の `config.json`（`apiHost` / `initialCommand` / `showUsage` / `gpu` / `menuItems` / `additionalPanes`）を編集します。編集対象は `loadUserConfig()` と同じ探索順で、既存の `config.json` があればそれ、無ければリポジトリ直下 `config.json` を作成します。
 - **呼び出し側から渡された場合**（`VK_TERMINALS_SETTINGS` に「設定ディスクリプタ JSON」のパスを指定）：そのディスクリプタが指す任意の config ファイルを編集します（vk-orchestrator が自身の統合 `config.json` を編集させる用途など）。vk-terminals 自身は編集対象の設定内容を知らず、ディスクリプタ（編集対象パス + 項目スキーマ）に従って読み書きするだけの汎用実装です。
 
 いずれの場合も、保存後の反映には再起動が必要です（設定は起動時に読み込むため）。
@@ -280,8 +316,9 @@ cp config.example.json ~/.vk-terminals/config.json
 ```
 
 - `key`：ドット区切りで対象 JSON の入れ子キーを指す（例 `github.token`）。
-- `type`：`text` / `password` / `number` / `boolean` / `json` のいずれか。`json` は配列・オブジェクトを textarea で編集します。
-- `emptyToNull`（任意）：`text` / `password` で空欄を `null` として書き出します。
+- `type`：`text` / `password` / `number` / `boolean` / `select` / `json` のいずれか。`json` は配列・オブジェクトを textarea で編集します。`select` は許可された値のみ選べるピッカーで、`options`（`{ value, label }` の配列）を併記します。
+- `default`（任意）：値が未設定のときの既定値。`boolean` で `default: true`（opt-out 項目）を指定すると、未設定のチェックボックスが誤ってオフ保存される問題を避けられます。
+- `emptyToNull`（任意）：`text` / `password` / `select` で空欄を `null` として書き出します。
 - 保存時はディスクリプタに載っているキーだけを型変換して書き戻し、**載っていない既存キーは保持**します。書き込み先は必ず `targetPath` に限定されます。
 
 ## HTTP API（外部連携用）
@@ -339,6 +376,10 @@ curl -s http://127.0.0.1:13847/api/states | python3 -m json.tool
 | `lastInputTime` | 最後にユーザーが入力した時刻（Unix ms） |
 | `lastLines` | 最近の出力テキスト（ANSI除去済み、最大15行） |
 
+各ペインには上記に加え、`POST /api/set-title` 由来の `apiTitle` / `apiUrl` / `apiPrUrl` / `apiPrMerged`、`agentroom: true` のときは `agentRoom` も含まれます（各エンドポイントの節を参照）。
+
+また、レスポンスのトップレベルには `updatedAt` / `terminals` に加えて `usage`（Claude の使用量スナップショット）が含まれます。使用量表示が opt-out（`showUsage: false`）または取得失敗のときは `usage: null` です（後方互換）。モバイルページはこの `usage` を利用します（後述の[Claude 使用量表示](#claude-使用量表示)を参照）。
+
 #### `POST /api/send`
 
 指定ターミナルにコマンドを送信。
@@ -374,6 +415,11 @@ curl -s -X POST http://127.0.0.1:13847/api/set-title \
   -H 'Content-Type: application/json' \
   -d '{"termId": "1", "title": "issue #44", "url": "https://github.com/vektor-inc/vk-terminals/issues/44", "prUrl": "https://github.com/vektor-inc/vk-terminals/pull/99"}'
 
+# PR ボタンをマージ済み表示（紫）にする
+curl -s -X POST http://127.0.0.1:13847/api/set-title \
+  -H 'Content-Type: application/json' \
+  -d '{"termId": "1", "title": "issue #44", "prUrl": "https://github.com/vektor-inc/vk-terminals/pull/99", "prMerged": true}'
+
 # タイトル・URL・PR ボタンをクリア（空文字で消す）
 curl -s -X POST http://127.0.0.1:13847/api/set-title \
   -H 'Content-Type: application/json' \
@@ -386,6 +432,7 @@ curl -s -X POST http://127.0.0.1:13847/api/set-title \
 - `title`: 表示する文字列。空文字 `""` を渡すと API 由来タイトルがクリアされ、OSC 由来タイトル（`taskTitle`）にフォールバックします。
 - `url`（任意）: タイトル全体をリンク化するための URL。`http(s):` スキームのみ許可、2048 文字以内、`new URL()` で parse 可能であることが必須。違反時は `400` を返します。空文字 `""` を渡すと既存の URL がクリアされます。省略すると URL なしになります。
 - `prUrl`（任意・issue #44）: タイトル行の右端に独立して表示する `PR ↗` ボタンに紐づける URL。バリデーションは `url` と完全同一（`http(s):` のみ・2048 文字以内・`new URL()` で parse 可）。空文字 `""` を渡すと PR ボタンが消えます。省略すると PR ボタンなしになります。
+- `prMerged`（任意・issue #113）: `PR ↗` ボタンをマージ済み表示（紫背景 + 非色アイコン）にする真偽値。**厳密な `true` のときだけ**マージ済み表示になり、それ以外の値（省略・`false`・文字列など）は通常表示（未マージ）になります。`prUrl` と組み合わせて使います。
 
 | 挙動 |
 |---|
@@ -393,11 +440,12 @@ curl -s -X POST http://127.0.0.1:13847/api/set-title \
 | `url` が設定されている間のみ、ペインのタイトル文字列全体が `<a>` として描画され、末尾に外部リンクマーク `↗` が付きます。クリックすると `shell.openExternal()` で OS の既定ブラウザを開きます。 |
 | OSC 0 / OSC 2 由来のタイトル（`taskTitle`）が表示されている間は `url` のリンク化は無効になります。API 由来のタイトル（`apiTitle`）が選択されているときだけリンク化されます。 |
 | `prUrl` で表示される `PR ↗` ボタンは `apiTitle` / `taskTitle` のどちらが表示されている間でも常時表示されます（issue リンクが消える場面でも PR ボタンは独立に出続けます）。 |
+| `prMerged: true` を送ると `PR ↗` ボタンがマージ済み表示（紫背景）に変わります。`prMerged` も他フィールド同様に置換セマンティクスで、送らなければ未マージ表示に戻ります。 |
 
 レスポンス例:
 
 ```json
-{ "ok": true, "termId": "1", "title": "issue #44", "url": "https://github.com/vektor-inc/vk-terminals/issues/44", "prUrl": "https://github.com/vektor-inc/vk-terminals/pull/99" }
+{ "ok": true, "termId": "1", "title": "issue #44", "url": "https://github.com/vektor-inc/vk-terminals/issues/44", "prUrl": "https://github.com/vektor-inc/vk-terminals/pull/99", "prMerged": true }
 ```
 
 エラー例:
@@ -432,7 +480,7 @@ curl -i -s -X POST http://127.0.0.1:13847/api/set-title \
 # => 400 {"error":"url must be http(s)"}
 ```
 
-設定された値は `GET /api/states` のレスポンス（および `~/.vk-terminals/states.json`）の各ペインオブジェクトに `apiTitle` / `apiUrl` / `apiPrUrl` フィールドとして含まれます。
+設定された値は `GET /api/states` のレスポンス（および `~/.vk-terminals/states.json`）の各ペインオブジェクトに `apiTitle` / `apiUrl` / `apiPrUrl` / `apiPrMerged` フィールドとして含まれます。
 
 #### `POST /api/set-status`
 
@@ -512,6 +560,67 @@ curl -s -X POST http://127.0.0.1:13847/api/new-pane \
 - タイムアウト（15秒）: `504 {"error": "timeout waiting for new pane"}`
 - renderer 側でペイン作成に失敗（既存ペインなし／分割失敗など）: `500 {"error": "<renderer からのエラーメッセージ>"}`
 
+#### `POST /api/close-pane`
+
+指定した `termId` のペインを閉じます（`✕` ボタンと同じ操作を外部から実行します）。
+
+```bash
+curl -s -X POST http://127.0.0.1:13847/api/close-pane \
+  -H 'Content-Type: application/json' \
+  -d '{"termId": "3"}'
+# => {"ok":true,"termId":"3"}
+```
+
+リクエストボディ:
+
+- `termId`：閉じる対象のターミナル ID（必須）。
+
+レスポンス:
+
+- 成功時: `200 {"ok": true, "termId": "<閉じたターミナルID>"}`
+- `termId` 未指定: `400 {"error": "termId required"}`
+- 不正な JSON: `400 {"error": "invalid JSON"}`
+- 指定 `termId` のペインが存在しない: `404 {"error": "terminal <id> not found"}`
+- ウィンドウが利用できない: `503 {"error": "window not available"}`
+- タイムアウト（15秒）: `504 {"error": "timeout waiting for close pane"}`
+
+#### `POST /api/menu`
+
+サイドバーに表示する追加メニュー項目を `source` 単位で登録・置換します（`config.json` の `menuItems` と同じ内容を外部から動的に反映させる用途）。同じ `source` を再送すると置換、`items: []` を送るとその `source` の項目をクリアします。
+
+```bash
+# source ごとにメニュー項目を登録・置換
+curl -s -X POST http://127.0.0.1:13847/api/menu \
+  -H 'Content-Type: application/json' \
+  -d '{
+        "source": "vk-orchestrator",
+        "title": "VK Orchestrator",
+        "items": [
+          { "id": "task-queue", "label": "task-queue", "icon": "📋",
+            "action": { "type": "open-url", "url": "https://github.com/vektor-inc/task-queue/issues" } }
+        ]
+      }'
+
+# 指定 source の項目をクリア
+curl -s -X POST http://127.0.0.1:13847/api/menu \
+  -H 'Content-Type: application/json' \
+  -d '{"source": "vk-orchestrator", "items": []}'
+```
+
+リクエストボディ:
+
+- `source`：メニューのグループ識別子（必須）。同じ `source` の再送で置換されます。
+- `title`（任意）：サイドバーに表示するグループ見出し。
+- `items`：メニュー項目の配列。各項目は `id` / `label` / `icon`（任意）/ `action` を持ちます。`action.type` は `open-url`（`url` を OS の既定ブラウザで開く）または `open-settings`（設定モーダルを開く）のみ対応。`items: []` で該当 `source` をクリアします。
+
+レスポンス:
+
+- 成功時: `200 {"ok": true, "source": "<source>"}`
+- バリデーション違反 / 不正な JSON: `400 {"error": "<内容>"}`
+- 登録済み source 数の上限超過: `400 {"error": "too many menu sources (max <N>)"}`
+
+> サイドバーメニューの詳細は後述の[サイドバーメニュー](#サイドバーメニュー)を参照してください。
+
 #### `POST /api/agentroom`
 
 エージェントルーム（後述）の各キャラの稼働状況を更新します。`config.json` の `agentroom: true` のときだけ表示に反映されます。
@@ -543,6 +652,8 @@ curl -s -X POST http://127.0.0.1:13847/api/agentroom \
 `~/.vk-terminals/states.json` に2秒ごとに全ターミナルの状態が書き出されます。HTTP API と同じ内容です。アプリ終了時に自動削除されます。`agentroom: true` のときは各ペインに解決済みのルーム状態 `agentRoom`（`{ "<キャラ名>": "<state>" }`）も含まれます。
 
 ## エージェントルーム（issue #58）
+
+> **現状（β・一旦無効化）**: エージェントルームは β 機能として、issue #70 で設定パネルからの項目とデフォルト表示を無効化しています。設定パネルからは切り替えられません。以下の内容は `config.json` に直接 `agentroom: true` を記述して有効化した場合の挙動です。
 
 `config.json` で `agentroom: true` にすると、各ペイン下部に開閉式（アコーディオン）の「エージェントルーム」が表示されます。司／和田／安藤／麗美／植草の 5 キャラを、Gather / WorkAdventure 風のチビキャラ（ドット絵）で次のように描き分けます。
 

@@ -1,5 +1,7 @@
 # Changelog
 
+- [ その他 ] README を現行実装に同期。Node.js 要件を 20 以上に修正し、HTTP API の `POST /api/menu`・`POST /api/close-pane`・`/api/set-title` の `prMerged`・`/api/states` の `usage` を追記、サイドバー格納／サイドバーメニュー・Claude 使用量表示・モバイルページの節を追加、エージェントルームが β 無効化中である旨を明記
+
 ## 1.15.0
 
 - [ 機能追加 ] サイドバーに格納したペインのツールバー（ヘッダー）にも、メインエリアのペイン同様 PR リンク（およびタイトルリンク）を表示するように追加（[#112](https://github.com/vektor-inc/vk-terminals/issues/112)）

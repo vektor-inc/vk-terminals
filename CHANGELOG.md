@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 機能追加 ] サイドバーに格納したペインのツールバー（ヘッダー）にも、メインエリアのペイン同様 PR リンク（およびタイトルリンク）を表示するように追加（[#112](https://github.com/vektor-inc/vk-terminals/issues/112)）
+- [ 仕様変更 ] サイドバーに格納したペインのヘッダーを、メインエリアのペイン同様タイトル行と操作アイコン行の2段表示に変更（[#112](https://github.com/vektor-inc/vk-terminals/issues/112)）
 - [ 機能追加 ] モバイル版でペインの並び順を ▲▼ ボタンで手動変更できるように変更。ステータス変化による自動並び替えを廃止し、指定順を localStorage に保存して維持（[#106](https://github.com/vektor-inc/vk-terminals/issues/106)）
 - [ 機能追加 ] HTTP API `POST /api/set-title` に `prMerged` を追加し、マージ済み PR のラベルを紫で表示できるように（[#113](https://github.com/vektor-inc/vk-terminals/issues/113)）
 - [ 仕様変更 ] Claude 使用量表示をサイドバー最上部の常時表示に統合し、クリックで開く使用量モーダルを廃止（[#109](https://github.com/vektor-inc/vk-terminals/issues/109)）

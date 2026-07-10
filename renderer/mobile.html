@@ -49,10 +49,15 @@
     animation: pulse 1.2s ease-in-out infinite; }
   @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.45; } }
   .card-title { flex: 1; min-width: 0; }
+  a.card-title { color: inherit; text-decoration: none; }
   .card-title .name { font-size: 13px; font-weight: 600; white-space: nowrap;
     overflow: hidden; text-overflow: ellipsis; }
+  .card-title.is-link .name { color: #58a6ff; text-decoration: underline;
+    text-underline-offset: 2px; cursor: pointer; }
+  .card-title.is-link .name::after { content: " ↗"; font-size: 10px; opacity: 0.85; }
   .card-title .cwd { font-size: 11px; color: var(--muted); white-space: nowrap;
     overflow: hidden; text-overflow: ellipsis; }
+  .card-title:focus-visible { outline: 2px solid #58a6ff; outline-offset: 2px; border-radius: 4px; }
   .badge { font-size: 10px; font-weight: 700; padding: 3px 7px; border-radius: 6px;
     text-transform: uppercase; letter-spacing: 0.04em; flex: none; }
   .badge.idle { background: #2a2f37; color: #9aa3ae; }
@@ -375,7 +380,7 @@ function ensureCard(termId) {
   var headMain = document.createElement("div"); headMain.className = "card-head-main";
   var headMeta = document.createElement("div"); headMeta.className = "card-head-meta";
   var dot = document.createElement("span"); dot.className = "dot idle";
-  var title = document.createElement("div"); title.className = "card-title";
+  var title = document.createElement("a"); title.className = "card-title";
   var name = document.createElement("div"); name.className = "name";
   var cwd = document.createElement("div"); cwd.className = "cwd";
   title.appendChild(name); title.appendChild(cwd);
@@ -403,12 +408,13 @@ function ensureCard(termId) {
   head.setAttribute("role", "button");
   head.setAttribute("tabindex", "0");
   function onHeadToggle(e) {
-    if (e.target.closest("button, input, a")) return;
+    if (e.target.closest("button, input, a[href]")) return;
     toggleCollapse(termId);
   }
   head.addEventListener("click", onHeadToggle);
   head.addEventListener("keydown", function(e) {
     if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") {
+      if (e.target.closest("button, input, a[href]")) return;
       e.preventDefault();
       onHeadToggle(e);
     }
@@ -462,6 +468,7 @@ function ensureCard(termId) {
   list.appendChild(root);
 
   cards[termId] = { root: root, pre: pre, name: name, cwd: cwd, dot: dot, badge: badge,
+    title: title,
     prLink: prLink, head: head, chevron: chevron, killBtn: killBtn };
   // 復活時を含め、現在の collapsed 状態を初期反映
   syncCollapseUI(cards[termId], termId);
@@ -600,10 +607,20 @@ function render(data) {
       c.prLink.href = t.apiPrUrl;
       c.prLink.title = t.apiPrUrl;
       c.prLink.classList.add("show");
+      c.title.href = t.apiPrUrl;
+      c.title.target = "_blank";
+      c.title.rel = "noopener noreferrer";
+      c.title.classList.add("is-link");
+      c.title.setAttribute("aria-label", c.name.textContent + " の PR を新しいタブで開く");
     } else {
       c.prLink.removeAttribute("href");
       c.prLink.removeAttribute("title");
       c.prLink.classList.remove("show");
+      c.title.removeAttribute("href");
+      c.title.removeAttribute("target");
+      c.title.removeAttribute("rel");
+      c.title.classList.remove("is-link");
+      c.title.removeAttribute("aria-label");
     }
     c.pre.textContent = sanitizeMobilePreviewText(tail(stripAnsi(t.lastLines || ""), 1400)).replace(/\n{3,}/g, "\n\n").trim();
     // 折り畳み状態を毎回当て直す（再描画・端末の消失→復活をまたいで一致させる）

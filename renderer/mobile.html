@@ -75,6 +75,15 @@
   a.pr-link:active { background: rgba(63,185,80,0.28); border-color: rgba(63,185,80,0.5); }
   a.pr-link:focus-visible { outline: 2px solid #58a6ff; outline-offset: 2px; }
   a.pr-link .pr-icon { font-size: 10px; opacity: 0.85; line-height: 1; flex: none; }
+  .pane-order-controls { display: inline-flex; align-items: center; gap: 4px; flex: none; }
+  .pane-order-button { display: inline-flex; align-items: center; justify-content: center;
+    width: 32px; min-width: 32px; height: 32px; padding: 0; border-radius: 6px;
+    border: 1px solid var(--card-border); background: #262b33; color: var(--fg);
+    font-size: 12px; line-height: 1; font-weight: 700; cursor: pointer; }
+  .pane-order-button:active { background: #323843; }
+  .pane-order-button:focus-visible { outline: 2px solid #58a6ff; outline-offset: 2px; }
+  .pane-order-button:disabled { color: var(--idle); background: #20242b; cursor: default; opacity: 0.62; }
+  .pane-order-button:disabled:active { background: #20242b; }
   pre.lines { margin: 0; padding: 10px 12px; background: #0d0f13; color: #c8ccd2;
     font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11px; line-height: 1.45;
     white-space: pre-wrap; word-break: break-word; max-height: 240px; overflow-y: auto;
@@ -333,7 +342,112 @@ var QUICK = [
 ];
 
 var list = document.getElementById("list");
-var cards = {}; // termId -> { root, pre, name, cwd, dot, badge, head, chevron }
+var cards = {}; // termId -> { root, pre, name, cwd, dot, badge, head, chevron, moveUpBtn, moveDownBtn }
+
+var PANE_ORDER_KEY = "vkt_mobile_pane_order";
+var paneOrder = []; // termId の表示順。保存値に無い新規端末は末尾へ追加する。
+var visiblePaneOrder = []; // 現在描画対象の termId だけに絞った表示順。
+try {
+  var savedOrder = localStorage.getItem(PANE_ORDER_KEY);
+  if (savedOrder) {
+    var parsedOrder = JSON.parse(savedOrder);
+    if (Array.isArray(parsedOrder)) {
+      var orderSeen = {};
+      paneOrder = parsedOrder.reduce(function(next, termId) {
+        var id = String(termId);
+        if (!orderSeen[id]) {
+          orderSeen[id] = true;
+          next.push(id);
+        }
+        return next;
+      }, []);
+    }
+  }
+} catch (e) { /* 壊れた JSON でも落とさない */ }
+
+function savePaneOrder() {
+  try { localStorage.setItem(PANE_ORDER_KEY, JSON.stringify(paneOrder)); }
+  catch (e) { /* 保存失敗は無視（プライベートモード等） */ }
+}
+
+function getTermId(paneId, terminal) {
+  return String(terminal && terminal.termId != null ? terminal.termId : paneId);
+}
+
+function sortTerminalKeysByStatus(keys, terms) {
+  // 新規端末を初めて末尾に足すときだけ、従来のステータス順で安定化する。
+  var rank = { waiting: 0, running: 1, idle: 2 };
+  return keys.slice().sort(function(a, b) {
+    var ra = rank[terms[a].status] != null ? rank[terms[a].status] : 3;
+    var rb = rank[terms[b].status] != null ? rank[terms[b].status] : 3;
+    if (ra !== rb) return ra - rb;
+    return getTermId(a, terms[a]).localeCompare(getTermId(b, terms[b]), undefined, { numeric: true });
+  });
+}
+
+function syncPaneOrder(terms) {
+  var keys = Object.keys(terms);
+  var present = {};
+  keys.forEach(function(paneId) {
+    present[getTermId(paneId, terms[paneId])] = true;
+  });
+
+  var used = {};
+  var next = [];
+  paneOrder.forEach(function(termId) {
+    var id = String(termId);
+    if (!used[id]) {
+      used[id] = true;
+      next.push(id);
+    }
+  });
+
+  var changed = next.length !== paneOrder.length;
+  sortTerminalKeysByStatus(keys, terms).forEach(function(paneId) {
+    var id = getTermId(paneId, terms[paneId]);
+    if (!used[id]) {
+      used[id] = true;
+      next.push(id);
+      changed = true;
+    }
+  });
+
+  if (!changed) {
+    for (var i = 0; i < next.length; i++) {
+      if (next[i] !== paneOrder[i]) { changed = true; break; }
+    }
+  }
+  paneOrder = next;
+  if (changed) savePaneOrder();
+  visiblePaneOrder = paneOrder.filter(function(termId) { return !!present[termId]; });
+  return visiblePaneOrder;
+}
+
+function applyPaneOrder() {
+  visiblePaneOrder.forEach(function(termId, idx) {
+    var c = cards[termId];
+    if (!c) return;
+    c.root.style.order = String(idx);
+    c.moveUpBtn.disabled = idx === 0;
+    c.moveDownBtn.disabled = idx === visiblePaneOrder.length - 1;
+  });
+}
+
+function movePane(termId, delta) {
+  var id = String(termId);
+  var idx = visiblePaneOrder.indexOf(id);
+  if (idx < 0) return;
+  var nextIdx = idx + delta;
+  if (nextIdx < 0 || nextIdx >= visiblePaneOrder.length) return;
+  visiblePaneOrder.splice(idx, 1);
+  visiblePaneOrder.splice(nextIdx, 0, id);
+  var visible = {};
+  visiblePaneOrder.forEach(function(visibleId) { visible[visibleId] = true; });
+  var hidden = paneOrder.filter(function(orderId) { return !visible[orderId]; });
+  paneOrder = visiblePaneOrder.concat(hidden);
+  savePaneOrder();
+  applyPaneOrder();
+}
 
 // 折り畳み状態は cards とは独立した plain object で持つ（termId -> bool）。
 // 理由: render() 末尾で states から消えた端末は cards[termId].root.remove() され
@@ -397,10 +511,20 @@ function ensureCard(termId) {
   var prIcon = document.createElement("span"); prIcon.className = "pr-icon";
   prIcon.setAttribute("aria-hidden", "true"); prIcon.textContent = "↗";
   prLink.appendChild(prLabel); prLink.appendChild(prIcon);
+  var orderControls = document.createElement("span"); orderControls.className = "pane-order-controls";
+  var moveUpBtn = document.createElement("button");
+  moveUpBtn.type = "button"; moveUpBtn.className = "pane-order-button";
+  moveUpBtn.textContent = "▲"; moveUpBtn.setAttribute("aria-label", "1つ上へ移動");
+  moveUpBtn.addEventListener("click", function() { movePane(termId, -1); });
+  var moveDownBtn = document.createElement("button");
+  moveDownBtn.type = "button"; moveDownBtn.className = "pane-order-button";
+  moveDownBtn.textContent = "▼"; moveDownBtn.setAttribute("aria-label", "1つ下へ移動");
+  moveDownBtn.addEventListener("click", function() { movePane(termId, 1); });
+  orderControls.appendChild(moveUpBtn); orderControls.appendChild(moveDownBtn);
   var chevron = document.createElement("span"); chevron.className = "chevron";
   chevron.setAttribute("aria-hidden", "true"); chevron.textContent = "▾";
   headMain.appendChild(dot); headMain.appendChild(title);
-  headMeta.appendChild(badge); headMeta.appendChild(prLink); headMeta.appendChild(chevron);
+  headMeta.appendChild(badge); headMeta.appendChild(prLink); headMeta.appendChild(orderControls); headMeta.appendChild(chevron);
   head.appendChild(headMain); head.appendChild(headMeta);
 
   // ヘッダ帯全体をタップで開閉トグル。将来ヘッダ内に
@@ -469,7 +593,8 @@ function ensureCard(termId) {
 
   cards[termId] = { root: root, pre: pre, name: name, cwd: cwd, dot: dot, badge: badge,
     title: title,
-    prLink: prLink, head: head, chevron: chevron, killBtn: killBtn };
+    prLink: prLink, head: head, chevron: chevron, killBtn: killBtn,
+    moveUpBtn: moveUpBtn, moveDownBtn: moveDownBtn };
   // 復活時を含め、現在の collapsed 状態を初期反映
   syncCollapseUI(cards[termId], termId);
   return cards[termId];
@@ -575,19 +700,16 @@ function render(data) {
   renderUsage(data.usage);
   var terms = data.terminals || {};
   var keys = Object.keys(terms);
-  // 並び順: waiting > running > idle、その中は termId 昇順
-  var rank = { waiting: 0, running: 1, idle: 2 };
-  keys.sort(function(a, b) {
-    var ra = rank[terms[a].status] != null ? rank[terms[a].status] : 3;
-    var rb = rank[terms[b].status] != null ? rank[terms[b].status] : 3;
-    if (ra !== rb) return ra - rb;
-    return String(terms[a].termId).localeCompare(String(terms[b].termId), undefined, { numeric: true });
+  var termById = {};
+  keys.forEach(function(paneId) {
+    termById[getTermId(paneId, terms[paneId])] = terms[paneId];
   });
+  var orderedTermIds = syncPaneOrder(terms);
 
   var seen = {};
-  keys.forEach(function(paneId, idx) {
-    var t = terms[paneId];
-    var termId = String(t.termId);
+  orderedTermIds.forEach(function(termId) {
+    var t = termById[termId];
+    if (!t) return;
     seen[termId] = true;
     var c = ensureCard(termId);
     var st = t.status || "idle";
@@ -625,13 +747,13 @@ function render(data) {
     c.pre.textContent = sanitizeMobilePreviewText(tail(stripAnsi(t.lastLines || ""), 1400)).replace(/\n{3,}/g, "\n\n").trim();
     // 折り畳み状態を毎回当て直す（再描画・端末の消失→復活をまたいで一致させる）
     syncCollapseUI(c, termId);
-    // CSS order で並び替え（DOM移動をやめてモバイルでの入力フォーカス消失を防ぐ）
-    c.root.style.order = String(idx);
   });
   // 消えた端末のカードを削除
   Object.keys(cards).forEach(function(termId) {
     if (!seen[termId]) { cards[termId].root.remove(); delete cards[termId]; }
   });
+  // CSS order で並び替え（DOM移動をやめてモバイルでの入力フォーカス消失を防ぐ）
+  applyPaneOrder();
 
   if (keys.length === 0) {
     if (!document.getElementById("empty")) {

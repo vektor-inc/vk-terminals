@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 機能追加 ] モバイル版でペインの並び順を ▲▼ ボタンで手動変更できるように変更。ステータス変化による自動並び替えを廃止し、指定順を localStorage に保存して維持（[#106](https://github.com/vektor-inc/vk-terminals/issues/106)）
+
 ## 1.14.0
 
 - [ 機能追加 ] モバイル版でペインのタイトルをタップすると、リンク指定（PR URL）がある場合に別タブで開くように変更（[#103](https://github.com/vektor-inc/vk-terminals/issues/103)）

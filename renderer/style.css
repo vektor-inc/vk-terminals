@@ -955,9 +955,19 @@ body.resizing-sidebar .sidebar {
  * タイトル行の右端に独立して表示する [ PR ↗ ] ボタン。
  *   - `.pane-badge` 共通基底（h18 / font-size 10 / radius 3px）に乗せる
  *   - `margin-left: auto` で右寄せ。`flex-shrink: 0` でタイトル省略時にも縮まない
- *   - 色: GitHub PR グリーン系（背景 rgba(63,185,80,.15) / border rgba(63,185,80,.3)）
+ *   - 色: GitHub PR グリーン系（背景 rgba(63,185,80,.15) / border #3fb950）
  *   - フォーカスリングは既存 `.pane-task-title-link` と同じ #58a6ff 2px
- * `.pane-task-title` 親側は背景 #aaa（明るい灰）なので、視認性のため文字色を濃い緑に倒す。
+ * `.pane-task-title` 親側は現在背景 #101015（暗色）。文字・境界は GitHub Primer
+ * ダーク寄りの明るいトークン（open: #3fb950 / merged: #a371f7）を使い、
+ * 暗背景で WCAG 2.1 AA（文字 4.5:1 / 境界 3:1）を満たす。
+ * hover は現行の塗り不透明度を維持しつつ、文字・境界を一段明るいトーン
+ * （open: #56d364 / merged: #b083f8）へ上げて AA を確保する。
+ * この hover 作法は `.stash-item .pane-task-title-pr` に揃えている。
+ * 境界は半透明だと 3:1 に届かないため、前景と同一の不透明トークンを使う。
+ * 概算コントラスト比（植草検算）: open base #3fb950 ≈ 6.0:1 /
+ * open hover #56d364 ≈ 6.5:1 / merged base #a371f7 ≈ 5.0:1 /
+ * merged hover #b083f8 ≈ 5.3:1 / 境界はいずれも #101015 に対し 3:1 以上。
+ * 実測は麗美が行う。
  */
 .pane-task-title-pr {
   margin-left: auto;
@@ -965,15 +975,10 @@ body.resizing-sidebar .sidebar {
   /* badge gap (3px) はやや詰まり気味なのでラベル + ↗ 用に 4px に上書き */
   gap: 4px;
   background: rgba(63, 185, 80, 0.15);
-  border: 1px solid rgba(63, 185, 80, 0.3);
+  border: 1px solid #3fb950;
   /* `.pane-task-title` の高さ（22px）に対し badge は 18px。
    * border 1px 込みでも親の line-height をはみ出さない。 */
-  /* 文字色: `.pane-task-title` 背景 `#aaa`（明るい灰）上で WCAG 2.1 AA テキスト基準
-   * （4.5:1）を満たすように濃い緑へ落とす。`#0a3d1b` で `#aaa` に対し実測コントラスト比
-   * 約 5.4:1 で AA 達成。
-   * （植草レビューで `#1a7f37`（約 3.0:1）→ `#0f5f29` に修正したが、
-   *  麗美の実測で `#0f5f29` は約 3.36:1 で AA 不達と判明し、最終的に `#0a3d1b` に再調整した経緯）。 */
-  color: #0a3d1b;
+  color: #3fb950;
   text-decoration: none;
   cursor: pointer;
   transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
@@ -981,26 +986,21 @@ body.resizing-sidebar .sidebar {
 
 .pane-task-title-pr:hover {
   background: rgba(63, 185, 80, 0.25);
-  border-color: rgba(63, 185, 80, 0.5);
-  color: #0a3d1b;
+  border-color: #56d364;
+  color: #56d364;
   text-decoration: none;
 }
 
 .pane-task-title-pr.merged {
   background: rgba(130, 80, 223, 0.15);
-  border-color: rgba(130, 80, 223, 0.3);
-  /* GitHub の merged 紫 `#8250df` 系。`.pane-task-title` 背景 `#aaa` 上で
-   * WCAG 2.1 AA テキスト基準（4.5:1）を満たす濃い紫へ落とす。
-   * 実背景は `#aaa` に badge 塗り `rgba(130,80,223,0.15)` を合成した
-   * 約 rgb(164,157,178) で、`#3a1a63` に対し実測コントラスト比 約 5.3:1（AA 達成）。
-   * hover（塗り 0.25）でも約 4.9:1 で 4.5:1 を確保する。 */
-  color: #3a1a63;
+  border-color: #a371f7;
+  color: #a371f7;
 }
 
 .pane-task-title-pr.merged:hover {
   background: rgba(130, 80, 223, 0.25);
-  border-color: rgba(130, 80, 223, 0.5);
-  color: #3a1a63;
+  border-color: #b083f8;
+  color: #b083f8;
 }
 
 .pane-task-title-pr:focus-visible {

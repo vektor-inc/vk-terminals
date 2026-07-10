@@ -75,14 +75,17 @@
   a.pr-link:active { background: rgba(63,185,80,0.28); border-color: rgba(63,185,80,0.5); }
   a.pr-link:focus-visible { outline: 2px solid #58a6ff; outline-offset: 2px; }
   a.pr-link .pr-icon { font-size: 10px; opacity: 0.85; line-height: 1; flex: none; }
-  .pane-order-controls { display: inline-flex; align-items: center; gap: 4px; flex: none; }
+  .pane-order-controls { display: inline-flex; align-items: center; gap: 8px; flex: none; }
   .pane-order-button { display: inline-flex; align-items: center; justify-content: center;
+    position: relative;
     width: 32px; min-width: 32px; height: 32px; padding: 0; border-radius: 6px;
-    border: 1px solid var(--card-border); background: #262b33; color: var(--fg);
+    border: 1px solid #606c7c; background: #2f353e; color: var(--fg);
     font-size: 12px; line-height: 1; font-weight: 700; cursor: pointer; }
-  .pane-order-button:active { background: #323843; }
+  .pane-order-button::before { content: ""; position: absolute; inset: -6px; }
+  .pane-order-button:active { background: #3a424d; }
   .pane-order-button:focus-visible { outline: 2px solid #58a6ff; outline-offset: 2px; }
-  .pane-order-button:disabled { color: var(--idle); background: #20242b; cursor: default; opacity: 0.62; }
+  .pane-order-button:disabled { color: var(--idle); border-color: var(--card-border);
+    background: #20242b; cursor: default; opacity: 0.62; }
   .pane-order-button:disabled:active { background: #20242b; }
   pre.lines { margin: 0; padding: 10px 12px; background: #0d0f13; color: #c8ccd2;
     font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11px; line-height: 1.45;
@@ -342,7 +345,7 @@ var QUICK = [
 ];
 
 var list = document.getElementById("list");
-var cards = {}; // termId -> { root, pre, name, cwd, dot, badge, head, chevron, moveUpBtn, moveDownBtn }
+var cards = {}; // termId -> { root, pre, name, cwd, dot, badge, head, chevron, orderControls, moveUpBtn, moveDownBtn }
 
 var PANE_ORDER_KEY = "vkt_mobile_pane_order";
 var paneOrder = []; // termId の表示順。保存値に無い新規端末は末尾へ追加する。
@@ -424,10 +427,12 @@ function syncPaneOrder(terms) {
 }
 
 function applyPaneOrder() {
+  var showOrderControls = visiblePaneOrder.length > 1;
   visiblePaneOrder.forEach(function(termId, idx) {
     var c = cards[termId];
     if (!c) return;
     c.root.style.order = String(idx);
+    c.orderControls.style.display = showOrderControls ? "" : "none";
     c.moveUpBtn.disabled = idx === 0;
     c.moveDownBtn.disabled = idx === visiblePaneOrder.length - 1;
   });
@@ -593,7 +598,7 @@ function ensureCard(termId) {
 
   cards[termId] = { root: root, pre: pre, name: name, cwd: cwd, dot: dot, badge: badge,
     title: title,
-    prLink: prLink, head: head, chevron: chevron, killBtn: killBtn,
+    prLink: prLink, head: head, chevron: chevron, orderControls: orderControls, killBtn: killBtn,
     moveUpBtn: moveUpBtn, moveDownBtn: moveDownBtn };
   // 復活時を含め、現在の collapsed 状態を初期反映
   syncCollapseUI(cards[termId], termId);

@@ -555,7 +555,7 @@ function builtinSettingsDescriptor() {
         label: '基本',
         fields: [
           { key: 'apiHost',        label: 'API ホスト',            type: 'text',    help: '既定 127.0.0.1' },
-          { key: 'newPaneStartupDir', label: '新規ペインを開く時の初期ディレクトリ', type: 'text', help: '値が保存されている場合、新規ペインを開いた時にそのディレクトリでターミナル（及び Claude）が起動します。' },
+          { key: 'newPaneStartupDir', label: '新規ペインを開く時の初期ディレクトリ', type: 'text', placeholder: '/path/to/project', help: '新規ペインを開く時の作業ディレクトリを絶対パスで指定します。「Claude Code を自動起動する」設定が有効な場合は Claude もこのディレクトリで起動します。未入力の場合、または存在しないパスの場合はホームディレクトリで起動します。' },
           { key: 'newPaneAutoLaunchClaude', label: '新規ペイン（子ターミナル）を開く時に自動的に Claude Code を起動する', type: 'boolean', default: false, help: 'チェックが入っている場合、新規ペインを開いた時に自動的に Claude Code が起動します。オフの場合は素のターミナルで起動します。' },
           { key: 'initialCommand', label: '初期コマンド',          type: 'text',    help: 'Claude Code で起動する設定の場合、最初のペインで Claude 起動直後に自動実行させたいコマンドがあれば記入してください。毎日最初に実行するコマンドの入力を省略するための機能です。' },
           // showUsage（issue #69）は opt-out（既定 ON）。default:true で「未設定 boolean が

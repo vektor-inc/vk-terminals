@@ -74,6 +74,10 @@ const RUNNING_INPUT_GUARD_MS = 200;
 // config.json の `agentroom: true` のときだけ各ペイン下部にアコーディオンを表示する。
 // 値は起動時に main プロセス（app:get-config）から取得する。
 let agentRoomEnabled = false;
+// 新規ペイン（＋ / 空グリッド「新規ペインを追加」）の既定挙動（issue #143）。
+// 値は起動時に main（app:get-config）から取得する。設定反映には再起動が必要（設定パネルの note 参照）。
+let newPaneStartupDir = '';
+let newPaneAutoLaunchClaude = false;
 // HTTP API（POST /api/agentroom）由来のルーム状態を、この TTL を超えたら「古い」と判断して
 // PTY 出力ベースのフォールバック表示に切り替える（ms）。
 const AGENTROOM_API_TTL_MS = 90000;
@@ -1612,7 +1616,7 @@ function renderEmptyGrid() {
   addBtn.className = 'grid-empty-btn';
   addBtn.textContent = '新規ペインを追加';
   addBtn.setAttribute('aria-label', '新規ペインを追加');
-  addBtn.addEventListener('click', () => { addPane(); });
+  addBtn.addEventListener('click', () => { addPane(newPaneStartupDir || null, { noClaude: !newPaneAutoLaunchClaude }); });
 
   const openBtn = document.createElement('button');
   openBtn.type = 'button';
@@ -1899,7 +1903,7 @@ function renderLeaf(node) {
   });
   header.querySelector('.btn-split').addEventListener('click', e => {
     e.stopPropagation();
-    splitPane(node.id, 'h');
+    splitPane(node.id, 'h', newPaneStartupDir || null, { noClaude: !newPaneAutoLaunchClaude });
   });
   header.querySelector('.btn-close').addEventListener('click', e => {
     e.stopPropagation();
@@ -2722,6 +2726,8 @@ async function initApp() {
   try {
     const cfg = await ipcRenderer.invoke('app:get-config');
     agentRoomEnabled = !!(cfg && cfg.agentroom);
+    newPaneStartupDir = (cfg && typeof cfg.newPaneStartupDir === 'string') ? cfg.newPaneStartupDir : '';
+    newPaneAutoLaunchClaude = !!(cfg && cfg.newPaneAutoLaunchClaude);
   } catch (_e) { /* 取得失敗時は無効のまま */ }
 
   // Dispose any existing terminals

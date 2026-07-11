@@ -1,6 +1,9 @@
 # Changelog
 
+## 1.15.5
+
 - [ 不具合修正 ] モバイル版のペインプレビューで Claude Code の位置指定再描画により直近の本文行が表示されない不具合を修正（[#132](https://github.com/vektor-inc/vk-terminals/issues/132)）
+- [ 不具合修正 ] モバイル版のペインプレビューで出力が少ないと表示領域が1行分に潰れて内容が読めない不具合を、最低表示高さ（約10行分）を確保して修正（[#134](https://github.com/vektor-inc/vk-terminals/issues/134)）
 
 ## 1.15.4
 

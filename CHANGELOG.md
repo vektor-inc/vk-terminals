@@ -1,6 +1,7 @@
 # Changelog
 
 - [ 機能追加 ] モバイル版の最下部に VK Terminals のバージョンを表示（[#135](https://github.com/vektor-inc/vk-terminals/issues/135)）
+- [ デザイン不具合修正 ] サイドバー格納時とモバイル版でマージ済み PR ラベルが紫にならず緑のままになる不具合を修正（[#137](https://github.com/vektor-inc/vk-terminals/issues/137)）
 
 ## 1.15.5
 

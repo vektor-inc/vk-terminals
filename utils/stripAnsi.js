@@ -14,31 +14,92 @@
 // CR は TUI の全行書き換え型の再描画として扱う。
 // 裸の `\r` は行頭復帰として扱い、後続文字で現在行を列単位に上書きする。
 // `\r\n` は改行 1 個にする。
-// erase-in-line CSI は列位置に応じて反映するが、カーソル横移動 CSI までは再現しない簡易実装。
+// erase-in-line CSI と基本的なカーソル移動 CSI は表示位置へ反映する。
 function applyDisplayControls(str) {
+  const MAX_ROWS = 500;
+  const MAX_COLS = 1000;
   const lines = [''];
+  let row = 0;
   let col = 0;
 
+  const clampRow = (nextRow) => Math.min(MAX_ROWS - 1, Math.max(0, nextRow));
+  const clampCol = (nextCol) => Math.min(MAX_COLS, Math.max(0, nextCol));
+
+  const ensureRow = (nextRow) => {
+    row = clampRow(nextRow);
+    while (lines.length <= row) {
+      lines.push('');
+    }
+  };
+
   const writeChar = (ch) => {
-    let cur = lines[lines.length - 1];
+    col = clampCol(col);
+    let cur = lines[row] || '';
     if (col > cur.length) {
       cur += ' '.repeat(col - cur.length);
     }
-    lines[lines.length - 1] = cur.slice(0, col) + ch + cur.slice(col + 1);
-    col += 1;
+    lines[row] = cur.slice(0, col) + ch + cur.slice(col + 1);
+    col = clampCol(col + 1);
   };
 
   const eraseInLine = (mode) => {
-    const cur = lines[lines.length - 1];
+    col = clampCol(col);
+    const cur = lines[row] || '';
     if (mode === '2') {
-      lines[lines.length - 1] = '';
+      lines[row] = '';
       return;
     }
     if (mode === '1') {
-      lines[lines.length - 1] = ' '.repeat(col) + cur.slice(col);
+      lines[row] = ' '.repeat(col) + cur.slice(col);
       return;
     }
-    lines[lines.length - 1] = cur.slice(0, col);
+    lines[row] = cur.slice(0, col);
+  };
+
+  const csiParams = (params) => {
+    if (params.startsWith('?')) return null;
+    return params.split(';').map((part) => {
+      if (part === '') return null;
+      const n = Number.parseInt(part, 10);
+      return Number.isFinite(n) ? n : null;
+    });
+  };
+
+  const csiParam = (values, index, fallback) => {
+    if (!values || values[index] == null || values[index] === 0) return fallback;
+    return values[index];
+  };
+
+  const applyCursor = (params, final) => {
+    const values = csiParams(params);
+    if (!values) return;
+    const n = csiParam(values, 0, 1);
+    if (final === 'A') {
+      ensureRow(row - n);
+    } else if (final === 'B') {
+      ensureRow(row + n);
+    } else if (final === 'C') {
+      col = clampCol(col + n);
+    } else if (final === 'D') {
+      col = clampCol(col - n);
+    } else if (final === 'E') {
+      ensureRow(row + n);
+      col = 0;
+    } else if (final === 'F') {
+      ensureRow(row - n);
+      col = 0;
+    } else if (final === 'G') {
+      col = clampCol(n - 1);
+    } else if (final === 'H' || final === 'f') {
+      ensureRow(csiParam(values, 0, 1) - 1);
+      col = clampCol(csiParam(values, 1, 1) - 1);
+    } else if (final === 'd') {
+      ensureRow(n - 1);
+    } else if (final === 'a') {
+      col = clampCol(col + n);
+    } else if (final === 'e') {
+      ensureRow(row + n);
+    }
   };
 
   for (let i = 0; i < str.length; i += 1) {
@@ -57,6 +118,8 @@ function applyDisplayControls(str) {
         const final = str[j];
         if (final === 'K') {
           eraseInLine(params === '' ? '0' : params);
+        } else {
+          applyCursor(params, final);
         }
         i = j;
         continue;
@@ -104,7 +167,8 @@ function applyDisplayControls(str) {
     }
     if (ch === '\r') {
       if (str[i + 1] === '\n') {
-        lines.push('');
+        ensureRow(row + 1);
+        lines[row] = lines[row] || '';
         col = 0;
         i += 1;
       } else {
@@ -113,7 +177,8 @@ function applyDisplayControls(str) {
       continue;
     }
     if (ch === '\n') {
-      lines.push('');
+      ensureRow(row + 1);
+      lines[row] = lines[row] || '';
       col = 0;
       continue;
     }

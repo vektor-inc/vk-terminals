@@ -151,7 +151,8 @@
   #usage-oauth .u-fill.level-warn { background: #d29922; }
   #usage-oauth .u-fill.level-crit { background: #f85149; }
   #usage-oauth .u-reset { margin-top: 4px; font-size: 10px; color: var(--muted); }
-  #app-version-footer { display: none; padding: 4px 12px 18px; color: var(--muted);
+  #app-version-footer { display: none; padding: 4px 12px;
+    padding-bottom: max(18px, env(safe-area-inset-bottom)); color: var(--muted);
     font-size: 11px; line-height: 1.4; text-align: center; }
   #app-version-footer.show { display: block; }
 </style>

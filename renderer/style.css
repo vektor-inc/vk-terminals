@@ -292,6 +292,14 @@ html, body {
   color: #8b949e;
   font-size: 12px;
 }
+.settings-error {
+  color: #f85149;
+  font-size: 12px;
+}
+/* 空のエラー行は余白を作らないよう非表示にする（flex gap の影響も避ける）。 */
+.settings-error:empty {
+  display: none;
+}
 .settings-row input[type="text"],
 .settings-row input[type="number"],
 .settings-row input[type="password"],
@@ -326,6 +334,11 @@ html, body {
 .settings-row textarea {
   resize: vertical;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+/* pattern 検証エラー時の赤枠。focus 時の青枠より前に置き、同詳細度なら後勝ちの
+   ソース順で focus（青）が勝つようにする（入力中は青、blur 後の未focusで赤）。 */
+.settings-row input[aria-invalid="true"] {
+  border-color: #f85149;
 }
 .settings-row input:focus,
 .settings-row select:focus,

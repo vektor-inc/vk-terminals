@@ -8,6 +8,7 @@ const { AGENT_ORDER, buildScene, resolveAgentStatesFromOutput } = require('./age
 const { matchesWaiting, nextWaitingState } = require('./waitingState');
 const { deriveStatus } = require('./statusState');
 const { getPrBadgePresentation } = require('./prBadge');
+const { isPatternValid } = require('./settingsValidation');
 
 // ─── xterm.css の注入 ─────────────────────────────────────────────────────────
 // xterm.css は index.html の相対パス <link> ではなく、Node のモジュール解決
@@ -2473,7 +2474,8 @@ function setupUsageBadge() {
 // "a.b" と "a_b" のような別キーがサニタイズ後に衝突しうるため、キー由来にしない）。
 function renderSettingsField(f, value, id) {
   const label = escText(f.label || f.key);
-  const help = f.help ? `<span class="settings-help">${escText(f.help)}</span>` : '';
+  // help には id を振り、text/number 分岐で input の aria-describedby から参照する。
+  const help = f.help ? `<span class="settings-help" id="${escAttr(id + '-help')}">${escText(f.help)}</span>` : '';
 
   if (f.type === 'boolean') {
     return `<div class="settings-row settings-row-check">
@@ -2528,9 +2530,14 @@ function renderSettingsField(f, value, id) {
 
   const inputType = f.type === 'number' ? 'number' : 'text';
   const ph = f.placeholder ? ` placeholder="${escAttr(f.placeholder)}"` : '';
+  // pattern 検証のエラー行と aria 関連付け。help があれば help id と error id を
+  // スペース区切りで両方指す（無ければ error id のみ）。
+  const errorId = escAttr(id + '-error');
+  const describedBy = escAttr(f.help ? `${id}-help ${id}-error` : `${id}-error`);
   return `<div class="settings-row">
     <label class="settings-label" for="${id}">${label}</label>${help}
-    <input type="${inputType}" id="${id}" value="${strVal}"${ph} spellcheck="false">
+    <input type="${inputType}" id="${id}" value="${strVal}"${ph} spellcheck="false" aria-describedby="${describedBy}">
+    <span class="settings-error" id="${errorId}" role="alert"></span>
   </div>`;
 }
 
@@ -2620,7 +2627,70 @@ async function openSettingsModal() {
     });
   });
 
+  // ─── pattern 検証（issue #140） ──────────────────────────────────────────────
+  // 検証対象は field.pattern（正規表現文字列）を持つフィールドのみ。type ではなく
+  // pattern の有無で判定することで、text/number など type を問わず汎用的に扱う。
+  const validatable = entries.filter(
+    ({ field }) => typeof field.pattern === 'string' && field.pattern !== ''
+  );
+
+  // 1 フィールドの検証結果を DOM に反映する。valid かどうかを返す。
+  // - valid: aria-invalid を外し、エラー文をクリア（赤枠も CSS 側で解除される）。
+  // - invalid: aria-invalid="true" を付与し、invalidMessage（無ければ汎用文）を表示。
+  //   invalidMessage は textContent で流し込むため HTML として解釈されない（XSS 安全）。
+  const applyFieldValidity = (field, id) => {
+    const input = modal.querySelector('#' + id);
+    const errEl = modal.querySelector('#' + id + '-error');
+    if (!input) return true;
+    const valid = isPatternValid(field.pattern, input.value);
+    if (valid) {
+      input.removeAttribute('aria-invalid');
+      if (errEl) errEl.textContent = '';
+    } else {
+      input.setAttribute('aria-invalid', 'true');
+      if (errEl) errEl.textContent = field.invalidMessage || '入力形式が正しくありません';
+    }
+    return valid;
+  };
+
+  // エラー表示を一旦消す（保存時の再判定前リセットに使う）。
+  const clearFieldValidity = (field, id) => {
+    const input = modal.querySelector('#' + id);
+    const errEl = modal.querySelector('#' + id + '-error');
+    if (input) input.removeAttribute('aria-invalid');
+    if (errEl) errEl.textContent = '';
+  };
+
+  // "優しく遅らせ、素早く許す": 打鍵中は警告せず blur で初回検証。エラーが付いた後だけ
+  // input イベントで再検証し、valid になれば即解除する。
+  for (const { field, id } of validatable) {
+    const input = modal.querySelector('#' + id);
+    if (!input) continue;
+    input.addEventListener('blur', () => { applyFieldValidity(field, id); });
+    input.addEventListener('input', () => {
+      if (input.getAttribute('aria-invalid') === 'true') applyFieldValidity(field, id);
+    });
+  }
+
   modal.querySelector('.settings-save').addEventListener('click', async () => {
+    // 保存前の検証ゲート: 全エラー表示を一旦クリアしてから対象を一括再判定する。
+    for (const { field, id } of validatable) clearFieldValidity(field, id);
+    let firstInvalid = null;
+    for (const { field, id } of validatable) {
+      const valid = applyFieldValidity(field, id);
+      if (!valid && !firstInvalid) firstInvalid = modal.querySelector('#' + id);
+    }
+    // 1 つでも不一致なら settings:save を呼ばず中断し、最初の不正欄へフォーカスする。
+    if (firstInvalid) {
+      msg.textContent = '入力内容に問題があります';
+      msg.className = 'settings-msg err';
+      firstInvalid.focus();
+      if (typeof firstInvalid.scrollIntoView === 'function') {
+        firstInvalid.scrollIntoView({ block: 'nearest' });
+      }
+      return;
+    }
+
     const out = {};
     for (const { field, id } of entries) {
       const input = modal.querySelector('#' + id);

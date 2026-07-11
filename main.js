@@ -1049,6 +1049,7 @@ function startHttpApi() {
             updatedAt: new Date().toISOString(),
             terminals: cachedStates,
             usage,
+            version: require('./package.json').version,
           }));
         });
       return;

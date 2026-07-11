@@ -264,3 +264,86 @@ test('モバイル: apiPrUrl が javascript: の場合はタイトルがリン�
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   }
 });
+
+test('モバイル: マージ済み PR リンクは紫表示とチェックアイコンに切り替わり、通常状態へ戻る', async () => {
+  const port = await getFreePort();
+  const { app, tmpRoot } = await launchApp(port);
+  const browser = await chromium.launch();
+  try {
+    await waitForTermId(port, '1');
+
+    const prUrl = `http://127.0.0.1:${port}/?pr=137`;
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    let injectedTerm = {
+      termId: '1',
+      status: 'idle',
+      displayTitle: 'PR #137 モバイル merged',
+      apiPrUrl: prUrl,
+      apiPrMerged: true,
+      lastLines: '',
+    };
+
+    // /api/states を差し替え、モバイル renderer に apiPrMerged: true を直接流す。
+    // POST /api/set-title と renderer の間の状態反映は既存テストで担保済みなので、
+    // ここでは mobile.html の render() が states の apiPrMerged を UI に反映するかへ絞る。
+    await page.route(`http://127.0.0.1:${port}/api/states`, async (route) => {
+      const injected = {
+        terminals: {
+          '1': injectedTerm,
+        },
+        updatedAt: Date.now(),
+      };
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(injected),
+      });
+    });
+
+    await page.goto(`http://127.0.0.1:${port}/`);
+
+    const card = page.locator('.card').first();
+    await expect(card).toContainText('PR #137 モバイル merged', { timeout: 15_000 });
+    const prLink = card.locator('a.pr-link');
+    await expect(prLink).toBeVisible();
+
+    // apiPrMerged: true のときは PC 版 PR バッジと同じ意味論（.merged + ✓ + 専用 aria-label）。
+    await expect(prLink).toHaveClass(/\bmerged\b/);
+    await expect(prLink).toHaveAttribute('aria-label', 'マージ済みのプルリクエストを開く');
+    await expect(prLink.locator('.pr-icon')).toHaveText('✓');
+
+    // 次の描画で未マージ／URL 無効になった場合、古い merged 表示が残らないことも確認する。
+    injectedTerm = {
+      termId: '1',
+      status: 'idle',
+      displayTitle: 'PR #137 モバイル normal',
+      apiPrUrl: prUrl,
+      apiPrMerged: false,
+      lastLines: '',
+    };
+    await page.evaluate(() => poll());
+
+    await expect(prLink).not.toHaveClass(/\bmerged\b/);
+    await expect(prLink).toHaveAttribute('aria-label', 'プルリクエストを開く');
+    await expect(prLink.locator('.pr-icon')).toHaveText('↗');
+
+    injectedTerm = {
+      termId: '1',
+      status: 'idle',
+      displayTitle: 'PR #137 モバイル hidden',
+      apiPrUrl: '',
+      apiPrMerged: true,
+      lastLines: '',
+    };
+    await page.evaluate(() => poll());
+
+    await expect(prLink).not.toHaveClass(/\bmerged\b/);
+    await expect(prLink).toHaveAttribute('aria-label', 'プルリクエストを開く');
+    await expect(prLink.locator('.pr-icon')).toHaveText('↗');
+  } finally {
+    await browser.close();
+    if (app) await app.close();
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});

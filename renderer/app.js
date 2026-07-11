@@ -818,7 +818,7 @@ function renderStashItem(id, idx, count) {
     + (!title && !taskPrUrl ? ' empty' : '')
     + (taskUrl ? ' has-link' : '')
     + (taskPrUrl ? ' has-pr' : '');
-  renderTaskTitleContent(titleEl, title, taskUrl, taskPrUrl);
+  renderTaskTitleContent(titleEl, title, taskUrl, taskPrUrl, !!t?.apiPrMerged);
   if (taskUrl) {
     titleEl.removeAttribute('title');
   } else {
@@ -889,7 +889,7 @@ function updateStashItem(paneId) {
     const title = getDisplayTitle(t);
     const url = getDisplayUrl(t);
     const prUrl = isSafeExternalUrl(t.apiPrUrl) ? t.apiPrUrl : '';
-    renderTaskTitleContent(titleEl, title, url, prUrl);
+    renderTaskTitleContent(titleEl, title, url, prUrl, !!t.apiPrMerged);
     if (url) {
       titleEl.removeAttribute('title');
     } else {

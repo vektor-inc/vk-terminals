@@ -73,6 +73,10 @@
     background: rgba(63,185,80,0.15); border: 1px solid rgba(63,185,80,0.3); color: #6fd58a; }
   a.pr-link.show { display: inline-flex; }
   a.pr-link:active { background: rgba(63,185,80,0.28); border-color: rgba(63,185,80,0.5); }
+  /* マージ済み PR リンク（issue #137）。ヘッダ帯 var(--card) #1d2127 上で
+     #c8a8ff はコントラスト比 8.08:1、active の #d0b5ff は 9.03:1 で AA 4.5:1 を満たす。 */
+  a.pr-link.merged { background: rgba(130,80,223,0.15); border-color: rgba(130,80,223,0.45); color: #c8a8ff; }
+  a.pr-link.merged:active { background: rgba(130,80,223,0.28); border-color: rgba(200,168,255,0.62); color: #d0b5ff; }
   a.pr-link:focus-visible { outline: 2px solid #58a6ff; outline-offset: 2px; }
   a.pr-link .pr-icon { font-size: 10px; opacity: 0.85; line-height: 1; flex: none; }
   .pane-order-controls { display: inline-flex; align-items: center; gap: 8px; flex: none; }
@@ -785,7 +789,7 @@ function ensureCard(termId) {
 
   cards[termId] = { root: root, pre: pre, name: name, cwd: cwd, dot: dot, badge: badge,
     title: title,
-    prLink: prLink, head: head, chevron: chevron, orderControls: orderControls, killBtn: killBtn,
+    prLink: prLink, prIcon: prIcon, head: head, chevron: chevron, orderControls: orderControls, killBtn: killBtn,
     moveUpBtn: moveUpBtn, moveDownBtn: moveDownBtn };
   // 復活時を含め、現在の collapsed 状態を初期反映
   syncCollapseUI(cards[termId], termId);
@@ -932,9 +936,13 @@ function render(data) {
     // PR リンク（issue #53）。安全な http(s) URL のときだけ href にセットして表示、
     // そうでなければ href を空にして非表示にする。
     if (isSafeHttpUrl(t.apiPrUrl)) {
+      var prMerged = t.apiPrMerged === true;
       c.prLink.href = t.apiPrUrl;
       c.prLink.title = t.apiPrUrl;
       c.prLink.classList.add("show");
+      c.prLink.classList.toggle("merged", prMerged);
+      c.prLink.setAttribute("aria-label", prMerged ? "マージ済みのプルリクエストを開く" : "プルリクエストを開く");
+      c.prIcon.textContent = prMerged ? "✓" : "↗";
       c.title.href = t.apiPrUrl;
       c.title.target = "_blank";
       c.title.rel = "noopener noreferrer";
@@ -944,6 +952,9 @@ function render(data) {
       c.prLink.removeAttribute("href");
       c.prLink.removeAttribute("title");
       c.prLink.classList.remove("show");
+      c.prLink.classList.remove("merged");
+      c.prLink.setAttribute("aria-label", "プルリクエストを開く");
+      c.prIcon.textContent = "↗";
       c.title.removeAttribute("href");
       c.title.removeAttribute("target");
       c.title.removeAttribute("rel");

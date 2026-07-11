@@ -219,6 +219,43 @@ test('格納カードのヘッダーが2段（タイトル行/操作行）にな
   }
 });
 
+test('格納カード: マージ済み PR バッジは格納後も紫表示とチェックアイコンを維持する', async () => {
+  const port = await getFreePort();
+  const { app, win, tmpRoot } = await launchApp(port);
+  try {
+    await waitForTermId(port, '1', true);
+
+    const prUrl = 'https://github.com/vektor-inc/vk-terminals/pull/137';
+    const setTitleRes = await postJson(port, '/api/set-title', {
+      termId: '1',
+      title: 'PR #137 マージ済み stash 確認',
+      prUrl,
+      prMerged: true,
+    });
+    expect(setTitleRes.status).toBe(200);
+    expect(setTitleRes.body?.prMerged).toBe(true);
+
+    // グリッド側でマージ済み表示になったペインを、実操作でサイドバーへ格納する。
+    const paneDomId = 'pane-1';
+    const gridPane = win.locator(`.pane[data-id="${paneDomId}"]`);
+    await expect(gridPane.locator('.pane-task-title-pr')).toHaveClass(/\bmerged\b/);
+    await gridPane.locator('.btn-stash').click();
+
+    await ensureSidebarOpen(win);
+    const stashItem = win.locator(`.stash-item[data-id="${paneDomId}"]`);
+    await expect(stashItem).toBeVisible({ timeout: 10_000 });
+
+    // renderStashItem() が apiPrMerged を渡し忘れると、ここで緑の通常 PR バッジに戻る。
+    const prBadge = stashItem.locator('.stash-item-title-row .pane-task-title-pr');
+    await expect(prBadge).toHaveClass(/\bmerged\b/);
+    await expect(prBadge).toHaveAttribute('aria-label', 'マージ済みのプルリクエストを開く（外部ブラウザ）');
+    await expect(prBadge.locator('.pane-task-title-pr-icon')).toHaveText('✓');
+  } finally {
+    if (app) await app.close();
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
 test('格納カード: ▲▼で並べ替えできる（デグレ確認）', async () => {
   const port = await getFreePort();
   const { app, win, tmpRoot } = await launchApp(port);

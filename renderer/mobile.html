@@ -36,7 +36,8 @@
   .card-head-meta { display: flex; align-items: center; gap: 8px; flex: none; }
   .card-head-meta .chevron { margin-left: auto; }
   .card-head:active { background: #232830; }
-  .chevron { flex: none; color: var(--muted); font-size: 13px; line-height: 1;
+  .chevron { flex: none; display: inline-flex; align-items: center; justify-content: center;
+    width: 32px; height: 32px; color: var(--fg); font-size: 16px; line-height: 1;
     transition: transform 0.12s ease; }
   .card.collapsed .chevron { transform: rotate(-90deg); }
   @media (prefers-reduced-motion: reduce) {

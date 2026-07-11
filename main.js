@@ -500,12 +500,15 @@ app.on('before-quit', () => {
 // renderer がエージェントルーム（issue #58）の有効/無効を知るための設定取得。
 //   本来は config.json の `agentroom: true` のときだけ各ペイン下部にアコーディオンを
 //   表示するが、issue #70 でエージェントルーム（β）を一旦無効化するため、config.json の
-//   値によらず常に false を返す。復帰時は下記を
-//     const config = loadUserConfig();
-//     return { agentroom: config.agentroom === true };
-//   に戻せばよい。
+//   値によらず agentroom は常に false を返す。復帰時は agentroom の返却値だけ
+//   `config.agentroom === true` に戻せばよい。
 ipcMain.handle('app:get-config', () => {
-  return { agentroom: false };
+  const config = loadUserConfig();
+  return {
+    agentroom: false,
+    newPaneStartupDir: typeof config.newPaneStartupDir === 'string' ? config.newPaneStartupDir.trim() : '',
+    newPaneAutoLaunchClaude: config.newPaneAutoLaunchClaude === true,
+  };
 });
 
 // 使用状況の取得（issue #69 → #73 で公式 API 主・トランスクリプト従の統一構造に変更）。
@@ -541,7 +544,7 @@ function resolveOwnConfigTargetPath() {
 }
 
 // env 未指定（スタンドアロン起動）時に使う組み込みディスクリプタ。VK Terminals 自身の
-// config.json（apiHost / initialCommand / agentroom / additionalPanes）を GUI から編集できる。
+// config.json（apiHost / initialCommand / 新規ペイン設定 / agentroom / additionalPanes）を GUI から編集できる。
 function builtinSettingsDescriptor() {
   return {
     title: 'VK Terminals 設定',
@@ -552,7 +555,9 @@ function builtinSettingsDescriptor() {
         label: '基本',
         fields: [
           { key: 'apiHost',        label: 'API ホスト',            type: 'text',    help: '既定 127.0.0.1' },
-          { key: 'initialCommand', label: '初期コマンド',          type: 'text',    help: '1 ペイン目で claude 起動直後に自動実行させたいコマンドがあれば記入してください。' },
+          { key: 'newPaneStartupDir', label: '新規ペインを開く時の初期ディレクトリ', type: 'text', help: '値が保存されている場合、新規ペインを開いた時にそのディレクトリでターミナル（及び Claude）が起動します。' },
+          { key: 'newPaneAutoLaunchClaude', label: '新規ペイン（子ターミナル）を開く時に自動的に Claude Code を起動する', type: 'boolean', default: false, help: 'チェックが入っている場合、新規ペインを開いた時に自動的に Claude Code が起動します。オフの場合は素のターミナルで起動します。' },
+          { key: 'initialCommand', label: '初期コマンド',          type: 'text',    help: 'Claude Code で起動する設定の場合、最初のペインで Claude 起動直後に自動実行させたいコマンドがあれば記入してください。毎日最初に実行するコマンドの入力を省略するための機能です。' },
           // showUsage（issue #69）は opt-out（既定 ON）。default:true で「未設定 boolean が
           // 保存時に false になる」問題を避ける（settings:describe / settings:save が default 尊重）。
           { key: 'showUsage',      label: 'トークン使用量を表示',   type: 'boolean', default: true, help: 'Claude の利用状況（セッション% / 週間制限%）をサイドバーの「Claude使用量」・モバイルページに表示します。' },
@@ -743,7 +748,14 @@ ipcMain.handle('settings:save', (event, incoming) => {
 ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
   const id = String(nextId++);
   const shell = process.env.SHELL || (process.platform === 'win32' ? (process.env.COMSPEC || 'powershell.exe') : '/bin/zsh');
-  const resolvedCwd = cwd || process.env.HOME || process.env.USERPROFILE || os.tmpdir();
+  let resolvedCwd = cwd || process.env.HOME || process.env.USERPROFILE || os.tmpdir();
+  try {
+    if (!fs.existsSync(resolvedCwd) || !fs.statSync(resolvedCwd).isDirectory()) {
+      resolvedCwd = process.env.HOME || process.env.USERPROFILE || os.tmpdir();
+    }
+  } catch (_e) {
+    resolvedCwd = process.env.HOME || process.env.USERPROFILE || os.tmpdir();
+  }
 
   // `options.noClaude` が明示指定されていればそれを優先、未指定なら CLI フラグの値を継承。
   // `noClaude` が true の場合、claude を自動起動せず素のシェルとして開く。

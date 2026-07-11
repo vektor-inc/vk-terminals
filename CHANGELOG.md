@@ -1,6 +1,7 @@
 # Changelog
 
 - [ 機能追加 ] モバイル版の最下部に VK Terminals のバージョンを表示（[#135](https://github.com/vektor-inc/vk-terminals/issues/135)）
+- [ 機能追加 ] 設定ダイアログのテキスト入力に形式チェックを追加し、`<owner>/<repo>` 等の不正な形式のまま保存されるのを防止（[#140](https://github.com/vektor-inc/vk-terminals/issues/140)）
 - [ 仕様変更 ] モバイル版のペインプレビュー表示領域の高さを約70%に縮小（[#139](https://github.com/vektor-inc/vk-terminals/issues/139)）
 - [ デザイン不具合修正 ] サイドバー格納時とモバイル版でマージ済み PR ラベルが紫にならず緑のままになる不具合を修正（[#137](https://github.com/vektor-inc/vk-terminals/issues/137)）
 

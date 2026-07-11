@@ -16,27 +16,34 @@
 // `\r\n` は改行 1 個にする。
 // erase-in-line CSI と基本的なカーソル移動 CSI は表示位置へ反映する。
 function applyDisplayControls(str) {
+  const MAX_ROWS = 500;
+  const MAX_COLS = 1000;
   const lines = [''];
   let row = 0;
   let col = 0;
 
+  const clampRow = (nextRow) => Math.min(MAX_ROWS - 1, Math.max(0, nextRow));
+  const clampCol = (nextCol) => Math.min(MAX_COLS, Math.max(0, nextCol));
+
   const ensureRow = (nextRow) => {
-    row = Math.max(0, nextRow);
+    row = clampRow(nextRow);
     while (lines.length <= row) {
       lines.push('');
     }
   };
 
   const writeChar = (ch) => {
+    col = clampCol(col);
     let cur = lines[row] || '';
     if (col > cur.length) {
       cur += ' '.repeat(col - cur.length);
     }
     lines[row] = cur.slice(0, col) + ch + cur.slice(col + 1);
-    col += 1;
+    col = clampCol(col + 1);
   };
 
   const eraseInLine = (mode) => {
+    col = clampCol(col);
     const cur = lines[row] || '';
     if (mode === '2') {
       lines[row] = '';
@@ -72,9 +79,9 @@ function applyDisplayControls(str) {
     } else if (final === 'B') {
       ensureRow(row + n);
     } else if (final === 'C') {
-      col += n;
+      col = clampCol(col + n);
     } else if (final === 'D') {
-      col = Math.max(0, col - n);
+      col = clampCol(col - n);
     } else if (final === 'E') {
       ensureRow(row + n);
       col = 0;
@@ -82,14 +89,14 @@ function applyDisplayControls(str) {
       ensureRow(row - n);
       col = 0;
     } else if (final === 'G') {
-      col = Math.max(0, n - 1);
+      col = clampCol(n - 1);
     } else if (final === 'H' || final === 'f') {
       ensureRow(csiParam(values, 0, 1) - 1);
-      col = Math.max(0, csiParam(values, 1, 1) - 1);
+      col = clampCol(csiParam(values, 1, 1) - 1);
     } else if (final === 'd') {
       ensureRow(n - 1);
     } else if (final === 'a') {
-      col += n;
+      col = clampCol(col + n);
     } else if (final === 'e') {
       ensureRow(row + n);
     }

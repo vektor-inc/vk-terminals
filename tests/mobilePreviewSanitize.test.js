@@ -11,6 +11,9 @@ const {
   stripAnsiForDisplay,
 } = require('../utils/stripAnsi');
 
+const MAX_DISPLAY_ROWS = 500;
+const MAX_DISPLAY_LINE_LENGTH = 1001;
+
 function loadSanitizeMobilePreviewText() {
   const html = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'mobile.html'), 'utf8');
   const match = html.match(/\/\/ Claude Code[\s\S]*?\nfunction tail/);
@@ -48,6 +51,31 @@ function buildClaudeCodeCsiRedrawFrame() {
     '\x1b[9;1H\x1b[2K│ > 1. Yes                    │',
     '\x1b[10;1H\x1b[2K╰────────────────────────────╯',
   ].join('');
+}
+
+function assertBoundedDisplayControls(name, fn) {
+  const cases = [
+    ['huge absolute row', '\x1b[999999Hrow'],
+    ['huge relative row', `top\x1b[2147483647Bbottom`],
+    ['huge absolute row and col', '\x1b[999999;9999999999999999HX'],
+    ['huge relative col', `start\x1b[9999999999999999CX`],
+    ['negative relative col', `abc\x1b[-5CX`],
+  ];
+
+  for (const [label, input] of cases) {
+    assert.doesNotThrow(() => fn(input), `${name}: ${label} should not throw`);
+    const output = fn(input);
+    const lines = output.split('\n');
+
+    assert.ok(
+      lines.length <= MAX_DISPLAY_ROWS,
+      `${name}: ${label} should clamp rows, got ${lines.length}`
+    );
+    assert.ok(
+      lines.every((line) => line.length <= MAX_DISPLAY_LINE_LENGTH),
+      `${name}: ${label} should clamp line length`
+    );
+  }
 }
 
 test('sanitizeMobilePreviewText: スピナー記号だけの行と数字断片行を除去する', () => {
@@ -185,6 +213,16 @@ test('stripAnsiForDisplay: Claude Code 風の CSI 位置指定再描画を複数
       '╰────────────────────────────╯',
     ].join('\n')
   );
+});
+
+test('stripAnsiForDisplay: 巨大な CSI カーソル移動でも行数と列幅を上限内に収める', () => {
+  assertBoundedDisplayControls('stripAnsiForDisplay', stripAnsiForDisplay);
+});
+
+test('mobile stripAnsi: 巨大な CSI カーソル移動でも行数と列幅を上限内に収める', () => {
+  const stripAnsi = loadMobileStripAnsi();
+
+  assertBoundedDisplayControls('mobile stripAnsi', stripAnsi);
 });
 
 test('mobile preview: Claude Code 風の CSI 位置指定再描画でも直近本文行を残す', () => {

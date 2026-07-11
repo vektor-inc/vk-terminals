@@ -151,6 +151,10 @@
   #usage-oauth .u-fill.level-warn { background: #d29922; }
   #usage-oauth .u-fill.level-crit { background: #f85149; }
   #usage-oauth .u-reset { margin-top: 4px; font-size: 10px; color: var(--muted); }
+  #app-version-footer { display: none; padding: 4px 12px;
+    padding-bottom: max(18px, env(safe-area-inset-bottom)); color: var(--muted);
+    font-size: 11px; line-height: 1.4; text-align: center; }
+  #app-version-footer.show { display: block; }
 </style>
 </head>
 <body>
@@ -181,6 +185,7 @@
   <div class="u-note" id="usage-note"></div>
 </div>
 <div id="list"></div>
+<footer id="app-version-footer"></footer>
 
 <script>
 "use strict";
@@ -794,6 +799,19 @@ function ensureCard(termId) {
 //   - それ以外（source === 'transcript' フォールバック）: 従来表示のまま。
 // 文字列は textContent で入れるので XSS 面も安全。
 var usageCard = document.getElementById("usage-card");
+var appVersionFooter = document.getElementById("app-version-footer");
+
+function renderAppVersion(version) {
+  if (!appVersionFooter) return;
+  var v = typeof version === "string" ? version.trim() : "";
+  if (!v) {
+    appVersionFooter.textContent = "";
+    appVersionFooter.classList.remove("show");
+    return;
+  }
+  appVersionFooter.textContent = "VK Terminals v" + v;
+  appVersionFooter.classList.add("show");
+}
 
 // 残り時間（ms）→「◯時間◯分後にリセット」
 function fmtRemainingJa(ms) {
@@ -884,6 +902,7 @@ function renderUsage(usage) {
 }
 
 function render(data) {
+  renderAppVersion(data.version);
   renderUsage(data.usage);
   var terms = data.terminals || {};
   var keys = Object.keys(terms);

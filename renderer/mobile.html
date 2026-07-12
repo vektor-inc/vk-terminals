@@ -711,11 +711,11 @@ function ensureCard(termId) {
   var orderControls = document.createElement("span"); orderControls.className = "pane-order-controls";
   var moveUpBtn = document.createElement("button");
   moveUpBtn.type = "button"; moveUpBtn.className = "pane-order-button";
-  moveUpBtn.textContent = "▲"; moveUpBtn.setAttribute("aria-label", "1つ上へ移動");
+  moveUpBtn.textContent = "↑"; moveUpBtn.setAttribute("aria-label", "1つ上へ移動");
   moveUpBtn.addEventListener("click", function() { movePane(termId, -1); });
   var moveDownBtn = document.createElement("button");
   moveDownBtn.type = "button"; moveDownBtn.className = "pane-order-button";
-  moveDownBtn.textContent = "▼"; moveDownBtn.setAttribute("aria-label", "1つ下へ移動");
+  moveDownBtn.textContent = "↓"; moveDownBtn.setAttribute("aria-label", "1つ下へ移動");
   moveDownBtn.addEventListener("click", function() { movePane(termId, 1); });
   orderControls.appendChild(moveUpBtn); orderControls.appendChild(moveDownBtn);
   var chevron = document.createElement("span"); chevron.className = "chevron";

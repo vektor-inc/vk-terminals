@@ -10,7 +10,7 @@ const path = require('path');
 //   - 格納カードのヘッダーが2段になっているか（タイトル行と操作行が別要素か）
 //   - prUrl 設定時に PR バッジが出るか
 //   - url 設定時にタイトルがリンク化されるか
-//   - 既存の操作ボタン（▲▼／xterm開閉／グリッドへ戻す／閉じる）が機能するか（デグレ確認）
+//   - 既存の操作ボタン（↑↓／xterm開閉／グリッドへ戻す／閉じる）が機能するか（デグレ確認）
 
 const repoRoot = path.resolve(__dirname, '..', '..');
 
@@ -256,7 +256,7 @@ test('格納カード: マージ済み PR バッジは格納後も紫表示と�
   }
 });
 
-test('格納カード: ▲▼で並べ替えできる（デグレ確認）', async () => {
+test('格納カード: ↑↓で並べ替えできる（デグレ確認）', async () => {
   const port = await getFreePort();
   const { app, win, tmpRoot } = await launchApp(port);
   try {

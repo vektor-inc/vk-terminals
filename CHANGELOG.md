@@ -1,5 +1,6 @@
 # Changelog
 
+- [ 仕様変更 ] モバイル版のペイン上下入れ替えアイコンを ▲▼ から ↑↓ に変更（[#148](https://github.com/vektor-inc/vk-terminals/issues/148)）
 - [ デザイン不具合修正 ] モバイル版のターミナルカード開閉インジケータが小さく気づきにくい問題を、サイズと色の調整で視認しやすく修正（[#146](https://github.com/vektor-inc/vk-terminals/issues/146)）
 
 ## 1.16.0

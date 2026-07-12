@@ -721,7 +721,7 @@ body.resizing-sidebar .sidebar {
   display: block;
 }
 
-/* 格納/復帰（←→）と並べ替え（◀▶ / ▲▼）を視覚的に分ける区切り線。 */
+/* 格納/復帰（←→）と並べ替え（◀▶ / ↑↓）を視覚的に分ける区切り線。 */
 .pane-actions-sep,
 .stash-actions-sep {
   width: 1px;

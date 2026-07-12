@@ -791,13 +791,13 @@ function renderPaneStash() {
 
 // xterm 表示トグル（― ボタン）のグリフ / ラベルを開閉状態から返す。
 // aria-expanded に加えて視覚グリフも切り替える（表示中=下向き▾ / 非表示=右向き▸）。
-// 並べ替えの ▲▼ とは向き（縦↔横起点）で区別する。
+// 並べ替えの ↑↓ とは向き（縦↔横起点）で区別する。
 function stashToggleGlyph(open) { return open ? '▾' : '▸'; }
 function stashToggleLabel(open) { return open ? 'ターミナルを隠す' : 'ターミナルを表示'; }
 
 // 格納ペイン 1 件分（コンパクトカード）を生成する。
 //   - タイトル行: タスク名 / タイトルリンク / PR リンク
-//   - 操作行: 状態バッジ + アクション（▲ ▼ 表示トグル(▸/▾) →(復帰) ✕）
+//   - 操作行: 状態バッジ + アクション（↑ ↓ 表示トグル(▸/▾) →(復帰) ✕）
 //   - cwd 行
 //   - term-container（xterm。既定は非表示、― で開閉）
 function renderStashItem(id, idx, count) {
@@ -836,8 +836,8 @@ function renderStashItem(id, idx, count) {
   head.innerHTML = `
     <span class="pane-badge pane-status" data-status="${escAttr(status)}" role="status" aria-live="polite"${statusAriaLabel ? ` aria-label="${escAttr(statusAriaLabel)}"` : ''}>${escText(statusLabel)}</span>
     <div class="stash-item-actions">
-      <button class="btn btn-stash-up" title="上へ移動" aria-label="上へ移動">▲</button>
-      <button class="btn btn-stash-down" title="下へ移動" aria-label="下へ移動">▼</button>
+      <button class="btn btn-stash-up" title="上へ移動" aria-label="上へ移動">↑</button>
+      <button class="btn btn-stash-down" title="下へ移動" aria-label="下へ移動">↓</button>
       <button class="btn btn-stash-toggle" title="${escAttr(stashToggleLabel(xtermOpen))}" aria-label="${escAttr(stashToggleLabel(xtermOpen))}" aria-expanded="${xtermOpen ? 'true' : 'false'}">${escText(stashToggleGlyph(xtermOpen))}</button>
       <span class="stash-actions-sep" aria-hidden="true"></span>
       <button class="btn btn-stash-restore" title="グリッドへ戻す" aria-label="グリッドへ戻す">→</button>

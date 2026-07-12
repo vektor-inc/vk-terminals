@@ -1,5 +1,7 @@
 # Changelog
 
+- [ デザイン不具合修正 ] モバイル版のターミナルカード開閉インジケータが小さく気づきにくい問題を、サイズと色の調整で視認しやすく修正（[#146](https://github.com/vektor-inc/vk-terminals/issues/146)）
+
 ## 1.16.0
 
 - [ 機能追加 ] モバイル版の最下部に VK Terminals のバージョンを表示（[#135](https://github.com/vektor-inc/vk-terminals/issues/135)）

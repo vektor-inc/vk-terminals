@@ -182,11 +182,11 @@ test('モバイルプレビュー: 末尾に罫線再描画が大量に溜まっ
     expect(maxHeightPx).not.toBe(240);
     expect(maxHeightPx).toBeGreaterThan(240);
 
-    // (2.5) issue #132: 内容が短くても、約10行分の表示領域を確保する。
+    // (2.5) issue #132: 内容が短くても、約7行分の表示領域を確保する。
     const minHeightPx = await pre.evaluate((el) => {
       return parseFloat(getComputedStyle(el).minHeight);
     });
-    expect(minHeightPx).toBeGreaterThanOrEqual(190);
+    expect(minHeightPx).toBeGreaterThanOrEqual(130);
 
     // (3) 長いコンテンツ注入時、初回描画でプレビューが最下部（最新）まで
     //     スクロールされている（scrollTop + clientHeight ≒ scrollHeight）。

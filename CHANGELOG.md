@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 開発環境 ] モバイルプレビュー高さ縮小（#141）に伴い更新漏れしていた e2e テストの期待値を現行仕様（min-height 140px）に合わせて修正（[#145](https://github.com/vektor-inc/vk-terminals/issues/145)）
+
 ## 1.17.0
 
 - [ 機能追加 ] UI から開く新規ペインの初期ディレクトリと Claude Code 自動起動有無を設定できる項目を追加（[#143](https://github.com/vektor-inc/vk-terminals/issues/143)）

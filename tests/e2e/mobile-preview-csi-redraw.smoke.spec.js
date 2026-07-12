@@ -161,7 +161,7 @@ test('モバイルプレビュー: CSI 位置指定再描画で直近の本文�
     const nonEmptyLineCount = text.split('\n').filter((l) => l.trim()).length;
     expect(nonEmptyLineCount).toBeGreaterThanOrEqual(5);
 
-    // (2) 最低高さ: 内容が短くてもプレビュー枠が約10行分（min-height: 140px）を確保する。
+    // (2) 最低高さ: 内容が短くてもプレビュー枠が約7行分（min-height: 140px）を確保する。
     const minHeightPx = await pre.evaluate((el) => parseFloat(getComputedStyle(el).minHeight));
     expect(minHeightPx).toBeGreaterThanOrEqual(130);
     // 実効の描画高さも約140px以上（短い内容で枠が潰れない）。

@@ -1,0 +1,70 @@
+name: Release
+
+"on":
+  push:
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Extract release notes from CHANGELOG
+        id: release_notes
+        run: |
+          tag="${GITHUB_REF_NAME}"
+
+          awk -v tag="$tag" '
+            $1 == "##" && $2 == tag && NF == 2 {
+              in_section = 1
+              next
+            }
+            in_section && /^##[[:space:]]/ {
+              exit
+            }
+            in_section {
+              lines[++n] = $0
+            }
+            END {
+              start = 1
+              while (start <= n && lines[start] ~ /^[[:space:]]*$/) {
+                start++
+              }
+              end = n
+              while (end >= start && lines[end] ~ /^[[:space:]]*$/) {
+                end--
+              }
+              for (i = start; i <= end; i++) {
+                print lines[i]
+              }
+            }
+          ' CHANGELOG.md > release-notes.md
+
+          if [ -s release-notes.md ]; then
+            echo "has_notes=true" >> "$GITHUB_OUTPUT"
+          else
+            : > release-notes.md
+            echo "has_notes=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub Release with CHANGELOG notes
+        if: steps.release_notes.outputs.has_notes == 'true'
+        # softprops/action-gh-release v2.6.1
+        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe
+        with:
+          tag_name: ${{ github.ref_name }}
+          body_path: release-notes.md
+
+      - name: Create GitHub Release with generated notes
+        if: steps.release_notes.outputs.has_notes != 'true'
+        # softprops/action-gh-release v2.6.1
+        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe
+        with:
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true

@@ -516,7 +516,7 @@ function syncCollapseUI(c, termId) {
   var isCollapsed = !!collapsed[termId];
   c.root.classList.toggle("collapsed", isCollapsed);
   c.head.setAttribute("aria-expanded", isCollapsed ? "false" : "true");
-  // chevron のグリフは ▾ 固定。向きは CSS の rotate(-90deg) で表現する。
+  c.chevron.textContent = isCollapsed ? "▲" : "▼";
 }
 
 function toggleCollapse(termId) {
@@ -564,7 +564,7 @@ function ensureCard(termId) {
   moveDownBtn.addEventListener("click", function() { movePane(termId, 1); });
   orderControls.appendChild(moveUpBtn); orderControls.appendChild(moveDownBtn);
   var chevron = document.createElement("span"); chevron.className = "chevron";
-  chevron.setAttribute("aria-hidden", "true"); chevron.textContent = "▾";
+  chevron.setAttribute("aria-hidden", "true"); chevron.textContent = "▼";
   headMain.appendChild(dot); headMain.appendChild(title);
   headMeta.appendChild(badge); headMeta.appendChild(prLink); headMeta.appendChild(orderControls); headMeta.appendChild(chevron);
   head.appendChild(headMain); head.appendChild(headMeta);

@@ -7,6 +7,8 @@ const os = require('os');
 const path = require('path');
 
 const {
+  describeSettingsValues,
+  describeTargetPaths,
   isValidSettingsDescriptor,
   resolveFieldTargetPath,
   resolveTargetPath,
@@ -29,6 +31,8 @@ function writeJson(filePath, value) {
 test('resolveTargetPath: ~ をホームディレクトリへ展開する', () => {
   assert.equal(resolveTargetPath('~'), os.homedir());
   assert.equal(resolveTargetPath('~/vk-terminals/config.json'), path.join(os.homedir(), 'vk-terminals/config.json'));
+  assert.equal(resolveTargetPath(''), null);
+  assert.equal(resolveTargetPath('   '), null);
 
   const absolutePath = path.join(os.tmpdir(), 'vk-terminals-config.json');
   assert.equal(resolveTargetPath(absolutePath), absolutePath);
@@ -74,6 +78,107 @@ test('isValidSettingsDescriptor: 全フィールドの保存先が解決でき�
       { fields: [{ key: 'b' }] },
     ],
   }), false);
+
+  assert.equal(isValidSettingsDescriptor({
+    targetPath: '   ',
+    groups: [
+      { fields: [{ key: 'a' }] },
+    ],
+  }), false);
+
+  assert.equal(isValidSettingsDescriptor({
+    targetPath: '/descriptor.json',
+    groups: [
+      { fields: [{ key: 'shared' }] },
+      { targetPath: '/group-b.json', fields: [{ key: 'shared' }] },
+    ],
+  }), false);
+});
+
+test('describeSettingsValues: 異なる保存先から値を集約し default と field override を反映する', () => {
+  const dir = makeTempDir();
+  const firstPath = path.join(dir, 'first.json');
+  const secondPath = path.join(dir, 'second.json');
+  const fieldPath = path.join(dir, 'field.json');
+  writeJson(firstPath, { name: 'vk' });
+  writeJson(secondPath, { nested: { count: 7 } });
+  writeJson(fieldPath, { override: 'field-value' });
+
+  const descriptor = {
+    targetPath: firstPath,
+    groups: [
+      {
+        fields: [
+          { key: 'name', label: '名前', type: 'text' },
+          { key: 'missing', label: '未設定', type: 'text', default: 'fallback' },
+        ],
+      },
+      {
+        targetPath: secondPath,
+        fields: [
+          { key: 'nested.count', label: '数', type: 'number', default: 1 },
+          { key: 'override', label: '上書き', type: 'text', targetPath: fieldPath },
+        ],
+      },
+    ],
+  };
+
+  assert.deepEqual(describeSettingsValues(descriptor), {
+    name: 'vk',
+    missing: 'fallback',
+    'nested.count': 7,
+    override: 'field-value',
+  });
+});
+
+test('describeTargetPaths: 単一・group 差異・field override の target 情報を返す', () => {
+  const dir = makeTempDir();
+  const firstPath = path.join(dir, 'first.json');
+  const secondPath = path.join(dir, 'second.json');
+  const fieldPath = path.join(dir, 'field.json');
+
+  assert.deepEqual(describeTargetPaths({
+    targetPath: firstPath,
+    groups: [
+      { fields: [{ key: 'a' }] },
+      { fields: [{ key: 'b' }] },
+    ],
+  }), {
+    targetPath: firstPath,
+    groupTargets: [[firstPath], [firstPath]],
+    allTargets: [firstPath],
+    hasMultipleTargets: false,
+  });
+
+  assert.deepEqual(describeTargetPaths({
+    targetPath: firstPath,
+    groups: [
+      { fields: [{ key: 'a' }] },
+      { targetPath: secondPath, fields: [{ key: 'b' }] },
+    ],
+  }), {
+    targetPath: firstPath,
+    groupTargets: [[firstPath], [secondPath]],
+    allTargets: [firstPath, secondPath],
+    hasMultipleTargets: true,
+  });
+
+  assert.deepEqual(describeTargetPaths({
+    targetPath: firstPath,
+    groups: [
+      {
+        fields: [
+          { key: 'a' },
+          { key: 'b', targetPath: fieldPath },
+        ],
+      },
+    ],
+  }), {
+    targetPath: firstPath,
+    groupTargets: [[firstPath, fieldPath]],
+    allTargets: [firstPath, fieldPath],
+    hasMultipleTargets: true,
+  });
 });
 
 test('saveSettingsToTargets: group ごとに別ファイルへ保存し未知キーを保持する', () => {
@@ -139,6 +244,48 @@ test('saveSettingsToTargets: 原子的書き込み後に一時ファイルを残
   assert.equal(readJson(targetPath).value, 'saved');
   const leftovers = fs.readdirSync(dir).filter((name) => name.endsWith('.tmp'));
   assert.deepEqual(leftovers, []);
+});
+
+test('saveSettingsToTargets: nested の中間値が配列ならオブジェクトへ置換して保存する', () => {
+  const dir = makeTempDir();
+  const targetPath = path.join(dir, 'config.json');
+  writeJson(targetPath, { nested: [] });
+  const descriptor = {
+    targetPath,
+    groups: [
+      { fields: [{ key: 'nested.count', label: '数', type: 'number' }] },
+    ],
+  };
+
+  const result = saveSettingsToTargets(descriptor, { 'nested.count': '5' });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(readJson(targetPath), { nested: { count: 5 } });
+});
+
+test('saveSettingsToTargets: 新規ファイルは 0600 で作成し既存ファイルの権限は維持する', () => {
+  const dir = makeTempDir();
+  const newPath = path.join(dir, 'new.json');
+  const existingPath = path.join(dir, 'existing.json');
+  writeJson(existingPath, { value: 'before' });
+  fs.chmodSync(existingPath, 0o640);
+
+  assert.equal(saveSettingsToTargets({
+    targetPath: newPath,
+    groups: [
+      { fields: [{ key: 'value', label: '値', type: 'text' }] },
+    ],
+  }, { value: 'new' }).ok, true);
+
+  assert.equal(saveSettingsToTargets({
+    targetPath: existingPath,
+    groups: [
+      { fields: [{ key: 'value', label: '値', type: 'text' }] },
+    ],
+  }, { value: 'after' }).ok, true);
+
+  assert.equal(fs.statSync(newPath).mode & 0o777, 0o600);
+  assert.equal(fs.statSync(existingPath).mode & 0o777, 0o640);
 });
 
 test('saveSettingsToTargets: トップレベル targetPath のみなら単一ファイルへ保存する', () => {

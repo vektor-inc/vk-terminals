@@ -161,9 +161,9 @@ test.describe.serial('設定モーダルのマルチターゲット表示（PR #
     await win.evaluate(() => window.openSettingsModal());
     await win.waitForSelector('.settings-modal', { state: 'visible' });
 
-    // ヘッダー下の案内文（単一パスではなくグループごとに異なる旨）。
+    // ヘッダー下の案内文（単一パスではなく項目またはグループごとに異なる旨）。
     const targetNotice = win.locator('.settings-target');
-    await expect(targetNotice).toHaveText('保存先: グループごとに異なります（各グループの下に表示）');
+    await expect(targetNotice).toHaveText('保存先: 項目またはグループごとに異なります（各項目・グループの下に表示）');
 
     // 各 group（fieldset）直下に保存先パス表示（.settings-group-target）が出る。
     const groupTargets = win.locator('.settings-group-target');

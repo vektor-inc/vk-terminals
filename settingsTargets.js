@@ -6,6 +6,7 @@ const path = require('path');
 
 function resolveTargetPath(rawPath) {
   if (typeof rawPath !== 'string') return null;
+  if (rawPath.trim() === '') return null;
   if (rawPath === '~') return os.homedir();
   if (rawPath.startsWith('~/')) return path.join(os.homedir(), rawPath.slice(2));
   return path.resolve(rawPath);
@@ -50,7 +51,13 @@ function isValidSettingsDescriptor(descriptor) {
   if (!descriptor || typeof descriptor !== 'object' || !Array.isArray(descriptor.groups)) {
     return false;
   }
-  return descriptorFieldTargetEntries(descriptor).every(({ targetPath }) => typeof targetPath === 'string' && targetPath !== '');
+  const seenKeys = new Set();
+  for (const { field, targetPath } of descriptorFieldTargetEntries(descriptor)) {
+    if (typeof targetPath !== 'string' || targetPath === '') return false;
+    if (seenKeys.has(field.key)) return false;
+    seenKeys.add(field.key);
+  }
+  return true;
 }
 
 function deepGet(obj, dottedKey) {
@@ -65,7 +72,7 @@ function deepSet(obj, dottedKey, value) {
   let cur = obj;
   for (let i = 0; i < keys.length - 1; i++) {
     const key = keys[i];
-    if (cur[key] == null || typeof cur[key] !== 'object') cur[key] = {};
+    if (cur[key] == null || typeof cur[key] !== 'object' || Array.isArray(cur[key])) cur[key] = {};
     cur = cur[key];
   }
   cur[keys[keys.length - 1]] = value;
@@ -169,8 +176,15 @@ function atomicWriteJsonFile(targetPath, config) {
   const base = path.basename(targetPath);
   fs.mkdirSync(dir, { recursive: true });
   const tmpPath = path.join(dir, `.${base}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`);
+  let mode = 0o600;
   try {
-    fs.writeFileSync(tmpPath, JSON.stringify(config, null, 2) + '\n');
+    mode = fs.statSync(targetPath).mode & 0o7777;
+  } catch (_error) {
+    mode = 0o600;
+  }
+  try {
+    fs.writeFileSync(tmpPath, JSON.stringify(config, null, 2) + '\n', { mode });
+    fs.chmodSync(tmpPath, mode);
     fs.renameSync(tmpPath, targetPath);
   } catch (error) {
     try {

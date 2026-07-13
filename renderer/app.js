@@ -2587,7 +2587,7 @@ async function openSettingsModal() {
     : '';
   const settingsTargetHtml = settingsAvailable
     ? (desc.hasMultipleTargets
-      ? '<p class="settings-target">保存先: グループごとに異なります（各グループの下に表示）</p>'
+      ? '<p class="settings-target">保存先: 項目またはグループごとに異なります（各項目・グループの下に表示）</p>'
       : `<p class="settings-target">保存先: <code>${escText(targetPathLabel)}</code></p>`)
     : '';
   const overlay = document.createElement('div');

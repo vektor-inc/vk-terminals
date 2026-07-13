@@ -650,6 +650,18 @@ function ensureCard(termId) {
 // 文字列は textContent で入れるので XSS 面も安全。
 var usageCard = document.getElementById("usage-card");
 var appVersionFooter = document.getElementById("app-version-footer");
+var appTitleHeading = document.querySelector("header h1");
+
+// ヘッダー／タブ／フッターに表示するアプリ名。呼び出し元が env VK_TERMINALS_APP_TITLE を
+// 渡すと main が /api/states の appTitle で伝えてくる。未指定時は既定の "VK Terminals"。
+var appTitle = "VK Terminals";
+
+function renderAppTitle(title) {
+  var t = typeof title === "string" ? title.trim() : "";
+  appTitle = t || "VK Terminals";
+  if (appTitleHeading) appTitleHeading.textContent = appTitle;
+  document.title = appTitle + " - Remote";
+}
 
 function renderAppVersion(version) {
   if (!appVersionFooter) return;
@@ -659,7 +671,7 @@ function renderAppVersion(version) {
     appVersionFooter.classList.remove("show");
     return;
   }
-  appVersionFooter.textContent = "VK Terminals v" + v;
+  appVersionFooter.textContent = appTitle + " v" + v;
   appVersionFooter.classList.add("show");
 }
 
@@ -752,6 +764,7 @@ function renderUsage(usage) {
 }
 
 function render(data) {
+  renderAppTitle(data.appTitle);
   renderAppVersion(data.version);
   renderUsage(data.usage);
   var terms = data.terminals || {};

@@ -2728,6 +2728,13 @@ async function initApp() {
     agentRoomEnabled = !!(cfg && cfg.agentroom);
     newPaneStartupDir = (cfg && typeof cfg.newPaneStartupDir === 'string') ? cfg.newPaneStartupDir : '';
     newPaneAutoLaunchClaude = !!(cfg && cfg.newPaneAutoLaunchClaude);
+    // ヘッダー／タブのアプリ名。呼び出し側（例: vk-orchestrator）が env で上書きすると
+    // main が app:get-config で伝えてくる。未指定時は index.html の既定 'VK Terminals'。
+    if (cfg && typeof cfg.appTitle === 'string' && cfg.appTitle.trim()) {
+      const titleEl = document.querySelector('.app-title');
+      if (titleEl) titleEl.textContent = cfg.appTitle.trim();
+      document.title = cfg.appTitle.trim();
+    }
   } catch (_e) { /* 取得失敗時は無効のまま */ }
 
   // Dispose any existing terminals

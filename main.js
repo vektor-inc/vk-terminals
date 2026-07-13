@@ -49,6 +49,13 @@ const API_PORT = (() => {
 const DATA_DIR = path.join(os.homedir(), '.vk-terminals');
 const STATE_FILE = path.join(DATA_DIR, 'states.json');
 const LOG_PREFIX = '[vk-terminals]';
+// ウィンドウタイトルバーおよびヘッダーに表示するアプリ名。既定は 'VK Terminals'。
+// 呼び出し側（例: vk-orchestrator）が env VK_TERMINALS_APP_TITLE を渡すと、その名称
+// （例: 'VK Orchestrator'）を表示する。renderer には app:get-config 経由で伝える。
+const APP_TITLE = (() => {
+  const t = process.env.VK_TERMINALS_APP_TITLE;
+  return typeof t === 'string' && t.trim() ? t.trim() : 'VK Terminals';
+})();
 // /api/send で「本文 + 末尾 Enter」を 1 リクエストで受け取ったとき、本文と Enter を
 // 分割して送るまでの待機時間（ms）。本文と \r を 1 回の write でまとめて流すと、
 // Claude Code の TUI がペースト（複数行入力）扱いして末尾 \r を入力欄の改行として
@@ -468,7 +475,7 @@ function createWindow() {
     titleBarStyle: 'hiddenInset',
     trafficLightPosition: { x: 16, y: 12 },
     backgroundColor: '#0d1117',
-    title: 'VK Terminals',
+    title: APP_TITLE,
   });
 
   win.webContents.on('did-finish-load', () => {
@@ -506,6 +513,7 @@ ipcMain.handle('app:get-config', () => {
   const config = loadUserConfig();
   return {
     agentroom: false,
+    appTitle: APP_TITLE,
     newPaneStartupDir: typeof config.newPaneStartupDir === 'string' ? config.newPaneStartupDir.trim() : '',
     newPaneAutoLaunchClaude: config.newPaneAutoLaunchClaude === true,
   };
@@ -556,7 +564,7 @@ function builtinSettingsDescriptor() {
         fields: [
           { key: 'apiHost',        label: 'API ホスト',            type: 'text',    help: '既定 127.0.0.1' },
           { key: 'newPaneStartupDir', label: '新規ペインを開く時の初期ディレクトリ', type: 'text', placeholder: '/path/to/project', help: '新規ペインを開く時の作業ディレクトリを絶対パスで指定します。「Claude Code を自動起動する」設定が有効な場合は Claude もこのディレクトリで起動します。未入力の場合、または存在しないパスの場合はホームディレクトリで起動します。' },
-          { key: 'newPaneAutoLaunchClaude', label: '新規ペイン（子ターミナル）を開く時に自動的に Claude Code を起動する', type: 'boolean', default: false, help: 'チェックが入っている場合、新規ペインを開いた時に自動的に Claude Code が起動します。オフの場合は素のターミナルで起動します。' },
+          { key: 'newPaneAutoLaunchClaude', label: 'Claude Code を自動的に起動する', type: 'boolean', default: false, help: 'チェックが入っている場合、新規ペインを開いた時に自動的に Claude Code が起動します。オフの場合は素のターミナルで起動します。' },
           { key: 'initialCommand', label: '初期コマンド',          type: 'text',    help: 'Claude Code で起動する設定の場合、最初のペインで Claude 起動直後に自動実行させたいコマンドがあれば記入してください。毎日最初に実行するコマンドの入力を省略するための機能です。' },
           // showUsage（issue #69）は opt-out（既定 ON）。default:true で「未設定 boolean が
           // 保存時に false になる」問題を避ける（settings:describe / settings:save が default 尊重）。
@@ -1077,6 +1085,7 @@ function startHttpApi() {
             terminals: cachedStates,
             usage,
             version: require('./package.json').version,
+            appTitle: APP_TITLE,
           }));
         });
       return;

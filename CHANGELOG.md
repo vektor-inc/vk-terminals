@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 機能追加 ] 呼び出し元が環境変数 `VK_TERMINALS_APP_TITLE` を渡すと、デスクトップとモバイル双方のヘッダー／タイトルのアプリ名を任意の名称に上書きできる機能を追加（未指定時は従来どおり `VK Terminals`）
+
 ## 1.17.1
 
 - [ 開発環境 ] モバイルプレビュー高さ縮小（#141）に伴い更新漏れしていた e2e テストの期待値を現行仕様（min-height 140px）に合わせて修正（[#145](https://github.com/vektor-inc/vk-terminals/issues/145)）

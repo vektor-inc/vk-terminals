@@ -1,5 +1,8 @@
 # Changelog
 
+- [ デザイン不具合修正 ] ペインタイトルと PR ボタンが余白なく密着してしまう表示崩れを、両者の間に 10px の余白を確保して修正（[#161](https://github.com/vektor-inc/vk-terminals/issues/161)）
+- [ 開発環境 ] ペインタイトルと PR ボタンの余白（#161）が密着に戻るのを検知する e2e 回帰テストを追加（[#161](https://github.com/vektor-inc/vk-terminals/issues/161)）
+
 ## 1.18.0
 
 - [ 機能追加 ] 呼び出し元が環境変数 `VK_TERMINALS_APP_TITLE` を渡すと、デスクトップとモバイル双方のヘッダー／タイトルのアプリ名を任意の名称に上書きできる機能を追加（未指定時は従来どおり `VK Terminals`）

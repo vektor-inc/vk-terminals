@@ -921,6 +921,11 @@ body.resizing-sidebar .sidebar {
   display: none;
 }
 
+/* PR ボタン同居時は、タイトル省略時でも右端ボタンとの最小余白を維持する。 */
+.pane-task-title.has-pr {
+  gap: 10px;
+}
+
 /* ─── Pane task title link (issue #29) ─────────────────────────────────────
  * apiTitle + apiUrl が設定されているときだけ、タイトル全体を <a> として描画する。
  * 通常時はタイトル文字色に同化（color: inherit）、hover/focus で軽く色を変えつつ下線。

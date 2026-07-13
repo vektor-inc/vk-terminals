@@ -1,0 +1,130 @@
+name: Release
+
+"on":
+  push:
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Extract release notes from CHANGELOG
+        id: release_notes
+        run: |
+          tag="${GITHUB_REF_NAME}"
+
+          awk -v tag="$tag" '
+            BEGIN {
+              rank["機能追加"] = 1
+              rank["New Feature"] = 1
+              rank["仕様変更"] = 2
+              rank["Spec Change"] = 2
+              rank["不具合修正"] = 3
+              rank["Bug Fix"] = 3
+              rank["デザイン不具合修正"] = 4
+              rank["Design Bug Fix"] = 4
+              rank["セキュリティ修正"] = 5
+              rank["Security Fix"] = 5
+              rank["開発環境"] = 6
+              rank["Dev Environment"] = 6
+              rank["その他"] = 7
+              rank["Other"] = 7
+            }
+            $1 == "##" && $2 == tag && NF == 2 {
+              in_section = 1
+              next
+            }
+            in_section && /^##[[:space:]]/ {
+              exit
+            }
+            in_section {
+              lines[++n] = $0
+            }
+            END {
+              start = 1
+              while (start <= n && lines[start] ~ /^[[:space:]]*$/) {
+                start++
+              }
+              end = n
+              while (end >= start && lines[end] ~ /^[[:space:]]*$/) {
+                end--
+              }
+              for (i = start; i <= end; i++) {
+                if (lines[i] ~ /^[[:space:]]*$/) {
+                  add_entry(entry)
+                  entry = ""
+                } else if (lines[i] ~ /^-/) {
+                  add_entry(entry)
+                  entry = lines[i]
+                } else if (entry != "") {
+                  entry = entry "\n" lines[i]
+                } else {
+                  entry = lines[i]
+                }
+              }
+              add_entry(entry)
+
+              for (i = 1; i <= 8; i++) {
+                if (bucket[i] != "") {
+                  if (printed) {
+                    printf "\n"
+                  }
+                  printf "%s", bucket[i]
+                  printed = 1
+                }
+              }
+            }
+            function add_entry(text, first_line, label, entry_rank, parts) {
+              if (text == "") {
+                return
+              }
+
+              split(text, parts, "\n")
+              first_line = parts[1]
+              entry_rank = 8
+
+              if (match(first_line, /\[[^][]*\]/)) {
+                label = substr(first_line, RSTART + 1, RLENGTH - 2)
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "", label)
+                if (label in rank) {
+                  entry_rank = rank[label]
+                }
+              }
+
+              if (bucket[entry_rank] != "") {
+                bucket[entry_rank] = bucket[entry_rank] "\n" text
+              } else {
+                bucket[entry_rank] = text
+              }
+            }
+          ' CHANGELOG.md > release-notes.md
+
+          if [ -s release-notes.md ]; then
+            echo "has_notes=true" >> "$GITHUB_OUTPUT"
+          else
+            : > release-notes.md
+            echo "has_notes=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub Release with CHANGELOG notes
+        if: steps.release_notes.outputs.has_notes == 'true'
+        # softprops/action-gh-release v2.6.1
+        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe
+        with:
+          tag_name: ${{ github.ref_name }}
+          body_path: release-notes.md
+
+      - name: Create GitHub Release with generated notes
+        if: steps.release_notes.outputs.has_notes != 'true'
+        # softprops/action-gh-release v2.6.1
+        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe
+        with:
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true

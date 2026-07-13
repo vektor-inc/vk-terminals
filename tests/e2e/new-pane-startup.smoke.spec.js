@@ -91,7 +91,7 @@ test.describe('新規ペイン起動設定（issue #143 / PR #144）', () => {
       await expect(
         win.locator('label.settings-check', { has: win.locator('#set-field-2') })
           .locator('.settings-label')
-      ).toHaveText('新規ペイン（子ターミナル）を開く時に自動的に Claude Code を起動する');
+      ).toHaveText('Claude Code を自動的に起動する');
       // 既定 false（default:false）で未チェック表示。
       await expect(claudeCheck).not.toBeChecked();
       await expect(win.locator('#set-field-2-help')).toContainText('素のターミナル');

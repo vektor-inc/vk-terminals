@@ -1047,6 +1047,21 @@ function startHttpApi() {
       return;
     }
 
+    // GET /mobile.css — mobile.html は静的ファイルサーバーではないため、
+    // CSS を外部化したファイルも明示的に配信する。
+    if (req.method === 'GET' && url.pathname === '/mobile.css') {
+      fs.readFile(path.join(__dirname, 'renderer', 'mobile.css'), (err, data) => {
+        if (err) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'mobile css not found' }));
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'text/css; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(data);
+      });
+      return;
+    }
+
     // GET /api/states
     if (req.method === 'GET' && url.pathname === '/api/states') {
       // usage（issue #69）はモバイルページの既存ポーリングに相乗りで additive に追加する。

@@ -1,6 +1,7 @@
 # Changelog
 
 - [ 開発環境 ] モバイルプレビュー高さ縮小（#141）に伴い更新漏れしていた e2e テストの期待値を現行仕様（min-height 140px）に合わせて修正（[#145](https://github.com/vektor-inc/vk-terminals/issues/145)）
+- [ その他 ] モバイル版のインライン CSS を外部ファイル（mobile.css）へ分離しメンテナンス性を向上（[#152](https://github.com/vektor-inc/vk-terminals/issues/152)）
 
 ## 1.17.0
 

@@ -2573,11 +2573,18 @@ async function openSettingsModal() {
       entries.push({ field: f, id });
       return renderSettingsField(f, desc.values[f.key], id);
     }).join('');
+    const groupTargets = Array.isArray(g.targetPaths) ? g.targetPaths : [];
+    const groupTargetHtml = desc.hasMultipleTargets && groupTargets.length
+      ? `<div class="settings-group-target">保存先: ${groupTargets.map((targetPath) => `<code>${escText(targetPath)}</code>`).join(' / ')}</div>`
+      : '';
     return `<fieldset class="settings-group">
-      <legend>${escText(g.label || '')}</legend>${rows}</fieldset>`;
+      <legend>${escText(g.label || '')}</legend>${groupTargetHtml}${rows}</fieldset>`;
   }).join('') : '';
 
   const appVersion = (desc && desc.appVersion) ? desc.appVersion : '';
+  const targetPathLabel = settingsAvailable
+    ? (desc.hasMultipleTargets ? '複数' : (desc.targetPath || (Array.isArray(desc.targetPaths) ? desc.targetPaths[0] : '') || ''))
+    : '';
   const overlay = document.createElement('div');
   overlay.className = 'settings-overlay';
   overlay.innerHTML = `
@@ -2588,7 +2595,7 @@ async function openSettingsModal() {
       </div>
       <div class="settings-view settings-view-config" role="region">
         ${settingsAvailable && desc.note ? `<p class="settings-note">${escText(desc.note)}</p>` : ''}
-        ${settingsAvailable ? `<p class="settings-target">保存先: <code>${escText(desc.targetPath || '')}</code></p>` : ''}
+        ${settingsAvailable ? `<p class="settings-target">保存先: <code>${escText(targetPathLabel)}</code></p>` : ''}
         ${settingsAvailable
           ? `<form class="settings-form" onsubmit="return false">${groupsHtml}</form>`
           : '<p class="settings-empty">この環境では編集できる設定項目がありません。</p>'}

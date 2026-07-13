@@ -1,5 +1,7 @@
 # Changelog
 
+## 1.18.0
+
 - [ 機能追加 ] 呼び出し元が環境変数 `VK_TERMINALS_APP_TITLE` を渡すと、デスクトップとモバイル双方のヘッダー／タイトルのアプリ名を任意の名称に上書きできる機能を追加（未指定時は従来どおり `VK Terminals`）
 - [ 機能追加 ] 設定パネルをセクション（group）ごとに別ファイルへ読み書きできるようマルチターゲット対応（[#158](https://github.com/vektor-inc/vk-terminals/issues/158)）
 

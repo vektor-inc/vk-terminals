@@ -275,6 +275,17 @@ html, body {
   font-size: 13px;
   font-weight: 600;
 }
+.settings-group-target {
+  margin-bottom: 8px;
+  padding-left: 6px;
+  color: #8b949e;
+  font-size: 11px;
+  line-height: 1.5;
+  word-break: break-all;
+}
+.settings-group-target code {
+  color: #8b949e;
+}
 .settings-row {
   display: flex;
   flex-direction: column;

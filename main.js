@@ -21,6 +21,12 @@ const { createOauthUsageProvider } = require('./oauthUsage');
 // 選べる（優先順位は env > config > プラットフォーム既定）。呼び出し側（VK Orchestrator
 // 等）が argv で GPU スイッチを明示している場合は介入しない。詳細は utils/gpu.js を参照。
 const { applyGpuMode } = require('./utils/gpu');
+const {
+  describeSettingsValues,
+  describeTargetPaths,
+  isValidSettingsDescriptor,
+  saveSettingsToTargets,
+} = require('./settingsTargets');
 const execFileAsync = promisify(execFile);
 
 let win;
@@ -596,10 +602,10 @@ function loadSettingsDescriptor() {
   if (p && fs.existsSync(p)) {
     try {
       const d = JSON.parse(fs.readFileSync(p, 'utf8'));
-      if (d && typeof d === 'object' && typeof d.targetPath === 'string' && Array.isArray(d.groups)) {
+      if (isValidSettingsDescriptor(d)) {
         return d;
       }
-      console.error(`${LOG_PREFIX} Invalid settings descriptor (missing targetPath/groups): ${p}`);
+      console.error(`${LOG_PREFIX} Invalid settings descriptor (unresolved targetPath/groups): ${p}`);
     } catch (e) {
       console.error(`${LOG_PREFIX} Failed to parse settings descriptor: ${p}`, e);
     }
@@ -608,149 +614,42 @@ function loadSettingsDescriptor() {
   return builtinSettingsDescriptor();
 }
 
-// ディスクリプタの全 groups からフィールド定義を平坦化して集める。
-function descriptorFields(descriptor) {
-  const fields = [];
-  for (const g of descriptor.groups) {
-    if (g && Array.isArray(g.fields)) fields.push(...g.fields);
-  }
-  return fields.filter(f => f && typeof f.key === 'string');
-}
-
-// "a.b.c" 形式のドットキーで入れ子オブジェクトから値を取り出す。
-function deepGet(obj, dottedKey) {
-  return dottedKey.split('.').reduce(
-    (acc, k) => (acc == null ? undefined : acc[k]),
-    obj,
-  );
-}
-
-// "a.b.c" 形式のドットキーで入れ子オブジェクトに値を設定する（中間は生成）。
-function deepSet(obj, dottedKey, value) {
-  const keys = dottedKey.split('.');
-  let cur = obj;
-  for (let i = 0; i < keys.length - 1; i++) {
-    const k = keys[i];
-    if (cur[k] == null || typeof cur[k] !== 'object') cur[k] = {};
-    cur = cur[k];
-  }
-  cur[keys[keys.length - 1]] = value;
-}
-
 // renderer 用: ディスクリプタと targetPath の現在値を返す。VK_TERMINALS_SETTINGS が
 // 未設定なら available:false（renderer 側は設定ボタンを表示しない）。
 ipcMain.handle('settings:describe', () => {
   const descriptor = loadSettingsDescriptor();
   if (!descriptor) return { available: false };
 
-  let current = {};
-  try {
-    if (fs.existsSync(descriptor.targetPath)) {
-      current = JSON.parse(fs.readFileSync(descriptor.targetPath, 'utf8'));
-    }
-  } catch (e) {
-    console.error(`${LOG_PREFIX} Failed to read target config: ${descriptor.targetPath}`, e);
-  }
-  if (!current || typeof current !== 'object') current = {};
-
-  const values = {};
-  for (const f of descriptorFields(descriptor)) {
-    const v = deepGet(current, f.key);
-    // 未設定（undefined）のフィールドは descriptor の default を尊重する。
-    // これがないと boolean（例: showUsage=opt-out）が GUI 上で未チェック表示になり、
-    // ユーザーが何も触らず保存しただけで false に固定されてしまう（issue #69 で同時修正）。
-    values[f.key] = v === undefined
-      ? (f.default !== undefined ? f.default : null)
-      : v;
-  }
+  const values = describeSettingsValues(descriptor, {
+    onReadError: (targetPath, e) => {
+      console.error(`${LOG_PREFIX} Failed to read target config: ${targetPath}`, e);
+    },
+  });
+  const targetInfo = describeTargetPaths(descriptor);
+  const groups = descriptor.groups.map((group, index) => ({
+    ...group,
+    targetPaths: targetInfo.groupTargets[index] || [],
+  }));
   return {
     available: true,
     title: descriptor.title || '設定',
     note: descriptor.note || '',
-    targetPath: descriptor.targetPath,
-    groups: descriptor.groups,
+    targetPath: targetInfo.targetPath,
+    groups,
     values,
     appVersion: require('./package.json').version,
+    targetPaths: targetInfo.allTargets,
+    hasMultipleTargets: targetInfo.hasMultipleTargets,
   };
 });
 
 // renderer からの保存。ディスクリプタに載っているキーだけを型変換して書き戻す
-// （未知のキーは既存 config から保持する。書き込み先は必ず descriptor.targetPath）。
+// （未知のキーは既存 config から保持する。書き込み先は field/group/descriptor の targetPath）。
 ipcMain.handle('settings:save', (event, incoming) => {
   const descriptor = loadSettingsDescriptor();
   if (!descriptor) return { ok: false, error: '設定ディスクリプタが見つかりません' };
 
-  const fields = descriptorFields(descriptor);
-  const values = incoming && typeof incoming === 'object' ? incoming : {};
-
-  // 既存 config を読み、ディスクリプタに載っていないキーは保持したまま更新する。
-  let config = {};
-  try {
-    if (fs.existsSync(descriptor.targetPath)) {
-      config = JSON.parse(fs.readFileSync(descriptor.targetPath, 'utf8'));
-    }
-  } catch (e) {
-    return { ok: false, error: `既存設定の読み込みに失敗: ${e.message}` };
-  }
-  if (!config || typeof config !== 'object') config = {};
-
-  for (const f of fields) {
-    if (!(f.key in values)) continue;
-    const raw = values[f.key];
-    const label = f.label || f.key;
-    let coerced;
-    switch (f.type) {
-      case 'number': {
-        if (raw === '' || raw === null || raw === undefined) { coerced = null; break; }
-        const n = Number(raw);
-        if (!Number.isFinite(n)) return { ok: false, error: `${label}: 数値として不正です` };
-        coerced = n;
-        break;
-      }
-      case 'boolean':
-        // 値が来ていない（null/undefined）場合は default を尊重する。
-        // checkbox は通常 true/false を送るが、未描画・欠損時に !!undefined=false へ
-        // 落として opt-out 既定を潰さないための保険（settings:describe の default 尊重と対）。
-        coerced = (raw === null || raw === undefined)
-          ? (f.default !== undefined ? !!f.default : false)
-          : !!raw;
-        break;
-      case 'json': {
-        if (raw === '' || raw === null || raw === undefined) {
-          coerced = f.emptyToNull ? null : [];
-          break;
-        }
-        try {
-          coerced = typeof raw === 'string' ? JSON.parse(raw) : raw;
-        } catch (e) {
-          return { ok: false, error: `${label}: JSON として不正です（${e.message}）` };
-        }
-        break;
-      }
-      case 'select': {
-        // 許可された値以外は保存させない（GUI の制約に加えた保険。API 直叩き対策）。
-        const allowed = (Array.isArray(f.options) ? f.options : []).map((o) => String(o.value ?? ''));
-        const s = raw == null ? '' : String(raw);
-        if (allowed.length && !allowed.includes(s)) {
-          return { ok: false, error: `${label}: 不正な値です（${allowed.join(' / ')} のいずれか）` };
-        }
-        coerced = (s === '' && f.emptyToNull) ? null : s;
-        break;
-      }
-      default: { // text / password
-        const s = raw == null ? '' : String(raw);
-        coerced = (s === '' && f.emptyToNull) ? null : s;
-      }
-    }
-    deepSet(config, f.key, coerced);
-  }
-
-  try {
-    fs.writeFileSync(descriptor.targetPath, JSON.stringify(config, null, 2) + '\n');
-  } catch (e) {
-    return { ok: false, error: `保存に失敗: ${e.message}` };
-  }
-  return { ok: true, targetPath: descriptor.targetPath };
+  return saveSettingsToTargets(descriptor, incoming);
 });
 
 ipcMain.handle('terminal:create', (event, cwd, options = {}) => {

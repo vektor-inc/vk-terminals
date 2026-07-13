@@ -2,7 +2,9 @@
 
 - [ 開発環境 ] モバイルプレビュー高さ縮小（#141）に伴い更新漏れしていた e2e テストの期待値を現行仕様（min-height 140px）に合わせて修正（[#145](https://github.com/vektor-inc/vk-terminals/issues/145)）
 - [ 開発環境 ] モバイル版の外部 CSS 化のデグレ（`/mobile.css` の 404 による無スタイル化）を検知する e2e 回帰テストを追加（[#152](https://github.com/vektor-inc/vk-terminals/issues/152)）
+- [ 開発環境 ] Prettier を導入し renderer の CSS を統一フォーマット化（`npm run format` / `format:check`）
 - [ その他 ] モバイル版のインライン CSS を外部ファイル（mobile.css）へ分離しメンテナンス性を向上（[#152](https://github.com/vektor-inc/vk-terminals/issues/152)）
+- [ その他 ] mobile.css をセクション別に整理し見出しコメントを付与してメンテナンス性を向上
 
 ## 1.17.0
 

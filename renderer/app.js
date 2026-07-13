@@ -2583,7 +2583,12 @@ async function openSettingsModal() {
 
   const appVersion = (desc && desc.appVersion) ? desc.appVersion : '';
   const targetPathLabel = settingsAvailable
-    ? (desc.hasMultipleTargets ? '複数' : (desc.targetPath || (Array.isArray(desc.targetPaths) ? desc.targetPaths[0] : '') || ''))
+    ? (desc.targetPath || (Array.isArray(desc.targetPaths) ? desc.targetPaths[0] : '') || '')
+    : '';
+  const settingsTargetHtml = settingsAvailable
+    ? (desc.hasMultipleTargets
+      ? '<p class="settings-target">保存先: グループごとに異なります（各グループの下に表示）</p>'
+      : `<p class="settings-target">保存先: <code>${escText(targetPathLabel)}</code></p>`)
     : '';
   const overlay = document.createElement('div');
   overlay.className = 'settings-overlay';
@@ -2595,7 +2600,7 @@ async function openSettingsModal() {
       </div>
       <div class="settings-view settings-view-config" role="region">
         ${settingsAvailable && desc.note ? `<p class="settings-note">${escText(desc.note)}</p>` : ''}
-        ${settingsAvailable ? `<p class="settings-target">保存先: <code>${escText(targetPathLabel)}</code></p>` : ''}
+        ${settingsTargetHtml}
         ${settingsAvailable
           ? `<form class="settings-form" onsubmit="return false">${groupsHtml}</form>`
           : '<p class="settings-empty">この環境では編集できる設定項目がありません。</p>'}

@@ -1194,6 +1194,60 @@ function startHttpApi() {
       return;
     }
 
+    // POST /api/set-lock  { termId: "1", lock: { close: false } }
+    //   — オーケストレーター等の外部権威が、そのペインの操作ロック状態を明示設定する。
+    //   lock.close === false のときだけ UI から閉じられない状態として扱う。
+    //   lock: null または { close: true } は解除相当。将来 stash/move 等を足せる拡張形にする。
+    if (req.method === 'POST' && url.pathname === '/api/set-lock') {
+      if (isForbiddenOrigin(req)) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'forbidden origin' }));
+        return;
+      }
+      if (!win || win.isDestroyed()) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'window not available' }));
+        return;
+      }
+      readJsonBody(req, res, 10 * 1024, (body) => {
+        try {
+          const parsed = JSON.parse(body);
+          const rawTermId = parsed?.termId;
+          if (!rawTermId) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'termId required' }));
+            return;
+          }
+          const termId = String(rawTermId);
+          if (!ptys.has(termId)) {
+            res.writeHead(404, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: `terminal ${termId} not found` }));
+            return;
+          }
+
+          const rawLock = parsed?.lock;
+          let lock = null;
+          if (rawLock === null) {
+            lock = null;
+          } else if (rawLock && typeof rawLock === 'object' && typeof rawLock.close === 'boolean') {
+            lock = { close: rawLock.close };
+          } else {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'lock must be null or an object with boolean close' }));
+            return;
+          }
+
+          win.webContents.send('terminal:set-lock', termId, lock);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true }));
+        } catch (e) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'invalid JSON' }));
+        }
+      });
+      return;
+    }
+
     // POST /api/agentroom  { termId: "1", agents?: {"和田":"working", ...}, agent?: "麗美", state?: "consulting" }
     //   — エージェントルーム（issue #58）の稼働状況を更新する。config.json の `agentroom: true` 時のみ表示に反映。
     //   `agents` オブジェクトを渡すとそのペインのルーム状態を丸ごと置換する（置換セマンティクス）。

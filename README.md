@@ -259,7 +259,7 @@ WSL2 上で vk-terminals を動かしている場合は、Windows との間に�
 
 ポートは通常 `13847` です。テストや並列起動では環境変数 `VK_TERMINALS_API_PORT` で上書きできますが、通常利用では変更不要です。
 
-`GET /api/health` は疎通確認用に `{ "ok": true }` を返します。起動時に環境変数 `VK_TERMINALS_INSTANCE_ID` を指定すると、レスポンスに `instanceId` も含めます（未指定または空文字の場合は従来どおり含めません）。
+`GET /api/health` は疎通確認用に `{ "ok": true }` を返します。起動時に環境変数 `VK_TERMINALS_INSTANCE_ID` を指定すると、レスポンスに `instanceId` も含めます（未指定または空文字の場合は従来どおり含めません）。`instanceId` は無認証の API ポートに到達できる利用者なら誰でも読めるため、`VK_TERMINALS_INSTANCE_ID` には認証情報などの機密値ではなく、取り違え検出用の非機密の識別子を指定してください。
 
 ### 外出先からのアクセス
 

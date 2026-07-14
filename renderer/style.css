@@ -141,6 +141,17 @@ html, body {
   padding: 14px 18px;
   border-bottom: 1px solid #21262d;
 }
+.settings-header.has-tabs {
+  align-items: stretch;
+  flex-direction: column;
+  gap: 12px;
+}
+.settings-titlebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
 .settings-header h2 {
   margin: 0;
   font-size: 15px;
@@ -165,6 +176,51 @@ html, body {
   border-radius: 5px;
 }
 .settings-close:hover { background: #21262d; color: #e6edf3; }
+
+/* 設定タブ（descriptor tabs がある場合のみ表示）
+   ========================================================================== */
+.settings-tabs {
+  display: flex;
+  gap: 14px;
+  overflow-x: auto;
+  padding-bottom: 1px;
+}
+.settings-tab {
+  position: relative;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 0 2px 6px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: #8b949e;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.settings-tab.is-active {
+  border-bottom-color: #58a6ff;
+  color: #e6edf3;
+  font-weight: 600;
+}
+.settings-tab:focus-visible {
+  outline: 2px solid #58a6ff;
+  outline-offset: 2px;
+}
+.settings-tab-dirty {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #d29922;
+  opacity: 0;
+}
+.settings-tab.is-dirty .settings-tab-dirty {
+  opacity: 1;
+}
 
 /* モーダル（flex column・max-height 制限）内でビュー単位にスクロールさせる。
  * hidden 属性で非表示切替。 */
@@ -262,6 +318,17 @@ html, body {
 .settings-form {
   padding: 12px 18px;
   overflow-y: auto;
+}
+.settings-tab-panel[hidden] {
+  display: none;
+}
+.settings-tab-target {
+  margin: 0 0 10px;
+  padding-left: 0;
+}
+.settings-tab-note {
+  margin: 0 0 12px;
+  padding: 0;
 }
 .settings-group {
   border: 1px solid #21262d;
@@ -386,10 +453,22 @@ html, body {
   padding: 12px 18px;
   border-top: 1px solid #21262d;
 }
+.settings-footer.has-tabs {
+  flex-wrap: wrap;
+}
 .settings-msg {
   flex: 1;
   font-size: 13px;
   color: #8b949e;
+}
+.settings-footer.has-tabs .settings-msg {
+  min-width: 120px;
+}
+.settings-save-hint {
+  flex: 0 1 190px;
+  color: #8b949e;
+  font-size: 12px;
+  line-height: 1.4;
 }
 .settings-msg.ok { color: #3fb950; }
 .settings-msg.err { color: #f85149; }

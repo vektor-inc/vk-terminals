@@ -1289,6 +1289,14 @@ body.resizing-sidebar .sidebar {
   color: #f85149;
   background: rgba(248, 81, 73, 0.12);
 }
+.btn-close.is-locked {
+  opacity: 0.3;
+  cursor: default;
+}
+.btn-close.is-locked:hover {
+  color: #768390;
+  background: none;
+}
 
 /* ─── Terminal viewport ────────────────────────────────────────────────────── */
 /* background は xterm.js が文字グリッドの整数倍でしか描画できないため container 下端に

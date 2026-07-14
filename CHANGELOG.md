@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.21.0
+
+- [ 機能追加 ] HTTP API から指定ペインを閉じられない状態にするペインのロック機能を追加（[#173](https://github.com/vektor-inc/vk-terminals/issues/173)）
+- [ 開発環境 ] ペインのロック機能（閉じる保護）を検証する e2e テストを追加（[#173](https://github.com/vektor-inc/vk-terminals/issues/173)）
+
 ## 1.20.0
 
 - [ 仕様変更 ] 新規起動時にサイドバー（メニュー）を開いた状態で起動するように変更（[#169](https://github.com/vektor-inc/vk-terminals/issues/169)）

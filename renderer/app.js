@@ -2574,6 +2574,7 @@ async function openSettingsModal() {
   const entries = [];
   const settingsTabs = settingsAvailable ? normalizeSettingsTabs(desc) : [];
   const useTabbedSettings = settingsTabs.length > 0;
+  const settingsSaveHintId = 'settings-save-hint';
   const renderGroupHtml = (g, options = {}) => {
     const rows = (g.fields || []).map(f => {
       const id = 'set-field-' + entries.length;
@@ -2658,9 +2659,9 @@ async function openSettingsModal() {
       </div>
       ${settingsAvailable ? `<div class="settings-footer${useTabbedSettings ? ' has-tabs' : ''}">
         <span class="settings-msg" role="status"></span>
-        ${useTabbedSettings ? '<span class="settings-save-hint">すべてのタブの変更をまとめて保存</span>' : ''}
+        ${useTabbedSettings ? `<span class="settings-save-hint" id="${settingsSaveHintId}">すべてのタブの変更をまとめて保存</span>` : ''}
         <button type="button" class="settings-cancel">キャンセル</button>
-        <button type="button" class="settings-save">保存</button>
+        <button type="button" class="settings-save"${useTabbedSettings ? ` aria-describedby="${settingsSaveHintId}"` : ''}>保存</button>
       </div>` : ''}
     </div>`;
   document.body.appendChild(overlay);
@@ -2685,6 +2686,7 @@ async function openSettingsModal() {
   modal.querySelector('.settings-cancel').addEventListener('click', close);
 
   let switchToFieldTab = () => {};
+  let clearDirtyTabs = () => {};
   if (useTabbedSettings) {
     const tablist = modal.querySelector('.settings-tabs');
     const tabButtons = Array.from(modal.querySelectorAll('.settings-tab'));
@@ -2733,11 +2735,20 @@ async function openSettingsModal() {
       if (!input) continue;
       const markDirty = () => {
         const button = tabButtons[tabIndex];
-        if (button) button.classList.add('is-dirty');
+        const tabLabel = settingsTabs[tabIndex] ? settingsTabs[tabIndex].label : '';
+        if (!button) return;
+        button.classList.add('is-dirty');
+        button.setAttribute('aria-label', `${tabLabel}（未保存の変更あり）`);
       };
       input.addEventListener('input', markDirty);
       input.addEventListener('change', markDirty);
     }
+    clearDirtyTabs = () => {
+      tabButtons.forEach((button) => {
+        button.classList.remove('is-dirty');
+        button.removeAttribute('aria-label');
+      });
+    };
     switchToFieldTab = (fieldEl) => {
       const entry = entries.find(({ id }) => fieldEl && fieldEl.id === id);
       if (!entry || !Number.isInteger(entry.tabIndex)) return;
@@ -2832,6 +2843,7 @@ async function openSettingsModal() {
     try {
       const res = await ipcRenderer.invoke('settings:save', out);
       if (res && res.ok) {
+        clearDirtyTabs();
         msg.textContent = '保存しました';
         msg.classList.add('ok');
         setTimeout(close, 800);

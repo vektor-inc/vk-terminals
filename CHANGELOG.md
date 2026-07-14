@@ -1,5 +1,7 @@
 # Changelog
 
+## 1.19.0
+
 - [ 機能追加 ] 本体 config の `port` を API サーバーの待受ポートとして利用できる設定を追加（環境変数 `VK_TERMINALS_API_PORT` 指定時は従来どおり優先）
 - [ 機能追加 ] 設定ディスクリプタの `tabs` 定義に対応し、設定パネルをタブ UI で表示できる機能を追加（[#167](https://github.com/vektor-inc/vk-terminals/issues/167)）
 

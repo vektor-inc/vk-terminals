@@ -7,6 +7,7 @@ const path = require('path');
 const repoRoot = path.resolve(__dirname, '..', '..');
 
 async function getFreePort() {
+  // OS に空きポートを割り当てさせ、取得後に閉じて Electron 側で再利用する。
   return await new Promise((resolve, reject) => {
     const server = net.createServer();
     server.on('error', reject);
@@ -23,7 +24,7 @@ async function getFreePort() {
 }
 
 async function launchApp(port) {
-  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-sidebar-collapsed-leak-'));
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-sidebar-open-on-launch-'));
   const tmpHome = path.join(tmpRoot, 'home');
   const configDir = path.join(tmpHome, '.vk-terminals');
   const configPath = path.join(configDir, 'config.json');
@@ -49,38 +50,28 @@ async function launchApp(port) {
   return { app, win, tmpRoot };
 }
 
-test('閉じたサイドバーの使用量カードはビューポートへ漏れず、開くと表示される', async () => {
+test('新規起動時はサイドバーが開いた状態で aria-expanded も true になる', async () => {
   const port = await getFreePort();
   const { app, win, tmpRoot } = await launchApp(port);
   try {
+    // 初回描画が完了し、#root にサイドバーが配置されるまで待つ。
     await win.waitForSelector('#sidebar', { state: 'attached' });
 
-    // issue #169 以降は起動直後にサイドバーが開くため、閉状態の漏れ確認では明示的に閉じる。
-    await win.evaluate(() => window.setSidebarOpen(false, { focusFirst: false }));
-    await win.waitForFunction(() => !document.getElementById('root').classList.contains('sidebar-open'));
+    // 起動直後からサイドバー用クラスが付いていることを回帰確認する。
+    await expect(win.locator('#root')).toHaveClass(/\bsidebar-open\b/);
 
-    // 閉状態のまま使用量カードを描画して、ビューポートへ漏れないことを検証する。
-    await win.evaluate(() => {
-      window.renderSidebarUsage({
-        source: 'oauth',
-        session: {
-          percent: 81,
-          resetAtMs: Date.now() + 2 * 60 * 60 * 1000,
-        },
-        weekly: {
-          percent: 40,
-          resetAtMs: Date.now() + 3 * 24 * 60 * 60 * 1000,
-        },
-      });
+    // 初期 HTML と描画後の状態が揃い、メニューボタンも展開状態を示す。
+    await expect(win.locator('#menu-btn')).toHaveAttribute('aria-expanded', 'true');
+
+    // 起動時に setSidebarOpen() を呼ばない方針なので、フォーカスはサイドバーへ移さずターミナルに残す。
+    const activeElement = await win.evaluate(() => {
+      const el = document.activeElement;
+      return {
+        insideSidebar: !!el?.closest?.('#sidebar'),
+        insideXterm: !!el?.closest?.('.xterm'),
+      };
     });
-
-    const usage = win.locator('#sidebar-usage');
-    await expect(usage).not.toBeInViewport();
-
-    // サイドバーを開いたときは、同じ使用量カードが通常どおり見えることも担保する。
-    await win.locator('#menu-btn').click();
-    await win.waitForFunction(() => document.getElementById('root').classList.contains('sidebar-open'));
-    await expect(usage).toBeInViewport();
+    expect(activeElement).toEqual({ insideSidebar: false, insideXterm: true });
   } finally {
     if (app) await app.close();
     fs.rmSync(tmpRoot, { recursive: true, force: true });

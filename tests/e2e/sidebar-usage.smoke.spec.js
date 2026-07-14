@@ -69,7 +69,8 @@ test('デスクトップの Claude 使用量はサイドバー最上部に常時
       });
     });
 
-    await win.locator('#menu-btn').click();
+    // issue #169 以降は起動直後からサイドバーが開くため、開状態のまま表示を確認する。
+    await win.waitForFunction(() => document.getElementById('root').classList.contains('sidebar-open'));
 
     const usage = win.locator('#sidebar-usage');
     await expect(usage).toBeVisible();

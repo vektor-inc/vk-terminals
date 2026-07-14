@@ -1,6 +1,6 @@
 {
   "name": "vk-terminals",
-  "version": "1.20.0",
+  "version": "1.21.0",
   "description": "複数ターミナルを並べて表示するデスクトップアプリ",
   "main": "main.js",
   "engines": {

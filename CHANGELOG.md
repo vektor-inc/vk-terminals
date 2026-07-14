@@ -1,5 +1,7 @@
 # Changelog
 
+## 1.21.0
+
 - [ 機能追加 ] HTTP API から指定ペインを閉じられないよう保護するペインのロック機能を追加（[#173](https://github.com/vektor-inc/vk-terminals/issues/173)）
 - [ 不具合修正 ] モバイル版でペインのタイトルをタップしても元のリンクに遷移せずターミナルが開閉する不具合を修正（[#174](https://github.com/vektor-inc/vk-terminals/issues/174)）
 - [ 開発環境 ] ペインのロック機能（閉じる保護）を検証する e2e テストを追加（[#173](https://github.com/vektor-inc/vk-terminals/issues/173)）

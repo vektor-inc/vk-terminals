@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 機能追加 ] 呼び出し元が環境変数 `VK_TERMINALS_INSTANCE_ID` を渡すと、`GET /api/health` のレスポンスに起動インスタンス識別子（`instanceId`）を含める機能を追加（未指定時は従来どおり `instanceId` を含めない）（[#177](https://github.com/vektor-inc/vk-terminals/issues/177)）
+
 ## 1.21.0
 
 - [ 機能追加 ] HTTP API から指定ペインを閉じられないよう保護するペインのロック機能を追加（[#173](https://github.com/vektor-inc/vk-terminals/issues/173)）

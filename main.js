@@ -21,6 +21,7 @@ const { createOauthUsageProvider } = require('./oauthUsage');
 // 選べる（優先順位は env > config > プラットフォーム既定）。呼び出し側（VK Orchestrator
 // 等）が argv で GPU スイッチを明示している場合は介入しない。詳細は utils/gpu.js を参照。
 const { applyGpuMode } = require('./utils/gpu');
+const { resolveInstanceId, buildHealthResponse } = require('./utils/instanceId');
 const {
   describeSettingsValues,
   describeTargetPaths,
@@ -57,6 +58,10 @@ const APP_TITLE = (() => {
   const t = process.env.VK_TERMINALS_APP_TITLE;
   return typeof t === 'string' && t.trim() ? t.trim() : 'VK Terminals';
 })();
+// 呼び出し側（例: vk-orchestrator）が起動時に渡した GUI インスタンス識別子。
+// /api/health で同じポート上の別インスタンスとの取り違えを検出できるようにする。
+// 未指定・空文字の場合は後方互換のため health レスポンスへ instanceId を含めない。
+const INSTANCE_ID = resolveInstanceId(process.env);
 // /api/send で「本文 + 末尾 Enter」を 1 リクエストで受け取ったとき、本文と Enter を
 // 分割して送るまでの待機時間（ms）。本文と \r を 1 回の write でまとめて流すと、
 // Claude Code の TUI がペースト（複数行入力）扱いして末尾 \r を入力欄の改行として
@@ -938,7 +943,7 @@ function startHttpApi() {
     // GET /api/health
     if (req.method === 'GET' && url.pathname === '/api/health') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true }));
+      res.end(JSON.stringify(buildHealthResponse(INSTANCE_ID)));
       return;
     }
 

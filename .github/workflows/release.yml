@@ -128,3 +128,22 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           generate_release_notes: true
+
+      # リリース後、vk-orchestrator に「新バージョンが出た」ことを通知して依存ピンの
+      # 自動追従（.github/workflows/sync-vk-terminals.yml）を即時起動する。
+      # PAT シークレット VK_ORCHESTRATOR_DISPATCH_TOKEN が未設定なら no-op（リリースは
+      # 失敗させない）。その場合でも vk-orchestrator 側の schedule が最大1日で追従する。
+      - name: Notify vk-orchestrator to sync version
+        env:
+          DISPATCH_TOKEN: ${{ secrets.VK_ORCHESTRATOR_DISPATCH_TOKEN }}
+        run: |
+          if [ -z "$DISPATCH_TOKEN" ]; then
+            echo "VK_ORCHESTRATOR_DISPATCH_TOKEN 未設定のため dispatch をスキップします（vk-orchestrator の schedule が追従します）。"
+            exit 0
+          fi
+          curl -sS -f -X POST \
+            -H "Authorization: Bearer ${DISPATCH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/repos/vektor-inc/vk-orchestrator/dispatches \
+            -d '{"event_type":"vk-terminals-released"}'

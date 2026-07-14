@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 開発環境 ] リリース（タグ push）時に vk-orchestrator へ依存追従を通知する repository_dispatch ステップを追加（PAT シークレット未設定時は no-op）
+
 ## 1.19.0
 
 - [ 機能追加 ] 本体 config の `port` を API サーバーの待受ポートとして利用できる設定を追加（環境変数 `VK_TERMINALS_API_PORT` 指定時は従来どおり優先）

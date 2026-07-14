@@ -47,11 +47,6 @@ const pendingClosePaneCallbacks = new Map();
 let nextClosePaneRequestId = 1;
 
 // ─── Terminal state & HTTP API ───────────────────────────────────────────────
-// テストや並列起動時にポートを隔離できるよう、環境変数で上書き可能にする（既定 13847）。
-const API_PORT = (() => {
-  const raw = Number(process.env.VK_TERMINALS_API_PORT);
-  return Number.isInteger(raw) && raw >= 1 && raw <= 65535 ? raw : 13847;
-})();
 const DATA_DIR = path.join(os.homedir(), '.vk-terminals');
 const STATE_FILE = path.join(DATA_DIR, 'states.json');
 const LOG_PREFIX = '[vk-terminals]';
@@ -304,6 +299,13 @@ function loadUserConfig() {
 // config.json の gpu も見るため loadUserConfig 定義後に実行する（env 未指定時に config を採用）。
 const appliedGpuMode = applyGpuMode(app, { configMode: loadUserConfig().gpu });
 if (appliedGpuMode) console.log(`${LOG_PREFIX} GPU mode: ${appliedGpuMode}`);
+
+// テストや並列起動時は環境変数で上書きし、未指定時は config.json の port を採用する。
+// loadUserConfig() は DATA_DIR を参照するため、DATA_DIR / loadUserConfig 定義後に算出する。
+const API_PORT = (() => {
+  const raw = Number(process.env.VK_TERMINALS_API_PORT ?? loadUserConfig().port);
+  return Number.isInteger(raw) && raw >= 1 && raw <= 65535 ? raw : 13847;
+})();
 
 // ─── トークン使用量（issue #69）────────────────────────────────────────────────
 // GET /api/states（モバイルページが ~2s ごとにポーリング）のホットパスで usage 判定の
@@ -634,6 +636,7 @@ ipcMain.handle('settings:describe', () => {
     available: true,
     title: descriptor.title || '設定',
     note: descriptor.note || '',
+    tabs: Array.isArray(descriptor.tabs) ? descriptor.tabs : [],
     targetPath: targetInfo.targetPath,
     groups,
     values,

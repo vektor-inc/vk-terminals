@@ -9,6 +9,11 @@ const { matchesWaiting, nextWaitingState } = require('./waitingState');
 const { deriveStatus } = require('./statusState');
 const { getPrBadgePresentation } = require('./prBadge');
 const { isPatternValid } = require('./settingsValidation');
+const {
+  deriveSettingsTargetPathsForGroups,
+  groupSettingsGroupsByTab,
+  normalizeSettingsTabs,
+} = require('./settingsTabs');
 
 // ─── xterm.css の注入 ─────────────────────────────────────────────────────────
 // xterm.css は index.html の相対パス <link> ではなく、Node のモジュール解決
@@ -2567,46 +2572,93 @@ async function openSettingsModal() {
 
   // 描画順に採番したユニーク id と field を対応付ける（保存時もこの対応で走査する）。
   const entries = [];
-  const groupsHtml = settingsAvailable ? desc.groups.map(g => {
+  const settingsTabs = settingsAvailable ? normalizeSettingsTabs(desc) : [];
+  const useTabbedSettings = settingsTabs.length > 0;
+  const renderGroupHtml = (g, options = {}) => {
     const rows = (g.fields || []).map(f => {
       const id = 'set-field-' + entries.length;
-      entries.push({ field: f, id });
+      entries.push({ field: f, id, tabIndex: options.tabIndex });
       return renderSettingsField(f, desc.values[f.key], id);
     }).join('');
     const groupTargets = Array.isArray(g.targetPaths) ? g.targetPaths : [];
-    const groupTargetHtml = desc.hasMultipleTargets && groupTargets.length
+    const groupTargetHtml = !useTabbedSettings && desc.hasMultipleTargets && groupTargets.length
       ? `<div class="settings-group-target">保存先: ${groupTargets.map((targetPath) => `<code>${escText(targetPath)}</code>`).join(' / ')}</div>`
       : '';
+    const legendHtml = options.omitLegend ? '' : `<legend>${escText(g.label || '')}</legend>`;
     return `<fieldset class="settings-group">
-      <legend>${escText(g.label || '')}</legend>${groupTargetHtml}${rows}</fieldset>`;
-  }).join('') : '';
+      ${legendHtml}${groupTargetHtml}${rows}</fieldset>`;
+  };
+
+  const groupedTabs = useTabbedSettings ? groupSettingsGroupsByTab(desc.groups, settingsTabs) : [];
+  const settingsTabsHtml = useTabbedSettings ? `<div class="settings-tabs" role="tablist" aria-label="設定カテゴリ">
+    ${settingsTabs.map((tab, index) => {
+      const tabId = `settings-tab-${index}`;
+      const panelId = `settings-panel-${index}`;
+      return `<button type="button" class="settings-tab${index === 0 ? ' is-active' : ''}" id="${escAttr(tabId)}" role="tab" aria-selected="${index === 0 ? 'true' : 'false'}" aria-controls="${escAttr(panelId)}" tabindex="${index === 0 ? '0' : '-1'}" data-tab-index="${index}">
+        <span>${escText(tab.label)}</span>
+        <span class="settings-tab-dirty" aria-hidden="true"></span>
+      </button>`;
+    }).join('')}
+  </div>` : '';
+  const groupsHtml = settingsAvailable
+    ? (useTabbedSettings
+        ? groupedTabs.map(({ groups }, tabIndex) => {
+          const tabId = `settings-tab-${tabIndex}`;
+          const panelId = `settings-panel-${tabIndex}`;
+          const targetPaths = deriveSettingsTargetPathsForGroups(groups);
+          const targetHtml = targetPaths.length
+            ? `<div class="settings-group-target settings-tab-target">保存先: ${targetPaths.map((targetPath) => `<code>${escText(targetPath)}</code>`).join(' / ')}</div>`
+            : '';
+          const noteHtml = desc.note ? `<p class="settings-note settings-tab-note">${escText(desc.note)}</p>` : '';
+          const tabGroupsHtml = groups.map((group) => renderGroupHtml(group, {
+            tabIndex,
+            omitLegend: groups.length === 1,
+          })).join('');
+          return `<section class="settings-tab-panel" id="${escAttr(panelId)}" role="tabpanel" aria-labelledby="${escAttr(tabId)}"${tabIndex === 0 ? '' : ' hidden'}>
+            ${targetHtml}${noteHtml}${tabGroupsHtml}
+          </section>`;
+        }).join('')
+        : desc.groups.map(g => renderGroupHtml(g)).join(''))
+    : '';
 
   const appVersion = (desc && desc.appVersion) ? desc.appVersion : '';
   const targetPathLabel = settingsAvailable
     ? (desc.targetPath || (Array.isArray(desc.targetPaths) ? desc.targetPaths[0] : '') || '')
     : '';
   const settingsTargetHtml = settingsAvailable
-    ? (desc.hasMultipleTargets
+    ? (useTabbedSettings
+      ? ''
+      : desc.hasMultipleTargets
       ? '<p class="settings-target">保存先: 項目またはグループごとに異なります（各項目・グループの下に表示）</p>'
       : `<p class="settings-target">保存先: <code>${escText(targetPathLabel)}</code></p>`)
     : '';
+  const settingsHeaderHtml = useTabbedSettings
+    ? `<div class="settings-header has-tabs">
+        <div class="settings-titlebar">
+          <h2>${escText((settingsAvailable && desc.title) || 'VK Terminals')}${appVersion ? `<span class="settings-version">VK Terminals v${escText(appVersion)}</span>` : ''}</h2>
+          <button class="settings-close" title="閉じる">✕</button>
+        </div>
+        ${settingsTabsHtml}
+      </div>`
+    : `<div class="settings-header">
+        <h2>${escText((settingsAvailable && desc.title) || 'VK Terminals')}${appVersion ? `<span class="settings-version">VK Terminals v${escText(appVersion)}</span>` : ''}</h2>
+        <button class="settings-close" title="閉じる">✕</button>
+      </div>`;
   const overlay = document.createElement('div');
   overlay.className = 'settings-overlay';
   overlay.innerHTML = `
     <div class="settings-modal" role="dialog" aria-modal="true">
-      <div class="settings-header">
-        <h2>${escText((settingsAvailable && desc.title) || 'VK Terminals')}${appVersion ? `<span class="settings-version">VK Terminals v${escText(appVersion)}</span>` : ''}</h2>
-        <button class="settings-close" title="閉じる">✕</button>
-      </div>
+      ${settingsHeaderHtml}
       <div class="settings-view settings-view-config" role="region">
-        ${settingsAvailable && desc.note ? `<p class="settings-note">${escText(desc.note)}</p>` : ''}
+        ${settingsAvailable && desc.note && !useTabbedSettings ? `<p class="settings-note">${escText(desc.note)}</p>` : ''}
         ${settingsTargetHtml}
         ${settingsAvailable
           ? `<form class="settings-form" onsubmit="return false">${groupsHtml}</form>`
           : '<p class="settings-empty">この環境では編集できる設定項目がありません。</p>'}
       </div>
-      ${settingsAvailable ? `<div class="settings-footer">
+      ${settingsAvailable ? `<div class="settings-footer${useTabbedSettings ? ' has-tabs' : ''}">
         <span class="settings-msg" role="status"></span>
+        ${useTabbedSettings ? '<span class="settings-save-hint">すべてのタブの変更をまとめて保存</span>' : ''}
         <button type="button" class="settings-cancel">キャンセル</button>
         <button type="button" class="settings-save">保存</button>
       </div>` : ''}
@@ -2631,6 +2683,67 @@ async function openSettingsModal() {
 
   const msg = modal.querySelector('.settings-msg');
   modal.querySelector('.settings-cancel').addEventListener('click', close);
+
+  let switchToFieldTab = () => {};
+  if (useTabbedSettings) {
+    const tablist = modal.querySelector('.settings-tabs');
+    const tabButtons = Array.from(modal.querySelectorAll('.settings-tab'));
+    const tabPanels = Array.from(modal.querySelectorAll('.settings-tab-panel'));
+    const activateTab = (nextIndex, options = {}) => {
+      if (nextIndex < 0 || nextIndex >= tabButtons.length) return;
+      tabButtons.forEach((button, index) => {
+        const active = index === nextIndex;
+        button.classList.toggle('is-active', active);
+        button.setAttribute('aria-selected', active ? 'true' : 'false');
+        button.setAttribute('tabindex', active ? '0' : '-1');
+      });
+      tabPanels.forEach((panel, index) => {
+        panel.hidden = index !== nextIndex;
+      });
+      if (options.focus) tabButtons[nextIndex].focus();
+    };
+    const moveTabFocus = (delta) => {
+      const currentIndex = tabButtons.findIndex((button) => button.getAttribute('aria-selected') === 'true');
+      const baseIndex = currentIndex >= 0 ? currentIndex : 0;
+      activateTab((baseIndex + delta + tabButtons.length) % tabButtons.length, { focus: true });
+    };
+    tablist.addEventListener('click', (e) => {
+      const button = e.target.closest('.settings-tab');
+      if (!button || !tablist.contains(button)) return;
+      activateTab(Number(button.dataset.tabIndex));
+    });
+    tablist.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        moveTabFocus(-1);
+      } else if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        moveTabFocus(1);
+      } else if (e.key === 'Home') {
+        e.preventDefault();
+        activateTab(0, { focus: true });
+      } else if (e.key === 'End') {
+        e.preventDefault();
+        activateTab(tabButtons.length - 1, { focus: true });
+      }
+    });
+    for (const { id, tabIndex } of entries) {
+      if (!Number.isInteger(tabIndex)) continue;
+      const input = modal.querySelector('#' + id);
+      if (!input) continue;
+      const markDirty = () => {
+        const button = tabButtons[tabIndex];
+        if (button) button.classList.add('is-dirty');
+      };
+      input.addEventListener('input', markDirty);
+      input.addEventListener('change', markDirty);
+    }
+    switchToFieldTab = (fieldEl) => {
+      const entry = entries.find(({ id }) => fieldEl && fieldEl.id === id);
+      if (!entry || !Number.isInteger(entry.tabIndex)) return;
+      activateTab(entry.tabIndex);
+    };
+  }
 
   // password の表示/非表示トグル
   modal.querySelectorAll('.settings-reveal').forEach(rev => {
@@ -2700,6 +2813,7 @@ async function openSettingsModal() {
     if (firstInvalid) {
       msg.textContent = '入力内容に問題があります';
       msg.className = 'settings-msg err';
+      switchToFieldTab(firstInvalid);
       firstInvalid.focus();
       if (typeof firstInvalid.scrollIntoView === 'function') {
         firstInvalid.scrollIntoView({ block: 'nearest' });

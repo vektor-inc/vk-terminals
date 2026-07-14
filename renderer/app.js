@@ -335,6 +335,7 @@ async function createTerminal(paneId, cwd, options = {}) {
     agentRoom: null,
     agentRoomUpdatedAt: 0,
     agentRoomOpen: false,
+    lock: null,
   };
 
   return paneId;
@@ -416,7 +417,7 @@ ipcRenderer.on('terminal:data', (event, id, data) => {
 
 ipcRenderer.on('terminal:exit', (event, id) => {
   const paneId = Object.keys(terminals).find(k => terminals[k]?.termId === id);
-  if (paneId) closePane(paneId);
+  if (paneId) closePane(paneId, { force: true });
 });
 
 // ─── DOM updates (without full re-render) ────────────────────────────────────
@@ -800,6 +801,27 @@ function renderPaneStash() {
 // 並べ替えの ↑↓ とは向き（縦↔横起点）で区別する。
 function stashToggleGlyph(open) { return open ? '▾' : '▸'; }
 function stashToggleLabel(open) { return open ? 'ターミナルを隠す' : 'ターミナルを表示'; }
+function isCloseLocked(t) { return t?.lock?.close === false; }
+function closeButtonLabel(locked) { return locked ? 'このペインは保護されています（閉じられません）' : '閉じる'; }
+
+function applyCloseButtonLock(button, locked) {
+  if (!button) return;
+  const label = closeButtonLabel(locked);
+  button.classList.toggle('is-locked', locked);
+  button.setAttribute('title', label);
+  button.setAttribute('aria-label', label);
+  if (locked) {
+    button.setAttribute('aria-disabled', 'true');
+  } else {
+    button.removeAttribute('aria-disabled');
+  }
+}
+
+function updatePaneCloseLock(paneId) {
+  const locked = isCloseLocked(terminals[paneId]);
+  applyCloseButtonLock(document.querySelector(`.pane[data-id="${paneId}"] .btn-close`), locked);
+  applyCloseButtonLock(document.querySelector(`.stash-item[data-id="${paneId}"] .btn-close`), locked);
+}
 
 // 格納ペイン 1 件分（コンパクトカード）を生成する。
 //   - タイトル行: タスク名 / タイトルリンク / PR リンク
@@ -823,6 +845,8 @@ function renderStashItem(id, idx, count) {
   const taskUrl = getDisplayUrl(t);
   const taskPrUrl = isSafeExternalUrl(t?.apiPrUrl) ? t.apiPrUrl : '';
   const cwd = t?.cwd || '~';
+  const closeLocked = isCloseLocked(t);
+  const closeLabel = closeButtonLabel(closeLocked);
 
   const titleEl = document.createElement('div');
   titleEl.className = 'pane-task-title stash-item-title-row'
@@ -847,7 +871,7 @@ function renderStashItem(id, idx, count) {
       <button class="btn btn-stash-toggle" title="${escAttr(stashToggleLabel(xtermOpen))}" aria-label="${escAttr(stashToggleLabel(xtermOpen))}" aria-expanded="${xtermOpen ? 'true' : 'false'}">${escText(stashToggleGlyph(xtermOpen))}</button>
       <span class="stash-actions-sep" aria-hidden="true"></span>
       <button class="btn btn-stash-restore" title="グリッドへ戻す" aria-label="グリッドへ戻す">→</button>
-      <button class="btn btn-close" title="閉じる" aria-label="閉じる">✕</button>
+      <button class="btn btn-close${closeLocked ? ' is-locked' : ''}" title="${escAttr(closeLabel)}" aria-label="${escAttr(closeLabel)}"${closeLocked ? ' aria-disabled="true"' : ''}>✕</button>
     </div>
   `;
 
@@ -872,7 +896,11 @@ function renderStashItem(id, idx, count) {
   downBtn.addEventListener('click', e => { e.stopPropagation(); moveStashPane(id, 'down'); });
   head.querySelector('.btn-stash-toggle').addEventListener('click', e => { e.stopPropagation(); toggleStashXterm(id); });
   head.querySelector('.btn-stash-restore').addEventListener('click', e => { e.stopPropagation(); unstashPane(id); });
-  head.querySelector('.btn-close').addEventListener('click', e => { e.stopPropagation(); closePane(id); });
+  head.querySelector('.btn-close').addEventListener('click', e => {
+    e.stopPropagation();
+    if (terminals[id]?.lock?.close === false) return;
+    closePane(id);
+  });
   li.addEventListener('mousedown', () => focusPane(id));
 
   return li;
@@ -910,6 +938,7 @@ function updateStashItem(paneId) {
     titleEl.classList.toggle('has-link', !!url);
     titleEl.classList.toggle('has-pr', !!prUrl);
   }
+  updatePaneCloseLock(paneId);
 }
 
 function focusFirstSidebarItem() {
@@ -1262,8 +1291,10 @@ async function splitPane(paneId, direction, overrideCwd, options = {}) {
   return addPane(overrideCwd, options);
 }
 
-function closePane(paneId) {
+function closePane(paneId, { force = false } = {}) {
   if (!paneExists(paneId)) return;
+  const _t = terminals[paneId];
+  if (!force && _t?.lock?.close === false) return;
 
   const t = terminals[paneId];
   if (t) {
@@ -1790,6 +1821,8 @@ function renderLeaf(node) {
   // PR ボタン用 URL（issue #44）。renderer 側でも http(s) 二段チェックを通す。
   const taskPrUrl = isSafeExternalUrl(t?.apiPrUrl) ? t.apiPrUrl : '';
   const taskPrMerged = !!t?.apiPrMerged;
+  const closeLocked = isCloseLocked(t);
+  const closeLabel = closeButtonLabel(closeLocked);
 
   const el = document.createElement('div');
   el.className = 'pane'
@@ -1855,7 +1888,7 @@ function renderLeaf(node) {
       <button class="btn btn-move btn-move-left" title="左へ移動" aria-label="左へ移動">◀</button>
       <button class="btn btn-move btn-move-right" title="右へ移動" aria-label="右へ移動">▶</button>
       <button class="btn btn-split" title="ペインを追加" aria-label="ペインを追加">＋</button>
-      <button class="btn btn-close" title="閉じる" aria-label="閉じる">✕</button>
+      <button class="btn btn-close${closeLocked ? ' is-locked' : ''}" title="${escAttr(closeLabel)}" aria-label="${escAttr(closeLabel)}"${closeLocked ? ' aria-disabled="true"' : ''}>✕</button>
     </div>
   `;
   // ドラッグ中に複数ファイルのヒントを表示
@@ -1913,6 +1946,7 @@ function renderLeaf(node) {
   });
   header.querySelector('.btn-close').addEventListener('click', e => {
     e.stopPropagation();
+    if (terminals[node.id]?.lock?.close === false) return;
     closePane(node.id);
   });
   el.addEventListener('mousedown', () => focusPane(node.id));
@@ -2948,6 +2982,8 @@ setInterval(() => {
       collapsed: false,
       // stashed: サイドバーへ格納中かどうか（issue #89）。外部監視ツール向けの新規フィールド。
       stashed: !!(tree && Array.isArray(tree.stashOrder) && tree.stashOrder.includes(paneId)),
+      // lock: HTTP API POST /api/set-lock 由来の操作ロック状態。未設定は null（全許可）。
+      lock: (t.lock && typeof t.lock.close === 'boolean') ? { close: t.lock.close } : null,
       // agentRoom（issue #58）: 解決済みのルーム状態 { name: state }。
       // agentroom 有効時のみ出力（モバイルページ等の将来連携用）。
       ...(agentRoomEnabled ? { agentRoom: resolveRoomAgents(t) } : {}),
@@ -3012,7 +3048,7 @@ ipcRenderer.on('terminal:request-close-pane', (event, payload = {}) => {
     return;
   }
   try {
-    closePane(paneId);
+    closePane(paneId, { force: true });
     reply({ ok: true, termId: termId });
   } catch (e) {
     reply({ error: e?.message || 'failed to close pane' });
@@ -3061,6 +3097,17 @@ ipcRenderer.on('terminal:set-status', (event, termId, waiting) => {
   if (!t) return;
   t.externalWaiting = !!waiting;
   recomputeStatus(paneId);
+});
+
+// ─── Lock update from main (HTTP API POST /api/set-lock) ────────────────────
+// lock.close === false のときだけ閉じる操作を保護する。未設定/null は全許可。
+ipcRenderer.on('terminal:set-lock', (event, termId, lock) => {
+  const paneId = Object.keys(terminals).find(k => String(terminals[k]?.termId) === String(termId));
+  if (!paneId) return;
+  const t = terminals[paneId];
+  if (!t) return;
+  t.lock = (lock && typeof lock.close === 'boolean') ? { close: lock.close } : null;
+  updatePaneCloseLock(paneId);
 });
 
 // ─── Auto-input notification from main (HTTP API経由の入力時) ─────────────────

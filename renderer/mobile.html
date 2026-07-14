@@ -410,6 +410,10 @@ function getTermId(paneId, terminal) {
   return String(terminal && terminal.termId != null ? terminal.termId : paneId);
 }
 
+function isCloseLocked(terminal) {
+  return !!(terminal && terminal.lock && terminal.lock.close === false);
+}
+
 function sortTerminalKeysByStatus(keys, terms) {
   // 新規端末を初めて末尾に足すときだけ、従来のステータス順で安定化する。
   var rank = { waiting: 0, running: 1, idle: 2 };
@@ -626,7 +630,10 @@ function ensureCard(termId) {
   var killRow = document.createElement("div"); killRow.className = "row danger-row";
   var killBtn = document.createElement("button");
   killBtn.className = "k kill"; killBtn.textContent = "✕ ターミナルを終了";
-  killBtn.addEventListener("click", function() { closeTerm(termId, name.textContent); });
+  killBtn.addEventListener("click", function() {
+    if (cards[termId] && cards[termId].closeLocked) return;
+    closeTerm(termId, name.textContent);
+  });
   killRow.appendChild(killBtn);
   actions.appendChild(killRow);
 
@@ -790,7 +797,19 @@ function render(data) {
     // フォールバックしていた不具合を修正（issue: モバイル側でタスク名が出ない）。
     var title = t.displayTitle || t.apiTitle || t.taskTitle || "";
     c.name.textContent = title.trim() ? title : ("Terminal " + termId);
-    c.killBtn.setAttribute("aria-label", (c.name.textContent || ("Terminal " + termId)) + " を終了する（実行中プロセスを停止）");
+    c.closeLocked = isCloseLocked(t);
+    c.killBtn.classList.toggle("is-locked", c.closeLocked);
+    if (c.closeLocked) {
+      c.killBtn.textContent = "🔒 保護中（閉じられません）";
+      c.killBtn.setAttribute("aria-disabled", "true");
+      c.killBtn.setAttribute("aria-label", "このペインは保護されています（閉じられません）");
+      c.killBtn.setAttribute("title", "このペインは保護されています（閉じられません）");
+    } else {
+      c.killBtn.textContent = "✕ ターミナルを終了";
+      c.killBtn.removeAttribute("aria-disabled");
+      c.killBtn.setAttribute("aria-label", (c.name.textContent || ("Terminal " + termId)) + " を終了する（実行中プロセスを停止）");
+      c.killBtn.removeAttribute("title");
+    }
     c.cwd.textContent = t.cwdShort || t.cwd || "";
     // PR リンク（issue #53）。安全な http(s) URL のときだけ href にセットして表示、
     // そうでなければ href を空にして非表示にする。

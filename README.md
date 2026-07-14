@@ -259,6 +259,8 @@ WSL2 上で vk-terminals を動かしている場合は、Windows との間に�
 
 ポートは通常 `13847` です。テストや並列起動では環境変数 `VK_TERMINALS_API_PORT` で上書きできますが、通常利用では変更不要です。
 
+`GET /api/health` は疎通確認用に `{ "ok": true }` を返します。起動時に環境変数 `VK_TERMINALS_INSTANCE_ID` を指定すると、レスポンスに `instanceId` も含めます（未指定または空文字の場合は従来どおり含めません）。
+
 ### 外出先からのアクセス
 
 外出先から使う場合は、Tailscale などの信頼できるプライベートネットワーク経由で公開してください。実装上は、`tailscale serve` などで vk-terminals を動かしているマシンの `127.0.0.1:13847` を tailnet に公開して使う想定です。

@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 仕様変更 ] 新規起動時にサイドバー（メニュー）を開いた状態で起動するように変更（[#169](https://github.com/vektor-inc/vk-terminals/issues/169)）
+- [ 開発環境 ] サイドバーの起動時表示状態と閉状態の漏れ防止を検証する e2e テストを追加・更新（[#169](https://github.com/vektor-inc/vk-terminals/issues/169)）
 - [ 開発環境 ] リリース（タグ push）時に vk-orchestrator へ依存追従を通知する repository_dispatch ステップを追加（PAT シークレット未設定時は no-op）
 
 ## 1.19.0

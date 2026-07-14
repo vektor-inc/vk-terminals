@@ -482,7 +482,8 @@ function openExternalUrlSafe(url) {
 
 // ─── Sidebar menu ────────────────────────────────────────────────────────────
 let sidebarMenuSections = [];
-let sidebarOpen = false;
+// 新規起動時はサイドバーを開いた状態にする（issue #169）。
+let sidebarOpen = true;
 let sidebarTransitionCleanup = null;
 // サイドバー幅リサイズ（issue #89）。ドラッグ中の一時状態。
 let sidebarResizeState = null;

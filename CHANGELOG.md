@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 不具合修正 ] モバイル版でペインのタイトルをタップしても元のリンクに遷移せずターミナルが開閉する不具合を修正（[#174](https://github.com/vektor-inc/vk-terminals/issues/174)）
+
 ## 1.20.0
 
 - [ 仕様変更 ] 新規起動時にサイドバー（メニュー）を開いた状態で起動するように変更（[#169](https://github.com/vektor-inc/vk-terminals/issues/169)）

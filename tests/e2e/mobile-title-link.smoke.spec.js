@@ -5,12 +5,13 @@ const os = require('os');
 const path = require('path');
 
 // issue #103 / PR #108: モバイル版でペインのタイトル（.card-title）を、
-// 状態 apiPrUrl が安全な http(s) URL のときだけ
+// 状態 apiUrl が安全な http(s) URL のときだけ
 // <a target="_blank" rel="noopener noreferrer"> にしてリンク化する変更の end-to-end 確認。
-//   A: 安全な https(http) URL があるとタイトルが href 付きリンク（.is-link）になり、
+//   A: 安全な https(http) URL があるとタイトルが url へ href 付きリンク（.is-link）になり、
+//      独立 PR ボタンは prUrl へリンクする。
 //      タイトルタップでは折りたたみがトグルせず新規タブ（popup）が開く。
 //   B: URL が無いとタイトルは href を持たず、タイトルタップで従来どおり折りたたみがトグルする。
-//   C: apiPrUrl が javascript: の場合はリンク化されない（renderer 側 isSafeHttpUrl のガード）。
+//   C: apiUrl が javascript: の場合はリンク化されない（renderer 側 isSafeHttpUrl のガード）。
 //      ※ API 側 /api/set-title は javascript: を 400 で弾くため、C は /api/states を
 //        差し替えて renderer のガード単体を検証する。
 
@@ -108,29 +109,36 @@ async function launchApp(port) {
   return { app, tmpRoot };
 }
 
-// ─── A: 安全な URL でタイトルがリンク化され、タップで折りたたみをトグルしない ───
-test('モバイル: apiPrUrl が安全な URL のときタイトルがリンク化され、タップで新規タブが開き折りたたみしない', async () => {
+// ─── A: 安全な URL でタイトルが apiUrl へリンク化され、タップで折りたたみをトグルしない ───
+test('モバイル: apiUrl が安全な URL のときタイトルがリンク化され、PR ボタンは apiPrUrl にリンクする', async () => {
   const port = await getFreePort();
   const { app, tmpRoot } = await launchApp(port);
   const browser = await chromium.launch();
   try {
     await waitForTermId(port, '1');
 
-    // PR URL を自前サーバー（同一オリジン）に向けておく。
+    // issue URL / PR URL を自前サーバー（同一オリジン）に向けておく。
     //   - isSafeHttpUrl / API バリデーションを通る http(s) URL であること
     //   - 外部ネットワークに出ず popup が即座に読み込めること
     // を両立させるため、mobile.html を配信する自サーバーの URL を使う。
+    const issueUrl = `http://127.0.0.1:${port}/?issue=103`;
     const prUrl = `http://127.0.0.1:${port}/?pr=103`;
     const setTitle = await postJson(port, '/api/set-title', {
       termId: '1',
       title: 'PR #103 タイトルリンク',
+      url: issueUrl,
       prUrl,
     });
     expect(setTitle.status).toBe(200);
+    expect(setTitle.body && setTitle.body.url).toBe(issueUrl);
     expect(setTitle.body && setTitle.body.prUrl).toBe(prUrl);
 
-    // モバイル Web UI を実ブラウザで開く。popup（新規タブ）検知のため context を明示する。
-    const context = await browser.newContext();
+    // モバイル Web UI を実ブラウザで開く。タッチ操作と popup 検知のため context を明示する。
+    const context = await browser.newContext({
+      hasTouch: true,
+      isMobile: true,
+      viewport: { width: 390, height: 844 },
+    });
     const page = await context.newPage();
     await page.goto(`http://127.0.0.1:${port}/`);
 
@@ -141,21 +149,28 @@ test('モバイル: apiPrUrl が安全な URL のときタイトルがリンク�
 
     // タイトルがリンク化されている（.is-link ＋ 属性一式）ことを確認する。
     await expect(title).toHaveClass(/\bis-link\b/, { timeout: 15_000 });
-    await expect(title).toHaveAttribute('href', prUrl);
+    await expect(title).toHaveAttribute('href', issueUrl);
     await expect(title).toHaveAttribute('target', '_blank');
     await expect(title).toHaveAttribute('rel', 'noopener noreferrer');
+
+    // 独立 PR ボタンは従来どおり prUrl にリンクする。
+    const prLink = card.locator('a.pr-link');
+    await expect(prLink).toBeVisible();
+    await expect(prLink).toHaveAttribute('href', prUrl);
+    await expect(prLink).toHaveAttribute('target', '_blank');
+    await expect(prLink).toHaveAttribute('rel', 'noopener noreferrer');
 
     // クリック前は折りたたまれていないこと（既定状態）。
     await expect(card).not.toHaveClass(/\bcollapsed\b/);
 
-    // タイトルをクリック → 新規タブ（popup）が開き、かつ折りたたみはトグルしない。
+    // タイトルを tap → issue URL の新規タブ（popup）が開き、かつ折りたたみはトグルしない。
     const [popup] = await Promise.all([
       context.waitForEvent('page'),
-      title.click(),
+      title.tap(),
     ]);
     // popup が対象 URL を開いていること（別タブ遷移が起きている）。
     await popup.waitForLoadState('domcontentloaded');
-    expect(popup.url()).toContain('pr=103');
+    expect(popup.url()).toContain('issue=103');
     await popup.close();
 
     // 元のカードは折りたたまれていない（リンククリックでトグルしないのが本変更の肝）。
@@ -167,22 +182,81 @@ test('モバイル: apiPrUrl が安全な URL のときタイトルがリンク�
   }
 });
 
-// ─── B: URL 無しではリンク化されず、タイトルタップで折りたたみがトグルする（従来挙動）───
-test('モバイル: apiPrUrl 無しではタイトルは href を持たず、タップで折りたたみがトグルする', async () => {
+// ─── #174: issue URL（apiUrl）だけでもタイトルがリンク化される ───
+test('モバイル: apiUrl のみでもタイトルがリンク化され、タップで新規タブが開き折りたたみしない', async () => {
   const port = await getFreePort();
   const { app, tmpRoot } = await launchApp(port);
   const browser = await chromium.launch();
   try {
     await waitForTermId(port, '1');
 
-    // URL は付けずにタイトルだけ設定する（prUrl を送らない = URL なし扱い）。
+    // issue URL 相当の url だけを設定する。prUrl は渡さない。
+    // 自サーバー URL を使い、外部ネットワークに出ず http(s) の安全 URL 条件だけを満たす。
+    const issueUrl = `http://127.0.0.1:${port}/?issue=174`;
+    const setTitle = await postJson(port, '/api/set-title', {
+      termId: '1',
+      title: 'Issue #174 タイトルリンク',
+      url: issueUrl,
+    });
+    expect(setTitle.status).toBe(200);
+    expect(setTitle.body && setTitle.body.url).toBe(issueUrl);
+
+    // タッチ操作で再現するため、モバイル相当 viewport + hasTouch の context を使う。
+    const context = await browser.newContext({
+      hasTouch: true,
+      isMobile: true,
+      viewport: { width: 390, height: 844 },
+    });
+    const page = await context.newPage();
+    await page.goto(`http://127.0.0.1:${port}/`);
+
+    const card = page.locator('.card', { hasText: 'Issue #174 タイトルリンク' });
+    const title = card.locator('.card-title');
+    await expect(title).toBeVisible({ timeout: 15_000 });
+
+    // url があれば prUrl が無くてもタイトルは issue URL へリンク化される。
+    await expect(title).toHaveClass(/\bis-link\b/);
+    await expect(title).toHaveAttribute('href', issueUrl);
+    await expect(title).toHaveAttribute('target', '_blank');
+    await expect(title).toHaveAttribute('rel', 'noopener noreferrer');
+
+    // onHeadToggle の a[href] ガードに入り、tap でも折りたたみはトグルしない。
+    await expect(card).not.toHaveClass(/\bcollapsed\b/);
+    const [popup] = await Promise.all([
+      context.waitForEvent('page'),
+      title.tap(),
+    ]);
+    await popup.waitForLoadState('domcontentloaded');
+    expect(popup.url()).toContain('issue=174');
+    await popup.close();
+    await expect(card).not.toHaveClass(/\bcollapsed\b/);
+  } finally {
+    await browser.close();
+    if (app) await app.close();
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+// ─── B: URL 無しではリンク化されず、タイトルタップで折りたたみがトグルする（従来挙動）───
+test('モバイル: apiUrl 無しではタイトルは href を持たず、タップで折りたたみがトグルする', async () => {
+  const port = await getFreePort();
+  const { app, tmpRoot } = await launchApp(port);
+  const browser = await chromium.launch();
+  try {
+    await waitForTermId(port, '1');
+
+    // URL は付けずにタイトルだけ設定する（url を送らない = タイトルリンクなし扱い）。
     const setTitle = await postJson(port, '/api/set-title', {
       termId: '1',
       title: 'リンク無しタイトル',
     });
     expect(setTitle.status).toBe(200);
 
-    const context = await browser.newContext();
+    const context = await browser.newContext({
+      hasTouch: true,
+      isMobile: true,
+      viewport: { width: 390, height: 844 },
+    });
     const page = await context.newPage();
     await page.goto(`http://127.0.0.1:${port}/`);
 
@@ -198,11 +272,11 @@ test('モバイル: apiPrUrl 無しではタイトルは href を持たず、タ
     await expect(card).not.toHaveClass(/\bcollapsed\b/);
 
     // タイトルタップ 1 回目 → 折りたたまれる（従来挙動＝デグレ無し）。
-    await title.click();
+    await title.tap();
     await expect(card).toHaveClass(/\bcollapsed\b/);
 
     // タイトルタップ 2 回目 → 展開に戻る（トグル動作）。
-    await title.click();
+    await title.tap();
     await expect(card).not.toHaveClass(/\bcollapsed\b/);
   } finally {
     await browser.close();
@@ -212,7 +286,7 @@ test('モバイル: apiPrUrl 無しではタイトルは href を持たず、タ
 });
 
 // ─── C: javascript: スキームはリンク化されない（renderer 側 isSafeHttpUrl ガード）───
-test('モバイル: apiPrUrl が javascript: の場合はタイトルがリンク化されない', async () => {
+test('モバイル: apiUrl が javascript: の場合はタイトルがリンク化されない', async () => {
   const port = await getFreePort();
   const { app, tmpRoot } = await launchApp(port);
   const browser = await chromium.launch();
@@ -222,7 +296,7 @@ test('モバイル: apiPrUrl が javascript: の場合はタイトルがリン�
     const context = await browser.newContext();
     const page = await context.newPage();
 
-    // /api/states を差し替え、apiPrUrl に javascript: を注入する。
+    // /api/states を差し替え、apiUrl に javascript: を注入する。
     // API 側 /api/set-title は javascript: を 400 で弾くため、この不正 URL は
     // 本来 renderer に到達しないが、多層防御として renderer 単体のガードを検証する。
     await page.route(`http://127.0.0.1:${port}/api/states`, async (route) => {
@@ -233,7 +307,7 @@ test('モバイル: apiPrUrl が javascript: の場合はタイトルがリン�
             status: 'idle',
             displayTitle: 'JS スキームタイトル',
             // eslint-disable-next-line no-script-url
-            apiPrUrl: 'javascript:alert(1)',
+            apiUrl: 'javascript:alert(1)',
             lastLines: '',
           },
         },

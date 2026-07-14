@@ -792,6 +792,21 @@ function render(data) {
     c.name.textContent = title.trim() ? title : ("Terminal " + termId);
     c.killBtn.setAttribute("aria-label", (c.name.textContent || ("Terminal " + termId)) + " を終了する（実行中プロセスを停止）");
     c.cwd.textContent = t.cwdShort || t.cwd || "";
+    // タイトルリンクは PC 版と同じく apiUrl（issue / 任意 URL）を使う。
+    // PR リンクボタンは apiPrUrl を使い、両者を独立して判定する。
+    if (isSafeHttpUrl(t.apiUrl)) {
+      c.title.href = t.apiUrl;
+      c.title.target = "_blank";
+      c.title.rel = "noopener noreferrer";
+      c.title.classList.add("is-link");
+      c.title.setAttribute("aria-label", c.name.textContent + " のリンクを新しいタブで開く");
+    } else {
+      c.title.removeAttribute("href");
+      c.title.removeAttribute("target");
+      c.title.removeAttribute("rel");
+      c.title.classList.remove("is-link");
+      c.title.removeAttribute("aria-label");
+    }
     // PR リンク（issue #53）。安全な http(s) URL のときだけ href にセットして表示、
     // そうでなければ href を空にして非表示にする。
     if (isSafeHttpUrl(t.apiPrUrl)) {
@@ -802,11 +817,6 @@ function render(data) {
       c.prLink.classList.toggle("merged", prMerged);
       c.prLink.setAttribute("aria-label", prMerged ? "マージ済みのプルリクエストを開く" : "プルリクエストを開く");
       c.prIcon.textContent = prMerged ? "✓" : "↗";
-      c.title.href = t.apiPrUrl;
-      c.title.target = "_blank";
-      c.title.rel = "noopener noreferrer";
-      c.title.classList.add("is-link");
-      c.title.setAttribute("aria-label", c.name.textContent + " の PR を新しいタブで開く");
     } else {
       c.prLink.removeAttribute("href");
       c.prLink.removeAttribute("title");
@@ -814,11 +824,6 @@ function render(data) {
       c.prLink.classList.remove("merged");
       c.prLink.setAttribute("aria-label", "プルリクエストを開く");
       c.prIcon.textContent = "↗";
-      c.title.removeAttribute("href");
-      c.title.removeAttribute("target");
-      c.title.removeAttribute("rel");
-      c.title.classList.remove("is-link");
-      c.title.removeAttribute("aria-label");
     }
     // 罫線・装飾行を除去してから末尾を切り出し、読める直近出力を残す。
     var cleaned = sanitizeMobilePreviewText(stripAnsi(t.lastLines || ""))

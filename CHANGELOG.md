@@ -1,5 +1,7 @@
 # Changelog
 
+## 1.18.1
+
 - [ デザイン不具合修正 ] ペインタイトルと PR ボタンが余白なく密着してしまう表示崩れを、両者の間に 10px の余白を確保して修正（[#161](https://github.com/vektor-inc/vk-terminals/issues/161)）
 - [ 開発環境 ] ペインタイトルと PR ボタンの余白（#161）が密着に戻るのを検知する e2e 回帰テストを追加（[#161](https://github.com/vektor-inc/vk-terminals/issues/161)）
 - [ 開発環境 ] タグ push をトリガーに GitHub Release（リリースノート＝CHANGELOG 抽出、リリースファイル＝ソース zip 自動添付）を自動生成する Workflow を追加（[#162](https://github.com/vektor-inc/vk-terminals/issues/162)）

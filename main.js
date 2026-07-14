@@ -1212,12 +1212,13 @@ function startHttpApi() {
       readJsonBody(req, res, 10 * 1024, (body) => {
         try {
           const parsed = JSON.parse(body);
-          const termId = parsed?.termId != null ? String(parsed.termId) : '';
-          if (!termId) {
+          const rawTermId = parsed?.termId;
+          if (!rawTermId) {
             res.writeHead(400, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: 'termId required' }));
             return;
           }
+          const termId = String(rawTermId);
           if (!ptys.has(termId)) {
             res.writeHead(404, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: `terminal ${termId} not found` }));

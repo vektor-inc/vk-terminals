@@ -149,3 +149,31 @@ test('close ロック中のペインは UI で閉じられず、/api/close-pane 
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   }
 });
+
+test('close ロック中のペインもプロセス自然終了時はクリーンアップされる', async () => {
+  const port = await getFreePort();
+  const { app, tmpRoot } = await launchApp(port);
+
+  try {
+    await waitForTermId(port, '1', true);
+    const created = await postJson(port, '/api/new-pane', { noClaude: true });
+    expect(created.status).toBe(200);
+    expect(created.body && created.body.ok).toBe(true);
+    const targetTermId = String(created.body.termId);
+
+    await waitForTermId(port, targetTermId, true);
+
+    const locked = await postJson(port, '/api/set-lock', { termId: targetTermId, lock: { close: false } });
+    expect(locked.status).toBe(200);
+    expect(locked.body && locked.body.ok).toBe(true);
+
+    const sent = await postJson(port, '/api/send', { termId: targetTermId, input: 'exit\n' });
+    expect(sent.status).toBe(200);
+    expect(sent.body && sent.body.ok).toBe(true);
+
+    await waitForTermId(port, targetTermId, false);
+  } finally {
+    if (app) await app.close();
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});

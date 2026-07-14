@@ -1290,7 +1290,8 @@ body.resizing-sidebar .sidebar {
   background: rgba(248, 81, 73, 0.12);
 }
 .btn-close.is-locked {
-  opacity: 0.3;
+  opacity: 0.48;
+  filter: grayscale(0.8);
   cursor: default;
 }
 .btn-close.is-locked:hover {

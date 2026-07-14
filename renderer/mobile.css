@@ -105,8 +105,14 @@ button.k.kill { flex: 1 1 100%; width: 100%; min-height: 44px;
   background: #b03636; border-color: #b03636; color: #fff; font-weight: 700; }
 button.k.kill:active { background: #8f2a2a; border-color: #8f2a2a; }
 button.k.kill:focus-visible { outline: 2px solid #58a6ff; outline-offset: 2px; }
-button.k.kill.is-locked { opacity: 0.3; cursor: default; }
-button.k.kill.is-locked:active { background: #b03636; border-color: #b03636; }
+button.k.kill.is-locked {
+  background: #6b3f3f;
+  border-color: #7c4a4a;
+  color: #f0f3f6;
+  cursor: default;
+  filter: grayscale(0.25);
+}
+button.k.kill.is-locked:active { background: #6b3f3f; border-color: #7c4a4a; }
 .sendrow { display: flex; gap: 6px; }
 .sendrow input { flex: 1; padding: 9px 10px; border-radius: 8px; border: 1px solid var(--card-border);
   background: #0d0f13; color: var(--fg); font-size: 14px; font-family: ui-monospace, Menlo, monospace; }

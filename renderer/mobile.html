@@ -800,10 +800,12 @@ function render(data) {
     c.closeLocked = isCloseLocked(t);
     c.killBtn.classList.toggle("is-locked", c.closeLocked);
     if (c.closeLocked) {
+      c.killBtn.textContent = "🔒 保護中（閉じられません）";
       c.killBtn.setAttribute("aria-disabled", "true");
       c.killBtn.setAttribute("aria-label", "このペインは保護されています（閉じられません）");
       c.killBtn.setAttribute("title", "このペインは保護されています（閉じられません）");
     } else {
+      c.killBtn.textContent = "✕ ターミナルを終了";
       c.killBtn.removeAttribute("aria-disabled");
       c.killBtn.setAttribute("aria-label", (c.name.textContent || ("Terminal " + termId)) + " を終了する（実行中プロセスを停止）");
       c.killBtn.removeAttribute("title");

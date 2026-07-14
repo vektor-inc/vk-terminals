@@ -417,7 +417,7 @@ ipcRenderer.on('terminal:data', (event, id, data) => {
 
 ipcRenderer.on('terminal:exit', (event, id) => {
   const paneId = Object.keys(terminals).find(k => terminals[k]?.termId === id);
-  if (paneId) closePane(paneId);
+  if (paneId) closePane(paneId, { force: true });
 });
 
 // ─── DOM updates (without full re-render) ────────────────────────────────────

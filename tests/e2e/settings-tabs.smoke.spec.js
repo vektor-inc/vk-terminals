@@ -166,6 +166,7 @@ test.describe.serial('設定モーダルのタブ UI（issue #167）', () => {
     // tabpanel は role=tabpanel / aria-labelledby でタブと関連付く。
     await expect(win.locator('#settings-panel-0')).toHaveAttribute('role', 'tabpanel');
     await expect(win.locator('#settings-panel-0')).toHaveAttribute('aria-labelledby', 'settings-tab-0');
+    await expect(win.locator('#settings-panel-0')).toHaveAttribute('tabindex', '0');
     // 先頭パネルのみ可視、2 番目は hidden。
     await expect(win.locator('#settings-panel-0')).toBeVisible();
     await expect(win.locator('#settings-panel-1')).toBeHidden();

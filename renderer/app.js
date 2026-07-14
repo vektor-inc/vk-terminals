@@ -2615,7 +2615,7 @@ async function openSettingsModal() {
             tabIndex,
             omitLegend: groups.length === 1,
           })).join('');
-          return `<section class="settings-tab-panel" id="${escAttr(panelId)}" role="tabpanel" aria-labelledby="${escAttr(tabId)}"${tabIndex === 0 ? '' : ' hidden'}>
+          return `<section class="settings-tab-panel" id="${escAttr(panelId)}" role="tabpanel" aria-labelledby="${escAttr(tabId)}" tabindex="0"${tabIndex === 0 ? '' : ' hidden'}>
             ${targetHtml}${noteHtml}${tabGroupsHtml}
           </section>`;
         }).join('')

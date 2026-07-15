@@ -1,5 +1,7 @@
 # Changelog
 
+## 1.23.0
+
 - [ 機能追加 ] 設定パネル descriptor に改行区切りテキストエリアから文字列配列を保存できる `lines` 入力型を追加（[#179](https://github.com/vektor-inc/vk-terminals/issues/179)）
 
 ## 1.22.0

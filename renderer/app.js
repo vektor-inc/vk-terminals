@@ -2545,6 +2545,14 @@ function renderSettingsField(f, value, id) {
     </div>`;
   }
 
+  if (f.type === 'lines') {
+    const body = Array.isArray(value) ? escText(value.join('\n')) : '';
+    return `<div class="settings-row">
+      <label class="settings-label" for="${id}">${label}</label>${help}
+      <textarea id="${id}" rows="4" spellcheck="false">${body}</textarea>
+    </div>`;
+  }
+
   if (f.type === 'password') {
     return `<div class="settings-row">
       <label class="settings-label" for="${id}">${label}</label>${help}

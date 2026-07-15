@@ -7,6 +7,7 @@ const os = require('os');
 const path = require('path');
 
 const {
+  coerceFieldValue,
   describeSettingsValues,
   describeTargetPaths,
   isValidSettingsDescriptor,
@@ -179,6 +180,49 @@ test('describeTargetPaths: 単一・group 差異・field override の target 情
     allTargets: [firstPath, fieldPath],
     hasMultipleTargets: true,
   });
+});
+
+test('coerceFieldValue: lines は改行区切り文字列を文字列配列へ変換する', () => {
+  assert.deepEqual(
+    coerceFieldValue({ key: 'paths', type: 'lines' }, '/a\n/b\n/c'),
+    { ok: true, value: ['/a', '/b', '/c'] },
+  );
+});
+
+test('coerceFieldValue: lines は前後空白と空行を除去する', () => {
+  assert.deepEqual(
+    coerceFieldValue({ key: 'paths', type: 'lines' }, '  /a  \n\n /b \n   \n/c\t'),
+    { ok: true, value: ['/a', '/b', '/c'] },
+  );
+});
+
+test('coerceFieldValue: lines は空文字を emptyToNull に応じて null または空配列に変換する', () => {
+  assert.deepEqual(
+    coerceFieldValue({ key: 'paths', type: 'lines', emptyToNull: true }, ''),
+    { ok: true, value: null },
+  );
+  assert.deepEqual(
+    coerceFieldValue({ key: 'paths', type: 'lines' }, ''),
+    { ok: true, value: [] },
+  );
+});
+
+test('coerceFieldValue: lines は空白のみの入力を emptyToNull に応じて null または空配列に変換する', () => {
+  assert.deepEqual(
+    coerceFieldValue({ key: 'paths', type: 'lines', emptyToNull: true }, '   \n  \n'),
+    { ok: true, value: null },
+  );
+  assert.deepEqual(
+    coerceFieldValue({ key: 'paths', type: 'lines' }, '   \n  \n'),
+    { ok: true, value: [] },
+  );
+});
+
+test('coerceFieldValue: lines は配列を String 化して trim と空要素除去を行う', () => {
+  assert.deepEqual(
+    coerceFieldValue({ key: 'paths', type: 'lines' }, [' /a ', 42, '', null, '  ', '/c']),
+    { ok: true, value: ['/a', '42', 'null', '/c'] },
+  );
 });
 
 test('saveSettingsToTargets: group ごとに別ファイルへ保存し未知キーを保持する', () => {

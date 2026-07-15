@@ -137,6 +137,20 @@ function coerceFieldValue(field, raw) {
         return { ok: false, error: `${label}: JSON として不正です（${error.message}）` };
       }
     }
+    case 'lines': {
+      if (raw === '' || raw === null || raw === undefined) {
+        return { ok: true, value: field.emptyToNull ? null : [] };
+      }
+      const lines = Array.isArray(raw) ? raw : String(raw).split('\n');
+      const normalized = lines.map((line) => String(line).trim()).filter((line) => line !== '');
+      if (normalized.length === 0 && field.emptyToNull) {
+        return { ok: true, value: null };
+      }
+      return {
+        ok: true,
+        value: normalized,
+      };
+    }
     case 'select': {
       const allowed = (Array.isArray(field.options) ? field.options : []).map((option) => String(option.value ?? ''));
       const stringValue = raw == null ? '' : String(raw);

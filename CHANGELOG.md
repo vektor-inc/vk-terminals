@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 機能追加 ] 設定パネル descriptor に改行区切りテキストエリアから文字列配列を保存できる `lines` 入力型を追加（[#179](https://github.com/vektor-inc/vk-terminals/issues/179)）
+
 ## 1.22.0
 
 - [ 機能追加 ] 呼び出し元が環境変数 `VK_TERMINALS_INSTANCE_ID` を渡すと、`GET /api/health` のレスポンスに起動インスタンス識別子（`instanceId`）を含める機能を追加（未指定時は従来どおり `instanceId` を含めない）（[#177](https://github.com/vektor-inc/vk-terminals/issues/177)）

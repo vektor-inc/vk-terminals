@@ -94,9 +94,6 @@ button.k { flex: 1 1 auto; min-width: 44px; padding: 9px 6px; border-radius: 8px
   border: 1px solid var(--card-border); background: #262b33; color: var(--fg);
   font-size: 13px; font-weight: 600; cursor: pointer; }
 button.k:active { background: #323843; }
-button.k.yes { border-color: #2f6b3f; color: #8fe0a6; }
-button.k.no  { border-color: #6b2f2f; color: #f0a3a3; }
-button.k.stop { border-color: #6b5a2f; color: #e8d08a; }
 /* ペイン終了（issue #100）。実行中プロセスを kill する不可逆操作なので、
    クイックボタン（アウトライン様式）と格を変えた「塗りの赤」にし、
    .actions 最下段に独立した全幅ボタンとして高頻度操作から分離する。 */

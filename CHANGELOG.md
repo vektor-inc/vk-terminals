@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 仕様変更 ] モバイル版ターミナル下部のクイック入力コントロール（1/2/3/Enter/Yes/No/Esc/Ctrl-C）を使わないため削除（[#181](https://github.com/vektor-inc/vk-terminals/issues/181)）
+
 ## 1.23.0
 
 - [ 機能追加 ] 設定パネル descriptor に改行区切りテキストエリアから文字列配列を保存できる `lines` 入力型を追加（[#179](https://github.com/vektor-inc/vk-terminals/issues/179)）

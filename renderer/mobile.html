@@ -361,22 +361,6 @@ async function closeTerm(termId, label) {
   }
 }
 
-// quick ボタン定義: ラベルと送る文字列
-var QUICK = [
-  [
-    { label: "1", input: "1", cls: "" },
-    { label: "2", input: "2", cls: "" },
-    { label: "3", input: "3", cls: "" },
-    { label: "↵ Enter", input: "\r", cls: "" }
-  ],
-  [
-    { label: "Yes (y↵)", input: "y\r", cls: "yes" },
-    { label: "No (n↵)", input: "n\r", cls: "no" },
-    { label: "Esc", input: "\x1b", cls: "" },
-    { label: "Ctrl-C", input: "\x03", cls: "stop" }
-  ]
-];
-
 var list = document.getElementById("list");
 var cards = {}; // termId -> { root, pre, name, cwd, dot, badge, head, chevron, orderControls, moveUpBtn, moveDownBtn }
 
@@ -593,16 +577,6 @@ function ensureCard(termId) {
   var pre = document.createElement("pre"); pre.className = "lines";
 
   var actions = document.createElement("div"); actions.className = "actions";
-  QUICK.forEach(function(grp) {
-    var row = document.createElement("div"); row.className = "row";
-    grp.forEach(function(b) {
-      var btn = document.createElement("button");
-      btn.className = "k " + b.cls; btn.textContent = b.label;
-      btn.addEventListener("click", function() { send(termId, b.input); });
-      row.appendChild(btn);
-    });
-    actions.appendChild(row);
-  });
   // 自由入力
   var sendrow = document.createElement("div"); sendrow.className = "sendrow";
   var inp = document.createElement("input");

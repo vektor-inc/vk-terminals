@@ -334,7 +334,7 @@ cp config.example.json ~/.vk-terminals/config.json
 
 タイトルバー右端の ⚙ ボタンから、設定を GUI 上で編集・保存できます。単体起動でも常に表示されます。
 
-- **単体起動時**（`VK_TERMINALS_SETTINGS` 未指定）：vk-terminals 自身の `config.json`（`apiHost` / `initialCommand` / `confirmClose` / `showUsage` / `gpu` / `menuItems` / `additionalPanes`）を編集します。編集対象は `loadUserConfig()` と同じ探索順で、既存の `config.json` があればそれ、無ければリポジトリ直下 `config.json` を作成します。
+- **単体起動時**（`VK_TERMINALS_SETTINGS` 未指定）：vk-terminals 自身の `config.json`（`apiHost` / `initialCommand` / `confirmClose` / `showUsage` / `gpu` / `waitingExcludeCwdPatterns` / `menuItems` / `additionalPanes`）を編集します。編集対象は `loadUserConfig()` と同じ探索順で、既存の `config.json` があればそれ、無ければリポジトリ直下 `config.json` を作成します。
 - **呼び出し側から渡された場合**（`VK_TERMINALS_SETTINGS` に「設定ディスクリプタ JSON」のパスを指定）：そのディスクリプタが指す任意の config ファイルを編集します（vk-orchestrator が自身の統合 `config.json` を編集させる用途など）。vk-terminals 自身は編集対象の設定内容を知らず、ディスクリプタ（編集対象パス + 項目スキーマ）に従って読み書きするだけの汎用実装です。
 
 いずれの場合も、保存後の反映には再起動が必要です（設定は起動時に読み込むため）。
@@ -359,10 +359,23 @@ cp config.example.json ~/.vk-terminals/config.json
 ```
 
 - `key`：ドット区切りで対象 JSON の入れ子キーを指す（例 `github.token`）。
-- `type`：`text` / `password` / `number` / `boolean` / `select` / `json` のいずれか。`json` は配列・オブジェクトを textarea で編集します。`select` は許可された値のみ選べるピッカーで、`options`（`{ value, label }` の配列）を併記します。
+- `type`：`text` / `password` / `number` / `boolean` / `select` / `json` / `lines` のいずれか。`json` は配列・オブジェクトを textarea で編集します。`lines` は改行区切りの文字列配列を textarea で編集します。`select` は許可された値のみ選べるピッカーで、`options`（`{ value, label }` の配列）を併記します。
 - `default`（任意）：値が未設定のときの既定値。`boolean` で `default: true`（opt-out 項目）を指定すると、未設定のチェックボックスが誤ってオフ保存される問題を避けられます。
 - `emptyToNull`（任意）：`text` / `password` / `select` で空欄を `null` として書き出します。
 - 保存時はディスクリプタに載っているキーだけを型変換して書き戻し、**載っていない既存キーは保持**します。書き込み先は必ず `targetPath` に限定されます。
+
+### 組み込み設定スキーマ
+
+単体起動時の設定パネル項目は、リポジトリ直下の `settings-schema.json` を単一ソースとして読み込みます。`settings-schema.json` には `groups` 配列と各 `field` の `key` / `label` / `type` / `default` / `help` / `placeholder` / `options` / `emptyToNull` などの静的な定義だけを置き、実行時に決まる編集対象ファイルの `targetPath` はアプリ側で `loadUserConfig()` と同じ探索順から合成します。
+
+呼び出し側（例: vk-orchestrator）は、この JSON を読み込んで表示したい `key` だけを選んだり、`title` / `note` / `label` / `help` などの文言を上書きしたりできます。
+
+組み込みスキーマの運用メモ:
+
+- `confirmClose` は既定 `busy`（実行中・入力待ちのみ確認）です。ペインの ✕ ボタンで閉じる操作にだけ適用され、HTTP API 経由（force）の自動クローズには適用されません。
+- `showUsage` は opt-out（既定 ON）です。`default: true` により、未設定の boolean が設定保存時に誤って `false` になることを避けています。
+- `gpu` は環境変数 `VK_TERMINALS_GPU` が最優先で、未指定時に `config.json` の `gpu`（設定パネル保存値）を使います。空値はプラットフォーム既定です。
+- `agentroom` は issue #70 で β 機能を一旦無効化しているため、`settings-schema.json` には含めていません。設定パネルへ復帰する場合は任意の group の `fields` に `{ "key": "agentroom", "label": "エージェントルーム（β）表示", "type": "boolean" }` を追加し、`app:get-config` の `agentroom` 返却値を `config.agentroom === true` に戻してください。
 
 ## HTTP API（外部連携用）
 

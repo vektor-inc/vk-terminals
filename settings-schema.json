@@ -97,7 +97,7 @@
           "key": "additionalPanes",
           "label": "追加ペイン (JSON 配列)",
           "type": "json",
-          "help": "例: [{\"cwd\":\"/path\"}]"
+          "help": "アプリ起動時に、最初のペインに加えて自動で開くペインを JSON 形式で登録できます。各要素の cwd（絶対パス）を作業ディレクトリとしてペインが作成され、そのディレクトリで Claude Code が起動します。\"noClaude\": true を指定したペインは Claude Code を起動せず素のターミナルで開きます。\n例: [{\"cwd\":\"/path\"}, {\"cwd\":\"/path2\", \"noClaude\": true}]"
         }
       ]
     }

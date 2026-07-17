@@ -21,6 +21,7 @@ const { createOauthUsageProvider } = require('./oauthUsage');
 // 選べる（優先順位は env > config > プラットフォーム既定）。呼び出し側（VK Orchestrator
 // 等）が argv で GPU スイッチを明示している場合は介入しない。詳細は utils/gpu.js を参照。
 const { applyGpuMode } = require('./utils/gpu');
+const { normalizeConfirmClose } = require('./utils/closeConfirm');
 const { resolveInstanceId, buildHealthResponse } = require('./utils/instanceId');
 const {
   describeSettingsValues,
@@ -529,6 +530,8 @@ ipcMain.handle('app:get-config', () => {
     appTitle: APP_TITLE,
     newPaneStartupDir: typeof config.newPaneStartupDir === 'string' ? config.newPaneStartupDir.trim() : '',
     newPaneAutoLaunchClaude: config.newPaneAutoLaunchClaude === true,
+    // ペインを閉じる時の確認（issue #184）。不正値・未指定は既定 'busy' に正規化して渡す。
+    confirmClose: normalizeConfirmClose(config.confirmClose),
   };
 });
 
@@ -579,6 +582,13 @@ function builtinSettingsDescriptor() {
           { key: 'newPaneStartupDir', label: '新規ペインを開く時の初期ディレクトリ', type: 'text', placeholder: '/path/to/project', help: '新規ペインを開く時の作業ディレクトリを絶対パスで指定します。「Claude Code を自動起動する」設定が有効な場合は Claude もこのディレクトリで起動します。未入力の場合、または存在しないパスの場合はホームディレクトリで起動します。' },
           { key: 'newPaneAutoLaunchClaude', label: 'Claude Code を自動的に起動する', type: 'boolean', default: false, help: 'チェックが入っている場合、新規ペインを開いた時に自動的に Claude Code が起動します。オフの場合は素のターミナルで起動します。' },
           { key: 'initialCommand', label: '初期コマンド',          type: 'text',    help: 'Claude Code で起動する設定の場合、最初のペインで Claude 起動直後に自動実行させたいコマンドがあれば記入してください。毎日最初に実行するコマンドの入力を省略するための機能です。' },
+          // ペインを閉じる時の確認（issue #184）。既定 'busy'（実行中・入力待ちのみ確認）。
+          // HTTP API 経由（force）の自動クローズには適用されない。
+          { key: 'confirmClose', label: 'ペインを閉じる時の確認ダイアログ', type: 'select', default: 'busy', help: 'ペインの ✕ ボタンで閉じる時に確認ダイアログを表示する条件。HTTP API 経由の自動クローズには適用されません。', options: [
+            { value: 'busy',   label: '実行中・入力待ちの場合は表示（既定）' },
+            { value: 'always', label: '常に表示' },
+            { value: 'never',  label: '確認なし' },
+          ] },
           // showUsage（issue #69）は opt-out（既定 ON）。default:true で「未設定 boolean が
           // 保存時に false になる」問題を避ける（settings:describe / settings:save が default 尊重）。
           { key: 'showUsage',      label: 'トークン使用量を表示',   type: 'boolean', default: true, help: 'Claude の利用状況（セッション% / 週間制限%）をサイドバーの「Claude使用量」・モバイルページに表示します。' },

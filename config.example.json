@@ -1,6 +1,7 @@
 {
   "apiHost": "127.0.0.1",
   "initialCommand": "",
+  "confirmClose": "busy",
   "gpu": "off",
   "agentroom": false,
   "_menuItemsNote": "menuItems に section 配列を入れるとサイドバーへ追加表示できます。action.type は open-url / open-settings のみ対応です。",

@@ -1,5 +1,8 @@
 # Changelog
 
+- [ 機能追加 ] 実行中・入力待ちのペインを誤って閉じないよう、ペインを閉じる時に確認ダイアログを表示する機能を追加（設定 `confirmClose`: 実行中・入力待ちのみ確認（既定）／常に確認／確認なし。HTTP API 経由の自動クローズは対象外）（[#184](https://github.com/vektor-inc/vk-terminals/issues/184)）
+- [ 開発環境 ] ペインを閉じる確認ダイアログ（confirmClose）の never / busy / always を検証する e2e テストを追加（[#184](https://github.com/vektor-inc/vk-terminals/issues/184)）
+
 ## 1.24.0
 
 - [ 仕様変更 ] モバイル版ターミナル下部のクイック入力コントロール（1/2/3/Enter/Yes/No/Esc/Ctrl-C）を使わないため削除（[#181](https://github.com/vektor-inc/vk-terminals/issues/181)）

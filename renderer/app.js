@@ -730,12 +730,12 @@ function createTaskListContainer() {
 
   const notice = document.createElement('div');
   notice.className = 'task-list-stale';
+  notice.setAttribute('role', 'status');
   notice.textContent = 'orchestrator 停止中';
   notice.hidden = true;
 
   const list = document.createElement('div');
   list.className = 'task-list-groups';
-  list.setAttribute('aria-live', 'polite');
 
   section.appendChild(title);
   section.appendChild(notice);
@@ -932,8 +932,8 @@ function formatTaskElapsed(startedAtMs) {
   if (!startedAtMs) return '';
   const diffMs = Math.max(0, Date.now() - startedAtMs);
   const totalMinutes = Math.floor(diffMs / 60000);
-  if (totalMinutes < 1) return 'たった今';
-  if (totalMinutes < 60) return `${totalMinutes}分前`;
+  if (totalMinutes < 1) return '1分未満';
+  if (totalMinutes < 60) return `${totalMinutes}分`;
   const hours = Math.floor(totalMinutes / 60);
   const minutes = totalMinutes % 60;
   if (hours < 24) return minutes ? `${hours}時間${minutes}分` : `${hours}時間`;
@@ -974,7 +974,6 @@ function renderTaskItem(task) {
   const badge = document.createElement('span');
   badge.className = 'pane-badge pane-status task-status';
   badge.dataset.status = task.status;
-  badge.setAttribute('role', 'status');
   badge.textContent = getTaskStatusLabel(task.status);
   head.appendChild(badge);
 
@@ -1039,6 +1038,7 @@ function renderTaskList(view = lastTaskView) {
 
   const groups = groupTasksByStatus(tasks);
   if (groups.length === 0) {
+    if (stale) return;
     const empty = document.createElement('div');
     empty.className = 'task-list-empty';
     empty.textContent = 'タスクはありません';

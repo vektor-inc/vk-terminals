@@ -835,7 +835,12 @@ body.resizing-sidebar .sidebar {
 .task-list[hidden] {
   display: none;
 }
-.task-list-title,
+.task-list-title {
+  padding: 0 4px 8px;
+  color: #c9d1d9;
+  font-size: 12px;
+  font-weight: 600;
+}
 .task-list-group-title {
   padding: 0 4px 6px;
   color: #8b949e;
@@ -855,8 +860,11 @@ body.resizing-sidebar .sidebar {
 .task-list-stale[hidden] {
   display: none;
 }
+.task-list.is-stale .task-list-groups {
+  opacity: 0.55;
+}
 .task-list-group {
-  margin-bottom: 10px;
+  margin-bottom: 16px;
 }
 .task-list-items {
   list-style: none;
@@ -927,6 +935,9 @@ body.resizing-sidebar .sidebar {
   color: #8b949e;
   background: rgba(139, 148, 158, 0.12);
   border: 1px solid rgba(139, 148, 158, 0.24);
+}
+.task-list.is-stale .pane-status {
+  animation: none;
 }
 .task-item-meta {
   display: flex;

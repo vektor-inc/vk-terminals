@@ -1,5 +1,7 @@
 # Changelog
 
+- [ デザイン不具合修正 ] 設定モーダルのタブ付き表示で保存ヒント文言が語の途中で不自然に改行される問題を修正（[#187](https://github.com/vektor-inc/vk-terminals/issues/187)）
+
 ## 1.25.0
 
 - [ 機能追加 ] ペインの cwd パターン指定でローカル入力待ち判定から除外できる設定を追加（[#183](https://github.com/vektor-inc/vk-terminals/issues/183)）

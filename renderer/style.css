@@ -465,10 +465,11 @@ html, body {
   min-width: 120px;
 }
 .settings-save-hint {
-  flex: 0 1 190px;
+  flex: 0 0 auto;
   color: #8b949e;
   font-size: 12px;
   line-height: 1.4;
+  white-space: nowrap;
 }
 .settings-msg.ok { color: #3fb950; }
 .settings-msg.err { color: #f85149; }
@@ -478,6 +479,7 @@ html, body {
   font-size: 13px;
   cursor: pointer;
   border: 1px solid #30363d;
+  white-space: nowrap;
 }
 .settings-cancel {
   background: #21262d;

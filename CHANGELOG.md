@@ -1,6 +1,8 @@
 # Changelog
 
-- [ 不具合修正 ] 起動時の初回ペインが「新規ペインを開く時の初期ディレクトリ」（newPaneStartupDir）設定を参照せず常にホームディレクトリで開く問題を修正
+## 1.28.0
+
+- [ 不具合修正 ] 起動時の初回ペインが「新規ペインを開く時の初期ディレクトリ」（newPaneStartupDir）設定を参照せず常にホームディレクトリで開く問題を修正（[#196](https://github.com/vektor-inc/vk-terminals/issues/196)）
 
 ## 1.27.0
 

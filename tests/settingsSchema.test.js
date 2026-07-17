@@ -60,7 +60,6 @@ test('buildBuiltinSettingsDescriptor: JSON から targetPath 付きの組み込�
     'confirmClose',
     'showUsage',
     'gpu',
-    'waitingExcludeCwdPatterns',
     'menuItems',
     'additionalPanes',
   ]);

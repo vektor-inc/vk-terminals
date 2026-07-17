@@ -526,6 +526,8 @@ app.on('before-quit', () => {
 //   `config.agentroom === true` に戻せばよい。
 ipcMain.handle('app:get-config', () => {
   const config = loadUserConfig();
+  // waitingExcludeCwdPatterns は設定 GUI には出さず、config.json 直編集専用にする（#192）。
+  // 読み込み・除外判定の機能は維持し、GUI 項目だけ settings-schema.json から削除した。
   const waitingExcludeCwdPatterns = Array.isArray(config.waitingExcludeCwdPatterns)
     ? config.waitingExcludeCwdPatterns.filter((pattern) => typeof pattern === 'string')
     : [];

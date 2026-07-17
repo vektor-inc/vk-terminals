@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 機能追加 ] サイドバーに `tasks-view.json` を読み取り専用で表示するタスク一覧セクションを追加
+
 ## 1.28.0
 
 - [ 不具合修正 ] 起動時の初回ペインが「新規ペインを開く時の初期ディレクトリ」（newPaneStartupDir）設定を参照せず常にホームディレクトリで開く問題を修正（[#196](https://github.com/vektor-inc/vk-terminals/issues/196)）

@@ -82,12 +82,6 @@
           ]
         },
         {
-          "key": "waitingExcludeCwdPatterns",
-          "label": "入力待ち判定から除外する cwd パターン",
-          "type": "lines",
-          "help": "ペインのフルパス cwd に部分一致した場合、ローカル PTY 出力からの入力待ち判定を無効にします。"
-        },
-        {
           "key": "menuItems",
           "label": "サイドバーメニュー (JSON 配列)",
           "type": "json",

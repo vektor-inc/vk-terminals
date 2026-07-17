@@ -1,6 +1,8 @@
 # Changelog
 
 - [ 仕様変更 ] 設定画面のサイドバーメニュー項目の説明文に用途の説明を追加し、例と改行して表示するように変更
+- [ 仕様変更 ] 入力待ち判定から除外する cwd パターン設定（waitingExcludeCwdPatterns）を設定 GUI から外し、config.json 直編集専用に変更（[#192](https://github.com/vektor-inc/vk-terminals/issues/192)）
+- [ 開発環境 ] waitingExcludeCwdPatterns の GUI 表示を検証する e2e テストを「GUI に表示されないこと」の確認へ変更（[#192](https://github.com/vektor-inc/vk-terminals/issues/192)）
 
 ## 1.26.0
 

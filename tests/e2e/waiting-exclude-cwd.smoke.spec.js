@@ -199,13 +199,12 @@ test('除外パターンに一致しない cwd のペインは、従来どおり
   }
 });
 
-test('設定 GUI に「入力待ち判定から除外する cwd パターン」の入力欄が表示される', async () => {
+test('設定 GUI に「入力待ち判定から除外する cwd パターン」の入力欄が表示されない', async () => {
   const port = await getFreePort();
   // VK_TERMINALS_SETTINGS を指定しないので、main は組み込みディスクリプタ（自身の config.json 編集）を使う。
-  // 事前に値を書いておき、その値が入力欄（textarea）に反映されることも合わせて確認する。
-  const configured = ['/Users/foo/excluded-project', 'sandbox'];
+  // 事前に値を書いておき、config.json に既存値があっても GUI 項目としては表示されないことを確認する。
   const { tmpRoot, tmpHome, configPath } = makeTempHome();
-  writeConfig(configPath, { waitingExcludeCwdPatterns: configured });
+  writeConfig(configPath, { waitingExcludeCwdPatterns: ['/Users/foo/excluded-project', 'sandbox'] });
   let app;
   try {
     app = await launchApp(tmpHome, port);
@@ -216,13 +215,9 @@ test('設定 GUI に「入力待ち判定から除外する cwd パターン」�
     await win.locator('#settings-btn').click();
     await expect(win.locator('.settings-overlay')).toBeVisible();
 
-    // 該当ラベルを持つ設定行の textarea を特定する（'lines' 型は textarea としてレンダリングされる）。
+    // waitingExcludeCwdPatterns は config.json 直編集専用なので、該当ラベルの設定行は描画されない。
     const row = win.locator('.settings-row', { hasText: '入力待ち判定から除外する cwd パターン' });
-    const textarea = row.locator('textarea');
-    await expect(textarea).toBeVisible();
-
-    // config.json の値が改行区切りで復元されていることを確認する。
-    await expect(textarea).toHaveValue(configured.join('\n'));
+    await expect(row).toHaveCount(0);
   } finally {
     if (app) await app.close();
     fs.rmSync(tmpRoot, { recursive: true, force: true });

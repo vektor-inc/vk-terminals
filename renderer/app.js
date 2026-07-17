@@ -3023,7 +3023,9 @@ async function initApp() {
   const paneId = newId();
   // stashOrder: サイドバー格納ペインの並び（issue #89）。sidebarWidth: セッション内の可変幅。
   tree = { type: 'grid', order: [paneId], colFr: null, rowFr: null, stashOrder: [], sidebarWidth: DEFAULT_SIDEBAR_WIDTH };
-  await createTerminal(paneId, null);
+  // 起動時の初回ペインも手動の新規ペイン（＋ボタン・分割）と同じく newPaneStartupDir に従う。
+  // 存在しないパスは main 側 terminal:create が HOME へフォールバックする。
+  await createTerminal(paneId, newPaneStartupDir || null);
   focusedPaneId = paneId;
 
   render();

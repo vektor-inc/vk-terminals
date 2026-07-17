@@ -1,5 +1,7 @@
 # Changelog
 
+## 1.25.0
+
 - [ 機能追加 ] ペインの cwd パターン指定でローカル入力待ち判定から除外できる設定を追加（[#183](https://github.com/vektor-inc/vk-terminals/issues/183)）
 - [ 機能追加 ] 実行中・入力待ちのペインを誤って閉じないよう、ペインを閉じる時に確認ダイアログを表示する機能を追加（設定 `confirmClose`: 実行中・入力待ちのみ確認（既定）／常に確認／確認なし。HTTP API 経由の自動クローズは対象外）（[#184](https://github.com/vektor-inc/vk-terminals/issues/184)）
 - [ 開発環境 ] cwd パターン指定によるローカル入力待ち判定除外のユニットテストを追加（[#183](https://github.com/vektor-inc/vk-terminals/issues/183)）

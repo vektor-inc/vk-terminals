@@ -2,6 +2,7 @@
 
 - [ 機能追加 ] ペインの cwd パターン指定でローカル入力待ち判定から除外できる設定を追加（[#183](https://github.com/vektor-inc/vk-terminals/issues/183)）
 - [ 開発環境 ] cwd パターン指定によるローカル入力待ち判定除外のユニットテストを追加（[#183](https://github.com/vektor-inc/vk-terminals/issues/183)）
+- [ 開発環境 ] cwd パターン除外の動作と設定画面の入力欄表示を検証する e2e スモークテストを追加（[#183](https://github.com/vektor-inc/vk-terminals/issues/183)）
 
 ## 1.24.0
 

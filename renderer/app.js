@@ -93,9 +93,34 @@ let newPaneAutoLaunchClaude = false;
 // 値は起動時に main（app:get-config）から取得する。設定反映には再起動が必要（設定パネルの note 参照）。
 let confirmClosePref = 'busy';
 let waitingExcludeCwdPatterns = [];
+let tasksFileConfigured = false;
+let lastTaskView = null;
 // HTTP API（POST /api/agentroom）由来のルーム状態を、この TTL を超えたら「古い」と判断して
 // PTY 出力ベースのフォールバック表示に切り替える（ms）。
 const AGENTROOM_API_TTL_MS = 90000;
+
+// tasks-view.json は vk-orchestrator が数秒おきに更新する読み取り専用スナップショット。
+// updatedAt がこの閾値を超えて古い場合は orchestrator 停止中として扱う。
+const TASKS_ORCHESTRATOR_STALE_MS = 60000;
+const TASKS_ELAPSED_TICK_MS = 30000;
+const TASK_STATUS_ORDER = [
+  'in-progress',
+  'waiting-input',
+  'ready',
+  'awaiting-approval',
+  'waiting-merge',
+  'failed',
+  'done',
+];
+const TASK_STATUS_LABELS = {
+  'awaiting-approval': '承認待ち',
+  'ready': '実行待ち',
+  'in-progress': '実行中',
+  'waiting-input': '入力待ち',
+  'waiting-merge': 'マージ待ち',
+  'done': '完了',
+  'failed': '失敗',
+};
 
 // waiting 判定用 lastLines バッファの上限（issue #32 対応）。
 //   - LASTLINES_MAX_LINES: 直近 N 行を保持する。
@@ -662,7 +687,8 @@ function createSidebar() {
   inner.className = 'sidebar-menu-inner';
   nav.appendChild(inner);
 
-  // 格納ペインセクション（renderSidebarMenu の再構築対象外・別管理）
+  // タスクセクション / 格納ペインセクション（renderSidebarMenu の再構築対象外・別管理）
+  nav.appendChild(createTaskListContainer());
   nav.appendChild(createPaneStashContainer());
 
   aside.appendChild(nav);
@@ -687,6 +713,33 @@ function createSidebarUsageCard() {
 
   section.appendChild(title);
   section.appendChild(body);
+  return section;
+}
+
+// vk-orchestrator の tasks-view.json を読み取り専用で表示するセクション。
+function createTaskListContainer() {
+  const section = document.createElement('section');
+  section.id = 'task-list';
+  section.className = 'task-list';
+  section.hidden = true;
+  section.setAttribute('aria-label', 'タスク');
+
+  const title = document.createElement('div');
+  title.className = 'task-list-title';
+  title.textContent = 'タスク';
+
+  const notice = document.createElement('div');
+  notice.className = 'task-list-stale';
+  notice.textContent = 'orchestrator 停止中';
+  notice.hidden = true;
+
+  const list = document.createElement('div');
+  list.className = 'task-list-groups';
+  list.setAttribute('aria-live', 'polite');
+
+  section.appendChild(title);
+  section.appendChild(notice);
+  section.appendChild(list);
   return section;
 }
 
@@ -732,6 +785,7 @@ function ensureSidebar(root) {
     el = createSidebar();
     renderSidebarMenu();
     renderSidebarUsage(lastUsageSnapshot);
+    renderTaskList(lastTaskView);
     renderPaneStash();
   }
   return el;
@@ -833,6 +887,184 @@ function updatePaneCloseLock(paneId) {
   applyCloseButtonLock(document.querySelector(`.pane[data-id="${paneId}"] .btn-close`), locked);
   applyCloseButtonLock(document.querySelector(`.stash-item[data-id="${paneId}"] .btn-close`), locked);
 }
+
+// ─── Task list rendering（issue #197）─────────────────────────────────────────
+function parseTaskTime(value) {
+  if (typeof value !== 'string' || !value.trim()) return null;
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function normalizeTaskStatus(value) {
+  return typeof value === 'string' && value.trim() ? value.trim() : 'unknown';
+}
+
+function getTaskStatusLabel(status) {
+  return TASK_STATUS_LABELS[status] || status;
+}
+
+function getTaskGroupTitle(status) {
+  return getTaskStatusLabel(status);
+}
+
+function normalizeTaskList(view) {
+  const tasks = Array.isArray(view?.tasks) ? view.tasks : [];
+  return tasks
+    .filter((task) => task && typeof task.title === 'string' && task.title.trim())
+    .map((task, index) => ({
+      id: task.id,
+      title: task.title.trim(),
+      status: normalizeTaskStatus(task.status),
+      assignee: typeof task.assignee === 'string' && task.assignee.trim() ? task.assignee.trim() : '',
+      startedAtMs: parseTaskTime(task.startedAt) ?? parseTaskTime(task.updatedAt) ?? parseTaskTime(task.createdAt),
+      index,
+    }));
+}
+
+function isTaskViewStale(view) {
+  if (!view || view.unavailable === true) return true;
+  const updatedAtMs = parseTaskTime(view.updatedAt);
+  if (!updatedAtMs) return true;
+  return Date.now() - updatedAtMs > TASKS_ORCHESTRATOR_STALE_MS;
+}
+
+function formatTaskElapsed(startedAtMs) {
+  if (!startedAtMs) return '';
+  const diffMs = Math.max(0, Date.now() - startedAtMs);
+  const totalMinutes = Math.floor(diffMs / 60000);
+  if (totalMinutes < 1) return 'たった今';
+  if (totalMinutes < 60) return `${totalMinutes}分前`;
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (hours < 24) return minutes ? `${hours}時間${minutes}分` : `${hours}時間`;
+  const days = Math.floor(hours / 24);
+  const restHours = hours % 24;
+  return restHours ? `${days}日${restHours}時間` : `${days}日`;
+}
+
+function groupTasksByStatus(tasks) {
+  const groups = new Map();
+  for (const task of tasks) {
+    if (!groups.has(task.status)) groups.set(task.status, []);
+    groups.get(task.status).push(task);
+  }
+  return Array.from(groups.entries()).sort(([a], [b]) => {
+    const ai = TASK_STATUS_ORDER.indexOf(a);
+    const bi = TASK_STATUS_ORDER.indexOf(b);
+    if (ai !== -1 && bi !== -1) return ai - bi;
+    if (ai !== -1) return -1;
+    if (bi !== -1) return 1;
+    return 0;
+  });
+}
+
+function renderTaskItem(task) {
+  const li = document.createElement('li');
+  li.className = 'task-item';
+  if (task.id !== undefined && task.id !== null) li.dataset.id = String(task.id);
+
+  const title = document.createElement('div');
+  title.className = 'task-item-title';
+  title.textContent = task.title;
+  title.title = task.title;
+
+  const head = document.createElement('div');
+  head.className = 'task-item-head';
+
+  const badge = document.createElement('span');
+  badge.className = 'pane-badge pane-status task-status';
+  badge.dataset.status = task.status;
+  badge.setAttribute('role', 'status');
+  badge.textContent = getTaskStatusLabel(task.status);
+  head.appendChild(badge);
+
+  const meta = document.createElement('div');
+  meta.className = 'task-item-meta';
+  if (task.assignee) {
+    const assignee = document.createElement('span');
+    assignee.className = 'task-item-assignee';
+    assignee.textContent = `担当: ${task.assignee}`;
+    meta.appendChild(assignee);
+  }
+  const elapsedText = formatTaskElapsed(task.startedAtMs);
+  if (elapsedText) {
+    const elapsed = document.createElement('span');
+    elapsed.className = 'task-item-elapsed';
+    elapsed.textContent = elapsedText;
+    elapsed.dataset.startedAt = String(task.startedAtMs);
+    elapsed.title = new Date(task.startedAtMs).toLocaleString();
+    meta.appendChild(elapsed);
+  }
+  head.appendChild(meta);
+
+  li.appendChild(title);
+  li.appendChild(head);
+  return li;
+}
+
+function renderTaskGroup(status, tasks) {
+  const group = document.createElement('section');
+  group.className = 'task-list-group';
+  group.dataset.status = status;
+
+  const title = document.createElement('div');
+  title.className = 'task-list-group-title';
+  title.textContent = getTaskGroupTitle(status);
+
+  const list = document.createElement('ul');
+  list.className = 'task-list-items';
+  tasks.forEach((task) => list.appendChild(renderTaskItem(task)));
+
+  group.appendChild(title);
+  group.appendChild(list);
+  return group;
+}
+
+function renderTaskList(view = lastTaskView) {
+  lastTaskView = view || null;
+  const section = document.getElementById('task-list');
+  if (!section) return;
+  const staleNotice = section.querySelector('.task-list-stale');
+  const container = section.querySelector('.task-list-groups');
+  if (!container) return;
+
+  const tasks = normalizeTaskList(view);
+  const stale = isTaskViewStale(view);
+  const shouldShow = tasksFileConfigured || tasks.length > 0 || (!!view && stale);
+  section.hidden = !shouldShow;
+  section.classList.toggle('is-stale', stale);
+  if (staleNotice) staleNotice.hidden = !stale;
+  container.replaceChildren();
+  if (!shouldShow) return;
+
+  const groups = groupTasksByStatus(tasks);
+  if (groups.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'task-list-empty';
+    empty.textContent = 'タスクはありません';
+    container.appendChild(empty);
+    return;
+  }
+
+  groups.forEach(([status, groupTasks]) => {
+    container.appendChild(renderTaskGroup(status, groupTasks));
+  });
+}
+
+function tickTaskElapsed() {
+  const section = document.getElementById('task-list');
+  if (!section || section.hidden) return;
+  section.querySelectorAll('.task-item-elapsed[data-started-at]').forEach((el) => {
+    const ms = Number(el.dataset.startedAt);
+    if (Number.isFinite(ms)) el.textContent = formatTaskElapsed(ms);
+  });
+  const stale = isTaskViewStale(lastTaskView);
+  section.classList.toggle('is-stale', stale);
+  const staleNotice = section.querySelector('.task-list-stale');
+  if (staleNotice) staleNotice.hidden = !stale;
+}
+
+window.renderTaskList = renderTaskList;
 
 // 格納ペイン 1 件分（コンパクトカード）を生成する。
 //   - タイトル行: タスク名 / タイトルリンク / PR リンク
@@ -1022,6 +1254,9 @@ function setupSidebarMenu() {
   ipcRenderer.on('menu:update', (_event, sections) => {
     sidebarMenuSections = Array.isArray(sections) ? sections : [];
     renderSidebarMenu();
+  });
+  ipcRenderer.on('tasks:update', (_event, view) => {
+    renderTaskList(view);
   });
 }
 
@@ -3003,6 +3238,8 @@ async function initApp() {
     // main 側でも正規化済みだが、取得失敗・欠落に備えてここでも既定 'busy' に落とす。
     confirmClosePref = normalizeConfirmClose(cfg && cfg.confirmClose);
     waitingExcludeCwdPatterns = normalizeWaitingExcludeCwdPatterns(cfg && cfg.waitingExcludeCwdPatterns);
+    tasksFileConfigured = !!(cfg && typeof cfg.tasksFile === 'string' && cfg.tasksFile.trim());
+    renderTaskList(lastTaskView);
     // ヘッダー／タブのアプリ名。呼び出し側（例: vk-orchestrator）が env で上書きすると
     // main が app:get-config で伝えてくる。未指定時は index.html の既定 'VK Terminals'。
     if (cfg && typeof cfg.appTitle === 'string' && cfg.appTitle.trim()) {
@@ -3048,6 +3285,7 @@ setupSettingsPanel();
 
 // 使用率警告ドットバッジ（☰ メニューボタン）とサイドバー使用量カードを配線する。
 setupUsageBadge();
+setInterval(tickTaskElapsed, TASKS_ELAPSED_TICK_MS);
 
 // ─── State reporting to main process ─────────────────────────────────────────
 setInterval(() => {

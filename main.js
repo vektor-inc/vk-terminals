@@ -82,6 +82,15 @@ const MENU_MAX_SOURCE = 100;
 const MENU_MAX_ICON = 8;
 const menuSources = new Map();
 
+const TASKS_POLL_INTERVAL_MS = 3000;
+const TASKS_WATCH_DEBOUNCE_MS = 150;
+let tasksFilePath = '';
+let tasksWatch = null;
+let tasksPollTimer = null;
+let tasksDebounceTimer = null;
+let tasksLastRaw = Symbol('tasksLastRaw:init');
+let tasksSnapshot = null;
+
 function validateUrlField(raw, fieldName) {
   if (raw === '' || raw == null) {
     return { ok: true, value: '' };
@@ -271,6 +280,111 @@ function pushMenuUpdate() {
   }
 }
 
+function normalizeTasksFile(config) {
+  const raw = config && typeof config.tasksFile === 'string' ? config.tasksFile.trim() : '';
+  if (!raw || !path.isAbsolute(raw)) return '';
+  return raw;
+}
+
+function readTasksSnapshotFromFile(filePath) {
+  let raw = null;
+  try {
+    raw = fs.readFileSync(filePath, 'utf8');
+  } catch (_e) {
+    return {
+      raw: null,
+      view: {
+        updatedAt: null,
+        tasks: [],
+        unavailable: true,
+      },
+    };
+  }
+
+  try {
+    const parsed = JSON.parse(raw);
+    const tasks = Array.isArray(parsed?.tasks) ? parsed.tasks : [];
+    return {
+      raw,
+      view: {
+        updatedAt: typeof parsed?.updatedAt === 'string' ? parsed.updatedAt : null,
+        tasks,
+      },
+    };
+  } catch (e) {
+    console.error(`${LOG_PREFIX} Failed to parse tasks snapshot: ${filePath}`, e.message);
+    return {
+      raw,
+      view: {
+        updatedAt: null,
+        tasks: [],
+        unavailable: true,
+      },
+    };
+  }
+}
+
+function pushTasksUpdate() {
+  if (!tasksFilePath || !win || win.isDestroyed()) return;
+  if (!tasksSnapshot) {
+    const next = readTasksSnapshotFromFile(tasksFilePath);
+    tasksLastRaw = next.raw;
+    tasksSnapshot = next.view;
+  }
+  win.webContents.send('tasks:update', tasksSnapshot);
+}
+
+function refreshTasksSnapshot(forceSend = false) {
+  if (!tasksFilePath) return;
+  const next = readTasksSnapshotFromFile(tasksFilePath);
+  const changed = next.raw !== tasksLastRaw;
+  tasksLastRaw = next.raw;
+  tasksSnapshot = next.view;
+  if (changed || forceSend) pushTasksUpdate();
+}
+
+function scheduleTasksRefresh() {
+  if (!tasksFilePath) return;
+  if (tasksDebounceTimer) clearTimeout(tasksDebounceTimer);
+  tasksDebounceTimer = setTimeout(() => {
+    tasksDebounceTimer = null;
+    refreshTasksSnapshot(true);
+  }, TASKS_WATCH_DEBOUNCE_MS);
+}
+
+function startTasksWatcher() {
+  tasksFilePath = normalizeTasksFile(loadUserConfig());
+  if (!tasksFilePath) return;
+
+  refreshTasksSnapshot(false);
+
+  try {
+    const dir = path.dirname(tasksFilePath);
+    const base = path.basename(tasksFilePath);
+    tasksWatch = fs.watch(dir, (eventType, filename) => {
+      if (!filename || String(filename) === base) scheduleTasksRefresh();
+    });
+    tasksWatch.on('error', (e) => {
+      console.error(`${LOG_PREFIX} tasks watcher failed:`, e && e.message);
+    });
+  } catch (e) {
+    console.error(`${LOG_PREFIX} Failed to watch tasks file: ${tasksFilePath}`, e && e.message);
+  }
+
+  tasksPollTimer = setInterval(() => refreshTasksSnapshot(false), TASKS_POLL_INTERVAL_MS);
+}
+
+function stopTasksWatcher() {
+  if (tasksDebounceTimer) clearTimeout(tasksDebounceTimer);
+  tasksDebounceTimer = null;
+  if (tasksPollTimer) clearInterval(tasksPollTimer);
+  tasksPollTimer = null;
+  if (tasksWatch) {
+    try { tasksWatch.close(); } catch (_e) {}
+  }
+  tasksWatch = null;
+}
+
 /**
  * ユーザー設定を読み込む。
  * 読み込み順:
@@ -279,7 +393,7 @@ function pushMenuUpdate() {
  *   3. ~/.claude/terminals-config.json（後方互換）
  * どちらも存在しない場合は空オブジェクトを返す。
  *
- * @returns {{ initialCommand?: string, additionalPanes?: Array<{cwd: string}>, waitingExcludeCwdPatterns?: string[] }} 設定オブジェクト
+ * @returns {{ initialCommand?: string, additionalPanes?: Array<{cwd: string}>, waitingExcludeCwdPatterns?: string[], tasksFile?: string }} 設定オブジェクト
  */
 function loadUserConfig() {
   const candidates = [
@@ -495,6 +609,7 @@ function createWindow() {
 
   win.webContents.on('did-finish-load', () => {
     pushMenuUpdate();
+    pushTasksUpdate();
   });
   win.loadFile('renderer/index.html');
   // win.webContents.openDevTools(); // uncomment to debug
@@ -502,6 +617,7 @@ function createWindow() {
 
 app.whenReady().then(async () => {
   createWindow();
+  startTasksWatcher();
   await checkAndUpdate();
   startHttpApi();
   // 使用量スナップショットを起動時に温めておく（初回ポーリングで null が返るのを避ける）。
@@ -515,6 +631,7 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   cleanupPtys();
+  stopTasksWatcher();
   try { fs.unlinkSync(STATE_FILE); } catch (e) {}
   if (httpServer) httpServer.close();
 });
@@ -531,6 +648,7 @@ ipcMain.handle('app:get-config', () => {
   const waitingExcludeCwdPatterns = Array.isArray(config.waitingExcludeCwdPatterns)
     ? config.waitingExcludeCwdPatterns.filter((pattern) => typeof pattern === 'string')
     : [];
+  const tasksFile = normalizeTasksFile(config);
   return {
     agentroom: false,
     appTitle: APP_TITLE,
@@ -539,6 +657,7 @@ ipcMain.handle('app:get-config', () => {
     // ペインを閉じる時の確認（issue #184）。不正値・未指定は既定 'busy' に正規化して渡す。
     confirmClose: normalizeConfirmClose(config.confirmClose),
     waitingExcludeCwdPatterns,
+    tasksFile,
   };
 });
 
@@ -850,6 +969,7 @@ function createAdditionalPane(cwd, options = {}) {
 let additionalPanesCreated = false;
 ipcMain.on('terminal:renderer-ready', async () => {
   pushMenuUpdate();
+  pushTasksUpdate();
   if (additionalPanesCreated) return; // closePane で最後のペインを閉じて再 initApp された場合は再生成しない
   additionalPanesCreated = true;
   const config = loadUserConfig();

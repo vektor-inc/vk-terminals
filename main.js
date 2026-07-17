@@ -29,6 +29,7 @@ const {
   isValidSettingsDescriptor,
   saveSettingsToTargets,
 } = require('./settingsTargets');
+const { buildBuiltinSettingsDescriptor } = require('./settingsSchema');
 const execFileAsync = promisify(execFile);
 
 let win;
@@ -571,48 +572,15 @@ function resolveOwnConfigTargetPath() {
   return path.join(__dirname, 'config.json');
 }
 
-// env 未指定（スタンドアロン起動）時に使う組み込みディスクリプタ。VK Terminals 自身の
-// config.json（apiHost / initialCommand / 新規ペイン設定 / agentroom / additionalPanes）を GUI から編集できる。
+// env 未指定（スタンドアロン起動）時に使う組み込みディスクリプタ。静的な項目定義は
+// settings-schema.json に置き、実行時に決まる targetPath だけをここで合成する。
 function builtinSettingsDescriptor() {
-  return {
-    title: 'VK Terminals 設定',
-    note: '保存後、VK Terminals を再起動すると反映されます。',
+  return buildBuiltinSettingsDescriptor({
     targetPath: resolveOwnConfigTargetPath(),
-    groups: [
-      {
-        label: '基本',
-        fields: [
-          { key: 'apiHost',        label: 'API ホスト',            type: 'text',    help: '既定 127.0.0.1' },
-          { key: 'newPaneStartupDir', label: '新規ペインを開く時の初期ディレクトリ', type: 'text', placeholder: '/path/to/project', help: '新規ペインを開く時の作業ディレクトリを絶対パスで指定します。「Claude Code を自動起動する」設定が有効な場合は Claude もこのディレクトリで起動します。未入力の場合、または存在しないパスの場合はホームディレクトリで起動します。' },
-          { key: 'newPaneAutoLaunchClaude', label: 'Claude Code を自動的に起動する', type: 'boolean', default: false, help: 'チェックが入っている場合、新規ペインを開いた時に自動的に Claude Code が起動します。オフの場合は素のターミナルで起動します。' },
-          { key: 'initialCommand', label: '初期コマンド',          type: 'text',    help: 'Claude Code で起動する設定の場合、最初のペインで Claude 起動直後に自動実行させたいコマンドがあれば記入してください。毎日最初に実行するコマンドの入力を省略するための機能です。' },
-          // ペインを閉じる時の確認（issue #184）。既定 'busy'（実行中・入力待ちのみ確認）。
-          // HTTP API 経由（force）の自動クローズには適用されない。
-          { key: 'confirmClose', label: 'ペインを閉じる時の確認ダイアログ', type: 'select', default: 'busy', help: 'ペインの ✕ ボタンで閉じる時に確認ダイアログを表示する条件。HTTP API 経由の自動クローズには適用されません。', options: [
-            { value: 'busy',   label: '実行中・入力待ちの場合は表示（既定）' },
-            { value: 'always', label: '常に表示' },
-            { value: 'never',  label: '確認なし' },
-          ] },
-          // showUsage（issue #69）は opt-out（既定 ON）。default:true で「未設定 boolean が
-          // 保存時に false になる」問題を避ける（settings:describe / settings:save が default 尊重）。
-          { key: 'showUsage',      label: 'トークン使用量を表示',   type: 'boolean', default: true, help: 'Claude の利用状況（セッション% / 週間制限%）をサイドバーの「Claude使用量」・モバイルページに表示します。' },
-          // GPU 起動モード（utils/gpu.js）。環境変数 VK_TERMINALS_GPU を優先し、未指定時にこの値を使う。
-          // 空（自動）はプラットフォーム既定（macOS=default / それ以外=off）。反映には再起動が必要（note に記載）。
-          { key: 'gpu', label: 'GPU 起動モード', type: 'select', emptyToNull: true, default: '', help: 'GUI(Electron) の GPU 初期化方法。WSLg 等ではエラー抑制のため既定で無効化されます。環境変数 VK_TERMINALS_GPU 指定時はそちらが優先されます。', options: [
-            { value: '',         label: '自動（プラットフォーム既定）' },
-            { value: 'off',      label: 'GPU 無効（エラー抑制・推奨）' },
-            { value: 'default',  label: 'Chromium 任せ' },
-          ] },
-          // issue #70 でエージェントルーム（β）を一旦無効化するため設定項目を非表示にする。
-          // 復帰時は下記コメントを解除する。
-          // { key: 'agentroom',      label: 'エージェントルーム（β）表示', type: 'boolean' },
-          { key: 'waitingExcludeCwdPatterns', label: '入力待ち判定から除外する cwd パターン', type: 'lines', help: 'ペインのフルパス cwd に部分一致した場合、ローカル PTY 出力からの入力待ち判定を無効にします。' },
-          { key: 'menuItems', label: 'サイドバーメニュー (JSON 配列)', type: 'json', help: '例: [{"source":"config","title":"Links","items":[{"id":"issues","label":"Issues","icon":"📋","action":{"type":"open-url","url":"https://github.com/"}}]}]' },
-          { key: 'additionalPanes', label: '追加ペイン (JSON 配列)', type: 'json',   help: '例: [{"cwd":"/path"}]' },
-        ],
-      },
-    ],
-  };
+    onError: (error, schemaPath) => {
+      console.error(`${LOG_PREFIX} Failed to load built-in settings schema: ${schemaPath}`, error);
+    },
+  });
 }
 
 // ディスクリプタを解決する。env VK_TERMINALS_SETTINGS が指す有効なディスクリプタが

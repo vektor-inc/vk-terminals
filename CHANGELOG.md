@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 仕様変更 ] 設定パネルの組み込み項目定義を `settings-schema.json` に切り出し、外部起動側から再利用できるように変更（[#189](https://github.com/vektor-inc/vk-terminals/issues/189)）
+
 ## 1.25.0
 
 - [ 機能追加 ] ペインの cwd パターン指定でローカル入力待ち判定から除外できる設定を追加（[#183](https://github.com/vektor-inc/vk-terminals/issues/183)）

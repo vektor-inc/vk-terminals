@@ -6,7 +6,12 @@ const { appendAnsiForDisplay, stripAnsiForDisplay } = require('../utils/stripAns
 const { normalizeConfirmClose, shouldConfirmClose } = require('../utils/closeConfirm');
 // エージェントルーム（issue #58）。サブエージェントの稼働状況をドット絵キャラで可視化する。
 const { AGENT_ORDER, buildScene, resolveAgentStatesFromOutput } = require('./agentRoom');
-const { matchesWaiting, nextWaitingState } = require('./waitingState');
+const {
+  isWaitingCwdExcluded,
+  matchesWaiting,
+  nextWaitingState,
+  normalizeWaitingExcludeCwdPatterns,
+} = require('./waitingState');
 const { deriveStatus } = require('./statusState');
 const { getPrBadgePresentation } = require('./prBadge');
 const { isPatternValid } = require('./settingsValidation');
@@ -87,6 +92,7 @@ let newPaneAutoLaunchClaude = false;
 // ペインを閉じる時の確認（issue #184）。'never' | 'busy' | 'always'（既定 'busy'）。
 // 値は起動時に main（app:get-config）から取得する。設定反映には再起動が必要（設定パネルの note 参照）。
 let confirmClosePref = 'busy';
+let waitingExcludeCwdPatterns = [];
 // HTTP API（POST /api/agentroom）由来のルーム状態を、この TTL を超えたら「古い」と判断して
 // PTY 出力ベースのフォールバック表示に切り替える（ms）。
 const AGENTROOM_API_TTL_MS = 90000;
@@ -127,7 +133,8 @@ function checkWaiting(paneId) {
   const t = terminals[paneId];
   if (!t) return;
   const matches = matchesWaiting(stripAnsiForDisplay(t.lastLines));
-  const waiting = nextWaitingState({ prev: t.waiting, matches });
+  const excluded = isWaitingCwdExcluded(t.cwdFull, waitingExcludeCwdPatterns);
+  const waiting = nextWaitingState({ prev: t.waiting, matches, excluded });
   if (waiting !== t.waiting) {
     t.waiting = waiting;
     // waiting フラグが変わったら status も再計算する
@@ -2995,6 +3002,7 @@ async function initApp() {
     newPaneAutoLaunchClaude = !!(cfg && cfg.newPaneAutoLaunchClaude);
     // main 側でも正規化済みだが、取得失敗・欠落に備えてここでも既定 'busy' に落とす。
     confirmClosePref = normalizeConfirmClose(cfg && cfg.confirmClose);
+    waitingExcludeCwdPatterns = normalizeWaitingExcludeCwdPatterns(cfg && cfg.waitingExcludeCwdPatterns);
     // ヘッダー／タブのアプリ名。呼び出し側（例: vk-orchestrator）が env で上書きすると
     // main が app:get-config で伝えてくる。未指定時は index.html の既定 'VK Terminals'。
     if (cfg && typeof cfg.appTitle === 'string' && cfg.appTitle.trim()) {

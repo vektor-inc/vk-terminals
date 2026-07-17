@@ -60,13 +60,30 @@ function matchesWaiting(cleanBuffer) {
   return WAITING_PATTERNS.some(p => p.test(cleanBuffer));
 }
 
-function nextWaitingState({ prev, matches }) {
+function normalizeWaitingExcludeCwdPatterns(patterns) {
+  if (!Array.isArray(patterns)) return [];
+  return patterns
+    .filter((pattern) => typeof pattern === 'string')
+    .map((pattern) => pattern.trim())
+    .filter((pattern) => pattern !== '');
+}
+
+function isWaitingCwdExcluded(cwdFull, patterns) {
+  if (typeof cwdFull !== 'string' || cwdFull === '') return false;
+  const normalized = normalizeWaitingExcludeCwdPatterns(patterns);
+  return normalized.some((pattern) => cwdFull.includes(pattern));
+}
+
+function nextWaitingState({ prev, matches, excluded = false }) {
+  if (excluded) return false;
   // 出力再評価では waiting を解除しない。解除はユーザー入力時の明示クリアだけに集約する。
   return matches || prev;
 }
 
 module.exports = {
   WAITING_PATTERNS,
+  isWaitingCwdExcluded,
   matchesWaiting,
   nextWaitingState,
+  normalizeWaitingExcludeCwdPatterns,
 };

@@ -35,6 +35,10 @@ test('deriveStatus: ローカル waiting が true なら waiting', () => {
   assert.equal(status({ localWaiting: true, externalWaiting: false }), 'waiting');
 });
 
+test('deriveStatus: ローカル waiting が false でも外部権威 waiting が true なら waiting', () => {
+  assert.equal(status({ localWaiting: false, externalWaiting: true }), 'waiting');
+});
+
 test('deriveStatus: 直近出力あり・直近入力なしなら running', () => {
   assert.equal(status({ lastOutputTime: 9500, lastInputTime: 0 }), 'running');
 });

@@ -3,6 +3,7 @@ const { ipcRenderer, shell } = require('electron');
 const { Terminal } = require('@xterm/xterm');
 const { FitAddon } = require('@xterm/addon-fit');
 const { appendAnsiForDisplay, stripAnsiForDisplay } = require('../utils/stripAnsi');
+const { normalizeConfirmClose, shouldConfirmClose } = require('../utils/closeConfirm');
 // エージェントルーム（issue #58）。サブエージェントの稼働状況をドット絵キャラで可視化する。
 const { AGENT_ORDER, buildScene, resolveAgentStatesFromOutput } = require('./agentRoom');
 const {
@@ -88,6 +89,9 @@ let agentRoomEnabled = false;
 // 値は起動時に main（app:get-config）から取得する。設定反映には再起動が必要（設定パネルの note 参照）。
 let newPaneStartupDir = '';
 let newPaneAutoLaunchClaude = false;
+// ペインを閉じる時の確認（issue #184）。'never' | 'busy' | 'always'（既定 'busy'）。
+// 値は起動時に main（app:get-config）から取得する。設定反映には再起動が必要（設定パネルの note 参照）。
+let confirmClosePref = 'busy';
 let waitingExcludeCwdPatterns = [];
 // HTTP API（POST /api/agentroom）由来のルーム状態を、この TTL を超えたら「古い」と判断して
 // PTY 出力ベースのフォールバック表示に切り替える（ms）。
@@ -1298,10 +1302,17 @@ async function splitPane(paneId, direction, overrideCwd, options = {}) {
   return addPane(overrideCwd, options);
 }
 
-function closePane(paneId, { force = false } = {}) {
+function closePane(paneId, { force = false, skipConfirm = false } = {}) {
   if (!paneExists(paneId)) return;
   const _t = terminals[paneId];
   if (!force && _t?.lock?.close === false) return;
+  // 誤クローズ防止（issue #184）: 非 force パスでは confirmClose 設定と status に応じて
+  // アプリ内確認ダイアログを挟む。force（HTTP API / PTY exit などの自動系）は従来どおり即閉じ。
+  // lock.close === false のガードが確認より優先される（上の early return）。
+  if (!force && !skipConfirm && shouldConfirmClose(confirmClosePref, _t?.status || 'idle')) {
+    openCloseConfirmDialog(paneId);
+    return;
+  }
 
   const t = terminals[paneId];
   if (t) {
@@ -1347,6 +1358,79 @@ function closePane(paneId, { force = false } = {}) {
 
   render();
   requestAnimationFrame(fitAll);
+}
+
+// ─── ペインを閉じる確認ダイアログ（issue #184）───────────────────────────────
+// OS ネイティブダイアログではなくアプリ内モーダルで確認する（フォーカス移動で
+// ペイン状態が変わらないこと。status は PTY 出力/入力時刻の派生値なので、モーダルへの
+// フォーカス移動では変化しない）。二重表示は closeConfirmOpen で防ぐ。
+let closeConfirmOpen = false;
+
+function openCloseConfirmDialog(paneId) {
+  if (closeConfirmOpen) return;
+  closeConfirmOpen = true;
+
+  const t = terminals[paneId];
+  const { label } = getStatusPresentation(t?.status);
+  // running / waiting はその旨を明示し、それ以外（'always' 設定の idle）は汎用文にする。
+  const message = label
+    ? `このペインは「${label}」です。閉じるとセッションは失われます。閉じますか？`
+    : 'このペインを閉じますか？';
+
+  const overlay = document.createElement('div');
+  overlay.className = 'confirm-overlay';
+  const modal = document.createElement('div');
+  modal.className = 'confirm-modal';
+  modal.setAttribute('role', 'alertdialog');
+  modal.setAttribute('aria-modal', 'true');
+  modal.setAttribute('aria-label', 'ペインを閉じる確認');
+
+  const msgEl = document.createElement('p');
+  msgEl.className = 'confirm-message';
+  msgEl.textContent = message;
+
+  const actions = document.createElement('div');
+  actions.className = 'confirm-actions';
+  const cancelBtn = document.createElement('button');
+  cancelBtn.type = 'button';
+  cancelBtn.className = 'confirm-cancel';
+  cancelBtn.textContent = 'キャンセル';
+  const closeBtn = document.createElement('button');
+  closeBtn.type = 'button';
+  closeBtn.className = 'confirm-close-pane';
+  closeBtn.textContent = '閉じる';
+  actions.appendChild(cancelBtn);
+  actions.appendChild(closeBtn);
+
+  modal.appendChild(msgEl);
+  modal.appendChild(actions);
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+
+  const cleanup = () => {
+    document.removeEventListener('keydown', onKey);
+    overlay.remove();
+    closeConfirmOpen = false;
+  };
+  const onKey = (e) => {
+    if (e.key === 'Escape') {
+      e.stopPropagation();
+      cleanup();
+    }
+  };
+  document.addEventListener('keydown', onKey);
+
+  overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) cleanup(); });
+  cancelBtn.addEventListener('click', cleanup);
+  closeBtn.addEventListener('click', () => {
+    cleanup();
+    // ダイアログ表示中に PTY exit 等で当該ペインが消えていても、closePane 冒頭の
+    // paneExists ガードで no-op になる（誤って別ペインを閉じることはない）。
+    closePane(paneId, { skipConfirm: true });
+  });
+
+  // 既定フォーカスは安全側（キャンセル）。Enter 誤爆で閉じてしまわないようにする。
+  cancelBtn.focus();
 }
 
 // ペインをグリッド上で左右の隣と入れ替える。端で隣が無ければ何もしない。
@@ -2916,6 +3000,8 @@ async function initApp() {
     agentRoomEnabled = !!(cfg && cfg.agentroom);
     newPaneStartupDir = (cfg && typeof cfg.newPaneStartupDir === 'string') ? cfg.newPaneStartupDir : '';
     newPaneAutoLaunchClaude = !!(cfg && cfg.newPaneAutoLaunchClaude);
+    // main 側でも正規化済みだが、取得失敗・欠落に備えてここでも既定 'busy' に落とす。
+    confirmClosePref = normalizeConfirmClose(cfg && cfg.confirmClose);
     waitingExcludeCwdPatterns = normalizeWaitingExcludeCwdPatterns(cfg && cfg.waitingExcludeCwdPatterns);
     // ヘッダー／タブのアプリ名。呼び出し側（例: vk-orchestrator）が env で上書きすると
     // main が app:get-config で伝えてくる。未指定時は index.html の既定 'VK Terminals'。

@@ -322,6 +322,7 @@ cp config.example.json ~/.vk-terminals/config.json
 - `additionalPanes`：起動時に追加で開くペインのリスト。各要素の `cwd`（絶対パス）でペインが分割作成され、その作業ディレクトリで claude が立ち上がります。複数指定可。省略または空配列の場合は 1 ペインのみで起動します。
   - `noClaude: true` を指定すると、そのペインのみ claude を自動起動せず素のシェルとして開きます（省略時は CLI フラグの設定に従う）。
 - `showUsage`：Claude の使用量表示（サイドバー最上部の「Claude使用量」・モバイルページ）の ON/OFF。opt-out 方式で、省略時は ON。明示的に `false` にしたときだけ無効化されます（後述の[Claude 使用量表示](#claude-使用量表示)を参照）。
+- `confirmClose`：ペインの ✕ ボタンで閉じる時に確認ダイアログを表示する条件。`busy`（実行中・入力待ちのみ確認。省略時の既定）／`always`（常に確認）／`never`（確認なし）。HTTP API 経由（`POST /api/close-pane`）やプロセス自然終了などの自動クローズには適用されません。
 - `menuItems`：サイドバーに表示する追加メニュー項目（外部リンク・設定モーダル起動）のリスト。省略時は表示なし（後述の[サイドバーメニュー](#サイドバーメニュー)を参照）。
 - `apiHost`：HTTP API サーバーの待受ホスト。省略時は `127.0.0.1`。LAN やモバイル端末からアクセスさせたい場合に自ホストの IP などを指定します。
 - `gpu`：GPU 起動モード（`off` / `default` / 未設定）。詳細は[GPU 起動モード](#gpu-起動モードvk_terminals_gpu)を参照。
@@ -333,7 +334,7 @@ cp config.example.json ~/.vk-terminals/config.json
 
 タイトルバー右端の ⚙ ボタンから、設定を GUI 上で編集・保存できます。単体起動でも常に表示されます。
 
-- **単体起動時**（`VK_TERMINALS_SETTINGS` 未指定）：vk-terminals 自身の `config.json`（`apiHost` / `initialCommand` / `showUsage` / `gpu` / `menuItems` / `additionalPanes`）を編集します。編集対象は `loadUserConfig()` と同じ探索順で、既存の `config.json` があればそれ、無ければリポジトリ直下 `config.json` を作成します。
+- **単体起動時**（`VK_TERMINALS_SETTINGS` 未指定）：vk-terminals 自身の `config.json`（`apiHost` / `initialCommand` / `confirmClose` / `showUsage` / `gpu` / `menuItems` / `additionalPanes`）を編集します。編集対象は `loadUserConfig()` と同じ探索順で、既存の `config.json` があればそれ、無ければリポジトリ直下 `config.json` を作成します。
 - **呼び出し側から渡された場合**（`VK_TERMINALS_SETTINGS` に「設定ディスクリプタ JSON」のパスを指定）：そのディスクリプタが指す任意の config ファイルを編集します（vk-orchestrator が自身の統合 `config.json` を編集させる用途など）。vk-terminals 自身は編集対象の設定内容を知らず、ディスクリプタ（編集対象パス + 項目スキーマ）に従って読み書きするだけの汎用実装です。
 
 いずれの場合も、保存後の反映には再起動が必要です（設定は起動時に読み込むため）。

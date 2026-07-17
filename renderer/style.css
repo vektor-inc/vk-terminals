@@ -1637,3 +1637,55 @@ body.pane-dragging * {
   .ar-bubble,
   .ar-coffee::before { animation: none !important; }
 }
+
+/* ─── ペインを閉じる確認ダイアログ（issue #184）───────────────────────────────
+ * 設定モーダル（.settings-overlay）と同系のトーンで、確認だけの小さなモーダル。
+ * z-index は設定モーダル（2000）より上に置き、どの文脈でも最前面で確認できるようにする。 */
+.confirm-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2100;
+  background: rgba(1, 4, 9, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.confirm-modal {
+  background: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  width: min(400px, calc(100vw - 48px));
+  padding: 18px;
+  color: #e6edf3;
+  font-size: 13px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+}
+.confirm-message {
+  margin: 0 0 16px;
+  line-height: 1.6;
+}
+.confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+.confirm-actions button {
+  padding: 6px 14px;
+  border-radius: 5px;
+  font-size: 13px;
+  cursor: pointer;
+  border: 1px solid #30363d;
+}
+.confirm-cancel {
+  background: #21262d;
+  color: #c9d1d9;
+}
+.confirm-cancel:hover { background: #30363d; }
+/* 破壊的操作（閉じる）は赤系で警告する（保存の緑と区別）。 */
+.confirm-close-pane {
+  background: #da3633;
+  border-color: #f85149;
+  color: #fff;
+  font-weight: 600;
+}
+.confirm-close-pane:hover { background: #f85149; }

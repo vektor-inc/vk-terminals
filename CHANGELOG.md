@@ -1,5 +1,8 @@
 # Changelog
 
+- [ 機能追加 ] ペインの cwd パターン指定でローカル入力待ち判定から除外できる設定を追加（[#183](https://github.com/vektor-inc/vk-terminals/issues/183)）
+- [ 開発環境 ] cwd パターン指定によるローカル入力待ち判定除外のユニットテストを追加（[#183](https://github.com/vektor-inc/vk-terminals/issues/183)）
+
 ## 1.24.0
 
 - [ 仕様変更 ] モバイル版ターミナル下部のクイック入力コントロール（1/2/3/Enter/Yes/No/Esc/Ctrl-C）を使わないため削除（[#181](https://github.com/vektor-inc/vk-terminals/issues/181)）

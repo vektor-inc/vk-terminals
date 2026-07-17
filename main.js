@@ -277,7 +277,7 @@ function pushMenuUpdate() {
  *   3. ~/.claude/terminals-config.json（後方互換）
  * どちらも存在しない場合は空オブジェクトを返す。
  *
- * @returns {{ initialCommand?: string, additionalPanes?: Array<{cwd: string}> }} 設定オブジェクト
+ * @returns {{ initialCommand?: string, additionalPanes?: Array<{cwd: string}>, waitingExcludeCwdPatterns?: string[] }} 設定オブジェクト
  */
 function loadUserConfig() {
   const candidates = [
@@ -524,11 +524,15 @@ app.on('before-quit', () => {
 //   `config.agentroom === true` に戻せばよい。
 ipcMain.handle('app:get-config', () => {
   const config = loadUserConfig();
+  const waitingExcludeCwdPatterns = Array.isArray(config.waitingExcludeCwdPatterns)
+    ? config.waitingExcludeCwdPatterns.filter((pattern) => typeof pattern === 'string')
+    : [];
   return {
     agentroom: false,
     appTitle: APP_TITLE,
     newPaneStartupDir: typeof config.newPaneStartupDir === 'string' ? config.newPaneStartupDir.trim() : '',
     newPaneAutoLaunchClaude: config.newPaneAutoLaunchClaude === true,
+    waitingExcludeCwdPatterns,
   };
 });
 
@@ -592,6 +596,7 @@ function builtinSettingsDescriptor() {
           // issue #70 でエージェントルーム（β）を一旦無効化するため設定項目を非表示にする。
           // 復帰時は下記コメントを解除する。
           // { key: 'agentroom',      label: 'エージェントルーム（β）表示', type: 'boolean' },
+          { key: 'waitingExcludeCwdPatterns', label: '入力待ち判定から除外する cwd パターン', type: 'lines', help: 'ペインのフルパス cwd に部分一致した場合、ローカル PTY 出力からの入力待ち判定を無効にします。' },
           { key: 'menuItems', label: 'サイドバーメニュー (JSON 配列)', type: 'json', help: '例: [{"source":"config","title":"Links","items":[{"id":"issues","label":"Issues","icon":"📋","action":{"type":"open-url","url":"https://github.com/"}}]}]' },
           { key: 'additionalPanes', label: '追加ペイン (JSON 配列)', type: 'json',   help: '例: [{"cwd":"/path"}]' },
         ],

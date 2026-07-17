@@ -69,7 +69,7 @@ test('buildBuiltinSettingsDescriptor: JSON から targetPath 付きの組み込�
     label: '新規ペインを開く時の初期ディレクトリ',
     type: 'text',
     placeholder: '/path/to/project',
-    help: '新規ペインを開く時の作業ディレクトリを絶対パスで指定します。「Claude Code を自動起動する」設定が有効な場合は Claude もこのディレクトリで起動します。未入力の場合、または存在しないパスの場合はホームディレクトリで起動します。',
+    help: '新規ペインを開く時の作業ディレクトリを絶対パスで指定します。起動時の初回ペインにも適用されます。「Claude Code を自動起動する」設定が有効な場合は Claude もこのディレクトリで起動します。未入力の場合、または存在しないパスの場合はホームディレクトリで起動します。',
   });
   assert.deepEqual(fields.find((field) => field.key === 'confirmClose'), {
     key: 'confirmClose',

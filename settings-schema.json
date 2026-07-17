@@ -91,7 +91,7 @@
           "key": "menuItems",
           "label": "サイドバーメニュー (JSON 配列)",
           "type": "json",
-          "help": "例: [{\"source\":\"config\",\"title\":\"Links\",\"items\":[{\"id\":\"issues\",\"label\":\"Issues\",\"icon\":\"📋\",\"action\":{\"type\":\"open-url\",\"url\":\"https://github.com/\"}}]}]"
+          "help": "任意のメニュー項目を JSON 形式で登録すると追加で表示する事ができます。\n例: [{\"source\":\"config\",\"title\":\"Links\",\"items\":[{\"id\":\"issues\",\"label\":\"Issues\",\"icon\":\"📋\",\"action\":{\"type\":\"open-url\",\"url\":\"https://github.com/\"}}]}]"
         },
         {
           "key": "additionalPanes",

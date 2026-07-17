@@ -369,6 +369,8 @@ html, body {
 .settings-help {
   color: #8b949e;
   font-size: 12px;
+  /* help 文中の \n を改行として表示する（menuItems の説明文＋例の 2 行表記など） */
+  white-space: pre-line;
 }
 .settings-error {
   color: #f85149;

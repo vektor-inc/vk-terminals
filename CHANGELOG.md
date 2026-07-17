@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 仕様変更 ] 設定画面のサイドバーメニュー項目の説明文に用途の説明を追加し、例と改行して表示するように変更
+
 ## 1.26.0
 
 - [ 仕様変更 ] 設定パネルの組み込み項目定義を `settings-schema.json` に切り出し、外部起動側から再利用できるように変更（[#189](https://github.com/vektor-inc/vk-terminals/issues/189)）

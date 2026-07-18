@@ -4,9 +4,11 @@ const path = require('path');
 const os = require('os');
 const fs = require('fs');
 const http = require('http');
+const crypto = require('crypto');
 const { execFile } = require('child_process');
 const { promisify } = require('util');
 const { stripAnsiForPattern } = require('./utils/stripAnsi');
+const { isAllowedTransition } = require('./utils/taskStatusActions');
 // エージェントルーム（issue #58）の agent 名・state 検証を renderer 側と共有する。
 // canonicalizeState / isKnownAgent は DOM 非依存なので main プロセスから require して使える。
 const { canonicalizeState, isKnownAgent } = require('./renderer/agentRoom');
@@ -280,10 +282,20 @@ function pushMenuUpdate() {
   }
 }
 
+function normalizeAbsoluteConfigPath(config, keys) {
+  for (const key of keys) {
+    const raw = config && typeof config[key] === 'string' ? config[key].trim() : '';
+    if (raw && path.isAbsolute(raw)) return raw;
+  }
+  return '';
+}
+
 function normalizeTasksFile(config) {
-  const raw = config && typeof config.tasksFile === 'string' ? config.tasksFile.trim() : '';
-  if (!raw || !path.isAbsolute(raw)) return '';
-  return raw;
+  return normalizeAbsoluteConfigPath(config, ['tasksFile', 'tasksViewPath']);
+}
+
+function normalizeCommandsFile(config) {
+  return normalizeAbsoluteConfigPath(config, ['commandsPath', 'tasksCommandFile']);
 }
 
 function readTasksSnapshotFromFile(filePath) {
@@ -649,6 +661,7 @@ ipcMain.handle('app:get-config', () => {
     ? config.waitingExcludeCwdPatterns.filter((pattern) => typeof pattern === 'string')
     : [];
   const tasksFile = normalizeTasksFile(config);
+  const commandsFile = normalizeCommandsFile(config);
   return {
     agentroom: false,
     appTitle: APP_TITLE,
@@ -658,7 +671,42 @@ ipcMain.handle('app:get-config', () => {
     confirmClose: normalizeConfirmClose(config.confirmClose),
     waitingExcludeCwdPatterns,
     tasksFile,
+    commandsFile,
   };
+});
+
+ipcMain.handle('tasks:set-status', async (_event, payload) => {
+  try {
+    const commandsFile = normalizeCommandsFile(loadUserConfig());
+    if (!commandsFile) {
+      return { ok: false, error: 'commands-file-not-configured' };
+    }
+
+    const taskId = Number(payload && payload.taskId);
+    if (!Number.isInteger(taskId) || taskId <= 0) {
+      return { ok: false, error: 'invalid-task-id' };
+    }
+
+    const expected = String(payload && payload.expected);
+    const to = String(payload && payload.to);
+    if (!isAllowedTransition(expected, to)) {
+      return { ok: false, error: 'disallowed-transition' };
+    }
+
+    const command = {
+      id: crypto.randomUUID(),
+      taskId,
+      action: 'set-status',
+      to,
+      expected,
+      requestedAt: new Date().toISOString(),
+    };
+    await fs.promises.mkdir(path.dirname(commandsFile), { recursive: true });
+    await fs.promises.appendFile(commandsFile, `${JSON.stringify(command)}\n`, 'utf8');
+    return { ok: true, id: command.id };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
 });
 
 // 使用状況の取得（issue #69 → #73 で公式 API 主・トランスクリプト従の統一構造に変更）。

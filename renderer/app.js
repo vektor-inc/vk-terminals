@@ -4,6 +4,7 @@ const { Terminal } = require('@xterm/xterm');
 const { FitAddon } = require('@xterm/addon-fit');
 const { appendAnsiForDisplay, stripAnsiForDisplay } = require('../utils/stripAnsi');
 const { normalizeConfirmClose, shouldConfirmClose } = require('../utils/closeConfirm');
+const { getTaskStatusActions } = require('../utils/taskStatusActions');
 // エージェントルーム（issue #58）。サブエージェントの稼働状況をドット絵キャラで可視化する。
 const { AGENT_ORDER, buildScene, resolveAgentStatesFromOutput } = require('./agentRoom');
 const {
@@ -94,7 +95,9 @@ let newPaneAutoLaunchClaude = false;
 let confirmClosePref = 'busy';
 let waitingExcludeCwdPatterns = [];
 let tasksFileConfigured = false;
+let commandsConfigured = false;
 let lastTaskView = null;
+const pendingTaskIds = new Set();
 // HTTP API（POST /api/agentroom）由来のルーム状態を、この TTL を超えたら「古い」と判断して
 // PTY 出力ベースのフォールバック表示に切り替える（ms）。
 const AGENTROOM_API_TTL_MS = 90000;
@@ -962,6 +965,8 @@ function renderTaskItem(task) {
   const li = document.createElement('li');
   li.className = 'task-item';
   if (task.id !== undefined && task.id !== null) li.dataset.id = String(task.id);
+  const taskKey = String(task.id);
+  const status = task.status;
 
   const title = document.createElement('div');
   title.className = 'task-item-title';
@@ -973,8 +978,8 @@ function renderTaskItem(task) {
 
   const badge = document.createElement('span');
   badge.className = 'pane-badge pane-status task-status';
-  badge.dataset.status = task.status;
-  badge.textContent = getTaskStatusLabel(task.status);
+  badge.dataset.status = status;
+  badge.textContent = getTaskStatusLabel(status);
   head.appendChild(badge);
 
   const meta = document.createElement('div');
@@ -998,6 +1003,64 @@ function renderTaskItem(task) {
 
   li.appendChild(title);
   li.appendChild(head);
+
+  const actions = getTaskStatusActions(status);
+  const canSendCommand = commandsConfigured && actions.length > 0 && Number.isInteger(Number(task.id)) && Number(task.id) > 0;
+  if (canSendCommand) {
+    const actionRow = document.createElement('div');
+    actionRow.className = 'task-item-actions';
+    if (pendingTaskIds.has(taskKey)) {
+      const pending = document.createElement('span');
+      pending.className = 'task-item-pending';
+      pending.setAttribute('role', 'status');
+      pending.textContent = '反映待ち';
+      actionRow.appendChild(pending);
+    } else {
+      actions.forEach((action) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'task-item-action';
+        button.dataset.to = action.to;
+        button.dataset.expected = status;
+        button.textContent = action.label;
+        button.addEventListener('click', async () => {
+          if (pendingTaskIds.has(taskKey)) return;
+          const buttons = actionRow.querySelectorAll('.task-item-action');
+          buttons.forEach((el) => { el.disabled = true; });
+          actionRow.querySelector('.task-item-action-error')?.remove();
+          try {
+            const res = await ipcRenderer.invoke('tasks:set-status', {
+              taskId: task.id,
+              expected: status,
+              to: action.to,
+            });
+            if (res && res.ok) {
+              pendingTaskIds.add(taskKey);
+              renderTaskList(lastTaskView);
+              return;
+            }
+            console.warn('タスクステータス変更依頼に失敗しました', res && res.error);
+            buttons.forEach((el) => { el.disabled = false; });
+            const error = document.createElement('span');
+            error.className = 'task-item-action-error';
+            error.setAttribute('role', 'status');
+            error.textContent = '送信失敗';
+            actionRow.appendChild(error);
+          } catch (e) {
+            console.warn('タスクステータス変更依頼に失敗しました', e);
+            buttons.forEach((el) => { el.disabled = false; });
+            const error = document.createElement('span');
+            error.className = 'task-item-action-error';
+            error.setAttribute('role', 'status');
+            error.textContent = '送信失敗';
+            actionRow.appendChild(error);
+          }
+        });
+        actionRow.appendChild(button);
+      });
+    }
+    li.appendChild(actionRow);
+  }
   return li;
 }
 
@@ -1256,6 +1319,7 @@ function setupSidebarMenu() {
     renderSidebarMenu();
   });
   ipcRenderer.on('tasks:update', (_event, view) => {
+    pendingTaskIds.clear();
     renderTaskList(view);
   });
 }
@@ -3239,6 +3303,7 @@ async function initApp() {
     confirmClosePref = normalizeConfirmClose(cfg && cfg.confirmClose);
     waitingExcludeCwdPatterns = normalizeWaitingExcludeCwdPatterns(cfg && cfg.waitingExcludeCwdPatterns);
     tasksFileConfigured = !!(cfg && typeof cfg.tasksFile === 'string' && cfg.tasksFile.trim());
+    commandsConfigured = !!(cfg && typeof cfg.commandsFile === 'string' && cfg.commandsFile.trim());
     renderTaskList(lastTaskView);
     // ヘッダー／タブのアプリ名。呼び出し側（例: vk-orchestrator）が env で上書きすると
     // main が app:get-config で伝えてくる。未指定時は index.html の既定 'VK Terminals'。

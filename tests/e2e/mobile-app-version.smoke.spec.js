@@ -71,12 +71,14 @@ async function launchApp(port) {
     agentroom: false,
     additionalPanes: [],
   }), 'utf8');
+  const env = { ...process.env };
+  delete env.VK_TERMINALS_APP_TITLE;
 
   const app = await _electron.launch({
     args: ['.', '--no-claude'],
     cwd: repoRoot,
     env: {
-      ...process.env,
+      ...env,
       HOME: tmpHome,
       USERPROFILE: tmpHome,
       VK_TERMINALS_API_PORT: String(port),

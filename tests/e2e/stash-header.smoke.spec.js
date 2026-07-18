@@ -97,6 +97,7 @@ async function launchApp(port) {
   fs.writeFileSync(configPath, JSON.stringify({
     apiHost: '127.0.0.1',
     initialCommand: '',
+    confirmClose: 'never',
     agentroom: false,
     additionalPanes: [],
   }), 'utf8');

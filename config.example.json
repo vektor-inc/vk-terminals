@@ -6,8 +6,10 @@
   "agentroom": false,
   "_waitingExcludeCwdPatternsNote": "ペインの cwdFull に部分一致した場合、ローカル PTY 出力からの waiting 判定対象外にします。",
   "waitingExcludeCwdPatterns": [],
-  "_tasksFileNote": "vk-orchestrator が注入する tasks-view.json の絶対パスです。未設定時はサイドバーのタスクセクションを表示しません。",
+  "_tasksFileNote": "vk-orchestrator が注入する tasks-view.json の絶対パスです。tasksFile 優先、未設定時は tasksViewPath も受け付けます。どちらも未設定時はサイドバーのタスクセクションを表示しません。",
   "tasksFile": "/absolute/path/to/tasks-view.json",
+  "_commandsPathNote": "vk-orchestrator が読み取る commands.jsonl の絶対パスです。commandsPath 優先、後方互換で tasksCommandFile も受け付けます。どちらも未設定時はタスク操作ボタンを表示しません。",
+  "commandsPath": "/absolute/path/to/commands.jsonl",
   "_menuItemsNote": "menuItems に section 配列を入れるとサイドバーへ追加表示できます。action.type は open-url / open-settings のみ対応です。",
   "menuItems": [],
   "_menuItemsExample": [

@@ -35,12 +35,17 @@
   <div class="u-note" id="usage-note"></div>
 </div>
 <section class="task-list" id="task-list" hidden>
-  <div class="task-list-head">
-    <h2>タスク</h2>
+  <button class="task-list-head" id="task-list-head" type="button" aria-controls="task-list-body" aria-expanded="true">
+    <span class="task-list-head-main">
+      <span class="task-list-chevron" aria-hidden="true">▼</span>
+      <span class="task-list-head-text">タスク</span>
+    </span>
     <span class="task-list-count" id="task-list-count"></span>
+  </button>
+  <div class="task-list-body" id="task-list-body">
+    <div class="task-list-stale" hidden>orchestrator 停止中</div>
+    <div class="task-list-groups"></div>
   </div>
-  <div class="task-list-stale" hidden>orchestrator 停止中</div>
-  <div class="task-list-groups"></div>
 </section>
 <div id="list"></div>
 <footer id="app-version-footer"></footer>
@@ -358,6 +363,30 @@ var taskListCount = document.getElementById("task-list-count");
 var taskListGroups = taskListSection ? taskListSection.querySelector(".task-list-groups") : null;
 var taskListStale = taskListSection ? taskListSection.querySelector(".task-list-stale") : null;
 var lastTaskData = null;
+
+// タスク一覧の折り畳み。項目が多いと下のペイン一覧へスクロールで届かなくなるため見出しから畳めるようにする。
+var TASK_LIST_COLLAPSE_KEY = "vkt.taskListCollapsed";
+var taskListHead = document.getElementById("task-list-head");
+var taskListChevron = taskListHead ? taskListHead.querySelector(".task-list-chevron") : null;
+function readTaskListCollapsed() {
+  try { return localStorage.getItem(TASK_LIST_COLLAPSE_KEY) === "1"; } catch (e) { return false; }
+}
+function writeTaskListCollapsed(collapsed) {
+  try { localStorage.setItem(TASK_LIST_COLLAPSE_KEY, collapsed ? "1" : "0"); } catch (e) { /* 保存失敗は無視 */ }
+}
+function syncTaskListCollapse(collapsed) {
+  if (taskListSection) taskListSection.classList.toggle("collapsed", collapsed);
+  if (taskListHead) taskListHead.setAttribute("aria-expanded", collapsed ? "false" : "true");
+  if (taskListChevron) taskListChevron.textContent = collapsed ? "▲" : "▼";
+}
+if (taskListHead) {
+  syncTaskListCollapse(readTaskListCollapsed());
+  taskListHead.addEventListener("click", function() {
+    var next = !taskListSection.classList.contains("collapsed");
+    syncTaskListCollapse(next);
+    writeTaskListCollapsed(next);
+  });
+}
 var pendingTaskIds = {}; // taskId -> { expected, to }
 
 function parseTaskTime(value) {
@@ -374,20 +403,6 @@ function getTaskStatusLabel(status) {
   return TASK_STATUS_LABELS[status] || status;
 }
 
-function formatTaskElapsed(startedAtMs) {
-  if (!startedAtMs) return "";
-  var diffMs = Math.max(0, Date.now() - startedAtMs);
-  var totalMinutes = Math.floor(diffMs / 60000);
-  if (totalMinutes < 1) return "1分未満";
-  if (totalMinutes < 60) return totalMinutes + "分";
-  var hours = Math.floor(totalMinutes / 60);
-  var minutes = totalMinutes % 60;
-  if (hours < 24) return minutes ? hours + "時間" + minutes + "分" : hours + "時間";
-  var days = Math.floor(hours / 24);
-  var restHours = hours % 24;
-  return restHours ? days + "日" + restHours + "時間" : days + "日";
-}
-
 function normalizeTaskList(view) {
   var tasks = Array.isArray(view && view.tasks) ? view.tasks : [];
   return tasks
@@ -399,7 +414,6 @@ function normalizeTaskList(view) {
         title: task.title.trim(),
         status: normalizeTaskStatus(task.status),
         assignee: typeof task.assignee === "string" && task.assignee.trim() ? task.assignee.trim() : "",
-        startedAtMs: parseTaskTime(task.startedAt) || parseTaskTime(task.updatedAt) || parseTaskTime(task.createdAt),
         actions: actions.filter(function(action) {
           return action && typeof action.label === "string" && typeof action.to === "string";
         }),
@@ -503,15 +517,6 @@ function renderTaskItem(task, commandsConfigured, stale) {
     assignee.textContent = "担当: " + task.assignee;
     meta.appendChild(assignee);
   }
-  var elapsedText = formatTaskElapsed(task.startedAtMs);
-  if (elapsedText) {
-    var elapsed = document.createElement("span");
-    elapsed.className = "task-item-elapsed";
-    elapsed.dataset.startedAt = String(task.startedAtMs);
-    elapsed.title = new Date(task.startedAtMs).toLocaleString();
-    elapsed.textContent = elapsedText;
-    meta.appendChild(elapsed);
-  }
   body.appendChild(meta);
 
   item.appendChild(title);
@@ -585,15 +590,11 @@ function renderTaskList(view) {
     var section = document.createElement("section");
     section.className = "task-list-group";
     section.dataset.status = group.status;
-    var heading = document.createElement("h3");
-    heading.className = "task-list-group-title";
-    heading.textContent = getTaskStatusLabel(group.status);
     var listEl = document.createElement("ul");
     listEl.className = "task-list-items";
     group.tasks.forEach(function(task) {
       listEl.appendChild(renderTaskItem(task, !!(view && view.commandsConfigured), stale));
     });
-    section.appendChild(heading);
     section.appendChild(listEl);
     taskListGroups.appendChild(section);
   });

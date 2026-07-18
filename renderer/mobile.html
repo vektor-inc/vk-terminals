@@ -34,6 +34,14 @@
   <div class="u-bar" id="usage-bar"><span class="u-marks" id="usage-marks"></span><span id="usage-percent"></span></div>
   <div class="u-note" id="usage-note"></div>
 </div>
+<section class="task-list" id="task-list" hidden>
+  <div class="task-list-head">
+    <h2>タスク</h2>
+    <span class="task-list-count" id="task-list-count"></span>
+  </div>
+  <div class="task-list-stale" hidden>orchestrator 停止中</div>
+  <div class="task-list-groups"></div>
+</section>
 <div id="list"></div>
 <footer id="app-version-footer"></footer>
 
@@ -321,6 +329,265 @@ var errEl = document.getElementById("err");
 function showErr(msg) {
   if (!msg) { errEl.style.display = "none"; return; }
   errEl.textContent = msg; errEl.style.display = "block";
+}
+
+// ステータス順と表示名は renderer/app.js の TASK_STATUS_LABELS/ORDER と同期を保つこと。
+// 遷移テーブルは持たず、操作ボタンは /api/tasks が返す actions だけを使う。
+var TASKS_ORCHESTRATOR_STALE_MS = 60000;
+var TASK_STATUS_ORDER = [
+  "in-progress",
+  "waiting-input",
+  "ready",
+  "awaiting-approval",
+  "waiting-merge",
+  "failed",
+  "done"
+];
+var TASK_STATUS_LABELS = {
+  "awaiting-approval": "承認待ち",
+  "ready": "実行待ち",
+  "in-progress": "実行中",
+  "waiting-input": "入力待ち",
+  "waiting-merge": "マージ待ち",
+  "done": "完了",
+  "failed": "失敗"
+};
+
+var taskListSection = document.getElementById("task-list");
+var taskListCount = document.getElementById("task-list-count");
+var taskListGroups = taskListSection ? taskListSection.querySelector(".task-list-groups") : null;
+var taskListStale = taskListSection ? taskListSection.querySelector(".task-list-stale") : null;
+var lastTaskData = null;
+var pendingTaskIds = {}; // taskId -> { expected, to }
+
+function parseTaskTime(value) {
+  if (typeof value !== "string" || !value) return null;
+  var ms = Date.parse(value);
+  return isFinite(ms) ? ms : null;
+}
+
+function normalizeTaskStatus(value) {
+  return typeof value === "string" && value.trim() ? value.trim() : "unknown";
+}
+
+function getTaskStatusLabel(status) {
+  return TASK_STATUS_LABELS[status] || status;
+}
+
+function formatTaskElapsed(startedAtMs) {
+  if (!startedAtMs) return "";
+  var diffMs = Math.max(0, Date.now() - startedAtMs);
+  var totalMinutes = Math.floor(diffMs / 60000);
+  if (totalMinutes < 1) return "1分未満";
+  if (totalMinutes < 60) return totalMinutes + "分";
+  var hours = Math.floor(totalMinutes / 60);
+  var minutes = totalMinutes % 60;
+  if (hours < 24) return minutes ? hours + "時間" + minutes + "分" : hours + "時間";
+  var days = Math.floor(hours / 24);
+  var restHours = hours % 24;
+  return restHours ? days + "日" + restHours + "時間" : days + "日";
+}
+
+function normalizeTaskList(view) {
+  var tasks = Array.isArray(view && view.tasks) ? view.tasks : [];
+  return tasks
+    .filter(function(task) { return task && typeof task.title === "string" && task.title.trim(); })
+    .map(function(task, index) {
+      var actions = Array.isArray(task.actions) ? task.actions : [];
+      return {
+        id: task.id,
+        title: task.title.trim(),
+        status: normalizeTaskStatus(task.status),
+        assignee: typeof task.assignee === "string" && task.assignee.trim() ? task.assignee.trim() : "",
+        startedAtMs: parseTaskTime(task.startedAt) || parseTaskTime(task.updatedAt) || parseTaskTime(task.createdAt),
+        actions: actions.filter(function(action) {
+          return action && typeof action.label === "string" && typeof action.to === "string";
+        }),
+        index: index
+      };
+    });
+}
+
+function isTaskViewStale(view) {
+  if (!view || view.unavailable === true) return true;
+  var updatedAtMs = parseTaskTime(view.updatedAt);
+  if (!updatedAtMs) return true;
+  return Date.now() - updatedAtMs > TASKS_ORCHESTRATOR_STALE_MS;
+}
+
+function groupTasksByStatus(tasks) {
+  var groups = {};
+  tasks.forEach(function(task) {
+    if (!groups[task.status]) groups[task.status] = [];
+    groups[task.status].push(task);
+  });
+  return Object.keys(groups).sort(function(a, b) {
+    var ai = TASK_STATUS_ORDER.indexOf(a);
+    var bi = TASK_STATUS_ORDER.indexOf(b);
+    if (ai !== -1 && bi !== -1) return ai - bi;
+    if (ai !== -1) return -1;
+    if (bi !== -1) return 1;
+    return 0;
+  }).map(function(status) {
+    return { status: status, tasks: groups[status] };
+  });
+}
+
+function syncPendingTaskIds(tasks) {
+  var present = {};
+  tasks.forEach(function(task) {
+    var key = String(task.id);
+    present[key] = true;
+    if (pendingTaskIds[key] && task.status !== pendingTaskIds[key].expected) {
+      delete pendingTaskIds[key];
+    }
+  });
+  Object.keys(pendingTaskIds).forEach(function(key) {
+    if (!present[key]) delete pendingTaskIds[key];
+  });
+}
+
+async function setTaskStatus(task, action) {
+  var key = String(task.id);
+  if (pendingTaskIds[key]) return;
+  try {
+    var res = await fetch("/api/tasks/set-status", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ taskId: task.id, expected: task.status, to: action.to })
+    });
+    var json = await res.json().catch(function() { return {}; });
+    if (!res.ok || !json.ok) {
+      showErr("タスク操作に失敗: " + (json.error || res.status));
+      return;
+    }
+    pendingTaskIds[key] = { expected: task.status, to: action.to };
+    renderTaskList(lastTaskData);
+    showErr("");
+  } catch (e) {
+    showErr("タスク操作に失敗: " + e.message);
+  }
+}
+
+function renderTaskItem(task, commandsConfigured) {
+  var item = document.createElement("li");
+  item.className = "task-item";
+  if (task.id !== undefined && task.id !== null) item.dataset.id = String(task.id);
+  var taskKey = String(task.id);
+
+  var title = document.createElement("div");
+  title.className = "task-item-title";
+  title.textContent = task.title;
+  title.title = task.title;
+
+  var body = document.createElement("div");
+  body.className = "task-item-body";
+
+  var badge = document.createElement("span");
+  badge.className = "task-status-badge";
+  badge.dataset.status = task.status;
+  badge.textContent = getTaskStatusLabel(task.status);
+  body.appendChild(badge);
+
+  var meta = document.createElement("div");
+  meta.className = "task-item-meta";
+  if (task.assignee) {
+    var assignee = document.createElement("span");
+    assignee.className = "task-item-assignee";
+    assignee.textContent = "担当: " + task.assignee;
+    meta.appendChild(assignee);
+  }
+  var elapsedText = formatTaskElapsed(task.startedAtMs);
+  if (elapsedText) {
+    var elapsed = document.createElement("span");
+    elapsed.className = "task-item-elapsed";
+    elapsed.dataset.startedAt = String(task.startedAtMs);
+    elapsed.title = new Date(task.startedAtMs).toLocaleString();
+    elapsed.textContent = elapsedText;
+    meta.appendChild(elapsed);
+  }
+  body.appendChild(meta);
+
+  item.appendChild(title);
+  item.appendChild(body);
+
+  var taskIdNumber = Number(task.id);
+  var canSendCommand = commandsConfigured && task.actions.length > 0
+    && Number.isInteger(taskIdNumber) && taskIdNumber > 0;
+  if (canSendCommand) {
+    var actionRow = document.createElement("div");
+    actionRow.className = "task-item-actions";
+    if (pendingTaskIds[taskKey]) {
+      var pending = document.createElement("span");
+      pending.className = "task-item-pending";
+      pending.setAttribute("role", "status");
+      pending.textContent = "反映待ち";
+      actionRow.appendChild(pending);
+    } else {
+      task.actions.forEach(function(action) {
+        var button = document.createElement("button");
+        button.type = "button";
+        button.className = "task-item-action";
+        button.dataset.expected = task.status;
+        button.dataset.to = action.to;
+        button.textContent = action.label;
+        button.addEventListener("click", function() {
+          var buttons = actionRow.querySelectorAll(".task-item-action");
+          buttons.forEach(function(el) { el.disabled = true; });
+          setTaskStatus(task, action).finally(function() {
+            if (!pendingTaskIds[taskKey]) {
+              buttons.forEach(function(el) { el.disabled = false; });
+            }
+          });
+        });
+        actionRow.appendChild(button);
+      });
+    }
+    item.appendChild(actionRow);
+  }
+
+  return item;
+}
+
+function renderTaskList(view) {
+  lastTaskData = view || null;
+  if (!taskListSection || !taskListGroups) return;
+  var tasks = normalizeTaskList(view);
+  syncPendingTaskIds(tasks);
+  var stale = isTaskViewStale(view);
+  var tasksConfigured = !!(view && view.tasksConfigured);
+  var shouldShow = tasksConfigured || tasks.length > 0;
+  taskListSection.hidden = !shouldShow;
+  taskListSection.classList.toggle("is-stale", stale);
+  if (taskListStale) taskListStale.hidden = !stale || !shouldShow;
+  if (taskListCount) taskListCount.textContent = tasks.length ? tasks.length + "件" : "";
+  while (taskListGroups.firstChild) taskListGroups.removeChild(taskListGroups.firstChild);
+  if (!shouldShow) return;
+
+  if (tasks.length === 0) {
+    var empty = document.createElement("div");
+    empty.className = "task-list-empty";
+    empty.textContent = stale ? "タスク情報を取得できません" : "タスクはありません";
+    taskListGroups.appendChild(empty);
+    return;
+  }
+
+  groupTasksByStatus(tasks).forEach(function(group) {
+    var section = document.createElement("section");
+    section.className = "task-list-group";
+    section.dataset.status = group.status;
+    var heading = document.createElement("h3");
+    heading.className = "task-list-group-title";
+    heading.textContent = getTaskStatusLabel(group.status);
+    var listEl = document.createElement("ul");
+    listEl.className = "task-list-items";
+    group.tasks.forEach(function(task) {
+      listEl.appendChild(renderTaskItem(task, !!(view && view.commandsConfigured)));
+    });
+    section.appendChild(heading);
+    section.appendChild(listEl);
+    taskListGroups.appendChild(section);
+  });
 }
 
 async function send(termId, input) {
@@ -858,10 +1125,20 @@ function render(data) {
 
 async function poll() {
   try {
-    var res = await fetch("/api/states", { cache: "no-store" });
-    if (!res.ok) throw new Error("HTTP " + res.status);
-    var data = await res.json();
+    var responses = await Promise.all([
+      fetch("/api/states", { cache: "no-store" }),
+      fetch("/api/tasks", { cache: "no-store" })
+    ]);
+    if (!responses[0].ok) throw new Error("/api/states HTTP " + responses[0].status);
+    if (!responses[1].ok) throw new Error("/api/tasks HTTP " + responses[1].status);
+    var payloads = await Promise.all([
+      responses[0].json(),
+      responses[1].json()
+    ]);
+    var data = payloads[0];
+    var tasksData = payloads[1];
     render(data);
+    renderTaskList(tasksData);
     // 初回描画でカードが #list に入った後に一度だけスクロール位置を復元する。
     // 2 回目以降のポーリング再描画では呼ばない（ユーザーのスクロール操作と競合させない）。
     restoreScrollOnce();

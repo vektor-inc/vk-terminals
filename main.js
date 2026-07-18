@@ -8,7 +8,7 @@ const crypto = require('crypto');
 const { execFile } = require('child_process');
 const { promisify } = require('util');
 const { stripAnsiForPattern } = require('./utils/stripAnsi');
-const { isAllowedTransition } = require('./utils/taskStatusActions');
+const { getTaskStatusActions, isAllowedTransition } = require('./utils/taskStatusActions');
 // エージェントルーム（issue #58）の agent 名・state 検証を renderer 側と共有する。
 // canonicalizeState / isKnownAgent は DOM 非依存なので main プロセスから require して使える。
 const { canonicalizeState, isKnownAgent } = require('./renderer/agentRoom');
@@ -334,6 +334,62 @@ function readTasksSnapshotFromFile(filePath) {
       },
     };
   }
+}
+
+function withTaskStatusActions(view) {
+  const tasks = Array.isArray(view?.tasks) ? view.tasks : [];
+  const config = loadUserConfig();
+  return {
+    updatedAt: typeof view?.updatedAt === 'string' ? view.updatedAt : null,
+    unavailable: view?.unavailable === true,
+    tasks: tasks.map((task) => ({
+      ...task,
+      actions: getTaskStatusActions(typeof task?.status === 'string' ? task.status : ''),
+    })),
+    tasksConfigured: !!normalizeTasksFile(config),
+    commandsConfigured: !!normalizeCommandsFile(config),
+  };
+}
+
+async function submitTaskStatusCommand(payload) {
+  try {
+    const commandsFile = normalizeCommandsFile(loadUserConfig());
+    if (!commandsFile) {
+      return { ok: false, error: 'commands-file-not-configured' };
+    }
+
+    const taskId = Number(payload && payload.taskId);
+    if (!Number.isInteger(taskId) || taskId <= 0) {
+      return { ok: false, error: 'invalid-task-id' };
+    }
+
+    const expected = String(payload && payload.expected);
+    const to = String(payload && payload.to);
+    if (!isAllowedTransition(expected, to)) {
+      return { ok: false, error: 'disallowed-transition' };
+    }
+
+    const command = {
+      id: crypto.randomUUID(),
+      taskId,
+      action: 'set-status',
+      to,
+      expected,
+      requestedAt: new Date().toISOString(),
+    };
+    await fs.promises.mkdir(path.dirname(commandsFile), { recursive: true });
+    await fs.promises.appendFile(commandsFile, `${JSON.stringify(command)}\n`, 'utf8');
+    return { ok: true, id: command.id };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+}
+
+function taskStatusCommandHttpStatus(result) {
+  if (!result || result.ok) return 200;
+  if (result.error === 'commands-file-not-configured') return 409;
+  if (result.error === 'invalid-task-id' || result.error === 'disallowed-transition') return 400;
+  return 500;
 }
 
 function pushTasksUpdate() {
@@ -676,37 +732,7 @@ ipcMain.handle('app:get-config', () => {
 });
 
 ipcMain.handle('tasks:set-status', async (_event, payload) => {
-  try {
-    const commandsFile = normalizeCommandsFile(loadUserConfig());
-    if (!commandsFile) {
-      return { ok: false, error: 'commands-file-not-configured' };
-    }
-
-    const taskId = Number(payload && payload.taskId);
-    if (!Number.isInteger(taskId) || taskId <= 0) {
-      return { ok: false, error: 'invalid-task-id' };
-    }
-
-    const expected = String(payload && payload.expected);
-    const to = String(payload && payload.to);
-    if (!isAllowedTransition(expected, to)) {
-      return { ok: false, error: 'disallowed-transition' };
-    }
-
-    const command = {
-      id: crypto.randomUUID(),
-      taskId,
-      action: 'set-status',
-      to,
-      expected,
-      requestedAt: new Date().toISOString(),
-    };
-    await fs.promises.mkdir(path.dirname(commandsFile), { recursive: true });
-    await fs.promises.appendFile(commandsFile, `${JSON.stringify(command)}\n`, 'utf8');
-    return { ok: true, id: command.id };
-  } catch (e) {
-    return { ok: false, error: String((e && e.message) || e) };
-  }
+  return submitTaskStatusCommand(payload);
 });
 
 // 使用状況の取得（issue #69 → #73 で公式 API 主・トランスクリプト従の統一構造に変更）。
@@ -1151,6 +1177,29 @@ function startHttpApi() {
       return;
     }
 
+    // GET /api/tasks
+    //   モバイルページ向けに tasks-view.json のスナップショットを返す。
+    //   ステータス遷移の正は utils/taskStatusActions.js に置き、ここで各タスクの actions を計算する。
+    if (req.method === 'GET' && url.pathname === '/api/tasks') {
+      const config = loadUserConfig();
+      const tasksFile = normalizeTasksFile(config);
+      let view = tasksSnapshot;
+      if (tasksFile && (!view || tasksFile !== tasksFilePath)) {
+        const next = readTasksSnapshotFromFile(tasksFile);
+        view = next.view;
+      }
+      if (!tasksFile) {
+        view = {
+          updatedAt: null,
+          tasks: [],
+          unavailable: true,
+        };
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify(withTaskStatusActions(view)));
+      return;
+    }
+
     // POST /api/send  { termId: "1", input: "y" }
     if (req.method === 'POST' && url.pathname === '/api/send') {
       if (isForbiddenOrigin(req)) {
@@ -1200,6 +1249,30 @@ function startHttpApi() {
           res.writeHead(400, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'invalid JSON' }));
         }
+      });
+      return;
+    }
+
+    // POST /api/tasks/set-status  { taskId: 123, expected: "awaiting-approval", to: "ready" }
+    //   サイドバー IPC の tasks:set-status と同じ共通ヘルパーで commands.jsonl に依頼を追記する。
+    if (req.method === 'POST' && url.pathname === '/api/tasks/set-status') {
+      if (isForbiddenOrigin(req)) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'forbidden origin' }));
+        return;
+      }
+      readJsonBody(req, res, 10 * 1024, async (body) => {
+        let parsed;
+        try {
+          parsed = JSON.parse(body);
+        } catch (_e) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'invalid JSON' }));
+          return;
+        }
+        const result = await submitTaskStatusCommand(parsed);
+        res.writeHead(taskStatusCommandHttpStatus(result), { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result.ok ? result : { ok: false, error: result.error }));
       });
       return;
     }

@@ -134,6 +134,7 @@ const TASK_STATUS_LABELS = {
 };
 const TASK_EDITABLE_STATUSES = new Set(['awaiting-approval', 'ready']);
 const TASK_PENDING_TIMEOUT_MS = 30000;
+const TASK_COMMAND_SEND_ERROR_MESSAGE = '送信に失敗しました（再試行してください）';
 
 // waiting 判定用 lastLines バッファの上限（issue #32 対応）。
 //   - LASTLINES_MAX_LINES: 直近 N 行を保持する。
@@ -990,6 +991,50 @@ function setTaskCommandError(taskKey, message) {
   taskCommandErrors.set(taskKey, message);
 }
 
+function escapeTaskFocusSelectorValue(value) {
+  return String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+function captureTaskFocusState() {
+  const active = document.activeElement;
+  if (!(active instanceof HTMLElement) || !active.closest('#task-list')) return null;
+  const taskId = active.dataset.taskId || active.closest('.task-item')?.dataset.id;
+  const control = active.dataset.taskControl;
+  if (!taskId || !control) return null;
+  return {
+    taskId,
+    control,
+    value: active.dataset.value || '',
+    to: active.dataset.to || '',
+    expected: active.dataset.expected || '',
+  };
+}
+
+function buildTaskFocusSelector(focusState) {
+  if (!focusState) return '';
+  let selector = `[data-task-id="${escapeTaskFocusSelectorValue(focusState.taskId)}"][data-task-control="${escapeTaskFocusSelectorValue(focusState.control)}"]`;
+  if (focusState.value) selector += `[data-value="${escapeTaskFocusSelectorValue(focusState.value)}"]`;
+  if (focusState.to) selector += `[data-to="${escapeTaskFocusSelectorValue(focusState.to)}"]`;
+  if (focusState.expected) selector += `[data-expected="${escapeTaskFocusSelectorValue(focusState.expected)}"]`;
+  return selector;
+}
+
+function restoreTaskFocusState(focusState) {
+  const selector = buildTaskFocusSelector(focusState);
+  if (!selector) return;
+  const target = document.querySelector(selector);
+  if (!(target instanceof HTMLElement)) return;
+  if ('disabled' in target && target.disabled) {
+    target.disabled = false;
+    target.setAttribute('aria-disabled', 'true');
+  }
+  try {
+    target.focus({ preventScroll: true });
+  } catch (_e) {
+    target.focus();
+  }
+}
+
 function syncPendingTaskCommands(tasks) {
   const present = new Set();
   tasks.forEach((task) => {
@@ -1164,12 +1209,12 @@ function renderTaskItem(task) {
       }
       console.warn('タスク変更依頼に失敗しました', res && res.error);
       clearTaskPending(taskKey);
-      setTaskCommandError(taskKey, '送信失敗');
+      setTaskCommandError(taskKey, TASK_COMMAND_SEND_ERROR_MESSAGE);
       renderTaskList(lastTaskView);
     } catch (e) {
       console.warn('タスク変更依頼に失敗しました', e);
       clearTaskPending(taskKey);
-      setTaskCommandError(taskKey, '送信失敗');
+      setTaskCommandError(taskKey, TASK_COMMAND_SEND_ERROR_MESSAGE);
       renderTaskList(lastTaskView);
     }
   };
@@ -1180,6 +1225,8 @@ function renderTaskItem(task) {
       button.type = 'button';
       button.className = buttonClassName;
       if (action.to === 'failed' || action.confirm === true) button.classList.add('task-item-action--danger');
+      button.dataset.taskId = taskKey;
+      button.dataset.taskControl = 'status-action';
       button.dataset.to = action.to;
       button.dataset.expected = status;
       button.disabled = hasPending;
@@ -1203,6 +1250,8 @@ function renderTaskItem(task) {
     const editButton = document.createElement('button');
     editButton.type = 'button';
     editButton.className = 'task-item-action';
+    editButton.dataset.taskId = taskKey;
+    editButton.dataset.taskControl = 'edit-toggle';
     editButton.setAttribute('aria-expanded', expandedTaskEditIds.has(taskKey) ? 'true' : 'false');
     editButton.textContent = expandedTaskEditIds.has(taskKey) ? '編集を閉じる' : '編集';
     editButton.addEventListener('click', () => {
@@ -1241,6 +1290,8 @@ function renderTaskItem(task) {
       priorityLabel.textContent = '優先度';
       const prioritySelect = document.createElement('select');
       prioritySelect.className = 'task-edit-select';
+      prioritySelect.dataset.taskId = taskKey;
+      prioritySelect.dataset.taskControl = 'priority-select';
       prioritySelect.disabled = hasPending;
       const currentPriority = taskPriorityToCommandValue(task.priority);
       getTaskPriorityOptions().forEach((option) => {
@@ -1251,6 +1302,10 @@ function renderTaskItem(task) {
         prioritySelect.appendChild(optionEl);
       });
       prioritySelect.addEventListener('change', () => {
+        if (getTaskPending(taskKey)) {
+          prioritySelect.value = currentPriority;
+          return;
+        }
         submitTaskCommand({
           kind: 'priority',
           actionName: 'tasks:set-priority',
@@ -1274,6 +1329,8 @@ function renderTaskItem(task) {
         const button = document.createElement('button');
         button.type = 'button';
         button.className = 'task-edit-segment';
+        button.dataset.taskId = taskKey;
+        button.dataset.taskControl = 'sequential-segment';
         button.dataset.value = option.value;
         button.setAttribute('aria-pressed', option.value === currentSequential ? 'true' : 'false');
         button.disabled = hasPending;
@@ -1355,6 +1412,7 @@ function renderTaskGroup(status, tasks) {
 }
 
 function renderTaskList(view = lastTaskView) {
+  const focusState = captureTaskFocusState();
   lastTaskView = view || null;
   const section = document.getElementById('task-list');
   if (!section) return;
@@ -1385,6 +1443,7 @@ function renderTaskList(view = lastTaskView) {
   groups.forEach(([status, groupTasks]) => {
     container.appendChild(renderTaskGroup(status, groupTasks));
   });
+  restoreTaskFocusState(focusState);
 }
 
 function tickTaskStale() {

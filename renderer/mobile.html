@@ -397,6 +397,7 @@ if (taskListHead) {
   });
 }
 var pendingTaskIds = {}; // taskId -> { expected, to }
+var TASK_COMMAND_SEND_ERROR_MESSAGE = "送信に失敗しました（再試行してください）";
 
 function parseTaskTime(value) {
   if (typeof value !== "string" || !value) return null;
@@ -504,7 +505,7 @@ async function setTaskStatus(task, action) {
     if (!res.ok || !json.ok) {
       delete pendingTaskIds[key];
       renderTaskList(lastTaskData);
-      showErr("タスク操作に失敗: " + (json.error || res.status));
+      showErr(TASK_COMMAND_SEND_ERROR_MESSAGE);
       return;
     }
     pendingTaskIds[key] = { expected: task.status, to: action.to };
@@ -513,7 +514,7 @@ async function setTaskStatus(task, action) {
   } catch (e) {
     delete pendingTaskIds[key];
     renderTaskList(lastTaskData);
-    showErr("タスク操作に失敗: " + e.message);
+    showErr(TASK_COMMAND_SEND_ERROR_MESSAGE);
   }
 }
 
@@ -653,13 +654,13 @@ async function send(termId, input) {
       body: JSON.stringify({ termId: termId, input: input })
     });
     if (!res.ok) {
-      var j = await res.json().catch(function(){ return {}; });
-      showErr("送信失敗: " + (j.error || res.status));
+      await res.json().catch(function(){ return {}; });
+      showErr(TASK_COMMAND_SEND_ERROR_MESSAGE);
     } else {
       showErr("");
     }
   } catch (e) {
-    showErr("送信失敗: " + e.message);
+    showErr(TASK_COMMAND_SEND_ERROR_MESSAGE);
   }
 }
 

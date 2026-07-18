@@ -161,8 +161,12 @@ test('新タスク契約では優先度バッジと編集パネルから set-pri
     await task.getByRole('button', { name: '編集' }).click();
     await expect(task.locator('.task-edit-panel')).toBeVisible();
     await expect(task.getByRole('button', { name: '承認' })).toBeVisible();
-    await task.getByLabel('優先度').selectOption('low');
+    const prioritySelect = task.getByLabel('優先度');
+    await prioritySelect.focus();
+    await prioritySelect.selectOption('low');
     await expect(task.locator('.task-item-pending')).toHaveText('反映待ち');
+    await expect(prioritySelect).toHaveAttribute('aria-disabled', 'true');
+    await expect.poll(() => win.evaluate(() => document.activeElement?.dataset.taskControl || '')).toBe('priority-select');
 
     await expect.poll(() => fs.existsSync(commandsPath) ? fs.readFileSync(commandsPath, 'utf8') : '', {
       timeout: 5000,

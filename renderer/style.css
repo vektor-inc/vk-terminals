@@ -979,7 +979,7 @@ body.resizing-sidebar .sidebar {
   border: 1px solid rgba(248, 81, 73, 0.32);
 }
 .task-priority-badge[data-priority="medium"] {
-  color: #e3b341;
+  color: #f0c36a;
   background: rgba(210, 153, 34, 0.14);
   border: 1px solid rgba(210, 153, 34, 0.32);
 }
@@ -1047,11 +1047,13 @@ body.resizing-sidebar .sidebar {
   outline: 2px solid #58a6ff;
   outline-offset: 2px;
 }
-.task-item-action:disabled {
+.task-item-action:disabled,
+.task-item-action[aria-disabled="true"] {
   opacity: 0.55;
   cursor: default;
 }
-.task-item-action:disabled:hover {
+.task-item-action:disabled:hover,
+.task-item-action[aria-disabled="true"]:hover {
   border-color: #30363d;
   background: #21262d;
   color: #c9d1d9;
@@ -1065,7 +1067,8 @@ body.resizing-sidebar .sidebar {
   background: rgba(248, 81, 73, 0.16);
   color: #ffb4ad;
 }
-.task-item-action--danger:disabled:hover {
+.task-item-action--danger:disabled:hover,
+.task-item-action--danger[aria-disabled="true"]:hover {
   border-color: rgba(248, 81, 73, 0.45);
   background: #21262d;
   color: #ffa198;
@@ -1130,7 +1133,8 @@ body.resizing-sidebar .sidebar {
   outline: 2px solid #58a6ff;
   outline-offset: 2px;
 }
-.task-edit-select:disabled {
+.task-edit-select:disabled,
+.task-edit-select[aria-disabled="true"] {
   opacity: 0.55;
 }
 .task-edit-segmented,
@@ -1141,6 +1145,10 @@ body.resizing-sidebar .sidebar {
   gap: 6px;
 }
 .task-edit-segment {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
   min-height: 28px;
   padding: 3px 9px;
   border: 1px solid #30363d;
@@ -1155,11 +1163,22 @@ body.resizing-sidebar .sidebar {
   cursor: pointer;
 }
 .task-edit-segment[aria-pressed="true"] {
-  border-color: rgba(88, 166, 255, 0.55);
-  background: rgba(88, 166, 255, 0.18);
-  color: #79c0ff;
+  border-color: rgba(121, 192, 255, 0.78);
+  background: rgba(88, 166, 255, 0.32);
+  color: #cfe8ff;
+  font-weight: 800;
+  box-shadow: inset 0 0 0 1px rgba(121, 192, 255, 0.26);
 }
-.task-edit-segment:disabled {
+.task-edit-segment[aria-pressed="true"]::before {
+  content: "";
+  width: 4px;
+  height: 8px;
+  border: solid currentColor;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg) translateY(-1px);
+}
+.task-edit-segment:disabled,
+.task-edit-segment[aria-disabled="true"] {
   opacity: 0.55;
   cursor: default;
 }

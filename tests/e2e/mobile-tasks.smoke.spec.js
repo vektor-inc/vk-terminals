@@ -98,6 +98,8 @@ test('モバイル HTTP API: タスク一覧取得とステータス変更依頼
         title: 'モバイルから承認するタスク',
         status: 'awaiting-approval',
         assignee: 'wada',
+        priority: null,
+        sequential: false,
         createdAt: freshDate(-10 * 60 * 1000),
         internalPath: path.join(tmpRoot, 'private-worktree'),
       },
@@ -126,6 +128,8 @@ test('モバイル HTTP API: タスク一覧取得とステータス変更依頼
       title: 'モバイルから承認するタスク',
       status: 'awaiting-approval',
       assignee: 'wada',
+      priority: null,
+      sequential: false,
     });
     expect(awaitingTask).not.toHaveProperty('internalPath');
     // actions はサーバー側の共有ロジックで計算され、モバイル側はこの配列だけを描画に使う。
@@ -158,6 +162,37 @@ test('モバイル HTTP API: タスク一覧取得とステータス変更依頼
     expect(typeof command.requestedAt).toBe('string');
     expect(Number.isNaN(Date.parse(command.requestedAt))).toBe(false);
 
+    const priority = await fetchJson(`${base}/api/tasks/set-priority`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ taskId: '199', expected: 'none', to: 'high' }),
+    });
+    expect(priority.res.status).toBe(200);
+    expect(priority.json.ok).toBe(true);
+
+    const sequential = await fetchJson(`${base}/api/tasks/set-sequential`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ taskId: '199', expected: 'parallel', to: 'sequential' }),
+    });
+    expect(sequential.res.status).toBe(200);
+    expect(sequential.json.ok).toBe(true);
+
+    const commandLines = fs.readFileSync(commandsPath, 'utf8').trimEnd().split('\n').map((line) => JSON.parse(line));
+    expect(commandLines).toHaveLength(3);
+    expect(commandLines[1]).toMatchObject({
+      taskId: 199,
+      action: 'set-priority',
+      to: 'high',
+      expected: 'none',
+    });
+    expect(commandLines[2]).toMatchObject({
+      taskId: 199,
+      action: 'set-sequential',
+      to: 'sequential',
+      expected: 'parallel',
+    });
+
     // 許可外の遷移は API レベルで拒否され、commands.jsonl も増えない。
     const disallowed = await fetchJson(`${base}/api/tasks/set-status`, {
       method: 'POST',
@@ -166,7 +201,7 @@ test('モバイル HTTP API: タスク一覧取得とステータス変更依頼
     });
     expect(disallowed.res.status).toBe(400);
     expect(disallowed.json).toMatchObject({ ok: false, error: 'disallowed-transition' });
-    expect(fs.readFileSync(commandsPath, 'utf8').trimEnd().split('\n')).toHaveLength(1);
+    expect(fs.readFileSync(commandsPath, 'utf8').trimEnd().split('\n')).toHaveLength(3);
 
     // 異なる Origin 付き POST は CSRF ガードで 403 になり、ヘルパーへ到達しない。
     const csrf = await fetchJson(`${base}/api/tasks/set-status`, {
@@ -176,7 +211,7 @@ test('モバイル HTTP API: タスク一覧取得とステータス変更依頼
     });
     expect(csrf.res.status).toBe(403);
     expect(csrf.json).toEqual({ error: 'forbidden origin' });
-    expect(fs.readFileSync(commandsPath, 'utf8').trimEnd().split('\n')).toHaveLength(1);
+    expect(fs.readFileSync(commandsPath, 'utf8').trimEnd().split('\n')).toHaveLength(3);
   } finally {
     if (app) await app.close();
     fs.rmSync(appTmpRoot, { recursive: true, force: true });

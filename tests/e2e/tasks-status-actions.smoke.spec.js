@@ -129,6 +129,60 @@ test('commandsPath 未設定時はステータス操作ボタンを表示しな�
   }
 });
 
+test('新タスク契約では優先度バッジと編集パネルから set-priority を送信できる', async () => {
+  const port = await getFreePort();
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-tasks-edit-'));
+  const tasksFile = path.join(tmpRoot, 'tasks-view.json');
+  const commandsPath = path.join(tmpRoot, 'commands.jsonl');
+  writeJson(tasksFile, {
+    updatedAt: freshDate(),
+    tasks: [
+      {
+        id: '203',
+        title: '編集できる承認待ちタスク',
+        status: 'awaiting-approval',
+        assignee: 'wada',
+        priority: 'high',
+        sequential: true,
+        createdAt: freshDate(-10 * 60 * 1000),
+      },
+    ],
+  });
+
+  const { app, win, tmpRoot: appTmpRoot } = await launchApp(port, { tasksFile, commandsPath });
+  try {
+    const section = win.locator('#task-list');
+    await expect(section).toBeVisible({ timeout: 10_000 });
+    const task = section.locator('.task-item').filter({ hasText: '編集できる承認待ちタスク' });
+    await expect(task.locator('.task-priority-badge')).toHaveText('高');
+    await expect(task.locator('.task-sequential-chip')).toHaveText('直列');
+    await expect(task.getByRole('button', { name: '承認' })).toHaveCount(0);
+
+    await task.getByRole('button', { name: '編集' }).click();
+    await expect(task.locator('.task-edit-panel')).toBeVisible();
+    await expect(task.getByRole('button', { name: '承認' })).toBeVisible();
+    await task.getByLabel('優先度').selectOption('low');
+    await expect(task.locator('.task-item-pending')).toHaveText('反映待ち');
+
+    await expect.poll(() => fs.existsSync(commandsPath) ? fs.readFileSync(commandsPath, 'utf8') : '', {
+      timeout: 5000,
+    }).not.toBe('');
+    const lines = fs.readFileSync(commandsPath, 'utf8').trimEnd().split('\n');
+    expect(lines).toHaveLength(1);
+    const command = JSON.parse(lines[0]);
+    expect(command).toMatchObject({
+      taskId: 203,
+      action: 'set-priority',
+      to: 'low',
+      expected: 'high',
+    });
+  } finally {
+    if (app) await app.close();
+    fs.rmSync(appTmpRoot, { recursive: true, force: true });
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
 test('in-progress タスクには commandsPath 設定時でも操作ボタンを表示しない', async () => {
   const port = await getFreePort();
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-tasks-status-in-progress-'));

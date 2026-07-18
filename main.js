@@ -8,7 +8,12 @@ const crypto = require('crypto');
 const { execFile } = require('child_process');
 const { promisify } = require('util');
 const { stripAnsiForPattern } = require('./utils/stripAnsi');
-const { getTaskStatusActions, isAllowedTransition } = require('./utils/taskStatusActions');
+const {
+  getTaskStatusActions,
+  isAllowedTransition,
+  isAllowedTaskPriorityValue,
+  isAllowedTaskSequentialValue,
+} = require('./utils/taskStatusActions');
 // エージェントルーム（issue #58）の agent 名・state 検証を renderer 側と共有する。
 // canonicalizeState / isKnownAgent は DOM 非依存なので main プロセスから require して使える。
 const { canonicalizeState, isKnownAgent } = require('./renderer/agentRoom');
@@ -339,7 +344,7 @@ function readTasksSnapshotFromFile(filePath) {
 function withTaskStatusActions(view) {
   const tasks = Array.isArray(view?.tasks) ? view.tasks : [];
   const config = loadUserConfig();
-  const taskFields = ['id', 'title', 'status', 'assignee', 'startedAt', 'updatedAt', 'createdAt'];
+  const taskFields = ['id', 'title', 'status', 'assignee', 'startedAt', 'updatedAt', 'createdAt', 'priority', 'sequential'];
   return {
     updatedAt: typeof view?.updatedAt === 'string' ? view.updatedAt : null,
     unavailable: view?.unavailable === true,
@@ -350,7 +355,9 @@ function withTaskStatusActions(view) {
           exposedTask[field] = task[field];
         }
       });
-      exposedTask.actions = getTaskStatusActions(typeof task?.status === 'string' ? task.status : '');
+      const hasPriorityContract = Object.prototype.hasOwnProperty.call(task || {}, 'priority');
+      exposedTask.actions = getTaskStatusActions(typeof task?.status === 'string' ? task.status : '')
+        .filter((action) => hasPriorityContract || action.confirm !== true);
       return exposedTask;
     }),
     tasksConfigured: !!normalizeTasksFile(config),
@@ -387,6 +394,80 @@ async function submitTaskStatusCommand(payload) {
     await fs.promises.mkdir(path.dirname(commandsFile), { recursive: true });
     await fs.promises.appendFile(commandsFile, `${JSON.stringify(command)}\n`, 'utf8');
     return { ok: true, id: command.id };
+  } catch (e) {
+    console.error(LOG_PREFIX, e);
+    return { ok: false, error: 'internal-error' };
+  }
+}
+
+async function appendTaskCommand(command, commandsFile = normalizeCommandsFile(loadUserConfig())) {
+  if (!commandsFile) {
+    return { ok: false, error: 'commands-file-not-configured' };
+  }
+
+  await fs.promises.mkdir(path.dirname(commandsFile), { recursive: true });
+  await fs.promises.appendFile(commandsFile, `${JSON.stringify(command)}\n`, 'utf8');
+  return { ok: true, id: command.id };
+}
+
+async function submitTaskPriorityCommand(payload) {
+  try {
+    const commandsFile = normalizeCommandsFile(loadUserConfig());
+    if (!commandsFile) {
+      return { ok: false, error: 'commands-file-not-configured' };
+    }
+
+    const taskId = Number(payload && payload.taskId);
+    if (!Number.isInteger(taskId) || taskId <= 0) {
+      return { ok: false, error: 'invalid-task-id' };
+    }
+
+    const expected = String(payload && payload.expected);
+    const to = String(payload && payload.to);
+    if (!isAllowedTaskPriorityValue(expected) || !isAllowedTaskPriorityValue(to) || expected === to) {
+      return { ok: false, error: 'disallowed-transition' };
+    }
+
+    return appendTaskCommand({
+      id: crypto.randomUUID(),
+      taskId,
+      action: 'set-priority',
+      to,
+      expected,
+      requestedAt: new Date().toISOString(),
+    }, commandsFile);
+  } catch (e) {
+    console.error(LOG_PREFIX, e);
+    return { ok: false, error: 'internal-error' };
+  }
+}
+
+async function submitTaskSequentialCommand(payload) {
+  try {
+    const commandsFile = normalizeCommandsFile(loadUserConfig());
+    if (!commandsFile) {
+      return { ok: false, error: 'commands-file-not-configured' };
+    }
+
+    const taskId = Number(payload && payload.taskId);
+    if (!Number.isInteger(taskId) || taskId <= 0) {
+      return { ok: false, error: 'invalid-task-id' };
+    }
+
+    const expected = String(payload && payload.expected);
+    const to = String(payload && payload.to);
+    if (!isAllowedTaskSequentialValue(expected) || !isAllowedTaskSequentialValue(to) || expected === to) {
+      return { ok: false, error: 'disallowed-transition' };
+    }
+
+    return appendTaskCommand({
+      id: crypto.randomUUID(),
+      taskId,
+      action: 'set-sequential',
+      to,
+      expected,
+      requestedAt: new Date().toISOString(),
+    }, commandsFile);
   } catch (e) {
     console.error(LOG_PREFIX, e);
     return { ok: false, error: 'internal-error' };
@@ -741,6 +822,14 @@ ipcMain.handle('app:get-config', () => {
 
 ipcMain.handle('tasks:set-status', async (_event, payload) => {
   return submitTaskStatusCommand(payload);
+});
+
+ipcMain.handle('tasks:set-priority', async (_event, payload) => {
+  return submitTaskPriorityCommand(payload);
+});
+
+ipcMain.handle('tasks:set-sequential', async (_event, payload) => {
+  return submitTaskSequentialCommand(payload);
 });
 
 // 使用状況の取得（issue #69 → #73 で公式 API 主・トランスクリプト従の統一構造に変更）。
@@ -1279,6 +1368,54 @@ function startHttpApi() {
           return;
         }
         const result = await submitTaskStatusCommand(parsed);
+        res.writeHead(taskStatusCommandHttpStatus(result), { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result.ok ? result : { ok: false, error: result.error }));
+      });
+      return;
+    }
+
+    // POST /api/tasks/set-priority  { taskId: 123, expected: "none", to: "high" }
+    //   commands.jsonl には null ではなく none/high/medium/low の文字列で依頼する。
+    if (req.method === 'POST' && url.pathname === '/api/tasks/set-priority') {
+      if (isForbiddenOrigin(req)) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'forbidden origin' }));
+        return;
+      }
+      readJsonBody(req, res, 10 * 1024, async (body) => {
+        let parsed;
+        try {
+          parsed = JSON.parse(body);
+        } catch (_e) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'invalid JSON' }));
+          return;
+        }
+        const result = await submitTaskPriorityCommand(parsed);
+        res.writeHead(taskStatusCommandHttpStatus(result), { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result.ok ? result : { ok: false, error: result.error }));
+      });
+      return;
+    }
+
+    // POST /api/tasks/set-sequential  { taskId: 123, expected: "parallel", to: "sequential" }
+    //   tasks-view.json の boolean を UI/API 呼び出し側で sequential/parallel に変換して送る。
+    if (req.method === 'POST' && url.pathname === '/api/tasks/set-sequential') {
+      if (isForbiddenOrigin(req)) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'forbidden origin' }));
+        return;
+      }
+      readJsonBody(req, res, 10 * 1024, async (body) => {
+        let parsed;
+        try {
+          parsed = JSON.parse(body);
+        } catch (_e) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'invalid JSON' }));
+          return;
+        }
+        const result = await submitTaskSequentialCommand(parsed);
         res.writeHead(taskStatusCommandHttpStatus(result), { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(result.ok ? result : { ok: false, error: result.error }));
       });

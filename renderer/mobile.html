@@ -357,6 +357,15 @@ var TASK_STATUS_LABELS = {
   "done": "完了",
   "failed": "失敗"
 };
+var TASK_PRIORITY_LABELS = {
+  high: "高",
+  medium: "中",
+  low: "低"
+};
+var TASK_SEQUENTIAL_LABELS = {
+  sequential: "直列",
+  parallel: "並列"
+};
 
 var taskListSection = document.getElementById("task-list");
 var taskListCount = document.getElementById("task-list-count");
@@ -403,22 +412,41 @@ function getTaskStatusLabel(status) {
   return TASK_STATUS_LABELS[status] || status;
 }
 
+function normalizeTaskPriority(value) {
+  return value === "high" || value === "medium" || value === "low" ? value : null;
+}
+
+function getTaskPriorityLabel(priority) {
+  return TASK_PRIORITY_LABELS[priority] || priority;
+}
+
+function taskSequentialToLabel(value) {
+  return value === true ? TASK_SEQUENTIAL_LABELS.sequential : TASK_SEQUENTIAL_LABELS.parallel;
+}
+
 function normalizeTaskList(view) {
   var tasks = Array.isArray(view && view.tasks) ? view.tasks : [];
   return tasks
     .filter(function(task) { return task && typeof task.title === "string" && task.title.trim(); })
     .map(function(task, index) {
       var actions = Array.isArray(task.actions) ? task.actions : [];
-      return {
+      var normalized = {
         id: task.id,
         title: task.title.trim(),
         status: normalizeTaskStatus(task.status),
         assignee: typeof task.assignee === "string" && task.assignee.trim() ? task.assignee.trim() : "",
         actions: actions.filter(function(action) {
-          return action && typeof action.label === "string" && typeof action.to === "string";
+          return action && typeof action.label === "string" && typeof action.to === "string" && action.confirm !== true;
         }),
         index: index
       };
+      if (Object.prototype.hasOwnProperty.call(task || {}, "priority")) {
+        normalized.priority = task.priority;
+      }
+      if (Object.prototype.hasOwnProperty.call(task || {}, "sequential")) {
+        normalized.sequential = task.sequential === true;
+      }
+      return normalized;
     });
 }
 
@@ -508,6 +536,23 @@ function renderTaskItem(task, commandsConfigured, stale) {
   badge.dataset.status = task.status;
   badge.textContent = getTaskStatusLabel(task.status);
   body.appendChild(badge);
+
+  var priority = normalizeTaskPriority(task.priority);
+  if (priority) {
+    var priorityBadge = document.createElement("span");
+    priorityBadge.className = "task-priority-badge";
+    priorityBadge.dataset.priority = priority;
+    priorityBadge.textContent = getTaskPriorityLabel(priority);
+    body.appendChild(priorityBadge);
+  }
+
+  if (typeof task.sequential === "boolean") {
+    var sequentialChip = document.createElement("span");
+    sequentialChip.className = "task-sequential-chip";
+    sequentialChip.dataset.sequential = task.sequential ? "sequential" : "parallel";
+    sequentialChip.textContent = taskSequentialToLabel(task.sequential);
+    body.appendChild(sequentialChip);
+  }
 
   var meta = document.createElement("div");
   meta.className = "task-item-meta";

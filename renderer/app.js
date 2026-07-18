@@ -4,7 +4,13 @@ const { Terminal } = require('@xterm/xterm');
 const { FitAddon } = require('@xterm/addon-fit');
 const { appendAnsiForDisplay, stripAnsiForDisplay } = require('../utils/stripAnsi');
 const { normalizeConfirmClose, shouldConfirmClose } = require('../utils/closeConfirm');
-const { getTaskStatusActions } = require('../utils/taskStatusActions');
+const {
+  getTaskStatusActions,
+  getTaskPriorityOptions,
+  getTaskPriorityLabel,
+  getTaskSequentialOptions,
+  getTaskSequentialLabel,
+} = require('../utils/taskStatusActions');
 // エージェントルーム（issue #58）。サブエージェントの稼働状況をドット絵キャラで可視化する。
 const { AGENT_ORDER, buildScene, resolveAgentStatesFromOutput } = require('./agentRoom');
 const {
@@ -97,7 +103,9 @@ let waitingExcludeCwdPatterns = [];
 let tasksFileConfigured = false;
 let commandsConfigured = false;
 let lastTaskView = null;
-const pendingTaskIds = new Set();
+const pendingTaskCommands = new Map();
+const taskCommandErrors = new Map();
+const expandedTaskEditIds = new Set();
 // HTTP API（POST /api/agentroom）由来のルーム状態を、この TTL を超えたら「古い」と判断して
 // PTY 出力ベースのフォールバック表示に切り替える（ms）。
 const AGENTROOM_API_TTL_MS = 90000;
@@ -124,6 +132,8 @@ const TASK_STATUS_LABELS = {
   'done': '完了',
   'failed': '失敗',
 };
+const TASK_EDITABLE_STATUSES = new Set(['awaiting-approval', 'ready']);
+const TASK_PENDING_TIMEOUT_MS = 30000;
 
 // waiting 判定用 lastLines バッファの上限（issue #32 対応）。
 //   - LASTLINES_MAX_LINES: 直近 N 行を保持する。
@@ -950,17 +960,100 @@ function getTaskStatusLabel(status) {
   return TASK_STATUS_LABELS[status] || status;
 }
 
+function hasTaskPriorityContract(task) {
+  return Object.prototype.hasOwnProperty.call(task || {}, 'priority');
+}
+
+function normalizeTaskPriority(value) {
+  return value === 'high' || value === 'medium' || value === 'low' ? value : null;
+}
+
+function taskPriorityToCommandValue(value) {
+  return normalizeTaskPriority(value) || 'none';
+}
+
+function taskSequentialToCommandValue(value) {
+  return value === true ? 'sequential' : 'parallel';
+}
+
+function getTaskPending(taskKey) {
+  return pendingTaskCommands.get(taskKey) || null;
+}
+
+function clearTaskPending(taskKey) {
+  const pending = pendingTaskCommands.get(taskKey);
+  if (pending?.timeoutId) clearTimeout(pending.timeoutId);
+  pendingTaskCommands.delete(taskKey);
+}
+
+function setTaskCommandError(taskKey, message) {
+  taskCommandErrors.set(taskKey, message);
+}
+
+function syncPendingTaskCommands(tasks) {
+  const present = new Set();
+  tasks.forEach((task) => {
+    const taskKey = String(task.id);
+    present.add(taskKey);
+    const pending = getTaskPending(taskKey);
+    if (!pending) return;
+    let current = task.status;
+    if (pending.kind === 'priority') {
+      current = taskPriorityToCommandValue(task.priority);
+    } else if (pending.kind === 'sequential') {
+      current = taskSequentialToCommandValue(task.sequential);
+    }
+    if (current !== pending.expected) {
+      clearTaskPending(taskKey);
+      taskCommandErrors.delete(taskKey);
+    }
+  });
+  Array.from(pendingTaskCommands.keys()).forEach((taskKey) => {
+    if (!present.has(taskKey)) clearTaskPending(taskKey);
+  });
+  Array.from(taskCommandErrors.keys()).forEach((taskKey) => {
+    if (!present.has(taskKey)) taskCommandErrors.delete(taskKey);
+  });
+  Array.from(expandedTaskEditIds.keys()).forEach((taskKey) => {
+    if (!present.has(taskKey)) expandedTaskEditIds.delete(taskKey);
+  });
+}
+
+function setTaskPending(taskKey, pending) {
+  clearTaskPending(taskKey);
+  const timeoutId = setTimeout(() => {
+    clearTaskPending(taskKey);
+    setTaskCommandError(taskKey, '反映されませんでした（再試行してください）');
+    renderTaskList(lastTaskView);
+  }, TASK_PENDING_TIMEOUT_MS);
+  pendingTaskCommands.set(taskKey, {
+    ...pending,
+    requestedAt: Date.now(),
+    timeoutId,
+  });
+  taskCommandErrors.delete(taskKey);
+}
+
 function normalizeTaskList(view) {
   const tasks = Array.isArray(view?.tasks) ? view.tasks : [];
   return tasks
     .filter((task) => task && typeof task.title === 'string' && task.title.trim())
-    .map((task, index) => ({
-      id: task.id,
-      title: task.title.trim(),
-      status: normalizeTaskStatus(task.status),
-      assignee: typeof task.assignee === 'string' && task.assignee.trim() ? task.assignee.trim() : '',
-      index,
-    }));
+    .map((task, index) => {
+      const normalized = {
+        id: task.id,
+        title: task.title.trim(),
+        status: normalizeTaskStatus(task.status),
+        assignee: typeof task.assignee === 'string' && task.assignee.trim() ? task.assignee.trim() : '',
+        index,
+      };
+      if (hasTaskPriorityContract(task)) {
+        normalized.priority = task.priority;
+      }
+      if (Object.prototype.hasOwnProperty.call(task || {}, 'sequential')) {
+        normalized.sequential = task.sequential === true;
+      }
+      return normalized;
+    });
 }
 
 function isTaskViewStale(view) {
@@ -992,6 +1085,10 @@ function renderTaskItem(task) {
   if (task.id !== undefined && task.id !== null) li.dataset.id = String(task.id);
   const taskKey = String(task.id);
   const status = task.status;
+  const pending = getTaskPending(taskKey);
+  const hasPending = !!pending;
+  const commandError = taskCommandErrors.get(taskKey);
+  const hasPriorityContract = hasTaskPriorityContract(task);
 
   const title = document.createElement('div');
   title.className = 'task-item-title';
@@ -1007,6 +1104,23 @@ function renderTaskItem(task) {
   badge.textContent = getTaskStatusLabel(status);
   head.appendChild(badge);
 
+  const priority = normalizeTaskPriority(task.priority);
+  if (priority) {
+    const priorityBadge = document.createElement('span');
+    priorityBadge.className = 'task-priority-badge';
+    priorityBadge.dataset.priority = priority;
+    priorityBadge.textContent = getTaskPriorityLabel(priority);
+    head.appendChild(priorityBadge);
+  }
+
+  if (typeof task.sequential === 'boolean') {
+    const sequentialChip = document.createElement('span');
+    sequentialChip.className = 'task-sequential-chip';
+    sequentialChip.dataset.sequential = task.sequential ? 'sequential' : 'parallel';
+    sequentialChip.textContent = getTaskSequentialLabel(taskSequentialToCommandValue(task.sequential));
+    head.appendChild(sequentialChip);
+  }
+
   const meta = document.createElement('div');
   meta.className = 'task-item-meta';
   if (task.assignee) {
@@ -1021,60 +1135,207 @@ function renderTaskItem(task) {
   li.appendChild(head);
 
   const actions = getTaskStatusActions(status);
-  const canSendCommand = commandsConfigured && actions.length > 0 && Number.isInteger(Number(task.id)) && Number(task.id) > 0;
-  if (canSendCommand) {
+  const canSendCommand = commandsConfigured && Number.isInteger(Number(task.id)) && Number(task.id) > 0;
+  const canUseEditPanel = canSendCommand && hasPriorityContract && TASK_EDITABLE_STATUSES.has(status);
+  const statusActions = hasPriorityContract
+    ? actions
+    : actions.filter((action) => action.confirm !== true);
+  const directActions = canUseEditPanel ? [] : statusActions;
+
+  const submitTaskCommand = async ({ kind, actionName, expected, to, warningAction }) => {
+    if (getTaskPending(taskKey)) return;
+    if (warningAction?.confirm) {
+      const ok = window.confirm(
+        'このタスクを差し戻しますか？\n\n実行中セッションがある場合、差し戻し後の再承認で二重起動につながる可能性があります。'
+      );
+      if (!ok) return;
+    }
+    setTaskPending(taskKey, { kind, expected, to });
+    renderTaskList(lastTaskView);
+    try {
+      const res = await ipcRenderer.invoke(actionName, {
+        taskId: task.id,
+        expected,
+        to,
+      });
+      if (res && res.ok) {
+        renderTaskList(lastTaskView);
+        return;
+      }
+      console.warn('タスク変更依頼に失敗しました', res && res.error);
+      clearTaskPending(taskKey);
+      setTaskCommandError(taskKey, '送信失敗');
+      renderTaskList(lastTaskView);
+    } catch (e) {
+      console.warn('タスク変更依頼に失敗しました', e);
+      clearTaskPending(taskKey);
+      setTaskCommandError(taskKey, '送信失敗');
+      renderTaskList(lastTaskView);
+    }
+  };
+
+  const appendStatusActions = (parent, buttonClassName) => {
+    statusActions.forEach((action) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = buttonClassName;
+      if (action.to === 'failed' || action.confirm === true) button.classList.add('task-item-action--danger');
+      button.dataset.to = action.to;
+      button.dataset.expected = status;
+      button.disabled = hasPending;
+      button.textContent = action.label;
+      button.addEventListener('click', () => {
+        submitTaskCommand({
+          kind: 'status',
+          actionName: 'tasks:set-status',
+          expected: status,
+          to: action.to,
+          warningAction: action,
+        });
+      });
+      parent.appendChild(button);
+    });
+  };
+
+  if (canUseEditPanel) {
     const actionRow = document.createElement('div');
     actionRow.className = 'task-item-actions';
-    if (pendingTaskIds.has(taskKey)) {
+    const editButton = document.createElement('button');
+    editButton.type = 'button';
+    editButton.className = 'task-item-action';
+    editButton.setAttribute('aria-expanded', expandedTaskEditIds.has(taskKey) ? 'true' : 'false');
+    editButton.textContent = expandedTaskEditIds.has(taskKey) ? '編集を閉じる' : '編集';
+    editButton.addEventListener('click', () => {
+      if (expandedTaskEditIds.has(taskKey)) {
+        expandedTaskEditIds.delete(taskKey);
+      } else {
+        expandedTaskEditIds.add(taskKey);
+      }
+      renderTaskList(lastTaskView);
+    });
+    actionRow.appendChild(editButton);
+    if (hasPending) {
+      const pendingLabel = document.createElement('span');
+      pendingLabel.className = 'task-item-pending';
+      pendingLabel.setAttribute('role', 'status');
+      pendingLabel.textContent = '反映待ち';
+      actionRow.appendChild(pendingLabel);
+    }
+    if (commandError) {
+      const error = document.createElement('span');
+      error.className = 'task-item-action-error';
+      error.setAttribute('role', 'status');
+      error.textContent = commandError;
+      actionRow.appendChild(error);
+    }
+    li.appendChild(actionRow);
+
+    if (expandedTaskEditIds.has(taskKey)) {
+      const panel = document.createElement('div');
+      panel.className = 'task-edit-panel';
+
+      const priorityField = document.createElement('label');
+      priorityField.className = 'task-edit-field';
+      const priorityLabel = document.createElement('span');
+      priorityLabel.className = 'task-edit-label';
+      priorityLabel.textContent = '優先度';
+      const prioritySelect = document.createElement('select');
+      prioritySelect.className = 'task-edit-select';
+      prioritySelect.disabled = hasPending;
+      const currentPriority = taskPriorityToCommandValue(task.priority);
+      getTaskPriorityOptions().forEach((option) => {
+        const optionEl = document.createElement('option');
+        optionEl.value = option.value;
+        optionEl.textContent = option.label;
+        if (option.value === currentPriority) optionEl.selected = true;
+        prioritySelect.appendChild(optionEl);
+      });
+      prioritySelect.addEventListener('change', () => {
+        submitTaskCommand({
+          kind: 'priority',
+          actionName: 'tasks:set-priority',
+          expected: currentPriority,
+          to: prioritySelect.value,
+        });
+      });
+      priorityField.appendChild(priorityLabel);
+      priorityField.appendChild(prioritySelect);
+      panel.appendChild(priorityField);
+
+      const sequentialField = document.createElement('div');
+      sequentialField.className = 'task-edit-field';
+      const sequentialLabel = document.createElement('span');
+      sequentialLabel.className = 'task-edit-label';
+      sequentialLabel.textContent = '実行方式';
+      const sequentialControl = document.createElement('div');
+      sequentialControl.className = 'task-edit-segmented';
+      const currentSequential = taskSequentialToCommandValue(task.sequential);
+      getTaskSequentialOptions().forEach((option) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'task-edit-segment';
+        button.dataset.value = option.value;
+        button.setAttribute('aria-pressed', option.value === currentSequential ? 'true' : 'false');
+        button.disabled = hasPending;
+        button.textContent = option.label;
+        button.addEventListener('click', () => {
+          if (option.value === currentSequential) return;
+          submitTaskCommand({
+            kind: 'sequential',
+            actionName: 'tasks:set-sequential',
+            expected: currentSequential,
+            to: option.value,
+          });
+        });
+        sequentialControl.appendChild(button);
+      });
+      sequentialField.appendChild(sequentialLabel);
+      sequentialField.appendChild(sequentialControl);
+      panel.appendChild(sequentialField);
+
+      if (statusActions.length > 0) {
+        const statusField = document.createElement('div');
+        statusField.className = 'task-edit-field task-edit-field--actions';
+        const statusLabel = document.createElement('span');
+        statusLabel.className = 'task-edit-label';
+        statusLabel.textContent = '状態';
+        const statusButtons = document.createElement('div');
+        statusButtons.className = 'task-edit-actions';
+        appendStatusActions(statusButtons, 'task-item-action');
+        statusField.appendChild(statusLabel);
+        statusField.appendChild(statusButtons);
+        panel.appendChild(statusField);
+      }
+
+      li.appendChild(panel);
+    }
+  } else if (canSendCommand && directActions.length > 0) {
+    const actionRow = document.createElement('div');
+    actionRow.className = 'task-item-actions';
+    appendStatusActions(actionRow, 'task-item-action');
+    if (hasPending) {
       const pending = document.createElement('span');
       pending.className = 'task-item-pending';
       pending.setAttribute('role', 'status');
       pending.textContent = '反映待ち';
       actionRow.appendChild(pending);
-    } else {
-      actions.forEach((action) => {
-        const button = document.createElement('button');
-        button.type = 'button';
-        button.className = 'task-item-action';
-        button.dataset.to = action.to;
-        button.dataset.expected = status;
-        button.textContent = action.label;
-        button.addEventListener('click', async () => {
-          if (pendingTaskIds.has(taskKey)) return;
-          const buttons = actionRow.querySelectorAll('.task-item-action');
-          buttons.forEach((el) => { el.disabled = true; });
-          actionRow.querySelector('.task-item-action-error')?.remove();
-          try {
-            const res = await ipcRenderer.invoke('tasks:set-status', {
-              taskId: task.id,
-              expected: status,
-              to: action.to,
-            });
-            if (res && res.ok) {
-              pendingTaskIds.add(taskKey);
-              renderTaskList(lastTaskView);
-              return;
-            }
-            console.warn('タスクステータス変更依頼に失敗しました', res && res.error);
-            buttons.forEach((el) => { el.disabled = false; });
-            const error = document.createElement('span');
-            error.className = 'task-item-action-error';
-            error.setAttribute('role', 'status');
-            error.textContent = '送信失敗';
-            actionRow.appendChild(error);
-          } catch (e) {
-            console.warn('タスクステータス変更依頼に失敗しました', e);
-            buttons.forEach((el) => { el.disabled = false; });
-            const error = document.createElement('span');
-            error.className = 'task-item-action-error';
-            error.setAttribute('role', 'status');
-            error.textContent = '送信失敗';
-            actionRow.appendChild(error);
-          }
-        });
-        actionRow.appendChild(button);
-      });
     }
+    if (commandError) {
+      const error = document.createElement('span');
+      error.className = 'task-item-action-error';
+      error.setAttribute('role', 'status');
+      error.textContent = commandError;
+      actionRow.appendChild(error);
+    }
+    li.appendChild(actionRow);
+  } else if (commandError) {
+    const actionRow = document.createElement('div');
+    actionRow.className = 'task-item-actions';
+    const error = document.createElement('span');
+    error.className = 'task-item-action-error';
+    error.setAttribute('role', 'status');
+    error.textContent = commandError;
+    actionRow.appendChild(error);
     li.appendChild(actionRow);
   }
   return li;
@@ -1102,6 +1363,7 @@ function renderTaskList(view = lastTaskView) {
   if (!container) return;
 
   const tasks = normalizeTaskList(view);
+  syncPendingTaskCommands(tasks);
   const stale = isTaskViewStale(view);
   const shouldShow = tasksFileConfigured || tasks.length > 0 || (!!view && stale);
   section.hidden = !shouldShow;
@@ -1326,7 +1588,6 @@ function setupSidebarMenu() {
     renderSidebarMenu();
   });
   ipcRenderer.on('tasks:update', (_event, view) => {
-    pendingTaskIds.clear();
     renderTaskList(view);
   });
 }

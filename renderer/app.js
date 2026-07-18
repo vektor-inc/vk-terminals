@@ -719,6 +719,18 @@ function createSidebarUsageCard() {
   return section;
 }
 
+// タスク一覧の折り畳み状態は localStorage に保持する。
+// 項目が多いと下の格納ペインへスクロールで届かなくなるため、見出しから畳めるようにする（issue #… 相当）。
+const TASK_LIST_COLLAPSE_KEY = 'vkt.taskListCollapsed';
+function readTaskListCollapsed() {
+  try { return localStorage.getItem(TASK_LIST_COLLAPSE_KEY) === '1'; }
+  catch (e) { return false; }
+}
+function writeTaskListCollapsed(collapsed) {
+  try { localStorage.setItem(TASK_LIST_COLLAPSE_KEY, collapsed ? '1' : '0'); }
+  catch (e) { /* プライベートモード等で保存失敗しても無視 */ }
+}
+
 // vk-orchestrator の tasks-view.json を読み取り専用で表示するセクション。
 function createTaskListContainer() {
   const section = document.createElement('section');
@@ -727,9 +739,31 @@ function createTaskListContainer() {
   section.hidden = true;
   section.setAttribute('aria-label', 'タスク');
 
-  const title = document.createElement('div');
+  const collapsed = readTaskListCollapsed();
+  section.classList.toggle('collapsed', collapsed);
+
+  // 見出し自体をトグルボタンにする（クリック / Enter / Space で開閉）。
+  const title = document.createElement('button');
+  title.type = 'button';
   title.className = 'task-list-title';
-  title.textContent = 'タスク';
+  title.setAttribute('aria-controls', 'task-list-body');
+  title.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+
+  const chevron = document.createElement('span');
+  chevron.className = 'task-list-chevron';
+  chevron.setAttribute('aria-hidden', 'true');
+  chevron.textContent = collapsed ? '▸' : '▾';
+
+  const label = document.createElement('span');
+  label.className = 'task-list-title-text';
+  label.textContent = 'タスク';
+
+  title.appendChild(chevron);
+  title.appendChild(label);
+
+  const body = document.createElement('div');
+  body.id = 'task-list-body';
+  body.className = 'task-list-body';
 
   const notice = document.createElement('div');
   notice.className = 'task-list-stale';
@@ -740,9 +774,19 @@ function createTaskListContainer() {
   const list = document.createElement('div');
   list.className = 'task-list-groups';
 
+  body.appendChild(notice);
+  body.appendChild(list);
+
+  title.addEventListener('click', () => {
+    const nowCollapsed = !section.classList.contains('collapsed');
+    section.classList.toggle('collapsed', nowCollapsed);
+    title.setAttribute('aria-expanded', nowCollapsed ? 'false' : 'true');
+    chevron.textContent = nowCollapsed ? '▸' : '▾';
+    writeTaskListCollapsed(nowCollapsed);
+  });
+
   section.appendChild(title);
-  section.appendChild(notice);
-  section.appendChild(list);
+  section.appendChild(body);
   return section;
 }
 
@@ -906,10 +950,6 @@ function getTaskStatusLabel(status) {
   return TASK_STATUS_LABELS[status] || status;
 }
 
-function getTaskGroupTitle(status) {
-  return getTaskStatusLabel(status);
-}
-
 function normalizeTaskList(view) {
   const tasks = Array.isArray(view?.tasks) ? view.tasks : [];
   return tasks
@@ -919,7 +959,6 @@ function normalizeTaskList(view) {
       title: task.title.trim(),
       status: normalizeTaskStatus(task.status),
       assignee: typeof task.assignee === 'string' && task.assignee.trim() ? task.assignee.trim() : '',
-      startedAtMs: parseTaskTime(task.startedAt) ?? parseTaskTime(task.updatedAt) ?? parseTaskTime(task.createdAt),
       index,
     }));
 }
@@ -929,20 +968,6 @@ function isTaskViewStale(view) {
   const updatedAtMs = parseTaskTime(view.updatedAt);
   if (!updatedAtMs) return true;
   return Date.now() - updatedAtMs > TASKS_ORCHESTRATOR_STALE_MS;
-}
-
-function formatTaskElapsed(startedAtMs) {
-  if (!startedAtMs) return '';
-  const diffMs = Math.max(0, Date.now() - startedAtMs);
-  const totalMinutes = Math.floor(diffMs / 60000);
-  if (totalMinutes < 1) return '1分未満';
-  if (totalMinutes < 60) return `${totalMinutes}分`;
-  const hours = Math.floor(totalMinutes / 60);
-  const minutes = totalMinutes % 60;
-  if (hours < 24) return minutes ? `${hours}時間${minutes}分` : `${hours}時間`;
-  const days = Math.floor(hours / 24);
-  const restHours = hours % 24;
-  return restHours ? `${days}日${restHours}時間` : `${days}日`;
 }
 
 function groupTasksByStatus(tasks) {
@@ -989,15 +1014,6 @@ function renderTaskItem(task) {
     assignee.className = 'task-item-assignee';
     assignee.textContent = `担当: ${task.assignee}`;
     meta.appendChild(assignee);
-  }
-  const elapsedText = formatTaskElapsed(task.startedAtMs);
-  if (elapsedText) {
-    const elapsed = document.createElement('span');
-    elapsed.className = 'task-item-elapsed';
-    elapsed.textContent = elapsedText;
-    elapsed.dataset.startedAt = String(task.startedAtMs);
-    elapsed.title = new Date(task.startedAtMs).toLocaleString();
-    meta.appendChild(elapsed);
   }
   head.appendChild(meta);
 
@@ -1069,15 +1085,10 @@ function renderTaskGroup(status, tasks) {
   group.className = 'task-list-group';
   group.dataset.status = status;
 
-  const title = document.createElement('div');
-  title.className = 'task-list-group-title';
-  title.textContent = getTaskGroupTitle(status);
-
   const list = document.createElement('ul');
   list.className = 'task-list-items';
   tasks.forEach((task) => list.appendChild(renderTaskItem(task)));
 
-  group.appendChild(title);
   group.appendChild(list);
   return group;
 }
@@ -1114,13 +1125,9 @@ function renderTaskList(view = lastTaskView) {
   });
 }
 
-function tickTaskElapsed() {
+function tickTaskStale() {
   const section = document.getElementById('task-list');
   if (!section || section.hidden) return;
-  section.querySelectorAll('.task-item-elapsed[data-started-at]').forEach((el) => {
-    const ms = Number(el.dataset.startedAt);
-    if (Number.isFinite(ms)) el.textContent = formatTaskElapsed(ms);
-  });
   const stale = isTaskViewStale(lastTaskView);
   section.classList.toggle('is-stale', stale);
   const staleNotice = section.querySelector('.task-list-stale');
@@ -3350,7 +3357,7 @@ setupSettingsPanel();
 
 // 使用率警告ドットバッジ（☰ メニューボタン）とサイドバー使用量カードを配線する。
 setupUsageBadge();
-setInterval(tickTaskElapsed, TASKS_ELAPSED_TICK_MS);
+setInterval(tickTaskStale, TASKS_ELAPSED_TICK_MS);
 
 // ─── State reporting to main process ─────────────────────────────────────────
 setInterval(() => {

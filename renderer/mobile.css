@@ -168,12 +168,33 @@ button.k.kill.is-locked:active { background: #6b3f3f; border-color: #7c4a4a; }
   align-items: baseline;
   justify-content: space-between;
   gap: 10px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
 }
-.task-list-head h2 {
+.task-list-head-main {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  min-width: 0;
+}
+.task-list-head-text {
   margin: 0;
   font-size: 13px;
   font-weight: 700;
   line-height: 1.35;
+}
+.task-list-chevron {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 10px;
+}
+.task-list.collapsed .task-list-body {
+  display: none;
 }
 .task-list-count {
   color: var(--muted);
@@ -206,13 +227,6 @@ button.k.kill.is-locked:active { background: #6b3f3f; border-color: #7c4a4a; }
   color: var(--muted);
   font-size: 12px;
   text-align: center;
-}
-.task-list-group-title {
-  margin: 0 0 6px;
-  color: #c9d1d9;
-  font-size: 11px;
-  font-weight: 700;
-  line-height: 1.35;
 }
 .task-list-items {
   display: flex;
@@ -302,8 +316,7 @@ button.k.kill.is-locked:active { background: #6b3f3f; border-color: #7c4a4a; }
   font-size: 11px;
   line-height: 1.35;
 }
-.task-item-assignee,
-.task-item-elapsed {
+.task-item-assignee {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;

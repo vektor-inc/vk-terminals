@@ -84,12 +84,11 @@ test('tasksFile 設定時はタスクセクションを表示し、status グル
     await expect(section).toContainText('未知ステータスタスク');
     await expect(section).not.toContainText('undefined');
 
-    // グループ見出しは推奨順（in-progress → waiting-input → ready → unknown）で並ぶ。
-    const groupTitles = await section.locator('.task-list-group-title').evaluateAll((els) => els.map((el) => el.textContent));
-    expect(groupTitles).toEqual(['実行中', '入力待ち', '実行待ち', 'custom-status']);
+    // グループ見出しは撤去したが、グループ自体は推奨順（in-progress → waiting-input → ready → unknown）で並ぶ。
+    const groupOrder = await section.locator('.task-list-group').evaluateAll((els) => els.map((el) => el.dataset.status));
+    expect(groupOrder).toEqual(['in-progress', 'waiting-input', 'ready', 'custom-status']);
     await expect(section.locator('.task-status[data-status="in-progress"]').first()).toHaveText('実行中');
     await expect(section.locator('.task-item-assignee').first()).toContainText('kurudrive');
-    await expect(section.locator('.task-item-elapsed').first()).toContainText('分');
 
     // fs.watch / polling 経由で書き換え後の snapshot が renderer に push されることを確認する。
     writeJson(tasksFile, {
@@ -100,6 +99,50 @@ test('tasksFile 設定時はタスクセクションを表示し、status グル
     });
     await expect(section).toContainText('監視更新後タスク', { timeout: 10_000 });
     await expect(section).not.toContainText('実行待ちタスク');
+  } finally {
+    if (app) await app.close();
+    fs.rmSync(appTmpRoot, { recursive: true, force: true });
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+test('タスク見出しクリックで一覧を折り畳み・展開でき、状態が localStorage に保存される', async () => {
+  const port = await getFreePort();
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-tasks-collapse-'));
+  const tasksFile = path.join(tmpRoot, 'tasks-view.json');
+  writeJson(tasksFile, {
+    updatedAt: freshDate(),
+    tasks: [
+      { id: 1, title: '実行中タスク', status: 'in-progress', assignee: 'kurudrive', startedAt: freshDate(-3 * 60 * 1000) },
+      { id: 2, title: '入力待ちタスク', status: 'waiting-input', assignee: 'wada', startedAt: freshDate(-80 * 60 * 1000) },
+    ],
+  });
+
+  const { app, win, tmpRoot: appTmpRoot } = await launchApp(port, { tasksFile });
+  try {
+    const section = win.locator('#task-list');
+    const title = section.locator('.task-list-title');
+    const body = section.locator('.task-list-body');
+    await expect(section).toBeVisible({ timeout: 10_000 });
+
+    // 初期は展開状態。
+    await expect(body).toBeVisible();
+    await expect(title).toHaveAttribute('aria-expanded', 'true');
+
+    // クリックで折り畳み。見出しは残り本体だけ隠れる。
+    await title.click();
+    await expect(body).toBeHidden();
+    await expect(title).toHaveAttribute('aria-expanded', 'false');
+    await expect(section).toContainText('タスク');
+    const stored = await win.evaluate(() => localStorage.getItem('vkt.taskListCollapsed'));
+    expect(stored).toBe('1');
+
+    // 再クリックで展開に戻る。
+    await title.click();
+    await expect(body).toBeVisible();
+    await expect(title).toHaveAttribute('aria-expanded', 'true');
+    const stored2 = await win.evaluate(() => localStorage.getItem('vkt.taskListCollapsed'));
+    expect(stored2).toBe('0');
   } finally {
     if (app) await app.close();
     fs.rmSync(appTmpRoot, { recursive: true, force: true });

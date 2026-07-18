@@ -339,13 +339,20 @@ function readTasksSnapshotFromFile(filePath) {
 function withTaskStatusActions(view) {
   const tasks = Array.isArray(view?.tasks) ? view.tasks : [];
   const config = loadUserConfig();
+  const taskFields = ['id', 'title', 'status', 'assignee', 'startedAt', 'updatedAt', 'createdAt'];
   return {
     updatedAt: typeof view?.updatedAt === 'string' ? view.updatedAt : null,
     unavailable: view?.unavailable === true,
-    tasks: tasks.map((task) => ({
-      ...task,
-      actions: getTaskStatusActions(typeof task?.status === 'string' ? task.status : ''),
-    })),
+    tasks: tasks.map((task) => {
+      const exposedTask = {};
+      taskFields.forEach((field) => {
+        if (Object.prototype.hasOwnProperty.call(task || {}, field) && task[field] !== undefined) {
+          exposedTask[field] = task[field];
+        }
+      });
+      exposedTask.actions = getTaskStatusActions(typeof task?.status === 'string' ? task.status : '');
+      return exposedTask;
+    }),
     tasksConfigured: !!normalizeTasksFile(config),
     commandsConfigured: !!normalizeCommandsFile(config),
   };
@@ -381,7 +388,8 @@ async function submitTaskStatusCommand(payload) {
     await fs.promises.appendFile(commandsFile, `${JSON.stringify(command)}\n`, 'utf8');
     return { ok: true, id: command.id };
   } catch (e) {
-    return { ok: false, error: String((e && e.message) || e) };
+    console.error(LOG_PREFIX, e);
+    return { ok: false, error: 'internal-error' };
   }
 }
 

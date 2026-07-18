@@ -450,6 +450,8 @@ function syncPendingTaskIds(tasks) {
 async function setTaskStatus(task, action) {
   var key = String(task.id);
   if (pendingTaskIds[key]) return;
+  pendingTaskIds[key] = { expected: task.status, to: action.to, inFlight: true };
+  renderTaskList(lastTaskData);
   try {
     var res = await fetch("/api/tasks/set-status", {
       method: "POST",
@@ -458,6 +460,8 @@ async function setTaskStatus(task, action) {
     });
     var json = await res.json().catch(function() { return {}; });
     if (!res.ok || !json.ok) {
+      delete pendingTaskIds[key];
+      renderTaskList(lastTaskData);
       showErr("タスク操作に失敗: " + (json.error || res.status));
       return;
     }
@@ -465,11 +469,13 @@ async function setTaskStatus(task, action) {
     renderTaskList(lastTaskData);
     showErr("");
   } catch (e) {
+    delete pendingTaskIds[key];
+    renderTaskList(lastTaskData);
     showErr("タスク操作に失敗: " + e.message);
   }
 }
 
-function renderTaskItem(task, commandsConfigured) {
+function renderTaskItem(task, commandsConfigured, stale) {
   var item = document.createElement("li");
   item.className = "task-item";
   if (task.id !== undefined && task.id !== null) item.dataset.id = String(task.id);
@@ -528,10 +534,13 @@ function renderTaskItem(task, commandsConfigured) {
         var button = document.createElement("button");
         button.type = "button";
         button.className = "task-item-action";
+        if (action.to === "failed") button.classList.add("task-item-action--danger");
         button.dataset.expected = task.status;
         button.dataset.to = action.to;
+        button.disabled = !!stale;
         button.textContent = action.label;
         button.addEventListener("click", function() {
+          if (stale || pendingTaskIds[taskKey]) return;
           var buttons = actionRow.querySelectorAll(".task-item-action");
           buttons.forEach(function(el) { el.disabled = true; });
           setTaskStatus(task, action).finally(function() {
@@ -582,7 +591,7 @@ function renderTaskList(view) {
     var listEl = document.createElement("ul");
     listEl.className = "task-list-items";
     group.tasks.forEach(function(task) {
-      listEl.appendChild(renderTaskItem(task, !!(view && view.commandsConfigured)));
+      listEl.appendChild(renderTaskItem(task, !!(view && view.commandsConfigured), stale));
     });
     section.appendChild(heading);
     section.appendChild(listEl);

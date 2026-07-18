@@ -163,9 +163,6 @@ button.k.kill.is-locked:active { background: #6b3f3f; border-color: #7c4a4a; }
   border-radius: 8px;
 }
 .task-list[hidden] { display: none; }
-.task-list.is-stale {
-  opacity: 0.62;
-}
 .task-list-head {
   display: flex;
   align-items: baseline;
@@ -187,10 +184,10 @@ button.k.kill.is-locked:active { background: #6b3f3f; border-color: #7c4a4a; }
 .task-list-stale {
   margin-top: 7px;
   padding: 7px 8px;
-  border: 1px solid rgba(210, 153, 34, 0.3);
+  border: 1px solid rgba(248, 81, 73, 0.35);
   border-radius: 6px;
-  background: rgba(210, 153, 34, 0.12);
-  color: #f0c36a;
+  background: rgba(248, 81, 73, 0.12);
+  color: #ffa198;
   font-size: 11px;
   font-weight: 700;
 }
@@ -200,6 +197,9 @@ button.k.kill.is-locked:active { background: #6b3f3f; border-color: #7c4a4a; }
   flex-direction: column;
   gap: 11px;
   margin-top: 10px;
+}
+.task-list.is-stale .task-list-groups {
+  opacity: 0.55;
 }
 .task-list-empty {
   padding: 18px 6px;
@@ -317,7 +317,7 @@ button.k.kill.is-locked:active { background: #6b3f3f; border-color: #7c4a4a; }
 }
 .task-item-action {
   flex: 1 1 96px;
-  min-height: 36px;
+  min-height: 44px;
   padding: 8px 10px;
   border: 1px solid #3d444d;
   border-radius: 8px;
@@ -326,6 +326,10 @@ button.k.kill.is-locked:active { background: #6b3f3f; border-color: #7c4a4a; }
   font-size: 12px;
   font-weight: 700;
   cursor: pointer;
+}
+.task-item-action--danger {
+  border-color: rgba(248, 81, 73, 0.45);
+  color: #ffa198;
 }
 .task-item-action:active {
   background: #30363d;

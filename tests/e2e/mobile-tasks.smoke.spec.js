@@ -99,6 +99,7 @@ test('モバイル HTTP API: タスク一覧取得とステータス変更依頼
         status: 'awaiting-approval',
         assignee: 'wada',
         createdAt: freshDate(-10 * 60 * 1000),
+        internalPath: path.join(tmpRoot, 'private-worktree'),
       },
       {
         id: '200',
@@ -126,6 +127,7 @@ test('モバイル HTTP API: タスク一覧取得とステータス変更依頼
       status: 'awaiting-approval',
       assignee: 'wada',
     });
+    expect(awaitingTask).not.toHaveProperty('internalPath');
     // actions はサーバー側の共有ロジックで計算され、モバイル側はこの配列だけを描画に使う。
     expect(awaitingTask.actions).toEqual(expect.arrayContaining([
       expect.objectContaining({ label: '承認', to: 'ready' }),
@@ -175,6 +177,42 @@ test('モバイル HTTP API: タスク一覧取得とステータス変更依頼
     expect(csrf.res.status).toBe(403);
     expect(csrf.json).toEqual({ error: 'forbidden origin' });
     expect(fs.readFileSync(commandsPath, 'utf8').trimEnd().split('\n')).toHaveLength(1);
+  } finally {
+    if (app) await app.close();
+    fs.rmSync(appTmpRoot, { recursive: true, force: true });
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+test('モバイル HTTP API: 未知のステータス変更エラーは internal-error に丸める', async () => {
+  const port = await getFreePort();
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-mobile-tasks-internal-error-'));
+  const tasksFile = path.join(tmpRoot, 'tasks-view.json');
+  writeJson(tasksFile, {
+    updatedAt: freshDate(),
+    tasks: [
+      {
+        id: '299',
+        title: '書き込み失敗を検証するタスク',
+        status: 'awaiting-approval',
+        createdAt: freshDate(-10 * 60 * 1000),
+      },
+    ],
+  });
+
+  const { app, tmpRoot: appTmpRoot } = await launchApp(port, { tasksFile, commandsPath: tmpRoot });
+  try {
+    const base = `http://127.0.0.1:${port}`;
+    await waitForTasks(port);
+
+    const result = await fetchJson(`${base}/api/tasks/set-status`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ taskId: '299', expected: 'awaiting-approval', to: 'ready' }),
+    });
+    expect(result.res.status).toBe(500);
+    expect(result.json).toEqual({ ok: false, error: 'internal-error' });
+    expect(JSON.stringify(result.json)).not.toContain(tmpRoot);
   } finally {
     if (app) await app.close();
     fs.rmSync(appTmpRoot, { recursive: true, force: true });

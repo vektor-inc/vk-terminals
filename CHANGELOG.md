@@ -1,10 +1,8 @@
 # Changelog
 
-## 1.31.0
-
 - [ 機能追加 ] タスク一覧で優先度・直列/並列の表示とデスクトップ版の編集 UI、差し戻し操作を追加（[#205](https://github.com/vektor-inc/vk-terminals/issues/205)）
 - [ 仕様変更 ] 未着手タスクのステータス操作ボタンを編集パネル内へ集約するように変更（[#205](https://github.com/vektor-inc/vk-terminals/issues/205)）
-- [ 不具合修正 ] デスクトップ版タスク操作の反映待ちを期待値照合とタイムアウトで解除するように修正（[#205](https://github.com/vektor-inc/vk-terminals/issues/205)）
+- [ 仕様変更 ] タスク操作の反映待ち表示を、反映確認まで維持し反映されない場合は再試行案内を表示するように変更（[#205](https://github.com/vektor-inc/vk-terminals/issues/205)）
 
 ## 1.30.0
 

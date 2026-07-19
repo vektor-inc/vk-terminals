@@ -84,6 +84,23 @@ async function waitForTasks(port, timeoutMs = 20_000) {
   throw lastError || new Error('/api/tasks did not become ready');
 }
 
+async function selectWithDialog(page, select, value, accept) {
+  const dialogPromise = page.waitForEvent('dialog');
+  const changePromise = select.evaluate((el, nextValue) => {
+    el.value = nextValue;
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  }, value);
+  const dialog = await dialogPromise;
+  const message = dialog.message();
+  if (accept) {
+    await dialog.accept();
+  } else {
+    await dialog.dismiss();
+  }
+  await changePromise;
+  return message;
+}
+
 test('モバイル HTTP API: タスク一覧取得とステータス変更依頼を検証する', async () => {
   const port = await getFreePort();
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-mobile-tasks-data-'));
@@ -100,6 +117,7 @@ test('モバイル HTTP API: タスク一覧取得とステータス変更依頼
         assignee: 'wada',
         priority: null,
         sequential: false,
+        prUrl: 'https://github.com/vektor-inc/vk-terminals/pull/199',
         createdAt: freshDate(-10 * 60 * 1000),
         internalPath: path.join(tmpRoot, 'private-worktree'),
       },
@@ -130,6 +148,7 @@ test('モバイル HTTP API: タスク一覧取得とステータス変更依頼
       assignee: 'wada',
       priority: null,
       sequential: false,
+      prUrl: 'https://github.com/vektor-inc/vk-terminals/pull/199',
     });
     expect(awaitingTask).not.toHaveProperty('internalPath');
     // actions はサーバー側の共有ロジックで計算され、モバイル側はこの配列だけを描画に使う。
@@ -212,6 +231,78 @@ test('モバイル HTTP API: タスク一覧取得とステータス変更依頼
     expect(csrf.res.status).toBe(403);
     expect(csrf.json).toEqual({ error: 'forbidden origin' });
     expect(fs.readFileSync(commandsPath, 'utf8').trimEnd().split('\n')).toHaveLength(3);
+  } finally {
+    if (app) await app.close();
+    fs.rmSync(appTmpRoot, { recursive: true, force: true });
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+test('モバイル UI: ステータス select の確認キャンセルと反映待ち表示を検証する', async ({ page }) => {
+  const port = await getFreePort();
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-mobile-tasks-ui-data-'));
+  const tasksFile = path.join(tmpRoot, 'tasks-view.json');
+  const commandsPath = path.join(tmpRoot, 'commands.jsonl');
+  writeJson(tasksFile, {
+    updatedAt: freshDate(),
+    tasks: [
+      {
+        id: '301',
+        title: 'モバイルの PR 付きマージ待ちタスク',
+        status: 'waiting-merge',
+        assignee: 'wada',
+        priority: 'medium',
+        sequential: false,
+        prUrl: 'https://github.com/vektor-inc/vk-terminals/pull/301',
+        updatedAt: freshDate(-60 * 1000),
+      },
+    ],
+  });
+
+  const { app, tmpRoot: appTmpRoot } = await launchApp(port, { tasksFile, commandsPath });
+  try {
+    await waitForTasks(port);
+    await page.goto(`http://127.0.0.1:${port}/`);
+    const task = page.locator('.task-item').filter({ hasText: 'モバイルの PR 付きマージ待ちタスク' });
+    await expect(task).toBeVisible({ timeout: 10_000 });
+    const statusSelect = task.getByLabel('モバイルの PR 付きマージ待ちタスク の状態');
+    await expect(statusSelect).toHaveValue('waiting-merge');
+
+    // mobile.html も全ステータスを同じ順で描画し、API が返す actions だけで disabled を決める。
+    await expect(statusSelect.locator('option')).toHaveText([
+      '承認待ち',
+      '実行待ち',
+      '実行中',
+      '入力待ち',
+      'マージ待ち',
+      '完了',
+      '失敗',
+    ]);
+    const readyDisabled = await statusSelect.locator('option[value="ready"]').evaluate((option) => option.disabled);
+    const doneDisabled = await statusSelect.locator('option[value="done"]').evaluate((option) => option.disabled);
+    expect(readyDisabled).toBe(true);
+    expect(doneDisabled).toBe(false);
+
+    const cancelMessage = await selectWithDialog(page, statusSelect, 'done', false);
+    expect(cancelMessage).toContain('ステータスを「完了」に変更しますか？');
+    expect(cancelMessage).toContain('PR のマージは行われません（PR は開いたまま残ります）。');
+    await expect(statusSelect).toHaveValue('waiting-merge');
+    expect(fs.existsSync(commandsPath)).toBe(false);
+
+    const acceptMessage = await selectWithDialog(page, statusSelect, 'done', true);
+    expect(acceptMessage).toContain('ステータスを「完了」に変更しますか？');
+    await expect(task.locator('.task-item-pending')).toHaveText('反映待ち');
+    await expect.poll(() => fs.existsSync(commandsPath) ? fs.readFileSync(commandsPath, 'utf8') : '', {
+      timeout: 5000,
+    }).not.toBe('');
+
+    const [line] = fs.readFileSync(commandsPath, 'utf8').trimEnd().split('\n');
+    expect(JSON.parse(line)).toMatchObject({
+      taskId: 301,
+      action: 'set-status',
+      to: 'done',
+      expected: 'waiting-merge',
+    });
   } finally {
     if (app) await app.close();
     fs.rmSync(appTmpRoot, { recursive: true, force: true });

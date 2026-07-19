@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 仕様変更 ] タスク一覧のステータス操作を操作ボタンからステータス名のプルダウン選択へ変更（[#207](https://github.com/vektor-inc/vk-terminals/issues/207)）
+
 ## 1.31.0
 
 - [ 機能追加 ] タスク一覧で優先度・直列/並列の表示とデスクトップ版の編集 UI、差し戻し操作を追加（[#205](https://github.com/vektor-inc/vk-terminals/issues/205)）

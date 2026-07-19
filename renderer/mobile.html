@@ -336,8 +336,8 @@ function showErr(msg) {
   errEl.textContent = msg; errEl.style.display = "block";
 }
 
-// ステータス順と表示名は renderer/app.js の TASK_STATUS_LABELS/ORDER と同期を保つこと。
-// 遷移テーブルは持たず、操作ボタンは /api/tasks が返す actions だけを使う。
+// グループソート用ステータス順は renderer/app.js の TASK_STATUS_ORDER と同期を保つこと。
+// 遷移テーブルは持たず、select の遷移可否は /api/tasks が返す actions だけを使う。
 var TASKS_ORCHESTRATOR_STALE_MS = 60000;
 var TASK_STATUS_ORDER = [
   "in-progress",
@@ -347,6 +347,16 @@ var TASK_STATUS_ORDER = [
   "waiting-merge",
   "failed",
   "done"
+];
+// select 用ステータス順と表示名は utils/taskStatusActions.js の TASK_STATUS_SELECT_ORDER/TASK_STATUS_LABELS と同期を保つこと。
+var TASK_STATUS_SELECT_ORDER = [
+  "awaiting-approval",
+  "ready",
+  "in-progress",
+  "waiting-input",
+  "waiting-merge",
+  "done",
+  "failed"
 ];
 var TASK_STATUS_LABELS = {
   "awaiting-approval": "承認待ち",
@@ -413,6 +423,29 @@ function getTaskStatusLabel(status) {
   return TASK_STATUS_LABELS[status] || status;
 }
 
+function getTaskStatusAction(task, to) {
+  var actions = Array.isArray(task && task.actions) ? task.actions : [];
+  for (var i = 0; i < actions.length; i += 1) {
+    if (actions[i] && actions[i].to === to) return actions[i];
+  }
+  return null;
+}
+
+// 確認文言は utils/taskStatusActions.js の getTaskStatusTransitionConfirmMessage と同期を保つこと。
+function getTaskStatusTransitionConfirmMessage(from, to, hasPrUrl) {
+  if (to === "awaiting-approval") {
+    return "ステータスを「承認待ち」に変更しますか？\n\n実行中のセッションがある場合、再承認で二重起動につながる可能性があります。";
+  }
+  if (from === "waiting-merge" && to === "done") {
+    var lines = ["ステータスを「完了」に変更しますか？"];
+    if (hasPrUrl) {
+      lines.push("", "PR のマージは行われません（PR は開いたまま残ります）。");
+    }
+    return lines.join("\n");
+  }
+  return "";
+}
+
 function normalizeTaskPriority(value) {
   return value === "high" || value === "medium" || value === "low" ? value : null;
 }
@@ -437,10 +470,13 @@ function normalizeTaskList(view) {
         status: normalizeTaskStatus(task.status),
         assignee: typeof task.assignee === "string" && task.assignee.trim() ? task.assignee.trim() : "",
         actions: actions.filter(function(action) {
-          return action && typeof action.label === "string" && typeof action.to === "string" && action.confirm !== true;
+          return action && typeof action.to === "string";
         }),
         index: index
       };
+      if (typeof task.prUrl === "string" && task.prUrl.trim()) {
+        normalized.prUrl = task.prUrl.trim();
+      }
       if (Object.prototype.hasOwnProperty.call(task || {}, "priority")) {
         normalized.priority = task.priority;
       }
@@ -490,16 +526,18 @@ function syncPendingTaskIds(tasks) {
   });
 }
 
-async function setTaskStatus(task, action) {
+async function setTaskStatus(task, to) {
   var key = String(task.id);
   if (pendingTaskIds[key]) return;
-  pendingTaskIds[key] = { expected: task.status, to: action.to, inFlight: true };
+  var confirmMessage = getTaskStatusTransitionConfirmMessage(task.status, to, !!task.prUrl);
+  if (confirmMessage && !window.confirm(confirmMessage)) return;
+  pendingTaskIds[key] = { expected: task.status, to: to, inFlight: true };
   renderTaskList(lastTaskData);
   try {
     var res = await fetch("/api/tasks/set-status", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ taskId: task.id, expected: task.status, to: action.to })
+      body: JSON.stringify({ taskId: task.id, expected: task.status, to: to })
     });
     var json = await res.json().catch(function() { return {}; });
     if (!res.ok || !json.ok) {
@@ -508,7 +546,7 @@ async function setTaskStatus(task, action) {
       showErr(TASK_COMMAND_SEND_ERROR_MESSAGE);
       return;
     }
-    pendingTaskIds[key] = { expected: task.status, to: action.to };
+    pendingTaskIds[key] = { expected: task.status, to: to };
     renderTaskList(lastTaskData);
     showErr("");
   } catch (e) {
@@ -532,11 +570,37 @@ function renderTaskItem(task, commandsConfigured, stale) {
   var body = document.createElement("div");
   body.className = "task-item-body";
 
-  var badge = document.createElement("span");
-  badge.className = "task-status-badge";
-  badge.dataset.status = task.status;
-  badge.textContent = getTaskStatusLabel(task.status);
-  body.appendChild(badge);
+  var taskIdNumber = Number(task.id);
+  var canSendCommand = commandsConfigured
+    && Number.isInteger(taskIdNumber) && taskIdNumber > 0;
+
+  var statusSelect = document.createElement("select");
+  statusSelect.className = "task-status-select";
+  statusSelect.dataset.status = task.status;
+  statusSelect.setAttribute("aria-label", task.title + " の状態");
+  var statusOptions = TASK_STATUS_SELECT_ORDER.indexOf(task.status) === -1
+    ? [task.status].concat(TASK_STATUS_SELECT_ORDER)
+    : TASK_STATUS_SELECT_ORDER;
+  statusOptions.forEach(function(status) {
+    var option = document.createElement("option");
+    option.value = status;
+    option.textContent = getTaskStatusLabel(status);
+    option.disabled = status !== task.status && !getTaskStatusAction(task, status);
+    if (status === task.status) option.selected = true;
+    statusSelect.appendChild(option);
+  });
+  statusSelect.disabled = !!(pendingTaskIds[taskKey] || stale || !canSendCommand);
+  statusSelect.addEventListener("change", function() {
+    var to = statusSelect.value;
+    if (stale || pendingTaskIds[taskKey] || to === task.status || !getTaskStatusAction(task, to)) {
+      statusSelect.value = task.status;
+      return;
+    }
+    setTaskStatus(task, to).then(function() {
+      statusSelect.value = task.status;
+    });
+  });
+  body.appendChild(statusSelect);
 
   var priority = normalizeTaskPriority(task.priority);
   if (priority) {
@@ -568,41 +632,14 @@ function renderTaskItem(task, commandsConfigured, stale) {
   item.appendChild(title);
   item.appendChild(body);
 
-  var taskIdNumber = Number(task.id);
-  var canSendCommand = commandsConfigured && task.actions.length > 0
-    && Number.isInteger(taskIdNumber) && taskIdNumber > 0;
-  if (canSendCommand) {
+  if (pendingTaskIds[taskKey]) {
     var actionRow = document.createElement("div");
     actionRow.className = "task-item-actions";
-    if (pendingTaskIds[taskKey]) {
-      var pending = document.createElement("span");
-      pending.className = "task-item-pending";
-      pending.setAttribute("role", "status");
-      pending.textContent = "反映待ち";
-      actionRow.appendChild(pending);
-    } else {
-      task.actions.forEach(function(action) {
-        var button = document.createElement("button");
-        button.type = "button";
-        button.className = "task-item-action";
-        if (action.to === "failed") button.classList.add("task-item-action--danger");
-        button.dataset.expected = task.status;
-        button.dataset.to = action.to;
-        button.disabled = !!stale;
-        button.textContent = action.label;
-        button.addEventListener("click", function() {
-          if (stale || pendingTaskIds[taskKey]) return;
-          var buttons = actionRow.querySelectorAll(".task-item-action");
-          buttons.forEach(function(el) { el.disabled = true; });
-          setTaskStatus(task, action).finally(function() {
-            if (!pendingTaskIds[taskKey]) {
-              buttons.forEach(function(el) { el.disabled = false; });
-            }
-          });
-        });
-        actionRow.appendChild(button);
-      });
-    }
+    var pending = document.createElement("span");
+    pending.className = "task-item-pending";
+    pending.setAttribute("role", "status");
+    pending.textContent = "反映待ち";
+    actionRow.appendChild(pending);
     item.appendChild(actionRow);
   }
 

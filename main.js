@@ -344,7 +344,7 @@ function readTasksSnapshotFromFile(filePath) {
 function withTaskStatusActions(view) {
   const tasks = Array.isArray(view?.tasks) ? view.tasks : [];
   const config = loadUserConfig();
-  const taskFields = ['id', 'title', 'status', 'assignee', 'startedAt', 'updatedAt', 'createdAt', 'priority', 'sequential'];
+  const taskFields = ['id', 'title', 'status', 'assignee', 'startedAt', 'updatedAt', 'createdAt', 'priority', 'sequential', 'prUrl'];
   return {
     updatedAt: typeof view?.updatedAt === 'string' ? view.updatedAt : null,
     unavailable: view?.unavailable === true,

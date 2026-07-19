@@ -151,7 +151,7 @@ test('タスク見出しクリックで一覧を折り畳み・展開でき、�
   }
 });
 
-test('tasks-view.json の updatedAt が古い場合は orchestrator 停止中を表示する', async () => {
+test('コールド起動で tasks-view.json の updatedAt が古い場合はタスクセクションを表示しない', async () => {
   const port = await getFreePort();
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-tasks-stale-'));
   const tasksFile = path.join(tmpRoot, 'tasks-view.json');
@@ -164,8 +164,44 @@ test('tasks-view.json の updatedAt が古い場合は orchestrator 停止中を
 
   const { app, win, tmpRoot: appTmpRoot } = await launchApp(port, { tasksFile });
   try {
+    await win.waitForSelector('#task-list', { state: 'attached' });
+    const section = win.locator('#task-list');
+    await expect(section).toHaveAttribute('hidden', '');
+    await expect(section).toBeHidden();
+    await expect(section).not.toContainText('古いスナップショットのタスク');
+  } finally {
+    if (app) await app.close();
+    fs.rmSync(appTmpRoot, { recursive: true, force: true });
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+test('fresh 表示後に tasks-view.json が stale 化した場合は orchestrator 停止中を表示する', async () => {
+  const port = await getFreePort();
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-tasks-stale-latched-'));
+  const tasksFile = path.join(tmpRoot, 'tasks-view.json');
+  writeJson(tasksFile, {
+    updatedAt: freshDate(),
+    tasks: [
+      { id: 8, title: '稼働中に観測したタスク', status: 'ready', createdAt: freshDate(-60 * 1000) },
+    ],
+  });
+
+  const { app, win, tmpRoot: appTmpRoot } = await launchApp(port, { tasksFile });
+  try {
     const section = win.locator('#task-list');
     await expect(section).toBeVisible({ timeout: 10_000 });
+    await expect(section).toContainText('稼働中に観測したタスク');
+    await expect(section.locator('.task-list-stale')).toBeHidden();
+
+    // fresh な view でラッチを立てた後、updatedAt だけを十分過去にして watcher から stale view を push させる。
+    writeJson(tasksFile, {
+      updatedAt: freshDate(-5 * 60 * 1000),
+      tasks: [
+        { id: 8, title: '稼働中に stale 化したタスク', status: 'ready', createdAt: freshDate(-10 * 60 * 1000) },
+      ],
+    });
+    await expect(section).toContainText('稼働中に stale 化したタスク', { timeout: 10_000 });
     await expect(section.locator('.task-list-stale')).toBeVisible();
     await expect(section.locator('.task-list-stale')).toHaveText('orchestrator 停止中');
   } finally {

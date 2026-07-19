@@ -338,7 +338,7 @@ function showErr(msg) {
 
 // グループソート用ステータス順は renderer/app.js の TASK_STATUS_ORDER と同期を保つこと。
 // 遷移テーブルは持たず、select の遷移可否は /api/tasks が返す actions だけを使う。
-var TASKS_ORCHESTRATOR_STALE_MS = 60000;
+var TASKS_ORCHESTRATOR_STALE_MS = 120000;
 var TASK_STATUS_ORDER = [
   "in-progress",
   "waiting-input",
@@ -382,6 +382,7 @@ var taskListCount = document.getElementById("task-list-count");
 var taskListGroups = taskListSection ? taskListSection.querySelector(".task-list-groups") : null;
 var taskListStale = taskListSection ? taskListSection.querySelector(".task-list-stale") : null;
 var lastTaskData = null;
+var hasSeenFreshTaskView = false;
 
 // タスク一覧の折り畳み。項目が多いと下のペイン一覧へスクロールで届かなくなるため見出しから畳めるようにする。
 var TASK_LIST_COLLAPSE_KEY = "vkt.taskListCollapsed";
@@ -487,11 +488,25 @@ function normalizeTaskList(view) {
     });
 }
 
-function isTaskViewStale(view) {
+function isTaskViewStale(view, options) {
   if (!view || view.unavailable === true) return true;
   var updatedAtMs = parseTaskTime(view.updatedAt);
   if (!updatedAtMs) return true;
-  return Date.now() - updatedAtMs > TASKS_ORCHESTRATOR_STALE_MS;
+  var staleMs = options && typeof options.staleMs === "number" && isFinite(options.staleMs) ? options.staleMs : TASKS_ORCHESTRATOR_STALE_MS;
+  var now = options && typeof options.now === "number" && isFinite(options.now) ? options.now : Date.now();
+  return now - updatedAtMs > staleMs;
+}
+
+function computeTaskSectionVisibility(view, hasSeenFresh) {
+  var stale = isTaskViewStale(view);
+  var hasFreshView = !!view && !stale;
+  var nextHasSeenFresh = hasSeenFresh === true || hasFreshView;
+  return {
+    shouldShow: nextHasSeenFresh,
+    stale: stale,
+    hasFreshView: hasFreshView,
+    hasSeenFresh: nextHasSeenFresh
+  };
 }
 
 function groupTasksByStatus(tasks) {
@@ -651,9 +666,10 @@ function renderTaskList(view) {
   if (!taskListSection || !taskListGroups) return;
   var tasks = normalizeTaskList(view);
   syncPendingTaskIds(tasks);
-  var stale = isTaskViewStale(view);
-  var tasksConfigured = !!(view && view.tasksConfigured);
-  var shouldShow = tasksConfigured || tasks.length > 0;
+  var visibility = computeTaskSectionVisibility(view, hasSeenFreshTaskView);
+  hasSeenFreshTaskView = visibility.hasSeenFresh;
+  var stale = visibility.stale;
+  var shouldShow = visibility.shouldShow;
   taskListSection.hidden = !shouldShow;
   taskListSection.classList.toggle("is-stale", stale);
   if (taskListStale) taskListStale.hidden = !stale || !shouldShow;

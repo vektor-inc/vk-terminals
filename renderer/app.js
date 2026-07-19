@@ -14,6 +14,11 @@ const {
   getTaskSequentialOptions,
   getTaskSequentialLabel,
 } = require('../utils/taskStatusActions');
+const {
+  DEFAULT_TASKS_ORCHESTRATOR_STALE_MS,
+  computeTaskSectionVisibility,
+  isTaskViewStale,
+} = require('../utils/taskSectionVisibility');
 // エージェントルーム（issue #58）。サブエージェントの稼働状況をドット絵キャラで可視化する。
 const { AGENT_ORDER, buildScene, resolveAgentStatesFromOutput } = require('./agentRoom');
 const {
@@ -103,9 +108,9 @@ let newPaneAutoLaunchClaude = false;
 // 値は起動時に main（app:get-config）から取得する。設定反映には再起動が必要（設定パネルの note 参照）。
 let confirmClosePref = 'busy';
 let waitingExcludeCwdPatterns = [];
-let tasksFileConfigured = false;
 let commandsConfigured = false;
 let lastTaskView = null;
+let hasSeenFreshTaskView = false;
 const pendingTaskCommands = new Map();
 const taskCommandErrors = new Map();
 const expandedTaskEditIds = new Set();
@@ -115,7 +120,7 @@ const AGENTROOM_API_TTL_MS = 90000;
 
 // tasks-view.json は vk-orchestrator が数秒おきに更新する読み取り専用スナップショット。
 // updatedAt がこの閾値を超えて古い場合は orchestrator 停止中として扱う。
-const TASKS_ORCHESTRATOR_STALE_MS = 60000;
+const TASKS_ORCHESTRATOR_STALE_MS = DEFAULT_TASKS_ORCHESTRATOR_STALE_MS;
 const TASKS_ELAPSED_TICK_MS = 30000;
 const TASK_STATUS_ORDER = [
   'in-progress',
@@ -941,12 +946,6 @@ function updatePaneCloseLock(paneId) {
 }
 
 // ─── Task list rendering（issue #197）─────────────────────────────────────────
-function parseTaskTime(value) {
-  if (typeof value !== 'string' || !value.trim()) return null;
-  const ms = Date.parse(value);
-  return Number.isFinite(ms) ? ms : null;
-}
-
 function normalizeTaskStatus(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : 'unknown';
 }
@@ -1092,13 +1091,6 @@ function normalizeTaskList(view) {
       }
       return normalized;
     });
-}
-
-function isTaskViewStale(view) {
-  if (!view || view.unavailable === true) return true;
-  const updatedAtMs = parseTaskTime(view.updatedAt);
-  if (!updatedAtMs) return true;
-  return Date.now() - updatedAtMs > TASKS_ORCHESTRATOR_STALE_MS;
 }
 
 function groupTasksByStatus(tasks) {
@@ -1396,11 +1388,16 @@ function renderTaskList(view = lastTaskView) {
 
   const tasks = normalizeTaskList(view);
   syncPendingTaskCommands(tasks);
-  const stale = isTaskViewStale(view);
-  const shouldShow = tasksFileConfigured || tasks.length > 0 || (!!view && stale);
+  const visibility = computeTaskSectionVisibility(view, {
+    hasSeenFresh: hasSeenFreshTaskView,
+    staleMs: TASKS_ORCHESTRATOR_STALE_MS,
+  });
+  hasSeenFreshTaskView = visibility.hasSeenFresh;
+  const stale = visibility.stale;
+  const shouldShow = visibility.shouldShow;
   section.hidden = !shouldShow;
   section.classList.toggle('is-stale', stale);
-  if (staleNotice) staleNotice.hidden = !stale;
+  if (staleNotice) staleNotice.hidden = !stale || !shouldShow;
   container.replaceChildren();
   if (!shouldShow) return;
 
@@ -1423,7 +1420,7 @@ function renderTaskList(view = lastTaskView) {
 function tickTaskStale() {
   const section = document.getElementById('task-list');
   if (!section || section.hidden) return;
-  const stale = isTaskViewStale(lastTaskView);
+  const stale = isTaskViewStale(lastTaskView, { staleMs: TASKS_ORCHESTRATOR_STALE_MS });
   section.classList.toggle('is-stale', stale);
   const staleNotice = section.querySelector('.task-list-stale');
   if (staleNotice) staleNotice.hidden = !stale;
@@ -3603,7 +3600,6 @@ async function initApp() {
     // main 側でも正規化済みだが、取得失敗・欠落に備えてここでも既定 'busy' に落とす。
     confirmClosePref = normalizeConfirmClose(cfg && cfg.confirmClose);
     waitingExcludeCwdPatterns = normalizeWaitingExcludeCwdPatterns(cfg && cfg.waitingExcludeCwdPatterns);
-    tasksFileConfigured = !!(cfg && typeof cfg.tasksFile === 'string' && cfg.tasksFile.trim());
     commandsConfigured = !!(cfg && typeof cfg.commandsFile === 'string' && cfg.commandsFile.trim());
     renderTaskList(lastTaskView);
     // ヘッダー／タブのアプリ名。呼び出し側（例: vk-orchestrator）が env で上書きすると

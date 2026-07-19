@@ -1,5 +1,7 @@
 # Changelog
 
+## 1.32.0
+
 - [ 仕様変更 ] タスク一覧のステータス操作を操作ボタンからステータス名のプルダウン選択へ変更（[#207](https://github.com/vektor-inc/vk-terminals/issues/207)）
 
 ## 1.31.0

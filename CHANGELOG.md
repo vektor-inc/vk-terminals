@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 仕様変更 ] サイドバーのタスク一覧でステータスをラベル表示にし、編集パネルの保存で変更をまとめて反映するように変更（[#211](https://github.com/vektor-inc/vk-terminals/issues/211)）
+
 ## 1.33.0
 
 - [ 仕様変更 ] VK Terminals 単独起動時はサイドバー・モバイルのタスク一覧を表示しないように変更（[#208](https://github.com/vektor-inc/vk-terminals/issues/208)）

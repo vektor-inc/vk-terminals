@@ -87,8 +87,8 @@ test('tasksFile 設定時はタスクセクションを表示し、status グル
     // グループ見出しは撤去したが、グループ自体は推奨順（in-progress → waiting-input → ready → unknown）で並ぶ。
     const groupOrder = await section.locator('.task-list-group').evaluateAll((els) => els.map((el) => el.dataset.status));
     expect(groupOrder).toEqual(['in-progress', 'waiting-input', 'ready', 'custom-status']);
-    await expect(section.locator('.task-status[data-status="in-progress"]').first()).toHaveValue('in-progress');
-    await expect(section.locator('.task-status[data-status="custom-status"]').first()).toHaveValue('custom-status');
+    await expect(section.locator('.task-status[data-status="in-progress"]').first()).toHaveText('実行中');
+    await expect(section.locator('.task-status[data-status="custom-status"]').first()).toHaveText('custom-status');
     await expect(section.locator('.task-item-assignee').first()).toContainText('kurudrive');
 
     // fs.watch / polling 経由で書き換え後の snapshot が renderer に push されることを確認する。

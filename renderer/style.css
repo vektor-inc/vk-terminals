@@ -914,50 +914,79 @@ body.resizing-sidebar .sidebar {
   padding: 5px 6px;
   background: #161b22;
 }
-.task-list .pane-status {
-  min-width: auto;
-  margin-right: 0;
-  visibility: visible;
+.task-status-select {
+  flex: none;
+  min-height: 22px;
+  padding: 2px 22px 2px 7px;
+  border: 1px solid transparent;
+  border-radius: var(--vktm--border-radius--sm);
+  font: inherit;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.2;
+  white-space: nowrap;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  background-image:
+    linear-gradient(45deg, transparent 50%, currentcolor 50%),
+    linear-gradient(135deg, currentcolor 50%, transparent 50%);
+  background-position:
+    calc(100% - 12px) 50%,
+    calc(100% - 8px) 50%;
+  background-size: 4px 4px, 4px 4px;
+  background-repeat: no-repeat;
+  transition: color 0.12s, border-color 0.12s, opacity 0.12s;
+  -webkit-app-region: no-drag;
 }
-.task-list .pane-status[data-status="in-progress"] {
+.task-status-select:focus-visible {
+  outline: 2px solid #58a6ff;
+  outline-offset: 2px;
+}
+.task-status-select:disabled,
+.task-status-select[aria-disabled="true"] {
+  opacity: 0.62;
+  cursor: default;
+}
+.task-status-select[data-status="in-progress"] {
   color: #3fb950;
-  background: rgba(63, 185, 80, 0.15);
+  background-color: rgba(63, 185, 80, 0.15);
   border: 1px solid rgba(63, 185, 80, 0.3);
 }
-.task-list .pane-status[data-status="waiting-input"] {
+.task-status-select[data-status="waiting-input"] {
   color: #d29922;
-  background: rgba(210, 153, 34, 0.15);
+  background-color: rgba(210, 153, 34, 0.15);
   border: 1px solid rgba(210, 153, 34, 0.3);
   animation: badge-pulse 1.5s ease-in-out infinite;
 }
-.task-list .pane-status[data-status="ready"],
-.task-list .pane-status[data-status="waiting-merge"] {
+.task-status-select[data-status="ready"],
+.task-status-select[data-status="waiting-merge"] {
   color: #58a6ff;
-  background: rgba(88, 166, 255, 0.15);
+  background-color: rgba(88, 166, 255, 0.15);
   border: 1px solid rgba(88, 166, 255, 0.3);
 }
-.task-list .pane-status[data-status="awaiting-approval"] {
+.task-status-select[data-status="awaiting-approval"] {
   color: #bc8cff;
-  background: rgba(188, 140, 255, 0.15);
+  background-color: rgba(188, 140, 255, 0.15);
   border: 1px solid rgba(188, 140, 255, 0.3);
 }
-.task-list .pane-status[data-status="failed"] {
+.task-status-select[data-status="failed"] {
   color: #ffa198;
-  background: rgba(248, 81, 73, 0.15);
+  background-color: rgba(248, 81, 73, 0.15);
   border: 1px solid rgba(248, 81, 73, 0.3);
 }
-.task-list .pane-status[data-status="done"] {
+.task-status-select[data-status="done"] {
   color: #8b949e;
-  background: rgba(139, 148, 158, 0.12);
+  background-color: rgba(139, 148, 158, 0.12);
   border: 1px solid rgba(139, 148, 158, 0.24);
 }
-.task-list .pane-status[data-status="unknown"],
-.task-list .pane-status:where(:not([data-status="in-progress"]):not([data-status="waiting-input"]):not([data-status="ready"]):not([data-status="waiting-merge"]):not([data-status="awaiting-approval"]):not([data-status="failed"]):not([data-status="done"])) {
+.task-status-select[data-status="unknown"],
+.task-status-select:where(:not([data-status="in-progress"]):not([data-status="waiting-input"]):not([data-status="ready"]):not([data-status="waiting-merge"]):not([data-status="awaiting-approval"]):not([data-status="failed"]):not([data-status="done"])) {
   color: #8b949e;
-  background: rgba(139, 148, 158, 0.12);
+  background-color: rgba(139, 148, 158, 0.12);
   border: 1px solid rgba(139, 148, 158, 0.24);
 }
-.task-list.is-stale .pane-status {
+.task-list.is-stale .task-status-select {
   animation: none;
 }
 .task-priority-badge,
@@ -1595,13 +1624,13 @@ body.resizing-sidebar .sidebar {
 .pane-status[data-status="running"] {
   /* .pane.drag-over の緑（#3fb950）と同系統に揃え、衝突を回避 */
   color: #3fb950;
-  background: rgba(63, 185, 80, 0.15);
+  background-color: rgba(63, 185, 80, 0.15);
   border: 1px solid rgba(63, 185, 80, 0.3);
 }
 
 .pane-status[data-status="waiting"] {
   color: #d29922;
-  background: rgba(210, 153, 34, 0.15);
+  background-color: rgba(210, 153, 34, 0.15);
   border: 1px solid rgba(210, 153, 34, 0.3);
   /* .pane.waiting 枠の waiting-pulse(1.5s) と位相を揃える */
   animation: badge-pulse 1.5s ease-in-out infinite;

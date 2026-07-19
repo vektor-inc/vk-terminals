@@ -5,7 +5,10 @@ const { FitAddon } = require('@xterm/addon-fit');
 const { appendAnsiForDisplay, stripAnsiForDisplay } = require('../utils/stripAnsi');
 const { normalizeConfirmClose, shouldConfirmClose } = require('../utils/closeConfirm');
 const {
-  getTaskStatusActions,
+  TASK_STATUS_SELECT_ORDER,
+  getTaskStatusLabel,
+  getTaskStatusSelectOptions,
+  getTaskStatusTransitionConfirmMessage,
   getTaskPriorityOptions,
   getTaskPriorityLabel,
   getTaskSequentialOptions,
@@ -123,15 +126,6 @@ const TASK_STATUS_ORDER = [
   'failed',
   'done',
 ];
-const TASK_STATUS_LABELS = {
-  'awaiting-approval': '承認待ち',
-  'ready': '実行待ち',
-  'in-progress': '実行中',
-  'waiting-input': '入力待ち',
-  'waiting-merge': 'マージ待ち',
-  'done': '完了',
-  'failed': '失敗',
-};
 const TASK_EDITABLE_STATUSES = new Set(['awaiting-approval', 'ready']);
 const TASK_PENDING_TIMEOUT_MS = 30000;
 const TASK_COMMAND_SEND_ERROR_MESSAGE = '送信に失敗しました（再試行してください）';
@@ -957,10 +951,6 @@ function normalizeTaskStatus(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : 'unknown';
 }
 
-function getTaskStatusLabel(status) {
-  return TASK_STATUS_LABELS[status] || status;
-}
-
 function hasTaskPriorityContract(task) {
   return Object.prototype.hasOwnProperty.call(task || {}, 'priority');
 }
@@ -1097,6 +1087,9 @@ function normalizeTaskList(view) {
       if (Object.prototype.hasOwnProperty.call(task || {}, 'sequential')) {
         normalized.sequential = task.sequential === true;
       }
+      if (typeof task.prUrl === 'string' && task.prUrl.trim()) {
+        normalized.prUrl = task.prUrl.trim();
+      }
       return normalized;
     });
 }
@@ -1143,11 +1136,13 @@ function renderTaskItem(task) {
   const head = document.createElement('div');
   head.className = 'task-item-head';
 
-  const badge = document.createElement('span');
-  badge.className = 'pane-badge pane-status task-status';
-  badge.dataset.status = status;
-  badge.textContent = getTaskStatusLabel(status);
-  head.appendChild(badge);
+  const statusSelect = document.createElement('select');
+  statusSelect.className = 'task-status task-status-select';
+  statusSelect.dataset.status = status;
+  statusSelect.dataset.taskId = taskKey;
+  statusSelect.dataset.taskControl = 'status-select';
+  statusSelect.setAttribute('aria-label', `${task.title} の状態`);
+  head.appendChild(statusSelect);
 
   const priority = normalizeTaskPriority(task.priority);
   if (priority) {
@@ -1179,20 +1174,26 @@ function renderTaskItem(task) {
   li.appendChild(title);
   li.appendChild(head);
 
-  const actions = getTaskStatusActions(status);
   const canSendCommand = commandsConfigured && Number.isInteger(Number(task.id)) && Number(task.id) > 0;
   const canUseEditPanel = canSendCommand && hasPriorityContract && TASK_EDITABLE_STATUSES.has(status);
-  const statusActions = hasPriorityContract
-    ? actions
-    : actions.filter((action) => action.confirm !== true);
-  const directActions = canUseEditPanel ? [] : statusActions;
+  const statusOptions = getTaskStatusSelectOptions(status, { hasPriorityContract });
+  statusOptions.forEach((option) => {
+    const optionEl = document.createElement('option');
+    optionEl.value = option.value;
+    optionEl.textContent = option.label;
+    optionEl.disabled = !canSendCommand || option.disabled;
+    if (option.value === status) optionEl.selected = true;
+    statusSelect.appendChild(optionEl);
+  });
+  statusSelect.disabled = hasPending || !canSendCommand;
+  if (hasPending || !canSendCommand) {
+    statusSelect.setAttribute('aria-disabled', 'true');
+  }
 
-  const submitTaskCommand = async ({ kind, actionName, expected, to, warningAction }) => {
+  const submitTaskCommand = async ({ kind, actionName, expected, to, confirmMessage }) => {
     if (getTaskPending(taskKey)) return;
-    if (warningAction?.confirm) {
-      const ok = window.confirm(
-        'このタスクを差し戻しますか？\n\n実行中セッションがある場合、差し戻し後の再承認で二重起動につながる可能性があります。'
-      );
+    if (confirmMessage) {
+      const ok = window.confirm(confirmMessage);
       if (!ok) return;
     }
     setTaskPending(taskKey, { kind, expected, to });
@@ -1219,30 +1220,27 @@ function renderTaskItem(task) {
     }
   };
 
-  const appendStatusActions = (parent, buttonClassName) => {
-    statusActions.forEach((action) => {
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.className = buttonClassName;
-      if (action.to === 'failed' || action.confirm === true) button.classList.add('task-item-action--danger');
-      button.dataset.taskId = taskKey;
-      button.dataset.taskControl = 'status-action';
-      button.dataset.to = action.to;
-      button.dataset.expected = status;
-      button.disabled = hasPending;
-      button.textContent = action.label;
-      button.addEventListener('click', () => {
-        submitTaskCommand({
-          kind: 'status',
-          actionName: 'tasks:set-status',
-          expected: status,
-          to: action.to,
-          warningAction: action,
-        });
-      });
-      parent.appendChild(button);
+  statusSelect.addEventListener('change', () => {
+    const to = statusSelect.value;
+    if (to === status || getTaskPending(taskKey)) {
+      statusSelect.value = status;
+      return;
+    }
+    const confirmMessage = getTaskStatusTransitionConfirmMessage({
+      from: status,
+      to,
+      hasPrUrl: !!task.prUrl,
     });
-  };
+    submitTaskCommand({
+      kind: 'status',
+      actionName: 'tasks:set-status',
+      expected: status,
+      to,
+      confirmMessage,
+    }).then(() => {
+      statusSelect.value = status;
+    });
+  });
 
   if (canUseEditPanel) {
     const actionRow = document.createElement('div');
@@ -1350,26 +1348,11 @@ function renderTaskItem(task) {
       sequentialField.appendChild(sequentialControl);
       panel.appendChild(sequentialField);
 
-      if (statusActions.length > 0) {
-        const statusField = document.createElement('div');
-        statusField.className = 'task-edit-field task-edit-field--actions';
-        const statusLabel = document.createElement('span');
-        statusLabel.className = 'task-edit-label';
-        statusLabel.textContent = '状態';
-        const statusButtons = document.createElement('div');
-        statusButtons.className = 'task-edit-actions';
-        appendStatusActions(statusButtons, 'task-item-action');
-        statusField.appendChild(statusLabel);
-        statusField.appendChild(statusButtons);
-        panel.appendChild(statusField);
-      }
-
       li.appendChild(panel);
     }
-  } else if (canSendCommand && directActions.length > 0) {
+  } else if (hasPending || commandError) {
     const actionRow = document.createElement('div');
     actionRow.className = 'task-item-actions';
-    appendStatusActions(actionRow, 'task-item-action');
     if (hasPending) {
       const pending = document.createElement('span');
       pending.className = 'task-item-pending';
@@ -1384,15 +1367,6 @@ function renderTaskItem(task) {
       error.textContent = commandError;
       actionRow.appendChild(error);
     }
-    li.appendChild(actionRow);
-  } else if (commandError) {
-    const actionRow = document.createElement('div');
-    actionRow.className = 'task-item-actions';
-    const error = document.createElement('span');
-    error.className = 'task-item-action-error';
-    error.setAttribute('role', 'status');
-    error.textContent = commandError;
-    actionRow.appendChild(error);
     li.appendChild(actionRow);
   }
   return li;

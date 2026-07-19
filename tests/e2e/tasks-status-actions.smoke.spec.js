@@ -27,6 +27,13 @@ function writeJson(filePath, value) {
   fs.writeFileSync(filePath, JSON.stringify(value, null, 2), 'utf8');
 }
 
+function readCommands(commandsPath) {
+  if (!fs.existsSync(commandsPath)) return [];
+  const raw = fs.readFileSync(commandsPath, 'utf8').trim();
+  if (!raw) return [];
+  return raw.split('\n').map((line) => JSON.parse(line));
+}
+
 function freshDate(offsetMs = 0) {
   return new Date(Date.now() + offsetMs).toISOString();
 }
@@ -59,7 +66,24 @@ async function launchApp(port, config = {}) {
   return { app, win, tmpRoot };
 }
 
-test('awaiting-approval タスクの承認ボタンで commands.jsonl に set-status を 1 行追記する', async () => {
+async function selectWithDialog(page, select, value, accept) {
+  const dialogPromise = page.waitForEvent('dialog');
+  const changePromise = select.evaluate((el, nextValue) => {
+    el.value = nextValue;
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  }, value);
+  const dialog = await dialogPromise;
+  const message = dialog.message();
+  if (accept) {
+    await dialog.accept();
+  } else {
+    await dialog.dismiss();
+  }
+  await changePromise;
+  return message;
+}
+
+test('承認待ちタスクのステータス select で commands.jsonl に set-status を 1 行追記する', async () => {
   const port = await getFreePort();
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-tasks-status-data-'));
   const tasksFile = path.join(tmpRoot, 'tasks-view.json');
@@ -76,18 +100,39 @@ test('awaiting-approval タスクの承認ボタンで commands.jsonl に set-st
     const section = win.locator('#task-list');
     await expect(section).toBeVisible({ timeout: 10_000 });
     const task = section.locator('.task-item').filter({ hasText: '承認待ちのタスク' });
-    await expect(task.getByRole('button', { name: '承認' })).toBeVisible();
+    const statusSelect = task.getByLabel('承認待ちのタスク の状態');
+    await expect(statusSelect).toHaveValue('awaiting-approval');
 
-    // クリック後は renderer 側の pending 表示に切り替わり、main 側では JSONL が追記される。
-    await task.getByRole('button', { name: '承認' }).click();
+    // select は常に 7 ステータスを同じライフサイクル順で持ち、遷移不可 option は disabled にする。
+    await expect(statusSelect.locator('option')).toHaveText([
+      '承認待ち',
+      '実行待ち',
+      '実行中',
+      '入力待ち',
+      'マージ待ち',
+      '完了',
+      '失敗',
+    ]);
+    const disabledByValue = await statusSelect.locator('option').evaluateAll((options) => (
+      Object.fromEntries(options.map((option) => [option.value, option.disabled]))
+    ));
+    expect(disabledByValue).toMatchObject({
+      'awaiting-approval': false,
+      ready: false,
+      'in-progress': true,
+      'waiting-input': true,
+      'waiting-merge': true,
+      done: true,
+      failed: true,
+    });
+
+    // 変更後は楽観表示せず、現在値へ戻したうえで反映待ちラベルを出す。
+    await statusSelect.selectOption('ready');
+    await expect(statusSelect).toHaveValue('awaiting-approval');
     await expect(task.locator('.task-item-pending')).toHaveText('反映待ち');
-    await expect.poll(() => fs.existsSync(commandsPath) ? fs.readFileSync(commandsPath, 'utf8') : '', {
-      timeout: 5000,
-    }).not.toBe('');
+    await expect.poll(() => readCommands(commandsPath), { timeout: 5000 }).toHaveLength(1);
 
-    const lines = fs.readFileSync(commandsPath, 'utf8').trimEnd().split('\n');
-    expect(lines).toHaveLength(1);
-    const command = JSON.parse(lines[0]);
+    const [command] = readCommands(commandsPath);
     expect(command).toMatchObject({
       taskId: 198,
       action: 'set-status',
@@ -105,7 +150,7 @@ test('awaiting-approval タスクの承認ボタンで commands.jsonl に set-st
   }
 });
 
-test('commandsPath 未設定時はステータス操作ボタンを表示しない', async () => {
+test('commandsPath 未設定時はステータス select を表示するが変更できない', async () => {
   const port = await getFreePort();
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-tasks-status-readonly-'));
   const tasksFile = path.join(tmpRoot, 'tasks-view.json');
@@ -120,7 +165,10 @@ test('commandsPath 未設定時はステータス操作ボタンを表示しな�
   try {
     const section = win.locator('#task-list');
     await expect(section).toBeVisible({ timeout: 10_000 });
-    await expect(section).toContainText('表示だけの承認待ちタスク');
+    const task = section.locator('.task-item').filter({ hasText: '表示だけの承認待ちタスク' });
+    const statusSelect = task.getByLabel('表示だけの承認待ちタスク の状態');
+    await expect(statusSelect).toBeVisible();
+    await expect(statusSelect).toBeDisabled();
     await expect(section.getByRole('button', { name: '承認' })).toHaveCount(0);
   } finally {
     if (app) await app.close();
@@ -129,7 +177,7 @@ test('commandsPath 未設定時はステータス操作ボタンを表示しな�
   }
 });
 
-test('新タスク契約では優先度バッジと編集パネルから set-priority を送信できる', async () => {
+test('編集パネルは優先度と実行方式だけを表示し、ステータス操作は select から送信する', async () => {
   const port = await getFreePort();
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-tasks-edit-'));
   const tasksFile = path.join(tmpRoot, 'tasks-view.json');
@@ -160,7 +208,8 @@ test('新タスク契約では優先度バッジと編集パネルから set-pri
 
     await task.getByRole('button', { name: '編集' }).click();
     await expect(task.locator('.task-edit-panel')).toBeVisible();
-    await expect(task.getByRole('button', { name: '承認' })).toBeVisible();
+    await expect(task.locator('.task-edit-label')).toHaveText(['優先度', '実行方式']);
+
     const prioritySelect = task.getByLabel('優先度');
     await prioritySelect.focus();
     await prioritySelect.selectOption('low');
@@ -168,12 +217,8 @@ test('新タスク契約では優先度バッジと編集パネルから set-pri
     await expect(prioritySelect).toHaveAttribute('aria-disabled', 'true');
     await expect.poll(() => win.evaluate(() => document.activeElement?.dataset.taskControl || '')).toBe('priority-select');
 
-    await expect.poll(() => fs.existsSync(commandsPath) ? fs.readFileSync(commandsPath, 'utf8') : '', {
-      timeout: 5000,
-    }).not.toBe('');
-    const lines = fs.readFileSync(commandsPath, 'utf8').trimEnd().split('\n');
-    expect(lines).toHaveLength(1);
-    const command = JSON.parse(lines[0]);
+    await expect.poll(() => readCommands(commandsPath), { timeout: 5000 }).toHaveLength(1);
+    const [command] = readCommands(commandsPath);
     expect(command).toMatchObject({
       taskId: 203,
       action: 'set-priority',
@@ -187,7 +232,7 @@ test('新タスク契約では優先度バッジと編集パネルから set-pri
   }
 });
 
-test('in-progress タスクには commandsPath 設定時でも操作ボタンを表示しない', async () => {
+test('旧契約の実行中タスクは承認待ちへの確認付き遷移を disabled にする', async () => {
   const port = await getFreePort();
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-tasks-status-in-progress-'));
   const tasksFile = path.join(tmpRoot, 'tasks-view.json');
@@ -195,7 +240,7 @@ test('in-progress タスクには commandsPath 設定時でも操作ボタンを
   writeJson(tasksFile, {
     updatedAt: freshDate(),
     tasks: [
-      { id: '202', title: '実行中のタスク', status: 'in-progress', assignee: 'wada', startedAt: freshDate(-60 * 1000) },
+      { id: '202', title: '実行中の旧契約タスク', status: 'in-progress', assignee: 'wada', startedAt: freshDate(-60 * 1000) },
     ],
   });
 
@@ -203,10 +248,148 @@ test('in-progress タスクには commandsPath 設定時でも操作ボタンを
   try {
     const section = win.locator('#task-list');
     await expect(section).toBeVisible({ timeout: 10_000 });
-    const task = section.locator('.task-item').filter({ hasText: '実行中のタスク' });
-    await expect(task).toBeVisible();
-    await expect(task.locator('.task-item-action')).toHaveCount(0);
+    const task = section.locator('.task-item').filter({ hasText: '実行中の旧契約タスク' });
+    const statusSelect = task.getByLabel('実行中の旧契約タスク の状態');
+    await expect(statusSelect).toHaveValue('in-progress');
+    const awaitingDisabled = await statusSelect.locator('option[value="awaiting-approval"]').evaluate((option) => option.disabled);
+    expect(awaitingDisabled).toBe(true);
     await expect(task.locator('.task-item-pending')).toHaveCount(0);
+    expect(readCommands(commandsPath)).toHaveLength(0);
+  } finally {
+    if (app) await app.close();
+    fs.rmSync(appTmpRoot, { recursive: true, force: true });
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+test('PR 付きマージ待ちタスクを完了へ変更する確認はキャンセル時に送信しない', async () => {
+  const port = await getFreePort();
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-tasks-status-merge-'));
+  const tasksFile = path.join(tmpRoot, 'tasks-view.json');
+  const commandsPath = path.join(tmpRoot, 'commands.jsonl');
+  writeJson(tasksFile, {
+    updatedAt: freshDate(),
+    tasks: [
+      {
+        id: '204',
+        title: 'PR 付きのマージ待ちタスク',
+        status: 'waiting-merge',
+        assignee: 'wada',
+        priority: 'medium',
+        sequential: false,
+        prUrl: 'https://github.com/vektor-inc/vk-terminals/pull/204',
+        updatedAt: freshDate(-60 * 1000),
+      },
+    ],
+  });
+
+  const { app, win, tmpRoot: appTmpRoot } = await launchApp(port, { tasksFile, commandsPath });
+  try {
+    const section = win.locator('#task-list');
+    await expect(section).toBeVisible({ timeout: 10_000 });
+    const task = section.locator('.task-item').filter({ hasText: 'PR 付きのマージ待ちタスク' });
+    const statusSelect = task.getByLabel('PR 付きのマージ待ちタスク の状態');
+
+    const cancelMessage = await selectWithDialog(win, statusSelect, 'done', false);
+    expect(cancelMessage).toContain('ステータスを「完了」に変更しますか？');
+    expect(cancelMessage).toContain('PR のマージは行われません（PR は開いたまま残ります）。');
+    await expect(statusSelect).toHaveValue('waiting-merge');
+    await expect(task.locator('.task-item-pending')).toHaveCount(0);
+    expect(readCommands(commandsPath)).toHaveLength(0);
+  } finally {
+    if (app) await app.close();
+    fs.rmSync(appTmpRoot, { recursive: true, force: true });
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+test('PR 付きマージ待ちタスクを完了へ変更すると反映待ちを表示する', async () => {
+  const port = await getFreePort();
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-tasks-status-merge-accept-'));
+  const tasksFile = path.join(tmpRoot, 'tasks-view.json');
+  const commandsPath = path.join(tmpRoot, 'commands.jsonl');
+  writeJson(tasksFile, {
+    updatedAt: freshDate(),
+    tasks: [
+      {
+        id: '206',
+        title: '完了へ進める PR 付きマージ待ちタスク',
+        status: 'waiting-merge',
+        assignee: 'wada',
+        priority: 'medium',
+        sequential: false,
+        prUrl: 'https://github.com/vektor-inc/vk-terminals/pull/206',
+        updatedAt: freshDate(-60 * 1000),
+      },
+    ],
+  });
+
+  const { app, win, tmpRoot: appTmpRoot } = await launchApp(port, { tasksFile, commandsPath });
+  try {
+    const section = win.locator('#task-list');
+    await expect(section).toBeVisible({ timeout: 10_000 });
+    const task = section.locator('.task-item').filter({ hasText: '完了へ進める PR 付きマージ待ちタスク' });
+    const statusSelect = task.getByLabel('完了へ進める PR 付きマージ待ちタスク の状態');
+
+    const acceptMessage = await selectWithDialog(win, statusSelect, 'done', true);
+    expect(acceptMessage).toContain('ステータスを「完了」に変更しますか？');
+    expect(acceptMessage).toContain('PR のマージは行われません（PR は開いたまま残ります）。');
+    await expect(statusSelect).toHaveValue('waiting-merge');
+    await expect(task.locator('.task-item-pending')).toHaveText('反映待ち');
+    await expect.poll(() => readCommands(commandsPath), { timeout: 5000 }).toHaveLength(1);
+    const [command] = readCommands(commandsPath);
+    expect(command).toMatchObject({
+      taskId: 206,
+      action: 'set-status',
+      to: 'done',
+      expected: 'waiting-merge',
+    });
+  } finally {
+    if (app) await app.close();
+    fs.rmSync(appTmpRoot, { recursive: true, force: true });
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+test('承認待ちへ戻す遷移では二重起動警告を表示する', async () => {
+  const port = await getFreePort();
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-tasks-status-return-'));
+  const tasksFile = path.join(tmpRoot, 'tasks-view.json');
+  const commandsPath = path.join(tmpRoot, 'commands.jsonl');
+  writeJson(tasksFile, {
+    updatedAt: freshDate(),
+    tasks: [
+      {
+        id: '205',
+        title: '差し戻し相当の実行中タスク',
+        status: 'in-progress',
+        assignee: 'wada',
+        priority: 'medium',
+        sequential: false,
+        startedAt: freshDate(-60 * 1000),
+      },
+    ],
+  });
+
+  const { app, win, tmpRoot: appTmpRoot } = await launchApp(port, { tasksFile, commandsPath });
+  try {
+    const section = win.locator('#task-list');
+    await expect(section).toBeVisible({ timeout: 10_000 });
+    const task = section.locator('.task-item').filter({ hasText: '差し戻し相当の実行中タスク' });
+    const statusSelect = task.getByLabel('差し戻し相当の実行中タスク の状態');
+
+    const message = await selectWithDialog(win, statusSelect, 'awaiting-approval', true);
+    expect(message).toContain('ステータスを「承認待ち」に変更しますか？');
+    expect(message).toContain('再承認で二重起動につながる可能性があります。');
+    await expect(task.locator('.task-item-pending')).toHaveText('反映待ち');
+    await expect.poll(() => readCommands(commandsPath), { timeout: 5000 }).toHaveLength(1);
+    const [command] = readCommands(commandsPath);
+    expect(command).toMatchObject({
+      taskId: 205,
+      action: 'set-status',
+      to: 'awaiting-approval',
+      expected: 'in-progress',
+    });
   } finally {
     if (app) await app.close();
     fs.rmSync(appTmpRoot, { recursive: true, force: true });

@@ -26,6 +26,26 @@ const TASK_STATUS_ACTIONS = Object.freeze({
   ]),
 });
 
+const TASK_STATUS_LABELS = Object.freeze({
+  'awaiting-approval': '承認待ち',
+  ready: '実行待ち',
+  'in-progress': '実行中',
+  'waiting-input': '入力待ち',
+  'waiting-merge': 'マージ待ち',
+  done: '完了',
+  failed: '失敗',
+});
+
+const TASK_STATUS_SELECT_ORDER = Object.freeze([
+  'awaiting-approval',
+  'ready',
+  'in-progress',
+  'waiting-input',
+  'waiting-merge',
+  'done',
+  'failed',
+]);
+
 const TASK_PRIORITY_OPTIONS = Object.freeze([
   Object.freeze({ value: 'high', label: '高' }),
   Object.freeze({ value: 'medium', label: '中' }),
@@ -46,6 +66,49 @@ function getTaskStatusActions(status) {
 
 function isAllowedTransition(from, to) {
   return getTaskStatusActions(from).some((action) => action.to === to);
+}
+
+function getTaskStatusLabel(status) {
+  return TASK_STATUS_LABELS[status] || status;
+}
+
+function getAllowedTaskStatusSelectActions(status, options = {}) {
+  const hasPriorityContract = options.hasPriorityContract !== false;
+  return getTaskStatusActions(status)
+    .filter((action) => hasPriorityContract || action.confirm !== true);
+}
+
+function isTaskStatusSelectOptionDisabled(currentStatus, optionStatus, options = {}) {
+  if (optionStatus === currentStatus) return false;
+  return !getAllowedTaskStatusSelectActions(currentStatus, options)
+    .some((action) => action.to === optionStatus);
+}
+
+function getTaskStatusSelectOptions(currentStatus, options = {}) {
+  const isKnownStatus = TASK_STATUS_SELECT_ORDER.includes(currentStatus);
+  const hasUnknownCurrentStatus = typeof currentStatus === 'string' && currentStatus && !isKnownStatus;
+  const statuses = hasUnknownCurrentStatus
+    ? Object.freeze([currentStatus, ...TASK_STATUS_SELECT_ORDER])
+    : TASK_STATUS_SELECT_ORDER;
+  return statuses.map((status) => Object.freeze({
+    value: status,
+    label: getTaskStatusLabel(status),
+    disabled: isTaskStatusSelectOptionDisabled(currentStatus, status, options),
+  }));
+}
+
+function getTaskStatusTransitionConfirmMessage({ from, to, hasPrUrl } = {}) {
+  if (to === 'awaiting-approval') {
+    return 'ステータスを「承認待ち」に変更しますか？\n\n実行中のセッションがある場合、再承認で二重起動につながる可能性があります。';
+  }
+  if (from === 'waiting-merge' && to === 'done') {
+    const lines = ['ステータスを「完了」に変更しますか？'];
+    if (hasPrUrl) {
+      lines.push('', 'PR のマージは行われません（PR は開いたまま残ります）。');
+    }
+    return lines.join('\n');
+  }
+  return '';
 }
 
 function getTaskPriorityOptions() {
@@ -74,10 +137,17 @@ function getTaskSequentialLabel(value) {
 
 module.exports = {
   TASK_STATUS_ACTIONS,
+  TASK_STATUS_LABELS,
+  TASK_STATUS_SELECT_ORDER,
   TASK_PRIORITY_OPTIONS,
   TASK_SEQUENTIAL_OPTIONS,
   getTaskStatusActions,
   isAllowedTransition,
+  getTaskStatusLabel,
+  getAllowedTaskStatusSelectActions,
+  isTaskStatusSelectOptionDisabled,
+  getTaskStatusSelectOptions,
+  getTaskStatusTransitionConfirmMessage,
   getTaskPriorityOptions,
   isAllowedTaskPriorityValue,
   getTaskPriorityLabel,

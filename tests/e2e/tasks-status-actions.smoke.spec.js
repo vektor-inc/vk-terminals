@@ -106,6 +106,7 @@ test('承認待ちタスクの編集パネル保存で commands.jsonl に set-st
     await expect(section).toBeVisible({ timeout: 10_000 });
     const task = section.locator('.task-item').filter({ hasText: '承認待ちのタスク' });
     await expect(task.locator('.task-status-label')).toHaveText('承認待ち');
+    await expect(task.locator('.task-status-label')).not.toHaveAttribute('role', 'status');
 
     await task.getByRole('button', { name: '編集' }).click();
     const statusSelect = task.getByLabel('ステータス');
@@ -137,9 +138,13 @@ test('承認待ちタスクの編集パネル保存で commands.jsonl に set-st
     // 変更だけでは送信せず、保存で反映待ちラベルを出す。
     await statusSelect.selectOption('ready');
     expect(readCommands(commandsPath)).toHaveLength(0);
+    const editButton = task.getByRole('button', { name: '編集' });
+    await expect(editButton).toHaveAttribute('aria-controls', 'task-edit-panel-198');
     await task.getByRole('button', { name: '保存' }).click();
     await expect(task.locator('.task-item-pending')).toHaveText('反映待ち');
     await expect(task.locator('.task-edit-panel')).toHaveCount(0);
+    await expect(editButton).toBeFocused();
+    await expect(editButton).toHaveAttribute('aria-expanded', 'false');
     await expect.poll(() => readCommands(commandsPath), { timeout: 5000 }).toHaveLength(1);
 
     const [command] = readCommands(commandsPath);
@@ -153,6 +158,66 @@ test('承認待ちタスクの編集パネル保存で commands.jsonl に set-st
     expect(command.id.length).toBeGreaterThan(0);
     expect(typeof command.requestedAt).toBe('string');
     expect(command.requestedAt.length).toBeGreaterThan(0);
+  } finally {
+    if (app) await app.close();
+    fs.rmSync(appTmpRoot, { recursive: true, force: true });
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+test('編集中のドラフトは tasks ビュー再描画後も保持される', async () => {
+  const port = await getFreePort();
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-tasks-draft-redraw-'));
+  const tasksFile = path.join(tmpRoot, 'tasks-view.json');
+  const commandsPath = path.join(tmpRoot, 'commands.jsonl');
+  writeJson(tasksFile, {
+    updatedAt: freshDate(),
+    tasks: [
+      {
+        id: '208',
+        title: '再描画中に編集するタスク',
+        status: 'awaiting-approval',
+        assignee: 'wada',
+        priority: 'high',
+        sequential: true,
+        createdAt: freshDate(-10 * 60 * 1000),
+      },
+    ],
+  });
+
+  const { app, win, tmpRoot: appTmpRoot } = await launchApp(port, { tasksFile, commandsPath });
+  try {
+    const section = win.locator('#task-list');
+    await expect(section).toBeVisible({ timeout: 10_000 });
+    const task = section.locator('.task-item').filter({ hasText: '再描画中に編集するタスク' });
+    await task.getByRole('button', { name: '編集' }).click();
+
+    const statusSelect = task.getByLabel('ステータス');
+    const prioritySelect = task.getByLabel('優先度');
+    await statusSelect.selectOption('ready');
+    await prioritySelect.selectOption('low');
+    await task.getByRole('button', { name: '並列' }).click();
+
+    writeJson(tasksFile, {
+      updatedAt: freshDate(),
+      tasks: [
+        {
+          id: '208',
+          title: '再描画中に編集するタスク',
+          status: 'awaiting-approval',
+          assignee: 'tsukasa',
+          priority: 'high',
+          sequential: true,
+          createdAt: freshDate(-10 * 60 * 1000),
+        },
+      ],
+    });
+
+    await expect(task.locator('.task-item-assignee')).toContainText('tsukasa', { timeout: 10_000 });
+    await expect(task.getByLabel('ステータス')).toHaveValue('ready');
+    await expect(task.getByLabel('優先度')).toHaveValue('low');
+    await expect(task.locator('.task-edit-segment[data-value="parallel"]')).toHaveAttribute('aria-pressed', 'true');
+    expect(readCommands(commandsPath)).toHaveLength(0);
   } finally {
     if (app) await app.close();
     fs.rmSync(appTmpRoot, { recursive: true, force: true });
@@ -308,6 +373,66 @@ test('編集パネルは保存まで優先度と実行方式を送信せず、�
       to: 'parallel',
       expected: 'sequential',
     });
+  } finally {
+    if (app) await app.close();
+    fs.rmSync(appTmpRoot, { recursive: true, force: true });
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+test('編集パネルの保存失敗時は閉じず、送信済みフィールドを再送しない', async () => {
+  const port = await getFreePort();
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-tasks-edit-retry-'));
+  const tasksFile = path.join(tmpRoot, 'tasks-view.json');
+  const commandsPath = path.join(tmpRoot, 'commands.jsonl');
+  writeJson(tasksFile, {
+    updatedAt: freshDate(),
+    tasks: [
+      {
+        id: '209',
+        title: '再試行する承認待ちタスク',
+        status: 'awaiting-approval',
+        assignee: 'wada',
+        priority: 'high',
+        sequential: true,
+        createdAt: freshDate(-10 * 60 * 1000),
+      },
+    ],
+  });
+
+  const { app, win, tmpRoot: appTmpRoot } = await launchApp(port, { tasksFile, commandsPath });
+  try {
+    await win.evaluate(() => {
+      const ipc = window.require('electron').ipcRenderer;
+      const originalInvoke = ipc.invoke.bind(ipc);
+      let failedSequentialOnce = false;
+      ipc.invoke = (channel, payload) => {
+        if (channel === 'tasks:set-sequential' && !failedSequentialOnce) {
+          failedSequentialOnce = true;
+          return Promise.resolve({ ok: false, error: 'forced-e2e-failure' });
+        }
+        return originalInvoke(channel, payload);
+      };
+    });
+
+    const section = win.locator('#task-list');
+    await expect(section).toBeVisible({ timeout: 10_000 });
+    const task = section.locator('.task-item').filter({ hasText: '再試行する承認待ちタスク' });
+    await task.getByRole('button', { name: '編集' }).click();
+    await task.getByLabel('優先度').selectOption('low');
+    await task.getByRole('button', { name: '並列' }).click();
+
+    await task.getByRole('button', { name: '保存' }).click();
+    await expect(task.locator('.task-edit-panel')).toBeVisible();
+    await expect(task.locator('.task-item-action-error')).toHaveText('送信に失敗しました（再試行してください）');
+    await expect(task.getByRole('button', { name: '保存' })).toBeEnabled();
+    await expect.poll(() => readCommands(commandsPath), { timeout: 5000 }).toHaveLength(1);
+    expect(readCommands(commandsPath).map((command) => command.action)).toEqual(['set-priority']);
+
+    await task.getByRole('button', { name: '保存' }).click();
+    await expect(task.locator('.task-edit-panel')).toHaveCount(0);
+    await expect.poll(() => readCommands(commandsPath), { timeout: 5000 }).toHaveLength(2);
+    expect(readCommands(commandsPath).map((command) => command.action)).toEqual(['set-priority', 'set-sequential']);
   } finally {
     if (app) await app.close();
     fs.rmSync(appTmpRoot, { recursive: true, force: true });

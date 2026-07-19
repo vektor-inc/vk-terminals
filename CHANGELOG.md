@@ -1,5 +1,7 @@
 # Changelog
 
+## 1.33.0
+
 - [ 仕様変更 ] VK Terminals 単独起動時はサイドバー・モバイルのタスク一覧を表示しないように変更（[#208](https://github.com/vektor-inc/vk-terminals/issues/208)）
 
 ## 1.32.0

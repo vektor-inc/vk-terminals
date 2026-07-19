@@ -269,7 +269,7 @@ button.k.kill.is-locked:active { background: #6b3f3f; border-color: #7c4a4a; }
   white-space: nowrap;
 }
 .task-status-select {
-  min-height: 24px;
+  min-height: 32px;
   padding-right: 24px;
   border: 1px solid transparent;
   font-family: inherit;

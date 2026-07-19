@@ -160,6 +160,72 @@ test('承認待ちタスクの編集パネル保存で commands.jsonl に set-st
   }
 });
 
+test('priority キーが無い承認待ちタスクはステータスだけ編集できる', async () => {
+  const port = await getFreePort();
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-tasks-status-legacy-approval-'));
+  const tasksFile = path.join(tmpRoot, 'tasks-view.json');
+  const commandsPath = path.join(tmpRoot, 'commands.jsonl');
+  writeJson(tasksFile, {
+    updatedAt: freshDate(),
+    tasks: [
+      {
+        id: '199',
+        title: '旧契約の承認待ちタスク',
+        status: 'awaiting-approval',
+        assignee: 'wada',
+        createdAt: freshDate(-10 * 60 * 1000),
+      },
+    ],
+  });
+
+  const { app, win, tmpRoot: appTmpRoot } = await launchApp(port, { tasksFile, commandsPath });
+  try {
+    const section = win.locator('#task-list');
+    await expect(section).toBeVisible({ timeout: 10_000 });
+    const task = section.locator('.task-item').filter({ hasText: '旧契約の承認待ちタスク' });
+    await expect(task.locator('.task-status-label')).toHaveText('承認待ち');
+
+    await task.getByRole('button', { name: '編集' }).click();
+    await expect(task.locator('.task-edit-panel')).toBeVisible();
+    await expect(task.locator('.task-edit-label')).toHaveText(['ステータス']);
+    await expect(task.getByLabel('優先度')).toHaveCount(0);
+    await expect(task.getByText('実行方式')).toHaveCount(0);
+
+    const statusSelect = task.getByLabel('ステータス');
+    await expect(statusSelect).toHaveValue('awaiting-approval');
+    const disabledByValue = await statusSelect.locator('option').evaluateAll((options) => (
+      Object.fromEntries(options.map((option) => [option.value, option.disabled]))
+    ));
+    expect(disabledByValue).toMatchObject({
+      'awaiting-approval': false,
+      ready: false,
+      'in-progress': true,
+      'waiting-input': true,
+      'waiting-merge': true,
+      done: true,
+      failed: true,
+    });
+
+    await statusSelect.selectOption('ready');
+    await task.getByRole('button', { name: '保存' }).click();
+    await expect(task.locator('.task-item-pending')).toHaveText('反映待ち');
+    await expect(task.locator('.task-edit-panel')).toHaveCount(0);
+    await expect.poll(() => readCommands(commandsPath), { timeout: 5000 }).toHaveLength(1);
+
+    const [command] = readCommands(commandsPath);
+    expect(command).toMatchObject({
+      taskId: 199,
+      action: 'set-status',
+      to: 'ready',
+      expected: 'awaiting-approval',
+    });
+  } finally {
+    if (app) await app.close();
+    fs.rmSync(appTmpRoot, { recursive: true, force: true });
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
 test('commandsPath 未設定時はステータスラベルを表示するが編集できない', async () => {
   const port = await getFreePort();
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-tasks-status-readonly-'));
@@ -293,7 +359,7 @@ test('編集パネルのキャンセルは変更を破棄して送信しない',
   }
 });
 
-test('旧契約の実行中タスクはステータスラベルのみ表示し編集パネルを表示しない', async () => {
+test('旧契約の実行中タスクはステータスのみ編集パネルを表示し confirm 遷移を無効化する', async () => {
   const port = await getFreePort();
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-tasks-status-in-progress-'));
   const tasksFile = path.join(tmpRoot, 'tasks-view.json');
@@ -311,7 +377,23 @@ test('旧契約の実行中タスクはステータスラベルのみ表示し�
     await expect(section).toBeVisible({ timeout: 10_000 });
     const task = section.locator('.task-item').filter({ hasText: '実行中の旧契約タスク' });
     await expect(task.locator('.task-status-label')).toHaveText('実行中');
-    await expect(task.getByRole('button', { name: '編集' })).toHaveCount(0);
+    await task.getByRole('button', { name: '編集' }).click();
+    await expect(task.locator('.task-edit-panel')).toBeVisible();
+    await expect(task.locator('.task-edit-label')).toHaveText(['ステータス']);
+    const statusSelect = task.getByLabel('ステータス');
+    await expect(statusSelect).toHaveValue('in-progress');
+    const disabledByValue = await statusSelect.locator('option').evaluateAll((options) => (
+      Object.fromEntries(options.map((option) => [option.value, option.disabled]))
+    ));
+    expect(disabledByValue).toMatchObject({
+      'awaiting-approval': true,
+      ready: true,
+      'in-progress': false,
+      'waiting-input': true,
+      'waiting-merge': true,
+      done: true,
+      failed: true,
+    });
     await expect(task.locator('.task-item-pending')).toHaveCount(0);
     expect(readCommands(commandsPath)).toHaveLength(0);
   } finally {

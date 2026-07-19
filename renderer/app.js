@@ -1186,7 +1186,7 @@ function renderTaskItem(task) {
   head.appendChild(meta);
 
   const canSendCommand = commandsConfigured && Number.isInteger(Number(task.id)) && Number(task.id) > 0;
-  const canUseEditPanel = canSendCommand && hasPriorityContract && TASK_EDITABLE_STATUSES.has(status);
+  const canUseEditPanel = canSendCommand && TASK_EDITABLE_STATUSES.has(status);
   const statusOptions = getTaskStatusSelectOptions(status, { hasPriorityContract });
 
   if (canUseEditPanel) {
@@ -1293,57 +1293,63 @@ function renderTaskItem(task) {
       statusField.appendChild(statusSelect);
       panel.appendChild(statusField);
 
-      const priorityField = document.createElement('label');
-      priorityField.className = 'task-edit-field';
-      const priorityLabel = document.createElement('span');
-      priorityLabel.className = 'task-edit-label';
-      priorityLabel.textContent = '優先度';
-      const prioritySelect = document.createElement('select');
-      prioritySelect.className = 'task-edit-select';
-      prioritySelect.dataset.taskId = taskKey;
-      prioritySelect.dataset.taskControl = 'priority-select';
-      prioritySelect.disabled = hasPending;
-      const currentPriority = taskPriorityToCommandValue(task.priority);
-      getTaskPriorityOptions().forEach((option) => {
-        const optionEl = document.createElement('option');
-        optionEl.value = option.value;
-        optionEl.textContent = option.label;
-        if (option.value === currentPriority) optionEl.selected = true;
-        prioritySelect.appendChild(optionEl);
-      });
-      priorityField.appendChild(priorityLabel);
-      priorityField.appendChild(prioritySelect);
-      panel.appendChild(priorityField);
-
-      const sequentialField = document.createElement('div');
-      sequentialField.className = 'task-edit-field';
-      const sequentialLabel = document.createElement('span');
-      sequentialLabel.className = 'task-edit-label';
-      sequentialLabel.textContent = '実行方式';
-      const sequentialControl = document.createElement('div');
-      sequentialControl.className = 'task-edit-segmented';
-      const currentSequential = taskSequentialToCommandValue(task.sequential);
-      getTaskSequentialOptions().forEach((option) => {
-        const button = document.createElement('button');
-        button.type = 'button';
-        button.className = 'task-edit-segment';
-        button.dataset.taskId = taskKey;
-        button.dataset.taskControl = 'sequential-segment';
-        button.dataset.value = option.value;
-        button.setAttribute('aria-pressed', option.value === currentSequential ? 'true' : 'false');
-        button.disabled = hasPending;
-        button.textContent = option.label;
-        button.addEventListener('click', () => {
-          if (button.disabled) return;
-          sequentialControl.querySelectorAll('.task-edit-segment').forEach((segment) => {
-            segment.setAttribute('aria-pressed', segment === button ? 'true' : 'false');
-          });
+      let prioritySelect = null;
+      let sequentialControl = null;
+      let currentPriority = null;
+      let currentSequential = null;
+      if (hasPriorityContract) {
+        const priorityField = document.createElement('label');
+        priorityField.className = 'task-edit-field';
+        const priorityLabel = document.createElement('span');
+        priorityLabel.className = 'task-edit-label';
+        priorityLabel.textContent = '優先度';
+        prioritySelect = document.createElement('select');
+        prioritySelect.className = 'task-edit-select';
+        prioritySelect.dataset.taskId = taskKey;
+        prioritySelect.dataset.taskControl = 'priority-select';
+        prioritySelect.disabled = hasPending;
+        currentPriority = taskPriorityToCommandValue(task.priority);
+        getTaskPriorityOptions().forEach((option) => {
+          const optionEl = document.createElement('option');
+          optionEl.value = option.value;
+          optionEl.textContent = option.label;
+          if (option.value === currentPriority) optionEl.selected = true;
+          prioritySelect.appendChild(optionEl);
         });
-        sequentialControl.appendChild(button);
-      });
-      sequentialField.appendChild(sequentialLabel);
-      sequentialField.appendChild(sequentialControl);
-      panel.appendChild(sequentialField);
+        priorityField.appendChild(priorityLabel);
+        priorityField.appendChild(prioritySelect);
+        panel.appendChild(priorityField);
+
+        const sequentialField = document.createElement('div');
+        sequentialField.className = 'task-edit-field';
+        const sequentialLabel = document.createElement('span');
+        sequentialLabel.className = 'task-edit-label';
+        sequentialLabel.textContent = '実行方式';
+        sequentialControl = document.createElement('div');
+        sequentialControl.className = 'task-edit-segmented';
+        currentSequential = taskSequentialToCommandValue(task.sequential);
+        getTaskSequentialOptions().forEach((option) => {
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.className = 'task-edit-segment';
+          button.dataset.taskId = taskKey;
+          button.dataset.taskControl = 'sequential-segment';
+          button.dataset.value = option.value;
+          button.setAttribute('aria-pressed', option.value === currentSequential ? 'true' : 'false');
+          button.disabled = hasPending;
+          button.textContent = option.label;
+          button.addEventListener('click', () => {
+            if (button.disabled) return;
+            sequentialControl.querySelectorAll('.task-edit-segment').forEach((segment) => {
+              segment.setAttribute('aria-pressed', segment === button ? 'true' : 'false');
+            });
+          });
+          sequentialControl.appendChild(button);
+        });
+        sequentialField.appendChild(sequentialLabel);
+        sequentialField.appendChild(sequentialControl);
+        panel.appendChild(sequentialField);
+      }
 
       const actionField = document.createElement('div');
       actionField.className = 'task-edit-field task-edit-field--actions';
@@ -1373,9 +1379,6 @@ function renderTaskItem(task) {
       saveButton.addEventListener('click', () => {
         if (getTaskPending(taskKey)) return;
         const nextStatus = statusSelect.value;
-        const nextPriority = prioritySelect.value;
-        const pressedSequential = sequentialControl.querySelector('.task-edit-segment[aria-pressed="true"]');
-        const nextSequential = pressedSequential?.dataset.value || currentSequential;
         const fields = [];
         if (nextStatus !== status) {
           const confirmMessage = getTaskStatusTransitionConfirmMessage({
@@ -1391,21 +1394,26 @@ function renderTaskItem(task) {
             to: nextStatus,
           });
         }
-        if (nextPriority !== currentPriority) {
-          fields.push({
-            kind: 'priority',
-            actionName: 'tasks:set-priority',
-            expected: currentPriority,
-            to: nextPriority,
-          });
-        }
-        if (nextSequential !== currentSequential) {
-          fields.push({
-            kind: 'sequential',
-            actionName: 'tasks:set-sequential',
-            expected: currentSequential,
-            to: nextSequential,
-          });
+        if (hasPriorityContract) {
+          const nextPriority = prioritySelect.value;
+          const pressedSequential = sequentialControl.querySelector('.task-edit-segment[aria-pressed="true"]');
+          const nextSequential = pressedSequential?.dataset.value || currentSequential;
+          if (nextPriority !== currentPriority) {
+            fields.push({
+              kind: 'priority',
+              actionName: 'tasks:set-priority',
+              expected: currentPriority,
+              to: nextPriority,
+            });
+          }
+          if (nextSequential !== currentSequential) {
+            fields.push({
+              kind: 'sequential',
+              actionName: 'tasks:set-sequential',
+              expected: currentSequential,
+              to: nextSequential,
+            });
+          }
         }
         if (fields.length === 0) {
           expandedTaskEditIds.delete(taskKey);

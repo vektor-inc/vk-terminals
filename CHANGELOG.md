@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 機能追加 ] サイドバーに Codex CLI の使用量（使用率%・トークン数）を表示する機能を追加（[#215](https://github.com/vektor-inc/vk-terminals/issues/215)）
+
 ## 1.35.0
 
 - [ 機能追加 ] 設定フォームに他の設定値へ応じて項目の表示を切り替える汎用機能（visibleWhen）を追加（[#213](https://github.com/vektor-inc/vk-terminals/issues/213)）

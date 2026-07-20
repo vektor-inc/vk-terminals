@@ -698,6 +698,7 @@ function createSidebar() {
   aside.className = 'sidebar';
 
   aside.appendChild(createSidebarUsageCard());
+  aside.appendChild(createSidebarCodexUsageCard());
 
   const nav = document.createElement('nav');
   nav.id = 'sidebar-menu';
@@ -728,6 +729,26 @@ function createSidebarUsageCard() {
   const title = document.createElement('div');
   title.className = 'sidebar-usage-title';
   title.textContent = 'Claude使用量';
+
+  const body = document.createElement('div');
+  body.className = 'sidebar-usage-body';
+  body.setAttribute('aria-live', 'polite');
+
+  section.appendChild(title);
+  section.appendChild(body);
+  return section;
+}
+
+function createSidebarCodexUsageCard() {
+  const section = document.createElement('section');
+  section.id = 'sidebar-codex-usage';
+  section.className = 'sidebar-usage';
+  section.hidden = true;
+  section.setAttribute('aria-label', 'Codex使用量');
+
+  const title = document.createElement('div');
+  title.className = 'sidebar-usage-title';
+  title.textContent = 'Codex使用量';
 
   const body = document.createElement('div');
   body.className = 'sidebar-usage-body';
@@ -851,6 +872,7 @@ function ensureSidebar(root) {
     el = createSidebar();
     renderSidebarMenu();
     renderSidebarUsage(lastUsageSnapshot);
+    renderSidebarCodexUsage(lastCodexUsageSnapshot);
     renderTaskList(lastTaskView);
     renderPaneStash();
   }
@@ -3093,6 +3115,7 @@ function setupSettingsPanel() {
 const USAGE_POLL_INTERVAL_MS = 60000; // 使用量バッジ・サイドバーカード共通（main 側 60s TTL に相乗り）
 const USAGE_SIDEBAR_TICK_INTERVAL_MS = 30000;
 let lastUsageSnapshot = null;
+let lastCodexUsageSnapshot = null;
 
 // 公式% の閾値カラー（〜70% 青 / 70〜90% アンバー / 90%〜 赤）。
 // フォールバックの自己ピーク比バーには適用しない（上限比ではないため）。
@@ -3270,6 +3293,69 @@ function renderUsageView(container, usage, options = {}) {
   container.appendChild(buildTranscriptUsageSection(usage));
 }
 
+function buildCodexTokenUsageSection(tokens) {
+  const sec = document.createElement('div');
+  sec.className = 'usage-section';
+
+  const head = document.createElement('div');
+  head.className = 'usage-section-head';
+  const titleEl = document.createElement('span');
+  titleEl.className = 'usage-section-title';
+  titleEl.textContent = 'トークン数';
+  const valueEl = document.createElement('span');
+  valueEl.className = 'usage-value';
+  const today = tokens && tokens.todayText ? tokens.todayText : '0';
+  setTextWithTitle(valueEl, `今日 ${today}`);
+  head.appendChild(titleEl);
+  head.appendChild(valueEl);
+  sec.appendChild(head);
+
+  const weekly = document.createElement('div');
+  weekly.className = 'usage-reset';
+  const weeklyText = tokens && tokens.weeklyText ? tokens.weeklyText : '0';
+  setTextWithTitle(weekly, `今週 ${weeklyText} トークン`);
+  sec.appendChild(weekly);
+  return sec;
+}
+
+function renderCodexUsageView(container, usage, options = {}) {
+  container.innerHTML = '';
+  if (!usage) {
+    return;
+  }
+  let rendered = false;
+
+  if (usage.stale === true) {
+    const note = document.createElement('div');
+    note.className = 'usage-note';
+    setTextWithTitle(note, '直近に取得した値を表示しています（最新の取得に一時的に失敗しました）');
+    container.appendChild(note);
+    rendered = true;
+  }
+  if (usage.session) {
+    container.appendChild(buildOauthUsageSection('現在のセッション', usage.session, 'remaining', {
+      titleLabel: options.compact ? 'セッション' : '',
+    }));
+    rendered = true;
+  }
+  if (usage.weekly) {
+    container.appendChild(buildOauthUsageSection('週間制限', usage.weekly, 'datetime', {
+      titleLabel: options.compact ? '週間' : '',
+    }));
+    rendered = true;
+  }
+  if (usage.tokens) {
+    container.appendChild(buildCodexTokenUsageSection(usage.tokens));
+    rendered = true;
+  }
+  if (!rendered) {
+    const p = document.createElement('p');
+    p.className = 'usage-empty';
+    p.textContent = '使用状況データを取得できません。Codex CLI のセッション履歴が無い場合や、設定「Codex 使用量を表示」が無効の場合はここには何も表示されません。';
+    container.appendChild(p);
+  }
+}
+
 function renderSidebarUsage(usage) {
   lastUsageSnapshot = usage || null;
   const section = document.getElementById('sidebar-usage');
@@ -3287,10 +3373,25 @@ function renderSidebarUsage(usage) {
   section.hidden = false;
 }
 
+function renderSidebarCodexUsage(usage) {
+  lastCodexUsageSnapshot = usage || null;
+  const section = document.getElementById('sidebar-codex-usage');
+  if (!section) return;
+  const body = section.querySelector('.sidebar-usage-body');
+  if (!body) return;
+
+  if (!usage) {
+    section.hidden = true;
+    body.replaceChildren();
+    return;
+  }
+
+  renderCodexUsageView(body, usage, { compact: true });
+  section.hidden = false;
+}
+
 function tickSidebarUsageReset() {
-  const section = document.getElementById('sidebar-usage');
-  if (!section || section.hidden) return;
-  section.querySelectorAll('[data-reset-at]').forEach((el) => {
+  document.querySelectorAll('.sidebar-usage [data-reset-at]').forEach((el) => {
     const at = Number(el.dataset.resetAt);
     if (Number.isFinite(at)) setTextWithTitle(el, formatRemainingJa(at - Date.now()));
   });
@@ -3303,8 +3404,8 @@ function tickSidebarUsageReset() {
 // 色のみの表現にしないよう、警告レベルに応じて title / aria-label も切り替える（a11y）。
 const USAGE_ALERT_LABELS = {
   '':     '',
-  'warn': 'Claude使用量: 警告（80%超）',
-  'crit': 'Claude使用量: 危険（90%超）',
+  'warn': '使用量: 警告（80%超）',
+  'crit': '使用量: 危険（90%超）',
 };
 
 // 直近の使用率警告レベル（'' / 'warn' / 'crit'）。
@@ -3329,22 +3430,37 @@ function applyUsageBadge() {
   }
 }
 
+function usageAlertMaxPercent(...snapshots) {
+  const pcts = [];
+  for (const usage of snapshots) {
+    if (!usage) continue;
+    for (const entry of [usage.session, usage.weekly]) {
+      if (entry && Number.isFinite(entry.percent)) pcts.push(entry.percent);
+    }
+  }
+  return pcts.length ? Math.max(...pcts) : null;
+}
+
 function setupUsageBadge() {
   const refresh = async () => {
     let level = '';
     let usage = null;
+    let codexUsage = null;
     try {
-      usage = await ipcRenderer.invoke('usage:get');
-      if (usage && usage.source === 'oauth') {
-        const pcts = [usage.session && usage.session.percent, usage.weekly && usage.weekly.percent]
-          .filter((p) => Number.isFinite(p));
-        const max = pcts.length ? Math.max(...pcts) : null;
-        if (max !== null && max > 80) level = max >= 90 ? 'crit' : 'warn';
-      }
+      [usage, codexUsage] = await Promise.all([
+        ipcRenderer.invoke('usage:get'),
+        ipcRenderer.invoke('codex-usage:get'),
+      ]);
+      const max = usageAlertMaxPercent(
+        usage && usage.source === 'oauth' ? usage : null,
+        codexUsage,
+      );
+      if (max !== null && max > 80) level = max >= 90 ? 'crit' : 'warn';
     } catch (_e) {
       level = ''; // 取得失敗時はバッジを消す（古い警告を残さない）
     }
     renderSidebarUsage(usage);
+    renderSidebarCodexUsage(codexUsage);
     usageAlertLevel = level;
     applyUsageBadge();
   };

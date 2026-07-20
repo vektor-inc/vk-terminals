@@ -59,6 +59,7 @@ test('buildBuiltinSettingsDescriptor: JSON から targetPath 付きの組み込�
     'initialCommand',
     'confirmClose',
     'showUsage',
+    'showCodexUsage',
     'gpu',
     'menuItems',
     'additionalPanes',
@@ -89,6 +90,13 @@ test('buildBuiltinSettingsDescriptor: JSON から targetPath 付きの組み込�
     type: 'boolean',
     default: true,
     help: 'Claude の利用状況（セッション% / 週間制限%）をサイドバーの「Claude使用量」・モバイルページに表示します。',
+  });
+  assert.deepEqual(fields.find((field) => field.key === 'showCodexUsage'), {
+    key: 'showCodexUsage',
+    label: 'Codex 使用量を表示',
+    type: 'boolean',
+    default: true,
+    help: 'Codex CLI の利用状況（セッション% / 週間制限% / トークン数）をサイドバーの「Codex使用量」に表示します。',
   });
   assert.deepEqual(fields.find((field) => field.key === 'gpu'), {
     key: 'gpu',

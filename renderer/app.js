@@ -30,6 +30,7 @@ const {
 const { deriveStatus } = require('./statusState');
 const { getPrBadgePresentation } = require('./prBadge');
 const { isPatternValid } = require('./settingsValidation');
+const { isFieldVisible } = require('./settingsVisibility');
 const {
   deriveSettingsTargetPathsForGroups,
   groupSettingsGroupsByTab,
@@ -3649,6 +3650,26 @@ async function openSettingsModal() {
     });
   });
 
+  const getEntryInput = (id) => modal.querySelector('#' + id);
+  const getEntryRow = (id) => {
+    const input = getEntryInput(id);
+    if (!input) return null;
+    return input.closest('.settings-row') || input.parentElement || input;
+  };
+  const isEntryVisible = (id) => {
+    const row = getEntryRow(id);
+    return !row || !row.hidden;
+  };
+  const getCurrentSettingValues = () => {
+    const values = {};
+    for (const { field, id } of entries) {
+      const input = getEntryInput(id);
+      if (!input) continue;
+      values[field.key] = field.type === 'boolean' ? input.checked : input.value;
+    }
+    return values;
+  };
+
   // ─── pattern 検証（issue #140） ──────────────────────────────────────────────
   // 検証対象は field.pattern（正規表現文字列）を持つフィールドのみ。type ではなく
   // pattern の有無で判定することで、text/number など type を問わず汎用的に扱う。
@@ -3661,9 +3682,14 @@ async function openSettingsModal() {
   // - invalid: aria-invalid="true" を付与し、invalidMessage（無ければ汎用文）を表示。
   //   invalidMessage は textContent で流し込むため HTML として解釈されない（XSS 安全）。
   const applyFieldValidity = (field, id) => {
-    const input = modal.querySelector('#' + id);
+    const input = getEntryInput(id);
     const errEl = modal.querySelector('#' + id + '-error');
     if (!input) return true;
+    if (!isEntryVisible(id)) {
+      input.removeAttribute('aria-invalid');
+      if (errEl) errEl.textContent = '';
+      return true;
+    }
     const valid = isPatternValid(field.pattern, input.value);
     if (valid) {
       input.removeAttribute('aria-invalid');
@@ -3677,16 +3703,35 @@ async function openSettingsModal() {
 
   // エラー表示を一旦消す（保存時の再判定前リセットに使う）。
   const clearFieldValidity = (field, id) => {
-    const input = modal.querySelector('#' + id);
+    const input = getEntryInput(id);
     const errEl = modal.querySelector('#' + id + '-error');
     if (input) input.removeAttribute('aria-invalid');
     if (errEl) errEl.textContent = '';
   };
 
+  const applyFieldVisibility = () => {
+    const values = getCurrentSettingValues();
+    for (const { field, id } of entries) {
+      const row = getEntryRow(id);
+      if (!row) continue;
+      const visible = isFieldVisible(field, values);
+      row.hidden = !visible;
+      if (!visible) clearFieldValidity(field, id);
+    }
+  };
+
+  for (const { id } of entries) {
+    const input = getEntryInput(id);
+    if (!input) continue;
+    input.addEventListener('input', applyFieldVisibility);
+    input.addEventListener('change', applyFieldVisibility);
+  }
+  applyFieldVisibility();
+
   // "優しく遅らせ、素早く許す": 打鍵中は警告せず blur で初回検証。エラーが付いた後だけ
   // input イベントで再検証し、valid になれば即解除する。
   for (const { field, id } of validatable) {
-    const input = modal.querySelector('#' + id);
+    const input = getEntryInput(id);
     if (!input) continue;
     input.addEventListener('blur', () => { applyFieldValidity(field, id); });
     input.addEventListener('input', () => {
@@ -3716,7 +3761,7 @@ async function openSettingsModal() {
 
     const out = {};
     for (const { field, id } of entries) {
-      const input = modal.querySelector('#' + id);
+      const input = getEntryInput(id);
       if (!input) continue;
       out[field.key] = field.type === 'boolean' ? input.checked : input.value;
     }

@@ -138,6 +138,20 @@ test('buildBuiltinSettingsDescriptor: schemaPath を差し替えて文言上書�
   ]);
 });
 
+test('validateSettingsSchema: visibleWhen 付きフィールドを reject しない', () => {
+  assert.equal(validateSettingsSchema({
+    groups: [
+      {
+        fields: [
+          { key: 'mode', label: 'モード', type: 'select', options: [] },
+          { key: 'advanced', label: '詳細', type: 'text', visibleWhen: { key: 'mode', value: 'advanced' } },
+          { key: 'legacy', label: '旧設定', type: 'text', visibleWhen: [{ key: 'mode', value: 'legacy', hide: true }] },
+        ],
+      },
+    ],
+  }), true);
+});
+
 test('loadSettingsSchema: 読み込み失敗時は起動を落とさない fallback schema を返す', () => {
   const errors = [];
   const schema = loadSettingsSchema({

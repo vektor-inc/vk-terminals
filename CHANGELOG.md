@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 機能追加 ] 設定フォームに他の設定値へ応じて項目の表示を切り替える汎用機能（visibleWhen）を追加（[#213](https://github.com/vektor-inc/vk-terminals/issues/213)）
+
 ## 1.34.0
 
 - [ 仕様変更 ] サイドバーのタスク一覧でステータスをラベル表示にし、編集パネルの保存で変更をまとめて反映するように変更（[#211](https://github.com/vektor-inc/vk-terminals/issues/211)）

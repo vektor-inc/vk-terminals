@@ -360,6 +360,7 @@ html, body {
   gap: 4px;
   margin-top: 14px;
 }
+.settings-row[hidden] { display: none; }
 .settings-row:first-of-type { margin-top: 2px; }
 .settings-label {
   color: #c9d1d9;

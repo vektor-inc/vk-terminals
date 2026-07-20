@@ -22,6 +22,8 @@ const { createUsageTracker, createTtlMemo } = require('./usageTracker');
 // 公式 usage API（issue #73）。OAuth トークンは oauthUsage モジュール（main プロセス）内で
 // のみ扱い、ここから先へは正規化済みの数値（%・リセット時刻・source 種別）だけを渡す。
 const { createOauthUsageProvider } = require('./oauthUsage');
+const { createCodexUsageProvider } = require('./codexUsage');
+const { createCodexUsageTracker } = require('./codexUsageTracker');
 // GUI(Electron) の GPU 起動モード。WSLg 等の Linux では Chromium の GPU 初期化が
 // 失敗して起動時にエラーが多発するため、既定で GPU を無効化する。モードは
 // VK_TERMINALS_GPU（環境変数）または config.json の gpu で off/default を
@@ -602,6 +604,10 @@ function usageEnabled() {
   return usageConfig().showUsage !== false;
 }
 
+function codexUsageEnabled() {
+  return usageConfig().showCodexUsage !== false;
+}
+
 // 集計対象の Claude projects ディレクトリ。複数アカウントは config.claudeProjectsDirs で
 // 複数指定できる。未指定なら usageTracker 側の既定（~/.claude/projects）を使う。
 function usageProjectsDirs() {
@@ -633,6 +639,8 @@ function getUsageForDisplay() {
 // ポーリング（設定モーダルの使用状況ビュー・歯車バッジ）やモバイルページの /api/states
 // ポーリングが重なっても API / Keychain への問い合わせは 60 秒に 1 回に抑えられる。
 const oauthUsage = createOauthUsageProvider();
+const codexUsage = createCodexUsageProvider();
+const codexUsageTracker = createCodexUsageTracker();
 
 // 使用状況の統一構造を返す（issue #73）。
 //   - 公式 usage API（source: 'oauth'、session / weekly の % とリセット時刻）を主とする。
@@ -651,6 +659,44 @@ async function getUsageUnified() {
     console.error(`${LOG_PREFIX} oauth usage failed:`, e && e.message);
   }
   return getUsageForDisplay();
+}
+
+async function getCodexUsageUnified() {
+  if (!codexUsageEnabled()) return null;
+  let limits = null;
+  try {
+    limits = await codexUsage.get();
+  } catch (e) {
+    console.error(`${LOG_PREFIX} codex usage failed:`, e && e.message);
+  }
+
+  let tokens = null;
+  try {
+    tokens = codexUsageTracker.getDescribed();
+  } catch (e) {
+    console.error(`${LOG_PREFIX} codex token usage failed:`, e && e.message);
+  }
+
+  if (!limits && !tokens) {
+    return {
+      source: 'codex',
+      session: null,
+      weekly: null,
+      tokens: null,
+      fetchedAtMs: Date.now(),
+      empty: true,
+    };
+  }
+  return {
+    source: 'codex',
+    session: limits && limits.session ? limits.session : null,
+    weekly: limits && limits.weekly ? limits.weekly : null,
+    stale: limits && limits.stale === true ? true : undefined,
+    fetchedAtMs: limits && Number.isFinite(limits.fetchedAtMs)
+      ? limits.fetchedAtMs
+      : (tokens && tokens.fetchedAtMs) || Date.now(),
+    tokens,
+  };
 }
 
 /**
@@ -779,6 +825,7 @@ app.whenReady().then(async () => {
   startHttpApi();
   // 使用量スナップショットを起動時に温めておく（初回ポーリングで null が返るのを避ける）。
   if (usageEnabled()) usageTracker.warmup().catch(() => {});
+  if (codexUsageEnabled()) Promise.all([codexUsage.get(), codexUsageTracker.warmup()]).catch(() => {});
 });
 
 app.on('window-all-closed', () => {
@@ -837,6 +884,7 @@ ipcMain.handle('tasks:set-sequential', async (_event, payload) => {
 // ドットバッジ: 60秒間隔）がポーリングする。main 側 60 秒 TTL キャッシュに相乗りするため
 // 実際の API 問い合わせは増えない。無効時・データ無し・失敗時は null。
 ipcMain.handle('usage:get', () => getUsageUnified());
+ipcMain.handle('codex-usage:get', () => getCodexUsageUnified());
 
 // ─── 設定パネル（汎用）────────────────────────────────────────────────────────
 // 呼び出し側（例: vk-orchestrator）が環境変数 VK_TERMINALS_SETTINGS に「設定ディスク

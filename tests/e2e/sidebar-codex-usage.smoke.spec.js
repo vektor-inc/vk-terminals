@@ -23,7 +23,7 @@ async function getFreePort() {
 }
 
 async function launchApp(port) {
-  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-sidebar-usage-'));
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-sidebar-codex-usage-'));
   const tmpHome = path.join(tmpRoot, 'home');
   const configDir = path.join(tmpHome, '.vk-terminals');
   const configPath = path.join(configDir, 'config.json');
@@ -49,7 +49,7 @@ async function launchApp(port) {
   return { app, win, tmpRoot };
 }
 
-test('デスクトップの Claude 使用量はサイドバー最上部に常時表示され、旧モーダル項目は無い', async () => {
+test('デスクトップの Codex 使用量は Claude 使用量の直下に表示される', async () => {
   const port = await getFreePort();
   const { app, win, tmpRoot } = await launchApp(port);
   try {
@@ -67,62 +67,69 @@ test('デスクトップの Claude 使用量はサイドバー最上部に常時
           resetAtMs: Date.now() + 3 * 24 * 60 * 60 * 1000,
         },
       });
+      window.renderSidebarCodexUsage({
+        source: 'codex',
+        session: {
+          percent: 61,
+          resetAtMs: Date.now() + 90 * 60 * 1000,
+        },
+        weekly: {
+          percent: 12,
+          resetAtMs: Date.now() + 4 * 24 * 60 * 60 * 1000,
+        },
+        tokens: {
+          todayText: '12k',
+          weeklyText: '345k',
+        },
+      });
     });
 
     // issue #169 以降は起動直後からサイドバーが開くため、開状態のまま表示を確認する。
     await win.waitForFunction(() => document.getElementById('root').classList.contains('sidebar-open'));
 
-    const usage = win.locator('#sidebar-usage');
+    const usage = win.locator('#sidebar-codex-usage');
     await expect(usage).toBeVisible();
     await expect(usage.locator('.sidebar-usage-body')).toHaveAttribute('aria-live', 'polite');
-    await expect(usage).toContainText('Claude使用量');
+    await expect(usage).toContainText('Codex使用量');
     await expect(usage.locator('.usage-section-title').nth(0)).toHaveText('セッション');
     await expect(usage.locator('.usage-section-title').nth(0)).toHaveAttribute('title', '現在のセッション');
     await expect(usage.locator('.usage-section-title').nth(1)).toHaveText('週間');
-    await expect(usage.locator('.usage-section-title').nth(1)).toHaveAttribute('title', '週間制限（すべてのモデル）');
-    const resetLabels = await usage.locator('.usage-reset').evaluateAll((els) => els.map((el) => ({
-      text: el.textContent,
-      title: el.getAttribute('title'),
-    })));
-    expect(resetLabels.every(({ text, title }) => text === title)).toBe(true);
+    await expect(usage.locator('.usage-section-title').nth(1)).toHaveAttribute('title', '週間制限');
+    await expect(usage).toContainText('今日 12k');
+    await expect(usage).toContainText('今週 345k トークン');
 
     const sidebarOrder = await win.evaluate(() => {
       const sidebar = document.getElementById('sidebar');
       return Array.from(sidebar.children).map((el) => el.id || el.className);
     });
     expect(sidebarOrder.slice(0, 3)).toEqual(['sidebar-usage', 'sidebar-codex-usage', 'sidebar-menu']);
-
-    await expect(win.locator('[data-menu-action="open-usage"]')).toHaveCount(0);
-    await expect(win.locator('.usage-overlay, .usage-modal')).toHaveCount(0);
   } finally {
     if (app) await app.close();
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   }
 });
 
-test('使用量データが null のときサイドバー使用量カードは hidden になる', async () => {
+test('Codex 使用量データが null のときサイドバー使用量カードは hidden になる', async () => {
   const port = await getFreePort();
   const { app, win, tmpRoot } = await launchApp(port);
   try {
     await win.waitForSelector('#sidebar', { state: 'attached' });
 
     await win.evaluate(() => {
-      window.renderSidebarUsage({
-        source: 'transcript',
-        tokensText: '1,234',
-        percentText: '42%',
-        resetText: '18:59',
-        remainingText: '2時間',
-        peakNote: '直近の履歴から推定しています',
+      window.renderSidebarCodexUsage({
+        source: 'codex',
+        tokens: {
+          todayText: '1k',
+          weeklyText: '9k',
+        },
       });
     });
-    const usage = win.locator('#sidebar-usage');
+    const usage = win.locator('#sidebar-codex-usage');
     await expect(usage).toBeVisible();
-    await expect(usage.locator('.usage-reset')).toHaveAttribute('title', 'リセット 18:59（残り2時間）');
-    await expect(usage.locator('.usage-note')).toHaveAttribute('title', '直近の履歴から推定しています');
+    await expect(usage.locator('.usage-reset')).toHaveAttribute('title', '今週 9k トークン');
 
     await win.evaluate(() => {
-      window.renderSidebarUsage(null);
+      window.renderSidebarCodexUsage(null);
     });
 
     await expect(usage).toHaveAttribute('hidden', '');

@@ -90,7 +90,7 @@ test('デスクトップの Claude 使用量はサイドバー最上部に常時
       const sidebar = document.getElementById('sidebar');
       return Array.from(sidebar.children).map((el) => el.id || el.className);
     });
-    expect(sidebarOrder.slice(0, 2)).toEqual(['sidebar-usage', 'sidebar-menu']);
+    expect(sidebarOrder.slice(0, 3)).toEqual(['sidebar-usage', 'sidebar-codex-usage', 'sidebar-menu']);
 
     await expect(win.locator('[data-menu-action="open-usage"]')).toHaveCount(0);
     await expect(win.locator('.usage-overlay, .usage-modal')).toHaveCount(0);

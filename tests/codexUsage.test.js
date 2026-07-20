@@ -4,6 +4,9 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 
 const {
   classifyWindow,
@@ -15,28 +18,51 @@ const {
 const {
   parseTokenCountRecord,
   parseCodexJsonl,
+  summarizeSessionTokenCounts,
   aggregateTokenCounts,
+  createCodexUsageTracker,
 } = require('../codexUsageTracker');
 
 const NOW = Date.parse('2026-07-06T03:00:00.000Z');
 
-function tokenCountLine({ primary, secondary, total = 1234, timestamp = '2026-07-06T02:00:00.000Z' } = {}) {
-  return JSON.stringify({
+function tokenCountLine({
+  primary,
+  secondary,
+  totalTokens = 1234,
+  timestamp = '2026-07-06T02:00:00.000Z',
+  info,
+  topLevel = false,
+  usage,
+} = {}) {
+  const resolvedInfo = info !== undefined
+    ? info
+    : {
+        total_token_usage: usage || {
+          input_tokens: 100,
+          cached_input_tokens: 200,
+          output_tokens: 300,
+          reasoning_output_tokens: 400,
+          total_tokens: totalTokens,
+        },
+      };
+  const payload = {
+    type: 'token_count',
+    rate_limits: { primary, secondary },
+    info: resolvedInfo,
+  };
+  const obj = topLevel ? {
     type: 'token_count',
     timestamp,
     payload: {
-      rate_limits: { primary, secondary },
-      info: {
-        total_token_usage: {
-          input: 100,
-          cached: 200,
-          output: 300,
-          reasoning: 400,
-          total,
-        },
-      },
+      rate_limits: payload.rate_limits,
+      info: payload.info,
     },
-  });
+  } : {
+    timestamp,
+    type: 'event_msg',
+    payload,
+  };
+  return JSON.stringify(obj);
 }
 
 test('classifyWindow: 300分は session、10080分以上は weekly として分類する', () => {
@@ -77,6 +103,16 @@ test('parseTokenCountLine: primary のみでも window_minutes に従って分�
   assert.equal(weeklyOnly.weekly.percent, 44);
 });
 
+test('parseTokenCountLine: 旧トップレベル token_count も互換で扱う', () => {
+  const r = parseTokenCountLine(tokenCountLine({
+    topLevel: true,
+    primary: { used_percent: 33, window_minutes: 300, resets_at: 1783306800 },
+    totalTokens: 9876,
+  }), NOW);
+  assert.equal(r.session.percent, 33);
+  assert.equal(r.tokens, 9876);
+});
+
 test('parseTokenCountLine: primary/secondary 欠落・壊れ行・token_count 以外は null', () => {
   assert.equal(parseTokenCountLine('not-json', NOW), null);
   assert.equal(parseTokenCountLine(JSON.stringify({ type: 'event' }), NOW), null);
@@ -86,12 +122,22 @@ test('parseTokenCountLine: primary/secondary 欠落・壊れ行・token_count �
   }), NOW), null);
 });
 
+test('parseTokenCountLine: info:null は rate_limits 有効・トークン無しとして扱う', () => {
+  const r = parseTokenCountLine(tokenCountLine({
+    primary: { used_percent: 39, window_minutes: 10080, resets_at: 1783900000 },
+    info: null,
+  }), NOW);
+  assert.equal(r.session, null);
+  assert.equal(r.weekly.percent, 39);
+  assert.equal(r.tokens, null);
+});
+
 test('extractLastTokenCount: 複数行から最後の有効な token_count を返し壊れ行をスキップする', () => {
   const text = [
-    tokenCountLine({ primary: { used_percent: 10, window_minutes: 300, resets_at: 1783306800 }, total: 111 }),
+    tokenCountLine({ primary: { used_percent: 10, window_minutes: 300, resets_at: 1783306800 }, totalTokens: 111 }),
     '{"type":"token_count",',
     JSON.stringify({ type: 'message', payload: {} }),
-    tokenCountLine({ primary: { used_percent: 22, window_minutes: 300, resets_at: 1783310000 }, total: 222 }),
+    tokenCountLine({ primary: { used_percent: 22, window_minutes: 300, resets_at: 1783310000 }, totalTokens: 222 }),
     '',
   ].join('\n');
   const r = extractLastTokenCount(text, NOW);
@@ -158,23 +204,82 @@ test('createCodexUsageProvider: 一時失敗時は stickyMaxMs 以内だけ直�
 test('parseTokenCountRecord / parseCodexJsonl: total_token_usage をトークン数として取り出す', () => {
   const obj = JSON.parse(tokenCountLine({
     primary: { used_percent: 1, window_minutes: 300, resets_at: 1783306800 },
-    total: 4321,
+    totalTokens: 4321,
   }));
   const entry = parseTokenCountRecord(obj);
   assert.equal(entry.tokens, 4321);
+  assert.equal(entry.totalTokens, 4321);
   assert.equal(entry.ts, Date.parse('2026-07-06T02:00:00.000Z'));
+  assert.equal(parseTokenCountRecord(JSON.parse(tokenCountLine({ info: null })), NOW), null);
 
   const text = [
     'broken',
-    JSON.stringify({ type: 'token_count', payload: { info: { total_token_usage: { input: 10, cached: 20, output: 30, reasoning: 40 } } } }),
+    tokenCountLine({
+      usage: {
+        input_tokens: 10,
+        cached_input_tokens: 20,
+        output_tokens: 30,
+        reasoning_output_tokens: 40,
+      },
+    }),
   ].join('\n');
   const entries = parseCodexJsonl(text, NOW);
   assert.equal(entries.length, 1);
-  assert.equal(entries[0].tokens, 100);
-  assert.equal(entries[0].ts, NOW);
+  assert.equal(entries[0].tokens, 80);
+  assert.equal(entries[0].ts, Date.parse('2026-07-06T02:00:00.000Z'));
 });
 
-test('aggregateTokenCounts: 今日と今週（7日）の合計を固定窓で集計する', () => {
+test('summarizeSessionTokenCounts: 同一セッションの累積 token_count を二重計上しない', () => {
+  const text = [
+    tokenCountLine({ totalTokens: 100, timestamp: '2026-07-06T00:10:00.000Z' }),
+    tokenCountLine({ totalTokens: 100, timestamp: '2026-07-06T00:11:00.000Z' }),
+    tokenCountLine({ totalTokens: 250, timestamp: '2026-07-06T00:12:00.000Z' }),
+    tokenCountLine({ totalTokens: 250, timestamp: '2026-07-06T00:13:00.000Z' }),
+  ].join('\n');
+  const summary = summarizeSessionTokenCounts(parseCodexJsonl(text));
+  assert.equal(summary.tokens, 250);
+  assert.equal(summary.ts, Date.parse('2026-07-06T00:13:00.000Z'));
+
+  const r = aggregateTokenCounts([summary], NOW, {
+    todayStartMs: Date.parse('2026-07-06T00:00:00.000Z'),
+    weeklyStartMs: NOW - 7 * 24 * 60 * 60 * 1000,
+    skewMs: 0,
+  });
+  assert.equal(r.todayTokens, 250);
+  assert.equal(r.weeklyTokens, 250);
+});
+
+test('createCodexUsageTracker: ファイル単位の最大累積値を差分読みで更新する', async () => {
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-codex-usage-'));
+  try {
+    const file = path.join(tmpRoot, 'rollout-test.jsonl');
+    fs.writeFileSync(file, [
+      tokenCountLine({ totalTokens: 100, timestamp: '2026-07-06T00:10:00.000Z' }),
+      tokenCountLine({ totalTokens: 100, timestamp: '2026-07-06T00:11:00.000Z' }),
+    ].join('\n') + '\n', 'utf8');
+
+    const tracker = createCodexUsageTracker({
+      dirs: [tmpRoot],
+      clock: () => NOW,
+      skewMs: 0,
+    });
+    let snapshot = await tracker.refresh();
+    assert.equal(snapshot.todayTokens, 100);
+    assert.equal(snapshot.weeklyTokens, 100);
+
+    fs.appendFileSync(file, [
+      tokenCountLine({ totalTokens: 250, timestamp: '2026-07-06T00:12:00.000Z' }),
+      tokenCountLine({ totalTokens: 250, timestamp: '2026-07-06T00:13:00.000Z' }),
+    ].join('\n') + '\n', 'utf8');
+    snapshot = await tracker.refresh();
+    assert.equal(snapshot.todayTokens, 250);
+    assert.equal(snapshot.weeklyTokens, 250);
+  } finally {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+test('aggregateTokenCounts: 今日と今週（7日）のセッション合計を固定窓で集計する', () => {
   const entries = [
     { ts: NOW - 8 * 24 * 60 * 60 * 1000, tokens: 1000 },
     { ts: Date.parse('2026-07-05T23:00:00.000Z'), tokens: 2000 },

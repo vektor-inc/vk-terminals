@@ -49,17 +49,34 @@ function parseRateLimitEntry(entry) {
 function tokenCountFromTotalUsage(usage) {
   if (!usage || typeof usage !== 'object') return null;
   const n = (v) => (typeof v === 'number' && Number.isFinite(v) ? Math.max(0, v) : 0);
+  if (typeof usage.total_tokens === 'number' && Number.isFinite(usage.total_tokens)) return n(usage.total_tokens);
   if (typeof usage.total === 'number' && Number.isFinite(usage.total)) return n(usage.total);
 
   let hasCodexShape = false;
   let total = 0;
-  for (const key of ['input', 'cached', 'output', 'reasoning']) {
+  for (const key of ['input_tokens', 'output_tokens', 'reasoning_output_tokens']) {
+    if (typeof usage[key] === 'number' && Number.isFinite(usage[key])) {
+      hasCodexShape = true;
+      total += n(usage[key]);
+    }
+  }
+  if (hasCodexShape) return total;
+
+  for (const key of ['input', 'output', 'reasoning']) {
     if (typeof usage[key] === 'number' && Number.isFinite(usage[key])) {
       hasCodexShape = true;
       total += n(usage[key]);
     }
   }
   return hasCodexShape ? total : null;
+}
+
+function tokenCountPayload(obj) {
+  if (!obj || typeof obj !== 'object') return null;
+  const payload = obj.payload && typeof obj.payload === 'object' ? obj.payload : null;
+  if (payload && payload.type === 'token_count') return payload;
+  if (obj.type === 'token_count') return payload || obj;
+  return null;
 }
 
 function parseTokenCountLine(line, nowMs = Date.now()) {
@@ -72,9 +89,9 @@ function parseTokenCountLine(line, nowMs = Date.now()) {
       return null;
     }
   }
-  if (!obj || typeof obj !== 'object' || obj.type !== 'token_count') return null;
 
-  const payload = obj.payload && typeof obj.payload === 'object' ? obj.payload : {};
+  const payload = tokenCountPayload(obj);
+  if (!payload) return null;
   const rateLimits = payload.rate_limits && typeof payload.rate_limits === 'object' ? payload.rate_limits : {};
   let session = null;
   let weekly = null;
@@ -242,6 +259,7 @@ module.exports = {
   parseResetAtSeconds,
   parseRateLimitEntry,
   tokenCountFromTotalUsage,
+  tokenCountPayload,
   parseTokenCountLine,
   extractLastTokenCount,
   isStickyUsable,

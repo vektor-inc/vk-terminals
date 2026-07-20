@@ -11,7 +11,7 @@ const {
   readSliceComplete,
   formatTokens,
 } = require('./usageTracker');
-const { tokenCountFromTotalUsage } = require('./codexUsage');
+const { tokenCountFromTotalUsage, tokenCountPayload } = require('./codexUsage');
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const CODEX_WEEKLY_WINDOW_MS = 7 * DAY_MS;
@@ -35,14 +35,14 @@ function parseTimestamp(obj, fallbackMs = null) {
 }
 
 function parseTokenCountRecord(obj, fallbackTs = null) {
-  if (!obj || typeof obj !== 'object' || obj.type !== 'token_count') return null;
-  const payload = obj.payload && typeof obj.payload === 'object' ? obj.payload : {};
+  const payload = tokenCountPayload(obj);
+  if (!payload) return null;
   const info = payload.info && typeof payload.info === 'object' ? payload.info : {};
   const tokens = tokenCountFromTotalUsage(info.total_token_usage);
   if (!Number.isFinite(tokens)) return null;
   const ts = parseTimestamp(obj, fallbackTs);
   if (!Number.isFinite(ts)) return null;
-  return { ts, tokens };
+  return { ts, tokens, totalTokens: tokens };
 }
 
 function parseCodexJsonl(text, fallbackTs = null) {
@@ -68,8 +68,29 @@ function startOfLocalDay(ms) {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
 }
 
-function aggregateTokenCounts(entries, nowMs, opts = {}) {
+function updateSessionTokenSummary(summary, entry) {
+  if (!entry || !Number.isFinite(entry.ts) || !Number.isFinite(entry.tokens)) return summary;
+  const tokens = Math.max(0, entry.tokens);
+  if (!summary || !Number.isFinite(summary.tokens) || tokens > summary.tokens) {
+    return { ts: entry.ts, tokens };
+  }
+  if (tokens === summary.tokens && (!Number.isFinite(summary.ts) || entry.ts > summary.ts)) {
+    return { ts: entry.ts, tokens };
+  }
+  return summary;
+}
+
+function summarizeSessionTokenCounts(entries) {
   if (!Array.isArray(entries) || entries.length === 0) return null;
+  let summary = null;
+  for (const entry of entries) {
+    summary = updateSessionTokenSummary(summary, entry);
+  }
+  return summary;
+}
+
+function aggregateTokenCounts(sessionSummaries, nowMs, opts = {}) {
+  if (!Array.isArray(sessionSummaries) || sessionSummaries.length === 0) return null;
   const skewMs = opts.skewMs != null ? opts.skewMs : CODEX_CLOCK_SKEW_MS;
   const weeklyWindowMs = opts.weeklyWindowMs || CODEX_WEEKLY_WINDOW_MS;
   const todayStartMs = opts.todayStartMs != null ? opts.todayStartMs : startOfLocalDay(nowMs);
@@ -79,7 +100,7 @@ function aggregateTokenCounts(entries, nowMs, opts = {}) {
   let weeklyTokens = 0;
   let count = 0;
 
-  for (const e of entries) {
+  for (const e of sessionSummaries) {
     if (!e || !Number.isFinite(e.ts) || !Number.isFinite(e.tokens) || e.ts > upper) continue;
     if (e.ts >= weeklyStartMs) weeklyTokens += Math.max(0, e.tokens);
     if (e.ts >= todayStartMs) todayTokens += Math.max(0, e.tokens);
@@ -103,6 +124,7 @@ function createCodexUsageTracker(options = {}) {
   const windowMs = options.windowMs || CODEX_WEEKLY_WINDOW_MS;
   const staleMs = options.staleMs != null ? options.staleMs : CODEX_SWR_STALE_MS;
   const skewMs = options.skewMs != null ? options.skewMs : CODEX_CLOCK_SKEW_MS;
+  const clock = typeof options.clock === 'function' ? options.clock : Date.now;
 
   const fileCache = new Map();
   let lastSnapshot = null;
@@ -110,7 +132,7 @@ function createCodexUsageTracker(options = {}) {
   let refreshing = null;
 
   async function refresh() {
-    const now = Date.now();
+    const now = clock();
     let dirs;
     try {
       dirs = getDirs();
@@ -121,13 +143,13 @@ function createCodexUsageTracker(options = {}) {
 
     const files = await listRecentFiles(dirs, now, windowMs);
     const alive = new Set();
-    const allEntries = [];
+    const sessionSummaries = [];
 
     for (const f of files) {
       alive.add(f.path);
       let cached = fileCache.get(f.path);
       if (!cached || cached.offset > f.size) {
-        cached = { offset: 0, entries: [] };
+        cached = { offset: 0, summary: null };
         fileCache.set(f.path, cached);
       }
       if (f.size > cached.offset) {
@@ -135,21 +157,23 @@ function createCodexUsageTracker(options = {}) {
           const { text, consumed } = await readSliceComplete(f.path, cached.offset, f.size);
           if (text) {
             const newEntries = parseCodexJsonl(text, f.mtimeMs);
-            if (newEntries.length) cached.entries = cached.entries.concat(newEntries);
+            for (const entry of newEntries) {
+              cached.summary = updateSessionTokenSummary(cached.summary, entry);
+            }
           }
           cached.offset = consumed;
         } catch (_e) {
           // 読み取り失敗はこのファイルだけスキップ（次回再試行）
         }
       }
-      if (cached.entries.length) allEntries.push(...cached.entries);
+      if (cached.summary) sessionSummaries.push(cached.summary);
     }
 
     for (const key of fileCache.keys()) {
       if (!alive.has(key)) fileCache.delete(key);
     }
 
-    lastSnapshot = aggregateTokenCounts(allEntries, now, { skewMs, weeklyWindowMs: windowMs });
+    lastSnapshot = aggregateTokenCounts(sessionSummaries, now, { skewMs, weeklyWindowMs: windowMs });
     lastSnapshotAt = now;
     return lastSnapshot;
   }
@@ -163,7 +187,7 @@ function createCodexUsageTracker(options = {}) {
   }
 
   function getSnapshot() {
-    const now = Date.now();
+    const now = clock();
     if (lastSnapshot !== null && now - lastSnapshotAt < staleMs) return lastSnapshot;
     scheduleRefresh();
     return lastSnapshot;
@@ -189,6 +213,8 @@ module.exports = {
   parseTimestamp,
   parseTokenCountRecord,
   parseCodexJsonl,
+  updateSessionTokenSummary,
+  summarizeSessionTokenCounts,
   startOfLocalDay,
   aggregateTokenCounts,
   createCodexUsageTracker,

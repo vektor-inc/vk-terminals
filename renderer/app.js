@@ -3351,7 +3351,7 @@ function renderCodexUsageView(container, usage, options = {}) {
   if (!rendered) {
     const p = document.createElement('p');
     p.className = 'usage-empty';
-    p.textContent = '使用状況データを取得できません。Codex CLI のセッション履歴が無い場合や、設定「Codex 使用量を表示」が無効の場合はここには何も表示されません。';
+    p.textContent = '使用状況データを取得できません。';
     container.appendChild(p);
   }
 }
@@ -3380,7 +3380,7 @@ function renderSidebarCodexUsage(usage) {
   const body = section.querySelector('.sidebar-usage-body');
   if (!body) return;
 
-  if (!usage) {
+  if (!usage || usage.empty === true) {
     section.hidden = true;
     body.replaceChildren();
     return;

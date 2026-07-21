@@ -772,6 +772,65 @@ function writeTaskListCollapsed(collapsed) {
   catch (e) { /* プライベートモード等で保存失敗しても無視 */ }
 }
 
+// 担当者フィルタのモードを localStorage に保持する（issue #226）。
+//   'self'（自分のみ・デフォルト） / 'all'（全員） / 'none'（担当なし） / '<login>'（個別担当者）
+// GitHub モードかつ viewer 判明時のみプルダウンを表示する。未設定時は 'self'。
+const TASK_ASSIGNEE_FILTER_KEY = 'vkt.taskAssigneeFilter';
+const TASK_ASSIGNEE_FILTER_DEFAULT = 'self';
+function readTaskAssigneeFilter() {
+  try {
+    const value = localStorage.getItem(TASK_ASSIGNEE_FILTER_KEY);
+    return (typeof value === 'string' && value) ? value : TASK_ASSIGNEE_FILTER_DEFAULT;
+  } catch (e) { return TASK_ASSIGNEE_FILTER_DEFAULT; }
+}
+function writeTaskAssigneeFilter(mode) {
+  try { localStorage.setItem(TASK_ASSIGNEE_FILTER_KEY, mode); }
+  catch (e) { /* プライベートモード等で保存失敗しても無視 */ }
+}
+
+// 表示中タスクから担当者フィルタの選択肢（value と表示ラベル）を組み立てる。
+//   固定: 自分のみ(self) / 全員(all)
+//   動的: 表示中タスクの担当者ログインを重複排除・ソートして追加（value は login）
+//   条件付き: 担当者が空のタスクがあれば「担当なし」(none) を追加
+function buildAssigneeFilterOptions(tasks) {
+  const options = [
+    { value: 'self', label: '自分のみ' },
+    { value: 'all', label: '全員' },
+  ];
+  const logins = new Set();
+  let hasUnassigned = false;
+  for (const task of tasks) {
+    const list = Array.isArray(task.assignees) ? task.assignees : [];
+    if (list.length === 0) { hasUnassigned = true; continue; }
+    for (const login of list) logins.add(login);
+  }
+  Array.from(logins).sort((a, b) => a.localeCompare(b)).forEach((login) => {
+    options.push({ value: login, label: login });
+  });
+  if (hasUnassigned) options.push({ value: 'none', label: '担当なし' });
+  return options;
+}
+
+// 保存済みモードを現在の選択肢に照らして解決する。
+// 個別 login が選択肢に無ければ静かに 'self' へフォールバックする（self/all/none は常に有効）。
+function resolveAssigneeFilterMode(storedMode, options) {
+  const valid = new Set(options.map((opt) => opt.value));
+  if (valid.has(storedMode)) return storedMode;
+  return TASK_ASSIGNEE_FILTER_DEFAULT;
+}
+
+// モードに従ってタスクを絞り込む。
+//   all  = 全部 / self = 担当者リストに viewer を含む / none = 担当者が空 / <login> = リストにその login を含む
+function applyAssigneeFilter(tasks, mode, viewer) {
+  if (mode === 'all') return tasks;
+  if (mode === 'none') return tasks.filter((task) => (task.assignees || []).length === 0);
+  if (mode === 'self') {
+    if (!viewer) return tasks;
+    return tasks.filter((task) => (task.assignees || []).includes(viewer));
+  }
+  return tasks.filter((task) => (task.assignees || []).includes(mode));
+}
+
 // vk-orchestrator の tasks-view.json を読み取り専用で表示するセクション。
 function createTaskListContainer() {
   const section = document.createElement('section');
@@ -783,24 +842,52 @@ function createTaskListContainer() {
   const collapsed = readTaskListCollapsed();
   section.classList.toggle('collapsed', collapsed);
 
-  // 見出し自体をトグルボタンにする（クリック / Enter / Space で開閉）。
-  const title = document.createElement('button');
-  title.type = 'button';
+  // 見出しは非インタラクティブなコンテナ（div）にする。
+  // 中に <select>（プルダウン）を入れ子にできるよう、見出し全体を button にはしない（issue #226）。
+  // ラベル（左）／担当者フィルタ／開閉トグル（右端）を兄弟要素として並べる。
+  const title = document.createElement('div');
   title.className = 'task-list-title';
-  title.setAttribute('aria-controls', 'task-list-body');
-  title.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
-
-  const chevron = document.createElement('span');
-  chevron.className = 'task-list-chevron';
-  chevron.setAttribute('aria-hidden', 'true');
-  chevron.textContent = collapsed ? '▸' : '▾';
 
   const label = document.createElement('span');
   label.className = 'task-list-title-text';
   label.textContent = 'タスク';
-
-  title.appendChild(chevron);
   title.appendChild(label);
+
+  // プルダウンとトグルは狭い幅でも分断されないよう nowrap のグループにまとめ、右端へ寄せる。
+  const controls = document.createElement('div');
+  controls.className = 'task-list-controls';
+
+  // 担当者で絞り込むプルダウン。GitHub モードかつ viewer 判明時のみ renderTaskList が表示する。
+  // 初期状態は非表示。選択肢・表示/非表示は描画のたびに更新する。
+  const filter = document.createElement('select');
+  filter.className = 'task-list-assignee-filter';
+  filter.setAttribute('aria-label', '担当者で絞り込み');
+  filter.hidden = true;
+  filter.addEventListener('change', () => {
+    writeTaskAssigneeFilter(filter.value);
+    renderTaskList(lastTaskView);
+  });
+  controls.appendChild(filter);
+
+  // 開閉トグルは実 <button> にして Enter/Space をネイティブ維持する。グリフは ▾（開）/▸（閉）。
+  const toggle = document.createElement('button');
+  toggle.type = 'button';
+  toggle.className = 'btn task-list-toggle';
+  toggle.setAttribute('aria-controls', 'task-list-body');
+  toggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+  toggle.setAttribute('aria-label', taskListToggleLabel(!collapsed));
+  toggle.textContent = stashToggleGlyph(!collapsed);
+  toggle.addEventListener('click', () => {
+    const nowCollapsed = !section.classList.contains('collapsed');
+    section.classList.toggle('collapsed', nowCollapsed);
+    toggle.setAttribute('aria-expanded', nowCollapsed ? 'false' : 'true');
+    toggle.setAttribute('aria-label', taskListToggleLabel(!nowCollapsed));
+    toggle.textContent = stashToggleGlyph(!nowCollapsed);
+    writeTaskListCollapsed(nowCollapsed);
+  });
+  controls.appendChild(toggle);
+
+  title.appendChild(controls);
 
   const body = document.createElement('div');
   body.id = 'task-list-body';
@@ -815,21 +902,22 @@ function createTaskListContainer() {
   const list = document.createElement('div');
   list.className = 'task-list-groups';
 
+  // フィルタ結果の件数を控えめにアナウンスする live region（視覚的には隠す）。
+  const liveCount = document.createElement('div');
+  liveCount.className = 'task-list-live';
+  liveCount.setAttribute('aria-live', 'polite');
+
   body.appendChild(notice);
   body.appendChild(list);
-
-  title.addEventListener('click', () => {
-    const nowCollapsed = !section.classList.contains('collapsed');
-    section.classList.toggle('collapsed', nowCollapsed);
-    title.setAttribute('aria-expanded', nowCollapsed ? 'false' : 'true');
-    chevron.textContent = nowCollapsed ? '▸' : '▾';
-    writeTaskListCollapsed(nowCollapsed);
-  });
+  body.appendChild(liveCount);
 
   section.appendChild(title);
   section.appendChild(body);
   return section;
 }
+
+// 開閉トグルの aria-label（開いているとき＝隠す操作、閉じているとき＝表示する操作）。
+function taskListToggleLabel(open) { return open ? 'タスク一覧を隠す' : 'タスク一覧を表示'; }
 
 // 格納ペインを収めるセクション（見出し＋リスト）。中身は renderPaneStash が更新する。
 function createPaneStashContainer() {
@@ -1163,16 +1251,43 @@ function setTaskPending(taskKey, pending) {
   taskCommandErrors.delete(taskKey);
 }
 
+// タスクの担当者リスト（複数割り当て可）を正規化する。
+// 配列が無い場合は単数 assignee にフォールバックする。空文字・非文字列は除外し、重複を除く。
+function normalizeAssigneeList(list, fallbackAssignee) {
+  const source = Array.isArray(list) ? list : (fallbackAssignee ? [fallbackAssignee] : []);
+  const seen = new Set();
+  const result = [];
+  for (const entry of source) {
+    if (typeof entry !== 'string') continue;
+    const login = entry.trim();
+    if (!login || seen.has(login)) continue;
+    seen.add(login);
+    result.push(login);
+  }
+  return result;
+}
+
+// スナップショットのトップレベル viewer（自分の GitHub ログイン名）を読む。
+// 非空文字列でなければ null（＝特定不能 → 担当者フィルタ非表示）。
+function getTaskViewer(view) {
+  const viewer = view && typeof view.viewer === 'string' ? view.viewer.trim() : '';
+  return viewer || null;
+}
+
 function normalizeTaskList(view) {
   const tasks = Array.isArray(view?.tasks) ? view.tasks : [];
   return tasks
     .filter((task) => task && typeof task.title === 'string' && task.title.trim())
     .map((task, index) => {
+      const assignee = typeof task.assignee === 'string' && task.assignee.trim() ? task.assignee.trim() : '';
       const normalized = {
         id: task.id,
         title: task.title.trim(),
         status: normalizeTaskStatus(task.status),
-        assignee: typeof task.assignee === 'string' && task.assignee.trim() ? task.assignee.trim() : '',
+        assignee,
+        // 担当者は複数割り当て可（GitHub issue の複数 assignee）。配列があれば正規化して読み、
+        // 無ければ単数 assignee にフォールバックする。「自分のみ」判定はこの配列で行う。
+        assignees: normalizeAssigneeList(task.assignees, assignee),
         index,
       };
       if (hasTaskPriorityContract(task)) {
@@ -1620,14 +1735,19 @@ function renderTaskList(view = lastTaskView, focusStateOverride = undefined) {
   section.classList.toggle('is-stale', stale);
   if (staleNotice) staleNotice.hidden = !stale || !shouldShow;
   container.replaceChildren();
+
+  // 担当者フィルタの表示/選択肢を更新し、絞り込み後のタスクを得る。
+  const visibleTasks = updateAssigneeFilter(section, tasks, view);
+
   if (!shouldShow) return;
 
-  const groups = groupTasksByStatus(tasks);
+  const groups = groupTasksByStatus(visibleTasks);
   if (groups.length === 0) {
     if (stale) return;
     const empty = document.createElement('div');
     empty.className = 'task-list-empty';
-    empty.textContent = 'タスクはありません';
+    // 元のタスクは在るが絞り込みで 0 件になった場合は、プルダウンは残したまま案内を出す。
+    empty.textContent = tasks.length > 0 ? '該当するタスクはありません' : 'タスクはありません';
     container.appendChild(empty);
     return;
   }
@@ -1636,6 +1756,47 @@ function renderTaskList(view = lastTaskView, focusStateOverride = undefined) {
     container.appendChild(renderTaskGroup(status, groupTasks));
   });
   restoreTaskFocusState(focusState);
+}
+
+// 担当者フィルタ（プルダウン）の表示・選択肢を現在のタスク／viewer に合わせて更新し、
+// 絞り込み後のタスク配列を返す。GitHub モードかつ viewer 判明時のみプルダウンを表示する。
+//   GitHub モード判定: 表示中タスクに http(s) の queueIssueUrl を持つものが 1 件でもあるか。
+function updateAssigneeFilter(section, tasks, view) {
+  const filter = section.querySelector('.task-list-assignee-filter');
+  const liveCount = section.querySelector('.task-list-live');
+  const viewer = getTaskViewer(view);
+  const githubMode = tasks.some((task) => !!task.queueIssueUrl);
+  const filterEnabled = githubMode && !!viewer;
+
+  if (!filter) return tasks;
+
+  // 条件を満たさなければプルダウンを隠し、絞り込みもしない（全件表示）。
+  if (!filterEnabled) {
+    filter.hidden = true;
+    if (liveCount) liveCount.textContent = '';
+    return tasks;
+  }
+
+  // 選択肢を再構築し、保存済みモードを解決（無効な個別 login は 'self' へフォールバック）。
+  const options = buildAssigneeFilterOptions(tasks);
+  const mode = resolveAssigneeFilterMode(readTaskAssigneeFilter(), options);
+  const currentOptions = Array.from(filter.options).map((opt) => `${opt.value} ${opt.textContent}`).join('');
+  const nextOptions = options.map((opt) => `${opt.value} ${opt.label}`).join('');
+  if (currentOptions !== nextOptions) {
+    filter.replaceChildren();
+    options.forEach((opt) => {
+      const el = document.createElement('option');
+      el.value = opt.value;
+      el.textContent = opt.label;
+      filter.appendChild(el);
+    });
+  }
+  filter.value = mode;
+  filter.hidden = false;
+
+  const filtered = applyAssigneeFilter(tasks, mode, viewer);
+  if (liveCount) liveCount.textContent = `${filtered.length}件表示`;
+  return filtered;
 }
 
 function tickTaskStale() {

@@ -107,7 +107,7 @@ test('tasksFile 設定時はタスクセクションを表示し、status グル
   }
 });
 
-test('タスク見出しクリックで一覧を折り畳み・展開でき、状態が localStorage に保存される', async () => {
+test('右端トグルボタンで一覧を折り畳み・展開でき、状態が localStorage に保存される', async () => {
   const port = await getFreePort();
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-tasks-collapse-'));
   const tasksFile = path.join(tmpRoot, 'tasks-view.json');
@@ -122,26 +122,27 @@ test('タスク見出しクリックで一覧を折り畳み・展開でき、�
   const { app, win, tmpRoot: appTmpRoot } = await launchApp(port, { tasksFile });
   try {
     const section = win.locator('#task-list');
-    const title = section.locator('.task-list-title');
+    // 開閉は見出し全体ではなく右端の独立トグルボタンに一本化した（issue #226）。
+    const toggle = section.locator('.task-list-toggle');
     const body = section.locator('.task-list-body');
     await expect(section).toBeVisible({ timeout: 10_000 });
 
-    // 初期は展開状態。
+    // 初期は展開状態。aria-expanded はトグルボタン側に付く。
     await expect(body).toBeVisible();
-    await expect(title).toHaveAttribute('aria-expanded', 'true');
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true');
 
     // クリックで折り畳み。見出しは残り本体だけ隠れる。
-    await title.click();
+    await toggle.click();
     await expect(body).toBeHidden();
-    await expect(title).toHaveAttribute('aria-expanded', 'false');
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
     await expect(section).toContainText('タスク');
     const stored = await win.evaluate(() => localStorage.getItem('vkt.taskListCollapsed'));
     expect(stored).toBe('1');
 
     // 再クリックで展開に戻る。
-    await title.click();
+    await toggle.click();
     await expect(body).toBeVisible();
-    await expect(title).toHaveAttribute('aria-expanded', 'true');
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true');
     const stored2 = await win.evaluate(() => localStorage.getItem('vkt.taskListCollapsed'));
     expect(stored2).toBe('0');
   } finally {
@@ -204,6 +205,77 @@ test('fresh 表示後に tasks-view.json が stale 化した場合は orchestrat
     await expect(section).toContainText('稼働中に stale 化したタスク', { timeout: 10_000 });
     await expect(section.locator('.task-list-stale')).toBeVisible();
     await expect(section.locator('.task-list-stale')).toHaveText('orchestrator 停止中');
+  } finally {
+    if (app) await app.close();
+    fs.rmSync(appTmpRoot, { recursive: true, force: true });
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+test('GitHub モード + viewer 判明時は担当者フィルタを表示し、デフォルト「自分のみ」で絞り込む', async () => {
+  const port = await getFreePort();
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-tasks-filter-'));
+  const tasksFile = path.join(tmpRoot, 'tasks-view.json');
+  // queueIssueUrl（http(s)）を持つタスクがあれば GitHub モード、viewer が自分のログイン名。
+  writeJson(tasksFile, {
+    updatedAt: freshDate(),
+    viewer: 'kurudrive',
+    tasks: [
+      { id: 1, title: '自分担当タスク', status: 'in-progress', assignees: ['kurudrive'], queueIssueUrl: 'https://github.com/example/repo/issues/1', startedAt: freshDate(-3 * 60 * 1000) },
+      { id: 2, title: '他人担当タスク', status: 'in-progress', assignees: ['wada'], queueIssueUrl: 'https://github.com/example/repo/issues/2', startedAt: freshDate(-3 * 60 * 1000) },
+    ],
+  });
+
+  const { app, win, tmpRoot: appTmpRoot } = await launchApp(port, { tasksFile });
+  try {
+    const section = win.locator('#task-list');
+    const filter = section.locator('.task-list-assignee-filter');
+    await expect(section).toBeVisible({ timeout: 10_000 });
+
+    // プルダウンが表示され、デフォルトは「自分のみ」（value=self）。
+    await expect(filter).toBeVisible();
+    await expect(filter).toHaveValue('self');
+    // 自分担当のみ表示され、他人担当は隠れる。
+    await expect(section).toContainText('自分担当タスク');
+    await expect(section).not.toContainText('他人担当タスク');
+
+    // 「全員」に切り替えると両方表示される。
+    await filter.selectOption('all');
+    await expect(section).toContainText('自分担当タスク');
+    await expect(section).toContainText('他人担当タスク');
+    const stored = await win.evaluate(() => localStorage.getItem('vkt.taskAssigneeFilter'));
+    expect(stored).toBe('all');
+
+    // 特定担当者（wada）に切り替えると wada 担当のみ表示。
+    await filter.selectOption('wada');
+    await expect(section).toContainText('他人担当タスク');
+    await expect(section).not.toContainText('自分担当タスク');
+  } finally {
+    if (app) await app.close();
+    fs.rmSync(appTmpRoot, { recursive: true, force: true });
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+test('viewer 不明（ローカルモード）時は担当者フィルタを表示しない', async () => {
+  const port = await getFreePort();
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-tasks-nofilter-'));
+  const tasksFile = path.join(tmpRoot, 'tasks-view.json');
+  // viewer 無し・queueIssueUrl 無し（ローカルモード）→ フィルタ非表示。
+  writeJson(tasksFile, {
+    updatedAt: freshDate(),
+    tasks: [
+      { id: 1, title: 'ローカルタスク', status: 'in-progress', assignee: 'kurudrive', startedAt: freshDate(-3 * 60 * 1000) },
+    ],
+  });
+
+  const { app, win, tmpRoot: appTmpRoot } = await launchApp(port, { tasksFile });
+  try {
+    const section = win.locator('#task-list');
+    await expect(section).toBeVisible({ timeout: 10_000 });
+    await expect(section).toContainText('ローカルタスク');
+    // プルダウンは DOM 上に存在するが hidden。
+    await expect(section.locator('.task-list-assignee-filter')).toBeHidden();
   } finally {
     if (app) await app.close();
     fs.rmSync(appTmpRoot, { recursive: true, force: true });

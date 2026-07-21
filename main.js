@@ -323,11 +323,15 @@ function readTasksSnapshotFromFile(filePath) {
   try {
     const parsed = JSON.parse(raw);
     const tasks = Array.isArray(parsed?.tasks) ? parsed.tasks : [];
+    // viewer（自分の GitHub ログイン名）はスナップショットのトップレベルに入る（vk-orchestrator#181 で付与予定）。
+    // 現状はまだ来ないため、非空文字列でなければ null にフォールバックする。
+    const viewer = typeof parsed?.viewer === 'string' && parsed.viewer.trim() ? parsed.viewer.trim() : null;
     return {
       raw,
       view: {
         updatedAt: typeof parsed?.updatedAt === 'string' ? parsed.updatedAt : null,
         tasks,
+        viewer,
       },
     };
   } catch (e) {
@@ -346,10 +350,15 @@ function readTasksSnapshotFromFile(filePath) {
 function withTaskStatusActions(view) {
   const tasks = Array.isArray(view?.tasks) ? view.tasks : [];
   const config = loadUserConfig();
-  const taskFields = ['id', 'title', 'status', 'assignee', 'startedAt', 'updatedAt', 'createdAt', 'priority', 'sequential', 'prUrl'];
+  // assignees（複数担当の配列）も露出する。GitHub issue は複数 assign 可のため、
+  // 単数 assignee に加えて配列を渡し、renderer 側で「自分のみ」判定に使う。
+  const taskFields = ['id', 'title', 'status', 'assignee', 'assignees', 'startedAt', 'updatedAt', 'createdAt', 'priority', 'sequential', 'prUrl'];
+  // viewer は非空文字列でなければ null に正規化して露出する（#181 反映前は null）。
+  const viewer = typeof view?.viewer === 'string' && view.viewer.trim() ? view.viewer.trim() : null;
   return {
     updatedAt: typeof view?.updatedAt === 'string' ? view.updatedAt : null,
     unavailable: view?.unavailable === true,
+    viewer,
     tasks: tasks.map((task) => {
       const exposedTask = {};
       taskFields.forEach((field) => {

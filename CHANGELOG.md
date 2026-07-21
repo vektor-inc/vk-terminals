@@ -1,5 +1,8 @@
 # Changelog
 
+- [ 機能追加 ] サイドバーのタスク一覧に GitHub モード時の担当者フィルタ（デフォルト「自分のみ」）を追加（[#226](https://github.com/vektor-inc/vk-terminals/issues/226)）
+- [ 仕様変更 ] サイドバーのタスク一覧の開閉を、見出し右端の独立トグルボタンに変更（[#226](https://github.com/vektor-inc/vk-terminals/issues/226)）
+
 ## 1.37.0
 
 - [ 機能追加 ] モバイル版に Codex CLI の使用量（使用率%・トークン数）を表示する機能を追加（[#218](https://github.com/vektor-inc/vk-terminals/issues/218)）

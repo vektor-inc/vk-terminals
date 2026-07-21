@@ -34,6 +34,34 @@
   <div class="u-bar" id="usage-bar"><span class="u-marks" id="usage-marks"></span><span id="usage-percent"></span></div>
   <div class="u-note" id="usage-note"></div>
 </div>
+<!-- Codex 使用量カード（issue #218）。data.codexUsage があれば表示、無ければカードごと隠す。
+     PC 版サイドバー（renderer/app.js の renderCodexUsageView）と対称の構造。
+     セッション% / 週間% の 2 バー（Claude カードの #usage-oauth と同じ u-sec 構造）と
+     トークン数（今日 / 今週）行を持つ。 -->
+<div id="codex-usage-card" aria-label="Codex使用量">
+  <div class="u-card-title">Codex 使用量</div>
+  <!-- 直近値表示中の注記（stale === true のとき） -->
+  <div class="u-note" id="co-stale-note" hidden></div>
+  <div id="codex-usage-oauth" hidden>
+    <div class="u-sec" id="co-session-sec" hidden>
+      <div class="u-sec-head"><span>現在のセッション</span><span class="u-pct" id="co-session-pct"></span></div>
+      <div class="u-track" id="co-session-track" role="progressbar" aria-label="現在のセッション"
+        aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="u-fill" id="co-session-fill"></div></div>
+      <div class="u-reset" id="co-session-reset"></div>
+    </div>
+    <div class="u-sec" id="co-weekly-sec" hidden>
+      <div class="u-sec-head"><span>週間制限</span><span class="u-pct" id="co-weekly-pct"></span></div>
+      <div class="u-track" id="co-weekly-track" role="progressbar" aria-label="週間制限"
+        aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="u-fill" id="co-weekly-fill"></div></div>
+      <div class="u-reset" id="co-weekly-reset"></div>
+    </div>
+  </div>
+  <!-- トークン数（今日 / 今週）。PC 版 buildCodexTokenUsageSection の表記に合わせる。 -->
+  <div class="u-tokens" id="co-tokens" hidden>
+    <div class="u-tokens-head"><span>トークン数</span><span class="u-tokens-today" id="co-tokens-today"></span></div>
+    <div class="u-reset" id="co-tokens-weekly"></div>
+  </div>
+</div>
 <section class="task-list" id="task-list" hidden>
   <button class="task-list-head" id="task-list-head" type="button" aria-controls="task-list-body" aria-expanded="true">
     <span class="task-list-head-main">
@@ -1008,6 +1036,7 @@ function ensureCard(termId) {
 //   - それ以外（source === 'transcript' フォールバック）: 従来表示のまま。
 // 文字列は textContent で入れるので XSS 面も安全。
 var usageCard = document.getElementById("usage-card");
+var codexUsageCard = document.getElementById("codex-usage-card");
 var appVersionFooter = document.getElementById("app-version-footer");
 var appTitleHeading = document.querySelector("header h1");
 
@@ -1122,10 +1151,61 @@ function renderUsage(usage) {
   usageCard.classList.add("show");
 }
 
+// Codex 使用量カード（issue #218）。PC 版サイドバー（renderCodexUsageView）と対称に描画する。
+//   - usage が falsy または usage.empty === true のときはカードごと隠す（Codex 未使用ユーザー）。
+//   - session / weekly は Claude カードと同じ renderOauthRow を流用（prefix "co-session" / "co-weekly"）。
+//   - tokens（{ todayText, weeklyText }）があれば「今日 ◯ / 今週 ◯ トークン」を表示。
+//   - stale === true のときは直近値表示中の注記を出す（PC 版と対称）。
+// 文字列は textContent で入れるので XSS 面も安全。
+function renderCodexUsage(usage) {
+  if (!codexUsageCard) return;
+  // データ無し・空スナップショットはカードごと非表示にする。
+  if (!usage || usage.empty === true) {
+    codexUsageCard.classList.remove("show");
+    return;
+  }
+
+  var oauthBox = document.getElementById("codex-usage-oauth");
+  var staleNote = document.getElementById("co-stale-note");
+  var tokensBox = document.getElementById("co-tokens");
+
+  // 直近取得値を表示している旨の注記（PC 版 renderCodexUsageView と同文）。
+  if (usage.stale === true) {
+    staleNote.textContent = "直近に取得した値を表示しています（最新の取得に一時的に失敗しました）";
+    staleNote.hidden = false;
+  } else {
+    staleNote.textContent = "";
+    staleNote.hidden = true;
+  }
+
+  // セッション% / 週間% の 2 バー（Claude カードと同じ描画関数を流用）。
+  if (usage.session || usage.weekly) {
+    renderOauthRow("co-session", usage.session, "remaining");
+    renderOauthRow("co-weekly", usage.weekly, "datetime");
+    oauthBox.hidden = false;
+  } else {
+    oauthBox.hidden = true;
+  }
+
+  // トークン数（今日 / 今週）。PC 版 buildCodexTokenUsageSection の表記に合わせる。
+  if (usage.tokens) {
+    var today = usage.tokens.todayText ? usage.tokens.todayText : "0";
+    var weekly = usage.tokens.weeklyText ? usage.tokens.weeklyText : "0";
+    document.getElementById("co-tokens-today").textContent = "今日 " + today;
+    document.getElementById("co-tokens-weekly").textContent = "今週 " + weekly + " トークン";
+    tokensBox.hidden = false;
+  } else {
+    tokensBox.hidden = true;
+  }
+
+  codexUsageCard.classList.add("show");
+}
+
 function render(data) {
   renderAppTitle(data.appTitle);
   renderAppVersion(data.version);
   renderUsage(data.usage);
+  renderCodexUsage(data.codexUsage);
   var terms = data.terminals || {};
   var keys = Object.keys(terms);
   var termById = {};

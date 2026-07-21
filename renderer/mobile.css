@@ -119,10 +119,20 @@ button.k.kill.is-locked:active { background: #6b3f3f; border-color: #7c4a4a; }
 .nl-toggle { font-size: 11px; color: var(--muted); display: flex; align-items: center; gap: 5px;
   padding: 2px; }
 #err { display: none; background: #4a1e1e; color: #ffb4b4; font-size: 12px; padding: 6px 12px; }
-/* トークン使用量カード（issue #69）。data.usage があるときだけ #list の先頭に表示する。 */
-#usage-card { display: none; margin: 10px 10px 0; padding: 11px 13px; background: var(--card);
-  border: 1px solid var(--card-border); border-radius: 12px; }
-#usage-card.show { display: block; }
+/* ==========================================================================
+   使用量カード（Claude: issue #69/#73 / Codex: issue #218）
+   data.usage / data.codexUsage があるときだけ #list の先頭に表示する。
+   両カードは共通の構造（u-sec / u-track / u-fill / u-reset / u-note）を共有する。
+   ========================================================================== */
+#usage-card, #codex-usage-card { display: none; margin: 10px 10px 0; padding: 11px 13px;
+  background: var(--card); border: 1px solid var(--card-border); border-radius: 12px; }
+#usage-card.show, #codex-usage-card.show { display: block; }
+
+/* カード見出し（Codex カードのみ。Claude カードは見出しレス） */
+#codex-usage-card .u-card-title { font-size: 12px; font-weight: 700; color: var(--fg);
+  margin-bottom: 8px; }
+
+/* フォールバック（トランスクリプト集計）行（Claude カードのみ） */
 #usage-card .u-line { font-size: 12px; color: var(--fg); font-weight: 600;
   display: flex; align-items: center; gap: 6px; }
 #usage-card .u-line[hidden] { display: none; }
@@ -132,25 +142,36 @@ button.k.kill.is-locked:active { background: #6b3f3f; border-color: #7c4a4a; }
   display: flex; align-items: center; gap: 8px; }
 #usage-card .u-bar[hidden] { display: none; }
 #usage-card .u-bar .u-marks { color: var(--running); letter-spacing: 2px; }
-/* ピーク比の意味をモバイルにだけ一度添える補足（UX-1）。 */
-#usage-card .u-note { margin-top: 4px; font-size: 10px; color: var(--muted); }
-#usage-card .u-note[hidden] { display: none; }
-/* 公式 usage API のセッション% / 週間% 2 バー表示（issue #73）。
-   公式% のみ閾値カラー（〜70% 青 / 70〜90% アンバー / 90%〜 赤）。
+
+/* 補足・注記（両カード共通）
+   ピーク比の意味をモバイルにだけ一度添える補足（Claude）／直近値表示中の注記（Codex）。 */
+#usage-card .u-note, #codex-usage-card .u-note { margin-top: 4px; font-size: 10px; color: var(--muted); }
+#usage-card .u-note[hidden], #codex-usage-card .u-note[hidden] { display: none; }
+
+/* 公式 usage API のセッション% / 週間% 2 バー表示（Claude #73 / Codex #218）。
+   閾値カラー（〜70% 青 / 70〜90% アンバー / 90%〜 赤）は両カードで統一する。
    数値ラベルを必ず併記し、色だけに依存しない。トラックは PC 側と同じ #21262d。 */
-#usage-oauth[hidden] { display: none; }
-#usage-oauth .u-sec { margin-top: 10px; }
-#usage-oauth .u-sec:first-child { margin-top: 0; }
-#usage-oauth .u-sec[hidden] { display: none; }
-#usage-oauth .u-sec-head { display: flex; align-items: baseline; justify-content: space-between;
-  gap: 8px; font-size: 12px; font-weight: 600; color: var(--fg); }
-#usage-oauth .u-sec-head .u-pct { white-space: nowrap; }
-#usage-oauth .u-track { margin-top: 5px; height: 7px; border-radius: 4px;
+#usage-oauth[hidden], #codex-usage-oauth[hidden] { display: none; }
+#usage-oauth .u-sec, #codex-usage-oauth .u-sec { margin-top: 10px; }
+#usage-oauth .u-sec:first-child, #codex-usage-oauth .u-sec:first-child { margin-top: 0; }
+#usage-oauth .u-sec[hidden], #codex-usage-oauth .u-sec[hidden] { display: none; }
+#usage-oauth .u-sec-head, #codex-usage-oauth .u-sec-head { display: flex; align-items: baseline;
+  justify-content: space-between; gap: 8px; font-size: 12px; font-weight: 600; color: var(--fg); }
+#usage-oauth .u-sec-head .u-pct, #codex-usage-oauth .u-sec-head .u-pct { white-space: nowrap; }
+#usage-oauth .u-track, #codex-usage-oauth .u-track { margin-top: 5px; height: 7px; border-radius: 4px;
   background: #21262d; overflow: hidden; }
-#usage-oauth .u-fill { height: 100%; border-radius: 4px; background: #58a6ff; }
-#usage-oauth .u-fill.level-warn { background: #d29922; }
-#usage-oauth .u-fill.level-crit { background: #f85149; }
-#usage-oauth .u-reset { margin-top: 4px; font-size: 10px; color: var(--muted); }
+#usage-oauth .u-fill, #codex-usage-oauth .u-fill { height: 100%; border-radius: 4px; background: #58a6ff; }
+#usage-oauth .u-fill.level-warn, #codex-usage-oauth .u-fill.level-warn { background: #d29922; }
+#usage-oauth .u-fill.level-crit, #codex-usage-oauth .u-fill.level-crit { background: #f85149; }
+#usage-oauth .u-reset, #codex-usage-oauth .u-reset { margin-top: 4px; font-size: 10px; color: var(--muted); }
+
+/* Codex トークン数（今日 / 今週）行（issue #218）。PC 版と同じ「今日 ◯ / 今週 ◯ トークン」表記。 */
+#codex-usage-card .u-tokens { margin-top: 10px; }
+#codex-usage-card .u-tokens[hidden] { display: none; }
+#codex-usage-card .u-tokens-head { display: flex; align-items: baseline; justify-content: space-between;
+  gap: 8px; font-size: 12px; font-weight: 600; color: var(--fg); }
+#codex-usage-card .u-tokens-head .u-tokens-today { white-space: nowrap; }
+#codex-usage-card .u-tokens .u-reset { margin-top: 4px; font-size: 10px; color: var(--muted); }
 
 /* ==========================================================================
    タスク一覧

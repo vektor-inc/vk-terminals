@@ -1737,7 +1737,8 @@ function renderTaskList(view = lastTaskView, focusStateOverride = undefined) {
   container.replaceChildren();
 
   // 担当者フィルタの表示/選択肢を更新し、絞り込み後のタスクを得る。
-  const visibleTasks = updateAssigneeFilter(section, tasks, view);
+  const filterResult = updateAssigneeFilter(section, tasks, view);
+  const visibleTasks = filterResult.tasks;
 
   if (!shouldShow) return;
 
@@ -1746,8 +1747,16 @@ function renderTaskList(view = lastTaskView, focusStateOverride = undefined) {
     if (stale) return;
     const empty = document.createElement('div');
     empty.className = 'task-list-empty';
-    // 元のタスクは在るが絞り込みで 0 件になった場合は、プルダウンは残したまま案内を出す。
-    empty.textContent = tasks.length > 0 ? '該当するタスクはありません' : 'タスクはありません';
+    // 全体が 0 件なら「タスクはありません」。元のタスクは在るが絞り込みで 0 件の場合は
+    // プルダウンを残したまま案内を出す。特にフィルタが self（自分のみ）のときは、
+    // 「自分に割り当てが無いだけ」と分かる文言にして誤認を減らす。
+    if (tasks.length === 0) {
+      empty.textContent = 'タスクはありません';
+    } else if (filterResult.mode === 'self') {
+      empty.textContent = '自分に割り当てられたタスクはありません';
+    } else {
+      empty.textContent = '該当するタスクはありません';
+    }
     container.appendChild(empty);
     return;
   }
@@ -1758,8 +1767,13 @@ function renderTaskList(view = lastTaskView, focusStateOverride = undefined) {
   restoreTaskFocusState(focusState);
 }
 
+// option 集合の同値判定用シリアライズ区切り文字。value/label やエントリ境界が
+// 曖昧にならないよう、通常テキストに現れない制御表示用文字（U+241F / U+241E）で区切る。
+const ASSIGNEE_OPTION_FIELD_SEP = '␟';
+const ASSIGNEE_OPTION_ITEM_SEP = '␞';
+
 // 担当者フィルタ（プルダウン）の表示・選択肢を現在のタスク／viewer に合わせて更新し、
-// 絞り込み後のタスク配列を返す。GitHub モードかつ viewer 判明時のみプルダウンを表示する。
+// 絞り込み後のタスク配列と適用モードを返す。GitHub モードかつ viewer 判明時のみプルダウンを表示する。
 //   GitHub モード判定: 表示中タスクに http(s) の queueIssueUrl を持つものが 1 件でもあるか。
 function updateAssigneeFilter(section, tasks, view) {
   const filter = section.querySelector('.task-list-assignee-filter');
@@ -1768,20 +1782,24 @@ function updateAssigneeFilter(section, tasks, view) {
   const githubMode = tasks.some((task) => !!task.queueIssueUrl);
   const filterEnabled = githubMode && !!viewer;
 
-  if (!filter) return tasks;
+  if (!filter) return { tasks, mode: 'all' };
 
   // 条件を満たさなければプルダウンを隠し、絞り込みもしない（全件表示）。
   if (!filterEnabled) {
     filter.hidden = true;
     if (liveCount) liveCount.textContent = '';
-    return tasks;
+    return { tasks, mode: 'all' };
   }
 
   // 選択肢を再構築し、保存済みモードを解決（無効な個別 login は 'self' へフォールバック）。
   const options = buildAssigneeFilterOptions(tasks);
   const mode = resolveAssigneeFilterMode(readTaskAssigneeFilter(), options);
-  const currentOptions = Array.from(filter.options).map((opt) => `${opt.value} ${opt.textContent}`).join('');
-  const nextOptions = options.map((opt) => `${opt.value} ${opt.label}`).join('');
+  const currentOptions = Array.from(filter.options)
+    .map((opt) => `${opt.value}${ASSIGNEE_OPTION_FIELD_SEP}${opt.textContent}`)
+    .join(ASSIGNEE_OPTION_ITEM_SEP);
+  const nextOptions = options
+    .map((opt) => `${opt.value}${ASSIGNEE_OPTION_FIELD_SEP}${opt.label}`)
+    .join(ASSIGNEE_OPTION_ITEM_SEP);
   if (currentOptions !== nextOptions) {
     filter.replaceChildren();
     options.forEach((opt) => {
@@ -1796,7 +1814,7 @@ function updateAssigneeFilter(section, tasks, view) {
 
   const filtered = applyAssigneeFilter(tasks, mode, viewer);
   if (liveCount) liveCount.textContent = `${filtered.length}件表示`;
-  return filtered;
+  return { tasks: filtered, mode };
 }
 
 function tickTaskStale() {

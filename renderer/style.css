@@ -867,6 +867,7 @@ body.resizing-sidebar .sidebar {
 /* 担当者フィルタのプルダウン。ダークパレットに合わせ、OS 標準の明色ドロップダウンが浮かないようにする。 */
 .task-list-assignee-filter {
   max-width: 120px;
+  height: 24px;
   padding: 2px 6px;
   border: 1px solid #30363d;
   border-radius: var(--vktm--border-radius--sm);

@@ -257,6 +257,42 @@ test('GitHub モード + viewer 判明時は担当者フィルタを表示し、
   }
 });
 
+test('GitHub モードで自分に割り当てが無い場合は self 用の空文言を表示する', async () => {
+  const port = await getFreePort();
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-tasks-empty-self-'));
+  const tasksFile = path.join(tmpRoot, 'tasks-view.json');
+  // viewer=kurudrive だが全タスクが他人担当 → デフォルト self では 0 件になる。
+  writeJson(tasksFile, {
+    updatedAt: freshDate(),
+    viewer: 'kurudrive',
+    tasks: [
+      { id: 1, title: '他人担当タスクA', status: 'in-progress', assignees: ['wada'], queueIssueUrl: 'https://github.com/example/repo/issues/1', startedAt: freshDate(-3 * 60 * 1000) },
+    ],
+  });
+
+  const { app, win, tmpRoot: appTmpRoot } = await launchApp(port, { tasksFile });
+  try {
+    const section = win.locator('#task-list');
+    const filter = section.locator('.task-list-assignee-filter');
+    const empty = section.locator('.task-list-empty');
+    await expect(section).toBeVisible({ timeout: 10_000 });
+
+    // self では自分に割り当てが無い旨の文言を出し、プルダウンは残す。
+    await expect(filter).toBeVisible();
+    await expect(filter).toHaveValue('self');
+    await expect(empty).toHaveText('自分に割り当てられたタスクはありません');
+
+    // 全員に切り替えると他人担当タスクが表示され、空文言は消える。
+    await filter.selectOption('all');
+    await expect(section).toContainText('他人担当タスクA');
+    await expect(empty).toHaveCount(0);
+  } finally {
+    if (app) await app.close();
+    fs.rmSync(appTmpRoot, { recursive: true, force: true });
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
 test('viewer 不明（ローカルモード）時は担当者フィルタを表示しない', async () => {
   const port = await getFreePort();
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-tasks-nofilter-'));

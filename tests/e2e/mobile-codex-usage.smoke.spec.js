@@ -112,7 +112,10 @@ test('モバイル: codexUsage があると Codex 使用量カードにセッシ
 
     const card = page.locator('#codex-usage-card');
     await expect(card).toHaveClass(/\bshow\b/, { timeout: 15_000 });
-    await expect(card).toHaveAttribute('aria-label', 'Codex使用量');
+    // 見出しは role=group + aria-labelledby で紐付ける（PC 版と対称）。
+    await expect(card).toHaveAttribute('role', 'group');
+    await expect(card).toHaveAttribute('aria-labelledby', 'codex-usage-card-title');
+    await expect(page.locator('#codex-usage-card-title')).toHaveText('Codex使用量');
 
     // セッション / 週間バーの % 表示。
     await expect(page.locator('#co-session-pct')).toHaveText('61% 使用済み');

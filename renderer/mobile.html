@@ -13,7 +13,8 @@
   <span class="meta" id="meta">接続中…</span>
 </header>
 <div id="err"></div>
-<div id="usage-card">
+<div id="usage-card" role="group" aria-labelledby="usage-card-title">
+  <div class="u-card-title" id="usage-card-title">Claude使用量</div>
   <!-- 公式 usage API 取得時（issue #73）: セッション% / 週間% の 2 バー表示 -->
   <div id="usage-oauth" hidden>
     <div class="u-sec" id="uo-session-sec" hidden>
@@ -38,8 +39,8 @@
      PC 版サイドバー（renderer/app.js の renderCodexUsageView）と対称の構造。
      セッション% / 週間% の 2 バー（Claude カードの #usage-oauth と同じ u-sec 構造）と
      トークン数（今日 / 今週）行を持つ。 -->
-<div id="codex-usage-card" aria-label="Codex使用量">
-  <div class="u-card-title">Codex 使用量</div>
+<div id="codex-usage-card" role="group" aria-labelledby="codex-usage-card-title">
+  <div class="u-card-title" id="codex-usage-card-title">Codex使用量</div>
   <!-- 直近値表示中の注記（stale === true のとき） -->
   <div class="u-note" id="co-stale-note" hidden></div>
   <div id="codex-usage-oauth" hidden>

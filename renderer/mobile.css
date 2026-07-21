@@ -128,9 +128,9 @@ button.k.kill.is-locked:active { background: #6b3f3f; border-color: #7c4a4a; }
   background: var(--card); border: 1px solid var(--card-border); border-radius: 12px; }
 #usage-card.show, #codex-usage-card.show { display: block; }
 
-/* カード見出し（Codex カードのみ。Claude カードは見出しレス） */
-#codex-usage-card .u-card-title { font-size: 12px; font-weight: 700; color: var(--fg);
-  margin-bottom: 8px; }
+/* カード見出し（Claude / Codex 両カード。縦積み時の帰属を明確にするため対称に表示する） */
+#usage-card .u-card-title, #codex-usage-card .u-card-title { font-size: 12px; font-weight: 700;
+  color: var(--fg); margin-bottom: 8px; }
 
 /* フォールバック（トランスクリプト集計）行（Claude カードのみ） */
 #usage-card .u-line { font-size: 12px; color: var(--fg); font-weight: 600;

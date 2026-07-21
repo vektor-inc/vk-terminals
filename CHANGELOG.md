@@ -1,5 +1,6 @@
 # Changelog
 
+- [ 機能追加 ] 設定パネルのタブごとに保存後の反映タイミングの案内文（note）を出し分けるように追加（[#240](https://github.com/vektor-inc/vk-terminals/issues/240)）
 - [ 仕様変更 ] サイドバー／モバイルのタスク一覧を、vk-orchestrator が書き出す宣言（tasks-widget.json）を描画する汎用ウィジェット方式に刷新（[#229](https://github.com/vektor-inc/vk-terminals/issues/229)）
 
 ## 1.38.0

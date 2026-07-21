@@ -4,11 +4,17 @@ function normalizeSettingsTabs(desc) {
   const rawTabs = desc && Array.isArray(desc.tabs) ? desc.tabs : [];
   return rawTabs
     .filter((tab) => tab && typeof tab.id === 'string' && tab.id.trim())
-    .map((tab, index) => ({
-      id: tab.id,
-      label: (typeof tab.label === 'string' && tab.label.trim()) ? tab.label : tab.id,
-      index,
-    }));
+    .map((tab, index) => {
+      const normalizedTab = {
+        id: tab.id,
+        label: (typeof tab.label === 'string' && tab.label.trim()) ? tab.label : tab.id,
+        index,
+      };
+      if (typeof tab.note === 'string' && tab.note.trim()) {
+        normalizedTab.note = tab.note;
+      }
+      return normalizedTab;
+    });
 }
 
 function groupSettingsGroupsByTab(groups, tabs) {

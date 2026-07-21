@@ -8,6 +8,7 @@
 - [ 機能追加 ] サイドバーのタスク一覧で GitHub モード時に issue 名から task-queue の issue へのリンクを表示するように追加（[vk-orchestrator#177](https://github.com/vektor-inc/vk-orchestrator/issues/177)）
 - [ 仕様変更 ] モバイル版のタスク一覧のステータス編集を、PC 版と同じ編集パネル方式（保存で変更をまとめて反映）に統一（[#219](https://github.com/vektor-inc/vk-terminals/issues/219)）
 - [ 仕様変更 ] 設定保存時のメッセージと注記を、設定が次回の起動から反映される旨が伝わる文言に変更（[#222](https://github.com/vektor-inc/vk-terminals/issues/222)）
+- [ 開発環境 ] e2e テストを非表示ウィンドウ・並列実行で高速化し、実行中の PC 操作を妨げないように改善（[#227](https://github.com/vektor-inc/vk-terminals/issues/227)）
 
 ## 1.36.0
 

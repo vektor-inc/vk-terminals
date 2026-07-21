@@ -788,11 +788,20 @@ function createWindow() {
   const x = Math.round((workAreaSize.width - winW) / 2);
   const y = Math.round((workAreaSize.height - winH) / 2);
 
+  // e2e（Playwright）実行時はウィンドウを画面に表示しないことで、実行中に OS のフォーカスを
+  // 奪って PC 操作を妨げないようにする。Playwright は CDP 経由で操作するため OS 上の表示は不要。
+  // ただし描画/スクリーンショットに依存するテスト向けに VK_TERMINALS_E2E_SHOW=1 で表示に opt-out できる。
+  // 通常起動（env 未設定）では従来どおり表示する。
+  const showWindow = process.env.VK_TERMINALS_E2E === '1'
+    ? process.env.VK_TERMINALS_E2E_SHOW === '1'
+    : true;
+
   win = new BrowserWindow({
     width: winW,
     height: winH,
     x,
     y,
+    show: showWindow,
     minWidth: 600,
     minHeight: 400,
     webPreferences: {

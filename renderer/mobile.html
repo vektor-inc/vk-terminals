@@ -87,6 +87,11 @@
 </button>
 <footer id="app-version-footer"></footer>
 
+<!-- 宣言的ウィジェット（tasks-widget.json）の共有ロジックと共有レンダラ（#229 / vk-orchestrator#182）。
+     main.js が GET /widgetContract.js / /widgetView.js で配信する。契約→レンダラの順で読み込む
+     （widgetView が window.VKWidgetContract を参照するため）。PC 版 renderer/app.js と描画を共有する。 -->
+<script src="/widgetContract.js"></script>
+<script src="/widgetView.js"></script>
 <script>
 "use strict";
 // ANSI エスケープ / 一部制御文字を除去（表示用）
@@ -373,78 +378,23 @@ function showErr(msg) {
   errEl.textContent = msg; errEl.style.display = "block";
 }
 
-// グループソート用ステータス順は renderer/app.js の TASK_STATUS_ORDER と同期を保つこと。
-// 遷移テーブルは持たず、select の遷移可否は /api/tasks が返す actions だけを使う。
-var TASKS_ORCHESTRATOR_STALE_MS = 120000;
-var TASK_STATUS_ORDER = [
-  "in-progress",
-  "waiting-input",
-  "ready",
-  "awaiting-approval",
-  "waiting-merge",
-  "failed",
-  "done"
-];
-// select 用ステータス順と表示名は utils/taskStatusActions.js の TASK_STATUS_SELECT_ORDER/TASK_STATUS_LABELS と同期を保つこと。
-var TASK_STATUS_SELECT_ORDER = [
-  "awaiting-approval",
-  "ready",
-  "in-progress",
-  "waiting-input",
-  "waiting-merge",
-  "done",
-  "failed"
-];
-var TASK_STATUS_LABELS = {
-  "awaiting-approval": "承認待ち",
-  "ready": "実行待ち",
-  "in-progress": "実行中",
-  "waiting-input": "入力待ち",
-  "waiting-merge": "マージ待ち",
-  "done": "完了",
-  "failed": "失敗"
-};
-var TASK_PRIORITY_LABELS = {
-  high: "高",
-  medium: "中",
-  low: "低"
-};
-var TASK_SEQUENTIAL_LABELS = {
-  sequential: "直列",
-  parallel: "並列"
-};
-// 優先度 select の選択肢は utils/taskStatusActions.js の TASK_PRIORITY_OPTIONS と同期を保つこと。
-// 読み取り専用バッジ（high/medium/low）と違い、編集 select には none（なし）を含める。
-var TASK_PRIORITY_OPTIONS = [
-  { value: "high", label: "高" },
-  { value: "medium", label: "中" },
-  { value: "low", label: "低" },
-  { value: "none", label: "なし" }
-];
-// 実行方式トグルの選択肢は utils/taskStatusActions.js の TASK_SEQUENTIAL_OPTIONS と同期を保つこと。
-var TASK_SEQUENTIAL_OPTIONS = [
-  { value: "sequential", label: "直列" },
-  { value: "parallel", label: "並列" }
-];
-// 編集パネルを出せるステータス集合は renderer/app.js の TASK_EDITABLE_STATUSES と同期を保つこと。
-var TASK_EDITABLE_STATUSES = {
-  "awaiting-approval": true,
-  "ready": true,
-  "in-progress": true,
-  "waiting-input": true,
-  "waiting-merge": true,
-  "failed": true
-};
-// 反映待ちがこの時間内に反映されない場合はタイムアウトで解除する（ms）。renderer/app.js と同期を保つこと。
+// タスクの語彙・遷移・確認文言・色は自前に持たず、GET /api/widgets が返す宣言（tasks-widget.json の
+// サニタイズ済みペイロード）を共有レンダラ（/widgetView.js）で描画する。契約ロジックは
+// window.VKWidgetContract（/widgetContract.js）にある。ここではその周辺の最小限だけを定義する。
+// 反映待ちがこの時間内に反映されない場合はタイムアウトで解除する（ms）。共有レンダラへ渡す。
 var TASK_PENDING_TIMEOUT_MS = 30000;
-var TASK_PENDING_TIMEOUT_MESSAGE = "反映されませんでした（再試行してください）";
+// コマンド送信失敗時のエラーメッセージ（send() などでも共用）。
+var TASK_COMMAND_SEND_ERROR_MESSAGE = "送信に失敗しました（再試行してください）";
+// dual-write 期間: 新 tasks-widget.json が無く旧 tasks-view.json だけがある場合の後方互換注記。
+var WIDGET_LEGACY_NOTICE_TEXT = "orchestrator の更新が必要な可能性があります";
 
 var taskListSection = document.getElementById("task-list");
 var taskListCount = document.getElementById("task-list-count");
 var taskListGroups = taskListSection ? taskListSection.querySelector(".task-list-groups") : null;
 var taskListStale = taskListSection ? taskListSection.querySelector(".task-list-stale") : null;
-var lastTaskData = null;
-var hasSeenFreshTaskView = false;
+// GET /api/widgets の中継ペイロード { widget, legacyNotice, commandsConfigured }。
+var lastWidgetPayload = null;
+var hasSeenFreshWidget = false;
 
 // タスク一覧の折り畳み。項目が多いと下のペイン一覧へスクロールで届かなくなるため見出しから畳めるようにする。
 var TASK_LIST_COLLAPSE_KEY = "vkt.taskListCollapsed";
@@ -469,787 +419,144 @@ if (taskListHead) {
     writeTaskListCollapsed(next);
   });
 }
-// PC 版（renderer/app.js）の pending モデルに合わせた汎用状態。
-//   - pendingTaskCommands: taskId -> { fields: [{ kind, endpoint, expected, to }], timeoutId }
-//     送信した項目（フィールド）ごとに expected（送信前の値）を保持し、新しい view で
-//     反映された or タイムアウトした時に解除する（フィールド非依存の一般化モデル）。
-//   - taskCommandErrors: taskId -> 直近のエラーメッセージ
-//   - expandedTaskEditIds: taskId -> true（編集パネル展開中）
-//   - taskEditDrafts: taskId -> { status?, priority?, sequential? }（未保存の編集内容）
-var pendingTaskCommands = {};
-var taskCommandErrors = {};
-var expandedTaskEditIds = {};
-var taskEditDrafts = {};
-var TASK_COMMAND_SEND_ERROR_MESSAGE = "送信に失敗しました（再試行してください）";
+// ─── 宣言的ウィジェット描画（#229 / vk-orchestrator#182）────────────────────
+// GET /api/widgets が返す宣言（サニタイズ済みペイロード）だけを、PC 版と共有の
+// 描画ロジック（window.VKWidgetView / window.VKWidgetContract）で描画する。
+var widgetContract = window.VKWidgetContract;
 
-// 編集パネル用エンドポイント。フィールドの kind と POST 先を対応させる。
-var TASK_COMMAND_ENDPOINTS = {
-  status: "/api/tasks/set-status",
-  priority: "/api/tasks/set-priority",
-  sequential: "/api/tasks/set-sequential"
-};
-
-function parseTaskTime(value) {
-  if (typeof value !== "string" || !value) return null;
-  var ms = Date.parse(value);
-  return isFinite(ms) ? ms : null;
-}
-
-function normalizeTaskStatus(value) {
-  return typeof value === "string" && value.trim() ? value.trim() : "unknown";
-}
-
-function getTaskStatusLabel(status) {
-  return TASK_STATUS_LABELS[status] || status;
-}
-
-function getTaskStatusAction(task, to) {
-  var actions = Array.isArray(task && task.actions) ? task.actions : [];
-  for (var i = 0; i < actions.length; i += 1) {
-    if (actions[i] && actions[i].to === to) return actions[i];
-  }
-  return null;
-}
-
-// 確認文言は utils/taskStatusActions.js の getTaskStatusTransitionConfirmMessage と同期を保つこと。
-function getTaskStatusTransitionConfirmMessage(from, to, hasPrUrl) {
-  if (to === "awaiting-approval") {
-    return "ステータスを「承認待ち」に変更しますか？\n\n実行中のセッションがある場合、再承認で二重起動につながる可能性があります。";
-  }
-  if (from === "waiting-merge" && to === "done") {
-    var lines = ["ステータスを「完了」に変更しますか？"];
-    if (hasPrUrl) {
-      lines.push("", "PR のマージは行われません（PR は開いたまま残ります）。");
-    }
-    return lines.join("\n");
-  }
-  return "";
-}
-
-function normalizeTaskPriority(value) {
-  return value === "high" || value === "medium" || value === "low" ? value : null;
-}
-
-function getTaskPriorityLabel(priority) {
-  return TASK_PRIORITY_LABELS[priority] || priority;
-}
-
-function taskSequentialToLabel(value) {
-  return value === true ? TASK_SEQUENTIAL_LABELS.sequential : TASK_SEQUENTIAL_LABELS.parallel;
-}
-
-// 優先度 select / API 依頼で使うコマンド値。null 系（high/medium/low 以外）は "none" に丸める。
-// utils/taskStatusActions.js の taskPriorityToCommandValue と同期を保つこと。
-function taskPriorityToCommandValue(value) {
-  return normalizeTaskPriority(value) || "none";
-}
-
-// 実行方式のコマンド値。tasks-view.json の boolean を sequential/parallel の文字列へ変換する。
-// utils/taskStatusActions.js の taskSequentialToCommandValue と同期を保つこと。
-function taskSequentialToCommandValue(value) {
-  return value === true ? "sequential" : "parallel";
-}
-
-function normalizeTaskList(view) {
-  var tasks = Array.isArray(view && view.tasks) ? view.tasks : [];
-  return tasks
-    .filter(function(task) { return task && typeof task.title === "string" && task.title.trim(); })
-    .map(function(task, index) {
-      var actions = Array.isArray(task.actions) ? task.actions : [];
-      var normalized = {
-        id: task.id,
-        title: task.title.trim(),
-        status: normalizeTaskStatus(task.status),
-        assignee: typeof task.assignee === "string" && task.assignee.trim() ? task.assignee.trim() : "",
-        actions: actions.filter(function(action) {
-          return action && typeof action.to === "string";
-        }),
-        index: index
-      };
-      if (typeof task.prUrl === "string" && task.prUrl.trim()) {
-        normalized.prUrl = task.prUrl.trim();
-      }
-      if (Object.prototype.hasOwnProperty.call(task || {}, "priority")) {
-        normalized.priority = task.priority;
-      }
-      if (Object.prototype.hasOwnProperty.call(task || {}, "sequential")) {
-        normalized.sequential = task.sequential === true;
-      }
-      return normalized;
-    });
-}
-
-// タスク欄表示判定は utils/taskSectionVisibility.js と同期を保つこと。ブラウザ配信のため require できず再実装している。
-function isTaskViewStale(view, options) {
-  if (!view || view.unavailable === true) return true;
-  var updatedAtMs = parseTaskTime(view.updatedAt);
-  if (!updatedAtMs) return true;
-  // options は util とのパリティ維持・テスト注入用（現状の呼び出し側では未指定）。
-  var staleMs = options && typeof options.staleMs === "number" && isFinite(options.staleMs) ? options.staleMs : TASKS_ORCHESTRATOR_STALE_MS;
-  var now = options && typeof options.now === "number" && isFinite(options.now) ? options.now : Date.now();
-  return now - updatedAtMs > staleMs;
-}
-
-function computeTaskSectionVisibility(view, hasSeenFresh) {
-  var stale = isTaskViewStale(view);
-  var hasFreshView = !!view && !stale;
-  var nextHasSeenFresh = hasSeenFresh === true || hasFreshView;
-  return {
-    shouldShow: nextHasSeenFresh,
-    stale: stale,
-    hasFreshView: hasFreshView,
-    hasSeenFresh: nextHasSeenFresh
-  };
-}
-
-function groupTasksByStatus(tasks) {
-  var groups = {};
-  tasks.forEach(function(task) {
-    if (!groups[task.status]) groups[task.status] = [];
-    groups[task.status].push(task);
-  });
-  return Object.keys(groups).sort(function(a, b) {
-    var ai = TASK_STATUS_ORDER.indexOf(a);
-    var bi = TASK_STATUS_ORDER.indexOf(b);
-    if (ai !== -1 && bi !== -1) return ai - bi;
-    if (ai !== -1) return -1;
-    if (bi !== -1) return 1;
-    return 0;
-  }).map(function(status) {
-    return { status: status, tasks: groups[status] };
-  });
-}
-
-// ─── 反映待ち（pending）・編集ドラフトの操作ヘルパー ─────────────────────────
-// renderer/app.js の同名関数と挙動を揃えること（フィールド非依存の pending モデル）。
-
-function getTaskPending(key) {
-  return pendingTaskCommands[key] || null;
-}
-
-function getTaskPendingFields(pending) {
-  if (!pending) return [];
-  return Array.isArray(pending.fields) ? pending.fields : [pending];
-}
-
-function clearTaskPending(key) {
-  var pending = pendingTaskCommands[key];
-  if (pending && pending.timeoutId) clearTimeout(pending.timeoutId);
-  delete pendingTaskCommands[key];
-}
-
-function setTaskCommandError(key, message) {
-  taskCommandErrors[key] = message;
-}
-
-// フィールド種別ごとの「現在値」を取り出す。反映判定（新しい値になったか）に使う。
-function getTaskCommandCurrentValue(task, kind) {
-  if (kind === "priority") return taskPriorityToCommandValue(task.priority);
-  if (kind === "sequential") return taskSequentialToCommandValue(task.sequential);
-  return task.status;
-}
-
-function setTaskPending(key, pending) {
-  clearTaskPending(key);
-  var timeoutId = setTimeout(function() {
-    // タイムアウト: 反映されないまま時間切れになったら pending を解除し再試行を促す。
-    // 優先度・実行方式は status が変わらないため、この一般化がないと永久に消えない。
-    clearTaskPending(key);
-    setTaskCommandError(key, TASK_PENDING_TIMEOUT_MESSAGE);
-    renderTaskList(lastTaskData);
-  }, TASK_PENDING_TIMEOUT_MS);
-  var fields = Array.isArray(pending.fields) ? pending.fields : [pending];
-  pendingTaskCommands[key] = {
-    fields: fields,
-    requestedAt: Date.now(),
-    timeoutId: timeoutId
-  };
-  delete taskCommandErrors[key];
-}
-
-function getTaskEditDraft(key) {
-  return taskEditDrafts[key] || null;
-}
-
-function setTaskEditDraftField(key, field, value) {
-  var draft = {};
-  var current = getTaskEditDraft(key);
-  if (current) {
-    Object.keys(current).forEach(function(k) { draft[k] = current[k]; });
-  }
-  draft[field] = value;
-  taskEditDrafts[key] = draft;
-}
-
-function deleteTaskEditDraftFields(key, fields) {
-  var draft = getTaskEditDraft(key);
-  if (!draft) return;
-  fields.forEach(function(field) { delete draft[field]; });
-  if (Object.keys(draft).length === 0) {
-    delete taskEditDrafts[key];
-  } else {
-    taskEditDrafts[key] = draft;
-  }
-}
-
-function clearTaskEditDraft(key) {
-  delete taskEditDrafts[key];
-}
-
-function getTaskEditPanelId(key) {
-  return "task-edit-panel-" + String(key).replace(/[^A-Za-z0-9_-]/g, "-");
-}
-
-// ─── フォーカス保持（ポーリング再描画対策）─────────────────────────────────
-// poll() は 2 秒周期でリスト DOM を全再生成する。編集操作中に再生成すると、
-// キーボード / スクリーンリーダーのフォーカス位置が失われ（WCAG 2.4.3）、
-// モバイルではネイティブ select ピッカーが選択前に閉じてしまう。
-// PC 版（renderer/app.js）の capture/restore と、操作中の再生成スキップで防ぐ。
-
-function escapeTaskFocusSelectorValue(value) {
-  return String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-}
-
-// 再描画直前に、#task-list 内でフォーカスを持つ編集コントロールの識別情報を控える。
-// renderer/app.js の captureTaskFocusState と挙動を揃えること。
-function captureTaskFocusState() {
-  var active = document.activeElement;
-  if (!(active instanceof HTMLElement) || !active.closest("#task-list")) return null;
-  var item = active.closest(".task-item");
-  var taskId = active.dataset.taskId || (item ? item.dataset.id : "");
-  var control = active.dataset.taskControl;
-  if (!taskId || !control) return null;
-  return {
-    taskId: taskId,
-    control: control,
-    value: active.dataset.value || "",
-    to: active.dataset.to || "",
-    expected: active.dataset.expected || ""
-  };
-}
-
-function buildTaskFocusSelector(focusState) {
-  if (!focusState) return "";
-  var selector = '[data-task-id="' + escapeTaskFocusSelectorValue(focusState.taskId)
-    + '"][data-task-control="' + escapeTaskFocusSelectorValue(focusState.control) + '"]';
-  if (focusState.value) selector += '[data-value="' + escapeTaskFocusSelectorValue(focusState.value) + '"]';
-  if (focusState.to) selector += '[data-to="' + escapeTaskFocusSelectorValue(focusState.to) + '"]';
-  if (focusState.expected) selector += '[data-expected="' + escapeTaskFocusSelectorValue(focusState.expected) + '"]';
-  return selector;
-}
-
-// 編集操作後に「編集」ボタンへフォーカスを戻すための focus state（PC 版と同じ）。
-function buildTaskEditToggleFocusState(taskKey) {
-  return { taskId: String(taskKey), control: "edit-toggle", value: "", to: "", expected: "" };
-}
-
-// 再描画後に、控えたフォーカスを復元する。対象が disabled なら aria-disabled のみ付ける。
-// renderer/app.js の restoreTaskFocusState と挙動を揃えること。
-function restoreTaskFocusState(focusState) {
-  var selector = buildTaskFocusSelector(focusState);
-  if (!selector) return;
-  var target = document.querySelector(selector);
-  if (!(target instanceof HTMLElement)) return;
-  if ("disabled" in target && target.disabled) {
-    target.setAttribute("aria-disabled", "true");
-    return;
-  }
+// http(s) のみ許可する外部リンク判定（描画側の二段構え防御）。
+function isSafeExternalUrl(url) {
+  if (typeof url !== "string" || !url || url.length > 2048) return false;
   try {
-    target.focus({ preventScroll: true });
+    var u = new URL(url);
+    return u.protocol === "http:" || u.protocol === "https:";
   } catch (e) {
-    target.focus();
-  }
-}
-
-// 編集パネルの select / トグルを操作中（展開中・フォーカスあり・反映待ちでない）かを判定する。
-// この間は poll による再生成をスキップし、ピッカー・フォーカス・ドラフトを丸ごと維持する。
-function shouldSkipTaskRenderForActiveEdit() {
-  var focusState = captureTaskFocusState();
-  if (!focusState) return false;
-  if (!expandedTaskEditIds[focusState.taskId]) return false;
-  if (getTaskPending(focusState.taskId)) return false;
-  return true;
-}
-
-// 新しい view が届くたびに、反映済み・消滅したタスクの pending / ドラフト / 展開状態を整理する。
-// renderer/app.js の syncPendingTaskCommands と挙動を揃えること。
-function syncPendingTaskCommands(tasks) {
-  var present = {};
-  tasks.forEach(function(task) {
-    var key = String(task.id);
-    present[key] = true;
-    // 編集不可ステータスへ変わったら展開・ドラフトは破棄する。
-    if (!TASK_EDITABLE_STATUSES[task.status]) {
-      delete expandedTaskEditIds[key];
-      delete taskEditDrafts[key];
-    }
-    var pending = getTaskPending(key);
-    if (!pending) return;
-    // まだ「送信前の値（expected）」のままのフィールドだけを残す。
-    // 現在値が expected と変われば、その項目は反映されたとみなして解除する。
-    var remainingFields = getTaskPendingFields(pending).filter(function(field) {
-      return getTaskCommandCurrentValue(task, field.kind) === field.expected;
-    });
-    if (remainingFields.length === 0) {
-      clearTaskPending(key);
-      delete taskCommandErrors[key];
-    } else if (remainingFields.length !== getTaskPendingFields(pending).length) {
-      pendingTaskCommands[key] = {
-        fields: remainingFields,
-        requestedAt: pending.requestedAt,
-        timeoutId: pending.timeoutId
-      };
-    }
-  });
-  Object.keys(pendingTaskCommands).forEach(function(key) {
-    if (!present[key]) clearTaskPending(key);
-  });
-  Object.keys(taskCommandErrors).forEach(function(key) {
-    if (!present[key]) delete taskCommandErrors[key];
-  });
-  Object.keys(expandedTaskEditIds).forEach(function(key) {
-    if (!present[key]) delete expandedTaskEditIds[key];
-  });
-  Object.keys(taskEditDrafts).forEach(function(key) {
-    if (!present[key]) delete taskEditDrafts[key];
-  });
-}
-
-// 変更した項目（fields）だけを順次 API 送信する。renderer/app.js の submitTaskCommands 相当。
-async function submitTaskCommands(task, key, fields) {
-  if (getTaskPending(key) || !fields.length) return false;
-  setTaskPending(key, { fields: fields });
-  renderTaskList(lastTaskData);
-  var sentKinds = [];
-  try {
-    for (var i = 0; i < fields.length; i += 1) {
-      var field = fields[i];
-      var res = await fetch(field.endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ taskId: task.id, expected: field.expected, to: field.to })
-      });
-      var json = await res.json().catch(function() { return {}; });
-      if (!res.ok || !json.ok) {
-        clearTaskPending(key);
-        deleteTaskEditDraftFields(key, sentKinds);
-        setTaskCommandError(key, TASK_COMMAND_SEND_ERROR_MESSAGE);
-        renderTaskList(lastTaskData);
-        showErr(TASK_COMMAND_SEND_ERROR_MESSAGE);
-        return false;
-      }
-      sentKinds.push(field.kind);
-    }
-    // 全項目の送信に成功したらパネルを閉じてドラフトを破棄する（反映待ちは view で解除）。
-    delete expandedTaskEditIds[key];
-    clearTaskEditDraft(key);
-    // 成功後は「編集」ボタンへフォーカスを戻す（反映待ちで disabled の間は aria-disabled のみ）。
-    renderTaskList(lastTaskData, buildTaskEditToggleFocusState(key));
-    showErr("");
-    return true;
-  } catch (e) {
-    clearTaskPending(key);
-    deleteTaskEditDraftFields(key, sentKinds);
-    setTaskCommandError(key, TASK_COMMAND_SEND_ERROR_MESSAGE);
-    renderTaskList(lastTaskData);
-    showErr(TASK_COMMAND_SEND_ERROR_MESSAGE);
     return false;
   }
 }
 
-// PC 版（renderer/app.js の renderTaskItem）と同じ「編集」パネル方式で 1 タスクを描画する。
-//   - ステータスはラベル表示にし、編集可能ステータス時だけ「編集」ボタンを出す。
-//   - 「編集」展開で ステータス / 優先度 / 実行方式 を編集し、保存で変更項目だけ順次送信する。
-//   - 優先度・実行方式は priority contract（task に priority プロパティがある）時だけ編集できる。
-function renderTaskItem(task, commandsConfigured, stale) {
-  var item = document.createElement("li");
-  item.className = "task-item";
-  if (task.id !== undefined && task.id !== null) item.dataset.id = String(task.id);
-  var taskKey = String(task.id);
-  var status = task.status;
-  var pending = getTaskPending(taskKey);
-  var hasPending = !!pending;
-  var commandError = taskCommandErrors[taskKey];
-  var hasPriorityContract = Object.prototype.hasOwnProperty.call(task, "priority");
-  var editPanelId = getTaskEditPanelId(taskKey);
-  var draft = getTaskEditDraft(taskKey);
-  var draftStatus = draft && Object.prototype.hasOwnProperty.call(draft, "status") ? draft.status : status;
-  var draftPriority = draft && Object.prototype.hasOwnProperty.call(draft, "priority")
-    ? draft.priority
-    : taskPriorityToCommandValue(task.priority);
-  var draftSequential = draft && Object.prototype.hasOwnProperty.call(draft, "sequential")
-    ? draft.sequential
-    : taskSequentialToCommandValue(task.sequential);
-
-  var title = document.createElement("div");
-  title.className = "task-item-title";
-  title.textContent = task.title;
-  title.title = task.title;
-
-  var body = document.createElement("div");
-  body.className = "task-item-body";
-
-  // ステータスはラベル表示（PC の task-status-label 相当）。編集は下の編集パネルで行う。
-  var statusLabel = document.createElement("span");
-  statusLabel.className = "task-status-label";
-  statusLabel.dataset.status = status;
-  statusLabel.setAttribute("aria-label", task.title + " の状態: " + getTaskStatusLabel(status));
-  statusLabel.textContent = getTaskStatusLabel(status);
-  body.appendChild(statusLabel);
-
-  // 優先度・実行方式は読み取り専用バッジ（現在値の表示）。編集は編集パネルの select / トグルで行う。
-  var priority = normalizeTaskPriority(task.priority);
-  if (priority) {
-    var priorityBadge = document.createElement("span");
-    priorityBadge.className = "task-priority-badge";
-    priorityBadge.dataset.priority = priority;
-    priorityBadge.textContent = getTaskPriorityLabel(priority);
-    body.appendChild(priorityBadge);
+// モバイルはブラウザなので新規タブで開く（noopener/noreferrer で opener を切る）。
+function openExternalUrlSafe(url) {
+  if (!isSafeExternalUrl(url)) return;
+  try {
+    window.open(url, "_blank", "noopener,noreferrer");
+  } catch (e) {
+    /* 失敗時は何もしない */
   }
-
-  if (typeof task.sequential === "boolean") {
-    var sequentialChip = document.createElement("span");
-    sequentialChip.className = "task-sequential-chip";
-    sequentialChip.dataset.sequential = task.sequential ? "sequential" : "parallel";
-    sequentialChip.textContent = taskSequentialToLabel(task.sequential);
-    body.appendChild(sequentialChip);
-  }
-
-  var meta = document.createElement("div");
-  meta.className = "task-item-meta";
-  if (task.assignee) {
-    var assignee = document.createElement("span");
-    assignee.className = "task-item-assignee";
-    assignee.textContent = "担当: " + task.assignee;
-    meta.appendChild(assignee);
-  }
-  body.appendChild(meta);
-
-  var taskIdNumber = Number(task.id);
-  var canSendCommand = commandsConfigured
-    && Number.isInteger(taskIdNumber) && taskIdNumber > 0;
-  var canUseEditPanel = canSendCommand && !!TASK_EDITABLE_STATUSES[status];
-  var isExpanded = !!expandedTaskEditIds[taskKey];
-
-  if (canUseEditPanel) {
-    var editButton = document.createElement("button");
-    editButton.type = "button";
-    editButton.className = "task-item-action task-item-action--compact";
-    editButton.dataset.taskId = taskKey;
-    editButton.dataset.taskControl = "edit-toggle";
-    editButton.setAttribute("aria-controls", editPanelId);
-    editButton.setAttribute("aria-expanded", isExpanded ? "true" : "false");
-    editButton.setAttribute("aria-label", "「" + task.title + "」を編集");
-    editButton.textContent = "編集";
-    // in-flight（反映待ち）中と stale 時は当該タスクの操作をロックする（item 単位ロック）。
-    editButton.disabled = hasPending || stale;
-    if (editButton.disabled) editButton.setAttribute("aria-disabled", "true");
-    editButton.addEventListener("click", function() {
-      if (editButton.disabled) return;
-      var opening = !expandedTaskEditIds[taskKey];
-      if (opening) {
-        expandedTaskEditIds[taskKey] = true;
-      } else {
-        delete expandedTaskEditIds[taskKey];
-        clearTaskEditDraft(taskKey);
-      }
-      // 開閉直後は「編集」ボタンへフォーカスを戻す（aria-expanded の変化を伝える）。
-      renderTaskList(lastTaskData, buildTaskEditToggleFocusState(taskKey));
-      if (opening) {
-        // 画面下端で開いた際に折り返し部が視界外へ出ないよう、パネルを見える範囲へ寄せる。
-        var panel = document.getElementById(getTaskEditPanelId(taskKey));
-        if (panel && typeof panel.scrollIntoView === "function") {
-          panel.scrollIntoView({ block: "nearest" });
-        }
-      }
-    });
-    body.appendChild(editButton);
-  }
-
-  item.appendChild(title);
-  item.appendChild(body);
-
-  // 反映待ち・エラーのフィードバック（PC の task-item-feedback 相当）。
-  if (hasPending || commandError) {
-    var feedback = document.createElement("div");
-    feedback.className = "task-item-feedback";
-    if (hasPending) {
-      var pendingLabel = document.createElement("span");
-      pendingLabel.className = "task-item-pending";
-      pendingLabel.setAttribute("role", "status");
-      pendingLabel.textContent = "反映待ち";
-      feedback.appendChild(pendingLabel);
-    }
-    if (commandError) {
-      var error = document.createElement("span");
-      error.className = "task-item-action-error";
-      error.setAttribute("role", "status");
-      error.textContent = commandError;
-      feedback.appendChild(error);
-    }
-    item.appendChild(feedback);
-  }
-
-  if (canUseEditPanel && isExpanded) {
-    item.appendChild(renderTaskEditPanel(task, taskKey, {
-      editPanelId: editPanelId,
-      status: status,
-      hasPending: hasPending,
-      hasPriorityContract: hasPriorityContract,
-      draftStatus: draftStatus,
-      draftPriority: draftPriority,
-      draftSequential: draftSequential
-    }));
-  }
-
-  return item;
 }
 
-// 編集パネル本体を組み立てる。PC 版の展開パネル（renderer/app.js）と同じ項目・順序に揃える。
-function renderTaskEditPanel(task, taskKey, ctx) {
-  var panel = document.createElement("div");
-  panel.className = "task-edit-panel";
-  panel.id = ctx.editPanelId;
+// 共有描画コントローラ。初回描画時に一度だけ生成する。
+//   sendCommand: 宣言のコマンド断片を POST /api/widgets/command へ中継する
+//                （id/requestedAt は main が付与）。
+//   getFilterMode: モバイルには担当者フィルタ UI が無いため常に 'all'（全件表示）。
+//   requestRerender: 反映待ちのタイムアウト等で共有側から再描画を要求する経路。
+var widgetViewController = null;
 
-  // ステータス（select）。遷移可否はサーバーが埋める task.actions で判定する（PC と同じ結果）。
-  var statusField = document.createElement("label");
-  statusField.className = "task-edit-field";
-  var statusLabelEl = document.createElement("span");
-  statusLabelEl.className = "task-edit-label";
-  statusLabelEl.textContent = "ステータス";
-  var statusSelect = document.createElement("select");
-  statusSelect.className = "task-edit-select";
-  statusSelect.dataset.taskId = taskKey;
-  statusSelect.dataset.taskControl = "status-select";
-  statusSelect.dataset.status = ctx.status;
-  statusSelect.setAttribute("aria-label", task.title + " のステータス");
-  statusSelect.disabled = ctx.hasPending;
-  if (ctx.hasPending) statusSelect.setAttribute("aria-disabled", "true");
-  var statusOptions = TASK_STATUS_SELECT_ORDER.indexOf(ctx.status) === -1
-    ? [ctx.status].concat(TASK_STATUS_SELECT_ORDER)
-    : TASK_STATUS_SELECT_ORDER;
-  statusOptions.forEach(function(optionStatus) {
-    var option = document.createElement("option");
-    option.value = optionStatus;
-    option.textContent = getTaskStatusLabel(optionStatus);
-    option.disabled = optionStatus !== ctx.status && !getTaskStatusAction(task, optionStatus);
-    if (optionStatus === ctx.draftStatus) option.selected = true;
-    statusSelect.appendChild(option);
-  });
-  statusSelect.addEventListener("change", function() {
-    setTaskEditDraftField(taskKey, "status", statusSelect.value);
-  });
-  statusField.appendChild(statusLabelEl);
-  statusField.appendChild(statusSelect);
-  panel.appendChild(statusField);
-
-  var prioritySelect = null;
-  var sequentialControl = null;
-  var currentPriority = null;
-  var currentSequential = null;
-
-  // 優先度・実行方式は priority contract がある時だけ編集できる（PC の hasTaskPriorityContract 相当）。
-  if (ctx.hasPriorityContract) {
-    var priorityField = document.createElement("label");
-    priorityField.className = "task-edit-field";
-    var priorityLabelEl = document.createElement("span");
-    priorityLabelEl.className = "task-edit-label";
-    priorityLabelEl.textContent = "優先度";
-    prioritySelect = document.createElement("select");
-    prioritySelect.className = "task-edit-select";
-    prioritySelect.dataset.taskId = taskKey;
-    prioritySelect.dataset.taskControl = "priority-select";
-    prioritySelect.setAttribute("aria-label", task.title + " の優先度");
-    prioritySelect.disabled = ctx.hasPending;
-    if (ctx.hasPending) prioritySelect.setAttribute("aria-disabled", "true");
-    currentPriority = taskPriorityToCommandValue(task.priority);
-    TASK_PRIORITY_OPTIONS.forEach(function(option) {
-      var optionEl = document.createElement("option");
-      optionEl.value = option.value;
-      optionEl.textContent = option.label;
-      if (option.value === ctx.draftPriority) optionEl.selected = true;
-      prioritySelect.appendChild(optionEl);
-    });
-    prioritySelect.addEventListener("change", function() {
-      setTaskEditDraftField(taskKey, "priority", prioritySelect.value);
-    });
-    priorityField.appendChild(priorityLabelEl);
-    priorityField.appendChild(prioritySelect);
-    panel.appendChild(priorityField);
-
-    var sequentialField = document.createElement("div");
-    sequentialField.className = "task-edit-field";
-    var sequentialLabelEl = document.createElement("span");
-    sequentialLabelEl.className = "task-edit-label";
-    sequentialLabelEl.textContent = "実行方式";
-    sequentialControl = document.createElement("div");
-    sequentialControl.className = "task-edit-segmented";
-    sequentialControl.setAttribute("role", "group");
-    sequentialControl.setAttribute("aria-label", task.title + " の実行方式");
-    currentSequential = taskSequentialToCommandValue(task.sequential);
-    TASK_SEQUENTIAL_OPTIONS.forEach(function(option) {
-      var segment = document.createElement("button");
-      segment.type = "button";
-      segment.className = "task-edit-segment";
-      segment.dataset.taskId = taskKey;
-      segment.dataset.taskControl = "sequential-segment";
-      segment.dataset.value = option.value;
-      segment.setAttribute("aria-pressed", option.value === ctx.draftSequential ? "true" : "false");
-      segment.setAttribute("aria-label", task.title + " の実行方式を" + option.label + "にする");
-      segment.disabled = ctx.hasPending;
-      if (ctx.hasPending) segment.setAttribute("aria-disabled", "true");
-      segment.textContent = option.label;
-      segment.addEventListener("click", function() {
-        if (segment.disabled) return;
-        var segments = sequentialControl.querySelectorAll(".task-edit-segment");
-        for (var i = 0; i < segments.length; i += 1) {
-          segments[i].setAttribute("aria-pressed", segments[i] === segment ? "true" : "false");
+function ensureWidgetViewController() {
+  if (widgetViewController) return widgetViewController;
+  if (!window.VKWidgetView || !taskListGroups) return null;
+  widgetViewController = window.VKWidgetView.createTaskWidgetView({
+    doc: document,
+    groupsEl: taskListGroups,
+    contract: widgetContract,
+    isSafeExternalUrl: isSafeExternalUrl,
+    openUrl: openExternalUrlSafe,
+    sendCommand: async function(command) {
+      try {
+        var res = await fetch("/api/widgets/command", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(command)
+        });
+        var json = await res.json().catch(function() { return {}; });
+        if (res.ok && json && json.ok) {
+          showErr("");
+          return { ok: true };
         }
-        setTaskEditDraftField(taskKey, "sequential", segment.dataset.value);
-      });
-      sequentialControl.appendChild(segment);
-    });
-    sequentialField.appendChild(sequentialLabelEl);
-    sequentialField.appendChild(sequentialControl);
-    panel.appendChild(sequentialField);
-  }
-
-  // 操作行（キャンセル / 保存）。PC と同じく右寄せで、ラベル列分のスペーサーを置く。
-  var actionField = document.createElement("div");
-  actionField.className = "task-edit-field task-edit-field--actions";
-  var actionSpacer = document.createElement("span");
-  actionSpacer.className = "task-edit-actions-spacer";
-  actionSpacer.setAttribute("aria-hidden", "true");
-  var actions = document.createElement("div");
-  actions.className = "task-edit-actions";
-
-  var cancelButton = document.createElement("button");
-  cancelButton.type = "button";
-  cancelButton.className = "task-item-action";
-  cancelButton.dataset.taskId = taskKey;
-  cancelButton.dataset.taskControl = "edit-cancel";
-  cancelButton.textContent = "キャンセル";
-  cancelButton.setAttribute("aria-label", "「" + task.title + "」の編集をキャンセル");
-  cancelButton.disabled = ctx.hasPending;
-  if (ctx.hasPending) cancelButton.setAttribute("aria-disabled", "true");
-  cancelButton.addEventListener("click", function() {
-    delete expandedTaskEditIds[taskKey];
-    clearTaskEditDraft(taskKey);
-    // キャンセル後は「編集」ボタンへフォーカスを戻す（パネルが閉じてもフォーカス迷子にしない）。
-    renderTaskList(lastTaskData, buildTaskEditToggleFocusState(taskKey));
-  });
-
-  var saveButton = document.createElement("button");
-  saveButton.type = "button";
-  saveButton.className = "task-item-action task-item-action--primary";
-  saveButton.dataset.taskId = taskKey;
-  saveButton.dataset.taskControl = "edit-save";
-  saveButton.textContent = "保存";
-  saveButton.setAttribute("aria-label", "「" + task.title + "」の編集を保存");
-  saveButton.disabled = ctx.hasPending;
-  if (ctx.hasPending) saveButton.setAttribute("aria-disabled", "true");
-  saveButton.addEventListener("click", function() {
-    if (getTaskPending(taskKey)) return;
-    var nextStatus = statusSelect.value;
-    var fields = [];
-    // ステータスは変更時だけ送信。危険遷移（差し戻し等）は confirm でガードする。
-    if (nextStatus !== ctx.status) {
-      var confirmMessage = getTaskStatusTransitionConfirmMessage(ctx.status, nextStatus, !!task.prUrl);
-      if (confirmMessage && !window.confirm(confirmMessage)) return;
-      fields.push({
-        kind: "status",
-        endpoint: TASK_COMMAND_ENDPOINTS.status,
-        expected: ctx.status,
-        to: nextStatus
-      });
-    }
-    if (ctx.hasPriorityContract) {
-      var nextPriority = prioritySelect.value;
-      var pressedSequential = sequentialControl.querySelector('.task-edit-segment[aria-pressed="true"]');
-      var nextSequential = pressedSequential ? pressedSequential.dataset.value : currentSequential;
-      if (nextPriority !== currentPriority) {
-        fields.push({
-          kind: "priority",
-          endpoint: TASK_COMMAND_ENDPOINTS.priority,
-          expected: currentPriority,
-          to: nextPriority
-        });
+        showErr(TASK_COMMAND_SEND_ERROR_MESSAGE);
+        return { ok: false, error: json && json.error };
+      } catch (e) {
+        showErr(TASK_COMMAND_SEND_ERROR_MESSAGE);
+        return { ok: false, error: e && e.message };
       }
-      if (nextSequential !== currentSequential) {
-        fields.push({
-          kind: "sequential",
-          endpoint: TASK_COMMAND_ENDPOINTS.sequential,
-          expected: currentSequential,
-          to: nextSequential
-        });
-      }
-    }
-    // 変更がなければ送信せずパネルを閉じ、「編集」ボタンへフォーカスを戻す。
-    if (fields.length === 0) {
-      delete expandedTaskEditIds[taskKey];
-      clearTaskEditDraft(taskKey);
-      renderTaskList(lastTaskData, buildTaskEditToggleFocusState(taskKey));
-      return;
-    }
-    submitTaskCommands(task, taskKey, fields);
+    },
+    getFilterMode: function() { return "all"; },
+    requestRerender: function() { renderWidget(); },
+    pendingTimeoutMs: TASK_PENDING_TIMEOUT_MS
   });
-
-  actions.appendChild(cancelButton);
-  actions.appendChild(saveButton);
-  actionField.appendChild(actionSpacer);
-  actionField.appendChild(actions);
-  panel.appendChild(actionField);
-
-  return panel;
+  return widgetViewController;
 }
 
-function renderTaskList(view, focusStateOverride) {
-  // ポーリング（focusStateOverride 省略）で編集コントロールを操作中の間は、
-  // DOM を作り直さずスキップし、ピッカー・フォーカス・ドラフトを丸ごと維持する。
-  // データは lastTaskData に取り込み、操作を終えた次の描画で最新化される。
-  if (focusStateOverride === undefined && shouldSkipTaskRenderForActiveEdit()) {
-    lastTaskData = view || null;
-    return;
-  }
-  // 明示指定（ボタン操作後）が無ければ、再描画前のフォーカス位置を控えて後で復元する。
-  var focusState = focusStateOverride === undefined ? captureTaskFocusState() : focusStateOverride;
-  lastTaskData = view || null;
+// ネイティブ select ピッカーを操作中（select にフォーカスがある）かを判定する。
+// poll（2 秒周期）の再描画で DOM を作り直すとピッカーが選択前に閉じてしまうため、
+// この間は poll 起因の再描画をスキップする（PC 版 shouldSkipTaskRenderForActiveEdit 相当）。
+function isEditingWidgetControl() {
+  var active = document.activeElement;
+  if (!(active instanceof HTMLElement) || !taskListGroups || !taskListGroups.contains(active)) return false;
+  return active.tagName === "SELECT";
+}
+
+// 一度でも新鮮な widget を見たら以後は表示を維持する（PC 版 computeTaskSectionVisibility と同じ考え方）。
+// ブラウザ配信で require できないため最小限を再実装する。stale は widget があるときだけ意味を持つ。
+function computeWidgetVisibility(widget, hasSeenFresh) {
+  var stale = widgetContract.isWidgetStale(widget, {});
+  var hasFresh = !!widget && !stale;
+  var nextHasSeenFresh = hasSeenFresh === true || hasFresh;
+  return {
+    shouldShow: nextHasSeenFresh,
+    stale: (!!widget && stale),
+    hasSeenFresh: nextHasSeenFresh
+  };
+}
+
+// GET /api/widgets の中継ペイロード { widget, legacyNotice, commandsConfigured } を描画する。
+// widget があれば共有レンダラで描画し、無く legacyNotice のみのときはタスク語彙を復活させず
+// 後方互換の注記だけを出す（dual-write 期間）。fromPoll のときはピッカー操作中の再描画を避ける。
+function renderWidget(fromPoll) {
   if (!taskListSection || !taskListGroups) return;
-  var tasks = normalizeTaskList(view);
-  syncPendingTaskCommands(tasks);
-  var visibility = computeTaskSectionVisibility(view, hasSeenFreshTaskView);
-  hasSeenFreshTaskView = visibility.hasSeenFresh;
+
+  // ネイティブ select ピッカー操作中は poll 再描画をスキップ（データは保持し次回描画で最新化）。
+  if (fromPoll && isEditingWidgetControl()) return;
+
+  var payload = lastWidgetPayload;
+  var widget = payload && payload.widget ? payload.widget : null;
+  var legacyNotice = !!(payload && payload.legacyNotice);
+
+  var visibility = computeWidgetVisibility(widget, hasSeenFreshWidget);
+  hasSeenFreshWidget = visibility.hasSeenFresh;
   var stale = visibility.stale;
-  var shouldShow = visibility.shouldShow;
+  var shouldShow = visibility.shouldShow || legacyNotice;
+
   taskListSection.hidden = !shouldShow;
   taskListSection.classList.toggle("is-stale", stale);
-  if (taskListStale) taskListStale.hidden = !stale || !shouldShow;
-  if (taskListCount) taskListCount.textContent = tasks.length ? tasks.length + "件" : "";
-  while (taskListGroups.firstChild) taskListGroups.removeChild(taskListGroups.firstChild);
-  if (!shouldShow) return;
 
-  if (tasks.length === 0) {
-    var empty = document.createElement("div");
-    empty.className = "task-list-empty";
-    empty.textContent = stale ? "タスク情報を取得できません" : "タスクはありません";
-    taskListGroups.appendChild(empty);
+  // 注記は stale 優先。widget が無く legacyNotice のときだけ後方互換の注記を出す。
+  // data-kind で配色を分ける（stale=danger / legacy=助言的な warning）。
+  if (taskListStale) {
+    if (stale) {
+      taskListStale.dataset.kind = "stale";
+      taskListStale.textContent = "orchestrator 停止中";
+      taskListStale.hidden = !shouldShow;
+    } else if (legacyNotice) {
+      taskListStale.dataset.kind = "legacy";
+      taskListStale.textContent = WIDGET_LEGACY_NOTICE_TEXT;
+      taskListStale.hidden = !shouldShow;
+    } else {
+      taskListStale.hidden = true;
+    }
+  }
+
+  var totalItems = widget ? widgetContract.flatItems(widget).length : 0;
+  if (taskListCount) taskListCount.textContent = totalItems ? totalItems + "件" : "";
+
+  if (!shouldShow) {
+    while (taskListGroups.firstChild) taskListGroups.removeChild(taskListGroups.firstChild);
     return;
   }
 
-  groupTasksByStatus(tasks).forEach(function(group) {
-    var section = document.createElement("section");
-    section.className = "task-list-group";
-    section.dataset.status = group.status;
-    var listEl = document.createElement("ul");
-    listEl.className = "task-list-items";
-    group.tasks.forEach(function(task) {
-      listEl.appendChild(renderTaskItem(task, !!(view && view.commandsConfigured), stale));
-    });
-    section.appendChild(listEl);
-    taskListGroups.appendChild(section);
-  });
-  // 再生成後にフォーカスを復元する（操作中スキップに漏れたキーボード操作等の保険）。
-  restoreTaskFocusState(focusState);
+  var controller = ensureWidgetViewController();
+  if (!controller) return;
+  controller.render(widget, { now: Date.now() });
 }
 
 async function send(termId, input) {
@@ -1841,18 +1148,19 @@ async function poll() {
   try {
     var responses = await Promise.all([
       fetch("/api/states", { cache: "no-store" }),
-      fetch("/api/tasks", { cache: "no-store" })
+      fetch("/api/widgets", { cache: "no-store" })
     ]);
     if (!responses[0].ok) throw new Error("/api/states HTTP " + responses[0].status);
-    if (!responses[1].ok) throw new Error("/api/tasks HTTP " + responses[1].status);
+    if (!responses[1].ok) throw new Error("/api/widgets HTTP " + responses[1].status);
     var payloads = await Promise.all([
       responses[0].json(),
       responses[1].json()
     ]);
     var data = payloads[0];
-    var tasksData = payloads[1];
+    lastWidgetPayload = payloads[1] || null;
     render(data);
-    renderTaskList(tasksData);
+    // fromPoll=true: ネイティブ select ピッカー操作中の再描画を避ける。
+    renderWidget(true);
     // 初回描画でカードが #list に入った後に一度だけスクロール位置を復元する。
     // 2 回目以降のポーリング再描画では呼ばない（ユーザーのスクロール操作と競合させない）。
     restoreScrollOnce();

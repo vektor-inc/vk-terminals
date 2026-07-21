@@ -235,7 +235,7 @@ test.describe('モバイル版「ペインを追加」ボタン（issue #217 / P
       const context = await browser.newContext();
       const page = await context.newPage();
 
-      // /api/states を空応答に差し替える（/api/tasks は素通しで実応答を使う）。
+      // /api/states を空応答に差し替える（/api/widgets は素通しで実応答を使う）。
       await page.route(`http://127.0.0.1:${port}/api/states`, async (route) => {
         await route.fulfill({
           status: 200,

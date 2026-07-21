@@ -39,6 +39,13 @@ header .meta { font-size: 11px; color: var(--muted); }
 .dot.waiting { background: var(--waiting); box-shadow: 0 0 0 3px rgba(245,166,35,0.22);
   animation: pulse 1.2s ease-in-out infinite; }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.45; } }
+/* 無限ループのパルス（待機・注意喚起）は reduced-motion で停止する（前庭系への配慮 / WCAG 2.3.3）。 */
+@media (prefers-reduced-motion: reduce) {
+  .dot.waiting,
+  .task-item[data-emphasis="attention"]::before {
+    animation: none;
+  }
+}
 .card-title { flex: 1; min-width: 0; }
 a.card-title { color: inherit; text-decoration: none; }
 .card-title .name { font-size: 13px; font-weight: 600; white-space: nowrap;
@@ -249,6 +256,13 @@ button.k.kill.is-locked:active { background: #6b3f3f; border-color: #7c4a4a; }
   font-size: 11px;
   font-weight: 700;
 }
+/* legacyNotice（orchestrator の更新を促す助言）はエラーに見える赤(danger)ではなく、
+ * warning 系の配色にして「停止中(danger)」と視覚的に区別する。 */
+.task-list-stale[data-kind="legacy"] {
+  border-color: rgba(210, 153, 34, 0.4);
+  color: #f0c36a;
+  background: rgba(210, 153, 34, 0.12);
+}
 .task-list-stale[hidden] { display: none; }
 .task-list-groups {
   display: flex;
@@ -287,160 +301,160 @@ button.k.kill.is-locked:active { background: #6b3f3f; border-color: #7c4a4a; }
   line-height: 1.35;
   overflow-wrap: anywhere;
 }
-.task-item-body {
+/* ─── tone トークン → 色（宣言的ウィジェット / #229）───────────────────────── */
+/* orchestrator は生 HEX を宣言に載せず tone トークン（7 種）だけを渡す。ビューアがここで
+ * tone→色へマッピングする（契約 docs/tasks-widget-schema.md）。モバイルもダーク固定
+ * （color-scheme: dark）のため GitHub ダークパレットで従来の見た目と同等にする。
+ * 各 tone は要素側で読む 3 変数（前景 / 背景 / 境界）を定義する。未知 tone は neutral 相当。
+ * コントラストは暗い背景（#0d1117〜#161b22）で本文 4.5:1 / UI 3:1（WCAG 2.1 AA）を意識。 */
+.task-list [data-tone="warning"] {
+  --wtone-fg: #f0c36a;
+  --wtone-bg: rgba(210, 153, 34, 0.15);
+  --wtone-border: rgba(210, 153, 34, 0.32);
+}
+.task-list [data-tone="info"] {
+  --wtone-fg: #79c0ff;
+  --wtone-bg: rgba(88, 166, 255, 0.15);
+  --wtone-border: rgba(88, 166, 255, 0.30);
+}
+.task-list [data-tone="progress"] {
+  --wtone-fg: #56d364;
+  --wtone-bg: rgba(63, 185, 80, 0.15);
+  --wtone-border: rgba(63, 185, 80, 0.30);
+}
+.task-list [data-tone="success"] {
+  --wtone-fg: #7ee787;
+  --wtone-bg: rgba(63, 185, 80, 0.13);
+  --wtone-border: rgba(63, 185, 80, 0.28);
+}
+.task-list [data-tone="danger"] {
+  --wtone-fg: #ffa198;
+  --wtone-bg: rgba(248, 81, 73, 0.15);
+  --wtone-border: rgba(248, 81, 73, 0.32);
+}
+.task-list [data-tone="neutral"] {
+  --wtone-fg: #adbac7;
+  --wtone-bg: rgba(139, 148, 158, 0.12);
+  --wtone-border: rgba(139, 148, 158, 0.26);
+}
+.task-list [data-tone="attention"] {
+  --wtone-fg: #d2a8ff;
+  --wtone-bg: rgba(188, 140, 255, 0.16);
+  --wtone-border: rgba(188, 140, 255, 0.34);
+}
+
+/* ─── グループ見出し（ステータス）───────────────────────────────────────── */
+.task-list-group-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 7px;
+}
+.widget-group-label {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 8px;
+  border: 1px solid var(--wtone-border, rgba(139, 148, 158, 0.26));
+  border-radius: 6px;
+  color: var(--wtone-fg, #adbac7);
+  background: var(--wtone-bg, rgba(139, 148, 158, 0.12));
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+/* ─── アイテムのバッジ行（優先度 / 直列・並列 / 担当者）─────────────────── */
+.task-item-head {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 7px;
   padding: 5px 8px 8px;
 }
-/* ステータスは読み取り専用ラベル（PC 版 task-status-label 相当）。編集は編集パネルで行う。 */
-.task-status-label,
-.task-priority-badge,
-.task-sequential-chip {
+.widget-badge {
   display: inline-flex;
   align-items: center;
   flex: none;
   padding: 3px 7px;
-  border: 1px solid transparent;
+  border: 1px solid var(--wtone-border, rgba(139, 148, 158, 0.26));
   border-radius: 6px;
+  color: var(--wtone-fg, #adbac7);
+  background: var(--wtone-bg, rgba(139, 148, 158, 0.12));
   font-size: 10px;
   font-weight: 700;
   line-height: 1.2;
   white-space: nowrap;
 }
-.task-status-label[data-status="in-progress"] {
-  color: #3fb950;
-  background-color: rgba(63, 185, 80, 0.15);
-  border-color: rgba(63, 185, 80, 0.3);
-}
-.task-status-label[data-status="waiting-input"] {
-  color: #d29922;
-  background-color: rgba(210, 153, 34, 0.15);
-  border-color: rgba(210, 153, 34, 0.3);
-  animation: pulse 1.5s ease-in-out infinite;
-}
-.task-status-label[data-status="ready"],
-.task-status-label[data-status="waiting-merge"] {
-  color: #58a6ff;
-  background-color: rgba(88, 166, 255, 0.15);
-  border-color: rgba(88, 166, 255, 0.3);
-}
-.task-status-label[data-status="awaiting-approval"] {
-  color: #bc8cff;
-  background-color: rgba(188, 140, 255, 0.15);
-  border-color: rgba(188, 140, 255, 0.3);
-}
-.task-status-label[data-status="failed"] {
-  color: #ffa198;
-  background-color: rgba(248, 81, 73, 0.15);
-  border-color: rgba(248, 81, 73, 0.3);
-}
-.task-status-label[data-status="done"] {
-  color: #8b949e;
-  background-color: rgba(139, 148, 158, 0.12);
-  border-color: rgba(139, 148, 158, 0.24);
-}
-.task-status-label[data-status="unknown"],
-.task-status-label:where(:not([data-status="in-progress"]):not([data-status="waiting-input"]):not([data-status="ready"]):not([data-status="waiting-merge"]):not([data-status="awaiting-approval"]):not([data-status="failed"]):not([data-status="done"])) {
-  color: #8b949e;
-  background-color: rgba(139, 148, 158, 0.12);
-  border-color: rgba(139, 148, 158, 0.24);
-}
-.task-list.is-stale .task-status-label {
-  animation: none;
-}
-.task-priority-badge[data-priority="high"] {
-  color: #ffa198;
-  background: rgba(248, 81, 73, 0.15);
-  border: 1px solid rgba(248, 81, 73, 0.32);
-}
-.task-priority-badge[data-priority="medium"] {
-  color: #f0c36a;
-  background: rgba(210, 153, 34, 0.15);
-  border: 1px solid rgba(210, 153, 34, 0.32);
-}
-.task-priority-badge[data-priority="low"] {
-  color: #7ee787;
-  background: rgba(63, 185, 80, 0.13);
-  border: 1px solid rgba(63, 185, 80, 0.28);
-}
-.task-sequential-chip {
-  color: var(--fg);
-  background: rgba(139, 148, 158, 0.12);
-  border: 1px solid rgba(139, 148, 158, 0.26);
-}
-.task-sequential-chip[data-sequential="sequential"] {
-  color: #79c0ff;
-  background: rgba(88, 166, 255, 0.12);
-  border-color: rgba(88, 166, 255, 0.28);
-}
-.task-item-meta {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px 8px;
+.task-item-assignee {
+  flex: 1 1 auto;
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--muted);
   font-size: 11px;
   line-height: 1.35;
 }
-.task-item-assignee {
+
+/* ─── 意味的強調（emphasis="attention" / 旧 waiting-input のパルス相当）──── */
+/* 色ではなく「注意を要する」意味を、左端アクセントバーの穏やかなパルスで示す。
+ * 既存の pulse キーフレームを流用。orchestrator 停止中（is-stale）はパルスを止める。 */
+.task-item[data-emphasis="attention"] {
+  position: relative;
+  border-color: rgba(210, 153, 34, 0.45);
+}
+.task-item[data-emphasis="attention"]::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 3px;
+  background: #d29922;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+.task-list.is-stale .task-item[data-emphasis="attention"]::before {
+  animation: none;
+}
+
+/* ─── アイテムの外部リンク（queue / pr）───────────────────────────────── */
+.task-item-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 0 8px 8px;
+}
+.widget-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  max-width: 100%;
+  color: #79c0ff;
+  text-decoration: none;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+.widget-link:active {
+  text-decoration: underline;
+}
+.widget-link:focus-visible {
+  outline: 2px solid #58a6ff;
+  outline-offset: 2px;
+}
+.widget-link-text {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* 操作ボタン共通（キャンセル・保存など）。タップ標的は 44px を確保する。 */
-.task-item-action {
-  min-height: 44px;
-  padding: 8px 14px;
-  border: 1px solid #3d444d;
-  border-radius: 8px;
-  background: #21262d;
-  color: #e6edf3;
-  font-family: inherit;
-  font-size: 12px;
-  font-weight: 700;
-  line-height: 1.3;
+.widget-link-icon {
   white-space: nowrap;
-  cursor: pointer;
-}
-/* 一覧内の「編集」ボタン。バッジ行の右端へ寄せ、::before でタップ標的を 44px 相当に広げる。 */
-.task-item-action--compact {
-  position: relative;
-  margin-left: auto;
-  min-height: 32px;
-  padding: 5px 12px;
-  border-radius: 7px;
+  margin-left: 4px;
   font-size: 11px;
-}
-.task-item-action--compact::before {
-  content: "";
-  position: absolute;
-  inset: -6px;
-}
-/* 保存（主アクション）。PC 版 task-item-action--primary と同系のブルー。 */
-.task-item-action--primary {
-  border-color: rgba(88, 166, 255, 0.52);
-  background: rgba(88, 166, 255, 0.2);
-  color: #cfe8ff;
-}
-.task-item-action:active {
-  background: #30363d;
-}
-.task-item-action--primary:active {
-  background: rgba(88, 166, 255, 0.3);
-}
-.task-item-action:focus-visible {
-  outline: 2px solid #58a6ff;
-  outline-offset: 2px;
-}
-.task-item-action:disabled,
-.task-item-action[aria-disabled="true"] {
-  color: #8b949e;
-  cursor: default;
-  opacity: 0.6;
+  opacity: 0.8;
+  line-height: 1;
 }
 
 /* ─── 反映待ち・エラーのフィードバック ───────────────────────────────────── */
@@ -473,7 +487,9 @@ button.k.kill.is-locked:active { background: #6b3f3f; border-color: #7c4a4a; }
   color: #ffa198;
 }
 
-/* ─── 編集パネル（PC 版 task-edit-panel を モバイル向けに実装） ───────────── */
+/* ─── 操作コントロール（ステータス / 優先度 / 実行方式の select）───────── */
+/* 宣言的ウィジェットではコントロールは常時表示のインライン select。変更即発行（確認はデータ依存
+ * の完成文で window.confirm）。タップ標的は 44px を確保する。 */
 .task-edit-panel {
   display: grid;
   gap: 11px;
@@ -481,20 +497,20 @@ button.k.kill.is-locked:active { background: #6b3f3f; border-color: #7c4a4a; }
   border-top: 1px solid #21262d;
   background: #0d1117;
 }
-.task-edit-field {
+.widget-control {
   display: grid;
   grid-template-columns: 68px minmax(0, 1fr);
   align-items: center;
   gap: 10px;
 }
-.task-edit-label {
+.widget-control-label {
   color: #8b949e;
   font-size: 12px;
   font-weight: 700;
   line-height: 1.3;
   white-space: nowrap;
 }
-.task-edit-select {
+.widget-control-select {
   min-width: 0;
   min-height: 44px;
   padding: 8px 30px 8px 10px;
@@ -518,70 +534,14 @@ button.k.kill.is-locked:active { background: #6b3f3f; border-color: #7c4a4a; }
   background-size: 5px 5px, 5px 5px;
   background-repeat: no-repeat;
 }
-.task-edit-select:focus-visible,
-.task-edit-segment:focus-visible {
+.widget-control-select:focus-visible {
   outline: 2px solid #58a6ff;
   outline-offset: 2px;
 }
-.task-edit-select:disabled,
-.task-edit-select[aria-disabled="true"] {
+.widget-control-select:disabled,
+.widget-control-select[aria-disabled="true"] {
   opacity: 0.6;
   cursor: default;
-}
-.task-edit-segmented {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 7px;
-}
-.task-edit-segment {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  flex: 1 1 0;
-  min-height: 44px;
-  padding: 8px 12px;
-  border: 1px solid #3d444d;
-  border-radius: 8px;
-  background: #21262d;
-  color: var(--fg);
-  font-family: inherit;
-  font-size: 13px;
-  font-weight: 700;
-  line-height: 1.3;
-  white-space: nowrap;
-  cursor: pointer;
-}
-.task-edit-segment[aria-pressed="true"] {
-  border-color: rgba(121, 192, 255, 0.78);
-  background: rgba(88, 166, 255, 0.32);
-  color: #cfe8ff;
-  box-shadow: inset 0 0 0 1px rgba(121, 192, 255, 0.26);
-}
-.task-edit-segment[aria-pressed="true"]::before {
-  content: "";
-  width: 5px;
-  height: 9px;
-  border: solid currentColor;
-  border-width: 0 2px 2px 0;
-  transform: rotate(45deg) translateY(-1px);
-}
-.task-edit-segment:disabled,
-.task-edit-segment[aria-disabled="true"] {
-  opacity: 0.6;
-  cursor: default;
-}
-.task-edit-field--actions {
-  align-items: start;
-}
-.task-edit-actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 8px;
-}
-.task-edit-actions .task-item-action {
-  flex: 1 1 0;
 }
 #app-version-footer { display: none; padding: 4px 12px;
   padding-bottom: max(18px, env(safe-area-inset-bottom)); color: var(--muted);

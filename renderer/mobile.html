@@ -413,6 +413,31 @@ var TASK_SEQUENTIAL_LABELS = {
   sequential: "直列",
   parallel: "並列"
 };
+// 優先度 select の選択肢は utils/taskStatusActions.js の TASK_PRIORITY_OPTIONS と同期を保つこと。
+// 読み取り専用バッジ（high/medium/low）と違い、編集 select には none（なし）を含める。
+var TASK_PRIORITY_OPTIONS = [
+  { value: "high", label: "高" },
+  { value: "medium", label: "中" },
+  { value: "low", label: "低" },
+  { value: "none", label: "なし" }
+];
+// 実行方式トグルの選択肢は utils/taskStatusActions.js の TASK_SEQUENTIAL_OPTIONS と同期を保つこと。
+var TASK_SEQUENTIAL_OPTIONS = [
+  { value: "sequential", label: "直列" },
+  { value: "parallel", label: "並列" }
+];
+// 編集パネルを出せるステータス集合は renderer/app.js の TASK_EDITABLE_STATUSES と同期を保つこと。
+var TASK_EDITABLE_STATUSES = {
+  "awaiting-approval": true,
+  "ready": true,
+  "in-progress": true,
+  "waiting-input": true,
+  "waiting-merge": true,
+  "failed": true
+};
+// 反映待ちがこの時間内に反映されない場合はタイムアウトで解除する（ms）。renderer/app.js と同期を保つこと。
+var TASK_PENDING_TIMEOUT_MS = 30000;
+var TASK_PENDING_TIMEOUT_MESSAGE = "反映されませんでした（再試行してください）";
 
 var taskListSection = document.getElementById("task-list");
 var taskListCount = document.getElementById("task-list-count");
@@ -444,8 +469,25 @@ if (taskListHead) {
     writeTaskListCollapsed(next);
   });
 }
-var pendingTaskIds = {}; // taskId -> { expected, to }
+// PC 版（renderer/app.js）の pending モデルに合わせた汎用状態。
+//   - pendingTaskCommands: taskId -> { fields: [{ kind, endpoint, expected, to }], timeoutId }
+//     送信した項目（フィールド）ごとに expected（送信前の値）を保持し、新しい view で
+//     反映された or タイムアウトした時に解除する（フィールド非依存の一般化モデル）。
+//   - taskCommandErrors: taskId -> 直近のエラーメッセージ
+//   - expandedTaskEditIds: taskId -> true（編集パネル展開中）
+//   - taskEditDrafts: taskId -> { status?, priority?, sequential? }（未保存の編集内容）
+var pendingTaskCommands = {};
+var taskCommandErrors = {};
+var expandedTaskEditIds = {};
+var taskEditDrafts = {};
 var TASK_COMMAND_SEND_ERROR_MESSAGE = "送信に失敗しました（再試行してください）";
+
+// 編集パネル用エンドポイント。フィールドの kind と POST 先を対応させる。
+var TASK_COMMAND_ENDPOINTS = {
+  status: "/api/tasks/set-status",
+  priority: "/api/tasks/set-priority",
+  sequential: "/api/tasks/set-sequential"
+};
 
 function parseTaskTime(value) {
   if (typeof value !== "string" || !value) return null;
@@ -494,6 +536,18 @@ function getTaskPriorityLabel(priority) {
 
 function taskSequentialToLabel(value) {
   return value === true ? TASK_SEQUENTIAL_LABELS.sequential : TASK_SEQUENTIAL_LABELS.parallel;
+}
+
+// 優先度 select / API 依頼で使うコマンド値。null 系（high/medium/low 以外）は "none" に丸める。
+// utils/taskStatusActions.js の taskPriorityToCommandValue と同期を保つこと。
+function taskPriorityToCommandValue(value) {
+  return normalizeTaskPriority(value) || "none";
+}
+
+// 実行方式のコマンド値。tasks-view.json の boolean を sequential/parallel の文字列へ変換する。
+// utils/taskStatusActions.js の taskSequentialToCommandValue と同期を保つこと。
+function taskSequentialToCommandValue(value) {
+  return value === true ? "sequential" : "parallel";
 }
 
 function normalizeTaskList(view) {
@@ -566,55 +620,194 @@ function groupTasksByStatus(tasks) {
   });
 }
 
-function syncPendingTaskIds(tasks) {
+// ─── 反映待ち（pending）・編集ドラフトの操作ヘルパー ─────────────────────────
+// renderer/app.js の同名関数と挙動を揃えること（フィールド非依存の pending モデル）。
+
+function getTaskPending(key) {
+  return pendingTaskCommands[key] || null;
+}
+
+function getTaskPendingFields(pending) {
+  if (!pending) return [];
+  return Array.isArray(pending.fields) ? pending.fields : [pending];
+}
+
+function clearTaskPending(key) {
+  var pending = pendingTaskCommands[key];
+  if (pending && pending.timeoutId) clearTimeout(pending.timeoutId);
+  delete pendingTaskCommands[key];
+}
+
+function setTaskCommandError(key, message) {
+  taskCommandErrors[key] = message;
+}
+
+// フィールド種別ごとの「現在値」を取り出す。反映判定（新しい値になったか）に使う。
+function getTaskCommandCurrentValue(task, kind) {
+  if (kind === "priority") return taskPriorityToCommandValue(task.priority);
+  if (kind === "sequential") return taskSequentialToCommandValue(task.sequential);
+  return task.status;
+}
+
+function setTaskPending(key, pending) {
+  clearTaskPending(key);
+  var timeoutId = setTimeout(function() {
+    // タイムアウト: 反映されないまま時間切れになったら pending を解除し再試行を促す。
+    // 優先度・実行方式は status が変わらないため、この一般化がないと永久に消えない。
+    clearTaskPending(key);
+    setTaskCommandError(key, TASK_PENDING_TIMEOUT_MESSAGE);
+    renderTaskList(lastTaskData);
+  }, TASK_PENDING_TIMEOUT_MS);
+  var fields = Array.isArray(pending.fields) ? pending.fields : [pending];
+  pendingTaskCommands[key] = {
+    fields: fields,
+    requestedAt: Date.now(),
+    timeoutId: timeoutId
+  };
+  delete taskCommandErrors[key];
+}
+
+function getTaskEditDraft(key) {
+  return taskEditDrafts[key] || null;
+}
+
+function setTaskEditDraftField(key, field, value) {
+  var draft = {};
+  var current = getTaskEditDraft(key);
+  if (current) {
+    Object.keys(current).forEach(function(k) { draft[k] = current[k]; });
+  }
+  draft[field] = value;
+  taskEditDrafts[key] = draft;
+}
+
+function deleteTaskEditDraftFields(key, fields) {
+  var draft = getTaskEditDraft(key);
+  if (!draft) return;
+  fields.forEach(function(field) { delete draft[field]; });
+  if (Object.keys(draft).length === 0) {
+    delete taskEditDrafts[key];
+  } else {
+    taskEditDrafts[key] = draft;
+  }
+}
+
+function clearTaskEditDraft(key) {
+  delete taskEditDrafts[key];
+}
+
+function getTaskEditPanelId(key) {
+  return "task-edit-panel-" + String(key).replace(/[^A-Za-z0-9_-]/g, "-");
+}
+
+// 新しい view が届くたびに、反映済み・消滅したタスクの pending / ドラフト / 展開状態を整理する。
+// renderer/app.js の syncPendingTaskCommands と挙動を揃えること。
+function syncPendingTaskCommands(tasks) {
   var present = {};
   tasks.forEach(function(task) {
     var key = String(task.id);
     present[key] = true;
-    if (pendingTaskIds[key] && task.status !== pendingTaskIds[key].expected) {
-      delete pendingTaskIds[key];
+    // 編集不可ステータスへ変わったら展開・ドラフトは破棄する。
+    if (!TASK_EDITABLE_STATUSES[task.status]) {
+      delete expandedTaskEditIds[key];
+      delete taskEditDrafts[key];
+    }
+    var pending = getTaskPending(key);
+    if (!pending) return;
+    // まだ「送信前の値（expected）」のままのフィールドだけを残す。
+    // 現在値が expected と変われば、その項目は反映されたとみなして解除する。
+    var remainingFields = getTaskPendingFields(pending).filter(function(field) {
+      return getTaskCommandCurrentValue(task, field.kind) === field.expected;
+    });
+    if (remainingFields.length === 0) {
+      clearTaskPending(key);
+      delete taskCommandErrors[key];
+    } else if (remainingFields.length !== getTaskPendingFields(pending).length) {
+      pendingTaskCommands[key] = {
+        fields: remainingFields,
+        requestedAt: pending.requestedAt,
+        timeoutId: pending.timeoutId
+      };
     }
   });
-  Object.keys(pendingTaskIds).forEach(function(key) {
-    if (!present[key]) delete pendingTaskIds[key];
+  Object.keys(pendingTaskCommands).forEach(function(key) {
+    if (!present[key]) clearTaskPending(key);
+  });
+  Object.keys(taskCommandErrors).forEach(function(key) {
+    if (!present[key]) delete taskCommandErrors[key];
+  });
+  Object.keys(expandedTaskEditIds).forEach(function(key) {
+    if (!present[key]) delete expandedTaskEditIds[key];
+  });
+  Object.keys(taskEditDrafts).forEach(function(key) {
+    if (!present[key]) delete taskEditDrafts[key];
   });
 }
 
-async function setTaskStatus(task, to) {
-  var key = String(task.id);
-  if (pendingTaskIds[key]) return;
-  var confirmMessage = getTaskStatusTransitionConfirmMessage(task.status, to, !!task.prUrl);
-  if (confirmMessage && !window.confirm(confirmMessage)) return;
-  pendingTaskIds[key] = { expected: task.status, to: to, inFlight: true };
+// 変更した項目（fields）だけを順次 API 送信する。renderer/app.js の submitTaskCommands 相当。
+async function submitTaskCommands(task, key, fields) {
+  if (getTaskPending(key) || !fields.length) return false;
+  setTaskPending(key, { fields: fields });
   renderTaskList(lastTaskData);
+  var sentKinds = [];
   try {
-    var res = await fetch("/api/tasks/set-status", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ taskId: task.id, expected: task.status, to: to })
-    });
-    var json = await res.json().catch(function() { return {}; });
-    if (!res.ok || !json.ok) {
-      delete pendingTaskIds[key];
-      renderTaskList(lastTaskData);
-      showErr(TASK_COMMAND_SEND_ERROR_MESSAGE);
-      return;
+    for (var i = 0; i < fields.length; i += 1) {
+      var field = fields[i];
+      var res = await fetch(field.endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ taskId: task.id, expected: field.expected, to: field.to })
+      });
+      var json = await res.json().catch(function() { return {}; });
+      if (!res.ok || !json.ok) {
+        clearTaskPending(key);
+        deleteTaskEditDraftFields(key, sentKinds);
+        setTaskCommandError(key, TASK_COMMAND_SEND_ERROR_MESSAGE);
+        renderTaskList(lastTaskData);
+        showErr(TASK_COMMAND_SEND_ERROR_MESSAGE);
+        return false;
+      }
+      sentKinds.push(field.kind);
     }
-    pendingTaskIds[key] = { expected: task.status, to: to };
+    // 全項目の送信に成功したらパネルを閉じてドラフトを破棄する（反映待ちは view で解除）。
+    delete expandedTaskEditIds[key];
+    clearTaskEditDraft(key);
     renderTaskList(lastTaskData);
     showErr("");
+    return true;
   } catch (e) {
-    delete pendingTaskIds[key];
+    clearTaskPending(key);
+    deleteTaskEditDraftFields(key, sentKinds);
+    setTaskCommandError(key, TASK_COMMAND_SEND_ERROR_MESSAGE);
     renderTaskList(lastTaskData);
     showErr(TASK_COMMAND_SEND_ERROR_MESSAGE);
+    return false;
   }
 }
 
+// PC 版（renderer/app.js の renderTaskItem）と同じ「編集」パネル方式で 1 タスクを描画する。
+//   - ステータスはラベル表示にし、編集可能ステータス時だけ「編集」ボタンを出す。
+//   - 「編集」展開で ステータス / 優先度 / 実行方式 を編集し、保存で変更項目だけ順次送信する。
+//   - 優先度・実行方式は priority contract（task に priority プロパティがある）時だけ編集できる。
 function renderTaskItem(task, commandsConfigured, stale) {
   var item = document.createElement("li");
   item.className = "task-item";
   if (task.id !== undefined && task.id !== null) item.dataset.id = String(task.id);
   var taskKey = String(task.id);
+  var status = task.status;
+  var pending = getTaskPending(taskKey);
+  var hasPending = !!pending;
+  var commandError = taskCommandErrors[taskKey];
+  var hasPriorityContract = Object.prototype.hasOwnProperty.call(task, "priority");
+  var editPanelId = getTaskEditPanelId(taskKey);
+  var draft = getTaskEditDraft(taskKey);
+  var draftStatus = draft && Object.prototype.hasOwnProperty.call(draft, "status") ? draft.status : status;
+  var draftPriority = draft && Object.prototype.hasOwnProperty.call(draft, "priority")
+    ? draft.priority
+    : taskPriorityToCommandValue(task.priority);
+  var draftSequential = draft && Object.prototype.hasOwnProperty.call(draft, "sequential")
+    ? draft.sequential
+    : taskSequentialToCommandValue(task.sequential);
 
   var title = document.createElement("div");
   title.className = "task-item-title";
@@ -624,38 +817,15 @@ function renderTaskItem(task, commandsConfigured, stale) {
   var body = document.createElement("div");
   body.className = "task-item-body";
 
-  var taskIdNumber = Number(task.id);
-  var canSendCommand = commandsConfigured
-    && Number.isInteger(taskIdNumber) && taskIdNumber > 0;
+  // ステータスはラベル表示（PC の task-status-label 相当）。編集は下の編集パネルで行う。
+  var statusLabel = document.createElement("span");
+  statusLabel.className = "task-status-label";
+  statusLabel.dataset.status = status;
+  statusLabel.setAttribute("aria-label", task.title + " の状態: " + getTaskStatusLabel(status));
+  statusLabel.textContent = getTaskStatusLabel(status);
+  body.appendChild(statusLabel);
 
-  var statusSelect = document.createElement("select");
-  statusSelect.className = "task-status-select";
-  statusSelect.dataset.status = task.status;
-  statusSelect.setAttribute("aria-label", task.title + " の状態");
-  var statusOptions = TASK_STATUS_SELECT_ORDER.indexOf(task.status) === -1
-    ? [task.status].concat(TASK_STATUS_SELECT_ORDER)
-    : TASK_STATUS_SELECT_ORDER;
-  statusOptions.forEach(function(status) {
-    var option = document.createElement("option");
-    option.value = status;
-    option.textContent = getTaskStatusLabel(status);
-    option.disabled = status !== task.status && !getTaskStatusAction(task, status);
-    if (status === task.status) option.selected = true;
-    statusSelect.appendChild(option);
-  });
-  statusSelect.disabled = !!(pendingTaskIds[taskKey] || stale || !canSendCommand);
-  statusSelect.addEventListener("change", function() {
-    var to = statusSelect.value;
-    if (stale || pendingTaskIds[taskKey] || to === task.status || !getTaskStatusAction(task, to)) {
-      statusSelect.value = task.status;
-      return;
-    }
-    setTaskStatus(task, to).then(function() {
-      statusSelect.value = task.status;
-    });
-  });
-  body.appendChild(statusSelect);
-
+  // 優先度・実行方式は読み取り専用バッジ（現在値の表示）。編集は編集パネルの select / トグルで行う。
   var priority = normalizeTaskPriority(task.priority);
   if (priority) {
     var priorityBadge = document.createElement("span");
@@ -683,28 +853,279 @@ function renderTaskItem(task, commandsConfigured, stale) {
   }
   body.appendChild(meta);
 
+  var taskIdNumber = Number(task.id);
+  var canSendCommand = commandsConfigured
+    && Number.isInteger(taskIdNumber) && taskIdNumber > 0;
+  var canUseEditPanel = canSendCommand && !!TASK_EDITABLE_STATUSES[status];
+  var isExpanded = !!expandedTaskEditIds[taskKey];
+
+  if (canUseEditPanel) {
+    var editButton = document.createElement("button");
+    editButton.type = "button";
+    editButton.className = "task-item-action task-item-action--compact";
+    editButton.dataset.taskId = taskKey;
+    editButton.dataset.taskControl = "edit-toggle";
+    editButton.setAttribute("aria-controls", editPanelId);
+    editButton.setAttribute("aria-expanded", isExpanded ? "true" : "false");
+    editButton.setAttribute("aria-label", "「" + task.title + "」を編集");
+    editButton.textContent = "編集";
+    // in-flight（反映待ち）中と stale 時は当該タスクの操作をロックする（item 単位ロック）。
+    editButton.disabled = hasPending || stale;
+    if (editButton.disabled) editButton.setAttribute("aria-disabled", "true");
+    editButton.addEventListener("click", function() {
+      if (editButton.disabled) return;
+      if (expandedTaskEditIds[taskKey]) {
+        delete expandedTaskEditIds[taskKey];
+        clearTaskEditDraft(taskKey);
+      } else {
+        expandedTaskEditIds[taskKey] = true;
+      }
+      renderTaskList(lastTaskData);
+    });
+    body.appendChild(editButton);
+  }
+
   item.appendChild(title);
   item.appendChild(body);
 
-  if (pendingTaskIds[taskKey]) {
-    var actionRow = document.createElement("div");
-    actionRow.className = "task-item-actions";
-    var pending = document.createElement("span");
-    pending.className = "task-item-pending";
-    pending.setAttribute("role", "status");
-    pending.textContent = "反映待ち";
-    actionRow.appendChild(pending);
-    item.appendChild(actionRow);
+  // 反映待ち・エラーのフィードバック（PC の task-item-feedback 相当）。
+  if (hasPending || commandError) {
+    var feedback = document.createElement("div");
+    feedback.className = "task-item-feedback";
+    if (hasPending) {
+      var pendingLabel = document.createElement("span");
+      pendingLabel.className = "task-item-pending";
+      pendingLabel.setAttribute("role", "status");
+      pendingLabel.textContent = "反映待ち";
+      feedback.appendChild(pendingLabel);
+    }
+    if (commandError) {
+      var error = document.createElement("span");
+      error.className = "task-item-action-error";
+      error.setAttribute("role", "status");
+      error.textContent = commandError;
+      feedback.appendChild(error);
+    }
+    item.appendChild(feedback);
+  }
+
+  if (canUseEditPanel && isExpanded) {
+    item.appendChild(renderTaskEditPanel(task, taskKey, {
+      editPanelId: editPanelId,
+      status: status,
+      hasPending: hasPending,
+      hasPriorityContract: hasPriorityContract,
+      draftStatus: draftStatus,
+      draftPriority: draftPriority,
+      draftSequential: draftSequential
+    }));
   }
 
   return item;
+}
+
+// 編集パネル本体を組み立てる。PC 版の展開パネル（renderer/app.js）と同じ項目・順序に揃える。
+function renderTaskEditPanel(task, taskKey, ctx) {
+  var panel = document.createElement("div");
+  panel.className = "task-edit-panel";
+  panel.id = ctx.editPanelId;
+
+  // ステータス（select）。遷移可否はサーバーが埋める task.actions で判定する（PC と同じ結果）。
+  var statusField = document.createElement("label");
+  statusField.className = "task-edit-field";
+  var statusLabelEl = document.createElement("span");
+  statusLabelEl.className = "task-edit-label";
+  statusLabelEl.textContent = "ステータス";
+  var statusSelect = document.createElement("select");
+  statusSelect.className = "task-edit-select";
+  statusSelect.dataset.taskId = taskKey;
+  statusSelect.dataset.taskControl = "status-select";
+  statusSelect.dataset.status = ctx.status;
+  statusSelect.setAttribute("aria-label", task.title + " のステータス");
+  statusSelect.disabled = ctx.hasPending;
+  if (ctx.hasPending) statusSelect.setAttribute("aria-disabled", "true");
+  var statusOptions = TASK_STATUS_SELECT_ORDER.indexOf(ctx.status) === -1
+    ? [ctx.status].concat(TASK_STATUS_SELECT_ORDER)
+    : TASK_STATUS_SELECT_ORDER;
+  statusOptions.forEach(function(optionStatus) {
+    var option = document.createElement("option");
+    option.value = optionStatus;
+    option.textContent = getTaskStatusLabel(optionStatus);
+    option.disabled = optionStatus !== ctx.status && !getTaskStatusAction(task, optionStatus);
+    if (optionStatus === ctx.draftStatus) option.selected = true;
+    statusSelect.appendChild(option);
+  });
+  statusSelect.addEventListener("change", function() {
+    setTaskEditDraftField(taskKey, "status", statusSelect.value);
+  });
+  statusField.appendChild(statusLabelEl);
+  statusField.appendChild(statusSelect);
+  panel.appendChild(statusField);
+
+  var prioritySelect = null;
+  var sequentialControl = null;
+  var currentPriority = null;
+  var currentSequential = null;
+
+  // 優先度・実行方式は priority contract がある時だけ編集できる（PC の hasTaskPriorityContract 相当）。
+  if (ctx.hasPriorityContract) {
+    var priorityField = document.createElement("label");
+    priorityField.className = "task-edit-field";
+    var priorityLabelEl = document.createElement("span");
+    priorityLabelEl.className = "task-edit-label";
+    priorityLabelEl.textContent = "優先度";
+    prioritySelect = document.createElement("select");
+    prioritySelect.className = "task-edit-select";
+    prioritySelect.dataset.taskId = taskKey;
+    prioritySelect.dataset.taskControl = "priority-select";
+    prioritySelect.setAttribute("aria-label", task.title + " の優先度");
+    prioritySelect.disabled = ctx.hasPending;
+    if (ctx.hasPending) prioritySelect.setAttribute("aria-disabled", "true");
+    currentPriority = taskPriorityToCommandValue(task.priority);
+    TASK_PRIORITY_OPTIONS.forEach(function(option) {
+      var optionEl = document.createElement("option");
+      optionEl.value = option.value;
+      optionEl.textContent = option.label;
+      if (option.value === ctx.draftPriority) optionEl.selected = true;
+      prioritySelect.appendChild(optionEl);
+    });
+    prioritySelect.addEventListener("change", function() {
+      setTaskEditDraftField(taskKey, "priority", prioritySelect.value);
+    });
+    priorityField.appendChild(priorityLabelEl);
+    priorityField.appendChild(prioritySelect);
+    panel.appendChild(priorityField);
+
+    var sequentialField = document.createElement("div");
+    sequentialField.className = "task-edit-field";
+    var sequentialLabelEl = document.createElement("span");
+    sequentialLabelEl.className = "task-edit-label";
+    sequentialLabelEl.textContent = "実行方式";
+    sequentialControl = document.createElement("div");
+    sequentialControl.className = "task-edit-segmented";
+    sequentialControl.setAttribute("role", "group");
+    sequentialControl.setAttribute("aria-label", task.title + " の実行方式");
+    currentSequential = taskSequentialToCommandValue(task.sequential);
+    TASK_SEQUENTIAL_OPTIONS.forEach(function(option) {
+      var segment = document.createElement("button");
+      segment.type = "button";
+      segment.className = "task-edit-segment";
+      segment.dataset.taskId = taskKey;
+      segment.dataset.taskControl = "sequential-segment";
+      segment.dataset.value = option.value;
+      segment.setAttribute("aria-pressed", option.value === ctx.draftSequential ? "true" : "false");
+      segment.setAttribute("aria-label", task.title + " の実行方式を" + option.label + "にする");
+      segment.disabled = ctx.hasPending;
+      if (ctx.hasPending) segment.setAttribute("aria-disabled", "true");
+      segment.textContent = option.label;
+      segment.addEventListener("click", function() {
+        if (segment.disabled) return;
+        var segments = sequentialControl.querySelectorAll(".task-edit-segment");
+        for (var i = 0; i < segments.length; i += 1) {
+          segments[i].setAttribute("aria-pressed", segments[i] === segment ? "true" : "false");
+        }
+        setTaskEditDraftField(taskKey, "sequential", segment.dataset.value);
+      });
+      sequentialControl.appendChild(segment);
+    });
+    sequentialField.appendChild(sequentialLabelEl);
+    sequentialField.appendChild(sequentialControl);
+    panel.appendChild(sequentialField);
+  }
+
+  // 操作行（キャンセル / 保存）。PC と同じく右寄せで、ラベル列分のスペーサーを置く。
+  var actionField = document.createElement("div");
+  actionField.className = "task-edit-field task-edit-field--actions";
+  var actionSpacer = document.createElement("span");
+  actionSpacer.className = "task-edit-actions-spacer";
+  actionSpacer.setAttribute("aria-hidden", "true");
+  var actions = document.createElement("div");
+  actions.className = "task-edit-actions";
+
+  var cancelButton = document.createElement("button");
+  cancelButton.type = "button";
+  cancelButton.className = "task-item-action";
+  cancelButton.dataset.taskId = taskKey;
+  cancelButton.dataset.taskControl = "edit-cancel";
+  cancelButton.textContent = "キャンセル";
+  cancelButton.setAttribute("aria-label", "「" + task.title + "」の編集をキャンセル");
+  cancelButton.disabled = ctx.hasPending;
+  if (ctx.hasPending) cancelButton.setAttribute("aria-disabled", "true");
+  cancelButton.addEventListener("click", function() {
+    delete expandedTaskEditIds[taskKey];
+    clearTaskEditDraft(taskKey);
+    renderTaskList(lastTaskData);
+  });
+
+  var saveButton = document.createElement("button");
+  saveButton.type = "button";
+  saveButton.className = "task-item-action task-item-action--primary";
+  saveButton.dataset.taskId = taskKey;
+  saveButton.dataset.taskControl = "edit-save";
+  saveButton.textContent = "保存";
+  saveButton.setAttribute("aria-label", "「" + task.title + "」の編集を保存");
+  saveButton.disabled = ctx.hasPending;
+  if (ctx.hasPending) saveButton.setAttribute("aria-disabled", "true");
+  saveButton.addEventListener("click", function() {
+    if (getTaskPending(taskKey)) return;
+    var nextStatus = statusSelect.value;
+    var fields = [];
+    // ステータスは変更時だけ送信。危険遷移（差し戻し等）は confirm でガードする。
+    if (nextStatus !== ctx.status) {
+      var confirmMessage = getTaskStatusTransitionConfirmMessage(ctx.status, nextStatus, !!task.prUrl);
+      if (confirmMessage && !window.confirm(confirmMessage)) return;
+      fields.push({
+        kind: "status",
+        endpoint: TASK_COMMAND_ENDPOINTS.status,
+        expected: ctx.status,
+        to: nextStatus
+      });
+    }
+    if (ctx.hasPriorityContract) {
+      var nextPriority = prioritySelect.value;
+      var pressedSequential = sequentialControl.querySelector('.task-edit-segment[aria-pressed="true"]');
+      var nextSequential = pressedSequential ? pressedSequential.dataset.value : currentSequential;
+      if (nextPriority !== currentPriority) {
+        fields.push({
+          kind: "priority",
+          endpoint: TASK_COMMAND_ENDPOINTS.priority,
+          expected: currentPriority,
+          to: nextPriority
+        });
+      }
+      if (nextSequential !== currentSequential) {
+        fields.push({
+          kind: "sequential",
+          endpoint: TASK_COMMAND_ENDPOINTS.sequential,
+          expected: currentSequential,
+          to: nextSequential
+        });
+      }
+    }
+    // 変更がなければ送信せずパネルを閉じる。
+    if (fields.length === 0) {
+      delete expandedTaskEditIds[taskKey];
+      clearTaskEditDraft(taskKey);
+      renderTaskList(lastTaskData);
+      return;
+    }
+    submitTaskCommands(task, taskKey, fields);
+  });
+
+  actions.appendChild(cancelButton);
+  actions.appendChild(saveButton);
+  actionField.appendChild(actionSpacer);
+  actionField.appendChild(actions);
+  panel.appendChild(actionField);
+
+  return panel;
 }
 
 function renderTaskList(view) {
   lastTaskData = view || null;
   if (!taskListSection || !taskListGroups) return;
   var tasks = normalizeTaskList(view);
-  syncPendingTaskIds(tasks);
+  syncPendingTaskCommands(tasks);
   var visibility = computeTaskSectionVisibility(view, hasSeenFreshTaskView);
   hasSeenFreshTaskView = visibility.hasSeenFresh;
   var stale = visibility.stale;

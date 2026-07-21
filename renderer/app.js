@@ -29,7 +29,7 @@ const {
 } = require('./waitingState');
 const { deriveStatus } = require('./statusState');
 const { getPrBadgePresentation } = require('./prBadge');
-const { resolveQueueIssueUrl } = require('./taskQueueLink');
+const { resolveQueueIssueUrl, resolveQueueIssuesListUrl } = require('./taskQueueLink');
 const { isPatternValid } = require('./settingsValidation');
 const { isFieldVisible } = require('./settingsVisibility');
 const {
@@ -1736,6 +1736,9 @@ function renderTaskList(view = lastTaskView, focusStateOverride = undefined) {
   if (staleNotice) staleNotice.hidden = !stale || !shouldShow;
   container.replaceChildren();
 
+  // 見出しラベルを GitHub モード時のみ task-queue issue 一覧へのリンクにする（issue #233）。
+  // 担当者フィルタと同じく、GitHub モード判定は描画のたびに変わるため毎回更新する。
+  updateTaskListTitleLink(section, tasks);
   // 担当者フィルタの表示/選択肢を更新し、絞り込み後のタスクを得る。
   const filterResult = updateAssigneeFilter(section, tasks, view);
   const visibleTasks = filterResult.tasks;
@@ -1771,6 +1774,68 @@ function renderTaskList(view = lastTaskView, focusStateOverride = undefined) {
 // 曖昧にならないよう、通常テキストに現れない制御表示用文字（U+241F / U+241E）で区切る。
 const ASSIGNEE_OPTION_FIELD_SEP = '␟';
 const ASSIGNEE_OPTION_ITEM_SEP = '␞';
+
+// 見出しラベル「タスク」を、GitHub モード時のみ task-queue issue 一覧への外部リンクにする（issue #233）。
+// 見出しコンテナ（.task-list-title の div 構造）と controls 兄弟要素は維持し、
+// ラベル span（.task-list-title-text）の中身だけを毎回作り直して切り替える。
+//   GitHub モード判定: updateAssigneeFilter と同じく、表示中タスクに queueIssueUrl を持つものが 1 件でもあるか。
+//   一覧 URL: いずれかのタスクの queueIssueUrl（.../issues/N）から /N を落として導出する。
+//            導出できない（ローカルモード・0 件・pull など）ときはプレーンテキストのまま。
+function updateTaskListTitleLink(section, tasks) {
+  const label = section.querySelector('.task-list-title-text');
+  if (!label) return;
+
+  const githubMode = tasks.some((task) => !!task.queueIssueUrl);
+  let listUrl;
+  if (githubMode) {
+    for (const task of tasks) {
+      const candidate = resolveQueueIssuesListUrl(task.queueIssueUrl);
+      if (candidate) { listUrl = candidate; break; }
+    }
+  }
+
+  // ローカルモード / URL 無し / 0 件: 従来どおりプレーンテキスト。
+  if (!listUrl) {
+    label.classList.remove('has-link');
+    label.replaceChildren();
+    label.textContent = 'タスク';
+    return;
+  }
+
+  // GitHub モード: 見出しを issue 一覧への外部リンクにする。タイトルリンク（renderTaskItem）と同じく
+  // href には実 URL を入れず href="#" + click で openExternalUrlSafe を呼ぶ。ツールチップに URL を集約。
+  label.classList.add('has-link');
+  label.replaceChildren();
+
+  const link = document.createElement('a');
+  link.className = 'task-list-title-link';
+  link.href = '#';
+  link.setAttribute('role', 'link');
+  link.setAttribute('aria-label', 'タスク一覧（外部ブラウザで開く）');
+  link.draggable = false;
+  link.title = `タスク一覧\n${listUrl}`;
+
+  const labelSpan = document.createElement('span');
+  labelSpan.className = 'task-list-title-link-text';
+  labelSpan.textContent = 'タスク';
+
+  const iconSpan = document.createElement('span');
+  iconSpan.className = 'task-list-title-link-icon';
+  iconSpan.setAttribute('aria-hidden', 'true');
+  // 先頭の U+2060(WORD JOINER) で「タスク」末尾と ↗ の間の改行を禁止する（タイトルリンクと同方針）。
+  iconSpan.textContent = '\u2060↗';
+  labelSpan.appendChild(iconSpan);
+
+  link.appendChild(labelSpan);
+
+  link.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    openExternalUrlSafe(listUrl);
+  });
+
+  label.appendChild(link);
+}
 
 // 担当者フィルタ（プルダウン）の表示・選択肢を現在のタスク／viewer に合わせて更新し、
 // 絞り込み後のタスク配列と適用モードを返す。GitHub モードかつ viewer 判明時のみプルダウンを表示する。

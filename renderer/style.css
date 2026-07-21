@@ -854,6 +854,42 @@ body.resizing-sidebar .sidebar {
   flex: 0 0 auto;
 }
 
+/* 見出しラベルのリンク化（GitHub モード時 / issue #233）
+   ========================================================================== */
+/* GitHub モードのとき、見出し「タスク」を task-queue issue 一覧への <a> にする。
+ * プレーンテキスト時（ローカルモード）と見た目を揃えるため色・太さは見出しに同化させ、
+ * hover/focus でのみ下線と色変化を付け、↗ アイコンで外部リンクを示す（タイトルリンクと同方針）。 */
+.task-list-title-link {
+  color: inherit;
+  font: inherit;
+  text-decoration: none;
+  cursor: pointer;
+  border-radius: 3px;
+  transition: color 0.12s ease, text-decoration-color 0.12s ease;
+}
+.task-list-title-link:hover {
+  color: #fff;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+.task-list-title-link:focus-visible {
+  outline: 2px solid #58a6ff;
+  outline-offset: 2px;
+}
+.task-list-title-link-icon {
+  /* WORD JOINER（app.js 側）と合わせ、「タスク」末尾と ↗ の間で改行させない。 */
+  white-space: nowrap;
+  margin-left: 4px;
+  font-size: 10px;
+  opacity: 0.75;
+  /* ↗ は emoji 系フォントで大きく描画されることがあるため行の高さへの影響を抑える。 */
+  line-height: 1;
+}
+.task-list-title-link:hover .task-list-title-link-icon {
+  opacity: 1;
+}
+
 /* 操作グループ（プルダウン＋開閉トグル）
    ========================================================================== */
 /* 右端へ寄せ、グループ内は分断させない（折り返すならグループ境界で）。 */

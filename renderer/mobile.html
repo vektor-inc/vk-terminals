@@ -77,6 +77,14 @@
   </div>
 </section>
 <div id="list"></div>
+<!-- ペイン追加ボタン（issue #217）。#list の外側直後の兄弟として静的に置く。
+     ポーリング再描画は #list 内だけを触るため、このボタンは再生成されず
+     フォーカス／disabled 状態が保持される。空状態（#empty 表示中）でも残り、
+     再びペインを開く唯一の導線になる。 -->
+<button id="add-pane-btn" type="button" aria-label="ペインを追加">
+  <span class="add-pane-icon" aria-hidden="true">＋</span>
+  <span class="add-pane-label">ペインを追加</span>
+</button>
 <footer id="app-version-footer"></footer>
 
 <script>
@@ -1340,6 +1348,73 @@ async function poll() {
     showErr("状態取得に失敗: " + e.message);
   }
 }
+
+// ペイン追加ボタン（issue #217）。
+// useDefaults: true を明示して POST /api/new-pane を呼ぶ。この経路だけ renderer 側で
+// cwd/noClaude 省略時に config 既定値（newPaneStartupDir / !newPaneAutoLaunchClaude）が
+// 補われ、デスクトップの「＋」ボタンと同じ挙動になる（他の API 呼び出し元は非影響）。
+var addPaneBtn = document.getElementById("add-pane-btn");
+var addPaneIcon = addPaneBtn ? addPaneBtn.querySelector(".add-pane-icon") : null;
+var addPaneLabel = addPaneBtn ? addPaneBtn.querySelector(".add-pane-label") : null;
+var addPaneInFlight = false;
+var ADD_PANE_TIMEOUT_MS = 8000;
+
+function setAddPaneBusy(busy) {
+  if (!addPaneBtn) return;
+  addPaneInFlight = busy;
+  addPaneBtn.disabled = busy;
+  // アクセシブル名は aria-label で「ペインを追加」に固定し、in-flight は aria-busy で伝える。
+  if (busy) addPaneBtn.setAttribute("aria-busy", "true");
+  else addPaneBtn.removeAttribute("aria-busy");
+  if (addPaneLabel) addPaneLabel.textContent = busy ? "追加中…" : "ペインを追加";
+  if (addPaneIcon) addPaneIcon.hidden = busy;
+}
+
+async function requestNewPane() {
+  if (addPaneInFlight) return;
+  setAddPaneBusy(true);
+  // ハング対策のタイムアウト。応答が来なくても必ず解除＋エラー表示する。
+  var settled = false;
+  var timer = setTimeout(function () {
+    if (settled) return;
+    settled = true;
+    setAddPaneBusy(false);
+    showErr("追加失敗: タイムアウト");
+  }, ADD_PANE_TIMEOUT_MS);
+  try {
+    var res = await fetch("/api/new-pane", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ useDefaults: true })
+    });
+    var j = await res.json().catch(function () { return {}; });
+    if (settled) return; // タイムアウト後に遅れて届いた応答は無視（多重解除・上書きを防ぐ）
+    settled = true;
+    clearTimeout(timer);
+    if (!res.ok || !j.ok) {
+      setAddPaneBusy(false);
+      showErr("追加失敗: " + (j.error || res.status));
+      return;
+    }
+    showErr("");
+    // 次ポーリング（約2秒）を待たず即再取得して新カードを早く描画する。
+    await poll();
+    // 新しい termId のカードへスクロール（この時点で描画済みなら）。
+    var newId = j.termId != null ? String(j.termId) : "";
+    if (newId && cards[newId] && cards[newId].root && typeof cards[newId].root.scrollIntoView === "function") {
+      cards[newId].root.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+    setAddPaneBusy(false);
+  } catch (e) {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    setAddPaneBusy(false);
+    showErr("追加失敗: " + e.message);
+  }
+}
+
+if (addPaneBtn) addPaneBtn.addEventListener("click", requestNewPane);
 
 // 自己再帰 setTimeout で逐次実行を保証（setInterval だと前回 fetch 完了前に
 // 次が走り、古い結果が新しい結果を上書きしうるため）。

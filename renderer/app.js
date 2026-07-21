@@ -3275,14 +3275,15 @@ async function openSettingsModal() {
   </div>` : '';
   const groupsHtml = settingsAvailable
     ? (useTabbedSettings
-        ? groupedTabs.map(({ groups }, tabIndex) => {
+        ? groupedTabs.map(({ tab, groups }, tabIndex) => {
           const tabId = `settings-tab-${tabIndex}`;
           const panelId = `settings-panel-${tabIndex}`;
           const targetPaths = deriveSettingsTargetPathsForGroups(groups);
           const targetHtml = targetPaths.length
             ? `<div class="settings-group-target settings-tab-target">保存先: ${targetPaths.map((targetPath) => `<code>${escText(targetPath)}</code>`).join(' / ')}</div>`
             : '';
-          const noteHtml = desc.note ? `<p class="settings-note settings-tab-note">${escText(desc.note)}</p>` : '';
+          const tabNote = (tab && tab.note) ? tab.note : desc.note;
+          const noteHtml = tabNote ? `<p class="settings-note settings-tab-note">${escText(tabNote)}</p>` : '';
           const tabGroupsHtml = groups.map((group) => renderGroupHtml(group, {
             tabIndex,
             omitLegend: groups.length === 1,

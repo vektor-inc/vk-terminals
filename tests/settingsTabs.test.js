@@ -12,16 +12,34 @@ const {
 test('normalizeSettingsTabs: 有効な tabs だけを描画用に正規化する', () => {
   assert.deepEqual(normalizeSettingsTabs({
     tabs: [
-      { id: 'general', label: '基本' },
+      { id: 'general', label: '基本', note: '保存後に反映' },
       { id: 'advanced' },
       { id: '' },
       null,
     ],
   }), [
-    { id: 'general', label: '基本', index: 0 },
+    { id: 'general', label: '基本', index: 0, note: '保存後に反映' },
     { id: 'advanced', label: 'advanced', index: 1 },
   ]);
   assert.deepEqual(normalizeSettingsTabs({}), []);
+});
+
+test('normalizeSettingsTabs: note は非空文字列だけを引き継ぐ', () => {
+  assert.deepEqual(normalizeSettingsTabs({
+    tabs: [
+      { id: 'general', note: '  保存後に反映  ' },
+      { id: 'empty', note: '' },
+      { id: 'blank', note: '   ' },
+      { id: 'number', note: 1 },
+      { id: 'missing' },
+    ],
+  }), [
+    { id: 'general', label: 'general', index: 0, note: '  保存後に反映  ' },
+    { id: 'empty', label: 'empty', index: 1 },
+    { id: 'blank', label: 'blank', index: 2 },
+    { id: 'number', label: 'number', index: 3 },
+    { id: 'missing', label: 'missing', index: 4 },
+  ]);
 });
 
 test('groupSettingsGroupsByTab: tab 未指定または未知の group は先頭タブへ振り分ける', () => {

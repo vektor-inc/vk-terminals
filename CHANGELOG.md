@@ -1,5 +1,7 @@
 # Changelog
 
+## 1.38.0
+
 - [ 機能追加 ] サイドバーのタスク一覧に GitHub モード時の担当者フィルタ（デフォルト「自分のみ」）を追加（[#226](https://github.com/vektor-inc/vk-terminals/issues/226)）
 - [ 機能追加 ] サイドバーのタスク一覧の見出しを、GitHub モード時に task-queue の issue 一覧ページへのリンクにするように追加（[#233](https://github.com/vektor-inc/vk-terminals/issues/233)）
 - [ 仕様変更 ] サイドバーのタスク一覧の開閉を、見出し右端の独立トグルボタンに変更（[#226](https://github.com/vektor-inc/vk-terminals/issues/226)）

@@ -1213,12 +1213,19 @@ function startHttpApi() {
       return;
     }
 
-    // GET /widgetContract.js / /widgetView.js — モバイルは静的ファイルサーバーではないため、
-    // 宣言的ウィジェットの共有描画モジュール（PC 版と共通）を明示的に配信する。
-    if (req.method === 'GET' && (url.pathname === '/widgetContract.js' || url.pathname === '/widgetView.js')) {
+    // GET /widgetContract.js / /widgetView.js / /mobilePreviewText.js / /mobile.js — モバイルは静的ファイルサーバーではないため、
+    // 宣言的ウィジェットの共有描画モジュール（PC 版と共通）とモバイル用 JS を明示的に配信する。
+    if (req.method === 'GET' && (
+      url.pathname === '/widgetContract.js'
+      || url.pathname === '/widgetView.js'
+      || url.pathname === '/mobilePreviewText.js'
+      || url.pathname === '/mobile.js'
+    )) {
       const fileMap = {
         '/widgetContract.js': path.join(__dirname, 'utils', 'widgetContract.js'),
         '/widgetView.js': path.join(__dirname, 'renderer', 'widgetView.js'),
+        '/mobilePreviewText.js': path.join(__dirname, 'renderer', 'mobilePreviewText.js'),
+        '/mobile.js': path.join(__dirname, 'renderer', 'mobile.js'),
       };
       fs.readFile(fileMap[url.pathname], (err, data) => {
         if (err) {

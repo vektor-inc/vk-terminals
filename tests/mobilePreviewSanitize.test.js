@@ -1,11 +1,12 @@
 'use strict';
 
-const fs = require('node:fs');
-const path = require('node:path');
 const test = require('node:test');
-const vm = require('node:vm');
 const assert = require('node:assert/strict');
 
+const {
+  sanitizeMobilePreviewText,
+  stripAnsi,
+} = require('../renderer/mobilePreviewText');
 const {
   appendAnsiForDisplay,
   stripAnsiForDisplay,
@@ -13,26 +14,6 @@ const {
 
 const MAX_DISPLAY_ROWS = 500;
 const MAX_DISPLAY_LINE_LENGTH = 1001;
-
-function loadSanitizeMobilePreviewText() {
-  const html = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'mobile.html'), 'utf8');
-  const match = html.match(/\/\/ Claude Code[\s\S]*?\nfunction tail/);
-  assert.ok(match, 'sanitizeMobilePreviewText の定義を renderer/mobile.html から抽出できる');
-
-  const context = {};
-  vm.runInNewContext(match[0].replace(/\nfunction tail$/, ''), context);
-  return context.sanitizeMobilePreviewText;
-}
-
-function loadMobileStripAnsi() {
-  const html = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'mobile.html'), 'utf8');
-  const match = html.match(/"use strict";[\s\S]*?\n\/\/ Claude Code/);
-  assert.ok(match, 'stripAnsi の定義を renderer/mobile.html から抽出できる');
-
-  const context = {};
-  vm.runInNewContext(match[0].replace(/\n\/\/ Claude Code$/, ''), context);
-  return context.stripAnsi;
-}
 
 function tailString(s, n) {
   return s.length > n ? s.slice(s.length - n) : s;
@@ -79,7 +60,6 @@ function assertBoundedDisplayControls(name, fn) {
 }
 
 test('sanitizeMobilePreviewText: スピナー記号だけの行と数字断片行を除去する', () => {
-  const sanitizeMobilePreviewText = loadSanitizeMobilePreviewText();
   const input = [
     '✻',
     '✳40',
@@ -101,7 +81,6 @@ test('sanitizeMobilePreviewText: スピナー記号だけの行と数字断片�
 });
 
 test('sanitizeMobilePreviewText: 英字と日本語を含む本文行は残す', () => {
-  const sanitizeMobilePreviewText = loadSanitizeMobilePreviewText();
   const input = [
     'npm test passed 12/12',
     '変更内容をご確認ください',
@@ -115,7 +94,6 @@ test('sanitizeMobilePreviewText: 英字と日本語を含む本文行は残す',
 });
 
 test('sanitizeMobilePreviewText: 半角カナと全角英数だけの本文行は残す', () => {
-  const sanitizeMobilePreviewText = loadSanitizeMobilePreviewText();
   const input = [
     'ﾆﾎﾝｺﾞ',
     '２０２０',
@@ -127,7 +105,6 @@ test('sanitizeMobilePreviewText: 半角カナと全角英数だけの本文行�
 });
 
 test('mobile preview: CR で再描画された日本語行を途中改行として残さない', () => {
-  const sanitizeMobilePreviewText = loadSanitizeMobilePreviewText();
   const redraw = [
     'ペイン',
     'ペインの',
@@ -143,8 +120,6 @@ test('mobile preview: CR で再描画された日本語行を途中改行とし�
 });
 
 test('mobile stripAnsi: 生の CR 再描画を途中改行として残さない', () => {
-  const sanitizeMobilePreviewText = loadSanitizeMobilePreviewText();
-  const stripAnsi = loadMobileStripAnsi();
   const redraw = [
     'ペイン',
     'ペインの',
@@ -164,8 +139,6 @@ test('stripAnsiForDisplay: CR は現在行を部分上書きする', () => {
 });
 
 test('mobile stripAnsi: CR は現在行を部分上書きする', () => {
-  const stripAnsi = loadMobileStripAnsi();
-
   assert.equal(stripAnsi('abc\rXY'), 'XYc');
 });
 
@@ -183,8 +156,6 @@ test('stripAnsiForDisplay: erase-in-line CSI を CR 再描画に反映する', (
 });
 
 test('mobile stripAnsi: erase-in-line CSI を CR 再描画に反映する', () => {
-  const stripAnsi = loadMobileStripAnsi();
-
   assert.equal(stripAnsi('経過 120秒 5000トークン\r\x1b[2K経過 5秒'), '経過 5秒');
   assert.equal(stripAnsi('abcdef\rXY\x1b[K'), 'XY');
   assert.equal(stripAnsi('abcdef\rXY\x1b[0K'), 'XY');
@@ -220,14 +191,10 @@ test('stripAnsiForDisplay: 巨大な CSI カーソル移動でも行数と列幅
 });
 
 test('mobile stripAnsi: 巨大な CSI カーソル移動でも行数と列幅を上限内に収める', () => {
-  const stripAnsi = loadMobileStripAnsi();
-
   assertBoundedDisplayControls('mobile stripAnsi', stripAnsi);
 });
 
 test('mobile preview: Claude Code 風の CSI 位置指定再描画でも直近本文行を残す', () => {
-  const sanitizeMobilePreviewText = loadSanitizeMobilePreviewText();
-  const stripAnsi = loadMobileStripAnsi();
   const preview = tailString(
     sanitizeMobilePreviewText(stripAnsi(buildClaudeCodeCsiRedrawFrame()))
       .replace(/\n{3,}/g, '\n\n')
@@ -242,7 +209,6 @@ test('mobile preview: Claude Code 風の CSI 位置指定再描画でも直近�
 });
 
 test('mobile preview: PTY イベントをまたぐ CR 再描画も同一行として扱う', () => {
-  const sanitizeMobilePreviewText = loadSanitizeMobilePreviewText();
   const lastLines = appendAnsiForDisplay(
     stripAnsiForDisplay('ペイン'),
     '\rペインのリンク付きの部分、B'

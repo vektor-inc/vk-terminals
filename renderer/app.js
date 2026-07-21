@@ -4028,7 +4028,7 @@ ipcRenderer.on('terminal:agentroom', (event, termId, agents, replace) => {
 
 // ─── New pane request from HTTP API ──────────────────────────────────────────
 ipcRenderer.on('terminal:request-new-pane', async (event, payload = {}) => {
-  const { requestId, cwd, noClaude, stashed } = payload;
+  const { requestId, cwd, noClaude, stashed, useDefaults } = payload;
   const reply = (result) => ipcRenderer.send('terminal:new-pane-created', { requestId, ...result });
   const targetPaneId = findLargestVisiblePaneId() || focusedPaneId || (tree ? getAllLeafIds(tree)[0] : null);
   if (!targetPaneId) {
@@ -4039,8 +4039,19 @@ ipcRenderer.on('terminal:request-new-pane', async (event, payload = {}) => {
     // 表示面積が最大のペインを長辺方向に分割し、全体の空きが大きい場所へ追加する
     const rect = getPaneRect(targetPaneId);
     const direction = (rect && rect.height > rect.width) ? 'v' : 'h';
-    const splitOptions = typeof noClaude === 'boolean' ? { noClaude } : {};
-    const result = await splitPane(targetPaneId, direction, cwd, splitOptions);
+    // useDefaults: true でオプトインした呼び出し（モバイルの「ペインを追加」ボタン）だけ、
+    // cwd/noClaude 省略時に config 既定値（newPaneStartupDir / !newPaneAutoLaunchClaude）を補い、
+    // デスクトップの「＋」ボタン（addPane(newPaneStartupDir || null, { noClaude: !newPaneAutoLaunchClaude })）
+    // と挙動を揃える。明示指定があればそれを優先する。
+    // useDefaults を渡さない既存呼び出し元（orchestrator 等）は従来どおり passthrough し、
+    // noClaude 省略時は main.js 側の既定（globalPlainMode）解決に委ねる＝既存挙動を変えない（issue #217）。
+    let effectiveCwd = cwd;
+    let splitOptions = typeof noClaude === 'boolean' ? { noClaude } : {};
+    if (useDefaults === true) {
+      if (typeof cwd !== 'string' || !cwd) effectiveCwd = newPaneStartupDir || null;
+      if (typeof noClaude !== 'boolean') splitOptions = { noClaude: !newPaneAutoLaunchClaude };
+    }
+    const result = await splitPane(targetPaneId, direction, effectiveCwd, splitOptions);
     if (!result || !result.termId) {
       reply({ error: 'split failed or termId unavailable' });
       return;

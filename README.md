@@ -277,8 +277,9 @@ WSL2 上で vk-terminals を動かしている場合は、Windows との間に�
 - 自由入力欄から任意のテキストを送信できます。「末尾に改行(↵)を付ける」をオンにすると Enter 付きで送信します。
 - ▲▼ ボタンでペインの並び順を手動変更できます。順序は端末の localStorage に保存されます（issue #106）。
 - 「ターミナルを終了」ボタンで対象ペインを終了できます。実行中のプロセスも停止し、元に戻せません（issue #100）。
+- ペイン一覧の一番下の「ペインを追加」ボタンで新規ペインを作成できます。デスクトップの「＋」ボタンと同じく `newPaneStartupDir` / `newPaneAutoLaunchClaude` 設定に従います（issue #217）。
 
-モバイルページ内には新規ペイン作成ボタンはありません。外部からペインを作成する場合は HTTP API の [`POST /api/new-pane`](#post-apinew-pane) を使用してください。
+外部からペインを作成する場合は HTTP API の [`POST /api/new-pane`](#post-apinew-pane) も使用できます。
 
 ### セキュリティ上の注意
 

@@ -116,6 +116,22 @@ button.k.kill.is-locked:active { background: #6b3f3f; border-color: #7c4a4a; }
 .sendrow button { padding: 9px 14px; border-radius: 8px; border: none; background: var(--accent);
   color: #fff; font-weight: 700; font-size: 14px; }
 .empty { color: var(--muted); text-align: center; padding: 40px 20px; font-size: 13px; }
+/* ペイン追加ボタン（issue #217）。#list の外側直後の兄弟。display:flex の
+   ブロックレベルボックスなので幅は左右マージン分を除いて自動で伸び、カード
+   （#list padding:10px）と左右端が揃う。破壊的な終了ボタン（塗り赤）と対に
+   なる導線なので accent 青の塗り＋白文字で明確に区別する。末尾カード・#err
+   バナー・フッターと被らないよう上下に余白を取る。 */
+#add-pane-btn {
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  margin: 4px 10px 16px; padding: 10px 12px; min-height: 44px;
+  border-radius: 8px; border: 1px solid var(--accent);
+  background: var(--accent); color: #fff; font-size: 14px; font-weight: 700;
+  cursor: pointer; }
+#add-pane-btn .add-pane-icon { font-size: 16px; line-height: 1; }
+#add-pane-btn:active { background: #1d4fd0; border-color: #1d4fd0; }
+#add-pane-btn:focus-visible { outline: 2px solid #58a6ff; outline-offset: 2px; }
+#add-pane-btn:disabled { opacity: 0.7; cursor: default; }
+#add-pane-btn:disabled:active { background: var(--accent); border-color: var(--accent); }
 .nl-toggle { font-size: 11px; color: var(--muted); display: flex; align-items: center; gap: 5px;
   padding: 2px; }
 #err { display: none; background: #4a1e1e; color: #ffb4b4; font-size: 12px; padding: 6px 12px; }

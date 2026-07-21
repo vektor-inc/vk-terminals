@@ -1824,6 +1824,7 @@ function startHttpApi() {
         let requestedCwd = null;
         let requestedNoClaude;
         let requestedStashed;
+        let requestedUseDefaults;
         if (body.length > 0) {
           try {
             const parsed = JSON.parse(body);
@@ -1835,6 +1836,13 @@ function startHttpApi() {
             }
             if (typeof parsed?.stashed === 'boolean') {
               requestedStashed = parsed.stashed;
+            }
+            // useDefaults: true のときだけ、cwd/noClaude 省略時に renderer 側で
+            // config 既定値（newPaneStartupDir / !newPaneAutoLaunchClaude）を補う。
+            // モバイルの「ペインを追加」ボタン専用のオプトイン。他の呼び出し元
+            // （orchestrator 等）は従来どおり passthrough される（issue #217）。
+            if (typeof parsed?.useDefaults === 'boolean') {
+              requestedUseDefaults = parsed.useDefaults;
             }
           } catch {
             res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -1864,6 +1872,7 @@ function startHttpApi() {
         const payload = { requestId, cwd: requestedCwd };
         if (typeof requestedNoClaude === 'boolean') payload.noClaude = requestedNoClaude;
         if (typeof requestedStashed === 'boolean') payload.stashed = requestedStashed;
+        if (requestedUseDefaults === true) payload.useDefaults = true;
         win.webContents.send('terminal:request-new-pane', payload);
       });
       return;

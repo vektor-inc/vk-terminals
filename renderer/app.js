@@ -1823,7 +1823,7 @@ function updateTaskListTitleLink(section, tasks) {
   iconSpan.className = 'task-list-title-link-icon';
   iconSpan.setAttribute('aria-hidden', 'true');
   // 先頭の U+2060(WORD JOINER) で「タスク」末尾と ↗ の間の改行を禁止する（タイトルリンクと同方針）。
-  iconSpan.textContent = '⁠↗';
+  iconSpan.textContent = '\u2060↗';
   labelSpan.appendChild(iconSpan);
 
   link.appendChild(labelSpan);

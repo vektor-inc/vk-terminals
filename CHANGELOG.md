@@ -2,6 +2,7 @@
 
 - [ 機能追加 ] モバイル版に Codex CLI の使用量（使用率%・トークン数）を表示する機能を追加（[#218](https://github.com/vektor-inc/vk-terminals/issues/218)）
 - [ 機能追加 ] モバイル版のペイン一覧下部に、新規ペインを開く「ペインを追加」ボタンを追加（[#217](https://github.com/vektor-inc/vk-terminals/issues/217)）
+- [ 機能追加 ] サイドバーのタスク一覧で GitHub モード時に issue 名から task-queue の issue へのリンクを表示するように追加（[vk-orchestrator#177](https://github.com/vektor-inc/vk-orchestrator/issues/177)）
 
 ## 1.36.0
 

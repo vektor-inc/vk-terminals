@@ -29,6 +29,7 @@ const {
 } = require('./waitingState');
 const { deriveStatus } = require('./statusState');
 const { getPrBadgePresentation } = require('./prBadge');
+const { resolveQueueIssueUrl } = require('./taskQueueLink');
 const { isPatternValid } = require('./settingsValidation');
 const { isFieldVisible } = require('./settingsVisibility');
 const {
@@ -1183,6 +1184,12 @@ function normalizeTaskList(view) {
       if (typeof task.prUrl === 'string' && task.prUrl.trim()) {
         normalized.prUrl = task.prUrl.trim();
       }
+      // queueIssueUrl は GitHub モード時のみ実 http(s) URL が入る（ローカルモードは local://）。
+      // http(s) のときだけ保持し、サイドバーでタイトルを issue へのリンクにする（issue #177）。
+      const queueIssueUrl = resolveQueueIssueUrl(task.queueIssueUrl);
+      if (queueIssueUrl) {
+        normalized.queueIssueUrl = queueIssueUrl;
+      }
       return normalized;
     });
 }
@@ -1225,8 +1232,42 @@ function renderTaskItem(task) {
 
   const title = document.createElement('div');
   title.className = 'task-item-title';
-  title.textContent = task.title;
-  title.title = task.title;
+  if (task.queueIssueUrl) {
+    // GitHub モード時: タイトルを task-queue issue への外部リンクにする（issue #177）。
+    // renderTaskTitleContent（ペインタイトル）と同じ思想で、href には実 URL を入れず
+    // href="#" + click で openExternalUrlSafe を呼ぶ。親 div には title 属性を付けず
+    // <a> 側にツールチップ（タイトル + URL）を集約する。
+    const link = document.createElement('a');
+    link.className = 'task-item-title-link';
+    link.href = '#';
+    link.setAttribute('role', 'link');
+    link.setAttribute('aria-label', `${task.title}（外部ブラウザで開く）`);
+    link.draggable = false;
+    link.title = `${task.title}\n${task.queueIssueUrl}`;
+
+    const labelSpan = document.createElement('span');
+    labelSpan.className = 'task-item-title-text';
+    labelSpan.textContent = task.title;
+    link.appendChild(labelSpan);
+
+    const iconSpan = document.createElement('span');
+    iconSpan.className = 'task-item-title-icon';
+    iconSpan.setAttribute('aria-hidden', 'true');
+    iconSpan.textContent = '↗';
+    link.appendChild(iconSpan);
+
+    link.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openExternalUrlSafe(task.queueIssueUrl);
+    });
+
+    title.appendChild(link);
+  } else {
+    // ローカルモード / URL 無し: 従来どおりプレーンテキスト。
+    title.textContent = task.title;
+    title.title = task.title;
+  }
 
   const head = document.createElement('div');
   head.className = 'task-item-head';

@@ -517,6 +517,81 @@ test('モバイル UI: 反映待ちが新しい view の到着で解除される
   }
 });
 
+test('モバイル UI: 編集パネル操作中は poll 再描画で フォーカス・ドラフト・パネルが維持される', async ({ page }) => {
+  const port = await getFreePort();
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-mobile-tasks-focus-data-'));
+  const tasksFile = path.join(tmpRoot, 'tasks-view.json');
+  const commandsPath = path.join(tmpRoot, 'commands.jsonl');
+  writeJson(tasksFile, {
+    updatedAt: freshDate(),
+    tasks: [
+      {
+        id: '601',
+        title: '編集中に外部更新が入るタスク',
+        status: 'ready',
+        assignee: 'wada',
+        priority: 'low',
+        sequential: false,
+      },
+    ],
+  });
+
+  const { app, tmpRoot: appTmpRoot } = await launchApp(port, { tasksFile, commandsPath });
+  try {
+    await waitForTasks(port);
+    await page.goto(`http://127.0.0.1:${port}/`);
+    const task = page.locator('.task-item').filter({ hasText: '編集中に外部更新が入るタスク' });
+    await expect(task).toBeVisible({ timeout: 10_000 });
+    await expect(task.locator('.task-item-assignee')).toHaveText('担当: wada');
+
+    // 編集パネルを開き、優先度 select にフォーカスを当てて high をドラフトへ入れる。
+    const panel = await openTaskEditPanel(task);
+    const prioritySelect = panel.locator('select[data-task-control="priority-select"]');
+    await prioritySelect.focus();
+    await setSelectValue(prioritySelect, 'high');
+    await expect(prioritySelect).toHaveValue('high');
+
+    // 外部で tasks-view.json を更新（担当を変更）。poll が拾っても編集中はスキップされる想定。
+    writeJson(tasksFile, {
+      updatedAt: freshDate(),
+      tasks: [
+        {
+          id: '601',
+          title: '編集中に外部更新が入るタスク',
+          status: 'ready',
+          assignee: 'ando',
+          priority: 'low',
+          sequential: false,
+        },
+      ],
+    });
+
+    // poll 間隔（2 秒）を確実に跨ぐまで待つ。
+    await page.waitForTimeout(3500);
+
+    // 操作中はフォーカス・ドラフト・パネルが維持され、外部更新（担当）は反映されない。
+    await expect(panel).toBeVisible();
+    await expect(prioritySelect).toHaveValue('high');
+    await expect(task.locator('.task-item-assignee')).toHaveText('担当: wada');
+    const activeControl = await page.evaluate(() => {
+      const el = document.activeElement;
+      return el && el.dataset ? el.dataset.taskControl : null;
+    });
+    expect(activeControl).toBe('priority-select');
+
+    // フォーカスを外すと skip が解除され、次の poll で外部更新が反映される（skip が永続でないこと）。
+    await page.evaluate(() => { if (document.activeElement) document.activeElement.blur(); });
+    await expect(task.locator('.task-item-assignee')).toHaveText('担当: ando', { timeout: 15_000 });
+    // パネルは開いたまま、ドラフト値（high）も保持される。
+    await expect(panel).toBeVisible();
+    await expect(task.locator('select[data-task-control="priority-select"]')).toHaveValue('high');
+  } finally {
+    if (app) await app.close();
+    fs.rmSync(appTmpRoot, { recursive: true, force: true });
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
 test('モバイル HTTP API: 未知のステータス変更エラーは internal-error に丸める', async () => {
   const port = await getFreePort();
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-mobile-tasks-internal-error-'));

@@ -700,6 +700,77 @@ function getTaskEditPanelId(key) {
   return "task-edit-panel-" + String(key).replace(/[^A-Za-z0-9_-]/g, "-");
 }
 
+// ─── フォーカス保持（ポーリング再描画対策）─────────────────────────────────
+// poll() は 2 秒周期でリスト DOM を全再生成する。編集操作中に再生成すると、
+// キーボード / スクリーンリーダーのフォーカス位置が失われ（WCAG 2.4.3）、
+// モバイルではネイティブ select ピッカーが選択前に閉じてしまう。
+// PC 版（renderer/app.js）の capture/restore と、操作中の再生成スキップで防ぐ。
+
+function escapeTaskFocusSelectorValue(value) {
+  return String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+// 再描画直前に、#task-list 内でフォーカスを持つ編集コントロールの識別情報を控える。
+// renderer/app.js の captureTaskFocusState と挙動を揃えること。
+function captureTaskFocusState() {
+  var active = document.activeElement;
+  if (!(active instanceof HTMLElement) || !active.closest("#task-list")) return null;
+  var item = active.closest(".task-item");
+  var taskId = active.dataset.taskId || (item ? item.dataset.id : "");
+  var control = active.dataset.taskControl;
+  if (!taskId || !control) return null;
+  return {
+    taskId: taskId,
+    control: control,
+    value: active.dataset.value || "",
+    to: active.dataset.to || "",
+    expected: active.dataset.expected || ""
+  };
+}
+
+function buildTaskFocusSelector(focusState) {
+  if (!focusState) return "";
+  var selector = '[data-task-id="' + escapeTaskFocusSelectorValue(focusState.taskId)
+    + '"][data-task-control="' + escapeTaskFocusSelectorValue(focusState.control) + '"]';
+  if (focusState.value) selector += '[data-value="' + escapeTaskFocusSelectorValue(focusState.value) + '"]';
+  if (focusState.to) selector += '[data-to="' + escapeTaskFocusSelectorValue(focusState.to) + '"]';
+  if (focusState.expected) selector += '[data-expected="' + escapeTaskFocusSelectorValue(focusState.expected) + '"]';
+  return selector;
+}
+
+// 編集操作後に「編集」ボタンへフォーカスを戻すための focus state（PC 版と同じ）。
+function buildTaskEditToggleFocusState(taskKey) {
+  return { taskId: String(taskKey), control: "edit-toggle", value: "", to: "", expected: "" };
+}
+
+// 再描画後に、控えたフォーカスを復元する。対象が disabled なら aria-disabled のみ付ける。
+// renderer/app.js の restoreTaskFocusState と挙動を揃えること。
+function restoreTaskFocusState(focusState) {
+  var selector = buildTaskFocusSelector(focusState);
+  if (!selector) return;
+  var target = document.querySelector(selector);
+  if (!(target instanceof HTMLElement)) return;
+  if ("disabled" in target && target.disabled) {
+    target.setAttribute("aria-disabled", "true");
+    return;
+  }
+  try {
+    target.focus({ preventScroll: true });
+  } catch (e) {
+    target.focus();
+  }
+}
+
+// 編集パネルの select / トグルを操作中（展開中・フォーカスあり・反映待ちでない）かを判定する。
+// この間は poll による再生成をスキップし、ピッカー・フォーカス・ドラフトを丸ごと維持する。
+function shouldSkipTaskRenderForActiveEdit() {
+  var focusState = captureTaskFocusState();
+  if (!focusState) return false;
+  if (!expandedTaskEditIds[focusState.taskId]) return false;
+  if (getTaskPending(focusState.taskId)) return false;
+  return true;
+}
+
 // 新しい view が届くたびに、反映済み・消滅したタスクの pending / ドラフト / 展開状態を整理する。
 // renderer/app.js の syncPendingTaskCommands と挙動を揃えること。
 function syncPendingTaskCommands(tasks) {
@@ -772,7 +843,8 @@ async function submitTaskCommands(task, key, fields) {
     // 全項目の送信に成功したらパネルを閉じてドラフトを破棄する（反映待ちは view で解除）。
     delete expandedTaskEditIds[key];
     clearTaskEditDraft(key);
-    renderTaskList(lastTaskData);
+    // 成功後は「編集」ボタンへフォーカスを戻す（反映待ちで disabled の間は aria-disabled のみ）。
+    renderTaskList(lastTaskData, buildTaskEditToggleFocusState(key));
     showErr("");
     return true;
   } catch (e) {
@@ -874,13 +946,22 @@ function renderTaskItem(task, commandsConfigured, stale) {
     if (editButton.disabled) editButton.setAttribute("aria-disabled", "true");
     editButton.addEventListener("click", function() {
       if (editButton.disabled) return;
-      if (expandedTaskEditIds[taskKey]) {
+      var opening = !expandedTaskEditIds[taskKey];
+      if (opening) {
+        expandedTaskEditIds[taskKey] = true;
+      } else {
         delete expandedTaskEditIds[taskKey];
         clearTaskEditDraft(taskKey);
-      } else {
-        expandedTaskEditIds[taskKey] = true;
       }
-      renderTaskList(lastTaskData);
+      // 開閉直後は「編集」ボタンへフォーカスを戻す（aria-expanded の変化を伝える）。
+      renderTaskList(lastTaskData, buildTaskEditToggleFocusState(taskKey));
+      if (opening) {
+        // 画面下端で開いた際に折り返し部が視界外へ出ないよう、パネルを見える範囲へ寄せる。
+        var panel = document.getElementById(getTaskEditPanelId(taskKey));
+        if (panel && typeof panel.scrollIntoView === "function") {
+          panel.scrollIntoView({ block: "nearest" });
+        }
+      }
     });
     body.appendChild(editButton);
   }
@@ -1054,7 +1135,8 @@ function renderTaskEditPanel(task, taskKey, ctx) {
   cancelButton.addEventListener("click", function() {
     delete expandedTaskEditIds[taskKey];
     clearTaskEditDraft(taskKey);
-    renderTaskList(lastTaskData);
+    // キャンセル後は「編集」ボタンへフォーカスを戻す（パネルが閉じてもフォーカス迷子にしない）。
+    renderTaskList(lastTaskData, buildTaskEditToggleFocusState(taskKey));
   });
 
   var saveButton = document.createElement("button");
@@ -1102,11 +1184,11 @@ function renderTaskEditPanel(task, taskKey, ctx) {
         });
       }
     }
-    // 変更がなければ送信せずパネルを閉じる。
+    // 変更がなければ送信せずパネルを閉じ、「編集」ボタンへフォーカスを戻す。
     if (fields.length === 0) {
       delete expandedTaskEditIds[taskKey];
       clearTaskEditDraft(taskKey);
-      renderTaskList(lastTaskData);
+      renderTaskList(lastTaskData, buildTaskEditToggleFocusState(taskKey));
       return;
     }
     submitTaskCommands(task, taskKey, fields);
@@ -1121,7 +1203,16 @@ function renderTaskEditPanel(task, taskKey, ctx) {
   return panel;
 }
 
-function renderTaskList(view) {
+function renderTaskList(view, focusStateOverride) {
+  // ポーリング（focusStateOverride 省略）で編集コントロールを操作中の間は、
+  // DOM を作り直さずスキップし、ピッカー・フォーカス・ドラフトを丸ごと維持する。
+  // データは lastTaskData に取り込み、操作を終えた次の描画で最新化される。
+  if (focusStateOverride === undefined && shouldSkipTaskRenderForActiveEdit()) {
+    lastTaskData = view || null;
+    return;
+  }
+  // 明示指定（ボタン操作後）が無ければ、再描画前のフォーカス位置を控えて後で復元する。
+  var focusState = focusStateOverride === undefined ? captureTaskFocusState() : focusStateOverride;
   lastTaskData = view || null;
   if (!taskListSection || !taskListGroups) return;
   var tasks = normalizeTaskList(view);
@@ -1157,6 +1248,8 @@ function renderTaskList(view) {
     section.appendChild(listEl);
     taskListGroups.appendChild(section);
   });
+  // 再生成後にフォーカスを復元する（操作中スキップに漏れたキーボード操作等の保険）。
+  restoreTaskFocusState(focusState);
 }
 
 async function send(termId, input) {

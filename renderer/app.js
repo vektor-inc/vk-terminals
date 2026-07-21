@@ -4,6 +4,7 @@ const { Terminal } = require('@xterm/xterm');
 const { FitAddon } = require('@xterm/addon-fit');
 const { appendAnsiForDisplay, stripAnsiForDisplay } = require('../utils/stripAnsi');
 const { normalizeConfirmClose, shouldConfirmClose } = require('../utils/closeConfirm');
+const { isSafeHttpUrl } = require('./urlSafety');
 // 宣言的ウィジェット（tasks-widget.json）の契約・共有描画（#229 / vk-orchestrator#182）。
 // タスクの語彙・色・遷移・確認文言は自前に持たず、orchestrator が書き出す宣言だけを描画する。
 const widgetContract = require('../utils/widgetContract');
@@ -20,6 +21,7 @@ const {
   normalizeWaitingExcludeCwdPatterns,
 } = require('./waitingState');
 const { deriveStatus } = require('./statusState');
+const { getStatusPresentation } = require('./statusPresentation');
 const { getPrBadgePresentation } = require('./prBadge');
 const { resolveQueueIssuesListUrl } = require('./taskQueueLink');
 const { isPatternValid } = require('./settingsValidation');
@@ -488,14 +490,7 @@ function getDisplayUrl(t) {
 // http(s): スキームのチェック（renderer 側の二段構えバリデーション）。
 // main 側で検証済みでも shell.openExternal 直前に念のため再チェックする。
 function isSafeExternalUrl(url) {
-  if (typeof url !== 'string' || !url) return false;
-  if (url.length > 2048) return false;
-  try {
-    const u = new URL(url);
-    return u.protocol === 'http:' || u.protocol === 'https:';
-  } catch (_e) {
-    return false;
-  }
+  return isSafeHttpUrl(url);
 }
 
 // shell.openExternal を共通化したヘルパー。
@@ -2261,14 +2256,6 @@ function appendGridHandles(grid, t, cols, rows) {
     h.addEventListener('mousedown', e => startGridResize(e, grid, 'row', j, cols, rows));
     grid.appendChild(h);
   }
-}
-
-// status → { label, ariaLabel } のマッピングを一元化する（updatePaneStatus / renderLeaf 共用）。
-// 'idle' および未知の値は空文字を返し、呼び出し側で「非表示・aria-label 除去」相当の扱いになる。
-function getStatusPresentation(status) {
-  if (status === 'waiting') return { label: '入力待ち', ariaLabel: 'ステータス: 入力待ち' };
-  if (status === 'running') return { label: '実行中',   ariaLabel: 'ステータス: 実行中' };
-  return { label: '', ariaLabel: '' };
 }
 
 // ─── Agent room: 状態の解決と描画（issue #58） ───────────────────────────────

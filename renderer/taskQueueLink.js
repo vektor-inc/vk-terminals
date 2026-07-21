@@ -1,5 +1,7 @@
 'use strict';
 
+const { isSafeHttpUrl } = require('./urlSafety');
+
 // サイドバーのタスク一覧で、タスクの queueIssueUrl を「リンク化してよい URL」か
 // どうか判定する純粋ヘルパー（issue #177 / 元 vk-orchestrator#177）。
 //
@@ -9,18 +11,11 @@
 //   - ローカルモード: local://queue/<id> → リンク化しない（プレーンテキストのまま）
 //
 // http(s) 以外（local:// など）を弾くことで、GitHub モードのときだけ実 URL を返す。
-// app.js 側の isSafeExternalUrl / openExternalUrlSafe と同じ「http(s) のみ許可」方針に揃える。
 function resolveQueueIssueUrl(url) {
   if (typeof url !== 'string') return undefined;
   const trimmed = url.trim();
-  if (!trimmed || trimmed.length > 2048) return undefined;
-  try {
-    const u = new URL(trimmed);
-    if (u.protocol === 'http:' || u.protocol === 'https:') return trimmed;
-  } catch (_e) {
-    return undefined;
-  }
-  return undefined;
+  if (!isSafeHttpUrl(trimmed)) return undefined;
+  return trimmed;
 }
 
 // タスクの queueIssueUrl（個別 issue の実 URL）から、task-queue の issue 一覧ページ URL を
@@ -42,7 +37,7 @@ function resolveQueueIssuesListUrl(url) {
   } catch (_e) {
     return undefined;
   }
-  if (u.protocol !== 'http:' && u.protocol !== 'https:') return undefined;
+  if (!isSafeHttpUrl(trimmed)) return undefined;
   // パスが `.../issues/<番号>`（末尾スラッシュ可）のときだけ末尾の `/<番号>` を落として一覧にする。
   const match = /^(.*\/issues)\/\d+\/?$/.exec(u.pathname);
   if (!match) return undefined;

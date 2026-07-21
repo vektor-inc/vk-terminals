@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 仕様変更 ] サイドバー／モバイルのタスク一覧を、vk-orchestrator が書き出す宣言（tasks-widget.json）を描画する汎用ウィジェット方式に刷新（[#229](https://github.com/vektor-inc/vk-terminals/issues/229)）
+
 ## 1.38.0
 
 - [ 機能追加 ] サイドバーのタスク一覧に GitHub モード時の担当者フィルタ（デフォルト「自分のみ」）を追加（[#226](https://github.com/vektor-inc/vk-terminals/issues/226)）

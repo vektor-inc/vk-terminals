@@ -8,12 +8,10 @@ const crypto = require('crypto');
 const { execFile } = require('child_process');
 const { promisify } = require('util');
 const { stripAnsiForPattern } = require('./utils/stripAnsi');
-const {
-  getTaskStatusActions,
-  isAllowedTransition,
-  isAllowedTaskPriorityValue,
-  isAllowedTaskSequentialValue,
-} = require('./utils/taskStatusActions');
+// 宣言的ウィジェット（tasks-widget.json）契約の共有ロジック（#229 / vk-orchestrator#182）。
+// タスクのドメイン語彙（遷移マトリクス・ラベル・優先度など）はこのプロセスに持たず、
+// orchestrator が書き出す宣言を検証・中継するだけの汎用実装にする。
+const widgetContract = require('./utils/widgetContract');
 // エージェントルーム（issue #58）の agent 名・state 検証を renderer 側と共有する。
 // canonicalizeState / isKnownAgent は DOM 非依存なので main プロセスから require して使える。
 const { canonicalizeState, isKnownAgent } = require('./renderer/agentRoom');
@@ -91,14 +89,16 @@ const MENU_MAX_SOURCE = 100;
 const MENU_MAX_ICON = 8;
 const menuSources = new Map();
 
-const TASKS_POLL_INTERVAL_MS = 3000;
-const TASKS_WATCH_DEBOUNCE_MS = 150;
-let tasksFilePath = '';
-let tasksWatch = null;
-let tasksPollTimer = null;
-let tasksDebounceTimer = null;
-let tasksLastRaw = Symbol('tasksLastRaw:init');
-let tasksSnapshot = null;
+// 宣言的ウィジェット（tasks-widget.json）の監視。旧 tasks-view.json とは別系統で監視し、
+// dual-write 期間は新パス（widget）を優先する。
+const WIDGET_POLL_INTERVAL_MS = 3000;
+const WIDGET_WATCH_DEBOUNCE_MS = 150;
+let widgetFilePath = '';
+let widgetWatch = null;
+let widgetPollTimer = null;
+let widgetDebounceTimer = null;
+let widgetLastRaw = Symbol('widgetLastRaw:init');
+let widgetPayload = null;
 
 function validateUrlField(raw, fieldName) {
   if (raw === '' || raw == null) {
@@ -297,6 +297,12 @@ function normalizeAbsoluteConfigPath(config, keys) {
   return '';
 }
 
+// 新 tasks-widget.json（宣言的ウィジェット）の絶対パス。widgetFile 優先、tasksWidgetPath も受け付ける。
+function normalizeTasksWidgetFile(config) {
+  return normalizeAbsoluteConfigPath(config, ['widgetFile', 'tasksWidgetPath', 'tasksWidgetFile']);
+}
+
+// 旧 tasks-view.json の絶対パス。dual-write 期間の後方互換注記（legacyNotice）判定にのみ使う。
 function normalizeTasksFile(config) {
   return normalizeAbsoluteConfigPath(config, ['tasksFile', 'tasksViewPath']);
 }
@@ -305,252 +311,143 @@ function normalizeCommandsFile(config) {
   return normalizeAbsoluteConfigPath(config, ['commandsPath', 'tasksCommandFile']);
 }
 
-function readTasksSnapshotFromFile(filePath) {
+// tasks-widget.json を読み、契約に沿ってサニタイズしたウィジェットを返す。
+// ファイルが無い・JSON が壊れている・kind が契約外のときは widget: null を返す。
+function readWidgetFromFile(filePath) {
   let raw = null;
   try {
     raw = fs.readFileSync(filePath, 'utf8');
   } catch (_e) {
-    return {
-      raw: null,
-      view: {
-        updatedAt: null,
-        tasks: [],
-        unavailable: true,
-      },
-    };
+    return { raw: null, widget: null };
   }
-
   try {
     const parsed = JSON.parse(raw);
-    const tasks = Array.isArray(parsed?.tasks) ? parsed.tasks : [];
-    // viewer（自分の GitHub ログイン名）はスナップショットのトップレベルに入る（vk-orchestrator#181 で付与予定）。
-    // 現状はまだ来ないため、非空文字列でなければ null にフォールバックする。
-    const viewer = typeof parsed?.viewer === 'string' && parsed.viewer.trim() ? parsed.viewer.trim() : null;
-    return {
-      raw,
-      view: {
-        updatedAt: typeof parsed?.updatedAt === 'string' ? parsed.updatedAt : null,
-        tasks,
-        viewer,
-      },
-    };
+    // サーバー側の検証（防御的サニタイズ）。tone/field/action/rel の allowlist・文字長上限・
+    // URL の http(s) 検証・payload のプリミティブ化をここで行い、renderer へ渡す前に安全化する。
+    const widget = widgetContract.sanitizeWidget(parsed);
+    return { raw, widget };
   } catch (e) {
-    console.error(`${LOG_PREFIX} Failed to parse tasks snapshot: ${filePath}`, e.message);
-    return {
-      raw,
-      view: {
-        updatedAt: null,
-        tasks: [],
-        unavailable: true,
-      },
-    };
+    console.error(`${LOG_PREFIX} Failed to parse tasks widget: ${filePath}`, e.message);
+    return { raw, widget: null };
   }
 }
 
-function withTaskStatusActions(view) {
-  const tasks = Array.isArray(view?.tasks) ? view.tasks : [];
+// renderer / モバイルへ配る中継ペイロードを組み立てる。
+// dual-write 期間: 新 widget があればそれを描画。無く旧 tasks-view.json だけがある場合は
+// タスク語彙を復活させず legacyNotice のみ立てる（意味論には踏み込まない）。
+function buildWidgetPayload(widget) {
   const config = loadUserConfig();
-  // assignees（複数担当の配列）も露出する。GitHub issue は複数 assign 可のため、
-  // 単数 assignee に加えて配列を渡し、renderer 側で「自分のみ」判定に使う。
-  const taskFields = ['id', 'title', 'status', 'assignee', 'assignees', 'startedAt', 'updatedAt', 'createdAt', 'priority', 'sequential', 'prUrl'];
-  // viewer は非空文字列でなければ null に正規化して露出する（#181 反映前は null）。
-  const viewer = typeof view?.viewer === 'string' && view.viewer.trim() ? view.viewer.trim() : null;
+  const legacyConfigured = !!normalizeTasksFile(config);
+  const legacyNotice = !widget && legacyConfigured;
   return {
-    updatedAt: typeof view?.updatedAt === 'string' ? view.updatedAt : null,
-    unavailable: view?.unavailable === true,
-    viewer,
-    tasks: tasks.map((task) => {
-      const exposedTask = {};
-      taskFields.forEach((field) => {
-        if (Object.prototype.hasOwnProperty.call(task || {}, field) && task[field] !== undefined) {
-          exposedTask[field] = task[field];
-        }
-      });
-      const hasPriorityContract = Object.prototype.hasOwnProperty.call(task || {}, 'priority');
-      exposedTask.actions = getTaskStatusActions(typeof task?.status === 'string' ? task.status : '')
-        .filter((action) => hasPriorityContract || action.confirm !== true);
-      return exposedTask;
-    }),
-    tasksConfigured: !!normalizeTasksFile(config),
+    widget: widget || null,
+    legacyNotice,
     commandsConfigured: !!normalizeCommandsFile(config),
   };
 }
 
-async function submitTaskStatusCommand(payload) {
-  try {
-    const commandsFile = normalizeCommandsFile(loadUserConfig());
-    if (!commandsFile) {
-      return { ok: false, error: 'commands-file-not-configured' };
-    }
-
-    const taskId = Number(payload && payload.taskId);
-    if (!Number.isInteger(taskId) || taskId <= 0) {
-      return { ok: false, error: 'invalid-task-id' };
-    }
-
-    const expected = String(payload && payload.expected);
-    const to = String(payload && payload.to);
-    if (!isAllowedTransition(expected, to)) {
-      return { ok: false, error: 'disallowed-transition' };
-    }
-
-    const command = {
-      id: crypto.randomUUID(),
-      taskId,
-      action: 'set-status',
-      to,
-      expected,
-      requestedAt: new Date().toISOString(),
-    };
-    await fs.promises.mkdir(path.dirname(commandsFile), { recursive: true });
-    await fs.promises.appendFile(commandsFile, `${JSON.stringify(command)}\n`, 'utf8');
-    return { ok: true, id: command.id };
-  } catch (e) {
-    console.error(LOG_PREFIX, e);
-    return { ok: false, error: 'internal-error' };
-  }
-}
-
+// commands.jsonl へ 1 行追記する共通機構（新 action は増やさない）。
 async function appendTaskCommand(command, commandsFile = normalizeCommandsFile(loadUserConfig())) {
   if (!commandsFile) {
     return { ok: false, error: 'commands-file-not-configured' };
   }
-
   await fs.promises.mkdir(path.dirname(commandsFile), { recursive: true });
   await fs.promises.appendFile(commandsFile, `${JSON.stringify(command)}\n`, 'utf8');
   return { ok: true, id: command.id };
 }
 
-async function submitTaskPriorityCommand(payload) {
+// 宣言のコマンド断片 { action, taskId, to, expected } を受け取り、契約 allowlist で検証してから
+// 一意 id と requestedAt を付与し commands.jsonl へ追記する。ビューア（VK Terminals）が id と
+// requestedAt を付与する契約なので、ここで crypto.randomUUID と ISO8601 を採番する。
+async function submitWidgetCommand(fragment) {
   try {
     const commandsFile = normalizeCommandsFile(loadUserConfig());
     if (!commandsFile) {
       return { ok: false, error: 'commands-file-not-configured' };
     }
-
-    const taskId = Number(payload && payload.taskId);
-    if (!Number.isInteger(taskId) || taskId <= 0) {
-      return { ok: false, error: 'invalid-task-id' };
-    }
-
-    const expected = String(payload && payload.expected);
-    const to = String(payload && payload.to);
-    if (!isAllowedTaskPriorityValue(expected) || !isAllowedTaskPriorityValue(to) || expected === to) {
-      return { ok: false, error: 'disallowed-transition' };
-    }
-
-    return appendTaskCommand({
+    const command = widgetContract.buildCommandLine(fragment, {
       id: crypto.randomUUID(),
-      taskId,
-      action: 'set-priority',
-      to,
-      expected,
       requestedAt: new Date().toISOString(),
-    }, commandsFile);
+    });
+    if (!command) {
+      return { ok: false, error: 'invalid-command' };
+    }
+    return appendTaskCommand(command, commandsFile);
   } catch (e) {
     console.error(LOG_PREFIX, e);
     return { ok: false, error: 'internal-error' };
   }
 }
 
-async function submitTaskSequentialCommand(payload) {
-  try {
-    const commandsFile = normalizeCommandsFile(loadUserConfig());
-    if (!commandsFile) {
-      return { ok: false, error: 'commands-file-not-configured' };
-    }
-
-    const taskId = Number(payload && payload.taskId);
-    if (!Number.isInteger(taskId) || taskId <= 0) {
-      return { ok: false, error: 'invalid-task-id' };
-    }
-
-    const expected = String(payload && payload.expected);
-    const to = String(payload && payload.to);
-    if (!isAllowedTaskSequentialValue(expected) || !isAllowedTaskSequentialValue(to) || expected === to) {
-      return { ok: false, error: 'disallowed-transition' };
-    }
-
-    return appendTaskCommand({
-      id: crypto.randomUUID(),
-      taskId,
-      action: 'set-sequential',
-      to,
-      expected,
-      requestedAt: new Date().toISOString(),
-    }, commandsFile);
-  } catch (e) {
-    console.error(LOG_PREFIX, e);
-    return { ok: false, error: 'internal-error' };
-  }
-}
-
-function taskStatusCommandHttpStatus(result) {
+function widgetCommandHttpStatus(result) {
   if (!result || result.ok) return 200;
   if (result.error === 'commands-file-not-configured') return 409;
-  if (result.error === 'invalid-task-id' || result.error === 'disallowed-transition') return 400;
+  if (result.error === 'invalid-command') return 400;
   return 500;
 }
 
-function pushTasksUpdate() {
-  if (!tasksFilePath || !win || win.isDestroyed()) return;
-  if (!tasksSnapshot) {
-    const next = readTasksSnapshotFromFile(tasksFilePath);
-    tasksLastRaw = next.raw;
-    tasksSnapshot = next.view;
-  }
-  win.webContents.send('tasks:update', tasksSnapshot);
+function currentWidgetPayload() {
+  if (widgetPayload) return widgetPayload;
+  const config = loadUserConfig();
+  const filePath = normalizeTasksWidgetFile(config);
+  const widget = filePath ? readWidgetFromFile(filePath).widget : null;
+  widgetPayload = buildWidgetPayload(widget);
+  return widgetPayload;
 }
 
-function refreshTasksSnapshot(forceSend = false) {
-  if (!tasksFilePath) return;
-  const next = readTasksSnapshotFromFile(tasksFilePath);
-  const changed = next.raw !== tasksLastRaw;
-  tasksLastRaw = next.raw;
-  tasksSnapshot = next.view;
-  if (changed || forceSend) pushTasksUpdate();
+function pushWidgetUpdate() {
+  if (!win || win.isDestroyed()) return;
+  win.webContents.send('widgets:update', currentWidgetPayload());
 }
 
-function scheduleTasksRefresh() {
-  if (!tasksFilePath) return;
-  if (tasksDebounceTimer) clearTimeout(tasksDebounceTimer);
-  tasksDebounceTimer = setTimeout(() => {
-    tasksDebounceTimer = null;
-    refreshTasksSnapshot(true);
-  }, TASKS_WATCH_DEBOUNCE_MS);
+function refreshWidgetSnapshot(forceSend = false) {
+  const config = loadUserConfig();
+  widgetFilePath = normalizeTasksWidgetFile(config);
+  const next = widgetFilePath ? readWidgetFromFile(widgetFilePath) : { raw: null, widget: null };
+  const changed = next.raw !== widgetLastRaw;
+  widgetLastRaw = next.raw;
+  widgetPayload = buildWidgetPayload(next.widget);
+  if (changed || forceSend) pushWidgetUpdate();
 }
 
-function startTasksWatcher() {
-  tasksFilePath = normalizeTasksFile(loadUserConfig());
-  if (!tasksFilePath) return;
+function scheduleWidgetRefresh() {
+  if (widgetDebounceTimer) clearTimeout(widgetDebounceTimer);
+  widgetDebounceTimer = setTimeout(() => {
+    widgetDebounceTimer = null;
+    refreshWidgetSnapshot(true);
+  }, WIDGET_WATCH_DEBOUNCE_MS);
+}
 
-  refreshTasksSnapshot(false);
+function startWidgetWatcher() {
+  widgetFilePath = normalizeTasksWidgetFile(loadUserConfig());
+  refreshWidgetSnapshot(false);
+  if (!widgetFilePath) return;
 
   try {
-    const dir = path.dirname(tasksFilePath);
-    const base = path.basename(tasksFilePath);
-    tasksWatch = fs.watch(dir, (eventType, filename) => {
-      if (!filename || String(filename) === base) scheduleTasksRefresh();
+    const dir = path.dirname(widgetFilePath);
+    const base = path.basename(widgetFilePath);
+    widgetWatch = fs.watch(dir, (eventType, filename) => {
+      if (!filename || String(filename) === base) scheduleWidgetRefresh();
     });
-    tasksWatch.on('error', (e) => {
-      console.error(`${LOG_PREFIX} tasks watcher failed:`, e && e.message);
+    widgetWatch.on('error', (e) => {
+      console.error(`${LOG_PREFIX} widget watcher failed:`, e && e.message);
     });
   } catch (e) {
-    console.error(`${LOG_PREFIX} Failed to watch tasks file: ${tasksFilePath}`, e && e.message);
+    console.error(`${LOG_PREFIX} Failed to watch widget file: ${widgetFilePath}`, e && e.message);
   }
 
-  tasksPollTimer = setInterval(() => refreshTasksSnapshot(false), TASKS_POLL_INTERVAL_MS);
+  widgetPollTimer = setInterval(() => refreshWidgetSnapshot(false), WIDGET_POLL_INTERVAL_MS);
 }
 
-function stopTasksWatcher() {
-  if (tasksDebounceTimer) clearTimeout(tasksDebounceTimer);
-  tasksDebounceTimer = null;
-  if (tasksPollTimer) clearInterval(tasksPollTimer);
-  tasksPollTimer = null;
-  if (tasksWatch) {
-    try { tasksWatch.close(); } catch (_e) {}
+function stopWidgetWatcher() {
+  if (widgetDebounceTimer) clearTimeout(widgetDebounceTimer);
+  widgetDebounceTimer = null;
+  if (widgetPollTimer) clearInterval(widgetPollTimer);
+  widgetPollTimer = null;
+  if (widgetWatch) {
+    try { widgetWatch.close(); } catch (_e) {}
   }
-  tasksWatch = null;
+  widgetWatch = null;
 }
 
 /**
@@ -830,7 +727,7 @@ function createWindow() {
 
   win.webContents.on('did-finish-load', () => {
     pushMenuUpdate();
-    pushTasksUpdate();
+    pushWidgetUpdate();
   });
   win.loadFile('renderer/index.html');
   // win.webContents.openDevTools(); // uncomment to debug
@@ -838,7 +735,7 @@ function createWindow() {
 
 app.whenReady().then(async () => {
   createWindow();
-  startTasksWatcher();
+  startWidgetWatcher();
   await checkAndUpdate();
   startHttpApi();
   // 使用量スナップショットを起動時に温めておく（初回ポーリングで null が返るのを避ける）。
@@ -853,7 +750,7 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   cleanupPtys();
-  stopTasksWatcher();
+  stopWidgetWatcher();
   try { fs.unlinkSync(STATE_FILE); } catch (e) {}
   if (httpServer) httpServer.close();
 });
@@ -870,6 +767,7 @@ ipcMain.handle('app:get-config', () => {
   const waitingExcludeCwdPatterns = Array.isArray(config.waitingExcludeCwdPatterns)
     ? config.waitingExcludeCwdPatterns.filter((pattern) => typeof pattern === 'string')
     : [];
+  const widgetFile = normalizeTasksWidgetFile(config);
   const tasksFile = normalizeTasksFile(config);
   const commandsFile = normalizeCommandsFile(config);
   return {
@@ -880,21 +778,17 @@ ipcMain.handle('app:get-config', () => {
     // ペインを閉じる時の確認（issue #184）。不正値・未指定は既定 'busy' に正規化して渡す。
     confirmClose: normalizeConfirmClose(config.confirmClose),
     waitingExcludeCwdPatterns,
+    widgetFile,
+    // tasksFile（旧 tasks-view.json）は dual-write 期間の後方互換注記判定に残す。
     tasksFile,
     commandsFile,
   };
 });
 
-ipcMain.handle('tasks:set-status', async (_event, payload) => {
-  return submitTaskStatusCommand(payload);
-});
-
-ipcMain.handle('tasks:set-priority', async (_event, payload) => {
-  return submitTaskPriorityCommand(payload);
-});
-
-ipcMain.handle('tasks:set-sequential', async (_event, payload) => {
-  return submitTaskSequentialCommand(payload);
+// 宣言的ウィジェットのコマンド中継（汎用）。renderer は宣言に載っていたコマンド断片
+// { action, taskId, to, expected } をそのまま渡し、main が検証・id/requestedAt 付与・追記する。
+ipcMain.handle('widgets:command', async (_event, fragment) => {
+  return submitWidgetCommand(fragment);
 });
 
 // 使用状況の取得（issue #69 → #73 で公式 API 主・トランスクリプト従の統一構造に変更）。
@@ -1206,7 +1100,7 @@ function createAdditionalPane(cwd, options = {}) {
 let additionalPanesCreated = false;
 ipcMain.on('terminal:renderer-ready', async () => {
   pushMenuUpdate();
-  pushTasksUpdate();
+  pushWidgetUpdate();
   if (additionalPanesCreated) return; // closePane で最後のペインを閉じて再 initApp された場合は再生成しない
   additionalPanesCreated = true;
   const config = loadUserConfig();
@@ -1319,6 +1213,25 @@ function startHttpApi() {
       return;
     }
 
+    // GET /widgetContract.js / /widgetView.js — モバイルは静的ファイルサーバーではないため、
+    // 宣言的ウィジェットの共有描画モジュール（PC 版と共通）を明示的に配信する。
+    if (req.method === 'GET' && (url.pathname === '/widgetContract.js' || url.pathname === '/widgetView.js')) {
+      const fileMap = {
+        '/widgetContract.js': path.join(__dirname, 'utils', 'widgetContract.js'),
+        '/widgetView.js': path.join(__dirname, 'renderer', 'widgetView.js'),
+      };
+      fs.readFile(fileMap[url.pathname], (err, data) => {
+        if (err) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'widget module not found' }));
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(data);
+      });
+      return;
+    }
+
     // GET /api/states
     if (req.method === 'GET' && url.pathname === '/api/states') {
       // usage（issue #69）はモバイルページの既存ポーリングに相乗りで additive に追加する。
@@ -1347,26 +1260,19 @@ function startHttpApi() {
       return;
     }
 
-    // GET /api/tasks
-    //   モバイルページ向けに tasks-view.json のスナップショットを返す。
-    //   ステータス遷移の正は utils/taskStatusActions.js に置き、ここで各タスクの actions を計算する。
-    if (req.method === 'GET' && url.pathname === '/api/tasks') {
+    // GET /api/widgets
+    //   モバイルページ向けに宣言的ウィジェット（tasks-widget.json）の中継ペイロードを返す。
+    //   ステータス遷移・ラベル・確認文言などの語彙は持たず、サニタイズ済みの宣言をそのまま返す。
+    if (req.method === 'GET' && url.pathname === '/api/widgets') {
       const config = loadUserConfig();
-      const tasksFile = normalizeTasksFile(config);
-      let view = tasksSnapshot;
-      if (tasksFile && (!view || tasksFile !== tasksFilePath)) {
-        const next = readTasksSnapshotFromFile(tasksFile);
-        view = next.view;
-      }
-      if (!tasksFile) {
-        view = {
-          updatedAt: null,
-          tasks: [],
-          unavailable: true,
-        };
+      const filePath = normalizeTasksWidgetFile(config);
+      let payload = widgetPayload;
+      if (!payload || filePath !== widgetFilePath) {
+        const widget = filePath ? readWidgetFromFile(filePath).widget : null;
+        payload = buildWidgetPayload(widget);
       }
       res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-      res.end(JSON.stringify(withTaskStatusActions(view)));
+      res.end(JSON.stringify(payload));
       return;
     }
 
@@ -1423,9 +1329,10 @@ function startHttpApi() {
       return;
     }
 
-    // POST /api/tasks/set-status  { taskId: 123, expected: "awaiting-approval", to: "ready" }
-    //   サイドバー IPC の tasks:set-status と同じ共通ヘルパーで commands.jsonl に依頼を追記する。
-    if (req.method === 'POST' && url.pathname === '/api/tasks/set-status') {
+    // POST /api/widgets/command  { action, taskId, to, expected }
+    //   宣言に載っていたコマンド断片をそのまま受け取り、契約 allowlist で検証してから
+    //   id / requestedAt を付与し commands.jsonl へ追記する（サイドバー IPC widgets:command と同経路）。
+    if (req.method === 'POST' && url.pathname === '/api/widgets/command') {
       if (isForbiddenOrigin(req)) {
         res.writeHead(403, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'forbidden origin' }));
@@ -1440,56 +1347,8 @@ function startHttpApi() {
           res.end(JSON.stringify({ error: 'invalid JSON' }));
           return;
         }
-        const result = await submitTaskStatusCommand(parsed);
-        res.writeHead(taskStatusCommandHttpStatus(result), { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(result.ok ? result : { ok: false, error: result.error }));
-      });
-      return;
-    }
-
-    // POST /api/tasks/set-priority  { taskId: 123, expected: "none", to: "high" }
-    //   commands.jsonl には null ではなく none/high/medium/low の文字列で依頼する。
-    if (req.method === 'POST' && url.pathname === '/api/tasks/set-priority') {
-      if (isForbiddenOrigin(req)) {
-        res.writeHead(403, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'forbidden origin' }));
-        return;
-      }
-      readJsonBody(req, res, 10 * 1024, async (body) => {
-        let parsed;
-        try {
-          parsed = JSON.parse(body);
-        } catch (_e) {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'invalid JSON' }));
-          return;
-        }
-        const result = await submitTaskPriorityCommand(parsed);
-        res.writeHead(taskStatusCommandHttpStatus(result), { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(result.ok ? result : { ok: false, error: result.error }));
-      });
-      return;
-    }
-
-    // POST /api/tasks/set-sequential  { taskId: 123, expected: "parallel", to: "sequential" }
-    //   tasks-view.json の boolean を UI/API 呼び出し側で sequential/parallel に変換して送る。
-    if (req.method === 'POST' && url.pathname === '/api/tasks/set-sequential') {
-      if (isForbiddenOrigin(req)) {
-        res.writeHead(403, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'forbidden origin' }));
-        return;
-      }
-      readJsonBody(req, res, 10 * 1024, async (body) => {
-        let parsed;
-        try {
-          parsed = JSON.parse(body);
-        } catch (_e) {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'invalid JSON' }));
-          return;
-        }
-        const result = await submitTaskSequentialCommand(parsed);
-        res.writeHead(taskStatusCommandHttpStatus(result), { 'Content-Type': 'application/json' });
+        const result = await submitWidgetCommand(parsed);
+        res.writeHead(widgetCommandHttpStatus(result), { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(result.ok ? result : { ok: false, error: result.error }));
       });
       return;

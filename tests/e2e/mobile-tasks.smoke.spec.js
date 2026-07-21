@@ -84,12 +84,18 @@ async function waitForTasks(port, timeoutMs = 20_000) {
   throw lastError || new Error('/api/tasks did not become ready');
 }
 
-async function selectWithDialog(page, select, value, accept) {
-  const dialogPromise = page.waitForEvent('dialog');
-  const changePromise = select.evaluate((el, nextValue) => {
+// 編集パネル内の select に値をセットして change を発火し、ドラフトへ反映させる。
+async function setSelectValue(select, value) {
+  await select.evaluate((el, nextValue) => {
     el.value = nextValue;
     el.dispatchEvent(new Event('change', { bubbles: true }));
   }, value);
+}
+
+// 「保存」クリックで確認ダイアログが出る操作用。ダイアログ文言を返し、accept/dismiss を選べる。
+async function clickWithDialog(page, button, accept) {
+  const dialogPromise = page.waitForEvent('dialog');
+  const clickPromise = button.click();
   const dialog = await dialogPromise;
   const message = dialog.message();
   if (accept) {
@@ -97,8 +103,16 @@ async function selectWithDialog(page, select, value, accept) {
   } else {
     await dialog.dismiss();
   }
-  await changePromise;
+  await clickPromise;
   return message;
+}
+
+// タスク項目の「編集」ボタンを押して編集パネルを開く。
+async function openTaskEditPanel(task) {
+  const editButton = task.locator('button[data-task-control="edit-toggle"]');
+  await editButton.click();
+  await expect(editButton).toHaveAttribute('aria-expanded', 'true');
+  return task.locator('.task-edit-panel');
 }
 
 test('モバイル HTTP API: タスク一覧取得とステータス変更依頼を検証する', async () => {
@@ -238,7 +252,7 @@ test('モバイル HTTP API: タスク一覧取得とステータス変更依頼
   }
 });
 
-test('モバイル UI: ステータス select の確認キャンセルと反映待ち表示を検証する', async ({ page }) => {
+test('モバイル UI: 編集パネルのステータス変更で確認キャンセルと反映待ちを検証する', async ({ page }) => {
   const port = await getFreePort();
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-mobile-tasks-ui-data-'));
   const tasksFile = path.join(tmpRoot, 'tasks-view.json');
@@ -265,10 +279,18 @@ test('モバイル UI: ステータス select の確認キャンセルと反映�
     await page.goto(`http://127.0.0.1:${port}/`);
     const task = page.locator('.task-item').filter({ hasText: 'モバイルの PR 付きマージ待ちタスク' });
     await expect(task).toBeVisible({ timeout: 10_000 });
-    const statusSelect = task.getByLabel('モバイルの PR 付きマージ待ちタスク の状態');
+
+    // ステータスはラベル表示になり、初期状態では編集パネルは閉じている（PC 同型）。
+    await expect(task.locator('.task-status-label')).toHaveText('マージ待ち');
+    await expect(task.locator('.task-edit-panel')).toHaveCount(0);
+
+    // 「編集」ボタンでパネルを展開する（テスト観点 a）。
+    const panel = await openTaskEditPanel(task);
+    await expect(panel).toBeVisible();
+    const statusSelect = panel.locator('select[data-task-control="status-select"]');
     await expect(statusSelect).toHaveValue('waiting-merge');
 
-    // mobile.html も全ステータスを同じ順で描画し、API が返す actions だけで disabled を決める。
+    // 全ステータスを同じ順で描画し、API が返す actions だけで disabled を決める。
     await expect(statusSelect.locator('option')).toHaveText([
       '承認待ち',
       '実行待ち',
@@ -283,13 +305,19 @@ test('モバイル UI: ステータス select の確認キャンセルと反映�
     expect(readyDisabled).toBe(true);
     expect(doneDisabled).toBe(false);
 
-    const cancelMessage = await selectWithDialog(page, statusSelect, 'done', false);
+    const saveButton = panel.locator('button[data-task-control="edit-save"]');
+
+    // 危険遷移（マージ待ち→完了）は保存時に確認ダイアログでガードされる。キャンセルすると送信しない。
+    await setSelectValue(statusSelect, 'done');
+    const cancelMessage = await clickWithDialog(page, saveButton, false);
     expect(cancelMessage).toContain('ステータスを「完了」に変更しますか？');
     expect(cancelMessage).toContain('PR のマージは行われません（PR は開いたまま残ります）。');
-    await expect(statusSelect).toHaveValue('waiting-merge');
     expect(fs.existsSync(commandsPath)).toBe(false);
+    // ダイアログをキャンセルしてもパネルは開いたまま。
+    await expect(panel).toBeVisible();
 
-    const acceptMessage = await selectWithDialog(page, statusSelect, 'done', true);
+    // 確認を承認すると set-status が commands.jsonl に追記され、反映待ちが表示される（観点 b）。
+    const acceptMessage = await clickWithDialog(page, saveButton, true);
     expect(acceptMessage).toContain('ステータスを「完了」に変更しますか？');
     await expect(task.locator('.task-item-pending')).toHaveText('反映待ち');
     await expect.poll(() => fs.existsSync(commandsPath) ? fs.readFileSync(commandsPath, 'utf8') : '', {
@@ -303,6 +331,260 @@ test('モバイル UI: ステータス select の確認キャンセルと反映�
       to: 'done',
       expected: 'waiting-merge',
     });
+  } finally {
+    if (app) await app.close();
+    fs.rmSync(appTmpRoot, { recursive: true, force: true });
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+test('モバイル UI: 編集パネルで優先度・実行方式・複数項目の保存と契約有無を検証する', async ({ page }) => {
+  const port = await getFreePort();
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-mobile-tasks-editor-data-'));
+  const tasksFile = path.join(tmpRoot, 'tasks-view.json');
+  const commandsPath = path.join(tmpRoot, 'commands.jsonl');
+  writeJson(tasksFile, {
+    updatedAt: freshDate(),
+    tasks: [
+      // priority=null（契約あり）。複数項目同時変更と expected="none" の検証に使う。
+      {
+        id: '401',
+        title: '優先度なしの承認待ちタスク',
+        status: 'awaiting-approval',
+        assignee: 'wada',
+        priority: null,
+        sequential: false,
+        createdAt: freshDate(-10 * 60 * 1000),
+      },
+      // priority=low（契約あり）。優先度のみ変更の検証に使う。
+      {
+        id: '402',
+        title: '優先度ありの実行待ちタスク',
+        status: 'ready',
+        priority: 'low',
+        sequential: false,
+      },
+      // sequential 変更の検証に使う。
+      {
+        id: '403',
+        title: '実行方式を変える実行待ちタスク',
+        status: 'ready',
+        priority: 'high',
+        sequential: false,
+      },
+      // priority プロパティ欠如（契約なし）。優先度・実行方式エディタが出ないことを検証。
+      {
+        id: '404',
+        title: '優先度契約のない実行中タスク',
+        status: 'in-progress',
+        assignee: 'tsukasa',
+      },
+      // 編集不可ステータス（done）。編集ボタンが出ないことを検証。
+      {
+        id: '405',
+        title: '完了済みで編集できないタスク',
+        status: 'done',
+        priority: 'medium',
+        sequential: true,
+      },
+    ],
+  });
+
+  const { app, tmpRoot: appTmpRoot } = await launchApp(port, { tasksFile, commandsPath });
+  try {
+    await waitForTasks(port);
+    await page.goto(`http://127.0.0.1:${port}/`);
+
+    const taskA = page.locator('.task-item').filter({ hasText: '優先度なしの承認待ちタスク' });
+    await expect(taskA).toBeVisible({ timeout: 10_000 });
+
+    // 観点 h: 編集不可ステータス（done）のタスクには編集ボタンが出ない。
+    const taskDone = page.locator('.task-item').filter({ hasText: '完了済みで編集できないタスク' });
+    await expect(taskDone.locator('button[data-task-control="edit-toggle"]')).toHaveCount(0);
+
+    // 観点 g: priority 契約のないタスクは編集ボタンは出るが、優先度・実行方式エディタは出ない。
+    const taskNoContract = page.locator('.task-item').filter({ hasText: '優先度契約のない実行中タスク' });
+    const panelNoContract = await openTaskEditPanel(taskNoContract);
+    await expect(panelNoContract.locator('select[data-task-control="status-select"]')).toHaveCount(1);
+    await expect(panelNoContract.locator('select[data-task-control="priority-select"]')).toHaveCount(0);
+    await expect(panelNoContract.locator('[data-task-control="sequential-segment"]')).toHaveCount(0);
+
+    // 観点 e + i: priority=null のタスクで、ステータス・優先度・実行方式を同時に変更して保存する。
+    const panelA = await openTaskEditPanel(taskA);
+    await setSelectValue(panelA.locator('select[data-task-control="status-select"]'), 'ready');
+    await setSelectValue(panelA.locator('select[data-task-control="priority-select"]'), 'high');
+    await panelA.locator('button[data-task-control="sequential-segment"][data-value="sequential"]').click();
+    // awaiting-approval→ready は確認ダイアログなし。保存で 3 件が順に送られる。
+    await panelA.locator('button[data-task-control="edit-save"]').click();
+    await expect(taskA.locator('.task-item-pending')).toHaveText('反映待ち');
+    await expect
+      .poll(() => (fs.existsSync(commandsPath) ? fs.readFileSync(commandsPath, 'utf8').trimEnd().split('\n').length : 0), { timeout: 5000 })
+      .toBe(3);
+    const multi = fs.readFileSync(commandsPath, 'utf8').trimEnd().split('\n').map((l) => JSON.parse(l));
+    expect(multi[0]).toMatchObject({ taskId: 401, action: 'set-status', to: 'ready', expected: 'awaiting-approval' });
+    // 観点 e: priority=null のタスクは expected="none" で送られる。
+    expect(multi[1]).toMatchObject({ taskId: 401, action: 'set-priority', to: 'high', expected: 'none' });
+    expect(multi[2]).toMatchObject({ taskId: 401, action: 'set-sequential', to: 'sequential', expected: 'parallel' });
+
+    // 観点 c: 優先度だけを変更して保存すると set-priority だけが送られる。
+    const taskB = page.locator('.task-item').filter({ hasText: '優先度ありの実行待ちタスク' });
+    const panelB = await openTaskEditPanel(taskB);
+    await setSelectValue(panelB.locator('select[data-task-control="priority-select"]'), 'high');
+    await panelB.locator('button[data-task-control="edit-save"]').click();
+    await expect(taskB.locator('.task-item-pending')).toHaveText('反映待ち');
+    await expect
+      .poll(() => fs.readFileSync(commandsPath, 'utf8').trimEnd().split('\n').length, { timeout: 5000 })
+      .toBe(4);
+    const afterB = fs.readFileSync(commandsPath, 'utf8').trimEnd().split('\n').map((l) => JSON.parse(l));
+    expect(afterB[3]).toMatchObject({ taskId: 402, action: 'set-priority', to: 'high', expected: 'low' });
+
+    // 観点 d: 実行方式だけを変更して保存すると set-sequential だけが送られる。
+    const taskC = page.locator('.task-item').filter({ hasText: '実行方式を変える実行待ちタスク' });
+    const panelC = await openTaskEditPanel(taskC);
+    await panelC.locator('button[data-task-control="sequential-segment"][data-value="sequential"]').click();
+    await panelC.locator('button[data-task-control="edit-save"]').click();
+    await expect(taskC.locator('.task-item-pending')).toHaveText('反映待ち');
+    await expect
+      .poll(() => fs.readFileSync(commandsPath, 'utf8').trimEnd().split('\n').length, { timeout: 5000 })
+      .toBe(5);
+    const afterC = fs.readFileSync(commandsPath, 'utf8').trimEnd().split('\n').map((l) => JSON.parse(l));
+    expect(afterC[4]).toMatchObject({ taskId: 403, action: 'set-sequential', to: 'sequential', expected: 'parallel' });
+  } finally {
+    if (app) await app.close();
+    fs.rmSync(appTmpRoot, { recursive: true, force: true });
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+test('モバイル UI: 反映待ちが新しい view の到着で解除される（pending 一般化の回帰確認）', async ({ page }) => {
+  const port = await getFreePort();
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-mobile-tasks-pending-data-'));
+  const tasksFile = path.join(tmpRoot, 'tasks-view.json');
+  const commandsPath = path.join(tmpRoot, 'commands.jsonl');
+  // priority だけを変える。status は変わらないため、旧モデルでは pending が永久に残る（地雷）。
+  writeJson(tasksFile, {
+    updatedAt: freshDate(),
+    tasks: [
+      {
+        id: '501',
+        title: '優先度だけ変える実行待ちタスク',
+        status: 'ready',
+        priority: 'low',
+        sequential: false,
+      },
+    ],
+  });
+
+  const { app, tmpRoot: appTmpRoot } = await launchApp(port, { tasksFile, commandsPath });
+  try {
+    await waitForTasks(port);
+    await page.goto(`http://127.0.0.1:${port}/`);
+    const task = page.locator('.task-item').filter({ hasText: '優先度だけ変える実行待ちタスク' });
+    await expect(task).toBeVisible({ timeout: 10_000 });
+
+    const panel = await openTaskEditPanel(task);
+    await setSelectValue(panel.locator('select[data-task-control="priority-select"]'), 'high');
+    await panel.locator('button[data-task-control="edit-save"]').click();
+
+    // 送信直後は反映待ちが表示される。
+    await expect(task.locator('.task-item-pending')).toHaveText('反映待ち');
+    await expect
+      .poll(() => (fs.existsSync(commandsPath) ? fs.readFileSync(commandsPath, 'utf8') : ''), { timeout: 5000 })
+      .not.toBe('');
+
+    // 新しい view（priority=high 反映済み）が届くと、status 非依存で pending が解除される。
+    writeJson(tasksFile, {
+      updatedAt: freshDate(),
+      tasks: [
+        {
+          id: '501',
+          title: '優先度だけ変える実行待ちタスク',
+          status: 'ready',
+          priority: 'high',
+          sequential: false,
+        },
+      ],
+    });
+
+    // ポーリング（2秒間隔）で新 view を取得し、反映待ちが消えることを確認する。
+    await expect(task.locator('.task-item-pending')).toHaveCount(0, { timeout: 15_000 });
+    // 優先度バッジも高に更新されている。
+    await expect(task.locator('.task-priority-badge')).toHaveText('高');
+  } finally {
+    if (app) await app.close();
+    fs.rmSync(appTmpRoot, { recursive: true, force: true });
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+test('モバイル UI: 編集パネル操作中は poll 再描画で フォーカス・ドラフト・パネルが維持される', async ({ page }) => {
+  const port = await getFreePort();
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-mobile-tasks-focus-data-'));
+  const tasksFile = path.join(tmpRoot, 'tasks-view.json');
+  const commandsPath = path.join(tmpRoot, 'commands.jsonl');
+  writeJson(tasksFile, {
+    updatedAt: freshDate(),
+    tasks: [
+      {
+        id: '601',
+        title: '編集中に外部更新が入るタスク',
+        status: 'ready',
+        assignee: 'wada',
+        priority: 'low',
+        sequential: false,
+      },
+    ],
+  });
+
+  const { app, tmpRoot: appTmpRoot } = await launchApp(port, { tasksFile, commandsPath });
+  try {
+    await waitForTasks(port);
+    await page.goto(`http://127.0.0.1:${port}/`);
+    const task = page.locator('.task-item').filter({ hasText: '編集中に外部更新が入るタスク' });
+    await expect(task).toBeVisible({ timeout: 10_000 });
+    await expect(task.locator('.task-item-assignee')).toHaveText('担当: wada');
+
+    // 編集パネルを開き、優先度 select にフォーカスを当てて high をドラフトへ入れる。
+    const panel = await openTaskEditPanel(task);
+    const prioritySelect = panel.locator('select[data-task-control="priority-select"]');
+    await prioritySelect.focus();
+    await setSelectValue(prioritySelect, 'high');
+    await expect(prioritySelect).toHaveValue('high');
+
+    // 外部で tasks-view.json を更新（担当を変更）。poll が拾っても編集中はスキップされる想定。
+    writeJson(tasksFile, {
+      updatedAt: freshDate(),
+      tasks: [
+        {
+          id: '601',
+          title: '編集中に外部更新が入るタスク',
+          status: 'ready',
+          assignee: 'ando',
+          priority: 'low',
+          sequential: false,
+        },
+      ],
+    });
+
+    // poll 間隔（2 秒）を確実に跨ぐまで待つ。
+    await page.waitForTimeout(3500);
+
+    // 操作中はフォーカス・ドラフト・パネルが維持され、外部更新（担当）は反映されない。
+    await expect(panel).toBeVisible();
+    await expect(prioritySelect).toHaveValue('high');
+    await expect(task.locator('.task-item-assignee')).toHaveText('担当: wada');
+    const activeControl = await page.evaluate(() => {
+      const el = document.activeElement;
+      return el && el.dataset ? el.dataset.taskControl : null;
+    });
+    expect(activeControl).toBe('priority-select');
+
+    // フォーカスを外すと skip が解除され、次の poll で外部更新が反映される（skip が永続でないこと）。
+    await page.evaluate(() => { if (document.activeElement) document.activeElement.blur(); });
+    await expect(task.locator('.task-item-assignee')).toHaveText('担当: ando', { timeout: 15_000 });
+    // パネルは開いたまま、ドラフト値（high）も保持される。
+    await expect(panel).toBeVisible();
+    await expect(task.locator('select[data-task-control="priority-select"]')).toHaveValue('high');
   } finally {
     if (app) await app.close();
     fs.rmSync(appTmpRoot, { recursive: true, force: true });

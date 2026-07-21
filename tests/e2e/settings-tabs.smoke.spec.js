@@ -273,7 +273,7 @@ test.describe.serial('設定モーダルのタブ UI（issue #167）', () => {
 
     // 保存する。
     await win.locator('.settings-save').click();
-    await expect(win.locator('.settings-msg')).toHaveText('保存しました');
+    await expect(win.locator('.settings-msg')).toHaveText('保存しました。次回の起動から反映されます。');
     // 両タブの値がまとめて保存される。
     const payload = await win.evaluate(() => window.__savedPayloads[window.__savedPayloads.length - 1]);
     expect(payload.host).toBe('ok.example');

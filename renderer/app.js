@@ -3887,9 +3887,9 @@ async function openSettingsModal() {
       const res = await ipcRenderer.invoke('settings:save', out);
       if (res && res.ok) {
         clearDirtyTabs();
-        msg.textContent = '保存しました';
+        msg.textContent = '保存しました。次回の起動から反映されます。';
         msg.classList.add('ok');
-        setTimeout(close, 800);
+        setTimeout(close, 2500);
       } else {
         msg.textContent = 'エラー: ' + (res && res.error ? res.error : '不明なエラー');
         msg.classList.add('err');

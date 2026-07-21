@@ -1248,13 +1248,19 @@ function renderTaskItem(task) {
     const labelSpan = document.createElement('span');
     labelSpan.className = 'task-item-title-text';
     labelSpan.textContent = task.title;
-    link.appendChild(labelSpan);
 
     const iconSpan = document.createElement('span');
     iconSpan.className = 'task-item-title-icon';
     iconSpan.setAttribute('aria-hidden', 'true');
-    iconSpan.textContent = '↗';
-    link.appendChild(iconSpan);
+    // 先頭の U+2060(WORD JOINER) でタイトル末尾文字と ↗ の間の改行を禁止する。
+    // .task-item-title は多行折り返し（overflow-wrap: anywhere）のため、アイコンを独立
+    // させると幅いっぱい時に ↗ だけが最終行へ孤立しうる（特に日本語は 1 文字単位で折り返す）。
+    // アイコンをタイトル本文 span 内に内包しつつ WORD JOINER で束ねることで、多行折り返しは
+    // 維持したまま「記号だけが次行に落ちる」状態を防ぐ（design-rules 準拠 / issue #177）。
+    iconSpan.textContent = '\u2060↗';
+    labelSpan.appendChild(iconSpan);
+
+    link.appendChild(labelSpan);
 
     link.addEventListener('click', (e) => {
       e.preventDefault();

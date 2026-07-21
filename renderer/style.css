@@ -933,6 +933,8 @@ body.resizing-sidebar .sidebar {
   outline-offset: 2px;
 }
 .task-item-title-icon {
+  /* WORD JOINER（app.js 側）と合わせ、多行折り返し時に ↗ だけが最終行へ孤立しないよう束ねる。 */
+  white-space: nowrap;
   margin-left: 4px;
   font-size: 10px;
   opacity: 0.75;

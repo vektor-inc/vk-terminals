@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 機能追加 ] モバイル版に Codex CLI の使用量（使用率%・トークン数）を表示する機能を追加（[#218](https://github.com/vektor-inc/vk-terminals/issues/218)）
+
 ## 1.36.0
 
 - [ 機能追加 ] サイドバーに Codex CLI の使用量（使用率%・トークン数）を表示する機能を追加（[#215](https://github.com/vektor-inc/vk-terminals/issues/215)）

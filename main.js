@@ -1307,18 +1307,25 @@ function startHttpApi() {
       // issue #73 で公式 API（source:'oauth'）主・トランスクリプト（source:'transcript'）従の
       // 統一構造になった。oauth 取得は非同期（main 側 60s TTL キャッシュ済み）のため、
       // ここだけ Promise を待ってからレスポンスする。失敗時は usage: null（後方互換）。
-      Promise.resolve(getUsageUnified())
-        .catch(() => null)
-        .then((usage) => {
-          res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-          res.end(JSON.stringify({
-            updatedAt: new Date().toISOString(),
-            terminals: cachedStates,
-            usage,
-            version: require('./package.json').version,
-            appTitle: APP_TITLE,
-          }));
-        });
+      //
+      // codexUsage（issue #218）も同様に additive に追加する。PC 版サイドバーと同じ
+      // getCodexUsageUnified() の統一構造を返し、モバイルでも Codex 使用量カードを描画する。
+      // usage と並行取得（Promise.all）し、片方が失敗しても他方に影響させない。失敗時は
+      // codexUsage: null（後方互換）。showCodexUsage=false のときは main 側で null が返る。
+      Promise.all([
+        Promise.resolve(getUsageUnified()).catch(() => null),
+        Promise.resolve(getCodexUsageUnified()).catch(() => null),
+      ]).then(([usage, codexUsage]) => {
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({
+          updatedAt: new Date().toISOString(),
+          terminals: cachedStates,
+          usage,
+          codexUsage,
+          version: require('./package.json').version,
+          appTitle: APP_TITLE,
+        }));
+      });
       return;
     }
 

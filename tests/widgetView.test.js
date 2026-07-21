@@ -289,3 +289,25 @@ test('render: 確認ダイアログで拒否するとコマンドを送らず現
   // 現在値へ戻る。
   assert.equal(select.value, 'waiting-merge');
 });
+
+test('render: 無効な選択肢は disabledReason を末尾ラベルと title に反映する', () => {
+  const widget = sanitized([
+    { id: 'ready', label: '実行待ち', tone: 'info', items: [{
+      id: '12', title: 'T', editable: true,
+      controls: [{ type: 'select', field: 'status', label: 'ステータス', current: 'ready', options: [
+        { value: 'ready', label: '実行待ち' },
+        { value: 'done', label: '完了', disabled: true, disabledReason: '直接完了にはできません' },
+      ] }],
+    }] },
+  ]);
+  const { groupsEl, view } = makeView();
+  view.render(widget, { now: Date.parse('2026-07-21T00:00:10.000Z') });
+  const options = groupsEl.querySelectorAll((el) => el.tagName === 'OPTION');
+  const doneOption = options.find((o) => o.value === 'done');
+  assert.equal(doneOption.disabled, true);
+  assert.equal(doneOption.textContent, '完了（直接完了にはできません）');
+  assert.equal(doneOption.title, '直接完了にはできません');
+  // 無効理由の無い選択肢はラベルそのまま。
+  const readyOption = options.find((o) => o.value === 'ready');
+  assert.equal(readyOption.textContent, '実行待ち');
+});

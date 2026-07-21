@@ -1040,6 +1040,16 @@ function restoreWidgetFocus(groupsEl, saved) {
   }
 }
 
+// ネイティブ select ピッカーを操作中（groupsEl 内の select にフォーカスがある）かを判定する。
+// orchestrator からの widgets:update 毎に groupsEl を作り直すと、開いているポップアップが閉じて
+// 選択中の操作が中断される。この間は widgets:update 起因の再描画をスキップし、データだけ保持して
+// blur 後（次の描画契機）に最新化する。capture/restore ではポップアップの開閉までは救えないため。
+function isEditingWidgetControl(groupsEl) {
+  const active = document.activeElement;
+  if (!(active instanceof HTMLElement) || !groupsEl.contains(active)) return false;
+  return active.tagName === 'SELECT';
+}
+
 // 共有レンダラの描画コントローラを一度だけ生成する。
 //   sendCommand: 宣言のコマンド断片をそのまま main へ中継する（id/requestedAt は main が付与）。
 //                commands.jsonl 未設定時は発行できないため即エラーで返す。
@@ -1170,12 +1180,16 @@ function updateWidgetFilter(section, info) {
 // widgets:update で受けた中継ペイロード { widget, legacyNotice, commandsConfigured } を描画する。
 // widget があれば共有レンダラで描画し、無く legacyNotice のみのときはタスク語彙を復活させず
 // 「orchestrator の更新が必要な可能性があります」の注記だけを出す（dual-write 期間の後方互換）。
-function renderWidget() {
+function renderWidget(fromUpdate) {
   const section = document.getElementById('task-list');
   if (!section) return;
   const staleNotice = section.querySelector('.task-list-stale');
   const groupsEl = section.querySelector('.task-list-groups');
   if (!groupsEl) return;
+
+  // ネイティブ select ピッカー操作中は widgets:update 起因の再描画をスキップ
+  // （データは lastWidgetPayload に保持済み。blur 後の次描画で最新化される）。
+  if (fromUpdate && isEditingWidgetControl(groupsEl)) return;
 
   const payload = lastWidgetPayload;
   const widget = payload && payload.widget ? payload.widget : null;
@@ -1202,11 +1216,14 @@ function renderWidget() {
   section.classList.toggle('is-stale', stale);
 
   // 注記は stale 優先。widget が無く legacyNotice のときだけ後方互換の注記を出す。
+  // data-kind で配色を分ける（stale=danger / legacy=助言的な warning）。
   if (staleNotice) {
     if (stale) {
+      staleNotice.dataset.kind = 'stale';
       staleNotice.textContent = 'orchestrator 停止中';
       staleNotice.hidden = !shouldShow;
     } else if (legacyNotice) {
+      staleNotice.dataset.kind = 'legacy';
       staleNotice.textContent = WIDGET_LEGACY_NOTICE_TEXT;
       staleNotice.hidden = !shouldShow;
     } else {
@@ -1245,6 +1262,7 @@ function tickWidgetStale() {
   const staleNotice = section.querySelector('.task-list-stale');
   if (!staleNotice) return;
   if (stale) {
+    staleNotice.dataset.kind = 'stale';
     staleNotice.textContent = 'orchestrator 停止中';
     staleNotice.hidden = false;
   } else {
@@ -1446,7 +1464,8 @@ function setupSidebarMenu() {
   });
   ipcRenderer.on('widgets:update', (_event, payload) => {
     lastWidgetPayload = payload || null;
-    renderWidget();
+    // fromUpdate=true: ネイティブ select ピッカー操作中の再描画を避ける。
+    renderWidget(true);
   });
 }
 

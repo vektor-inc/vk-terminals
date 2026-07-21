@@ -190,7 +190,14 @@
         optionByValue.set(option.value, option);
         const optionEl = el('option');
         optionEl.value = option.value;
-        optionEl.textContent = option.label;
+        // 無効な選択肢の理由（disabledReason）をユーザーへ伝える。ネイティブ <option> は
+        // ツールチップ（title）が確実に見えるとは限らないため、可視の末尾ラベルにも併記する。
+        if (option.disabled === true && option.disabledReason) {
+          optionEl.textContent = `${option.label}（${option.disabledReason}）`;
+          optionEl.title = option.disabledReason;
+        } else {
+          optionEl.textContent = option.label;
+        }
         optionEl.disabled = option.disabled === true;
         if (option.value === control.current) optionEl.selected = true;
         select.appendChild(optionEl);

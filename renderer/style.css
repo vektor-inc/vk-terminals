@@ -707,6 +707,13 @@ body.resizing-sidebar .sidebar {
   .sidebar {
     transition: none;
   }
+  /* 無限ループのパルス（待機・注意喚起）は reduced-motion で停止する（前庭系への配慮 / WCAG 2.3.3）。 */
+  .stash-item.waiting,
+  .pane.waiting,
+  .pane-status[data-status="waiting"],
+  .task-item[data-emphasis="attention"]::before {
+    animation: none;
+  }
 }
 
 /* ─── Pane stash（サイドバーへの格納, issue #89）───────────────────────────────
@@ -900,7 +907,8 @@ body.resizing-sidebar .sidebar {
   margin-left: auto;
   flex-wrap: nowrap;
 }
-/* 担当者フィルタのプルダウン。ダークパレットに合わせ、OS 標準の明色ドロップダウンが浮かないようにする。 */
+/* 担当者フィルタのプルダウン。ダークパレットに合わせ、OS 標準の明色ドロップダウンが浮かないようにする。
+ * color-scheme: dark で、開いた option リスト（ネイティブ描画）も OS ライト環境で暗くする。 */
 .task-list-assignee-filter {
   max-width: 120px;
   height: 24px;
@@ -909,6 +917,7 @@ body.resizing-sidebar .sidebar {
   border-radius: var(--vktm--border-radius--sm);
   background: #0d1117;
   color: #c9d1d9;
+  color-scheme: dark;
   font: inherit;
   font-size: 11px;
   font-weight: 400;
@@ -959,6 +968,13 @@ body.resizing-sidebar .sidebar {
   font-size: 11px;
   font-weight: 600;
 }
+/* legacyNotice（orchestrator の更新を促す助言）はエラーに見える赤(danger)ではなく、
+ * warning 系の配色にして「停止中(danger)」と視覚的に区別する。 */
+.task-list-stale[data-kind="legacy"] {
+  border-color: rgba(210, 153, 34, 0.4);
+  color: #f0c36a;
+  background: rgba(210, 153, 34, 0.12);
+}
 .task-list-stale[hidden] {
   display: none;
 }
@@ -1002,9 +1018,10 @@ body.resizing-sidebar .sidebar {
 /* tone トークン → 色（宣言的ウィジェット / #229）
    ========================================================================== */
 /* orchestrator は生 HEX を宣言に載せず tone トークン（7 種）だけを渡す。ビューアがここで
- * tone→色へマッピングする（契約 docs/tasks-widget-schema.md）。このアプリはダーク固定
- * （html に color-scheme: dark）のため、GitHub ダークパレットで従来のステータス色と同等の
- * 見た目にする。各 tone は要素側で読む 3 変数（前景 / 背景 / 境界）を定義する。
+ * tone→色へマッピングする（契約 docs/tasks-widget-schema.md）。このアプリはダーク前提の
+ * 固定配色（body 背景・各要素とも GitHub ダーク系のハードコード。html への color-scheme 宣言は
+ * 無く、フォーム要素は個別に color-scheme: dark を指定）のため、GitHub ダークパレットで従来の
+ * ステータス色と同等の見た目にする。各 tone は要素側で読む 3 変数（前景 / 背景 / 境界）を定義する。
  * 未知 tone は widgetContract.toneOrDefault が neutral へ寄せるため、既定は neutral 相当。
  * コントラストは各前景色 × 暗い背景（#0d1117〜#161b22）で本文 4.5:1 / UI 3:1（WCAG 2.1 AA）を意識。 */
 .task-list [data-tone="warning"] {
@@ -1099,7 +1116,8 @@ body.resizing-sidebar .sidebar {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: #6e7681;
+  /* #161b22 上で本文 AA（4.5:1）を満たす muted 色。#6e7681 は約 3.7:1 で未達のため #8b949e に。 */
+  color: #8b949e;
   font-size: 11px;
   line-height: 1.35;
 }
@@ -1206,6 +1224,8 @@ body.resizing-sidebar .sidebar {
   border-radius: var(--vktm--border-radius--sm);
   background: #161b22;
   color: #c9d1d9;
+  /* 開いた option リスト（ネイティブ描画）を OS ライト環境で浮かせない。 */
+  color-scheme: dark;
   font: inherit;
   font-size: 11px;
   font-weight: 600;
@@ -1260,7 +1280,8 @@ body.resizing-sidebar .sidebar {
    ========================================================================== */
 .task-list-empty {
   padding: 6px 4px;
-  color: #6e7681;
+  /* #0d1117 上で本文 AA（4.5:1）を満たす muted 色。#6e7681 は約 4.15:1 で僅かに未達のため #8b949e に。 */
+  color: #8b949e;
   font-size: 11px;
 }
 

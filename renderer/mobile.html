@@ -531,11 +531,14 @@ function renderWidget(fromPoll) {
   taskListSection.classList.toggle("is-stale", stale);
 
   // 注記は stale 優先。widget が無く legacyNotice のときだけ後方互換の注記を出す。
+  // data-kind で配色を分ける（stale=danger / legacy=助言的な warning）。
   if (taskListStale) {
     if (stale) {
+      taskListStale.dataset.kind = "stale";
       taskListStale.textContent = "orchestrator 停止中";
       taskListStale.hidden = !shouldShow;
     } else if (legacyNotice) {
+      taskListStale.dataset.kind = "legacy";
       taskListStale.textContent = WIDGET_LEGACY_NOTICE_TEXT;
       taskListStale.hidden = !shouldShow;
     } else {

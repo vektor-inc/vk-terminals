@@ -196,7 +196,7 @@ test.describe.serial('設定ダイアログの pattern 形式チェック（issu
 
     // 保存が通る。
     await win.locator('.settings-save').click();
-    await expect(win.locator('.settings-msg')).toHaveText('保存しました');
+    await expect(win.locator('.settings-msg')).toHaveText('保存しました。次回の起動から反映されます。');
     const payload = await win.evaluate(() => window.__savedPayloads[window.__savedPayloads.length - 1]);
     expect(payload.repo).toBe('vektor-inc/vk-terminals');
   });
@@ -210,7 +210,7 @@ test.describe.serial('設定ダイアログの pattern 形式チェック（issu
 
     // 保存が通る。
     await win.locator('.settings-save').click();
-    await expect(win.locator('.settings-msg')).toHaveText('保存しました');
+    await expect(win.locator('.settings-msg')).toHaveText('保存しました。次回の起動から反映されます。');
     const payload = await win.evaluate(() => window.__savedPayloads[window.__savedPayloads.length - 1]);
     expect(payload.repo).toBe('');
   });
@@ -225,7 +225,7 @@ test.describe.serial('設定ダイアログの pattern 形式チェック（issu
 
     // repo は空欄のまま（valid）なので保存が通り、legacy 値もそのまま保存される。
     await win.locator('.settings-save').click();
-    await expect(win.locator('.settings-msg')).toHaveText('保存しました');
+    await expect(win.locator('.settings-msg')).toHaveText('保存しました。次回の起動から反映されます。');
     const payload = await win.evaluate(() => window.__savedPayloads[window.__savedPayloads.length - 1]);
     expect(payload.legacy).toBe('foobar-not-a-repo');
   });

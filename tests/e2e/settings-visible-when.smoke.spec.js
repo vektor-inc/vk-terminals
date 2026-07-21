@@ -201,7 +201,7 @@ test.describe.serial('設定ダイアログの visibleWhen 表示切替（issue 
 
     // この状態で保存 → 非表示項目は検証対象外なので保存が通る。
     await win.locator('.settings-save').click();
-    await expect(win.locator('.settings-msg')).toHaveText('保存しました');
+    await expect(win.locator('.settings-msg')).toHaveText('保存しました。次回の起動から反映されます。');
 
     const saved = await win.evaluate(() => window.__savedPayloads.length);
     expect(saved).toBe(1);

@@ -5,7 +5,7 @@ const path = require('path');
 
 const SETTINGS_SCHEMA_PATH = path.join(__dirname, 'settings-schema.json');
 const DEFAULT_SCHEMA_TITLE = 'VK Terminals 設定';
-const DEFAULT_SCHEMA_NOTE = '保存後、VK Terminals を再起動すると反映されます。';
+const DEFAULT_SCHEMA_NOTE = '保存後、次回の起動から反映されます。';
 
 function cloneJson(value) {
   return JSON.parse(JSON.stringify(value));

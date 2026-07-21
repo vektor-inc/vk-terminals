@@ -8,3 +8,4 @@ playwright-report/
 .claude/
 config.json
 settings-descriptor.json
+node_modules/

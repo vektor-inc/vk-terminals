@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 機能追加 ] モバイル版タスク一覧に GitHub モード時の担当者フィルタ（デフォルト「自分のみ」）と表示/全体の件数表示を追加（[#232](https://github.com/vektor-inc/vk-terminals/issues/232)）
+
 ## 1.42.0
 
 - [ 仕様変更 ] サイドバー・モバイルのタスクカードでステータスをカード先頭バッジに戻し、Issue チップを廃止してタイトルリンクへ変更（[#251](https://github.com/vektor-inc/vk-terminals/issues/251)）

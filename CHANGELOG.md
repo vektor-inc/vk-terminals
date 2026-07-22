@@ -1,5 +1,7 @@
 # Changelog
 
+## 1.42.0
+
 - [ 仕様変更 ] サイドバー・モバイルのタスクカードでステータスをカード先頭バッジに戻し、Issue チップを廃止してタイトルリンクへ変更（[#251](https://github.com/vektor-inc/vk-terminals/issues/251)）
 
 ## 1.41.0

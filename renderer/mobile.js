@@ -1,6 +1,8 @@
 "use strict";
 
-const { stripAnsi, sanitizeMobilePreviewText, applyCarriageReturns, tail, isSafeHttpUrl } = window.VKMobilePreview;
+const { stripAnsi, sanitizeMobilePreviewText, applyCarriageReturns, tail } = window.VKMobilePreview;
+const { isSafeHttpUrl } = window.VKUrlSafety;
+var statusPresentation = window.VKStatusPresentation;
 
 // スクロール位置の保存・復元。
 // このページは Cache-Control: no-store で配信され、#list の中身は読み込み後に
@@ -111,13 +113,7 @@ var widgetContract = window.VKWidgetContract;
 
 // http(s) のみ許可する外部リンク判定（描画側の二段構え防御）。
 function isSafeExternalUrl(url) {
-  if (typeof url !== "string" || !url || url.length > 2048) return false;
-  try {
-    var u = new URL(url);
-    return u.protocol === "http:" || u.protocol === "https:";
-  } catch (e) {
-    return false;
-  }
+  return isSafeHttpUrl(url);
 }
 
 // モバイルはブラウザなので新規タブで開く（noopener/noreferrer で opener を切る）。
@@ -321,10 +317,9 @@ function isCloseLocked(terminal) {
 
 function sortTerminalKeysByStatus(keys, terms) {
   // 新規端末を初めて末尾に足すときだけ、従来のステータス順で安定化する。
-  var rank = { waiting: 0, running: 1, idle: 2 };
   return keys.slice().sort(function(a, b) {
-    var ra = rank[terms[a].status] != null ? rank[terms[a].status] : 3;
-    var rb = rank[terms[b].status] != null ? rank[terms[b].status] : 3;
+    var ra = statusPresentation.getStatusRank(terms[a].status);
+    var rb = statusPresentation.getStatusRank(terms[b].status);
     if (ra !== rb) return ra - rb;
     return getTermId(a, terms[a]).localeCompare(getTermId(b, terms[b]), undefined, { numeric: true });
   });
@@ -449,7 +444,9 @@ function ensureCard(termId) {
   var name = document.createElement("div"); name.className = "name";
   var cwd = document.createElement("div"); cwd.className = "cwd";
   title.appendChild(name); title.appendChild(cwd);
-  var badge = document.createElement("span"); badge.className = "badge idle"; badge.textContent = "idle";
+  var badge = document.createElement("span"); badge.className = "badge idle"; badge.hidden = true;
+  badge.setAttribute("role", "status");
+  badge.setAttribute("aria-live", "polite");
   // PR リンク（issue #53）。ヘッダ帯に置くことで折り畳んでも残り、PC の「常時表示」方針と整合する。
   // モバイルは通常ブラウザなので実 URL を href に入れた通常リンク（target=_blank）にする。
   // href へのセットは render() 側で isSafeHttpUrl() を通った値だけ行う。
@@ -738,7 +735,14 @@ function render(data) {
     var st = t.status || "idle";
     c.dot.className = "dot " + st;
     c.badge.className = "badge " + st;
-    c.badge.textContent = st;
+    var statusView = statusPresentation.getStatusPresentation(st);
+    c.badge.textContent = statusView.label;
+    c.badge.hidden = !statusView.label;
+    if (statusView.ariaLabel) {
+      c.badge.setAttribute("aria-label", statusView.ariaLabel);
+    } else {
+      c.badge.removeAttribute("aria-label");
+    }
     // displayTitle = apiTitle || taskTitle（main 側 getDisplayTitle と同じ値）。
     // 旧 t.title は存在しないフィールドで常に空だったため、必ず "Terminal N" に
     // フォールバックしていた不具合を修正（issue: モバイル側でタスク名が出ない）。

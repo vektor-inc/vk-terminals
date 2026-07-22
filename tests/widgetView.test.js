@@ -155,7 +155,7 @@ function makeView(deps) {
 
 // ── テスト ───────────────────────────────────────────────────────────────────
 
-test('render: グループ見出し・アイテムに tone を data 属性で付与し、未知 tone は neutral', () => {
+test('render: ステータスバッジを各カードの先頭へ prepend し、グループ見出しは描画しない', () => {
   const widget = sanitized([
     { id: 'in-progress', label: '実行中', tone: 'progress', items: [
       { id: '1', title: 'タスクA', editable: false, badges: [{ label: '高', tone: 'danger' }, { label: '直列', tone: 'zzz' }] },
@@ -164,12 +164,15 @@ test('render: グループ見出し・アイテムに tone を data 属性で付
   const { groupsEl, view } = makeView();
   view.render(widget, { now: Date.parse('2026-07-21T00:00:10.000Z') });
 
-  const groupLabel = groupsEl.querySelectorAll((el) => el.classList.contains('widget-group-label'))[0];
-  assert.equal(groupLabel.dataset.tone, 'progress');
+  assert.equal(groupsEl.querySelectorAll((el) => el.classList.contains('task-list-group')).length, 1);
+  assert.equal(groupsEl.querySelectorAll((el) => el.classList.contains('task-list-group-head')).length, 0);
+  assert.equal(groupsEl.querySelectorAll((el) => el.classList.contains('widget-group-label')).length, 0);
+
   const badges = groupsEl.querySelectorAll((el) => el.classList.contains('widget-badge'));
-  assert.equal(badges[0].dataset.tone, 'danger');
+  assert.deepEqual(badges.map((badge) => badge.textContent), ['実行中', '高', '直列']);
+  assert.deepEqual(badges.map((badge) => badge.dataset.tone), ['progress', 'danger', 'neutral']);
   // 未知 tone は neutral へフォールバック。
-  assert.equal(badges[1].dataset.tone, 'neutral');
+  assert.equal(badges[2].dataset.tone, 'neutral');
 });
 
 test('render: 文字列は textContent で描画され、HTML として解釈されない（XSS 防御）', () => {
@@ -203,6 +206,66 @@ test('render: isSafeExternalUrl が false のリンクは描画しない（二�
   assert.equal(links[0].dataset.rel, 'pr');
 });
 
+test('render: rel="queue" のリンクチップは非表示にし、rel="pr" は描画する', () => {
+  const widget = sanitized([
+    { id: 'g', label: 'G', tone: 'info', items: [{ id: '1', title: 't', editable: false, links: [
+      { rel: 'queue', url: 'https://example.com/issues/1', label: 'Issue' },
+      { rel: 'pr', url: 'https://example.com/pull/1', label: 'PR' },
+    ] }] },
+  ]);
+  const { groupsEl, view } = makeView();
+  view.render(widget, { now: Date.parse('2026-07-21T00:00:10.000Z') });
+
+  const links = groupsEl.querySelectorAll((el) => el.classList.contains('widget-link'));
+  assert.equal(links.length, 1);
+  assert.equal(links[0].dataset.rel, 'pr');
+  assert.equal(links[0].textContent, 'PR⁠↗');
+});
+
+test('render: queue URL があるタイトルは外部リンク化し、クリックで queue URL を openUrl へ渡す', () => {
+  const queueUrl = 'https://github.com/vektor-inc/vk-orchestrator/issues/301';
+  const opened = [];
+  const safeChecked = [];
+  const widget = sanitized([
+    { id: 'in-progress', label: '実行中', tone: 'progress', items: [{ id: '301', title: '宣言ウィジェットの実行中タスク', editable: false, links: [
+      { rel: 'queue', url: queueUrl, label: 'issue #301' },
+      { rel: 'pr', url: 'https://github.com/vektor-inc/vk-orchestrator/pull/301', label: 'PR #301' },
+    ] }] },
+  ]);
+  const { groupsEl, view } = makeView({
+    isSafeExternalUrl: (url) => { safeChecked.push(url); return true; },
+    openUrl: (url) => { opened.push(url); },
+  });
+  view.render(widget, { now: Date.parse('2026-07-21T00:00:10.000Z') });
+
+  const title = groupsEl.querySelectorAll((el) => el.classList.contains('task-item-title'))[0];
+  assert.equal(title.tagName, 'A');
+  assert.equal(title.getAttribute('role'), 'link');
+  assert.equal(title.getAttribute('aria-label'), '宣言ウィジェットの実行中タスク（外部ブラウザで開く）');
+  assert.equal(title.title, `宣言ウィジェットの実行中タスク\n${queueUrl}`);
+  assert.equal(title.textContent, '宣言ウィジェットの実行中タスク⁠↗');
+
+  title.dispatch('click');
+  assert.equal(opened.length, 1);
+  assert.equal(opened[0], queueUrl);
+  assert.ok(safeChecked.includes(queueUrl));
+});
+
+test('render: queue URL が無いタイトルはプレーンテキストのまま描画する', () => {
+  const widget = sanitized([
+    { id: 'ready', label: '実行待ち', tone: 'info', items: [{ id: '401', title: 'ローカルモードのタスク', editable: false, links: [
+      { rel: 'pr', url: 'https://example.com/pull/401', label: 'PR #401' },
+    ] }] },
+  ], { viewer: null });
+  const { groupsEl, view } = makeView();
+  view.render(widget, { now: Date.parse('2026-07-21T00:00:10.000Z') });
+
+  const title = groupsEl.querySelectorAll((el) => el.classList.contains('task-item-title'))[0];
+  assert.equal(title.tagName, 'DIV');
+  assert.equal(title.getAttribute('role'), null);
+  assert.equal(title.textContent, 'ローカルモードのタスク');
+});
+
 test('render: 担当者フィルタ（self）は viewer のアイテムだけを描画する', () => {
   const widget = sanitized([
     { id: 'g', label: 'G', tone: 'info', items: [
@@ -216,7 +279,7 @@ test('render: 担当者フィルタ（self）は viewer のアイテムだけを
   assert.equal(info.filterEnabled, true);
   assert.equal(info.filterMode, 'self');
   assert.equal(info.visibleItems, 1);
-  const titles = groupsEl.querySelectorAll((el) => el.classList.contains('task-item-title')).map((el) => el.textContent);
+  const titles = groupsEl.querySelectorAll((el) => el.classList.contains('task-item-title-text')).map((el) => el.textContent);
   assert.deepEqual(titles, ['mine']);
 });
 

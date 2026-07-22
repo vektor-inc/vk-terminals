@@ -330,26 +330,56 @@
       return node;
     }
 
-    function buildLink(link) {
-      const a = el('a', 'widget-link');
-      a.dataset.rel = link.rel;
-      a.href = '#';
-      a.setAttribute('role', 'link');
-      a.draggable = false;
-      a.title = `${link.label}\n${link.url}`;
-      a.setAttribute('aria-label', `${link.label}${strings.openExternal}`);
-      const text = el('span', 'widget-link-text');
-      text.textContent = link.label;
+    function appendExternalIcon(text) {
       const icon = el('span', 'widget-link-icon');
       icon.setAttribute('aria-hidden', 'true');
       icon.textContent = '⁠↗';
       text.appendChild(icon);
-      a.appendChild(text);
-      a.addEventListener('click', (e) => {
+    }
+
+    function wireExternalLink(anchor, label, url) {
+      anchor.href = '#';
+      anchor.setAttribute('role', 'link');
+      anchor.draggable = false;
+      anchor.title = `${label}\n${url}`;
+      anchor.setAttribute('aria-label', `${label}${strings.openExternal}`);
+      anchor.addEventListener('click', (e) => {
         e.preventDefault();
         e.stopPropagation();
-        if (isSafeExternalUrl(link.url)) openUrl(link.url);
+        if (isSafeExternalUrl(url)) openUrl(url);
       });
+    }
+
+    function buildLink(link) {
+      const a = el('a', 'widget-link');
+      a.dataset.rel = link.rel;
+      wireExternalLink(a, link.label, link.url);
+      const text = el('span', 'widget-link-text');
+      text.textContent = link.label;
+      appendExternalIcon(text);
+      a.appendChild(text);
+      return a;
+    }
+
+    function findQueueLink(item) {
+      return (item.links || []).find((link) => link.rel === 'queue' && isSafeExternalUrl(link.url)) || null;
+    }
+
+    function buildTitle(item) {
+      const queueLink = findQueueLink(item);
+      if (!queueLink) {
+        const title = el('div', 'task-item-title');
+        title.textContent = item.title;
+        title.title = item.title;
+        return title;
+      }
+
+      const a = el('a', 'task-item-title task-item-title-link');
+      wireExternalLink(a, item.title, queueLink.url);
+      const text = el('span', 'task-item-title-text');
+      text.textContent = item.title;
+      a.appendChild(text);
+      appendExternalIcon(a);
       return a;
     }
 
@@ -358,6 +388,10 @@
       span.dataset.tone = contract.toneOrDefault(badge.tone);
       span.textContent = badge.label;
       return span;
+    }
+
+    function buildStatusBadge(group) {
+      return buildBadge({ label: group.label, tone: group.tone });
     }
 
     function buildControl(item, control, disabled) {
@@ -475,17 +509,15 @@
       return panel;
     }
 
-    function buildItem(item) {
+    function buildItem(item, group) {
       const li = el('li', 'task-item');
       li.dataset.id = item.id;
       if (item.emphasis) li.dataset.emphasis = item.emphasis;
 
-      const title = el('div', 'task-item-title');
-      title.textContent = item.title;
-      title.title = item.title;
-      li.appendChild(title);
+      li.appendChild(buildTitle(item));
 
       const head = el('div', 'task-item-head');
+      head.appendChild(buildStatusBadge(group));
       for (const badge of (item.badges || [])) head.appendChild(buildBadge(badge));
       if (item.assignee) {
         const assignee = el('span', 'task-item-assignee');
@@ -515,12 +547,11 @@
       }
       if (head.childNodes.length) li.appendChild(head);
 
-      if (item.links && item.links.length) {
+      const visibleLinks = (item.links || []).filter((link) => link.rel !== 'queue' && isSafeExternalUrl(link.url));
+      if (visibleLinks.length) {
         const links = el('div', 'task-item-links');
-        for (const link of item.links) {
-          if (isSafeExternalUrl(link.url)) links.appendChild(buildLink(link));
-        }
-        if (links.childNodes.length) li.appendChild(links);
+        for (const link of visibleLinks) links.appendChild(buildLink(link));
+        li.appendChild(links);
       }
 
       const isPending = !!getPending(item.id);
@@ -553,15 +584,8 @@
       section.dataset.groupId = group.id;
       section.dataset.tone = contract.toneOrDefault(group.tone);
 
-      const header = el('div', 'task-list-group-head');
-      const label = el('span', 'widget-group-label');
-      label.dataset.tone = contract.toneOrDefault(group.tone);
-      label.textContent = group.label;
-      header.appendChild(label);
-      section.appendChild(header);
-
       const list = el('ul', 'task-list-items');
-      for (const item of items) list.appendChild(buildItem(item));
+      for (const item of items) list.appendChild(buildItem(item, group));
       section.appendChild(list);
       return section;
     }

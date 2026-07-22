@@ -172,8 +172,8 @@ async function closeApp(app) {
   }
 }
 
-// ─── 1: サイドバー: 宣言を共有レンダラで描画し、バッジ・リンク・見出しリンク・フィルタを出す ───
-test('サイドバー: widgetFile の宣言でグループ／アイテム／バッジ／リンク／見出しリンク／担当者フィルタを描画する', async () => {
+// ─── 1: サイドバー: 宣言を共有レンダラで描画し、バッジ・タイトルリンク・見出しリンク・フィルタを出す ───
+test('サイドバー: widgetFile の宣言でグループ／アイテム／バッジ／タイトルリンク／見出しリンク／担当者フィルタを描画する', async () => {
   const port = await getFreePort();
   const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-widget-decl-data-'));
   const widgetFile = path.join(dataRoot, 'tasks-widget.json');
@@ -184,26 +184,31 @@ test('サイドバー: widgetFile の宣言でグループ／アイテム／バ�
     const section = win.locator('#task-list');
     await expect(section).toBeVisible({ timeout: 10_000 });
 
-    // グループ見出し（tone 反映）とアイテムが描画される。
+    // グループ構造（tone 反映）とアイテムが描画される。
     const group = section.locator('.task-list-group[data-group-id="in-progress"]');
     await expect(group).toHaveAttribute('data-tone', 'progress');
+    await expect(group.locator('.task-list-group-head')).toHaveCount(0);
     const item = section.locator('.task-item[data-id="301"]');
     await expect(item).toBeVisible();
-    await expect(item.locator('.task-item-title')).toHaveText('宣言ウィジェットの実行中タスク');
+    const itemTitleLink = item.locator('a.task-item-title');
+    await expect(itemTitleLink.locator('.task-item-title-text')).toHaveText('宣言ウィジェットの実行中タスク');
+    await expect(itemTitleLink).toHaveAttribute('role', 'link');
+    await expect(itemTitleLink).toHaveAttribute('aria-label', '宣言ウィジェットの実行中タスク（外部ブラウザで開く）');
+    await expect(itemTitleLink).toHaveAttribute('title', /https:\/\/github\.com\/vektor-inc\/vk-orchestrator\/issues\/301/m);
     // emphasis は意味属性として data-emphasis に載る。
     await expect(item).toHaveAttribute('data-emphasis', 'attention');
 
-    // バッジ（tone 付き）。
-    const badge = item.locator('.widget-badge');
-    await expect(badge).toHaveText('高');
-    await expect(badge).toHaveAttribute('data-tone', 'warning');
+    // ステータス→優先度の順でバッジ（tone 付き）を出す。
+    const badges = item.locator('.widget-badge');
+    await expect(badges).toHaveText(['実行中', '高']);
+    await expect(badges.nth(0)).toHaveAttribute('data-tone', 'progress');
+    await expect(badges.nth(1)).toHaveAttribute('data-tone', 'warning');
 
-    // 外部リンク（queue / pr）は a.widget-link で描画され、href は "#"。
+    // queue はタイトルリンクへ移し、PR だけを a.widget-link で描画する。
     const links = item.locator('.task-item-links a.widget-link');
-    await expect(links).toHaveCount(2);
-    const queueLink = item.locator('a.widget-link[data-rel="queue"]');
-    await expect(queueLink).toHaveAttribute('href', '#');
-    await expect(queueLink).toHaveAttribute('aria-label', /issue #301（外部ブラウザで開く）/);
+    await expect(links).toHaveCount(1);
+    await expect(item.locator('a.widget-link[data-rel="queue"]')).toHaveCount(0);
+    await expect(item.locator('a.widget-link[data-rel="pr"]')).toHaveAttribute('aria-label', /PR #301（外部ブラウザで開く）/);
 
     // GitHub モードでは見出し「タスク」が issue 一覧への外部リンクになる（末尾 /301 を落とす）。
     const titleLink = section.locator('.task-list-title-text a.task-list-title-link');
@@ -461,7 +466,7 @@ test('モバイル: /api/widgets の宣言を描画し、ステータス変更�
     await page.goto(`${base}/`);
     const item = page.locator('.task-item[data-id="301"]');
     await expect(item).toBeVisible({ timeout: 10_000 });
-    await expect(item.locator('.task-item-title')).toHaveText('宣言ウィジェットの実行中タスク');
+    await expect(item.locator('.task-item-title-text')).toHaveText('宣言ウィジェットの実行中タスク');
 
     // ステータス変更は編集パネル内の下書き更新だけ。保存時に confirm 承認→POST 経由で commands.jsonl へ追記。
     const editButton = item.locator('button.task-item-edit');
@@ -560,6 +565,7 @@ test('サイドバー: ローカルモード（queue リンク無し／viewer �
     await expect(section).toBeVisible({ timeout: 10_000 });
     // アイテムは描画される。
     await expect(section.locator('.task-item[data-id="401"] .task-item-title')).toHaveText('ローカルモードのタスク');
+    await expect(section.locator('.task-item[data-id="401"] a.task-item-title')).toHaveCount(0);
     // GitHub モードでないので担当者フィルタは非表示。
     await expect(section.locator('.task-list-assignee-filter')).toBeHidden();
     // 見出しはリンク化されずプレーンテキスト「タスク」。

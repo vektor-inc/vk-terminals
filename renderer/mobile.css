@@ -294,6 +294,7 @@ button.k.kill.is-locked:active { background: #6b3f3f; border-color: #7c4a4a; }
   background: #161b22;
 }
 .task-item-title {
+  display: block;
   padding: 8px 9px 6px;
   color: #e6edf3;
   font-size: 12px;
@@ -301,28 +302,21 @@ button.k.kill.is-locked:active { background: #6b3f3f; border-color: #7c4a4a; }
   line-height: 1.35;
   overflow-wrap: anywhere;
 }
-/* ─── グループ見出し（ステータス）───────────────────────────────────────── */
-.task-list-group-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 7px;
+.task-item-title-link {
+  text-decoration: none;
 }
-.widget-group-label {
-  display: inline-flex;
-  align-items: center;
-  padding: 3px 8px;
-  border: 1px solid var(--wtone-border, rgba(139, 148, 158, 0.26));
-  border-radius: 6px;
-  color: var(--wtone-fg, #adbac7);
-  background: var(--wtone-bg, rgba(139, 148, 158, 0.12));
-  font-size: 10px;
-  font-weight: 700;
-  line-height: 1.2;
-  white-space: nowrap;
+.task-item-title-link:active {
+  text-decoration: underline;
+}
+.task-item-title-link:focus-visible {
+  outline: 2px solid #58a6ff;
+  outline-offset: 2px;
+}
+.task-item-title-text {
+  overflow-wrap: anywhere;
 }
 
-/* ─── アイテムのバッジ行（優先度 / 直列・並列 / 担当者）─────────────────── */
+/* ─── アイテムのバッジ行（ステータス / 優先度 / 直列・並列 / 担当者）───── */
 .task-item-head {
   display: flex;
   flex-wrap: wrap;

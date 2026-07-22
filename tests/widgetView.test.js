@@ -9,7 +9,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const contract = require('../utils/widgetContract');
-const { createTaskWidgetView } = require('../renderer/widgetView');
+const { createTaskWidgetView, DEFAULT_STRINGS } = require('../renderer/widgetView');
 
 // ── 最小 DOM スタブ ──────────────────────────────────────────────────────────
 class FakeClassList {
@@ -21,8 +21,9 @@ class FakeClassList {
 }
 
 class FakeElement {
-  constructor(tag) {
+  constructor(tag, ownerDocument) {
     this.tagName = String(tag).toUpperCase();
+    this.ownerDocument = ownerDocument || null;
     this.children = [];
     this.dataset = {};
     this.attributes = {};
@@ -31,6 +32,7 @@ class FakeElement {
     this.parentNode = null;
     this._text = '';
     this._className = '';
+    this._id = '';
     this.value = undefined;
     this.disabled = false;
     this.selected = false;
@@ -50,6 +52,13 @@ class FakeElement {
   }
   get className() { return this._className; }
 
+  set id(v) {
+    this._id = String(v == null ? '' : v);
+    if (this._id) this.attributes.id = this._id;
+    else delete this.attributes.id;
+  }
+  get id() { return this._id; }
+
   get childNodes() { return this.children; }
   get firstChild() { return this.children[0] || null; }
 
@@ -61,11 +70,12 @@ class FakeElement {
     nodes.forEach((n) => this.appendChild(n));
   }
 
-  setAttribute(k, v) { this.attributes[k] = String(v); }
+  setAttribute(k, v) { this.attributes[k] = String(v); if (k === 'id') this._id = String(v); }
   getAttribute(k) { return Object.prototype.hasOwnProperty.call(this.attributes, k) ? this.attributes[k] : null; }
   removeAttribute(k) { delete this.attributes[k]; }
 
   addEventListener(type, fn) { (this.listeners[type] = this.listeners[type] || []).push(fn); }
+  focus() { if (this.ownerDocument) this.ownerDocument.activeElement = this; }
   // テスト用: イベントを発火する。
   dispatch(type) {
     const ev = { preventDefault() {}, stopPropagation() {} };
@@ -106,7 +116,9 @@ class FakeTextNode {
 }
 
 function makeDoc() {
-  return { createElement: (tag) => new FakeElement(tag) };
+  const doc = { activeElement: null };
+  doc.createElement = (tag) => new FakeElement(tag, doc);
+  return doc;
 }
 
 // テスト用のサニタイズ済みウィジェットを組む（contract.sanitizeWidget を通す）。
@@ -347,7 +359,7 @@ test('render: 保存後の widget 更新で current が追いつくと pending �
       ] },
     ],
   });
-  const { groupsEl, view } = makeView({
+  const { doc, groupsEl, view } = makeView({
     sendCommand: async () => ({ ok: true }),
     pendingTimeoutMs: 30000,
   });
@@ -366,6 +378,8 @@ test('render: 保存後の widget 更新で current が追いつくと pending �
   assert.equal(view.hasPending(), false);
   assert.equal(view.hasOpenEditor(), false);
   assert.equal(groupsEl.querySelectorAll((el) => el.classList.contains('task-edit-panel')).length, 0);
+  const editButton = groupsEl.querySelectorAll((el) => el.classList.contains('task-item-edit'))[0];
+  assert.equal(doc.activeElement, editButton);
 });
 
 test('render: キャンセルで下書きを破棄し畳みに戻る', () => {
@@ -432,7 +446,7 @@ test('render: 送信失敗時は下書きを保持し、パネルを開いたま
   assert.equal(kept.value, 'in-progress');
   const error = groupsEl.querySelectorAll((el) => el.classList.contains('task-item-action-error'))[0];
   assert.equal(error.getAttribute('role'), 'alert');
-  assert.equal(error.textContent, '反映されませんでした。変更は破棄されました（再試行してください）');
+  assert.equal(error.textContent, DEFAULT_STRINGS.sendError);
 });
 
 test('render: 無効な選択肢は disabledReason を末尾ラベルと title に反映する', () => {

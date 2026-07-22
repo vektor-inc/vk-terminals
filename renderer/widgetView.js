@@ -32,7 +32,7 @@
   const DEFAULT_STRINGS = Object.freeze({
     pending: '反映待ち',
     sendError: '送信に失敗しました（再試行してください）',
-    timeoutError: '反映されませんでした。変更は破棄されました（再試行してください）',
+    timeoutError: '反映を確認できませんでした（内容は保持しています。再試行できます）',
     savingPending: '保存中…（反映待ち）',
     empty: 'タスクはありません',
     emptySelf: '自分に割り当てられたタスクはありません',
@@ -245,7 +245,7 @@
       if (!res || !res.ok) {
         clearPending(item.id);
         savingTasks.delete(item.id);
-        errors.set(item.id, strings.timeoutError);
+        errors.set(item.id, strings.sendError);
         requestRerender();
       }
     }
@@ -304,7 +304,7 @@
             if (editingTaskId === taskId) {
               editingTaskId = null;
               drafts.delete(taskId);
-              pendingFocus = null;
+              pendingFocus = { type: 'edit-button', taskId };
             }
           }
         } else if (remaining.length !== p.fields.length) {
@@ -418,7 +418,6 @@
       const panel = el('div', 'task-edit-panel');
       const panelId = panelIdForItem(item);
       panel.id = panelId;
-      panel.setAttribute('id', panelId);
       panel.setAttribute('tabindex', '-1');
 
       panel.addEventListener('keydown', (e) => {
@@ -575,6 +574,7 @@
      */
     function render(widget, options = {}) {
       lastWidget = widget || null;
+      // syncPending の前後で、消滅した編集対象アイテム由来の draft/pending を掃除する。
       cleanupEditorForWidget(lastWidget);
       syncPending(lastWidget);
       cleanupEditorForWidget(lastWidget);

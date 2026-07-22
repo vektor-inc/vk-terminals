@@ -1015,51 +1015,6 @@ body.resizing-sidebar .sidebar {
   padding: 5px 6px;
   background: #161b22;
 }
-/* tone トークン → 色（宣言的ウィジェット / #229）
-   ========================================================================== */
-/* orchestrator は生 HEX を宣言に載せず tone トークン（7 種）だけを渡す。ビューアがここで
- * tone→色へマッピングする（契約 docs/tasks-widget-schema.md）。このアプリはダーク前提の
- * 固定配色（body 背景・各要素とも GitHub ダーク系のハードコード。html への color-scheme 宣言は
- * 無く、フォーム要素は個別に color-scheme: dark を指定）のため、GitHub ダークパレットで従来の
- * ステータス色と同等の見た目にする。各 tone は要素側で読む 3 変数（前景 / 背景 / 境界）を定義する。
- * 未知 tone は widgetContract.toneOrDefault が neutral へ寄せるため、既定は neutral 相当。
- * コントラストは各前景色 × 暗い背景（#0d1117〜#161b22）で本文 4.5:1 / UI 3:1（WCAG 2.1 AA）を意識。 */
-.task-list [data-tone="warning"] {
-  --wtone-fg: #f0c36a;
-  --wtone-bg: rgba(210, 153, 34, 0.15);
-  --wtone-border: rgba(210, 153, 34, 0.32);
-}
-.task-list [data-tone="info"] {
-  --wtone-fg: #79c0ff;
-  --wtone-bg: rgba(88, 166, 255, 0.15);
-  --wtone-border: rgba(88, 166, 255, 0.30);
-}
-.task-list [data-tone="progress"] {
-  --wtone-fg: #56d364;
-  --wtone-bg: rgba(63, 185, 80, 0.15);
-  --wtone-border: rgba(63, 185, 80, 0.30);
-}
-.task-list [data-tone="success"] {
-  --wtone-fg: #7ee787;
-  --wtone-bg: rgba(63, 185, 80, 0.13);
-  --wtone-border: rgba(63, 185, 80, 0.28);
-}
-.task-list [data-tone="danger"] {
-  --wtone-fg: #ffa198;
-  --wtone-bg: rgba(248, 81, 73, 0.15);
-  --wtone-border: rgba(248, 81, 73, 0.32);
-}
-.task-list [data-tone="neutral"] {
-  --wtone-fg: #adbac7;
-  --wtone-bg: rgba(139, 148, 158, 0.12);
-  --wtone-border: rgba(139, 148, 158, 0.26);
-}
-.task-list [data-tone="attention"] {
-  --wtone-fg: #d2a8ff;
-  --wtone-bg: rgba(188, 140, 255, 0.16);
-  --wtone-border: rgba(188, 140, 255, 0.34);
-}
-
 /* グループ見出し（ステータス）
    ========================================================================== */
 /* 旧 UI はアイテムごとにステータスバッジを出していたが、宣言的ウィジェットではグループ見出し

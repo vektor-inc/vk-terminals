@@ -439,12 +439,12 @@ function ensureCard(termId) {
   var head = document.createElement("div"); head.className = "card-head";
   var headMain = document.createElement("div"); headMain.className = "card-head-main";
   var headMeta = document.createElement("div"); headMeta.className = "card-head-meta";
-  var dot = document.createElement("span"); dot.className = "dot idle";
+  var dot = document.createElement("span"); dot.className = "dot"; dot.dataset.status = "idle";
   var title = document.createElement("a"); title.className = "card-title";
   var name = document.createElement("div"); name.className = "name";
   var cwd = document.createElement("div"); cwd.className = "cwd";
   title.appendChild(name); title.appendChild(cwd);
-  var badge = document.createElement("span"); badge.className = "badge idle"; badge.hidden = true;
+  var badge = document.createElement("span"); badge.className = "badge"; badge.dataset.status = "idle"; badge.hidden = true;
   badge.setAttribute("role", "status");
   badge.setAttribute("aria-live", "polite");
   // PR リンク（issue #53）。ヘッダ帯に置くことで折り畳んでも残り、PC の「常時表示」方針と整合する。
@@ -733,8 +733,8 @@ function render(data) {
     seen[termId] = true;
     var c = ensureCard(termId);
     var st = t.status || "idle";
-    c.dot.className = "dot " + st;
-    c.badge.className = "badge " + st;
+    c.dot.dataset.status = st;
+    c.badge.dataset.status = st;
     var statusView = statusPresentation.getStatusPresentation(st);
     c.badge.textContent = statusView.label;
     c.badge.hidden = !statusView.label;

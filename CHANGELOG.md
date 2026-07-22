@@ -1,5 +1,8 @@
 # Changelog
 
+- [ 仕様変更 ] モバイル版の実行中ステータス色をサイドバーと同じ緑系に統一（[#238](https://github.com/vektor-inc/vk-terminals/issues/238)）
+- [ その他 ] サイドバー・モバイルのステータス属性と宣言的ウィジェットの tone CSS トークンを共通化（[#238](https://github.com/vektor-inc/vk-terminals/issues/238)）
+
 ## 1.39.0
 
 - [ 機能追加 ] 設定パネルのタブごとに保存後の反映タイミングの案内文（note）を出し分けるように追加（[#240](https://github.com/vektor-inc/vk-terminals/issues/240)）

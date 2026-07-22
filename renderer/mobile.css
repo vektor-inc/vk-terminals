@@ -4,9 +4,9 @@
   --card-border: #2c323b;
   --fg: #e6e8eb;
   --muted: #8b939e;
-  --idle: #5a6573;
-  --running: #3b82f6;
-  --waiting: #f5a623;
+  --idle: #6e7681;
+  --running: #3fb950;
+  --waiting: #d29922;
   --accent: #2563eb;
 }
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -34,14 +34,14 @@ header .meta { font-size: 11px; color: var(--muted); }
   font-size: 16px; line-height: 1; font-weight: 700; }
 .chevron:active { background: #3a424d; }
 .dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
-.dot.idle { background: var(--idle); }
-.dot.running { background: var(--running); box-shadow: 0 0 0 3px rgba(59,130,246,0.18); }
-.dot.waiting { background: var(--waiting); box-shadow: 0 0 0 3px rgba(245,166,35,0.22);
+.dot[data-status="idle"] { background: var(--idle); }
+.dot[data-status="running"] { background: var(--running); box-shadow: 0 0 0 3px rgba(63,185,80,0.18); }
+.dot[data-status="waiting"] { background: var(--waiting); box-shadow: 0 0 0 3px rgba(210,153,34,0.22);
   animation: pulse 1.2s ease-in-out infinite; }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.45; } }
 /* 無限ループのパルス（待機・注意喚起）は reduced-motion で停止する（前庭系への配慮 / WCAG 2.3.3）。 */
 @media (prefers-reduced-motion: reduce) {
-  .dot.waiting,
+  .dot[data-status="waiting"],
   .task-item[data-emphasis="attention"]::before {
     animation: none;
   }
@@ -56,11 +56,11 @@ a.card-title { color: inherit; text-decoration: none; }
 .card-title .cwd { font-size: 11px; color: var(--muted); white-space: nowrap;
   overflow: hidden; text-overflow: ellipsis; }
 .card-title:focus-visible { outline: 2px solid #58a6ff; outline-offset: 2px; border-radius: 4px; }
-.badge { font-size: 10px; font-weight: 700; padding: 3px 7px; border-radius: 6px;
-  text-transform: uppercase; letter-spacing: 0.04em; flex: none; }
-.badge.idle { background: #2a2f37; color: #9aa3ae; }
-.badge.running { background: rgba(59,130,246,0.15); color: #7fb0ff; }
-.badge.waiting { background: rgba(245,166,35,0.18); color: #ffce7a; }
+.badge { font-size: 10px; font-weight: 600; padding: 2px 6px; border: 1px solid transparent;
+  border-radius: 6px; flex: none; }
+.badge[data-status="idle"] { background: #2a2f37; color: #8b949e; border-color: rgba(139,148,158,0.26); }
+.badge[data-status="running"] { background: rgba(63,185,80,0.15); color: #6fd58a; border-color: rgba(63,185,80,0.3); }
+.badge[data-status="waiting"] { background: rgba(210,153,34,0.15); color: #d29922; border-color: rgba(210,153,34,0.3); }
 /* PR リンク（issue #53）。PC 版の [ PR ↗ ] バッジ（GitHub PR グリーン系）に寄せる。
    ヘッダ帯（暗背景 var(--card)）上に置くため、PC の濃緑ではなく明るい緑文字にする。
    .badge と同じ角丸・font-size に調和させつつ、タップ領域確保のため min-height 32px・
@@ -301,48 +301,6 @@ button.k.kill.is-locked:active { background: #6b3f3f; border-color: #7c4a4a; }
   line-height: 1.35;
   overflow-wrap: anywhere;
 }
-/* ─── tone トークン → 色（宣言的ウィジェット / #229）───────────────────────── */
-/* orchestrator は生 HEX を宣言に載せず tone トークン（7 種）だけを渡す。ビューアがここで
- * tone→色へマッピングする（契約 docs/tasks-widget-schema.md）。モバイルもダーク固定
- * （color-scheme: dark）のため GitHub ダークパレットで従来の見た目と同等にする。
- * 各 tone は要素側で読む 3 変数（前景 / 背景 / 境界）を定義する。未知 tone は neutral 相当。
- * コントラストは暗い背景（#0d1117〜#161b22）で本文 4.5:1 / UI 3:1（WCAG 2.1 AA）を意識。 */
-.task-list [data-tone="warning"] {
-  --wtone-fg: #f0c36a;
-  --wtone-bg: rgba(210, 153, 34, 0.15);
-  --wtone-border: rgba(210, 153, 34, 0.32);
-}
-.task-list [data-tone="info"] {
-  --wtone-fg: #79c0ff;
-  --wtone-bg: rgba(88, 166, 255, 0.15);
-  --wtone-border: rgba(88, 166, 255, 0.30);
-}
-.task-list [data-tone="progress"] {
-  --wtone-fg: #56d364;
-  --wtone-bg: rgba(63, 185, 80, 0.15);
-  --wtone-border: rgba(63, 185, 80, 0.30);
-}
-.task-list [data-tone="success"] {
-  --wtone-fg: #7ee787;
-  --wtone-bg: rgba(63, 185, 80, 0.13);
-  --wtone-border: rgba(63, 185, 80, 0.28);
-}
-.task-list [data-tone="danger"] {
-  --wtone-fg: #ffa198;
-  --wtone-bg: rgba(248, 81, 73, 0.15);
-  --wtone-border: rgba(248, 81, 73, 0.32);
-}
-.task-list [data-tone="neutral"] {
-  --wtone-fg: #adbac7;
-  --wtone-bg: rgba(139, 148, 158, 0.12);
-  --wtone-border: rgba(139, 148, 158, 0.26);
-}
-.task-list [data-tone="attention"] {
-  --wtone-fg: #d2a8ff;
-  --wtone-bg: rgba(188, 140, 255, 0.16);
-  --wtone-border: rgba(188, 140, 255, 0.34);
-}
-
 /* ─── グループ見出し（ステータス）───────────────────────────────────────── */
 .task-list-group-head {
   display: flex;

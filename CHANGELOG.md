@@ -1,5 +1,7 @@
 # Changelog
 
+## 1.44.0
+
 - [ 機能追加 ] タスク編集フォームの自動マージ選択を宣言的ウィジェットで受け付けるように追加（[#254](https://github.com/vektor-inc/vk-terminals/issues/254)）
 
 ## 1.43.0

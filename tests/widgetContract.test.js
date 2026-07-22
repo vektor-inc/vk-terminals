@@ -100,6 +100,29 @@ test('sanitizeWidget: editable=false のアイテムは controls を持たない
   assert.equal(w.groups[0].items[0].controls.length, 0);
 });
 
+test('sanitizeWidget: automerge の select コントロールを保持する', () => {
+  const w = contract.sanitizeWidget(baseRawWidget({
+    groups: [{ id: 'ready', label: '準備完了', tone: 'info', items: [{
+      id: '254', title: 'automerge task', editable: true,
+      controls: [{
+        type: 'select',
+        field: 'automerge',
+        label: '自動マージ',
+        ariaLabel: '自動マージを選択',
+        current: 'disabled',
+        options: [
+          { value: 'disabled', label: 'しない' },
+          { value: 'enabled', label: 'する', command: { action: 'set-automerge', taskId: '254', to: 'enabled', expected: 'disabled' } },
+        ],
+      }],
+    }] }],
+  }));
+  const control = w.groups[0].items[0].controls[0];
+  assert.equal(control.field, 'automerge');
+  assert.equal(control.type, 'select');
+  assert.equal(control.options[1].command.action, 'set-automerge');
+});
+
 test('sanitizeWidget: emphasis は attention のみ、それ以外は無視', () => {
   const w = contract.sanitizeWidget(baseRawWidget({
     groups: [{ id: 'g', label: 'G', tone: 'warning', items: [
@@ -146,6 +169,20 @@ test('buildCommandLine: 断片に id / requestedAt を付与する。不正断�
   assert.equal(contract.buildCommandLine({ action: 'set-status', to: 'x', expected: 'y' }, { id: 'i', requestedAt: 'r' }), null);
 });
 
+test('sanitizeCommand: set-automerge の単一コマンドを保持する', () => {
+  assert.deepEqual(contract.sanitizeCommand({
+    action: 'set-automerge',
+    taskId: '254',
+    to: 'enabled',
+    expected: 'disabled',
+  }), {
+    action: 'set-automerge',
+    taskId: '254',
+    to: 'enabled',
+    expected: 'disabled',
+  });
+});
+
 test('buildBatchCommandLine: apply-batch 断片に id / requestedAt を付与し ops を保持する', () => {
   const line = contract.buildBatchCommandLine(
     {
@@ -169,6 +206,24 @@ test('buildBatchCommandLine: apply-batch 断片に id / requestedAt を付与し
       { action: 'set-status', to: 'awaiting-approval', expected: 'ready' },
     ],
     requestedAt: '2026-07-21T00:00:00.000Z',
+  });
+});
+
+test('sanitizeBatchCommand: apply-batch の ops に set-automerge を保持する', () => {
+  assert.deepEqual(contract.sanitizeBatchCommand({
+    action: 'apply-batch',
+    taskId: '254',
+    ops: [
+      { action: 'set-status', to: 'awaiting-approval', expected: 'ready' },
+      { action: 'set-automerge', to: 'enabled', expected: 'disabled' },
+    ],
+  }), {
+    action: 'apply-batch',
+    taskId: '254',
+    ops: [
+      { action: 'set-status', to: 'awaiting-approval', expected: 'ready' },
+      { action: 'set-automerge', to: 'enabled', expected: 'disabled' },
+    ],
   });
 });
 

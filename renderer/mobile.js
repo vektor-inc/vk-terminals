@@ -80,6 +80,8 @@ var taskListSection = document.getElementById("task-list");
 var taskListCount = document.getElementById("task-list-count");
 var taskListGroups = taskListSection ? taskListSection.querySelector(".task-list-groups") : null;
 var taskListStale = taskListSection ? taskListSection.querySelector(".task-list-stale") : null;
+var taskListFilter = document.getElementById("task-list-assignee-filter");
+var taskListLive = document.getElementById("task-list-live");
 // GET /api/widgets の中継ペイロード { widget, legacyNotice, commandsConfigured }。
 var lastWidgetPayload = null;
 var hasSeenFreshWidget = false;
@@ -94,6 +96,24 @@ function readTaskListCollapsed() {
 function writeTaskListCollapsed(collapsed) {
   try { localStorage.setItem(TASK_LIST_COLLAPSE_KEY, collapsed ? "1" : "0"); } catch (e) { /* 保存失敗は無視 */ }
 }
+
+// 担当者フィルタは PC 版と同じ localStorage キーを使い、端末をまたいで選択を揃える（issue #232）。
+//   "self"（自分のみ・デフォルト） / "all"（全員） / "none"（担当なし） / "<login>"（個別担当者）
+var TASK_ASSIGNEE_FILTER_KEY = "vkt.taskAssigneeFilter";
+var TASK_ASSIGNEE_FILTER_DEFAULT = "self";
+var ASSIGNEE_OPTION_FIELD_SEP = "\u001f";
+var ASSIGNEE_OPTION_ITEM_SEP = "\u001e";
+function readTaskAssigneeFilter() {
+  try {
+    var value = localStorage.getItem(TASK_ASSIGNEE_FILTER_KEY);
+    return (typeof value === "string" && value) ? value : TASK_ASSIGNEE_FILTER_DEFAULT;
+  } catch (e) { return TASK_ASSIGNEE_FILTER_DEFAULT; }
+}
+function writeTaskAssigneeFilter(mode) {
+  try { localStorage.setItem(TASK_ASSIGNEE_FILTER_KEY, mode); }
+  catch (e) { /* 保存失敗は無視 */ }
+}
+
 function syncTaskListCollapse(collapsed) {
   if (taskListSection) taskListSection.classList.toggle("collapsed", collapsed);
   if (taskListHead) taskListHead.setAttribute("aria-expanded", collapsed ? "false" : "true");
@@ -162,7 +182,7 @@ function ensureWidgetViewController() {
         return { ok: false, error: e && e.message };
       }
     },
-    getFilterMode: function() { return "all"; },
+    getFilterMode: function() { return readTaskAssigneeFilter(); },
     requestRerender: function() { renderWidget(); },
     pendingTimeoutMs: TASK_PENDING_TIMEOUT_MS
   });
@@ -174,8 +194,48 @@ function ensureWidgetViewController() {
 // この間は poll 起因の再描画をスキップする（PC 版 shouldSkipTaskRenderForActiveEdit 相当）。
 function isEditingWidgetControl() {
   var active = document.activeElement;
-  if (!(active instanceof HTMLElement) || !taskListGroups || !taskListGroups.contains(active)) return false;
+  if (!(active instanceof HTMLElement)) return false;
+  if (taskListFilter && active === taskListFilter) return true;
+  if (!taskListGroups || !taskListGroups.contains(active)) return false;
   return active.tagName === "SELECT";
+}
+
+function updateWidgetFilter(info) {
+  if (!taskListFilter) return;
+
+  if (!info || !info.filterEnabled) {
+    taskListFilter.hidden = true;
+    if (taskListLive) taskListLive.textContent = "";
+    return;
+  }
+
+  // 選択肢が変わったときだけ作り直す。poll 中に毎回 replace するとネイティブピッカーが閉じる。
+  var options = Array.isArray(info.filterOptions) ? info.filterOptions : [];
+  var currentOptions = Array.prototype.map.call(taskListFilter.options, function(opt) {
+    return opt.value + ASSIGNEE_OPTION_FIELD_SEP + opt.textContent;
+  }).join(ASSIGNEE_OPTION_ITEM_SEP);
+  var nextOptions = options.map(function(opt) {
+    return opt.value + ASSIGNEE_OPTION_FIELD_SEP + opt.label;
+  }).join(ASSIGNEE_OPTION_ITEM_SEP);
+  if (currentOptions !== nextOptions) {
+    while (taskListFilter.firstChild) taskListFilter.removeChild(taskListFilter.firstChild);
+    options.forEach(function(opt) {
+      var el = document.createElement("option");
+      el.value = opt.value;
+      el.textContent = opt.label;
+      taskListFilter.appendChild(el);
+    });
+  }
+  taskListFilter.value = info.filterMode;
+  taskListFilter.hidden = false;
+  if (taskListLive) taskListLive.textContent = info.visibleItems + "件表示";
+}
+
+if (taskListFilter) {
+  taskListFilter.addEventListener("change", function() {
+    writeTaskAssigneeFilter(taskListFilter.value);
+    renderWidget();
+  });
 }
 
 // 一度でも新鮮な widget を見たら以後は表示を維持する（PC 版 computeTaskSectionVisibility と同じ考え方）。
@@ -235,17 +295,24 @@ function renderWidget(fromPoll) {
     }
   }
 
-  var totalItems = widget ? widgetContract.flatItems(widget).length : 0;
-  if (taskListCount) taskListCount.textContent = totalItems ? totalItems + "件" : "";
-
   if (!shouldShow) {
     while (taskListGroups.firstChild) taskListGroups.removeChild(taskListGroups.firstChild);
+    updateWidgetFilter(null);
+    if (taskListCount) taskListCount.textContent = "";
     return;
   }
 
   var controller = ensureWidgetViewController();
   if (!controller) return;
-  controller.render(widget, { now: Date.now() });
+  var info = controller.render(widget, { now: Date.now() });
+  updateWidgetFilter(info);
+  if (taskListCount) {
+    if (info && info.filterEnabled) {
+      taskListCount.textContent = info.visibleItems + " / " + info.totalItems + "件";
+    } else {
+      taskListCount.textContent = info ? info.totalItems + "件" : "";
+    }
+  }
 }
 
 async function send(termId, input) {

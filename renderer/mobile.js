@@ -3,6 +3,7 @@
 const { stripAnsi, sanitizeMobilePreviewText, applyCarriageReturns, tail } = window.VKMobilePreview;
 const { isSafeHttpUrl } = window.VKUrlSafety;
 var statusPresentation = window.VKStatusPresentation;
+var prBadge = window.VKPrBadge;
 
 // スクロール位置の保存・復元。
 // このページは Cache-Control: no-store で配信され、#list の中身は読み込み後に
@@ -780,20 +781,21 @@ function render(data) {
     // PR リンク（issue #53）。安全な http(s) URL のときだけ href にセットして表示、
     // そうでなければ href を空にして非表示にする。
     if (isSafeHttpUrl(t.apiPrUrl)) {
-      var prMerged = t.apiPrMerged === true;
+      var prPresentation = prBadge.getPrBadgePresentation(t.apiPrMerged, { external: false });
       c.prLink.href = t.apiPrUrl;
       c.prLink.title = t.apiPrUrl;
       c.prLink.classList.add("show");
-      c.prLink.classList.toggle("merged", prMerged);
-      c.prLink.setAttribute("aria-label", prMerged ? "マージ済みのプルリクエストを開く" : "プルリクエストを開く");
-      c.prIcon.textContent = prMerged ? "✓" : "↗";
+      c.prLink.classList.toggle("merged", prPresentation.merged);
+      c.prLink.setAttribute("aria-label", prPresentation.ariaLabel);
+      c.prIcon.textContent = prPresentation.icon;
     } else {
+      var hiddenPrPresentation = prBadge.getPrBadgePresentation(false, { external: false });
       c.prLink.removeAttribute("href");
       c.prLink.removeAttribute("title");
       c.prLink.classList.remove("show");
       c.prLink.classList.remove("merged");
-      c.prLink.setAttribute("aria-label", "プルリクエストを開く");
-      c.prIcon.textContent = "↗";
+      c.prLink.setAttribute("aria-label", hiddenPrPresentation.ariaLabel);
+      c.prIcon.textContent = hiddenPrPresentation.icon;
     }
     // 罫線・装飾行を除去してから末尾を切り出し、読める直近出力を残す。
     var cleaned = sanitizeMobilePreviewText(stripAnsi(t.lastLines || ""))

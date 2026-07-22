@@ -1,5 +1,7 @@
 # Changelog
 
+## 1.40.0
+
 - [ 仕様変更 ] モバイル版の実行中ステータス色をサイドバーと同じ緑系に統一（[#238](https://github.com/vektor-inc/vk-terminals/issues/238)）
 - [ その他 ] サイドバー・モバイルのステータス属性と宣言的ウィジェットの tone CSS トークンを共通化（[#238](https://github.com/vektor-inc/vk-terminals/issues/238)）
 - [ その他 ] PR バッジの表示ロジック（アイコン・aria・merged 判定）をサイドバーとモバイルで共有モジュール化（[#239](https://github.com/vektor-inc/vk-terminals/issues/239)）

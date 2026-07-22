@@ -997,6 +997,7 @@ body.resizing-sidebar .sidebar {
   overflow: hidden;
 }
 .task-item-title {
+  display: block;
   padding: 8px 8px 6px;
   color: #c9d1d9;
   font-size: 12px;
@@ -1004,9 +1005,26 @@ body.resizing-sidebar .sidebar {
   line-height: 1.35;
   overflow-wrap: anywhere;
 }
+.task-item-title-link {
+  text-decoration: none;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+.task-item-title-link:hover {
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+.task-item-title-link:focus-visible {
+  outline: 2px solid #58a6ff;
+  outline-offset: 2px;
+}
+.task-item-title-text {
+  overflow-wrap: anywhere;
+}
 
-/* 宣言的ウィジェットではタスクタイトルはプレーンテキストで描画し、外部リンク（queue / pr）は
- * 独立した .task-item-links / .widget-link チップとして下段に出す（旧・タイトル自体のリンク化は廃止）。 */
+/* アイテムのバッジ（ステータス / 優先度 / 直列・並列）
+   ========================================================================== */
 .task-item-head {
   display: flex;
   flex-wrap: wrap;
@@ -1042,41 +1060,6 @@ body.resizing-sidebar .sidebar {
 .task-item-edit:disabled {
   opacity: 0.55;
   cursor: default;
-}
-/* グループ見出し（ステータス）
-   ========================================================================== */
-/* 旧 UI はアイテムごとにステータスバッジを出していたが、宣言的ウィジェットではグループ見出し
- * （実行中・承認待ち等）を tone 付きで 1 度だけ出す。tone の未設定時は neutral にフォールバック。 */
-.task-list-group-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 6px;
-}
-.widget-group-label {
-  display: inline-flex;
-  align-items: center;
-  min-height: 20px;
-  padding: 2px 8px;
-  border: 1px solid var(--wtone-border, rgba(139, 148, 158, 0.26));
-  border-radius: var(--vktm--border-radius--sm);
-  color: var(--wtone-fg, #adbac7);
-  background: var(--wtone-bg, rgba(139, 148, 158, 0.12));
-  font-size: 10px;
-  font-weight: 700;
-  line-height: 1.2;
-  white-space: nowrap;
-}
-
-/* アイテムのバッジ（優先度 / 直列・並列）
-   ========================================================================== */
-.task-item-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 6px;
-  background: #161b22;
 }
 .widget-badge {
   display: inline-flex;

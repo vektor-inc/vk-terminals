@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 仕様変更 ] サイドバー・モバイルのタスクカードでステータスをカード先頭バッジに戻し、Issue チップを廃止してタイトルリンクへ変更（[#251](https://github.com/vektor-inc/vk-terminals/issues/251)）
+
 ## 1.41.0
 
 - [ 仕様変更 ] サイドバーのタスク編集を、プルダウンを選ぶと即反映する方式から、編集ボタンで展開し保存/キャンセルでまとめて確定する方式に変更（[#248](https://github.com/vektor-inc/vk-terminals/issues/248)）

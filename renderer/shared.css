@@ -1,0 +1,40 @@
+/* ==========================================================================
+   Shared tone tokens
+   ========================================================================== */
+/* 宣言的ウィジェットの tone トークン（7 種）を、サイドバー / モバイルで共通の
+ * CSS カスタムプロパティ（前景 / 背景 / 境界）へ変換する。 */
+.task-list [data-tone="warning"] {
+  --wtone-fg: #f0c36a;
+  --wtone-bg: rgba(210, 153, 34, 0.15);
+  --wtone-border: rgba(210, 153, 34, 0.32);
+}
+.task-list [data-tone="info"] {
+  --wtone-fg: #79c0ff;
+  --wtone-bg: rgba(88, 166, 255, 0.15);
+  --wtone-border: rgba(88, 166, 255, 0.30);
+}
+.task-list [data-tone="progress"] {
+  --wtone-fg: #56d364;
+  --wtone-bg: rgba(63, 185, 80, 0.15);
+  --wtone-border: rgba(63, 185, 80, 0.30);
+}
+.task-list [data-tone="success"] {
+  --wtone-fg: #7ee787;
+  --wtone-bg: rgba(63, 185, 80, 0.13);
+  --wtone-border: rgba(63, 185, 80, 0.28);
+}
+.task-list [data-tone="danger"] {
+  --wtone-fg: #ffa198;
+  --wtone-bg: rgba(248, 81, 73, 0.15);
+  --wtone-border: rgba(248, 81, 73, 0.32);
+}
+.task-list [data-tone="neutral"] {
+  --wtone-fg: #adbac7;
+  --wtone-bg: rgba(139, 148, 158, 0.12);
+  --wtone-border: rgba(139, 148, 158, 0.26);
+}
+.task-list [data-tone="attention"] {
+  --wtone-fg: #d2a8ff;
+  --wtone-bg: rgba(188, 140, 255, 0.16);
+  --wtone-border: rgba(188, 140, 255, 0.34);
+}

@@ -6,8 +6,8 @@ const path = require('path');
 
 // PR #153: モバイル版のインライン CSS を renderer/mobile.css へ分離した変更の
 // end-to-end 確認（外部 CSS 化のデグレを検知するための回帰スペック）。
-//   - GET /mobile.css が HTTP 200 かつ Content-Type: text/css で返る。
-//   - mobile.html は <link rel="stylesheet" href="mobile.css"> を持ち、
+//   - GET /mobile.css / /shared.css が HTTP 200 かつ Content-Type: text/css で返る。
+//   - mobile.html は外部 CSS の <link rel="stylesheet"> を持ち、
 //     実ブラウザで開いたときに外部 CSS が実際に適用される（無スタイル=真っ白ではない）。
 
 const repoRoot = path.resolve(__dirname, '..', '..');
@@ -83,6 +83,27 @@ test('GET /mobile.css が HTTP 200 かつ Content-Type: text/css で返る', asy
     // 移設された CSS の中身が実際に配信されていること（代表的なセレクタ）。
     expect(body).toContain('.card');
     expect(body.length).toBeGreaterThan(1000);
+  } finally {
+    if (app) await app.close();
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+// ─── GET /shared.css が 200 / text/css で配信される ───
+test('GET /shared.css が HTTP 200 かつ Content-Type: text/css で返る', async () => {
+  const port = await getFreePort();
+  const { app, tmpRoot } = await launchApp(port);
+  try {
+    await waitForServer(port);
+
+    const res = await fetch(`http://127.0.0.1:${port}/shared.css`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toMatch(/text\/css/);
+
+    const body = await res.text();
+    // PC / モバイル共通の tone トークン定義が実際に配信されていること。
+    expect(body).toContain('.task-list [data-tone="warning"]');
+    expect(body).toContain('--wtone-fg');
   } finally {
     if (app) await app.close();
     fs.rmSync(tmpRoot, { recursive: true, force: true });

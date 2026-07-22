@@ -1213,6 +1213,21 @@ function startHttpApi() {
       return;
     }
 
+    // GET /shared.css — mobile.html は静的ファイルサーバーではないため、
+    // PC / モバイル共通 CSS も明示的に配信する。
+    if (req.method === 'GET' && url.pathname === '/shared.css') {
+      fs.readFile(path.join(__dirname, 'renderer', 'shared.css'), (err, data) => {
+        if (err) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'shared css not found' }));
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'text/css; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(data);
+      });
+      return;
+    }
+
     // GET /widgetContract.js / /widgetView.js / 共有 UMD / /mobile.js — モバイルは静的ファイルサーバーではないため、
     // 宣言的ウィジェットの共有描画モジュール（PC 版と共通）とモバイル用 JS を明示的に配信する。
     if (req.method === 'GET' && (

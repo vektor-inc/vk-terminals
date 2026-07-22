@@ -1235,6 +1235,7 @@ function startHttpApi() {
       || url.pathname === '/widgetView.js'
       || url.pathname === '/terminalDisplay.js'
       || url.pathname === '/urlSafety.js'
+      || url.pathname === '/prBadge.js'
       || url.pathname === '/statusPresentation.js'
       || url.pathname === '/mobilePreviewText.js'
       || url.pathname === '/mobile.js'
@@ -1244,6 +1245,7 @@ function startHttpApi() {
         '/widgetView.js': path.join(__dirname, 'renderer', 'widgetView.js'),
         '/terminalDisplay.js': path.join(__dirname, 'renderer', 'terminalDisplay.js'),
         '/urlSafety.js': path.join(__dirname, 'renderer', 'urlSafety.js'),
+        '/prBadge.js': path.join(__dirname, 'renderer', 'prBadge.js'),
         '/statusPresentation.js': path.join(__dirname, 'renderer', 'statusPresentation.js'),
         '/mobilePreviewText.js': path.join(__dirname, 'renderer', 'mobilePreviewText.js'),
         '/mobile.js': path.join(__dirname, 'renderer', 'mobile.js'),

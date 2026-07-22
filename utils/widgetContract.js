@@ -96,6 +96,10 @@
     return null;
   }
 
+  function hasOwn(obj, key) {
+    return Object.prototype.hasOwnProperty.call(obj, key);
+  }
+
   // ── サニタイズ（生成側 JSON → 描画に安全な正規化オブジェクト）──────────────
   function sanitizeCommand(raw) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
@@ -110,6 +114,37 @@
       taskId: clampStr(taskId, LIMITS.id),
       to: clampStr(to, LIMITS.text),
       expected: clampStr(expected, LIMITS.text),
+    };
+  }
+
+  function sanitizeBatchCommand(raw) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+    if (!hasOwn(raw, 'action') || raw.action !== 'apply-batch') return null;
+    const taskId = coerceCommandValue(raw.taskId);
+    if (taskId === null || !taskId) return null;
+    if (!hasOwn(raw, 'ops') || !Array.isArray(raw.ops) || raw.ops.length === 0) return null;
+
+    const seenActions = new Set();
+    const ops = [];
+    for (const rawOp of raw.ops) {
+      if (!rawOp || typeof rawOp !== 'object' || Array.isArray(rawOp)) return null;
+      if (!hasOwn(rawOp, 'action') || !COMMAND_ACTION_SET.has(rawOp.action)) return null;
+      if (seenActions.has(rawOp.action)) return null;
+      const to = hasOwn(rawOp, 'to') ? coerceCommandValue(rawOp.to) : null;
+      const expected = hasOwn(rawOp, 'expected') ? coerceCommandValue(rawOp.expected) : null;
+      if (to === null || expected === null) return null;
+      seenActions.add(rawOp.action);
+      ops.push({
+        action: rawOp.action,
+        to: clampStr(to, LIMITS.text),
+        expected: clampStr(expected, LIMITS.text),
+      });
+    }
+
+    return {
+      action: 'apply-batch',
+      taskId: clampStr(taskId, LIMITS.id),
+      ops,
     };
   }
 
@@ -372,6 +407,25 @@
     };
   }
 
+  /**
+   * apply-batch 断片 { action:'apply-batch', taskId, ops } に一意 id と requestedAt を付与し、
+   * commands.jsonl の 1 行 { id, taskId, action, ops, requestedAt } を組み立てる。
+   * @param {object} fragment
+   * @param {{ id: string, requestedAt: string }} meta
+   * @returns {object|null}
+   */
+  function buildBatchCommandLine(fragment, meta) {
+    const command = sanitizeBatchCommand(fragment);
+    if (!command) return null;
+    return {
+      id: meta.id,
+      taskId: command.taskId,
+      action: 'apply-batch',
+      ops: command.ops,
+      requestedAt: meta.requestedAt,
+    };
+  }
+
   return {
     WIDGET_TONES,
     WIDGET_TONE_SET,
@@ -389,6 +443,7 @@
     isPrimitive,
     toneOrDefault,
     sanitizeCommand,
+    sanitizeBatchCommand,
     sanitizeWidget,
     isWidgetStale,
     flatItems,
@@ -397,5 +452,6 @@
     resolveAssigneeFilterMode,
     applyAssigneeFilter,
     buildCommandLine,
+    buildBatchCommandLine,
   };
 });

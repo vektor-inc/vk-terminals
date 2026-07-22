@@ -1015,6 +1015,34 @@ body.resizing-sidebar .sidebar {
   padding: 5px 6px;
   background: #161b22;
 }
+.task-item-edit {
+  margin-left: auto;
+  min-width: 44px;
+  min-height: 24px;
+  padding: 3px 8px;
+  border: 1px solid #30363d;
+  border-radius: var(--vktm--border-radius--sm);
+  background: #21262d;
+  color: #c9d1d9;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.3;
+  cursor: pointer;
+  white-space: nowrap;
+  -webkit-app-region: no-drag;
+}
+.task-item-edit:hover {
+  background: #30363d;
+}
+.task-item-edit:focus-visible {
+  outline: 2px solid #58a6ff;
+  outline-offset: 2px;
+}
+.task-item-edit:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
 /* グループ見出し（ステータス）
    ========================================================================== */
 /* 旧 UI はアイテムごとにステータスバッジを出していたが、宣言的ウィジェットではグループ見出し
@@ -1147,16 +1175,44 @@ body.resizing-sidebar .sidebar {
   opacity: 1;
 }
 
-/* 操作コントロール（ステータス / 優先度 / 実行方式の select）
+/* 編集パネル（ステータス / 優先度 / 実行方式の select）
    ========================================================================== */
-/* 宣言的ウィジェットではコントロールは常時表示のインライン select。変更即発行（確認はデータ依存
- * の完成文で window.confirm）。ダーク UI に整合する中立の select として組む（tone は付けない）。 */
+/* 宣言的ウィジェットの editable タスクは、編集ボタンでパネルを開き、保存でまとめて確定する。 */
 .task-edit-panel {
   display: grid;
-  gap: 8px;
+  gap: 9px;
   padding: 8px 6px 9px;
   border-top: 1px solid #21262d;
   background: #0d1117;
+}
+.task-edit-panel:focus {
+  outline: none;
+}
+.task-edit-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 18px;
+}
+.task-edit-panel-title {
+  color: #8b949e;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+.task-edit-dirty {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #d29922;
+}
+.task-edit-dirty[hidden] {
+  display: none;
+}
+.task-edit-controls {
+  display: grid;
+  gap: 8px;
 }
 .widget-control {
   display: grid;
@@ -1195,6 +1251,49 @@ body.resizing-sidebar .sidebar {
 .widget-control-select[aria-disabled="true"] {
   opacity: 0.55;
   cursor: default;
+}
+.task-edit-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+  padding-top: 2px;
+}
+.task-edit-actions button {
+  min-width: 0;
+  min-height: 28px;
+  padding: 5px 10px;
+  border: 1px solid #30363d;
+  border-radius: 5px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.3;
+  cursor: pointer;
+  white-space: nowrap;
+  -webkit-app-region: no-drag;
+}
+.task-edit-actions button:focus-visible {
+  outline: 2px solid #58a6ff;
+  outline-offset: 2px;
+}
+.task-edit-actions button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.task-edit-cancel {
+  background: #21262d;
+  color: #c9d1d9;
+}
+.task-edit-cancel:hover {
+  background: #30363d;
+}
+.task-edit-save {
+  border-color: #2ea043;
+  background: #238636;
+  color: #fff;
+}
+.task-edit-save:hover {
+  background: #2ea043;
 }
 
 /* 反映待ち / エラーのフィードバック

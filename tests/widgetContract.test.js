@@ -146,6 +146,61 @@ test('buildCommandLine: 断片に id / requestedAt を付与する。不正断�
   assert.equal(contract.buildCommandLine({ action: 'set-status', to: 'x', expected: 'y' }, { id: 'i', requestedAt: 'r' }), null);
 });
 
+test('buildBatchCommandLine: apply-batch 断片に id / requestedAt を付与し ops を保持する', () => {
+  const line = contract.buildBatchCommandLine(
+    {
+      action: 'apply-batch',
+      taskId: '139',
+      ops: [
+        { action: 'set-priority', taskId: 'IGNORED', to: 'high', expected: 'medium' },
+        { action: 'set-status', to: 'awaiting-approval', expected: 'ready' },
+      ],
+      id: 'IGNORED',
+      requestedAt: 'IGNORED',
+    },
+    { id: 'uuid-batch', requestedAt: '2026-07-21T00:00:00.000Z' },
+  );
+  assert.deepEqual(line, {
+    id: 'uuid-batch',
+    taskId: '139',
+    action: 'apply-batch',
+    ops: [
+      { action: 'set-priority', to: 'high', expected: 'medium' },
+      { action: 'set-status', to: 'awaiting-approval', expected: 'ready' },
+    ],
+    requestedAt: '2026-07-21T00:00:00.000Z',
+  });
+});
+
+test('sanitizeBatchCommand: ops 空・重複 action・未対応 action は null', () => {
+  assert.equal(contract.sanitizeBatchCommand({ action: 'apply-batch', taskId: '1', ops: [] }), null);
+  assert.equal(contract.sanitizeBatchCommand({ action: 'apply-batch', taskId: '1', ops: [
+    { action: 'set-status', to: 'a', expected: 'b' },
+    { action: 'set-status', to: 'c', expected: 'd' },
+  ] }), null);
+  assert.equal(contract.sanitizeBatchCommand({ action: 'apply-batch', taskId: '1', ops: [
+    { action: 'delete', to: 'a', expected: 'b' },
+  ] }), null);
+});
+
+test('sanitizeBatchCommand: op 内 taskId は無視し、prototype 経由の action は拒否する', () => {
+  const sanitizedBatch = contract.sanitizeBatchCommand({
+    action: 'apply-batch',
+    taskId: '1',
+    ops: [{ action: 'set-sequential', taskId: 'IGNORED', to: 'sequential', expected: 'parallel' }],
+  });
+  assert.deepEqual(sanitizedBatch, {
+    action: 'apply-batch',
+    taskId: '1',
+    ops: [{ action: 'set-sequential', to: 'sequential', expected: 'parallel' }],
+  });
+
+  const inheritedOp = Object.create({ action: 'set-status' });
+  inheritedOp.to = 'done';
+  inheritedOp.expected = 'ready';
+  assert.equal(contract.sanitizeBatchCommand({ action: 'apply-batch', taskId: '1', ops: [inheritedOp] }), null);
+});
+
 test('deriveAssigneeFilterOptions: 固定 self/all + 担当者ソート + 担当なし', () => {
   const w = contract.sanitizeWidget(baseRawWidget({
     groups: [{ id: 'g', label: 'G', tone: 'info', items: [

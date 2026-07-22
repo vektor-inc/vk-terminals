@@ -270,9 +270,9 @@ button.k.kill.is-locked:active { background: #6b3f3f; border-color: #7c4a4a; }
   min-height: 44px;
   margin-top: 10px;
   padding: 9px 34px 9px 11px;
-  border: 1px solid #3d444d;
+  border: 1px solid #606c7c;
   border-radius: 8px;
-  background-color: #161b22;
+  background-color: #2f353e;
   color: var(--fg);
   color-scheme: dark;
   font: inherit;

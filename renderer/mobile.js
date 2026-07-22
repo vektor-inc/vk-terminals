@@ -197,8 +197,15 @@ function computeWidgetVisibility(widget, hasSeenFresh) {
 function renderWidget(fromPoll) {
   if (!taskListSection || !taskListGroups) return;
 
-  // ネイティブ select ピッカー操作中は poll 再描画をスキップ（データは保持し次回描画で最新化）。
-  if (fromPoll && isEditingWidgetControl()) return;
+  // ネイティブ select ピッカー操作中、または編集パネルで下書き編集中は poll 再描画をスキップする
+  // （データは保持し、閉じた後の次回描画で最新化）。保存中は反映検知のため更新を通す。
+  if (
+    fromPoll
+    && (
+      isEditingWidgetControl()
+      || (widgetViewController && widgetViewController.hasOpenEditor() && !widgetViewController.hasPending())
+    )
+  ) return;
 
   var payload = lastWidgetPayload;
   var widget = payload && payload.widget ? payload.widget : null;

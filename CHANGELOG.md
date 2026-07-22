@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 仕様変更 ] サイドバーのタスク編集を、プルダウンを選ぶと即反映する方式から、編集ボタンで展開し保存/キャンセルでまとめて確定する方式に変更（[#248](https://github.com/vektor-inc/vk-terminals/issues/248)）
+
 ## 1.40.0
 
 - [ 仕様変更 ] モバイル版の実行中ステータス色をサイドバーと同じ緑系に統一（[#238](https://github.com/vektor-inc/vk-terminals/issues/238)）

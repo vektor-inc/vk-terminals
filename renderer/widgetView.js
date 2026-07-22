@@ -32,7 +32,8 @@
   const DEFAULT_STRINGS = Object.freeze({
     pending: '反映待ち',
     sendError: '送信に失敗しました（再試行してください）',
-    timeoutError: '反映されませんでした（再試行してください）',
+    timeoutError: '反映を確認できませんでした（内容は保持しています。再試行できます）',
+    savingPending: '保存中…（反映待ち）',
     empty: 'タスクはありません',
     emptySelf: '自分に割り当てられたタスクはありません',
     emptyFiltered: '該当するタスクはありません',
@@ -83,7 +84,13 @@
     // pending: taskId -> { fields: [{ field, expected }], timeoutId }
     const pending = new Map();
     const errors = new Map();
+    const drafts = new Map();
+    const savingTasks = new Set();
+    const renderedEditButtons = new Map();
+    const renderedPanels = new Map();
     let lastWidget = null;
+    let editingTaskId = null;
+    let pendingFocus = null;
 
     function getPending(taskId) { return pending.get(taskId) || null; }
 
@@ -100,11 +107,181 @@
       if (existing && existing.timeoutId) clearTimeout(existing.timeoutId);
       const timeoutId = setTimeout(() => {
         clearPending(taskId);
+        savingTasks.delete(taskId);
         errors.set(taskId, strings.timeoutError);
         requestRerender();
       }, pendingTimeoutMs);
       pending.set(taskId, { fields, timeoutId });
       errors.delete(taskId);
+    }
+
+    function getControls(item) {
+      return Array.isArray(item.controls) ? item.controls : [];
+    }
+
+    function buildDraftFromItem(item) {
+      const draft = {};
+      for (const control of getControls(item)) draft[control.field] = control.current;
+      return draft;
+    }
+
+    function getDraftValue(item, control) {
+      const draft = drafts.get(item.id);
+      return draft && Object.prototype.hasOwnProperty.call(draft, control.field)
+        ? draft[control.field]
+        : control.current;
+    }
+
+    function setDraftValue(item, control, value) {
+      const draft = drafts.get(item.id) || buildDraftFromItem(item);
+      draft[control.field] = value;
+      drafts.set(item.id, draft);
+    }
+
+    function findControlOption(control, value) {
+      return (control.options || []).find((option) => option.value === value) || null;
+    }
+
+    function buildBatchOps(item) {
+      const ops = [];
+      const fields = [];
+      const confirms = [];
+      const seenActions = new Set();
+      for (const control of getControls(item)) {
+        const value = getDraftValue(item, control);
+        if (value === control.current) continue;
+        const option = findControlOption(control, value);
+        if (!option || !option.command || seenActions.has(option.command.action)) continue;
+        seenActions.add(option.command.action);
+        fields.push(control.field);
+        ops.push({
+          action: option.command.action,
+          to: option.command.to,
+          expected: option.command.expected,
+        });
+        if (option.confirm) confirms.push(option.confirm);
+      }
+      return { ops, fields, confirms };
+    }
+
+    function isItemDirty(item) {
+      return getControls(item).some((control) => getDraftValue(item, control) !== control.current);
+    }
+
+    function canSaveItem(item) {
+      return buildBatchOps(item).ops.length > 0;
+    }
+
+    function updateEditPanelState(item) {
+      const panel = renderedPanels.get(item.id);
+      if (!panel) return;
+      const dirty = isItemDirty(item);
+      const canSave = canSaveItem(item);
+      if (panel.dirtyDot) panel.dirtyDot.hidden = !dirty;
+      if (panel.saveButton) panel.saveButton.disabled = !canSave || savingTasks.has(item.id);
+    }
+
+    function closeEditor(taskId, options = {}) {
+      if (editingTaskId !== taskId) return;
+      editingTaskId = null;
+      drafts.delete(taskId);
+      savingTasks.delete(taskId);
+      pendingFocus = options.restoreFocus ? { type: 'edit-button', taskId } : null;
+    }
+
+    function confirmDiscardIfNeeded(taskId) {
+      if (!taskId) return true;
+      const item = contract.flatItems(lastWidget).find((candidate) => candidate.id === taskId);
+      if (!item || !isItemDirty(item)) return true;
+      return confirmFn('編集中の変更を破棄しますか？');
+    }
+
+    function openEditor(item) {
+      if (editingTaskId === item.id) return;
+      if (editingTaskId && savingTasks.has(editingTaskId)) return;
+      if (editingTaskId && !confirmDiscardIfNeeded(editingTaskId)) return;
+      if (editingTaskId) {
+        drafts.delete(editingTaskId);
+        savingTasks.delete(editingTaskId);
+      }
+      editingTaskId = item.id;
+      drafts.set(item.id, buildDraftFromItem(item));
+      errors.delete(item.id);
+      pendingFocus = { type: 'first-control', taskId: item.id };
+      requestRerender();
+    }
+
+    function cancelEditor(item) {
+      if (savingTasks.has(item.id)) return;
+      if (!confirmDiscardIfNeeded(item.id)) return;
+      closeEditor(item.id, { restoreFocus: true });
+      requestRerender();
+    }
+
+    async function saveEditor(item) {
+      if (savingTasks.has(item.id)) return;
+      const batch = buildBatchOps(item);
+      if (!batch.ops.length) return;
+      const confirmText = batch.confirms.map(joinConfirm).filter(Boolean).join('\n\n---\n\n');
+      if (confirmText && !confirmFn(confirmText)) return;
+
+      for (const field of batch.fields) {
+        const control = getControls(item).find((candidate) => candidate.field === field);
+        if (control) setPendingField(item.id, field, control.current);
+      }
+      savingTasks.add(item.id);
+      requestRerender();
+
+      let res;
+      try {
+        res = await sendCommand({
+          action: 'apply-batch',
+          taskId: item.id,
+          ops: batch.ops,
+        });
+      } catch (_e) {
+        res = { ok: false };
+      }
+      if (!res || !res.ok) {
+        clearPending(item.id);
+        savingTasks.delete(item.id);
+        errors.set(item.id, strings.sendError);
+        requestRerender();
+      }
+    }
+
+    function safeFocus(node) {
+      if (!node || typeof node.focus !== 'function') return;
+      try {
+        node.focus({ preventScroll: true });
+      } catch (_e) {
+        node.focus();
+      }
+    }
+
+    function applyPendingFocus() {
+      if (!pendingFocus) return;
+      const focus = pendingFocus;
+      pendingFocus = null;
+      if (focus.type === 'edit-button') {
+        safeFocus(renderedEditButtons.get(focus.taskId));
+        return;
+      }
+      const panel = renderedPanels.get(focus.taskId);
+      if (panel && panel.firstControl) safeFocus(panel.firstControl);
+      else if (panel && panel.node) safeFocus(panel.node);
+    }
+
+    function cleanupEditorForWidget(widget) {
+      if (!editingTaskId) return;
+      const exists = contract.flatItems(widget).some((item) => item.id === editingTaskId);
+      if (exists) return;
+      drafts.delete(editingTaskId);
+      savingTasks.delete(editingTaskId);
+      clearPending(editingTaskId);
+      errors.delete(editingTaskId);
+      editingTaskId = null;
+      pendingFocus = null;
     }
 
     // 現在のウィジェットに照らして pending を掃除する。
@@ -122,10 +299,19 @@
         const remaining = p.fields.filter((f) => currentByField[f.field] === f.expected);
         if (remaining.length === 0) {
           clearPending(taskId);
+          if (savingTasks.has(taskId)) {
+            savingTasks.delete(taskId);
+            if (editingTaskId === taskId) {
+              editingTaskId = null;
+              drafts.delete(taskId);
+              pendingFocus = { type: 'edit-button', taskId };
+            }
+          }
         } else if (remaining.length !== p.fields.length) {
           if (p.timeoutId) clearTimeout(p.timeoutId);
           const timeoutId = setTimeout(() => {
             clearPending(taskId);
+            savingTasks.delete(taskId);
             errors.set(taskId, strings.timeoutError);
             requestRerender();
           }, pendingTimeoutMs);
@@ -199,37 +385,94 @@
           optionEl.textContent = option.label;
         }
         optionEl.disabled = option.disabled === true;
-        if (option.value === control.current) optionEl.selected = true;
+        if (option.value === getDraftValue(item, control)) optionEl.selected = true;
         select.appendChild(optionEl);
       }
-      select.value = control.current;
-      select.addEventListener('change', async () => {
+      select.value = getDraftValue(item, control);
+      select.addEventListener('change', () => {
         const option = optionByValue.get(select.value);
-        // 現在値・command 無しの選択肢は no-op（元に戻す）。
-        if (!option || !option.command || option.value === control.current) {
+        if (!option || option.disabled === true) {
           select.value = control.current;
           return;
         }
-        if (option.confirm) {
-          const text = joinConfirm(option.confirm);
-          if (text && !confirmFn(text)) {
-            select.value = control.current;
-            return;
-          }
+        // 現在値は command 無しでも正当。現在値以外で command が無い選択肢は送信不能なので戻す。
+        if (option.value !== control.current && !option.command) {
+          select.value = getDraftValue(item, control);
+          return;
         }
-        if (getPending(item.id)) { select.value = control.current; return; }
-        setPendingField(item.id, control.field, control.current);
-        requestRerender();
-        const res = await sendCommand(option.command);
-        if (!res || !res.ok) {
-          clearPending(item.id);
-          errors.set(item.id, strings.sendError);
-          requestRerender();
-        }
+        setDraftValue(item, control, option.value);
+        updateEditPanelState(item);
       });
       field.appendChild(labelEl);
       field.appendChild(select);
       return field;
+    }
+
+    function panelIdForItem(item) {
+      const safe = String(item.id).replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '') || 'task';
+      return `task-edit-panel-${safe}`;
+    }
+
+    function buildEditPanel(item, isPending) {
+      const saving = savingTasks.has(item.id);
+      const panel = el('div', 'task-edit-panel');
+      const panelId = panelIdForItem(item);
+      panel.id = panelId;
+      panel.setAttribute('tabindex', '-1');
+
+      panel.addEventListener('keydown', (e) => {
+        if (e && e.key === 'Escape') {
+          e.preventDefault();
+          e.stopPropagation();
+          cancelEditor(item);
+        }
+      });
+
+      const header = el('div', 'task-edit-panel-head');
+      const heading = el('span', 'task-edit-panel-title');
+      heading.textContent = 'タスク編集';
+      const dirtyDot = el('span', 'task-edit-dirty');
+      dirtyDot.setAttribute('aria-label', '未保存の変更あり');
+      dirtyDot.hidden = !isItemDirty(item);
+      header.appendChild(heading);
+      header.appendChild(dirtyDot);
+      panel.appendChild(header);
+
+      const controls = el('div', 'task-edit-controls');
+      let firstControl = null;
+      for (const control of getControls(item)) {
+        const controlEl = buildControl(item, control, saving || isPending);
+        if (!firstControl) {
+          firstControl = controlEl.childNodes[1] || controlEl;
+        }
+        controls.appendChild(controlEl);
+      }
+      panel.appendChild(controls);
+
+      const actions = el('div', 'task-edit-actions');
+      const cancel = el('button', 'task-edit-cancel');
+      cancel.type = 'button';
+      cancel.textContent = 'キャンセル';
+      cancel.disabled = saving;
+      cancel.addEventListener('click', () => cancelEditor(item));
+
+      const save = el('button', 'task-edit-save');
+      save.type = 'button';
+      save.textContent = '保存';
+      save.disabled = !canSaveItem(item) || saving;
+      save.addEventListener('click', () => { saveEditor(item); });
+
+      actions.appendChild(cancel);
+      actions.appendChild(save);
+      panel.appendChild(actions);
+
+      renderedPanels.set(item.id, {
+        node: panel,
+        firstControl,
+        saveButton: save,
+        dirtyDot,
+      });
+      return panel;
     }
 
     function buildItem(item) {
@@ -249,6 +492,27 @@
         assignee.textContent = `${strings.assigneePrefix}${item.assignee}`;
         head.appendChild(assignee);
       }
+      const editable = item.editable && Array.isArray(item.controls) && item.controls.length;
+      const isEditing = editable && editingTaskId === item.id;
+      const panelId = panelIdForItem(item);
+      if (editable) {
+        const editButton = el('button', 'task-item-edit');
+        editButton.type = 'button';
+        editButton.setAttribute('aria-expanded', isEditing ? 'true' : 'false');
+        editButton.setAttribute('aria-controls', panelId);
+        editButton.setAttribute('aria-label', `「${item.title}」を編集`);
+        editButton.textContent = '編集';
+        editButton.disabled = savingTasks.has(item.id) || (editingTaskId && savingTasks.has(editingTaskId) && editingTaskId !== item.id);
+        editButton.addEventListener('click', () => {
+          if (isEditing) {
+            cancelEditor(item);
+          } else {
+            openEditor(item);
+          }
+        });
+        head.appendChild(editButton);
+        renderedEditButtons.set(item.id, editButton);
+      }
       if (head.childNodes.length) li.appendChild(head);
 
       if (item.links && item.links.length) {
@@ -260,10 +524,8 @@
       }
 
       const isPending = !!getPending(item.id);
-      if (item.editable && Array.isArray(item.controls) && item.controls.length) {
-        const controls = el('div', 'task-edit-panel');
-        for (const control of item.controls) controls.appendChild(buildControl(item, control, isPending));
-        li.appendChild(controls);
+      if (isEditing) {
+        li.appendChild(buildEditPanel(item, isPending));
       }
 
       const errorMessage = errors.get(item.id);
@@ -272,12 +534,12 @@
         if (isPending) {
           const p = el('span', 'task-item-pending');
           p.setAttribute('role', 'status');
-          p.textContent = strings.pending;
+          p.textContent = savingTasks.has(item.id) ? strings.savingPending : strings.pending;
           feedback.appendChild(p);
         }
         if (errorMessage) {
           const err = el('span', 'task-item-action-error');
-          err.setAttribute('role', 'status');
+          err.setAttribute('role', 'alert');
           err.textContent = errorMessage;
           feedback.appendChild(err);
         }
@@ -312,7 +574,12 @@
      */
     function render(widget, options = {}) {
       lastWidget = widget || null;
+      // syncPending の前後で、消滅した編集対象アイテム由来の draft/pending を掃除する。
+      cleanupEditorForWidget(lastWidget);
       syncPending(lastWidget);
+      cleanupEditorForWidget(lastWidget);
+      renderedEditButtons.clear();
+      renderedPanels.clear();
 
       const now = (typeof options.now === 'number') ? options.now : Date.now();
       const stale = contract.isWidgetStale(lastWidget, { now });
@@ -333,6 +600,7 @@
       let emptyReason = '';
 
       if (!lastWidget) {
+        applyPendingFocus();
         return { stale, viewer, githubMode, filterEnabled, filterOptions, filterMode: mode, totalItems, visibleItems, emptyReason, emptyText: '' };
       }
 
@@ -354,6 +622,7 @@
         groupsEl.appendChild(empty);
       }
 
+      applyPendingFocus();
       return {
         stale, viewer, githubMode, filterEnabled, filterOptions, filterMode: mode,
         totalItems, visibleItems, emptyReason, emptyText: lastWidget.emptyText || '',
@@ -364,6 +633,7 @@
       render,
       getLastWidget: () => lastWidget,
       hasPending: () => pending.size > 0,
+      hasOpenEditor: () => editingTaskId !== null,
     };
   }
 

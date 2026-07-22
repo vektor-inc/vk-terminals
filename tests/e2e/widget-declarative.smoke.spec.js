@@ -49,6 +49,25 @@ function readCommands(commandsPath) {
   return raw.split('\n').map((line) => JSON.parse(line));
 }
 
+function expectApplyBatchCommand(command) {
+  expect(command).toMatchObject({
+    taskId: '301',
+    action: 'apply-batch',
+    ops: [
+      {
+        action: 'set-status',
+        to: 'awaiting-approval',
+        expected: 'in-progress',
+      },
+    ],
+  });
+  expect(command.ops).toHaveLength(1);
+  expect(command.ops[0]).not.toHaveProperty('taskId');
+  expect(typeof command.id).toBe('string');
+  expect(command.id.length).toBeGreaterThan(0);
+  expect(Number.isNaN(Date.parse(command.requestedAt))).toBe(false);
+}
+
 // GitHub モード（rel:"queue" の http(s) リンクを持つ）＋ viewer 判明＋編集可能な宣言を組み立てる。
 // viewer=kurudrive、全アイテム assignee=kurudrive にして、既定フィルタ（自分のみ）でも表示される状態にする。
 function buildWidget(overrides = {}) {
@@ -134,6 +153,25 @@ async function launchApp(port, config = {}) {
   return { app, win, tmpRoot };
 }
 
+async function closeApp(app) {
+  if (!app) return;
+  const proc = app.process();
+  const closePromise = app.close().then(() => true).catch(() => true);
+  const closed = await Promise.race([
+    closePromise,
+    new Promise((resolve) => setTimeout(() => resolve(false), 5000)),
+  ]);
+  if (!closed && proc && !proc.killed) {
+    proc.kill('SIGKILL');
+  }
+  if (!closed) {
+    await Promise.race([
+      closePromise,
+      new Promise((resolve) => setTimeout(resolve, 1000)),
+    ]);
+  }
+}
+
 // ─── 1: サイドバー: 宣言を共有レンダラで描画し、バッジ・リンク・見出しリンク・フィルタを出す ───
 test('サイドバー: widgetFile の宣言でグループ／アイテム／バッジ／リンク／見出しリンク／担当者フィルタを描画する', async () => {
   const port = await getFreePort();
@@ -181,7 +219,21 @@ test('サイドバー: widgetFile の宣言でグループ／アイテム／バ�
     // fresh なので stale 注記は出ない。
     await expect(section.locator('.task-list-stale')).toBeHidden();
 
-    // ステータス select は現在値 in-progress。無効選択肢（done）は disabledReason を末尾ラベルへ併記する。
+    // editable なタスクは既定では select を畳み、編集ボタンだけを表示する。
+    const editButton = item.locator('button.task-item-edit');
+    await expect(editButton).toBeVisible();
+    await expect(editButton).toHaveText('編集');
+    await expect(editButton).toHaveAttribute('aria-expanded', 'false');
+    await expect(editButton).toHaveAttribute('aria-controls', 'task-edit-panel-301');
+    await expect(editButton).toHaveAttribute('aria-label', '「宣言ウィジェットの実行中タスク」を編集');
+    await expect(item.locator('select[data-field="status"]')).toHaveCount(0);
+
+    // 展開後のステータス select は現在値 in-progress。無効選択肢（done）は disabledReason を末尾ラベルへ併記する。
+    await editButton.click();
+    await expect(editButton).toHaveAttribute('aria-expanded', 'true');
+    const panel = item.locator('.task-edit-panel');
+    await expect(panel).toBeVisible();
+    await expect(panel.locator('button.task-edit-save')).toBeDisabled();
     const statusSelect = item.locator('select[data-field="status"]');
     await expect(statusSelect).toHaveValue('in-progress');
     const doneOption = statusSelect.locator('option[value="done"]');
@@ -189,14 +241,14 @@ test('サイドバー: widgetFile の宣言でグループ／アイテム／バ�
     expect(await doneOption.evaluate((o) => o.disabled)).toBe(true);
     await expect(doneOption).toHaveText('完了（PR のマージが必要です）');
   } finally {
-    if (app) await app.close();
+    await closeApp(app);
     fs.rmSync(tmpRoot, { recursive: true, force: true });
     fs.rmSync(dataRoot, { recursive: true, force: true });
   }
 });
 
-// ─── 2: サイドバー: ステータス変更→確認→IPC widgets:command 経由で commands.jsonl に 1 行追記 ───
-test('サイドバー: ステータス select 変更で確認後 commands.jsonl に set-status を中継し反映待ちを表示する', async () => {
+// ─── 2: サイドバー: 編集パネルで下書き保存→確認→IPC widgets:command 経由で commands.jsonl に 1 行追記 ───
+test('サイドバー: 編集パネルの保存で確認後 commands.jsonl に apply-batch を中継し反映待ちを表示する', async () => {
   const port = await getFreePort();
   const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-widget-decl-cmd-'));
   const widgetFile = path.join(dataRoot, 'tasks-widget.json');
@@ -208,44 +260,54 @@ test('サイドバー: ステータス select 変更で確認後 commands.jsonl 
     const section = win.locator('#task-list');
     await expect(section).toBeVisible({ timeout: 10_000 });
     const item = section.locator('.task-item[data-id="301"]');
+    const editButton = item.locator('button.task-item-edit');
+    await editButton.click();
+    const panel = item.locator('.task-edit-panel');
+    await expect(panel).toBeVisible();
     const statusSelect = item.locator('select[data-field="status"]');
     await expect(statusSelect).toHaveValue('in-progress');
+    const saveButton = panel.locator('button.task-edit-save');
+    await expect(saveButton).toBeDisabled();
 
-    // 新モデルは select 変更で即座に confirm が出る。selectOption はダイアログが閉じるまで返らないため、
-    // ダイアログハンドラを先に登録してから selectOption を await する（登録後に selectOption を呼ぶ）。
+    // select 変更は下書き更新だけ。confirm も送信もまだ発生しない。
+    let unexpectedDialogs = 0;
+    const unexpectedDialogHandler = async (dialog) => {
+      unexpectedDialogs += 1;
+      await dialog.dismiss();
+    };
+    win.on('dialog', unexpectedDialogHandler);
+    await statusSelect.selectOption('awaiting-approval');
+    win.off('dialog', unexpectedDialogHandler);
+    expect(unexpectedDialogs).toBe(0);
+    await expect(saveButton).toBeEnabled();
+    expect(readCommands(commandsPath)).toHaveLength(0);
+
+    // 保存クリック時に confirm が出る。承認すると apply-batch 1 行だけを送信する。
     let dialogMessage = '';
     win.once('dialog', async (dialog) => {
       dialogMessage = dialog.message();
       await dialog.accept();
     });
-    await statusSelect.selectOption('awaiting-approval');
+    await saveButton.click();
     expect(dialogMessage).toContain('ステータスを「承認待ち」に変更しますか？');
     expect(dialogMessage).toContain('再承認で二重起動につながる可能性があります。');
 
     // 反映待ちが表示される。
-    await expect(item.locator('.task-item-pending')).toHaveText('反映待ち');
+    await expect(item.locator('.task-item-pending')).toHaveText('保存中…（反映待ち）');
 
-    // commands.jsonl に 1 行（id / requestedAt はビューアが採番）。
+    // commands.jsonl に apply-batch 1 行（id / requestedAt はビューアが採番）。
     await expect.poll(() => readCommands(commandsPath), { timeout: 5000 }).toHaveLength(1);
     const [command] = readCommands(commandsPath);
-    expect(command).toMatchObject({
-      taskId: '301',
-      action: 'set-status',
-      to: 'awaiting-approval',
-      expected: 'in-progress',
-    });
-    expect(typeof command.id).toBe('string');
-    expect(command.id.length).toBeGreaterThan(0);
-    expect(Number.isNaN(Date.parse(command.requestedAt))).toBe(false);
+    expectApplyBatchCommand(command);
   } finally {
-    if (app) await app.close();
+    await closeApp(app);
     fs.rmSync(tmpRoot, { recursive: true, force: true });
     fs.rmSync(dataRoot, { recursive: true, force: true });
   }
 });
 
-// ─── 3: サイドバー: 確認をキャンセルすると送信せず現在値へ戻す ───
-test('サイドバー: ステータス変更の確認をキャンセルすると commands.jsonl に追記せず現在値へ戻す', async () => {
+// ─── 3: サイドバー: 保存確認をキャンセルすると送信せず下書きを保持し、編集キャンセルで破棄する ───
+test('サイドバー: 保存確認をキャンセルすると commands.jsonl に追記せず下書きを保持する', async () => {
   const port = await getFreePort();
   const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-widget-decl-cancel-'));
   const widgetFile = path.join(dataRoot, 'tasks-widget.json');
@@ -257,18 +319,38 @@ test('サイドバー: ステータス変更の確認をキャンセルすると
     const section = win.locator('#task-list');
     await expect(section).toBeVisible({ timeout: 10_000 });
     const item = section.locator('.task-item[data-id="301"]');
+    const editButton = item.locator('button.task-item-edit');
+    await editButton.click();
+    const panel = item.locator('.task-edit-panel');
+    await expect(panel).toBeVisible();
     const statusSelect = item.locator('select[data-field="status"]');
-
-    // 確認をキャンセル（dismiss）する。ハンドラを先に登録してから selectOption を await する。
-    win.once('dialog', async (dialog) => { await dialog.dismiss(); });
-    await statusSelect.selectOption('awaiting-approval');
-
-    // キャンセルなので現在値へ戻り、反映待ちも出ず、commands.jsonl も作られない。
     await expect(statusSelect).toHaveValue('in-progress');
+
+    await statusSelect.selectOption('awaiting-approval');
+    await expect(panel.locator('button.task-edit-save')).toBeEnabled();
+
+    // 保存確認をキャンセル（dismiss）する。下書きは保持され、送信は行われない。
+    win.once('dialog', async (dialog) => { await dialog.dismiss(); });
+    await panel.locator('button.task-edit-save').click();
+    await expect(statusSelect).toHaveValue('awaiting-approval');
+    await expect(item.locator('.task-edit-panel')).toBeVisible();
+    await expect(item.locator('.task-item-pending')).toHaveCount(0);
+    expect(readCommands(commandsPath)).toHaveLength(0);
+
+    // 編集キャンセルで破棄確認を承認すると、下書きを捨ててパネルを畳む。
+    let discardMessage = '';
+    win.once('dialog', async (dialog) => {
+      discardMessage = dialog.message();
+      await dialog.accept();
+    });
+    await panel.locator('button.task-edit-cancel').click();
+    expect(discardMessage).toContain('編集中の変更を破棄しますか？');
+    await expect(item.locator('.task-edit-panel')).toHaveCount(0);
+    await expect(editButton).toHaveAttribute('aria-expanded', 'false');
     await expect(item.locator('.task-item-pending')).toHaveCount(0);
     expect(readCommands(commandsPath)).toHaveLength(0);
   } finally {
-    if (app) await app.close();
+    await closeApp(app);
     fs.rmSync(tmpRoot, { recursive: true, force: true });
     fs.rmSync(dataRoot, { recursive: true, force: true });
   }
@@ -316,7 +398,7 @@ test('サイドバー: 担当者フィルタで自分のみ／全員を切り替
     await expect(section).toContainText('他人担当の実行中タスク');
     await expect(section).not.toContainText('宣言ウィジェットの実行中タスク');
   } finally {
-    if (app) await app.close();
+    await closeApp(app);
     fs.rmSync(tmpRoot, { recursive: true, force: true });
     fs.rmSync(dataRoot, { recursive: true, force: true });
   }
@@ -343,7 +425,7 @@ test('サイドバー: 旧 tasksFile のみ設定時はタスク語彙を復活�
     await expect(section).not.toContainText('旧タスク');
     await expect(section.locator('.task-item')).toHaveCount(0);
   } finally {
-    if (app) await app.close();
+    await closeApp(app);
     fs.rmSync(tmpRoot, { recursive: true, force: true });
     fs.rmSync(dataRoot, { recursive: true, force: true });
   }
@@ -381,26 +463,30 @@ test('モバイル: /api/widgets の宣言を描画し、ステータス変更�
     await expect(item).toBeVisible({ timeout: 10_000 });
     await expect(item.locator('.task-item-title')).toHaveText('宣言ウィジェットの実行中タスク');
 
-    // ステータス変更→confirm 承認→POST /api/widgets/command 経由で commands.jsonl へ追記。
-    // selectOption はダイアログが閉じるまで返らないため、ハンドラを先に登録してから await する。
+    // ステータス変更は編集パネル内の下書き更新だけ。保存時に confirm 承認→POST 経由で commands.jsonl へ追記。
+    const editButton = item.locator('button.task-item-edit');
+    await editButton.click();
+    const panel = item.locator('.task-edit-panel');
+    await expect(panel).toBeVisible();
     const statusSelect = item.locator('select[data-field="status"]');
+    const saveButton = panel.locator('button.task-edit-save');
+    await expect(saveButton).toBeDisabled();
+    await statusSelect.selectOption('awaiting-approval');
+    await expect(saveButton).toBeEnabled();
+    expect(readCommands(commandsPath)).toHaveLength(0);
+
     let dialogMessage = '';
     page.once('dialog', async (dialog) => {
       dialogMessage = dialog.message();
       await dialog.accept();
     });
-    await statusSelect.selectOption('awaiting-approval');
+    await saveButton.click();
     expect(dialogMessage).toContain('ステータスを「承認待ち」に変更しますか？');
 
-    await expect(item.locator('.task-item-pending')).toHaveText('反映待ち');
+    await expect(item.locator('.task-item-pending')).toHaveText('保存中…（反映待ち）');
     await expect.poll(() => readCommands(commandsPath), { timeout: 5000 }).toHaveLength(1);
     const [command] = readCommands(commandsPath);
-    expect(command).toMatchObject({
-      taskId: '301',
-      action: 'set-status',
-      to: 'awaiting-approval',
-      expected: 'in-progress',
-    });
+    expectApplyBatchCommand(command);
 
     // 直接 POST でも 200 / ok:true で中継される（CSRF 同一 Origin）。
     const direct = await fetch(`${base}/api/widgets/command`, {
@@ -419,7 +505,7 @@ test('モバイル: /api/widgets の宣言を描画し、ステータス変更�
     });
     expect(csrf.status).toBe(403);
   } finally {
-    if (app) await app.close();
+    await closeApp(app);
     fs.rmSync(tmpRoot, { recursive: true, force: true });
     fs.rmSync(dataRoot, { recursive: true, force: true });
   }
@@ -480,7 +566,7 @@ test('サイドバー: ローカルモード（queue リンク無し／viewer �
     await expect(section.locator('.task-list-title-text a.task-list-title-link')).toHaveCount(0);
     await expect(section.locator('.task-list-title-text')).toHaveText('タスク');
   } finally {
-    if (app) await app.close();
+    await closeApp(app);
     fs.rmSync(tmpRoot, { recursive: true, force: true });
     fs.rmSync(dataRoot, { recursive: true, force: true });
   }
@@ -507,7 +593,7 @@ test('サイドバー: GitHub モードで自分に割り当てが無い場合�
     await expect(section.locator('.task-list-empty')).toHaveText('自分に割り当てられたタスクはありません');
     await expect(section.locator('.task-item[data-id="301"]')).toHaveCount(0);
   } finally {
-    if (app) await app.close();
+    await closeApp(app);
     fs.rmSync(tmpRoot, { recursive: true, force: true });
     fs.rmSync(dataRoot, { recursive: true, force: true });
   }
@@ -528,7 +614,7 @@ test('サイドバー: コールド起動で widget の updatedAt が古い場�
     await expect(section).toBeHidden();
     await expect(section).not.toContainText('宣言ウィジェットの実行中タスク');
   } finally {
-    if (app) await app.close();
+    await closeApp(app);
     fs.rmSync(tmpRoot, { recursive: true, force: true });
     fs.rmSync(dataRoot, { recursive: true, force: true });
   }
@@ -554,7 +640,7 @@ test('サイドバー: fresh 表示後に widget が stale 化した場合は or
     await expect(notice).toHaveText('orchestrator 停止中');
     await expect(notice).toHaveAttribute('data-kind', 'stale');
   } finally {
-    if (app) await app.close();
+    await closeApp(app);
     fs.rmSync(tmpRoot, { recursive: true, force: true });
     fs.rmSync(dataRoot, { recursive: true, force: true });
   }
@@ -569,7 +655,7 @@ test('サイドバー: widgetFile 未設定かつ legacy 無しならセクシ�
     const section = win.locator('#task-list');
     await expect(section).toBeHidden();
   } finally {
-    if (app) await app.close();
+    await closeApp(app);
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   }
 });
@@ -605,7 +691,7 @@ test('サイドバー: 右端トグルで一覧を折り畳み・展開でき、
     await expect(toggle).toHaveAttribute('aria-expanded', 'true');
     expect(await win.evaluate(() => localStorage.getItem('vkt.taskListCollapsed'))).toBe('0');
   } finally {
-    if (app) await app.close();
+    await closeApp(app);
     fs.rmSync(tmpRoot, { recursive: true, force: true });
     fs.rmSync(dataRoot, { recursive: true, force: true });
   }

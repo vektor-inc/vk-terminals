@@ -9,7 +9,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const contract = require('../utils/widgetContract');
-const { createTaskWidgetView } = require('../renderer/widgetView');
+const { createTaskWidgetView, DEFAULT_STRINGS } = require('../renderer/widgetView');
 
 // ── 最小 DOM スタブ ──────────────────────────────────────────────────────────
 class FakeClassList {
@@ -21,8 +21,9 @@ class FakeClassList {
 }
 
 class FakeElement {
-  constructor(tag) {
+  constructor(tag, ownerDocument) {
     this.tagName = String(tag).toUpperCase();
+    this.ownerDocument = ownerDocument || null;
     this.children = [];
     this.dataset = {};
     this.attributes = {};
@@ -31,6 +32,7 @@ class FakeElement {
     this.parentNode = null;
     this._text = '';
     this._className = '';
+    this._id = '';
     this.value = undefined;
     this.disabled = false;
     this.selected = false;
@@ -50,6 +52,13 @@ class FakeElement {
   }
   get className() { return this._className; }
 
+  set id(v) {
+    this._id = String(v == null ? '' : v);
+    if (this._id) this.attributes.id = this._id;
+    else delete this.attributes.id;
+  }
+  get id() { return this._id; }
+
   get childNodes() { return this.children; }
   get firstChild() { return this.children[0] || null; }
 
@@ -61,11 +70,12 @@ class FakeElement {
     nodes.forEach((n) => this.appendChild(n));
   }
 
-  setAttribute(k, v) { this.attributes[k] = String(v); }
+  setAttribute(k, v) { this.attributes[k] = String(v); if (k === 'id') this._id = String(v); }
   getAttribute(k) { return Object.prototype.hasOwnProperty.call(this.attributes, k) ? this.attributes[k] : null; }
   removeAttribute(k) { delete this.attributes[k]; }
 
   addEventListener(type, fn) { (this.listeners[type] = this.listeners[type] || []).push(fn); }
+  focus() { if (this.ownerDocument) this.ownerDocument.activeElement = this; }
   // テスト用: イベントを発火する。
   dispatch(type) {
     const ev = { preventDefault() {}, stopPropagation() {} };
@@ -106,7 +116,9 @@ class FakeTextNode {
 }
 
 function makeDoc() {
-  return { createElement: (tag) => new FakeElement(tag) };
+  const doc = { activeElement: null };
+  doc.createElement = (tag) => new FakeElement(tag, doc);
+  return doc;
 }
 
 // テスト用のサニタイズ済みウィジェットを組む（contract.sanitizeWidget を通す）。
@@ -225,14 +237,78 @@ test('render: 表示 0 件かつ非 stale は空文言、stale のときは空�
   assert.equal(b.groupsEl.querySelectorAll((el) => el.classList.contains('task-list-empty')).length, 0);
 });
 
-test('render: コントロールの変更でコマンド断片を sendCommand へ渡し、反映待ちを表示する', async () => {
+function editableWidgetWithControls(overrides) {
+  const item = Object.assign({
+    id: '10',
+    title: 'T',
+    editable: true,
+    badges: [{ label: '中', tone: 'neutral' }, { label: '並列', tone: 'info' }],
+    controls: [
+      { type: 'select', field: 'status', label: 'ステータス', ariaLabel: 'ステータス', current: 'ready', options: [
+        { value: 'ready', label: '実行待ち' },
+        { value: 'in-progress', label: '実行中', command: { action: 'set-status', taskId: '10', to: 'in-progress', expected: 'ready' } },
+        { value: 'awaiting-approval', label: '承認待ち', command: { action: 'set-status', taskId: '10', to: 'awaiting-approval', expected: 'ready' },
+          confirm: { title: '承認待ちにしますか？', body: '確認が必要です' } },
+      ] },
+      { type: 'select', field: 'priority', label: '優先度', current: 'medium', options: [
+        { value: 'medium', label: '中' },
+        { value: 'high', label: '高', command: { action: 'set-priority', taskId: '10', to: 'high', expected: 'medium' } },
+      ] },
+      { type: 'select', field: 'sequential', label: '実行方式', current: 'parallel', options: [
+        { value: 'parallel', label: '並列' },
+        { value: 'sequential', label: '直列', command: { action: 'set-sequential', taskId: '10', to: 'sequential', expected: 'parallel' } },
+      ] },
+    ],
+  }, overrides || {});
+  return sanitized([{ id: 'ready', label: '実行待ち', tone: 'info', items: [item] }]);
+}
+
+test('render: editable アイテムは既定で select を畳み、編集ボタンだけを描画する', () => {
+  const widget = editableWidgetWithControls();
+  const { groupsEl, view } = makeView();
+  view.render(widget, { now: Date.parse('2026-07-21T00:00:10.000Z') });
+
+  assert.equal(groupsEl.querySelectorAll((el) => el.tagName === 'SELECT').length, 0);
+  assert.equal(groupsEl.querySelectorAll((el) => el.classList.contains('task-edit-panel')).length, 0);
+  const editButton = groupsEl.querySelectorAll((el) => el.classList.contains('task-item-edit'))[0];
+  assert.equal(editButton.tagName, 'BUTTON');
+  assert.equal(editButton.textContent, '編集');
+  assert.equal(editButton.getAttribute('aria-expanded'), 'false');
+  assert.equal(editButton.getAttribute('aria-label'), '「T」を編集');
+});
+
+test('render: 編集ボタン click 後の再描画でパネル・キャンセル・保存が現れ、hasOpenEditor が true', () => {
+  const widget = editableWidgetWithControls();
+  const { groupsEl, view } = makeView();
+  view.render(widget, { now: Date.parse('2026-07-21T00:00:10.000Z') });
+
+  groupsEl.querySelectorAll((el) => el.classList.contains('task-item-edit'))[0].dispatch('click');
+  assert.equal(view.hasOpenEditor(), true);
+  view.render(widget, { now: Date.parse('2026-07-21T00:00:10.000Z') });
+
+  assert.equal(groupsEl.querySelectorAll((el) => el.tagName === 'SELECT').length, 3);
+  const panel = groupsEl.querySelectorAll((el) => el.classList.contains('task-edit-panel'))[0];
+  const editButton = groupsEl.querySelectorAll((el) => el.classList.contains('task-item-edit'))[0];
+  assert.equal(editButton.getAttribute('aria-expanded'), 'true');
+  assert.equal(editButton.getAttribute('aria-controls'), panel.getAttribute('id'));
+  assert.equal(groupsEl.querySelectorAll((el) => el.classList.contains('task-edit-cancel'))[0].textContent, 'キャンセル');
+  assert.equal(groupsEl.querySelectorAll((el) => el.classList.contains('task-edit-save'))[0].textContent, '保存');
+});
+
+test('render: select 変更は下書きだけ更新し、保存時に apply-batch を 1 回だけ送る', async () => {
   const widget = sanitized([
     { id: 'ready', label: '実行待ち', tone: 'info', items: [{
       id: '10', title: 'T', editable: true,
-      controls: [{ type: 'select', field: 'status', label: 'ステータス', ariaLabel: 'ステータス', current: 'ready', options: [
-        { value: 'ready', label: '実行待ち' },
-        { value: 'in-progress', label: '実行中', command: { action: 'set-status', taskId: '10', to: 'in-progress', expected: 'ready' } },
-      ] }],
+      controls: [
+        { type: 'select', field: 'status', label: 'ステータス', ariaLabel: 'ステータス', current: 'ready', options: [
+          { value: 'ready', label: '実行待ち' },
+          { value: 'in-progress', label: '実行中', command: { action: 'set-status', taskId: '10', to: 'in-progress', expected: 'ready' } },
+        ] },
+        { type: 'select', field: 'priority', label: '優先度', current: 'medium', options: [
+          { value: 'medium', label: '中' },
+          { value: 'high', label: '高', command: { action: 'set-priority', taskId: '10', to: 'high', expected: 'medium' } },
+        ] },
+      ],
     }] },
   ]);
   const sent = [];
@@ -244,15 +320,27 @@ test('render: コントロールの変更でコマンド断片を sendCommand �
     pendingTimeoutMs: 40,
   });
   view.render(widget, { now: Date.parse('2026-07-21T00:00:10.000Z') });
+  groupsEl.querySelectorAll((el) => el.classList.contains('task-item-edit'))[0].dispatch('click');
+  view.render(widget, { now: Date.parse('2026-07-21T00:00:10.000Z') });
 
-  const select = groupsEl.querySelectorAll((el) => el.tagName === 'SELECT')[0];
-  select.value = 'in-progress';
-  select.dispatch('change');
-  // change ハンドラは async。マイクロタスクを 1 回流す。
+  const save = groupsEl.querySelectorAll((el) => el.classList.contains('task-edit-save'))[0];
+  assert.equal(save.disabled, true);
+
+  const selects = groupsEl.querySelectorAll((el) => el.tagName === 'SELECT');
+  selects.find((el) => el.dataset.field === 'status').value = 'in-progress';
+  selects.find((el) => el.dataset.field === 'status').dispatch('change');
+  assert.equal(sent.length, 0);
+  assert.equal(save.disabled, false);
+
+  save.dispatch('click');
   await Promise.resolve();
 
   assert.equal(sent.length, 1);
-  assert.deepEqual(sent[0], { action: 'set-status', taskId: '10', to: 'in-progress', expected: 'ready' });
+  assert.deepEqual(sent[0], {
+    action: 'apply-batch',
+    taskId: '10',
+    ops: [{ action: 'set-status', to: 'in-progress', expected: 'ready' }],
+  });
   assert.equal(view.hasPending(), true);
   assert.ok(rerenders >= 1);
 
@@ -261,33 +349,104 @@ test('render: コントロールの変更でコマンド断片を sendCommand �
   assert.equal(view.hasPending(), false);
 });
 
-test('render: 確認ダイアログで拒否するとコマンドを送らず現在値へ戻す', async () => {
-  const widget = sanitized([
-    { id: 'waiting-merge', label: 'マージ待ち', tone: 'info', items: [{
-      id: '11', title: 'T', editable: true,
-      controls: [{ type: 'select', field: 'status', label: 'ステータス', current: 'waiting-merge', options: [
-        { value: 'waiting-merge', label: 'マージ待ち' },
-        { value: 'done', label: '完了',
-          command: { action: 'set-status', taskId: '11', to: 'done', expected: 'waiting-merge' },
-          confirm: { title: '完了にしますか？', body: 'PR は残ります' } },
-      ] }],
-    }] },
-  ]);
-  const sent = [];
-  const { groupsEl, view } = makeView({
-    sendCommand: async (cmd) => { sent.push(cmd); return { ok: true }; },
-    confirm: () => false, // 拒否
+test('render: 保存後の widget 更新で current が追いつくと pending を消してパネルを畳む', async () => {
+  const widget = editableWidgetWithControls();
+  const updatedWidget = editableWidgetWithControls({
+    controls: [
+      { type: 'select', field: 'status', label: 'ステータス', current: 'in-progress', options: [
+        { value: 'ready', label: '実行待ち', command: { action: 'set-status', taskId: '10', to: 'ready', expected: 'in-progress' } },
+        { value: 'in-progress', label: '実行中' },
+      ] },
+    ],
+  });
+  const { doc, groupsEl, view } = makeView({
+    sendCommand: async () => ({ ok: true }),
+    pendingTimeoutMs: 30000,
   });
   view.render(widget, { now: Date.parse('2026-07-21T00:00:10.000Z') });
-  const select = groupsEl.querySelectorAll((el) => el.tagName === 'SELECT')[0];
-  select.value = 'done';
+  groupsEl.querySelectorAll((el) => el.classList.contains('task-item-edit'))[0].dispatch('click');
+  view.render(widget, { now: Date.parse('2026-07-21T00:00:10.000Z') });
+
+  const status = groupsEl.querySelectorAll((el) => el.tagName === 'SELECT').find((el) => el.dataset.field === 'status');
+  status.value = 'in-progress';
+  status.dispatch('change');
+  groupsEl.querySelectorAll((el) => el.classList.contains('task-edit-save'))[0].dispatch('click');
+  await Promise.resolve();
+  assert.equal(view.hasPending(), true);
+
+  view.render(updatedWidget, { now: Date.parse('2026-07-21T00:00:11.000Z') });
+  assert.equal(view.hasPending(), false);
+  assert.equal(view.hasOpenEditor(), false);
+  assert.equal(groupsEl.querySelectorAll((el) => el.classList.contains('task-edit-panel')).length, 0);
+  const editButton = groupsEl.querySelectorAll((el) => el.classList.contains('task-item-edit'))[0];
+  assert.equal(doc.activeElement, editButton);
+});
+
+test('render: キャンセルで下書きを破棄し畳みに戻る', () => {
+  const widget = editableWidgetWithControls();
+  const { groupsEl, view } = makeView();
+  view.render(widget, { now: Date.parse('2026-07-21T00:00:10.000Z') });
+  groupsEl.querySelectorAll((el) => el.classList.contains('task-item-edit'))[0].dispatch('click');
+  view.render(widget, { now: Date.parse('2026-07-21T00:00:10.000Z') });
+
+  const status = groupsEl.querySelectorAll((el) => el.tagName === 'SELECT').find((el) => el.dataset.field === 'status');
+  status.value = 'in-progress';
+  status.dispatch('change');
+
+  groupsEl.querySelectorAll((el) => el.classList.contains('task-edit-cancel'))[0].dispatch('click');
+  assert.equal(view.hasOpenEditor(), false);
+  view.render(widget, { now: Date.parse('2026-07-21T00:00:10.000Z') });
+  assert.equal(groupsEl.querySelectorAll((el) => el.tagName === 'SELECT').length, 0);
+});
+
+test('render: confirm 付き option は保存前に確認し、拒否なら送信しない', async () => {
+  const widget = editableWidgetWithControls();
+  const sent = [];
+  const confirms = [];
+  const { groupsEl, view } = makeView({
+    sendCommand: async (cmd) => { sent.push(cmd); return { ok: true }; },
+    confirm: (text) => { confirms.push(text); return false; },
+  });
+  view.render(widget, { now: Date.parse('2026-07-21T00:00:10.000Z') });
+  groupsEl.querySelectorAll((el) => el.classList.contains('task-item-edit'))[0].dispatch('click');
+  view.render(widget, { now: Date.parse('2026-07-21T00:00:10.000Z') });
+
+  const select = groupsEl.querySelectorAll((el) => el.tagName === 'SELECT').find((el) => el.dataset.field === 'status');
+  select.value = 'awaiting-approval';
   select.dispatch('change');
+  groupsEl.querySelectorAll((el) => el.classList.contains('task-edit-save'))[0].dispatch('click');
   await Promise.resolve();
 
+  assert.equal(confirms.length, 1);
+  assert.match(confirms[0], /承認待ちにしますか？/);
   assert.equal(sent.length, 0);
   assert.equal(view.hasPending(), false);
-  // 現在値へ戻る。
-  assert.equal(select.value, 'waiting-merge');
+  assert.equal(view.hasOpenEditor(), true);
+  assert.equal(select.value, 'awaiting-approval');
+});
+
+test('render: 送信失敗時は下書きを保持し、パネルを開いたまま error を表示する', async () => {
+  const widget = editableWidgetWithControls();
+  const { groupsEl, view } = makeView({
+    sendCommand: async () => ({ ok: false, error: 'boom' }),
+  });
+  view.render(widget, { now: Date.parse('2026-07-21T00:00:10.000Z') });
+  groupsEl.querySelectorAll((el) => el.classList.contains('task-item-edit'))[0].dispatch('click');
+  view.render(widget, { now: Date.parse('2026-07-21T00:00:10.000Z') });
+
+  const status = groupsEl.querySelectorAll((el) => el.tagName === 'SELECT').find((el) => el.dataset.field === 'status');
+  status.value = 'in-progress';
+  status.dispatch('change');
+  groupsEl.querySelectorAll((el) => el.classList.contains('task-edit-save'))[0].dispatch('click');
+  await Promise.resolve();
+  view.render(widget, { now: Date.parse('2026-07-21T00:00:10.000Z') });
+
+  assert.equal(view.hasOpenEditor(), true);
+  const kept = groupsEl.querySelectorAll((el) => el.tagName === 'SELECT').find((el) => el.dataset.field === 'status');
+  assert.equal(kept.value, 'in-progress');
+  const error = groupsEl.querySelectorAll((el) => el.classList.contains('task-item-action-error'))[0];
+  assert.equal(error.getAttribute('role'), 'alert');
+  assert.equal(error.textContent, DEFAULT_STRINGS.sendError);
 });
 
 test('render: 無効な選択肢は disabledReason を末尾ラベルと title に反映する', () => {
@@ -301,6 +460,8 @@ test('render: 無効な選択肢は disabledReason を末尾ラベルと title �
     }] },
   ]);
   const { groupsEl, view } = makeView();
+  view.render(widget, { now: Date.parse('2026-07-21T00:00:10.000Z') });
+  groupsEl.querySelectorAll((el) => el.classList.contains('task-item-edit'))[0].dispatch('click');
   view.render(widget, { now: Date.parse('2026-07-21T00:00:10.000Z') });
   const options = groupsEl.querySelectorAll((el) => el.tagName === 'OPTION');
   const doneOption = options.find((o) => o.value === 'done');

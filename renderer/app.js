@@ -1182,9 +1182,16 @@ function renderWidget(fromUpdate) {
   const groupsEl = section.querySelector('.task-list-groups');
   if (!groupsEl) return;
 
-  // ネイティブ select ピッカー操作中は widgets:update 起因の再描画をスキップ
-  // （データは lastWidgetPayload に保持済み。blur 後の次描画で最新化される）。
-  if (fromUpdate && isEditingWidgetControl(groupsEl)) return;
+  // ネイティブ select ピッカー操作中、または編集パネルで下書き編集中は widgets:update 起因の
+  // 再描画をスキップする（データは lastWidgetPayload に保持済み。閉じた後の次描画で最新化）。
+  // 保存中は pending の反映検知が必要なため、更新描画を通して syncPending に渡す。
+  if (
+    fromUpdate
+    && (
+      isEditingWidgetControl(groupsEl)
+      || (widgetViewController && widgetViewController.hasOpenEditor() && !widgetViewController.hasPending())
+    )
+  ) return;
 
   const payload = lastWidgetPayload;
   const widget = payload && payload.widget ? payload.widget : null;

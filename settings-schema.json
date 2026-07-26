@@ -88,7 +88,11 @@
         },
         {
           "type": "paragraph",
-          "text": "API ホストを変えたくない場合は、Tailscale の tailscale serve コマンドで、パソコン上の 127.0.0.1:13847 を tailnet だけに公開する方法もあります。パソコンのターミナルで次のコマンドを実行し、表示された URL をスマートフォンのブラウザで開きます。この方法なら API ホストの変更も vk-terminals の再起動も不要です。"
+          "text": "API ホストを変えたくない場合は、Tailscale の tailscale serve コマンドで、パソコン上の 127.0.0.1:13847 を tailnet だけに公開する方法もあります。この方法なら API ホストの変更も vk-terminals の再起動も不要です。"
+        },
+        {
+          "type": "paragraph",
+          "text": "パソコンのターミナルで次のコマンドを実行し、表示された URL をスマートフォンのブラウザで開きます。--bg（コマンドを終了しても公開を続ける指定）は Tailscale 1.54 以降の書式なので、それより古い版をお使いの場合は tailscale serve --help で書式を確認してください。"
         },
         {
           "type": "code",

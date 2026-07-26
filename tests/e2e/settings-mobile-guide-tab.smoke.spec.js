@@ -121,6 +121,8 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
     const codes = win.locator(`${PANEL_MOBILE} .settings-content-code`);
     await expect(codes.nth(0)).toHaveText('http://<Tailscale IP>:13847/');
     await expect(codes.nth(1)).toHaveText('tailscale serve --bg 13847');
+    // --bg は版によって使えないため、対応バージョンを添えて詰まらないようにする。
+    await expect(win.locator(PANEL_MOBILE)).toContainText('Tailscale 1.54 以降の書式');
 
     // 注意書きは role="note" + 「注意」の文字（色だけに依存しない）で伝える。
     const callout = win.locator(`${PANEL_MOBILE} .settings-content-callout`);

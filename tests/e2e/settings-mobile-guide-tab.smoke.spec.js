@@ -258,4 +258,23 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
     await expect(win.locator('.settings-save')).toBeVisible();
     await expect(win.locator('.settings-cancel')).toHaveText('キャンセル');
   });
+
+  test('保存後に手動で閉じても、遅れた自動クローズが二重オープンのロックを壊さない', async () => {
+    await win.locator('#set-field-0').fill('127.0.0.1');
+    await win.locator('.settings-save').click();
+    await expect(win.locator('.settings-msg')).toHaveClass(/ok/);
+
+    // 自動クローズ（2.5 秒）を待たずに ✕ で閉じ、すぐ開き直す。
+    await win.locator('.settings-close').click();
+    await win.waitForSelector('.settings-modal', { state: 'detached' });
+    await win.evaluate(() => window.openSettingsModal());
+    await win.waitForSelector('.settings-modal', { state: 'visible' });
+
+    // 取り消されなかったタイマーは、閉じた前回のモーダルに対して close() を呼ぶ。
+    // 開き直したモーダルは消えないが、モーダルが開いているかどうかのフラグだけが
+    // false に戻るため、この時点で設定を開くと 2 枚目が重なって生成される。
+    await win.waitForTimeout(3000);
+    await win.evaluate(() => window.openSettingsModal());
+    await expect(win.locator('.settings-modal')).toHaveCount(1);
+  });
 });

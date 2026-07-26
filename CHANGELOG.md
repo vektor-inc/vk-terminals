@@ -2,6 +2,7 @@
 
 - [ 機能追加 ] 設定パネルに、Tailscale 経由で外出先のスマートフォンからモバイルページを開く手順を案内する読み取り専用タブ「外出先から確認」を追加（[#245](https://github.com/vektor-inc/vk-terminals/issues/245)）
 - [ 機能追加 ] 設定ディスクリプタのタブに、入力欄を持たない説明コンテンツ（`tabs[].content`）を定義できるように追加（[#245](https://github.com/vektor-inc/vk-terminals/issues/245)）
+- [ 不具合修正 ] 設定パネルを保存直後に手動で閉じると、取り消されずに残った自動クローズ処理が二重オープンの抑止を解除し、設定パネルが 2 枚重なって開いてしまう不具合を修正（[#245](https://github.com/vektor-inc/vk-terminals/issues/245)）
 
 ## 1.44.0
 

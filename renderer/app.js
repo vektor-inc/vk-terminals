@@ -3399,7 +3399,15 @@ async function openSettingsModal() {
 
   const modal = overlay.querySelector('.settings-modal');
 
+  // 保存成功後の自動クローズ用タイマー。手動で閉じたときに残しておくと、遅れて発火した
+  // close() が modalOpen を false に戻して二重オープンのロックを無効化してしまうため、
+  // close() で必ず取り消す。
+  let autoCloseTimer = null;
   const close = () => {
+    if (autoCloseTimer !== null) {
+      clearTimeout(autoCloseTimer);
+      autoCloseTimer = null;
+    }
     document.removeEventListener('keydown', onKey);
     overlay.remove();
     modalOpen = false;
@@ -3693,7 +3701,7 @@ async function openSettingsModal() {
         clearDirtyTabs();
         msg.textContent = '保存しました。次回の起動から反映されます。';
         msg.classList.add('ok');
-        setTimeout(close, 2500);
+        autoCloseTimer = setTimeout(close, 2500);
       } else {
         msg.textContent = 'エラー: ' + (res && res.error ? res.error : '不明なエラー');
         msg.classList.add('err');

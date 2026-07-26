@@ -3216,6 +3216,56 @@ function renderSettingsField(f, value, id) {
   </div>`;
 }
 
+// 説明タブ（tabs[].content）の読み取り専用ブロックを HTML 化する。
+// blocks は settingsTabs.js の normalizeSettingsTabContent で正規化済み（未知の type や
+// 非 http(s) の URL は除去済み）である前提。content は外部ディスクリプタ
+// （VK_TERMINALS_SETTINGS）からも入りうるため、テキストは escText / 属性は escAttr を
+// 必ず通し、HTML を素通しする実装（markdown → HTML 化など）はしない。
+// tabIndexById: tabLink ブロックの参照先タブ ID → タブ番号の Map。
+function renderSettingsTabContent(blocks, tabIndexById) {
+  const html = (Array.isArray(blocks) ? blocks : []).map((block) => {
+    if (block.type === 'heading') {
+      // モーダル見出しが <h2> なので、その配下は <h3> にする。
+      return `<h3 class="settings-content-heading">${escText(block.text)}</h3>`;
+    }
+    if (block.type === 'paragraph') {
+      return `<p class="settings-content-text">${escText(block.text)}</p>`;
+    }
+    if (block.type === 'list') {
+      const tag = block.ordered ? 'ol' : 'ul';
+      const items = block.items.map((item) => `<li>${escText(item)}</li>`).join('');
+      return `<${tag} class="settings-content-list">${items}</${tag}>`;
+    }
+    if (block.type === 'code') {
+      return `<pre class="settings-content-code"><code>${escText(block.text)}</code></pre>`;
+    }
+    if (block.type === 'links') {
+      // href には実 URL を入れず href="#" + click → openExternalUrlSafe に寄せる
+      // （Electron の renderer 内で外部サイトが開くのを防ぐ既存パターン）。
+      const items = block.items.map(({ label, url }) => `<li>
+        <a class="settings-content-link" href="#" role="link" draggable="false" data-external-url="${escAttr(url)}" title="${escAttr(`${label}\n${url}`)}" aria-label="${escAttr(`${label}（外部ブラウザで開く）`)}"><span>${escText(label)}</span><span class="settings-content-link-icon" aria-hidden="true">↗</span></a>
+      </li>`).join('');
+      return `<ul class="settings-content-links">${items}</ul>`;
+    }
+    if (block.type === 'callout') {
+      // 色だけに依存させないため、トーンを表す見出し語をテキストとしても出す。
+      const toneLabel = block.tone === 'warning' ? '注意' : '補足';
+      return `<div class="settings-content-callout" data-tone="${escAttr(block.tone)}" role="note">
+        <span class="settings-content-callout-label">${escText(toneLabel)}</span>
+        <p class="settings-content-callout-text">${escText(block.text)}</p>
+      </div>`;
+    }
+    if (block.type === 'tabLink') {
+      const targetIndex = tabIndexById.get(block.tab);
+      if (!Number.isInteger(targetIndex)) return '';
+      return `<button type="button" class="settings-content-tablink" data-tab-link-index="${escAttr(String(targetIndex))}">${escText(block.label)}</button>`;
+    }
+    return '';
+  }).join('');
+
+  return html ? `<div class="settings-content">${html}</div>` : '';
+}
+
 // 設定モーダルの二重オープンを防ぐロック。settings:describe の await 中は overlay がまだ
 // DOM に無いため、.settings-overlay の有無チェックだけでは二重生成されうる。await より前に
 // 同期で立てるこのフラグで「チェック〜生成」を原子的に守り、モーダルを閉じた／生成に
@@ -3257,6 +3307,12 @@ async function openSettingsModal() {
   };
 
   const groupedTabs = useTabbedSettings ? groupSettingsGroupsByTab(desc.groups, settingsTabs) : [];
+  // 保存対象のフィールドを 1 つも持たないタブ（= 説明だけのタブ）を判別する。
+  // 「保存後、次回の起動から反映されます。」の継承抑止とフッターの出し分けに使う。
+  const tabHasFields = groupedTabs.map(({ groups }) => groups.some(
+    (group) => Array.isArray(group.fields) && group.fields.length > 0
+  ));
+  const tabIndexById = new Map(settingsTabs.map((tab, index) => [tab.id, index]));
   const settingsTabsHtml = useTabbedSettings ? `<div class="settings-tabs" role="tablist" aria-label="設定カテゴリ">
     ${settingsTabs.map((tab, index) => {
       const tabId = `settings-tab-${index}`;
@@ -3276,14 +3332,17 @@ async function openSettingsModal() {
           const targetHtml = targetPaths.length
             ? `<div class="settings-group-target settings-tab-target">保存先: ${targetPaths.map((targetPath) => `<code>${escText(targetPath)}</code>`).join(' / ')}</div>`
             : '';
-          const tabNote = (tab && tab.note) ? tab.note : desc.note;
+          // desc.note（「保存後、次回の起動から反映されます。」）は保存対象があるタブにだけ
+          // 継承する。説明だけのタブに出すと保存できるかのような誤誘導になるため。
+          const tabNote = (tab && tab.note) ? tab.note : (tabHasFields[tabIndex] ? desc.note : '');
           const noteHtml = tabNote ? `<p class="settings-note settings-tab-note">${escText(tabNote)}</p>` : '';
+          const contentHtml = renderSettingsTabContent(tab && tab.content, tabIndexById);
           const tabGroupsHtml = groups.map((group) => renderGroupHtml(group, {
             tabIndex,
             omitLegend: groups.length === 1,
           })).join('');
           return `<section class="settings-tab-panel" id="${escAttr(panelId)}" role="tabpanel" aria-labelledby="${escAttr(tabId)}" tabindex="0"${tabIndex === 0 ? '' : ' hidden'}>
-            ${targetHtml}${noteHtml}${tabGroupsHtml}
+            ${targetHtml}${noteHtml}${contentHtml}${tabGroupsHtml}
           </section>`;
         }).join('')
         : desc.groups.map(g => renderGroupHtml(g)).join(''))
@@ -3350,7 +3409,18 @@ async function openSettingsModal() {
   if (!settingsAvailable) return;
 
   const msg = modal.querySelector('.settings-msg');
-  modal.querySelector('.settings-cancel').addEventListener('click', close);
+  const cancelButton = modal.querySelector('.settings-cancel');
+  cancelButton.addEventListener('click', close);
+
+  // 説明タブ内の外部リンク（links ブロック）。href は "#" のままにして、
+  // 既存パターンどおり shell.openExternal 経由で OS の既定ブラウザを開く。
+  modal.querySelectorAll('.settings-content-link').forEach((link) => {
+    link.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openExternalUrlSafe(link.dataset.externalUrl || '');
+    });
+  });
 
   let switchToFieldTab = () => {};
   let clearDirtyTabs = () => {};
@@ -3358,6 +3428,19 @@ async function openSettingsModal() {
     const tablist = modal.querySelector('.settings-tabs');
     const tabButtons = Array.from(modal.querySelectorAll('.settings-tab'));
     const tabPanels = Array.from(modal.querySelectorAll('.settings-tab-panel'));
+    const saveButton = modal.querySelector('.settings-save');
+    const saveHint = modal.querySelector('.settings-save-hint');
+    let activeTabIndex = 0;
+    // フッターの「保存」は全タブ横断だが、説明だけのタブを見ている間は保存対象が無いので隠す。
+    // ただし他タブに未保存の変更が残っている場合は隠さない（隠すと「閉じる」しか押せず、
+    // 編集内容を保存できないまま破棄してしまうため）。
+    const updateSettingsFooter = () => {
+      const showSave = tabHasFields[activeTabIndex] !== false
+        || tabButtons.some((button) => button.classList.contains('is-dirty'));
+      saveButton.hidden = !showSave;
+      if (saveHint) saveHint.hidden = !showSave;
+      cancelButton.textContent = showSave ? 'キャンセル' : '閉じる';
+    };
     const activateTab = (nextIndex, options = {}) => {
       if (nextIndex < 0 || nextIndex >= tabButtons.length) return;
       tabButtons.forEach((button, index) => {
@@ -3369,6 +3452,8 @@ async function openSettingsModal() {
       tabPanels.forEach((panel, index) => {
         panel.hidden = index !== nextIndex;
       });
+      activeTabIndex = nextIndex;
+      updateSettingsFooter();
       if (options.focus) tabButtons[nextIndex].focus();
     };
     const moveTabFocus = (delta) => {
@@ -3406,6 +3491,7 @@ async function openSettingsModal() {
         if (!button) return;
         button.classList.add('is-dirty');
         button.setAttribute('aria-label', `${tabLabel}（未保存の変更あり）`);
+        updateSettingsFooter();
       };
       input.addEventListener('input', markDirty);
       input.addEventListener('change', markDirty);
@@ -3415,12 +3501,23 @@ async function openSettingsModal() {
         button.classList.remove('is-dirty');
         button.removeAttribute('aria-label');
       });
+      updateSettingsFooter();
     };
     switchToFieldTab = (fieldEl) => {
       const entry = entries.find(({ id }) => fieldEl && fieldEl.id === id);
       if (!entry || !Number.isInteger(entry.tabIndex)) return;
       activateTab(entry.tabIndex);
     };
+    // 説明タブ内の「〇〇タブを開く」ボタン（tabLink ブロック）。
+    // 移動先タブのボタンへフォーカスも移し、キーボード操作でも流れが途切れないようにする。
+    modal.querySelectorAll('.settings-content-tablink').forEach((button) => {
+      button.addEventListener('click', () => {
+        const targetIndex = Number(button.dataset.tabLinkIndex);
+        if (!Number.isInteger(targetIndex)) return;
+        activateTab(targetIndex, { focus: true });
+      });
+    });
+    updateSettingsFooter();
   }
 
   // password の表示/非表示トグル

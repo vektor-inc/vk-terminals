@@ -14,6 +14,9 @@ function cloneJson(value) {
 function validateSettingsSchema(schema) {
   if (!schema || typeof schema !== 'object' || Array.isArray(schema)) return false;
   if (!Array.isArray(schema.groups)) return false;
+  // tabs は任意。あるなら配列であること（中身の妥当性は renderer 側の
+  // normalizeSettingsTabs / normalizeSettingsTabContent が不正要素を落として吸収する）。
+  if (schema.tabs !== undefined && !Array.isArray(schema.tabs)) return false;
 
   for (const group of schema.groups) {
     if (!group || typeof group !== 'object' || Array.isArray(group)) return false;

@@ -1,5 +1,8 @@
 # Changelog
 
+- [ 機能追加 ] 設定パネルに、Tailscale 経由で外出先のスマートフォンからモバイルページを開く手順を案内する読み取り専用タブ「外出先から確認」を追加（[#245](https://github.com/vektor-inc/vk-terminals/issues/245)）
+- [ 機能追加 ] 設定ディスクリプタのタブに、入力欄を持たない説明コンテンツ（`tabs[].content`）を定義できるように追加（[#245](https://github.com/vektor-inc/vk-terminals/issues/245)）
+
 ## 1.44.0
 
 - [ 機能追加 ] タスク編集フォームの自動マージ選択を宣言的ウィジェットで受け付けるように追加（[#254](https://github.com/vektor-inc/vk-terminals/issues/254)）

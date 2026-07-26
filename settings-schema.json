@@ -1,9 +1,115 @@
 {
   "title": "VK Terminals 設定",
   "note": "保存後、次回の起動から反映されます。",
+  "tabs": [
+    {
+      "id": "general",
+      "label": "設定"
+    },
+    {
+      "id": "mobile",
+      "label": "外出先から確認",
+      "content": [
+        {
+          "type": "heading",
+          "text": "スマートフォンから確認できます"
+        },
+        {
+          "type": "paragraph",
+          "text": "vk-terminals を動かしているパソコンでは、全ターミナルの状況をまとめて見られる専用ページ（モバイルページ）を配信する小さな Web サーバーも一緒に動いています。スマートフォンのブラウザでこのページを開けば、ターミナルの状況確認と応答などの簡単な操作ができます。スマートフォン側にアプリをインストールする必要はありません。"
+        },
+        {
+          "type": "paragraph",
+          "text": "初期設定ではパソコン自身からしか開けません。外出先から開くには、次の Tailscale を使う方法が簡単です。"
+        },
+        {
+          "type": "heading",
+          "text": "Tailscale とは"
+        },
+        {
+          "type": "paragraph",
+          "text": "Tailscale は、自分のパソコンやスマートフォンだけを同じプライベートネットワーク（tailnet）に参加させるサービスです。パソコンとスマートフォンの両方を Tailscale に接続すると、同じ Wi-Fi にいなくても、外出先からスマートフォンのブラウザで vk-terminals のモバイルページを開けます。"
+        },
+        {
+          "type": "heading",
+          "text": "準備: 両方の端末を Tailscale に接続する"
+        },
+        {
+          "type": "list",
+          "ordered": true,
+          "items": [
+            "Tailscale のアカウントを作成します（個人利用向けの無料プランがあります）。",
+            "vk-terminals を動かしているパソコンに Tailscale をインストールし、作成したアカウントでサインインします。",
+            "スマートフォンにも Tailscale アプリをインストールし、同じアカウントでサインインします。",
+            "パソコンとスマートフォンの両方が、同じ tailnet に参加している状態にします。"
+          ]
+        },
+        {
+          "type": "links",
+          "items": [
+            {
+              "label": "Tailscale クイックスタート（登録から接続までの手順）",
+              "url": "https://tailscale.com/docs/how-to/quickstart"
+            },
+            {
+              "label": "Tailscale ダウンロード（各 OS 向けアプリ）",
+              "url": "https://tailscale.com/download"
+            }
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "スマートフォンで開くアドレス"
+        },
+        {
+          "type": "paragraph",
+          "text": "両方の端末を Tailscale に接続した状態で、スマートフォンのブラウザから次のアドレスを開きます。<Tailscale IP> の部分は、パソコンに割り当てられた 100.x.x.x のアドレスに置き換えてください。"
+        },
+        {
+          "type": "code",
+          "text": "http://<Tailscale IP>:13847/"
+        },
+        {
+          "type": "heading",
+          "text": "vk-terminals 側の設定"
+        },
+        {
+          "type": "paragraph",
+          "text": "「設定」タブの「API ホスト」に、パソコンの Tailscale IP（100.x.x.x）を入力して保存します。API ホストはアプリの起動時に読み込まれるため、保存後に vk-terminals を再起動すると反映されます。"
+        },
+        {
+          "type": "tabLink",
+          "label": "「設定」タブを開く",
+          "tab": "general"
+        },
+        {
+          "type": "heading",
+          "text": "別の方法: tailscale serve で公開する"
+        },
+        {
+          "type": "paragraph",
+          "text": "API ホストを変えたくない場合は、Tailscale の tailscale serve コマンドで、パソコン上の 127.0.0.1:13847 を tailnet だけに公開する方法もあります。パソコンのターミナルで次のコマンドを実行し、表示された URL をスマートフォンのブラウザで開きます。この方法なら API ホストの変更も vk-terminals の再起動も不要です。"
+        },
+        {
+          "type": "code",
+          "text": "tailscale serve --bg 13847"
+        },
+        {
+          "type": "heading",
+          "text": "セキュリティ上の注意"
+        },
+        {
+          "type": "callout",
+          "tone": "warning",
+          "text": "vk-terminals のモバイルページと HTTP API には認証がありません。到達できる端末からはターミナルの閲覧や簡易操作ができるため、公開ネットワークではなく Tailscale の tailnet など信頼できるネットワーク内でのみ利用してください。"
+        }
+      ]
+    }
+  ],
   "groups": [
     {
       "label": "基本",
+      "tab": "general",
       "fields": [
         {
           "key": "apiHost",

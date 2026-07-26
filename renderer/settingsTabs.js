@@ -1,9 +1,86 @@
 'use strict';
 
+const { isSafeHttpUrl } = require('./urlSafety');
+
+// tabs[].content で使える読み取り専用コンテンツブロックの種別。
+// 保存対象の入力欄を持たない「説明だけのタブ」を、スキーマ駆動のまま表現するための仕組み。
+// 描画側（renderer/app.js）は正規化済みのブロックだけを受け取り、描画に専念する。
+const SETTINGS_CONTENT_CALLOUT_TONES = new Set(['info', 'warning']);
+
+function nonEmptyString(value) {
+  return typeof value === 'string' && value.trim() !== '' ? value : '';
+}
+
+// 1 ブロックを正規化する。不正なブロック（未知の type / text 欠落 / 非 http(s) URL など）は
+// null を返して黙って落とす。外部ディスクリプタ（VK_TERMINALS_SETTINGS）由来の壊れた
+// 定義でアプリ全体が壊れないようにするための方針。
+function normalizeSettingsContentBlock(block, tabIds) {
+  if (!block || typeof block !== 'object' || Array.isArray(block)) return null;
+  const type = typeof block.type === 'string' ? block.type : '';
+
+  if (type === 'heading' || type === 'paragraph' || type === 'code') {
+    const text = nonEmptyString(block.text);
+    return text ? { type, text } : null;
+  }
+
+  if (type === 'list') {
+    const items = (Array.isArray(block.items) ? block.items : [])
+      .map((item) => nonEmptyString(item))
+      .filter((item) => item !== '');
+    if (!items.length) return null;
+    return { type, ordered: block.ordered === true, items };
+  }
+
+  if (type === 'links') {
+    const items = [];
+    for (const item of Array.isArray(block.items) ? block.items : []) {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+      const url = typeof item.url === 'string' ? item.url : '';
+      // http(s) 以外（file: / javascript: など）はここで落とす。
+      if (!isSafeHttpUrl(url)) continue;
+      items.push({ label: nonEmptyString(item.label) || url, url });
+    }
+    if (!items.length) return null;
+    return { type, items };
+  }
+
+  if (type === 'callout') {
+    const text = nonEmptyString(block.text);
+    if (!text) return null;
+    const tone = SETTINGS_CONTENT_CALLOUT_TONES.has(block.tone) ? block.tone : 'info';
+    return { type, tone, text };
+  }
+
+  if (type === 'tabLink') {
+    // 同じモーダル内の別タブへ移動するボタン。存在しないタブ ID を指すものは落とす。
+    const label = nonEmptyString(block.label);
+    const tab = nonEmptyString(block.tab);
+    if (!label || !tab || !tabIds.has(tab)) return null;
+    return { type, label, tab };
+  }
+
+  return null;
+}
+
+function normalizeSettingsTabContent(rawContent, options = {}) {
+  const tabIds = options.tabIds instanceof Set
+    ? options.tabIds
+    : new Set(Array.isArray(options.tabIds) ? options.tabIds : []);
+  const normalized = [];
+  for (const block of Array.isArray(rawContent) ? rawContent : []) {
+    const normalizedBlock = normalizeSettingsContentBlock(block, tabIds);
+    if (normalizedBlock) normalized.push(normalizedBlock);
+  }
+  return normalized;
+}
+
 function normalizeSettingsTabs(desc) {
-  const rawTabs = desc && Array.isArray(desc.tabs) ? desc.tabs : [];
+  const rawTabs = (desc && Array.isArray(desc.tabs) ? desc.tabs : [])
+    .filter((tab) => tab && typeof tab.id === 'string' && tab.id.trim());
+  // tabLink の参照先検証に使う（tabs 全体を見てからでないと判定できない）。
+  const tabIds = new Set(rawTabs.map((tab) => tab.id));
+
   return rawTabs
-    .filter((tab) => tab && typeof tab.id === 'string' && tab.id.trim())
     .map((tab, index) => {
       const normalizedTab = {
         id: tab.id,
@@ -12,6 +89,10 @@ function normalizeSettingsTabs(desc) {
       };
       if (typeof tab.note === 'string' && tab.note.trim()) {
         normalizedTab.note = tab.note;
+      }
+      const content = normalizeSettingsTabContent(tab.content, { tabIds });
+      if (content.length) {
+        normalizedTab.content = content;
       }
       return normalizedTab;
     });
@@ -55,5 +136,6 @@ function deriveSettingsTargetPathsForGroups(groups) {
 module.exports = {
   deriveSettingsTargetPathsForGroups,
   groupSettingsGroupsByTab,
+  normalizeSettingsTabContent,
   normalizeSettingsTabs,
 };

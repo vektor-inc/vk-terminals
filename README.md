@@ -263,6 +263,8 @@ WSL2 上で vk-terminals を動かしている場合は、Windows との間に�
 
 ### 外出先からのアクセス
 
+ここに書いた手順は、アプリ内でも読めます。タイトルバー右端の ⚙ →「外出先から確認」タブに、Tailscale を使って外出先のスマートフォンからモバイルページを開くまでの案内（Tailscale とは何か・両方の端末を tailnet に参加させる手順・開くアドレス・API ホストの設定・`tailscale serve` を使う方法・セキュリティ上の注意）をまとめてあります。
+
 外出先から使う場合は、Tailscale などの信頼できるプライベートネットワーク経由で公開してください。実装上は、`tailscale serve` などで vk-terminals を動かしているマシンの `127.0.0.1:13847` を tailnet に公開して使う想定です。
 
 `apiHost` に Tailscale IP（`100.x.x.x`）を指定して tailnet 内から `http://<Tailscale IP>:13847/` を開く構成も使えます。Tailscale 未接続などで指定した `apiHost` が割り当てられていない場合、API サーバーは `127.0.0.1` にフォールバックして起動します。
@@ -367,11 +369,36 @@ cp config.example.json ~/.vk-terminals/config.json
 - `emptyToNull`（任意）：`text` / `password` / `select` で空欄を `null` として書き出します。
 - 保存時はディスクリプタに載っているキーだけを型変換して書き戻し、**載っていない既存キーは保持**します。書き込み先は必ず `targetPath` に限定されます。
 
+#### タブ（`tabs`）
+
+トップレベルに `tabs`（`{ id, label, note?, content? }` の配列）を置くと、設定パネルがタブ表示になります。各 `group` の `tab` に `id` を指定すると、そのタブへ振り分けられます（`tab` 未指定・不明な `id` は先頭タブ）。`tabs` が無ければ従来どおりタブ無しで表示されます。フッターの「保存」は全タブ横断で、1 回の保存で全タブの変更をまとめて書き戻します。
+
+`content` を指定すると、そのタブに**保存対象を持たない読み取り専用の説明**を表示できます（アプリ内ヘルプ用途。組み込みスキーマの「外出先から確認」タブがこの形式です）。ブロックの配列で、使える `type` は次のとおりです。
+
+```jsonc
+"content": [
+  { "type": "heading",   "text": "見出し" },                          // モーダル見出し配下の h3
+  { "type": "paragraph", "text": "本文" },
+  { "type": "list",      "ordered": true, "items": ["手順1", "手順2"] }, // ordered 省略時は箇条書き
+  { "type": "code",      "text": "http://<Tailscale IP>:13847/" },     // コマンド・URL の例
+  { "type": "links",     "items": [{ "label": "公式サイト", "url": "https://example.com/" }] },
+  { "type": "callout",   "tone": "warning", "text": "注意書き" },       // tone は info（既定）/ warning
+  { "type": "tabLink",   "label": "「設定」タブを開く", "tab": "general" } // 同じモーダル内の別タブへ移動
+]
+```
+
+- テキストは必ずエスケープして表示され、HTML やマークダウンとしては解釈されません。
+- `links` の URL は `http` / `https` のみ許可され、クリックすると OS の既定ブラウザで開きます。
+- 不正なブロック（未知の `type`、`text` 欠落、`http(s)` 以外の URL、存在しないタブを指す `tabLink` など）は黙って取り除かれます。
+- 保存対象のフィールドを 1 つも持たないタブでは、`note` の継承（トップレベル `note` の表示）を行わず、「保存」ボタンも隠します（未保存の変更が他タブに残っている間は、保存できなくならないよう表示したままにします）。
+
 ### 組み込み設定スキーマ
 
 単体起動時の設定パネル項目は、リポジトリ直下の `settings-schema.json` を単一ソースとして読み込みます。`settings-schema.json` には `groups` 配列と各 `field` の `key` / `label` / `type` / `default` / `help` / `placeholder` / `options` / `emptyToNull` などの静的な定義だけを置き、実行時に決まる編集対象ファイルの `targetPath` はアプリ側で `loadUserConfig()` と同じ探索順から合成します。
 
 呼び出し側（例: vk-orchestrator）は、この JSON を読み込んで表示したい `key` だけを選んだり、`title` / `note` / `label` / `help` などの文言を上書きしたりできます。
+
+組み込みスキーマは「設定」（全設定項目）と「外出先から確認」（Tailscale 経由でスマートフォンから見る手順の案内。入力欄は無く読み取り専用）の 2 タブ構成です。`VK_TERMINALS_SETTINGS` で外部ディスクリプタを指定している場合は組み込みスキーマを読まないため、これらのタブは表示されません（設定パネルの内容は外部ディスクリプタが持つ、という既存の仕様どおりです）。
 
 組み込みスキーマの運用メモ:
 

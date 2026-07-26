@@ -55,6 +55,25 @@ async function launchApp(port) {
   return { app, win, tmpRoot };
 }
 
+// 説明タブのブロック（.settings-content の直下要素）の並び順を調べる。
+// 手順の並びは「読んだ人がその順に操作して成功するか」に直結するので、
+// 個々の文言だけでなく前後関係も固定する。
+// specs は { 名前: { selector?, text? } } で、両方指定なら AND 条件。
+async function contentBlockIndexes(win, panelSelector, specs) {
+  return await win.locator(`${panelSelector} .settings-content`).evaluate((root, specList) => {
+    const blocks = Array.from(root.children);
+    const result = {};
+    for (const [name, spec] of Object.entries(specList)) {
+      result[name] = blocks.findIndex((el) => {
+        if (spec.selector && !el.matches(spec.selector)) return false;
+        if (spec.text && !el.textContent.includes(spec.text)) return false;
+        return true;
+      });
+    }
+    return result;
+  }, specs);
+}
+
 const TAB_GENERAL = '#settings-tab-0';   // 設定
 const TAB_MOBILE = '#settings-tab-1';    // 外出先から確認
 const PANEL_GENERAL = '#settings-panel-0';
@@ -147,6 +166,13 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
     // 2 つの方法の選び分けを添える。
     await expect(win.locator(PANEL_MOBILE)).toContainText('どちらか一方を行えば開けます');
 
+    // Tailscale IP の節は「方法 1 で使う」ことを先に示す（方法 2 を選ぶ人に不要な作業を
+    // 押し付けない）。確認手段もターミナルより先に GUI（メニューバー / 通知領域）を出す。
+    await expect(win.locator(PANEL_MOBILE)).toContainText('「方法 2」だけを行う場合は不要です');
+    // 方法 2 は環境によってそのまま実行できないことがあるため「最短」と言い切らない。
+    await expect(win.locator(PANEL_MOBILE)).not.toContainText('最短');
+    await expect(win.locator(PANEL_MOBILE)).toContainText('そのままでは実行できない場合があります');
+
     // 注意書きは role="note" + トーンを表す語（色だけに依存しない）で伝える。
     const callouts = win.locator(`${PANEL_MOBILE} .settings-content-callout`);
     await expect(callouts).toHaveCount(2);
@@ -155,6 +181,9 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
     await expect(infoCallout).toHaveAttribute('role', 'note');
     await expect(infoCallout.locator('.settings-content-callout-label')).toHaveText('補足');
     await expect(infoCallout).toContainText('127.0.0.1 で待ち受けます');
+    // 確認手段はログに頼らない（Finder / Dock から起動した人には起動ログを見る手段がない）。
+    await expect(infoCallout).toContainText('パソコン自身のブラウザで同じアドレスを開いてみて');
+    await expect(win.locator(PANEL_MOBILE)).not.toContainText('API server listening');
     // 末尾は無認証についての警告。
     const warningCallout = win.locator(`${PANEL_MOBILE} .settings-content-callout[data-tone="warning"]`);
     await expect(warningCallout).toHaveAttribute('role', 'note');
@@ -165,6 +194,37 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
     await expect(win.locator(`${PANEL_MOBILE} .settings-tab-note`)).toHaveCount(0);
     // パネル自身がフォーカス可能（入力欄が無いのでキーボードで読めるようにする）。
     await expect(win.locator(PANEL_MOBILE)).toHaveAttribute('tabindex', '0');
+  });
+
+  test('方法 1 は「手順 → アドレス → 実例 → 補足 → 移動ボタン」の順に並ぶ', async () => {
+    await win.locator(TAB_MOBILE).click();
+    const at = await contentBlockIndexes(win, PANEL_MOBILE, {
+      ipHeading: { selector: 'h3', text: 'パソコンの Tailscale IP を調べる' },
+      ipGui: { text: 'メニューバーの Tailscale アイコン' },
+      ipCommand: { selector: '.settings-content-code', text: 'tailscale ip -4' },
+      method1Heading: { selector: 'h3', text: '方法 1' },
+      address: { selector: '.settings-content-code', text: '<Tailscale IP>:13847' },
+      example: { text: 'http://100.101.102.103:13847/' },
+      infoCallout: { selector: '.settings-content-callout[data-tone="info"]' },
+      tabLink: { selector: '.settings-content-tablink' },
+      method2Heading: { selector: 'h3', text: '方法 2' },
+    });
+    for (const [name, index] of Object.entries(at)) {
+      expect(index, `${name} が見つからない`).toBeGreaterThan(-1);
+    }
+
+    // ターミナルを避けたい人向けに、GUI での確認手段をコマンドより先に出す。
+    expect(at.ipGui).toBeGreaterThan(at.ipHeading);
+    expect(at.ipGui).toBeLessThan(at.ipCommand);
+
+    // 移動ボタンは方法 1 の最後。節の途中に置くと、押した人がその先のアドレスを
+    // 読まずにタブを移り、保存後の自動クローズと相まって読みに戻れなくなる。
+    expect(at.address).toBeGreaterThan(at.method1Heading);
+    expect(at.example).toBeGreaterThan(at.address);
+    // 未接続時のフォールバック説明は、まだ試していない段階ではなくつまずく直後に置く。
+    expect(at.infoCallout).toBeGreaterThan(at.example);
+    expect(at.tabLink).toBeGreaterThan(at.infoCallout);
+    expect(at.tabLink).toBeLessThan(at.method2Heading);
   });
 
   test('外部リンクは href="#" のまま data 属性に http(s) URL を持つ', async () => {
@@ -229,23 +289,35 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
     expect(visible).toBe(true);
   });
 
-  test('タブを切り替えるとスクロール位置が先頭に戻る', async () => {
-    // 設定タブを下までスクロールしてから説明タブへ移ると、導入から読み始められる。
-    await win.locator(PANEL_GENERAL).evaluate((el) => {
-      el.closest('.settings-view-config').scrollTop = 99999;
-    });
-    const scrolled = await win.locator(PANEL_GENERAL).evaluate(
+  test('スクロール位置はタブごとに記憶され、初回は先頭から表示される', async () => {
+    const scrollTopOf = (panelSelector) => win.locator(panelSelector).evaluate(
       (el) => el.closest('.settings-view-config').scrollTop
     );
-    expect(scrolled).toBeGreaterThan(0);
+    const scrollTo = (panelSelector, top) => win.locator(panelSelector).evaluate(
+      (el, value) => { el.closest('.settings-view-config').scrollTop = value; },
+      top
+    );
 
+    // 設定タブを下までスクロールしてから説明タブへ移る。
+    await scrollTo(PANEL_GENERAL, 99999);
+    const generalScroll = await scrollTopOf(PANEL_GENERAL);
+    expect(generalScroll).toBeGreaterThan(0);
+
+    // 未訪問のタブは先頭から。位置を引き継ぐと説明タブの導入を読み飛ばしてしまう。
     await win.locator(TAB_MOBILE).click();
-    const afterSwitch = await win.locator(PANEL_MOBILE).evaluate(
-      (el) => el.closest('.settings-view-config').scrollTop
-    );
-    expect(afterSwitch).toBe(0);
-    // 説明タブの先頭（導入の見出し）が見えている。
+    expect(await scrollTopOf(PANEL_MOBILE)).toBe(0);
     await expect(win.locator(`${PANEL_MOBILE} h3.settings-content-heading`).first()).toBeInViewport();
+
+    // 説明タブを読み進めてから設定タブへ戻ると、設定タブは離れたときの位置に戻る。
+    await scrollTo(PANEL_MOBILE, 400);
+    const mobileScroll = await scrollTopOf(PANEL_MOBILE);
+    expect(mobileScroll).toBeGreaterThan(0);
+    await win.locator(TAB_GENERAL).click();
+    expect(await scrollTopOf(PANEL_GENERAL)).toBe(generalScroll);
+
+    // 説明タブへ戻ると読みかけの位置から再開できる（往復で読み直しにならない）。
+    await win.locator(TAB_MOBILE).click();
+    expect(await scrollTopOf(PANEL_MOBILE)).toBe(mobileScroll);
   });
 
   test('未保存の変更がある場合は説明タブでも保存ボタンを隠さない', async () => {
@@ -257,6 +329,19 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
     await win.locator(TAB_MOBILE).click();
     await expect(win.locator('.settings-save')).toBeVisible();
     await expect(win.locator('.settings-cancel')).toHaveText('キャンセル');
+  });
+
+  test('保存後のフッター固定はタブを移った時点で解除される', async () => {
+    // 保存直後はボタン構成を固定する（押した直後に「保存」が消えて位置がずれないように）。
+    // ただしその固定を引きずると、説明タブへ移っても「保存」が出たままになる。
+    await win.locator('#set-field-0').fill('127.0.0.1');
+    await win.locator('.settings-save').click();
+    await expect(win.locator('.settings-msg')).toHaveClass(/ok/);
+    await expect(win.locator('.settings-save')).toBeVisible();
+
+    await win.locator(TAB_MOBILE).click();
+    await expect(win.locator('.settings-save')).toBeHidden();
+    await expect(win.locator('.settings-cancel')).toHaveText('閉じる');
   });
 
   test('保存後に手動で閉じても、遅れた自動クローズが二重オープンのロックを壊さない', async () => {

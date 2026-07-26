@@ -184,7 +184,10 @@ test('normalizeSettingsTabContent: callout の tone は既知の値だけ採用�
 });
 
 test('normalizeSettingsTabContent: tabLink の field は実在するキーだけ採用する', () => {
-  const options = { tabIds: ['general'], fieldKeys: ['apiHost', 'initialCommand'] };
+  const options = {
+    tabIds: ['general'],
+    fieldTabs: [['apiHost', 'general'], ['initialCommand', 'general']],
+  };
   assert.deepEqual(normalizeSettingsTabContent([
     { type: 'tabLink', label: 'API ホストへ', tab: 'general', field: 'apiHost' },
     // 未知のキーは field だけ落とし、タブ移動は効かせる（ブロックごと落とさない）。
@@ -222,6 +225,76 @@ test('normalizeSettingsTabs: field の検証には desc.groups のフィール�
   assert.deepEqual(mobileTab.content, [
     { type: 'tabLink', label: 'API ホストへ', tab: 'general', field: 'apiHost' },
     { type: 'tabLink', label: '存在しない欄へ', tab: 'general' },
+  ]);
+});
+
+test('normalizeSettingsTabContent: field の所属タブが tab と食い違う場合は field だけ落とす', () => {
+  // 採用してしまうと、着地に成功したときは field の実タブ（tokens）へ、失敗したときは
+  // 宣言どおりの tab（general）へと、同じボタンが経路によって別のタブに着地する。
+  const options = {
+    tabIds: ['general', 'tokens'],
+    fieldTabs: [['apiHost', 'general'], ['githubToken', 'tokens']],
+  };
+  assert.deepEqual(normalizeSettingsTabContent([
+    { type: 'tabLink', label: '一致', tab: 'general', field: 'apiHost' },
+    { type: 'tabLink', label: '不一致', tab: 'general', field: 'githubToken' },
+  ], options), [
+    { type: 'tabLink', label: '一致', tab: 'general', field: 'apiHost' },
+    { type: 'tabLink', label: '不一致', tab: 'general' },
+  ]);
+});
+
+test('normalizeSettingsTabs: 別タブのフィールドを指す tabLink は field を落としてタブ移動だけ残す', () => {
+  const [, , mobileTab] = normalizeSettingsTabs({
+    tabs: [
+      { id: 'general', label: '設定' },
+      { id: 'tokens', label: 'トークン' },
+      {
+        id: 'mobile',
+        label: '外出先から確認',
+        content: [
+          // 「設定」タブへ移動するボタンなのに、指している欄は「トークン」タブにある。
+          { type: 'tabLink', label: '設定タブへ', tab: 'general', field: 'githubToken' },
+          { type: 'tabLink', label: 'トークンタブへ', tab: 'tokens', field: 'githubToken' },
+        ],
+      },
+    ],
+    groups: [
+      { label: '基本', tab: 'general', fields: [{ key: 'apiHost', label: 'API ホスト', type: 'text' }] },
+      { label: 'トークン', tab: 'tokens', fields: [{ key: 'githubToken', label: 'GitHub トークン', type: 'password' }] },
+    ],
+  });
+
+  assert.deepEqual(mobileTab.content, [
+    { type: 'tabLink', label: '設定タブへ', tab: 'general' },
+    { type: 'tabLink', label: 'トークンタブへ', tab: 'tokens', field: 'githubToken' },
+  ]);
+});
+
+test('normalizeSettingsTabs: tab 未指定の group のフィールドは先頭タブ扱いで照合する', () => {
+  // 描画側（groupSettingsGroupsByTab）が tab 未指定・未知の group を先頭タブへ寄せるので、
+  // field の所属タブ判定も同じ規則に揃える。ずれると表示と判定が食い違う。
+  const [, mobileTab] = normalizeSettingsTabs({
+    tabs: [
+      { id: 'general', label: '設定' },
+      {
+        id: 'mobile',
+        label: '外出先から確認',
+        content: [
+          { type: 'tabLink', label: 'tab 未指定の group', tab: 'general', field: 'apiHost' },
+          { type: 'tabLink', label: '未知の tab を持つ group', tab: 'general', field: 'initialCommand' },
+        ],
+      },
+    ],
+    groups: [
+      { label: '基本', fields: [{ key: 'apiHost', label: 'API ホスト', type: 'text' }] },
+      { label: '起動', tab: 'nope', fields: [{ key: 'initialCommand', label: '起動コマンド', type: 'text' }] },
+    ],
+  });
+
+  assert.deepEqual(mobileTab.content, [
+    { type: 'tabLink', label: 'tab 未指定の group', tab: 'general', field: 'apiHost' },
+    { type: 'tabLink', label: '未知の tab を持つ group', tab: 'general', field: 'initialCommand' },
   ]);
 });
 

@@ -16,24 +16,39 @@ function toStringSet(value) {
   return new Set(Array.isArray(value) ? value : []);
 }
 
-// tabLink の移動先フィールド（field）の検証に使う、ディスクリプタ上の全フィールドキー。
-function collectSettingsFieldKeys(desc) {
-  const keys = new Set();
+// [key, tabId] の配列でも Map でも受け取れるようにする（テストや呼び出し側の都合）。
+function toStringMap(value) {
+  if (value instanceof Map) return value;
+  return new Map(Array.isArray(value) ? value.filter((entry) => Array.isArray(entry)) : []);
+}
+
+// tabLink の移動先（tab と field）の整合を見るための「フィールドキー → そのフィールドが
+// 属するタブ ID」の対応表。tab 未指定・未知の tab を持つ group は先頭タブへ寄せる
+// （描画側の groupSettingsGroupsByTab と同じ規則。ここがずれると判定と表示が食い違う）。
+// キーが重複する場合は、描画・保存で先に拾われる最初の 1 つを正とする。
+function collectSettingsFieldTabs(desc, tabIdList) {
+  const fieldTabs = new Map();
+  const tabIds = new Set(tabIdList);
+  const firstTabId = tabIdList.length ? tabIdList[0] : '';
   const groups = (desc && Array.isArray(desc.groups)) ? desc.groups : [];
   for (const group of groups) {
+    const groupTabId = group && typeof group.tab === 'string' && tabIds.has(group.tab)
+      ? group.tab
+      : firstTabId;
     const fields = (group && Array.isArray(group.fields)) ? group.fields : [];
     for (const field of fields) {
       const key = field && typeof field.key === 'string' ? field.key : '';
-      if (key.trim()) keys.add(key);
+      if (!key.trim() || fieldTabs.has(key)) continue;
+      fieldTabs.set(key, groupTabId);
     }
   }
-  return keys;
+  return fieldTabs;
 }
 
 // 1 ブロックを正規化する。不正なブロック（未知の type / text 欠落 / 非 http(s) URL など）は
 // null を返して黙って落とす。外部ディスクリプタ（VK_TERMINALS_SETTINGS）由来の壊れた
 // 定義でアプリ全体が壊れないようにするための方針。
-function normalizeSettingsContentBlock(block, tabIds, fieldKeys) {
+function normalizeSettingsContentBlock(block, tabIds, fieldTabs) {
   if (!block || typeof block !== 'object' || Array.isArray(block)) return null;
   const type = typeof block.type === 'string' ? block.type : '';
 
@@ -76,10 +91,12 @@ function normalizeSettingsContentBlock(block, tabIds, fieldKeys) {
     const tab = nonEmptyString(block.tab);
     if (!label || !tab || !tabIds.has(tab)) return null;
     const normalized = { type, label, tab };
-    // field（任意）は移動先の入力欄。実在するフィールドキーのときだけ採用し、未知のキーなら
-    // その指定だけを落とす（タブ移動自体は効かせたいので、ブロックごとは落とさない）。
+    // field（任意）は「移動先タブの入力欄」。実在し、かつ宣言された tab に属するときだけ
+    // 採用する。所属タブが食い違う field をそのまま採用すると、着地に成功したときは field の
+    // 実タブへ、失敗したとき（非表示など）は宣言どおりの tab へと、経路によって別のタブへ
+    // 飛ぶボタンになってしまう。不一致なら field の指定だけを落とし、タブ移動は効かせる。
     const field = nonEmptyString(block.field);
-    if (field && fieldKeys.has(field)) normalized.field = field;
+    if (field && fieldTabs.get(field) === tab) normalized.field = field;
     return normalized;
   }
 
@@ -88,10 +105,10 @@ function normalizeSettingsContentBlock(block, tabIds, fieldKeys) {
 
 function normalizeSettingsTabContent(rawContent, options = {}) {
   const tabIds = toStringSet(options.tabIds);
-  const fieldKeys = toStringSet(options.fieldKeys);
+  const fieldTabs = toStringMap(options.fieldTabs);
   const normalized = [];
   for (const block of Array.isArray(rawContent) ? rawContent : []) {
-    const normalizedBlock = normalizeSettingsContentBlock(block, tabIds, fieldKeys);
+    const normalizedBlock = normalizeSettingsContentBlock(block, tabIds, fieldTabs);
     if (normalizedBlock) normalized.push(normalizedBlock);
   }
   return normalized;
@@ -110,8 +127,9 @@ function normalizeSettingsTabs(desc) {
       return true;
     });
   // tabLink の参照先検証に使う（tabs / groups 全体を見てからでないと判定できない）。
-  const tabIds = new Set(rawTabs.map((tab) => tab.id));
-  const fieldKeys = collectSettingsFieldKeys(desc);
+  const tabIdList = rawTabs.map((tab) => tab.id);
+  const tabIds = new Set(tabIdList);
+  const fieldTabs = collectSettingsFieldTabs(desc, tabIdList);
 
   return rawTabs
     .map((tab, index) => {
@@ -123,7 +141,7 @@ function normalizeSettingsTabs(desc) {
       if (typeof tab.note === 'string' && tab.note.trim()) {
         normalizedTab.note = tab.note;
       }
-      const content = normalizeSettingsTabContent(tab.content, { tabIds, fieldKeys });
+      const content = normalizeSettingsTabContent(tab.content, { tabIds, fieldTabs });
       if (content.length) {
         normalizedTab.content = content;
       }

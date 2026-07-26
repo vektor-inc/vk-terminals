@@ -3435,6 +3435,28 @@ async function openSettingsModal() {
     });
   });
 
+  // entries（フィールド定義）と DOM を突き合わせるヘルパー。visibleWhen による行の
+  // 表示状態（isEntryVisible）は、検証のスキップだけでなくタブ移動の着地判定でも使う。
+  const getEntryInput = (id) => modal.querySelector('#' + id);
+  const getEntryRow = (id) => {
+    const input = getEntryInput(id);
+    if (!input) return null;
+    return input.closest('.settings-row') || input.parentElement || input;
+  };
+  const isEntryVisible = (id) => {
+    const row = getEntryRow(id);
+    return !row || !row.hidden;
+  };
+  const getCurrentSettingValues = () => {
+    const values = {};
+    for (const { field, id } of entries) {
+      const input = getEntryInput(id);
+      if (!input) continue;
+      values[field.key] = field.type === 'boolean' ? input.checked : input.value;
+    }
+    return values;
+  };
+
   let switchToFieldTab = () => {};
   let clearDirtyTabs = () => {};
   let lockSettingsFooter = () => {};
@@ -3452,6 +3474,8 @@ async function openSettingsModal() {
     const updateSettingsFooter = () => {
       // 保存成功後は自動クローズまでの間ボタン構成を固定する。dirty 解除に連動して
       // 「保存」が消えると、押した直後にボタンが入れ替わって位置がずれるため。
+      // 固定はタブを切り替えるまで（activateTab で解除）。タブを移る操作をした時点で
+      // 「押した直後の並び替わり」は起きないので、そのタブに合った構成へ戻してよい。
       if (footerLocked) return;
       const showSave = tabHasFields[activeTabIndex] !== false
         || tabButtons.some((button) => button.classList.contains('is-dirty'));
@@ -3460,15 +3484,30 @@ async function openSettingsModal() {
       cancelButton.textContent = showSave ? 'キャンセル' : '閉じる';
     };
     lockSettingsFooter = () => { footerLocked = true; };
-    // タブは同じスクロールコンテナを共有するため、切り替え時に scrollTop を引き継ぐと
-    // 移動先が途中から表示される（説明タブの導入を読み飛ばす／目的の入力欄が画面外になる）。
-    const resetSettingsScroll = () => {
-      for (const el of modal.querySelectorAll('.settings-view-config, .settings-form')) {
-        el.scrollTop = 0;
-      }
+    // タブは同じスクロールコンテナを共有するため、切り替え時に scrollTop をそのまま
+    // 引き継ぐと移動先が途中から表示される（説明タブの導入を読み飛ばす／目的の入力欄が
+    // 画面外になる）。かといって毎回 0 に戻すと、読みかけの位置を捨てて往復のたびに
+    // 探し直しになる。そこでタブごとに位置を覚えて復元する（未訪問のタブは先頭から）。
+    const scrollContainers = Array.from(modal.querySelectorAll('.settings-view-config, .settings-form'));
+    const tabScrollTops = new Map();
+    const saveTabScroll = (index) => {
+      tabScrollTops.set(index, scrollContainers.map((el) => el.scrollTop));
     };
+    const restoreTabScroll = (index) => {
+      const saved = tabScrollTops.get(index);
+      scrollContainers.forEach((el, i) => {
+        el.scrollTop = saved ? saved[i] : 0;
+      });
+    };
+    // タブを切り替える。切り替え時は現タブのスクロール位置を控え、移動先タブの前回位置
+    // （未訪問なら先頭）へ復元する。位置を保ちたい呼び出し元は、同じタブを指定すれば
+    // スクロールには触れない（tabChanged が false のときは保存も復元もしない）。
     const activateTab = (nextIndex, options = {}) => {
       if (nextIndex < 0 || nextIndex >= tabButtons.length) return;
+      const tabChanged = activeTabIndex !== nextIndex;
+      // パネルを差し替える前に控える。hidden にすると中身の高さが変わり、
+      // スクロール位置がブラウザ側で丸められてしまうため。
+      if (tabChanged) saveTabScroll(activeTabIndex);
       tabButtons.forEach((button, index) => {
         const active = index === nextIndex;
         button.classList.toggle('is-active', active);
@@ -3478,21 +3517,27 @@ async function openSettingsModal() {
       tabPanels.forEach((panel, index) => {
         panel.hidden = index !== nextIndex;
       });
-      const tabChanged = activeTabIndex !== nextIndex;
       activeTabIndex = nextIndex;
+      // 保存直後のフッター固定は、タブを移った時点で解除する（B-5: 説明タブに
+      // 「保存」が出たまま残らないようにする）。
+      if (tabChanged) footerLocked = false;
       updateSettingsFooter();
-      if (tabChanged) resetSettingsScroll();
+      if (tabChanged) restoreTabScroll(nextIndex);
       if (options.focus) tabButtons[nextIndex].focus();
     };
     // 指定タブへ移動したうえで、目的の入力欄までスクロールしてフォーカスまで運ぶ。
     // tabLink（説明タブの導線）と switchToFieldTab（検証エラー時の誘導）で共有する。
+    // 着地できたときだけ true を返す。visibleWhen で隠れている行は focus() も
+    // scrollIntoView も効かないため、成功扱いにせず呼び出し側のフォールバックに委ねる。
     const revealSettingsEntry = (entry) => {
       if (!entry || !Number.isInteger(entry.tabIndex)) return false;
       activateTab(entry.tabIndex);
-      const input = modal.querySelector('#' + entry.id);
-      if (!input) return false;
+      const input = getEntryInput(entry.id);
+      if (!input || !isEntryVisible(entry.id)) return false;
       if (typeof input.scrollIntoView === 'function') input.scrollIntoView({ block: 'center' });
-      input.focus();
+      // 中央に寄せた直後にブラウザ既定のスクロールで位置がずれないよう、
+      // フォーカス側のスクロールは抑止する。
+      input.focus({ preventScroll: true });
       return true;
     };
     const moveTabFocus = (delta) => {
@@ -3542,10 +3587,11 @@ async function openSettingsModal() {
       });
       updateSettingsFooter();
     };
+    // 保存時の検証エラーで最初の不正欄へ誘導する。tabLink と同じ revealSettingsEntry を
+    // 通すので、タブ移動だけでなく着地（中央寄せ＋フォーカス）まで揃う。
     switchToFieldTab = (fieldEl) => {
       const entry = entries.find(({ id }) => fieldEl && fieldEl.id === id);
-      if (!entry || !Number.isInteger(entry.tabIndex)) return;
-      activateTab(entry.tabIndex);
+      revealSettingsEntry(entry);
     };
     // 説明タブ内の移動ボタン（tabLink ブロック）。
     // field 指定があればその入力欄まで運び、無ければ移動先タブのボタンへフォーカスを移す
@@ -3575,26 +3621,6 @@ async function openSettingsModal() {
       rev.textContent = show ? '🙈' : '👁';
     });
   });
-
-  const getEntryInput = (id) => modal.querySelector('#' + id);
-  const getEntryRow = (id) => {
-    const input = getEntryInput(id);
-    if (!input) return null;
-    return input.closest('.settings-row') || input.parentElement || input;
-  };
-  const isEntryVisible = (id) => {
-    const row = getEntryRow(id);
-    return !row || !row.hidden;
-  };
-  const getCurrentSettingValues = () => {
-    const values = {};
-    for (const { field, id } of entries) {
-      const input = getEntryInput(id);
-      if (!input) continue;
-      values[field.key] = field.type === 'boolean' ? input.checked : input.value;
-    }
-    return values;
-  };
 
   // ─── pattern 検証（issue #140） ──────────────────────────────────────────────
   // 検証対象は field.pattern（正規表現文字列）を持つフィールドのみ。type ではなく
@@ -3677,11 +3703,13 @@ async function openSettingsModal() {
     if (firstInvalid) {
       msg.textContent = '入力内容に問題があります';
       msg.className = 'settings-msg err';
+      // タブ表示のときは switchToFieldTab が着地まで済ませている（二重に呼んでも冪等）。
+      // タブ無しモードでは何もしないので、ここで中央寄せとフォーカスを行う。
       switchToFieldTab(firstInvalid);
-      firstInvalid.focus();
       if (typeof firstInvalid.scrollIntoView === 'function') {
-        firstInvalid.scrollIntoView({ block: 'nearest' });
+        firstInvalid.scrollIntoView({ block: 'center' });
       }
+      firstInvalid.focus({ preventScroll: true });
       return;
     }
 

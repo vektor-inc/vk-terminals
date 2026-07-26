@@ -345,9 +345,11 @@ html, body {
    直前のブロックとの間に大きめの余白を取る。 */
 .settings-content-heading {
   /* 本文 13px より 1 段大きくして、色・太字だけに頼らず階層を示す。
-     h3 が連続する縦長のコンテンツなので、セクション間の余白も広めに取る。 */
+     h3 が連続する縦長のコンテンツなので、セクション間の余白も広めに取る。
+     アクセントカラー（#58a6ff）はリンクと移動ボタン＝「押せるもの」に限定し、
+     見出しは非対話色に落とす。青が見出しにも付くと「青＝押せる」の手がかりが濁る。 */
   margin: 26px 0 6px;
-  color: #58a6ff;
+  color: #e6edf3;
   font-size: 14px;
   font-weight: 600;
 }
@@ -429,15 +431,17 @@ html, body {
   border-left-width: 3px;
   border-radius: 5px;
 }
+/* info は補足なので控えめな灰、warning は琥珀。info に青を使わないのは、
+   このパネル内の青をリンクと移動ボタン（＝押せるもの）だけに残すため。 */
 .settings-content-callout[data-tone="warning"] { border-left-color: #d29922; }
-.settings-content-callout[data-tone="info"] { border-left-color: #58a6ff; }
+.settings-content-callout[data-tone="info"] { border-left-color: #8b949e; }
 .settings-content-callout-label {
   flex: 0 0 auto;
   font-weight: 600;
   white-space: nowrap;
 }
 .settings-content-callout[data-tone="warning"] .settings-content-callout-label { color: #d29922; }
-.settings-content-callout[data-tone="info"] .settings-content-callout-label { color: #58a6ff; }
+.settings-content-callout[data-tone="info"] .settings-content-callout-label { color: #8b949e; }
 .settings-content-callout-text {
   margin: 0;
 }

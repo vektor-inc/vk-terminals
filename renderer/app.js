@@ -3243,7 +3243,7 @@ function renderSettingsTabContent(blocks, tabIndexById) {
       // href には実 URL を入れず href="#" + click → openExternalUrlSafe に寄せる
       // （Electron の renderer 内で外部サイトが開くのを防ぐ既存パターン）。
       const items = block.items.map(({ label, url }) => `<li>
-        <a class="settings-content-link" href="#" role="link" draggable="false" data-external-url="${escAttr(url)}" title="${escAttr(`${label}\n${url}`)}" aria-label="${escAttr(`${label}（外部ブラウザで開く）`)}"><span>${escText(label)}</span><span class="settings-content-link-icon" aria-hidden="true">↗</span></a>
+        <a class="settings-content-link" href="#" draggable="false" data-external-url="${escAttr(url)}" title="${escAttr(`${label}\n${url}`)}" aria-label="${escAttr(`${label}（外部ブラウザで開く）`)}"><span>${escText(label)}</span><span class="settings-content-link-icon" aria-hidden="true">↗</span></a>
       </li>`).join('');
       return `<ul class="settings-content-links">${items}</ul>`;
     }
@@ -3258,7 +3258,10 @@ function renderSettingsTabContent(blocks, tabIndexById) {
     if (block.type === 'tabLink') {
       const targetIndex = tabIndexById.get(block.tab);
       if (!Number.isInteger(targetIndex)) return '';
-      return `<button type="button" class="settings-content-tablink" data-tab-link-index="${escAttr(String(targetIndex))}">${escText(block.label)}</button>`;
+      // field があれば移動後にその入力欄まで運ぶ（「〇〇から設定してください」の移動手段は、
+      // タブを開くだけでなく目的の欄に着地させて初めて成立する）。
+      const fieldAttr = block.field ? ` data-tab-link-field="${escAttr(block.field)}"` : '';
+      return `<button type="button" class="settings-content-tablink" data-tab-link-index="${escAttr(String(targetIndex))}"${fieldAttr}>${escText(block.label)}</button>`;
     }
     return '';
   }).join('');
@@ -3291,6 +3294,8 @@ async function openSettingsModal() {
   const settingsTabs = settingsAvailable ? normalizeSettingsTabs(desc) : [];
   const useTabbedSettings = settingsTabs.length > 0;
   const settingsSaveHintId = 'settings-save-hint';
+  // ダイアログ名（支援技術の読み上げ）に見出しを使うための id。
+  const settingsTitleId = 'settings-modal-title';
   const renderGroupHtml = (g, options = {}) => {
     const rows = (g.fields || []).map(f => {
       const id = 'set-field-' + entries.length;
@@ -3362,19 +3367,19 @@ async function openSettingsModal() {
   const settingsHeaderHtml = useTabbedSettings
     ? `<div class="settings-header has-tabs">
         <div class="settings-titlebar">
-          <h2>${escText((settingsAvailable && desc.title) || 'VK Terminals')}${appVersion ? `<span class="settings-version">VK Terminals v${escText(appVersion)}</span>` : ''}</h2>
+          <h2 id="${settingsTitleId}">${escText((settingsAvailable && desc.title) || 'VK Terminals')}${appVersion ? `<span class="settings-version">VK Terminals v${escText(appVersion)}</span>` : ''}</h2>
           <button class="settings-close" title="閉じる">✕</button>
         </div>
         ${settingsTabsHtml}
       </div>`
     : `<div class="settings-header">
-        <h2>${escText((settingsAvailable && desc.title) || 'VK Terminals')}${appVersion ? `<span class="settings-version">VK Terminals v${escText(appVersion)}</span>` : ''}</h2>
+        <h2 id="${settingsTitleId}">${escText((settingsAvailable && desc.title) || 'VK Terminals')}${appVersion ? `<span class="settings-version">VK Terminals v${escText(appVersion)}</span>` : ''}</h2>
         <button class="settings-close" title="閉じる">✕</button>
       </div>`;
   const overlay = document.createElement('div');
   overlay.className = 'settings-overlay';
   overlay.innerHTML = `
-    <div class="settings-modal" role="dialog" aria-modal="true">
+    <div class="settings-modal" role="dialog" aria-modal="true" aria-labelledby="${settingsTitleId}">
       ${settingsHeaderHtml}
       <div class="settings-view settings-view-config" role="region">
         ${settingsAvailable && desc.note && !useTabbedSettings ? `<p class="settings-note">${escText(desc.note)}</p>` : ''}
@@ -3424,6 +3429,7 @@ async function openSettingsModal() {
 
   let switchToFieldTab = () => {};
   let clearDirtyTabs = () => {};
+  let lockSettingsFooter = () => {};
   if (useTabbedSettings) {
     const tablist = modal.querySelector('.settings-tabs');
     const tabButtons = Array.from(modal.querySelectorAll('.settings-tab'));
@@ -3431,15 +3437,27 @@ async function openSettingsModal() {
     const saveButton = modal.querySelector('.settings-save');
     const saveHint = modal.querySelector('.settings-save-hint');
     let activeTabIndex = 0;
+    let footerLocked = false;
     // フッターの「保存」は全タブ横断だが、説明だけのタブを見ている間は保存対象が無いので隠す。
     // ただし他タブに未保存の変更が残っている場合は隠さない（隠すと「閉じる」しか押せず、
     // 編集内容を保存できないまま破棄してしまうため）。
     const updateSettingsFooter = () => {
+      // 保存成功後は自動クローズまでの間ボタン構成を固定する。dirty 解除に連動して
+      // 「保存」が消えると、押した直後にボタンが入れ替わって位置がずれるため。
+      if (footerLocked) return;
       const showSave = tabHasFields[activeTabIndex] !== false
         || tabButtons.some((button) => button.classList.contains('is-dirty'));
       saveButton.hidden = !showSave;
       if (saveHint) saveHint.hidden = !showSave;
       cancelButton.textContent = showSave ? 'キャンセル' : '閉じる';
+    };
+    lockSettingsFooter = () => { footerLocked = true; };
+    // タブは同じスクロールコンテナを共有するため、切り替え時に scrollTop を引き継ぐと
+    // 移動先が途中から表示される（説明タブの導入を読み飛ばす／目的の入力欄が画面外になる）。
+    const resetSettingsScroll = () => {
+      for (const el of modal.querySelectorAll('.settings-view-config, .settings-form')) {
+        el.scrollTop = 0;
+      }
     };
     const activateTab = (nextIndex, options = {}) => {
       if (nextIndex < 0 || nextIndex >= tabButtons.length) return;
@@ -3452,9 +3470,22 @@ async function openSettingsModal() {
       tabPanels.forEach((panel, index) => {
         panel.hidden = index !== nextIndex;
       });
+      const tabChanged = activeTabIndex !== nextIndex;
       activeTabIndex = nextIndex;
       updateSettingsFooter();
+      if (tabChanged) resetSettingsScroll();
       if (options.focus) tabButtons[nextIndex].focus();
+    };
+    // 指定タブへ移動したうえで、目的の入力欄までスクロールしてフォーカスまで運ぶ。
+    // tabLink（説明タブの導線）と switchToFieldTab（検証エラー時の誘導）で共有する。
+    const revealSettingsEntry = (entry) => {
+      if (!entry || !Number.isInteger(entry.tabIndex)) return false;
+      activateTab(entry.tabIndex);
+      const input = modal.querySelector('#' + entry.id);
+      if (!input) return false;
+      if (typeof input.scrollIntoView === 'function') input.scrollIntoView({ block: 'center' });
+      input.focus();
+      return true;
     };
     const moveTabFocus = (delta) => {
       const currentIndex = tabButtons.findIndex((button) => button.getAttribute('aria-selected') === 'true');
@@ -3508,12 +3539,18 @@ async function openSettingsModal() {
       if (!entry || !Number.isInteger(entry.tabIndex)) return;
       activateTab(entry.tabIndex);
     };
-    // 説明タブ内の「〇〇タブを開く」ボタン（tabLink ブロック）。
-    // 移動先タブのボタンへフォーカスも移し、キーボード操作でも流れが途切れないようにする。
+    // 説明タブ内の移動ボタン（tabLink ブロック）。
+    // field 指定があればその入力欄まで運び、無ければ移動先タブのボタンへフォーカスを移す
+    // （キーボード操作でも流れが途切れないようにする）。
     modal.querySelectorAll('.settings-content-tablink').forEach((button) => {
       button.addEventListener('click', () => {
         const targetIndex = Number(button.dataset.tabLinkIndex);
         if (!Number.isInteger(targetIndex)) return;
+        const fieldKey = button.dataset.tabLinkField || '';
+        const entry = fieldKey
+          ? entries.find(({ field }) => field.key === fieldKey)
+          : null;
+        if (entry && revealSettingsEntry(entry)) return;
         activateTab(targetIndex, { focus: true });
       });
     });
@@ -3651,6 +3688,8 @@ async function openSettingsModal() {
     try {
       const res = await ipcRenderer.invoke('settings:save', out);
       if (res && res.ok) {
+        // dirty 解除でフッターの構成が変わらないよう、先に固定してから解除する。
+        lockSettingsFooter();
         clearDirtyTabs();
         msg.textContent = '保存しました。次回の起動から反映されます。';
         msg.classList.add('ok');

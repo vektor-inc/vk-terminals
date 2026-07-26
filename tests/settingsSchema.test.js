@@ -160,6 +160,49 @@ test('validateSettingsSchema: visibleWhen 付きフィールドを reject しな
   }), true);
 });
 
+test('validateSettingsSchema: tabs の型ミスでは schema 全体を reject しない', () => {
+  // ここで false を返すと fallback schema（groups: []）に落ち、タブの型ミス 1 つで
+  // 設定パネルの項目が全部消えてしまう。tabs の扱いは loadSettingsSchema 側で degrade する。
+  assert.equal(validateSettingsSchema({
+    tabs: 'general',
+    groups: [{ fields: [{ key: 'apiHost', label: 'API ホスト', type: 'text' }] }],
+  }), true);
+});
+
+test('loadSettingsSchema: tabs が配列でなければ tabs だけ落とし、groups は保持する', () => {
+  const schemaPath = path.join(makeTempDir(), 'settings-schema.json');
+  const errors = [];
+  writeJson(schemaPath, {
+    title: 'テスト設定',
+    tabs: { general: '設定' }, // 配列でない不正な tabs
+    groups: [{ label: '基本', fields: [{ key: 'apiHost', label: 'API ホスト', type: 'text' }] }],
+  });
+
+  const schema = loadSettingsSchema({
+    schemaPath,
+    onError: (error, failedPath) => errors.push({ error, failedPath }),
+  });
+
+  // 設定項目は消えず、タブ定義だけが落ちてタブ無し表示に degrade する。
+  assert.equal(schema.title, 'テスト設定');
+  assert.equal('tabs' in schema, false);
+  assert.deepEqual(schema.groups.map((group) => group.label), ['基本']);
+  assert.equal(errors.length, 0);
+});
+
+test('loadSettingsSchema: 正しい tabs はそのまま保持する', () => {
+  const schemaPath = path.join(makeTempDir(), 'settings-schema.json');
+  writeJson(schemaPath, {
+    tabs: [{ id: 'general', label: '設定' }],
+    groups: [{ label: '基本', tab: 'general', fields: [{ key: 'apiHost', label: 'API ホスト', type: 'text' }] }],
+  });
+
+  const schema = loadSettingsSchema({ schemaPath });
+
+  assert.deepEqual(schema.tabs, [{ id: 'general', label: '設定' }]);
+  assert.equal(schema.groups[0].tab, 'general');
+});
+
 test('loadSettingsSchema: 読み込み失敗時は起動を落とさない fallback schema を返す', () => {
   const errors = [];
   const schema = loadSettingsSchema({

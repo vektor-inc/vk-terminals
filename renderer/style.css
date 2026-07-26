@@ -344,9 +344,11 @@ html, body {
 /* モーダル見出し（h2）配下の小見出し。情報グループの区切りとして、
    直前のブロックとの間に大きめの余白を取る。 */
 .settings-content-heading {
-  margin: 22px 0 6px;
+  /* 本文 13px より 1 段大きくして、色・太字だけに頼らず階層を示す。
+     h3 が連続する縦長のコンテンツなので、セクション間の余白も広めに取る。 */
+  margin: 26px 0 6px;
   color: #58a6ff;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
 }
 .settings-content-text {
@@ -395,15 +397,17 @@ html, body {
 .settings-content-link-icon {
   margin-left: 3px;
 }
+/* 説明タブ唯一の CTA。既定の二次ボタン境界（#30363d）は背景比 1.55:1 で WCAG 1.4.11
+   （UI 部品 3:1）に届かないため、境界と文字をアクセントカラーに上げている（境界 7.5:1）。 */
 .settings-content-tablink {
   display: inline-flex;
   align-items: center;
   margin: 0 0 12px;
   padding: 6px 14px;
   background: #21262d;
-  border: 1px solid #30363d;
+  border: 1px solid #58a6ff;
   border-radius: 5px;
-  color: #c9d1d9;
+  color: #58a6ff;
   font: inherit;
   font-size: 12px;
   cursor: pointer;

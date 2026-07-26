@@ -97,17 +97,31 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
     // 既定は「設定」タブ（既存の設定項目が従来どおり見える）。
     await expect(win.locator(TAB_GENERAL)).toHaveAttribute('aria-selected', 'true');
     await expect(win.locator(`${PANEL_GENERAL} label[for="set-field-0"]`)).toHaveText('API ホスト');
+    // API ホストの説明から説明タブへ戻れるよう、タブ名を明記する。
+    await expect(win.locator('#set-field-0-help')).toContainText('「外出先から確認」タブ');
+    // ダイアログ名が読み上げられるよう、見出しと関連付ける。
+    await expect(win.locator('.settings-modal')).toHaveAttribute('aria-labelledby', 'settings-modal-title');
+    await expect(win.locator('#settings-modal-title')).toContainText('VK Terminals 設定');
   });
 
   test('説明タブに手順・リンク・コード例・注意書きが表示される', async () => {
     await win.locator(TAB_MOBILE).click();
     await expect(win.locator(PANEL_MOBILE)).toBeVisible();
 
-    // 見出しは h3（モーダルの h2 の下位）で、情報設計どおりの順に並ぶ。
+    // 見出しは h3（モーダルの h2 の下位）で、実行順に並ぶ。
+    // 前提（Tailscale 接続 → IP 取得 → vk-terminals 側の設定）を踏んでからアドレスを
+    // 開く順序になっていないと、指示どおり進めた人が必ず接続に失敗する。
     const headings = win.locator(`${PANEL_MOBILE} h3.settings-content-heading`);
-    await expect(headings.nth(0)).toHaveText('スマートフォンから確認できます');
-    await expect(headings.nth(1)).toHaveText('Tailscale とは');
-    await expect(headings.last()).toHaveText('セキュリティ上の注意');
+    await expect(headings).toHaveText([
+      'スマートフォンから確認できます',
+      'Tailscale とは',
+      '準備: 両方の端末を Tailscale に接続する',
+      'パソコンの Tailscale IP を調べる',
+      '外出先から開く 2 つの方法',
+      '方法 1: vk-terminals の API ホストを変更する',
+      '方法 2: tailscale serve で公開する',
+      'セキュリティ上の注意',
+    ]);
 
     // Tailscale の説明（アプリのインストール不要 / 同じ Wi-Fi でなくてよい）。
     await expect(win.locator(PANEL_MOBILE))
@@ -117,19 +131,35 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
     // 準備手順は番号付きリスト。
     await expect(win.locator(`${PANEL_MOBILE} ol.settings-content-list li`)).toHaveCount(4);
 
-    // 開く URL 例と tailscale serve のコマンド例がコードブロックで出る。
+    // コードブロックは「IP の調べ方 → 開くアドレス → tailscale serve」の順。
     const codes = win.locator(`${PANEL_MOBILE} .settings-content-code`);
-    await expect(codes.nth(0)).toHaveText('http://<Tailscale IP>:13847/');
-    await expect(codes.nth(1)).toHaveText('tailscale serve --bg 13847');
+    await expect(codes).toHaveText([
+      'tailscale ip -4',
+      'http://<Tailscale IP>:13847/',
+      'tailscale serve --bg 13847',
+    ]);
     // --bg は版によって使えないため、対応バージョンを添えて詰まらないようにする。
     await expect(win.locator(PANEL_MOBILE)).toContainText('Tailscale 1.54 以降の書式');
+    // 山括弧ごとコピーされないよう実例を併記する。
+    await expect(win.locator(PANEL_MOBILE)).toContainText('http://100.101.102.103:13847/');
+    // アドレスの節は再起動を受けた文にする（前工程を踏ませる）。
+    await expect(win.locator(PANEL_MOBILE)).toContainText('再起動したら');
+    // 2 つの方法の選び分けを添える。
+    await expect(win.locator(PANEL_MOBILE)).toContainText('どちらか一方を行えば開けます');
 
-    // 注意書きは role="note" + 「注意」の文字（色だけに依存しない）で伝える。
-    const callout = win.locator(`${PANEL_MOBILE} .settings-content-callout`);
-    await expect(callout).toHaveAttribute('role', 'note');
-    await expect(callout).toHaveAttribute('data-tone', 'warning');
-    await expect(callout.locator('.settings-content-callout-label')).toHaveText('注意');
-    await expect(callout).toContainText('認証がありません');
+    // 注意書きは role="note" + トーンを表す語（色だけに依存しない）で伝える。
+    const callouts = win.locator(`${PANEL_MOBILE} .settings-content-callout`);
+    await expect(callouts).toHaveCount(2);
+    // 方法 1 には、Tailscale 未接続時に 127.0.0.1 へ黙ってフォールバックする旨の補足。
+    const infoCallout = win.locator(`${PANEL_MOBILE} .settings-content-callout[data-tone="info"]`);
+    await expect(infoCallout).toHaveAttribute('role', 'note');
+    await expect(infoCallout.locator('.settings-content-callout-label')).toHaveText('補足');
+    await expect(infoCallout).toContainText('127.0.0.1 で待ち受けます');
+    // 末尾は無認証についての警告。
+    const warningCallout = win.locator(`${PANEL_MOBILE} .settings-content-callout[data-tone="warning"]`);
+    await expect(warningCallout).toHaveAttribute('role', 'note');
+    await expect(warningCallout.locator('.settings-content-callout-label')).toHaveText('注意');
+    await expect(warningCallout).toContainText('認証がありません');
 
     // 保存対象が無いタブなので「保存後、次回の起動から反映されます。」は継承しない。
     await expect(win.locator(`${PANEL_MOBILE} .settings-tab-note`)).toHaveCount(0);
@@ -174,19 +204,48 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
     await expect(win.locator('.settings-cancel')).toHaveText('キャンセル');
   });
 
-  test('「設定」タブを開くボタンで設定タブへ移動できる', async () => {
+  test('移動ボタンは設定タブの API ホスト欄まで運ぶ（表示領域内・フォーカス済み）', async () => {
     await win.locator(TAB_MOBILE).click();
     const tabLink = win.locator(`${PANEL_MOBILE} .settings-content-tablink`);
-    await expect(tabLink).toHaveText('「設定」タブを開く');
+    await expect(tabLink).toHaveText('API ホストの設定へ移動');
+    // 説明タブを読み進めた状態（スクロール済み）から押しても着地点は変わらない。
+    await win.locator(PANEL_MOBILE).evaluate((el) => {
+      el.closest('.settings-view-config').scrollTop = 600;
+    });
     await tabLink.click();
 
-    // 「設定」タブがアクティブになり、API ホストの入力欄が見える。
+    // 「設定」タブがアクティブになる。
     await expect(win.locator(TAB_GENERAL)).toHaveAttribute('aria-selected', 'true');
     await expect(win.locator(PANEL_GENERAL)).toBeVisible();
-    await expect(win.locator('#set-field-0')).toBeVisible();
-    // フォーカスも移動先タブへ移る（キーボード操作でも流れが途切れない）。
+    // API ホスト欄そのものにフォーカスが乗る（タブを開いただけで終わらせない）。
     const focusedId = await win.evaluate(() => document.activeElement && document.activeElement.id);
-    expect(focusedId).toBe('settings-tab-0');
+    expect(focusedId).toBe('set-field-0');
+    // かつスクロールコンテナの表示領域内に収まっている。
+    const visible = await win.locator('#set-field-0').evaluate((el) => {
+      const view = el.closest('.settings-view-config').getBoundingClientRect();
+      const box = el.getBoundingClientRect();
+      return box.top >= view.top && box.bottom <= view.bottom;
+    });
+    expect(visible).toBe(true);
+  });
+
+  test('タブを切り替えるとスクロール位置が先頭に戻る', async () => {
+    // 設定タブを下までスクロールしてから説明タブへ移ると、導入から読み始められる。
+    await win.locator(PANEL_GENERAL).evaluate((el) => {
+      el.closest('.settings-view-config').scrollTop = 99999;
+    });
+    const scrolled = await win.locator(PANEL_GENERAL).evaluate(
+      (el) => el.closest('.settings-view-config').scrollTop
+    );
+    expect(scrolled).toBeGreaterThan(0);
+
+    await win.locator(TAB_MOBILE).click();
+    const afterSwitch = await win.locator(PANEL_MOBILE).evaluate(
+      (el) => el.closest('.settings-view-config').scrollTop
+    );
+    expect(afterSwitch).toBe(0);
+    // 説明タブの先頭（導入の見出し）が見えている。
+    await expect(win.locator(`${PANEL_MOBILE} h3.settings-content-heading`).first()).toBeInViewport();
   });
 
   test('未保存の変更がある場合は説明タブでも保存ボタンを隠さない', async () => {

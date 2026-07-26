@@ -43,6 +43,37 @@ test('normalizeSettingsTabs: note は非空文字列だけを引き継ぐ', () =
   ]);
 });
 
+test('normalizeSettingsTabs: 重複する id のタブは最初の 1 つだけ残す', () => {
+  // 重複を残すと group.tab / tabLink.tab の参照が後勝ちになり、先に定義したタブが
+  // 中身の無い空タブになってしまう。
+  assert.deepEqual(normalizeSettingsTabs({
+    tabs: [
+      { id: 'general', label: '設定' },
+      { id: 'mobile', label: '外出先から確認' },
+      { id: 'general', label: '設定（重複）' },
+    ],
+  }), [
+    { id: 'general', label: '設定', index: 0 },
+    { id: 'mobile', label: '外出先から確認', index: 1 },
+  ]);
+});
+
+test('normalizeSettingsTabs: 重複除去後も group は残ったタブへ正しく振り分けられる', () => {
+  const tabs = normalizeSettingsTabs({
+    tabs: [
+      { id: 'general', label: '設定' },
+      { id: 'general', label: '設定（重複）' },
+      { id: 'mobile', label: '外出先から確認' },
+    ],
+  });
+  const grouped = groupSettingsGroupsByTab([{ label: '基本', tab: 'general' }], tabs);
+
+  assert.equal(grouped.length, 2);
+  // 先頭の general タブに group が入る（重複タブに吸い取られない）。
+  assert.deepEqual(grouped[0].groups.map((group) => group.label), ['基本']);
+  assert.deepEqual(grouped[1].groups, []);
+});
+
 test('groupSettingsGroupsByTab: tab 未指定または未知の group は先頭タブへ振り分ける', () => {
   const tabs = normalizeSettingsTabs({
     tabs: [
@@ -149,6 +180,48 @@ test('normalizeSettingsTabContent: callout の tone は既知の値だけ採用�
     { type: 'callout', tone: 'info', text: 'B' },
     { type: 'callout', tone: 'info', text: 'C' },
     { type: 'callout', tone: 'warning', text: 'D' },
+  ]);
+});
+
+test('normalizeSettingsTabContent: tabLink の field は実在するキーだけ採用する', () => {
+  const options = { tabIds: ['general'], fieldKeys: ['apiHost', 'initialCommand'] };
+  assert.deepEqual(normalizeSettingsTabContent([
+    { type: 'tabLink', label: 'API ホストへ', tab: 'general', field: 'apiHost' },
+    // 未知のキーは field だけ落とし、タブ移動は効かせる（ブロックごと落とさない）。
+    { type: 'tabLink', label: '未知のキー', tab: 'general', field: 'nope' },
+    { type: 'tabLink', label: 'field 空', tab: 'general', field: '  ' },
+    { type: 'tabLink', label: 'field 非文字列', tab: 'general', field: 1 },
+    { type: 'tabLink', label: 'field 無し', tab: 'general' },
+  ], options), [
+    { type: 'tabLink', label: 'API ホストへ', tab: 'general', field: 'apiHost' },
+    { type: 'tabLink', label: '未知のキー', tab: 'general' },
+    { type: 'tabLink', label: 'field 空', tab: 'general' },
+    { type: 'tabLink', label: 'field 非文字列', tab: 'general' },
+    { type: 'tabLink', label: 'field 無し', tab: 'general' },
+  ]);
+});
+
+test('normalizeSettingsTabs: field の検証には desc.groups のフィールドキーを使う', () => {
+  const [, mobileTab] = normalizeSettingsTabs({
+    tabs: [
+      { id: 'general', label: '設定' },
+      {
+        id: 'mobile',
+        label: '外出先から確認',
+        content: [
+          { type: 'tabLink', label: 'API ホストへ', tab: 'general', field: 'apiHost' },
+          { type: 'tabLink', label: '存在しない欄へ', tab: 'general', field: 'ghost' },
+        ],
+      },
+    ],
+    groups: [
+      { label: '基本', tab: 'general', fields: [{ key: 'apiHost', label: 'API ホスト', type: 'text' }] },
+    ],
+  });
+
+  assert.deepEqual(mobileTab.content, [
+    { type: 'tabLink', label: 'API ホストへ', tab: 'general', field: 'apiHost' },
+    { type: 'tabLink', label: '存在しない欄へ', tab: 'general' },
   ]);
 });
 

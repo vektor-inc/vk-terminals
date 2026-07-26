@@ -11,10 +11,29 @@ function nonEmptyString(value) {
   return typeof value === 'string' && value.trim() !== '' ? value : '';
 }
 
+function toStringSet(value) {
+  if (value instanceof Set) return value;
+  return new Set(Array.isArray(value) ? value : []);
+}
+
+// tabLink の移動先フィールド（field）の検証に使う、ディスクリプタ上の全フィールドキー。
+function collectSettingsFieldKeys(desc) {
+  const keys = new Set();
+  const groups = (desc && Array.isArray(desc.groups)) ? desc.groups : [];
+  for (const group of groups) {
+    const fields = (group && Array.isArray(group.fields)) ? group.fields : [];
+    for (const field of fields) {
+      const key = field && typeof field.key === 'string' ? field.key : '';
+      if (key.trim()) keys.add(key);
+    }
+  }
+  return keys;
+}
+
 // 1 ブロックを正規化する。不正なブロック（未知の type / text 欠落 / 非 http(s) URL など）は
 // null を返して黙って落とす。外部ディスクリプタ（VK_TERMINALS_SETTINGS）由来の壊れた
 // 定義でアプリ全体が壊れないようにするための方針。
-function normalizeSettingsContentBlock(block, tabIds) {
+function normalizeSettingsContentBlock(block, tabIds, fieldKeys) {
   if (!block || typeof block !== 'object' || Array.isArray(block)) return null;
   const type = typeof block.type === 'string' ? block.type : '';
 
@@ -56,29 +75,43 @@ function normalizeSettingsContentBlock(block, tabIds) {
     const label = nonEmptyString(block.label);
     const tab = nonEmptyString(block.tab);
     if (!label || !tab || !tabIds.has(tab)) return null;
-    return { type, label, tab };
+    const normalized = { type, label, tab };
+    // field（任意）は移動先の入力欄。実在するフィールドキーのときだけ採用し、未知のキーなら
+    // その指定だけを落とす（タブ移動自体は効かせたいので、ブロックごとは落とさない）。
+    const field = nonEmptyString(block.field);
+    if (field && fieldKeys.has(field)) normalized.field = field;
+    return normalized;
   }
 
   return null;
 }
 
 function normalizeSettingsTabContent(rawContent, options = {}) {
-  const tabIds = options.tabIds instanceof Set
-    ? options.tabIds
-    : new Set(Array.isArray(options.tabIds) ? options.tabIds : []);
+  const tabIds = toStringSet(options.tabIds);
+  const fieldKeys = toStringSet(options.fieldKeys);
   const normalized = [];
   for (const block of Array.isArray(rawContent) ? rawContent : []) {
-    const normalizedBlock = normalizeSettingsContentBlock(block, tabIds);
+    const normalizedBlock = normalizeSettingsContentBlock(block, tabIds, fieldKeys);
     if (normalizedBlock) normalized.push(normalizedBlock);
   }
   return normalized;
 }
 
 function normalizeSettingsTabs(desc) {
+  // id は「タブの同一性」を決めるキーで、group.tab / tabLink.tab の参照先にもなる。
+  // 重複を残すと参照が後勝ちになり、先に定義したタブが中身の無い空タブになってしまうため、
+  // ここで最初の 1 つだけを採用する。
+  const seenTabIds = new Set();
   const rawTabs = (desc && Array.isArray(desc.tabs) ? desc.tabs : [])
-    .filter((tab) => tab && typeof tab.id === 'string' && tab.id.trim());
-  // tabLink の参照先検証に使う（tabs 全体を見てからでないと判定できない）。
+    .filter((tab) => {
+      if (!tab || typeof tab.id !== 'string' || !tab.id.trim()) return false;
+      if (seenTabIds.has(tab.id)) return false;
+      seenTabIds.add(tab.id);
+      return true;
+    });
+  // tabLink の参照先検証に使う（tabs / groups 全体を見てからでないと判定できない）。
   const tabIds = new Set(rawTabs.map((tab) => tab.id));
+  const fieldKeys = collectSettingsFieldKeys(desc);
 
   return rawTabs
     .map((tab, index) => {
@@ -90,7 +123,7 @@ function normalizeSettingsTabs(desc) {
       if (typeof tab.note === 'string' && tab.note.trim()) {
         normalizedTab.note = tab.note;
       }
-      const content = normalizeSettingsTabContent(tab.content, { tabIds });
+      const content = normalizeSettingsTabContent(tab.content, { tabIds, fieldKeys });
       if (content.length) {
         normalizedTab.content = content;
       }

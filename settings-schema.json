@@ -59,32 +59,62 @@
         },
         {
           "type": "heading",
-          "text": "スマートフォンで開くアドレス"
+          "text": "パソコンの Tailscale IP を調べる"
         },
         {
           "type": "paragraph",
-          "text": "両方の端末を Tailscale に接続した状態で、スマートフォンのブラウザから次のアドレスを開きます。<Tailscale IP> の部分は、パソコンに割り当てられた 100.x.x.x のアドレスに置き換えてください。"
+          "text": "このあとの手順で使う、パソコンに割り当てられた 100.x.x.x のアドレスです。パソコンのターミナルで次のコマンドを実行すると表示されるので、控えておいてください。"
+        },
+        {
+          "type": "code",
+          "text": "tailscale ip -4"
+        },
+        {
+          "type": "paragraph",
+          "text": "macOS ではメニューバーの Tailscale アイコン、Windows では通知領域の Tailscale アイコンからも確認できます。Tailscale の管理コンソール（Machines の一覧）にも表示されます。"
+        },
+        {
+          "type": "heading",
+          "text": "外出先から開く 2 つの方法"
+        },
+        {
+          "type": "paragraph",
+          "text": "設定画面だけで完結させたい場合は、次の「方法 1」で API ホストを変更します。パソコンのターミナル操作に抵抗がなければ「方法 2」の tailscale serve が最短で、vk-terminals の再起動も不要です。どちらか一方を行えば開けます。"
+        },
+        {
+          "type": "heading",
+          "text": "方法 1: vk-terminals の API ホストを変更する"
+        },
+        {
+          "type": "paragraph",
+          "text": "「設定」タブの「API ホスト」に、控えた Tailscale IP（100.x.x.x）を入力して保存します。API ホストはアプリの起動時に読み込まれるため、保存後に vk-terminals を再起動すると反映されます。"
+        },
+        {
+          "type": "tabLink",
+          "label": "API ホストの設定へ移動",
+          "tab": "general",
+          "field": "apiHost"
+        },
+        {
+          "type": "callout",
+          "tone": "info",
+          "text": "パソコンが Tailscale に接続されていない状態で起動すると、指定した API ホストが使えないため 127.0.0.1 で待ち受けます（この場合スマートフォンからは開けません）。開けないときは、パソコンが Tailscale に接続されているかと、起動時のログに出る「API server listening on ...」のアドレスを確認してください。"
+        },
+        {
+          "type": "paragraph",
+          "text": "再起動したら、スマートフォンのブラウザから次のアドレスを開きます。<Tailscale IP> の部分は、控えたアドレスに置き換えてください（山括弧 < > は入力しません）。"
         },
         {
           "type": "code",
           "text": "http://<Tailscale IP>:13847/"
         },
         {
-          "type": "heading",
-          "text": "vk-terminals 側の設定"
-        },
-        {
           "type": "paragraph",
-          "text": "「設定」タブの「API ホスト」に、パソコンの Tailscale IP（100.x.x.x）を入力して保存します。API ホストはアプリの起動時に読み込まれるため、保存後に vk-terminals を再起動すると反映されます。"
-        },
-        {
-          "type": "tabLink",
-          "label": "「設定」タブを開く",
-          "tab": "general"
+          "text": "たとえば Tailscale IP が 100.101.102.103 なら http://100.101.102.103:13847/ です。ポート番号は通常 13847 で、環境変数 VK_TERMINALS_API_PORT で変更している場合はそのポート番号にします。"
         },
         {
           "type": "heading",
-          "text": "別の方法: tailscale serve で公開する"
+          "text": "方法 2: tailscale serve で公開する"
         },
         {
           "type": "paragraph",
@@ -119,7 +149,7 @@
           "key": "apiHost",
           "label": "API ホスト",
           "type": "text",
-          "help": "既定 127.0.0.1"
+          "help": "既定 127.0.0.1。外出先のスマートフォンから確認できるようにする場合は、パソコンの Tailscale IP（100.x.x.x）を入力します。手順は上の「外出先から確認」タブにまとめてあります。"
         },
         {
           "key": "newPaneStartupDir",

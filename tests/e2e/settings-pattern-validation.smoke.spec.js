@@ -131,9 +131,17 @@ test.describe.serial('設定ダイアログの pattern 形式チェック（issu
     await win.waitForSelector(REPO_ID, { state: 'visible' });
   });
 
-  // 各テストの後に Escape でモーダルを閉じる（次テストで再オープンできるように）。
+  // 各テストの後にモーダルを閉じる（次テストで再オープンできるように）。
+  // 閉じる操作に Escape を使わないのは、Escape がモーダルだけでなくサイドバーも閉じ、
+  // その開閉アニメーション後（約 220ms）に ☰ ボタンへフォーカスを戻すため。この遅延
+  // フォーカスが次テストへ持ち越されると、入力欄に当てたはずのフォーカスを ☰ に奪われ、
+  // activeElement を見る検証が実装とは無関係に落ちる。他の settings 系 spec と同じく
+  // ✕ ボタンで閉じれば、サイドバー側のハンドラを起こさずに済む。
   test.afterEach(async () => {
-    await win.keyboard.press('Escape');
+    const closeBtn = win.locator('.settings-close');
+    if (await closeBtn.count()) {
+      await closeBtn.click().catch(() => {});
+    }
     await win.waitForSelector('.settings-modal', { state: 'detached' }).catch(() => {});
   });
 

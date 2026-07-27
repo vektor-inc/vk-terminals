@@ -3679,11 +3679,20 @@ async function openSettingsModal() {
     }
   };
 
+  // 保存後にユーザーが操作を続けているならパネルを勝手に閉じない、という原則は
+  // タブ移動（activateTab）だけでなく同じタブに留まったままの編集にも要る。適用しないと
+  // 「保存 → 続けて編集 → 2.5 秒で消えて編集が失われる」「保存 → 不正値で再保存 →
+  // エラーを出したまま消える」が起きる。タブ表示のときしか動かない markDirty ではなく、
+  // 全モードで動くこのループに寄せる。
+  const onEntryEdited = () => {
+    autoClose.cancel();
+    applyFieldVisibility();
+  };
   for (const { id } of entries) {
     const input = getEntryInput(id);
     if (!input) continue;
-    input.addEventListener('input', applyFieldVisibility);
-    input.addEventListener('change', applyFieldVisibility);
+    input.addEventListener('input', onEntryEdited);
+    input.addEventListener('change', onEntryEdited);
   }
   applyFieldVisibility();
 

@@ -404,6 +404,22 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
     await expect(win.locator('.settings-msg')).toHaveText('保存しました。次回の起動から反映されます。');
   });
 
+  test('保存後に同じタブで編集を続けても自動クローズしない', async () => {
+    // 「操作を続けているなら勝手に閉じない」はタブ移動だけの話ではない。同じタブに
+    // 留まったままの編集で閉じると、入力中の内容がそのまま失われる。
+    await win.locator('#set-field-0').fill('127.0.0.1');
+    await win.locator('.settings-save').click();
+    await expect(win.locator('.settings-msg')).toHaveClass(/ok/);
+
+    // 自動クローズ（2.5 秒）が来る前に編集を再開する。
+    await win.locator('#set-field-0').fill('100.100.100.100');
+
+    await win.waitForTimeout(3000);
+    await expect(win.locator('.settings-modal')).toBeVisible();
+    // 入力中の内容も残っている。
+    await expect(win.locator('#set-field-0')).toHaveValue('100.100.100.100');
+  });
+
   test('保存応答が閉じた後に返ってきても、自動クローズを武装し直さない', async () => {
     // 応答が返る前に閉じられると、閉じた後のクロージャから setTimeout が張られる。
     // その発火は「今開いているモーダル」ではなく前回の overlay を対象に modalOpen を

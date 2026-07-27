@@ -1,59 +1,6 @@
-const { test, expect, _electron } = require('@playwright/test');
-const fs = require('fs');
-const net = require('net');
-const os = require('os');
-const path = require('path');
-
-const repoRoot = path.resolve(__dirname, '..', '..');
-
-// 空きポートを取得する（他の e2e と同様、API サーバ用に固定ポート衝突を避ける）。
-async function getFreePort() {
-  return await new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.on('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address();
-      const port = typeof address === 'object' && address ? address.port : null;
-      server.close((err) => {
-        if (err) { reject(err); return; }
-        if (!port) { reject(new Error('failed to allocate a free port')); return; }
-        resolve(port);
-      });
-    });
-  });
-}
-
-// Electron アプリを起動する（--no-claude でターミナル起動を抑止）。
-// settings-pattern-validation.smoke.spec.js の起動方式に倣う。
-async function launchApp(port) {
-  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-settings-multitarget-'));
-  const tmpHome = path.join(tmpRoot, 'home');
-  const configDir = path.join(tmpHome, '.vk-terminals');
-  const configPath = path.join(configDir, 'config.json');
-  fs.mkdirSync(configDir, { recursive: true });
-  fs.writeFileSync(configPath, JSON.stringify({
-    apiHost: '127.0.0.1',
-    initialCommand: '',
-    agentroom: false,
-    additionalPanes: [],
-  }), 'utf8');
-
-  const app = await _electron.launch({
-    args: ['.', '--no-claude'],
-    cwd: repoRoot,
-    env: {
-      ...process.env,
-      // 実環境の VK_TERMINALS_APP_TITLE / VK_TERMINALS_SETTINGS の影響を受けないよう明示的に無効化する。
-      VK_TERMINALS_APP_TITLE: '',
-      VK_TERMINALS_SETTINGS: '',
-      HOME: tmpHome,
-      USERPROFILE: tmpHome,
-      VK_TERMINALS_API_PORT: String(port),
-    },
-  });
-  const win = await app.firstWindow();
-  return { app, win, tmpRoot };
-}
+const { test, expect } = require('@playwright/test');
+// 起動〜初期描画待ちは共通ヘルパーへ集約している（issue #263）。
+const { closeApp, getFreePort, launchAppAndWait } = require('./helpers/electron-app');
 
 // renderer の ipcRenderer.invoke を差し替え、settings:describe の応答を注入する。
 // これは main.js の settings:describe が返す形（group ごとに targetPaths を持ち、
@@ -132,13 +79,16 @@ test.describe.serial('設定モーダルのマルチターゲット表示（PR #
 
   test.beforeAll(async () => {
     const port = await getFreePort();
-    ({ app, win, tmpRoot } = await launchApp(port));
-    await win.waitForSelector('#sidebar', { state: 'attached' });
+    ({ app, win, tmpRoot } = await launchAppAndWait({
+      port,
+      prefix: 'vk-terminals-e2e-settings-multitarget-',
+      // 実環境の VK_TERMINALS_APP_TITLE / VK_TERMINALS_SETTINGS の影響を受けないよう明示的に無効化する。
+      env: { VK_TERMINALS_APP_TITLE: '', VK_TERMINALS_SETTINGS: '' },
+    }));
   });
 
   test.afterAll(async () => {
-    if (app) await app.close();
-    if (tmpRoot) fs.rmSync(tmpRoot, { recursive: true, force: true });
+    await closeApp({ app, tmpRoot });
   });
 
   // 各テストの後に閉じるボタンでモーダルを閉じる（modalOpen フラグが確実に false に戻り、

@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 開発環境 ] e2e を全件連続実行するとマシン負荷が高いときに一部のテストがタイムアウトで落ちる問題を修正（[#263](https://github.com/vektor-inc/vk-terminals/issues/263)）
+
 ## 1.46.0
 
 - [ 仕様変更 ] ペインの「入力待ち」判定を、出力のたびではなく出力が止まった時点で行うように変更（点灯まで最大数秒遅れる代わりに、作業中の誤検知が減り作業再開で自動解除）（[vektor-inc/vk-orchestrator#212](https://github.com/vektor-inc/vk-orchestrator/issues/212)）

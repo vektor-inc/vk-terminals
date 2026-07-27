@@ -1,59 +1,6 @@
-const { test, expect, _electron } = require('@playwright/test');
-const fs = require('fs');
-const net = require('net');
-const os = require('os');
-const path = require('path');
-
-const repoRoot = path.resolve(__dirname, '..', '..');
-
-// 空きポートを取得する（他の e2e と同様、API サーバ用に固定ポート衝突を避ける）。
-async function getFreePort() {
-  return await new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.on('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address();
-      const port = typeof address === 'object' && address ? address.port : null;
-      server.close((err) => {
-        if (err) { reject(err); return; }
-        if (!port) { reject(new Error('failed to allocate a free port')); return; }
-        resolve(port);
-      });
-    });
-  });
-}
-
-// Electron アプリを起動する（--no-claude でターミナル起動を抑止）。
-// VK_TERMINALS_SETTINGS を空にして、組み込みスキーマ（settings-schema.json）を
-// そのまま描画させる。このテストは組み込みスキーマの tabs 定義自体も検証対象にする。
-async function launchApp(port) {
-  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-mobile-guide-'));
-  const tmpHome = path.join(tmpRoot, 'home');
-  const configDir = path.join(tmpHome, '.vk-terminals');
-  const configPath = path.join(configDir, 'config.json');
-  fs.mkdirSync(configDir, { recursive: true });
-  fs.writeFileSync(configPath, JSON.stringify({
-    apiHost: '127.0.0.1',
-    initialCommand: '',
-    agentroom: false,
-    additionalPanes: [],
-  }), 'utf8');
-
-  const app = await _electron.launch({
-    args: ['.', '--no-claude'],
-    cwd: repoRoot,
-    env: {
-      ...process.env,
-      VK_TERMINALS_APP_TITLE: '',
-      VK_TERMINALS_SETTINGS: '',
-      HOME: tmpHome,
-      USERPROFILE: tmpHome,
-      VK_TERMINALS_API_PORT: String(port),
-    },
-  });
-  const win = await app.firstWindow();
-  return { app, win, tmpRoot };
-}
+const { test, expect } = require('@playwright/test');
+// 起動〜初期描画待ちは共通ヘルパーへ集約している（issue #263）。
+const { closeApp, getFreePort, launchAppAndWait } = require('./helpers/electron-app');
 
 // 説明タブのブロック（.settings-content の直下要素）の並び順を調べる。
 // 手順の並びは「読んだ人がその順に操作して成功するか」に直結するので、
@@ -110,13 +57,17 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
 
   test.beforeAll(async () => {
     const port = await getFreePort();
-    ({ app, win, tmpRoot } = await launchApp(port));
-    await win.waitForSelector('#sidebar', { state: 'attached' });
+    // VK_TERMINALS_SETTINGS を空にして、組み込みスキーマ（settings-schema.json）を
+    // そのまま描画させる。このテストは組み込みスキーマの tabs 定義自体も検証対象にする。
+    ({ app, win, tmpRoot } = await launchAppAndWait({
+      port,
+      prefix: 'vk-terminals-e2e-mobile-guide-',
+      env: { VK_TERMINALS_APP_TITLE: '', VK_TERMINALS_SETTINGS: '' },
+    }));
   });
 
   test.afterAll(async () => {
-    if (app) await app.close();
-    if (tmpRoot) fs.rmSync(tmpRoot, { recursive: true, force: true });
+    await closeApp({ app, tmpRoot });
   });
 
   test.beforeEach(async () => {

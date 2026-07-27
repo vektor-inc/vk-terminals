@@ -422,7 +422,14 @@ h4.settings-content-heading {
 /* 説明タブ唯一の CTA。既定の二次ボタン境界（#30363d）は背景比 1.55:1 で WCAG 1.4.11
    （UI 部品 3:1）に届かないため、境界と文字をアクセントカラーに上げている（境界 7.5:1）。 */
 .settings-content-tablink {
-  display: inline-flex;
+  /* inline-flex（インラインレベル）だと匿名の行ボックスに包まれ、後続ブロックとの
+     マージン相殺が起きない。行ボックスの余り分がそのまま加算されるため、直後の見出しの
+     上余白が意図より約 12px 広がり（h4 の 18px → 30px）、余白で示している見出しの階層が
+     崩れる。ブロックレベルにして相殺を回復させ、幅は fit-content で内容ぴったりに保つ。
+     隣接セレクタで余白を打ち消す方法は取らない（ボタンの padding / line-height を
+     変えると崩れるマジックナンバーになり、後続が段落の場合も直らないため）。 */
+  display: flex;
+  width: fit-content;
   align-items: center;
   margin: 0 0 12px;
   padding: 6px 14px;

@@ -168,6 +168,22 @@ test('normalizeSettingsTabContent: 親の h3 が出る前の level 4 は 3 に�
   ]);
 });
 
+test('normalizeSettingsTabContent: 呼び出し側が渡したブロックを書き換えない', () => {
+  // 繰り上げ（level 4 → 3）は正規化後のコピーに対して行い、rawContent は無傷に保つ。
+  // 「正規化は必ず新しいオブジェクトを返す」という前提が崩れると、スキーマ定義そのものを
+  // 書き換えてしまう（同じ定義を使い回す呼び出し側で 2 回目の描画結果が変わる）。
+  const raw = [{ type: 'heading', text: '先頭の子見出し', level: 4 }];
+  const out = normalizeSettingsTabContent(raw);
+  assert.equal(raw[0].level, 4);        // 入力の定義は変わらない
+  assert.notEqual(out[0], raw[0]);      // 参照を共有していない
+  assert.equal(out[0].level, 3);
+  // 凍結されたブロックを渡しても例外にならない（副作用の有無をもう一段で担保）。
+  assert.doesNotThrow(() => normalizeSettingsTabContent([
+    Object.freeze({ type: 'heading', text: 'a', level: 4 }),
+    Object.freeze({ type: 'heading', text: 'b', level: 4 }),
+  ]));
+});
+
 test('normalizeSettingsTabContent: h3 が先に出ていれば後続の level 4 は 4 のまま', () => {
   assert.deepEqual(normalizeSettingsTabContent([
     { type: 'heading', text: '外出先から開く 2 つの方法' },

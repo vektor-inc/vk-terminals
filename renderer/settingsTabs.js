@@ -132,9 +132,14 @@ function normalizeSettingsTabContent(rawContent, options = {}) {
     const normalizedBlock = normalizeSettingsContentBlock(block, tabIds, fieldTabs);
     if (!normalizedBlock) continue;
     if (normalizedBlock.type === 'heading') {
-      // 親となる h3 が先に出ていない level 4 は 3 へ繰り上げる。
-      if (!seenTopLevelHeading) normalizedBlock.level = 3;
-      if (normalizedBlock.level === 3) seenTopLevelHeading = true;
+      // 親となる h3 が先に出ていない level 4 は 3 へ繰り上げる。繰り上げた見出し自身が
+      // その親になるので、以降の level 4 は子見出しとしてそのまま通す。
+      // 書き換えるのは normalizeSettingsContentBlock が返した新しいオブジェクトで、
+      // 呼び出し側が渡した rawContent のブロックには触らない。
+      if (!seenTopLevelHeading) {
+        normalizedBlock.level = 3;
+        seenTopLevelHeading = true;
+      }
     }
     normalized.push(normalizedBlock);
   }

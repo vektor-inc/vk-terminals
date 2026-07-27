@@ -225,7 +225,9 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
     const at = await contentBlockIndexes(win, PANEL_MOBILE, {
       ipHeading: { selector: 'h3', text: 'パソコンの Tailscale IP を調べる' },
       ipGui: { text: 'メニューバーの Tailscale アイコン' },
-      ipCommand: { selector: '.settings-content-code', text: 'tailscale ip -4' },
+      // コピーボタン付きのコードブロックは .settings-content-codeblock で包まれるため、
+      // .settings-content の直下に来るのはラッパー側になる。
+      ipCommand: { selector: '.settings-content-codeblock', text: 'tailscale ip -4' },
       method1Heading: { selector: 'h3', text: '方法 1' },
       address: { selector: '.settings-content-code', text: '<Tailscale IP>:13847' },
       example: { text: 'http://100.101.102.103:13847/' },
@@ -270,6 +272,91 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
       () => document.activeElement && document.activeElement.dataset.externalUrl
     );
     expect(focusedUrl).toBe('https://tailscale.com/docs/how-to/quickstart');
+  });
+
+  // ─── コードブロックのコピーボタン（issue #262） ───────────────────────────────
+
+  test('コピーボタンはコマンドの 2 ブロックだけに付き、コマンド文字列を読み上げる', async () => {
+    await win.locator(TAB_MOBILE).click();
+    const copyButtons = win.locator(`${PANEL_MOBILE} .settings-content-copy`);
+    // タイプミスしやすいコマンド 2 つにだけ付ける。
+    await expect(copyButtons).toHaveCount(2);
+    await expect(copyButtons).toHaveText(['コピー', 'コピー']);
+    // 貼り付け先がパソコンではなくスマートフォンのアドレスバーになるアドレスは対象外。
+    // ラッパーが付かず <pre> 単体のまま残る。
+    const codeblocks = win.locator(`${PANEL_MOBILE} .settings-content-codeblock`);
+    await expect(codeblocks).toHaveCount(2);
+    await expect(codeblocks.nth(0)).toContainText('tailscale ip -4');
+    await expect(codeblocks.nth(1)).toContainText('tailscale serve --bg 13847');
+    await expect(
+      win.locator(`${PANEL_MOBILE} .settings-content-codeblock`, { hasText: '<Tailscale IP>:13847' })
+    ).toHaveCount(0);
+
+    // 可視ラベル「コピー」を含みつつ対象コマンドまで読み上げる（WCAG 2.5.3 / 2 個の区別）。
+    await expect(copyButtons.nth(0)).toHaveAttribute('aria-label', 'コピー: tailscale ip -4');
+    await expect(copyButtons.nth(1)).toHaveAttribute('aria-label', 'コピー: tailscale serve --bg 13847');
+
+    // フィードバック用の live region は押す前から DOM にある（後から挿入すると読み上げが
+    // 発火しない）。初期状態は空。
+    const statuses = win.locator(`${PANEL_MOBILE} .settings-content-copy-status`);
+    await expect(statuses).toHaveCount(2);
+    await expect(statuses.nth(0)).toHaveAttribute('role', 'status');
+    await expect(statuses.nth(0)).toHaveText('');
+
+    // キーボードだけでも到達できる（マウス前提の操作にしない）。
+    await copyButtons.nth(1).focus();
+    const focusedLabel = await win.evaluate(
+      () => document.activeElement && document.activeElement.getAttribute('aria-label')
+    );
+    expect(focusedLabel).toBe('コピー: tailscale serve --bg 13847');
+  });
+
+  test('コピーボタンを押すとクリップボードにコマンドが入り、2 秒後に表示が戻る', async () => {
+    // クリップボードの中身は Electron の clipboard から読む（renderer 側で require できる）。
+    const readClipboard = () => win.evaluate(() => require('electron').clipboard.readText());
+
+    await win.locator(TAB_MOBILE).click();
+    const serveBlock = win.locator(`${PANEL_MOBILE} .settings-content-codeblock`).nth(1);
+    const button = serveBlock.locator('.settings-content-copy');
+    const status = serveBlock.locator('.settings-content-copy-status');
+
+    await button.click();
+    // 成功は色だけでなくテキストでも伝える（data-state は付けない＝既定の緑）。
+    await expect(status).toHaveText('コピーしました');
+    await expect(status).not.toHaveAttribute('data-state', 'error');
+    // 表示どおりの文字列が入る（コピー元は DOM のコード本文）。
+    expect(await readClipboard()).toBe('tailscale serve --bg 13847');
+    // フォーカスは押したボタンに留まる（続けてもう一方もコピーできる）。
+    await expect(button).toBeFocused();
+
+    // 1 秒時点ではまだ出ている（押した直後に消えて見落とさないように）。
+    await win.waitForTimeout(1000);
+    await expect(status).toHaveText('コピーしました');
+    // 2 秒後には消える。
+    await expect(status).toHaveText('', { timeout: 4000 });
+
+    // もう一方のブロックは独立して動く（状態が混ざらない）。
+    const ipBlock = win.locator(`${PANEL_MOBILE} .settings-content-codeblock`).nth(0);
+    await ipBlock.locator('.settings-content-copy').click();
+    await expect(ipBlock.locator('.settings-content-copy-status')).toHaveText('コピーしました');
+    await expect(status).toHaveText('');
+    expect(await readClipboard()).toBe('tailscale ip -4');
+  });
+
+  test('連打してもフィードバックは重複せず、最後の押下から 2 秒表示される', async () => {
+    await win.locator(TAB_MOBILE).click();
+    const block = win.locator(`${PANEL_MOBILE} .settings-content-codeblock`).nth(0);
+    const button = block.locator('.settings-content-copy');
+    const status = block.locator('.settings-content-copy-status');
+
+    await button.click();
+    await expect(status).toHaveText('コピーしました');
+    // 1 回目の消灯タイマーが残っていると、2 回目の表示が途中で消えてしまう。
+    await win.waitForTimeout(1500);
+    await button.click();
+    await win.waitForTimeout(1000);
+    await expect(status).toHaveText('コピーしました');
+    await expect(status).toHaveText('', { timeout: 4000 });
   });
 
   test('説明タブには入力欄が 1 つも無く、保存ボタンが隠れる', async () => {

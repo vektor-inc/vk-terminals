@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 機能追加 ] 設定パネルの説明コンテンツのコードブロックに、コマンドを手打ちせずに貼り付けられるコピーボタンを追加（[#262](https://github.com/vektor-inc/vk-terminals/issues/262)）
+
 ## 1.46.0
 
 - [ 仕様変更 ] ペインの「入力待ち」判定を、出力のたびではなく出力が止まった時点で行うように変更（点灯まで最大数秒遅れる代わりに、作業中の誤検知が減り作業再開で自動解除）（[vektor-inc/vk-orchestrator#212](https://github.com/vektor-inc/vk-orchestrator/issues/212)）

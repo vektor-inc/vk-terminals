@@ -57,9 +57,18 @@ function normalizeSettingsContentBlock(block, tabIds, fieldTabs) {
   if (!block || typeof block !== 'object' || Array.isArray(block)) return null;
   const type = typeof block.type === 'string' ? block.type : '';
 
-  if (type === 'heading' || type === 'paragraph' || type === 'code') {
+  if (type === 'heading' || type === 'paragraph') {
     const text = nonEmptyString(block.text);
     return text ? { type, text } : null;
+  }
+
+  if (type === 'code') {
+    const text = nonEmptyString(block.text);
+    if (!text) return null;
+    // copy はコピーボタンを出すかどうか。既定（省略時）はコピーできる方に寄せる。
+    // 外部ディスクリプタ（VK_TERMINALS_SETTINGS）由来の不正値でコピー機能が黙って
+    // 死なないよう、明示的な false 以外はすべて true に寄せる（既定＝コピーできる）。
+    return { type, text, copy: block.copy !== false };
   }
 
   if (type === 'list') {

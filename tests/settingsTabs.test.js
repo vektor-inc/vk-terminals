@@ -110,10 +110,34 @@ test('normalizeSettingsTabContent: 各ブロック種別を正規化する', () 
     { type: 'paragraph', text: '本文' },
     { type: 'list', ordered: false, items: ['A', 'B'] },
     { type: 'list', ordered: true, items: ['1 番目'] },
-    { type: 'code', text: 'http://<Tailscale IP>:13847/' },
+    { type: 'code', text: 'http://<Tailscale IP>:13847/', copy: true },
     { type: 'links', items: [{ label: 'Tailscale', url: 'https://tailscale.com/download' }] },
     { type: 'callout', tone: 'warning', text: '認証はありません' },
     { type: 'tabLink', label: '「設定」タブを開く', tab: 'general' },
+  ]);
+});
+
+// code ブロックの copy（コピーボタンの有無）。既定はコピーできる方に寄せ、
+// 明示的な false だけをボタン無しとして扱う。外部ディスクリプタ
+// （VK_TERMINALS_SETTINGS）に壊れた値が入っていても、コピー機能が黙って
+// 消えないことを保証する。
+test('normalizeSettingsTabContent: code の copy は明示的な false のみ無効化する', () => {
+  assert.deepEqual(normalizeSettingsTabContent([
+    { type: 'code', text: 'copy 省略' },
+    { type: 'code', text: 'copy true', copy: true },
+    { type: 'code', text: 'copy false', copy: false },
+    { type: 'code', text: 'copy 文字列 no', copy: 'no' },
+    { type: 'code', text: 'copy 文字列 false', copy: 'false' },
+    { type: 'code', text: 'copy 数値 0', copy: 0 },
+    { type: 'code', text: 'copy null', copy: null },
+  ]), [
+    { type: 'code', text: 'copy 省略', copy: true },
+    { type: 'code', text: 'copy true', copy: true },
+    { type: 'code', text: 'copy false', copy: false },
+    { type: 'code', text: 'copy 文字列 no', copy: true },
+    { type: 'code', text: 'copy 文字列 false', copy: true },
+    { type: 'code', text: 'copy 数値 0', copy: true },
+    { type: 'code', text: 'copy null', copy: true },
   ]);
 });
 

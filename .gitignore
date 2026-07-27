@@ -1,4 +1,7 @@
-node_modules/
+# 末尾スラッシュを付けるとディレクトリにしかマッチせず、git worktree で張られる
+# node_modules シンボリックリンク（git からはディレクトリに見えない）が素通りするため、
+# スラッシュ無しで「ディレクトリでもシンボリックリンクでも無視する」形にしている。
+node_modules
 dist/
 build/
 *.log
@@ -8,4 +11,3 @@ playwright-report/
 .claude/
 config.json
 settings-descriptor.json
-node_modules/

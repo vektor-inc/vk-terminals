@@ -331,15 +331,132 @@ html, body {
   margin: 0 0 12px;
   padding: 0;
 }
+
+/* 説明タブのコンテンツ（tabs[].content の読み取り専用ブロック）
+   ========================================================================== */
+.settings-content {
+  color: #c9d1d9;
+  font-size: 13px;
+  line-height: 1.7;
+}
+.settings-content > :first-child { margin-top: 0; }
+.settings-content > :last-child { margin-bottom: 0; }
+/* モーダル見出し（h2）配下の小見出し。情報グループの区切りとして、
+   直前のブロックとの間に大きめの余白を取る。 */
+.settings-content-heading {
+  /* 本文 13px より 1 段大きくして、色・太字だけに頼らず階層を示す。
+     h3 が連続する縦長のコンテンツなので、セクション間の余白も広めに取る。
+     アクセントカラー（#58a6ff）はリンクと移動ボタン＝「押せるもの」に限定し、
+     見出しは非対話色に落とす。青が見出しにも付くと「青＝押せる」の手がかりが濁る。 */
+  margin: 26px 0 6px;
+  color: #e6edf3;
+  font-size: 14px;
+  font-weight: 600;
+}
+.settings-content-text {
+  margin: 0 0 10px;
+}
+.settings-content-list {
+  margin: 0 0 10px;
+  padding-left: 1.5em;
+}
+.settings-content-list li {
+  margin-bottom: 4px;
+}
+.settings-content-code {
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  background: #010409;
+  border: 1px solid #21262d;
+  border-radius: 5px;
+  /* 長いコマンド・URL でモーダル全体が横スクロールしないよう、この箱の中で流す。 */
+  overflow-x: auto;
+  color: #e6edf3;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.settings-content-links {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 12px;
+  padding: 0;
+  list-style: none;
+}
+.settings-content-link {
+  color: #58a6ff;
+  text-decoration: none;
+}
+.settings-content-link:hover {
+  text-decoration: underline;
+}
+.settings-content-link:focus-visible {
+  outline: 2px solid #58a6ff;
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+.settings-content-link-icon {
+  margin-left: 3px;
+}
+/* 説明タブ唯一の CTA。既定の二次ボタン境界（#30363d）は背景比 1.55:1 で WCAG 1.4.11
+   （UI 部品 3:1）に届かないため、境界と文字をアクセントカラーに上げている（境界 7.5:1）。 */
+.settings-content-tablink {
+  display: inline-flex;
+  align-items: center;
+  margin: 0 0 12px;
+  padding: 6px 14px;
+  background: #21262d;
+  border: 1px solid #58a6ff;
+  border-radius: 5px;
+  color: #58a6ff;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.settings-content-tablink:hover { background: #30363d; }
+.settings-content-tablink:focus-visible {
+  outline: 2px solid #58a6ff;
+  outline-offset: 2px;
+}
+/* 注意書き。色だけに依存させないため、HTML 側で「注意」等の見出し語を併記している。 */
+.settings-content-callout {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-left-width: 3px;
+  border-radius: 5px;
+}
+/* info は補足なので控えめな灰、warning は琥珀。info に青を使わないのは、
+   このパネル内の青をリンクと移動ボタン（＝押せるもの）だけに残すため。 */
+.settings-content-callout[data-tone="warning"] { border-left-color: #d29922; }
+.settings-content-callout[data-tone="info"] { border-left-color: #8b949e; }
+.settings-content-callout-label {
+  flex: 0 0 auto;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.settings-content-callout[data-tone="warning"] .settings-content-callout-label { color: #d29922; }
+.settings-content-callout[data-tone="info"] .settings-content-callout-label { color: #8b949e; }
+.settings-content-callout-text {
+  margin: 0;
+}
 .settings-group {
   border: 1px solid #21262d;
   border-radius: 6px;
   padding: 8px 12px 12px;
   margin: 0 0 18px;
 }
+/* グループ見出しは押せない。アクセントカラー（#58a6ff）はリンクと移動ボタンに限定し、
+   ここは非対話色に落とす（説明タブの h3 と同じ判断。同一モーダル内で「青＝押せる」の
+   手がかりを崩さないため）。 */
 .settings-group legend {
   padding: 0 6px;
-  color: #58a6ff;
+  color: #e6edf3;
   font-size: 13px;
   font-weight: 600;
 }
@@ -468,6 +585,9 @@ html, body {
 .settings-footer.has-tabs .settings-msg {
   min-width: 120px;
 }
+/* 説明だけのタブを表示中は保存ボタンと保存ヒントを隠す（hidden 属性で切替）。 */
+.settings-save[hidden],
+.settings-save-hint[hidden] { display: none; }
 .settings-save-hint {
   flex: 0 0 auto;
   color: #8b949e;

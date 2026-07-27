@@ -131,9 +131,17 @@ test.describe.serial('設定ダイアログの pattern 形式チェック（issu
     await win.waitForSelector(REPO_ID, { state: 'visible' });
   });
 
-  // 各テストの後に Escape でモーダルを閉じる（次テストで再オープンできるように）。
+  // 各テストの後にモーダルを閉じる（次テストで再オープンできるように）。
+  // 閉じる操作に Escape を使わないのは、Escape がモーダルだけでなくサイドバーも閉じ、
+  // その開閉アニメーション後（約 220ms）に ☰ ボタンへフォーカスを戻すため。この遅延
+  // フォーカスが次テストへ持ち越されると、入力欄に当てたはずのフォーカスを ☰ に奪われ、
+  // activeElement を見る検証が実装とは無関係に落ちる。他の settings 系 spec と同じく
+  // ✕ ボタンで閉じれば、サイドバー側のハンドラを起こさずに済む。
   test.afterEach(async () => {
-    await win.keyboard.press('Escape');
+    const closeBtn = win.locator('.settings-close');
+    if (await closeBtn.count()) {
+      await closeBtn.click().catch(() => {});
+    }
     await win.waitForSelector('.settings-modal', { state: 'detached' }).catch(() => {});
   });
 
@@ -228,5 +236,26 @@ test.describe.serial('設定ダイアログの pattern 形式チェック（issu
     await expect(win.locator('.settings-msg')).toHaveText('保存しました。次回の起動から反映されます。');
     const payload = await win.evaluate(() => window.__savedPayloads[window.__savedPayloads.length - 1]);
     expect(payload.legacy).toBe('foobar-not-a-repo');
+  });
+
+  test('7: フッターの総括エラーは不正が残る間は消えず、直しきると消える', async () => {
+    // 不正なまま保存して総括エラーを出す。
+    await win.locator(REPO_ID).fill('foobar');
+    await win.locator('.settings-save').click();
+    await expect(win.locator('.settings-msg')).toHaveText('入力内容に問題があります');
+
+    // まだ不正なうちは消さない。打鍵のたびに消すと、直している最中に何を指摘されたのか
+    // 見失う（"owner/repo の形式" の 2 つ目が空なので、これもまだ不正）。
+    await win.locator(REPO_ID).fill('foobar/');
+    await expect(win.locator('.settings-msg')).toHaveText('入力内容に問題があります');
+    await expect(win.locator('.settings-msg')).toHaveClass(/err/);
+
+    // 直しきったら消す。問題が 1 つも無いのに赤字が残ると、存在しない不正欄を探させる。
+    await win.locator(REPO_ID).fill('vektor-inc/vk-terminals');
+    await expect(win.locator('.settings-msg')).toHaveText('');
+    await expect(win.locator('.settings-msg')).not.toHaveClass(/err/);
+    // 欄側の表示（赤枠・エラー文）も揃って消えている。
+    await expect(win.locator(REPO_ID)).not.toHaveAttribute('aria-invalid', 'true');
+    await expect(win.locator(REPO_ERR)).toBeHidden();
   });
 });

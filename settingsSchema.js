@@ -48,7 +48,15 @@ function loadSettingsSchema(options = {}) {
     if (!validateSettingsSchema(schema)) {
       throw new Error('Invalid settings schema structure');
     }
-    return cloneJson(schema);
+    const loaded = cloneJson(schema);
+    // tabs（任意）が配列でない場合は、その定義だけ落としてタブ無し表示に degrade させる。
+    // 検証エラー扱いにすると schema 全体が fallback（groups: []）に落ち、タブの型ミス 1 つで
+    // 設定パネルの項目が全部消えてしまうため。タブの中身の妥当性は renderer 側の
+    // normalizeSettingsTabs / normalizeSettingsTabContent が不正要素を落として吸収する。
+    if (loaded.tabs !== undefined && !Array.isArray(loaded.tabs)) {
+      delete loaded.tabs;
+    }
+    return loaded;
   } catch (error) {
     if (onError) onError(error, schemaPath);
     return fallbackSettingsSchema();

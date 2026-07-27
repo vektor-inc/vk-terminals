@@ -1,5 +1,7 @@
 # Changelog
 
+## 1.45.0
+
 - [ 機能追加 ] 設定パネルに、Tailscale 経由で外出先のスマートフォンからモバイルページを開く手順を案内する読み取り専用タブ「外出先から確認」を追加（[#245](https://github.com/vektor-inc/vk-terminals/issues/245)）
 - [ 機能追加 ] 設定ディスクリプタのタブに、入力欄を持たない説明コンテンツ（`tabs[].content`）を定義できるように追加（[#245](https://github.com/vektor-inc/vk-terminals/issues/245)）
 - [ 仕様変更 ] 設定パネルの保存が入力内容の問題で止まったとき、対象の入力欄を画面の端ではなく中央に寄せて表示するように変更（[#245](https://github.com/vektor-inc/vk-terminals/issues/245)）

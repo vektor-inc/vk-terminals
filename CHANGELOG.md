@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 開発環境 ] e2e を全件連続実行するとマシン負荷が高いときに一部のテストがタイムアウトで落ちる問題を修正（[#263](https://github.com/vektor-inc/vk-terminals/issues/263)）
+
 ## 1.47.0
 
 - [ 機能追加 ] 設定パネルの説明コンテンツのコードブロックに、コマンドを手打ちせずに貼り付けられるコピーボタンを追加（[#262](https://github.com/vektor-inc/vk-terminals/issues/262)）

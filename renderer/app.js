@@ -26,6 +26,7 @@ const { getPrBadgePresentation } = require('./prBadge');
 const { resolveQueueIssuesListUrl } = require('./taskQueueLink');
 const { isPatternValid } = require('./settingsValidation');
 const { isFieldVisible } = require('./settingsVisibility');
+const { createAutoCloseController } = require('./autoClose');
 const {
   deriveSettingsTargetPathsForGroups,
   groupSettingsGroupsByTab,
@@ -3399,30 +3400,15 @@ async function openSettingsModal() {
 
   const modal = overlay.querySelector('.settings-modal');
 
-  // 保存成功後の自動クローズ用タイマー。武装したまま放置すると、遅れて発火した close() が
+  // 保存成功後の自動クローズ。武装したまま放置すると、遅れて発火した close() が
   // 「今開いているモーダル」ではなくこのクロージャの overlay を対象に modalOpen を false へ
-  // 戻し、二重オープンの抑止を壊す。取り消し漏れを防ぐため arm / cancel をここに集約し、
-  // close()（手動クローズ）とタブ切り替えの両方から cancelAutoClose() を呼ぶ。
-  let autoCloseTimer = null;
-  let closed = false;
-  const cancelAutoClose = () => {
-    if (autoCloseTimer === null) return;
-    clearTimeout(autoCloseTimer);
-    autoCloseTimer = null;
-  };
-  // 保存応答は await の向こう側なので、返ってきた時点でモーダルが既に閉じられていることが
-  // ある。閉じた後のクロージャから武装すると、次に開いたモーダルを巻き添えに modalOpen を
-  // false へ戻してしまうため closed で弾く。保存を連打された場合に前のタイマーが残らないよう、
-  // 張り直す前に必ず取り消す。
-  const armAutoClose = () => {
-    if (closed) return;
-    cancelAutoClose();
-    autoCloseTimer = setTimeout(close, 2500);
-  };
+  // 戻し、二重オープンの抑止を壊す。寿命の判断は renderer/autoClose.js に集約してあり、
+  // ここは「いつ武装し、いつ取り消すか」だけを決める。
+  const autoClose = createAutoCloseController({ onFire: () => close() });
   const close = () => {
-    if (closed) return;
-    closed = true;
-    cancelAutoClose();
+    // markClosed() が false を返すのは 2 回目以降。遅れて発火したタイマーが
+    // modalOpen を巻き戻さないよう、閉じる処理は冪等にしておく。
+    if (!autoClose.markClosed()) return;
     document.removeEventListener('keydown', onKey);
     overlay.remove();
     modalOpen = false;
@@ -3540,7 +3526,7 @@ async function openSettingsModal() {
         // 併せて保存後の自動クローズも取り消す。固定を解いて「保存後のタブ移動」を
         // 正式に許した以上、移動先を読んでいる最中にパネルごと消えるのは矛盾する。
         // 「保存しました」の表示は残したまま、閉じるタイミングはユーザーに委ねる。
-        cancelAutoClose();
+        autoClose.cancel();
       }
       updateSettingsFooter();
       if (tabChanged) restoreTabScroll(nextIndex);
@@ -3750,7 +3736,7 @@ async function openSettingsModal() {
         clearDirtyTabs();
         msg.textContent = '保存しました。次回の起動から反映されます。';
         msg.classList.add('ok');
-        armAutoClose();
+        autoClose.arm();
       } else {
         msg.textContent = 'エラー: ' + (res && res.error ? res.error : '不明なエラー');
         msg.classList.add('err');

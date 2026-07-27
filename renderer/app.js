@@ -3318,10 +3318,13 @@ function renderSettingsField(f, value, id) {
 // 「どのコマンドをコピーするボタンか」が読み上げで区別できる。
 // 改行は空白に畳み、長いコマンドは 60 文字で切って読み上げが延々続かないようにする。
 const SETTINGS_COPY_LABEL_MAX = 60;
-function copyLabel(text) {
+function settingsCopyButtonLabel(text) {
   const oneLine = String(text).replace(/\s+/g, ' ').trim();
-  const clipped = oneLine.length > SETTINGS_COPY_LABEL_MAX
-    ? `${oneLine.slice(0, SETTINGS_COPY_LABEL_MAX)}…`
+  // 切り詰めはコードポイント単位で行う。slice は UTF-16 コードユニット単位なので、
+  // 境界が絵文字などサロゲートペアの途中に来ると孤立サロゲートが残り読み上げが化ける。
+  const chars = Array.from(oneLine);
+  const clipped = chars.length > SETTINGS_COPY_LABEL_MAX
+    ? `${chars.slice(0, SETTINGS_COPY_LABEL_MAX).join('')}…`
     : oneLine;
   return `コピー: ${clipped}`;
 }
@@ -3358,7 +3361,7 @@ function renderSettingsTabContent(blocks, tabIndexById) {
         ${pre}
         <div class="settings-content-code-actions">
           <span class="settings-content-copy-status" role="status"></span>
-          <button type="button" class="settings-content-copy" aria-label="${escAttr(copyLabel(block.text))}">コピー</button>
+          <button type="button" class="settings-content-copy" aria-label="${escAttr(settingsCopyButtonLabel(block.text))}">コピー</button>
         </div>
       </div>`;
     }
@@ -3758,6 +3761,20 @@ async function openSettingsModal() {
     // 説明タブのコードブロックのコピーボタン（code ブロックの copy 有効時）。
     // 説明タブの中身はモーダルを開いた時に一度だけ描画されるので、tabLink と同じく
     // 生成済みのボタンへ直接張る（イベント委譲は不要）。
+    // フィードバックの表示と消灯は同じ 2 プロパティ（textContent / data-state）を
+    // 対称に触るので 1 か所に寄せる。state は 'ok' / 'error' / ''（消灯）。
+    const setCopyStatus = (status, state) => {
+      if (!status) return;
+      if (!state) {
+        status.textContent = '';
+        status.removeAttribute('data-state');
+        return;
+      }
+      // 色だけに依存させないため、成否はテキストでも伝える。
+      status.textContent = state === 'ok' ? 'コピーしました' : 'コピーできませんでした';
+      if (state === 'ok') status.removeAttribute('data-state');
+      else status.setAttribute('data-state', state);
+    };
     modal.querySelectorAll('.settings-content-copy').forEach((button) => {
       button.addEventListener('click', () => {
         const wrapper = button.closest('.settings-content-codeblock');
@@ -3765,29 +3782,30 @@ async function openSettingsModal() {
         // コピー元は data-* に持たせず DOM のコード本文から取る。表示している内容と
         // 貼られる内容が構造的に一致することを保証するため。
         const codeEl = wrapper ? wrapper.querySelector('.settings-content-code code') : null;
+        // コピー元が取れないときは書き込まない。空文字で上書きすると、
+        // ユーザーが直前にコピーした内容を黙って壊してしまう。
         const text = codeEl ? codeEl.textContent : '';
         let ok = true;
-        try {
-          // navigator.clipboard は file:// では secure context 判定に依存するため使わず、
-          // Electron の clipboard を直接使う。
-          clipboard.writeText(text);
-        } catch (_e) {
+        if (!text) {
           ok = false;
+        } else {
+          try {
+            // navigator.clipboard は file:// では secure context 判定に依存するため使わず、
+            // Electron の clipboard を直接使う。
+            clipboard.writeText(text);
+          } catch (_e) {
+            // writeText は書き込み失敗を例外で返さないため、この catch は保険。
+            // 「失敗を検出できている」わけではない点に注意。
+            ok = false;
+          }
         }
-        if (status) {
-          // 色だけに依存させないため、成否はテキストでも伝える。
-          status.textContent = ok ? 'コピーしました' : 'コピーできませんでした';
-          if (ok) status.removeAttribute('data-state');
-          else status.setAttribute('data-state', 'error');
-        }
+        setCopyStatus(status, ok ? 'ok' : 'error');
         // 連打しても表示が重ならず、かつ早く消えないよう毎回 2 秒に張り替える。
         const pending = copyResetTimers.get(button);
         if (pending) clearTimeout(pending);
         copyResetTimers.set(button, setTimeout(() => {
           copyResetTimers.delete(button);
-          if (!status) return;
-          status.textContent = '';
-          status.removeAttribute('data-state');
+          setCopyStatus(status, '');
         }, 2000));
         // フォーカスは移動させない。押したボタンに留めて連続コピーできるようにする。
       });

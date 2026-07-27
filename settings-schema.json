@@ -83,6 +83,7 @@
         },
         {
           "type": "heading",
+          "level": 4,
           "text": "方法 1: vk-terminals の API ホストを変更する"
         },
         {
@@ -114,6 +115,7 @@
         },
         {
           "type": "heading",
+          "level": 4,
           "text": "方法 2: tailscale serve で公開する"
         },
         {

@@ -106,7 +106,7 @@ test('normalizeSettingsTabContent: 各ブロック種別を正規化する', () 
     { type: 'callout', tone: 'warning', text: '認証はありません' },
     { type: 'tabLink', label: '「設定」タブを開く', tab: 'general' },
   ], { tabIds: ['general', 'mobile'] }), [
-    { type: 'heading', text: '見出し' },
+    { type: 'heading', text: '見出し', level: 3 },
     { type: 'paragraph', text: '本文' },
     { type: 'list', ordered: false, items: ['A', 'B'] },
     { type: 'list', ordered: true, items: ['1 番目'] },
@@ -114,6 +114,72 @@ test('normalizeSettingsTabContent: 各ブロック種別を正規化する', () 
     { type: 'links', items: [{ label: 'Tailscale', url: 'https://tailscale.com/download' }] },
     { type: 'callout', tone: 'warning', text: '認証はありません' },
     { type: 'tabLink', label: '「設定」タブを開く', tab: 'general' },
+  ]);
+});
+
+test('normalizeSettingsTabContent: heading の level は 3 / 4 だけ採用し、既定は 3', () => {
+  // level は「親セクション（3）／子セクション（4）」の 2 段だけ。不正値でブロックごと
+  // 落とすと後続の段落が直前のセクションに吸収されて意味が壊れるため、3 に落着させる。
+  // 先頭ブロックには level 4 の繰り上げ規則が働くので、値そのものの判定は
+  // 親見出し（level 3）を 1 つ置いた後ろで確かめる。
+  assert.deepEqual(normalizeSettingsTabContent([
+    { type: 'heading', text: '親セクション', level: 3 },
+    { type: 'heading', text: '子セクション', level: 4 },
+    { type: 'heading', text: '5 以上は 4 に寄せる', level: 5 },
+    { type: 'heading', text: '2 以下は 3', level: 2 },
+    // 文字列は数値に強制変換しない（全角数字や "4.0" の扱いが曖昧になるだけ）。
+    { type: 'heading', text: '文字列は 3', level: '4' },
+    { type: 'heading', text: 'null は 3', level: null },
+    { type: 'heading', text: '非整数は 3', level: 3.5 },
+    { type: 'heading', text: '未指定は 3' },
+  ]), [
+    { type: 'heading', text: '親セクション', level: 3 },
+    { type: 'heading', text: '子セクション', level: 4 },
+    { type: 'heading', text: '5 以上は 4 に寄せる', level: 4 },
+    { type: 'heading', text: '2 以下は 3', level: 3 },
+    { type: 'heading', text: '文字列は 3', level: 3 },
+    { type: 'heading', text: 'null は 3', level: 3 },
+    { type: 'heading', text: '非整数は 3', level: 3 },
+    { type: 'heading', text: '未指定は 3', level: 3 },
+  ]);
+});
+
+test('normalizeSettingsTabContent: 親の h3 が出る前の level 4 は 3 に繰り上げる', () => {
+  // 先頭が level 4 だと、モーダル見出し（h2）の直下が h4 になって見出しレベルが
+  // 1 段飛ぶ（WCAG 1.3.1）。並びを見ないと判定できないので、ここで担保する。
+  assert.deepEqual(normalizeSettingsTabContent([
+    { type: 'heading', text: '先頭の子見出し', level: 4 },
+    { type: 'paragraph', text: '本文' },
+    // 繰り上げで親（level 3）が立つので、これ以降の level 4 はそのまま子扱い。
+    { type: 'heading', text: '2 つ目の子見出し', level: 4 },
+  ]), [
+    { type: 'heading', text: '先頭の子見出し', level: 3 },
+    { type: 'paragraph', text: '本文' },
+    { type: 'heading', text: '2 つ目の子見出し', level: 4 },
+  ]);
+
+  // text 欠落で落ちたブロックは親として数えない（描画されない見出しを親にすると、
+  // 実際の画面では h2 の直下に h4 が出てしまう）。
+  assert.deepEqual(normalizeSettingsTabContent([
+    { type: 'heading', level: 3 },
+    { type: 'heading', text: '子見出しのつもり', level: 4 },
+  ]), [
+    { type: 'heading', text: '子見出しのつもり', level: 3 },
+  ]);
+});
+
+test('normalizeSettingsTabContent: h3 が先に出ていれば後続の level 4 は 4 のまま', () => {
+  assert.deepEqual(normalizeSettingsTabContent([
+    { type: 'heading', text: '外出先から開く 2 つの方法' },
+    { type: 'heading', text: '方法 1', level: 4 },
+    { type: 'heading', text: '方法 2', level: 4 },
+    // h4 → h3 と戻るのは正常（子セクションを抜けたことを伝える）。
+    { type: 'heading', text: 'セキュリティ上の注意' },
+  ]), [
+    { type: 'heading', text: '外出先から開く 2 つの方法', level: 3 },
+    { type: 'heading', text: '方法 1', level: 4 },
+    { type: 'heading', text: '方法 2', level: 4 },
+    { type: 'heading', text: 'セキュリティ上の注意', level: 3 },
   ]);
 });
 
@@ -367,7 +433,7 @@ test('normalizeSettingsTabs: content は正規化して非空のときだけ持�
       label: '外出先から確認',
       index: 1,
       content: [
-        { type: 'heading', text: 'スマートフォンから確認できます' },
+        { type: 'heading', text: 'スマートフォンから確認できます', level: 3 },
         { type: 'tabLink', label: '「設定」タブを開く', tab: 'general' },
       ],
     },

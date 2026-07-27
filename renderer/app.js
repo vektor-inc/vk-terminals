@@ -3322,8 +3322,11 @@ function renderSettingsField(f, value, id) {
 function renderSettingsTabContent(blocks, tabIndexById) {
   const html = (Array.isArray(blocks) ? blocks : []).map((block) => {
     if (block.type === 'heading') {
-      // モーダル見出しが <h2> なので、その配下は <h3> にする。
-      return `<h3 class="settings-content-heading">${escText(block.text)}</h3>`;
+      // モーダル見出しが <h2> なので、その配下は h3（親セクション）/ h4（子セクション）。
+      // 正規化済みでも tag は列挙から出す（`h${level}` を組み立てない）。外部ディスクリプタ
+      // 由来の値が将来正規化をすり抜けても任意タグにならないようにするための多重防御。
+      const tag = block.level === 4 ? 'h4' : 'h3';
+      return `<${tag} class="settings-content-heading">${escText(block.text)}</${tag}>`;
     }
     if (block.type === 'paragraph') {
       return `<p class="settings-content-text">${escText(block.text)}</p>`;

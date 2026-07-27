@@ -6,6 +6,7 @@ const { isSafeHttpUrl } = require('./urlSafety');
 // 保存対象の入力欄を持たない「説明だけのタブ」を、スキーマ駆動のまま表現するための仕組み。
 // 描画側（renderer/app.js）は正規化済みのブロックだけを受け取り、描画に専念する。
 const SETTINGS_CONTENT_CALLOUT_TONES = new Set(['info', 'warning']);
+const SETTINGS_CONTENT_STATUS_SOURCES = new Set(['apiServer']);
 
 function nonEmptyString(value) {
   return typeof value === 'string' && value.trim() !== '' ? value : '';
@@ -108,6 +109,11 @@ function normalizeSettingsContentBlock(block, tabIds, fieldTabs) {
     if (!text) return null;
     const tone = SETTINGS_CONTENT_CALLOUT_TONES.has(block.tone) ? block.tone : 'info';
     return { type, tone, text };
+  }
+
+  if (type === 'status') {
+    const source = nonEmptyString(block.source);
+    return SETTINGS_CONTENT_STATUS_SOURCES.has(source) ? { type, source } : null;
   }
 
   if (type === 'tabLink') {

@@ -79,6 +79,13 @@ const INSTANCE_ID = resolveInstanceId(process.env);
 const SEND_ENTER_SPLIT_DELAY_MS = 150;
 let cachedStates = {};  // renderer から受け取った状態キャッシュ
 let httpServer = null;
+let apiServerRuntimeStatus = {
+  phase: 'pending',
+  port: null,
+  startupHost: '',
+  actualHost: '',
+  errorCode: '',
+};
 
 const MENU_ACTION_TYPES = new Set(['open-settings', 'open-url']);
 const MENU_MAX_SECTIONS = 20;
@@ -496,6 +503,21 @@ const API_PORT = (() => {
   return Number.isInteger(raw) && raw >= 1 && raw <= 65535 ? raw : 13847;
 })();
 
+function normalizeApiHost(value) {
+  return typeof value === 'string' && value.trim() ? value.trim() : '127.0.0.1';
+}
+
+// 設定パネルへ渡す API サーバー状態。bind 結果は起動処理が確定した値を保持し、
+// savedHost だけは呼び出し時点の設定ファイルを読む。これにより「フォールバック」と
+// 「保存したが未再起動」を、起動時・現在・実 bind の 3 値で renderer が判別できる。
+function describeApiServerRuntimeStatus() {
+  return {
+    ...apiServerRuntimeStatus,
+    port: API_PORT,
+    savedHost: normalizeApiHost(loadUserConfig().apiHost),
+  };
+}
+
 // ─── トークン使用量（issue #69）────────────────────────────────────────────────
 // GET /api/states（モバイルページが ~2s ごとにポーリング）のホットパスで usage 判定の
 // たびに loadUserConfig() の同期 I/O（readFileSync + JSON.parse）を走らせないよう、
@@ -884,10 +906,15 @@ ipcMain.handle('settings:describe', () => {
     groups,
     values,
     appVersion: require('./package.json').version,
+    apiServerStatus: describeApiServerRuntimeStatus(),
     targetPaths: targetInfo.allTargets,
     hasMultipleTargets: targetInfo.hasMultipleTargets,
   };
 });
+
+// 起動直後、API サーバーがまだ確定していない間だけ renderer が状態を取り直すための
+// 軽量経路。静的な設定ディスクリプタ全体は再構築せず、状態スナップショットだけを返す。
+ipcMain.handle('settings:api-server-status', () => describeApiServerRuntimeStatus());
 
 // renderer からの保存。ディスクリプタに載っているキーだけを型変換して書き戻す
 // （未知のキーは既存 config から保持する。書き込み先は field/group/descriptor の targetPath）。
@@ -1858,20 +1885,40 @@ function startHttpApi() {
   //   例: Tailscale IP（100.x.x.x）を指定すると tailnet 内からのみ到達可能になり、
   //   スマホ等から http://<apiHost>:13847/ で状態確認・応答できる（LAN/公開には出さない）。
   //   '0.0.0.0' を指定すると LAN を含む全 I/F で待ち受ける（信頼できる NW でのみ推奨）。
-  const apiHostRaw = loadUserConfig().apiHost;
-  const apiHost = (typeof apiHostRaw === 'string' && apiHostRaw.trim())
-    ? apiHostRaw.trim()
-    : '127.0.0.1';
+  const apiHost = normalizeApiHost(loadUserConfig().apiHost);
+  apiServerRuntimeStatus = {
+    phase: 'pending',
+    port: API_PORT,
+    startupHost: apiHost,
+    actualHost: '',
+    errorCode: '',
+  };
 
   let triedFallback = false;
   const listen = (host) => {
     httpServer.listen(API_PORT, host, () => {
-      console.log(`${LOG_PREFIX} API server listening on http://${host}:${API_PORT}`);
+      const address = httpServer.address();
+      const actualHost = address && typeof address === 'object' ? address.address : host;
+      apiServerRuntimeStatus = {
+        phase: 'listening',
+        port: API_PORT,
+        startupHost: apiHost,
+        actualHost,
+        errorCode: '',
+      };
+      console.log(`${LOG_PREFIX} API server listening on http://${actualHost}:${API_PORT}`);
     });
   };
 
   httpServer.on('error', (e) => {
     if (e.code === 'EADDRINUSE') {
+      apiServerRuntimeStatus = {
+        phase: 'error',
+        port: API_PORT,
+        startupHost: apiHost,
+        actualHost: '',
+        errorCode: e.code,
+      };
       console.warn(`${LOG_PREFIX} Port ${API_PORT} in use, API server disabled.`);
     } else if (e.code === 'EADDRNOTAVAIL' && !triedFallback && apiHost !== '127.0.0.1') {
       // apiHost（例: Tailscale IP）が未割り当て（Tailscale 未接続など）の場合は
@@ -1880,6 +1927,13 @@ function startHttpApi() {
       console.warn(`${LOG_PREFIX} apiHost ${apiHost} unavailable, falling back to 127.0.0.1.`);
       listen('127.0.0.1');
     } else {
+      apiServerRuntimeStatus = {
+        phase: 'error',
+        port: API_PORT,
+        startupHost: apiHost,
+        actualHost: '',
+        errorCode: typeof e.code === 'string' ? e.code : 'UNKNOWN',
+      };
       console.error(`${LOG_PREFIX} API server error:`, e);
     }
   });

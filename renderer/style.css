@@ -527,6 +527,61 @@ h4.settings-content-heading {
 .settings-content-callout-text {
   margin: 0;
 }
+
+/* API サーバーの実行時ステータス
+   ========================================================================== */
+.settings-content-status {
+  display: block;
+  margin: 32px 0 12px;
+}
+.settings-content-status > .settings-content-heading {
+  margin: 0 0 6px;
+}
+.settings-content-status-body {
+  padding: 10px 12px;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-left-width: 3px;
+  border-radius: 5px;
+}
+.settings-content-status[data-tone="success"] .settings-content-status-body {
+  border-left-color: #3fb950;
+}
+.settings-content-status[data-tone="info"] .settings-content-status-body,
+.settings-content-status[data-tone="neutral"] .settings-content-status-body {
+  border-left-color: #8b949e;
+}
+.settings-content-status[data-tone="warning"] .settings-content-status-body {
+  border-left-color: #d29922;
+}
+.settings-content-status[data-tone="error"] .settings-content-status-body {
+  border-left-color: #f85149;
+}
+.settings-content-status-label {
+  display: block;
+  margin-bottom: 8px;
+  font-weight: 600;
+}
+.settings-content-status[data-tone="success"] .settings-content-status-label {
+  color: #3fb950;
+}
+.settings-content-status[data-tone="info"] .settings-content-status-label,
+.settings-content-status[data-tone="neutral"] .settings-content-status-label {
+  color: #8b949e;
+}
+.settings-content-status[data-tone="warning"] .settings-content-status-label {
+  color: #d29922;
+}
+.settings-content-status[data-tone="error"] .settings-content-status-label {
+  color: #f85149;
+}
+.settings-content-status-body > .settings-content-codeblock,
+.settings-content-status-body > .settings-content-code {
+  margin-bottom: 8px;
+}
+.settings-content-status-text {
+  margin: 0;
+}
 .settings-group {
   border: 1px solid #21262d;
   border-radius: 6px;

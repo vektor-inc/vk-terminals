@@ -1,5 +1,7 @@
 # Changelog
 
+## 1.46.0
+
 - [ 仕様変更 ] ペインの「入力待ち」判定を、出力のたびではなく出力が止まった時点で行うように変更（点灯まで最大数秒遅れる代わりに、作業中の誤検知が減り作業再開で自動解除）（[vektor-inc/vk-orchestrator#212](https://github.com/vektor-inc/vk-orchestrator/issues/212)）
 - [ 不具合修正 ] AI が作業中でも進捗報告の「〜を待っています」という文言に反応してペインが「入力待ち」になり、作業が再開しても表示が張り付いたままになる不具合を修正（[vektor-inc/vk-orchestrator#212](https://github.com/vektor-inc/vk-orchestrator/issues/212)）
 

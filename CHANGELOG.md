@@ -1,5 +1,6 @@
 # Changelog
 
+- [ 機能追加 ] 設定パネルの説明コンテンツのコードブロックに、コマンドを手打ちせずに貼り付けられるコピーボタンを追加（[#262](https://github.com/vektor-inc/vk-terminals/issues/262)）
 - [ 機能追加 ] 設定パネルの説明コンテンツ（`tabs[].content`）の見出しに `level`（3 または 4）を指定できるようにし、親セクションと子セクションの階層を表現できるように追加（[#260](https://github.com/vektor-inc/vk-terminals/issues/260)）
 - [ 仕様変更 ] 設定パネル「外出先から確認」タブの「方法 1」「方法 2」を「外出先から開く 2 つの方法」の子見出しにし、見出しの大きさと余白で親子関係が分かるように変更（[#260](https://github.com/vektor-inc/vk-terminals/issues/260)）
 - [ デザイン不具合修正 ] 設定パネルの説明タブで、別タブへの移動ボタンの直後に来る見出しだけ上の余白が広くなり、余白で示している見出しの階層が崩れる問題を修正（[#260](https://github.com/vektor-inc/vk-terminals/issues/260)）

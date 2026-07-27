@@ -1,5 +1,5 @@
 /* global require */
-const { ipcRenderer, shell } = require('electron');
+const { ipcRenderer, shell, clipboard } = require('electron');
 const { Terminal } = require('@xterm/xterm');
 const { FitAddon } = require('@xterm/addon-fit');
 const { appendAnsiForDisplay, stripAnsiForDisplay } = require('../utils/stripAnsi');
@@ -3313,6 +3313,22 @@ function renderSettingsField(f, value, id) {
   </div>`;
 }
 
+// コピーボタンの aria-label。可視ラベル「コピー」を先頭に含めるため WCAG 2.5.3
+// （Label in Name）を満たし、同じタブに複数のコードブロックが並んでも
+// 「どのコマンドをコピーするボタンか」が読み上げで区別できる。
+// 改行は空白に畳み、長いコマンドは 60 文字で切って読み上げが延々続かないようにする。
+const SETTINGS_COPY_LABEL_MAX = 60;
+function settingsCopyButtonLabel(text) {
+  const oneLine = String(text).replace(/\s+/g, ' ').trim();
+  // 切り詰めはコードポイント単位で行う。slice は UTF-16 コードユニット単位なので、
+  // 境界が絵文字などサロゲートペアの途中に来ると孤立サロゲートが残り読み上げが化ける。
+  const chars = Array.from(oneLine);
+  const clipped = chars.length > SETTINGS_COPY_LABEL_MAX
+    ? `${chars.slice(0, SETTINGS_COPY_LABEL_MAX).join('')}…`
+    : oneLine;
+  return `コピー: ${clipped}`;
+}
+
 // 説明タブ（tabs[].content）の読み取り専用ブロックを HTML 化する。
 // blocks は settingsTabs.js の normalizeSettingsTabContent で正規化済み（未知の type や
 // 非 http(s) の URL は除去済み）である前提。content は外部ディスクリプタ
@@ -3337,7 +3353,20 @@ function renderSettingsTabContent(blocks, tabIndexById) {
       return `<${tag} class="settings-content-list">${items}</${tag}>`;
     }
     if (block.type === 'code') {
-      return `<pre class="settings-content-code"><code>${escText(block.text)}</code></pre>`;
+      const pre = `<pre class="settings-content-code"><code>${escText(block.text)}</code></pre>`;
+      // copy: false のブロック（貼り付け先がパソコンではないアドレスなど）は
+      // 従来どおり <pre> 単体で出す。ラッパーも操作行も付けない。
+      if (!block.copy) return pre;
+      // フィードバック用の live region（.settings-content-copy-status）は空の <span> として
+      // 最初から DOM に置く。押されてから挿入する実装ではスクリーンリーダーの
+      // 読み上げが発火しない。
+      return `<div class="settings-content-codeblock">
+        ${pre}
+        <div class="settings-content-code-actions">
+          <span class="settings-content-copy-status" role="status"></span>
+          <button type="button" class="settings-content-copy" aria-label="${escAttr(settingsCopyButtonLabel(block.text))}">コピー</button>
+        </div>
+      </div>`;
     }
     if (block.type === 'links') {
       // href には実 URL を入れず href="#" + click → openExternalUrlSafe に寄せる
@@ -3499,6 +3528,15 @@ async function openSettingsModal() {
 
   const modal = overlay.querySelector('.settings-modal');
 
+  // 説明タブのコピーボタンごとの「フィードバックを消すタイマー」。連打で表示が
+  // 重ならないよう押下時に張り替え、モーダルを閉じるときは全部止める（DOM から
+  // 外れたノードへ書き込むのとタイマーが残るのを防ぐ）。
+  const copyResetTimers = new Map();
+  const clearCopyResetTimers = () => {
+    copyResetTimers.forEach((timerId) => clearTimeout(timerId));
+    copyResetTimers.clear();
+  };
+
   // 保存成功後の自動クローズ。武装したまま放置すると、遅れて発火した close() が
   // 「今開いているモーダル」ではなくこのクロージャの overlay を対象に modalOpen を false へ
   // 戻し、二重オープンの抑止を壊す。寿命の判断は renderer/autoClose.js に集約してあり、
@@ -3509,6 +3547,7 @@ async function openSettingsModal() {
     // modalOpen を巻き戻さないよう、閉じる処理は冪等にしておく。
     if (!autoClose.markClosed()) return;
     document.removeEventListener('keydown', onKey);
+    clearCopyResetTimers();
     overlay.remove();
     modalOpen = false;
   };
@@ -3720,6 +3759,58 @@ async function openSettingsModal() {
           : null;
         if (entry && revealSettingsEntry(entry)) return;
         activateTab(targetIndex, { focus: true });
+      });
+    });
+    // 説明タブのコードブロックのコピーボタン（code ブロックの copy 有効時）。
+    // 説明タブの中身はモーダルを開いた時に一度だけ描画されるので、tabLink と同じく
+    // 生成済みのボタンへ直接張る（イベント委譲は不要）。
+    // フィードバックの表示と消灯は同じ 2 プロパティ（textContent / data-state）を
+    // 対称に触るので 1 か所に寄せる。state は 'ok' / 'error' / ''（消灯）。
+    const setCopyStatus = (status, state) => {
+      if (!status) return;
+      if (!state) {
+        status.textContent = '';
+        status.removeAttribute('data-state');
+        return;
+      }
+      // 色だけに依存させないため、成否はテキストでも伝える。
+      status.textContent = state === 'ok' ? 'コピーしました' : 'コピーできませんでした';
+      if (state === 'ok') status.removeAttribute('data-state');
+      else status.setAttribute('data-state', state);
+    };
+    modal.querySelectorAll('.settings-content-copy').forEach((button) => {
+      button.addEventListener('click', () => {
+        const wrapper = button.closest('.settings-content-codeblock');
+        const status = wrapper ? wrapper.querySelector('.settings-content-copy-status') : null;
+        // コピー元は data-* に持たせず DOM のコード本文から取る。表示している内容と
+        // 貼られる内容が構造的に一致することを保証するため。
+        const codeEl = wrapper ? wrapper.querySelector('.settings-content-code code') : null;
+        // コピー元が取れないときは書き込まない。空文字で上書きすると、
+        // ユーザーが直前にコピーした内容を黙って壊してしまう。
+        const text = codeEl ? codeEl.textContent : '';
+        let ok = true;
+        if (!text) {
+          ok = false;
+        } else {
+          try {
+            // navigator.clipboard は file:// では secure context 判定に依存するため使わず、
+            // Electron の clipboard を直接使う。
+            clipboard.writeText(text);
+          } catch (_e) {
+            // writeText は書き込み失敗を例外で返さないため、この catch は保険。
+            // 「失敗を検出できている」わけではない点に注意。
+            ok = false;
+          }
+        }
+        setCopyStatus(status, ok ? 'ok' : 'error');
+        // 連打しても表示が重ならず、かつ早く消えないよう毎回 2 秒に張り替える。
+        const pending = copyResetTimers.get(button);
+        if (pending) clearTimeout(pending);
+        copyResetTimers.set(button, setTimeout(() => {
+          copyResetTimers.delete(button);
+          setCopyStatus(status, '');
+        }, 2000));
+        // フォーカスは移動させない。押したボタンに留めて連続コピーできるようにする。
       });
     });
     updateSettingsFooter();

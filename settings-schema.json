@@ -96,7 +96,8 @@
         },
         {
           "type": "code",
-          "text": "http://<Tailscale IP>:13847/"
+          "text": "http://<Tailscale IP>:13847/",
+          "copy": false
         },
         {
           "type": "paragraph",

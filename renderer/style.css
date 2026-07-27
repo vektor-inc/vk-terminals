@@ -401,6 +401,56 @@ h4.settings-content-heading {
   font-size: 12px;
   line-height: 1.5;
 }
+/* コード＋コピー操作のまとまり。pre は overflow-x: auto なので、ボタンを内側に重ねると
+   横スクロールで一緒に流れる。操作行は pre の外（下辺に接する行）に置く。 */
+.settings-content-codeblock {
+  margin: 0 0 12px;
+}
+.settings-content-codeblock .settings-content-code {
+  margin: 0;
+  border-radius: 5px 5px 0 0;
+}
+.settings-content-code-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px 8px;
+  padding: 4px 6px;
+  background: #161b22;
+  border: 1px solid #21262d;
+  border-top: 0;
+  border-radius: 0 0 5px 5px;
+}
+/* 二次操作。アクセントカラーは説明タブ唯一の CTA（tablink）に残すため文字はグレー系。
+   ただし境界 #30363d は背景比 1.7:1 で WCAG 1.4.11（UI 部品 3:1）に届かないため
+   #8b949e まで上げる（5.6:1）。面・角丸・hover・フォーカスリングは既存ボタンと共通。 */
+.settings-content-copy {
+  flex: 0 0 auto;
+  padding: 3px 10px;
+  background: #21262d;
+  border: 1px solid #8b949e;
+  border-radius: 5px;
+  color: #c9d1d9;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.settings-content-copy:hover {
+  background: #30363d;
+}
+.settings-content-copy:focus-visible {
+  outline: 2px solid #58a6ff;
+  outline-offset: 2px;
+}
+/* 成功は .settings-msg.ok と同じ緑。色だけに依存させないためテキストを必ず併記する。 */
+.settings-content-copy-status {
+  font-size: 12px;
+  color: #3fb950;
+}
+.settings-content-copy-status[data-state="error"] {
+  color: #f85149;
+}
 .settings-content-links {
   display: flex;
   flex-direction: column;

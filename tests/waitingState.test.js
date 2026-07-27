@@ -152,6 +152,25 @@ test('waitingCheckDelayMs: 上限は静止までの残り時間より長くな�
   );
 });
 
+test('waitingCheckDelayMs: 非静止で評価した直後に張り直すと、次は必ず静止評価になる', () => {
+  // 不変条件「バーストの最後の評価は必ず静止評価になる」の担保
+  // （checkWaiting() は quiescent === false のとき scheduleWaitingCheck() を張り直す）。
+  // 上限で評価した直後は pendingSince がリセットされるので、その状態で張り直したときの
+  // 着地点を確かめる。
+  const lastOutputTime = 10_000;
+  const now = lastOutputTime + 400; // 出力が流れている最中に上限で評価された直後
+  assert.equal(isOutputQuiescent({ now, lastOutputTime }), false);
+
+  const delay = waitingCheckDelayMs({ now, lastOutputTime, pendingSince: now });
+
+  // 張り直しの待ち時間は必ず正（0 で即再入して無限ループにならない）。
+  assert.ok(delay > 0, `delay must be positive: ${delay}`);
+  // これ以上出力が来なければ、着地時点はちょうど静止到達時点になる。
+  const nextEvalAt = now + delay;
+  assert.equal(nextEvalAt, lastOutputTime + WAITING_QUIESCENCE_MS);
+  assert.equal(isOutputQuiescent({ now: nextEvalAt, lastOutputTime }), true);
+});
+
 test('waitingCheckDelayMs: 負の待ち時間は 0 に丸める', () => {
   const now = 10_000;
   assert.equal(waitingCheckDelayMs({ now, lastOutputTime: now - 60_000, pendingSince: now - 60_000 }), 0);

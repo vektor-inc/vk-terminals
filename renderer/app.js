@@ -95,6 +95,11 @@ let dragState = null;
 // status 判定で使う閾値（ms）。
 //   - RUNNING_IDLE_TIMEOUT_MS: 最後の PTY 出力から何 ms 経ったら idle に戻すか
 //   - RUNNING_INPUT_GUARD_MS:  入力直後（タイプ中）はエコー出力で running 扱いしないためのガード時間
+//
+// ⚠ RUNNING_IDLE_TIMEOUT_MS は waitingState.js の WAITING_QUIESCENCE_MS（1500ms）と
+//   同値であることに意味がある。入力待ちの解除は「出力が流れている」ときにしか起きないが、
+//   静止時間がこの値を超えると解除の瞬間に recentOutput が偽になり、running ではなく
+//   idle を一瞬経由してバッジがちらつく。変更するときは必ず両方を見ること。
 const RUNNING_IDLE_TIMEOUT_MS = 1500;
 const RUNNING_INPUT_GUARD_MS = 200;
 
@@ -174,22 +179,30 @@ function checkWaiting(paneId) {
   const excluded = isWaitingCwdExcluded(t.cwdFull, waitingExcludeCwdPatterns);
   const quiescent = isOutputQuiescent({ now, lastOutputTime: t.lastOutputTime });
   const waiting = nextWaitingState({ prev: t.waiting, matches, excluded, quiescent });
-  if (waiting === t.waiting) return;
-  t.waiting = waiting;
-  // NOTE: 解除時に lastLines は捨てない。解除が起きるのは matches === false のとき
-  // だけなので、バッファには入力待ちと判定される文言が残っていない。捨てると直後の
-  // 判定材料まで失うだけで、再点灯の抑止にもならないため保持する
-  // （ユーザー入力による解除は文脈ごと変わるため、markPaneInput では従来どおり捨てる）。
-  // waiting フラグが変わったら status も再計算する。
-  // 出力が流れている最中の解除では recentOutput が真になるので、idle を経由せず
-  // そのまま 'running' へ遷移する（deriveStatus 参照）。
-  recomputeStatus(paneId);
-  // 待機状態になったときに通知音を鳴らす。解除と再検知が短時間で往復しても
-  // 鳴り続けないようクールダウンを挟む。
-  if (waiting && shouldBeepForWaiting({ now, lastBeepAt: t.lastWaitingBeepAt })) {
-    t.lastWaitingBeepAt = now;
-    shell.beep();
+  if (waiting !== t.waiting) {
+    t.waiting = waiting;
+    // NOTE: 解除時に lastLines は捨てない。解除が起きるのは matches === false のとき
+    // だけなので、バッファには入力待ちと判定される文言が残っていない。捨てると直後の
+    // 判定材料まで失うだけで、再点灯の抑止にもならないため保持する
+    // （ユーザー入力による解除は文脈ごと変わるため、markPaneInput では従来どおり捨てる）。
+    // waiting フラグが変わったら status も再計算する。
+    // 出力が流れている最中の解除では recentOutput が真になるので、idle を経由せず
+    // そのまま 'running' へ遷移する（deriveStatus 参照）。
+    recomputeStatus(paneId);
+    // 待機状態になったときに通知音を鳴らす。解除と再検知が短時間で往復しても
+    // 鳴り続けないようクールダウンを挟む。
+    if (waiting && shouldBeepForWaiting({ now, lastBeepAt: t.lastWaitingBeepAt })) {
+      t.lastWaitingBeepAt = now;
+      shell.beep();
+    }
   }
+  // 不変条件: バーストの最後の評価は必ず静止評価になる。
+  //   上限（非静止）で走った評価はここで打ち止めにできない。この直後に出力が止まると
+  //   次のタイマーを張る契機（terminal:data）が来ず、静止時点の評価が一度も走らないため、
+  //   バーストの最後の瞬間に出ていた本物のプロンプトを取りこぼす。
+  //   非静止で評価したときは必ず張り直し、静止に到達するまで追いかける。
+  //   （張り直しの delay は「静止までの残り」= 必ず正なので、ここで無限ループはしない）
+  if (!quiescent) scheduleWaitingCheck(paneId);
 }
 
 // 静止ゲート（issue vektor-inc/vk-orchestrator#212）。

@@ -422,6 +422,11 @@ h4.settings-content-heading {
   border-top: 0;
   border-radius: 0 0 5px 5px;
 }
+/* status の面では操作行を pre と同じ面へ落とし、コードと操作を一つの箱として見せる。
+   status 本体と同色のままだと境界が埋もれ、ボタンだけが浮いて見えるため。 */
+.settings-content-status-body .settings-content-code-actions {
+  background: #010409;
+}
 /* 二次操作。アクセントカラーは説明タブ唯一の CTA（tablink）に残すため文字はグレー系。
    ただし境界 #30363d は背景比 1.7:1 で WCAG 1.4.11（UI 部品 3:1）に届かないため
    #8b949e まで上げる（5.6:1）。面・角丸・hover・フォーカスリングは既存ボタンと共通。 */

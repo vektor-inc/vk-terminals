@@ -81,10 +81,10 @@ let cachedStates = {};  // renderer から受け取った状態キャッシュ
 let httpServer = null;
 let apiServerRuntimeStatus = {
   phase: 'pending',
-  port: null,
   startupHost: '',
   actualHost: '',
   errorCode: '',
+  fellBack: false,
 };
 
 const MENU_ACTION_TYPES = new Set(['open-settings', 'open-url']);
@@ -510,6 +510,8 @@ function normalizeApiHost(value) {
 // 設定パネルへ渡す API サーバー状態。bind 結果は起動処理が確定した値を保持し、
 // savedHost だけは呼び出し時点の設定ファイルを読む。これにより「フォールバック」と
 // 「保存したが未再起動」を、起動時・現在・実 bind の 3 値で renderer が判別できる。
+// fellBack は文字列比較では分からない「EADDRNOTAVAIL 後にループバックへ切り替えた」
+// という起動処理の事実を伝える。
 function describeApiServerRuntimeStatus() {
   return {
     ...apiServerRuntimeStatus,
@@ -1888,10 +1890,10 @@ function startHttpApi() {
   const apiHost = normalizeApiHost(loadUserConfig().apiHost);
   apiServerRuntimeStatus = {
     phase: 'pending',
-    port: API_PORT,
     startupHost: apiHost,
     actualHost: '',
     errorCode: '',
+    fellBack: false,
   };
 
   let triedFallback = false;
@@ -1901,10 +1903,10 @@ function startHttpApi() {
       const actualHost = address && typeof address === 'object' ? address.address : host;
       apiServerRuntimeStatus = {
         phase: 'listening',
-        port: API_PORT,
         startupHost: apiHost,
         actualHost,
         errorCode: '',
+        fellBack: triedFallback,
       };
       console.log(`${LOG_PREFIX} API server listening on http://${actualHost}:${API_PORT}`);
     });
@@ -1914,10 +1916,10 @@ function startHttpApi() {
     if (e.code === 'EADDRINUSE') {
       apiServerRuntimeStatus = {
         phase: 'error',
-        port: API_PORT,
         startupHost: apiHost,
         actualHost: '',
         errorCode: e.code,
+        fellBack: false,
       };
       console.warn(`${LOG_PREFIX} Port ${API_PORT} in use, API server disabled.`);
     } else if (e.code === 'EADDRNOTAVAIL' && !triedFallback && apiHost !== '127.0.0.1') {
@@ -1929,10 +1931,10 @@ function startHttpApi() {
     } else {
       apiServerRuntimeStatus = {
         phase: 'error',
-        port: API_PORT,
         startupHost: apiHost,
         actualHost: '',
         errorCode: typeof e.code === 'string' ? e.code : 'UNKNOWN',
+        fellBack: triedFallback,
       };
       console.error(`${LOG_PREFIX} API server error:`, e);
     }

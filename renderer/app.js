@@ -3330,7 +3330,7 @@ function settingsCopyButtonLabel(text) {
   return `コピー: ${clipped}`;
 }
 
-function renderSettingsCopyableCode(text, copy = true) {
+function renderSettingsCopyableCode(text, copy) {
   const pre = `<pre class="settings-content-code"><code>${escText(text)}</code></pre>`;
   if (!copy) return pre;
   return `<div class="settings-content-codeblock">
@@ -3342,17 +3342,28 @@ function renderSettingsCopyableCode(text, copy = true) {
   </div>`;
 }
 
-function renderApiServerStatus(status) {
+function renderApiServerStatusBody(status, tabIndexById) {
   const presentation = getApiServerStatusPresentation(status);
   const addressHtml = presentation.address
     ? renderSettingsCopyableCode(presentation.address, presentation.copy)
     : '';
+  const targetIndex = tabIndexById.get('general');
+  const apiHostLinkHtml = presentation.showApiHostLink && Number.isInteger(targetIndex)
+    ? `<button type="button" class="settings-content-tablink" data-tab-link-index="${escAttr(String(targetIndex))}" data-tab-link-field="apiHost">API ホストの設定へ移動</button>`
+    : '';
+  return `<span class="settings-content-status-label">${escText(presentation.label)}</span>
+    ${addressHtml}
+    <p class="settings-content-status-text">${escText(presentation.message)}</p>
+    ${apiHostLinkHtml}`;
+}
+
+function renderApiServerStatus(status, tabIndexById) {
+  const presentation = getApiServerStatusPresentation(status);
+  const busyAttr = status && status.phase === 'pending' ? ' aria-busy="true"' : '';
   return `<section class="settings-content-status" data-status-source="apiServer" data-tone="${escAttr(presentation.tone)}">
     <h3 class="settings-content-heading">現在の待ち受けアドレス</h3>
-    <div class="settings-content-status-body" role="status">
-      <span class="settings-content-status-label">${escText(presentation.label)}</span>
-      ${addressHtml}
-      <p class="settings-content-status-text">${escText(presentation.message)}</p>
+    <div class="settings-content-status-body" role="status"${busyAttr}>
+      ${renderApiServerStatusBody(status, tabIndexById)}
     </div>
   </section>`;
 }
@@ -3400,7 +3411,7 @@ function renderSettingsTabContent(blocks, tabIndexById, runtimeStatus = {}) {
       </div>`;
     }
     if (block.type === 'status' && block.source === 'apiServer') {
-      return renderApiServerStatus(runtimeStatus.apiServer);
+      return renderApiServerStatus(runtimeStatus.apiServer, tabIndexById);
     }
     if (block.type === 'tabLink') {
       const targetIndex = tabIndexById.get(block.tab);
@@ -3775,20 +3786,22 @@ async function openSettingsModal() {
     // 説明タブ内の移動ボタン（tabLink ブロック）。
     // field 指定があればその入力欄まで運び、無ければ移動先タブのボタンへフォーカスを移す
     // （キーボード操作でも流れが途切れないようにする）。
-    modal.querySelectorAll('.settings-content-tablink').forEach((button) => {
-      button.addEventListener('click', () => {
-        const targetIndex = Number(button.dataset.tabLinkIndex);
-        if (!Number.isInteger(targetIndex)) return;
-        const fieldKey = button.dataset.tabLinkField || '';
-        const entry = fieldKey
-          ? entries.find(({ field }) => field.key === fieldKey)
-          : null;
-        if (entry && revealSettingsEntry(entry)) return;
-        activateTab(targetIndex, { focus: true });
-      });
+    // status の確定後に追加されるエラー時の移動ボタンにも同じ導線を使えるよう、
+    // モーダル上で委譲する。
+    modal.addEventListener('click', (event) => {
+      const button = event.target.closest('.settings-content-tablink');
+      if (!button) return;
+      const targetIndex = Number(button.dataset.tabLinkIndex);
+      if (!Number.isInteger(targetIndex)) return;
+      const fieldKey = button.dataset.tabLinkField || '';
+      const entry = fieldKey
+        ? entries.find(({ field }) => field.key === fieldKey)
+        : null;
+      if (entry && revealSettingsEntry(entry)) return;
+      activateTab(targetIndex, { focus: true });
     });
     // 説明タブの code ブロックと実行時 status ブロックのコピーボタン。
-    // status ブロックは「確認中」から確定表示へ差し替わるため、後段でイベント委譲する。
+    // status ブロックは「確認中」から確定表示へ中身が更新されるため、後段でイベント委譲する。
     // フィードバックの表示と消灯は同じ 2 プロパティ（textContent / data-state）を
     // 対称に触るので 1 か所に寄せる。state は 'ok' / 'error' / ''（消灯）。
     const setCopyStatus = (status, state) => {
@@ -3804,11 +3817,11 @@ async function openSettingsModal() {
       else status.setAttribute('data-state', state);
     };
     // code ブロックと実行時 status ブロックで同じコピー処理を使う。status は「確認中」
-    // から確定状態へ DOM を差し替えるため、生成済みボタンへの個別配線ではなく、
-    // モーダル内のイベント委譲にして差し替え後も同じ経路へ流す。
+    // から確定状態へ中身を更新するため、生成済みボタンへの個別配線ではなく、
+    // モーダル内のイベント委譲にして更新後も同じ経路へ流す。
     modal.addEventListener('click', (event) => {
       const button = event.target.closest('.settings-content-copy');
-      if (!button || !modal.contains(button)) return;
+      if (!button) return;
       const wrapper = button.closest('.settings-content-codeblock');
       const status = wrapper ? wrapper.querySelector('.settings-content-copy-status') : null;
       // コピー元は data-* に持たせず DOM のコード本文から取る。表示している内容と
@@ -3837,10 +3850,16 @@ async function openSettingsModal() {
     });
 
     // createWindow() より API 起動が後なので、設定パネルを極端に早く開くと「確認中」に
-    // なる。確定前に限って軽量 IPC を 250ms ごとに取り直し、確定時または close() で止める。
+    // なる。確定前に限って軽量 IPC を 250ms ごとに最大 20 回（5 秒）取り直し、
+    // 確定時・上限到達時・close() のいずれかで止める。
     const statusElement = modal.querySelector('[data-status-source="apiServer"]');
     if (statusElement && desc.apiServerStatus && desc.apiServerStatus.phase === 'pending') {
+      let pollCount = 0;
+      let pollInFlight = false;
       const refreshApiServerStatus = async () => {
+        if (pollInFlight) return;
+        pollInFlight = true;
+        pollCount += 1;
         try {
           const nextStatus = await ipcRenderer.invoke('settings:api-server-status');
           const current = modal.querySelector('[data-status-source="apiServer"]');
@@ -3848,14 +3867,40 @@ async function openSettingsModal() {
             stopApiServerStatusPolling();
             return;
           }
-          current.outerHTML = renderApiServerStatus(nextStatus);
-          if (nextStatus && nextStatus.phase !== 'pending') stopApiServerStatusPolling();
+          const settledStatus = nextStatus && nextStatus.phase !== 'pending'
+            ? nextStatus
+            : (pollCount >= 20 ? { phase: 'unavailable' } : nextStatus);
+          const presentation = getApiServerStatusPresentation(settledStatus);
+          const body = current.querySelector('.settings-content-status-body');
+          current.dataset.tone = presentation.tone;
+          if (body) {
+            body.innerHTML = renderApiServerStatusBody(settledStatus, tabIndexById);
+            if (settledStatus && settledStatus.phase === 'pending') {
+              body.setAttribute('aria-busy', 'true');
+            } else {
+              body.removeAttribute('aria-busy');
+            }
+          }
+          if (!settledStatus || settledStatus.phase !== 'pending') stopApiServerStatusPolling();
         } catch (_e) {
-          // 一時的な取得失敗では確認中を維持し、モーダルが開いている間だけ再試行する。
+          // 一時的な取得失敗でも上限までは確認中を維持する。上限では行き止まりを避ける
+          // 案内に切り替え、同期 I/O を伴う main 側の状態取得を止める。
+          if (pollCount >= 20) {
+            const current = modal.querySelector('[data-status-source="apiServer"]');
+            const body = current && current.querySelector('.settings-content-status-body');
+            const unavailable = { phase: 'unavailable' };
+            if (current) current.dataset.tone = getApiServerStatusPresentation(unavailable).tone;
+            if (body) {
+              body.innerHTML = renderApiServerStatusBody(unavailable, tabIndexById);
+              body.removeAttribute('aria-busy');
+            }
+            stopApiServerStatusPolling();
+          }
+        } finally {
+          pollInFlight = false;
         }
       };
       apiServerStatusPollTimer = setInterval(refreshApiServerStatus, 250);
-      refreshApiServerStatus();
     }
     updateSettingsFooter();
   }

@@ -16,15 +16,33 @@ function formatApiUrl(host, port) {
   return `http://${urlHost}:${port}/`;
 }
 
+function isLoopbackHost(host) {
+  return host === '127.0.0.1' || host === '::1';
+}
+
+function isWildcardHost(host) {
+  return host === '0.0.0.0' || host === '::';
+}
+
 function getApiServerStatusPresentation(status) {
   const safeStatus = status && typeof status === 'object' ? status : {};
   const port = Number.isInteger(safeStatus.port) ? safeStatus.port : 13847;
+
+  if (safeStatus.phase === 'unavailable') {
+    return {
+      tone: 'warning',
+      label: '確認できませんでした',
+      message: 'API サーバーの起動を確認できませんでした。起動処理中の可能性があります。しばらくしてから設定パネルを開き直してください。',
+      address: '',
+      copy: false,
+    };
+  }
 
   if (safeStatus.phase !== 'listening' && safeStatus.phase !== 'error') {
     return {
       tone: 'neutral',
       label: '確認中',
-      message: '確認中',
+      message: 'API サーバーの起動を確認しています。',
       address: '',
       copy: false,
     };
@@ -46,9 +64,10 @@ function getApiServerStatusPresentation(status) {
     return {
       tone: 'error',
       label: 'エラー',
-      message: `起動時にエラーが発生しました（エラーコード: ${errorCode}）。API ホストの値を確認してください。`,
+      message: `API サーバーの起動に失敗しました（エラーコード: ${errorCode}）。「設定」タブの「API ホスト」の値を確認してください。`,
       address: '',
       copy: false,
+      showApiHostLink: true,
     };
   }
 
@@ -57,40 +76,43 @@ function getApiServerStatusPresentation(status) {
   const actualHost = normalizeHost(safeStatus.actualHost);
   const address = formatApiUrl(actualHost, port);
 
-  // 起動時の値と現在保存されている値が違えば、実際の bind 結果より先に
-  // 「保存後、未再起動」を案内する。フォールバックと見た目が同じ 127.0.0.1 でも、
-  // 必要な操作（再起動だけ / Tailscale 接続後に再起動）を取り違えないため。
-  if (startupHost !== savedHost) {
+  // 保存値が実際の待ち受け先と一致していれば、フォールバック後に実アドレスへ設定を
+  // 直したケースなので「未反映」とは案内しない。起動時設定との一致も見ることで、
+  // localhost → ::1 のような正常な名前解決を未反映と誤認しない。
+  if (savedHost !== actualHost && savedHost !== startupHost) {
+    const loopbackNote = isLoopbackHost(actualHost)
+      ? 'この状態ではスマートフォンからは開けません。'
+      : '';
     return {
       tone: 'warning',
       label: '注意',
-      message: `保存した API ホスト（${savedHost}）は次回起動から反映されます。今は ${actualHost} で待ち受けているのでスマートフォンからは開けません。vk-terminals を再起動してください。`,
+      message: `保存した API ホスト（${savedHost}）は、まだ反映されていません。今は起動したときの設定のまま ${actualHost} で待ち受けています。${loopbackNote}保存したアドレスがこのパソコンに割り当てられた状態（ホスト名なら名前解決できる状態）にしてから、vk-terminals を再起動してください。`,
       address,
-      copy: actualHost !== '0.0.0.0',
+      copy: !isWildcardHost(actualHost),
     };
   }
 
-  if (actualHost !== startupHost) {
+  if (safeStatus.fellBack === true && savedHost !== actualHost) {
     return {
       tone: 'warning',
       label: '注意',
-      message: `設定した API ホスト（${startupHost}）がこのパソコンに割り当てられていないため、${actualHost} で待ち受けています。パソコンを Tailscale に接続してから vk-terminals を再起動してください。`,
+      message: `起動したときの API ホスト（${startupHost}）がこのパソコンに割り当てられていなかったため、${actualHost} で待ち受けています。この状態ではスマートフォンからは開けません。そのアドレスがパソコンに割り当てられた状態（Tailscale IP なら Tailscale に接続した状態）にしてから、vk-terminals を再起動してください。`,
       address,
-      copy: actualHost !== '0.0.0.0',
+      copy: !isWildcardHost(actualHost),
     };
   }
 
-  if (actualHost === '0.0.0.0') {
+  if (isWildcardHost(actualHost)) {
     return {
       tone: 'info',
       label: '補足',
-      message: 'すべてのネットワークで待ち受けています。0.0.0.0 の部分をこのパソコンのアドレスに置き換えて開いてください。',
+      message: `${actualHost} は、このパソコンのすべてのネットワークで待ち受ける指定です。アドレスの ${actualHost} の部分をこのパソコンのアドレスに置き換えて開いてください。Tailscale IP の調べ方は、下の「パソコンの Tailscale IP を調べる」を確認してください。`,
       address,
       copy: false,
     };
   }
 
-  if (actualHost === '127.0.0.1' || actualHost === '::1') {
+  if (isLoopbackHost(actualHost)) {
     return {
       tone: 'info',
       label: '補足',
@@ -103,7 +125,7 @@ function getApiServerStatusPresentation(status) {
   return {
     tone: 'success',
     label: '正常',
-    message: 'スマートフォンが同じ tailnet につながっていれば、このアドレスで開けます。',
+    message: 'スマートフォンがこのアドレスに届くネットワーク（Tailscale の場合は同じ tailnet）につながっていれば、このアドレスで開けます。',
     address,
     copy: true,
   };

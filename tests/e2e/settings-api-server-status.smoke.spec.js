@@ -95,3 +95,82 @@ test('ポートが使用中なら API サーバーが起動していないエラ
     if (blocker) await closeServer(blocker);
   }
 });
+
+test('確認中の live region は器を保ったまま更新し、5 秒で確認打ち切りを案内する', async () => {
+  const port = await getFreePort();
+  let launched;
+  try {
+    launched = await launchAppAndWait({
+      port,
+      prefix: 'vk-terminals-e2e-api-status-pending-',
+      env: { VK_TERMINALS_APP_TITLE: '', VK_TERMINALS_SETTINGS: '' },
+    });
+    // settings:describe と状態の取り直しを pending に固定し、20 回上限へ到達させる。
+    await launched.win.evaluate(() => {
+      const { ipcRenderer } = require('electron');
+      const originalInvoke = ipcRenderer.invoke.bind(ipcRenderer);
+      ipcRenderer.invoke = async (channel, ...args) => {
+        if (channel === 'settings:api-server-status') return { phase: 'pending' };
+        const result = await originalInvoke(channel, ...args);
+        if (channel === 'settings:describe') {
+          return { ...result, apiServerStatus: { phase: 'pending' } };
+        }
+        return result;
+      };
+    });
+
+    const status = await openApiServerStatus(launched.win);
+    const body = status.locator('.settings-content-status-body');
+    await expect(body).toHaveAttribute('role', 'status');
+    await expect(body).toHaveAttribute('aria-busy', 'true');
+    await expect(body.locator('.settings-content-status-label')).toHaveText('確認中');
+    await expect(body).toContainText('API サーバーの起動を確認しています');
+
+    // body 自体が差し替わっていないことを、任意属性が残ることで固定する。
+    await body.evaluate((element) => element.setAttribute('data-e2e-live-region', 'same'));
+    await expect(body.locator('.settings-content-status-label'))
+      .toHaveText('確認できませんでした', { timeout: 7000 });
+    await expect(body).toHaveAttribute('data-e2e-live-region', 'same');
+    await expect(body).not.toHaveAttribute('aria-busy', 'true');
+    await expect(body).toContainText('しばらくしてから設定パネルを開き直してください');
+  } finally {
+    if (launched) await closeApp(launched);
+  }
+});
+
+test('API ホストのエラーから設定欄へ移動してフォーカスできる', async () => {
+  const port = await getFreePort();
+  let launched;
+  try {
+    launched = await launchAppAndWait({
+      port,
+      prefix: 'vk-terminals-e2e-api-status-host-error-',
+      env: { VK_TERMINALS_APP_TITLE: '', VK_TERMINALS_SETTINGS: '' },
+    });
+    await launched.win.evaluate(() => {
+      const { ipcRenderer } = require('electron');
+      const originalInvoke = ipcRenderer.invoke.bind(ipcRenderer);
+      ipcRenderer.invoke = async (channel, ...args) => {
+        const result = await originalInvoke(channel, ...args);
+        if (channel === 'settings:describe') {
+          return {
+            ...result,
+            apiServerStatus: { phase: 'error', port: 13847, errorCode: 'EACCES' },
+          };
+        }
+        return result;
+      };
+    });
+
+    const status = await openApiServerStatus(launched.win);
+    await expect(status).toContainText('API サーバーの起動に失敗しました');
+    await expect(status).toContainText('「設定」タブの「API ホスト」');
+    const link = status.locator('.settings-content-tablink');
+    await expect(link).toHaveText('API ホストの設定へ移動');
+    await link.click();
+    await expect(launched.win.locator('#settings-tab-0')).toHaveAttribute('aria-selected', 'true');
+    await expect(launched.win.locator('#set-field-0')).toBeFocused();
+  } finally {
+    if (launched) await closeApp(launched);
+  }
+});

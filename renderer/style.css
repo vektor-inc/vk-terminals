@@ -451,9 +451,12 @@ html, body {
   padding: 8px 12px 12px;
   margin: 0 0 18px;
 }
+/* グループ見出しは押せない。アクセントカラー（#58a6ff）はリンクと移動ボタンに限定し、
+   ここは非対話色に落とす（説明タブの h3 と同じ判断。同一モーダル内で「青＝押せる」の
+   手がかりを崩さないため）。 */
 .settings-group legend {
   padding: 0 6px;
-  color: #58a6ff;
+  color: #e6edf3;
   font-size: 13px;
   font-weight: 600;
 }

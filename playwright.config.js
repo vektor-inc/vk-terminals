@@ -12,9 +12,12 @@ process.env.VK_TERMINALS_E2E ??= '1';
 // Electron 1 本は main / renderer / GPU / utility と複数の OS プロセスを持つため、
 // ブラウザのコンテキストを増やすのとは負荷の増え方が違う。実測（8 論理コア）では
 // 4 ワーカー・8 ワーカーはいずれも全件 pass、16 ワーカーでは負荷が高いときに
-// テストタイムアウトで数件落ちた。論理コアの 50% を基本にしつつ、コア数の多いマシンで
+// テストタイムアウトで数件落ちた。使える並列度の 50% を基本にしつつ、コア数の多いマシンで
 // 上限を踏み越えないよう 8 で頭を抑える。
-const workers = Math.max(1, Math.min(8, Math.floor(os.cpus().length / 2)));
+// 並列度は os.cpus().length ではなく os.availableParallelism() から採る。CPU affinity や
+// コンテナの制限を反映するため、CI に載せたときに実際に使える数に合う（Node 20 以降で利用可能。
+// package.json の engines.node は >=20）。
+const workers = Math.max(1, Math.min(8, Math.floor(os.availableParallelism() / 2)));
 
 module.exports = defineConfig({
   testDir: 'tests/e2e',

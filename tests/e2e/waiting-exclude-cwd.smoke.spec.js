@@ -17,10 +17,15 @@ const repoRoot = path.resolve(__dirname, '..', '..');
 // 日本語パターンだと Playwright のキーボード入力（IME）に依存するため、判定は
 // ASCII の "Proceed?" を「スクリプトの出力」として発生させることで安定させる。
 const WAITING_MARKER = 'Proceed?';
-// 出力が checkWaiting まで到達したことを確認するための後続マーカー。
-// タイプするコマンド行には現れず、スクリプトの出力にのみ現れるため、
-// これが端末に見えた時点で "Proceed?" も評価済みだと断定できる。
+// 出力が waiting 判定の入力（lastLines）まで到達したことを確認するための後続マーカー。
+// タイプするコマンド行には現れず、スクリプトの出力にのみ現れる。
 const READY_MARKER = 'RXREADYMARK';
+// waiting 判定は「最後の PTY 出力から一定時間静止したら」行われる
+// （renderer/waitingState.js の WAITING_QUIESCENCE_MS = 1500ms /
+//  issue vektor-inc/vk-orchestrator#212）。
+// 「waiting にならないこと」を確かめる側は、判定が走る前に見て通ってしまわないよう、
+// 静止時間より十分長く待ってから確認する。
+const QUIESCENCE_SETTLE_MS = 4000;
 
 async function getFreePort() {
   // OS に空きポートを割り当てさせ、取得後に閉じて Electron 側で再利用する。
@@ -162,9 +167,10 @@ test('除外パターンに一致する cwd のペインは、入力待ち出力
     await fireWaitingOutput(win, scriptPath);
 
     // 出力（Proceed? → RXREADYMARK）が端末に届いたことを確認する。
-    // RXREADYMARK が見えた時点で checkWaiting は Proceed? を評価済み。
     const rows = win.locator('.pane .xterm-rows').first();
     await expect(rows).toContainText(READY_MARKER, { timeout: 15_000 });
+    // 出力が静止してから判定が走るため、その時間を過ぎるまで待ってから確認する。
+    await win.waitForTimeout(QUIESCENCE_SETTLE_MS);
 
     // 除外設定が効いていれば、入力待ちパターンを出力しても waiting にならない。
     const status = win.locator('.pane .pane-status').first();

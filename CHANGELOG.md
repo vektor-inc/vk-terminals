@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 不具合修正 ] AI が作業中でも進捗報告の「〜を待っています」という文言や再描画途中の出力に反応してペインが「入力待ち」になり、作業が再開しても表示が張り付いたままになる不具合を修正（[vektor-inc/vk-orchestrator#212](https://github.com/vektor-inc/vk-orchestrator/issues/212)）
+
 ## 1.45.0
 
 - [ 機能追加 ] 設定パネルに、Tailscale 経由で外出先のスマートフォンからモバイルページを開く手順を案内する読み取り専用タブ「外出先から確認」を追加（[#245](https://github.com/vektor-inc/vk-terminals/issues/245)）

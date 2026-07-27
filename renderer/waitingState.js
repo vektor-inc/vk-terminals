@@ -37,7 +37,14 @@ const WAITING_PATTERNS = [
   /(?:承認|回答|ご判断|ご返答|お返事|ご指示|ご連絡)(?:を)?(?:お)?待ち/,
   /(?:いただけ|いただい)たら.{0,30}(?:委任|お願い|進め|実装)/,
   /(?:お任せ|ご判断)(?:します|ください|いただけ)/,
-  /(?:お待ち|待って)(?:しています|います|ます)/,
+  // NOTE: /(?:お待ち|待って)(?:しています|います|ます)/ は削除
+  //   （issue vektor-inc/vk-orchestrator#212）。
+  //   「和田の修正を待っています。」「CI の完了を待っています。」のような、
+  //   第三者（サブエージェント・外部処理）の完了待ちを伝える進捗ナレーションに
+  //   反応してしまい、AI が動作中でも「入力待ち」が点灯していた。
+  //   ユーザー宛ての待ち文言は直上の
+  //   /(?:承認|回答|ご判断|ご返答|お返事|ご指示|ご連絡)(?:を)?(?:お)?待ち/ が拾うため、
+  //   宛先を限定しない広いパターンは持たない。
   // AskUserQuestion / 数字選択肢の UI 検知（issue #46）。
   // Claude Code の AskUserQuestion は「❯ 1. … / 2. …」の選択肢と
   // 「Enter to select / ↑/↓ to navigate / Esc to cancel」のフッターが固定で出る。
@@ -74,16 +81,67 @@ function isWaitingCwdExcluded(cwdFull, patterns) {
   return normalized.some((pattern) => cwdFull.includes(pattern));
 }
 
-function nextWaitingState({ prev, matches, excluded = false }) {
-  if (excluded) return false;
-  // 出力再評価では waiting を解除しない。解除はユーザー入力時の明示クリアだけに集約する。
-  return matches || prev;
+// ─── 判定タイミング（静止ゲート / issue vektor-inc/vk-orchestrator#212）──────
+// PTY 出力のたびに判定すると、作業中スピナー（経過秒数付き）の再描画途中の
+// バッファに対して評価してしまい、進捗ナレーションや描画途中の断片で誤検知しやすい。
+// 逆に本物の確認待ちでは相手が止まるため出力が途絶える。この差を判定条件に使い、
+// 「最後の出力から一定時間静止したら判定する」形にする。
+const WAITING_QUIESCENCE_MS = 1500;
+// 入力待ち表示中に限って設ける再判定の上限（ms）。
+// 誤検知で入力待ちになったまま出力が延々と流れ続ける（スピナーが回り続ける）と
+// 静止が訪れず、再評価の機会が永久に来ない。張り付きから必ず復帰できるよう、
+// 入力待ち中だけは静止を待たずにこの間隔で再評価する。
+const WAITING_STUCK_RECHECK_MS = 5000;
+
+// 次に waiting 判定を行うまでの待ち時間（ms）を返す。
+//   - lastOutputTime: 最後に PTY 出力を受け取った時刻
+//   - pendingSince:   前回の判定以降、最初に出力を受け取った時刻（上限判定の起点）
+//   - waiting:        現在入力待ち表示中か（上限による強制再判定は入力待ち中のみ）
+function waitingCheckDelayMs({
+  now,
+  lastOutputTime,
+  pendingSince,
+  waiting = false,
+  quiescenceMs = WAITING_QUIESCENCE_MS,
+  stuckRecheckMs = WAITING_STUCK_RECHECK_MS,
+}) {
+  let target = (lastOutputTime || 0) + quiescenceMs;
+  if (waiting && pendingSince) target = Math.min(target, pendingSince + stuckRecheckMs);
+  return Math.max(0, target - now);
+}
+
+// 出力が静止した時点（または入力待ち中の上限到達時）の再評価。
+// 戻り値の clearArmed は「次に出力が再開したら入力待ちを解除する」予約フラグ。
+//
+// なぜ非マッチで即解除しないか:
+//   静止時点の lastLines には直近の再描画結果（ダイアログ本体）が残っているため、
+//   原則としてそのまま再評価してよい。ただしウィンドウリサイズ等で TUI が再描画すると
+//   確認文が別位置で折り返され、一時的にパターンへマッチしなくなることがある
+//   （tests の「リサイズ再描画で確認文が折り返された非マッチ例」参照）。
+//   ここで即解除すると本物の確認待ちを取りこぼすため、解除は「出力が再開した
+//   ＝相手は入力を待たずに動いている」という追加の根拠が得られるまで保留する。
+function nextWaitingStateOnQuiescence({ prev, matches, excluded = false }) {
+  if (excluded) return { waiting: false, clearArmed: false };
+  if (matches) return { waiting: true, clearArmed: false };
+  return { waiting: prev === true, clearArmed: prev === true };
+}
+
+// PTY 出力を受け取った時点の評価。解除予約済みならここで入力待ちを解除する。
+// 予約が無い間は出力があっても解除しない（旧来のスティッキー性を保つ）。
+function nextWaitingStateOnOutput({ prev, clearArmed, excluded = false }) {
+  if (excluded) return { waiting: false, clearArmed: false };
+  if (prev === true && clearArmed === true) return { waiting: false, clearArmed: false };
+  return { waiting: prev === true, clearArmed: clearArmed === true };
 }
 
 module.exports = {
   WAITING_PATTERNS,
+  WAITING_QUIESCENCE_MS,
+  WAITING_STUCK_RECHECK_MS,
   isWaitingCwdExcluded,
   matchesWaiting,
-  nextWaitingState,
+  nextWaitingStateOnOutput,
+  nextWaitingStateOnQuiescence,
   normalizeWaitingExcludeCwdPatterns,
+  waitingCheckDelayMs,
 };

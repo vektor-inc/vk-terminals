@@ -17,8 +17,10 @@ const { AGENT_ORDER, buildScene, resolveAgentStatesFromOutput } = require('./age
 const {
   isWaitingCwdExcluded,
   matchesWaiting,
-  nextWaitingState,
+  nextWaitingStateOnOutput,
+  nextWaitingStateOnQuiescence,
   normalizeWaitingExcludeCwdPatterns,
+  waitingCheckDelayMs,
 } = require('./waitingState');
 const { deriveStatus } = require('./statusState');
 const { getStatusPresentation } = require('./statusPresentation');
@@ -73,7 +75,9 @@ const PANE_DRAG_MIME = 'application/x-vk-pane';
 // 中央デッドゾーンの比率（issue #40）。0.2 = 中央 20% を無効ゾーンとして扱う
 const PANE_DROP_DEADZONE = 0.2;
 // terminals[paneId] のフィールド概要（status / runningTimer は issue #23 で追加）:
-//   - waiting (bool): 内部判定用フラグ。WAITING_PATTERNS ヒットで true になり、入力まで保持。
+//   - waiting (bool): 内部判定用フラグ。PTY 出力が静止した時点で WAITING_PATTERNS に
+//     ヒットすると true になる（静止ゲート / issue vektor-inc/vk-orchestrator#212）。
+//     解除は「ユーザー入力（markPaneInput）」または「静止時点の再評価が非マッチ → 次の出力再開」。
 //     states.json 後方互換のために残してある（task-queue 等の外部連携が参照している）。
 //   - externalWaiting (bool): 外部権威の入力待ちフラグ。POST /api/set-status の明示 push だけで更新。
 //     自動入力・リサイズ・再描画では解除せず、waiting と OR で status に合流する。
@@ -156,12 +160,17 @@ const TERM_THEME = {
   white: '#b1bac4', brightWhite: '#f0f6fc',
 };
 
+// 出力が静止した時点（または入力待ち中の上限到達時）に呼ぶ waiting 判定本体。
+// PTY 出力のたびには呼ばない（scheduleWaitingCheck 経由でのみ呼ばれる）。
 function checkWaiting(paneId) {
   const t = terminals[paneId];
   if (!t) return;
+  t.waitingCheckTimer = null;
+  t.waitingPendingSince = 0;
   const matches = matchesWaiting(stripAnsiForDisplay(t.lastLines));
   const excluded = isWaitingCwdExcluded(t.cwdFull, waitingExcludeCwdPatterns);
-  const waiting = nextWaitingState({ prev: t.waiting, matches, excluded });
+  const { waiting, clearArmed } = nextWaitingStateOnQuiescence({ prev: t.waiting, matches, excluded });
+  t.waitingClearArmed = clearArmed;
   if (waiting !== t.waiting) {
     t.waiting = waiting;
     // waiting フラグが変わったら status も再計算する
@@ -171,12 +180,62 @@ function checkWaiting(paneId) {
   }
 }
 
+// 静止ゲート（issue vektor-inc/vk-orchestrator#212）。
+// PTY 出力のたびにタイマーを張り直し、出力が止まってから判定する。
+// 入力待ち表示中だけは、静止が訪れないまま張り付くのを防ぐため上限時間で強制再判定する。
+function scheduleWaitingCheck(paneId) {
+  const t = terminals[paneId];
+  if (!t) return;
+  const now = Date.now();
+  if (!t.waitingPendingSince) t.waitingPendingSince = now;
+  const delay = waitingCheckDelayMs({
+    now,
+    lastOutputTime: t.lastOutputTime,
+    pendingSince: t.waitingPendingSince,
+    waiting: t.waiting,
+  });
+  clearWaitingCheckTimer(t);
+  t.waitingCheckTimer = setTimeout(() => checkWaiting(paneId), delay);
+}
+
+function clearWaitingCheckTimer(t) {
+  if (!t?.waitingCheckTimer) return;
+  clearTimeout(t.waitingCheckTimer);
+  t.waitingCheckTimer = null;
+}
+
+// PTY 出力を受け取った時点の waiting 更新。
+// 直前の静止判定で解除予約（waitingClearArmed）が立っていれば、
+// 「相手は入力を待たずに動いている」根拠が得られたとみなして入力待ちを解除する。
+function applyWaitingOnOutput(paneId) {
+  const t = terminals[paneId];
+  if (!t) return;
+  if (!t.waiting) return;
+  const excluded = isWaitingCwdExcluded(t.cwdFull, waitingExcludeCwdPatterns);
+  const { waiting, clearArmed } = nextWaitingStateOnOutput({
+    prev: t.waiting,
+    clearArmed: t.waitingClearArmed,
+    excluded,
+  });
+  t.waitingClearArmed = clearArmed;
+  if (waiting === t.waiting) return;
+  t.waiting = waiting;
+  // 解除の根拠になった非マッチ済みバッファを残すと、次の静止判定で同じ文言に
+  // 再びマッチして入力待ちが再点灯してしまうため、markPaneInput と同様に捨てる。
+  t.lastLines = '';
+  recomputeStatus(paneId);
+}
+
 // 入力（ユーザー入力・ドロップ送信・API 送信）があったペインのローカル入力待ち状態を解除する。
-// スティッキー化した waiting の唯一の解除経路。externalWaiting は外部の明示 false push だけで解除する。
+// waiting の即時解除経路（もう一方は applyWaitingOnOutput の解除予約経由）。
+// externalWaiting は外部の明示 false push だけで解除する。
 function markPaneInput(paneId) {
   const t = terminals[paneId];
   if (!t) return;
   t.lastInputTime = Date.now();
+  clearWaitingCheckTimer(t);
+  t.waitingPendingSince = 0;
+  t.waitingClearArmed = false;
   if (t.waiting) {
     t.waiting = false;
     t.lastLines = '';
@@ -345,6 +404,16 @@ async function createTerminal(paneId, cwd, options = {}) {
     // runningTimer: 'running' を 1500ms 後に 'idle' に戻すタイマー id。
     // recomputeStatus() / bumpRunning() が張り直す。closePane() で必ず clearTimeout する。
     runningTimer: null,
+    // waitingCheckTimer: 静止ゲートの判定タイマー id（issue vektor-inc/vk-orchestrator#212）。
+    //   PTY 出力のたびに張り直し、出力が止まった時点で checkWaiting() を走らせる。
+    //   closePane() で必ず clearTimeout する。
+    // waitingPendingSince: 前回の判定以降、最初に出力を受け取った時刻。
+    //   入力待ち中の強制再判定（WAITING_STUCK_RECHECK_MS）の起点。
+    // waitingClearArmed: 「次に出力が再開したら入力待ちを解除する」予約フラグ。
+    //   静止時点の再評価が非マッチだったときに立つ。
+    waitingCheckTimer: null,
+    waitingPendingSince: 0,
+    waitingClearArmed: false,
     lastLines: '',
     lastOutputTime: Date.now(),
     lastInputTime: 0,
@@ -437,6 +506,10 @@ ipcRenderer.on('terminal:data', (event, id, data) => {
     updatePaneCwd(paneId, t.cwd);
   }
 
+  // 出力が再開した時点の waiting 更新（issue vektor-inc/vk-orchestrator#212）。
+  // 解除時に古い lastLines を捨てるため、新しいチャンクを積む前に呼ぶ。
+  applyWaitingOnOutput(paneId);
+
   // Accumulate last lines for waiting detection
   // issue #32: 直近 N 行のウィンドウが小さすぎると、Claude Code TUI のプロンプト枠や
   // recap メッセージの再描画で本来の確認文が押し出されて検知できなくなる。
@@ -448,7 +521,8 @@ ipcRenderer.on('terminal:data', (event, id, data) => {
   }
   t.lastLines = merged;
   t.lastOutputTime = Date.now();
-  checkWaiting(paneId);
+  // 判定は出力が静止してから行う（即時判定はしない）。
+  scheduleWaitingCheck(paneId);
   // 出力があったので running を bump（waiting / 入力直後はスキップされる）
   bumpRunning(paneId);
 });
@@ -1766,6 +1840,8 @@ function closePane(paneId, { force = false, skipConfirm = false } = {}) {
     // status の自動 idle 復帰タイマーが残っているとクロージャ経由で terminals[paneId] を
     // 参照し続けてしまうため、必ず破棄する（リーク防止）。
     clearRunningIdleTimer(t);
+    // 静止ゲートの判定タイマーも同様にクロージャで terminals[paneId] を掴み続けるため破棄する。
+    clearWaitingCheckTimer(t);
     // auto-input バッジの自動非表示タイマーも残っていればクリアする
     // （runningTimer と一貫させた防御的なクリーンアップ／issue #38）
     const paneEl = document.querySelector(`.pane[data-id="${paneId}"]`);

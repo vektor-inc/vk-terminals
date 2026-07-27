@@ -3687,6 +3687,31 @@ async function openSettingsModal() {
     }
   };
 
+  // 表示中の欄に pattern 違反が残っているか。DOM の aria-invalid ではなく値から判定する。
+  // 各欄の再検証リスナはこの下で登録されており、同じ input イベントでは onEntryEdited の
+  // 方が先に走るため、この時点の aria-invalid は 1 打鍵ぶん古い。値を見れば登録順に
+  // 依存しない。非表示の欄は applyFieldValidity 同様に検証対象から外す。
+  const hasInvalidVisibleEntry = () => validatable.some(({ field, id }) => {
+    const input = getEntryInput(id);
+    if (!input || !isEntryVisible(id)) return false;
+    return !isPatternValid(field.pattern, input.value);
+  });
+
+  // フッターの総括メッセージは「表示が実態と食い違った時点」で消す。
+  //  - 「保存しました」(ok): 編集を再開した時点で食い違う（未保存の変更を抱えている）
+  //  - 「入力内容に問題があります」(err): 不正な欄がゼロになった時点で食い違う
+  // err を打鍵のたびに消さないのは、直している最中に何を指摘されたのかを見失わせない
+  // ため。1 つでも不正が残っていれば出したままにする。逆に直しきったあとも残すと、
+  // 問題が無いのに「まだどこかにある」と言い続けることになり、存在しない不正欄を
+  // 探させてしまう。
+  const clearStaleSettingsMessage = () => {
+    const stale = msg.classList.contains('ok')
+      || (msg.classList.contains('err') && !hasInvalidVisibleEntry());
+    if (!stale) return;
+    msg.textContent = '';
+    msg.className = 'settings-msg';
+  };
+
   // 保存後にユーザーが操作を続けているならパネルを勝手に閉じない、という原則は
   // タブ移動（activateTab）だけでなく同じタブに留まったままの編集にも要る。適用しないと
   // 「保存 → 続けて編集 → 2.5 秒で消えて編集が失われる」「保存 → 不正値で再保存 →
@@ -3694,18 +3719,13 @@ async function openSettingsModal() {
   // 全モードで動くこのループに寄せる。
   const onEntryEdited = () => {
     autoClose.cancel();
-    // 編集を再開した時点で「保存しました」は実態と食い違う（未保存の変更を抱えたまま
-    // 成功メッセージが残る）。閉じないようにしたことで初めて表に出た矛盾なので、
-    // ここで消す。エラー文（err）は消さない。直している最中に何が問題だったのかを
-    // 見失わせないため、従来どおり欄ごとの検証結果に任せる。
-    if (msg.classList.contains('ok')) {
-      msg.textContent = '';
-      msg.className = 'settings-msg';
-    }
-    // 保存直後のフッター固定も、編集を始めた時点で理由（押した直後にボタンが
+    // 保存直後のフッター固定は、編集を始めた時点で理由（押した直後にボタンが
     // 並び替わるのを防ぐ）が消える。
     unlockSettingsFooter();
+    // 表示中の欄が変わると「不正な欄が残っているか」の答えも変わるので、
+    // 総括メッセージの判定より先に表示状態を更新しておく。
     applyFieldVisibility();
+    clearStaleSettingsMessage();
   };
   for (const { id } of entries) {
     const input = getEntryInput(id);

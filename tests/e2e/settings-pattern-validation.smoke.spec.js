@@ -237,4 +237,25 @@ test.describe.serial('設定ダイアログの pattern 形式チェック（issu
     const payload = await win.evaluate(() => window.__savedPayloads[window.__savedPayloads.length - 1]);
     expect(payload.legacy).toBe('foobar-not-a-repo');
   });
+
+  test('7: フッターの総括エラーは不正が残る間は消えず、直しきると消える', async () => {
+    // 不正なまま保存して総括エラーを出す。
+    await win.locator(REPO_ID).fill('foobar');
+    await win.locator('.settings-save').click();
+    await expect(win.locator('.settings-msg')).toHaveText('入力内容に問題があります');
+
+    // まだ不正なうちは消さない。打鍵のたびに消すと、直している最中に何を指摘されたのか
+    // 見失う（"owner/repo の形式" の 2 つ目が空なので、これもまだ不正）。
+    await win.locator(REPO_ID).fill('foobar/');
+    await expect(win.locator('.settings-msg')).toHaveText('入力内容に問題があります');
+    await expect(win.locator('.settings-msg')).toHaveClass(/err/);
+
+    // 直しきったら消す。問題が 1 つも無いのに赤字が残ると、存在しない不正欄を探させる。
+    await win.locator(REPO_ID).fill('vektor-inc/vk-terminals');
+    await expect(win.locator('.settings-msg')).toHaveText('');
+    await expect(win.locator('.settings-msg')).not.toHaveClass(/err/);
+    // 欄側の表示（赤枠・エラー文）も揃って消えている。
+    await expect(win.locator(REPO_ID)).not.toHaveAttribute('aria-invalid', 'true');
+    await expect(win.locator(REPO_ERR)).toBeHidden();
+  });
 });

@@ -23,23 +23,28 @@ function toStringMap(value) {
 }
 
 // tabLink の移動先（tab と field）の整合を見るための「フィールドキー → そのフィールドが
-// 属するタブ ID」の対応表。tab 未指定・未知の tab を持つ group は先頭タブへ寄せる
-// （描画側の groupSettingsGroupsByTab と同じ規則。ここがずれると判定と表示が食い違う）。
-// キーが重複する場合は、描画・保存で先に拾われる最初の 1 つを正とする。
-function collectSettingsFieldTabs(desc, tabIdList) {
+// 属するタブ ID」の対応表。
+//
+// 走査は desc.groups の宣言順ではなく groupSettingsGroupsByTab の結果（タブ順 →
+// タブ内グループ順）で行う。描画側が入力欄を採番する順序がこれで、移動先の解決も
+// 「最初に見つかったキー」を拾うため、順序がずれるとキー重複時にどちらを指すかが
+// 判定と実際の着地先で食い違う。結果、検証は通るのに押すと別タブへ着地する tabLink が
+// 残り、逆に正しく着地するものが落とされる。tab 未指定・未知の tab を持つ group を
+// 先頭タブへ寄せる規則も、この関数を通すことで自動的に描画側と揃う。
+//
+// キーが重複する場合、移動先の解決では先に拾われた 1 つを正とする。保存は最後勝ち
+// （app.js の out[field.key] = ... が後の欄で上書きする）なので、両者は一致しない。
+function collectSettingsFieldTabs(desc, tabs) {
   const fieldTabs = new Map();
-  const tabIds = new Set(tabIdList);
-  const firstTabId = tabIdList.length ? tabIdList[0] : '';
   const groups = (desc && Array.isArray(desc.groups)) ? desc.groups : [];
-  for (const group of groups) {
-    const groupTabId = group && typeof group.tab === 'string' && tabIds.has(group.tab)
-      ? group.tab
-      : firstTabId;
-    const fields = (group && Array.isArray(group.fields)) ? group.fields : [];
-    for (const field of fields) {
-      const key = field && typeof field.key === 'string' ? field.key : '';
-      if (!key.trim() || fieldTabs.has(key)) continue;
-      fieldTabs.set(key, groupTabId);
+  for (const { tab, groups: tabGroups } of groupSettingsGroupsByTab(groups, tabs)) {
+    for (const group of tabGroups) {
+      const fields = (group && Array.isArray(group.fields)) ? group.fields : [];
+      for (const field of fields) {
+        const key = field && typeof field.key === 'string' ? field.key : '';
+        if (!key.trim() || fieldTabs.has(key)) continue;
+        fieldTabs.set(key, tab.id);
+      }
     }
   }
   return fieldTabs;
@@ -127,9 +132,8 @@ function normalizeSettingsTabs(desc) {
       return true;
     });
   // tabLink の参照先検証に使う（tabs / groups 全体を見てからでないと判定できない）。
-  const tabIdList = rawTabs.map((tab) => tab.id);
-  const tabIds = new Set(tabIdList);
-  const fieldTabs = collectSettingsFieldTabs(desc, tabIdList);
+  const tabIds = new Set(rawTabs.map((tab) => tab.id));
+  const fieldTabs = collectSettingsFieldTabs(desc, rawTabs);
 
   return rawTabs
     .map((tab, index) => {

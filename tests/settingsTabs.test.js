@@ -271,6 +271,37 @@ test('normalizeSettingsTabs: 別タブのフィールドを指す tabLink は fi
   ]);
 });
 
+test('normalizeSettingsTabs: キー重複時の所属タブは宣言順ではなく描画順（タブ順）で決まる', () => {
+  // 描画側は groupSettingsGroupsByTab の順（タブ順 → タブ内グループ順）で入力欄を採番し、
+  // 移動先の解決も最初に見つかったキーを拾う。desc.groups の宣言順で判定すると両者がずれ、
+  // 検証を通るのに押すと別タブへ着地する tabLink が残る（逆に正しく着地する方が落とされる）。
+  const [, , mobileTab] = normalizeSettingsTabs({
+    tabs: [
+      { id: 'general', label: '設定' },
+      { id: 'tokens', label: 'トークン' },
+      {
+        id: 'mobile',
+        label: '外出先から確認',
+        content: [
+          // dup は general / tokens の両方にあるが、先に描画されるのは general 側。
+          { type: 'tabLink', label: '実際の着地先', tab: 'general', field: 'dup' },
+          { type: 'tabLink', label: '宣言順だと通ってしまう方', tab: 'tokens', field: 'dup' },
+        ],
+      },
+    ],
+    // 宣言順は tokens が先だが、タブ順では general が先に描画される。
+    groups: [
+      { label: 'トークン', tab: 'tokens', fields: [{ key: 'dup', label: '重複キー', type: 'text' }] },
+      { label: '基本', tab: 'general', fields: [{ key: 'dup', label: '重複キー', type: 'text' }] },
+    ],
+  });
+
+  assert.deepEqual(mobileTab.content, [
+    { type: 'tabLink', label: '実際の着地先', tab: 'general', field: 'dup' },
+    { type: 'tabLink', label: '宣言順だと通ってしまう方', tab: 'tokens' },
+  ]);
+});
+
 test('normalizeSettingsTabs: tab 未指定の group のフィールドは先頭タブ扱いで照合する', () => {
   // 描画側（groupSettingsGroupsByTab）が tab 未指定・未知の group を先頭タブへ寄せるので、
   // field の所属タブ判定も同じ規則に揃える。ずれると表示と判定が食い違う。

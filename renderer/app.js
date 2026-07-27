@@ -3461,6 +3461,7 @@ async function openSettingsModal() {
   let switchToFieldTab = () => {};
   let clearDirtyTabs = () => {};
   let lockSettingsFooter = () => {};
+  let unlockSettingsFooter = () => {};
   if (useTabbedSettings) {
     const tablist = modal.querySelector('.settings-tabs');
     const tabButtons = Array.from(modal.querySelectorAll('.settings-tab'));
@@ -3485,6 +3486,13 @@ async function openSettingsModal() {
       cancelButton.textContent = showSave ? 'キャンセル' : '閉じる';
     };
     lockSettingsFooter = () => { footerLocked = true; };
+    // 固定を解いて、そのタブに合った構成へ戻す。markDirty の updateSettingsFooter は
+    // 固定中だと素通りするため、解除したこちらから改めて反映し直す。
+    unlockSettingsFooter = () => {
+      if (!footerLocked) return;
+      footerLocked = false;
+      updateSettingsFooter();
+    };
     // タブは同じスクロールコンテナを共有するため、切り替え時に scrollTop をそのまま
     // 引き継ぐと移動先が途中から表示される（説明タブの導入を読み飛ばす／目的の入力欄が
     // 画面外になる）。かといって毎回 0 に戻すと、読みかけの位置を捨てて往復のたびに
@@ -3686,6 +3694,17 @@ async function openSettingsModal() {
   // 全モードで動くこのループに寄せる。
   const onEntryEdited = () => {
     autoClose.cancel();
+    // 編集を再開した時点で「保存しました」は実態と食い違う（未保存の変更を抱えたまま
+    // 成功メッセージが残る）。閉じないようにしたことで初めて表に出た矛盾なので、
+    // ここで消す。エラー文（err）は消さない。直している最中に何が問題だったのかを
+    // 見失わせないため、従来どおり欄ごとの検証結果に任せる。
+    if (msg.classList.contains('ok')) {
+      msg.textContent = '';
+      msg.className = 'settings-msg';
+    }
+    // 保存直後のフッター固定も、編集を始めた時点で理由（押した直後にボタンが
+    // 並び替わるのを防ぐ）が消える。
+    unlockSettingsFooter();
     applyFieldVisibility();
   };
   for (const { id } of entries) {

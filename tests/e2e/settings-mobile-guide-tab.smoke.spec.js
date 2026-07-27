@@ -420,6 +420,21 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
     await expect(win.locator('#set-field-0')).toHaveValue('100.100.100.100');
   });
 
+  test('保存後に編集を再開すると「保存しました」が消える', async () => {
+    // 閉じないようにしたことで、未保存の変更を抱えたまま成功メッセージが残るように
+    // なった。編集を始めた時点で実態と食い違うので消す。
+    await win.locator('#set-field-0').fill('127.0.0.1');
+    await win.locator('.settings-save').click();
+    await expect(win.locator('.settings-msg')).toHaveClass(/ok/);
+
+    await win.locator('#set-field-0').fill('100.100.100.100');
+    await expect(win.locator('.settings-msg')).toHaveText('');
+    await expect(win.locator('.settings-msg')).not.toHaveClass(/ok/);
+    // 未保存の変更として扱われ、保存する手段は残る。
+    await expect(win.locator(TAB_GENERAL)).toHaveClass(/is-dirty/);
+    await expect(win.locator('.settings-save')).toBeVisible();
+  });
+
   test('保存応答が閉じた後に返ってきても、自動クローズを武装し直さない', async () => {
     // 応答が返る前に閉じられると、閉じた後のクロージャから setTimeout が張られる。
     // その発火は「今開いているモーダル」ではなく前回の overlay を対象に modalOpen を

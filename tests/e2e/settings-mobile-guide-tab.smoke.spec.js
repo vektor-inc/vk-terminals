@@ -45,6 +45,39 @@ async function restoreSave(win) {
   });
 }
 
+// 実クリップボードを汚さないため writeText をスタブして呼び出しを記録する。
+// require('electron').clipboard は app.js が起動時に分割代入したものと同一オブジェクトで、
+// writeText は writable/configurable なのでメソッド差し替えで呼び出しを捕まえられる。
+// readText で退避して書き戻す方式は採らない。プレーンテキストのフレーバーしか取れず、
+// 画像・RTF・HTML が入っていた場合に書き戻しがそれらをテキストへ化けさせて壊すうえ、
+// 途中で落ちると書き戻されないまま汚れが残るため。
+async function stubClipboardWrite(win) {
+  await win.evaluate(() => {
+    const { clipboard } = require('electron');
+    if (!window.__origWriteText) window.__origWriteText = clipboard.writeText;
+    window.__written = [];
+    clipboard.writeText = (text) => { window.__written.push(text); };
+  });
+}
+// コピー失敗（書き込みが例外を投げるケース）を再現する。
+async function stubClipboardFailure(win) {
+  await win.evaluate(() => {
+    const { clipboard } = require('electron');
+    if (!window.__origWriteText) window.__origWriteText = clipboard.writeText;
+    clipboard.writeText = () => { throw new Error('stubbed clipboard failure'); };
+  });
+}
+async function restoreClipboardWrite(win) {
+  await win.evaluate(() => {
+    const { clipboard } = require('electron');
+    if (!window.__origWriteText) return;
+    clipboard.writeText = window.__origWriteText;
+    delete window.__origWriteText;
+    delete window.__written;
+  });
+}
+const writtenTexts = (win) => win.evaluate(() => (window.__written || []).slice());
+
 const TAB_GENERAL = '#settings-tab-0';   // 設定
 const TAB_MOBILE = '#settings-tab-1';    // 外出先から確認
 const PANEL_GENERAL = '#settings-panel-0';
@@ -77,6 +110,9 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
   });
 
   test.afterEach(async () => {
+    // describe.serial で win を共有しているため、クリップボードの差し替えは
+    // 毎テストの終わりに必ず戻す（後続テストへ漏らさない）。
+    await restoreClipboardWrite(win).catch(() => {});
     const closeBtn = win.locator('.settings-close');
     if (await closeBtn.count()) {
       await closeBtn.click().catch(() => {});
@@ -102,10 +138,10 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
     await win.locator(TAB_MOBILE).click();
     await expect(win.locator(PANEL_MOBILE)).toBeVisible();
 
-    // 見出しは h3（モーダルの h2 の下位）で、実行順に並ぶ。
+    // 見出しはモーダルの h2 の下位（h3 / h4）で、実行順に並ぶ。
     // 前提（Tailscale 接続 → IP 取得 → vk-terminals 側の設定）を踏んでからアドレスを
     // 開く順序になっていないと、指示どおり進めた人が必ず接続に失敗する。
-    const headings = win.locator(`${PANEL_MOBILE} h3.settings-content-heading`);
+    const headings = win.locator(`${PANEL_MOBILE} .settings-content-heading`);
     await expect(headings).toHaveText([
       'スマートフォンから確認できます',
       'Tailscale とは',
@@ -116,6 +152,67 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
       '方法 2: tailscale serve で公開する',
       'セキュリティ上の注意',
     ]);
+
+    // 見出しレベルの内訳（issue #260）。親セクションは h3、「方法 1」「方法 2」だけが
+    // 「外出先から開く 2 つの方法」の子なので h4。
+    await expect(win.locator(`${PANEL_MOBILE} h3.settings-content-heading`)).toHaveText([
+      'スマートフォンから確認できます',
+      'Tailscale とは',
+      '準備: 両方の端末を Tailscale に接続する',
+      'パソコンの Tailscale IP を調べる',
+      '外出先から開く 2 つの方法',
+      'セキュリティ上の注意',
+    ]);
+    await expect(win.locator(`${PANEL_MOBILE} h4.settings-content-heading`)).toHaveText([
+      '方法 1: vk-terminals の API ホストを変更する',
+      '方法 2: tailscale serve で公開する',
+    ]);
+    // 階層そのものの検証。h4 の直前の親は h3「外出先から開く 2 つの方法」で、
+    // 末尾の「セキュリティ上の注意」は h3 に戻る（＝方法 2 のサブセクションを抜けた、
+    // 機能全体への注意である、が読み上げでも伝わる）。
+    const levels = await headings.evaluateAll(
+      (els) => els.map((el) => ({ tag: el.tagName.toLowerCase(), text: el.textContent }))
+    );
+    const parentIndex = levels.findIndex((h) => h.text === '外出先から開く 2 つの方法');
+    // 見つからないまま添字を引くと undefined の参照で TypeError になり、
+    // 「何が壊れたか」が読めないログになるため先にガードする。
+    expect(parentIndex, '親見出し「外出先から開く 2 つの方法」が見つからない').toBeGreaterThan(-1);
+    expect(levels[parentIndex].tag).toBe('h3');
+    expect(levels[parentIndex + 1].tag).toBe('h4');   // 方法 1
+    expect(levels[levels.length - 1].tag).toBe('h3'); // セキュリティ上の注意
+    // 先頭は h3（モーダルの h2 からレベルが飛ばない）。
+    expect(levels[0].tag).toBe('h3');
+
+    // 見出しの階層は「タグ」だけでなく「直前のブロックとの実際の余白」でも示している。
+    // 「方法 1」「方法 2」は同じ親（h3「外出先から開く 2 つの方法」）の子＝同レベルなので、
+    // 上余白は揃っていなければならない。実測（描画結果の隙間）を見るのは、マージン相殺が
+    // 効かないブロック（インラインレベルの要素など）が直前に来ると、指定値どおりでも
+    // 実際の余白だけが広がって階層が崩れるため。「方法 2」の直前は移動ボタンで、
+    // これを取り違えると子セクション境界が親セクション境界とほぼ同じ広さになる。
+    const gaps = await win.locator(`${PANEL_MOBILE} .settings-content`).evaluate((root) => {
+      const result = {};
+      for (const el of Array.from(root.children)) {
+        if (!el.classList.contains('settings-content-heading')) continue;
+        const prev = el.previousElementSibling;
+        if (!prev) continue;
+        // 直前ブロックの下端から見出しの上端まで（＝相殺後の実効ギャップ）。
+        result[el.textContent] = Math.round(
+          el.getBoundingClientRect().top - prev.getBoundingClientRect().bottom
+        );
+      }
+      return result;
+    });
+    const method1Gap = gaps['方法 1: vk-terminals の API ホストを変更する'];
+    const method2Gap = gaps['方法 2: tailscale serve で公開する'];
+    const sectionGap = gaps['セキュリティ上の注意']; // 親セクションの境界（h3）
+    for (const [name, gap] of Object.entries({ method1Gap, method2Gap, sectionGap })) {
+      expect(gap, `${name} を取得できない`).toBeGreaterThan(0);
+    }
+    // 兄弟どうしは同じ広さ（丸め誤差 1px まで許容）。px の決め打ちはしない。
+    expect(Math.abs(method1Gap - method2Gap)).toBeLessThanOrEqual(1);
+    // 子セクションの境界は親セクションの境界より明らかに狭い（グループ内 < グループ間）。
+    expect(method1Gap).toBeLessThan(sectionGap - 4);
+    expect(method2Gap).toBeLessThan(sectionGap - 4);
 
     // Tailscale の説明（アプリのインストール不要 / 同じ Wi-Fi でなくてよい）。
     await expect(win.locator(PANEL_MOBILE))
@@ -176,13 +273,16 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
     const at = await contentBlockIndexes(win, PANEL_MOBILE, {
       ipHeading: { selector: 'h3', text: 'パソコンの Tailscale IP を調べる' },
       ipGui: { text: 'メニューバーの Tailscale アイコン' },
-      ipCommand: { selector: '.settings-content-code', text: 'tailscale ip -4' },
-      method1Heading: { selector: 'h3', text: '方法 1' },
+      // コピーボタン付きのコードブロックは .settings-content-codeblock で包まれるため、
+      // .settings-content の直下に来るのはラッパー側になる。
+      ipCommand: { selector: '.settings-content-codeblock', text: 'tailscale ip -4' },
+      // 「方法 1」「方法 2」は親セクション（h3「外出先から開く 2 つの方法」）の子なので h4。
+      method1Heading: { selector: 'h4', text: '方法 1' },
       address: { selector: '.settings-content-code', text: '<Tailscale IP>:13847' },
       example: { text: 'http://100.101.102.103:13847/' },
       infoCallout: { selector: '.settings-content-callout[data-tone="info"]' },
       tabLink: { selector: '.settings-content-tablink' },
-      method2Heading: { selector: 'h3', text: '方法 2' },
+      method2Heading: { selector: 'h4', text: '方法 2' },
     });
     for (const [name, index] of Object.entries(at)) {
       expect(index, `${name} が見つからない`).toBeGreaterThan(-1);
@@ -221,6 +321,109 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
       () => document.activeElement && document.activeElement.dataset.externalUrl
     );
     expect(focusedUrl).toBe('https://tailscale.com/docs/how-to/quickstart');
+  });
+
+  // ─── コードブロックのコピーボタン（issue #262） ───────────────────────────────
+
+  test('コピーボタンはコマンドの 2 ブロックだけに付き、コマンド文字列を読み上げる', async () => {
+    await win.locator(TAB_MOBILE).click();
+    const copyButtons = win.locator(`${PANEL_MOBILE} .settings-content-copy`);
+    // タイプミスしやすいコマンド 2 つにだけ付ける。
+    await expect(copyButtons).toHaveCount(2);
+    await expect(copyButtons).toHaveText(['コピー', 'コピー']);
+    // 貼り付け先がパソコンではなくスマートフォンのアドレスバーになるアドレスは対象外。
+    // ラッパーが付かず <pre> 単体のまま残る。
+    const codeblocks = win.locator(`${PANEL_MOBILE} .settings-content-codeblock`);
+    await expect(codeblocks).toHaveCount(2);
+    await expect(codeblocks.nth(0)).toContainText('tailscale ip -4');
+    await expect(codeblocks.nth(1)).toContainText('tailscale serve --bg 13847');
+    await expect(
+      win.locator(`${PANEL_MOBILE} .settings-content-codeblock`, { hasText: '<Tailscale IP>:13847' })
+    ).toHaveCount(0);
+
+    // 可視ラベル「コピー」を含みつつ対象コマンドまで読み上げる（WCAG 2.5.3 / 2 個の区別）。
+    await expect(copyButtons.nth(0)).toHaveAttribute('aria-label', 'コピー: tailscale ip -4');
+    await expect(copyButtons.nth(1)).toHaveAttribute('aria-label', 'コピー: tailscale serve --bg 13847');
+
+    // フィードバック用の live region は押す前から DOM にある（後から挿入すると読み上げが
+    // 発火しない）。初期状態は空。
+    const statuses = win.locator(`${PANEL_MOBILE} .settings-content-copy-status`);
+    await expect(statuses).toHaveCount(2);
+    await expect(statuses.nth(0)).toHaveAttribute('role', 'status');
+    await expect(statuses.nth(0)).toHaveText('');
+
+    // キーボードだけでも到達できる（マウス前提の操作にしない）。
+    await copyButtons.nth(1).focus();
+    const focusedLabel = await win.evaluate(
+      () => document.activeElement && document.activeElement.getAttribute('aria-label')
+    );
+    expect(focusedLabel).toBe('コピー: tailscale serve --bg 13847');
+  });
+
+  test('コピーボタンを押すとコマンドがクリップボードへ渡り、2 秒後に表示が戻る', async () => {
+    await win.locator(TAB_MOBILE).click();
+    await stubClipboardWrite(win);
+    const serveBlock = win.locator(`${PANEL_MOBILE} .settings-content-codeblock`).nth(1);
+    const button = serveBlock.locator('.settings-content-copy');
+    const status = serveBlock.locator('.settings-content-copy-status');
+
+    await button.click();
+    // 成功は色だけでなくテキストでも伝える（data-state は付けない＝既定の緑）。
+    await expect(status).toHaveText('コピーしました');
+    await expect(status).not.toHaveAttribute('data-state', 'error');
+    // 表示どおりの文字列が 1 回だけ渡る（コピー元は DOM のコード本文）。
+    expect(await writtenTexts(win)).toEqual(['tailscale serve --bg 13847']);
+    // フォーカスは押したボタンに留まる（続けてもう一方もコピーできる）。
+    await expect(button).toBeFocused();
+    // 2 秒後には消える。
+    await expect(status).toHaveText('', { timeout: 4000 });
+
+    // もう一方のブロックは独立して動く（状態が混ざらない）。
+    const ipBlock = win.locator(`${PANEL_MOBILE} .settings-content-codeblock`).nth(0);
+    await ipBlock.locator('.settings-content-copy').click();
+    await expect(ipBlock.locator('.settings-content-copy-status')).toHaveText('コピーしました');
+    await expect(status).toHaveText('');
+    expect(await writtenTexts(win)).toEqual(['tailscale serve --bg 13847', 'tailscale ip -4']);
+  });
+
+  test('連打してもフィードバックは重複せず、最後の押下から 2 秒表示される', async () => {
+    await win.locator(TAB_MOBILE).click();
+    await stubClipboardWrite(win);
+    const block = win.locator(`${PANEL_MOBILE} .settings-content-codeblock`).nth(0);
+    const button = block.locator('.settings-content-copy');
+    const status = block.locator('.settings-content-copy-status');
+
+    // 押下と待機を Promise.all で束ね、経過時間の起点を押下時刻に固定する。
+    // 「押す → アサーション → 待つ」と直列に並べると、間のアサーションにかかった時間が
+    // そのまま余裕を削るため、2 秒の消灯に追い越されて偽陽性で落ちうる。
+    const clickAndWait = (ms) => Promise.all([button.click(), win.waitForTimeout(ms)]);
+
+    // 1 回目の押下から 1.2 秒。この時点ではまだ出ている（消灯まで 0.8 秒の余裕）。
+    await clickAndWait(1200);
+    await expect(status).toHaveText('コピーしました');
+    expect(await writtenTexts(win)).toEqual(['tailscale ip -4']);
+
+    // 2 回目の押下から 1.2 秒。1 回目の押下からは 2.4 秒以上経っているので、
+    // 消灯タイマーが張り替わっていなければ既に消えている（＝連打の張り替えを検出できる）。
+    // 一方 2 回目の押下からは 1.2 秒なので、正しく張り替わっていれば必ず出ている。
+    // どちらの判定も直前のアサーションの所要時間に左右されない。
+    await clickAndWait(1200);
+    await expect(status).toHaveText('コピーしました');
+    // 最後の押下から 2 秒後には消える。
+    await expect(status).toHaveText('', { timeout: 4000 });
+  });
+
+  test('コピーに失敗したときは失敗をテキストで伝える', async () => {
+    await win.locator(TAB_MOBILE).click();
+    await stubClipboardFailure(win);
+    const block = win.locator(`${PANEL_MOBILE} .settings-content-codeblock`).nth(0);
+    const status = block.locator('.settings-content-copy-status');
+    await block.locator('.settings-content-copy').click();
+    // 色だけに依存させず、テキストと data-state の両方で失敗を伝える。
+    await expect(status).toHaveText('コピーできませんでした');
+    await expect(status).toHaveAttribute('data-state', 'error');
+    // 失敗表示も 2 秒で戻る（押し直せる状態に復帰する）。
+    await expect(status).toHaveText('', { timeout: 4000 });
   });
 
   test('説明タブには入力欄が 1 つも無く、保存ボタンが隠れる', async () => {

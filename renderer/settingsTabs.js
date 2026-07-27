@@ -57,9 +57,29 @@ function normalizeSettingsContentBlock(block, tabIds, fieldTabs) {
   if (!block || typeof block !== 'object' || Array.isArray(block)) return null;
   const type = typeof block.type === 'string' ? block.type : '';
 
-  if (type === 'heading' || type === 'paragraph' || type === 'code') {
+  if (type === 'heading') {
+    const text = nonEmptyString(block.text);
+    if (!text) return null;
+    // 3 / 4 のみ。5 以上は 4 に寄せ、それ以外（2 以下 / 非整数 / "4" / 未指定）は 3。
+    // 不正値でブロック自体を落とさないのは、見出しが消えると後続の段落が
+    // 直前のセクションに吸収されて意味が壊れるため（callout の tone と同じ方針）。
+    const level = (Number.isInteger(block.level) && block.level >= 4) ? 4 : 3;
+    return { type, text, level };
+  }
+
+  // text だけを持つ唯一のブロック（heading は level、code は copy を併せて持つ）。
+  if (type === 'paragraph') {
     const text = nonEmptyString(block.text);
     return text ? { type, text } : null;
+  }
+
+  if (type === 'code') {
+    const text = nonEmptyString(block.text);
+    if (!text) return null;
+    // copy はコピーボタンを出すかどうか。既定（省略時）はコピーできる方に寄せる。
+    // 外部ディスクリプタ（VK_TERMINALS_SETTINGS）由来の不正値でコピー機能が黙って
+    // 死なないよう、明示的な false 以外はすべて true に寄せる（既定＝コピーできる）。
+    return { type, text, copy: block.copy !== false };
   }
 
   if (type === 'list') {
@@ -112,9 +132,26 @@ function normalizeSettingsTabContent(rawContent, options = {}) {
   const tabIds = toStringSet(options.tabIds);
   const fieldTabs = toStringMap(options.fieldTabs);
   const normalized = [];
+  // そのタブで level 3 の heading がまだ出ていないかどうか。
+  // 外部ディスクリプタ（VK_TERMINALS_SETTINGS）が content の 1 個目に level: 4 を書くと、
+  // モーダル見出し（h2）の直下が h4 になり、見出しレベルが 1 段飛ぶ（WCAG 1.3.1 違反）。
+  // これは前のブロックを見ないと判定できないため、単体ブロックを見る
+  // normalizeSettingsContentBlock では防げず、並び全体を見るここでしか担保できない。
+  let seenTopLevelHeading = false;
   for (const block of Array.isArray(rawContent) ? rawContent : []) {
     const normalizedBlock = normalizeSettingsContentBlock(block, tabIds, fieldTabs);
-    if (normalizedBlock) normalized.push(normalizedBlock);
+    if (!normalizedBlock) continue;
+    if (normalizedBlock.type === 'heading') {
+      // 親となる h3 が先に出ていない level 4 は 3 へ繰り上げる。繰り上げた見出し自身が
+      // その親になるので、以降の level 4 は子見出しとしてそのまま通す。
+      // 書き換えるのは normalizeSettingsContentBlock が返した新しいオブジェクトで、
+      // 呼び出し側が渡した rawContent のブロックには触らない。
+      if (!seenTopLevelHeading) {
+        normalizedBlock.level = 3;
+        seenTopLevelHeading = true;
+      }
+    }
+    normalized.push(normalizedBlock);
   }
   return normalized;
 }

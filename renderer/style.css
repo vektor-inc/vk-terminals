@@ -334,6 +334,11 @@ html, body {
 
 /* 説明タブのコンテンツ（tabs[].content の読み取り専用ブロック）
    ========================================================================== */
+/* ブロック種別を足すときの方針: .settings-content 直下のブロックは必ずブロックレベル
+   （display: block / flex / grid など）にする。インラインレベル（inline-flex 等）にすると
+   匿名の行ボックスに包まれて隣接兄弟のマージン相殺が効かず、直後のブロックとの余白が
+   指定値より広がる。この領域は見出しの階層を余白の差で示しているため、1 ブロックでも
+   相殺が効かないと、その直後の見出しだけ 1 段上の階層に見えて階層表現が崩れる。 */
 .settings-content {
   color: #c9d1d9;
   font-size: 13px;
@@ -341,17 +346,37 @@ html, body {
 }
 .settings-content > :first-child { margin-top: 0; }
 .settings-content > :last-child { margin-bottom: 0; }
-/* モーダル見出し（h2）配下の小見出し。情報グループの区切りとして、
-   直前のブロックとの間に大きめの余白を取る。 */
+/* モーダル見出し（h2 15px）配下の小見出し。h3 = 親セクション、h4 = 子セクション。
+   タイプスケールが 15/14/13/12 と 1px 刻みで詰まっているため、階層は
+   「2px のサイズ差」＋「マージン相殺後の実効ギャップ 3 段」で表現する。
+   - weight では差を付けない: 日本語フォント（Hiragino Sans 等）で 600 と 700 が
+     同じウェイトにスナップし、環境によって差が消えるため。
+   - 色でも差を付けない: #8b949e は非アクティブタブ・info ラベル等で
+     「メタ情報／不活性」を意味しており、見出しに使うと無効表示に見える。
+   - 左罫線・インデントも使わない: 左罫線は callout の語彙。インデントは
+     content がフラットなブロック列で見出しに続く本文を包めないため、
+     見出しだけが自分の本文より右に張り出す。
+   アクセントカラー（#58a6ff）はリンクと移動ボタン＝「押せるもの」に限定し、
+   見出しは非対話色に落とす。 */
 .settings-content-heading {
-  /* 本文 13px より 1 段大きくして、色・太字だけに頼らず階層を示す。
-     h3 が連続する縦長のコンテンツなので、セクション間の余白も広めに取る。
-     アクセントカラー（#58a6ff）はリンクと移動ボタン＝「押せるもの」に限定し、
-     見出しは非対話色に落とす。青が見出しにも付くと「青＝押せる」の手がかりが濁る。 */
-  margin: 26px 0 6px;
+  /* 本文ブロックの下マージンは 10px（text/list）〜12px（code/links/callout/tablink）。
+     隣接兄弟マージンは相殺されるので、実効ギャップを
+     グループ内 10-12px < h4 18px < h3 32px の 3 段にする。 */
+  margin: 32px 0 6px;
   color: #e6edf3;
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 600;
+  /* .settings-content の 1.7 は見出しには緩い。折り返し時のブロック感を出す。
+     1.45 ではなく 1.5 なのは WCAG 1.4.12 でユーザーが 1.5 に上書きしたときの
+     変動を小さくするため。固定高・nowrap は付けない（1.4.10 / 1.4.12）。 */
+  line-height: 1.5;
+}
+/* 子見出し。タグ自体がレベルを持つので、修飾クラスを増やさず要素セレクタで分岐する
+   （クラスとタグがずれる余地をなくす）。
+   下マージンを h3 より小さくして、見出しを自分の本文に最も近接させる。 */
+h4.settings-content-heading {
+  margin: 18px 0 4px;
+  font-size: 13px;
 }
 .settings-content-text {
   margin: 0 0 10px;
@@ -375,6 +400,56 @@ html, body {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
   line-height: 1.5;
+}
+/* コード＋コピー操作のまとまり。pre は overflow-x: auto なので、ボタンを内側に重ねると
+   横スクロールで一緒に流れる。操作行は pre の外（下辺に接する行）に置く。 */
+.settings-content-codeblock {
+  margin: 0 0 12px;
+}
+.settings-content-codeblock .settings-content-code {
+  margin: 0;
+  border-radius: 5px 5px 0 0;
+}
+.settings-content-code-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px 8px;
+  padding: 4px 6px;
+  background: #161b22;
+  border: 1px solid #21262d;
+  border-top: 0;
+  border-radius: 0 0 5px 5px;
+}
+/* 二次操作。アクセントカラーは説明タブ唯一の CTA（tablink）に残すため文字はグレー系。
+   ただし境界 #30363d は背景比 1.7:1 で WCAG 1.4.11（UI 部品 3:1）に届かないため
+   #8b949e まで上げる（5.6:1）。面・角丸・hover・フォーカスリングは既存ボタンと共通。 */
+.settings-content-copy {
+  flex: 0 0 auto;
+  padding: 3px 10px;
+  background: #21262d;
+  border: 1px solid #8b949e;
+  border-radius: 5px;
+  color: #c9d1d9;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.settings-content-copy:hover {
+  background: #30363d;
+}
+.settings-content-copy:focus-visible {
+  outline: 2px solid #58a6ff;
+  outline-offset: 2px;
+}
+/* 成功は .settings-msg.ok と同じ緑。色だけに依存させないためテキストを必ず併記する。 */
+.settings-content-copy-status {
+  font-size: 12px;
+  color: #3fb950;
+}
+.settings-content-copy-status[data-state="error"] {
+  color: #f85149;
 }
 .settings-content-links {
   display: flex;
@@ -402,7 +477,14 @@ html, body {
 /* 説明タブ唯一の CTA。既定の二次ボタン境界（#30363d）は背景比 1.55:1 で WCAG 1.4.11
    （UI 部品 3:1）に届かないため、境界と文字をアクセントカラーに上げている（境界 7.5:1）。 */
 .settings-content-tablink {
-  display: inline-flex;
+  /* inline-flex（インラインレベル）だと匿名の行ボックスに包まれ、後続ブロックとの
+     マージン相殺が起きない。行ボックスの余り分がそのまま加算されるため、直後の見出しの
+     上余白が意図より約 12px 広がり（h4 の 18px → 30px）、余白で示している見出しの階層が
+     崩れる。ブロックレベルにして相殺を回復させ、幅は fit-content で内容ぴったりに保つ。
+     隣接セレクタで余白を打ち消す方法は取らない（ボタンの padding / line-height を
+     変えると崩れるマジックナンバーになり、後続が段落の場合も直らないため）。 */
+  display: flex;
+  width: fit-content;
   align-items: center;
   margin: 0 0 12px;
   padding: 6px 14px;

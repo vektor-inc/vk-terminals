@@ -3537,6 +3537,10 @@ async function openSettingsModal() {
         // 保存直後のフッター固定は、タブを移った時点で解除する（B-5: 説明タブに
         // 「保存」が出たまま残らないようにする）。
         footerLocked = false;
+        // 併せて保存後の自動クローズも取り消す。固定を解いて「保存後のタブ移動」を
+        // 正式に許した以上、移動先を読んでいる最中にパネルごと消えるのは矛盾する。
+        // 「保存しました」の表示は残したまま、閉じるタイミングはユーザーに委ねる。
+        cancelAutoClose();
       }
       updateSettingsFooter();
       if (tabChanged) restoreTabScroll(nextIndex);

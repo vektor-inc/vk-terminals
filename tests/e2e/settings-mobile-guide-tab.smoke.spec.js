@@ -387,6 +387,23 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
     await expect(win.locator('.settings-modal')).toHaveCount(1);
   });
 
+  test('保存後に別のタブへ移ると自動クローズを取り消す', async () => {
+    // フッター固定を解いて「保存後のタブ移動」を正式に許した以上、移動先を読んでいる
+    // 最中にパネルごと消えるのは矛盾する。閉じるタイミングはユーザーに委ねる。
+    await win.locator('#set-field-0').fill('127.0.0.1');
+    await win.locator('.settings-save').click();
+    await expect(win.locator('.settings-msg')).toHaveClass(/ok/);
+
+    await win.locator(TAB_MOBILE).click();
+
+    // 自動クローズ（2.5 秒）を過ぎても開いたまま。
+    await win.waitForTimeout(3000);
+    await expect(win.locator('.settings-modal')).toBeVisible();
+    await expect(win.locator(PANEL_MOBILE)).toBeVisible();
+    // 保存できたことは伝わり続ける。
+    await expect(win.locator('.settings-msg')).toHaveText('保存しました。次回の起動から反映されます。');
+  });
+
   test('保存応答が閉じた後に返ってきても、自動クローズを武装し直さない', async () => {
     // 応答が返る前に閉じられると、閉じた後のクロージャから setTimeout が張られる。
     // その発火は「今開いているモーダル」ではなく前回の overlay を対象に modalOpen を

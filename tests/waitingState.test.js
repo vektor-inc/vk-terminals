@@ -4,117 +4,104 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
+  WAITING_BEEP_COOLDOWN_MS,
+  WAITING_MAX_EVAL_INTERVAL_MS,
   WAITING_QUIESCENCE_MS,
-  WAITING_STUCK_RECHECK_MS,
+  isOutputQuiescent,
   isWaitingCwdExcluded,
   matchesWaiting,
-  nextWaitingStateOnOutput,
-  nextWaitingStateOnQuiescence,
+  nextWaitingState,
   normalizeWaitingExcludeCwdPatterns,
+  shouldBeepForWaiting,
   waitingCheckDelayMs,
 } = require('../renderer/waitingState');
+const { deriveStatus } = require('../renderer/statusState');
 
-// ─── 静止（quiescence）時点の再評価 ──────────────────────────────────────────
+// ─── waiting 判定（静止ゲート） ──────────────────────────────────────────────
 // issue vektor-inc/vk-orchestrator#212:
-//   旧実装は「出力再評価では waiting を解除しない」スティッキー設計で、解除経路が
-//   ユーザー入力（markPaneInput）しか無かったため、一度誤検知すると AI が動き続けても
-//   「入力待ち」が張り付いたままになっていた。
-//   本 PR では判定タイミングを「出力が静止した時点」に変え、静止時点では prev に
-//   引きずられず素直に再評価する。ただし即解除はせず、リサイズ再描画で確認文が
-//   折り返して一時的にマッチしなくなったケース（下の matchesWaiting のテスト参照）で
-//   本物の確認待ちを取りこぼさないよう「出力が再開したら解除する」予約に留める。
+//   旧実装は PTY 出力のたびに判定し、かつ「出力再評価では waiting を解除しない」
+//   スティッキー設計で、解除経路がユーザー入力（markPaneInput）しか無かったため、
+//   一度誤検知すると AI が動き続けても「入力待ち」が張り付いたままになっていた。
+//   本 PR では判定タイミングを「出力が静止した時点（＋上限間隔ごと）」に変え、
+//   解除の根拠を「判定時点で出力が流れている＝相手は入力を待たずに動いている」に
+//   一本化する。静止時点の非マッチでは解除しない（リサイズ再描画で確認文が折り返し、
+//   本物の確認待ちでも一時的に非マッチになるため。下の matchesWaiting のテスト参照）。
 
-test('nextWaitingStateOnQuiescence: 静止時点でマッチしたら入力待ちになる', () => {
-  assert.deepEqual(
-    nextWaitingStateOnQuiescence({ prev: false, matches: true }),
-    { waiting: true, clearArmed: false },
-  );
+test('nextWaitingState: 静止時点でマッチしたら入力待ちになる', () => {
+  assert.equal(nextWaitingState({ prev: false, matches: true, quiescent: true }), true);
 });
 
-test('nextWaitingStateOnQuiescence: 静止時点でマッチしなければ非待機のまま', () => {
-  assert.deepEqual(
-    nextWaitingStateOnQuiescence({ prev: false, matches: false }),
-    { waiting: false, clearArmed: false },
-  );
+test('nextWaitingState: 静止時点でマッチしなければ非待機のまま', () => {
+  assert.equal(nextWaitingState({ prev: false, matches: false, quiescent: true }), false);
 });
 
-test('nextWaitingStateOnQuiescence: 入力待ち中にマッチし続けたら入力待ちのまま', () => {
-  assert.deepEqual(
-    nextWaitingStateOnQuiescence({ prev: true, matches: true }),
-    { waiting: true, clearArmed: false },
-  );
+test('nextWaitingState: 入力待ち中にマッチし続けたら入力待ちのまま', () => {
+  assert.equal(nextWaitingState({ prev: true, matches: true, quiescent: true }), true);
 });
 
-test('nextWaitingStateOnQuiescence: 入力待ち中に非マッチでも即解除せず解除予約にとどめる', () => {
-  // 静止した＝相手が止まっている状態なので、ここで解除すると本物の確認待ち
-  // （リサイズ再描画で文言が折り返しマッチしなくなっただけ）を取りこぼす。
-  assert.deepEqual(
-    nextWaitingStateOnQuiescence({ prev: true, matches: false }),
-    { waiting: true, clearArmed: true },
-  );
+test('nextWaitingState: 静止時点の非マッチでは入力待ちを解除しない', () => {
+  // 静止した＝相手が止まっている。ここで解除すると、リサイズ再描画で文言が
+  // 折り返してマッチしなくなっただけの本物の確認待ちを取りこぼす。
+  assert.equal(nextWaitingState({ prev: true, matches: false, quiescent: true }), true);
 });
 
-test('nextWaitingStateOnQuiescence: 除外対象 cwd ではマッチしても入力待ちにならない', () => {
+test('nextWaitingState: 出力が流れている最中の非マッチで入力待ちを解除する', () => {
+  // 上限間隔で強制的に呼ばれた評価。出力が流れている＝相手は入力を待たずに
+  // 動いている、が解除の根拠。張り付きからの唯一の自動復帰経路。
+  assert.equal(nextWaitingState({ prev: true, matches: false, quiescent: false }), false);
+});
+
+test('nextWaitingState: 出力が流れていてもマッチしていれば入力待ちのまま', () => {
+  assert.equal(nextWaitingState({ prev: true, matches: true, quiescent: false }), true);
+});
+
+test('nextWaitingState: 除外対象 cwd ではマッチしても入力待ちにならない', () => {
   const excluded = isWaitingCwdExcluded('/work/vk-orchestrator/tasks', ['vk-orchestrator']);
 
   assert.equal(excluded, true);
-  assert.deepEqual(
-    nextWaitingStateOnQuiescence({ prev: false, matches: true, excluded }),
-    { waiting: false, clearArmed: false },
-  );
+  assert.equal(nextWaitingState({ prev: false, matches: true, excluded, quiescent: true }), false);
 });
 
-test('nextWaitingStateOnQuiescence: 除外対象 cwd では既存の入力待ちも解除する', () => {
+test('nextWaitingState: 除外対象 cwd では既存の入力待ちも解除する', () => {
   const excluded = isWaitingCwdExcluded('/work/vk-orchestrator/tasks', ['vk-orchestrator']);
 
-  assert.deepEqual(
-    nextWaitingStateOnQuiescence({ prev: true, matches: true, excluded }),
-    { waiting: false, clearArmed: false },
-  );
+  assert.equal(nextWaitingState({ prev: true, matches: true, excluded, quiescent: true }), false);
 });
 
-test('nextWaitingStateOnQuiescence: 除外パターンに一致しない cwd では従来どおり入力待ちになる', () => {
+test('nextWaitingState: 除外パターンに一致しない cwd では従来どおり入力待ちになる', () => {
   const excluded = isWaitingCwdExcluded('/work/vk-terminals', ['vk-orchestrator']);
 
   assert.equal(excluded, false);
-  assert.deepEqual(
-    nextWaitingStateOnQuiescence({ prev: false, matches: true, excluded }),
-    { waiting: true, clearArmed: false },
+  assert.equal(nextWaitingState({ prev: false, matches: true, excluded, quiescent: true }), true);
+});
+
+test('nextWaitingState: 出力が流れている最中の解除直後は idle を経由せず running になる', () => {
+  // 解除は「出力が流れている」ときだけ起きるので、deriveStatus の recentOutput が真になり
+  // status は running に落ち着く。バッジが一瞬 idle にちらつかないことの確認。
+  const now = 100_000;
+  const lastOutputTime = now - 200; // 出力が流れている
+  assert.equal(nextWaitingState({ prev: true, matches: false, quiescent: false }), false);
+  assert.equal(
+    deriveStatus({
+      localWaiting: false,
+      externalWaiting: false,
+      now,
+      lastOutputTime,
+      lastInputTime: 0,
+      runningIdleTimeoutMs: 1500,
+      runningInputGuardMs: 200,
+    }),
+    'running',
   );
 });
 
-// ─── 出力再開時の解除 ────────────────────────────────────────────────────────
-
-test('nextWaitingStateOnOutput: 解除予約が無ければ出力が来ても入力待ちを保持する', () => {
-  assert.deepEqual(
-    nextWaitingStateOnOutput({ prev: true, clearArmed: false }),
-    { waiting: true, clearArmed: false },
-  );
+test('isOutputQuiescent: 静止時間の到達で切り替わる', () => {
+  const now = 10_000;
+  assert.equal(isOutputQuiescent({ now, lastOutputTime: now - WAITING_QUIESCENCE_MS }), true);
+  assert.equal(isOutputQuiescent({ now, lastOutputTime: now - WAITING_QUIESCENCE_MS + 1 }), false);
 });
 
-test('nextWaitingStateOnOutput: 解除予約済みなら出力再開で入力待ちを解除する', () => {
-  // 出力が再開した＝相手は入力を待たずに動いている、という強い根拠。
-  assert.deepEqual(
-    nextWaitingStateOnOutput({ prev: true, clearArmed: true }),
-    { waiting: false, clearArmed: false },
-  );
-});
-
-test('nextWaitingStateOnOutput: 非待機のときは何も変えない', () => {
-  assert.deepEqual(
-    nextWaitingStateOnOutput({ prev: false, clearArmed: false }),
-    { waiting: false, clearArmed: false },
-  );
-});
-
-test('nextWaitingStateOnOutput: 除外対象 cwd では入力待ちも解除予約も落とす', () => {
-  assert.deepEqual(
-    nextWaitingStateOnOutput({ prev: true, clearArmed: false, excluded: true }),
-    { waiting: false, clearArmed: false },
-  );
-});
-
-// ─── 判定タイミング（静止ゲート） ────────────────────────────────────────────
+// ─── 判定タイミング ──────────────────────────────────────────────────────────
 
 test('waitingCheckDelayMs: 出力が続いている間は判定を先送りする', () => {
   const now = 10_000;
@@ -142,22 +129,25 @@ test('waitingCheckDelayMs: 静止時間を満たしていれば即座に判定�
   );
 });
 
-test('waitingCheckDelayMs: 入力待ち中に出力が鳴り止まないときは上限時間で再判定する', () => {
-  // 誤検知で入力待ちになったまま出力が延々と流れる（スピナー）と静止が訪れず、
-  // 再評価の機会が永久に来ない。入力待ち中だけは上限を設けて必ず再評価する。
+test('waitingCheckDelayMs: 出力が鳴り止まなくても上限間隔で必ず判定する（入力待ちでなくても）', () => {
+  // 上限が無いと、出力が静止時間未満の間隔で流れ続ける限り一度も判定されず、
+  // その間に本物のプロンプトが出ても検知もビープもされない。状態によらず適用する。
   const pendingSince = 10_000;
-  const now = pendingSince + WAITING_STUCK_RECHECK_MS - 300;
-  assert.equal(
-    waitingCheckDelayMs({ now, lastOutputTime: now, pendingSince, waiting: true }),
-    300,
-  );
+  const now = pendingSince + WAITING_MAX_EVAL_INTERVAL_MS - 300;
+  assert.equal(waitingCheckDelayMs({ now, lastOutputTime: now, pendingSince }), 300);
 });
 
-test('waitingCheckDelayMs: 非待機のときは上限を適用せず静止まで待つ', () => {
+test('waitingCheckDelayMs: 上限を過ぎていれば即座に判定する', () => {
   const pendingSince = 10_000;
-  const now = pendingSince + WAITING_STUCK_RECHECK_MS + 10_000;
+  const now = pendingSince + WAITING_MAX_EVAL_INTERVAL_MS + 10_000;
+  assert.equal(waitingCheckDelayMs({ now, lastOutputTime: now, pendingSince }), 0);
+});
+
+test('waitingCheckDelayMs: 上限は静止までの残り時間より長くならない', () => {
+  // 出力が 1 回だけ来て止まった直後（pendingSince = lastOutputTime）は静止側が先に来る。
+  const now = 10_000;
   assert.equal(
-    waitingCheckDelayMs({ now, lastOutputTime: now, pendingSince, waiting: false }),
+    waitingCheckDelayMs({ now, lastOutputTime: now, pendingSince: now }),
     WAITING_QUIESCENCE_MS,
   );
 });
@@ -165,6 +155,28 @@ test('waitingCheckDelayMs: 非待機のときは上限を適用せず静止ま�
 test('waitingCheckDelayMs: 負の待ち時間は 0 に丸める', () => {
   const now = 10_000;
   assert.equal(waitingCheckDelayMs({ now, lastOutputTime: now - 60_000, pendingSince: now - 60_000 }), 0);
+});
+
+// ─── ビープのクールダウン ────────────────────────────────────────────────────
+
+test('shouldBeepForWaiting: 初回は鳴らす', () => {
+  assert.equal(shouldBeepForWaiting({ now: 10_000, lastBeepAt: 0 }), true);
+});
+
+test('shouldBeepForWaiting: クールダウン中の再検知では鳴らさない', () => {
+  const lastBeepAt = 10_000;
+  assert.equal(
+    shouldBeepForWaiting({ now: lastBeepAt + WAITING_BEEP_COOLDOWN_MS - 1, lastBeepAt }),
+    false,
+  );
+});
+
+test('shouldBeepForWaiting: クールダウンを過ぎれば再び鳴らす', () => {
+  const lastBeepAt = 10_000;
+  assert.equal(
+    shouldBeepForWaiting({ now: lastBeepAt + WAITING_BEEP_COOLDOWN_MS, lastBeepAt }),
+    true,
+  );
 });
 
 test('normalizeWaitingExcludeCwdPatterns: 文字列以外・空白のみの値を除外する', () => {
@@ -192,15 +204,33 @@ test('matchesWaiting: リサイズ再描画で確認文が折り返された非�
 test('matchesWaiting: 第三者の作業を待つ進捗ナレーションは入力待ちにしない', () => {
   // issue vektor-inc/vk-orchestrator#212: サブエージェントの完了待ちを伝える
   // 進捗報告であって、ユーザーへの確認要求ではない。
-  assert.equal(matchesWaiting('麗美の分は受領済みです。和田の修正を待っています。'), false);
-  assert.equal(matchesWaiting('CI の完了を待っています。'), false);
-  assert.equal(matchesWaiting('サブエージェントの応答を待っています'), false);
+  const cases = [
+    '麗美の分は受領済みです。和田の修正を待っています。',
+    'CI の完了を待っています。',
+    'サブエージェントの応答を待っています',
+    '司の指示を待っています',
+    '他チームの対応を待っています',
+  ];
+  for (const sample of cases) {
+    assert.equal(matchesWaiting(sample), false, `誤検知している: ${sample}`);
+  }
 });
 
-test('matchesWaiting: ユーザー宛ての待ち文言は従来どおり検知する', () => {
-  assert.equal(matchesWaiting('マージするかどうかのご判断をお待ちしています。'), true);
-  assert.equal(matchesWaiting('※ recap: 承認待ちです。'), true);
-  assert.equal(matchesWaiting('ご指示をお待ちしています。'), true);
+test('matchesWaiting: ユーザー宛ての待ち文言は検知する', () => {
+  // 待つ対象の名詞が「ユーザーが差し出すもの」の許可リストに載っていれば検知する。
+  const cases = [
+    '入力をお待ちしています。',
+    '選択をお待ちしています。',
+    'ご対応をお待ちしています。',
+    'マージするかどうかのご判断をお待ちしています。',
+    '※ recap: 承認待ちです。',
+    'ご指示をお待ちしています。',
+    'ご確認を待っています。',
+    'ご返信をお待ちしております。',
+  ];
+  for (const sample of cases) {
+    assert.equal(matchesWaiting(sample), true, `検知できていない: ${sample}`);
+  }
 });
 
 test('matchesWaiting: 本物の確認待ち UI は従来どおり検知する（回帰防止）', () => {

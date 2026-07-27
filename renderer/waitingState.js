@@ -1,6 +1,18 @@
 /* global module */
 
 // ─── Waiting detection ────────────────────────────────────────────────────────
+
+// 「〜を（お）待ちしています / 〜を待っています」で待っている対象の許可リスト。
+// ユーザーが差し出すもの（入力・選択・承認など）に限定し、第三者（サブエージェントや
+// CI）の成果物を待つ進捗ナレーションと区別する（issue vektor-inc/vk-orchestrator#212）。
+const WAITING_TARGET_NOUNS = [
+  '入力', '選択', '承認', '回答',
+  'ご対応', 'ご確認', 'ご返信', '返信', 'ご連絡', 'ご指示', 'ご判断', 'ご返答', 'お返事',
+];
+const WAITING_TARGET_NOUNS_PATTERN = new RegExp(
+  `(?:${WAITING_TARGET_NOUNS.join('|')})(?:を)?(?:お)?待(?:ち|って)`,
+);
+
 const WAITING_PATTERNS = [
   /\[y\/N\]/i, /\[Y\/n\]/i, /\(y\/n\)/i,
   /Press Enter/i,
@@ -34,17 +46,18 @@ const WAITING_PATTERNS = [
   // Claude Code が "※ recap: …承認待ちです。…(disable recaps in /config)" のような
   // 振り返りメッセージを最後に挟むケースで、本文末尾が "承認待ち" や "委任します"
   // のような形になる。これらの「次アクションをユーザーに委ねている」言い回しを拾う。
-  /(?:承認|回答|ご判断|ご返答|お返事|ご指示|ご連絡)(?:を)?(?:お)?待ち/,
+  // 「〜を（お）待ちしています」系（issue vektor-inc/vk-orchestrator#212）。
+  //   旧実装は宛先を問わない /(?:お待ち|待って)(?:しています|います|ます)/ を併置していたため、
+  //   「和田の修正を待っています。」「CI の完了を待っています。」のような、第三者
+  //   （サブエージェント・外部処理）の完了待ちを伝える進捗ナレーションにも反応し、
+  //   AI が動作中でも「入力待ち」が点灯していた。
+  //   そこで **待つ対象の名詞を許可リスト化** し、ユーザーが差し出すものを待っている
+  //   ときだけ一致させる。「修正 / 完了 / 応答」のような第三者の成果物は列挙しない。
+  //   接頭辞なしの「指示 / 判断 / 対応」も、他エージェント宛て（例:「司の指示を待っています」）
+  //   になり得るため入れず、ご付きの形だけを許可する。
+  WAITING_TARGET_NOUNS_PATTERN,
   /(?:いただけ|いただい)たら.{0,30}(?:委任|お願い|進め|実装)/,
   /(?:お任せ|ご判断)(?:します|ください|いただけ)/,
-  // NOTE: /(?:お待ち|待って)(?:しています|います|ます)/ は削除
-  //   （issue vektor-inc/vk-orchestrator#212）。
-  //   「和田の修正を待っています。」「CI の完了を待っています。」のような、
-  //   第三者（サブエージェント・外部処理）の完了待ちを伝える進捗ナレーションに
-  //   反応してしまい、AI が動作中でも「入力待ち」が点灯していた。
-  //   ユーザー宛ての待ち文言は直上の
-  //   /(?:承認|回答|ご判断|ご返答|お返事|ご指示|ご連絡)(?:を)?(?:お)?待ち/ が拾うため、
-  //   宛先を限定しない広いパターンは持たない。
   // AskUserQuestion / 数字選択肢の UI 検知（issue #46）。
   // Claude Code の AskUserQuestion は「❯ 1. … / 2. …」の選択肢と
   // 「Enter to select / ↑/↓ to navigate / Esc to cancel」のフッターが固定で出る。
@@ -87,61 +100,76 @@ function isWaitingCwdExcluded(cwdFull, patterns) {
 // 逆に本物の確認待ちでは相手が止まるため出力が途絶える。この差を判定条件に使い、
 // 「最後の出力から一定時間静止したら判定する」形にする。
 const WAITING_QUIESCENCE_MS = 1500;
-// 入力待ち表示中に限って設ける再判定の上限（ms）。
-// 誤検知で入力待ちになったまま出力が延々と流れ続ける（スピナーが回り続ける）と
-// 静止が訪れず、再評価の機会が永久に来ない。張り付きから必ず復帰できるよう、
-// 入力待ち中だけは静止を待たずにこの間隔で再評価する。
-const WAITING_STUCK_RECHECK_MS = 5000;
+// 判定間隔の上限（ms）。出力が静止しないまま流れ続けても、必ずこの間隔ごとに 1 回は
+// 評価する。これが無いと、
+//   - waiting=false のペインで出力が途切れないまま本物のプロンプトが出た場合に
+//     一度も評価されず、検知もビープもされない（取りこぼし）
+//   - 誤検知で waiting=true になったまま出力が流れ続けると解除の機会が来ない（張り付き）
+// の両方が起きる。状態によらず常時適用する。
+const WAITING_MAX_EVAL_INTERVAL_MS = 5000;
 
 // 次に waiting 判定を行うまでの待ち時間（ms）を返す。
-//   - lastOutputTime: 最後に PTY 出力を受け取った時刻
+//   - lastOutputTime: 最後に PTY 出力を受け取った時刻（静止判定の起点）
 //   - pendingSince:   前回の判定以降、最初に出力を受け取った時刻（上限判定の起点）
-//   - waiting:        現在入力待ち表示中か（上限による強制再判定は入力待ち中のみ）
+// 「静止するまで」と「上限間隔」の早い方を採る。
 function waitingCheckDelayMs({
   now,
   lastOutputTime,
   pendingSince,
-  waiting = false,
   quiescenceMs = WAITING_QUIESCENCE_MS,
-  stuckRecheckMs = WAITING_STUCK_RECHECK_MS,
+  maxEvalIntervalMs = WAITING_MAX_EVAL_INTERVAL_MS,
 }) {
   let target = (lastOutputTime || 0) + quiescenceMs;
-  if (waiting && pendingSince) target = Math.min(target, pendingSince + stuckRecheckMs);
+  if (pendingSince) target = Math.min(target, pendingSince + maxEvalIntervalMs);
   return Math.max(0, target - now);
 }
 
-// 出力が静止した時点（または入力待ち中の上限到達時）の再評価。
-// 戻り値の clearArmed は「次に出力が再開したら入力待ちを解除する」予約フラグ。
-//
-// なぜ非マッチで即解除しないか:
-//   静止時点の lastLines には直近の再描画結果（ダイアログ本体）が残っているため、
-//   原則としてそのまま再評価してよい。ただしウィンドウリサイズ等で TUI が再描画すると
-//   確認文が別位置で折り返され、一時的にパターンへマッチしなくなることがある
-//   （tests の「リサイズ再描画で確認文が折り返された非マッチ例」参照）。
-//   ここで即解除すると本物の確認待ちを取りこぼすため、解除は「出力が再開した
-//   ＝相手は入力を待たずに動いている」という追加の根拠が得られるまで保留する。
-function nextWaitingStateOnQuiescence({ prev, matches, excluded = false }) {
-  if (excluded) return { waiting: false, clearArmed: false };
-  if (matches) return { waiting: true, clearArmed: false };
-  return { waiting: prev === true, clearArmed: prev === true };
+// 判定時点で出力が静止しているか（＝相手が止まっているか）。
+// 静止していれば「入力待ちかもしれない」、流れていれば「相手は動いている」の強い根拠になる。
+function isOutputQuiescent({ now, lastOutputTime, quiescenceMs = WAITING_QUIESCENCE_MS }) {
+  return now - (lastOutputTime || 0) >= quiescenceMs;
 }
 
-// PTY 出力を受け取った時点の評価。解除予約済みならここで入力待ちを解除する。
-// 予約が無い間は出力があっても解除しない（旧来のスティッキー性を保つ）。
-function nextWaitingStateOnOutput({ prev, clearArmed, excluded = false }) {
-  if (excluded) return { waiting: false, clearArmed: false };
-  if (prev === true && clearArmed === true) return { waiting: false, clearArmed: false };
-  return { waiting: prev === true, clearArmed: clearArmed === true };
+// waiting 判定（issue vektor-inc/vk-orchestrator#212）。
+// 解除の根拠を「判定時点で出力が流れている」ことに一本化する。
+//
+//   静止して呼ばれた評価（quiescent = true / 相手は止まっている）
+//     - マッチ   → 入力待ち ON
+//     - 非マッチ → 現状維持。ウィンドウリサイズ等の再描画で確認文が別位置に折り返されると
+//                  本物の確認待ちでも一時的に非マッチになるため（tests の
+//                  「リサイズ再描画で確認文が折り返された非マッチ例」参照）、ここで
+//                  解除すると本物を取りこぼす。
+//   上限で強制的に呼ばれた評価（quiescent = false / 出力が流れ続けている）
+//     - マッチ   → 入力待ち ON のまま
+//     - 非マッチ → 解除。出力が流れている＝相手は入力を待たずに動いている、が根拠。
+//                  張り付きからの唯一の自動復帰経路。
+function nextWaitingState({ prev, matches, excluded = false, quiescent }) {
+  if (excluded) return false;
+  if (matches) return true;
+  return quiescent ? prev === true : false;
+}
+
+// 入力待ち検知時のビープを鳴らしてよいか。
+// 解除と再検知が短時間で往復すると鳴り続けてうるさいため、クールダウンを設ける。
+// ユーザーが応答したとき（markPaneInput）は起点をリセットするので、
+// 「応答したら次の確認でまた鳴る」という本来の通知は抑止しない。
+const WAITING_BEEP_COOLDOWN_MS = 15000;
+
+function shouldBeepForWaiting({ now, lastBeepAt, cooldownMs = WAITING_BEEP_COOLDOWN_MS }) {
+  if (!lastBeepAt) return true;
+  return now - lastBeepAt >= cooldownMs;
 }
 
 module.exports = {
+  WAITING_BEEP_COOLDOWN_MS,
+  WAITING_MAX_EVAL_INTERVAL_MS,
   WAITING_PATTERNS,
   WAITING_QUIESCENCE_MS,
-  WAITING_STUCK_RECHECK_MS,
+  isOutputQuiescent,
   isWaitingCwdExcluded,
   matchesWaiting,
-  nextWaitingStateOnOutput,
-  nextWaitingStateOnQuiescence,
+  nextWaitingState,
   normalizeWaitingExcludeCwdPatterns,
+  shouldBeepForWaiting,
   waitingCheckDelayMs,
 };

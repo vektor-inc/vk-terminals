@@ -12,6 +12,7 @@ const {
   matchesWaiting,
   nextWaitingState,
   normalizeWaitingExcludeCwdPatterns,
+  selectWaitingBuffer,
   shouldBeepForWaiting,
   waitingCheckDelayMs,
 } = require('../renderer/waitingState');
@@ -93,6 +94,47 @@ test('nextWaitingState: 出力が流れている最中の解除直後は idle �
     }),
     'running',
   );
+});
+
+// ─── 判定に使うバッファの選択 ────────────────────────────────────────────────
+
+test('selectWaitingBuffer: 静止評価では直近ウィンドウ全体を見る', () => {
+  // 画面に残っているダイアログを拾う必要があるため。
+  assert.equal(
+    selectWaitingBuffer({ quiescent: true, fullBuffer: 'Proceed?\nline 1', recentBuffer: 'line 1' }),
+    'Proceed?\nline 1',
+  );
+});
+
+test('selectWaitingBuffer: 上限評価では前回の評価以降の出力だけを見る', () => {
+  // ウィンドウ全体を見ると、点灯のもとになった文言が 80 行バッファから押し出される
+  // まで一致し続け、解除までの時間が出力の行数レートに依存してしまう。
+  assert.equal(
+    selectWaitingBuffer({ quiescent: false, fullBuffer: 'Proceed?\nline 1', recentBuffer: 'line 1' }),
+    'line 1',
+  );
+});
+
+test('selectWaitingBuffer: 上限評価は直近出力のみを見るので、古い確認文言では解除を妨げない', () => {
+  // 「点灯のもとになった Proceed? がまだウィンドウに残っている / 直近の出力には
+  // 待ち文言が無い」状況で、解除まで到達できることを判定側とつないで確認する。
+  const fullBuffer = ['Proceed?', ...Array.from({ length: 40 }, (_v, i) => `line ${i}`)].join('\n');
+  const recentBuffer = Array.from({ length: 20 }, (_v, i) => `line ${i + 40}`).join('\n');
+
+  // 出力が流れている最中（上限評価）
+  const streaming = selectWaitingBuffer({ quiescent: false, fullBuffer, recentBuffer });
+  assert.equal(matchesWaiting(streaming), false);
+  assert.equal(nextWaitingState({ prev: true, matches: false, quiescent: false }), false);
+
+  // 出力が止まれば全体を見直すので、画面に残っている確認文言で再点灯する（自己修復）
+  const quiesced = selectWaitingBuffer({ quiescent: true, fullBuffer, recentBuffer });
+  assert.equal(matchesWaiting(quiesced), true);
+  assert.equal(nextWaitingState({ prev: false, matches: true, quiescent: true }), true);
+});
+
+test('selectWaitingBuffer: バッファ未設定でも空文字を返す', () => {
+  assert.equal(selectWaitingBuffer({ quiescent: false, fullBuffer: 'x' }), '');
+  assert.equal(selectWaitingBuffer({ quiescent: true }), '');
 });
 
 test('isOutputQuiescent: 静止時間の到達で切り替わる', () => {

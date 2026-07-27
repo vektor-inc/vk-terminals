@@ -13,8 +13,12 @@
 //     「誤検知（うるさい）より見逃し（AI が止まったことに気づけない）のほうが実害が大きい」。
 //     ご付きへの絞り込みは、コストを見逃し側へ寄せる変更になる。
 //   - 現在の状態機械では、この種の誤検知は出力が流れている限り上限間隔
-//     （WAITING_MAX_EVAL_INTERVAL_MS）で自動解除されるため、被害は「最大数秒バッジが
-//     点く」だけに収まる。旧実装のように永久に張り付くことはない。
+//     （WAITING_MAX_EVAL_INTERVAL_MS = 5 秒）で自動解除される。上限評価は「前回の評価
+//     以降に届いた出力」だけを見る（selectWaitingBuffer 参照）ので、解除までの時間は
+//     出力量に依らずこの間隔で頭打ちになり、被害は「作業中に数秒バッジが点く」に収まる。
+//     旧実装のように永久に張り付くことはない。
+//     （※ 出力が完全に止まっているときは解除されないが、それは「相手が止まっている」
+//       状態なので、バッジが点いたままでも実害は小さい。）
 //   将来この判断を見直すときは、上のトレードオフが変わったかどうかから検討すること。
 const WAITING_TARGET_NOUNS = [
   '入力', '選択', '承認', '回答',
@@ -147,6 +151,25 @@ function isOutputQuiescent({ now, lastOutputTime, quiescenceMs = WAITING_QUIESCE
   return now - (lastOutputTime || 0) >= quiescenceMs;
 }
 
+// 判定に使うバッファを、判定の種類で使い分ける（issue vektor-inc/vk-orchestrator#212）。
+//   - 静止評価（quiescent = true / 出力が止まっている）
+//       画面に残っているダイアログを拾う必要があるため、直近ウィンドウ全体
+//       （fullBuffer = lastLines / 80 行）で判定する。
+//   - 上限評価（quiescent = false / 出力が流れている）
+//       前回の評価以降に届いた出力だけ（recentBuffer）で判定する。
+//       ウィンドウ全体を見ると、点灯のもとになった文言が 80 行バッファから押し出される
+//       まで一致し続けるため、解除までの時間が「経過時間」ではなく「出力の行数レート」に
+//       依存してしまう（実測: 1 行 0.2 秒だと解除まで 20 秒 / 解除されない）。
+//       直近の数秒に届いた出力だけを見れば、解除は上限間隔で頭打ちになる。
+//
+// 揺り戻しの自己修復:
+//   本物のダイアログが出ている最中に別プロセスが出力を流し続けると、上限評価で
+//   いったん解除され得る。その場合も出力が止まった時点の静止評価で lastLines 全体を
+//   見直して再点灯するため、状態は自己修復する（ビープはクールダウンで抑止される）。
+function selectWaitingBuffer({ quiescent, fullBuffer, recentBuffer }) {
+  return (quiescent ? fullBuffer : recentBuffer) || '';
+}
+
 // waiting 判定（issue vektor-inc/vk-orchestrator#212）。
 // 解除の根拠を「判定時点で出力が流れている」ことに一本化する。
 //
@@ -187,6 +210,7 @@ module.exports = {
   matchesWaiting,
   nextWaitingState,
   normalizeWaitingExcludeCwdPatterns,
+  selectWaitingBuffer,
   shouldBeepForWaiting,
   waitingCheckDelayMs,
 };

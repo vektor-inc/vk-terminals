@@ -20,6 +20,7 @@ const {
   matchesWaiting,
   nextWaitingState,
   normalizeWaitingExcludeCwdPatterns,
+  selectWaitingBuffer,
   shouldBeepForWaiting,
   waitingCheckDelayMs,
 } = require('./waitingState');
@@ -175,9 +176,17 @@ function checkWaiting(paneId) {
   t.waitingCheckTimer = null;
   t.waitingPendingSince = 0;
   const now = Date.now();
-  const matches = matchesWaiting(stripAnsiForDisplay(t.lastLines));
   const excluded = isWaitingCwdExcluded(t.cwdFull, waitingExcludeCwdPatterns);
   const quiescent = isOutputQuiescent({ now, lastOutputTime: t.lastOutputTime });
+  // 静止評価は lastLines（80 行ウィンドウ）全体、上限評価は前回の評価以降に届いた
+  // 出力（recentLines）だけを見る。理由は selectWaitingBuffer のコメント参照。
+  const matches = matchesWaiting(stripAnsiForDisplay(selectWaitingBuffer({
+    quiescent,
+    fullBuffer: t.lastLines,
+    recentBuffer: t.recentLines,
+  })));
+  // 次回の上限評価は「ここから先に届いた出力」だけを対象にする。
+  t.recentLines = '';
   const waiting = nextWaitingState({ prev: t.waiting, matches, excluded, quiescent });
   if (waiting !== t.waiting) {
     t.waiting = waiting;
@@ -228,6 +237,19 @@ function clearWaitingCheckTimer(t) {
   t.waitingCheckTimer = null;
 }
 
+// waiting 判定用バッファへ PTY 出力を積む。
+// issue #32: 直近 N 行のウィンドウが小さすぎると、Claude Code TUI のプロンプト枠や
+// recap メッセージの再描画で本来の確認文が押し出されて検知できなくなる。
+// 行数とトータル文字数の両方で上限を設けてメモリ膨張も防ぎつつ十分なウィンドウを確保する。
+function appendWaitingBuffer(prev, data) {
+  let merged = appendAnsiForDisplay(prev, data).split('\n').slice(-LASTLINES_MAX_LINES).join('\n');
+  if (merged.length > LASTLINES_MAX_CHARS) {
+    // 行を跨いだ単純な末尾切り出し（マルチバイトでも安全）。
+    merged = merged.slice(-LASTLINES_MAX_CHARS);
+  }
+  return merged;
+}
+
 // 入力（ユーザー入力・ドロップ送信・API 送信）があったペインのローカル入力待ち状態を解除する。
 // waiting の即時解除経路（もう一方は checkWaiting() の「出力が流れている最中の非マッチ」）。
 // externalWaiting は外部の明示 false push だけで解除する。
@@ -243,6 +265,7 @@ function markPaneInput(paneId) {
   if (t.waiting) {
     t.waiting = false;
     t.lastLines = '';
+    t.recentLines = '';
   }
   recomputeStatus(paneId);
 }
@@ -418,6 +441,9 @@ async function createTerminal(paneId, cwd, options = {}) {
     waitingPendingSince: 0,
     lastWaitingBeepAt: 0,
     lastLines: '',
+    // recentLines: 前回の waiting 評価以降に届いた出力だけを貯めるバッファ。
+    //   上限評価（出力が流れている最中の判定）で使う。lastLines と同じ上限でトリムする。
+    recentLines: '',
     lastOutputTime: Date.now(),
     lastInputTime: 0,
     // taskTitle: xterm の OSC 0/2 由来のタイトル（claude TUI 等が継続的に発行する）
@@ -510,15 +536,10 @@ ipcRenderer.on('terminal:data', (event, id, data) => {
   }
 
   // Accumulate last lines for waiting detection
-  // issue #32: 直近 N 行のウィンドウが小さすぎると、Claude Code TUI のプロンプト枠や
-  // recap メッセージの再描画で本来の確認文が押し出されて検知できなくなる。
-  // 行数とトータル文字数の両方で上限を設けてメモリ膨張も防ぎつつ十分なウィンドウを確保する。
-  let merged = appendAnsiForDisplay(t.lastLines, data).split('\n').slice(-LASTLINES_MAX_LINES).join('\n');
-  if (merged.length > LASTLINES_MAX_CHARS) {
-    // 行を跨いだ単純な末尾切り出し（マルチバイトでも安全）。
-    merged = merged.slice(-LASTLINES_MAX_CHARS);
-  }
-  t.lastLines = merged;
+  t.lastLines = appendWaitingBuffer(t.lastLines, data);
+  // 上限評価（出力が流れている最中の判定）用に、前回の評価以降の出力も別に貯める。
+  // checkWaiting() が評価のたびにリセットする（issue vektor-inc/vk-orchestrator#212）。
+  t.recentLines = appendWaitingBuffer(t.recentLines, data);
   t.lastOutputTime = Date.now();
   // 判定は出力が静止してから行う（即時判定はしない）。
   scheduleWaitingCheck(paneId);

@@ -74,6 +74,30 @@ async function contentBlockIndexes(win, panelSelector, specs) {
   }, specs);
 }
 
+// settings:save の応答をわざと遅らせる。保存処理は await の向こう側なので、
+// 「応答が返ってきた時点では既にモーダルが閉じられている」状況をこれで再現する。
+// 保存自体は行わせず ok だけ返す（一時 HOME の設定ファイルを書き換えないため）。
+async function stubSlowSave(win, delayMs) {
+  await win.evaluate((ms) => {
+    const { ipcRenderer } = require('electron');
+    if (!window.__origInvoke) window.__origInvoke = ipcRenderer.invoke.bind(ipcRenderer);
+    ipcRenderer.invoke = (channel, ...args) => {
+      if (channel !== 'settings:save') return window.__origInvoke(channel, ...args);
+      return new Promise((resolve) => setTimeout(() => resolve({ ok: true }), ms));
+    };
+  }, delayMs);
+}
+
+// stubSlowSave を元に戻す（後続テストが本来の保存経路を使えるように）。
+async function restoreSave(win) {
+  await win.evaluate(() => {
+    const { ipcRenderer } = require('electron');
+    if (!window.__origInvoke) return;
+    ipcRenderer.invoke = window.__origInvoke;
+    delete window.__origInvoke;
+  });
+}
+
 const TAB_GENERAL = '#settings-tab-0';   // 設定
 const TAB_MOBILE = '#settings-tab-1';    // 外出先から確認
 const PANEL_GENERAL = '#settings-panel-0';
@@ -361,5 +385,30 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
     await win.waitForTimeout(3000);
     await win.evaluate(() => window.openSettingsModal());
     await expect(win.locator('.settings-modal')).toHaveCount(1);
+  });
+
+  test('保存応答が閉じた後に返ってきても、自動クローズを武装し直さない', async () => {
+    // 応答が返る前に閉じられると、閉じた後のクロージャから setTimeout が張られる。
+    // その発火は「今開いているモーダル」ではなく前回の overlay を対象に modalOpen を
+    // false へ戻すため、二重オープンの抑止が壊れて 2 枚重なる。
+    const saveDelay = 1500;
+    await stubSlowSave(win, saveDelay);
+    try {
+      await win.locator('#set-field-0').fill('127.0.0.1');
+      await win.locator('.settings-save').click();
+
+      // 応答を待たずに ✕ で閉じ、すぐ開き直す。
+      await win.locator('.settings-close').click();
+      await win.waitForSelector('.settings-modal', { state: 'detached' });
+      await win.evaluate(() => window.openSettingsModal());
+      await win.waitForSelector('.settings-modal', { state: 'visible' });
+
+      // 「遅れて返った応答が武装 → その 2.5 秒後に発火」までを待ち切ってから確かめる。
+      await win.waitForTimeout(saveDelay + 2500 + 800);
+      await win.evaluate(() => window.openSettingsModal());
+      await expect(win.locator('.settings-modal')).toHaveCount(1);
+    } finally {
+      await restoreSave(win);
+    }
   });
 });

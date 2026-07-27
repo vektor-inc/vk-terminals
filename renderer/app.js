@@ -3399,15 +3399,30 @@ async function openSettingsModal() {
 
   const modal = overlay.querySelector('.settings-modal');
 
-  // 保存成功後の自動クローズ用タイマー。手動で閉じたときに残しておくと、遅れて発火した
-  // close() が modalOpen を false に戻して二重オープンのロックを無効化してしまうため、
-  // close() で必ず取り消す。
+  // 保存成功後の自動クローズ用タイマー。武装したまま放置すると、遅れて発火した close() が
+  // 「今開いているモーダル」ではなくこのクロージャの overlay を対象に modalOpen を false へ
+  // 戻し、二重オープンの抑止を壊す。取り消し漏れを防ぐため arm / cancel をここに集約し、
+  // close()（手動クローズ）とタブ切り替えの両方から cancelAutoClose() を呼ぶ。
   let autoCloseTimer = null;
+  let closed = false;
+  const cancelAutoClose = () => {
+    if (autoCloseTimer === null) return;
+    clearTimeout(autoCloseTimer);
+    autoCloseTimer = null;
+  };
+  // 保存応答は await の向こう側なので、返ってきた時点でモーダルが既に閉じられていることが
+  // ある。閉じた後のクロージャから武装すると、次に開いたモーダルを巻き添えに modalOpen を
+  // false へ戻してしまうため closed で弾く。保存を連打された場合に前のタイマーが残らないよう、
+  // 張り直す前に必ず取り消す。
+  const armAutoClose = () => {
+    if (closed) return;
+    cancelAutoClose();
+    autoCloseTimer = setTimeout(close, 2500);
+  };
   const close = () => {
-    if (autoCloseTimer !== null) {
-      clearTimeout(autoCloseTimer);
-      autoCloseTimer = null;
-    }
+    if (closed) return;
+    closed = true;
+    cancelAutoClose();
     document.removeEventListener('keydown', onKey);
     overlay.remove();
     modalOpen = false;
@@ -3518,9 +3533,11 @@ async function openSettingsModal() {
         panel.hidden = index !== nextIndex;
       });
       activeTabIndex = nextIndex;
-      // 保存直後のフッター固定は、タブを移った時点で解除する（B-5: 説明タブに
-      // 「保存」が出たまま残らないようにする）。
-      if (tabChanged) footerLocked = false;
+      if (tabChanged) {
+        // 保存直後のフッター固定は、タブを移った時点で解除する（B-5: 説明タブに
+        // 「保存」が出たまま残らないようにする）。
+        footerLocked = false;
+      }
       updateSettingsFooter();
       if (tabChanged) restoreTabScroll(nextIndex);
       if (options.focus) tabButtons[nextIndex].focus();
@@ -3729,7 +3746,7 @@ async function openSettingsModal() {
         clearDirtyTabs();
         msg.textContent = '保存しました。次回の起動から反映されます。';
         msg.classList.add('ok');
-        autoCloseTimer = setTimeout(close, 2500);
+        armAutoClose();
       } else {
         msg.textContent = 'エラー: ' + (res && res.error ? res.error : '不明なエラー');
         msg.classList.add('err');

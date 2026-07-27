@@ -80,16 +80,15 @@ test.describe.serial('設定キー重複時の移動先と保存値（issue #258
     await closeApp({ app, tmpRoot });
   });
 
+  test.afterEach(async () => {
+    const closeButton = win.locator('.settings-close');
+    if (await closeButton.isVisible()) await closeButton.click();
+  });
+
   test('移動ボタンで着地した欄の入力値がそのまま保存される', async () => {
     await installDuplicateKeyDescriptor(win);
     await win.evaluate(() => window.openSettingsModal());
     await win.waitForSelector('.settings-modal', { state: 'visible' });
-
-    // 後から描画される重複欄だけのグループは消え、このタブは説明だけのタブと同様に
-    // 保存対象無しになる。legend だけの空 fieldset と保存ボタンを残さない。
-    await win.getByRole('tab', { name: 'トークン' }).click();
-    await expect(win.getByLabel('後から描画される接続先', { exact: true })).toHaveCount(0);
-    await expect(win.locator('.settings-save')).toBeHidden();
 
     // 案内タブから、重複キーのうち描画順で先に現れる基本タブの欄へ移動する。
     await win.getByRole('tab', { name: '案内' }).click();
@@ -107,5 +106,17 @@ test.describe.serial('設定キー重複時の移動先と保存値（issue #258
       () => window.__savedPayloads[window.__savedPayloads.length - 1]
     );
     expect(payload.duplicate).toBe('guided.example');
+  });
+
+  test('重複した欄は描画されず、そのタブは保存対象なしになる', async () => {
+    await installDuplicateKeyDescriptor(win);
+    await win.evaluate(() => window.openSettingsModal());
+    await win.waitForSelector('.settings-modal', { state: 'visible' });
+
+    // 後から描画される重複欄だけのグループは消え、このタブは説明だけのタブと同様に
+    // 保存対象無しになる。legend だけの空 fieldset と保存ボタンを残さない。
+    await win.getByRole('tab', { name: 'トークン' }).click();
+    await expect(win.getByLabel('後から描画される接続先', { exact: true })).toHaveCount(0);
+    await expect(win.locator('.settings-save')).toBeHidden();
   });
 });

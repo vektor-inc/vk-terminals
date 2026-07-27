@@ -113,6 +113,21 @@ test('dedupeSettingsFieldsByKey: 同一グループ内の重複キーは最初�
   }]);
 });
 
+test('dedupeSettingsFieldsByKey: 組み込みプロパティ名の重複キーも先勝ちで 1 件残す', () => {
+  const prototypeKeys = ['__proto__', 'constructor', 'toString'];
+  const fields = prototypeKeys.flatMap((key) => [
+    { key, label: `${key} の最初`, type: 'text' },
+    { key, label: `${key} の重複`, type: 'text' },
+  ]);
+
+  assert.deepEqual(dedupeSettingsFieldsByKey([{ label: '組み込み名', fields }], []), [{
+    label: '組み込み名',
+    fields: prototypeKeys.map((key) => (
+      { key, label: `${key} の最初`, type: 'text' }
+    )),
+  }]);
+});
+
 test('dedupeSettingsFieldsByKey: 別グループの重複キーはタブ順の描画で最初の 1 つを残す', () => {
   const tabs = normalizeSettingsTabs({
     tabs: [
@@ -177,6 +192,44 @@ test('dedupeSettingsFieldsByKey: 別グループの重複キーはタブ順の�
   assert.deepEqual(tabs[2].content, [
     { type: 'tabLink', label: '重複キーへ', tab: 'general', field: 'duplicate' },
     { type: 'tabLink', label: '宣言順の欄へ', tab: 'tokens' },
+  ]);
+});
+
+test('dedupeSettingsFieldsByKey: tab 未指定と未知 tab のグループは宣言順より描画順を優先する', () => {
+  const tabs = [
+    { id: 'general', label: '基本', index: 0 },
+    { id: 'tokens', label: 'トークン', index: 1 },
+  ];
+  const groups = [
+    {
+      label: '宣言順では最初',
+      tab: 'tokens',
+      fields: [{ key: 'duplicate', label: '後から描画', type: 'text' }],
+    },
+    {
+      label: 'tab 未指定',
+      fields: [{ key: 'duplicate', label: '最初に描画', type: 'text' }],
+    },
+    {
+      label: '未知 tab',
+      tab: 'missing',
+      fields: [
+        { key: 'duplicate', label: '先頭タブ内で後から描画', type: 'text' },
+        { key: 'unknown-only', label: '未知 tab の固有欄', type: 'text' },
+      ],
+    },
+  ];
+
+  assert.deepEqual(dedupeSettingsFieldsByKey(groups, tabs), [
+    {
+      label: 'tab 未指定',
+      fields: [{ key: 'duplicate', label: '最初に描画', type: 'text' }],
+    },
+    {
+      label: '未知 tab',
+      tab: 'missing',
+      fields: [{ key: 'unknown-only', label: '未知 tab の固有欄', type: 'text' }],
+    },
   ]);
 });
 
@@ -245,6 +298,64 @@ test('dedupeSettingsFieldsByKey: 不正な key のフィールド同士は重複
     label: '不正キー',
     fields: fields.slice(0, 7),
   }]);
+});
+
+test('dedupeSettingsFieldsByKey: 非配列の groups・group・fields は例外なくそのまま通す', () => {
+  assert.deepEqual(dedupeSettingsFieldsByKey(null, []), []);
+  assert.deepEqual(dedupeSettingsFieldsByKey({ fields: [] }, []), []);
+  assert.deepEqual(dedupeSettingsFieldsByKey([
+    null,
+    42,
+    { label: 'fields 未指定' },
+    { label: 'fields が非配列', fields: 'not-array' },
+  ], []), [
+    null,
+    42,
+    { label: 'fields 未指定' },
+    { label: 'fields が非配列', fields: 'not-array' },
+  ]);
+});
+
+test('dedupeSettingsFieldsByKey: 落とした重複キーを 1 行の警告にまとめる', () => {
+  const originalWarn = console.warn;
+  const warnings = [];
+  console.warn = (...args) => warnings.push(args);
+  try {
+    dedupeSettingsFieldsByKey([{
+      fields: [
+        { key: 'host' },
+        { key: 'host' },
+        { key: 'token' },
+        { key: 'token' },
+        { key: 'host' },
+      ],
+    }], []);
+  } finally {
+    console.warn = originalWarn;
+  }
+
+  assert.deepEqual(warnings, [[
+    '[settings] 重複した key のため設定欄をスキップしました:',
+    'host, token',
+  ]]);
+});
+
+test('dedupeSettingsFieldsByKey: 重複キーが無いときは警告しない', () => {
+  const originalWarn = console.warn;
+  const warnings = [];
+  console.warn = (...args) => warnings.push(args);
+  try {
+    dedupeSettingsFieldsByKey([{
+      fields: [
+        { key: 'host' },
+        { key: 'token' },
+      ],
+    }], []);
+  } finally {
+    console.warn = originalWarn;
+  }
+
+  assert.deepEqual(warnings, []);
 });
 
 test('dedupeSettingsFieldsByKey: 重複除去で空になったグループだけを描画対象から外す', () => {

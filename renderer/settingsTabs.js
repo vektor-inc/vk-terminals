@@ -214,7 +214,10 @@ function dedupeSettingsFieldsByKey(groups, tabs) {
   const orderedGroups = Array.isArray(tabs) && tabs.length > 0
     ? groupSettingsGroupsByTab(safeGroups, tabs).flatMap(({ groups: tabGroups }) => tabGroups)
     : safeGroups;
+  // 素の {} では seen['__proto__'] が常に truthy になって全フィールドが消えるため、
+  // 組み込みプロパティ名も安全にキーとして扱える Set を使う。
   const seenKeys = new Set();
+  const duplicateKeys = new Set();
   const dedupedGroups = [];
 
   for (const group of orderedGroups) {
@@ -228,7 +231,10 @@ function dedupeSettingsFieldsByKey(groups, tabs) {
       if (!key.trim()) return true;
       // タブ ID・所属タブ・移動先の既存解決はすべて先勝ち。保存対象も同じ欄へ揃えるため、
       // 描画順で最初の 1 件を残し、後から現れる同一 key の欄を落とす。
-      if (seenKeys.has(key)) return false;
+      if (seenKeys.has(key)) {
+        duplicateKeys.add(key);
+        return false;
+      }
       seenKeys.add(key);
       return true;
     });
@@ -236,7 +242,16 @@ function dedupeSettingsFieldsByKey(groups, tabs) {
     // 元から fields が空のグループは既存どおり残す。一方、重複除去で初めて空になった
     // グループは legend だけの fieldset を生むため、描画対象からグループごと外す。
     if (group.fields.length > 0 && fields.length === 0) continue;
+    // Object.assign({}, group) は JSON 由来の own __proto__ でプロトタイプ汚染されるため、
+    // own プロパティとして安全にコピーできるオブジェクトスプレッドを使う。
     dedupedGroups.push({ ...group, fields });
+  }
+
+  if (duplicateKeys.size > 0 && typeof console !== 'undefined' && console.warn) {
+    console.warn(
+      '[settings] 重複した key のため設定欄をスキップしました:',
+      [...duplicateKeys].join(', ')
+    );
   }
 
   return dedupedGroups;

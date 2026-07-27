@@ -3479,8 +3479,13 @@ async function openSettingsModal() {
             tabIndex,
             omitLegend: groups.length === 1,
           })).join('');
+          // 説明コンテンツも設定グループも無い、完全に空のタブだけに空状態を示す。
+          // fields が空でもグループがあれば legend を残す既存挙動は変えない。
+          const emptyHtml = !contentHtml && groups.length === 0
+            ? '<p class="settings-empty">このタブに表示できる設定項目はありません。</p>'
+            : '';
           return `<section class="settings-tab-panel" id="${escAttr(panelId)}" role="tabpanel" aria-labelledby="${escAttr(tabId)}" tabindex="0"${tabIndex === 0 ? '' : ' hidden'}>
-            ${targetHtml}${noteHtml}${contentHtml}${tabGroupsHtml}
+            ${targetHtml}${noteHtml}${contentHtml}${tabGroupsHtml}${emptyHtml}
           </section>`;
         }).join('')
         : settingsGroups.map(g => renderGroupHtml(g)).join(''))

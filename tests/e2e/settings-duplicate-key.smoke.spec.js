@@ -114,9 +114,12 @@ test.describe.serial('設定キー重複時の移動先と保存値（issue #258
     await win.waitForSelector('.settings-modal', { state: 'visible' });
 
     // 後から描画される重複欄だけのグループは消え、このタブは説明だけのタブと同様に
-    // 保存対象無しになる。legend だけの空 fieldset と保存ボタンを残さない。
+    // 保存対象無しになる。legend だけの空 fieldset と保存ボタンを残さず、代わりに
+    // パネルが空であることを伝える。
     await win.getByRole('tab', { name: 'トークン' }).click();
     await expect(win.getByLabel('後から描画される接続先', { exact: true })).toHaveCount(0);
+    await expect(win.locator('#settings-panel-1 .settings-empty'))
+      .toHaveText('このタブに表示できる設定項目はありません。');
     await expect(win.locator('.settings-save')).toBeHidden();
   });
 });

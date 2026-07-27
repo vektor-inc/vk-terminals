@@ -1,5 +1,6 @@
 # Changelog
 
+- [ 仕様変更 ] 設定パネルで説明コンテンツも設定グループも無いタブに、表示できる設定項目が無いことを示すメッセージを追加（[#258](https://github.com/vektor-inc/vk-terminals/issues/258)）
 - [ 不具合修正 ] 設定項目のキーが重複したとき、移動ボタンで案内された欄への入力ではなく別の欄の値が保存される不具合を修正（[#258](https://github.com/vektor-inc/vk-terminals/issues/258)）
 - [ 開発環境 ] e2e を全件連続実行するとマシン負荷が高いときに一部のテストがタイムアウトで落ちる問題を修正（[#263](https://github.com/vektor-inc/vk-terminals/issues/263)）
 

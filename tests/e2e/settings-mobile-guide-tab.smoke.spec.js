@@ -430,6 +430,8 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
     await win.locator(TAB_MOBILE).click();
     await expect(win.locator(`${PANEL_MOBILE} input, ${PANEL_MOBILE} select, ${PANEL_MOBILE} textarea`))
       .toHaveCount(0);
+    // 説明コンテンツがあればパネルは空ではないので、空状態メッセージを足さない。
+    await expect(win.locator(`${PANEL_MOBILE} .settings-empty`)).toHaveCount(0);
     // 保存対象が無いので「保存」と保存ヒントを隠し、残す操作は「閉じる」だけにする。
     await expect(win.locator('.settings-save')).toBeHidden();
     await expect(win.locator('.settings-save-hint')).toBeHidden();

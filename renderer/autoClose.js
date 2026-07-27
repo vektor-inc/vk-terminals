@@ -35,7 +35,13 @@ function createAutoCloseController(options = {}) {
     arm() {
       if (closed) return false;
       cancel();
-      timer = schedule(onFire, delayMs);
+      // 発火時に自分で timer を落とす。onFire 側の後始末（呼び出し側では close →
+      // markClosed → cancel）に任せると、そこを通らない onFire を渡されたときに
+      // 発火済みの ID を保持し続け、isArmed が true のままになる。
+      timer = schedule(() => {
+        timer = null;
+        onFire();
+      }, delayMs);
       return true;
     },
     cancel,

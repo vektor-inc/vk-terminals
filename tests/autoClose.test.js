@@ -59,6 +59,19 @@ test('arm: 武装すると指定時間後に発火する', () => {
   assert.equal(fired.count, 1);
 });
 
+// 発火したらタイマーは保留中でなくなる。onFire の実装（呼び出し側では close）が
+// 後始末を通るかどうかに依存せず、このモジュール単体で状態が正しくあってほしい。
+test('arm: 発火後は isArmed が false に戻る', () => {
+  const { clock, controller } = setup({ onFire: () => {} });
+  controller.arm();
+  clock.tick(2500);
+  assert.equal(controller.isArmed, false);
+
+  // 発火後も武装し直せる（closed にはなっていない）。
+  assert.equal(controller.arm(), true);
+  assert.equal(controller.isArmed, true);
+});
+
 test('cancel: 取り消すと発火しない', () => {
   const { clock, fired, controller } = setup();
   controller.arm();

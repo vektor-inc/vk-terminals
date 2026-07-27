@@ -32,6 +32,7 @@ const { isPatternValid } = require('./settingsValidation');
 const { isFieldVisible } = require('./settingsVisibility');
 const { createAutoCloseController } = require('./autoClose');
 const {
+  dedupeSettingsFieldsByKey,
   deriveSettingsTargetPathsForGroups,
   groupSettingsGroupsByTab,
   normalizeSettingsTabs,
@@ -3421,6 +3422,9 @@ async function openSettingsModal() {
   // 描画順に採番したユニーク id と field を対応付ける（保存時もこの対応で走査する）。
   const entries = [];
   const settingsTabs = settingsAvailable ? normalizeSettingsTabs(desc) : [];
+  const settingsGroups = settingsAvailable
+    ? dedupeSettingsFieldsByKey(desc.groups, settingsTabs)
+    : [];
   const useTabbedSettings = settingsTabs.length > 0;
   const settingsSaveHintId = 'settings-save-hint';
   // ダイアログ名（支援技術の読み上げ）に見出しを使うための id。
@@ -3440,7 +3444,7 @@ async function openSettingsModal() {
       ${legendHtml}${groupTargetHtml}${rows}</fieldset>`;
   };
 
-  const groupedTabs = useTabbedSettings ? groupSettingsGroupsByTab(desc.groups, settingsTabs) : [];
+  const groupedTabs = useTabbedSettings ? groupSettingsGroupsByTab(settingsGroups, settingsTabs) : [];
   // 保存対象のフィールドを 1 つも持たないタブ（= 説明だけのタブ）を判別する。
   // 「保存後、次回の起動から反映されます。」の継承抑止とフッターの出し分けに使う。
   const tabHasFields = groupedTabs.map(({ groups }) => groups.some(
@@ -3479,7 +3483,7 @@ async function openSettingsModal() {
             ${targetHtml}${noteHtml}${contentHtml}${tabGroupsHtml}
           </section>`;
         }).join('')
-        : desc.groups.map(g => renderGroupHtml(g)).join(''))
+        : settingsGroups.map(g => renderGroupHtml(g)).join(''))
     : '';
 
   const appVersion = (desc && desc.appVersion) ? desc.appVersion : '';

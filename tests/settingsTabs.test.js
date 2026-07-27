@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
+  dedupeSettingsFieldsByKey,
   deriveSettingsTargetPathsForGroups,
   groupSettingsGroupsByTab,
   normalizeSettingsTabContent,
@@ -91,6 +92,182 @@ test('groupSettingsGroupsByTab: tab 未指定または未知の group は先頭�
   assert.equal(grouped.length, 2);
   assert.deepEqual(grouped[0].groups.map((group) => group.label), ['B', 'C']);
   assert.deepEqual(grouped[1].groups.map((group) => group.label), ['A']);
+});
+
+test('dedupeSettingsFieldsByKey: 同一グループ内の重複キーは最初の 1 つだけ残す', () => {
+  const groups = [{
+    label: '基本',
+    fields: [
+      { key: 'host', label: '最初のホスト', type: 'text' },
+      { key: 'port', label: 'ポート', type: 'text' },
+      { key: 'host', label: '後のホスト', type: 'text' },
+    ],
+  }];
+
+  assert.deepEqual(dedupeSettingsFieldsByKey(groups, []), [{
+    label: '基本',
+    fields: [
+      { key: 'host', label: '最初のホスト', type: 'text' },
+      { key: 'port', label: 'ポート', type: 'text' },
+    ],
+  }]);
+});
+
+test('dedupeSettingsFieldsByKey: 別グループの重複キーはタブ順の描画で最初の 1 つを残す', () => {
+  const tabs = normalizeSettingsTabs({
+    tabs: [
+      { id: 'general', label: '基本' },
+      { id: 'tokens', label: 'トークン' },
+      {
+        id: 'guide',
+        label: '案内',
+        content: [
+          { type: 'tabLink', label: '重複キーへ', tab: 'general', field: 'duplicate' },
+          { type: 'tabLink', label: '宣言順の欄へ', tab: 'tokens', field: 'duplicate' },
+        ],
+      },
+    ],
+    // 宣言では tokens が先だが、描画ではタブ順により general が先になる。
+    groups: [
+      {
+        label: 'トークン',
+        tab: 'tokens',
+        fields: [
+          { key: 'duplicate', label: '宣言順では最初', type: 'text' },
+          { key: 'token', label: 'トークン', type: 'text' },
+        ],
+      },
+      {
+        label: '基本',
+        tab: 'general',
+        fields: [{ key: 'duplicate', label: '描画順では最初', type: 'text' }],
+      },
+    ],
+  });
+  const groups = [
+    {
+      label: 'トークン',
+      tab: 'tokens',
+      fields: [
+        { key: 'duplicate', label: '宣言順では最初', type: 'text' },
+        { key: 'token', label: 'トークン', type: 'text' },
+      ],
+    },
+    {
+      label: '基本',
+      tab: 'general',
+      fields: [{ key: 'duplicate', label: '描画順では最初', type: 'text' }],
+    },
+  ];
+
+  const deduped = dedupeSettingsFieldsByKey(groups, tabs);
+  assert.deepEqual(deduped, [
+    {
+      label: '基本',
+      tab: 'general',
+      fields: [{ key: 'duplicate', label: '描画順では最初', type: 'text' }],
+    },
+    {
+      label: 'トークン',
+      tab: 'tokens',
+      fields: [{ key: 'token', label: 'トークン', type: 'text' }],
+    },
+  ]);
+  // 所属タブの検証も描画順で先勝ちなので、残った duplicate のタブと tabLink が一致する。
+  assert.deepEqual(tabs[2].content, [
+    { type: 'tabLink', label: '重複キーへ', tab: 'general', field: 'duplicate' },
+    { type: 'tabLink', label: '宣言順の欄へ', tab: 'tokens' },
+  ]);
+});
+
+test('dedupeSettingsFieldsByKey: タブ無しではグループの宣言順で最初のキーを残す', () => {
+  const groups = [
+    {
+      label: '先',
+      fields: [{ key: 'duplicate', label: '宣言順で最初', type: 'text' }],
+    },
+    {
+      label: '後',
+      fields: [
+        { key: 'duplicate', label: '宣言順で後', type: 'text' },
+        { key: 'unique', label: '固有', type: 'text' },
+      ],
+    },
+  ];
+
+  assert.deepEqual(dedupeSettingsFieldsByKey(groups, []), [
+    {
+      label: '先',
+      fields: [{ key: 'duplicate', label: '宣言順で最初', type: 'text' }],
+    },
+    {
+      label: '後',
+      fields: [{ key: 'unique', label: '固有', type: 'text' }],
+    },
+  ]);
+});
+
+test('dedupeSettingsFieldsByKey: 重複が無い場合は内容を変えず入力も破壊しない', () => {
+  const firstFields = [{ key: 'host', label: 'ホスト', type: 'text' }];
+  const secondFields = [{ key: 'token', label: 'トークン', type: 'password' }];
+  const groups = [
+    { label: '基本', tab: 'general', fields: firstFields },
+    { label: '認証', tab: 'tokens', fields: secondFields },
+  ];
+  const before = structuredClone(groups);
+  const tabs = [
+    { id: 'general', label: '基本', index: 0 },
+    { id: 'tokens', label: 'トークン', index: 1 },
+  ];
+
+  const deduped = dedupeSettingsFieldsByKey(groups, tabs);
+  assert.deepEqual(deduped, before);
+  assert.deepEqual(groups, before);
+  // 戻り値側の fields を後から変更しても、設定ディスクリプタの配列には波及しない。
+  assert.notEqual(deduped[0], groups[0]);
+  assert.notEqual(deduped[0].fields, firstFields);
+  assert.notEqual(deduped[1].fields, secondFields);
+});
+
+test('dedupeSettingsFieldsByKey: 不正な key のフィールド同士は重複扱いで落とさない', () => {
+  const fields = [
+    { label: 'key 無し', type: 'text' },
+    { key: null, label: 'null', type: 'text' },
+    { key: 0, label: '数値', type: 'text' },
+    { key: '', label: '空文字', type: 'text' },
+    { key: '   ', label: '空白のみ', type: 'text' },
+    { key: '', label: '空文字 2', type: 'text' },
+    { key: 'valid', label: '有効', type: 'text' },
+    { key: 'valid', label: '有効な重複', type: 'text' },
+  ];
+
+  assert.deepEqual(dedupeSettingsFieldsByKey([{ label: '不正キー', fields }], []), [{
+    label: '不正キー',
+    fields: fields.slice(0, 7),
+  }]);
+});
+
+test('dedupeSettingsFieldsByKey: 重複除去で空になったグループだけを描画対象から外す', () => {
+  const groups = [
+    {
+      label: '採用されるグループ',
+      fields: [{ key: 'duplicate', label: '最初', type: 'text' }],
+    },
+    {
+      label: '重複だけのグループ',
+      fields: [{ key: 'duplicate', label: '後', type: 'text' }],
+    },
+    // 元から空のグループは既存の表示仕様を変えないため残す。
+    { label: '元から空', fields: [] },
+  ];
+
+  assert.deepEqual(dedupeSettingsFieldsByKey(groups, []), [
+    {
+      label: '採用されるグループ',
+      fields: [{ key: 'duplicate', label: '最初', type: 'text' }],
+    },
+    { label: '元から空', fields: [] },
+  ]);
 });
 
 // ─── tabs[].content（読み取り専用の説明ブロック / issue #245） ───────────────────

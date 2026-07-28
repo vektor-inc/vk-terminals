@@ -1,4 +1,5 @@
 const { test, expect } = require('@playwright/test');
+const path = require('path');
 const builtinDescriptor = require('../../settings-schema.json');
 const { closeApp, getFreePort, launchAppAndWait } = require('./helpers/electron-app');
 
@@ -25,17 +26,19 @@ async function restoreInvoke(win) {
   });
 }
 
-function descriptorWithLongCommand() {
+function descriptorWithLongCommand(targetPath) {
   const descriptor = structuredClone(builtinDescriptor);
   descriptor.available = true;
-  descriptor.targetPath = '/tmp/settings.json';
+  descriptor.targetPath = targetPath;
   descriptor.appVersion = '0.0.0-test';
   descriptor.values = {};
   const mobileTab = descriptor.tabs.find((tab) => tab.id === 'mobile');
+  if (!mobileTab) throw new Error('settings-schema.json に mobile タブが無い');
   const command = `curl https://example.test/${'unbroken-command-segment-'.repeat(8)}done`;
   const target = mobileTab.content.find(
     (block) => block.type === 'code' && block.text === 'tailscale serve --bg 13847'
   );
+  if (!target) throw new Error('mobile タブに "tailscale serve --bg 13847" の code ブロックが無い');
   target.text = command;
   // コピーボタンの有無で Tab 停止位置を変えず、組み込みスキーマと同じ構造を保つ。
   return { descriptor, command };
@@ -44,7 +47,7 @@ function descriptorWithLongCommand() {
 const TAB_MOBILE = '#settings-tab-1';
 const PANEL_MOBILE = '#settings-panel-1';
 
-test.describe.serial('設定パネルの長いコードとキーボード停止位置（issue #267）', () => {
+test.describe.serial('設定パネルのコード折り返しとボタン境界色（issue #267）', () => {
   let app;
   let win;
   let tmpRoot;
@@ -64,7 +67,8 @@ test.describe.serial('設定パネルの長いコードとキーボード停止�
   });
 
   test.beforeEach(async () => {
-    const injected = descriptorWithLongCommand();
+    // 起動ヘルパーが spec ごとに作成・後片付けする一時領域内だけを保存先として示す。
+    const injected = descriptorWithLongCommand(path.join(tmpRoot, 'settings.json'));
     command = injected.command;
     await installDescriptor(win, injected.descriptor);
     await win.evaluate(() => window.openSettingsModal());
@@ -74,7 +78,7 @@ test.describe.serial('設定パネルの長いコードとキーボード停止�
 
   test.afterEach(async () => {
     const closeButton = win.locator('.settings-close');
-    if (await closeButton.count() && await closeButton.isVisible()) {
+    if ((await closeButton.count()) > 0 && await closeButton.isVisible()) {
       await closeButton.click().catch(() => {});
     }
     await win.waitForSelector('.settings-modal', { state: 'detached' }).catch(() => {});
@@ -96,7 +100,7 @@ test.describe.serial('設定パネルの長いコードとキーボード停止�
     await expect(code).not.toHaveAttribute('tabindex');
   });
 
-  test('「外出先から確認」タブの Tab キー停止位置は期待数から増えない', async () => {
+  test('「外出先から確認」タブの Tab キー停止位置にコードブロックを含まない', async () => {
     await win.locator('.settings-close').focus();
 
     // モーダル先頭の閉じるボタンから Tab を送り、モーダル外へ出るまでを 1 周として数える。
@@ -124,6 +128,22 @@ test.describe.serial('設定パネルの長いコードとキーボード停止�
     }
 
     expect(leftModal, `Tab がモーダル外へ進まない: ${stops.join(' -> ')}`).toBe(true);
-    expect(stops, `実測した停止位置: ${stops.join(' -> ')}`).toHaveLength(9);
+    // 本題の不変条件: 折り返したコードブロック（pre）は Tab 停止位置に現れない。
+    // 停止位置の「数」を固定すると、説明コンテンツにリンクやコードブロックが増えただけで
+    // 落ちるうえ、「pre が増えた」のかどうかも分からない。性質そのものを主張する。
+    expect(
+      stops.filter((stop) => stop.includes('settings-content-code')),
+      `実測した停止位置: ${stops.join(' -> ')}`
+    ).toEqual([]);
+  });
+
+  test('二次ボタンと保存ボタンの枠線の色が共通スタイルに上書きされない', async () => {
+    await win.locator('#settings-tab-0').click();
+    const save = win.locator('.settings-save');
+    await expect(save).toBeVisible();
+    // 共通ルール（.settings-footer button）が border-color を直接持つと詳細度で勝ち、
+    // 保存ボタンの緑がグレー（#30363d）へ戻る。issue #267 の回帰をここで押さえる。
+    await expect(save).toHaveCSS('border-color', 'rgb(46, 160, 67)');
+    await expect(win.locator('.settings-cancel')).toHaveCSS('border-color', 'rgb(139, 148, 158)');
   });
 });

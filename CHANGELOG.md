@@ -6,7 +6,7 @@
 - [ 不具合修正 ] 設定パネルの描画中にエラーが起きると、アプリを再起動するまで設定を開けなくなる不具合を修正（[#259](https://github.com/vektor-inc/vk-terminals/issues/259)）
 - [ デザイン不具合修正 ] 設定パネルのコードブロックで長いコマンドが横スクロールになり、ポインタを使えない場合にはみ出した部分を読めない問題を、枠内で折り返して全文を読めるように修正（[#267](https://github.com/vektor-inc/vk-terminals/issues/267)）
 - [ デザイン不具合修正 ] 設定パネルの「キャンセル」「閉じる」とパスワード表示切替ボタンの枠線が背景と近く、ボタンの範囲が分かりにくい問題を修正（[#267](https://github.com/vektor-inc/vk-terminals/issues/267)）
-- [ デザイン不具合修正 ] 設定パネルの「保存」ボタンで、指定されていた緑の枠線が共通スタイルに上書きされて表示されない問題を修正（[#267](https://github.com/vektor-inc/vk-terminals/issues/267)）
+- [ デザイン不具合修正 ] 設定パネルの「保存」ボタンに緑の枠線が表示されず、ボタンの輪郭がぼやけて見える問題を修正（[#267](https://github.com/vektor-inc/vk-terminals/issues/267)）
 - [ 開発環境 ] e2e を全件連続実行するとマシン負荷が高いときに一部のテストがタイムアウトで落ちる問題を修正（[#263](https://github.com/vektor-inc/vk-terminals/issues/263)）
 
 ## 1.47.0

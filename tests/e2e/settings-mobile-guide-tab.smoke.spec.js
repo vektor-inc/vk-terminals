@@ -114,6 +114,10 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
     // describe.serial で win を共有しているため、クリップボードの差し替えは
     // 毎テストの終わりに必ず戻す（後続テストへ漏らさない）。
     await restoreClipboardWrite(win).catch(() => {});
+    await win.evaluate(() => {
+      document.getElementById('outside-focus-target')?.remove();
+      document.getElementById('removed-settings-opener')?.remove();
+    }).catch(() => {});
     const closeBtn = win.locator('.settings-close');
     if (await closeBtn.count()) {
       await closeBtn.click().catch(() => {});
@@ -563,6 +567,56 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
     await win.waitForTimeout(3000);
     await win.evaluate(() => window.openSettingsModal());
     await expect(win.locator('.settings-modal')).toHaveCount(1);
+  });
+
+  test('保存後の自動クローズ時にフォーカスがパネル外なら操作先へ引き戻さない', async () => {
+    // 実際の設定ボタンを復帰先として控えさせるため、beforeEach がプログラムから開いた
+    // パネルを閉じて、設定ボタンから開き直す。
+    await win.locator('.settings-close').click();
+    await win.waitForSelector('.settings-modal', { state: 'detached' });
+    await win.locator('#settings-btn').click();
+    await expect(win.locator('.settings-modal')).toBeVisible();
+
+    await win.locator('#set-field-0').fill('127.0.0.1');
+    await win.locator('.settings-save').click();
+    await expect(win.locator('.settings-msg')).toHaveClass(/ok/);
+
+    // overlay の直後に置いたボタンを Tab 順の次の要素にして、パネル外へ実際のキー操作で
+    // 移動する。自動クローズ後も設定ボタンへ戻らず、この操作先に留まることを確かめる。
+    await win.evaluate(() => {
+      const target = document.createElement('button');
+      target.id = 'outside-focus-target';
+      target.textContent = 'パネル外の操作先';
+      document.querySelector('.settings-overlay').after(target);
+    });
+    await win.locator('.settings-save').focus();
+    await win.keyboard.press('Tab');
+    await expect(win.locator('#outside-focus-target')).toBeFocused();
+
+    await win.waitForSelector('.settings-modal', { state: 'detached', timeout: 5000 });
+    await expect(win.locator('#outside-focus-target')).toBeFocused();
+  });
+
+  test('設定パネルを開いた要素が消えていたら設定ボタンへフォーカスを戻す', async () => {
+    await win.locator('.settings-close').click();
+    await win.waitForSelector('.settings-modal', { state: 'detached' });
+
+    // サイドバー再描画で開いたメニュー項目が置き換わる状況を、削除する一時ボタンで再現する。
+    await win.evaluate(() => {
+      const opener = document.createElement('button');
+      opener.id = 'removed-settings-opener';
+      opener.textContent = '設定を開く';
+      document.body.appendChild(opener);
+      opener.focus();
+      window.openSettingsModal();
+    });
+    await expect(win.locator('.settings-modal')).toBeVisible();
+    await win.locator('#removed-settings-opener').evaluate((opener) => opener.remove());
+    await win.locator('.settings-close').focus();
+
+    await win.keyboard.press('Escape');
+    await expect(win.locator('.settings-modal')).toHaveCount(0);
+    await expect(win.locator('#settings-btn')).toBeFocused();
   });
 
   test('保存後に別のタブへ移ると自動クローズを取り消す', async () => {

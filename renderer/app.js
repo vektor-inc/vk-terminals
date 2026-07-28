@@ -1961,9 +1961,14 @@ function openCloseConfirmDialog(paneId) {
   let unregisterEscapeLayer = () => {};
   const cleanup = () => {
     unregisterEscapeLayer();
+    // 画面から消す前に、いまフォーカスがダイアログ内にあるかを見る。外へ出ている場合まで
+    // 引き戻すと、閉じるタイミングでユーザーの操作先からフォーカスを奪ってしまう。
+    // body は背景クリック時の着地点になりうるため、従来どおり復帰対象に含める。
+    const active = document.activeElement;
+    const shouldRestore = !active || active === document.body || overlay.contains(active);
     overlay.remove();
     closeConfirmOpen = false;
-    if (restoreFocusElement?.isConnected) restoreFocusElement.focus();
+    if (shouldRestore && restoreFocusElement?.isConnected) restoreFocusElement.focus();
   };
   unregisterEscapeLayer = escapeLayers.register(cleanup);
 
@@ -3614,9 +3619,18 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
     unregisterEscapeLayer();
     clearCopyResetTimers();
     stopApiServerStatusPolling();
+    // 画面から消す前に、いまフォーカスが設定パネル内にあるかを見る。自動クローズを
+    // 待つ間に外へ移っていた場合まで引き戻すと、#257 と同じフォーカス移動になる。
+    // body は背景クリック時の着地点になりうるため、従来どおり復帰対象に含める。
+    const active = document.activeElement;
+    const shouldRestore = !active || active === document.body || overlay.contains(active);
     overlay.remove();
     release();
-    if (restoreFocusElement?.isConnected) restoreFocusElement.focus();
+    if (shouldRestore) {
+      (restoreFocusElement?.isConnected
+        ? restoreFocusElement
+        : document.getElementById('settings-btn'))?.focus();
+    }
   };
   // ここから後の例外では、close に overlay・キー操作・各タイマーをまとめて片付けさせる。
   setFailureCleanup(close);

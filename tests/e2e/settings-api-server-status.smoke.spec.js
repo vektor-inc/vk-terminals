@@ -86,8 +86,11 @@ test('ポートが使用中なら API サーバーが起動していないエラ
     const status = await openApiServerStatus(launched.win);
     await expect(status).toHaveAttribute('data-tone', 'error');
     await expect(status.locator('.settings-content-status-label')).toHaveText('エラー');
-    await expect(status).toContainText(`ポート ${port} が他のプログラムに使われている`);
-    await expect(status).toContainText('API サーバーが起動していません');
+    await expect(status).toContainText(
+      `API サーバーが使うポート番号 ${port} を別のプログラムが使用している`
+    );
+    await expect(status).toContainText('起動時の設定値（環境変数）VK_TERMINALS_API_PORT');
+    await expect(status).toContainText('別のポート番号を指定してから、vk-terminals を再起動');
     // 起動していない状態ではコピー可能なアドレスを提示しない。
     await expect(status.locator('.settings-content-copy')).toHaveCount(0);
   } finally {
@@ -167,6 +170,11 @@ test('API ホストのエラーから設定欄へ移動してフォーカスで�
     await expect(status).toContainText('「設定」タブの「API ホスト」');
     const link = status.locator('.settings-content-tablink');
     await expect(link).toHaveText('API ホストの設定へ移動');
+    const spacing = await link.evaluate((element) => {
+      const style = getComputedStyle(element);
+      return { marginTop: style.marginTop, marginBottom: style.marginBottom };
+    });
+    expect(spacing).toEqual({ marginTop: '8px', marginBottom: '0px' });
     await link.click();
     await expect(launched.win.locator('#settings-tab-0')).toHaveAttribute('aria-selected', 'true');
     await expect(launched.win.locator('#set-field-0')).toBeFocused();

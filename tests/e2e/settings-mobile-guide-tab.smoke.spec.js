@@ -225,7 +225,8 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
       .toContainText('外出先から開くには、次の Tailscale を使う方法が簡単です');
     await expect(win.locator(PANEL_MOBILE))
       .not.toContainText('初期設定ではパソコン自身からしか開けません');
-    await expect(win.locator(PANEL_MOBILE)).toContainText('tailnet');
+    await expect(win.locator(PANEL_MOBILE))
+      .toContainText('同じプライベートネットワーク（tailnet）');
 
     // 準備手順は番号付きリスト。
     await expect(win.locator(`${PANEL_MOBILE} ol.settings-content-list li`)).toHaveCount(4);

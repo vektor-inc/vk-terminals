@@ -24,6 +24,10 @@ function isWildcardHost(host) {
   return host === '0.0.0.0' || host === '::';
 }
 
+function isAlwaysAvailableHost(host) {
+  return isLoopbackHost(host) || isWildcardHost(host) || host === 'localhost';
+}
+
 function getApiServerStatusPresentation(status) {
   const safeStatus = status && typeof status === 'object' ? status : {};
   const port = Number.isInteger(safeStatus.port) ? safeStatus.port : 13847;
@@ -53,7 +57,7 @@ function getApiServerStatusPresentation(status) {
       return {
         tone: 'error',
         label: 'エラー',
-        message: `ポート ${port} が他のプログラムに使われているため、API サーバーが起動していません。vk-terminals を二重に起動している場合は片方を終了してください。他のプログラムが使っている場合は、環境変数 VK_TERMINALS_API_PORT で別のポート番号を指定してください。`,
+        message: `API サーバーが使うポート番号 ${port} を別のプログラムが使用しているため、API サーバーを起動できませんでした。vk-terminals を二重に起動している場合は片方を終了し、vk-terminals を再起動してください。他のプログラムが使っている場合は、起動時の設定値（環境変数）VK_TERMINALS_API_PORT に別のポート番号を指定してから、vk-terminals を再起動してください。`,
         address: '',
         copy: false,
       };
@@ -83,10 +87,13 @@ function getApiServerStatusPresentation(status) {
     const loopbackNote = isLoopbackHost(actualHost)
       ? 'この状態ではスマートフォンからは開けません。'
       : '';
+    const restartNote = isAlwaysAvailableHost(savedHost)
+      ? '保存した API ホストを反映するには、vk-terminals を再起動してください。'
+      : '保存した API ホストを反映するには、そのアドレスをこのパソコンで使える状態にしてから、vk-terminals を再起動してください。Tailscale IP の場合は Tailscale に接続し、ホスト名の場合はその名前でこのパソコンに接続できることを確認してください。';
     return {
       tone: 'warning',
       label: '注意',
-      message: `保存した API ホスト（${savedHost}）は、まだ反映されていません。今は起動したときの設定のまま ${actualHost} で待ち受けています。${loopbackNote}保存したアドレスがこのパソコンに割り当てられた状態（ホスト名なら名前解決できる状態）にしてから、vk-terminals を再起動してください。`,
+      message: `保存した API ホスト（${savedHost}）は、まだ反映されていません。今は起動したときの設定のまま ${actualHost} で待ち受けています。${loopbackNote}${restartNote}`,
       address,
       copy: !isWildcardHost(actualHost),
     };
@@ -125,7 +132,7 @@ function getApiServerStatusPresentation(status) {
   return {
     tone: 'success',
     label: '正常',
-    message: 'スマートフォンがこのアドレスに届くネットワーク（Tailscale の場合は同じ tailnet）につながっていれば、このアドレスで開けます。',
+    message: 'スマートフォンがこのアドレスに届くネットワークにつながっていれば、このアドレスで開けます。Tailscale を使う場合は、パソコンとスマートフォンを同じプライベートネットワーク（tailnet）に接続してください。',
     address,
     copy: true,
   };

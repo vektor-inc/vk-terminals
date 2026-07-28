@@ -35,7 +35,7 @@ test('指定したアドレスで待ち受けている場合は正常として�
   })), {
     tone: 'success',
     label: '正常',
-    message: 'スマートフォンがこのアドレスに届くネットワーク（Tailscale の場合は同じ tailnet）につながっていれば、このアドレスで開けます。',
+    message: 'スマートフォンがこのアドレスに届くネットワークにつながっていれば、このアドレスで開けます。Tailscale を使う場合は、パソコンとスマートフォンを同じプライベートネットワーク（tailnet）に接続してください。',
     address: 'http://100.101.102.103:13847/',
     copy: true,
   });
@@ -66,8 +66,24 @@ test('保存値が実待ち受け先にも起動時設定にも未反映なら�
   assert.match(result.message, /保存した API ホスト（100\.101\.102\.103）は、まだ反映されていません/);
   assert.match(result.message, /今は起動したときの設定のまま 127\.0\.0\.1/);
   assert.match(result.message, /スマートフォンからは開けません/);
-  assert.match(result.message, /保存したアドレスがこのパソコンに割り当てられた状態/);
-  assert.match(result.message, /vk-terminals を再起動してください/);
+  assert.match(result.message, /そのアドレスをこのパソコンで使える状態にしてから/);
+  assert.match(result.message, /Tailscale IP の場合は Tailscale に接続し/);
+  assert.match(result.message, /ホスト名の場合はその名前でこのパソコンに接続できることを確認/);
+});
+
+test('常に使える保存値が未反映なら準備を求めず再起動だけを案内する', () => {
+  for (const savedHost of ['127.0.0.1', '::1', '0.0.0.0', '::', 'localhost']) {
+    const result = getApiServerStatusPresentation(listening({
+      startupHost: '192.0.2.10',
+      actualHost: '192.0.2.10',
+      savedHost,
+    }));
+    assert.match(
+      result.message,
+      /保存した API ホストを反映するには、vk-terminals を再起動してください。$/
+    );
+    assert.doesNotMatch(result.message, /このパソコンで使える状態|Tailscale に接続/);
+  }
 });
 
 test('未反映でも実待ち受け先が外部到達可能ならスマートフォンから開けないと断定しない', () => {
@@ -119,6 +135,19 @@ test('localhost が ::1 に名前解決されてもフォールバック警告�
   assert.doesNotMatch(result.message, /割り当てられていな|再起動/);
 });
 
+test('MagicDNS 名が Tailscale IP へ解決されてもフォールバック警告を出さない', () => {
+  const result = getApiServerStatusPresentation(listening({
+    startupHost: 'my-pc.example.ts.net',
+    savedHost: 'my-pc.example.ts.net',
+    actualHost: '100.101.102.103',
+    fellBack: false,
+  }));
+  assert.equal(result.tone, 'success');
+  assert.equal(result.label, '正常');
+  assert.equal(result.address, 'http://100.101.102.103:13847/');
+  assert.doesNotMatch(result.message, /まだ反映されていません|割り当てられていなかった/);
+});
+
 test('ポート使用中は API サーバーが起動していないエラーを表示する', () => {
   const result = getApiServerStatusPresentation({
     phase: 'error',
@@ -129,8 +158,10 @@ test('ポート使用中は API サーバーが起動していないエラーを
   assert.equal(result.label, 'エラー');
   assert.equal(result.address, '');
   assert.equal(result.copy, false);
-  assert.match(result.message, /ポート 13847 が他のプログラムに使われている/);
-  assert.match(result.message, /VK_TERMINALS_API_PORT/);
+  assert.equal(
+    result.message,
+    'API サーバーが使うポート番号 13847 を別のプログラムが使用しているため、API サーバーを起動できませんでした。vk-terminals を二重に起動している場合は片方を終了し、vk-terminals を再起動してください。他のプログラムが使っている場合は、起動時の設定値（環境変数）VK_TERMINALS_API_PORT に別のポート番号を指定してから、vk-terminals を再起動してください。'
+  );
 });
 
 test('その他の起動エラーはエラーコードと API ホスト確認を表示する', () => {

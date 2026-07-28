@@ -587,6 +587,11 @@ h4.settings-content-heading {
 .settings-content-status-text {
   margin: 0;
 }
+/* エラー説明と移動ボタンを同じ情報グループとして近接させ、下側には余白を残さない。 */
+.settings-content-status-text + .settings-content-tablink {
+  margin-top: 8px;
+  margin-bottom: 0;
+}
 .settings-group {
   border: 1px solid #21262d;
   border-radius: 6px;

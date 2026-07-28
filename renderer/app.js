@@ -3862,6 +3862,7 @@ async function openSettingsModal() {
         pollCount += 1;
         try {
           const nextStatus = await ipcRenderer.invoke('settings:api-server-status');
+          if (!modal.isConnected) return;
           const current = modal.querySelector('[data-status-source="apiServer"]');
           if (!current) {
             stopApiServerStatusPolling();
@@ -3883,6 +3884,7 @@ async function openSettingsModal() {
           }
           if (!settledStatus || settledStatus.phase !== 'pending') stopApiServerStatusPolling();
         } catch (_e) {
+          if (!modal.isConnected) return;
           // 一時的な取得失敗でも上限までは確認中を維持する。上限では行き止まりを避ける
           // 案内に切り替え、同期 I/O を伴う main 側の状態取得を止める。
           if (pollCount >= 20) {

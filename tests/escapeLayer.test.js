@@ -19,10 +19,11 @@ function createEventTarget() {
       const index = phase.indexOf(listener);
       if (index !== -1) phase.splice(index, 1);
     },
-    dispatch(key) {
+    dispatch(key, options = {}) {
       let immediatePropagationStopped = false;
       const event = {
         key,
+        isComposing: options.isComposing === true,
         defaultPrevented: false,
         preventDefault() { this.defaultPrevented = true; },
         stopImmediatePropagation() { immediatePropagationStopped = true; },
@@ -67,6 +68,20 @@ test('最前面を解除すると、その次の Escape は直前のレイヤー
   target.dispatch('Escape');
 
   assert.deepEqual(called, ['first']);
+});
+
+test('真ん中のレイヤーを解除しても、Escape は最前面へ渡る', () => {
+  const target = createEventTarget();
+  const stack = createEscapeLayerStack(target);
+  const called = [];
+  stack.register(() => called.push('first'));
+  const unregisterSecond = stack.register(() => called.push('second'));
+  stack.register(() => called.push('third'));
+
+  assert.equal(unregisterSecond(), true);
+  target.dispatch('Escape');
+
+  assert.deepEqual(called, ['third']);
 });
 
 test('コールバック内で自身を解除しても、同じ Escape で背後のレイヤーは呼ばない', () => {
@@ -114,4 +129,26 @@ test('Escape 以外のキーはレイヤーがあっても消費しない', () =
 
   assert.deepEqual(called, ['background']);
   assert.equal(event.defaultPrevented, false);
+});
+
+test('IME 変換中の Escape は消費するが、レイヤーを閉じず背後へも通さない', () => {
+  const target = createEventTarget();
+  const stack = createEscapeLayerStack(target);
+  const called = [];
+  target.addEventListener('keydown', () => called.push('background'));
+  stack.register(() => called.push('modal'));
+
+  const event = target.dispatch('Escape', { isComposing: true });
+
+  assert.deepEqual(called, []);
+  assert.equal(event.defaultPrevented, true);
+  assert.equal(target.listeners.capture.length, 1);
+});
+
+test('イベント対象と登録コールバックの型を検証する', () => {
+  assert.throws(() => createEscapeLayerStack(null), TypeError);
+
+  const stack = createEscapeLayerStack(createEventTarget());
+  assert.throws(() => stack.register(null), TypeError);
+  assert.throws(() => stack.register('close'), TypeError);
 });

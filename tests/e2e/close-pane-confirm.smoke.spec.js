@@ -158,13 +158,10 @@ test('confirmClose 既定（busy）: waiting のペインは確認あり・idle 
     await win.keyboard.press('Escape');
     await expect(overlay).toHaveCount(0);
     await expect(win.locator('#root')).toHaveClass(/\bsidebar-open\b/);
-    // サイドバーを閉じたときのフォーカス復帰は約 220ms 後なので、その時間を越えても
-    // ☰ ボタンへフォーカスが移らないことを確かめる。
+    // サイドバーを閉じたときの遅延フォーカス時間（約 220ms）を越えても、
+    // ダイアログを開いた操作元の ✕ ボタンへフォーカスが戻ったままかを確かめる。
     await win.waitForTimeout(400);
-    const activeElementId = await win.evaluate(
-      () => (document.activeElement && document.activeElement.id) || ''
-    );
-    expect(activeElementId).not.toBe('menu-btn');
+    await expect(closeBtn).toBeFocused();
     await new Promise((r) => setTimeout(r, 2500)); // report-states 1 周期分待って残存を確認
     expect(termIdsOf(await getStates(port))).toContain(termId);
 

@@ -4,7 +4,8 @@
 //
 // 各 UI が document に個別の keydown リスナーを置くと、同じキー操作で背後の UI まで
 // 動いてしまう。ここでは capture フェーズのリスナーを 1 本だけ置き、最後に登録された
-// レイヤーだけへ Escape を渡す。レイヤーがある間の Escape はその場で消費し、document
+// レイヤーだけへ Escape を渡す。「後から登録されたレイヤーは視覚的にも最前面にある」
+// という重なり順を前提とする。レイヤーがある間の Escape はその場で消費し、document
 // 上の既存リスナーやフォーカス中の要素には到達させない。
 function createEscapeLayerStack(eventTarget) {
   if (!eventTarget
@@ -21,6 +22,8 @@ function createEscapeLayerStack(eventTarget) {
 
     event.preventDefault();
     event.stopImmediatePropagation();
+    // IME 変換中の Escape は変換の取り消し。モーダルは閉じないが、背後へも通さない。
+    if (event.isComposing) return;
     // コールバック内で自分自身を解除しても、次のレイヤーを同じキー操作で呼ばないよう、
     // 発火時点の最前面だけを取得して 1 回だけ実行する。
     const topLayer = layers[layers.length - 1];
@@ -29,6 +32,8 @@ function createEscapeLayerStack(eventTarget) {
 
   return {
     // 戻り値の関数を UI の cleanup / close から呼び、レイヤーの寿命と DOM の寿命を揃える。
+    // onEscape が例外で抜けるとレイヤーが残り続けるため、閉じる処理は最初に戻り値の
+    // 解除関数を呼び、後続処理の成否にかかわらず Escape を再び受け取れる状態にする。
     register(onEscape) {
       if (typeof onEscape !== 'function') {
         throw new TypeError('onEscape must be a function');

@@ -1918,6 +1918,7 @@ let closeConfirmOpen = false;
 
 function openCloseConfirmDialog(paneId) {
   if (closeConfirmOpen) return;
+  const restoreFocusElement = document.activeElement;
   closeConfirmOpen = true;
 
   const t = terminals[paneId];
@@ -1962,6 +1963,7 @@ function openCloseConfirmDialog(paneId) {
     unregisterEscapeLayer();
     overlay.remove();
     closeConfirmOpen = false;
+    if (restoreFocusElement?.isConnected) restoreFocusElement.focus();
   };
   unregisterEscapeLayer = escapeLayers.register(cleanup);
 
@@ -3433,16 +3435,19 @@ function renderSettingsTabContent(blocks, tabIndexById, runtimeStatus = {}, entr
 const settingsModalGuard = createSingleOpenGuard();
 
 async function openSettingsModal() {
+  // settings:describe の応答待ち中にフォーカスが変わっても、実際に設定を開いた操作元へ
+  // 戻せるよう、非同期処理へ入る前の要素をモーダルの寿命と一緒に保持する。
+  const restoreFocusElement = document.activeElement;
   try {
     await settingsModalGuard.protect(({ release, setFailureCleanup }) => (
-      buildSettingsModal({ release, setFailureCleanup })
+      buildSettingsModal({ release, setFailureCleanup, restoreFocusElement })
     ));
   } catch (e) {
     console.error('設定パネルの生成に失敗しました', e);
   }
 }
 
-async function buildSettingsModal({ release, setFailureCleanup }) {
+async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElement }) {
   // 設定ディスクリプタが無い環境でも空の設定モーダルとして開く（使用量はサイドバー上部）。
   let desc = null;
   try {
@@ -3611,6 +3616,7 @@ async function buildSettingsModal({ release, setFailureCleanup }) {
     stopApiServerStatusPolling();
     overlay.remove();
     release();
+    if (restoreFocusElement?.isConnected) restoreFocusElement.focus();
   };
   // ここから後の例外では、close に overlay・キー操作・各タイマーをまとめて片付けさせる。
   setFailureCleanup(close);

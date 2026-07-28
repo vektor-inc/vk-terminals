@@ -639,6 +639,11 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
   });
 
   test('Escape キーで設定モーダルを閉じられる', async () => {
+    // beforeEach のプログラム呼び出しで開いたモーダルを一度閉じ、実際の設定ボタンから
+    // 開き直すことで、Escape 後の具体的なフォーカス復帰先も検証する。
+    await win.locator('.settings-close').click();
+    await win.waitForSelector('.settings-modal', { state: 'detached' });
+    await win.locator('#settings-btn').click();
     await expect(win.locator('.settings-modal')).toBeVisible();
     const sidebarWasOpen = await win.evaluate(
       () => document.getElementById('root').classList.contains('sidebar-open')
@@ -648,15 +653,15 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
     await win.waitForSelector('.settings-modal', { state: 'detached' });
     await expect(win.locator('.settings-modal')).toHaveCount(0);
 
-    // 設定モーダルが最前面で Escape を消費するため、背後のサイドバーは開いたままで、
-    // 開閉アニメーション後の ☰ ボタンへの遅延フォーカスも起きない。
+    // 設定モーダルが最前面で Escape を消費するため、背後のサイドバーは開いたまま。
+    // 開閉アニメーション後の遅延時間を越えても、操作元の設定ボタンへ戻ったままになる。
     if (sidebarWasOpen) {
       await expect(win.locator('#root')).toHaveClass(/\bsidebar-open\b/);
       await win.waitForTimeout(400);
       const activeElementId = await win.evaluate(
         () => (document.activeElement && document.activeElement.id) || ''
       );
-      expect(activeElementId).not.toBe('menu-btn');
+      expect(activeElementId).toBe('settings-btn');
     }
   });
 });

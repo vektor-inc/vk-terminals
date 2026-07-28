@@ -18,7 +18,8 @@ test('設定モーダルの Escape は背後のサイドバーを閉じず、遅
     if (!sidebarOpen) await win.locator('#menu-btn').click();
     await expect(win.locator('#root')).toHaveClass(/\bsidebar-open\b/);
 
-    // 実際の設定ボタンからモーダルを開き、閉じるボタンへフォーカスを置く。
+    // 実際の設定ボタンからモーダルを開く。開いた後はモーダル内へフォーカスを移し、
+    // 閉じたときに操作元の設定ボタンまで戻れることを確かめる。
     await win.locator('#settings-btn').click();
     await expect(win.locator('.settings-modal')).toBeVisible();
     await win.locator('.settings-close').focus();
@@ -29,13 +30,13 @@ test('設定モーダルの Escape は背後のサイドバーを閉じず、遅
     await expect(win.locator('.settings-modal')).toHaveCount(0);
     await expect(win.locator('#root')).toHaveClass(/\bsidebar-open\b/);
 
-    // サイドバーが誤って閉じた場合は約 220ms 後に ☰ へフォーカスが戻るため、
-    // そのフォールバック時間を越えても遅延フォーカスが起きないことを確かめる。
+    // サイドバーが誤って閉じた場合の遅延フォーカス時間（約 220ms）を越えても、
+    // 開いた操作元の設定ボタンへフォーカスが戻ったままであることを確かめる。
     await win.waitForTimeout(400);
     const activeElementId = await win.evaluate(
       () => (document.activeElement && document.activeElement.id) || ''
     );
-    expect(activeElementId).not.toBe('menu-btn');
+    expect(activeElementId).toBe('settings-btn');
 
     // モーダルを閉じた時点でレイヤー登録は解除される。続けて Escape を押した場合は、
     // 従来どおりサイドバーが閉じ、アニメーション後に ☰ へフォーカスが戻る。

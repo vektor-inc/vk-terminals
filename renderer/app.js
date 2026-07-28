@@ -33,12 +33,16 @@ const { isPatternValid } = require('./settingsValidation');
 const { isFieldVisible } = require('./settingsVisibility');
 const { createAutoCloseController } = require('./autoClose');
 const { createSingleOpenGuard } = require('./settingsModalGuard');
+const { createEscapeLayerStack } = require('./escapeLayer');
 const {
   dedupeSettingsFieldsByKey,
   deriveSettingsTargetPathsForGroups,
   groupSettingsGroupsByTab,
   normalizeSettingsTabs,
 } = require('./settingsTabs');
+
+// モーダル類の Escape は、最後に開いたものだけへ渡す。
+const escapeLayers = createEscapeLayerStack(document);
 
 // ─── xterm.css の注入 ─────────────────────────────────────────────────────────
 // xterm.css は index.html の相対パス <link> ではなく、Node のモジュール解決
@@ -1914,6 +1918,7 @@ let closeConfirmOpen = false;
 
 function openCloseConfirmDialog(paneId) {
   if (closeConfirmOpen) return;
+  const restoreFocusElement = document.activeElement;
   closeConfirmOpen = true;
 
   const t = terminals[paneId];
@@ -1953,20 +1958,27 @@ function openCloseConfirmDialog(paneId) {
   overlay.appendChild(modal);
   document.body.appendChild(overlay);
 
+  let unregisterEscapeLayer = () => {};
   const cleanup = () => {
-    document.removeEventListener('keydown', onKey);
+    unregisterEscapeLayer();
+    // 画面から消す前に、いまフォーカスがダイアログ内にあるかを見る。外へ出ている場合まで
+    // 引き戻すと、閉じるタイミングでユーザーの操作先からフォーカスを奪ってしまう。
+    // body は背景クリック時の着地点になりうるため、従来どおり復帰対象に含める。
+    const active = document.activeElement;
+    const shouldRestore = !active || active === document.body || overlay.contains(active);
     overlay.remove();
     closeConfirmOpen = false;
+    if (shouldRestore && restoreFocusElement?.isConnected) restoreFocusElement.focus();
   };
-  const onKey = (e) => {
-    if (e.key === 'Escape') {
-      e.stopPropagation();
-      cleanup();
-    }
-  };
-  document.addEventListener('keydown', onKey);
+  unregisterEscapeLayer = escapeLayers.register(cleanup);
 
-  overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) cleanup(); });
+  overlay.addEventListener('mousedown', (e) => {
+    if (e.target !== overlay) return;
+    // 削除済み overlay への既定のフォーカス移動で、cleanup() の復帰先が
+    // body に上書きされないよう、背景クリックの既定動作を先に止める。
+    e.preventDefault();
+    cleanup();
+  });
   cancelBtn.addEventListener('click', cleanup);
   closeBtn.addEventListener('click', () => {
     cleanup();
@@ -3434,16 +3446,19 @@ function renderSettingsTabContent(blocks, tabIndexById, runtimeStatus = {}, entr
 const settingsModalGuard = createSingleOpenGuard();
 
 async function openSettingsModal() {
+  // settings:describe の応答待ち中にフォーカスが変わっても、実際に設定を開いた操作元へ
+  // 戻せるよう、非同期処理へ入る前の要素をモーダルの寿命と一緒に保持する。
+  const restoreFocusElement = document.activeElement;
   try {
     await settingsModalGuard.protect(({ release, setFailureCleanup }) => (
-      buildSettingsModal({ release, setFailureCleanup })
+      buildSettingsModal({ release, setFailureCleanup, restoreFocusElement })
     ));
   } catch (e) {
     console.error('設定パネルの生成に失敗しました', e);
   }
 }
 
-async function buildSettingsModal({ release, setFailureCleanup }) {
+async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElement }) {
   // 設定ディスクリプタが無い環境でも空の設定モーダルとして開く（使用量はサイドバー上部）。
   let desc = null;
   try {
@@ -3602,22 +3617,38 @@ async function buildSettingsModal({ release, setFailureCleanup }) {
   // 二重オープンの抑止を壊す。寿命の判断は renderer/autoClose.js に集約してあり、
   // ここは「いつ武装し、いつ取り消すか」だけを決める。
   const autoClose = createAutoCloseController({ onFire: () => close() });
+  let unregisterEscapeLayer = () => {};
   const close = () => {
     // markClosed() が false を返すのは 2 回目以降。遅れて発火したタイマーが
     // 後から開いたモーダルのロックを巻き戻さないよう、閉じる処理は冪等にしておく。
     if (!autoClose.markClosed()) return;
-    document.removeEventListener('keydown', onKey);
+    unregisterEscapeLayer();
     clearCopyResetTimers();
     stopApiServerStatusPolling();
+    // 画面から消す前に、いまフォーカスが設定パネル内にあるかを見る。自動クローズを
+    // 待つ間に外へ移っていた場合まで引き戻すと、#257 と同じフォーカス移動になる。
+    // body は背景クリック時の着地点になりうるため、従来どおり復帰対象に含める。
+    const active = document.activeElement;
+    const shouldRestore = !active || active === document.body || overlay.contains(active);
     overlay.remove();
     release();
+    if (shouldRestore) {
+      (restoreFocusElement?.isConnected
+        ? restoreFocusElement
+        : document.getElementById('settings-btn'))?.focus();
+    }
   };
-  const onKey = (e) => { if (e.key === 'Escape') close(); };
   // ここから後の例外では、close に overlay・キー操作・各タイマーをまとめて片付けさせる。
   setFailureCleanup(close);
-  document.addEventListener('keydown', onKey);
+  unregisterEscapeLayer = escapeLayers.register(close);
 
-  overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) close(); });
+  overlay.addEventListener('mousedown', (e) => {
+    if (e.target !== overlay) return;
+    // 削除済み overlay への既定のフォーカス移動で、close() の復帰先が
+    // body に上書きされないよう、背景クリックの既定動作を先に止める。
+    e.preventDefault();
+    close();
+  });
   modal.querySelector('.settings-close').addEventListener('click', close);
 
   // 設定項目が無い環境ではフォーム関連の配線は不要（閉じるだけ）。

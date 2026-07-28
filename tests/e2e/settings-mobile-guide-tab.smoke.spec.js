@@ -114,6 +114,10 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
     // describe.serial で win を共有しているため、クリップボードの差し替えは
     // 毎テストの終わりに必ず戻す（後続テストへ漏らさない）。
     await restoreClipboardWrite(win).catch(() => {});
+    await win.evaluate(() => {
+      document.getElementById('outside-focus-target')?.remove();
+      document.getElementById('removed-settings-opener')?.remove();
+    }).catch(() => {});
     const closeBtn = win.locator('.settings-close');
     if (await closeBtn.count()) {
       await closeBtn.click().catch(() => {});
@@ -565,6 +569,56 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
     await expect(win.locator('.settings-modal')).toHaveCount(1);
   });
 
+  test('保存後の自動クローズ時にフォーカスがパネル外なら操作先へ引き戻さない', async () => {
+    // 実際の設定ボタンを復帰先として控えさせるため、beforeEach がプログラムから開いた
+    // パネルを閉じて、設定ボタンから開き直す。
+    await win.locator('.settings-close').click();
+    await win.waitForSelector('.settings-modal', { state: 'detached' });
+    await win.locator('#settings-btn').click();
+    await expect(win.locator('.settings-modal')).toBeVisible();
+
+    await win.locator('#set-field-0').fill('127.0.0.1');
+    await win.locator('.settings-save').click();
+    await expect(win.locator('.settings-msg')).toHaveClass(/ok/);
+
+    // overlay の直後に置いたボタンを Tab 順の次の要素にして、パネル外へ実際のキー操作で
+    // 移動する。自動クローズ後も設定ボタンへ戻らず、この操作先に留まることを確かめる。
+    await win.evaluate(() => {
+      const target = document.createElement('button');
+      target.id = 'outside-focus-target';
+      target.textContent = 'パネル外の操作先';
+      document.querySelector('.settings-overlay').after(target);
+    });
+    await win.locator('.settings-save').focus();
+    await win.keyboard.press('Tab');
+    await expect(win.locator('#outside-focus-target')).toBeFocused();
+
+    await win.waitForSelector('.settings-modal', { state: 'detached', timeout: 5000 });
+    await expect(win.locator('#outside-focus-target')).toBeFocused();
+  });
+
+  test('設定パネルを開いた要素が消えていたら設定ボタンへフォーカスを戻す', async () => {
+    await win.locator('.settings-close').click();
+    await win.waitForSelector('.settings-modal', { state: 'detached' });
+
+    // サイドバー再描画で開いたメニュー項目が置き換わる状況を、削除する一時ボタンで再現する。
+    await win.evaluate(() => {
+      const opener = document.createElement('button');
+      opener.id = 'removed-settings-opener';
+      opener.textContent = '設定を開く';
+      document.body.appendChild(opener);
+      opener.focus();
+      window.openSettingsModal();
+    });
+    await expect(win.locator('.settings-modal')).toBeVisible();
+    await win.locator('#removed-settings-opener').evaluate((opener) => opener.remove());
+    await win.locator('.settings-close').focus();
+
+    await win.keyboard.press('Escape');
+    await expect(win.locator('.settings-modal')).toHaveCount(0);
+    await expect(win.locator('#settings-btn')).toBeFocused();
+  });
+
   test('保存後に別のタブへ移ると自動クローズを取り消す', async () => {
     // フッター固定を解いて「保存後のタブ移動」を正式に許した以上、移動先を読んでいる
     // 最中にパネルごと消えるのは矛盾する。閉じるタイミングはユーザーに委ねる。
@@ -638,8 +692,12 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
     }
   });
 
-  // このテストはサイドバーを閉じた状態にして終わるため、末尾に置く。
   test('Escape キーで設定モーダルを閉じられる', async () => {
+    // beforeEach のプログラム呼び出しで開いたモーダルを一度閉じ、実際の設定ボタンから
+    // 開き直すことで、Escape 後の具体的なフォーカス復帰先も検証する。
+    await win.locator('.settings-close').click();
+    await win.waitForSelector('.settings-modal', { state: 'detached' });
+    await win.locator('#settings-btn').click();
     await expect(win.locator('.settings-modal')).toBeVisible();
     const sidebarWasOpen = await win.evaluate(
       () => document.getElementById('root').classList.contains('sidebar-open')
@@ -649,13 +707,15 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
     await win.waitForSelector('.settings-modal', { state: 'detached' });
     await expect(win.locator('.settings-modal')).toHaveCount(0);
 
-    // Escape はサイドバーの keydown ハンドラも起こし、開閉アニメーション後（約 220ms）に
-    // ☰ ボタンへフォーカスを戻す。この遅延フォーカスを次テストへ持ち越すと、入力欄へ
-    // 当てたはずのフォーカスを奪われて activeElement の検証が壊れるため、ここで着地させる。
+    // 設定モーダルが最前面で Escape を消費するため、背後のサイドバーは開いたまま。
+    // 開閉アニメーション後の遅延時間を越えても、操作元の設定ボタンへ戻ったままになる。
     if (sidebarWasOpen) {
-      await expect
-        .poll(() => win.evaluate(() => (document.activeElement && document.activeElement.id) || ''))
-        .toBe('menu-btn');
+      await expect(win.locator('#root')).toHaveClass(/\bsidebar-open\b/);
+      await win.waitForTimeout(400);
+      const activeElementId = await win.evaluate(
+        () => (document.activeElement && document.activeElement.id) || ''
+      );
+      expect(activeElementId).toBe('settings-btn');
     }
   });
 });

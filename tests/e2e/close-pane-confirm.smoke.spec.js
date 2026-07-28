@@ -145,11 +145,23 @@ test('confirmClose 既定（busy）: waiting のペインは確認あり・idle 
     const closeBtn = win.locator(`.pane[data-id="${paneId}"] .btn-close`);
     const overlay = win.locator('.confirm-overlay');
 
-    // (1) ✕ → 確認ダイアログが出る → キャンセル → ペイン・PTY とも無傷で残る。
+    // サイドバーを開いた状態に揃え、確認ダイアログの Escape が背後へ届かないことも見る。
+    const sidebarOpen = await win.locator('#root').evaluate(
+      (root) => root.classList.contains('sidebar-open')
+    );
+    if (!sidebarOpen) await win.locator('#menu-btn').click();
+    await expect(win.locator('#root')).toHaveClass(/\bsidebar-open\b/);
+
+    // (1) ✕ → 確認ダイアログが出る → Escape でキャンセル → ペイン・PTY とも無傷で残る。
     await closeBtn.click();
     await expect(overlay).toBeVisible();
-    await win.locator('.confirm-cancel').click();
+    await win.keyboard.press('Escape');
     await expect(overlay).toHaveCount(0);
+    await expect(win.locator('#root')).toHaveClass(/\bsidebar-open\b/);
+    // サイドバーを閉じたときの遅延フォーカス時間（約 220ms）を越えても、
+    // ダイアログを開いた操作元の ✕ ボタンへフォーカスが戻ったままかを確かめる。
+    await win.waitForTimeout(400);
+    await expect(closeBtn).toBeFocused();
     await new Promise((r) => setTimeout(r, 2500)); // report-states 1 周期分待って残存を確認
     expect(termIdsOf(await getStates(port))).toContain(termId);
 

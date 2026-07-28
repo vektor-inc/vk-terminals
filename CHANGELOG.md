@@ -3,6 +3,7 @@
 - [ 機能追加 ] 設定パネルの「外出先から確認」に、API サーバーが実際に待ち受けているアドレスと起動エラーを表示する機能を追加（[#261](https://github.com/vektor-inc/vk-terminals/issues/261)）
 - [ 仕様変更 ] 設定パネルで説明コンテンツも設定グループも無いタブに、表示できる設定項目が無いことを示すメッセージを追加（[#258](https://github.com/vektor-inc/vk-terminals/issues/258)）
 - [ 不具合修正 ] 設定項目のキーが重複したとき、移動ボタンで案内された欄への入力ではなく別の欄の値が保存される不具合を修正（[#258](https://github.com/vektor-inc/vk-terminals/issues/258)）
+- [ 不具合修正 ] 設定パネルの描画中にエラーが起きると、アプリを再起動するまで設定を開けなくなる不具合を修正（[#259](https://github.com/vektor-inc/vk-terminals/issues/259)）
 - [ 開発環境 ] e2e を全件連続実行するとマシン負荷が高いときに一部のテストがタイムアウトで落ちる問題を修正（[#263](https://github.com/vektor-inc/vk-terminals/issues/263)）
 
 ## 1.47.0

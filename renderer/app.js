@@ -32,6 +32,7 @@ const { resolveQueueIssuesListUrl } = require('./taskQueueLink');
 const { isPatternValid } = require('./settingsValidation');
 const { isFieldVisible } = require('./settingsVisibility');
 const { createAutoCloseController } = require('./autoClose');
+const { createSingleOpenGuard } = require('./settingsModalGuard');
 const {
   dedupeSettingsFieldsByKey,
   deriveSettingsTargetPathsForGroups,
@@ -3427,17 +3428,22 @@ function renderSettingsTabContent(blocks, tabIndexById, runtimeStatus = {}, entr
   return html ? `<div class="settings-content">${html}</div>` : '';
 }
 
-// 設定モーダルの二重オープンを防ぐロック。settings:describe の await 中は overlay がまだ
-// DOM に無いため、.settings-overlay の有無チェックだけでは二重生成されうる。await より前に
-// 同期で立てるこのフラグで「チェック〜生成」を原子的に守り、モーダルを閉じた／生成に
-// 失敗した時に必ず戻す。
-let modalOpen = false;
+// 設定モーダルの二重オープンを防ぐロック。settings:describe の応答待ち中は overlay がまだ
+// DOM に無いため、要素の有無だけでは二重生成されうる。生成前にロックを取得し、閉じた時は
+// buildSettingsModal の close、生成に失敗した時は protect の例外処理が必ず解放する。
+const settingsModalGuard = createSingleOpenGuard();
 
 async function openSettingsModal() {
-  // 二重オープン防止（describe の await より前に立てる）
-  if (modalOpen) return;
-  modalOpen = true;
+  try {
+    await settingsModalGuard.protect(({ release, setFailureCleanup }) => (
+      buildSettingsModal({ release, setFailureCleanup })
+    ));
+  } catch (e) {
+    console.error('設定パネルの生成に失敗しました', e);
+  }
+}
 
+async function buildSettingsModal({ release, setFailureCleanup }) {
   // 設定ディスクリプタが無い環境でも空の設定モーダルとして開く（使用量はサイドバー上部）。
   let desc = null;
   try {
@@ -3568,6 +3574,12 @@ async function openSettingsModal() {
       </div>` : ''}
     </div>`;
   document.body.appendChild(overlay);
+  // close を組み立てる前の例外では、まだキー操作やタイマーは登録されていないため、
+  // この生成途中の overlay だけを外してロックを解放する。
+  setFailureCleanup(() => {
+    overlay.remove();
+    release();
+  });
 
   const modal = overlay.querySelector('.settings-modal');
 
@@ -3586,21 +3598,23 @@ async function openSettingsModal() {
   };
 
   // 保存成功後の自動クローズ。武装したまま放置すると、遅れて発火した close() が
-  // 「今開いているモーダル」ではなくこのクロージャの overlay を対象に modalOpen を false へ
-  // 戻し、二重オープンの抑止を壊す。寿命の判断は renderer/autoClose.js に集約してあり、
+  // 「今開いているモーダル」ではなくこのクロージャの overlay を対象にロックを解放し、
+  // 二重オープンの抑止を壊す。寿命の判断は renderer/autoClose.js に集約してあり、
   // ここは「いつ武装し、いつ取り消すか」だけを決める。
   const autoClose = createAutoCloseController({ onFire: () => close() });
   const close = () => {
     // markClosed() が false を返すのは 2 回目以降。遅れて発火したタイマーが
-    // modalOpen を巻き戻さないよう、閉じる処理は冪等にしておく。
+    // 後から開いたモーダルのロックを巻き戻さないよう、閉じる処理は冪等にしておく。
     if (!autoClose.markClosed()) return;
     document.removeEventListener('keydown', onKey);
     clearCopyResetTimers();
     stopApiServerStatusPolling();
     overlay.remove();
-    modalOpen = false;
+    release();
   };
   const onKey = (e) => { if (e.key === 'Escape') close(); };
+  // ここから後の例外では、close に overlay・キー操作・各タイマーをまとめて片付けさせる。
+  setFailureCleanup(close);
   document.addEventListener('keydown', onKey);
 
   overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) close(); });

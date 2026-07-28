@@ -6,6 +6,17 @@
   --vktm--border-radius--md:5px;
 }
 
+:root {
+  /* WCAG 1.4.11（UI 部品 3:1）を満たす明るさの、対話部品の境界色。
+     面が #21262d / #161b22 のような明るめの面に置くボタン・セレクトボックス向け
+     （例: .settings-footer button / .settings-reveal / .widget-control-select /
+     .task-list-assignee-filter）。
+     設定パネルの入力欄・セレクトボックス（.settings-row 内）には使わない。面が #010409 と
+     暗く、既存の枠線 #6e7681 で既に 4.47:1 を満たすため、この変数へ寄せると基準を
+     満たしたまま見た目だけが変わる。 */
+  --vktm--color--border-interactive: #8b949e;
+}
+
 html, body {
   width: 100%;
   height: 100%;
@@ -394,15 +405,19 @@ h4.settings-content-heading {
   background: #010409;
   border: 1px solid #21262d;
   border-radius: 5px;
-  /* 長いコマンド・URL でモーダル全体が横スクロールしないよう、この箱の中で流す。 */
-  overflow-x: auto;
+  /* pre はフォーカスを受け取れず、横スクロールにするとポインタを使えない人が
+     はみ出した部分を読めない（WCAG 2.1.1）。改行・連続空白はコードとして保持しつつ、
+     空白の切れ目がない長い URL も枠幅で折る。overflow-x は、将来この折り返しを
+     変えたときにキーボードで届かないスクロールを復活させる経路になるため置かない。 */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
   color: #e6edf3;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
   line-height: 1.5;
 }
-/* コード＋コピー操作のまとまり。pre は overflow-x: auto なので、ボタンを内側に重ねると
-   横スクロールで一緒に流れる。操作行は pre の外（下辺に接する行）に置く。 */
+/* コード＋コピー操作のまとまり。操作行はコードの外（下辺に接する行）に置き、
+   コード本文とコピー操作を分離する。 */
 .settings-content-codeblock {
   margin: 0 0 12px;
 }
@@ -428,13 +443,15 @@ h4.settings-content-heading {
   background: #010409;
 }
 /* 二次操作。アクセントカラーは説明タブ唯一の CTA（tablink）に残すため文字はグレー系。
-   ただし境界 #30363d は背景比 1.7:1 で WCAG 1.4.11（UI 部品 3:1）に届かないため
-   #8b949e まで上げる（5.6:1）。面・角丸・hover・フォーカスリングは既存ボタンと共通。 */
+   境界 #30363d はボタンの面 #21262d に対して 1.25:1、操作行の面 #161b22 に対して
+   1.42:1 で WCAG 1.4.11（UI 部品 3:1）に届かないため、#8b949e まで上げる
+   （ボタンの面に対して 4.95:1、操作行の面に対して 5.62:1）。
+   面・角丸・hover・フォーカスリングは既存ボタンと共通。 */
 .settings-content-copy {
   flex: 0 0 auto;
   padding: 3px 10px;
   background: #21262d;
-  border: 1px solid #8b949e;
+  border: 1px solid var(--vktm--color--border-interactive);
   border-radius: 5px;
   color: #c9d1d9;
   font: inherit;
@@ -479,8 +496,9 @@ h4.settings-content-heading {
 .settings-content-link-icon {
   margin-left: 3px;
 }
-/* 説明タブ唯一の CTA。既定の二次ボタン境界（#30363d）は背景比 1.55:1 で WCAG 1.4.11
-   （UI 部品 3:1）に届かないため、境界と文字をアクセントカラーに上げている（境界 7.5:1）。 */
+/* 説明タブ唯一の CTA。二次ボタンの既定境界は #8b949e へ変更したが、このボタンは
+   アクセントカラー #58a6ff のままにする。モーダルの面 #0d1117 に対して 7.49:1、
+   ボタンの面 #21262d に対して 6.03:1 で WCAG 1.4.11（UI 部品 3:1）を満たす。 */
 .settings-content-tablink {
   /* inline-flex（インラインレベル）だと匿名の行ボックスに包まれ、後続ブロックとの
      マージン相殺が起きない。行ボックスの余り分がそのまま加算されるため、直後の見出しの
@@ -710,7 +728,7 @@ h4.settings-content-heading {
 .settings-reveal {
   flex-shrink: 0;
   background: #21262d;
-  border: 1px solid #30363d;
+  border: 1px solid var(--vktm--color--border-interactive);
   border-radius: 5px;
   color: #c9d1d9;
   cursor: pointer;
@@ -752,7 +770,10 @@ h4.settings-content-heading {
   border-radius: 5px;
   font-size: 13px;
   cursor: pointer;
-  border: 1px solid #30363d;
+  /* 既定色は変数経由にする。バリアントは同じ要素で変数を上書きするだけでよく、
+     border-color の詳細度争い（共通ルール (0,1,1) がバリアント (0,1,0) に勝つ問題）も
+     ソース順への依存も生じない。色を書き忘れたボタンが currentColor で描かれる事故も防げる。 */
+  border: 1px solid var(--vktm--color--border-override, var(--vktm--color--border-interactive));
   white-space: nowrap;
 }
 .settings-cancel {
@@ -762,7 +783,10 @@ h4.settings-content-heading {
 .settings-cancel:hover { background: #30363d; }
 .settings-save {
   background: #238636;
-  border-color: #2ea043;
+  /* 共通ルールが読む変数を上書きする。border-color を直接書くと共通ルールの
+     詳細度に負けるため（この不具合が issue #267 の修正対象だった）。
+     カスタムプロパティは継承するため、親要素ではなく必ずコントロール自身で上書きする。 */
+  --vktm--color--border-override: #2ea043;
   color: #fff;
   font-weight: 600;
 }

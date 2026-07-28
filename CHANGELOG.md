@@ -1,5 +1,7 @@
 # Changelog
 
+## 1.48.0
+
 - [ 機能追加 ] 設定パネルの「外出先から確認」に、API サーバーが実際に待ち受けているアドレスと起動エラーを表示する機能を追加（[#261](https://github.com/vektor-inc/vk-terminals/issues/261)）
 - [ 仕様変更 ] 設定パネルで説明コンテンツも設定グループも無いタブに、表示できる設定項目が無いことを示すメッセージを追加（[#258](https://github.com/vektor-inc/vk-terminals/issues/258)）
 - [ 不具合修正 ] 設定項目のキーが重複したとき、移動ボタンで案内された欄への入力ではなく別の欄の値が保存される不具合を修正（[#258](https://github.com/vektor-inc/vk-terminals/issues/258)）

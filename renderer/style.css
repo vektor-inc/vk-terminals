@@ -8,9 +8,12 @@
 
 :root {
   /* WCAG 1.4.11（UI 部品 3:1）を満たす明るさの、対話部品の境界色。
-     面が #21262d / #161b22 のような明るめの面に置くボタン・セレクトボックス向け。
-     入力欄には使わない。入力欄の面は #010409 と暗く、既存の枠線 #6e7681 で既に
-     4.47:1 を満たすため、この変数へ寄せると基準を満たしたまま見た目だけが変わる。 */
+     面が #21262d / #161b22 のような明るめの面に置くボタン・セレクトボックス向け
+     （例: .settings-footer button / .settings-reveal / .widget-control-select /
+     .task-list-assignee-filter）。
+     設定パネルの入力欄・セレクトボックス（.settings-row 内）には使わない。面が #010409 と
+     暗く、既存の枠線 #6e7681 で既に 4.47:1 を満たすため、この変数へ寄せると基準を
+     満たしたまま見た目だけが変わる。 */
   --vktm--color--border-interactive: #8b949e;
 }
 
@@ -770,7 +773,7 @@ h4.settings-content-heading {
   /* 既定色は変数経由にする。バリアントは同じ要素で変数を上書きするだけでよく、
      border-color の詳細度争い（共通ルール (0,1,1) がバリアント (0,1,0) に勝つ問題）も
      ソース順への依存も生じない。色を書き忘れたボタンが currentColor で描かれる事故も防げる。 */
-  border: 1px solid var(--vktm--button-border-color, var(--vktm--color--border-interactive));
+  border: 1px solid var(--vktm--color--border-override, var(--vktm--color--border-interactive));
   white-space: nowrap;
 }
 .settings-cancel {
@@ -781,8 +784,9 @@ h4.settings-content-heading {
 .settings-save {
   background: #238636;
   /* 共通ルールが読む変数を上書きする。border-color を直接書くと共通ルールの
-     詳細度に負けるため（この不具合が issue #267 の修正対象だった）。 */
-  --vktm--button-border-color: #2ea043;
+     詳細度に負けるため（この不具合が issue #267 の修正対象だった）。
+     カスタムプロパティは継承するため、親要素ではなく必ずコントロール自身で上書きする。 */
+  --vktm--color--border-override: #2ea043;
   color: #fff;
   font-weight: 600;
 }

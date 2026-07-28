@@ -128,6 +128,8 @@ test.describe.serial('設定パネルのコード折り返しとボタン境界�
     }
 
     expect(leftModal, `Tab がモーダル外へ進まない: ${stops.join(' -> ')}`).toBe(true);
+    // 停止位置が空振りしていないことの担保（本文が描かれず空パスするのを防ぐ）。
+    expect(stops.some((stop) => stop.includes('settings-content-copy'))).toBe(true);
     // 本題の不変条件: 折り返したコードブロック（pre）は Tab 停止位置に現れない。
     // 停止位置の「数」を固定すると、説明コンテンツにリンクやコードブロックが増えただけで
     // 落ちるうえ、「pre が増えた」のかどうかも分からない。性質そのものを主張する。

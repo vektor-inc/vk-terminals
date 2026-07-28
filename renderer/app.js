@@ -33,12 +33,16 @@ const { isPatternValid } = require('./settingsValidation');
 const { isFieldVisible } = require('./settingsVisibility');
 const { createAutoCloseController } = require('./autoClose');
 const { createSingleOpenGuard } = require('./settingsModalGuard');
+const { createEscapeLayerStack } = require('./escapeLayer');
 const {
   dedupeSettingsFieldsByKey,
   deriveSettingsTargetPathsForGroups,
   groupSettingsGroupsByTab,
   normalizeSettingsTabs,
 } = require('./settingsTabs');
+
+// モーダル類の Escape は、最後に開いたものだけへ渡す。
+const escapeLayers = createEscapeLayerStack(document);
 
 // ─── xterm.css の注入 ─────────────────────────────────────────────────────────
 // xterm.css は index.html の相対パス <link> ではなく、Node のモジュール解決
@@ -1953,18 +1957,13 @@ function openCloseConfirmDialog(paneId) {
   overlay.appendChild(modal);
   document.body.appendChild(overlay);
 
+  let unregisterEscapeLayer = () => {};
   const cleanup = () => {
-    document.removeEventListener('keydown', onKey);
+    unregisterEscapeLayer();
     overlay.remove();
     closeConfirmOpen = false;
   };
-  const onKey = (e) => {
-    if (e.key === 'Escape') {
-      e.stopPropagation();
-      cleanup();
-    }
-  };
-  document.addEventListener('keydown', onKey);
+  unregisterEscapeLayer = escapeLayers.register(cleanup);
 
   overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) cleanup(); });
   cancelBtn.addEventListener('click', cleanup);
@@ -3602,20 +3601,20 @@ async function buildSettingsModal({ release, setFailureCleanup }) {
   // 二重オープンの抑止を壊す。寿命の判断は renderer/autoClose.js に集約してあり、
   // ここは「いつ武装し、いつ取り消すか」だけを決める。
   const autoClose = createAutoCloseController({ onFire: () => close() });
+  let unregisterEscapeLayer = () => {};
   const close = () => {
     // markClosed() が false を返すのは 2 回目以降。遅れて発火したタイマーが
     // 後から開いたモーダルのロックを巻き戻さないよう、閉じる処理は冪等にしておく。
     if (!autoClose.markClosed()) return;
-    document.removeEventListener('keydown', onKey);
+    unregisterEscapeLayer();
     clearCopyResetTimers();
     stopApiServerStatusPolling();
     overlay.remove();
     release();
   };
-  const onKey = (e) => { if (e.key === 'Escape') close(); };
   // ここから後の例外では、close に overlay・キー操作・各タイマーをまとめて片付けさせる。
   setFailureCleanup(close);
-  document.addEventListener('keydown', onKey);
+  unregisterEscapeLayer = escapeLayers.register(close);
 
   overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) close(); });
   modal.querySelector('.settings-close').addEventListener('click', close);

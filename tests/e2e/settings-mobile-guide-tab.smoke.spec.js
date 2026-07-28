@@ -638,7 +638,6 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
     }
   });
 
-  // このテストはサイドバーを閉じた状態にして終わるため、末尾に置く。
   test('Escape キーで設定モーダルを閉じられる', async () => {
     await expect(win.locator('.settings-modal')).toBeVisible();
     const sidebarWasOpen = await win.evaluate(
@@ -649,13 +648,15 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
     await win.waitForSelector('.settings-modal', { state: 'detached' });
     await expect(win.locator('.settings-modal')).toHaveCount(0);
 
-    // Escape はサイドバーの keydown ハンドラも起こし、開閉アニメーション後（約 220ms）に
-    // ☰ ボタンへフォーカスを戻す。この遅延フォーカスを次テストへ持ち越すと、入力欄へ
-    // 当てたはずのフォーカスを奪われて activeElement の検証が壊れるため、ここで着地させる。
+    // 設定モーダルが最前面で Escape を消費するため、背後のサイドバーは開いたままで、
+    // 開閉アニメーション後の ☰ ボタンへの遅延フォーカスも起きない。
     if (sidebarWasOpen) {
-      await expect
-        .poll(() => win.evaluate(() => (document.activeElement && document.activeElement.id) || ''))
-        .toBe('menu-btn');
+      await expect(win.locator('#root')).toHaveClass(/\bsidebar-open\b/);
+      await win.waitForTimeout(400);
+      const activeElementId = await win.evaluate(
+        () => (document.activeElement && document.activeElement.id) || ''
+      );
+      expect(activeElementId).not.toBe('menu-btn');
     }
   });
 });

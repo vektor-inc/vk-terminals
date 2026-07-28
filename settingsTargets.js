@@ -4,6 +4,12 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
+const UNSAFE_KEY_SEGMENTS = new Set(['__proto__', 'prototype', 'constructor']);
+
+function hasUnsafeKeySegment(dottedKey) {
+  return dottedKey.split('.').some((segment) => UNSAFE_KEY_SEGMENTS.has(segment));
+}
+
 function resolveTargetPath(rawPath) {
   if (typeof rawPath !== 'string') return null;
   if (rawPath.trim() === '') return null;
@@ -54,6 +60,7 @@ function isValidSettingsDescriptor(descriptor) {
   const seenKeys = new Set();
   for (const { field, targetPath } of descriptorFieldTargetEntries(descriptor)) {
     if (typeof targetPath !== 'string' || targetPath === '') return false;
+    if (hasUnsafeKeySegment(field.key)) return false;
     if (seenKeys.has(field.key)) return false;
     seenKeys.add(field.key);
   }
@@ -61,6 +68,7 @@ function isValidSettingsDescriptor(descriptor) {
 }
 
 function deepGet(obj, dottedKey) {
+  if (hasUnsafeKeySegment(dottedKey)) return undefined;
   return dottedKey.split('.').reduce(
     (acc, key) => (acc == null ? undefined : acc[key]),
     obj,
@@ -68,6 +76,9 @@ function deepGet(obj, dottedKey) {
 }
 
 function deepSet(obj, dottedKey, value) {
+  if (hasUnsafeKeySegment(dottedKey)) {
+    throw new Error(`Unsafe settings key: ${dottedKey}`);
+  }
   const keys = dottedKey.split('.');
   let cur = obj;
   for (let i = 0; i < keys.length - 1; i++) {

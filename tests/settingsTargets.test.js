@@ -8,6 +8,8 @@ const path = require('path');
 
 const {
   coerceFieldValue,
+  deepGet,
+  deepSet,
   describeSettingsValues,
   describeTargetPaths,
   isValidSettingsDescriptor,
@@ -94,6 +96,61 @@ test('isValidSettingsDescriptor: 全フィールドの保存先が解決でき�
       { targetPath: '/group-b.json', fields: [{ key: 'shared' }] },
     ],
   }), false);
+});
+
+test('isValidSettingsDescriptor: 危険なキーセグメントを含むフィールドは無効', () => {
+  for (const key of ['__proto__.x', 'constructor.prototype.x', 'prototype.x']) {
+    assert.equal(isValidSettingsDescriptor({
+      targetPath: '/descriptor.json',
+      groups: [
+        { fields: [{ key }] },
+      ],
+    }), false, key);
+  }
+});
+
+test('deepSet: 危険なキーセグメントへの書き込みを拒否して Object.prototype を汚染しない', () => {
+  const cases = [
+    ['__proto__.settingsTargetsPolluted', 'PWNED'],
+    ['constructor.prototype.settingsTargetsPolluted', 'PWNED'],
+    ['prototype.settingsTargetsPolluted', 'PWNED'],
+  ];
+
+  delete Object.prototype.settingsTargetsPolluted;
+  try {
+    for (const [key, value] of cases) {
+      let thrownError;
+      try {
+        deepSet({}, key, value);
+      } catch (error) {
+        thrownError = error;
+      }
+      assert.equal(Object.prototype.settingsTargetsPolluted, undefined, key);
+      assert.ok(thrownError instanceof Error, key);
+    }
+  } finally {
+    delete Object.prototype.settingsTargetsPolluted;
+  }
+});
+
+test('deepGet: 危険なキーセグメントを含むキーは undefined を返す', () => {
+  const source = Object.assign(Object.create({ x: 'proto' }), {
+    constructor: { prototype: { x: 'constructor' } },
+    prototype: { x: 'prototype' },
+  });
+
+  assert.equal(deepGet(source, '__proto__.x'), undefined);
+  assert.equal(deepGet(source, 'constructor.prototype.x'), undefined);
+  assert.equal(deepGet(source, 'prototype.x'), undefined);
+});
+
+test('deepGet / deepSet: 通常のドット区切りキーは従来どおり読み書きできる', () => {
+  const target = {};
+
+  deepSet(target, 'a.b.c', 'value');
+
+  assert.deepEqual(target, { a: { b: { c: 'value' } } });
+  assert.equal(deepGet(target, 'a.b.c'), 'value');
 });
 
 test('describeSettingsValues: 異なる保存先から値を集約し default と field override を反映する', () => {

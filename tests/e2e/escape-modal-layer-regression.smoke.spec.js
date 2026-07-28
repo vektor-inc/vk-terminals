@@ -210,4 +210,43 @@ test.describe.serial('Escape レイヤー導入後のデグレ確認（issue #25
     await expect(win.locator('.settings-modal')).toHaveCount(0);
     await expect(win.locator('#settings-btn')).toBeFocused();
   });
+
+  // 背景クリック時の既定動作を止める対処は設定パネルと確認ダイアログの両方に入れてある。
+  // 設定パネル側だけを見ていると、片方だけ戻し忘れても気づけないため両方を押さえる。
+  test('確認ダイアログを背景クリックで閉じても ✕ ボタンへフォーカスが戻る', async () => {
+    const paneId = await win.evaluate(() => document.querySelector('.pane')?.dataset.id || '');
+    const closeBtn = win.locator(`.pane[data-id="${paneId}"] .btn-close`);
+    await closeBtn.focus();
+    await win.evaluate((id) => window.openCloseConfirmDialog(id), paneId);
+    await expect(win.locator('.confirm-overlay')).toBeVisible();
+
+    await win.locator('.confirm-overlay').click({ position: { x: 4, y: 4 } });
+    await expect(win.locator('.confirm-overlay')).toHaveCount(0);
+    await expect(closeBtn).toBeFocused();
+    // 背景クリックはキャンセル扱い。ペインは閉じられずに残る。
+    await expect(win.locator(`.pane[data-id="${paneId}"]`)).toHaveCount(1);
+  });
+
+  // 既定動作を止めるのは背景（オーバーレイ自身）を押したときだけで、モーダルの中は
+  // 素通しにしてある。ここが効きすぎるとテキスト選択や入力欄のクリックまで死ぬ。
+  test('背景の preventDefault はモーダル内の選択・クリックを妨げない', async () => {
+    await win.locator('#settings-btn').click();
+    await expect(win.locator('.settings-modal')).toBeVisible();
+
+    // モーダル内のラベルをドラッグしてテキスト選択できる。
+    const label = win.locator('.settings-modal label').first();
+    const box = await label.boundingBox();
+    await win.mouse.move(box.x + 2, box.y + box.height / 2);
+    await win.mouse.down();
+    await win.mouse.move(box.x + box.width - 2, box.y + box.height / 2, { steps: 10 });
+    await win.mouse.up();
+    expect(await win.evaluate(() => String(window.getSelection()))).not.toBe('');
+
+    // モーダル内の入力欄はクリックで従来どおりフォーカスできる。
+    await win.locator('#set-field-0').click();
+    await expect(win.locator('#set-field-0')).toBeFocused();
+
+    await win.locator('.settings-close').click();
+    await expect(win.locator('.settings-modal')).toHaveCount(0);
+  });
 });

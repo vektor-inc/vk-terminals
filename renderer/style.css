@@ -587,9 +587,12 @@ h4.settings-content-heading {
 .settings-content-status-text {
   margin: 0;
 }
-/* エラー説明と移動ボタンを同じ情報グループとして近接させ、下側には余白を残さない。 */
-.settings-content-status-text + .settings-content-tablink {
-  margin-top: 8px;
+/* 本文と操作の間に余白を作り、箱の下端は padding だけに任せる（padding を挟むと
+   最終要素の下マージンは相殺されず、上端 10px と非対称になる）。 */
+.settings-content-status-body > .settings-content-tablink {
+  margin: 10px 0 0;
+}
+.settings-content-status-body > :last-child {
   margin-bottom: 0;
 }
 .settings-group {

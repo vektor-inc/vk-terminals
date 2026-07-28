@@ -132,7 +132,7 @@ test('確認中の live region は器を保ったまま更新し、5 秒で確�
     // body 自体が差し替わっていないことを、任意属性が残ることで固定する。
     await body.evaluate((element) => element.setAttribute('data-e2e-live-region', 'same'));
     await expect(body.locator('.settings-content-status-label'))
-      .toHaveText('確認できませんでした', { timeout: 7000 });
+      .toHaveText('注意', { timeout: 7000 });
     await expect(body).toHaveAttribute('data-e2e-live-region', 'same');
     await expect(body).not.toHaveAttribute('aria-busy', 'true');
     await expect(body).toContainText('しばらくしてから設定パネルを開き直してください');
@@ -174,10 +174,10 @@ test('API ホストのエラーから設定欄へ移動してフォーカスで�
       const style = getComputedStyle(element);
       return { marginTop: style.marginTop, marginBottom: style.marginBottom };
     });
-    expect(spacing).toEqual({ marginTop: '8px', marginBottom: '0px' });
+    expect(spacing).toEqual({ marginTop: '10px', marginBottom: '0px' });
     await link.click();
     await expect(launched.win.locator('#settings-tab-0')).toHaveAttribute('aria-selected', 'true');
-    await expect(launched.win.locator('#set-field-0')).toBeFocused();
+    await expect(launched.win.getByLabel('API ホスト', { exact: true })).toBeFocused();
   } finally {
     if (launched) await closeApp(launched);
   }

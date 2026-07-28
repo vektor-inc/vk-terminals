@@ -3342,14 +3342,12 @@ function renderSettingsCopyableCode(text, copy) {
   </div>`;
 }
 
-function renderApiServerStatusBody(status, tabIndexById) {
-  const presentation = getApiServerStatusPresentation(status);
+function renderApiServerStatusBody(presentation, apiHostTabIndex) {
   const addressHtml = presentation.address
     ? renderSettingsCopyableCode(presentation.address, presentation.copy)
     : '';
-  const targetIndex = tabIndexById.get('general');
-  const apiHostLinkHtml = presentation.showApiHostLink && Number.isInteger(targetIndex)
-    ? `<button type="button" class="settings-content-tablink" data-tab-link-index="${escAttr(String(targetIndex))}" data-tab-link-field="apiHost">API ホストの設定へ移動</button>`
+  const apiHostLinkHtml = presentation.showApiHostLink && Number.isInteger(apiHostTabIndex)
+    ? `<button type="button" class="settings-content-tablink" data-tab-link-index="${escAttr(String(apiHostTabIndex))}" data-tab-link-field="apiHost">API ホストの設定へ移動</button>`
     : '';
   return `<span class="settings-content-status-label">${escText(presentation.label)}</span>
     ${addressHtml}
@@ -3357,13 +3355,13 @@ function renderApiServerStatusBody(status, tabIndexById) {
     ${apiHostLinkHtml}`;
 }
 
-function renderApiServerStatus(status, tabIndexById) {
+function renderApiServerStatus(status, apiHostTabIndex) {
   const presentation = getApiServerStatusPresentation(status);
   const busyAttr = status && status.phase === 'pending' ? ' aria-busy="true"' : '';
   return `<section class="settings-content-status" data-status-source="apiServer" data-tone="${escAttr(presentation.tone)}">
     <h3 class="settings-content-heading">現在の待ち受けアドレス</h3>
     <div class="settings-content-status-body" role="status"${busyAttr}>
-      ${renderApiServerStatusBody(status, tabIndexById)}
+      ${renderApiServerStatusBody(presentation, apiHostTabIndex)}
     </div>
   </section>`;
 }
@@ -3374,7 +3372,7 @@ function renderApiServerStatus(status, tabIndexById) {
 // （VK_TERMINALS_SETTINGS）からも入りうるため、テキストは escText / 属性は escAttr を
 // 必ず通し、HTML を素通しする実装（markdown → HTML 化など）はしない。
 // tabIndexById: tabLink ブロックの参照先タブ ID → タブ番号の Map。
-function renderSettingsTabContent(blocks, tabIndexById, runtimeStatus = {}) {
+function renderSettingsTabContent(blocks, tabIndexById, runtimeStatus = {}, entries = []) {
   const html = (Array.isArray(blocks) ? blocks : []).map((block) => {
     if (block.type === 'heading') {
       // モーダル見出しが <h2> なので、その配下は h3（親セクション）/ h4（子セクション）。
@@ -3411,7 +3409,8 @@ function renderSettingsTabContent(blocks, tabIndexById, runtimeStatus = {}) {
       </div>`;
     }
     if (block.type === 'status' && block.source === 'apiServer') {
-      return renderApiServerStatus(runtimeStatus.apiServer, tabIndexById);
+      const apiHostEntry = entries.find(({ field }) => field.key === 'apiHost');
+      return renderApiServerStatus(runtimeStatus.apiServer, apiHostEntry?.tabIndex);
     }
     if (block.type === 'tabLink') {
       const targetIndex = tabIndexById.get(block.tab);
@@ -3476,6 +3475,14 @@ async function openSettingsModal() {
     (group) => Array.isArray(group.fields) && group.fields.length > 0
   ));
   const tabIndexById = new Map(settingsTabs.map((tab, index) => [tab.id, index]));
+  // content より先に全タブのフィールドを組み立て、status ブロックの移動先も
+  // スキーマ由来の entries から確実に参照できるようにする。
+  const tabGroupsHtml = useTabbedSettings
+    ? groupedTabs.map(({ groups }, tabIndex) => groups.map((group) => renderGroupHtml(group, {
+      tabIndex,
+      omitLegend: groups.length === 1,
+    })).join(''))
+    : [];
   const settingsTabsHtml = useTabbedSettings ? `<div class="settings-tabs" role="tablist" aria-label="設定カテゴリ">
     ${settingsTabs.map((tab, index) => {
       const tabId = `settings-tab-${index}`;
@@ -3501,13 +3508,9 @@ async function openSettingsModal() {
           const noteHtml = tabNote ? `<p class="settings-note settings-tab-note">${escText(tabNote)}</p>` : '';
           const contentHtml = renderSettingsTabContent(tab && tab.content, tabIndexById, {
             apiServer: desc.apiServerStatus,
-          });
-          const tabGroupsHtml = groups.map((group) => renderGroupHtml(group, {
-            tabIndex,
-            omitLegend: groups.length === 1,
-          })).join('');
+          }, entries);
           return `<section class="settings-tab-panel" id="${escAttr(panelId)}" role="tabpanel" aria-labelledby="${escAttr(tabId)}" tabindex="0"${tabIndex === 0 ? '' : ' hidden'}>
-            ${targetHtml}${noteHtml}${contentHtml}${tabGroupsHtml}
+            ${targetHtml}${noteHtml}${contentHtml}${tabGroupsHtml[tabIndex]}
           </section>`;
         }).join('')
         : desc.groups.map(g => renderGroupHtml(g)).join(''))
@@ -3856,6 +3859,26 @@ async function openSettingsModal() {
     if (statusElement && desc.apiServerStatus && desc.apiServerStatus.phase === 'pending') {
       let pollCount = 0;
       let pollInFlight = false;
+      const apiHostEntry = entries.find(({ field }) => field.key === 'apiHost');
+      const applyApiServerStatus = (status) => {
+        const current = modal.querySelector('[data-status-source="apiServer"]');
+        if (!current) {
+          stopApiServerStatusPolling();
+          return;
+        }
+        const presentation = getApiServerStatusPresentation(status);
+        const body = current.querySelector('.settings-content-status-body');
+        current.dataset.tone = presentation.tone;
+        if (body) {
+          body.innerHTML = renderApiServerStatusBody(presentation, apiHostEntry?.tabIndex);
+          if (status && status.phase === 'pending') {
+            body.setAttribute('aria-busy', 'true');
+          } else {
+            body.removeAttribute('aria-busy');
+          }
+        }
+        if (!status || status.phase !== 'pending') stopApiServerStatusPolling();
+      };
       const refreshApiServerStatus = async () => {
         if (pollInFlight) return;
         pollInFlight = true;
@@ -3863,40 +3886,16 @@ async function openSettingsModal() {
         try {
           const nextStatus = await ipcRenderer.invoke('settings:api-server-status');
           if (!modal.isConnected) return;
-          const current = modal.querySelector('[data-status-source="apiServer"]');
-          if (!current) {
-            stopApiServerStatusPolling();
-            return;
-          }
           const settledStatus = nextStatus && nextStatus.phase !== 'pending'
             ? nextStatus
             : (pollCount >= 20 ? { phase: 'unavailable' } : nextStatus);
-          const presentation = getApiServerStatusPresentation(settledStatus);
-          const body = current.querySelector('.settings-content-status-body');
-          current.dataset.tone = presentation.tone;
-          if (body) {
-            body.innerHTML = renderApiServerStatusBody(settledStatus, tabIndexById);
-            if (settledStatus && settledStatus.phase === 'pending') {
-              body.setAttribute('aria-busy', 'true');
-            } else {
-              body.removeAttribute('aria-busy');
-            }
-          }
-          if (!settledStatus || settledStatus.phase !== 'pending') stopApiServerStatusPolling();
+          applyApiServerStatus(settledStatus);
         } catch (_e) {
           if (!modal.isConnected) return;
           // 一時的な取得失敗でも上限までは確認中を維持する。上限では行き止まりを避ける
           // 案内に切り替え、同期 I/O を伴う main 側の状態取得を止める。
           if (pollCount >= 20) {
-            const current = modal.querySelector('[data-status-source="apiServer"]');
-            const body = current && current.querySelector('.settings-content-status-body');
-            const unavailable = { phase: 'unavailable' };
-            if (current) current.dataset.tone = getApiServerStatusPresentation(unavailable).tone;
-            if (body) {
-              body.innerHTML = renderApiServerStatusBody(unavailable, tabIndexById);
-              body.removeAttribute('aria-busy');
-            }
-            stopApiServerStatusPolling();
+            applyApiServerStatus({ phase: 'unavailable' });
           }
         } finally {
           pollInFlight = false;

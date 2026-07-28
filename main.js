@@ -1919,7 +1919,7 @@ function startHttpApi() {
         startupHost: apiHost,
         actualHost: '',
         errorCode: e.code,
-        fellBack: false,
+        fellBack: triedFallback,
       };
       console.warn(`${LOG_PREFIX} Port ${API_PORT} in use, API server disabled.`);
     } else if (e.code === 'EADDRNOTAVAIL' && !triedFallback && apiHost !== '127.0.0.1') {

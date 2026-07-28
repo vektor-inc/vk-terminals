@@ -35,7 +35,7 @@ function getApiServerStatusPresentation(status) {
   if (safeStatus.phase === 'unavailable') {
     return {
       tone: 'warning',
-      label: '確認できませんでした',
+      label: '注意',
       message: 'API サーバーの起動を確認できませんでした。起動処理中の可能性があります。しばらくしてから設定パネルを開き直してください。',
       address: '',
       copy: false,
@@ -84,16 +84,16 @@ function getApiServerStatusPresentation(status) {
   // 直したケースなので「未反映」とは案内しない。起動時設定との一致も見ることで、
   // localhost → ::1 のような正常な名前解決を未反映と誤認しない。
   if (savedHost !== actualHost && savedHost !== startupHost) {
-    const loopbackNote = isLoopbackHost(actualHost)
+    const currentNote = isLoopbackHost(actualHost)
       ? 'この状態ではスマートフォンからは開けません。'
-      : '';
+      : 'この状態では、このアドレスに届く端末からはまだ開けます。';
     const restartNote = isAlwaysAvailableHost(savedHost)
       ? '保存した API ホストを反映するには、vk-terminals を再起動してください。'
       : '保存した API ホストを反映するには、そのアドレスをこのパソコンで使える状態にしてから、vk-terminals を再起動してください。Tailscale IP の場合は Tailscale に接続し、ホスト名の場合はその名前でこのパソコンに接続できることを確認してください。';
     return {
       tone: 'warning',
       label: '注意',
-      message: `保存した API ホスト（${savedHost}）は、まだ反映されていません。今は起動したときの設定のまま ${actualHost} で待ち受けています。${loopbackNote}${restartNote}`,
+      message: `保存した API ホスト（${savedHost}）は、まだ反映されていません。今は起動したときの設定のまま ${actualHost} で待ち受けています。${currentNote}${restartNote}`,
       address,
       copy: !isWildcardHost(actualHost),
     };

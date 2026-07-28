@@ -94,6 +94,7 @@ test('未反映でも実待ち受け先が外部到達可能ならスマート�
   }));
   assert.equal(result.tone, 'warning');
   assert.doesNotMatch(result.message, /スマートフォンからは開けません/);
+  assert.match(result.message, /この状態では、このアドレスに届く端末からはまだ開けます/);
 });
 
 test('フォールバック事実がある場合だけ割り当てエラーとして案内する', () => {
@@ -192,7 +193,7 @@ test('確定前は中立の確認中を表示する', () => {
 test('確認を打ち切った状態は設定パネルを開き直す案内を表示する', () => {
   assert.deepEqual(getApiServerStatusPresentation({ phase: 'unavailable' }), {
     tone: 'warning',
-    label: '確認できませんでした',
+    label: '注意',
     message: 'API サーバーの起動を確認できませんでした。起動処理中の可能性があります。しばらくしてから設定パネルを開き直してください。',
     address: '',
     copy: false,

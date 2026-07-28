@@ -13,15 +13,15 @@ const { closeApp, getFreePort, launchAppAndWait } = require('./helpers/electron-
 // だけ。ここを 1 つのディスクリプタに同居させて、片方を直したらもう片方が崩れる形の
 // 退行を 1 テストで捕まえられるようにする。
 
-// ipcRenderer.invoke を差し替えてテスト用の設定ディスクリプタを読み込ませる。
+// window.VKIpc.invoke（renderer 側の中継レイヤ／issue #268）を差し替えてテスト用の設定ディスクリプタを読み込ませる。
 // 保存は実ファイルへ書かず、渡された payload を window.__savedPayloads に積むだけにする
 // （保存処理がどの欄を採用したかを payload で直接観測するため）。
 async function installDescriptor(win, desc) {
   await win.evaluate((descriptor) => {
-    const { ipcRenderer } = require('electron');
-    if (!window.__origInvoke) window.__origInvoke = ipcRenderer.invoke.bind(ipcRenderer);
+    const vkIpc = window.VKIpc;
+    if (!window.__origInvoke) window.__origInvoke = vkIpc.invoke.bind(vkIpc);
     window.__savedPayloads = [];
-    ipcRenderer.invoke = (channel, payload) => {
+    vkIpc.invoke = (channel, payload) => {
       if (channel === 'settings:describe') return Promise.resolve(descriptor);
       if (channel === 'settings:save') {
         window.__savedPayloads.push(payload);
@@ -35,9 +35,9 @@ async function installDescriptor(win, desc) {
 // 差し替えを戻す（組み込みスキーマを読ませるテストのため）。
 async function restoreInvoke(win) {
   await win.evaluate(() => {
-    const { ipcRenderer } = require('electron');
+    const vkIpc = window.VKIpc;
     if (!window.__origInvoke) return;
-    ipcRenderer.invoke = window.__origInvoke;
+    vkIpc.invoke = window.__origInvoke;
     delete window.__origInvoke;
   });
 }
@@ -116,7 +116,7 @@ test.describe.serial('重複除去で空になったタブの案内と導線（P
       port,
       prefix: 'vk-terminals-e2e-settings-empty-tab-',
       // 実環境のディスクリプタを読み込ませない。組み込みスキーマを見るテストだけ
-      // ipcRenderer の差し替えを外して素の経路に戻す。
+      // window.VKIpc の差し替えを外して素の経路に戻す。
       env: { VK_TERMINALS_APP_TITLE: '', VK_TERMINALS_SETTINGS: '' },
     }));
   });
@@ -420,7 +420,7 @@ test.describe.serial('重複除去で空になったタブの案内と導線（P
   });
 
   test('組み込みスキーマでは案内メッセージが出ず、設定項目が従来どおり表示される', async () => {
-    // ipcRenderer の差し替えを外し、settings-schema.json を読む実経路で確認する。
+    // window.VKIpc の差し替えを外し、settings-schema.json を読む実経路で確認する。
     await restoreInvoke(win);
     await openSettings(win);
 

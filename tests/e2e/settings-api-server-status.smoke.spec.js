@@ -48,22 +48,22 @@ test('127.0.0.1 で実際に待ち受けているアドレスを表示する', a
 
     // 実クリップボードは汚さず、#266 と同じ Electron clipboard.writeText 経路へ
     // 画面に出ている URL がそのまま渡ることを確認する。
-    await launched.win.evaluate(() => {
-      const { clipboard } = require('electron');
-      window.__apiStatusOriginalWriteText = clipboard.writeText;
-      window.__apiStatusWritten = [];
-      clipboard.writeText = (text) => window.__apiStatusWritten.push(text);
+    // issue #268 で renderer から clipboard を直接触れなくなったため、実際に書き込む
+    // main プロセス側（ipcMain.handle('clipboard:write-text')）でスタブする。
+    await launched.app.evaluate(({ clipboard }) => {
+      globalThis.__apiStatusOriginalWriteText = clipboard.writeText;
+      globalThis.__apiStatusWritten = [];
+      clipboard.writeText = (text) => globalThis.__apiStatusWritten.push(text);
     });
     await status.locator('.settings-content-copy').click();
     await expect(status.locator('.settings-content-copy-status')).toHaveText('コピーしました');
-    expect(await launched.win.evaluate(() => window.__apiStatusWritten)).toEqual([
+    expect(await launched.app.evaluate(() => globalThis.__apiStatusWritten)).toEqual([
       `http://127.0.0.1:${port}/`,
     ]);
-    await launched.win.evaluate(() => {
-      const { clipboard } = require('electron');
-      clipboard.writeText = window.__apiStatusOriginalWriteText;
-      delete window.__apiStatusOriginalWriteText;
-      delete window.__apiStatusWritten;
+    await launched.app.evaluate(({ clipboard }) => {
+      clipboard.writeText = globalThis.__apiStatusOriginalWriteText;
+      delete globalThis.__apiStatusOriginalWriteText;
+      delete globalThis.__apiStatusWritten;
     });
   } finally {
     if (launched) await closeApp(launched);
@@ -109,10 +109,11 @@ test('確認中の live region は器を保ったまま更新し、5 秒で確�
       env: { VK_TERMINALS_APP_TITLE: '', VK_TERMINALS_SETTINGS: '' },
     });
     // settings:describe と状態の取り直しを pending に固定し、20 回上限へ到達させる。
+    // 差し替え先は window.VKIpc（renderer 側の中継レイヤ／issue #268）。
     await launched.win.evaluate(() => {
-      const { ipcRenderer } = require('electron');
-      const originalInvoke = ipcRenderer.invoke.bind(ipcRenderer);
-      ipcRenderer.invoke = async (channel, ...args) => {
+      const vkIpc = window.VKIpc;
+      const originalInvoke = vkIpc.invoke.bind(vkIpc);
+      vkIpc.invoke = async (channel, ...args) => {
         if (channel === 'settings:api-server-status') return { phase: 'pending' };
         const result = await originalInvoke(channel, ...args);
         if (channel === 'settings:describe') {
@@ -151,9 +152,9 @@ test('API ホストのエラーから設定欄へ移動してフォーカスで�
       env: { VK_TERMINALS_APP_TITLE: '', VK_TERMINALS_SETTINGS: '' },
     });
     await launched.win.evaluate(() => {
-      const { ipcRenderer } = require('electron');
-      const originalInvoke = ipcRenderer.invoke.bind(ipcRenderer);
-      ipcRenderer.invoke = async (channel, ...args) => {
+      const vkIpc = window.VKIpc;
+      const originalInvoke = vkIpc.invoke.bind(vkIpc);
+      vkIpc.invoke = async (channel, ...args) => {
         const result = await originalInvoke(channel, ...args);
         if (channel === 'settings:describe') {
           return {

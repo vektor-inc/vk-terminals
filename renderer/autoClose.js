@@ -14,6 +14,19 @@
 //  1. 閉じたあとは二度と武装しない（arm が closed を見る）
 //  2. 閉じるときにタイマーを取り消す（markClosed が cancel する）
 //  3. 閉じる処理は冪等（markClosed が 2 回目以降 false を返す）
+//
+// Node（require）とブラウザ（<script>）の両方から使える UMD 形式（issue #268）。
+// renderer は nodeIntegration 無効のため require が無く、index.html が <script> で読む。
+// ※ 差分を追いやすいよう、factory の中身は元のインデントのままにしている。
+(function (root, factory) {
+  const api = factory();
+  if (typeof module === 'object' && module.exports) {
+    module.exports = api;
+  } else {
+    root.VKAutoClose = api;
+  }
+})(typeof self !== 'undefined' ? self : this, function () {
+
 function createAutoCloseController(options = {}) {
   const delayMs = Number.isFinite(options.delayMs) ? options.delayMs : 2500;
   const schedule = typeof options.setTimeout === 'function' ? options.setTimeout : setTimeout;
@@ -58,4 +71,5 @@ function createAutoCloseController(options = {}) {
   };
 }
 
-module.exports = { createAutoCloseController };
+return { createAutoCloseController };
+});

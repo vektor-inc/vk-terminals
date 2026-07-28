@@ -3,13 +3,13 @@ const path = require('path');
 const builtinDescriptor = require('../../settings-schema.json');
 const { closeApp, getFreePort, launchAppAndWait } = require('./helpers/electron-app');
 
-// ipcRenderer.invoke を差し替え、組み込みの「外出先から確認」タブへ、実際のスキーマでは
+// window.VKIpc.invoke（renderer 側の中継レイヤ／issue #268）を差し替え、組み込みの「外出先から確認」タブへ、実際のスキーマでは
 // 再現できない 100 文字超のコマンドを注入する。保存はこのテストでは行わない。
 async function installDescriptor(win, desc) {
   await win.evaluate((descriptor) => {
-    const { ipcRenderer } = require('electron');
-    if (!window.__origInvoke) window.__origInvoke = ipcRenderer.invoke.bind(ipcRenderer);
-    ipcRenderer.invoke = (channel, ...args) => {
+    const vkIpc = window.VKIpc;
+    if (!window.__origInvoke) window.__origInvoke = vkIpc.invoke.bind(vkIpc);
+    vkIpc.invoke = (channel, ...args) => {
       if (channel === 'settings:describe') return Promise.resolve(descriptor);
       if (channel === 'settings:save') return Promise.resolve({ ok: true });
       return window.__origInvoke(channel, ...args);
@@ -19,9 +19,9 @@ async function installDescriptor(win, desc) {
 
 async function restoreInvoke(win) {
   await win.evaluate(() => {
-    const { ipcRenderer } = require('electron');
+    const vkIpc = window.VKIpc;
     if (!window.__origInvoke) return;
-    ipcRenderer.invoke = window.__origInvoke;
+    vkIpc.invoke = window.__origInvoke;
     delete window.__origInvoke;
   });
 }

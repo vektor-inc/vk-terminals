@@ -7,6 +7,19 @@
 // レイヤーだけへ Escape を渡す。「後から登録されたレイヤーは視覚的にも最前面にある」
 // という重なり順を前提とする。レイヤーがある間の Escape はその場で消費し、document
 // 上の既存リスナーやフォーカス中の要素には到達させない。
+//
+// Node（require）とブラウザ（<script>）の両方から使える UMD 形式（issue #268）。
+// renderer は nodeIntegration 無効のため require が無く、index.html が <script> で読む。
+// ※ 差分を追いやすいよう、factory の中身は元のインデントのままにしている。
+(function (root, factory) {
+  const api = factory();
+  if (typeof module === 'object' && module.exports) {
+    module.exports = api;
+  } else {
+    root.VKEscapeLayer = api;
+  }
+})(typeof self !== 'undefined' ? self : this, function () {
+
 function createEscapeLayerStack(eventTarget) {
   if (!eventTarget
     || typeof eventTarget.addEventListener !== 'function'
@@ -63,4 +76,5 @@ function createEscapeLayerStack(eventTarget) {
   };
 }
 
-module.exports = { createEscapeLayerStack };
+return { createEscapeLayerStack };
+});

@@ -1,6 +1,22 @@
 'use strict';
 
-const { isSafeHttpUrl } = require('./urlSafety');
+// Node（require）とブラウザ（<script>）の両方から使える UMD 形式（issue #268）。
+// renderer は nodeIntegration 無効のため require が無く、index.html が <script> で読む。
+// ※ 差分を追いやすいよう、factory の中身は元のインデントのままにしている。
+(function (root, factory) {
+  const api = factory();
+  if (typeof module === 'object' && module.exports) {
+    module.exports = api;
+  } else {
+    root.VKSettingsTabs = api;
+  }
+})(typeof self !== 'undefined' ? self : this, function () {
+
+// urlSafety は Node では require、ブラウザでは先に読み込まれた window.VKUrlSafety から
+// 受け取る（index.html の <script> 順で保証する）。
+const { isSafeHttpUrl } = (typeof require === 'function')
+  ? require('./urlSafety')
+  : self.VKUrlSafety;
 
 // tabs[].content で使える読み取り専用コンテンツブロックの種別。
 // 保存対象の入力欄を持たない「説明だけのタブ」を、スキーマ駆動のまま表現するための仕組み。
@@ -279,10 +295,11 @@ function deriveSettingsTargetPathsForGroups(groups) {
   return paths;
 }
 
-module.exports = {
+return {
   dedupeSettingsFieldsByKey,
   deriveSettingsTargetPathsForGroups,
   groupSettingsGroupsByTab,
   normalizeSettingsTabContent,
   normalizeSettingsTabs,
 };
+});

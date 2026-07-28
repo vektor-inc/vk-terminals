@@ -15,6 +15,19 @@
 // @param {Object} field          設定フィールド descriptor。
 // @param {Object} values         現在のフォーム値。key => 現在値。
 // @return {boolean}              表示する場合は true。
+//
+// Node（require）とブラウザ（<script>）の両方から使える UMD 形式（issue #268）。
+// renderer は nodeIntegration 無効のため require が無く、index.html が <script> で読む。
+// ※ 差分を追いやすいよう、factory の中身は元のインデントのままにしている。
+(function (root, factory) {
+  const api = factory();
+  if (typeof module === 'object' && module.exports) {
+    module.exports = api;
+  } else {
+    root.VKSettingsVisibility = api;
+  }
+})(typeof self !== 'undefined' ? self : this, function () {
+
 function isFieldVisible(field, values) {
   if (!field || typeof field !== 'object' || Array.isArray(field)) return true;
   const visibleWhen = field.visibleWhen;
@@ -47,6 +60,7 @@ function isConditionVisible(condition, values) {
   return matched;
 }
 
-module.exports = {
+return {
   isFieldVisible,
 };
+});

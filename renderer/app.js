@@ -1,19 +1,40 @@
-/* global require */
-const { ipcRenderer, shell, clipboard } = require('electron');
-const { Terminal } = require('@xterm/xterm');
-const { FitAddon } = require('@xterm/addon-fit');
-const { appendAnsiForDisplay, stripAnsiForDisplay } = require('../utils/stripAnsi');
-const { normalizeConfirmClose, shouldConfirmClose } = require('../utils/closeConfirm');
-const { isSafeHttpUrl } = require('./urlSafety');
+// ─── 依存の受け取り（issue #268） ─────────────────────────────────────────────
+// BrowserWindow を nodeIntegration: false / contextIsolation: true にしたため、
+// このファイルからは require が使えない。必要なものは 3 経路で受け取る。
+//
+//   1. IPC / shell / clipboard … preload の contextBridge（window.vkBridge）を
+//      renderer/ipcClient.js が中継した VKIpc / VKShell / VKClipboard
+//   2. xterm / addon-fit     … renderer/bootstrap.js が <script> で読み込んだ UMD の
+//      グローバル（window.Terminal / window.FitAddon）
+//   3. アプリ内の共有モジュール … index.html が <script> で読み込んだ UMD の
+//      グローバル（window.VK*）
+//
+// このファイルに require を書き戻さないこと（書けば読み込み時点で必ず落ちる）。
+
+// 1. preload 経由の API（実体は renderer/ipcClient.js）。
+//    オブジェクト参照だけを持ち、メソッドは分割代入しない。e2e が
+//    window.VKIpc.invoke を差し替えてモックするため、呼び出し時に引き直す必要がある。
+const VKIpc = window.VKIpc;
+const VKShell = window.VKShell;
+const VKClipboard = window.VKClipboard;
+
+// 2. xterm（bootstrap.js が app.js より先に読み込み済み）
+const Terminal = window.Terminal;
+const FitAddon = window.FitAddon.FitAddon;
+
+// 3. アプリ内の共有モジュール（index.html の <script> 順で読み込み済み）
+const { appendAnsiForDisplay, stripAnsiForDisplay } = window.VKStripAnsi;
+const { normalizeConfirmClose, shouldConfirmClose } = window.VKCloseConfirm;
+const { isSafeHttpUrl } = window.VKUrlSafety;
 // 宣言的ウィジェット（tasks-widget.json）の契約・共有描画（#229 / vk-orchestrator#182）。
 // タスクの語彙・色・遷移・確認文言は自前に持たず、orchestrator が書き出す宣言だけを描画する。
-const widgetContract = require('../utils/widgetContract');
-const { createTaskWidgetView } = require('./widgetView');
+const widgetContract = window.VKWidgetContract;
+const { createTaskWidgetView } = window.VKWidgetView;
 const {
   computeTaskSectionVisibility,
-} = require('../utils/taskSectionVisibility');
+} = window.VKTaskSectionVisibility;
 // エージェントルーム（issue #58）。サブエージェントの稼働状況をドット絵キャラで可視化する。
-const { AGENT_ORDER, buildScene, resolveAgentStatesFromOutput } = require('./agentRoom');
+const { AGENT_ORDER, buildScene, resolveAgentStatesFromOutput } = window.VKAgentRoom;
 const {
   isOutputQuiescent,
   isWaitingCwdExcluded,
@@ -23,55 +44,26 @@ const {
   selectWaitingBuffer,
   shouldBeepForWaiting,
   waitingCheckDelayMs,
-} = require('./waitingState');
-const { deriveStatus } = require('./statusState');
-const { getStatusPresentation } = require('./statusPresentation');
-const { getApiServerStatusPresentation } = require('./apiServerStatus');
-const { getPrBadgePresentation } = require('./prBadge');
-const { resolveQueueIssuesListUrl } = require('./taskQueueLink');
-const { isPatternValid } = require('./settingsValidation');
-const { isFieldVisible } = require('./settingsVisibility');
-const { createAutoCloseController } = require('./autoClose');
-const { createSingleOpenGuard } = require('./settingsModalGuard');
-const { createEscapeLayerStack } = require('./escapeLayer');
+} = window.VKWaitingState;
+const { deriveStatus } = window.VKStatusState;
+const { getStatusPresentation } = window.VKStatusPresentation;
+const { getApiServerStatusPresentation } = window.VKApiServerStatus;
+const { getPrBadgePresentation } = window.VKPrBadge;
+const { resolveQueueIssuesListUrl } = window.VKTaskQueueLink;
+const { isPatternValid } = window.VKSettingsValidation;
+const { isFieldVisible } = window.VKSettingsVisibility;
+const { createAutoCloseController } = window.VKAutoClose;
+const { createSingleOpenGuard } = window.VKSettingsModalGuard;
+const { createEscapeLayerStack } = window.VKEscapeLayer;
 const {
   dedupeSettingsFieldsByKey,
   deriveSettingsTargetPathsForGroups,
   groupSettingsGroupsByTab,
   normalizeSettingsTabs,
-} = require('./settingsTabs');
+} = window.VKSettingsTabs;
 
-// モーダル類の Escape は、最後に開いたものだけへ渡す。
+// モーダル類の Escape は、最後に開いたものだけへ渡す（issue #284）。
 const escapeLayers = createEscapeLayerStack(document);
-
-// ─── xterm.css の注入 ─────────────────────────────────────────────────────────
-// xterm.css は index.html の相対パス <link> ではなく、Node のモジュール解決
-// （require.resolve）で実体を探して <style> として注入する。
-//
-// なぜ必要か:
-//   vk-terminals が npm 依存としてインストールされた場合（例: vk-orchestrator の
-//   node_modules 内から起動）、依存パッケージは上位の node_modules へホイストされ、
-//   自身の node_modules ディレクトリが存在しない。require() は上位へ遡って解決できるが、
-//   <link href="../node_modules/..."> の相対パスは遡れず 404 になる。
-//   xterm.css には IME 用 textarea を画面外へ逃がす必須スタイル
-//   （.xterm-helper-textarea の position: absolute / opacity: 0 / left: -9999em 等）が
-//   含まれており、欠落すると textarea が文書フロー上（ペイン左上）に可視状態で置かれ、
-//   日本語入力の変換候補ウィンドウがペイン左上に表示される・合成中の文字列が
-//   ペイン上部に見えてしまう。
-(() => {
-  const fs = require('fs');
-  try {
-    const css = fs.readFileSync(require.resolve('@xterm/xterm/css/xterm.css'), 'utf8');
-    const style = document.createElement('style');
-    style.textContent = css;
-    // アプリ側 style.css より前に挿入し、既存の上書き関係（style.css が後勝ち）を維持する
-    const appCss = document.querySelector('link[href="style.css"]');
-    document.head.insertBefore(style, appCss);
-  } catch (e) {
-    // 読み込み失敗時もアプリ自体は起動させる（従来の <link> 404 と同等の状態に留める）
-    console.error('xterm.css の読み込みに失敗しました', e);
-  }
-})();
 
 // ─── State ────────────────────────────────────────────────────────────────────
 let tree = null;       // Layout tree root
@@ -209,7 +201,7 @@ function checkWaiting(paneId) {
     // 鳴り続けないようクールダウンを挟む。
     if (waiting && shouldBeepForWaiting({ now, lastBeepAt: t.lastWaitingBeepAt })) {
       t.lastWaitingBeepAt = now;
-      shell.beep();
+      VKShell.beep();
     }
   }
   // 不変条件: バーストの最後の評価は必ず静止評価になる。
@@ -349,7 +341,7 @@ function bumpRunning(paneId) {
 // options.noClaude が true の場合、main 側で claude の自動起動をスキップする。
 // 未指定の場合は main 側のグローバル設定（CLI フラグ）にフォールバックする。
 async function createTerminal(paneId, cwd, options = {}) {
-  const result = await ipcRenderer.invoke('terminal:create', cwd || null, options);
+  const result = await VKIpc.invoke('terminal:create', cwd || null, options);
   const { id: termId, cwd: initialCwd } = result;
 
   const term = new Terminal({
@@ -379,7 +371,7 @@ async function createTerminal(paneId, cwd, options = {}) {
 
   // 共通の入力送信ヘルパー（waiting バッジのクリアを含む）
   function sendTerminalInput(data) {
-    ipcRenderer.send('terminal:input', termId, data);
+    VKIpc.send('terminal:input', termId, data);
     markPaneInput(paneId);
   }
 
@@ -526,7 +518,7 @@ function escAttr(value) {
 }
 
 // ─── IPC: data from pty ───────────────────────────────────────────────────────
-ipcRenderer.on('terminal:data', (event, id, data) => {
+VKIpc.on('terminal:data', (id, data) => {
   const paneId = Object.keys(terminals).find(k => terminals[k]?.termId === id);
   if (!paneId || !terminals[paneId]) return;
 
@@ -554,7 +546,7 @@ ipcRenderer.on('terminal:data', (event, id, data) => {
   bumpRunning(paneId);
 });
 
-ipcRenderer.on('terminal:exit', (event, id) => {
+VKIpc.on('terminal:exit', (id) => {
   const paneId = Object.keys(terminals).find(k => terminals[k]?.termId === id);
   if (paneId) closePane(paneId, { force: true });
 });
@@ -590,21 +582,22 @@ function getDisplayUrl(t) {
 }
 
 // http(s): スキームのチェック（renderer 側の二段構えバリデーション）。
-// main 側で検証済みでも shell.openExternal 直前に念のため再チェックする。
+// 外部ブラウザを開く直前に念のため再チェックする。ただし最終防衛線はこれではなく
+// main プロセス側の再検証（ipcMain.handle('shell:open-external')／issue #268）。
+// renderer 側の判定はすり抜けても、main が http(s) 以外を開くことはない。
 function isSafeExternalUrl(url) {
   return isSafeHttpUrl(url);
 }
 
-// shell.openExternal を共通化したヘルパー。
-// http(s) 二段チェック → shell.openExternal を呼ぶ。失敗時は何もしない。
+// 外部ブラウザで開く処理を共通化したヘルパー。
+// http(s) チェック → preload 経由で main に openExternal を依頼する。失敗時は何もしない。
 // click ハンドラ用に preventDefault / stopPropagation 済みである前提。
 function openExternalUrlSafe(url) {
   if (!isSafeExternalUrl(url)) return;
   try {
-    // Electron の shell.openExternal は Promise を返すが、reject 時にハンドラがないと
-    // unhandled rejection になるため明示的にハンドリングする。同期 throw もありうるので
-    // 念のため try/catch でラップしておく。
-    const p = shell.openExternal(url);
+    // 戻り値は Promise（成否の boolean）。reject 時にハンドラがないと unhandled rejection に
+    // なるため明示的にハンドリングする。同期 throw もありうるので try/catch でも包む。
+    const p = VKShell.openExternal(url);
     if (p && typeof p.catch === 'function') {
       p.catch(() => { /* 失敗時は何もしない */ });
     }
@@ -1162,7 +1155,7 @@ function ensureWidgetViewController(groupsEl) {
     sendCommand: async (command) => {
       if (!commandsConfigured) return { ok: false, error: 'commands-file-not-configured' };
       try {
-        const res = await ipcRenderer.invoke('widgets:command', command);
+        const res = await VKIpc.invoke('widgets:command', command);
         return res && res.ok ? { ok: true } : { ok: false, error: res && res.error };
       } catch (e) {
         console.warn('ウィジェットコマンドの送信に失敗しました', e);
@@ -1562,11 +1555,11 @@ function setupSidebarMenu() {
     event.preventDefault();
     setSidebarOpen(false, { focusToggle: true });
   });
-  ipcRenderer.on('menu:update', (_event, sections) => {
+  VKIpc.on('menu:update', (sections) => {
     sidebarMenuSections = Array.isArray(sections) ? sections : [];
     renderSidebarMenu();
   });
-  ipcRenderer.on('widgets:update', (_event, payload) => {
+  VKIpc.on('widgets:update', (payload) => {
     lastWidgetPayload = payload || null;
     // fromUpdate=true: ネイティブ select ピッカー操作中の再描画を避ける。
     renderWidget(true);
@@ -1878,7 +1871,7 @@ function closePane(paneId, { force = false, skipConfirm = false } = {}) {
       delete paneEl.dataset.autoInputTimer;
     }
     t.term.dispose();
-    ipcRenderer.send('terminal:kill', t.termId);
+    VKIpc.send('terminal:kill', t.termId);
     delete terminals[paneId];
   }
 
@@ -1889,7 +1882,7 @@ function closePane(paneId, { force = false, skipConfirm = false } = {}) {
     // Last pane closed → start fresh
     // 格納ペインが 1 枚でも生き残っている場合は巻き込んで作り直さない（issue #89）。
     initApp().then(() => {
-      ipcRenderer.send('terminal:renderer-ready');
+      VKIpc.send('terminal:renderer-ready');
     });
     return;
   }
@@ -2228,7 +2221,7 @@ function fitTerminal(paneId) {
   if (t.element && t.element.offsetParent === null) return;
   try {
     t.fitAddon.fit();
-    ipcRenderer.send('terminal:resize', t.termId, t.term.cols, t.term.rows);
+    VKIpc.send('terminal:resize', t.termId, t.term.cols, t.term.rows);
   } catch (e) {}
 }
 
@@ -2691,7 +2684,7 @@ function renderLeaf(node) {
     focusPane(node.id);
     const t = terminals[node.id];
     if (t) {
-      ipcRenderer.send('terminal:input', t.termId, text);
+      VKIpc.send('terminal:input', t.termId, text);
       markPaneInput(node.id);
     }
 
@@ -3227,8 +3220,8 @@ function setupUsageBadge() {
     let codexUsage = null;
     try {
       [usage, codexUsage] = await Promise.all([
-        ipcRenderer.invoke('usage:get'),
-        ipcRenderer.invoke('codex-usage:get'),
+        VKIpc.invoke('usage:get'),
+        VKIpc.invoke('codex-usage:get'),
       ]);
       const max = usageAlertMaxPercent(
         usage && usage.source === 'oauth' ? usage : null,
@@ -3462,7 +3455,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
   // 設定ディスクリプタが無い環境でも空の設定モーダルとして開く（使用量はサイドバー上部）。
   let desc = null;
   try {
-    desc = await ipcRenderer.invoke('settings:describe');
+    desc = await VKIpc.invoke('settings:describe');
   } catch (_e) {
     desc = null;
   }
@@ -3876,7 +3869,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
     // code ブロックと実行時 status ブロックで同じコピー処理を使う。status は「確認中」
     // から確定状態へ中身を更新するため、生成済みボタンへの個別配線ではなく、
     // モーダル内のイベント委譲にして更新後も同じ経路へ流す。
-    modal.addEventListener('click', (event) => {
+    modal.addEventListener('click', async (event) => {
       const button = event.target.closest('.settings-content-copy');
       if (!button) return;
       const wrapper = button.closest('.settings-content-codeblock');
@@ -3891,8 +3884,9 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
       } else {
         try {
           // navigator.clipboard は file:// では secure context 判定に依存するため使わず、
-          // Electron の clipboard を直接使う。
-          clipboard.writeText(text);
+          // Electron の clipboard を使う。書き込み自体は main プロセスで行い、
+          // preload 経由で成否だけを受け取る（issue #268）。
+          ok = await VKClipboard.writeText(text);
         } catch (_e) {
           ok = false;
         }
@@ -3938,7 +3932,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
         pollInFlight = true;
         pollCount += 1;
         try {
-          const nextStatus = await ipcRenderer.invoke('settings:api-server-status');
+          const nextStatus = await VKIpc.invoke('settings:api-server-status');
           if (!modal.isConnected) return;
           const settledStatus = nextStatus && nextStatus.phase !== 'pending'
             ? nextStatus
@@ -4111,7 +4105,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
     msg.textContent = '保存中...';
     msg.className = 'settings-msg';
     try {
-      const res = await ipcRenderer.invoke('settings:save', out);
+      const res = await VKIpc.invoke('settings:save', out);
       if (res && res.ok) {
         // dirty 解除でフッターの構成が変わらないよう、先に固定してから解除する。
         lockSettingsFooter();
@@ -4134,7 +4128,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
 async function initApp() {
   // エージェントルーム（issue #58）の有効/無効を main から取得（最初の render より前に確定させる）。
   try {
-    const cfg = await ipcRenderer.invoke('app:get-config');
+    const cfg = await VKIpc.invoke('app:get-config');
     agentRoomEnabled = !!(cfg && cfg.agentroom);
     newPaneStartupDir = (cfg && typeof cfg.newPaneStartupDir === 'string') ? cfg.newPaneStartupDir : '';
     newPaneAutoLaunchClaude = !!(cfg && cfg.newPaneAutoLaunchClaude);
@@ -4160,7 +4154,7 @@ async function initApp() {
     clearRunningIdleTimer(t);
     clearWaitingCheckTimer(t);
     try { t.term.dispose(); } catch (e) {}
-    ipcRenderer.send('terminal:kill', t.termId);
+    VKIpc.send('terminal:kill', t.termId);
   }
   terminals = {};
   focusedPaneId = null;
@@ -4185,7 +4179,7 @@ setupSidebarMenu();
 
 initApp().then(() => {
   // 起動完了を main プロセスに通知（main 側で additionalPanes を順次作成する）
-  ipcRenderer.send('terminal:renderer-ready');
+  VKIpc.send('terminal:renderer-ready');
 });
 
 // 設定モーダルの歯車ボタンを配線する（設定のみ。使用量はサイドバー上部へ常時表示）。
@@ -4239,14 +4233,14 @@ setInterval(() => {
       ...(agentRoomEnabled ? { agentRoom: resolveRoomAgents(t) } : {}),
     };
   }
-  ipcRenderer.send('terminal:report-states', states);
+  VKIpc.send('terminal:report-states', states);
 }, 2000);
 
 // ─── Agent room update from main (HTTP API POST /api/agentroom) ──────────────
 // replace=true: そのペインのルーム状態を agents で丸ごと置換。
 // replace=false: agents の分だけ既存状態にマージ（1 人更新）。
 // いずれも agentRoomUpdatedAt を更新して「新鮮」扱いにする。
-ipcRenderer.on('terminal:agentroom', (event, termId, agents, replace) => {
+VKIpc.on('terminal:agentroom', (termId, agents, replace) => {
   const paneId = Object.keys(terminals).find(k => terminals[k]?.termId === termId);
   if (!paneId) return;
   const t = terminals[paneId];
@@ -4261,9 +4255,9 @@ ipcRenderer.on('terminal:agentroom', (event, termId, agents, replace) => {
 });
 
 // ─── New pane request from HTTP API ──────────────────────────────────────────
-ipcRenderer.on('terminal:request-new-pane', async (event, payload = {}) => {
+VKIpc.on('terminal:request-new-pane', async (payload = {}) => {
   const { requestId, cwd, noClaude, stashed, useDefaults } = payload;
-  const reply = (result) => ipcRenderer.send('terminal:new-pane-created', { requestId, ...result });
+  const reply = (result) => VKIpc.send('terminal:new-pane-created', { requestId, ...result });
   const targetPaneId = findLargestVisiblePaneId() || focusedPaneId || (tree ? getAllLeafIds(tree)[0] : null);
   if (!targetPaneId) {
     reply({ error: 'no pane available' });
@@ -4299,9 +4293,9 @@ ipcRenderer.on('terminal:request-new-pane', async (event, payload = {}) => {
   }
 });
 
-ipcRenderer.on('terminal:request-close-pane', (event, payload = {}) => {
+VKIpc.on('terminal:request-close-pane', (payload = {}) => {
   const { requestId, termId } = payload;
-  const reply = (result) => ipcRenderer.send('terminal:close-pane-done', { requestId, ...result });
+  const reply = (result) => VKIpc.send('terminal:close-pane-done', { requestId, ...result });
   // termId → paneId 逆引き（既存の terminal:title / set-status ハンドラと同じパターン）
   const paneId = Object.keys(terminals).find(k => String(terminals[k]?.termId) === String(termId));
   if (!paneId) {
@@ -4330,7 +4324,7 @@ ipcRenderer.on('terminal:request-close-pane', (event, payload = {}) => {
 //   - 文字列 → http(s): スキームのみ（main 側で検証済み）。apiPrUrl にセット
 // 第5引数 prMerged: PR ボタンのマージ済み表示フラグ。boolean のときのみ apiPrMerged に反映する。
 // title / url / prUrl / prMerged はペアで都度送る置換セマンティクス。
-ipcRenderer.on('terminal:title', (event, termId, title, url, prUrl, prMerged) => {
+VKIpc.on('terminal:title', (termId, title, url, prUrl, prMerged) => {
   const paneId = Object.keys(terminals).find(k => terminals[k]?.termId === termId);
   if (!paneId) return;
   terminals[paneId].apiTitle = title || '';
@@ -4351,7 +4345,7 @@ ipcRenderer.on('terminal:title', (event, termId, title, url, prUrl, prMerged) =>
 
 // ─── Status update from main (HTTP API POST /api/set-status) ────────────────
 // 外部権威の入力待ちフラグを明示的に設定する。markPaneInput / 自動入力では解除しない。
-ipcRenderer.on('terminal:set-status', (event, termId, waiting) => {
+VKIpc.on('terminal:set-status', (termId, waiting) => {
   const paneId = Object.keys(terminals).find(k => terminals[k]?.termId === termId);
   if (!paneId) return;
   const t = terminals[paneId];
@@ -4362,7 +4356,7 @@ ipcRenderer.on('terminal:set-status', (event, termId, waiting) => {
 
 // ─── Lock update from main (HTTP API POST /api/set-lock) ────────────────────
 // lock.close === false のときだけ閉じる操作を保護する。未設定/null は全許可。
-ipcRenderer.on('terminal:set-lock', (event, termId, lock) => {
+VKIpc.on('terminal:set-lock', (termId, lock) => {
   const paneId = Object.keys(terminals).find(k => String(terminals[k]?.termId) === String(termId));
   if (!paneId) return;
   const t = terminals[paneId];
@@ -4372,7 +4366,7 @@ ipcRenderer.on('terminal:set-lock', (event, termId, lock) => {
 });
 
 // ─── Auto-input notification from main (HTTP API経由の入力時) ─────────────────
-ipcRenderer.on('terminal:auto-input', (event, termId) => {
+VKIpc.on('terminal:auto-input', (termId) => {
   const paneId = Object.keys(terminals).find(k => terminals[k]?.termId === termId);
   if (!paneId) return;
   markPaneInput(paneId);

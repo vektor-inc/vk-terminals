@@ -13,7 +13,7 @@ const path = require('path');
 //      （main.js 側で `parsed?.prMerged === true` により既に boolean へ矯正されるため、
 //        HTTP API 経由ではここまでで多くのケースを検証できる）
 //   D: renderer 側の型ガード自体（IPC 経由で main の矯正をバイパスした場合）も
-//      多層防御として直接確認する（ipcRenderer.on の `typeof prMerged === 'boolean'` ガード）。
+//      多層防御として直接確認する（VKIpc.on の `typeof prMerged === 'boolean'` ガード）。
 
 const repoRoot = path.resolve(__dirname, '..', '..');
 
@@ -189,7 +189,7 @@ test('POST /api/set-title の prMerged が renderer の PR バッジへ反映さ
       target.webContents.send('terminal:title', '1', 'PR #113 IPC 直接非 boolean', '', injectedPrUrl, 'true');
     }, prUrl);
 
-    // renderer 実装（app.js の ipcRenderer.on('terminal:title', ...)）は
+    // renderer 実装（app.js の VKIpc.on('terminal:title', ...)）は
     // `typeof prMerged === 'boolean'` のときだけ apiPrMerged を上書きする。
     // 文字列 'true' は boolean ではないため上書きされず、直前の apiPrMerged（true）が
     // そのまま維持される＝ .merged クラスが付いたままになるはず。

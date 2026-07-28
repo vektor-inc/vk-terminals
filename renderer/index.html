@@ -3,9 +3,10 @@
 <head>
   <meta charset="UTF-8">
   <title>VK Terminals</title>
-  <!-- xterm.css は相対パス <link> では読み込まない（app.js が require.resolve で注入する）。
-       npm 依存としてインストールされた場合、依存が上位の node_modules へホイストされて
-       相対パスが 404 になるため（詳細は app.js の「xterm.css の注入」コメントを参照）。 -->
+  <!-- xterm.css は相対パス <link> では読み込まない（preload が読んだ中身を bootstrap.js が
+       <style> として注入する）。npm 依存としてインストールされた場合、依存が上位の
+       node_modules へホイストされて相対パスが 404 になるため
+       （詳細は renderer/bootstrap.js の冒頭コメントを参照）。 -->
   <link rel="stylesheet" href="shared.css">
   <link rel="stylesheet" href="style.css">
 </head>
@@ -19,6 +20,41 @@
     <button id="settings-btn" class="titlebar-btn" title="設定">⚙</button>
   </div>
   <div id="root"></div>
-  <script src="app.js"></script>
+
+  <!-- nodeIntegration 無効化（issue #268）に伴い、app.js が require していたローカル
+       モジュールはここで <script> として読み込む。いずれも UMD なので、Node（main.js /
+       ユニットテスト）からは従来どおり require でき、ここでは window.VK* を生やす。
+       これらはアプリ同梱の相対パスなので、node_modules のホイスト問題は起きない。
+
+       ⚠ 並び順は依存順。動かすときは下記の依存を壊していないか確認すること。
+         - ipcClient.js       : preload の window.vkBridge（他より先に置く必要はないが先頭が分かりやすい）
+         - stripAnsi.js       : VKTerminalDisplay
+         - widgetView.js      : VKWidgetContract
+         - taskQueueLink.js / settingsTabs.js : VKUrlSafety -->
+  <script src="ipcClient.js"></script>
+  <script src="urlSafety.js"></script>
+  <script src="terminalDisplay.js"></script>
+  <script src="../utils/stripAnsi.js"></script>
+  <script src="../utils/closeConfirm.js"></script>
+  <script src="../utils/taskSectionVisibility.js"></script>
+  <script src="../utils/widgetContract.js"></script>
+  <script src="widgetView.js"></script>
+  <script src="agentRoom.js"></script>
+  <script src="waitingState.js"></script>
+  <script src="statusState.js"></script>
+  <script src="statusPresentation.js"></script>
+  <script src="apiServerStatus.js"></script>
+  <script src="prBadge.js"></script>
+  <script src="taskQueueLink.js"></script>
+  <script src="settingsValidation.js"></script>
+  <script src="settingsVisibility.js"></script>
+  <script src="autoClose.js"></script>
+  <script src="settingsModalGuard.js"></script>
+  <script src="escapeLayer.js"></script>
+  <script src="settingsTabs.js"></script>
+
+  <!-- xterm（UMD）と xterm.css を読み込んでから app.js を読み込む。実体のパスは
+       preload が require.resolve で解決する（相対パスが使えない事情は bootstrap.js 参照）。 -->
+  <script src="bootstrap.js"></script>
 </body>
 </html>

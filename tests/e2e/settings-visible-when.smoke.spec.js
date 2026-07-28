@@ -2,14 +2,14 @@ const { test, expect } = require('@playwright/test');
 // 起動〜初期描画待ちは共通ヘルパーへ集約している（issue #263）。
 const { closeApp, getFreePort, launchAppAndWait } = require('./helpers/electron-app');
 
-// renderer の ipcRenderer.invoke を差し替え、visibleWhen 付き descriptor を返させる。
+// renderer の window.VKIpc.invoke（renderer 側の中継レイヤ／issue #268）を差し替え、visibleWhen 付き descriptor を返させる。
 // 制御フィールド confirmClose（select）を never にすると、依存フィールド
 // initialCommand（text, visibleWhen hide:true）が隠れる、という PR の代表例を再現する。
 // あわせて pattern 付きの依存フィールド depPattern も置き、非表示時に検証が
 // スキップされる（保存を妨げない）ことも確認する。
 async function installMockDescriptor(win) {
   await win.evaluate(() => {
-    const { ipcRenderer } = require('electron');
+    const vkIpc = window.VKIpc;
     const desc = {
       available: true,
       title: 'テスト設定',
@@ -52,7 +52,7 @@ async function installMockDescriptor(win) {
       values: { confirmClose: 'busy', initialCommand: '', depPattern: '' },
     };
     window.__savedPayloads = [];
-    ipcRenderer.invoke = (channel, payload) => {
+    vkIpc.invoke = (channel, payload) => {
       if (channel === 'settings:describe') return Promise.resolve(desc);
       if (channel === 'settings:save') {
         window.__savedPayloads.push(payload);

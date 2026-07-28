@@ -24,11 +24,13 @@ async function contentBlockIndexes(win, panelSelector, specs) {
 // settings:save の応答をわざと遅らせる。保存処理は await の向こう側なので、
 // 「応答が返ってきた時点では既にモーダルが閉じられている」状況をこれで再現する。
 // 保存自体は行わせず ok だけ返す（一時 HOME の設定ファイルを書き換えないため）。
+// 差し替え先は window.VKIpc（renderer 側の中継レイヤ）。preload が contextBridge で
+// 公開した window.vkBridge は差し替えられないため、モックはこちらに対して行う（issue #268）。
 async function stubSlowSave(win, delayMs) {
   await win.evaluate((ms) => {
-    const { ipcRenderer } = require('electron');
-    if (!window.__origInvoke) window.__origInvoke = ipcRenderer.invoke.bind(ipcRenderer);
-    ipcRenderer.invoke = (channel, ...args) => {
+    const vkIpc = window.VKIpc;
+    if (!window.__origInvoke) window.__origInvoke = vkIpc.invoke.bind(vkIpc);
+    vkIpc.invoke = (channel, ...args) => {
       if (channel !== 'settings:save') return window.__origInvoke(channel, ...args);
       return new Promise((resolve) => setTimeout(() => resolve({ ok: true }), ms));
     };
@@ -38,45 +40,47 @@ async function stubSlowSave(win, delayMs) {
 // stubSlowSave を元に戻す（後続テストが本来の保存経路を使えるように）。
 async function restoreSave(win) {
   await win.evaluate(() => {
-    const { ipcRenderer } = require('electron');
+    const vkIpc = window.VKIpc;
     if (!window.__origInvoke) return;
-    ipcRenderer.invoke = window.__origInvoke;
+    vkIpc.invoke = window.__origInvoke;
     delete window.__origInvoke;
   });
 }
 
 // 実クリップボードを汚さないため writeText をスタブして呼び出しを記録する。
-// require('electron').clipboard は app.js が起動時に分割代入したものと同一オブジェクトで、
-// writeText は writable/configurable なのでメソッド差し替えで呼び出しを捕まえられる。
+//
+// スタブを当てるのは main プロセス側（app.evaluate）。issue #268 で renderer から
+// electron の clipboard を触れなくしたため、実際に書き込むのは main の
+// ipcMain.handle('clipboard:write-text') であり、そこが掴んでいる clipboard を差し替える。
+// main.js は起動時に分割代入した clipboard を参照し続けるので、同一オブジェクトの
+// writeText（writable/configurable）を差し替えれば呼び出しを捕まえられる。
+//
 // readText で退避して書き戻す方式は採らない。プレーンテキストのフレーバーしか取れず、
 // 画像・RTF・HTML が入っていた場合に書き戻しがそれらをテキストへ化けさせて壊すうえ、
 // 途中で落ちると書き戻されないまま汚れが残るため。
-async function stubClipboardWrite(win) {
-  await win.evaluate(() => {
-    const { clipboard } = require('electron');
-    if (!window.__origWriteText) window.__origWriteText = clipboard.writeText;
-    window.__written = [];
-    clipboard.writeText = (text) => { window.__written.push(text); };
+async function stubClipboardWrite(app) {
+  await app.evaluate(({ clipboard }) => {
+    if (!globalThis.__origWriteText) globalThis.__origWriteText = clipboard.writeText;
+    globalThis.__written = [];
+    clipboard.writeText = (text) => { globalThis.__written.push(text); };
   });
 }
 // コピー失敗（書き込みが例外を投げるケース）を再現する。
-async function stubClipboardFailure(win) {
-  await win.evaluate(() => {
-    const { clipboard } = require('electron');
-    if (!window.__origWriteText) window.__origWriteText = clipboard.writeText;
+async function stubClipboardFailure(app) {
+  await app.evaluate(({ clipboard }) => {
+    if (!globalThis.__origWriteText) globalThis.__origWriteText = clipboard.writeText;
     clipboard.writeText = () => { throw new Error('stubbed clipboard failure'); };
   });
 }
-async function restoreClipboardWrite(win) {
-  await win.evaluate(() => {
-    const { clipboard } = require('electron');
-    if (!window.__origWriteText) return;
-    clipboard.writeText = window.__origWriteText;
-    delete window.__origWriteText;
-    delete window.__written;
+async function restoreClipboardWrite(app) {
+  await app.evaluate(({ clipboard }) => {
+    if (!globalThis.__origWriteText) return;
+    clipboard.writeText = globalThis.__origWriteText;
+    delete globalThis.__origWriteText;
+    delete globalThis.__written;
   });
 }
-const writtenTexts = (win) => win.evaluate(() => (window.__written || []).slice());
+const writtenTexts = (app) => app.evaluate(() => (globalThis.__written || []).slice());
 
 const TAB_GENERAL = '#settings-tab-0';   // 設定
 const TAB_MOBILE = '#settings-tab-1';    // 外出先から確認
@@ -113,7 +117,7 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
   test.afterEach(async () => {
     // describe.serial で win を共有しているため、クリップボードの差し替えは
     // 毎テストの終わりに必ず戻す（後続テストへ漏らさない）。
-    await restoreClipboardWrite(win).catch(() => {});
+    await restoreClipboardWrite(app).catch(() => {});
     await win.evaluate(() => {
       document.getElementById('outside-focus-target')?.remove();
       document.getElementById('removed-settings-opener')?.remove();
@@ -387,7 +391,7 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
 
   test('コピーボタンを押すとコマンドがクリップボードへ渡り、2 秒後に表示が戻る', async () => {
     await win.locator(TAB_MOBILE).click();
-    await stubClipboardWrite(win);
+    await stubClipboardWrite(app);
     const commandBlocks = win.locator(`${PANEL_MOBILE} .settings-content > .settings-content-codeblock`);
     const serveBlock = commandBlocks.nth(1);
     const button = serveBlock.locator('.settings-content-copy');
@@ -398,7 +402,7 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
     await expect(status).toHaveText('コピーしました');
     await expect(status).not.toHaveAttribute('data-state', 'error');
     // 表示どおりの文字列が 1 回だけ渡る（コピー元は DOM のコード本文）。
-    expect(await writtenTexts(win)).toEqual(['tailscale serve --bg 13847']);
+    expect(await writtenTexts(app)).toEqual(['tailscale serve --bg 13847']);
     // フォーカスは押したボタンに留まる（続けてもう一方もコピーできる）。
     await expect(button).toBeFocused();
     // 2 秒後には消える。
@@ -409,12 +413,12 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
     await ipBlock.locator('.settings-content-copy').click();
     await expect(ipBlock.locator('.settings-content-copy-status')).toHaveText('コピーしました');
     await expect(status).toHaveText('');
-    expect(await writtenTexts(win)).toEqual(['tailscale serve --bg 13847', 'tailscale ip -4']);
+    expect(await writtenTexts(app)).toEqual(['tailscale serve --bg 13847', 'tailscale ip -4']);
   });
 
   test('連打してもフィードバックは重複せず、最後の押下から 2 秒表示される', async () => {
     await win.locator(TAB_MOBILE).click();
-    await stubClipboardWrite(win);
+    await stubClipboardWrite(app);
     const block = win.locator(`${PANEL_MOBILE} .settings-content > .settings-content-codeblock`).nth(0);
     const button = block.locator('.settings-content-copy');
     const status = block.locator('.settings-content-copy-status');
@@ -427,7 +431,7 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
     // 1 回目の押下から 1.2 秒。この時点ではまだ出ている（消灯まで 0.8 秒の余裕）。
     await clickAndWait(1200);
     await expect(status).toHaveText('コピーしました');
-    expect(await writtenTexts(win)).toEqual(['tailscale ip -4']);
+    expect(await writtenTexts(app)).toEqual(['tailscale ip -4']);
 
     // 2 回目の押下から 1.2 秒。1 回目の押下からは 2.4 秒以上経っているので、
     // 消灯タイマーが張り替わっていなければ既に消えている（＝連打の張り替えを検出できる）。
@@ -441,7 +445,7 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
 
   test('コピーに失敗したときは失敗をテキストで伝える', async () => {
     await win.locator(TAB_MOBILE).click();
-    await stubClipboardFailure(win);
+    await stubClipboardFailure(app);
     const block = win.locator(`${PANEL_MOBILE} .settings-content > .settings-content-codeblock`).nth(0);
     const status = block.locator('.settings-content-copy-status');
     await block.locator('.settings-content-copy').click();

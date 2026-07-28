@@ -7,6 +7,18 @@
 //   - 'always' … 常に確認する
 // main（app:get-config / 設定ディスクリプタ）と renderer（closePane ガード）の
 // 双方から使うため utils に置く。
+//
+// Node（require）とブラウザ（<script>）の両方から使える UMD 形式（issue #268）。
+// renderer は nodeIntegration 無効のため require が無く、index.html が <script> で読む。
+// ※ 差分を追いやすいよう、factory の中身は元のインデントのままにしている。
+(function (root, factory) {
+  const api = factory();
+  if (typeof module === 'object' && module.exports) {
+    module.exports = api;
+  } else {
+    root.VKCloseConfirm = api;
+  }
+})(typeof self !== 'undefined' ? self : this, function () {
 
 const CONFIRM_CLOSE_MODES = ['never', 'busy', 'always'];
 const DEFAULT_CONFIRM_CLOSE = 'busy';
@@ -25,9 +37,10 @@ function shouldConfirmClose(mode, status) {
   return status === 'running' || status === 'waiting';
 }
 
-module.exports = {
+return {
   CONFIRM_CLOSE_MODES,
   DEFAULT_CONFIRM_CLOSE,
   normalizeConfirmClose,
   shouldConfirmClose,
 };
+});

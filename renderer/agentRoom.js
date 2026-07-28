@@ -1,7 +1,6 @@
-/* global module, require */
 // ─── エージェントルーム（issue #58） ─────────────────────────────────────────
 // サブエージェントの稼働状況を Gather / WorkAdventure 風のチビキャラ（ドット絵）で
-// 可視化する描画モジュール。app.js から require して使う。
+// 可視化する描画モジュール。app.js から使う（index.html が <script> で読み込む）。
 //
 // 役割分担:
 //   - app.js  : 状態の供給（HTTP API 由来 or PTY 出力フォールバック）と DOM への組み込み
@@ -12,9 +11,25 @@
 //   - 'working'    : 作業中 → デスクで PC に向かう
 //   - 'idle'       : 待機中 → コーヒーを飲んでいる
 //   - 'off'        : 離席   → 薄く表示
+//
+// Node（require）とブラウザ（<script>）の両方から使える UMD 形式（issue #268）。
+// renderer は nodeIntegration 無効のため require が無く、index.html が <script> で読む。
+// ※ 差分を追いやすいよう、factory の中身は元のインデントのままにしている。
+(function (root, factory) {
+  const api = factory();
+  if (typeof module === 'object' && module.exports) {
+    module.exports = api;
+  } else {
+    root.VKAgentRoom = api;
+  }
+})(typeof self !== 'undefined' ? self : this, function () {
 
-const fs = require('fs');
-const path = require('path');
+// fs / path は Node（main.js・テスト）でだけ使える。renderer では nodeIntegration が
+// 無効なので存在せず、スプライト SVG は preload が読んだものを受け取る（後述の
+// readSpriteFile を参照）。
+const nodeRequire = (typeof require === 'function') ? require : null;
+const fs = nodeRequire ? nodeRequire('fs') : null;
+const path = nodeRequire ? nodeRequire('path') : null;
 
 // 表示順（固定）。司＝メイン Claude（ディレクター）、以降はサブエージェント。
 const AGENT_ORDER = ['司', '和田', '安藤', '麗美', '植草'];
@@ -44,6 +59,19 @@ const SPRITE_FILES = {
   '植草': 'uekusa.svg',
 };
 const _spriteCache = {};
+// スプライト SVG の中身を取り出す。
+//   - Node（main.js / ユニットテスト）: renderer/sprites/*.svg を fs で読む
+//   - renderer: fs が無いので、preload が読んで window.VKAgentRoomSprites に置いた
+//     ファイル名 → SVG 文字列のマップから取る（issue #268）
+// どちらでも得られなければ null を返し、呼び出し側が手続き生成へフォールバックする。
+function readSpriteFile(file) {
+  if (fs && path) {
+    return fs.readFileSync(path.join(__dirname, 'sprites', file), 'utf8');
+  }
+  const injected = (typeof self !== 'undefined' && self.VKAgentRoomSprites) || null;
+  if (injected && typeof injected[file] === 'string') return injected[file];
+  return null;
+}
 // 外部スプライト SVG を読み込み、CSS でサイズ制御できるよう class を注入して返す（無ければ null）。
 function getExternalSprite(name) {
   if (!(name in _spriteCache)) {
@@ -52,7 +80,9 @@ function getExternalSprite(name) {
       _spriteCache[name] = null;
     } else {
       try {
-        let svg = fs.readFileSync(path.join(__dirname, 'sprites', file), 'utf8').trim();
+        const raw = readSpriteFile(file);
+        if (raw === null) throw new Error(`sprite not available: ${file}`);
+        let svg = raw.trim();
         // 開始タグだけ書き換え: 固定 width/height を外し、CSS 用 class と aria-hidden を付与。
         svg = svg.replace(/^<svg\b([^>]*)>/, (m, attrs) => {
           attrs = attrs.replace(/\swidth="[^"]*"/, '').replace(/\sheight="[^"]*"/, '');
@@ -564,7 +594,7 @@ function buildScene(agents) {
   return stage;
 }
 
-module.exports = {
+return {
   AGENT_ORDER,
   AGENT_HANDLES,
   SUBAGENT_ORDER,
@@ -577,3 +607,4 @@ module.exports = {
   resolveAgentStatesFromOutput,
   buildScene,
 };
+});

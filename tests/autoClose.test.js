@@ -109,8 +109,9 @@ test('markClosed: 武装中のタイマーを取り消す', () => {
 });
 
 // 性質 3: 閉じる処理は冪等。
-// 戻り値で早期 return する呼び出し側（app.js の close）が、2 回目以降に modalOpen を
-// 巻き戻さないための土台。遅れて発火したタイマーが close を呼んでも無害になる。
+// 戻り値で早期 return する呼び出し側（app.js の close）が、2 回目以降に
+// 二重オープン抑止のロックを解放しないための土台。遅れて発火したタイマーが
+// close を呼んでも無害になる。
 test('markClosed: 2 回目以降は false を返す（close を冪等にするため）', () => {
   const { controller } = setup();
   assert.equal(controller.markClosed(), true);

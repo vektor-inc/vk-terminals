@@ -42,11 +42,21 @@ function createSingleOpenGuard() {
           },
         });
       } catch (error) {
+        let cleanupError = null;
         try {
           failureCleanup();
+        } catch (caughtError) {
+          cleanupError = caughtError;
         } finally {
           // 後片付け側が途中で失敗しても、設定を開き直せる状態だけは必ず取り戻す。
           release();
+        }
+        if (cleanupError) {
+          try {
+            console.error('設定パネルの例外時の後片付けに失敗しました', cleanupError);
+          } catch {
+            // エラー記録の失敗で、呼び出し側へ伝える元の例外を置き換えない。
+          }
         }
         throw error;
       }

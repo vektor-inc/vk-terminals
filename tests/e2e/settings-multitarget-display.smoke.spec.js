@@ -91,7 +91,7 @@ test.describe.serial('設定モーダルのマルチターゲット表示（PR #
     await closeApp({ app, tmpRoot });
   });
 
-  // 各テストの後に閉じるボタンでモーダルを閉じる（modalOpen フラグが確実に false に戻り、
+  // 各テストの後に閉じるボタンでモーダルを閉じる（二重オープン抑止のロックを確実に解放し、
   // 次テストで再オープンできるようにする。Escape でも閉じるが、閉じ処理を確定させるため
   // 閉じるボタンを明示クリックし、DOM から detach されるまで待つ）。
   test.afterEach(async () => {

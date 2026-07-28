@@ -577,6 +577,16 @@ test('normalizeSettingsTabContent: callout の tone は既知の値だけ採用�
   ]);
 });
 
+test('normalizeSettingsTabContent: status は既知の apiServer source だけを採用する', () => {
+  assert.deepEqual(normalizeSettingsTabContent([
+    { type: 'status', source: 'apiServer' },
+    { type: 'status', source: 'unknown' },
+    { type: 'status' },
+  ]), [
+    { type: 'status', source: 'apiServer' },
+  ]);
+});
+
 test('normalizeSettingsTabContent: tabLink の field は実在するキーだけ採用する', () => {
   const options = {
     tabIds: ['general'],

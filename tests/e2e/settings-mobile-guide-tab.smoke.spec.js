@@ -87,13 +87,14 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
   let app;
   let win;
   let tmpRoot;
+  let apiPort;
 
   test.beforeAll(async () => {
-    const port = await getFreePort();
+    apiPort = await getFreePort();
     // VK_TERMINALS_SETTINGS を空にして、組み込みスキーマ（settings-schema.json）を
     // そのまま描画させる。このテストは組み込みスキーマの tabs 定義自体も検証対象にする。
     ({ app, win, tmpRoot } = await launchAppAndWait({
-      port,
+      port: apiPort,
       prefix: 'vk-terminals-e2e-mobile-guide-',
       env: { VK_TERMINALS_APP_TITLE: '', VK_TERMINALS_SETTINGS: '' },
     }));
@@ -144,6 +145,7 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
     const headings = win.locator(`${PANEL_MOBILE} .settings-content-heading`);
     await expect(headings).toHaveText([
       'スマートフォンから確認できます',
+      '現在の待ち受けアドレス',
       'Tailscale とは',
       '準備: 両方の端末を Tailscale に接続する',
       'パソコンの Tailscale IP を調べる',
@@ -157,6 +159,7 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
     // 「外出先から開く 2 つの方法」の子なので h4。
     await expect(win.locator(`${PANEL_MOBILE} h3.settings-content-heading`)).toHaveText([
       'スマートフォンから確認できます',
+      '現在の待ち受けアドレス',
       'Tailscale とは',
       '準備: 両方の端末を Tailscale に接続する',
       'パソコンの Tailscale IP を調べる',
@@ -217,14 +220,22 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
     // Tailscale の説明（アプリのインストール不要 / 同じ Wi-Fi でなくてよい）。
     await expect(win.locator(PANEL_MOBILE))
       .toContainText('スマートフォン側にアプリをインストールする必要はありません');
-    await expect(win.locator(PANEL_MOBILE)).toContainText('tailnet');
+    // 実際の到達範囲は直後の状態表示へ集約し、導入文では繰り返さない。
+    await expect(win.locator(PANEL_MOBILE))
+      .toContainText('外出先から開くには、次の Tailscale を使う方法が簡単です');
+    await expect(win.locator(PANEL_MOBILE))
+      .not.toContainText('初期設定ではパソコン自身からしか開けません');
+    await expect(win.locator(PANEL_MOBILE))
+      .toContainText('同じプライベートネットワーク（tailnet）');
 
     // 準備手順は番号付きリスト。
     await expect(win.locator(`${PANEL_MOBILE} ol.settings-content-list li`)).toHaveCount(4);
 
-    // コードブロックは「IP の調べ方 → 開くアドレス → tailscale serve」の順。
+    // コードブロックは「現在の待ち受けアドレス → IP の調べ方 → 開くアドレス →
+    // tailscale serve」の順。
     const codes = win.locator(`${PANEL_MOBILE} .settings-content-code`);
     await expect(codes).toHaveText([
+      `http://127.0.0.1:${apiPort}/`,
       'tailscale ip -4',
       'http://<Tailscale IP>:13847/',
       'tailscale serve --bg 13847',
@@ -245,17 +256,23 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
     await expect(win.locator(PANEL_MOBILE)).not.toContainText('最短');
     await expect(win.locator(PANEL_MOBILE)).toContainText('そのままでは実行できない場合があります');
 
+    // 実際の待ち受け状態は色だけでなく「補足」の語と URL でも伝える。
+    const apiStatus = win.locator(`${PANEL_MOBILE} [data-status-source="apiServer"]`);
+    await expect(apiStatus).toHaveAttribute('data-tone', 'info');
+    await expect(apiStatus.locator('.settings-content-status-label')).toHaveText('補足');
+    await expect(apiStatus).toContainText(`http://127.0.0.1:${apiPort}/`);
+    await expect(apiStatus).toContainText('このパソコンからのみ開けます');
+
+    // 推測による診断手順は削除し、再起動後に先頭の実アドレスを見る案内へ置き換える。
+    await expect(win.locator(PANEL_MOBILE))
+      .toContainText('このタブの先頭にある「現在の待ち受けアドレス」');
+    await expect(win.locator(PANEL_MOBILE))
+      .not.toContainText('パソコン自身のブラウザで同じアドレスを開いてみて');
+    await expect(win.locator(PANEL_MOBILE)).not.toContainText('API server listening');
+
     // 注意書きは role="note" + トーンを表す語（色だけに依存しない）で伝える。
     const callouts = win.locator(`${PANEL_MOBILE} .settings-content-callout`);
-    await expect(callouts).toHaveCount(2);
-    // 方法 1 には、Tailscale 未接続時に 127.0.0.1 へ黙ってフォールバックする旨の補足。
-    const infoCallout = win.locator(`${PANEL_MOBILE} .settings-content-callout[data-tone="info"]`);
-    await expect(infoCallout).toHaveAttribute('role', 'note');
-    await expect(infoCallout.locator('.settings-content-callout-label')).toHaveText('補足');
-    await expect(infoCallout).toContainText('127.0.0.1 で待ち受けます');
-    // 確認手段はログに頼らない（Finder / Dock から起動した人には起動ログを見る手段がない）。
-    await expect(infoCallout).toContainText('パソコン自身のブラウザで同じアドレスを開いてみて');
-    await expect(win.locator(PANEL_MOBILE)).not.toContainText('API server listening');
+    await expect(callouts).toHaveCount(1);
     // 末尾は無認証についての警告。
     const warningCallout = win.locator(`${PANEL_MOBILE} .settings-content-callout[data-tone="warning"]`);
     await expect(warningCallout).toHaveAttribute('role', 'note');
@@ -280,7 +297,7 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
       method1Heading: { selector: 'h4', text: '方法 1' },
       address: { selector: '.settings-content-code', text: '<Tailscale IP>:13847' },
       example: { text: 'http://100.101.102.103:13847/' },
-      infoCallout: { selector: '.settings-content-callout[data-tone="info"]' },
+      statusConfirmation: { text: 'このタブの先頭にある「現在の待ち受けアドレス」' },
       tabLink: { selector: '.settings-content-tablink' },
       method2Heading: { selector: 'h4', text: '方法 2' },
     });
@@ -296,9 +313,9 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
     // 読まずにタブを移り、保存後の自動クローズと相まって読みに戻れなくなる。
     expect(at.address).toBeGreaterThan(at.method1Heading);
     expect(at.example).toBeGreaterThan(at.address);
-    // 未接続時のフォールバック説明は、まだ試していない段階ではなくつまずく直後に置く。
-    expect(at.infoCallout).toBeGreaterThan(at.example);
-    expect(at.tabLink).toBeGreaterThan(at.infoCallout);
+    // 再起動後の確認先は実例の直後に置き、推測による診断手順は挟まない。
+    expect(at.statusConfirmation).toBeGreaterThan(at.example);
+    expect(at.tabLink).toBeGreaterThan(at.statusConfirmation);
     expect(at.tabLink).toBeLessThan(at.method2Heading);
   });
 
@@ -325,15 +342,19 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
 
   // ─── コードブロックのコピーボタン（issue #262） ───────────────────────────────
 
-  test('コピーボタンはコマンドの 2 ブロックだけに付き、コマンド文字列を読み上げる', async () => {
+  test('コピーボタンは実アドレスとコマンドで共通の仕組みを使い、対象文字列を読み上げる', async () => {
     await win.locator(TAB_MOBILE).click();
     const copyButtons = win.locator(`${PANEL_MOBILE} .settings-content-copy`);
-    // タイプミスしやすいコマンド 2 つにだけ付ける。
-    await expect(copyButtons).toHaveCount(2);
-    await expect(copyButtons).toHaveText(['コピー', 'コピー']);
+    // 手入力しづらい実アドレスと、タイプミスしやすいコマンド 2 つに付ける。
+    await expect(copyButtons).toHaveCount(3);
+    await expect(copyButtons).toHaveText(['コピー', 'コピー', 'コピー']);
+    await expect(copyButtons.nth(0)).toHaveAttribute(
+      'aria-label',
+      `コピー: http://127.0.0.1:${apiPort}/`
+    );
     // 貼り付け先がパソコンではなくスマートフォンのアドレスバーになるアドレスは対象外。
     // ラッパーが付かず <pre> 単体のまま残る。
-    const codeblocks = win.locator(`${PANEL_MOBILE} .settings-content-codeblock`);
+    const codeblocks = win.locator(`${PANEL_MOBILE} .settings-content > .settings-content-codeblock`);
     await expect(codeblocks).toHaveCount(2);
     await expect(codeblocks.nth(0)).toContainText('tailscale ip -4');
     await expect(codeblocks.nth(1)).toContainText('tailscale serve --bg 13847');
@@ -342,18 +363,18 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
     ).toHaveCount(0);
 
     // 可視ラベル「コピー」を含みつつ対象コマンドまで読み上げる（WCAG 2.5.3 / 2 個の区別）。
-    await expect(copyButtons.nth(0)).toHaveAttribute('aria-label', 'コピー: tailscale ip -4');
-    await expect(copyButtons.nth(1)).toHaveAttribute('aria-label', 'コピー: tailscale serve --bg 13847');
+    await expect(copyButtons.nth(1)).toHaveAttribute('aria-label', 'コピー: tailscale ip -4');
+    await expect(copyButtons.nth(2)).toHaveAttribute('aria-label', 'コピー: tailscale serve --bg 13847');
 
     // フィードバック用の live region は押す前から DOM にある（後から挿入すると読み上げが
     // 発火しない）。初期状態は空。
     const statuses = win.locator(`${PANEL_MOBILE} .settings-content-copy-status`);
-    await expect(statuses).toHaveCount(2);
+    await expect(statuses).toHaveCount(3);
     await expect(statuses.nth(0)).toHaveAttribute('role', 'status');
     await expect(statuses.nth(0)).toHaveText('');
 
     // キーボードだけでも到達できる（マウス前提の操作にしない）。
-    await copyButtons.nth(1).focus();
+    await copyButtons.nth(2).focus();
     const focusedLabel = await win.evaluate(
       () => document.activeElement && document.activeElement.getAttribute('aria-label')
     );
@@ -363,7 +384,8 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
   test('コピーボタンを押すとコマンドがクリップボードへ渡り、2 秒後に表示が戻る', async () => {
     await win.locator(TAB_MOBILE).click();
     await stubClipboardWrite(win);
-    const serveBlock = win.locator(`${PANEL_MOBILE} .settings-content-codeblock`).nth(1);
+    const commandBlocks = win.locator(`${PANEL_MOBILE} .settings-content > .settings-content-codeblock`);
+    const serveBlock = commandBlocks.nth(1);
     const button = serveBlock.locator('.settings-content-copy');
     const status = serveBlock.locator('.settings-content-copy-status');
 
@@ -379,7 +401,7 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
     await expect(status).toHaveText('', { timeout: 4000 });
 
     // もう一方のブロックは独立して動く（状態が混ざらない）。
-    const ipBlock = win.locator(`${PANEL_MOBILE} .settings-content-codeblock`).nth(0);
+    const ipBlock = commandBlocks.nth(0);
     await ipBlock.locator('.settings-content-copy').click();
     await expect(ipBlock.locator('.settings-content-copy-status')).toHaveText('コピーしました');
     await expect(status).toHaveText('');
@@ -389,7 +411,7 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
   test('連打してもフィードバックは重複せず、最後の押下から 2 秒表示される', async () => {
     await win.locator(TAB_MOBILE).click();
     await stubClipboardWrite(win);
-    const block = win.locator(`${PANEL_MOBILE} .settings-content-codeblock`).nth(0);
+    const block = win.locator(`${PANEL_MOBILE} .settings-content > .settings-content-codeblock`).nth(0);
     const button = block.locator('.settings-content-copy');
     const status = block.locator('.settings-content-copy-status');
 
@@ -416,7 +438,7 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
   test('コピーに失敗したときは失敗をテキストで伝える', async () => {
     await win.locator(TAB_MOBILE).click();
     await stubClipboardFailure(win);
-    const block = win.locator(`${PANEL_MOBILE} .settings-content-codeblock`).nth(0);
+    const block = win.locator(`${PANEL_MOBILE} .settings-content > .settings-content-codeblock`).nth(0);
     const status = block.locator('.settings-content-copy-status');
     await block.locator('.settings-content-copy').click();
     // 色だけに依存させず、テキストと data-state の両方で失敗を伝える。

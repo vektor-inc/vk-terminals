@@ -26,6 +26,7 @@ const {
 } = require('./waitingState');
 const { deriveStatus } = require('./statusState');
 const { getStatusPresentation } = require('./statusPresentation');
+const { getApiServerStatusPresentation } = require('./apiServerStatus');
 const { getPrBadgePresentation } = require('./prBadge');
 const { resolveQueueIssuesListUrl } = require('./taskQueueLink');
 const { isPatternValid } = require('./settingsValidation');
@@ -3330,13 +3331,49 @@ function settingsCopyButtonLabel(text) {
   return `コピー: ${clipped}`;
 }
 
+function renderSettingsCopyableCode(text, copy) {
+  const pre = `<pre class="settings-content-code"><code>${escText(text)}</code></pre>`;
+  if (!copy) return pre;
+  return `<div class="settings-content-codeblock">
+    ${pre}
+    <div class="settings-content-code-actions">
+      <span class="settings-content-copy-status" role="status"></span>
+      <button type="button" class="settings-content-copy" aria-label="${escAttr(settingsCopyButtonLabel(text))}">コピー</button>
+    </div>
+  </div>`;
+}
+
+function renderApiServerStatusBody(presentation, apiHostTabIndex) {
+  const addressHtml = presentation.address
+    ? renderSettingsCopyableCode(presentation.address, presentation.copy)
+    : '';
+  const apiHostLinkHtml = presentation.showApiHostLink && Number.isInteger(apiHostTabIndex)
+    ? `<button type="button" class="settings-content-tablink" data-tab-link-index="${escAttr(String(apiHostTabIndex))}" data-tab-link-field="apiHost">API ホストの設定へ移動</button>`
+    : '';
+  return `<span class="settings-content-status-label">${escText(presentation.label)}</span>
+    ${addressHtml}
+    <p class="settings-content-status-text">${escText(presentation.message)}</p>
+    ${apiHostLinkHtml}`;
+}
+
+function renderApiServerStatus(status, apiHostTabIndex) {
+  const presentation = getApiServerStatusPresentation(status);
+  const busyAttr = status && status.phase === 'pending' ? ' aria-busy="true"' : '';
+  return `<section class="settings-content-status" data-status-source="apiServer" data-tone="${escAttr(presentation.tone)}">
+    <h3 class="settings-content-heading">現在の待ち受けアドレス</h3>
+    <div class="settings-content-status-body" role="status"${busyAttr}>
+      ${renderApiServerStatusBody(presentation, apiHostTabIndex)}
+    </div>
+  </section>`;
+}
+
 // 説明タブ（tabs[].content）の読み取り専用ブロックを HTML 化する。
 // blocks は settingsTabs.js の normalizeSettingsTabContent で正規化済み（未知の type や
 // 非 http(s) の URL は除去済み）である前提。content は外部ディスクリプタ
 // （VK_TERMINALS_SETTINGS）からも入りうるため、テキストは escText / 属性は escAttr を
 // 必ず通し、HTML を素通しする実装（markdown → HTML 化など）はしない。
 // tabIndexById: tabLink ブロックの参照先タブ ID → タブ番号の Map。
-function renderSettingsTabContent(blocks, tabIndexById) {
+function renderSettingsTabContent(blocks, tabIndexById, runtimeStatus = {}, entries = []) {
   const html = (Array.isArray(blocks) ? blocks : []).map((block) => {
     if (block.type === 'heading') {
       // モーダル見出しが <h2> なので、その配下は h3（親セクション）/ h4（子セクション）。
@@ -3354,20 +3391,7 @@ function renderSettingsTabContent(blocks, tabIndexById) {
       return `<${tag} class="settings-content-list">${items}</${tag}>`;
     }
     if (block.type === 'code') {
-      const pre = `<pre class="settings-content-code"><code>${escText(block.text)}</code></pre>`;
-      // copy: false のブロック（貼り付け先がパソコンではないアドレスなど）は
-      // 従来どおり <pre> 単体で出す。ラッパーも操作行も付けない。
-      if (!block.copy) return pre;
-      // フィードバック用の live region（.settings-content-copy-status）は空の <span> として
-      // 最初から DOM に置く。押されてから挿入する実装ではスクリーンリーダーの
-      // 読み上げが発火しない。
-      return `<div class="settings-content-codeblock">
-        ${pre}
-        <div class="settings-content-code-actions">
-          <span class="settings-content-copy-status" role="status"></span>
-          <button type="button" class="settings-content-copy" aria-label="${escAttr(settingsCopyButtonLabel(block.text))}">コピー</button>
-        </div>
-      </div>`;
+      return renderSettingsCopyableCode(block.text, block.copy);
     }
     if (block.type === 'links') {
       // href には実 URL を入れず href="#" + click → openExternalUrlSafe に寄せる
@@ -3384,6 +3408,10 @@ function renderSettingsTabContent(blocks, tabIndexById) {
         <span class="settings-content-callout-label">${escText(toneLabel)}</span>
         <p class="settings-content-callout-text">${escText(block.text)}</p>
       </div>`;
+    }
+    if (block.type === 'status' && block.source === 'apiServer') {
+      const apiHostEntry = entries.find(({ field }) => field.key === 'apiHost');
+      return renderApiServerStatus(runtimeStatus.apiServer, apiHostEntry?.tabIndex);
     }
     if (block.type === 'tabLink') {
       const targetIndex = tabIndexById.get(block.tab);
@@ -3451,6 +3479,14 @@ async function openSettingsModal() {
     (group) => Array.isArray(group.fields) && group.fields.length > 0
   ));
   const tabIndexById = new Map(settingsTabs.map((tab, index) => [tab.id, index]));
+  // content より先に全タブのフィールドを組み立て、status ブロックの移動先も
+  // スキーマ由来の entries から確実に参照できるようにする。
+  const tabGroupsHtml = useTabbedSettings
+    ? groupedTabs.map(({ groups }, tabIndex) => groups.map((group) => renderGroupHtml(group, {
+      tabIndex,
+      omitLegend: groups.length === 1,
+    })).join(''))
+    : [];
   const settingsTabsHtml = useTabbedSettings ? `<div class="settings-tabs" role="tablist" aria-label="設定カテゴリ">
     ${settingsTabs.map((tab, index) => {
       const tabId = `settings-tab-${index}`;
@@ -3474,18 +3510,16 @@ async function openSettingsModal() {
           // 継承する。説明だけのタブに出すと保存できるかのような誤誘導になるため。
           const tabNote = (tab && tab.note) ? tab.note : (tabHasFields[tabIndex] ? desc.note : '');
           const noteHtml = tabNote ? `<p class="settings-note settings-tab-note">${escText(tabNote)}</p>` : '';
-          const contentHtml = renderSettingsTabContent(tab && tab.content, tabIndexById);
-          const tabGroupsHtml = groups.map((group) => renderGroupHtml(group, {
-            tabIndex,
-            omitLegend: groups.length === 1,
-          })).join('');
+          const contentHtml = renderSettingsTabContent(tab && tab.content, tabIndexById, {
+            apiServer: desc.apiServerStatus,
+          }, entries);
           // 説明コンテンツも設定グループも無い、完全に空のタブだけに空状態を示す。
           // fields が空でもグループがあれば legend を残す既存挙動は変えない。
           const emptyHtml = !contentHtml && groups.length === 0
             ? '<p class="settings-empty">このタブに表示できる設定項目はありません。</p>'
             : '';
           return `<section class="settings-tab-panel" id="${escAttr(panelId)}" role="tabpanel" aria-labelledby="${escAttr(tabId)}" tabindex="0"${tabIndex === 0 ? '' : ' hidden'}>
-            ${targetHtml}${noteHtml}${contentHtml}${tabGroupsHtml}${emptyHtml}
+            ${targetHtml}${noteHtml}${contentHtml}${tabGroupsHtml[tabIndex]}${emptyHtml}
           </section>`;
         }).join('')
         : settingsGroups.map(g => renderGroupHtml(g)).join(''))
@@ -3541,9 +3575,14 @@ async function openSettingsModal() {
   // 重ならないよう押下時に張り替え、モーダルを閉じるときは全部止める（DOM から
   // 外れたノードへ書き込むのとタイマーが残るのを防ぐ）。
   const copyResetTimers = new Map();
+  let apiServerStatusPollTimer = null;
   const clearCopyResetTimers = () => {
     copyResetTimers.forEach((timerId) => clearTimeout(timerId));
     copyResetTimers.clear();
+  };
+  const stopApiServerStatusPolling = () => {
+    if (apiServerStatusPollTimer) clearInterval(apiServerStatusPollTimer);
+    apiServerStatusPollTimer = null;
   };
 
   // 保存成功後の自動クローズ。武装したまま放置すると、遅れて発火した close() が
@@ -3557,6 +3596,7 @@ async function openSettingsModal() {
     if (!autoClose.markClosed()) return;
     document.removeEventListener('keydown', onKey);
     clearCopyResetTimers();
+    stopApiServerStatusPolling();
     overlay.remove();
     modalOpen = false;
   };
@@ -3758,21 +3798,22 @@ async function openSettingsModal() {
     // 説明タブ内の移動ボタン（tabLink ブロック）。
     // field 指定があればその入力欄まで運び、無ければ移動先タブのボタンへフォーカスを移す
     // （キーボード操作でも流れが途切れないようにする）。
-    modal.querySelectorAll('.settings-content-tablink').forEach((button) => {
-      button.addEventListener('click', () => {
-        const targetIndex = Number(button.dataset.tabLinkIndex);
-        if (!Number.isInteger(targetIndex)) return;
-        const fieldKey = button.dataset.tabLinkField || '';
-        const entry = fieldKey
-          ? entries.find(({ field }) => field.key === fieldKey)
-          : null;
-        if (entry && revealSettingsEntry(entry)) return;
-        activateTab(targetIndex, { focus: true });
-      });
+    // status の確定後に追加されるエラー時の移動ボタンにも同じ導線を使えるよう、
+    // モーダル上で委譲する。
+    modal.addEventListener('click', (event) => {
+      const button = event.target.closest('.settings-content-tablink');
+      if (!button) return;
+      const targetIndex = Number(button.dataset.tabLinkIndex);
+      if (!Number.isInteger(targetIndex)) return;
+      const fieldKey = button.dataset.tabLinkField || '';
+      const entry = fieldKey
+        ? entries.find(({ field }) => field.key === fieldKey)
+        : null;
+      if (entry && revealSettingsEntry(entry)) return;
+      activateTab(targetIndex, { focus: true });
     });
-    // 説明タブのコードブロックのコピーボタン（code ブロックの copy 有効時）。
-    // 説明タブの中身はモーダルを開いた時に一度だけ描画されるので、tabLink と同じく
-    // 生成済みのボタンへ直接張る（イベント委譲は不要）。
+    // 説明タブの code ブロックと実行時 status ブロックのコピーボタン。
+    // status ブロックは「確認中」から確定表示へ中身が更新されるため、後段でイベント委譲する。
     // フィードバックの表示と消灯は同じ 2 プロパティ（textContent / data-state）を
     // 対称に触るので 1 か所に寄せる。state は 'ok' / 'error' / ''（消灯）。
     const setCopyStatus = (status, state) => {
@@ -3787,41 +3828,90 @@ async function openSettingsModal() {
       if (state === 'ok') status.removeAttribute('data-state');
       else status.setAttribute('data-state', state);
     };
-    modal.querySelectorAll('.settings-content-copy').forEach((button) => {
-      button.addEventListener('click', () => {
-        const wrapper = button.closest('.settings-content-codeblock');
-        const status = wrapper ? wrapper.querySelector('.settings-content-copy-status') : null;
-        // コピー元は data-* に持たせず DOM のコード本文から取る。表示している内容と
-        // 貼られる内容が構造的に一致することを保証するため。
-        const codeEl = wrapper ? wrapper.querySelector('.settings-content-code code') : null;
-        // コピー元が取れないときは書き込まない。空文字で上書きすると、
-        // ユーザーが直前にコピーした内容を黙って壊してしまう。
-        const text = codeEl ? codeEl.textContent : '';
-        let ok = true;
-        if (!text) {
+    // code ブロックと実行時 status ブロックで同じコピー処理を使う。status は「確認中」
+    // から確定状態へ中身を更新するため、生成済みボタンへの個別配線ではなく、
+    // モーダル内のイベント委譲にして更新後も同じ経路へ流す。
+    modal.addEventListener('click', (event) => {
+      const button = event.target.closest('.settings-content-copy');
+      if (!button) return;
+      const wrapper = button.closest('.settings-content-codeblock');
+      const status = wrapper ? wrapper.querySelector('.settings-content-copy-status') : null;
+      // コピー元は data-* に持たせず DOM のコード本文から取る。表示している内容と
+      // 貼られる内容が構造的に一致することを保証するため。
+      const codeEl = wrapper ? wrapper.querySelector('.settings-content-code code') : null;
+      const text = codeEl ? codeEl.textContent : '';
+      let ok = true;
+      if (!text) {
+        ok = false;
+      } else {
+        try {
+          // navigator.clipboard は file:// では secure context 判定に依存するため使わず、
+          // Electron の clipboard を直接使う。
+          clipboard.writeText(text);
+        } catch (_e) {
           ok = false;
-        } else {
-          try {
-            // navigator.clipboard は file:// では secure context 判定に依存するため使わず、
-            // Electron の clipboard を直接使う。
-            clipboard.writeText(text);
-          } catch (_e) {
-            // writeText は書き込み失敗を例外で返さないため、この catch は保険。
-            // 「失敗を検出できている」わけではない点に注意。
-            ok = false;
+        }
+      }
+      setCopyStatus(status, ok ? 'ok' : 'error');
+      const pending = copyResetTimers.get(button);
+      if (pending) clearTimeout(pending);
+      copyResetTimers.set(button, setTimeout(() => {
+        copyResetTimers.delete(button);
+        setCopyStatus(status, '');
+      }, 2000));
+    });
+
+    // createWindow() より API 起動が後なので、設定パネルを極端に早く開くと「確認中」に
+    // なる。確定前に限って軽量 IPC を 250ms ごとに最大 20 回（5 秒）取り直し、
+    // 確定時・上限到達時・close() のいずれかで止める。
+    const statusElement = modal.querySelector('[data-status-source="apiServer"]');
+    if (statusElement && desc.apiServerStatus && desc.apiServerStatus.phase === 'pending') {
+      let pollCount = 0;
+      let pollInFlight = false;
+      const apiHostEntry = entries.find(({ field }) => field.key === 'apiHost');
+      const applyApiServerStatus = (status) => {
+        const current = modal.querySelector('[data-status-source="apiServer"]');
+        if (!current) {
+          stopApiServerStatusPolling();
+          return;
+        }
+        const presentation = getApiServerStatusPresentation(status);
+        const body = current.querySelector('.settings-content-status-body');
+        current.dataset.tone = presentation.tone;
+        if (body) {
+          body.innerHTML = renderApiServerStatusBody(presentation, apiHostEntry?.tabIndex);
+          if (status && status.phase === 'pending') {
+            body.setAttribute('aria-busy', 'true');
+          } else {
+            body.removeAttribute('aria-busy');
           }
         }
-        setCopyStatus(status, ok ? 'ok' : 'error');
-        // 連打しても表示が重ならず、かつ早く消えないよう毎回 2 秒に張り替える。
-        const pending = copyResetTimers.get(button);
-        if (pending) clearTimeout(pending);
-        copyResetTimers.set(button, setTimeout(() => {
-          copyResetTimers.delete(button);
-          setCopyStatus(status, '');
-        }, 2000));
-        // フォーカスは移動させない。押したボタンに留めて連続コピーできるようにする。
-      });
-    });
+        if (!status || status.phase !== 'pending') stopApiServerStatusPolling();
+      };
+      const refreshApiServerStatus = async () => {
+        if (pollInFlight) return;
+        pollInFlight = true;
+        pollCount += 1;
+        try {
+          const nextStatus = await ipcRenderer.invoke('settings:api-server-status');
+          if (!modal.isConnected) return;
+          const settledStatus = nextStatus && nextStatus.phase !== 'pending'
+            ? nextStatus
+            : (pollCount >= 20 ? { phase: 'unavailable' } : nextStatus);
+          applyApiServerStatus(settledStatus);
+        } catch (_e) {
+          if (!modal.isConnected) return;
+          // 一時的な取得失敗でも上限までは確認中を維持する。上限では行き止まりを避ける
+          // 案内に切り替え、同期 I/O を伴う main 側の状態取得を止める。
+          if (pollCount >= 20) {
+            applyApiServerStatus({ phase: 'unavailable' });
+          }
+        } finally {
+          pollInFlight = false;
+        }
+      };
+      apiServerStatusPollTimer = setInterval(refreshApiServerStatus, 250);
+    }
     updateSettingsFooter();
   }
 

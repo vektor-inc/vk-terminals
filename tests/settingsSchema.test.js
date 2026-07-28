@@ -161,6 +161,7 @@ test('validateSettingsSchema: visibleWhen 付きフィールドを reject しな
 });
 
 test('validateSettingsSchema: 危険なキーセグメントを含むフィールドは無効', () => {
+  // 汚染経路になる各セグメントが schema 検証の段階ですべて拒否されることを確認する。
   for (const key of ['__proto__.x', 'constructor.prototype.x', 'prototype.x']) {
     assert.equal(validateSettingsSchema({
       groups: [

@@ -4,6 +4,12 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
+// 設定ディスクリプタは環境変数 VK_TERMINALS_SETTINGS で外部から差し替えられるため、
+// 信頼できない入力として扱う。キーを「.」で区切って階層をたどる処理に
+// __proto__ や constructor.prototype が入ると Object.prototype へ書き込まれ、
+// fs と pty.spawn を持つメインプロセス全体のオブジェクトが汚染される。
+// そのため検証時の isValidSettingsDescriptor / validateSettingsSchema と、読み書き時の
+// deepGet / deepSet の両方で同じ判定を行う多重防御にする。
 const UNSAFE_KEY_SEGMENTS = new Set(['__proto__', 'prototype', 'constructor']);
 
 function hasUnsafeKeySegment(dottedKey) {
@@ -77,6 +83,8 @@ function deepGet(obj, dottedKey) {
 
 function deepSet(obj, dottedKey, value) {
   if (hasUnsafeKeySegment(dottedKey)) {
+    // 黙って保存対象から落とすと原因の追跡が困難になるため、saveSettingsToTargets が
+    // 保存失敗として捕捉し、呼び出し元からユーザーへ伝えられるよう例外にする。
     throw new Error(`Unsafe settings key: ${dottedKey}`);
   }
   const keys = dottedKey.split('.');
@@ -103,6 +111,8 @@ function describeSettingsValues(descriptor, options = {}) {
   const values = {};
 
   for (const { field, targetPath } of descriptorFieldTargetEntries(descriptor)) {
+    // 読み書き時の扱いと揃えて危険なキーを飛ばし、画面へ渡す一覧オブジェクト自身の
+    // プロトタイプが差し替えられることを防ぐ。
     if (hasUnsafeKeySegment(field.key)) continue;
     let current = cache.get(targetPath);
     if (!cache.has(targetPath)) {
@@ -184,6 +194,8 @@ function groupFieldsByTargetPath(descriptor, incoming) {
 
   for (const entry of descriptorFieldTargetEntries(descriptor)) {
     const { field, targetPath } = entry;
+    // in 演算子はプロトタイプチェーンまで参照するため使わない。toString や valueOf などを
+    // 画面側が送っていなくても送信済みと誤判定し、意図しない値を保存することを防ぐ。
     if (!Object.prototype.hasOwnProperty.call(values, field.key)) continue;
     if (typeof targetPath !== 'string' || targetPath === '') {
       return { ok: false, error: `${field.label || field.key}: 保存先が未設定です` };

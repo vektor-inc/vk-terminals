@@ -100,6 +100,7 @@ test('isValidSettingsDescriptor: 全フィールドの保存先が解決でき�
 });
 
 test('isValidSettingsDescriptor: 危険なキーセグメントを含むフィールドは無効', () => {
+  // 外部から差し替えられた設定ディスクリプタを使う前に各汚染経路を拒否できることを確認する。
   for (const key of ['__proto__.x', 'constructor.prototype.x', 'prototype.x']) {
     assert.equal(isValidSettingsDescriptor({
       targetPath: '/descriptor.json',
@@ -111,12 +112,14 @@ test('isValidSettingsDescriptor: 危険なキーセグメントを含むフィ�
 });
 
 test('deepSet: 危険なキーセグメントへの書き込みを拒否して Object.prototype を汚染しない', () => {
+  // 各危険セグメントへの書き込みが例外になり、共通プロトタイプへ到達しないことを確認する。
   const cases = [
     ['__proto__.settingsTargetsPolluted', 'PWNED'],
     ['constructor.prototype.settingsTargetsPolluted', 'PWNED'],
     ['prototype.settingsTargetsPolluted', 'PWNED'],
   ];
 
+  // 以前の失敗した実行で汚染が残っていても、この検証へ影響させないため事前に掃除する。
   delete Object.prototype.settingsTargetsPolluted;
   try {
     for (const [key, value] of cases) {
@@ -130,11 +133,13 @@ test('deepSet: 危険なキーセグメントへの書き込みを拒否して O
       assert.ok(thrownError instanceof Error, key);
     }
   } finally {
+    // 検証途中で例外が発生しても、後続テストへプロトタイプ汚染を持ち越さないため必ず掃除する。
     delete Object.prototype.settingsTargetsPolluted;
   }
 });
 
 test('deepGet: 危険なキーセグメントを含むキーは undefined を返す', () => {
+  // 自身や継承元に値が存在しても、危険な経路からは読み取れないことを確認する。
   const source = Object.assign(Object.create({ x: 'proto' }), {
     constructor: { prototype: { x: 'constructor' } },
     prototype: { x: 'prototype' },
@@ -146,6 +151,7 @@ test('deepGet: 危険なキーセグメントを含むキーは undefined を返
 });
 
 test('deepGet / deepSet: 通常のドット区切りキーは従来どおり読み書きできる', () => {
+  // 防御追加後も安全な階層キーの読み書きには影響がないことを確認する。
   const target = {};
 
   deepSet(target, 'a.b.c', 'value');
@@ -191,6 +197,7 @@ test('describeSettingsValues: 異なる保存先から値を集約し default �
 });
 
 test('describeSettingsValues: 危険なキーを返却値に追加せずプロトタイプを維持する', () => {
+  // 画面へ渡す一覧から危険なキーが除外され、一覧自身のプロトタイプが維持されることを確認する。
   const descriptor = {
     targetPath: path.join(makeTempDir(), 'config.json'),
     groups: [
@@ -350,6 +357,7 @@ test('saveSettingsToTargets: group ごとに別ファイルへ保存し未知キ
 });
 
 test('groupFieldsByTargetPath: incoming にない Object.prototype 由来のキーを保存対象に含めない', () => {
+  // 画面側が値を送っていない組み込みプロパティを、保存対象と誤判定しないことを確認する。
   const targetPath = path.join(makeTempDir(), 'config.json');
   const descriptor = {
     targetPath,
@@ -370,6 +378,7 @@ test('groupFieldsByTargetPath: incoming にない Object.prototype 由来のキ�
 });
 
 test('saveSettingsToTargets: 危険なキーの保存を拒否して汚染もファイル作成もしない', () => {
+  // 保存処理全体でも危険なキーを拒否し、プロトタイプ汚染とファイル作成を防ぐことを確認する。
   const targetPath = path.join(makeTempDir(), 'config.json');
   const pollutedKey = 'settingsTargetsSavePolluted';
   const descriptor = {
@@ -383,6 +392,7 @@ test('saveSettingsToTargets: 危険なキーの保存を拒否して汚染もフ
     ],
   };
 
+  // 以前の失敗した実行で汚染が残っていても、この検証へ影響させないため事前に掃除する。
   delete Object.prototype[pollutedKey];
   try {
     const result = saveSettingsToTargets(descriptor, {
@@ -393,6 +403,7 @@ test('saveSettingsToTargets: 危険なキーの保存を拒否して汚染もフ
     assert.equal(Object.prototype[pollutedKey], undefined);
     assert.equal(fs.existsSync(targetPath), false);
   } finally {
+    // 検証途中で例外が発生しても、後続テストへプロトタイプ汚染を持ち越さないため必ず掃除する。
     delete Object.prototype[pollutedKey];
   }
 });

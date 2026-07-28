@@ -22,6 +22,9 @@ function validateSettingsSchema(schema) {
 
     for (const field of group.fields) {
       if (!field || typeof field !== 'object' || Array.isArray(field)) return false;
+      // 危険なキーの判定を settingsTargets.js と共用し、判定ロジックの二重管理を避ける。
+      // hasUnsafeKeySegment は内部で split を呼ぶため、短絡評価を利用して文字列かどうかを
+      // 先に確認する評価順を崩してはならない。
       if (
         typeof field.key !== 'string'
         || field.key.trim() === ''

@@ -12,6 +12,7 @@ const {
   deepSet,
   describeSettingsValues,
   describeTargetPaths,
+  groupFieldsByTargetPath,
   isValidSettingsDescriptor,
   resolveFieldTargetPath,
   resolveTargetPath,
@@ -189,6 +190,25 @@ test('describeSettingsValues: 異なる保存先から値を集約し default �
   });
 });
 
+test('describeSettingsValues: 危険なキーを返却値に追加せずプロトタイプを維持する', () => {
+  const descriptor = {
+    targetPath: path.join(makeTempDir(), 'config.json'),
+    groups: [
+      {
+        fields: [
+          { key: '__proto__', label: '危険なキー', type: 'json', default: { polluted: true } },
+        ],
+      },
+    ],
+  };
+
+  const values = describeSettingsValues(descriptor);
+
+  assert.equal(Object.getPrototypeOf(values), Object.prototype);
+  assert.equal(Object.prototype.hasOwnProperty.call(values, '__proto__'), false);
+  assert.equal(values.polluted, undefined);
+});
+
 test('describeTargetPaths: 単一・group 差異・field override の target 情報を返す', () => {
   const dir = makeTempDir();
   const firstPath = path.join(dir, 'first.json');
@@ -327,6 +347,54 @@ test('saveSettingsToTargets: group ごとに別ファイルへ保存し未知キ
     enabled: false,
     items: [{ id: 1 }],
   });
+});
+
+test('groupFieldsByTargetPath: incoming にない Object.prototype 由来のキーを保存対象に含めない', () => {
+  const targetPath = path.join(makeTempDir(), 'config.json');
+  const descriptor = {
+    targetPath,
+    groups: [
+      {
+        fields: [
+          { key: 'toString', label: '文字列化', type: 'text' },
+          { key: 'hasOwnProperty', label: '所有判定', type: 'text' },
+        ],
+      },
+    ],
+  };
+
+  const result = groupFieldsByTargetPath(descriptor, {});
+
+  assert.equal(result.ok, true);
+  assert.equal(result.grouped.size, 0);
+});
+
+test('saveSettingsToTargets: 危険なキーの保存を拒否して汚染もファイル作成もしない', () => {
+  const targetPath = path.join(makeTempDir(), 'config.json');
+  const pollutedKey = 'settingsTargetsSavePolluted';
+  const descriptor = {
+    targetPath,
+    groups: [
+      {
+        fields: [
+          { key: `__proto__.${pollutedKey}`, label: '危険なキー', type: 'text' },
+        ],
+      },
+    ],
+  };
+
+  delete Object.prototype[pollutedKey];
+  try {
+    const result = saveSettingsToTargets(descriptor, {
+      [`__proto__.${pollutedKey}`]: 'PWNED',
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(Object.prototype[pollutedKey], undefined);
+    assert.equal(fs.existsSync(targetPath), false);
+  } finally {
+    delete Object.prototype[pollutedKey];
+  }
 });
 
 test('saveSettingsToTargets: 原子的書き込み後に一時ファイルを残さない', () => {

@@ -103,6 +103,7 @@ function describeSettingsValues(descriptor, options = {}) {
   const values = {};
 
   for (const { field, targetPath } of descriptorFieldTargetEntries(descriptor)) {
+    if (hasUnsafeKeySegment(field.key)) continue;
     let current = cache.get(targetPath);
     if (!cache.has(targetPath)) {
       try {
@@ -183,7 +184,7 @@ function groupFieldsByTargetPath(descriptor, incoming) {
 
   for (const entry of descriptorFieldTargetEntries(descriptor)) {
     const { field, targetPath } = entry;
-    if (!(field.key in values)) continue;
+    if (!Object.prototype.hasOwnProperty.call(values, field.key)) continue;
     if (typeof targetPath !== 'string' || targetPath === '') {
       return { ok: false, error: `${field.label || field.key}: 保存先が未設定です` };
     }
@@ -291,6 +292,7 @@ module.exports = {
   descriptorFieldEntries,
   descriptorFieldTargetEntries,
   groupFieldsByTargetPath,
+  hasUnsafeKeySegment,
   isValidSettingsDescriptor,
   readJsonObject,
   resolveFieldTargetPath,

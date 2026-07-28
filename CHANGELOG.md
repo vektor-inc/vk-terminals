@@ -1,7 +1,7 @@
 # Changelog
 
 - [ セキュリティ修正 ] 画面表示側から Node.js・Electron の機能へ直接アクセスできない構成に変更し、ターミナル出力や外部から受け取った文字列の表示処理に不備があってもパソコン上で任意のコマンドが実行されない状態に修正（[#268](https://github.com/vektor-inc/vk-terminals/issues/268)）
-- [ セキュリティ修正 ] 設定項目のキーからアプリ全体のオブジェクトが汚染される問題を、危険なキーを拒否して設定を安全に保存できるように修正（[#273](https://github.com/vektor-inc/vk-terminals/issues/273)）
+- [ セキュリティ修正 ] 設定項目のキーに `__proto__` などの特別な名前を含む設定を読み込むと、設定の保存処理でアプリ内部のあらゆるデータが書き換わりうる問題を修正（[#273](https://github.com/vektor-inc/vk-terminals/issues/273)）
 
 ## 1.48.0
 

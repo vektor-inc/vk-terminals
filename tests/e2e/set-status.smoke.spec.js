@@ -131,7 +131,7 @@ test('POST /api/set-status が renderer の waiting 表示へ反映される', a
     const pane = win.locator('.pane').first();
     const status = win.locator('.pane .pane-status').first();
 
-    // main の HTTP API → webContents.send → renderer の ipcRenderer.on →
+    // main の HTTP API → webContents.send → renderer の VKIpc.on →
     // recomputeStatus → DOM 反映、という統合パスを実際の Electron 上で確認する。
     await expect(status).toHaveAttribute('data-status', 'waiting');
     await expect(pane).toHaveClass(/\bwaiting\b/);

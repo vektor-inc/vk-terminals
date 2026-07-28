@@ -1,6 +1,16 @@
-/* global module */
-
 // ─── Waiting detection ────────────────────────────────────────────────────────
+//
+// Node（require）とブラウザ（<script>）の両方から使える UMD 形式（issue #268）。
+// renderer は nodeIntegration 無効のため require が無く、index.html が <script> で読む。
+// ※ 差分を追いやすいよう、factory の中身は元のインデントのままにしている。
+(function (root, factory) {
+  const api = factory();
+  if (typeof module === 'object' && module.exports) {
+    module.exports = api;
+  } else {
+    root.VKWaitingState = api;
+  }
+})(typeof self !== 'undefined' ? self : this, function () {
 
 // 「〜を（お）待ちしています / 〜を待っています」で待っている対象の許可リスト。
 // ユーザーが差し出すもの（入力・選択・承認など）に限定し、第三者（サブエージェントや
@@ -200,7 +210,7 @@ function shouldBeepForWaiting({ now, lastBeepAt, cooldownMs = WAITING_BEEP_COOLD
   return now - lastBeepAt >= cooldownMs;
 }
 
-module.exports = {
+return {
   WAITING_BEEP_COOLDOWN_MS,
   WAITING_MAX_EVAL_INTERVAL_MS,
   WAITING_PATTERNS,
@@ -214,3 +224,4 @@ module.exports = {
   shouldBeepForWaiting,
   waitingCheckDelayMs,
 };
+});

@@ -803,6 +803,23 @@ h4.settings-content-heading {
   overflow: hidden;
 }
 
+/* ─── 起動失敗の表示（issue #268）─────────────────────────────────────────────
+ * renderer/bootstrap.js が xterm や xterm.css を読み込めずに初期化を中断したときの
+ * 唯一の画面。#root は flex なので、単独の子として中央に置く。
+ * 文字色 #e6edf3 は面 #0d1117 に対して 15.4:1 で、WCAG 1.4.3（4.5:1）を満たす。 */
+.boot-error {
+  margin: auto;
+  max-width: 34em;
+  padding: 24px 28px;
+  border: 1px solid #f85149;
+  border-radius: var(--vktm--border-radius--md);
+  background: #0d1117;
+  color: #e6edf3;
+  font-size: 14px;
+  line-height: 1.7;
+  text-align: center;
+}
+
 /* ─── Sidebar ──────────────────────────────────────────────────────────────── */
 /* ラッパー（.sidebar）が flex 子・開閉トランジション・可変幅（--vktm-sidebar-width）の基準。
  * 固定ヘッダーの使用量カードの下で、内側の nav（.sidebar-menu）がメニューと格納ペインを

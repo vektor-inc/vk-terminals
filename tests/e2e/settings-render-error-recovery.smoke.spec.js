@@ -7,8 +7,8 @@ const { closeApp, getFreePort, launchAppAndWait } = require('./helpers/electron-
 // Electron アプリを再起動せずに同じ画面から復帰できるかを検証する。
 async function installRecoverableDescribeFailure(win) {
   await win.evaluate(() => {
-    const { ipcRenderer } = require('electron');
-    const originalInvoke = ipcRenderer.invoke.bind(ipcRenderer);
+    const vkIpc = window.VKIpc;
+    const originalInvoke = vkIpc.invoke.bind(vkIpc);
     const descriptor = {
       available: true,
       title: '描画エラー復帰テスト',
@@ -26,7 +26,7 @@ async function installRecoverableDescribeFailure(win) {
     };
 
     window.__settingsDescribeCalls = 0;
-    ipcRenderer.invoke = (channel, ...args) => {
+    vkIpc.invoke = (channel, ...args) => {
       if (channel !== 'settings:describe') return originalInvoke(channel, ...args);
       window.__settingsDescribeCalls += 1;
       if (window.__settingsDescribeCalls === 1) {

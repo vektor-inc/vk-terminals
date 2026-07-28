@@ -1,5 +1,17 @@
 'use strict';
 
+// Node（require）とブラウザ（<script>）の両方から使える UMD 形式（issue #268）。
+// renderer は nodeIntegration 無効のため require が無く、index.html が <script> で読む。
+// ※ 差分を追いやすいよう、factory の中身は元のインデントのままにしている。
+(function (root, factory) {
+  const api = factory();
+  if (typeof module === 'object' && module.exports) {
+    module.exports = api;
+  } else {
+    root.VKTaskSectionVisibility = api;
+  }
+})(typeof self !== 'undefined' ? self : this, function () {
+
 const DEFAULT_TASKS_ORCHESTRATOR_STALE_MS = 120000;
 
 function parseTaskUpdatedAt(value) {
@@ -32,9 +44,10 @@ function computeTaskSectionVisibility(view, options = {}) {
   });
 }
 
-module.exports = {
+return {
   DEFAULT_TASKS_ORCHESTRATOR_STALE_MS,
   computeTaskSectionVisibility,
   isTaskViewStale,
   parseTaskUpdatedAt,
 };
+});

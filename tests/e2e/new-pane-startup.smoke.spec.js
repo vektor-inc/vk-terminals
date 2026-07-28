@@ -115,16 +115,16 @@ test.describe('新規ペイン起動設定（issue #143 / PR #144）', () => {
 
       // (A) 実在ディレクトリを渡すと、resolvedCwd はそのパスのまま返る。
       const okCwd = await win.evaluate(async (dir) => {
-        const { ipcRenderer } = require('electron');
-        const r = await ipcRenderer.invoke('terminal:create', dir, { noClaude: true });
+        const vkIpc = window.VKIpc;
+        const r = await vkIpc.invoke('terminal:create', dir, { noClaude: true });
         return r && r.cwd;
       }, existDir);
       expect(okCwd).toBe(existDir);
 
       // (B) 存在しないパスを渡すと HOME(tmpHome) にフォールバックし、起動は失敗しない。
       const fbCwd = await win.evaluate(async (badPath) => {
-        const { ipcRenderer } = require('electron');
-        const r = await ipcRenderer.invoke('terminal:create', badPath, { noClaude: true });
+        const vkIpc = window.VKIpc;
+        const r = await vkIpc.invoke('terminal:create', badPath, { noClaude: true });
         return r && r.cwd;
       }, path.join(existDir, 'no', 'such', 'dir-xyz'));
       expect(fbCwd).toBe(tmpHome);
@@ -149,12 +149,12 @@ test.describe('新規ペイン起動設定（issue #143 / PR #144）', () => {
       // 起動時に生成される既定ペインのヘッダ＋ボタンを待つ。
       await win.waitForSelector('.pane-header .btn-split', { state: 'visible' });
 
-      // ipcRenderer.invoke を包んで terminal:create の引数を記録（元処理には委譲）。
+      // window.VKIpc.invoke を包んで terminal:create の引数を記録（元処理には委譲）。
       await win.evaluate(() => {
-        const { ipcRenderer } = require('electron');
+        const vkIpc = window.VKIpc;
         window.__termCreateCalls = [];
-        const orig = ipcRenderer.invoke.bind(ipcRenderer);
-        ipcRenderer.invoke = (channel, ...args) => {
+        const orig = vkIpc.invoke.bind(vkIpc);
+        vkIpc.invoke = (channel, ...args) => {
           if (channel === 'terminal:create') {
             window.__termCreateCalls.push({ cwd: args[0], options: args[1] });
           }
@@ -199,11 +199,11 @@ test.describe('新規ペイン起動設定（issue #143 / PR #144）', () => {
       await win.waitForSelector('.pane-header .btn-split', { state: 'visible' });
 
       await win.evaluate(() => {
-        const { ipcRenderer } = require('electron');
+        const vkIpc = window.VKIpc;
         window.__termCreateCalls = [];
         let n = 1000;
-        const orig = ipcRenderer.invoke.bind(ipcRenderer);
-        ipcRenderer.invoke = (channel, ...args) => {
+        const orig = vkIpc.invoke.bind(vkIpc);
+        vkIpc.invoke = (channel, ...args) => {
           if (channel === 'terminal:create') {
             window.__termCreateCalls.push({ cwd: args[0], options: args[1] });
             // claude を起こさないようスタブ応答（PTY を実生成しない）。

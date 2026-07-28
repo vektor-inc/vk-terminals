@@ -5,7 +5,7 @@ const { closeApp, getFreePort, launchAppAndWait } = require('./helpers/electron-
 // 保存処理が別の欄を採用すると、着地した欄へ入力した値と保存値が食い違う。
 async function installDuplicateKeyDescriptor(win) {
   await win.evaluate(() => {
-    const { ipcRenderer } = require('electron');
+    const vkIpc = window.VKIpc;
     const desc = {
       available: true,
       title: '重複キー設定',
@@ -50,7 +50,7 @@ async function installDuplicateKeyDescriptor(win) {
     };
 
     window.__savedPayloads = [];
-    ipcRenderer.invoke = (channel, payload) => {
+    vkIpc.invoke = (channel, payload) => {
       if (channel === 'settings:describe') return Promise.resolve(desc);
       if (channel === 'settings:save') {
         window.__savedPayloads.push(payload);

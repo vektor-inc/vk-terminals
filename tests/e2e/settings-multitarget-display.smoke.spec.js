@@ -2,14 +2,14 @@ const { test, expect } = require('@playwright/test');
 // 起動〜初期描画待ちは共通ヘルパーへ集約している（issue #263）。
 const { closeApp, getFreePort, launchAppAndWait } = require('./helpers/electron-app');
 
-// renderer の ipcRenderer.invoke を差し替え、settings:describe の応答を注入する。
+// renderer の window.VKIpc.invoke（renderer 側の中継レイヤ／issue #268）を差し替え、settings:describe の応答を注入する。
 // これは main.js の settings:describe が返す形（group ごとに targetPaths を持ち、
 // hasMultipleTargets / targetPath / targetPaths を含む）を模したもの。
 // describeTargetPaths / describeSettingsValues のユニットテストは別途担保されているため、
 // ここでは「describe の応答を renderer がどう表示するか」に絞って検証する。
 async function installMultiTargetDescriptor(win) {
   await win.evaluate(() => {
-    const { ipcRenderer } = require('electron');
+    const vkIpc = window.VKIpc;
     const desc = {
       available: true,
       title: 'マルチターゲット設定',
@@ -33,7 +33,7 @@ async function installMultiTargetDescriptor(win) {
       ],
       values: { aValue: '', bValue: '' },
     };
-    ipcRenderer.invoke = (channel) => {
+    vkIpc.invoke = (channel) => {
       if (channel === 'settings:describe') return Promise.resolve(desc);
       if (channel === 'settings:save') return Promise.resolve({ ok: true });
       return Promise.resolve(null);
@@ -44,7 +44,7 @@ async function installMultiTargetDescriptor(win) {
 // 単一ターゲット（従来 descriptor）の describe 応答を注入する。
 async function installSingleTargetDescriptor(win) {
   await win.evaluate(() => {
-    const { ipcRenderer } = require('electron');
+    const vkIpc = window.VKIpc;
     const desc = {
       available: true,
       title: '単一ターゲット設定',
@@ -64,7 +64,7 @@ async function installSingleTargetDescriptor(win) {
       ],
       values: { aValue: '' },
     };
-    ipcRenderer.invoke = (channel) => {
+    vkIpc.invoke = (channel) => {
       if (channel === 'settings:describe') return Promise.resolve(desc);
       if (channel === 'settings:save') return Promise.resolve({ ok: true });
       return Promise.resolve(null);

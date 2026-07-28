@@ -2,12 +2,12 @@ const { test, expect } = require('@playwright/test');
 // 起動〜初期描画待ちは共通ヘルパーへ集約している（issue #263）。
 const { closeApp, getFreePort, launchAppAndWait } = require('./helpers/electron-app');
 
-// renderer の ipcRenderer.invoke を差し替え、tabs 付き descriptor を返させる。
+// renderer の window.VKIpc.invoke（renderer 側の中継レイヤ／issue #268）を差し替え、tabs 付き descriptor を返させる。
 // main.js の settings:describe が tabs を含めて返す形（PR の変更）を模したもの。
 // groups には tab キーで所属タブを指定し、group ごとに targetPaths（保存先）を持たせる。
 async function installTabbedDescriptor(win) {
   await win.evaluate(() => {
-    const { ipcRenderer } = require('electron');
+    const vkIpc = window.VKIpc;
     const desc = {
       available: true,
       title: 'タブ設定',
@@ -47,7 +47,7 @@ async function installTabbedDescriptor(win) {
       values: { host: '', limit: '' },
     };
     window.__savedPayloads = [];
-    ipcRenderer.invoke = (channel, payload) => {
+    vkIpc.invoke = (channel, payload) => {
       if (channel === 'settings:describe') return Promise.resolve(desc);
       if (channel === 'settings:save') {
         window.__savedPayloads.push(payload);

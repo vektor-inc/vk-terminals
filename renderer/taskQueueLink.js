@@ -1,6 +1,22 @@
 'use strict';
 
-const { isSafeHttpUrl } = require('./urlSafety');
+// Node（require）とブラウザ（<script>）の両方から使える UMD 形式（issue #268）。
+// renderer は nodeIntegration 無効のため require が無く、index.html が <script> で読む。
+// ※ 差分を追いやすいよう、factory の中身は元のインデントのままにしている。
+(function (root, factory) {
+  const api = factory();
+  if (typeof module === 'object' && module.exports) {
+    module.exports = api;
+  } else {
+    root.VKTaskQueueLink = api;
+  }
+})(typeof self !== 'undefined' ? self : this, function () {
+
+// urlSafety は Node では require、ブラウザでは先に読み込まれた window.VKUrlSafety から
+// 受け取る（index.html の <script> 順で保証する）。
+const { isSafeHttpUrl } = (typeof require === 'function')
+  ? require('./urlSafety')
+  : self.VKUrlSafety;
 
 // サイドバーのタスク一覧で、タスクの queueIssueUrl を「リンク化してよい URL」か
 // どうか判定する純粋ヘルパー（issue #177 / 元 vk-orchestrator#177）。
@@ -44,7 +60,8 @@ function resolveQueueIssuesListUrl(url) {
   return `${u.origin}${match[1]}`;
 }
 
-module.exports = {
+return {
   resolveQueueIssueUrl,
   resolveQueueIssuesListUrl,
 };
+});

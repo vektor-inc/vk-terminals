@@ -2,13 +2,16 @@ const { test, expect } = require('@playwright/test');
 // 起動〜初期描画待ちは共通ヘルパーへ集約している（issue #263）。
 const { closeApp, getFreePort, launchAppAndWait } = require('./helpers/electron-app');
 
-// renderer の ipcRenderer.invoke を差し替え、pattern 付き descriptor を返させる。
-// app.js は `const { ipcRenderer } = require('electron')` で同一のモジュールオブジェクトを
-// 参照しているため、そのオブジェクトの invoke を上書きすれば openSettingsModal 内の
-// 呼び出しにも効く。settings:save は成功を返しつつ payload を window に記録する。
+// renderer の window.VKIpc.invoke を差し替え、pattern 付き descriptor を返させる。
+// app.js は renderer/ipcClient.js が置いた同一のオブジェクト（window.VKIpc）を参照して
+// いるため、その invoke を上書きすれば openSettingsModal 内の呼び出しにも効く。
+// preload が contextBridge で公開した window.vkBridge 側は差し替えできないので、
+// モックは必ずこの renderer 側の中継レイヤに対して行う（issue #268）。
+// なお差し替えても権限は増えない。許可されるチャンネルは preload 側の許可リストが決める。
+// settings:save は成功を返しつつ payload を window に記録する。
 async function installMockDescriptor(win) {
   await win.evaluate(() => {
-    const { ipcRenderer } = require('electron');
+    const vkIpc = window.VKIpc;
     // <owner>/<repo> 形式（親 vk-orchestrator が付与する pattern の代表例）。
     const REPO_PATTERN = '^[^/\\s]+/[^/\\s]+$';
     const desc = {
@@ -41,7 +44,7 @@ async function installMockDescriptor(win) {
       values: { repo: '', legacy: '' },
     };
     window.__savedPayloads = [];
-    ipcRenderer.invoke = (channel, payload) => {
+    vkIpc.invoke = (channel, payload) => {
       if (channel === 'settings:describe') return Promise.resolve(desc);
       if (channel === 'settings:save') {
         window.__savedPayloads.push(payload);

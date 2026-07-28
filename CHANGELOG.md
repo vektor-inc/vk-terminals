@@ -1,5 +1,7 @@
 # Changelog
 
+- [ セキュリティ修正 ] 画面表示側から Node.js・Electron の機能へ直接アクセスできない構成に変更し、ターミナル出力や外部から受け取った文字列の表示処理に不備があってもパソコン上で任意のコマンドが実行されない状態に修正（[#268](https://github.com/vektor-inc/vk-terminals/issues/268)）
+
 ## 1.48.0
 
 - [ 機能追加 ] 設定パネルの「外出先から確認」に、API サーバーが実際に待ち受けているアドレスと起動エラーを表示する機能を追加（[#261](https://github.com/vektor-inc/vk-terminals/issues/261)）

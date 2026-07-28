@@ -15,6 +15,19 @@
 // @param {string} pattern  検証に使う正規表現文字列（descriptor 由来）。
 // @param {*} rawValue      入力欄の生値（通常は input.value）。
 // @return {boolean}        検証を通れば true。
+//
+// Node（require）とブラウザ（<script>）の両方から使える UMD 形式（issue #268）。
+// renderer は nodeIntegration 無効のため require が無く、index.html が <script> で読む。
+// ※ 差分を追いやすいよう、factory の中身は元のインデントのままにしている。
+(function (root, factory) {
+  const api = factory();
+  if (typeof module === 'object' && module.exports) {
+    module.exports = api;
+  } else {
+    root.VKSettingsValidation = api;
+  }
+})(typeof self !== 'undefined' ? self : this, function () {
+
 function isPatternValid(pattern, rawValue) {
   // pattern を持たないフィールドは検証対象外。
   if (typeof pattern !== 'string' || pattern === '') return true;
@@ -40,6 +53,7 @@ function isPatternValid(pattern, rawValue) {
   return re.test(value);
 }
 
-module.exports = {
+return {
   isPatternValid,
 };
+});

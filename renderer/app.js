@@ -1972,7 +1972,13 @@ function openCloseConfirmDialog(paneId) {
   };
   unregisterEscapeLayer = escapeLayers.register(cleanup);
 
-  overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) cleanup(); });
+  overlay.addEventListener('mousedown', (e) => {
+    if (e.target !== overlay) return;
+    // 削除済み overlay への既定のフォーカス移動で、cleanup() の復帰先が
+    // body に上書きされないよう、背景クリックの既定動作を先に止める。
+    e.preventDefault();
+    cleanup();
+  });
   cancelBtn.addEventListener('click', cleanup);
   closeBtn.addEventListener('click', () => {
     cleanup();
@@ -3636,7 +3642,13 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
   setFailureCleanup(close);
   unregisterEscapeLayer = escapeLayers.register(close);
 
-  overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) close(); });
+  overlay.addEventListener('mousedown', (e) => {
+    if (e.target !== overlay) return;
+    // 削除済み overlay への既定のフォーカス移動で、close() の復帰先が
+    // body に上書きされないよう、背景クリックの既定動作を先に止める。
+    e.preventDefault();
+    close();
+  });
   modal.querySelector('.settings-close').addEventListener('click', close);
 
   // 設定項目が無い環境ではフォーム関連の配線は不要（閉じるだけ）。

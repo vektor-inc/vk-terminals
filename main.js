@@ -905,7 +905,7 @@ function loadSettingsDescriptor() {
       if (isValidSettingsDescriptor(d)) {
         return d;
       }
-      console.error(`${LOG_PREFIX} Invalid settings descriptor (unresolved targetPath/groups): ${p}`);
+      console.error(`${LOG_PREFIX} Invalid settings descriptor (unresolved targetPath / duplicate or unsafe key): ${p}`);
     } catch (e) {
       console.error(`${LOG_PREFIX} Failed to parse settings descriptor: ${p}`, e);
     }

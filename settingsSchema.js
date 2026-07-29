@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { hasUnsafeKeySegment } = require('./settingsTargets');
 
 const SETTINGS_SCHEMA_PATH = path.join(__dirname, 'settings-schema.json');
 const DEFAULT_SCHEMA_TITLE = 'VK Terminals 設定';
@@ -21,7 +22,14 @@ function validateSettingsSchema(schema) {
 
     for (const field of group.fields) {
       if (!field || typeof field !== 'object' || Array.isArray(field)) return false;
-      if (typeof field.key !== 'string' || field.key.trim() === '') return false;
+      // 危険なキーの判定を settingsTargets.js と共用し、判定ロジックの二重管理を避ける。
+      // hasUnsafeKeySegment は内部で split を呼ぶため、短絡評価を利用して文字列かどうかを
+      // 先に確認する評価順を崩してはならない。
+      if (
+        typeof field.key !== 'string'
+        || field.key.trim() === ''
+        || hasUnsafeKeySegment(field.key)
+      ) return false;
       if (typeof field.label !== 'string' || field.label.trim() === '') return false;
       if (typeof field.type !== 'string' || field.type.trim() === '') return false;
       if (field.options !== undefined && !Array.isArray(field.options)) return false;

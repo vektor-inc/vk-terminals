@@ -160,6 +160,21 @@ test('validateSettingsSchema: visibleWhen 付きフィールドを reject しな
   }), true);
 });
 
+test('validateSettingsSchema: 危険なキーセグメントを含むフィールドは無効', () => {
+  // 汚染経路になる各セグメントが schema 検証の段階ですべて拒否されることを確認する。
+  for (const key of ['__proto__.x', 'constructor.prototype.x', 'prototype.x']) {
+    assert.equal(validateSettingsSchema({
+      groups: [
+        {
+          fields: [
+            { key, label: '危険なキー', type: 'text' },
+          ],
+        },
+      ],
+    }), false, key);
+  }
+});
+
 test('validateSettingsSchema: tabs の型ミスでは schema 全体を reject しない', () => {
   // ここで false を返すと fallback schema（groups: []）に落ち、タブの型ミス 1 つで
   // 設定パネルの項目が全部消えてしまう。tabs の扱いは loadSettingsSchema 側で degrade する。

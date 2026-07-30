@@ -3498,7 +3498,11 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
   const tabGroupsHtml = useTabbedSettings
     ? groupedTabs.map(({ groups }, tabIndex) => groups.map((group) => renderGroupHtml(group, {
       tabIndex,
-      omitLegend: groups.length === 1,
+      // グループが 1 つだけのタブでは legend がタブのラベルと重複して見えるため省くが、
+      // 欄が 1 つも無いグループでは残す。legend も欄も無いと枠線と余白だけの空箱になり、
+      // 案内文（emptyHtml）も出ない・移動ボタンも残るので、押した人が着地先で
+      // 何も読めない行き止まりになる（issue #275）。
+      omitLegend: groups.length === 1 && Array.isArray(group.fields) && group.fields.length > 0,
     })).join(''))
     : [];
   const settingsTabsHtml = useTabbedSettings ? `<div class="settings-tabs" role="tablist" aria-label="設定カテゴリ">
@@ -3530,8 +3534,9 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
           // 説明コンテンツも設定グループも注記も無い、完全に空のタブだけに空状態を示す。
           // 案内文の役目は「意図せず白紙になった画面で、何も見落としていないと伝える」ことなので、
           // note に代替手段（「この機能は環境変数で設定します」など）を書いたタブでは出さない。
-          // 出すとその文章を打ち消してしまう。fields が空でもグループがあれば legend を残す
-          // 既存挙動は変えない。
+          // 出すとその文章を打ち消してしまう。fields が空でもグループがあれば、グループ名
+          // （legend）を読める状態で残すので空タブ扱いにしない（グループが 1 つだけのときも
+          // legend を省かないのは上の omitLegend のとおり）。
           // ※ この条件は settingsTabs.js の「移動先が空の tabLink を落とす」判定と対。片方だけ
           //   変えると行き止まりが残るか、内容があるのに移動ボタンが出なくなる（issue #275）。
           const emptyHtml = !contentHtml && groups.length === 0 && !tabNote

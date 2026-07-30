@@ -843,7 +843,8 @@ test('normalizeSettingsTabs: 表示できる内容があるタブを指す tabLi
     ],
     groups: [
       { label: '基本', tab: 'fields', fields: [{ key: 'host', label: '接続先', type: 'text' }] },
-      // 元から fields が空のグループ。legend だけの枠が見えるので空タブ扱いにしない。
+      // 元から fields が空のグループ。描画側はこのグループの legend（グループ名）を
+      // 残すため、開いた人には読めるものがある。よって空タブ扱いにしない。
       { label: '未実装の設定', tab: 'emptyGroup', fields: [] },
     ],
   });
@@ -959,9 +960,11 @@ test('normalizeSettingsTabs: 落とした tabLink を 1 行の警告にまとめ
   }
 
   // 連鎖で落ちた分（hop → empty / guide → hop）も同じ 1 行にまとめる。
+  // 各件は「起点タブ・ボタンのラベル・移動先」の順。ラベルを括弧に入れると移動先タブの
+  // ラベルと読み違えられ、設定ファイル内の該当箇所を探せなくなるため、この順を固定する。
   assert.deepEqual(warnings, [[
     '[settings] 移動先のタブに表示できる内容が無いため tabLink を表示しませんでした:',
-    'hop → empty（中身なしへ）, guide → empty（中身なしへ移動）, guide → hop（経由タブへ移動）',
+    'hop タブの「中身なしへ」→ empty, guide タブの「中身なしへ移動」→ empty, guide タブの「経由タブへ移動」→ hop',
   ]]);
 });
 

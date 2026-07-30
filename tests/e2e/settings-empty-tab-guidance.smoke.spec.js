@@ -113,7 +113,9 @@ function matrixDescriptor() {
           { key: 'port', label: 'ポート', type: 'text' },
         ],
       },
-      // 元から fields が空のグループ。既存の見た目（legend だけの枠）を変えない対象。
+      // 元から fields が空のグループ。このタブのグループはこれ 1 つだけなので、legend を
+      // 省く条件（グループが 1 つ）に当たるが、欄が無いので省かず legend を出す。
+      // 省くと枠線と余白だけの空箱になり、案内文も出ないまま行き止まりが残る（issue #275）。
       { label: '未実装の設定', tab: 'emptyGroup', fields: [] },
       // 重複除去で空になるグループ。host は fields タブ側が先に描画されるので落ちる。
       {
@@ -173,9 +175,12 @@ test.describe.serial('重複除去で空になったタブの案内と導線（P
     await expect(win.locator(`${PANEL(MATRIX_TAB.onlyDesc)} .settings-content`)).toBeVisible();
     await expect(win.locator(`${PANEL(MATRIX_TAB.onlyDesc)} .settings-empty`)).toHaveCount(0);
 
-    // 項目が空のグループがあるタブには出さない（legend だけの枠を出す既存の見た目を保つ）。
+    // 項目が空のグループがあるタブには出さない。案内文の代わりにグループ名（legend）が
+    // 読めるため。legend まで消えると枠線と余白だけの空箱になり、案内文も出ないので
+    // 行き止まりになる。個数だけでなく legend の文字列も固定する（issue #275）。
     await win.locator(TAB(MATRIX_TAB.emptyGroup)).click();
     await expect(win.locator(`${PANEL(MATRIX_TAB.emptyGroup)} fieldset.settings-group`)).toHaveCount(1);
+    await expect(win.locator(`${PANEL(MATRIX_TAB.emptyGroup)} fieldset.settings-group legend`)).toHaveText('未実装の設定');
     await expect(win.locator(`${PANEL(MATRIX_TAB.emptyGroup)} input`)).toHaveCount(0);
     await expect(win.locator(`${PANEL(MATRIX_TAB.emptyGroup)} .settings-empty`)).toHaveCount(0);
 

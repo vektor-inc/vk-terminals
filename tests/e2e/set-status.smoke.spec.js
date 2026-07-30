@@ -75,15 +75,18 @@ test('POST /api/set-status が renderer の waiting 表示へ反映される', a
   // 実ユーザーの ~/.vk-terminals/config.json（Tailscale IP 等）に依存しないようにする。
   // このテストは HTTP API と renderer 反映の統合パスだけを見るため、Claude CLI の有無に
   // 依存させない素のシェル（--no-claude）で起動する。いずれもヘルパーが行う。
-  const { app, win, tmpRoot } = await launchApp({
-    port,
-    // 元は共通の 'vk-terminals-e2e-' だったが、失敗時に取り残しの出どころが分かるよう
-    // spec 名を含む接頭辞にしている。
-    prefix: 'vk-terminals-e2e-set-status-',
-    env: { VK_TERMINALS_SETTINGS: descriptorPath },
-  });
-
+  // 起動が失敗しても descriptorRoot を消せるよう、launchApp は try の中で呼ぶ。
+  let launched;
   try {
+    launched = await launchApp({
+      port,
+      // 元は共通の 'vk-terminals-e2e-' だったが、失敗時に取り残しの出どころが分かるよう
+      // spec 名を含む接頭辞にしている。
+      prefix: 'vk-terminals-e2e-set-status-',
+      env: { VK_TERMINALS_SETTINGS: descriptorPath },
+    });
+    const { win } = launched;
+
     await waitForPtyRegistration(port);
 
     const pane = win.locator('.pane').first();
@@ -101,7 +104,7 @@ test('POST /api/set-status が renderer の waiting 表示へ反映される', a
     await expect(status).not.toHaveAttribute('data-status', 'waiting');
     await expect(pane).not.toHaveClass(/\bwaiting\b/);
   } finally {
-    await closeApp({ app, tmpRoot });
+    if (launched) await closeApp(launched);
     fs.rmSync(descriptorRoot, { recursive: true, force: true });
   }
 });

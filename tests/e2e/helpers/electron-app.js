@@ -83,6 +83,12 @@ async function launchApp({ port, prefix, env = {}, config = {} }) {
     const resolvedConfig = typeof config === 'function'
       ? config({ tmpRoot, tmpHome, configPath })
       : config;
+    // 戻り値がプレーンオブジェクトでなければここで落とす。null / undefined は展開しても
+    // 無視されるだけなので、spec が意図した設定が入らないまま既定 config で静かに通り
+    // （検証が黙って弱くなり気づけない）、文字列なら添字がキーとして混入する。
+    if (!resolvedConfig || typeof resolvedConfig !== 'object' || Array.isArray(resolvedConfig)) {
+      throw new Error('launchApp: config must be a plain object (or a function returning one)');
+    }
     fs.writeFileSync(configPath, JSON.stringify({
       apiHost: '127.0.0.1',
       initialCommand: '',
@@ -107,9 +113,12 @@ async function launchApp({ port, prefix, env = {}, config = {} }) {
         //     'VK Terminals' を使う（未設定と同じ）。
         //   - main.js の settingsDescriptorPath(): VK_TERMINALS_SETTINGS が空白のみなら
         //     null（指定なし）を返し、組み込みディスクリプタへフォールバックする（未設定と同じ）。
+        //   - utils/instanceId.js の resolveInstanceId(): VK_TERMINALS_INSTANCE_ID が空白のみなら
+        //     null を返し、/api/health に instanceId を含めない（未設定と同じ）。
         // このため env から変数ごと消す口（unset）は設けていない。
         VK_TERMINALS_APP_TITLE: '',
         VK_TERMINALS_SETTINGS: '',
+        VK_TERMINALS_INSTANCE_ID: '',
         ...env,
         // 隔離用のキーは spec が渡す env の後に置く。ここが spec に負けると
         // 実 HOME を読み書きしたり他の spec とポートを共有したりしてしまうため、

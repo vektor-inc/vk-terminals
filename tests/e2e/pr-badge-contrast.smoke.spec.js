@@ -1,8 +1,6 @@
-const { test, expect, _electron } = require('@playwright/test');
-const fs = require('fs');
-const net = require('net');
-const os = require('os');
-const path = require('path');
+const { test, expect } = require('@playwright/test');
+// 起動〜初期描画待ちは共通ヘルパーへ集約している（issue #263 / #269）。
+const { closeApp, getFreePort, launchApp } = require('./helpers/electron-app');
 
 // issue #123 / PR #124: ペインタイトル行（背景 #101015）の PR バッジ配色を
 // 暗背景で WCAG 2.1 AA を満たすよう再調整した件の実描画確認。
@@ -12,24 +10,6 @@ const path = require('path');
 //   - open  hover: color #56d364 / border #56d364 / bg rgba(63,185,80,0.25)
 //   - merged base: color #a371f7 / border #a371f7 / bg rgba(130,80,223,0.15)
 //   - merged hover: color #b083f8 / border #b083f8 / bg rgba(130,80,223,0.25)
-
-const repoRoot = path.resolve(__dirname, '..', '..');
-
-async function getFreePort() {
-  return await new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.on('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address();
-      const port = typeof address === 'object' && address ? address.port : null;
-      server.close((err) => {
-        if (err) return reject(err);
-        if (!port) return reject(new Error('failed to allocate a free port'));
-        resolve(port);
-      });
-    });
-  });
-}
 
 async function postSetTitle(port, payload) {
   const response = await fetch(`http://127.0.0.1:${port}/api/set-title`, {
@@ -84,24 +64,14 @@ async function expectBadgeStyle(badge, expected, label) {
 
 test('PR バッジの再調整後の色が renderer に想定どおり描画される', async () => {
   const port = await getFreePort();
-  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-pr-contrast-'));
-  const tmpHome = path.join(tmpRoot, 'home');
-  const configDir = path.join(tmpHome, '.vk-terminals');
-  const configPath = path.join(configDir, 'config.json');
-  let app;
-
-  fs.mkdirSync(configDir, { recursive: true });
-  fs.writeFileSync(configPath, JSON.stringify({
-    apiHost: '127.0.0.1', initialCommand: '', agentroom: false, additionalPanes: [],
-  }), 'utf8');
+  // 実ユーザーの ~/.vk-terminals/config.json に依存しない一時 HOME の用意と、
+  // 素のシェル（--no-claude）での起動はヘルパーに任せる。
+  const { app, win, tmpRoot } = await launchApp({
+    port,
+    prefix: 'vk-terminals-e2e-pr-contrast-',
+  });
 
   try {
-    app = await _electron.launch({
-      args: ['.', '--no-claude'],
-      cwd: repoRoot,
-      env: { ...process.env, HOME: tmpHome, USERPROFILE: tmpHome, VK_TERMINALS_API_PORT: String(port) },
-    });
-    const win = await app.firstWindow();
     await waitForPtyRegistration(port);
 
     const prUrl = `http://127.0.0.1:${port}/?pr=123`;
@@ -144,7 +114,6 @@ test('PR バッジの再調整後の色が renderer に想定どおり描画さ�
       background: 'rgba(130, 80, 223, 0.25)',
     }, 'merged hover');
   } finally {
-    if (app) await app.close();
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    await closeApp({ app, tmpRoot });
   }
 });

@@ -1,8 +1,6 @@
-const { test, expect, _electron, chromium } = require('@playwright/test');
-const fs = require('fs');
-const net = require('net');
-const os = require('os');
-const path = require('path');
+const { test, expect, chromium } = require('@playwright/test');
+// 起動〜初期描画待ちは共通ヘルパーへ集約している（issue #263 / #269）。
+const { closeApp, getFreePort, launchApp } = require('./helpers/electron-app');
 
 // PR #221 / issue #217: モバイル版の「ペインを追加」ボタンの検証。
 //
@@ -15,25 +13,6 @@ const path = require('path');
 // 空きポートを指定 → chromium で mobile.html を HTTP で開いて実描画・実操作を検証する。
 // config で newPaneAutoLaunchClaude:false としているため、ボタン押下（useDefaults:true）
 // でも新ペインは素のシェル（noClaude:true）で開き、claude 実バイナリは起動しない。
-
-const repoRoot = path.resolve(__dirname, '..', '..');
-
-// OS に空きポートを割り当てさせ、取得後に閉じて Electron 側で再利用する。
-async function getFreePort() {
-  return await new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.on('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address();
-      const port = typeof address === 'object' && address ? address.port : null;
-      server.close((err) => {
-        if (err) { reject(err); return; }
-        if (!port) { reject(new Error('failed to allocate a free port')); return; }
-        resolve(port);
-      });
-    });
-  });
-}
 
 // /api/states を node 側から直接取得してペイン数を数える（ページのポーリングとは別経路）。
 async function getStates(port) {
@@ -68,35 +47,13 @@ async function waitForPaneCount(port, expectedCount, timeoutMs = 20_000) {
 
 // 一時 HOME を用意して Electron を素のシェル（--no-claude）で起動する。
 // newPaneAutoLaunchClaude:false により、ボタン経由の新ペインも素のシェルで開く。
-async function launchApp(port) {
-  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-addpane-'));
-  const tmpHome = path.join(tmpRoot, 'home');
-  const configDir = path.join(tmpHome, '.vk-terminals');
-  fs.mkdirSync(configDir, { recursive: true });
-  fs.writeFileSync(path.join(configDir, 'config.json'), JSON.stringify({
-    apiHost: '127.0.0.1',
-    initialCommand: '',
-    agentroom: false,
-    additionalPanes: [],
-    newPaneAutoLaunchClaude: false,
-  }), 'utf8');
-
-  // 親環境（vk-orchestrator 等）の VK_TERMINALS_SETTINGS が漏れ込まないよう明示的に外す。
-  const childEnv = {
-    ...process.env,
-    HOME: tmpHome,
-    USERPROFILE: tmpHome,
-    VK_TERMINALS_API_PORT: String(port),
-  };
-  delete childEnv.VK_TERMINALS_SETTINGS;
-
-  const app = await _electron.launch({
-    args: ['.', '--no-claude'],
-    cwd: repoRoot,
-    env: childEnv,
+// 親環境（vk-orchestrator 等）の VK_TERMINALS_SETTINGS の中和はヘルパーが既定で行う。
+async function launchAddPaneApp(port) {
+  return await launchApp({
+    port,
+    prefix: 'vk-terminals-e2e-addpane-',
+    config: { newPaneAutoLaunchClaude: false },
   });
-  await app.firstWindow();
-  return { app, tmpRoot };
 }
 
 test.describe('モバイル版「ペインを追加」ボタン（issue #217 / PR #221）', () => {
@@ -104,7 +61,7 @@ test.describe('モバイル版「ペインを追加」ボタン（issue #217 / P
   // #list の直後の兄弟として #add-pane-btn が表示され、ラベル・アイコンが正しいこと。
   test('#list の直後に「ペインを追加」ボタンが表示される', async () => {
     const port = await getFreePort();
-    const { app, tmpRoot } = await launchApp(port);
+    const { app, tmpRoot } = await launchAddPaneApp(port);
     const browser = await chromium.launch();
     try {
       await waitForPaneCount(port, 1);
@@ -132,8 +89,7 @@ test.describe('モバイル版「ペインを追加」ボタン（issue #217 / P
       expect(isNextSibling).toBe(true);
     } finally {
       await browser.close();
-      if (app) await app.close();
-      fs.rmSync(tmpRoot, { recursive: true, force: true });
+      await closeApp({ app, tmpRoot });
     }
   });
 
@@ -142,7 +98,7 @@ test.describe('モバイル版「ペインを追加」ボタン（issue #217 / P
   // #list の新カードが出現する。
   test('タップするとペインが1つ増える', async () => {
     const port = await getFreePort();
-    const { app, tmpRoot } = await launchApp(port);
+    const { app, tmpRoot } = await launchAddPaneApp(port);
     const browser = await chromium.launch();
     try {
       await waitForPaneCount(port, 1);
@@ -169,8 +125,7 @@ test.describe('モバイル版「ペインを追加」ボタン（issue #217 / P
       await expect(page.locator('#add-pane-btn')).not.toHaveAttribute('aria-busy', 'true');
     } finally {
       await browser.close();
-      if (app) await app.close();
-      fs.rmSync(tmpRoot, { recursive: true, force: true });
+      await closeApp({ app, tmpRoot });
     }
   });
 
@@ -180,7 +135,7 @@ test.describe('モバイル版「ペインを追加」ボタン（issue #217 / P
   // 応答後は解除されて「ペインを追加」に戻る。
   test('送信中はボタンが disabled + aria-busy になり「追加中…」表示、完了後に解除される', async () => {
     const port = await getFreePort();
-    const { app, tmpRoot } = await launchApp(port);
+    const { app, tmpRoot } = await launchAddPaneApp(port);
     const browser = await chromium.launch();
     try {
       await waitForPaneCount(port, 1);
@@ -218,8 +173,7 @@ test.describe('モバイル版「ペインを追加」ボタン（issue #217 / P
       await expect(btn.locator('.add-pane-icon')).toBeVisible();
     } finally {
       await browser.close();
-      if (app) await app.close();
-      fs.rmSync(tmpRoot, { recursive: true, force: true });
+      await closeApp({ app, tmpRoot });
     }
   });
 
@@ -228,7 +182,7 @@ test.describe('モバイル版「ペインを追加」ボタン（issue #217 / P
   // 表示時でも #add-pane-btn が残ること（再びペインを開く唯一の導線）を確認する。
   test('ペイン0件の空状態でもボタンが表示される', async () => {
     const port = await getFreePort();
-    const { app, tmpRoot } = await launchApp(port);
+    const { app, tmpRoot } = await launchAddPaneApp(port);
     const browser = await chromium.launch();
     try {
       await waitForPaneCount(port, 1);
@@ -256,8 +210,7 @@ test.describe('モバイル版「ペインを追加」ボタン（issue #217 / P
       await expect(page.locator('#add-pane-btn .add-pane-label')).toHaveText('ペインを追加');
     } finally {
       await browser.close();
-      if (app) await app.close();
-      fs.rmSync(tmpRoot, { recursive: true, force: true });
+      await closeApp({ app, tmpRoot });
     }
   });
 });

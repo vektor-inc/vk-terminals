@@ -1,8 +1,6 @@
-const { test, expect, _electron } = require('@playwright/test');
-const fs = require('fs');
-const net = require('net');
-const os = require('os');
-const path = require('path');
+const { test, expect } = require('@playwright/test');
+// 起動〜初期描画待ちは共通ヘルパーへ集約している（issue #263 / #269）。
+const { closeApp, getFreePort, launchApp } = require('./helpers/electron-app');
 
 // issue #184: 誤クローズ防止。ペインの ✕ ボタンで閉じる時に、config の
 // `confirmClose`（never / busy / always・既定 busy）と status に応じて
@@ -11,26 +9,6 @@ const path = require('path');
 //   - always: idle でも確認あり
 //   - never: waiting でも確認なし
 // HTTP API 経由（force）は従来どおり確認なし（close-pane.smoke.spec.js が担保）。
-
-const repoRoot = path.resolve(__dirname, '..', '..');
-
-async function getFreePort() {
-  // OS に空きポートを割り当てさせ、取得後に閉じて Electron 側で再利用する。
-  // 既定ポート 13847 を避け、開発中の通常起動インスタンスと衝突させない。
-  return await new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.on('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address();
-      const port = typeof address === 'object' && address ? address.port : null;
-      server.close((err) => {
-        if (err) { reject(err); return; }
-        if (!port) { reject(new Error('failed to allocate a free port')); return; }
-        resolve(port);
-      });
-    });
-  });
-}
 
 // GET /api/states を叩き、terminals（paneId -> state）を返す。
 async function getStates(port) {
@@ -97,31 +75,12 @@ async function postJson(port, pathname, payload) {
 }
 
 // 一時 HOME に confirmClose を含む config を書き、素のシェル（--no-claude）で起動する。
-async function launchApp(port, configOverrides = {}) {
-  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-confirm-'));
-  const tmpHome = path.join(tmpRoot, 'home');
-  const configDir = path.join(tmpHome, '.vk-terminals');
-  fs.mkdirSync(configDir, { recursive: true });
-  fs.writeFileSync(path.join(configDir, 'config.json'), JSON.stringify({
-    apiHost: '127.0.0.1',
-    initialCommand: '',
-    agentroom: false,
-    additionalPanes: [],
-    ...configOverrides,
-  }), 'utf8');
-
-  const app = await _electron.launch({
-    args: ['.', '--no-claude'],
-    cwd: repoRoot,
-    env: {
-      ...process.env,
-      HOME: tmpHome,
-      USERPROFILE: tmpHome,
-      VK_TERMINALS_API_PORT: String(port),
-    },
+async function launchConfirmApp(port, configOverrides = {}) {
+  return await launchApp({
+    port,
+    prefix: 'vk-terminals-e2e-confirm-',
+    config: configOverrides,
   });
-  const win = await app.firstWindow();
-  return { app, win, tmpRoot };
 }
 
 // 終了対象の追加ペインを作り、waiting にして paneId を返す共通手順。
@@ -138,7 +97,7 @@ async function createWaitingPane(port) {
 
 test('confirmClose 既定（busy）: waiting のペインは確認あり・idle は確認なし', async () => {
   const port = await getFreePort();
-  const { app, win, tmpRoot } = await launchApp(port); // confirmClose 未指定 = 既定 busy
+  const { app, win, tmpRoot } = await launchConfirmApp(port); // confirmClose 未指定 = 既定 busy
   try {
     await waitForTermId(port, '1', true);
     const { termId, paneId } = await createWaitingPane(port);
@@ -186,14 +145,13 @@ test('confirmClose 既定（busy）: waiting のペインは確認あり・idle 
     // 最初のペイン（"1"）は一連の操作後も残っていること。
     expect(termIdsOf(await getStates(port))).toContain('1');
   } finally {
-    if (app) await app.close();
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    await closeApp({ app, tmpRoot });
   }
 });
 
 test('confirmClose: always は idle でも確認あり', async () => {
   const port = await getFreePort();
-  const { app, win, tmpRoot } = await launchApp(port, { confirmClose: 'always' });
+  const { app, win, tmpRoot } = await launchConfirmApp(port, { confirmClose: 'always' });
   try {
     await waitForTermId(port, '1', true);
     const created = await postJson(port, '/api/new-pane', { noClaude: true });
@@ -208,14 +166,13 @@ test('confirmClose: always は idle でも確認あり', async () => {
     await win.locator('.confirm-close-pane').click();
     await waitForTermId(port, termId, false);
   } finally {
-    if (app) await app.close();
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    await closeApp({ app, tmpRoot });
   }
 });
 
 test('confirmClose: never は waiting でも確認なしで閉じる', async () => {
   const port = await getFreePort();
-  const { app, win, tmpRoot } = await launchApp(port, { confirmClose: 'never' });
+  const { app, win, tmpRoot } = await launchConfirmApp(port, { confirmClose: 'never' });
   try {
     await waitForTermId(port, '1', true);
     const { termId, paneId } = await createWaitingPane(port);
@@ -224,7 +181,6 @@ test('confirmClose: never は waiting でも確認なしで閉じる', async () 
     await expect(win.locator('.confirm-overlay')).toHaveCount(0);
     await waitForTermId(port, termId, false);
   } finally {
-    if (app) await app.close();
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    await closeApp({ app, tmpRoot });
   }
 });

@@ -1,8 +1,9 @@
-const { test, expect, _electron } = require('@playwright/test');
+const { test, expect } = require('@playwright/test');
 const fs = require('fs');
-const net = require('net');
 const os = require('os');
 const path = require('path');
+// 起動〜初期描画待ちは共通ヘルパーへ集約している（issue #263 / #269）。
+const { getFreePort, launchApp } = require('./helpers/electron-app');
 
 // PR #235 / issue #229: サイドバー／モバイルのタスク UI を、外部（vk-orchestrator）が書き出す
 // 宣言 JSON（tasks-widget.json）を読んで描画する汎用ウィジェットビューアへ刷新したことの
@@ -13,25 +14,6 @@ const path = require('path');
 // 既存の旧タスク仕様スペック（tasks-sidebar / tasks-status-actions / mobile-tasks / sidebar-task-link 等）は
 // 旧 tasksFile（tasks-view.json）とタスク語彙にべったり依存しており、この刷新で陳腐化している。
 // 本スペックは「新実装が正しく動くこと」を担保するために新規追加した（麗美 / e2e 担当）。
-
-const repoRoot = path.resolve(__dirname, '..', '..');
-
-async function getFreePort() {
-  // OS に空きポートを割り当てさせ、取得後に閉じて Electron 側で再利用する。
-  return await new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.on('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address();
-      const port = typeof address === 'object' && address ? address.port : null;
-      server.close((err) => {
-        if (err) { reject(err); return; }
-        if (!port) { reject(new Error('failed to allocate a free port')); return; }
-        resolve(port);
-      });
-    });
-  });
-}
 
 function writeJson(filePath, value) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -125,50 +107,34 @@ function buildWidget(overrides = {}) {
   };
 }
 
-async function launchApp(port, config = {}) {
-  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-widget-decl-'));
-  const tmpHome = path.join(tmpRoot, 'home');
-  const configDir = path.join(tmpHome, '.vk-terminals');
-  const configPath = path.join(configDir, 'config.json');
-  fs.mkdirSync(configDir, { recursive: true });
-  writeJson(configPath, {
-    apiHost: '127.0.0.1',
-    initialCommand: '',
-    agentroom: false,
-    additionalPanes: [],
-    ...config,
-  });
-
-  const app = await _electron.launch({
-    args: ['.', '--no-claude'],
-    cwd: repoRoot,
-    env: {
-      ...process.env,
-      HOME: tmpHome,
-      USERPROFILE: tmpHome,
-      VK_TERMINALS_API_PORT: String(port),
-    },
-  });
-  const win = await app.firstWindow();
-  return { app, win, tmpRoot };
+async function launchWidgetApp(port, config = {}) {
+  return await launchApp({ port, prefix: 'vk-terminals-e2e-widget-decl-', config });
 }
 
-async function closeApp(app) {
-  if (!app) return;
-  const proc = app.process();
-  const closePromise = app.close().then(() => true).catch(() => true);
-  const closed = await Promise.race([
-    closePromise,
-    new Promise((resolve) => setTimeout(() => resolve(false), 5000)),
-  ]);
-  if (!closed && proc && !proc.killed) {
-    proc.kill('SIGKILL');
-  }
-  if (!closed) {
-    await Promise.race([
+// このスペックは共通ヘルパーの closeApp を使わず、独自の強制終了付き後始末を使う。
+// app.close() が返ってこないケース（widget watcher を抱えた状態での終了）に備えて
+// 5 秒で SIGKILL へ切り替える措置を PR #249 から引き継いでいるため。
+// 一時ディレクトリの削除は close の成否に関わらず finally で必ず行う。
+async function closeAppForcefully({ app, tmpRoot }) {
+  try {
+    if (!app) return;
+    const proc = app.process();
+    const closePromise = app.close().then(() => true).catch(() => true);
+    const closed = await Promise.race([
       closePromise,
-      new Promise((resolve) => setTimeout(resolve, 1000)),
+      new Promise((resolve) => setTimeout(() => resolve(false), 5000)),
     ]);
+    if (!closed && proc && !proc.killed) {
+      proc.kill('SIGKILL');
+    }
+    if (!closed) {
+      await Promise.race([
+        closePromise,
+        new Promise((resolve) => setTimeout(resolve, 1000)),
+      ]);
+    }
+  } finally {
+    if (tmpRoot) fs.rmSync(tmpRoot, { recursive: true, force: true });
   }
 }
 
@@ -179,7 +145,7 @@ test('サイドバー: widgetFile の宣言でグループ／アイテム／バ�
   const widgetFile = path.join(dataRoot, 'tasks-widget.json');
   writeJson(widgetFile, buildWidget());
 
-  const { app, win, tmpRoot } = await launchApp(port, { widgetFile });
+  const { app, win, tmpRoot } = await launchWidgetApp(port, { widgetFile });
   try {
     const section = win.locator('#task-list');
     await expect(section).toBeVisible({ timeout: 10_000 });
@@ -246,8 +212,7 @@ test('サイドバー: widgetFile の宣言でグループ／アイテム／バ�
     expect(await doneOption.evaluate((o) => o.disabled)).toBe(true);
     await expect(doneOption).toHaveText('完了（PR のマージが必要です）');
   } finally {
-    await closeApp(app);
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    await closeAppForcefully({ app, tmpRoot });
     fs.rmSync(dataRoot, { recursive: true, force: true });
   }
 });
@@ -260,7 +225,7 @@ test('サイドバー: 編集パネルの保存で確認後 commands.jsonl に a
   const commandsPath = path.join(dataRoot, 'commands.jsonl');
   writeJson(widgetFile, buildWidget());
 
-  const { app, win, tmpRoot } = await launchApp(port, { widgetFile, commandsPath });
+  const { app, win, tmpRoot } = await launchWidgetApp(port, { widgetFile, commandsPath });
   try {
     const section = win.locator('#task-list');
     await expect(section).toBeVisible({ timeout: 10_000 });
@@ -305,8 +270,7 @@ test('サイドバー: 編集パネルの保存で確認後 commands.jsonl に a
     const [command] = readCommands(commandsPath);
     expectApplyBatchCommand(command);
   } finally {
-    await closeApp(app);
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    await closeAppForcefully({ app, tmpRoot });
     fs.rmSync(dataRoot, { recursive: true, force: true });
   }
 });
@@ -319,7 +283,7 @@ test('サイドバー: 保存確認をキャンセルすると commands.jsonl �
   const commandsPath = path.join(dataRoot, 'commands.jsonl');
   writeJson(widgetFile, buildWidget());
 
-  const { app, win, tmpRoot } = await launchApp(port, { widgetFile, commandsPath });
+  const { app, win, tmpRoot } = await launchWidgetApp(port, { widgetFile, commandsPath });
   try {
     const section = win.locator('#task-list');
     await expect(section).toBeVisible({ timeout: 10_000 });
@@ -355,8 +319,7 @@ test('サイドバー: 保存確認をキャンセルすると commands.jsonl �
     await expect(item.locator('.task-item-pending')).toHaveCount(0);
     expect(readCommands(commandsPath)).toHaveLength(0);
   } finally {
-    await closeApp(app);
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    await closeAppForcefully({ app, tmpRoot });
     fs.rmSync(dataRoot, { recursive: true, force: true });
   }
 });
@@ -380,7 +343,7 @@ test('サイドバー: 担当者フィルタで自分のみ／全員を切り替
   });
   writeJson(widgetFile, widget);
 
-  const { app, win, tmpRoot } = await launchApp(port, { widgetFile });
+  const { app, win, tmpRoot } = await launchWidgetApp(port, { widgetFile });
   try {
     const section = win.locator('#task-list');
     await expect(section).toBeVisible({ timeout: 10_000 });
@@ -403,8 +366,7 @@ test('サイドバー: 担当者フィルタで自分のみ／全員を切り替
     await expect(section).toContainText('他人担当の実行中タスク');
     await expect(section).not.toContainText('宣言ウィジェットの実行中タスク');
   } finally {
-    await closeApp(app);
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    await closeAppForcefully({ app, tmpRoot });
     fs.rmSync(dataRoot, { recursive: true, force: true });
   }
 });
@@ -417,7 +379,7 @@ test('サイドバー: 旧 tasksFile のみ設定時はタスク語彙を復活�
   // 旧フォーマットのファイルが存在するだけで legacyNotice が立つ（中身の語彙は描画しない）。
   writeJson(tasksFile, { updatedAt: freshDate(), tasks: [{ id: 1, title: '旧タスク', status: 'ready' }] });
 
-  const { app, win, tmpRoot } = await launchApp(port, { tasksFile });
+  const { app, win, tmpRoot } = await launchWidgetApp(port, { tasksFile });
   try {
     await win.waitForSelector('#task-list', { state: 'attached' });
     const section = win.locator('#task-list');
@@ -430,8 +392,7 @@ test('サイドバー: 旧 tasksFile のみ設定時はタスク語彙を復活�
     await expect(section).not.toContainText('旧タスク');
     await expect(section.locator('.task-item')).toHaveCount(0);
   } finally {
-    await closeApp(app);
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    await closeAppForcefully({ app, tmpRoot });
     fs.rmSync(dataRoot, { recursive: true, force: true });
   }
 });
@@ -444,7 +405,7 @@ test('モバイル: /api/widgets の宣言を描画し、ステータス変更�
   const commandsPath = path.join(dataRoot, 'commands.jsonl');
   writeJson(widgetFile, buildWidget());
 
-  const { app, tmpRoot } = await launchApp(port, { widgetFile, commandsPath });
+  const { app, tmpRoot } = await launchWidgetApp(port, { widgetFile, commandsPath });
   try {
     const base = `http://127.0.0.1:${port}`;
 
@@ -510,8 +471,7 @@ test('モバイル: /api/widgets の宣言を描画し、ステータス変更�
     });
     expect(csrf.status).toBe(403);
   } finally {
-    await closeApp(app);
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    await closeAppForcefully({ app, tmpRoot });
     fs.rmSync(dataRoot, { recursive: true, force: true });
   }
 });
@@ -559,7 +519,7 @@ test('サイドバー: ローカルモード（queue リンク無し／viewer �
   const widgetFile = path.join(dataRoot, 'tasks-widget.json');
   writeJson(widgetFile, buildLocalWidget());
 
-  const { app, win, tmpRoot } = await launchApp(port, { widgetFile });
+  const { app, win, tmpRoot } = await launchWidgetApp(port, { widgetFile });
   try {
     const section = win.locator('#task-list');
     await expect(section).toBeVisible({ timeout: 10_000 });
@@ -572,8 +532,7 @@ test('サイドバー: ローカルモード（queue リンク無し／viewer �
     await expect(section.locator('.task-list-title-text a.task-list-title-link')).toHaveCount(0);
     await expect(section.locator('.task-list-title-text')).toHaveText('タスク');
   } finally {
-    await closeApp(app);
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    await closeAppForcefully({ app, tmpRoot });
     fs.rmSync(dataRoot, { recursive: true, force: true });
   }
 });
@@ -588,7 +547,7 @@ test('サイドバー: GitHub モードで自分に割り当てが無い場合�
   widget.groups[0].items[0].assignee = 'wada';
   writeJson(widgetFile, widget);
 
-  const { app, win, tmpRoot } = await launchApp(port, { widgetFile });
+  const { app, win, tmpRoot } = await launchWidgetApp(port, { widgetFile });
   try {
     const section = win.locator('#task-list');
     await expect(section).toBeVisible({ timeout: 10_000 });
@@ -599,8 +558,7 @@ test('サイドバー: GitHub モードで自分に割り当てが無い場合�
     await expect(section.locator('.task-list-empty')).toHaveText('自分に割り当てられたタスクはありません');
     await expect(section.locator('.task-item[data-id="301"]')).toHaveCount(0);
   } finally {
-    await closeApp(app);
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    await closeAppForcefully({ app, tmpRoot });
     fs.rmSync(dataRoot, { recursive: true, force: true });
   }
 });
@@ -613,15 +571,14 @@ test('サイドバー: コールド起動で widget の updatedAt が古い場�
   // updatedAt を staleThreshold(120s) より十分過去にする。新鮮な view を一度も見ていないので非表示。
   writeJson(widgetFile, buildWidget({ updatedAt: freshDate(-5 * 60 * 1000) }));
 
-  const { app, win, tmpRoot } = await launchApp(port, { widgetFile });
+  const { app, win, tmpRoot } = await launchWidgetApp(port, { widgetFile });
   try {
     await win.waitForSelector('#task-list', { state: 'attached' });
     const section = win.locator('#task-list');
     await expect(section).toBeHidden();
     await expect(section).not.toContainText('宣言ウィジェットの実行中タスク');
   } finally {
-    await closeApp(app);
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    await closeAppForcefully({ app, tmpRoot });
     fs.rmSync(dataRoot, { recursive: true, force: true });
   }
 });
@@ -633,7 +590,7 @@ test('サイドバー: fresh 表示後に widget が stale 化した場合は or
   const widgetFile = path.join(dataRoot, 'tasks-widget.json');
   writeJson(widgetFile, buildWidget());
 
-  const { app, win, tmpRoot } = await launchApp(port, { widgetFile });
+  const { app, win, tmpRoot } = await launchWidgetApp(port, { widgetFile });
   try {
     const section = win.locator('#task-list');
     await expect(section).toBeVisible({ timeout: 10_000 });
@@ -646,8 +603,7 @@ test('サイドバー: fresh 表示後に widget が stale 化した場合は or
     await expect(notice).toHaveText('orchestrator 停止中');
     await expect(notice).toHaveAttribute('data-kind', 'stale');
   } finally {
-    await closeApp(app);
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    await closeAppForcefully({ app, tmpRoot });
     fs.rmSync(dataRoot, { recursive: true, force: true });
   }
 });
@@ -655,14 +611,13 @@ test('サイドバー: fresh 表示後に widget が stale 化した場合は or
 // ─── 11: widgetFile 未設定（かつ legacy も無し）ならセクションを表示しない（旧 tasks-sidebar 相当） ───
 test('サイドバー: widgetFile 未設定かつ legacy 無しならセクションを表示しない', async () => {
   const port = await getFreePort();
-  const { app, win, tmpRoot } = await launchApp(port, {});
+  const { app, win, tmpRoot } = await launchWidgetApp(port, {});
   try {
     await win.waitForSelector('#task-list', { state: 'attached' });
     const section = win.locator('#task-list');
     await expect(section).toBeHidden();
   } finally {
-    await closeApp(app);
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    await closeAppForcefully({ app, tmpRoot });
   }
 });
 
@@ -673,7 +628,7 @@ test('サイドバー: 右端トグルで一覧を折り畳み・展開でき、
   const widgetFile = path.join(dataRoot, 'tasks-widget.json');
   writeJson(widgetFile, buildWidget());
 
-  const { app, win, tmpRoot } = await launchApp(port, { widgetFile });
+  const { app, win, tmpRoot } = await launchWidgetApp(port, { widgetFile });
   try {
     const section = win.locator('#task-list');
     await expect(section).toBeVisible({ timeout: 10_000 });
@@ -697,8 +652,7 @@ test('サイドバー: 右端トグルで一覧を折り畳み・展開でき、
     await expect(toggle).toHaveAttribute('aria-expanded', 'true');
     expect(await win.evaluate(() => localStorage.getItem('vkt.taskListCollapsed'))).toBe('0');
   } finally {
-    await closeApp(app);
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    await closeAppForcefully({ app, tmpRoot });
     fs.rmSync(dataRoot, { recursive: true, force: true });
   }
 });

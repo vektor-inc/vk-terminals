@@ -8,10 +8,17 @@ const { closeApp, getFreePort, launchAppAndWait } = require('./helpers/electron-
 // 案内メッセージを出す／出さないの境界、保存ボタンとフッターの出し分け、未保存
 // インジケータの行き先、移動ボタンの導線、そして保存対象が 1 つも無い極端な定義。
 //
-// 案内メッセージの境界は 4 パターンあり（説明だけのタブ / 項目が空のグループだけの
-// タブ / グループも説明も無いタブ / 重複除去で空になったタブ）、うち出すのは後ろ 2 つ
-// だけ。ここを 1 つのディスクリプタに同居させて、片方を直したらもう片方が崩れる形の
-// 退行を 1 テストで捕まえられるようにする。
+// 案内メッセージの境界は 5 パターンあり（説明だけのタブ / 項目が空のグループだけの
+// タブ / note だけのタブ / グループも説明も無いタブ / 重複除去で空になったタブ）、うち
+// 出すのは後ろ 2 つだけ。ここを 1 つのディスクリプタに同居させて、片方を直したらもう
+// 片方が崩れる形の退行を 1 テストで捕まえられるようにする。
+//
+// ※ issue #275 で導線側の判断が更新されている。「開いても案内メッセージだけが出るタブ」を
+//   指す移動ボタンは、押した先が行き止まりになるため表示しない。PR #272 の時点では同じ
+//   ボタンが案内メッセージへ着地することを確かめていたが、着地したときの安全（案内が読める
+//   ／キーボードで抜け出せる／パネルにフォーカスできる）は残したまま、確認する経路を
+//   「タブバーから直接そのタブを開く」側へ移した。したがって、このファイルで移動ボタンが
+//   表示されないことを確かめているのは #272 の退行ではなく、#275 の仕様である。
 
 // window.VKIpc.invoke（renderer 側の中継レイヤ／issue #268）を差し替えてテスト用の設定ディスクリプタを読み込ませる。
 // 保存は実ファイルへ書かず、渡された payload を window.__savedPayloads に積むだけにする
@@ -53,9 +60,20 @@ async function openSettings(win) {
 
 const EMPTY_MESSAGE = 'このタブに表示できる設定項目はありません。';
 
-// 案内メッセージの 4 パターンを 1 つに詰めたディスクリプタ。
-// タブ 0: 実欄あり / タブ 1: 説明だけ / タブ 2: 項目が空のグループだけ /
-// タブ 3: グループも説明も無い / タブ 4: 重複除去で空になる
+// 案内メッセージの 5 パターンを 1 つに詰めたディスクリプタ。
+// タブの並びは MATRIX_TAB を正とする（タブを増やすと後続の index がずれるため、
+// テスト側は数値ではなく名前で参照する）。
+const MATRIX_TAB = {
+  fields: 0,      // 実欄あり
+  onlyDesc: 1,    // 説明だけ
+  emptyGroup: 2,  // 項目が空のグループだけ
+  noteOnly: 3,    // note だけ
+  noGroup: 4,     // グループも説明も無い
+  deduped: 5,     // 重複除去で空になる
+};
+
+const NOTE_ONLY_TEXT = 'この機能は環境変数で設定します。';
+
 function matrixDescriptor() {
   return {
     available: true,
@@ -71,12 +89,18 @@ function matrixDescriptor() {
         content: [
           { type: 'paragraph', text: '説明だけのタブです。' },
           { type: 'tabLink', label: '接続先の設定へ移動', tab: 'fields', field: 'host' },
-          // 重複除去で欄が消えたタブへ向けた移動ボタン。field は所属タブが食い違うため
-          // 落ち、タブ移動だけが効く（＝押した先が空タブになる導線）。
+          // 重複除去で欄が消えて空になるタブへ向けた移動ボタン。押した先が案内メッセージ
+          // だけの行き止まりになるため、issue #275 でブロックごと表示しないようにした。
           { type: 'tabLink', label: '重複タブへ移動', tab: 'deduped', field: 'host' },
+          // field の所属タブ（fields）が宣言した tab と食い違う移動ボタン。移動先自体は
+          // 空ではないので、field の指定だけを落としてタブ移動は効かせる（#272 の仕様）。
+          { type: 'tabLink', label: '空グループタブへ移動', tab: 'emptyGroup', field: 'host' },
+          // note だけのタブは「表示できる内容がある」ので移動先として有効（ボタンは残る）。
+          { type: 'tabLink', label: 'note だけのタブへ移動', tab: 'noteOnly' },
         ],
       },
       { id: 'emptyGroup', label: '空グループ' },
+      { id: 'noteOnly', label: 'note だけ', note: NOTE_ONLY_TEXT },
       { id: 'noGroup', label: '中身なし' },
       { id: 'deduped', label: '重複' },
     ],
@@ -141,36 +165,41 @@ test.describe.serial('重複除去で空になったタブの案内と導線（P
     await openSettings(win);
 
     // 実欄があるタブには出さない。
-    await expect(win.locator(`${PANEL(0)} .settings-empty`)).toHaveCount(0);
-    await expect(win.locator(`${PANEL(0)} input`)).toHaveCount(2);
+    await expect(win.locator(`${PANEL(MATRIX_TAB.fields)} .settings-empty`)).toHaveCount(0);
+    await expect(win.locator(`${PANEL(MATRIX_TAB.fields)} input`)).toHaveCount(2);
 
     // 説明コンテンツがあるタブには出さない（読むものがあるので空ではない）。
-    await win.locator(TAB(1)).click();
-    await expect(win.locator(`${PANEL(1)} .settings-content`)).toBeVisible();
-    await expect(win.locator(`${PANEL(1)} .settings-empty`)).toHaveCount(0);
+    await win.locator(TAB(MATRIX_TAB.onlyDesc)).click();
+    await expect(win.locator(`${PANEL(MATRIX_TAB.onlyDesc)} .settings-content`)).toBeVisible();
+    await expect(win.locator(`${PANEL(MATRIX_TAB.onlyDesc)} .settings-empty`)).toHaveCount(0);
 
     // 項目が空のグループがあるタブには出さない（legend だけの枠を出す既存の見た目を保つ）。
-    await win.locator(TAB(2)).click();
-    await expect(win.locator(`${PANEL(2)} fieldset.settings-group`)).toHaveCount(1);
-    await expect(win.locator(`${PANEL(2)} input`)).toHaveCount(0);
-    await expect(win.locator(`${PANEL(2)} .settings-empty`)).toHaveCount(0);
+    await win.locator(TAB(MATRIX_TAB.emptyGroup)).click();
+    await expect(win.locator(`${PANEL(MATRIX_TAB.emptyGroup)} fieldset.settings-group`)).toHaveCount(1);
+    await expect(win.locator(`${PANEL(MATRIX_TAB.emptyGroup)} input`)).toHaveCount(0);
+    await expect(win.locator(`${PANEL(MATRIX_TAB.emptyGroup)} .settings-empty`)).toHaveCount(0);
+
+    // note だけのタブには出さない（書いた案内を打ち消してしまうため / issue #275）。
+    await win.locator(TAB(MATRIX_TAB.noteOnly)).click();
+    await expect(win.locator(`${PANEL(MATRIX_TAB.noteOnly)} .settings-tab-note`)).toHaveText(NOTE_ONLY_TEXT);
+    await expect(win.locator(`${PANEL(MATRIX_TAB.noteOnly)} .settings-empty`)).toHaveCount(0);
 
     // グループも説明も無いタブには出す（従来は完全な空白パネルだった）。
-    await win.locator(TAB(3)).click();
-    await expect(win.locator(`${PANEL(3)} .settings-empty`)).toHaveText(EMPTY_MESSAGE);
+    await win.locator(TAB(MATRIX_TAB.noGroup)).click();
+    await expect(win.locator(`${PANEL(MATRIX_TAB.noGroup)} .settings-empty`)).toHaveText(EMPTY_MESSAGE);
 
     // 重複除去で空になったタブにも出す。落ちた欄は描画されない。
-    await win.locator(TAB(4)).click();
-    await expect(win.locator(`${PANEL(4)} .settings-empty`)).toHaveText(EMPTY_MESSAGE);
+    await win.locator(TAB(MATRIX_TAB.deduped)).click();
+    await expect(win.locator(`${PANEL(MATRIX_TAB.deduped)} .settings-empty`)).toHaveText(EMPTY_MESSAGE);
     await expect(win.getByLabel('後から描画される接続先', { exact: true })).toHaveCount(0);
     // 空になったグループは legend だけの枠も残さない。
-    await expect(win.locator(`${PANEL(4)} fieldset.settings-group`)).toHaveCount(0);
+    await expect(win.locator(`${PANEL(MATRIX_TAB.deduped)} fieldset.settings-group`)).toHaveCount(0);
 
     // 案内メッセージはモーダル全体で 2 つだけ（出しすぎていない）。
     await expect(win.locator('.settings-tab-panel .settings-empty')).toHaveCount(2);
     // 保存対象が無いタブには「保存後に反映されます」を継承しない（保存できる誤誘導を避ける）。
-    await expect(win.locator(`${PANEL(3)} .settings-tab-note`)).toHaveCount(0);
-    await expect(win.locator(`${PANEL(4)} .settings-tab-note`)).toHaveCount(0);
+    await expect(win.locator(`${PANEL(MATRIX_TAB.noGroup)} .settings-tab-note`)).toHaveCount(0);
+    await expect(win.locator(`${PANEL(MATRIX_TAB.deduped)} .settings-tab-note`)).toHaveCount(0);
   });
 
   // ─── 観点 1: 移動ボタンの導線（重複あり） ─────────────────────────────────
@@ -179,11 +208,11 @@ test.describe.serial('重複除去で空になったタブの案内と導線（P
     await installDescriptor(win, matrixDescriptor());
     await openSettings(win);
 
-    await win.locator(TAB(1)).click();
+    await win.locator(TAB(MATRIX_TAB.onlyDesc)).click();
     await win.getByRole('button', { name: '接続先の設定へ移動' }).click();
 
     // 着地先タブがアクティブになり、欄にフォーカスが乗り、表示領域内に収まる。
-    await expect(win.locator(TAB(0))).toHaveAttribute('aria-selected', 'true');
+    await expect(win.locator(TAB(MATRIX_TAB.fields))).toHaveAttribute('aria-selected', 'true');
     const target = win.getByLabel('接続先', { exact: true });
     await expect(target).toBeFocused();
     const inView = await target.evaluate((el) => {
@@ -205,13 +234,13 @@ test.describe.serial('重複除去で空になったタブの案内と導線（P
     await openSettings(win);
 
     // 矢印キーだけで説明タブへ移り、Tab でパネル内の移動ボタンまで到達する。
-    await win.locator(TAB(0)).focus();
+    await win.locator(TAB(MATRIX_TAB.fields)).focus();
     await win.keyboard.press('ArrowRight');
-    await expect(win.locator(TAB(1))).toHaveAttribute('aria-selected', 'true');
-    await expect(win.locator(TAB(1))).toBeFocused();
+    await expect(win.locator(TAB(MATRIX_TAB.onlyDesc))).toHaveAttribute('aria-selected', 'true');
+    await expect(win.locator(TAB(MATRIX_TAB.onlyDesc))).toBeFocused();
 
     // Tab を送って移動ボタンへ辿り着けること（マウス前提の導線になっていない）。
-    const tabLink = win.locator(`${PANEL(1)} .settings-content-tablink`).first();
+    const tabLink = win.locator(`${PANEL(MATRIX_TAB.onlyDesc)} .settings-content-tablink`).first();
     let reached = false;
     for (let i = 0; i < 6 && !reached; i += 1) {
       await win.keyboard.press('Tab');
@@ -221,50 +250,115 @@ test.describe.serial('重複除去で空になったタブの案内と導線（P
 
     // Enter で押すと欄まで運ばれる。
     await win.keyboard.press('Enter');
-    await expect(win.locator(TAB(0))).toHaveAttribute('aria-selected', 'true');
+    await expect(win.locator(TAB(MATRIX_TAB.fields))).toHaveAttribute('aria-selected', 'true');
     await expect(win.getByLabel('接続先', { exact: true })).toBeFocused();
 
     // Space でも同じ（button 要素の既定の活性化キー両方を確かめる）。
-    await win.locator(TAB(1)).click();
+    await win.locator(TAB(MATRIX_TAB.onlyDesc)).click();
     await tabLink.focus();
     await win.keyboard.press('Space');
-    await expect(win.locator(TAB(0))).toHaveAttribute('aria-selected', 'true');
+    await expect(win.locator(TAB(MATRIX_TAB.fields))).toHaveAttribute('aria-selected', 'true');
     await expect(win.getByLabel('接続先', { exact: true })).toBeFocused();
   });
 
-  test('空になったタブへの移動ボタンは行き止まりにならず、案内メッセージとタブへ着地する', async () => {
+  test('表示できる内容が無いタブへの移動ボタンは、そもそも表示されない', async () => {
+    // issue #275: 押しても案内メッセージだけが出るタブへは、ボタン自体を出さない
+    // （ボタンは「向こうに続きがある」という約束のため、行き止まりへ送ると他の移動
+    // ボタンまで信用されなくなる）。タブ自体はタブバーに残るので自力では開ける。
     await installDescriptor(win, matrixDescriptor());
     await openSettings(win);
 
-    await win.locator(TAB(1)).click();
-    // 移動先の欄は重複除去で消えているため、ボタンはタブ移動だけを行う。
-    await win.getByRole('button', { name: '重複タブへ移動' }).click();
+    await win.locator(TAB(MATRIX_TAB.onlyDesc)).click();
+    await expect(win.locator(`${PANEL(MATRIX_TAB.onlyDesc)} .settings-content`)).toBeVisible();
 
-    await expect(win.locator(TAB(4))).toHaveAttribute('aria-selected', 'true');
-    await expect(win.locator(PANEL(4))).toBeVisible();
-    // 真っ白ではなく理由が読める（PR #272 が潰した行き止まり）。
-    await expect(win.locator(`${PANEL(4)} .settings-empty`)).toHaveText(EMPTY_MESSAGE);
-    // フォーカスは移動先のタブボタンへ移り、キーボードでも流れが途切れない。
-    await expect(win.locator(TAB(4))).toBeFocused();
+    // 重複除去で空になるタブ（deduped）へ向けたボタンは描画されない。
+    await expect(win.getByRole('button', { name: '重複タブへ移動' })).toHaveCount(0);
+
+    // 巻き込みが無いこと。残るべき移動ボタン 3 つ（実欄あり / 空グループ / note だけ）は
+    // そのまま出る。ここが無いと「全部消えた」バグを取り逃す。
+    await expect(win.locator(`${PANEL(MATRIX_TAB.onlyDesc)} .settings-content-tablink`)).toHaveCount(3);
+    await expect(win.getByRole('button', { name: '接続先の設定へ移動' })).toBeVisible();
+    await expect(win.getByRole('button', { name: '空グループタブへ移動' })).toBeVisible();
+    await expect(win.getByRole('button', { name: 'note だけのタブへ移動' })).toBeVisible();
+    // 段落などボタン以外のブロックも消えない。
+    await expect(win.locator(`${PANEL(MATRIX_TAB.onlyDesc)} .settings-content-text`))
+      .toHaveText('説明だけのタブです。');
+    // タブバーからは今後もそのタブを開ける（タブ自体は消していない）。
+    await expect(win.locator(TAB(MATRIX_TAB.deduped))).toBeVisible();
+  });
+
+  test('note だけのタブへの移動ボタンは残り、着地先に案内メッセージは出ない', async () => {
+    // note に代替手段を書いたタブは「表示できる内容がある」ので移動先として有効。
+    await installDescriptor(win, matrixDescriptor());
+    await openSettings(win);
+
+    await win.locator(TAB(MATRIX_TAB.onlyDesc)).click();
+    await win.getByRole('button', { name: 'note だけのタブへ移動' }).click();
+
+    await expect(win.locator(TAB(MATRIX_TAB.noteOnly))).toHaveAttribute('aria-selected', 'true');
+    await expect(win.locator(TAB(MATRIX_TAB.noteOnly))).toBeFocused();
+    await expect(win.locator(`${PANEL(MATRIX_TAB.noteOnly)} .settings-tab-note`)).toHaveText(NOTE_ONLY_TEXT);
+    // note を打ち消す案内メッセージは出ない。
+    await expect(win.locator(`${PANEL(MATRIX_TAB.noteOnly)} .settings-empty`)).toHaveCount(0);
+  });
+
+  test('移動先タブに属さない field を指す移動ボタンは、タブ移動だけが効く', async () => {
+    // field（host）は「実欄あり」タブの欄で、宣言された tab（空グループ）とは食い違う。
+    // 採用すると経路によって別のタブへ飛ぶため field だけを落とし、タブ移動は効かせる。
+    await installDescriptor(win, matrixDescriptor());
+    await openSettings(win);
+
+    await win.locator(TAB(MATRIX_TAB.onlyDesc)).click();
+    await win.getByRole('button', { name: '空グループタブへ移動' }).click();
+
+    // 宣言どおり「空グループ」タブへ着地し、食い違う field のタブへは飛ばない。
+    await expect(win.locator(TAB(MATRIX_TAB.emptyGroup))).toHaveAttribute('aria-selected', 'true');
+    await expect(win.locator(PANEL(MATRIX_TAB.emptyGroup))).toBeVisible();
+    await expect(win.locator(TAB(MATRIX_TAB.fields))).toHaveAttribute('aria-selected', 'false');
+    // field を落としたぶん、フォーカスは移動先のタブボタンへフォールバックする
+    // （食い違う field が属する「実欄あり」タブは開かれないままになる）。
+    await expect(win.locator(TAB(MATRIX_TAB.emptyGroup))).toBeFocused();
+    await expect(win.locator(PANEL(MATRIX_TAB.fields))).toBeHidden();
+  });
+
+  test('タブバーから直接開いた空タブは、案内メッセージが読めてキーボードでも抜け出せる', async () => {
+    // #258 / #272 の成果（着いてしまった人に理由が読める・そこから抜け出せる）は残す。
+    // #275 で移動ボタンからは行けなくなったため、確認はタブバーから開く経路で行う。
+    await installDescriptor(win, matrixDescriptor());
+    await openSettings(win);
+
+    await win.locator(TAB(MATRIX_TAB.deduped)).click();
+    await expect(win.locator(TAB(MATRIX_TAB.deduped))).toHaveAttribute('aria-selected', 'true');
+    await expect(win.locator(PANEL(MATRIX_TAB.deduped))).toBeVisible();
+    // 真っ白ではなく理由が読める。
+    await expect(win.locator(`${PANEL(MATRIX_TAB.deduped)} .settings-empty`)).toHaveText(EMPTY_MESSAGE);
     // パネル自身もフォーカス可能（入力欄が無くても読み上げで辿れる）。
-    await expect(win.locator(PANEL(4))).toHaveAttribute('tabindex', '0');
+    await expect(win.locator(PANEL(MATRIX_TAB.deduped))).toHaveAttribute('tabindex', '0');
+
+    // タブボタンへフォーカスを置けば、そこから矢印キーで隣のタブへ抜けられる。
+    await win.locator(TAB(MATRIX_TAB.deduped)).focus();
+    await expect(win.locator(TAB(MATRIX_TAB.deduped))).toBeFocused();
+    await win.keyboard.press('ArrowLeft');
+    await expect(win.locator(TAB(MATRIX_TAB.noGroup))).toHaveAttribute('aria-selected', 'true');
+    await expect(win.locator(TAB(MATRIX_TAB.noGroup))).toBeFocused();
   });
 
   test('空タブを開いたまま Home / End / 矢印キーでタブ移動を続けられる', async () => {
     await installDescriptor(win, matrixDescriptor());
     await openSettings(win);
 
-    await win.locator(TAB(4)).click();
-    await win.locator(TAB(4)).focus();
+    // deduped は末尾のタブ（End / 回り込みの着地先も deduped になる）。
+    await win.locator(TAB(MATRIX_TAB.deduped)).click();
+    await win.locator(TAB(MATRIX_TAB.deduped)).focus();
     await win.keyboard.press('Home');
-    await expect(win.locator(TAB(0))).toHaveAttribute('aria-selected', 'true');
+    await expect(win.locator(TAB(MATRIX_TAB.fields))).toHaveAttribute('aria-selected', 'true');
     await win.keyboard.press('End');
-    await expect(win.locator(TAB(4))).toHaveAttribute('aria-selected', 'true');
+    await expect(win.locator(TAB(MATRIX_TAB.deduped))).toHaveAttribute('aria-selected', 'true');
     // 末尾から右へ回り込んで先頭へ戻る。
     await win.keyboard.press('ArrowRight');
-    await expect(win.locator(TAB(0))).toHaveAttribute('aria-selected', 'true');
+    await expect(win.locator(TAB(MATRIX_TAB.fields))).toHaveAttribute('aria-selected', 'true');
     await win.keyboard.press('ArrowLeft');
-    await expect(win.locator(TAB(4))).toHaveAttribute('aria-selected', 'true');
+    await expect(win.locator(TAB(MATRIX_TAB.deduped))).toHaveAttribute('aria-selected', 'true');
 
     // 空タブを見ている状態でも Escape で閉じられる。
     await win.keyboard.press('Escape');
@@ -279,27 +373,33 @@ test.describe.serial('重複除去で空になったタブの案内と導線（P
     await openSettings(win);
 
     // 空になったタブ単体では保存対象が無いので「閉じる」だけ。
-    await win.locator(TAB(4)).click();
+    await win.locator(TAB(MATRIX_TAB.deduped)).click();
     await expect(win.locator('.settings-save')).toBeHidden();
     await expect(win.locator('.settings-save-hint')).toBeHidden();
     await expect(win.locator('.settings-cancel')).toHaveText('閉じる');
 
     // 実欄があるタブへ戻して編集する。
-    await win.locator(TAB(0)).click();
+    await win.locator(TAB(MATRIX_TAB.fields)).click();
     await expect(win.locator('.settings-save')).toBeVisible();
     await win.getByLabel('接続先', { exact: true }).fill('dirty.example');
 
     // 未保存インジケータは編集した欄が描画されているタブにだけ付く。
     // 重複した 2 件目が消えた分、印が別タブへ迷子になっていないことを確かめる。
-    await expect(win.locator(TAB(0))).toHaveClass(/is-dirty/);
-    await expect(win.locator(TAB(0))).toHaveAttribute('aria-label', '実欄あり（未保存の変更あり）');
-    for (const index of [1, 2, 3, 4]) {
+    await expect(win.locator(TAB(MATRIX_TAB.fields))).toHaveClass(/is-dirty/);
+    await expect(win.locator(TAB(MATRIX_TAB.fields))).toHaveAttribute('aria-label', '実欄あり（未保存の変更あり）');
+    for (const index of [
+      MATRIX_TAB.onlyDesc,
+      MATRIX_TAB.emptyGroup,
+      MATRIX_TAB.noteOnly,
+      MATRIX_TAB.noGroup,
+      MATRIX_TAB.deduped,
+    ]) {
       await expect(win.locator(TAB(index))).not.toHaveClass(/is-dirty/);
     }
 
     // 未保存の変更を抱えた状態で空タブへ移っても、保存する手段は残る
     // （隠すと「閉じる」しか押せず編集内容を捨てることになる）。
-    await win.locator(TAB(4)).click();
+    await win.locator(TAB(MATRIX_TAB.deduped)).click();
     await expect(win.locator('.settings-save')).toBeVisible();
     await expect(win.locator('.settings-cancel')).toHaveText('キャンセル');
     // 空タブから押しても保存でき、値も正しい。
@@ -307,7 +407,7 @@ test.describe.serial('重複除去で空になったタブの案内と導線（P
     await expect(win.locator('.settings-msg')).toHaveClass(/ok/);
     expect((await lastPayload(win)).host).toBe('dirty.example');
     // 保存が済めば印は解除される。
-    await expect(win.locator(TAB(0))).not.toHaveClass(/is-dirty/);
+    await expect(win.locator(TAB(MATRIX_TAB.fields))).not.toHaveClass(/is-dirty/);
   });
 
   // ─── 観点 5: 保存対象が 1 つも無い極端な定義 ───────────────────────────────

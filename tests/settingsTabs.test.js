@@ -694,8 +694,17 @@ test('normalizeSettingsTabs: キー重複時の所属タブは宣言順ではな
       },
     ],
     // 宣言順は tokens が先だが、タブ順では general が先に描画される。
+    // tokens 側には重複しない欄も置き、重複除去でタブごと空にならないようにする
+    // （空になると issue #275 の判定で tabLink ごと落ち、field だけを落とす挙動が見えない）。
     groups: [
-      { label: 'トークン', tab: 'tokens', fields: [{ key: 'dup', label: '重複キー', type: 'text' }] },
+      {
+        label: 'トークン',
+        tab: 'tokens',
+        fields: [
+          { key: 'dup', label: '重複キー', type: 'text' },
+          { key: 'githubToken', label: 'GitHub トークン', type: 'password' },
+        ],
+      },
       { label: '基本', tab: 'general', fields: [{ key: 'dup', label: '重複キー', type: 'text' }] },
     ],
   });
@@ -764,6 +773,11 @@ test('normalizeSettingsTabs: content は正規化して非空のときだけ持�
       { id: 'empty', label: '空', content: [{ type: 'unknown' }] },
       { id: 'notarray', label: '配列でない', content: 'text' },
     ],
+    // general に入力欄を持たせて、mobile の tabLink が issue #275 の空タブ判定で
+    // 落ちないようにする（ここで見たいのは content の正規化と非空判定のみ）。
+    groups: [
+      { label: '基本', tab: 'general', fields: [{ key: 'apiHost', label: 'API ホスト', type: 'text' }] },
+    ],
   }), [
     { id: 'general', label: '設定', index: 0 },
     {
@@ -777,6 +791,319 @@ test('normalizeSettingsTabs: content は正規化して非空のときだけ持�
     },
     { id: 'empty', label: '空', index: 2 },
     { id: 'notarray', label: '配列でない', index: 3 },
+  ]);
+});
+
+// ─── 移動先に表示できる内容が無い tabLink（issue #275） ─────────────────────────
+//
+// 「開いても『このタブに表示できる設定項目はありません。』だけが出るタブ」への移動ボタンは、
+// 押した先が行き止まりになるため表示しない。判定条件（説明コンテンツ・グループ・note の
+// どれも無い）は renderer/app.js の案内文の条件と対であり、片方だけ変えると「見えている
+// のにボタンが出ない」または「ボタンは出るのに行き止まり」が残る。
+
+test('normalizeSettingsTabs: 入力欄も説明も note も無いタブを指す tabLink はブロックごと落とす', () => {
+  const [, guideTab] = normalizeSettingsTabs({
+    tabs: [
+      { id: 'empty', label: '中身なし' },
+      {
+        id: 'guide',
+        label: '案内',
+        content: [
+          { type: 'paragraph', text: '説明本文' },
+          { type: 'tabLink', label: '中身なしへ移動', tab: 'empty' },
+        ],
+      },
+    ],
+    groups: [],
+  });
+
+  // 移動ボタンだけが消え、同じ content の他のブロックは残る。
+  assert.deepEqual(guideTab.content, [{ type: 'paragraph', text: '説明本文' }]);
+});
+
+test('normalizeSettingsTabs: 表示できる内容があるタブを指す tabLink は残す', () => {
+  // 説明あり / 入力欄あり / 項目 0 件のグループだけ / note だけ の 4 パターンはいずれも
+  // 案内文が出ない（＝行き止まりではない）ため、移動ボタンを落としてはいけない。
+  const tabs = normalizeSettingsTabs({
+    tabs: [
+      { id: 'fields', label: '実欄あり' },
+      { id: 'desc', label: '説明だけ', content: [{ type: 'paragraph', text: '読むものがある' }] },
+      { id: 'emptyGroup', label: '空グループ' },
+      { id: 'noteOnly', label: 'note だけ', note: 'この機能は環境変数で設定します' },
+      {
+        id: 'guide',
+        label: '案内',
+        content: [
+          { type: 'tabLink', label: '実欄ありへ', tab: 'fields' },
+          { type: 'tabLink', label: '説明だけへ', tab: 'desc' },
+          { type: 'tabLink', label: '空グループへ', tab: 'emptyGroup' },
+          { type: 'tabLink', label: 'note だけへ', tab: 'noteOnly' },
+        ],
+      },
+    ],
+    groups: [
+      { label: '基本', tab: 'fields', fields: [{ key: 'host', label: '接続先', type: 'text' }] },
+      // 元から fields が空のグループ。描画側はこのグループの legend（グループ名）を
+      // 残すため、開いた人には読めるものがある。よって空タブ扱いにしない。
+      { label: '未実装の設定', tab: 'emptyGroup', fields: [] },
+    ],
+  });
+
+  assert.deepEqual(tabs[4].content, [
+    { type: 'tabLink', label: '実欄ありへ', tab: 'fields' },
+    { type: 'tabLink', label: '説明だけへ', tab: 'desc' },
+    { type: 'tabLink', label: '空グループへ', tab: 'emptyGroup' },
+    { type: 'tabLink', label: 'note だけへ', tab: 'noteOnly' },
+  ]);
+});
+
+test('normalizeSettingsTabs: キー重複でグループごと消えて空になるタブを指す tabLink も落とす', () => {
+  // 素の desc.groups で数えると「グループが 1 つある」ことになり、行き止まりが残る。
+  // 案内文と同じく、重複キーを取り除いた後の状態で数える必要がある。
+  const [, , guideTab] = normalizeSettingsTabs({
+    tabs: [
+      { id: 'fields', label: '実欄あり' },
+      { id: 'deduped', label: '重複' },
+      {
+        id: 'guide',
+        label: '案内',
+        content: [{ type: 'tabLink', label: '重複タブへ移動', tab: 'deduped' }],
+      },
+    ],
+    groups: [
+      { label: '基本', tab: 'fields', fields: [{ key: 'host', label: '接続先', type: 'text' }] },
+      // host は fields タブ側が先に描画されるため、こちらはグループごと消える。
+      { label: '重複した設定', tab: 'deduped', fields: [{ key: 'host', label: '後の接続先', type: 'text' }] },
+    ],
+  });
+
+  // content が空になったタブは content プロパティ自体を持たない（既存仕様）。
+  assert.equal(guideTab.content, undefined);
+});
+
+test('normalizeSettingsTabs: 移動ボタンを落として空になったタブを指す tabLink も連鎖して落とす', () => {
+  // 1 回だけの判定では、原因がアプリ側に変わっただけの行き止まりを新しく作ってしまう。
+  const [, viaEmpty, viaViaEmpty, guideTab] = normalizeSettingsTabs({
+    tabs: [
+      { id: 'empty', label: '中身なし' },
+      // 中身なしタブへの移動ボタンだけを持つタブ。ボタンが落ちると自身も空になる。
+      { id: 'hop1', label: '経由 1', content: [{ type: 'tabLink', label: '中身なしへ', tab: 'empty' }] },
+      // さらに 1 段深い連鎖。
+      { id: 'hop2', label: '経由 2', content: [{ type: 'tabLink', label: '経由 1 へ', tab: 'hop1' }] },
+      {
+        id: 'guide',
+        label: '案内',
+        content: [
+          { type: 'paragraph', text: '残る本文' },
+          { type: 'tabLink', label: '経由 2 へ', tab: 'hop2' },
+        ],
+      },
+    ],
+    groups: [],
+  });
+
+  assert.equal(viaEmpty.content, undefined);
+  assert.equal(viaViaEmpty.content, undefined);
+  assert.deepEqual(guideTab.content, [{ type: 'paragraph', text: '残る本文' }]);
+});
+
+test('normalizeSettingsTabs: 空タブへの移動ボタンを落としても同じ content の他ブロックは残す', () => {
+  const [, , guideTab] = normalizeSettingsTabs({
+    tabs: [
+      { id: 'fields', label: '実欄あり' },
+      { id: 'empty', label: '中身なし' },
+      {
+        id: 'guide',
+        label: '案内',
+        content: [
+          { type: 'heading', text: '見出し' },
+          { type: 'paragraph', text: '本文' },
+          { type: 'tabLink', label: '中身なしへ', tab: 'empty' },
+          { type: 'tabLink', label: '実欄ありへ', tab: 'fields' },
+        ],
+      },
+    ],
+    groups: [
+      { label: '基本', tab: 'fields', fields: [{ key: 'host', label: '接続先', type: 'text' }] },
+    ],
+  });
+
+  assert.deepEqual(guideTab.content, [
+    { type: 'heading', text: '見出し', level: 3 },
+    { type: 'paragraph', text: '本文' },
+    { type: 'tabLink', label: '実欄ありへ', tab: 'fields' },
+  ]);
+});
+
+test('normalizeSettingsTabs: 落とした tabLink を 1 行の警告にまとめる', () => {
+  const originalWarn = console.warn;
+  const warnings = [];
+  console.warn = (...args) => warnings.push(args);
+  try {
+    normalizeSettingsTabs({
+      tabs: [
+        { id: 'empty', label: '中身なし' },
+        { id: 'hop', label: '経由', content: [{ type: 'tabLink', label: '中身なしへ', tab: 'empty' }] },
+        {
+          id: 'guide',
+          label: '案内',
+          content: [
+            { type: 'tabLink', label: '中身なしへ移動', tab: 'empty' },
+            { type: 'tabLink', label: '経由タブへ移動', tab: 'hop' },
+          ],
+        },
+      ],
+      groups: [],
+    });
+  } finally {
+    console.warn = originalWarn;
+  }
+
+  // 連鎖で落ちた分（hop → empty / guide → hop）も同じ 1 行にまとめる。
+  // 各件は「起点タブ・ボタンのラベル・移動先」の順。ラベルを括弧に入れると移動先タブの
+  // ラベルと読み違えられ、設定ファイル内の該当箇所を探せなくなるため、この順を固定する。
+  assert.deepEqual(warnings, [[
+    '[settings] 移動先のタブに表示できる内容が無いため tabLink を表示しませんでした:',
+    'hop タブの「中身なしへ」→ empty, guide タブの「中身なしへ移動」→ empty, guide タブの「経由タブへ移動」→ hop',
+  ]]);
+});
+
+test('normalizeSettingsTabs: 落とす tabLink が無いときは警告しない', () => {
+  const originalWarn = console.warn;
+  const warnings = [];
+  console.warn = (...args) => warnings.push(args);
+  try {
+    normalizeSettingsTabs({
+      tabs: [
+        { id: 'fields', label: '実欄あり' },
+        { id: 'guide', label: '案内', content: [{ type: 'tabLink', label: '実欄ありへ', tab: 'fields' }] },
+      ],
+      groups: [
+        { label: '基本', tab: 'fields', fields: [{ key: 'host', label: '接続先', type: 'text' }] },
+      ],
+    });
+  } finally {
+    console.warn = originalWarn;
+  }
+
+  assert.deepEqual(warnings, []);
+});
+
+test('normalizeSettingsTabs: 重複キーの警告は描画側の 1 回だけで二重に出さない', () => {
+  // 空タブ判定のために normalizeSettingsTabs の中でも重複除去が必要になるが、警告は
+  // 描画側（renderer/app.js の dedupeSettingsFieldsByKey）の 1 回だけに保つ。
+  const desc = {
+    tabs: [
+      { id: 'fields', label: '実欄あり' },
+      { id: 'deduped', label: '重複' },
+    ],
+    groups: [
+      { label: '基本', tab: 'fields', fields: [{ key: 'host', label: '接続先', type: 'text' }] },
+      { label: '重複した設定', tab: 'deduped', fields: [{ key: 'host', label: '後の接続先', type: 'text' }] },
+    ],
+  };
+  const originalWarn = console.warn;
+  const warnings = [];
+  console.warn = (...args) => warnings.push(args);
+  try {
+    // renderer/app.js と同じ呼び出し順（正規化 → 重複除去）。
+    const tabs = normalizeSettingsTabs(desc);
+    dedupeSettingsFieldsByKey(desc.groups, tabs);
+  } finally {
+    console.warn = originalWarn;
+  }
+
+  assert.deepEqual(warnings, [[
+    '[settings] 重複した key のため設定欄をスキップしました:',
+    'host',
+  ]]);
+});
+
+test('normalizeSettingsTabs: 組み込みプロパティ名のタブ ID でも空タブ判定が誤らず汚染も起きない', () => {
+  // 空タブの集計（空タブ集合・タブ別グループ数・note）を素のオブジェクトで持つ実装に戻すと、
+  // '__proto__' の代入で Object.prototype が書き換わり、'toString' / 'constructor' は
+  // 代入前から truthy に見えて判定が壊れる。Map / Set のままであることを固定する（#273）。
+  const [protoTab, toStringTab, constructorTab, prototypeTab] = normalizeSettingsTabs({
+    tabs: [
+      { id: '__proto__', label: 'proto' },
+      { id: 'toString', content: [{ type: 'paragraph', text: 'hello' }] },
+      // 空タブ（__proto__）を指すので落ちる。
+      { id: 'constructor', content: [{ type: 'tabLink', tab: '__proto__', label: 'go' }] },
+      // 内容のあるタブ（toString）を指すので残る。
+      { id: 'prototype', content: [{ type: 'tabLink', tab: 'toString', label: 'go2' }] },
+    ],
+    groups: [],
+  });
+
+  assert.deepEqual(protoTab, { id: '__proto__', label: 'proto', index: 0 });
+  assert.deepEqual(toStringTab, {
+    id: 'toString',
+    label: 'toString',
+    index: 1,
+    content: [{ type: 'paragraph', text: 'hello' }],
+  });
+  assert.equal(constructorTab.content, undefined);
+  assert.deepEqual(prototypeTab.content, [{ type: 'tabLink', label: 'go2', tab: 'toString' }]);
+
+  // 無関係なオブジェクトへ正規化結果が漏れていない（プロトタイプ汚染が起きていない）。
+  assert.deepEqual(Object.keys({}), []);
+  assert.equal({}.index, undefined);
+  assert.equal({}.content, undefined);
+});
+
+test('normalizeSettingsTabs: 相互参照・自己参照の tabLink は落とさずカスケードが停止する', () => {
+  // 移動ボタン自体がそのタブの content なので、どのタブも空タブにはならない。1 巡目で
+  // 新しい空タブが見つからず収束する（ここで落とすと、参照が循環しているだけの正常な
+  // 定義から導線が消える）。自己参照を落とさないことも #275 の定義どおりの仕様。
+  const tabs = normalizeSettingsTabs({
+    tabs: [
+      { id: 'a', label: 'A', content: [{ type: 'tabLink', label: 'B へ', tab: 'b' }] },
+      { id: 'b', label: 'B', content: [{ type: 'tabLink', label: 'A へ', tab: 'a' }] },
+      { id: 'c', label: 'C', content: [{ type: 'tabLink', label: '自分へ', tab: 'c' }] },
+    ],
+    groups: [],
+  });
+
+  assert.deepEqual(tabs.map((tab) => tab.content), [
+    [{ type: 'tabLink', label: 'B へ', tab: 'b' }],
+    [{ type: 'tabLink', label: 'A へ', tab: 'a' }],
+    [{ type: 'tabLink', label: '自分へ', tab: 'c' }],
+  ]);
+});
+
+test('normalizeSettingsTabs: 10 段の直鎖でも連鎖を最後まで潰しきる', () => {
+  // 巡回上限を固定回数などタブ数より小さい値にすると、鎖の奥のタブに content が残る。
+  // chain0（中身なし）← chain1 ← … ← chain10 と、1 巡で 1 段ずつ空タブが増える形。
+  const CHAIN_LENGTH = 10;
+  const tabs = [{ id: 'chain0', label: '中身なし' }];
+  for (let i = 1; i <= CHAIN_LENGTH; i += 1) {
+    tabs.push({
+      id: `chain${i}`,
+      label: `連鎖 ${i}`,
+      content: [{ type: 'tabLink', label: `chain${i - 1} へ`, tab: `chain${i - 1}` }],
+    });
+  }
+
+  const normalized = normalizeSettingsTabs({ tabs, groups: [] });
+
+  assert.equal(normalized.length, CHAIN_LENGTH + 1);
+  // 全段の移動ボタンが落ち、どのタブにも content が残らない。
+  assert.deepEqual(normalized.map((tab) => tab.content), new Array(CHAIN_LENGTH + 1).fill(undefined));
+});
+
+test('normalizeSettingsTabContent: オプション未指定なら空タブ判定を行わず従来どおり動く', () => {
+  // 単体ブロックの検証だけを期待して呼ぶ既存の呼び出し（テスト含む）を壊さない。
+  assert.deepEqual(normalizeSettingsTabContent([
+    { type: 'paragraph', text: '本文' },
+    // tabIds を渡していないので参照先を検証できず、従来どおり tabLink は残らない。
+    { type: 'tabLink', label: '設定へ', tab: 'general' },
+  ]), [{ type: 'paragraph', text: '本文' }]);
+
+  // tabIds だけを渡した場合は、移動先の中身を知らないまま tabLink を残す（従来の挙動）。
+  assert.deepEqual(normalizeSettingsTabContent([
+    { type: 'tabLink', label: '設定へ', tab: 'general' },
+  ], { tabIds: ['general'] }), [
+    { type: 'tabLink', label: '設定へ', tab: 'general' },
   ]);
 });
 

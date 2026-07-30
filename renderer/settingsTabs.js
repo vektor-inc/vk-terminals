@@ -150,9 +150,17 @@ function normalizeSettingsContentBlock(block, tabIds, fieldTabs) {
   return null;
 }
 
+// アプリ本体からは normalizeSettingsTabs 経由でのみ呼ばれ（renderer/app.js は
+// この関数を import していない）、下記 2 つのオプションは常にそこから渡される。
+// 省略時の既定値は、この関数を単体で呼ぶとき（テスト）のためのもの。
+// - emptyTabIds: 開いても案内文だけが出るタブの ID 集合（normalizeSettingsTabs が算出）。
+//   省略すると空集合になり、tabLink を落とす判定は働かない。
+// - onDropTabLink: 上記を指していて落とした tabLink を受け取るコールバック（警告の集約用）
 function normalizeSettingsTabContent(rawContent, options = {}) {
   const tabIds = toStringSet(options.tabIds);
   const fieldTabs = toStringMap(options.fieldTabs);
+  const emptyTabIds = toStringSet(options.emptyTabIds);
+  const onDropTabLink = typeof options.onDropTabLink === 'function' ? options.onDropTabLink : null;
   const normalized = [];
   // そのタブで level 3 の heading がまだ出ていないかどうか。
   // 外部ディスクリプタ（VK_TERMINALS_SETTINGS）が content の 1 個目に level: 4 を書くと、
@@ -163,6 +171,14 @@ function normalizeSettingsTabContent(rawContent, options = {}) {
   for (const block of Array.isArray(rawContent) ? rawContent : []) {
     const normalizedBlock = normalizeSettingsContentBlock(block, tabIds, fieldTabs);
     if (!normalizedBlock) continue;
+    // 押した先が案内文だけのタブになる tabLink は、ボタンごと落とす（issue #275）。
+    // ボタンは「向こうに続きがある」という約束なので、行き止まりへ送るとその content の
+    // 他の移動ボタンまで信用されなくなる。移動先の中身は単体ブロックからは見えないため、
+    // 判定に必要な emptyTabIds は tabs / groups 全体を見る normalizeSettingsTabs が渡す。
+    if (normalizedBlock.type === 'tabLink' && emptyTabIds.has(normalizedBlock.tab)) {
+      if (onDropTabLink) onDropTabLink(normalizedBlock);
+      continue;
+    }
     if (normalizedBlock.type === 'heading') {
       // 親となる h3 が先に出ていない level 4 は 3 へ繰り上げる。繰り上げた見出し自身が
       // その親になるので、以降の level 4 は子見出しとしてそのまま通す。
@@ -194,6 +210,68 @@ function normalizeSettingsTabs(desc) {
   const tabIds = new Set(rawTabs.map((tab) => tab.id));
   const fieldTabs = collectSettingsFieldTabs(desc, rawTabs);
 
+  // 「開いても『このタブに表示できる設定項目はありません。』だけが出るタブ」を割り出すための
+  // 材料。判定条件は描画側（renderer/app.js の emptyHtml）と完全に対にする。片方だけ変えると
+  // 「内容が見えているのに移動ボタンが出ない」または「ボタンは出るのに行き止まり」が残る。
+  //
+  // グループ数は重複キーの除去後で数える。重複除去は欄が全滅したグループをグループごと
+  // 落とすため、素の desc.groups で数えると空になったタブを「内容あり」と誤判定する。
+  // ここで公開版の dedupeSettingsFieldsByKey を呼ぶと描画側の呼び出しと合わせて重複キーの
+  // 警告が 2 回出るため、警告を出さない内部版を使う。
+  const { groups: dedupedGroups } = dedupeSettingsFieldsByKeyQuiet(desc && desc.groups, rawTabs);
+  const groupCountByTabId = new Map(
+    groupSettingsGroupsByTab(dedupedGroups, rawTabs)
+      .map(({ tab, groups }) => [tab.id, groups.length])
+  );
+  const noteByTabId = new Map(rawTabs.map((tab) => [tab.id, nonEmptyString(tab.note)]));
+
+  // 空タブを指す tabLink を落とすと、その tabLink だけを content に持っていたタブが新たに
+  // 空タブになる。1 回だけの判定では、原因がアプリ側に変わっただけの行き止まりを新しく
+  // 作ってしまうため、変化が無くなるまで繰り返す。
+  //
+  // 空タブ集合は単調増加で、1 巡ごとに 1 件以上増えなければその場で抜けるため、巡回数は
+  // タブ数 + 1 で頭打ちになる（ループ条件でも上限を切って無限ループを構造的に防ぐ）。
+  // 抜けた時点の emptyTabIds は最終的な空タブ全体なので、その巡で集めた dropped は
+  // 連鎖で落ちた分もすべて含む（何巡目に落ちたかは区別しない）。
+  const emptyTabIds = new Set();
+  let contentByTabId = new Map();
+  let dropped = [];
+  for (let pass = 0; pass <= rawTabs.length; pass += 1) {
+    contentByTabId = new Map();
+    dropped = [];
+    for (const tab of rawTabs) {
+      contentByTabId.set(tab.id, normalizeSettingsTabContent(tab.content, {
+        tabIds,
+        fieldTabs,
+        emptyTabIds,
+        // どのタブに書いたボタンかが分からないと直せないため、起点タブ・ラベル・移動先を
+        // 「どこの何がどこを指していたか」の順に並べて残す。移動先を末尾に置くのは、
+        // 括弧内にラベルを置くと移動先タブのラベルと読み違えられ、設定ファイル内の
+        // 該当箇所を探せなくなるため。
+        onDropTabLink: (block) => dropped.push(`${tab.id} タブの「${block.label}」→ ${block.tab}`),
+      }));
+    }
+    const nextEmptyTabIds = rawTabs
+      .map((tab) => tab.id)
+      .filter((tabId) => (
+        !emptyTabIds.has(tabId)
+        && contentByTabId.get(tabId).length === 0
+        && groupCountByTabId.get(tabId) === 0
+        && !noteByTabId.get(tabId)
+      ));
+    if (nextEmptyTabIds.length === 0) break;
+    for (const tabId of nextEmptyTabIds) emptyTabIds.add(tabId);
+  }
+
+  // ボタンが黙って消えると「書いたのに出てこない」という別の混乱になるため、重複キーで
+  // 設定欄を落とすときと同じ作法で、1 回の正規化につき 1 行にまとめて知らせる。
+  if (dropped.length > 0 && typeof console !== 'undefined' && console.warn) {
+    console.warn(
+      '[settings] 移動先のタブに表示できる内容が無いため tabLink を表示しませんでした:',
+      dropped.join(', ')
+    );
+  }
+
   return rawTabs
     .map((tab, index) => {
       const normalizedTab = {
@@ -201,10 +279,14 @@ function normalizeSettingsTabs(desc) {
         label: (typeof tab.label === 'string' && tab.label.trim()) ? tab.label : tab.id,
         index,
       };
-      if (typeof tab.note === 'string' && tab.note.trim()) {
-        normalizedTab.note = tab.note;
+      // 空タブ判定（noteByTabId）と同じ非空判定を使う。trim せず元の文字列を引き継ぐため、
+      // 前後に空白を含む note もそのまま表示される。
+      const note = nonEmptyString(tab.note);
+      if (note) {
+        normalizedTab.note = note;
       }
-      const content = normalizeSettingsTabContent(tab.content, { tabIds, fieldTabs });
+      // 上の収束ループが rawTabs の全 ID を毎巡必ず埋めるため、get は常に配列を返す。
+      const content = contentByTabId.get(tab.id);
       if (content.length) {
         normalizedTab.content = content;
       }
@@ -231,7 +313,10 @@ function groupSettingsGroupsByTab(groups, tabs) {
   return grouped;
 }
 
-function dedupeSettingsFieldsByKey(groups, tabs) {
+// 重複除去の本体。警告は出さず、落としたキーを呼び出し側へ返すだけにする。
+// normalizeSettingsTabs も空タブ判定のために同じ除去結果を必要とするが、公開版をそのまま
+// 呼ぶと描画側（renderer/app.js）の呼び出しと合わせて重複キーの警告が 2 回出てしまう。
+function dedupeSettingsFieldsByKeyQuiet(groups, tabs) {
   const safeGroups = Array.isArray(groups) ? groups : [];
   const orderedGroups = Array.isArray(tabs) && tabs.length > 0
     ? groupSettingsGroupsByTab(safeGroups, tabs).flatMap(({ groups: tabGroups }) => tabGroups)
@@ -268,6 +353,12 @@ function dedupeSettingsFieldsByKey(groups, tabs) {
     // own プロパティとして安全にコピーできるオブジェクトスプレッドを使う。
     dedupedGroups.push({ ...group, fields });
   }
+
+  return { groups: dedupedGroups, duplicateKeys };
+}
+
+function dedupeSettingsFieldsByKey(groups, tabs) {
+  const { groups: dedupedGroups, duplicateKeys } = dedupeSettingsFieldsByKeyQuiet(groups, tabs);
 
   if (duplicateKeys.size > 0 && typeof console !== 'undefined' && console.warn) {
     console.warn(

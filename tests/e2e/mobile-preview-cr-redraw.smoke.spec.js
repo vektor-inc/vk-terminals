@@ -1,8 +1,6 @@
-const { test, expect, _electron, chromium } = require('@playwright/test');
-const fs = require('fs');
-const net = require('net');
-const os = require('os');
-const path = require('path');
+const { test, expect, chromium } = require('@playwright/test');
+// 起動〜初期描画待ちは共通ヘルパーへ集約している（issue #263 / #269）。
+const { closeApp, getFreePort, launchApp } = require('./helpers/electron-app');
 
 // issue #121 / PR #122: モバイル版ペインプレビューで、TUI の再描画に伴う裸の \r
 // （キャリッジリターン。行頭復帰＝現在行を上書きするのが本来の意味）を、
@@ -18,25 +16,6 @@ const path = require('path');
 // tests/e2e/mobile-title-link.smoke.spec.js の「apiPrUrl に javascript: を注入」
 // テストと同じ手法（正規の API 経路は別テストで担保済みなので、注入対象は
 // レンダラー単体の描画ロジックに絞る）。
-
-const repoRoot = path.resolve(__dirname, '..', '..');
-
-async function getFreePort() {
-  // OS に空きポートを割り当てさせ、取得後に閉じて Electron 側で再利用する。
-  return await new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.on('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address();
-      const port = typeof address === 'object' && address ? address.port : null;
-      server.close((err) => {
-        if (err) { reject(err); return; }
-        if (!port) { reject(new Error('failed to allocate a free port')); return; }
-        resolve(port);
-      });
-    });
-  });
-}
 
 async function getStates(port) {
   const res = await fetch(`http://127.0.0.1:${port}/api/states`);
@@ -69,36 +48,13 @@ async function waitForTermId(port, termId, timeoutMs = 20_000) {
 }
 
 // 一時 HOME を用意して Electron を素のシェル（--no-claude）で起動する。
-async function launchApp(port) {
-  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-cr-'));
-  const tmpHome = path.join(tmpRoot, 'home');
-  const configDir = path.join(tmpHome, '.vk-terminals');
-  const configPath = path.join(configDir, 'config.json');
-  fs.mkdirSync(configDir, { recursive: true });
-  fs.writeFileSync(configPath, JSON.stringify({
-    apiHost: '127.0.0.1',
-    initialCommand: '',
-    agentroom: false,
-    additionalPanes: [],
-  }), 'utf8');
-
-  const app = await _electron.launch({
-    args: ['.', '--no-claude'],
-    cwd: repoRoot,
-    env: {
-      ...process.env,
-      HOME: tmpHome,
-      USERPROFILE: tmpHome,
-      VK_TERMINALS_API_PORT: String(port),
-    },
-  });
-  await app.firstWindow();
-  return { app, tmpRoot };
+async function launchCrRedrawApp(port) {
+  return await launchApp({ port, prefix: 'vk-terminals-e2e-cr-' });
 }
 
 test('モバイルプレビュー: 生 CR で再描画された日本語行が数文字ごとの改行にならず1行に表示される', async () => {
   const port = await getFreePort();
-  const { app, tmpRoot } = await launchApp(port);
+  const { app, tmpRoot } = await launchCrRedrawApp(port);
   const browser = await chromium.launch();
   try {
     await waitForTermId(port, '1');
@@ -153,7 +109,6 @@ test('モバイルプレビュー: 生 CR で再描画された日本語行が�
     expect((text.match(/\n/g) || []).length).toBe(0);
   } finally {
     await browser.close();
-    if (app) await app.close();
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    await closeApp({ app, tmpRoot });
   }
 });

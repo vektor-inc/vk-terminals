@@ -1,34 +1,9 @@
-const { test, expect, _electron } = require('@playwright/test');
+const { test, expect } = require('@playwright/test');
 const fs = require('fs');
-const net = require('net');
 const os = require('os');
 const path = require('path');
-
-const repoRoot = path.resolve(__dirname, '..', '..');
-
-async function getFreePort() {
-  // OS に空きポートを割り当てさせ、取得後に閉じて Electron 側で再利用する。
-  // 既定ポート 13847 を避けることで、開発中の通常起動インスタンスと衝突させない。
-  return await new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.on('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address();
-      const port = typeof address === 'object' && address ? address.port : null;
-      server.close((err) => {
-        if (err) {
-          reject(err);
-          return;
-        }
-        if (!port) {
-          reject(new Error('failed to allocate a free port'));
-          return;
-        }
-        resolve(port);
-      });
-    });
-  });
-}
+// 起動〜初期描画待ちは共通ヘルパーへ集約している（issue #263 / #269）。
+const { closeApp, getFreePort, launchApp } = require('./helpers/electron-app');
 
 async function postSetStatus(port, waiting) {
   const response = await fetch(`http://127.0.0.1:${port}/api/set-status`, {
@@ -73,29 +48,16 @@ async function waitForPtyRegistration(port) {
 
 test('POST /api/set-status が renderer の waiting 表示へ反映される', async () => {
   const port = await getFreePort();
-  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-'));
-  const tmpHome = path.join(tmpRoot, 'home');
-  const configDir = path.join(tmpHome, '.vk-terminals');
-  const configPath = path.join(configDir, 'config.json');
-  const descriptorPath = path.join(tmpRoot, 'settings-descriptor.json');
-  let app;
-
-  fs.mkdirSync(configDir, { recursive: true });
-
-  // loadUserConfig() は HOME 配下の config.json を読むため、HOME 自体を一時化して
-  // 実ユーザーの ~/.vk-terminals/config.json（Tailscale IP 等）に依存しないようにする。
-  fs.writeFileSync(configPath, JSON.stringify({
-    apiHost: '127.0.0.1',
-    initialCommand: '',
-    agentroom: false,
-    additionalPanes: [],
-  }), 'utf8');
 
   // VK_TERMINALS_SETTINGS は設定パネル用ディスクリプタとして読まれる。
-  // テスト中に設定 UI が開かれても一時 config だけを指すようにしておく。
+  // テスト中に設定 UI が開かれても一時的なパスだけを指すようにしておく。
+  // ディスクリプタは env で渡す都合上 Electron 起動前にパスが確定している必要があるため、
+  // ヘルパーが作る一時 HOME とは別に、このスペックが持つ一時ディレクトリへ置く。
+  const descriptorRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-set-status-descriptor-'));
+  const descriptorPath = path.join(descriptorRoot, 'settings-descriptor.json');
   fs.writeFileSync(descriptorPath, JSON.stringify({
     title: 'E2E Settings',
-    targetPath: configPath,
+    targetPath: path.join(descriptorRoot, 'config.json'),
     groups: [
       {
         label: 'E2E',
@@ -109,22 +71,21 @@ test('POST /api/set-status が renderer の waiting 表示へ反映される', a
     ],
   }), 'utf8');
 
+  // loadUserConfig() は HOME 配下の config.json を読むため、HOME 自体を一時化して
+  // 実ユーザーの ~/.vk-terminals/config.json（Tailscale IP 等）に依存しないようにする。
+  // このテストは HTTP API と renderer 反映の統合パスだけを見るため、Claude CLI の有無に
+  // 依存させない素のシェル（--no-claude）で起動する。いずれもヘルパーが行う。
+  // 起動が失敗しても descriptorRoot を消せるよう、launchApp は try の中で呼ぶ。
+  let launched;
   try {
-    app = await _electron.launch({
-      // このテストは HTTP API と renderer 反映の統合パスだけを見る。
-      // Claude CLI の有無に依存させないため、起動時は素のシェルにしておく。
-      args: ['.', '--no-claude'],
-      cwd: repoRoot,
-      env: {
-        ...process.env,
-        HOME: tmpHome,
-        USERPROFILE: tmpHome,
-        VK_TERMINALS_API_PORT: String(port),
-        VK_TERMINALS_SETTINGS: descriptorPath,
-      },
+    launched = await launchApp({
+      port,
+      // 元は共通の 'vk-terminals-e2e-' だったが、失敗時に取り残しの出どころが分かるよう
+      // spec 名を含む接頭辞にしている。
+      prefix: 'vk-terminals-e2e-set-status-',
+      env: { VK_TERMINALS_SETTINGS: descriptorPath },
     });
-
-    const win = await app.firstWindow();
+    const { win } = launched;
 
     await waitForPtyRegistration(port);
 
@@ -143,7 +104,7 @@ test('POST /api/set-status が renderer の waiting 表示へ反映される', a
     await expect(status).not.toHaveAttribute('data-status', 'waiting');
     await expect(pane).not.toHaveClass(/\bwaiting\b/);
   } finally {
-    if (app) await app.close();
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    if (launched) await closeApp(launched);
+    fs.rmSync(descriptorRoot, { recursive: true, force: true });
   }
 });

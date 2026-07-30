@@ -49,7 +49,6 @@ test.describe('設定パネル描画エラー後のロック解放（issue #259�
       port,
       prefix: 'vk-terminals-e2e-settings-render-error-',
       // 実環境の設定スキーマに左右されないよう、renderer 側で応答を差し替える。
-      env: { VK_TERMINALS_APP_TITLE: '', VK_TERMINALS_SETTINGS: '' },
     }));
   });
 

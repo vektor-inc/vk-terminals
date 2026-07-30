@@ -1,8 +1,7 @@
-const { test, expect, _electron, chromium } = require('@playwright/test');
-const fs = require('fs');
-const net = require('net');
-const os = require('os');
+const { test, expect, chromium } = require('@playwright/test');
 const path = require('path');
+// 起動〜初期描画待ちは共通ヘルパーへ集約している（issue #263 / #269）。
+const { closeApp, getFreePort, launchApp } = require('./helpers/electron-app');
 
 // 環境変数 VK_TERMINALS_APP_TITLE によるアプリ名上書きの end-to-end 確認。
 //   - デスクトップ（renderer/index.html）のヘッダー .app-title が上書き名になる。
@@ -13,22 +12,6 @@ const path = require('path');
 const OVERRIDE_TITLE = 'VK Orchestrator';
 const repoRoot = path.resolve(__dirname, '..', '..');
 const pkgVersion = require(path.join(repoRoot, 'package.json')).version;
-
-async function getFreePort() {
-  return await new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.on('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address();
-      const port = typeof address === 'object' && address ? address.port : null;
-      server.close((err) => {
-        if (err) { reject(err); return; }
-        if (!port) { reject(new Error('failed to allocate a free port')); return; }
-        resolve(port);
-      });
-    });
-  });
-}
 
 // /api/states が appTitle を返し始めるまで短くリトライして待つ。
 async function waitForStatesWithAppTitle(port, timeoutMs = 20_000) {
@@ -51,55 +34,34 @@ async function waitForStatesWithAppTitle(port, timeoutMs = 20_000) {
 }
 
 // 一時 HOME を用意し、VK_TERMINALS_APP_TITLE を付与して Electron を起動する。
-async function launchApp(port) {
-  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-title-'));
-  const tmpHome = path.join(tmpRoot, 'home');
-  const configDir = path.join(tmpHome, '.vk-terminals');
-  const configPath = path.join(configDir, 'config.json');
-  fs.mkdirSync(configDir, { recursive: true });
-  fs.writeFileSync(configPath, JSON.stringify({
-    apiHost: '127.0.0.1',
-    initialCommand: '',
-    agentroom: false,
-    additionalPanes: [],
-  }), 'utf8');
-
-  const app = await _electron.launch({
-    args: ['.', '--no-claude'],
-    cwd: repoRoot,
-    env: {
-      ...process.env,
-      HOME: tmpHome,
-      USERPROFILE: tmpHome,
-      VK_TERMINALS_API_PORT: String(port),
-      VK_TERMINALS_APP_TITLE: OVERRIDE_TITLE,
-    },
+// ヘルパーは既定でこの変数を空文字へ中和するため、上書き名は env で明示的に opt-in する。
+async function launchTitleOverrideApp(port) {
+  return await launchApp({
+    port,
+    prefix: 'vk-terminals-e2e-title-',
+    env: { VK_TERMINALS_APP_TITLE: OVERRIDE_TITLE },
   });
-  await app.firstWindow();
-  return { app, tmpRoot };
 }
 
 // ─── デスクトップのヘッダー .app-title が上書き名になり、/api/states にも反映される ───
 test('デスクトップ: VK_TERMINALS_APP_TITLE でヘッダーと /api/states の appTitle が上書きされる', async () => {
   const port = await getFreePort();
-  const { app, tmpRoot } = await launchApp(port);
+  const { app, win, tmpRoot } = await launchTitleOverrideApp(port);
   try {
     const json = await waitForStatesWithAppTitle(port);
     expect(json.appTitle).toBe(OVERRIDE_TITLE);
 
-    const win = await app.firstWindow();
     const titleEl = win.locator('.app-title');
     await expect(titleEl).toHaveText(OVERRIDE_TITLE, { timeout: 15_000 });
   } finally {
-    await app.close().catch(() => {});
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    await closeApp({ app, tmpRoot });
   }
 });
 
 // ─── モバイルページの <h1> とバージョンフッターが上書き名になる ───
 test('モバイル: <h1> とフッターが VK_TERMINALS_APP_TITLE の上書き名になる', async () => {
   const port = await getFreePort();
-  const { app, tmpRoot } = await launchApp(port);
+  const { app, tmpRoot } = await launchTitleOverrideApp(port);
   const browser = await chromium.launch();
   try {
     await waitForStatesWithAppTitle(port);
@@ -116,7 +78,6 @@ test('モバイル: <h1> とフッターが VK_TERMINALS_APP_TITLE の上書き�
     await expect(footer).toHaveText(`${OVERRIDE_TITLE} v${pkgVersion}`, { timeout: 15_000 });
   } finally {
     await browser.close().catch(() => {});
-    await app.close().catch(() => {});
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    await closeApp({ app, tmpRoot });
   }
 });

@@ -1,8 +1,7 @@
-const { test, expect, _electron, chromium } = require('@playwright/test');
-const fs = require('fs');
-const net = require('net');
-const os = require('os');
+const { test, expect, chromium } = require('@playwright/test');
 const path = require('path');
+// 起動〜初期描画待ちは共通ヘルパーへ集約している（issue #263 / #269）。
+const { closeApp, getFreePort, launchApp } = require('./helpers/electron-app');
 
 // issue #135 / PR #136: モバイル版の最下部に VK Terminals のバージョンを表示する変更の
 // end-to-end 確認。
@@ -14,23 +13,6 @@ const path = require('path');
 const repoRoot = path.resolve(__dirname, '..', '..');
 // package.json の version を真実源として読む（main.js も同じ値を返す想定）。
 const pkgVersion = require(path.join(repoRoot, 'package.json')).version;
-
-async function getFreePort() {
-  // OS に空きポートを割り当てさせ、取得後に閉じて Electron 側で再利用する。
-  return await new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.on('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address();
-      const port = typeof address === 'object' && address ? address.port : null;
-      server.close((err) => {
-        if (err) { reject(err); return; }
-        if (!port) { reject(new Error('failed to allocate a free port')); return; }
-        resolve(port);
-      });
-    });
-  });
-}
 
 // GET /api/states を叩き、レスポンス JSON をそのまま返す。
 async function fetchStates(port) {
@@ -58,41 +40,17 @@ async function waitForStatesWithVersion(port, timeoutMs = 20_000) {
 }
 
 // 一時 HOME を用意して Electron を素のシェル（--no-claude）で起動する。
-async function launchApp(port) {
-  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-version-'));
-  const tmpHome = path.join(tmpRoot, 'home');
-  const configDir = path.join(tmpHome, '.vk-terminals');
-  const configPath = path.join(configDir, 'config.json');
-  fs.mkdirSync(configDir, { recursive: true });
-  // 実ユーザーの ~/.vk-terminals/config.json に依存しないよう HOME を一時化する。
-  fs.writeFileSync(configPath, JSON.stringify({
-    apiHost: '127.0.0.1',
-    initialCommand: '',
-    agentroom: false,
-    additionalPanes: [],
-  }), 'utf8');
-  const env = { ...process.env };
-  delete env.VK_TERMINALS_APP_TITLE;
-
-  const app = await _electron.launch({
-    args: ['.', '--no-claude'],
-    cwd: repoRoot,
-    env: {
-      ...env,
-      HOME: tmpHome,
-      USERPROFILE: tmpHome,
-      VK_TERMINALS_API_PORT: String(port),
-    },
-  });
-  await app.firstWindow();
-  return { app, tmpRoot };
+// 実ユーザーの config.json への依存を切る HOME の一時化と、フッター表示名を左右する
+// VK_TERMINALS_APP_TITLE の中和（既定 'VK Terminals' を使わせる）はヘルパーが行う。
+async function launchVersionApp(port) {
+  return await launchApp({ port, prefix: 'vk-terminals-e2e-version-' });
 }
 
 // ─── GET /api/states のレスポンスに version（= package.json の version）が含まれ、
 //     既存フィールドもデグレしていない（回帰確認）───
 test('GET /api/states のレスポンスに version が含まれ、既存フィールドも維持されている', async () => {
   const port = await getFreePort();
-  const { app, tmpRoot } = await launchApp(port);
+  const { app, tmpRoot } = await launchVersionApp(port);
   try {
     const json = await waitForStatesWithVersion(port);
 
@@ -106,8 +64,7 @@ test('GET /api/states のレスポンスに version が含まれ、既存フィ�
     expect(json.terminals && typeof json.terminals).toBe('object');
     expect(json).toHaveProperty('usage');
   } finally {
-    if (app) await app.close();
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    await closeApp({ app, tmpRoot });
   }
 });
 
@@ -115,7 +72,7 @@ test('GET /api/states のレスポンスに version が含まれ、既存フィ�
 //     表示され、.show が付いて可視になる ───
 test('モバイル: 最下部の #app-version-footer に VK Terminals v<version> が表示され可視になる', async () => {
   const port = await getFreePort();
-  const { app, tmpRoot } = await launchApp(port);
+  const { app, tmpRoot } = await launchVersionApp(port);
   const browser = await chromium.launch();
   try {
     // /api/states が version を返せる状態になってからページを開く。
@@ -142,7 +99,6 @@ test('モバイル: 最下部の #app-version-footer に VK Terminals v<version>
     expect(footerTop).toBeGreaterThanOrEqual(listBottom - 1);
   } finally {
     await browser.close();
-    if (app) await app.close();
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    await closeApp({ app, tmpRoot });
   }
 });

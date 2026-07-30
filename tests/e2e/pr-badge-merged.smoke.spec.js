@@ -1,8 +1,6 @@
-const { test, expect, _electron } = require('@playwright/test');
-const fs = require('fs');
-const net = require('net');
-const os = require('os');
-const path = require('path');
+const { test, expect } = require('@playwright/test');
+// 起動〜初期描画待ちは共通ヘルパーへ集約している（issue #263 / #269）。
+const { closeApp, getFreePort, launchApp } = require('./helpers/electron-app');
 
 // issue #113 / PR #114: POST /api/set-title に prMerged を渡すと、ペイン上部の
 // PR バッジ（.pane-task-title-pr）がマージ済み表示（紫 + ✓ アイコン + 専用 aria-label）
@@ -14,32 +12,6 @@ const path = require('path');
 //        HTTP API 経由ではここまでで多くのケースを検証できる）
 //   D: renderer 側の型ガード自体（IPC 経由で main の矯正をバイパスした場合）も
 //      多層防御として直接確認する（VKIpc.on の `typeof prMerged === 'boolean'` ガード）。
-
-const repoRoot = path.resolve(__dirname, '..', '..');
-
-async function getFreePort() {
-  // OS に空きポートを割り当てさせ、取得後に閉じて Electron 側で再利用する。
-  // 既定ポート 13847 を避けることで、開発中の通常起動インスタンスと衝突させない。
-  return await new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.on('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address();
-      const port = typeof address === 'object' && address ? address.port : null;
-      server.close((err) => {
-        if (err) {
-          reject(err);
-          return;
-        }
-        if (!port) {
-          reject(new Error('failed to allocate a free port'));
-          return;
-        }
-        resolve(port);
-      });
-    });
-  });
-}
 
 async function postSetTitle(port, payload) {
   const response = await fetch(`http://127.0.0.1:${port}/api/set-title`, {
@@ -84,39 +56,16 @@ async function waitForPtyRegistration(port) {
 
 test('POST /api/set-title の prMerged が renderer の PR バッジへ反映される', async () => {
   const port = await getFreePort();
-  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-pr-merged-'));
-  const tmpHome = path.join(tmpRoot, 'home');
-  const configDir = path.join(tmpHome, '.vk-terminals');
-  const configPath = path.join(configDir, 'config.json');
-  let app;
-
-  fs.mkdirSync(configDir, { recursive: true });
-
   // loadUserConfig() は HOME 配下の config.json を読むため、HOME 自体を一時化して
   // 実ユーザーの ~/.vk-terminals/config.json（Tailscale IP 等）に依存しないようにする。
-  fs.writeFileSync(configPath, JSON.stringify({
-    apiHost: '127.0.0.1',
-    initialCommand: '',
-    agentroom: false,
-    additionalPanes: [],
-  }), 'utf8');
+  // このテストは HTTP API と renderer 反映の統合パスだけを見るため、Claude CLI の有無に
+  // 依存させない素のシェル（--no-claude）で起動する。いずれもヘルパーが行う。
+  const { app, win, tmpRoot } = await launchApp({
+    port,
+    prefix: 'vk-terminals-e2e-pr-merged-',
+  });
 
   try {
-    app = await _electron.launch({
-      // このテストは HTTP API と renderer 反映の統合パスだけを見る。
-      // Claude CLI の有無に依存させないため、起動時は素のシェルにしておく。
-      args: ['.', '--no-claude'],
-      cwd: repoRoot,
-      env: {
-        ...process.env,
-        HOME: tmpHome,
-        USERPROFILE: tmpHome,
-        VK_TERMINALS_API_PORT: String(port),
-      },
-    });
-
-    const win = await app.firstWindow();
-
     await waitForPtyRegistration(port);
 
     // prUrl は http(s) の schema・new URL() parse・2048 文字以内であればよく、
@@ -196,7 +145,6 @@ test('POST /api/set-title の prMerged が renderer の PR バッジへ反映さ
     // ここが崩れて「非 boolean を merged 判定に使ってしまう」実装に変わっていないかを確認する。
     await expect(prBadge).toHaveClass(/\bmerged\b/);
   } finally {
-    if (app) await app.close();
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    await closeApp({ app, tmpRoot });
   }
 });

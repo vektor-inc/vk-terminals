@@ -1,6 +1,7 @@
 # Changelog
 
 - [ 仕様変更 ] 設定パネルの「キャンセル」「閉じる」「保存」・ヘッダーの ✕・パスワードの表示切替ボタン・タブの内容領域で、キーボードで選んだときの枠が OS 標準の枠になっていたのを、アプリ内の他の部分と同じ青い枠に統一（[#280](https://github.com/vektor-inc/vk-terminals/issues/280)）
+- [ 開発環境 ] e2e の全 spec を共通の Electron 起動ヘルパーへ移行し、マシン負荷が高いときの起動待ちタイムアウトによる失敗と、起動に失敗した際の一時ディレクトリ・Electron プロセスの取り残しを解消（[#269](https://github.com/vektor-inc/vk-terminals/issues/269)）
 
 ## 1.49.0
 

@@ -82,8 +82,7 @@ test.describe.serial('設定モーダルのマルチターゲット表示（PR #
     ({ app, win, tmpRoot } = await launchAppAndWait({
       port,
       prefix: 'vk-terminals-e2e-settings-multitarget-',
-      // 実環境の VK_TERMINALS_APP_TITLE / VK_TERMINALS_SETTINGS の影響を受けないよう明示的に無効化する。
-      env: { VK_TERMINALS_APP_TITLE: '', VK_TERMINALS_SETTINGS: '' },
+      // 実環境の VK_TERMINALS_APP_TITLE / VK_TERMINALS_SETTINGS の中和はヘルパーの既定。
     }));
   });
 

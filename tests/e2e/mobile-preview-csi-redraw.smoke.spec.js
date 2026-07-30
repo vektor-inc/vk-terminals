@@ -1,8 +1,6 @@
-const { test, expect, _electron, chromium } = require('@playwright/test');
-const fs = require('fs');
-const net = require('net');
-const os = require('os');
-const path = require('path');
+const { test, expect, chromium } = require('@playwright/test');
+// 起動〜初期描画待ちは共通ヘルパーへ集約している（issue #263 / #269）。
+const { closeApp, getFreePort, launchApp } = require('./helpers/electron-app');
 
 // issue #132 / PR #133: モバイル版ペインプレビューで、Claude Code の TUI が行う
 // CSI カーソル位置指定による全画面再描画（`\x1b[row;colH` で各行の先頭へ移動し
@@ -15,25 +13,6 @@ const path = require('path');
 // VK_TERMINALS_API_PORT で空きポートを指定、Playwright の page.route で
 // /api/states 応答を差し替えて任意の lastLines を注入 → 実ブラウザで mobile.html の
 // 実描画（実物の stripAnsi / sanitizeMobilePreviewText を経由した DOM）を検証する。
-
-const repoRoot = path.resolve(__dirname, '..', '..');
-
-async function getFreePort() {
-  // OS に空きポートを割り当てさせ、取得後に閉じて Electron 側で再利用する。
-  return await new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.on('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address();
-      const port = typeof address === 'object' && address ? address.port : null;
-      server.close((err) => {
-        if (err) { reject(err); return; }
-        if (!port) { reject(new Error('failed to allocate a free port')); return; }
-        resolve(port);
-      });
-    });
-  });
-}
 
 async function getStates(port) {
   const res = await fetch(`http://127.0.0.1:${port}/api/states`);
@@ -66,31 +45,8 @@ async function waitForTermId(port, termId, timeoutMs = 20_000) {
 }
 
 // 一時 HOME を用意して Electron を素のシェル（--no-claude）で起動する。
-async function launchApp(port) {
-  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-csi-'));
-  const tmpHome = path.join(tmpRoot, 'home');
-  const configDir = path.join(tmpHome, '.vk-terminals');
-  const configPath = path.join(configDir, 'config.json');
-  fs.mkdirSync(configDir, { recursive: true });
-  fs.writeFileSync(configPath, JSON.stringify({
-    apiHost: '127.0.0.1',
-    initialCommand: '',
-    agentroom: false,
-    additionalPanes: [],
-  }), 'utf8');
-
-  const app = await _electron.launch({
-    args: ['.', '--no-claude'],
-    cwd: repoRoot,
-    env: {
-      ...process.env,
-      HOME: tmpHome,
-      USERPROFILE: tmpHome,
-      VK_TERMINALS_API_PORT: String(port),
-    },
-  });
-  await app.firstWindow();
-  return { app, tmpRoot };
+async function launchCsiRedrawApp(port) {
+  return await launchApp({ port, prefix: 'vk-terminals-e2e-csi-' });
 }
 
 // Claude Code 風の CSI カーソル位置指定再描画フレームを組み立てる。
@@ -111,7 +67,7 @@ function buildClaudeCodeCsiRedrawFrame() {
 
 test('モバイルプレビュー: CSI 位置指定再描画で直近の本文行が複数行として復元される', async () => {
   const port = await getFreePort();
-  const { app, tmpRoot } = await launchApp(port);
+  const { app, tmpRoot } = await launchCsiRedrawApp(port);
   const browser = await chromium.launch();
   try {
     await waitForTermId(port, '1');
@@ -169,7 +125,6 @@ test('モバイルプレビュー: CSI 位置指定再描画で直近の本文�
     expect(clientHeightPx).toBeGreaterThanOrEqual(130);
   } finally {
     await browser.close();
-    if (app) await app.close();
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    await closeApp({ app, tmpRoot });
   }
 });

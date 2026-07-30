@@ -1,32 +1,12 @@
-const { test, expect, _electron, chromium } = require('@playwright/test');
-const fs = require('fs');
-const net = require('net');
-const os = require('os');
-const path = require('path');
+const { test, expect, chromium } = require('@playwright/test');
+// 起動〜初期描画待ちは共通ヘルパーへ集約している（issue #263 / #269）。
+const { closeApp, getFreePort, launchApp } = require('./helpers/electron-app');
 
 // PR #153: モバイル版のインライン CSS を renderer/mobile.css へ分離した変更の
 // end-to-end 確認（外部 CSS 化のデグレを検知するための回帰スペック）。
 //   - GET /mobile.css / /shared.css が HTTP 200 かつ Content-Type: text/css で返る。
 //   - mobile.html は外部 CSS の <link rel="stylesheet"> を持ち、
 //     実ブラウザで開いたときに外部 CSS が実際に適用される（無スタイル=真っ白ではない）。
-
-const repoRoot = path.resolve(__dirname, '..', '..');
-
-async function getFreePort() {
-  return await new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.on('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address();
-      const port = typeof address === 'object' && address ? address.port : null;
-      server.close((err) => {
-        if (err) { reject(err); return; }
-        if (!port) { reject(new Error('failed to allocate a free port')); return; }
-        resolve(port);
-      });
-    });
-  });
-}
 
 // HTTP サーバーが起きて / が 200 を返せるようになるまで待つ。
 async function waitForServer(port, timeoutMs = 20_000) {
@@ -41,37 +21,14 @@ async function waitForServer(port, timeoutMs = 20_000) {
   throw new Error('HTTP server did not become ready in time');
 }
 
-async function launchApp(port) {
-  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-css-'));
-  const tmpHome = path.join(tmpRoot, 'home');
-  const configDir = path.join(tmpHome, '.vk-terminals');
-  const configPath = path.join(configDir, 'config.json');
-  fs.mkdirSync(configDir, { recursive: true });
-  fs.writeFileSync(configPath, JSON.stringify({
-    apiHost: '127.0.0.1',
-    initialCommand: '',
-    agentroom: false,
-    additionalPanes: [],
-  }), 'utf8');
-
-  const app = await _electron.launch({
-    args: ['.', '--no-claude'],
-    cwd: repoRoot,
-    env: {
-      ...process.env,
-      HOME: tmpHome,
-      USERPROFILE: tmpHome,
-      VK_TERMINALS_API_PORT: String(port),
-    },
-  });
-  await app.firstWindow();
-  return { app, tmpRoot };
+async function launchCssApp(port) {
+  return await launchApp({ port, prefix: 'vk-terminals-e2e-css-' });
 }
 
 // ─── GET /mobile.css が 200 / text/css で配信される ───
 test('GET /mobile.css が HTTP 200 かつ Content-Type: text/css で返る', async () => {
   const port = await getFreePort();
-  const { app, tmpRoot } = await launchApp(port);
+  const { app, tmpRoot } = await launchCssApp(port);
   try {
     await waitForServer(port);
 
@@ -84,15 +41,14 @@ test('GET /mobile.css が HTTP 200 かつ Content-Type: text/css で返る', asy
     expect(body).toContain('.card');
     expect(body.length).toBeGreaterThan(1000);
   } finally {
-    if (app) await app.close();
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    await closeApp({ app, tmpRoot });
   }
 });
 
 // ─── GET /shared.css が 200 / text/css で配信される ───
 test('GET /shared.css が HTTP 200 かつ Content-Type: text/css で返る', async () => {
   const port = await getFreePort();
-  const { app, tmpRoot } = await launchApp(port);
+  const { app, tmpRoot } = await launchCssApp(port);
   try {
     await waitForServer(port);
 
@@ -105,15 +61,14 @@ test('GET /shared.css が HTTP 200 かつ Content-Type: text/css で返る', asy
     expect(body).toContain('.task-list [data-tone="warning"]');
     expect(body).toContain('--wtone-fg');
   } finally {
-    if (app) await app.close();
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    await closeApp({ app, tmpRoot });
   }
 });
 
 // ─── 実ブラウザで開いたとき外部 CSS が適用される（無スタイルで崩れていない）───
 test('モバイルページを実ブラウザで開くと外部 CSS が適用される', async () => {
   const port = await getFreePort();
-  const { app, tmpRoot } = await launchApp(port);
+  const { app, tmpRoot } = await launchCssApp(port);
   const browser = await chromium.launch();
   try {
     await waitForServer(port);
@@ -148,7 +103,6 @@ test('モバイルページを実ブラウザで開くと外部 CSS が適用さ
     expect(headerPosition).toBe('sticky');
   } finally {
     await browser.close();
-    if (app) await app.close();
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    await closeApp({ app, tmpRoot });
   }
 });

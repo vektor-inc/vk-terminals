@@ -36,7 +36,6 @@ test('127.0.0.1 で実際に待ち受けているアドレスを表示する', a
     launched = await launchAppAndWait({
       port,
       prefix: 'vk-terminals-e2e-api-status-listening-',
-      env: { VK_TERMINALS_APP_TITLE: '', VK_TERMINALS_SETTINGS: '' },
     });
 
     const status = await openApiServerStatus(launched.win);
@@ -80,7 +79,6 @@ test('ポートが使用中なら API サーバーが起動していないエラ
     launched = await launchAppAndWait({
       port,
       prefix: 'vk-terminals-e2e-api-status-in-use-',
-      env: { VK_TERMINALS_APP_TITLE: '', VK_TERMINALS_SETTINGS: '' },
     });
 
     const status = await openApiServerStatus(launched.win);
@@ -106,7 +104,6 @@ test('確認中の live region は器を保ったまま更新し、5 秒で確�
     launched = await launchAppAndWait({
       port,
       prefix: 'vk-terminals-e2e-api-status-pending-',
-      env: { VK_TERMINALS_APP_TITLE: '', VK_TERMINALS_SETTINGS: '' },
     });
     // settings:describe と状態の取り直しを pending に固定し、20 回上限へ到達させる。
     // 差し替え先は window.VKIpc（renderer 側の中継レイヤ／issue #268）。
@@ -149,7 +146,6 @@ test('API ホストのエラーから設定欄へ移動してフォーカスで�
     launched = await launchAppAndWait({
       port,
       prefix: 'vk-terminals-e2e-api-status-host-error-',
-      env: { VK_TERMINALS_APP_TITLE: '', VK_TERMINALS_SETTINGS: '' },
     });
     await launched.win.evaluate(() => {
       const vkIpc = window.VKIpc;

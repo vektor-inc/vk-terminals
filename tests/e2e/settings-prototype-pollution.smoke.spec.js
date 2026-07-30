@@ -48,7 +48,6 @@ test('同梱スキーマの全項目を表示し、編集した値を実際の J
     launched = await launchAppAndWait({
       port,
       prefix: 'vk-terminals-e2e-settings-builtin-regression-',
-      env: { VK_TERMINALS_APP_TITLE: '', VK_TERMINALS_SETTINGS: '' },
     });
 
     await openSettings(launched.win);
@@ -88,10 +87,7 @@ test('危険な外部ディスクリプタを拒否し、同梱スキーマの�
     launched = await launchAppAndWait({
       port,
       prefix: 'vk-terminals-e2e-settings-unsafe-fallback-',
-      env: {
-        VK_TERMINALS_APP_TITLE: '',
-        VK_TERMINALS_SETTINGS: descriptorPath,
-      },
+      env: { VK_TERMINALS_SETTINGS: descriptorPath },
     });
 
     // 不正な定義でもアプリが起動し、設定ボタンを操作できること自体が回帰条件。
@@ -136,10 +132,7 @@ test('安全な外部ディスクリプタは拒否せず、その項目を表�
     launched = await launchAppAndWait({
       port,
       prefix: 'vk-terminals-e2e-settings-safe-descriptor-',
-      env: {
-        VK_TERMINALS_APP_TITLE: '',
-        VK_TERMINALS_SETTINGS: descriptorPath,
-      },
+      env: { VK_TERMINALS_SETTINGS: descriptorPath },
     });
 
     await openSettings(launched.win);

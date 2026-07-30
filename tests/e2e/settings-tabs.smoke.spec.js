@@ -74,8 +74,7 @@ test.describe.serial('設定モーダルのタブ UI（issue #167）', () => {
     ({ app, win, tmpRoot } = await launchAppAndWait({
       port,
       prefix: 'vk-terminals-e2e-settings-tabs-',
-      // 実環境の VK_TERMINALS_* の影響を受けないよう明示的に無効化する。
-      env: { VK_TERMINALS_APP_TITLE: '', VK_TERMINALS_SETTINGS: '' },
+      // 実環境の VK_TERMINALS_* の中和はヘルパーの既定。
     }));
   });
 

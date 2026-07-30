@@ -150,9 +150,11 @@ function normalizeSettingsContentBlock(block, tabIds, fieldTabs) {
   return null;
 }
 
-// options は後方互換。tabIds / fieldTabs だけを渡す従来の呼び出しでは
-// emptyTabIds が空集合になり、tabLink を落とす判定は働かない（従来どおりの挙動）。
-// - emptyTabIds: 開いても案内文だけが出るタブの ID 集合（normalizeSettingsTabs が算出）
+// アプリ本体からは normalizeSettingsTabs 経由でのみ呼ばれ（renderer/app.js は
+// この関数を import していない）、下記 2 つのオプションは常にそこから渡される。
+// 省略時の既定値は、この関数を単体で呼ぶとき（テスト）のためのもの。
+// - emptyTabIds: 開いても案内文だけが出るタブの ID 集合（normalizeSettingsTabs が算出）。
+//   省略すると空集合になり、tabLink を落とす判定は働かない。
 // - onDropTabLink: 上記を指していて落とした tabLink を受け取るコールバック（警告の集約用）
 function normalizeSettingsTabContent(rawContent, options = {}) {
   const tabIds = toStringSet(options.tabIds);
@@ -280,7 +282,8 @@ function normalizeSettingsTabs(desc) {
       if (note) {
         normalizedTab.note = note;
       }
-      const content = contentByTabId.get(tab.id) || [];
+      // 上の収束ループが rawTabs の全 ID を毎巡必ず埋めるため、get は常に配列を返す。
+      const content = contentByTabId.get(tab.id);
       if (content.length) {
         normalizedTab.content = content;
       }

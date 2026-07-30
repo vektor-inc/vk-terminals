@@ -1016,6 +1016,78 @@ test('normalizeSettingsTabs: 重複キーの警告は描画側の 1 回だけで
   ]]);
 });
 
+test('normalizeSettingsTabs: 組み込みプロパティ名のタブ ID でも空タブ判定が誤らず汚染も起きない', () => {
+  // 空タブの集計（空タブ集合・タブ別グループ数・note）を素のオブジェクトで持つ実装に戻すと、
+  // '__proto__' の代入で Object.prototype が書き換わり、'toString' / 'constructor' は
+  // 代入前から truthy に見えて判定が壊れる。Map / Set のままであることを固定する（#273）。
+  const [protoTab, toStringTab, constructorTab, prototypeTab] = normalizeSettingsTabs({
+    tabs: [
+      { id: '__proto__', label: 'proto' },
+      { id: 'toString', content: [{ type: 'paragraph', text: 'hello' }] },
+      // 空タブ（__proto__）を指すので落ちる。
+      { id: 'constructor', content: [{ type: 'tabLink', tab: '__proto__', label: 'go' }] },
+      // 内容のあるタブ（toString）を指すので残る。
+      { id: 'prototype', content: [{ type: 'tabLink', tab: 'toString', label: 'go2' }] },
+    ],
+    groups: [],
+  });
+
+  assert.deepEqual(protoTab, { id: '__proto__', label: 'proto', index: 0 });
+  assert.deepEqual(toStringTab, {
+    id: 'toString',
+    label: 'toString',
+    index: 1,
+    content: [{ type: 'paragraph', text: 'hello' }],
+  });
+  assert.equal(constructorTab.content, undefined);
+  assert.deepEqual(prototypeTab.content, [{ type: 'tabLink', label: 'go2', tab: 'toString' }]);
+
+  // 無関係なオブジェクトへ正規化結果が漏れていない（プロトタイプ汚染が起きていない）。
+  assert.deepEqual(Object.keys({}), []);
+  assert.equal({}.index, undefined);
+  assert.equal({}.content, undefined);
+});
+
+test('normalizeSettingsTabs: 相互参照・自己参照の tabLink は落とさずカスケードが停止する', () => {
+  // 移動ボタン自体がそのタブの content なので、どのタブも空タブにはならない。1 巡目で
+  // 新しい空タブが見つからず収束する（ここで落とすと、参照が循環しているだけの正常な
+  // 定義から導線が消える）。自己参照を落とさないことも #275 の定義どおりの仕様。
+  const tabs = normalizeSettingsTabs({
+    tabs: [
+      { id: 'a', label: 'A', content: [{ type: 'tabLink', label: 'B へ', tab: 'b' }] },
+      { id: 'b', label: 'B', content: [{ type: 'tabLink', label: 'A へ', tab: 'a' }] },
+      { id: 'c', label: 'C', content: [{ type: 'tabLink', label: '自分へ', tab: 'c' }] },
+    ],
+    groups: [],
+  });
+
+  assert.deepEqual(tabs.map((tab) => tab.content), [
+    [{ type: 'tabLink', label: 'B へ', tab: 'b' }],
+    [{ type: 'tabLink', label: 'A へ', tab: 'a' }],
+    [{ type: 'tabLink', label: '自分へ', tab: 'c' }],
+  ]);
+});
+
+test('normalizeSettingsTabs: 10 段の直鎖でも連鎖を最後まで潰しきる', () => {
+  // 巡回上限を固定回数などタブ数より小さい値にすると、鎖の奥のタブに content が残る。
+  // chain0（中身なし）← chain1 ← … ← chain10 と、1 巡で 1 段ずつ空タブが増える形。
+  const CHAIN_LENGTH = 10;
+  const tabs = [{ id: 'chain0', label: '中身なし' }];
+  for (let i = 1; i <= CHAIN_LENGTH; i += 1) {
+    tabs.push({
+      id: `chain${i}`,
+      label: `連鎖 ${i}`,
+      content: [{ type: 'tabLink', label: `chain${i - 1} へ`, tab: `chain${i - 1}` }],
+    });
+  }
+
+  const normalized = normalizeSettingsTabs({ tabs, groups: [] });
+
+  assert.equal(normalized.length, CHAIN_LENGTH + 1);
+  // 全段の移動ボタンが落ち、どのタブにも content が残らない。
+  assert.deepEqual(normalized.map((tab) => tab.content), new Array(CHAIN_LENGTH + 1).fill(undefined));
+});
+
 test('normalizeSettingsTabContent: オプション未指定なら空タブ判定を行わず従来どおり動く', () => {
   // 単体ブロックの検証だけを期待して呼ぶ既存の呼び出し（テスト含む）を壊さない。
   assert.deepEqual(normalizeSettingsTabContent([

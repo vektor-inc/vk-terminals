@@ -1,7 +1,8 @@
 # Changelog
 
-- [ 仕様変更 ] 設定パネルの説明タブで、押しても案内メッセージだけが表示されるタブへの移動ボタンを表示しないように変更（[#275](https://github.com/vektor-inc/vk-terminals/issues/275)）
-- [ 不具合修正 ] 設定パネルで注記だけを表示するタブに、その注記を打ち消す「このタブに表示できる設定項目はありません。」が併記される不具合を修正（[#275](https://github.com/vektor-inc/vk-terminals/issues/275)）
+- [ 仕様変更 ] 設定パネルの説明タブで、押した先に表示できる内容が無い移動ボタンを表示しないように変更（[#275](https://github.com/vektor-inc/vk-terminals/issues/275)）
+- [ 不具合修正 ] 設定パネルで注記だけを表示するタブに「このタブに表示できる設定項目はありません。」の案内が併記され、注記に書いた代わりの設定方法が無効な情報のように見える不具合を修正（[#275](https://github.com/vektor-inc/vk-terminals/issues/275)）
+- [ 不具合修正 ] 設定パネルで設定項目が無いグループだけを持つタブを開くと、グループ名も案内も表示されず枠線だけが表示される不具合を修正（[#275](https://github.com/vektor-inc/vk-terminals/issues/275)）
 
 ## 1.49.0
 

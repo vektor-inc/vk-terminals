@@ -244,8 +244,11 @@ function normalizeSettingsTabs(desc) {
         tabIds,
         fieldTabs,
         emptyTabIds,
-        // どのタブに書いたボタンかが分からないと直せないため、元のタブ・移動先・ラベルを残す。
-        onDropTabLink: (block) => dropped.push(`${tab.id} → ${block.tab}（${block.label}）`),
+        // どのタブに書いたボタンかが分からないと直せないため、起点タブ・ラベル・移動先を
+        // 「どこの何がどこを指していたか」の順に並べて残す。移動先を末尾に置くのは、
+        // 括弧内にラベルを置くと移動先タブのラベルと読み違えられ、設定ファイル内の
+        // 該当箇所を探せなくなるため。
+        onDropTabLink: (block) => dropped.push(`${tab.id} タブの「${block.label}」→ ${block.tab}`),
       }));
     }
     const nextEmptyTabIds = rawTabs

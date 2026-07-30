@@ -1,8 +1,8 @@
-const { test, expect, _electron } = require('@playwright/test');
+const { test, expect } = require('@playwright/test');
 const fs = require('fs');
-const net = require('net');
-const os = require('os');
 const path = require('path');
+// 起動〜初期描画待ちは共通ヘルパーへ集約している（issue #263 / #269）。
+const { closeApp, getFreePort, launchApp } = require('./helpers/electron-app');
 
 // issue #183 / PR #185:
 //   ユーザー設定 waitingExcludeCwdPatterns（文字列配列）に部分一致する cwd のペインは、
@@ -10,8 +10,6 @@ const path = require('path');
 //   このスペックは、実際に Electron を起動し、シェルへ入力待ちパターンを「出力」させて
 //   （タイプするコマンド行そのものにはパターンを含めない）、除外設定の有無で waiting 表示が
 //   どう変わるかを検証する。externalWaiting（POST /api/set-status 由来）の経路は本 PR で不変。
-
-const repoRoot = path.resolve(__dirname, '..', '..');
 
 // 入力待ちとして検知させる ASCII パターン。WAITING_PATTERNS の /Proceed\?/i に一致する。
 // 日本語パターンだと Playwright のキーボード入力（IME）に依存するため、判定は
@@ -26,24 +24,6 @@ const READY_MARKER = 'RXREADYMARK';
 // 「waiting にならないこと」を確かめる側は、判定が走る前に見て通ってしまわないよう、
 // 静止時間より十分長く待ってから確認する。
 const QUIESCENCE_SETTLE_MS = 4000;
-
-async function getFreePort() {
-  // OS に空きポートを割り当てさせ、取得後に閉じて Electron 側で再利用する。
-  // 既定ポートを避け、開発中の通常起動インスタンスと衝突させない。
-  return await new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.on('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address();
-      const port = typeof address === 'object' && address ? address.port : null;
-      server.close((err) => {
-        if (err) { reject(err); return; }
-        if (!port) { reject(new Error('failed to allocate a free port')); return; }
-        resolve(port);
-      });
-    });
-  });
-}
 
 async function postSetStatus(port, waiting) {
   // termId "1" は起動時に renderer が作る最初のペインの PTY。
@@ -77,28 +57,6 @@ async function waitForPtyRegistration(port) {
   throw lastError || new Error('terminal 1 was not registered in time');
 }
 
-// 一時 HOME を用意する（config.json はまだ書かない）。
-// loadUserConfig() は os.homedir()（= HOME 環境変数）配下の .vk-terminals/config.json を読むため、
-// HOME を一時化することで実ユーザー設定に依存しない。
-function makeTempHome() {
-  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-'));
-  const tmpHome = path.join(tmpRoot, 'home');
-  const configDir = path.join(tmpHome, '.vk-terminals');
-  fs.mkdirSync(configDir, { recursive: true });
-  return { tmpRoot, tmpHome, configPath: path.join(configDir, 'config.json') };
-}
-
-// 一時 HOME 配下へ config.json を書き出す。
-function writeConfig(configPath, extraConfig) {
-  fs.writeFileSync(configPath, JSON.stringify({
-    apiHost: '127.0.0.1',
-    initialCommand: '',
-    agentroom: false,
-    additionalPanes: [],
-    ...extraConfig,
-  }), 'utf8');
-}
-
 // 入力待ちパターンを「出力」させるためのシェルスクリプトを書き出す。
 // タイプするコマンドはこのスクリプトのパスだけ（= WAITING_MARKER を含まない）なので、
 // 入力時の waiting クリアや echo 混入の影響を受けず、出力による検知だけを純粋に見られる。
@@ -108,21 +66,17 @@ function writeTriggerScript(tmpRoot) {
   return scriptPath;
 }
 
-async function launchApp(tmpHome, port, extraEnv) {
-  return await _electron.launch({
-    // claude の有無に依存させないため素のシェルで開く。
-    args: ['.', '--no-claude'],
-    cwd: repoRoot,
-    env: {
-      ...process.env,
-      HOME: tmpHome,
-      USERPROFILE: tmpHome,
-      VK_TERMINALS_API_PORT: String(port),
-      // 実行環境から継承される VK_TERMINALS_SETTINGS（vk-orchestrator 等の外部ディスクリプタ）を
-      // 打ち消し、常に vk-terminals 組み込みディスクリプタ（本 PR がフィールドを追加した対象）を使わせる。
-      VK_TERMINALS_SETTINGS: '',
-      ...extraEnv,
-    },
+// 一時 HOME（loadUserConfig() が読む .vk-terminals/config.json の置き場）の用意と、
+// claude の有無に依存させない素のシェル（--no-claude）での起動はヘルパーが行う。
+// 実行環境から継承される VK_TERMINALS_SETTINGS（vk-orchestrator 等の外部ディスクリプタ）の
+// 打ち消しもヘルパーの既定なので、常に vk-terminals 組み込みディスクリプタが使われる。
+async function launchWaitingApp(port, config) {
+  return await launchApp({
+    port,
+    // 元は共通の 'vk-terminals-e2e-' だったが、失敗時に取り残しの出どころが分かるよう
+    // spec 名を含む接頭辞にしている。
+    prefix: 'vk-terminals-e2e-waiting-exclude-',
+    config,
   });
 }
 
@@ -152,16 +106,15 @@ async function fireWaitingOutput(win, scriptPath) {
 
 test('除外パターンに一致する cwd のペインは、入力待ち出力でも waiting にならない', async () => {
   const port = await getFreePort();
-  const { tmpRoot, tmpHome, configPath } = makeTempHome();
   // 最初のペインの cwd は HOME（= tmpHome）。その一意な一部（一時ディレクトリ名）を
   // 除外パターンに指定することで、シンボリックリンク解決（/tmp→/private/tmp 等）が
-  // 起きても部分一致が成立する。
-  writeConfig(configPath, { waitingExcludeCwdPatterns: [path.basename(tmpRoot)] });
+  // 起きても部分一致が成立する。ディレクトリ名は mkdtemp が決めるため、config は
+  // 生成後のパスを受け取る関数で渡す。
+  const { app, win, tmpRoot } = await launchWaitingApp(port, ({ tmpRoot }) => ({
+    waitingExcludeCwdPatterns: [path.basename(tmpRoot)],
+  }));
   const scriptPath = writeTriggerScript(tmpRoot);
-  let app;
   try {
-    app = await launchApp(tmpHome, port);
-    const win = await app.firstWindow();
     const { pane } = await prepareFirstPane(win, port);
 
     await fireWaitingOutput(win, scriptPath);
@@ -177,21 +130,18 @@ test('除外パターンに一致する cwd のペインは、入力待ち出力
     await expect(pane).not.toHaveClass(/\bwaiting\b/);
     await expect(status).not.toHaveAttribute('data-status', 'waiting');
   } finally {
-    if (app) await app.close();
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    await closeApp({ app, tmpRoot });
   }
 });
 
 test('除外パターンに一致しない cwd のペインは、従来どおり入力待ち出力で waiting になる', async () => {
   const port = await getFreePort();
-  const { tmpRoot, tmpHome, configPath } = makeTempHome();
   // HOME（ペイン cwd）に含まれないパターンにして、除外が発動しない状況をつくる。
-  writeConfig(configPath, { waitingExcludeCwdPatterns: ['__never_matches_this_path_zzz__'] });
+  const { app, win, tmpRoot } = await launchWaitingApp(port, {
+    waitingExcludeCwdPatterns: ['__never_matches_this_path_zzz__'],
+  });
   const scriptPath = writeTriggerScript(tmpRoot);
-  let app;
   try {
-    app = await launchApp(tmpHome, port);
-    const win = await app.firstWindow();
     const { pane, status } = await prepareFirstPane(win, port);
 
     await fireWaitingOutput(win, scriptPath);
@@ -200,21 +150,19 @@ test('除外パターンに一致しない cwd のペインは、従来どおり
     await expect(pane).toHaveClass(/\bwaiting\b/, { timeout: 15_000 });
     await expect(status).toHaveAttribute('data-status', 'waiting');
   } finally {
-    if (app) await app.close();
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    await closeApp({ app, tmpRoot });
   }
 });
 
 test('設定 GUI に「入力待ち判定から除外する cwd パターン」の入力欄が表示されない', async () => {
   const port = await getFreePort();
-  // VK_TERMINALS_SETTINGS を指定しないので、main は組み込みディスクリプタ（自身の config.json 編集）を使う。
+  // VK_TERMINALS_SETTINGS は指定しない（ヘルパーが空文字へ中和する）ので、main は
+  // 組み込みディスクリプタ（自身の config.json 編集）を使う。
   // 事前に値を書いておき、config.json に既存値があっても GUI 項目としては表示されないことを確認する。
-  const { tmpRoot, tmpHome, configPath } = makeTempHome();
-  writeConfig(configPath, { waitingExcludeCwdPatterns: ['/Users/foo/excluded-project', 'sandbox'] });
-  let app;
+  const { app, win, tmpRoot } = await launchWaitingApp(port, {
+    waitingExcludeCwdPatterns: ['/Users/foo/excluded-project', 'sandbox'],
+  });
   try {
-    app = await launchApp(tmpHome, port);
-    const win = await app.firstWindow();
     await waitForPtyRegistration(port); // 起動完了を待つ
 
     // 歯車ボタンから設定モーダルを開く。
@@ -225,7 +173,6 @@ test('設定 GUI に「入力待ち判定から除外する cwd パターン」�
     const row = win.locator('.settings-row', { hasText: '入力待ち判定から除外する cwd パターン' });
     await expect(row).toHaveCount(0);
   } finally {
-    if (app) await app.close();
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    await closeApp({ app, tmpRoot });
   }
 });

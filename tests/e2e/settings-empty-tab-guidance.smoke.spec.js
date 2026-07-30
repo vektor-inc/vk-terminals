@@ -115,9 +115,8 @@ test.describe.serial('重複除去で空になったタブの案内と導線（P
     ({ app, win, tmpRoot } = await launchAppAndWait({
       port,
       prefix: 'vk-terminals-e2e-settings-empty-tab-',
-      // 実環境のディスクリプタを読み込ませない。組み込みスキーマを見るテストだけ
-      // window.VKIpc の差し替えを外して素の経路に戻す。
-      env: { VK_TERMINALS_APP_TITLE: '', VK_TERMINALS_SETTINGS: '' },
+      // 実環境のディスクリプタは読み込ませない（ヘルパーが VK_TERMINALS_* を中和する）。
+      // 組み込みスキーマを見るテストだけ window.VKIpc の差し替えを外して素の経路に戻す。
     }));
   });
 

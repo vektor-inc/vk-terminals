@@ -1,8 +1,6 @@
-const { test, expect, _electron, chromium } = require('@playwright/test');
-const fs = require('fs');
-const net = require('net');
-const os = require('os');
-const path = require('path');
+const { test, expect, chromium } = require('@playwright/test');
+// 起動〜初期描画待ちは共通ヘルパーへ集約している（issue #263 / #269）。
+const { closeApp, getFreePort, launchApp } = require('./helpers/electron-app');
 
 // issue #181 / PR #182: モバイル版ターミナルカード下部の未使用クイック入力ボタン群
 // （1/2/3/↵ Enter, Yes(y↵)/No(n↵)/Esc/Ctrl-C）を削除した変更の end-to-end 確認。
@@ -10,26 +8,6 @@ const path = require('path');
 //   残存確認: 自由入力欄（.sendrow の input + 送信ボタン）・改行トグル
 //             （.nl-toggle）・終了ボタン（button.k.kill）が従来どおり存在すること。
 // 起動パターンは close-pane.smoke.spec.js 等のモバイル系 smoke を踏襲する。
-
-const repoRoot = path.resolve(__dirname, '..', '..');
-
-async function getFreePort() {
-  // OS に空きポートを割り当てさせ、取得後に閉じて Electron 側で再利用する。
-  // 既定ポート 13847 を避け、開発中の通常起動インスタンスと衝突させない。
-  return await new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.on('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address();
-      const port = typeof address === 'object' && address ? address.port : null;
-      server.close((err) => {
-        if (err) { reject(err); return; }
-        if (!port) { reject(new Error('failed to allocate a free port')); return; }
-        resolve(port);
-      });
-    });
-  });
-}
 
 // GET /api/states を叩き、terminals（paneId -> state）を返す。
 async function getStates(port) {
@@ -66,38 +44,14 @@ async function waitForTermId(port, termId, timeoutMs = 20_000) {
 }
 
 // 一時 HOME を用意して Electron を素のシェル（--no-claude）で起動する。
-async function launchApp(port) {
-  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-quick-'));
-  const tmpHome = path.join(tmpRoot, 'home');
-  const configDir = path.join(tmpHome, '.vk-terminals');
-  const configPath = path.join(configDir, 'config.json');
-  fs.mkdirSync(configDir, { recursive: true });
-  // 実ユーザーの ~/.vk-terminals/config.json に依存しないよう HOME を一時化する。
-  fs.writeFileSync(configPath, JSON.stringify({
-    apiHost: '127.0.0.1',
-    initialCommand: '',
-    agentroom: false,
-    additionalPanes: [],
-  }), 'utf8');
-
-  const app = await _electron.launch({
-    args: ['.', '--no-claude'],
-    cwd: repoRoot,
-    env: {
-      ...process.env,
-      HOME: tmpHome,
-      USERPROFILE: tmpHome,
-      VK_TERMINALS_API_PORT: String(port),
-    },
-  });
-  await app.firstWindow();
-  return { app, tmpRoot };
+async function launchQuickControlsApp(port) {
+  return await launchApp({ port, prefix: 'vk-terminals-e2e-quick-' });
 }
 
 // ─── 削除確認: クイック入力ボタン群がカード内に 1 つも存在しないこと ───
 test('モバイル: 未使用クイック入力ボタン（1/2/3/Enter, Yes/No/Esc/Ctrl-C）が削除されている', async () => {
   const port = await getFreePort();
-  const { app, tmpRoot } = await launchApp(port);
+  const { app, tmpRoot } = await launchQuickControlsApp(port);
   const browser = await chromium.launch();
   try {
     await waitForTermId(port, '1');
@@ -133,15 +87,14 @@ test('モバイル: 未使用クイック入力ボタン（1/2/3/Enter, Yes/No/E
     await expect(card.locator('.actions button.k.stop')).toHaveCount(0);
   } finally {
     await browser.close();
-    if (app) await app.close();
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    await closeApp({ app, tmpRoot });
   }
 });
 
 // ─── 残存確認: 自由入力欄・改行トグル・終了ボタンが従来どおり存在すること ───
 test('モバイル: 自由入力欄・改行トグル・終了ボタンは残存し、レイアウトが崩れていない', async () => {
   const port = await getFreePort();
-  const { app, tmpRoot } = await launchApp(port);
+  const { app, tmpRoot } = await launchQuickControlsApp(port);
   const browser = await chromium.launch();
   try {
     await waitForTermId(port, '1');
@@ -189,7 +142,6 @@ test('モバイル: 自由入力欄・改行トグル・終了ボタンは残存
     expect(killBox.width).toBeGreaterThan(cardBox.width * 0.6);
   } finally {
     await browser.close();
-    if (app) await app.close();
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    await closeApp({ app, tmpRoot });
   }
 });

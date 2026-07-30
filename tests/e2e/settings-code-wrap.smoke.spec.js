@@ -58,7 +58,6 @@ test.describe.serial('設定パネルのコード折り返しとボタン境界�
     ({ app, win, tmpRoot } = await launchAppAndWait({
       port,
       prefix: 'vk-terminals-e2e-settings-code-wrap-',
-      env: { VK_TERMINALS_APP_TITLE: '', VK_TERMINALS_SETTINGS: '' },
     }));
   });
 

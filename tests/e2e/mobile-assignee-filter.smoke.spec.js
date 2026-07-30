@@ -1,8 +1,9 @@
-const { test, expect, _electron, chromium } = require('@playwright/test');
+const { test, expect, chromium } = require('@playwright/test');
 const fs = require('fs');
-const net = require('net');
 const os = require('os');
 const path = require('path');
+// 起動〜初期描画待ちは共通ヘルパーへ集約している（issue #263 / #269）。
+const { getFreePort, launchApp } = require('./helpers/electron-app');
 
 // issue #232 / PR #253: モバイル版タスク一覧に GitHub モード時の担当者フィルタと
 // 「表示中 / 全体」件数表示を追加した変更の end-to-end 確認。
@@ -21,25 +22,6 @@ const path = require('path');
 //   3. select で選択を変えると絞り込み・件数が追従し、選択が localStorage に記憶される。
 //   4. select 操作中（フォーカス中）に自動更新（poll 約2秒）が来ても select が勝手に作り直されない。
 //   5. 開閉トグル（全幅ボタン）が従来どおり動作する（回帰）。
-
-const repoRoot = path.resolve(__dirname, '..', '..');
-
-async function getFreePort() {
-  // OS に空きポートを割り当てさせ、取得後に閉じて Electron 側で再利用する。
-  return await new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.on('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address();
-      const port = typeof address === 'object' && address ? address.port : null;
-      server.close((err) => {
-        if (err) { reject(err); return; }
-        if (!port) { reject(new Error('failed to allocate a free port')); return; }
-        resolve(port);
-      });
-    });
-  });
-}
 
 function writeJson(filePath, value) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -109,45 +91,33 @@ function buildLocalWidget(overrides = {}) {
   };
 }
 
-async function launchApp(port, config = {}) {
-  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-mobile-filter-'));
-  const tmpHome = path.join(tmpRoot, 'home');
-  const configDir = path.join(tmpHome, '.vk-terminals');
-  const configPath = path.join(configDir, 'config.json');
-  fs.mkdirSync(configDir, { recursive: true });
-  writeJson(configPath, {
-    apiHost: '127.0.0.1',
-    initialCommand: '',
-    agentroom: false,
-    additionalPanes: [],
-    ...config,
+async function launchMobileFilterApp(port, config = {}) {
+  return await launchApp({
+    port,
+    prefix: 'vk-terminals-e2e-mobile-filter-',
+    config,
   });
-
-  const app = await _electron.launch({
-    args: ['.', '--no-claude'],
-    cwd: repoRoot,
-    env: {
-      ...process.env,
-      HOME: tmpHome,
-      USERPROFILE: tmpHome,
-      VK_TERMINALS_API_PORT: String(port),
-    },
-  });
-  await app.firstWindow();
-  return { app, tmpRoot };
 }
 
-async function closeApp(app) {
-  if (!app) return;
-  const proc = app.process();
-  const closePromise = app.close().then(() => true).catch(() => true);
-  const closed = await Promise.race([
-    closePromise,
-    new Promise((resolve) => setTimeout(() => resolve(false), 5000)),
-  ]);
-  if (!closed && proc && !proc.killed) proc.kill('SIGKILL');
-  if (!closed) {
-    await Promise.race([closePromise, new Promise((resolve) => setTimeout(resolve, 1000))]);
+// このスペックは共通ヘルパーの closeApp を使わず、独自の強制終了付き後始末を使う。
+// app.close() が返ってこないケース（widget watcher を抱えた状態での終了）に備えて
+// 5 秒で SIGKILL へ切り替える措置を PR #253 から引き継いでいるため。
+// 一時ディレクトリの削除は close の成否に関わらず finally で必ず行う。
+async function closeAppForcefully({ app, tmpRoot }) {
+  try {
+    if (!app) return;
+    const proc = app.process();
+    const closePromise = app.close().then(() => true).catch(() => true);
+    const closed = await Promise.race([
+      closePromise,
+      new Promise((resolve) => setTimeout(() => resolve(false), 5000)),
+    ]);
+    if (!closed && proc && !proc.killed) proc.kill('SIGKILL');
+    if (!closed) {
+      await Promise.race([closePromise, new Promise((resolve) => setTimeout(resolve, 1000))]);
+    }
+  } finally {
+    if (tmpRoot) fs.rmSync(tmpRoot, { recursive: true, force: true });
   }
 }
 
@@ -192,7 +162,7 @@ test('モバイル: GitHub モード＋viewer で担当者フィルタが表示�
   const widgetFile = path.join(dataRoot, 'tasks-widget.json');
   writeJson(widgetFile, buildGithubWidget());
 
-  const { app, tmpRoot } = await launchApp(port, { widgetFile });
+  const { app, tmpRoot } = await launchMobileFilterApp(port, { widgetFile });
   const browser = await chromium.launch();
   try {
     const { context, page } = await openMobile(browser, port);
@@ -250,8 +220,7 @@ test('モバイル: GitHub モード＋viewer で担当者フィルタが表示�
     await context.close();
   } finally {
     await browser.close();
-    await closeApp(app);
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    await closeAppForcefully({ app, tmpRoot });
     fs.rmSync(dataRoot, { recursive: true, force: true });
   }
 });
@@ -263,7 +232,7 @@ test('モバイル: ローカルモード（GitHub モードでない／viewer �
   const widgetFile = path.join(dataRoot, 'tasks-widget.json');
   writeJson(widgetFile, buildLocalWidget());
 
-  const { app, tmpRoot } = await launchApp(port, { widgetFile });
+  const { app, tmpRoot } = await launchMobileFilterApp(port, { widgetFile });
   const browser = await chromium.launch();
   try {
     const { context, page } = await openMobile(browser, port);
@@ -284,8 +253,7 @@ test('モバイル: ローカルモード（GitHub モードでない／viewer �
     await context.close();
   } finally {
     await browser.close();
-    await closeApp(app);
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    await closeAppForcefully({ app, tmpRoot });
     fs.rmSync(dataRoot, { recursive: true, force: true });
   }
 });
@@ -297,7 +265,7 @@ test('モバイル: 担当者フィルタにフォーカス中は poll 再描画
   const widgetFile = path.join(dataRoot, 'tasks-widget.json');
   writeJson(widgetFile, buildGithubWidget());
 
-  const { app, tmpRoot } = await launchApp(port, { widgetFile });
+  const { app, tmpRoot } = await launchMobileFilterApp(port, { widgetFile });
   const browser = await chromium.launch();
   try {
     const { context, page } = await openMobile(browser, port);
@@ -332,8 +300,7 @@ test('モバイル: 担当者フィルタにフォーカス中は poll 再描画
     await context.close();
   } finally {
     await browser.close();
-    await closeApp(app);
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    await closeAppForcefully({ app, tmpRoot });
     fs.rmSync(dataRoot, { recursive: true, force: true });
   }
 });
@@ -345,7 +312,7 @@ test('モバイル: タスク一覧の開閉トグル（全幅ボタン）が従
   const widgetFile = path.join(dataRoot, 'tasks-widget.json');
   writeJson(widgetFile, buildGithubWidget());
 
-  const { app, tmpRoot } = await launchApp(port, { widgetFile });
+  const { app, tmpRoot } = await launchMobileFilterApp(port, { widgetFile });
   const browser = await chromium.launch();
   try {
     const { context, page } = await openMobile(browser, port);
@@ -376,8 +343,7 @@ test('モバイル: タスク一覧の開閉トグル（全幅ボタン）が従
     await context.close();
   } finally {
     await browser.close();
-    await closeApp(app);
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    await closeAppForcefully({ app, tmpRoot });
     fs.rmSync(dataRoot, { recursive: true, force: true });
   }
 });

@@ -10,6 +10,12 @@
 //
 // そこで起動と初期待機をこのファイルへ一本化し、待ち時間は既定値に頼らず
 // 明示する。マシンが高負荷のときも「どこで待ち切れなかったか」がエラーに出る。
+//
+// issue #269 で残りの spec もすべてここへ移行した。写しを持っていた spec は明示
+// タイムアウトが無く（高負荷時に既定 30 秒で落ちる）、起動途中で失敗すると一時
+// ディレクトリと Electron プロセスを解放できずに os.tmpdir() へ取り残していた。
+// あわせて、実環境の VK_TERMINALS_* を中和する既定もここへ集約している（launchApp の
+// env コメント参照）。
 const fs = require('fs');
 const net = require('net');
 const os = require('os');
@@ -63,19 +69,32 @@ async function getFreePort() {
 //   - config: ~/.vk-terminals/config.json の内容を上書きできる。apiHost も含めて
 //     spec 側が意図的に差し替えられる設計（例: バインドアドレスの挙動を確かめたい場合）。
 //     既定は 127.0.0.1 で、上書きしなければテスト用 API がループバック外へ出ることはない。
+//     一時ディレクトリのパスを設定値に使いたい場合（例: 自分の cwd に一致する除外パターンを
+//     与えたい spec）は、パスが mkdtemp まで決まらないためオブジェクトの代わりに
+//     ({ tmpRoot, tmpHome, configPath }) => ({ ... }) の関数を渡せる。
 async function launchApp({ port, prefix, env = {}, config = {} }) {
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   let app = null;
   try {
     const tmpHome = path.join(tmpRoot, 'home');
     const configDir = path.join(tmpHome, '.vk-terminals');
+    const configPath = path.join(configDir, 'config.json');
     fs.mkdirSync(configDir, { recursive: true });
-    fs.writeFileSync(path.join(configDir, 'config.json'), JSON.stringify({
+    const resolvedConfig = typeof config === 'function'
+      ? config({ tmpRoot, tmpHome, configPath })
+      : config;
+    // 戻り値がプレーンオブジェクトでなければここで落とす。null / undefined は展開しても
+    // 無視されるだけなので、spec が意図した設定が入らないまま既定 config で静かに通り
+    // （検証が黙って弱くなり気づけない）、文字列なら添字がキーとして混入する。
+    if (!resolvedConfig || typeof resolvedConfig !== 'object' || Array.isArray(resolvedConfig)) {
+      throw new Error('launchApp: config must be a plain object (or a function returning one)');
+    }
+    fs.writeFileSync(configPath, JSON.stringify({
       apiHost: '127.0.0.1',
       initialCommand: '',
       agentroom: false,
       additionalPanes: [],
-      ...config,
+      ...resolvedConfig,
     }), 'utf8');
 
     app = await _electron.launch({
@@ -84,6 +103,22 @@ async function launchApp({ port, prefix, env = {}, config = {} }) {
       timeout: APP_BOOT_TIMEOUT,
       env: {
         ...process.env,
+        // 実環境（開発者のシェル、vk-orchestrator 配下での起動）から継承される
+        // VK_TERMINALS_* を既定で中和する。アプリ名が変わったり外部の設定ディスクリプタが
+        // 使われたりすると、テストが見ている前提そのものが静かに変わってしまう。
+        // spec の env より前に置いてあるので、意図して指定する spec は上書きで opt-in できる。
+        //
+        // 変数を delete するのではなく空文字を置くのは、受け取る側の実装で結果が同じになるため。
+        //   - main.js の APP_TITLE 解決: VK_TERMINALS_APP_TITLE が空白のみなら既定
+        //     'VK Terminals' を使う（未設定と同じ）。
+        //   - main.js の settingsDescriptorPath(): VK_TERMINALS_SETTINGS が空白のみなら
+        //     null（指定なし）を返し、組み込みディスクリプタへフォールバックする（未設定と同じ）。
+        //   - utils/instanceId.js の resolveInstanceId(): VK_TERMINALS_INSTANCE_ID が空白のみなら
+        //     null を返し、/api/health に instanceId を含めない（未設定と同じ）。
+        // このため env から変数ごと消す口（unset）は設けていない。
+        VK_TERMINALS_APP_TITLE: '',
+        VK_TERMINALS_SETTINGS: '',
+        VK_TERMINALS_INSTANCE_ID: '',
         ...env,
         // 隔離用のキーは spec が渡す env の後に置く。ここが spec に負けると
         // 実 HOME を読み書きしたり他の spec とポートを共有したりしてしまうため、
@@ -94,7 +129,9 @@ async function launchApp({ port, prefix, env = {}, config = {} }) {
       },
     });
     const win = await app.firstWindow({ timeout: APP_BOOT_TIMEOUT });
-    return { app, win, tmpRoot };
+    // tmpHome は HOME 隔離先そのもの。ペインの cwd や設定ファイルの場所を
+    // expect で参照する spec があるため、tmpRoot と併せて返す。
+    return { app, win, tmpRoot, tmpHome };
   } catch (e) {
     // 起動途中で失敗した場合、掴んだ Electron プロセス（main / renderer / GPU / utility）と
     // 一時ディレクトリは呼び出し側に渡らないため afterAll の closeApp では解放されない。

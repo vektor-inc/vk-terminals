@@ -1,30 +1,9 @@
-const { test, expect, _electron } = require('@playwright/test');
-const fs = require('fs');
-const net = require('net');
-const os = require('os');
-const path = require('path');
+const { test, expect } = require('@playwright/test');
+// 起動〜初期描画待ちは共通ヘルパーへ集約している（issue #263 / #269）。
+const { closeApp, getFreePort, launchApp } = require('./helpers/electron-app');
 
 // issue #173: オーケストレーター専用ペインを誤操作で閉じないための
 // close ロックを、HTTP API → IPC → renderer UI → closePane 防御まで統合確認する。
-
-const repoRoot = path.resolve(__dirname, '..', '..');
-
-async function getFreePort() {
-  // OS に空きポートを割り当てさせ、取得後に閉じて Electron 側で再利用する。
-  return await new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.on('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address();
-      const port = typeof address === 'object' && address ? address.port : null;
-      server.close((err) => {
-        if (err) { reject(err); return; }
-        if (!port) { reject(new Error('failed to allocate a free port')); return; }
-        resolve(port);
-      });
-    });
-  });
-}
 
 async function getStates(port) {
   const res = await fetch(`http://127.0.0.1:${port}/api/states`);
@@ -74,38 +53,13 @@ async function postJson(port, pathname, payload) {
   return { status: res.status, body };
 }
 
-async function launchApp(port) {
-  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-lock-'));
-  const tmpHome = path.join(tmpRoot, 'home');
-  const configDir = path.join(tmpHome, '.vk-terminals');
-  const configPath = path.join(configDir, 'config.json');
-  fs.mkdirSync(configDir, { recursive: true });
-
-  // 実ユーザーの ~/.vk-terminals/config.json に依存せず、起動時は素のシェルにする。
-  fs.writeFileSync(configPath, JSON.stringify({
-    apiHost: '127.0.0.1',
-    initialCommand: '',
-    agentroom: false,
-    additionalPanes: [],
-  }), 'utf8');
-
-  const app = await _electron.launch({
-    args: ['.', '--no-claude'],
-    cwd: repoRoot,
-    env: {
-      ...process.env,
-      HOME: tmpHome,
-      USERPROFILE: tmpHome,
-      VK_TERMINALS_API_PORT: String(port),
-    },
-  });
-  const win = await app.firstWindow();
-  return { app, win, tmpRoot };
+async function launchLockApp(port) {
+  return await launchApp({ port, prefix: 'vk-terminals-e2e-lock-' });
 }
 
 test('close ロック中のペインは UI で閉じられず、/api/close-pane では閉じられる', async () => {
   const port = await getFreePort();
-  const { app, win, tmpRoot } = await launchApp(port);
+  const { app, win, tmpRoot } = await launchLockApp(port);
 
   try {
     // 起動直後の最初のペインが登録されるまで待ってから、検証対象の追加ペインを作る。
@@ -145,14 +99,13 @@ test('close ロック中のペインは UI で閉じられず、/api/close-pane 
     await waitForTermId(port, targetTermId, false);
     await expect(pane).toHaveCount(0);
   } finally {
-    if (app) await app.close();
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    await closeApp({ app, tmpRoot });
   }
 });
 
 test('close ロック中のペインもプロセス自然終了時はクリーンアップされる', async () => {
   const port = await getFreePort();
-  const { app, tmpRoot } = await launchApp(port);
+  const { app, tmpRoot } = await launchLockApp(port);
 
   try {
     await waitForTermId(port, '1', true);
@@ -173,7 +126,6 @@ test('close ロック中のペインもプロセス自然終了時はクリー�
 
     await waitForTermId(port, targetTermId, false);
   } finally {
-    if (app) await app.close();
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    await closeApp({ app, tmpRoot });
   }
 });

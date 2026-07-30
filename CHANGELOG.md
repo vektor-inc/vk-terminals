@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 開発環境 ] e2e の全 spec を共通の Electron 起動ヘルパーへ移行し、マシン負荷が高いときの起動待ちタイムアウトによる失敗と、起動に失敗した際の一時ディレクトリ・Electron プロセスの取り残しを解消（[#269](https://github.com/vektor-inc/vk-terminals/issues/269)）
+
 ## 1.49.0
 
 - [ セキュリティ修正 ] 画面表示側から Node.js・Electron の機能へ直接アクセスできない構成に変更し、ターミナル出力や外部から受け取った文字列の表示処理に不備があってもパソコン上で任意のコマンドが実行されない状態に修正（[#268](https://github.com/vektor-inc/vk-terminals/issues/268)）

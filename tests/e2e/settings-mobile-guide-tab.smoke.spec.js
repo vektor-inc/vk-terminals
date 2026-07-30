@@ -95,12 +95,12 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
 
   test.beforeAll(async () => {
     apiPort = await getFreePort();
-    // VK_TERMINALS_SETTINGS を空にして、組み込みスキーマ（settings-schema.json）を
-    // そのまま描画させる。このテストは組み込みスキーマの tabs 定義自体も検証対象にする。
+    // ヘルパーが VK_TERMINALS_SETTINGS を空へ中和するので、組み込みスキーマ
+    // （settings-schema.json）がそのまま描画される。
+    // このテストは組み込みスキーマの tabs 定義自体も検証対象にする。
     ({ app, win, tmpRoot } = await launchAppAndWait({
       port: apiPort,
       prefix: 'vk-terminals-e2e-mobile-guide-',
-      env: { VK_TERMINALS_APP_TITLE: '', VK_TERMINALS_SETTINGS: '' },
     }));
   });
 

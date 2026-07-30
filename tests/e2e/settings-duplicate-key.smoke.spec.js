@@ -71,8 +71,7 @@ test.describe.serial('設定キー重複時の移動先と保存値（issue #258
     ({ app, win, tmpRoot } = await launchAppAndWait({
       port,
       prefix: 'vk-terminals-e2e-settings-duplicate-key-',
-      // 実環境の設定ディスクリプタを読み込まず、テスト用定義だけを使う。
-      env: { VK_TERMINALS_APP_TITLE: '', VK_TERMINALS_SETTINGS: '' },
+      // 実環境の設定ディスクリプタは読み込まない（ヘルパーが VK_TERMINALS_* を中和する）。
     }));
   });
 

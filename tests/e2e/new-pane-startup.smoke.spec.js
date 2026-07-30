@@ -1,59 +1,19 @@
-const { test, expect, _electron } = require('@playwright/test');
+const { test, expect } = require('@playwright/test');
 const fs = require('fs');
-const net = require('net');
 const os = require('os');
 const path = require('path');
-
-const repoRoot = path.resolve(__dirname, '..', '..');
-
-// 空きポートを取得する（他の e2e と同様、API サーバ用の固定ポート衝突を避ける）。
-async function getFreePort() {
-  return await new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.on('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address();
-      const port = typeof address === 'object' && address ? address.port : null;
-      server.close((err) => {
-        if (err) { reject(err); return; }
-        if (!port) { reject(new Error('failed to allocate a free port')); return; }
-        resolve(port);
-      });
-    });
-  });
-}
+// 起動〜初期描画待ちは共通ヘルパーへ集約している（issue #263 / #269）。
+const { closeApp, getFreePort, launchAppAndWait } = require('./helpers/electron-app');
 
 // 指定した config で Electron アプリを起動する（--no-claude で claude 自動起動を抑止）。
-// tmpHome を HOME に割り当て、その下の .vk-terminals/config.json に設定を書き込む。
-// これにより settings:describe は組み込みディスクリプタ（VK Terminals 自身の設定）を返す。
-async function launchApp(port, config) {
-  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-newpane-'));
-  const tmpHome = path.join(tmpRoot, 'home');
-  const configDir = path.join(tmpHome, '.vk-terminals');
-  fs.mkdirSync(configDir, { recursive: true });
-  fs.writeFileSync(path.join(configDir, 'config.json'), JSON.stringify(config), 'utf8');
-
-  // 親環境（vk-orchestrator 等）の VK_TERMINALS_SETTINGS が漏れ込むと外部ディスクリプタが
-  // 使われてしまうため、明示的に外して VK Terminals 自身の組み込みディスクリプタを使わせる。
-  const childEnv = {
-    ...process.env,
-    HOME: tmpHome,
-    USERPROFILE: tmpHome,
-    VK_TERMINALS_API_PORT: String(port),
-  };
-  delete childEnv.VK_TERMINALS_SETTINGS;
-
-  const app = await _electron.launch({
-    args: ['.', '--no-claude'],
-    cwd: repoRoot,
-    env: childEnv,
-  });
-  const win = await app.firstWindow();
-  return { app, win, tmpRoot, tmpHome };
+// HOME の一時化と、その下の .vk-terminals/config.json への書き出しはヘルパーが行う。
+// 親環境（vk-orchestrator 等）の VK_TERMINALS_SETTINGS もヘルパーが既定で中和するため、
+// settings:describe は組み込みディスクリプタ（VK Terminals 自身の設定）を返す。
+// 最小構成（apiHost / initialCommand / agentroom / additionalPanes）はヘルパーの既定値と
+// 同じ内容なので、ここでは個別テストで必要なキーだけ渡す。
+async function launchNewPaneApp(port, config = {}) {
+  return await launchAppAndWait({ port, prefix: 'vk-terminals-e2e-newpane-', config });
 }
-
-// 最小構成の config。個別テストで必要なキーだけ上書きする。
-const BASE_CONFIG = { apiHost: '127.0.0.1', initialCommand: '', agentroom: false, additionalPanes: [] };
 
 test.describe('新規ペイン起動設定（issue #143 / PR #144）', () => {
   // ── (1) 設定パネルに新規ペイン設定が表示される ──────────────────────────────
@@ -62,9 +22,8 @@ test.describe('新規ペイン起動設定（issue #143 / PR #144）', () => {
   // 「API ホストの直下」に 2 項目が並ぶことを id の連番で担保する。
   test('設定パネルに新規ペイン設定が API ホストの直下に表示される', async () => {
     const port = await getFreePort();
-    const { app, win, tmpRoot } = await launchApp(port, BASE_CONFIG);
+    const { app, win, tmpRoot } = await launchNewPaneApp(port);
     try {
-      await win.waitForSelector('#sidebar', { state: 'attached' });
       // 設定モーダルを開く（組み込みディスクリプタで描画される）。
       await win.evaluate(() => window.openSettingsModal());
       await win.waitForSelector('.settings-modal', { state: 'visible' });
@@ -99,20 +58,17 @@ test.describe('新規ペイン起動設定（issue #143 / PR #144）', () => {
       // (3) その下に初期コマンド（field-3）が続く（＝2 項目が API ホストと初期コマンドの間に入る）。
       await expect(win.locator('label[for="set-field-3"]')).toHaveText('初期コマンド');
     } finally {
-      await app.close();
-      fs.rmSync(tmpRoot, { recursive: true, force: true });
+      await closeApp({ app, tmpRoot });
     }
   });
 
   // ── (2) terminal:create の cwd 解決（PR で追加した実在チェック） ──────────────
   test('terminal:create は実在ディレクトリを使い、不正パスは HOME にフォールバックする', async () => {
     const port = await getFreePort();
-    const { app, win, tmpRoot, tmpHome } = await launchApp(port, BASE_CONFIG);
+    const { app, win, tmpRoot, tmpHome } = await launchNewPaneApp(port);
     // 実在する一時ディレクトリ（cwd として渡す）。
     const existDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-exist-'));
     try {
-      await win.waitForSelector('#sidebar', { state: 'attached' });
-
       // (A) 実在ディレクトリを渡すと、resolvedCwd はそのパスのまま返る。
       const okCwd = await win.evaluate(async (dir) => {
         const vkIpc = window.VKIpc;
@@ -129,8 +85,7 @@ test.describe('新規ペイン起動設定（issue #143 / PR #144）', () => {
       }, path.join(existDir, 'no', 'such', 'dir-xyz'));
       expect(fbCwd).toBe(tmpHome);
     } finally {
-      await app.close();
-      fs.rmSync(tmpRoot, { recursive: true, force: true });
+      await closeApp({ app, tmpRoot });
       fs.rmSync(existDir, { recursive: true, force: true });
     }
   });
@@ -139,13 +94,11 @@ test.describe('新規ペイン起動設定（issue #143 / PR #144）', () => {
   test('ヘッダの＋ボタンは newPaneStartupDir と noClaude:true(自動起動オフ) を渡す', async () => {
     const port = await getFreePort();
     const startupDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-startup-'));
-    const { app, win, tmpRoot } = await launchApp(port, {
-      ...BASE_CONFIG,
+    const { app, win, tmpRoot } = await launchNewPaneApp(port, {
       newPaneStartupDir: startupDir,
       newPaneAutoLaunchClaude: false,
     });
     try {
-      await win.waitForSelector('#sidebar', { state: 'attached' });
       // 起動時に生成される既定ペインのヘッダ＋ボタンを待つ。
       await win.waitForSelector('.pane-header .btn-split', { state: 'visible' });
 
@@ -177,8 +130,7 @@ test.describe('新規ペイン起動設定（issue #143 / PR #144）', () => {
       // 自動起動オフ → noClaude:true（素のターミナル）。
       expect(call.options && call.options.noClaude).toBe(true);
     } finally {
-      await app.close();
-      fs.rmSync(tmpRoot, { recursive: true, force: true });
+      await closeApp({ app, tmpRoot });
       fs.rmSync(startupDir, { recursive: true, force: true });
     }
   });
@@ -189,13 +141,11 @@ test.describe('新規ペイン起動設定（issue #143 / PR #144）', () => {
   test('ヘッダの＋ボタンは noClaude:false(自動起動オン) を渡す', async () => {
     const port = await getFreePort();
     const startupDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-startup-on-'));
-    const { app, win, tmpRoot } = await launchApp(port, {
-      ...BASE_CONFIG,
+    const { app, win, tmpRoot } = await launchNewPaneApp(port, {
       newPaneStartupDir: startupDir,
       newPaneAutoLaunchClaude: true,
     });
     try {
-      await win.waitForSelector('#sidebar', { state: 'attached' });
       await win.waitForSelector('.pane-header .btn-split', { state: 'visible' });
 
       await win.evaluate(() => {
@@ -226,8 +176,7 @@ test.describe('新規ペイン起動設定（issue #143 / PR #144）', () => {
       // 自動起動オン → noClaude:false（claude 起動）。
       expect(call.options && call.options.noClaude).toBe(false);
     } finally {
-      await app.close();
-      fs.rmSync(tmpRoot, { recursive: true, force: true });
+      await closeApp({ app, tmpRoot });
       fs.rmSync(startupDir, { recursive: true, force: true });
     }
   });

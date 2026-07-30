@@ -1,33 +1,11 @@
-const { test, expect, _electron, chromium } = require('@playwright/test');
-const fs = require('fs');
-const net = require('net');
-const os = require('os');
-const path = require('path');
+const { test, expect, chromium } = require('@playwright/test');
+// 起動〜初期描画待ちは共通ヘルパーへ集約している（issue #263 / #269）。
+const { closeApp, getFreePort, launchApp } = require('./helpers/electron-app');
 
 // issue #100 / PR #101: モバイル Web UI から HTTP API 経由でデスクトップ側の
 // ペイン（ターミナル）を終了（kill）できるようにした変更の end-to-end 確認。
 //   POST /api/new-pane で作成 → GET /api/states で termId 確認 →
 //   POST /api/close-pane { termId } → /api/states から当該 termId が消える、を実機 Electron で検証する。
-
-const repoRoot = path.resolve(__dirname, '..', '..');
-
-async function getFreePort() {
-  // OS に空きポートを割り当てさせ、取得後に閉じて Electron 側で再利用する。
-  // 既定ポート 13847 を避け、開発中の通常起動インスタンスと衝突させない。
-  return await new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.on('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address();
-      const port = typeof address === 'object' && address ? address.port : null;
-      server.close((err) => {
-        if (err) { reject(err); return; }
-        if (!port) { reject(new Error('failed to allocate a free port')); return; }
-        resolve(port);
-      });
-    });
-  });
-}
 
 // GET /api/states を叩き、terminals（paneId -> state）を返す。
 async function getStates(port) {
@@ -78,37 +56,14 @@ async function postJson(port, pathname, payload) {
 }
 
 // 一時 HOME を用意して Electron を素のシェル（--no-claude）で起動する。
-async function launchApp(port) {
-  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-close-'));
-  const tmpHome = path.join(tmpRoot, 'home');
-  const configDir = path.join(tmpHome, '.vk-terminals');
-  const configPath = path.join(configDir, 'config.json');
-  fs.mkdirSync(configDir, { recursive: true });
-  // 実ユーザーの ~/.vk-terminals/config.json に依存しないよう HOME を一時化する。
-  fs.writeFileSync(configPath, JSON.stringify({
-    apiHost: '127.0.0.1',
-    initialCommand: '',
-    agentroom: false,
-    additionalPanes: [],
-  }), 'utf8');
-
-  const app = await _electron.launch({
-    args: ['.', '--no-claude'],
-    cwd: repoRoot,
-    env: {
-      ...process.env,
-      HOME: tmpHome,
-      USERPROFILE: tmpHome,
-      VK_TERMINALS_API_PORT: String(port),
-    },
-  });
-  await app.firstWindow();
-  return { app, tmpRoot };
+// 実ユーザーの ~/.vk-terminals/config.json に依存しないよう、HOME の一時化はヘルパーが行う。
+async function launchClosePaneApp(port) {
+  return await launchApp({ port, prefix: 'vk-terminals-e2e-close-' });
 }
 
 test('POST /api/close-pane で作成したペインが終了し /api/states から消える', async () => {
   const port = await getFreePort();
-  const { app, tmpRoot } = await launchApp(port);
+  const { app, tmpRoot } = await launchClosePaneApp(port);
   try {
     // 起動直後の最初のペイン（termId "1"）が登録されるまで待つ。
     await waitForTermId(port, '1', true);
@@ -136,14 +91,13 @@ test('POST /api/close-pane で作成したペインが終了し /api/states か�
     // 最初のペイン（"1"）は残っていること = 対象だけをピンポイントで閉じられている。
     expect(remaining).toContain('1');
   } finally {
-    if (app) await app.close();
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    await closeApp({ app, tmpRoot });
   }
 });
 
 test('POST /api/close-pane の異常系（存在しない termId は 404 / termId 欠落は 400）', async () => {
   const port = await getFreePort();
-  const { app, tmpRoot } = await launchApp(port);
+  const { app, tmpRoot } = await launchClosePaneApp(port);
   try {
     await waitForTermId(port, '1', true);
 
@@ -161,14 +115,13 @@ test('POST /api/close-pane の異常系（存在しない termId は 404 / termI
     const states = await getStates(port);
     expect(termIdsOf(states)).toContain('1');
   } finally {
-    if (app) await app.close();
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    await closeApp({ app, tmpRoot });
   }
 });
 
 test('モバイルページ: 終了ボタンと確認ダイアログ（却下でペイン残存 / 承認で終了）', async () => {
   const port = await getFreePort();
-  const { app, tmpRoot } = await launchApp(port);
+  const { app, tmpRoot } = await launchClosePaneApp(port);
   const browser = await chromium.launch();
   try {
     await waitForTermId(port, '1', true);
@@ -206,7 +159,6 @@ test('モバイルページ: 終了ボタンと確認ダイアログ（却下で
     await expect(page.locator('.card', { hasText: 'Terminal 1' })).toBeVisible();
   } finally {
     await browser.close();
-    if (app) await app.close();
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    await closeApp({ app, tmpRoot });
   }
 });

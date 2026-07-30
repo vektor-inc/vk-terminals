@@ -1,8 +1,10 @@
 # Changelog
 
+- [ 仕様変更 ] 設定パネルの「キャンセル」「閉じる」「保存」・ヘッダーの ✕・パスワードの表示切替ボタン・タブの内容領域で、キーボードで選んだときの枠が OS 標準の枠になっていたのを、アプリ内の他の部分と同じ青い枠に統一（[#280](https://github.com/vektor-inc/vk-terminals/issues/280)）
 - [ 仕様変更 ] 設定パネルの説明タブで、押した先に表示できる内容が無い移動ボタンを表示しないように変更（[#275](https://github.com/vektor-inc/vk-terminals/issues/275)）
 - [ 不具合修正 ] 設定パネルで注記だけを表示するタブに「このタブに表示できる設定項目はありません。」の案内が併記され、注記に書いた代わりの設定方法が無効な情報のように見える不具合を修正（[#275](https://github.com/vektor-inc/vk-terminals/issues/275)）
 - [ 不具合修正 ] 設定パネルで設定項目が無いグループだけを持つタブを開くと、グループ名も案内も表示されず枠線だけが表示される不具合を修正（[#275](https://github.com/vektor-inc/vk-terminals/issues/275)）
+- [ 開発環境 ] e2e の全 spec を共通の Electron 起動ヘルパーへ移行し、マシン負荷が高いときの起動待ちタイムアウトによる失敗と、起動に失敗した際の一時ディレクトリ・Electron プロセスの取り残しを解消（[#269](https://github.com/vektor-inc/vk-terminals/issues/269)）
 
 ## 1.49.0
 

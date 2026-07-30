@@ -188,6 +188,15 @@ html, body {
   border-radius: 5px;
 }
 .settings-close:hover { background: #21262d; color: #e6edf3; }
+/* キーボードフォーカス時のリングはアプリ共通の自前リングに揃える（issue #280）。
+   指定が無いと macOS の OS 標準リング（アンバー＋白の二重）になり、同じパネル内の
+   コピーボタンやタブと見え方が食い違う。
+   26×26px と小さいが、実測でモーダル右端まで 19px・上端まで 15px あり、
+   外側 2px（リング外端は 4px 外）でも他の要素と干渉しないため既存と同じ値を使う。 */
+.settings-close:focus-visible {
+  outline: 2px solid #58a6ff;
+  outline-offset: 2px;
+}
 
 /* 設定タブ（descriptor tabs がある場合のみ表示）
    ========================================================================== */
@@ -333,6 +342,19 @@ html, body {
 }
 .settings-tab-panel[hidden] {
   display: none;
+}
+/* tabpanel は tabindex="0" を持つため Tab 順（タブボタンの直後）に止まる。ここが
+   OS 標準リングのままだと、内容領域の全幅・全高に別デザインの枠が出るため、26px の ✕ や
+   34px の表示切替より遥かに目立つ不揃いになる（issue #280）。
+   オフセットは他と同じ外側 2px。このパネルは padding を持たず、実測で中身の
+   .settings-group と左端・幅が完全に一致する（x 439 / 幅 522px）ため、内側にすると
+   リングがグループの枠線に重なってどちらの枠なのか読めなくなる。外側ならグループの
+   枠線との間に 2px の隙間が空いて別々の枠として読め、かつ親 .settings-form の左右
+   padding 18px の中に収まる（リング外端はパネル境界の 4px 外、そこからモーダル端まで
+   なお 14px 残る）。 */
+.settings-tab-panel:focus-visible {
+  outline: 2px solid #58a6ff;
+  outline-offset: 2px;
 }
 .settings-tab-target {
   margin: 0 0 10px;
@@ -735,6 +757,14 @@ h4.settings-content-heading {
   width: 34px;
 }
 .settings-reveal:hover { background: #30363d; }
+/* 34px 幅と小さいが、実測で左の入力欄まで 6px（.settings-pwd の gap）・下の行まで 14px
+   （.settings-row の margin-top）あり、外側 2px（リング外端は 4px 外）でも入力欄の枠にも
+   次の行にも重ならない。内側オフセット（.sidebar-resizer と同じ手）にすると 1px の境界線と
+   密着してボタンが一回り小さく見えるため、ここは他のボタンと同じ外側 2px を使う。 */
+.settings-reveal:focus-visible {
+  outline: 2px solid #58a6ff;
+  outline-offset: 2px;
+}
 .settings-footer {
   display: flex;
   align-items: center;
@@ -775,6 +805,12 @@ h4.settings-content-heading {
      ソース順への依存も生じない。色を書き忘れたボタンが currentColor で描かれる事故も防げる。 */
   border: 1px solid var(--vktm--color--border-override, var(--vktm--color--border-interactive));
   white-space: nowrap;
+}
+/* 「キャンセル」「閉じる」「保存」共通。リングは面の外側に出るため、緑の保存ボタンでも
+   グレーのキャンセルでも同じ見え方になる（バリアントごとの指定は不要）。 */
+.settings-footer button:focus-visible {
+  outline: 2px solid #58a6ff;
+  outline-offset: 2px;
 }
 .settings-cancel {
   background: #21262d;

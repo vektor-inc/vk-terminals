@@ -1,8 +1,8 @@
-const { test, expect, _electron } = require('@playwright/test');
+const { test, expect } = require('@playwright/test');
 const fs = require('fs');
-const net = require('net');
-const os = require('os');
 const path = require('path');
+// 起動〜初期描画待ちは共通ヘルパーへ集約している（issue #263 / #269）。
+const { closeApp, getFreePort, launchApp } = require('./helpers/electron-app');
 
 // issue vektor-inc/vk-orchestrator#212 / PR #264:
 //   「入力待ち」バッジの判定を「PTY 出力が静止した時点」に変更し、
@@ -18,8 +18,6 @@ const path = require('path');
 //   既存 spec と同様に「スクリプトに出力させる」方式を使う。タイプするコマンド行は
 //   スクリプトのパスだけ（ASCII）なので、入力による waiting クリアの影響を受けない。
 
-const repoRoot = path.resolve(__dirname, '..', '..');
-
 // 出力がバッファ（lastLines）へ到達したことを確認するための後続マーカー。
 // タイプするコマンド行には現れず、スクリプトの出力にのみ現れる。
 const READY_MARKER = 'RXREADYMARK';
@@ -27,23 +25,6 @@ const READY_MARKER = 'RXREADYMARK';
 // WAITING_QUIESCENCE_MS = 1500ms）。「waiting にならないこと」を確かめる側は、
 // 判定前に見て通ってしまわないよう、静止時間より十分長く待ってから確認する。
 const QUIESCENCE_SETTLE_MS = 4000;
-
-async function getFreePort() {
-  // OS に空きポートを割り当てさせ、取得後に閉じて Electron 側で再利用する。
-  return await new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.on('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address();
-      const port = typeof address === 'object' && address ? address.port : null;
-      server.close((err) => {
-        if (err) { reject(err); return; }
-        if (!port) { reject(new Error('failed to allocate a free port')); return; }
-        resolve(port);
-      });
-    });
-  });
-}
 
 async function postSetStatus(port, waiting) {
   // termId "1" は起動時に renderer が作る最初のペインの PTY。
@@ -77,29 +58,9 @@ async function waitForPtyRegistration(port) {
   throw lastError || new Error('terminal 1 was not registered in time');
 }
 
-// 一時 HOME を用意する（loadUserConfig() は HOME 配下の .vk-terminals/config.json を読むため、
-// HOME を一時化して実ユーザー設定に依存させない）。
-function makeTempHome() {
-  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-'));
-  const tmpHome = path.join(tmpRoot, 'home');
-  const configDir = path.join(tmpHome, '.vk-terminals');
-  fs.mkdirSync(configDir, { recursive: true });
-  return { tmpRoot, tmpHome, configPath: path.join(configDir, 'config.json') };
-}
-
-// 一時 HOME 配下へ config.json を書き出す。
-// waitingExcludeCwdPatterns には「絶対に一致しない」値を入れ、cwd 除外が
+// config の waitingExcludeCwdPatterns には「絶対に一致しない」値を入れ、cwd 除外が
 // 発動しない（＝ waiting 判定が素通しで効く）状況を明示的に作る。
-function writeConfig(configPath, extraConfig) {
-  fs.writeFileSync(configPath, JSON.stringify({
-    apiHost: '127.0.0.1',
-    initialCommand: '',
-    agentroom: false,
-    additionalPanes: [],
-    waitingExcludeCwdPatterns: ['__never_matches_this_path_zzz__'],
-    ...extraConfig,
-  }), 'utf8');
-}
+const NO_CWD_EXCLUSION = { waitingExcludeCwdPatterns: ['__never_matches_this_path_zzz__'] };
 
 // 任意の本文を「出力」させるシェルスクリプトを書き出す。
 // 本文の後に READY_MARKER を出して、判定バッファまで到達したことを検知できるようにする。
@@ -110,20 +71,17 @@ function writeEchoScript(tmpRoot, name, bodyLines) {
   return scriptPath;
 }
 
-async function launchApp(tmpHome, port, extraEnv) {
-  return await _electron.launch({
-    // claude の有無に依存させないため素のシェルで開く。
-    args: ['.', '--no-claude'],
-    cwd: repoRoot,
-    env: {
-      ...process.env,
-      HOME: tmpHome,
-      USERPROFILE: tmpHome,
-      VK_TERMINALS_API_PORT: String(port),
-      // 実行環境から継承される VK_TERMINALS_SETTINGS を打ち消し、常に組み込みディスクリプタを使わせる。
-      VK_TERMINALS_SETTINGS: '',
-      ...extraEnv,
-    },
+// 一時 HOME（loadUserConfig() が読む .vk-terminals/config.json の置き場）の用意と、
+// claude の有無に依存させない素のシェル（--no-claude）での起動はヘルパーが行う。
+// 実行環境から継承される VK_TERMINALS_SETTINGS の打ち消しもヘルパーの既定なので、
+// 常に組み込みディスクリプタが使われる。
+async function launchWaitingApp(port) {
+  return await launchApp({
+    port,
+    // 元は共通の 'vk-terminals-e2e-' だったが、失敗時に取り残しの出どころが分かるよう
+    // spec 名を含む接頭辞にしている。
+    prefix: 'vk-terminals-e2e-waiting-quiescence-',
+    config: NO_CWD_EXCLUSION,
   });
 }
 
@@ -178,14 +136,10 @@ async function measureWaitingOnset(win, timeoutMs = 20_000) {
 
 test('本物の確認待ち（Proceed?）は、出力が静止してから waiting になる', async () => {
   const port = await getFreePort();
-  const { tmpRoot, tmpHome, configPath } = makeTempHome();
-  writeConfig(configPath, {});
+  const { app, win, tmpRoot } = await launchWaitingApp(port);
   // WAITING_PATTERNS の /Proceed\?/i に一致する ASCII の確認待ち文言。
   const scriptPath = writeEchoScript(tmpRoot, 'prompt-ascii.sh', ['Proceed?']);
-  let app;
   try {
-    app = await launchApp(tmpHome, port);
-    const win = await app.firstWindow();
     const { pane, status } = await prepareFirstPane(win, port);
 
     await runScript(win, scriptPath);
@@ -205,21 +159,16 @@ test('本物の確認待ち（Proceed?）は、出力が静止してから waiti
     // バッジの文言も確認する（橙の「入力待ち」表示）。
     await expect(status).toHaveText('入力待ち');
   } finally {
-    if (app) await app.close();
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    await closeApp({ app, tmpRoot });
   }
 });
 
 test('本物の確認待ち（日本語「入力をお待ちしています。」）も waiting になる', async () => {
   const port = await getFreePort();
-  const { tmpRoot, tmpHome, configPath } = makeTempHome();
-  writeConfig(configPath, {});
+  const { app, win, tmpRoot } = await launchWaitingApp(port);
   // 許可リスト方式の待ち対象名詞「入力」に一致するユーザー宛ての確認待ち文言。
   const scriptPath = writeEchoScript(tmpRoot, 'prompt-ja.sh', ['入力をお待ちしています。']);
-  let app;
   try {
-    app = await launchApp(tmpHome, port);
-    const win = await app.firstWindow();
     const { pane, status } = await prepareFirstPane(win, port);
 
     await runScript(win, scriptPath);
@@ -230,15 +179,13 @@ test('本物の確認待ち（日本語「入力をお待ちしています。�
     await expect(pane).toHaveClass(/\bwaiting\b/, { timeout: 15_000 });
     await expect(status).toHaveAttribute('data-status', 'waiting');
   } finally {
-    if (app) await app.close();
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    await closeApp({ app, tmpRoot });
   }
 });
 
 test('第三者宛ての進捗ナレーション（「〜の修正を待っています。」）では waiting にならない', async () => {
   const port = await getFreePort();
-  const { tmpRoot, tmpHome, configPath } = makeTempHome();
-  writeConfig(configPath, {});
+  const { app, win, tmpRoot } = await launchWaitingApp(port);
   // 待つ対象が「修正」= 第三者（サブエージェント）の成果物なので、
   // 許可リスト（入力・選択・承認…）に載っておらず一致してはいけない。
   const scriptPath = writeEchoScript(tmpRoot, 'narration.sh', [
@@ -246,10 +193,7 @@ test('第三者宛ての進捗ナレーション（「〜の修正を待って�
     'CI の完了を待っています。',
     'サブエージェントの応答を待っています',
   ]);
-  let app;
   try {
-    app = await launchApp(tmpHome, port);
-    const win = await app.firstWindow();
     const { pane, status } = await prepareFirstPane(win, port);
 
     await runScript(win, scriptPath);
@@ -263,15 +207,13 @@ test('第三者宛ての進捗ナレーション（「〜の修正を待って�
     await expect(pane).not.toHaveClass(/\bwaiting\b/);
     await expect(status).not.toHaveAttribute('data-status', 'waiting');
   } finally {
-    if (app) await app.close();
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    await closeApp({ app, tmpRoot });
   }
 });
 
 test('waiting 点灯後にユーザー入力なしで出力を流し続けると、出力量に依らず上限間隔で自動解除される', async () => {
   const port = await getFreePort();
-  const { tmpRoot, tmpHome, configPath } = makeTempHome();
-  writeConfig(configPath, {});
+  const { app, win, tmpRoot } = await launchWaitingApp(port);
   // 「点灯 → 出力継続 → 自動解除」を **1 回のコマンド入力だけ** で再現する。
   // 途中でユーザーがキー入力すると markPaneInput() が waiting を即クリアしてしまい、
   // 「出力による自動解除」を検証したことにならないため、点灯待ちの sleep も
@@ -300,10 +242,7 @@ test('waiting 点灯後にユーザー入力なしで出力を流し続けると
     '',
   ].join('\n'), 'utf8');
 
-  let app;
   try {
-    app = await launchApp(tmpHome, port);
-    const win = await app.firstWindow();
     const { pane, status } = await prepareFirstPane(win, port);
 
     await runScript(win, scriptPath);
@@ -346,7 +285,6 @@ test('waiting 点灯後にユーザー入力なしで出力を流し続けると
     // 出力が流れている最中の解除なので、idle ではなく running（実行中）へ戻る。
     await expect(status).toHaveAttribute('data-status', 'running');
   } finally {
-    if (app) await app.close();
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    await closeApp({ app, tmpRoot });
   }
 });

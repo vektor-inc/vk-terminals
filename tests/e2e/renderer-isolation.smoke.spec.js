@@ -22,7 +22,6 @@ test.describe.serial('renderer の隔離（issue #268）', () => {
     ({ app, win, tmpRoot } = await launchAppAndWait({
       port,
       prefix: 'vk-terminals-e2e-isolation-',
-      env: { VK_TERMINALS_APP_TITLE: '', VK_TERMINALS_SETTINGS: '' },
     }));
   });
 
@@ -265,7 +264,6 @@ test('xterm を読み込めないときは無言の空画面にせず、理由�
   const launched = await launchAppAndWait({
     port,
     prefix: 'vk-terminals-e2e-boot-failure-',
-    env: { VK_TERMINALS_APP_TITLE: '', VK_TERMINALS_SETTINGS: '' },
   });
   try {
     // 正常に起動できていることを先に確かめる（この後の失敗が仕込みによるものだと分かる）。

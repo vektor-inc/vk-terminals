@@ -1,8 +1,6 @@
-const { test, expect, _electron, chromium } = require('@playwright/test');
-const fs = require('fs');
-const net = require('net');
-const os = require('os');
-const path = require('path');
+const { test, expect, chromium } = require('@playwright/test');
+// 起動〜初期描画待ちは共通ヘルパーへ集約している（issue #263 / #269）。
+const { closeApp, getFreePort, launchApp } = require('./helpers/electron-app');
 
 // issue #218: モバイル版に Codex CLI の使用量カードを表示する変更の end-to-end 確認。
 //   - /api/states に codexUsage を additive に載せ、mobile.html の renderCodexUsage が
@@ -10,25 +8,6 @@ const path = require('path');
 //   - codexUsage が null / empty のときはカードごと非表示（Codex 未使用ユーザー）になる。
 // /api/states を route で差し替え、renderer 側の描画だけを検証する（PC 版サイドバー
 // smoke（sidebar-codex-usage.smoke.spec.js）とモバイルで対称の確認）。
-
-const repoRoot = path.resolve(__dirname, '..', '..');
-
-async function getFreePort() {
-  // OS に空きポートを割り当てさせ、取得後に閉じて Electron 側で再利用する。
-  return await new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.on('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address();
-      const port = typeof address === 'object' && address ? address.port : null;
-      server.close((err) => {
-        if (err) { reject(err); return; }
-        if (!port) { reject(new Error('failed to allocate a free port')); return; }
-        resolve(port);
-      });
-    });
-  });
-}
 
 // HTTP サーバー（/api/states）が応答するまで node 側 fetch で待つ。
 // page.route はブラウザ内リクエストのみ差し替えるため、この node fetch は実サーバーに届く。
@@ -47,36 +26,13 @@ async function waitForServer(port, timeoutMs = 20_000) {
 }
 
 // 一時 HOME を用意して Electron を素のシェル（--no-claude）で起動する。
-async function launchApp(port) {
-  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-mobile-codex-'));
-  const tmpHome = path.join(tmpRoot, 'home');
-  const configDir = path.join(tmpHome, '.vk-terminals');
-  const configPath = path.join(configDir, 'config.json');
-  fs.mkdirSync(configDir, { recursive: true });
-  fs.writeFileSync(configPath, JSON.stringify({
-    apiHost: '127.0.0.1',
-    initialCommand: '',
-    agentroom: false,
-    additionalPanes: [],
-  }), 'utf8');
-
-  const app = await _electron.launch({
-    args: ['.', '--no-claude'],
-    cwd: repoRoot,
-    env: {
-      ...process.env,
-      HOME: tmpHome,
-      USERPROFILE: tmpHome,
-      VK_TERMINALS_API_PORT: String(port),
-    },
-  });
-  await app.firstWindow();
-  return { app, tmpRoot };
+async function launchCodexUsageApp(port) {
+  return await launchApp({ port, prefix: 'vk-terminals-e2e-mobile-codex-' });
 }
 
 test('モバイル: codexUsage があると Codex 使用量カードにセッション/週間バーとトークン数が表示される', async () => {
   const port = await getFreePort();
-  const { app, tmpRoot } = await launchApp(port);
+  const { app, tmpRoot } = await launchCodexUsageApp(port);
   const browser = await chromium.launch();
   try {
     const context = await browser.newContext({
@@ -133,14 +89,13 @@ test('モバイル: codexUsage があると Codex 使用量カードにセッシ
     await expect(page.locator('#co-tokens-weekly')).toHaveText('今週 345k トークン');
   } finally {
     await browser.close();
-    if (app) await app.close();
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    await closeApp({ app, tmpRoot });
   }
 });
 
 test('モバイル: codexUsage が empty / null のとき Codex 使用量カードは非表示になる', async () => {
   const port = await getFreePort();
-  const { app, tmpRoot } = await launchApp(port);
+  const { app, tmpRoot } = await launchCodexUsageApp(port);
   const browser = await chromium.launch();
   try {
     const context = await browser.newContext({
@@ -180,7 +135,6 @@ test('モバイル: codexUsage が empty / null のとき Codex 使用量カー�
     await expect(card).toBeHidden();
   } finally {
     await browser.close();
-    if (app) await app.close();
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    await closeApp({ app, tmpRoot });
   }
 });

@@ -1,8 +1,6 @@
-const { test, expect, _electron } = require('@playwright/test');
-const fs = require('fs');
-const net = require('net');
-const os = require('os');
-const path = require('path');
+const { test, expect } = require('@playwright/test');
+// 起動〜初期描画待ちは共通ヘルパーへ集約している（issue #263 / #269）。
+const { closeApp, getFreePort, launchApp } = require('./helpers/electron-app');
 
 // PR #117 / issue #112: サイドバー格納ペインのヘッダーを2段化
 // （1段目=タイトル行 / 2段目=ステータスバッジ＋操作アイコン行）し、
@@ -11,25 +9,6 @@ const path = require('path');
 //   - prUrl 設定時に PR バッジが出るか
 //   - url 設定時にタイトルがリンク化されるか
 //   - 既存の操作ボタン（↑↓／xterm開閉／グリッドへ戻す／閉じる）が機能するか（デグレ確認）
-
-const repoRoot = path.resolve(__dirname, '..', '..');
-
-async function getFreePort() {
-  // OS に空きポートを割り当てさせ、取得後に閉じて Electron 側で再利用する。
-  return await new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.on('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address();
-      const port = typeof address === 'object' && address ? address.port : null;
-      server.close((err) => {
-        if (err) { reject(err); return; }
-        if (!port) { reject(new Error('failed to allocate a free port')); return; }
-        resolve(port);
-      });
-    });
-  });
-}
 
 async function postJson(port, pathname, payload) {
   const res = await fetch(`http://127.0.0.1:${port}${pathname}`, {
@@ -88,37 +67,13 @@ async function ensureSidebarOpen(win) {
 }
 
 // 一時 HOME を用意して Electron を素のシェル（--no-claude）で起動する。
-async function launchApp(port) {
-  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-stash-header-'));
-  const tmpHome = path.join(tmpRoot, 'home');
-  const configDir = path.join(tmpHome, '.vk-terminals');
-  const configPath = path.join(configDir, 'config.json');
-  fs.mkdirSync(configDir, { recursive: true });
-  fs.writeFileSync(configPath, JSON.stringify({
-    apiHost: '127.0.0.1',
-    initialCommand: '',
-    confirmClose: 'never',
-    agentroom: false,
-    additionalPanes: [],
-  }), 'utf8');
-
-  const app = await _electron.launch({
-    args: ['.', '--no-claude'],
-    cwd: repoRoot,
-    env: {
-      ...process.env,
-      HOME: tmpHome,
-      USERPROFILE: tmpHome,
-      VK_TERMINALS_API_PORT: String(port),
-    },
-  });
-  const win = await app.firstWindow();
-  return { app, win, tmpRoot };
+async function launchStashHeaderApp(port) {
+  return await launchApp({ port, prefix: 'vk-terminals-e2e-stash-header-', config: { confirmClose: 'never' } });
 }
 
 test('格納カードのヘッダーが2段（タイトル行/操作行）になり、PRバッジ・タイトルリンクが表示される', async () => {
   const port = await getFreePort();
-  const { app, win, tmpRoot } = await launchApp(port);
+  const { app, win, tmpRoot } = await launchStashHeaderApp(port);
   try {
     // 起動直後の最初のペイン（termId "1"）が登録されるまで待つ。
     await waitForTermId(port, '1', true);
@@ -215,14 +170,13 @@ test('格納カードのヘッダーが2段（タイトル行/操作行）にな
     // 最初のペインは残っている。
     expect(termIdsOf(await getStates(port))).toContain('1');
   } finally {
-    if (app) await app.close();
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    await closeApp({ app, tmpRoot });
   }
 });
 
 test('格納カード: マージ済み PR バッジは格納後も紫表示とチェックアイコンを維持する', async () => {
   const port = await getFreePort();
-  const { app, win, tmpRoot } = await launchApp(port);
+  const { app, win, tmpRoot } = await launchStashHeaderApp(port);
   try {
     await waitForTermId(port, '1', true);
 
@@ -252,14 +206,13 @@ test('格納カード: マージ済み PR バッジは格納後も紫表示と�
     await expect(prBadge).toHaveAttribute('aria-label', 'マージ済みのプルリクエストを開く（外部ブラウザ）');
     await expect(prBadge.locator('.pane-task-title-pr-icon')).toHaveText('✓');
   } finally {
-    if (app) await app.close();
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    await closeApp({ app, tmpRoot });
   }
 });
 
 test('格納カード: ↑↓で並べ替えできる（デグレ確認）', async () => {
   const port = await getFreePort();
-  const { app, win, tmpRoot } = await launchApp(port);
+  const { app, win, tmpRoot } = await launchStashHeaderApp(port);
   try {
     await waitForTermId(port, '1', true);
 
@@ -295,7 +248,6 @@ test('格納カード: ↑↓で並べ替えできる（デグレ確認）', asy
     const after = await getOrder();
     expect(after.indexOf(paneDomId2)).toBeLessThan(after.indexOf(paneDomId1));
   } finally {
-    if (app) await app.close();
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    await closeApp({ app, tmpRoot });
   }
 });

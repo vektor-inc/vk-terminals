@@ -129,7 +129,7 @@ function matrixDescriptor() {
 const PANEL = (index) => `#settings-panel-${index}`;
 const TAB = (index) => `#settings-tab-${index}`;
 
-test.describe.serial('重複除去で空になったタブの案内と導線（PR #272 の副作用側）', () => {
+test.describe.serial('重複除去で空になったタブの案内と導線（PR #272 / issue #275）', () => {
   let app;
   let win;
   let tmpRoot;

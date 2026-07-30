@@ -274,8 +274,11 @@ function normalizeSettingsTabs(desc) {
         label: (typeof tab.label === 'string' && tab.label.trim()) ? tab.label : tab.id,
         index,
       };
-      if (typeof tab.note === 'string' && tab.note.trim()) {
-        normalizedTab.note = tab.note;
+      // 空タブ判定（noteByTabId）と同じ非空判定を使う。trim せず元の文字列を引き継ぐため、
+      // 前後に空白を含む note もそのまま表示される。
+      const note = nonEmptyString(tab.note);
+      if (note) {
+        normalizedTab.note = note;
       }
       const content = contentByTabId.get(tab.id) || [];
       if (content.length) {

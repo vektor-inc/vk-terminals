@@ -1,12 +1,21 @@
 // 設定パネルの e2e で使う window.VKIpc.invoke の差し替えヘルパー（issue #293）。
 //
-// 設定パネル系の 4 spec は「window.VKIpc.invoke を退避してテスト用の応答へ差し替え、
+// 設定パネル系の spec は「window.VKIpc.invoke を退避してテスト用の応答へ差し替え、
 // afterEach で元へ戻す」という同じ骨格を spec ごとに写して持っていた。差し替え先が
 // window.VKIpc なのは、preload が contextBridge で公開した window.vkBridge を renderer から
 // 書き換えられないため（issue #268）で、この「どこを差し替えるか」の判断は今後 IPC 経路を
-// 変えるたびに見直す対象になる。写しのままだと 4 箇所を同時に直す必要があり、直し漏れた
+// 変えるたびに見直す対象になる。写しのままだと全箇所を同時に直す必要があり、直し漏れた
 // spec は差し替えが効かないまま実 IPC を叩いて（＝実 HOME の設定ファイルを触りながら）
-// 静かに通ってしまう。骨格をここへ一本化し、直す場所を 1 箇所にする。
+// 静かに通ってしまう。骨格をここへ集約し、直す場所を減らしていく。
+//
+// ただし移行はまだ途中で、「ここ 1 箇所を直せば済む」状態には達していない。issue #293 で
+// 移行したのは次の 4 spec だけ:
+//   settings-code-wrap / settings-mobile-guide-tab / settings-empty-tab-guidance /
+//   settings-focus-ring
+// 同じ骨格（describe を差し替えて save の payload を積む形）は次の 4 spec に残っており、
+// 順次こちらへ移行する予定:
+//   settings-duplicate-key / settings-pattern-validation / settings-tabs / settings-visible-when
+// したがって差し替えの方式を変えるときは、このファイルだけでなく上記 4 spec も併せて直す。
 //
 // 一方で、写しに見えた 3 つの差し込み処理は挙動が別物であり、統合してはいけない。
 //   - settings:describe を差し替えるか（保存の遅延だけを見る spec は組み込みスキーマを使う）
@@ -83,7 +92,11 @@ async function installDescriptorRecordingSaves(win, descriptor) {
 // 「応答が返ってきた時点では既にモーダルが閉じられている」状況をこれで再現する。
 // settings:describe は差し替えないため、描画されるのは組み込みスキーマのまま
 // （このスタブの本体は遅延であって、定義の差し替えではない）。
+//
+// 遅延こそがこの入口の本体なので、delayMs を渡し忘れたら黙って遅延ゼロにせず落とす
+// （即応答になると「閉じた後に応答が返る」状況が再現されず、テストが素通りする）。
 async function stubSlowSave(win, delayMs) {
+  if (typeof delayMs !== 'number') throw new Error('stubSlowSave: delayMs は必須');
   await installInvokeStub(win, {
     saveDelayMs: delayMs,
     passthroughOtherChannels: true,
@@ -106,8 +119,15 @@ async function restoreInvoke(win) {
   });
 }
 
-// 記録した payload の読み出し。window.__savedPayloads はこのヘルパーの実装詳細なので、
-// spec 側から直接触らせない（記録先の名前を変えるときに spec を追いかけずに済む）。
+// 記録した payload の読み出し。移行済みの spec は window.__savedPayloads を直接触らず
+// ここを通す（記録先の名前を変えるときに追う範囲を狭めるため）。ただし未移行の 4 spec は
+// 今も window.__savedPayloads を直接読み書きしているので、名前を変えるならそちらも直す。
+//
+// savedPayloads は現時点でどの spec からも呼ばれていないが、消さない。lastSavedPayload では
+// 「保存が 1 度も呼ばれていない（0 件）」も「先頭の 1 件」も表せず、未移行の
+// settings-pattern-validation / settings-tabs / settings-visible-when が実際にその 2 つを
+// 見ている。読み出し口をこれだけにすると、移行時に再び window.__savedPayloads を直接
+// 触る形へ戻ってしまう。
 const savedPayloads = (win) => win.evaluate(() => (window.__savedPayloads || []).slice());
 const lastSavedPayload = (win) => win.evaluate(
   () => window.__savedPayloads[window.__savedPayloads.length - 1]

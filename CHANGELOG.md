@@ -1,6 +1,6 @@
 # Changelog
 
-- [ 開発環境 ] 設定パネル系 e2e の設定データ差し込み処理を共通ヘルパーへ集約し、保存内容の記録・保存応答の遅延・実 IPC への委譲といった spec ごとの違いが呼び出し側から読み取れるように変更（[#293](https://github.com/vektor-inc/vk-terminals/issues/293)）
+- [ 開発環境 ] 設定パネル系 e2e の設定データ差し込み処理を共通ヘルパーへ集約（[#293](https://github.com/vektor-inc/vk-terminals/issues/293)）
 
 ## 1.50.0
 

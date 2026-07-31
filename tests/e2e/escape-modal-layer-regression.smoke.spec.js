@@ -67,9 +67,11 @@ test.describe.serial('Escape レイヤー導入後のデグレ確認（issue #25
 
   // 各テストはサイドバー・モーダルの状態を前提にするため、開始時に必ず揃える。
   test.beforeEach(async () => {
+    // 重なっている場合は最前面から閉じる。issue #282 で背後は inert になるため、
+    // 下のモーダルの ✕ を先に押しても届かない。
     await win.evaluate(() => {
-      document.querySelector('.settings-close')?.click();
       document.querySelector('.confirm-cancel')?.click();
+      document.querySelector('.settings-close')?.click();
     });
     await expect(win.locator('.settings-modal')).toHaveCount(0);
     await expect(win.locator('.confirm-overlay')).toHaveCount(0);
@@ -90,28 +92,38 @@ test.describe.serial('Escape レイヤー導入後のデグレ確認（issue #25
     await expect.poll(() => sawEscapeInput(app)).toBe(true);
   });
 
-  test('設定パネルが開いている間はターミナルへ Escape を通さない', async () => {
+  // 【経緯】#257 の時点ではパネルを開いたままターミナルへフォーカスを移せたため、
+  // 「パネル外にフォーカスがある状態の Escape」を再現して見張りの効きを確かめていた。
+  // #282 でフォーカストラップが入り、背後（ペイン領域）が inert になってその状態自体を
+  // 作れなくなったので、確認内容を「フォーカスも Escape も背後へ届かない」へ改めた。
+  test('設定パネルが開いている間はターミナルへフォーカスも Escape も通さない', async () => {
+    const paneId = await win.evaluate(() => document.querySelector('.pane')?.dataset.id || '');
+    expect(paneId).not.toBe('');
     await win.locator('#settings-btn').click();
     await expect(win.locator('.settings-modal')).toBeVisible();
 
-    // パネルを開いたままターミナルへフォーカスを移し、そこで Escape を押す。
+    // 背後が inert なので、直接 focus() を呼んでもターミナルへは入らない。
+    await win.locator(`.pane[data-id="${paneId}"] .xterm-helper-textarea`)
+      .evaluate((textarea) => textarea.focus());
+    expect(
+      await win.evaluate(() => Boolean(document.activeElement?.closest('.settings-modal'))),
+      'パネル表示中にフォーカスがターミナルへ抜けた'
+    ).toBe(true);
+
     // capture フェーズの見張りが先に消費するため、PTY へは何も送られない。
-    await focusTerminal(win);
     await resetTerminalInputSpy(app);
     await win.keyboard.press('Escape');
 
     await expect(win.locator('.settings-modal')).toHaveCount(0);
     expect(await sawEscapeInput(app)).toBe(false);
-    // フォーカスがパネルの外にあったので、歯車ボタンへは引き戻さない。
     await expect(win.locator('#root')).toHaveClass(/\bsidebar-open\b/);
+    // 閉じる時点でフォーカスはパネル内にあるため、操作元の歯車へ戻る。
+    // サイドバーが誤って閉じた場合の遅延フォーカス（約 220ms）を越えても変わらない。
     await win.waitForTimeout(400);
-    const activeId = await win.evaluate(
-      () => (document.activeElement && document.activeElement.id) || ''
-    );
-    expect(activeId).not.toBe('settings-btn');
-    expect(activeId).not.toBe('menu-btn');
+    await expect(win.locator('#settings-btn')).toBeFocused();
 
-    // 閉じたあとは見張りが外れ、同じ操作で再び ESC が PTY へ届く。
+    // 閉じたあとは見張りも inert も外れ、同じ操作で再び ESC が PTY へ届く。
+    await focusTerminal(win);
     await resetTerminalInputSpy(app);
     await win.keyboard.press('Escape');
     await expect.poll(() => sawEscapeInput(app)).toBe(true);

@@ -146,6 +146,13 @@ html, body {
   font-size: 13px;
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
 }
+/* パネル本体は開いたときの着地点（tabindex="-1"）で、押せる対象ではない。
+   枠を出すとパネル全体が OS 標準のリングで囲まれ、issue #280 で揃えた青いリングと
+   食い違って見える。どこにいるかはダイアログ名の読み上げと、続く Tab の停止位置で伝わる。
+   タスク編集パネル（.task-edit-panel）と同じ扱い（issue #282）。 */
+.settings-modal:focus {
+  outline: none;
+}
 .settings-header {
   display: flex;
   align-items: center;

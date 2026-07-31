@@ -122,7 +122,7 @@ test('initialFocus を指定すると先頭ではなくそこへフォーカス�
   assert.equal(doc.activeElement, buttons.closePane);
 });
 
-test('initialFocus が Tab で止まれない要素なら先頭の操作対象へ落とす', () => {
+test('initialFocus が focus できない要素なら先頭の操作対象へ落とす', () => {
   const { doc, modal, buttons } = createScreen();
   buttons.save.disabled = true;
   const traps = createFocusTrapStack(doc);
@@ -130,6 +130,44 @@ test('initialFocus が Tab で止まれない要素なら先頭の操作対象�
   traps.activate(modal, { initialFocus: buttons.save });
 
   assert.equal(doc.activeElement, buttons.close);
+});
+
+test('initialFocus に tabindex="-1" の着地点を渡すとそこへ入る', () => {
+  // 設定パネルは Tab の停止位置ではないパネル本体を着地点にする（マウスで開いたときに
+  // リングが見えないまま閉じるボタンが選ばれるのを避けるため）。Tab で止まれるかどうかで
+  // 判定すると、ここで弾かれて先頭のボタンへ落ちてしまう。
+  const { doc, modal, buttons } = createScreen();
+  modal.attributes.tabindex = '-1';
+  const traps = createFocusTrapStack(doc);
+
+  traps.activate(modal, { initialFocus: modal });
+
+  assert.equal(doc.activeElement, modal);
+  // 着地点自身は Tab の停止位置に混ざらない（最初の Tab は先頭のボタンへ進む）。
+  doc.dispatchKey('Tab');
+  assert.equal(doc.activeElement, buttons.close);
+  // 着地点からの Shift+Tab は末尾へ入れる（ブラウザ既定の巻き戻り先に委ねない）。
+  modal.focus();
+  doc.dispatchKey('Tab', { shiftKey: true });
+  assert.equal(doc.activeElement, buttons.save);
+});
+
+test('初期フォーカスで例外が出たら、トラップを巻き戻してから投げ直す', () => {
+  // 解除関数を受け取れないまま抜けると、背後の inert を外す手段が無くなる。
+  const { doc, titlebar, root, modal, buttons } = createScreen();
+  const failure = new Error('focus failed');
+  buttons.close.focus = () => { throw failure; };
+  const traps = createFocusTrapStack(doc);
+
+  assert.throws(() => traps.activate(modal), (error) => error === failure);
+
+  assert.equal(titlebar.inert, false);
+  assert.equal(root.inert, false);
+  assert.equal(doc.listeners.capture.length, 0);
+  // トラップも残っていない（次に開くモーダルが最前面として扱われる）。
+  buttons.save.focus();
+  const event = doc.dispatchKey('Tab');
+  assert.equal(event.defaultPrevented, false);
 });
 
 test('末尾で Tab を押すと先頭へ、先頭で Shift+Tab を押すと末尾へ循環する', () => {

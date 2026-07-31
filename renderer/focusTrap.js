@@ -13,6 +13,12 @@
 // から引き直すので、モーダルが 2 枚重なった状態で最前面だけを閉じても、下のモーダルが
 // inert のまま取り残される（＝閉じたのに操作できない）事故が起きない。
 //
+// ※ inert を引き直すのはトラップの増減時だけなので、**トラップ中に document.body 直下へ
+//    追加された要素は inert にならない**。現状これに当たるのはペイン D&D のドロップ位置
+//    表示（#pane-drop-indicator）だけで、pointer-events: none かつフォーカスできないため
+//    実害は無い。将来ここへ操作できる要素を足す場合は、この経路が抜け道になる
+//    （Tab はキー操作側のトラップが拾うので循環からは漏れないが、inert は当たらない）。
+//
 // 解除関数は escapeLayer.js と同じく「閉じる処理の最初の方で呼ぶ」前提。inert が残ったまま
 // では復帰先へ focus() しても空振りするため、フォーカスを戻すより前に必ず呼ぶこと。
 //
@@ -44,21 +50,35 @@ const FOCUSABLE_SELECTOR = [
   '[tabindex]',
 ].join(',');
 
-function isTabbable(element) {
+// focus() で当てられるか。tabindex="-1" は「Tab では止まらないが focus はできる」ので
+// ここでは弾かない。モーダル本体のような着地点専用の要素を initialFocus に渡せるようにする。
+//
+// 既知の穴（いずれも現在の DOM に該当が無いので割り切っている）:
+//   - visibility: hidden / opacity: 0 は矩形を持つため通ってしまう
+//   - <summary> は selector に載せていないので拾えない
+//   - contenteditable="false" は selector に載るが編集不可なので本来は停止位置ではない
+//   - <fieldset disabled> 配下の子は自身の disabled が false のまま通ってしまう
+//     （設定パネルは .settings-group を fieldset に使っているが disabled は付けていない）
+function isFocusable(element) {
   if (!element) return false;
   if (element.disabled === true) return false;
   if (element.inert === true) return false;
+  // hidden 属性・display:none（非表示のタブパネル、隠した保存ボタン）はここで落とす。
+  // offsetParent ではなく矩形の有無を見るのは、position:fixed の要素でも正しく判定するため。
+  if (typeof element.getClientRects === 'function' && element.getClientRects().length === 0) {
+    return false;
+  }
+  return true;
+}
+
+function isTabbable(element) {
+  if (!isFocusable(element)) return false;
   // tabindex="-1" は「プログラムからは当てられるが Tab では止まらない」。設定パネルの
   // 非アクティブなタブボタンがこれに当たる（矢印キーで移動する tablist のため）。
   const tabIndexAttr = typeof element.getAttribute === 'function'
     ? element.getAttribute('tabindex')
     : null;
   if (tabIndexAttr !== null && Number(tabIndexAttr) < 0) return false;
-  // hidden 属性・display:none（非表示のタブパネル、隠した保存ボタン）はここで落とす。
-  // offsetParent ではなく矩形の有無を見るのは、position:fixed の要素でも正しく判定するため。
-  if (typeof element.getClientRects === 'function' && element.getClientRects().length === 0) {
-    return false;
-  }
   return true;
 }
 
@@ -129,6 +149,14 @@ function createFocusTrapStack(documentRef) {
       (event.shiftKey ? last : first).focus();
       return;
     }
+    if (active === trap.container) {
+      // tabindex="-1" の着地点（モーダル本体）にいる状態。ここからの Shift+Tab の行き先は
+      // ブラウザ既定では「背後がすべて inert のときにどこへ巻き戻るか」に委ねられるため、
+      // 前後どちらへ進むかを明示して結果を固定する。
+      event.preventDefault();
+      (event.shiftKey ? last : first).focus();
+      return;
+    }
     if (event.shiftKey && active === first) {
       event.preventDefault();
       last.focus();
@@ -144,8 +172,8 @@ function createFocusTrapStack(documentRef) {
     // focus() が空振りする）。
     //
     // options.initialFocus に要素を渡すと、そこへ初期フォーカスを入れる（確認ダイアログの
-    // 「キャンセル」のように、先頭ではなく安全側の選択肢を既定にしたい場合に使う）。
-    // 省略時は先頭の操作対象へ入れる。
+    // 「キャンセル」のように安全側の選択肢を既定にしたい場合や、設定パネルのように
+    // tabindex="-1" のモーダル本体を着地点にしたい場合に使う）。省略時は先頭の操作対象へ入れる。
     activate(container, options = {}) {
       if (!container || typeof container.querySelectorAll !== 'function') {
         throw new TypeError('container must be an element');
@@ -157,16 +185,9 @@ function createFocusTrapStack(documentRef) {
         documentRef.addEventListener('keydown', onKeyDown, true);
         listening = true;
       }
-      // 初期フォーカスより先に inert を引く。背後にフォーカスが残ったままだと、
-      // inert を付けた時点でブラウザがそれを外し、行き先が body へ落ちてしまう。
-      applyInert();
-
-      const requested = options.initialFocus;
-      const initial = requested && isTabbable(requested) ? requested : collectTabbable(container)[0];
-      if (initial && typeof initial.focus === 'function') initial.focus();
 
       let active = true;
-      return () => {
+      const release = () => {
         if (!active) return false;
         active = false;
 
@@ -180,6 +201,28 @@ function createFocusTrapStack(documentRef) {
         }
         return true;
       };
+
+      // 解除関数は inert を引く前に組み立てておく。ここから先で例外が出ると呼び出し側は
+      // 解除関数を受け取れず、背後が inert のまま外す手段が無くなる（アプリの再起動以外に
+      // 復帰路が無い）ため、自分で巻き戻してから例外を投げ直す。
+      try {
+        // 初期フォーカスより先に inert を引く。背後にフォーカスが残ったままだと、
+        // inert を付けた時点でブラウザがそれを外し、行き先が body へ落ちてしまう。
+        applyInert();
+
+        const requested = options.initialFocus;
+        // 判定は isTabbable ではなく isFocusable。tabindex="-1" の着地点を渡されたときに
+        // 弾いて先頭の操作対象へ落としてしまうと、指定した意味が無くなる。
+        const initial = requested && isFocusable(requested)
+          ? requested
+          : collectTabbable(container)[0];
+        if (initial && typeof initial.focus === 'function') initial.focus();
+      } catch (error) {
+        release();
+        throw error;
+      }
+
+      return release;
     },
   };
 }

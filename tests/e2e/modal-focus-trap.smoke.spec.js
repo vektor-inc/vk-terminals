@@ -60,6 +60,9 @@ test.describe.serial('モーダルのフォーカストラップ（issue #282）
     ({ app, win, tmpRoot } = await launchAppAndWait({
       port,
       prefix: 'vk-terminals-e2e-modal-focus-trap-',
+      // 確認ダイアログをペインの ✕ から実際に開けるようにする（既定の busy では
+      // idle のペインは確認なしで閉じてしまい、実操作での確認ができない）。
+      config: { confirmClose: 'always' },
     }));
   });
 
@@ -83,11 +86,19 @@ test.describe.serial('モーダルのフォーカストラップ（issue #282）
     await expect(win.locator('#root')).toHaveClass(/\bsidebar-open\b/);
   });
 
-  test('設定パネルを開いた直後、フォーカスはパネル内の先頭の操作対象にある', async () => {
+  test('設定パネルを開いた直後、フォーカスはパネル本体にあり Space で閉じない', async () => {
     await win.locator('#settings-btn').click();
     await expect(win.locator('.settings-modal')).toBeVisible();
 
-    // 先頭の操作対象はヘッダーの ✕。開いた直後の Tab がパネルの中から始まる。
+    // 着地点はパネル本体（tabindex="-1"）。ヘッダーの ✕ に当てると、マウスで開いた
+    // ときはリングが出ないまま閉じる操作が準備された状態になり、設定を読みながら
+    // Space を押しただけでパネルが閉じてしまう。
+    await expect(win.locator('.settings-modal')).toBeFocused();
+    await win.keyboard.press('Space');
+    await expect(win.locator('.settings-modal')).toBeVisible();
+
+    // 最初の Tab はヘッダーの ✕ から始まる（着地点自身は停止位置に混ざらない）。
+    await win.keyboard.press('Tab');
     await expect(win.locator('.settings-close')).toBeFocused();
   });
 
@@ -150,14 +161,17 @@ test.describe.serial('モーダルのフォーカストラップ（issue #282）
   test('確認ダイアログはキャンセルへフォーカスが入り、Tab で外へ出ない', async () => {
     const paneId = await win.evaluate(() => document.querySelector('.pane')?.dataset.id || '');
     expect(paneId).not.toBe('');
+    // 実際にペインの ✕ を押して開く（confirmClose: 'always' でこの経路が常に通る）。
     const closeBtn = win.locator(`.pane[data-id="${paneId}"] .btn-close`);
-    await closeBtn.focus();
-    await win.evaluate((id) => window.openCloseConfirmDialog(id), paneId);
+    await closeBtn.click();
     await expect(win.locator('.confirm-overlay')).toBeVisible();
 
     // 既定は安全側（キャンセル）。ここは #257 以前から正しいので維持する。
     await expect(win.locator('.confirm-cancel')).toBeFocused();
+    // ダイアログの背後はペイン領域だけでなくタイトルバーも止める。植草が申し送った
+    // 「ダイアログを開いたまま ⚙ へ抜けて設定パネルを開く」経路はここで塞がる。
     expect(await isInert(win, '#root')).toBe(true);
+    expect(await isInert(win, '.titlebar')).toBe(true);
 
     const stops = await collectTabStops(win, { times: 8, container: '.confirm-modal' });
     expect(
@@ -175,14 +189,18 @@ test.describe.serial('モーダルのフォーカストラップ（issue #282）
     await win.keyboard.press('Escape');
     await expect(win.locator('.confirm-overlay')).toHaveCount(0);
     expect(await isInert(win, '#root')).toBe(false);
+    expect(await isInert(win, '.titlebar')).toBe(false);
     await expect(closeBtn).toBeFocused();
     // キャンセル扱いなのでペインは残る。
     await expect(win.locator(`.pane[data-id="${paneId}"]`)).toHaveCount(1);
   });
 
   test('設定パネルに確認ダイアログを重ねて閉じても、設定パネルは操作できる状態へ戻る', async () => {
-    // 重なり順は escapeLayer と同じ前提（後から開いたものが最前面）。最前面だけを
-    // 閉じたときに、下のモーダルが無効化されたまま取り残されないことを見る。
+    // 【防御的テスト】この重なりは #282 以降、ユーザー操作では作れない。確認ダイアログの
+    // 入口はどちらもペインの ✕（#root 配下）で、設定パネル表示中は inert だからこそ
+    // 押せない。ここでは openCloseConfirmDialog を直接呼んで状態を作り、
+    // 「重なりが起きたときに下のモーダルが inert のまま取り残されない」という
+    // applyInert の不変条件だけを押さえる（将来モーダルを増やしたときの安全網）。
     await win.locator('#settings-btn').click();
     await expect(win.locator('.settings-modal')).toBeVisible();
     const paneId = await win.evaluate(() => document.querySelector('.pane')?.dataset.id || '');

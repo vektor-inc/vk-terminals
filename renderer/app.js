@@ -55,6 +55,7 @@ const { isFieldVisible } = window.VKSettingsVisibility;
 const { createAutoCloseController } = window.VKAutoClose;
 const { createSingleOpenGuard } = window.VKSettingsModalGuard;
 const { createEscapeLayerStack } = window.VKEscapeLayer;
+const { createFocusTrapStack } = window.VKFocusTrap;
 const {
   dedupeSettingsFieldsByKey,
   deriveSettingsTargetPathsForGroups,
@@ -64,6 +65,10 @@ const {
 
 // モーダル類の Escape は、最後に開いたものだけへ渡す（issue #284）。
 const escapeLayers = createEscapeLayerStack(document);
+// モーダル類の Tab は最前面のものの中だけで循環させ、背後は inert で止める（issue #282）。
+// これにより escapeLayers が前提とする「後から開いたものが最前面」も構造的に保たれる
+// （背後の ⚙ へ Tab で抜けて、確認ダイアログの上に設定パネルを開く経路が消えるため）。
+const focusTraps = createFocusTrapStack(document);
 
 // ─── State ────────────────────────────────────────────────────────────────────
 let tree = null;       // Layout tree root
@@ -1952,8 +1957,12 @@ function openCloseConfirmDialog(paneId) {
   document.body.appendChild(overlay);
 
   let unregisterEscapeLayer = () => {};
+  let releaseFocusTrap = () => {};
   const cleanup = () => {
     unregisterEscapeLayer();
+    // 背後の inert はフォーカスを戻すより前に外す。付いたままだと復帰先への focus() が
+    // 空振りし、閉じた後にフォーカスが画面全体へ落ちてしまう（issue #282）。
+    releaseFocusTrap();
     // 画面から消す前に、いまフォーカスがダイアログ内にあるかを見る。外へ出ている場合まで
     // 引き戻すと、閉じるタイミングでユーザーの操作先からフォーカスを奪ってしまう。
     // body は背景クリック時の着地点になりうるため、従来どおり復帰対象に含める。
@@ -1980,8 +1989,10 @@ function openCloseConfirmDialog(paneId) {
     closePane(paneId, { skipConfirm: true });
   });
 
+  // ダイアログの中へフォーカスを閉じ込め、背後（ペインの ✕ や ☰）を操作できないようにする。
+  // aria-modal="true" と宣言している以上、実際にも背後を止めておく（issue #282）。
   // 既定フォーカスは安全側（キャンセル）。Enter 誤爆で閉じてしまわないようにする。
-  cancelBtn.focus();
+  releaseFocusTrap = focusTraps.activate(modal, { initialFocus: cancelBtn });
 }
 
 // ペインをグリッド上で左右の隣と入れ替える。端で隣が無ければ何もしない。
@@ -3621,15 +3632,21 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
   // ここは「いつ武装し、いつ取り消すか」だけを決める。
   const autoClose = createAutoCloseController({ onFire: () => close() });
   let unregisterEscapeLayer = () => {};
+  let releaseFocusTrap = () => {};
   const close = () => {
     // markClosed() が false を返すのは 2 回目以降。遅れて発火したタイマーが
     // 後から開いたモーダルのロックを巻き戻さないよう、閉じる処理は冪等にしておく。
     if (!autoClose.markClosed()) return;
     unregisterEscapeLayer();
+    // 背後の inert はフォーカスを戻すより前に外す。付いたままだと復帰先への focus() が
+    // 空振りし、閉じた後にフォーカスが画面全体へ落ちてしまう（issue #282）。
+    releaseFocusTrap();
     clearCopyResetTimers();
     stopApiServerStatusPolling();
-    // 画面から消す前に、いまフォーカスが設定パネル内にあるかを見る。自動クローズを
-    // 待つ間に外へ移っていた場合まで引き戻すと、#257 と同じフォーカス移動になる。
+    // 画面から消す前に、いまフォーカスが設定パネル内にあるかを見る。トラップ導入後は
+    // Tab でパネル外へ出る経路が無くなったが、パネルの上に確認ダイアログが重なっている
+    // 間に自動クローズが発火する経路が残る。そのときまで引き戻すと、ユーザーが操作中の
+    // ダイアログからフォーカスを奪ってしまう（issue #282）。
     // body は背景クリック時の着地点になりうるため、従来どおり復帰対象に含める。
     const active = document.activeElement;
     const shouldRestore = !active || active === document.body || overlay.contains(active);
@@ -3642,8 +3659,14 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
     }
   };
   // ここから後の例外では、close に overlay・キー操作・各タイマーをまとめて片付けさせる。
+  // close はトラップの解除も行うため、以降で例外が出ても背後が inert のまま残らない。
   setFailureCleanup(close);
   unregisterEscapeLayer = escapeLayers.register(close);
+  // パネルの中へフォーカスを閉じ込め、背後（ペインの ✕ や ☰）を操作できないようにする。
+  // aria-modal="true" と宣言している以上、実際にも背後を止めておく（issue #282）。
+  // 初期フォーカスは先頭の操作対象（ヘッダーの ✕）。開いた直後の Tab がパネルの中から
+  // 始まり、支援技術にもパネルが開いたことが伝わる。
+  releaseFocusTrap = focusTraps.activate(modal);
 
   overlay.addEventListener('mousedown', (e) => {
     if (e.target !== overlay) return;

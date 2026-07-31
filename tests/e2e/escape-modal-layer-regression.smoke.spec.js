@@ -241,24 +241,93 @@ test.describe.serial('Escape レイヤー導入後のデグレ確認（issue #25
 
   // 既定動作を止めるのは背景（オーバーレイ自身）を押したときだけで、モーダルの中は
   // 素通しにしてある。ここが効きすぎるとテキスト選択や入力欄のクリックまで死ぬ。
+  //
+  // 【確かめ方（issue #294）】主たる確認は「モーダル内の mousedown が preventDefault
+  // されていないこと」そのものを見る。当初はドラッグで文字が選べたかという“結果”だけを
+  // 見ていたが、それは環境と負荷に左右されるため、確認したい性質より先にドラッグの成否で
+  // 落ちていた。背景を押したときは逆に true になることも併せて見る（常に false を返すだけの
+  // 空検査になっていないかの担保）。
+  //
+  // 【ドラッグの対象にラベルを使わない理由（issue #294）】label は押下すると紐づく入力欄へ
+  // フォーカスを移し、そのとき文書の選択が解除される（実測: ラベル上の文字を選んだ状態で
+  // 対応する input に focus() すると選択が空になる。ラベル以外の文字の選択はそのまま残る）。
+  // Chromium はラベル上の文字が選択済みならこの転送を抑止するため、ドラッグが選択として
+  // 成立した回だけ選択が残り、負荷でドラッグが選択にならなかった回はフォーカスが移って
+  // 選択が空になる、という不安定さを抱えていた。押してもフォーカスが移らない普通のテキスト
+  // （説明文）を対象にすれば、この経路を丸ごと避けられる。
   test('背景の preventDefault はモーダル内の選択・クリックを妨げない', async () => {
     await win.locator('#settings-btn').click();
     await expect(win.locator('.settings-modal')).toBeVisible();
 
-    // モーダル内のラベルをドラッグしてテキスト選択できる。
-    const label = win.locator('.settings-modal label').first();
-    const box = await label.boundingBox();
-    await win.mouse.move(box.x + 2, box.y + box.height / 2);
-    await win.mouse.down();
-    await win.mouse.move(box.x + box.width - 2, box.y + box.height / 2, { steps: 10 });
-    await win.mouse.up();
-    expect(await win.evaluate(() => String(window.getSelection()))).not.toBe('');
+    // document のバブリング段で mousedown を拾う。overlay 自身に張ってあるハンドラより
+    // 後に走るので、そこで既定動作が止められたかを defaultPrevented で見分けられる。
+    await win.evaluate(() => {
+      globalThis.__mousedownLog = [];
+      globalThis.__mousedownProbe = (e) => {
+        globalThis.__mousedownLog.push({
+          inModal: Boolean(e.target.closest && e.target.closest('.settings-modal')),
+          prevented: e.defaultPrevented,
+        });
+      };
+      document.addEventListener('mousedown', globalThis.__mousedownProbe);
+    });
+    const takeMousedownLog = () => win.evaluate(() => {
+      const log = globalThis.__mousedownLog || [];
+      globalThis.__mousedownLog = [];
+      return log;
+    });
+    // 直前の操作で溜まった分を捨て、次に押した 1 回だけを見られるようにする
+    // （中身は takeMousedownLog と同じで、戻り値を使わないことを名前で示すための別名）。
+    const drainMousedownLog = takeMousedownLog;
 
-    // モーダル内の入力欄はクリックで従来どおりフォーカスできる。
-    await win.locator('#set-field-0').click();
-    await expect(win.locator('#set-field-0')).toBeFocused();
+    // プローブは document へ張るため、途中で assertion が落ちても必ず外す。残ると
+    // 後続テストの mousedown が __mousedownLog に溜まり、次の取得が余計な要素を
+    // 拾って落ちる、という追いにくい壊れ方をする。
+    try {
+      // モーダル内を押しても既定動作は止められていない。
+      await drainMousedownLog();
+      await win.locator('#set-field-0').click();
+      expect(
+        await takeMousedownLog(),
+        'モーダル内の mousedown で既定動作が止められている'
+      ).toEqual([{ inModal: true, prevented: false }]);
 
-    await win.locator('.settings-close').click();
-    await expect(win.locator('.settings-modal')).toHaveCount(0);
+      // モーダル内の入力欄はクリックで従来どおりフォーカスできる。
+      await expect(win.locator('#set-field-0')).toBeFocused();
+
+      // モーダル内の説明文はドラッグで範囲選択できる。負荷でマウスの動きが丸められると
+      // 選択が成立しないことがあるため、ドラッグごとやり直す（1 回のドラッグ結果を
+      // ポーリングしても、成立しなかった回は何度見ても空のままで意味がない）。
+      const helpText = win.locator('.settings-modal .settings-help').first();
+      // 説明文はスキーマ側の help の有無で存在が決まる。将来 .first() が非表示タブの
+      // ものを掴むと boundingBox() が null になり、toPass を 10 秒回した末に box.x の
+      // 例外という読めない失敗になるため、先に可視であることを確かめて理由を明示する。
+      await expect(helpText).toBeVisible();
+      await expect(async () => {
+        await win.evaluate(() => window.getSelection()?.removeAllRanges());
+        const box = await helpText.boundingBox();
+        await win.mouse.move(box.x + 2, box.y + box.height / 2);
+        await win.mouse.down();
+        await win.mouse.move(box.x + box.width - 2, box.y + box.height / 2, { steps: 10 });
+        await win.mouse.up();
+        expect(await win.evaluate(() => String(window.getSelection()))).not.toBe('');
+      }).toPass({ timeout: 10_000 });
+
+      // 対称性の確認: 背景そのものを押したときは既定動作が止まる（= 上の false が
+      // 「そもそも誰も止めていない」ではなく、モーダル内だけ素通しである証拠になる）。
+      await drainMousedownLog();
+      await win.locator('.settings-overlay').click({ position: { x: 4, y: 4 } });
+      expect(
+        await takeMousedownLog(),
+        '背景の mousedown で既定動作が止められていない'
+      ).toEqual([{ inModal: false, prevented: true }]);
+      await expect(win.locator('.settings-modal')).toHaveCount(0);
+    } finally {
+      await win.evaluate(() => {
+        document.removeEventListener('mousedown', globalThis.__mousedownProbe);
+        delete globalThis.__mousedownProbe;
+        delete globalThis.__mousedownLog;
+      });
+    }
   });
 });

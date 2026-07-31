@@ -276,44 +276,58 @@ test.describe.serial('Escape レイヤー導入後のデグレ確認（issue #25
       globalThis.__mousedownLog = [];
       return log;
     });
+    // 直前の操作で溜まった分を捨て、次に押した 1 回だけを見られるようにする
+    // （中身は takeMousedownLog と同じで、戻り値を使わないことを名前で示すための別名）。
+    const drainMousedownLog = takeMousedownLog;
 
-    // モーダル内を押しても既定動作は止められていない。
-    await takeMousedownLog();
-    await win.locator('#set-field-0').click();
-    expect(
-      await takeMousedownLog(),
-      'モーダル内の mousedown で既定動作が止められている'
-    ).toEqual([{ inModal: true, prevented: false }]);
+    // プローブは document へ張るため、途中で assertion が落ちても必ず外す。残ると
+    // 後続テストの mousedown が __mousedownLog に溜まり、次の取得が余計な要素を
+    // 拾って落ちる、という追いにくい壊れ方をする。
+    try {
+      // モーダル内を押しても既定動作は止められていない。
+      await drainMousedownLog();
+      await win.locator('#set-field-0').click();
+      expect(
+        await takeMousedownLog(),
+        'モーダル内の mousedown で既定動作が止められている'
+      ).toEqual([{ inModal: true, prevented: false }]);
 
-    // モーダル内の入力欄はクリックで従来どおりフォーカスできる。
-    await expect(win.locator('#set-field-0')).toBeFocused();
+      // モーダル内の入力欄はクリックで従来どおりフォーカスできる。
+      await expect(win.locator('#set-field-0')).toBeFocused();
 
-    // モーダル内の説明文はドラッグで範囲選択できる。負荷でマウスの動きが丸められると
-    // 選択が成立しないことがあるため、ドラッグごとやり直す（1 回のドラッグ結果を
-    // ポーリングしても、成立しなかった回は何度見ても空のままで意味がない）。
-    const helpText = win.locator('.settings-modal .settings-help').first();
-    await expect(async () => {
-      await win.evaluate(() => window.getSelection()?.removeAllRanges());
-      const box = await helpText.boundingBox();
-      await win.mouse.move(box.x + 2, box.y + box.height / 2);
-      await win.mouse.down();
-      await win.mouse.move(box.x + box.width - 2, box.y + box.height / 2, { steps: 10 });
-      await win.mouse.up();
-      expect(await win.evaluate(() => String(window.getSelection()))).not.toBe('');
-    }).toPass({ timeout: 10_000 });
+      // モーダル内の説明文はドラッグで範囲選択できる。負荷でマウスの動きが丸められると
+      // 選択が成立しないことがあるため、ドラッグごとやり直す（1 回のドラッグ結果を
+      // ポーリングしても、成立しなかった回は何度見ても空のままで意味がない）。
+      const helpText = win.locator('.settings-modal .settings-help').first();
+      // 説明文はスキーマ側の help の有無で存在が決まる。将来 .first() が非表示タブの
+      // ものを掴むと boundingBox() が null になり、toPass を 10 秒回した末に box.x の
+      // 例外という読めない失敗になるため、先に可視であることを確かめて理由を明示する。
+      await expect(helpText).toBeVisible();
+      await expect(async () => {
+        await win.evaluate(() => window.getSelection()?.removeAllRanges());
+        const box = await helpText.boundingBox();
+        await win.mouse.move(box.x + 2, box.y + box.height / 2);
+        await win.mouse.down();
+        await win.mouse.move(box.x + box.width - 2, box.y + box.height / 2, { steps: 10 });
+        await win.mouse.up();
+        expect(await win.evaluate(() => String(window.getSelection()))).not.toBe('');
+      }).toPass({ timeout: 10_000 });
 
-    // 対称性の確認: 背景そのものを押したときは既定動作が止まる（= 上の false が
-    // 「そもそも誰も止めていない」ではなく、モーダル内だけ素通しである証拠になる）。
-    await takeMousedownLog();
-    await win.locator('.settings-overlay').click({ position: { x: 4, y: 4 } });
-    expect(
-      await takeMousedownLog(),
-      '背景の mousedown で既定動作が止められていない'
-    ).toEqual([{ inModal: false, prevented: true }]);
-    await expect(win.locator('.settings-modal')).toHaveCount(0);
-
-    await win.evaluate(() => {
-      document.removeEventListener('mousedown', globalThis.__mousedownProbe);
-    });
+      // 対称性の確認: 背景そのものを押したときは既定動作が止まる（= 上の false が
+      // 「そもそも誰も止めていない」ではなく、モーダル内だけ素通しである証拠になる）。
+      await drainMousedownLog();
+      await win.locator('.settings-overlay').click({ position: { x: 4, y: 4 } });
+      expect(
+        await takeMousedownLog(),
+        '背景の mousedown で既定動作が止められていない'
+      ).toEqual([{ inModal: false, prevented: true }]);
+      await expect(win.locator('.settings-modal')).toHaveCount(0);
+    } finally {
+      await win.evaluate(() => {
+        document.removeEventListener('mousedown', globalThis.__mousedownProbe);
+        delete globalThis.__mousedownProbe;
+        delete globalThis.__mousedownLog;
+      });
+    }
   });
 });

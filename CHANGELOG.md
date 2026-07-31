@@ -1,6 +1,6 @@
 # Changelog
 
-- [ その他 ] キーボードで選んだときに表示される青い枠の内部の指定方法を CSS 変数へ集約（表示上の変化なし）（[#292](https://github.com/vektor-inc/vk-terminals/issues/292)）
+- [ その他 ] キーボードで選んだときに表示される青い枠について、内部の指定方法を CSS 変数へ集約（表示上の変化なし）（[#292](https://github.com/vektor-inc/vk-terminals/issues/292)）
 
 ## 1.50.0
 

@@ -17,6 +17,10 @@
   --vktm--color--border-interactive: #8b949e;
 }
 
+/* フォーカスリングの変数（--vktm--color--focus-ring / --vktm--outline--focus-ring /
+ * --vktm--outline-offset--focus-ring）は renderer/shared.css の :root にある。
+ * モバイル版（mobile.html）とも共有するため、定義と書き方のルールはそちらを参照すること。 */
+
 html, body {
   width: 100%;
   height: 100%;
@@ -99,8 +103,8 @@ html, body {
   color: #e6edf3;
 }
 .titlebar-menu-btn:focus-visible {
-  outline: 2px solid #58a6ff;
-  outline-offset: 2px;
+  outline: var(--vktm--outline--focus-ring);
+  outline-offset: var(--vktm--outline-offset--focus-ring);
 }
 
 /* 使用率の警告ドットバッジ。公式の使用率（セッション・週間のいずれか）が 80% を
@@ -147,13 +151,17 @@ html, body {
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
 }
 /* パネル本体は開いたときの着地点（tabindex="-1"）で、押せる対象ではない。
-   枠を出すとパネル全体が OS 標準のリングで囲まれ、issue #280 で揃えた青いリングと
-   食い違って見える。どこにいるかはダイアログ名の読み上げと、続く Tab の停止位置で伝わる。
+   shared.css の「対話部品の :focus-visible にはフォーカスリングの 2 行を必ず書く」という
+   規約に対する、意図的な例外がここ。Tab では止まらないのでリングを出す対象にならず、
+   出すとパネル全体が OS 標準のリングで囲まれて、アプリ共通の青いリング
+   （--vktm--outline--focus-ring）と見え方が食い違う。どこにいるかはダイアログ名の
+   読み上げと、続く Tab の停止位置で伝わる。
    タスク編集パネル（.task-edit-panel）と同じ扱い（issue #282）。
    ⚠ この指定が成り立つのは「Tab で止まらない着地点」だからこそ。パネル本体を Tab 順へ
    入れる（tabindex="0" にする／着地点をやめて操作対象へ初期フォーカスを移す）変更を
-   入れるなら、この指定も必ず外すこと。Tab で到達できる要素の枠を消すと
-   WCAG 2.4.7（フォーカスの可視化）違反になる。 */
+   入れるなら、この指定を外し、代わりに規約どおりの 2 行
+   （outline: var(--vktm--outline--focus-ring); / outline-offset: var(--vktm--outline-offset--focus-ring);）
+   を書くこと。Tab で到達できる要素の枠を消すと WCAG 2.4.7（フォーカスの可視化）違反になる。 */
 .settings-modal:focus {
   outline: none;
 }
@@ -205,8 +213,8 @@ html, body {
    26×26px と小さいが、実測でモーダル右端まで 19px・上端まで 15px あり、
    外側 2px（リング外端は 4px 外）でも他の要素と干渉しないため既存と同じ値を使う。 */
 .settings-close:focus-visible {
-  outline: 2px solid #58a6ff;
-  outline-offset: 2px;
+  outline: var(--vktm--outline--focus-ring);
+  outline-offset: var(--vktm--outline-offset--focus-ring);
 }
 
 /* 設定タブ（descriptor tabs がある場合のみ表示）
@@ -240,8 +248,8 @@ html, body {
   font-weight: 600;
 }
 .settings-tab:focus-visible {
-  outline: 2px solid #58a6ff;
-  outline-offset: 2px;
+  outline: var(--vktm--outline--focus-ring);
+  outline-offset: var(--vktm--outline-offset--focus-ring);
 }
 .settings-tab-dirty {
   width: 7px;
@@ -364,8 +372,8 @@ html, body {
    padding 18px の中に収まる（リング外端はパネル境界の 4px 外、そこからモーダル端まで
    なお 14px 残る）。 */
 .settings-tab-panel:focus-visible {
-  outline: 2px solid #58a6ff;
-  outline-offset: 2px;
+  outline: var(--vktm--outline--focus-ring);
+  outline-offset: var(--vktm--outline-offset--focus-ring);
 }
 .settings-tab-target {
   margin: 0 0 10px;
@@ -495,8 +503,8 @@ h4.settings-content-heading {
   background: #30363d;
 }
 .settings-content-copy:focus-visible {
-  outline: 2px solid #58a6ff;
-  outline-offset: 2px;
+  outline: var(--vktm--outline--focus-ring);
+  outline-offset: var(--vktm--outline-offset--focus-ring);
 }
 /* 成功は .settings-msg.ok と同じ緑。色だけに依存させないためテキストを必ず併記する。 */
 .settings-content-copy-status {
@@ -522,8 +530,8 @@ h4.settings-content-heading {
   text-decoration: underline;
 }
 .settings-content-link:focus-visible {
-  outline: 2px solid #58a6ff;
-  outline-offset: 2px;
+  outline: var(--vktm--outline--focus-ring);
+  outline-offset: var(--vktm--outline-offset--focus-ring);
   border-radius: 3px;
 }
 .settings-content-link-icon {
@@ -554,8 +562,8 @@ h4.settings-content-heading {
 }
 .settings-content-tablink:hover { background: #30363d; }
 .settings-content-tablink:focus-visible {
-  outline: 2px solid #58a6ff;
-  outline-offset: 2px;
+  outline: var(--vktm--outline--focus-ring);
+  outline-offset: var(--vktm--outline-offset--focus-ring);
 }
 /* 注意書き。色だけに依存させないため、HTML 側で「注意」等の見出し語を併記している。 */
 .settings-content-callout {
@@ -773,8 +781,8 @@ h4.settings-content-heading {
    次の行にも重ならない。内側オフセット（.sidebar-resizer と同じ手）にすると 1px の境界線と
    密着してボタンが一回り小さく見えるため、ここは他のボタンと同じ外側 2px を使う。 */
 .settings-reveal:focus-visible {
-  outline: 2px solid #58a6ff;
-  outline-offset: 2px;
+  outline: var(--vktm--outline--focus-ring);
+  outline-offset: var(--vktm--outline-offset--focus-ring);
 }
 .settings-footer {
   display: flex;
@@ -820,8 +828,8 @@ h4.settings-content-heading {
 /* 「キャンセル」「閉じる」「保存」共通。リングは面の外側に出るため、緑の保存ボタンでも
    グレーのキャンセルでも同じ見え方になる（バリアントごとの指定は不要）。 */
 .settings-footer button:focus-visible {
-  outline: 2px solid #58a6ff;
-  outline-offset: 2px;
+  outline: var(--vktm--outline--focus-ring);
+  outline-offset: var(--vktm--outline-offset--focus-ring);
 }
 .settings-cancel {
   background: #21262d;
@@ -986,12 +994,16 @@ body.resizing-sidebar .sidebar {
   background: rgba(88, 166, 255, 0.35);
 }
 /* キーボードフォーカス時は明確なフォーカスリングを出す（WCAG 2.4.7）。
- * 細帯なので outline は内側にオフセットし、視認できる 2px の枠にする。 */
+ * 細帯なので outline は内側にオフセットし、視認できる 2px の枠にする。
+ * ここは共通の --vktm--outline-offset--focus-ring（外側 2px）を使わない、アプリ内で唯一の
+ * 意図的な例外。幅 8px の帯に外側 2px を足すと隣接ペインへ食い込むため、offset は -2px の
+ * 個別値にし、内側の枠は box-shadow inset で描く。
+ * 色だけは共通なので、outline も box-shadow も shared.css の変数を参照する。 */
 .sidebar-resizer:focus-visible {
   background: rgba(88, 166, 255, 0.35);
-  outline: 2px solid #58a6ff;
+  outline: var(--vktm--outline--focus-ring);
   outline-offset: -2px;
-  box-shadow: inset 0 0 0 2px #58a6ff;
+  box-shadow: inset 0 0 0 2px var(--vktm--color--focus-ring);
 }
 .sidebar-menu-list,
 .sidebar-submenu-list {
@@ -1040,8 +1052,8 @@ body.resizing-sidebar .sidebar {
 .sidebar-menu-link:focus-visible,
 .sidebar-menu-button:focus-visible,
 .sidebar-menu-summary:focus-visible {
-  outline: 2px solid #58a6ff;
-  outline-offset: 2px;
+  outline: var(--vktm--outline--focus-ring);
+  outline-offset: var(--vktm--outline-offset--focus-ring);
 }
 .sidebar-menu-icon {
   flex: 0 0 20px;
@@ -1239,8 +1251,8 @@ body.resizing-sidebar .sidebar {
   text-underline-offset: 2px;
 }
 .task-list-title-link:focus-visible {
-  outline: 2px solid #58a6ff;
-  outline-offset: 2px;
+  outline: var(--vktm--outline--focus-ring);
+  outline-offset: var(--vktm--outline-offset--focus-ring);
 }
 .task-list-title-link-icon {
   /* WORD JOINER（app.js 側）と合わせ、「タスク」末尾と ↗ の間で改行させない。 */
@@ -1287,8 +1299,8 @@ body.resizing-sidebar .sidebar {
   display: none;
 }
 .task-list-assignee-filter:focus-visible {
-  outline: 2px solid #58a6ff;
-  outline-offset: 2px;
+  outline: var(--vktm--outline--focus-ring);
+  outline-offset: var(--vktm--outline-offset--focus-ring);
 }
 /* 開閉トグル（当たり判定は 24×24 CSS px 以上）。.btn を基調に少しコンパクトにする。 */
 .task-list-toggle {
@@ -1298,8 +1310,8 @@ body.resizing-sidebar .sidebar {
   color: #8b949e;
 }
 .task-list-toggle:focus-visible {
-  outline: 2px solid #58a6ff;
-  outline-offset: 2px;
+  outline: var(--vktm--outline--focus-ring);
+  outline-offset: var(--vktm--outline-offset--focus-ring);
 }
 /* フィルタ結果件数の live region（視覚的に隠し、SR にだけ伝える）。 */
 .task-list-live {
@@ -1374,8 +1386,8 @@ body.resizing-sidebar .sidebar {
   text-underline-offset: 2px;
 }
 .task-item-title-link:focus-visible {
-  outline: 2px solid #58a6ff;
-  outline-offset: 2px;
+  outline: var(--vktm--outline--focus-ring);
+  outline-offset: var(--vktm--outline-offset--focus-ring);
 }
 .task-item-title-text {
   overflow-wrap: anywhere;
@@ -1412,8 +1424,8 @@ body.resizing-sidebar .sidebar {
   background: #30363d;
 }
 .task-item-edit:focus-visible {
-  outline: 2px solid #58a6ff;
-  outline-offset: 2px;
+  outline: var(--vktm--outline--focus-ring);
+  outline-offset: var(--vktm--outline-offset--focus-ring);
 }
 .task-item-edit:disabled {
   opacity: 0.55;
@@ -1495,8 +1507,8 @@ body.resizing-sidebar .sidebar {
   text-underline-offset: 2px;
 }
 .widget-link:focus-visible {
-  outline: 2px solid #58a6ff;
-  outline-offset: 2px;
+  outline: var(--vktm--outline--focus-ring);
+  outline-offset: var(--vktm--outline-offset--focus-ring);
 }
 .widget-link-text {
   min-width: 0;
@@ -1585,8 +1597,8 @@ body.resizing-sidebar .sidebar {
   -webkit-app-region: no-drag;
 }
 .widget-control-select:focus-visible {
-  outline: 2px solid #58a6ff;
-  outline-offset: 2px;
+  outline: var(--vktm--outline--focus-ring);
+  outline-offset: var(--vktm--outline-offset--focus-ring);
 }
 .widget-control-select:disabled,
 .widget-control-select[aria-disabled="true"] {
@@ -1614,8 +1626,8 @@ body.resizing-sidebar .sidebar {
   -webkit-app-region: no-drag;
 }
 .task-edit-actions button:focus-visible {
-  outline: 2px solid #58a6ff;
-  outline-offset: 2px;
+  outline: var(--vktm--outline--focus-ring);
+  outline-offset: var(--vktm--outline-offset--focus-ring);
 }
 .task-edit-actions button:disabled {
   opacity: 0.55;
@@ -1740,8 +1752,8 @@ body.resizing-sidebar .sidebar {
   border-color: #3fb950;
 }
 .grid-empty-btn:focus-visible {
-  outline: 2px solid #58a6ff;
-  outline-offset: 2px;
+  outline: var(--vktm--outline--focus-ring);
+  outline-offset: var(--vktm--outline-offset--focus-ring);
 }
 /* 副次アクション（サイドバーを開く）は控えめなニュートラル配色にする。 */
 .grid-empty-btn-secondary {
@@ -1899,8 +1911,8 @@ body.resizing-sidebar .sidebar {
 }
 
 .pane-task-title-link:focus-visible {
-  outline: 2px solid #58a6ff;
-  outline-offset: 2px;
+  outline: var(--vktm--outline--focus-ring);
+  outline-offset: var(--vktm--outline-offset--focus-ring);
 }
 
 /* タイトル本文側だけ省略表示にする（↗ アイコンは省略させない）。
@@ -1930,7 +1942,7 @@ body.resizing-sidebar .sidebar {
  *   - `.pane-badge` 共通基底（h18 / font-size 10 / radius 3px）に乗せる
  *   - `margin-left: auto` で右寄せ。`flex-shrink: 0` でタイトル省略時にも縮まない
  *   - 色: GitHub PR グリーン系（背景 rgba(63,185,80,.15) / border #3fb950）
- *   - フォーカスリングは既存 `.pane-task-title-link` と同じ #58a6ff 2px
+ *   - フォーカスリングは共通の `--vktm--outline--focus-ring` を参照する
  * `.pane-task-title` 親側は現在背景 #101015（暗色）。文字・境界は GitHub Primer
  * ダーク寄りの明るいトークン（open: #3fb950 / merged: #a371f7）を使い、
  * 暗背景で WCAG 2.1 AA（文字 4.5:1 / 境界 3:1）を満たす。
@@ -1978,8 +1990,8 @@ body.resizing-sidebar .sidebar {
 }
 
 .pane-task-title-pr:focus-visible {
-  outline: 2px solid #58a6ff;
-  outline-offset: 2px;
+  outline: var(--vktm--outline--focus-ring);
+  outline-offset: var(--vktm--outline-offset--focus-ring);
 }
 
 .pane-task-title-pr-icon {

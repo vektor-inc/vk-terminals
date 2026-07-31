@@ -126,7 +126,8 @@ test.describe.serial('モーダルのフォーカストラップ（issue #282）
     await win.locator('#settings-btn').click();
     await expect(win.locator('.settings-modal')).toBeVisible();
 
-    // 開いた直後は先頭にいるため、1 回目の Shift+Tab がそのまま「先頭からの逆行」になる。
+    // 開いた直後は着地点（パネル本体）にいるため、1 回目の Shift+Tab は末尾（保存）へ飛ぶ。
+    // 以降はそこから逆行する。着地点からの行き先は focusTrap 側で明示的に決めている。
     const stops = await collectTabStops(win, { times: 30, shift: true, container: '.settings-modal' });
 
     expect(

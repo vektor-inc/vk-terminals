@@ -3593,6 +3593,10 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
       </div>`;
   const overlay = document.createElement('div');
   overlay.className = 'settings-overlay';
+  // .settings-modal の tabindex="-1" は、開いたときの初期フォーカスの着地点（issue #282）。
+  // これが落ちると focusTraps.activate の initialFocus が無言で空振りする（isFocusable は
+  // 「本当に focus できるか」までは見ないためフォールバックも走らない）。結果、フォーカスが
+  // パネルの外に残り、#282 で直した症状へ静かに戻る。外さないこと。
   overlay.innerHTML = `
     <div class="settings-modal" role="dialog" aria-modal="true" aria-labelledby="${settingsTitleId}" tabindex="-1">
       ${settingsHeaderHtml}

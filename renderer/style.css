@@ -15,27 +15,11 @@
      暗く、既存の枠線 #6e7681 で既に 4.47:1 を満たすため、この変数へ寄せると基準を
      満たしたまま見た目だけが変わる。 */
   --vktm--color--border-interactive: #8b949e;
-
-  /* キーボードフォーカス時のフォーカスリング（WCAG 2.4.7 / 1.4.11）。
-     色は GitHub Primer ダークのアクセント #58a6ff。アプリで最も暗い面 #010409 に対しても
-     10:1 以上あり、モーダルの面 #0d1117・ペイン面 #101015 など全ての面で
-     UI 部品の 3:1 を満たすため、面ごとに色を変えずこの 1 色で統一する。
-     対話部品（button / a / input / select / role="button" 等）の :focus-visible には、
-     個別に値を直書きせず必ず次の 2 行をセットで書くこと。書き忘れると OS 標準の枠のまま
-     残り、見た目が壊れないためキーボード操作時にしか気づけない（#267 / #280 の再発防止）。
-
-       outline: var(--vktm--outline--focus-ring);
-       outline-offset: var(--vktm--outline-offset--focus-ring);
-
-     例外: 帯が細く外側に枠を出せない部品（.sidebar-resizer）は outline-offset を
-     個別値（-2px）にし、内側の枠を --vktm--color--focus-ring の box-shadow inset で描く。
-     色だけは共通なので、そうした例外でも --vktm--color--focus-ring を参照する。
-     なお .sidebar-resizer:hover 等の rgba(88, 166, 255, 0.35) は同系色だが背景用の別用途。
-     フォーカスリング用のこれらの変数は割り当てない。 */
-  --vktm--color--focus-ring: #58a6ff;
-  --vktm--outline--focus-ring: 2px solid var(--vktm--color--focus-ring);
-  --vktm--outline-offset--focus-ring: 2px;
 }
+
+/* フォーカスリングの変数（--vktm--color--focus-ring / --vktm--outline--focus-ring /
+ * --vktm--outline-offset--focus-ring）は renderer/shared.css の :root にある。
+ * モバイル版（mobile.html）とも共有するため、定義と書き方のルールはそちらを参照すること。 */
 
 html, body {
   width: 100%;
@@ -996,8 +980,10 @@ body.resizing-sidebar .sidebar {
 }
 /* キーボードフォーカス時は明確なフォーカスリングを出す（WCAG 2.4.7）。
  * 細帯なので outline は内側にオフセットし、視認できる 2px の枠にする。
- * ここは --vktm--outline-offset--focus-ring（外側 2px）を使わない意図的な例外。
- * 色だけは共通なので box-shadow も --vktm--color--focus-ring を参照する。 */
+ * ここは共通の --vktm--outline-offset--focus-ring（外側 2px）を使わない、アプリ内で唯一の
+ * 意図的な例外。幅 8px の帯に外側 2px を足すと隣接ペインへ食い込むため、offset は -2px の
+ * 個別値にし、内側の枠は box-shadow inset で描く。
+ * 色だけは共通なので、outline も box-shadow も shared.css の変数を参照する。 */
 .sidebar-resizer:focus-visible {
   background: rgba(88, 166, 255, 0.35);
   outline: var(--vktm--outline--focus-ring);

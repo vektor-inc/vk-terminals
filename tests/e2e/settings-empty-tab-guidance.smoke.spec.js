@@ -1,5 +1,13 @@
 const { test, expect } = require('@playwright/test');
 const { closeApp, getFreePort, launchAppAndWait } = require('./helpers/electron-app');
+// 設定ディスクリプタの差し込みと後始末は共通ヘルパーへ集約している（issue #293）。
+// この spec は「保存処理がどの欄を採用したか」を payload で直接観測するため、
+// 保存内容を記録する差し込み（実 IPC へは一切流さない方）を使う。
+const {
+  installDescriptorRecordingSaves,
+  lastSavedPayload,
+  restoreInvoke,
+} = require('./helpers/settings-descriptor');
 
 // issue #258 / PR #272 の副作用側（重複除去でタブが空になったときの見せ方と導線）を確かめる。
 //
@@ -19,39 +27,6 @@ const { closeApp, getFreePort, launchAppAndWait } = require('./helpers/electron-
 //   ／キーボードで抜け出せる／パネルにフォーカスできる）は残したまま、確認する経路を
 //   「タブバーから直接そのタブを開く」側へ移した。したがって、このファイルで移動ボタンが
 //   表示されないことを確かめているのは #272 の退行ではなく、#275 の仕様である。
-
-// window.VKIpc.invoke（renderer 側の中継レイヤ／issue #268）を差し替えてテスト用の設定ディスクリプタを読み込ませる。
-// 保存は実ファイルへ書かず、渡された payload を window.__savedPayloads に積むだけにする
-// （保存処理がどの欄を採用したかを payload で直接観測するため）。
-async function installDescriptor(win, desc) {
-  await win.evaluate((descriptor) => {
-    const vkIpc = window.VKIpc;
-    if (!window.__origInvoke) window.__origInvoke = vkIpc.invoke.bind(vkIpc);
-    window.__savedPayloads = [];
-    vkIpc.invoke = (channel, payload) => {
-      if (channel === 'settings:describe') return Promise.resolve(descriptor);
-      if (channel === 'settings:save') {
-        window.__savedPayloads.push(payload);
-        return Promise.resolve({ ok: true });
-      }
-      return Promise.resolve(null);
-    };
-  }, desc);
-}
-
-// 差し替えを戻す（組み込みスキーマを読ませるテストのため）。
-async function restoreInvoke(win) {
-  await win.evaluate(() => {
-    const vkIpc = window.VKIpc;
-    if (!window.__origInvoke) return;
-    vkIpc.invoke = window.__origInvoke;
-    delete window.__origInvoke;
-  });
-}
-
-const lastPayload = (win) => win.evaluate(
-  () => window.__savedPayloads[window.__savedPayloads.length - 1]
-);
 
 async function openSettings(win) {
   await win.evaluate(() => window.openSettingsModal());
@@ -162,7 +137,7 @@ test.describe.serial('重複除去で空になったタブの案内と導線（P
   // ─── 観点 2: 案内メッセージの出る／出ないの境界 ─────────────────────────────
 
   test('案内メッセージは「中身なし」「重複除去で空」の 2 タブにだけ出る', async () => {
-    await installDescriptor(win, matrixDescriptor());
+    await installDescriptorRecordingSaves(win, matrixDescriptor());
     await openSettings(win);
 
     // 実欄があるタブには出さない。
@@ -209,7 +184,7 @@ test.describe.serial('重複除去で空になったタブの案内と導線（P
   // ─── 観点 1: 移動ボタンの導線（重複あり） ─────────────────────────────────
 
   test('移動ボタンは重複の 1 件目へ着地し、その値がそのまま保存される', async () => {
-    await installDescriptor(win, matrixDescriptor());
+    await installDescriptorRecordingSaves(win, matrixDescriptor());
     await openSettings(win);
 
     await win.locator(TAB(MATRIX_TAB.onlyDesc)).click();
@@ -230,11 +205,11 @@ test.describe.serial('重複除去で空になったタブの案内と導線（P
     await target.fill('landed.example');
     await win.locator('.settings-save').click();
     await expect(win.locator('.settings-msg')).toHaveClass(/ok/);
-    expect((await lastPayload(win)).host).toBe('landed.example');
+    expect((await lastSavedPayload(win)).host).toBe('landed.example');
   });
 
   test('移動ボタンをキーボード（Enter / Space）で押しても同じ欄へ着地する', async () => {
-    await installDescriptor(win, matrixDescriptor());
+    await installDescriptorRecordingSaves(win, matrixDescriptor());
     await openSettings(win);
 
     // 矢印キーだけで説明タブへ移り、Tab でパネル内の移動ボタンまで到達する。
@@ -269,7 +244,7 @@ test.describe.serial('重複除去で空になったタブの案内と導線（P
     // issue #275: 押しても案内メッセージだけが出るタブへは、ボタン自体を出さない
     // （ボタンは「向こうに続きがある」という約束のため、行き止まりへ送ると他の移動
     // ボタンまで信用されなくなる）。タブ自体はタブバーに残るので自力では開ける。
-    await installDescriptor(win, matrixDescriptor());
+    await installDescriptorRecordingSaves(win, matrixDescriptor());
     await openSettings(win);
 
     await win.locator(TAB(MATRIX_TAB.onlyDesc)).click();
@@ -293,7 +268,7 @@ test.describe.serial('重複除去で空になったタブの案内と導線（P
 
   test('note だけのタブへの移動ボタンは残り、着地先に案内メッセージは出ない', async () => {
     // note に代替手段を書いたタブは「表示できる内容がある」ので移動先として有効。
-    await installDescriptor(win, matrixDescriptor());
+    await installDescriptorRecordingSaves(win, matrixDescriptor());
     await openSettings(win);
 
     await win.locator(TAB(MATRIX_TAB.onlyDesc)).click();
@@ -309,7 +284,7 @@ test.describe.serial('重複除去で空になったタブの案内と導線（P
   test('移動先タブに属さない field を指す移動ボタンは、タブ移動だけが効く', async () => {
     // field（host）は「実欄あり」タブの欄で、宣言された tab（空グループ）とは食い違う。
     // 採用すると経路によって別のタブへ飛ぶため field だけを落とし、タブ移動は効かせる。
-    await installDescriptor(win, matrixDescriptor());
+    await installDescriptorRecordingSaves(win, matrixDescriptor());
     await openSettings(win);
 
     await win.locator(TAB(MATRIX_TAB.onlyDesc)).click();
@@ -328,7 +303,7 @@ test.describe.serial('重複除去で空になったタブの案内と導線（P
   test('タブバーから直接開いた空タブは、案内メッセージが読めてキーボードでも抜け出せる', async () => {
     // #258 / #272 の成果（着いてしまった人に理由が読める・そこから抜け出せる）は残す。
     // #275 で移動ボタンからは行けなくなったため、確認はタブバーから開く経路で行う。
-    await installDescriptor(win, matrixDescriptor());
+    await installDescriptorRecordingSaves(win, matrixDescriptor());
     await openSettings(win);
 
     await win.locator(TAB(MATRIX_TAB.deduped)).click();
@@ -348,7 +323,7 @@ test.describe.serial('重複除去で空になったタブの案内と導線（P
   });
 
   test('空タブを開いたまま Home / End / 矢印キーでタブ移動を続けられる', async () => {
-    await installDescriptor(win, matrixDescriptor());
+    await installDescriptorRecordingSaves(win, matrixDescriptor());
     await openSettings(win);
 
     // deduped は末尾のタブ（End / 回り込みの着地先も deduped になる）。
@@ -373,7 +348,7 @@ test.describe.serial('重複除去で空になったタブの案内と導線（P
   // ─── 観点 3 / 4: フッターの出し分けと未保存インジケータ ─────────────────────
 
   test('空になったタブでは保存が隠れるが、他タブに未保存の変更があれば隠れない', async () => {
-    await installDescriptor(win, matrixDescriptor());
+    await installDescriptorRecordingSaves(win, matrixDescriptor());
     await openSettings(win);
 
     // 空になったタブ単体では保存対象が無いので「閉じる」だけ。
@@ -409,7 +384,7 @@ test.describe.serial('重複除去で空になったタブの案内と導線（P
     // 空タブから押しても保存でき、値も正しい。
     await win.locator('.settings-save').click();
     await expect(win.locator('.settings-msg')).toHaveClass(/ok/);
-    expect((await lastPayload(win)).host).toBe('dirty.example');
+    expect((await lastSavedPayload(win)).host).toBe('dirty.example');
     // 保存が済めば印は解除される。
     await expect(win.locator(TAB(MATRIX_TAB.fields))).not.toHaveClass(/is-dirty/);
   });
@@ -417,7 +392,7 @@ test.describe.serial('重複除去で空になったタブの案内と導線（P
   // ─── 観点 5: 保存対象が 1 つも無い極端な定義 ───────────────────────────────
 
   test('全タブが空の定義でもパネルは壊れず、閉じる操作だけが残る', async () => {
-    await installDescriptor(win, {
+    await installDescriptorRecordingSaves(win, {
       available: true,
       title: '全タブ空の検証',
       note: '保存後に反映されます。',
@@ -456,7 +431,7 @@ test.describe.serial('重複除去で空になったタブの案内と導線（P
 
   test('タブを使わない表示でも重複除去が効き、最初の欄の値が保存される', async () => {
     // タブ無しモードは案内メッセージの対象外。重複除去だけが効いていることを確かめる。
-    await installDescriptor(win, {
+    await installDescriptorRecordingSaves(win, {
       available: true,
       title: 'タブ無しの重複検証',
       note: '保存後に反映されます。',
@@ -479,11 +454,11 @@ test.describe.serial('重複除去で空になったタブの案内と導線（P
     await win.getByLabel('先の接続先', { exact: true }).fill('notabs.example');
     await win.locator('.settings-save').click();
     await expect(win.locator('.settings-msg')).toHaveClass(/ok/);
-    expect((await lastPayload(win)).host).toBe('notabs.example');
+    expect((await lastSavedPayload(win)).host).toBe('notabs.example');
   });
 
   test('重複の無い定義では案内メッセージが出ず、全欄が表示・保存できる', async () => {
-    await installDescriptor(win, {
+    await installDescriptorRecordingSaves(win, {
       available: true,
       title: '重複なしの検証',
       note: '保存後に反映されます。',
@@ -520,7 +495,7 @@ test.describe.serial('重複除去で空になったタブの案内と導線（P
     await expect(win.locator(TAB(1))).toHaveClass(/is-dirty/);
     await win.locator('.settings-save').click();
     await expect(win.locator('.settings-msg')).toHaveClass(/ok/);
-    expect(await lastPayload(win)).toMatchObject({ host: 'b', port: '2', secure: false });
+    expect(await lastSavedPayload(win)).toMatchObject({ host: 'b', port: '2', secure: false });
   });
 
   test('組み込みスキーマでは案内メッセージが出ず、設定項目が従来どおり表示される', async () => {

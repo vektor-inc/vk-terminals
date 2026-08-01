@@ -83,31 +83,39 @@ test.describe.serial('設定パネルのコード折り返しとボタン境界�
   test('「外出先から確認」タブの Tab キー停止位置にコードブロックを含まない', async () => {
     await win.locator('.settings-close').focus();
 
-    // モーダル先頭の閉じるボタンから Tab を送り、モーダル外へ出るまでを 1 周として数える。
-    // 上限を設け、予期しないフォーカス循環が起きても無限ループにしない。
+    // モーダル先頭の閉じるボタンから Tab を送り、そこへ戻ってくるまでを 1 周として数える。
+    // issue #282 でフォーカストラップが入り、Tab はモーダルの中で循環するようになったため、
+    // 「モーダル外へ出たら 1 周」ではなく「先頭へ戻ったら 1 周」で区切る。
+    // 上限を設け、循環の起点へ戻れない場合も無限ループにしない。
     const stops = ['button.settings-close'];
-    let leftModal = false;
+    let cycled = false;
     for (let i = 0; i < 20; i += 1) {
       await win.keyboard.press('Tab');
       const current = await win.evaluate(() => {
         const el = document.activeElement;
-        if (!el) return { stop: '(none)', inModal: false };
+        if (!el) return { stop: '(none)', inModal: false, isFirst: false };
         const className = typeof el.className === 'string'
           ? el.className.trim().split(/\s+/).filter(Boolean).join('.')
           : '';
         const stop = el.id
           ? `#${el.id}`
           : `${el.tagName.toLowerCase()}${className ? `.${className}` : ''}`;
-        return { stop, inModal: Boolean(el.closest('.settings-modal')) };
+        return {
+          stop,
+          inModal: Boolean(el.closest('.settings-modal')),
+          isFirst: el === document.querySelector('.settings-close'),
+        };
       });
-      if (!current.inModal) {
-        leftModal = true;
+      // 途中でモーダル外へ抜けたら、その時点でトラップが壊れている。
+      expect(current.inModal, `Tab がモーダル外へ抜けた: ${[...stops, current.stop].join(' -> ')}`).toBe(true);
+      if (current.isFirst) {
+        cycled = true;
         break;
       }
       stops.push(current.stop);
     }
 
-    expect(leftModal, `Tab がモーダル外へ進まない: ${stops.join(' -> ')}`).toBe(true);
+    expect(cycled, `Tab が先頭へ戻らない: ${stops.join(' -> ')}`).toBe(true);
     // 停止位置が空振りしていないことの担保（本文が描かれず空パスするのを防ぐ）。
     expect(stops.some((stop) => stop.includes('settings-content-copy'))).toBe(true);
     // 本題の不変条件: 折り返したコードブロック（pre）は Tab 停止位置に現れない。

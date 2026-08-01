@@ -55,6 +55,7 @@ const { isFieldVisible } = window.VKSettingsVisibility;
 const { createAutoCloseController } = window.VKAutoClose;
 const { createSingleOpenGuard } = window.VKSettingsModalGuard;
 const { createEscapeLayerStack } = window.VKEscapeLayer;
+const { createFocusTrapStack } = window.VKFocusTrap;
 const {
   dedupeSettingsFieldsByKey,
   deriveSettingsTargetPathsForGroups,
@@ -64,6 +65,13 @@ const {
 
 // モーダル類の Escape は、最後に開いたものだけへ渡す（issue #284）。
 const escapeLayers = createEscapeLayerStack(document);
+// モーダル類の Tab は最前面のものの中だけで循環させ、背後は inert で止める（issue #282）。
+// これで escapeLayers が前提とする「後から開いたものが最前面」を崩す経路のうち、
+// 「確認ダイアログを開いたまま Tab で ⚙ へ抜けて設定パネルを開く」は消える。
+// ただし openSettingsModal() は settings:describe の応答を待つため、⚙ を押してから
+// パネルが生成されるまでの数 ms はまだ何も inert ではない。この隙間にペインの ✕ を
+// 押せれば逆転しうる（手動では踏めず、二重オープンも各ガードで防がれているため未対応）。
+const focusTraps = createFocusTrapStack(document);
 
 // ─── State ────────────────────────────────────────────────────────────────────
 let tree = null;       // Layout tree root
@@ -1952,11 +1960,20 @@ function openCloseConfirmDialog(paneId) {
   document.body.appendChild(overlay);
 
   let unregisterEscapeLayer = () => {};
+  let releaseFocusTrap = () => {};
   const cleanup = () => {
     unregisterEscapeLayer();
+    // 背後の inert はフォーカスを戻すより前に外す。付いたままだと復帰先への focus() が
+    // 空振りし、閉じた後にフォーカスが画面全体へ落ちてしまう（issue #282）。
+    releaseFocusTrap();
     // 画面から消す前に、いまフォーカスがダイアログ内にあるかを見る。外へ出ている場合まで
     // 引き戻すと、閉じるタイミングでユーザーの操作先からフォーカスを奪ってしまう。
-    // body は背景クリック時の着地点になりうるため、従来どおり復帰対象に含める。
+    //
+    // body の枝は背景クリック時の着地点として入れたものだが、いまはもう 1 つ効き所がある。
+    // 設定パネルの上に重ねたダイアログを閉じる場合、直前の releaseFocusTrap() が下の
+    // 設定パネルへトラップを引き直す過程でこの overlay 自身を inert にするため、ブラウザが
+    // フォーカスを body へ落とす。つまり overlay.contains(active) は成立せず、復帰は
+    // body の枝が担っている。順序を入れ替えるとここが静かに壊れるので注意（issue #282）。
     const active = document.activeElement;
     const shouldRestore = !active || active === document.body || overlay.contains(active);
     overlay.remove();
@@ -1980,8 +1997,10 @@ function openCloseConfirmDialog(paneId) {
     closePane(paneId, { skipConfirm: true });
   });
 
+  // ダイアログの中へフォーカスを閉じ込め、背後（ペインの ✕ や ☰）を操作できないようにする。
+  // aria-modal="true" と宣言している以上、実際にも背後を止めておく（issue #282）。
   // 既定フォーカスは安全側（キャンセル）。Enter 誤爆で閉じてしまわないようにする。
-  cancelBtn.focus();
+  releaseFocusTrap = focusTraps.activate(modal, { initialFocus: cancelBtn });
 }
 
 // ペインをグリッド上で左右の隣と入れ替える。端で隣が無ければ何もしない。
@@ -3564,18 +3583,22 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
     ? `<div class="settings-header has-tabs">
         <div class="settings-titlebar">
           <h2 id="${settingsTitleId}">${escText((settingsAvailable && desc.title) || 'VK Terminals')}${appVersion ? `<span class="settings-version">VK Terminals v${escText(appVersion)}</span>` : ''}</h2>
-          <button class="settings-close" title="閉じる">✕</button>
+          <button class="settings-close" aria-label="閉じる" title="閉じる">✕</button>
         </div>
         ${settingsTabsHtml}
       </div>`
     : `<div class="settings-header">
         <h2 id="${settingsTitleId}">${escText((settingsAvailable && desc.title) || 'VK Terminals')}${appVersion ? `<span class="settings-version">VK Terminals v${escText(appVersion)}</span>` : ''}</h2>
-        <button class="settings-close" title="閉じる">✕</button>
+        <button class="settings-close" aria-label="閉じる" title="閉じる">✕</button>
       </div>`;
   const overlay = document.createElement('div');
   overlay.className = 'settings-overlay';
+  // .settings-modal の tabindex="-1" は、開いたときの初期フォーカスの着地点（issue #282）。
+  // これが落ちると focusTraps.activate の initialFocus が無言で空振りする（isFocusable は
+  // 「本当に focus できるか」までは見ないためフォールバックも走らない）。結果、フォーカスが
+  // パネルの外に残り、#282 で直した症状へ静かに戻る。外さないこと。
   overlay.innerHTML = `
-    <div class="settings-modal" role="dialog" aria-modal="true" aria-labelledby="${settingsTitleId}">
+    <div class="settings-modal" role="dialog" aria-modal="true" aria-labelledby="${settingsTitleId}" tabindex="-1">
       ${settingsHeaderHtml}
       <div class="settings-view settings-view-config" role="region">
         ${settingsAvailable && desc.note && !useTabbedSettings ? `<p class="settings-note">${escText(desc.note)}</p>` : ''}
@@ -3621,16 +3644,23 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
   // ここは「いつ武装し、いつ取り消すか」だけを決める。
   const autoClose = createAutoCloseController({ onFire: () => close() });
   let unregisterEscapeLayer = () => {};
+  let releaseFocusTrap = () => {};
   const close = () => {
     // markClosed() が false を返すのは 2 回目以降。遅れて発火したタイマーが
     // 後から開いたモーダルのロックを巻き戻さないよう、閉じる処理は冪等にしておく。
     if (!autoClose.markClosed()) return;
     unregisterEscapeLayer();
+    // 背後の inert はフォーカスを戻すより前に外す。付いたままだと復帰先への focus() が
+    // 空振りし、閉じた後にフォーカスが画面全体へ落ちてしまう（issue #282）。
+    releaseFocusTrap();
     clearCopyResetTimers();
     stopApiServerStatusPolling();
-    // 画面から消す前に、いまフォーカスが設定パネル内にあるかを見る。自動クローズを
-    // 待つ間に外へ移っていた場合まで引き戻すと、#257 と同じフォーカス移動になる。
-    // body は背景クリック時の着地点になりうるため、従来どおり復帰対象に含める。
+    // 画面から消す前に、いまフォーカスが設定パネル内にあるかを見る。#257 ではこれが
+    // 「自動クローズを待つ間に Tab でパネル外へ出た場合に、操作先からフォーカスを
+    // 奪わない」ための条件だったが、#282 のトラップでその経路自体は無くなった。
+    // それでも条件を残すのは、フォーカスがパネル内にもユーザーの操作先にも無い
+    // （= body へ落ちている）場合を拾う !active / active === document.body の枝が要るため。
+    // 背景クリックで閉じたときの着地点がこれに当たる。
     const active = document.activeElement;
     const shouldRestore = !active || active === document.body || overlay.contains(active);
     overlay.remove();
@@ -3642,8 +3672,19 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
     }
   };
   // ここから後の例外では、close に overlay・キー操作・各タイマーをまとめて片付けさせる。
+  // close はトラップの解除も行うため、以降で例外が出ても背後が inert のまま残らない。
   setFailureCleanup(close);
   unregisterEscapeLayer = escapeLayers.register(close);
+  // パネルの中へフォーカスを閉じ込め、背後（ペインの ✕ や ☰）を操作できないようにする。
+  // aria-modal="true" と宣言している以上、実際にも背後を止めておく（issue #282）。
+  //
+  // 初期フォーカスは先頭の操作対象（ヘッダーの ✕）ではなく、tabindex="-1" を付けた
+  // パネル本体に置く。マウスで開いたときの programmatic focus には Chromium が
+  // :focus-visible のリングを出さないため、✕ に当てるとリングが見えないまま閉じる操作が
+  // 準備された状態になり、設定を読みながら Space を押しただけでパネルが閉じてしまう。
+  // パネル本体なら Space はスクロールになり、支援技術にはダイアログ名から読み下せて、
+  // 最初の Tab は ✕ → タブ → 内容 → キャンセル → 保存という自然な並びで始まる。
+  releaseFocusTrap = focusTraps.activate(modal, { initialFocus: modal });
 
   overlay.addEventListener('mousedown', (e) => {
     if (e.target !== overlay) return;

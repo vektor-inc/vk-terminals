@@ -551,7 +551,14 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
     await expect(win.locator('.settings-modal')).toHaveCount(1);
   });
 
-  test('保存後の自動クローズ時にフォーカスがパネル外なら操作先へ引き戻さない', async () => {
+  // 【経緯】このテストは #257 の回帰テストを #282 で反転させたもの。
+  // #257 の時点ではフォーカストラップが無く、保存後の自動クローズ（約 2.5 秒）を待つ間に
+  // Tab でパネルの外へ出られた。そのため #257 は「閉じる時点でフォーカスがパネル内に
+  // あるときだけ操作元へ戻す」という条件付きの実装でこの経路を回避しており、当時は
+  // 「パネル外へ出たあと、自動クローズ後もそこに留まる」ことを確認していた。
+  // #282 でトラップが入り、その経路自体が消滅した（条件が構造的に真になった）ため、
+  // 削除ではなく確認内容を反転し、「パネル外へ出られないこと」を押さえる形へ置き換えた。
+  test('保存後の自動クローズを待つ間も Tab でパネルの外へ出られない', async () => {
     // 実際の設定ボタンを復帰先として控えさせるため、beforeEach がプログラムから開いた
     // パネルを閉じて、設定ボタンから開き直す。
     await win.locator('.settings-close').click();
@@ -563,8 +570,8 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
     await win.locator('.settings-save').click();
     await expect(win.locator('.settings-msg')).toHaveClass(/ok/);
 
-    // overlay の直後に置いたボタンを Tab 順の次の要素にして、パネル外へ実際のキー操作で
-    // 移動する。自動クローズ後も設定ボタンへ戻らず、この操作先に留まることを確かめる。
+    // #257 当時にパネル外への出口となった要素（overlay の直後 = Tab 順の次）を同じ位置へ
+    // 置く。トラップが入った今は、保存ボタンから Tab を送ってもここへは移らない。
     await win.evaluate(() => {
       const target = document.createElement('button');
       target.id = 'outside-focus-target';
@@ -573,10 +580,16 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
     });
     await win.locator('.settings-save').focus();
     await win.keyboard.press('Tab');
-    await expect(win.locator('#outside-focus-target')).toBeFocused();
+    await expect(win.locator('#outside-focus-target')).not.toBeFocused();
+    expect(
+      await win.evaluate(() => Boolean(document.activeElement?.closest('.settings-modal'))),
+      'Tab で設定パネルの外へ出られてしまった'
+    ).toBe(true);
 
+    // 出口を塞いだ結果、自動クローズの時点でフォーカスは必ずパネル内にある。
+    // よって #257 で入れた復帰処理がそのまま働き、操作元の設定ボタンへ戻る。
     await win.waitForSelector('.settings-modal', { state: 'detached', timeout: 5000 });
-    await expect(win.locator('#outside-focus-target')).toBeFocused();
+    await expect(win.locator('#settings-btn')).toBeFocused();
   });
 
   test('設定パネルを開いた要素が消えていたら設定ボタンへフォーカスを戻す', async () => {

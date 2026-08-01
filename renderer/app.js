@@ -197,6 +197,16 @@ function checkWaiting(paneId) {
   const waiting = nextWaitingState({ prev: t.waiting, matches, excluded, quiescent });
   if (waiting !== t.waiting) {
     t.waiting = waiting;
+    if (waiting) {
+      // 静止ゲートが効いていることを e2e から検証できるようにするための記録（issue #270）。
+      // 記録するのは「点灯した時刻」と「その時点での lastOutputTime」という生の 2 値だけで、
+      // 差分も quiescent の判定結果も持たせない。差分をここで計算すると、テストが
+      // 「本番コード自身の結論」を読み返すだけになり、退行の検出力が消えるため。
+      // なお e2e 側が観測時点で lastOutputTime を読む形にはできない。lastOutputTime は
+      // 出力のたびに前進する（terminal:data ハンドラ）ので、点灯後に出力が届くと差分が
+      // 縮み、意味のない値になる。点灯の瞬間にスナップショットする必要がある。
+      t.localWaitingOnset = { at: now, lastOutputTime: t.lastOutputTime };
+    }
     // NOTE: 解除時に lastLines は捨てない。解除が起きるのは matches === false のとき
     // だけなので、バッファには入力待ちと判定される文言が残っていない。捨てると直後の
     // 判定材料まで失うだけで、再点灯の抑止にもならないため保持する
@@ -444,9 +454,14 @@ async function createTerminal(paneId, cwd, options = {}) {
     // waitingPendingSince: 前回の判定以降、最初に出力を受け取った時刻。
     //   判定間隔の上限（WAITING_MAX_EVAL_INTERVAL_MS）の起点。
     // lastWaitingBeepAt: 最後に入力待ちのビープを鳴らした時刻（連続再生の抑止）。
+    // localWaitingOnset: ローカル判定（checkWaiting）で waiting が false → true に転じた
+    //   瞬間のスナップショット { at, lastOutputTime }（issue #270）。e2e から静止ゲートの
+    //   実効を確かめるためだけの記録で、アプリの挙動には一切使わない。未点灯なら null、
+    //   再点灯のたびに上書きする（解除時のクリアは不要 = 次の点灯で必ず上書きされる）。
     waitingCheckTimer: null,
     waitingPendingSince: 0,
     lastWaitingBeepAt: 0,
+    localWaitingOnset: null,
     lastLines: '',
     // recentLines: 前回の waiting 評価以降に届いた出力だけを貯めるバッファ。
     //   上限評価（出力が流れている最中の判定）で使う。lastLines と同じ上限でトリムする。
@@ -1377,6 +1392,24 @@ function tickWidgetStale() {
 
 // e2e / デバッグ用の描画フック（旧 window.renderTaskList の後継）。
 window.renderWidget = renderWidget;
+
+// e2e / デバッグ用の読み取り専用フック（issue #270）。
+// 静止ゲート（waitingState.js の WAITING_QUIESCENCE_MS）は t.lastOutputTime を起点に
+// タイマーを張るため、「出力が静止してから点灯している」ことを e2e から確かめるには、
+// ゲートと同じ起点の時刻が要る。DOM への描画時刻を起点にすると、高負荷で xterm の描画や
+// テスト側のポーリングが遅れた分だけ間隔が短く出て、実時間の下限を割る（issue #270）。
+//
+// terminals そのものを読む形は採らない。xterm インスタンスを含むため、Playwright の
+// evaluate が返す構造化クローンに乗らず、そもそも e2e 側へ取り出せないため。
+// （terminals は `let`（クラシックスクリプトのグローバル字句環境）なので window.terminals
+//   としては見えないが、evaluate 内の素の識別子 `terminals` では参照しうる。「見えないから
+//   安全」ではなく、取り出せない以上アクセサ経由に統一する、という判断。）
+// ここでは点灯記録のコピー（プレーンな数値 2 つ）だけを返し、内部状態を書き換える口は開けない。
+window.getLocalWaitingOnset = (paneId) => {
+  const onset = terminals[paneId]?.localWaitingOnset;
+  if (!onset) return null;
+  return { at: onset.at, lastOutputTime: onset.lastOutputTime };
+};
 
 // 格納ペイン 1 件分（コンパクトカード）を生成する。
 //   - タイトル行: タスク名 / タイトルリンク / PR リンク

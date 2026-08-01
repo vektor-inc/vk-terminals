@@ -3,6 +3,9 @@ const fs = require('fs');
 const path = require('path');
 // 起動〜初期描画待ちは共通ヘルパーへ集約している（issue #263 / #269）。
 const { closeApp, getFreePort, launchApp } = require('./helpers/electron-app');
+// 静止ゲートの長さは実装（renderer/waitingState.js）から直接引く。spec 側に数値を
+// 書き写すと、実装を変えたときにテストだけが古い前提のまま通ってしまうため（issue #270）。
+const { WAITING_QUIESCENCE_MS } = require('../../renderer/waitingState');
 
 // issue vektor-inc/vk-orchestrator#212 / PR #264:
 //   「入力待ち」バッジの判定を「PTY 出力が静止した時点」に変更し、
@@ -108,30 +111,59 @@ async function runScript(win, scriptPath) {
   await win.keyboard.press('Enter');
 }
 
-// レンダラ内で「READY_MARKER が画面に出た時刻」と「waiting が点灯した時刻」を
-// 高頻度ポーリングして計測する。Playwright 側から locator を叩くと IPC 往復で
-// 粒度が荒くなるため、ページコンテキストで測る。
-async function measureWaitingOnset(win, timeoutMs = 20_000) {
-  return await win.evaluate(async ({ readyMarker, timeoutMs }) => {
-    const start = performance.now();
-    let readyAt = null;
-    let waitingAt = null;
-    while (performance.now() - start < timeoutMs) {
-      const pane = document.querySelector('.pane');
-      const rows = document.querySelector('.pane .xterm-rows');
-      if (readyAt === null && rows && rows.textContent.includes(readyMarker)) readyAt = performance.now();
-      if (waitingAt === null && pane && pane.classList.contains('waiting')) waitingAt = performance.now();
-      if (readyAt !== null && waitingAt !== null) break;
-      await new Promise((r) => setTimeout(r, 25));
-    }
-    return {
-      sawReady: readyAt !== null,
-      sawWaiting: waitingAt !== null,
-      // waiting が「READY_MARKER 表示から何 ms 後」に点いたか。静止ゲートが効いていれば
-      // おおよそ WAITING_QUIESCENCE_MS（1500ms）になる。
-      delayFromReadyMs: (readyAt !== null && waitingAt !== null) ? Math.round(waitingAt - readyAt) : null,
-    };
-  }, { readyMarker: READY_MARKER, timeoutMs });
+// ─── 静止ゲートの検証（issue #270）─────────────────────────────────────────────
+//
+// レンダラは waiting が点灯した瞬間に、「点灯した時刻」と「その時点の最終出力時刻
+// （静止ゲートのタイマーを張る起点）」を記録している（renderer/app.js の
+// localWaitingOnset）。ここではその記録を読むだけで、**テスト側では時刻を一切計測しない**。
+//
+// なぜテスト側で測らないのか:
+//   旧実装は「READY_MARKER が画面に出たのを見た時刻」と「waiting クラスが付いたのを
+//   見た時刻」を 25ms ポーリングで測り、その差に下限 1000ms を置いていた。どちらも
+//   「テストが観測した時刻」であって出力やゲートの時刻ではないため、高負荷（CI の
+//   オーバーサブスクライブ）では次の理由で下限を割る。
+//     - 計測は runScript() の後に始まる 1 本のループで、2 つの時刻を同じイテレーションで
+//       判定する。最初の一周に入るまで（CDP 往復や 25ms タイマーの遅延で）1.5 秒以上
+//       スタックすると、その一周で両方が同時に立って差は 0 になる。
+//     - 取り得る最小値が 0 である以上、下限をいくつに置いても原理的に落ちうる。
+//       「下限を緩める」対処では直らない（検出力が落ちるだけ）。
+//   レンダラ内部の記録は、点灯そのものと同じクロックで、点灯の瞬間に確定した値なので、
+//   観測開始の遅れにもポーリング粒度にも一切依存しない。
+//
+// ⚠ クロックを混ぜないこと。
+//   記録されている 2 値はどちらも Date.now() 系（renderer/app.js の lastOutputTime は
+//   Date.now() ベース）。ここに performance.now() を持ち込むと performance.timeOrigin
+//   ぶん（数百万 ms）ずれ、「WAITING_QUIESCENCE_MS 以上」が常に真になって、
+//   **落ちないまま無意味な検証になる**。差を取ってよいのはレンダラ由来の 2 値どうしだけ。
+
+// 最初のペインの点灯記録を読む。未点灯なら null。
+async function readLocalWaitingOnset(win) {
+  return await win.evaluate(() => {
+    const paneId = document.querySelector('.pane')?.dataset?.id;
+    if (!paneId || typeof window.getLocalWaitingOnset !== 'function') return null;
+    return window.getLocalWaitingOnset(paneId);
+  });
+}
+
+// baseline より後に記録された点灯かどうか。baseline が null（まだ一度も点いていない）なら
+// 記録が現れた時点で新しい。
+function isNewerOnset(onset, baseline) {
+  if (!onset) return false;
+  if (!baseline) return true;
+  return onset.at > baseline.at;
+}
+
+// baseline より新しい点灯記録が現れるまで待つ。時間切れなら null を返す。
+// ここでの Date.now() は待ち時間の打ち切り用であって、検証する値の計測には使っていない
+// （計測はレンダラ側で完結している）。
+async function waitForLocalWaitingOnset(win, baseline, timeoutMs = 20_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const onset = await readLocalWaitingOnset(win);
+    if (isNewerOnset(onset, baseline)) return onset;
+    await win.waitForTimeout(50);
+  }
+  return null;
 }
 
 test('本物の確認待ち（Proceed?）は、出力が静止してから waiting になる', async () => {
@@ -142,17 +174,35 @@ test('本物の確認待ち（Proceed?）は、出力が静止してから waiti
   try {
     const { pane, status } = await prepareFirstPane(win, port);
 
+    // スクリプトを流す前に既存の点灯記録を控える。起動直後のシェルプロンプトが偶然
+    // WAITING_PATTERNS に一致して一度点灯・解除していた場合に、その古い記録を掴んで
+    // しまわないようにするため、ベースラインは必ず runScript() の前に取る。
+    const baseline = await readLocalWaitingOnset(win);
+
     await runScript(win, scriptPath);
 
-    // 出力の到達と waiting 点灯の時刻を同時に計測する。
-    const measured = await measureWaitingOnset(win);
-    expect(measured.sawReady).toBe(true);
-    expect(measured.sawWaiting).toBe(true);
-    // 静止ゲート（1500ms）が効いていること。出力到達と同時に点いていたら
-    // 「出力のたびに判定」の旧挙動なので、下限を置いて退行を検出する。
-    // 画面描画のわずかな遅れ（数十 ms）を見込んで下限は 1000ms に緩めてある。
-    expect(measured.delayFromReadyMs).toBeGreaterThanOrEqual(1000);
-    expect(measured.delayFromReadyMs).toBeLessThan(7000);
+    // 点灯が来ること自体の検証は、この待機がタイムアウトしないことで足りる。
+    const onset = await waitForLocalWaitingOnset(win, baseline);
+    expect(onset, '待機時間内にローカル判定の点灯が記録されなかった').not.toBeNull();
+
+    // 静止ゲートが効いていること。点灯時刻とその時点の最終出力時刻の差が
+    // WAITING_QUIESCENCE_MS 以上なら、「出力が静止してから点いた」ことになる。
+    // 出力のたびに判定していた旧挙動なら、この差はほぼ 0 になるので確実に落ちる。
+    // 高負荷ではタイマーの発火が遅れて差は**大きくなる側にしか動かない**ため、
+    // この下限は負荷に依らず成立する（上限を置かないのはこのため。上限を残すと
+    // 今度は負荷で伸びた側で落ちる）。
+    //
+    // ⚠ この主張が正当に落ちうるケース: 極端な負荷で PTY のチャンク配送が 3.5 秒以上に
+    //   伸びると、静止（1.5 秒）に到達する前に上限評価（WAITING_MAX_EVAL_INTERVAL_MS =
+    //   5 秒）が先に走る。上限評価でもマッチすれば点灯する（waitingState.js の
+    //   nextWaitingState）ので、その瞬間の差は定義上 1.5 秒未満になる。もしこれが
+    //   観測されたら、対処は「下限を緩める」ではなく「シナリオをより静かにする」
+    //   （Enter 前後に流れる出力を減らし、出力が一息に届くようにする）こと。
+    const quiescenceGapMs = onset.at - onset.lastOutputTime;
+    expect(
+      quiescenceGapMs,
+      `点灯時刻 ${onset.at} / 点灯時点の最終出力時刻 ${onset.lastOutputTime}`,
+    ).toBeGreaterThanOrEqual(WAITING_QUIESCENCE_MS);
 
     await expect(pane).toHaveClass(/\bwaiting\b/);
     await expect(status).toHaveAttribute('data-status', 'waiting');

@@ -2,29 +2,10 @@ const { test, expect } = require('@playwright/test');
 const path = require('path');
 const builtinDescriptor = require('../../settings-schema.json');
 const { closeApp, getFreePort, launchAppAndWait } = require('./helpers/electron-app');
-
-// window.VKIpc.invoke（renderer 側の中継レイヤ／issue #268）を差し替え、組み込みの「外出先から確認」タブへ、実際のスキーマでは
-// 再現できない 100 文字超のコマンドを注入する。保存はこのテストでは行わない。
-async function installDescriptor(win, desc) {
-  await win.evaluate((descriptor) => {
-    const vkIpc = window.VKIpc;
-    if (!window.__origInvoke) window.__origInvoke = vkIpc.invoke.bind(vkIpc);
-    vkIpc.invoke = (channel, ...args) => {
-      if (channel === 'settings:describe') return Promise.resolve(descriptor);
-      if (channel === 'settings:save') return Promise.resolve({ ok: true });
-      return window.__origInvoke(channel, ...args);
-    };
-  }, desc);
-}
-
-async function restoreInvoke(win) {
-  await win.evaluate(() => {
-    const vkIpc = window.VKIpc;
-    if (!window.__origInvoke) return;
-    vkIpc.invoke = window.__origInvoke;
-    delete window.__origInvoke;
-  });
-}
+// 設定ディスクリプタの差し込みと後始末は共通ヘルパーへ集約している（issue #293）。
+// ここでは組み込みの「外出先から確認」タブへ、実際のスキーマでは再現できない 100 文字超の
+// コマンドを注入するだけで、保存の中身は見ない（installDescriptor は成功だけを返す）。
+const { installDescriptor, restoreInvoke } = require('./helpers/settings-descriptor');
 
 function descriptorWithLongCommand(targetPath) {
   const descriptor = structuredClone(builtinDescriptor);

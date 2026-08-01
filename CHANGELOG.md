@@ -2,6 +2,7 @@
 
 - [ 不具合修正 ] 設定パネルやペインを閉じる確認の表示中に Tab キーで背後のペインの ✕ やメニューボタンを操作できてしまう不具合を修正。あわせて設定パネルを開いたときにパネル内へフォーカスが入るように変更（[#282](https://github.com/vektor-inc/vk-terminals/issues/282)）
 - [ 開発環境 ] e2e の背景クリック抑止テストが、マシン負荷によってラベル上のドラッグが範囲選択にならず失敗することがあったのを、モーダル内の mousedown が抑止されていないことを直接確かめる形へ変更（[#294](https://github.com/vektor-inc/vk-terminals/issues/294)）
+- [ 開発環境 ] 設定パネル系 e2e の設定データ差し込み処理を共通ヘルパーへ集約（[#293](https://github.com/vektor-inc/vk-terminals/issues/293)）
 - [ その他 ] キーボードで選んだときに表示される青い枠について、内部の指定方法を CSS 変数へ集約（表示上の変化なし）（[#292](https://github.com/vektor-inc/vk-terminals/issues/292)）
 
 ## 1.50.0

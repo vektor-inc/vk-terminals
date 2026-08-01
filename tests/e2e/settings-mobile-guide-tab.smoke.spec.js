@@ -1,6 +1,10 @@
 const { test, expect } = require('@playwright/test');
 // 起動〜初期描画待ちは共通ヘルパーへ集約している（issue #263）。
 const { closeApp, getFreePort, launchAppAndWait } = require('./helpers/electron-app');
+// window.VKIpc（renderer 側の中継レイヤ）の差し替えと後始末は共通ヘルパーへ集約している
+// （issue #293）。この spec が差し込むのは保存応答の遅延だけで、設定ディスクリプタは
+// 差し替えない（組み込みスキーマの tabs 定義自体を検証対象にしているため）。
+const { restoreInvoke, stubSlowSave } = require('./helpers/settings-descriptor');
 
 // 説明タブのブロック（.settings-content の直下要素）の並び順を調べる。
 // 手順の並びは「読んだ人がその順に操作して成功するか」に直結するので、
@@ -19,32 +23,6 @@ async function contentBlockIndexes(win, panelSelector, specs) {
     }
     return result;
   }, specs);
-}
-
-// settings:save の応答をわざと遅らせる。保存処理は await の向こう側なので、
-// 「応答が返ってきた時点では既にモーダルが閉じられている」状況をこれで再現する。
-// 保存自体は行わせず ok だけ返す（一時 HOME の設定ファイルを書き換えないため）。
-// 差し替え先は window.VKIpc（renderer 側の中継レイヤ）。preload が contextBridge で
-// 公開した window.vkBridge は差し替えられないため、モックはこちらに対して行う（issue #268）。
-async function stubSlowSave(win, delayMs) {
-  await win.evaluate((ms) => {
-    const vkIpc = window.VKIpc;
-    if (!window.__origInvoke) window.__origInvoke = vkIpc.invoke.bind(vkIpc);
-    vkIpc.invoke = (channel, ...args) => {
-      if (channel !== 'settings:save') return window.__origInvoke(channel, ...args);
-      return new Promise((resolve) => setTimeout(() => resolve({ ok: true }), ms));
-    };
-  }, delayMs);
-}
-
-// stubSlowSave を元に戻す（後続テストが本来の保存経路を使えるように）。
-async function restoreSave(win) {
-  await win.evaluate(() => {
-    const vkIpc = window.VKIpc;
-    if (!window.__origInvoke) return;
-    vkIpc.invoke = window.__origInvoke;
-    delete window.__origInvoke;
-  });
 }
 
 // 実クリップボードを汚さないため writeText をスタブして呼び出しを記録する。
@@ -705,7 +683,8 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
       await win.evaluate(() => window.openSettingsModal());
       await expect(win.locator('.settings-modal')).toHaveCount(1);
     } finally {
-      await restoreSave(win);
+      // 後続テストが本来の保存経路を使えるよう、差し替えは必ず戻す。
+      await restoreInvoke(win);
     }
   });
 

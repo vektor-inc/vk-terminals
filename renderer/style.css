@@ -748,11 +748,25 @@ h4.settings-content-heading {
 .settings-row input[aria-invalid="true"] {
   border-color: #f85149;
 }
-.settings-row input:focus,
+/* 種類を絞る理由: 基本ルール（711-725行）と同じく、枠線（border）で見た目が変わる
+   種類（text/number/password/select/textarea）だけを対象にする。checkbox はここに
+   含めない。checkbox は OS 標準の見た目で描かれ border-color が効かないため、
+   input 全称で outline: none だけを当てるとフォーカス時の見た目が何も残らず消える
+   （WCAG 2.4.7 違反。issue #291）。 */
+.settings-row input[type="text"]:focus,
+.settings-row input[type="number"]:focus,
+.settings-row input[type="password"]:focus,
 .settings-row select:focus,
 .settings-row textarea:focus {
   outline: none;
   border-color: #58a6ff;
+}
+/* checkbox には border-color が効かないため、アプリ共通のフォーカスリングを別途出す
+   （issue #291）。shared.css の「対話部品の :focus-visible には個別に値を直書きせず
+   必ず 2 行をセットで書くこと」の規約どおり、変数参照の 2 行をセットで書く。 */
+.settings-check input:focus-visible {
+  outline: var(--vktm--outline--focus-ring);
+  outline-offset: var(--vktm--outline-offset--focus-ring);
 }
 .settings-check {
   display: flex;

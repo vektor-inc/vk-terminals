@@ -77,6 +77,18 @@ async function expectAppFocusRing(win, selector) {
   expect(await readRing(win, selector), `${selector} のフォーカスリング`).toEqual(APP_FOCUS_RING);
 }
 
+// text/select/textarea はリングではなく border-color（青枠線）でフォーカスを示す従来方式
+// のまま（issue #291 で checkbox だけをリング対象に切り出したときの回帰確認用）。
+const INPUT_FOCUS_BORDER_COLOR = 'rgb(88, 166, 255)';
+
+async function readBorderColor(win, selector) {
+  return await win.evaluate((sel) => {
+    const el = document.querySelector(sel);
+    if (!el) throw new Error(`${sel} が見つからない`);
+    return getComputedStyle(el).borderTopColor;
+  }, selector);
+}
+
 const TAB_GENERAL = '#settings-tab-0';
 // tabpanel は全タブ分が DOM に存在し、非アクティブなものは hidden で隠れている。
 // hidden の要素はフォーカスできないため、常に「表示中のパネル」を指すセレクタを使う。
@@ -162,6 +174,42 @@ test.describe.serial('設定パネルのフォーカスリングの統一（issu
         await readRing(win, selector),
         `${selector} とコピーボタンでフォーカスリングが揃わない`
       ).toEqual(baseline);
+    }
+  });
+
+  test('チェックボックスにフォーカスするとアプリ共通のフォーカスリングが当たる（issue #291）', async () => {
+    // チェックボックスは border-color が効かない OS 標準の見た目で描かれるため、
+    // .settings-row input:focus の outline: none だけが効くとフォーカス時に何も
+    // 表示されなくなる（WCAG 2.4.7 違反）。.settings-check input:focus-visible で
+    // 別途アプリ共通のリングを出す指定が効いていることを確認する。
+    const checkboxRow = win.locator('.settings-row-check', { hasText: 'Claude Code を自動的に起動する' });
+    const checkbox = checkboxRow.locator('input[type="checkbox"]');
+    await expect(checkbox).toBeVisible();
+    const checkboxId = await checkbox.getAttribute('id');
+    await focusByKeyboard(win, `#${checkboxId}`);
+    await expectAppFocusRing(win, `#${checkboxId}`);
+  });
+
+  test('テキスト欄・セレクトボックスはフォーカス時に従来どおり青枠線が付き、アプリ共通リングは出ない（issue #291 の回帰確認）', async () => {
+    // .settings-row input:focus / select:focus の対象種類を絞った変更（issue #291）が
+    // text/select のフォーカス時の見た目（border-color）を巻き込んでいないかを確認する。
+    for (const [rowText, inputSelector] of [
+      ['API ホスト', 'input'],
+      ['ペインを閉じる時の確認ダイアログ', 'select'],
+    ]) {
+      const row = win.locator('.settings-row', { hasText: rowText });
+      const field = row.locator(inputSelector);
+      await expect(field).toBeVisible();
+      const fieldId = await field.getAttribute('id');
+      await focusByKeyboard(win, `#${fieldId}`);
+      // outline は従来どおり none（アプリ共通リングの対象ではない）。
+      const ring = await readRing(win, `#${fieldId}`);
+      expect(ring.style, `#${fieldId} の outline-style`).toBe('none');
+      // border-color が従来どおりの青（#58a6ff）に変わっている。
+      expect(
+        await readBorderColor(win, `#${fieldId}`),
+        `#${fieldId} の border-color`
+      ).toBe(INPUT_FOCUS_BORDER_COLOR);
     }
   });
 });

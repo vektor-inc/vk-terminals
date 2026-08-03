@@ -66,6 +66,33 @@ function showErr(msg) {
   errEl.textContent = msg; errEl.style.display = "block";
 }
 
+// 認証切れ（issue #313）。GET /?token=... で発行される Cookie の有効期限切れ、または
+// まだ未登録の端末が対象。個別のエラー文言（送信失敗・終了失敗等）ではなく、この
+// 画面全体を覆う表示に一本化する（古いターミナル一覧を残すと「まだ繋がっている」と
+// 誤解させるため）。自動更新（poll の 2 秒ループ）もここで止め、画面上の再読み込み
+// ボタン、またはページのリロードでのみ再開させる。
+var authExpired = false;
+var authExpiredEl = document.getElementById("auth-expired");
+function showAuthExpired() {
+  if (authExpired) return; // 既に表示中なら何もしない（多重実行の防止）
+  authExpired = true;
+  showErr("");
+  if (authExpiredEl) authExpiredEl.hidden = false;
+  var metaEl = document.getElementById("meta");
+  if (metaEl) metaEl.textContent = "";
+  // 古いターミナル一覧・タスク一覧・使用量カードを残さない。
+  if (list) list.innerHTML = "";
+  var emptyEl = document.getElementById("empty");
+  if (emptyEl) emptyEl.remove();
+  var taskListEl = document.getElementById("task-list");
+  if (taskListEl) taskListEl.hidden = true;
+  var usageCardEl = document.getElementById("usage-card");
+  if (usageCardEl) usageCardEl.hidden = true;
+  var codexUsageCardEl = document.getElementById("codex-usage-card");
+  if (codexUsageCardEl) codexUsageCardEl.hidden = true;
+  if (addPaneBtn) addPaneBtn.hidden = true;
+}
+
 // タスクの語彙・遷移・確認文言・色は自前に持たず、GET /api/widgets が返す宣言（tasks-widget.json の
 // サニタイズ済みペイロード）を共有レンダラ（/widgetView.js）で描画する。契約ロジックは
 // window.VKWidgetContract（/widgetContract.js）にある。ここではその周辺の最小限だけを定義する。
@@ -170,6 +197,7 @@ function ensureWidgetViewController() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(command)
         });
+        if (res.status === 401) { showAuthExpired(); return { ok: false, error: "unauthorized" }; }
         var json = await res.json().catch(function() { return {}; });
         if (res.ok && json && json.ok) {
           showErr("");
@@ -322,6 +350,7 @@ async function send(termId, input) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ termId: termId, input: input })
     });
+    if (res.status === 401) { showAuthExpired(); return; }
     if (!res.ok) {
       await res.json().catch(function(){ return {}; });
       showErr(TASK_COMMAND_SEND_ERROR_MESSAGE);
@@ -342,6 +371,7 @@ async function closeTerm(termId, label) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ termId: termId })
     });
+    if (res.status === 401) { showAuthExpired(); return; }
     if (!res.ok) {
       var j = await res.json().catch(function(){ return {}; });
       showErr("終了失敗: " + (j.error || res.status));
@@ -915,6 +945,10 @@ async function poll() {
       fetch("/api/states", { cache: "no-store" }),
       fetch("/api/widgets", { cache: "no-store" })
     ]);
+    if (responses[0].status === 401 || responses[1].status === 401) {
+      showAuthExpired();
+      return;
+    }
     if (!responses[0].ok) throw new Error("/api/states HTTP " + responses[0].status);
     if (!responses[1].ok) throw new Error("/api/widgets HTTP " + responses[1].status);
     var payloads = await Promise.all([
@@ -974,6 +1008,14 @@ async function requestNewPane() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ useDefaults: true })
     });
+    if (res.status === 401) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      setAddPaneBusy(false);
+      showAuthExpired();
+      return;
+    }
     var j = await res.json().catch(function () { return {}; });
     if (settled) return; // タイムアウト後に遅れて届いた応答は無視（多重解除・上書きを防ぐ）
     settled = true;
@@ -1003,8 +1045,19 @@ async function requestNewPane() {
 
 if (addPaneBtn) addPaneBtn.addEventListener("click", requestNewPane);
 
+// 認証切れ表示の「再読み込み」ボタン（issue #313）。自動更新は止まっているため、
+// 再開する唯一の手段はページのリロード（＝この場でボタンからも行えるようにする）。
+var authExpiredReloadBtn = document.getElementById("auth-expired-reload");
+if (authExpiredReloadBtn) {
+  authExpiredReloadBtn.addEventListener("click", function () { location.reload(); });
+}
+
 // 自己再帰 setTimeout で逐次実行を保証（setInterval だと前回 fetch 完了前に
 // 次が走り、古い結果が新しい結果を上書きしうるため）。
+// authExpired 検知後は再スケジュールしない（=自動更新を止める）。再開はリロードのみ。
 (function loop() {
-  poll().finally(function () { setTimeout(loop, 2000); });
+  if (authExpired) return;
+  poll().finally(function () {
+    if (!authExpired) setTimeout(loop, 2000);
+  });
 })();

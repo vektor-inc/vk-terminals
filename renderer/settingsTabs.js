@@ -132,6 +132,13 @@ function normalizeSettingsContentBlock(block, tabIds, fieldTabs) {
     return SETTINGS_CONTENT_STATUS_SOURCES.has(source) ? { type, source } : null;
   }
 
+  // アクセストークン（issue #313）の表示・コピー・再発行と、初回登録用 URL の
+  // 表示・コピーをまとめた自己完結パネル。追加のプロパティは持たない（トークン本体は
+  // 秘密情報のため、この静的なディスクリプタには載せず、renderer が IPC で都度取得する）。
+  if (type === 'apiTokenPanel') {
+    return { type };
+  }
+
   if (type === 'tabLink') {
     // 同じモーダル内の別タブへ移動するボタン。存在しないタブ ID を指すものは落とす。
     const label = nonEmptyString(block.label);

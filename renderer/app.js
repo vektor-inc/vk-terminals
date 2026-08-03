@@ -25,6 +25,14 @@ const FitAddon = window.FitAddon.FitAddon;
 // 3. アプリ内の共有モジュール（index.html の <script> 順で読み込み済み）
 const { appendAnsiForDisplay, stripAnsiForDisplay } = window.VKStripAnsi;
 const { normalizeConfirmClose, shouldConfirmClose } = window.VKCloseConfirm;
+// apiHost の即時案内（getApiHostAuthNotice）と utils/apiAuth.js の認証要否判定
+// （shouldRequireAuth）が同じループバック定義を参照するための共有モジュール
+// （issue #313 レビュー対応・PR #315 指摘。旧実装は '127.0.0.1' の完全一致だけを
+// 見ており、::1 / ::ffff:127.0.0.1 で誤った警告を出していた）。
+// isLoopbackDisplayValue は画面の即時案内専用（'localhost' も loopback 扱いにする）。
+// 認証要否の実判定（shouldRequireAuth）に使う isLoopbackHost 自体には 'localhost' を
+// 足していないので、ここでは案内専用の関数だけを使う（PR #315 安藤のレビュー指摘）。
+const { isLoopbackDisplayValue } = window.VKLoopbackHost;
 const { isSafeHttpUrl } = window.VKUrlSafety;
 // 宣言的ウィジェット（tasks-widget.json）の契約・共有描画（#229 / vk-orchestrator#182）。
 // タスクの語彙・色・遷移・確認文言は自前に持たず、orchestrator が書き出す宣言だけを描画する。
@@ -2037,6 +2045,78 @@ function openCloseConfirmDialog(paneId) {
   releaseFocusTrap = focusTraps.activate(modal, { initialFocus: cancelBtn });
 }
 
+// ─── アクセストークン再発行の確認ダイアログ（issue #313）─────────────────────
+// openCloseConfirmDialog と同じパターン（アプリ内モーダル・role="alertdialog"・
+// フォーカストラップ・Escape レイヤー・復帰フォーカス）を再利用する。OS ネイティブの
+// window.confirm() を使わない理由は openCloseConfirmDialog 冒頭のコメントを参照
+// （フォーカス移動の扱いをアプリの他のダイアログと統一するため）。
+// 設定モーダルの上に重ねて開かれる想定（フォーカストラップのスタック構造は
+// openCloseConfirmDialog の cleanup コメントのとおり、重ね開きに対応済み）。
+let reissueTokenConfirmOpen = false;
+
+function openReissueTokenConfirmDialog(onConfirm) {
+  if (reissueTokenConfirmOpen) return;
+  const restoreFocusElement = document.activeElement;
+  reissueTokenConfirmOpen = true;
+
+  const overlay = document.createElement('div');
+  overlay.className = 'confirm-overlay';
+  const modal = document.createElement('div');
+  modal.className = 'confirm-modal';
+  modal.setAttribute('role', 'alertdialog');
+  modal.setAttribute('aria-modal', 'true');
+  modal.setAttribute('aria-label', 'アクセストークンの再発行確認');
+
+  const msgEl = document.createElement('p');
+  msgEl.className = 'confirm-message';
+  msgEl.textContent = 'トークンを再発行しますか？登録済みのすべてのスマートフォンが使えなくなります（個別に無効化することはできません）。';
+
+  const actions = document.createElement('div');
+  actions.className = 'confirm-actions';
+  const cancelBtn = document.createElement('button');
+  cancelBtn.type = 'button';
+  cancelBtn.className = 'confirm-cancel';
+  cancelBtn.textContent = 'キャンセル';
+  const confirmBtn = document.createElement('button');
+  confirmBtn.type = 'button';
+  confirmBtn.className = 'confirm-reissue-token';
+  confirmBtn.textContent = '再発行する';
+  actions.appendChild(cancelBtn);
+  actions.appendChild(confirmBtn);
+
+  modal.appendChild(msgEl);
+  modal.appendChild(actions);
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+
+  let unregisterEscapeLayer = () => {};
+  let releaseFocusTrap = () => {};
+  const cleanup = () => {
+    unregisterEscapeLayer();
+    releaseFocusTrap();
+    const active = document.activeElement;
+    const shouldRestore = !active || active === document.body || overlay.contains(active);
+    overlay.remove();
+    reissueTokenConfirmOpen = false;
+    if (shouldRestore && restoreFocusElement?.isConnected) restoreFocusElement.focus();
+  };
+  unregisterEscapeLayer = escapeLayers.register(cleanup);
+
+  overlay.addEventListener('mousedown', (e) => {
+    if (e.target !== overlay) return;
+    e.preventDefault();
+    cleanup();
+  });
+  cancelBtn.addEventListener('click', cleanup);
+  confirmBtn.addEventListener('click', () => {
+    cleanup();
+    onConfirm();
+  });
+
+  // 既定フォーカスは安全側（キャンセル）。Enter 誤爆で再発行してしまわないようにする。
+  releaseFocusTrap = focusTraps.activate(modal, { initialFocus: cancelBtn });
+}
+
 // ペインをグリッド上で左右の隣と入れ替える。端で隣が無ければ何もしない。
 function movePane(paneId, dir) {
   const order = tree.order;
@@ -3294,6 +3374,33 @@ function setupUsageBadge() {
   setInterval(tickSidebarUsageReset, USAGE_SIDEBAR_TICK_INTERVAL_MS);
 }
 
+// apiHost の入力値から、その場で出す認証関連の案内を判定する（issue #313）。
+// 保存・再起動を待たずにその場で気づけるようにするための即時フィードバック。
+// null を返した場合は案内なし（ループバックアドレス・'localhost'・未入力）。
+// isLoopbackDisplayValue は utils/apiAuth.js（shouldRequireAuth）が実際の認証要否を
+// 決めるのに使う isLoopbackHost をベースに、画面の即時案内だけ 'localhost' も
+// loopback 扱いに広げたもの（PR #315 レビュー対応）。'127.0.0.1' の完全一致だけで
+// 判定すると、::1 や ::ffff:127.0.0.1 のように実際には認証不要な値に対しても
+// 「認証が必須になります」と誤って案内してしまう。'localhost' も同様で、
+// 127.0.0.1 より自然に入力されやすいぶん、誤案内を見た利用者が「もう保護されて
+// いる」と誤認したまま tailscale serve 公開時に apiRequireAuthAlways を有効化し
+// 忘れる実害につながるため、案内側だけは isLoopbackHost より広く判定する
+// （安藤のセキュリティレビュー指摘）。
+function getApiHostAuthNotice(rawValue) {
+  const value = typeof rawValue === 'string' ? rawValue.trim() : '';
+  if (!value || isLoopbackDisplayValue(value)) return null;
+  if (value === '0.0.0.0') {
+    return {
+      tone: 'warning',
+      text: '0.0.0.0 を指定すると LAN 上の誰からでも接続できるうえ、通信が暗号化されないためアクセストークンが平文で流れます。推奨しません（Tailscale の利用をご検討ください）。',
+    };
+  }
+  return {
+    tone: 'info',
+    text: '127.0.0.1 以外を指定すると、保存して再起動した後はアクセストークンによる認証が必須になります。初回登録用の URL は「外出先から確認」タブで確認できます。',
+  };
+}
+
 // 1 フィールド分の入力 HTML を組み立てる。
 // id は描画順で採番したユニークな値を呼び出し側から受け取る（キーから id を導出すると
 // "a.b" と "a_b" のような別キーがサニタイズ後に衝突しうるため、キー由来にしない）。
@@ -3366,11 +3473,20 @@ function renderSettingsField(f, value, id) {
   // pattern 検証のエラー行と aria 関連付け。help があれば help id と error id を
   // スペース区切りで両方指す（無ければ error id のみ）。
   const errorId = escAttr(id + '-error');
-  const describedBy = escAttr(f.help ? `${id}-help ${id}-error` : `${id}-error`);
+  // apiHost だけ、保存・再起動を待たずその場で認証要否の案内を出すための空の通知欄を
+  // 併設する（issue #313）。中身は buildSettingsModal 側で入力イベントに応じて書き換える。
+  const inlineNoticeId = escAttr(id + '-notice');
+  const inlineNoticeHtml = f.key === 'apiHost'
+    ? `<p class="settings-inline-notice" id="${inlineNoticeId}" role="status" aria-live="polite" hidden></p>`
+    : '';
+  const describedBy = escAttr(f.help
+    ? `${id}-help ${id}-error${f.key === 'apiHost' ? ` ${id}-notice` : ''}`
+    : `${id}-error${f.key === 'apiHost' ? ` ${id}-notice` : ''}`);
   return `<div class="settings-row">
     <label class="settings-label" for="${id}">${label}</label>${help}
     <input type="${inputType}" id="${id}" value="${strVal}"${ph} spellcheck="false" aria-describedby="${describedBy}">
     <span class="settings-error" id="${errorId}" role="alert"></span>
+    ${inlineNoticeHtml}
   </div>`;
 }
 
@@ -3426,6 +3542,50 @@ function renderApiServerStatus(status, apiHostTabIndex) {
   </section>`;
 }
 
+// アクセストークン（issue #313）の表示・コピー・再発行、初回登録用 URL の表示・コピーを
+// まとめた自己完結パネル。トークン本体は秘密情報のため、この静的な HTML には埋め込まず
+// マスク（伏せ字）だけを出しておき、実値は「表示」「初回登録用の URL を表示」ボタンを
+// 押した時にだけ IPC（settings:api-token-info）で都度取得する（buildSettingsModal 側で配線）。
+const API_TOKEN_MASK_PLACEHOLDER = '•'.repeat(64);
+function renderApiTokenPanel(persisted) {
+  // ボタンは既存の .settings-content-copy / .settings-content-tablink と見た目を
+  // 揃えつつ、専用クラス（settings-content-apitoken-btn）にする。同じクラス名を共有すると
+  // 既存のイベント委譲（コピー・タブ移動）がこのボタンにも反応してしまうため
+  // （どちらも無害な no-op に倒れるが、意図が分かりにくく事故の元になる）。
+  // 「コピー」ボタンは初回登録用 URL 側にも同名のボタンが並ぶため、aria-label で
+  // 何をコピーするボタんかを区別する（renderSettingsCopyableCode と同じ作法）。
+  //
+  // persisted が false の場合、トークンの永続化に失敗しており次回起動で変わる旨を
+  // 警告する（main.js の settings:describe が返す apiTokenPersisted を反映）。
+  const persistWarningHtml = persisted === false
+    ? `<div class="settings-content-callout" data-tone="warning" role="alert">
+        <span class="settings-content-callout-label">注意</span>
+        <p class="settings-content-callout-text">このトークンは設定ファイルへの保存に失敗しており、メモリ上だけで動作しています。次回の起動でトークンが変わり、登録済みのスマートフォンは再登録が必要になります。ディスク容量や書き込み権限をご確認ください。</p>
+      </div>`
+    : '';
+  return `<section class="settings-content-apitoken" data-apitoken-panel>
+    <h3 class="settings-content-heading">アクセストークン</h3>
+    ${persistWarningHtml}
+    <div class="settings-content-apitoken-value-row">
+      <code class="settings-content-apitoken-value" data-apitoken-value>${API_TOKEN_MASK_PLACEHOLDER}</code>
+      <button type="button" class="settings-content-apitoken-btn" data-apitoken-reveal aria-pressed="false">表示</button>
+      <button type="button" class="settings-content-apitoken-btn" data-apitoken-copy aria-label="コピー: アクセストークン">コピー</button>
+    </div>
+    <span class="settings-content-copy-status" data-apitoken-copy-status role="status"></span>
+    <span class="settings-content-apitoken-error" data-apitoken-error role="alert"></span>
+
+    <div class="settings-content-apitoken-url">
+      <button type="button" class="settings-content-apitoken-btn" data-apitoken-url-reveal aria-expanded="false">初回登録用の URL を表示</button>
+      <div class="settings-content-apitoken-url-body" data-apitoken-url-body hidden></div>
+    </div>
+
+    <div class="settings-content-apitoken-reissue">
+      <button type="button" class="settings-content-apitoken-btn settings-content-apitoken-btn-danger" data-apitoken-reissue>トークンを再発行</button>
+      <span class="settings-content-apitoken-reissue-status" data-apitoken-reissue-status role="status"></span>
+    </div>
+  </section>`;
+}
+
 // 説明タブ（tabs[].content）の読み取り専用ブロックを HTML 化する。
 // blocks は settingsTabs.js の normalizeSettingsTabContent で正規化済み（未知の type や
 // 非 http(s) の URL は除去済み）である前提。content は外部ディスクリプタ
@@ -3471,6 +3631,9 @@ function renderSettingsTabContent(blocks, tabIndexById, runtimeStatus = {}, entr
     if (block.type === 'status' && block.source === 'apiServer') {
       const apiHostEntry = entries.find(({ field }) => field.key === 'apiHost');
       return renderApiServerStatus(runtimeStatus.apiServer, apiHostEntry?.tabIndex);
+    }
+    if (block.type === 'apiTokenPanel') {
+      return renderApiTokenPanel(runtimeStatus.apiTokenPersisted);
     }
     if (block.type === 'tabLink') {
       const targetIndex = tabIndexById.get(block.tab);
@@ -3583,6 +3746,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
           const noteHtml = tabNote ? `<p class="settings-note settings-tab-note">${escText(tabNote)}</p>` : '';
           const contentHtml = renderSettingsTabContent(tab && tab.content, tabIndexById, {
             apiServer: desc.apiServerStatus,
+            apiTokenPersisted: desc.apiTokenPersisted,
           }, entries);
           // 説明コンテンツも設定グループも注記も無い、完全に空のタブだけに空状態を示す。
           // 案内文の役目は「意図せず白紙になった画面で、何も見落としていないと伝える」ことなので、
@@ -3818,6 +3982,10 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
         el.scrollTop = saved ? saved[i] : 0;
       });
     };
+    // タブを離れたときに片付けたい処理（アクセストークンの表示状態のリセット等）を
+    // 登録する場所。タブは隠すだけで DOM を破棄しないため、伏せ字に戻す等の後始末は
+    // 明示的に行わないと残り続ける（issue #313 レビュー対応・中-5）。
+    const onSettingsTabChangedCallbacks = [];
     // タブを切り替える。切り替え時は現タブのスクロール位置を控え、移動先タブの前回位置
     // （未訪問なら先頭）へ復元する。位置を保ちたい呼び出し元は、同じタブを指定すれば
     // スクロールには触れない（tabChanged が false のときは保存も復元もしない）。
@@ -3845,6 +4013,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
         // 正式に許した以上、移動先を読んでいる最中にパネルごと消えるのは矛盾する。
         // 「保存しました」の表示は残したまま、閉じるタイミングはユーザーに委ねる。
         autoClose.cancel();
+        onSettingsTabChangedCallbacks.forEach((cb) => cb());
       }
       updateSettingsFooter();
       if (tabChanged) restoreTabScroll(nextIndex);
@@ -3984,6 +4153,164 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
         setCopyStatus(status, '');
       }, 2000));
     });
+
+    // ─── アクセストークンパネル（issue #313） ─────────────────────────────────
+    // トークン本体・登録用 URL は既定で伏せておき、「表示」系ボタンを押した時だけ
+    // IPC（settings:api-token-info）で都度取得する。取得のたびに main 側から
+    // 最新の値を引くため、再発行後もこの取得経路を通す限り古い値を返さない。
+    const apiTokenPanel = modal.querySelector('[data-apitoken-panel]');
+    if (apiTokenPanel) {
+      const tokenValueEl = apiTokenPanel.querySelector('[data-apitoken-value]');
+      const tokenRevealBtn = apiTokenPanel.querySelector('[data-apitoken-reveal]');
+      const tokenCopyBtn = apiTokenPanel.querySelector('[data-apitoken-copy]');
+      const tokenCopyStatusEl = apiTokenPanel.querySelector('[data-apitoken-copy-status]');
+      const tokenErrorEl = apiTokenPanel.querySelector('[data-apitoken-error]');
+      const urlRevealBtn = apiTokenPanel.querySelector('[data-apitoken-url-reveal]');
+      const urlBodyEl = apiTokenPanel.querySelector('[data-apitoken-url-body]');
+      const reissueBtn = apiTokenPanel.querySelector('[data-apitoken-reissue]');
+      const reissueStatusEl = apiTokenPanel.querySelector('[data-apitoken-reissue-status]');
+      let tokenRevealed = false;
+      let urlRevealed = false;
+      let tokenCopyResetTimer = null;
+
+      // タブを離れたら、表示中の秘密情報を伏せ字へ戻す（issue #313 レビュー対応・中-5）。
+      // 設定モーダルはタブを hidden にするだけで DOM を破棄しないため、これを行わないと
+      // 表示したまま別タブへ移って戻った時に伏せ字へ戻らず秘密情報が残り続ける。
+      onSettingsTabChangedCallbacks.push(() => {
+        if (tokenRevealed) {
+          tokenRevealed = false;
+          tokenValueEl.textContent = API_TOKEN_MASK_PLACEHOLDER;
+          tokenRevealBtn.textContent = '表示';
+          tokenRevealBtn.setAttribute('aria-pressed', 'false');
+        }
+        if (urlRevealed) {
+          urlRevealed = false;
+          urlBodyEl.hidden = true;
+          urlBodyEl.innerHTML = '';
+          urlRevealBtn.textContent = '初回登録用の URL を表示';
+          urlRevealBtn.setAttribute('aria-expanded', 'false');
+        }
+      });
+
+      const showTokenError = (message) => {
+        if (!tokenErrorEl) return;
+        tokenErrorEl.textContent = message;
+      };
+      const clearTokenError = () => showTokenError('');
+
+      // main 側から都度取得する。preload の許可リスト（INVOKE_CHANNELS）に
+      // channel が無い場合や IPC 自体が失敗した場合、ここで無言の null を返すと
+      // 呼び出し側が何も起きなかったように見えてしまう（issue #313 レビュー対応・
+      // 重大-1）。必ずパネル上にエラー文言を出す。
+      const fetchApiTokenInfo = async () => {
+        try {
+          const info = await VKIpc.invoke('settings:api-token-info');
+          if (!info || !info.token) {
+            showTokenError('アクセストークンの取得に失敗しました（応答が不正です）。');
+            return null;
+          }
+          clearTokenError();
+          return info;
+        } catch (e) {
+          showTokenError('アクセストークンの取得に失敗しました: ' + (e && e.message ? e.message : '不明なエラー'));
+          return null;
+        }
+      };
+
+      if (tokenRevealBtn && tokenValueEl) {
+        tokenRevealBtn.addEventListener('click', async () => {
+          if (tokenRevealed) {
+            tokenRevealed = false;
+            tokenValueEl.textContent = API_TOKEN_MASK_PLACEHOLDER;
+            tokenRevealBtn.textContent = '表示';
+            tokenRevealBtn.setAttribute('aria-pressed', 'false');
+            return;
+          }
+          const info = await fetchApiTokenInfo();
+          if (!info) return;
+          tokenRevealed = true;
+          tokenValueEl.textContent = info.token;
+          tokenRevealBtn.textContent = '隠す';
+          tokenRevealBtn.setAttribute('aria-pressed', 'true');
+        });
+      }
+
+      if (tokenCopyBtn) {
+        tokenCopyBtn.addEventListener('click', async () => {
+          const info = await fetchApiTokenInfo();
+          let ok = !!(info && info.token);
+          if (ok) {
+            try {
+              ok = await VKClipboard.writeText(info.token);
+            } catch (_e) {
+              ok = false;
+            }
+          }
+          setCopyStatus(tokenCopyStatusEl, ok ? 'ok' : 'error');
+          if (tokenCopyResetTimer) clearTimeout(tokenCopyResetTimer);
+          tokenCopyResetTimer = setTimeout(() => {
+            tokenCopyResetTimer = null;
+            setCopyStatus(tokenCopyStatusEl, '');
+          }, 2000);
+        });
+      }
+
+      if (urlRevealBtn && urlBodyEl) {
+        urlRevealBtn.addEventListener('click', async () => {
+          if (urlRevealed) {
+            urlRevealed = false;
+            urlBodyEl.hidden = true;
+            urlBodyEl.innerHTML = '';
+            urlRevealBtn.textContent = '初回登録用の URL を表示';
+            urlRevealBtn.setAttribute('aria-expanded', 'false');
+            return;
+          }
+          const info = await fetchApiTokenInfo();
+          if (!info || !info.registrationUrl) return;
+          // コピーボタン付きのコード表示は既存の renderSettingsCopyableCode を再利用する
+          // （挿入後の .settings-content-copy クリックは既存のイベント委譲がそのまま拾う）。
+          urlBodyEl.innerHTML = renderSettingsCopyableCode(info.registrationUrl, true);
+          urlBodyEl.hidden = false;
+          urlRevealed = true;
+          urlRevealBtn.textContent = '初回登録用の URL を隠す';
+          urlRevealBtn.setAttribute('aria-expanded', 'true');
+        });
+      }
+
+      if (reissueBtn) {
+        reissueBtn.addEventListener('click', () => {
+          // OS ネイティブの window.confirm() ではなく、アプリ内モーダルで確認する
+          // （issue #313 レビュー対応・重大-3。理由は openReissueTokenConfirmDialog 定義を参照）。
+          openReissueTokenConfirmDialog(async () => {
+            let result;
+            try {
+              result = await VKIpc.invoke('settings:reissue-api-token');
+            } catch (e) {
+              result = { ok: false, error: e.message };
+            }
+            if (result && result.ok) {
+              if (reissueStatusEl) {
+                reissueStatusEl.textContent = '再発行しました。登録済みだった端末は使えなくなります。';
+                reissueStatusEl.removeAttribute('data-state');
+              }
+              // 表示中だった値は古いトークンのままにしない。
+              if (tokenRevealed) tokenValueEl.textContent = result.token;
+              if (urlRevealed && result.registrationUrl) {
+                urlBodyEl.innerHTML = renderSettingsCopyableCode(result.registrationUrl, true);
+              }
+              // 永続化に成功した以上、以前表示していた「保存に失敗した」警告は消してよい。
+              if (result.persisted) {
+                const persistWarning = apiTokenPanel.querySelector('[data-tone="warning"]');
+                if (persistWarning) persistWarning.remove();
+              }
+            } else if (reissueStatusEl) {
+              reissueStatusEl.textContent = 'エラー: ' + (result && result.error ? result.error : '不明なエラー');
+              reissueStatusEl.setAttribute('data-state', 'error');
+            }
+          });
+        });
+      }
+    }
 
     // createWindow() より API 起動が後なので、設定パネルを極端に早く開くと「確認中」に
     // なる。確定前に限って軽量 IPC を 250ms ごとに最大 20 回（5 秒）取り直し、
@@ -4147,6 +4474,30 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
     input.addEventListener('change', onEntryEdited);
   }
   applyFieldVisibility();
+
+  // apiHost はその場で認証要否の案内を出す（issue #313）。保存・再起動して初めて
+  // 気づく流れを避けるため、入力のたびに即時判定する。
+  const apiHostEntryForNotice = entries.find(({ field }) => field.key === 'apiHost');
+  if (apiHostEntryForNotice) {
+    const apiHostInput = getEntryInput(apiHostEntryForNotice.id);
+    const apiHostNoticeEl = modal.querySelector('#' + apiHostEntryForNotice.id + '-notice');
+    if (apiHostInput && apiHostNoticeEl) {
+      const applyApiHostNotice = () => {
+        const notice = getApiHostAuthNotice(apiHostInput.value);
+        if (!notice) {
+          apiHostNoticeEl.hidden = true;
+          apiHostNoticeEl.textContent = '';
+          apiHostNoticeEl.removeAttribute('data-tone');
+          return;
+        }
+        apiHostNoticeEl.hidden = false;
+        apiHostNoticeEl.textContent = notice.text;
+        apiHostNoticeEl.setAttribute('data-tone', notice.tone);
+      };
+      applyApiHostNotice();
+      apiHostInput.addEventListener('input', applyApiHostNotice);
+    }
+  }
 
   // "優しく遅らせ、素早く許す": 打鍵中は警告せず blur で初回検証。エラーが付いた後だけ
   // input イベントで再検証し、valid になれば即解除する。

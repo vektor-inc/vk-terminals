@@ -14,6 +14,17 @@
   <span class="meta" id="meta">接続中…</span>
 </header>
 <div id="err"></div>
+<!-- 認証切れ表示（issue #313）。Cookie の有効期限切れ・未登録の端末からのアクセス時に
+     画面全体を覆う。古いターミナル一覧を残さないよう、表示中は他の要素を JS 側で隠す。
+     文面には「認証」「トークン」「Cookie」という語を出さない（利用者向けの案内文言）。 -->
+<div id="auth-expired" role="alert" hidden>
+  <div class="auth-expired-box">
+    <h2>接続が許可されていません</h2>
+    <p>このスマートフォンの登録の有効期限が切れたか、まだ登録されていません。</p>
+    <p>パソコンの VK Terminals を開き、設定パネルの「外出先から確認」タブに表示されている初回登録用の URL を、このスマートフォンでもう一度開いてください。</p>
+    <button type="button" id="auth-expired-reload">再読み込み</button>
+  </div>
+</div>
 <div id="usage-card" role="group" aria-labelledby="usage-card-title">
   <div class="u-card-title" id="usage-card-title">Claude使用量</div>
   <!-- 公式 usage API 取得時（issue #73）: セッション% / 週間% の 2 バー表示 -->

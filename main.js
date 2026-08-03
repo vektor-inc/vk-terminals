@@ -43,8 +43,21 @@ const {
   describeTargetPaths,
   isValidSettingsDescriptor,
   saveSettingsToTargets,
+  readJsonObject,
 } = require('./settingsTargets');
 const { buildBuiltinSettingsDescriptor } = require('./settingsSchema');
+// HTTP API のアクセストークン認証（issue #313）。トークン生成・timing-safe 比較・
+// 認証要否判定・Cookie 組み立ては utils/apiAuth.js に切り出し、単体テストしやすくしてある。
+const {
+  generateApiToken,
+  isValidApiTokenFormat,
+  shouldRequireAuth,
+  isAuthorizedRequest,
+  extractTokenFromRequest,
+  buildAuthCookieHeader,
+  isAuthExemptPath,
+  evaluateTokenRegistration,
+} = require('./utils/apiAuth');
 const execFileAsync = promisify(execFile);
 
 let win;
@@ -468,6 +481,18 @@ function stopWidgetWatcher() {
   widgetWatch = null;
 }
 
+// loadUserConfig() / resolveTokenConfigPath()（アクセストークン専用パス解決）が
+// 共有する設定ファイルの探索候補。両者の探索順がずれると、一方だけが後方互換パスを
+// 見つけて他方が見つけない、という事故が起きる（issue #313 レビュー対応・中-1/中-2）ため、
+// 候補配列そのものをこの 1 か所で共有する。
+function userConfigCandidatePaths() {
+  return [
+    path.join(DATA_DIR, 'config.json'),
+    path.join(__dirname, 'config.json'),
+    path.join(os.homedir(), '.claude', 'terminals-config.json'), // 後方互換
+  ];
+}
+
 /**
  * ユーザー設定を読み込む。
  * 読み込み順:
@@ -479,11 +504,7 @@ function stopWidgetWatcher() {
  * @returns {{ initialCommand?: string, additionalPanes?: Array<{cwd: string}>, waitingExcludeCwdPatterns?: string[], tasksFile?: string }} 設定オブジェクト
  */
 function loadUserConfig() {
-  const candidates = [
-    path.join(DATA_DIR, 'config.json'),
-    path.join(__dirname, 'config.json'),
-    path.join(os.homedir(), '.claude', 'terminals-config.json'), // 後方互換
-  ];
+  const candidates = userConfigCandidatePaths();
 
   for (const configPath of candidates) {
     if (fs.existsSync(configPath)) {
@@ -510,6 +531,19 @@ const API_PORT = (() => {
   const raw = Number(process.env.VK_TERMINALS_API_PORT ?? loadUserConfig().port);
   return Number.isInteger(raw) && raw >= 1 && raw <= 65535 ? raw : 13847;
 })();
+
+// ─── アクセストークン（issue #313）────────────────────────────────────────────
+// 初回起動時に暗号論的に安全な乱数でトークンを生成し、config.json の apiToken へ
+// 保存する（利用者に安全な文字列を考えさせない）。永続化に失敗した場合はメモリ上
+// だけの一時トークンで起動する（この場合、次回起動でトークンが変わり、登録済みの
+// 端末はすべて再登録が必要になる。apiHost が 127.0.0.1 のまま＝認証不要な状態なら
+// 実害が無いため、警告ログのみでそのまま起動する）。
+// ensureApiToken / persistApiToken は resolveOwnConfigTargetPath 定義の直後にある
+// （関数宣言は巻き上げられるため、定義位置がここより下でも呼び出せる）。
+let { token: API_TOKEN, persisted: apiTokenPersisted } = ensureApiToken();
+if (!apiTokenPersisted) {
+  console.warn(`${LOG_PREFIX} Failed to persist API token to config.json. Using an in-memory token for this session only; it will change (and re-registration will be required on mobile) after the next restart.`);
+}
 
 function normalizeApiHost(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : '127.0.0.1';
@@ -885,6 +919,103 @@ function resolveOwnConfigTargetPath() {
   return path.join(__dirname, 'config.json');
 }
 
+// アクセストークン専用のパス解決（issue #313）。loadUserConfig() と探索順を完全に
+// 一致させる（userConfigCandidatePaths() を共有）ことで、次の 2 つの事故を防ぐ。
+//   - 中-1: 既存の設定ファイルがあればそこへトークンを書き込む。resolveOwnConfigTargetPath()
+//     は候補が 2 つしか無いため、利用者が後から ~/.vk-terminals/config.json を作ると
+//     保存先が切り替わり、新しいトークンが生成されて登録済み端末が全部無効になりうる。
+//   - 中-2: どの候補も存在しない場合のフォールバックを {appDir}/config.json ではなく
+//     README の記述どおり DATA_DIR/config.json（~/.vk-terminals/config.json）にする。
+//     {appDir} が書き込めないパッケージ化環境で毎起動トークンが変わる事故も防ぐ。
+// 設定パネルの保存経路が使う resolveOwnConfigTargetPath() 自体は変更しない
+// （このトークン専用の解決とは独立させ、既存の保存挙動に影響させないため）。
+//
+// 【既知の残存リスク（PR #315 安藤のセキュリティレビュー指摘・コメントのみ対応）】
+// この 2 つの解決は候補リストが非対称（こちらは後方互換の
+// ~/.claude/terminals-config.json も候補に含むが、resolveOwnConfigTargetPath() は
+// 含まない）。そのため、レガシーファイルだけが存在する環境で設定パネルから保存すると
+// {appDir}/config.json が新規作成され、次回起動時の resolveTokenConfigPath() は
+// 優先順位（DATA_DIR → appDir → legacy）どおりその新しい {appDir}/config.json を
+// 選ぶ。そこには apiToken が無いため ensureApiToken() が新トークンを発行し、
+// 登録済みの端末が全部無効になる（個別無効化はできない仕様なので再登録が必要になる）。
+// 影響は可用性（再登録の手間）のみでトークン漏えい等のセキュリティ上の実害はなく、
+// レガシーパスだけが存在する状態自体がまれなため、今回は解決の対称化はスコープ外と
+// している（対称化すると resolveOwnConfigTargetPath() 側の既存の保存挙動を変えてしまう）。
+function resolveTokenConfigPath() {
+  const candidates = userConfigCandidatePaths();
+  for (const configPath of candidates) {
+    if (fs.existsSync(configPath)) return configPath;
+  }
+  return path.join(DATA_DIR, 'config.json');
+}
+
+// アクセストークン（issue #313）を config.json の apiToken へ書き込む。
+// 既存の atomicWriteJsonFile（settingsTargets.js）は「既存ファイルの権限を引き継ぐ」
+// 実装のため、既に緩い権限（例: 0644）で config.json が存在する環境だとトークンが
+// そのまま緩い権限で保存されてしまう。トークンはパスワード相当の秘密情報のため、
+// この書き込み経路だけは既存権限を無視し、明示的に 0600（所有者のみ読み書き可）を
+// 強制する。一時ファイルは flag: 'wx'（既存なら失敗）で作成し、失敗時は
+// atomicWriteJsonFile（settingsTargets.js）と同様に unlink して残骸を残さない。
+// @param {string} token 書き込むアクセストークン
+// @returns {boolean} 書き込みに成功したか
+function persistApiToken(token) {
+  const targetPath = resolveTokenConfigPath();
+  const dir = path.dirname(targetPath);
+  const tmpPath = path.join(dir, `.${path.basename(targetPath)}.${process.pid}.${Date.now()}.token.tmp`);
+  try {
+    const config = readJsonObject(targetPath);
+    config.apiToken = token;
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(tmpPath, JSON.stringify(config, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
+    fs.chmodSync(tmpPath, 0o600); // umask の影響を受けないよう明示的に付け直す
+    fs.renameSync(tmpPath, targetPath);
+    fs.chmodSync(targetPath, 0o600); // rename 後の最終ファイルにも念のため明示適用
+    return true;
+  } catch (e) {
+    console.error(`${LOG_PREFIX} Failed to persist API token: ${targetPath}`, e);
+    try {
+      if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
+    } catch (_cleanupError) {
+      // 元の保存エラーを優先し、後始末の失敗は握りつぶす。
+    }
+    return false;
+  }
+}
+
+// 起動時にアクセストークンを確保する。既に config.json に apiToken があり、かつ
+// generateApiToken() の出力形式（16進64文字）に一致すればそれを使い続け（再起動の
+// たびに変わると登録済み端末が全部使えなくなるため）、無ければ新規生成して保存する。
+// 形式が不正な値（利用者が手で短い文字列に書き換えた場合等）を検出したときは、
+// 総当たりで突破されうる弱いトークンをそのまま使わず、警告したうえで再発行する
+// （issue #313 レビュー対応・中-4）。
+// @returns {{ token: string, persisted: boolean }} persisted は「今回・過去いずれかの
+//   保存に成功しているか」（既存トークンの読み込みは常に persisted:true 扱い）
+function ensureApiToken() {
+  const targetPath = resolveTokenConfigPath();
+  let existing = '';
+  try {
+    const config = readJsonObject(targetPath);
+    if (typeof config.apiToken === 'string' && config.apiToken.trim()) {
+      existing = config.apiToken.trim();
+    }
+  } catch (e) {
+    console.error(`${LOG_PREFIX} Failed to read existing API token: ${targetPath}`, e);
+  }
+  if (existing) {
+    if (isValidApiTokenFormat(existing)) return { token: existing, persisted: true };
+    console.warn(`${LOG_PREFIX} apiToken in ${targetPath} does not match the generated format (16進64文字); it was likely edited by hand into a weak value. Re-issuing a new token.`);
+    // 形式不正の再発行はここで即座に持続化する（既存の弱いトークンを一瞬でも
+    // 有効なままにしないため）。
+    const replacement = generateApiToken();
+    const persisted = persistApiToken(replacement);
+    return { token: replacement, persisted };
+  }
+
+  const token = generateApiToken();
+  const persisted = persistApiToken(token);
+  return { token, persisted };
+}
+
 // env 未指定（スタンドアロン起動）時に使う組み込みディスクリプタ。静的な項目定義は
 // settings-schema.json に置き、実行時に決まる targetPath だけをここで合成する。
 function builtinSettingsDescriptor() {
@@ -943,6 +1074,9 @@ ipcMain.handle('settings:describe', () => {
     values,
     appVersion: require('./package.json').version,
     apiServerStatus: describeApiServerRuntimeStatus(),
+    // アクセストークンの永続化に失敗しているか（issue #313）。トークン本体は含めず
+    // 真偽値だけを渡すため、パネルを開いた時点（「表示」を押す前）でも警告を出せる。
+    apiTokenPersisted,
     targetPaths: targetInfo.allTargets,
     hasMultipleTargets: targetInfo.hasMultipleTargets,
   };
@@ -959,6 +1093,67 @@ ipcMain.handle('settings:save', (event, incoming) => {
   if (!descriptor) return { ok: false, error: '設定ディスクリプタが見つかりません' };
 
   return saveSettingsToTargets(descriptor, incoming);
+});
+
+// ─── アクセストークン（issue #313）: 設定パネルからの表示・再発行 ─────────────
+// トークン自体は apiToken フィールドとして settings-schema.json の group/field には
+// 載せない（generic な field 保存経路に乗せると、マスク表示中の値をそのまま
+// settings:save で書き戻して破壊する事故になりうるため）。表示・再発行専用の
+// IPC を用意し、renderer 側は必要になった時だけ呼ぶ（既定で伏せておくため）。
+
+// 現在の待ち受けアドレスを元に、スマホの初回登録用 URL のベースを組み立てる。
+// 実際に bind できたアドレス（apiServerRuntimeStatus.actualHost）を優先し、
+// 未確定なら設定値、それも無ければ 127.0.0.1 にフォールバックする。
+function currentApiBaseUrl() {
+  const actualHost = apiServerRuntimeStatus && apiServerRuntimeStatus.actualHost;
+  const host = (typeof actualHost === 'string' && actualHost) || normalizeApiHost(loadUserConfig().apiHost);
+  return `http://${host}:${API_PORT}`;
+}
+
+// トークン本体と、トークン込みの初回登録用 URL（GET /?token=... 形式）をまとめて返す。
+// 「表示」「初回登録用の URL を表示」ボタン押下時にだけ呼ばれる想定（既定で伏せるため）。
+ipcMain.handle('settings:api-token-info', () => ({
+  token: API_TOKEN,
+  persisted: apiTokenPersisted,
+  registrationUrl: `${currentApiBaseUrl()}/?token=${encodeURIComponent(API_TOKEN)}`,
+}));
+
+// トークンを再発行する。登録済みの端末（Cookie）はすべて無効になる（個別無効化は
+// できない仕様）。永続化に失敗した場合は既存トークンを維持したまま失敗を返す
+// （再発行の失敗で現在使えている認証まで壊さないため）。
+//
+// 【既知の残存リスク（PR #315 再レビュー指摘・修正-5・コメントのみ対応）】
+// persistApiToken() は対象ファイルを丸ごと読み → apiToken だけ書き換え → 丸ごと
+// 書き戻す実装で、settings:save（設定パネルの保存）も同じファイルに対して同様の
+// 読み→書きを行う。この 2 つの ipcMain.handle は同期処理で同一プロセス・同一
+// スレッド上で完走するため、同一プロセス内では割り込まない（片方の途中でもう
+// 片方が挟まることはない）。加えて saveSettingsToTargets は保存時に対象ファイルを
+// 読み直す（settingsTargets.js の readJsonObject 経由）ため、再発行の直後に設定
+// パネルの保存が走っても、保存処理は再発行済みの新トークンを読んだうえで書き戻す。
+// 実際に上書きが起こりうるのは、同じ HOME で vk-terminals を 2 プロセス同時に
+// 起動し、双方から同じファイルへほぼ同時に書き込んだ場合だけである（後から
+// 書き込んだプロセスが先の変更を丸ごと上書きする）。ファイルロックや楽観的並行
+// 制御を入れていないのは、影響が可用性（一方の変更が消える・再登録が要る）に
+// とどまり、トークン漏えい等のセキュリティ上の実害が無いうえ、同じ HOME を複数
+// プロセスで同時に使う運用自体がまれなため。今回のスコープでは対応しない。
+ipcMain.handle('settings:reissue-api-token', () => {
+  const newToken = generateApiToken();
+  const persisted = persistApiToken(newToken);
+  if (!persisted) {
+    return {
+      ok: false,
+      error: 'トークンの保存に失敗しました（ディスク容量や権限をご確認ください）。既存のトークンは維持されています。',
+      persisted: apiTokenPersisted,
+    };
+  }
+  API_TOKEN = newToken;
+  apiTokenPersisted = true;
+  return {
+    ok: true,
+    token: newToken,
+    persisted: apiTokenPersisted,
+    registrationUrl: `${currentApiBaseUrl()}/?token=${encodeURIComponent(newToken)}`,
+  };
 });
 
 // ─── renderer 向けの shell / clipboard 中継（issue #268） ─────────────────────
@@ -1241,6 +1436,12 @@ ipcMain.on('terminal:report-states', (event, states) => {
 
 // ─── HTTP API ────────────────────────────────────────────────────────────────
 function startHttpApi() {
+  // 「認証を必ず要求する」設定（issue #313）。tailscale serve --bg のように apiHost が
+  // 127.0.0.1 のまま外部（tailnet）へ公開されるケースに対応するためのオプトイン。
+  // 他の設定同様「保存後、次回の起動から反映」なので、起動時に一度だけ読めばよい
+  // （毎リクエストで config.json を同期読みするのを避ける）。
+  const requireAuthAlways = !!loadUserConfig().apiRequireAuthAlways;
+
   // ブラウザ起点の cross-origin リクエストを弾く CSRF 対策。
   //   Origin ヘッダはブラウザが cross-origin の POST 等で必ず送る。同一オリジンの
   //   モバイルページや、curl 等の非ブラウザクライアント（Origin なし）は素通りさせ、
@@ -1287,6 +1488,57 @@ function startHttpApi() {
 
   httpServer = http.createServer((req, res) => {
     const url = new URL(req.url, `http://127.0.0.1:${API_PORT}`);
+
+    // GET /?token=<トークン> または GET /index.html?token=<トークン>
+    // （issue #313・スマホ初回登録経路）
+    //   トークン付きの初回登録用 URL を開いたときだけの特別経路。以下の認証ゲートより
+    //   前に分岐する必要がある（このリクエスト自体はまだ Cookie を持っていないため）。
+    //   正しいトークンなら Cookie を発行し、トークンを取り除いた `/` へリダイレクトする
+    //   （ブックマーク・履歴にトークンが残らないようにするため）。`/index.html` も
+    //   同じ経路として扱わないと、そちらで開かれた場合に登録が成立せず、アドレスバーに
+    //   トークンが残ったままになってしまう（PR #315 レビュー指摘）。
+    if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html') && url.searchParams.has('token')) {
+      const providedToken = url.searchParams.get('token') || '';
+      const registration = evaluateTokenRegistration(providedToken, API_TOKEN);
+      if (registration.authorized) {
+        res.setHeader('Set-Cookie', buildAuthCookieHeader(API_TOKEN));
+        res.writeHead(302, { Location: registration.redirectLocation });
+        res.end();
+      } else {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'unauthorized' }));
+      }
+      return;
+    }
+
+    // ─── 認証ゲート（issue #313）───────────────────────────────────────────────
+    //   全リクエストを対象に、入口のここ 1 か所だけで認証を確認する。ルートごとに
+    //   同じチェックをコピーすると、新しい API を追加した時に入れ忘れる事故が起きる
+    //   ため（既存の CSRF 対策 isForbiddenOrigin が実際にそうなっている）、認証は
+    //   ここへ集約する。判定は「設定ファイルの値」ではなく「実際に待ち受けに成功した
+    //   アドレス」（apiServerRuntimeStatus.actualHost）で行う（issue #313 必須条件）。
+    //   isAuthExemptPath に載っている経路（GET /api/health と、ページ本体を構成する
+    //   静的ファイル）は免除する。「免除はここだけ」という前提を isAuthExemptPath 側の
+    //   1 か所（と対応するテスト）に集約しているため、ここでは分岐を増やさない。
+    //   免除されたページ本体はこの後の通常ルーティングでそのまま配信されるが、
+    //   データを返す /api/* はここで弾かれない限りすべて認証対象のまま。
+    if (!isAuthExemptPath(req.method, url.pathname)
+      && shouldRequireAuth({ actualHost: apiServerRuntimeStatus.actualHost, requireAlways: requireAuthAlways })) {
+      if (!isAuthorizedRequest(req, API_TOKEN)) {
+        console.warn(`${LOG_PREFIX} 401 ${req.method} ${url.pathname} from ${req.socket?.remoteAddress || 'unknown'}`);
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'unauthorized' }));
+        return;
+      }
+      // 認証成功のたびに Cookie の有効期限を付け直す（ローリング更新・365日）。
+      // Cookie 経由（スマホのブラウザ）で通った場合だけ付け直す。Authorization ヘッダ
+      // 経由（curl・オーケストレーター等）にまで Set-Cookie を返すと、レスポンスヘッダを
+      // ログするツールにトークンが平文で残りうるため、Cookie 認証時に限定する。
+      const { source } = extractTokenFromRequest(req);
+      if (source === 'cookie') {
+        res.setHeader('Set-Cookie', buildAuthCookieHeader(API_TOKEN));
+      }
+    }
 
     // GET /api/health
     if (req.method === 'GET' && url.pathname === '/api/health') {

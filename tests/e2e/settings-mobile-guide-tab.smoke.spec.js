@@ -138,6 +138,10 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
       '外出先から開く 2 つの方法',
       '方法 1: vk-terminals の API ホストを変更する',
       '方法 2: tailscale serve で公開する',
+      // issue #313: スマートフォンの登録手順とアクセストークンパネル（自身の見出しを持つ
+      // 自己完結セクション）が「方法 2」と「セキュリティ上の注意」の間に入る。
+      'スマートフォンを登録する',
+      'アクセストークン',
       'セキュリティ上の注意',
     ]);
 
@@ -150,6 +154,8 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
       '準備: 両方の端末を Tailscale に接続する',
       'パソコンの Tailscale IP を調べる',
       '外出先から開く 2 つの方法',
+      'スマートフォンを登録する',
+      'アクセストークン',
       'セキュリティ上の注意',
     ]);
     await expect(win.locator(`${PANEL_MOBILE} h4.settings-content-heading`)).toHaveText([
@@ -257,13 +263,18 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
     await expect(win.locator(PANEL_MOBILE)).not.toContainText('API server listening');
 
     // 注意書きは role="note" + トーンを表す語（色だけに依存しない）で伝える。
+    // issue #313: 「保護されている」安心情報（info）と「0.0.0.0 は暗号化されない」
+    // 警告（warning）を 2 ブロックに分けている（安心情報と警告を 1 つに同居させない）。
     const callouts = win.locator(`${PANEL_MOBILE} .settings-content-callout`);
-    await expect(callouts).toHaveCount(1);
-    // 末尾は無認証についての警告。
+    await expect(callouts).toHaveCount(2);
+    const infoCallout = win.locator(`${PANEL_MOBILE} .settings-content-callout[data-tone="info"]`);
+    await expect(infoCallout).toHaveAttribute('role', 'note');
+    await expect(infoCallout.locator('.settings-content-callout-label')).toHaveText('補足');
+    await expect(infoCallout).toContainText('アクセストークンによる認証で保護されています');
     const warningCallout = win.locator(`${PANEL_MOBILE} .settings-content-callout[data-tone="warning"]`);
     await expect(warningCallout).toHaveAttribute('role', 'note');
     await expect(warningCallout.locator('.settings-content-callout-label')).toHaveText('注意');
-    await expect(warningCallout).toContainText('認証がありません');
+    await expect(warningCallout).toContainText('0.0.0.0');
 
     // 保存対象が無いタブなので「保存後、次回の起動から反映されます。」は継承しない。
     await expect(win.locator(`${PANEL_MOBILE} .settings-tab-note`)).toHaveCount(0);
@@ -354,8 +365,9 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
 
     // フィードバック用の live region は押す前から DOM にある（後から挿入すると読み上げが
     // 発火しない）。初期状態は空。
+    // issue #313: アクセストークンパネルのコピーフィードバック（4 個目）が末尾に増える。
     const statuses = win.locator(`${PANEL_MOBILE} .settings-content-copy-status`);
-    await expect(statuses).toHaveCount(3);
+    await expect(statuses).toHaveCount(4);
     await expect(statuses.nth(0)).toHaveAttribute('role', 'status');
     await expect(statuses.nth(0)).toHaveText('');
 
@@ -454,7 +466,9 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
 
   test('移動ボタンは設定タブの API ホスト欄まで運ぶ（表示領域内・フォーカス済み）', async () => {
     await win.locator(TAB_MOBILE).click();
-    const tabLink = win.locator(`${PANEL_MOBILE} .settings-content-tablink`);
+    // issue #313 で「常にアクセストークン認証を必須にする」設定への移動ボタンも
+    // 増えたため（方法 2 の節）、テキストで絞って「API ホストの設定へ移動」だけを狙う。
+    const tabLink = win.locator(`${PANEL_MOBILE} .settings-content-tablink`, { hasText: 'API ホストの設定へ移動' });
     await expect(tabLink).toHaveText('API ホストの設定へ移動');
     // 説明タブを読み進めた状態（スクロール済み）から押しても着地点は変わらない。
     await win.locator(PANEL_MOBILE).evaluate((el) => {

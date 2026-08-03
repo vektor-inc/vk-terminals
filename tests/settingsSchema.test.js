@@ -52,9 +52,12 @@ test('buildBuiltinSettingsDescriptor: JSON から targetPath 付きの組み込�
   assert.deepEqual(descriptor.groups.map((group) => group.label), ['基本']);
 
   const fields = descriptor.groups.flatMap((group) => group.fields);
+  // apiRequireAuthAlways は末尾に置く（issue #313 レビュー対応）。apiHost の直後に
+  // 挿入すると、組み込みスキーマの描画順（apiHost=0 / newPaneStartupDir=1 / ...）に
+  // 依存する既存 e2e（tests/e2e/new-pane-startup.smoke.spec.js）の欄インデックスが
+  // ずれてしまうため。
   assert.deepEqual(fields.map((field) => field.key), [
     'apiHost',
-    'apiRequireAuthAlways',
     'newPaneStartupDir',
     'newPaneAutoLaunchClaude',
     'initialCommand',
@@ -64,6 +67,7 @@ test('buildBuiltinSettingsDescriptor: JSON から targetPath 付きの組み込�
     'gpu',
     'menuItems',
     'additionalPanes',
+    'apiRequireAuthAlways',
   ]);
 
   assert.deepEqual(fields.find((field) => field.key === 'newPaneStartupDir'), {

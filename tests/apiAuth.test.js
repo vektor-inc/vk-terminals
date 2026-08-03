@@ -7,7 +7,9 @@ const assert = require('node:assert/strict');
 
 const {
   generateApiToken,
+  isValidApiTokenFormat,
   timingSafeEqualStrings,
+  isLoopbackHost,
   shouldRequireAuth,
   parseCookieHeader,
   extractTokenFromRequest,
@@ -30,6 +32,22 @@ test('generateApiToken: 呼び出すたびに異なる値になる', () => {
   const a = generateApiToken();
   const b = generateApiToken();
   assert.notEqual(a, b);
+});
+
+test('isValidApiTokenFormat: generateApiToken() の出力は true', () => {
+  assert.equal(isValidApiTokenFormat(generateApiToken()), true);
+});
+
+test('isValidApiTokenFormat: 短い・推測しやすい値や不正な形式は false（issue #313 レビュー対応・中-4）', () => {
+  assert.equal(isValidApiTokenFormat('1234'), false);
+  assert.equal(isValidApiTokenFormat(''), false);
+  assert.equal(isValidApiTokenFormat('a'.repeat(63)), false); // 63文字（1文字不足）
+  assert.equal(isValidApiTokenFormat('a'.repeat(65)), false); // 65文字（1文字超過）
+  assert.equal(isValidApiTokenFormat('G'.repeat(64)), false); // 16進以外の文字
+  assert.equal(isValidApiTokenFormat('A'.repeat(64)), false); // 大文字（小文字16進のみ許容）
+  assert.equal(isValidApiTokenFormat(null), false);
+  assert.equal(isValidApiTokenFormat(undefined), false);
+  assert.equal(isValidApiTokenFormat(1234), false);
 });
 
 test('timingSafeEqualStrings: 完全一致で true', () => {
@@ -58,13 +76,45 @@ test('timingSafeEqualStrings: 空文字・非文字列は false', () => {
   assert.equal(timingSafeEqualStrings('a', null), false);
 });
 
+test('timingSafeEqualStrings: 256文字を超える入力は throw せず false（長さ上限）', () => {
+  const token = generateApiToken();
+  const tooLong = 'a'.repeat(257);
+  assert.doesNotThrow(() => {
+    assert.equal(timingSafeEqualStrings(tooLong, token), false);
+    assert.equal(timingSafeEqualStrings(token, tooLong), false);
+    assert.equal(timingSafeEqualStrings(tooLong, tooLong), false);
+  });
+});
+
+test('isLoopbackHost: 127.0.0.1 / 127.0.0.0-8 全体 / ::1 / IPv4 射影は true', () => {
+  assert.equal(isLoopbackHost('127.0.0.1'), true);
+  assert.equal(isLoopbackHost('127.0.0.2'), true);
+  assert.equal(isLoopbackHost('127.1.2.3'), true);
+  assert.equal(isLoopbackHost('::1'), true);
+  assert.equal(isLoopbackHost('::ffff:127.0.0.1'), true);
+});
+
+test('isLoopbackHost: 0.0.0.0 / :: / 空文字 / 通常の IP は false', () => {
+  assert.equal(isLoopbackHost('0.0.0.0'), false);
+  assert.equal(isLoopbackHost('::'), false);
+  assert.equal(isLoopbackHost(''), false);
+  assert.equal(isLoopbackHost('100.101.102.103'), false);
+  assert.equal(isLoopbackHost(undefined), false);
+});
+
 test('shouldRequireAuth: actualHost が 127.0.0.1 なら不要（requireAlways 未指定）', () => {
   assert.equal(shouldRequireAuth({ actualHost: '127.0.0.1' }), false);
 });
 
-test('shouldRequireAuth: actualHost が 127.0.0.1 以外なら必須', () => {
+test('shouldRequireAuth: actualHost がループバック系（::1 / 127.0.0.2）なら不要', () => {
+  assert.equal(shouldRequireAuth({ actualHost: '::1' }), false);
+  assert.equal(shouldRequireAuth({ actualHost: '127.0.0.2' }), false);
+});
+
+test('shouldRequireAuth: actualHost が 127.0.0.1 以外（0.0.0.0 / :: 含む）なら必須', () => {
   assert.equal(shouldRequireAuth({ actualHost: '100.101.102.103' }), true);
   assert.equal(shouldRequireAuth({ actualHost: '0.0.0.0' }), true);
+  assert.equal(shouldRequireAuth({ actualHost: '::' }), true);
 });
 
 test('shouldRequireAuth: actualHost が空文字（待ち受け確定前）は安全側で必須', () => {
@@ -81,15 +131,20 @@ test('shouldRequireAuth: requireAlways が false/未指定なら従来どおり 
 });
 
 test('parseCookieHeader: 複数 Cookie を分解する', () => {
-  assert.deepEqual(
-    parseCookieHeader('a=1; vk_terminals_token=abc123; b=2'),
-    { a: '1', vk_terminals_token: 'abc123', b: '2' },
-  );
+  const result = parseCookieHeader('a=1; vk_terminals_token=abc123; b=2');
+  assert.equal(result.a, '1');
+  assert.equal(result.vk_terminals_token, 'abc123');
+  assert.equal(result.b, '2');
 });
 
-test('parseCookieHeader: 未指定・空文字は空オブジェクト', () => {
-  assert.deepEqual(parseCookieHeader(undefined), {});
-  assert.deepEqual(parseCookieHeader(''), {});
+test('parseCookieHeader: 未指定・空文字はプロパティを持たない', () => {
+  assert.deepEqual(Object.keys(parseCookieHeader(undefined)), []);
+  assert.deepEqual(Object.keys(parseCookieHeader('')), []);
+});
+
+test('parseCookieHeader: プロトタイプを持たないオブジェクトを返す（__proto__ 汚染対策）', () => {
+  const result = parseCookieHeader('a=1');
+  assert.equal(Object.getPrototypeOf(result), null);
 });
 
 test('extractTokenFromRequest: Authorization: Bearer ヘッダを優先する', () => {
@@ -145,16 +200,43 @@ test('buildAuthCookieHeader: HttpOnly / SameSite=Strict / 365日を含む', () =
   assert.equal(AUTH_COOKIE_MAX_AGE_SECONDS, 60 * 60 * 24 * 365);
 });
 
-test('isAuthExemptPath: GET /api/health だけが true', () => {
+test('isAuthExemptPath: GET /api/health は true', () => {
   assert.equal(isAuthExemptPath('GET', '/api/health'), true);
 });
 
-test('isAuthExemptPath: 他のパス・メソッドはすべて false（/api/health 以外は認証対象）', () => {
-  assert.equal(isAuthExemptPath('GET', '/'), false);
+test('isAuthExemptPath: ページ本体を構成する静的ファイルは true（issue #313 レビュー対応・重大-2）', () => {
+  // 未登録・Cookie 失効の端末でもページ自体は読み込め、画面側の JS が /api/* の 401 を
+  // 検知して確定文言を出せる必要があるため、これらは認証不要にする。
+  assert.equal(isAuthExemptPath('GET', '/'), true);
+  assert.equal(isAuthExemptPath('GET', '/index.html'), true);
+  assert.equal(isAuthExemptPath('GET', '/mobile.css'), true);
+  assert.equal(isAuthExemptPath('GET', '/shared.css'), true);
+  assert.equal(isAuthExemptPath('GET', '/mobile.js'), true);
+  assert.equal(isAuthExemptPath('GET', '/widgetContract.js'), true);
+  assert.equal(isAuthExemptPath('GET', '/widgetView.js'), true);
+  assert.equal(isAuthExemptPath('GET', '/terminalDisplay.js'), true);
+  assert.equal(isAuthExemptPath('GET', '/urlSafety.js'), true);
+  assert.equal(isAuthExemptPath('GET', '/prBadge.js'), true);
+  assert.equal(isAuthExemptPath('GET', '/statusPresentation.js'), true);
+  assert.equal(isAuthExemptPath('GET', '/mobilePreviewText.js'), true);
+});
+
+test('isAuthExemptPath: データを返す /api/* はすべて false（唯一の例外は /api/health）', () => {
   assert.equal(isAuthExemptPath('GET', '/api/states'), false);
   assert.equal(isAuthExemptPath('GET', '/api/widgets'), false);
+  assert.equal(isAuthExemptPath('POST', '/api/send'), false);
+  assert.equal(isAuthExemptPath('POST', '/api/set-title'), false);
+  assert.equal(isAuthExemptPath('POST', '/api/new-pane'), false);
+});
+
+test('isAuthExemptPath: メソッドが GET 以外なら免除パスでも false', () => {
   assert.equal(isAuthExemptPath('POST', '/api/health'), false);
-  assert.equal(isAuthExemptPath('GET', '/mobile.js'), false);
+  assert.equal(isAuthExemptPath('POST', '/'), false);
+});
+
+test('isAuthExemptPath: 未知のパスは false', () => {
+  assert.equal(isAuthExemptPath('GET', '/unknown.js'), false);
+  assert.equal(isAuthExemptPath('GET', '/favicon.ico'), false);
 });
 
 test('evaluateTokenRegistration: 正しいトークンはリダイレクト先 "/" を返す（トークンが残らない）', () => {

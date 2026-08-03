@@ -703,6 +703,28 @@ h4.settings-content-heading {
   outline: var(--vktm--outline--focus-ring);
   outline-offset: var(--vktm--outline-offset--focus-ring);
 }
+/* トークン再発行は不可逆な破壊的操作のため、「表示」「コピー」「URL を表示」の
+   グレー系二次ボタンとは視覚的に区別する（issue #313 レビュー対応・中-8）。
+   新しい色は増やさず、既存の危険色トークン（.confirm-close-pane と同じ
+   #da3633 / #f85149）を再利用する。 */
+.settings-content-apitoken-btn-danger {
+  background: #da3633;
+  border-color: #f85149;
+  color: #fff;
+  font-weight: 600;
+}
+.settings-content-apitoken-btn-danger:hover {
+  background: #f85149;
+}
+.settings-content-apitoken-error {
+  display: block;
+  margin-top: 4px;
+  color: #f85149;
+  font-size: 12px;
+}
+.settings-content-apitoken-error:empty {
+  display: none;
+}
 .settings-content-apitoken-url {
   margin: 0 0 12px;
 }
@@ -2649,3 +2671,12 @@ body.pane-dragging * {
   font-weight: 600;
 }
 .confirm-close-pane:hover { background: #f85149; }
+/* トークン再発行（issue #313）も同様に不可逆な破壊的操作のため、閉じる確認と
+   同じ危険色トークン（#da3633 / #f85149）を再利用する。新しい色は増やさない。 */
+.confirm-reissue-token {
+  background: #da3633;
+  border-color: #f85149;
+  color: #fff;
+  font-weight: 600;
+}
+.confirm-reissue-token:hover { background: #f85149; }

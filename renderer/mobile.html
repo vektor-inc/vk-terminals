@@ -17,7 +17,7 @@
 <!-- 認証切れ表示（issue #313）。Cookie の有効期限切れ・未登録の端末からのアクセス時に
      画面全体を覆う。古いターミナル一覧を残さないよう、表示中は他の要素を JS 側で隠す。
      文面には「認証」「トークン」「Cookie」という語を出さない（利用者向けの案内文言）。 -->
-<div id="auth-expired" hidden>
+<div id="auth-expired" role="alert" hidden>
   <div class="auth-expired-box">
     <h2>接続が許可されていません</h2>
     <p>このスマートフォンの登録の有効期限が切れたか、まだ登録されていません。</p>

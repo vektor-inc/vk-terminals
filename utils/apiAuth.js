@@ -27,6 +27,29 @@ function generateApiToken() {
   return crypto.randomBytes(API_TOKEN_BYTES).toString('hex');
 }
 
+// generateApiToken() の出力形式（16進 64 文字）に一致する文字列だけを判定する。
+const API_TOKEN_FORMAT_PATTERN = new RegExp(`^[0-9a-f]{${API_TOKEN_BYTES * 2}}$`);
+
+/**
+ * 文字列が generateApiToken() の出力形式（16進 64 文字）に一致するかを判定する。
+ * config.json の apiToken は利用者が直接編集できる設定キーのため、「1234」のような
+ * 短く推測しやすい値に書き換えられていても、空文字でなければそのまま採用してしまう
+ * 実装は総当たりで突破されうる（issue #313 レビュー対応・中-4）。既存トークンを
+ * 読み込む際はこの関数で形式を確認し、一致しない場合は再生成すべきと判断する。
+ * @param {unknown} token
+ * @returns {boolean}
+ */
+function isValidApiTokenFormat(token) {
+  return typeof token === 'string' && API_TOKEN_FORMAT_PATTERN.test(token);
+}
+
+// タイミングセーフ比較を行う前の長さ上限。トークン自体は 64 文字固定だが、
+// リクエスト側（Authorization ヘッダ・Cookie・?token= クエリ）は攻撃者が任意長の
+// 文字列を送れるため、上限を設けずに Buffer 変換すると無駄に大きな割り当てを
+// 強いられうる（軽微な DoS 耐性）。長さそのものは公開情報同然のため、上限超過を
+// 理由にした早期 return はタイミング上の情報漏えいにならない。
+const MAX_COMPARABLE_TOKEN_LENGTH = 256;
+
 /**
  * トークン同士を、文字列長に関わらず同じ時間で比較する。
  * 通常の `===` 比較は不一致箇所までの時間差でトークンを推測されうるため使わない。
@@ -41,6 +64,7 @@ function generateApiToken() {
  */
 function timingSafeEqualStrings(a, b) {
   if (typeof a !== 'string' || typeof b !== 'string' || a === '' || b === '') return false;
+  if (a.length > MAX_COMPARABLE_TOKEN_LENGTH || b.length > MAX_COMPARABLE_TOKEN_LENGTH) return false;
   const bufA = Buffer.from(a, 'utf8');
   const bufB = Buffer.from(b, 'utf8');
   if (bufA.length !== bufB.length) {
@@ -48,6 +72,29 @@ function timingSafeEqualStrings(a, b) {
     return false;
   }
   return crypto.timingSafeEqual(bufA, bufB);
+}
+
+// ループバックアドレスの判定パターン。`apiHost` に `localhost` を指定した場合、
+// Node の名前解決順によっては `::1`（IPv6 ループバック）で bind されることがあり、
+// `127.0.0.1` との完全一致だけで判定すると誤って認証必須になってしまう
+// （issue #313 レビュー対応・中-3）。`127.0.0.0/8` 全体・`::1`・IPv4 射影アドレス
+// （`::ffff:127.0.0.1` 形式）も同一視する。`0.0.0.0` / `::`（全 I/F 待受）はいずれの
+// パターンにも一致せず、引き続き「認証必須」のまま扱われる。
+const IPV4_LOOPBACK_PATTERN = /^127(?:\.\d{1,3}){3}$/;
+const IPV4_MAPPED_IPV6_PATTERN = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i;
+
+/**
+ * 待ち受けアドレスがループバック（同一マシンからしか到達できないアドレス）かどうかを判定する。
+ * @param {string} host
+ * @returns {boolean}
+ */
+function isLoopbackHost(host) {
+  const value = typeof host === 'string' ? host.trim() : '';
+  if (!value) return false;
+  if (value === '::1') return true;
+  if (IPV4_LOOPBACK_PATTERN.test(value)) return true;
+  const mapped = value.match(IPV4_MAPPED_IPV6_PATTERN);
+  return !!(mapped && IPV4_LOOPBACK_PATTERN.test(mapped[1]));
 }
 
 /**
@@ -67,7 +114,7 @@ function shouldRequireAuth({ actualHost, requireAlways } = {}) {
   if (requireAlways) return true;
   const host = typeof actualHost === 'string' ? actualHost.trim() : '';
   if (!host) return true; // 未確定（起動直後の一瞬）は認証必須側に倒す
-  return host !== '127.0.0.1';
+  return !isLoopbackHost(host);
 }
 
 /**
@@ -76,7 +123,9 @@ function shouldRequireAuth({ actualHost, requireAlways } = {}) {
  * @returns {Record<string, string>}
  */
 function parseCookieHeader(cookieHeader) {
-  const cookies = {};
+  // __proto__ 等のキーが渡っても Object.prototype を汚染しないよう、プロトタイプの
+  // 無いオブジェクトを器にする（settingsTargets.js の hasUnsafeKeySegment と同じ考え方）。
+  const cookies = Object.create(null);
   if (typeof cookieHeader !== 'string' || !cookieHeader) return cookies;
   cookieHeader.split(';').forEach((part) => {
     const idx = part.indexOf('=');
@@ -137,16 +186,41 @@ function buildAuthCookieHeader(token) {
   return `${AUTH_COOKIE_NAME}=${encoded}; Max-Age=${AUTH_COOKIE_MAX_AGE_SECONDS}; Path=/; HttpOnly; SameSite=Strict`;
 }
 
+// 認証を課さない GET パス（issue #313 レビュー対応・重大-2）。
+//   - `/api/health`: ヘルスチェック用途。
+//   - それ以外はいずれも「ページ本体を構成する静的ファイル」で、アプリに同梱された
+//     固定の内容のみを返し、利用者データを一切含まない（誰が読んでも実害が無い）。
+//     ここを免除しないと、未登録・Cookie 失効の端末がブラウザでモバイルページを
+//     開いた際にページの HTML/CSS/JS 自体が読み込めず、`{"error":"unauthorized"}` という
+//     生の JSON しか出せない（画面側の JS が 401 を検知して確定文言を出す、という
+//     設計そのものが成立しない）。データを返す `/api/*` はここに載せず、引き続き
+//     すべて認証対象のままにする。
+const AUTH_EXEMPT_GET_PATHS = new Set([
+  '/api/health',
+  '/',
+  '/index.html',
+  '/mobile.css',
+  '/shared.css',
+  '/mobile.js',
+  '/widgetContract.js',
+  '/widgetView.js',
+  '/terminalDisplay.js',
+  '/urlSafety.js',
+  '/prBadge.js',
+  '/statusPresentation.js',
+  '/mobilePreviewText.js',
+]);
+
 /**
- * このメソッド・パスの組が「認証不要」の唯一の例外（GET /api/health）かどうかを判定する。
- * main.js のルーティングはこの関数を「/api/health の早期応答」判定にも使うことで、
- * 「認証不要な経路はここだけ」という前提をこの 1 か所（と対応するテスト）だけで担保する。
+ * このメソッド・パスの組が認証不要かどうかを判定する。main.js の認証ゲートはこの
+ * 関数だけを見て免除可否を決める。「免除はここだけ」という前提をこの 1 か所（と
+ * 対応するテスト）だけで担保する。
  * @param {string} method
  * @param {string} pathname
  * @returns {boolean}
  */
 function isAuthExemptPath(method, pathname) {
-  return method === 'GET' && pathname === '/api/health';
+  return method === 'GET' && AUTH_EXEMPT_GET_PATHS.has(pathname);
 }
 
 /**
@@ -171,7 +245,9 @@ module.exports = {
   AUTH_COOKIE_NAME,
   AUTH_COOKIE_MAX_AGE_SECONDS,
   generateApiToken,
+  isValidApiTokenFormat,
   timingSafeEqualStrings,
+  isLoopbackHost,
   shouldRequireAuth,
   parseCookieHeader,
   extractTokenFromRequest,

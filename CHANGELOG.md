@@ -1,5 +1,6 @@
 # Changelog
 
+- [ 不具合修正 ] 設定パネルのチェックボックスをキーボードで選んだときにフォーカス位置を示す枠が表示されない不具合を修正（[#291](https://github.com/vektor-inc/vk-terminals/issues/291)）
 - [ 開発環境 ] 設定パネル系 e2e のスタブが、保存・設定定義の読み込み以外のやり取りをアプリの実装へ委譲するか選べていた設定（`passthroughOtherChannels`）を廃止。設定定義を差し替えたかどうかで自動的に決まる規則へ統一し、あわせて委譲が必要な spec に「委譲が壊れると検知できる」検証を追加（[#304](https://github.com/vektor-inc/vk-terminals/issues/304)）
 
 ## 1.52.0

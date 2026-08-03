@@ -5,6 +5,7 @@
 // このファイルは Node 標準の crypto にのみ依存する。
 
 const crypto = require('crypto');
+const { isLoopbackHost } = require('./loopbackHost');
 
 // トークンは crypto.randomBytes で生成する暗号論的に安全な乱数（32byte = 256bit）を
 // 16進文字列（64文字固定長）にしたもの。固定長にしておくことで、
@@ -74,28 +75,10 @@ function timingSafeEqualStrings(a, b) {
   return crypto.timingSafeEqual(bufA, bufB);
 }
 
-// ループバックアドレスの判定パターン。`apiHost` に `localhost` を指定した場合、
-// Node の名前解決順によっては `::1`（IPv6 ループバック）で bind されることがあり、
-// `127.0.0.1` との完全一致だけで判定すると誤って認証必須になってしまう
-// （issue #313 レビュー対応・中-3）。`127.0.0.0/8` 全体・`::1`・IPv4 射影アドレス
-// （`::ffff:127.0.0.1` 形式）も同一視する。`0.0.0.0` / `::`（全 I/F 待受）はいずれの
-// パターンにも一致せず、引き続き「認証必須」のまま扱われる。
-const IPV4_LOOPBACK_PATTERN = /^127(?:\.\d{1,3}){3}$/;
-const IPV4_MAPPED_IPV6_PATTERN = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i;
-
-/**
- * 待ち受けアドレスがループバック（同一マシンからしか到達できないアドレス）かどうかを判定する。
- * @param {string} host
- * @returns {boolean}
- */
-function isLoopbackHost(host) {
-  const value = typeof host === 'string' ? host.trim() : '';
-  if (!value) return false;
-  if (value === '::1') return true;
-  if (IPV4_LOOPBACK_PATTERN.test(value)) return true;
-  const mapped = value.match(IPV4_MAPPED_IPV6_PATTERN);
-  return !!(mapped && IPV4_LOOPBACK_PATTERN.test(mapped[1]));
-}
+// ループバックアドレスの判定は utils/loopbackHost.js（isLoopbackHost）に集約している。
+// renderer/app.js の `apiHost` 入力欄の即時案内（getApiHostAuthNotice）とここで
+// 判定基準が分かれていると、画面上の案内と実際の認証要否がずれるため（issue #313
+// レビュー対応・PR #315 指摘）、両方が同じ関数を参照する。
 
 /**
  * 現在の状況から認証を必須にするかどうかを判定する。

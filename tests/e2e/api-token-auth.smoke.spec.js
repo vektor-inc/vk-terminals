@@ -122,4 +122,40 @@ test.describe.serial('HTTP API のアクセストークン認証（issue #313）
     });
     expect(res.status).toBe(200);
   });
+
+  // issue #313 完了条件（PR #315 レビュー指摘）: POST /api/send は「401 が返る」だけでは
+  // 不十分で、ターミナルへの書き込みそのものが起きていないことまで確認する必要がある。
+  // main.js の認証ゲートはルーティングより手前で弾いているため実害は無いはずだが、
+  // 「401 を返しつつ内部では書き込んでしまう」実装崩れは HTTP ステータスだけでは
+  // 検出できない。実画面のペイン内容に送信文字列が現れないことまで見る。
+  test('10. トークン無しの POST /api/send は 401 を返し、ターミナルへ書き込まれない', async () => {
+    const marker = `UNAUTHORIZED_SEND_MARKER_${Date.now()}`;
+    const res = await fetch(`http://127.0.0.1:${apiPort}/api/send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ termId: '1', input: marker }),
+    });
+    expect(res.status).toBe(401);
+    const json = await res.json();
+    expect(json.error).toBe('unauthorized');
+
+    // 401 直後に一定時間待ち、PTY への書き込みがあれば表示に現れるはずのマーカーが
+    // 実際に現れないことを確認する（「返り値は 401 だが内部では書き込んでいた」を防ぐ）。
+    await win.waitForTimeout(500);
+    const paneText = await win.locator('.pane .xterm-rows').first().innerText();
+    expect(paneText).not.toContain(marker);
+  });
+
+  // 誤ったトークンの拒否は 3-4 / 8 で「?token= クエリ」経路（初回登録用 URL）だけを
+  // 確認しており、通常の API 呼び出しで使う Authorization: Bearer 経路は未検証だった
+  // （PR #315 レビュー指摘）。isAuthorizedRequest は経路によらず同じ
+  // timingSafeEqualStrings で比較しているが、それを実際の HTTP 応答で裏付ける。
+  test('11. 誤った Authorization: Bearer トークンの GET /api/states は 401', async () => {
+    const res = await fetch(`http://127.0.0.1:${apiPort}/api/states`, {
+      headers: { Authorization: 'Bearer wrong-token-value' },
+    });
+    expect(res.status).toBe(401);
+    const json = await res.json();
+    expect(json.error).toBe('unauthorized');
+  });
 });

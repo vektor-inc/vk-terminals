@@ -25,6 +25,11 @@ const FitAddon = window.FitAddon.FitAddon;
 // 3. アプリ内の共有モジュール（index.html の <script> 順で読み込み済み）
 const { appendAnsiForDisplay, stripAnsiForDisplay } = window.VKStripAnsi;
 const { normalizeConfirmClose, shouldConfirmClose } = window.VKCloseConfirm;
+// apiHost の即時案内（getApiHostAuthNotice）と utils/apiAuth.js の認証要否判定
+// （shouldRequireAuth）が同じループバック定義を参照するための共有モジュール
+// （issue #313 レビュー対応・PR #315 指摘。旧実装は '127.0.0.1' の完全一致だけを
+// 見ており、::1 / ::ffff:127.0.0.1 で誤った警告を出していた）。
+const { isLoopbackHost } = window.VKLoopbackHost;
 const { isSafeHttpUrl } = window.VKUrlSafety;
 // 宣言的ウィジェット（tasks-widget.json）の契約・共有描画（#229 / vk-orchestrator#182）。
 // タスクの語彙・色・遷移・確認文言は自前に持たず、orchestrator が書き出す宣言だけを描画する。
@@ -3368,10 +3373,14 @@ function setupUsageBadge() {
 
 // apiHost の入力値から、その場で出す認証関連の案内を判定する（issue #313）。
 // 保存・再起動を待たずにその場で気づけるようにするための即時フィードバック。
-// null を返した場合は案内なし（127.0.0.1 または未入力）。
+// null を返した場合は案内なし（ループバックアドレスまたは未入力）。
+// ループバック判定は utils/apiAuth.js（shouldRequireAuth）が実際の認証要否を
+// 決めるのに使う isLoopbackHost と共有している（PR #315 レビュー対応）。
+// '127.0.0.1' の完全一致だけで判定すると、::1 や ::ffff:127.0.0.1 のように
+// 実際には認証不要な値に対しても「認証が必須になります」と誤って案内してしまう。
 function getApiHostAuthNotice(rawValue) {
   const value = typeof rawValue === 'string' ? rawValue.trim() : '';
-  if (!value || value === '127.0.0.1') return null;
+  if (!value || isLoopbackHost(value)) return null;
   if (value === '0.0.0.0') {
     return {
       tone: 'warning',

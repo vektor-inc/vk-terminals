@@ -11,3 +11,6 @@ playwright-report/
 .claude/
 config.json
 settings-descriptor.json
+# レビュー検証用のスクリーンショット置き場（PR #315 レビュー指摘）。エージェントの
+# 一時検証（vk-ui-tester 等）が書き出す実行結果で、リポジトリに残す成果物ではない。
+review-assets/

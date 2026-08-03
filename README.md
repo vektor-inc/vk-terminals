@@ -649,6 +649,11 @@ curl -s -X POST http://127.0.0.1:13847/api/new-pane \
 curl -s -X POST http://127.0.0.1:13847/api/new-pane \
   -H 'Content-Type: application/json' \
   -d '{"stashed": true}'
+
+# モデルを指定して claude を起動する
+curl -s -X POST http://127.0.0.1:13847/api/new-pane \
+  -H 'Content-Type: application/json' \
+  -d '{"model": "sonnet"}'
 ```
 
 リクエストボディ（任意）:
@@ -656,10 +661,15 @@ curl -s -X POST http://127.0.0.1:13847/api/new-pane \
 - `cwd`：新規ペインのカレントディレクトリ（絶対パス）。未指定ならホームディレクトリ。
 - `noClaude`：`true` の場合、新規ペインで claude を自動起動せず素のシェルとして開く。未指定なら起動時の `--no-claude` フラグの値に従う。
 - `stashed`：`true` の場合、新規ペインをサイドバー格納＋折りたたみ状態で開く。未指定または `false` ならグリッドに追加。
+- `model`：新規ペインで起動する claude のモデル名（`claude --model '<model>'` として実行）。`sonnet` / `opus` のような別名も `claude-opus-5[1m]` のような正式名も指定できる。**未指定の場合は従来どおり `claude` をそのまま実行**し、利用者が `/model` で選んだデフォルトモデルで起動する。
+  - 指定できるのは **英数字・`.`・`_`・`-`・`[`・`]` のみ、64 文字以内、先頭は英数字** の文字列。それ以外の文字（空白・`;`・`&`・`` ` ``・`$`・引用符・改行など）を含む値、長すぎる値、文字列でない値は `400` で拒否され、**ペインは作成されません**。
+  - `noClaude: true` と同時に指定した場合は claude を起動しないため、`model` は無視されます。
 
 レスポンス:
 
 - 成功時: `200 {"ok": true, "termId": "<新規ターミナルID>"}`
+- `model` が不正: `400 {"error": "invalid model"}`
+- 不正な JSON: `400 {"error": "invalid JSON"}`
 - ウィンドウが利用できない: `503 {"error": "window not available"}`
 - タイムアウト（15秒）: `504 {"error": "timeout waiting for new pane"}`
 - renderer 側でペイン作成に失敗（既存ペインなし／分割失敗など）: `500 {"error": "<renderer からのエラーメッセージ>"}`

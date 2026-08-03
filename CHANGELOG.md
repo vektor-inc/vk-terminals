@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 機能追加 ] `POST /api/new-pane` で新規ペインを開くとき、そのペインで起動する Claude Code のモデルを呼び出し側から指定できる `model` を追加（[#310](https://github.com/vektor-inc/vk-terminals/issues/310)）
+
 ## 1.51.0
 
 - [ 不具合修正 ] 設定パネルやペインを閉じる確認の表示中に Tab キーで背後のペインの ✕ やメニューボタンを操作できてしまう不具合を修正。あわせて設定パネルを開いたときにパネル内へフォーカスが入るように変更（[#282](https://github.com/vektor-inc/vk-terminals/issues/282)）

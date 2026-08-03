@@ -358,6 +358,7 @@ function bumpRunning(paneId) {
 // ─── Create terminal ──────────────────────────────────────────────────────────
 // options.noClaude が true の場合、main 側で claude の自動起動をスキップする。
 // 未指定の場合は main 側のグローバル設定（CLI フラグ）にフォールバックする。
+// options.model が指定されていれば main 側で claude をそのモデルで起動する（未指定なら素の claude）。
 async function createTerminal(paneId, cwd, options = {}) {
   const result = await VKIpc.invoke('terminal:create', cwd || null, options);
   const { id: termId, cwd: initialCwd } = result;
@@ -4340,7 +4341,7 @@ VKIpc.on('terminal:agentroom', (termId, agents, replace) => {
 
 // ─── New pane request from HTTP API ──────────────────────────────────────────
 VKIpc.on('terminal:request-new-pane', async (payload = {}) => {
-  const { requestId, cwd, noClaude, stashed, useDefaults } = payload;
+  const { requestId, cwd, noClaude, stashed, useDefaults, model } = payload;
   const reply = (result) => VKIpc.send('terminal:new-pane-created', { requestId, ...result });
   const targetPaneId = findLargestVisiblePaneId() || focusedPaneId || (tree ? getAllLeafIds(tree)[0] : null);
   if (!targetPaneId) {
@@ -4363,6 +4364,10 @@ VKIpc.on('terminal:request-new-pane', async (payload = {}) => {
       if (typeof cwd !== 'string' || !cwd) effectiveCwd = newPaneStartupDir || null;
       if (typeof noClaude !== 'boolean') splitOptions = { noClaude: !newPaneAutoLaunchClaude };
     }
+    // model は noClaude と同じく main へ素通しする（issue #310）。値の妥当性は
+    // HTTP 受け口と main 側の terminal:create の両方で検証されるため、ここでは判定しない。
+    // 未指定なら splitOptions に載らない＝main 側は従来どおり素の claude を起動する。
+    if (typeof model === 'string') splitOptions = { ...splitOptions, model };
     const result = await splitPane(targetPaneId, direction, effectiveCwd, splitOptions);
     if (!result || !result.termId) {
       reply({ error: 'split failed or termId unavailable' });

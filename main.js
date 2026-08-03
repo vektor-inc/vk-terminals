@@ -34,6 +34,9 @@ const { normalizeConfirmClose } = require('./utils/closeConfirm');
 // 外部ブラウザで開いてよい URL の判定（renderer と共有）。renderer 側にも同じ判定が
 // あるが、最終防衛線はこのプロセス側（issue #268）。
 const { isSafeHttpUrl } = require('./renderer/urlSafety');
+// 新規ペインで起動する claude のモデル指定の検証と、起動コマンドの組み立て（issue #310）。
+// HTTP 受け口と terminal:create の両方で使い、片方を通らない経路が増えても素通りさせない。
+const { isValidClaudeModel, buildClaudeLaunchCommand } = require('./renderer/claudeModel');
 const { resolveInstanceId, buildHealthResponse } = require('./utils/instanceId');
 const {
   describeSettingsValues,
@@ -1123,10 +1126,14 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
   ptys.set(id, ptyProcess);
 
   // 起動後に自動でclaudeを実行（素のターミナルモード時はスキップ）
+  // options.model が指定されていれば --model を付けて起動する（issue #310）。
+  // HTTP 受け口でも検証済みだが、ここでも buildClaudeLaunchCommand が再検証する。
+  // 未指定・不正値では素の `claude` になり、従来と完全に同一の文字列を書き込む。
+  const launchCommand = buildClaudeLaunchCommand(options.model);
   if (!noClaude) {
     setTimeout(() => {
       if (ptys.has(id)) {
-        ptyProcess.write('claude\r');
+        ptyProcess.write(`${launchCommand}\r`);
       }
     }, 200);
   }
@@ -1823,10 +1830,13 @@ function startHttpApi() {
       return;
     }
 
-    // POST /api/new-pane  { cwd?: "/path/to/dir", noClaude?: boolean, stashed?: boolean } — 新規ペインを作成して termId を返す
+    // POST /api/new-pane  { cwd?: "/path/to/dir", noClaude?: boolean, stashed?: boolean, model?: string } — 新規ペインを作成して termId を返す
     //   cwd を指定すればそのディレクトリで開く。未指定なら HOME で開く。
     //   noClaude: true を指定すると、新規ペインで claude を自動起動せず素のシェルとして開く。
     //   stashed: true を指定すると、サイドバー格納＋折りたたみ状態で開く。
+    //   model を指定すると、そのモデルで claude を起動する（claude --model '<model>'）。
+    //     許可するのは英数字・`.`・`_`・`-`・`[`・`]` のみ・64 文字以内で、先頭は英数字。
+    //     それ以外は 400 で拒否しペインを作らない。未指定なら従来どおり素の claude を起動する。
     if (req.method === 'POST' && url.pathname === '/api/new-pane') {
       if (isForbiddenOrigin(req)) {
         res.writeHead(403, { 'Content-Type': 'application/json' });
@@ -1844,6 +1854,7 @@ function startHttpApi() {
         let requestedNoClaude;
         let requestedStashed;
         let requestedUseDefaults;
+        let requestedModel;
         if (body.length > 0) {
           try {
             const parsed = JSON.parse(body);
@@ -1862,6 +1873,17 @@ function startHttpApi() {
             // （orchestrator 等）は従来どおり passthrough される（issue #217）。
             if (typeof parsed?.useDefaults === 'boolean') {
               requestedUseDefaults = parsed.useDefaults;
+            }
+            // model: 起動する claude のモデル名（issue #310）。値はペインへ書き込む
+            // 起動コマンドの一部になるため、許可リストを通らない値はペインを作らずに拒否する。
+            // 省略時は従来どおり素の claude を起動する＝既存の呼び出し元は非影響。
+            if (parsed?.model !== undefined) {
+              if (!isValidClaudeModel(parsed.model)) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'invalid model' }));
+                return;
+              }
+              requestedModel = parsed.model;
             }
           } catch {
             res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -1892,6 +1914,7 @@ function startHttpApi() {
         if (typeof requestedNoClaude === 'boolean') payload.noClaude = requestedNoClaude;
         if (typeof requestedStashed === 'boolean') payload.stashed = requestedStashed;
         if (requestedUseDefaults === true) payload.useDefaults = true;
+        if (typeof requestedModel === 'string') payload.model = requestedModel;
         win.webContents.send('terminal:request-new-pane', payload);
       });
       return;

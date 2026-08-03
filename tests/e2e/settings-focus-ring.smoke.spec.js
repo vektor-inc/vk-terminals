@@ -196,7 +196,11 @@ test.describe.serial('設定パネルのフォーカスリングの統一（issu
     // 変更（issue #291）が、text/select/textarea/password のフォーカス時の見た目
     // （border-color）を巻き込んでいないかを確認する。
     for (const [rowText, inputSelector] of [
-      ['API ホスト', 'input'],
+      // issue #313 で追加された apiRequireAuthAlways（常にアクセストークン認証を
+      // 必須にする）の説明文が「API ホストが 127.0.0.1 のままでも…」と "API ホスト"
+      // を含むため、hasText: 'API ホスト' だけでは apiHost の行とチェックボックスの行の
+      // 2 件にマッチしてしまう（strict mode violation）。種類まで指定して一意にする。
+      ['API ホスト', 'input[type="text"]'],
       ['ペインを閉じる時の確認ダイアログ', 'select'],
       ['サイドバーメニュー (JSON 配列)', 'textarea'],
       ['テスト用パスワード', 'input'],

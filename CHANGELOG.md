@@ -1,6 +1,6 @@
 # Changelog
 
-- [ セキュリティ修正 ] HTTP API（スマホ用ページ・外部連携の窓口）にアクセストークン認証（`Authorization: Bearer` ヘッダ / Cookie）を追加。実際の待ち受けアドレスが `127.0.0.1` 以外のとき、または設定で常時認証を有効にしたときに自動的に適用される（[#313](https://github.com/vektor-inc/vk-terminals/issues/313)）
+- [ セキュリティ修正 ] HTTP API（スマホ用ページ・外部連携の窓口）にアクセストークンによる認証を追加。既定の `127.0.0.1` で待ち受けている場合の動作は従来どおりで、外出先から使う設定にしたときのみ認証が必須（[#313](https://github.com/vektor-inc/vk-terminals/issues/313)）
 
 ## 1.52.0
 

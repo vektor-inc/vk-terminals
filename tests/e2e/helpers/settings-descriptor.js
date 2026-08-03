@@ -38,17 +38,23 @@
 // ディスパッチャが options を見て分岐する形にしている。
 //
 //   - describe: { descriptor } を渡したときだけ settings:describe を横取りする。
-//     キーの有無で判定するのは、descriptor に null を差し込んで「利用不可」を再現したく
-//     なったときに、差し替えないことと区別できるようにするため。
-//     このキーの有無は、その他チャンネル（settings:describe / settings:save 以外。
-//     describe を渡さなかった場合は settings:describe 自身もここに含まれる）の扱いも決める。
-//     真偽値のオプションは持たない — describe を渡した＝設定定義を丸ごと差し替えたときは
-//     その他チャンネルも Promise.resolve(null) を返して実 IPC から切り離し（差し込んだ
-//     定義と実環境の状態が混ざるのを防ぐ）、describe を渡さなかったときはその他チャンネルを
-//     元の invoke（実装）へ委譲する。issue #304 の実測で、前者（installDescriptor /
-//     installDescriptorRecordingSaves）はその他チャンネルが一度も発生しないこと、後者
-//     （stubSlowSave）は settings:describe 自身が実際に委譲される（モーダルを閉じて
-//     開き直すと再呼び出しされる）ことを確認している。
+//     判定は `descriptor` プロパティの有無ではなく、`describe` ラッパーそのものの
+//     truthy 判定（if (opts.describe)）。descriptor に null を差し込めば「利用不可」を
+//     再現できる（ラッパー自体は truthy なので横取りされ、settings:describe の応答として
+//     null が返る）。一方、`describe: undefined` のように呼び出し側がラッパーごと
+//     undefined を渡すと横取りされない（差し替えないことと区別する、という元の意図どおり）。
+//     このラッパーの truthy / falsy は、その他チャンネル（settings:describe / settings:save
+//     以外。describe が falsy な場合は settings:describe 自身もここに含まれる）の扱いも
+//     決める。真偽値のオプションは持たない — describe が truthy＝設定定義を丸ごと
+//     差し替えたときはその他チャンネルも Promise.resolve(null) を返して実 IPC から切り離し
+//     （差し込んだ定義と実環境の状態が混ざるのを防ぐ）、describe が falsy なときはその他
+//     チャンネルを元の invoke（実装）へ委譲する。したがって `describe: cond ? { descriptor }
+//     : undefined` のように条件次第でラッパーごと undefined になりうる渡し方をすると、
+//     安全側（null で切り離す）ではなく委譲側へ黙って倒れる点に注意（呼び出し側が
+//     describe を渡すかどうかを条件分岐する場合は、呼び出し自体を分ける）。issue #304 の
+//     実測で、前者（installDescriptor / installDescriptorRecordingSaves）はその他チャンネルが
+//     一度も発生しないこと、後者（stubSlowSave）は settings:describe 自身が実際に委譲される
+//     （モーダルを閉じて開き直すと再呼び出しされる）ことを確認している。
 //   - recordSavePayloads: settings:save で受け取った payload を window.__savedPayloads へ積む。
 //   - saveDelayMs: 指定があれば settings:save の応答をその時間だけ遅らせる。
 async function installInvokeStub(win, options) {

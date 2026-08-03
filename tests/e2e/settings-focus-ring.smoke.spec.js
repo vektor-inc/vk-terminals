@@ -77,8 +77,9 @@ async function expectAppFocusRing(win, selector) {
   expect(await readRing(win, selector), `${selector} のフォーカスリング`).toEqual(APP_FOCUS_RING);
 }
 
-// text/select/textarea はリングではなく border-color（青枠線）でフォーカスを示す従来方式
-// のまま（issue #291 で checkbox だけをリング対象に切り出したときの回帰確認用）。
+// text/number/password/select/textarea はリングではなく border-color（青枠線）で
+// フォーカスを示す従来方式のまま（issue #291 で checkbox だけをリング対象に切り出した
+// ときの回帰確認用）。
 const INPUT_FOCUS_BORDER_COLOR = 'rgb(88, 166, 255)';
 
 async function readBorderColor(win, selector) {
@@ -190,12 +191,15 @@ test.describe.serial('設定パネルのフォーカスリングの統一（issu
     await expectAppFocusRing(win, `#${checkboxId}`);
   });
 
-  test('テキスト欄・セレクトボックスはフォーカス時に従来どおり青枠線が付き、アプリ共通リングは出ない（issue #291 の回帰確認）', async () => {
-    // .settings-row input:focus / select:focus の対象種類を絞った変更（issue #291）が
-    // text/select のフォーカス時の見た目（border-color）を巻き込んでいないかを確認する。
+  test('テキスト欄・セレクトボックス・複数行入力・パスワード欄はフォーカス時に従来どおり青枠線が付き、アプリ共通リングは出ない（issue #291 の回帰確認）', async () => {
+    // .settings-row input:focus / select:focus / textarea:focus の対象種類を絞った
+    // 変更（issue #291）が、text/select/textarea/password のフォーカス時の見た目
+    // （border-color）を巻き込んでいないかを確認する。
     for (const [rowText, inputSelector] of [
       ['API ホスト', 'input'],
       ['ペインを閉じる時の確認ダイアログ', 'select'],
+      ['サイドバーメニュー (JSON 配列)', 'textarea'],
+      ['テスト用パスワード', 'input'],
     ]) {
       const row = win.locator('.settings-row', { hasText: rowText });
       const field = row.locator(inputSelector);

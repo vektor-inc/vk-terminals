@@ -678,6 +678,15 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
       await win.evaluate(() => window.openSettingsModal());
       await win.waitForSelector('.settings-modal', { state: 'visible' });
 
+      // 開き直した設定パネルにも組み込みスキーマ（settings:describe が実装へ委譲され、
+      // 実際のタブ・欄が読み込まれた結果）が描画されていることを確かめる。stubSlowSave は
+      // settings:describe を差し替えないため、この再オープンでも同チャンネルが再度実装へ
+      // 委譲される（helpers/settings-descriptor.js の stubSlowSave 参照）。ここを見ずに
+      // モーダルの個数だけを見ると、委譲が壊れて中身が空のまま描画されても気づけない
+      // （issue #304）。
+      await expect(win.locator('.settings-tab')).toHaveCount(2);
+      await expect(win.locator(`${PANEL_GENERAL} label[for="set-field-0"]`)).toHaveText('API ホスト');
+
       // 「遅れて返った応答が武装 → その 2.5 秒後に発火」までを待ち切ってから確かめる。
       await win.waitForTimeout(saveDelay + 2500 + 800);
       await win.evaluate(() => window.openSettingsModal());

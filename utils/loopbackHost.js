@@ -63,7 +63,10 @@ function isLoopbackHost(host) {
  * @returns {boolean}
  */
 function isLoopbackDisplayValue(value) {
-  const trimmed = typeof value === 'string' ? value.trim() : '';
+  // 'localhost.'（末尾ドット付きの FQDN 形式）は実際には 'localhost' と同じ扱いで
+  // ループバックへ bind されるが、末尾ドットが付いたままだと下の完全一致から漏れて
+  // 「認証が必須になります」と誤案内していた（PR #315 再レビュー指摘・修正-3）。
+  const trimmed = (typeof value === 'string' ? value.trim() : '').replace(/\.$/, '');
   if (!trimmed) return false;
   if (trimmed.toLowerCase() === 'localhost') return true;
   return isLoopbackHost(trimmed);

@@ -234,6 +234,16 @@ test('isAuthorizedRequest: 別トークンの導出値では false（誤った�
   assert.equal(isAuthorizedRequest(req, token), false);
 });
 
+test('isAuthorizedRequest: 導出値（deriveCookieToken）は Authorization: Bearer 経由でも true（意図した挙動・PR #315 再レビュー指摘・修正-4）', () => {
+  // Cookie 経由に限定しても、curl 等で Cookie ヘッダを直接付ければ同じことができ
+  // 実効性が無いため、両経路で受ける実装にしている（意図的な設計）。導出値は本体
+  // トークンと同じ権限を持つ完全な資格情報であり、「Bearer には使えない特別な値」
+  // ではないことをこのテストで固定する（deriveCookieToken 冒頭のコメント参照）。
+  const token = generateApiToken();
+  const req = { headers: { authorization: `Bearer ${deriveCookieToken(token)}` } };
+  assert.equal(isAuthorizedRequest(req, token), true);
+});
+
 test('isAuthExemptPath: GET /api/health は true', () => {
   assert.equal(isAuthExemptPath('GET', '/api/health'), true);
 });

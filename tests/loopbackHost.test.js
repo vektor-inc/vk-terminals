@@ -40,6 +40,14 @@ test('isLoopbackDisplayValue: localhost は大小文字・前後空白を問わ�
   assert.equal(isLoopbackDisplayValue('  localhost  '), true);
 });
 
+test('isLoopbackDisplayValue: localhost.（末尾ドット付きの FQDN 形式）も true（PR #315 再レビュー指摘・修正-3）', () => {
+  // 末尾ドットは実際には 'localhost' と同じ意味で名前解決されループバックへ bind
+  // されるが、完全一致から漏れると「認証が必須になります」と誤案内していた。
+  assert.equal(isLoopbackDisplayValue('localhost.'), true);
+  assert.equal(isLoopbackDisplayValue('LOCALHOST.'), true);
+  assert.equal(isLoopbackDisplayValue('  localhost.  '), true);
+});
+
 test('isLoopbackDisplayValue: 0.0.0.0 / :: / 空文字 / 通常の IP / localhost 以外のホスト名は false', () => {
   assert.equal(isLoopbackDisplayValue('0.0.0.0'), false);
   assert.equal(isLoopbackDisplayValue('::'), false);

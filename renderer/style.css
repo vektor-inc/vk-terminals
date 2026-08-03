@@ -854,12 +854,20 @@ h4.settings-content-heading {
   resize: vertical;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
-/* pattern 検証エラー時の赤枠。focus 時の青枠より前に置き、同詳細度なら後勝ちの
-   ソース順で focus（青）が勝つようにする（入力中は青、blur 後の未focusで赤）。 */
+/* pattern 検証エラー時の赤枠。focus 側は type 属性セレクタ（[type="..."]）のぶん
+   詳細度が高く（focus 側 (0,3,1) に対しここは (0,2,1)）、ソース順に関わらず常に
+   focus（青）が勝つ（入力中は青、blur 後の未focusで赤）。 */
 .settings-row input[aria-invalid="true"] {
   border-color: #f85149;
 }
-.settings-row input:focus,
+/* 種類を絞る理由: 基本ルール（`.settings-row input[type="text"]` ほか）と同じく、
+   枠線（border）で見た目が変わる種類（text/number/password/select/textarea）だけを
+   対象にする。checkbox はここに含めない。checkbox は OS 標準の見た目で描かれ
+   border-color が効かないため、input 全称で outline: none だけを当てるとフォーカス
+   時の見た目が何も残らず消える（WCAG 2.4.7 違反。issue #291）。 */
+.settings-row input[type="text"]:focus,
+.settings-row input[type="number"]:focus,
+.settings-row input[type="password"]:focus,
 .settings-row select:focus,
 .settings-row textarea:focus {
   outline: none;
@@ -873,6 +881,16 @@ h4.settings-content-heading {
   cursor: pointer;
 }
 .settings-check input { -webkit-app-region: no-drag; }
+/* .settings-check は真偽値の設定項目を囲むラベルで、この中に入る部品（現状は
+   checkbox）は OS 標準の見た目で描かれ border-color の指定が効かないため、種類を
+   名指しせずここでまとめてアプリ共通のフォーカスリングを出す。将来ラジオボタン等の
+   別部品がここに入っても同じ理由で取りこぼさない（issue #291）。shared.css の
+   「対話部品の :focus-visible には個別に値を直書きせず必ず 2 行をセットで書くこと」
+   の規約どおり、変数参照の 2 行をセットで書く。 */
+.settings-check input:focus-visible {
+  outline: var(--vktm--outline--focus-ring);
+  outline-offset: var(--vktm--outline-offset--focus-ring);
+}
 .settings-pwd {
   display: flex;
   gap: 6px;

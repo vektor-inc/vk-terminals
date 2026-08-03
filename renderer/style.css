@@ -654,6 +654,77 @@ h4.settings-content-heading {
 .settings-content-status-body > :last-child {
   margin-bottom: 0;
 }
+
+/* アクセストークンパネル（issue #313）
+   ========================================================================== */
+.settings-content-apitoken {
+  display: block;
+  margin: 32px 0 12px;
+}
+.settings-content-apitoken > .settings-content-heading {
+  margin: 0 0 6px;
+}
+.settings-content-apitoken-value-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  margin: 0 0 4px;
+}
+.settings-content-apitoken-value {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 6px 8px;
+  background: #010409;
+  border: 1px solid #21262d;
+  border-radius: 5px;
+  color: #e6edf3;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+/* 二次ボタン。既存の .settings-content-copy と見た目は揃えつつ、既存のコピー・
+   タブ移動のイベント委譲に誤って拾われないよう別クラスにしている。 */
+.settings-content-apitoken-btn {
+  flex: 0 0 auto;
+  padding: 3px 10px;
+  background: #21262d;
+  border: 1px solid var(--vktm--color--border-interactive);
+  border-radius: 5px;
+  color: #c9d1d9;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.settings-content-apitoken-btn:hover {
+  background: #30363d;
+}
+.settings-content-apitoken-btn:focus-visible {
+  outline: var(--vktm--outline--focus-ring);
+  outline-offset: var(--vktm--outline-offset--focus-ring);
+}
+.settings-content-apitoken-url {
+  margin: 0 0 12px;
+}
+.settings-content-apitoken-url-body {
+  margin-top: 8px;
+}
+.settings-content-apitoken-reissue {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  padding-top: 10px;
+  border-top: 1px solid #21262d;
+}
+.settings-content-apitoken-reissue-status {
+  font-size: 12px;
+  color: #3fb950;
+}
+.settings-content-apitoken-reissue-status[data-state="error"] {
+  color: #f85149;
+}
+
 .settings-group {
   border: 1px solid #21262d;
   border-radius: 6px;
@@ -706,6 +777,24 @@ h4.settings-content-heading {
 }
 /* 空のエラー行は余白を作らないよう非表示にする（flex gap の影響も避ける）。 */
 .settings-error:empty {
+  display: none;
+}
+/* apiHost 専用: 127.0.0.1 以外・0.0.0.0 を入力した時点で出す即時案内（issue #313）。
+   色だけに依存させないため info/warning とも見出し語をテキスト側で明示している。 */
+.settings-inline-notice {
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: 5px;
+  border-left: 3px solid #8b949e;
+  background: #161b22;
+  color: #c9d1d9;
+  font-size: 12px;
+}
+.settings-inline-notice[data-tone="warning"] {
+  border-left-color: #d29922;
+  color: #d29922;
+}
+.settings-inline-notice[hidden] {
   display: none;
 }
 .settings-row input[type="text"],

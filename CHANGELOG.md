@@ -1,5 +1,7 @@
 # Changelog
 
+- [ セキュリティ修正 ] HTTP API（スマホ用ページ・外部連携の窓口）が接続相手を一切認証していなかったのを、アクセストークン認証（`Authorization: Bearer` ヘッダ / Cookie）が必須になるよう修正。実際の待ち受けアドレスが `127.0.0.1` 以外のとき、または設定で常時認証を有効にしたときに自動的に適用される（[#313](https://github.com/vektor-inc/vk-terminals/issues/313)）
+
 ## 1.52.0
 
 - [ 機能追加 ] `POST /api/new-pane` で新規ペインを開くとき、そのペインで起動する Claude Code のモデルを呼び出し側から指定できる `model` を追加（[#310](https://github.com/vektor-inc/vk-terminals/issues/310)）

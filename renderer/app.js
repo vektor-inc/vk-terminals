@@ -3294,6 +3294,24 @@ function setupUsageBadge() {
   setInterval(tickSidebarUsageReset, USAGE_SIDEBAR_TICK_INTERVAL_MS);
 }
 
+// apiHost の入力値から、その場で出す認証関連の案内を判定する（issue #313）。
+// 保存・再起動を待たずにその場で気づけるようにするための即時フィードバック。
+// null を返した場合は案内なし（127.0.0.1 または未入力）。
+function getApiHostAuthNotice(rawValue) {
+  const value = typeof rawValue === 'string' ? rawValue.trim() : '';
+  if (!value || value === '127.0.0.1') return null;
+  if (value === '0.0.0.0') {
+    return {
+      tone: 'warning',
+      text: '0.0.0.0 を指定すると LAN 上の誰からでも接続できるうえ、通信が暗号化されないためアクセストークンが平文で流れます。推奨しません（Tailscale の利用をご検討ください）。',
+    };
+  }
+  return {
+    tone: 'info',
+    text: '127.0.0.1 以外を指定すると、保存して再起動した後はアクセストークンによる認証が必須になります。初回登録用の URL は「外出先から確認」タブで確認できます。',
+  };
+}
+
 // 1 フィールド分の入力 HTML を組み立てる。
 // id は描画順で採番したユニークな値を呼び出し側から受け取る（キーから id を導出すると
 // "a.b" と "a_b" のような別キーがサニタイズ後に衝突しうるため、キー由来にしない）。
@@ -3366,11 +3384,20 @@ function renderSettingsField(f, value, id) {
   // pattern 検証のエラー行と aria 関連付け。help があれば help id と error id を
   // スペース区切りで両方指す（無ければ error id のみ）。
   const errorId = escAttr(id + '-error');
-  const describedBy = escAttr(f.help ? `${id}-help ${id}-error` : `${id}-error`);
+  // apiHost だけ、保存・再起動を待たずその場で認証要否の案内を出すための空の通知欄を
+  // 併設する（issue #313）。中身は buildSettingsModal 側で入力イベントに応じて書き換える。
+  const inlineNoticeId = escAttr(id + '-notice');
+  const inlineNoticeHtml = f.key === 'apiHost'
+    ? `<p class="settings-inline-notice" id="${inlineNoticeId}" role="note" hidden></p>`
+    : '';
+  const describedBy = escAttr(f.help
+    ? `${id}-help ${id}-error${f.key === 'apiHost' ? ` ${id}-notice` : ''}`
+    : `${id}-error${f.key === 'apiHost' ? ` ${id}-notice` : ''}`);
   return `<div class="settings-row">
     <label class="settings-label" for="${id}">${label}</label>${help}
     <input type="${inputType}" id="${id}" value="${strVal}"${ph} spellcheck="false" aria-describedby="${describedBy}">
     <span class="settings-error" id="${errorId}" role="alert"></span>
+    ${inlineNoticeHtml}
   </div>`;
 }
 
@@ -3426,6 +3453,37 @@ function renderApiServerStatus(status, apiHostTabIndex) {
   </section>`;
 }
 
+// アクセストークン（issue #313）の表示・コピー・再発行、初回登録用 URL の表示・コピーを
+// まとめた自己完結パネル。トークン本体は秘密情報のため、この静的な HTML には埋め込まず
+// マスク（伏せ字）だけを出しておき、実値は「表示」「初回登録用の URL を表示」ボタンを
+// 押した時にだけ IPC（settings:api-token-info）で都度取得する（buildSettingsModal 側で配線）。
+const API_TOKEN_MASK_PLACEHOLDER = '•'.repeat(64);
+function renderApiTokenPanel() {
+  // ボタンは既存の .settings-content-copy / .settings-content-tablink と見た目を
+  // 揃えつつ、専用クラス（settings-content-apitoken-btn）にする。同じクラス名を共有すると
+  // 既存のイベント委譲（コピー・タブ移動）がこのボタンにも反応してしまうため
+  // （どちらも無害な no-op に倒れるが、意図が分かりにくく事故の元になる）。
+  return `<section class="settings-content-apitoken" data-apitoken-panel>
+    <h3 class="settings-content-heading">アクセストークン</h3>
+    <div class="settings-content-apitoken-value-row">
+      <code class="settings-content-apitoken-value" data-apitoken-value>${API_TOKEN_MASK_PLACEHOLDER}</code>
+      <button type="button" class="settings-content-apitoken-btn" data-apitoken-reveal aria-pressed="false">表示</button>
+      <button type="button" class="settings-content-apitoken-btn" data-apitoken-copy>コピー</button>
+    </div>
+    <span class="settings-content-copy-status" data-apitoken-copy-status role="status"></span>
+
+    <div class="settings-content-apitoken-url">
+      <button type="button" class="settings-content-apitoken-btn" data-apitoken-url-reveal aria-expanded="false">初回登録用の URL を表示</button>
+      <div class="settings-content-apitoken-url-body" data-apitoken-url-body hidden></div>
+    </div>
+
+    <div class="settings-content-apitoken-reissue">
+      <button type="button" class="settings-content-apitoken-btn" data-apitoken-reissue>トークンを再発行</button>
+      <span class="settings-content-apitoken-reissue-status" data-apitoken-reissue-status role="status"></span>
+    </div>
+  </section>`;
+}
+
 // 説明タブ（tabs[].content）の読み取り専用ブロックを HTML 化する。
 // blocks は settingsTabs.js の normalizeSettingsTabContent で正規化済み（未知の type や
 // 非 http(s) の URL は除去済み）である前提。content は外部ディスクリプタ
@@ -3471,6 +3529,9 @@ function renderSettingsTabContent(blocks, tabIndexById, runtimeStatus = {}, entr
     if (block.type === 'status' && block.source === 'apiServer') {
       const apiHostEntry = entries.find(({ field }) => field.key === 'apiHost');
       return renderApiServerStatus(runtimeStatus.apiServer, apiHostEntry?.tabIndex);
+    }
+    if (block.type === 'apiTokenPanel') {
+      return renderApiTokenPanel();
     }
     if (block.type === 'tabLink') {
       const targetIndex = tabIndexById.get(block.tab);
@@ -3985,6 +4046,122 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
       }, 2000));
     });
 
+    // ─── アクセストークンパネル（issue #313） ─────────────────────────────────
+    // トークン本体・登録用 URL は既定で伏せておき、「表示」系ボタンを押した時だけ
+    // IPC（settings:api-token-info）で都度取得する。取得のたびに main 側から
+    // 最新の値を引くため、再発行後もこの取得経路を通す限り古い値を返さない。
+    const apiTokenPanel = modal.querySelector('[data-apitoken-panel]');
+    if (apiTokenPanel) {
+      const tokenValueEl = apiTokenPanel.querySelector('[data-apitoken-value]');
+      const tokenRevealBtn = apiTokenPanel.querySelector('[data-apitoken-reveal]');
+      const tokenCopyBtn = apiTokenPanel.querySelector('[data-apitoken-copy]');
+      const tokenCopyStatusEl = apiTokenPanel.querySelector('[data-apitoken-copy-status]');
+      const urlRevealBtn = apiTokenPanel.querySelector('[data-apitoken-url-reveal]');
+      const urlBodyEl = apiTokenPanel.querySelector('[data-apitoken-url-body]');
+      const reissueBtn = apiTokenPanel.querySelector('[data-apitoken-reissue]');
+      const reissueStatusEl = apiTokenPanel.querySelector('[data-apitoken-reissue-status]');
+      let tokenRevealed = false;
+      let urlRevealed = false;
+      let tokenCopyResetTimer = null;
+
+      const fetchApiTokenInfo = async () => {
+        try {
+          return await VKIpc.invoke('settings:api-token-info');
+        } catch (_e) {
+          return null;
+        }
+      };
+
+      if (tokenRevealBtn && tokenValueEl) {
+        tokenRevealBtn.addEventListener('click', async () => {
+          if (tokenRevealed) {
+            tokenRevealed = false;
+            tokenValueEl.textContent = API_TOKEN_MASK_PLACEHOLDER;
+            tokenRevealBtn.textContent = '表示';
+            tokenRevealBtn.setAttribute('aria-pressed', 'false');
+            return;
+          }
+          const info = await fetchApiTokenInfo();
+          if (!info || !info.token) return;
+          tokenRevealed = true;
+          tokenValueEl.textContent = info.token;
+          tokenRevealBtn.textContent = '隠す';
+          tokenRevealBtn.setAttribute('aria-pressed', 'true');
+        });
+      }
+
+      if (tokenCopyBtn) {
+        tokenCopyBtn.addEventListener('click', async () => {
+          const info = await fetchApiTokenInfo();
+          let ok = !!(info && info.token);
+          if (ok) {
+            try {
+              ok = await VKClipboard.writeText(info.token);
+            } catch (_e) {
+              ok = false;
+            }
+          }
+          setCopyStatus(tokenCopyStatusEl, ok ? 'ok' : 'error');
+          if (tokenCopyResetTimer) clearTimeout(tokenCopyResetTimer);
+          tokenCopyResetTimer = setTimeout(() => {
+            tokenCopyResetTimer = null;
+            setCopyStatus(tokenCopyStatusEl, '');
+          }, 2000);
+        });
+      }
+
+      if (urlRevealBtn && urlBodyEl) {
+        urlRevealBtn.addEventListener('click', async () => {
+          if (urlRevealed) {
+            urlRevealed = false;
+            urlBodyEl.hidden = true;
+            urlBodyEl.innerHTML = '';
+            urlRevealBtn.textContent = '初回登録用の URL を表示';
+            urlRevealBtn.setAttribute('aria-expanded', 'false');
+            return;
+          }
+          const info = await fetchApiTokenInfo();
+          if (!info || !info.registrationUrl) return;
+          // コピーボタン付きのコード表示は既存の renderSettingsCopyableCode を再利用する
+          // （挿入後の .settings-content-copy クリックは既存のイベント委譲がそのまま拾う）。
+          urlBodyEl.innerHTML = renderSettingsCopyableCode(info.registrationUrl, true);
+          urlBodyEl.hidden = false;
+          urlRevealed = true;
+          urlRevealBtn.textContent = '初回登録用の URL を隠す';
+          urlRevealBtn.setAttribute('aria-expanded', 'true');
+        });
+      }
+
+      if (reissueBtn) {
+        reissueBtn.addEventListener('click', async () => {
+          const confirmed = window.confirm(
+            'トークンを再発行しますか？\n登録済みのすべてのスマートフォンが使えなくなります（個別に無効化することはできません）。'
+          );
+          if (!confirmed) return;
+          let result;
+          try {
+            result = await VKIpc.invoke('settings:reissue-api-token');
+          } catch (e) {
+            result = { ok: false, error: e.message };
+          }
+          if (result && result.ok) {
+            if (reissueStatusEl) {
+              reissueStatusEl.textContent = '再発行しました。登録済みだった端末は使えなくなります。';
+              reissueStatusEl.removeAttribute('data-state');
+            }
+            // 表示中だった値は古いトークンのままにしない。
+            if (tokenRevealed) tokenValueEl.textContent = result.token;
+            if (urlRevealed && result.registrationUrl) {
+              urlBodyEl.innerHTML = renderSettingsCopyableCode(result.registrationUrl, true);
+            }
+          } else if (reissueStatusEl) {
+            reissueStatusEl.textContent = 'エラー: ' + (result && result.error ? result.error : '不明なエラー');
+            reissueStatusEl.setAttribute('data-state', 'error');
+          }
+        });
+      }
+    }
+
     // createWindow() より API 起動が後なので、設定パネルを極端に早く開くと「確認中」に
     // なる。確定前に限って軽量 IPC を 250ms ごとに最大 20 回（5 秒）取り直し、
     // 確定時・上限到達時・close() のいずれかで止める。
@@ -4147,6 +4324,30 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
     input.addEventListener('change', onEntryEdited);
   }
   applyFieldVisibility();
+
+  // apiHost はその場で認証要否の案内を出す（issue #313）。保存・再起動して初めて
+  // 気づく流れを避けるため、入力のたびに即時判定する。
+  const apiHostEntryForNotice = entries.find(({ field }) => field.key === 'apiHost');
+  if (apiHostEntryForNotice) {
+    const apiHostInput = getEntryInput(apiHostEntryForNotice.id);
+    const apiHostNoticeEl = modal.querySelector('#' + apiHostEntryForNotice.id + '-notice');
+    if (apiHostInput && apiHostNoticeEl) {
+      const applyApiHostNotice = () => {
+        const notice = getApiHostAuthNotice(apiHostInput.value);
+        if (!notice) {
+          apiHostNoticeEl.hidden = true;
+          apiHostNoticeEl.textContent = '';
+          apiHostNoticeEl.removeAttribute('data-tone');
+          return;
+        }
+        apiHostNoticeEl.hidden = false;
+        apiHostNoticeEl.textContent = notice.text;
+        apiHostNoticeEl.setAttribute('data-tone', notice.tone);
+      };
+      applyApiHostNotice();
+      apiHostInput.addEventListener('input', applyApiHostNotice);
+    }
+  }
 
   // "優しく遅らせ、素早く許す": 打鍵中は警告せず blur で初回検証。エラーが付いた後だけ
   // input イベントで再検証し、valid になれば即解除する。

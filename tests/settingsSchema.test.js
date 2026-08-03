@@ -54,6 +54,7 @@ test('buildBuiltinSettingsDescriptor: JSON から targetPath 付きの組み込�
   const fields = descriptor.groups.flatMap((group) => group.fields);
   assert.deepEqual(fields.map((field) => field.key), [
     'apiHost',
+    'apiRequireAuthAlways',
     'newPaneStartupDir',
     'newPaneAutoLaunchClaude',
     'initialCommand',

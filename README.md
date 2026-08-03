@@ -247,30 +247,48 @@ HTTP API サーバーのルート（`GET http://<apiHost>:13847/`）は、スマ
 
 既定では HTTP API サーバーは `127.0.0.1:13847` で待ち受けるため、同じパソコン上からしか見えません。スマートフォンなど LAN 内の別端末から開く場合は、パソコンの LAN IP アドレスを `apiHost` に設定します。
 
-`apiHost` を LAN IP にすると、同一ネットワーク上の全端末から**無認証で**ターミナルを閲覧・操作できるようになります。必ず信頼できるネットワークでのみ設定してください（詳細は後述の[セキュリティ上の注意](#セキュリティ上の注意)を参照）。
+`apiHost` に `127.0.0.1` 以外を指定すると、アクセストークンによる認証が自動的に必須になります（issue #313）。ただし LAN 経由の通信は暗号化されないため、同じネットワーク上でパケットを覗き見できる第三者にはトークンが漏れる可能性があります。必ず信頼できるネットワークでのみ設定してください（詳細は後述の[セキュリティ上の注意](#セキュリティ上の注意)を参照）。
 
 1. パソコンとスマートフォンを同じ信頼できるネットワークに接続します。
 2. パソコンの IP アドレスを確認します。macOS の Wi-Fi ではターミナルで `ipconfig getifaddr en0` を実行するか、「システム設定」→「Wi-Fi」→接続中ネットワークの詳細から確認します。Windows ではコマンドプロンプトで `ipconfig` を実行し、接続中のアダプターの「IPv4 アドレス」を確認します。
 3. タイトルバー右端の ⚙ →「設定」タブで「API ホスト」にパソコンの IP アドレス（例: `192.168.1.23`）を入力して保存します。`config.json` を直接編集する場合は、`"apiHost": "192.168.1.23"` のように指定します。設定ファイルの場所や優先順位は[起動時の初期コマンド設定](#起動時の初期コマンド設定)、設定パネルの挙動は[設定パネル](#設定パネル)を参照してください。
 4. vk-terminals を再起動します。`apiHost` は起動時に読み込まれるため、保存後の再起動が必要です。
-5. スマートフォンのブラウザで `http://<パソコンのIP>:13847/`（例: `http://192.168.1.23:13847/`）を開きます。
+5. 次の[スマートフォンの初回登録](#スマートフォンの初回登録)の手順で、スマートフォンを登録します。
 
 WSL2 上で vk-terminals を動かしている場合は、Windows との間に仮想ネットワークを挟むため、LAN 内の他端末からアクセスするには Windows 側でのポート転送（`netsh interface portproxy` など）の追加設定が必要です（関連: [WSLg での起動](#wslg-での起動)）。
 
 ポートは通常 `13847` です。テストや並列起動では環境変数 `VK_TERMINALS_API_PORT` で上書きできますが、通常利用では変更不要です。
 
-`GET /api/health` は疎通確認用に `{ "ok": true }` を返します。起動時に環境変数 `VK_TERMINALS_INSTANCE_ID` を指定すると、レスポンスに `instanceId` も含めます（未指定または空文字の場合は従来どおり含めません）。`instanceId` は無認証の API ポートに到達できる利用者なら誰でも読めるため、`VK_TERMINALS_INSTANCE_ID` には認証情報などの機密値ではなく、取り違え検出用の非機密の識別子を指定してください。
+`GET /api/health` は疎通確認用に `{ "ok": true }` を返し、唯一認証不要のエンドポイントです。起動時に環境変数 `VK_TERMINALS_INSTANCE_ID` を指定すると、レスポンスに `instanceId` も含めます（未指定または空文字の場合は従来どおり含めません）。`instanceId` は認証不要な `/api/health` に到達できる利用者なら誰でも読めるため、`VK_TERMINALS_INSTANCE_ID` には認証情報などの機密値ではなく、取り違え検出用の非機密の識別子を指定してください。
 
 ### 外出先からのアクセス
 
-ここに書いた手順は、アプリ内でも読めます。タイトルバー右端の ⚙ →「外出先から確認」タブに、Tailscale を使って外出先のスマートフォンからモバイルページを開くまでの案内（Tailscale とは何か・両方の端末を tailnet に参加させる手順・Tailscale IP の調べ方・下記 2 方法の手順・セキュリティ上の注意）をまとめてあります。エンドユーザー向けの説明はそちらが正で、この節は同じ内容の開発者向けの要約です。
+ここに書いた手順は、アプリ内でも読めます。タイトルバー右端の ⚙ →「外出先から確認」タブに、Tailscale を使って外出先のスマートフォンからモバイルページを開くまでの案内（Tailscale とは何か・両方の端末を tailnet に参加させる手順・Tailscale IP の調べ方・下記 2 方法の手順・スマートフォンの登録・セキュリティ上の注意）をまとめてあります。エンドユーザー向けの説明はそちらが正で、この節は同じ内容の開発者向けの要約です。
 
 外出先から使う場合は、Tailscale などの信頼できるプライベートネットワーク経由で公開してください。方法は 2 つあり、どちらか一方を行えば開けます。
 
-- **方法 1: `apiHost` に Tailscale IP（`100.x.x.x`）を指定する** — 設定パネルだけで完結させたい場合はこちら。tailnet 内から `http://<Tailscale IP>:13847/` を開きます。`apiHost` は起動時に読み込むため保存後の再起動が必要です。Tailscale 未接続などで指定した `apiHost` が割り当てられていない場合、API サーバーは `127.0.0.1` にフォールバックして起動します（この場合スマートフォンからは開けないため、起動ログの `API server listening on ...` を確認してください）。
-- **方法 2: `tailscale serve` で公開する** — ターミナル操作に抵抗がなければこちらも使えます。`apiHost` の変更も再起動も不要です。`tailscale serve --bg 13847` で vk-terminals を動かしているマシンの `127.0.0.1:13847` を tailnet に公開し、表示された URL を開きます（`--bg` は Tailscale 1.54 以降の書式）。tailnet の構成（MagicDNS・HTTPS 証明書の有効化など）や Tailscale の導入方法によっては、先に有効化などの準備が必要で、そのままでは実行できない場合があります。
+- **方法 1: `apiHost` に Tailscale IP（`100.x.x.x`）を指定する** — 設定パネルだけで完結させたい場合はこちら。tailnet 内から `http://<Tailscale IP>:13847/` を開きます。`apiHost` は起動時に読み込むため保存後の再起動が必要です。Tailscale 未接続などで指定した `apiHost` が割り当てられていない場合、API サーバーは `127.0.0.1` にフォールバックして起動します（この場合スマートフォンからは開けないため、起動ログの `API server listening on ...` を確認してください）。`apiHost` が `127.0.0.1` 以外で実際に待ち受けているため、アクセストークンによる認証が自動的に必須になります。
+- **方法 2: `tailscale serve` で公開する** — ターミナル操作に抵抗がなければこちらも使えます。`apiHost` の変更も再起動も不要です。`tailscale serve --bg 13847` で vk-terminals を動かしているマシンの `127.0.0.1:13847` を tailnet に公開し、表示された URL を開きます（`--bg` は Tailscale 1.54 以降の書式）。tailnet の構成（MagicDNS・HTTPS 証明書の有効化など）や Tailscale の導入方法によっては、先に有効化などの準備が必要で、そのままでは実行できない場合があります。**この方法は待ち受けアドレスが `127.0.0.1` のままのため、設定パネルの「常にアクセストークン認証を必須にする」を有効にしてください。** 有効にしないと、待ち受けアドレスだけでは通常のローカル利用と区別できず、認証がかからないまま tailnet に公開されてしまいます。
 
 Tailscale IP は、対象マシンのメニューバー / 通知領域の Tailscale アイコン、または `tailscale ip -4` で確認できます。
+
+### スマートフォンの初回登録
+
+`apiHost` を変更した場合（方法 1）・`tailscale serve` で公開した場合（方法 2）のいずれも、最後にスマートフォンの登録が必要です（issue #313）。登録は端末ごとに 1 回だけ行えば、以降はブックマークから開くだけで使えます。
+
+1. パソコンのタイトルバー右端の ⚙ →「外出先から確認」タブを開き、「アクセストークン」欄の下にある「初回登録用の URL を表示」を押します。表示された URL（トークン付き）をコピーします。
+2. AirDrop や自分宛てのメッセージ（メール・チャット等）で、コピーした URL をスマートフォンへ転送します。**手入力はしないでください**（トークンは長い文字列で、打ち間違えると登録できません）。
+3. スマートフォンでその URL を開きます。開くと自動的に登録が完了し、アドレスがトークンの付いていない `http://<アドレス>:13847/` へ切り替わります。
+4. **この状態でブックマークします。** トークン付きの URL のままブックマークすると、ブックマークや閲覧履歴にトークンが残ってしまいます。
+
+この操作は初回だけでよく、以降は毎回この手順をやり直す必要はありません。ブックマークを開くだけでモバイルページを使えます。
+
+補足:
+
+- 初回登録用の URL はパスワードと同等です。他人に渡さないでください。
+- 複数のスマートフォン・タブレットで使う場合は、それぞれの端末で同じ手順（1〜4）を行ってください。
+- 機種変更やブラウザの Cookie 削除などで登録状態が失われた場合は、同じ手順をやり直せば再登録できます。
+- 端末を紛失した場合は、設定パネルの「トークンを再発行」を押してください。**登録済みのすべての端末が使えなくなります**（個別の端末だけを無効化することはできません）。紛失した端末以外は、上記の手順で再登録してください。
 
 ### モバイルページでできること
 
@@ -288,11 +306,12 @@ Tailscale IP は、対象マシンのメニューバー / 通知領域の Tailsc
 
 ### セキュリティ上の注意
 
-モバイルページと HTTP API には認証がありません。`POST /api/send` などの更新系エンドポイントには Host ヘッダと Origin ヘッダを突き合わせる CSRF 対策がありますが、到達できる端末からはターミナル操作が可能です。
+モバイルページと HTTP API は、アクセストークンによる認証で保護されています（issue #313）。実際に待ち受けているアドレスが `127.0.0.1` 以外の場合、または設定パネルで「常にアクセストークン認証を必須にする」を有効にした場合は、`GET /api/health` を除くすべてのエンドポイントで認証が必須になります。登録済みの端末（[スマートフォンの初回登録](#スマートフォンの初回登録)を済ませた端末）だけが操作できます。`POST /api/send` などの更新系エンドポイントには、これとは別に Host ヘッダと Origin ヘッダを突き合わせる CSRF 対策もあります。
 
+- **`0.0.0.0` を `apiHost` に指定して LAN に開く使い方は避けてください。** 全インターフェースで待ち受けるうえ、HTTPS ではないため通信が暗号化されず、アクセストークンが平文で流れます。同一 LAN 上でパケットを覗き見できる第三者にトークンが漏れる可能性があります。Tailscale 経由なら Tailscale 側の暗号化があるため問題になりません。
 - 自宅 LAN や tailnet など、信頼できるネットワーク以外には公開しないでください。
-- `0.0.0.0` を `apiHost` に指定すると全インターフェースで待ち受けます。公開ネットワークや不特定多数が接続できる LAN では非推奨です。
-- 指定した `apiHost` が使えない場合は `127.0.0.1` にフォールバックするため、スマートフォンから見えないときは起動ログの `API server listening on ...` を確認してください。
+- 指定した `apiHost` が使えない場合は `127.0.0.1` にフォールバックするため、スマートフォンから見えないときは起動ログの `API server listening on ...` を確認してください（この場合 `127.0.0.1` での待ち受けに戻るため、`apiHost` に `127.0.0.1` 以外を指定していても認証は必須になりません）。
+- トークンを紛失・流出させた場合は、設定パネルの「トークンを再発行」を押してください。登録済みのすべての端末が無効になります（個別の端末だけを無効化することはできません）。
 
 ## 起動時の初期コマンド設定
 
@@ -330,7 +349,8 @@ cp config.example.json ~/.vk-terminals/config.json
 - `showUsage`：Claude の使用量表示（サイドバー最上部の「Claude使用量」・モバイルページ）の ON/OFF。opt-out 方式で、省略時は ON。明示的に `false` にしたときだけ無効化されます（後述の[Claude 使用量表示](#claude-使用量表示)を参照）。
 - `confirmClose`：ペインの ✕ ボタンで閉じる時に確認ダイアログを表示する条件。`busy`（実行中・入力待ちのみ確認。省略時の既定）／`always`（常に確認）／`never`（確認なし）。HTTP API 経由（`POST /api/close-pane`）やプロセス自然終了などの自動クローズには適用されません。
 - `menuItems`：サイドバーに表示する追加メニュー項目（外部リンク・設定モーダル起動）のリスト。省略時は表示なし（後述の[サイドバーメニュー](#サイドバーメニュー)を参照）。
-- `apiHost`：HTTP API サーバーの待受ホスト。省略時は `127.0.0.1`。LAN やモバイル端末からアクセスさせたい場合に自ホストの IP などを指定します。
+- `apiHost`：HTTP API サーバーの待受ホスト。省略時は `127.0.0.1`。LAN やモバイル端末からアクセスさせたい場合に自ホストの IP などを指定します。`127.0.0.1` 以外を指定すると、アクセストークンによる認証が自動的に必須になります（詳細は[モバイルページ](#モバイルページ)を参照）。`0.0.0.0` を指定する使い方は、通信が暗号化されずトークンが平文で流れるため避けてください。
+- `apiRequireAuthAlways`：`true` にすると、`apiHost` が `127.0.0.1` のままでも常にアクセストークン認証を必須にします。`tailscale serve --bg` で公開する場合（[外出先からのアクセス](#外出先からのアクセス)の「方法 2」）に有効化が必要です。省略時は `false`。
 - `gpu`：GPU 起動モード（`off` / `default` / 未設定）。詳細は[GPU 起動モード](#gpu-起動モードvk_terminals_gpu)を参照。
 - `agentroom`：`true` にすると、各ペイン下部に開閉式の「エージェントルーム」を表示します（後述の[エージェントルーム](#エージェントルームissue-58)を参照）。省略時は `false`（非表示）。**現在は β 扱いで一旦無効化されており、設定パネルからは編集できません**（#70）。利用する場合は config.json に直接 `agentroom: true` を記述してください。
 
@@ -340,7 +360,7 @@ cp config.example.json ~/.vk-terminals/config.json
 
 タイトルバー右端の ⚙ ボタンから、設定を GUI 上で編集・保存できます。単体起動でも常に表示されます。
 
-- **単体起動時**（`VK_TERMINALS_SETTINGS` 未指定）：vk-terminals 自身の `config.json`（`apiHost` / `initialCommand` / `confirmClose` / `showUsage` / `gpu` / `menuItems` / `additionalPanes`）を編集します。編集対象は `loadUserConfig()` と同じ探索順で、既存の `config.json` があればそれ、無ければリポジトリ直下 `config.json` を作成します。
+- **単体起動時**（`VK_TERMINALS_SETTINGS` 未指定）：vk-terminals 自身の `config.json`（`apiHost` / `apiRequireAuthAlways` / `initialCommand` / `confirmClose` / `showUsage` / `gpu` / `menuItems` / `additionalPanes`）を編集します。編集対象は `loadUserConfig()` と同じ探索順で、既存の `config.json` があればそれ、無ければリポジトリ直下 `config.json` を作成します。`apiToken`（アクセストークン）はこの汎用フィールド経由では編集できません。「外出先から確認」タブの専用パネル（表示・コピー・再発行）でのみ扱います（誤って伏せ字のまま保存してトークンを壊す事故を避けるため）。
 - **呼び出し側から渡された場合**（`VK_TERMINALS_SETTINGS` に「設定ディスクリプタ JSON」のパスを指定）：そのディスクリプタが指す任意の config ファイルを編集します（vk-orchestrator が自身の統合 `config.json` を編集させる用途など）。vk-terminals 自身は編集対象の設定内容を知らず、ディスクリプタ（編集対象パス + 項目スキーマ）に従って読み書きするだけの汎用実装です。
 
 `waitingExcludeCwdPatterns` は設定 GUI では編集できず、config.json の直編集専用です。
@@ -431,9 +451,20 @@ cp config.example.json ~/.vk-terminals/config.json
 
 ### エンドポイント
 
+#### アクセストークン認証（issue #313）
+
+実際に待ち受けているアドレスが `127.0.0.1` 以外の場合（LAN IP や Tailscale IP を `apiHost` に指定した場合、または設定パネルで「常にアクセストークン認証を必須にする」を有効にした場合）、`GET /api/health` を除く**すべてのエンドポイント**でアクセストークンによる認証が必須になります。`127.0.0.1`（既定）のままなら認証不要ですが、以下の例には `apiHost` を変更した場合にもそのまま使えるよう、常に `Authorization` ヘッダを付けています。
+
+トークンは初回起動時に自動生成され `~/.vk-terminals/config.json` の `apiToken` に保存されます。値はタイトルバー右端の ⚙ →「外出先から確認」タブの「アクセストークン」欄（既定は伏せ字。「表示」で表示、「コピー」でコピー）から確認できます。認証が必要な状態でトークンを付けずにリクエストすると `401 {"error": "unauthorized"}` が返ります。
+
+```bash
+curl -s http://127.0.0.1:13847/api/states \
+  -H 'Authorization: Bearer <アクセストークン>'
+```
+
 #### `GET /api/health`
 
-ヘルスチェック。
+ヘルスチェック（唯一、認証不要のエンドポイントです）。
 
 ```bash
 curl -s http://127.0.0.1:13847/api/health
@@ -445,7 +476,8 @@ curl -s http://127.0.0.1:13847/api/health
 全ターミナルの状態を取得。
 
 ```bash
-curl -s http://127.0.0.1:13847/api/states | python3 -m json.tool
+curl -s http://127.0.0.1:13847/api/states \
+  -H 'Authorization: Bearer <アクセストークン>' | python3 -m json.tool
 ```
 
 レスポンス例:
@@ -490,6 +522,7 @@ curl -s http://127.0.0.1:13847/api/states | python3 -m json.tool
 
 ```bash
 curl -s -X POST http://127.0.0.1:13847/api/send \
+  -H 'Authorization: Bearer <アクセストークン>' \
   -H 'Content-Type: application/json' \
   -d '{"termId": "1", "input": "y\r"}'
 ```
@@ -506,26 +539,31 @@ curl -s -X POST http://127.0.0.1:13847/api/send \
 ```bash
 # タイトルだけ設定（リンクなし）
 curl -s -X POST http://127.0.0.1:13847/api/set-title \
+  -H 'Authorization: Bearer <アクセストークン>' \
   -H 'Content-Type: application/json' \
   -d '{"termId": "1", "title": "issue #29 対応中"}'
 
 # タイトルとリンク URL をセットで設定
 curl -s -X POST http://127.0.0.1:13847/api/set-title \
+  -H 'Authorization: Bearer <アクセストークン>' \
   -H 'Content-Type: application/json' \
   -d '{"termId": "1", "title": "issue #29", "url": "https://github.com/vektor-inc/vk-terminals/issues/29"}'
 
 # タイトル・issue リンク・PR ボタンをまとめて設定
 curl -s -X POST http://127.0.0.1:13847/api/set-title \
+  -H 'Authorization: Bearer <アクセストークン>' \
   -H 'Content-Type: application/json' \
   -d '{"termId": "1", "title": "issue #44", "url": "https://github.com/vektor-inc/vk-terminals/issues/44", "prUrl": "https://github.com/vektor-inc/vk-terminals/pull/99"}'
 
 # PR ボタンをマージ済み表示（紫）にする
 curl -s -X POST http://127.0.0.1:13847/api/set-title \
+  -H 'Authorization: Bearer <アクセストークン>' \
   -H 'Content-Type: application/json' \
   -d '{"termId": "1", "title": "issue #44", "prUrl": "https://github.com/vektor-inc/vk-terminals/pull/99", "prMerged": true}'
 
 # タイトル・URL・PR ボタンをクリア（空文字で消す）
 curl -s -X POST http://127.0.0.1:13847/api/set-title \
+  -H 'Authorization: Bearer <アクセストークン>' \
   -H 'Content-Type: application/json' \
   -d '{"termId": "1", "title": "", "url": "", "prUrl": ""}'
 ```
@@ -567,18 +605,21 @@ curl -s -X POST http://127.0.0.1:13847/api/set-title \
 ```bash
 # 大文字スキーム（`new URL()` がプロトコルを小文字化するため http(s) 判定で弾かれる）
 curl -i -s -X POST http://127.0.0.1:13847/api/set-title \
+  -H 'Authorization: Bearer <アクセストークン>' \
   -H 'Content-Type: application/json' \
   -d '{"termId":"1","title":"x","url":"JAVASCRIPT:alert(1)"}'
 # => 400 {"error":"url must be http(s)"}
 
 # javascript: スキーム
 curl -i -s -X POST http://127.0.0.1:13847/api/set-title \
+  -H 'Authorization: Bearer <アクセストークン>' \
   -H 'Content-Type: application/json' \
   -d '{"termId":"1","title":"x","url":"javascript:alert(1)"}'
 # => 400 {"error":"url must be http(s)"}
 
 # data: スキーム
 curl -i -s -X POST http://127.0.0.1:13847/api/set-title \
+  -H 'Authorization: Bearer <アクセストークン>' \
   -H 'Content-Type: application/json' \
   -d '{"termId":"1","title":"x","url":"data:text/html,<script>alert(1)</script>"}'
 # => 400 {"error":"url must be http(s)"}
@@ -593,11 +634,13 @@ curl -i -s -X POST http://127.0.0.1:13847/api/set-title \
 ```bash
 # 外部権威の入力待ちフラグを立てる
 curl -s -X POST http://127.0.0.1:13847/api/set-status \
+  -H 'Authorization: Bearer <アクセストークン>' \
   -H 'Content-Type: application/json' \
   -d '{"termId": "1", "waiting": true}'
 
 # 外部権威の入力待ちフラグを解除する
 curl -s -X POST http://127.0.0.1:13847/api/set-status \
+  -H 'Authorization: Bearer <アクセストークン>' \
   -H 'Content-Type: application/json' \
   -d '{"termId": "1", "waiting": false}'
 ```
@@ -632,26 +675,31 @@ curl -s -X POST http://127.0.0.1:13847/api/set-status \
 新規ペインを作成し、作成されたターミナルの `termId` を返します。ペインは通常グリッドの末尾に追加され、全体は自動折返しグリッドで再配置されます。`stashed: true` を指定した場合はサイドバー格納＋折りたたみ状態で作成されます。
 
 ```bash
-curl -s -X POST http://127.0.0.1:13847/api/new-pane
+curl -s -X POST http://127.0.0.1:13847/api/new-pane \
+  -H 'Authorization: Bearer <アクセストークン>'
 # => {"ok":true,"termId":"3"}
 
 # cwd を指定して開く
 curl -s -X POST http://127.0.0.1:13847/api/new-pane \
+  -H 'Authorization: Bearer <アクセストークン>' \
   -H 'Content-Type: application/json' \
   -d '{"cwd": "/Users/you/Documents/git/your-project"}'
 
 # claude を起動せず素のシェルとして開く
 curl -s -X POST http://127.0.0.1:13847/api/new-pane \
+  -H 'Authorization: Bearer <アクセストークン>' \
   -H 'Content-Type: application/json' \
   -d '{"noClaude": true}'
 
 # サイドバーに格納して折りたたみ状態で開く
 curl -s -X POST http://127.0.0.1:13847/api/new-pane \
+  -H 'Authorization: Bearer <アクセストークン>' \
   -H 'Content-Type: application/json' \
   -d '{"stashed": true}'
 
 # モデルを指定して claude を起動する
 curl -s -X POST http://127.0.0.1:13847/api/new-pane \
+  -H 'Authorization: Bearer <アクセストークン>' \
   -H 'Content-Type: application/json' \
   -d '{"model": "sonnet"}'
 ```
@@ -680,6 +728,7 @@ curl -s -X POST http://127.0.0.1:13847/api/new-pane \
 
 ```bash
 curl -s -X POST http://127.0.0.1:13847/api/close-pane \
+  -H 'Authorization: Bearer <アクセストークン>' \
   -H 'Content-Type: application/json' \
   -d '{"termId": "3"}'
 # => {"ok":true,"termId":"3"}
@@ -705,6 +754,7 @@ curl -s -X POST http://127.0.0.1:13847/api/close-pane \
 ```bash
 # source ごとにメニュー項目を登録・置換
 curl -s -X POST http://127.0.0.1:13847/api/menu \
+  -H 'Authorization: Bearer <アクセストークン>' \
   -H 'Content-Type: application/json' \
   -d '{
         "source": "vk-orchestrator",
@@ -717,6 +767,7 @@ curl -s -X POST http://127.0.0.1:13847/api/menu \
 
 # 指定 source の項目をクリア
 curl -s -X POST http://127.0.0.1:13847/api/menu \
+  -H 'Authorization: Bearer <アクセストークン>' \
   -H 'Content-Type: application/json' \
   -d '{"source": "vk-orchestrator", "items": []}'
 ```
@@ -742,11 +793,13 @@ curl -s -X POST http://127.0.0.1:13847/api/menu \
 ```bash
 # ルーム状態を丸ごと置換（agents オブジェクト）
 curl -s -X POST http://127.0.0.1:13847/api/agentroom \
+  -H 'Authorization: Bearer <アクセストークン>' \
   -H 'Content-Type: application/json' \
   -d '{"termId": "1", "agents": {"司": "consulting", "和田": "working", "麗美": "working"}}'
 
 # 1 人だけ更新（agent + state のマージ）
 curl -s -X POST http://127.0.0.1:13847/api/agentroom \
+  -H 'Authorization: Bearer <アクセストークン>' \
   -H 'Content-Type: application/json' \
   -d '{"termId": "1", "agent": "麗美", "state": "idle"}'
 ```

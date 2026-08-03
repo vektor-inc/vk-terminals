@@ -629,3 +629,55 @@ button.k.kill.is-locked:active { background: #6b3f3f; border-color: #7c4a4a; }
   padding-bottom: max(18px, env(safe-area-inset-bottom)); color: var(--muted);
   font-size: 11px; line-height: 1.4; text-align: center; }
 #app-version-footer.show { display: block; }
+
+/* ==========================================================================
+   認証切れ表示（issue #313）
+   ========================================================================== */
+/* 画面全体を覆い、古いターミナル一覧を残さない（JS 側で他要素も hidden にする）。 */
+#auth-expired {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 16px;
+  background: var(--bg);
+}
+#auth-expired[hidden] { display: none; }
+.auth-expired-box {
+  max-width: 360px;
+  padding: 20px 18px;
+  background: var(--card);
+  border: 1px solid var(--card-border);
+  border-radius: 12px;
+  text-align: center;
+}
+.auth-expired-box h2 {
+  margin: 0 0 12px;
+  font-size: 16px;
+  color: var(--fg);
+}
+.auth-expired-box p {
+  margin: 0 0 10px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--fg);
+}
+.auth-expired-box p:last-of-type { margin-bottom: 16px; }
+#auth-expired-reload {
+  min-height: 44px;
+  padding: 8px 18px;
+  border: 1px solid var(--card-border);
+  border-radius: 8px;
+  background: #21262d;
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+#auth-expired-reload:focus-visible {
+  outline: 2px solid #58a6ff;
+  outline-offset: 2px;
+}

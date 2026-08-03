@@ -587,6 +587,17 @@ test('normalizeSettingsTabContent: status は既知の apiServer source だけ�
   ]);
 });
 
+test('normalizeSettingsTabContent: apiTokenPanel はプロパティを持たず素通しする（issue #313）', () => {
+  assert.deepEqual(normalizeSettingsTabContent([
+    { type: 'apiTokenPanel' },
+    // トークン本体等の秘密情報をディスクリプタに紛れ込ませても無視する。
+    { type: 'apiTokenPanel', token: 'leaked-should-be-ignored' },
+  ]), [
+    { type: 'apiTokenPanel' },
+    { type: 'apiTokenPanel' },
+  ]);
+});
+
 test('normalizeSettingsTabContent: tabLink の field は実在するキーだけ採用する', () => {
   const options = {
     tabIds: ['general'],

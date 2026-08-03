@@ -43,8 +43,19 @@ const {
   describeTargetPaths,
   isValidSettingsDescriptor,
   saveSettingsToTargets,
+  readJsonObject,
 } = require('./settingsTargets');
 const { buildBuiltinSettingsDescriptor } = require('./settingsSchema');
+// HTTP API のアクセストークン認証（issue #313）。トークン生成・timing-safe 比較・
+// 認証要否判定・Cookie 組み立ては utils/apiAuth.js に切り出し、単体テストしやすくしてある。
+const {
+  generateApiToken,
+  shouldRequireAuth,
+  isAuthorizedRequest,
+  buildAuthCookieHeader,
+  isAuthExemptPath,
+  evaluateTokenRegistration,
+} = require('./utils/apiAuth');
 const execFileAsync = promisify(execFile);
 
 let win;
@@ -511,6 +522,19 @@ const API_PORT = (() => {
   return Number.isInteger(raw) && raw >= 1 && raw <= 65535 ? raw : 13847;
 })();
 
+// ─── アクセストークン（issue #313）────────────────────────────────────────────
+// 初回起動時に暗号論的に安全な乱数でトークンを生成し、config.json の apiToken へ
+// 保存する（利用者に安全な文字列を考えさせない）。永続化に失敗した場合はメモリ上
+// だけの一時トークンで起動する（この場合、次回起動でトークンが変わり、登録済みの
+// 端末はすべて再登録が必要になる。apiHost が 127.0.0.1 のまま＝認証不要な状態なら
+// 実害が無いため、警告ログのみでそのまま起動する）。
+// ensureApiToken / persistApiToken は resolveOwnConfigTargetPath 定義の直後にある
+// （関数宣言は巻き上げられるため、定義位置がここより下でも呼び出せる）。
+let { token: API_TOKEN, persisted: apiTokenPersisted } = ensureApiToken();
+if (!apiTokenPersisted) {
+  console.warn(`${LOG_PREFIX} Failed to persist API token to config.json. Using an in-memory token for this session only; it will change (and re-registration will be required on mobile) after the next restart.`);
+}
+
 function normalizeApiHost(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : '127.0.0.1';
 }
@@ -885,6 +909,56 @@ function resolveOwnConfigTargetPath() {
   return path.join(__dirname, 'config.json');
 }
 
+// アクセストークン（issue #313）を config.json の apiToken へ書き込む。
+// 既存の atomicWriteJsonFile（settingsTargets.js）は「既存ファイルの権限を引き継ぐ」
+// 実装のため、既に緩い権限（例: 0644）で config.json が存在する環境だとトークンが
+// そのまま緩い権限で保存されてしまう。トークンはパスワード相当の秘密情報のため、
+// この書き込み経路だけは既存権限を無視し、明示的に 0600（所有者のみ読み書き可）を
+// 強制する。
+// @param {string} token 書き込むアクセストークン
+// @returns {boolean} 書き込みに成功したか
+function persistApiToken(token) {
+  const targetPath = resolveOwnConfigTargetPath();
+  try {
+    const config = readJsonObject(targetPath);
+    config.apiToken = token;
+    const dir = path.dirname(targetPath);
+    fs.mkdirSync(dir, { recursive: true });
+    const tmpPath = path.join(dir, `.${path.basename(targetPath)}.${process.pid}.${Date.now()}.token.tmp`);
+    fs.writeFileSync(tmpPath, JSON.stringify(config, null, 2) + '\n', { mode: 0o600 });
+    fs.chmodSync(tmpPath, 0o600); // umask の影響を受けないよう明示的に付け直す
+    fs.renameSync(tmpPath, targetPath);
+    fs.chmodSync(targetPath, 0o600); // rename 後の最終ファイルにも念のため明示適用
+    return true;
+  } catch (e) {
+    console.error(`${LOG_PREFIX} Failed to persist API token: ${targetPath}`, e);
+    return false;
+  }
+}
+
+// 起動時にアクセストークンを確保する。既に config.json に apiToken があればそれを
+// 使い続け（再起動のたびに変わると登録済み端末が全部使えなくなるため）、無ければ
+// 新規生成して保存する。
+// @returns {{ token: string, persisted: boolean }} persisted は「今回・過去いずれかの
+//   保存に成功しているか」（既存トークンの読み込みは常に persisted:true 扱い）
+function ensureApiToken() {
+  const targetPath = resolveOwnConfigTargetPath();
+  let existing = '';
+  try {
+    const config = readJsonObject(targetPath);
+    if (typeof config.apiToken === 'string' && config.apiToken.trim()) {
+      existing = config.apiToken.trim();
+    }
+  } catch (e) {
+    console.error(`${LOG_PREFIX} Failed to read existing API token: ${targetPath}`, e);
+  }
+  if (existing) return { token: existing, persisted: true };
+
+  const token = generateApiToken();
+  const persisted = persistApiToken(token);
+  return { token, persisted };
+}
+
 // env 未指定（スタンドアロン起動）時に使う組み込みディスクリプタ。静的な項目定義は
 // settings-schema.json に置き、実行時に決まる targetPath だけをここで合成する。
 function builtinSettingsDescriptor() {
@@ -959,6 +1033,46 @@ ipcMain.handle('settings:save', (event, incoming) => {
   if (!descriptor) return { ok: false, error: '設定ディスクリプタが見つかりません' };
 
   return saveSettingsToTargets(descriptor, incoming);
+});
+
+// ─── アクセストークン（issue #313）: 設定パネルからの表示・再発行 ─────────────
+// トークン自体は apiToken フィールドとして settings-schema.json の group/field には
+// 載せない（generic な field 保存経路に乗せると、マスク表示中の値をそのまま
+// settings:save で書き戻して破壊する事故になりうるため）。表示・再発行専用の
+// IPC を用意し、renderer 側は必要になった時だけ呼ぶ（既定で伏せておくため）。
+
+// 現在の待ち受けアドレスを元に、スマホの初回登録用 URL のベースを組み立てる。
+// 実際に bind できたアドレス（apiServerRuntimeStatus.actualHost）を優先し、
+// 未確定なら設定値、それも無ければ 127.0.0.1 にフォールバックする。
+function currentApiBaseUrl() {
+  const actualHost = apiServerRuntimeStatus && apiServerRuntimeStatus.actualHost;
+  const host = (typeof actualHost === 'string' && actualHost) || normalizeApiHost(loadUserConfig().apiHost);
+  return `http://${host}:${API_PORT}`;
+}
+
+// トークン本体と、トークン込みの初回登録用 URL（GET /?token=... 形式）をまとめて返す。
+// 「表示」「初回登録用の URL を表示」ボタン押下時にだけ呼ばれる想定（既定で伏せるため）。
+ipcMain.handle('settings:api-token-info', () => ({
+  token: API_TOKEN,
+  registrationUrl: `${currentApiBaseUrl()}/?token=${encodeURIComponent(API_TOKEN)}`,
+}));
+
+// トークンを再発行する。登録済みの端末（Cookie）はすべて無効になる（個別無効化は
+// できない仕様）。永続化に失敗した場合は既存トークンを維持したまま失敗を返す
+// （再発行の失敗で現在使えている認証まで壊さないため）。
+ipcMain.handle('settings:reissue-api-token', () => {
+  const newToken = generateApiToken();
+  const persisted = persistApiToken(newToken);
+  if (!persisted) {
+    return { ok: false, error: 'トークンの保存に失敗しました（ディスク容量や権限をご確認ください）。既存のトークンは維持されています。' };
+  }
+  API_TOKEN = newToken;
+  apiTokenPersisted = true;
+  return {
+    ok: true,
+    token: newToken,
+    registrationUrl: `${currentApiBaseUrl()}/?token=${encodeURIComponent(newToken)}`,
+  };
 });
 
 // ─── renderer 向けの shell / clipboard 中継（issue #268） ─────────────────────
@@ -1241,6 +1355,12 @@ ipcMain.on('terminal:report-states', (event, states) => {
 
 // ─── HTTP API ────────────────────────────────────────────────────────────────
 function startHttpApi() {
+  // 「認証を必ず要求する」設定（issue #313）。tailscale serve --bg のように apiHost が
+  // 127.0.0.1 のまま外部（tailnet）へ公開されるケースに対応するためのオプトイン。
+  // 他の設定同様「保存後、次回の起動から反映」なので、起動時に一度だけ読めばよい
+  // （毎リクエストで config.json を同期読みするのを避ける）。
+  const requireAuthAlways = !!loadUserConfig().apiRequireAuthAlways;
+
   // ブラウザ起点の cross-origin リクエストを弾く CSRF 対策。
   //   Origin ヘッダはブラウザが cross-origin の POST 等で必ず送る。同一オリジンの
   //   モバイルページや、curl 等の非ブラウザクライアント（Origin なし）は素通りさせ、
@@ -1288,11 +1408,47 @@ function startHttpApi() {
   httpServer = http.createServer((req, res) => {
     const url = new URL(req.url, `http://127.0.0.1:${API_PORT}`);
 
-    // GET /api/health
-    if (req.method === 'GET' && url.pathname === '/api/health') {
+    // GET /api/health（認証不要。ヘルスチェック用途のため唯一の例外）
+    if (isAuthExemptPath(req.method, url.pathname)) {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(buildHealthResponse(INSTANCE_ID)));
       return;
+    }
+
+    // GET /?token=<トークン>（issue #313・スマホ初回登録経路）
+    //   トークン付きの初回登録用 URL を開いたときだけの特別経路。以下の認証ゲートより
+    //   前に分岐する必要がある（このリクエスト自体はまだ Cookie を持っていないため）。
+    //   正しいトークンなら Cookie を発行し、トークンを取り除いた `/` へリダイレクトする
+    //   （ブックマーク・履歴にトークンが残らないようにするため）。
+    if (req.method === 'GET' && url.pathname === '/' && url.searchParams.has('token')) {
+      const providedToken = url.searchParams.get('token') || '';
+      const registration = evaluateTokenRegistration(providedToken, API_TOKEN);
+      if (registration.authorized) {
+        res.setHeader('Set-Cookie', buildAuthCookieHeader(API_TOKEN));
+        res.writeHead(302, { Location: registration.redirectLocation });
+        res.end();
+      } else {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'unauthorized' }));
+      }
+      return;
+    }
+
+    // ─── 認証ゲート（issue #313）───────────────────────────────────────────────
+    //   /api/health 以外の全リクエストを対象に、入口のここ 1 か所だけで認証を確認する。
+    //   ルートごとに同じチェックをコピーすると、新しい API を追加した時に入れ忘れる
+    //   事故が起きるため（既存の CSRF 対策 isForbiddenOrigin が実際にそうなっている）、
+    //   認証はここへ集約する。判定は「設定ファイルの値」ではなく「実際に待ち受けに
+    //   成功したアドレス」（apiServerRuntimeStatus.actualHost）で行う（issue #313 必須条件）。
+    if (shouldRequireAuth({ actualHost: apiServerRuntimeStatus.actualHost, requireAlways: requireAuthAlways })) {
+      if (!isAuthorizedRequest(req, API_TOKEN)) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'unauthorized' }));
+        return;
+      }
+      // 認証成功のたびに Cookie の有効期限を付け直す（ローリング更新・365日）。
+      // Authorization ヘッダ経由（curl 等）で通った場合も無害なので条件分けしない。
+      res.setHeader('Set-Cookie', buildAuthCookieHeader(API_TOKEN));
     }
 
     // GET /  — スマホ等から状態確認・応答するモバイルページ

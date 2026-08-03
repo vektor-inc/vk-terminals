@@ -1,5 +1,7 @@
 # Changelog
 
+## 1.52.0
+
 - [ 機能追加 ] `POST /api/new-pane` で新規ペインを開くとき、そのペインで起動する Claude Code のモデルを呼び出し側から指定できる `model` を追加（[#310](https://github.com/vektor-inc/vk-terminals/issues/310)）
 
 ## 1.51.0

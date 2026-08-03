@@ -9,6 +9,7 @@ const http = require('http');
 const crypto = require('crypto');
 const { execFile } = require('child_process');
 const { promisify } = require('util');
+const { pathToFileURL } = require('url');
 const { stripAnsiForPattern } = require('./utils/stripAnsi');
 // 宣言的ウィジェット（tasks-widget.json）契約の共有ロジック（#229 / vk-orchestrator#182）。
 // タスクのドメイン語彙（遷移マトリクス・ラベル・優先度など）はこのプロセスに持たず、
@@ -756,6 +757,68 @@ async function checkAndUpdate() {
   }
 }
 
+// ─── renderer 起動時リソースの解決（issue #268 → #323） ───────────────────────
+// xterm 実体の絶対パス・xterm.css の中身・エージェントルームのスプライト SVG は、
+// 以前は preload.js が fs / require.resolve で直接解決していた。sandbox: true では
+// preload から Node のファイル読み取りが使えなくなるため、この解決は main プロセス側で
+// 行い、renderer へは IPC（invoke）で渡す（ipcMain.handle('app:get-xterm-resources') /
+// ('app:get-agent-room-sprites')。呼び出し元は renderer/bootstrap.js）。
+
+// require.resolve で絶対パスを取り、file:// URL にして renderer へ渡す。
+// renderer からは相対パスで辿れない（vk-terminals が npm 依存として上位の
+// node_modules へホイストされた構成だと 404 になる）ため、解決はここで行う。
+function resolveScriptUrl(request) {
+  try {
+    return pathToFileURL(require.resolve(request)).href;
+  } catch (e) {
+    console.error(`${LOG_PREFIX} failed to resolve ${request}`, e);
+    return '';
+  }
+}
+
+function readXtermCss() {
+  try {
+    return fs.readFileSync(require.resolve('@xterm/xterm/css/xterm.css'), 'utf8');
+  } catch (e) {
+    // 読み込み失敗時もアプリ自体は起動させる（従来の <link> 404 と同等の状態に留める）。
+    console.error(`${LOG_PREFIX} xterm.css の読み込みに失敗しました`, e);
+    return '';
+  }
+}
+
+// エージェントルーム（issue #58）のドット絵スプライト。renderer/sprites/*.svg は
+// アプリ同梱の静的ファイルだが、renderer からは fs で読めないのでここで読んで渡す。
+// 読めなかったものは載せない（renderer/agentRoom.js が手続き生成へフォールバックする）。
+function readAgentRoomSprites() {
+  const dir = path.join(__dirname, 'renderer', 'sprites');
+  const sprites = {};
+  let files = [];
+  try {
+    files = fs.readdirSync(dir);
+  } catch (_e) {
+    return sprites;
+  }
+  for (const file of files) {
+    if (!file.endsWith('.svg')) continue;
+    try {
+      sprites[file] = fs.readFileSync(path.join(dir, file), 'utf8');
+    } catch (_e) { /* 読めないものは黙って落とす */ }
+  }
+  return sprites;
+}
+
+// renderer/bootstrap.js が起動時に await して使う。読み込み順は bootstrap.js 側が保証する
+//（xterm → addon-fit → xterm.css → app.js）。
+ipcMain.handle('app:get-xterm-resources', () => ({
+  scriptUrls: [
+    resolveScriptUrl('@xterm/xterm/lib/xterm.js'),
+    resolveScriptUrl('@xterm/addon-fit/lib/addon-fit.js'),
+  ].filter(Boolean),
+  css: readXtermCss(),
+}));
+
+ipcMain.handle('app:get-agent-room-sprites', () => readAgentRoomSprites());
+
 function createWindow() {
   const { workAreaSize } = screen.getPrimaryDisplay();
   const winW = Math.min(1400, workAreaSize.width);
@@ -785,13 +848,11 @@ function createWindow() {
       // 表示処理のどこか 1 箇所でエスケープが漏れても任意コード実行に至らないようにするため。
       nodeIntegration: false,
       contextIsolation: true,
-      // sandbox は明示的に無効化する。Electron 20 以降 renderer は既定でサンドボックス化
-      // され、preload から Node の require が使えなくなる。preload は fs / require.resolve で
-      // xterm の実体と xterm.css を解決する必要があるため無効にする
-      //（なぜ相対パスで済ませられないかは preload.js / renderer/bootstrap.js の冒頭コメント）。
-      // renderer 自体は nodeIntegration: false + contextIsolation: true のままなので、
-      // 「renderer から Node へ触れない」という防御は sandbox の有無に依らず成立する。
-      sandbox: false,
+      // sandbox は明示指定しない。Electron 20 以降の既定（true）のまま使う（issue #323）。
+      // 以前は preload が fs / require.resolve で xterm 実体と xterm.css を直接解決して
+      // おり、sandbox: true にすると preload から Node の require が使えず解決できなかった。
+      // 現在はその解決を main プロセス側（本ファイルの ipcMain.handle('app:get-xterm-resources')
+      // 等）へ移し、preload は IPC 経由で受け取るだけにしたため、sandbox を有効にできる。
       preload: path.join(__dirname, 'preload.js'),
       // ウィンドウがオクルード（背面/最小化）状態になっても renderer のタイマーを
       // 間引かせない。スマホ等から監視している間 Mac 側ウィンドウは背面になりがちで、

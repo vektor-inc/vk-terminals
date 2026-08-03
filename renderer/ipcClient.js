@@ -38,7 +38,7 @@
     writeText: (text) => bridge.clipboard.writeText(text),
   };
 
-  // エージェントルーム（issue #58）のスプライト SVG。renderer から fs が使えないため
-  // preload が読んだ中身をそのまま渡す。renderer/agentRoom.js が参照する。
-  root.VKAgentRoomSprites = bridge.agentRoomSprites || {};
+  // エージェントルーム（issue #58）のスプライト SVG（window.VKAgentRoomSprites）は
+  // main への問い合わせが非同期（invoke）になったため（issue #323）、ここでは
+  // 同期に置かず renderer/bootstrap.js の boot() が app.js 読み込み前に配置する。
 })(window);

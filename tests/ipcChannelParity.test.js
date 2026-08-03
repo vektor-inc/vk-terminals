@@ -23,8 +23,12 @@ const mainSource = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8'
 const preloadSource = fs.readFileSync(path.join(__dirname, '..', 'preload.js'), 'utf8');
 
 // main.js が ipcMain.handle(...) で登録している全チャンネル名。
+// クォートはシングル/ダブル/バッククォートのいずれでも拾う（このリポジトリには
+// ESLint 設定が無く、クォートの書き方が機械的に強制されていないため、シングル
+// クォート決め打ちだと書き方が違うハンドラを黙って抽出漏れする・issue #313 レビュー
+// 対応・修正-2）。
 function extractHandleChannels(source) {
-  return [...source.matchAll(/ipcMain\.handle\(\s*'([^']+)'/g)].map((m) => m[1]);
+  return [...source.matchAll(/ipcMain\.handle\(\s*['"`]([^'"`]+)['"`]/g)].map((m) => m[1]);
 }
 
 // preload.js の `const INVOKE_CHANNELS = new Set([...])` から要素を抽出する。
@@ -41,18 +45,36 @@ test('前提: main.js から ipcMain.handle のチャンネルを抽出できる
   assert.ok(channels.length > 0, 'ipcMain.handle の抽出结果が空。正規表現がずれている可能性がある');
 });
 
-test('main.js の ipcMain.handle チャンネルはすべて preload.js のどこかに文字列として現れる', () => {
-  // 「INVOKE_CHANNELS に載っている」だけでなく、shell:open-external /
-  // clipboard:write-text のように専用ラッパー（contextBridge 経由の shell.openExternal /
-  // clipboard.writeText）で直接 ipcRenderer.invoke(channel, ...) しているチャンネルも
-  // 正当に許可されているため、判定は「preload.js のソースにチャンネル名の文字列
-  // リテラルが存在するか」で行う（INVOKE_CHANNELS への内包を強制しない）。
+test('前提: ipcMain.handle( の出現回数と抽出できたチャンネル数が一致する（issue #313 レビュー対応・修正-2）', () => {
+  // クォートを 3 種とも許容しても、抽出できなかった 1 件だけが漏れるケースは
+  // 「件数 > 0」だけでは検出できない。ipcMain.handle( の出現回数そのものと突き合わせ、
+  // クォートの書き方が想定外で 1 件でも抽出漏れがあれば気付けるようにする。
+  const occurrences = (mainSource.match(/ipcMain\.handle\(/g) || []).length;
+  const channels = extractHandleChannels(mainSource);
+  assert.equal(
+    channels.length,
+    occurrences,
+    'ipcMain.handle の一部を抽出できていない（クォートの書き方が違う可能性）'
+  );
+});
+
+// contextBridge の専用ラッパー（shell.openExternal / clipboard.writeText）が
+// INVOKE_CHANNELS を経由せず直接 ipcRenderer.invoke(channel, ...) している分だけは、
+// この 2 件に限定して明示的に除外する（issue #313 レビュー対応・修正-1）。
+const WRAPPER_CHANNELS = new Set(['shell:open-external', 'clipboard:write-text']);
+
+test('main.js の ipcMain.handle チャンネルは INVOKE_CHANNELS（または専用ラッパー）で必ず呼び出し可能', () => {
+  // 「preload.js のどこかに文字列として現れるか」で判定すると、間違った許可リスト
+  // （例: SEND_CHANNELS）に紛れ込んだ場合を検出できない（重大-1 と同じ形の事故）。
+  // INVOKE_CHANNELS への内包で判定し、専用ラッパー経由の 2 件だけを名指しで除外する。
   const handleChannels = extractHandleChannels(mainSource);
-  const missing = handleChannels.filter((channel) => !preloadSource.includes(`'${channel}'`));
+  const invokeChannels = extractInvokeChannels(preloadSource) || [];
+  const allowed = new Set([...invokeChannels, ...WRAPPER_CHANNELS]);
+  const missing = handleChannels.filter((channel) => !allowed.has(channel));
   assert.deepEqual(
     missing,
     [],
-    `preload.js のどこにも現れないチャンネル（renderer から呼べない）: ${missing.join(', ')}`
+    `INVOKE_CHANNELS にも専用ラッパーにも無いチャンネル（renderer から呼べない）: ${missing.join(', ')}`
   );
 });
 

@@ -929,6 +929,18 @@ function resolveOwnConfigTargetPath() {
 //     {appDir} が書き込めないパッケージ化環境で毎起動トークンが変わる事故も防ぐ。
 // 設定パネルの保存経路が使う resolveOwnConfigTargetPath() 自体は変更しない
 // （このトークン専用の解決とは独立させ、既存の保存挙動に影響させないため）。
+//
+// 【既知の残存リスク（PR #315 安藤のセキュリティレビュー指摘・コメントのみ対応）】
+// この 2 つの解決は候補リストが非対称（こちらは後方互換の
+// ~/.claude/terminals-config.json も候補に含むが、resolveOwnConfigTargetPath() は
+// 含まない）。そのため、レガシーファイルだけが存在する環境で設定パネルから保存すると
+// {appDir}/config.json が新規作成され、次回起動時の resolveTokenConfigPath() は
+// 優先順位（DATA_DIR → appDir → legacy）どおりその新しい {appDir}/config.json を
+// 選ぶ。そこには apiToken が無いため ensureApiToken() が新トークンを発行し、
+// 登録済みの端末が全部無効になる（個別無効化はできない仕様なので再登録が必要になる）。
+// 影響は可用性（再登録の手間）のみでトークン漏えい等のセキュリティ上の実害はなく、
+// レガシーパスだけが存在する状態自体がまれなため、今回は解決の対称化はスコープ外と
+// している（対称化すると resolveOwnConfigTargetPath() 側の既存の保存挙動を変えてしまう）。
 function resolveTokenConfigPath() {
   const candidates = userConfigCandidatePaths();
   for (const configPath of candidates) {
@@ -1109,6 +1121,16 @@ ipcMain.handle('settings:api-token-info', () => ({
 // トークンを再発行する。登録済みの端末（Cookie）はすべて無効になる（個別無効化は
 // できない仕様）。永続化に失敗した場合は既存トークンを維持したまま失敗を返す
 // （再発行の失敗で現在使えている認証まで壊さないため）。
+//
+// 【既知の残存リスク（PR #315 安藤のセキュリティレビュー指摘・コメントのみ対応）】
+// persistApiToken() は対象ファイルを丸ごと読み → apiToken だけ書き換え → 丸ごと
+// 書き戻す実装で、settings:save（設定パネルの保存）も同じファイルに対して同様の
+// 読み→書きを行う。この 2 つが短い間隔で両方走ると、後から書き込んだ方が先に
+// 書き込んだ方の変更を丸ごと上書きする（例: 再発行の直後に設定パネルの保存が
+// 走ると、再発行で書いた新トークンが古いトークンへ巻き戻る）。ファイルロックや
+// 楽観的並行制御を入れていないのは、両方ともユーザー本人の単一セッションからの
+// 操作であり、影響は可用性（一方の変更が消える・再登録が要る）にとどまり、
+// トークン漏えい等のセキュリティ上の実害はないため。今回のスコープでは対応しない。
 ipcMain.handle('settings:reissue-api-token', () => {
   const newToken = generateApiToken();
   const persisted = persistApiToken(newToken);
@@ -1462,12 +1484,15 @@ function startHttpApi() {
   httpServer = http.createServer((req, res) => {
     const url = new URL(req.url, `http://127.0.0.1:${API_PORT}`);
 
-    // GET /?token=<トークン>（issue #313・スマホ初回登録経路）
+    // GET /?token=<トークン> または GET /index.html?token=<トークン>
+    // （issue #313・スマホ初回登録経路）
     //   トークン付きの初回登録用 URL を開いたときだけの特別経路。以下の認証ゲートより
     //   前に分岐する必要がある（このリクエスト自体はまだ Cookie を持っていないため）。
     //   正しいトークンなら Cookie を発行し、トークンを取り除いた `/` へリダイレクトする
-    //   （ブックマーク・履歴にトークンが残らないようにするため）。
-    if (req.method === 'GET' && url.pathname === '/' && url.searchParams.has('token')) {
+    //   （ブックマーク・履歴にトークンが残らないようにするため）。`/index.html` も
+    //   同じ経路として扱わないと、そちらで開かれた場合に登録が成立せず、アドレスバーに
+    //   トークンが残ったままになってしまう（PR #315 レビュー指摘）。
+    if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html') && url.searchParams.has('token')) {
       const providedToken = url.searchParams.get('token') || '';
       const registration = evaluateTokenRegistration(providedToken, API_TOKEN);
       if (registration.authorized) {

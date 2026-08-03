@@ -14,6 +14,7 @@ const {
   parseCookieHeader,
   extractTokenFromRequest,
   isAuthorizedRequest,
+  deriveCookieToken,
   buildAuthCookieHeader,
   isAuthExemptPath,
   evaluateTokenRegistration,
@@ -193,11 +194,44 @@ test('isAuthorizedRequest: expectedToken が空・未設定なら常に false', 
 test('buildAuthCookieHeader: HttpOnly / SameSite=Strict / 365日を含む', () => {
   const token = generateApiToken();
   const header = buildAuthCookieHeader(token);
-  assert.match(header, new RegExp(`^${AUTH_COOKIE_NAME}=${token}; `));
   assert.match(header, /HttpOnly/);
   assert.match(header, /SameSite=Strict/);
   assert.match(header, new RegExp(`Max-Age=${AUTH_COOKIE_MAX_AGE_SECONDS}\\b`));
   assert.equal(AUTH_COOKIE_MAX_AGE_SECONDS, 60 * 60 * 24 * 365);
+});
+
+// Cookie はポートを区別しない（RFC 6265）ため、apiHost を Tailscale IP にすると
+// 同じホストの別ポートで動く別サービスへもブラウザが Cookie を送ってしまう。
+// トークン本体をそのまま Cookie に載せないための導出値化（PR #315 安藤のセキュリティ
+// レビュー指摘・必須-5）を、値そのもので検証する。
+test('buildAuthCookieHeader: Cookie の値はトークン本体ではなく、deriveCookieToken の導出値', () => {
+  const token = generateApiToken();
+  const header = buildAuthCookieHeader(token);
+  const derived = deriveCookieToken(token);
+  assert.match(header, new RegExp(`^${AUTH_COOKIE_NAME}=${derived}; `));
+  assert.doesNotMatch(header, new RegExp(`^${AUTH_COOKIE_NAME}=${token}(;|$)`));
+});
+
+test('deriveCookieToken: 同じトークンからは常に同じ値、異なるトークンからは異なる値', () => {
+  const tokenA = generateApiToken();
+  const tokenB = generateApiToken();
+  assert.equal(deriveCookieToken(tokenA), deriveCookieToken(tokenA));
+  assert.notEqual(deriveCookieToken(tokenA), deriveCookieToken(tokenB));
+  // トークン本体（64文字16進）とは異なる文字列であること（同一視できないことの確認）。
+  assert.notEqual(deriveCookieToken(tokenA), tokenA);
+});
+
+test('isAuthorizedRequest: Cookie に導出値（deriveCookieToken）を積んでも true', () => {
+  const token = generateApiToken();
+  const req = { headers: { cookie: `${AUTH_COOKIE_NAME}=${deriveCookieToken(token)}` } };
+  assert.equal(isAuthorizedRequest(req, token), true);
+});
+
+test('isAuthorizedRequest: 別トークンの導出値では false（誤ったトークンの導出値を偽装されても通らない）', () => {
+  const token = generateApiToken();
+  const otherToken = generateApiToken();
+  const req = { headers: { cookie: `${AUTH_COOKIE_NAME}=${deriveCookieToken(otherToken)}` } };
+  assert.equal(isAuthorizedRequest(req, token), false);
 });
 
 test('isAuthExemptPath: GET /api/health は true', () => {

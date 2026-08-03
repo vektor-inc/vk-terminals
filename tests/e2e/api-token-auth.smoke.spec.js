@@ -43,6 +43,13 @@ test.describe.serial('HTTP API のアクセストークン認証（issue #313）
     token = config.apiToken;
     expect(typeof token, `config.json に apiToken が無い: ${raw}`).toBe('string');
     expect(token.length).toBe(64);
+
+    // persistApiToken（main.js）が明示的に 0600（所有者のみ読み書き可）を強制する
+    // 実装になっている（issue #313 レビュー対応・中-4 の対応時）が、これまで
+    // どのテストも実際のファイル権限を確認していなかった（PR #315 安藤のセキュリティ
+    // レビュー指摘・必須-8）。トークンはパスワード相当の秘密情報のため、ここで担保する。
+    const mode = fs.statSync(configPath).mode & 0o777;
+    expect(mode, `config.json の権限が 0600 でない: ${mode.toString(8)}`).toBe(0o600);
   });
 
   test.afterAll(async () => {
@@ -79,6 +86,25 @@ test.describe.serial('HTTP API のアクセストークン認証（issue #313）
     expect(setCookie).toBeTruthy();
     expect(setCookie).toContain('HttpOnly');
     expect(setCookie).toContain('SameSite=Strict');
+    // Cookie の値はトークン本体ではなく導出値（PR #315 レビュー指摘・必須-5）。
+    // ポートを区別しない Cookie の性質上、トークン本体をそのまま載せると、
+    // 同じホストの別ポートで動く別サービスへ平文で漏れうるため。
+    expect(setCookie.startsWith(`vk_terminals_token=${token};`)).toBe(false);
+  });
+
+  // 初回登録経路は `/` だけでなく `/index.html?token=...` で開かれた場合も成立する
+  // 必要がある（PR #315 レビュー指摘・必須-6）。ここが抜けると、登録が成立せず
+  // アドレスバーにトークンが残ったままになる。
+  test('4-2. GET /index.html?token=<正しいトークン> も 302 + Set-Cookie を返す', async () => {
+    const res = await fetch(`http://127.0.0.1:${apiPort}/index.html?token=${token}`, {
+      redirect: 'manual',
+    });
+    expect(res.status).toBe(302);
+    const location = res.headers.get('location');
+    expect(location).toBe('/');
+    expect(location.includes(token)).toBe(false);
+    const setCookie = res.headers.get('set-cookie');
+    expect(setCookie).toBeTruthy();
   });
 
   test('5. GET /api/health は認証なしで 200', async () => {

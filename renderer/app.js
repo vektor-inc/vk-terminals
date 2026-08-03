@@ -29,7 +29,10 @@ const { normalizeConfirmClose, shouldConfirmClose } = window.VKCloseConfirm;
 // （shouldRequireAuth）が同じループバック定義を参照するための共有モジュール
 // （issue #313 レビュー対応・PR #315 指摘。旧実装は '127.0.0.1' の完全一致だけを
 // 見ており、::1 / ::ffff:127.0.0.1 で誤った警告を出していた）。
-const { isLoopbackHost } = window.VKLoopbackHost;
+// isLoopbackDisplayValue は画面の即時案内専用（'localhost' も loopback 扱いにする）。
+// 認証要否の実判定（shouldRequireAuth）に使う isLoopbackHost 自体には 'localhost' を
+// 足していないので、ここでは案内専用の関数だけを使う（PR #315 安藤のレビュー指摘）。
+const { isLoopbackDisplayValue } = window.VKLoopbackHost;
 const { isSafeHttpUrl } = window.VKUrlSafety;
 // 宣言的ウィジェット（tasks-widget.json）の契約・共有描画（#229 / vk-orchestrator#182）。
 // タスクの語彙・色・遷移・確認文言は自前に持たず、orchestrator が書き出す宣言だけを描画する。
@@ -3373,14 +3376,19 @@ function setupUsageBadge() {
 
 // apiHost の入力値から、その場で出す認証関連の案内を判定する（issue #313）。
 // 保存・再起動を待たずにその場で気づけるようにするための即時フィードバック。
-// null を返した場合は案内なし（ループバックアドレスまたは未入力）。
-// ループバック判定は utils/apiAuth.js（shouldRequireAuth）が実際の認証要否を
-// 決めるのに使う isLoopbackHost と共有している（PR #315 レビュー対応）。
-// '127.0.0.1' の完全一致だけで判定すると、::1 や ::ffff:127.0.0.1 のように
-// 実際には認証不要な値に対しても「認証が必須になります」と誤って案内してしまう。
+// null を返した場合は案内なし（ループバックアドレス・'localhost'・未入力）。
+// isLoopbackDisplayValue は utils/apiAuth.js（shouldRequireAuth）が実際の認証要否を
+// 決めるのに使う isLoopbackHost をベースに、画面の即時案内だけ 'localhost' も
+// loopback 扱いに広げたもの（PR #315 レビュー対応）。'127.0.0.1' の完全一致だけで
+// 判定すると、::1 や ::ffff:127.0.0.1 のように実際には認証不要な値に対しても
+// 「認証が必須になります」と誤って案内してしまう。'localhost' も同様で、
+// 127.0.0.1 より自然に入力されやすいぶん、誤案内を見た利用者が「もう保護されて
+// いる」と誤認したまま tailscale serve 公開時に apiRequireAuthAlways を有効化し
+// 忘れる実害につながるため、案内側だけは isLoopbackHost より広く判定する
+// （安藤のセキュリティレビュー指摘）。
 function getApiHostAuthNotice(rawValue) {
   const value = typeof rawValue === 'string' ? rawValue.trim() : '';
-  if (!value || isLoopbackHost(value)) return null;
+  if (!value || isLoopbackDisplayValue(value)) return null;
   if (value === '0.0.0.0') {
     return {
       tone: 'warning',

@@ -45,7 +45,32 @@ function isLoopbackHost(host) {
   return !!(mapped && IPV4_LOOPBACK_PATTERN.test(mapped[1]));
 }
 
+// renderer/app.js の apiHost 入力欄が出す即時案内だけで使う判定（PR #315 安藤の
+// セキュリティレビュー指摘）。'localhost' は IP リテラルではないため isLoopbackHost()
+// では拾えないが、'127.0.0.1' より自然に入力されやすい文字列でもある。画面側が
+// 「認証が必須になります」と誤案内すると、利用者が「もう保護されている」と誤認した
+// まま tailscale serve 公開時に apiRequireAuthAlways を有効化し忘れる実害につながる
+// （画面は必須と言うが実際は不要、という危険な方向にだけ倒れるズレ）。
+//
+// isLoopbackHost() 自体には 'localhost' を足さない。あちらは main.js が実際に bind
+// したアドレス（IP リテラル）だけを受け取る前提で、shouldRequireAuth() の判定に
+// 直結する。名前を loopback 扱いする条件を isLoopbackHost() に混ぜると、認証ゲート
+// 側の判定まで緩んでしまう。
+/**
+ * apiHost 入力欄の即時案内用に、`value` が「実質的にループバック」とみなせるかを判定する。
+ * 認証要否の判定（shouldRequireAuth）には使わないこと。
+ * @param {string} value
+ * @returns {boolean}
+ */
+function isLoopbackDisplayValue(value) {
+  const trimmed = typeof value === 'string' ? value.trim() : '';
+  if (!trimmed) return false;
+  if (trimmed.toLowerCase() === 'localhost') return true;
+  return isLoopbackHost(trimmed);
+}
+
 return {
   isLoopbackHost,
+  isLoopbackDisplayValue,
 };
 });

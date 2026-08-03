@@ -144,28 +144,50 @@ function extractTokenFromRequest(req) {
   return { token: '', source: 'none' };
 }
 
+// Cookie に載せる値は、トークン本体ではなくここから導出した値にする（PR #315
+// 安藤のセキュリティレビュー指摘・必須-5）。Cookie はポートを区別しない
+// （RFC 6265）ため、apiHost を Tailscale IP にしてスマホを登録すると、ブラウザは
+// `vk_terminals_token=<値>` をそのホスト全体（他のポートで動く別サービスも含む）に
+// 対して送ってしまう。トークン本体をそのまま Cookie に載せていると、同じマシンの
+// 別ポートで動く何らかの HTTP サービスへ、登録済みスマホがアクセスしただけで
+// トークン本体を平文で渡してしまい、受け取り側のログからそのまま
+// `Authorization: Bearer` に使える値が読める。派生値なら、それが漏れても
+// トークン本体（画面に表示され AirDrop 等で運ばれるマスター値）は分からない。
+// HMAC の鍵にトークン本体を使うことで、この派生値からトークン本体を逆算できない
+// ようにしている。'cookie-v1' は用途を固定するためのドメイン分離用文字列で、
+// 将来 Cookie 以外の派生値が必要になった場合に別の文字列を使えば値が衝突しない。
+function deriveCookieToken(apiToken) {
+  return crypto.createHmac('sha256', apiToken).update('cookie-v1').digest('hex');
+}
+
 /**
  * リクエストが正しいトークンを提示しているか判定する（timing-safe）。
+ * トークン本体（Authorization ヘッダ経由で送られる想定）と、Cookie 用に導出した
+ * 値（deriveCookieToken）のどちらでも通す。Cookie にはトークン本体ではなく
+ * 導出値だけを載せる設計（buildAuthCookieHeader）にしたため、Cookie 経由で送られて
+ * くるのは導出値である。
  * @param {import('http').IncomingMessage} req
- * @param {string} expectedToken 現在有効なアクセストークン
+ * @param {string} expectedToken 現在有効なアクセストークン（本体）
  * @returns {boolean}
  */
 function isAuthorizedRequest(req, expectedToken) {
   if (typeof expectedToken !== 'string' || !expectedToken) return false;
   const { token } = extractTokenFromRequest(req);
   if (!token) return false;
-  return timingSafeEqualStrings(token, expectedToken);
+  if (timingSafeEqualStrings(token, expectedToken)) return true;
+  return timingSafeEqualStrings(token, deriveCookieToken(expectedToken));
 }
 
 /**
  * 認証 Cookie の `Set-Cookie` ヘッダ値を組み立てる。
  * HttpOnly・SameSite=Strict を付け、有効期限は 365 日（呼び出す都度、この関数を
- * 使って付け直すことでローリング更新になる）。
- * @param {string} token
+ * 使って付け直すことでローリング更新になる）。値はトークン本体ではなく
+ * deriveCookieToken() で導出した値にする（PR #315 レビュー指摘・上の解説を参照）。
+ * @param {string} token 現在有効なアクセストークン（本体）
  * @returns {string}
  */
 function buildAuthCookieHeader(token) {
-  const encoded = encodeURIComponent(token);
+  const encoded = encodeURIComponent(deriveCookieToken(token));
   return `${AUTH_COOKIE_NAME}=${encoded}; Max-Age=${AUTH_COOKIE_MAX_AGE_SECONDS}; Path=/; HttpOnly; SameSite=Strict`;
 }
 
@@ -235,6 +257,7 @@ module.exports = {
   parseCookieHeader,
   extractTokenFromRequest,
   isAuthorizedRequest,
+  deriveCookieToken,
   buildAuthCookieHeader,
   isAuthExemptPath,
   evaluateTokenRegistration,

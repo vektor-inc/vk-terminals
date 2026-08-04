@@ -49,6 +49,20 @@ test.describe.serial('renderer の隔離（issue #268）', () => {
     });
   });
 
+  // この PR（issue #323）の主目的そのものの回帰チェック。上の 2 テストは preload が
+  // 見せる API の形と IPC の疎通しか確かめておらず、renderer が nodeIntegration: false /
+  // contextIsolation: true で保護されていても、main.js の webPreferences に
+  // sandbox: false を書き戻すだけで OS レベルのサンドボックスは無効化できてしまう
+  // （それでも他のテストは緑のまま通る）。ここでは実際に起動した webContents の
+  // webPreferences を直接読み、sandbox が有効なままであることを固定する。
+  test('renderer の webContents は OS レベルのサンドボックス（sandbox: true）で動いている', async () => {
+    const sandboxed = await app.evaluate(({ BrowserWindow }) => {
+      const target = BrowserWindow.getAllWindows()[0];
+      return target.webContents.getLastWebPreferences().sandbox;
+    });
+    expect(sandboxed).toBe(true);
+  });
+
   test('preload が渡すのは名前を付けた API だけで、生の ipcRenderer は渡らない', async () => {
     const shape = await win.evaluate(() => ({
       bridgeKeys: Object.keys(window.vkBridge).sort(),
@@ -317,8 +331,8 @@ test('xterm を読み込めないときは無言の空画面にせず、理由�
     await expect(launched.win.locator('#sidebar')).toBeAttached();
     await expect(launched.win.locator('.boot-error')).toHaveCount(0);
 
-    // xterm 本体の読み込みだけを落とす。preload の require.resolve は成功させたまま
-    // <script> の取得を失敗させることで、loadScript が reject する経路を通す。
+    // xterm 本体の読み込みだけを落とす。main の require.resolve（app:get-xterm-resources）は
+    // 成功させたまま <script> の取得を失敗させることで、loadScript が reject する経路を通す。
     await launched.app.evaluate(({ session, BrowserWindow }) => {
       session.defaultSession.webRequest.onBeforeRequest(
         { urls: ['*://*/*', 'file://*', 'file:///*'] },

@@ -3,10 +3,10 @@
 <head>
   <meta charset="UTF-8">
   <title>VK Terminals</title>
-  <!-- xterm.css は相対パス <link> では読み込まない（preload が読んだ中身を bootstrap.js が
-       <style> として注入する）。npm 依存としてインストールされた場合、依存が上位の
-       node_modules へホイストされて相対パスが 404 になるため
-       （詳細は renderer/bootstrap.js の冒頭コメントを参照）。 -->
+  <!-- xterm.css は相対パス <link> では読み込まない（main プロセスが読んだ中身を
+       bootstrap.js が IPC で受け取り <style> として注入する）。npm 依存として
+       インストールされた場合、依存が上位の node_modules へホイストされて相対パスが
+       404 になるため（詳細は renderer/bootstrap.js の冒頭コメントを参照）。 -->
   <link rel="stylesheet" href="shared.css">
   <link rel="stylesheet" href="style.css">
 </head>
@@ -56,7 +56,7 @@
   <script src="settingsTabs.js"></script>
 
   <!-- xterm（UMD）と xterm.css を読み込んでから app.js を読み込む。実体のパスは
-       preload が require.resolve で解決する（相対パスが使えない事情は bootstrap.js 参照）。 -->
+       main プロセスが require.resolve で解決する（相対パスが使えない事情は bootstrap.js 参照）。 -->
   <script src="bootstrap.js"></script>
 </body>
 </html>

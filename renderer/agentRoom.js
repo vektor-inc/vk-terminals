@@ -25,8 +25,8 @@
 })(typeof self !== 'undefined' ? self : this, function () {
 
 // fs / path は Node（main.js・テスト）でだけ使える。renderer では nodeIntegration が
-// 無効なので存在せず、スプライト SVG は preload が読んだものを受け取る（後述の
-// readSpriteFile を参照）。
+// 無効なので存在せず、スプライト SVG は main プロセスが読んで IPC で渡したものを
+// bootstrap.js 経由で受け取る（後述の readSpriteFile を参照）。
 const nodeRequire = (typeof require === 'function') ? require : null;
 const fs = nodeRequire ? nodeRequire('fs') : null;
 const path = nodeRequire ? nodeRequire('path') : null;
@@ -61,8 +61,9 @@ const SPRITE_FILES = {
 const _spriteCache = {};
 // スプライト SVG の中身を取り出す。
 //   - Node（main.js / ユニットテスト）: renderer/sprites/*.svg を fs で読む
-//   - renderer: fs が無いので、preload が読んで window.VKAgentRoomSprites に置いた
-//     ファイル名 → SVG 文字列のマップから取る（issue #268）
+//   - renderer: fs が無いので、main プロセスが読んで IPC で渡したものを
+//     renderer/bootstrap.js が window.VKAgentRoomSprites に置いた、ファイル名 → SVG
+//     文字列のマップから取る（issue #268 / #323）
 // どちらでも得られなければ null を返し、呼び出し側が手続き生成へフォールバックする。
 function readSpriteFile(file) {
   if (fs && path) {

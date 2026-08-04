@@ -10,9 +10,19 @@ const { closeApp, getFreePort, launchApp } = require('./helpers/electron-app');
 // 返すが、renderer 側はそれを無視して何も表示していなかった。
 //
 // ここでは shell.openExternal を main プロセス側で失敗させ（既存の「openExternal は
-// http(s) 以外を開かない」テストと同じ手口）、#root に常設される汎用トーストが
-// 正しい文言・role・aria 属性で表示されること、コピー操作で本文が差し替わること、
-// フォーカスを奪わないこと、同時発生時に積み上がらないことを確認する。
+// http(s) 以外を開かない」テストと同じ手口）、document.body 直下に常設される汎用
+// トーストが正しい文言・role・aria 属性で表示されること、コピー操作で本文が差し替わる
+// こと、フォーカスを奪わないこと、同時発生時に積み上がらないことを確認する。
+//
+// 加えて、安藤（リードエンジニア）のレビューで実機再現された 2 つの実害の回帰テスト
+// も持つ（トーストを #root 直下ではなく document.body 直下へ置く理由そのもの）。
+//   - 高1: #root は render() が root.replaceChildren() で子を丸ごと差し替えるため、
+//     #root の内側にトーストを置くとペイン追加・移動・格納のたびに DOM から外れ、
+//     以後アプリ再起動まで二度と表示されなくなる。
+//   - 高2: #root は position: fixed で独自の重なり文脈を作るため、内側の要素は
+//     document.body 直下の設定モーダル・確認ダイアログより前面に出られない。さらに
+//     モーダル表示中は focusTrap.js の applyInert が #root へ inert を付けるため、
+//     内側のトーストは操作不可・支援技術からも除外される。
 //
 // PR バッジ（.pane-task-title-pr）を発火点に選ぶ理由: openExternalUrlSafe() の
 // 5 箇所の呼び出し元のうち、HTTP API（/api/set-title）だけで実 URL 付きの状態を
@@ -74,6 +84,20 @@ async function restoreShellOpenExternal(app) {
   });
 }
 
+// 特定の URL だけ失敗させ、それ以外は成功させる（中: 直前の失敗トーストが残ったまま
+// 別のリンクが成功したときの回帰テスト用）。
+async function stubShellOpenExternalSelective(app, failingUrl) {
+  await app.evaluate(({ shell }, url) => {
+    if (!globalThis.__origOpenExternal) globalThis.__origOpenExternal = shell.openExternal;
+    globalThis.__openExternalCalls = globalThis.__openExternalCalls || [];
+    shell.openExternal = async (u) => {
+      globalThis.__openExternalCalls.push(u);
+      if (u === url) throw new Error('stubbed shell.openExternal failure');
+      // それ以外（成功させたい URL）は実際に OS のブラウザは開かせない。
+    };
+  }, failingUrl);
+}
+
 // クリップボードの成否は main プロセス側の clipboard.writeText を差し替えて制御する
 // （settings-mobile-guide-tab.smoke.spec.js と同じ手口。renderer からは electron の
 // clipboard を直接触れないため、実際に書き込むのは main の
@@ -133,10 +157,13 @@ test.describe.serial('外部ブラウザを開けなかったときのトース�
       await prBadge.click();
 
       // main まで実際に届いたことを確認したうえで、成功時は画面に何も出ないことを見る。
+      // toBeHidden() は「存在しない」「存在するが非表示」のどちらも合格にする
+      // （このテストは describe.serial の 1 番目なのでまだ DOM に無いはずだが、
+      // トーストの生成タイミング（遅延生成かどうか）に依存しない判定にしておく）。
       await expect
         .poll(() => app.evaluate(() => (globalThis.__openExternalCalls || []).length))
         .toBeGreaterThan(0);
-      await expect(win.locator('.vk-toast')).toHaveCount(0);
+      await expect(win.locator('.vk-toast')).toBeHidden();
     } finally {
       await restoreShellOpenExternal(app);
     }
@@ -228,6 +255,131 @@ test.describe.serial('外部ブラウザを開けなかったときのトース�
     } finally {
       await restoreShellOpenExternal(app);
       await restoreClipboardWrite(app);
+    }
+  });
+
+  // ─── 中: 直前の失敗トーストが残ったまま、別のリンクが成功するとコピー対象がずれる ───
+  // 安藤レビュー指摘。openExternalUrlSafe() が成功時（true 解決時）に表示中のトーストを
+  // 消すようになったことの回帰テスト。「成功時に新たなトーストを出さない」方針自体は
+  // 変えていないので、ここでは「消えること」だけを見る。
+  test('別のリンクが成功すると、表示中の失敗トーストが消える', async () => {
+    const succeedingUrl = `http://127.0.0.1:${port}/?pr=326-succeed`;
+    await stubShellOpenExternalSelective(app, prUrl); // prUrl だけ失敗、succeedingUrl は成功
+    try {
+      const prBadge = win.locator('.pane .pane-task-title-pr').first();
+
+      // ① リンク A（prUrl）が失敗しトースト表示。
+      await postSetTitle(port, { termId: '1', title: 'issue #326 中: 失敗A', prUrl });
+      await prBadge.click();
+      await expect(win.locator('.vk-toast')).toBeVisible();
+      await expect(win.locator('.vk-toast .vk-toast-message')).toHaveText('ブラウザを開けませんでした');
+
+      // ② 別のリンク B（succeedingUrl）を開いて成功させる。
+      await postSetTitle(port, { termId: '1', title: 'issue #326 中: 成功B', prUrl: succeedingUrl });
+      await prBadge.click();
+
+      // main まで実際に succeedingUrl が届いたことを確認したうえで、トーストが
+      // 消えていること（「ブラウザを開けませんでした」が A のまま残ってコピー対象が
+      // ずれる、を再発させないこと）を見る。
+      await expect
+        .poll(() => app.evaluate(
+          (url) => (globalThis.__openExternalCalls || []).includes(url),
+          succeedingUrl
+        ))
+        .toBe(true);
+      await expect(win.locator('.vk-toast')).toBeHidden();
+    } finally {
+      await restoreShellOpenExternal(app);
+    }
+  });
+
+  // ─── 高1: ペインを追加すると、以後トーストが二度と出なくなる ───────────────────
+  // 安藤レビュー指摘・実機再現済み。render()（renderer/app.js）が #root の子を
+  // root.replaceChildren() で丸ごと差し替えるため、#root の直下にトーストを置くと
+  // ペイン追加のたびに DOM から外れ、ensureExternalUrlToast() のキャッシュ短絡が
+  // 切り離し済みノードをそのまま返すため以後二度と表示されなくなっていた。
+  // トーストを document.body 直下へ移すことの回帰テスト。
+  //
+  // .first() ではなく PR バッジの title 属性（= prUrl）で狙い撃ちする。ペイン追加後は
+  // 画面上に PR バッジが 2 つになりうり、DOM 順が termId "1" のペインと一致する保証が
+  // 無いため。
+  test('ペインを追加した後（render() の再構築後）も、トーストは再び表示される', async () => {
+    await stubShellOpenExternal(app, { fail: true });
+    try {
+      const prBadge = win.locator(`.pane-task-title-pr[title="${prUrl}"]`).first();
+      await postSetTitle(port, { termId: '1', title: 'issue #326 ペイン追加前', prUrl });
+      await expect(prBadge).toBeVisible();
+      await prBadge.click();
+      await expect(win.locator('.vk-toast')).toBeVisible();
+
+      // ペインを追加する（render() が #root の子を丸ごと差し替える経路を踏む）。
+      await win.locator('.pane-header .btn-split').first().click();
+      await expect(win.locator('.pane')).toHaveCount(2);
+
+      // 同じリンクをもう一度失敗させる。#root の外（document.body 直下）にあれば、
+      // ペイン追加の影響を受けずに再表示できるはず。
+      await postSetTitle(port, { termId: '1', title: 'issue #326 ペイン追加後', prUrl });
+      await prBadge.click();
+      await expect(win.locator('.vk-toast')).toBeVisible();
+      await expect(win.locator('.vk-toast .vk-toast-message')).toHaveText('ブラウザを開けませんでした');
+    } finally {
+      await restoreShellOpenExternal(app);
+    }
+  });
+
+  // ─── 高2: z-index 2200 が効いておらず、設定モーダル表示中はトーストが見えず操作もできない ───
+  // 安藤レビュー指摘・実機再現済み（{"rootInert":true,"toastInsideInertRoot":true,...}）。
+  // #root は position: fixed で独自の重なり文脈を作るため、内側のトーストは
+  // document.body 直下の .settings-overlay（2000）より前面に出られない。さらに
+  // モーダル表示中は focusTrap.js の applyInert が #root へ inert を付けるため、
+  // 内側のトーストは操作不可・支援技術からも除外される。
+  //
+  // 実機の再現条件（#root が既にモーダルより前に存在した状態で inert が付く）を
+  // 忠実に再現するため、先にペイン外の失敗でトースト DOM を常設させてから設定
+  // モーダルを開く（focusTrap.js の applyInert はトラップの活性化時にしか body 直下を
+  // 走査しないため、モーダルを開いた「後」に初めてトーストを作るケースでは、そもそも
+  // この経路を通らない）。
+  test('設定モーダル表示中でも説明リンクの失敗が見え、コピーボタンを押せる（inert にならない）', async () => {
+    await stubShellOpenExternal(app, { fail: true });
+    await stubClipboardWrite(app);
+    try {
+      const prBadge = win.locator(`.pane-task-title-pr[title="${prUrl}"]`).first();
+      await postSetTitle(port, { termId: '1', title: 'issue #326 モーダル前の失敗', prUrl });
+      await prBadge.click();
+      await expect(win.locator('.vk-toast')).toBeVisible();
+
+      // 設定モーダルを開く（ここで focusTrap.js の applyInert が body 直下の子を
+      // 走査する。.vk-toast-layer に data-vk-inert-exempt が無ければ inert が付く）。
+      await win.evaluate(() => window.openSettingsModal());
+      await win.waitForSelector('.settings-modal', { state: 'visible' });
+      await win.waitForSelector('.settings-tabs', { state: 'visible' });
+
+      const layerInert = await win.evaluate(() => {
+        const layer = document.querySelector('.vk-toast-layer');
+        return layer ? layer.inert : null;
+      });
+      expect(layerInert).toBe(false);
+
+      // 「外出先から確認」タブ（#settings-tab-1）の説明リンクを失敗させる
+      // （settings-mobile-guide-tab.smoke.spec.js が同じタブ・同じセレクタで検証済み）。
+      await win.locator('#settings-tab-1').click();
+      const link = win.locator('#settings-panel-1 .settings-content-link').first();
+      await expect(link).toBeVisible();
+      await link.click();
+
+      const toast = win.locator('.vk-toast');
+      await expect(toast).toBeVisible();
+      await expect(toast.locator('.vk-toast-message')).toHaveText('ブラウザを開けませんでした');
+
+      // 実際にコピーボタンを押せる（inert なら click() の効果が中の要素へ届かない）。
+      await toast.locator('.vk-toast-copy').click();
+      await expect(toast.locator('.vk-toast-message')).toHaveText('URLをコピーしました');
+    } finally {
+      await restoreShellOpenExternal(app);
+      await restoreClipboardWrite(app);
+      const closeBtn = win.locator('.settings-close');
+      if (await closeBtn.count()) await closeBtn.click().catch(() => {});
+      await win.waitForSelector('.settings-modal', { state: 'detached' }).catch(() => {});
     }
   });
 });

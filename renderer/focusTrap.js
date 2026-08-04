@@ -19,6 +19,14 @@
 //    実害は無い。将来ここへ操作できる要素を足す場合は、この経路が抜け道になる
 //    （Tab はキー操作側のトラップが拾うので循環からは漏れないが、inert は当たらない）。
 //
+// 例外: `data-vk-inert-exempt` 属性を持つ body 直下の子要素は、モーダルより後ろへ
+// 無効化しない（issue #326）。汎用トースト（renderer/app.js の .vk-toast-layer）が
+// これに当たる。トーストは設定モーダル内の説明リンクが失敗したときにこそ見える必要が
+// あり、他のモーダルより手前（z-index 2200）に置く方針のため、inert で操作不可に
+// なると本末転倒になる。既存の「トラップ中に追加された要素は inert にならない」抜け道
+// とは別に、**トーストは先に作られてから後でモーダルが開くケースもある**（一度でも
+// 失敗すればトーストの DOM は常設され続けるため）ので、明示的な除外を設けている。
+//
 // 解除関数は escapeLayer.js と同じく「閉じる処理の最初の方で呼ぶ」前提。inert が残ったまま
 // では復帰先へ focus() しても空振りするため、フォーカスを戻すより前に必ず呼ぶこと。
 //
@@ -118,6 +126,9 @@ function createFocusTrapStack(documentRef) {
       // 最前面のモーダル自身と、その祖先は対象外。祖先へ付けると中まで無効になる。
       if (child === trap.container) continue;
       if (typeof child.contains === 'function' && child.contains(trap.container)) continue;
+      // data-vk-inert-exempt を持つ要素は対象外（issue #326。汎用トーストなど、
+      // モーダルより手前に置いてどのモーダル表示中でも操作できる必要がある要素向け）。
+      if (typeof child.hasAttribute === 'function' && child.hasAttribute('data-vk-inert-exempt')) continue;
       inertBackup.set(child, child.inert);
       child.inert = true;
     }

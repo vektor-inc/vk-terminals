@@ -1005,18 +1005,32 @@ h4.settings-content-heading {
 }
 
 /* ─── 汎用トースト（issue #326）───────────────────────────────────────────────
- * 外部ブラウザを開けなかったときなど、一時的な失敗を知らせる。#root 直下に 1 つだけ
- * 常設し、呼び出し箇所ごとに吹き出しを出す方式は採らない（ペインを閉じても発生源ごと
- * 消えない・狭いペイン幅でもはみ出さないようにするため）。
+ * 外部ブラウザを開けなかったときなど、一時的な失敗を知らせる。document.body 直下
+ * （#root の外）に 1 つだけ常設し、呼び出し箇所ごとに吹き出しを出す方式は採らない
+ * （ペインを閉じても発生源ごと消えない・狭いペイン幅でもはみ出さないようにするため）。
+ * #root の外に置く理由は renderer/app.js のトースト実装コメントを参照（render() の
+ * root.replaceChildren() で DOM から外れる／#root の重なり文脈に閉じ込められて
+ * モーダルより前面に出られない、の 2 点。安藤レビュー指摘・issue #326）。
+ *
  * z-index は設定モーダル（2000）・閉じる確認ダイアログ .confirm-overlay（2100）より
  * 上に置く。設定モーダル内の説明リンクからも失敗しうるため、モーダル表示中でも
  * 見える必要がある。枠色はエラー系トーン（.boot-error と同じ #f85149）、
- * 地の配色は情報系トーン（.settings-inline-notice と同じ #161b22 / #c9d1d9）に揃える。 */
-.vk-toast {
+ * 地の配色は情報系トーン（.settings-inline-notice と同じ #161b22 / #c9d1d9）に揃える。
+ *
+ * .vk-toast-layer（外側・pointer-events: none）と .vk-toast（内側・pointer-events:
+ * auto）を分けているのは、document.body 直下だと確認ダイアログ（.confirm-overlay /
+ * .confirm-modal）より前面に来るため。外側を pointer-events: none にして、実際に
+ * 見える箱（.vk-toast）だけへ pointer-events: auto を戻すことで、トーストの表示
+ * 領域以外がダイアログのクリックを吸わないようにする（安藤レビュー指摘・高）。 */
+.vk-toast-layer {
   position: fixed;
   bottom: 16px;
   right: 16px;
   z-index: 2200;
+  pointer-events: none;
+}
+.vk-toast {
+  pointer-events: auto;
   max-width: 320px;
   padding: 10px 12px;
   border-radius: var(--vktm--border-radius--md);

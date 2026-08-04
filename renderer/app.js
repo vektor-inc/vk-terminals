@@ -622,17 +622,44 @@ function isSafeExternalUrl(url) {
 }
 
 // ─── 汎用トースト（issue #326） ───────────────────────────────────────────────
-// 外部ブラウザを開けなかったときの失敗フィードバック。#root 直下に 1 つだけ常設し、
-// 呼び出し箇所（サイドバーメニュー／タスクリスト／ペインのタイトル・PR バッジ／
-// 設定モーダルの説明リンク）ごとに吹き出しを出さない。ペインを閉じても発生源ごと
-// 消えず、狭いペイン幅ではみ出す心配もない構造にするため（植草の方針）。
+// 外部ブラウザを開けなかったときの失敗フィードバック。document.body 直下（#root の
+// 外）に 1 つだけ常設し、呼び出し箇所（サイドバーメニュー／タスクリスト／ペインの
+// タイトル・PR バッジ／設定モーダルの説明リンク）ごとに吹き出しを出さない。
+//
+// #root の外（document.body 直下）に置く理由（安藤レビュー指摘・issue #326）:
+//   - render()（下記）は #root の子を root.replaceChildren() で丸ごと差し替える。
+//     #root の内側にトーストを置くと、ペイン追加・移動・格納のたびに DOM から
+//     外れる。ensureExternalUrlToast() のキャッシュ短絡がそのまま切り離し済み
+//     ノードを返すため、以後アプリを再起動するまで二度と表示されなくなる。
+//   - #root は position: fixed で独自の重なり文脈を作るため、内側の要素は
+//     document.body 直下の設定モーダル（.settings-overlay, z-index 2000）・
+//     閉じる確認ダイアログ（.confirm-overlay, z-index 2100）より前面に出られない。
+//     さらにモーダル表示中は renderer/focusTrap.js の applyInert が #root（body
+//     直下の子）へ inert を付けるため、内側のトーストは操作不可・支援技術からも
+//     除外される。設定モーダル内の説明リンクが失敗したときにこそ見える必要が
+//     あるので、これでは本末転倒になる。
+// body 直下へ挿入する分、focusTrap.js 側にも「この要素は inert の対象から除外する」
+// 仕組み（data-vk-inert-exempt 属性）を追加している（同ファイル参照）。
+//
+// 挿入位置は body の先頭（#root より前）にする。#root の内側はペイン数に応じて
+// 無数の Tab 停止点があり、末尾に置くとクリックした場所によっては Tab で辿り着く
+// までの距離が非常に長くなる（植草レビュー指摘）。DOM 順で先頭に固定することで、
+// 少なくとも「ページ先頭から」の距離を一定に保つ（クリック位置からの距離そのものを
+// 短縮する手段は、出現時にフォーカスを奪わない制約の中では無い）。
+//
 // 成功時は何も出さない（ブラウザが実際に開くこと自体がフィードバックのため）。
-let externalUrlToastEl = null;
+let externalUrlToastLayerEl = null; // document.body 直下へ挿入する外側コンテナ（pointer-events: none）
+let externalUrlToastEl = null; // 実際に見える箱（pointer-events: auto）。中身の差し替えはこちらへ行う
 let externalUrlToastDismissTimer = null;
 let externalUrlToastCopyUrl = '';
-// トーストにポインタが乗っている・トースト内にフォーカスがある間は自動消去しない
-// （キーボードでコピーボタンへ辿り着く前に消えないようにするため）。
-let externalUrlToastHoldOpen = false;
+// ホバー中・フォーカス中は自動消去しない（キーボードでコピーボタンへ辿り着く前に
+// 消えないようにするため）。要求仕様は「ホバー中 OR フォーカス中」の論理和なので、
+// 単一フラグの後勝ちにせず 2 つを別々に持つ。片方だけが終わってももう片方が続いて
+// いれば保持し続ける（安藤レビュー指摘・高3。単一フラグだと、ホバーしたまま Tab で
+// コピーボタンへ移った後にポインタだけ外へ動かすと、フォーカスが残っているのに
+// 保持が解けてタイマーが再開してしまっていた）。
+let externalUrlToastHovered = false;
+let externalUrlToastFocusWithin = false;
 const EXTERNAL_URL_TOAST_AUTO_DISMISS_MS = 5000;
 const EXTERNAL_URL_TOAST_FAILED_MESSAGE = 'ブラウザを開けませんでした';
 const EXTERNAL_URL_TOAST_COPY_LABEL = 'URLをコピー';
@@ -647,10 +674,16 @@ function clearExternalUrlToastTimer() {
   }
 }
 
-// ホバー・フォーカス中でなければ 5 秒後に自動で閉じるタイマーを（再）セットする。
-function scheduleExternalUrlToastDismiss() {
+function externalUrlToastShouldHoldOpen() {
+  return externalUrlToastHovered || externalUrlToastFocusWithin;
+}
+
+// 「保持すべきか（ホバー中 OR フォーカス中）」をそのつど再評価し、保持すべきでなければ
+// 5 秒後に自動で閉じるタイマーを（再）セットする。イベントハンドラ側は状態フラグを
+// 更新したあと必ずこれを呼ぶ。
+function reconsiderExternalUrlToastTimer() {
   clearExternalUrlToastTimer();
-  if (externalUrlToastHoldOpen) return;
+  if (externalUrlToastShouldHoldOpen()) return;
   externalUrlToastDismissTimer = setTimeout(() => {
     hideExternalUrlToast();
   }, EXTERNAL_URL_TOAST_AUTO_DISMISS_MS);
@@ -660,6 +693,13 @@ function hideExternalUrlToast() {
   clearExternalUrlToastTimer();
   if (externalUrlToastEl) externalUrlToastEl.hidden = true;
   externalUrlToastCopyUrl = '';
+  // 非表示にする瞬間、ポインタがまだ乗っている／フォーカスが中にある状態でも
+  // mouseleave / focusout が必ず飛んでくるとは限らない（display:none 化や、成功時に
+  // 別経路から hideExternalUrlToast() を呼ぶケース）。フラグを持ち越すと次回表示時に
+  // 自動消去が働かなくなるため、ここで明示的にリセットする
+  // （安藤レビュー指摘・低1）。
+  externalUrlToastHovered = false;
+  externalUrlToastFocusWithin = false;
 }
 
 function setExternalUrlToastMessage(text) {
@@ -668,11 +708,32 @@ function setExternalUrlToastMessage(text) {
   if (messageEl) messageEl.textContent = text;
 }
 
-// #root へ 1 度だけトースト DOM を生やす（以後は使い回す）。
+// document.body へ 1 度だけトースト DOM を生やす（以後は使い回す）。
 function ensureExternalUrlToast() {
-  if (externalUrlToastEl) return externalUrlToastEl;
-  const root = document.getElementById('root');
-  if (!root) return null;
+  // isConnected を見るのは保険（安藤レビュー指摘）。#root の作り替え（render()）は
+  // body 直下のこのノードには触れないため通常は起きないが、万一 body から
+  // 切り離されていた場合に、切り離し済みノードをそのまま返して二度と表示されなく
+  // なる事故を防ぐ。
+  if (externalUrlToastLayerEl && externalUrlToastLayerEl.isConnected) return externalUrlToastEl;
+
+  const body = document.body;
+  if (!body) return null;
+
+  if (externalUrlToastLayerEl) {
+    // 同じノードを付け直すだけにする（中身は保持済みなので作り直さない）。
+    body.insertBefore(externalUrlToastLayerEl, body.firstChild);
+    return externalUrlToastEl;
+  }
+
+  const layer = document.createElement('div');
+  layer.className = 'vk-toast-layer';
+  // document.body 直下だと確認ダイアログ（.confirm-overlay / .confirm-modal）より
+  // 前面に来る（z-index 2200 > 2100）。外側コンテナは pointer-events: none にし、
+  // 実際に見える箱（.vk-toast）だけへ pointer-events: auto を戻すことで、トーストの
+  // 表示領域以外がダイアログのクリックを吸わないようにする（安藤レビュー指摘・高）。
+  // focusTrap.js の applyInert が body 直下の子へ inert を付けて回るため、この要素は
+  // その対象から除外してもらう目印を付ける（同ファイル参照）。
+  layer.setAttribute('data-vk-inert-exempt', '');
 
   const toast = document.createElement('div');
   toast.className = 'vk-toast';
@@ -707,22 +768,30 @@ function ensureExternalUrlToast() {
   });
   toast.appendChild(copyButton);
 
-  const pause = () => {
-    externalUrlToastHoldOpen = true;
-    clearExternalUrlToastTimer();
-  };
-  const resume = (event) => {
+  toast.addEventListener('mouseenter', () => {
+    externalUrlToastHovered = true;
+    reconsiderExternalUrlToastTimer();
+  });
+  toast.addEventListener('mouseleave', () => {
+    externalUrlToastHovered = false;
+    reconsiderExternalUrlToastTimer();
+  });
+  toast.addEventListener('focusin', () => {
+    externalUrlToastFocusWithin = true;
+    reconsiderExternalUrlToastTimer();
+  });
+  toast.addEventListener('focusout', (event) => {
     // フォーカスがトースト内の別要素へ移るだけなら維持する。
-    if (event && event.type === 'focusout' && toast.contains(event.relatedTarget)) return;
-    externalUrlToastHoldOpen = false;
-    scheduleExternalUrlToastDismiss();
-  };
-  toast.addEventListener('mouseenter', pause);
-  toast.addEventListener('mouseleave', resume);
-  toast.addEventListener('focusin', pause);
-  toast.addEventListener('focusout', resume);
+    if (toast.contains(event.relatedTarget)) return;
+    externalUrlToastFocusWithin = false;
+    reconsiderExternalUrlToastTimer();
+  });
 
-  root.appendChild(toast);
+  layer.appendChild(toast);
+  // #root より前（body の先頭）に挿入する（理由は冒頭コメント参照）。
+  body.insertBefore(layer, body.firstChild);
+
+  externalUrlToastLayerEl = layer;
   externalUrlToastEl = toast;
   return toast;
 }
@@ -736,12 +805,15 @@ function showExternalUrlOpenFailedToast(url) {
   externalUrlToastCopyUrl = url;
   setExternalUrlToastMessage(EXTERNAL_URL_TOAST_FAILED_MESSAGE);
   toast.hidden = false;
-  scheduleExternalUrlToastDismiss();
+  reconsiderExternalUrlToastTimer();
 }
 
 // 外部ブラウザで開く処理を共通化したヘルパー。
 // http(s) チェック → preload 経由で main に openExternal を依頼する。
 // 失敗（false 解決 / reject / 同期 throw のいずれか）は汎用トーストで知らせる（issue #326）。
+// 成功時に新たなトーストを出さない方針は変えないが、直前の失敗トーストが表示中の
+// ままだとコピー対象の URL がずれる（開けなかった URL と別の URL が残る）ため、
+// 成功時は表示中のトーストを消す（安藤レビュー指摘・中）。
 // click ハンドラ用に preventDefault / stopPropagation 済みである前提。
 function openExternalUrlSafe(url) {
   if (!isSafeExternalUrl(url)) return;
@@ -751,7 +823,11 @@ function openExternalUrlSafe(url) {
     const p = VKShell.openExternal(url);
     if (p && typeof p.then === 'function') {
       p.then((ok) => {
-        if (ok !== true) showExternalUrlOpenFailedToast(url);
+        if (ok === true) {
+          hideExternalUrlToast();
+        } else {
+          showExternalUrlOpenFailedToast(url);
+        }
       }, () => {
         showExternalUrlOpenFailedToast(url);
       });

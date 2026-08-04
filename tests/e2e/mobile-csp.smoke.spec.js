@@ -40,8 +40,8 @@ test('GET /（mobile.html）は buildMobileCsp() と一致する Content-Securit
     // <meta> 側（renderer/index.html）では frame-ancestors が仕様上無視されるため、
     // ここでしか固定できない。
     expect(csp).toContain("frame-ancestors 'none'");
-    // 注入スクリプト対策の要。default-src 'none' が抜けると、他のディレクティブで
-    // 明示していない資源種別（例: worker-src）が無制限に開いてしまう。
+    // 注入スクリプト対策の要。default-src 'none' が抜けると、default-src 以外に
+    // 受け皿を持たない資源種別（例: media-src / manifest-src）が無制限に開いてしまう。
     expect(csp).toContain("default-src 'none'");
 
     // ヘッダー文字列全体を utils/csp.js の buildMobileCsp() と完全一致させ、

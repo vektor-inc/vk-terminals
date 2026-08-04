@@ -4,7 +4,19 @@
   <meta charset="UTF-8">
   <!-- CSP（issue #324）。通信ヘッダーを付けられない file:// 直読み込みのため <meta> 指定。
        各ディレクティブの根拠は renderer/bootstrap.js 冒頭コメント・main.js の
-       resolveScriptUrl 周辺コメントを参照。値は実測して決めている（推測で緩めない）。 -->
+       resolveScriptUrl 周辺コメントを参照。値は実測して決めている（推測で緩めない）。
+
+       file:// 文書では 'self' は file: スキーム全体にマッチし、アプリ配下のパスには
+       限定されない（xterm 本体・addon-fit をアプリ外の絶対パスから追加許可なしで
+       読み込めているのはこのため）。したがって script-src 'self' が止めているのは
+       「インライン実行」と「file: 以外のオリジンからの読み込み」であり、ローカル
+       ファイルの読み込み自体は制限されない。
+
+       frame-ancestors はここには追加していない。<meta http-equiv> では
+       frame-ancestors（と sandbox・report-uri）は仕様上無視されるため、書いても
+       「効いているつもり」の誤解を生むだけで実効性が無い。HTTP 配信できる
+       renderer/mobile.html 側では main.js のレスポンスヘッダーに持たせている
+       （utils/csp.js の buildMobileCsp）。 -->
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'">
   <title>VK Terminals</title>
   <!-- xterm.css は相対パス <link> では読み込まない（main プロセスが読んだ中身を

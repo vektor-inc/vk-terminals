@@ -67,10 +67,13 @@ test('サイドバーの幅リサイズハンドルは、キーボードフォ�
     expect(style.outlineOffset, '.sidebar-resizer の outline-offset').toBe('-2px');
 
     // box-shadow の inset（内側の線）が重なって描かれている。
-    // computed 値の書式はブラウザ依存のため、色・inset キーワード・広がり 2px の存在で判定する。
-    expect(style.boxShadow, '.sidebar-resizer の box-shadow').toContain('inset');
-    expect(style.boxShadow, '.sidebar-resizer の box-shadow の色').toContain('rgb(88, 166, 255)');
-    expect(style.boxShadow, '.sidebar-resizer の box-shadow の広がり').toContain('2px');
+    // computed 値は Chromium では「色 offset-x offset-y blur spread inset」の順で
+    // 正規化される（実測: "rgb(88, 166, 255) 0px 0px 0px 2px inset"）。toContain('2px') だと
+    // spread と offset-y が入れ替わった別物（例: "0px 2px 0px 0px inset"）でも通ってしまうため、
+    // 各値の位置まで固定した正規表現で判定する。
+    expect(style.boxShadow, '.sidebar-resizer の box-shadow').toMatch(
+      /^rgb\(88, 166, 255\) 0px 0px 0px 2px inset$/
+    );
   } finally {
     await closeApp({ app, tmpRoot });
   }

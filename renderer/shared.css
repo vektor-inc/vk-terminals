@@ -26,10 +26,15 @@
 
 /* 対話部品（button / a / input / select / role="button" 等）は下の網羅指定が拾うため、
    通常は個別に :focus-visible を書く必要が無い。個別に書くのは、網羅指定と違う見せ方が
-   必要な例外のときだけ（.sidebar-resizer / .card-head のように、外向きの枠だと隣の要素や
-   親の overflow: hidden にぶつかる場合）。例外を書くときも値は直書きせず、必ず
-   --vktm--outline--focus-ring / --vktm--outline-offset--focus-ring /
-   --vktm--color--focus-ring のいずれかの変数を参照すること。
+   必要な例外のときだけで、2 種類ある。
+     1. オフセットだけ変える例外（.sidebar-resizer / .card-head / .agent-room-summary /
+        .pane-header .btn）: 外向きの枠だと隣の要素や親の overflow: hidden にぶつかるため、
+        内側オフセットへ個別上書きする。
+     2. 枠自体を出さない例外（.settings-modal / .task-edit-panel）: Tab では止まらない
+        着地点（tabindex="-1"）で、キーボード操作では到達しないため outline: none にする。
+   いずれの例外を書くときも値は直書きせず、必ず --vktm--outline--focus-ring /
+   --vktm--outline-offset--focus-ring / --vktm--color--focus-ring のいずれかの変数を参照すること
+   （2 の outline: none はそもそも値を持たないため対象外）。
    下の :where() は中身の詳細度をゼロとして数えるため、この指定の詳細度は
    :focus-visible 分の (0,1,0) のみ。クラス指定を使う既存の個別指定は詳細度で必ず勝つため
    共存できる。網羅指定を消したり :where() を外したりして詳細度が上がると、既存の個別指定を
@@ -41,8 +46,10 @@
 }
 /* xterm.js が内部で作る .xterm-helper-textarea（IME 用に画面外へ逃がした textarea。
    bootstrap.js の injectXtermCss 参照）も上の textarea セレクタに拾われるが、
-   xterm.css 側の opacity: 0 と left: -9999em で二重に隠されているため実害は無い。
-   xterm.js 側がこの隠し方を変えた場合はここも見直すこと。 */
+   xterm.css 側の opacity: 0 で隠されているため実害は無い（変換中は xterm.js が inline
+   style で left / top / width / height を画面内へ書き換えるが、opacity は触らない。
+   実際に効いている隠蔽はこの 1 本のみ）。xterm.js 側がこの隠し方を変えた場合は
+   ここも見直すこと。 */
 
 /* Tone tokens
    -------------------------------------------------------------------------- */

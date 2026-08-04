@@ -28,6 +28,15 @@ header .meta { font-size: 11px; color: var(--muted); }
 .card-head-meta { display: flex; align-items: center; gap: 8px; flex: none; }
 .card-head-meta .chevron { margin-left: auto; }
 .card-head:active { background: #232830; }
+/* キーボードフォーカス時のリング（shared.css の網羅指定が拾う）は既定で外向きに出る。
+ * .card-head は role="button" tabindex="0" を持つが、親 .card（overflow: hidden +
+ * border-radius、上記参照）の最初の直下要素で、左右上が親の内側の境界にぴったり接している
+ * （.card 側に余白が無いため）。外向きのまま描くと枠の大半が親の overflow: hidden に
+ * 切り取られ、輪郭が途中で欠けた表示になってしまう。.sidebar-resizer と同じ発想で、
+ * ここだけ内側オフセットへ個別上書きする（issue #302）。 */
+.card-head:focus-visible {
+  outline-offset: -2px;
+}
 .chevron { flex: none; display: inline-flex; align-items: center; justify-content: center;
   width: 32px; min-width: 32px; height: 32px; padding: 0; border-radius: 6px;
   border: 1px solid #606c7c; background: #2f353e; color: var(--fg);

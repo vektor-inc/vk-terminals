@@ -5,6 +5,7 @@
 - [ セキュリティ修正 ] 起動時に必要なファイル（xterm 本体・xterm.css・エージェントルームのスプライト）の読み取りをアプリ本体（main プロセス）側へ集約し、画面表示側の OS レベルのサンドボックスを有効化（[#323](https://github.com/vektor-inc/vk-terminals/issues/323)）
 - [ セキュリティ修正 ] 画面表示側に CSP（コンテンツセキュリティポリシー）を設定し、注入されたスクリプトが実行されないこと・外部サイトを iframe で枠内に埋め込めないことを追加で保護。スマホ用ページ（外出先から確認）には、他サイトからの iframe 埋め込みを拒否する設定も追加（[#324](https://github.com/vektor-inc/vk-terminals/issues/324)）
 - [ 開発環境 ] 設定パネル系 e2e のスタブが、保存・設定定義の読み込み以外のやり取りをアプリの実装へ委譲するか選べていた設定（`passthroughOtherChannels`）を廃止。設定定義を差し替えたかどうかで自動的に決まる規則へ統一し、あわせて委譲が必要な spec に「委譲が壊れると検知できる」検証を追加（[#304](https://github.com/vektor-inc/vk-terminals/issues/304)）
+- [ その他 ] クリップボードへコピーしてよい文字数の上限が preload.js と main.js に別々に定義されていたのを、`utils/clipboardLimits.js` の 1 箇所へ集約（表示・動作上の変化なし）（[#325](https://github.com/vektor-inc/vk-terminals/issues/325)）
 
 ## 1.52.0
 

@@ -61,6 +61,10 @@ const {
 } = require('./utils/apiAuth');
 // mobile.html（HTTP 配信）向け CSP ヘッダーの組み立て（issue #324）。
 const { buildMobileCsp } = require('./utils/csp');
+// clipboard へ書き込んでよい文字列の上限（issue #325）。定義はここ（utils/clipboardLimits.js）
+// の 1 箇所のみで、preload.js へは BrowserWindow 生成時に additionalArguments で渡す
+// （理由は utils/clipboardLimits.js のコメントを参照）。
+const { MAX_CLIPBOARD_TEXT_LENGTH, CLIPBOARD_MAX_LENGTH_ARG_PREFIX } = require('./utils/clipboardLimits');
 const execFileAsync = promisify(execFile);
 
 let win;
@@ -856,6 +860,12 @@ function createWindow() {
       // 現在はその解決を main プロセス側（本ファイルの ipcMain.handle('app:get-xterm-resources')
       // 等）へ移し、preload は IPC 経由で受け取るだけにしたため、sandbox を有効にできる。
       preload: path.join(__dirname, 'preload.js'),
+      // clipboard 書き込み上限（issue #325）を preload へ渡す。sandbox: true の preload は
+      // ローカルファイルの相対 require ができず utils/clipboardLimits.js を直接 require
+      // できないため、Electron が公式に用意している「preload へ小さな値を渡す」仕組み
+      // （additionalArguments。渡した文字列は renderer プロセスの process.argv 末尾に
+      // 追加される）で渡す。preload 側はこれを process.argv から読み取る。
+      additionalArguments: [`${CLIPBOARD_MAX_LENGTH_ARG_PREFIX}${MAX_CLIPBOARD_TEXT_LENGTH}`],
       // ウィンドウがオクルード（背面/最小化）状態になっても renderer のタイマーを
       // 間引かせない。スマホ等から監視している間 Mac 側ウィンドウは背面になりがちで、
       // 既定の backgroundThrottling: true だと状態レポート用 setInterval(2s) が約1分に1回まで
@@ -1244,9 +1254,9 @@ ipcMain.on('shell:beep', () => {
   electronShell.beep();
 });
 
-// クリップボードへ書き込む上限。preload 側と同じ値を持ち、preload を経由しない
-// 呼び出しでも青天井にならないようにする。
-const MAX_CLIPBOARD_TEXT_LENGTH = 100000;
+// クリップボードへ書き込む上限（MAX_CLIPBOARD_TEXT_LENGTH はファイル冒頭で
+// utils/clipboardLimits.js から require 済み・issue #325）。preload を経由しない
+// 呼び出しでも青天井にならないようにする最終防衛線。
 
 // 設定パネルのコピーボタン（issue #262 / #266）用。成否を boolean で返す。
 ipcMain.handle('clipboard:write-text', (_event, text) => {

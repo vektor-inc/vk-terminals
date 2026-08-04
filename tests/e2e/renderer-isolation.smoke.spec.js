@@ -1,6 +1,9 @@
 const { test, expect } = require('@playwright/test');
 // 起動〜初期描画待ちは共通ヘルパーへ集約している（issue #263）。
 const { closeApp, getFreePort, launchAppAndWait } = require('./helpers/electron-app');
+// clipboard 上限のリテラル（100000）は utils/clipboardLimits.js の 1 箇所のみに
+// 集約している（issue #325）。テストは Node 側で動くため直接 require できる。
+const { MAX_CLIPBOARD_TEXT_LENGTH } = require('../../utils/clipboardLimits');
 
 // ─── renderer の隔離（issue #268） ────────────────────────────────────────────
 //
@@ -179,13 +182,16 @@ test.describe.serial('renderer の隔離（issue #268）', () => {
       clipboard.writeText = (text) => { globalThis.__written.push(text); };
     });
     try {
-      const returned = await win.evaluate(async () => ({
+      // win.evaluate のコールバックは renderer（ブラウザ）側で実行されるため、Node 側の
+      // クロージャ変数（MAX_CLIPBOARD_TEXT_LENGTH）はそのままでは参照できない。
+      // 第二引数で明示的に値を渡す。
+      const returned = await win.evaluate(async (maxLen) => ({
         ok: await window.VKClipboard.writeText('vk-terminals'),
         empty: await window.VKClipboard.writeText(''),
         // 上限（10 万文字）超過は渡さない。
-        tooLong: await window.VKClipboard.writeText('x'.repeat(100001)),
+        tooLong: await window.VKClipboard.writeText('x'.repeat(maxLen + 1)),
         notString: await window.VKClipboard.writeText(12345),
-      }));
+      }), MAX_CLIPBOARD_TEXT_LENGTH);
       expect(returned).toEqual({ ok: true, empty: false, tooLong: false, notString: false });
       expect(await app.evaluate(() => globalThis.__written)).toEqual(['vk-terminals']);
     } finally {

@@ -1,4 +1,4 @@
-// ─── renderer のブートストラップ（issue #268） ────────────────────────────────
+// ─── renderer のブートストラップ（issue #268 / #323） ─────────────────────────
 //
 // nodeIntegration を切ったので、app.js から xterm を require できなくなった。
 // 代わりに UMD ビルドを <script> で読み込み、window.Terminal / window.FitAddon を
@@ -8,15 +8,24 @@
 //   vk-terminals が npm 依存としてインストールされた場合（例: vk-orchestrator の
 //   node_modules 内から起動）、依存パッケージは上位の node_modules へホイストされ、
 //   自身の node_modules ディレクトリが存在しない。相対パスはそこを遡れず 404 になる。
-//   そのため preload が require.resolve で実体の絶対パス（file:// URL）を解決し、
-//   ここではそれを読み込むだけにしている。xterm.css も同じ理由で <link> ではなく
-//   preload が読んだ中身を <style> として注入する。
+//   そのため main プロセスが require.resolve で実体の絶対パス（file:// URL）を解決し
+//  （main.js の resolveScriptUrl / ipcMain.handle('app:get-xterm-resources')）、
+//   ここでは vkBridge.xterm.getResources() で main へ問い合わせて受け取ったものを
+//   読み込むだけにしている。xterm.css も同じ理由で <link> ではなく main が読んだ
+//   中身を IPC で受け取り <style> として注入する（sandbox 有効化により preload 自体は
+//   fs / require.resolve を使えないため、この解決を main 側へ移してある）。
+//
+// エージェントルーム（issue #58）のスプライト SVG（window.VKAgentRoomSprites）も
+// 同じ理由で main から IPC で受け取る。以前は renderer/ipcClient.js が同期で
+// window へ置いていたが、IPC が非同期（invoke）になったためここで受け取ってから
+// app.js を読み込む（app.js は VKAgentRoomSprites が揃っている前提で読まれる）。
 //
 // 読み込み順は決定的にする必要がある:
 //   1. xterm（window.Terminal）
 //   2. addon-fit（window.FitAddon）— xterm に依存
 //   3. xterm.css を <style> で注入
-//   4. app.js（1〜3 が揃っていることを前提に読み込み時点で参照する）
+//   4. window.VKAgentRoomSprites を main から受け取って配置
+//   5. app.js（1〜4 が揃っていることを前提に読み込み時点で参照する）
 (function () {
   'use strict';
 
@@ -65,8 +74,14 @@
   }
 
   async function boot() {
-    const urls = (bridge && bridge.xterm && bridge.xterm.scriptUrls) || [];
-    // 解決に失敗した URL は preload が落としてくるため、2 本（xterm 本体と addon-fit）
+    // main プロセスへ問い合わせて xterm 本体・addon-fit の file:// URL と
+    // xterm.css の中身を受け取る（issue #323。preload はもう自分で解決しない）。
+    const xtermResources = (bridge && bridge.xterm && typeof bridge.xterm.getResources === 'function')
+      ? await bridge.xterm.getResources()
+      : null;
+
+    const urls = (xtermResources && xtermResources.scriptUrls) || [];
+    // 解決に失敗した URL は main が落としてくるため、2 本（xterm 本体と addon-fit）
     // 揃っていなければ先に失敗させる。空のまま app.js を読むと
     // window.FitAddon.FitAddon で TypeError になり、catch を素通りして
     // 同じ「無言の空画面」になる。
@@ -76,9 +91,23 @@
     // xterm.css も必須扱いにする。欠けても画面は一見動くが、IME 用 textarea が
     // 文書フロー上（ペイン左上）に可視で置かれ、日本語入力の変換候補がそこに出る。
     // 原因の分からない表示不具合として現れるだけなので、ここで明示的に失敗させる。
-    const css = bridge && bridge.xterm ? bridge.xterm.css : '';
+    const css = xtermResources ? xtermResources.css : '';
     if (!css) throw new Error('[vk-terminals] xterm.css を読み込めませんでした');
     injectXtermCss(css);
+
+    // エージェントルーム（issue #58）のスプライト。renderer/agentRoom.js は
+    // window.VKAgentRoomSprites を参照時（描画時）に読むだけなので、app.js を読み込む
+    // 前に揃っていれば順序上は問題ない。取得に失敗しても手続き生成へフォールバック
+    // できる（agentRoom.js 側の仕様）ため、xterm 系と異なりここでは fatal にしない。
+    try {
+      const sprites = (bridge && bridge.agentRoomSprites && typeof bridge.agentRoomSprites.get === 'function')
+        ? await bridge.agentRoomSprites.get()
+        : null;
+      window.VKAgentRoomSprites = sprites || {};
+    } catch (e) {
+      console.error('[vk-terminals] agent room sprites の取得に失敗しました', e);
+      window.VKAgentRoomSprites = {};
+    }
 
     await loadScript('app.js');
   }

@@ -1,4 +1,4 @@
-// ─── preload（issue #268） ────────────────────────────────────────────────────
+// ─── preload（issue #268 / #323） ─────────────────────────────────────────────
 //
 // BrowserWindow を nodeIntegration: false / contextIsolation: true で作るのに合わせ、
 // renderer が必要とする機能だけを contextBridge で「名前を付けた API」として渡す。
@@ -7,21 +7,33 @@
 //       （require('child_process') など）へ到達させない。renderer には Node も
 //       Electron のモジュールも一切見えない状態にし、ここに書いた関数だけを通す。
 //
-// sandbox は既定（false）のまま使う。
-//   このファイルが fs / require.resolve を使って xterm 実体の絶対パスと xterm.css の
-//   中身を解決するため。sandbox: true にすると preload から Node のモジュール解決が
-//   使えなくなり、vk-terminals が npm 依存としてインストールされて依存が上位の
-//   node_modules へホイストされた構成で xterm を見つけられなくなる
-//   （相対パスが使えない事情は renderer/bootstrap.js のコメントを参照）。
-//   preload はアプリ同梱のコードしか実行しないため、ここが Node を持つこと自体は
-//   攻撃面にならない。攻撃面になるのは「renderer から Node へ触れること」であり、
-//   それは contextIsolation + 下記の許可リストで塞いでいる。
+// sandbox は既定（true）のまま使う（issue #323）。
+//   sandbox: true の preload から require できるのは Electron の一部モジュール
+//   （electron 自身が提供する contextBridge / ipcRenderer 等）と一部の Node 組み込み
+//  （events / timers / url など）だけで、fs / path やローカルファイルの相対 require は
+//   使えない。以前はここで fs / require.resolve を使って xterm 実体の絶対パスと
+//   xterm.css の中身を解決していたが、その解決は main プロセス側（main.js の
+//   ipcMain.handle('app:get-xterm-resources') / ('app:get-agent-room-sprites')）へ移し、
+//   ここでは IPC 経由で受け取るだけにした。isSafeHttpUrl も同じ理由で
+//   renderer/urlSafety.js を require せず、このファイル内に直接持たせている
+//  （renderer/urlSafety.js 自体は mobile.html 側や settingsTabs.js 等が引き続き使うため残す）。
 
 const { contextBridge, ipcRenderer } = require('electron');
-const fs = require('fs');
-const path = require('path');
-const { pathToFileURL } = require('url');
-const { isSafeHttpUrl } = require('./renderer/urlSafety');
+
+// renderer/urlSafety.js の isSafeHttpUrl / MAX_SAFE_HTTP_URL_LENGTH と完全に同じ実装。
+// sandbox 下の preload からはローカルファイルの require ができないため複製している
+// （挙動を変えた場合は renderer/urlSafety.js 側にも反映すること）。
+const MAX_SAFE_HTTP_URL_LENGTH = 2048;
+function isSafeHttpUrl(url) {
+  if (typeof url !== 'string' || !url) return false;
+  if (url.length > MAX_SAFE_HTTP_URL_LENGTH) return false;
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch (_e) {
+    return false;
+  }
+}
 
 // ─── チャンネル許可リスト ─────────────────────────────────────────────────────
 // 任意チャンネルを呼べる汎用 invoke/send/on は公開しない。ここに載っていない
@@ -30,6 +42,8 @@ const { isSafeHttpUrl } = require('./renderer/urlSafety');
 // renderer → main（応答あり）
 const INVOKE_CHANNELS = new Set([
   'app:get-config',
+  'app:get-xterm-resources',
+  'app:get-agent-room-sprites',
   'widgets:command',
   'usage:get',
   'codex-usage:get',
@@ -103,49 +117,6 @@ function addListener(channel, listener) {
   };
 }
 
-// ─── xterm の実体解決 ────────────────────────────────────────────────────────
-// require.resolve で絶対パスを取り、file:// URL にして renderer へ渡す。
-// renderer からは相対パスで辿れない（ホイスト時に 404 になる）ため、解決はここで行う。
-function resolveScriptUrl(request) {
-  try {
-    return pathToFileURL(require.resolve(request)).href;
-  } catch (e) {
-    console.error(`[vk-terminals] failed to resolve ${request}`, e);
-    return '';
-  }
-}
-
-function readXtermCss() {
-  try {
-    return fs.readFileSync(require.resolve('@xterm/xterm/css/xterm.css'), 'utf8');
-  } catch (e) {
-    // 読み込み失敗時もアプリ自体は起動させる（従来の <link> 404 と同等の状態に留める）。
-    console.error('[vk-terminals] xterm.css の読み込みに失敗しました', e);
-    return '';
-  }
-}
-
-// エージェントルーム（issue #58）のドット絵スプライト。renderer/sprites/*.svg は
-// アプリ同梱の静的ファイルだが、renderer からは fs で読めなくなるのでここで読んで渡す。
-// 読めなかったものは載せない（renderer/agentRoom.js が手続き生成へフォールバックする）。
-function readAgentRoomSprites() {
-  const dir = path.join(__dirname, 'renderer', 'sprites');
-  const sprites = {};
-  let files = [];
-  try {
-    files = fs.readdirSync(dir);
-  } catch (_e) {
-    return sprites;
-  }
-  for (const file of files) {
-    if (!file.endsWith('.svg')) continue;
-    try {
-      sprites[file] = fs.readFileSync(path.join(dir, file), 'utf8');
-    } catch (_e) { /* 読めないものは黙って落とす */ }
-  }
-  return sprites;
-}
-
 // ─── contextBridge へ公開する API ─────────────────────────────────────────────
 contextBridge.exposeInMainWorld('vkBridge', {
   ipc: {
@@ -183,13 +154,19 @@ contextBridge.exposeInMainWorld('vkBridge', {
   },
 
   xterm: {
-    // 読み込み順は renderer/bootstrap.js が保証する（xterm → addon-fit）。
-    scriptUrls: [
-      resolveScriptUrl('@xterm/xterm/lib/xterm.js'),
-      resolveScriptUrl('@xterm/addon-fit/lib/addon-fit.js'),
-    ].filter(Boolean),
-    css: readXtermCss(),
+    // xterm 本体・addon-fit の絶対パス（file:// URL）と xterm.css の中身は main プロセス
+    // 側で解決する（issue #323。理由はファイル冒頭コメントを参照）。読み込み順
+    //（xterm → addon-fit → xterm.css → app.js）は renderer/bootstrap.js が保証する。
+    getResources() {
+      return ipcRenderer.invoke('app:get-xterm-resources');
+    },
   },
 
-  agentRoomSprites: readAgentRoomSprites(),
+  agentRoomSprites: {
+    // エージェントルーム（issue #58）のドット絵スプライト（renderer/sprites/*.svg の中身）。
+    // renderer からは fs で読めないため main プロセス側で読み、ここでは IPC で受け取るだけ。
+    get() {
+      return ipcRenderer.invoke('app:get-agent-room-sprites');
+    },
+  },
 });

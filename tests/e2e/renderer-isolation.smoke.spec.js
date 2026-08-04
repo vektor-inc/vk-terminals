@@ -49,6 +49,20 @@ test.describe.serial('renderer の隔離（issue #268）', () => {
     });
   });
 
+  // この PR（issue #323）の主目的そのものの回帰チェック。上の 2 テストは preload が
+  // 見せる API の形と IPC の疎通しか確かめておらず、renderer が nodeIntegration: false /
+  // contextIsolation: true で保護されていても、main.js の webPreferences に
+  // sandbox: false を書き戻すだけで OS レベルのサンドボックスは無効化できてしまう
+  // （それでも他のテストは緑のまま通る）。ここでは実際に起動した webContents の
+  // webPreferences を直接読み、sandbox が有効なままであることを固定する。
+  test('renderer の webContents は OS レベルのサンドボックス（sandbox: true）で動いている', async () => {
+    const sandboxed = await app.evaluate(({ BrowserWindow }) => {
+      const target = BrowserWindow.getAllWindows()[0];
+      return target.webContents.getLastWebPreferences().sandbox;
+    });
+    expect(sandboxed).toBe(true);
+  });
+
   test('preload が渡すのは名前を付けた API だけで、生の ipcRenderer は渡らない', async () => {
     const shape = await win.evaluate(() => ({
       bridgeKeys: Object.keys(window.vkBridge).sort(),
@@ -215,38 +229,85 @@ test.describe.serial('renderer の隔離（issue #268）', () => {
     expect(await win.evaluate(() => typeof window.VKShell.openExternal)).toBe('function');
   });
 
-  test('xterm と xterm.css は preload が解決した実体から読み込まれている', async () => {
-    const loaded = await win.evaluate(() => ({
-      terminal: typeof window.Terminal,
-      fitAddon: typeof (window.FitAddon && window.FitAddon.FitAddon),
-      // xterm.css が <style> として入っていること。IME 用 textarea を画面外へ逃がす
-      // スタイルが欠けると、日本語入力の変換候補がペイン左上に出る（issue #268 以前からの要件）。
-      hasHelperTextareaRule: Array.from(document.querySelectorAll('style'))
-        .some((el) => el.textContent.includes('.xterm-helper-textarea')),
-      // アプリ側 style.css より前に入っていること（後勝ちの上書き関係を維持する）。
-      injectedBeforeAppCss: (() => {
-        const children = Array.from(document.head.children);
-        const styleIndex = children.findIndex(
-          (el) => el.tagName === 'STYLE' && el.textContent.includes('.xterm-helper-textarea')
-        );
-        const linkIndex = children.findIndex(
-          (el) => el.tagName === 'LINK' && el.getAttribute('href') === 'style.css'
-        );
-        return styleIndex > -1 && linkIndex > -1 && styleIndex < linkIndex;
-      })(),
-      // 実際に適用され、IME 用 textarea が文書フローから外れていること。
-      helperTextarea: (() => {
-        const el = document.querySelector('.xterm-helper-textarea');
-        if (!el) return null;
-        const style = getComputedStyle(el);
-        return { position: style.position, opacity: style.opacity };
-      })(),
-    }));
+  test('xterm と xterm.css は main が解決した実体を preload 経由で受け取って読み込まれている', async () => {
+    const loaded = await win.evaluate(async () => {
+      // preload は自分でファイルを読まず、main へ invoke で問い合わせるだけになった
+      // （issue #323）。xterm.scriptUrls / xterm.css のような静的プロパティは
+      // vkBridge にもう存在せず、getResources() という関数だけが公開されている。
+      const xtermBridgeShape = {
+        hasStaticScriptUrls: 'scriptUrls' in window.vkBridge.xterm,
+        hasStaticCss: 'css' in window.vkBridge.xterm,
+        getResourcesType: typeof window.vkBridge.xterm.getResources,
+      };
+      // 実際に main へ invoke して、file:// URL 2 本と xterm.css の中身が返ってくること
+      // （main.js の ipcMain.handle('app:get-xterm-resources') が生きていること）を確かめる。
+      const resources = await window.vkBridge.xterm.getResources();
+
+      return {
+        xtermBridgeShape,
+        scriptUrlCount: resources.scriptUrls.length,
+        scriptUrlsAreFileUrls: resources.scriptUrls.every((u) => u.startsWith('file://')),
+        cssLength: resources.css.length,
+        terminal: typeof window.Terminal,
+        fitAddon: typeof (window.FitAddon && window.FitAddon.FitAddon),
+        // xterm.css が <style> として入っていること。IME 用 textarea を画面外へ逃がす
+        // スタイルが欠けると、日本語入力の変換候補がペイン左上に出る（issue #268 以前からの要件）。
+        hasHelperTextareaRule: Array.from(document.querySelectorAll('style'))
+          .some((el) => el.textContent.includes('.xterm-helper-textarea')),
+        // アプリ側 style.css より前に入っていること（後勝ちの上書き関係を維持する）。
+        injectedBeforeAppCss: (() => {
+          const children = Array.from(document.head.children);
+          const styleIndex = children.findIndex(
+            (el) => el.tagName === 'STYLE' && el.textContent.includes('.xterm-helper-textarea')
+          );
+          const linkIndex = children.findIndex(
+            (el) => el.tagName === 'LINK' && el.getAttribute('href') === 'style.css'
+          );
+          return styleIndex > -1 && linkIndex > -1 && styleIndex < linkIndex;
+        })(),
+        // 実際に適用され、IME 用 textarea が文書フローから外れていること。
+        helperTextarea: (() => {
+          const el = document.querySelector('.xterm-helper-textarea');
+          if (!el) return null;
+          const style = getComputedStyle(el);
+          return { position: style.position, opacity: style.opacity };
+        })(),
+      };
+    });
+    expect(loaded.xtermBridgeShape).toEqual({
+      hasStaticScriptUrls: false,
+      hasStaticCss: false,
+      getResourcesType: 'function',
+    });
+    expect(loaded.scriptUrlCount).toBe(2);
+    expect(loaded.scriptUrlsAreFileUrls).toBe(true);
+    expect(loaded.cssLength).toBeGreaterThan(0);
     expect(loaded.terminal).toBe('function');
     expect(loaded.fitAddon).toBe('function');
     expect(loaded.hasHelperTextareaRule).toBe(true);
     expect(loaded.injectedBeforeAppCss).toBe(true);
     expect(loaded.helperTextarea).toEqual({ position: 'absolute', opacity: '0' });
+  });
+
+  test('エージェントルームのスプライトは main へ invoke して受け取っている（issue #323）', async () => {
+    const result = await win.evaluate(async () => {
+      const hasStaticSprites = typeof window.vkBridge.agentRoomSprites !== 'object'
+        ? null
+        : Object.keys(window.vkBridge.agentRoomSprites).filter((k) => k !== 'get');
+      const sprites = await window.vkBridge.agentRoomSprites.get();
+      return {
+        getType: typeof window.vkBridge.agentRoomSprites.get,
+        // get() 以外の静的プロパティ（旧: ファイル名 → SVG のマップ本体）が残っていないこと。
+        extraKeys: hasStaticSprites,
+        spriteFileCount: Object.keys(sprites || {}).length,
+        // bootstrap.js が app.js 読み込み前に window へ配置したもの（renderer/agentRoom.js が参照）。
+        windowSpriteFileCount: Object.keys(window.VKAgentRoomSprites || {}).length,
+      };
+    });
+    expect(result.getType).toBe('function');
+    expect(result.extraKeys).toEqual([]);
+    expect(result.spriteFileCount).toBeGreaterThan(0);
+    expect(result.windowSpriteFileCount).toBe(result.spriteFileCount);
   });
 });
 
@@ -270,8 +331,8 @@ test('xterm を読み込めないときは無言の空画面にせず、理由�
     await expect(launched.win.locator('#sidebar')).toBeAttached();
     await expect(launched.win.locator('.boot-error')).toHaveCount(0);
 
-    // xterm 本体の読み込みだけを落とす。preload の require.resolve は成功させたまま
-    // <script> の取得を失敗させることで、loadScript が reject する経路を通す。
+    // xterm 本体の読み込みだけを落とす。main の require.resolve（app:get-xterm-resources）は
+    // 成功させたまま <script> の取得を失敗させることで、loadScript が reject する経路を通す。
     await launched.app.evaluate(({ session, BrowserWindow }) => {
       session.defaultSession.webRequest.onBeforeRequest(
         { urls: ['*://*/*', 'file://*', 'file:///*'] },

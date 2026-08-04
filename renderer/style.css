@@ -1004,6 +1004,51 @@ h4.settings-content-heading {
   text-align: center;
 }
 
+/* ─── 汎用トースト（issue #326）───────────────────────────────────────────────
+ * 外部ブラウザを開けなかったときなど、一時的な失敗を知らせる。#root 直下に 1 つだけ
+ * 常設し、呼び出し箇所ごとに吹き出しを出す方式は採らない（ペインを閉じても発生源ごと
+ * 消えない・狭いペイン幅でもはみ出さないようにするため）。
+ * z-index は設定モーダル（2000）・閉じる確認ダイアログ .confirm-overlay（2100）より
+ * 上に置く。設定モーダル内の説明リンクからも失敗しうるため、モーダル表示中でも
+ * 見える必要がある。枠色はエラー系トーン（.boot-error と同じ #f85149）、
+ * 地の配色は情報系トーン（.settings-inline-notice と同じ #161b22 / #c9d1d9）に揃える。 */
+.vk-toast {
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  z-index: 2200;
+  max-width: 320px;
+  padding: 10px 12px;
+  border-radius: var(--vktm--border-radius--md);
+  border-left: 3px solid #f85149;
+  background: #161b22;
+  color: #c9d1d9;
+  font-size: 13px;
+  line-height: 1.6;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+.vk-toast[hidden] {
+  display: none;
+}
+.vk-toast-message {
+  margin: 0;
+}
+.vk-toast-copy {
+  margin-top: 8px;
+  padding: 4px 10px;
+  border-radius: 5px;
+  border: 1px solid var(--vktm--color--border-interactive);
+  background: #21262d;
+  color: #c9d1d9;
+  font-size: 12px;
+  cursor: pointer;
+}
+.vk-toast-copy:hover { background: #30363d; }
+.vk-toast-copy:focus-visible {
+  outline: var(--vktm--outline--focus-ring);
+  outline-offset: var(--vktm--outline-offset--focus-ring);
+}
+
 /* ─── Sidebar ──────────────────────────────────────────────────────────────── */
 /* ラッパー（.sidebar）が flex 子・開閉トランジション・可変幅（--vktm-sidebar-width）の基準。
  * 固定ヘッダーの使用量カードの下で、内側の nav（.sidebar-menu）がメニューと格納ペインを

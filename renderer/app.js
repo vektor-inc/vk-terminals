@@ -621,8 +621,127 @@ function isSafeExternalUrl(url) {
   return isSafeHttpUrl(url);
 }
 
+// ─── 汎用トースト（issue #326） ───────────────────────────────────────────────
+// 外部ブラウザを開けなかったときの失敗フィードバック。#root 直下に 1 つだけ常設し、
+// 呼び出し箇所（サイドバーメニュー／タスクリスト／ペインのタイトル・PR バッジ／
+// 設定モーダルの説明リンク）ごとに吹き出しを出さない。ペインを閉じても発生源ごと
+// 消えず、狭いペイン幅ではみ出す心配もない構造にするため（植草の方針）。
+// 成功時は何も出さない（ブラウザが実際に開くこと自体がフィードバックのため）。
+let externalUrlToastEl = null;
+let externalUrlToastDismissTimer = null;
+let externalUrlToastCopyUrl = '';
+// トーストにポインタが乗っている・トースト内にフォーカスがある間は自動消去しない
+// （キーボードでコピーボタンへ辿り着く前に消えないようにするため）。
+let externalUrlToastHoldOpen = false;
+const EXTERNAL_URL_TOAST_AUTO_DISMISS_MS = 5000;
+const EXTERNAL_URL_TOAST_FAILED_MESSAGE = 'ブラウザを開けませんでした';
+const EXTERNAL_URL_TOAST_COPY_LABEL = 'URLをコピー';
+// 可視ラベル「URLをコピー」を先頭に含める（WCAG 2.5.3 Label in Name）。
+// settingsCopyButtonLabel() と同じ考え方。
+const EXTERNAL_URL_TOAST_COPY_ARIA_LABEL = '開けなかったURLをコピー';
+
+function clearExternalUrlToastTimer() {
+  if (externalUrlToastDismissTimer) {
+    clearTimeout(externalUrlToastDismissTimer);
+    externalUrlToastDismissTimer = null;
+  }
+}
+
+// ホバー・フォーカス中でなければ 5 秒後に自動で閉じるタイマーを（再）セットする。
+function scheduleExternalUrlToastDismiss() {
+  clearExternalUrlToastTimer();
+  if (externalUrlToastHoldOpen) return;
+  externalUrlToastDismissTimer = setTimeout(() => {
+    hideExternalUrlToast();
+  }, EXTERNAL_URL_TOAST_AUTO_DISMISS_MS);
+}
+
+function hideExternalUrlToast() {
+  clearExternalUrlToastTimer();
+  if (externalUrlToastEl) externalUrlToastEl.hidden = true;
+  externalUrlToastCopyUrl = '';
+}
+
+function setExternalUrlToastMessage(text) {
+  if (!externalUrlToastEl) return;
+  const messageEl = externalUrlToastEl.querySelector('.vk-toast-message');
+  if (messageEl) messageEl.textContent = text;
+}
+
+// #root へ 1 度だけトースト DOM を生やす（以後は使い回す）。
+function ensureExternalUrlToast() {
+  if (externalUrlToastEl) return externalUrlToastEl;
+  const root = document.getElementById('root');
+  if (!root) return null;
+
+  const toast = document.createElement('div');
+  toast.className = 'vk-toast';
+  // 割り込まないトーン。.settings-inline-notice / .task-list-stale と同じ
+  // role="status" / aria-live="polite" にする（alert ではなく polite）。
+  toast.setAttribute('role', 'status');
+  toast.setAttribute('aria-live', 'polite');
+  toast.hidden = true;
+
+  const message = document.createElement('p');
+  message.className = 'vk-toast-message';
+  toast.appendChild(message);
+
+  const copyButton = document.createElement('button');
+  copyButton.type = 'button';
+  copyButton.className = 'vk-toast-copy';
+  copyButton.textContent = EXTERNAL_URL_TOAST_COPY_LABEL;
+  copyButton.setAttribute('aria-label', EXTERNAL_URL_TOAST_COPY_ARIA_LABEL);
+  copyButton.addEventListener('click', async () => {
+    // コピーは押したときだけ行う（自動コピーは、利用者が別の内容をコピーしていた
+    // 場合に無断で上書きしてしまうため行わない）。
+    let ok = false;
+    try {
+      // navigator.clipboard ではなく VKClipboard.writeText を使う理由は
+      // 4140 行目付近のコメント（file:// では secure context 判定に依存するため）と同じ。
+      ok = await VKClipboard.writeText(externalUrlToastCopyUrl);
+    } catch (_e) {
+      ok = false;
+    }
+    // 語尾は既存のコピー結果表示（コピーしました／コピーできませんでした）に揃える。
+    setExternalUrlToastMessage(ok ? 'URLをコピーしました' : 'コピーできませんでした');
+  });
+  toast.appendChild(copyButton);
+
+  const pause = () => {
+    externalUrlToastHoldOpen = true;
+    clearExternalUrlToastTimer();
+  };
+  const resume = (event) => {
+    // フォーカスがトースト内の別要素へ移るだけなら維持する。
+    if (event && event.type === 'focusout' && toast.contains(event.relatedTarget)) return;
+    externalUrlToastHoldOpen = false;
+    scheduleExternalUrlToastDismiss();
+  };
+  toast.addEventListener('mouseenter', pause);
+  toast.addEventListener('mouseleave', resume);
+  toast.addEventListener('focusin', pause);
+  toast.addEventListener('focusout', resume);
+
+  root.appendChild(toast);
+  externalUrlToastEl = toast;
+  return toast;
+}
+
+// 外部ブラウザを開けなかったときに呼ぶ。同時発生時は積み上げず、前のトーストを
+// 新しい内容で上書きする（積み上げると読み上げが渋滞するため）。
+// 出現時にフォーカスは奪わない（操作中の要素にフォーカスを残す）。
+function showExternalUrlOpenFailedToast(url) {
+  const toast = ensureExternalUrlToast();
+  if (!toast) return;
+  externalUrlToastCopyUrl = url;
+  setExternalUrlToastMessage(EXTERNAL_URL_TOAST_FAILED_MESSAGE);
+  toast.hidden = false;
+  scheduleExternalUrlToastDismiss();
+}
+
 // 外部ブラウザで開く処理を共通化したヘルパー。
-// http(s) チェック → preload 経由で main に openExternal を依頼する。失敗時は何もしない。
+// http(s) チェック → preload 経由で main に openExternal を依頼する。
+// 失敗（false 解決 / reject / 同期 throw のいずれか）は汎用トーストで知らせる（issue #326）。
 // click ハンドラ用に preventDefault / stopPropagation 済みである前提。
 function openExternalUrlSafe(url) {
   if (!isSafeExternalUrl(url)) return;
@@ -630,11 +749,15 @@ function openExternalUrlSafe(url) {
     // 戻り値は Promise（成否の boolean）。reject 時にハンドラがないと unhandled rejection に
     // なるため明示的にハンドリングする。同期 throw もありうるので try/catch でも包む。
     const p = VKShell.openExternal(url);
-    if (p && typeof p.catch === 'function') {
-      p.catch(() => { /* 失敗時は何もしない */ });
+    if (p && typeof p.then === 'function') {
+      p.then((ok) => {
+        if (ok !== true) showExternalUrlOpenFailedToast(url);
+      }, () => {
+        showExternalUrlOpenFailedToast(url);
+      });
     }
   } catch (_e) {
-    /* 同期エラー時も無視 */
+    showExternalUrlOpenFailedToast(url);
   }
 }
 

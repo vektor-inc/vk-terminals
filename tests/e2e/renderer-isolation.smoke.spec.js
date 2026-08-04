@@ -318,13 +318,18 @@ test.describe.serial('renderer の隔離（issue #268）', () => {
 // 反応せず、ユーザーからは無言で固まったようにしか見えない（復旧手段はアプリの終了だけ）。
 // console.error だけで済ませていないこと＝画面に理由が出ることを固定する。
 //
+// issue #326: boot() が失敗する 3 つの原因（実体の場所を解決できない／実体は
+// 見つかったが読み込みに失敗／xterm.css が読めない）は、以前はすべて同じ 1 文に
+// なっていた。ここでは 3 つの経路を個別に踏んで、それぞれ固定の文言へ振り分けられる
+// ことを確認する。
+//
 // 上の describe.serial とは app を共有しない。再読み込みを挟むため、
 // 共有インスタンスを壊さないよう専用に起動する。
-test('xterm を読み込めないときは無言の空画面にせず、理由を画面に出す', async () => {
+test('script の実体は見つかるが読み込みに失敗したときは、その原因専用の文言を画面に出す', async () => {
   const port = await getFreePort();
   const launched = await launchAppAndWait({
     port,
-    prefix: 'vk-terminals-e2e-boot-failure-',
+    prefix: 'vk-terminals-e2e-boot-failure-load-',
   });
   try {
     // 正常に起動できていることを先に確かめる（この後の失敗が仕込みによるものだと分かる）。
@@ -332,7 +337,8 @@ test('xterm を読み込めないときは無言の空画面にせず、理由�
     await expect(launched.win.locator('.boot-error')).toHaveCount(0);
 
     // xterm 本体の読み込みだけを落とす。main の require.resolve（app:get-xterm-resources）は
-    // 成功させたまま <script> の取得を失敗させることで、loadScript が reject する経路を通す。
+    // 成功させたまま <script> の取得を失敗させることで、loadScript が reject する経路
+    // （bootstrap.js の BOOT_ERROR_CODE.SCRIPT_LOAD_FAILED）を通す。
     await launched.app.evaluate(({ session, BrowserWindow }) => {
       session.defaultSession.webRequest.onBeforeRequest(
         { urls: ['*://*/*', 'file://*', 'file:///*'] },
@@ -347,11 +353,87 @@ test('xterm を読み込めないときは無言の空画面にせず、理由�
     await expect(bootError).toHaveAttribute('role', 'alert');
     // 次に取れる手を「まず再起動 → それでも駄目ならインストールし直す」の順で書く。
     // 全文で固定するのは、軽い手段（再起動）が条件節に埋もれて重い手段（再インストール）
-    // だけが拾い読みで目に入る書き方へ戻るのを防ぐため。
+    // だけが拾い読みで目に入る書き方へ戻るのを防ぐため。原因1（場所を特定できない）・
+    // 原因3（css を読めない）とは 1 文目が異なることも、この全文一致で固定される。
     await expect(bootError).toHaveText(
-      'ターミナルの初期化に失敗しました。アプリを再起動してください。それでも直らない場合は、インストールし直してください。'
+      'ターミナルの描画に必要なファイルの読み込みに失敗しました。アプリを再起動してください。それでも直らない場合は、インストールし直してください。'
     );
     // 空の #root のまま放置されていない。
+    await expect(launched.win.locator('#sidebar')).toHaveCount(0);
+  } finally {
+    await closeApp(launched);
+  }
+});
+
+test('script の実体を解決できないときは、専用の文言を画面に出す', async () => {
+  const port = await getFreePort();
+  const launched = await launchAppAndWait({
+    port,
+    prefix: 'vk-terminals-e2e-boot-failure-resolve-',
+  });
+  try {
+    await expect(launched.win.locator('#sidebar')).toBeAttached();
+    await expect(launched.win.locator('.boot-error')).toHaveCount(0);
+
+    // ipcMain.handle('app:get-xterm-resources') を差し替え、scriptUrls を 2 本未満に
+    // する。main.js の resolveScriptUrl は require.resolve の失敗を握りつぶして
+    // 空文字を返し filter(Boolean) で落とすため、renderer からは「1 本も無い」応答として
+    // 見える（bootstrap.js の urls.length < 2 → BOOT_ERROR_CODE.RESOLVE_FAILED）。
+    // 同じ手口を再現するため、ここではハンドラ自体を空配列を返すものに差し替える。
+    await launched.app.evaluate(({ ipcMain }) => {
+      ipcMain.removeHandler('app:get-xterm-resources');
+      ipcMain.handle('app:get-xterm-resources', () => ({ scriptUrls: [], css: 'body{}' }));
+    });
+    await launched.app.evaluate(({ BrowserWindow }) => {
+      BrowserWindow.getAllWindows()[0].webContents.reload();
+    });
+
+    const bootError = launched.win.locator('.boot-error');
+    await expect(bootError).toBeVisible({ timeout: 30000 });
+    await expect(bootError).toHaveAttribute('role', 'alert');
+    await expect(bootError).toHaveText(
+      'ターミナルの描画に必要なファイルの場所を特定できませんでした。アプリを再起動してください。それでも直らない場合は、インストールし直してください。'
+    );
+    await expect(launched.win.locator('#sidebar')).toHaveCount(0);
+  } finally {
+    await closeApp(launched);
+  }
+});
+
+test('xterm.css を読み込めないときは、専用の文言を画面に出す', async () => {
+  const port = await getFreePort();
+  const launched = await launchAppAndWait({
+    port,
+    prefix: 'vk-terminals-e2e-boot-failure-css-',
+  });
+  try {
+    await expect(launched.win.locator('#sidebar')).toBeAttached();
+    await expect(launched.win.locator('.boot-error')).toHaveCount(0);
+
+    // 差し替え前に、正規の scriptUrls（実在する file:// URL）を今動いている renderer から
+    // 取得しておく。差し替え後も script 自体は正しく読み込ませたい（読み込みに失敗させる
+    // テストは別にあるため）ので、css だけを空にして BOOT_ERROR_CODE.CSS_MISSING の経路を
+    // 単独で通す。
+    const realResources = await launched.win.evaluate(
+      () => window.vkBridge.xterm.getResources()
+    );
+    await launched.app.evaluate(({ ipcMain }, resources) => {
+      ipcMain.removeHandler('app:get-xterm-resources');
+      ipcMain.handle('app:get-xterm-resources', () => ({
+        scriptUrls: resources.scriptUrls,
+        css: '',
+      }));
+    }, realResources);
+    await launched.app.evaluate(({ BrowserWindow }) => {
+      BrowserWindow.getAllWindows()[0].webContents.reload();
+    });
+
+    const bootError = launched.win.locator('.boot-error');
+    await expect(bootError).toBeVisible({ timeout: 30000 });
+    await expect(bootError).toHaveAttribute('role', 'alert');
+    await expect(bootError).toHaveText(
+      'ターミナルの表示スタイルを読み込めませんでした。アプリを再起動してください。それでも直らない場合は、インストールし直してください。'
+    );
     await expect(launched.win.locator('#sidebar')).toHaveCount(0);
   } finally {
     await closeApp(launched);

@@ -73,6 +73,22 @@
     root.appendChild(box);
   }
 
+  // boot() の失敗原因を示す目印。Error に付ける独自プロパティ（vkBootErrorCode）の値。
+  // catch 側はこの値だけを見て画面文言を選ぶ（e.message はユーザー名を含む絶対パスが
+  // 混じりうるため画面には出さない。issue #326）。
+  const BOOT_ERROR_CODE = {
+    RESOLVE_FAILED: 'resolve-failed', // 実体の file:// URL を解決できなかった
+    SCRIPT_LOAD_FAILED: 'script-load-failed', // 実体は見つかったが <script> の読み込みに失敗した
+    CSS_MISSING: 'css-missing', // xterm.css の中身を読めなかった
+  };
+
+  // Error に vkBootErrorCode を付けて投げ直すための小さなヘルパー。
+  function fail(code, message) {
+    const err = new Error(message);
+    err.vkBootErrorCode = code;
+    throw err;
+  }
+
   async function boot() {
     // main プロセスへ問い合わせて xterm 本体・addon-fit の file:// URL と
     // xterm.css の中身を受け取る（issue #323。preload はもう自分で解決しない）。
@@ -85,14 +101,19 @@
     // 揃っていなければ先に失敗させる。空のまま app.js を読むと
     // window.FitAddon.FitAddon で TypeError になり、catch を素通りして
     // 同じ「無言の空画面」になる。
-    if (urls.length < 2) throw new Error('[vk-terminals] xterm の実体を解決できませんでした');
-    for (const src of urls) await loadScript(src);
+    if (urls.length < 2) fail(BOOT_ERROR_CODE.RESOLVE_FAILED, '[vk-terminals] xterm の実体を解決できませんでした');
+    try {
+      for (const src of urls) await loadScript(src);
+    } catch (e) {
+      e.vkBootErrorCode = BOOT_ERROR_CODE.SCRIPT_LOAD_FAILED;
+      throw e;
+    }
 
     // xterm.css も必須扱いにする。欠けても画面は一見動くが、IME 用 textarea が
     // 文書フロー上（ペイン左上）に可視で置かれ、日本語入力の変換候補がそこに出る。
     // 原因の分からない表示不具合として現れるだけなので、ここで明示的に失敗させる。
     const css = xtermResources ? xtermResources.css : '';
-    if (!css) throw new Error('[vk-terminals] xterm.css を読み込めませんでした');
+    if (!css) fail(BOOT_ERROR_CODE.CSS_MISSING, '[vk-terminals] xterm.css を読み込めませんでした');
     injectXtermCss(css);
 
     // エージェントルーム（issue #58）のスプライト。renderer/agentRoom.js は
@@ -112,10 +133,38 @@
     await loadScript('app.js');
   }
 
+  // 原因ごとの固定文言（issue #326）。1 文目だけが原因ごとに違い、2・3 文目
+  // 「まず再起動 → それでも直らない場合はインストールし直す」は共通のまま維持する
+  // （最初に試すべき手を条件節に埋めず独立した 1 文にする方針は変えていない。
+  // 条件節に入れると拾い読みで「インストールし直す」だけが目に入り、重い手段から
+  // 始めさせてしまう）。「xterm」という固有名詞は画面文言に出さない
+  // （将来ライブラリを差し替えたときに文言まで直す羽目になるため）。
+  // Object.create(null) でプロトタイプの無いオブジェクトとして作る。素のオブジェクト
+  // リテラル（{}）だと、code が 'toString' 等プロトタイプ由来のプロパティ名と一致した
+  // 場合に関数などプロトタイプ側の値を引いてしまい、既定文言へ倒れず画面にその中身が
+  // 出かねない（安藤レビュー指摘・低2。このリポジトリは #273 で同種の問題を
+  // セキュリティ修正として塞いだ経緯がある）。現状 vkBootErrorCode には同ファイル内の
+  // 3 定数しか入らないため実際には到達しないが、将来の変更で到達点が増えても安全側に
+  // 倒れるようにしておく。
+  const BOOT_ERROR_MESSAGE = Object.create(null);
+  BOOT_ERROR_MESSAGE[BOOT_ERROR_CODE.RESOLVE_FAILED] =
+    'ターミナルの描画に必要なファイルの場所を特定できませんでした。アプリを再起動してください。それでも直らない場合は、インストールし直してください。';
+  BOOT_ERROR_MESSAGE[BOOT_ERROR_CODE.SCRIPT_LOAD_FAILED] =
+    'ターミナルの描画に必要なファイルの読み込みに失敗しました。アプリを再起動してください。それでも直らない場合は、インストールし直してください。';
+  BOOT_ERROR_MESSAGE[BOOT_ERROR_CODE.CSS_MISSING] =
+    'ターミナルの表示スタイルを読み込めませんでした。アプリを再起動してください。それでも直らない場合は、インストールし直してください。';
+  // 目印（vkBootErrorCode）が無い・知らない値だった場合の既定文言。原因を特定できない
+  // 失敗経路が将来増えても、ここへ倒れるだけでエラーの中身（e.message）が画面に漏れることはない。
+  const BOOT_ERROR_MESSAGE_DEFAULT =
+    'ターミナルの初期化に失敗しました。アプリを再起動してください。それでも直らない場合は、インストールし直してください。';
+
   boot().catch((e) => {
+    // e.message には file:///Users/<ユーザー名>/... のような絶対パスが混じりうるため、
+    // console.error にだけ出し、画面には出さない（issue #326）。画面には
+    // vkBootErrorCode を機械的に振り分けた固定文言だけを出す。
     console.error('[vk-terminals] renderer の初期化に失敗しました', e);
-    // 最初に試すべき手（再起動）を条件節に埋めず独立した 1 文にする。条件節に入れると
-    // 拾い読みで「インストールし直す」だけが目に入り、重い手段から始めさせてしまう。
-    showBootFailure('ターミナルの初期化に失敗しました。アプリを再起動してください。それでも直らない場合は、インストールし直してください。');
+    const code = e && e.vkBootErrorCode;
+    const message = (code && BOOT_ERROR_MESSAGE[code]) || BOOT_ERROR_MESSAGE_DEFAULT;
+    showBootFailure(message);
   });
 })();

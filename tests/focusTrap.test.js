@@ -54,6 +54,9 @@ function createDocument() {
         ? this.attributes[attributeName]
         : null;
     },
+    hasAttribute(attributeName) {
+      return Object.prototype.hasOwnProperty.call(this.attributes, attributeName);
+    },
     getClientRects() {
       return this.rects > 0 ? [{}] : [];
     },
@@ -272,6 +275,33 @@ test('背後の要素へ inert を付け、解除で元の状態へ戻す', () =
   assert.equal(titlebar.inert, false);
   assert.equal(root.inert, false);
   assert.equal(alreadyInert.inert, true);
+});
+
+test('data-vk-inert-exempt を持つ body 直下の子は inert にせず、解除時も他の要素の復元を壊さない', () => {
+  // 汎用トースト（renderer/app.js の .vk-toast-layer, issue #326）向けの除外分岐。
+  // モーダルより手前に置いてどのモーダル表示中でも操作できる必要があるため、
+  // applyInert の対象から外す。
+  const { doc, titlebar, root, modal } = createScreen();
+  const toastLayer = doc.createElement({
+    name: 'toastLayer',
+    attributes: { 'data-vk-inert-exempt': '' },
+  });
+  doc.body.append(toastLayer);
+  const traps = createFocusTrapStack(doc);
+
+  const release = traps.activate(modal);
+  // 通常どおり無効化される要素（titlebar / root）はそのまま inert になる。
+  assert.equal(titlebar.inert, true);
+  assert.equal(root.inert, true);
+  // 除外対象は inert にならない。
+  assert.equal(toastLayer.inert, false);
+
+  // 解除しても、除外対象を挟んだことで他の要素の復元が壊れない
+  // （inertBackup に載らない要素が復元処理を巻き込まないこと）。
+  assert.equal(release(), true);
+  assert.equal(titlebar.inert, false);
+  assert.equal(root.inert, false);
+  assert.equal(toastLayer.inert, false);
 });
 
 test('モーダル自身ではなく overlay が body 直下にあっても、その overlay は無効化しない', () => {

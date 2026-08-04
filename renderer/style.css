@@ -1004,6 +1004,81 @@ h4.settings-content-heading {
   text-align: center;
 }
 
+/* ─── 汎用トースト（issue #326）───────────────────────────────────────────────
+ * 外部ブラウザを開けなかったときなど、一時的な失敗を知らせる。document.body 直下
+ * （#root の外）に 1 つだけ常設し、呼び出し箇所ごとに吹き出しを出す方式は採らない
+ * （ペインを閉じても発生源ごと消えない・狭いペイン幅でもはみ出さないようにするため）。
+ * #root の外に置く理由は renderer/app.js のトースト実装コメントを参照（render() の
+ * root.replaceChildren() で DOM から外れる／#root の重なり文脈に閉じ込められて
+ * モーダルより前面に出られない、の 2 点。安藤レビュー指摘・issue #326）。
+ *
+ * z-index は設定モーダル（2000）・閉じる確認ダイアログ .confirm-overlay（2100）より
+ * 上に置く。設定モーダル内の説明リンクからも失敗しうるため、モーダル表示中でも
+ * 見える必要がある。枠色はエラー系トーン（.boot-error と同じ #f85149）、
+ * 地の配色は情報系トーン（.settings-inline-notice と同じ #161b22 / #c9d1d9）に揃える。
+ *
+ * .vk-toast-layer（外側・pointer-events: none）と .vk-toast（内側・pointer-events:
+ * auto）を分けているのは、document.body 直下だと確認ダイアログ（.confirm-overlay /
+ * .confirm-modal）より前面に来るため。外側を pointer-events: none にして、実際に
+ * 見える箱（.vk-toast）だけへ pointer-events: auto を戻すことで、トーストの表示
+ * 領域以外がダイアログのクリックを吸わないようにする（安藤レビュー指摘・高）。
+ *
+ * 設定パネル（.settings-overlay）・閉じる確認ダイアログ（.confirm-overlay）の
+ * 表示中は左下へ寄せる（植草の確定仕様・issue #326）。両者とも画面中央配置で
+ * ボタン列が下部の右寄りに並ぶ共通構造のため、最小ウィンドウ幅（600px）では
+ * 右下のトーストがボタンに重なる（例: 設定パネルの「閉じる」がポインタでも
+ * キーボードでも押せなくなる）。ウィンドウ高さで位置を変える案は境界付近で
+ * トーストが飛び跳ねて「毎回同じ場所に出る」予測可能性を壊すため採らず、
+ * 「モーダル表示中かどうか」という離散的な条件だけで切り替える。
+ * 位置が変わる瞬間に transition は付けない。モーダルの開閉という別のイベントの
+ * 副次的な移動であり、動かすと視線を引いて邪魔になるため。 */
+.vk-toast-layer {
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  left: auto;
+  z-index: 2200;
+  pointer-events: none;
+}
+body:has(.settings-overlay) .vk-toast-layer,
+body:has(.confirm-overlay) .vk-toast-layer {
+  right: auto;
+  left: 16px;
+}
+.vk-toast {
+  pointer-events: auto;
+  max-width: 320px;
+  padding: 10px 12px;
+  border-radius: var(--vktm--border-radius--md);
+  border-left: 3px solid #f85149;
+  background: #161b22;
+  color: #c9d1d9;
+  font-size: 13px;
+  line-height: 1.6;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+.vk-toast[hidden] {
+  display: none;
+}
+.vk-toast-message {
+  margin: 0;
+}
+.vk-toast-copy {
+  margin-top: 8px;
+  padding: 4px 10px;
+  border-radius: 5px;
+  border: 1px solid var(--vktm--color--border-interactive);
+  background: #21262d;
+  color: #c9d1d9;
+  font-size: 12px;
+  cursor: pointer;
+}
+.vk-toast-copy:hover { background: #30363d; }
+.vk-toast-copy:focus-visible {
+  outline: var(--vktm--outline--focus-ring);
+  outline-offset: var(--vktm--outline-offset--focus-ring);
+}
+
 /* ─── Sidebar ──────────────────────────────────────────────────────────────── */
 /* ラッパー（.sidebar）が flex 子・開閉トランジション・可変幅（--vktm-sidebar-width）の基準。
  * 固定ヘッダーの使用量カードの下で、内側の nav（.sidebar-menu）がメニューと格納ペインを

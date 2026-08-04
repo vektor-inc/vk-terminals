@@ -61,6 +61,9 @@ html, body {
 }
 
 /* タイトルバー右端の設定ボタン（ドラッグ領域から除外する） */
+/* この部品は意図的に個別の :focus-visible を持たない。
+   tests/e2e/focus-ring-catch-all.smoke.spec.js が「網羅指定だけで枠が付くこと」を
+   確かめるカナリアにしているため、ここに :focus-visible を足さないこと（issue #302）。 */
 .titlebar-btn {
   position: absolute;
   right: 8px;
@@ -151,17 +154,18 @@ html, body {
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
 }
 /* パネル本体は開いたときの着地点（tabindex="-1"）で、押せる対象ではない。
-   shared.css の「対話部品の :focus-visible にはフォーカスリングの 2 行を必ず書く」という
-   規約に対する、意図的な例外がここ。Tab では止まらないのでリングを出す対象にならず、
+   shared.css の網羅指定は [tabindex] を値によらず拾うため、放っておくとこの
+   Tab で止まらない着地点にまで枠が出てしまう。ここはそれを打ち消す、枠自体を
+   出さない意図的な例外（shared.css の例外 2 種のうち「枠を出さない」方）。
    出すとパネル全体が OS 標準のリングで囲まれて、アプリ共通の青いリング
    （--vktm--outline--focus-ring）と見え方が食い違う。どこにいるかはダイアログ名の
    読み上げと、続く Tab の停止位置で伝わる。
    タスク編集パネル（.task-edit-panel）と同じ扱い（issue #282）。
    ⚠ この指定が成り立つのは「Tab で止まらない着地点」だからこそ。パネル本体を Tab 順へ
    入れる（tabindex="0" にする／着地点をやめて操作対象へ初期フォーカスを移す）変更を
-   入れるなら、この指定を外し、代わりに規約どおりの 2 行
-   （outline: var(--vktm--outline--focus-ring); / outline-offset: var(--vktm--outline-offset--focus-ring);）
-   を書くこと。Tab で到達できる要素の枠を消すと WCAG 2.4.7（フォーカスの可視化）違反になる。 */
+   入れるなら、この指定を外すこと。外すだけで shared.css の網羅指定がアプリ共通の
+   リングを自動で出す（個別に 2 行を書き足す必要は無い）。Tab で到達できる要素の枠を
+   消したままにすると WCAG 2.4.7（フォーカスの可視化）違反になる。 */
 .settings-modal:focus {
   outline: none;
 }
@@ -884,9 +888,11 @@ h4.settings-content-heading {
 /* .settings-check は真偽値の設定項目を囲むラベルで、この中に入る部品（現状は
    checkbox）は OS 標準の見た目で描かれ border-color の指定が効かないため、種類を
    名指しせずここでまとめてアプリ共通のフォーカスリングを出す。将来ラジオボタン等の
-   別部品がここに入っても同じ理由で取りこぼさない（issue #291）。shared.css の
-   「対話部品の :focus-visible には個別に値を直書きせず必ず 2 行をセットで書くこと」
-   の規約どおり、変数参照の 2 行をセットで書く。 */
+   別部品がここに入っても同じ理由で取りこぼさない（issue #291）。
+   実際には shared.css の網羅指定が input 全般を拾うため、この個別指定が無くても
+   同じ見た目になる（issue #302 以降は冗長）が、上記の経緯を明示するためあえて
+   残している。値は shared.css の変数（--vktm--outline--focus-ring /
+   --vktm--outline-offset--focus-ring）を直書きせず参照すること。 */
 .settings-check input:focus-visible {
   outline: var(--vktm--outline--focus-ring);
   outline-offset: var(--vktm--outline-offset--focus-ring);
@@ -2373,6 +2379,16 @@ body.resizing-sidebar .sidebar {
   color: #768390;
   background: none;
 }
+/* キーボードフォーカス時のリング（shared.css の網羅指定が拾う）は既定で外向きに出る。
+ * .pane-header は高さ 28px、.btn は 26px で上下の余白が 1px しかなく、外向き 2px の枠は
+ * ヘッダー外へ 3px はみ出して上のタイトル行と重なる。さらにタイトル無し・PR 無し・
+ * ペイン1枚（.pane-task-title.empty { display: none }）の条件では .pane-header が
+ * .pane（overflow: hidden）の最初の子になり、枠の上辺が完全に切り取られる。起動直後の
+ * 1ペイン状態がこれに当たるため頻繁に踏む。.sidebar-resizer / .card-head /
+ * .agent-room-summary と同じ発想で、内側オフセットへ個別上書きする（issue #302）。 */
+.pane-header .btn:focus-visible {
+  outline-offset: -2px;
+}
 
 /* ─── Terminal viewport ────────────────────────────────────────────────────── */
 /* background は xterm.js が文字グリッドの整数倍でしか描画できないため container 下端に
@@ -2506,6 +2522,14 @@ body.pane-dragging * {
 }
 .agent-room-summary::-webkit-details-marker { display: none; }
 .agent-room-summary:hover { color: #c9d1d9; background: #161b22; }
+/* キーボードフォーカス時のリング（shared.css の網羅指定が拾う）は既定で外向きに出る。
+ * summary はブロック要素で全幅を占め、親の .agent-room（上記、余白なし）とその親の
+ * .pane（overflow: hidden）に左右上が接しているため、外向きのまま描くと枠の左右が
+ * 完全に切り取られる。閉じている間は下辺も切られ、上辺だけが残る不揃いな表示になる。
+ * .sidebar-resizer / .card-head と同じ発想で、内側オフセットへ個別上書きする（issue #302）。 */
+.agent-room-summary:focus-visible {
+  outline-offset: -2px;
+}
 .agent-room-summary::after {
   content: '▸';
   margin-left: auto;

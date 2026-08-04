@@ -266,17 +266,23 @@ test.describe.serial('外部ブラウザを開けなかったときのトース�
     const succeedingUrl = `http://127.0.0.1:${port}/?pr=326-succeed`;
     await stubShellOpenExternalSelective(app, prUrl); // prUrl だけ失敗、succeedingUrl は成功
     try {
-      const prBadge = win.locator('.pane .pane-task-title-pr').first();
-
       // ① リンク A（prUrl）が失敗しトースト表示。
       await postSetTitle(port, { termId: '1', title: 'issue #326 中: 失敗A', prUrl });
-      await prBadge.click();
+      const prBadgeA = win.locator(`.pane-task-title-pr[title="${prUrl}"]`).first();
+      await expect(prBadgeA).toBeVisible();
+      await prBadgeA.click();
       await expect(win.locator('.vk-toast')).toBeVisible();
       await expect(win.locator('.vk-toast .vk-toast-message')).toHaveText('ブラウザを開けませんでした');
 
-      // ② 別のリンク B（succeedingUrl）を開いて成功させる。
+      // ② 別のリンク B（succeedingUrl）を開いて成功させる。バッジのクリックハンドラは
+      // 描画時点の URL をクロージャで掴むため、postSetTitle 直後にまだ古い（失敗する）
+      // prUrl のままクリックすると、succeedingUrl ではなく prUrl が main へ届いてしまう
+      // （安藤レビュー指摘）。title 属性が succeedingUrl に描き直されるまで待ってから
+      // クリックする。
       await postSetTitle(port, { termId: '1', title: 'issue #326 中: 成功B', prUrl: succeedingUrl });
-      await prBadge.click();
+      const prBadgeB = win.locator(`.pane-task-title-pr[title="${succeedingUrl}"]`).first();
+      await expect(prBadgeB).toBeVisible();
+      await prBadgeB.click();
 
       // main まで実際に succeedingUrl が届いたことを確認したうえで、トーストが
       // 消えていること（「ブラウザを開けませんでした」が A のまま残ってコピー対象が

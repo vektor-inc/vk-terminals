@@ -125,6 +125,40 @@ async function restoreClipboardWrite(app) {
 }
 const writtenTexts = (app) => app.evaluate(() => (globalThis.__written || []).slice());
 
+// ウィンドウを main.js の最小サイズ（minWidth: 600 / minHeight: 400）まで縮めて fn を
+// 実行し、終わったら元のサイズへ戻す（このテストの後に追加される他テストへ影響させない）。
+async function withSmallWindow(app, fn) {
+  const originalBounds = await app.evaluate(({ BrowserWindow }) => (
+    BrowserWindow.getAllWindows()[0].getBounds()
+  ));
+  await app.evaluate(({ BrowserWindow }) => {
+    BrowserWindow.getAllWindows()[0].setBounds({ width: 600, height: 400 });
+  });
+  try {
+    await fn();
+  } finally {
+    await app.evaluate(({ BrowserWindow }, bounds) => {
+      BrowserWindow.getAllWindows()[0].setBounds(bounds);
+    }, originalBounds);
+  }
+}
+
+// 要素の中心座標で document.elementFromPoint() を取り、その要素自身（またはその子孫）が
+// 最前面に来ているかを見る。安藤が実機のレビューで使っていた判定と同じ考え方
+// （中心の最前面がボタン自身ではなくトーストなら、クリックはトーストへ吸われる）。
+async function isOnTopAtOwnCenter(win, selector) {
+  return win.evaluate((sel) => {
+    const el = document.querySelector(sel);
+    if (!el) return null;
+    const rect = el.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    const top = document.elementFromPoint(cx, cy);
+    if (!top) return false;
+    return top === el || el.contains(top);
+  }, selector);
+}
+
 test.describe.serial('外部ブラウザを開けなかったときのトースト（issue #326）', () => {
   let app;
   let win;
@@ -386,6 +420,92 @@ test.describe.serial('外部ブラウザを開けなかったときのトース�
       const closeBtn = win.locator('.settings-close');
       if (await closeBtn.count()) await closeBtn.click().catch(() => {});
       await win.waitForSelector('.settings-modal', { state: 'detached' }).catch(() => {});
+    }
+  });
+
+  // ─── 中: 最小ウィンドウで、設定パネルのボタンをトーストの箱が覆う ───────────────
+  // 安藤の実測（600×400 / 700×500 / 800×600 で .settings-cancel の中心の最前面が
+  // .vk-toast-message）を受けた植草の確定仕様（issue #326）。設定パネル・確認
+  // ダイアログはいずれも中央配置でボタン列が下部の右寄りに並ぶため、それらの表示中は
+  // トーストを左下へ逃がす（renderer/style.css の
+  // body:has(.settings-overlay) .vk-toast-layer / body:has(.confirm-overlay) ...）。
+  test('最小ウィンドウでも、設定パネルの「キャンセル」「保存」をトーストが覆わない', async () => {
+    await stubShellOpenExternal(app, { fail: true });
+    try {
+      await withSmallWindow(app, async () => {
+        await win.evaluate(() => window.openSettingsModal());
+        await win.waitForSelector('.settings-modal', { state: 'visible' });
+        await win.waitForSelector('.settings-tabs', { state: 'visible' });
+
+        // 「外出先から確認」タブの説明リンクを失敗させ、トーストを表示する。
+        await win.locator('#settings-tab-1').click();
+        const link = win.locator('#settings-panel-1 .settings-content-link').first();
+        await expect(link).toBeVisible();
+        await link.click();
+        await expect(win.locator('.vk-toast')).toBeVisible();
+
+        // .settings-overlay 表示中は左下へ寄っていること。
+        const toastSide = await win.evaluate(() => {
+          const rect = document.querySelector('.vk-toast-layer').getBoundingClientRect();
+          return rect.left < window.innerWidth / 2 ? 'left' : 'right';
+        });
+        expect(toastSide).toBe('left');
+
+        // 「キャンセル」は常設（説明タブでも隠れない）。中心の最前面が自分自身であること。
+        expect(await isOnTopAtOwnCenter(win, '.settings-cancel')).toBe(true);
+
+        // 「保存」は説明だけのタブでは隠れる（hidden 属性）ため、フィールドのある
+        // 「設定」タブへ戻ってから確かめる。トーストは .settings-overlay が
+        // 表示され続けている限り左下のまま（タブ切替では消えない）。
+        await win.locator('#settings-tab-0').click();
+        await expect(win.locator('.settings-save')).toBeVisible();
+        expect(await isOnTopAtOwnCenter(win, '.settings-save')).toBe(true);
+        expect(await isOnTopAtOwnCenter(win, '.settings-cancel')).toBe(true);
+      });
+    } finally {
+      await restoreShellOpenExternal(app);
+      const closeBtn = win.locator('.settings-close');
+      if (await closeBtn.count()) await closeBtn.click().catch(() => {});
+      await win.waitForSelector('.settings-modal', { state: 'detached' }).catch(() => {});
+    }
+  });
+
+  test('最小ウィンドウでも、確認ダイアログの「キャンセル」「閉じる」をトーストが覆わない', async () => {
+    await stubShellOpenExternal(app, { fail: true });
+    try {
+      await withSmallWindow(app, async () => {
+        // まずリンクを失敗させてトーストを表示する（確認ダイアログとは無関係の経路）。
+        const prBadge = win.locator(`.pane-task-title-pr[title="${prUrl}"]`).first();
+        await postSetTitle(port, { termId: '1', title: 'issue #326 中: 確認ダイアログ前', prUrl });
+        await expect(prBadge).toBeVisible();
+        await prBadge.click();
+        await expect(win.locator('.vk-toast')).toBeVisible();
+
+        // ペインを閉じる確認ダイアログを開く。status（running/waiting）に依存する
+        // 通常の ✕ クリック経路（confirmClose: 'busy' が既定）を避け、この spec が
+        // レイアウトだけを見たいことを明確にするため window.openCloseConfirmDialog を
+        // 直接呼ぶ（app.js のトップレベル関数宣言は window へ生える。issue #184）。
+        const paneId = await win.evaluate(() => document.querySelector('.pane')?.dataset.id || '');
+        expect(paneId).not.toBe('');
+        await win.evaluate((id) => window.openCloseConfirmDialog(id), paneId);
+        await win.waitForSelector('.confirm-overlay', { state: 'visible' });
+
+        // .confirm-overlay 表示中も左下へ寄っていること。
+        const toastSide = await win.evaluate(() => {
+          const rect = document.querySelector('.vk-toast-layer').getBoundingClientRect();
+          return rect.left < window.innerWidth / 2 ? 'left' : 'right';
+        });
+        expect(toastSide).toBe('left');
+
+        expect(await isOnTopAtOwnCenter(win, '.confirm-cancel')).toBe(true);
+        expect(await isOnTopAtOwnCenter(win, '.confirm-close-pane')).toBe(true);
+
+        // キャンセルして閉じる（実際にペインを閉じない）。
+        await win.locator('.confirm-cancel').click();
+        await win.waitForSelector('.confirm-overlay', { state: 'detached' });
+      });
+    } finally {
+      await restoreShellOpenExternal(app);
     }
   });
 });

@@ -1,5 +1,7 @@
 # Changelog
 
+## 1.53.0
+
 - [ 仕様変更 ] 外部ブラウザを開けなかったときに、画面右下のトーストで知らせて URL のコピー操作を提供するように変更（[#326](https://github.com/vektor-inc/vk-terminals/issues/326)）
 - [ 仕様変更 ] 起動に必要なファイルの読み込みに失敗したとき、原因（場所を特定できない／読み込み失敗／表示スタイルを読み込めない）ごとに案内文を出し分けるように変更（[#326](https://github.com/vektor-inc/vk-terminals/issues/326)）
 - [ 不具合修正 ] 設定パネルのチェックボックスをキーボードで選んだときにフォーカス位置を示す枠が表示されない不具合を修正（[#291](https://github.com/vektor-inc/vk-terminals/issues/291)）

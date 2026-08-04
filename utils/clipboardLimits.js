@@ -19,6 +19,13 @@
 // （CLIPBOARD_MAX_LENGTH_ARG_PREFIX という引数名の文字列自体は preload.js 側にも
 // 複製が必要。ずれた場合は preload 側が上限不明と判定し、main 側の検証へ委ねる
 // だけで、上限値そのものが 2 箇所に増えるわけではない）。
+//
+// 注意: additionalArguments に載せた値は renderer プロセスのコマンドラインに現れ、
+// OS のプロセス一覧（`ps` 等）から同一ユーザーの他プロセスにも見える（実測確認済み・
+// 安藤のセキュリティレビュー指摘・LOW-2）。今回渡すのは「10万」という非機密の数値
+// なので問題ないが、この仕組みを他の値（API トークン等）を preload へ渡す前例として
+// 真似してはいけない。秘密情報を渡す必要が出た場合は IPC（許可リストに載せた
+// invoke/handle）を使うこと。
 const MAX_CLIPBOARD_TEXT_LENGTH = 100000;
 
 // additionalArguments に載せる際の引数名。preload.js 側のパース処理と対応させる。

@@ -3,7 +3,7 @@ const { test, expect } = require('@playwright/test');
 const { closeApp, getFreePort, launchAppAndWait } = require('./helpers/electron-app');
 // clipboard 上限のリテラル（100000）は utils/clipboardLimits.js の 1 箇所のみに
 // 集約している（issue #325）。テストは Node 側で動くため直接 require できる。
-const { MAX_CLIPBOARD_TEXT_LENGTH } = require('../../utils/clipboardLimits');
+const { MAX_CLIPBOARD_TEXT_LENGTH, CLIPBOARD_MAX_LENGTH_ARG_PREFIX } = require('../../utils/clipboardLimits');
 
 // ─── renderer の隔離（issue #268） ────────────────────────────────────────────
 //
@@ -201,6 +201,22 @@ test.describe.serial('renderer の隔離（issue #268）', () => {
         delete globalThis.__written;
       });
     }
+  });
+
+  // 上のテストは「preload 側の一段目の検証が消えても main 側が拒否するため
+  // tooLong: false のまま緑で通ってしまう」という弱点を持つ（安藤のセキュリティ
+  // レビュー指摘・MEDIUM-1）。実際 main.js の additionalArguments 行を削除すると
+  // preload の上限が NaN になり一段目が丸ごとスルーされるが、上のテストだけでは
+  // 検知できない。上の「renderer の webContents は OS レベルのサンドボックス
+  // （sandbox: true）で動いている」テストと同じ考え方（main.js に sandbox: false を
+  // 書き戻しても他が緑のまま通るため、webPreferences を直接読んで固定する）で、
+  // additionalArguments に上限値が実際に載っていることをここで直接固定する。
+  test('clipboard 上限は additionalArguments で preload へ渡っている（issue #325）', async () => {
+    const args = await app.evaluate(({ BrowserWindow }) => {
+      const target = BrowserWindow.getAllWindows()[0];
+      return target.webContents.getLastWebPreferences().additionalArguments;
+    });
+    expect(args).toContain(`${CLIPBOARD_MAX_LENGTH_ARG_PREFIX}${MAX_CLIPBOARD_TEXT_LENGTH}`);
   });
 
   test('renderer から外部オリジンへ遷移できない・新規ウィンドウも開けない', async () => {

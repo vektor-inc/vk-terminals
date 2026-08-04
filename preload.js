@@ -102,9 +102,20 @@ function readClipboardMaxLengthFromArgv() {
   const arg = process.argv.find(
     (a) => typeof a === 'string' && a.startsWith(CLIPBOARD_MAX_LENGTH_ARG_PREFIX)
   );
-  if (!arg) return NaN;
+  // 通常起動では main.js が additionalArguments で必ず値を渡すため、ここに来るのは
+  // 異常事態（main.js 側の変更漏れ等）。100000 のようなリテラルを再導入せずに済ませる
+  // ため、フォールバック値ではなく警告ログだけを残す（安藤のセキュリティレビュー
+  // 指摘・LOW-1）。
+  if (!arg) {
+    console.warn(`[vk-terminals] clipboard max length not found in argv; falling back to main-process validation only`);
+    return NaN;
+  }
   const value = Number(arg.slice(CLIPBOARD_MAX_LENGTH_ARG_PREFIX.length));
-  return Number.isInteger(value) && value > 0 ? value : NaN;
+  if (!(Number.isInteger(value) && value > 0)) {
+    console.warn(`[vk-terminals] clipboard max length in argv is malformed (${arg}); falling back to main-process validation only`);
+    return NaN;
+  }
+  return value;
 }
 const MAX_CLIPBOARD_TEXT_LENGTH = readClipboardMaxLengthFromArgv();
 

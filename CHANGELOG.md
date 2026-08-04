@@ -3,6 +3,7 @@
 - [ 不具合修正 ] 設定パネルのチェックボックスをキーボードで選んだときにフォーカス位置を示す枠が表示されない不具合を修正（[#291](https://github.com/vektor-inc/vk-terminals/issues/291)）
 - [ セキュリティ修正 ] HTTP API（スマホ用ページ・外部連携の窓口）にアクセストークンによる認証を追加。既定の `127.0.0.1` で待ち受けている場合の動作は従来どおりで、外出先から使う設定にしたときのみ認証が必須（[#313](https://github.com/vektor-inc/vk-terminals/issues/313)）
 - [ セキュリティ修正 ] 起動時に必要なファイル（xterm 本体・xterm.css・エージェントルームのスプライト）の読み取りをアプリ本体（main プロセス）側へ集約し、画面表示側の OS レベルのサンドボックスを有効化（[#323](https://github.com/vektor-inc/vk-terminals/issues/323)）
+- [ セキュリティ修正 ] 画面表示側に CSP（コンテンツセキュリティポリシー）を設定し、注入されたスクリプトが実行されないこと・外部サイトを iframe で枠内に埋め込めないことを追加で保護（[#324](https://github.com/vektor-inc/vk-terminals/issues/324)）
 - [ 開発環境 ] 設定パネル系 e2e のスタブが、保存・設定定義の読み込み以外のやり取りをアプリの実装へ委譲するか選べていた設定（`passthroughOtherChannels`）を廃止。設定定義を差し替えたかどうかで自動的に決まる規則へ統一し、あわせて委譲が必要な spec に「委譲が壊れると検知できる」検証を追加（[#304](https://github.com/vektor-inc/vk-terminals/issues/304)）
 
 ## 1.52.0

@@ -1617,7 +1617,18 @@ function startHttpApi() {
           res.end(JSON.stringify({ error: 'mobile page not found' }));
           return;
         }
-        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+        // CSP（issue #324）。mobile.html は HTTP 配信なので、renderer/index.html の
+        // <meta> ではなく実際のレスポンスヘッダーで指定できる（本来こちらが正）。
+        // index.html と違い script-src への追加許可（xterm 実体の file:// 読み込み）は
+        // 不要（mobile.js 等はすべてこのサーバーが同一オリジンの絶対パスで配信するため）。
+        // connect-src は index.html の 'none' と異なり 'self' にしている点に注意:
+        // mobile.js が /api/states・/api/widgets・/api/send 等へ同一オリジン fetch する
+        // （ポーリング描画・ペイン操作の実体）ため、'none' にすると画面が壊れる。
+        res.writeHead(200, {
+          'Content-Type': 'text/html; charset=utf-8',
+          'Cache-Control': 'no-store',
+          'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'",
+        });
         res.end(data);
       });
       return;

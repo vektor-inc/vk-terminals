@@ -127,10 +127,15 @@ const writtenTexts = (app) => app.evaluate(() => (globalThis.__written || []).sl
 
 // ウィンドウを main.js の最小サイズ（minWidth: 600 / minHeight: 400）まで縮めて fn を
 // 実行し、終わったら元のサイズへ戻す（このテストの後に追加される他テストへ影響させない）。
-async function withSmallWindow(app, fn) {
+// 戻した後は画面側の resize 反映（window.innerWidth が元に戻ること）まで待つ。待たずに
+// 次のテストへ進むと、将来この後ろにテストが足されたときに旧サイズ前提の測定と
+// 競合しうるため（司レビュー指摘・低。現状この 2 件は describe.serial の最後なので
+// 実害は無いが保険として入れておく）。
+async function withSmallWindow(app, win, fn) {
   const originalBounds = await app.evaluate(({ BrowserWindow }) => (
     BrowserWindow.getAllWindows()[0].getBounds()
   ));
+  const originalInnerWidth = await win.evaluate(() => window.innerWidth);
   await app.evaluate(({ BrowserWindow }) => {
     BrowserWindow.getAllWindows()[0].setBounds({ width: 600, height: 400 });
   });
@@ -140,6 +145,7 @@ async function withSmallWindow(app, fn) {
     await app.evaluate(({ BrowserWindow }, bounds) => {
       BrowserWindow.getAllWindows()[0].setBounds(bounds);
     }, originalBounds);
+    await win.waitForFunction((w) => window.innerWidth === w, originalInnerWidth);
   }
 }
 
@@ -323,7 +329,7 @@ test.describe.serial('外部ブラウザを開けなかったときのトース�
       // ずれる、を再発させないこと）を見る。
       await expect
         .poll(() => app.evaluate(
-          (url) => (globalThis.__openExternalCalls || []).includes(url),
+          (_electron, url) => (globalThis.__openExternalCalls || []).includes(url),
           succeedingUrl
         ))
         .toBe(true);
@@ -432,7 +438,7 @@ test.describe.serial('外部ブラウザを開けなかったときのトース�
   test('最小ウィンドウでも、設定パネルの「キャンセル」「保存」をトーストが覆わない', async () => {
     await stubShellOpenExternal(app, { fail: true });
     try {
-      await withSmallWindow(app, async () => {
+      await withSmallWindow(app, win, async () => {
         await win.evaluate(() => window.openSettingsModal());
         await win.waitForSelector('.settings-modal', { state: 'visible' });
         await win.waitForSelector('.settings-tabs', { state: 'visible' });
@@ -473,7 +479,7 @@ test.describe.serial('外部ブラウザを開けなかったときのトース�
   test('最小ウィンドウでも、確認ダイアログの「キャンセル」「閉じる」をトーストが覆わない', async () => {
     await stubShellOpenExternal(app, { fail: true });
     try {
-      await withSmallWindow(app, async () => {
+      await withSmallWindow(app, win, async () => {
         // まずリンクを失敗させてトーストを表示する（確認ダイアログとは無関係の経路）。
         const prBadge = win.locator(`.pane-task-title-pr[title="${prUrl}"]`).first();
         await postSetTitle(port, { termId: '1', title: 'issue #326 中: 確認ダイアログ前', prUrl });

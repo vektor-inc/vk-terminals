@@ -17,6 +17,10 @@
 //   ここでは IPC 経由で受け取るだけにした。isSafeHttpUrl も同じ理由で
 //   renderer/urlSafety.js を require せず、このファイル内に直接持たせている
 //  （renderer/urlSafety.js 自体は mobile.html 側や settingsTabs.js 等が引き続き使うため残す）。
+//   clipboard 書き込み上限（MAX_CLIPBOARD_TEXT_LENGTH・issue #325）も同じ制約のため
+//   utils/clipboardLimits.js を require せず、BrowserWindow の
+//   webPreferences.additionalArguments 経由で main.js から受け取っている
+//  （詳細は下の定義箇所のコメントを参照）。
 
 const { contextBridge, ipcRenderer } = require('electron');
 
@@ -81,9 +85,28 @@ const ON_CHANNELS = new Set([
   'terminal:request-close-pane',
 ]);
 
-// clipboard へ渡してよい文字列の上限。設定パネルのコピーボタンが渡すのは
-// URL・コマンド 1 行なので、桁違いに余裕を持たせたうえで青天井にはしない。
-const MAX_CLIPBOARD_TEXT_LENGTH = 100000;
+// clipboard へ渡してよい文字列の上限（issue #325）。定義は utils/clipboardLimits.js の
+// 1 箇所のみで、ここではその値を持たない。sandbox 下の preload はローカルファイルの
+// 相対 require ができず utils/clipboardLimits.js を直接 require できないため
+// （理由は本ファイル冒頭コメント）、main.js が BrowserWindow 生成時に
+// webPreferences.additionalArguments で渡した値を process.argv から読み取る。
+//
+// 引数が見つからない・数値として壊れている場合は Number.NaN のままにする。ここで
+// 100000 のようなリテラルをフォールバックとして書くと定義が再び 2 箇所に増えてしまう
+// ため、意図的に書かない。その代わり下の writeText() は「上限が確定できない場合は
+// この層でのチェックをスキップし、main 側の最終防衛線（ipcMain.handle
+// ('clipboard:write-text')）にそのまま委ねる」動きにしてある。通常起動では
+// additionalArguments が必ず渡るためこの分岐には入らない。
+const CLIPBOARD_MAX_LENGTH_ARG_PREFIX = '--clipboard-max-text-length=';
+function readClipboardMaxLengthFromArgv() {
+  const arg = process.argv.find(
+    (a) => typeof a === 'string' && a.startsWith(CLIPBOARD_MAX_LENGTH_ARG_PREFIX)
+  );
+  if (!arg) return NaN;
+  const value = Number(arg.slice(CLIPBOARD_MAX_LENGTH_ARG_PREFIX.length));
+  return Number.isInteger(value) && value > 0 ? value : NaN;
+}
+const MAX_CLIPBOARD_TEXT_LENGTH = readClipboardMaxLengthFromArgv();
 
 function rejectChannel(kind, channel) {
   return new Error(`[vk-terminals] ${kind} channel not allowed: ${String(channel)}`);
@@ -148,6 +171,9 @@ contextBridge.exposeInMainWorld('vkBridge', {
     // 成否を boolean で返す（main 側で書き込みが失敗したら false）。
     writeText(text) {
       if (typeof text !== 'string' || !text) return Promise.resolve(false);
+      // MAX_CLIPBOARD_TEXT_LENGTH が NaN（additionalArguments 未到達など）の場合、
+      // NaN との比較は常に false になるためこのチェックは自然にスキップされ、
+      // main 側の最終防衛線（ipcMain.handle('clipboard:write-text')）の判定に委ねる。
       if (text.length > MAX_CLIPBOARD_TEXT_LENGTH) return Promise.resolve(false);
       return ipcRenderer.invoke('clipboard:write-text', text);
     },

@@ -61,6 +61,9 @@ html, body {
 }
 
 /* タイトルバー右端の設定ボタン（ドラッグ領域から除外する） */
+/* この部品は意図的に個別の :focus-visible を持たない。
+   tests/e2e/focus-ring-catch-all.smoke.spec.js が「網羅指定だけで枠が付くこと」を
+   確かめるカナリアにしているため、ここに :focus-visible を足さないこと（issue #302）。 */
 .titlebar-btn {
   position: absolute;
   right: 8px;

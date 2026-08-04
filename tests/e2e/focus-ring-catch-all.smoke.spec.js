@@ -1,6 +1,6 @@
 const { test, expect } = require('@playwright/test');
 // 起動〜初期描画待ちは共通ヘルパーへ集約している（issue #263 / #269）。
-const { closeApp, getFreePort, launchApp, launchAppAndWait } = require('./helpers/electron-app');
+const { closeApp, getFreePort, launchAppAndWait } = require('./helpers/electron-app');
 
 // issue #302: #267 → #280 → #292 と続いた「新しい対話部品にフォーカスリングの指定を
 // 書き忘れる」再発を、個別指定に頼らず shared.css の網羅指定（:where(...):focus-visible）
@@ -71,12 +71,11 @@ test('タイトルバー右端の ⚙（設定を開く）ボタンは、個別�
 test('ペインヘッダーの操作ボタンは、キーボードフォーカス時に内側オフセットの個別上書きが効く（issue #302）', async () => {
   const port = await getFreePort();
   // --no-claude で起動すると素のシェルのペインが 1 枚だけ作られる（他 spec と同じ既定挙動）。
-  const { app, win, tmpRoot } = await launchApp({
+  const { app, win, tmpRoot } = await launchAppAndWait({
     port,
     prefix: 'vk-terminals-e2e-focus-ring-catch-all-pane-header-',
   });
   try {
-    await win.waitForSelector('#sidebar', { state: 'attached' });
     const stashBtn = win.locator('.pane-header .btn-stash');
     await expect(stashBtn).toBeVisible();
     await focusByKeyboard(win, '.pane-header .btn-stash');

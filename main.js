@@ -59,6 +59,8 @@ const {
   isAuthExemptPath,
   evaluateTokenRegistration,
 } = require('./utils/apiAuth');
+// mobile.html（HTTP 配信）向け CSP ヘッダーの組み立て（issue #324）。
+const { buildMobileCsp } = require('./utils/csp');
 // clipboard へ書き込んでよい文字列の上限（issue #325）。定義はここ（utils/clipboardLimits.js）
 // の 1 箇所のみで、preload.js へは BrowserWindow 生成時に additionalArguments で渡す
 // （理由は utils/clipboardLimits.js のコメントを参照）。
@@ -1627,7 +1629,23 @@ function startHttpApi() {
           res.end(JSON.stringify({ error: 'mobile page not found' }));
           return;
         }
-        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+        // CSP（issue #324）。mobile.html は HTTP 配信なので、renderer/index.html の
+        // <meta> ではなく実際のレスポンスヘッダーで指定できる（本来こちらが正で、
+        // <meta> では無視される frame-ancestors もここでは持たせられる）。
+        // index.html 側の script-src も 'self' のみで追加許可は無く、この点は
+        // 両者で違いは無い（mobile.js 等はこのサーバーが同一オリジンの絶対パスで
+        // 配信するため、xterm 実体のような file:// 越しの読み込みが発生しない）。
+        // connect-src だけは index.html の 'none' と異なり 'self' にしている:
+        // mobile.js が /api/states・/api/widgets・/api/send 等へ同一オリジン fetch する
+        // （ポーリング描画・ペイン操作の実体）ため、'none' にすると画面が壊れる。
+        // 文字列の組み立ては utils/csp.js の buildMobileCsp() へ切り出し、単体テスト
+        // （タイプミス・ディレクティブの脱落）と e2e（実レスポンスヘッダーの検証）の
+        // 両方から固定している。
+        res.writeHead(200, {
+          'Content-Type': 'text/html; charset=utf-8',
+          'Cache-Control': 'no-store',
+          'Content-Security-Policy': buildMobileCsp(),
+        });
         res.end(data);
       });
       return;

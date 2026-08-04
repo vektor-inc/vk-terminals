@@ -235,6 +235,93 @@ test.describe.serial('renderer の隔離（issue #268）', () => {
     expect(await win.evaluate(() => typeof window.VKShell.openExternal)).toBe('function');
   });
 
+  // ─── CSP（issue #324） ──────────────────────────────────────────────────────
+  //
+  // renderer/index.html には <meta http-equiv="Content-Security-Policy"> で
+  // 「注入されたスクリプトを実行させない」「外部サイトを iframe で枠内に埋め込めない」
+  // を強制している。上の「外部オリジンへ遷移できない」テストは will-navigate /
+  // setWindowOpenHandler（issue #285）の回帰チェックで、CSP はそれとは独立した層
+  // （navigate せずスクリプトが直接実行できてしまうケース・埋め込みのケース）を塞ぐ。
+  //
+  // どちらのテストも「実行されなかった／読み込まれなかった」ことの副作用（window の
+  // 書き換えが起きていない等）だけでは、CSP 以外の理由（そもそも注入できていない等）
+  // でも green になってしまう。そのため securitypolicyviolation イベントが実際に
+  // 発火したこと自体を根拠にする。
+
+  test('CSP 違反により、画面に埋め込まれたスクリプトが実行されない', async () => {
+    const result = await win.evaluate(async () => {
+      window.__cspViolations = [];
+      const onViolation = (e) => {
+        window.__cspViolations.push({
+          directive: e.violatedDirective,
+          blockedURI: e.blockedURI,
+        });
+      };
+      document.addEventListener('securitypolicyviolation', onViolation);
+
+      // PTY 出力・HTTP API 入力等の外部由来文字列がエスケープ漏れで DOM に混入した
+      // ケースを模す。<script> 要素を動的に生成して document.body へ挿し込むのは、
+      // innerHTML 経由の <script> と異なり実際に「実行が試みられる」経路なので、
+      // ブロックされているのがエスケープ漏れではなく CSP そのものであることを確かめられる。
+      window.__injectedScriptRan = false;
+      const script = document.createElement('script');
+      script.textContent = 'window.__injectedScriptRan = true;';
+      document.body.appendChild(script);
+
+      // securitypolicyviolation イベントは同期の appendChild 直後には届かないことがあるため、
+      // マイクロタスク待ちではなく実タイマーで少し待つ。
+      await new Promise((resolve) => setTimeout(resolve, 500));
+
+      document.removeEventListener('securitypolicyviolation', onViolation);
+      const violations = window.__cspViolations;
+      const ran = window.__injectedScriptRan;
+      delete window.__cspViolations;
+      delete window.__injectedScriptRan;
+      script.remove();
+      return { violations, ran };
+    });
+
+    // 根拠は違反イベントそのもの。script-src 系ディレクティブで inline が block された
+    // という報告が最低 1 件あることを確かめる（Chromium は script-src-elem を報告する）。
+    expect(
+      result.violations.some((v) => v.directive.startsWith('script-src') && v.blockedURI === 'inline')
+    ).toBe(true);
+    // 違反が実際に実行を止めていたことも併せて確認する（根拠は上の違反イベントの方）。
+    expect(result.ran).toBe(false);
+  });
+
+  test('CSP（frame-src none）により、外部サイトを iframe で枠内に読み込めない', async () => {
+    const result = await win.evaluate(async () => {
+      window.__cspViolations = [];
+      const onViolation = (e) => {
+        window.__cspViolations.push({
+          directive: e.violatedDirective,
+          blockedURI: e.blockedURI,
+        });
+      };
+      document.addEventListener('securitypolicyviolation', onViolation);
+
+      const iframe = document.createElement('iframe');
+      iframe.id = '__csp_probe_iframe';
+      iframe.src = 'https://example.com/';
+      document.body.appendChild(iframe);
+
+      await new Promise((resolve) => setTimeout(resolve, 500));
+
+      document.removeEventListener('securitypolicyviolation', onViolation);
+      const violations = window.__cspViolations;
+      delete window.__cspViolations;
+      iframe.remove();
+      return { violations };
+    });
+
+    // frame-src 'none' の違反が実際に報告されたことを根拠にする（読み込めなかった
+    // ことだけを見ると、そもそも iframe を作れなかった等の別要因と区別できない）。
+    expect(
+      result.violations.some((v) => v.directive === 'frame-src' && v.blockedURI === 'https://example.com/')
+    ).toBe(true);
+  });
+
   test('xterm と xterm.css は main が解決した実体を preload 経由で受け取って読み込まれている', async () => {
     const loaded = await win.evaluate(async () => {
       // preload は自分でファイルを読まず、main へ invoke で問い合わせるだけになった

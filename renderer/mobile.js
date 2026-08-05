@@ -312,7 +312,7 @@ function renderWidget(fromPoll) {
   if (taskListStale) {
     if (stale) {
       taskListStale.dataset.kind = "stale";
-      taskListStale.textContent = "orchestrator 停止中";
+      taskListStale.textContent = "Orchestrator 停止中";
       taskListStale.hidden = !shouldShow;
     } else if (legacyNotice) {
       taskListStale.dataset.kind = "legacy";

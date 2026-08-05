@@ -583,8 +583,8 @@ test('サイドバー: コールド起動で widget の updatedAt が古い場�
   }
 });
 
-// ─── 10: fresh 表示後に stale 化したら「orchestrator 停止中」を出す（旧 tasks-sidebar 相当） ───
-test('サイドバー: fresh 表示後に widget が stale 化した場合は orchestrator 停止中を表示する', async () => {
+// ─── 10: fresh 表示後に stale 化したら「Orchestrator 停止中」を出す（旧 tasks-sidebar 相当） ───
+test('サイドバー: fresh 表示後に widget が stale 化した場合は Orchestrator 停止中を表示する', async () => {
   const port = await getFreePort();
   const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-widget-decl-stalelatch-'));
   const widgetFile = path.join(dataRoot, 'tasks-widget.json');
@@ -600,7 +600,7 @@ test('サイドバー: fresh 表示後に widget が stale 化した場合は or
     writeJson(widgetFile, buildWidget({ updatedAt: freshDate(-5 * 60 * 1000) }));
     const notice = section.locator('.task-list-stale');
     await expect(notice).toBeVisible({ timeout: 10_000 });
-    await expect(notice).toHaveText('orchestrator 停止中');
+    await expect(notice).toHaveText('Orchestrator 停止中');
     await expect(notice).toHaveAttribute('data-kind', 'stale');
   } finally {
     await closeAppForcefully({ app, tmpRoot });

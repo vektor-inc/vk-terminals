@@ -1153,7 +1153,7 @@ function createTaskListContainer() {
   const notice = document.createElement('div');
   notice.className = 'task-list-stale';
   notice.setAttribute('role', 'status');
-  notice.textContent = 'orchestrator 停止中';
+  notice.textContent = 'Orchestrator 停止中';
   notice.hidden = true;
 
   const list = document.createElement('div');
@@ -1548,7 +1548,7 @@ function renderWidget(fromUpdate) {
   if (staleNotice) {
     if (stale) {
       staleNotice.dataset.kind = 'stale';
-      staleNotice.textContent = 'orchestrator 停止中';
+      staleNotice.textContent = 'Orchestrator 停止中';
       staleNotice.hidden = !shouldShow;
     } else if (legacyNotice) {
       staleNotice.dataset.kind = 'legacy';
@@ -1591,7 +1591,7 @@ function tickWidgetStale() {
   if (!staleNotice) return;
   if (stale) {
     staleNotice.dataset.kind = 'stale';
-    staleNotice.textContent = 'orchestrator 停止中';
+    staleNotice.textContent = 'Orchestrator 停止中';
     staleNotice.hidden = false;
   } else {
     staleNotice.hidden = true;

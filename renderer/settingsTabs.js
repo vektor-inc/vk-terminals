@@ -67,14 +67,10 @@ function collectSettingsFieldTabs(desc, tabs) {
   return fieldTabs;
 }
 
-// 1 ブロックを正規化する。不正なブロック（未知の type / text 欠落 / 非 http(s) URL など）は
-// null を返して黙って落とす。外部ディスクリプタ（VK_TERMINALS_SETTINGS）由来の壊れた
-// 定義でアプリ全体が壊れないようにするための方針。
-function normalizeSettingsContentBlock(block, tabIds, fieldTabs) {
-  if (!block || typeof block !== 'object' || Array.isArray(block)) return null;
-  const type = typeof block.type === 'string' ? block.type : '';
-
-  if (type === 'heading') {
+// type ごとの正規化処理を 1 箇所に集約する。この表のキーを公開一覧にも使うことで、
+// 描画できる種別を追加したときに一覧だけが古くなる状態を防ぐ。
+const SETTINGS_CONTENT_BLOCK_HANDLERS = Object.freeze({
+  heading(block, type) {
     const text = nonEmptyString(block.text);
     if (!text) return null;
     // 3 / 4 のみ。5 以上は 4 に寄せ、それ以外（2 以下 / 非整数 / "4" / 未指定）は 3。
@@ -82,32 +78,32 @@ function normalizeSettingsContentBlock(block, tabIds, fieldTabs) {
     // 直前のセクションに吸収されて意味が壊れるため（callout の tone と同じ方針）。
     const level = (Number.isInteger(block.level) && block.level >= 4) ? 4 : 3;
     return { type, text, level };
-  }
+  },
 
   // text だけを持つ唯一のブロック（heading は level、code は copy を併せて持つ）。
-  if (type === 'paragraph') {
+  paragraph(block, type) {
     const text = nonEmptyString(block.text);
     return text ? { type, text } : null;
-  }
+  },
 
-  if (type === 'code') {
+  code(block, type) {
     const text = nonEmptyString(block.text);
     if (!text) return null;
     // copy はコピーボタンを出すかどうか。既定（省略時）はコピーできる方に寄せる。
     // 外部ディスクリプタ（VK_TERMINALS_SETTINGS）由来の不正値でコピー機能が黙って
     // 死なないよう、明示的な false 以外はすべて true に寄せる（既定＝コピーできる）。
     return { type, text, copy: block.copy !== false };
-  }
+  },
 
-  if (type === 'list') {
+  list(block, type) {
     const items = (Array.isArray(block.items) ? block.items : [])
       .map((item) => nonEmptyString(item))
       .filter((item) => item !== '');
     if (!items.length) return null;
     return { type, ordered: block.ordered === true, items };
-  }
+  },
 
-  if (type === 'links') {
+  links(block, type) {
     const items = [];
     for (const item of Array.isArray(block.items) ? block.items : []) {
       if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
@@ -118,28 +114,28 @@ function normalizeSettingsContentBlock(block, tabIds, fieldTabs) {
     }
     if (!items.length) return null;
     return { type, items };
-  }
+  },
 
-  if (type === 'callout') {
+  callout(block, type) {
     const text = nonEmptyString(block.text);
     if (!text) return null;
     const tone = SETTINGS_CONTENT_CALLOUT_TONES.has(block.tone) ? block.tone : 'info';
     return { type, tone, text };
-  }
+  },
 
-  if (type === 'status') {
+  status(block, type) {
     const source = nonEmptyString(block.source);
     return SETTINGS_CONTENT_STATUS_SOURCES.has(source) ? { type, source } : null;
-  }
+  },
 
   // アクセストークン（issue #313）の表示・コピー・再発行と、初回登録用 URL の
   // 表示・コピーをまとめた自己完結パネル。追加のプロパティは持たない（トークン本体は
   // 秘密情報のため、この静的なディスクリプタには載せず、renderer が IPC で都度取得する）。
-  if (type === 'apiTokenPanel') {
+  apiTokenPanel(block, type) {
     return { type };
-  }
+  },
 
-  if (type === 'tabLink') {
+  tabLink(block, type, tabIds, fieldTabs) {
     // 同じモーダル内の別タブへ移動するボタン。存在しないタブ ID を指すものは落とす。
     const label = nonEmptyString(block.label);
     const tab = nonEmptyString(block.tab);
@@ -152,9 +148,21 @@ function normalizeSettingsContentBlock(block, tabIds, fieldTabs) {
     const field = nonEmptyString(block.field);
     if (field && fieldTabs.get(field) === tab) normalized.field = field;
     return normalized;
-  }
+  },
+});
 
-  return null;
+// 正規化処理のキーから導出した、呼び出し側が書き換えられない対応種別一覧。
+const SETTINGS_CONTENT_BLOCK_TYPES = Object.freeze(Object.keys(SETTINGS_CONTENT_BLOCK_HANDLERS));
+
+// 1 ブロックを正規化する。不正なブロック（未知の type / text 欠落 / 非 http(s) URL など）は
+// null を返して黙って落とす。外部ディスクリプタ（VK_TERMINALS_SETTINGS）由来の壊れた
+// 定義でアプリ全体が壊れないようにするための方針。
+function normalizeSettingsContentBlock(block, tabIds, fieldTabs) {
+  if (!block || typeof block !== 'object' || Array.isArray(block)) return null;
+  const type = typeof block.type === 'string' ? block.type : '';
+  if (!Object.prototype.hasOwnProperty.call(SETTINGS_CONTENT_BLOCK_HANDLERS, type)) return null;
+
+  return SETTINGS_CONTENT_BLOCK_HANDLERS[type](block, type, tabIds, fieldTabs);
 }
 
 // アプリ本体からは normalizeSettingsTabs 経由でのみ呼ばれ（renderer/app.js は
@@ -394,6 +402,7 @@ function deriveSettingsTargetPathsForGroups(groups) {
 }
 
 return {
+  SETTINGS_CONTENT_BLOCK_TYPES,
   dedupeSettingsFieldsByKey,
   deriveSettingsTargetPathsForGroups,
   groupSettingsGroupsByTab,

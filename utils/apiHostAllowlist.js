@@ -68,6 +68,8 @@ function isAllowedApiHost({ hostHeader, apiHost, actualHost, authRequired } = {}
   // 認証必須の構成では、外部公開に使う MagicDNS 名や .local 名を事前に列挙できない。
   // DNS リバインディング経由では本アプリのトークンを提示できず認証で拒否されるため、
   // 有効な形式であることだけを確認して許可リスト照合は省略する。
+  // shouldRequireAuth() は待ち受け先の未確定時も true（認証側の安全側）を返すが、ここでは
+  // 照合省略という緩い側に働く。リクエストは待ち受け開始後にしか届かない前提に依存する。
   if (authRequired) return true;
 
   if (isLoopbackHost(requestHost) || requestHost === 'localhost') return true;

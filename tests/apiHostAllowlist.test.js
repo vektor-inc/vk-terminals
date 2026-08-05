@@ -74,6 +74,10 @@ test('認証不要の構成では許可リストに無いホストを拒否す�
   assert.equal(isAllowed('evil.example.com:13847'), false);
 });
 
+test('authRequired を省略した場合は許可リストと照合する', () => {
+  assert.equal(isAllowedApiHost({ hostHeader: 'evil.example.com:13847', apiHost: '127.0.0.1', actualHost: '127.0.0.1' }), false);
+});
+
 test('apiHost が :: でも実際の待ち受けがループバックなら許可リストで拒否する', () => {
   assert.equal(isAllowed('evil.example.com:13847', {
     apiHost: '::',
@@ -91,6 +95,14 @@ test('認証必須の構成では有効な外部ホスト名を許可する', ()
       authRequired: shouldRequireAuth(authConfig),
     }), true);
   }
+});
+
+test('ワイルドカードアドレスで待ち受けた場合は認証を必須にする', () => {
+  assert.deepEqual(['0.0.0.0', '::'].map((actualHost) => shouldRequireAuth({ actualHost })), [true, true]);
+});
+
+test('角括弧で囲った IPv4 は不正な Host として扱う', () => {
+  assert.equal(parseHostHeader('[127.0.0.1]'), '');
 });
 
 test('認証必須の構成でも Host ヘッダが無い・空・不正形式なら拒否する', () => {

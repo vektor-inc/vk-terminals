@@ -59,6 +59,7 @@ const {
   isAuthExemptPath,
   evaluateTokenRegistration,
 } = require('./utils/apiAuth');
+const { isAllowedApiHost } = require('./utils/apiHostAllowlist');
 // mobile.html（HTTP 配信）向け CSP ヘッダーの組み立て（issue #324）。
 const { buildMobileCsp } = require('./utils/csp');
 // clipboard へ書き込んでよい文字列の上限（issue #325）。定義はここ（utils/clipboardLimits.js）
@@ -1509,11 +1510,13 @@ ipcMain.on('terminal:report-states', (event, states) => {
 
 // ─── HTTP API ────────────────────────────────────────────────────────────────
 function startHttpApi() {
+  const apiConfig = loadUserConfig();
+  const apiHost = normalizeApiHost(apiConfig.apiHost);
   // 「認証を必ず要求する」設定（issue #313）。tailscale serve --bg のように apiHost が
   // 127.0.0.1 のまま外部（tailnet）へ公開されるケースに対応するためのオプトイン。
   // 他の設定同様「保存後、次回の起動から反映」なので、起動時に一度だけ読めばよい
   // （毎リクエストで config.json を同期読みするのを避ける）。
-  const requireAuthAlways = !!loadUserConfig().apiRequireAuthAlways;
+  const requireAuthAlways = !!apiConfig.apiRequireAuthAlways;
 
   // ブラウザ起点の cross-origin リクエストを弾く CSRF 対策。
   //   Origin ヘッダはブラウザが cross-origin の POST 等で必ず送る。同一オリジンの
@@ -1561,6 +1564,27 @@ function startHttpApi() {
 
   httpServer = http.createServer((req, res) => {
     const url = new URL(req.url, `http://127.0.0.1:${API_PORT}`);
+    const authRequired = shouldRequireAuth({
+      actualHost: apiServerRuntimeStatus.actualHost,
+      requireAlways: requireAuthAlways,
+    });
+
+    // ─── Host 許可リストゲート（issue #322）──────────────────────────────────
+    // DNS リバインディングで Origin と Host が攻撃者の名前のまま一致する経路を防ぐ。
+    // 認証免除ルートや初回登録経路も含む全リクエストが入口のこの 1 か所を通るよう、
+    // トークン登録の分岐と認証ゲートのどちらよりも前で確認する。許可リスト照合は
+    // 認証不要な構成でのみ行い、認証必須なら Host の形式だけを検証して認証側で守る。
+    if (!isAllowedApiHost({
+      hostHeader: req.headers.host,
+      apiHost,
+      actualHost: apiServerRuntimeStatus.actualHost,
+      authRequired,
+    })) {
+      console.warn(`${LOG_PREFIX} 403 ${req.method} ${url.pathname} from ${req.socket?.remoteAddress || 'unknown'} (forbidden host)`);
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'forbidden host' }));
+      return;
+    }
 
     // GET /?token=<トークン> または GET /index.html?token=<トークン>
     // （issue #313・スマホ初回登録経路）
@@ -1595,8 +1619,7 @@ function startHttpApi() {
     //   1 か所（と対応するテスト）に集約しているため、ここでは分岐を増やさない。
     //   免除されたページ本体はこの後の通常ルーティングでそのまま配信されるが、
     //   データを返す /api/* はここで弾かれない限りすべて認証対象のまま。
-    if (!isAuthExemptPath(req.method, url.pathname)
-      && shouldRequireAuth({ actualHost: apiServerRuntimeStatus.actualHost, requireAlways: requireAuthAlways })) {
+    if (!isAuthExemptPath(req.method, url.pathname) && authRequired) {
       if (!isAuthorizedRequest(req, API_TOKEN)) {
         console.warn(`${LOG_PREFIX} 401 ${req.method} ${url.pathname} from ${req.socket?.remoteAddress || 'unknown'}`);
         res.writeHead(401, { 'Content-Type': 'application/json' });
@@ -2324,7 +2347,6 @@ function startHttpApi() {
   //   例: Tailscale IP（100.x.x.x）を指定すると tailnet 内からのみ到達可能になり、
   //   スマホ等から http://<apiHost>:13847/ で状態確認・応答できる（LAN/公開には出さない）。
   //   '0.0.0.0' を指定すると LAN を含む全 I/F で待ち受ける（信頼できる NW でのみ推奨）。
-  const apiHost = normalizeApiHost(loadUserConfig().apiHost);
   apiServerRuntimeStatus = {
     phase: 'pending',
     startupHost: apiHost,

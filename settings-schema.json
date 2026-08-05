@@ -136,13 +136,17 @@
         },
         {
           "type": "paragraph",
-          "text": "既知の限界として、この方法による公開状態は vk-terminals 側からは自動で検知できません。tailscale serve は TCP レベルでの転送のため、API ホストは 127.0.0.1 のままで、tailnet 経由のアクセスも通常のローカル利用と区別がつかず、そのままだと認証がかからずに公開され続けます。次の設定を必ず有効にしてください。"
+          "text": "既知の限界として、この方法による公開状態は vk-terminals 側からは自動で検知できません。tailscale serve は TCP レベルでの転送のため、API ホストは 127.0.0.1 のままで、tailnet 経由のアクセスも通常のローカル利用と区別がつきません。次の設定を必ず有効にして、vk-terminals を再起動してください。設定が無効なままなら、tailnet 側の名前を使ったアクセスは安全のため 403 {\"error\":\"forbidden host\"} で拒否されます。"
         },
         {
           "type": "tabLink",
           "label": "「常にアクセストークン認証を必須にする」設定へ移動",
           "tab": "general",
           "field": "apiRequireAuthAlways"
+        },
+        {
+          "type": "paragraph",
+          "text": "モバイルページが 403 {\"error\":\"forbidden host\"} で開けない場合は、tailscale serve で公開しているのに「常にアクセストークン認証を必須にする」が無効になっていないか確認してください。有効にして vk-terminals を再起動すると開けるようになります。"
         },
         {
           "type": "heading",

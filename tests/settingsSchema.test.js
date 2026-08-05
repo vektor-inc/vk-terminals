@@ -12,6 +12,7 @@ const {
   loadSettingsSchema,
   validateSettingsSchema,
 } = require('../settingsSchema');
+const { SETTINGS_CONTENT_BLOCK_TYPES } = require('../renderer/settingsTabs');
 
 function makeTempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-schema-'));
@@ -39,6 +40,22 @@ test('settings-schema.json: valid JSON で必須構造を持つ', () => {
       assert.equal(typeof field.label, 'string');
       assert.equal(typeof field.type, 'string');
     }
+  }
+});
+
+test('settings-schema.json: 全タブの content が描画側の対応種別だけを使う', () => {
+  const schema = JSON.parse(fs.readFileSync(SETTINGS_SCHEMA_PATH, 'utf8'));
+
+  assert.equal(Object.isFrozen(SETTINGS_CONTENT_BLOCK_TYPES), true);
+  for (const tab of schema.tabs) {
+    const content = Array.isArray(tab.content) ? tab.content : [];
+    content.forEach((block, index) => {
+      const type = block && block.type;
+      assert.ok(
+        SETTINGS_CONTENT_BLOCK_TYPES.includes(type),
+        `タブ "${tab.id}" の content の ${index + 1} 番目に未対応の種別 "${String(type)}" があります。`
+      );
+    });
   }
 });
 

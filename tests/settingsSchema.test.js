@@ -47,6 +47,7 @@ test('settings-schema.json: 全タブの content が描画側の対応種別だ�
   const schema = JSON.parse(fs.readFileSync(SETTINGS_SCHEMA_PATH, 'utf8'));
 
   assert.equal(Object.isFrozen(SETTINGS_CONTENT_BLOCK_TYPES), true);
+  assert.ok(Array.isArray(schema.tabs), 'settings-schema.json に tabs がありません');
   for (const tab of schema.tabs) {
     const content = Array.isArray(tab.content) ? tab.content : [];
     content.forEach((block, index) => {

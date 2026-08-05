@@ -1564,15 +1564,21 @@ function startHttpApi() {
 
   httpServer = http.createServer((req, res) => {
     const url = new URL(req.url, `http://127.0.0.1:${API_PORT}`);
+    const authRequired = shouldRequireAuth({
+      actualHost: apiServerRuntimeStatus.actualHost,
+      requireAlways: requireAuthAlways,
+    });
 
     // ─── Host 許可リストゲート（issue #322）──────────────────────────────────
     // DNS リバインディングで Origin と Host が攻撃者の名前のまま一致する経路を防ぐ。
     // 認証免除ルートや初回登録経路も含む全リクエストが入口のこの 1 か所を通るよう、
-    // トークン登録の分岐と認証ゲートのどちらよりも前で確認する。
+    // トークン登録の分岐と認証ゲートのどちらよりも前で確認する。許可リスト照合は
+    // 認証不要な構成でのみ行い、認証必須なら Host の形式だけを検証して認証側で守る。
     if (!isAllowedApiHost({
       hostHeader: req.headers.host,
       apiHost,
       actualHost: apiServerRuntimeStatus.actualHost,
+      authRequired,
     })) {
       console.warn(`${LOG_PREFIX} 403 ${req.method} ${url.pathname} from ${req.socket?.remoteAddress || 'unknown'} (forbidden host)`);
       res.writeHead(403, { 'Content-Type': 'application/json' });
@@ -1613,8 +1619,7 @@ function startHttpApi() {
     //   1 か所（と対応するテスト）に集約しているため、ここでは分岐を増やさない。
     //   免除されたページ本体はこの後の通常ルーティングでそのまま配信されるが、
     //   データを返す /api/* はここで弾かれない限りすべて認証対象のまま。
-    if (!isAuthExemptPath(req.method, url.pathname)
-      && shouldRequireAuth({ actualHost: apiServerRuntimeStatus.actualHost, requireAlways: requireAuthAlways })) {
+    if (!isAuthExemptPath(req.method, url.pathname) && authRequired) {
       if (!isAuthorizedRequest(req, API_TOKEN)) {
         console.warn(`${LOG_PREFIX} 401 ${req.method} ${url.pathname} from ${req.socket?.remoteAddress || 'unknown'}`);
         res.writeHead(401, { 'Content-Type': 'application/json' });

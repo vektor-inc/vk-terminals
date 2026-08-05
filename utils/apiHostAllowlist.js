@@ -5,8 +5,6 @@
 
 const { isLoopbackHost } = require('./loopbackHost');
 
-const WILDCARD_HOSTS = new Set(['0.0.0.0', '::']);
-
 /**
  * 比較用にホスト名・IP アドレスを正規化する。
  * @param {unknown} value
@@ -38,7 +36,8 @@ function parseHostHeader(hostHeader) {
 
   if (value.startsWith('[')) {
     const match = value.match(/^\[([^\]]+)\](?::\d+)?$/);
-    return match ? normalizeHost(match[1]) : '';
+    // 角括弧は IPv6 リテラル専用。localhost や IPv4 を囲った形式は受理しない。
+    return match && match[1].includes(':') ? normalizeHost(match[1]) : '';
   }
 
   const colonIndex = value.lastIndexOf(':');
@@ -55,19 +54,21 @@ function parseHostHeader(hostHeader) {
 
 /**
  * HTTP API リクエストの Host ヘッダが安全な接続先を示しているか判定する。
- * @param {{ hostHeader?: unknown, apiHost?: unknown, actualHost?: unknown }} params
+ * アクセストークン認証が必須なら認証側で保護されるため、有効な形式の Host は通す。
+ * 認証が不要な場合だけ、ループバック・設定値・実際の待ち受け先と照合する。
+ * @param {{ hostHeader?: unknown, apiHost?: unknown, actualHost?: unknown, authRequired?: boolean }} params
  * @returns {boolean}
  */
-function isAllowedApiHost({ hostHeader, apiHost, actualHost } = {}) {
+function isAllowedApiHost({ hostHeader, apiHost, actualHost, authRequired } = {}) {
   const configuredHost = normalizeHost(apiHost);
   const requestHost = parseHostHeader(hostHeader);
-  // Host が無い・空・複数値（配列）・不正形式の場合は、待ち受け設定に関係なく拒否する。
+  // Host が無い・空・複数値（配列）・不正形式の場合は、認証の要否に関係なく拒否する。
   if (!requestHost) return false;
 
-  // 全インターフェース待ち受けでは、クライアントが到達に使う LAN IP 等を列挙できない。
-  // この構成は既存の shouldRequireAuth() によりアクセストークン認証が必須になるため、
-  // README に記載済みの LAN 公開を壊さないよう Host 許可リスト検証は通す。
-  if (WILDCARD_HOSTS.has(configuredHost)) return true;
+  // 認証必須の構成では、外部公開に使う MagicDNS 名や .local 名を事前に列挙できない。
+  // DNS リバインディング経由では本アプリのトークンを提示できず認証で拒否されるため、
+  // 有効な形式であることだけを確認して許可リスト照合は省略する。
+  if (authRequired) return true;
 
   if (isLoopbackHost(requestHost) || requestHost === 'localhost') return true;
 

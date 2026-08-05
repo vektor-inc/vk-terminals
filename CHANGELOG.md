@@ -2,7 +2,7 @@
 
 ## 1.53.1
 
-- [ セキュリティ修正 ] HTTP API（スマホ用ページ・外部連携の窓口）が、接続先を示す Host ヘッダを待ち受け設定と照合し、想定外の名前を経由したアクセスを拒否するように修正（[#322](https://github.com/vektor-inc/vk-terminals/issues/322)）
+- [ セキュリティ修正 ] HTTP API（スマホ用ページ・外部連携の窓口）が、認証不要時に接続先を示す Host ヘッダを待ち受け先と照合し、想定外の名前を経由したアクセスを拒否するように修正（[#322](https://github.com/vektor-inc/vk-terminals/issues/322)）
 - [ 開発環境 ] 設定パネルの説明部品に未対応の種別名が指定されたとき、該当するタブ・位置・種別名をテストで検出する仕組みを追加（[#333](https://github.com/vektor-inc/vk-terminals/issues/333)）
 
 ## 1.53.0

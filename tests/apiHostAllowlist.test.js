@@ -3,12 +3,14 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
+const { shouldRequireAuth } = require('../utils/apiAuth');
 const { isAllowedApiHost, parseHostHeader } = require('../utils/apiHostAllowlist');
 
 const isAllowed = (hostHeader, overrides = {}) => isAllowedApiHost({
   hostHeader,
   apiHost: '127.0.0.1',
   actualHost: '127.0.0.1',
+  authRequired: false,
   ...overrides,
 });
 
@@ -29,6 +31,18 @@ test('localhost は末尾ドット・大文字小文字・ポートの有無を�
   }
 });
 
+test('localhost やループバックを一部に含む別名は拒否する', () => {
+  for (const host of [
+    'localhost.evil.com:13847',
+    'localhost.evil.com.',
+    'evil-localhost',
+    'notlocalhost',
+    '127.0.0.1.evil.com',
+  ]) {
+    assert.equal(isAllowed(host), false, host);
+  }
+});
+
 test('設定した apiHost と実際の待ち受けアドレスを正規化して許可する', () => {
   assert.equal(isAllowed('TERMINAL.EXAMPLE.COM:13847', {
     apiHost: 'terminal.example.com.',
@@ -43,6 +57,7 @@ test('設定した apiHost と実際の待ち受けアドレスを正規化し�
 test('Host ヘッダのポートと IPv6 の角括弧を正規化する', () => {
   assert.equal(parseHostHeader('example.com:13847'), 'example.com');
   assert.equal(parseHostHeader('[2001:db8::1]:13847'), '2001:db8::1');
+  assert.equal(parseHostHeader('[localhost]'), '');
   assert.equal(isAllowed('[2001:DB8::1]:13847', {
     apiHost: '2001:db8::1',
     actualHost: '2001:db8::1',
@@ -55,17 +70,31 @@ test('Host ヘッダが無い・空・配列・不正形式なら拒否する', 
   }
 });
 
-test('許可リストに無い攻撃者ドメインを拒否する', () => {
+test('認証不要の構成では許可リストに無いホストを拒否する', () => {
   assert.equal(isAllowed('evil.example.com:13847'), false);
 });
 
-test('apiHost が全インターフェース待ち受けなら Host 検証を通す', () => {
-  for (const apiHost of ['0.0.0.0', '::']) {
-    assert.equal(isAllowedApiHost({
-      hostHeader: '192.168.1.23:13847',
-      apiHost,
-      actualHost: apiHost,
-    }), true, apiHost);
-    assert.equal(isAllowedApiHost({ hostHeader: undefined, apiHost, actualHost: apiHost }), false, apiHost);
+test('apiHost が :: でも実際の待ち受けがループバックなら許可リストで拒否する', () => {
+  assert.equal(isAllowed('evil.example.com:13847', {
+    apiHost: '::',
+    actualHost: '127.0.0.1',
+  }), false);
+});
+
+test('認証必須の構成では有効な外部ホスト名を許可する', () => {
+  for (const authConfig of [
+    { actualHost: '100.101.102.103', requireAlways: false },
+    { actualHost: '127.0.0.1', requireAlways: true },
+  ]) {
+    assert.equal(isAllowed('mymac.tail1234.ts.net', {
+      actualHost: authConfig.actualHost,
+      authRequired: shouldRequireAuth(authConfig),
+    }), true);
+  }
+});
+
+test('認証必須の構成でも Host ヘッダが無い・空・不正形式なら拒否する', () => {
+  for (const host of [undefined, '', '   ', ['mymac.tail1234.ts.net'], 'example.com:not-a-port', '[localhost]']) {
+    assert.equal(isAllowed(host, { authRequired: true }), false, String(host));
   }
 });

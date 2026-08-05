@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.53.2
+
+- [ 仕様変更 ] タスク一覧の「orchestrator 停止中」表示が製品名の表記と揃っていなかったため、頭文字を大文字にして「Orchestrator 停止中」に統一
 - [ セキュリティ修正 ] HTTP API（スマホ用ページ・外部連携の窓口）が、認証不要時に接続先を示す Host ヘッダを待ち受け先と照合し、想定外の名前を経由したアクセスを拒否するように修正（[#322](https://github.com/vektor-inc/vk-terminals/issues/322)）
 
 ## 1.53.1

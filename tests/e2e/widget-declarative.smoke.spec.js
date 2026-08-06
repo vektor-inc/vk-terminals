@@ -773,6 +773,21 @@ test('サイドバー: 200px 幅で担当者フィルタ表示時もタスク見
     );
     expect(settingsHeaderStyle).toEqual(taskHeaderStyle);
     expect(settingsHeaderStyle).toEqual({ fontSize: '12px', accentHeight: '12px' });
+    const taskCenterDifference = await header.evaluate((element) => {
+      const headerRect = element.getBoundingClientRect();
+      const labelRect = element.querySelector('.sidebar-section-label').getBoundingClientRect();
+      const controlsRect = element.querySelector('.sidebar-section-controls').getBoundingClientRect();
+      const accent = getComputedStyle(element, '::before');
+      // 擬似要素には getBoundingClientRect() が無いため、align-self: center で揃うバー中心を
+      // 同じフレックス行にある操作グループの実座標から復元し、ラベルの実座標と比較する。
+      // 絶対配置へ戻った場合も以前のずれを検知できるよう、その実配置で中心を求める。
+      const accentCenterY = accent.position === 'absolute'
+        ? headerRect.top + Number.parseFloat(accent.top) + Number.parseFloat(accent.height) / 2
+        : controlsRect.top + controlsRect.height / 2;
+      const labelCenterY = labelRect.top + labelRect.height / 2;
+      return Math.abs(accentCenterY - labelCenterY);
+    });
+    expect(taskCenterDifference).toBeLessThanOrEqual(1);
     const wideAccentHeight = await header.evaluate(
       (element) => getComputedStyle(element, '::before').height
     );

@@ -120,15 +120,27 @@ test('設定カードの見出し全体をクリックすると設定モーダ�
     const positions = await header.evaluate((element) => {
       const headerRect = element.getBoundingClientRect();
       const iconRect = element.querySelector('.sidebar-menu-icon').getBoundingClientRect();
+      const labelRect = element.querySelector('.sidebar-section-label').getBoundingClientRect();
+      const headerStyle = getComputedStyle(element);
       const accent = getComputedStyle(element, '::before');
+      const accentWidth = Number.parseFloat(accent.width);
+      // 擬似要素には getBoundingClientRect() が無いため、先頭フレックス項目の実配置を
+      // ヘッダーと同一行アイコンの実座標、および算出済みスタイルから復元する。
+      // 絶対配置へ戻った場合も以前のずれを検知できるよう、その実配置で中心を求める。
+      const accentLeft = headerRect.left + Number.parseFloat(headerStyle.paddingLeft);
+      const accentCenterY = accent.position === 'absolute'
+        ? headerRect.top + Number.parseFloat(accent.top) + Number.parseFloat(accent.height) / 2
+        : iconRect.top + iconRect.height / 2;
       return {
-        accentLeft: headerRect.left + Number.parseFloat(accent.left),
-        accentRight: headerRect.left + Number.parseFloat(accent.left) + Number.parseFloat(accent.width),
+        accentLeft,
+        accentRight: accentLeft + accentWidth,
+        centerDifference: Math.abs(accentCenterY - (labelRect.top + labelRect.height / 2)),
         iconLeft: iconRect.left,
       };
     });
     expect(positions.accentLeft).toBeLessThan(positions.iconLeft);
     expect(positions.accentRight).toBeLessThan(positions.iconLeft);
+    expect(positions.centerDifference).toBeLessThanOrEqual(1);
 
     await header.click();
     await expect(win.locator('.settings-overlay')).toBeVisible();

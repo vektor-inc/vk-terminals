@@ -1163,27 +1163,23 @@ button.sidebar-section-header {
   cursor: pointer;
 }
 .sidebar-section-header {
-  position: relative;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
   width: 100%;
-  padding: 2px 4px 8px 13px;
+  padding: 2px 4px 8px;
   color: #c9d1d9;
   font-size: 12px;
   font-weight: 600;
 }
 .sidebar-section-header::before {
   /* アクセントは常に同じ青で強調だけを表す。警告・エラーなどの状態は色を変えず、
-   * .sidebar-section-controls にアイコンまたはバッジを追加して示す。
-   * top はヘッダーの padding-top と対応する。line-height を変更する場合は、文字と
-   * 1em のバーの縦位置がずれないように top もあわせて見直す。 */
+   * .sidebar-section-controls にアイコンまたはバッジを追加して示す。見出し行の中央に
+   * 揃えるため、絶対配置ではなく先頭のフレックス項目として配置する。 */
   content: '';
-  position: absolute;
-  top: 2px;
-  left: 4px;
-  width: 3px;
+  flex: 0 0 3px;
+  align-self: center;
   height: 1em;
   border-radius: var(--vktm--border-radius--sm);
   background: var(--vktm--color--section-accent);

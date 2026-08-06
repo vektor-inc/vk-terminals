@@ -3634,9 +3634,7 @@ function renderSettingsField(f, value, id) {
   }
 
   if (f.type === 'lines') {
-    // 配列でなければ文字列として扱う保存側（settingsTargets.js の coerceFieldValue）と
-    // 表示を揃える（issue #339）。文字列・配列以外は空欄にする判定は
-    // renderer/settingsLinesField.js の linesFieldDisplayText に切り出し済み。
+    // 判定は renderer/settingsLinesField.js の linesFieldDisplayText を参照（issue #339）。
     const body = escText(linesFieldDisplayText(value));
     return `<div class="settings-row">
       <label class="settings-label" for="${id}">${label}</label>${help}

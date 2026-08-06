@@ -764,6 +764,15 @@ test('サイドバー: 200px 幅で担当者フィルタ表示時もタスク見
     const section = win.locator('#task-list');
     await expect(section).toBeVisible({ timeout: 10_000 });
     const header = section.locator('.sidebar-section-header');
+    const settingsHeader = win.locator('#sidebar-settings .sidebar-section-header');
+    const [taskHeaderStyle, settingsHeaderStyle] = await Promise.all(
+      [header, settingsHeader].map((locator) => locator.evaluate((element) => ({
+        fontSize: getComputedStyle(element).fontSize,
+        accentHeight: getComputedStyle(element, '::before').height,
+      })))
+    );
+    expect(settingsHeaderStyle).toEqual(taskHeaderStyle);
+    expect(settingsHeaderStyle).toEqual({ fontSize: '12px', accentHeight: '12px' });
     const wideAccentHeight = await header.evaluate(
       (element) => getComputedStyle(element, '::before').height
     );

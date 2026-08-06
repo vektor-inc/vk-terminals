@@ -1158,6 +1158,8 @@ button.sidebar-section-header {
   background: transparent;
   text-align: left;
   font: inherit;
+  font-size: 12px;
+  font-weight: 600;
   cursor: pointer;
 }
 .sidebar-section-header {
@@ -1174,7 +1176,9 @@ button.sidebar-section-header {
 }
 .sidebar-section-header::before {
   /* アクセントは常に同じ青で強調だけを表す。警告・エラーなどの状態は色を変えず、
-   * .sidebar-section-controls にアイコンまたはバッジを追加して示す。 */
+   * .sidebar-section-controls にアイコンまたはバッジを追加して示す。
+   * top はヘッダーの padding-top と対応する。line-height を変更する場合は、文字と
+   * 1em のバーの縦位置がずれないように top もあわせて見直す。 */
   content: '';
   position: absolute;
   top: 2px;

@@ -1116,9 +1116,11 @@ function createSidebar() {
 }
 
 function createSidebarSettingsCard() {
-  const section = document.createElement('section');
-  section.id = 'sidebar-settings';
-  section.className = 'sidebar-section-card';
+  // 中身がボタン1つだけでランドマークとして移動する先がなく、section に aria-label を
+  // 付けると「設定」が領域名とボタン名で二重に読み上げられるため、意図的に div とする。
+  const card = document.createElement('div');
+  card.id = 'sidebar-settings';
+  card.className = 'sidebar-section-card';
 
   const header = document.createElement('button');
   header.type = 'button';
@@ -1131,8 +1133,8 @@ function createSidebarSettingsCard() {
   header.appendChild(label);
   header.addEventListener('click', () => openSettingsModal());
 
-  section.appendChild(header);
-  return section;
+  card.appendChild(header);
+  return card;
 }
 
 function createSidebarUsageCard() {

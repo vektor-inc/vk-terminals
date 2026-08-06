@@ -254,6 +254,11 @@ function shouldBeepForWaiting({ now, lastBeepAt, cooldownMs = WAITING_BEEP_COOLD
 //      これを避けるため、走査窓の全行から候補を集めて **最大値** を採る
 //      （collectAgentCounts）。0 という「無い」証拠が非0の「ある」証拠を
 //      上書きしないようにする。
+//   1b. 「← 0 agents」のように、実機の Claude Code が描画しないはずの値（0・
+//      桁数上限超え・先頭ゼロ埋め等）にしか一致しなかった場合は、それを 0 の
+//      根拠にせず null（不明）にする。⚠ 安藤の指摘（MEDIUM-2）: 「証拠が無い」
+//      （目印すら無い）と「証拠はあったが信用できなかった」はどちらも「確定できない」
+//      という点で同じであり、後者だけを 0 として扱う理由が無い。
 //   2. フッターの目印が無ければ null（不明）
 //   3. 目印の行、**および画面上でそれより下にある行**が "…" で截断されている場合は
 //      null（不明）。截断された先に agents セグメントがあったかどうか分からないため。
@@ -290,6 +295,20 @@ const WAITING_FOR_BACKGROUND_AGENTS_PATTERN = /Waiting for (\d{1,4})(?!\d) backg
 //   - `(?:agent|agen|age|ag|a)$` … 省略記号を伴わずに行末そのものが断片で切れている場合
 const BACKGROUND_AGENTS_ARROW_PATTERN =
   /←[ \t]*(\d{1,4})(?!\d)[ \t]*(?:agents?\b|(?:agents?|agen|age|ag|a)?[ \t]*(?:…|\.\.\.)|(?:agent|agen|age|ag|a)$)/gi;
+
+// BACKGROUND_AGENTS_ARROW_PATTERN と同じ形だが、\d{1,4}(?!\d) の桁数上限を外した
+// 「緩い」版。値の抽出には使わず（キャプチャは無視する）、collectAgentCounts が
+// 「厳格パターンでは一致しなかった行に、agents ヒントらしきものが実在したか」を
+// 判定するためだけに使う。安藤の指摘（MEDIUM-2）: 桁数上限超え（例: 5 桁以上）や
+// 先頭ゼロ埋め（例: 0000000002）だと厳格パターンはそもそも 1 件もマッチしない
+// （\d{1,4} は同じ開始位置から縮めるだけで、次の文字が常にまだ数字のままなので
+// 全長どこを取っても (?!\d) を満たせない）。マッチが 0 件だと「agents 表示が無い」
+// のと区別が付かず、素通りしてそのまま 0 になってしまう。この緩い版で「digit + agent
+// の断片/省略記号」という形自体は実在したことを検知し、0 と断定しない根拠にする。
+// g フラグを持たないため matchAll 専用の lastIndex 汚染の心配は無く、.test() で
+// 十分（安藤の指摘 MEDIUM-1 と同じ理由で、この用途には g を付けない）。
+const BACKGROUND_AGENTS_ARROW_AMBIGUOUS_PATTERN =
+  /←[ \t]*\d+[ \t]*(?:agents?\b|(?:agents?|agen|age|ag|a)?[ \t]*(?:…|\.\.\.)|(?:agent|agen|age|ag|a)$)/i;
 
 // Claude Code の画面であることの常時表示の目印（フッター行）。
 // このいずれかが検知できて初めて「フッターが読み取れる状態」とみなす。
@@ -330,23 +349,47 @@ function parseSafeAgentCount(rawDigits) {
 // 集めてから最大値を選ぶ。
 //
 // 正規表現に g フラグを付けているのは String.prototype.matchAll に渡すために必要
-// なため。matchAll は渡された正規表現の lastIndex を書き換えず（内部で複製して走査する
-// 仕様）、モジュール直下の共有定数を毎回 new RegExp し直したり lastIndex を手動で
-// リセットしたりする必要がない。exec/test で g フラグ付き正規表現を使うと呼び出し
-// ごとに lastIndex がずれる間欠バグの温床になるため、この 2 定数は matchAll 専用とし、
-// 他の場所（exec/test）では使わないこと。
+// なため。matchAll は渡された正規表現の複製（内部で新しく作られる別オブジェクト）
+// の lastIndex は書き換えないが、**その複製を作る際に元の正規表現オブジェクトの
+// lastIndex を読み取って引き継ぐ**（安藤の指摘 MEDIUM-1）。つまり守られるのは
+// 「書き込みされない」ことだけで、「外部から汚染されない」ことは守られない。
+// この 2 定数は module 内に閉じている（export していない）とはいえ、念のため
+// 呼び出しのたびに明示的に 0 へリセットし、外部汚染や呼び出し順に依存しない形にする。
 function collectAgentCounts(lines) {
   let best = null;
+  // 「証拠らしきものは見えたが、値として信用できなかった」ことを覚えておく。
+  // 実機の Claude Code は「← 0 agents」を描画しない（サブエージェントが無ければ
+  // セグメント自体を出さない）ため、0 にマッチした・桁数上限を超えた・先頭ゼロ埋め
+  // だったなどの理由で「0」として扱われた場合、それは確定した 0 の根拠にはならず
+  // ノイズでしかない。0 と断定せず不明（null）側へ倒す判断材料として記録する
+  // （安藤の指摘 MEDIUM-2）。
+  let sawUnreadableEvidence = false;
   for (const line of lines) {
+    // 「← N agents」の厳格パターンがこの行で 1 件でも一致したか。一致していれば、
+    // 桁数上限超え・先頭ゼロ埋めの心配は無い（その場合はそもそも一致しないため）ので、
+    // 後段の緩いパターンでの二重検知はしない。
+    let arrowMatchedOnLine = false;
     for (const pattern of [WAITING_FOR_BACKGROUND_AGENTS_PATTERN, BACKGROUND_AGENTS_ARROW_PATTERN]) {
+      pattern.lastIndex = 0;
       for (const m of line.matchAll(pattern)) {
+        if (pattern === BACKGROUND_AGENTS_ARROW_PATTERN) arrowMatchedOnLine = true;
         const n = parseSafeAgentCount(m[1]);
-        if (n === null) continue;
+        if (n === null || n === 0) {
+          sawUnreadableEvidence = true;
+          continue;
+        }
         if (best === null || n > best) best = n;
       }
     }
+    // 厳格パターンが 1 件も一致しなかった行でも、桁数上限を外した緩いパターンで
+    // 「agents ヒントらしきもの」を検知できた場合（安藤の指摘 MEDIUM-2: 範囲外の
+    // 桁数「← 99999 agents」・先頭ゼロ埋め「← 0000000002 agents」等）は、
+    // 「何も無かった」と区別できないまま 0 の根拠にしないよう記録する。
+    if (!arrowMatchedOnLine && BACKGROUND_AGENTS_ARROW_AMBIGUOUS_PATTERN.test(line)) {
+      sawUnreadableEvidence = true;
+    }
   }
-  return best;
+  return { best, sawUnreadableEvidence };
 }
 
 // バックグラウンドで動いている Claude Code サブエージェントの数を判定する。
@@ -364,22 +407,39 @@ function collectAgentCounts(lines) {
 // 返り値:
 //   - 整数（0 以上）: 値が確定した（agents 表示が読めた、またはフッターが最後まで
 //     読めていて agents 表示が無かった）
-//   - null: 不明。バッファが空・Claude Code の画面ではない・フッターが截断されていて
-//     agents 表示の有無を確認できない、のいずれか。呼び出し側は 0 と区別して扱うこと。
+//   - null: 不明。バッファが空・Claude Code の画面ではない・agents ヒントらしきものは
+//     見えたが値を確定できない（0・桁数上限超え・先頭ゼロ埋め）・フッターが截断されて
+//     いて agents 表示の有無を確認できない、のいずれか。呼び出し側は 0 と区別して扱う
+//     こと。
 function detectBackgroundAgents(screenText) {
   if (typeof screenText !== 'string' || screenText === '') return null;
   const lines = screenText.split('\n');
 
-  // 1. 正の証拠を走査窓の全行から集め、最大値を採る（0 に打ち消されない）。
-  const found = collectAgentCounts(lines);
-  if (found !== null && found > 0) return found;
+  // 1. 正の証拠を走査窓の全行から集め、最大値を採る（best は必ず 1 以上。0 に
+  //    打ち消されない）。
+  const { best, sawUnreadableEvidence } = collectAgentCounts(lines);
+  if (best !== null) return best;
+
+  // 1b. 「← 0 agents」のような、実機では出現しないはずの信用できない証拠
+  //     （0・桁数上限超え・先頭ゼロ埋め等）を見た場合は、0 と断定せず不明側へ倒す
+  //     （安藤の指摘 MEDIUM-2: 規則2「目印が無ければ null」より、確定できない
+  //     証拠を 0 と断定してしまうほうが誤りが大きい）。
+  if (sawUnreadableEvidence) return null;
 
   // 2. フッターの目印が無ければ Claude Code の画面と確証が持てないため不明。
   const footerIndex = lines.findIndex((line) => CLAUDE_CODE_FOOTER_PATTERN.test(line));
-  if (footerIndex === -1) return found; // found はここでは null か 0（明示的な 0 表記）
+  if (footerIndex === -1) return null;
 
   // 3. 目印行、**およびそれより画面下側の全行**が截断されていれば 0 と断定しない
   //    （HIGH-2: agents ヒントが目印と別行に出るレイアウトも塞ぐ）。
+  //
+  //    既知の残存リスク（対応不要・記録のみ、安藤・司と合意済み）: 「✻ Waiting for
+  //    N background agents to finish」ナレーションは入力ボックスより**上**（＝
+  //    footerIndex より前）に出るため、この截断チェックの対象外になる。ナレーション
+  //    行だけが截断され、目印行以降が無傷だと 0 を返す経路が残る。ただし Claude Code
+  //    はツール結果の行を日常的に "…" で切り詰めるため、チェック範囲を画面全体へ
+  //    広げると大半の画面が null に落ち、この機能自体が実用にならない。見逃しの
+  //    実害（稀）と可用性の低下（大半が null 化）を比較し、あえて塞がない判断とした。
   for (let i = footerIndex; i < lines.length; i++) {
     if (isTruncatedLine(lines[i])) return null;
   }
@@ -412,12 +472,24 @@ function detectBackgroundAgents(screenText) {
 // 截断の目印（省略記号）も無いまま 0 と誤判定される恐れがある。isWrapped が真の
 // 行は改行を挟まず直前の行へ連結する。
 //
-// 返り値: 行文字列の配列。buffer が不正な形（duck typing に失敗）なら null。
+// 安藤の指摘（LOW-2）: 境界値が緩く、契約（「buffer が不正な形なら null」）と
+// 食い違うケースがあった。
+//   - baseY が buffer.length を超える（あるいは負の）値だと、素朴には空配列や
+//     負インデックス読み出しにつながる → baseY は 0 未満に倒さずクランプする
+//   - maxLines が数値でない・0 以下だと NaN 経由で意図せず空配列になる
+//     → 事前に検証し、不正なら null にする
+//   - 結果として読める行が 1 行も無かった場合も、呼び出し側からは「バッファが
+//     不正だった」場合と区別が付かない空配列ではなく null を返す
+//
+// 返り値: 行文字列の配列（1 行以上）。buffer / maxLines が不正な形、または
+// 読める行が 1 行も無かった場合は null。
 function extractScreenLines(buffer, maxLines) {
   if (!buffer || typeof buffer.length !== 'number' || typeof buffer.getLine !== 'function') return null;
+  if (typeof maxLines !== 'number' || !Number.isFinite(maxLines) || maxLines <= 0) return null;
   const total = buffer.length;
   if (!Number.isFinite(total) || total <= 0) return null;
-  const baseY = Number.isFinite(buffer.baseY) ? buffer.baseY : 0;
+  const rawBaseY = Number.isFinite(buffer.baseY) ? buffer.baseY : 0;
+  const baseY = Math.max(0, rawBaseY);
   const start = Math.max(baseY, total - maxLines);
   const lines = [];
   for (let i = start; i < total; i++) {
@@ -430,15 +502,21 @@ function extractScreenLines(buffer, maxLines) {
       lines.push(text);
     }
   }
-  return lines;
+  return lines.length > 0 ? lines : null;
 }
 
 return {
-  BACKGROUND_AGENTS_ARROW_PATTERN,
+  // BACKGROUND_AGENTS_ARROW_PATTERN / WAITING_FOR_BACKGROUND_AGENTS_PATTERN は
+  // あえて export しない（安藤の指摘 MEDIUM-1）。g フラグ付き正規表現は lastIndex
+  // という可変状態を持つオブジェクトのため、外部から .test()/.exec() を一度でも
+  // 呼ばれると、次の matchAll 呼び出し（collectAgentCounts 側で毎回 lastIndex を
+  // 0 にリセットしているので実害は無いが）に依存しない設計であっても、export した
+  // 時点で「外部から触ってよいもの」という誤解を招く。この 2 定数は
+  // collectAgentCounts の内部実装詳細として module 内に閉じ、他モジュール・
+  // テストからは detectBackgroundAgents 経由でのみ振る舞いを検証する。
   CLAUDE_CODE_FOOTER_PATTERN,
   MAX_BACKGROUND_AGENTS,
   WAITING_BEEP_COOLDOWN_MS,
-  WAITING_FOR_BACKGROUND_AGENTS_PATTERN,
   WAITING_MAX_EVAL_INTERVAL_MS,
   WAITING_PATTERNS,
   WAITING_QUIESCENCE_MS,

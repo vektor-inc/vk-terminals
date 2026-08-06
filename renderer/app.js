@@ -303,9 +303,12 @@ function appendWaitingBuffer(prev, data) {
 // 凍結して lastOutputTime が古いまま固定される。司令塔が「出力が止まった＝
 // 終了」と誤認する、この issue と同種の事故を別経路で起こしてしまうため、
 // 必ず try/catch で受け止めて不明（null）側へフォールバックする。
+// 安藤の指摘（LOW-1）: 存在チェック（t.term.buffer.active へのプロパティアクセス
+// 連鎖）自体も try の外にあると、MEDIUM-2 で入れた例外の受け止めがその手前で
+// 素通りしてしまう。存在チェックごと try の内側へ入れる。
 function readBackgroundAgents(t) {
-  if (!t || !t.term || !t.term.buffer || !t.term.buffer.active) return null;
   try {
+    if (!t || !t.term || !t.term.buffer || !t.term.buffer.active) return null;
     const lines = extractScreenLines(t.term.buffer.active, BACKGROUND_AGENTS_SCAN_LINES);
     if (lines === null) return null;
     return detectBackgroundAgents(lines.join('\n'));

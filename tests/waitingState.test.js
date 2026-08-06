@@ -473,6 +473,25 @@ test('detectBackgroundAgents: 目印行は無傷でもヒント行だけが截�
   assert.equal(detectBackgroundAgents(screen), null);
 });
 
+test('detectBackgroundAgents: 目印が無く、迷子の「← 0 agents」しか無ければ不明（null）のまま（MEDIUM-2・N1）', () => {
+  // 規則2「目印が無ければ null」は変わらない。「← 0 agents」という信用できない
+  // 証拠（実機では出現しないはずの 0）を見たとしても、目印そのものが無い以上、
+  // それを根拠に 0 と断定してはいけない（安藤の再レビュー N1 のケース）。
+  const screen = [
+    '⏺ 参考: 過去のログには「← 0 agents」という表示が残っていました。',
+    '$ echo done',
+  ].join('\n');
+  assert.equal(detectBackgroundAgents(screen), null);
+});
+
+test('detectBackgroundAgents: 目印が無く、「Waiting for 0 background agents to finish」しか無ければ不明（null）のまま（MEDIUM-2・N2）', () => {
+  const screen = [
+    '✻ Waiting for 0 background agents to finish',
+    '$ echo done',
+  ].join('\n');
+  assert.equal(detectBackgroundAgents(screen), null);
+});
+
 test('detectBackgroundAgents: 桁数が異常に大きい数値（現実には截断を伴う）は null のまま（LOW: 上限チェック）', () => {
   // 20 桁の数値は実際の端末幅では必ず截断されるため、截断側の判定で null になる
   // ことを確認する（安藤の検証結果「20桁→null」）。
@@ -484,16 +503,19 @@ test('detectBackgroundAgents: 桁数が異常に大きい数値（現実には�
   assert.equal(detectBackgroundAgents(screen), null);
 });
 
-test('detectBackgroundAgents: 桁数上限（4桁）を超える数値はそもそも正の証拠として拾わない（截断していなくても巨大な数を返さない）', () => {
-  // 截断されていない（省略記号なし）ケースでも、5 桁以上の数値は \d{1,4} + (?!\d) に
-  // より拾われない。JSON に天文学的な数値が載る事故を防ぐ防御であることを、
-  // 截断判定に頼らない形でも確認する（0 になる＝巨大な数をそのまま返さない）。
+test('detectBackgroundAgents: 桁数上限（4桁）を超える数値は 0 と断定せず不明（null）にする（MEDIUM-2・N3）', () => {
+  // 截断されていない（省略記号なし）ケースでも、5 桁以上の数値は厳格パターン
+  // （\d{1,4} + (?!\d)）には 1 件も一致しない。ここで「一致が無い＝agents 表示が
+  // 無い」と早合点すると、JSON に載らないだけで実態は「読み取れなかった」だけの
+  // ケースを 0 と断定してしまう。緩いパターン（BACKGROUND_AGENTS_ARROW_AMBIGUOUS_
+  // PATTERN）で「agents ヒントらしきものが実在した」ことを検知し、null（不明）にする
+  // ことを確認する（安藤の再レビュー・実測「N3 範囲外の5桁 → 0」からの回帰防止）。
   const screen = [
     '❯ ',
     '  bypass permissions on (shift+tab to cycle)',
     '                              ← 99999 agents · ↓ to manage',
   ].join('\n');
-  assert.equal(detectBackgroundAgents(screen), 0);
+  assert.equal(detectBackgroundAgents(screen), null);
 });
 
 test('detectBackgroundAgents: 「← 3 apples remaining」は agents ではないので拾わない（MEDIUM-3）', () => {
@@ -505,18 +527,61 @@ test('detectBackgroundAgents: 「← 3 apples remaining」は agents ではな�
   assert.equal(detectBackgroundAgents(screen), 0);
 });
 
-test('detectBackgroundAgents: 先頭ゼロ埋めの数値（実機では出現しない想定）は不明側へ倒れる（副作用として許容）', () => {
+test('detectBackgroundAgents: 先頭ゼロ埋めの数値は 0 と断定せず不明（null）にする（MEDIUM-2・N4）', () => {
   // 「← 0000000002 agents」のように先頭にゼロが並ぶと、桁数上限のための
   // (?!\d) 判定が数字の開始位置から縮めていく形になるため、10 桁分の数字全体が
-  // 1〜4 桁のどの切り出し方でも「直後がまだ数字」になり、結局どこにもマッチしない。
-  // 実機の Claude Code は先頭ゼロ埋めの表記を出さないため実害は無く、
-  // 不明側（null ではなく、目印は読めるので 0）に倒れる分は安全側。
+  // 1〜4 桁のどの切り出し方でも「直後がまだ数字」になり、厳格パターンは結局
+  // どこにもマッチしない。実機の Claude Code は先頭ゼロ埋めの表記を出さないため
+  // 実際には起きないが、「一致が無い＝agents 表示が無い」と早合点して 0 と断定する
+  // のは誤り（0 は確定値であって不明側ではないため、それ自体は安全側の値ではない）。
+  // 緩いパターンで「agents ヒントらしきもの」を検知し null（不明）にすることを確認する。
   const screen = [
     '❯ ',
     '  bypass permissions on (shift+tab to cycle)',
     '                              ← 0000000002 agents · ↓ to manage',
   ].join('\n');
-  assert.equal(detectBackgroundAgents(screen), 0);
+  assert.equal(detectBackgroundAgents(screen), null);
+});
+
+// 安藤の指摘（MEDIUM-1）: matchAll は元の正規表現オブジェクトの lastIndex を
+// 「書き換え」はしないが、複製を作る際に「読み取って引き継ぐ」。したがって、g フラグ
+// 付きの共有正規表現オブジェクトに対して外部から .test()/.exec() が一度でも呼ばれると、
+// 以後の matchAll がその汚染された位置から始まってしまい、本来ヒットするはずの
+// 一致を取りこぼす（false 0）。
+//
+// 対応: 該当する 2 定数（WAITING_FOR_BACKGROUND_AGENTS_PATTERN /
+// BACKGROUND_AGENTS_ARROW_PATTERN）は module の export から外し（この waitingState.js
+// の UMD ラッパーはクロージャなので、Node の require からも一切参照できない）、加えて
+// collectAgentCounts が呼び出しのたびに明示的に lastIndex を 0 へリセットする、の
+// 二重の対策にした。
+//
+// ここでは「外部から .test() を呼んで汚した直後の detectBackgroundAgents 呼び出し」を
+// 文字どおり再現するテストは書けない（それこそが export を外した狙いで、外部の
+// テストコードから汚染対象の正規表現オブジェクトへ到達する経路が無いことを意味する）。
+// 代わりに、汚染が起きたときに壊れるはずの性質——「一致箇所が文字列の先頭から離れた
+// 位置にある入力を、連続で何度呼んでも毎回正しく検知できること」——を、実際に公開
+// されている detectBackgroundAgents だけを使って検証する。もし将来 lastIndex の
+// リセットが失われ、かつ何らかの経路で lastIndex が動いてしまうようなことがあれば、
+// このテストが 2 回目以降の呼び出しで失敗して検知できる。
+test('detectBackgroundAgents: 一致位置が先頭から離れた入力を連続で判定しても毎回正しく検知できる（lastIndex 汚染の回帰防止・MEDIUM-1）', () => {
+  const farMatch = [
+    'x'.repeat(500), // 一致箇所をある程度後方へ追いやるための無関係な前置き
+    '❯ ',
+    '  bypass permissions on (shift+tab to cycle)',
+    '                              ← 3 agents · ↓ to manage',
+  ].join('\n');
+  for (let i = 0; i < 5; i++) {
+    assert.equal(detectBackgroundAgents(farMatch), 3, `${i + 1} 回目の呼び出しで一致しなかった`);
+  }
+
+  // 「Waiting for N ... to finish」パターン側も同様に確認する（別の共有定数）。
+  const farWaitingMatch = [
+    'x'.repeat(500),
+    '✻ Waiting for 4 background agents to finish',
+  ].join('\n');
+  for (let i = 0; i < 5; i++) {
+    assert.equal(detectBackgroundAgents(farWaitingMatch), 4, `${i + 1} 回目の呼び出しで一致しなかった`);
+  }
 });
 
 test('detectBackgroundAgents: 「← 5 and counting」は agents ではないので拾わない（MEDIUM-3）', () => {
@@ -656,4 +721,30 @@ test('extractScreenLines: buffer が不正な形（duck typing 失敗）なら n
 test('extractScreenLines: length が 0 以下なら null', () => {
   const buffer = makeStubBuffer({ length: 0, baseY: 0 });
   assert.equal(extractScreenLines(buffer, 20), null);
+});
+
+// ─── 境界値の締め直し（安藤の指摘 LOW-2） ────────────────────────────────────
+// 「buffer / maxLines が不正な形なら null」という契約に対し、境界値がいくつか
+// 緩かった。結果的には null に落ちるケースもあったが、契約どおり明示的に検証する。
+
+test('extractScreenLines: baseY が buffer.length を超えていても例外にならず null（読める行が無い）', () => {
+  // 通常は起こらない想定だが、baseY が総行数を超えるような不整合な入力でも、
+  // 負インデックスへの読み出し等を起こさず安全に null へ倒れることを確認する。
+  const buffer = makeStubBuffer({ length: 10, baseY: 100 });
+  assert.equal(extractScreenLines(buffer, 20), null);
+});
+
+test('extractScreenLines: baseY が負の値でも 0 未満へは倒さない（クランプ）', () => {
+  const buffer = makeStubBuffer({ length: 5, baseY: -3 });
+  const lines = extractScreenLines(buffer, 20);
+  assert.deepEqual(lines, ['line-0', 'line-1', 'line-2', 'line-3', 'line-4']);
+});
+
+test('extractScreenLines: maxLines が数値でない・0 以下なら null', () => {
+  const buffer = makeStubBuffer({ length: 10, baseY: 0 });
+  assert.equal(extractScreenLines(buffer, undefined), null);
+  assert.equal(extractScreenLines(buffer, NaN), null);
+  assert.equal(extractScreenLines(buffer, 0), null);
+  assert.equal(extractScreenLines(buffer, -5), null);
+  assert.equal(extractScreenLines(buffer, 'twenty'), null);
 });

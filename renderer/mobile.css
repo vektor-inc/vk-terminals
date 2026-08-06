@@ -208,11 +208,16 @@ button.k.kill.is-locked:active { background: #6b3f3f; border-color: #7c4a4a; }
 /* ==========================================================================
    タスク一覧
    ========================================================================== */
+/* セクションの面はペインのカード（.card = var(--card)）より一段明るくする。
+ * 同じ var(--card) / var(--card-border) を使っていたためペインのカードと見分けが
+ * つかなかった。--card 自体は他のカード（ペイン・使用量）と共有しているので変えず、
+ * このセクションにだけ明るい面を与える。中のカード（.task-item は #161b22）は
+ * この面より暗くなり、面の階層で区別される。 */
 .task-list {
   margin: 10px 10px 0;
   padding: 11px 13px 13px;
-  background: var(--card);
-  border: 1px solid var(--card-border);
+  background: #262b33;
+  border: 1px solid #39404a;
   border-radius: 8px;
 }
 .task-list[hidden] { display: none; }
@@ -279,7 +284,9 @@ button.k.kill.is-locked:active { background: #6b3f3f; border-color: #7c4a4a; }
   min-height: 44px;
   margin-top: 10px;
   padding: 9px 34px 9px 11px;
-  border: 1px solid #606c7c;
+  /* 面が #262b33 へ明るくなった分、#606c7c では境界が 2.66:1 まで落ちて
+   * WCAG 1.4.11（UI 部品 3:1）を割るため、一段明るい境界色にする（3.78:1）。 */
+  border: 1px solid #7d8590;
   border-radius: 8px;
   background-color: #2f353e;
   color: var(--fg);

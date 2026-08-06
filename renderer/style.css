@@ -1416,10 +1416,16 @@ body.resizing-sidebar .sidebar {
 
 /* ─── Task list（サイドバーの task-queue スナップショット, issue #197）───────
  * vk-orchestrator が書き出す tasks-view.json を読み取り専用カードで縦積みする。 */
+/* セクションの面はサイドバーの地（#0d1117）より一段明るい #1c2128 にする。
+ * 背景無し＋上端 1px 線だけだと、サイドバーの地にも、同じ枠色（#21262d）を持つ
+ * ペイン（.pane）にも同化して、どこからがタスク領域なのか読み取れなかったため。
+ * 中のカード（.task-item は #0d1117）はこの面より暗くなり、面の階層で区別される。 */
 .task-list {
-  margin: 10px 8px 0;
-  padding-top: 10px;
-  border-top: 1px solid #21262d;
+  margin: 10px 8px;
+  padding: 10px 8px;
+  border: 1px solid #30363d;
+  border-radius: var(--vktm--border-radius--md);
+  background: #1c2128;
 }
 .task-list[hidden] {
   display: none;
@@ -1493,7 +1499,9 @@ body.resizing-sidebar .sidebar {
   max-width: 120px;
   height: 24px;
   padding: 2px 6px;
-  border: 1px solid #30363d;
+  /* 面が #1c2128 へ明るくなった分、#30363d では境界が 1.34:1 まで落ちるため、
+   * :root の注記どおり対話部品用の境界色へ寄せる（面に対して 5.27:1）。 */
+  border: 1px solid var(--vktm--color--border-interactive);
   border-radius: var(--vktm--border-radius--sm);
   background: #0d1117;
   color: #c9d1d9;

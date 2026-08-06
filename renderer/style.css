@@ -1091,7 +1091,9 @@ body:has(.confirm-overlay) .vk-toast-layer {
  * スクロール表示し、右端の .sidebar-resizer で幅をドラッグ変更する（issue #89）。 */
 .sidebar {
   --vktm--sidebar-section-inset: 8px;
-  --vktm--color--section-accent: var(--vktm--color--focus-ring);
+  /* shared.css の規約どおり、同系色でも別用途にはフォーカスリング用変数を割り当てない。
+   * フォーカス枠と意図的に同じ #58a6ff を使うが、装飾用トークンとして独立させる。 */
+  --vktm--color--section-accent: #58a6ff;
   position: relative;
   flex: 0 0 0;
   width: var(--vktm-sidebar-width, 330px);

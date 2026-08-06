@@ -132,12 +132,14 @@ test('設定カードの見出し全体をクリックすると設定モーダ�
         ? headerRect.top + Number.parseFloat(accent.top) + Number.parseFloat(accent.height) / 2
         : iconRect.top + iconRect.height / 2;
       return {
+        accentBackgroundColor: accent.backgroundColor,
         accentLeft,
         accentRight: accentLeft + accentWidth,
         centerDifference: Math.abs(accentCenterY - (labelRect.top + labelRect.height / 2)),
         iconLeft: iconRect.left,
       };
     });
+    expect(positions.accentBackgroundColor).toBe('rgb(88, 166, 255)');
     expect(positions.accentLeft).toBeLessThan(positions.iconLeft);
     expect(positions.accentRight).toBeLessThan(positions.iconLeft);
     expect(positions.centerDifference).toBeLessThanOrEqual(1);

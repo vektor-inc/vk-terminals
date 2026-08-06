@@ -102,3 +102,37 @@ test('使用量データが null のときサイドバー使用量カードは h
     await closeApp({ app, tmpRoot });
   }
 });
+
+test('設定カードの見出し全体をクリックすると設定モーダルが開く', async () => {
+  const port = await getFreePort();
+  const { app, win, tmpRoot } = await launchSidebarUsageApp(port);
+  try {
+    const card = win.locator('#sidebar-settings');
+    const header = card.locator('button.sidebar-section-header');
+    await expect(header).toContainText('設定');
+    await expect(header.locator('.sidebar-menu-icon')).toHaveText('⚙');
+    await expect(header.locator('.sidebar-section-label')).toHaveText('設定');
+    expect(await card.evaluate((element) => ({
+      previous: element.previousElementSibling?.className,
+      next: element.nextElementSibling?.id,
+    }))).toEqual({ previous: 'sidebar-menu-inner', next: 'task-list' });
+
+    const positions = await header.evaluate((element) => {
+      const headerRect = element.getBoundingClientRect();
+      const iconRect = element.querySelector('.sidebar-menu-icon').getBoundingClientRect();
+      const accent = getComputedStyle(element, '::before');
+      return {
+        accentLeft: headerRect.left + Number.parseFloat(accent.left),
+        accentRight: headerRect.left + Number.parseFloat(accent.left) + Number.parseFloat(accent.width),
+        iconLeft: iconRect.left,
+      };
+    });
+    expect(positions.accentLeft).toBeLessThan(positions.iconLeft);
+    expect(positions.accentRight).toBeLessThan(positions.iconLeft);
+
+    await header.click();
+    await expect(win.locator('.settings-overlay')).toBeVisible();
+  } finally {
+    await closeApp({ app, tmpRoot });
+  }
+});

@@ -1104,13 +1104,35 @@ function createSidebar() {
   inner.className = 'sidebar-menu-inner';
   nav.appendChild(inner);
 
-  // タスクセクション / 格納ペインセクション（renderSidebarMenu の再構築対象外・別管理）
+  // 設定 / タスクセクション / 格納ペインセクション（renderSidebarMenu の再構築対象外・別管理）
+  // 設定は従来どおりユーザー追加メニューの後ろへ置き、その次にタスクを並べる。
+  nav.appendChild(createSidebarSettingsCard());
   nav.appendChild(createTaskListContainer());
   nav.appendChild(createPaneStashContainer());
 
   aside.appendChild(nav);
   aside.appendChild(createSidebarResizer());
   return aside;
+}
+
+function createSidebarSettingsCard() {
+  const section = document.createElement('section');
+  section.id = 'sidebar-settings';
+  section.className = 'sidebar-section-card';
+
+  const header = document.createElement('button');
+  header.type = 'button';
+  header.className = 'sidebar-section-header';
+  header.appendChild(createMenuIcon('⚙'));
+
+  const label = document.createElement('span');
+  label.className = 'sidebar-section-label';
+  label.textContent = '設定';
+  header.appendChild(label);
+  header.addEventListener('click', () => openSettingsModal());
+
+  section.appendChild(header);
+  return section;
 }
 
 function createSidebarUsageCard() {

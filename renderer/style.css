@@ -1091,6 +1091,7 @@ body:has(.confirm-overlay) .vk-toast-layer {
  * スクロール表示し、右端の .sidebar-resizer で幅をドラッグ変更する（issue #89）。 */
 .sidebar {
   --vktm--sidebar-section-inset: 8px;
+  --vktm--color--section-accent: var(--vktm--color--focus-ring);
   position: relative;
   flex: 0 0 0;
   width: var(--vktm-sidebar-width, 330px);
@@ -1151,16 +1152,41 @@ body.resizing-sidebar .sidebar {
 .sidebar-section-card[hidden] {
   display: none;
 }
+button.sidebar-section-header {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
 .sidebar-section-header {
+  position: relative;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
   width: 100%;
-  padding: 2px 4px 8px;
+  padding: 2px 4px 8px 13px;
   color: #c9d1d9;
   font-size: 12px;
   font-weight: 600;
+}
+.sidebar-section-header::before {
+  /* アクセントは常に同じ青で強調だけを表す。警告・エラーなどの状態は色を変えず、
+   * .sidebar-section-controls にアイコンまたはバッジを追加して示す。 */
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 4px;
+  width: 3px;
+  height: 1em;
+  border-radius: var(--vktm--border-radius--sm);
+  background: var(--vktm--color--section-accent);
+}
+button.sidebar-section-header:hover {
+  border-radius: var(--vktm--border-radius--sm);
+  background: #21262d;
 }
 .sidebar-section-label {
   flex: 1 1 4em;
@@ -1180,10 +1206,13 @@ body.resizing-sidebar .sidebar {
   margin-left: auto;
   white-space: nowrap;
 }
-.sidebar-section-toggle {
+.btn.sidebar-section-toggle {
   flex: 0 0 24px;
   width: 24px;
   height: 24px;
+  border: 1px solid var(--vktm--color--border-interactive);
+  border-radius: var(--vktm--border-radius--sm);
+  background: transparent;
   color: #8b949e;
   font-size: 12px;
 }

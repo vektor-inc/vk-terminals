@@ -677,6 +677,16 @@ test('サイドバー: 長いメニュー見出しは 200px 幅で省略し、�
         },
       ],
     },
+    {
+      items: [
+        {
+          id: 'untitled-item',
+          label: '無題メニュー項目',
+          icon: '🧰',
+          action: { type: 'open-settings' },
+        },
+      ],
+    },
   ];
   const { app, win, tmpRoot } = await launchWidgetApp(port, { menuItems });
   const sidebar = win.locator('#sidebar');
@@ -688,8 +698,8 @@ test('サイドバー: 長いメニュー見出しは 200px 幅で省略し、�
     await expect(section).toHaveAttribute('id', 'sidebar-menu-section-config-0');
     await expect(section.locator('.sidebar-section-label')).toHaveAttribute('title', longTitle);
 
-    // title を持たない組み込み「設定」は、カードや見出しを足さず直下のプレーン ul に保つ。
-    const plainList = menuInner.locator(':scope > .sidebar-menu-list').filter({ hasText: '設定' });
+    // title を持たない設定メニューは、カードや見出しを足さず直下のプレーン ul に保つ。
+    const plainList = menuInner.locator(':scope > .sidebar-menu-list').filter({ hasText: '無題メニュー項目' });
     await expect(plainList).toHaveCount(1);
     await expect(menuInner.getByText('メニュー', { exact: true })).toHaveCount(0);
 
@@ -753,6 +763,10 @@ test('サイドバー: 200px 幅で担当者フィルタ表示時もタスク見
     const sidebarMenu = win.locator('.sidebar-menu');
     const section = win.locator('#task-list');
     await expect(section).toBeVisible({ timeout: 10_000 });
+    const header = section.locator('.sidebar-section-header');
+    const wideAccentHeight = await header.evaluate(
+      (element) => getComputedStyle(element, '::before').height
+    );
     await sidebar.evaluate((element) => {
       element.style.setProperty('--vktm-sidebar-width', '200px');
     });
@@ -765,6 +779,11 @@ test('サイドバー: 200px 幅で担当者フィルタ表示時もタスク見
     await expect(filter).toBeVisible();
     await expect(toggle).toBeVisible();
 
+    const narrowAccentHeight = await header.evaluate(
+      (element) => getComputedStyle(element, '::before').height
+    );
+    expect(narrowAccentHeight).toBe(wideAccentHeight);
+
     const bounds = await Promise.all([
       sidebarMenu.evaluate((element) => element.getBoundingClientRect().toJSON()),
       label.evaluate((element) => element.getBoundingClientRect().toJSON()),
@@ -776,6 +795,25 @@ test('サイドバー: 200px 幅で担当者フィルタ表示時もタスク見
       expect(controlBounds.right).toBeLessThanOrEqual(bounds[0].right);
     }
     expect(bounds[1].width).toBeGreaterThanOrEqual(48);
+
+    await toggle.focus();
+    const toggleStyle = await toggle.evaluate((element) => {
+      const style = getComputedStyle(element);
+      return {
+        width: style.width,
+        height: style.height,
+        borderWidth: style.borderWidth,
+        borderStyle: style.borderStyle,
+        outlineOffset: style.outlineOffset,
+      };
+    });
+    expect(toggleStyle).toEqual({
+      width: '24px',
+      height: '24px',
+      borderWidth: '1px',
+      borderStyle: 'solid',
+      outlineOffset: '2px',
+    });
 
     await toggle.click();
     await expect(section.locator('.sidebar-section-body')).toBeHidden();

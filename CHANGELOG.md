@@ -1,5 +1,7 @@
 # Changelog
 
+## 1.55.0
+
 - [ 機能追加 ] `GET /api/states` の各ペイン情報に、そのペインでバックグラウンドに動いている Claude Code サブエージェント数を示す `backgroundAgents` を追加。画面から判定できない場合は `0` と区別して `null`（不明）を返す（[#340](https://github.com/vektor-inc/vk-terminals/issues/340)）
 - [ 仕様変更 ] サイドバーの使用量・設定・見出し付きメニュー・タスク・格納したペインを見出しが判別しやすい共通カード表示に統一し、内容を持つカードを折り畳めるように変更（[#337](https://github.com/vektor-inc/vk-terminals/issues/337)）
 - [ 不具合修正 ] 設定ファイルに文字列で書かれた項目（`workspace.search_paths` など）が設定画面のリスト欄で空欄に表示され、そのまま保存すると値が消えてしまう不具合を修正（[#339](https://github.com/vektor-inc/vk-terminals/issues/339)）

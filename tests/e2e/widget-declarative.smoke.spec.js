@@ -632,8 +632,16 @@ test('サイドバー: 右端トグルで一覧を折り畳み・展開でき、
   try {
     const section = win.locator('#task-list');
     await expect(section).toBeVisible({ timeout: 10_000 });
-    const toggle = section.locator('.task-list-toggle');
+    const toggle = section.locator('.sidebar-section-toggle');
     const body = section.locator('.task-list-body');
+
+    // サイドバー下限幅でも、ラベル・担当者フィルタ・トグルを持つ共通見出しがはみ出さない。
+    await win.locator('#sidebar').evaluate((sidebar) => {
+      sidebar.style.setProperty('--vktm-sidebar-width', '200px');
+    });
+    expect(await section.locator('.sidebar-section-header').evaluate((header) => (
+      header.scrollWidth <= header.clientWidth
+    ))).toBe(true);
 
     // 初期は展開。
     await expect(body).toBeVisible();
@@ -644,13 +652,17 @@ test('サイドバー: 右端トグルで一覧を折り畳み・展開でき、
     await expect(body).toBeHidden();
     await expect(toggle).toHaveAttribute('aria-expanded', 'false');
     await expect(section).toContainText('タスク');
-    expect(await win.evaluate(() => localStorage.getItem('vkt.taskListCollapsed'))).toBe('1');
+    expect(await win.evaluate(() => JSON.parse(
+      localStorage.getItem('vkt.sidebarSectionsCollapsed')
+    )['task-list'])).toBe(true);
 
     // 再クリックで展開に戻る。
     await toggle.click();
     await expect(body).toBeVisible();
     await expect(toggle).toHaveAttribute('aria-expanded', 'true');
-    expect(await win.evaluate(() => localStorage.getItem('vkt.taskListCollapsed'))).toBe('0');
+    expect(await win.evaluate(() => JSON.parse(
+      localStorage.getItem('vkt.sidebarSectionsCollapsed')
+    )['task-list'])).toBe(false);
   } finally {
     await closeAppForcefully({ app, tmpRoot });
     fs.rmSync(dataRoot, { recursive: true, force: true });

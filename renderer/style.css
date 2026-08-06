@@ -1126,26 +1126,64 @@ body.resizing-sidebar .sidebar {
 }
 .sidebar-menu-inner {
   width: 100%;
+  padding: 0;
+}
+
+/* サイドバーセクション共通カード（issue #337）
+   ========================================================================== */
+.sidebar-section-card {
+  margin: 10px 8px;
   padding: 10px 8px;
+  border: 1px solid #30363d;
+  border-radius: var(--vktm--border-radius--md);
+  background: #1c2128;
+}
+.sidebar-section-card[hidden] {
+  display: none;
+}
+.sidebar-section-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 2px 4px 8px;
+  color: #c9d1d9;
+  font-size: 12px;
+  font-weight: 600;
+}
+.sidebar-section-label {
+  flex: 0 0 auto;
+  min-width: 0;
+  white-space: nowrap;
+}
+.sidebar-section-controls {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  min-width: 0;
+  margin-left: auto;
+  white-space: nowrap;
+}
+.sidebar-section-toggle {
+  flex: 0 0 24px;
+  width: 24px;
+  height: 24px;
+  color: #8b949e;
+  font-size: 12px;
+}
+.sidebar-section-toggle:focus-visible {
+  outline: var(--vktm--outline--focus-ring);
+  outline-offset: var(--vktm--outline-offset--focus-ring);
+}
+.sidebar-section-card.collapsed .sidebar-section-body {
+  display: none;
 }
 
 .sidebar-usage {
   flex: 0 0 auto;
-  width: 100%;
-  padding: 10px 12px 12px;
-  border-bottom: 1px solid #21262d;
-  background: #0d1117;
-}
-.sidebar-usage[hidden] {
-  display: none;
-}
-.sidebar-usage-title {
-  margin-bottom: 8px;
-  color: #8b949e;
-  font-size: 11px;
-  font-weight: 600;
-  line-height: 1.2;
-  white-space: nowrap;
+  margin-bottom: 0;
 }
 .sidebar-usage .usage-section {
   margin-bottom: 12px;
@@ -1218,12 +1256,6 @@ body.resizing-sidebar .sidebar {
 .sidebar-menu-list,
 .sidebar-submenu-list {
   list-style: none;
-}
-.sidebar-section-title {
-  padding: 10px 8px 5px;
-  color: #8b949e;
-  font-size: 11px;
-  font-weight: 600;
 }
 .sidebar-menu-item {
   margin: 2px 0;
@@ -1298,20 +1330,6 @@ body.resizing-sidebar .sidebar {
 
 /* ─── Pane stash（サイドバーへの格納, issue #89）───────────────────────────────
  * メニューリストの下に、格納ペインをコンパクトカードで縦積みする。 */
-.pane-stash {
-  margin: 10px 8px 0;
-  padding-top: 10px;
-  border-top: 1px solid #21262d;
-}
-.pane-stash[hidden] {
-  display: none;
-}
-.pane-stash-title {
-  padding: 0 4px 6px;
-  color: #8b949e;
-  font-size: 11px;
-  font-weight: 600;
-}
 .pane-stash-list {
   list-style: none;
   margin: 0;
@@ -1416,33 +1434,6 @@ body.resizing-sidebar .sidebar {
 
 /* ─── Task list（サイドバーの task-queue スナップショット, issue #197）───────
  * vk-orchestrator が書き出す tasks-view.json を読み取り専用カードで縦積みする。 */
-/* セクションの面はサイドバーの地（#0d1117）より一段明るい #1c2128 にする。
- * 背景無し＋上端 1px 線だけだと、サイドバーの地にも、同じ枠色（#21262d）を持つ
- * ペイン（.pane）にも同化して、どこからがタスク領域なのか読み取れなかったため。
- * 中のカード（.task-item は #0d1117）はこの面より暗くなり、面の階層で区別される。 */
-.task-list {
-  margin: 10px 8px;
-  padding: 10px 8px;
-  border: 1px solid #30363d;
-  border-radius: var(--vktm--border-radius--md);
-  background: #1c2128;
-}
-.task-list[hidden] {
-  display: none;
-}
-/* 見出しは非インタラクティブなコンテナ（div）。ラベル（左）＋ 操作グループ（右端）を並べる。
-   開閉トグルとプルダウンは兄弟要素として controls グループにまとめる（issue #226）。 */
-.task-list-title {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 6px;
-  width: 100%;
-  padding: 2px 4px 8px;
-  color: #c9d1d9;
-  font-size: 12px;
-  font-weight: 600;
-}
 .task-list-title-text {
   flex: 0 0 auto;
 }
@@ -1483,20 +1474,12 @@ body.resizing-sidebar .sidebar {
   opacity: 1;
 }
 
-/* 操作グループ（プルダウン＋開閉トグル）
-   ========================================================================== */
-/* 右端へ寄せ、グループ内は分断させない（折り返すならグループ境界で）。 */
-.task-list-controls {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  margin-left: auto;
-  flex-wrap: nowrap;
-}
 /* 担当者フィルタのプルダウン。ダークパレットに合わせ、OS 標準の明色ドロップダウンが浮かないようにする。
  * color-scheme: dark で、開いた option リスト（ネイティブ描画）も OS ライト環境で暗くする。 */
 .task-list-assignee-filter {
-  max-width: 120px;
+  width: 120px;
+  min-width: 0;
+  max-width: calc(100% - 28px);
   height: 24px;
   padding: 2px 6px;
   /* 面が #1c2128 へ明るくなった分、#30363d では境界が 1.34:1 まで落ちるため、
@@ -1520,17 +1503,6 @@ body.resizing-sidebar .sidebar {
   outline: var(--vktm--outline--focus-ring);
   outline-offset: var(--vktm--outline-offset--focus-ring);
 }
-/* 開閉トグル（当たり判定は 24×24 CSS px 以上）。.btn を基調に少しコンパクトにする。 */
-.task-list-toggle {
-  width: 24px;
-  height: 24px;
-  font-size: 12px;
-  color: #8b949e;
-}
-.task-list-toggle:focus-visible {
-  outline: var(--vktm--outline--focus-ring);
-  outline-offset: var(--vktm--outline-offset--focus-ring);
-}
 /* フィルタ結果件数の live region（視覚的に隠し、SR にだけ伝える）。 */
 .task-list-live {
   position: absolute;
@@ -1542,9 +1514,6 @@ body.resizing-sidebar .sidebar {
   clip: rect(0 0 0 0);
   white-space: nowrap;
   border: 0;
-}
-.task-list.collapsed .task-list-body {
-  display: none;
 }
 .task-list-stale {
   margin: 0 0 8px;

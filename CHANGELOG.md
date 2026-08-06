@@ -1,6 +1,7 @@
 # Changelog
 
 - [ 仕様変更 ] サイドバーの使用量・設定・見出し付きメニュー・タスク・格納したペインを見出しが判別しやすい共通カード表示に統一し、内容を持つカードを折り畳めるように変更（[#337](https://github.com/vektor-inc/vk-terminals/issues/337)）
+- [ 不具合修正 ] 設定ファイルに文字列で書かれた項目（`workspace.search_paths` など）が設定画面のリスト欄で空欄に表示され、そのまま保存すると値が消えてしまう不具合を修正（[#339](https://github.com/vektor-inc/vk-terminals/issues/339)）
 
 ## 1.54.0
 

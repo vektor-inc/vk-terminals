@@ -65,6 +65,7 @@ const { getPrBadgePresentation } = window.VKPrBadge;
 const { resolveQueueIssuesListUrl } = window.VKTaskQueueLink;
 const { isPatternValid } = window.VKSettingsValidation;
 const { isFieldVisible } = window.VKSettingsVisibility;
+const { linesFieldDisplayText } = window.VKSettingsLinesField;
 const { createAutoCloseController } = window.VKAutoClose;
 const { createSingleOpenGuard } = window.VKSettingsModalGuard;
 const { createEscapeLayerStack } = window.VKEscapeLayer;
@@ -3712,7 +3713,8 @@ function renderSettingsField(f, value, id) {
   }
 
   if (f.type === 'lines') {
-    const body = Array.isArray(value) ? escText(value.join('\n')) : '';
+    // 判定は renderer/settingsLinesField.js の linesFieldDisplayText を参照（issue #339）。
+    const body = escText(linesFieldDisplayText(value));
     return `<div class="settings-row">
       <label class="settings-label" for="${id}">${label}</label>${help}
       <textarea id="${id}" rows="4" spellcheck="false">${body}</textarea>

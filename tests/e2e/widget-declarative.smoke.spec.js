@@ -713,13 +713,13 @@ test('サイドバー: 長いメニュー見出しは 200px 幅で省略し、�
     expect(bounds[1].top).toBeGreaterThanOrEqual(bounds[0].top);
     expect(bounds[1].bottom).toBeLessThanOrEqual(bounds[0].bottom);
 
-    // カードと無題のプレーンリストは同じ左右インセットを参照する。
-    const sectionAndListBounds = await Promise.all([
-      section.evaluate((element) => element.getBoundingClientRect().toJSON()),
-      plainList.evaluate((element) => element.getBoundingClientRect().toJSON()),
+    // カード内と無題リスト内で、実際に見える項目のアイコン列を揃える。
+    const itemIconBounds = await Promise.all([
+      section.locator('.sidebar-menu-icon').first().evaluate((element) => element.getBoundingClientRect().toJSON()),
+      plainList.locator('.sidebar-menu-icon').first().evaluate((element) => element.getBoundingClientRect().toJSON()),
     ]);
-    expect(sectionAndListBounds[1].left).toBe(sectionAndListBounds[0].left);
-    expect(sectionAndListBounds[1].right).toBe(sectionAndListBounds[0].right);
+    // カードだけが持つ 1px の border 分は、視覚上無視できる許容差とする。
+    expect(Math.abs(itemIconBounds[1].left - itemIconBounds[0].left)).toBeLessThanOrEqual(1);
 
     await toggle.click();
     await expect(section.locator('.sidebar-section-body')).toBeHidden();

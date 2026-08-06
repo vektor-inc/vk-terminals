@@ -1133,6 +1133,7 @@ body.resizing-sidebar .sidebar {
 }
 .sidebar-menu-inner > .sidebar-menu-list {
   margin: 10px var(--vktm--sidebar-section-inset);
+  padding: 0 var(--vktm--sidebar-section-inset);
 }
 
 /* サイドバーセクション共通カード（issue #337）
@@ -1142,7 +1143,7 @@ body.resizing-sidebar .sidebar {
    * 背景無し＋上端 1px 線だけではサイドバーの地やペインに同化し、領域の境界を
    * 読み取れなかったため。中のカードは暗くなり、面の階層で区別される。 */
   margin: 10px var(--vktm--sidebar-section-inset);
-  padding: 10px 8px;
+  padding: 10px var(--vktm--sidebar-section-inset);
   border: 1px solid #30363d;
   border-radius: var(--vktm--border-radius--md);
   background: #1c2128;

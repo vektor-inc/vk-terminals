@@ -121,27 +121,18 @@ test('設定カードの見出し全体をクリックすると設定モーダ�
       const headerRect = element.getBoundingClientRect();
       const iconRect = element.querySelector('.sidebar-menu-icon').getBoundingClientRect();
       const labelRect = element.querySelector('.sidebar-section-label').getBoundingClientRect();
-      const headerStyle = getComputedStyle(element);
-      const accent = getComputedStyle(element, '::before');
-      const accentWidth = Number.parseFloat(accent.width);
-      // 擬似要素には getBoundingClientRect() が無いため、先頭フレックス項目の実配置を
-      // ヘッダーと同一行アイコンの実座標、および算出済みスタイルから復元する。
-      // 絶対配置へ戻った場合も以前のずれを検知できるよう、その実配置で中心を求める。
-      const accentLeft = headerRect.left + Number.parseFloat(headerStyle.paddingLeft);
-      const accentCenterY = accent.position === 'absolute'
-        ? headerRect.top + Number.parseFloat(accent.top) + Number.parseFloat(accent.height) / 2
-        : iconRect.top + iconRect.height / 2;
       return {
-        accentBackgroundColor: accent.backgroundColor,
-        accentLeft,
-        accentRight: accentLeft + accentWidth,
-        centerDifference: Math.abs(accentCenterY - (labelRect.top + labelRect.height / 2)),
-        iconLeft: iconRect.left,
+        // 見出しの先頭に飾りを足すと、アイコンがカード内容の左端から下がって
+        // 他のカードと縦に揃わなくなるため、擬似要素が描かれていないことを確かめる。
+        accentContent: getComputedStyle(element, '::before').content,
+        iconIndent: iconRect.left - headerRect.left,
+        centerDifference: Math.abs(
+          (iconRect.top + iconRect.height / 2) - (labelRect.top + labelRect.height / 2)
+        ),
       };
     });
-    expect(positions.accentBackgroundColor).toBe('rgb(88, 166, 255)');
-    expect(positions.accentLeft).toBeLessThan(positions.iconLeft);
-    expect(positions.accentRight).toBeLessThan(positions.iconLeft);
+    expect(positions.accentContent).toBe('none');
+    expect(positions.iconIndent).toBeLessThanOrEqual(1);
     expect(positions.centerDifference).toBeLessThanOrEqual(1);
 
     await header.click();

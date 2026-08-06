@@ -29,6 +29,7 @@ test('デスクトップの Claude 使用量はサイドバー最上部に常時
 
     const usage = win.locator('#sidebar-usage');
     await expect(usage).toBeVisible();
+    await expect(usage.locator('.sidebar-section-label')).not.toHaveAttribute('title', /.+/);
     await expect(usage.locator('.sidebar-usage-body')).toHaveAttribute('aria-live', 'polite');
     await expect(usage).toContainText('Claude使用量');
     await expect(usage.locator('.usage-section-title').nth(0)).toHaveText('セッション');
@@ -79,6 +80,24 @@ test('使用量データが null のときサイドバー使用量カードは h
 
     await expect(usage).toHaveAttribute('hidden', '');
     await expect(usage).toBeHidden();
+    await expect(win.locator('#sidebar-codex-usage')).toBeHidden();
+
+    // 使用量カードが両方 hidden でも、固定領域とスクロール領域の境界線は nav 上端に残り、
+    // サイドバー上端へ接するため途中で宙に浮かない。
+    const boundary = await win.locator('.sidebar-menu').evaluate((element) => {
+      const sidebarRect = element.parentElement.getBoundingClientRect();
+      const menuRect = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      return {
+        borderTopStyle: style.borderTopStyle,
+        borderTopWidth: style.borderTopWidth,
+        menuTop: menuRect.top,
+        sidebarTop: sidebarRect.top,
+      };
+    });
+    expect(boundary.borderTopStyle).toBe('solid');
+    expect(boundary.borderTopWidth).toBe('1px');
+    expect(boundary.menuTop).toBe(boundary.sidebarTop);
   } finally {
     await closeApp({ app, tmpRoot });
   }

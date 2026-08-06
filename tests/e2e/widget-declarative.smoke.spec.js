@@ -689,7 +689,8 @@ test('サイドバー: 長いメニュー見出しは 200px 幅で省略し、�
     await expect(section.locator('.sidebar-section-label')).toHaveAttribute('title', longTitle);
 
     // title を持たない組み込み「設定」は、カードや見出しを足さず直下のプレーン ul に保つ。
-    await expect(menuInner.locator(':scope > .sidebar-menu-list').filter({ hasText: '設定' })).toHaveCount(1);
+    const plainList = menuInner.locator(':scope > .sidebar-menu-list').filter({ hasText: '設定' });
+    await expect(plainList).toHaveCount(1);
     await expect(menuInner.getByText('メニュー', { exact: true })).toHaveCount(0);
 
     originalWidth = await sidebar.evaluate((element) => ({
@@ -702,14 +703,23 @@ test('サイドバー: 長いメニュー見出しは 200px 幅で省略し、�
 
     const toggle = section.locator('.sidebar-section-toggle');
     await expect(toggle).toBeVisible();
+    const sidebarMenu = win.locator('.sidebar-menu');
     const bounds = await Promise.all([
-      sidebar.evaluate((element) => element.getBoundingClientRect().toJSON()),
+      sidebarMenu.evaluate((element) => element.getBoundingClientRect().toJSON()),
       toggle.evaluate((element) => element.getBoundingClientRect().toJSON()),
     ]);
     expect(bounds[1].left).toBeGreaterThanOrEqual(bounds[0].left);
     expect(bounds[1].right).toBeLessThanOrEqual(bounds[0].right);
     expect(bounds[1].top).toBeGreaterThanOrEqual(bounds[0].top);
     expect(bounds[1].bottom).toBeLessThanOrEqual(bounds[0].bottom);
+
+    // カードと無題のプレーンリストは同じ左右インセットを参照する。
+    const sectionAndListBounds = await Promise.all([
+      section.evaluate((element) => element.getBoundingClientRect().toJSON()),
+      plainList.evaluate((element) => element.getBoundingClientRect().toJSON()),
+    ]);
+    expect(sectionAndListBounds[1].left).toBe(sectionAndListBounds[0].left);
+    expect(sectionAndListBounds[1].right).toBe(sectionAndListBounds[0].right);
 
     await toggle.click();
     await expect(section.locator('.sidebar-section-body')).toBeHidden();
@@ -727,5 +737,51 @@ test('サイドバー: 長いメニュー見出しは 200px 幅で省略し、�
       }, originalWidth).catch(() => {});
     }
     await closeAppForcefully({ app, tmpRoot });
+  }
+});
+
+// ─── 14: 担当者フィルタ表示時も下限幅でラベルとトグルを保つ ───
+test('サイドバー: 200px 幅で担当者フィルタ表示時もタスク見出しとトグルを可視・操作可能に保つ', async () => {
+  const port = await getFreePort();
+  const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-widget-decl-narrow-filter-'));
+  const widgetFile = path.join(dataRoot, 'tasks-widget.json');
+  writeJson(widgetFile, buildWidget());
+
+  const { app, win, tmpRoot } = await launchWidgetApp(port, { widgetFile });
+  try {
+    const sidebar = win.locator('#sidebar');
+    const sidebarMenu = win.locator('.sidebar-menu');
+    const section = win.locator('#task-list');
+    await expect(section).toBeVisible({ timeout: 10_000 });
+    await sidebar.evaluate((element) => {
+      element.style.setProperty('--vktm-sidebar-width', '200px');
+    });
+
+    const label = section.locator('.sidebar-section-label');
+    const filter = section.locator('.task-list-assignee-filter');
+    const toggle = section.locator('.sidebar-section-toggle');
+    await expect(label).toContainText('タスク');
+    await expect(label).not.toHaveAttribute('title', /.+/);
+    await expect(filter).toBeVisible();
+    await expect(toggle).toBeVisible();
+
+    const bounds = await Promise.all([
+      sidebarMenu.evaluate((element) => element.getBoundingClientRect().toJSON()),
+      label.evaluate((element) => element.getBoundingClientRect().toJSON()),
+      filter.evaluate((element) => element.getBoundingClientRect().toJSON()),
+      toggle.evaluate((element) => element.getBoundingClientRect().toJSON()),
+    ]);
+    for (const controlBounds of bounds.slice(1)) {
+      expect(controlBounds.left).toBeGreaterThanOrEqual(bounds[0].left);
+      expect(controlBounds.right).toBeLessThanOrEqual(bounds[0].right);
+    }
+    expect(bounds[1].width).toBeGreaterThanOrEqual(48);
+
+    await toggle.click();
+    await expect(section.locator('.sidebar-section-body')).toBeHidden();
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  } finally {
+    await closeAppForcefully({ app, tmpRoot });
+    fs.rmSync(dataRoot, { recursive: true, force: true });
   }
 });

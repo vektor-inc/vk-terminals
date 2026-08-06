@@ -1090,6 +1090,7 @@ body:has(.confirm-overlay) .vk-toast-layer {
  * 固定ヘッダーの使用量カードの下で、内側の nav（.sidebar-menu）がメニューと格納ペインを
  * スクロール表示し、右端の .sidebar-resizer で幅をドラッグ変更する（issue #89）。 */
 .sidebar {
+  --vktm--sidebar-section-inset: 8px;
   position: relative;
   flex: 0 0 0;
   width: var(--vktm-sidebar-width, 330px);
@@ -1122,11 +1123,16 @@ body.resizing-sidebar .sidebar {
   width: 100%;
   min-height: 0;
   min-width: 0;
+  /* カード枠とは別に全幅へ引き、固定される使用量ゾーンとスクロール領域を区切る。 */
+  border-top: 1px solid #21262d;
   overflow: hidden auto;
 }
 .sidebar-menu-inner {
   width: 100%;
   padding: 0;
+}
+.sidebar-menu-inner > .sidebar-menu-list {
+  margin: 10px var(--vktm--sidebar-section-inset);
 }
 
 /* サイドバーセクション共通カード（issue #337）
@@ -1135,7 +1141,7 @@ body.resizing-sidebar .sidebar {
   /* セクションの面はサイドバーの地（#0d1117）より一段明るい #1c2128 にする。
    * 背景無し＋上端 1px 線だけではサイドバーの地やペインに同化し、領域の境界を
    * 読み取れなかったため。中のカードは暗くなり、面の階層で区別される。 */
-  margin: 10px 8px;
+  margin: 10px var(--vktm--sidebar-section-inset);
   padding: 10px 8px;
   border: 1px solid #30363d;
   border-radius: var(--vktm--border-radius--md);
@@ -1146,6 +1152,7 @@ body.resizing-sidebar .sidebar {
 }
 .sidebar-section-header {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
   width: 100%;
@@ -1155,19 +1162,20 @@ body.resizing-sidebar .sidebar {
   font-weight: 600;
 }
 .sidebar-section-label {
-  flex: 1 1 auto;
-  min-width: 0;
+  flex: 1 1 4em;
+  min-width: 4em;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .sidebar-section-controls {
   display: flex;
-  flex: 0 0 auto;
+  flex: 0 1 auto;
   align-items: center;
   justify-content: flex-end;
   gap: 4px;
   min-width: 0;
+  max-width: 100%;
   margin-left: auto;
   white-space: nowrap;
 }

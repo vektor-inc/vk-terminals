@@ -854,6 +854,7 @@ let sidebarResizeState = null;
 const DEFAULT_SIDEBAR_WIDTH = 330;
 const SIDEBAR_MIN_WIDTH = 200;
 migrateLegacyState();
+// null プロトタイプのため、hasOwnProperty など Object.prototype のメソッドは持たない。
 const sidebarSectionsCollapsed = readCollapsedSections();
 
 function isReducedMotion() {
@@ -977,6 +978,7 @@ function createSidebarSectionHeader(section, options) {
     controls = [],
     labelClassName = '',
     labelId = '',
+    labelTitle = '',
     toggleLabelText = labelText,
   } = options;
   const header = document.createElement('div');
@@ -986,7 +988,7 @@ function createSidebarSectionHeader(section, options) {
   if (labelId) label.id = labelId;
   label.className = ['sidebar-section-label', labelClassName].filter(Boolean).join(' ');
   label.textContent = labelText;
-  label.title = labelText;
+  if (labelTitle) label.title = labelTitle;
   header.appendChild(label);
 
   const controlGroup = document.createElement('div');
@@ -1044,19 +1046,20 @@ function renderSidebarMenu() {
     const items = Array.isArray(section?.items) ? section.items : [];
     for (const item of items) list.appendChild(createMenuItem(item));
 
-    // main プロセスからは必ず source が届く。欠損した malformed/旧IPCデータには安定した
-    // 出どころが無いため、描画位置を fallback にする。通常ソースとは別名にして影響を局所化する。
-    const source = typeof section?.source === 'string' && section.source
-      ? section.source
-      : `source-missing-${sectionIndex}`;
-    const sourceIndex = sourceSectionIndexes.get(source) || 0;
-    sourceSectionIndexes.set(source, sourceIndex + 1);
-
     // title 省略は、前後のメニューへ馴染ませるプレーンリストという公開仕様。
     if (!section?.title) {
       inner.appendChild(list);
       continue;
     }
+
+    // main プロセスからは必ず source が届く。欠損した malformed/旧IPCデータには安定した
+    // 出どころが無いため、描画位置を fallback にする。通常ソースとは別名にして影響を局所化する。
+    // 折り畳み状態を持たない無題リストは、source ごとのカード連番を消費させない。
+    const source = typeof section?.source === 'string' && section.source
+      ? section.source
+      : `source-missing-${sectionIndex}`;
+    const sourceIndex = sourceSectionIndexes.get(source) || 0;
+    sourceSectionIndexes.set(source, sourceIndex + 1);
 
     const sectionEl = document.createElement('div');
     const sectionId = `sidebar-menu-section-${encodeSidebarSectionIdPart(source)}-${sourceIndex}`;
@@ -1069,6 +1072,7 @@ function renderSidebarMenu() {
       labelText: section.title,
       body: list,
       labelId: `${sectionId}-label`,
+      labelTitle: section.title,
     });
     list.setAttribute('aria-labelledby', label.id);
     sectionEl.appendChild(header);

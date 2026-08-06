@@ -57,6 +57,7 @@ function readCollapsedSections(storage) {
 }
 
 function migrateLegacyState(storage) {
+  // true は実際に移行したかではなく、移行不要の場合も含めてエラー無く完了したことを表す。
   const resolvedStorage = getStorage(storage);
   if (!resolvedStorage) return false;
   try {

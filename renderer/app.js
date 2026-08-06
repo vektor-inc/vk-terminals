@@ -44,6 +44,7 @@ const {
 // エージェントルーム（issue #58）。サブエージェントの稼働状況をドット絵キャラで可視化する。
 const { AGENT_ORDER, buildScene, resolveAgentStatesFromOutput } = window.VKAgentRoom;
 const {
+  detectBackgroundAgents,
   isOutputQuiescent,
   isWaitingCwdExcluded,
   matchesWaiting,
@@ -161,6 +162,11 @@ const WIDGET_LEGACY_NOTICE_TEXT = 'orchestrator の更新が必要な可能性�
 const LASTLINES_MAX_LINES = 80;
 const LASTLINES_MAX_CHARS = 8000;
 
+// バックグラウンドサブエージェント数（issue #340）の判定に読む画面末尾の行数。
+// Claude Code のフッター行（"bypass permissions on" 等）と「← N agents」ヒントは
+// 画面下端の数行以内に収まるため、余裕を見て 20 行あれば十分。
+const BACKGROUND_AGENTS_SCAN_LINES = 20;
+
 // ─── ID generation ────────────────────────────────────────────────────────────
 let _idCounter = 0;
 const newId = () => `pane-${++_idCounter}`;
@@ -273,6 +279,34 @@ function appendWaitingBuffer(prev, data) {
     merged = merged.slice(-LASTLINES_MAX_CHARS);
   }
   return merged;
+}
+
+// バックグラウンドサブエージェント数（issue #340）を、xterm の画面バッファから
+// 都度読み直して判定する。
+//
+// t.lastLines（appendWaitingBuffer が積む累積バッファ）ではなく、
+// t.term.buffer.active（xterm が実際に画面へ描画している内容そのもの）を読む。
+// 累積バッファには過去に流れた「← N agents」の描画が残り続けるため、素朴に
+// 走査するとサブエージェント終了後もいつまでも古い数を返し、「終わると 0 に
+// 戻る」という完了条件を満たせない（buffer.active は現在の画面そのものなので
+// この問題が起きない）。
+//
+// buffer.active.length は総行数（スクロールバック込み）。末尾
+// BACKGROUND_AGENTS_SCAN_LINES 行（＝現在画面の下端）だけを取り出し、
+// 判定は renderer/waitingState.js の detectBackgroundAgents（純粋関数）に委ねる。
+function readBackgroundAgents(t) {
+  if (!t || !t.term || !t.term.buffer || !t.term.buffer.active) return null;
+  const buf = t.term.buffer.active;
+  const total = buf.length;
+  if (!Number.isFinite(total) || total <= 0) return null;
+  const rows = Math.min(BACKGROUND_AGENTS_SCAN_LINES, total);
+  const lines = [];
+  for (let i = total - rows; i < total; i++) {
+    const line = buf.getLine(i);
+    // trimRight: true で各行の末尾空白を除去（translateToString の標準オプション）。
+    if (line) lines.push(line.translateToString(true));
+  }
+  return detectBackgroundAgents(lines.join('\n'));
 }
 
 // 入力（ユーザー入力・ドロップ送信・API 送信）があったペインのローカル入力待ち状態を解除する。
@@ -4846,6 +4880,10 @@ setInterval(() => {
       lastOutputTime: t.lastOutputTime,
       lastInputTime: t.lastInputTime,
       lastLines: t.lastLines,
+      // backgroundAgents（issue #340）: バックグラウンドで動く Claude Code サブ
+      // エージェント数。整数（0 以上）または不明を表す null。既存フィールドの
+      // 意味・値には影響しない追加のみのフィールド。
+      backgroundAgents: readBackgroundAgents(t),
       // taskTitle: OSC 0/2 由来のタイトル（後方互換のため既存キーを維持）
       // apiTitle:  POST /api/set-title 由来のタイトル（issue #22 で分離）
       // apiUrl:    POST /api/set-title 由来の URL（issue #29）。apiTitle 表示時のみリンク化される

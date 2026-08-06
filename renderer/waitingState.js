@@ -210,11 +210,58 @@ function shouldBeepForWaiting({ now, lastBeepAt, cooldownMs = WAITING_BEEP_COOLD
   return now - lastBeepAt >= cooldownMs;
 }
 
+// ─── バックグラウンドサブエージェント数の検知（issue vektor-inc/vk-terminals#340）──
+//
+// 背景: 司令塔（vk-orchestrator）はペインの稼働判定を lastOutputTime（最後の画面出力
+// 時刻）の新しさだけで行っている。Claude Code のメイン応答が終わり、サブエージェント
+// だけがバックグラウンドで走っている間は画面の再描画が止まり出力が流れなくなるため、
+// 司令塔が「作業終了」と誤認してしまう（2026-08-06 に実際発生）。この誤認を防ぐため、
+// 画面末尾に出るフッター表示からバックグラウンドで動くサブエージェント数を読み取る。
+//
+// Claude Code のフッターには、サブエージェントが動いている間だけ右側に
+// 「← N agents · ↓ to manage」（単数形は「← 1 agent」）が表示される。
+const BACKGROUND_AGENTS_HINT_PATTERN = /←\s*(\d+)\s*agents?\b/i;
+
+// Claude Code の画面であることの常時表示の目印（フッター行）。
+// このいずれかが検知できて初めて「フッターが読み取れる状態」とみなす。
+//   - "? for shortcuts"                        : 既定モードのフッター
+//   - "bypass permissions on (shift+tab ...)"   : 権限確認バイパスモードのフッター
+//   - "accept edits on (shift+tab ...)"         : 編集自動承認モードのフッター
+// 後者 2 つは "(shift+tab to cycle)" を伴うため、まとめて拾えるようにしている。
+// 実機の vk-terminals 稼働ペイン（~/.vk-terminals/states.json に記録された実際の
+// 画面出力）で "bypass permissions on (shift+tab to cycle)" を確認済み。
+const CLAUDE_CODE_FOOTER_PATTERN = /\?\s*for\s+shortcuts|shift\+tab\s+to\s+cycle|bypass permissions on|accept edits on/i;
+
+// バックグラウンドで動いている Claude Code サブエージェントの数を判定する。
+//
+// 引数 screenText には、累積バッファ（lastLines）ではなく **現在画面に表示されている
+// 内容のスナップショット**（xterm の term.buffer.active から読んだ末尾数行）を渡すこと。
+// 累積バッファをそのまま渡すと、サブエージェント終了後も過去に流れた
+// 「← N agents」の描画がバッファに残り続け、いつまでも古い数を返してしまう
+// （完了条件「サブエージェントが終わると 0 に戻る」を満たせなくなる）。
+// 呼び出し側は matchesWaiting と同様、ANSI 除去済みのテキストを渡す想定。
+//
+// 返り値:
+//   - 整数（0 以上）: フッターの目印が読み取れ、値が確定した（agents 表示が無ければ 0）
+//   - null:          目印自体が読み取れない（バッファが空・Claude Code の画面ではない等）
+//                    の「不明」。呼び出し側は 0 と区別して扱うこと。
+function detectBackgroundAgents(screenText) {
+  if (typeof screenText !== 'string' || screenText === '') return null;
+  if (!CLAUDE_CODE_FOOTER_PATTERN.test(screenText)) return null;
+  const match = BACKGROUND_AGENTS_HINT_PATTERN.exec(screenText);
+  if (!match) return 0;
+  const n = parseInt(match[1], 10);
+  return Number.isInteger(n) && n >= 0 ? n : 0;
+}
+
 return {
+  BACKGROUND_AGENTS_HINT_PATTERN,
+  CLAUDE_CODE_FOOTER_PATTERN,
   WAITING_BEEP_COOLDOWN_MS,
   WAITING_MAX_EVAL_INTERVAL_MS,
   WAITING_PATTERNS,
   WAITING_QUIESCENCE_MS,
+  detectBackgroundAgents,
   isOutputQuiescent,
   isWaitingCwdExcluded,
   matchesWaiting,

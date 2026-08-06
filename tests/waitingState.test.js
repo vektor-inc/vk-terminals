@@ -7,6 +7,7 @@ const {
   WAITING_BEEP_COOLDOWN_MS,
   WAITING_MAX_EVAL_INTERVAL_MS,
   WAITING_QUIESCENCE_MS,
+  detectBackgroundAgents,
   isOutputQuiescent,
   isWaitingCwdExcluded,
   matchesWaiting,
@@ -17,6 +18,7 @@ const {
   waitingCheckDelayMs,
 } = require('../renderer/waitingState');
 const { deriveStatus } = require('../renderer/statusState');
+const { stripAnsiForDisplay } = require('../utils/stripAnsi');
 
 // ─── waiting 判定（静止ゲート） ──────────────────────────────────────────────
 // issue vektor-inc/vk-orchestrator#212:
@@ -309,4 +311,109 @@ test('matchesWaiting: 本物の確認待ち UI は従来どおり検知する（
   for (const sample of cases) {
     assert.equal(matchesWaiting(sample), true, `検知できていない: ${sample}`);
   }
+});
+
+// ─── detectBackgroundAgents（バックグラウンドサブエージェント数の検知） ───────────
+// issue vektor-inc/vk-terminals#340:
+//   司令塔（vk-orchestrator）は lastOutputTime（最後の画面出力時刻）が直近かどうかで
+//   ペインの稼働を判定している。Claude Code のメイン応答が終わりサブエージェントだけが
+//   バックグラウンドで走っている間は画面の再描画が止まるため、司令塔が「作業終了」と
+//   誤認してしまう（2026-08-06 に実際発生）。この誤認を防ぐため、画面末尾のフッター表示
+//   から実行中のサブエージェント数を読み取る。
+//
+// 呼び出し側（renderer/app.js）は、累積バッファ（lastLines）ではなく xterm の
+// term.buffer.active から読んだ「現在画面のスナップショット」を渡す想定。このテストでは
+// その前提を、複数形・入力ボックス行など実機の画面出力を模した文字列で検証する。
+
+test('detectBackgroundAgents: 「← 2 agents · ↓ to manage」を含む画面は 2 を返す', () => {
+  // issue #340 記載の実例（Claude Code の画面末尾）を模したもの。
+  const screen = [
+    '✻ Brewed for 21m 15s · 2 shells still running',
+    '───────────────────────────────────────────────',
+    '❯ 修正が終わったらそのまま PR まで進めて',
+    '───────────────────────────────────────────────',
+    '  bypass permissions on (shift+tab to cycle) · esc to interrupt',
+    '                              ← 2 agents · ↓ to manage',
+  ].join('\n');
+  assert.equal(detectBackgroundAgents(screen), 2);
+});
+
+test('detectBackgroundAgents: 10 以上の 2 桁の数値も読み取れる', () => {
+  const screen = [
+    '❯ ',
+    '  ? for shortcuts',
+    '                              ← 12 agents · ↓ to manage',
+  ].join('\n');
+  assert.equal(detectBackgroundAgents(screen), 12);
+});
+
+test('detectBackgroundAgents: 単数形「← 1 agent」も読み取れる', () => {
+  const screen = [
+    '❯ ',
+    '  accept edits on (shift+tab to cycle)',
+    '                              ← 1 agent · ↓ to manage',
+  ].join('\n');
+  assert.equal(detectBackgroundAgents(screen), 1);
+});
+
+test('detectBackgroundAgents: フッターは読めるが agents 表示が無ければ 0', () => {
+  const screen = [
+    '⏺ 実装が完了しました。',
+    '❯ ',
+    '  ? for shortcuts',
+  ].join('\n');
+  assert.equal(detectBackgroundAgents(screen), 0);
+});
+
+test('detectBackgroundAgents: 空文字は不明（null）', () => {
+  assert.equal(detectBackgroundAgents(''), null);
+});
+
+test('detectBackgroundAgents: 未定義・非文字列は不明（null）', () => {
+  assert.equal(detectBackgroundAgents(undefined), null);
+  assert.equal(detectBackgroundAgents(null), null);
+});
+
+test('detectBackgroundAgents: Claude Code 以外の出力（フッターの目印が無い）は不明（null）', () => {
+  const screen = [
+    '$ npm test',
+    '2007 pass / 0 fail',
+    '← 2 agents · ↓ to manage', // フッターの目印が無いのでこの文字列自体は判定材料にしない
+    '$ ',
+  ].join('\n');
+  assert.equal(detectBackgroundAgents(screen), null);
+});
+
+test('detectBackgroundAgents: サブエージェント終了後は 0 へ戻る（累積バッファ方式の退行防止）', () => {
+  // renderer/app.js は t.lastLines（累積バッファ）ではなく、xterm の
+  // term.buffer.active から読んだ「現在画面のスナップショット」を都度渡す設計にした。
+  // ここでは「サブエージェント稼働中の画面」→「終了後の画面」という 2 回の
+  // 独立した呼び出しで検証する。もし実装が累積バッファをそのまま渡す方式（案 B の
+  // 素朴な走査や、単純な「最後の一致を採る」方式）だった場合、1 回目の
+  // 「← 2 agents」の描画が古い出力として残り続け、2 回目も 2 を返してしまう
+  // （完了条件「サブエージェントが終わると 0 に戻ること」を満たせない）。
+  const runningScreen = [
+    '✻ Brewed for 21m 15s · 2 shells still running',
+    '❯ ',
+    '  bypass permissions on (shift+tab to cycle)',
+    '                              ← 2 agents · ↓ to manage',
+  ].join('\n');
+  assert.equal(detectBackgroundAgents(runningScreen), 2, 'サブエージェント稼働中は 2 を検知できる必要がある');
+
+  // サブエージェントが終わった直後の画面（現在の画面には agents ヒントがもう無い）。
+  const finishedScreen = [
+    '⏺ サブエージェントが完了しました。',
+    '❯ ',
+    '  bypass permissions on (shift+tab to cycle)',
+  ].join('\n');
+  assert.equal(detectBackgroundAgents(finishedScreen), 0, 'サブエージェント終了後は 0 に戻る必要がある');
+});
+
+test('detectBackgroundAgents: ANSI 制御コードが混ざっていても stripAnsiForDisplay 適用後なら判定できる', () => {
+  // checkWaiting() と同じ流儀（呼び出し側で stripAnsiForDisplay を通してから渡す）に合わせる。
+  const raw = '\x1b[2m✻ Brewed for 21m 15s\x1b[0m\n\x1b[1m❯\x1b[0m \n' +
+    '  \x1b[32mbypass permissions on (shift+tab to cycle)\x1b[0m\n' +
+    '\x1b[90m                              ← 2 agents · ↓ to manage\x1b[0m';
+  const clean = stripAnsiForDisplay(raw);
+  assert.equal(detectBackgroundAgents(clean), 2);
 });

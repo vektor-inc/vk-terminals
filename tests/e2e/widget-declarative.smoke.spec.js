@@ -765,32 +765,26 @@ test('サイドバー: 200px 幅で担当者フィルタ表示時もタスク見
     await expect(section).toBeVisible({ timeout: 10_000 });
     const header = section.locator('.sidebar-section-header');
     const settingsHeader = win.locator('#sidebar-settings .sidebar-section-header');
+    // タスクと設定の見出しは同じ見た目に揃える。片方だけ先頭の飾り（擬似要素）が
+    // 復活するとカード間でラベルの左端がずれるため、両方まとめて確かめる。
     const [taskHeaderStyle, settingsHeaderStyle] = await Promise.all(
       [header, settingsHeader].map((locator) => locator.evaluate((element) => ({
         fontSize: getComputedStyle(element).fontSize,
-        accentHeight: getComputedStyle(element, '::before').height,
+        accentContent: getComputedStyle(element, '::before').content,
       })))
     );
     expect(settingsHeaderStyle).toEqual(taskHeaderStyle);
-    expect(settingsHeaderStyle).toEqual({ fontSize: '12px', accentHeight: '12px' });
+    expect(settingsHeaderStyle).toEqual({ fontSize: '12px', accentContent: 'none' });
     const taskCenterDifference = await header.evaluate((element) => {
-      const headerRect = element.getBoundingClientRect();
       const labelRect = element.querySelector('.sidebar-section-label').getBoundingClientRect();
       const controlsRect = element.querySelector('.sidebar-section-controls').getBoundingClientRect();
-      const accent = getComputedStyle(element, '::before');
-      // 擬似要素には getBoundingClientRect() が無いため、align-self: center で揃うバー中心を
-      // 同じフレックス行にある操作グループの実座標から復元し、ラベルの実座標と比較する。
-      // 絶対配置へ戻った場合も以前のずれを検知できるよう、その実配置で中心を求める。
-      const accentCenterY = accent.position === 'absolute'
-        ? headerRect.top + Number.parseFloat(accent.top) + Number.parseFloat(accent.height) / 2
-        : controlsRect.top + controlsRect.height / 2;
-      const labelCenterY = labelRect.top + labelRect.height / 2;
-      return Math.abs(accentCenterY - labelCenterY);
+      // ラベルと操作グループは同じフレックス行に並ぶため、実座標の中心どうしを比べて
+      // 見出し 1 行の縦位置が揃っていることを確かめる。
+      return Math.abs(
+        (controlsRect.top + controlsRect.height / 2) - (labelRect.top + labelRect.height / 2)
+      );
     });
     expect(taskCenterDifference).toBeLessThanOrEqual(1);
-    const wideAccentHeight = await header.evaluate(
-      (element) => getComputedStyle(element, '::before').height
-    );
     await sidebar.evaluate((element) => {
       element.style.setProperty('--vktm-sidebar-width', '200px');
     });

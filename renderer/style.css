@@ -7,14 +7,12 @@
 }
 
 :root {
-  /* WCAG 1.4.11（UI 部品 3:1）を満たす明るさの、対話部品の境界色。
-     面が #21262d / #161b22 のような明るめの面に置くボタン・セレクトボックス向け
-     （例: .settings-footer button / .settings-reveal / .widget-control-select /
-     .task-list-assignee-filter）。
-     設定パネルの入力欄・セレクトボックス（.settings-row 内）には使わない。面が #010409 と
-     暗く、既存の枠線 #6e7681 で既に 4.47:1 を満たすため、この変数へ寄せると基準を
-     満たしたまま見た目だけが変わる。 */
-  --vktm--color--border-interactive: #8b949e;
+  /* ボタン・セレクトボックス・入力欄など、操作できる部品の境界色。
+     この変数を使う面のうち最も明るい #21262d 上で 3.31:1 となり、WCAG 1.4.11
+     （UI 部品 3:1）を満たす。これより暗くすると基準を割るため、落ち着かせたい場合でも
+     #6a737d（#21262d 上 3.16:1）が下限。#30363d のような暗い値にはしないこと
+     （#21262d 上 1.25:1 で、枠線が面に埋もれて部品の範囲が読み取れなくなる）。 */
+  --vktm--color--border-interactive: #6e7681;
 }
 
 /* フォーカスリングの変数（--vktm--color--focus-ring / --vktm--outline--focus-ring /
@@ -831,7 +829,7 @@ h4.settings-content-heading {
   width: 100%;
   box-sizing: border-box;
   background: #010409;
-  border: 1px solid #6e7681;
+  border: 1px solid var(--vktm--color--border-interactive);
   border-radius: 5px;
   color: #e6edf3;
   padding: 6px 8px;
@@ -1091,9 +1089,6 @@ body:has(.confirm-overlay) .vk-toast-layer {
  * スクロール表示し、右端の .sidebar-resizer で幅をドラッグ変更する（issue #89）。 */
 .sidebar {
   --vktm--sidebar-section-inset: 8px;
-  /* shared.css の規約どおり、同系色でも別用途にはフォーカスリング用変数を割り当てない。
-   * フォーカス枠と意図的に同じ #58a6ff を使うが、装飾用トークンとして独立させる。 */
-  --vktm--color--section-accent: #58a6ff;
   position: relative;
   flex: 0 0 0;
   width: var(--vktm-sidebar-width, 330px);
@@ -1170,21 +1165,15 @@ button.sidebar-section-header {
   align-items: center;
   gap: 6px;
   width: 100%;
-  padding: 2px 4px 8px;
+  padding: 0;
   color: #c9d1d9;
   font-size: 12px;
   font-weight: 600;
 }
-.sidebar-section-header::before {
-  /* アクセントは常に同じ青で強調だけを表す。警告・エラーなどの状態は色を変えず、
-   * .sidebar-section-controls にアイコンまたはバッジを追加して示す。見出し行の中央に
-   * 揃えるため、絶対配置ではなく先頭のフレックス項目として配置する。 */
-  content: '';
-  flex: 0 0 3px;
-  align-self: center;
-  height: 1em;
-  border-radius: var(--vktm--border-radius--sm);
-  background: var(--vktm--color--section-accent);
+/* 見出しが折り畳み済みカードの最後の要素になったときは下余白を付けない。
+ * 内容が続く場合だけ、見出しと内容の間に余白を確保する。 */
+.sidebar-section-header:where(:not(:last-child)) {
+  margin-bottom: 12px;
 }
 button.sidebar-section-header:hover {
   border-radius: var(--vktm--border-radius--sm);
@@ -1580,8 +1569,8 @@ button.sidebar-section-header:hover {
 .task-list.is-stale .task-list-groups {
   opacity: 0.55;
 }
-.task-list-group {
-  margin-bottom: 16px;
+.task-list-group:where(:not(:last-child)) {
+  margin-bottom: 14px;
 }
 .task-list-items {
   list-style: none;

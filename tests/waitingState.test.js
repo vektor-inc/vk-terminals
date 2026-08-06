@@ -7,6 +7,8 @@ const {
   WAITING_BEEP_COOLDOWN_MS,
   WAITING_MAX_EVAL_INTERVAL_MS,
   WAITING_QUIESCENCE_MS,
+  detectBackgroundAgents,
+  extractScreenLines,
   isOutputQuiescent,
   isWaitingCwdExcluded,
   matchesWaiting,
@@ -17,6 +19,7 @@ const {
   waitingCheckDelayMs,
 } = require('../renderer/waitingState');
 const { deriveStatus } = require('../renderer/statusState');
+const { stripAnsiForDisplay } = require('../utils/stripAnsi');
 
 // ─── waiting 判定（静止ゲート） ──────────────────────────────────────────────
 // issue vektor-inc/vk-orchestrator#212:
@@ -309,4 +312,437 @@ test('matchesWaiting: 本物の確認待ち UI は従来どおり検知する（
   for (const sample of cases) {
     assert.equal(matchesWaiting(sample), true, `検知できていない: ${sample}`);
   }
+});
+
+// ─── detectBackgroundAgents（バックグラウンドサブエージェント数の検知） ───────────
+// issue vektor-inc/vk-terminals#340:
+//   司令塔（vk-orchestrator）は lastOutputTime（最後の画面出力時刻）が直近かどうかで
+//   ペインの稼働を判定している。Claude Code のメイン応答が終わりサブエージェントだけが
+//   バックグラウンドで走っている間は画面の再描画が止まるため、司令塔が「作業終了」と
+//   誤認してしまう（2026-08-06 に実際発生）。この誤認を防ぐため、画面末尾のフッター表示
+//   から実行中のサブエージェント数を読み取る。
+//
+// 呼び出し側（renderer/app.js）は、累積バッファ（lastLines）ではなく xterm の
+// term.buffer.active から読んだ「現在画面のスナップショット」を渡す想定。このテストでは
+// その前提を、複数形・入力ボックス行など実機の画面出力を模した文字列で検証する。
+
+test('detectBackgroundAgents: 「← 2 agents · ↓ to manage」を含む画面は 2 を返す', () => {
+  // issue #340 記載の実例（Claude Code の画面末尾）を模したもの。
+  const screen = [
+    '✻ Brewed for 21m 15s · 2 shells still running',
+    '───────────────────────────────────────────────',
+    '❯ 修正が終わったらそのまま PR まで進めて',
+    '───────────────────────────────────────────────',
+    '  bypass permissions on (shift+tab to cycle) · esc to interrupt',
+    '                              ← 2 agents · ↓ to manage',
+  ].join('\n');
+  assert.equal(detectBackgroundAgents(screen), 2);
+});
+
+test('detectBackgroundAgents: 10 以上の 2 桁の数値も読み取れる', () => {
+  const screen = [
+    '❯ ',
+    '  ? for shortcuts',
+    '                              ← 12 agents · ↓ to manage',
+  ].join('\n');
+  assert.equal(detectBackgroundAgents(screen), 12);
+});
+
+test('detectBackgroundAgents: 単数形「← 1 agent」も読み取れる', () => {
+  const screen = [
+    '❯ ',
+    '  accept edits on (shift+tab to cycle)',
+    '                              ← 1 agent · ↓ to manage',
+  ].join('\n');
+  assert.equal(detectBackgroundAgents(screen), 1);
+});
+
+// ─── フッター截断（ペイン幅による "…" 切り詰め）への耐性 ────────────────────────
+// 司からの実機データ（~/.vk-terminals/states.json の lastLines）で確認された、
+// 同じペインがペイン幅の変化に応じて異なる長さに截断された実例そのもの。
+// フッターの目印（bypass permissions on 等）は行頭側にあるので必ず一致するが、
+// agents セグメントは行末側なので真っ先に切られる。「目印が読めた＝0」と早合点すると
+// 動いているペインを 0（≒ 止まっている）と誤認させてしまうため、数字が読める限りは
+// 截断の深さに関わらず 2 を返せる必要がある。
+test('detectBackgroundAgents: フッター截断（実機データ） — 「← 2 agents…」以降、agents の綴りが截断されても 2 を返す', () => {
+  const truncatedButReadable = [
+    '⏵⏵ bypass permissions on (shift+tab to cycle) · ← 2 agents · ↓ to mana…',
+    '⏵⏵ bypass permissions on (shift+tab to cycle) · ← 2 agents…',
+    '⏵⏵ bypass permissions on (shift+tab to cycle) · ← 2 agent…',
+    '⏵⏵ bypass permissions on (shift+tab to cycle) · ← 2 agen…',
+    '⏵⏵ bypass permissions on (shift+tab to cycle) · ← 2 age…',
+    '⏵⏵ bypass permissions on (shift+tab to cycle) · ← 2 ag…',
+    '⏵⏵ bypass permissions on (shift+tab to cycle) · ← 2 a…',
+    '⏵⏵ bypass permissions on (shift+tab to cycle) · ← 2 …',
+    '⏵⏵ bypass permissions on (shift+tab to cycle) · ← 2…',
+    '⏵⏵ bypass permissions on · 1 shell · ← 2 agents · ↓ to mana…',
+  ];
+  for (const line of truncatedButReadable) {
+    assert.equal(detectBackgroundAgents(line), 2, `2 を検知できていない: ${line}`);
+  }
+});
+
+test('detectBackgroundAgents: フッター截断（実機データ） — 数字自体や agents セグメント全体が截断で読めないときは不明（null）', () => {
+  const truncatedUnreadable = [
+    // 矢印はあるが数字自体が截断で消えている。0 台の数字さえ読み取れないので不明。
+    '⏵⏵ bypass permissions on (shift+tab to cycle) · ← …',
+    // agents セグメント自体が截断で丸ごと見えない（この先に agents があったか分からない）。
+    '⏵⏵ bypass permissions on (shift+tab to cycle) · esc to inte…',
+  ];
+  for (const line of truncatedUnreadable) {
+    assert.equal(detectBackgroundAgents(line), null, `null になっていない: ${line}`);
+  }
+});
+
+test('detectBackgroundAgents: フッターが截断されていなければ agents セグメント無しは 0 のまま（回帰確認）', () => {
+  // "esc to interrupt" が最後まで読めていて省略記号も付いていない ＝ 截断されていない。
+  const screen = '⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt';
+  assert.equal(detectBackgroundAgents(screen), 0);
+});
+
+// ─── 「✻ Waiting for N background agent(s) to finish」ナレーション ──────────────
+// 「← N agents」ヒントとは別のタイミング（メイン応答がサブエージェントの完了待ちで
+// 停止している間）に出る表示。実機で単数・複数の両方を確認済み。
+test('detectBackgroundAgents: 「Waiting for 1 background agent to finish」（単数形）は 1 を返す', () => {
+  const screen = [
+    '✻ Waiting for 1 background agent to finish',
+    '',
+    '❯ ',
+  ].join('\n');
+  assert.equal(detectBackgroundAgents(screen), 1);
+});
+
+test('detectBackgroundAgents: 「Waiting for 4 background agents to finish」（複数形）は 4 を返す', () => {
+  const screen = [
+    '✻ Waiting for 4 background agents to finish',
+    '',
+    '❯ ',
+  ].join('\n');
+  assert.equal(detectBackgroundAgents(screen), 4);
+});
+
+test('detectBackgroundAgents: 「Waiting for N background agent(s)」はフッターの目印が無くても正の証拠として拾う', () => {
+  // メイン応答が完全に止まりフッターの入力ボックス自体がまだ描画されていない
+  // タイミングでもこのナレーションだけは出るため、目印を要求しない。
+  const screen = '✻ Waiting for 2 background agents to finish';
+  assert.equal(detectBackgroundAgents(screen), 2);
+});
+
+// ─── 「←」の誤検知防止（無関係な文字列との区別） ────────────────────────────────
+// "↓ 75.4k tokens" のような既存表示は下矢印（↓）であり左矢印（←）とは別の記号なので
+// そもそも衝突しない。ここでは「← N」の直後が agents の断片でも省略記号でもない、
+// この issue とは無関係な文字列を誤って拾わないことを確認する。
+test('detectBackgroundAgents: 「← N」の直後が agents の断片でも省略記号でもなければ正の証拠として扱わない', () => {
+  const screen = [
+    '❯ ',
+    '  ? for shortcuts',
+    '← 5 minutes ago にコミットされました', // agents 表示ではない無関係な文言（仮想例）
+  ].join('\n');
+  // フッターの目印（? for shortcuts）は截断されていないので、agents 表示無しとして 0。
+  assert.equal(detectBackgroundAgents(screen), 0);
+});
+
+// ─── 安藤（セキュリティレビュー）の指摘への回帰防止テスト ──────────────────────────
+
+test('detectBackgroundAgents: 走査窓の上部にあるノイズ（← 0 agents 等）が下端の本物の数を打ち消さない（HIGH-1）', () => {
+  // 安藤の指摘: 先頭一致だけを見ると、画面上部にたまたま流れた「← 0 agents」表記や
+  // 「Waiting for 0 background agents to finish」ナレーションが、画面下端にある
+  // 本物の「← 2 agents」を打ち消して 0 を返してしまう（この PR の diff やドキュメントを
+  // Claude Code ペインに表示しただけでも再現する）。全行から最大値を採ることで防ぐ。
+  const screen = [
+    '⏺ 参考: 過去のログには「← 0 agents」という表示が残っていました。', // 上部のノイズ（0 件）
+    '✻ Waiting for 0 background agents to finish', // 上部のノイズ（0 件のナレーション）
+    '✻ Brewed for 21m 15s · 2 shells still running',
+    '❯ ',
+    '  bypass permissions on (shift+tab to cycle)',
+    '                              ← 2 agents · ↓ to manage', // 画面下端の本物
+  ].join('\n');
+  assert.equal(detectBackgroundAgents(screen), 2);
+});
+
+test('detectBackgroundAgents: 目印行は無傷でもヒント行だけが截断されていれば不明（HIGH-2・2行レイアウト）', () => {
+  // 安藤の指摘: agents ヒントがフッターの目印と別行に描かれるレイアウトで、目印行
+  // 自体は最後まで読めていても、ヒント行（矢印はあるが数字が截断で読めない）だけが
+  // 截断されていれば 0 と断定できない。目印行だけでなく、それより下の全行を
+  // 截断チェックの対象にすることで塞ぐ。
+  const screen = [
+    '❯ ',
+    '  bypass permissions on (shift+tab to cycle) · esc to interrupt', // 目印行は無傷
+    '                              ← …', // ヒント行だけが截断（数字も読めない）
+  ].join('\n');
+  assert.equal(detectBackgroundAgents(screen), null);
+});
+
+test('detectBackgroundAgents: 目印が無く、迷子の「← 0 agents」しか無ければ不明（null）のまま（MEDIUM-2・N1）', () => {
+  // 規則2「目印が無ければ null」は変わらない。「← 0 agents」という信用できない
+  // 証拠（実機では出現しないはずの 0）を見たとしても、目印そのものが無い以上、
+  // それを根拠に 0 と断定してはいけない（安藤の再レビュー N1 のケース）。
+  const screen = [
+    '⏺ 参考: 過去のログには「← 0 agents」という表示が残っていました。',
+    '$ echo done',
+  ].join('\n');
+  assert.equal(detectBackgroundAgents(screen), null);
+});
+
+test('detectBackgroundAgents: 目印が無く、「Waiting for 0 background agents to finish」しか無ければ不明（null）のまま（MEDIUM-2・N2）', () => {
+  const screen = [
+    '✻ Waiting for 0 background agents to finish',
+    '$ echo done',
+  ].join('\n');
+  assert.equal(detectBackgroundAgents(screen), null);
+});
+
+test('detectBackgroundAgents: 桁数が異常に大きい数値（現実には截断を伴う）は null のまま（LOW: 上限チェック）', () => {
+  // 20 桁の数値は実際の端末幅では必ず截断されるため、截断側の判定で null になる
+  // ことを確認する（安藤の検証結果「20桁→null」）。
+  const screen = [
+    '❯ ',
+    '  bypass permissions on (shift+tab to cycle)',
+    '                              ← 99999999999999999999 age…',
+  ].join('\n');
+  assert.equal(detectBackgroundAgents(screen), null);
+});
+
+test('detectBackgroundAgents: 桁数上限（4桁）を超える数値は 0 と断定せず不明（null）にする（MEDIUM-2・N3）', () => {
+  // 截断されていない（省略記号なし）ケースでも、5 桁以上の数値は厳格パターン
+  // （\d{1,4} + (?!\d)）には 1 件も一致しない。ここで「一致が無い＝agents 表示が
+  // 無い」と早合点すると、JSON に載らないだけで実態は「読み取れなかった」だけの
+  // ケースを 0 と断定してしまう。緩いパターン（BACKGROUND_AGENTS_ARROW_AMBIGUOUS_
+  // PATTERN）で「agents ヒントらしきものが実在した」ことを検知し、null（不明）にする
+  // ことを確認する（安藤の再レビュー・実測「N3 範囲外の5桁 → 0」からの回帰防止）。
+  const screen = [
+    '❯ ',
+    '  bypass permissions on (shift+tab to cycle)',
+    '                              ← 99999 agents · ↓ to manage',
+  ].join('\n');
+  assert.equal(detectBackgroundAgents(screen), null);
+});
+
+test('detectBackgroundAgents: 「← 3 apples remaining」は agents ではないので拾わない（MEDIUM-3）', () => {
+  const screen = [
+    '❯ ',
+    '  ? for shortcuts',
+    '← 3 apples remaining', // agents 表示ではない無関係な文言
+  ].join('\n');
+  assert.equal(detectBackgroundAgents(screen), 0);
+});
+
+test('detectBackgroundAgents: 先頭ゼロ埋めの数値は 0 と断定せず不明（null）にする（MEDIUM-2・N4）', () => {
+  // 「← 0000000002 agents」のように先頭にゼロが並ぶと、桁数上限のための
+  // (?!\d) 判定が数字の開始位置から縮めていく形になるため、10 桁分の数字全体が
+  // 1〜4 桁のどの切り出し方でも「直後がまだ数字」になり、厳格パターンは結局
+  // どこにもマッチしない。実機の Claude Code は先頭ゼロ埋めの表記を出さないため
+  // 実際には起きないが、「一致が無い＝agents 表示が無い」と早合点して 0 と断定する
+  // のは誤り（0 は確定値であって不明側ではないため、それ自体は安全側の値ではない）。
+  // 緩いパターンで「agents ヒントらしきもの」を検知し null（不明）にすることを確認する。
+  const screen = [
+    '❯ ',
+    '  bypass permissions on (shift+tab to cycle)',
+    '                              ← 0000000002 agents · ↓ to manage',
+  ].join('\n');
+  assert.equal(detectBackgroundAgents(screen), null);
+});
+
+// 安藤の指摘（MEDIUM-1、および再レビューでの LOW 指摘）: matchAll は元の正規表現
+// オブジェクトの lastIndex を「書き換え」はしないが、複製を作る際に「読み取って
+// 引き継ぐ」。したがって、g フラグ付きの共有正規表現オブジェクトに対して外部から
+// .test()/.exec() が一度でも呼ばれると、以後の matchAll がその汚染された位置から
+// 始まってしまい、本来ヒットするはずの一致を取りこぼす（false 0）。
+//
+// 対応: 該当する 2 定数（WAITING_FOR_BACKGROUND_AGENTS_PATTERN /
+// BACKGROUND_AGENTS_ARROW_PATTERN）は module の export から外し（この waitingState.js
+// の UMD ラッパーはクロージャなので、Node の require からも一切参照できない）、加えて
+// collectAgentCounts が呼び出しのたびに明示的に lastIndex を 0 へリセットする、の
+// 二重の対策にした（pattern.lastIndex = 0 の行自体はテストできなくても export を
+// 外したことと二重に効いていてコストがゼロなので、そのまま残している）。
+//
+// 「一致位置が先頭から離れた入力を連続で判定しても毎回正しく検知できる」という形の
+// 回帰防止テストは、当初これで足りると考えていたが誤りだった。matchAll は元の
+// lastIndex を書き換えない（読み取るだけ）ため、外部からの汚染経路が無い限り
+// 共有定数の lastIndex は永久に 0 のままで、リセット行の有無は公開 API 経由の
+// 挙動に一切差を生まない（実際に pattern.lastIndex = 0 を外して確認済み。全テスト
+// 通過してしまい、退行を検知できなかった）。
+//
+// 守るべき不変条件は「共有される lastIndex に外から手が届かないこと」そのものであり、
+// それは公開面（export 一覧）を直接検証することでしか観測できない。このテストは
+// 「汚染が起きたか」ではなく「汚染できる経路が公開されていないか」を見る。
+test('waitingState: g フラグ付きの正規表現を export しない（lastIndex 汚染の回帰防止・MEDIUM-1）', () => {
+  // g 付き正規表現は lastIndex という可変状態を持つオブジェクト。export すると
+  // 外部の .test()/.exec() が lastIndex を進め、その後の matchAll が複製を作る際に
+  // その値を引き継いで一致を取り逃す（＝ backgroundAgents が false 0 を返す）。
+  // 「matchAll は元を書き換えない」のは書き込みの話で、読み取りは守られない。
+  //
+  // このテストは「汚染が起きたか」ではなく「汚染できる経路が公開されていないか」を
+  // 見る。lastIndex を汚す経路が無いことは公開 API 側からしか観測できないため、
+  // 実際に汚染を再現するテストは（意図どおり）書けない。
+  for (const [name, value] of Object.entries(require('../renderer/waitingState'))) {
+    if (value instanceof RegExp) {
+      assert.equal(value.global, false, `g フラグ付きの正規表現を export している: ${name}`);
+    }
+  }
+});
+
+test('detectBackgroundAgents: 「← 5 and counting」は agents ではないので拾わない（MEDIUM-3）', () => {
+  const screen = [
+    '❯ ',
+    '  ? for shortcuts',
+    '← 5 and counting', // agents 表示ではない無関係な文言
+  ].join('\n');
+  assert.equal(detectBackgroundAgents(screen), 0);
+});
+
+test('detectBackgroundAgents: フッターは読めるが agents 表示が無ければ 0', () => {
+  const screen = [
+    '⏺ 実装が完了しました。',
+    '❯ ',
+    '  ? for shortcuts',
+  ].join('\n');
+  assert.equal(detectBackgroundAgents(screen), 0);
+});
+
+test('detectBackgroundAgents: 空文字は不明（null）', () => {
+  assert.equal(detectBackgroundAgents(''), null);
+});
+
+test('detectBackgroundAgents: 未定義・非文字列は不明（null）', () => {
+  assert.equal(detectBackgroundAgents(undefined), null);
+  assert.equal(detectBackgroundAgents(null), null);
+});
+
+test('detectBackgroundAgents: Claude Code 以外の出力（フッターの目印も agents ヒントも無い）は不明（null）', () => {
+  // 「← N agents」の断片も「Waiting for N background agent(s)」も含まない、
+  // フッターの目印も無い素の shell 出力。正の証拠が無く、目印も無いので null。
+  const screen = [
+    '$ npm test',
+    '2007 pass / 0 fail',
+    '$ ',
+  ].join('\n');
+  assert.equal(detectBackgroundAgents(screen), null);
+});
+
+test('detectBackgroundAgents: サブエージェント終了後は 0 へ戻る（累積バッファ方式の退行防止）', () => {
+  // renderer/app.js は t.lastLines（累積バッファ）ではなく、xterm の
+  // term.buffer.active から読んだ「現在画面のスナップショット」を都度渡す設計にした。
+  // ここでは「サブエージェント稼働中の画面」→「終了後の画面」という 2 回の
+  // 独立した呼び出しで検証する。もし実装が累積バッファをそのまま渡す方式（案 B の
+  // 素朴な走査や、単純な「最後の一致を採る」方式）だった場合、1 回目の
+  // 「← 2 agents」の描画が古い出力として残り続け、2 回目も 2 を返してしまう
+  // （完了条件「サブエージェントが終わると 0 に戻ること」を満たせない）。
+  const runningScreen = [
+    '✻ Brewed for 21m 15s · 2 shells still running',
+    '❯ ',
+    '  bypass permissions on (shift+tab to cycle)',
+    '                              ← 2 agents · ↓ to manage',
+  ].join('\n');
+  assert.equal(detectBackgroundAgents(runningScreen), 2, 'サブエージェント稼働中は 2 を検知できる必要がある');
+
+  // サブエージェントが終わった直後の画面（現在の画面には agents ヒントがもう無い）。
+  const finishedScreen = [
+    '⏺ サブエージェントが完了しました。',
+    '❯ ',
+    '  bypass permissions on (shift+tab to cycle)',
+  ].join('\n');
+  assert.equal(detectBackgroundAgents(finishedScreen), 0, 'サブエージェント終了後は 0 に戻る必要がある');
+});
+
+test('detectBackgroundAgents: ANSI 制御コードが混ざっていても stripAnsiForDisplay 適用後なら判定できる', () => {
+  // checkWaiting() と同じ流儀（呼び出し側で stripAnsiForDisplay を通してから渡す）に合わせる。
+  const raw = '\x1b[2m✻ Brewed for 21m 15s\x1b[0m\n\x1b[1m❯\x1b[0m \n' +
+    '  \x1b[32mbypass permissions on (shift+tab to cycle)\x1b[0m\n' +
+    '\x1b[90m                              ← 2 agents · ↓ to manage\x1b[0m';
+  const clean = stripAnsiForDisplay(raw);
+  assert.equal(detectBackgroundAgents(clean), 2);
+});
+
+// ─── extractScreenLines（xterm 画面バッファの切り出し） ─────────────────────────
+// issue vektor-inc/vk-terminals#340 / 安藤の指摘（MEDIUM-1）:
+//   renderer/app.js の readBackgroundAgents は、xterm の term.buffer.active から
+//   末尾 N 行を読んで detectBackgroundAgents に渡す。この切り出し自体（何行目から
+//   読むか）にテストが 1 件も無く、「buffer.active だから古い描画は残らない」という
+//   案 A の前提が、ペインが N 行より小さいとき（グリッド分割で常態）に崩れることが
+//   見落とされていた。app.js は window.* グローバルに依存して Node から require
+//   できないため、この切り出しロジックを純粋関数として waitingState.js 側へ移し、
+//   xterm の IBuffer と同じ形（length / baseY / getLine）を持つスタブでテストする。
+
+// テスト用の最小スタブ。xterm の IBuffer / IBufferLine の該当プロパティだけを持つ。
+function makeStubBuffer({ length, baseY, wrappedIndexes = [] }) {
+  return {
+    length,
+    baseY,
+    getLine(i) {
+      if (i < 0 || i >= length) return undefined;
+      return {
+        translateToString: () => `line-${i}`,
+        isWrapped: wrappedIndexes.includes(i),
+      };
+    },
+  };
+}
+
+test('extractScreenLines: バッファが maxLines 未満なら先頭（0 行目）から全行読む', () => {
+  const buffer = makeStubBuffer({ length: 10, baseY: 0 });
+  const lines = extractScreenLines(buffer, 20);
+  assert.deepEqual(lines, Array.from({ length: 10 }, (_, i) => `line-${i}`));
+});
+
+test('extractScreenLines: baseY でクランプし、baseY より前（スクロールバック）を読まない（MEDIUM-1 回帰防止）', () => {
+  // total=30 行のバッファで、現在画面（baseY..29）は 5 行しかない小さなペインを想定。
+  // baseY によるクランプが無いと、maxLines=20 に合わせて 10 行目から読んでしまい、
+  // baseY より前（10〜24 行目、＝現在の画面ではない過去の描画）まで拾ってしまう。
+  const buffer = makeStubBuffer({ length: 30, baseY: 25 });
+  const lines = extractScreenLines(buffer, 20);
+  assert.deepEqual(lines, ['line-25', 'line-26', 'line-27', 'line-28', 'line-29']);
+});
+
+test('extractScreenLines: isWrapped な行は改行を挟まず直前の行へ連結する（折り返し対応）', () => {
+  // 1 行目（index 1）が isWrapped=true ＝ 0 行目の続き（折り返し）。
+  const buffer = makeStubBuffer({ length: 3, baseY: 0, wrappedIndexes: [1] });
+  const lines = extractScreenLines(buffer, 20);
+  assert.deepEqual(lines, ['line-0line-1', 'line-2']);
+});
+
+test('extractScreenLines: getLine が undefined を返す行は読み飛ばす（例外を投げない）', () => {
+  const buffer = {
+    length: 3,
+    baseY: 0,
+    getLine: (i) => (i === 1 ? undefined : { translateToString: () => `line-${i}` }),
+  };
+  assert.deepEqual(extractScreenLines(buffer, 20), ['line-0', 'line-2']);
+});
+
+test('extractScreenLines: buffer が不正な形（duck typing 失敗）なら null', () => {
+  assert.equal(extractScreenLines(null, 20), null);
+  assert.equal(extractScreenLines({}, 20), null);
+  assert.equal(extractScreenLines({ length: 10 }, 20), null); // getLine が無い
+});
+
+test('extractScreenLines: length が 0 以下なら null', () => {
+  const buffer = makeStubBuffer({ length: 0, baseY: 0 });
+  assert.equal(extractScreenLines(buffer, 20), null);
+});
+
+// ─── 境界値の締め直し（安藤の指摘 LOW-2） ────────────────────────────────────
+// 「buffer / maxLines が不正な形なら null」という契約に対し、境界値がいくつか
+// 緩かった。結果的には null に落ちるケースもあったが、契約どおり明示的に検証する。
+
+test('extractScreenLines: baseY が buffer.length を超えていても例外にならず null（読める行が無い）', () => {
+  // 通常は起こらない想定だが、baseY が総行数を超えるような不整合な入力でも、
+  // 負インデックスへの読み出し等を起こさず安全に null へ倒れることを確認する。
+  const buffer = makeStubBuffer({ length: 10, baseY: 100 });
+  assert.equal(extractScreenLines(buffer, 20), null);
+});
+
+test('extractScreenLines: baseY が負の値でも 0 未満へは倒さない（クランプ）', () => {
+  const buffer = makeStubBuffer({ length: 5, baseY: -3 });
+  const lines = extractScreenLines(buffer, 20);
+  assert.deepEqual(lines, ['line-0', 'line-1', 'line-2', 'line-3', 'line-4']);
+});
+
+test('extractScreenLines: maxLines が数値でない・0 以下なら null', () => {
+  const buffer = makeStubBuffer({ length: 10, baseY: 0 });
+  assert.equal(extractScreenLines(buffer, undefined), null);
+  assert.equal(extractScreenLines(buffer, NaN), null);
+  assert.equal(extractScreenLines(buffer, 0), null);
+  assert.equal(extractScreenLines(buffer, -5), null);
+  assert.equal(extractScreenLines(buffer, 'twenty'), null);
 });

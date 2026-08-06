@@ -49,6 +49,8 @@ const {
 // エージェントルーム（issue #58）。サブエージェントの稼働状況をドット絵キャラで可視化する。
 const { AGENT_ORDER, buildScene, resolveAgentStatesFromOutput } = window.VKAgentRoom;
 const {
+  detectBackgroundAgents,
+  extractScreenLines,
   isOutputQuiescent,
   isWaitingCwdExcluded,
   matchesWaiting,
@@ -167,6 +169,11 @@ const WIDGET_LEGACY_NOTICE_TEXT = 'orchestrator の更新が必要な可能性�
 const LASTLINES_MAX_LINES = 80;
 const LASTLINES_MAX_CHARS = 8000;
 
+// バックグラウンドサブエージェント数（issue #340）の判定に読む画面末尾の行数。
+// Claude Code のフッター行（"bypass permissions on" 等）と「← N agents」ヒントは
+// 画面下端の数行以内に収まるため、余裕を見て 20 行あれば十分。
+const BACKGROUND_AGENTS_SCAN_LINES = 20;
+
 // ─── ID generation ────────────────────────────────────────────────────────────
 let _idCounter = 0;
 const newId = () => `pane-${++_idCounter}`;
@@ -279,6 +286,41 @@ function appendWaitingBuffer(prev, data) {
     merged = merged.slice(-LASTLINES_MAX_CHARS);
   }
   return merged;
+}
+
+// バックグラウンドサブエージェント数（issue #340）を、xterm の画面バッファから
+// 都度読み直して判定する。
+//
+// t.lastLines（appendWaitingBuffer が積む累積バッファ）ではなく、
+// t.term.buffer.active（xterm が実際に画面へ描画している内容そのもの）を読む。
+// 累積バッファには過去に流れた「← N agents」の描画が残り続けるため、素朴に
+// 走査するとサブエージェント終了後もいつまでも古い数を返し、「終わると 0 に
+// 戻る」という完了条件を満たせない（buffer.active は現在の画面そのものなので
+// この問題が起きない）。
+//
+// 行の切り出し自体（末尾 BACKGROUND_AGENTS_SCAN_LINES 行への絞り込み・baseY
+// クランプ・折り返し行の連結）は renderer/waitingState.js の extractScreenLines
+// （純粋関数）へ委ね、判定も同ファイルの detectBackgroundAgents に委ねる。
+// app.js 側は xterm オブジェクトを渡す配線と、例外の受け止めだけを担う。
+//
+// 安藤の指摘（MEDIUM-2）: readBackgroundAgents はこの setInterval ループで
+// 初めて xterm 内部（buffer.active）へ触る呼び出しのため、想定外の例外で
+// throw すると terminal:report-states 自体が送られなくなり、cachedStates が
+// 凍結して lastOutputTime が古いまま固定される。司令塔が「出力が止まった＝
+// 終了」と誤認する、この issue と同種の事故を別経路で起こしてしまうため、
+// 必ず try/catch で受け止めて不明（null）側へフォールバックする。
+// 安藤の指摘（LOW-1）: 存在チェック（t.term.buffer.active へのプロパティアクセス
+// 連鎖）自体も try の外にあると、MEDIUM-2 で入れた例外の受け止めがその手前で
+// 素通りしてしまう。存在チェックごと try の内側へ入れる。
+function readBackgroundAgents(t) {
+  try {
+    if (!t || !t.term || !t.term.buffer || !t.term.buffer.active) return null;
+    const lines = extractScreenLines(t.term.buffer.active, BACKGROUND_AGENTS_SCAN_LINES);
+    if (lines === null) return null;
+    return detectBackgroundAgents(lines.join('\n'));
+  } catch (e) {
+    return null;
+  }
 }
 
 // 入力（ユーザー入力・ドロップ送信・API 送信）があったペインのローカル入力待ち状態を解除する。
@@ -4927,6 +4969,10 @@ setInterval(() => {
       lastOutputTime: t.lastOutputTime,
       lastInputTime: t.lastInputTime,
       lastLines: t.lastLines,
+      // backgroundAgents（issue #340）: バックグラウンドで動く Claude Code サブ
+      // エージェント数。整数（0 以上）または不明を表す null。既存フィールドの
+      // 意味・値には影響しない追加のみのフィールド。
+      backgroundAgents: readBackgroundAgents(t),
       // taskTitle: OSC 0/2 由来のタイトル（後方互換のため既存キーを維持）
       // apiTitle:  POST /api/set-title 由来のタイトル（issue #22 で分離）
       // apiUrl:    POST /api/set-title 由来の URL（issue #29）。apiTitle 表示時のみリンク化される

@@ -51,8 +51,8 @@ function descriptorWithLinesFields(targetPath) {
       // 設定ファイルに workspace.search_paths を文字列で直接書いたケースの再現。
       stringPaths: '/a\n/b',
       arrayPaths: ['/x', '/y'],
-      // textarea を早期に閉じて後続の <script> を実行させようとする値。
-      xssPaths: '</textarea><script>window.__xssInjected = true;</script>',
+      // textarea を早期に閉じて後続の <script> をノードとして生やそうとする値。
+      xssPaths: '</textarea><script>1</script>',
     },
   };
 }
@@ -126,14 +126,26 @@ test.describe.serial('設定パネルの lines フィールドに文字列値を
     expect(payload.arrayPaths).toBe('/x\n/y');
   });
 
-  test('値に </textarea> を含んでいても textarea を閉じず、中のスクリプトは実行されない', async () => {
+  test('値に </textarea> を含んでいてもエスケープされ、textarea を閉じずそのまま表示される', async () => {
     // escText でエスケープされていれば textarea.value は元の文字列どおりに読める
     // （ブラウザが HTML エンティティを復元する）。エスケープが外れて途中で
-    // textarea を閉じてしまうと、値が途中で切れるか <script> が実行される。
-    await expect(win.locator(XSS_PATHS_ID))
-      .toHaveValue('</textarea><script>window.__xssInjected = true;</script>');
+    // textarea を閉じてしまうと、後続の文字列が DOM 構造として解釈され、
+    // 値が途中で切れる（toHaveValue が落ちる）か <script> 要素が生成される。
+    await expect(win.locator(XSS_PATHS_ID)).toHaveValue('</textarea><script>1</script>');
 
-    const scriptExecuted = await win.evaluate(() => window.__xssInjected === true);
-    expect(scriptExecuted).toBe(false);
+    // 「スクリプトが実行されないこと」は assert しない。このアプリでは以下の 2 点により、
+    // エスケープを外して <script>/onerror などを混ぜても実行経路そのものが存在せず、
+    // 実行有無の assert は原理的に必ず green になり検証にならないため（安藤レビュー指摘）。
+    //   1. 設定モーダルは renderer/app.js の overlay.innerHTML = … で組まれる。HTML 仕様上、
+    //      innerHTML 経由で挿入された <script> は要素としては生成されるが実行されない。
+    //   2. 仮に実行経路があっても CSP script-src 'self'（'unsafe-inline' なし。tests/csp.test.js
+    //      が固定）がインラインスクリプトの実行を塞ぐ。
+    // そのため、エスケープが外れたときに実際に変化する「DOM 構造」の方を見る。
+    // escText が効いていれば <script> はテキストとしてエスケープされ要素化しないので 0 件、
+    // 外れれば innerHTML パース時にノードとして生成されるため件数が増えて red になる。
+    const injectedScripts = await win.evaluate(
+      () => document.querySelectorAll('.settings-form script').length
+    );
+    expect(injectedScripts).toBe(0);
   });
 });

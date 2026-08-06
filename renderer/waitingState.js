@@ -240,29 +240,56 @@ function shouldBeepForWaiting({ now, lastBeepAt, cooldownMs = WAITING_BEEP_COOLD
 // 返す、という false 0（動いているのに止まっていると誤認させる、この issue が最も
 // 避けたい失敗）を量産してしまう。そこで判定順序を次のようにする。
 //
-//   1. 正の証拠（フッターの目印の有無に関わらず先に見る）
+//   1. 正の証拠（フッターの目印の有無に関わらず、走査窓の**全行**から先に集める）
 //        - 「✻ Waiting for N background agent(s) to finish」ナレーション
 //        - 「← N」+ agents の断片（"agents"〜"a" のどこまで截断されていても）
 //      数字が読めている以上、それを信じる。誤って Claude Code 以外の画面から
 //      拾ってしまっても、司令塔側は「動いている」と保守的に見えるだけで実害は小さい
 //      （見逃し＝false 0 のほうが「未検証PRをマージする」実害が大きい）。
+//      ⚠ 安藤（セキュリティレビュー）の指摘（HIGH-1）: 走査窓は複数行あるため、
+//      先頭に一致した1件だけを採ると、画面上部にたまたま流れた「← 0 agents」や
+//      「Waiting for 0 background agents to finish」（このコードのコメント・
+//      この PR の diff 自体を Claude Code ペインに表示しただけで出現し得る）が、
+//      画面下端にある本物の「← 2 agents」を **打ち消して 0 を返してしまう。**
+//      これを避けるため、走査窓の全行から候補を集めて **最大値** を採る
+//      （collectAgentCounts）。0 という「無い」証拠が非0の「ある」証拠を
+//      上書きしないようにする。
 //   2. フッターの目印が無ければ null（不明）
-//   3. 目印はあるが、その行の末尾が "…" で截断されている場合も null（不明）。
-//      截断された先に agents セグメントがあったかどうか分からないため。
+//   3. 目印の行、**および画面上でそれより下にある行**が "…" で截断されている場合は
+//      null（不明）。截断された先に agents セグメントがあったかどうか分からないため。
+//      ⚠ 安藤の指摘（HIGH-2）: 目印行だけを截断チェックしていると、agents ヒントが
+//      目印と別の行に出るレイアウト（本ファイルのテスト自体がそうだった）で、
+//      ヒント行だけが截断されていても目印行が無傷なら 0 を返してしまう。目印より
+//      下の行を丸ごと対象にすることで、単一行・複数行どちらのレイアウトでも塞ぐ。
 //   4. フッターが最後まで読めていて agents セグメントが無ければ、そこで初めて 0。
+
+// 拾ってよい上限値（無効な巨大数値が JSON にそのまま載るのを防ぐ、安藤の指摘 LOW）。
+// Claude Code の実際のサブエージェント数がこの値を超えることは想定していない。
+const MAX_BACKGROUND_AGENTS = 999;
 
 // 「✻ Waiting for N background agent(s) to finish」ナレーション（実機で単数・複数とも確認済み）。
 // メイン応答がサブエージェントの完了待ちで停止しているときに出る、← N agents とは別の表示。
-const WAITING_FOR_BACKGROUND_AGENTS_PATTERN = /Waiting for (\d+) background agents? to finish/i;
+// (?!\d) で数字の直後にさらに数字が続かないことを要求し、\d{1,4} を桁数無制限にしない
+// （安藤の指摘 LOW: 20 桁の数値でも Number.isInteger は通過するため、上限チェックだけでは
+// 不十分。桁数自体をここで絞ることで巨大な数値そのものを取り込まないようにする）。
+// g フラグは collectAgentCounts で matchAll に渡すために必要（後述のコメント参照）。
+const WAITING_FOR_BACKGROUND_AGENTS_PATTERN = /Waiting for (\d{1,4})(?!\d) background agents? to finish/gi;
 
 // 「← N agents · ↓ to manage」ヒント。末尾側の agents の綴りがどこまで截断されていても
 // （"agents" 〜 "a" の1文字、または省略記号 "…"/"..." が直後に来る場合も）拾えるように、
 // 長い候補から順に alternation を並べる（find -regex の注意と同じ理由）。
 // "←" という左矢印はこの用途以外での使用が確認できていないため、"↓ 75.4k tokens" のような
-// 別表示（下矢印・別記号）と混同する心配はない。一方、agents の断片も省略記号も無い
-// 「← 5 minutes ago」のような無関係な文字列とは区別できるよう、断片 or 省略記号の
-// いずれかを必須（オプションにしない）にしている。
-const BACKGROUND_AGENTS_ARROW_PATTERN = /←\s*(\d+)\s*(?:agents?|agen|age|ag|a|…|\.\.\.)/i;
+// 別表示（下矢印・別記号）と混同する心配はない。
+//
+// 一方、安藤の指摘（MEDIUM-3）で「← 3 apples remaining」「← 5 and counting」のような
+// 無関係な文字列まで拾ってしまうことが分かった。截断は必ず行末で起きるため、断片は
+// 「行末（$）」または「省略記号の直前」のどちらかに限定し、単語の途中に出てくる
+// "a" 等を誤って拾わないようにする。
+//   - `agents?\b` … 截断されていない完全な語（単数・複数、語境界必須）
+//   - `(?:agents?|agen|age|ag|a)?[ \t]*(?:…|\.\.\.)` … 断片（空でもよい）＋省略記号
+//   - `(?:agent|agen|age|ag|a)$` … 省略記号を伴わずに行末そのものが断片で切れている場合
+const BACKGROUND_AGENTS_ARROW_PATTERN =
+  /←[ \t]*(\d{1,4})(?!\d)[ \t]*(?:agents?\b|(?:agents?|agen|age|ag|a)?[ \t]*(?:…|\.\.\.)|(?:agent|agen|age|ag|a)$)/gi;
 
 // Claude Code の画面であることの常時表示の目印（フッター行）。
 // このいずれかが検知できて初めて「フッターが読み取れる状態」とみなす。
@@ -274,10 +301,52 @@ const BACKGROUND_AGENTS_ARROW_PATTERN = /←\s*(\d+)\s*(?:agents?|agen|age|ag|a|
 // 画面出力）で "bypass permissions on (shift+tab to cycle)" を確認済み。
 const CLAUDE_CODE_FOOTER_PATTERN = /\?\s*for\s+shortcuts|shift\+tab\s+to\s+cycle|bypass permissions on|accept edits on/i;
 
-// 行末の空白を取り除いたうえで、省略記号（全角三点リーダー … / 半角3連ドット ...）で
-// 終わっているかを判定する。フッター行がペイン幅で截断されているかどうかの目印。
+// 省略記号（全角三点リーダー … / 半角3連ドット ...）で終わっているかを判定する。
+// フッター行がペイン幅で截断されているかどうかの目印。
+//
+// 安藤の指摘（LOW: ReDoS）: 旧実装は `line.replace(/[ \t]+$/, '')` で末尾空白を
+// 削ってから判定していたが、`+` の末尾アンカー付き量指定子は入力次第で二次の
+// バックトラッキングを起こし、実測で 5 万文字の入力に 1.5 秒かかった。
+// `translateToString(true)` は末尾空白を落とすため通常は到達しないが、
+// この関数自体は export された汎用の純粋関数であり、将来 lastLines（最大 8000 字）
+// のような長い文字列を渡されても安全なように、末尾の空白・CR ごと省略記号にまとめて
+// 一度でマッチさせる形に変更した（実測 1.5s → 0.035ms）。
 function isTruncatedLine(line) {
-  return /(?:…|\.\.\.)\s*$/.test(line.replace(/[ \t]+$/, ''));
+  return /(?:…|\.\.\.)[ \t\r]*$/.test(line);
+}
+
+// parseInt した数値が「バックグラウンドエージェント数」として妥当かを検証する。
+// 安藤の指摘（LOW）: Number.isInteger だけでは巨大な数値（例: 20 桁）も通過してしまい、
+// そのまま JSON に載る。Number.isSafeInteger と値域チェックの両方で防ぐ。
+function parseSafeAgentCount(rawDigits) {
+  const n = parseInt(rawDigits, 10);
+  if (!Number.isSafeInteger(n) || n < 0 || n > MAX_BACKGROUND_AGENTS) return null;
+  return n;
+}
+
+// 走査窓（screenText を分割した各行）の**全行**から正の証拠（Waiting for N.../← N...）
+// を集め、最大値を採る。安藤の指摘（HIGH-1）への対応の中核: 1 件でも先頭一致させると
+// 画面上部のノイズ（「← 0 agents」等）が下端の本物を打ち消してしまうため、必ず全件
+// 集めてから最大値を選ぶ。
+//
+// 正規表現に g フラグを付けているのは String.prototype.matchAll に渡すために必要
+// なため。matchAll は渡された正規表現の lastIndex を書き換えず（内部で複製して走査する
+// 仕様）、モジュール直下の共有定数を毎回 new RegExp し直したり lastIndex を手動で
+// リセットしたりする必要がない。exec/test で g フラグ付き正規表現を使うと呼び出し
+// ごとに lastIndex がずれる間欠バグの温床になるため、この 2 定数は matchAll 専用とし、
+// 他の場所（exec/test）では使わないこと。
+function collectAgentCounts(lines) {
+  let best = null;
+  for (const line of lines) {
+    for (const pattern of [WAITING_FOR_BACKGROUND_AGENTS_PATTERN, BACKGROUND_AGENTS_ARROW_PATTERN]) {
+      for (const m of line.matchAll(pattern)) {
+        const n = parseSafeAgentCount(m[1]);
+        if (n === null) continue;
+        if (best === null || n > best) best = n;
+      }
+    }
+  }
+  return best;
 }
 
 // バックグラウンドで動いている Claude Code サブエージェントの数を判定する。
@@ -287,7 +356,10 @@ function isTruncatedLine(line) {
 // 累積バッファをそのまま渡すと、サブエージェント終了後も過去に流れた
 // 「← N agents」の描画がバッファに残り続け、いつまでも古い数を返してしまう
 // （完了条件「サブエージェントが終わると 0 に戻る」を満たせなくなる）。
-// 呼び出し側は matchesWaiting と同様、ANSI 除去済みのテキストを渡す想定。
+// xterm のバッファは元々 ANSI エスケープを含まないため通常は無加工で渡せるが、
+// ANSI が混ざる入力（テスト等）を渡す場合は matchesWaiting と同様に
+// stripAnsiForDisplay を通してから渡すこと（エスケープシーケンスが判定対象の
+// 文字列の途中に挟まると一致しなくなるため）。
 //
 // 返り値:
 //   - 整数（0 以上）: 値が確定した（agents 表示が読めた、またはフッターが最後まで
@@ -296,45 +368,82 @@ function isTruncatedLine(line) {
 //     agents 表示の有無を確認できない、のいずれか。呼び出し側は 0 と区別して扱うこと。
 function detectBackgroundAgents(screenText) {
   if (typeof screenText !== 'string' || screenText === '') return null;
+  const lines = screenText.split('\n');
 
-  // 1a. 「Waiting for N background agent(s) to finish」ナレーション（正の証拠）。
-  const waitingMatch = WAITING_FOR_BACKGROUND_AGENTS_PATTERN.exec(screenText);
-  if (waitingMatch) {
-    const n = parseInt(waitingMatch[1], 10);
-    if (Number.isInteger(n) && n >= 0) return n;
-    return null; // 実質到達しないが、原則どおり不正値は 0 にしない
-  }
-
-  // 1b. 「← N agents」ヒント（截断されていても数字さえ読めれば正の証拠として拾う）。
-  const arrowMatch = BACKGROUND_AGENTS_ARROW_PATTERN.exec(screenText);
-  if (arrowMatch) {
-    const n = parseInt(arrowMatch[1], 10);
-    if (Number.isInteger(n) && n >= 0) return n;
-    return null;
-  }
+  // 1. 正の証拠を走査窓の全行から集め、最大値を採る（0 に打ち消されない）。
+  const found = collectAgentCounts(lines);
+  if (found !== null && found > 0) return found;
 
   // 2. フッターの目印が無ければ Claude Code の画面と確証が持てないため不明。
-  const lines = screenText.split('\n');
-  const footerLines = lines.filter((line) => CLAUDE_CODE_FOOTER_PATTERN.test(line));
-  if (footerLines.length === 0) return null;
+  const footerIndex = lines.findIndex((line) => CLAUDE_CODE_FOOTER_PATTERN.test(line));
+  if (footerIndex === -1) return found; // found はここでは null か 0（明示的な 0 表記）
 
-  // 3. 目印はあるが、その行が截断されている（末尾が省略記号）場合、截断された先に
-  //    agents セグメントがあったかどうか分からないため 0 と断定せず不明とする。
-  if (footerLines.some(isTruncatedLine)) return null;
+  // 3. 目印行、**およびそれより画面下側の全行**が截断されていれば 0 と断定しない
+  //    （HIGH-2: agents ヒントが目印と別行に出るレイアウトも塞ぐ）。
+  for (let i = footerIndex; i < lines.length; i++) {
+    if (isTruncatedLine(lines[i])) return null;
+  }
 
   // 4. フッターが最後まで読めていて agents セグメントが見当たらないので 0。
   return 0;
 }
 
+// xterm の画面バッファ（term.buffer.active 相当のダック型オブジェクト）から、
+// detectBackgroundAgents に渡す「現在画面の末尾 N 行」を切り出す純粋関数（issue #340）。
+//
+// renderer/app.js から xterm 依存のロジックをここへ移し、Node（require）から
+// テスト可能にしている。引数 buffer は次の形を想定する（xterm の IBuffer が実際に
+// この形を持つ。テストでは同じ形のスタブを渡せばよい）:
+//   - length:  number             総行数（スクロールバック込み）
+//   - baseY:   number             現在の画面（最下端までスクロールしたときの
+//                                 viewport 先頭行）の絶対行番号
+//   - getLine: (i: number) => { translateToString(trimRight: boolean): string,
+//                                isWrapped?: boolean } | undefined
+//
+// 安藤の指摘（MEDIUM-1）: 末尾 maxLines 行を無条件に読むと、ペインが maxLines より
+// 少ない行数（グリッド分割で縦に小さいペインは常態）のとき、その差分だけ baseY より
+// 前（＝スクロールバック側の古い描画）まで読んでしまう。「buffer.active だから古い
+// 描画は残らない」という前提が崩れ、サブエージェント終了後も古い「← 2 agents」を
+// 拾い続ける退行につながるため、読み出し開始位置を baseY でクランプする。
+//
+// 安藤の指摘（LOW: 折り返し行）: xterm の IBufferLine.translateToString は行の
+// 折り返し（isWrapped）を考慮しない。フッターが截断ではなく折り返しで複数行に
+// 分かれた場合、素朴に改行で連結すると「← 2」と「agents」が行境界で分断され、
+// 截断の目印（省略記号）も無いまま 0 と誤判定される恐れがある。isWrapped が真の
+// 行は改行を挟まず直前の行へ連結する。
+//
+// 返り値: 行文字列の配列。buffer が不正な形（duck typing に失敗）なら null。
+function extractScreenLines(buffer, maxLines) {
+  if (!buffer || typeof buffer.length !== 'number' || typeof buffer.getLine !== 'function') return null;
+  const total = buffer.length;
+  if (!Number.isFinite(total) || total <= 0) return null;
+  const baseY = Number.isFinite(buffer.baseY) ? buffer.baseY : 0;
+  const start = Math.max(baseY, total - maxLines);
+  const lines = [];
+  for (let i = start; i < total; i++) {
+    const bufLine = buffer.getLine(i);
+    if (!bufLine) continue;
+    const text = typeof bufLine.translateToString === 'function' ? bufLine.translateToString(true) : '';
+    if (bufLine.isWrapped && lines.length > 0) {
+      lines[lines.length - 1] += text;
+    } else {
+      lines.push(text);
+    }
+  }
+  return lines;
+}
+
 return {
   BACKGROUND_AGENTS_ARROW_PATTERN,
   CLAUDE_CODE_FOOTER_PATTERN,
+  MAX_BACKGROUND_AGENTS,
   WAITING_BEEP_COOLDOWN_MS,
   WAITING_FOR_BACKGROUND_AGENTS_PATTERN,
   WAITING_MAX_EVAL_INTERVAL_MS,
   WAITING_PATTERNS,
   WAITING_QUIESCENCE_MS,
   detectBackgroundAgents,
+  extractScreenLines,
   isOutputQuiescent,
   isWaitingCwdExcluded,
   matchesWaiting,

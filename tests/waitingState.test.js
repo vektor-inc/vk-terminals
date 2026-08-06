@@ -8,6 +8,7 @@ const {
   WAITING_MAX_EVAL_INTERVAL_MS,
   WAITING_QUIESCENCE_MS,
   detectBackgroundAgents,
+  extractScreenLines,
   isOutputQuiescent,
   isWaitingCwdExcluded,
   matchesWaiting,
@@ -441,6 +442,92 @@ test('detectBackgroundAgents: 「← N」の直後が agents の断片でも省�
   assert.equal(detectBackgroundAgents(screen), 0);
 });
 
+// ─── 安藤（セキュリティレビュー）の指摘への回帰防止テスト ──────────────────────────
+
+test('detectBackgroundAgents: 走査窓の上部にあるノイズ（← 0 agents 等）が下端の本物の数を打ち消さない（HIGH-1）', () => {
+  // 安藤の指摘: 先頭一致だけを見ると、画面上部にたまたま流れた「← 0 agents」表記や
+  // 「Waiting for 0 background agents to finish」ナレーションが、画面下端にある
+  // 本物の「← 2 agents」を打ち消して 0 を返してしまう（この PR の diff やドキュメントを
+  // Claude Code ペインに表示しただけでも再現する）。全行から最大値を採ることで防ぐ。
+  const screen = [
+    '⏺ 参考: 過去のログには「← 0 agents」という表示が残っていました。', // 上部のノイズ（0 件）
+    '✻ Waiting for 0 background agents to finish', // 上部のノイズ（0 件のナレーション）
+    '✻ Brewed for 21m 15s · 2 shells still running',
+    '❯ ',
+    '  bypass permissions on (shift+tab to cycle)',
+    '                              ← 2 agents · ↓ to manage', // 画面下端の本物
+  ].join('\n');
+  assert.equal(detectBackgroundAgents(screen), 2);
+});
+
+test('detectBackgroundAgents: 目印行は無傷でもヒント行だけが截断されていれば不明（HIGH-2・2行レイアウト）', () => {
+  // 安藤の指摘: agents ヒントがフッターの目印と別行に描かれるレイアウトで、目印行
+  // 自体は最後まで読めていても、ヒント行（矢印はあるが数字が截断で読めない）だけが
+  // 截断されていれば 0 と断定できない。目印行だけでなく、それより下の全行を
+  // 截断チェックの対象にすることで塞ぐ。
+  const screen = [
+    '❯ ',
+    '  bypass permissions on (shift+tab to cycle) · esc to interrupt', // 目印行は無傷
+    '                              ← …', // ヒント行だけが截断（数字も読めない）
+  ].join('\n');
+  assert.equal(detectBackgroundAgents(screen), null);
+});
+
+test('detectBackgroundAgents: 桁数が異常に大きい数値（現実には截断を伴う）は null のまま（LOW: 上限チェック）', () => {
+  // 20 桁の数値は実際の端末幅では必ず截断されるため、截断側の判定で null になる
+  // ことを確認する（安藤の検証結果「20桁→null」）。
+  const screen = [
+    '❯ ',
+    '  bypass permissions on (shift+tab to cycle)',
+    '                              ← 99999999999999999999 age…',
+  ].join('\n');
+  assert.equal(detectBackgroundAgents(screen), null);
+});
+
+test('detectBackgroundAgents: 桁数上限（4桁）を超える数値はそもそも正の証拠として拾わない（截断していなくても巨大な数を返さない）', () => {
+  // 截断されていない（省略記号なし）ケースでも、5 桁以上の数値は \d{1,4} + (?!\d) に
+  // より拾われない。JSON に天文学的な数値が載る事故を防ぐ防御であることを、
+  // 截断判定に頼らない形でも確認する（0 になる＝巨大な数をそのまま返さない）。
+  const screen = [
+    '❯ ',
+    '  bypass permissions on (shift+tab to cycle)',
+    '                              ← 99999 agents · ↓ to manage',
+  ].join('\n');
+  assert.equal(detectBackgroundAgents(screen), 0);
+});
+
+test('detectBackgroundAgents: 「← 3 apples remaining」は agents ではないので拾わない（MEDIUM-3）', () => {
+  const screen = [
+    '❯ ',
+    '  ? for shortcuts',
+    '← 3 apples remaining', // agents 表示ではない無関係な文言
+  ].join('\n');
+  assert.equal(detectBackgroundAgents(screen), 0);
+});
+
+test('detectBackgroundAgents: 先頭ゼロ埋めの数値（実機では出現しない想定）は不明側へ倒れる（副作用として許容）', () => {
+  // 「← 0000000002 agents」のように先頭にゼロが並ぶと、桁数上限のための
+  // (?!\d) 判定が数字の開始位置から縮めていく形になるため、10 桁分の数字全体が
+  // 1〜4 桁のどの切り出し方でも「直後がまだ数字」になり、結局どこにもマッチしない。
+  // 実機の Claude Code は先頭ゼロ埋めの表記を出さないため実害は無く、
+  // 不明側（null ではなく、目印は読めるので 0）に倒れる分は安全側。
+  const screen = [
+    '❯ ',
+    '  bypass permissions on (shift+tab to cycle)',
+    '                              ← 0000000002 agents · ↓ to manage',
+  ].join('\n');
+  assert.equal(detectBackgroundAgents(screen), 0);
+});
+
+test('detectBackgroundAgents: 「← 5 and counting」は agents ではないので拾わない（MEDIUM-3）', () => {
+  const screen = [
+    '❯ ',
+    '  ? for shortcuts',
+    '← 5 and counting', // agents 表示ではない無関係な文言
+  ].join('\n');
+  assert.equal(detectBackgroundAgents(screen), 0);
+});
+
 test('detectBackgroundAgents: フッターは読めるが agents 表示が無ければ 0', () => {
   const screen = [
     '⏺ 実装が完了しました。',
@@ -502,4 +589,71 @@ test('detectBackgroundAgents: ANSI 制御コードが混ざっていても strip
     '\x1b[90m                              ← 2 agents · ↓ to manage\x1b[0m';
   const clean = stripAnsiForDisplay(raw);
   assert.equal(detectBackgroundAgents(clean), 2);
+});
+
+// ─── extractScreenLines（xterm 画面バッファの切り出し） ─────────────────────────
+// issue vektor-inc/vk-terminals#340 / 安藤の指摘（MEDIUM-1）:
+//   renderer/app.js の readBackgroundAgents は、xterm の term.buffer.active から
+//   末尾 N 行を読んで detectBackgroundAgents に渡す。この切り出し自体（何行目から
+//   読むか）にテストが 1 件も無く、「buffer.active だから古い描画は残らない」という
+//   案 A の前提が、ペインが N 行より小さいとき（グリッド分割で常態）に崩れることが
+//   見落とされていた。app.js は window.* グローバルに依存して Node から require
+//   できないため、この切り出しロジックを純粋関数として waitingState.js 側へ移し、
+//   xterm の IBuffer と同じ形（length / baseY / getLine）を持つスタブでテストする。
+
+// テスト用の最小スタブ。xterm の IBuffer / IBufferLine の該当プロパティだけを持つ。
+function makeStubBuffer({ length, baseY, wrappedIndexes = [] }) {
+  return {
+    length,
+    baseY,
+    getLine(i) {
+      if (i < 0 || i >= length) return undefined;
+      return {
+        translateToString: () => `line-${i}`,
+        isWrapped: wrappedIndexes.includes(i),
+      };
+    },
+  };
+}
+
+test('extractScreenLines: バッファが maxLines 未満なら先頭（0 行目）から全行読む', () => {
+  const buffer = makeStubBuffer({ length: 10, baseY: 0 });
+  const lines = extractScreenLines(buffer, 20);
+  assert.deepEqual(lines, Array.from({ length: 10 }, (_, i) => `line-${i}`));
+});
+
+test('extractScreenLines: baseY でクランプし、baseY より前（スクロールバック）を読まない（MEDIUM-1 回帰防止）', () => {
+  // total=30 行のバッファで、現在画面（baseY..29）は 5 行しかない小さなペインを想定。
+  // baseY によるクランプが無いと、maxLines=20 に合わせて 10 行目から読んでしまい、
+  // baseY より前（10〜24 行目、＝現在の画面ではない過去の描画）まで拾ってしまう。
+  const buffer = makeStubBuffer({ length: 30, baseY: 25 });
+  const lines = extractScreenLines(buffer, 20);
+  assert.deepEqual(lines, ['line-25', 'line-26', 'line-27', 'line-28', 'line-29']);
+});
+
+test('extractScreenLines: isWrapped な行は改行を挟まず直前の行へ連結する（折り返し対応）', () => {
+  // 1 行目（index 1）が isWrapped=true ＝ 0 行目の続き（折り返し）。
+  const buffer = makeStubBuffer({ length: 3, baseY: 0, wrappedIndexes: [1] });
+  const lines = extractScreenLines(buffer, 20);
+  assert.deepEqual(lines, ['line-0line-1', 'line-2']);
+});
+
+test('extractScreenLines: getLine が undefined を返す行は読み飛ばす（例外を投げない）', () => {
+  const buffer = {
+    length: 3,
+    baseY: 0,
+    getLine: (i) => (i === 1 ? undefined : { translateToString: () => `line-${i}` }),
+  };
+  assert.deepEqual(extractScreenLines(buffer, 20), ['line-0', 'line-2']);
+});
+
+test('extractScreenLines: buffer が不正な形（duck typing 失敗）なら null', () => {
+  assert.equal(extractScreenLines(null, 20), null);
+  assert.equal(extractScreenLines({}, 20), null);
+  assert.equal(extractScreenLines({ length: 10 }, 20), null); // getLine が無い
+});
+
+test('extractScreenLines: length が 0 以下なら null', () => {
+  const buffer = makeStubBuffer({ length: 0, baseY: 0 });
+  assert.equal(extractScreenLines(buffer, 20), null);
 });

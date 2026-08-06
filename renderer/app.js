@@ -45,6 +45,7 @@ const {
 const { AGENT_ORDER, buildScene, resolveAgentStatesFromOutput } = window.VKAgentRoom;
 const {
   detectBackgroundAgents,
+  extractScreenLines,
   isOutputQuiescent,
   isWaitingCwdExcluded,
   matchesWaiting,
@@ -291,22 +292,26 @@ function appendWaitingBuffer(prev, data) {
 // 戻る」という完了条件を満たせない（buffer.active は現在の画面そのものなので
 // この問題が起きない）。
 //
-// buffer.active.length は総行数（スクロールバック込み）。末尾
-// BACKGROUND_AGENTS_SCAN_LINES 行（＝現在画面の下端）だけを取り出し、
-// 判定は renderer/waitingState.js の detectBackgroundAgents（純粋関数）に委ねる。
+// 行の切り出し自体（末尾 BACKGROUND_AGENTS_SCAN_LINES 行への絞り込み・baseY
+// クランプ・折り返し行の連結）は renderer/waitingState.js の extractScreenLines
+// （純粋関数）へ委ね、判定も同ファイルの detectBackgroundAgents に委ねる。
+// app.js 側は xterm オブジェクトを渡す配線と、例外の受け止めだけを担う。
+//
+// 安藤の指摘（MEDIUM-2）: readBackgroundAgents はこの setInterval ループで
+// 初めて xterm 内部（buffer.active）へ触る呼び出しのため、想定外の例外で
+// throw すると terminal:report-states 自体が送られなくなり、cachedStates が
+// 凍結して lastOutputTime が古いまま固定される。司令塔が「出力が止まった＝
+// 終了」と誤認する、この issue と同種の事故を別経路で起こしてしまうため、
+// 必ず try/catch で受け止めて不明（null）側へフォールバックする。
 function readBackgroundAgents(t) {
   if (!t || !t.term || !t.term.buffer || !t.term.buffer.active) return null;
-  const buf = t.term.buffer.active;
-  const total = buf.length;
-  if (!Number.isFinite(total) || total <= 0) return null;
-  const rows = Math.min(BACKGROUND_AGENTS_SCAN_LINES, total);
-  const lines = [];
-  for (let i = total - rows; i < total; i++) {
-    const line = buf.getLine(i);
-    // trimRight: true で各行の末尾空白を除去（translateToString の標準オプション）。
-    if (line) lines.push(line.translateToString(true));
+  try {
+    const lines = extractScreenLines(t.term.buffer.active, BACKGROUND_AGENTS_SCAN_LINES);
+    if (lines === null) return null;
+    return detectBackgroundAgents(lines.join('\n'));
+  } catch (e) {
+    return null;
   }
-  return detectBackgroundAgents(lines.join('\n'));
 }
 
 // 入力（ユーザー入力・ドロップ送信・API 送信）があったペインのローカル入力待ち状態を解除する。

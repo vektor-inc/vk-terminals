@@ -1,6 +1,6 @@
 # Changelog
 
-- [ 仕様変更 ] サイドバーの使用量・メニュー・タスク・格納したペインを共通のカード表示に統一し、各セクションを折り畳めるように変更（[#337](https://github.com/vektor-inc/vk-terminals/issues/337)）
+- [ 仕様変更 ] サイドバーの使用量・見出し付きメニュー・タスク・格納したペインを共通のカード表示に統一し、各カードを折り畳めるように変更（[#337](https://github.com/vektor-inc/vk-terminals/issues/337)）
 
 ## 1.54.0
 

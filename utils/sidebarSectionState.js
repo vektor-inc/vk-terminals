@@ -14,56 +14,76 @@ const STORAGE_KEY = 'vkt.sidebarSectionsCollapsed';
 const LEGACY_TASK_STORAGE_KEY = 'vkt.taskListCollapsed';
 const TASK_SECTION_ID = 'task-list';
 
+function createCollapsedSections() {
+  return Object.create(null);
+}
+
+function getStorage(storage) {
+  if (storage) return storage;
+  try {
+    return typeof globalThis !== 'undefined' ? globalThis.localStorage : null;
+  } catch (_e) {
+    return null;
+  }
+}
+
 function normalizeCollapsedSections(value) {
-  const normalized = {};
+  // null プロトタイプなら、外部由来のセクション名も組み込みプロパティと衝突しない。
+  const normalized = createCollapsedSections();
   if (!value || typeof value !== 'object' || Array.isArray(value)) return normalized;
   for (const [sectionId, collapsed] of Object.entries(value)) {
-    if (sectionId === '__proto__' || sectionId === 'constructor' || sectionId === 'prototype') continue;
     if (typeof collapsed === 'boolean') normalized[sectionId] = collapsed;
   }
   return normalized;
 }
 
 function parseCollapsedSections(value) {
-  if (typeof value !== 'string' || !value) return {};
+  if (typeof value !== 'string' || !value) return createCollapsedSections();
   try {
     return normalizeCollapsedSections(JSON.parse(value));
   } catch (_e) {
-    return {};
+    return createCollapsedSections();
   }
 }
 
 function readCollapsedSections(storage) {
+  const resolvedStorage = getStorage(storage);
+  if (!resolvedStorage) return createCollapsedSections();
   try {
-    const stored = storage.getItem(STORAGE_KEY);
-    if (stored !== null) return parseCollapsedSections(stored);
-
-    const migrated = {};
-    if (storage.getItem(LEGACY_TASK_STORAGE_KEY) === '1') {
-      migrated[TASK_SECTION_ID] = true;
-    }
-    storage.setItem(STORAGE_KEY, JSON.stringify(migrated));
-    // 新形式を先に保存してから旧キーを消し、以後の起動で再移行や二重管理を起こさない。
-    try { storage.removeItem(LEGACY_TASK_STORAGE_KEY); }
-    catch (_e) { /* 新形式の保存が済んでいるため、旧キーの削除失敗は読み込みを妨げない */ }
-    return migrated;
+    return parseCollapsedSections(resolvedStorage.getItem(STORAGE_KEY));
   } catch (_e) {
-    return {};
+    return createCollapsedSections();
   }
 }
 
-function writeSectionCollapsed(storage, sectionId, collapsed) {
-  if (
-    typeof sectionId !== 'string'
-    || !sectionId
-    || sectionId === '__proto__'
-    || sectionId === 'constructor'
-    || sectionId === 'prototype'
-  ) return false;
+function migrateLegacyState(storage) {
+  const resolvedStorage = getStorage(storage);
+  if (!resolvedStorage) return false;
   try {
-    const sections = readCollapsedSections(storage);
+    if (resolvedStorage.getItem(STORAGE_KEY) !== null) return true;
+    const legacyValue = resolvedStorage.getItem(LEGACY_TASK_STORAGE_KEY);
+    if (legacyValue === null) return true;
+
+    const migrated = createCollapsedSections();
+    if (legacyValue === '1') migrated[TASK_SECTION_ID] = true;
+    resolvedStorage.setItem(STORAGE_KEY, JSON.stringify(migrated));
+    // 移行は片道。旧版へ戻すと新キーを読めず、タスク一覧は開いた状態へ戻る。
+    try { resolvedStorage.removeItem(LEGACY_TASK_STORAGE_KEY); }
+    catch (_e) { /* 新形式の保存が済んでいるため、旧キーの削除失敗は起動を妨げない */ }
+    return true;
+  } catch (_e) {
+    return false;
+  }
+}
+
+function writeSectionCollapsed(sectionId, collapsed, storage) {
+  if (typeof sectionId !== 'string' || !sectionId) return false;
+  const resolvedStorage = getStorage(storage);
+  if (!resolvedStorage) return false;
+  try {
+    const sections = readCollapsedSections(resolvedStorage);
     sections[sectionId] = collapsed === true;
-    storage.setItem(STORAGE_KEY, JSON.stringify(sections));
+    resolvedStorage.setItem(STORAGE_KEY, JSON.stringify(sections));
     return true;
   } catch (_e) {
     return false;
@@ -73,6 +93,7 @@ function writeSectionCollapsed(storage, sectionId, collapsed) {
 return {
   LEGACY_TASK_STORAGE_KEY,
   STORAGE_KEY,
+  migrateLegacyState,
   parseCollapsedSections,
   readCollapsedSections,
   writeSectionCollapsed,

@@ -1132,6 +1132,9 @@ body.resizing-sidebar .sidebar {
 /* サイドバーセクション共通カード（issue #337）
    ========================================================================== */
 .sidebar-section-card {
+  /* セクションの面はサイドバーの地（#0d1117）より一段明るい #1c2128 にする。
+   * 背景無し＋上端 1px 線だけではサイドバーの地やペインに同化し、領域の境界を
+   * 読み取れなかったため。中のカードは暗くなり、面の階層で区別される。 */
   margin: 10px 8px;
   padding: 10px 8px;
   border: 1px solid #30363d;
@@ -1152,13 +1155,15 @@ body.resizing-sidebar .sidebar {
   font-weight: 600;
 }
 .sidebar-section-label {
-  flex: 0 0 auto;
+  flex: 1 1 auto;
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 .sidebar-section-controls {
   display: flex;
-  flex: 1 1 auto;
+  flex: 0 0 auto;
   align-items: center;
   justify-content: flex-end;
   gap: 4px;
@@ -1434,9 +1439,6 @@ body.resizing-sidebar .sidebar {
 
 /* ─── Task list（サイドバーの task-queue スナップショット, issue #197）───────
  * vk-orchestrator が書き出す tasks-view.json を読み取り専用カードで縦積みする。 */
-.task-list-title-text {
-  flex: 0 0 auto;
-}
 
 /* 見出しラベルのリンク化（GitHub モード時 / issue #233）
    ========================================================================== */

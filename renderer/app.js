@@ -35,6 +35,7 @@ const { normalizeConfirmClose, shouldConfirmClose } = window.VKCloseConfirm;
 const { isLoopbackDisplayValue } = window.VKLoopbackHost;
 const { isSafeHttpUrl } = window.VKUrlSafety;
 const {
+  migrateLegacyState,
   readCollapsedSections,
   writeSectionCollapsed,
 } = window.VKSidebarSectionState;
@@ -852,7 +853,8 @@ let sidebarResizeState = null;
 // 従来の 252px から約 1.3 倍に拡張した既定幅。永続化はしない（再起動で既定に戻る）。
 const DEFAULT_SIDEBAR_WIDTH = 330;
 const SIDEBAR_MIN_WIDTH = 200;
-const sidebarSectionsCollapsed = readCollapsedSections(window.localStorage);
+migrateLegacyState();
+const sidebarSectionsCollapsed = readCollapsedSections();
 
 function isReducedMotion() {
   return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
@@ -946,8 +948,27 @@ function createMenuItem(item) {
   return li;
 }
 
-// サイドバー各カードの共通見出し。ラベルと操作を別ゾーンにしてクリック範囲を分離する。
-// body が無い場合はトグルを生成しない。
+function encodeSidebarSectionIdPart(value) {
+  let encoded = '';
+  for (let index = 0; index < value.length; index++) {
+    const codeUnit = value.charCodeAt(index);
+    const nextCodeUnit = value.charCodeAt(index + 1);
+    if (codeUnit >= 0xD800 && codeUnit <= 0xDBFF && nextCodeUnit >= 0xDC00 && nextCodeUnit <= 0xDFFF) {
+      encoded += encodeURIComponent(value.slice(index, index + 2));
+      index++;
+    } else if (codeUnit >= 0xD800 && codeUnit <= 0xDFFF) {
+      // JSON で届きうる孤立サロゲートを encodeURIComponent に渡すと例外になるため明示表現へ逃がす。
+      encoded += `%u${codeUnit.toString(16).padStart(4, '0')}`;
+    } else {
+      encoded += encodeURIComponent(value[index]);
+    }
+  }
+  return encoded;
+}
+
+// サイドバー各カードの共通見出し。見出し全体は非インタラクティブな div のままにする。
+// issue #226 の担当者 <select> を入れ子にできるよう、見出し全体を button にせず、
+// ラベルと操作を兄弟ゾーンへ分離する。body が無い場合はトグルを生成しない。
 function createSidebarSectionHeader(section, options) {
   const {
     sectionId,
@@ -955,15 +976,17 @@ function createSidebarSectionHeader(section, options) {
     body,
     controls = [],
     labelClassName = '',
+    labelId = '',
     toggleLabelText = labelText,
   } = options;
   const header = document.createElement('div');
   header.className = 'sidebar-section-header';
 
   const label = document.createElement('span');
-  label.id = `${sectionId}-label`;
+  if (labelId) label.id = labelId;
   label.className = ['sidebar-section-label', labelClassName].filter(Boolean).join(' ');
   label.textContent = labelText;
+  label.title = labelText;
   header.appendChild(label);
 
   const controlGroup = document.createElement('div');
@@ -984,7 +1007,7 @@ function createSidebarSectionHeader(section, options) {
       section.classList.toggle('collapsed', nowCollapsed);
       updateSidebarSectionToggle(toggle, toggleLabelText, !nowCollapsed);
       sidebarSectionsCollapsed[sectionId] = nowCollapsed;
-      writeSectionCollapsed(window.localStorage, sectionId, nowCollapsed);
+      writeSectionCollapsed(sectionId, nowCollapsed);
     });
     controlGroup.appendChild(toggle);
   }
@@ -1013,28 +1036,42 @@ function renderSidebarMenu() {
   }
   inner.replaceChildren();
 
+  const sourceSectionIndexes = new Map();
   for (let sectionIndex = 0; sectionIndex < sidebarMenuSections.length; sectionIndex++) {
     const section = sidebarMenuSections[sectionIndex];
     const list = document.createElement('ul');
     list.className = 'sidebar-menu-list';
     const items = Array.isArray(section?.items) ? section.items : [];
+    for (const item of items) list.appendChild(createMenuItem(item));
+
+    // main プロセスからは必ず source が届く。欠損した malformed/旧IPCデータには安定した
+    // 出どころが無いため、描画位置を fallback にする。通常ソースとは別名にして影響を局所化する。
+    const source = typeof section?.source === 'string' && section.source
+      ? section.source
+      : `source-missing-${sectionIndex}`;
+    const sourceIndex = sourceSectionIndexes.get(source) || 0;
+    sourceSectionIndexes.set(source, sourceIndex + 1);
+
+    // title 省略は、前後のメニューへ馴染ませるプレーンリストという公開仕様。
+    if (!section?.title) {
+      inner.appendChild(list);
+      continue;
+    }
 
     const sectionEl = document.createElement('div');
-    const sectionId = `sidebar-menu-section-${sectionIndex}`;
+    const sectionId = `sidebar-menu-section-${encodeSidebarSectionIdPart(source)}-${sourceIndex}`;
     sectionEl.id = sectionId;
     sectionEl.className = 'sidebar-section sidebar-section-card';
     list.id = `${sectionId}-body`;
     list.classList.add('sidebar-section-body');
     const { header, label } = createSidebarSectionHeader(sectionEl, {
       sectionId,
-      labelText: section?.title || 'メニュー',
+      labelText: section.title,
       body: list,
+      labelId: `${sectionId}-label`,
     });
     list.setAttribute('aria-labelledby', label.id);
     sectionEl.appendChild(header);
-    for (const item of items) {
-      list.appendChild(createMenuItem(item));
-    }
     sectionEl.appendChild(list);
     inner.appendChild(sectionEl);
   }

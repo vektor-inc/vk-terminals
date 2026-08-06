@@ -635,14 +635,6 @@ test('サイドバー: 右端トグルで一覧を折り畳み・展開でき、
     const toggle = section.locator('.sidebar-section-toggle');
     const body = section.locator('.task-list-body');
 
-    // サイドバー下限幅でも、ラベル・担当者フィルタ・トグルを持つ共通見出しがはみ出さない。
-    await win.locator('#sidebar').evaluate((sidebar) => {
-      sidebar.style.setProperty('--vktm-sidebar-width', '200px');
-    });
-    expect(await section.locator('.sidebar-section-header').evaluate((header) => (
-      header.scrollWidth <= header.clientWidth
-    ))).toBe(true);
-
     // 初期は展開。
     await expect(body).toBeVisible();
     await expect(toggle).toHaveAttribute('aria-expanded', 'true');
@@ -666,5 +658,74 @@ test('サイドバー: 右端トグルで一覧を折り畳み・展開でき、
   } finally {
     await closeAppForcefully({ app, tmpRoot });
     fs.rmSync(dataRoot, { recursive: true, force: true });
+  }
+});
+
+// ─── 13: 長いメニュー見出しでも下限幅でトグルを可視・操作可能に保つ ───
+test('サイドバー: 長いメニュー見出しは 200px 幅で省略し、トグルを可視領域内に保つ', async () => {
+  const port = await getFreePort();
+  const longTitle = 'これは二十文字を超えるとても長い外部連携メニューの見出しです';
+  const menuItems = [
+    {
+      title: longTitle,
+      items: [
+        {
+          id: 'long-title-item',
+          label: '長い見出しの項目',
+          icon: '🧪',
+          action: { type: 'open-settings' },
+        },
+      ],
+    },
+  ];
+  const { app, win, tmpRoot } = await launchWidgetApp(port, { menuItems });
+  const sidebar = win.locator('#sidebar');
+  let originalWidth = null;
+  try {
+    const menuInner = win.locator('.sidebar-menu-inner');
+    const section = menuInner.locator('.sidebar-section-card').filter({ hasText: longTitle });
+    await expect(section).toBeVisible({ timeout: 10_000 });
+    await expect(section).toHaveAttribute('id', 'sidebar-menu-section-config-0');
+    await expect(section.locator('.sidebar-section-label')).toHaveAttribute('title', longTitle);
+
+    // title を持たない組み込み「設定」は、カードや見出しを足さず直下のプレーン ul に保つ。
+    await expect(menuInner.locator(':scope > .sidebar-menu-list').filter({ hasText: '設定' })).toHaveCount(1);
+    await expect(menuInner.getByText('メニュー', { exact: true })).toHaveCount(0);
+
+    originalWidth = await sidebar.evaluate((element) => ({
+      value: element.style.getPropertyValue('--vktm-sidebar-width'),
+      priority: element.style.getPropertyPriority('--vktm-sidebar-width'),
+    }));
+    await sidebar.evaluate((element) => {
+      element.style.setProperty('--vktm-sidebar-width', '200px');
+    });
+
+    const toggle = section.locator('.sidebar-section-toggle');
+    await expect(toggle).toBeVisible();
+    const bounds = await Promise.all([
+      sidebar.evaluate((element) => element.getBoundingClientRect().toJSON()),
+      toggle.evaluate((element) => element.getBoundingClientRect().toJSON()),
+    ]);
+    expect(bounds[1].left).toBeGreaterThanOrEqual(bounds[0].left);
+    expect(bounds[1].right).toBeLessThanOrEqual(bounds[0].right);
+    expect(bounds[1].top).toBeGreaterThanOrEqual(bounds[0].top);
+    expect(bounds[1].bottom).toBeLessThanOrEqual(bounds[0].bottom);
+
+    await toggle.click();
+    await expect(section.locator('.sidebar-section-body')).toBeHidden();
+    expect(await win.evaluate(() => JSON.parse(
+      localStorage.getItem('vkt.sidebarSectionsCollapsed')
+    )['sidebar-menu-section-config-0'])).toBe(true);
+  } finally {
+    if (originalWidth) {
+      await sidebar.evaluate((element, previous) => {
+        if (previous.value) {
+          element.style.setProperty('--vktm-sidebar-width', previous.value, previous.priority);
+        } else {
+          element.style.removeProperty('--vktm-sidebar-width');
+        }
+      }, originalWidth).catch(() => {});
+    }
+    await closeAppForcefully({ app, tmpRoot });
   }
 });

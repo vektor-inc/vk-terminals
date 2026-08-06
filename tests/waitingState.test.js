@@ -356,6 +356,91 @@ test('detectBackgroundAgents: 単数形「← 1 agent」も読み取れる', () 
   assert.equal(detectBackgroundAgents(screen), 1);
 });
 
+// ─── フッター截断（ペイン幅による "…" 切り詰め）への耐性 ────────────────────────
+// 司からの実機データ（~/.vk-terminals/states.json の lastLines）で確認された、
+// 同じペインがペイン幅の変化に応じて異なる長さに截断された実例そのもの。
+// フッターの目印（bypass permissions on 等）は行頭側にあるので必ず一致するが、
+// agents セグメントは行末側なので真っ先に切られる。「目印が読めた＝0」と早合点すると
+// 動いているペインを 0（≒ 止まっている）と誤認させてしまうため、数字が読める限りは
+// 截断の深さに関わらず 2 を返せる必要がある。
+test('detectBackgroundAgents: フッター截断（実機データ） — 「← 2 agents…」以降、agents の綴りが截断されても 2 を返す', () => {
+  const truncatedButReadable = [
+    '⏵⏵ bypass permissions on (shift+tab to cycle) · ← 2 agents · ↓ to mana…',
+    '⏵⏵ bypass permissions on (shift+tab to cycle) · ← 2 agents…',
+    '⏵⏵ bypass permissions on (shift+tab to cycle) · ← 2 agent…',
+    '⏵⏵ bypass permissions on (shift+tab to cycle) · ← 2 agen…',
+    '⏵⏵ bypass permissions on (shift+tab to cycle) · ← 2 age…',
+    '⏵⏵ bypass permissions on (shift+tab to cycle) · ← 2 ag…',
+    '⏵⏵ bypass permissions on (shift+tab to cycle) · ← 2 a…',
+    '⏵⏵ bypass permissions on (shift+tab to cycle) · ← 2 …',
+    '⏵⏵ bypass permissions on (shift+tab to cycle) · ← 2…',
+    '⏵⏵ bypass permissions on · 1 shell · ← 2 agents · ↓ to mana…',
+  ];
+  for (const line of truncatedButReadable) {
+    assert.equal(detectBackgroundAgents(line), 2, `2 を検知できていない: ${line}`);
+  }
+});
+
+test('detectBackgroundAgents: フッター截断（実機データ） — 数字自体や agents セグメント全体が截断で読めないときは不明（null）', () => {
+  const truncatedUnreadable = [
+    // 矢印はあるが数字自体が截断で消えている。0 台の数字さえ読み取れないので不明。
+    '⏵⏵ bypass permissions on (shift+tab to cycle) · ← …',
+    // agents セグメント自体が截断で丸ごと見えない（この先に agents があったか分からない）。
+    '⏵⏵ bypass permissions on (shift+tab to cycle) · esc to inte…',
+  ];
+  for (const line of truncatedUnreadable) {
+    assert.equal(detectBackgroundAgents(line), null, `null になっていない: ${line}`);
+  }
+});
+
+test('detectBackgroundAgents: フッターが截断されていなければ agents セグメント無しは 0 のまま（回帰確認）', () => {
+  // "esc to interrupt" が最後まで読めていて省略記号も付いていない ＝ 截断されていない。
+  const screen = '⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt';
+  assert.equal(detectBackgroundAgents(screen), 0);
+});
+
+// ─── 「✻ Waiting for N background agent(s) to finish」ナレーション ──────────────
+// 「← N agents」ヒントとは別のタイミング（メイン応答がサブエージェントの完了待ちで
+// 停止している間）に出る表示。実機で単数・複数の両方を確認済み。
+test('detectBackgroundAgents: 「Waiting for 1 background agent to finish」（単数形）は 1 を返す', () => {
+  const screen = [
+    '✻ Waiting for 1 background agent to finish',
+    '',
+    '❯ ',
+  ].join('\n');
+  assert.equal(detectBackgroundAgents(screen), 1);
+});
+
+test('detectBackgroundAgents: 「Waiting for 4 background agents to finish」（複数形）は 4 を返す', () => {
+  const screen = [
+    '✻ Waiting for 4 background agents to finish',
+    '',
+    '❯ ',
+  ].join('\n');
+  assert.equal(detectBackgroundAgents(screen), 4);
+});
+
+test('detectBackgroundAgents: 「Waiting for N background agent(s)」はフッターの目印が無くても正の証拠として拾う', () => {
+  // メイン応答が完全に止まりフッターの入力ボックス自体がまだ描画されていない
+  // タイミングでもこのナレーションだけは出るため、目印を要求しない。
+  const screen = '✻ Waiting for 2 background agents to finish';
+  assert.equal(detectBackgroundAgents(screen), 2);
+});
+
+// ─── 「←」の誤検知防止（無関係な文字列との区別） ────────────────────────────────
+// "↓ 75.4k tokens" のような既存表示は下矢印（↓）であり左矢印（←）とは別の記号なので
+// そもそも衝突しない。ここでは「← N」の直後が agents の断片でも省略記号でもない、
+// この issue とは無関係な文字列を誤って拾わないことを確認する。
+test('detectBackgroundAgents: 「← N」の直後が agents の断片でも省略記号でもなければ正の証拠として扱わない', () => {
+  const screen = [
+    '❯ ',
+    '  ? for shortcuts',
+    '← 5 minutes ago にコミットされました', // agents 表示ではない無関係な文言（仮想例）
+  ].join('\n');
+  // フッターの目印（? for shortcuts）は截断されていないので、agents 表示無しとして 0。
+  assert.equal(detectBackgroundAgents(screen), 0);
+});
+
 test('detectBackgroundAgents: フッターは読めるが agents 表示が無ければ 0', () => {
   const screen = [
     '⏺ 実装が完了しました。',
@@ -374,11 +459,12 @@ test('detectBackgroundAgents: 未定義・非文字列は不明（null）', () =
   assert.equal(detectBackgroundAgents(null), null);
 });
 
-test('detectBackgroundAgents: Claude Code 以外の出力（フッターの目印が無い）は不明（null）', () => {
+test('detectBackgroundAgents: Claude Code 以外の出力（フッターの目印も agents ヒントも無い）は不明（null）', () => {
+  // 「← N agents」の断片も「Waiting for N background agent(s)」も含まない、
+  // フッターの目印も無い素の shell 出力。正の証拠が無く、目印も無いので null。
   const screen = [
     '$ npm test',
     '2007 pass / 0 fail',
-    '← 2 agents · ↓ to manage', // フッターの目印が無いのでこの文字列自体は判定材料にしない
     '$ ',
   ].join('\n');
   assert.equal(detectBackgroundAgents(screen), null);

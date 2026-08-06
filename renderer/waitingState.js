@@ -218,9 +218,51 @@ function shouldBeepForWaiting({ now, lastBeepAt, cooldownMs = WAITING_BEEP_COOLD
 // 司令塔が「作業終了」と誤認してしまう（2026-08-06 に実際発生）。この誤認を防ぐため、
 // 画面末尾に出るフッター表示からバックグラウンドで動くサブエージェント数を読み取る。
 //
-// Claude Code のフッターには、サブエージェントが動いている間だけ右側に
-// 「← N agents · ↓ to manage」（単数形は「← 1 agent」）が表示される。
-const BACKGROUND_AGENTS_HINT_PATTERN = /←\s*(\d+)\s*agents?\b/i;
+// このフッター行は **ペイン幅に応じて末尾が "…" で截断される。** 実機
+// （~/.vk-terminals/states.json に記録された実際の画面出力）で以下を確認済み。
+//
+//   ⏵⏵ bypass permissions on (shift+tab to cycle) · ← 2 agents · ↓ to mana…
+//   ⏵⏵ bypass permissions on (shift+tab to cycle) · ← 2 agents…
+//   ⏵⏵ bypass permissions on (shift+tab to cycle) · ← 2 agent…
+//   ⏵⏵ bypass permissions on (shift+tab to cycle) · ← 2 agen…
+//   ⏵⏵ bypass permissions on (shift+tab to cycle) · ← 2 age…
+//   ⏵⏵ bypass permissions on (shift+tab to cycle) · ← 2 ag…
+//   ⏵⏵ bypass permissions on (shift+tab to cycle) · ← 2 a…
+//   ⏵⏵ bypass permissions on (shift+tab to cycle) · ← 2 …
+//   ⏵⏵ bypass permissions on (shift+tab to cycle) · ← 2…
+//   ⏵⏵ bypass permissions on (shift+tab to cycle) · ← …        （数字自体が截断）
+//   ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to inte…（agents セグメント自体が截断で消滅）
+//
+// フッターの目印（bypass permissions on 等）は行の**先頭側**にあるので必ず一致するが、
+// agents セグメントは行の**末尾側**なので真っ先に切られる。「目印が読めた＝フッターの
+// 全容が読めた」ではないため、目印が読めたことだけを根拠に「agents 表示が無い→0」と
+// 断定すると、上記のように数字が読めているのに 0 を返す・数字自体が見えないのに 0 を
+// 返す、という false 0（動いているのに止まっていると誤認させる、この issue が最も
+// 避けたい失敗）を量産してしまう。そこで判定順序を次のようにする。
+//
+//   1. 正の証拠（フッターの目印の有無に関わらず先に見る）
+//        - 「✻ Waiting for N background agent(s) to finish」ナレーション
+//        - 「← N」+ agents の断片（"agents"〜"a" のどこまで截断されていても）
+//      数字が読めている以上、それを信じる。誤って Claude Code 以外の画面から
+//      拾ってしまっても、司令塔側は「動いている」と保守的に見えるだけで実害は小さい
+//      （見逃し＝false 0 のほうが「未検証PRをマージする」実害が大きい）。
+//   2. フッターの目印が無ければ null（不明）
+//   3. 目印はあるが、その行の末尾が "…" で截断されている場合も null（不明）。
+//      截断された先に agents セグメントがあったかどうか分からないため。
+//   4. フッターが最後まで読めていて agents セグメントが無ければ、そこで初めて 0。
+
+// 「✻ Waiting for N background agent(s) to finish」ナレーション（実機で単数・複数とも確認済み）。
+// メイン応答がサブエージェントの完了待ちで停止しているときに出る、← N agents とは別の表示。
+const WAITING_FOR_BACKGROUND_AGENTS_PATTERN = /Waiting for (\d+) background agents? to finish/i;
+
+// 「← N agents · ↓ to manage」ヒント。末尾側の agents の綴りがどこまで截断されていても
+// （"agents" 〜 "a" の1文字、または省略記号 "…"/"..." が直後に来る場合も）拾えるように、
+// 長い候補から順に alternation を並べる（find -regex の注意と同じ理由）。
+// "←" という左矢印はこの用途以外での使用が確認できていないため、"↓ 75.4k tokens" のような
+// 別表示（下矢印・別記号）と混同する心配はない。一方、agents の断片も省略記号も無い
+// 「← 5 minutes ago」のような無関係な文字列とは区別できるよう、断片 or 省略記号の
+// いずれかを必須（オプションにしない）にしている。
+const BACKGROUND_AGENTS_ARROW_PATTERN = /←\s*(\d+)\s*(?:agents?|agen|age|ag|a|…|\.\.\.)/i;
 
 // Claude Code の画面であることの常時表示の目印（フッター行）。
 // このいずれかが検知できて初めて「フッターが読み取れる状態」とみなす。
@@ -232,6 +274,12 @@ const BACKGROUND_AGENTS_HINT_PATTERN = /←\s*(\d+)\s*agents?\b/i;
 // 画面出力）で "bypass permissions on (shift+tab to cycle)" を確認済み。
 const CLAUDE_CODE_FOOTER_PATTERN = /\?\s*for\s+shortcuts|shift\+tab\s+to\s+cycle|bypass permissions on|accept edits on/i;
 
+// 行末の空白を取り除いたうえで、省略記号（全角三点リーダー … / 半角3連ドット ...）で
+// 終わっているかを判定する。フッター行がペイン幅で截断されているかどうかの目印。
+function isTruncatedLine(line) {
+  return /(?:…|\.\.\.)\s*$/.test(line.replace(/[ \t]+$/, ''));
+}
+
 // バックグラウンドで動いている Claude Code サブエージェントの数を判定する。
 //
 // 引数 screenText には、累積バッファ（lastLines）ではなく **現在画面に表示されている
@@ -242,22 +290,47 @@ const CLAUDE_CODE_FOOTER_PATTERN = /\?\s*for\s+shortcuts|shift\+tab\s+to\s+cycle
 // 呼び出し側は matchesWaiting と同様、ANSI 除去済みのテキストを渡す想定。
 //
 // 返り値:
-//   - 整数（0 以上）: フッターの目印が読み取れ、値が確定した（agents 表示が無ければ 0）
-//   - null:          目印自体が読み取れない（バッファが空・Claude Code の画面ではない等）
-//                    の「不明」。呼び出し側は 0 と区別して扱うこと。
+//   - 整数（0 以上）: 値が確定した（agents 表示が読めた、またはフッターが最後まで
+//     読めていて agents 表示が無かった）
+//   - null: 不明。バッファが空・Claude Code の画面ではない・フッターが截断されていて
+//     agents 表示の有無を確認できない、のいずれか。呼び出し側は 0 と区別して扱うこと。
 function detectBackgroundAgents(screenText) {
   if (typeof screenText !== 'string' || screenText === '') return null;
-  if (!CLAUDE_CODE_FOOTER_PATTERN.test(screenText)) return null;
-  const match = BACKGROUND_AGENTS_HINT_PATTERN.exec(screenText);
-  if (!match) return 0;
-  const n = parseInt(match[1], 10);
-  return Number.isInteger(n) && n >= 0 ? n : 0;
+
+  // 1a. 「Waiting for N background agent(s) to finish」ナレーション（正の証拠）。
+  const waitingMatch = WAITING_FOR_BACKGROUND_AGENTS_PATTERN.exec(screenText);
+  if (waitingMatch) {
+    const n = parseInt(waitingMatch[1], 10);
+    if (Number.isInteger(n) && n >= 0) return n;
+    return null; // 実質到達しないが、原則どおり不正値は 0 にしない
+  }
+
+  // 1b. 「← N agents」ヒント（截断されていても数字さえ読めれば正の証拠として拾う）。
+  const arrowMatch = BACKGROUND_AGENTS_ARROW_PATTERN.exec(screenText);
+  if (arrowMatch) {
+    const n = parseInt(arrowMatch[1], 10);
+    if (Number.isInteger(n) && n >= 0) return n;
+    return null;
+  }
+
+  // 2. フッターの目印が無ければ Claude Code の画面と確証が持てないため不明。
+  const lines = screenText.split('\n');
+  const footerLines = lines.filter((line) => CLAUDE_CODE_FOOTER_PATTERN.test(line));
+  if (footerLines.length === 0) return null;
+
+  // 3. 目印はあるが、その行が截断されている（末尾が省略記号）場合、截断された先に
+  //    agents セグメントがあったかどうか分からないため 0 と断定せず不明とする。
+  if (footerLines.some(isTruncatedLine)) return null;
+
+  // 4. フッターが最後まで読めていて agents セグメントが見当たらないので 0。
+  return 0;
 }
 
 return {
-  BACKGROUND_AGENTS_HINT_PATTERN,
+  BACKGROUND_AGENTS_ARROW_PATTERN,
   CLAUDE_CODE_FOOTER_PATTERN,
   WAITING_BEEP_COOLDOWN_MS,
+  WAITING_FOR_BACKGROUND_AGENTS_PATTERN,
   WAITING_MAX_EVAL_INTERVAL_MS,
   WAITING_PATTERNS,
   WAITING_QUIESCENCE_MS,

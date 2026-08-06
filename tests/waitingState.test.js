@@ -543,44 +543,42 @@ test('detectBackgroundAgents: 先頭ゼロ埋めの数値は 0 と断定せず�
   assert.equal(detectBackgroundAgents(screen), null);
 });
 
-// 安藤の指摘（MEDIUM-1）: matchAll は元の正規表現オブジェクトの lastIndex を
-// 「書き換え」はしないが、複製を作る際に「読み取って引き継ぐ」。したがって、g フラグ
-// 付きの共有正規表現オブジェクトに対して外部から .test()/.exec() が一度でも呼ばれると、
-// 以後の matchAll がその汚染された位置から始まってしまい、本来ヒットするはずの
-// 一致を取りこぼす（false 0）。
+// 安藤の指摘（MEDIUM-1、および再レビューでの LOW 指摘）: matchAll は元の正規表現
+// オブジェクトの lastIndex を「書き換え」はしないが、複製を作る際に「読み取って
+// 引き継ぐ」。したがって、g フラグ付きの共有正規表現オブジェクトに対して外部から
+// .test()/.exec() が一度でも呼ばれると、以後の matchAll がその汚染された位置から
+// 始まってしまい、本来ヒットするはずの一致を取りこぼす（false 0）。
 //
 // 対応: 該当する 2 定数（WAITING_FOR_BACKGROUND_AGENTS_PATTERN /
 // BACKGROUND_AGENTS_ARROW_PATTERN）は module の export から外し（この waitingState.js
 // の UMD ラッパーはクロージャなので、Node の require からも一切参照できない）、加えて
 // collectAgentCounts が呼び出しのたびに明示的に lastIndex を 0 へリセットする、の
-// 二重の対策にした。
+// 二重の対策にした（pattern.lastIndex = 0 の行自体はテストできなくても export を
+// 外したことと二重に効いていてコストがゼロなので、そのまま残している）。
 //
-// ここでは「外部から .test() を呼んで汚した直後の detectBackgroundAgents 呼び出し」を
-// 文字どおり再現するテストは書けない（それこそが export を外した狙いで、外部の
-// テストコードから汚染対象の正規表現オブジェクトへ到達する経路が無いことを意味する）。
-// 代わりに、汚染が起きたときに壊れるはずの性質——「一致箇所が文字列の先頭から離れた
-// 位置にある入力を、連続で何度呼んでも毎回正しく検知できること」——を、実際に公開
-// されている detectBackgroundAgents だけを使って検証する。もし将来 lastIndex の
-// リセットが失われ、かつ何らかの経路で lastIndex が動いてしまうようなことがあれば、
-// このテストが 2 回目以降の呼び出しで失敗して検知できる。
-test('detectBackgroundAgents: 一致位置が先頭から離れた入力を連続で判定しても毎回正しく検知できる（lastIndex 汚染の回帰防止・MEDIUM-1）', () => {
-  const farMatch = [
-    'x'.repeat(500), // 一致箇所をある程度後方へ追いやるための無関係な前置き
-    '❯ ',
-    '  bypass permissions on (shift+tab to cycle)',
-    '                              ← 3 agents · ↓ to manage',
-  ].join('\n');
-  for (let i = 0; i < 5; i++) {
-    assert.equal(detectBackgroundAgents(farMatch), 3, `${i + 1} 回目の呼び出しで一致しなかった`);
-  }
-
-  // 「Waiting for N ... to finish」パターン側も同様に確認する（別の共有定数）。
-  const farWaitingMatch = [
-    'x'.repeat(500),
-    '✻ Waiting for 4 background agents to finish',
-  ].join('\n');
-  for (let i = 0; i < 5; i++) {
-    assert.equal(detectBackgroundAgents(farWaitingMatch), 4, `${i + 1} 回目の呼び出しで一致しなかった`);
+// 「一致位置が先頭から離れた入力を連続で判定しても毎回正しく検知できる」という形の
+// 回帰防止テストは、当初これで足りると考えていたが誤りだった。matchAll は元の
+// lastIndex を書き換えない（読み取るだけ）ため、外部からの汚染経路が無い限り
+// 共有定数の lastIndex は永久に 0 のままで、リセット行の有無は公開 API 経由の
+// 挙動に一切差を生まない（実際に pattern.lastIndex = 0 を外して確認済み。全テスト
+// 通過してしまい、退行を検知できなかった）。
+//
+// 守るべき不変条件は「共有される lastIndex に外から手が届かないこと」そのものであり、
+// それは公開面（export 一覧）を直接検証することでしか観測できない。このテストは
+// 「汚染が起きたか」ではなく「汚染できる経路が公開されていないか」を見る。
+test('waitingState: g フラグ付きの正規表現を export しない（lastIndex 汚染の回帰防止・MEDIUM-1）', () => {
+  // g 付き正規表現は lastIndex という可変状態を持つオブジェクト。export すると
+  // 外部の .test()/.exec() が lastIndex を進め、その後の matchAll が複製を作る際に
+  // その値を引き継いで一致を取り逃す（＝ backgroundAgents が false 0 を返す）。
+  // 「matchAll は元を書き換えない」のは書き込みの話で、読み取りは守られない。
+  //
+  // このテストは「汚染が起きたか」ではなく「汚染できる経路が公開されていないか」を
+  // 見る。lastIndex を汚す経路が無いことは公開 API 側からしか観測できないため、
+  // 実際に汚染を再現するテストは（意図どおり）書けない。
+  for (const [name, value] of Object.entries(require('../renderer/waitingState'))) {
+    if (value instanceof RegExp) {
+      assert.equal(value.global, false, `g フラグ付きの正規表現を export している: ${name}`);
+    }
   }
 });
 

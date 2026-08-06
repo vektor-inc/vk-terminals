@@ -632,7 +632,7 @@ test('サイドバー: 右端トグルで一覧を折り畳み・展開でき、
   try {
     const section = win.locator('#task-list');
     await expect(section).toBeVisible({ timeout: 10_000 });
-    const toggle = section.locator('.task-list-toggle');
+    const toggle = section.locator('.sidebar-section-toggle');
     const body = section.locator('.task-list-body');
 
     // 初期は展開。
@@ -644,13 +644,204 @@ test('サイドバー: 右端トグルで一覧を折り畳み・展開でき、
     await expect(body).toBeHidden();
     await expect(toggle).toHaveAttribute('aria-expanded', 'false');
     await expect(section).toContainText('タスク');
-    expect(await win.evaluate(() => localStorage.getItem('vkt.taskListCollapsed'))).toBe('1');
+    expect(await win.evaluate(() => JSON.parse(
+      localStorage.getItem('vkt.sidebarSectionsCollapsed')
+    )['task-list'])).toBe(true);
 
     // 再クリックで展開に戻る。
     await toggle.click();
     await expect(body).toBeVisible();
     await expect(toggle).toHaveAttribute('aria-expanded', 'true');
-    expect(await win.evaluate(() => localStorage.getItem('vkt.taskListCollapsed'))).toBe('0');
+    expect(await win.evaluate(() => JSON.parse(
+      localStorage.getItem('vkt.sidebarSectionsCollapsed')
+    )['task-list'])).toBe(false);
+  } finally {
+    await closeAppForcefully({ app, tmpRoot });
+    fs.rmSync(dataRoot, { recursive: true, force: true });
+  }
+});
+
+// ─── 13: 長いメニュー見出しでも下限幅でトグルを可視・操作可能に保つ ───
+test('サイドバー: 長いメニュー見出しは 200px 幅で省略し、トグルを可視領域内に保つ', async () => {
+  const port = await getFreePort();
+  const longTitle = 'これは二十文字を超えるとても長い外部連携メニューの見出しです';
+  const menuItems = [
+    {
+      title: longTitle,
+      items: [
+        {
+          id: 'long-title-item',
+          label: '長い見出しの項目',
+          icon: '🧪',
+          action: { type: 'open-settings' },
+        },
+      ],
+    },
+    {
+      items: [
+        {
+          id: 'untitled-item',
+          label: '無題メニュー項目',
+          icon: '🧰',
+          action: { type: 'open-settings' },
+        },
+      ],
+    },
+  ];
+  const { app, win, tmpRoot } = await launchWidgetApp(port, { menuItems });
+  const sidebar = win.locator('#sidebar');
+  let originalWidth = null;
+  try {
+    const menuInner = win.locator('.sidebar-menu-inner');
+    const section = menuInner.locator('.sidebar-section-card').filter({ hasText: longTitle });
+    await expect(section).toBeVisible({ timeout: 10_000 });
+    await expect(section).toHaveAttribute('id', 'sidebar-menu-section-config-0');
+    await expect(section.locator('.sidebar-section-label')).toHaveAttribute('title', longTitle);
+
+    // title を持たない設定メニューは、カードや見出しを足さず直下のプレーン ul に保つ。
+    const plainList = menuInner.locator(':scope > .sidebar-menu-list').filter({ hasText: '無題メニュー項目' });
+    await expect(plainList).toHaveCount(1);
+    await expect(menuInner.getByText('メニュー', { exact: true })).toHaveCount(0);
+
+    originalWidth = await sidebar.evaluate((element) => ({
+      value: element.style.getPropertyValue('--vktm-sidebar-width'),
+      priority: element.style.getPropertyPriority('--vktm-sidebar-width'),
+    }));
+    await sidebar.evaluate((element) => {
+      element.style.setProperty('--vktm-sidebar-width', '200px');
+    });
+
+    const toggle = section.locator('.sidebar-section-toggle');
+    await expect(toggle).toBeVisible();
+    const sidebarMenu = win.locator('.sidebar-menu');
+    const bounds = await Promise.all([
+      sidebarMenu.evaluate((element) => element.getBoundingClientRect().toJSON()),
+      toggle.evaluate((element) => element.getBoundingClientRect().toJSON()),
+    ]);
+    expect(bounds[1].left).toBeGreaterThanOrEqual(bounds[0].left);
+    expect(bounds[1].right).toBeLessThanOrEqual(bounds[0].right);
+    expect(bounds[1].top).toBeGreaterThanOrEqual(bounds[0].top);
+    expect(bounds[1].bottom).toBeLessThanOrEqual(bounds[0].bottom);
+
+    // カード内と無題リスト内で、実際に見える項目のアイコン列を揃える。
+    const itemIconBounds = await Promise.all([
+      section.locator('.sidebar-menu-icon').first().evaluate((element) => element.getBoundingClientRect().toJSON()),
+      plainList.locator('.sidebar-menu-icon').first().evaluate((element) => element.getBoundingClientRect().toJSON()),
+    ]);
+    // カードだけが持つ 1px の border 分は、視覚上無視できる許容差とする。
+    expect(Math.abs(itemIconBounds[1].left - itemIconBounds[0].left)).toBeLessThanOrEqual(1);
+
+    await toggle.click();
+    await expect(section.locator('.sidebar-section-body')).toBeHidden();
+    expect(await win.evaluate(() => JSON.parse(
+      localStorage.getItem('vkt.sidebarSectionsCollapsed')
+    )['sidebar-menu-section-config-0'])).toBe(true);
+  } finally {
+    if (originalWidth) {
+      await sidebar.evaluate((element, previous) => {
+        if (previous.value) {
+          element.style.setProperty('--vktm-sidebar-width', previous.value, previous.priority);
+        } else {
+          element.style.removeProperty('--vktm-sidebar-width');
+        }
+      }, originalWidth).catch(() => {});
+    }
+    await closeAppForcefully({ app, tmpRoot });
+  }
+});
+
+// ─── 14: 担当者フィルタ表示時も下限幅でラベルとトグルを保つ ───
+test('サイドバー: 200px 幅で担当者フィルタ表示時もタスク見出しとトグルを可視・操作可能に保つ', async () => {
+  const port = await getFreePort();
+  const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-widget-decl-narrow-filter-'));
+  const widgetFile = path.join(dataRoot, 'tasks-widget.json');
+  writeJson(widgetFile, buildWidget());
+
+  const { app, win, tmpRoot } = await launchWidgetApp(port, { widgetFile });
+  try {
+    const sidebar = win.locator('#sidebar');
+    const sidebarMenu = win.locator('.sidebar-menu');
+    const section = win.locator('#task-list');
+    await expect(section).toBeVisible({ timeout: 10_000 });
+    const header = section.locator('.sidebar-section-header');
+    const settingsHeader = win.locator('#sidebar-settings .sidebar-section-header');
+    const [taskHeaderStyle, settingsHeaderStyle] = await Promise.all(
+      [header, settingsHeader].map((locator) => locator.evaluate((element) => ({
+        fontSize: getComputedStyle(element).fontSize,
+        accentHeight: getComputedStyle(element, '::before').height,
+      })))
+    );
+    expect(settingsHeaderStyle).toEqual(taskHeaderStyle);
+    expect(settingsHeaderStyle).toEqual({ fontSize: '12px', accentHeight: '12px' });
+    const taskCenterDifference = await header.evaluate((element) => {
+      const headerRect = element.getBoundingClientRect();
+      const labelRect = element.querySelector('.sidebar-section-label').getBoundingClientRect();
+      const controlsRect = element.querySelector('.sidebar-section-controls').getBoundingClientRect();
+      const accent = getComputedStyle(element, '::before');
+      // 擬似要素には getBoundingClientRect() が無いため、align-self: center で揃うバー中心を
+      // 同じフレックス行にある操作グループの実座標から復元し、ラベルの実座標と比較する。
+      // 絶対配置へ戻った場合も以前のずれを検知できるよう、その実配置で中心を求める。
+      const accentCenterY = accent.position === 'absolute'
+        ? headerRect.top + Number.parseFloat(accent.top) + Number.parseFloat(accent.height) / 2
+        : controlsRect.top + controlsRect.height / 2;
+      const labelCenterY = labelRect.top + labelRect.height / 2;
+      return Math.abs(accentCenterY - labelCenterY);
+    });
+    expect(taskCenterDifference).toBeLessThanOrEqual(1);
+    const wideAccentHeight = await header.evaluate(
+      (element) => getComputedStyle(element, '::before').height
+    );
+    await sidebar.evaluate((element) => {
+      element.style.setProperty('--vktm-sidebar-width', '200px');
+    });
+
+    const label = section.locator('.sidebar-section-label');
+    const filter = section.locator('.task-list-assignee-filter');
+    const toggle = section.locator('.sidebar-section-toggle');
+    await expect(label).toContainText('タスク');
+    await expect(label).not.toHaveAttribute('title', /.+/);
+    await expect(filter).toBeVisible();
+    await expect(toggle).toBeVisible();
+
+    const narrowAccentHeight = await header.evaluate(
+      (element) => getComputedStyle(element, '::before').height
+    );
+    expect(narrowAccentHeight).toBe(wideAccentHeight);
+
+    const bounds = await Promise.all([
+      sidebarMenu.evaluate((element) => element.getBoundingClientRect().toJSON()),
+      label.evaluate((element) => element.getBoundingClientRect().toJSON()),
+      filter.evaluate((element) => element.getBoundingClientRect().toJSON()),
+      toggle.evaluate((element) => element.getBoundingClientRect().toJSON()),
+    ]);
+    for (const controlBounds of bounds.slice(1)) {
+      expect(controlBounds.left).toBeGreaterThanOrEqual(bounds[0].left);
+      expect(controlBounds.right).toBeLessThanOrEqual(bounds[0].right);
+    }
+    expect(bounds[1].width).toBeGreaterThanOrEqual(48);
+
+    await toggle.focus();
+    const toggleStyle = await toggle.evaluate((element) => {
+      const style = getComputedStyle(element);
+      return {
+        width: style.width,
+        height: style.height,
+        borderWidth: style.borderWidth,
+        borderStyle: style.borderStyle,
+        outlineOffset: style.outlineOffset,
+      };
+    });
+    expect(toggleStyle).toEqual({
+      width: '24px',
+      height: '24px',
+      borderWidth: '1px',
+      borderStyle: 'solid',
+      outlineOffset: '2px',
+    });
+
+    await toggle.click();
+    await expect(section.locator('.sidebar-section-body')).toBeHidden();
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
   } finally {
     await closeAppForcefully({ app, tmpRoot });
     fs.rmSync(dataRoot, { recursive: true, force: true });

@@ -34,6 +34,11 @@ const { normalizeConfirmClose, shouldConfirmClose } = window.VKCloseConfirm;
 // 足していないので、ここでは案内専用の関数だけを使う（PR #315 安藤のレビュー指摘）。
 const { isLoopbackDisplayValue } = window.VKLoopbackHost;
 const { isSafeHttpUrl } = window.VKUrlSafety;
+const {
+  migrateLegacyState,
+  readCollapsedSections,
+  writeSectionCollapsed,
+} = window.VKSidebarSectionState;
 // 宣言的ウィジェット（tasks-widget.json）の契約・共有描画（#229 / vk-orchestrator#182）。
 // タスクの語彙・色・遷移・確認文言は自前に持たず、orchestrator が書き出す宣言だけを描画する。
 const widgetContract = window.VKWidgetContract;
@@ -849,6 +854,9 @@ let sidebarResizeState = null;
 // 従来の 252px から約 1.3 倍に拡張した既定幅。永続化はしない（再起動で既定に戻る）。
 const DEFAULT_SIDEBAR_WIDTH = 330;
 const SIDEBAR_MIN_WIDTH = 200;
+migrateLegacyState();
+// null プロトタイプのため、hasOwnProperty など Object.prototype のメソッドは持たない。
+const sidebarSectionsCollapsed = readCollapsedSections();
 
 function isReducedMotion() {
   return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
@@ -942,6 +950,81 @@ function createMenuItem(item) {
   return li;
 }
 
+function encodeSidebarSectionIdPart(value) {
+  let encoded = '';
+  for (let index = 0; index < value.length; index++) {
+    const codeUnit = value.charCodeAt(index);
+    const nextCodeUnit = value.charCodeAt(index + 1);
+    if (codeUnit >= 0xD800 && codeUnit <= 0xDBFF && nextCodeUnit >= 0xDC00 && nextCodeUnit <= 0xDFFF) {
+      encoded += encodeURIComponent(value.slice(index, index + 2));
+      index++;
+    } else if (codeUnit >= 0xD800 && codeUnit <= 0xDFFF) {
+      // JSON で届きうる孤立サロゲートを encodeURIComponent に渡すと例外になるため明示表現へ逃がす。
+      encoded += `%u${codeUnit.toString(16).padStart(4, '0')}`;
+    } else {
+      encoded += encodeURIComponent(value[index]);
+    }
+  }
+  return encoded;
+}
+
+// サイドバー各カードの共通見出し。見出し全体は非インタラクティブな div のままにする。
+// issue #226 の担当者 <select> を入れ子にできるよう、見出し全体を button にせず、
+// ラベルと操作を兄弟ゾーンへ分離する。body が無い場合はトグルを生成しない。
+function createSidebarSectionHeader(section, options) {
+  const {
+    sectionId,
+    labelText,
+    body,
+    controls = [],
+    labelClassName = '',
+    labelId = '',
+    labelTitle = '',
+    toggleLabelText = labelText,
+  } = options;
+  const header = document.createElement('div');
+  header.className = 'sidebar-section-header';
+
+  const label = document.createElement('span');
+  if (labelId) label.id = labelId;
+  label.className = ['sidebar-section-label', labelClassName].filter(Boolean).join(' ');
+  label.textContent = labelText;
+  if (labelTitle) label.title = labelTitle;
+  header.appendChild(label);
+
+  const controlGroup = document.createElement('div');
+  controlGroup.className = 'sidebar-section-controls';
+  for (const control of controls) controlGroup.appendChild(control);
+
+  if (body) {
+    const collapsed = sidebarSectionsCollapsed[sectionId] === true;
+    section.classList.toggle('collapsed', collapsed);
+
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'btn sidebar-section-toggle';
+    toggle.setAttribute('aria-controls', body.id);
+    updateSidebarSectionToggle(toggle, toggleLabelText, !collapsed);
+    toggle.addEventListener('click', () => {
+      const nowCollapsed = !section.classList.contains('collapsed');
+      section.classList.toggle('collapsed', nowCollapsed);
+      updateSidebarSectionToggle(toggle, toggleLabelText, !nowCollapsed);
+      sidebarSectionsCollapsed[sectionId] = nowCollapsed;
+      writeSectionCollapsed(sectionId, nowCollapsed);
+    });
+    controlGroup.appendChild(toggle);
+  }
+
+  if (controlGroup.childElementCount) header.appendChild(controlGroup);
+  return { header, label };
+}
+
+function updateSidebarSectionToggle(toggle, labelText, open) {
+  toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+  toggle.setAttribute('aria-label', open ? `${labelText}を隠す` : `${labelText}を表示`);
+  toggle.textContent = stashToggleGlyph(open);
+}
+
 function renderSidebarMenu() {
   const nav = document.getElementById('sidebar-menu');
   if (!nav) return;
@@ -956,33 +1039,46 @@ function renderSidebarMenu() {
   }
   inner.replaceChildren();
 
+  const sourceSectionIndexes = new Map();
   for (let sectionIndex = 0; sectionIndex < sidebarMenuSections.length; sectionIndex++) {
     const section = sidebarMenuSections[sectionIndex];
     const list = document.createElement('ul');
     list.className = 'sidebar-menu-list';
     const items = Array.isArray(section?.items) ? section.items : [];
+    for (const item of items) list.appendChild(createMenuItem(item));
 
-    if (section?.title) {
-      const sectionEl = document.createElement('div');
-      sectionEl.className = 'sidebar-section';
-      const title = document.createElement('div');
-      const titleId = `sidebar-section-title-${sectionIndex}`;
-      title.className = 'sidebar-section-title';
-      title.id = titleId;
-      title.textContent = section.title;
-      list.setAttribute('aria-labelledby', titleId);
-      sectionEl.appendChild(title);
-      for (const item of items) {
-        list.appendChild(createMenuItem(item));
-      }
-      sectionEl.appendChild(list);
-      inner.appendChild(sectionEl);
-    } else {
-      for (const item of items) {
-        list.appendChild(createMenuItem(item));
-      }
+    // title 省略は、前後のメニューへ馴染ませるプレーンリストという公開仕様。
+    if (!section?.title) {
       inner.appendChild(list);
+      continue;
     }
+
+    // main プロセスからは必ず source が届く。欠損した malformed/旧IPCデータには安定した
+    // 出どころが無いため、描画位置を fallback にする。通常ソースとは別名にして影響を局所化する。
+    // 折り畳み状態を持たない無題リストは、source ごとのカード連番を消費させない。
+    const source = typeof section?.source === 'string' && section.source
+      ? section.source
+      : `source-missing-${sectionIndex}`;
+    const sourceIndex = sourceSectionIndexes.get(source) || 0;
+    sourceSectionIndexes.set(source, sourceIndex + 1);
+
+    const sectionEl = document.createElement('div');
+    const sectionId = `sidebar-menu-section-${encodeSidebarSectionIdPart(source)}-${sourceIndex}`;
+    sectionEl.id = sectionId;
+    sectionEl.className = 'sidebar-section sidebar-section-card';
+    list.id = `${sectionId}-body`;
+    list.classList.add('sidebar-section-body');
+    const { header, label } = createSidebarSectionHeader(sectionEl, {
+      sectionId,
+      labelText: section.title,
+      body: list,
+      labelId: `${sectionId}-label`,
+      labelTitle: section.title,
+    });
+    list.setAttribute('aria-labelledby', label.id);
+    sectionEl.appendChild(header);
+    sectionEl.appendChild(list);
+    inner.appendChild(sectionEl);
   }
 
   applyUsageBadge();
@@ -1009,7 +1105,9 @@ function createSidebar() {
   inner.className = 'sidebar-menu-inner';
   nav.appendChild(inner);
 
-  // タスクセクション / 格納ペインセクション（renderSidebarMenu の再構築対象外・別管理）
+  // 設定 / タスクセクション / 格納ペインセクション（renderSidebarMenu の再構築対象外・別管理）
+  // 設定は従来どおりユーザー追加メニューの後ろへ置き、その次にタスクを並べる。
+  nav.appendChild(createSidebarSettingsCard());
   nav.appendChild(createTaskListContainer());
   nav.appendChild(createPaneStashContainer());
 
@@ -1018,22 +1116,46 @@ function createSidebar() {
   return aside;
 }
 
+function createSidebarSettingsCard() {
+  // 中身がボタン1つだけでランドマークとして移動する先がなく、section に aria-label を
+  // 付けると「設定」が領域名とボタン名で二重に読み上げられるため、意図的に div とする。
+  const card = document.createElement('div');
+  card.id = 'sidebar-settings';
+  card.className = 'sidebar-section-card';
+
+  const header = document.createElement('button');
+  header.type = 'button';
+  header.className = 'sidebar-section-header';
+  header.appendChild(createMenuIcon('⚙'));
+
+  const label = document.createElement('span');
+  label.className = 'sidebar-section-label';
+  label.textContent = '設定';
+  header.appendChild(label);
+  header.addEventListener('click', () => openSettingsModal());
+
+  card.appendChild(header);
+  return card;
+}
+
 function createSidebarUsageCard() {
   const section = document.createElement('section');
   section.id = 'sidebar-usage';
-  section.className = 'sidebar-usage';
+  section.className = 'sidebar-usage sidebar-section-card';
   section.hidden = true;
   section.setAttribute('aria-label', 'Claude使用量');
 
-  const title = document.createElement('div');
-  title.className = 'sidebar-usage-title';
-  title.textContent = 'Claude使用量';
-
   const body = document.createElement('div');
-  body.className = 'sidebar-usage-body';
+  body.id = 'sidebar-usage-body';
+  body.className = 'sidebar-usage-body sidebar-section-body';
   body.setAttribute('aria-live', 'polite');
 
-  section.appendChild(title);
+  const { header } = createSidebarSectionHeader(section, {
+    sectionId: section.id,
+    labelText: 'Claude使用量',
+    body,
+  });
+  section.appendChild(header);
   section.appendChild(body);
   return section;
 }
@@ -1041,33 +1163,23 @@ function createSidebarUsageCard() {
 function createSidebarCodexUsageCard() {
   const section = document.createElement('section');
   section.id = 'sidebar-codex-usage';
-  section.className = 'sidebar-usage';
+  section.className = 'sidebar-usage sidebar-section-card';
   section.hidden = true;
   section.setAttribute('aria-label', 'Codex使用量');
 
-  const title = document.createElement('div');
-  title.className = 'sidebar-usage-title';
-  title.textContent = 'Codex使用量';
-
   const body = document.createElement('div');
-  body.className = 'sidebar-usage-body';
+  body.id = 'sidebar-codex-usage-body';
+  body.className = 'sidebar-usage-body sidebar-section-body';
   body.setAttribute('aria-live', 'polite');
 
-  section.appendChild(title);
+  const { header } = createSidebarSectionHeader(section, {
+    sectionId: section.id,
+    labelText: 'Codex使用量',
+    body,
+  });
+  section.appendChild(header);
   section.appendChild(body);
   return section;
-}
-
-// タスク一覧の折り畳み状態は localStorage に保持する。
-// 項目が多いと下の格納ペインへスクロールで届かなくなるため、見出しから畳めるようにする（issue #… 相当）。
-const TASK_LIST_COLLAPSE_KEY = 'vkt.taskListCollapsed';
-function readTaskListCollapsed() {
-  try { return localStorage.getItem(TASK_LIST_COLLAPSE_KEY) === '1'; }
-  catch (e) { return false; }
-}
-function writeTaskListCollapsed(collapsed) {
-  try { localStorage.setItem(TASK_LIST_COLLAPSE_KEY, collapsed ? '1' : '0'); }
-  catch (e) { /* プライベートモード等で保存失敗しても無視 */ }
 }
 
 // 担当者フィルタのモードを localStorage に保持する（issue #226）。
@@ -1093,27 +1205,9 @@ function writeTaskAssigneeFilter(mode) {
 function createTaskListContainer() {
   const section = document.createElement('section');
   section.id = 'task-list';
-  section.className = 'task-list';
+  section.className = 'task-list sidebar-section-card';
   section.hidden = true;
   section.setAttribute('aria-label', 'タスク');
-
-  const collapsed = readTaskListCollapsed();
-  section.classList.toggle('collapsed', collapsed);
-
-  // 見出しは非インタラクティブなコンテナ（div）にする。
-  // 中に <select>（プルダウン）を入れ子にできるよう、見出し全体を button にはしない（issue #226）。
-  // ラベル（左）／担当者フィルタ／開閉トグル（右端）を兄弟要素として並べる。
-  const title = document.createElement('div');
-  title.className = 'task-list-title';
-
-  const label = document.createElement('span');
-  label.className = 'task-list-title-text';
-  label.textContent = 'タスク';
-  title.appendChild(label);
-
-  // プルダウンとトグルは狭い幅でも分断されないよう nowrap のグループにまとめ、右端へ寄せる。
-  const controls = document.createElement('div');
-  controls.className = 'task-list-controls';
 
   // 担当者で絞り込むプルダウン。GitHub モードかつ viewer 判明時のみ renderWidget が表示する。
   // 初期状態は非表示。選択肢・表示/非表示は描画のたびに更新する。
@@ -1125,31 +1219,9 @@ function createTaskListContainer() {
     writeTaskAssigneeFilter(filter.value);
     renderWidget();
   });
-  controls.appendChild(filter);
-
-  // 開閉トグルは実 <button> にして Enter/Space をネイティブ維持する。グリフは ▾（開）/▸（閉）。
-  const toggle = document.createElement('button');
-  toggle.type = 'button';
-  toggle.className = 'btn task-list-toggle';
-  toggle.setAttribute('aria-controls', 'task-list-body');
-  toggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
-  toggle.setAttribute('aria-label', taskListToggleLabel(!collapsed));
-  toggle.textContent = stashToggleGlyph(!collapsed);
-  toggle.addEventListener('click', () => {
-    const nowCollapsed = !section.classList.contains('collapsed');
-    section.classList.toggle('collapsed', nowCollapsed);
-    toggle.setAttribute('aria-expanded', nowCollapsed ? 'false' : 'true');
-    toggle.setAttribute('aria-label', taskListToggleLabel(!nowCollapsed));
-    toggle.textContent = stashToggleGlyph(!nowCollapsed);
-    writeTaskListCollapsed(nowCollapsed);
-  });
-  controls.appendChild(toggle);
-
-  title.appendChild(controls);
-
   const body = document.createElement('div');
   body.id = 'task-list-body';
-  body.className = 'task-list-body';
+  body.className = 'task-list-body sidebar-section-body';
 
   const notice = document.createElement('div');
   notice.className = 'task-list-stale';
@@ -1169,30 +1241,37 @@ function createTaskListContainer() {
   body.appendChild(list);
   body.appendChild(liveCount);
 
-  section.appendChild(title);
+  const { header } = createSidebarSectionHeader(section, {
+    sectionId: section.id,
+    labelText: 'タスク',
+    toggleLabelText: 'タスク一覧',
+    body,
+    controls: [filter],
+    labelClassName: 'task-list-title-text',
+  });
+  section.appendChild(header);
   section.appendChild(body);
   return section;
 }
-
-// 開閉トグルの aria-label（開いているとき＝隠す操作、閉じているとき＝表示する操作）。
-function taskListToggleLabel(open) { return open ? 'タスク一覧を隠す' : 'タスク一覧を表示'; }
 
 // 格納ペインを収めるセクション（見出し＋リスト）。中身は renderPaneStash が更新する。
 function createPaneStashContainer() {
   const section = document.createElement('section');
   section.id = 'pane-stash';
-  section.className = 'pane-stash';
+  section.className = 'pane-stash sidebar-section-card';
   section.hidden = true;
   section.setAttribute('aria-label', '格納したペイン');
 
-  const title = document.createElement('div');
-  title.className = 'pane-stash-title';
-  title.textContent = '格納したペイン';
-
   const list = document.createElement('ul');
-  list.className = 'pane-stash-list';
+  list.id = 'pane-stash-body';
+  list.className = 'pane-stash-list sidebar-section-body';
 
-  section.appendChild(title);
+  const { header } = createSidebarSectionHeader(section, {
+    sectionId: section.id,
+    labelText: '格納したペイン',
+    body: list,
+  });
+  section.appendChild(header);
   section.appendChild(list);
   return section;
 }
@@ -1415,8 +1494,8 @@ function deriveWidgetIssuesListUrl(widget) {
 }
 
 // 見出しラベル「タスク」を、GitHub モード時のみ task-queue issue 一覧への外部リンクにする（issue #233）。
-// 見出しコンテナ（.task-list-title の div 構造）と controls 兄弟要素は維持し、ラベル span
-// （.task-list-title-text）の中身だけを作り直して切り替える。listUrl が空ならプレーンテキストに戻す。
+// 共通見出しの左右ゾーンは維持し、左ラベル（.task-list-title-text）の中身だけを
+// 作り直して切り替える。listUrl が空ならプレーンテキストに戻す。
 function updateWidgetTitleLink(section, listUrl) {
   const label = section.querySelector('.task-list-title-text');
   if (!label) return;

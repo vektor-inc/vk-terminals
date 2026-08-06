@@ -297,25 +297,10 @@ function getConfigMenuSections() {
   return sections;
 }
 
-function builtinMenuSection() {
-  return {
-    source: 'builtin',
-    items: [
-      {
-        id: 'settings',
-        label: '設定',
-        icon: '⚙',
-        action: { type: 'open-settings' },
-      },
-    ],
-  };
-}
-
 function mergedMenuSections() {
   return [
     ...getConfigMenuSections(),
     ...Array.from(menuSources.values()),
-    builtinMenuSection(),
   ];
 }
 

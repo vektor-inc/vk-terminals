@@ -45,6 +45,7 @@
        ⚠ 並び順は依存順。動かすときは下記の依存を壊していないか確認すること。
          - ipcClient.js       : preload の window.vkBridge（他より先に置く必要はないが先頭が分かりやすい）
          - stripAnsi.js       : VKTerminalDisplay
+         - sidebarSectionState.js : localStorage（app.js の共通セクション生成前）
          - widgetView.js      : VKWidgetContract
          - taskQueueLink.js / settingsTabs.js : VKUrlSafety -->
   <script src="ipcClient.js"></script>
@@ -53,6 +54,7 @@
   <script src="../utils/stripAnsi.js"></script>
   <script src="../utils/closeConfirm.js"></script>
   <script src="../utils/loopbackHost.js"></script>
+  <script src="../utils/sidebarSectionState.js"></script>
   <script src="../utils/taskSectionVisibility.js"></script>
   <script src="../utils/widgetContract.js"></script>
   <script src="widgetView.js"></script>

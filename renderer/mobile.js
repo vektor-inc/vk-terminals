@@ -113,7 +113,8 @@ var taskListLive = document.getElementById("task-list-live");
 var lastWidgetPayload = null;
 var hasSeenFreshWidget = false;
 
-// タスク一覧の折り畳み。項目が多いと下のペイン一覧へスクロールで届かなくなるため見出しから畳めるようにする。
+// タスク一覧の折り畳み。HTTP オリジンのモバイルページはデスクトップ版（file:）と
+// localStorage が別領域なので、旧来の専用キーをこのページ内だけで使い続ける。
 var TASK_LIST_COLLAPSE_KEY = "vkt.taskListCollapsed";
 var taskListHead = document.getElementById("task-list-head");
 var taskListChevron = taskListHead ? taskListHead.querySelector(".task-list-chevron") : null;

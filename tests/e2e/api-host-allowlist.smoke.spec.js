@@ -29,7 +29,18 @@ function requestHealth(port, hostHeader, { timeoutMs = 10_000 } = {}) {
         body: Buffer.concat(chunks).toString('utf8'),
       }));
     });
-    req.on('error', reject);
+    req.on('error', (error) => {
+      // AbortSignal.timeout() が発火すると素の `AbortError: The operation was
+      // aborted` だけが飛んでくる。どのリクエストが何 ms で諦めたのかが読み取れる
+      // 形に包み替える（issue #347 の趣旨に揃える）。
+      if (error.name === 'AbortError') {
+        reject(new Error(
+          `GET /api/health（Host: ${hostHeader ?? '(既定)'}）が ${timeoutMs}ms 以内に応答しなかった`,
+        ));
+        return;
+      }
+      reject(error);
+    });
     req.end();
   });
 }

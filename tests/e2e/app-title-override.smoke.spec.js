@@ -80,36 +80,44 @@ test('デスクトップ: VK_TERMINALS_APP_TITLE でヘッダーと /api/states 
 
 // ─── モバイルページの <h1> とバージョンフッターが上書き名になる ───
 //
-// issue #347: この spec 単体で待ちの最悪値を合計すると 120 秒（playwright.config.js
-// の timeout）を超えていた。起動予算（launchApp の BOOT_TOTAL_BUDGET_MS = 60 秒）に
-// 加えて、chromium.launch() / page.goto() が既定（30 秒ずつ）で明示上限が無く、
-// waitForStatesWithAppTitle（20 秒）＋ 3 つの expect（15 秒 × 3）まで積んでいたため、
-// 起動予算と合わせた最悪値が 120 秒を大きく超えていた。実測でこれらは常に数秒以内に
-// 終わっており、以下の値はいずれも余裕を持たせつつ、合計が 120 秒に収まるように
-// 縮めている。
-//
-// あわせて、chromium.launch() が try の外・Electron 起動後にあり、chromium の
-// 起動に失敗すると Electron と一時 HOME が漏れる問題があった（同じ行を触るため
-// ここで直す）。closeApp を必ず通す外側の try/finally と、browser.close() を
-// 必ず通す内側の try/finally に分け、どちらで失敗しても両方解放されるようにする。
+// issue #347: この spec 単体で待ちの最悪値を合計すると既定の 120 秒
+// （playwright.config.js の timeout）を超える。起動予算（launchApp の
+// BOOT_TOTAL_BUDGET_MS = 60 秒。実測 ~7 秒の 8.5 倍に取った上限で、期待消費では
+// ない）に加えて、Electron と Chromium の 2 つを起動するため chromium.launch() /
+// page.goto() の待ちも積む。式の最大項（起動予算）を膨らませたまま実在する操作
+// （Chromium のコールドスタート等）側の上限を削って辻褄を合わせるのは、削る側を
+// 間違える（Electron を並べた高負荷下では Chromium の新規コールドスタートに
+// Playwright の既定 30 秒すら余裕が無いことがある）。上限を明示すること自体は
+// 必要な修正（無制限の待ちが本当の欠陥）だが、値は現実的な水準に保ち、この spec
+// だけ test.setTimeout() で枠を広げる。
 test('モバイル: <h1> とフッターが VK_TERMINALS_APP_TITLE の上書き名になる', async () => {
+  // この spec だけは Electron と Chromium の 2 つを起動するため、既定の 120 秒では
+  // 待ちの最悪値の合計が収まらない。枠に合わせて各操作を削るのではなく、枠を広げる。
+  test.setTimeout(180_000);
+
   const port = await getFreePort();
   const { app, tmpRoot } = await launchTitleOverrideApp(port);
   try {
-    const browser = await chromium.launch({ timeout: 8_000 });
+    // chromium.launch() が try の外・Electron 起動後にあり、chromium の起動に
+    // 失敗すると Electron と一時 HOME が漏れる問題があった。closeApp を必ず通す
+    // 外側の try/finally と、browser.close() を必ず通す内側の try/finally に分け、
+    // どちらで失敗しても両方解放されるようにする。
+    const browser = await chromium.launch({ timeout: 30_000 });
     try {
-      await waitForStatesWithAppTitle(port, 10_000);
+      // デスクトップ側（20 秒）と同じ上限に揃える（同じ関数を同じファイル内で
+      // 違う上限で呼ぶと、どちらが本来の想定かが読み手に伝わらない）。
+      await waitForStatesWithAppTitle(port, 20_000);
 
       const context = await browser.newContext();
       const page = await context.newPage();
-      await page.goto(`http://127.0.0.1:${port}/`, { timeout: 8_000 });
+      await page.goto(`http://127.0.0.1:${port}/`, { timeout: 15_000 });
 
       const heading = page.locator('header h1');
-      await expect(heading).toHaveText(OVERRIDE_TITLE, { timeout: 8_000 });
+      await expect(heading).toHaveText(OVERRIDE_TITLE, { timeout: 15_000 });
 
       const footer = page.locator('#app-version-footer');
-      await expect(footer).toBeVisible({ timeout: 8_000 });
-      await expect(footer).toHaveText(`${OVERRIDE_TITLE} v${pkgVersion}`, { timeout: 8_000 });
+      await expect(footer).toBeVisible({ timeout: 15_000 });
+      await expect(footer).toHaveText(`${OVERRIDE_TITLE} v${pkgVersion}`, { timeout: 15_000 });
     } finally {
       await browser.close().catch(() => {});
     }

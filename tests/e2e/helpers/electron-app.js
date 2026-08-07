@@ -57,13 +57,20 @@ const BOOT_TOTAL_BUDGET_MS = 60_000;
 // コメント・MEDIUM-3 参照）。実測では常に数 ms だが、issue #347 の負荷試験で
 // 「api-token-auth の beforeAll が、起動予算 60 秒のほかに時間を食う要素が
 // getFreePort() しかないのに 120 秒の汎用タイムアウトで落ち、段名も出ない」
-// 事例が実際に発生した。素の net.Server の listen/close はタイムアウトを
-// 持たないため、極端な高負荷でイベントループの順番が回ってくるまでの時間が
-// 伸びると無期限に近い待ちになり得る。ここにも明示の上限を設け、超えた場合は
-// 何が起きたか分かるメッセージで早く失敗させる。
+// 事例が実際に発生した。予算外の待ち（ここでは getFreePort()）が概ね 60 秒を
+// 超えると、その後に始まる起動シーケンスの絶対期限（budget 作成時点 + 60 秒）が
+// フック開始からの外側の絶対期限（120 秒）を追い越してしまい、budget 自身の段
+// タイマーが一度も作られないまま外側が先に発火する（"段名が出ない" ことと
+// "budget が発火しない" ことの両方が同時に説明できる）。素の net.Server の
+// listen/close はタイムアウトを持たないため、極端な高負荷でイベントループの
+// 順番が回ってくるまでの時間が伸びると、この 60 秒を超える待ちになり得る。
+// ここにも明示の上限を設け、超えた場合は何が起きたか分かるメッセージで早く
+// 失敗させる。10 秒で頭打ちにすることで、予算外の窓は最大 10 秒に収まり、
+// 起動シーケンスの絶対期限はフック開始から最大 70 秒（外側 120 秒に対して
+// 50 秒の余裕）になる。
 const GET_FREE_PORT_TIMEOUT_MS = 10_000;
-// この閾値を超えたら（正常に完了した場合でも）標準出力へ 1 行書く。boot budget の
-// STAGE_LOG_THRESHOLD_MS と同じ考え方（issue #347）。
+// この閾値を超えたら（正常に完了した場合でも）標準エラー出力（stderr）へ 1 行書く。
+// boot budget の STAGE_LOG_THRESHOLD_MS と同じ考え方（issue #347）。
 const GET_FREE_PORT_LOG_THRESHOLD_MS = 3_000;
 
 // OS に空きポートを割り当てさせ、取得後に閉じて Electron 側で再利用する。
@@ -71,10 +78,11 @@ const GET_FREE_PORT_LOG_THRESHOLD_MS = 3_000;
 async function getFreePort() {
   const startedAt = Date.now();
   let timer;
+  let server = null; // 上限を踏んだ場合に finally から閉じるため、Promise の外へ出す。
   try {
     return await Promise.race([
       new Promise((resolve, reject) => {
-        const server = net.createServer();
+        server = net.createServer();
         server.on('error', reject);
         server.listen(0, '127.0.0.1', () => {
           const address = server.address();
@@ -94,6 +102,15 @@ async function getFreePort() {
     ]);
   } finally {
     clearTimeout(timer);
+    // 上限に先に到達した場合、listen 中のサーバーは閉じられずに残る。閉じるのは
+    // 「遅れた listen コールバックがいつか実行されたとき」に委ねられ、その保持時間は
+    // 無制限になる。listening 中は libuv の active handle であり、既に苦しいプロセスに
+    // 居座り続けて後続の負荷を押し上げる（Electron プロセス・一時ディレクトリの
+    // 後始末と同じ基準で、ここも即座に閉じる）。成功経路では resolve 時点で既に
+    // listening === false のため no-op。ここで close() した後に遅れた listen
+    // コールバックが実行され二重に close() を呼んでも、ERR_SERVER_NOT_RUNNING は
+    // 既決の Promise の reject へ渡って捨てられるだけで未処理例外にはならない。
+    if (server && server.listening) server.close(() => {});
     const elapsed = Date.now() - startedAt;
     if (elapsed >= GET_FREE_PORT_LOG_THRESHOLD_MS) {
       process.stderr.write(`[boot] getFreePort に ${elapsed}ms かかった（boot budget の管轄外）\n`);

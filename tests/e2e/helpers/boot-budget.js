@@ -56,7 +56,7 @@ class BootStageError extends Error {
 // 走るため、先に登録されるガードが必ず勝ってしまう）。
 const GUARD_SLACK_MS = 2_000;
 
-// 段の所要時間がこれを超えたら、完了を待たずに標準出力（stderr）へ 1 行書く。
+// 段の所要時間がこれを超えたら、完了を待たずに標準エラー出力（stderr）へ 1 行書く。
 // 外側（beforeAll/テストの 120 秒）に打ち切られた場合、この段の Promise チェーンは
 // 結果を返す前に放棄され、エラーオブジェクトへ情報を積む通常の経路（wrapStageError）
 // は一度も走らない。そのケースでも「どこまで進んで、どこで止まったか」をログに
@@ -159,7 +159,6 @@ async function runStage(budget, stage, fn, { guardSlackMs = GUARD_SLACK_MS, stag
   // 取り残しが復活してしまうため（安藤の指摘: 一番効いている 1 文字）。
   const fnTimeoutMs = Math.max(1, remainingMs - guardSlackMs);
   let timer;
-  let logTimer;
   let guardFired = false;
   const guard = new Promise((_resolve, reject) => {
     timer = setTimeout(() => {
@@ -167,12 +166,18 @@ async function runStage(budget, stage, fn, { guardSlackMs = GUARD_SLACK_MS, stag
       reject(new Error(`残り ${remainingMs}ms 以内に完了しなかった（fn 側の timeout が機能していない）`));
     }, remainingMs);
   });
-  logTimer = setTimeout(() => {
+  // stageLogThresholdMs で固定して張る（fnTimeoutMs との Math.min は取らない）。
+  // fnTimeoutMs の方が短い場合、段は閾値へ到達する前に fn 自身の失敗で先に終わり、
+  // finally の clearTimeout がこのログを取り消す。それが正しい挙動であり、
+  // Math.min を取って「閾値より早く発火したのに、メッセージには元の閾値を
+  // 埋め込む」形にすると、段が失敗するのとほぼ同じ瞬間に「まだ進行中」という
+  // 食い違ったログが出る（安藤の実測）。
+  const logTimer = setTimeout(() => {
     process.stderr.write(
       `[boot] "${stage}" が ${stageLogThresholdMs}ms を超えてまだ進行中`
         + `（総予算 ${budget.totalMs}ms、開始からの経過 ${budget.elapsedMs()}ms）\n`,
     );
-  }, Math.min(stageLogThresholdMs, fnTimeoutMs));
+  }, stageLogThresholdMs);
   try {
     return await Promise.race([fn(fnTimeoutMs), guard]);
   } catch (error) {

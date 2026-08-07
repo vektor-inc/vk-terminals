@@ -16,6 +16,18 @@
 // ディレクトリと Electron プロセスを解放できずに os.tmpdir() へ取り残していた。
 // あわせて、実環境の VK_TERMINALS_* を中和する既定もここへ集約している（launchApp の
 // env コメント参照）。
+//
+// issue #347: 起動〜初期描画の 3 段（launch / firstWindow / #sidebar 待ち）は、
+// かつて各段が独立した固定 35 秒の相対タイマーを持っていた（35s×3=105s が
+// beforeAll/テストの持ち時間 120s を超えない、という設計）。しかし getFreePort() /
+// mkdtempSync() のような段の外側の待ちがフック開始からの時間を先に食うと、
+// 各段は「自分の 35 秒」には収まっているのに累積は 120 秒を超えてしまい、外側の
+// 絶対タイムアウトが内側の相対タイマーより先に発火して「どの段で詰まったか」が
+// 失われていた（相対時間 vs 絶対時間の非対称性。詳細は boot-budget.js と
+// boot-budget.test.js の縮小再現を参照）。ここでは起動シーケンス全体に単一の
+// 絶対予算（BOOT_TOTAL_BUDGET_MS）を持たせ、各段には「そこからの残り」を渡す。
+const { createBootBudget, runStage } = require('./boot-budget');
+
 const fs = require('fs');
 const net = require('net');
 const os = require('os');
@@ -24,20 +36,18 @@ const { _electron } = require('@playwright/test');
 
 const repoRoot = path.resolve(__dirname, '..', '..', '..');
 
-// 起動〜初期描画の各段（launch / firstWindow / #sidebar 待ち）に与える待ち時間の上限。
+// 起動シーケンス全体（launch → firstWindow → #sidebar 待ち）で使ってよい合計時間。
 //
-// 実測（8 論理コア）では launch + firstWindow が 443〜2,161ms、#sidebar 待ちが最大
-// 4.67 秒だった。Electron を並行起動して負荷が高い状態でもこの範囲に収まっている。
-//
-// 値は「3 段の合計がフックの持ち時間を超えない」ことから決めている。Playwright は
-// beforeAll / afterAll にフックごと独立した持ち時間（= playwright.config.js の timeout
-// = 120 秒）を与えるため、3 段の合計がそれを超えると、後段で詰まったときに内側の
-// 明示タイムアウトより先にフックタイムアウトが刺さり、「どの段で待ち切れなかったか」
-// という、このヘルパーが残そうとしている情報が失われる。
-// 35 秒 × 3 段 = 105 秒でフック枠 120 秒に対し 15 秒の余裕を残し、内側のタイムアウトが
-// 必ず先に立つようにする（合計をちょうど 120 秒にすると同着になり得るため避ける）。
-// 実測の最悪値 4.67 秒に対しては 7 倍以上の余裕がある。
-const APP_BOOT_TIMEOUT = 35_000;
+// 実測（8 論理コア、4 ワーカー）では launch + firstWindow が 443〜2,161ms、
+// #sidebar 待ちが最大 4.67 秒（3 段合計で最大 ~7 秒）だった。60 秒はこれの 8 倍
+// 以上の余裕を持たせつつ、beforeAll/テストの持ち時間 120 秒（playwright.config.js
+// の timeout）の半分に留める。半分以下にしているのは、起動シーケンス以外にも
+// 待ちを積む spec（app-title-override.smoke.spec.js の /api/states 応答待ち 20 秒＋
+// 表示確認 15 秒など）が同じ 120 秒の枠を共有しているため。この余裕により、
+// 段の外側でどれだけ時間を食っても、この予算そのものが外側の絶対タイムアウトへ
+// 到達する前に必ず尽きる（＝内側の検知が構造的に必ず外側より先に発火する）。
+// この不変条件は tests/e2e/helpers/boot-budget.test.js で固定している。
+const BOOT_TOTAL_BUDGET_MS = 60_000;
 
 // OS に空きポートを割り当てさせ、取得後に閉じて Electron 側で再利用する。
 // spec ごとにポートを分けることで、並列実行時の固定ポート衝突を避ける。
@@ -72,7 +82,11 @@ async function getFreePort() {
 //     一時ディレクトリのパスを設定値に使いたい場合（例: 自分の cwd に一致する除外パターンを
 //     与えたい spec）は、パスが mkdtemp まで決まらないためオブジェクトの代わりに
 //     ({ tmpRoot, tmpHome, configPath }) => ({ ... }) の関数を渡せる。
-async function launchApp({ port, prefix, env = {}, config = {} }) {
+// budget は起動シーケンス全体で共有する単一の予算。launchAppAndWait から呼ぶ場合は
+// waitForAppReady と同じ budget を渡し、「electron-launch → firstWindow → sidebar-ready」
+// の 3 段を 1 つの絶対予算で管理する。launchApp を単独で呼ぶ spec（#sidebar を
+// 使わないものも多い）向けに、省略時はこの 2 段だけの新しい budget を作る。
+async function launchApp({ port, prefix, env = {}, config = {}, budget = createBootBudget(BOOT_TOTAL_BUDGET_MS) }) {
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   let app = null;
   try {
@@ -97,10 +111,10 @@ async function launchApp({ port, prefix, env = {}, config = {} }) {
       ...resolvedConfig,
     }), 'utf8');
 
-    app = await _electron.launch({
+    app = await runStage(budget, 'electron-launch', (remainingMs) => _electron.launch({
       args: ['.', '--no-claude'],
       cwd: repoRoot,
-      timeout: APP_BOOT_TIMEOUT,
+      timeout: remainingMs,
       env: {
         ...process.env,
         // 実環境（開発者のシェル、vk-orchestrator 配下での起動）から継承される
@@ -127,11 +141,11 @@ async function launchApp({ port, prefix, env = {}, config = {} }) {
         USERPROFILE: tmpHome,
         VK_TERMINALS_API_PORT: String(port),
       },
-    });
-    const win = await app.firstWindow({ timeout: APP_BOOT_TIMEOUT });
+    }));
+    const win = await runStage(budget, 'first-window', (remainingMs) => app.firstWindow({ timeout: remainingMs }));
     // tmpHome は HOME 隔離先そのもの。ペインの cwd や設定ファイルの場所を
     // expect で参照する spec があるため、tmpRoot と併せて返す。
-    return { app, win, tmpRoot, tmpHome };
+    return { app, win, tmpRoot, tmpHome, budget };
   } catch (e) {
     // 起動途中で失敗した場合、掴んだ Electron プロセス（main / renderer / GPU / utility）と
     // 一時ディレクトリは呼び出し側に渡らないため afterAll の closeApp では解放されない。
@@ -145,15 +159,23 @@ async function launchApp({ port, prefix, env = {}, config = {} }) {
 
 // レンダラーの初期描画が終わるまで待つ。#sidebar は app.js が起動時に組み立てるため、
 // これが付いた時点でトップレベルの配線（設定モーダルを開く関数など）は済んでいる。
-async function waitForAppReady(win) {
-  await win.waitForSelector('#sidebar', { state: 'attached', timeout: APP_BOOT_TIMEOUT });
+// budget は launchApp と同じものを渡す想定（launchAppAndWait 参照）。単独で呼ぶ場合は
+// 省略でき、その場合はこの 1 段だけの新しい budget を使う。
+async function waitForAppReady(win, budget = createBootBudget(BOOT_TOTAL_BUDGET_MS)) {
+  await runStage(budget, 'sidebar-ready', (remainingMs) => (
+    win.waitForSelector('#sidebar', { state: 'attached', timeout: remainingMs })
+  ));
 }
 
 // 起動から初期描画待ちまでをまとめて行う（beforeAll から 1 行で呼べるように）。
+// electron-launch / first-window / sidebar-ready の 3 段を 1 つの絶対予算
+// （BOOT_TOTAL_BUDGET_MS）で管理する。段の外側（getFreePort 等）でどれだけ時間を
+// 使っていても、この 3 段の合計は budget を超えられない（issue #347）。
 async function launchAppAndWait(options) {
-  const launched = await launchApp(options);
+  const budget = createBootBudget(BOOT_TOTAL_BUDGET_MS);
+  const launched = await launchApp({ ...options, budget });
   try {
-    await waitForAppReady(launched.win);
+    await waitForAppReady(launched.win, budget);
   } catch (e) {
     // 初期描画待ちで失敗した場合も、この時点では戻り値が呼び出し側へ渡っておらず
     // afterAll の closeApp が空振りする。launchApp と同じ理由でここで解放する。
@@ -177,7 +199,7 @@ async function closeApp({ app, tmpRoot }) {
 }
 
 module.exports = {
-  APP_BOOT_TIMEOUT,
+  BOOT_TOTAL_BUDGET_MS,
   closeApp,
   getFreePort,
   launchApp,

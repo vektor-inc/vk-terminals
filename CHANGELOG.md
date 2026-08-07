@@ -1,6 +1,7 @@
 # Changelog
 
 - [ 開発環境 ] #343 の見出しアクセント撤廃・枠線色変更に e2e が追随できておらず 2 件失敗していたのを修正（[#344](https://github.com/vektor-inc/vk-terminals/issues/344)）
+- [ 開発環境 ] e2e が高負荷時にアプリの起動待ちで 120 秒を使い切って落ち、どこで詰まったか分からない不具合を修正。起動シーケンスを単一の予算で管理し、失敗時に段名と経過時間を表示するように変更（[#347](https://github.com/vektor-inc/vk-terminals/issues/347)）
 
 ## 1.55.1
 

@@ -14,23 +14,41 @@ const repoRoot = path.resolve(__dirname, '..', '..');
 const pkgVersion = require(path.join(repoRoot, 'package.json')).version;
 
 // /api/states が appTitle を返し始めるまで短くリトライして待つ。
+//
+// issue #347: fetch は既定でレスポンス待ちに上限を持たない。以前は 1 回の
+// fetch にタイムアウトを与えていなかったため、サーバー側が応答を返せない
+// 状態になると、この await から戻らずループの deadline 判定（Date.now() <
+// deadline）に一度も到達できなかった。これが「1 回目は timeout（120 秒）を
+// 使い切り、やり直しは 5 秒で成功する」という不安定さの原因だった。
+// 1 回あたりの上限を deadline までの残り時間以下（最大 5 秒）に抑え、
+// リトライのたびに deadline 判定へ必ず戻れるようにする。
 async function waitForStatesWithAppTitle(port, timeoutMs = 20_000) {
   const deadline = Date.now() + timeoutMs;
   let lastJson = null;
+  let lastError = null;
   while (Date.now() < deadline) {
+    const remainingMs = deadline - Date.now();
+    const perRequestTimeoutMs = Math.max(1000, Math.min(5_000, remainingMs));
     try {
-      const res = await fetch(`http://127.0.0.1:${port}/api/states`);
+      const res = await fetch(`http://127.0.0.1:${port}/api/states`, {
+        signal: AbortSignal.timeout(perRequestTimeoutMs),
+      });
       if (res.status === 200) {
         const json = await res.json();
         lastJson = json;
         if (typeof json.appTitle === 'string' && json.appTitle) return json;
       }
-    } catch (_e) {
-      // 起動前の fetch 失敗は同じループで吸収する。
+    } catch (e) {
+      // 起動前の接続失敗・1 回分のタイムアウトは同じループで吸収する。
+      lastError = e;
     }
     await new Promise((r) => setTimeout(r, 250));
   }
-  throw new Error(`/api/states did not return appTitle in time. last json: ${JSON.stringify(lastJson)}`);
+  throw new Error(
+    `/api/states did not return appTitle in time (${timeoutMs}ms). `
+      + `last json: ${JSON.stringify(lastJson)}`
+      + (lastError ? ` last error: ${lastError.message}` : ''),
+  );
 }
 
 // 一時 HOME を用意し、VK_TERMINALS_APP_TITLE を付与して Electron を起動する。

@@ -64,7 +64,9 @@ const BOOT_TOTAL_BUDGET_MS = 60_000;
 //       budget も段タイマーも作られるが、budget の絶対期限（作成時点 + 60 秒）が
 //       フック開始からの外側の絶対期限（120 秒）を追い越すため、段の実行中に外側が
 //       先に発火する。段の Promise チェーンは結果を返す前に放棄され、wrapStageError が
-//       一度も走らないのでエラーに段名が載らない。
+//       一度も走らないのでエラーに段名が載らない（それでも runStage の
+//       STAGE_LOG_THRESHOLD_MS のログは、外側が打ち切る前に既に出ているため残る。
+//       実際の負荷試験でこのログから "first-window" で詰まっていることを特定できた）。
 //   (b) getFreePort が 120 秒近く戻らなかった場合。launchApp に到達しないため budget
 //       自体が作られず、段タイマーも存在しない。
 // ここに明示の上限を設け、超えた場合は何が起きたか分かるメッセージで早く失敗させる。
@@ -205,8 +207,13 @@ async function launchApp({ port, prefix, env = {}, config = {}, budget = createB
     // 一時ディレクトリは呼び出し側に渡らないため afterAll の closeApp では解放されない。
     // そして失敗する状況とは高負荷そのものなので、残ったプロセスが後続 spec の負荷を
     // 押し上げて連鎖を招く。リソースを掴んだこの場所で解放しておく。
-    if (app) await app.close().catch(() => {});
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    //
+    // 素の app.close() を待たず closeApp へ委ねる。ここで上限の無い close() を待つと、
+    // 返ってこないまま fs.rmSync(tmpRoot) に到達できず一時ディレクトリが残る
+    // （closeApp で直したのと同じ欠陥。しかもこの経路は定義上高負荷時にしか通らない
+    // ため、closeApp で観測された取り残しと同じ現象がここでも起きる）。
+    // 閉じる際のエラーは握り潰し、報告するのは元の起動失敗の方にする。
+    await closeApp({ app, tmpRoot }).catch(() => {});
     throw e;
   }
 }
@@ -294,7 +301,19 @@ async function closeApp({ app, tmpRoot }) {
       process.stderr.write(`[boot] closeApp の app.close() に ${elapsed}ms かかった\n`);
     }
   }
-  if (closeError) throw closeError;
+  if (closeError) {
+    // 上限で放棄した場合、プロセスの掃除は Playwright の exit ハンドラ
+    // （process.kill(-pid, 'SIGKILL')。ワーカー終了時にプロセスグループごと
+    // 落とすため、放棄したプロセスも最終的には必ず死ぬ）任せになり、
+    // そのワーカーが後続の spec を処理し終えるまで居座る。掴んでいる子プロセスの
+    // グループをここで落として、後続 spec への負荷を断つ（負値や undefined を
+    // -pid に渡すと意図しないグループを撃つため、正の整数であることを確認する）。
+    const child = app && typeof app.process === 'function' ? app.process() : null;
+    if (child && Number.isInteger(child.pid) && child.pid > 0) {
+      try { process.kill(-child.pid, 'SIGKILL'); } catch (_e) { /* 既に死んでいる */ }
+    }
+    throw closeError;
+  }
 }
 
 module.exports = {

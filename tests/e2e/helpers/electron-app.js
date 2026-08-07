@@ -57,17 +57,20 @@ const BOOT_TOTAL_BUDGET_MS = 60_000;
 // コメント・MEDIUM-3 参照）。実測では常に数 ms だが、issue #347 の負荷試験で
 // 「api-token-auth の beforeAll が、起動予算 60 秒のほかに時間を食う要素が
 // getFreePort() しかないのに 120 秒の汎用タイムアウトで落ち、段名も出ない」
-// 事例が実際に発生した。予算外の待ち（ここでは getFreePort()）が概ね 60 秒を
-// 超えると、その後に始まる起動シーケンスの絶対期限（budget 作成時点 + 60 秒）が
-// フック開始からの外側の絶対期限（120 秒）を追い越してしまい、budget 自身の段
-// タイマーが一度も作られないまま外側が先に発火する（"段名が出ない" ことと
-// "budget が発火しない" ことの両方が同時に説明できる）。素の net.Server の
-// listen/close はタイムアウトを持たないため、極端な高負荷でイベントループの
-// 順番が回ってくるまでの時間が伸びると、この 60 秒を超える待ちになり得る。
-// ここにも明示の上限を設け、超えた場合は何が起きたか分かるメッセージで早く
-// 失敗させる。10 秒で頭打ちにすることで、予算外の窓は最大 10 秒に収まり、
-// 起動シーケンスの絶対期限はフック開始から最大 70 秒（外側 120 秒に対して
-// 50 秒の余裕）になる。
+// 事例が実際に発生した。素の net.Server の listen/close はタイムアウトを持たないため、
+// 極端な高負荷でイベントループの順番が回ってくるまでの時間が伸びると、この待ちが
+// 無期限に近く伸び得る。伸びた場合の帰結は次の 2 通りで、どちらも「段名が残らない」:
+//   (a) getFreePort が概ね 60 秒を超えて完了した場合。launchApp には到達するので
+//       budget も段タイマーも作られるが、budget の絶対期限（作成時点 + 60 秒）が
+//       フック開始からの外側の絶対期限（120 秒）を追い越すため、段の実行中に外側が
+//       先に発火する。段の Promise チェーンは結果を返す前に放棄され、wrapStageError が
+//       一度も走らないのでエラーに段名が載らない。
+//   (b) getFreePort が 120 秒近く戻らなかった場合。launchApp に到達しないため budget
+//       自体が作られず、段タイマーも存在しない。
+// ここに明示の上限を設け、超えた場合は何が起きたか分かるメッセージで早く失敗させる。
+// 10 秒で頭打ちにすることで予算外の窓は最大 10 秒に収まり、起動シーケンスの絶対期限は
+// フック開始から最大 70 秒（外側 120 秒に対して 50 秒の余裕）になる ＝ (a) は起こらない。
+// (b) はこの上限自身が 10 秒で捕まえ、GET_FREE_PORT_LOG_THRESHOLD_MS の 1 行が残る。
 const GET_FREE_PORT_TIMEOUT_MS = 10_000;
 // この閾値を超えたら（正常に完了した場合でも）標準エラー出力（stderr）へ 1 行書く。
 // boot budget の STAGE_LOG_THRESHOLD_MS と同じ考え方（issue #347）。
@@ -248,16 +251,50 @@ async function launchAppAndWait(options) {
   return launched;
 }
 
+// app.close() 自体には明示のタイムアウトが無い。getFreePort() と同じ種類の欠陥
+// （issue #347 の負荷試験で実際に "Worker teardown timeout of 120000ms exceeded."
+// が複数回発生し、一時ディレクトリが取り残された）で、close() が返ってこないまま
+// 外側（120 秒）に打ち切られると、finally に到達できず fs.rmSync(tmpRoot) が
+// 走らない。ここにも明示の上限を設け、上限に達しても finally には必ず到達させる
+// （＝一時ディレクトリの削除を先に済ませてからエラーを投げる）。
+const APP_CLOSE_TIMEOUT_MS = 10_000;
+// この閾値を超えたら（正常に完了した場合でも）標準エラー出力（stderr）へ 1 行書く。
+// getFreePort() の GET_FREE_PORT_LOG_THRESHOLD_MS と同じ考え方（issue #347）。
+const APP_CLOSE_LOG_THRESHOLD_MS = 3_000;
+
 // アプリを閉じて一時 HOME を消す。afterAll から呼ぶ。
-// 閉じるのに失敗してもエラーは握り潰さずそのまま投げる（プロセスが残ったことを
-// 隠さない）が、一時 HOME の削除は finally で必ず実行する。ここを try の外に置くと
-// 閉じるのに失敗したときだけ os.tmpdir() にゴミが溜まり続ける。
+// 閉じるのに失敗（またはタイムアウト）してもエラーは握り潰さずそのまま投げる
+// （プロセスが残ったことを隠さない）が、一時 HOME の削除は必ずそれより先に行う。
+// 削除を try の外に置いたり、タイムアウトのエラーをそのまま関数の外へ投げてしまうと、
+// 閉じ切れなかったときだけ os.tmpdir() にゴミが溜まり続ける。
 async function closeApp({ app, tmpRoot }) {
+  const startedAt = Date.now();
+  let timer;
+  let closeError = null;
   try {
-    if (app) await app.close();
+    if (app) {
+      await Promise.race([
+        app.close(),
+        new Promise((_resolve, reject) => {
+          timer = setTimeout(() => {
+            reject(new Error(`closeApp: app.close() did not resolve within ${APP_CLOSE_TIMEOUT_MS}ms`));
+          }, APP_CLOSE_TIMEOUT_MS);
+        }),
+      ]);
+    }
+  } catch (e) {
+    // ここで投げ直さず保持する。一時ディレクトリの削除（下の finally）を必ず
+    // 先に済ませたいため。
+    closeError = e;
   } finally {
+    clearTimeout(timer);
     if (tmpRoot) fs.rmSync(tmpRoot, { recursive: true, force: true });
+    const elapsed = Date.now() - startedAt;
+    if (elapsed >= APP_CLOSE_LOG_THRESHOLD_MS) {
+      process.stderr.write(`[boot] closeApp の app.close() に ${elapsed}ms かかった\n`);
+    }
   }
+  if (closeError) throw closeError;
 }
 
 module.exports = {

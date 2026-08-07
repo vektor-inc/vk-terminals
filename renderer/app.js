@@ -55,15 +55,18 @@ const {
 // エージェントルーム（issue #58）。サブエージェントの稼働状況をドット絵キャラで可視化する。
 const { AGENT_ORDER, buildScene, resolveAgentStatesFromOutput } = window.VKAgentRoom;
 const {
+  containsIgnoringWhitespace,
   detectBackgroundAgents,
   extractScreenLines,
+  findWaitingMatch,
   isOutputQuiescent,
   isWaitingCwdExcluded,
-  matchesWaiting,
+  nextWaitingOnset,
   nextWaitingState,
   normalizeWaitingExcludeCwdPatterns,
   selectWaitingBuffer,
   shouldBeepForWaiting,
+  stripVolatileForKey,
   waitingCheckDelayMs,
 } = window.VKWaitingState;
 const { deriveStatus } = window.VKStatusState;
@@ -214,14 +217,69 @@ function checkWaiting(paneId) {
   const quiescent = isOutputQuiescent({ now, lastOutputTime: t.lastOutputTime });
   // 静止評価は lastLines（80 行ウィンドウ）全体、上限評価は前回の評価以降に届いた
   // 出力（recentLines）だけを見る。理由は selectWaitingBuffer のコメント参照。
-  const matches = matchesWaiting(stripAnsiForDisplay(selectWaitingBuffer({
+  const buffer = stripAnsiForDisplay(selectWaitingBuffer({
     quiescent,
     fullBuffer: t.lastLines,
     recentBuffer: t.recentLines,
-  })));
+  }));
+  // findWaitingMatch は真偽値ではなく、一致箇所（前後の文脈込み）の文字列そのものを
+  // 返す（issue #352）。バッファ内で最も後ろの一致（画面下端に最も近い、ライブな
+  // 一致）を返すため、80 行バッファの先頭側に残る古いログ等を誤って根拠にしない
+  // （安藤の指摘・再レビュー HIGH。findWaitingMatch 自体のコメント参照）。
+  // 点灯の根拠を記録するため matchesWaiting ではなくこちらを使う。
+  const matchText = findWaitingMatch(buffer);
+  const matches = matchText !== null;
+  // stripVolatileForKey は matchText（文脈込み）から数字（時刻・termId・カウンタ等の
+  // 可変部分）だけを潰したもの。ビープの長期抑制の鍵（t.waitingOnsetKey）専用
+  // （issue #352 の再レビュー・司と安藤の実測で発覚）。matchText をそのまま鍵にすると
+  // 可変部分のせいで再点灯のたびに鍵が変わり長期抑制が効かない一方、正規表現の
+  // 一致範囲そのもの（m[0]）まで丸めると判別力が無くなり内容の異なる本物の確認
+  // どうしを同一視してしまう（詳細は stripVolatileForKey / WAITING_BEEP_REPEAT_SUPPRESS_MS
+  // のコメント参照）。
+  const matchKey = stripVolatileForKey(matchText);
   // 次回の上限評価は「ここから先に届いた出力」だけを対象にする。
   t.recentLines = '';
-  const waiting = nextWaitingState({ prev: t.waiting, matches, excluded, quiescent });
+  // 静止評価・非マッチ・かつ現在入力待ち中のときだけ、点灯根拠がまだ画面
+  // （lastLines）に見えるかを調べる。上の条件に当たらない呼び出しでは
+  // nextWaitingState 側で使われないため計算を省く。
+  //   quiescent が真のとき buffer は selectWaitingBuffer により t.lastLines
+  //   （ANSI を落としたもの）そのものになる。
+  const onsetStillVisible = (quiescent && !matches && t.waiting && t.waitingOnsetMatch)
+    ? containsIgnoringWhitespace(buffer, t.waitingOnsetMatch)
+    : undefined;
+  const waiting = nextWaitingState({ prev: t.waiting, matches, excluded, quiescent, onsetStillVisible });
+  // 点灯根拠（t.waitingOnsetMatch / t.waitingOnsetKey）の更新ルール自体は
+  // nextWaitingOnset（純粋関数）に委ねる。判断基準の詳細・#91 への影響が無い理由は
+  // 同関数のコメント参照。ここでは backfill 用の再探索だけを行う。
+  //
+  // backfill: waiting = true で、かつ今回は「静止評価での新規マッチ」ではない
+  // （matches && quiescent が成立しない）ときだけ、解除判定の照合先そのものである
+  // t.lastLines に対して直接再探索する。上限評価（quiescent = false）でのマッチ
+  // 直後に出力が止まり、次の静止評価が recentLines と lastLines の CR 上書きの
+  // 食い違いで非マッチになるケース（安藤の指摘 MEDIUM と同根）で根拠が null に
+  // 固定され続けるのを防ぐ（司の指摘・#352 の再レビュー）。
+  // quiescent な非マッチでここに来た場合は buffer が既に t.lastLines と同一なので、
+  // この再探索は matches と同じ null を返す空振りになるだけで実害は無い。
+  let backfillText = null;
+  let backfillKey = null;
+  if (waiting && !(matches && quiescent)) {
+    const backfillBuffer = stripAnsiForDisplay(t.lastLines);
+    backfillText = findWaitingMatch(backfillBuffer);
+    backfillKey = backfillText !== null ? stripVolatileForKey(backfillText) : null;
+  }
+  const nextOnset = nextWaitingOnset({
+    waiting,
+    prevOnsetMatch: t.waitingOnsetMatch,
+    prevOnsetKey: t.waitingOnsetKey,
+    matches,
+    quiescent,
+    matchText,
+    matchKey,
+    backfillText,
+    backfillKey,
+  });
+  t.waitingOnsetMatch = nextOnset.onsetMatch;
+  t.waitingOnsetKey = nextOnset.onsetKey;
   if (waiting !== t.waiting) {
     t.waiting = waiting;
     if (waiting) {
@@ -244,8 +302,24 @@ function checkWaiting(paneId) {
     recomputeStatus(paneId);
     // 待機状態になったときに通知音を鳴らす。解除と再検知が短時間で往復しても
     // 鳴り続けないようクールダウンを挟む。
-    if (waiting && shouldBeepForWaiting({ now, lastBeepAt: t.lastWaitingBeepAt })) {
+    // onsetMatch / lastBeepedOnsetMatch には t.waitingOnsetKey（stripVolatileForKey で
+    // 数字を潰した後の文字列）を渡す。issue #352 の副作用対応（植草のレビュー）:
+    // 疎な出力ペインは「点灯→押し出されて解除→同じ文言で再点灯」の点滅を起こし
+    // 得るため、直前と同じ点灯根拠なら通常より長い猶予
+    // （WAITING_BEEP_REPEAT_SUPPRESS_MS）で抑止する。
+    // ⚠ t.waitingOnsetMatch（文脈そのまま。数字を潰していない）を渡してはいけない
+    //   （司の実測で発覚した不具合）。vk-orchestrator の常駐ログは前後の文脈
+    //   （termId 等）が毎回変わるため、数字を潰さない文字列を鍵にすると長期抑制が
+    //   一度も適用されない（詳細は stripVolatileForKey / WAITING_BEEP_REPEAT_SUPPRESS_MS
+    //   のコメント参照）。
+    if (waiting && shouldBeepForWaiting({
+      now,
+      lastBeepAt: t.lastWaitingBeepAt,
+      onsetMatch: t.waitingOnsetKey,
+      lastBeepedOnsetMatch: t.lastBeepedOnsetKey,
+    })) {
       t.lastWaitingBeepAt = now;
+      t.lastBeepedOnsetKey = t.waitingOnsetKey;
       VKShell.beep();
     }
   }
@@ -341,10 +415,16 @@ function markPaneInput(paneId) {
   // ユーザーが応答した後の入力待ちは「別の新しい確認」なので、クールダウンを持ち越さず
   // 必ず鳴らす。抑止したいのは入力を挟まない機械的な往復だけ。
   t.lastWaitingBeepAt = 0;
+  // lastBeepedOnsetKey も同じ理由でリセットする。人が応答した以上、次にこのペインが
+  // 入力待ちになったら（たとえ点灯根拠の文字列が偶然同じでも）新しい確認として扱い、
+  // ビープの長期抑制（WAITING_BEEP_REPEAT_SUPPRESS_MS）を持ち越さない。
+  t.lastBeepedOnsetKey = null;
   if (t.waiting) {
     t.waiting = false;
     t.lastLines = '';
     t.recentLines = '';
+    t.waitingOnsetMatch = null;
+    t.waitingOnsetKey = null;
   }
   recomputeStatus(paneId);
 }
@@ -536,10 +616,36 @@ async function createTerminal(paneId, cwd, options = {}) {
     //   瞬間のスナップショット { at, lastOutputTime }（issue #270）。e2e から静止ゲートの
     //   実効を確かめるためだけの記録で、アプリの挙動には一切使わない。未点灯なら null、
     //   再点灯のたびに上書きする（解除時のクリアは不要 = 次の点灯で必ず上書きされる）。
+    // waitingOnsetMatch: 現在の waiting=true の根拠になっている実際のマッチ文字列
+    //   （findWaitingMatch の返り値。前後の文脈込み）。localWaitingOnset とは違い、
+    //   checkWaiting() の解除判定そのものに使う実体（issue #352）。
+    //   静止評価・非マッチのときにこの文字列が lastLines から空白無視で見えなくなって
+    //   いれば自動解除する。マッチするたびに最新の文字列へ更新し、waiting が false に
+    //   戻ったら（除外・上限評価での解除・onsetStillVisible による解除・markPaneInput
+    //   のいずれでも）null に戻す。根拠が未記録のまま waiting=true が続く場合は
+    //   checkWaiting() が毎回 t.lastLines への再探索（backfill）を試み、拾えた時点で
+    //   ここに記録する（司の指摘・#352 の再レビュー。詳細は checkWaiting 内のコメント
+    //   参照）。
+    // waitingOnsetKey: waitingOnsetMatch と同じタイミングで更新する、
+    //   stripVolatileForKey(waitingOnsetMatch)（数字だけを潰した文字列）。
+    //   ビープの長期抑制（lastBeepedOnsetKey との比較）専用（issue #352 の再レビュー・
+    //   司と安藤の実測で発覚）。waitingOnsetMatch をそのまま抑制の鍵にすると、
+    //   vk-orchestrator の常駐ログのように前後の文脈（termId 等）が毎回変わる出力で
+    //   鍵も毎回変わり長期抑制が一度も適用されない。一方、数字を潰すだけでなく
+    //   正規表現の一致範囲そのもの（m[0]）まで丸めると判別力が無くなり、内容の
+    //   異なる本物の確認どうしを同一視してしまう（stripVolatileForKey のコメント参照）。
+    // lastBeepedOnsetKey: 直前にビープを鳴らしたときの waitingOnsetKey のスナップ
+    //   ショット（issue #352・植草のレビュー）。次にビープが必要になったとき、今回の
+    //   waitingOnsetKey と空白・罫線を無視して同一なら「同じ誤検知の点滅」とみなし、
+    //   通常より長い猶予（WAITING_BEEP_REPEAT_SUPPRESS_MS）で抑止する
+    //   （shouldBeepForWaiting 参照）。markPaneInput で null に戻す。
     waitingCheckTimer: null,
     waitingPendingSince: 0,
     lastWaitingBeepAt: 0,
     localWaitingOnset: null,
+    waitingOnsetMatch: null,
+    waitingOnsetKey: null,
+    lastBeepedOnsetKey: null,
     lastLines: '',
     // recentLines: 前回の waiting 評価以降に届いた出力だけを貯めるバッファ。
     //   上限評価（出力が流れている最中の判定）で使う。lastLines と同じ上限でトリムする。

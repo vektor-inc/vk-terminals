@@ -5,17 +5,24 @@ const assert = require('node:assert/strict');
 
 const {
   WAITING_BEEP_COOLDOWN_MS,
+  WAITING_BEEP_REPEAT_SUPPRESS_MS,
   WAITING_MAX_EVAL_INTERVAL_MS,
+  WAITING_PATTERNS,
   WAITING_QUIESCENCE_MS,
+  containsIgnoringWhitespace,
   detectBackgroundAgents,
   extractScreenLines,
+  findWaitingMatch,
   isOutputQuiescent,
   isWaitingCwdExcluded,
   matchesWaiting,
+  nextWaitingOnset,
   nextWaitingState,
   normalizeWaitingExcludeCwdPatterns,
+  sameIgnoringWhitespace,
   selectWaitingBuffer,
   shouldBeepForWaiting,
+  stripVolatileForKey,
   waitingCheckDelayMs,
 } = require('../renderer/waitingState');
 const { deriveStatus } = require('../renderer/statusState');
@@ -97,6 +104,434 @@ test('nextWaitingState: 出力が流れている最中の解除直後は idle �
     }),
     'running',
   );
+});
+
+// ─── 静止評価での自動解除（issue vektor-inc/vk-terminals#352） ──────────────────
+// 旧実装（vk-orchestrator#212）の唯一の解除経路は「出力が流れている最中（quiescent =
+// false）の非マッチ」だった。数秒おきに 1 行だけ出力し続けるペイン（vk-orchestrator の
+// 常駐ログ等）は、判定のたびに 1.5 秒（WAITING_QUIESCENCE_MS）以上経ってから評価される
+// ため quiescent = true にしかならず、この解除経路が一度も回ってこなかった。
+// nextWaitingState に onsetStillVisible（点灯根拠の文字列がまだ判定バッファに見えるか）
+// を追加し、静止評価でも「根拠が画面から消えていれば解除する」経路を設けた。
+
+test('findWaitingMatch: 一致箇所の文字列を返す（前後の文脈を含む）。非マッチは null', () => {
+  const sample = '作業が完了しました。ご確認をお願いします。';
+  const match = findWaitingMatch(sample);
+  assert.notEqual(match, null);
+  assert.equal(typeof match, 'string');
+  // 返り値は一致箇所の前後に文脈を含めるため m[0] そのものより長くなり得るが、
+  // 元の文字列の部分文字列であることは変わらない。
+  assert.ok(sample.includes(match), `返り値が元の文字列の部分文字列になっていない: ${JSON.stringify(match)}`);
+  assert.equal(findWaitingMatch('$ echo done'), null);
+  assert.equal(findWaitingMatch(''), null);
+});
+
+test('findWaitingMatch: matchesWaiting と一致・非一致の判定が揃う', () => {
+  const matchSamples = ['Proceed?', 'この内容で進めてよろしいでしょうか？', '❯ Yes'];
+  const noMatchSamples = ['$ echo done', 'CI の完了を待っています。'];
+  for (const sample of [...matchSamples, ...noMatchSamples]) {
+    assert.equal(findWaitingMatch(sample) !== null, matchesWaiting(sample), `不整合: ${sample}`);
+  }
+});
+
+test('findWaitingMatch: 全角「？」1 文字にしか一致しないケースでも、前後の文脈込みで短すぎない文字列を返す', () => {
+  // 懸念点: /[？]\s*$/ の m[0] 自体は「？」1 文字。文脈を含めずに記録すると、後続の
+  // 無関係な出力に「？」が 1 つでも含まれるだけで「まだ画面にある」と誤判定し、
+  // 疎な出力ペインでの自動解除が実質効かなくなる（レビューで指摘された懸念）。
+  const sample = 'この作業は続けても大丈夫？';
+  const match = findWaitingMatch(sample);
+  assert.notEqual(match, null);
+  assert.ok(match.length > 1, `文脈を含めておらず短すぎる: ${JSON.stringify(match)}`);
+});
+
+// ─── stripVolatileForKey（ビープ長期抑制の鍵。issue #352 の再レビュー） ────────────
+// 複数段階の実測で発覚した問題を経て、今の形に落ち着いている:
+//   1. 司の実測: findWaitingMatch（文脈込み）をビープ抑制の鍵にそのまま使うと、
+//      vk-orchestrator の常駐ログのように前後の文脈（termId 等）が毎回変わる
+//      出力では鍵も毎回変わり、長期抑制（WAITING_BEEP_REPEAT_SUPPRESS_MS）が
+//      一度も適用されない。
+//   2. 安藤の実測: 1 の対処として m[0]（正規表現の一致範囲そのもの）を鍵にすると、
+//      判別力が無くなり、内容の異なる本物の確認（例:「編集の許可」と「コマンド
+//      実行の許可」はどちらも m[0] = "Do you want to"）まで同一視してしまう。
+//   3. 安藤の再実測（実機の画面形で確認）: 2 の対処として数字を潰す
+//      stripVolatileForKey を採ったが、これは vk-orchestrator の常駐ログ
+//      （可変部分が数字）は救えても、Claude Code の実機の許可プロンプト
+//      （枠付きの複数行ボックスで、選択肢が最下部にある）までは救えない。
+//      findWaitingMatch は最も後ろの一致を返す（#91 対策）ため、鍵は問いの本文
+//      ではなく選択肢の定型文（"❯ 1. Yes" 等）になり、内容の異なる許可プロンプト
+//      どうしが同一の鍵になる。下のテストはこの限界を「区別できる」という嘘の
+//      期待値ではなく「実際にこうなる」という形で固定する（安藤の指摘: 1 行の
+//      平文サンプルでは区別できるように見えたが、実機の画面形を反映していな
+//      かったため見落とした、その反省を踏まえた形）。
+
+test('stripVolatileForKey: 数字を # に潰す。非文字列は null', () => {
+  assert.equal(stripVolatileForKey('termId=5: terminal 5 not found'), 'termId=#: terminal # not found');
+  assert.equal(stripVolatileForKey(null), null);
+  assert.equal(stripVolatileForKey(undefined), null);
+});
+
+test('stripVolatileForKey(findWaitingMatch(...)): 司の実測ケース（termId だけが違う vk-orchestrator の常駐ログ2行）で同じキーになる', () => {
+  // findWaitingMatch（文脈込み）は termId を含む文脈のせいで 2 行の結果が異なる
+  // （前後 24 文字の文脈に termId の数字が含まれるため）。
+  const lineA = '[scan-waiting-markers] termId=5: 入力待ちマーカー消灯失敗: terminal 5 not found';
+  const lineB = '[scan-waiting-markers] termId=9: 入力待ちマーカー消灯失敗: terminal 9 not found';
+  assert.notEqual(
+    findWaitingMatch(lineA),
+    findWaitingMatch(lineB),
+    'findWaitingMatch（文脈込み）が termId 違いでも同じ文字列になっている（このテストの前提が崩れている）',
+  );
+  // stripVolatileForKey で数字を潰すと、termId の違いだけが差だったので同じキーになる。
+  const keyA = stripVolatileForKey(findWaitingMatch(lineA));
+  const keyB = stripVolatileForKey(findWaitingMatch(lineB));
+  assert.notEqual(keyA, null);
+  assert.equal(
+    keyA,
+    keyB,
+    'termId が違うだけで同じ言い回しなのにキーが変わっている（長期抑制が効かなくなる回帰）',
+  );
+});
+
+// 実機の Claude Code の許可プロンプトを模したボックス（枠付きの複数行、選択肢が
+// 最下部）。1 行の平文サンプルでは実機の画面形を反映できていなかった（安藤の
+// 指摘・再々レビュー）ため、この形で固定する。
+function buildPermissionBox(questionLines) {
+  return [
+    '╭──────────────────────────────────╮',
+    ...questionLines.map((line) => `│ ${line}`),
+    '│                                    │',
+    '│ ❯ 1. Yes',
+    '│   2. No',
+    '╰──────────────────────────────────╯',
+  ].join('\n');
+}
+
+test('stripVolatileForKey(findWaitingMatch(...)): 実機の許可プロンプト（枠付き複数行ボックス）は問いが違っても同一キーになる（安藤の実測・既知の限界）', () => {
+  // findWaitingMatch は最も後ろの一致を返す（#91 対策）ため、ボックスでは
+  // 最下部の選択肢行（"❯ 1. Yes"）を掴む。問いの本文（1 行目）は鍵に含まれない。
+  const p1 = buildPermissionBox(['Do you want to make this edit to renderer/app.js?']);
+  const p2 = buildPermissionBox(['Do you want to run this command?', '  rm -rf build']);
+  const key1 = stripVolatileForKey(findWaitingMatch(p1));
+  const key2 = stripVolatileForKey(findWaitingMatch(p2));
+  assert.notEqual(key1, null);
+  // 「区別できる」という期待値ではなく、「実際にこうなる」を固定する。
+  // 内容の異なる許可プロンプトが同一キーになるのは既知の限界であり、
+  // WAITING_BEEP_REPEAT_SUPPRESS_MS（120 秒）が見逃しの最終的な歯止めになる
+  // （詳細は同定数のコメント参照）。main に対する退行ではない（main は 2 問目で
+  // waiting の状態遷移が起きないためビープが鳴らない）。
+  assert.equal(
+    key1,
+    key2,
+    '実機の画面形で区別できるようになっている（前提が変わっている可能性があるので要確認）',
+  );
+});
+
+test('shouldBeepForWaiting: 司の実測ケースを再現 — stripVolatileForKey をキーに使えば長期抑制が実際に効く', () => {
+  const lineA = '[scan-waiting-markers] termId=5: 入力待ちマーカー消灯失敗: terminal 5 not found';
+  const lineB = '[scan-waiting-markers] termId=9: 入力待ちマーカー消灯失敗: terminal 9 not found';
+  const keyA = stripVolatileForKey(findWaitingMatch(lineA));
+  const keyB = stripVolatileForKey(findWaitingMatch(lineB));
+  const lastBeepAt = 10_000;
+  assert.equal(
+    shouldBeepForWaiting({
+      now: lastBeepAt + WAITING_BEEP_COOLDOWN_MS + 1, // 通常のクールダウンは過ぎている
+      lastBeepAt,
+      onsetMatch: keyB,
+      lastBeepedOnsetMatch: keyA,
+    }),
+    false,
+    'termId だけが違う再点灯なのに長期抑制が効いていない（回帰）',
+  );
+});
+
+test('shouldBeepForWaiting: 実機の許可プロンプト（枠付き複数行ボックス）は問いが違っても2問目が長期抑制で無音になる（既知の限界。WAITING_BEEP_REPEAT_SUPPRESS_MS が歯止め）', () => {
+  const p1 = buildPermissionBox(['Do you want to make this edit to renderer/app.js?']);
+  const p2 = buildPermissionBox(['Do you want to run this command?', '  rm -rf build']);
+  const key1 = stripVolatileForKey(findWaitingMatch(p1));
+  const key2 = stripVolatileForKey(findWaitingMatch(p2));
+  const lastBeepAt = 10_000;
+  assert.equal(
+    shouldBeepForWaiting({
+      now: lastBeepAt + WAITING_BEEP_COOLDOWN_MS + 1,
+      lastBeepAt,
+      onsetMatch: key2,
+      lastBeepedOnsetMatch: key1,
+    }),
+    false,
+    '実機の画面形で 2 問目が鳴るようになっている（前提が変わっている可能性があるので要確認）',
+  );
+});
+
+test('containsIgnoringWhitespace: 空白・改行（全角スペース含む）を無視して包含判定する', () => {
+  assert.equal(containsIgnoringWhitespace('foo\nbar baz', 'foobarbaz'), true);
+  assert.equal(containsIgnoringWhitespace('foo\nbar baz', 'foo bar   baz'), true);
+  assert.equal(containsIgnoringWhitespace('ご確認　を　お願いします', 'ご確認をお願いします'), true);
+});
+
+test('containsIgnoringWhitespace: 含まれていなければ false', () => {
+  assert.equal(containsIgnoringWhitespace('poll 1\npoll 2', 'Proceed?'), false);
+});
+
+test('containsIgnoringWhitespace: needle が空・非文字列なら false（空文字列が常に true になる事故を防ぐ）', () => {
+  assert.equal(containsIgnoringWhitespace('anything', ''), false);
+  assert.equal(containsIgnoringWhitespace('anything', null), false);
+  assert.equal(containsIgnoringWhitespace('anything', undefined), false);
+});
+
+test('nextWaitingState: onsetStillVisible が無い（追跡できていない）ときは fail-safe で解除しない', () => {
+  // onsetStillVisible は本 issue で新規追加した引数であり、守るべき既存の互換は無い。
+  // undefined のときに解除しないのは互換維持ではなく、「根拠が追跡できていない・
+  // 確かめられない」状況に対する fail-safe（安藤の指摘 LOW-2）。
+  assert.equal(nextWaitingState({ prev: true, matches: false, quiescent: true }), true);
+});
+
+test('nextWaitingState: 静止時点の非マッチでも、点灯根拠が消えていれば（onsetStillVisible=false）解除する', () => {
+  assert.equal(
+    nextWaitingState({ prev: true, matches: false, quiescent: true, onsetStillVisible: false }),
+    false,
+  );
+});
+
+test('nextWaitingState: 静止時点の非マッチで、点灯根拠がまだ見えていれば（onsetStillVisible=true）解除しない', () => {
+  assert.equal(
+    nextWaitingState({ prev: true, matches: false, quiescent: true, onsetStillVisible: true }),
+    true,
+  );
+});
+
+test('シナリオ: 数秒おきに1行だけ出力し続けるペインで、一度点灯したあと静止評価で自動解除される', () => {
+  // 点灯: 「Proceed?」を含む行が流れ、静止評価でマッチして waiting になる。
+  const onsetLine = 'Proceed?';
+  let waiting = nextWaitingState({ prev: false, matches: true, quiescent: true });
+  assert.equal(waiting, true);
+  const onsetMatch = findWaitingMatch(onsetLine);
+  assert.notEqual(onsetMatch, null);
+
+  // その後、無人ペインが数秒おきに無関係な1行だけを出し続け、判定のたびに
+  // quiescent = true（出力が疎なので毎回静止時間を超えている）・非マッチになる。
+  // 80 行分押し出された結果、点灯根拠の行はもう lastLines に無い。
+  const lastLinesAfterEviction = Array.from({ length: 80 }, (_, i) => `[poll] 実行待ちタスクなし ${i}`).join('\n');
+  const onsetStillVisible = containsIgnoringWhitespace(lastLinesAfterEviction, onsetMatch);
+  assert.equal(onsetStillVisible, false, '押し出された行が残っている想定になっている');
+
+  waiting = nextWaitingState({ prev: true, matches: false, quiescent: true, onsetStillVisible });
+  assert.equal(waiting, false, '疎な出力で点灯根拠が消えたのに解除されていない（張り付き回帰）');
+});
+
+test('シナリオ: リサイズで折り返しが変わっただけでは解除されない（vektor-inc/vk-terminals#91 再発防止）', () => {
+  // 点灯: 本物の確認待ち文言でマッチして waiting になる。
+  const onsetLine = '作業が完了しました。ご確認をお願いします。';
+  let waiting = nextWaitingState({ prev: false, matches: true, quiescent: true });
+  assert.equal(waiting, true);
+  const onsetMatch = findWaitingMatch(onsetLine);
+  assert.notEqual(onsetMatch, null);
+
+  // リサイズ再描画で確認文の折り返し位置だけが変わり、文字自体は残ったまま
+  // 別の行に分割される（既存テスト「リサイズ再描画で確認文が折り返された非マッチ例」と
+  // 同種の状況）。静止評価では非マッチになる。
+  const resizedBuffer = [
+    '作業が完了しました。ご確認',
+    'をお願いします。',
+    '✻ Worked for 2m 14s',
+  ].join('\n');
+  assert.equal(matchesWaiting(resizedBuffer), false);
+
+  // しかし空白・改行を無視すれば、点灯根拠の文字はまだ画面に残っている。
+  const onsetStillVisible = containsIgnoringWhitespace(resizedBuffer, onsetMatch);
+  assert.equal(onsetStillVisible, true, 'リサイズで文字自体が消えた想定になっている');
+
+  waiting = nextWaitingState({ prev: true, matches: false, quiescent: true, onsetStillVisible });
+  assert.equal(waiting, true, 'リサイズによる折り返しだけで誤って解除されている（#91 の再発）');
+});
+
+test('シナリオ: 枠線付き TUI（Claude Code のプロンプト枠）でリサイズしても解除されない（安藤の指摘 HIGH-2・#91 再発防止）', () => {
+  // 空白だけを無視する比較は、折り返しで確認文の改行位置が変わるだけなら安全（文字の
+  // 総数は変わらない）。しかし枠線で囲まれたレイアウトでは、リサイズで枠の横幅
+  // （╭──────╮ の「─」の本数）自体が変わり、罫線の文字数が増減する。空白だけ
+  // 無視する比較のままだと、この本数の変化を「消えた」と誤判定してしまう。
+  const onsetLine = [
+    '───────────────╮',
+    '│ ご確認をお願いします。   │',
+    '╰───────────────╯',
+  ].join('\n');
+  assert.equal(matchesWaiting(onsetLine), true);
+  let waiting = nextWaitingState({ prev: false, matches: true, quiescent: true });
+  assert.equal(waiting, true);
+  const onsetMatch = findWaitingMatch(onsetLine);
+  assert.notEqual(onsetMatch, null);
+
+  // リサイズでペイン幅が狭まり、枠の横幅（罫線の本数）自体が変わり、かつ確認文が
+  // 「ご確認」と「を」の間で折り返されて再描画された状態。文字自体は残っている。
+  const narrowedBuffer = [
+    '─────╮',
+    '│ ご確認',
+    'を│',
+    'お願いします。│',
+    '╰─────╯',
+  ].join('\n');
+  // 罫線の本数が変わり、かつ折り返しで許可リストの名詞パターンが分断されたため、
+  // 素の文字列比較では非マッチになる（このテストが検証したい「誤って解除され
+  // そうになる」状況そのもの）。
+  assert.equal(matchesWaiting(narrowedBuffer), false);
+
+  const onsetStillVisible = containsIgnoringWhitespace(narrowedBuffer, onsetMatch);
+  assert.equal(
+    onsetStillVisible,
+    true,
+    '枠線の本数が変わっただけなのに「消えた」と誤判定している（#91 の再発）',
+  );
+
+  waiting = nextWaitingState({ prev: true, matches: false, quiescent: true, onsetStillVisible });
+  assert.equal(waiting, true, '枠線付き TUI のリサイズで誤って解除されている（#91 の再発）');
+});
+
+test('シナリオ: バッファ先頭側に残る古い一致ではなく、画面下端に近い本物のダイアログを点灯根拠にする（安藤の指摘・再レビュー HIGH・#91 再発防止）', () => {
+  // 安藤の実測で発覚: findWaitingMatchDetail が「配列順で最初に当たったパターンの
+  // 最初の一致」を返す実装だと、80 行バッファの先頭側に残る古い一致（例: 何行も
+  // 前に流れた "Press Enter to continue" というログ）を、画面下端の本物のダイアログ
+  // より先に返してしまう。古い行は先に押し出されるので、それを点灯根拠にすると、
+  // 本物のダイアログがまだ画面にあるのに「消えた」と誤判定して誤解除してしまう
+  // （#91 の再発）。バッファ内で最も後ろ（画面下端に近い）の一致を採ることで
+  // 塞いだことを確認する。
+  const workerLogLines = Array.from({ length: 30 }, (_, i) => `[10:0${i % 6}] worker log line ${i}`).join('\n');
+  const lastLines = [
+    '[10:00:01] Press Enter to continue', // 古い一致（もう画面に無い想定）
+    workerLogLines,
+    '───────────────╮',
+    '│ この内容でご確認をお願いします。   │', // 画面下端の本物のダイアログ
+    '╰───────────────╯',
+  ].join('\n');
+  assert.equal(matchesWaiting(lastLines), true);
+
+  const onsetMatch = findWaitingMatch(lastLines);
+  assert.notEqual(onsetMatch, null);
+  // 点灯根拠は「古い行」ではなく「本物のダイアログ」側になっているはずである。
+  assert.ok(
+    onsetMatch.includes('ご確認'),
+    `点灯根拠が古い行を指している（バッファ先頭側の一致を採ってしまっている）: ${JSON.stringify(onsetMatch)}`,
+  );
+
+  // 古い行が押し出され、本物のダイアログはリサイズで折り返されて非マッチになった状態
+  // （「ご確認」と「を」の間で折り返され、許可リストの名詞パターンが分断される）。
+  const afterEviction = [
+    '─────╮',
+    '│ この内容でご確認',
+    'を│',
+    'お願いします。│',
+    '╰─────╯',
+  ].join('\n');
+  assert.equal(matchesWaiting(afterEviction), false);
+
+  const onsetStillVisible = containsIgnoringWhitespace(afterEviction, onsetMatch);
+  assert.equal(
+    onsetStillVisible,
+    true,
+    '本物のダイアログがまだ画面にあるのに「消えた」と誤判定している（#91 の再発）',
+  );
+
+  const waiting = nextWaitingState({ prev: true, matches: false, quiescent: true, onsetStillVisible });
+  assert.equal(waiting, true, '本物のダイアログが画面にあるのに誤って解除されている（#91 の再発）');
+});
+
+test('containsIgnoringWhitespace: TUI の枠線・罫線（Unicode Box Drawing）も無視する（安藤の指摘 HIGH-2）', () => {
+  // 枠の横幅が変わって罫線の本数そのものが増減しても、罫線を除けば一致する。
+  assert.equal(containsIgnoringWhitespace('╭───╮\n│ abc │\n╰───╯', '╭─╮\nabc\n╰─╯'), true);
+  // 罫線を除いた本文自体が違えば、当然一致しない（緩めすぎて何でも true になっていないことの確認）。
+  assert.equal(containsIgnoringWhitespace('╭───╮\n│ abc │\n╰───╯', 'xyz'), false);
+});
+
+// ─── nextWaitingOnset（点灯根拠の更新・issue #352 の再レビュー） ─────────────────
+// checkWaiting() が t.waitingOnsetMatch / t.waitingOnsetKey をどう更新するかの
+// 決定ロジックを、renderer/app.js から切り出した純粋関数。司の指摘（#352 再レビュー
+// point 2）: 上限評価（quiescent = false）で末尾アンカー系パターンがマッチして
+// waiting = true になった直後に出力が止まると、次の静止評価が recentLines と
+// lastLines の CR 上書きの食い違いで非マッチになり、根拠が null のまま張り付きうる。
+// backfill（呼び出し側が t.lastLines へ直接再探索した結果）でこれを塞ぐ。
+
+test('nextWaitingOnset: waiting が false なら根拠は両方 null になる（除外・解除のいずれでも）', () => {
+  const result = nextWaitingOnset({
+    waiting: false,
+    prevOnsetMatch: '前回の根拠',
+    prevOnsetKey: '前回のキー',
+    matches: true, // excluded で強制的に false にされた状況を想定（matches は true でもよい）
+    quiescent: true,
+  });
+  assert.deepEqual(result, { onsetMatch: null, onsetKey: null });
+});
+
+test('nextWaitingOnset: 静止評価での新規マッチ（matches && quiescent）なら最新の文字列・キーに更新する', () => {
+  const result = nextWaitingOnset({
+    waiting: true,
+    prevOnsetMatch: '古い根拠',
+    prevOnsetKey: '古いキー',
+    matches: true,
+    quiescent: true,
+    matchText: '新しい根拠',
+    matchKey: '新しいキー',
+  });
+  assert.deepEqual(result, { onsetMatch: '新しい根拠', onsetKey: '新しいキー' });
+});
+
+test('nextWaitingOnset: 上限評価でのマッチ（quiescent = false）では更新せず、根拠がまだ無ければ backfill を使う', () => {
+  // matches && quiescent が成立しない（quiescent = false）ケース。matchText がある
+  // 場合でもそれは使わない（安藤の指摘 MEDIUM: recentLines 由来で lastLines との
+  // 食い違いがあり得るため）。backfill（呼び出し側が別途 t.lastLines へ再探索した
+  // 結果）が取れていれば、それを使う。
+  const result = nextWaitingOnset({
+    waiting: true,
+    prevOnsetMatch: null,
+    prevOnsetKey: null,
+    matches: true,
+    quiescent: false,
+    matchText: '上限評価でのマッチ文字列（使わない）',
+    matchKey: '上限評価でのマッチキー（使わない）',
+    backfillText: 'lastLines から拾えた根拠',
+    backfillKey: 'lastLines から拾えたキー',
+  });
+  assert.deepEqual(result, { onsetMatch: 'lastLines から拾えた根拠', onsetKey: 'lastLines から拾えたキー' });
+});
+
+test('nextWaitingOnset: backfill も取れなければ根拠は null のまま（fail-safe。#91 への影響は無い）', () => {
+  // 司の指摘が示した張り付きの残存経路: 上限評価でマッチして waiting = true に
+  // なった直後、静止評価が CR 上書きの食い違いで非マッチになり、backfill も
+  // 失敗する（lastLines のどこにも該当パターンが見当たらない）ケース。
+  // ここでは「解除する」のではなく「根拠不明のまま」に留める（nextWaitingState 側の
+  // fail-safe と対応する。onsetStillVisible が undefined → 現状維持）。
+  const result = nextWaitingOnset({
+    waiting: true,
+    prevOnsetMatch: null,
+    prevOnsetKey: null,
+    matches: false,
+    quiescent: true,
+    backfillText: null,
+    backfillKey: null,
+  });
+  assert.deepEqual(result, { onsetMatch: null, onsetKey: null });
+});
+
+test('nextWaitingOnset: 根拠が既にあり今回は更新材料が無い（非マッチで現状維持）なら前回の値をそのまま保つ', () => {
+  const result = nextWaitingOnset({
+    waiting: true,
+    prevOnsetMatch: '前回の根拠',
+    prevOnsetKey: '前回のキー',
+    matches: false,
+    quiescent: true,
+  });
+  assert.deepEqual(result, { onsetMatch: '前回の根拠', onsetKey: '前回のキー' });
+});
+
+test('nextWaitingOnset: 根拠が既にある場合、backfill が渡されても上書きしない（新規根拠は matches && quiescent 経由のみ）', () => {
+  // 根拠がすでにある状態で backfill 値が渡されるのは想定外だが、上書きしないことを
+  // 明示しておく（「根拠が無いときだけ backfill を使う」という条件そのものの固定）。
+  const result = nextWaitingOnset({
+    waiting: true,
+    prevOnsetMatch: '既にある根拠',
+    prevOnsetKey: '既にあるキー',
+    matches: false,
+    quiescent: false,
+    backfillText: '別の根拠（使われないはず）',
+    backfillKey: '別のキー（使われないはず）',
+  });
+  assert.deepEqual(result, { onsetMatch: '既にある根拠', onsetKey: '既にあるキー' });
 });
 
 // ─── 判定に使うバッファの選択 ────────────────────────────────────────────────
@@ -241,6 +676,96 @@ test('shouldBeepForWaiting: クールダウンを過ぎれば再び鳴らす', (
     shouldBeepForWaiting({ now: lastBeepAt + WAITING_BEEP_COOLDOWN_MS, lastBeepAt }),
     true,
   );
+});
+
+// ─── ビープの長期抑制（issue #352・植草のレビュー） ─────────────────────────────
+// #352 で解除経路（静止評価での自動解除）を追加した結果、疎な出力ペインは
+// 「点灯→押し出されて解除→同じ文言で再点灯」の点滅を起こし得る。旧実装は一度点灯
+// したら二度と状態が遷移しなかったため、この種の誤検知でもビープは初回 1 回だけ
+// だったが、新実装では毎回の再点灯がビープ対象になる。直前と同じ点灯根拠なら
+// 通常のクールダウン（WAITING_BEEP_COOLDOWN_MS）ではなく長い猶予
+// （WAITING_BEEP_REPEAT_SUPPRESS_MS）で抑止することを確認する。
+
+test('shouldBeepForWaiting: onsetMatch / lastBeepedOnsetMatch を渡さない呼び出しは従来どおり通常クールダウンで判定する（後方互換）', () => {
+  const lastBeepAt = 10_000;
+  assert.equal(
+    shouldBeepForWaiting({ now: lastBeepAt + WAITING_BEEP_COOLDOWN_MS, lastBeepAt }),
+    true,
+  );
+  assert.equal(
+    shouldBeepForWaiting({ now: lastBeepAt + WAITING_BEEP_COOLDOWN_MS - 1, lastBeepAt }),
+    false,
+  );
+});
+
+test('shouldBeepForWaiting: 直前と同じ点灯根拠（空白・罫線を無視して同一）なら、通常クールダウンを過ぎていても長期抑制で鳴らさない', () => {
+  const lastBeepAt = 10_000;
+  const onsetMatch = '[poll] 実行待ちタスクなし';
+  assert.equal(
+    shouldBeepForWaiting({
+      now: lastBeepAt + WAITING_BEEP_COOLDOWN_MS + 1, // 通常のクールダウンは過ぎている
+      lastBeepAt,
+      onsetMatch,
+      lastBeepedOnsetMatch: onsetMatch,
+    }),
+    false,
+    '同じ誤検知の点滅なのに通常クールダウンだけで鳴ってしまっている',
+  );
+});
+
+test('shouldBeepForWaiting: 直前と同じ点灯根拠でも、長期抑制の猶予を過ぎれば再び鳴らす', () => {
+  const lastBeepAt = 10_000;
+  const onsetMatch = '[poll] 実行待ちタスクなし';
+  assert.equal(
+    shouldBeepForWaiting({
+      now: lastBeepAt + WAITING_BEEP_REPEAT_SUPPRESS_MS,
+      lastBeepAt,
+      onsetMatch,
+      lastBeepedOnsetMatch: onsetMatch,
+    }),
+    true,
+  );
+});
+
+test('shouldBeepForWaiting: 点灯根拠が異なる（別の新しい確認）なら、通常クールダウンだけで鳴らす', () => {
+  const lastBeepAt = 10_000;
+  assert.equal(
+    shouldBeepForWaiting({
+      now: lastBeepAt + WAITING_BEEP_COOLDOWN_MS,
+      lastBeepAt,
+      onsetMatch: 'ご確認をお願いします。',
+      lastBeepedOnsetMatch: '[poll] 実行待ちタスクなし',
+    }),
+    true,
+  );
+});
+
+test('shouldBeepForWaiting: 空白・罫線だけが違う同一の点灯根拠は「同じ」とみなし長期抑制する', () => {
+  const lastBeepAt = 10_000;
+  assert.equal(
+    shouldBeepForWaiting({
+      now: lastBeepAt + WAITING_BEEP_COOLDOWN_MS + 1,
+      lastBeepAt,
+      onsetMatch: '│ ご確認をお願いします。 │',
+      lastBeepedOnsetMatch: 'ご確認\nをお願いします。',
+    }),
+    false,
+  );
+});
+
+test('sameIgnoringWhitespace: 空白・罫線を無視して同一なら true', () => {
+  assert.equal(sameIgnoringWhitespace('foo\nbar', 'foobar'), true);
+  assert.equal(sameIgnoringWhitespace('│ foo │', 'foo'), true);
+});
+
+test('sameIgnoringWhitespace: 内容自体が違えば false', () => {
+  assert.equal(sameIgnoringWhitespace('foo', 'bar'), false);
+});
+
+test('sameIgnoringWhitespace: 非文字列・空文字列は false（空文字列同士が誤って同一と判定されないように）', () => {
+  assert.equal(sameIgnoringWhitespace('', ''), false);
+  assert.equal(sameIgnoringWhitespace(null, null), false);
+  assert.equal(sameIgnoringWhitespace(undefined, 'foo'), false);
 });
 
 test('normalizeWaitingExcludeCwdPatterns: 文字列以外・空白のみの値を除外する', () => {
@@ -580,6 +1105,19 @@ test('waitingState: g フラグ付きの正規表現を export しない（lastI
       assert.equal(value.global, false, `g フラグ付きの正規表現を export している: ${name}`);
     }
   }
+});
+
+// findWaitingMatch（issue #352）は WAITING_PATTERNS を pattern.exec() でループして回し、
+// 返り値の m.index を使って文脈の切り出し位置を決める。g / y フラグ付きの正規表現は
+// lastIndex という可変状態を持つため、複数回の exec() 呼び出しの間で位置が持ち越され、
+// 同じ入力を渡しても 1 回おきに取りこぼす（安藤の指摘 LOW-1・実演: g 付きパターンを
+// 一時的に足して同じ文字列を 3 回渡すと call 0 は一致・call 1 は null・call 2 は
+// 再び一致、という交互のふるまいになった）。
+// WAITING_PATTERNS は現状 g / y フラグ付きを 1 件も含まないため実害は無いが、将来
+// パターンを足すときにこの前提が崩れないよう固定する。
+test('WAITING_PATTERNS: g / y フラグを持たない（findWaitingMatch が exec を回すため lastIndex の持ち越しで 1 回おきに取りこぼす回帰の防止・LOW-1）', () => {
+  const stateful = WAITING_PATTERNS.filter((p) => p.global || p.sticky);
+  assert.deepEqual(stateful, [], `g / y フラグ付きのパターンがある: ${stateful}`);
 });
 
 test('detectBackgroundAgents: 「← 5 and counting」は agents ではないので拾わない（MEDIUM-3）', () => {

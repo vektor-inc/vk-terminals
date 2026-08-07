@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 不具合修正 ] 数秒おきに1行だけ出力し続けるペインで「入力待ち」ラベルが誤って点くと、そのペインへ何か入力するまで消えず、本当に応答を待っているペインと見分けが付かない不具合を修正（[#352](https://github.com/vektor-inc/vk-terminals/issues/352)）
+
 ## 1.56.1
 
 - [ 開発環境 ] e2e の spec を統合し、同じ起動条件のテストで Electron の起動を共有することで全件実行時の起動回数と壁時計時間を削減（[#348](https://github.com/vektor-inc/vk-terminals/issues/348)）

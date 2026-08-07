@@ -20,8 +20,10 @@ const pkgVersion = require(path.join(repoRoot, 'package.json')).version;
 // 状態になると、この await から戻らずループの deadline 判定（Date.now() <
 // deadline）に一度も到達できなかった。これが「1 回目は timeout（120 秒）を
 // 使い切り、やり直しは 5 秒で成功する」という不安定さの原因だった。
-// 1 回あたりの上限を deadline までの残り時間以下（最大 5 秒）に抑え、
-// リトライのたびに deadline 判定へ必ず戻れるようにする。
+// 1 回あたりの上限は 1〜5 秒の範囲に収め、リトライのたびに deadline 判定へ
+// 必ず戻れるようにする（Math.max(1000, ...) があるため、deadline までの残りが
+// 1000ms 未満でも最低 1000ms は待つ。その場合 deadline を数百 ms 超えることが
+// あるが、無期限に戻らなくなることは無い）。
 async function waitForStatesWithAppTitle(port, timeoutMs = 20_000) {
   const deadline = Date.now() + timeoutMs;
   let lastJson = null;

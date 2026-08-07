@@ -17,15 +17,11 @@
 // あわせて、実環境の VK_TERMINALS_* を中和する既定もここへ集約している（launchApp の
 // env コメント参照）。
 //
-// issue #347: 起動〜初期描画の 3 段（launch / firstWindow / #sidebar 待ち）は、
-// かつて各段が独立した固定 35 秒の相対タイマーを持っていた（35s×3=105s が
-// beforeAll/テストの持ち時間 120s を超えない、という設計）。しかし getFreePort() /
-// mkdtempSync() のような段の外側の待ちがフック開始からの時間を先に食うと、
-// 各段は「自分の 35 秒」には収まっているのに累積は 120 秒を超えてしまい、外側の
-// 絶対タイムアウトが内側の相対タイマーより先に発火して「どの段で詰まったか」が
-// 失われていた（相対時間 vs 絶対時間の非対称性。詳細は boot-budget.js と
-// boot-budget.test.js の縮小再現を参照）。ここでは起動シーケンス全体に単一の
-// 絶対予算（BOOT_TOTAL_BUDGET_MS）を持たせ、各段には「そこからの残り」を渡す。
+// issue #347: 起動〜初期描画の 3 段（launch / firstWindow / #sidebar 待ち）を
+// 単一の絶対予算（boot-budget.js の createBootBudget）で管理する。旧設計
+// （各段が独立した固定 35 秒の相対タイマーを持つ）が「どの段で詰まったか」を
+// 失っていた経緯・仕組みの詳細は boot-budget.js の冒頭コメントと
+// tests/bootBudget.test.js の縮小再現を参照（ここでは重複させない）。
 const { createBootBudget, runStage } = require('./boot-budget');
 
 const fs = require('fs');
@@ -41,12 +37,16 @@ const repoRoot = path.resolve(__dirname, '..', '..', '..');
 // 実測（8 論理コア、4 ワーカー）では launch + firstWindow が 443〜2,161ms、
 // #sidebar 待ちが最大 4.67 秒（3 段合計で最大 ~7 秒）だった。60 秒はこれの 8 倍
 // 以上の余裕を持たせつつ、beforeAll/テストの持ち時間 120 秒（playwright.config.js
-// の timeout）の半分に留める。半分以下にしているのは、起動シーケンス以外にも
-// 待ちを積む spec（app-title-override.smoke.spec.js の /api/states 応答待ち 20 秒＋
-// 表示確認 15 秒など）が同じ 120 秒の枠を共有しているため。この余裕により、
-// 段の外側でどれだけ時間を食っても、この予算そのものが外側の絶対タイムアウトへ
-// 到達する前に必ず尽きる（＝内側の検知が構造的に必ず外側より先に発火する）。
-// この不変条件は tests/e2e/helpers/boot-budget.test.js で固定している。
+// の timeout）の半分に留める。半分以下にしているのは、次の 2 点のため:
+//   - 起動シーケンス以外にも待ちを積む spec（app-title-override.smoke.spec.js の
+//     /api/states 応答待ち 20 秒＋表示確認 15 秒など）が同じ 120 秒の枠を共有している。
+//   - この予算の時計は createBootBudget() が呼ばれた瞬間（= launchApp / launchAppAndWait
+//     が呼ばれた瞬間）から動き出すため、それより前に spec が使った時間（getFreePort()
+//     など）はこの予算から見えない。半分という余裕は、その見えない分を吸収するため。
+// つまり保証できるのは「launchApp/launchAppAndWait 呼び出し以降、この 3 段の合計は
+// 必ず 60 秒以下に収まる」であり、「呼び出し前にどれだけ時間を使っても構造的に
+// 外側より先に発火する」という言い切りではない。この不変条件（60 秒が外側の
+// 半分以下であること）は tests/bootBudget.test.js で固定している。
 const BOOT_TOTAL_BUDGET_MS = 60_000;
 
 // OS に空きポートを割り当てさせ、取得後に閉じて Electron 側で再利用する。
@@ -159,23 +159,28 @@ async function launchApp({ port, prefix, env = {}, config = {}, budget = createB
 
 // レンダラーの初期描画が終わるまで待つ。#sidebar は app.js が起動時に組み立てるため、
 // これが付いた時点でトップレベルの配線（設定モーダルを開く関数など）は済んでいる。
-// budget は launchApp と同じものを渡す想定（launchAppAndWait 参照）。単独で呼ぶ場合は
-// 省略でき、その場合はこの 1 段だけの新しい budget を使う。
-async function waitForAppReady(win, budget = createBootBudget(BOOT_TOTAL_BUDGET_MS)) {
+//
+// 引数は launchApp の戻り値と同じ形（{ win, budget }）で受け取る。budget は
+// launchApp と同じものを渡す想定（launchAppAndWait 参照）。現時点で launchApp と
+// 対にせず単独で呼ぶ spec は無いが、直接呼ぶ場合に備えて budget は省略可能にし、
+// その場合はこの 1 段だけの新しい budget を使う（MEDIUM-4: 呼び出し元が増えたときに
+// うっかり (win) の位置引数で呼んでも、budget を渡し忘れて保証が壊れる、という
+// 落とし穴を無くすため launchApp の戻り値をそのまま渡せる形に揃えている）。
+async function waitForAppReady({ win, budget = createBootBudget(BOOT_TOTAL_BUDGET_MS) }) {
   await runStage(budget, 'sidebar-ready', (remainingMs) => (
     win.waitForSelector('#sidebar', { state: 'attached', timeout: remainingMs })
   ));
 }
 
 // 起動から初期描画待ちまでをまとめて行う（beforeAll から 1 行で呼べるように）。
-// electron-launch / first-window / sidebar-ready の 3 段を 1 つの絶対予算
-// （BOOT_TOTAL_BUDGET_MS）で管理する。段の外側（getFreePort 等）でどれだけ時間を
-// 使っていても、この 3 段の合計は budget を超えられない（issue #347）。
+// electron-launch / first-window / sidebar-ready の 3 段を 1 つの絶対予算で管理する。
+// options.budget が渡されていればそれをそのまま使う（呼び出し元が既に budget を
+// 持っている場合に黙って新しい budget へ差し替えない。MEDIUM-3）。
 async function launchAppAndWait(options) {
-  const budget = createBootBudget(BOOT_TOTAL_BUDGET_MS);
+  const budget = options.budget ?? createBootBudget(BOOT_TOTAL_BUDGET_MS);
   const launched = await launchApp({ ...options, budget });
   try {
-    await waitForAppReady(launched.win, budget);
+    await waitForAppReady(launched);
   } catch (e) {
     // 初期描画待ちで失敗した場合も、この時点では戻り値が呼び出し側へ渡っておらず
     // afterAll の closeApp が空振りする。launchApp と同じ理由でここで解放する。

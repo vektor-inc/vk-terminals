@@ -13,6 +13,11 @@ const OVERRIDE_TITLE = 'VK Orchestrator';
 const repoRoot = path.resolve(__dirname, '..', '..');
 const pkgVersion = require(path.join(repoRoot, 'package.json')).version;
 
+// helpers/electron-app.js の APP_CLOSE_TIMEOUT_MS と同じ値・同じ考え方。
+// browser.close() に上限が無いと、ハングした場合に内側の finally が完了せず、
+// Electron 側の後始末（closeApp）を行う外側の finally へ到達できない（issue #347）。
+const BROWSER_CLOSE_TIMEOUT_MS = 10_000;
+
 // /api/states が appTitle を返し始めるまで短くリトライして待つ。
 //
 // issue #347: fetch は既定でレスポンス待ちに上限を持たない。以前は 1 回の
@@ -119,7 +124,14 @@ test('モバイル: <h1> とフッターが VK_TERMINALS_APP_TITLE の上書き�
       await expect(footer).toBeVisible({ timeout: 15_000 });
       await expect(footer).toHaveText(`${OVERRIDE_TITLE} v${pkgVersion}`, { timeout: 15_000 });
     } finally {
-      await browser.close().catch(() => {});
+      // browser.close() がハングしても、この finally を必ず完了させて外側の
+      // finally（closeApp による Electron・一時ディレクトリの後始末）へ到達させる
+      // （closeApp / getFreePort と同じ方針。issue #347）。
+      let timer;
+      await Promise.race([
+        browser.close().catch(() => {}),
+        new Promise((resolve) => { timer = setTimeout(resolve, BROWSER_CLOSE_TIMEOUT_MS); }),
+      ]).finally(() => clearTimeout(timer));
     }
   } finally {
     await closeApp({ app, tmpRoot });

@@ -188,7 +188,7 @@ test('runStage: fn が remainingMs 以内に終わらない場合（fn 自身の
   );
 });
 
-test('runStage: 段の所要時間が閾値を超えたら、完了を待たずに標準出力へ 1 行書く', async () => {
+test('runStage: 段の所要時間が閾値を超えたら、完了を待たずに標準エラー出力へ 1 行書く', async () => {
   // 外側（beforeAll/テストの 120 秒）に打ち切られた場合、この段の Promise チェーンは
   // 結果を返す前に放棄され、通常のエラー経路（wrapStageError）は一度も走らない。
   // stageLogThresholdMs を小さくして、この「完了前に書く」ログが実際に機能することを

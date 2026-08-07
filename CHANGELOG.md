@@ -1,5 +1,7 @@
 # Changelog
 
+## 1.56.1
+
 - [ 開発環境 ] e2e の spec を統合し、同じ起動条件のテストで Electron の起動を共有することで全件実行時の起動回数と壁時計時間を削減（[#348](https://github.com/vektor-inc/vk-terminals/issues/348)）
 
 ## 1.56.0

@@ -2381,6 +2381,10 @@ let closeConfirmOpen = false;
 
 function openCloseConfirmDialog(paneId) {
   if (closeConfirmOpen) return;
+  // URL にホバーしたままマウスを動かさず Tab で「✕」まで来て Enter で確定する経路では
+  // xterm 側の leave が発火しない。確認ダイアログ（z-index 2100）の手前にツールチップ
+  // （2300）が浮いたまま残るのを防ぐ（Claude Code レビュー指摘・LOW）。
+  hideTermLinkTooltip();
   const restoreFocusElement = document.activeElement;
   closeConfirmOpen = true;
 
@@ -2784,6 +2788,11 @@ function fitAll() {
 
 // ─── Rendering ────────────────────────────────────────────────────────────────
 function render() {
+  // #root を丸ごと作り直す（root.replaceChildren）ため、ホバー中に呼ばれると
+  // xterm 側の要素が入れ替わり leave が発火せず、position: fixed のツールチップが
+  // 残り続ける。closePane() / initApp() / window の blur と同じ対策（安藤・Claude Code
+  // レビュー指摘・LOW）。
+  hideTermLinkTooltip();
   const root = document.getElementById('root');
   const sidebar = ensureSidebar(root);
   const newContent = renderGrid(tree);
@@ -4080,6 +4089,10 @@ function renderSettingsTabContent(blocks, tabIndexById, runtimeStatus = {}, entr
 const settingsModalGuard = createSingleOpenGuard();
 
 async function openSettingsModal() {
+  // URL にホバーしたままマウスを動かさず Tab で ⚙ まで来て Enter で確定する経路では
+  // xterm 側の leave が発火しない。設定モーダル（z-index 2000）の手前にツールチップ
+  // （2300）が浮いたまま残るのを防ぐ（Claude Code レビュー指摘・LOW）。
+  hideTermLinkTooltip();
   // settings:describe の応答待ち中にフォーカスが変わっても、実際に設定を開いた操作元へ
   // 戻せるよう、非同期処理へ入る前の要素をモーダルの寿命と一緒に保持する。
   const restoreFocusElement = document.activeElement;

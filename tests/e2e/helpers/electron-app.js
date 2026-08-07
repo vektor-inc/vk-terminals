@@ -16,6 +16,14 @@
 // ディレクトリと Electron プロセスを解放できずに os.tmpdir() へ取り残していた。
 // あわせて、実環境の VK_TERMINALS_* を中和する既定もここへ集約している（launchApp の
 // env コメント参照）。
+//
+// issue #347: 起動〜初期描画の 3 段（launch / firstWindow / #sidebar 待ち）を
+// 単一の絶対予算（boot-budget.js の createBootBudget）で管理する。旧設計
+// （各段が独立した固定 35 秒の相対タイマーを持つ）が「どの段で詰まったか」を
+// 失っていた経緯・仕組みの詳細は boot-budget.js の冒頭コメントと
+// tests/bootBudget.test.js の縮小再現を参照（ここでは重複させない）。
+const { createBootBudget, runStage } = require('./boot-budget');
+
 const fs = require('fs');
 const net = require('net');
 const os = require('os');
@@ -24,37 +32,95 @@ const { _electron } = require('@playwright/test');
 
 const repoRoot = path.resolve(__dirname, '..', '..', '..');
 
-// 起動〜初期描画の各段（launch / firstWindow / #sidebar 待ち）に与える待ち時間の上限。
+// 起動シーケンス全体（launch → firstWindow → #sidebar 待ち）で使ってよい合計時間。
 //
-// 実測（8 論理コア）では launch + firstWindow が 443〜2,161ms、#sidebar 待ちが最大
-// 4.67 秒だった。Electron を並行起動して負荷が高い状態でもこの範囲に収まっている。
-//
-// 値は「3 段の合計がフックの持ち時間を超えない」ことから決めている。Playwright は
-// beforeAll / afterAll にフックごと独立した持ち時間（= playwright.config.js の timeout
-// = 120 秒）を与えるため、3 段の合計がそれを超えると、後段で詰まったときに内側の
-// 明示タイムアウトより先にフックタイムアウトが刺さり、「どの段で待ち切れなかったか」
-// という、このヘルパーが残そうとしている情報が失われる。
-// 35 秒 × 3 段 = 105 秒でフック枠 120 秒に対し 15 秒の余裕を残し、内側のタイムアウトが
-// 必ず先に立つようにする（合計をちょうど 120 秒にすると同着になり得るため避ける）。
-// 実測の最悪値 4.67 秒に対しては 7 倍以上の余裕がある。
-const APP_BOOT_TIMEOUT = 35_000;
+// 実測（8 論理コア、4 ワーカー）では launch + firstWindow が 443〜2,161ms、
+// #sidebar 待ちが最大 4.67 秒（3 段合計で最大 ~7 秒）だった。60 秒はこれの 8 倍
+// 以上の余裕を持たせつつ、beforeAll/テストの持ち時間 120 秒（playwright.config.js
+// の timeout）の半分に留める。半分以下にしているのは、次の 2 点のため:
+//   - 起動シーケンス以外にも待ちを積む spec（app-title-override.smoke.spec.js の
+//     /api/states 応答待ち 20 秒＋表示確認 15 秒など）が同じ 120 秒の枠を共有している。
+//   - この予算の時計は createBootBudget() が呼ばれた瞬間（= launchApp / launchAppAndWait
+//     が呼ばれた瞬間）から動き出すため、それより前に spec が使った時間（getFreePort()
+//     など）はこの予算から見えない。半分という余裕は、その見えない分を吸収するため。
+// つまり保証できるのは「launchApp/launchAppAndWait 呼び出し以降、この 3 段の合計は
+// 必ず 60 秒以下に収まる」であり、「呼び出し前にどれだけ時間を使っても構造的に
+// 外側より先に発火する」という言い切りではない。この不変条件（60 秒が外側の
+// 半分以下であること）は tests/bootBudget.test.js で固定している。
+// なお getFreePort() 自身にも別途 GET_FREE_PORT_TIMEOUT_MS の上限を設けている
+// （下記コメント参照。負荷試験で実際にここが伸びて 120 秒の汎用タイムアウトに
+// つながった事例が見つかったため）。
+const BOOT_TOTAL_BUDGET_MS = 60_000;
+
+// getFreePort() は boot budget（launchApp/launchAppAndWait 呼び出し以降を管理）の
+// 管轄外で、spec が launchApp 系を呼ぶ前に呼ぶ（BOOT_TOTAL_BUDGET_MS の
+// コメント・MEDIUM-3 参照）。実測では常に数 ms だが、issue #347 の負荷試験で
+// 「api-token-auth の beforeAll が、起動予算 60 秒のほかに時間を食う要素が
+// getFreePort() しかないのに 120 秒の汎用タイムアウトで落ち、段名も出ない」
+// 事例が実際に発生した。素の net.Server の listen/close はタイムアウトを持たないため、
+// 極端な高負荷でイベントループの順番が回ってくるまでの時間が伸びると、この待ちが
+// 無期限に近く伸び得る。伸びた場合の帰結は次の 2 通りで、どちらも「段名が残らない」:
+//   (a) getFreePort が概ね 60 秒を超えて完了した場合。launchApp には到達するので
+//       budget も段タイマーも作られるが、budget の絶対期限（作成時点 + 60 秒）が
+//       フック開始からの外側の絶対期限（120 秒）を追い越すため、段の実行中に外側が
+//       先に発火する。段の Promise チェーンは結果を返す前に放棄され、wrapStageError が
+//       一度も走らないのでエラーに段名が載らない（それでも runStage の
+//       STAGE_LOG_THRESHOLD_MS のログは、外側が打ち切る前に既に出ているため残る。
+//       実際の負荷試験でこのログから "first-window" で詰まっていることを特定できた）。
+//   (b) getFreePort が 120 秒近く戻らなかった場合。launchApp に到達しないため budget
+//       自体が作られず、段タイマーも存在しない。
+// ここに明示の上限を設け、超えた場合は何が起きたか分かるメッセージで早く失敗させる。
+// 10 秒で頭打ちにすることで予算外の窓は最大 10 秒に収まり、起動シーケンスの絶対期限は
+// フック開始から最大 70 秒（外側 120 秒に対して 50 秒の余裕）になる ＝ (a) は起こらない。
+// (b) はこの上限自身が 10 秒で捕まえ、GET_FREE_PORT_LOG_THRESHOLD_MS の 1 行が残る。
+const GET_FREE_PORT_TIMEOUT_MS = 10_000;
+// この閾値を超えたら（正常に完了した場合でも）標準エラー出力（stderr）へ 1 行書く。
+// boot budget の STAGE_LOG_THRESHOLD_MS と同じ考え方（issue #347）。
+const GET_FREE_PORT_LOG_THRESHOLD_MS = 3_000;
 
 // OS に空きポートを割り当てさせ、取得後に閉じて Electron 側で再利用する。
 // spec ごとにポートを分けることで、並列実行時の固定ポート衝突を避ける。
 async function getFreePort() {
-  return await new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.on('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address();
-      const port = typeof address === 'object' && address ? address.port : null;
-      server.close((err) => {
-        if (err) { reject(err); return; }
-        if (!port) { reject(new Error('failed to allocate a free port')); return; }
-        resolve(port);
-      });
-    });
-  });
+  const startedAt = Date.now();
+  let timer;
+  let server = null; // 上限を踏んだ場合に finally から閉じるため、Promise の外へ出す。
+  try {
+    return await Promise.race([
+      new Promise((resolve, reject) => {
+        server = net.createServer();
+        server.on('error', reject);
+        server.listen(0, '127.0.0.1', () => {
+          const address = server.address();
+          const port = typeof address === 'object' && address ? address.port : null;
+          server.close((err) => {
+            if (err) { reject(err); return; }
+            if (!port) { reject(new Error('failed to allocate a free port')); return; }
+            resolve(port);
+          });
+        });
+      }),
+      new Promise((_resolve, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error(`getFreePort did not resolve within ${GET_FREE_PORT_TIMEOUT_MS}ms`));
+        }, GET_FREE_PORT_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+    // 上限に先に到達した場合、listen 中のサーバーは閉じられずに残る。閉じるのは
+    // 「遅れた listen コールバックがいつか実行されたとき」に委ねられ、その保持時間は
+    // 無制限になる。listening 中は libuv の active handle であり、既に苦しいプロセスに
+    // 居座り続けて後続の負荷を押し上げる（Electron プロセス・一時ディレクトリの
+    // 後始末と同じ基準で、ここも即座に閉じる）。成功経路では resolve 時点で既に
+    // listening === false のため no-op。ここで close() した後に遅れた listen
+    // コールバックが実行され二重に close() を呼んでも、ERR_SERVER_NOT_RUNNING は
+    // 既決の Promise の reject へ渡って捨てられるだけで未処理例外にはならない。
+    if (server && server.listening) server.close(() => {});
+    const elapsed = Date.now() - startedAt;
+    if (elapsed >= GET_FREE_PORT_LOG_THRESHOLD_MS) {
+      process.stderr.write(`[boot] getFreePort に ${elapsed}ms かかった（boot budget の管轄外）\n`);
+    }
+  }
 }
 
 // 一時 HOME を用意して Electron を素のシェル（--no-claude）で起動する。
@@ -72,7 +138,11 @@ async function getFreePort() {
 //     一時ディレクトリのパスを設定値に使いたい場合（例: 自分の cwd に一致する除外パターンを
 //     与えたい spec）は、パスが mkdtemp まで決まらないためオブジェクトの代わりに
 //     ({ tmpRoot, tmpHome, configPath }) => ({ ... }) の関数を渡せる。
-async function launchApp({ port, prefix, env = {}, config = {} }) {
+// budget は起動シーケンス全体で共有する単一の予算。launchAppAndWait から呼ぶ場合は
+// waitForAppReady と同じ budget を渡し、「electron-launch → firstWindow → sidebar-ready」
+// の 3 段を 1 つの絶対予算で管理する。launchApp を単独で呼ぶ spec（#sidebar を
+// 使わないものも多い）向けに、省略時はこの 2 段だけの新しい budget を作る。
+async function launchApp({ port, prefix, env = {}, config = {}, budget = createBootBudget(BOOT_TOTAL_BUDGET_MS) }) {
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   let app = null;
   try {
@@ -97,10 +167,10 @@ async function launchApp({ port, prefix, env = {}, config = {} }) {
       ...resolvedConfig,
     }), 'utf8');
 
-    app = await _electron.launch({
+    app = await runStage(budget, 'electron-launch', (fnTimeoutMs) => _electron.launch({
       args: ['.', '--no-claude'],
       cwd: repoRoot,
-      timeout: APP_BOOT_TIMEOUT,
+      timeout: fnTimeoutMs,
       env: {
         ...process.env,
         // 実環境（開発者のシェル、vk-orchestrator 配下での起動）から継承される
@@ -127,33 +197,57 @@ async function launchApp({ port, prefix, env = {}, config = {} }) {
         USERPROFILE: tmpHome,
         VK_TERMINALS_API_PORT: String(port),
       },
-    });
-    const win = await app.firstWindow({ timeout: APP_BOOT_TIMEOUT });
+    }));
+    const win = await runStage(budget, 'first-window', (fnTimeoutMs) => app.firstWindow({ timeout: fnTimeoutMs }));
     // tmpHome は HOME 隔離先そのもの。ペインの cwd や設定ファイルの場所を
     // expect で参照する spec があるため、tmpRoot と併せて返す。
-    return { app, win, tmpRoot, tmpHome };
+    return { app, win, tmpRoot, tmpHome, budget };
   } catch (e) {
     // 起動途中で失敗した場合、掴んだ Electron プロセス（main / renderer / GPU / utility）と
     // 一時ディレクトリは呼び出し側に渡らないため afterAll の closeApp では解放されない。
     // そして失敗する状況とは高負荷そのものなので、残ったプロセスが後続 spec の負荷を
     // 押し上げて連鎖を招く。リソースを掴んだこの場所で解放しておく。
-    if (app) await app.close().catch(() => {});
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    //
+    // 素の app.close() を待たず closeApp へ委ねる。ここで上限の無い close() を待つと、
+    // 返ってこないまま fs.rmSync(tmpRoot) に到達できず一時ディレクトリが残る
+    // （closeApp で直したのと同じ欠陥。しかもこの経路は定義上高負荷時にしか通らない
+    // ため、closeApp で観測された取り残しと同じ現象がここでも起きる）。
+    // 閉じる際のエラーは握り潰し、報告するのは元の起動失敗の方にする。
+    await closeApp({ app, tmpRoot }).catch(() => {});
     throw e;
   }
 }
 
 // レンダラーの初期描画が終わるまで待つ。#sidebar は app.js が起動時に組み立てるため、
 // これが付いた時点でトップレベルの配線（設定モーダルを開く関数など）は済んでいる。
-async function waitForAppReady(win) {
-  await win.waitForSelector('#sidebar', { state: 'attached', timeout: APP_BOOT_TIMEOUT });
+//
+// 引数は launchApp の戻り値と同じ形（{ win, budget }）で受け取る。budget は
+// launchApp と同じものを渡す想定（launchAppAndWait 参照）。現時点で launchApp と
+// 対にせず単独で呼ぶ spec は無いが、直接呼ぶ場合に備えて budget は省略可能にし、
+// その場合はこの 1 段だけの新しい budget を使う（MEDIUM-4: 呼び出し元が増えたときに
+// うっかり (win) の位置引数で呼んでも、budget を渡し忘れて保証が壊れる、という
+// 落とし穴を無くすため launchApp の戻り値をそのまま渡せる形に揃えている）。
+//
+// 引数なし呼び出し（旧形式 waitForAppReady(win) の呼び方を誤ってそのまま残した場合
+// を含む）だと、分割代入前に落ちるか win が undefined のまま段の中まで進んでしまい、
+// どちらも読み取りにくい失敗になる。既定値 {} で分割代入自体は落とさず、直後に
+// win の有無を明示チェックして分かりやすいメッセージで落とす。
+async function waitForAppReady({ win, budget = createBootBudget(BOOT_TOTAL_BUDGET_MS) } = {}) {
+  if (!win) throw new Error('waitForAppReady: { win } が必要です（launchApp の戻り値をそのまま渡してください）');
+  await runStage(budget, 'sidebar-ready', (fnTimeoutMs) => (
+    win.waitForSelector('#sidebar', { state: 'attached', timeout: fnTimeoutMs })
+  ));
 }
 
 // 起動から初期描画待ちまでをまとめて行う（beforeAll から 1 行で呼べるように）。
+// electron-launch / first-window / sidebar-ready の 3 段を 1 つの絶対予算で管理する。
+// options.budget が渡されていればそれをそのまま使う（呼び出し元が既に budget を
+// 持っている場合に黙って新しい budget へ差し替えない。MEDIUM-3）。
 async function launchAppAndWait(options) {
-  const launched = await launchApp(options);
+  const budget = options.budget ?? createBootBudget(BOOT_TOTAL_BUDGET_MS);
+  const launched = await launchApp({ ...options, budget });
   try {
-    await waitForAppReady(launched.win);
+    await waitForAppReady(launched);
   } catch (e) {
     // 初期描画待ちで失敗した場合も、この時点では戻り値が呼び出し側へ渡っておらず
     // afterAll の closeApp が空振りする。launchApp と同じ理由でここで解放する。
@@ -164,20 +258,74 @@ async function launchAppAndWait(options) {
   return launched;
 }
 
+// app.close() 自体には明示のタイムアウトが無い。getFreePort() と同じ種類の欠陥
+// （issue #347 の負荷試験で実際に "Worker teardown timeout of 120000ms exceeded."
+// が複数回発生し、一時ディレクトリが取り残された）で、close() が返ってこないまま
+// 外側（120 秒）に打ち切られると、finally に到達できず fs.rmSync(tmpRoot) が
+// 走らない。ここにも明示の上限を設け、上限に達しても finally には必ず到達させる
+// （＝一時ディレクトリの削除を先に済ませてからエラーを投げる）。
+const APP_CLOSE_TIMEOUT_MS = 10_000;
+// この閾値を超えたら（正常に完了した場合でも）標準エラー出力（stderr）へ 1 行書く。
+// getFreePort() の GET_FREE_PORT_LOG_THRESHOLD_MS と同じ考え方（issue #347）。
+const APP_CLOSE_LOG_THRESHOLD_MS = 3_000;
+
 // アプリを閉じて一時 HOME を消す。afterAll から呼ぶ。
-// 閉じるのに失敗してもエラーは握り潰さずそのまま投げる（プロセスが残ったことを
-// 隠さない）が、一時 HOME の削除は finally で必ず実行する。ここを try の外に置くと
-// 閉じるのに失敗したときだけ os.tmpdir() にゴミが溜まり続ける。
+// 閉じるのに失敗（またはタイムアウト）してもエラーは握り潰さずそのまま投げる
+// （プロセスが残ったことを隠さない）が、一時 HOME の削除は必ずそれより先に行う。
+// 削除を try の外に置いたり、タイムアウトのエラーをそのまま関数の外へ投げてしまうと、
+// 閉じ切れなかったときだけ os.tmpdir() にゴミが溜まり続ける。
 async function closeApp({ app, tmpRoot }) {
+  const startedAt = Date.now();
+  let timer;
+  let closeError = null;
   try {
-    if (app) await app.close();
+    if (app) {
+      await Promise.race([
+        app.close(),
+        new Promise((_resolve, reject) => {
+          timer = setTimeout(() => {
+            reject(new Error(`closeApp: app.close() did not resolve within ${APP_CLOSE_TIMEOUT_MS}ms`));
+          }, APP_CLOSE_TIMEOUT_MS);
+        }),
+      ]);
+    }
+  } catch (e) {
+    // ここで投げ直さず保持する。一時ディレクトリの削除（下の finally）を必ず
+    // 先に済ませたいため。
+    closeError = e;
   } finally {
+    clearTimeout(timer);
     if (tmpRoot) fs.rmSync(tmpRoot, { recursive: true, force: true });
+    const elapsed = Date.now() - startedAt;
+    if (elapsed >= APP_CLOSE_LOG_THRESHOLD_MS) {
+      process.stderr.write(`[boot] closeApp の app.close() に ${elapsed}ms かかった\n`);
+    }
+  }
+  if (closeError) {
+    // 上限で放棄した場合、プロセスの掃除は Playwright の exit ハンドラ
+    // （process.kill(-pid, 'SIGKILL')。ワーカー終了時にプロセスグループごと
+    // 落とすため、放棄したプロセスも最終的には必ず死ぬ）任せになり、
+    // そのワーカーが後続の spec を処理し終えるまで居座る。掴んでいる子プロセスの
+    // グループをここで落として、後続 spec への負荷を断つ（負値や undefined を
+    // -pid に渡すと意図しないグループを撃つため、正の整数であることを確認する）。
+    const child = app && typeof app.process === 'function' ? app.process() : null;
+    // 既に終了しているプロセスへ撃たない（Playwright 自身も killProcess() で
+    // !processClosed を条件にしている）。終了後も child.pid は保持されるため、
+    // pid の形だけを見ると死んだ PID に kill -pid を撃ってしまう（closeError は
+    // タイムアウト以外にも立つ。app.close() が Target closed 等の本物の失敗を
+    // 返す経路では子はほぼ確実に既に死んでおり、負荷時のクラッシュで日常的に
+    // 通る）。死んだ PID が OS に再利用されていた場合、無関係なプロセスグループを
+    // 撃つ事故を避けるため、未終了であることも確認する。
+    if (child && Number.isInteger(child.pid) && child.pid > 0
+        && child.exitCode === null && child.signalCode === null) {
+      try { process.kill(-child.pid, 'SIGKILL'); } catch (_e) { /* 既に死んでいる */ }
+    }
+    throw closeError;
   }
 }
 
 module.exports = {
-  APP_BOOT_TIMEOUT,
+  BOOT_TOTAL_BUDGET_MS,
   closeApp,
   getFreePort,
   launchApp,

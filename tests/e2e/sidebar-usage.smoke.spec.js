@@ -136,7 +136,11 @@ test('設定カードの見出し全体をクリックすると設定モーダ�
     expect(positions.centerDifference).toBeLessThanOrEqual(1);
 
     await header.click();
-    await expect(win.locator('.settings-overlay')).toBeVisible();
+    // 設定モーダルはディスクリプタを読んで描画するため、既定の expect タイムアウト
+    // （5 秒）では全件実行のような高負荷時に足りず、単独実行では通るのに全件実行では
+    // 落ちる不安定さの原因になっていた（issue #347）。他ファイルの同種の描画確認
+    // （app-title-override.smoke.spec.js 等）に合わせて明示的に延ばす。
+    await expect(win.locator('.settings-overlay')).toBeVisible({ timeout: 15_000 });
   } finally {
     await closeApp({ app, tmpRoot });
   }

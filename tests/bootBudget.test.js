@@ -11,6 +11,11 @@
 // testMatch に一致してしまい、node:test の TAP 出力が e2e のログに混入し、
 // unit テストが落ちても Playwright の終了コードには影響しないため気付けない
 // （レビュー指摘。実際にログで確認済み）。
+//
+// tests/e2e/helpers/electron-app.js は @playwright/test に依存する。ここでは
+// モジュール先頭で require せず、実際に使うテストの中で遅延 require する
+// （npm ci --omit=dev のような devDependencies 抜きの環境で、このファイル全体が
+// 落ちるのを防ぐ。レビュー指摘）。
 'use strict';
 
 const test = require('node:test');
@@ -20,7 +25,6 @@ const os = require('os');
 const path = require('path');
 
 const { BootStageError, createBootBudget, runStage } = require('./e2e/helpers/boot-budget');
-const { launchApp, launchAppAndWait } = require('./e2e/helpers/electron-app');
 
 test('createBootBudget: 予算内では enter() が残り時間を正しく返す', () => {
   let clock = 0;
@@ -109,48 +113,71 @@ test('runStage: fn が失敗した場合、段名と経過時間を乗せたエ�
   );
 });
 
+// ── MEDIUM-A の回帰テスト ──
+//
+// 残りが安全網の余白（guardSlackMs）以下しか無い場合、fn を一切呼ばずにその場で
+// 予算切れとして打ち切る。以前は Math.max(1, ...) で 1ms に丸めて fn を呼んでいた
+// ため、最も確実に「予算切れ」と言える境界でだけ fn 側の失敗として処理され、
+// timedOut が false になっていた（安藤の実測）。
+test('runStage: 残りが安全網の余白以下しかない場合、fn を呼ばずに timedOut 付きで即座に打ち切る', async () => {
+  const budget = createBootBudget(1_500); // guardSlackMs 既定 2_000ms より小さい総予算。
+  let fnCalled = false;
+  await assert.rejects(
+    runStage(budget, 'first-window', () => {
+      fnCalled = true;
+      return Promise.resolve();
+    }),
+    (error) => {
+      assert.ok(error instanceof BootStageError);
+      assert.equal(error.stage, 'first-window');
+      // 予算切れによる失敗だと確実に分かる。
+      assert.equal(error.timedOut, true);
+      return true;
+    },
+  );
+  // fn（Electron 起動 API 等）を一切呼んでいない。
+  assert.equal(fnCalled, false);
+});
+
 // ── HIGH-1 の回帰テスト ──
 //
 // 以前は runStage のガードタイマーが fn へ渡す timeout と同値で登録されていた。
 // Node のタイマーは同一期限なら登録順に発火するため、先に登録されるガードが
 // 必ず fn 側より先に勝ち、fn 自身の詳しい失敗（Playwright の Call log 等）が
-// 丸ごと捨てられていた。ガードには GUARD_SLACK_MS 分長い期限を与えることで、
-// fn が自分の timeout（fnTimeoutMs）を守っている限り、常に fn 側の失敗が
-// 先に伝わることを確かめる。
-test('runStage: fn が自分の timeout（fnTimeoutMs）を守って先に失敗すれば、ガードに横取りされず fn 側の失敗がそのまま伝わる', async () => {
-  const budget = createBootBudget(1_000); // 実時間 1000ms
-  const seenFnTimeoutMs = [];
+// 丸ごと捨てられていた。
+//
+// レビュー指摘（MEDIUM-B）: 以前のこのテストは fn が渡された fnTimeoutMs と
+// 無関係に固定 10ms で reject していたため、元のバグ条件（ガードと fn の timeout が
+// 同値）から最も遠い配置になっており、GUARD_SLACK_MS を 0 に戻しても
+// Call log / timedOut の assertion は落ちなかった（数値の assertion だけが落ちる）。
+// fn 自身に fnTimeoutMs ちょうどで失敗させることで、GUARD_SLACK_MS を 0 に戻すと
+// 狙った理由（ガードに横取りされる）で確実に落ちるテストにする。
+test('runStage: fn が fnTimeoutMs ちょうどで失敗しても、ガードに横取りされず fn 側の失敗が伝わる', async () => {
+  const budget = createBootBudget(2_100); // guardSlackMs 既定 2_000ms より 100ms だけ大きい。
   await assert.rejects(
-    runStage(budget, 'electron-launch', (fnTimeoutMs) => {
-      seenFnTimeoutMs.push(fnTimeoutMs);
-      // fn 自身が、渡された fnTimeoutMs 以内に詳しい情報（Call log 相当）を持つ
-      // 失敗を返す状況を模す（Playwright の _electron.launch 等の実際の挙動）。
-      return new Promise((_resolve, reject) => {
-        setTimeout(() => reject(new Error(`Timeout ${fnTimeoutMs}ms exceeded. Call log: ...`)), 10);
-      });
-    }),
+    runStage(budget, 'sidebar-ready', (fnTimeoutMs) => new Promise((_resolve, reject) => {
+      setTimeout(
+        () => reject(new Error(`Timeout ${fnTimeoutMs}ms exceeded.\nCall log:\n  - waiting for locator('#sidebar')`)),
+        fnTimeoutMs,
+      );
+    })),
     (error) => {
-      assert.ok(error instanceof BootStageError);
-      // ガードは発火していない（fn 側の失敗だと確実には言えないため false のまま）。
-      assert.equal(error.timedOut, false);
-      // fn 側の詳しい情報（Call log 相当）が消えずに残っている。
-      assert.match(error.message, /Call log: \.\.\./);
+      assert.equal(error.timedOut, false, 'ガードが横取りしている');
+      assert.match(error.message, /Call log/);
       return true;
     },
   );
-  assert.equal(seenFnTimeoutMs.length, 1);
-  // fn には budget の残り時間そのもの（≒1000ms）ではなく、安全網の分（2000ms）を
-  // 引いた値が渡っている。
-  assert.ok(seenFnTimeoutMs[0] < 1_000);
 });
 
 test('runStage: fn が remainingMs 以内に終わらない場合（fn 自身の timeout が機能していない）、ガードが timedOut 付きで安全に止める', async () => {
+  // guardSlackMs を小さくして、総予算が小さいままガードの性質（早期打ち切りではなく
+  // 実際にガードのタイマーが発火する経路）を踏む。
   const budget = createBootBudget(30, { now: Date.now }); // 実時間 30ms
   await assert.rejects(
     runStage(budget, 'first-window', () => new Promise(() => {
       // 何も resolve/reject しない。fn 自身に timeout 実装が無い（あるいは
       // 壊れている）ケースの安全網（ガード）を確かめる。
-    })),
+    }), { guardSlackMs: 10 }),
     (error) => {
       assert.ok(error instanceof BootStageError);
       assert.equal(error.stage, 'first-window');
@@ -158,6 +185,28 @@ test('runStage: fn が remainingMs 以内に終わらない場合（fn 自身の
       assert.equal(error.timedOut, true);
       return true;
     },
+  );
+});
+
+test('runStage: 段の所要時間が閾値を超えたら、完了を待たずに標準出力へ 1 行書く', async () => {
+  // 外側（beforeAll/テストの 120 秒）に打ち切られた場合、この段の Promise チェーンは
+  // 結果を返す前に放棄され、通常のエラー経路（wrapStageError）は一度も走らない。
+  // stageLogThresholdMs を小さくして、この「完了前に書く」ログが実際に機能することを
+  // 決定的に（実時間を長く待たずに）確かめる。
+  const budget = createBootBudget(1_000);
+  const originalWrite = process.stderr.write;
+  const written = [];
+  process.stderr.write = (chunk) => { written.push(String(chunk)); return true; };
+  try {
+    await runStage(budget, 'first-window', () => new Promise((resolve) => {
+      setTimeout(resolve, 40); // ログ閾値（20ms）より後、fn 自体は最終的に成功する。
+    }), { guardSlackMs: 100, stageLogThresholdMs: 20 });
+  } finally {
+    process.stderr.write = originalWrite;
+  }
+  assert.ok(
+    written.some((line) => line.includes('first-window') && line.includes('20ms')),
+    `段の進行ログが出力されていない: ${JSON.stringify(written)}`,
   );
 });
 
@@ -210,15 +259,23 @@ test('縮小再現: budget 作成後、段の外側で想定外に時間を使�
 });
 
 // ── 境界: budget の時計が「いつから」動くか（MEDIUM-3） ──
+//
+// レビュー指摘: 以前は `budget.elapsedMs() < 10` しか見ておらず、作りたての
+// budget は常にそうなるため落ちようがなかった（将来 budget 作成のタイミングを
+// getFreePort より前へ動かす改善が入ってもパスしてしまう、意味の無い assertion）。
+// 注入した「世界時計」を作成前に大きく進めておき、budget の内部時計が
+// 作成時点を基準にしていることを、作成タイミングに依存せず決定的に確かめる。
 test('createBootBudget: 作成より前に経過した時間（getFreePort 相当）は budget の管理外のまま残る', () => {
-  // getFreePort() は launchApp / launchAppAndWait を呼ぶ前に spec 側が呼ぶため、
-  // createBootBudget() が作られる前に起きる。budget の時計は作成時点から
-  // 動き出すため、作成前にどれだけ時間を使っていても elapsedMs には反映されない。
-  // つまり「段の外側でどれだけ時間を食っても構造的に外側より先に発火する」という
+  let worldClock = 50_000; // getFreePort 相当の待ちで、既に 50 秒経過した想定。
+  const budget = createBootBudget(10_000, { now: () => worldClock });
+  // budget の内部時計は作成時点（= startedAt）を基準にするため、作成前に世界時計が
+  // どれだけ進んでいても、作成直後の elapsedMs は 0 のまま
+  // （＝「段の外側でどれだけ時間を食っても構造的に外側より先に発火する」という
   // 言い切りは成立せず、実際の不変条件は「createBootBudget() 呼び出し以降、
-  // 3 段の合計は必ず totalMs 以下に収まる」に留まる。
-  const budget = createBootBudget(10_000); // ここが「作成」の瞬間
-  assert.ok(budget.elapsedMs() < 10); // 作成直前の待ちは一切反映されない
+  // 3 段の合計は必ず totalMs 以下に収まる」に留まる）。
+  assert.equal(budget.elapsedMs(), 0);
+  worldClock += 5_000;
+  assert.equal(budget.elapsedMs(), 5_000);
 });
 
 test('createBootBudget: budget 作成後・段に入る前の実処理時間（mkdtempSync 等に相当）は elapsedMs へ正しく反映される', async () => {
@@ -232,13 +289,15 @@ test('createBootBudget: budget 作成後・段に入る前の実処理時間（m
   assert.ok(remaining <= 10_000 - 50);
 });
 
-// ── MEDIUM-6: launchApp / launchAppAndWait への budget の受け渡しそのものの検証 ──
+// ── MEDIUM-6 / MEDIUM-B: launchApp / launchAppAndWait / waitForAppReady への
+//    budget の受け渡しそのものの検証 ──
 //
 // Electron を実際に起動する統合確認は tests/e2e/*.smoke.spec.js 側で行っている。
 // ここでは「渡された budget が既に尽きていれば、Electron を起動する API を
-// 一切呼ばず、一時ディレクトリも残さない」という本番コードパス上の不変条件を、
-// 安く・決定的に確認する。
+// 一切呼ばず、一時ディレクトリも残さない」「3 段が 1 つの budget を共有し、
+// 経路も引き継ぐ」という本番コードパス上の不変条件を、安く・決定的に確認する。
 test('launchApp: 渡された budget が尽きていれば Electron を起動せず、一時ディレクトリも残さない', async () => {
+  const { launchApp } = require('./e2e/helpers/electron-app');
   let clock = 0;
   const budget = createBootBudget(1_000, { now: () => clock });
   clock = 2_000; // 段に入る前に予算切れ
@@ -260,6 +319,7 @@ test('launchApp: 渡された budget が尽きていれば Electron を起動せ
 });
 
 test('launchAppAndWait: options.budget を渡すとその budget がそのまま使われる（黙って新しい budget へ差し替えられない）', async () => {
+  const { launchAppAndWait } = require('./e2e/helpers/electron-app');
   let clock = 0;
   const budget = createBootBudget(1_000, { now: () => clock });
   clock = 2_000; // 段に入る前に予算切れ
@@ -273,6 +333,33 @@ test('launchAppAndWait: options.budget を渡すとその budget がそのまま
       assert.equal(error.elapsedMs, 2_000);
       return true;
     },
+  );
+});
+
+test('waitForAppReady: 渡された budget をそのまま使い、経路も引き継ぐ', async () => {
+  const { waitForAppReady } = require('./e2e/helpers/electron-app');
+  let clock = 0;
+  const budget = createBootBudget(1_000, { now: () => clock });
+  budget.enter('electron-launch');
+  clock = 2_000; // sidebar-ready に入る前に予算切れ
+  const win = { waitForSelector: () => assert.fail('予算切れなのに waitForSelector が呼ばれた') };
+  await assert.rejects(
+    waitForAppReady({ win, budget }),
+    (error) => {
+      assert.equal(error.stage, 'sidebar-ready');
+      assert.equal(error.timedOut, true);
+      // launchApp 側で通った electron-launch の経路を引き継いでいる。
+      assert.match(error.message, /electron-launch@0ms/);
+      return true;
+    },
+  );
+});
+
+test('waitForAppReady: win を渡さずに呼ぶと分かりやすいメッセージで落ちる（旧形式の呼び方の取り違え対策）', async () => {
+  const { waitForAppReady } = require('./e2e/helpers/electron-app');
+  await assert.rejects(
+    waitForAppReady(),
+    /waitForAppReady: \{ win \} が必要です/,
   );
 });
 

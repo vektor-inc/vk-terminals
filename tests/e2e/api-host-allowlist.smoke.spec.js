@@ -6,12 +6,18 @@ const { closeApp, getFreePort, launchAppAndWait } = require('./helpers/electron-
 // main.js の HTTP サーバー入口に Host 許可リストゲートが実際に配線され、
 // 既定の認証不要構成では接続先と異なる Host が拒否されることを確認する。
 // fetch() では Host を指定できないため、Node の生の HTTP リクエストを使う。
-function requestHealth(port, hostHeader) {
+//
+// issue #347: Node の http.request は既定でレスポンス待ちに上限を持たない
+// （fetch と同じ種類の問題）。接続はできたが応答が返らない状態になると
+// 無期限に戻らず、テストの持ち時間 120 秒をそのまま使い切ってしまう。
+// AbortSignal.timeout() で 1 リクエストあたりの上限を明示する。
+function requestHealth(port, hostHeader, { timeoutMs = 10_000 } = {}) {
   return new Promise((resolve, reject) => {
     const options = {
       host: '127.0.0.1',
       port,
       path: '/api/health',
+      signal: AbortSignal.timeout(timeoutMs),
     };
     if (hostHeader) options.headers = { Host: hostHeader };
 

@@ -56,6 +56,14 @@ class BootStageError extends Error {
 // 走るため、先に登録されるガードが必ず勝ってしまう）。
 const GUARD_SLACK_MS = 2_000;
 
+// 段の所要時間がこれを超えたら、完了を待たずに標準出力（stderr）へ 1 行書く。
+// 外側（beforeAll/テストの 120 秒）に打ち切られた場合、この段の Promise チェーンは
+// 結果を返す前に放棄され、エラーオブジェクトへ情報を積む通常の経路（wrapStageError）
+// は一度も走らない。そのケースでも「どこまで進んで、どこで止まったか」をログに
+// 残すための保険（issue #347）。正常時（大多数）は閾値に届かず出力されないため、
+// ログは汚れない。
+const STAGE_LOG_THRESHOLD_MS = 10_000;
+
 // totalMs: この予算全体で使ってよい合計時間（ms）。
 // now: テスト用に注入できる時計（既定は Date.now）。
 function createBootBudget(totalMs, { now = Date.now } = {}) {
@@ -117,8 +125,8 @@ function createBootBudget(totalMs, { now = Date.now } = {}) {
 // 乗せて再送する（Playwright 自身の Call log やエラーメッセージは error.message /
 // cause として保持されるため失われない）。
 //
-// fn には remainingMs そのものではなく、そこから GUARD_SLACK_MS を引いた
-// fnTimeoutMs を渡す。ガード自身は remainingMs のフルで発火するため、fn が
+// fn には remainingMs そのものではなく、そこから guardSlackMs（既定 GUARD_SLACK_MS）
+// を引いた fnTimeoutMs を渡す。ガード自身は remainingMs のフルで発火するため、fn が
 // 自分の timeout を正しく守っている限りガードより先に fn 側のタイムアウトが
 // 発火し、Playwright 自身の詳しいエラー（Call log・プロセス終了処理込み）が
 // そのまま得られる。ガードは「fn が自分の timeout を守らなかったとき」だけの
@@ -126,10 +134,32 @@ function createBootBudget(totalMs, { now = Date.now } = {}) {
 // 扱うためのものではない設計に変更した（HIGH-1: 以前はガードと fn の timeout が
 // 同値だったため、Node のタイマーが登録順に発火する仕様上ガードが常に勝ち、
 // fn 側のエラー情報が丸ごと捨てられていた）。
-async function runStage(budget, stage, fn) {
+//
+// remainingMs が guardSlackMs 以下しか残っていない場合、fn へ渡す timeout が
+// 意味のある正の値を取れない（0 以下になる、または極小になる）。この境地では
+// fn を一切呼ばず、この場で予算切れとして打ち切る（MEDIUM-A: 以前は
+// Math.max(1, ...) で 1ms に丸めて fn を呼んでいたため、最も確実に「予算切れ」と
+// 言える境界でだけ fn 側の失敗として処理され、timedOut が false になっていた）。
+//
+// guardSlackMs は既定値のまま使うのが通常で、テストで極小予算を使う場合にだけ
+// 明示的に小さくする口を残している（第 4 引数）。
+async function runStage(budget, stage, fn, { guardSlackMs = GUARD_SLACK_MS, stageLogThresholdMs = STAGE_LOG_THRESHOLD_MS } = {}) {
   const remainingMs = budget.enter(stage);
-  const fnTimeoutMs = Math.max(1, remainingMs - GUARD_SLACK_MS);
+  if (remainingMs <= guardSlackMs) {
+    throw budget.wrapStageError(
+      stage,
+      new Error(`残り ${remainingMs}ms しかなく、この段に意味のある待ち時間を割り当てられない（余白 ${guardSlackMs}ms 以下）`),
+      { timedOut: true },
+    );
+  }
+  // guardSlackMs 分を引いた後も必ず正の値になることは上のチェックで保証されている。
+  // それでも Math.max(1, ...) を残しているのは、Playwright の timeout オプションは
+  // 0 を「無制限」として扱うため、万一 0 以下の値が渡ると、まさにこの予算切れの
+  // 段でだけ Playwright 自身の上限が無効化され、HIGH-1 で直したはずのプロセス
+  // 取り残しが復活してしまうため（安藤の指摘: 一番効いている 1 文字）。
+  const fnTimeoutMs = Math.max(1, remainingMs - guardSlackMs);
   let timer;
+  let logTimer;
   let guardFired = false;
   const guard = new Promise((_resolve, reject) => {
     timer = setTimeout(() => {
@@ -137,6 +167,12 @@ async function runStage(budget, stage, fn) {
       reject(new Error(`残り ${remainingMs}ms 以内に完了しなかった（fn 側の timeout が機能していない）`));
     }, remainingMs);
   });
+  logTimer = setTimeout(() => {
+    process.stderr.write(
+      `[boot] "${stage}" が ${stageLogThresholdMs}ms を超えてまだ進行中`
+        + `（総予算 ${budget.totalMs}ms、開始からの経過 ${budget.elapsedMs()}ms）\n`,
+    );
+  }, Math.min(stageLogThresholdMs, fnTimeoutMs));
   try {
     return await Promise.race([fn(fnTimeoutMs), guard]);
   } catch (error) {
@@ -144,6 +180,7 @@ async function runStage(budget, stage, fn) {
     throw budget.wrapStageError(stage, error, { timedOut: guardFired });
   } finally {
     clearTimeout(timer);
+    clearTimeout(logTimer);
   }
 }
 

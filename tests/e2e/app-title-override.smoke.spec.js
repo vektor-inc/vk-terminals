@@ -79,25 +79,41 @@ test('デスクトップ: VK_TERMINALS_APP_TITLE でヘッダーと /api/states 
 });
 
 // ─── モバイルページの <h1> とバージョンフッターが上書き名になる ───
+//
+// issue #347: この spec 単体で待ちの最悪値を合計すると 120 秒（playwright.config.js
+// の timeout）を超えていた。起動予算（launchApp の BOOT_TOTAL_BUDGET_MS = 60 秒）に
+// 加えて、chromium.launch() / page.goto() が既定（30 秒ずつ）で明示上限が無く、
+// waitForStatesWithAppTitle（20 秒）＋ 3 つの expect（15 秒 × 3）まで積んでいたため、
+// 起動予算と合わせた最悪値が 120 秒を大きく超えていた。実測でこれらは常に数秒以内に
+// 終わっており、以下の値はいずれも余裕を持たせつつ、合計が 120 秒に収まるように
+// 縮めている。
+//
+// あわせて、chromium.launch() が try の外・Electron 起動後にあり、chromium の
+// 起動に失敗すると Electron と一時 HOME が漏れる問題があった（同じ行を触るため
+// ここで直す）。closeApp を必ず通す外側の try/finally と、browser.close() を
+// 必ず通す内側の try/finally に分け、どちらで失敗しても両方解放されるようにする。
 test('モバイル: <h1> とフッターが VK_TERMINALS_APP_TITLE の上書き名になる', async () => {
   const port = await getFreePort();
   const { app, tmpRoot } = await launchTitleOverrideApp(port);
-  const browser = await chromium.launch();
   try {
-    await waitForStatesWithAppTitle(port);
+    const browser = await chromium.launch({ timeout: 8_000 });
+    try {
+      await waitForStatesWithAppTitle(port, 10_000);
 
-    const context = await browser.newContext();
-    const page = await context.newPage();
-    await page.goto(`http://127.0.0.1:${port}/`);
+      const context = await browser.newContext();
+      const page = await context.newPage();
+      await page.goto(`http://127.0.0.1:${port}/`, { timeout: 8_000 });
 
-    const heading = page.locator('header h1');
-    await expect(heading).toHaveText(OVERRIDE_TITLE, { timeout: 15_000 });
+      const heading = page.locator('header h1');
+      await expect(heading).toHaveText(OVERRIDE_TITLE, { timeout: 8_000 });
 
-    const footer = page.locator('#app-version-footer');
-    await expect(footer).toBeVisible({ timeout: 15_000 });
-    await expect(footer).toHaveText(`${OVERRIDE_TITLE} v${pkgVersion}`, { timeout: 15_000 });
+      const footer = page.locator('#app-version-footer');
+      await expect(footer).toBeVisible({ timeout: 8_000 });
+      await expect(footer).toHaveText(`${OVERRIDE_TITLE} v${pkgVersion}`, { timeout: 8_000 });
+    } finally {
+      await browser.close().catch(() => {});
+    }
   } finally {
-    await browser.close().catch(() => {});
     await closeApp({ app, tmpRoot });
   }
 });

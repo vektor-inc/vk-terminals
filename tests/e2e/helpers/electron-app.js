@@ -47,24 +47,58 @@ const repoRoot = path.resolve(__dirname, '..', '..', '..');
 // 必ず 60 秒以下に収まる」であり、「呼び出し前にどれだけ時間を使っても構造的に
 // 外側より先に発火する」という言い切りではない。この不変条件（60 秒が外側の
 // 半分以下であること）は tests/bootBudget.test.js で固定している。
+// なお getFreePort() 自身にも別途 GET_FREE_PORT_TIMEOUT_MS の上限を設けている
+// （下記コメント参照。負荷試験で実際にここが伸びて 120 秒の汎用タイムアウトに
+// つながった事例が見つかったため）。
 const BOOT_TOTAL_BUDGET_MS = 60_000;
+
+// getFreePort() は boot budget（launchApp/launchAppAndWait 呼び出し以降を管理）の
+// 管轄外で、spec が launchApp 系を呼ぶ前に呼ぶ（BOOT_TOTAL_BUDGET_MS の
+// コメント・MEDIUM-3 参照）。実測では常に数 ms だが、issue #347 の負荷試験で
+// 「api-token-auth の beforeAll が、起動予算 60 秒のほかに時間を食う要素が
+// getFreePort() しかないのに 120 秒の汎用タイムアウトで落ち、段名も出ない」
+// 事例が実際に発生した。素の net.Server の listen/close はタイムアウトを
+// 持たないため、極端な高負荷でイベントループの順番が回ってくるまでの時間が
+// 伸びると無期限に近い待ちになり得る。ここにも明示の上限を設け、超えた場合は
+// 何が起きたか分かるメッセージで早く失敗させる。
+const GET_FREE_PORT_TIMEOUT_MS = 10_000;
+// この閾値を超えたら（正常に完了した場合でも）標準出力へ 1 行書く。boot budget の
+// STAGE_LOG_THRESHOLD_MS と同じ考え方（issue #347）。
+const GET_FREE_PORT_LOG_THRESHOLD_MS = 3_000;
 
 // OS に空きポートを割り当てさせ、取得後に閉じて Electron 側で再利用する。
 // spec ごとにポートを分けることで、並列実行時の固定ポート衝突を避ける。
 async function getFreePort() {
-  return await new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.on('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address();
-      const port = typeof address === 'object' && address ? address.port : null;
-      server.close((err) => {
-        if (err) { reject(err); return; }
-        if (!port) { reject(new Error('failed to allocate a free port')); return; }
-        resolve(port);
-      });
-    });
-  });
+  const startedAt = Date.now();
+  let timer;
+  try {
+    return await Promise.race([
+      new Promise((resolve, reject) => {
+        const server = net.createServer();
+        server.on('error', reject);
+        server.listen(0, '127.0.0.1', () => {
+          const address = server.address();
+          const port = typeof address === 'object' && address ? address.port : null;
+          server.close((err) => {
+            if (err) { reject(err); return; }
+            if (!port) { reject(new Error('failed to allocate a free port')); return; }
+            resolve(port);
+          });
+        });
+      }),
+      new Promise((_resolve, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error(`getFreePort did not resolve within ${GET_FREE_PORT_TIMEOUT_MS}ms`));
+        }, GET_FREE_PORT_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+    const elapsed = Date.now() - startedAt;
+    if (elapsed >= GET_FREE_PORT_LOG_THRESHOLD_MS) {
+      process.stderr.write(`[boot] getFreePort に ${elapsed}ms かかった（boot budget の管轄外）\n`);
+    }
+  }
 }
 
 // 一時 HOME を用意して Electron を素のシェル（--no-claude）で起動する。
@@ -111,10 +145,10 @@ async function launchApp({ port, prefix, env = {}, config = {}, budget = createB
       ...resolvedConfig,
     }), 'utf8');
 
-    app = await runStage(budget, 'electron-launch', (remainingMs) => _electron.launch({
+    app = await runStage(budget, 'electron-launch', (fnTimeoutMs) => _electron.launch({
       args: ['.', '--no-claude'],
       cwd: repoRoot,
-      timeout: remainingMs,
+      timeout: fnTimeoutMs,
       env: {
         ...process.env,
         // 実環境（開発者のシェル、vk-orchestrator 配下での起動）から継承される
@@ -142,7 +176,7 @@ async function launchApp({ port, prefix, env = {}, config = {}, budget = createB
         VK_TERMINALS_API_PORT: String(port),
       },
     }));
-    const win = await runStage(budget, 'first-window', (remainingMs) => app.firstWindow({ timeout: remainingMs }));
+    const win = await runStage(budget, 'first-window', (fnTimeoutMs) => app.firstWindow({ timeout: fnTimeoutMs }));
     // tmpHome は HOME 隔離先そのもの。ペインの cwd や設定ファイルの場所を
     // expect で参照する spec があるため、tmpRoot と併せて返す。
     return { app, win, tmpRoot, tmpHome, budget };
@@ -166,9 +200,15 @@ async function launchApp({ port, prefix, env = {}, config = {}, budget = createB
 // その場合はこの 1 段だけの新しい budget を使う（MEDIUM-4: 呼び出し元が増えたときに
 // うっかり (win) の位置引数で呼んでも、budget を渡し忘れて保証が壊れる、という
 // 落とし穴を無くすため launchApp の戻り値をそのまま渡せる形に揃えている）。
-async function waitForAppReady({ win, budget = createBootBudget(BOOT_TOTAL_BUDGET_MS) }) {
-  await runStage(budget, 'sidebar-ready', (remainingMs) => (
-    win.waitForSelector('#sidebar', { state: 'attached', timeout: remainingMs })
+//
+// 引数なし呼び出し（旧形式 waitForAppReady(win) の呼び方を誤ってそのまま残した場合
+// を含む）だと、分割代入前に落ちるか win が undefined のまま段の中まで進んでしまい、
+// どちらも読み取りにくい失敗になる。既定値 {} で分割代入自体は落とさず、直後に
+// win の有無を明示チェックして分かりやすいメッセージで落とす。
+async function waitForAppReady({ win, budget = createBootBudget(BOOT_TOTAL_BUDGET_MS) } = {}) {
+  if (!win) throw new Error('waitForAppReady: { win } が必要です（launchApp の戻り値をそのまま渡してください）');
+  await runStage(budget, 'sidebar-ready', (fnTimeoutMs) => (
+    win.waitForSelector('#sidebar', { state: 'attached', timeout: fnTimeoutMs })
   ));
 }
 

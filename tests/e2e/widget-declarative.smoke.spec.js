@@ -14,6 +14,21 @@ const { getFreePort, launchApp } = require('./helpers/electron-app');
 // 既存の旧タスク仕様スペック（tasks-sidebar / tasks-status-actions / mobile-tasks / sidebar-task-link 等）は
 // 旧 tasksFile（tasks-view.json）とタスク語彙にべったり依存しており、この刷新で陳腐化している。
 // 本スペックは「新実装が正しく動くこと」を担保するために新規追加した（麗美 / e2e 担当）。
+//
+// issue #348: config が同じ（widgetFile [+ commandsPath]）テスト 11 本を 1 起動へ共有した。
+// tasksFile / 空 config / menuItems の 3 テストは config 構造が異なる（widgetFile を
+// 使わない・別のトップレベルキーを使う）ため、起動時の設定値そのものが検証対象と見なし、
+// 個別起動のまま残している。
+//
+// 共有時の隔離: main.js の widget watcher（startWidgetWatcher）は fs.watch + 150ms
+// デバウンス（最大 3000ms ポーリングでの取りこぼし対策）で widgetFile の変更を検知し、
+// pushWidgetUpdate() が変化を renderer へ push する。push はモジュールレベルの
+// キャッシュ（currentWidgetPayload）を送るため、ファイルを書き換えた直後すぐに
+// win.reload() すると、did-finish-load 時点のキャッシュが古いままの可能性がある。
+// そのため各テストの先頭で widgetFile を書き換えた後に十分な余裕（600ms。デバウンス
+// 150ms の 4 倍）を空けてから reload する。localStorage は reload しても消えないため
+// 明示的に clear() する。commands.jsonl は監視されないただの追記先ファイルなので、
+// 各テストの先頭で明示的に削除してクリーンな状態から始める。
 
 function writeJson(filePath, value) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -107,6 +122,39 @@ function buildWidget(overrides = {}) {
   };
 }
 
+// ローカルモード用の宣言（rel:"queue" リンク無し＝GitHub モードでない、viewer 不明）。
+function buildLocalWidget(overrides = {}) {
+  return {
+    schemaVersion: 1,
+    kind: 'task-list',
+    lang: 'ja',
+    updatedAt: freshDate(),
+    viewer: null,
+    staleThresholdMs: 120000,
+    emptyText: 'タスクはありません',
+    groups: [
+      {
+        id: 'ready',
+        label: '実行待ち',
+        tone: 'info',
+        order: 0,
+        items: [
+          {
+            id: '401',
+            title: 'ローカルモードのタスク',
+            updatedAt: freshDate(),
+            editable: false,
+            badges: [],
+            links: [],
+            controls: [],
+          },
+        ],
+      },
+    ],
+    ...overrides,
+  };
+}
+
 async function launchWidgetApp(port, config = {}) {
   return await launchApp({ port, prefix: 'vk-terminals-e2e-widget-decl-', config });
 }
@@ -138,15 +186,45 @@ async function closeAppForcefully({ app, tmpRoot }) {
   }
 }
 
-// ─── 1: サイドバー: 宣言を共有レンダラで描画し、バッジ・タイトルリンク・見出しリンク・フィルタを出す ───
-test('サイドバー: widgetFile の宣言でグループ／アイテム／バッジ／タイトルリンク／見出しリンク／担当者フィルタを描画する', async () => {
-  const port = await getFreePort();
-  const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-widget-decl-data-'));
-  const widgetFile = path.join(dataRoot, 'tasks-widget.json');
-  writeJson(widgetFile, buildWidget());
+// widgetFile を新しい内容へ書き換え、watcher の検知（fs.watch + 150ms デバウンス）が
+// キャッシュへ反映されるまでの余裕を空けてから win.reload() する。localStorage は
+// reload しても消えないため明示的に clear() し、commandsPath は監視されないただの
+// 追記先ファイルなので存在すれば削除してクリーンな状態から始める。
+async function setupWidget(win, widgetFile, widget, { commandsPath } = {}) {
+  writeJson(widgetFile, widget);
+  if (commandsPath && fs.existsSync(commandsPath)) fs.rmSync(commandsPath);
+  await new Promise((r) => setTimeout(r, 600));
+  await win.evaluate(() => localStorage.clear());
+  await win.reload();
+  await win.waitForSelector('#sidebar', { state: 'attached' });
+}
 
-  const { app, win, tmpRoot } = await launchWidgetApp(port, { widgetFile });
-  try {
+test.describe.serial('widgetFile 系タスク一覧の描画・操作（issue #229 / #348 で起動共有）', () => {
+  let app;
+  let win;
+  let tmpRoot;
+  let port;
+  let dataRoot;
+  let widgetFile;
+  let commandsPath;
+
+  test.beforeAll(async () => {
+    port = await getFreePort();
+    dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-widget-decl-shared-'));
+    widgetFile = path.join(dataRoot, 'tasks-widget.json');
+    commandsPath = path.join(dataRoot, 'commands.jsonl');
+    writeJson(widgetFile, buildWidget());
+    ({ app, win, tmpRoot } = await launchWidgetApp(port, { widgetFile, commandsPath }));
+  });
+
+  test.afterAll(async () => {
+    await closeAppForcefully({ app, tmpRoot });
+    fs.rmSync(dataRoot, { recursive: true, force: true });
+  });
+
+  // ─── 1: サイドバー: 宣言を共有レンダラで描画し、バッジ・タイトルリンク・見出しリンク・フィルタを出す ───
+  test('サイドバー: widgetFile の宣言でグループ／アイテム／バッジ／タイトルリンク／見出しリンク／担当者フィルタを描画する', async () => {
+    await setupWidget(win, widgetFile, buildWidget(), { commandsPath });
     const section = win.locator('#task-list');
     await expect(section).toBeVisible({ timeout: 10_000 });
 
@@ -211,22 +289,11 @@ test('サイドバー: widgetFile の宣言でグループ／アイテム／バ�
     // option 要素の disabled は Playwright の toBeDisabled が拾いにくいため DOM プロパティで確認する。
     expect(await doneOption.evaluate((o) => o.disabled)).toBe(true);
     await expect(doneOption).toHaveText('完了（PR のマージが必要です）');
-  } finally {
-    await closeAppForcefully({ app, tmpRoot });
-    fs.rmSync(dataRoot, { recursive: true, force: true });
-  }
-});
+  });
 
-// ─── 2: サイドバー: 編集パネルで下書き保存→確認→IPC widgets:command 経由で commands.jsonl に 1 行追記 ───
-test('サイドバー: 編集パネルの保存で確認後 commands.jsonl に apply-batch を中継し反映待ちを表示する', async () => {
-  const port = await getFreePort();
-  const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-widget-decl-cmd-'));
-  const widgetFile = path.join(dataRoot, 'tasks-widget.json');
-  const commandsPath = path.join(dataRoot, 'commands.jsonl');
-  writeJson(widgetFile, buildWidget());
-
-  const { app, win, tmpRoot } = await launchWidgetApp(port, { widgetFile, commandsPath });
-  try {
+  // ─── 2: サイドバー: 編集パネルで下書き保存→確認→IPC widgets:command 経由で commands.jsonl に 1 行追記 ───
+  test('サイドバー: 編集パネルの保存で確認後 commands.jsonl に apply-batch を中継し反映待ちを表示する', async () => {
+    await setupWidget(win, widgetFile, buildWidget(), { commandsPath });
     const section = win.locator('#task-list');
     await expect(section).toBeVisible({ timeout: 10_000 });
     const item = section.locator('.task-item[data-id="301"]');
@@ -269,22 +336,11 @@ test('サイドバー: 編集パネルの保存で確認後 commands.jsonl に a
     await expect.poll(() => readCommands(commandsPath), { timeout: 5000 }).toHaveLength(1);
     const [command] = readCommands(commandsPath);
     expectApplyBatchCommand(command);
-  } finally {
-    await closeAppForcefully({ app, tmpRoot });
-    fs.rmSync(dataRoot, { recursive: true, force: true });
-  }
-});
+  });
 
-// ─── 3: サイドバー: 保存確認をキャンセルすると送信せず下書きを保持し、編集キャンセルで破棄する ───
-test('サイドバー: 保存確認をキャンセルすると commands.jsonl に追記せず下書きを保持する', async () => {
-  const port = await getFreePort();
-  const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-widget-decl-cancel-'));
-  const widgetFile = path.join(dataRoot, 'tasks-widget.json');
-  const commandsPath = path.join(dataRoot, 'commands.jsonl');
-  writeJson(widgetFile, buildWidget());
-
-  const { app, win, tmpRoot } = await launchWidgetApp(port, { widgetFile, commandsPath });
-  try {
+  // ─── 3: サイドバー: 保存確認をキャンセルすると送信せず下書きを保持し、編集キャンセルで破棄する ───
+  test('サイドバー: 保存確認をキャンセルすると commands.jsonl に追記せず下書きを保持する', async () => {
+    await setupWidget(win, widgetFile, buildWidget(), { commandsPath });
     const section = win.locator('#task-list');
     await expect(section).toBeVisible({ timeout: 10_000 });
     const item = section.locator('.task-item[data-id="301"]');
@@ -318,33 +374,23 @@ test('サイドバー: 保存確認をキャンセルすると commands.jsonl �
     await expect(editButton).toHaveAttribute('aria-expanded', 'false');
     await expect(item.locator('.task-item-pending')).toHaveCount(0);
     expect(readCommands(commandsPath)).toHaveLength(0);
-  } finally {
-    await closeAppForcefully({ app, tmpRoot });
-    fs.rmSync(dataRoot, { recursive: true, force: true });
-  }
-});
-
-// ─── 4: サイドバー: 担当者フィルタ（GitHub モード）で自分のみ／全員を切り替えられる ───
-test('サイドバー: 担当者フィルタで自分のみ／全員を切り替え、localStorage に保存する', async () => {
-  const port = await getFreePort();
-  const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-widget-decl-filter-'));
-  const widgetFile = path.join(dataRoot, 'tasks-widget.json');
-  // viewer=kurudrive。自分担当と他人担当（wada）を混在させる。
-  const widget = buildWidget();
-  widget.groups[0].items.push({
-    id: '302',
-    title: '他人担当の実行中タスク',
-    assignee: 'wada',
-    updatedAt: freshDate(),
-    editable: false,
-    badges: [],
-    links: [{ rel: 'queue', url: 'https://github.com/vektor-inc/vk-orchestrator/issues/302', label: 'issue #302' }],
-    controls: [],
   });
-  writeJson(widgetFile, widget);
 
-  const { app, win, tmpRoot } = await launchWidgetApp(port, { widgetFile });
-  try {
+  // ─── 4: サイドバー: 担当者フィルタ（GitHub モード）で自分のみ／全員を切り替えられる ───
+  test('サイドバー: 担当者フィルタで自分のみ／全員を切り替え、localStorage に保存する', async () => {
+    // viewer=kurudrive。自分担当と他人担当（wada）を混在させる。
+    const widget = buildWidget();
+    widget.groups[0].items.push({
+      id: '302',
+      title: '他人担当の実行中タスク',
+      assignee: 'wada',
+      updatedAt: freshDate(),
+      editable: false,
+      badges: [],
+      links: [{ rel: 'queue', url: 'https://github.com/vektor-inc/vk-orchestrator/issues/302', label: 'issue #302' }],
+      controls: [],
+    });
+    await setupWidget(win, widgetFile, widget);
     const section = win.locator('#task-list');
     await expect(section).toBeVisible({ timeout: 10_000 });
     const filter = section.locator('.task-list-assignee-filter');
@@ -365,48 +411,13 @@ test('サイドバー: 担当者フィルタで自分のみ／全員を切り替
     await filter.selectOption('wada');
     await expect(section).toContainText('他人担当の実行中タスク');
     await expect(section).not.toContainText('宣言ウィジェットの実行中タスク');
-  } finally {
-    await closeAppForcefully({ app, tmpRoot });
-    fs.rmSync(dataRoot, { recursive: true, force: true });
-  }
-});
+  });
 
-// ─── 5: legacyNotice: 旧 tasksFile のみ設定（widgetFile 無し）→ 後方互換注記を出す ───
-test('サイドバー: 旧 tasksFile のみ設定時はタスク語彙を復活させず後方互換注記を表示する', async () => {
-  const port = await getFreePort();
-  const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-widget-decl-legacy-'));
-  const tasksFile = path.join(dataRoot, 'tasks-view.json');
-  // 旧フォーマットのファイルが存在するだけで legacyNotice が立つ（中身の語彙は描画しない）。
-  writeJson(tasksFile, { updatedAt: freshDate(), tasks: [{ id: 1, title: '旧タスク', status: 'ready' }] });
-
-  const { app, win, tmpRoot } = await launchWidgetApp(port, { tasksFile });
-  try {
-    await win.waitForSelector('#task-list', { state: 'attached' });
-    const section = win.locator('#task-list');
-    await expect(section).toBeVisible({ timeout: 10_000 });
-
-    // 後方互換注記（data-kind="legacy"）が出て、旧タスクの語彙（タイトル）は描画されない。
-    const notice = section.locator('.task-list-stale');
-    await expect(notice).toBeVisible();
-    await expect(notice).toHaveAttribute('data-kind', 'legacy');
-    await expect(section).not.toContainText('旧タスク');
-    await expect(section.locator('.task-item')).toHaveCount(0);
-  } finally {
-    await closeAppForcefully({ app, tmpRoot });
-    fs.rmSync(dataRoot, { recursive: true, force: true });
-  }
-});
-
-// ─── 6: モバイル: GET /api/widgets 描画と POST /api/widgets/command 中継 ───
-test('モバイル: /api/widgets の宣言を描画し、ステータス変更を POST /api/widgets/command で中継する', async ({ page }) => {
-  const port = await getFreePort();
-  const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-widget-decl-mobile-'));
-  const widgetFile = path.join(dataRoot, 'tasks-widget.json');
-  const commandsPath = path.join(dataRoot, 'commands.jsonl');
-  writeJson(widgetFile, buildWidget());
-
-  const { app, tmpRoot } = await launchWidgetApp(port, { widgetFile, commandsPath });
-  try {
+  // ─── 5: モバイル: GET /api/widgets 描画と POST /api/widgets/command 中継 ───
+  // 元の番号は 6（後続を控える tasksFile / 空 config / menuItems の 3 テストは別ファイル
+  // 位置に個別起動として残したため、この共有グループ内では通し番号のみ詰めている）。
+  test('モバイル: /api/widgets の宣言を描画し、ステータス変更を POST /api/widgets/command で中継する', async ({ page }) => {
+    await setupWidget(win, widgetFile, buildWidget(), { commandsPath });
     const base = `http://127.0.0.1:${port}`;
 
     // GET /api/widgets は中継ペイロード（widget / legacyNotice / commandsConfigured）を返す。
@@ -470,57 +481,11 @@ test('モバイル: /api/widgets の宣言を描画し、ステータス変更�
       body: JSON.stringify({ action: 'set-status', taskId: '301', to: 'awaiting-approval', expected: 'in-progress' }),
     });
     expect(csrf.status).toBe(403);
-  } finally {
-    await closeAppForcefully({ app, tmpRoot });
-    fs.rmSync(dataRoot, { recursive: true, force: true });
-  }
-});
+  });
 
-// ─── 以下は旧タスク UI スペック（tasks-sidebar / sidebar-task-link 等）から、新 widget モデルでも
-//     有効な観点だけを移植したもの。旧スペックは陳腐化のため削除し、ここへ集約する。 ───
-
-// ローカルモード用の宣言（rel:"queue" リンク無し＝GitHub モードでない、viewer 不明）。
-function buildLocalWidget(overrides = {}) {
-  return {
-    schemaVersion: 1,
-    kind: 'task-list',
-    lang: 'ja',
-    updatedAt: freshDate(),
-    viewer: null,
-    staleThresholdMs: 120000,
-    emptyText: 'タスクはありません',
-    groups: [
-      {
-        id: 'ready',
-        label: '実行待ち',
-        tone: 'info',
-        order: 0,
-        items: [
-          {
-            id: '401',
-            title: 'ローカルモードのタスク',
-            updatedAt: freshDate(),
-            editable: false,
-            badges: [],
-            links: [],
-            controls: [],
-          },
-        ],
-      },
-    ],
-    ...overrides,
-  };
-}
-
-// ─── 7: ローカルモード: 担当者フィルタ非表示・見出しはプレーンテキスト（旧 sidebar-task-list-title-link 相当） ───
-test('サイドバー: ローカルモード（queue リンク無し／viewer 不明）では担当者フィルタを出さず見出しもリンク化しない', async () => {
-  const port = await getFreePort();
-  const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-widget-decl-local-'));
-  const widgetFile = path.join(dataRoot, 'tasks-widget.json');
-  writeJson(widgetFile, buildLocalWidget());
-
-  const { app, win, tmpRoot } = await launchWidgetApp(port, { widgetFile });
-  try {
+  // ─── 6: ローカルモード: 担当者フィルタ非表示・見出しはプレーンテキスト（旧 sidebar-task-list-title-link 相当） ───
+  test('サイドバー: ローカルモード（queue リンク無し／viewer 不明）では担当者フィルタを出さず見出しもリンク化しない', async () => {
+    await setupWidget(win, widgetFile, buildLocalWidget());
     const section = win.locator('#task-list');
     await expect(section).toBeVisible({ timeout: 10_000 });
     // アイテムは描画される。
@@ -531,24 +496,14 @@ test('サイドバー: ローカルモード（queue リンク無し／viewer �
     // 見出しはリンク化されずプレーンテキスト「タスク」。
     await expect(section.locator('.task-list-title-text a.task-list-title-link')).toHaveCount(0);
     await expect(section.locator('.task-list-title-text')).toHaveText('タスク');
-  } finally {
-    await closeAppForcefully({ app, tmpRoot });
-    fs.rmSync(dataRoot, { recursive: true, force: true });
-  }
-});
+  });
 
-// ─── 8: self フィルタで自分の担当が無いとき self 用の空文言を出す（旧 tasks-sidebar 相当） ───
-test('サイドバー: GitHub モードで自分に割り当てが無い場合は self 用の空文言を表示する', async () => {
-  const port = await getFreePort();
-  const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-widget-decl-selfempty-'));
-  const widgetFile = path.join(dataRoot, 'tasks-widget.json');
-  // viewer=kurudrive だが唯一のアイテムは他人（wada）担当にする。既定フィルタ（自分のみ）で 0 件。
-  const widget = buildWidget();
-  widget.groups[0].items[0].assignee = 'wada';
-  writeJson(widgetFile, widget);
-
-  const { app, win, tmpRoot } = await launchWidgetApp(port, { widgetFile });
-  try {
+  // ─── 7: self フィルタで自分の担当が無いとき self 用の空文言を出す（旧 tasks-sidebar 相当） ───
+  test('サイドバー: GitHub モードで自分に割り当てが無い場合は self 用の空文言を表示する', async () => {
+    // viewer=kurudrive だが唯一のアイテムは他人（wada）担当にする。既定フィルタ（自分のみ）で 0 件。
+    const widget = buildWidget();
+    widget.groups[0].items[0].assignee = 'wada';
+    await setupWidget(win, widgetFile, widget);
     const section = win.locator('#task-list');
     await expect(section).toBeVisible({ timeout: 10_000 });
     const filter = section.locator('.task-list-assignee-filter');
@@ -557,41 +512,20 @@ test('サイドバー: GitHub モードで自分に割り当てが無い場合�
     // 自分担当が無いので self 用の空文言、アイテムは非表示。
     await expect(section.locator('.task-list-empty')).toHaveText('自分に割り当てられたタスクはありません');
     await expect(section.locator('.task-item[data-id="301"]')).toHaveCount(0);
-  } finally {
-    await closeAppForcefully({ app, tmpRoot });
-    fs.rmSync(dataRoot, { recursive: true, force: true });
-  }
-});
+  });
 
-// ─── 9: コールド起動で updatedAt が古い（stale）ときはセクションを表示しない（旧 tasks-sidebar 相当） ───
-test('サイドバー: コールド起動で widget の updatedAt が古い場合はセクションを表示しない', async () => {
-  const port = await getFreePort();
-  const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-widget-decl-coldstale-'));
-  const widgetFile = path.join(dataRoot, 'tasks-widget.json');
-  // updatedAt を staleThreshold(120s) より十分過去にする。新鮮な view を一度も見ていないので非表示。
-  writeJson(widgetFile, buildWidget({ updatedAt: freshDate(-5 * 60 * 1000) }));
-
-  const { app, win, tmpRoot } = await launchWidgetApp(port, { widgetFile });
-  try {
-    await win.waitForSelector('#task-list', { state: 'attached' });
+  // ─── 8: コールド起動で updatedAt が古い（stale）ときはセクションを表示しない（旧 tasks-sidebar 相当） ───
+  test('サイドバー: コールド起動で widget の updatedAt が古い場合はセクションを表示しない', async () => {
+    // updatedAt を staleThreshold(120s) より十分過去にする。新鮮な view を一度も見ていないので非表示。
+    await setupWidget(win, widgetFile, buildWidget({ updatedAt: freshDate(-5 * 60 * 1000) }));
     const section = win.locator('#task-list');
     await expect(section).toBeHidden();
     await expect(section).not.toContainText('宣言ウィジェットの実行中タスク');
-  } finally {
-    await closeAppForcefully({ app, tmpRoot });
-    fs.rmSync(dataRoot, { recursive: true, force: true });
-  }
-});
+  });
 
-// ─── 10: fresh 表示後に stale 化したら「Orchestrator 停止中」を出す（旧 tasks-sidebar 相当） ───
-test('サイドバー: fresh 表示後に widget が stale 化した場合は Orchestrator 停止中を表示する', async () => {
-  const port = await getFreePort();
-  const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-widget-decl-stalelatch-'));
-  const widgetFile = path.join(dataRoot, 'tasks-widget.json');
-  writeJson(widgetFile, buildWidget());
-
-  const { app, win, tmpRoot } = await launchWidgetApp(port, { widgetFile });
-  try {
+  // ─── 9: fresh 表示後に stale 化したら「Orchestrator 停止中」を出す（旧 tasks-sidebar 相当） ───
+  test('サイドバー: fresh 表示後に widget が stale 化した場合は Orchestrator 停止中を表示する', async () => {
+    await setupWidget(win, widgetFile, buildWidget());
     const section = win.locator('#task-list');
     await expect(section).toBeVisible({ timeout: 10_000 });
     await expect(section.locator('.task-list-stale')).toBeHidden();
@@ -602,34 +536,11 @@ test('サイドバー: fresh 表示後に widget が stale 化した場合は Or
     await expect(notice).toBeVisible({ timeout: 10_000 });
     await expect(notice).toHaveText('Orchestrator 停止中');
     await expect(notice).toHaveAttribute('data-kind', 'stale');
-  } finally {
-    await closeAppForcefully({ app, tmpRoot });
-    fs.rmSync(dataRoot, { recursive: true, force: true });
-  }
-});
+  });
 
-// ─── 11: widgetFile 未設定（かつ legacy も無し）ならセクションを表示しない（旧 tasks-sidebar 相当） ───
-test('サイドバー: widgetFile 未設定かつ legacy 無しならセクションを表示しない', async () => {
-  const port = await getFreePort();
-  const { app, win, tmpRoot } = await launchWidgetApp(port, {});
-  try {
-    await win.waitForSelector('#task-list', { state: 'attached' });
-    const section = win.locator('#task-list');
-    await expect(section).toBeHidden();
-  } finally {
-    await closeAppForcefully({ app, tmpRoot });
-  }
-});
-
-// ─── 12: 折り畳みトグルで一覧を開閉し、状態を localStorage に保存する（旧 tasks-sidebar 相当） ───
-test('サイドバー: 右端トグルで一覧を折り畳み・展開でき、状態が localStorage に保存される', async () => {
-  const port = await getFreePort();
-  const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-widget-decl-collapse-'));
-  const widgetFile = path.join(dataRoot, 'tasks-widget.json');
-  writeJson(widgetFile, buildWidget());
-
-  const { app, win, tmpRoot } = await launchWidgetApp(port, { widgetFile });
-  try {
+  // ─── 10: 折り畳みトグルで一覧を開閉し、状態を localStorage に保存する（旧 tasks-sidebar 相当） ───
+  test('サイドバー: 右端トグルで一覧を折り畳み・展開でき、状態が localStorage に保存される', async () => {
+    await setupWidget(win, widgetFile, buildWidget());
     const section = win.locator('#task-list');
     await expect(section).toBeVisible({ timeout: 10_000 });
     const toggle = section.locator('.sidebar-section-toggle');
@@ -655,13 +566,163 @@ test('サイドバー: 右端トグルで一覧を折り畳み・展開でき、
     expect(await win.evaluate(() => JSON.parse(
       localStorage.getItem('vkt.sidebarSectionsCollapsed')
     )['task-list'])).toBe(false);
+  });
+
+  // ─── 11: 担当者フィルタ表示時も下限幅でラベルとトグルを保つ ───
+  test('サイドバー: 200px 幅で担当者フィルタ表示時もタスク見出しとトグルを可視・操作可能に保つ', async () => {
+    await setupWidget(win, widgetFile, buildWidget());
+    const sidebar = win.locator('#sidebar');
+    const sidebarMenu = win.locator('.sidebar-menu');
+    const section = win.locator('#task-list');
+    await expect(section).toBeVisible({ timeout: 10_000 });
+    const header = section.locator('.sidebar-section-header');
+    const settingsHeader = win.locator('#sidebar-settings .sidebar-section-header');
+    // タスクと設定の見出しは同じ見た目に揃える。片方だけ先頭の飾り（擬似要素）が
+    // 復活するとカード間でラベルの左端がずれるため、両方まとめて確かめる。
+    const [taskHeaderStyle, settingsHeaderStyle] = await Promise.all(
+      [header, settingsHeader].map((locator) => locator.evaluate((element) => ({
+        fontSize: getComputedStyle(element).fontSize,
+        accentContent: getComputedStyle(element, '::before').content,
+      })))
+    );
+    expect(settingsHeaderStyle).toEqual(taskHeaderStyle);
+    expect(settingsHeaderStyle).toEqual({ fontSize: '12px', accentContent: 'none' });
+    const taskCenterDifference = await header.evaluate((element) => {
+      const labelRect = element.querySelector('.sidebar-section-label').getBoundingClientRect();
+      const controlsRect = element.querySelector('.sidebar-section-controls').getBoundingClientRect();
+      // ラベルと操作グループは同じフレックス行に並ぶため、実座標の中心どうしを比べて
+      // 見出し 1 行の縦位置が揃っていることを確かめる。
+      return Math.abs(
+        (controlsRect.top + controlsRect.height / 2) - (labelRect.top + labelRect.height / 2)
+      );
+    });
+    expect(taskCenterDifference).toBeLessThanOrEqual(1);
+    let originalWidth = null;
+    try {
+      originalWidth = await sidebar.evaluate((element) => ({
+        value: element.style.getPropertyValue('--vktm-sidebar-width'),
+        priority: element.style.getPropertyPriority('--vktm-sidebar-width'),
+      }));
+      await sidebar.evaluate((element) => {
+        element.style.setProperty('--vktm-sidebar-width', '200px');
+      });
+
+      const label = section.locator('.sidebar-section-label');
+      const filter = section.locator('.task-list-assignee-filter');
+      const toggle = section.locator('.sidebar-section-toggle');
+      await expect(label).toContainText('タスク');
+      await expect(label).not.toHaveAttribute('title', /.+/);
+      await expect(filter).toBeVisible();
+      await expect(toggle).toBeVisible();
+
+      // #343 でセクション見出しの ::before アクセントバー自体を削除したため、
+      // 「広い幅と狭い幅でアクセントの高さが一致する」という比較はもう成立しない
+      // （比較先の wideAccentHeight もこの変更で宣言だけ消え、実行すると
+      // ReferenceError で中断していた）。単純に削除するのではなく、狭幅へリサイズした
+      // 後も復活していないことの安価な二重確認として置き換える。
+      // 同テスト前半で taskHeaderStyle / settingsHeaderStyle として広い幅のときの
+      // ::before の content が 'none' であることを確かめているのと同じ観点で、
+      // 狭い幅へリサイズした後も 'none' のまま（アクセントが復活していない）ことを
+      // 確かめる。
+      const narrowAccentContent = await header.evaluate(
+        (element) => getComputedStyle(element, '::before').content
+      );
+      expect(narrowAccentContent).toBe('none');
+
+      const bounds = await Promise.all([
+        sidebarMenu.evaluate((element) => element.getBoundingClientRect().toJSON()),
+        label.evaluate((element) => element.getBoundingClientRect().toJSON()),
+        filter.evaluate((element) => element.getBoundingClientRect().toJSON()),
+        toggle.evaluate((element) => element.getBoundingClientRect().toJSON()),
+      ]);
+      for (const controlBounds of bounds.slice(1)) {
+        expect(controlBounds.left).toBeGreaterThanOrEqual(bounds[0].left);
+        expect(controlBounds.right).toBeLessThanOrEqual(bounds[0].right);
+      }
+      expect(bounds[1].width).toBeGreaterThanOrEqual(48);
+
+      await toggle.focus();
+      const toggleStyle = await toggle.evaluate((element) => {
+        const style = getComputedStyle(element);
+        return {
+          width: style.width,
+          height: style.height,
+          borderWidth: style.borderWidth,
+          borderStyle: style.borderStyle,
+          outlineOffset: style.outlineOffset,
+        };
+      });
+      expect(toggleStyle).toEqual({
+        width: '24px',
+        height: '24px',
+        borderWidth: '1px',
+        borderStyle: 'solid',
+        outlineOffset: '2px',
+      });
+
+      await toggle.click();
+      await expect(section.locator('.sidebar-section-body')).toBeHidden();
+      await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    } finally {
+      if (originalWidth) {
+        await sidebar.evaluate((element, previous) => {
+          if (previous.value) {
+            element.style.setProperty('--vktm-sidebar-width', previous.value, previous.priority);
+          } else {
+            element.style.removeProperty('--vktm-sidebar-width');
+          }
+        }, originalWidth).catch(() => {});
+      }
+    }
+  });
+});
+
+// ─── legacyNotice: 旧 tasksFile のみ設定（widgetFile 無し）→ 後方互換注記を出す ───
+// config が widgetFile ではなく tasksFile を使う（起動時の設定値そのものが検証対象）ため、
+// 上の共有グループには含めず個別起動を維持する。
+test('サイドバー: 旧 tasksFile のみ設定時はタスク語彙を復活させず後方互換注記を表示する', async () => {
+  const port = await getFreePort();
+  const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-widget-decl-legacy-'));
+  const tasksFile = path.join(dataRoot, 'tasks-view.json');
+  // 旧フォーマットのファイルが存在するだけで legacyNotice が立つ（中身の語彙は描画しない）。
+  writeJson(tasksFile, { updatedAt: freshDate(), tasks: [{ id: 1, title: '旧タスク', status: 'ready' }] });
+
+  const { app, win, tmpRoot } = await launchWidgetApp(port, { tasksFile });
+  try {
+    await win.waitForSelector('#task-list', { state: 'attached' });
+    const section = win.locator('#task-list');
+    await expect(section).toBeVisible({ timeout: 10_000 });
+
+    // 後方互換注記（data-kind="legacy"）が出て、旧タスクの語彙（タイトル）は描画されない。
+    const notice = section.locator('.task-list-stale');
+    await expect(notice).toBeVisible();
+    await expect(notice).toHaveAttribute('data-kind', 'legacy');
+    await expect(section).not.toContainText('旧タスク');
+    await expect(section.locator('.task-item')).toHaveCount(0);
   } finally {
     await closeAppForcefully({ app, tmpRoot });
     fs.rmSync(dataRoot, { recursive: true, force: true });
   }
 });
 
-// ─── 13: 長いメニュー見出しでも下限幅でトグルを可視・操作可能に保つ ───
+// ─── widgetFile 未設定（かつ legacy も無し）ならセクションを表示しない（旧 tasks-sidebar 相当） ───
+// config が空（widgetFile も tasksFile も未設定であること自体）が検証対象のため、
+// 上の共有グループには含めず個別起動を維持する。
+test('サイドバー: widgetFile 未設定かつ legacy 無しならセクションを表示しない', async () => {
+  const port = await getFreePort();
+  const { app, win, tmpRoot } = await launchWidgetApp(port, {});
+  try {
+    await win.waitForSelector('#task-list', { state: 'attached' });
+    const section = win.locator('#task-list');
+    await expect(section).toBeHidden();
+  } finally {
+    await closeAppForcefully({ app, tmpRoot });
+  }
+});
+
+// ─── 長いメニュー見出しでも下限幅でトグルを可視・操作可能に保つ ───
+// config が menuItems（widgetFile を使わない別のトップレベルキー）のため、
+// 上の共有グループには含めず個別起動を維持する。
 test('サイドバー: 長いメニュー見出しは 200px 幅で省略し、トグルを可視領域内に保つ', async () => {
   const port = await getFreePort();
   const longTitle = 'これは二十文字を超えるとても長い外部連携メニューの見出しです';
@@ -747,106 +808,5 @@ test('サイドバー: 長いメニュー見出しは 200px 幅で省略し、�
       }, originalWidth).catch(() => {});
     }
     await closeAppForcefully({ app, tmpRoot });
-  }
-});
-
-// ─── 14: 担当者フィルタ表示時も下限幅でラベルとトグルを保つ ───
-test('サイドバー: 200px 幅で担当者フィルタ表示時もタスク見出しとトグルを可視・操作可能に保つ', async () => {
-  const port = await getFreePort();
-  const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-widget-decl-narrow-filter-'));
-  const widgetFile = path.join(dataRoot, 'tasks-widget.json');
-  writeJson(widgetFile, buildWidget());
-
-  const { app, win, tmpRoot } = await launchWidgetApp(port, { widgetFile });
-  try {
-    const sidebar = win.locator('#sidebar');
-    const sidebarMenu = win.locator('.sidebar-menu');
-    const section = win.locator('#task-list');
-    await expect(section).toBeVisible({ timeout: 10_000 });
-    const header = section.locator('.sidebar-section-header');
-    const settingsHeader = win.locator('#sidebar-settings .sidebar-section-header');
-    // タスクと設定の見出しは同じ見た目に揃える。片方だけ先頭の飾り（擬似要素）が
-    // 復活するとカード間でラベルの左端がずれるため、両方まとめて確かめる。
-    const [taskHeaderStyle, settingsHeaderStyle] = await Promise.all(
-      [header, settingsHeader].map((locator) => locator.evaluate((element) => ({
-        fontSize: getComputedStyle(element).fontSize,
-        accentContent: getComputedStyle(element, '::before').content,
-      })))
-    );
-    expect(settingsHeaderStyle).toEqual(taskHeaderStyle);
-    expect(settingsHeaderStyle).toEqual({ fontSize: '12px', accentContent: 'none' });
-    const taskCenterDifference = await header.evaluate((element) => {
-      const labelRect = element.querySelector('.sidebar-section-label').getBoundingClientRect();
-      const controlsRect = element.querySelector('.sidebar-section-controls').getBoundingClientRect();
-      // ラベルと操作グループは同じフレックス行に並ぶため、実座標の中心どうしを比べて
-      // 見出し 1 行の縦位置が揃っていることを確かめる。
-      return Math.abs(
-        (controlsRect.top + controlsRect.height / 2) - (labelRect.top + labelRect.height / 2)
-      );
-    });
-    expect(taskCenterDifference).toBeLessThanOrEqual(1);
-    await sidebar.evaluate((element) => {
-      element.style.setProperty('--vktm-sidebar-width', '200px');
-    });
-
-    const label = section.locator('.sidebar-section-label');
-    const filter = section.locator('.task-list-assignee-filter');
-    const toggle = section.locator('.sidebar-section-toggle');
-    await expect(label).toContainText('タスク');
-    await expect(label).not.toHaveAttribute('title', /.+/);
-    await expect(filter).toBeVisible();
-    await expect(toggle).toBeVisible();
-
-    // #343 でセクション見出しの ::before アクセントバー自体を削除したため、
-    // 「広い幅と狭い幅でアクセントの高さが一致する」という比較はもう成立しない
-    // （比較先の wideAccentHeight もこの変更で宣言だけ消え、実行すると
-    // ReferenceError で中断していた）。単純に削除するのではなく、狭幅へリサイズした
-    // 後も復活していないことの安価な二重確認として置き換える。
-    // 同テスト前半で taskHeaderStyle / settingsHeaderStyle として広い幅のときの
-    // ::before の content が 'none' であることを確かめているのと同じ観点で、
-    // 狭い幅へリサイズした後も 'none' のまま（アクセントが復活していない）ことを
-    // 確かめる。
-    const narrowAccentContent = await header.evaluate(
-      (element) => getComputedStyle(element, '::before').content
-    );
-    expect(narrowAccentContent).toBe('none');
-
-    const bounds = await Promise.all([
-      sidebarMenu.evaluate((element) => element.getBoundingClientRect().toJSON()),
-      label.evaluate((element) => element.getBoundingClientRect().toJSON()),
-      filter.evaluate((element) => element.getBoundingClientRect().toJSON()),
-      toggle.evaluate((element) => element.getBoundingClientRect().toJSON()),
-    ]);
-    for (const controlBounds of bounds.slice(1)) {
-      expect(controlBounds.left).toBeGreaterThanOrEqual(bounds[0].left);
-      expect(controlBounds.right).toBeLessThanOrEqual(bounds[0].right);
-    }
-    expect(bounds[1].width).toBeGreaterThanOrEqual(48);
-
-    await toggle.focus();
-    const toggleStyle = await toggle.evaluate((element) => {
-      const style = getComputedStyle(element);
-      return {
-        width: style.width,
-        height: style.height,
-        borderWidth: style.borderWidth,
-        borderStyle: style.borderStyle,
-        outlineOffset: style.outlineOffset,
-      };
-    });
-    expect(toggleStyle).toEqual({
-      width: '24px',
-      height: '24px',
-      borderWidth: '1px',
-      borderStyle: 'solid',
-      outlineOffset: '2px',
-    });
-
-    await toggle.click();
-    await expect(section.locator('.sidebar-section-body')).toBeHidden();
-    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
-  } finally {
-    await closeAppForcefully({ app, tmpRoot });
-    fs.rmSync(dataRoot, { recursive: true, force: true });
   }
 });

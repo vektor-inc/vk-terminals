@@ -22,6 +22,14 @@ const { getFreePort, launchApp } = require('./helpers/electron-app');
 //   3. select で選択を変えると絞り込み・件数が追従し、選択が localStorage に記憶される。
 //   4. select 操作中（フォーカス中）に自動更新（poll 約2秒）が来ても select が勝手に作り直されない。
 //   5. 開閉トグル（全幅ボタン）が従来どおり動作する（回帰）。
+//
+// issue #348: 4 テストとも config が { widgetFile } のみで同一のため、Electron の起動を
+// 1 回に共有する。widget-declarative.smoke.spec.js と同じ理由で、widgetFile を書き換えた
+// 直後は main.js の widget watcher（fs.watch + 150ms デバウンス）がまだキャッシュへ反映して
+// いない可能性があるため、書き換え後に十分な余裕（600ms）を空けてから GET /api/widgets を
+// 叩く。chromium の browser / context / page は元コードのとおり各テストで新規作成しており、
+// localStorage 等のブラウザ側状態はテスト間で最初から共有されない（Electron 側の
+// widgetFile の内容だけが共有される状態）。
 
 function writeJson(filePath, value) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -141,6 +149,13 @@ async function waitForWidgetReady(port, timeoutMs = 20_000) {
   throw new Error(`/api/widgets did not return a widget in time. last: ${JSON.stringify(last)}`);
 }
 
+// widgetFile を新しい内容へ書き換え、main.js の widget watcher（fs.watch + 150ms
+// デバウンス）がキャッシュへ反映するまでの余裕を空ける。
+async function setupWidget(widgetFile, widget) {
+  writeJson(widgetFile, widget);
+  await new Promise((r) => setTimeout(r, 600));
+}
+
 // モバイル相当の context（タッチ・モバイル viewport）を開く。
 // API サーバー＋widget の準備完了を待ってから goto する（ERR_CONNECTION_REFUSED 回避）。
 async function openMobile(browser, port) {
@@ -155,195 +170,186 @@ async function openMobile(browser, port) {
   return { context, page };
 }
 
-// ─── 1 & 2 & 3: GitHub モード＋viewer で select 表示・既定 self・件数「表示中/全体」・切替と永続化 ───
-test('モバイル: GitHub モード＋viewer で担当者フィルタが表示され、既定 self で「表示中/全体」件数を出し、切替が localStorage に記憶される', async () => {
-  const port = await getFreePort();
-  const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-mobile-filter-data-'));
-  const widgetFile = path.join(dataRoot, 'tasks-widget.json');
-  writeJson(widgetFile, buildGithubWidget());
+test.describe.serial('モバイル版タスク一覧の担当者フィルタ（issue #232 / #348 で起動共有）', () => {
+  let app;
+  let tmpRoot;
+  let port;
+  let widgetFile;
 
-  const { app, tmpRoot } = await launchMobileFilterApp(port, { widgetFile });
-  const browser = await chromium.launch();
-  try {
-    const { context, page } = await openMobile(browser, port);
+  test.beforeAll(async () => {
+    port = await getFreePort();
+    const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-mobile-filter-data-'));
+    widgetFile = path.join(dataRoot, 'tasks-widget.json');
+    writeJson(widgetFile, buildGithubWidget());
+    ({ app, tmpRoot } = await launchMobileFilterApp(port, { widgetFile }));
+  });
 
-    const section = page.locator('#task-list');
-    await expect(section).toBeVisible({ timeout: 15_000 });
-
-    // 1: GitHub モード＋viewer 判明なので select が表示され、既定は「自分のみ(self)」。
-    const filter = page.locator('#task-list-assignee-filter');
-    await expect(filter).toBeVisible({ timeout: 15_000 });
-    await expect(filter).toHaveValue('self');
-
-    // 選択肢: self / all / kurudrive / wada / none（担当なしアイテムがあるため）。
-    const optionValues = await filter.locator('option').evaluateAll((els) => els.map((o) => o.value));
-    expect(optionValues).toEqual(['self', 'all', 'kurudrive', 'wada', 'none']);
-
-    // 既定 self では自分（kurudrive）担当の 2 件だけ表示。
-    await expect(section).toContainText('自分の実行中タスクA');
-    await expect(section).toContainText('自分の実行中タスクB');
-    await expect(section).not.toContainText('他人担当（wada）のタスク');
-    await expect(section).not.toContainText('担当なしのタスク');
-
-    // 2: 件数バッジは「表示中 / 全体」= 2 / 4件。
-    const count = page.locator('#task-list-count');
-    await expect(count).toHaveText('2 / 4件');
-
-    // 3: 「全員」に切り替えると全 4 件表示・件数が 4 / 4件・選択が localStorage に保存される。
-    await filter.selectOption('all');
-    await expect(section).toContainText('他人担当（wada）のタスク');
-    await expect(section).toContainText('担当なしのタスク');
-    await expect(count).toHaveText('4 / 4件');
-    let stored = await page.evaluate(() => localStorage.getItem('vkt.taskAssigneeFilter'));
-    expect(stored).toBe('all');
-
-    // 「担当なし(none)」→ 担当なしの 1 件だけ・件数 1 / 4件。
-    await filter.selectOption('none');
-    await expect(section).toContainText('担当なしのタスク');
-    await expect(section).not.toContainText('自分の実行中タスクA');
-    await expect(count).toHaveText('1 / 4件');
-
-    // 個別担当者（wada）→ wada 担当の 1 件だけ・件数 1 / 4件。
-    await filter.selectOption('wada');
-    await expect(section).toContainText('他人担当（wada）のタスク');
-    await expect(section).not.toContainText('担当なしのタスク');
-    await expect(count).toHaveText('1 / 4件');
-    stored = await page.evaluate(() => localStorage.getItem('vkt.taskAssigneeFilter'));
-    expect(stored).toBe('wada');
-
-    // 3(続き): 再読み込みしても選択（wada）が保持される。
-    await page.reload();
-    await expect(page.locator('#task-list-assignee-filter')).toBeVisible({ timeout: 15_000 });
-    await expect(page.locator('#task-list-assignee-filter')).toHaveValue('wada');
-    await expect(page.locator('#task-list-count')).toHaveText('1 / 4件');
-
-    await context.close();
-  } finally {
-    await browser.close();
+  test.afterAll(async () => {
     await closeAppForcefully({ app, tmpRoot });
-    fs.rmSync(dataRoot, { recursive: true, force: true });
-  }
-});
+  });
 
-// ─── 2(裏): ローカルモード（queue リンク無し／viewer 不明）では select 非表示・件数は全件のみ ───
-test('モバイル: ローカルモード（GitHub モードでない／viewer 不明）では担当者フィルタを出さず件数は全件のみ', async () => {
-  const port = await getFreePort();
-  const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-mobile-filter-local-'));
-  const widgetFile = path.join(dataRoot, 'tasks-widget.json');
-  writeJson(widgetFile, buildLocalWidget());
+  // ─── 1 & 2 & 3: GitHub モード＋viewer で select 表示・既定 self・件数「表示中/全体」・切替と永続化 ───
+  test('モバイル: GitHub モード＋viewer で担当者フィルタが表示され、既定 self で「表示中/全体」件数を出し、切替が localStorage に記憶される', async () => {
+    await setupWidget(widgetFile, buildGithubWidget());
+    const browser = await chromium.launch();
+    try {
+      const { context, page } = await openMobile(browser, port);
 
-  const { app, tmpRoot } = await launchMobileFilterApp(port, { widgetFile });
-  const browser = await chromium.launch();
-  try {
-    const { context, page } = await openMobile(browser, port);
+      const section = page.locator('#task-list');
+      await expect(section).toBeVisible({ timeout: 15_000 });
 
-    const section = page.locator('#task-list');
-    await expect(section).toBeVisible({ timeout: 15_000 });
+      // 1: GitHub モード＋viewer 判明なので select が表示され、既定は「自分のみ(self)」。
+      const filter = page.locator('#task-list-assignee-filter');
+      await expect(filter).toBeVisible({ timeout: 15_000 });
+      await expect(filter).toHaveValue('self');
 
-    // アイテムは描画される。
-    await expect(section).toContainText('ローカルモードのタスク1');
-    await expect(section).toContainText('ローカルモードのタスク2');
+      // 選択肢: self / all / kurudrive / wada / none（担当なしアイテムがあるため）。
+      const optionValues = await filter.locator('option').evaluateAll((els) => els.map((o) => o.value));
+      expect(optionValues).toEqual(['self', 'all', 'kurudrive', 'wada', 'none']);
 
-    // GitHub モードでない＝担当者フィルタは非表示。
-    await expect(page.locator('#task-list-assignee-filter')).toBeHidden();
+      // 既定 self では自分（kurudrive）担当の 2 件だけ表示。
+      await expect(section).toContainText('自分の実行中タスクA');
+      await expect(section).toContainText('自分の実行中タスクB');
+      await expect(section).not.toContainText('他人担当（wada）のタスク');
+      await expect(section).not.toContainText('担当なしのタスク');
 
-    // 件数は「表示中/全体」形式ではなく全件のみ（2件）。
-    await expect(page.locator('#task-list-count')).toHaveText('2件');
+      // 2: 件数バッジは「表示中 / 全体」= 2 / 4件。
+      const count = page.locator('#task-list-count');
+      await expect(count).toHaveText('2 / 4件');
 
-    await context.close();
-  } finally {
-    await browser.close();
-    await closeAppForcefully({ app, tmpRoot });
-    fs.rmSync(dataRoot, { recursive: true, force: true });
-  }
-});
+      // 3: 「全員」に切り替えると全 4 件表示・件数が 4 / 4件・選択が localStorage に保存される。
+      await filter.selectOption('all');
+      await expect(section).toContainText('他人担当（wada）のタスク');
+      await expect(section).toContainText('担当なしのタスク');
+      await expect(count).toHaveText('4 / 4件');
+      let stored = await page.evaluate(() => localStorage.getItem('vkt.taskAssigneeFilter'));
+      expect(stored).toBe('all');
 
-// ─── 4: select フォーカス中は poll（約2秒）による再描画で select が作り直されない ───
-test('モバイル: 担当者フィルタにフォーカス中は poll 再描画で select が作り直されない（ネイティブピッカーが閉じない）', async () => {
-  const port = await getFreePort();
-  const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-mobile-filter-focus-'));
-  const widgetFile = path.join(dataRoot, 'tasks-widget.json');
-  writeJson(widgetFile, buildGithubWidget());
+      // 「担当なし(none)」→ 担当なしの 1 件だけ・件数 1 / 4件。
+      await filter.selectOption('none');
+      await expect(section).toContainText('担当なしのタスク');
+      await expect(section).not.toContainText('自分の実行中タスクA');
+      await expect(count).toHaveText('1 / 4件');
 
-  const { app, tmpRoot } = await launchMobileFilterApp(port, { widgetFile });
-  const browser = await chromium.launch();
-  try {
-    const { context, page } = await openMobile(browser, port);
+      // 個別担当者（wada）→ wada 担当の 1 件だけ・件数 1 / 4件。
+      await filter.selectOption('wada');
+      await expect(section).toContainText('他人担当（wada）のタスク');
+      await expect(section).not.toContainText('担当なしのタスク');
+      await expect(count).toHaveText('1 / 4件');
+      stored = await page.evaluate(() => localStorage.getItem('vkt.taskAssigneeFilter'));
+      expect(stored).toBe('wada');
 
-    const filter = page.locator('#task-list-assignee-filter');
-    await expect(filter).toBeVisible({ timeout: 15_000 });
+      // 3(続き): 再読み込みしても選択（wada）が保持される。
+      await page.reload();
+      await expect(page.locator('#task-list-assignee-filter')).toBeVisible({ timeout: 15_000 });
+      await expect(page.locator('#task-list-assignee-filter')).toHaveValue('wada');
+      await expect(page.locator('#task-list-count')).toHaveText('1 / 4件');
 
-    // select にフォーカスを当て、フォーカス中は再描画スキップ対象になることを確認する。
-    await filter.focus();
-    expect(await page.evaluate(() => document.activeElement && document.activeElement.id)).toBe('task-list-assignee-filter');
+      await context.close();
+    } finally {
+      await browser.close();
+    }
+  });
 
-    // フォーカス中に widget を書き換え、担当者(new-dev)を 1 人増やす（選択肢が変わる更新）。
-    const updated = buildGithubWidget();
-    updated.groups[0].items.push({
-      id: '505', title: '新担当のタスク', assignee: 'new-dev', updatedAt: freshDate(),
-      editable: false, badges: [], links: [{ rel: 'queue', url: 'https://github.com/vektor-inc/vk-orchestrator/issues/505', label: 'issue #505' }], controls: [],
-    });
-    writeJson(widgetFile, updated);
+  // ─── 2(裏): ローカルモード（queue リンク無し／viewer 不明）では select 非表示・件数は全件のみ ───
+  test('モバイル: ローカルモード（GitHub モードでない／viewer 不明）では担当者フィルタを出さず件数は全件のみ', async () => {
+    await setupWidget(widgetFile, buildLocalWidget());
+    const browser = await chromium.launch();
+    try {
+      const { context, page } = await openMobile(browser, port);
 
-    // poll 2 周期以上（約5秒）待っても、フォーカス中は再描画がスキップされ選択肢は増えない。
-    await page.waitForTimeout(5000);
-    expect(await page.evaluate(() => document.activeElement && document.activeElement.id)).toBe('task-list-assignee-filter');
-    let optionValues = await filter.locator('option').evaluateAll((els) => els.map((o) => o.value));
-    expect(optionValues).toEqual(['self', 'all', 'kurudrive', 'wada', 'none']);
+      const section = page.locator('#task-list');
+      await expect(section).toBeVisible({ timeout: 15_000 });
 
-    // フォーカスを外し poll を1回明示的に走らせると、最新の選択肢（new-dev 追加）へ更新される。
-    await page.evaluate(() => document.activeElement && document.activeElement.blur());
-    await page.evaluate(() => poll());
-    await expect.poll(async () => filter.locator('option').evaluateAll((els) => els.map((o) => o.value)))
-      .toEqual(['self', 'all', 'kurudrive', 'new-dev', 'wada', 'none']);
+      // アイテムは描画される。
+      await expect(section).toContainText('ローカルモードのタスク1');
+      await expect(section).toContainText('ローカルモードのタスク2');
 
-    await context.close();
-  } finally {
-    await browser.close();
-    await closeAppForcefully({ app, tmpRoot });
-    fs.rmSync(dataRoot, { recursive: true, force: true });
-  }
-});
+      // GitHub モードでない＝担当者フィルタは非表示。
+      await expect(page.locator('#task-list-assignee-filter')).toBeHidden();
 
-// ─── 5: 開閉トグル（全幅ボタン）が従来どおり動作し、状態が localStorage に保存される（回帰） ───
-test('モバイル: タスク一覧の開閉トグル（全幅ボタン）が従来どおり動作し、状態が localStorage に保存される', async () => {
-  const port = await getFreePort();
-  const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-mobile-filter-collapse-'));
-  const widgetFile = path.join(dataRoot, 'tasks-widget.json');
-  writeJson(widgetFile, buildGithubWidget());
+      // 件数は「表示中/全体」形式ではなく全件のみ（2件）。
+      await expect(page.locator('#task-list-count')).toHaveText('2件');
 
-  const { app, tmpRoot } = await launchMobileFilterApp(port, { widgetFile });
-  const browser = await chromium.launch();
-  try {
-    const { context, page } = await openMobile(browser, port);
+      await context.close();
+    } finally {
+      await browser.close();
+    }
+  });
 
-    const section = page.locator('#task-list');
-    await expect(section).toBeVisible({ timeout: 15_000 });
-    const head = page.locator('#task-list-head');
-    const body = page.locator('#task-list-body');
+  // ─── 4: select フォーカス中は poll（約2秒）による再描画で select が作り直されない ───
+  test('モバイル: 担当者フィルタにフォーカス中は poll 再描画で select が作り直されない（ネイティブピッカーが閉じない）', async () => {
+    await setupWidget(widgetFile, buildGithubWidget());
+    const browser = await chromium.launch();
+    try {
+      const { context, page } = await openMobile(browser, port);
 
-    // 初期は展開。
-    await expect(body).toBeVisible();
-    await expect(head).toHaveAttribute('aria-expanded', 'true');
-    await expect(section).not.toHaveClass(/\bcollapsed\b/);
+      const filter = page.locator('#task-list-assignee-filter');
+      await expect(filter).toBeVisible({ timeout: 15_000 });
 
-    // タップで折り畳み。見出しは残り本体は隠れ、localStorage に保存される。
-    await head.tap();
-    await expect(body).toBeHidden();
-    await expect(head).toHaveAttribute('aria-expanded', 'false');
-    await expect(section).toHaveClass(/\bcollapsed\b/);
-    expect(await page.evaluate(() => localStorage.getItem('vkt.taskListCollapsed'))).toBe('1');
+      // select にフォーカスを当て、フォーカス中は再描画スキップ対象になることを確認する。
+      await filter.focus();
+      expect(await page.evaluate(() => document.activeElement && document.activeElement.id)).toBe('task-list-assignee-filter');
 
-    // 再タップで展開に戻る。
-    await head.tap();
-    await expect(body).toBeVisible();
-    await expect(head).toHaveAttribute('aria-expanded', 'true');
-    expect(await page.evaluate(() => localStorage.getItem('vkt.taskListCollapsed'))).toBe('0');
+      // フォーカス中に widget を書き換え、担当者(new-dev)を 1 人増やす（選択肢が変わる更新）。
+      const updated = buildGithubWidget();
+      updated.groups[0].items.push({
+        id: '505', title: '新担当のタスク', assignee: 'new-dev', updatedAt: freshDate(),
+        editable: false, badges: [], links: [{ rel: 'queue', url: 'https://github.com/vektor-inc/vk-orchestrator/issues/505', label: 'issue #505' }], controls: [],
+      });
+      writeJson(widgetFile, updated);
 
-    await context.close();
-  } finally {
-    await browser.close();
-    await closeAppForcefully({ app, tmpRoot });
-    fs.rmSync(dataRoot, { recursive: true, force: true });
-  }
+      // poll 2 周期以上（約5秒）待っても、フォーカス中は再描画がスキップされ選択肢は増えない。
+      await page.waitForTimeout(5000);
+      expect(await page.evaluate(() => document.activeElement && document.activeElement.id)).toBe('task-list-assignee-filter');
+      let optionValues = await filter.locator('option').evaluateAll((els) => els.map((o) => o.value));
+      expect(optionValues).toEqual(['self', 'all', 'kurudrive', 'wada', 'none']);
+
+      // フォーカスを外し poll を1回明示的に走らせると、最新の選択肢（new-dev 追加）へ更新される。
+      await page.evaluate(() => document.activeElement && document.activeElement.blur());
+      await page.evaluate(() => poll());
+      await expect.poll(async () => filter.locator('option').evaluateAll((els) => els.map((o) => o.value)))
+        .toEqual(['self', 'all', 'kurudrive', 'new-dev', 'wada', 'none']);
+
+      await context.close();
+    } finally {
+      await browser.close();
+    }
+  });
+
+  // ─── 5: 開閉トグル（全幅ボタン）が従来どおり動作し、状態が localStorage に保存される（回帰） ───
+  test('モバイル: タスク一覧の開閉トグル（全幅ボタン）が従来どおり動作し、状態が localStorage に保存される', async () => {
+    await setupWidget(widgetFile, buildGithubWidget());
+    const browser = await chromium.launch();
+    try {
+      const { context, page } = await openMobile(browser, port);
+
+      const section = page.locator('#task-list');
+      await expect(section).toBeVisible({ timeout: 15_000 });
+      const head = page.locator('#task-list-head');
+      const body = page.locator('#task-list-body');
+
+      // 初期は展開。
+      await expect(body).toBeVisible();
+      await expect(head).toHaveAttribute('aria-expanded', 'true');
+      await expect(section).not.toHaveClass(/\bcollapsed\b/);
+
+      // タップで折り畳み。見出しは残り本体は隠れ、localStorage に保存される。
+      await head.tap();
+      await expect(body).toBeHidden();
+      await expect(head).toHaveAttribute('aria-expanded', 'false');
+      await expect(section).toHaveClass(/\bcollapsed\b/);
+      expect(await page.evaluate(() => localStorage.getItem('vkt.taskListCollapsed'))).toBe('1');
+
+      // 再タップで展開に戻る。
+      await head.tap();
+      await expect(body).toBeVisible();
+      await expect(head).toHaveAttribute('aria-expanded', 'true');
+      expect(await page.evaluate(() => localStorage.getItem('vkt.taskListCollapsed'))).toBe('0');
+
+      await context.close();
+    } finally {
+      await browser.close();
+    }
+  });
 });

@@ -34,6 +34,12 @@ const { normalizeConfirmClose, shouldConfirmClose } = window.VKCloseConfirm;
 // 足していないので、ここでは案内専用の関数だけを使う（PR #315 安藤のレビュー指摘）。
 const { isLoopbackDisplayValue } = window.VKLoopbackHost;
 const { isSafeHttpUrl } = window.VKUrlSafety;
+// ペイン内 URL の Cmd/Ctrl+クリック対応（issue #349）。折り返し行をまたぐ URL の検出・
+// バッファ位置への変換は renderer/terminalLinkProvider.js（xterm.js の
+// registerLinkProvider を自前実装）が担う。詳しい採用理由は同ファイル冒頭のコメント参照。
+const { createTerminalLinkProvider } = window.VKTerminalLinkProvider;
+// ツールチップに表示する「解決後の遷移先ホスト」の取得に使う（安藤レビュー指摘・MEDIUM）。
+const { getUrlHost } = window.VKUrlLinkify;
 const {
   migrateLegacyState,
   readCollapsedSections,
@@ -432,6 +438,21 @@ async function createTerminal(paneId, cwd, options = {}) {
 
   const fitAddon = new FitAddon();
   term.loadAddon(fitAddon);
+
+  // ペイン内 URL の Cmd/Ctrl+クリック対応（issue #349）。破棄は term.dispose() 側に
+  // 任せる（xterm.js 本体の LinkProviderService は Terminal の disposal 時に登録済み
+  // プロバイダを自動でクリアするため、fitAddon 同様ここで個別に dispose() を呼ぶ必要は無い）。
+  // isMac は明示的に IS_MAC_PLATFORM を渡す（安藤レビュー指摘・LOW）。省略すると
+  // isLinkOpenModifierPressed 側が呼び出しのたびに isMacPlatform() を再評価する一方、
+  // ツールチップの文言（TERM_LINK_MODIFIER_LABEL）はキャッシュ済みの IS_MAC_PLATFORM を
+  // 使っており、「実際に見ている修飾キー」と「表示している修飾キー」の判定元が
+  // 2 箇所に分かれてしまう。値は実行中変わらないため実害は無いが、出所を 1 本化する。
+  term.registerLinkProvider(createTerminalLinkProvider(term, createTerminalLinkHandlers({
+    openUrl: openExternalUrlSafe,
+    showTooltip: showTermLinkTooltip,
+    hideTooltip: hideTermLinkTooltip,
+    isMac: IS_MAC_PLATFORM,
+  })));
 
   // OSC 0 / OSC 2 のタイトル変更を購読してペイン上部のタスクタイトル行に反映する。
   // 例: `printf '\033]0;ビルド中\007'` をシェルで実行すると "ビルド中" がここに表示される。
@@ -883,6 +904,81 @@ function openExternalUrlSafe(url) {
   } catch (_e) {
     showExternalUrlOpenFailedToast(url);
   }
+}
+
+// ─── ペイン内 URL の Cmd/Ctrl+クリック（issue #349） ───────────────────────────────
+// URL の検出・バッファ範囲への変換は renderer/terminalLinkProvider.js（xterm.js の
+// registerLinkProvider を自前実装したもの）が担い、ここでは「どう開くか」
+// （修飾キー判定・ツールチップ表示）だけを扱う。実際に開く経路は openExternalUrlSafe を
+// そのまま使う（新しい経路を増やさない。植草の確定仕様）。
+//
+// 単クリックでは開かない仕様にしているのは、ターミナルのドラッグ選択との誤爆を防ぐため
+// （植草の UX レビュー・issue #349）。xterm.js 側の Linkifier は mousedown 時点のリンクと
+// mouseup 時点のリンクが一致したときだけ activate を呼ぶため、ドラッグ選択とは元々
+// 衝突しない（xterm.js 本体の src/browser/Linkifier.ts で確認済み）。また矩形選択の
+// 修飾キーは Alt（xterm.js 本体の SelectionService.shouldColumnSelect）であり、
+// ここで使う Cmd（macOS）/ Ctrl（Windows・Linux）とは別のキーのため競合しない。
+//
+// 修飾キー判定（isMacPlatform / isLinkOpenModifierPressed / createTerminalLinkHandlers）
+// は utils/terminalLinkPolicy.js の UMD へ切り出してある。この機能で最もセキュリティに
+// 効く分岐（単クリックだけでは絶対に外部 URL を開かせない）を renderer/app.js の
+// 非エクスポート関数のままにせず、tests/terminalLinkPolicy.test.js から直接ユニット
+// テストできるようにするため（安藤レビュー指摘・MEDIUM）。
+const { isMacPlatform, createTerminalLinkHandlers } = window.VKTerminalLinkPolicy;
+const IS_MAC_PLATFORM = isMacPlatform();
+const TERM_LINK_MODIFIER_LABEL = IS_MAC_PLATFORM ? '⌘+クリックで開く' : 'Ctrl+クリックで開く';
+
+// ホバー中のツールチップ本体。全ペイン共通で 1 つだけ用意し、都度使い回す
+// （externalUrlToast と同じ考え方。document.body 直下に置き、#root の render() による
+// 差し替えの影響を受けないようにする）。
+let termLinkTooltipEl = null;
+
+function ensureTermLinkTooltip() {
+  if (termLinkTooltipEl) return termLinkTooltipEl;
+  const el = document.createElement('div');
+  el.className = 'term-link-tooltip';
+  // マウス追従のみの補助表示で、キーボード操作でも読み上げでも到達できないため
+  // 支援技術には見せない（Cmd/Ctrl+クリック自体がポインタ操作前提の機能のため）。
+  el.setAttribute('aria-hidden', 'true');
+  el.hidden = true;
+  document.body.appendChild(el);
+  termLinkTooltipEl = el;
+  return el;
+}
+
+// ツールチップの文言。遷移先ホストを表示する（安藤レビュー指摘・MEDIUM）。
+//
+// ターミナル出力は攻撃者が内容を制御しうる前提のため、「⌘+クリックで開く」という
+// 固定文言だけでは、ユーザーが実際の行き先を検証する手段が本文の目視しかなかった
+// （例: 見た目は https://github.com/... に見えても実体は
+// https://github.com@evil.example/login というユーザー情報付き URL で、実ホストは
+// evil.example ということがありうる）。new URL(url).host（VKUrlLinkify.getUrlHost）で
+// 解決した後のホストをツールチップに出すことで、表示テキストに惑わされず実際の行き先を
+// 確認できるようにする。なお renderer/urlLinkify.js の extractUrlMatches はユーザー情報
+// 付き URL 自体をそもそもリンク化しないため、ここに渡ってくる url は通常そのケースには
+// 該当しないが、ツールチップ自体は「実ホストを見せる」という独立した防御として残す。
+function termLinkTooltipMessage(url) {
+  const host = getUrlHost(url);
+  return host ? `${host} を ${TERM_LINK_MODIFIER_LABEL}` : TERM_LINK_MODIFIER_LABEL;
+}
+
+// カーソル位置の近くにツールチップを表示する。pointer-events: none にしてあるため
+// （style.css 参照）、このツールチップ自身が xterm.js 側のホバー判定（マウス位置の
+// 追跡）を奪うことはない。textContent で入れる（innerHTML は使わない。url はターミナル
+// 出力由来で攻撃者が内容を制御しうるため）。
+function showTermLinkTooltip(event, url) {
+  const el = ensureTermLinkTooltip();
+  el.textContent = termLinkTooltipMessage(url);
+  const OFFSET = 12;
+  el.hidden = false;
+  const maxLeft = Math.max(0, window.innerWidth - el.offsetWidth - 4);
+  const maxTop = Math.max(0, window.innerHeight - el.offsetHeight - 4);
+  el.style.left = `${Math.min(event.clientX + OFFSET, maxLeft)}px`;
+  el.style.top = `${Math.min(event.clientY + OFFSET, maxTop)}px`;
+}
+
+function hideTermLinkTooltip() {
+  if (termLinkTooltipEl) termLinkTooltipEl.hidden = true;
 }
 
 // ─── Sidebar menu ────────────────────────────────────────────────────────────
@@ -2241,6 +2337,9 @@ function closePane(paneId, { force = false, skipConfirm = false } = {}) {
       clearTimeout(Number(autoInputTimer));
       delete paneEl.dataset.autoInputTimer;
     }
+    // ホバー中に閉じられると leave が発火せず、position: fixed のツールチップが
+    // 残り続けるため明示的に隠す（安藤レビュー指摘・LOW）。
+    hideTermLinkTooltip();
     t.term.dispose();
     VKIpc.send('terminal:kill', t.termId);
     delete terminals[paneId];
@@ -2282,6 +2381,10 @@ let closeConfirmOpen = false;
 
 function openCloseConfirmDialog(paneId) {
   if (closeConfirmOpen) return;
+  // URL にホバーしたままマウスを動かさず Tab で「✕」まで来て Enter で確定する経路では
+  // xterm 側の leave が発火しない。確認ダイアログ（z-index 2100）の手前にツールチップ
+  // （2300）が浮いたまま残るのを防ぐ（Claude Code レビュー指摘・LOW）。
+  hideTermLinkTooltip();
   const restoreFocusElement = document.activeElement;
   closeConfirmOpen = true;
 
@@ -2685,6 +2788,11 @@ function fitAll() {
 
 // ─── Rendering ────────────────────────────────────────────────────────────────
 function render() {
+  // #root を丸ごと作り直す（root.replaceChildren）ため、ホバー中に呼ばれると
+  // xterm 側の要素が入れ替わり leave が発火せず、position: fixed のツールチップが
+  // 残り続ける。closePane() / initApp() / window の blur と同じ対策（安藤・Claude Code
+  // レビュー指摘・LOW）。
+  hideTermLinkTooltip();
   const root = document.getElementById('root');
   const sidebar = ensureSidebar(root);
   const newContent = renderGrid(tree);
@@ -3320,6 +3428,10 @@ function observePanes() {
 window.addEventListener('resize', debouncedFitAll);
 // ウィンドウ幅が縮んだときにサイドバー幅の上限（幅比）を超えないよう再クランプする（issue #89）。
 window.addEventListener('resize', () => setSidebarWidth(getSidebarWidth()));
+// ウィンドウがフォーカスを失うと、ホバー中のマウス位置を xterm 側が追跡し続けられず
+// leave が発火しないケースがある（例: ホバーしたまま Cmd+Tab で他アプリへ切り替える）。
+// position: fixed のツールチップが画面に残り続けるのを防ぐ（安藤レビュー指摘・LOW）。
+window.addEventListener('blur', hideTermLinkTooltip);
 
 // ─── 設定パネル（汎用）────────────────────────────────────────────────────────
 // main プロセス（settings:describe / settings:save）経由で、呼び出し側が env
@@ -3977,6 +4089,10 @@ function renderSettingsTabContent(blocks, tabIndexById, runtimeStatus = {}, entr
 const settingsModalGuard = createSingleOpenGuard();
 
 async function openSettingsModal() {
+  // URL にホバーしたままマウスを動かさず Tab で ⚙ まで来て Enter で確定する経路では
+  // xterm 側の leave が発火しない。設定モーダル（z-index 2000）の手前にツールチップ
+  // （2300）が浮いたまま残るのを防ぐ（Claude Code レビュー指摘・LOW）。
+  hideTermLinkTooltip();
   // settings:describe の応答待ち中にフォーカスが変わっても、実際に設定を開いた操作元へ
   // 戻せるよう、非同期処理へ入る前の要素をモーダルの寿命と一緒に保持する。
   const restoreFocusElement = document.activeElement;
@@ -4905,6 +5021,9 @@ async function initApp() {
   } catch (_e) { /* 取得失敗時は無効のまま */ }
 
   // Dispose any existing terminals
+  // ホバー中に一括破棄されるとリンクの leave が発火しないため、closePane() と同様に
+  // ここでもツールチップを明示的に隠す（安藤レビュー指摘・LOW）。
+  hideTermLinkTooltip();
   for (const [paneId, t] of Object.entries(terminals)) {
     // terminals を丸ごと差し替えるため、closePane() と同様にタイマーを破棄する。
     // 残ったままだと古い terminals[paneId] をクロージャで掴み続け、消えたペインに

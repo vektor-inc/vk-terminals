@@ -309,7 +309,15 @@ async function closeApp({ app, tmpRoot }) {
     // グループをここで落として、後続 spec への負荷を断つ（負値や undefined を
     // -pid に渡すと意図しないグループを撃つため、正の整数であることを確認する）。
     const child = app && typeof app.process === 'function' ? app.process() : null;
-    if (child && Number.isInteger(child.pid) && child.pid > 0) {
+    // 既に終了しているプロセスへ撃たない（Playwright 自身も killProcess() で
+    // !processClosed を条件にしている）。終了後も child.pid は保持されるため、
+    // pid の形だけを見ると死んだ PID に kill -pid を撃ってしまう（closeError は
+    // タイムアウト以外にも立つ。app.close() が Target closed 等の本物の失敗を
+    // 返す経路では子はほぼ確実に既に死んでおり、負荷時のクラッシュで日常的に
+    // 通る）。死んだ PID が OS に再利用されていた場合、無関係なプロセスグループを
+    // 撃つ事故を避けるため、未終了であることも確認する。
+    if (child && Number.isInteger(child.pid) && child.pid > 0
+        && child.exitCode === null && child.signalCode === null) {
       try { process.kill(-child.pid, 'SIGKILL'); } catch (_e) { /* 既に死んでいる */ }
     }
     throw closeError;

@@ -142,26 +142,35 @@ test.describe.serial('設定パネルのコード折り返しとボタン境界�
     // フォールバックの --vktm--color--border-interactive）に詳細度で勝たないこと。
     // 以前は期待値を rgb(...) で直書きしていたが、#343 で --vktm--color--border-interactive
     // を #8b949e → #6e7681 に変更した際、この直書きだけが旧い値のまま残されて
-    // このテストだけが落ちた（今回の e2e 失敗の原因）。同じ更新漏れを防ぐため、
+    // この 1 件が落ちた（今回の e2e 失敗の原因の一つ）。同じ更新漏れを防ぐため、
     // 期待値も CSS 変数の実際の値から作る（色コードの直書きをしない）。
     const [saveBorderVar, cancelBorderVar] = await Promise.all([
       save.evaluate((el) => getComputedStyle(el).getPropertyValue('--vktm--color--border-override').trim()),
       cancel.evaluate((el) => getComputedStyle(el).getPropertyValue('--vktm--color--border-interactive').trim()),
     ]);
+    // 変数が読めない／色として解釈できない値だと、下の正規化が既定色や直前の色へ
+    // 静かに落ちて比較が空振りする。生値の段階で弾いておく。
+    expect(saveBorderVar, '.settings-save の --vktm--color--border-override が読めない').toMatch(/^(#|rgb|hsl)/);
+    expect(cancelBorderVar, ':root の --vktm--color--border-interactive が読めない').toMatch(/^(#|rgb|hsl)/);
     // 変数の生の値（#2ea043 等）を getComputedStyle が返す rgb(...) 形式に正規化するため、
-    // 使い捨てのプローブ要素の color に代入して読み直す。
+    // 使い捨てのプローブ要素の color に代入して読み直す。プローブは呼び出しごとに
+    // 作り直し、不正な値で style.color の代入が黙って無視されても直前の色を
+    // 読んでしまわないようにする。
     const [expectedSaveBorder, expectedCancelBorder] = await win.evaluate(([saveColor, cancelColor]) => {
-      const probe = document.createElement('div');
-      probe.style.display = 'none';
-      document.body.appendChild(probe);
       const normalize = (value) => {
+        const probe = document.createElement('div');
+        probe.style.display = 'none';
+        document.body.appendChild(probe);
         probe.style.color = value;
-        return getComputedStyle(probe).color;
+        const result = getComputedStyle(probe).color;
+        probe.remove();
+        return result;
       };
-      const result = [normalize(saveColor), normalize(cancelColor)];
-      probe.remove();
-      return result;
+      return [normalize(saveColor), normalize(cancelColor)];
     }, [saveBorderVar, cancelBorderVar]);
+    // 2 つの期待値が同値なら、どちらかが既定色へ落ちているか、バリアント指定が
+    // 潰れている。ボタンの色分けが消えていないことの担保も兼ねる。
+    expect(expectedSaveBorder).not.toBe(expectedCancelBorder);
 
     await expect(save).toHaveCSS('border-color', expectedSaveBorder);
     await expect(cancel).toHaveCSS('border-color', expectedCancelBorder);

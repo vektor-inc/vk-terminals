@@ -1,6 +1,6 @@
 # Changelog
 
-- [ 開発環境 ] #343 のサイドバー見出しアクセントバー撤廃・枠線色変更に e2e が追随できておらず 2件失敗していたのを、アクセントが復活していないことと枠線色を CSS 変数から読んで確かめる形へ修正（[#344](https://github.com/vektor-inc/vk-terminals/issues/344)）
+- [ 開発環境 ] #343 の見出しアクセント撤廃・枠線色変更に e2e が追随できておらず 2 件失敗していたのを修正（[#344](https://github.com/vektor-inc/vk-terminals/issues/344)）
 
 ## 1.55.1
 

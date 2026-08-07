@@ -133,9 +133,37 @@ test.describe.serial('設定パネルのコード折り返しとボタン境界�
     await win.locator('#settings-tab-0').click();
     const save = win.locator('.settings-save');
     await expect(save).toBeVisible();
+    const cancel = win.locator('.settings-cancel');
     // 共通ルール（.settings-footer button）が border-color を直接持つと詳細度で勝ち、
     // 保存ボタンの緑がグレー（#30363d）へ戻る。issue #267 の回帰をここで押さえる。
-    await expect(save).toHaveCSS('border-color', 'rgb(46, 160, 67)');
-    await expect(win.locator('.settings-cancel')).toHaveCSS('border-color', 'rgb(139, 148, 158)');
+    //
+    // このテストが守る不変条件は「色そのもの」ではなく、共通ルールの border-color が
+    // バリアント指定（.settings-save の --vktm--color--border-override、無ければ
+    // フォールバックの --vktm--color--border-interactive）に詳細度で勝たないこと。
+    // 以前は期待値を rgb(...) で直書きしていたが、#343 で --vktm--color--border-interactive
+    // を #8b949e → #6e7681 に変更した際、この直書きだけが旧い値のまま残されて
+    // このテストだけが落ちた（今回の e2e 失敗の原因）。同じ更新漏れを防ぐため、
+    // 期待値も CSS 変数の実際の値から作る（色コードの直書きをしない）。
+    const [saveBorderVar, cancelBorderVar] = await Promise.all([
+      save.evaluate((el) => getComputedStyle(el).getPropertyValue('--vktm--color--border-override').trim()),
+      cancel.evaluate((el) => getComputedStyle(el).getPropertyValue('--vktm--color--border-interactive').trim()),
+    ]);
+    // 変数の生の値（#2ea043 等）を getComputedStyle が返す rgb(...) 形式に正規化するため、
+    // 使い捨てのプローブ要素の color に代入して読み直す。
+    const [expectedSaveBorder, expectedCancelBorder] = await win.evaluate(([saveColor, cancelColor]) => {
+      const probe = document.createElement('div');
+      probe.style.display = 'none';
+      document.body.appendChild(probe);
+      const normalize = (value) => {
+        probe.style.color = value;
+        return getComputedStyle(probe).color;
+      };
+      const result = [normalize(saveColor), normalize(cancelColor)];
+      probe.remove();
+      return result;
+    }, [saveBorderVar, cancelBorderVar]);
+
+    await expect(save).toHaveCSS('border-color', expectedSaveBorder);
+    await expect(cancel).toHaveCSS('border-color', expectedCancelBorder);
   });
 });

@@ -797,10 +797,18 @@ test('サイドバー: 200px 幅で担当者フィルタ表示時もタスク見
     await expect(filter).toBeVisible();
     await expect(toggle).toBeVisible();
 
-    const narrowAccentHeight = await header.evaluate(
-      (element) => getComputedStyle(element, '::before').height
+    // #343 でセクション見出しの ::before アクセントバー自体を削除したため、
+    // 「広い幅と狭い幅でアクセントの高さが一致する」という比較はもう成立しない
+    // （比較先の wideAccentHeight もこの変更で宣言だけ消え、実行すると
+    // ReferenceError で中断していた）。単純に削除するのではなく、#343 の意図
+    // （アクセントを外したこと）に対する回帰ガードとして意味を持つ形に置き換える。
+    // 770〜777 行付近で広い幅のときに ::before の content が 'none' であることを
+    // 確かめているのと同じ観点で、狭い幅へリサイズした後も 'none' のまま
+    // （アクセントが復活していない）ことを確かめる。
+    const narrowAccentContent = await header.evaluate(
+      (element) => getComputedStyle(element, '::before').content
     );
-    expect(narrowAccentHeight).toBe(wideAccentHeight);
+    expect(narrowAccentContent).toBe('none');
 
     const bounds = await Promise.all([
       sidebarMenu.evaluate((element) => element.getBoundingClientRect().toJSON()),

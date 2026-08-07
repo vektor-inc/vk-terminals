@@ -10,6 +10,7 @@ const {
   hasUserInfo,
   isAcceptableUrlHost,
 } = require('../renderer/urlLinkify');
+const { MAX_SAFE_HTTP_URL_LENGTH } = require('../renderer/urlSafety');
 
 test('extractUrlMatches: 単純な http(s) URL を 1 件拾う', () => {
   const url = 'https://example.com/path';
@@ -175,11 +176,27 @@ test('extractUrlMatches: 非 ASCII ドメインが途中で切れてドット無
   assert.deepEqual(extractUrlMatches('参照: https://-/foo です'), []);
 });
 
+test('extractUrlMatches: 大文字スキーム（HTTPS://）も拾う', () => {
+  assert.equal(extractUrlMatches('参照 HTTPS://EXAMPLE.COM/A です')[0].url, 'HTTPS://EXAMPLE.COM/A');
+});
+
+test('extractUrlMatches: MAX_SAFE_HTTP_URL_LENGTH（2048文字）を超える URL は弾く', () => {
+  const tooLong = `https://example.com/${'a'.repeat(MAX_SAFE_HTTP_URL_LENGTH)}`;
+  assert.deepEqual(extractUrlMatches(tooLong), []);
+});
+
 // ─── ツールチップ表示用のホスト取得 ──────────────────────────────────────────────
 test('getUrlHost: ポート込みのホストを返す。解析失敗時は空文字', () => {
   assert.equal(getUrlHost('https://github.com@evil.example/login'), 'evil.example');
   assert.equal(getUrlHost('http://127.0.0.1:3000/'), '127.0.0.1:3000');
   assert.equal(getUrlHost('not a url'), '');
+});
+
+test('getUrlHost: パーセントエンコードされたホストも解決後の実ホストを返す', () => {
+  // "%67ithub.com" は new URL() 側でデコードされ実際には github.com を指す。
+  // ツールチップに出す host は「表示テキストに惑わされない実際の行き先」である
+  // ことの確認（安藤レビュー指摘）。
+  assert.equal(getUrlHost('https://%67ithub.com/'), 'github.com');
 });
 
 test('trimTrailingPunctuation: 大量の閉じカッコが連続しても正しく全部削り切る（性能改善の回帰確認）', () => {

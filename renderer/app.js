@@ -442,10 +442,16 @@ async function createTerminal(paneId, cwd, options = {}) {
   // ペイン内 URL の Cmd/Ctrl+クリック対応（issue #349）。破棄は term.dispose() 側に
   // 任せる（xterm.js 本体の LinkProviderService は Terminal の disposal 時に登録済み
   // プロバイダを自動でクリアするため、fitAddon 同様ここで個別に dispose() を呼ぶ必要は無い）。
+  // isMac は明示的に IS_MAC_PLATFORM を渡す（安藤レビュー指摘・LOW）。省略すると
+  // isLinkOpenModifierPressed 側が呼び出しのたびに isMacPlatform() を再評価する一方、
+  // ツールチップの文言（TERM_LINK_MODIFIER_LABEL）はキャッシュ済みの IS_MAC_PLATFORM を
+  // 使っており、「実際に見ている修飾キー」と「表示している修飾キー」の判定元が
+  // 2 箇所に分かれてしまう。値は実行中変わらないため実害は無いが、出所を 1 本化する。
   term.registerLinkProvider(createTerminalLinkProvider(term, createTerminalLinkHandlers({
     openUrl: openExternalUrlSafe,
     showTooltip: showTermLinkTooltip,
     hideTooltip: hideTermLinkTooltip,
+    isMac: IS_MAC_PLATFORM,
   })));
 
   // OSC 0 / OSC 2 のタイトル変更を購読してペイン上部のタスクタイトル行に反映する。

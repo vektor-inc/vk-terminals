@@ -22,13 +22,34 @@
 //     ナレーションが一部ヒットするのは事実。ただし本機能の判断基準は一貫して
 //     「誤検知（うるさい）より見逃し（AI が止まったことに気づけない）のほうが実害が大きい」。
 //     ご付きへの絞り込みは、コストを見逃し側へ寄せる変更になる。
-//   - 現在の状態機械では、この種の誤検知は出力が流れている限り上限間隔
-//     （WAITING_MAX_EVAL_INTERVAL_MS = 5 秒）で自動解除される。上限評価は「前回の評価
-//     以降に届いた出力」だけを見る（selectWaitingBuffer 参照）ので、解除までの時間は
-//     出力量に依らずこの間隔で頭打ちになり、被害は「作業中に数秒バッジが点く」に収まる。
-//     旧実装のように永久に張り付くことはない。
-//     （※ 出力が完全に止まっているときは解除されないが、それは「相手が止まっている」
-//       状態なので、バッジが点いたままでも実害は小さい。）
+//
+// 誤検知したときの実害をどう抑えるか（上の判断基準そのものは変えず、解除経路を見直した）:
+//   旧実装（vk-orchestrator#212）は「出力が流れている最中の非マッチでのみ解除する」
+//   （上限間隔 WAITING_MAX_EVAL_INTERVAL_MS = 5 秒で頭打ち）の一本槍で、静止評価
+//   （quiescent = true）では非マッチでも常に現状維持していた。これは「出力が完全に
+//   止まっているときは相手も止まっているのだから、バッジが点いたままでも実害は
+//   小さい」という前提に立っていた。
+//
+//   ところが vektor-inc/vk-terminals#352 で、この前提が崩れる実例が見つかった。
+//   数秒おきに 1 行だけ出力し続ける無人ペイン（vk-orchestrator 自身の常駐ログ等）は、
+//   出力が完全に止まっているわけではないのに、判定のたびに「最後の出力から静止時間
+//   （1.5 秒）以上経っている」＝ quiescent = true と評価される。解除の評価
+//   （quiescent = false のときだけ）が一度も回ってこないため、誤って点いた
+//   「入力待ち」が人が打鍵するまで無期限に張り付いた。「実害は小さい」という前提が
+//   成立しない典型例だった。
+//
+//   そこで、静止評価にも解除経路を追加した（nextWaitingState の onsetStillVisible /
+//   findWaitingMatch / containsIgnoringWhitespace）。点灯の根拠になった実際の
+//   マッチ文字列（前後に文脈を含めたもの。理由は findWaitingMatch 参照）を記録し、
+//   静止評価で非マッチのときに「その文字列が判定バッファ（lastLines）から消えているか」
+//   を空白・改行を無視した包含比較で確かめる。消えていれば解除し、残っていれば
+//   現状維持する。
+//     - 「消えている」＝疎な出力で 80 行バッファから実際に押し出された（#352 のケース）
+//     - 「残っている」＝画面サイズを変えて折り返し位置だけが変わった。文字自体は
+//       バッファに残るので誤解除しない（vektor-inc/vk-terminals#91 の再発防止）
+//   つまり今回の判断は「見逃しより誤検知の実害を軽くする」という優先順位そのものは
+//   変えず、「一度点いた誤検知が自力で消えるまでの時間」を、出力の疎密に関わらず
+//   有限にすることを優先した。
 //   将来この判断を見直すときは、上のトレードオフが変わったかどうかから検討すること。
 const WAITING_TARGET_NOUNS = [
   '入力', '選択', '承認', '回答',
@@ -101,8 +122,60 @@ const WAITING_PATTERNS = [
   /[？]\s*$/,
 ];
 
+// 点灯根拠として記録する文字列に含める、一致箇所前後の文脈の文字数（issue #352）。
+//
+// WAITING_PATTERNS の一致範囲（m[0]）だけを記録すると、パターンによっては
+// 極端に短い文字列しか取れない（例: 全角「？」で終わる文への補助パターン
+// /[？]\s*$/ は m[0] が「？」1 文字になる）。1 文字だと、後続の無関係な出力に
+// 同じ文字が 1 つでも含まれるだけで containsIgnoringWhitespace が「まだ画面にある」
+// と判定してしまい、疎な出力ペインでの自動解除（#352 の本題）が実質的に効かなく
+// なる。そこで一致箇所の前後に固定文字数の文脈を含めて記録する。
+//
+// 文脈を広げても vektor-inc/vk-terminals#91（リサイズ再描画）への耐性は失われない。
+// リサイズは文字自体を書き換えず折り返し位置だけを変えるため、文脈を含めた文字列も
+// 空白・改行を無視した比較なら変わらず一致し続ける。
+const WAITING_ONSET_CONTEXT_CHARS = 24;
+
+// WAITING_PATTERNS のいずれかに一致した箇所を、前後の文脈込みの文字列として返す
+// （一致しなければ null）。この関数はどのパターンが一致したかを区別しない
+// （呼び出し側が知る必要が無いため）。
+//
+// 返り値は「正規表現の一致範囲そのもの」ではなく、前後 WAITING_ONSET_CONTEXT_CHARS
+// 文字を加えた範囲であることに注意（理由は WAITING_ONSET_CONTEXT_CHARS のコメント
+// 参照）。真偽値だけが要る呼び出し（matchesWaiting）はこの差を意識しなくてよい。
+function findWaitingMatch(cleanBuffer) {
+  if (typeof cleanBuffer !== 'string' || cleanBuffer === '') return null;
+  for (const pattern of WAITING_PATTERNS) {
+    const m = pattern.exec(cleanBuffer);
+    if (m && m[0] !== '') {
+      const start = Math.max(0, m.index - WAITING_ONSET_CONTEXT_CHARS);
+      const end = Math.min(cleanBuffer.length, m.index + m[0].length + WAITING_ONSET_CONTEXT_CHARS);
+      return cleanBuffer.slice(start, end);
+    }
+  }
+  return null;
+}
+
 function matchesWaiting(cleanBuffer) {
-  return WAITING_PATTERNS.some(p => p.test(cleanBuffer));
+  return findWaitingMatch(cleanBuffer) !== null;
+}
+
+// 空白・改行（全角スペース含む。JS の \s は Unicode の空白分離子を含むため対応済み）
+// を取り除いた文字列を返す純粋関数。containsIgnoringWhitespace の下請け。
+function stripWhitespaceForCompare(str) {
+  return typeof str === 'string' ? str.replace(/\s+/g, '') : '';
+}
+
+// haystack に needle が「空白・改行を無視して」含まれているかを判定する（issue #352）。
+// リサイズ再描画で確認文の折り返し位置だけが変わったケース（vektor-inc/vk-terminals#91）
+// では、文字自体はまだ画面に残っているため、この比較なら「まだ見える」と判定できる。
+// needle が空・非文字列なら false を返す（空文字列は素朴な includes だと常に true に
+// なってしまい、「根拠が無いのに常に見える」という誤った結果を招くため明示的に弾く）。
+function containsIgnoringWhitespace(haystack, needle) {
+  if (typeof needle !== 'string' || needle === '') return false;
+  const strippedNeedle = stripWhitespaceForCompare(needle);
+  if (strippedNeedle === '') return false;
+  return stripWhitespaceForCompare(haystack).includes(strippedNeedle);
 }
 
 function normalizeWaitingExcludeCwdPatterns(patterns) {
@@ -180,23 +253,32 @@ function selectWaitingBuffer({ quiescent, fullBuffer, recentBuffer }) {
   return (quiescent ? fullBuffer : recentBuffer) || '';
 }
 
-// waiting 判定（issue vektor-inc/vk-orchestrator#212）。
-// 解除の根拠を「判定時点で出力が流れている」ことに一本化する。
+// waiting 判定（issue vektor-inc/vk-orchestrator#212 / vektor-inc/vk-terminals#352）。
 //
 //   静止して呼ばれた評価（quiescent = true / 相手は止まっている）
 //     - マッチ   → 入力待ち ON
-//     - 非マッチ → 現状維持。ウィンドウリサイズ等の再描画で確認文が別位置に折り返されると
-//                  本物の確認待ちでも一時的に非マッチになるため（tests の
+//     - 非マッチ → 原則現状維持。ウィンドウリサイズ等の再描画で確認文が別位置に
+//                  折り返されると本物の確認待ちでも一時的に非マッチになるため（tests の
 //                  「リサイズ再描画で確認文が折り返された非マッチ例」参照）、ここで
-//                  解除すると本物を取りこぼす。
+//                  無条件に解除すると本物を取りこぼす。
+//                  ただし onsetStillVisible（点灯根拠の文字列が判定バッファから
+//                  空白無視の包含比較で見えるか。findWaitingMatch /
+//                  containsIgnoringWhitespace 参照）が明示的に false のときは解除する
+//                  （issue #352: 数秒おきに 1 行だけ出力し続けるペインは quiescent = true
+//                  の評価しか回ってこないため、この経路が無いと永久に張り付く）。
+//                  onsetStillVisible を渡さない呼び出し（undefined）は従来どおり
+//                  現状維持のみ。呼び出し側が点灯根拠を追跡していない場面
+//                  （excluded 判定のテスト等）の後方互換のため。
 //   上限で強制的に呼ばれた評価（quiescent = false / 出力が流れ続けている）
 //     - マッチ   → 入力待ち ON のまま
 //     - 非マッチ → 解除。出力が流れている＝相手は入力を待たずに動いている、が根拠。
-//                  張り付きからの唯一の自動復帰経路。
-function nextWaitingState({ prev, matches, excluded = false, quiescent }) {
+function nextWaitingState({ prev, matches, excluded = false, quiescent, onsetStillVisible }) {
   if (excluded) return false;
   if (matches) return true;
-  return quiescent ? prev === true : false;
+  if (!quiescent) return false;
+  if (prev !== true) return false;
+  if (onsetStillVisible === false) return false;
+  return true;
 }
 
 // 入力待ち検知時のビープを鳴らしてよいか。
@@ -520,8 +602,10 @@ return {
   WAITING_MAX_EVAL_INTERVAL_MS,
   WAITING_PATTERNS,
   WAITING_QUIESCENCE_MS,
+  containsIgnoringWhitespace,
   detectBackgroundAgents,
   extractScreenLines,
+  findWaitingMatch,
   isOutputQuiescent,
   isWaitingCwdExcluded,
   matchesWaiting,

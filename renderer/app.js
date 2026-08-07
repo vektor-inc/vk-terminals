@@ -55,11 +55,12 @@ const {
 // エージェントルーム（issue #58）。サブエージェントの稼働状況をドット絵キャラで可視化する。
 const { AGENT_ORDER, buildScene, resolveAgentStatesFromOutput } = window.VKAgentRoom;
 const {
+  containsIgnoringWhitespace,
   detectBackgroundAgents,
   extractScreenLines,
+  findWaitingMatch,
   isOutputQuiescent,
   isWaitingCwdExcluded,
-  matchesWaiting,
   nextWaitingState,
   normalizeWaitingExcludeCwdPatterns,
   selectWaitingBuffer,
@@ -214,14 +215,39 @@ function checkWaiting(paneId) {
   const quiescent = isOutputQuiescent({ now, lastOutputTime: t.lastOutputTime });
   // 静止評価は lastLines（80 行ウィンドウ）全体、上限評価は前回の評価以降に届いた
   // 出力（recentLines）だけを見る。理由は selectWaitingBuffer のコメント参照。
-  const matches = matchesWaiting(stripAnsiForDisplay(selectWaitingBuffer({
+  const buffer = stripAnsiForDisplay(selectWaitingBuffer({
     quiescent,
     fullBuffer: t.lastLines,
     recentBuffer: t.recentLines,
-  })));
+  }));
+  // findWaitingMatch は真偽値ではなく、一致箇所（前後の文脈込み）の文字列そのものを
+  // 返す（issue #352）。点灯の根拠を記録するため matchesWaiting ではなくこちらを使う。
+  const matchText = findWaitingMatch(buffer);
+  const matches = matchText !== null;
   // 次回の上限評価は「ここから先に届いた出力」だけを対象にする。
   t.recentLines = '';
-  const waiting = nextWaitingState({ prev: t.waiting, matches, excluded, quiescent });
+  // 静止評価・非マッチ・かつ現在入力待ち中のときだけ、点灯根拠がまだ画面
+  // （lastLines）に見えるかを調べる。上の条件に当たらない呼び出しでは
+  // nextWaitingState 側で使われないため計算を省く。
+  //   quiescent が真のとき buffer は selectWaitingBuffer により t.lastLines
+  //   （ANSI を落としたもの）そのものになる。
+  const onsetStillVisible = (quiescent && !matches && t.waiting && t.waitingOnsetMatch)
+    ? containsIgnoringWhitespace(buffer, t.waitingOnsetMatch)
+    : undefined;
+  const waiting = nextWaitingState({ prev: t.waiting, matches, excluded, quiescent, onsetStillVisible });
+  // 点灯根拠（t.waitingOnsetMatch）は waiting フラグと独立に、常に現在の waiting の
+  // 真偽と整合させる（issue #352 やること 3: 再マッチのたびに最新の文字列へ更新する）。
+  //   - waiting が true でこの評価で新たにマッチした → 最新のマッチ文字列に更新する
+  //   - waiting が true だがこの評価は非マッチ（onsetStillVisible により現状維持された）
+  //     → 前回記録した文字列をそのまま使い続ける（この評価では更新材料が無い）
+  //   - waiting が false（解除された・そもそも点いていない・除外された） → 根拠は無意味
+  //     なので捨てる。excluded で強制解除された場合に matches が true のまま
+  //     古い文字列を残さないようにするのもここで担保する。
+  if (waiting) {
+    if (matches) t.waitingOnsetMatch = matchText;
+  } else {
+    t.waitingOnsetMatch = null;
+  }
   if (waiting !== t.waiting) {
     t.waiting = waiting;
     if (waiting) {
@@ -345,6 +371,7 @@ function markPaneInput(paneId) {
     t.waiting = false;
     t.lastLines = '';
     t.recentLines = '';
+    t.waitingOnsetMatch = null;
   }
   recomputeStatus(paneId);
 }
@@ -536,10 +563,18 @@ async function createTerminal(paneId, cwd, options = {}) {
     //   瞬間のスナップショット { at, lastOutputTime }（issue #270）。e2e から静止ゲートの
     //   実効を確かめるためだけの記録で、アプリの挙動には一切使わない。未点灯なら null、
     //   再点灯のたびに上書きする（解除時のクリアは不要 = 次の点灯で必ず上書きされる）。
+    // waitingOnsetMatch: 現在の waiting=true の根拠になっている実際のマッチ文字列
+    //   （findWaitingMatch の返り値。前後の文脈込み）。localWaitingOnset とは違い、
+    //   checkWaiting() の解除判定そのものに使う実体（issue #352）。
+    //   静止評価・非マッチのときにこの文字列が lastLines から空白無視で見えなくなって
+    //   いれば自動解除する。マッチするたびに最新の文字列へ更新し、waiting が false に
+    //   戻ったら（除外・上限評価での解除・onsetStillVisible による解除・markPaneInput
+    //   のいずれでも）null に戻す。
     waitingCheckTimer: null,
     waitingPendingSince: 0,
     lastWaitingBeepAt: 0,
     localWaitingOnset: null,
+    waitingOnsetMatch: null,
     lastLines: '',
     // recentLines: 前回の waiting 評価以降に届いた出力だけを貯めるバッファ。
     //   上限評価（出力が流れている最中の判定）で使う。lastLines と同じ上限でトリムする。

@@ -21,7 +21,7 @@ const { WAITING_QUIESCENCE_MS } = require('../../renderer/waitingState');
 //   既存 spec と同様に「スクリプトに出力させる」方式を使う。タイプするコマンド行は
 //   スクリプトのパスだけ（ASCII）なので、入力による waiting クリアの影響を受けない。
 //
-// issue #348: このファイルだけは他の smoke spec と違い、4 テストで Electron の
+// issue #348: このファイルだけは他の smoke spec と違い、5 テストで Electron の
 // 起動を共有していない（各テストが自前で launchApp する）。一度は起動共有を試みたが
 // 2 巡のレビューで撤回した。理由は次のとおり（同じ道を辿らないための記録）。
 //   - 画面（win）を reload() すると、renderer は起動時と同じ経路で新しい PTY を
@@ -360,6 +360,72 @@ test('waiting 点灯後にユーザー入力なしで出力を流し続けると
     await expect(status).not.toHaveAttribute('data-status', 'waiting');
     // 出力が流れている最中の解除なので、idle ではなく running（実行中）へ戻る。
     await expect(status).toHaveAttribute('data-status', 'running');
+  } finally {
+    await closeApp({ app, tmpRoot });
+  }
+});
+
+// ─── 疎な出力（vektor-inc/vk-terminals#352）での自動解除 ────────────────────────
+//
+// 上のテスト（0.2 秒間隔のバースト）は「出力が流れている最中（quiescent = false）の
+// 非マッチ」という既存の解除経路（vk-orchestrator#212）を検証している。
+// issue #352 が報告したのはそれとは別の状況で、vk-orchestrator のように**数秒おきに
+// 1 行だけ**しか出力しないペインでは、判定のたびに「最後の出力から静止時間
+// （WAITING_QUIESCENCE_MS = 1.5 秒）以上経っている」＝ quiescent = true にしかならず、
+// 上の解除経路が一度も回ってこない。旧実装はこのケースを解除できず、人が打鍵するまで
+// 永久に張り付いた。
+//
+// この e2e では「1 行だけ・間隔を空けて出力する」という条件は保ったまま、1 行を
+// 十分長くすることで、実機の 80 行張り付き（押し出しに数時間かかった）と同じ
+// メカニズム（判定バッファ lastLines からの押し出し）を短時間で再現する。
+// renderer/app.js の LASTLINES_MAX_CHARS（8000 文字）は行数上限（80 行）と並ぶ
+// もう一方のトリム条件で、どちらで押し出されても「点灯根拠の文字列が lastLines から
+// 消える」という解除条件（containsIgnoringWhitespace）は同じに扱われる。
+test('疎な出力（数秒おきに1行）が続くペインでも、一度点灯した入力待ちが人の打鍵なしで自動解除される（issue #352）', async () => {
+  const port = await getFreePort();
+  const { app, win, tmpRoot } = await launchWaitingApp(port);
+  // 1 行の長さと本数: LASTLINES_MAX_CHARS(8000) を確実に超えるよう、
+  // 1500 文字 × 6 行 = 9000 文字を用意する（"Proceed?" と READY_MARKER 分の
+  // 余裕を差し引いても超える）。
+  const LONG_LINE_CHARS = 1500;
+  const SPARSE_LINES = 6;
+  // WAITING_QUIESCENCE_MS（1.5 秒）より長い間隔を空け、1 行ごとに静止評価
+  // （quiescent = true）が走る「疎な出力」を再現する。
+  const SPARSE_INTERVAL_SEC = 2;
+  const longLine = 'x'.repeat(LONG_LINE_CHARS);
+  const bodyLines = [];
+  for (let i = 0; i < SPARSE_LINES; i++) {
+    bodyLines.push(`printf '%s\\n' '${longLine}'`);
+    bodyLines.push(`sleep ${SPARSE_INTERVAL_SEC}`);
+  }
+  const scriptPath = path.join(tmpRoot, 'sparse.sh');
+  fs.writeFileSync(scriptPath, [
+    '#!/bin/sh',
+    "printf '%s\\n' 'Proceed?'",
+    `printf '%s\\n' '${READY_MARKER}'`,
+    'sleep 4', // 静止 → waiting 点灯（点灯根拠は 'Proceed?' 周辺の文字列になる）
+    ...bodyLines,
+    "printf '%s\\n' 'SPARSEDONE'",
+    '',
+  ].join('\n'), 'utf8');
+
+  try {
+    const { pane, status } = await prepareFirstPane(win, port);
+
+    await runScript(win, scriptPath);
+
+    // sleep 中（出力静止）に waiting が点灯することを確認する。
+    await expect(pane).toHaveClass(/\bwaiting\b/, { timeout: 15_000 });
+    await expect(status).toHaveAttribute('data-status', 'waiting');
+
+    // ここから先はユーザー入力を一切行わない。疎な出力（数秒間隔の長い行）が
+    // 続くだけで、旧実装なら「静止評価の非マッチでは現状維持」のまま張り付いていた
+    // （このテストが落ちる = 張り付きの回帰）。
+    await expect(
+      pane,
+      '疎な出力が続いても入力待ちが自動解除されない（張り付き回帰・issue #352）',
+    ).not.toHaveClass(/\bwaiting\b/, { timeout: 25_000 });
+    await expect(status).not.toHaveAttribute('data-status', 'waiting');
   } finally {
     await closeApp({ app, tmpRoot });
   }

@@ -7,8 +7,10 @@ const {
   WAITING_BEEP_COOLDOWN_MS,
   WAITING_MAX_EVAL_INTERVAL_MS,
   WAITING_QUIESCENCE_MS,
+  containsIgnoringWhitespace,
   detectBackgroundAgents,
   extractScreenLines,
+  findWaitingMatch,
   isOutputQuiescent,
   isWaitingCwdExcluded,
   matchesWaiting,
@@ -97,6 +99,123 @@ test('nextWaitingState: 出力が流れている最中の解除直後は idle �
     }),
     'running',
   );
+});
+
+// ─── 静止評価での自動解除（issue vektor-inc/vk-terminals#352） ──────────────────
+// 旧実装（vk-orchestrator#212）の唯一の解除経路は「出力が流れている最中（quiescent =
+// false）の非マッチ」だった。数秒おきに 1 行だけ出力し続けるペイン（vk-orchestrator の
+// 常駐ログ等）は、判定のたびに 1.5 秒（WAITING_QUIESCENCE_MS）以上経ってから評価される
+// ため quiescent = true にしかならず、この解除経路が一度も回ってこなかった。
+// nextWaitingState に onsetStillVisible（点灯根拠の文字列がまだ判定バッファに見えるか）
+// を追加し、静止評価でも「根拠が画面から消えていれば解除する」経路を設けた。
+
+test('findWaitingMatch: 一致箇所の文字列を返す（前後の文脈を含む）。非マッチは null', () => {
+  const sample = '作業が完了しました。ご確認をお願いします。';
+  const match = findWaitingMatch(sample);
+  assert.notEqual(match, null);
+  assert.equal(typeof match, 'string');
+  // 返り値は一致箇所の前後に文脈を含めるため m[0] そのものより長くなり得るが、
+  // 元の文字列の部分文字列であることは変わらない。
+  assert.ok(sample.includes(match), `返り値が元の文字列の部分文字列になっていない: ${JSON.stringify(match)}`);
+  assert.equal(findWaitingMatch('$ echo done'), null);
+  assert.equal(findWaitingMatch(''), null);
+});
+
+test('findWaitingMatch: matchesWaiting と一致・非一致の判定が揃う', () => {
+  const matchSamples = ['Proceed?', 'この内容で進めてよろしいでしょうか？', '❯ Yes'];
+  const noMatchSamples = ['$ echo done', 'CI の完了を待っています。'];
+  for (const sample of [...matchSamples, ...noMatchSamples]) {
+    assert.equal(findWaitingMatch(sample) !== null, matchesWaiting(sample), `不整合: ${sample}`);
+  }
+});
+
+test('findWaitingMatch: 全角「？」1 文字にしか一致しないケースでも、前後の文脈込みで短すぎない文字列を返す', () => {
+  // 懸念点: /[？]\s*$/ の m[0] 自体は「？」1 文字。文脈を含めずに記録すると、後続の
+  // 無関係な出力に「？」が 1 つでも含まれるだけで「まだ画面にある」と誤判定し、
+  // 疎な出力ペインでの自動解除が実質効かなくなる（レビューで指摘された懸念）。
+  const sample = 'この作業は続けても大丈夫？';
+  const match = findWaitingMatch(sample);
+  assert.notEqual(match, null);
+  assert.ok(match.length > 1, `文脈を含めておらず短すぎる: ${JSON.stringify(match)}`);
+});
+
+test('containsIgnoringWhitespace: 空白・改行（全角スペース含む）を無視して包含判定する', () => {
+  assert.equal(containsIgnoringWhitespace('foo\nbar baz', 'foobarbaz'), true);
+  assert.equal(containsIgnoringWhitespace('foo\nbar baz', 'foo bar   baz'), true);
+  assert.equal(containsIgnoringWhitespace('ご確認　を　お願いします', 'ご確認をお願いします'), true);
+});
+
+test('containsIgnoringWhitespace: 含まれていなければ false', () => {
+  assert.equal(containsIgnoringWhitespace('poll 1\npoll 2', 'Proceed?'), false);
+});
+
+test('containsIgnoringWhitespace: needle が空・非文字列なら false（空文字列が常に true になる事故を防ぐ）', () => {
+  assert.equal(containsIgnoringWhitespace('anything', ''), false);
+  assert.equal(containsIgnoringWhitespace('anything', null), false);
+  assert.equal(containsIgnoringWhitespace('anything', undefined), false);
+});
+
+test('nextWaitingState: onsetStillVisible を渡さない呼び出しは従来どおり静止時点の非マッチで解除しない（後方互換）', () => {
+  assert.equal(nextWaitingState({ prev: true, matches: false, quiescent: true }), true);
+});
+
+test('nextWaitingState: 静止時点の非マッチでも、点灯根拠が消えていれば（onsetStillVisible=false）解除する', () => {
+  assert.equal(
+    nextWaitingState({ prev: true, matches: false, quiescent: true, onsetStillVisible: false }),
+    false,
+  );
+});
+
+test('nextWaitingState: 静止時点の非マッチで、点灯根拠がまだ見えていれば（onsetStillVisible=true）解除しない', () => {
+  assert.equal(
+    nextWaitingState({ prev: true, matches: false, quiescent: true, onsetStillVisible: true }),
+    true,
+  );
+});
+
+test('シナリオ: 数秒おきに1行だけ出力し続けるペインで、一度点灯したあと静止評価で自動解除される', () => {
+  // 点灯: 「Proceed?」を含む行が流れ、静止評価でマッチして waiting になる。
+  const onsetLine = 'Proceed?';
+  let waiting = nextWaitingState({ prev: false, matches: true, quiescent: true });
+  assert.equal(waiting, true);
+  const onsetMatch = findWaitingMatch(onsetLine);
+  assert.notEqual(onsetMatch, null);
+
+  // その後、無人ペインが数秒おきに無関係な1行だけを出し続け、判定のたびに
+  // quiescent = true（出力が疎なので毎回静止時間を超えている）・非マッチになる。
+  // 80 行分押し出された結果、点灯根拠の行はもう lastLines に無い。
+  const lastLinesAfterEviction = Array.from({ length: 80 }, (_, i) => `[poll] 実行待ちタスクなし ${i}`).join('\n');
+  const onsetStillVisible = containsIgnoringWhitespace(lastLinesAfterEviction, onsetMatch);
+  assert.equal(onsetStillVisible, false, '押し出された行が残っている想定になっている');
+
+  waiting = nextWaitingState({ prev: true, matches: false, quiescent: true, onsetStillVisible });
+  assert.equal(waiting, false, '疎な出力で点灯根拠が消えたのに解除されていない（張り付き回帰）');
+});
+
+test('シナリオ: リサイズで折り返しが変わっただけでは解除されない（vektor-inc/vk-terminals#91 再発防止）', () => {
+  // 点灯: 本物の確認待ち文言でマッチして waiting になる。
+  const onsetLine = '作業が完了しました。ご確認をお願いします。';
+  let waiting = nextWaitingState({ prev: false, matches: true, quiescent: true });
+  assert.equal(waiting, true);
+  const onsetMatch = findWaitingMatch(onsetLine);
+  assert.notEqual(onsetMatch, null);
+
+  // リサイズ再描画で確認文の折り返し位置だけが変わり、文字自体は残ったまま
+  // 別の行に分割される（既存テスト「リサイズ再描画で確認文が折り返された非マッチ例」と
+  // 同種の状況）。静止評価では非マッチになる。
+  const resizedBuffer = [
+    '作業が完了しました。ご確認',
+    'をお願いします。',
+    '✻ Worked for 2m 14s',
+  ].join('\n');
+  assert.equal(matchesWaiting(resizedBuffer), false);
+
+  // しかし空白・改行を無視すれば、点灯根拠の文字はまだ画面に残っている。
+  const onsetStillVisible = containsIgnoringWhitespace(resizedBuffer, onsetMatch);
+  assert.equal(onsetStillVisible, true, 'リサイズで文字自体が消えた想定になっている');
+
+  waiting = nextWaitingState({ prev: true, matches: false, quiescent: true, onsetStillVisible });
+  assert.equal(waiting, true, 'リサイズによる折り返しだけで誤って解除されている（#91 の再発）');
 });
 
 // ─── 判定に使うバッファの選択 ────────────────────────────────────────────────

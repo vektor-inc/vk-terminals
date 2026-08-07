@@ -151,6 +151,19 @@ const WAITING_ONSET_CONTEXT_CHARS = 24;
 // 返り値は「正規表現の一致範囲そのもの」ではなく、前後 WAITING_ONSET_CONTEXT_CHARS
 // 文字を加えた範囲であることに注意（理由は WAITING_ONSET_CONTEXT_CHARS のコメント
 // 参照）。真偽値だけが要る呼び出し（matchesWaiting）はこの差を意識しなくてよい。
+//
+// ⚠ 「点灯根拠」という名前から、画面下端に出ている最新のダイアログそのものを指すと
+//   読めるが、そうとは限らない（安藤の指摘・再レビュー LOW）。WAITING_PATTERNS の
+//   配列順で最初に当たったパターン × バッファ**先頭側**の最初の一致を返すため、
+//   バッファに古い一致（例: 何行も前に流れた "Press Enter to continue" というログや、
+//   AskUserQuestion の "Enter to select" フッター定型文）が残っていると、画面下端の
+//   本物のダイアログより先にそちらを返すことがある。
+//   解除判定（onsetStillVisible）への実害は無い（見るのは matches === false のときに
+//   限られ、本物のダイアログが出ている間はそもそも matches === true になるため
+//   解除経路に入らない）。ただし他の用途に流用する際は「必ずしも最新の根拠ではない」
+//   ことを踏まえること。実例: shouldBeepForWaiting のビープ長期抑制の鍵にそのまま
+//   使ったところ、AskUserQuestion の定型フッターが問いの違いを覆い隠してしまった
+//   （WAITING_BEEP_REPEAT_SUPPRESS_MS のコメント参照）。
 function findWaitingMatch(cleanBuffer) {
   if (typeof cleanBuffer !== 'string' || cleanBuffer === '') return null;
   for (const pattern of WAITING_PATTERNS) {
@@ -184,6 +197,15 @@ function matchesWaiting(cleanBuffer) {
 // これは「見逃しより誤検知の実害を軽くする」という本ファイルの優先順位（冒頭コメント
 // 参照）とも整合する。誤って解除しない方向にしか働かないため、#352 の解除性能
 //（点灯根拠がバッファから実際に押し出されたら解除する）を弱めることはない。
+//
+// ⚠ replace 専用（安藤の指摘・再レビュー LOW）。g フラグ付き正規表現は lastIndex と
+//   いう可変状態を持つオブジェクトで、String.prototype.replace は仕様上 g 付き
+//   正規表現の lastIndex を呼び出し前に 0 へリセットするため stripNoiseForCompare の
+//   現在の使い方（replace 専用）では安全。しかし同じオブジェクトを .test() /
+//   .exec() で呼ぶと lastIndex が呼び出しをまたいで持ち越され、1 回おきに取りこぼす
+//   （LOW-1 で WAITING_PATTERNS に同じ問題を回帰テストで固定した、その隣にこの
+//   定数を増やした形になっているので明記しておく）。この定数を test/exec で使わない
+//   こと。
 const COMPARE_NOISE_PATTERN = /[\s─-╿]+/g;
 
 function stripNoiseForCompare(str) {
@@ -334,13 +356,27 @@ const WAITING_BEEP_COOLDOWN_MS = 15000;
 // クールダウンではなくこちらの長い猶予を使う。「別の新しい確認」なら根拠の文字列も
 // 変わるはずなので、通常どおり短いクールダウンで鳴らせる。
 //
-// 値の根拠: issue #352 の実例（vk-orchestrator が「入力待ち」を含むログを繰り返す）
-// では、常駐させたまま数時間気付かれなかった。10 分（600000ms）にすれば、同じ
-// 誤検知が延々と鳴り続ける実害はほぼ解消しつつ（1 時間の放置でも高々 6 回）、
-// 万一同じ文言で本当に別の確認が来ても 10 分以上経てば通知が復活するので、
-// 「見逃しより誤検知の実害を軽くする」という優先順位を、恒久的な無音化ではなく
-// 有限の抑制に留める形で保っている。
-const WAITING_BEEP_REPEAT_SUPPRESS_MS = 600000;
+// 値の根拠: この値は「同じ点灯根拠で鳴らないビープを、人が最大どれだけ聞き逃す
+// 可能性があるか」の上限そのものになる（安藤の指摘・再レビュー MEDIUM）。長くする
+// ほど誤検知の点滅は静かになるが、見逃しの窓も同じだけ広がる。
+//
+// この見逃しの窓は「同じ点灯根拠」の判定精度に直結して悪化する。findWaitingMatch
+// は配列順で最初に当たったパターン × バッファ先頭側の最初の一致を返すため（詳細は
+// 同関数のコメント参照）、日本語の AskUserQuestion のように本文が英語パターンに
+// 当たらず定型フッター（"Enter to select" 等）だけが一致するケースでは、
+// 「問いの内容」ではなく「フッターの定型文」が鍵になり、**内容の異なる 2 問目が
+// 1 問目と「同じ根拠」と誤判定されて抑制対象に入る**（安藤の実測で確認済み）。
+// つまりこの値は「同じ誤検知の点滅を静める効果」と「AskUserQuestion で問いが
+// 変わったのに気付かれない最悪ケースの長さ」を同時に決める。
+//
+// 15 秒（WAITING_BEEP_COOLDOWN_MS）のままだと疎な出力ペインでは毎回の再点灯で
+// 鳴ってしまう一方、10 分（600000ms）まで伸ばすと AskUserQuestion の見逃しの窓が
+// 実用上大きすぎる（安藤の指摘で再検討）。2 分（120000ms）であれば、疎な出力の
+// 誤検知（vk-orchestrator の常駐ログ等、押し出しに数十秒〜数分かかる）はほぼ
+// 抑制できる一方、見逃しの上限も「気付くまで最大 2 分」程度に留まる。
+// 「見逃しより誤検知の実害を軽くする」という優先順位（冒頭コメント参照）を、
+// 恒久的な無音化ではなく有限の抑制に留める形で保っている。
+const WAITING_BEEP_REPEAT_SUPPRESS_MS = 120000;
 
 // a と b が、空白・改行・TUI 罫線を無視すると同一とみなせるか（issue #352）。
 // containsIgnoringWhitespace の下請け（stripNoiseForCompare）を再利用し、双方向の

@@ -13,7 +13,6 @@ const {
   detectBackgroundAgents,
   extractScreenLines,
   findWaitingMatch,
-  findWaitingMatchKey,
   isOutputQuiescent,
   isWaitingCwdExcluded,
   matchesWaiting,
@@ -23,6 +22,7 @@ const {
   sameIgnoringWhitespace,
   selectWaitingBuffer,
   shouldBeepForWaiting,
+  stripVolatileForKey,
   waitingCheckDelayMs,
 } = require('../renderer/waitingState');
 const { deriveStatus } = require('../renderer/statusState');
@@ -144,26 +144,24 @@ test('findWaitingMatch: 全角「？」1 文字にしか一致しないケース
   assert.ok(match.length > 1, `文脈を含めておらず短すぎる: ${JSON.stringify(match)}`);
 });
 
-// ─── findWaitingMatchKey（ビープ長期抑制の鍵。issue #352 の再レビュー） ────────────
-// 司の実測で発覚: findWaitingMatch（文脈込み）をビープ抑制の鍵にそのまま使うと、
-// vk-orchestrator の常駐ログのように前後の文脈（termId 等）が毎回変わる出力では
-// 鍵も毎回変わり、長期抑制（WAITING_BEEP_REPEAT_SUPPRESS_MS）が一度も適用されない。
-// findWaitingMatchKey（m[0]。文脈を含まない）はこの問題を避けるために用意した。
+// ─── stripVolatileForKey（ビープ長期抑制の鍵。issue #352 の再レビュー） ────────────
+// 2 段階の実測で発覚した問題を両方解決する必要がある:
+//   1. 司の実測: findWaitingMatch（文脈込み）をビープ抑制の鍵にそのまま使うと、
+//      vk-orchestrator の常駐ログのように前後の文脈（termId 等）が毎回変わる
+//      出力では鍵も毎回変わり、長期抑制（WAITING_BEEP_REPEAT_SUPPRESS_MS）が
+//      一度も適用されない。
+//   2. 安藤の実測: 1 の対処として m[0]（正規表現の一致範囲そのもの）を鍵にすると、
+//      判別力が無くなり、内容の異なる本物の確認（例:「編集の許可」と「コマンド
+//      実行の許可」はどちらも m[0] = "Do you want to"）まで同一視してしまう。
+// stripVolatileForKey は文脈込みの文字列から数字だけを潰すことで両方を満たす。
 
-test('findWaitingMatchKey: 正規表現の一致範囲そのもの（m[0]）を返す。非マッチは null', () => {
-  assert.equal(findWaitingMatchKey('Proceed?'), 'Proceed?');
-  assert.equal(findWaitingMatchKey('$ echo done'), null);
-  assert.equal(findWaitingMatchKey(''), null);
+test('stripVolatileForKey: 数字を # に潰す。非文字列は null', () => {
+  assert.equal(stripVolatileForKey('termId=5: terminal 5 not found'), 'termId=#: terminal # not found');
+  assert.equal(stripVolatileForKey(null), null);
+  assert.equal(stripVolatileForKey(undefined), null);
 });
 
-test('findWaitingMatchKey: findWaitingMatch と一致・非一致の判定が揃う（同じ探索結果から派生するため）', () => {
-  const samples = ['Proceed?', 'この内容で進めてよろしいでしょうか？', '$ echo done', 'CI の完了を待っています。'];
-  for (const sample of samples) {
-    assert.equal(findWaitingMatchKey(sample) !== null, findWaitingMatch(sample) !== null, `不整合: ${sample}`);
-  }
-});
-
-test('findWaitingMatchKey: 司の実測ケース（termId だけが違う vk-orchestrator の常駐ログ2行）で同じキーになる', () => {
+test('stripVolatileForKey(findWaitingMatch(...)): 司の実測ケース（termId だけが違う vk-orchestrator の常駐ログ2行）で同じキーになる', () => {
   // findWaitingMatch（文脈込み）は termId を含む文脈のせいで 2 行の結果が異なる
   // （前後 24 文字の文脈に termId の数字が含まれるため）。
   const lineA = '[scan-waiting-markers] termId=5: 入力待ちマーカー消灯失敗: terminal 5 not found';
@@ -173,24 +171,39 @@ test('findWaitingMatchKey: 司の実測ケース（termId だけが違う vk-orc
     findWaitingMatch(lineB),
     'findWaitingMatch（文脈込み）が termId 違いでも同じ文字列になっている（このテストの前提が崩れている）',
   );
-  // findWaitingMatchKey（m[0]。文脈を含まない）は termId に依存しないパターン
-  // （「入力待ち」を拾う WAITING_TARGET_NOUNS_PATTERN）そのものなので、同じキーになる。
-  assert.notEqual(findWaitingMatchKey(lineA), null);
+  // stripVolatileForKey で数字を潰すと、termId の違いだけが差だったので同じキーになる。
+  const keyA = stripVolatileForKey(findWaitingMatch(lineA));
+  const keyB = stripVolatileForKey(findWaitingMatch(lineB));
+  assert.notEqual(keyA, null);
   assert.equal(
-    findWaitingMatchKey(lineA),
-    findWaitingMatchKey(lineB),
+    keyA,
+    keyB,
     'termId が違うだけで同じ言い回しなのにキーが変わっている（長期抑制が効かなくなる回帰）',
   );
 });
 
-test('shouldBeepForWaiting: 司の実測ケースを再現 — findWaitingMatchKey をキーに使えば長期抑制が実際に効く', () => {
-  // 修正前（findWaitingMatch の文脈込み文字列をキーに使っていた）は、この 2 行が
-  // termId 違いで別々のキーになり、shouldBeepForWaiting が毎回 true を返して
-  // WAITING_BEEP_REPEAT_SUPPRESS_MS が実質無効化されていた（司の実測）。
+test('stripVolatileForKey(findWaitingMatch(...)): 安藤の実測ケース — 内容の異なる2つの本物の許可プロンプトは別のキーになる', () => {
+  // 安藤の指摘（再レビュー MEDIUM）: 鍵を m[0] だけにすると、Claude Code の許可
+  // プロンプトはどれも /Do you want to/i にしか当たらず、「編集の許可」も
+  // 「コマンド実行の許可」も同じ m[0] = "Do you want to" になってしまい、
+  // 内容の異なる本物の確認どうしが同一視される（2 問目が長期抑制で無音になる）。
+  const p1 = 'Do you want to make this edit to renderer/app.js?';
+  const p2 = 'Do you want to run this command?\n  rm -rf build';
+  const key1 = stripVolatileForKey(findWaitingMatch(p1));
+  const key2 = stripVolatileForKey(findWaitingMatch(p2));
+  assert.notEqual(key1, null);
+  assert.notEqual(
+    key1,
+    key2,
+    '内容の異なる本物の確認が同一キーになっている（2 問目が誤って無音になる回帰）',
+  );
+});
+
+test('shouldBeepForWaiting: 司の実測ケースを再現 — stripVolatileForKey をキーに使えば長期抑制が実際に効く', () => {
   const lineA = '[scan-waiting-markers] termId=5: 入力待ちマーカー消灯失敗: terminal 5 not found';
   const lineB = '[scan-waiting-markers] termId=9: 入力待ちマーカー消灯失敗: terminal 9 not found';
-  const keyA = findWaitingMatchKey(lineA);
-  const keyB = findWaitingMatchKey(lineB);
+  const keyA = stripVolatileForKey(findWaitingMatch(lineA));
+  const keyB = stripVolatileForKey(findWaitingMatch(lineB));
   const lastBeepAt = 10_000;
   assert.equal(
     shouldBeepForWaiting({
@@ -201,6 +214,24 @@ test('shouldBeepForWaiting: 司の実測ケースを再現 — findWaitingMatchK
     }),
     false,
     'termId だけが違う再点灯なのに長期抑制が効いていない（回帰）',
+  );
+});
+
+test('shouldBeepForWaiting: 安藤の実測ケースを再現 — 内容の異なる本物の許可プロンプトはちゃんと鳴る', () => {
+  const p1 = 'Do you want to make this edit to renderer/app.js?';
+  const p2 = 'Do you want to run this command?\n  rm -rf build';
+  const key1 = stripVolatileForKey(findWaitingMatch(p1));
+  const key2 = stripVolatileForKey(findWaitingMatch(p2));
+  const lastBeepAt = 10_000;
+  assert.equal(
+    shouldBeepForWaiting({
+      now: lastBeepAt + WAITING_BEEP_COOLDOWN_MS + 1,
+      lastBeepAt,
+      onsetMatch: key2,
+      lastBeepedOnsetMatch: key1,
+    }),
+    true,
+    '内容の異なる本物の確認なのに長期抑制で鳴らなくなっている（回帰）',
   );
 });
 
@@ -325,6 +356,54 @@ test('シナリオ: 枠線付き TUI（Claude Code のプロンプト枠）で�
 
   waiting = nextWaitingState({ prev: true, matches: false, quiescent: true, onsetStillVisible });
   assert.equal(waiting, true, '枠線付き TUI のリサイズで誤って解除されている（#91 の再発）');
+});
+
+test('シナリオ: バッファ先頭側に残る古い一致ではなく、画面下端に近い本物のダイアログを点灯根拠にする（安藤の指摘・再レビュー HIGH・#91 再発防止）', () => {
+  // 安藤の実測で発覚: findWaitingMatchDetail が「配列順で最初に当たったパターンの
+  // 最初の一致」を返す実装だと、80 行バッファの先頭側に残る古い一致（例: 何行も
+  // 前に流れた "Press Enter to continue" というログ）を、画面下端の本物のダイアログ
+  // より先に返してしまう。古い行は先に押し出されるので、それを点灯根拠にすると、
+  // 本物のダイアログがまだ画面にあるのに「消えた」と誤判定して誤解除してしまう
+  // （#91 の再発）。バッファ内で最も後ろ（画面下端に近い）の一致を採ることで
+  // 塞いだことを確認する。
+  const workerLogLines = Array.from({ length: 30 }, (_, i) => `[10:0${i % 6}] worker log line ${i}`).join('\n');
+  const lastLines = [
+    '[10:00:01] Press Enter to continue', // 古い一致（もう画面に無い想定）
+    workerLogLines,
+    '───────────────╮',
+    '│ この内容でご確認をお願いします。   │', // 画面下端の本物のダイアログ
+    '╰───────────────╯',
+  ].join('\n');
+  assert.equal(matchesWaiting(lastLines), true);
+
+  const onsetMatch = findWaitingMatch(lastLines);
+  assert.notEqual(onsetMatch, null);
+  // 点灯根拠は「古い行」ではなく「本物のダイアログ」側になっているはずである。
+  assert.ok(
+    onsetMatch.includes('ご確認'),
+    `点灯根拠が古い行を指している（バッファ先頭側の一致を採ってしまっている）: ${JSON.stringify(onsetMatch)}`,
+  );
+
+  // 古い行が押し出され、本物のダイアログはリサイズで折り返されて非マッチになった状態
+  // （「ご確認」と「を」の間で折り返され、許可リストの名詞パターンが分断される）。
+  const afterEviction = [
+    '─────╮',
+    '│ この内容でご確認',
+    'を│',
+    'お願いします。│',
+    '╰─────╯',
+  ].join('\n');
+  assert.equal(matchesWaiting(afterEviction), false);
+
+  const onsetStillVisible = containsIgnoringWhitespace(afterEviction, onsetMatch);
+  assert.equal(
+    onsetStillVisible,
+    true,
+    '本物のダイアログがまだ画面にあるのに「消えた」と誤判定している（#91 の再発）',
+  );
+
+  const waiting = nextWaitingState({ prev: true, matches: false, quiescent: true, onsetStillVisible });
+  assert.equal(waiting, true, '本物のダイアログが画面にあるのに誤って解除されている（#91 の再発）');
 });
 
 test('containsIgnoringWhitespace: TUI の枠線・罫線（Unicode Box Drawing）も無視する（安藤の指摘 HIGH-2）', () => {

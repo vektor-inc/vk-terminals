@@ -59,7 +59,6 @@ const {
   detectBackgroundAgents,
   extractScreenLines,
   findWaitingMatch,
-  findWaitingMatchKey,
   isOutputQuiescent,
   isWaitingCwdExcluded,
   nextWaitingOnset,
@@ -67,6 +66,7 @@ const {
   normalizeWaitingExcludeCwdPatterns,
   selectWaitingBuffer,
   shouldBeepForWaiting,
+  stripVolatileForKey,
   waitingCheckDelayMs,
 } = window.VKWaitingState;
 const { deriveStatus } = window.VKStatusState;
@@ -223,16 +223,20 @@ function checkWaiting(paneId) {
     recentBuffer: t.recentLines,
   }));
   // findWaitingMatch は真偽値ではなく、一致箇所（前後の文脈込み）の文字列そのものを
-  // 返す（issue #352）。点灯の根拠を記録するため matchesWaiting ではなくこちらを使う。
+  // 返す（issue #352）。バッファ内で最も後ろの一致（画面下端に最も近い、ライブな
+  // 一致）を返すため、80 行バッファの先頭側に残る古いログ等を誤って根拠にしない
+  // （安藤の指摘・再レビュー HIGH。findWaitingMatch 自体のコメント参照）。
+  // 点灯の根拠を記録するため matchesWaiting ではなくこちらを使う。
   const matchText = findWaitingMatch(buffer);
   const matches = matchText !== null;
-  // findWaitingMatchKey は正規表現の一致範囲そのもの（m[0]。前後の文脈を含まない）を
-  // 返す。ビープの長期抑制の鍵（t.waitingOnsetKey）専用（issue #352 の再レビュー・
-  // 司の実測で発覚）。findWaitingMatch（文脈込み）をそのまま鍵にすると、
-  // vk-orchestrator の常駐ログのように前後の文脈（時刻・termId 等）が毎回変わる
-  // 出力では鍵も毎回変わってしまい、長期抑制が一度も適用されない
-  // （詳細は findWaitingMatchKey / WAITING_BEEP_REPEAT_SUPPRESS_MS のコメント参照）。
-  const matchKey = findWaitingMatchKey(buffer);
+  // stripVolatileForKey は matchText（文脈込み）から数字（時刻・termId・カウンタ等の
+  // 可変部分）だけを潰したもの。ビープの長期抑制の鍵（t.waitingOnsetKey）専用
+  // （issue #352 の再レビュー・司と安藤の実測で発覚）。matchText をそのまま鍵にすると
+  // 可変部分のせいで再点灯のたびに鍵が変わり長期抑制が効かない一方、正規表現の
+  // 一致範囲そのもの（m[0]）まで丸めると判別力が無くなり内容の異なる本物の確認
+  // どうしを同一視してしまう（詳細は stripVolatileForKey / WAITING_BEEP_REPEAT_SUPPRESS_MS
+  // のコメント参照）。
+  const matchKey = stripVolatileForKey(matchText);
   // 次回の上限評価は「ここから先に届いた出力」だけを対象にする。
   t.recentLines = '';
   // 静止評価・非マッチ・かつ現在入力待ち中のときだけ、点灯根拠がまだ画面
@@ -261,7 +265,7 @@ function checkWaiting(paneId) {
   if (waiting && !(matches && quiescent)) {
     const backfillBuffer = stripAnsiForDisplay(t.lastLines);
     backfillText = findWaitingMatch(backfillBuffer);
-    backfillKey = backfillText !== null ? findWaitingMatchKey(backfillBuffer) : null;
+    backfillKey = backfillText !== null ? stripVolatileForKey(backfillText) : null;
   }
   const nextOnset = nextWaitingOnset({
     waiting,
@@ -298,15 +302,16 @@ function checkWaiting(paneId) {
     recomputeStatus(paneId);
     // 待機状態になったときに通知音を鳴らす。解除と再検知が短時間で往復しても
     // 鳴り続けないようクールダウンを挟む。
-    // onsetMatch / lastBeepedOnsetMatch には t.waitingOnsetKey（findWaitingMatchKey の
-    // m[0]。前後の文脈を含まない）を渡す。issue #352 の副作用対応（植草のレビュー）:
+    // onsetMatch / lastBeepedOnsetMatch には t.waitingOnsetKey（stripVolatileForKey で
+    // 数字を潰した後の文字列）を渡す。issue #352 の副作用対応（植草のレビュー）:
     // 疎な出力ペインは「点灯→押し出されて解除→同じ文言で再点灯」の点滅を起こし
     // 得るため、直前と同じ点灯根拠なら通常より長い猶予
     // （WAITING_BEEP_REPEAT_SUPPRESS_MS）で抑止する。
-    // ⚠ t.waitingOnsetMatch（前後の文脈込み）を渡してはいけない（司の実測で発覚した
-    //   不具合）。vk-orchestrator の常駐ログは前後の文脈（termId 等）が毎回変わるため、
-    //   文脈込みの文字列を鍵にすると長期抑制が一度も適用されない
-    //   （詳細は shouldBeepForWaiting / WAITING_BEEP_REPEAT_SUPPRESS_MS のコメント参照）。
+    // ⚠ t.waitingOnsetMatch（文脈そのまま。数字を潰していない）を渡してはいけない
+    //   （司の実測で発覚した不具合）。vk-orchestrator の常駐ログは前後の文脈
+    //   （termId 等）が毎回変わるため、数字を潰さない文字列を鍵にすると長期抑制が
+    //   一度も適用されない（詳細は stripVolatileForKey / WAITING_BEEP_REPEAT_SUPPRESS_MS
+    //   のコメント参照）。
     if (waiting && shouldBeepForWaiting({
       now,
       lastBeepAt: t.lastWaitingBeepAt,
@@ -621,12 +626,14 @@ async function createTerminal(paneId, cwd, options = {}) {
     //   checkWaiting() が毎回 t.lastLines への再探索（backfill）を試み、拾えた時点で
     //   ここに記録する（司の指摘・#352 の再レビュー。詳細は checkWaiting 内のコメント
     //   参照）。
-    // waitingOnsetKey: waitingOnsetMatch と同じタイミングで更新する、正規表現の
-    //   一致範囲そのもの（findWaitingMatchKey の返り値。m[0]。前後の文脈を含まない）。
+    // waitingOnsetKey: waitingOnsetMatch と同じタイミングで更新する、
+    //   stripVolatileForKey(waitingOnsetMatch)（数字だけを潰した文字列）。
     //   ビープの長期抑制（lastBeepedOnsetKey との比較）専用（issue #352 の再レビュー・
-    //   司の実測で発覚）。waitingOnsetMatch を抑制の鍵にすると、vk-orchestrator の
-    //   常駐ログのように前後の文脈（termId 等）が毎回変わる出力で鍵も毎回変わり、
-    //   長期抑制が一度も適用されないため分離した。
+    //   司と安藤の実測で発覚）。waitingOnsetMatch をそのまま抑制の鍵にすると、
+    //   vk-orchestrator の常駐ログのように前後の文脈（termId 等）が毎回変わる出力で
+    //   鍵も毎回変わり長期抑制が一度も適用されない。一方、数字を潰すだけでなく
+    //   正規表現の一致範囲そのもの（m[0]）まで丸めると判別力が無くなり、内容の
+    //   異なる本物の確認どうしを同一視してしまう（stripVolatileForKey のコメント参照）。
     // lastBeepedOnsetKey: 直前にビープを鳴らしたときの waitingOnsetKey のスナップ
     //   ショット（issue #352・植草のレビュー）。次にビープが必要になったとき、今回の
     //   waitingOnsetKey と空白・罫線を無視して同一なら「同じ誤検知の点滅」とみなし、

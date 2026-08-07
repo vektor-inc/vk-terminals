@@ -145,19 +145,32 @@ const WAITING_PATTERNS = [
 const WAITING_ONSET_CONTEXT_CHARS = 24;
 
 // WAITING_PATTERNS のいずれかに一致した箇所の詳細を返す（一致しなければ null）。
-// findWaitingMatch（文脈込みの文字列）と findWaitingMatchKey（一致範囲そのもの）の
-// 両方から使う共通の探索ロジック。呼び出しごとに別々に exec() を走らせると、
-// （現状は起こらないはずだが）2 つの結果が食い違う余地を生むため、探索自体を
-// ここへ一本化して「同じ入力なら常に同じ一致箇所を指す」ことを構造で保証する。
+// findWaitingMatch（文脈込みの文字列）が使う探索ロジック。
+//
+// 配列順で最初に当たったパターンの最初の一致ではなく、**バッファ内で最も後ろ
+// （index が最大）の一致**を採る（安藤の指摘・再レビュー HIGH）。
+//   判定バッファ（lastLines）は 80 行のスクロールバックなので、先頭側には
+//   すでに画面から流れ去った古い一致（例: 何行も前に流れた "Press Enter to
+//   continue" というログ）が残っていることがある。配列順で最初に見つかった
+//   ものを採ると、画面下端の本物のダイアログより先にそちらを返してしまう。
+//   古い一致の方が先に押し出されるため、それを点灯根拠として記録すると、
+//   本物のダイアログがまだ画面にあるのに押し出しだけで「消えた」と誤判定し、
+//   誤って解除してしまう（vektor-inc/vk-terminals#91 の再発。安藤の実測で確認）。
+//   最も後ろの一致はバッファの中でライブな画面に最も近く、押し出されるのも
+//   最後になるため、この誤解除が起きない。
+//   コスト: 全パターンを走査するようになる（短絡できない）が、実測
+//   （8000 字の敵対的入力 x50）でも計測誤差の範囲だった（支配項の
+//   /approve.*\(y\/n\)/i がどちらの実装でも走るため）。
 function findWaitingMatchDetail(cleanBuffer) {
   if (typeof cleanBuffer !== 'string' || cleanBuffer === '') return null;
+  let best = null;
   for (const pattern of WAITING_PATTERNS) {
     const m = pattern.exec(cleanBuffer);
-    if (m && m[0] !== '') {
-      return { raw: m[0], index: m.index, buffer: cleanBuffer };
+    if (m && m[0] !== '' && (best === null || m.index > best.index)) {
+      best = { raw: m[0], index: m.index, buffer: cleanBuffer };
     }
   }
-  return null;
+  return best;
 }
 
 // WAITING_PATTERNS のいずれかに一致した箇所を、前後の文脈込みの文字列として返す
@@ -168,18 +181,10 @@ function findWaitingMatchDetail(cleanBuffer) {
 // 文字を加えた範囲であることに注意（理由は WAITING_ONSET_CONTEXT_CHARS のコメント
 // 参照）。真偽値だけが要る呼び出し（matchesWaiting）はこの差を意識しなくてよい。
 //
-// 用途は「解除判定（onsetStillVisible）の照合元」に限定すること。ビープ抑制の鍵には
-// 使わない（findWaitingMatchKey を使う。理由は同関数のコメント参照）。
-//
-// ⚠ 「点灯根拠」という名前から、画面下端に出ている最新のダイアログそのものを指すと
-//   読めるが、そうとは限らない（安藤の指摘・再レビュー LOW）。WAITING_PATTERNS の
-//   配列順で最初に当たったパターン × バッファ**先頭側**の最初の一致を返すため、
-//   バッファに古い一致（例: 何行も前に流れた "Press Enter to continue" というログ）が
-//   残っていると、画面下端の本物のダイアログより先にそちらを返すことがある。
-//   解除判定（onsetStillVisible）への実害は無い（見るのは matches === false のときに
-//   限られ、本物のダイアログが出ている間はそもそも matches === true になるため
-//   解除経路に入らない）。ただし他の用途に流用する際は「必ずしも最新の根拠ではない」
-//   ことを踏まえること。
+// バッファ内で最も後ろの一致を返す（findWaitingMatchDetail 参照）ため、通常は
+// 画面下端に最も近い最新の根拠になる。ビープ抑制の鍵に使う場合は、この文脈込みの
+// 文字列に含まれる可変部分（時刻・ID・カウンタ等の数字）をそのまま比較しないこと
+// （app.js 側で数字を潰してから比較する。詳細は checkWaiting のコメント参照）。
 function findWaitingMatch(cleanBuffer) {
   const detail = findWaitingMatchDetail(cleanBuffer);
   if (!detail) return null;
@@ -188,29 +193,36 @@ function findWaitingMatch(cleanBuffer) {
   return detail.buffer.slice(start, end);
 }
 
-// WAITING_PATTERNS のいずれかに一致した箇所の、正規表現の一致範囲そのもの（m[0]。
-// 前後の文脈を含まない）を返す（一致しなければ null）。ビープ抑制の鍵
-// （shouldBeepForWaiting の onsetMatch）専用に用意した（issue #352 の再レビュー・
-// 司の実測で確認）。
+// findWaitingMatch が返す文脈込みの文字列から、可変部分（時刻・termId・カウンタ
+// 等の数字）を潰した文字列を返す（issue #352 の再レビュー）。ビープの長期抑制の
+// 鍵（shouldBeepForWaiting の onsetMatch）専用。null / 非文字列は null を返す。
 //
-// なぜ findWaitingMatch（文脈込み）をそのままキーにできないか:
-//   vk-orchestrator の常駐ログ（#352 の主対象）のように、同じ言い回し（例:
-//   「入力待ち」）の前後の文脈（時刻・termId・カウンタ・隣接行）が毎回変わる出力では、
-//   文脈込みの文字列は再点灯のたびに毎回違う値になり、shouldBeepForWaiting の
-//   「直前と同じ点灯根拠なら長期抑制する」判定が一度も成立しない（司の実測:
-//   termId=5 と termId=9 の 2 行で sameIgnoringWhitespace が false になり、
-//   WAITING_BEEP_REPEAT_SUPPRESS_MS が実質無効化されていた）。m[0] は一致した
-//   パターンそのものの範囲だけなので、可変の文脈を含まず安定して一致する
-//   （上の例では両方とも m[0] = "入力待ち" になる）。
+// なぜ文脈込みの文字列をそのまま鍵にできないか（司の実測で発覚）:
+//   vk-orchestrator の常駐ログのように、同じ言い回し（例:「入力待ち」）の前後の
+//   文脈（時刻・termId・カウンタ・隣接行）が毎回変わる出力では、文脈込みの文字列は
+//   再点灯のたびに毎回違う値になり、shouldBeepForWaiting の「直前と同じ点灯根拠
+//   なら長期抑制する」判定が一度も成立しない（実測: termId=5 と termId=9 の 2 行で
+//   sameIgnoringWhitespace が false になり、WAITING_BEEP_REPEAT_SUPPRESS_MS が
+//   実質無効化されていた）。
 //
-// 逆に短く定型化しすぎる副作用もあることに注意。日本語の選択式プロンプト
-// （AskUserQuestion 等）では m[0] が "Enter to select" のような固定フッター文言に
-// なり、**設問が違う 2 つの本物の確認が同一キーになる**（findWaitingMatch のコメント
-// 参照）。これは WAITING_BEEP_REPEAT_SUPPRESS_MS の値を決めるときに承知のうえで
-// 受け入れたトレードオフである（同定数のコメント参照）。
-function findWaitingMatchKey(cleanBuffer) {
-  const detail = findWaitingMatchDetail(cleanBuffer);
-  return detail ? detail.raw : null;
+// なぜ「正規表現の一致範囲そのもの（m[0]）」に丸めるのでもいけないか（安藤の
+// 指摘・再レビュー MEDIUM。当初はそちらを採っていたが後退させた）:
+//   m[0] は定義上「パターンのリテラルそのもの」なので、判別力が低すぎる。
+//   例えば Claude Code の許可プロンプトはどれも /Do you want to/i にしか当たらず、
+//   「編集の許可」も「コマンド実行の許可」も m[0] = "Do you want to" という同じ
+//   鍵になってしまい、**内容の異なる本物の確認どうしが同一視される**
+//   （安藤の実測: 2 種類の本物の確認プロンプトが誤って同一キーになった）。
+//   これは日本語の AskUserQuestion だけの問題として承知していたはずが、
+//   実際には英語の通常の許可プロンプト全般にまで広がっており、合意していた
+//   トレードオフの範囲を超えていた。
+//
+// 数字だけを潰す（`\d+` → `#`）のはこの両方を満たす折衷案（安藤の実測で確認）:
+//   vk-orchestrator の可変部分（termId 等）は数字なので、潰せば同じ鍵になり
+//   長期抑制が効く。一方、許可プロンプトの「何を許可するか」を表す語（"make this
+//   edit" / "run this command" 等）は数字ではないので潰されず残り、異なる確認
+//   どうしを区別できる。
+function stripVolatileForKey(text) {
+  return typeof text === 'string' ? text.replace(/\d+/g, '#') : null;
 }
 
 function matchesWaiting(cleanBuffer) {
@@ -430,36 +442,43 @@ const WAITING_BEEP_COOLDOWN_MS = 15000;
 // クールダウンではなくこちらの長い猶予を使う。「別の新しい確認」なら根拠の文字列も
 // 変わるはずなので、通常どおり短いクールダウンで鳴らせる。
 //
-// ⚠ ここで渡す onsetMatch / lastBeepedOnsetMatch は findWaitingMatchKey（正規表現の
-//   一致範囲そのもの。m[0]）の値であること。findWaitingMatch（前後の文脈込み）を
-//   そのまま渡してはいけない（司の実測で発覚した不具合・#352 の再レビュー）。
-//   vk-orchestrator の常駐ログのように、同じ言い回し（例:「入力待ち」）の前後の
-//   文脈（時刻・termId・カウンタ・隣接行）が毎回変わる出力では、文脈込みの文字列は
-//   再点灯のたびに毎回違う値になり、この長期抑制が一度も適用されなくなる
-//   （実測: termId=5 / termId=9 の 2 行で sameIgnoringWhitespace が false になり、
-//   結局 15 秒クールダウンしか効いていなかった）。findWaitingMatchKey の m[0] は
-//   可変の文脈を含まないため、同じ言い回しなら安定して一致する。
+// ⚠ ここで渡す onsetMatch / lastBeepedOnsetMatch は stripVolatileForKey(findWaitingMatch(...))
+//   の値であること（詳細は stripVolatileForKey のコメント参照）。
+//
+//   findWaitingMatch（前後の文脈込み）をそのまま渡してはいけない（司の実測で発覚
+//   した不具合・#352 の再レビュー）。vk-orchestrator の常駐ログのように、同じ
+//   言い回し（例:「入力待ち」）の前後の文脈（時刻・termId・カウンタ・隣接行）が
+//   毎回変わる出力では、文脈込みの文字列は再点灯のたびに毎回違う値になり、この
+//   長期抑制が一度も適用されなくなる（実測: termId=5 / termId=9 の 2 行で
+//   sameIgnoringWhitespace が false になり、結局 15 秒クールダウンしか効いて
+//   いなかった）。
+//
+//   正規表現の一致範囲そのもの（m[0]）に丸めるのでもいけない（安藤の指摘・
+//   再レビュー MEDIUM。当初はそちらを採っていたが後退させた）。m[0] は
+//   パターンのリテラルそのものなので判別力が低すぎる。例えば Claude Code の
+//   許可プロンプトはどれも /Do you want to/i にしか当たらないため、「編集の許可」
+//   も「コマンド実行の許可」も m[0] = "Do you want to" という同じ鍵になり、
+//   **内容の異なる本物の確認どうしが同一視される**（安藤の実測で確認済み。
+//   当初「AskUserQuestion の定型フッターに限った話」として許容したつもりの
+//   トレードオフが、実際には英語の通常の許可プロンフト全般にまで広がっていた）。
+//
+//   stripVolatileForKey は文脈込みの文字列から数字だけを潰すことで両方を満たす
+//   折衷案（安藤の実測で確認）: vk-orchestrator の可変部分（termId 等）は数字
+//   なので潰されて同じ鍵になり長期抑制が効く。一方、許可プロンプトの「何を
+//   許可するか」を表す語（"make this edit" / "run this command" 等）は数字では
+//   ないので潰されず残り、異なる確認どうしを区別できる。
 //
 // 値の根拠: この値は「同じ点灯根拠で鳴らないビープを、人が最大どれだけ聞き逃す
 // 可能性があるか」の上限そのものになる（安藤の指摘・再レビュー MEDIUM）。長くする
 // ほど誤検知の点滅は静かになるが、見逃しの窓も同じだけ広がる。
 //
-// この見逃しの窓は「同じ点灯根拠」の判定精度に直結して悪化する。findWaitingMatchKey
-// は配列順で最初に当たったパターン × バッファ先頭側の最初の一致の m[0] を返すため
-// （詳細は同関数のコメント参照）、日本語の AskUserQuestion のように本文が英語
-// パターンに当たらず定型フッター（"Enter to select" 等）だけが一致するケースでは、
-// 「問いの内容」ではなく「フッターの定型文」が鍵になり、**内容の異なる 2 問目が
-// 1 問目と「同じ根拠」と誤判定されて抑制対象に入る**（安藤の実測で確認済み）。
-// つまりこの値は「同じ誤検知の点滅を静める効果」と「AskUserQuestion で問いが
-// 変わったのに気付かれない最悪ケースの長さ」を同時に決める。これは m[0] をキーに
-// 切り替えても解消しない（AskUserQuestion のフッター自体が m[0] になるため）ので、
-// 承知のうえで受け入れたトレードオフとする。
-//
 // 15 秒（WAITING_BEEP_COOLDOWN_MS）のままだと疎な出力ペインでは毎回の再点灯で
-// 鳴ってしまう一方、10 分（600000ms）まで伸ばすと AskUserQuestion の見逃しの窓が
-// 実用上大きすぎる（安藤の指摘で再検討）。2 分（120000ms）であれば、疎な出力の
-// 誤検知（vk-orchestrator の常駐ログ等、押し出しに数十秒〜数分かかる）はほぼ
-// 抑制できる一方、見逃しの上限も「気付くまで最大 2 分」程度に留まる。
+// 鳴ってしまう一方、10 分（600000ms）まで伸ばすと見逃しの窓が実用上大きすぎる
+// （安藤の指摘で再検討）。2 分（120000ms）であれば、疎な出力の誤検知
+// （vk-orchestrator の常駐ログ等、押し出しに数十秒〜数分かかる）はほぼ抑制できる
+// 一方、見逃しの上限も「気付くまで最大 2 分」程度に留まる。stripVolatileForKey で
+// 判別力を上げた後も、数字以外の文脈が偶然一致する本物の確認どうしが同一視される
+// 可能性はゼロではないため、この上限は残る。
 // 「見逃しより誤検知の実害を軽くする」という優先順位（冒頭コメント参照）を、
 // 恒久的な無音化ではなく有限の抑制に留める形で保っている。
 const WAITING_BEEP_REPEAT_SUPPRESS_MS = 120000;
@@ -807,7 +826,6 @@ return {
   detectBackgroundAgents,
   extractScreenLines,
   findWaitingMatch,
-  findWaitingMatchKey,
   isOutputQuiescent,
   isWaitingCwdExcluded,
   matchesWaiting,
@@ -817,6 +835,7 @@ return {
   sameIgnoringWhitespace,
   selectWaitingBuffer,
   shouldBeepForWaiting,
+  stripVolatileForKey,
   waitingCheckDelayMs,
 };
 });

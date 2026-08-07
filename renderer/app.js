@@ -34,6 +34,10 @@ const { normalizeConfirmClose, shouldConfirmClose } = window.VKCloseConfirm;
 // 足していないので、ここでは案内専用の関数だけを使う（PR #315 安藤のレビュー指摘）。
 const { isLoopbackDisplayValue } = window.VKLoopbackHost;
 const { isSafeHttpUrl } = window.VKUrlSafety;
+// ペイン内 URL の Cmd/Ctrl+クリック対応（issue #349）。折り返し行をまたぐ URL の検出・
+// バッファ位置への変換は renderer/terminalLinkProvider.js（xterm.js の
+// registerLinkProvider を自前実装）が担う。詳しい採用理由は同ファイル冒頭のコメント参照。
+const { createTerminalLinkProvider } = window.VKTerminalLinkProvider;
 const {
   migrateLegacyState,
   readCollapsedSections,
@@ -432,6 +436,11 @@ async function createTerminal(paneId, cwd, options = {}) {
 
   const fitAddon = new FitAddon();
   term.loadAddon(fitAddon);
+
+  // ペイン内 URL の Cmd/Ctrl+クリック対応（issue #349）。破棄は term.dispose() 側に
+  // 任せる（xterm.js 本体の LinkProviderService は Terminal の disposal 時に登録済み
+  // プロバイダを自動でクリアするため、fitAddon 同様ここで個別に dispose() を呼ぶ必要は無い）。
+  term.registerLinkProvider(createTerminalLinkProvider(term, createTerminalLinkHandlers()));
 
   // OSC 0 / OSC 2 のタイトル変更を購読してペイン上部のタスクタイトル行に反映する。
   // 例: `printf '\033]0;ビルド中\007'` をシェルで実行すると "ビルド中" がここに表示される。
@@ -883,6 +892,93 @@ function openExternalUrlSafe(url) {
   } catch (_e) {
     showExternalUrlOpenFailedToast(url);
   }
+}
+
+// ─── ペイン内 URL の Cmd/Ctrl+クリック（issue #349） ───────────────────────────────
+// URL の検出・バッファ範囲への変換は renderer/terminalLinkProvider.js（xterm.js の
+// registerLinkProvider を自前実装したもの）が担い、ここでは「どう開くか」
+// （修飾キー判定・ツールチップ表示）だけを扱う。実際に開く経路は openExternalUrlSafe を
+// そのまま使う（新しい経路を増やさない。植草の確定仕様）。
+//
+// 単クリックでは開かない仕様にしているのは、ターミナルのドラッグ選択との誤爆を防ぐため
+// （植草の UX レビュー・issue #349）。xterm.js 側の Linkifier は mousedown 時点のリンクと
+// mouseup 時点のリンクが一致したときだけ activate を呼ぶため、ドラッグ選択とは元々
+// 衝突しない（xterm.js 本体の src/browser/Linkifier.ts で確認済み）。また矩形選択の
+// 修飾キーは Alt（xterm.js 本体の SelectionService.shouldColumnSelect）であり、
+// ここで使う Cmd（macOS）/ Ctrl（Windows・Linux）とは別のキーのため競合しない。
+
+// macOS かどうかの判定。navigator.platform は非推奨だが、Electron が同梱する
+// Chromium では引き続き利用できる（contextIsolation の影響を受けない標準 Web API のため
+// preload 経由の橋渡しは不要）。テスト環境（node --test。navigator 無し）ではこの関数を
+// 呼ばない前提のため未定義チェックだけ入れておく。
+function isMacPlatform() {
+  const platform = (typeof navigator !== 'undefined' && navigator.platform) || '';
+  return /Mac|iPhone|iPod|iPad/i.test(platform);
+}
+
+const IS_MAC_PLATFORM = isMacPlatform();
+
+// リンクを開く修飾キーが押されているか。macOS は Cmd（metaKey）、Windows・Linux は
+// Ctrl（ctrlKey）（植草の確定仕様）。
+function isLinkOpenModifierPressed(event) {
+  return IS_MAC_PLATFORM ? !!event.metaKey : !!event.ctrlKey;
+}
+
+const TERM_LINK_TOOLTIP_TEXT = IS_MAC_PLATFORM ? '⌘+クリックで開く' : 'Ctrl+クリックで開く';
+
+// ホバー中のツールチップ本体。全ペイン共通で 1 つだけ用意し、都度使い回す
+// （externalUrlToast と同じ考え方。document.body 直下に置き、#root の render() による
+// 差し替えの影響を受けないようにする）。
+let termLinkTooltipEl = null;
+
+function ensureTermLinkTooltip() {
+  if (termLinkTooltipEl) return termLinkTooltipEl;
+  const el = document.createElement('div');
+  el.className = 'term-link-tooltip';
+  // マウス追従のみの補助表示で、キーボード操作でも読み上げでも到達できないため
+  // 支援技術には見せない（Cmd/Ctrl+クリック自体がポインタ操作前提の機能のため）。
+  el.setAttribute('aria-hidden', 'true');
+  el.hidden = true;
+  el.textContent = TERM_LINK_TOOLTIP_TEXT;
+  document.body.appendChild(el);
+  termLinkTooltipEl = el;
+  return el;
+}
+
+// カーソル位置の近くにツールチップを表示する。pointer-events: none にしてあるため
+// （style.css 参照）、このツールチップ自身が xterm.js 側のホバー判定（マウス位置の
+// 追跡）を奪うことはない。
+function showTermLinkTooltip(event) {
+  const el = ensureTermLinkTooltip();
+  const OFFSET = 12;
+  el.hidden = false;
+  const maxLeft = Math.max(0, window.innerWidth - el.offsetWidth - 4);
+  const maxTop = Math.max(0, window.innerHeight - el.offsetHeight - 4);
+  el.style.left = `${Math.min(event.clientX + OFFSET, maxLeft)}px`;
+  el.style.top = `${Math.min(event.clientY + OFFSET, maxTop)}px`;
+}
+
+function hideTermLinkTooltip() {
+  if (termLinkTooltipEl) termLinkTooltipEl.hidden = true;
+}
+
+// term.registerLinkProvider() に渡すハンドラ一式。見た目（ホバー時の下線・pointer
+// カーソル）は xterm.js 本体が自動で付ける（ILink.decorations を明示しない場合は既定で
+// 有効。ANSI 前景色は変更しない。植草の確定仕様）。
+function createTerminalLinkHandlers() {
+  return {
+    activate(event, url) {
+      if (!isLinkOpenModifierPressed(event)) return;
+      event.preventDefault();
+      openExternalUrlSafe(url);
+    },
+    hover(event) {
+      showTermLinkTooltip(event);
+    },
+    leave() {
+      hideTermLinkTooltip();
+    },
+  };
 }
 
 // ─── Sidebar menu ────────────────────────────────────────────────────────────

@@ -47,9 +47,12 @@
          - stripAnsi.js       : VKTerminalDisplay
          - sidebarSectionState.js : localStorage（app.js の共通セクション生成前）
          - widgetView.js      : VKWidgetContract
-         - taskQueueLink.js / settingsTabs.js : VKUrlSafety -->
+         - taskQueueLink.js / settingsTabs.js / urlLinkify.js : VKUrlSafety
+         - terminalLinkProvider.js : VKUrlLinkify（ペイン内 URL の Cmd/Ctrl+クリック対応。issue #349） -->
   <script src="ipcClient.js"></script>
   <script src="urlSafety.js"></script>
+  <script src="urlLinkify.js"></script>
+  <script src="terminalLinkProvider.js"></script>
   <script src="terminalDisplay.js"></script>
   <script src="../utils/stripAnsi.js"></script>
   <script src="../utils/closeConfirm.js"></script>

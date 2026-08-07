@@ -5,7 +5,9 @@ const assert = require('node:assert/strict');
 
 const {
   WAITING_BEEP_COOLDOWN_MS,
+  WAITING_BEEP_REPEAT_SUPPRESS_MS,
   WAITING_MAX_EVAL_INTERVAL_MS,
+  WAITING_PATTERNS,
   WAITING_QUIESCENCE_MS,
   containsIgnoringWhitespace,
   detectBackgroundAgents,
@@ -16,6 +18,7 @@ const {
   matchesWaiting,
   nextWaitingState,
   normalizeWaitingExcludeCwdPatterns,
+  sameIgnoringWhitespace,
   selectWaitingBuffer,
   shouldBeepForWaiting,
   waitingCheckDelayMs,
@@ -155,7 +158,10 @@ test('containsIgnoringWhitespace: needle が空・非文字列なら false（空
   assert.equal(containsIgnoringWhitespace('anything', undefined), false);
 });
 
-test('nextWaitingState: onsetStillVisible を渡さない呼び出しは従来どおり静止時点の非マッチで解除しない（後方互換）', () => {
+test('nextWaitingState: onsetStillVisible が無い（追跡できていない）ときは fail-safe で解除しない', () => {
+  // onsetStillVisible は本 issue で新規追加した引数であり、守るべき既存の互換は無い。
+  // undefined のときに解除しないのは互換維持ではなく、「根拠が追跡できていない・
+  // 確かめられない」状況に対する fail-safe（安藤の指摘 LOW-2）。
   assert.equal(nextWaitingState({ prev: true, matches: false, quiescent: true }), true);
 });
 
@@ -216,6 +222,54 @@ test('シナリオ: リサイズで折り返しが変わっただけでは解除
 
   waiting = nextWaitingState({ prev: true, matches: false, quiescent: true, onsetStillVisible });
   assert.equal(waiting, true, 'リサイズによる折り返しだけで誤って解除されている（#91 の再発）');
+});
+
+test('シナリオ: 枠線付き TUI（Claude Code のプロンプト枠）でリサイズしても解除されない（安藤の指摘 HIGH-2・#91 再発防止）', () => {
+  // 空白だけを無視する比較は、折り返しで確認文の改行位置が変わるだけなら安全（文字の
+  // 総数は変わらない）。しかし枠線で囲まれたレイアウトでは、リサイズで枠の横幅
+  // （╭──────╮ の「─」の本数）自体が変わり、罫線の文字数が増減する。空白だけ
+  // 無視する比較のままだと、この本数の変化を「消えた」と誤判定してしまう。
+  const onsetLine = [
+    '───────────────╮',
+    '│ ご確認をお願いします。   │',
+    '╰───────────────╯',
+  ].join('\n');
+  assert.equal(matchesWaiting(onsetLine), true);
+  let waiting = nextWaitingState({ prev: false, matches: true, quiescent: true });
+  assert.equal(waiting, true);
+  const onsetMatch = findWaitingMatch(onsetLine);
+  assert.notEqual(onsetMatch, null);
+
+  // リサイズでペイン幅が狭まり、枠の横幅（罫線の本数）自体が変わり、かつ確認文が
+  // 「ご確認」と「を」の間で折り返されて再描画された状態。文字自体は残っている。
+  const narrowedBuffer = [
+    '─────╮',
+    '│ ご確認',
+    'を│',
+    'お願いします。│',
+    '╰─────╯',
+  ].join('\n');
+  // 罫線の本数が変わり、かつ折り返しで許可リストの名詞パターンが分断されたため、
+  // 素の文字列比較では非マッチになる（このテストが検証したい「誤って解除され
+  // そうになる」状況そのもの）。
+  assert.equal(matchesWaiting(narrowedBuffer), false);
+
+  const onsetStillVisible = containsIgnoringWhitespace(narrowedBuffer, onsetMatch);
+  assert.equal(
+    onsetStillVisible,
+    true,
+    '枠線の本数が変わっただけなのに「消えた」と誤判定している（#91 の再発）',
+  );
+
+  waiting = nextWaitingState({ prev: true, matches: false, quiescent: true, onsetStillVisible });
+  assert.equal(waiting, true, '枠線付き TUI のリサイズで誤って解除されている（#91 の再発）');
+});
+
+test('containsIgnoringWhitespace: TUI の枠線・罫線（Unicode Box Drawing）も無視する（安藤の指摘 HIGH-2）', () => {
+  // 枠の横幅が変わって罫線の本数そのものが増減しても、罫線を除けば一致する。
+  assert.equal(containsIgnoringWhitespace('╭───╮\n│ abc │\n╰───╯', '╭─╮\nabc\n╰─╯'), true);
+  // 罫線を除いた本文自体が違えば、当然一致しない（緩めすぎて何でも true になっていないことの確認）。
+  assert.equal(containsIgnoringWhitespace('╭───╮\n│ abc │\n╰───╯', 'xyz'), false);
 });
 
 // ─── 判定に使うバッファの選択 ────────────────────────────────────────────────
@@ -360,6 +414,96 @@ test('shouldBeepForWaiting: クールダウンを過ぎれば再び鳴らす', (
     shouldBeepForWaiting({ now: lastBeepAt + WAITING_BEEP_COOLDOWN_MS, lastBeepAt }),
     true,
   );
+});
+
+// ─── ビープの長期抑制（issue #352・植草のレビュー） ─────────────────────────────
+// #352 で解除経路（静止評価での自動解除）を追加した結果、疎な出力ペインは
+// 「点灯→押し出されて解除→同じ文言で再点灯」の点滅を起こし得る。旧実装は一度点灯
+// したら二度と状態が遷移しなかったため、この種の誤検知でもビープは初回 1 回だけ
+// だったが、新実装では毎回の再点灯がビープ対象になる。直前と同じ点灯根拠なら
+// 通常のクールダウン（WAITING_BEEP_COOLDOWN_MS）ではなく長い猶予
+// （WAITING_BEEP_REPEAT_SUPPRESS_MS）で抑止することを確認する。
+
+test('shouldBeepForWaiting: onsetMatch / lastBeepedOnsetMatch を渡さない呼び出しは従来どおり通常クールダウンで判定する（後方互換）', () => {
+  const lastBeepAt = 10_000;
+  assert.equal(
+    shouldBeepForWaiting({ now: lastBeepAt + WAITING_BEEP_COOLDOWN_MS, lastBeepAt }),
+    true,
+  );
+  assert.equal(
+    shouldBeepForWaiting({ now: lastBeepAt + WAITING_BEEP_COOLDOWN_MS - 1, lastBeepAt }),
+    false,
+  );
+});
+
+test('shouldBeepForWaiting: 直前と同じ点灯根拠（空白・罫線を無視して同一）なら、通常クールダウンを過ぎていても長期抑制で鳴らさない', () => {
+  const lastBeepAt = 10_000;
+  const onsetMatch = '[poll] 実行待ちタスクなし';
+  assert.equal(
+    shouldBeepForWaiting({
+      now: lastBeepAt + WAITING_BEEP_COOLDOWN_MS + 1, // 通常のクールダウンは過ぎている
+      lastBeepAt,
+      onsetMatch,
+      lastBeepedOnsetMatch: onsetMatch,
+    }),
+    false,
+    '同じ誤検知の点滅なのに通常クールダウンだけで鳴ってしまっている',
+  );
+});
+
+test('shouldBeepForWaiting: 直前と同じ点灯根拠でも、長期抑制の猶予を過ぎれば再び鳴らす', () => {
+  const lastBeepAt = 10_000;
+  const onsetMatch = '[poll] 実行待ちタスクなし';
+  assert.equal(
+    shouldBeepForWaiting({
+      now: lastBeepAt + WAITING_BEEP_REPEAT_SUPPRESS_MS,
+      lastBeepAt,
+      onsetMatch,
+      lastBeepedOnsetMatch: onsetMatch,
+    }),
+    true,
+  );
+});
+
+test('shouldBeepForWaiting: 点灯根拠が異なる（別の新しい確認）なら、通常クールダウンだけで鳴らす', () => {
+  const lastBeepAt = 10_000;
+  assert.equal(
+    shouldBeepForWaiting({
+      now: lastBeepAt + WAITING_BEEP_COOLDOWN_MS,
+      lastBeepAt,
+      onsetMatch: 'ご確認をお願いします。',
+      lastBeepedOnsetMatch: '[poll] 実行待ちタスクなし',
+    }),
+    true,
+  );
+});
+
+test('shouldBeepForWaiting: 空白・罫線だけが違う同一の点灯根拠は「同じ」とみなし長期抑制する', () => {
+  const lastBeepAt = 10_000;
+  assert.equal(
+    shouldBeepForWaiting({
+      now: lastBeepAt + WAITING_BEEP_COOLDOWN_MS + 1,
+      lastBeepAt,
+      onsetMatch: '│ ご確認をお願いします。 │',
+      lastBeepedOnsetMatch: 'ご確認\nをお願いします。',
+    }),
+    false,
+  );
+});
+
+test('sameIgnoringWhitespace: 空白・罫線を無視して同一なら true', () => {
+  assert.equal(sameIgnoringWhitespace('foo\nbar', 'foobar'), true);
+  assert.equal(sameIgnoringWhitespace('│ foo │', 'foo'), true);
+});
+
+test('sameIgnoringWhitespace: 内容自体が違えば false', () => {
+  assert.equal(sameIgnoringWhitespace('foo', 'bar'), false);
+});
+
+test('sameIgnoringWhitespace: 非文字列・空文字列は false（空文字列同士が誤って同一と判定されないように）', () => {
+  assert.equal(sameIgnoringWhitespace('', ''), false);
+  assert.equal(sameIgnoringWhitespace(null, null), false);
+  assert.equal(sameIgnoringWhitespace(undefined, 'foo'), false);
 });
 
 test('normalizeWaitingExcludeCwdPatterns: 文字列以外・空白のみの値を除外する', () => {
@@ -699,6 +843,19 @@ test('waitingState: g フラグ付きの正規表現を export しない（lastI
       assert.equal(value.global, false, `g フラグ付きの正規表現を export している: ${name}`);
     }
   }
+});
+
+// findWaitingMatch（issue #352）は WAITING_PATTERNS を pattern.exec() でループして回し、
+// 返り値の m.index を使って文脈の切り出し位置を決める。g / y フラグ付きの正規表現は
+// lastIndex という可変状態を持つため、複数回の exec() 呼び出しの間で位置が持ち越され、
+// 同じ入力を渡しても 1 回おきに取りこぼす（安藤の指摘 LOW-1・実演: g 付きパターンを
+// 一時的に足して同じ文字列を 3 回渡すと call 0 は一致・call 1 は null・call 2 は
+// 再び一致、という交互のふるまいになった）。
+// WAITING_PATTERNS は現状 g / y フラグ付きを 1 件も含まないため実害は無いが、将来
+// パターンを足すときにこの前提が崩れないよう固定する。
+test('WAITING_PATTERNS: g / y フラグを持たない（findWaitingMatch が exec を回すため lastIndex の持ち越しで 1 回おきに取りこぼす回帰の防止・LOW-1）', () => {
+  const stateful = WAITING_PATTERNS.filter((p) => p.global || p.sticky);
+  assert.deepEqual(stateful, [], `g / y フラグ付きのパターンがある: ${stateful}`);
 });
 
 test('detectBackgroundAgents: 「← 5 and counting」は agents ではないので拾わない（MEDIUM-3）', () => {

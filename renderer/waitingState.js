@@ -50,6 +50,14 @@
 //   つまり今回の判断は「見逃しより誤検知の実害を軽くする」という優先順位そのものは
 //   変えず、「一度点いた誤検知が自力で消えるまでの時間」を、出力の疎密に関わらず
 //   有限にすることを優先した。
+//
+//   この解除経路の追加は音（ビープ）の鳴り方にも影響する（植草のレビュー）。旧実装は
+//   一度点灯したら二度と状態が遷移しなかったため、同じ誤検知でもビープは初回 1 回
+//   だけだった。新実装は解除→再点灯を繰り返すたびに waiting が false→true と遷移し
+//   直すため、そのたびにビープ対象になる。無人ペインが数分おきに鳴り続けるのは音の
+//   面では後退なので、shouldBeepForWaiting に「直前と同じ点灯根拠なら長め
+//   （WAITING_BEEP_REPEAT_SUPPRESS_MS）の猶予を使う」判定を追加して緩和した
+//   （詳細は shouldBeepForWaiting 周辺のコメント参照）。
 //   将来この判断を見直すときは、上のトレードオフが変わったかどうかから検討すること。
 const WAITING_TARGET_NOUNS = [
   '入力', '選択', '承認', '回答',
@@ -160,22 +168,39 @@ function matchesWaiting(cleanBuffer) {
   return findWaitingMatch(cleanBuffer) !== null;
 }
 
-// 空白・改行（全角スペース含む。JS の \s は Unicode の空白分離子を含むため対応済み）
-// を取り除いた文字列を返す純粋関数。containsIgnoringWhitespace の下請け。
-function stripWhitespaceForCompare(str) {
-  return typeof str === 'string' ? str.replace(/\s+/g, '') : '';
+// 空白・改行（全角スペース含む。JS の \s は Unicode の空白分離子を含むため対応済み）に加え、
+// TUI の枠線・罫線（Unicode Box Drawing ブロック: U+2500–U+257F。─ │ ╭ ╮ ╰ ╯ ═ ║ ┌ 等を
+// すべて含む）も取り除いた文字列を返す純粋関数。containsIgnoringWhitespace の下請け。
+//
+// 罫線を無視する理由（安藤の指摘 HIGH-2・issue #352 のレビュー）:
+//   空白だけを無視する比較は、折り返しで改行の位置が変わるだけなら安全（文字の総数は
+//   変わらない）。しかし Claude Code のプロンプト枠のように **文字自体が枠線で囲まれた**
+//   レイアウトでは、リサイズで枠の横幅（╭──────╮ の「─」の本数）自体が変わり、罫線の
+//   文字数が増減する。空白だけを無視する比較のままだと、この本数の変化を「消えた」と
+//   誤判定し、本物の確認待ちを誤解除してしまう（vektor-inc/vk-terminals#91 の再発）。
+//   罫線ごと比較対象から除外すれば、本数がいくつ変わっても影響しない。
+//
+// 比較が緩くなる方向の変更であることに注意（罫線を除いた分だけ「一致しやすく」なる）。
+// これは「見逃しより誤検知の実害を軽くする」という本ファイルの優先順位（冒頭コメント
+// 参照）とも整合する。誤って解除しない方向にしか働かないため、#352 の解除性能
+//（点灯根拠がバッファから実際に押し出されたら解除する）を弱めることはない。
+const COMPARE_NOISE_PATTERN = /[\s─-╿]+/g;
+
+function stripNoiseForCompare(str) {
+  return typeof str === 'string' ? str.replace(COMPARE_NOISE_PATTERN, '') : '';
 }
 
-// haystack に needle が「空白・改行を無視して」含まれているかを判定する（issue #352）。
-// リサイズ再描画で確認文の折り返し位置だけが変わったケース（vektor-inc/vk-terminals#91）
-// では、文字自体はまだ画面に残っているため、この比較なら「まだ見える」と判定できる。
+// haystack に needle が「空白・改行・TUI 枠線を無視して」含まれているかを判定する
+// （issue #352）。リサイズ再描画で確認文の折り返し位置や、それを囲む枠線の本数だけが
+// 変わったケース（vektor-inc/vk-terminals#91）では、確認文の文字自体はまだ画面に残って
+// いるため、この比較なら「まだ見える」と判定できる。
 // needle が空・非文字列なら false を返す（空文字列は素朴な includes だと常に true に
 // なってしまい、「根拠が無いのに常に見える」という誤った結果を招くため明示的に弾く）。
 function containsIgnoringWhitespace(haystack, needle) {
   if (typeof needle !== 'string' || needle === '') return false;
-  const strippedNeedle = stripWhitespaceForCompare(needle);
+  const strippedNeedle = stripNoiseForCompare(needle);
   if (strippedNeedle === '') return false;
-  return stripWhitespaceForCompare(haystack).includes(strippedNeedle);
+  return stripNoiseForCompare(haystack).includes(strippedNeedle);
 }
 
 function normalizeWaitingExcludeCwdPatterns(patterns) {
@@ -266,9 +291,14 @@ function selectWaitingBuffer({ quiescent, fullBuffer, recentBuffer }) {
 //                  containsIgnoringWhitespace 参照）が明示的に false のときは解除する
 //                  （issue #352: 数秒おきに 1 行だけ出力し続けるペインは quiescent = true
 //                  の評価しか回ってこないため、この経路が無いと永久に張り付く）。
-//                  onsetStillVisible を渡さない呼び出し（undefined）は従来どおり
-//                  現状維持のみ。呼び出し側が点灯根拠を追跡していない場面
-//                  （excluded 判定のテスト等）の後方互換のため。
+//                  onsetStillVisible を渡さない呼び出し（undefined）は現状維持のみ。
+//                  これは互換維持のためではなく（onsetStillVisible は本 issue で新規
+//                  追加した引数で、守るべき既存の互換は無い）、「点灯根拠を追跡できて
+//                  いない・確かめられない」という状況そのものに対する fail-safe の
+//                  本番セマンティクスである。根拠不明のまま解除すると、本物の確認待ちを
+//                  誤って消してしまうリスクの方が「疎な出力での張り付き」より実害が
+//                  大きいため、判断できないときは常に解除しない側に倒す
+//                  （安藤の指摘 LOW-2）。
 //   上限で強制的に呼ばれた評価（quiescent = false / 出力が流れ続けている）
 //     - マッチ   → 入力待ち ON のまま
 //     - 非マッチ → 解除。出力が流れている＝相手は入力を待たずに動いている、が根拠。
@@ -287,9 +317,57 @@ function nextWaitingState({ prev, matches, excluded = false, quiescent, onsetSti
 // 「応答したら次の確認でまた鳴る」という本来の通知は抑止しない。
 const WAITING_BEEP_COOLDOWN_MS = 15000;
 
-function shouldBeepForWaiting({ now, lastBeepAt, cooldownMs = WAITING_BEEP_COOLDOWN_MS }) {
+// 「同じ点灯根拠」でのビープを長めに抑制する猶予（issue #352・植草のレビュー）。
+//
+// 背景: #352 の修正で解除経路（静止評価での自動解除）を追加した結果、疎な出力
+// ペイン（vk-orchestrator の常駐ログ等）では「点灯 → 押し出されて解除 → 同じ文言で
+// 再点灯」の点滅が起きる（issue 本文で許容と明記した挙動）。旧実装は一度点灯したら
+// 二度と状態が遷移しなかったため、この種の誤検知でもビープは初回 1 回だけだった。
+// 新実装は解除→再点灯のたびに waiting が false→true と遷移し直すため、そのたびに
+// ビープ対象になる。しかも 80 行 / 8000 文字バッファが押し出されるまでの時間
+// （疎な出力では数十秒〜数分）は WAITING_BEEP_COOLDOWN_MS（15 秒）より長いのが
+// 通常なので、クールダウンをほぼ毎回やり過ごして鳴ってしまう。無人の常駐ペインが
+// 数分おきに鳴り続けるのは、音の面では旧実装より後退になる。
+//
+// 対応: 直前にビープを鳴らしたときの点灯根拠（lastBeepedOnsetMatch）を覚えておき、
+// 今回の点灯根拠（onsetMatch）が空白・罫線を無視した比較で「同じ」なら、通常の
+// クールダウンではなくこちらの長い猶予を使う。「別の新しい確認」なら根拠の文字列も
+// 変わるはずなので、通常どおり短いクールダウンで鳴らせる。
+//
+// 値の根拠: issue #352 の実例（vk-orchestrator が「入力待ち」を含むログを繰り返す）
+// では、常駐させたまま数時間気付かれなかった。10 分（600000ms）にすれば、同じ
+// 誤検知が延々と鳴り続ける実害はほぼ解消しつつ（1 時間の放置でも高々 6 回）、
+// 万一同じ文言で本当に別の確認が来ても 10 分以上経てば通知が復活するので、
+// 「見逃しより誤検知の実害を軽くする」という優先順位を、恒久的な無音化ではなく
+// 有限の抑制に留める形で保っている。
+const WAITING_BEEP_REPEAT_SUPPRESS_MS = 600000;
+
+// a と b が、空白・改行・TUI 罫線を無視すると同一とみなせるか（issue #352）。
+// containsIgnoringWhitespace の下請け（stripNoiseForCompare）を再利用し、双方向の
+// 包含で等価性を判定する。
+function sameIgnoringWhitespace(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  const strippedA = stripNoiseForCompare(a);
+  const strippedB = stripNoiseForCompare(b);
+  if (strippedA === '' || strippedB === '') return false;
+  return strippedA === strippedB;
+}
+
+function shouldBeepForWaiting({
+  now,
+  lastBeepAt,
+  cooldownMs = WAITING_BEEP_COOLDOWN_MS,
+  onsetMatch,
+  lastBeepedOnsetMatch,
+  repeatCooldownMs = WAITING_BEEP_REPEAT_SUPPRESS_MS,
+}) {
   if (!lastBeepAt) return true;
-  return now - lastBeepAt >= cooldownMs;
+  // onsetMatch / lastBeepedOnsetMatch のどちらか一方でも無い（呼び出し側が点灯根拠を
+  // 追跡していない・追跡できていない）場合は、従来どおり短いクールダウンだけで判定する。
+  const effectiveCooldownMs = sameIgnoringWhitespace(onsetMatch, lastBeepedOnsetMatch)
+    ? repeatCooldownMs
+    : cooldownMs;
+  return now - lastBeepAt >= effectiveCooldownMs;
 }
 
 // ─── バックグラウンドサブエージェント数の検知（issue vektor-inc/vk-terminals#340）──
@@ -599,6 +677,7 @@ return {
   CLAUDE_CODE_FOOTER_PATTERN,
   MAX_BACKGROUND_AGENTS,
   WAITING_BEEP_COOLDOWN_MS,
+  WAITING_BEEP_REPEAT_SUPPRESS_MS,
   WAITING_MAX_EVAL_INTERVAL_MS,
   WAITING_PATTERNS,
   WAITING_QUIESCENCE_MS,
@@ -611,6 +690,7 @@ return {
   matchesWaiting,
   nextWaitingState,
   normalizeWaitingExcludeCwdPatterns,
+  sameIgnoringWhitespace,
   selectWaitingBuffer,
   shouldBeepForWaiting,
   waitingCheckDelayMs,

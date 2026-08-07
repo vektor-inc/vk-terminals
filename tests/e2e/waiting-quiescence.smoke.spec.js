@@ -381,14 +381,27 @@ test('waiting 点灯後にユーザー入力なしで出力を流し続けると
 // renderer/app.js の LASTLINES_MAX_CHARS（8000 文字）は行数上限（80 行）と並ぶ
 // もう一方のトリム条件で、どちらで押し出されても「点灯根拠の文字列が lastLines から
 // 消える」という解除条件（containsIgnoringWhitespace）は同じに扱われる。
+//
+// ⚠ 1 行の実効文字数は renderer/terminalDisplay.js の applyDisplayControls が持つ
+//   MAX_COLS（= 1000）でクランプされる（安藤の指摘 HIGH-1）。appendWaitingBuffer
+//   （renderer/app.js）は PTY から届いた生データを毎回 appendAnsiForDisplay
+//   （= applyDisplayControls）に通してから lastLines へ積むため、1 行に 1500 文字を
+//   流しても実際に判定バッファへ乗るのは 1 行あたり最大 1001 文字（MAX_COLS + 1）
+//   まで。当初 6 行（1500 × 6 = 9000 のつもり）で組んだところ、実際には
+//   1001 × 6 ≒ 6006 文字にしかならず LASTLINES_MAX_CHARS（8000）に届かず、
+//   "Proceed?" が一度も押し出されず解除されないままテストが timeout した
+//   （安藤のレビューで実測・再現済み）。renderer/app.js の appendWaitingBuffer と
+//   同じロジックで実測した結果、"Proceed?" が押し出されるのは 8 行目
+//   （1001 × 8 ≒ 8008 > 8000）だった。ここでは十分な安全マージンを見て 12 行にする。
 test('疎な出力（数秒おきに1行）が続くペインでも、一度点灯した入力待ちが人の打鍵なしで自動解除される（issue #352）', async () => {
   const port = await getFreePort();
   const { app, win, tmpRoot } = await launchWaitingApp(port);
-  // 1 行の長さと本数: LASTLINES_MAX_CHARS(8000) を確実に超えるよう、
-  // 1500 文字 × 6 行 = 9000 文字を用意する（"Proceed?" と READY_MARKER 分の
-  // 余裕を差し引いても超える）。
+  // 1 行の長さと本数: 1 行は MAX_COLS（1000）でクランプされ実効は最大 1001 文字
+  // なので、素朴に 1500 × N で計算しても LASTLINES_MAX_CHARS（8000）には届かない
+  // （上のコメント参照）。1001 × 8 ≒ 8008 で押し出される計算だが、安全マージンを
+  // 取って 12 行（1001 × 12 ≒ 12012）にする。
   const LONG_LINE_CHARS = 1500;
-  const SPARSE_LINES = 6;
+  const SPARSE_LINES = 12;
   // WAITING_QUIESCENCE_MS（1.5 秒）より長い間隔を空け、1 行ごとに静止評価
   // （quiescent = true）が走る「疎な出力」を再現する。
   const SPARSE_INTERVAL_SEC = 2;
@@ -421,10 +434,13 @@ test('疎な出力（数秒おきに1行）が続くペインでも、一度点�
     // ここから先はユーザー入力を一切行わない。疎な出力（数秒間隔の長い行）が
     // 続くだけで、旧実装なら「静止評価の非マッチでは現状維持」のまま張り付いていた
     // （このテストが落ちる = 張り付きの回帰）。
+    // タイムアウトは SPARSE_LINES(12) * SPARSE_INTERVAL_SEC(2s) = 24 秒のバースト全体
+    // （押し出しは 8 行目前後で起きる計算だが、高負荷時のタイマー遅延も見て余裕を持つ）
+    // より長く取る。playwright.config.js の test timeout（120 秒）には十分収まる。
     await expect(
       pane,
       '疎な出力が続いても入力待ちが自動解除されない（張り付き回帰・issue #352）',
-    ).not.toHaveClass(/\bwaiting\b/, { timeout: 25_000 });
+    ).not.toHaveClass(/\bwaiting\b/, { timeout: 35_000 });
     await expect(status).not.toHaveAttribute('data-status', 'waiting');
   } finally {
     await closeApp({ app, tmpRoot });

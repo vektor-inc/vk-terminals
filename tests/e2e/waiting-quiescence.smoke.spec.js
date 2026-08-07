@@ -29,36 +29,54 @@ const READY_MARKER = 'RXREADYMARK';
 // 判定前に見て通ってしまわないよう、静止時間より十分長く待ってから確認する。
 const QUIESCENCE_SETTLE_MS = 4000;
 
-async function postSetStatus(port, waiting) {
-  // termId "1" は起動時に renderer が作る最初のペインの PTY。
+// 現在画面に出ているペインの termId を /api/states から引き直す。
+// win.reload() のたびに renderer は initApp() で terminal:create をやり直すが、
+// main.js の nextId（main.js:1261）はモジュール変数で単調増加しリセットされない。
+// また reload 前の PTY は terminal:kill されずに main の ptys に孤児として残るため、
+// 固定値 '1' を使うと 2 回目以降の reload 後は「今は存在しない古い PTY」を指してしまい、
+// しかもそれが孤児として残っている間は /api/set-status が 200 を返し続ける
+// （404 分岐を通らない）ため、テスト側は気づけない。
+async function currentTermId(port) {
+  const res = await fetch(`http://127.0.0.1:${port}/api/states`);
+  if (res.status !== 200) throw new Error(`/api/states returned ${res.status}`);
+  const json = await res.json();
+  const ids = Object.values(json.terminals || {})
+    .map((t) => (t && t.termId != null ? String(t.termId) : null))
+    .filter(Boolean);
+  if (ids.length !== 1) throw new Error(`ペインが 1 枚である前提が崩れた: ${JSON.stringify(ids)}`);
+  return ids[0];
+}
+
+async function postSetStatus(port, termId, waiting) {
   const response = await fetch(`http://127.0.0.1:${port}/api/set-status`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ termId: '1', waiting }),
+    body: JSON.stringify({ termId, waiting }),
   });
   let body = null;
   try { body = await response.json(); } catch (_e) { /* 非 JSON も許容 */ }
   return { response, body };
 }
 
+// 「現在のペインの PTY が /api/set-status に 200 を返す」まで待つ。
+// 固定 termId で待つと、孤児化した旧 PTY にも 200 が返ってしまい待機が空振りする
+// （現在のペインの登録を待ったことにならない）ため、termId 自体を states から
+// 都度引き直しながら待つ形にしている。
 async function waitForPtyRegistration(port) {
-  // PTY 登録前は main が 404 を返すため、200 になるまで短くリトライする。
   const deadline = Date.now() + 20_000;
   let lastError = null;
   while (Date.now() < deadline) {
     try {
-      const result = await postSetStatus(port, true);
-      if (result.response.status === 200) return;
-      if (result.response.status !== 404) {
-        throw new Error(`unexpected status ${result.response.status}: ${JSON.stringify(result.body)}`);
-      }
-      lastError = new Error(`terminal 1 not ready: ${JSON.stringify(result.body)}`);
+      const termId = await currentTermId(port);
+      const result = await postSetStatus(port, termId, true);
+      if (result.response.status === 200) return termId;
+      lastError = new Error(`termId ${termId} not ready: ${result.response.status} ${JSON.stringify(result.body)}`);
     } catch (e) {
       lastError = e;
     }
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
-  throw lastError || new Error('terminal 1 was not registered in time');
+  throw lastError || new Error('現在のペインの PTY が時間内に登録されなかった');
 }
 
 // config の waitingExcludeCwdPatterns には「絶対に一致しない」値を入れ、cwd 除外が
@@ -88,10 +106,10 @@ async function launchWaitingApp(port) {
   });
 }
 
-// 最初のペインを準備完了状態にし、externalWaiting をクリアしてローカル判定だけの初期状態にする。
+// 現在のペインを準備完了状態にし、externalWaiting をクリアしてローカル判定だけの初期状態にする。
 async function prepareFirstPane(win, port) {
-  await waitForPtyRegistration(port); // このプローブは externalWaiting=true を立てる
-  const cleared = await postSetStatus(port, false);
+  const termId = await waitForPtyRegistration(port); // このプローブは externalWaiting=true を立てる
+  const cleared = await postSetStatus(port, termId, false);
   expect(cleared.response.status).toBe(200);
 
   const pane = win.locator('.pane').first();
@@ -99,7 +117,7 @@ async function prepareFirstPane(win, port) {
   // 起点は「入力待ちではない」ことを確認しておく。
   await expect(pane).not.toHaveClass(/\bwaiting\b/);
   await expect(status).not.toHaveAttribute('data-status', 'waiting');
-  return { pane, status };
+  return { pane, status, termId };
 }
 
 // 端末へフォーカスし、スクリプトを実行して本文を「出力」させる。
@@ -167,16 +185,22 @@ async function waitForLocalWaitingOnset(win, baseline, timeoutMs = 20_000) {
 }
 
 // issue #348: 4 テストとも同じ config（NO_CWD_EXCLUSION 固定）で launchApp を
-// 呼んでいるため、起動を 1 回に共有する。各テストは同じ termId '1' の PTY へ
-// スクリプトを流し waiting の点灯・解除を確認するが、テスト終了時に waiting が
-// 点灯したまま（または解除済み）のどちらでも残りうるため、各テストの先頭で
-// win.reload() して #sidebar の再描画を待つ。reload 後は report-states が
-// 最新の PTY 状態（waiting は実際には Electron 側のタイマー評価に依存する
-// ローカル判定で、reload しても PTY 自体は継続しているため、再描画時点の
-// 実際の状態がそのまま反映される）に基づいて再構築される。
-// prepareFirstPane() が postSetStatus(port, false) で externalWaiting を明示的に
-// クリアしてから「入力待ちではない」ことを確認しているため、reload と
-// この明示クリアの組み合わせで起点を統一できることを確認済み（PR 参照）。
+// 呼んでいるため、起動を 1 回に共有する。各テストの先頭で win.reload() して
+// #sidebar の再描画を待つが、これは renderer 側の DOM・JS 状態を初期化するだけで、
+// main プロセス側の PTY の生死には影響しない点に注意（安藤のレビュー指摘）。
+//
+// win.reload() すると renderer は initApp() で新しい PTY を terminal:create するが、
+// main.js の nextId（main.js:1261）はモジュール変数で単調増加してリセットされないため、
+// termId は '1' → '2' → '3' … と reload ごとに進む。しかも reload 前の PTY は
+// terminal:kill されずに main の ptys に「孤児」として残る（renderer 側の破棄ループは
+// reload 後の空の terminals に対して回るため、古い PTY には触れない）。孤児は
+// closeApp() の cleanupPtys() で最終的に回収されるが、テスト実行中は生き続け、
+// /api/set-status のような termId 指定 API は孤児の termId にも 200 を返してしまう
+// （main.js:1972 の 404 分岐は「ptys に存在しない」ときだけ通るため）。
+// したがって termId を固定値で扱うテストは、孤児の PTY を誤って掴んでも気づけない
+// （postSetStatus は 200 を返すが、renderer 側の受け口は該当ペインが無いので黙って
+// 握り潰す）。そのため各操作の直前で currentTermId() / waitForPtyRegistration() を
+// 使って /api/states から「今画面に出ているペイン」の termId を都度引き直している。
 test.describe.serial('入力待ちの静止判定・自動解除（issue vektor-inc/vk-orchestrator#212 / PR #264）', () => {
   let app;
   let win;

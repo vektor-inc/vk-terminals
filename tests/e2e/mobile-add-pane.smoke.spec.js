@@ -58,7 +58,10 @@ async function launchAddPaneApp(port) {
 
 // issue #348: 4 テストとも同じ config（newPaneAutoLaunchClaude:false）で launchApp を
 // 呼んでいるため、起動を 1 回に共有する（describe → describe.serial）。
-// 「タップするとペインが1つ増える」がペイン数を 1→2 に変える唯一のテストだが、
+// 「タップするとペインが1つ増える」だけがペイン数を変えるテストで、絶対値（1→2）
+// ではなく直前の件数からの相対値（+1）で検証しているため、このテストが何回・どの
+// 順番で実行されても「他にペインを増やすテストが無い」という前提に依存しない
+// （安藤のレビュー指摘。以前は絶対値だったため、この前提が厳密には言い過ぎだった）。
 // 他の 3 テストはいずれもペイン数を見ない（#list .card を first() で見る／page.route で
 // /api/states 自体を差し替える）ため、実行順に関わらず影響しない。chromium の
 // browser/context/page は各テストで新規作成しており、ブラウザ側の状態は共有しない。
@@ -115,23 +118,24 @@ test.describe.serial('モバイル版「ペインを追加」ボタン（issue #
   test('タップするとペインが1つ増える', async () => {
     const browser = await chromium.launch();
     try {
+      // 絶対値（1件）ではなく、タップ前の件数からの相対値（+1）で検証する
+      // （安藤のレビュー指摘。他にペインを増やすテストが無いという前提を置かずに済む）。
       const before = termIdsOf(await getStates(port));
-      expect(before.length).toBe(1);
 
       const context = await browser.newContext();
       const page = await context.newPage();
       await page.goto(`http://127.0.0.1:${port}/`);
-      await expect(page.locator('#list .card')).toHaveCount(1, { timeout: 15_000 });
+      await expect(page.locator('#list .card')).toHaveCount(before.length, { timeout: 15_000 });
 
       // ボタンをタップ。
       await page.locator('#add-pane-btn').click();
 
-      // node 側 /api/states でペインが2件になるまで待つ（POST /api/new-pane が効いた証拠）。
-      const after = await waitForPaneCount(port, 2);
-      expect(after.length).toBe(2);
+      // node 側 /api/states でペインが 1 件増えるまで待つ（POST /api/new-pane が効いた証拠）。
+      const after = await waitForPaneCount(port, before.length + 1);
+      expect(after.length).toBe(before.length + 1);
 
-      // ページの #list カードも2枚に増える（ポーリング再描画で反映）。
-      await expect(page.locator('#list .card')).toHaveCount(2, { timeout: 15_000 });
+      // ページの #list カードも 1 枚増える（ポーリング再描画で反映）。
+      await expect(page.locator('#list .card')).toHaveCount(before.length + 1, { timeout: 15_000 });
 
       // ボタンは操作後、通常状態（有効）に戻っている。
       await expect(page.locator('#add-pane-btn')).toBeEnabled();

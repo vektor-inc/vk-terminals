@@ -26,8 +26,9 @@ const { getFreePort, launchApp } = require('./helpers/electron-app');
 // issue #348: 4 テストとも config が { widgetFile } のみで同一のため、Electron の起動を
 // 1 回に共有する。widget-declarative.smoke.spec.js と同じ理由で、widgetFile を書き換えた
 // 直後は main.js の widget watcher（fs.watch + 150ms デバウンス）がまだキャッシュへ反映して
-// いない可能性があるため、書き換え後に十分な余裕（600ms）を空けてから GET /api/widgets を
-// 叩く。chromium の browser / context / page は元コードのとおり各テストで新規作成しており、
+// いない可能性がある。固定の待ち時間ではなく、GET /api/widgets が「今書いた宣言」
+// （updatedAt で判定）を返すまで実際に待つ（安藤のレビュー指摘）。chromium の
+// browser / context / page は元コードのとおり各テストで新規作成しており、
 // localStorage 等のブラウザ側状態はテスト間で最初から共有されない（Electron 側の
 // widgetFile の内容だけが共有される状態）。
 
@@ -129,7 +130,9 @@ async function closeAppForcefully({ app, tmpRoot }) {
   }
 }
 
-// GET /api/widgets が非 null の widget を返すまで待つ（API サーバー起動＋widgetFile 読込完了の保証）。
+// GET /api/widgets が非 null の widget を返すまで待つ（API サーバー起動の保証）。
+// setupWidget() が「今書いた内容」の反映まで確認しているため、ここでは
+// 起動直後などサーバーがまだ立っていないケースだけを吸収すれば足りる。
 async function waitForWidgetReady(port, timeoutMs = 20_000) {
   const deadline = Date.now() + timeoutMs;
   let last = null;
@@ -149,11 +152,28 @@ async function waitForWidgetReady(port, timeoutMs = 20_000) {
   throw new Error(`/api/widgets did not return a widget in time. last: ${JSON.stringify(last)}`);
 }
 
-// widgetFile を新しい内容へ書き換え、main.js の widget watcher（fs.watch + 150ms
-// デバウンス）がキャッシュへ反映するまでの余裕を空ける。
-async function setupWidget(widgetFile, widget) {
+// widgetFile を新しい内容へ書き換え、GET /api/widgets が「今書いた宣言」（updatedAt で
+// 判定）を返すまで待つ。main.js の widget watcher（fs.watch + 150ms デバウンス）が
+// キャッシュへ反映するタイミングは固定値では言い切れないため、時間ではなく
+// 反映されたことそのものを条件にする（安藤のレビュー指摘）。
+async function setupWidget(port, widgetFile, widget) {
   writeJson(widgetFile, widget);
-  await new Promise((r) => setTimeout(r, 600));
+  const deadline = Date.now() + 20_000;
+  let last = null;
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/api/widgets`);
+      if (res.status === 200) {
+        const json = await res.json();
+        last = json;
+        if (json?.widget?.updatedAt === widget.updatedAt) return;
+      }
+    } catch (_e) {
+      // 起動前の失敗は同じループで吸収する。
+    }
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  throw new Error(`widgetFile の更新が /api/widgets へ反映されなかった: ${JSON.stringify(last)}`);
 }
 
 // モバイル相当の context（タッチ・モバイル viewport）を開く。
@@ -175,10 +195,11 @@ test.describe.serial('モバイル版タスク一覧の担当者フィルタ（i
   let tmpRoot;
   let port;
   let widgetFile;
+  let dataRoot;
 
   test.beforeAll(async () => {
     port = await getFreePort();
-    const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-mobile-filter-data-'));
+    dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-mobile-filter-data-'));
     widgetFile = path.join(dataRoot, 'tasks-widget.json');
     writeJson(widgetFile, buildGithubWidget());
     ({ app, tmpRoot } = await launchMobileFilterApp(port, { widgetFile }));
@@ -186,11 +207,16 @@ test.describe.serial('モバイル版タスク一覧の担当者フィルタ（i
 
   test.afterAll(async () => {
     await closeAppForcefully({ app, tmpRoot });
+    // main（統合前）では 4 テストすべてが finally で dataRoot を削除していた。
+    // 統合時に afterAll への移し忘れがあり、一時ディレクトリが os.tmpdir() に
+    // 取り残されていた（安藤のレビュー指摘。helpers/electron-app.js 冒頭コメントの
+    // #269 / #347 と同種の取り残し）。
+    if (dataRoot) fs.rmSync(dataRoot, { recursive: true, force: true });
   });
 
   // ─── 1 & 2 & 3: GitHub モード＋viewer で select 表示・既定 self・件数「表示中/全体」・切替と永続化 ───
   test('モバイル: GitHub モード＋viewer で担当者フィルタが表示され、既定 self で「表示中/全体」件数を出し、切替が localStorage に記憶される', async () => {
-    await setupWidget(widgetFile, buildGithubWidget());
+    await setupWidget(port, widgetFile, buildGithubWidget());
     const browser = await chromium.launch();
     try {
       const { context, page } = await openMobile(browser, port);
@@ -253,7 +279,7 @@ test.describe.serial('モバイル版タスク一覧の担当者フィルタ（i
 
   // ─── 2(裏): ローカルモード（queue リンク無し／viewer 不明）では select 非表示・件数は全件のみ ───
   test('モバイル: ローカルモード（GitHub モードでない／viewer 不明）では担当者フィルタを出さず件数は全件のみ', async () => {
-    await setupWidget(widgetFile, buildLocalWidget());
+    await setupWidget(port, widgetFile, buildLocalWidget());
     const browser = await chromium.launch();
     try {
       const { context, page } = await openMobile(browser, port);
@@ -279,7 +305,7 @@ test.describe.serial('モバイル版タスク一覧の担当者フィルタ（i
 
   // ─── 4: select フォーカス中は poll（約2秒）による再描画で select が作り直されない ───
   test('モバイル: 担当者フィルタにフォーカス中は poll 再描画で select が作り直されない（ネイティブピッカーが閉じない）', async () => {
-    await setupWidget(widgetFile, buildGithubWidget());
+    await setupWidget(port, widgetFile, buildGithubWidget());
     const browser = await chromium.launch();
     try {
       const { context, page } = await openMobile(browser, port);
@@ -319,7 +345,7 @@ test.describe.serial('モバイル版タスク一覧の担当者フィルタ（i
 
   // ─── 5: 開閉トグル（全幅ボタン）が従来どおり動作し、状態が localStorage に保存される（回帰） ───
   test('モバイル: タスク一覧の開閉トグル（全幅ボタン）が従来どおり動作し、状態が localStorage に保存される', async () => {
-    await setupWidget(widgetFile, buildGithubWidget());
+    await setupWidget(port, widgetFile, buildGithubWidget());
     const browser = await chromium.launch();
     try {
       const { context, page } = await openMobile(browser, port);

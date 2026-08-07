@@ -25,10 +25,11 @@ const { getFreePort, launchApp } = require('./helpers/electron-app');
 // pushWidgetUpdate() が変化を renderer へ push する。push はモジュールレベルの
 // キャッシュ（currentWidgetPayload）を送るため、ファイルを書き換えた直後すぐに
 // win.reload() すると、did-finish-load 時点のキャッシュが古いままの可能性がある。
-// そのため各テストの先頭で widgetFile を書き換えた後に十分な余裕（600ms。デバウンス
-// 150ms の 4 倍）を空けてから reload する。localStorage は reload しても消えないため
-// 明示的に clear() する。commands.jsonl は監視されないただの追記先ファイルなので、
-// 各テストの先頭で明示的に削除してクリーンな状態から始める。
+// そのため各テストの先頭で widgetFile を書き換えた後、GET /api/widgets が「今書いた
+// 宣言」（updatedAt で判定）を返すまで実際に待ってから reload する（固定の待ち時間
+// ではなく反映されたことそのものを条件にする。安藤のレビュー指摘）。localStorage は
+// reload しても消えないため明示的に clear() する。commands.jsonl は監視されないただの
+// 追記先ファイルなので、各テストの先頭で明示的に削除してクリーンな状態から始める。
 
 function writeJson(filePath, value) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -186,14 +187,32 @@ async function closeAppForcefully({ app, tmpRoot }) {
   }
 }
 
-// widgetFile を新しい内容へ書き換え、watcher の検知（fs.watch + 150ms デバウンス）が
-// キャッシュへ反映されるまでの余裕を空けてから win.reload() する。localStorage は
-// reload しても消えないため明示的に clear() し、commandsPath は監視されないただの
-// 追記先ファイルなので存在すれば削除してクリーンな状態から始める。
-async function setupWidget(win, widgetFile, widget, { commandsPath } = {}) {
+// widgetFile を新しい内容へ書き換え、GET /api/widgets が「今書いた宣言」（updatedAt で
+// 判定）を返すまで待ってから win.reload() する。main.js の widget watcher
+// （fs.watch + 150ms デバウンス）がキャッシュへ反映するタイミングは固定値では
+// 言い切れないため、時間ではなく反映されたことそのものを条件にする（安藤のレビュー
+// 指摘）。localStorage は reload しても消えないため明示的に clear() し、commandsPath
+// は監視されないただの追記先ファイルなので存在すれば削除してクリーンな状態から始める。
+async function setupWidget(win, port, widgetFile, widget, { commandsPath } = {}) {
   writeJson(widgetFile, widget);
   if (commandsPath && fs.existsSync(commandsPath)) fs.rmSync(commandsPath);
-  await new Promise((r) => setTimeout(r, 600));
+  const deadline = Date.now() + 20_000;
+  let last = null;
+  let reflected = false;
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/api/widgets`);
+      if (res.status === 200) {
+        const json = await res.json();
+        last = json;
+        if (json?.widget?.updatedAt === widget.updatedAt) { reflected = true; break; }
+      }
+    } catch (_e) {
+      // 起動前の失敗は同じループで吸収する。
+    }
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  if (!reflected) throw new Error(`widgetFile の更新が /api/widgets へ反映されなかった: ${JSON.stringify(last)}`);
   await win.evaluate(() => localStorage.clear());
   await win.reload();
   await win.waitForSelector('#sidebar', { state: 'attached' });
@@ -224,7 +243,7 @@ test.describe.serial('widgetFile 系タスク一覧の描画・操作（issue #2
 
   // ─── 1: サイドバー: 宣言を共有レンダラで描画し、バッジ・タイトルリンク・見出しリンク・フィルタを出す ───
   test('サイドバー: widgetFile の宣言でグループ／アイテム／バッジ／タイトルリンク／見出しリンク／担当者フィルタを描画する', async () => {
-    await setupWidget(win, widgetFile, buildWidget(), { commandsPath });
+    await setupWidget(win, port, widgetFile, buildWidget(), { commandsPath });
     const section = win.locator('#task-list');
     await expect(section).toBeVisible({ timeout: 10_000 });
 
@@ -293,7 +312,7 @@ test.describe.serial('widgetFile 系タスク一覧の描画・操作（issue #2
 
   // ─── 2: サイドバー: 編集パネルで下書き保存→確認→IPC widgets:command 経由で commands.jsonl に 1 行追記 ───
   test('サイドバー: 編集パネルの保存で確認後 commands.jsonl に apply-batch を中継し反映待ちを表示する', async () => {
-    await setupWidget(win, widgetFile, buildWidget(), { commandsPath });
+    await setupWidget(win, port, widgetFile, buildWidget(), { commandsPath });
     const section = win.locator('#task-list');
     await expect(section).toBeVisible({ timeout: 10_000 });
     const item = section.locator('.task-item[data-id="301"]');
@@ -340,7 +359,7 @@ test.describe.serial('widgetFile 系タスク一覧の描画・操作（issue #2
 
   // ─── 3: サイドバー: 保存確認をキャンセルすると送信せず下書きを保持し、編集キャンセルで破棄する ───
   test('サイドバー: 保存確認をキャンセルすると commands.jsonl に追記せず下書きを保持する', async () => {
-    await setupWidget(win, widgetFile, buildWidget(), { commandsPath });
+    await setupWidget(win, port, widgetFile, buildWidget(), { commandsPath });
     const section = win.locator('#task-list');
     await expect(section).toBeVisible({ timeout: 10_000 });
     const item = section.locator('.task-item[data-id="301"]');
@@ -390,7 +409,7 @@ test.describe.serial('widgetFile 系タスク一覧の描画・操作（issue #2
       links: [{ rel: 'queue', url: 'https://github.com/vektor-inc/vk-orchestrator/issues/302', label: 'issue #302' }],
       controls: [],
     });
-    await setupWidget(win, widgetFile, widget);
+    await setupWidget(win, port, widgetFile, widget);
     const section = win.locator('#task-list');
     await expect(section).toBeVisible({ timeout: 10_000 });
     const filter = section.locator('.task-list-assignee-filter');
@@ -417,7 +436,7 @@ test.describe.serial('widgetFile 系タスク一覧の描画・操作（issue #2
   // 元の番号は 6（後続を控える tasksFile / 空 config / menuItems の 3 テストは別ファイル
   // 位置に個別起動として残したため、この共有グループ内では通し番号のみ詰めている）。
   test('モバイル: /api/widgets の宣言を描画し、ステータス変更を POST /api/widgets/command で中継する', async ({ page }) => {
-    await setupWidget(win, widgetFile, buildWidget(), { commandsPath });
+    await setupWidget(win, port, widgetFile, buildWidget(), { commandsPath });
     const base = `http://127.0.0.1:${port}`;
 
     // GET /api/widgets は中継ペイロード（widget / legacyNotice / commandsConfigured）を返す。
@@ -485,7 +504,7 @@ test.describe.serial('widgetFile 系タスク一覧の描画・操作（issue #2
 
   // ─── 6: ローカルモード: 担当者フィルタ非表示・見出しはプレーンテキスト（旧 sidebar-task-list-title-link 相当） ───
   test('サイドバー: ローカルモード（queue リンク無し／viewer 不明）では担当者フィルタを出さず見出しもリンク化しない', async () => {
-    await setupWidget(win, widgetFile, buildLocalWidget());
+    await setupWidget(win, port, widgetFile, buildLocalWidget());
     const section = win.locator('#task-list');
     await expect(section).toBeVisible({ timeout: 10_000 });
     // アイテムは描画される。
@@ -503,7 +522,7 @@ test.describe.serial('widgetFile 系タスク一覧の描画・操作（issue #2
     // viewer=kurudrive だが唯一のアイテムは他人（wada）担当にする。既定フィルタ（自分のみ）で 0 件。
     const widget = buildWidget();
     widget.groups[0].items[0].assignee = 'wada';
-    await setupWidget(win, widgetFile, widget);
+    await setupWidget(win, port, widgetFile, widget);
     const section = win.locator('#task-list');
     await expect(section).toBeVisible({ timeout: 10_000 });
     const filter = section.locator('.task-list-assignee-filter');
@@ -517,7 +536,7 @@ test.describe.serial('widgetFile 系タスク一覧の描画・操作（issue #2
   // ─── 8: コールド起動で updatedAt が古い（stale）ときはセクションを表示しない（旧 tasks-sidebar 相当） ───
   test('サイドバー: コールド起動で widget の updatedAt が古い場合はセクションを表示しない', async () => {
     // updatedAt を staleThreshold(120s) より十分過去にする。新鮮な view を一度も見ていないので非表示。
-    await setupWidget(win, widgetFile, buildWidget({ updatedAt: freshDate(-5 * 60 * 1000) }));
+    await setupWidget(win, port, widgetFile, buildWidget({ updatedAt: freshDate(-5 * 60 * 1000) }));
     const section = win.locator('#task-list');
     await expect(section).toBeHidden();
     await expect(section).not.toContainText('宣言ウィジェットの実行中タスク');
@@ -525,7 +544,7 @@ test.describe.serial('widgetFile 系タスク一覧の描画・操作（issue #2
 
   // ─── 9: fresh 表示後に stale 化したら「Orchestrator 停止中」を出す（旧 tasks-sidebar 相当） ───
   test('サイドバー: fresh 表示後に widget が stale 化した場合は Orchestrator 停止中を表示する', async () => {
-    await setupWidget(win, widgetFile, buildWidget());
+    await setupWidget(win, port, widgetFile, buildWidget());
     const section = win.locator('#task-list');
     await expect(section).toBeVisible({ timeout: 10_000 });
     await expect(section.locator('.task-list-stale')).toBeHidden();
@@ -540,7 +559,7 @@ test.describe.serial('widgetFile 系タスク一覧の描画・操作（issue #2
 
   // ─── 10: 折り畳みトグルで一覧を開閉し、状態を localStorage に保存する（旧 tasks-sidebar 相当） ───
   test('サイドバー: 右端トグルで一覧を折り畳み・展開でき、状態が localStorage に保存される', async () => {
-    await setupWidget(win, widgetFile, buildWidget());
+    await setupWidget(win, port, widgetFile, buildWidget());
     const section = win.locator('#task-list');
     await expect(section).toBeVisible({ timeout: 10_000 });
     const toggle = section.locator('.sidebar-section-toggle');
@@ -570,7 +589,7 @@ test.describe.serial('widgetFile 系タスク一覧の描画・操作（issue #2
 
   // ─── 11: 担当者フィルタ表示時も下限幅でラベルとトグルを保つ ───
   test('サイドバー: 200px 幅で担当者フィルタ表示時もタスク見出しとトグルを可視・操作可能に保つ', async () => {
-    await setupWidget(win, widgetFile, buildWidget());
+    await setupWidget(win, port, widgetFile, buildWidget());
     const sidebar = win.locator('#sidebar');
     const sidebarMenu = win.locator('.sidebar-menu');
     const section = win.locator('#task-list');

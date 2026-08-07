@@ -134,6 +134,7 @@ test.describe.serial('設定パネルの API サーバー状態表示（起動�
       };
     });
 
+    const startedAt = Date.now();
     const status = await openApiServerStatus(win);
     const body = status.locator('.settings-content-status-body');
     await expect(body).toHaveAttribute('role', 'status');
@@ -149,6 +150,11 @@ test.describe.serial('設定パネルの API サーバー状態表示（起動�
     // という仕様値自体は変えず、確認手段側の余裕だけを広げる（7000ms→15000ms）。
     await expect(body.locator('.settings-content-status-label'))
       .toHaveText('注意', { timeout: 15_000 });
+    // 上限（15000ms）だけでは「即時に打ち切った」退行（5 秒のはずが 0 秒になる等）を
+    // 検知できない（安藤のレビュー指摘）。打ち切りは 250ms × 20 回の setInterval なので
+    // 遅れる方向にしかブレず、下限は決定論的に置ける。5000ms からの余裕として 4000ms を
+    // 下限に置く。
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(4_000);
     await expect(body).toHaveAttribute('data-e2e-live-region', 'same');
     await expect(body).not.toHaveAttribute('aria-busy', 'true');
     await expect(body).toContainText('しばらくしてから設定パネルを開き直してください');

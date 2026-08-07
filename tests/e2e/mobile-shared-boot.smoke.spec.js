@@ -108,7 +108,11 @@ async function postJson(port, pathname, payload) {
 // termId='1' のタイトルを空文字に戻し、「Terminal 1」という既定表示へ戻す
 // （renderer/mobile.js の displayTitle フォールバック）。
 async function resetPaneTitle(port) {
-  await postJson(port, '/api/set-title', { termId: '1', title: '' });
+  const res = await postJson(port, '/api/set-title', { termId: '1', title: '' });
+  // 応答を検証しないと、404 等が静かに素通りして前テストのタイトルが残ったまま
+  // 次のテストへ進んでしまう（安藤のレビュー指摘。現状は termId '1' が生きているので
+  // 実害は出ていないが、検証としては担保になっていなかった）。
+  expect(res.status).toBe(200);
 }
 
 // キーボード由来のフォーカスでないと :focus-visible は当たらない

@@ -436,11 +436,67 @@ test.describe.serial('ペイン内 URL の Cmd/Ctrl+クリック（issue #349 / 
     expect(tooltip.hidden).toBe(true);
   });
 
+  // ─── render() の再構築でツールチップが残らない（PR #350 追補） ──────────────────
+  // tests/e2e/external-url-toast.smoke.spec.js の「ペインを追加した後（render() の
+  // 再構築後）も、トーストは再び表示される」と同じ考え方。render()（renderer/app.js）は
+  // #root の子を root.replaceChildren() で丸ごと差し替え、xterm の要素を新しい
+  // コンテナへ移し替える。ホバー中に呼ばれると xterm 側の leave が発火しないため、
+  // render() の先頭で明示的に hideTermLinkTooltip() を呼ぶようにした（Claude Code
+  // レビュー指摘・LOW）。この回帰テスト。
+  //
+  // ⚠ このファイルは test.describe.serial + beforeAll で 1 つのアプリインスタンスを
+  // 全テストで共有しており、実行順に依存する（司のレビューで実際に踏んだ落とし穴）。
+  // 直後の「ホバー中にそのペインを閉じると…」テストが最後に pane-1 を閉じるため、
+  // pane-1 を前提にするテストは必ずそれより前に置くこと。後から追加するテストで
+  // pane-1（や他テストが閉じる／作り直すペイン）に依存する場合は、この並び順の制約を
+  // 忘れずに確認する。
+  test('ペインを追加した後（render() の再構築後）は、古いツールチップが残らずホバーし直せば再表示される', async () => {
+    const url = 'https://example.com/vk-terminals-e2e-render-rebuild';
+    await postSend(port, `echo "${url}"\r`);
+    await waitForBufferText(win, url, 'pane-1');
+
+    let pos = await findTextPosition(win, url, 'pane-1');
+    expect(pos).not.toBeNull();
+    await hoverAtOffset(win, pos, 3);
+    let tooltip = await getTooltip(win);
+    expect(tooltip.hidden).toBe(false);
+
+    // ペインを追加する（render() が #root の子を丸ごと差し替える経路を踏む）。マウスは
+    // 動かしていないため、xterm 側の leave には頼れない状態を再現している。
+    // このファイルは test.describe.serial でアプリを共有しており、後続テストも
+    // ペインを追加するため、絶対数ではなく「1 枚増えたこと」で判定する。
+    const paneCountBefore = await win.locator('.pane').count();
+    await win.locator('.pane-header .btn-split').first().click();
+    await expect(win.locator('.pane')).toHaveCount(paneCountBefore + 1);
+
+    // render() の先頭の hideTermLinkTooltip() により、この時点で隠れているはず。
+    tooltip = await getTooltip(win);
+    expect(tooltip.hidden).toBe(true);
+
+    // レイアウト変更（ペイン幅が変わる）後の座標で取り直し、もう一度ホバーすれば
+    // 問題無く再表示できる（トーストと違い document.body 直下は元から変えていないが、
+    // 「消えたまま二度と出ない」退行になっていないことを確認する）。
+    await moveMouseAway(win);
+    pos = await findTextPosition(win, url, 'pane-1');
+    expect(pos).not.toBeNull();
+    await hoverAtOffset(win, pos, 3);
+    tooltip = await getTooltip(win);
+    expect(tooltip.hidden).toBe(false);
+    expect(tooltip.text).toContain('example.com');
+  });
+
+  // ⚠ このテストは pane-1 を消費する（後始末として最後に閉じる）。pane-1 を前提にする
+  // テストを新しく足す場合は、必ずこのテストより前に置くこと（このファイルは
+  // test.describe.serial + beforeAll でアプリを共有しているため、以後のテストからは
+  // pane-1 が存在しないものとして扱われる）。
   test('ホバー中にそのペインを閉じるとツールチップが残らない', async () => {
     // 最後の 1 ペインを閉じると自動で新しいペインが作られる経路まで踏みたくないため、
     // 先にペインを追加してから、ホバー対象のペイン（pane-1）を閉じる。
+    // 直前のテストが既にペインを追加しているため、絶対数（2枚）ではなく
+    // 「1 枚増えたこと」で判定する（このファイルの test.describe.serial 共有前提）。
+    const paneCountBefore = await win.locator('.pane').count();
     await win.locator('.pane-header .btn-split').first().click();
-    await expect(win.locator('.pane')).toHaveCount(2);
+    await expect(win.locator('.pane')).toHaveCount(paneCountBefore + 1);
 
     const url = 'https://example.com/vk-terminals-e2e-close-pane';
     await postSend(port, `echo "${url}"\r`);
@@ -458,44 +514,5 @@ test.describe.serial('ペイン内 URL の Cmd/Ctrl+クリック（issue #349 / 
     await new Promise((resolve) => setTimeout(resolve, 150));
     tooltip = await getTooltip(win);
     expect(tooltip.hidden).toBe(true);
-  });
-
-  // ─── render() の再構築でツールチップが残らない（PR #350 追補） ──────────────────
-  // tests/e2e/external-url-toast.smoke.spec.js の「ペインを追加した後（render() の
-  // 再構築後）も、トーストは再び表示される」と同じ考え方。render()（renderer/app.js）は
-  // #root の子を root.replaceChildren() で丸ごと差し替え、xterm の要素を新しい
-  // コンテナへ移し替える。ホバー中に呼ばれると xterm 側の leave が発火しないため、
-  // render() の先頭で明示的に hideTermLinkTooltip() を呼ぶようにした（Claude Code
-  // レビュー指摘・LOW）。この回帰テスト。
-  test('ペインを追加した後（render() の再構築後）は、古いツールチップが残らずホバーし直せば再表示される', async () => {
-    const url = 'https://example.com/vk-terminals-e2e-render-rebuild';
-    await postSend(port, `echo "${url}"\r`);
-    await waitForBufferText(win, url, 'pane-1');
-
-    let pos = await findTextPosition(win, url, 'pane-1');
-    expect(pos).not.toBeNull();
-    await hoverAtOffset(win, pos, 3);
-    let tooltip = await getTooltip(win);
-    expect(tooltip.hidden).toBe(false);
-
-    // ペインを追加する（render() が #root の子を丸ごと差し替える経路を踏む）。マウスは
-    // 動かしていないため、xterm 側の leave には頼れない状態を再現している。
-    await win.locator('.pane-header .btn-split').first().click();
-    await expect(win.locator('.pane')).toHaveCount(2);
-
-    // render() の先頭の hideTermLinkTooltip() により、この時点で隠れているはず。
-    tooltip = await getTooltip(win);
-    expect(tooltip.hidden).toBe(true);
-
-    // レイアウト変更（ペイン幅が変わる）後の座標で取り直し、もう一度ホバーすれば
-    // 問題無く再表示できる（トーストと違い document.body 直下は元から変えていないが、
-    // 「消えたまま二度と出ない」退行になっていないことを確認する）。
-    await moveMouseAway(win);
-    pos = await findTextPosition(win, url, 'pane-1');
-    expect(pos).not.toBeNull();
-    await hoverAtOffset(win, pos, 3);
-    tooltip = await getTooltip(win);
-    expect(tooltip.hidden).toBe(false);
-    expect(tooltip.text).toContain('example.com');
   });
 });

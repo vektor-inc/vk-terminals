@@ -2430,6 +2430,43 @@ button.sidebar-section-header:hover {
   width: 100% !important;
 }
 
+/* ─── Terminal link tooltip（issue #349）────────────────────────────────────── */
+/* ペイン内の URL 上にホバーしたときだけ出す「Cmd/Ctrl+クリックで開く」の案内。
+ * 下線・pointer カーソル自体は xterm.js 本体（Linkifier）が自動で付けるため、ここでは
+ * ツールチップの見た目だけを持つ。配色は .vk-toast と同じダーク系トーンに揃える。
+ *
+ * pointer-events: none にしているのは、renderer/app.js の showTermLinkTooltip が
+ * マウス位置に追従させて配置する際、ツールチップ自身がホバー対象になって xterm.js の
+ * マウス追跡（Linkifier._handleMouseMove）を横取りしないようにするため。
+ *
+ * max-width / white-space: normal / overflow-wrap（安藤レビュー指摘・LOW）:
+ * ホストは URL 中の任意の文字列になりうる（DNS 的に実在可能な
+ * "github.com.<...>.evil.jp" のようなサブドメイン偽装も作れる）。white-space: nowrap
+ * かつ幅制限が無いと、長いホストで画面幅を超え、renderer/app.js 側の
+ * maxLeft/maxTop クランプが 0 に張り付いて left: 0 に置かれた結果、末尾（＝実際の
+ * 登録可能ドメイン）が画面外へ押し出されてしまう。これはホスト表示で防ぎたかった
+ * なりすまし対策そのものを無効化してしまうため、折り返して全体を可視にする。
+ * text-overflow: ellipsis は使わない。末尾を省略すると「先頭の github.com. だけ見える」
+ * という、まさに防ぎたい状態を作ってしまうため。 */
+.term-link-tooltip {
+  position: fixed;
+  z-index: 2300;
+  max-width: min(90vw, 480px);
+  padding: 4px 8px;
+  border-radius: var(--vktm--border-radius--md);
+  background: #161b22;
+  color: #c9d1d9;
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+.term-link-tooltip[hidden] {
+  display: none;
+}
+
 /* ─── Drag cursor override ─────────────────────────────────────────────────── */
 body.resizing-h,
 body.resizing-h * {

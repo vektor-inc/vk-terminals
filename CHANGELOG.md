@@ -1,5 +1,6 @@
 # Changelog
 
+- [ 機能追加 ] ペイン内に表示された URL（http/https）を Cmd（macOS）・Ctrl（Windows / Linux）+クリックで既定のブラウザで開けるように追加（[#349](https://github.com/vektor-inc/vk-terminals/issues/349)）
 - [ 開発環境 ] #343 の見出しアクセント撤廃・枠線色変更に e2e が追随できておらず 2 件失敗していたのを修正（[#344](https://github.com/vektor-inc/vk-terminals/issues/344)）
 
 ## 1.55.1

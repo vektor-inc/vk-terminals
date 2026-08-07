@@ -144,6 +144,22 @@ const WAITING_PATTERNS = [
 // 空白・改行を無視した比較なら変わらず一致し続ける。
 const WAITING_ONSET_CONTEXT_CHARS = 24;
 
+// WAITING_PATTERNS のいずれかに一致した箇所の詳細を返す（一致しなければ null）。
+// findWaitingMatch（文脈込みの文字列）と findWaitingMatchKey（一致範囲そのもの）の
+// 両方から使う共通の探索ロジック。呼び出しごとに別々に exec() を走らせると、
+// （現状は起こらないはずだが）2 つの結果が食い違う余地を生むため、探索自体を
+// ここへ一本化して「同じ入力なら常に同じ一致箇所を指す」ことを構造で保証する。
+function findWaitingMatchDetail(cleanBuffer) {
+  if (typeof cleanBuffer !== 'string' || cleanBuffer === '') return null;
+  for (const pattern of WAITING_PATTERNS) {
+    const m = pattern.exec(cleanBuffer);
+    if (m && m[0] !== '') {
+      return { raw: m[0], index: m.index, buffer: cleanBuffer };
+    }
+  }
+  return null;
+}
+
 // WAITING_PATTERNS のいずれかに一致した箇所を、前後の文脈込みの文字列として返す
 // （一致しなければ null）。この関数はどのパターンが一致したかを区別しない
 // （呼び出し側が知る必要が無いため）。
@@ -152,33 +168,53 @@ const WAITING_ONSET_CONTEXT_CHARS = 24;
 // 文字を加えた範囲であることに注意（理由は WAITING_ONSET_CONTEXT_CHARS のコメント
 // 参照）。真偽値だけが要る呼び出し（matchesWaiting）はこの差を意識しなくてよい。
 //
+// 用途は「解除判定（onsetStillVisible）の照合元」に限定すること。ビープ抑制の鍵には
+// 使わない（findWaitingMatchKey を使う。理由は同関数のコメント参照）。
+//
 // ⚠ 「点灯根拠」という名前から、画面下端に出ている最新のダイアログそのものを指すと
 //   読めるが、そうとは限らない（安藤の指摘・再レビュー LOW）。WAITING_PATTERNS の
 //   配列順で最初に当たったパターン × バッファ**先頭側**の最初の一致を返すため、
-//   バッファに古い一致（例: 何行も前に流れた "Press Enter to continue" というログや、
-//   AskUserQuestion の "Enter to select" フッター定型文）が残っていると、画面下端の
-//   本物のダイアログより先にそちらを返すことがある。
+//   バッファに古い一致（例: 何行も前に流れた "Press Enter to continue" というログ）が
+//   残っていると、画面下端の本物のダイアログより先にそちらを返すことがある。
 //   解除判定（onsetStillVisible）への実害は無い（見るのは matches === false のときに
 //   限られ、本物のダイアログが出ている間はそもそも matches === true になるため
 //   解除経路に入らない）。ただし他の用途に流用する際は「必ずしも最新の根拠ではない」
-//   ことを踏まえること。実例: shouldBeepForWaiting のビープ長期抑制の鍵にそのまま
-//   使ったところ、AskUserQuestion の定型フッターが問いの違いを覆い隠してしまった
-//   （WAITING_BEEP_REPEAT_SUPPRESS_MS のコメント参照）。
+//   ことを踏まえること。
 function findWaitingMatch(cleanBuffer) {
-  if (typeof cleanBuffer !== 'string' || cleanBuffer === '') return null;
-  for (const pattern of WAITING_PATTERNS) {
-    const m = pattern.exec(cleanBuffer);
-    if (m && m[0] !== '') {
-      const start = Math.max(0, m.index - WAITING_ONSET_CONTEXT_CHARS);
-      const end = Math.min(cleanBuffer.length, m.index + m[0].length + WAITING_ONSET_CONTEXT_CHARS);
-      return cleanBuffer.slice(start, end);
-    }
-  }
-  return null;
+  const detail = findWaitingMatchDetail(cleanBuffer);
+  if (!detail) return null;
+  const start = Math.max(0, detail.index - WAITING_ONSET_CONTEXT_CHARS);
+  const end = Math.min(detail.buffer.length, detail.index + detail.raw.length + WAITING_ONSET_CONTEXT_CHARS);
+  return detail.buffer.slice(start, end);
+}
+
+// WAITING_PATTERNS のいずれかに一致した箇所の、正規表現の一致範囲そのもの（m[0]。
+// 前後の文脈を含まない）を返す（一致しなければ null）。ビープ抑制の鍵
+// （shouldBeepForWaiting の onsetMatch）専用に用意した（issue #352 の再レビュー・
+// 司の実測で確認）。
+//
+// なぜ findWaitingMatch（文脈込み）をそのままキーにできないか:
+//   vk-orchestrator の常駐ログ（#352 の主対象）のように、同じ言い回し（例:
+//   「入力待ち」）の前後の文脈（時刻・termId・カウンタ・隣接行）が毎回変わる出力では、
+//   文脈込みの文字列は再点灯のたびに毎回違う値になり、shouldBeepForWaiting の
+//   「直前と同じ点灯根拠なら長期抑制する」判定が一度も成立しない（司の実測:
+//   termId=5 と termId=9 の 2 行で sameIgnoringWhitespace が false になり、
+//   WAITING_BEEP_REPEAT_SUPPRESS_MS が実質無効化されていた）。m[0] は一致した
+//   パターンそのものの範囲だけなので、可変の文脈を含まず安定して一致する
+//   （上の例では両方とも m[0] = "入力待ち" になる）。
+//
+// 逆に短く定型化しすぎる副作用もあることに注意。日本語の選択式プロンプト
+// （AskUserQuestion 等）では m[0] が "Enter to select" のような固定フッター文言に
+// なり、**設問が違う 2 つの本物の確認が同一キーになる**（findWaitingMatch のコメント
+// 参照）。これは WAITING_BEEP_REPEAT_SUPPRESS_MS の値を決めるときに承知のうえで
+// 受け入れたトレードオフである（同定数のコメント参照）。
+function findWaitingMatchKey(cleanBuffer) {
+  const detail = findWaitingMatchDetail(cleanBuffer);
+  return detail ? detail.raw : null;
 }
 
 function matchesWaiting(cleanBuffer) {
-  return findWaitingMatch(cleanBuffer) !== null;
+  return findWaitingMatchDetail(cleanBuffer) !== null;
 }
 
 // 空白・改行（全角スペース含む。JS の \s は Unicode の空白分離子を含むため対応済み）に加え、
@@ -333,6 +369,44 @@ function nextWaitingState({ prev, matches, excluded = false, quiescent, onsetSti
   return true;
 }
 
+// waiting=true が続く間、点灯根拠（onsetMatch は解除判定用の文脈込み文字列、
+// onsetKey はビープ抑制用の m[0]）をどう更新するかを決める（issue #352 の再レビュー）。
+// nextWaitingState が決めた waiting の値をそのまま受け取り、判定はしない。
+//
+//   - waiting が false → 根拠は無意味なので両方 null に戻す（除外・解除のいずれでも）。
+//   - matches && quiescent（今回、判定に使ったバッファ = lastLines で新たにマッチ
+//     した） → 最新のマッチ文字列・キーに更新する。
+//   - それ以外で、根拠がまだ無い（prevOnsetMatch が無い） → backfill（呼び出し側が
+//     t.lastLines へ直接再探索した結果）が取れていれば、それで埋める。
+//     このケースが必要になった経緯: 上限評価（quiescent = false）で末尾アンカー系
+//     パターン（例: /[？]\s*$/）がマッチして waiting = true になった直後、出力が
+//     止まると次の静止評価は t.lastLines を見るが、recentLines との CR 上書きの
+//     食い違いで非マッチになることがある（安藤の指摘 MEDIUM と同根）。すると根拠が
+//     null のまま onsetStillVisible が undefined（fail-safe で現状維持）に固定され、
+//     以降ペインが疎な出力になると #352 の症状がこの経路をすり抜けて残る
+//     （司の指摘・再レビュー）。backfill は「解除判定の照合先そのものである
+//     lastLines に対して直接再探索し、拾えたら記録する」ことでこれを塞ぐ。
+//     取れなければ null のまま（fail-safe。#91 への影響は無い — 「その時点で実際に
+//     lastLines に存在する文字列」しか記録しないため、#91 が守る「本物の確認待ちを
+//     誤解除しない」という性質をそのまま引き継ぐ）。
+//   - それ以外（根拠は既にある、または backfill も無い） → 前回の値をそのまま保つ。
+function nextWaitingOnset({
+  waiting,
+  prevOnsetMatch,
+  prevOnsetKey,
+  matches,
+  quiescent,
+  matchText,
+  matchKey,
+  backfillText,
+  backfillKey,
+}) {
+  if (!waiting) return { onsetMatch: null, onsetKey: null };
+  if (matches && quiescent) return { onsetMatch: matchText, onsetKey: matchKey };
+  if (!prevOnsetMatch && backfillText != null) return { onsetMatch: backfillText, onsetKey: backfillKey };
+  return { onsetMatch: prevOnsetMatch ?? null, onsetKey: prevOnsetKey ?? null };
+}
+
 // 入力待ち検知時のビープを鳴らしてよいか。
 // 解除と再検知が短時間で往復すると鳴り続けてうるさいため、クールダウンを設ける。
 // ユーザーが応答したとき（markPaneInput）は起点をリセットするので、
@@ -356,18 +430,30 @@ const WAITING_BEEP_COOLDOWN_MS = 15000;
 // クールダウンではなくこちらの長い猶予を使う。「別の新しい確認」なら根拠の文字列も
 // 変わるはずなので、通常どおり短いクールダウンで鳴らせる。
 //
+// ⚠ ここで渡す onsetMatch / lastBeepedOnsetMatch は findWaitingMatchKey（正規表現の
+//   一致範囲そのもの。m[0]）の値であること。findWaitingMatch（前後の文脈込み）を
+//   そのまま渡してはいけない（司の実測で発覚した不具合・#352 の再レビュー）。
+//   vk-orchestrator の常駐ログのように、同じ言い回し（例:「入力待ち」）の前後の
+//   文脈（時刻・termId・カウンタ・隣接行）が毎回変わる出力では、文脈込みの文字列は
+//   再点灯のたびに毎回違う値になり、この長期抑制が一度も適用されなくなる
+//   （実測: termId=5 / termId=9 の 2 行で sameIgnoringWhitespace が false になり、
+//   結局 15 秒クールダウンしか効いていなかった）。findWaitingMatchKey の m[0] は
+//   可変の文脈を含まないため、同じ言い回しなら安定して一致する。
+//
 // 値の根拠: この値は「同じ点灯根拠で鳴らないビープを、人が最大どれだけ聞き逃す
 // 可能性があるか」の上限そのものになる（安藤の指摘・再レビュー MEDIUM）。長くする
 // ほど誤検知の点滅は静かになるが、見逃しの窓も同じだけ広がる。
 //
-// この見逃しの窓は「同じ点灯根拠」の判定精度に直結して悪化する。findWaitingMatch
-// は配列順で最初に当たったパターン × バッファ先頭側の最初の一致を返すため（詳細は
-// 同関数のコメント参照）、日本語の AskUserQuestion のように本文が英語パターンに
-// 当たらず定型フッター（"Enter to select" 等）だけが一致するケースでは、
+// この見逃しの窓は「同じ点灯根拠」の判定精度に直結して悪化する。findWaitingMatchKey
+// は配列順で最初に当たったパターン × バッファ先頭側の最初の一致の m[0] を返すため
+// （詳細は同関数のコメント参照）、日本語の AskUserQuestion のように本文が英語
+// パターンに当たらず定型フッター（"Enter to select" 等）だけが一致するケースでは、
 // 「問いの内容」ではなく「フッターの定型文」が鍵になり、**内容の異なる 2 問目が
 // 1 問目と「同じ根拠」と誤判定されて抑制対象に入る**（安藤の実測で確認済み）。
 // つまりこの値は「同じ誤検知の点滅を静める効果」と「AskUserQuestion で問いが
-// 変わったのに気付かれない最悪ケースの長さ」を同時に決める。
+// 変わったのに気付かれない最悪ケースの長さ」を同時に決める。これは m[0] をキーに
+// 切り替えても解消しない（AskUserQuestion のフッター自体が m[0] になるため）ので、
+// 承知のうえで受け入れたトレードオフとする。
 //
 // 15 秒（WAITING_BEEP_COOLDOWN_MS）のままだと疎な出力ペインでは毎回の再点灯で
 // 鳴ってしまう一方、10 分（600000ms）まで伸ばすと AskUserQuestion の見逃しの窓が
@@ -721,9 +807,11 @@ return {
   detectBackgroundAgents,
   extractScreenLines,
   findWaitingMatch,
+  findWaitingMatchKey,
   isOutputQuiescent,
   isWaitingCwdExcluded,
   matchesWaiting,
+  nextWaitingOnset,
   nextWaitingState,
   normalizeWaitingExcludeCwdPatterns,
   sameIgnoringWhitespace,

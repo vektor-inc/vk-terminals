@@ -13,9 +13,11 @@ const {
   detectBackgroundAgents,
   extractScreenLines,
   findWaitingMatch,
+  findWaitingMatchKey,
   isOutputQuiescent,
   isWaitingCwdExcluded,
   matchesWaiting,
+  nextWaitingOnset,
   nextWaitingState,
   normalizeWaitingExcludeCwdPatterns,
   sameIgnoringWhitespace,
@@ -140,6 +142,66 @@ test('findWaitingMatch: 全角「？」1 文字にしか一致しないケース
   const match = findWaitingMatch(sample);
   assert.notEqual(match, null);
   assert.ok(match.length > 1, `文脈を含めておらず短すぎる: ${JSON.stringify(match)}`);
+});
+
+// ─── findWaitingMatchKey（ビープ長期抑制の鍵。issue #352 の再レビュー） ────────────
+// 司の実測で発覚: findWaitingMatch（文脈込み）をビープ抑制の鍵にそのまま使うと、
+// vk-orchestrator の常駐ログのように前後の文脈（termId 等）が毎回変わる出力では
+// 鍵も毎回変わり、長期抑制（WAITING_BEEP_REPEAT_SUPPRESS_MS）が一度も適用されない。
+// findWaitingMatchKey（m[0]。文脈を含まない）はこの問題を避けるために用意した。
+
+test('findWaitingMatchKey: 正規表現の一致範囲そのもの（m[0]）を返す。非マッチは null', () => {
+  assert.equal(findWaitingMatchKey('Proceed?'), 'Proceed?');
+  assert.equal(findWaitingMatchKey('$ echo done'), null);
+  assert.equal(findWaitingMatchKey(''), null);
+});
+
+test('findWaitingMatchKey: findWaitingMatch と一致・非一致の判定が揃う（同じ探索結果から派生するため）', () => {
+  const samples = ['Proceed?', 'この内容で進めてよろしいでしょうか？', '$ echo done', 'CI の完了を待っています。'];
+  for (const sample of samples) {
+    assert.equal(findWaitingMatchKey(sample) !== null, findWaitingMatch(sample) !== null, `不整合: ${sample}`);
+  }
+});
+
+test('findWaitingMatchKey: 司の実測ケース（termId だけが違う vk-orchestrator の常駐ログ2行）で同じキーになる', () => {
+  // findWaitingMatch（文脈込み）は termId を含む文脈のせいで 2 行の結果が異なる
+  // （前後 24 文字の文脈に termId の数字が含まれるため）。
+  const lineA = '[scan-waiting-markers] termId=5: 入力待ちマーカー消灯失敗: terminal 5 not found';
+  const lineB = '[scan-waiting-markers] termId=9: 入力待ちマーカー消灯失敗: terminal 9 not found';
+  assert.notEqual(
+    findWaitingMatch(lineA),
+    findWaitingMatch(lineB),
+    'findWaitingMatch（文脈込み）が termId 違いでも同じ文字列になっている（このテストの前提が崩れている）',
+  );
+  // findWaitingMatchKey（m[0]。文脈を含まない）は termId に依存しないパターン
+  // （「入力待ち」を拾う WAITING_TARGET_NOUNS_PATTERN）そのものなので、同じキーになる。
+  assert.notEqual(findWaitingMatchKey(lineA), null);
+  assert.equal(
+    findWaitingMatchKey(lineA),
+    findWaitingMatchKey(lineB),
+    'termId が違うだけで同じ言い回しなのにキーが変わっている（長期抑制が効かなくなる回帰）',
+  );
+});
+
+test('shouldBeepForWaiting: 司の実測ケースを再現 — findWaitingMatchKey をキーに使えば長期抑制が実際に効く', () => {
+  // 修正前（findWaitingMatch の文脈込み文字列をキーに使っていた）は、この 2 行が
+  // termId 違いで別々のキーになり、shouldBeepForWaiting が毎回 true を返して
+  // WAITING_BEEP_REPEAT_SUPPRESS_MS が実質無効化されていた（司の実測）。
+  const lineA = '[scan-waiting-markers] termId=5: 入力待ちマーカー消灯失敗: terminal 5 not found';
+  const lineB = '[scan-waiting-markers] termId=9: 入力待ちマーカー消灯失敗: terminal 9 not found';
+  const keyA = findWaitingMatchKey(lineA);
+  const keyB = findWaitingMatchKey(lineB);
+  const lastBeepAt = 10_000;
+  assert.equal(
+    shouldBeepForWaiting({
+      now: lastBeepAt + WAITING_BEEP_COOLDOWN_MS + 1, // 通常のクールダウンは過ぎている
+      lastBeepAt,
+      onsetMatch: keyB,
+      lastBeepedOnsetMatch: keyA,
+    }),
+    false,
+    'termId だけが違う再点灯なのに長期抑制が効いていない（回帰）',
+  );
 });
 
 test('containsIgnoringWhitespace: 空白・改行（全角スペース含む）を無視して包含判定する', () => {
@@ -270,6 +332,101 @@ test('containsIgnoringWhitespace: TUI の枠線・罫線（Unicode Box Drawing�
   assert.equal(containsIgnoringWhitespace('╭───╮\n│ abc │\n╰───╯', '╭─╮\nabc\n╰─╯'), true);
   // 罫線を除いた本文自体が違えば、当然一致しない（緩めすぎて何でも true になっていないことの確認）。
   assert.equal(containsIgnoringWhitespace('╭───╮\n│ abc │\n╰───╯', 'xyz'), false);
+});
+
+// ─── nextWaitingOnset（点灯根拠の更新・issue #352 の再レビュー） ─────────────────
+// checkWaiting() が t.waitingOnsetMatch / t.waitingOnsetKey をどう更新するかの
+// 決定ロジックを、renderer/app.js から切り出した純粋関数。司の指摘（#352 再レビュー
+// point 2）: 上限評価（quiescent = false）で末尾アンカー系パターンがマッチして
+// waiting = true になった直後に出力が止まると、次の静止評価が recentLines と
+// lastLines の CR 上書きの食い違いで非マッチになり、根拠が null のまま張り付きうる。
+// backfill（呼び出し側が t.lastLines へ直接再探索した結果）でこれを塞ぐ。
+
+test('nextWaitingOnset: waiting が false なら根拠は両方 null になる（除外・解除のいずれでも）', () => {
+  const result = nextWaitingOnset({
+    waiting: false,
+    prevOnsetMatch: '前回の根拠',
+    prevOnsetKey: '前回のキー',
+    matches: true, // excluded で強制的に false にされた状況を想定（matches は true でもよい）
+    quiescent: true,
+  });
+  assert.deepEqual(result, { onsetMatch: null, onsetKey: null });
+});
+
+test('nextWaitingOnset: 静止評価での新規マッチ（matches && quiescent）なら最新の文字列・キーに更新する', () => {
+  const result = nextWaitingOnset({
+    waiting: true,
+    prevOnsetMatch: '古い根拠',
+    prevOnsetKey: '古いキー',
+    matches: true,
+    quiescent: true,
+    matchText: '新しい根拠',
+    matchKey: '新しいキー',
+  });
+  assert.deepEqual(result, { onsetMatch: '新しい根拠', onsetKey: '新しいキー' });
+});
+
+test('nextWaitingOnset: 上限評価でのマッチ（quiescent = false）では更新せず、根拠がまだ無ければ backfill を使う', () => {
+  // matches && quiescent が成立しない（quiescent = false）ケース。matchText がある
+  // 場合でもそれは使わない（安藤の指摘 MEDIUM: recentLines 由来で lastLines との
+  // 食い違いがあり得るため）。backfill（呼び出し側が別途 t.lastLines へ再探索した
+  // 結果）が取れていれば、それを使う。
+  const result = nextWaitingOnset({
+    waiting: true,
+    prevOnsetMatch: null,
+    prevOnsetKey: null,
+    matches: true,
+    quiescent: false,
+    matchText: '上限評価でのマッチ文字列（使わない）',
+    matchKey: '上限評価でのマッチキー（使わない）',
+    backfillText: 'lastLines から拾えた根拠',
+    backfillKey: 'lastLines から拾えたキー',
+  });
+  assert.deepEqual(result, { onsetMatch: 'lastLines から拾えた根拠', onsetKey: 'lastLines から拾えたキー' });
+});
+
+test('nextWaitingOnset: backfill も取れなければ根拠は null のまま（fail-safe。#91 への影響は無い）', () => {
+  // 司の指摘が示した張り付きの残存経路: 上限評価でマッチして waiting = true に
+  // なった直後、静止評価が CR 上書きの食い違いで非マッチになり、backfill も
+  // 失敗する（lastLines のどこにも該当パターンが見当たらない）ケース。
+  // ここでは「解除する」のではなく「根拠不明のまま」に留める（nextWaitingState 側の
+  // fail-safe と対応する。onsetStillVisible が undefined → 現状維持）。
+  const result = nextWaitingOnset({
+    waiting: true,
+    prevOnsetMatch: null,
+    prevOnsetKey: null,
+    matches: false,
+    quiescent: true,
+    backfillText: null,
+    backfillKey: null,
+  });
+  assert.deepEqual(result, { onsetMatch: null, onsetKey: null });
+});
+
+test('nextWaitingOnset: 根拠が既にあり今回は更新材料が無い（非マッチで現状維持）なら前回の値をそのまま保つ', () => {
+  const result = nextWaitingOnset({
+    waiting: true,
+    prevOnsetMatch: '前回の根拠',
+    prevOnsetKey: '前回のキー',
+    matches: false,
+    quiescent: true,
+  });
+  assert.deepEqual(result, { onsetMatch: '前回の根拠', onsetKey: '前回のキー' });
+});
+
+test('nextWaitingOnset: 根拠が既にある場合、backfill が渡されても上書きしない（新規根拠は matches && quiescent 経由のみ）', () => {
+  // 根拠がすでにある状態で backfill 値が渡されるのは想定外だが、上書きしないことを
+  // 明示しておく（「根拠が無いときだけ backfill を使う」という条件そのものの固定）。
+  const result = nextWaitingOnset({
+    waiting: true,
+    prevOnsetMatch: '既にある根拠',
+    prevOnsetKey: '既にあるキー',
+    matches: false,
+    quiescent: false,
+    backfillText: '別の根拠（使われないはず）',
+    backfillKey: '別のキー（使われないはず）',
+  });
+  assert.deepEqual(result, { onsetMatch: '既にある根拠', onsetKey: '既にあるキー' });
 });
 
 // ─── 判定に使うバッファの選択 ────────────────────────────────────────────────

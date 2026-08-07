@@ -48,7 +48,8 @@
          - sidebarSectionState.js : localStorage（app.js の共通セクション生成前）
          - widgetView.js      : VKWidgetContract
          - taskQueueLink.js / settingsTabs.js / urlLinkify.js : VKUrlSafety
-         - terminalLinkProvider.js : VKUrlLinkify（ペイン内 URL の Cmd/Ctrl+クリック対応。issue #349） -->
+         - terminalLinkProvider.js : VKUrlLinkify（ペイン内 URL の Cmd/Ctrl+クリック対応。issue #349）
+         - terminalLinkPolicy.js : 依存無し（修飾キー判定。app.js が VKUrlLinkify と併せて使う） -->
   <script src="ipcClient.js"></script>
   <script src="urlSafety.js"></script>
   <script src="urlLinkify.js"></script>
@@ -57,6 +58,7 @@
   <script src="../utils/stripAnsi.js"></script>
   <script src="../utils/closeConfirm.js"></script>
   <script src="../utils/loopbackHost.js"></script>
+  <script src="../utils/terminalLinkPolicy.js"></script>
   <script src="../utils/sidebarSectionState.js"></script>
   <script src="../utils/taskSectionVisibility.js"></script>
   <script src="../utils/widgetContract.js"></script>

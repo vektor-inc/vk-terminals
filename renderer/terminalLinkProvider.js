@@ -176,6 +176,15 @@
       // 内のコメントと同じ）。start は 0-based → 1-based の変換で +1 するが、end.x は
       // 0-based の exclusive 境界がそのまま 1-based の inclusive 境界と数値上一致するため
       // +1 しない。
+      //
+      // 注記（安藤レビュー・偶然の一致に関する記録）: URL がバッファ行のちょうど末尾で
+      // 終わる場合、endPos.col（stringIndexToColumn）が 0 を返し、end.x が 1-based の
+      // 規約上あり得ない 0 になることがある。これはバグではない。xterm.js 側の
+      // Linkifier._linkAtPosition は range を y*cols+x の線形インデックスに変換して
+      // 比較するだけで、x の値が [1..cols] の範囲内かは検証しない。(y, x=0) と
+      // (y-1, x=cols) は同じ線形インデックスになるため結果的に正しい範囲として扱われる
+      // （xterm.js 本体の実装詳細に依存した挙動であり、xterm 側でこの比較方法が変わると
+      // 崩れうる。ただし現状は正しく動作しており、修正の必要は無い）。
       links.push({
         range: {
           start: { x: startPos.col + 1, y: startPos.rowIndex + 1 },

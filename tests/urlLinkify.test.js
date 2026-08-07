@@ -3,7 +3,13 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { extractUrlMatches, trimTrailingPunctuation } = require('../renderer/urlLinkify');
+const {
+  extractUrlMatches,
+  trimTrailingPunctuation,
+  getUrlHost,
+  hasUserInfo,
+  isAcceptableUrlHost,
+} = require('../renderer/urlLinkify');
 
 test('extractUrlMatches: 単純な http(s) URL を 1 件拾う', () => {
   const url = 'https://example.com/path';
@@ -119,6 +125,69 @@ test('extractUrlMatches: 空・非文字列・URL を含まないテキストは
 test('extractUrlMatches: 末尾記号を全部落として不正 URL になるものは弾く', () => {
   // "," を全部削ると "https://" だけが残り、isSafeHttpUrl が false を返すため除外される
   assert.deepEqual(extractUrlMatches('https://,,,'), []);
+});
+
+// ─── ユーザー情報付き URL（なりすまし対策）（安藤レビュー指摘・MEDIUM） ──────────────
+test('hasUserInfo: user:pass@host / user@host 形式を検出する', () => {
+  assert.equal(hasUserInfo('https://github.com@evil.example/login'), true);
+  assert.equal(hasUserInfo('https://user:pass@host.com/'), true);
+  assert.equal(hasUserInfo('https://token@github.com/x'), true);
+  assert.equal(hasUserInfo('https://example.com/path'), false);
+});
+
+test('extractUrlMatches: ユーザー情報付き URL はなりすましの恐れがあるためリンク化しない', () => {
+  // 見た目上は github.com への URL に見えても、実際のホストは evil.example になる
+  // （@ より前がユーザー情報として解釈されるため）。
+  assert.deepEqual(extractUrlMatches('https://github.com@evil.example/login'), []);
+  assert.deepEqual(extractUrlMatches('アクセストークン付き: https://token@github.com/x を開く'), []);
+});
+
+test('extractUrlMatches: 折り返しをまたいで偶然できる「ユーザー情報付き URL」も弾く', () => {
+  // terminalLinkProvider.js が折り返し行を連結した結果、行末の "https://github.com" と
+  // 次行頭の "@evil.example/x"（例えば前景色を背景色と同じにして不可視にできる）が
+  // 1 本の文字列として渡ってくるケースを想定したテスト。
+  const merged = 'https://github.com@evil.example/x';
+  assert.deepEqual(extractUrlMatches(merged), []);
+});
+
+// ─── ホスト名にドットが無い候補の除外（ローカル開発サーバは許可）（安藤レビュー指摘・LOW） ──
+test('isAcceptableUrlHost: localhost・IPv4・IPv6 リテラルは許可する', () => {
+  assert.equal(isAcceptableUrlHost('http://localhost:8888/'), true);
+  assert.equal(isAcceptableUrlHost('http://127.0.0.1:3000/'), true);
+  assert.equal(isAcceptableUrlHost('http://[::1]:8080/path'), true);
+});
+
+test('isAcceptableUrlHost: ドットを含まない一般ホスト名は弾く', () => {
+  assert.equal(isAcceptableUrlHost('https://-'), false);
+  assert.equal(isAcceptableUrlHost('https://g'), false);
+});
+
+test('extractUrlMatches: ローカル開発サーバの URL はリンク化する', () => {
+  assert.equal(extractUrlMatches('サーバー起動: http://localhost:8888/ です')[0].url, 'http://localhost:8888/');
+  assert.equal(extractUrlMatches('http://127.0.0.1:3000/api')[0].url, 'http://127.0.0.1:3000/api');
+  assert.equal(extractUrlMatches('http://[::1]:8080/path')[0].url, 'http://[::1]:8080/path');
+});
+
+test('extractUrlMatches: 非 ASCII ドメインが途中で切れてドット無しになったものは弾く', () => {
+  // "https://götest.com" は ö が候補文字集合に含まれないため "https://g" として
+  // 切り出されるが、ホスト名にドットが無いため除外される（開いても無意味なページになる）。
+  assert.deepEqual(extractUrlMatches('https://götest.com'), []);
+  assert.deepEqual(extractUrlMatches('参照: https://-/foo です'), []);
+});
+
+// ─── ツールチップ表示用のホスト取得 ──────────────────────────────────────────────
+test('getUrlHost: ポート込みのホストを返す。解析失敗時は空文字', () => {
+  assert.equal(getUrlHost('https://github.com@evil.example/login'), 'evil.example');
+  assert.equal(getUrlHost('http://127.0.0.1:3000/'), '127.0.0.1:3000');
+  assert.equal(getUrlHost('not a url'), '');
+});
+
+test('trimTrailingPunctuation: 大量の閉じカッコが連続しても正しく全部削り切る（性能改善の回帰確認）', () => {
+  // 以前は 1 文字削るたびに slice + 再カウントしており O(n^2) だった
+  // （安藤レビュー指摘・LOW）。件数を増やしても正しく末尾を全部削り切れることを確認する。
+  const url = 'https://example.com/a';
+  const closing = ')'.repeat(2000);
+  assert.equal(trimTrailingPunctuation(url + closing), url);
 });
 
 test('trimTrailingPunctuation: 単体でも記号の組み合わせを正しく処理する', () => {

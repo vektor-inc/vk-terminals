@@ -38,6 +38,8 @@ const { isSafeHttpUrl } = window.VKUrlSafety;
 // バッファ位置への変換は renderer/terminalLinkProvider.js（xterm.js の
 // registerLinkProvider を自前実装）が担う。詳しい採用理由は同ファイル冒頭のコメント参照。
 const { createTerminalLinkProvider } = window.VKTerminalLinkProvider;
+// ツールチップに表示する「解決後の遷移先ホスト」の取得に使う（安藤レビュー指摘・MEDIUM）。
+const { getUrlHost } = window.VKUrlLinkify;
 const {
   migrateLegacyState,
   readCollapsedSections,
@@ -440,7 +442,11 @@ async function createTerminal(paneId, cwd, options = {}) {
   // ペイン内 URL の Cmd/Ctrl+クリック対応（issue #349）。破棄は term.dispose() 側に
   // 任せる（xterm.js 本体の LinkProviderService は Terminal の disposal 時に登録済み
   // プロバイダを自動でクリアするため、fitAddon 同様ここで個別に dispose() を呼ぶ必要は無い）。
-  term.registerLinkProvider(createTerminalLinkProvider(term, createTerminalLinkHandlers()));
+  term.registerLinkProvider(createTerminalLinkProvider(term, createTerminalLinkHandlers({
+    openUrl: openExternalUrlSafe,
+    showTooltip: showTermLinkTooltip,
+    hideTooltip: hideTermLinkTooltip,
+  })));
 
   // OSC 0 / OSC 2 のタイトル変更を購読してペイン上部のタスクタイトル行に反映する。
   // 例: `printf '\033]0;ビルド中\007'` をシェルで実行すると "ビルド中" がここに表示される。
@@ -906,25 +912,15 @@ function openExternalUrlSafe(url) {
 // 衝突しない（xterm.js 本体の src/browser/Linkifier.ts で確認済み）。また矩形選択の
 // 修飾キーは Alt（xterm.js 本体の SelectionService.shouldColumnSelect）であり、
 // ここで使う Cmd（macOS）/ Ctrl（Windows・Linux）とは別のキーのため競合しない。
-
-// macOS かどうかの判定。navigator.platform は非推奨だが、Electron が同梱する
-// Chromium では引き続き利用できる（contextIsolation の影響を受けない標準 Web API のため
-// preload 経由の橋渡しは不要）。テスト環境（node --test。navigator 無し）ではこの関数を
-// 呼ばない前提のため未定義チェックだけ入れておく。
-function isMacPlatform() {
-  const platform = (typeof navigator !== 'undefined' && navigator.platform) || '';
-  return /Mac|iPhone|iPod|iPad/i.test(platform);
-}
-
+//
+// 修飾キー判定（isMacPlatform / isLinkOpenModifierPressed / createTerminalLinkHandlers）
+// は utils/terminalLinkPolicy.js の UMD へ切り出してある。この機能で最もセキュリティに
+// 効く分岐（単クリックだけでは絶対に外部 URL を開かせない）を renderer/app.js の
+// 非エクスポート関数のままにせず、tests/terminalLinkPolicy.test.js から直接ユニット
+// テストできるようにするため（安藤レビュー指摘・MEDIUM）。
+const { isMacPlatform, createTerminalLinkHandlers } = window.VKTerminalLinkPolicy;
 const IS_MAC_PLATFORM = isMacPlatform();
-
-// リンクを開く修飾キーが押されているか。macOS は Cmd（metaKey）、Windows・Linux は
-// Ctrl（ctrlKey）（植草の確定仕様）。
-function isLinkOpenModifierPressed(event) {
-  return IS_MAC_PLATFORM ? !!event.metaKey : !!event.ctrlKey;
-}
-
-const TERM_LINK_TOOLTIP_TEXT = IS_MAC_PLATFORM ? '⌘+クリックで開く' : 'Ctrl+クリックで開く';
+const TERM_LINK_MODIFIER_LABEL = IS_MAC_PLATFORM ? '⌘+クリックで開く' : 'Ctrl+クリックで開く';
 
 // ホバー中のツールチップ本体。全ペイン共通で 1 つだけ用意し、都度使い回す
 // （externalUrlToast と同じ考え方。document.body 直下に置き、#root の render() による
@@ -939,17 +935,34 @@ function ensureTermLinkTooltip() {
   // 支援技術には見せない（Cmd/Ctrl+クリック自体がポインタ操作前提の機能のため）。
   el.setAttribute('aria-hidden', 'true');
   el.hidden = true;
-  el.textContent = TERM_LINK_TOOLTIP_TEXT;
   document.body.appendChild(el);
   termLinkTooltipEl = el;
   return el;
 }
 
+// ツールチップの文言。遷移先ホストを表示する（安藤レビュー指摘・MEDIUM）。
+//
+// ターミナル出力は攻撃者が内容を制御しうる前提のため、「⌘+クリックで開く」という
+// 固定文言だけでは、ユーザーが実際の行き先を検証する手段が本文の目視しかなかった
+// （例: 見た目は https://github.com/... に見えても実体は
+// https://github.com@evil.example/login というユーザー情報付き URL で、実ホストは
+// evil.example ということがありうる）。new URL(url).host（VKUrlLinkify.getUrlHost）で
+// 解決した後のホストをツールチップに出すことで、表示テキストに惑わされず実際の行き先を
+// 確認できるようにする。なお renderer/urlLinkify.js の extractUrlMatches はユーザー情報
+// 付き URL 自体をそもそもリンク化しないため、ここに渡ってくる url は通常そのケースには
+// 該当しないが、ツールチップ自体は「実ホストを見せる」という独立した防御として残す。
+function termLinkTooltipMessage(url) {
+  const host = getUrlHost(url);
+  return host ? `${host} を ${TERM_LINK_MODIFIER_LABEL}` : TERM_LINK_MODIFIER_LABEL;
+}
+
 // カーソル位置の近くにツールチップを表示する。pointer-events: none にしてあるため
 // （style.css 参照）、このツールチップ自身が xterm.js 側のホバー判定（マウス位置の
-// 追跡）を奪うことはない。
-function showTermLinkTooltip(event) {
+// 追跡）を奪うことはない。textContent で入れる（innerHTML は使わない。url はターミナル
+// 出力由来で攻撃者が内容を制御しうるため）。
+function showTermLinkTooltip(event, url) {
   const el = ensureTermLinkTooltip();
+  el.textContent = termLinkTooltipMessage(url);
   const OFFSET = 12;
   el.hidden = false;
   const maxLeft = Math.max(0, window.innerWidth - el.offsetWidth - 4);
@@ -960,25 +973,6 @@ function showTermLinkTooltip(event) {
 
 function hideTermLinkTooltip() {
   if (termLinkTooltipEl) termLinkTooltipEl.hidden = true;
-}
-
-// term.registerLinkProvider() に渡すハンドラ一式。見た目（ホバー時の下線・pointer
-// カーソル）は xterm.js 本体が自動で付ける（ILink.decorations を明示しない場合は既定で
-// 有効。ANSI 前景色は変更しない。植草の確定仕様）。
-function createTerminalLinkHandlers() {
-  return {
-    activate(event, url) {
-      if (!isLinkOpenModifierPressed(event)) return;
-      event.preventDefault();
-      openExternalUrlSafe(url);
-    },
-    hover(event) {
-      showTermLinkTooltip(event);
-    },
-    leave() {
-      hideTermLinkTooltip();
-    },
-  };
 }
 
 // ─── Sidebar menu ────────────────────────────────────────────────────────────
@@ -2337,6 +2331,9 @@ function closePane(paneId, { force = false, skipConfirm = false } = {}) {
       clearTimeout(Number(autoInputTimer));
       delete paneEl.dataset.autoInputTimer;
     }
+    // ホバー中に閉じられると leave が発火せず、position: fixed のツールチップが
+    // 残り続けるため明示的に隠す（安藤レビュー指摘・LOW）。
+    hideTermLinkTooltip();
     t.term.dispose();
     VKIpc.send('terminal:kill', t.termId);
     delete terminals[paneId];
@@ -3416,6 +3413,10 @@ function observePanes() {
 window.addEventListener('resize', debouncedFitAll);
 // ウィンドウ幅が縮んだときにサイドバー幅の上限（幅比）を超えないよう再クランプする（issue #89）。
 window.addEventListener('resize', () => setSidebarWidth(getSidebarWidth()));
+// ウィンドウがフォーカスを失うと、ホバー中のマウス位置を xterm 側が追跡し続けられず
+// leave が発火しないケースがある（例: ホバーしたまま Cmd+Tab で他アプリへ切り替える）。
+// position: fixed のツールチップが画面に残り続けるのを防ぐ（安藤レビュー指摘・LOW）。
+window.addEventListener('blur', hideTermLinkTooltip);
 
 // ─── 設定パネル（汎用）────────────────────────────────────────────────────────
 // main プロセス（settings:describe / settings:save）経由で、呼び出し側が env
@@ -5001,6 +5002,9 @@ async function initApp() {
   } catch (_e) { /* 取得失敗時は無効のまま */ }
 
   // Dispose any existing terminals
+  // ホバー中に一括破棄されるとリンクの leave が発火しないため、closePane() と同様に
+  // ここでもツールチップを明示的に隠す（安藤レビュー指摘・LOW）。
+  hideTermLinkTooltip();
   for (const [paneId, t] of Object.entries(terminals)) {
     // terminals を丸ごと差し替えるため、closePane() と同様にタイマーを破棄する。
     // 残ったままだと古い terminals[paneId] をクロージャで掴み続け、消えたペインに

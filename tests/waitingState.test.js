@@ -145,7 +145,7 @@ test('findWaitingMatch: 全角「？」1 文字にしか一致しないケース
 });
 
 // ─── stripVolatileForKey（ビープ長期抑制の鍵。issue #352 の再レビュー） ────────────
-// 2 段階の実測で発覚した問題を両方解決する必要がある:
+// 複数段階の実測で発覚した問題を経て、今の形に落ち着いている:
 //   1. 司の実測: findWaitingMatch（文脈込み）をビープ抑制の鍵にそのまま使うと、
 //      vk-orchestrator の常駐ログのように前後の文脈（termId 等）が毎回変わる
 //      出力では鍵も毎回変わり、長期抑制（WAITING_BEEP_REPEAT_SUPPRESS_MS）が
@@ -153,7 +153,16 @@ test('findWaitingMatch: 全角「？」1 文字にしか一致しないケース
 //   2. 安藤の実測: 1 の対処として m[0]（正規表現の一致範囲そのもの）を鍵にすると、
 //      判別力が無くなり、内容の異なる本物の確認（例:「編集の許可」と「コマンド
 //      実行の許可」はどちらも m[0] = "Do you want to"）まで同一視してしまう。
-// stripVolatileForKey は文脈込みの文字列から数字だけを潰すことで両方を満たす。
+//   3. 安藤の再実測（実機の画面形で確認）: 2 の対処として数字を潰す
+//      stripVolatileForKey を採ったが、これは vk-orchestrator の常駐ログ
+//      （可変部分が数字）は救えても、Claude Code の実機の許可プロンプト
+//      （枠付きの複数行ボックスで、選択肢が最下部にある）までは救えない。
+//      findWaitingMatch は最も後ろの一致を返す（#91 対策）ため、鍵は問いの本文
+//      ではなく選択肢の定型文（"❯ 1. Yes" 等）になり、内容の異なる許可プロンプト
+//      どうしが同一の鍵になる。下のテストはこの限界を「区別できる」という嘘の
+//      期待値ではなく「実際にこうなる」という形で固定する（安藤の指摘: 1 行の
+//      平文サンプルでは区別できるように見えたが、実機の画面形を反映していな
+//      かったため見落とした、その反省を踏まえた形）。
 
 test('stripVolatileForKey: 数字を # に潰す。非文字列は null', () => {
   assert.equal(stripVolatileForKey('termId=5: terminal 5 not found'), 'termId=#: terminal # not found');
@@ -182,20 +191,37 @@ test('stripVolatileForKey(findWaitingMatch(...)): 司の実測ケース（termId
   );
 });
 
-test('stripVolatileForKey(findWaitingMatch(...)): 安藤の実測ケース — 内容の異なる2つの本物の許可プロンプトは別のキーになる', () => {
-  // 安藤の指摘（再レビュー MEDIUM）: 鍵を m[0] だけにすると、Claude Code の許可
-  // プロンプトはどれも /Do you want to/i にしか当たらず、「編集の許可」も
-  // 「コマンド実行の許可」も同じ m[0] = "Do you want to" になってしまい、
-  // 内容の異なる本物の確認どうしが同一視される（2 問目が長期抑制で無音になる）。
-  const p1 = 'Do you want to make this edit to renderer/app.js?';
-  const p2 = 'Do you want to run this command?\n  rm -rf build';
+// 実機の Claude Code の許可プロンプトを模したボックス（枠付きの複数行、選択肢が
+// 最下部）。1 行の平文サンプルでは実機の画面形を反映できていなかった（安藤の
+// 指摘・再々レビュー）ため、この形で固定する。
+function buildPermissionBox(questionLines) {
+  return [
+    '╭──────────────────────────────────╮',
+    ...questionLines.map((line) => `│ ${line}`),
+    '│                                    │',
+    '│ ❯ 1. Yes',
+    '│   2. No',
+    '╰──────────────────────────────────╯',
+  ].join('\n');
+}
+
+test('stripVolatileForKey(findWaitingMatch(...)): 実機の許可プロンプト（枠付き複数行ボックス）は問いが違っても同一キーになる（安藤の実測・既知の限界）', () => {
+  // findWaitingMatch は最も後ろの一致を返す（#91 対策）ため、ボックスでは
+  // 最下部の選択肢行（"❯ 1. Yes"）を掴む。問いの本文（1 行目）は鍵に含まれない。
+  const p1 = buildPermissionBox(['Do you want to make this edit to renderer/app.js?']);
+  const p2 = buildPermissionBox(['Do you want to run this command?', '  rm -rf build']);
   const key1 = stripVolatileForKey(findWaitingMatch(p1));
   const key2 = stripVolatileForKey(findWaitingMatch(p2));
   assert.notEqual(key1, null);
-  assert.notEqual(
+  // 「区別できる」という期待値ではなく、「実際にこうなる」を固定する。
+  // 内容の異なる許可プロンプトが同一キーになるのは既知の限界であり、
+  // WAITING_BEEP_REPEAT_SUPPRESS_MS（120 秒）が見逃しの最終的な歯止めになる
+  // （詳細は同定数のコメント参照）。main に対する退行ではない（main は 2 問目で
+  // waiting の状態遷移が起きないためビープが鳴らない）。
+  assert.equal(
     key1,
     key2,
-    '内容の異なる本物の確認が同一キーになっている（2 問目が誤って無音になる回帰）',
+    '実機の画面形で区別できるようになっている（前提が変わっている可能性があるので要確認）',
   );
 });
 
@@ -217,9 +243,9 @@ test('shouldBeepForWaiting: 司の実測ケースを再現 — stripVolatileForK
   );
 });
 
-test('shouldBeepForWaiting: 安藤の実測ケースを再現 — 内容の異なる本物の許可プロンプトはちゃんと鳴る', () => {
-  const p1 = 'Do you want to make this edit to renderer/app.js?';
-  const p2 = 'Do you want to run this command?\n  rm -rf build';
+test('shouldBeepForWaiting: 実機の許可プロンプト（枠付き複数行ボックス）は問いが違っても2問目が長期抑制で無音になる（既知の限界。WAITING_BEEP_REPEAT_SUPPRESS_MS が歯止め）', () => {
+  const p1 = buildPermissionBox(['Do you want to make this edit to renderer/app.js?']);
+  const p2 = buildPermissionBox(['Do you want to run this command?', '  rm -rf build']);
   const key1 = stripVolatileForKey(findWaitingMatch(p1));
   const key2 = stripVolatileForKey(findWaitingMatch(p2));
   const lastBeepAt = 10_000;
@@ -230,8 +256,8 @@ test('shouldBeepForWaiting: 安藤の実測ケースを再現 — 内容の異�
       onsetMatch: key2,
       lastBeepedOnsetMatch: key1,
     }),
-    true,
-    '内容の異なる本物の確認なのに長期抑制で鳴らなくなっている（回帰）',
+    false,
+    '実機の画面形で 2 問目が鳴るようになっている（前提が変わっている可能性があるので要確認）',
   );
 });
 

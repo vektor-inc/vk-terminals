@@ -56,15 +56,32 @@ async function launchAddPaneApp(port) {
   });
 }
 
-test.describe('モバイル版「ペインを追加」ボタン（issue #217 / PR #221）', () => {
+// issue #348: 4 テストとも同じ config（newPaneAutoLaunchClaude:false）で launchApp を
+// 呼んでいるため、起動を 1 回に共有する（describe → describe.serial）。
+// 「タップするとペインが1つ増える」がペイン数を 1→2 に変える唯一のテストだが、
+// 他の 3 テストはいずれもペイン数を見ない（#list .card を first() で見る／page.route で
+// /api/states 自体を差し替える）ため、実行順に関わらず影響しない。chromium の
+// browser/context/page は各テストで新規作成しており、ブラウザ側の状態は共有しない。
+test.describe.serial('モバイル版「ペインを追加」ボタン（issue #217 / PR #221）', () => {
+  let app;
+  let tmpRoot;
+  let port;
+
+  test.beforeAll(async () => {
+    port = await getFreePort();
+    ({ app, tmpRoot } = await launchAddPaneApp(port));
+    await waitForPaneCount(port, 1);
+  });
+
+  test.afterAll(async () => {
+    await closeApp({ app, tmpRoot });
+  });
+
   // ── (1) ボタンの存在・配置 ──────────────────────────────────────────────
   // #list の直後の兄弟として #add-pane-btn が表示され、ラベル・アイコンが正しいこと。
   test('#list の直後に「ペインを追加」ボタンが表示される', async () => {
-    const port = await getFreePort();
-    const { app, tmpRoot } = await launchAddPaneApp(port);
     const browser = await chromium.launch();
     try {
-      await waitForPaneCount(port, 1);
       const context = await browser.newContext();
       const page = await context.newPage();
       await page.goto(`http://127.0.0.1:${port}/`);
@@ -89,7 +106,6 @@ test.describe('モバイル版「ペインを追加」ボタン（issue #217 / P
       expect(isNextSibling).toBe(true);
     } finally {
       await browser.close();
-      await closeApp({ app, tmpRoot });
     }
   });
 
@@ -97,11 +113,8 @@ test.describe('モバイル版「ペインを追加」ボタン（issue #217 / P
   // ボタンクリックで POST /api/new-pane が呼ばれ、terminals が1件増え、
   // #list の新カードが出現する。
   test('タップするとペインが1つ増える', async () => {
-    const port = await getFreePort();
-    const { app, tmpRoot } = await launchAddPaneApp(port);
     const browser = await chromium.launch();
     try {
-      await waitForPaneCount(port, 1);
       const before = termIdsOf(await getStates(port));
       expect(before.length).toBe(1);
 
@@ -125,7 +138,6 @@ test.describe('モバイル版「ペインを追加」ボタン（issue #217 / P
       await expect(page.locator('#add-pane-btn')).not.toHaveAttribute('aria-busy', 'true');
     } finally {
       await browser.close();
-      await closeApp({ app, tmpRoot });
     }
   });
 
@@ -134,11 +146,8 @@ test.describe('モバイル版「ペインを追加」ボタン（issue #217 / P
   // 決定的に観測する。遅延中は disabled / aria-busy=true / ラベル「追加中…」、
   // 応答後は解除されて「ペインを追加」に戻る。
   test('送信中はボタンが disabled + aria-busy になり「追加中…」表示、完了後に解除される', async () => {
-    const port = await getFreePort();
-    const { app, tmpRoot } = await launchAddPaneApp(port);
     const browser = await chromium.launch();
     try {
-      await waitForPaneCount(port, 1);
       const context = await browser.newContext();
       const page = await context.newPage();
 
@@ -173,7 +182,6 @@ test.describe('モバイル版「ペインを追加」ボタン（issue #217 / P
       await expect(btn.locator('.add-pane-icon')).toBeVisible();
     } finally {
       await browser.close();
-      await closeApp({ app, tmpRoot });
     }
   });
 
@@ -181,11 +189,8 @@ test.describe('モバイル版「ペインを追加」ボタン（issue #217 / P
   // /api/states を空（terminals:{}）に差し替え、「稼働中のターミナルがありません」
   // 表示時でも #add-pane-btn が残ること（再びペインを開く唯一の導線）を確認する。
   test('ペイン0件の空状態でもボタンが表示される', async () => {
-    const port = await getFreePort();
-    const { app, tmpRoot } = await launchAddPaneApp(port);
     const browser = await chromium.launch();
     try {
-      await waitForPaneCount(port, 1);
       const context = await browser.newContext();
       const page = await context.newPage();
 
@@ -210,7 +215,6 @@ test.describe('モバイル版「ペインを追加」ボタン（issue #217 / P
       await expect(page.locator('#add-pane-btn .add-pane-label')).toHaveText('ペインを追加');
     } finally {
       await browser.close();
-      await closeApp({ app, tmpRoot });
     }
   });
 });

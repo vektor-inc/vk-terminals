@@ -166,12 +166,40 @@ async function waitForLocalWaitingOnset(win, baseline, timeoutMs = 20_000) {
   return null;
 }
 
-test('本物の確認待ち（Proceed?）は、出力が静止してから waiting になる', async () => {
-  const port = await getFreePort();
-  const { app, win, tmpRoot } = await launchWaitingApp(port);
-  // WAITING_PATTERNS の /Proceed\?/i に一致する ASCII の確認待ち文言。
-  const scriptPath = writeEchoScript(tmpRoot, 'prompt-ascii.sh', ['Proceed?']);
-  try {
+// issue #348: 4 テストとも同じ config（NO_CWD_EXCLUSION 固定）で launchApp を
+// 呼んでいるため、起動を 1 回に共有する。各テストは同じ termId '1' の PTY へ
+// スクリプトを流し waiting の点灯・解除を確認するが、テスト終了時に waiting が
+// 点灯したまま（または解除済み）のどちらでも残りうるため、各テストの先頭で
+// win.reload() して #sidebar の再描画を待つ。reload 後は report-states が
+// 最新の PTY 状態（waiting は実際には Electron 側のタイマー評価に依存する
+// ローカル判定で、reload しても PTY 自体は継続しているため、再描画時点の
+// 実際の状態がそのまま反映される）に基づいて再構築される。
+// prepareFirstPane() が postSetStatus(port, false) で externalWaiting を明示的に
+// クリアしてから「入力待ちではない」ことを確認しているため、reload と
+// この明示クリアの組み合わせで起点を統一できることを確認済み（PR 参照）。
+test.describe.serial('入力待ちの静止判定・自動解除（issue vektor-inc/vk-orchestrator#212 / PR #264）', () => {
+  let app;
+  let win;
+  let tmpRoot;
+  let port;
+
+  test.beforeAll(async () => {
+    port = await getFreePort();
+    ({ app, win, tmpRoot } = await launchWaitingApp(port));
+  });
+
+  test.afterAll(async () => {
+    await closeApp({ app, tmpRoot });
+  });
+
+  test.beforeEach(async () => {
+    await win.reload();
+    await win.waitForSelector('#sidebar', { state: 'attached' });
+  });
+
+  test('本物の確認待ち（Proceed?）は、出力が静止してから waiting になる', async () => {
+    // WAITING_PATTERNS の /Proceed\?/i に一致する ASCII の確認待ち文言。
+    const scriptPath = writeEchoScript(tmpRoot, 'prompt-ascii.sh', ['Proceed?']);
     const { pane, status } = await prepareFirstPane(win, port);
 
     // スクリプトを流す前に既存の点灯記録を控える。起動直後のシェルプロンプトが偶然
@@ -208,17 +236,11 @@ test('本物の確認待ち（Proceed?）は、出力が静止してから waiti
     await expect(status).toHaveAttribute('data-status', 'waiting');
     // バッジの文言も確認する（橙の「入力待ち」表示）。
     await expect(status).toHaveText('入力待ち');
-  } finally {
-    await closeApp({ app, tmpRoot });
-  }
-});
+  });
 
-test('本物の確認待ち（日本語「入力をお待ちしています。」）も waiting になる', async () => {
-  const port = await getFreePort();
-  const { app, win, tmpRoot } = await launchWaitingApp(port);
-  // 許可リスト方式の待ち対象名詞「入力」に一致するユーザー宛ての確認待ち文言。
-  const scriptPath = writeEchoScript(tmpRoot, 'prompt-ja.sh', ['入力をお待ちしています。']);
-  try {
+  test('本物の確認待ち（日本語「入力をお待ちしています。」）も waiting になる', async () => {
+    // 許可リスト方式の待ち対象名詞「入力」に一致するユーザー宛ての確認待ち文言。
+    const scriptPath = writeEchoScript(tmpRoot, 'prompt-ja.sh', ['入力をお待ちしています。']);
     const { pane, status } = await prepareFirstPane(win, port);
 
     await runScript(win, scriptPath);
@@ -228,22 +250,16 @@ test('本物の確認待ち（日本語「入力をお待ちしています。�
     // 静止してから判定が走るので、点灯まで最大 1.5 秒程度かかる。
     await expect(pane).toHaveClass(/\bwaiting\b/, { timeout: 15_000 });
     await expect(status).toHaveAttribute('data-status', 'waiting');
-  } finally {
-    await closeApp({ app, tmpRoot });
-  }
-});
+  });
 
-test('第三者宛ての進捗ナレーション（「〜の修正を待っています。」）では waiting にならない', async () => {
-  const port = await getFreePort();
-  const { app, win, tmpRoot } = await launchWaitingApp(port);
-  // 待つ対象が「修正」= 第三者（サブエージェント）の成果物なので、
-  // 許可リスト（入力・選択・承認…）に載っておらず一致してはいけない。
-  const scriptPath = writeEchoScript(tmpRoot, 'narration.sh', [
-    '麗美の分は受領済みです。和田の修正を待っています。',
-    'CI の完了を待っています。',
-    'サブエージェントの応答を待っています',
-  ]);
-  try {
+  test('第三者宛ての進捗ナレーション（「〜の修正を待っています。」）では waiting にならない', async () => {
+    // 待つ対象が「修正」= 第三者（サブエージェント）の成果物なので、
+    // 許可リスト（入力・選択・承認…）に載っておらず一致してはいけない。
+    const scriptPath = writeEchoScript(tmpRoot, 'narration.sh', [
+      '麗美の分は受領済みです。和田の修正を待っています。',
+      'CI の完了を待っています。',
+      'サブエージェントの応答を待っています',
+    ]);
     const { pane, status } = await prepareFirstPane(win, port);
 
     await runScript(win, scriptPath);
@@ -256,43 +272,37 @@ test('第三者宛ての進捗ナレーション（「〜の修正を待って�
 
     await expect(pane).not.toHaveClass(/\bwaiting\b/);
     await expect(status).not.toHaveAttribute('data-status', 'waiting');
-  } finally {
-    await closeApp({ app, tmpRoot });
-  }
-});
+  });
 
-test('waiting 点灯後にユーザー入力なしで出力を流し続けると、出力量に依らず上限間隔で自動解除される', async () => {
-  const port = await getFreePort();
-  const { app, win, tmpRoot } = await launchWaitingApp(port);
-  // 「点灯 → 出力継続 → 自動解除」を **1 回のコマンド入力だけ** で再現する。
-  // 途中でユーザーがキー入力すると markPaneInput() が waiting を即クリアしてしまい、
-  // 「出力による自動解除」を検証したことにならないため、点灯待ちの sleep も
-  // バーストもすべて同じスクリプトの中で行う。
-  //
-  // バーストの間隔について: **わざと遅い（0.2 秒間隔）バーストにしている**。
-  // 上限評価が lastLines（80 行ウィンドウ）全体を見ていた頃は、点灯のもとになった
-  // 「Proceed?」がウィンドウから押し出されるまで解除できず、この間隔だと 80 行 ≒ 16 秒
-  // かかっていた（実測では 60 行流しても解除されないまま）。
-  // 現在の実装は上限評価で「前回の評価以降に届いた出力」だけを見るため、解除までの
-  // 時間は出力の行数レートに依存せず WAITING_MAX_EVAL_INTERVAL_MS（5 秒）で頭打ちになる。
-  const BURST_INTERVAL_SEC = '0.2';
-  const BURST_LINES = 80;
-  // 解除の上限（ms）。押し出し依存だった頃は 16 秒以上かかっていたので、
-  // ここを下回れば「行数レート依存ではない」ことの証明になる。
-  const RELEASE_BUDGET_MS = 10_000;
-  const scriptPath = path.join(tmpRoot, 'stick.sh');
-  fs.writeFileSync(scriptPath, [
-    '#!/bin/sh',
-    "printf '%s\\n' 'Proceed?'",
-    `printf '%s\\n' '${READY_MARKER}'`,
-    'sleep 4',                       // 静止 → waiting 点灯
-    "printf '%s\\n' 'BURSTSTART'",
-    'i=1',
-    `while [ "$i" -le ${BURST_LINES} ]; do printf 'line %s\\n' "$i"; sleep ${BURST_INTERVAL_SEC}; i=$((i+1)); done`,
-    '',
-  ].join('\n'), 'utf8');
+  test('waiting 点灯後にユーザー入力なしで出力を流し続けると、出力量に依らず上限間隔で自動解除される', async () => {
+    // 「点灯 → 出力継続 → 自動解除」を **1 回のコマンド入力だけ** で再現する。
+    // 途中でユーザーがキー入力すると markPaneInput() が waiting を即クリアしてしまい、
+    // 「出力による自動解除」を検証したことにならないため、点灯待ちの sleep も
+    // バーストもすべて同じスクリプトの中で行う。
+    //
+    // バーストの間隔について: **わざと遅い（0.2 秒間隔）バーストにしている**。
+    // 上限評価が lastLines（80 行ウィンドウ）全体を見ていた頃は、点灯のもとになった
+    // 「Proceed?」がウィンドウから押し出されるまで解除できず、この間隔だと 80 行 ≒ 16 秒
+    // かかっていた（実測では 60 行流しても解除されないまま）。
+    // 現在の実装は上限評価で「前回の評価以降に届いた出力」だけを見るため、解除までの
+    // 時間は出力の行数レートに依存せず WAITING_MAX_EVAL_INTERVAL_MS（5 秒）で頭打ちになる。
+    const BURST_INTERVAL_SEC = '0.2';
+    const BURST_LINES = 80;
+    // 解除の上限（ms）。押し出し依存だった頃は 16 秒以上かかっていたので、
+    // ここを下回れば「行数レート依存ではない」ことの証明になる。
+    const RELEASE_BUDGET_MS = 10_000;
+    const scriptPath = path.join(tmpRoot, 'stick.sh');
+    fs.writeFileSync(scriptPath, [
+      '#!/bin/sh',
+      "printf '%s\\n' 'Proceed?'",
+      `printf '%s\\n' '${READY_MARKER}'`,
+      'sleep 4',                       // 静止 → waiting 点灯
+      "printf '%s\\n' 'BURSTSTART'",
+      'i=1',
+      `while [ "$i" -le ${BURST_LINES} ]; do printf 'line %s\\n' "$i"; sleep ${BURST_INTERVAL_SEC}; i=$((i+1)); done`,
+      '',
+    ].join('\n'), 'utf8');
 
-  try {
     const { pane, status } = await prepareFirstPane(win, port);
 
     await runScript(win, scriptPath);
@@ -334,7 +344,5 @@ test('waiting 点灯後にユーザー入力なしで出力を流し続けると
     await expect(status).not.toHaveAttribute('data-status', 'waiting');
     // 出力が流れている最中の解除なので、idle ではなく running（実行中）へ戻る。
     await expect(status).toHaveAttribute('data-status', 'running');
-  } finally {
-    await closeApp({ app, tmpRoot });
-  }
+  });
 });

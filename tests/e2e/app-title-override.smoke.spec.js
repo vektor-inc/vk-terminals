@@ -68,45 +68,45 @@ async function launchTitleOverrideApp(port) {
   });
 }
 
-// ─── デスクトップのヘッダー .app-title が上書き名になり、/api/states にも反映される ───
-test('デスクトップ: VK_TERMINALS_APP_TITLE でヘッダーと /api/states の appTitle が上書きされる', async () => {
-  const port = await getFreePort();
-  const { app, win, tmpRoot } = await launchTitleOverrideApp(port);
-  try {
+// issue #348: 2 テストとも同じ env（VK_TERMINALS_APP_TITLE 固定）で launchApp を
+// 呼んでいるため、起動を 1 回に共有する。デスクトップ側は win（#sidebar）を、
+// モバイル側は chromium で別途開いた page を見るだけで、どちらも状態を書き換えない
+// （appTitle は起動時に決まる読み取り専用の値）ため、テスト間の持ち越しの心配はない。
+test.describe.serial('環境変数 VK_TERMINALS_APP_TITLE によるアプリ名上書き', () => {
+  let app;
+  let win;
+  let tmpRoot;
+  let port;
+
+  test.beforeAll(async () => {
+    port = await getFreePort();
+    ({ app, win, tmpRoot } = await launchTitleOverrideApp(port));
+  });
+
+  test.afterAll(async () => {
+    await closeApp({ app, tmpRoot });
+  });
+
+  // ─── デスクトップのヘッダー .app-title が上書き名になり、/api/states にも反映される ───
+  test('デスクトップ: VK_TERMINALS_APP_TITLE でヘッダーと /api/states の appTitle が上書きされる', async () => {
     const json = await waitForStatesWithAppTitle(port);
     expect(json.appTitle).toBe(OVERRIDE_TITLE);
 
     const titleEl = win.locator('.app-title');
     await expect(titleEl).toHaveText(OVERRIDE_TITLE, { timeout: 15_000 });
-  } finally {
-    await closeApp({ app, tmpRoot });
-  }
-});
+  });
 
-// ─── モバイルページの <h1> とバージョンフッターが上書き名になる ───
-//
-// issue #347: この spec 単体で待ちの最悪値を合計すると既定の 120 秒
-// （playwright.config.js の timeout）を超える。起動予算（launchApp の
-// BOOT_TOTAL_BUDGET_MS = 60 秒。実測 ~7 秒の 8.5 倍に取った上限で、期待消費では
-// ない）に加えて、Electron と Chromium の 2 つを起動するため chromium.launch() /
-// page.goto() の待ちも積む。式の最大項（起動予算）を膨らませたまま実在する操作
-// （Chromium のコールドスタート等）側の上限を削って辻褄を合わせるのは、削る側を
-// 間違える（Electron を並べた高負荷下では Chromium の新規コールドスタートに
-// Playwright の既定 30 秒すら余裕が無いことがある）。上限を明示すること自体は
-// 必要な修正（無制限の待ちが本当の欠陥）だが、値は現実的な水準に保ち、この spec
-// だけ test.setTimeout() で枠を広げる。
-test('モバイル: <h1> とフッターが VK_TERMINALS_APP_TITLE の上書き名になる', async () => {
-  // この spec だけは Electron と Chromium の 2 つを起動するため、既定の 120 秒では
-  // 待ちの最悪値の合計が収まらない。枠に合わせて各操作を削るのではなく、枠を広げる。
-  test.setTimeout(180_000);
+  // ─── モバイルページの <h1> とバージョンフッターが上書き名になる ───
+  //
+  // issue #347: この spec 単体で待ちの最悪値を合計すると既定の 120 秒
+  // （playwright.config.js の timeout）を超える。起動予算（launchApp の
+  // BOOT_TOTAL_BUDGET_MS = 60 秒。実測 ~7 秒の 8.5 倍に取った上限で、期待消費では
+  // ない）に加えて、Chromium の起動も待つため、この spec だけ test.setTimeout() で
+  // 枠を広げる（issue #348 で Electron 自体の起動をこのテストの前で共有した後も、
+  // Chromium のコールドスタート分の余裕は変わらず必要なため維持する）。
+  test('モバイル: <h1> とフッターが VK_TERMINALS_APP_TITLE の上書き名になる', async () => {
+    test.setTimeout(180_000);
 
-  const port = await getFreePort();
-  const { app, tmpRoot } = await launchTitleOverrideApp(port);
-  try {
-    // chromium.launch() が try の外・Electron 起動後にあり、chromium の起動に
-    // 失敗すると Electron と一時 HOME が漏れる問題があった。closeApp を必ず通す
-    // 外側の try/finally と、browser.close() を必ず通す内側の try/finally に分け、
-    // どちらで失敗しても両方解放されるようにする。
     const browser = await chromium.launch({ timeout: 30_000 });
     try {
       // デスクトップ側（20 秒）と同じ上限に揃える（同じ関数を同じファイル内で
@@ -124,8 +124,7 @@ test('モバイル: <h1> とフッターが VK_TERMINALS_APP_TITLE の上書き�
       await expect(footer).toBeVisible({ timeout: 15_000 });
       await expect(footer).toHaveText(`${OVERRIDE_TITLE} v${pkgVersion}`, { timeout: 15_000 });
     } finally {
-      // browser.close() がハングしても、この finally を必ず完了させて外側の
-      // finally（closeApp による Electron・一時ディレクトリの後始末）へ到達させる
+      // browser.close() がハングしても、この finally を必ず完了させる
       // （closeApp / getFreePort と同じ方針。issue #347）。
       let timer;
       await Promise.race([
@@ -133,7 +132,5 @@ test('モバイル: <h1> とフッターが VK_TERMINALS_APP_TITLE の上書き�
         new Promise((resolve) => { timer = setTimeout(resolve, BROWSER_CLOSE_TIMEOUT_MS); }),
       ]).finally(() => clearTimeout(timer));
     }
-  } finally {
-    await closeApp({ app, tmpRoot });
-  }
+  });
 });

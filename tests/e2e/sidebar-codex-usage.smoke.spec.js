@@ -6,10 +6,30 @@ async function launchSidebarCodexApp(port) {
   return await launchAppAndWait({ port, prefix: 'vk-terminals-e2e-sidebar-codex-usage-' });
 }
 
-test('デスクトップの Codex 使用量は Claude 使用量の直下に表示される', async () => {
-  const port = await getFreePort();
-  const { app, win, tmpRoot } = await launchSidebarCodexApp(port);
-  try {
+// issue #348: 2 テストとも env/config の指定なしで launchAppAndWait を呼んでいるため、
+// 起動を 1 回に共有する（sidebar-usage.smoke.spec.js と同じ考え方）。
+// window.renderSidebarUsage / renderSidebarCodexUsage の直接呼び出しは DOM 上の
+// 表示だけなので win.reload() で初期状態へ戻る。
+test.describe.serial('デスクトップのサイドバー Codex 使用量カード（issue #348 で起動共有）', () => {
+  let app;
+  let win;
+  let tmpRoot;
+
+  test.beforeAll(async () => {
+    const port = await getFreePort();
+    ({ app, win, tmpRoot } = await launchSidebarCodexApp(port));
+  });
+
+  test.afterAll(async () => {
+    await closeApp({ app, tmpRoot });
+  });
+
+  test.beforeEach(async () => {
+    await win.reload();
+    await win.waitForSelector('#sidebar', { state: 'attached' });
+  });
+
+  test('デスクトップの Codex 使用量は Claude 使用量の直下に表示される', async () => {
     await win.evaluate(() => {
       window.renderSidebarUsage({
         source: 'oauth',
@@ -58,15 +78,9 @@ test('デスクトップの Codex 使用量は Claude 使用量の直下に表�
       return Array.from(sidebar.children).map((el) => el.id || el.className);
     });
     expect(sidebarOrder.slice(0, 3)).toEqual(['sidebar-usage', 'sidebar-codex-usage', 'sidebar-menu']);
-  } finally {
-    await closeApp({ app, tmpRoot });
-  }
-});
+  });
 
-test('Codex 使用量データが null のときサイドバー使用量カードは hidden になる', async () => {
-  const port = await getFreePort();
-  const { app, win, tmpRoot } = await launchSidebarCodexApp(port);
-  try {
+  test('Codex 使用量データが null のときサイドバー使用量カードは hidden になる', async () => {
     await win.evaluate(() => {
       window.renderSidebarCodexUsage({
         source: 'codex',
@@ -86,7 +100,5 @@ test('Codex 使用量データが null のときサイドバー使用量カー�
 
     await expect(usage).toHaveAttribute('hidden', '');
     await expect(usage).toBeHidden();
-  } finally {
-    await closeApp({ app, tmpRoot });
-  }
+  });
 });

@@ -789,8 +789,15 @@ h4.settings-content-heading {
   font-weight: 500;
   white-space: nowrap;
 }
+/* 入力欄の説明文。同じパネル内の説明タブ本文（.settings-content）と同じ #c9d1d9 にする。
+   #8b949e は非アクティブタブ・info ラベル等で「メタ情報／不活性」を意味する色で、
+   コントラスト比も 6.1:1（対 #0d1117）と低く、12px の本文では読み取りにくかった。
+   説明タブ側だけが読みやすく、入力欄の説明文だけが沈んで見える状態を解消する。
+   ラベル（.settings-label）と同色になるが、階層は font-size（13px / 12px）と
+   font-weight（500 / 既定）で付ける。説明タブが見出し #e6edf3 / 本文 #c9d1d9 で
+   差を付けているのと同じ考え方。 */
 .settings-help {
-  color: #8b949e;
+  color: #c9d1d9;
   font-size: 12px;
   /* help 文中の \n を改行として表示する（menuItems の説明文＋例の 2 行表記など） */
   white-space: pre-line;

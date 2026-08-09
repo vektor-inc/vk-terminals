@@ -270,7 +270,7 @@ WSL2 上で vk-terminals を動かしている場合は、Windows との間に�
 - **方法 1: `apiHost` に Tailscale IP（`100.x.x.x`）を指定する** — 設定パネルだけで完結させたい場合はこちら。tailnet 内から `http://<Tailscale IP>:13847/` を開きます。`apiHost` は起動時に読み込むため保存後の再起動が必要です。Tailscale 未接続などで指定した `apiHost` が割り当てられていない場合、API サーバーは `127.0.0.1` にフォールバックして起動します（この場合スマートフォンからは開けないため、起動ログの `API server listening on ...` を確認してください）。`apiHost` が `127.0.0.1` 以外で実際に待ち受けているため、アクセストークンによる認証が自動的に必須になります。
 - **方法 2: `tailscale serve` で公開する** — ターミナル操作に抵抗がなければこちらも使えます。`apiHost` の変更は不要です。`tailscale serve --bg 13847` で vk-terminals を動かしているマシンの `127.0.0.1:13847` を tailnet に公開し、表示された URL を開きます（`--bg` は Tailscale 1.54 以降の書式）。tailnet の構成（MagicDNS・HTTPS 証明書の有効化など）や Tailscale の導入方法によっては、先に有効化などの準備が必要で、そのままでは実行できない場合があります。**既知の限界として、この方法による公開状態は vk-terminals 側からは自動で検知できません。** `tailscale serve` は TCP レベルでの転送のため、vk-terminals からは tailnet 経由のアクセスも通常のローカルアクセス（待ち受けアドレスは `127.0.0.1` のまま）と区別がつきません。設定パネルの「常にアクセストークン認証を必須にする」を**手動で**有効にして vk-terminals を再起動してください。設定が無効なままなら、tailnet 側の名前を使ったアクセスは安全のため `403 {"error":"forbidden host"}` で拒否されます。
 
-Tailscale IP は、対象マシンのメニューバー / 通知領域の Tailscale アイコン、または `tailscale ip -4` で確認できます。
+Tailscale IP は、Tailscale の管理コンソール（Machines の一覧）、または対象マシンで `tailscale ip -4` を実行して確認できます。
 
 ### スマートフォンの初回登録
 

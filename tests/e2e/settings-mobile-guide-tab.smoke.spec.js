@@ -242,7 +242,7 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
     await expect(win.locator(PANEL_MOBILE)).toContainText('どちらか一方を行えば開けます');
 
     // Tailscale IP の節は「方法 1 で使う」ことを先に示す（方法 2 を選ぶ人に不要な作業を
-    // 押し付けない）。確認手段もターミナルより先に GUI（メニューバー / 通知領域）を出す。
+    // 押し付けない）。確認手段もターミナルより先に GUI（管理コンソール）を出す。
     await expect(win.locator(PANEL_MOBILE)).toContainText('「方法 2」だけを行う場合は不要です');
     // 方法 2 は環境によってそのまま実行できないことがあるため「最短」と言い切らない。
     await expect(win.locator(PANEL_MOBILE)).not.toContainText('最短');
@@ -286,7 +286,7 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
     await win.locator(TAB_MOBILE).click();
     const at = await contentBlockIndexes(win, PANEL_MOBILE, {
       ipHeading: { selector: 'h3', text: 'パソコンの Tailscale IP を調べる' },
-      ipGui: { text: 'メニューバーの Tailscale アイコン' },
+      ipGui: { text: 'Tailscale の管理コンソール' },
       // コピーボタン付きのコードブロックは .settings-content-codeblock で包まれるため、
       // .settings-content の直下に来るのはラッパー側になる。
       ipCommand: { selector: '.settings-content-codeblock', text: 'tailscale ip -4' },

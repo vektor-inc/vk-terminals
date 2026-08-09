@@ -125,7 +125,7 @@ function getApiServerStatusPresentation(status) {
     return {
       tone: 'info',
       label: '補足',
-      message: `${actualHost} は、このパソコンのすべてのネットワークで待ち受ける指定です。アドレスの ${actualHost} の部分をこのパソコンのアドレスに置き換えて開いてください。Tailscale IP の調べ方は、下の「パソコンの Tailscale IP を調べる」を確認してください。`,
+      message: `${actualHost} は、このパソコンのすべてのネットワークで待ち受ける指定です。アドレスの ${actualHost} の部分をこのパソコンのアドレスに置き換えて開いてください。Tailscale IP の調べ方は、上の「手順 2: パソコンの Tailscale IP を調べる」を確認してください。`,
       address,
       copy: false,
     };
@@ -135,7 +135,10 @@ function getApiServerStatusPresentation(status) {
     return {
       tone: 'info',
       label: '補足',
-      message: 'このパソコンからのみ開けます。外出先から開くには、下の方法 1 か 2 を使ってください。',
+      // 「再起動」までは書かない。ここは保存待ちが無い（＝今の設定どおりに動けている）
+      // 状態なので、再起動を促すと保存待ち・フォールバックの警告と読み分けられなくなる。
+      // 反映の手順は上の「手順 3」の本文に任せる。
+      message: 'このパソコンからのみ開けます。外出先から開くには、上の「手順 3」で API ホストに Tailscale IP を指定してください。',
       address,
       copy: true,
     };

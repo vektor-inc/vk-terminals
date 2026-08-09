@@ -125,65 +125,45 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
     await win.locator(TAB_MOBILE).click();
     await expect(win.locator(PANEL_MOBILE)).toBeVisible();
 
-    // 見出しはモーダルの h2 の下位（h3 / h4）で、実行順に並ぶ。
-    // 前提（Tailscale 接続 → IP 取得 → vk-terminals 側の設定）を踏んでからアドレスを
-    // 開く順序になっていないと、指示どおり進めた人が必ず接続に失敗する。
+    // 見出しは実行順に並ぶ。前提（Tailscale 接続 → IP 取得 → vk-terminals 側の設定 →
+    // 端末の登録）を踏んでからアドレスを開く順序になっていないと、指示どおり進めた人が
+    // 必ず接続に失敗する。手順のあとに「状況によって変わる話」（開けないときの確認点・
+    // Tailscale の説明・別の公開方法・注意）を置き、最短で使いたい人が手順だけを
+    // 上から読み切れる並びにしている。
     const headings = win.locator(`${PANEL_MOBILE} .settings-content-heading`);
     await expect(headings).toHaveText([
       'スマートフォンから確認できます',
+      '手順 1: パソコンとスマートフォンを Tailscale に接続する',
+      '手順 2: パソコンの Tailscale IP を調べる',
+      '手順 3: API ホストに Tailscale IP を入れて再起動する',
+      // 手順 3 の結果を確かめる場所なので、手順 3 の直後・手順 4 の前に置く。
       '現在の待ち受けアドレス',
-      'Tailscale とは',
-      '準備: 両方の端末を Tailscale に接続する',
-      'パソコンの Tailscale IP を調べる',
-      '外出先から開く 2 つの方法',
-      '方法 1: vk-terminals の API ホストを変更する',
-      '方法 2: tailscale serve で公開する',
-      // issue #313: スマートフォンの登録手順とアクセストークンパネル（自身の見出しを持つ
-      // 自己完結セクション）が「方法 2」と「セキュリティ上の注意」の間に入る。
-      'スマートフォンを登録する',
+      '手順 4: スマートフォンを登録する',
       'アクセストークン',
+      'うまく開けないときは',
+      'Tailscale とは',
+      '別の方法: tailscale serve で公開する',
       'セキュリティ上の注意',
     ]);
 
-    // 見出しレベルの内訳（issue #260）。親セクションは h3、「方法 1」「方法 2」だけが
-    // 「外出先から開く 2 つの方法」の子なので h4。
-    await expect(win.locator(`${PANEL_MOBILE} h3.settings-content-heading`)).toHaveText([
-      'スマートフォンから確認できます',
-      '現在の待ち受けアドレス',
-      'Tailscale とは',
-      '準備: 両方の端末を Tailscale に接続する',
-      'パソコンの Tailscale IP を調べる',
-      '外出先から開く 2 つの方法',
-      'スマートフォンを登録する',
-      'アクセストークン',
-      'セキュリティ上の注意',
-    ]);
-    await expect(win.locator(`${PANEL_MOBILE} h4.settings-content-heading`)).toHaveText([
-      '方法 1: vk-terminals の API ホストを変更する',
-      '方法 2: tailscale serve で公開する',
-    ]);
-    // 階層そのものの検証。h4 の直前の親は h3「外出先から開く 2 つの方法」で、
-    // 末尾の「セキュリティ上の注意」は h3 に戻る（＝方法 2 のサブセクションを抜けた、
-    // 機能全体への注意である、が読み上げでも伝わる）。
+    // 見出しレベル（issue #260）。この構成はすべて同レベルの節（h3）で、h4 は使わない。
+    // 手順 4 と手順 3 の中には自身の見出しを持つ自己完結パネル（アクセストークン /
+    // 現在の待ち受けアドレス）が入り、それらの見出しは h3 固定で描かれる。手順側を h4 に
+    // すると節の中に上位レベルの見出しが現れて階層が壊れるため、手順も h3 に揃えている。
     const levels = await headings.evaluateAll(
       (els) => els.map((el) => ({ tag: el.tagName.toLowerCase(), text: el.textContent }))
     );
-    const parentIndex = levels.findIndex((h) => h.text === '外出先から開く 2 つの方法');
-    // 見つからないまま添字を引くと undefined の参照で TypeError になり、
-    // 「何が壊れたか」が読めないログになるため先にガードする。
-    expect(parentIndex, '親見出し「外出先から開く 2 つの方法」が見つからない').toBeGreaterThan(-1);
-    expect(levels[parentIndex].tag).toBe('h3');
-    expect(levels[parentIndex + 1].tag).toBe('h4');   // 方法 1
-    expect(levels[levels.length - 1].tag).toBe('h3'); // セキュリティ上の注意
     // 先頭は h3（モーダルの h2 からレベルが飛ばない）。
     expect(levels[0].tag).toBe('h3');
+    expect(levels.filter((h) => h.tag !== 'h3')).toEqual([]);
+    await expect(win.locator(`${PANEL_MOBILE} h4.settings-content-heading`)).toHaveCount(0);
 
-    // 見出しの階層は「タグ」だけでなく「直前のブロックとの実際の余白」でも示している。
-    // 「方法 1」「方法 2」は同じ親（h3「外出先から開く 2 つの方法」）の子＝同レベルなので、
-    // 上余白は揃っていなければならない。実測（描画結果の隙間）を見るのは、マージン相殺が
-    // 効かないブロック（インラインレベルの要素など）が直前に来ると、指定値どおりでも
-    // 実際の余白だけが広がって階層が崩れるため。「方法 2」の直前は移動ボタンで、
-    // これを取り違えると子セクション境界が親セクション境界とほぼ同じ広さになる。
+    // 見出しの区切りは「タグ」だけでなく「直前のブロックとの実際の余白」でも示している。
+    // 同レベルの節どうしなので上余白は揃っていなければならない。実測（描画結果の隙間）を
+    // 見るのは、マージン相殺が効かないブロック（インラインレベルの要素など）が直前に来ると、
+    // 指定値どおりでも実際の余白だけが広がって区切りが崩れるため。手順 4 の直前は
+    // 状態表示のセクション、「うまく開けないときは」の直前はトークンパネルで、いずれも
+    // 相殺が効かない並びになっている。
     const gaps = await win.locator(`${PANEL_MOBILE} .settings-content`).evaluate((root) => {
       const result = {};
       for (const el of Array.from(root.children)) {
@@ -197,38 +177,40 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
       }
       return result;
     });
-    const method1Gap = gaps['方法 1: vk-terminals の API ホストを変更する'];
-    const method2Gap = gaps['方法 2: tailscale serve で公開する'];
-    const sectionGap = gaps['セキュリティ上の注意']; // 親セクションの境界（h3）
-    for (const [name, gap] of Object.entries({ method1Gap, method2Gap, sectionGap })) {
+    const step2Gap = gaps['手順 2: パソコンの Tailscale IP を調べる'];
+    const step3Gap = gaps['手順 3: API ホストに Tailscale IP を入れて再起動する'];
+    const securityGap = gaps['セキュリティ上の注意'];
+    for (const [name, gap] of Object.entries({ step2Gap, step3Gap, securityGap })) {
       expect(gap, `${name} を取得できない`).toBeGreaterThan(0);
     }
-    // 兄弟どうしは同じ広さ（丸め誤差 1px まで許容）。px の決め打ちはしない。
-    expect(Math.abs(method1Gap - method2Gap)).toBeLessThanOrEqual(1);
-    // 子セクションの境界は親セクションの境界より明らかに狭い（グループ内 < グループ間）。
-    expect(method1Gap).toBeLessThan(sectionGap - 4);
-    expect(method2Gap).toBeLessThan(sectionGap - 4);
+    // 同レベルの節どうしは同じ広さ（丸め誤差 1px まで許容）。px の決め打ちはしない。
+    expect(Math.abs(step2Gap - step3Gap)).toBeLessThanOrEqual(1);
+    expect(Math.abs(step2Gap - securityGap)).toBeLessThanOrEqual(1);
 
     // Tailscale の説明（アプリのインストール不要 / 同じ Wi-Fi でなくてよい）。
     await expect(win.locator(PANEL_MOBILE))
       .toContainText('スマートフォン側にアプリをインストールする必要はありません');
-    // 実際の到達範囲は直後の状態表示へ集約し、導入文では繰り返さない。
+    // 実際の到達範囲は手順 3 の状態表示へ集約し、導入文では繰り返さない。
     await expect(win.locator(PANEL_MOBILE))
-      .toContainText('外出先から開くには、次の Tailscale を使う方法が簡単です');
+      .toContainText('外出先から開くには、Tailscale を使う方法が簡単です');
+    // 手順だけ上から追えば済むことを導入文で明示する（どこから読むか迷わせない）。
+    await expect(win.locator(PANEL_MOBILE))
+      .toContainText('次の手順 1 〜 4 を上から順に行えば使えるようになります');
     await expect(win.locator(PANEL_MOBILE))
       .not.toContainText('初期設定ではパソコン自身からしか開けません');
     await expect(win.locator(PANEL_MOBILE))
       .toContainText('同じプライベートネットワーク（tailnet）');
 
-    // 準備手順は番号付きリスト。
-    await expect(win.locator(`${PANEL_MOBILE} ol.settings-content-list li`)).toHaveCount(4);
+    // 手順 1 は番号付きリスト、開けないときの確認点は順序を持たないリスト。
+    await expect(win.locator(`${PANEL_MOBILE} ol.settings-content-list li`)).toHaveCount(3);
+    await expect(win.locator(`${PANEL_MOBILE} ul.settings-content-list li`)).toHaveCount(3);
 
-    // コードブロックは「現在の待ち受けアドレス → IP の調べ方 → 開くアドレス →
-    // tailscale serve」の順。
+    // コードブロックは「IP の調べ方（手順 2）→ 現在の待ち受けアドレス（手順 3）→
+    // 開き直すアドレス → tailscale serve」の順。
     const codes = win.locator(`${PANEL_MOBILE} .settings-content-code`);
     await expect(codes).toHaveText([
-      `http://127.0.0.1:${apiPort}/`,
       'tailscale ip -4',
+      `http://127.0.0.1:${apiPort}/`,
       'http://<Tailscale IP>:13847/',
       'tailscale serve --bg 13847',
     ]);
@@ -236,15 +218,14 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
     await expect(win.locator(PANEL_MOBILE)).toContainText('Tailscale 1.54 以降の書式');
     // 山括弧ごとコピーされないよう実例を併記する。
     await expect(win.locator(PANEL_MOBILE)).toContainText('http://100.101.102.103:13847/');
-    // アドレスの節は再起動を受けた文にする（前工程を踏ませる）。
+    // 確認の節は再起動を受けた文にする（前工程を踏ませる）。
     await expect(win.locator(PANEL_MOBILE)).toContainText('再起動したら');
-    // 2 つの方法の選び分けを添える。
-    await expect(win.locator(PANEL_MOBILE)).toContainText('どちらか一方を行えば開けます');
-
-    // Tailscale IP の節は「方法 1 で使う」ことを先に示す（方法 2 を選ぶ人に不要な作業を
-    // 押し付けない）。確認手段もターミナルより先に GUI（管理コンソール）を出す。
-    await expect(win.locator(PANEL_MOBILE)).toContainText('「方法 2」だけを行う場合は不要です');
-    // 方法 2 は環境によってそのまま実行できないことがあるため「最短」と言い切らない。
+    // tailscale serve は手順 2・3 の代わりであることと、手順 1・4 は共通で必要なことを示す
+    // （どこまで置き換わるのか分からないまま実行させない）。
+    await expect(win.locator(PANEL_MOBILE)).toContainText('手順 2・手順 3 の代わりになり');
+    await expect(win.locator(PANEL_MOBILE))
+      .toContainText('手順 1 の接続と手順 4 の登録はこの方法でも必要です');
+    // tailscale serve は環境によってそのまま実行できないことがあるため「最短」と言い切らない。
     await expect(win.locator(PANEL_MOBILE)).not.toContainText('最短');
     await expect(win.locator(PANEL_MOBILE)).toContainText('そのままでは実行できない場合があります');
 
@@ -255,9 +236,9 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
     await expect(apiStatus).toContainText(`http://127.0.0.1:${apiPort}/`);
     await expect(apiStatus).toContainText('このパソコンからのみ開けます');
 
-    // 推測による診断手順は削除し、再起動後に先頭の実アドレスを見る案内へ置き換える。
+    // 推測による診断手順は削除し、再起動後に直後の実アドレスを見る案内へ置き換える。
     await expect(win.locator(PANEL_MOBILE))
-      .toContainText('このタブの先頭にある「現在の待ち受けアドレス」');
+      .toContainText('下の「現在の待ち受けアドレス」で確認できます');
     await expect(win.locator(PANEL_MOBILE))
       .not.toContainText('パソコン自身のブラウザで同じアドレスを開いてみて');
     await expect(win.locator(PANEL_MOBILE)).not.toContainText('API server listening');
@@ -282,38 +263,43 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
     await expect(win.locator(PANEL_MOBILE)).toHaveAttribute('tabindex', '0');
   });
 
-  test('方法 1 は「手順 → アドレス → 実例 → 補足 → 移動ボタン」の順に並ぶ', async () => {
+  test('手順 2・3 は「IP の確認 → 設定と再起動 → 移動ボタン → 状態表示」の順に並ぶ', async () => {
     await win.locator(TAB_MOBILE).click();
     const at = await contentBlockIndexes(win, PANEL_MOBILE, {
-      ipHeading: { selector: 'h3', text: 'パソコンの Tailscale IP を調べる' },
+      step2Heading: { selector: 'h3', text: '手順 2' },
       ipGui: { text: 'Tailscale の管理コンソール' },
       // コピーボタン付きのコードブロックは .settings-content-codeblock で包まれるため、
       // .settings-content の直下に来るのはラッパー側になる。
       ipCommand: { selector: '.settings-content-codeblock', text: 'tailscale ip -4' },
-      // 「方法 1」「方法 2」は親セクション（h3「外出先から開く 2 つの方法」）の子なので h4。
-      method1Heading: { selector: 'h4', text: '方法 1' },
-      address: { selector: '.settings-content-code', text: '<Tailscale IP>:13847' },
+      step3Heading: { selector: 'h3', text: '手順 3' },
+      statusConfirmation: { text: '下の「現在の待ち受けアドレス」' },
+      tabLink: { selector: '.settings-content-tablink', text: 'API ホストの設定へ移動' },
+      statusSection: { selector: '[data-status-source="apiServer"]' },
+      step4Heading: { selector: 'h3', text: '手順 4' },
+      // 開き直すためのアドレスは最短手順では不要なので、手順のあと（うまく開けないとき）へ。
+      reopenAddress: { selector: '.settings-content-code', text: '<Tailscale IP>:13847' },
       example: { text: 'http://100.101.102.103:13847/' },
-      statusConfirmation: { text: 'このタブの先頭にある「現在の待ち受けアドレス」' },
-      tabLink: { selector: '.settings-content-tablink' },
-      method2Heading: { selector: 'h4', text: '方法 2' },
     });
     for (const [name, index] of Object.entries(at)) {
       expect(index, `${name} が見つからない`).toBeGreaterThan(-1);
     }
 
     // ターミナルを避けたい人向けに、GUI での確認手段をコマンドより先に出す。
-    expect(at.ipGui).toBeGreaterThan(at.ipHeading);
+    expect(at.ipGui).toBeGreaterThan(at.step2Heading);
     expect(at.ipGui).toBeLessThan(at.ipCommand);
+    expect(at.ipCommand).toBeLessThan(at.step3Heading);
 
-    // 移動ボタンは方法 1 の最後。節の途中に置くと、押した人がその先のアドレスを
+    // 移動ボタンは手順 3 の文章の最後。節の途中に置くと、押した人がその先の説明を
     // 読まずにタブを移り、保存後の自動クローズと相まって読みに戻れなくなる。
-    expect(at.address).toBeGreaterThan(at.method1Heading);
-    expect(at.example).toBeGreaterThan(at.address);
-    // 再起動後の確認先は実例の直後に置き、推測による診断手順は挟まない。
-    expect(at.statusConfirmation).toBeGreaterThan(at.example);
+    expect(at.statusConfirmation).toBeGreaterThan(at.step3Heading);
     expect(at.tabLink).toBeGreaterThan(at.statusConfirmation);
-    expect(at.tabLink).toBeLessThan(at.method2Heading);
+    // 状態表示は手順 3 の結果を確かめる場所なので、移動ボタンの直後・手順 4 の前。
+    expect(at.statusSection).toBeGreaterThan(at.tabLink);
+    expect(at.step4Heading).toBeGreaterThan(at.statusSection);
+
+    // 開き直すアドレスと実例は手順のあと。最短で使いたい人の導線に混ぜない。
+    expect(at.reopenAddress).toBeGreaterThan(at.step4Heading);
+    expect(at.example).toBeGreaterThan(at.reopenAddress);
   });
 
   test('外部リンクは href="#" のまま data 属性に http(s) URL を持つ', async () => {
@@ -345,7 +331,9 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
     // 手入力しづらい実アドレスと、タイプミスしやすいコマンド 2 つに付ける。
     await expect(copyButtons).toHaveCount(3);
     await expect(copyButtons).toHaveText(['コピー', 'コピー', 'コピー']);
-    await expect(copyButtons.nth(0)).toHaveAttribute(
+    // 並びは DOM 順（手順 2 のコマンド → 手順 3 の実アドレス → tailscale serve）。
+    await expect(copyButtons.nth(0)).toHaveAttribute('aria-label', 'コピー: tailscale ip -4');
+    await expect(copyButtons.nth(1)).toHaveAttribute(
       'aria-label',
       `コピー: http://127.0.0.1:${apiPort}/`
     );
@@ -360,7 +348,6 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
     ).toHaveCount(0);
 
     // 可視ラベル「コピー」を含みつつ対象コマンドまで読み上げる（WCAG 2.5.3 / 2 個の区別）。
-    await expect(copyButtons.nth(1)).toHaveAttribute('aria-label', 'コピー: tailscale ip -4');
     await expect(copyButtons.nth(2)).toHaveAttribute('aria-label', 'コピー: tailscale serve --bg 13847');
 
     // フィードバック用の live region は押す前から DOM にある（後から挿入すると読み上げが

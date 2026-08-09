@@ -140,23 +140,28 @@ test.describe.serial('設定パネルの説明タブ「モバイルから確認�
       '現在の待ち受けアドレス',
       '手順 4: スマートフォンを登録する',
       'アクセストークン',
+      // トークンパネル内の小見出し（h4）。パネルの見出し（h3）の子。
+      '初回登録用の URL',
       'うまく開けないときは',
       'Tailscale とは',
       '別の方法: tailscale serve で公開する',
       'セキュリティ上の注意',
     ]);
 
-    // 見出しレベル（issue #260）。この構成はすべて同レベルの節（h3）で、h4 は使わない。
+    // 見出しレベル（issue #260）。タブ直下の節はすべて同レベル（h3）に揃える。
     // 手順 4 と手順 3 の中には自身の見出しを持つ自己完結パネル（アクセストークン /
     // 現在の待ち受けアドレス）が入り、それらの見出しは h3 固定で描かれる。手順側を h4 に
     // すると節の中に上位レベルの見出しが現れて階層が壊れるため、手順も h3 に揃えている。
+    // h4 はトークンパネル内の小見出し（初回登録用の URL）だけで、パネルの h3 の直後に
+    // 出るため階層は飛ばない。これ以外に h4 が増えていたら、節の見出しが降格している。
     const levels = await headings.evaluateAll(
       (els) => els.map((el) => ({ tag: el.tagName.toLowerCase(), text: el.textContent }))
     );
     // 先頭は h3（モーダルの h2 からレベルが飛ばない）。
     expect(levels[0].tag).toBe('h3');
-    expect(levels.filter((h) => h.tag !== 'h3')).toEqual([]);
-    await expect(win.locator(`${PANEL_MOBILE} h4.settings-content-heading`)).toHaveCount(0);
+    expect(levels.filter((h) => h.tag !== 'h3').map((h) => h.text)).toEqual(['初回登録用の URL']);
+    await expect(win.locator(`${PANEL_MOBILE} .settings-content-apitoken h4.settings-content-heading`))
+      .toHaveCount(1);
 
     // 見出しの区切りは「タグ」だけでなく「直前のブロックとの実際の余白」でも示している。
     // 同レベルの節どうしなので上余白は揃っていなければならない。実測（描画結果の隙間）を

@@ -848,7 +848,7 @@ test.describe.serial('設定パネル: タブ・保存先表示系（issue #348 
       await restoreInvoke(win);
       await openSettings(win);
 
-      // 組み込みは「設定」「外出先から確認」の 2 タブ。どちらも空ではないので案内は出ない。
+      // 組み込みは「設定」「モバイルから確認」の 2 タブ。どちらも空ではないので案内は出ない。
       await expect(win.locator('.settings-tab')).toHaveCount(2);
       await expect(win.locator('.settings-empty')).toHaveCount(0);
       await expect(win.locator(`${PANEL(0)} input`).first()).toBeVisible();

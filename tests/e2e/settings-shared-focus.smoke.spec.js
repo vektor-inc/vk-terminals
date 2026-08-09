@@ -298,14 +298,14 @@ test.describe.serial('設定パネル: フォーカス・スタイル系（issue
       await expect(code).not.toHaveAttribute('tabindex');
     });
 
-    test('「外出先から確認」タブの Tab キー停止位置にコードブロックを含まない', async () => {
+    test('「モバイルから確認」タブの Tab キー停止位置にコードブロックを含まない', async () => {
       await win.locator('.settings-close').focus();
 
       // モーダル先頭の閉じるボタンから Tab を送り、そこへ戻ってくるまでを 1 周として数える。
       // issue #282 でフォーカストラップが入り、Tab はモーダルの中で循環するようになったため、
       // 「モーダル外へ出たら 1 周」ではなく「先頭へ戻ったら 1 周」で区切る。
       // 上限を設け、循環の起点へ戻れない場合も無限ループにしない。issue #313 でアクセス
-      // トークンパネル（表示・コピー・再発行等）と 2 つ目の tabLink が「外出先から確認」
+      // トークンパネル（表示・コピー・再発行等）と 2 つ目の tabLink が「モバイルから確認」
       // タブに増え、Tab 停止位置の総数が増えたため上限に余裕を持たせている。
       const stops = ['button.settings-close'];
       let cycled = false;

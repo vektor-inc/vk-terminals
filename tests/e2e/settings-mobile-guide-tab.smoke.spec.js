@@ -61,11 +61,11 @@ async function restoreClipboardWrite(app) {
 const writtenTexts = (app) => app.evaluate(() => (globalThis.__written || []).slice());
 
 const TAB_GENERAL = '#settings-tab-0';   // 設定
-const TAB_MOBILE = '#settings-tab-1';    // 外出先から確認
+const TAB_MOBILE = '#settings-tab-1';    // モバイルから確認
 const PANEL_GENERAL = '#settings-panel-0';
 const PANEL_MOBILE = '#settings-panel-1';
 
-test.describe.serial('設定パネルの説明タブ「外出先から確認」（issue #245）', () => {
+test.describe.serial('設定パネルの説明タブ「モバイルから確認」（issue #245）', () => {
   let app;
   let win;
   let tmpRoot;
@@ -107,15 +107,15 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
     await win.waitForSelector('.settings-modal', { state: 'detached' }).catch(() => {});
   });
 
-  test('組み込みスキーマに「設定」「外出先から確認」の 2 タブが出る', async () => {
+  test('組み込みスキーマに「設定」「モバイルから確認」の 2 タブが出る', async () => {
     await expect(win.locator('.settings-tab')).toHaveCount(2);
     await expect(win.locator(TAB_GENERAL)).toContainText('設定');
-    await expect(win.locator(TAB_MOBILE)).toContainText('外出先から確認');
+    await expect(win.locator(TAB_MOBILE)).toContainText('モバイルから確認');
     // 既定は「設定」タブ（既存の設定項目が従来どおり見える）。
     await expect(win.locator(TAB_GENERAL)).toHaveAttribute('aria-selected', 'true');
     await expect(win.locator(`${PANEL_GENERAL} label[for="set-field-0"]`)).toHaveText('API ホスト');
     // API ホストの説明から説明タブへ戻れるよう、タブ名を明記する。
-    await expect(win.locator('#set-field-0-help')).toContainText('「外出先から確認」タブ');
+    await expect(win.locator('#set-field-0-help')).toContainText('「モバイルから確認」タブ');
     // ダイアログ名が読み上げられるよう、見出しと関連付ける。
     await expect(win.locator('.settings-modal')).toHaveAttribute('aria-labelledby', 'settings-modal-title');
     await expect(win.locator('#settings-modal-title')).toContainText('VK Terminals 設定');

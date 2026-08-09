@@ -406,7 +406,7 @@ test.describe.serial('外部ブラウザを開けなかったときのトース�
       });
       expect(layerInert).toBe(false);
 
-      // 「外出先から確認」タブ（#settings-tab-1）の説明リンクを失敗させる
+      // 「モバイルから確認」タブ（#settings-tab-1）の説明リンクを失敗させる
       // （settings-mobile-guide-tab.smoke.spec.js が同じタブ・同じセレクタで検証済み）。
       await win.locator('#settings-tab-1').click();
       const link = win.locator('#settings-panel-1 .settings-content-link').first();
@@ -443,7 +443,7 @@ test.describe.serial('外部ブラウザを開けなかったときのトース�
         await win.waitForSelector('.settings-modal', { state: 'visible' });
         await win.waitForSelector('.settings-tabs', { state: 'visible' });
 
-        // 「外出先から確認」タブの説明リンクを失敗させ、トーストを表示する。
+        // 「モバイルから確認」タブの説明リンクを失敗させ、トーストを表示する。
         await win.locator('#settings-tab-1').click();
         const link = win.locator('#settings-panel-1 .settings-content-link').first();
         await expect(link).toBeVisible();

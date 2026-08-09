@@ -4082,18 +4082,22 @@ function renderApiServerStatus(status, apiHostTabIndex) {
   </section>`;
 }
 
-// アクセストークン（issue #313）の表示・コピー・再発行、初回登録用 URL の表示・コピーを
-// まとめた自己完結パネル。トークン本体は秘密情報のため、この静的な HTML には埋め込まず
-// マスク（伏せ字）だけを出しておき、実値は「表示」「初回登録用の URL を表示」ボタンを
-// 押した時にだけ IPC（settings:api-token-info）で都度取得する（buildSettingsModal 側で配線）。
+// 初回登録用 URL（issue #313）の表示・コピーと、アクセストークンの再発行をまとめた
+// 自己完結パネル。URL は秘密情報（トークンを含む）のため、この静的な HTML には埋め込まず
+// マスク（伏せ字）だけを出しておき、実値は「表示」「コピー」ボタンを押した時にだけ
+// IPC（settings:api-token-info）で都度取得する（buildSettingsModal 側で配線）。
+//
+// トークン本体の表示・コピーはこのパネルには置かない。設定パネル内にトークンだけを
+// 入力する箇所は無く、利用者がここで必要とするのは初回登録用 URL だけのため
+// （手で curl を叩く場合は ~/.vk-terminals/config.json の apiToken を直接参照する）。
 const API_TOKEN_MASK_PLACEHOLDER = '•'.repeat(64);
 function renderApiTokenPanel(persisted) {
   // ボタンは既存の .settings-content-copy / .settings-content-tablink と見た目を
   // 揃えつつ、専用クラス（settings-content-apitoken-btn）にする。同じクラス名を共有すると
   // 既存のイベント委譲（コピー・タブ移動）がこのボタンにも反応してしまうため
   // （どちらも無害な no-op に倒れるが、意図が分かりにくく事故の元になる）。
-  // 「コピー」ボタンは初回登録用 URL 側にも同名のボタンが並ぶため、aria-label で
-  // 何をコピーするボタんかを区別する（renderSettingsCopyableCode と同じ作法）。
+  // 「コピー」ボタンはラベルだけでは何をコピーするか分からないため、aria-label で
+  // 対象を補う（renderSettingsCopyableCode と同じ作法）。
   //
   // persisted が false の場合、トークンの永続化に失敗しており次回起動で変わる旨を
   // 警告する（main.js の settings:describe が返す apiTokenPersisted を反映）。
@@ -4106,18 +4110,14 @@ function renderApiTokenPanel(persisted) {
   return `<section class="settings-content-apitoken" data-apitoken-panel>
     <h3 class="settings-content-heading">アクセストークン</h3>
     ${persistWarningHtml}
+    <h4 class="settings-content-heading">初回登録用の URL</h4>
     <div class="settings-content-apitoken-value-row">
-      <code class="settings-content-apitoken-value" data-apitoken-value>${API_TOKEN_MASK_PLACEHOLDER}</code>
-      <button type="button" class="settings-content-apitoken-btn" data-apitoken-reveal aria-pressed="false">表示</button>
-      <button type="button" class="settings-content-apitoken-btn" data-apitoken-copy aria-label="コピー: アクセストークン">コピー</button>
+      <code class="settings-content-apitoken-value" data-apitoken-url-value>${API_TOKEN_MASK_PLACEHOLDER}</code>
+      <button type="button" class="settings-content-apitoken-btn" data-apitoken-url-reveal aria-pressed="false">表示</button>
+      <button type="button" class="settings-content-apitoken-btn" data-apitoken-url-copy aria-label="コピー: 初回登録用の URL">コピー</button>
     </div>
     <span class="settings-content-copy-status" data-apitoken-copy-status role="status"></span>
     <span class="settings-content-apitoken-error" data-apitoken-error role="alert"></span>
-
-    <div class="settings-content-apitoken-url">
-      <button type="button" class="settings-content-apitoken-btn" data-apitoken-url-reveal aria-expanded="false">初回登録用の URL を表示</button>
-      <div class="settings-content-apitoken-url-body" data-apitoken-url-body hidden></div>
-    </div>
 
     <div class="settings-content-apitoken-reissue">
       <button type="button" class="settings-content-apitoken-btn settings-content-apitoken-btn-danger" data-apitoken-reissue>トークンを再発行</button>
@@ -4699,40 +4699,30 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
     });
 
     // ─── アクセストークンパネル（issue #313） ─────────────────────────────────
-    // トークン本体・登録用 URL は既定で伏せておき、「表示」系ボタンを押した時だけ
+    // 初回登録用 URL は既定で伏せておき、「表示」「コピー」ボタンを押した時だけ
     // IPC（settings:api-token-info）で都度取得する。取得のたびに main 側から
     // 最新の値を引くため、再発行後もこの取得経路を通す限り古い値を返さない。
     const apiTokenPanel = modal.querySelector('[data-apitoken-panel]');
     if (apiTokenPanel) {
-      const tokenValueEl = apiTokenPanel.querySelector('[data-apitoken-value]');
-      const tokenRevealBtn = apiTokenPanel.querySelector('[data-apitoken-reveal]');
-      const tokenCopyBtn = apiTokenPanel.querySelector('[data-apitoken-copy]');
-      const tokenCopyStatusEl = apiTokenPanel.querySelector('[data-apitoken-copy-status]');
-      const tokenErrorEl = apiTokenPanel.querySelector('[data-apitoken-error]');
+      const urlValueEl = apiTokenPanel.querySelector('[data-apitoken-url-value]');
       const urlRevealBtn = apiTokenPanel.querySelector('[data-apitoken-url-reveal]');
-      const urlBodyEl = apiTokenPanel.querySelector('[data-apitoken-url-body]');
+      const urlCopyBtn = apiTokenPanel.querySelector('[data-apitoken-url-copy]');
+      const urlCopyStatusEl = apiTokenPanel.querySelector('[data-apitoken-copy-status]');
+      const tokenErrorEl = apiTokenPanel.querySelector('[data-apitoken-error]');
       const reissueBtn = apiTokenPanel.querySelector('[data-apitoken-reissue]');
       const reissueStatusEl = apiTokenPanel.querySelector('[data-apitoken-reissue-status]');
-      let tokenRevealed = false;
       let urlRevealed = false;
-      let tokenCopyResetTimer = null;
+      let urlCopyResetTimer = null;
 
       // タブを離れたら、表示中の秘密情報を伏せ字へ戻す（issue #313 レビュー対応・中-5）。
       // 設定モーダルはタブを hidden にするだけで DOM を破棄しないため、これを行わないと
       // 表示したまま別タブへ移って戻った時に伏せ字へ戻らず秘密情報が残り続ける。
       onSettingsTabChangedCallbacks.push(() => {
-        if (tokenRevealed) {
-          tokenRevealed = false;
-          tokenValueEl.textContent = API_TOKEN_MASK_PLACEHOLDER;
-          tokenRevealBtn.textContent = '表示';
-          tokenRevealBtn.setAttribute('aria-pressed', 'false');
-        }
         if (urlRevealed) {
           urlRevealed = false;
-          urlBodyEl.hidden = true;
-          urlBodyEl.innerHTML = '';
-          urlRevealBtn.textContent = '初回登録用の URL を表示';
-          urlRevealBtn.setAttribute('aria-expanded', 'false');
+          urlValueEl.textContent = API_TOKEN_MASK_PLACEHOLDER;
+          urlRevealBtn.textContent = '表示';
+          urlRevealBtn.setAttribute('aria-pressed', 'false');
         }
       });
 
@@ -4749,75 +4739,53 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
       const fetchApiTokenInfo = async () => {
         try {
           const info = await VKIpc.invoke('settings:api-token-info');
-          if (!info || !info.token) {
-            showTokenError('アクセストークンの取得に失敗しました（応答が不正です）。');
+          if (!info || !info.registrationUrl) {
+            showTokenError('初回登録用の URL の取得に失敗しました（応答が不正です）。');
             return null;
           }
           clearTokenError();
           return info;
         } catch (e) {
-          showTokenError('アクセストークンの取得に失敗しました: ' + (e && e.message ? e.message : '不明なエラー'));
+          showTokenError('初回登録用の URL の取得に失敗しました: ' + (e && e.message ? e.message : '不明なエラー'));
           return null;
         }
       };
 
-      if (tokenRevealBtn && tokenValueEl) {
-        tokenRevealBtn.addEventListener('click', async () => {
-          if (tokenRevealed) {
-            tokenRevealed = false;
-            tokenValueEl.textContent = API_TOKEN_MASK_PLACEHOLDER;
-            tokenRevealBtn.textContent = '表示';
-            tokenRevealBtn.setAttribute('aria-pressed', 'false');
+      if (urlRevealBtn && urlValueEl) {
+        urlRevealBtn.addEventListener('click', async () => {
+          if (urlRevealed) {
+            urlRevealed = false;
+            urlValueEl.textContent = API_TOKEN_MASK_PLACEHOLDER;
+            urlRevealBtn.textContent = '表示';
+            urlRevealBtn.setAttribute('aria-pressed', 'false');
             return;
           }
           const info = await fetchApiTokenInfo();
           if (!info) return;
-          tokenRevealed = true;
-          tokenValueEl.textContent = info.token;
-          tokenRevealBtn.textContent = '隠す';
-          tokenRevealBtn.setAttribute('aria-pressed', 'true');
+          urlRevealed = true;
+          urlValueEl.textContent = info.registrationUrl;
+          urlRevealBtn.textContent = '隠す';
+          urlRevealBtn.setAttribute('aria-pressed', 'true');
         });
       }
 
-      if (tokenCopyBtn) {
-        tokenCopyBtn.addEventListener('click', async () => {
+      if (urlCopyBtn) {
+        urlCopyBtn.addEventListener('click', async () => {
           const info = await fetchApiTokenInfo();
-          let ok = !!(info && info.token);
+          let ok = !!info;
           if (ok) {
             try {
-              ok = await VKClipboard.writeText(info.token);
+              ok = await VKClipboard.writeText(info.registrationUrl);
             } catch (_e) {
               ok = false;
             }
           }
-          setCopyStatus(tokenCopyStatusEl, ok ? 'ok' : 'error');
-          if (tokenCopyResetTimer) clearTimeout(tokenCopyResetTimer);
-          tokenCopyResetTimer = setTimeout(() => {
-            tokenCopyResetTimer = null;
-            setCopyStatus(tokenCopyStatusEl, '');
+          setCopyStatus(urlCopyStatusEl, ok ? 'ok' : 'error');
+          if (urlCopyResetTimer) clearTimeout(urlCopyResetTimer);
+          urlCopyResetTimer = setTimeout(() => {
+            urlCopyResetTimer = null;
+            setCopyStatus(urlCopyStatusEl, '');
           }, 2000);
-        });
-      }
-
-      if (urlRevealBtn && urlBodyEl) {
-        urlRevealBtn.addEventListener('click', async () => {
-          if (urlRevealed) {
-            urlRevealed = false;
-            urlBodyEl.hidden = true;
-            urlBodyEl.innerHTML = '';
-            urlRevealBtn.textContent = '初回登録用の URL を表示';
-            urlRevealBtn.setAttribute('aria-expanded', 'false');
-            return;
-          }
-          const info = await fetchApiTokenInfo();
-          if (!info || !info.registrationUrl) return;
-          // コピーボタン付きのコード表示は既存の renderSettingsCopyableCode を再利用する
-          // （挿入後の .settings-content-copy クリックは既存のイベント委譲がそのまま拾う）。
-          urlBodyEl.innerHTML = renderSettingsCopyableCode(info.registrationUrl, true);
-          urlBodyEl.hidden = false;
-          urlRevealed = true;
-          urlRevealBtn.textContent = '初回登録用の URL を隠す';
-          urlRevealBtn.setAttribute('aria-expanded', 'true');
         });
       }
 
@@ -4838,9 +4806,8 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
                 reissueStatusEl.removeAttribute('data-state');
               }
               // 表示中だった値は古いトークンのままにしない。
-              if (tokenRevealed) tokenValueEl.textContent = result.token;
               if (urlRevealed && result.registrationUrl) {
-                urlBodyEl.innerHTML = renderSettingsCopyableCode(result.registrationUrl, true);
+                urlValueEl.textContent = result.registrationUrl;
               }
               // 永続化に成功した以上、以前表示していた「保存に失敗した」警告は消してよい。
               if (result.persisted) {

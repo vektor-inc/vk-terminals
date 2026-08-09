@@ -1169,10 +1169,11 @@ function currentApiBaseUrl() {
   return `http://${host}:${API_PORT}`;
 }
 
-// トークン本体と、トークン込みの初回登録用 URL（GET /?token=... 形式）をまとめて返す。
-// 「表示」「初回登録用の URL を表示」ボタン押下時にだけ呼ばれる想定（既定で伏せるため）。
+// トークン込みの初回登録用 URL（GET /?token=... 形式）を返す。設定パネルの
+// 「表示」「コピー」ボタン押下時にだけ呼ばれる想定（既定で伏せるため）。
+// トークン本体は返さない。設定パネルはトークン単体を表示しなくなったため
+// （手で curl を叩く場合は config.json の apiToken を直接参照する）。
 ipcMain.handle('settings:api-token-info', () => ({
-  token: API_TOKEN,
   persisted: apiTokenPersisted,
   registrationUrl: `${currentApiBaseUrl()}/?token=${encodeURIComponent(API_TOKEN)}`,
 }));
@@ -1209,7 +1210,6 @@ ipcMain.handle('settings:reissue-api-token', () => {
   apiTokenPersisted = true;
   return {
     ok: true,
-    token: newToken,
     persisted: apiTokenPersisted,
     registrationUrl: `${currentApiBaseUrl()}/?token=${encodeURIComponent(newToken)}`,
   };

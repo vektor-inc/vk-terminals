@@ -663,7 +663,10 @@ h4.settings-content-heading {
   display: block;
   margin: 32px 0 12px;
 }
-.settings-content-apitoken > .settings-content-heading {
+/* パネル自身が上マージンを持つので、先頭の h3 は上マージンを打ち消す。
+   配下の h4（「初回登録用の URL」）は通常どおり 18px の間隔を保たせるため、
+   セレクタは h3 に限定する。 */
+.settings-content-apitoken > h3.settings-content-heading {
   margin: 0 0 6px;
 }
 .settings-content-apitoken-value-row {
@@ -705,7 +708,7 @@ h4.settings-content-heading {
   outline: var(--vktm--outline--focus-ring);
   outline-offset: var(--vktm--outline-offset--focus-ring);
 }
-/* トークン再発行は不可逆な破壊的操作のため、「表示」「コピー」「URL を表示」の
+/* トークン再発行は不可逆な破壊的操作のため、「表示」「コピー」の
    グレー系二次ボタンとは視覚的に区別する（issue #313 レビュー対応・中-8）。
    新しい色は増やさず、既存の危険色トークン（.confirm-close-pane と同じ
    #da3633 / #f85149）を再利用する。 */
@@ -727,17 +730,12 @@ h4.settings-content-heading {
 .settings-content-apitoken-error:empty {
   display: none;
 }
-.settings-content-apitoken-url {
-  margin: 0 0 12px;
-}
-.settings-content-apitoken-url-body {
-  margin-top: 8px;
-}
 .settings-content-apitoken-reissue {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 4px 8px;
+  margin-top: 12px;
   padding-top: 10px;
   border-top: 1px solid #21262d;
 }

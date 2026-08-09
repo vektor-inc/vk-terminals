@@ -50,12 +50,12 @@ test('normalizeSettingsTabs: 重複する id のタブは最初の 1 つだけ�
   assert.deepEqual(normalizeSettingsTabs({
     tabs: [
       { id: 'general', label: '設定' },
-      { id: 'mobile', label: '外出先から確認' },
+      { id: 'mobile', label: 'モバイルから確認' },
       { id: 'general', label: '設定（重複）' },
     ],
   }), [
     { id: 'general', label: '設定', index: 0 },
-    { id: 'mobile', label: '外出先から確認', index: 1 },
+    { id: 'mobile', label: 'モバイルから確認', index: 1 },
   ]);
 });
 
@@ -64,7 +64,7 @@ test('normalizeSettingsTabs: 重複除去後も group は残ったタブへ正�
     tabs: [
       { id: 'general', label: '設定' },
       { id: 'general', label: '設定（重複）' },
-      { id: 'mobile', label: '外出先から確認' },
+      { id: 'mobile', label: 'モバイルから確認' },
     ],
   });
   const grouped = groupSettingsGroupsByTab([{ label: '基本', tab: 'general' }], tabs);
@@ -625,7 +625,7 @@ test('normalizeSettingsTabs: field の検証には desc.groups のフィール�
       { id: 'general', label: '設定' },
       {
         id: 'mobile',
-        label: '外出先から確認',
+        label: 'モバイルから確認',
         content: [
           { type: 'tabLink', label: 'API ホストへ', tab: 'general', field: 'apiHost' },
           { type: 'tabLink', label: '存在しない欄へ', tab: 'general', field: 'ghost' },
@@ -666,7 +666,7 @@ test('normalizeSettingsTabs: 別タブのフィールドを指す tabLink は fi
       { id: 'tokens', label: 'トークン' },
       {
         id: 'mobile',
-        label: '外出先から確認',
+        label: 'モバイルから確認',
         content: [
           // 「設定」タブへ移動するボタンなのに、指している欄は「トークン」タブにある。
           { type: 'tabLink', label: '設定タブへ', tab: 'general', field: 'githubToken' },
@@ -696,7 +696,7 @@ test('normalizeSettingsTabs: キー重複時の所属タブは宣言順ではな
       { id: 'tokens', label: 'トークン' },
       {
         id: 'mobile',
-        label: '外出先から確認',
+        label: 'モバイルから確認',
         content: [
           // dup は general / tokens の両方にあるが、先に描画されるのは general 側。
           { type: 'tabLink', label: '実際の着地先', tab: 'general', field: 'dup' },
@@ -734,7 +734,7 @@ test('normalizeSettingsTabs: tab 未指定の group のフィールドは先頭�
       { id: 'general', label: '設定' },
       {
         id: 'mobile',
-        label: '外出先から確認',
+        label: 'モバイルから確認',
         content: [
           { type: 'tabLink', label: 'tab 未指定の group', tab: 'general', field: 'apiHost' },
           { type: 'tabLink', label: '未知の tab を持つ group', tab: 'general', field: 'initialCommand' },
@@ -774,7 +774,7 @@ test('normalizeSettingsTabs: content は正規化して非空のときだけ持�
       { id: 'general', label: '設定' },
       {
         id: 'mobile',
-        label: '外出先から確認',
+        label: 'モバイルから確認',
         content: [
           { type: 'heading', text: 'スマートフォンから確認できます' },
           { type: 'bogus', text: '落ちる' },
@@ -793,7 +793,7 @@ test('normalizeSettingsTabs: content は正規化して非空のときだけ持�
     { id: 'general', label: '設定', index: 0 },
     {
       id: 'mobile',
-      label: '外出先から確認',
+      label: 'モバイルから確認',
       index: 1,
       content: [
         { type: 'heading', text: 'スマートフォンから確認できます', level: 3 },

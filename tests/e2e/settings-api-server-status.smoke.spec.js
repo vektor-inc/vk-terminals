@@ -9,7 +9,7 @@ const {
 async function openApiServerStatus(win) {
   await win.evaluate(() => window.openSettingsModal());
   await win.waitForSelector('.settings-modal', { state: 'visible' });
-  // 「外出先から確認」タブを開き、実行時データが差し込まれた status ブロックを見る。
+  // 「モバイルから確認」タブを開き、実行時データが差し込まれた status ブロックを見る。
   await win.locator('#settings-tab-1').click();
   return win.locator('#settings-panel-1 [data-status-source="apiServer"]');
 }

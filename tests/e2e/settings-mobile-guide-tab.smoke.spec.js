@@ -267,7 +267,7 @@ test.describe.serial('設定パネルの説明タブ「外出先から確認」�
     await win.locator(TAB_MOBILE).click();
     const at = await contentBlockIndexes(win, PANEL_MOBILE, {
       step2Heading: { selector: 'h3', text: '手順 2' },
-      ipGui: { text: 'メニューバーの Tailscale アイコン' },
+      ipGui: { text: 'Tailscale の管理コンソール' },
       // コピーボタン付きのコードブロックは .settings-content-codeblock で包まれるため、
       // .settings-content の直下に来るのはラッパー側になる。
       ipCommand: { selector: '.settings-content-codeblock', text: 'tailscale ip -4' },

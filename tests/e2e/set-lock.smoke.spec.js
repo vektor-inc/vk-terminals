@@ -53,17 +53,47 @@ async function postJson(port, pathname, payload) {
   return { status: res.status, body };
 }
 
-async function launchLockApp(port) {
-  return await launchApp({ port, prefix: 'vk-terminals-e2e-lock-' });
-}
+// issue #348: 2 テストとも env/config の指定なしで launchApp を呼んでいるため、
+// 起動を 1 回に共有する。いずれのテストも自分で作った新規ペインを最終的に消して
+// 終わる（テスト1は /api/close-pane、テスト2は exit 送信での自然終了）ため、
+// テスト終了時点で常に「最初に作った新規ペインが消え、reload 直後にあった 1 枚だけが
+// 残る」状態に戻る。ただし win.reload() のたびに main.js の nextId は進むため、
+// 残るペインの termId は '1' 固定ではなく '2'、'3' … と変わっていく（安藤のレビュー
+// 指摘）。このファイルは termId を固定値で参照せず、常に /api/new-pane の応答から
+// 得た termId を使っているため、この点自体はテストの正しさに影響しない。
+// win 側は closeBtn の属性を局所更新するだけで、次テストの beforeEach で
+// win.reload() すれば初期状態に戻る。
+test.describe.serial('close ロック（issue #173）', () => {
+  let app;
+  let win;
+  let tmpRoot;
+  let port;
 
-test('close ロック中のペインは UI で閉じられず、/api/close-pane では閉じられる', async () => {
-  const port = await getFreePort();
-  const { app, win, tmpRoot } = await launchLockApp(port);
-
-  try {
-    // 起動直後の最初のペインが登録されるまで待ってから、検証対象の追加ペインを作る。
+  test.beforeAll(async () => {
+    port = await getFreePort();
+    ({ app, win, tmpRoot } = await launchApp({ port, prefix: 'vk-terminals-e2e-lock-' }));
     await waitForTermId(port, '1', true);
+  });
+
+  test.afterAll(async () => {
+    await closeApp({ app, tmpRoot });
+  });
+
+  test.beforeEach(async () => {
+    await win.reload();
+    await win.waitForSelector('#sidebar', { state: 'attached' });
+    // #sidebar は setupSidebarMenu() が initApp() より前（renderer/app.js のスクリプト
+    // 評価時点、load イベントより前）に付けるため、初期化完了の指標にならない
+    // （安藤のレビュー指摘）。initApp() は app:get-config の IPC 往復と
+    // terminal:create（node-pty の spawn）を待つため、load 後もしばらく未完了で、
+    // その間 tree は null のまま。ここで /api/new-pane を叩くと、
+    // VKIpc.on('terminal:request-new-pane', ...) はモジュール評価時に登録済みなので
+    // 受け付けてしまい、targetPaneId が取れず { error: 'no pane available' } を返す。
+    // ペインが実際に描画されるまで待ってから次のテストへ進む。
+    await expect(win.locator('.pane .xterm-screen').first()).toBeVisible({ timeout: 30_000 });
+  });
+
+  test('close ロック中のペインは UI で閉じられず、/api/close-pane では閉じられる', async () => {
     const created = await postJson(port, '/api/new-pane', { noClaude: true });
     expect(created.status).toBe(200);
     expect(created.body && created.body.ok).toBe(true);
@@ -98,17 +128,9 @@ test('close ロック中のペインは UI で閉じられず、/api/close-pane 
     expect(closed.body && closed.body.ok).toBe(true);
     await waitForTermId(port, targetTermId, false);
     await expect(pane).toHaveCount(0);
-  } finally {
-    await closeApp({ app, tmpRoot });
-  }
-});
+  });
 
-test('close ロック中のペインもプロセス自然終了時はクリーンアップされる', async () => {
-  const port = await getFreePort();
-  const { app, tmpRoot } = await launchLockApp(port);
-
-  try {
-    await waitForTermId(port, '1', true);
+  test('close ロック中のペインもプロセス自然終了時はクリーンアップされる', async () => {
     const created = await postJson(port, '/api/new-pane', { noClaude: true });
     expect(created.status).toBe(200);
     expect(created.body && created.body.ok).toBe(true);
@@ -125,7 +147,5 @@ test('close ロック中のペインもプロセス自然終了時はクリー�
     expect(sent.body && sent.body.ok).toBe(true);
 
     await waitForTermId(port, targetTermId, false);
-  } finally {
-    await closeApp({ app, tmpRoot });
-  }
+  });
 });

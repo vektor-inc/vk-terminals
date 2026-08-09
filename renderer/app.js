@@ -34,6 +34,12 @@ const { normalizeConfirmClose, shouldConfirmClose } = window.VKCloseConfirm;
 // 足していないので、ここでは案内専用の関数だけを使う（PR #315 安藤のレビュー指摘）。
 const { isLoopbackDisplayValue } = window.VKLoopbackHost;
 const { isSafeHttpUrl } = window.VKUrlSafety;
+// ペイン内 URL の Cmd/Ctrl+クリック対応（issue #349）。折り返し行をまたぐ URL の検出・
+// バッファ位置への変換は renderer/terminalLinkProvider.js（xterm.js の
+// registerLinkProvider を自前実装）が担う。詳しい採用理由は同ファイル冒頭のコメント参照。
+const { createTerminalLinkProvider } = window.VKTerminalLinkProvider;
+// ツールチップに表示する「解決後の遷移先ホスト」の取得に使う（安藤レビュー指摘・MEDIUM）。
+const { getUrlHost } = window.VKUrlLinkify;
 const {
   migrateLegacyState,
   readCollapsedSections,
@@ -49,15 +55,18 @@ const {
 // エージェントルーム（issue #58）。サブエージェントの稼働状況をドット絵キャラで可視化する。
 const { AGENT_ORDER, buildScene, resolveAgentStatesFromOutput } = window.VKAgentRoom;
 const {
+  containsIgnoringWhitespace,
   detectBackgroundAgents,
   extractScreenLines,
+  findWaitingMatch,
   isOutputQuiescent,
   isWaitingCwdExcluded,
-  matchesWaiting,
+  nextWaitingOnset,
   nextWaitingState,
   normalizeWaitingExcludeCwdPatterns,
   selectWaitingBuffer,
   shouldBeepForWaiting,
+  stripVolatileForKey,
   waitingCheckDelayMs,
 } = window.VKWaitingState;
 const { deriveStatus } = window.VKStatusState;
@@ -208,14 +217,69 @@ function checkWaiting(paneId) {
   const quiescent = isOutputQuiescent({ now, lastOutputTime: t.lastOutputTime });
   // 静止評価は lastLines（80 行ウィンドウ）全体、上限評価は前回の評価以降に届いた
   // 出力（recentLines）だけを見る。理由は selectWaitingBuffer のコメント参照。
-  const matches = matchesWaiting(stripAnsiForDisplay(selectWaitingBuffer({
+  const buffer = stripAnsiForDisplay(selectWaitingBuffer({
     quiescent,
     fullBuffer: t.lastLines,
     recentBuffer: t.recentLines,
-  })));
+  }));
+  // findWaitingMatch は真偽値ではなく、一致箇所（前後の文脈込み）の文字列そのものを
+  // 返す（issue #352）。バッファ内で最も後ろの一致（画面下端に最も近い、ライブな
+  // 一致）を返すため、80 行バッファの先頭側に残る古いログ等を誤って根拠にしない
+  // （安藤の指摘・再レビュー HIGH。findWaitingMatch 自体のコメント参照）。
+  // 点灯の根拠を記録するため matchesWaiting ではなくこちらを使う。
+  const matchText = findWaitingMatch(buffer);
+  const matches = matchText !== null;
+  // stripVolatileForKey は matchText（文脈込み）から数字（時刻・termId・カウンタ等の
+  // 可変部分）だけを潰したもの。ビープの長期抑制の鍵（t.waitingOnsetKey）専用
+  // （issue #352 の再レビュー・司と安藤の実測で発覚）。matchText をそのまま鍵にすると
+  // 可変部分のせいで再点灯のたびに鍵が変わり長期抑制が効かない一方、正規表現の
+  // 一致範囲そのもの（m[0]）まで丸めると判別力が無くなり内容の異なる本物の確認
+  // どうしを同一視してしまう（詳細は stripVolatileForKey / WAITING_BEEP_REPEAT_SUPPRESS_MS
+  // のコメント参照）。
+  const matchKey = stripVolatileForKey(matchText);
   // 次回の上限評価は「ここから先に届いた出力」だけを対象にする。
   t.recentLines = '';
-  const waiting = nextWaitingState({ prev: t.waiting, matches, excluded, quiescent });
+  // 静止評価・非マッチ・かつ現在入力待ち中のときだけ、点灯根拠がまだ画面
+  // （lastLines）に見えるかを調べる。上の条件に当たらない呼び出しでは
+  // nextWaitingState 側で使われないため計算を省く。
+  //   quiescent が真のとき buffer は selectWaitingBuffer により t.lastLines
+  //   （ANSI を落としたもの）そのものになる。
+  const onsetStillVisible = (quiescent && !matches && t.waiting && t.waitingOnsetMatch)
+    ? containsIgnoringWhitespace(buffer, t.waitingOnsetMatch)
+    : undefined;
+  const waiting = nextWaitingState({ prev: t.waiting, matches, excluded, quiescent, onsetStillVisible });
+  // 点灯根拠（t.waitingOnsetMatch / t.waitingOnsetKey）の更新ルール自体は
+  // nextWaitingOnset（純粋関数）に委ねる。判断基準の詳細・#91 への影響が無い理由は
+  // 同関数のコメント参照。ここでは backfill 用の再探索だけを行う。
+  //
+  // backfill: waiting = true で、かつ今回は「静止評価での新規マッチ」ではない
+  // （matches && quiescent が成立しない）ときだけ、解除判定の照合先そのものである
+  // t.lastLines に対して直接再探索する。上限評価（quiescent = false）でのマッチ
+  // 直後に出力が止まり、次の静止評価が recentLines と lastLines の CR 上書きの
+  // 食い違いで非マッチになるケース（安藤の指摘 MEDIUM と同根）で根拠が null に
+  // 固定され続けるのを防ぐ（司の指摘・#352 の再レビュー）。
+  // quiescent な非マッチでここに来た場合は buffer が既に t.lastLines と同一なので、
+  // この再探索は matches と同じ null を返す空振りになるだけで実害は無い。
+  let backfillText = null;
+  let backfillKey = null;
+  if (waiting && !(matches && quiescent)) {
+    const backfillBuffer = stripAnsiForDisplay(t.lastLines);
+    backfillText = findWaitingMatch(backfillBuffer);
+    backfillKey = backfillText !== null ? stripVolatileForKey(backfillText) : null;
+  }
+  const nextOnset = nextWaitingOnset({
+    waiting,
+    prevOnsetMatch: t.waitingOnsetMatch,
+    prevOnsetKey: t.waitingOnsetKey,
+    matches,
+    quiescent,
+    matchText,
+    matchKey,
+    backfillText,
+    backfillKey,
+  });
+  t.waitingOnsetMatch = nextOnset.onsetMatch;
+  t.waitingOnsetKey = nextOnset.onsetKey;
   if (waiting !== t.waiting) {
     t.waiting = waiting;
     if (waiting) {
@@ -238,8 +302,24 @@ function checkWaiting(paneId) {
     recomputeStatus(paneId);
     // 待機状態になったときに通知音を鳴らす。解除と再検知が短時間で往復しても
     // 鳴り続けないようクールダウンを挟む。
-    if (waiting && shouldBeepForWaiting({ now, lastBeepAt: t.lastWaitingBeepAt })) {
+    // onsetMatch / lastBeepedOnsetMatch には t.waitingOnsetKey（stripVolatileForKey で
+    // 数字を潰した後の文字列）を渡す。issue #352 の副作用対応（植草のレビュー）:
+    // 疎な出力ペインは「点灯→押し出されて解除→同じ文言で再点灯」の点滅を起こし
+    // 得るため、直前と同じ点灯根拠なら通常より長い猶予
+    // （WAITING_BEEP_REPEAT_SUPPRESS_MS）で抑止する。
+    // ⚠ t.waitingOnsetMatch（文脈そのまま。数字を潰していない）を渡してはいけない
+    //   （司の実測で発覚した不具合）。vk-orchestrator の常駐ログは前後の文脈
+    //   （termId 等）が毎回変わるため、数字を潰さない文字列を鍵にすると長期抑制が
+    //   一度も適用されない（詳細は stripVolatileForKey / WAITING_BEEP_REPEAT_SUPPRESS_MS
+    //   のコメント参照）。
+    if (waiting && shouldBeepForWaiting({
+      now,
+      lastBeepAt: t.lastWaitingBeepAt,
+      onsetMatch: t.waitingOnsetKey,
+      lastBeepedOnsetMatch: t.lastBeepedOnsetKey,
+    })) {
       t.lastWaitingBeepAt = now;
+      t.lastBeepedOnsetKey = t.waitingOnsetKey;
       VKShell.beep();
     }
   }
@@ -335,10 +415,16 @@ function markPaneInput(paneId) {
   // ユーザーが応答した後の入力待ちは「別の新しい確認」なので、クールダウンを持ち越さず
   // 必ず鳴らす。抑止したいのは入力を挟まない機械的な往復だけ。
   t.lastWaitingBeepAt = 0;
+  // lastBeepedOnsetKey も同じ理由でリセットする。人が応答した以上、次にこのペインが
+  // 入力待ちになったら（たとえ点灯根拠の文字列が偶然同じでも）新しい確認として扱い、
+  // ビープの長期抑制（WAITING_BEEP_REPEAT_SUPPRESS_MS）を持ち越さない。
+  t.lastBeepedOnsetKey = null;
   if (t.waiting) {
     t.waiting = false;
     t.lastLines = '';
     t.recentLines = '';
+    t.waitingOnsetMatch = null;
+    t.waitingOnsetKey = null;
   }
   recomputeStatus(paneId);
 }
@@ -433,6 +519,21 @@ async function createTerminal(paneId, cwd, options = {}) {
   const fitAddon = new FitAddon();
   term.loadAddon(fitAddon);
 
+  // ペイン内 URL の Cmd/Ctrl+クリック対応（issue #349）。破棄は term.dispose() 側に
+  // 任せる（xterm.js 本体の LinkProviderService は Terminal の disposal 時に登録済み
+  // プロバイダを自動でクリアするため、fitAddon 同様ここで個別に dispose() を呼ぶ必要は無い）。
+  // isMac は明示的に IS_MAC_PLATFORM を渡す（安藤レビュー指摘・LOW）。省略すると
+  // isLinkOpenModifierPressed 側が呼び出しのたびに isMacPlatform() を再評価する一方、
+  // ツールチップの文言（TERM_LINK_MODIFIER_LABEL）はキャッシュ済みの IS_MAC_PLATFORM を
+  // 使っており、「実際に見ている修飾キー」と「表示している修飾キー」の判定元が
+  // 2 箇所に分かれてしまう。値は実行中変わらないため実害は無いが、出所を 1 本化する。
+  term.registerLinkProvider(createTerminalLinkProvider(term, createTerminalLinkHandlers({
+    openUrl: openExternalUrlSafe,
+    showTooltip: showTermLinkTooltip,
+    hideTooltip: hideTermLinkTooltip,
+    isMac: IS_MAC_PLATFORM,
+  })));
+
   // OSC 0 / OSC 2 のタイトル変更を購読してペイン上部のタスクタイトル行に反映する。
   // 例: `printf '\033]0;ビルド中\007'` をシェルで実行すると "ビルド中" がここに表示される。
   // ここで書き込むのは OSC 由来の taskTitle のみ。API（POST /api/set-title）由来の
@@ -515,10 +616,36 @@ async function createTerminal(paneId, cwd, options = {}) {
     //   瞬間のスナップショット { at, lastOutputTime }（issue #270）。e2e から静止ゲートの
     //   実効を確かめるためだけの記録で、アプリの挙動には一切使わない。未点灯なら null、
     //   再点灯のたびに上書きする（解除時のクリアは不要 = 次の点灯で必ず上書きされる）。
+    // waitingOnsetMatch: 現在の waiting=true の根拠になっている実際のマッチ文字列
+    //   （findWaitingMatch の返り値。前後の文脈込み）。localWaitingOnset とは違い、
+    //   checkWaiting() の解除判定そのものに使う実体（issue #352）。
+    //   静止評価・非マッチのときにこの文字列が lastLines から空白無視で見えなくなって
+    //   いれば自動解除する。マッチするたびに最新の文字列へ更新し、waiting が false に
+    //   戻ったら（除外・上限評価での解除・onsetStillVisible による解除・markPaneInput
+    //   のいずれでも）null に戻す。根拠が未記録のまま waiting=true が続く場合は
+    //   checkWaiting() が毎回 t.lastLines への再探索（backfill）を試み、拾えた時点で
+    //   ここに記録する（司の指摘・#352 の再レビュー。詳細は checkWaiting 内のコメント
+    //   参照）。
+    // waitingOnsetKey: waitingOnsetMatch と同じタイミングで更新する、
+    //   stripVolatileForKey(waitingOnsetMatch)（数字だけを潰した文字列）。
+    //   ビープの長期抑制（lastBeepedOnsetKey との比較）専用（issue #352 の再レビュー・
+    //   司と安藤の実測で発覚）。waitingOnsetMatch をそのまま抑制の鍵にすると、
+    //   vk-orchestrator の常駐ログのように前後の文脈（termId 等）が毎回変わる出力で
+    //   鍵も毎回変わり長期抑制が一度も適用されない。一方、数字を潰すだけでなく
+    //   正規表現の一致範囲そのもの（m[0]）まで丸めると判別力が無くなり、内容の
+    //   異なる本物の確認どうしを同一視してしまう（stripVolatileForKey のコメント参照）。
+    // lastBeepedOnsetKey: 直前にビープを鳴らしたときの waitingOnsetKey のスナップ
+    //   ショット（issue #352・植草のレビュー）。次にビープが必要になったとき、今回の
+    //   waitingOnsetKey と空白・罫線を無視して同一なら「同じ誤検知の点滅」とみなし、
+    //   通常より長い猶予（WAITING_BEEP_REPEAT_SUPPRESS_MS）で抑止する
+    //   （shouldBeepForWaiting 参照）。markPaneInput で null に戻す。
     waitingCheckTimer: null,
     waitingPendingSince: 0,
     lastWaitingBeepAt: 0,
     localWaitingOnset: null,
+    waitingOnsetMatch: null,
+    waitingOnsetKey: null,
+    lastBeepedOnsetKey: null,
     lastLines: '',
     // recentLines: 前回の waiting 評価以降に届いた出力だけを貯めるバッファ。
     //   上限評価（出力が流れている最中の判定）で使う。lastLines と同じ上限でトリムする。
@@ -883,6 +1010,81 @@ function openExternalUrlSafe(url) {
   } catch (_e) {
     showExternalUrlOpenFailedToast(url);
   }
+}
+
+// ─── ペイン内 URL の Cmd/Ctrl+クリック（issue #349） ───────────────────────────────
+// URL の検出・バッファ範囲への変換は renderer/terminalLinkProvider.js（xterm.js の
+// registerLinkProvider を自前実装したもの）が担い、ここでは「どう開くか」
+// （修飾キー判定・ツールチップ表示）だけを扱う。実際に開く経路は openExternalUrlSafe を
+// そのまま使う（新しい経路を増やさない。植草の確定仕様）。
+//
+// 単クリックでは開かない仕様にしているのは、ターミナルのドラッグ選択との誤爆を防ぐため
+// （植草の UX レビュー・issue #349）。xterm.js 側の Linkifier は mousedown 時点のリンクと
+// mouseup 時点のリンクが一致したときだけ activate を呼ぶため、ドラッグ選択とは元々
+// 衝突しない（xterm.js 本体の src/browser/Linkifier.ts で確認済み）。また矩形選択の
+// 修飾キーは Alt（xterm.js 本体の SelectionService.shouldColumnSelect）であり、
+// ここで使う Cmd（macOS）/ Ctrl（Windows・Linux）とは別のキーのため競合しない。
+//
+// 修飾キー判定（isMacPlatform / isLinkOpenModifierPressed / createTerminalLinkHandlers）
+// は utils/terminalLinkPolicy.js の UMD へ切り出してある。この機能で最もセキュリティに
+// 効く分岐（単クリックだけでは絶対に外部 URL を開かせない）を renderer/app.js の
+// 非エクスポート関数のままにせず、tests/terminalLinkPolicy.test.js から直接ユニット
+// テストできるようにするため（安藤レビュー指摘・MEDIUM）。
+const { isMacPlatform, createTerminalLinkHandlers } = window.VKTerminalLinkPolicy;
+const IS_MAC_PLATFORM = isMacPlatform();
+const TERM_LINK_MODIFIER_LABEL = IS_MAC_PLATFORM ? '⌘+クリックで開く' : 'Ctrl+クリックで開く';
+
+// ホバー中のツールチップ本体。全ペイン共通で 1 つだけ用意し、都度使い回す
+// （externalUrlToast と同じ考え方。document.body 直下に置き、#root の render() による
+// 差し替えの影響を受けないようにする）。
+let termLinkTooltipEl = null;
+
+function ensureTermLinkTooltip() {
+  if (termLinkTooltipEl) return termLinkTooltipEl;
+  const el = document.createElement('div');
+  el.className = 'term-link-tooltip';
+  // マウス追従のみの補助表示で、キーボード操作でも読み上げでも到達できないため
+  // 支援技術には見せない（Cmd/Ctrl+クリック自体がポインタ操作前提の機能のため）。
+  el.setAttribute('aria-hidden', 'true');
+  el.hidden = true;
+  document.body.appendChild(el);
+  termLinkTooltipEl = el;
+  return el;
+}
+
+// ツールチップの文言。遷移先ホストを表示する（安藤レビュー指摘・MEDIUM）。
+//
+// ターミナル出力は攻撃者が内容を制御しうる前提のため、「⌘+クリックで開く」という
+// 固定文言だけでは、ユーザーが実際の行き先を検証する手段が本文の目視しかなかった
+// （例: 見た目は https://github.com/... に見えても実体は
+// https://github.com@evil.example/login というユーザー情報付き URL で、実ホストは
+// evil.example ということがありうる）。new URL(url).host（VKUrlLinkify.getUrlHost）で
+// 解決した後のホストをツールチップに出すことで、表示テキストに惑わされず実際の行き先を
+// 確認できるようにする。なお renderer/urlLinkify.js の extractUrlMatches はユーザー情報
+// 付き URL 自体をそもそもリンク化しないため、ここに渡ってくる url は通常そのケースには
+// 該当しないが、ツールチップ自体は「実ホストを見せる」という独立した防御として残す。
+function termLinkTooltipMessage(url) {
+  const host = getUrlHost(url);
+  return host ? `${host} を ${TERM_LINK_MODIFIER_LABEL}` : TERM_LINK_MODIFIER_LABEL;
+}
+
+// カーソル位置の近くにツールチップを表示する。pointer-events: none にしてあるため
+// （style.css 参照）、このツールチップ自身が xterm.js 側のホバー判定（マウス位置の
+// 追跡）を奪うことはない。textContent で入れる（innerHTML は使わない。url はターミナル
+// 出力由来で攻撃者が内容を制御しうるため）。
+function showTermLinkTooltip(event, url) {
+  const el = ensureTermLinkTooltip();
+  el.textContent = termLinkTooltipMessage(url);
+  const OFFSET = 12;
+  el.hidden = false;
+  const maxLeft = Math.max(0, window.innerWidth - el.offsetWidth - 4);
+  const maxTop = Math.max(0, window.innerHeight - el.offsetHeight - 4);
+  el.style.left = `${Math.min(event.clientX + OFFSET, maxLeft)}px`;
+  el.style.top = `${Math.min(event.clientY + OFFSET, maxTop)}px`;
+}
+
+function hideTermLinkTooltip() {
+  if (termLinkTooltipEl) termLinkTooltipEl.hidden = true;
 }
 
 // ─── Sidebar menu ────────────────────────────────────────────────────────────
@@ -2241,6 +2443,9 @@ function closePane(paneId, { force = false, skipConfirm = false } = {}) {
       clearTimeout(Number(autoInputTimer));
       delete paneEl.dataset.autoInputTimer;
     }
+    // ホバー中に閉じられると leave が発火せず、position: fixed のツールチップが
+    // 残り続けるため明示的に隠す（安藤レビュー指摘・LOW）。
+    hideTermLinkTooltip();
     t.term.dispose();
     VKIpc.send('terminal:kill', t.termId);
     delete terminals[paneId];
@@ -2282,6 +2487,10 @@ let closeConfirmOpen = false;
 
 function openCloseConfirmDialog(paneId) {
   if (closeConfirmOpen) return;
+  // URL にホバーしたままマウスを動かさず Tab で「✕」まで来て Enter で確定する経路では
+  // xterm 側の leave が発火しない。確認ダイアログ（z-index 2100）の手前にツールチップ
+  // （2300）が浮いたまま残るのを防ぐ（Claude Code レビュー指摘・LOW）。
+  hideTermLinkTooltip();
   const restoreFocusElement = document.activeElement;
   closeConfirmOpen = true;
 
@@ -2685,6 +2894,11 @@ function fitAll() {
 
 // ─── Rendering ────────────────────────────────────────────────────────────────
 function render() {
+  // #root を丸ごと作り直す（root.replaceChildren）ため、ホバー中に呼ばれると
+  // xterm 側の要素が入れ替わり leave が発火せず、position: fixed のツールチップが
+  // 残り続ける。closePane() / initApp() / window の blur と同じ対策（安藤・Claude Code
+  // レビュー指摘・LOW）。
+  hideTermLinkTooltip();
   const root = document.getElementById('root');
   const sidebar = ensureSidebar(root);
   const newContent = renderGrid(tree);
@@ -3320,6 +3534,10 @@ function observePanes() {
 window.addEventListener('resize', debouncedFitAll);
 // ウィンドウ幅が縮んだときにサイドバー幅の上限（幅比）を超えないよう再クランプする（issue #89）。
 window.addEventListener('resize', () => setSidebarWidth(getSidebarWidth()));
+// ウィンドウがフォーカスを失うと、ホバー中のマウス位置を xterm 側が追跡し続けられず
+// leave が発火しないケースがある（例: ホバーしたまま Cmd+Tab で他アプリへ切り替える）。
+// position: fixed のツールチップが画面に残り続けるのを防ぐ（安藤レビュー指摘・LOW）。
+window.addEventListener('blur', hideTermLinkTooltip);
 
 // ─── 設定パネル（汎用）────────────────────────────────────────────────────────
 // main プロセス（settings:describe / settings:save）経由で、呼び出し側が env
@@ -3977,6 +4195,10 @@ function renderSettingsTabContent(blocks, tabIndexById, runtimeStatus = {}, entr
 const settingsModalGuard = createSingleOpenGuard();
 
 async function openSettingsModal() {
+  // URL にホバーしたままマウスを動かさず Tab で ⚙ まで来て Enter で確定する経路では
+  // xterm 側の leave が発火しない。設定モーダル（z-index 2000）の手前にツールチップ
+  // （2300）が浮いたまま残るのを防ぐ（Claude Code レビュー指摘・LOW）。
+  hideTermLinkTooltip();
   // settings:describe の応答待ち中にフォーカスが変わっても、実際に設定を開いた操作元へ
   // 戻せるよう、非同期処理へ入る前の要素をモーダルの寿命と一緒に保持する。
   const restoreFocusElement = document.activeElement;
@@ -4905,6 +5127,9 @@ async function initApp() {
   } catch (_e) { /* 取得失敗時は無効のまま */ }
 
   // Dispose any existing terminals
+  // ホバー中に一括破棄されるとリンクの leave が発火しないため、closePane() と同様に
+  // ここでもツールチップを明示的に隠す（安藤レビュー指摘・LOW）。
+  hideTermLinkTooltip();
   for (const [paneId, t] of Object.entries(terminals)) {
     // terminals を丸ごと差し替えるため、closePane() と同様にタイマーを破棄する。
     // 残ったままだと古い terminals[paneId] をクロージャで掴み続け、消えたペインに

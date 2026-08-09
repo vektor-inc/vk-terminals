@@ -20,6 +20,32 @@ const { WAITING_QUIESCENCE_MS } = require('../../renderer/waitingState');
 //   日本語文字列は Playwright のキーボード入力（IME）に依存すると不安定なため、
 //   既存 spec と同様に「スクリプトに出力させる」方式を使う。タイプするコマンド行は
 //   スクリプトのパスだけ（ASCII）なので、入力による waiting クリアの影響を受けない。
+//
+// issue #348: このファイルだけは他の smoke spec と違い、5 テストで Electron の
+// 起動を共有していない（各テストが自前で launchApp する）。一度は起動共有を試みたが
+// 2 巡のレビューで撤回した。理由は次のとおり（同じ道を辿らないための記録）。
+//   - 画面（win）を reload() すると、renderer は起動時と同じ経路で新しい PTY を
+//     terminal:create するが、main プロセス側のターミナルの通し番号（nextId）は
+//     モジュール変数で単調増加してリセットされない。reload 前の古い PTY は
+//     terminal:kill されずに main 側の一覧（ptys）に残ったまま（画面からは切り離
+//     される）になる。
+//   - そのため /api/set-status のような termId 指定 API は、もう画面に存在しない
+//     古い termId に対しても成功（200）を返す。一方 renderer 側の受け口
+//     （renderer/app.js の該当ペイン検索）は該当ペインが無いので黙って return する。
+//     つまり termId を固定値や reload 前の値で扱うテストは、成功したように見えて
+//     何も検証していない状態になりうる。
+//   - この孤児化を避けるため「/api/states から現在の termId を都度引き直す」形に
+//     直したが、それでも避けられなかった。main.js の terminal:report-states は
+//     cachedStates を上書きするだけで reload 時にクリアされず、renderer 側の報告は
+//     2000ms 間隔（renderer/app.js の setInterval）なので、reload 完了から
+//     約 2 秒間は /api/states も「もう画面に無い古いペイン」を返し続ける。しかも
+//     返るのは要素 1 個の配列なので、「ペインが 1 枚である」という前提チェックも
+//     素通りしてしまう（issue #348 / 安藤のレビュー 2 巡ぶんの結論）。
+//   - 待ち方を変える対処（2 秒のラグを吸収する）も検討したが、その場合テストの
+//     正しさが「cachedStates が reload でクリアされない」「報告間隔が 2000ms」と
+//     いう製品側の未文書な内部タイミングに依存し続ける。どちらかが変わればまた
+//     静かに壊れるため、issue の「隔離が必要なものは無理に共有しない」という方針に
+//     従い、この spec は起動共有の対象から外している。
 
 // 出力がバッファ（lastLines）へ到達したことを確認するための後続マーカー。
 // タイプするコマンド行には現れず、スクリプトの出力にのみ現れる。
@@ -334,6 +360,88 @@ test('waiting 点灯後にユーザー入力なしで出力を流し続けると
     await expect(status).not.toHaveAttribute('data-status', 'waiting');
     // 出力が流れている最中の解除なので、idle ではなく running（実行中）へ戻る。
     await expect(status).toHaveAttribute('data-status', 'running');
+  } finally {
+    await closeApp({ app, tmpRoot });
+  }
+});
+
+// ─── 疎な出力（vektor-inc/vk-terminals#352）での自動解除 ────────────────────────
+//
+// 上のテスト（0.2 秒間隔のバースト）は「出力が流れている最中（quiescent = false）の
+// 非マッチ」という既存の解除経路（vk-orchestrator#212）を検証している。
+// issue #352 が報告したのはそれとは別の状況で、vk-orchestrator のように**数秒おきに
+// 1 行だけ**しか出力しないペインでは、判定のたびに「最後の出力から静止時間
+// （WAITING_QUIESCENCE_MS = 1.5 秒）以上経っている」＝ quiescent = true にしかならず、
+// 上の解除経路が一度も回ってこない。旧実装はこのケースを解除できず、人が打鍵するまで
+// 永久に張り付いた。
+//
+// この e2e では「1 行だけ・間隔を空けて出力する」という条件は保ったまま、1 行を
+// 十分長くすることで、実機の 80 行張り付き（押し出しに数時間かかった）と同じ
+// メカニズム（判定バッファ lastLines からの押し出し）を短時間で再現する。
+// renderer/app.js の LASTLINES_MAX_CHARS（8000 文字）は行数上限（80 行）と並ぶ
+// もう一方のトリム条件で、どちらで押し出されても「点灯根拠の文字列が lastLines から
+// 消える」という解除条件（containsIgnoringWhitespace）は同じに扱われる。
+//
+// ⚠ 1 行の実効文字数は renderer/terminalDisplay.js の applyDisplayControls が持つ
+//   MAX_COLS（= 1000）でクランプされる（安藤の指摘 HIGH-1）。appendWaitingBuffer
+//   （renderer/app.js）は PTY から届いた生データを毎回 appendAnsiForDisplay
+//   （= applyDisplayControls）に通してから lastLines へ積むため、1 行に 1500 文字を
+//   流しても実際に判定バッファへ乗るのは 1 行あたり最大 1001 文字（MAX_COLS + 1）
+//   まで。当初 6 行（1500 × 6 = 9000 のつもり）で組んだところ、実際には
+//   1001 × 6 ≒ 6006 文字にしかならず LASTLINES_MAX_CHARS（8000）に届かず、
+//   "Proceed?" が一度も押し出されず解除されないままテストが timeout した
+//   （安藤のレビューで実測・再現済み）。renderer/app.js の appendWaitingBuffer と
+//   同じロジックで実測した結果、"Proceed?" が押し出されるのは 8 行目
+//   （1001 × 8 ≒ 8008 > 8000）だった。ここでは十分な安全マージンを見て 12 行にする。
+test('疎な出力（数秒おきに1行）が続くペインでも、一度点灯した入力待ちが人の打鍵なしで自動解除される（issue #352）', async () => {
+  const port = await getFreePort();
+  const { app, win, tmpRoot } = await launchWaitingApp(port);
+  // 1 行の長さと本数: 1 行は MAX_COLS（1000）でクランプされ実効は最大 1001 文字
+  // なので、素朴に 1500 × N で計算しても LASTLINES_MAX_CHARS（8000）には届かない
+  // （上のコメント参照）。1001 × 8 ≒ 8008 で押し出される計算だが、安全マージンを
+  // 取って 12 行（1001 × 12 ≒ 12012）にする。
+  const LONG_LINE_CHARS = 1500;
+  const SPARSE_LINES = 12;
+  // WAITING_QUIESCENCE_MS（1.5 秒）より長い間隔を空け、1 行ごとに静止評価
+  // （quiescent = true）が走る「疎な出力」を再現する。
+  const SPARSE_INTERVAL_SEC = 2;
+  const longLine = 'x'.repeat(LONG_LINE_CHARS);
+  const bodyLines = [];
+  for (let i = 0; i < SPARSE_LINES; i++) {
+    bodyLines.push(`printf '%s\\n' '${longLine}'`);
+    bodyLines.push(`sleep ${SPARSE_INTERVAL_SEC}`);
+  }
+  const scriptPath = path.join(tmpRoot, 'sparse.sh');
+  fs.writeFileSync(scriptPath, [
+    '#!/bin/sh',
+    "printf '%s\\n' 'Proceed?'",
+    `printf '%s\\n' '${READY_MARKER}'`,
+    'sleep 4', // 静止 → waiting 点灯（点灯根拠は 'Proceed?' 周辺の文字列になる）
+    ...bodyLines,
+    "printf '%s\\n' 'SPARSEDONE'",
+    '',
+  ].join('\n'), 'utf8');
+
+  try {
+    const { pane, status } = await prepareFirstPane(win, port);
+
+    await runScript(win, scriptPath);
+
+    // sleep 中（出力静止）に waiting が点灯することを確認する。
+    await expect(pane).toHaveClass(/\bwaiting\b/, { timeout: 15_000 });
+    await expect(status).toHaveAttribute('data-status', 'waiting');
+
+    // ここから先はユーザー入力を一切行わない。疎な出力（数秒間隔の長い行）が
+    // 続くだけで、旧実装なら「静止評価の非マッチでは現状維持」のまま張り付いていた
+    // （このテストが落ちる = 張り付きの回帰）。
+    // タイムアウトは SPARSE_LINES(12) * SPARSE_INTERVAL_SEC(2s) = 24 秒のバースト全体
+    // （押し出しは 8 行目前後で起きる計算だが、高負荷時のタイマー遅延も見て余裕を持つ）
+    // より長く取る。playwright.config.js の test timeout（120 秒）には十分収まる。
+    await expect(
+      pane,
+      '疎な出力が続いても入力待ちが自動解除されない（張り付き回帰・issue #352）',
+    ).not.toHaveClass(/\bwaiting\b/, { timeout: 35_000 });
+    await expect(status).not.toHaveAttribute('data-status', 'waiting');
   } finally {
     await closeApp({ app, tmpRoot });
   }

@@ -1,6 +1,21 @@
 # Changelog
 
+- [ 仕様変更 ] 設定パネル「外出先から確認」タブの Tailscale IP の調べ方で、実際にはメニューバー / 通知領域のアイコンから確認できず場所が分からないため、案内を管理コンソール（Machines の一覧）と `tailscale ip -4` に整理
 - [ 仕様変更 ] 設定パネル「外出先から確認」タブで、外出先から使うまでに必要な操作が Tailscale の概念説明や別の公開方法に挟まれて追いにくかったため、前半に手順 1〜4 だけを並べ、開けないときの確認点・Tailscale の説明・`tailscale serve` を使う方法・注意事項を後半へ移す構成へ変更
+
+## 1.56.2
+
+- [ 不具合修正 ] 数秒おきに1行だけ出力し続けるペインで「入力待ち」ラベルが誤って点くと、そのペインへ何か入力するまで消えず、本当に応答を待っているペインと見分けが付かない不具合を修正（[#352](https://github.com/vektor-inc/vk-terminals/issues/352)）
+
+## 1.56.1
+
+- [ 開発環境 ] e2e の spec を統合し、同じ起動条件のテストで Electron の起動を共有することで全件実行時の起動回数と壁時計時間を削減（[#348](https://github.com/vektor-inc/vk-terminals/issues/348)）
+
+## 1.56.0
+
+- [ 機能追加 ] ペイン内に表示された URL（http/https）を Cmd（macOS）・Ctrl（Windows / Linux）+クリックで既定のブラウザで開けるように追加（[#349](https://github.com/vektor-inc/vk-terminals/issues/349)）
+- [ 開発環境 ] #343 の見出しアクセント撤廃・枠線色変更に e2e が追随できておらず 2 件失敗していたのを修正（[#344](https://github.com/vektor-inc/vk-terminals/issues/344)）
+- [ 開発環境 ] e2e が高負荷時にアプリの起動待ちで詰まったとき、どの段で詰まったか分からない不具合を修正（[#347](https://github.com/vektor-inc/vk-terminals/issues/347)）
 
 ## 1.55.1
 

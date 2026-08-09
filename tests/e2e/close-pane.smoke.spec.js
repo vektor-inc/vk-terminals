@@ -61,13 +61,27 @@ async function launchClosePaneApp(port) {
   return await launchApp({ port, prefix: 'vk-terminals-e2e-close-' });
 }
 
-test('POST /api/close-pane で作成したペインが終了し /api/states から消える', async () => {
-  const port = await getFreePort();
-  const { app, tmpRoot } = await launchClosePaneApp(port);
-  try {
+// issue #348: 3 テストとも env/config の指定なしで launchApp を呼んでいるため、
+// 起動を 1 回に共有する。各テストは自分で作った新規ペインを最終的に閉じて終わる
+// （テスト2は新規ペイン自体を作らない異常系のみ）ため、テスト終了時点で常に
+// 「最初のペイン（termId '1'）だけが残る」状態に戻り、順序に依存しない。
+test.describe.serial('POST /api/close-pane によるペイン終了（issue #100 / PR #101）', () => {
+  let app;
+  let tmpRoot;
+  let port;
+
+  test.beforeAll(async () => {
+    port = await getFreePort();
+    ({ app, tmpRoot } = await launchClosePaneApp(port));
     // 起動直後の最初のペイン（termId "1"）が登録されるまで待つ。
     await waitForTermId(port, '1', true);
+  });
 
+  test.afterAll(async () => {
+    await closeApp({ app, tmpRoot });
+  });
+
+  test('POST /api/close-pane で作成したペインが終了し /api/states から消える', async () => {
     // 追加ペインを作成する（claude を起動しない素のシェル）。
     const created = await postJson(port, '/api/new-pane', { noClaude: true });
     expect(created.status).toBe(200);
@@ -90,17 +104,9 @@ test('POST /api/close-pane で作成したペインが終了し /api/states か�
     const remaining = await waitForTermId(port, newTermId, false);
     // 最初のペイン（"1"）は残っていること = 対象だけをピンポイントで閉じられている。
     expect(remaining).toContain('1');
-  } finally {
-    await closeApp({ app, tmpRoot });
-  }
-});
+  });
 
-test('POST /api/close-pane の異常系（存在しない termId は 404 / termId 欠落は 400）', async () => {
-  const port = await getFreePort();
-  const { app, tmpRoot } = await launchClosePaneApp(port);
-  try {
-    await waitForTermId(port, '1', true);
-
+  test('POST /api/close-pane の異常系（存在しない termId は 404 / termId 欠落は 400）', async () => {
     // 存在しない termId → 404。誤って別ペインを閉じないための境界確認。
     const notFound = await postJson(port, '/api/close-pane', { termId: '999999' });
     expect(notFound.status).toBe(404);
@@ -114,51 +120,45 @@ test('POST /api/close-pane の異常系（存在しない termId は 404 / termI
     // 異常系リクエスト後も最初のペインは無事に残っていること。
     const states = await getStates(port);
     expect(termIdsOf(states)).toContain('1');
-  } finally {
-    await closeApp({ app, tmpRoot });
-  }
-});
+  });
 
-test('モバイルページ: 終了ボタンと確認ダイアログ（却下でペイン残存 / 承認で終了）', async () => {
-  const port = await getFreePort();
-  const { app, tmpRoot } = await launchClosePaneApp(port);
-  const browser = await chromium.launch();
-  try {
-    await waitForTermId(port, '1', true);
-    // 終了対象の追加ペインを作成する（termId は 2 以降の連番）。
-    const created = await postJson(port, '/api/new-pane', { noClaude: true });
-    expect(created.status).toBe(200);
-    const targetId = String(created.body.termId);
-    await waitForTermId(port, targetId, true);
+  test('モバイルページ: 終了ボタンと確認ダイアログ（却下でペイン残存 / 承認で終了）', async () => {
+    const browser = await chromium.launch();
+    try {
+      // 終了対象の追加ペインを作成する（termId は 2 以降の連番）。
+      const created = await postJson(port, '/api/new-pane', { noClaude: true });
+      expect(created.status).toBe(200);
+      const targetId = String(created.body.termId);
+      await waitForTermId(port, targetId, true);
 
-    // モバイル Web UI（mobile.html）を実ブラウザで開く。ページは同一オリジンで /api/* を叩く。
-    const page = await browser.newPage();
-    await page.goto(`http://127.0.0.1:${port}/`);
+      // モバイル Web UI（mobile.html）を実ブラウザで開く。ページは同一オリジンで /api/* を叩く。
+      const page = await browser.newPage();
+      await page.goto(`http://127.0.0.1:${port}/`);
 
-    // 対象ペインのカード（タイトル未設定なので "Terminal <id>" 表示）内の終了ボタンを特定する。
-    const targetCard = page.locator('.card', { hasText: `Terminal ${targetId}` });
-    const killBtn = targetCard.locator('button.kill');
-    await expect(killBtn).toBeVisible({ timeout: 10_000 });
-    await expect(killBtn).toHaveText('✕ ターミナルを終了');
+      // 対象ペインのカード（タイトル未設定なので "Terminal <id>" 表示）内の終了ボタンを特定する。
+      const targetCard = page.locator('.card', { hasText: `Terminal ${targetId}` });
+      const killBtn = targetCard.locator('button.kill');
+      await expect(killBtn).toBeVisible({ timeout: 10_000 });
+      await expect(killBtn).toHaveText('✕ ターミナルを終了');
 
-    // (1) 確認ダイアログを「却下」する → close-pane は呼ばれず、ペインは残る。
-    page.once('dialog', (dialog) => dialog.dismiss());
-    await killBtn.click();
-    // 却下直後は API を叩いていないはず。念のため少し待ってから states を確認する。
-    await page.waitForTimeout(1500);
-    expect(termIdsOf(await getStates(port))).toContain(targetId);
+      // (1) 確認ダイアログを「却下」する → close-pane は呼ばれず、ペインは残る。
+      page.once('dialog', (dialog) => dialog.dismiss());
+      await killBtn.click();
+      // 却下直後は API を叩いていないはず。念のため少し待ってから states を確認する。
+      await page.waitForTimeout(1500);
+      expect(termIdsOf(await getStates(port))).toContain(targetId);
 
-    // (2) 確認ダイアログを「承認」する → close-pane が呼ばれ、ペインが終了する。
-    page.once('dialog', (dialog) => dialog.accept());
-    await killBtn.click();
-    // states から消えることを確認する（API → renderer closePane → report-states 反映）。
-    await waitForTermId(port, targetId, false);
-    // UI 側でも該当カードが消える（ポーリング再描画で除去）。
-    await expect(targetCard).toHaveCount(0, { timeout: 10_000 });
-    // 最初のペインのカードは残っていること。
-    await expect(page.locator('.card', { hasText: 'Terminal 1' })).toBeVisible();
-  } finally {
-    await browser.close();
-    await closeApp({ app, tmpRoot });
-  }
+      // (2) 確認ダイアログを「承認」する → close-pane が呼ばれ、ペインが終了する。
+      page.once('dialog', (dialog) => dialog.accept());
+      await killBtn.click();
+      // states から消えることを確認する（API → renderer closePane → report-states 反映）。
+      await waitForTermId(port, targetId, false);
+      // UI 側でも該当カードが消える（ポーリング再描画で除去）。
+      await expect(targetCard).toHaveCount(0, { timeout: 10_000 });
+      // 最初のペインのカードは残っていること。
+      await expect(page.locator('.card', { hasText: 'Terminal 1' })).toBeVisible();
+    } finally {
+      await browser.close();
+    }
+  });
 });

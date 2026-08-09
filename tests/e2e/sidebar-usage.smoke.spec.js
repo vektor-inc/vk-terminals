@@ -6,10 +6,31 @@ async function launchSidebarUsageApp(port) {
   return await launchAppAndWait({ port, prefix: 'vk-terminals-e2e-sidebar-usage-' });
 }
 
-test('デスクトップの Claude 使用量はサイドバー最上部に常時表示され、旧モーダル項目は無い', async () => {
-  const port = await getFreePort();
-  const { app, win, tmpRoot } = await launchSidebarUsageApp(port);
-  try {
+// issue #348: 3 テストとも env/config の指定なしで launchAppAndWait を呼んでいるため、
+// 起動を 1 回に共有する。各テストは window.renderSidebarUsage(...) を直接呼ぶか
+// 設定モーダルを開くだけで、いずれも win.reload() で初期状態へ戻る
+// （renderSidebarUsage の描画結果は DOM 上の表示だけで、reload すれば新規ロードの
+// app.js が再実行され、既定の hidden 状態から始まる）。
+test.describe.serial('デスクトップのサイドバー使用量カード（issue #348 で起動共有）', () => {
+  let app;
+  let win;
+  let tmpRoot;
+
+  test.beforeAll(async () => {
+    const port = await getFreePort();
+    ({ app, win, tmpRoot } = await launchSidebarUsageApp(port));
+  });
+
+  test.afterAll(async () => {
+    await closeApp({ app, tmpRoot });
+  });
+
+  test.beforeEach(async () => {
+    await win.reload();
+    await win.waitForSelector('#sidebar', { state: 'attached' });
+  });
+
+  test('デスクトップの Claude 使用量はサイドバー最上部に常時表示され、旧モーダル項目は無い', async () => {
     await win.evaluate(() => {
       window.renderSidebarUsage({
         source: 'oauth',
@@ -50,15 +71,9 @@ test('デスクトップの Claude 使用量はサイドバー最上部に常時
 
     await expect(win.locator('[data-menu-action="open-usage"]')).toHaveCount(0);
     await expect(win.locator('.usage-overlay, .usage-modal')).toHaveCount(0);
-  } finally {
-    await closeApp({ app, tmpRoot });
-  }
-});
+  });
 
-test('使用量データが null のときサイドバー使用量カードは hidden になる', async () => {
-  const port = await getFreePort();
-  const { app, win, tmpRoot } = await launchSidebarUsageApp(port);
-  try {
+  test('使用量データが null のときサイドバー使用量カードは hidden になる', async () => {
     await win.evaluate(() => {
       window.renderSidebarUsage({
         source: 'transcript',
@@ -98,15 +113,9 @@ test('使用量データが null のときサイドバー使用量カードは h
     expect(boundary.borderTopStyle).toBe('solid');
     expect(boundary.borderTopWidth).toBe('1px');
     expect(boundary.menuTop).toBe(boundary.sidebarTop);
-  } finally {
-    await closeApp({ app, tmpRoot });
-  }
-});
+  });
 
-test('設定カードの見出し全体をクリックすると設定モーダルが開く', async () => {
-  const port = await getFreePort();
-  const { app, win, tmpRoot } = await launchSidebarUsageApp(port);
-  try {
+  test('設定カードの見出し全体をクリックすると設定モーダルが開く', async () => {
     const card = win.locator('#sidebar-settings');
     const header = card.locator('button.sidebar-section-header');
     await expect(header).toContainText('設定');
@@ -136,8 +145,10 @@ test('設定カードの見出し全体をクリックすると設定モーダ�
     expect(positions.centerDifference).toBeLessThanOrEqual(1);
 
     await header.click();
-    await expect(win.locator('.settings-overlay')).toBeVisible();
-  } finally {
-    await closeApp({ app, tmpRoot });
-  }
+    // 設定モーダルはディスクリプタを読んで描画するため、既定の expect タイムアウト
+    // （5 秒）では全件実行のような高負荷時に足りず、単独実行では通るのに全件実行では
+    // 落ちる不安定さの原因になっていた（issue #347）。他ファイルの同種の描画確認
+    // （app-title-override.smoke.spec.js 等）に合わせて明示的に延ばす。
+    await expect(win.locator('.settings-overlay')).toBeVisible({ timeout: 15_000 });
+  });
 });

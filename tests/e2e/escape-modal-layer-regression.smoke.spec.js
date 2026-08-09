@@ -195,20 +195,23 @@ test.describe.serial('Escape レイヤー導入後のデグレ確認（issue #25
     await expect(win.locator('#root')).toHaveClass(/\bsidebar-open\b/);
   });
 
+  // issue #347: toBeFocused() は既定の expect タイムアウト（5 秒）のままだと、
+  // 負荷試験で実際に不安定（フォーカスの復帰が 5 秒以内に終わらず失敗）として
+  // 現れた。他ファイルの同種の描画確認に合わせて明示的に延ばす。
   test('✕ / キャンセルで閉じても操作元のボタンへフォーカスが戻る', async () => {
     // ✕ ボタン
     await win.locator('#settings-btn').click();
     await expect(win.locator('.settings-modal')).toBeVisible();
     await win.locator('.settings-close').click();
     await expect(win.locator('.settings-modal')).toHaveCount(0);
-    await expect(win.locator('#settings-btn')).toBeFocused();
+    await expect(win.locator('#settings-btn')).toBeFocused({ timeout: 10_000 });
 
     // キャンセルボタン
     await win.locator('#settings-btn').click();
     await expect(win.locator('.settings-modal')).toBeVisible();
     await win.locator('.settings-cancel').click();
     await expect(win.locator('.settings-modal')).toHaveCount(0);
-    await expect(win.locator('#settings-btn')).toBeFocused();
+    await expect(win.locator('#settings-btn')).toBeFocused({ timeout: 10_000 });
 
     // どちらもサイドバーは開いたまま。
     await expect(win.locator('#root')).toHaveClass(/\bsidebar-open\b/);

@@ -3,6 +3,7 @@ const { test, expect } = require('@playwright/test');
 const { closeApp, getFreePort, launchAppAndWait } = require('./helpers/electron-app');
 // 設定ディスクリプタの差し込みと後始末は共通ヘルパーへ集約している（issue #293）。
 const {
+  installDescriptor,
   installDescriptorRecordingSaves,
   lastSavedPayload,
   restoreInvoke,
@@ -858,6 +859,81 @@ test.describe.serial('設定パネル: タブ・保存先表示系（issue #348 
       await win.locator(TAB(1)).click();
       await expect(win.locator('.settings-empty')).toHaveCount(0);
       await expect(win.locator('.settings-save')).toBeHidden();
+    });
+  });
+
+  // ─── 入力欄グループの後ろの説明（contentAfter） ─────────────────────────────
+  //
+  // 描画位置は単体テストでは確かめられない（normalizeSettingsTabs はブロックの配列を
+  // 返すだけで、パネル内のどこに置かれるかは描画側が決める）。ここでは
+  // 「content → 入力欄グループ → contentAfter」の並びを実 DOM で見る。
+  test.describe('入力欄の後ろに置く説明', () => {
+    function contentAfterDescriptor() {
+      return {
+        available: true,
+        title: 'contentAfter の検証',
+        targetPath: '/tmp/settings.json',
+        appVersion: '0.0.0-test',
+        tabs: [
+          {
+            id: 'orchestrator',
+            label: 'Orchestrator',
+            content: [{ type: 'paragraph', text: '入力欄より前の説明' }],
+            contentAfter: [{ type: 'paragraph', text: '入力欄より後ろの説明' }],
+          },
+          {
+            id: 'agents',
+            label: 'VK Agents',
+            contentAfter: [
+              { type: 'heading', text: 'ルールの差し替え' },
+              { type: 'paragraph', text: 'ルールを上書きできます。' },
+            ],
+          },
+        ],
+        groups: [
+          {
+            label: '基本設定',
+            tab: 'orchestrator',
+            fields: [{ key: 'template', label: 'コマンドテンプレート', type: 'text' }],
+          },
+          {
+            label: 'エージェント共通設定',
+            tab: 'agents',
+            fields: [{ key: 'model', label: 'モデル', type: 'text' }],
+          },
+        ],
+        values: { template: '', model: '' },
+      };
+    }
+
+    test.beforeEach(async () => {
+      await installDescriptor(win, contentAfterDescriptor());
+      await win.evaluate(() => window.openSettingsModal());
+      await win.waitForSelector('.settings-modal', { state: 'visible' });
+      await win.waitForSelector('.settings-tabs', { state: 'visible' });
+    });
+
+    test.afterEach(async () => {
+      const closeButton = win.locator('.settings-close');
+      if (await closeButton.count() && await closeButton.isVisible()) {
+        await closeButton.click().catch(() => {});
+      }
+      await win.waitForSelector('.settings-modal', { state: 'detached' }).catch(() => {});
+      await restoreInvoke(win).catch(() => {});
+    });
+
+    test('contentAfter は入力欄グループより後ろに描く', async () => {
+      const order = await win.evaluate(() => Array.from(
+        document.querySelector('#settings-panel-0').children
+      ).map((el) => el.className.split(' ')[0]));
+
+      expect(order).toEqual(['settings-content', 'settings-group', 'settings-content']);
+
+      // VK Agents 側は content を持たないので、説明は入力欄グループの後ろだけに出る。
+      const agentsOrder = await win.evaluate(() => Array.from(
+        document.querySelector('#settings-panel-1').children
+      ).map((el) => el.className.split(' ')[0]));
+      expect(agentsOrder).toEqual(['settings-group', 'settings-content']);
     });
   });
 

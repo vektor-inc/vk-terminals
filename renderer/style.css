@@ -400,6 +400,11 @@ html, body {
 }
 .settings-content > :first-child { margin-top: 0; }
 .settings-content > :last-child { margin-bottom: 0; }
+/* 入力欄グループの後ろに置く説明（tabs[].contentAfter）。上の `> :first-child` で先頭の
+   見出しの上マージン（h3 は 32px）が消えるため、そのままだと直前のグループとの間が
+   グループの下マージン 18px だけになり、節の変わり目が h4 相当（18px）の弱い区切りに
+   見える。容器側で 14px を足して h3 相当の 32px 段へ戻す。 */
+.settings-content-after { margin-top: 14px; }
 /* モーダル見出し（h2 15px）配下の小見出し。h3 = 親セクション、h4 = 子セクション。
    タイプスケールが 15/14/13/12 と 1px 刻みで詰まっているため、階層は
    「2px のサイズ差」＋「マージン相殺後の実効ギャップ 3 段」で表現する。

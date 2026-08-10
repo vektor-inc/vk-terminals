@@ -18,9 +18,15 @@ const { isSafeHttpUrl } = (typeof require === 'function')
   ? require('./urlSafety')
   : self.VKUrlSafety;
 
-// tabs[].content で使える読み取り専用コンテンツブロックの種別。
+// tabs[].content / tabs[].contentAfter で使える読み取り専用コンテンツブロックの種別。
 // 保存対象の入力欄を持たない「説明だけのタブ」を、スキーマ駆動のまま表現するための仕組み。
 // 描画側（renderer/app.js）は正規化済みのブロックだけを受け取り、描画に専念する。
+//
+// content は入力欄グループより前、contentAfter は後ろに描かれる。使える種別・正規化の
+// 規則はどちらも同じで、置く位置だけが違う（入力欄を読み終えたあとに読ませたい補足は
+// contentAfter に書く）。見出しレベルの繰り上げ（後述の seenTopLevelHeading）は
+// content / contentAfter それぞれの並びの中だけで判定するため、どちらも先頭の見出しは
+// 必ず h3 になり、間に入力欄グループを挟んでもレベルが飛ばない。
 const SETTINGS_CONTENT_CALLOUT_TONES = new Set(['info', 'warning']);
 const SETTINGS_CONTENT_STATUS_SOURCES = new Set(['apiServer']);
 
@@ -250,12 +256,15 @@ function normalizeSettingsTabs(desc) {
   // 連鎖で落ちた分もすべて含む（何巡目に落ちたかは区別しない）。
   const emptyTabIds = new Set();
   let contentByTabId = new Map();
+  let contentAfterByTabId = new Map();
   let dropped = [];
   for (let pass = 0; pass <= rawTabs.length; pass += 1) {
     contentByTabId = new Map();
+    contentAfterByTabId = new Map();
     dropped = [];
     for (const tab of rawTabs) {
-      contentByTabId.set(tab.id, normalizeSettingsTabContent(tab.content, {
+      // content と contentAfter は同じ規則で正規化する（違うのは描画位置だけ）。
+      const normalizeFor = (rawContent) => normalizeSettingsTabContent(rawContent, {
         tabIds,
         fieldTabs,
         emptyTabIds,
@@ -264,13 +273,18 @@ function normalizeSettingsTabs(desc) {
         // 括弧内にラベルを置くと移動先タブのラベルと読み違えられ、設定ファイル内の
         // 該当箇所を探せなくなるため。
         onDropTabLink: (block) => dropped.push(`${tab.id} タブの「${block.label}」→ ${block.tab}`),
-      }));
+      });
+      contentByTabId.set(tab.id, normalizeFor(tab.content));
+      contentAfterByTabId.set(tab.id, normalizeFor(tab.contentAfter));
     }
     const nextEmptyTabIds = rawTabs
       .map((tab) => tab.id)
       .filter((tabId) => (
         !emptyTabIds.has(tabId)
         && contentByTabId.get(tabId).length === 0
+        // 入力欄グループの後ろの説明だけを持つタブも「表示できる内容がある」側。
+        // ここを見落とすと、そのタブを指す tabLink が行き止まり扱いで落ちてしまう。
+        && contentAfterByTabId.get(tabId).length === 0
         && groupCountByTabId.get(tabId) === 0
         && !noteByTabId.get(tabId)
       ));
@@ -304,6 +318,10 @@ function normalizeSettingsTabs(desc) {
       const content = contentByTabId.get(tab.id);
       if (content.length) {
         normalizedTab.content = content;
+      }
+      const contentAfter = contentAfterByTabId.get(tab.id);
+      if (contentAfter.length) {
+        normalizedTab.contentAfter = contentAfter;
       }
       return normalizedTab;
     });

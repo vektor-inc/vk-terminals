@@ -619,6 +619,86 @@ test('normalizeSettingsTabContent: tabLink の field は実在するキーだけ
   ]);
 });
 
+test('normalizeSettingsTabs: contentAfter は正規化して非空のときだけ持たせる', () => {
+  assert.deepEqual(normalizeSettingsTabs({
+    tabs: [
+      {
+        id: 'agents',
+        label: 'VK Agents',
+        content: [{ type: 'paragraph', text: '前書き' }],
+        contentAfter: [
+          { type: 'heading', text: 'ルールの差し替え' },
+          { type: 'bogus', text: '落ちる' },
+          { type: 'code', text: '~/.vk-agents/overrides/rules/' },
+        ],
+      },
+      { id: 'empty', label: '空', contentAfter: [{ type: 'unknown' }] },
+      { id: 'notarray', label: '配列でない', contentAfter: 'text', note: '注記' },
+    ],
+    groups: [],
+  }), [
+    {
+      id: 'agents',
+      label: 'VK Agents',
+      index: 0,
+      content: [{ type: 'paragraph', text: '前書き' }],
+      contentAfter: [
+        { type: 'heading', text: 'ルールの差し替え', level: 3 },
+        { type: 'code', text: '~/.vk-agents/overrides/rules/', copy: true },
+      ],
+    },
+    { id: 'empty', label: '空', index: 1 },
+    { id: 'notarray', label: '配列でない', index: 2, note: '注記' },
+  ]);
+});
+
+test('normalizeSettingsTabs: contentAfter の先頭見出しも h3 へ繰り上げる', () => {
+  // content と contentAfter の間には入力欄グループ（legend）が入るため、見出しレベルの
+  // 繰り上げはそれぞれの並びの中だけで判定する（どちらも先頭は必ず h3 になる）。
+  const [tab] = normalizeSettingsTabs({
+    tabs: [
+      {
+        id: 'agents',
+        label: 'VK Agents',
+        content: [{ type: 'heading', text: '前半', level: 3 }],
+        contentAfter: [
+          { type: 'heading', text: '後半', level: 4 },
+          { type: 'heading', text: '後半の子', level: 4 },
+        ],
+      },
+    ],
+    groups: [],
+  });
+
+  assert.deepEqual(tab.contentAfter, [
+    { type: 'heading', text: '後半', level: 3 },
+    { type: 'heading', text: '後半の子', level: 4 },
+  ]);
+});
+
+test('normalizeSettingsTabs: contentAfter だけを持つタブを指す tabLink は落とさない', () => {
+  // 入力欄グループの後ろの説明しか無いタブも「表示できる内容がある」側。
+  const [guideTab] = normalizeSettingsTabs({
+    tabs: [
+      {
+        id: 'guide',
+        label: '案内',
+        content: [{ type: 'tabLink', label: '差し替えの説明へ', tab: 'agents' }],
+      },
+      {
+        id: 'agents',
+        label: 'VK Agents',
+        contentAfter: [{ type: 'paragraph', text: 'ルールを上書きできます' }],
+      },
+    ],
+    groups: [],
+  });
+
+  assert.deepEqual(guideTab.content, [
+    { type: 'tabLink', label: '差し替えの説明へ', tab: 'agents' },
+  ]);
+});
+
 test('normalizeSettingsTabs: field の検証には desc.groups のフィールドキーを使う', () => {
   const [, mobileTab] = normalizeSettingsTabs({
     tabs: [

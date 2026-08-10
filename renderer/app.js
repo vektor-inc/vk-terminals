@@ -4132,7 +4132,9 @@ function renderApiTokenPanel(persisted) {
 // （VK_TERMINALS_SETTINGS）からも入りうるため、テキストは escText / 属性は escAttr を
 // 必ず通し、HTML を素通しする実装（markdown → HTML 化など）はしない。
 // tabIndexById: tabLink ブロックの参照先タブ ID → タブ番号の Map。
-function renderSettingsTabContent(blocks, tabIndexById, runtimeStatus = {}, entries = []) {
+// extraClass: 容器（.settings-content）へ足すクラス。入力欄グループの後ろへ置くときに
+// 節の変わり目の余白を戻すために使う（下の .settings-content-after 参照）。
+function renderSettingsTabContent(blocks, tabIndexById, runtimeStatus = {}, entries = [], extraClass = '') {
   const html = (Array.isArray(blocks) ? blocks : []).map((block) => {
     if (block.type === 'heading') {
       // モーダル見出しが <h2> なので、その配下は h3（親セクション）/ h4（子セクション）。
@@ -4186,7 +4188,9 @@ function renderSettingsTabContent(blocks, tabIndexById, runtimeStatus = {}, entr
     return '';
   }).join('');
 
-  return html ? `<div class="settings-content">${html}</div>` : '';
+  if (!html) return '';
+  const className = extraClass ? `settings-content ${extraClass}` : 'settings-content';
+  return `<div class="${escAttr(className)}">${html}</div>`;
 }
 
 // 設定モーダルの二重オープンを防ぐロック。settings:describe の応答待ち中は overlay がまだ
@@ -4288,11 +4292,16 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
           // 継承する。説明だけのタブに出すと保存できるかのような誤誘導になるため。
           const tabNote = (tab && tab.note) ? tab.note : (tabHasFields[tabIndex] ? desc.note : '');
           const noteHtml = tabNote ? `<p class="settings-note settings-tab-note">${escText(tabNote)}</p>` : '';
-          const contentHtml = renderSettingsTabContent(tab && tab.content, tabIndexById, {
+          const runtimeStatus = {
             apiServer: desc.apiServerStatus,
             apiTokenPersisted: desc.apiTokenPersisted,
-          }, entries);
-          // 説明コンテンツも設定グループも注記も無い、完全に空のタブだけに空状態を示す。
+          };
+          const contentHtml = renderSettingsTabContent(tab && tab.content, tabIndexById, runtimeStatus, entries);
+          // 入力欄グループの後ろに描く説明ブロック。content と同じ種別・同じ描画処理で、
+          // 置く位置だけが違う（入力欄を読み終えたあとに読ませたい補足はこちらに書く）。
+          const contentAfterHtml = renderSettingsTabContent(tab && tab.contentAfter, tabIndexById, runtimeStatus, entries, 'settings-content-after');
+          // 説明コンテンツ（content / contentAfter）も設定グループも注記も無い、完全に空の
+          // タブだけに空状態を示す。
           // 案内文の役目は「意図せず白紙になった画面で、何も見落としていないと伝える」ことなので、
           // note に代替手段（「この機能は環境変数で設定します」など）を書いたタブでは出さない。
           // 出すとその文章を打ち消してしまう。fields が空でもグループがあれば、グループ名
@@ -4300,11 +4309,11 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
           // legend を省かないのは上の omitLegend のとおり）。
           // ※ この条件は settingsTabs.js の「移動先が空の tabLink を落とす」判定と対。片方だけ
           //   変えると行き止まりが残るか、内容があるのに移動ボタンが出なくなる（issue #275）。
-          const emptyHtml = !contentHtml && groups.length === 0 && !tabNote
+          const emptyHtml = !contentHtml && !contentAfterHtml && groups.length === 0 && !tabNote
             ? '<p class="settings-empty">このタブに表示できる設定項目はありません。</p>'
             : '';
           return `<section class="settings-tab-panel" id="${escAttr(panelId)}" role="tabpanel" aria-labelledby="${escAttr(tabId)}" tabindex="0"${tabIndex === 0 ? '' : ' hidden'}>
-            ${targetHtml}${noteHtml}${contentHtml}${tabGroupsHtml[tabIndex]}${emptyHtml}
+            ${targetHtml}${noteHtml}${contentHtml}${tabGroupsHtml[tabIndex]}${contentAfterHtml}${emptyHtml}
           </section>`;
         }).join('')
         : settingsGroups.map(g => renderGroupHtml(g)).join(''))

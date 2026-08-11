@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 
 const { parseStrictBoolFlag } = require('../utils/strictBoolFlag');
 
-// POST /api/set-title の prMerged / prWaitingMerge（issue #44 / #363）が共有する
+// POST /api/set-title の prMerged / waitingMerge（issue #44 / #363）が共有する
 // 真偽値パーサ。厳密な true のときだけ true、それ以外はすべて false に倒す。
 
 test('parseStrictBoolFlag: 厳密な true のみ true を返す', () => {

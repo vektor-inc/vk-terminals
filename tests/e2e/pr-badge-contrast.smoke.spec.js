@@ -102,7 +102,7 @@ test('PR バッジの再調整後の色が renderer に想定どおり描画さ�
     await win.locator('.pane-task-title').first().hover({ position: { x: 2, y: 2 } });
 
     // ─── awaiting-merge（マージ待ち。issue #363）base ───
-    await postSetTitle(port, { termId: '1', title: 'awaiting-merge PR バッジ', prUrl, prWaitingMerge: true });
+    await postSetTitle(port, { termId: '1', title: 'awaiting-merge PR バッジ', prUrl, waitingMerge: true });
     await expect(prBadge).toHaveClass(/\bawaiting-merge\b/);
     await expectBadgeStyle(prBadge, {
       color: 'rgb(121, 192, 255)',          // #79c0ff

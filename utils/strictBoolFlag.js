@@ -1,7 +1,7 @@
 'use strict';
 
 // main プロセス側（main.js）の HTTP API 受け口専用のパーサ。
-// POST /api/set-title の prMerged / prWaitingMerge（issue #44 / #363）など、
+// POST /api/set-title の prMerged / waitingMerge（issue #44 / #363）など、
 // 「厳密な true のときだけ true。それ以外（false・未指定・文字列 "true" 等）は
 // すべて false に倒す」という同一規約を持つ真偽値フラグの共通パーサ。
 // 未指定が false に倒れることが後方互換の担保になる（Orchestrator 経由でない

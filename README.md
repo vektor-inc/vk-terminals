@@ -522,7 +522,7 @@ curl -s http://127.0.0.1:13847/api/states \
 | `lastLines` | 最近の出力テキスト（ANSI除去済み、最大15行） |
 | `backgroundAgents` | そのペインでバックグラウンドに動いている Claude Code サブエージェント数（issue #340）。画面末尾のフッター表示（`← N agents` 等）から判定した整数（0 以上）、または判定できないときは `null`（不明）。`0` と `null` は区別されており、`null` は「フッターが読み取れる Claude Code の画面ではない」等の判定不能を表す（バックグラウンドで動くサブエージェントが無いことが確定した状態は `0`）。ペイン幅が狭くフッター表示が `…` で截断され、agents 表示の有無を確認しきれない場合も `0` と断定せず `null` になる。サブエージェントが終了すると `0` に戻る。司令塔（vk-orchestrator）はこの値が `null` のときは、従来どおり `lastOutputTime` だけでペインの稼働を判定する想定 |
 
-各ペインには上記に加え、`POST /api/set-title` 由来の `apiTitle` / `apiUrl` / `apiPrUrl` / `apiPrMerged` / `apiPrWaitingMerge`、`agentroom: true` のときは `agentRoom` も含まれます（各エンドポイントの節を参照）。
+各ペインには上記に加え、`POST /api/set-title` 由来の `apiTitle` / `apiUrl` / `apiPrUrl` / `apiPrMerged` / `apiWaitingMerge`、`agentroom: true` のときは `agentRoom` も含まれます（各エンドポイントの節を参照）。
 
 また、レスポンスのトップレベルには `updatedAt` / `terminals` に加えて `usage`（Claude の使用量スナップショット）が含まれます。使用量表示が opt-out（`showUsage: false`）または取得失敗のときは `usage: null` です（後方互換）。モバイルページはこの `usage` を利用します（後述の[Claude 使用量表示](#claude-使用量表示)を参照）。
 
@@ -575,7 +575,7 @@ curl -s -X POST http://127.0.0.1:13847/api/set-title \
 curl -s -X POST http://127.0.0.1:13847/api/set-title \
   -H 'Authorization: Bearer <アクセストークン>' \
   -H 'Content-Type: application/json' \
-  -d '{"termId": "1", "title": "issue #44", "prUrl": "https://github.com/vektor-inc/vk-terminals/pull/99", "prWaitingMerge": true}'
+  -d '{"termId": "1", "title": "issue #44", "prUrl": "https://github.com/vektor-inc/vk-terminals/pull/99", "waitingMerge": true}'
 
 # タイトル・URL・PR ボタンをクリア（空文字で消す）
 curl -s -X POST http://127.0.0.1:13847/api/set-title \
@@ -591,7 +591,7 @@ curl -s -X POST http://127.0.0.1:13847/api/set-title \
 - `url`（任意）: タイトル全体をリンク化するための URL。`http(s):` スキームのみ許可、2048 文字以内、`new URL()` で parse 可能であることが必須。違反時は `400` を返します。空文字 `""` を渡すと既存の URL がクリアされます。省略すると URL なしになります。
 - `prUrl`（任意・issue #44）: タイトル行の右端に独立して表示する `PR ↗` ボタンに紐づける URL。バリデーションは `url` と完全同一（`http(s):` のみ・2048 文字以内・`new URL()` で parse 可）。空文字 `""` を渡すと PR ボタンが消えます。省略すると PR ボタンなしになります。
 - `prMerged`（任意・issue #113）: `PR ↗` ボタンをマージ済み表示（紫背景 + 非色アイコン）にする真偽値。**厳密な `true` のときだけ**マージ済み表示になり、それ以外の値（省略・`false`・文字列など）は通常表示（未マージ）になります。`prUrl` と組み合わせて使います。
-- `prWaitingMerge`（任意・issue #363）: `PR ↗` ボタンをマージ待ち表示（青背景 + 非色アイコン）にする真偽値。`prMerged` と同じく**厳密な `true` のときだけ**マージ待ち表示になり、それ以外の値（省略・`false`・文字列など）は「PR が出ただけ」表示（灰背景）になります。`prMerged` と同時に `true` を送った場合は `prMerged` が優先されます（マージ済みが最終状態のため）。
+- `waitingMerge`（任意・issue #363）: `PR ↗` ボタンをマージ待ち表示（青背景 + 非色アイコン）にする真偽値。`prMerged` と同じく**厳密な `true` のときだけ**マージ待ち表示になり、それ以外の値（省略・`false`・文字列など）は「PR が出ただけ」表示（灰背景）になります。`prMerged` と同時に `true` を送った場合は `prMerged` が優先されます（マージ済みが最終状態のため）。フィールド名は送信側（vk-orchestrator）の実装に合わせています（`prWaitingMerge` ではありません）。
 
 | 挙動 |
 |---|
@@ -599,12 +599,12 @@ curl -s -X POST http://127.0.0.1:13847/api/set-title \
 | `url` が設定されている間のみ、ペインのタイトル文字列全体が `<a>` として描画され、末尾に外部リンクマーク `↗` が付きます。クリックすると `shell.openExternal()` で OS の既定ブラウザを開きます。 |
 | OSC 0 / OSC 2 由来のタイトル（`taskTitle`）が表示されている間は `url` のリンク化は無効になります。API 由来のタイトル（`apiTitle`）が選択されているときだけリンク化されます。 |
 | `prUrl` で表示される `PR ↗` ボタンは `apiTitle` / `taskTitle` のどちらが表示されている間でも常時表示されます（issue リンクが消える場面でも PR ボタンは独立に出続けます）。 |
-| `prUrl` だけを送った場合（`prMerged` も `prWaitingMerge` も省略）は「PR が出ただけ」表示（灰背景）になります。`prMerged: true` を送ると紫（マージ済み）、`prWaitingMerge: true` を送ると青（マージ待ち）に変わります。いずれも他フィールド同様に置換セマンティクスで、送らなければ「PR が出ただけ」表示に戻ります。 |
+| `prUrl` だけを送った場合（`prMerged` も `waitingMerge` も省略）は「PR が出ただけ」表示（灰背景）になります。`prMerged: true` を送ると紫（マージ済み）、`waitingMerge: true` を送ると青（マージ待ち）に変わります。いずれも他フィールド同様に置換セマンティクスで、送らなければ「PR が出ただけ」表示に戻ります。 |
 
 レスポンス例:
 
 ```json
-{ "ok": true, "termId": "1", "title": "issue #44", "url": "https://github.com/vektor-inc/vk-terminals/issues/44", "prUrl": "https://github.com/vektor-inc/vk-terminals/pull/99", "prMerged": true, "prWaitingMerge": false }
+{ "ok": true, "termId": "1", "title": "issue #44", "url": "https://github.com/vektor-inc/vk-terminals/issues/44", "prUrl": "https://github.com/vektor-inc/vk-terminals/pull/99", "prMerged": true, "waitingMerge": false }
 ```
 
 エラー例:
@@ -642,7 +642,7 @@ curl -i -s -X POST http://127.0.0.1:13847/api/set-title \
 # => 400 {"error":"url must be http(s)"}
 ```
 
-設定された値は `GET /api/states` のレスポンス（および `~/.vk-terminals/states.json`）の各ペインオブジェクトに `apiTitle` / `apiUrl` / `apiPrUrl` / `apiPrMerged` / `apiPrWaitingMerge` フィールドとして含まれます。
+設定された値は `GET /api/states` のレスポンス（および `~/.vk-terminals/states.json`）の各ペインオブジェクトに `apiTitle` / `apiUrl` / `apiPrUrl` / `apiPrMerged` / `apiWaitingMerge` フィールドとして含まれます。
 
 #### `POST /api/set-status`
 

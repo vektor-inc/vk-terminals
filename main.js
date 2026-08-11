@@ -66,7 +66,7 @@ const { buildMobileCsp } = require('./utils/csp');
 // の 1 箇所のみで、preload.js へは BrowserWindow 生成時に additionalArguments で渡す
 // （理由は utils/clipboardLimits.js のコメントを参照）。
 const { MAX_CLIPBOARD_TEXT_LENGTH, CLIPBOARD_MAX_LENGTH_ARG_PREFIX } = require('./utils/clipboardLimits');
-// POST /api/set-title の prMerged / prWaitingMerge（issue #44 / #363）共通の真偽値パーサ。
+// POST /api/set-title の prMerged / waitingMerge（issue #44 / #363）共通の真偽値パーサ。
 const { parseStrictBoolFlag } = require('./utils/strictBoolFlag');
 const execFileAsync = promisify(execFile);
 
@@ -1847,7 +1847,7 @@ function startHttpApi() {
       return;
     }
 
-    // POST /api/set-title  { termId: "1", title: "タスク名", url?: "https://...", prUrl?: "https://...", prMerged?: true, prWaitingMerge?: true }
+    // POST /api/set-title  { termId: "1", title: "タスク名", url?: "https://...", prUrl?: "https://...", prMerged?: true, waitingMerge?: true }
     //   — ペイン上部のタスクタイトル行に表示する文字列を設定。
     //   空文字や null を title に指定するとタイトル行を非表示に戻す。
     //   url を指定するとタイトル全体をリンク化（クリックで OS の既定ブラウザで開く）。
@@ -1858,9 +1858,10 @@ function startHttpApi() {
     //   省略 → PR ボタンなし扱い、空文字 "" → 既存 prUrl をクリア。
     //   バリデーションは url と同一規約（http(s):・2048 文字以内・new URL() parse 可）。
     //   prMerged: PR ボタンをマージ済み表示にする真偽値。厳密な true のみ true、それ以外は false。
-    //   prWaitingMerge（issue #363）: PR ボタンをマージ待ち表示（青）にする真偽値。
+    //   waitingMerge（issue #363）: PR ボタンをマージ待ち表示（青）にする真偽値。フィールド名は
+    //   送信側（vk-orchestrator#389）の実装に合わせている（`prWaitingMerge` ではない）。
     //   prMerged と同じく厳密な true のみ true、それ以外（false・未指定・文字列 "true" 等）は false。
-    //   prMerged と prWaitingMerge が同時に true で来た場合は prMerged を優先する
+    //   prMerged と waitingMerge が同時に true で来た場合は prMerged を優先する
     //   （マージ済みが最終状態のため）。未指定が false に倒れることで、Orchestrator 経由でない
     //   ペイン・古い Orchestrator からのリクエストは「PR が出ただけ（灰）」表示になる（後方互換）。
     if (req.method === 'POST' && url.pathname === '/api/set-title') {
@@ -1941,15 +1942,15 @@ function startHttpApi() {
             prUrlValue = r.value;
           }
           const prMergedValue = parseStrictBoolFlag(parsed?.prMerged);
-          // prWaitingMerge（issue #363）: prMerged と同じく厳密な true のみ true。
+          // waitingMerge（issue #363）: prMerged と同じく厳密な true のみ true。
           // 文字列 "true" や false・未指定はすべて false に倒す（後方互換の担保）。
-          const prWaitingMergeValue = parseStrictBoolFlag(parsed?.prWaitingMerge);
+          const waitingMergeValue = parseStrictBoolFlag(parsed?.waitingMerge);
 
           if (win && !win.isDestroyed()) {
-            win.webContents.send('terminal:title', termId, title, urlValue, prUrlValue, prMergedValue, prWaitingMergeValue);
+            win.webContents.send('terminal:title', termId, title, urlValue, prUrlValue, prMergedValue, waitingMergeValue);
           }
           res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ ok: true, termId, title, url: urlValue, prUrl: prUrlValue, prMerged: prMergedValue, prWaitingMerge: prWaitingMergeValue }));
+          res.end(JSON.stringify({ ok: true, termId, title, url: urlValue, prUrl: prUrlValue, prMerged: prMergedValue, waitingMerge: waitingMergeValue }));
         } catch (e) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'invalid JSON' }));

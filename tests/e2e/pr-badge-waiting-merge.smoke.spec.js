@@ -2,17 +2,17 @@ const { test, expect } = require('@playwright/test');
 // 起動〜初期描画待ちは共通ヘルパーへ集約している（issue #263 / #269）。
 const { closeApp, getFreePort, launchApp } = require('./helpers/electron-app');
 
-// issue #363: POST /api/set-title に prWaitingMerge を渡すと、ペイン上部の
+// issue #363: POST /api/set-title に waitingMerge を渡すと、ペイン上部の
 // PR バッジ（.pane-task-title-pr）がマージ待ち表示（青 + … アイコン + 専用 aria-label）
 // に切り替わることの end-to-end 確認。pr-badge-merged.smoke.spec.js（issue #113）に倣う。
-//   A: prWaitingMerge: true → .awaiting-merge クラスが付き、アイコンが …、
+//   A: waitingMerge: true → .awaiting-merge クラスが付き、アイコンが …、
 //      aria-label がマージ待ち文言になる
-//   B: prWaitingMerge 省略 → 「PR が出ただけ」表示（.merged / .awaiting-merge いずれも無し、
+//   B: waitingMerge 省略 → 「PR が出ただけ」表示（.merged / .awaiting-merge いずれも無し、
 //      アイコン ↗、従来 aria-label）。既存ユーザーから見た旧「オープン（緑）」に相当する状態が
 //      灰へ変わった後の既定表示（issue #363 の仕様変更）
-//   C: prWaitingMerge が boolean 以外（文字列 "true"）→ 厳密な === true 判定により
+//   C: waitingMerge が boolean 以外（文字列 "true"）→ 厳密な === true 判定により
 //      「PR が出ただけ」表示のまま
-//   D: prMerged と prWaitingMerge が同時に true → prMerged を優先し .merged 表示になる
+//   D: prMerged と waitingMerge が同時に true → prMerged を優先し .merged 表示になる
 //      （.awaiting-merge は付かない）
 
 async function postSetTitle(port, payload) {
@@ -56,7 +56,7 @@ async function waitForPtyRegistration(port) {
   throw lastError || new Error('terminal 1 was not registered in time');
 }
 
-test('POST /api/set-title の prWaitingMerge が renderer の PR バッジへ反映される', async () => {
+test('POST /api/set-title の waitingMerge が renderer の PR バッジへ反映される', async () => {
   const port = await getFreePort();
   // loadUserConfig() は HOME 配下の config.json を読むため、HOME 自体を一時化して
   // 実ユーザーの ~/.vk-terminals/config.json（Tailscale IP 等）に依存しないようにする。
@@ -77,15 +77,15 @@ test('POST /api/set-title の prWaitingMerge が renderer の PR バッジへ反
     const prBadge = win.locator('.pane .pane-task-title-pr').first();
     const prIcon = prBadge.locator('.pane-task-title-pr-icon');
 
-    // ─── A: prWaitingMerge: true → 青（.awaiting-merge）・…・マージ待ち aria-label ───
+    // ─── A: waitingMerge: true → 青（.awaiting-merge）・…・マージ待ち aria-label ───
     const waitingResult = await postSetTitle(port, {
       termId: '1',
       title: 'PR #363 マージ待ちバッジ確認',
       prUrl,
-      prWaitingMerge: true,
+      waitingMerge: true,
     });
     expect(waitingResult.response.status).toBe(200);
-    expect(waitingResult.body && waitingResult.body.prWaitingMerge).toBe(true);
+    expect(waitingResult.body && waitingResult.body.waitingMerge).toBe(true);
     expect(waitingResult.body && waitingResult.body.prMerged).toBe(false);
 
     await expect(prBadge).toBeVisible();
@@ -94,49 +94,49 @@ test('POST /api/set-title の prWaitingMerge が renderer の PR バッジへ反
     await expect(prBadge).toHaveAttribute('aria-label', 'マージ待ちのプルリクエストを開く（外部ブラウザ）');
     await expect(prIcon).toHaveText('…');
 
-    // ─── B: prWaitingMerge 省略 → 「PR が出ただけ」表示（.awaiting-merge / .merged 無し・↗） ───
+    // ─── B: waitingMerge 省略 → 「PR が出ただけ」表示（.awaiting-merge / .merged 無し・↗） ───
     const omittedResult = await postSetTitle(port, {
       termId: '1',
       title: 'PR #363 省略時は PR が出ただけ表示',
       prUrl,
     });
     expect(omittedResult.response.status).toBe(200);
-    expect(omittedResult.body && omittedResult.body.prWaitingMerge).toBe(false);
+    expect(omittedResult.body && omittedResult.body.waitingMerge).toBe(false);
 
     await expect(prBadge).not.toHaveClass(/\bawaiting-merge\b/);
     await expect(prBadge).not.toHaveClass(/\bmerged\b/);
     await expect(prBadge).toHaveAttribute('aria-label', 'プルリクエストを開く（外部ブラウザ）');
     await expect(prIcon).toHaveText('↗');
 
-    // ─── C: prWaitingMerge が boolean 以外（文字列 "true"）→ 厳密な === true 判定で灰のまま ───
+    // ─── C: waitingMerge が boolean 以外（文字列 "true"）→ 厳密な === true 判定で灰のまま ───
     // 先に一度 awaiting-merge: true にしてから非 boolean を送り、灰へ戻ることを確認する。
-    await postSetTitle(port, { termId: '1', title: 'PR #363 一旦マージ待ちに', prUrl, prWaitingMerge: true });
+    await postSetTitle(port, { termId: '1', title: 'PR #363 一旦マージ待ちに', prUrl, waitingMerge: true });
     await expect(prBadge).toHaveClass(/\bawaiting-merge\b/);
 
     const nonBooleanResult = await postSetTitle(port, {
       termId: '1',
       title: 'PR #363 非 boolean は灰扱い',
       prUrl,
-      prWaitingMerge: 'true',
+      waitingMerge: 'true',
     });
     expect(nonBooleanResult.response.status).toBe(200);
-    expect(nonBooleanResult.body && nonBooleanResult.body.prWaitingMerge).toBe(false);
+    expect(nonBooleanResult.body && nonBooleanResult.body.waitingMerge).toBe(false);
 
     await expect(prBadge).not.toHaveClass(/\bawaiting-merge\b/);
     await expect(prBadge).toHaveAttribute('aria-label', 'プルリクエストを開く（外部ブラウザ）');
     await expect(prIcon).toHaveText('↗');
 
-    // ─── D: prMerged と prWaitingMerge が同時に true → prMerged を優先（マージ済みが最終状態） ───
+    // ─── D: prMerged と waitingMerge が同時に true → prMerged を優先（マージ済みが最終状態） ───
     const bothResult = await postSetTitle(port, {
       termId: '1',
       title: 'PR #363 同時 true は prMerged 優先',
       prUrl,
       prMerged: true,
-      prWaitingMerge: true,
+      waitingMerge: true,
     });
     expect(bothResult.response.status).toBe(200);
     expect(bothResult.body && bothResult.body.prMerged).toBe(true);
-    expect(bothResult.body && bothResult.body.prWaitingMerge).toBe(true);
+    expect(bothResult.body && bothResult.body.waitingMerge).toBe(true);
 
     await expect(prBadge).toHaveClass(/\bmerged\b/);
     await expect(prBadge).not.toHaveClass(/\bawaiting-merge\b/);
@@ -170,7 +170,7 @@ async function postSetStatus(port, payload) {
 }
 
 // 安藤レビュー（HIGH）の再発防止テスト: updateStashItem() は renderTaskTitleContent() へ
-// prWaitingMerge を渡し忘れると、更新経路自体は正常に動くため初回描画（renderStashItem()）
+// waitingMerge を渡し忘れると、更新経路自体は正常に動くため初回描画（renderStashItem()）
 // では青が付くのに、直後のステータス更新（updatePaneStatus() 経由で updateStashItem() が
 // 再実行される）で「PR が出ただけ」灰へ静かに戻ってしまう。ステータス更新は頻繁に走るため、
 // 見た目には「格納カードでは青がほぼ出ない」という形で現れる。
@@ -193,7 +193,7 @@ test('格納カード: ステータス更新を挟んでもマージ待ち（青
       termId: '1',
       title: 'PR #363 格納カード回帰確認',
       prUrl,
-      prWaitingMerge: true,
+      waitingMerge: true,
     });
     expect(waitingResult.response.status).toBe(200);
 
@@ -221,7 +221,7 @@ test('格納カード: ステータス更新を挟んでもマージ待ち（青
     // ケースも、この同期点で同時に弾ける。
     await expect(stashItem.locator('.pane-status')).toHaveAttribute('data-status', 'waiting');
 
-    // updateStashItem() が prWaitingMerge を渡し忘れていると、ここで灰（awaiting-merge 無し）に
+    // updateStashItem() が waitingMerge を渡し忘れていると、ここで灰（awaiting-merge 無し）に
     // 戻ってしまう。渡し漏れが直っていれば青のまま維持されるはず。
     await expect(stashPrBadge).toHaveClass(/\bawaiting-merge\b/);
     await expect(stashPrBadge).toHaveAttribute('aria-label', 'マージ待ちのプルリクエストを開く（外部ブラウザ）');

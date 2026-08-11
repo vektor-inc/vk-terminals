@@ -14,6 +14,9 @@
   // 第2引数 options:
   //   - external: 既存オプション。true（既定）で aria-label に「（外部ブラウザ）」を付与する。
   //   - prWaitingMerge（issue #363）: true のとき「マージ待ち」状態（青）で表示する。
+  //     この module（renderer 内部限定）だけの名前で、HTTP API（POST /api/set-title の
+  //     `waitingMerge` / GET /api/states の `apiWaitingMerge`）とは意図的に揃えていない
+  //     （外部との取り決めが必要なのは HTTP API 側の名前のみのため）。
   //     options 経由の追加フィールドのため、既存の呼び出し
   //     `getPrBadgePresentation(bool)` / `getPrBadgePresentation(bool, { external })` は
   //     prWaitingMerge 未指定 → false 扱いとなり、そのまま動作する（後方互換）。

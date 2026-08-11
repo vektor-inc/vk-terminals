@@ -48,6 +48,9 @@ test('getPrBadgePresentation: external true で外部ブラウザ aria を返す
 });
 
 // ─── issue #363: prWaitingMerge（マージ待ち・青）3状態対応 ──────────────────
+// ここでの `prWaitingMerge` は getPrBadgePresentation の options キー名（renderer 内部限定）。
+// HTTP API（POST /api/set-title の `waitingMerge` / GET /api/states の `apiWaitingMerge`）
+// とは別名で、意図的に揃えていない（renderer/prBadge.js のコメント参照）。
 
 test('getPrBadgePresentation: prWaitingMerge true で awaiting-merge クラス・aria・非色アイコンを返す', () => {
   const presentation = getPrBadgePresentation(false, { prWaitingMerge: true });

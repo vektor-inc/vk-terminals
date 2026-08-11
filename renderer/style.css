@@ -2183,6 +2183,10 @@ button.sidebar-section-header:hover {
  * AA を確保する。この hover 作法は `.stash-item .pane-task-title-pr.merged` に揃えている。
  * 境界は半透明だと 3:1 に届かないため、前景と同一の不透明トークンを使う
  * （awaiting-merge の border もサイドバーの半透明トークン rgba(88,166,255,.30) は使わない）。
+ * open / awaiting-merge の文字・境界色は renderer/shared.css の
+ * --vktm--color--pr-badge-open(-hover) / --vktm--color--pr-badge-awaiting-merge(-hover)
+ * を参照する（PC・モバイル間で同一値の直書きが2重管理になっていた安藤レビュー・MEDIUM
+ * 対応。値そのものは変更していない）。merged は面ごとに値が異なるため対象外で直書きのまま。
  * 概算コントラスト比（植草検算）: open base #99a1ab ≈ 5.78:1(ペイン)/5.15:1(格納) /
  * open hover #b1bac4 ≈ 6.33:1/5.65:1 / awaiting-merge base #79c0ff ≈ 7.45:1/6.54:1 /
  * awaiting-merge hover #a5d6ff ≈ 7.34:1/6.53:1 / merged base #a371f7 ≈ 4.70:1(ペイン) /
@@ -2195,10 +2199,10 @@ button.sidebar-section-header:hover {
   /* badge gap (3px) はやや詰まり気味なのでラベル + ↗ 用に 4px に上書き */
   gap: 4px;
   background: rgba(153, 161, 171, 0.15);
-  border: 1px solid #99a1ab;
+  border: 1px solid var(--vktm--color--pr-badge-open);
   /* `.pane-task-title` の高さ（22px）に対し badge は 18px。
    * border 1px 込みでも親の line-height をはみ出さない。 */
-  color: #99a1ab;
+  color: var(--vktm--color--pr-badge-open);
   text-decoration: none;
   cursor: pointer;
   transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
@@ -2206,21 +2210,21 @@ button.sidebar-section-header:hover {
 
 .pane-task-title-pr:hover {
   background: rgba(153, 161, 171, 0.25);
-  border-color: #b1bac4;
-  color: #b1bac4;
+  border-color: var(--vktm--color--pr-badge-open-hover);
+  color: var(--vktm--color--pr-badge-open-hover);
   text-decoration: none;
 }
 
 .pane-task-title-pr.awaiting-merge {
   background: rgba(121, 192, 255, 0.15);
-  border-color: #79c0ff;
-  color: #79c0ff;
+  border-color: var(--vktm--color--pr-badge-awaiting-merge);
+  color: var(--vktm--color--pr-badge-awaiting-merge);
 }
 
 .pane-task-title-pr.awaiting-merge:hover {
   background: rgba(121, 192, 255, 0.25);
-  border-color: #a5d6ff;
-  color: #a5d6ff;
+  border-color: var(--vktm--color--pr-badge-awaiting-merge-hover);
+  color: var(--vktm--color--pr-badge-awaiting-merge-hover);
 }
 
 .pane-task-title-pr.merged {

@@ -93,3 +93,21 @@
   --wtone-bg: rgba(188, 140, 255, 0.16);
   --wtone-border: rgba(188, 140, 255, 0.34);
 }
+
+/* PR badge tokens (issue #363)
+   -------------------------------------------------------------------------- */
+/* [ PR ↗ ] バッジ（renderer/style.css の .pane-task-title-pr / renderer/mobile.css の
+ * a.pr-link）の「open（PR が出ただけ）」「awaiting-merge（マージ待ち）」2状態は、
+ * PC・モバイルの両ファイルにまったく同じ色（文字・境界の不透明トークン）を直書きしていた。
+ * キーボードフォーカスリングの色が両ファイルへ別々に直書きされ、片方だけ変えて食い違う
+ * 不具合が #267 → #280 と2回連続で起きた反省（PR #299 でこの shared.css へ集約）と
+ * 同じ形の重複のため、ここへ集約する（安藤レビュー・MEDIUM）。
+ * 色の値そのものは変更していない（植草検算済みの既存値を参照の仕方だけ変更）。
+ * merged（マージ済み・紫）は PC ペイン / 格納カード / モバイルでそれぞれ値が異なる
+ * （面ごとにコントラストを取り直した結果）ため、共通トークン化の対象外。 */
+:root {
+  --vktm--color--pr-badge-open: #99a1ab;
+  --vktm--color--pr-badge-open-hover: #b1bac4;
+  --vktm--color--pr-badge-awaiting-merge: #79c0ff;
+  --vktm--color--pr-badge-awaiting-merge-hover: #a5d6ff;
+}

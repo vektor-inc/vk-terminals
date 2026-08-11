@@ -80,20 +80,25 @@ a.card-title { color: inherit; text-decoration: none; }
  * border は半透明トークンだと状態によって UI コンポーネント基準（3:1）を満たしたり
  * 満たさなかったりする不安定な状態になっていたため（植草レビュー・HIGH。issue #363）、
  * PC 版と同じく文字色と同一の不透明トークンへ寄せている。
+ * open / awaiting-merge の文字・境界色は renderer/shared.css の
+ * --vktm--color--pr-badge-open(-hover) / --vktm--color--pr-badge-awaiting-merge(-hover)
+ * を参照する（PC の renderer/style.css とまったく同じ値を別々に直書きしていた2重管理を
+ * 解消。安藤レビュー・MEDIUM。値そのものは変更していない）。
  * 検算（#1d2127 上の実効コントラスト）:
  *   灰   base #99a1ab ≈ 6.19:1 / active #b1bac4 ≈ 8.23:1
  *   青   base #79c0ff ≈ 8.31:1 / active #a5d6ff ≈ 10.52:1
- *   紫   base #c8a8ff ≈ 8.08:1 / active #d0b5ff ≈ 9.03:1（文字色と同値のため上記コメント値を流用）
+ *   紫   base #c8a8ff ≈ 8.08:1 / active #d0b5ff ≈ 9.03:1（文字色と同値のため上記コメント値を流用。
+ *        merged は面ごとに値が異なるため共通トークン化の対象外で直書きのまま）
  * いずれも UI コンポーネント基準 3:1 を余裕を持って満たす。 */
 a.pr-link { display: none; align-items: center; gap: 4px; flex: none;
   font-size: 10px; font-weight: 700; padding: 4px 8px; min-height: 32px; border-radius: 6px;
   text-transform: uppercase; letter-spacing: 0.04em; text-decoration: none;
-  background: rgba(153,161,171,0.15); border: 1px solid #99a1ab; color: #99a1ab; }
+  background: rgba(153,161,171,0.15); border: 1px solid var(--vktm--color--pr-badge-open); color: var(--vktm--color--pr-badge-open); }
 a.pr-link.show { display: inline-flex; }
-a.pr-link:active { background: rgba(153,161,171,0.28); border-color: #b1bac4; color: #b1bac4; }
+a.pr-link:active { background: rgba(153,161,171,0.28); border-color: var(--vktm--color--pr-badge-open-hover); color: var(--vktm--color--pr-badge-open-hover); }
 /* マージ待ち PR リンク（issue #363）。#79c0ff / active #a5d6ff。 */
-a.pr-link.awaiting-merge { background: rgba(121,192,255,0.15); border-color: #79c0ff; color: #79c0ff; }
-a.pr-link.awaiting-merge:active { background: rgba(121,192,255,0.28); border-color: #a5d6ff; color: #a5d6ff; }
+a.pr-link.awaiting-merge { background: rgba(121,192,255,0.15); border-color: var(--vktm--color--pr-badge-awaiting-merge); color: var(--vktm--color--pr-badge-awaiting-merge); }
+a.pr-link.awaiting-merge:active { background: rgba(121,192,255,0.28); border-color: var(--vktm--color--pr-badge-awaiting-merge-hover); color: var(--vktm--color--pr-badge-awaiting-merge-hover); }
 /* マージ済み PR リンク（issue #137）。ヘッダ帯 var(--card) #1d2127 上で
    #c8a8ff はコントラスト比 8.08:1、active の #d0b5ff は 9.03:1 で AA 4.5:1 を満たす。
    border も半透明トークン rgba(130,80,223,.45)（実効 1.62:1・UI 基準 3:1 未達）から

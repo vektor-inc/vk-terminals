@@ -214,6 +214,13 @@ test('格納カード: ステータス更新を挟んでもマージ待ち（青
     const setStatusOn = await postSetStatus(port, { termId: '1', waiting: true });
     expect(setStatusOn.response.status).toBe(200);
 
+    // updateStashItem() が実際に再実行されたことを、同じ関数が書き換える .pane-status で先に確認する。
+    // これを挟まないと、下の toHaveClass が「ステータス更新が届く前の青」（格納直後に既に付いている青）
+    // で満たされてしまい、第6引数の渡し漏れが再発しても検出できない（安藤レビュー・MEDIUM）。
+    // recomputeStatus() の `if (next !== t.status)` 短絡で updateStashItem() が一度も走らない
+    // ケースも、この同期点で同時に弾ける。
+    await expect(stashItem.locator('.pane-status')).toHaveAttribute('data-status', 'waiting');
+
     // updateStashItem() が prWaitingMerge を渡し忘れていると、ここで灰（awaiting-merge 無し）に
     // 戻ってしまう。渡し漏れが直っていれば青のまま維持されるはず。
     await expect(stashPrBadge).toHaveClass(/\bawaiting-merge\b/);
@@ -223,6 +230,8 @@ test('格納カード: ステータス更新を挟んでもマージ待ち（青
     // 念のため waiting: false に戻すステータス更新も挟み、複数回の更新でも崩れないことを見る。
     const setStatusOff = await postSetStatus(port, { termId: '1', waiting: false });
     expect(setStatusOff.response.status).toBe(200);
+    // 同じ理由で、こちらも .pane-status の data-status="idle" を同期点にしてから検証する。
+    await expect(stashItem.locator('.pane-status')).toHaveAttribute('data-status', 'idle');
     await expect(stashPrBadge).toHaveClass(/\bawaiting-merge\b/);
   } finally {
     await closeApp({ app, tmpRoot });

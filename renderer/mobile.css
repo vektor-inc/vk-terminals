@@ -76,20 +76,31 @@ a.card-title { color: inherit; text-decoration: none; }
  * 上に置くため、PC のペイン/格納カード向け値をそのまま流用する（issue #363 植草検算で
  * #1d2127 上でも AA 4.5:1 を満たすことを確認済み）。
  * .badge と同じ角丸・font-size に調和させつつ、タップ領域確保のため min-height 32px・
- * padding 縦広めにして指で押しやすくする（ヘッダ自体は min-height 44px）。 */
+ * padding 縦広めにして指で押しやすくする（ヘッダ自体は min-height 44px）。
+ * border は半透明トークンだと状態によって UI コンポーネント基準（3:1）を満たしたり
+ * 満たさなかったりする不安定な状態になっていたため（植草レビュー・HIGH。issue #363）、
+ * PC 版と同じく文字色と同一の不透明トークンへ寄せている。
+ * 検算（#1d2127 上の実効コントラスト）:
+ *   灰   base #99a1ab ≈ 6.19:1 / active #b1bac4 ≈ 8.23:1
+ *   青   base #79c0ff ≈ 8.31:1 / active #a5d6ff ≈ 10.52:1
+ *   紫   base #c8a8ff ≈ 8.08:1 / active #d0b5ff ≈ 9.03:1（文字色と同値のため上記コメント値を流用）
+ * いずれも UI コンポーネント基準 3:1 を余裕を持って満たす。 */
 a.pr-link { display: none; align-items: center; gap: 4px; flex: none;
   font-size: 10px; font-weight: 700; padding: 4px 8px; min-height: 32px; border-radius: 6px;
   text-transform: uppercase; letter-spacing: 0.04em; text-decoration: none;
-  background: rgba(153,161,171,0.15); border: 1px solid rgba(153,161,171,0.3); color: #99a1ab; }
+  background: rgba(153,161,171,0.15); border: 1px solid #99a1ab; color: #99a1ab; }
 a.pr-link.show { display: inline-flex; }
-a.pr-link:active { background: rgba(153,161,171,0.28); border-color: rgba(153,161,171,0.5); color: #b1bac4; }
+a.pr-link:active { background: rgba(153,161,171,0.28); border-color: #b1bac4; color: #b1bac4; }
 /* マージ待ち PR リンク（issue #363）。#79c0ff / active #a5d6ff。 */
-a.pr-link.awaiting-merge { background: rgba(121,192,255,0.15); border-color: rgba(121,192,255,0.45); color: #79c0ff; }
-a.pr-link.awaiting-merge:active { background: rgba(121,192,255,0.28); border-color: rgba(165,214,255,0.62); color: #a5d6ff; }
+a.pr-link.awaiting-merge { background: rgba(121,192,255,0.15); border-color: #79c0ff; color: #79c0ff; }
+a.pr-link.awaiting-merge:active { background: rgba(121,192,255,0.28); border-color: #a5d6ff; color: #a5d6ff; }
 /* マージ済み PR リンク（issue #137）。ヘッダ帯 var(--card) #1d2127 上で
-   #c8a8ff はコントラスト比 8.08:1、active の #d0b5ff は 9.03:1 で AA 4.5:1 を満たす。 */
-a.pr-link.merged { background: rgba(130,80,223,0.15); border-color: rgba(130,80,223,0.45); color: #c8a8ff; }
-a.pr-link.merged:active { background: rgba(130,80,223,0.28); border-color: rgba(200,168,255,0.62); color: #d0b5ff; }
+   #c8a8ff はコントラスト比 8.08:1、active の #d0b5ff は 9.03:1 で AA 4.5:1 を満たす。
+   border も半透明トークン rgba(130,80,223,.45)（実効 1.62:1・UI 基準 3:1 未達）から
+   文字色と同一の不透明トークンへ変更（issue #363 植草レビュー・LOW。今回の変更とは
+   無関係の既存不具合だが同じ行を触るため合わせて修正）。 */
+a.pr-link.merged { background: rgba(130,80,223,0.15); border-color: #c8a8ff; color: #c8a8ff; }
+a.pr-link.merged:active { background: rgba(130,80,223,0.28); border-color: #d0b5ff; color: #d0b5ff; }
 a.pr-link:focus-visible { outline: 2px solid #58a6ff; outline-offset: 2px; }
 a.pr-link .pr-icon { font-size: 10px; opacity: 0.85; line-height: 1; flex: none; }
 .pane-order-controls { display: inline-flex; align-items: center; gap: 8px; flex: none; }

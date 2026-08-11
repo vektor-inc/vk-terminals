@@ -2052,7 +2052,10 @@ function updateStashItem(paneId) {
     const title = getDisplayTitle(t);
     const url = getDisplayUrl(t);
     const prUrl = isSafeExternalUrl(t.apiPrUrl) ? t.apiPrUrl : '';
-    renderTaskTitleContent(titleEl, title, url, prUrl, !!t.apiPrMerged);
+    // 第6引数 prWaitingMerge（issue #363）の渡し漏れがあると、updatePaneStatus() 経由で
+    // 頻繁に呼ばれるこの関数がステータス更新のたびに「PR が出ただけ」表示へ引き戻してしまい、
+    // 格納カードでマージ待ちの青がほぼ表示されなくなる（安藤レビュー・HIGH）。
+    renderTaskTitleContent(titleEl, title, url, prUrl, !!t.apiPrMerged, !!t.apiPrWaitingMerge);
     if (url) {
       titleEl.removeAttribute('title');
     } else {

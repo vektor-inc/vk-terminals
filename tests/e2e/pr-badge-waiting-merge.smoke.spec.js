@@ -146,3 +146,85 @@ test('POST /api/set-title の prWaitingMerge が renderer の PR バッジへ反
     await closeApp({ app, tmpRoot });
   }
 });
+
+// サイドバーを確実に開いた状態にする（stash-header.smoke.spec.js と同じ発想）。
+// stashPane()（ペイン格納時）は自動でサイドバーを開くため、既に開いている状態で
+// #menu-btn を無条件にクリックすると逆に閉じてしまう。現在の開閉状態を見てから
+// 必要な場合だけクリックする。
+async function ensureSidebarOpen(win) {
+  const isOpen = await win.evaluate(() => document.getElementById('root').classList.contains('sidebar-open'));
+  if (!isOpen) {
+    await win.locator('#menu-btn').click();
+  }
+}
+
+async function postSetStatus(port, payload) {
+  const response = await fetch(`http://127.0.0.1:${port}/api/set-status`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  let body = null;
+  try { body = await response.json(); } catch (_e) { /* 非 JSON 応答も診断のため許容 */ }
+  return { response, body };
+}
+
+// 安藤レビュー（HIGH）の再発防止テスト: updateStashItem() は renderTaskTitleContent() へ
+// prWaitingMerge を渡し忘れると、更新経路自体は正常に動くため初回描画（renderStashItem()）
+// では青が付くのに、直後のステータス更新（updatePaneStatus() 経由で updateStashItem() が
+// 再実行される）で「PR が出ただけ」灰へ静かに戻ってしまう。ステータス更新は頻繁に走るため、
+// 見た目には「格納カードでは青がほぼ出ない」という形で現れる。
+// ここでは POST /api/set-status で明示的にステータス変更を1回挟み、格納カードの
+// PR バッジが awaiting-merge を保ち続けることを確認する。
+test('格納カード: ステータス更新を挟んでもマージ待ち（青）表示を維持する（issue #363 回帰確認）', async () => {
+  const port = await getFreePort();
+  const { app, win, tmpRoot } = await launchApp({
+    port,
+    prefix: 'vk-terminals-e2e-pr-waiting-merge-stash-',
+  });
+
+  try {
+    await waitForPtyRegistration(port);
+
+    const prUrl = `http://127.0.0.1:${port}/?pr=363-stash`;
+
+    // ─── マージ待ちにしてから、実操作でサイドバーへ格納する ───
+    const waitingResult = await postSetTitle(port, {
+      termId: '1',
+      title: 'PR #363 格納カード回帰確認',
+      prUrl,
+      prWaitingMerge: true,
+    });
+    expect(waitingResult.response.status).toBe(200);
+
+    const paneDomId = 'pane-1';
+    const gridPane = win.locator(`.pane[data-id="${paneDomId}"]`);
+    await expect(gridPane.locator('.pane-task-title-pr')).toHaveClass(/\bawaiting-merge\b/);
+    await gridPane.locator('.btn-stash').click();
+
+    await ensureSidebarOpen(win);
+    const stashItem = win.locator(`.stash-item[data-id="${paneDomId}"]`);
+    await expect(stashItem).toBeVisible({ timeout: 10_000 });
+
+    const stashPrBadge = stashItem.locator('.stash-item-title-row .pane-task-title-pr');
+    // 格納直後（renderStashItem() 経由の初回描画）は青のまま。
+    await expect(stashPrBadge).toHaveClass(/\bawaiting-merge\b/);
+
+    // ─── ステータス更新を1回挟む（updatePaneStatus() → updateStashItem() を踏ませる） ───
+    const setStatusOn = await postSetStatus(port, { termId: '1', waiting: true });
+    expect(setStatusOn.response.status).toBe(200);
+
+    // updateStashItem() が prWaitingMerge を渡し忘れていると、ここで灰（awaiting-merge 無し）に
+    // 戻ってしまう。渡し漏れが直っていれば青のまま維持されるはず。
+    await expect(stashPrBadge).toHaveClass(/\bawaiting-merge\b/);
+    await expect(stashPrBadge).toHaveAttribute('aria-label', 'マージ待ちのプルリクエストを開く（外部ブラウザ）');
+    await expect(stashPrBadge.locator('.pane-task-title-pr-icon')).toHaveText('…');
+
+    // 念のため waiting: false に戻すステータス更新も挟み、複数回の更新でも崩れないことを見る。
+    const setStatusOff = await postSetStatus(port, { termId: '1', waiting: false });
+    expect(setStatusOff.response.status).toBe(200);
+    await expect(stashPrBadge).toHaveClass(/\bawaiting-merge\b/);
+  } finally {
+    await closeApp({ app, tmpRoot });
+  }
+});

@@ -176,13 +176,25 @@
     return { count, firstIndex };
   }
 
+  // text の position（match.index + raw.length。生マッチの終端）から、句読点
+  // （ALWAYS_TRIM_TRAILING に含まれる文字）が続く間だけ読み飛ばして終端位置を返す。
+  // 閉じ括弧（CLOSING_BRACKETS）やその他の文字に当たったところで止まる（許可リスト
+  // 方式。isTruncatedAtTableCellBorder のコメント「句読点だけを読み飛ばす理由（B案）」
+  // 参照）。upTo（通常は raw の終端）を超えて読み飛ばすことはない。
+  function skipTrailingPunctuation(text, position, upTo) {
+    let i = position;
+    while (i < upTo && ALWAYS_TRIM_TRAILING.has(text[i])) i += 1;
+    return i;
+  }
+
   // URL 候補が「罫線テーブルのセル境界で切り詰められた断片」らしいかどうかを判定する
   // （issue #361）。
   //
-  // end には「トリム前の生マッチ終端」（呼び出し側の言葉で言えば
-  // match.index + raw.length。trimTrailingPunctuation() を通す前の位置）を渡すこと。
-  // trimTrailingPunctuation() 後の url の終端を渡してはいけない（PR #365 レビュー・
-  // HIGH。詳しい理由は下の「なぜ生マッチ終端を使うか」を参照）。
+  // end には「句読点だけを読み飛ばした後の終端」（呼び出し側の skipTrailingPunctuation()
+  // が返す値）を渡すこと。trimTrailingPunctuation() 後の url の終端をそのまま渡しては
+  // いけない（PR #365 レビュー・HIGH）し、閉じ括弧まで無条件に読み飛ばした生マッチ
+  // 終端（match.index + raw.length）を渡してもいけない（PR #365 再レビュー・植草の
+  // UX 判断で修正。詳しい理由は下の「句読点だけを読み飛ばす理由（B案）」を参照）。
   //
   // 罫線テーブルの各行は「ターミナルの折り返し」ではなく独立したバッファ行のため、
   // xterm の isWrapped は false。terminalLinkProvider.js の getWrappedLineWindow() は
@@ -213,13 +225,15 @@
   // 緩さの根拠にしている。
   //
   // ただしこの非対称性ゆえに、条件3は空白の個数を問わない（パディングの空白が
-  // 何個挟まっても素通りする）ため、「セル内で URL の後ろに他の文字が続かない
-  // （＝セルの右端の縦線に直接接している）」場合は、その URL がそのセル内で
-  // 最長かどうかに関わらずすべて非リンク化される（切り詰められた場合と行内の
-  // 情報だけでは区別できないため、原理的に避けられない）。#361 のようなテーブルは
-  // 「URL がセルの唯一の内容」であることが多く、罫線テーブル内の単独 URL セルは
-  // ほぼ全て非リンク化される、という理解が実態に近い。これは意図して受け入れた
-  // 仕様であり、changelog にも明記している。
+  // 何個挟まっても素通りする）ため、「セル内で URL の直後が句読点だけを挟んで
+  // 縦線に直接接している」場合は、その URL がそのセル内で最長かどうかに関わらず
+  // 非リンク化される（切り詰められた場合と行内の情報だけでは区別できないため、
+  // 原理的に避けられない）。これは意図して受け入れた仕様であり、changelog にも
+  // 明記している。
+  //
+  // なお閉じ括弧（")" "]" 等）はセル内容として扱う（下記「句読点だけを読み飛ばす
+  // 理由（B案）」を参照）ため、"#399 (URL)" のように閉じ括弧がセル右端に来る場合は
+  // この非リンク化の対象にならず、従来どおりリンク化される。
   //
   // xterm のバッファには一切触れない（text と start/end というインデックスだけで
   // 完結する）純粋関数として書けるため、urlLinkify.js の責務境界（バッファに触れない）
@@ -230,19 +244,38 @@
   // borders は scanTableBorders(text) の結果を呼び出し側（extractUrlMatches）が
   // 候補ごとではなく行ごとに 1 回だけ計算して渡す（性能対策。上記コメント参照）。
   //
-  // なぜ生マッチ終端を使うか（PR #365 レビュー・HIGH の修正）:
+  // 句読点だけを読み飛ばす理由（B案。PR #365 再レビュー・植草の UX 判断で HIGH 修正
+  // (3b513df) から変更）:
   // extractUrlMatches() は正規表現でまず「URL らしき塊」を大まかに拾い（raw）、
   // trimTrailingPunctuation() で末尾の "." "," ")" 等を落とした結果を実際の URL
-  // （url）にしている。以前はこの判定に url 側の終端（トリム後）を渡していたため、
-  // 表がちょうど「trimTrailingPunctuation が削る記号」の直前で URL を切ったとき
-  // （例: "vk-agents." の直後が縦線）、トリム後の終端の位置に残るのはその記号自体で
-  // 空白でも縦線でもなく、条件が成立せず抑止し損ねていた（切り詰められた断片が
-  // そのままリンク化され、404 を開く実バグ）。
-  // 生マッチ終端（raw の終端）を渡せば、そこから「削られる記号」も含めて素通りして
-  // 縦線の有無を見られるため正しく判定できる。trimTrailingPunctuation が削る記号は
-  // 定義上「URL の一部でも意味のあるセル内容でもない」ノイズなので、それを飛ばした
-  // 先に縦線があるかどうかで判定して問題ない。記号のあとに本当のセル内容
-  // （例: "済"）が続く場合は、その文字で while ループが止まり縦線に届かないため、
+  // （url）にしている。HIGH 修正（3b513df）では、この判定に「トリム前の生マッチ終端
+  // （raw の終端）」を渡すことで、句読点で終わる切り詰め断片（例: "vk-agents." の直後
+  // が縦線）を正しく抑止できるようにした。
+  //
+  // ところがこの方式には副作用があった。閉じ括弧（")" "]" や全角の "）" 等）も
+  // trimTrailingPunctuation が落とす対象のため、生マッチ終端まで無条件に読み飛ばすと、
+  // "#399 (URL)" のように「閉じ括弧がセルの右端に来る」だけの完全な URL まで抑止して
+  // しまう。この書式は issue #361 の起票者が最初に貼った再現例そのもので、GitHub CLI
+  // や Claude Code のログで頻出するため、この副作用は「境界ケースを抑止側へ倒す」
+  // という許容範囲を超え、#361 の主目的（押せるはずの URL を押せるようにする）を
+  // 損なう規模だと判断した（司・植草合意）。
+  //
+  // そこで読み飛ばす対象を ALWAYS_TRIM_TRAILING の句読点だけに絞り、CLOSING_BRACKETS
+  // の閉じ括弧（半角・全角とも）は「セル内容」とみなして読み飛ばさない（＝そこで
+  // 立ち止まり、抑止しない）ことにした。閉じ括弧の一覧をここで別途ベタ書きしていない
+  // 点に注意: skipTrailingPunctuation() は ALWAYS_TRIM_TRAILING に含まれる文字だけを
+  // 許可リスト方式で読み飛ばすため、CLOSING_BRACKETS の文字（を含め、それ以外の
+  // あらゆる文字）は「許可リストに無い」という理由だけで自動的に読み飛ばし対象外になる。
+  // CLOSING_BRACKETS 自体をここで参照する必要が無いため、ALWAYS_TRIM_TRAILING と
+  // CLOSING_BRACKETS の定義が二重管理でズレる心配もない。
+  //
+  // 残るリスク（受け入れ済み・司・植草合意）: URL 自身が ")" 等の閉じ括弧を含み、
+  // ちょうどその位置でセル幅に切られた場合だけ、閉じ括弧が「セル内容」と誤認されて
+  // 抑止漏れとなり 404 が開く。「URL のパスに閉じ括弧を含む」かつ「切断位置がちょうど
+  // そこ」の同時成立が必要なため、発生頻度は十分低いと判断した。
+  //
+  // 記号のあとに本当のセル内容（例: "済"）が続く場合は、その文字（句読点でも
+  // 閉じ括弧でもない）で skipTrailingPunctuation() の読み飛ばしが止まるため、
   // 従来どおり抑止しない（"#363 (https://...) 済 │ done │" のようなケースは壊れない）。
   function isTruncatedAtTableCellBorder(text, start, end, borders) {
     if (borders.count < 2) return false;
@@ -316,11 +349,13 @@
         const start = match.index;
         const end = start + url.length;
         // 罫線テーブルのセル境界で切り詰められた URL 断片はリンク化しない（issue #361）。
-        // isTruncatedAtTableCellBorder には end（トリム後）ではなく、trimTrailingPunctuation
-        // で削られる前の生マッチ終端 rawEnd を渡す（PR #365 レビュー・HIGH。理由は
-        // isTruncatedAtTableCellBorder のコメント参照）。
+        // isTruncatedAtTableCellBorder には、トリム後の end でも生マッチ終端
+        // （start + raw.length）でもなく、句読点だけを読み飛ばした終端を渡す
+        // （B案。PR #365 再レビュー。理由は isTruncatedAtTableCellBorder のコメント
+        // 「句読点だけを読み飛ばす理由（B案）」参照）。
         const rawEnd = start + raw.length;
-        if (isTruncatedAtTableCellBorder(text, start, rawEnd, borders)) continue;
+        const punctuationSkippedEnd = skipTrailingPunctuation(text, end, rawEnd);
+        if (isTruncatedAtTableCellBorder(text, start, punctuationSkippedEnd, borders)) continue;
         results.push({ url, start, end });
       }
     }
@@ -335,5 +370,6 @@
     isAcceptableUrlHost,
     isTruncatedAtTableCellBorder,
     scanTableBorders,
+    skipTrailingPunctuation,
   };
 });

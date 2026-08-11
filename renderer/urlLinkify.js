@@ -144,6 +144,148 @@
     }
   }
 
+  // 罫線テーブルのセル境界とみなす縦線の文字コード（issue #361）。ASCII の '|' は
+  // 含めない（シェルパイプ「cmd1 | grep https://example.com | wc -l」のように、URL の
+  // 直後にスペース＋パイプが続く正当な出力まで「テーブルの行」と誤検知するリスクが
+  // 高いため。固定幅の罫線テーブルを描画するツールは通常 Unicode の罫線文字を使い、
+  // ASCII パイプでこの種のセル折り返し表示を行うツールは一般的でない）。
+  // 0x2502 = │（単線） / 0x2503 = ┃（太線） / 0x2551 = ║（二重線）。
+  // 文字コードで比較する（charCodeAt）のは scanTableBorders() 側の性能対策（後述）に
+  // 合わせるため。文字列比較・Set.has(文字) より高速。
+  function isTableBorderCode(code) {
+    return code === 0x2502 || code === 0x2503 || code === 0x2551;
+  }
+
+  // text 全体を 1 回だけ走査し、罫線テーブルの縦線の出現数と最初に出てくる位置を返す。
+  // extractUrlMatches() が候補（URL）ごとに呼び出すのではなく、行（text）ごとに 1 回だけ
+  // 呼び出して結果を使い回す（安藤レビュー指摘・MEDIUM。候補ごとに text 全体を数え直すと
+  // O(候補数 × 行長) になり、URL を多数含む行では provideLinks が呼ばれるたび
+  // （ホバーで移動するたびに呼ばれる経路）に数 ms かかる実測あり。行ごとに 1 回に
+  // まとめることで候補数に依存しない O(行長) に落とす）。
+  // for...of ではなく charCodeAt によるインデックスループを使うのも同じ理由の性能対策
+  // （for...of は文字列に対してコードポイントごとに部分文字列を生成するため遅い）。
+  function scanTableBorders(text) {
+    let count = 0;
+    let firstIndex = -1;
+    for (let i = 0; i < text.length; i += 1) {
+      if (isTableBorderCode(text.charCodeAt(i))) {
+        count += 1;
+        if (firstIndex < 0) firstIndex = i;
+      }
+    }
+    return { count, firstIndex };
+  }
+
+  // text の position（match.index + raw.length。生マッチの終端）から、句読点
+  // （ALWAYS_TRIM_TRAILING に含まれる文字）が続く間だけ読み飛ばして終端位置を返す。
+  // 閉じ括弧（CLOSING_BRACKETS）やその他の文字に当たったところで止まる（許可リスト
+  // 方式。isTruncatedAtTableCellBorder のコメント「句読点だけを読み飛ばす理由（B案）」
+  // 参照）。upTo（通常は raw の終端）を超えて読み飛ばすことはない。
+  function skipTrailingPunctuation(text, position, upTo) {
+    let i = position;
+    while (i < upTo && ALWAYS_TRIM_TRAILING.has(text[i])) i += 1;
+    return i;
+  }
+
+  // URL 候補が「罫線テーブルのセル境界で切り詰められた断片」らしいかどうかを判定する
+  // （issue #361）。
+  //
+  // end には「句読点だけを読み飛ばした後の終端」（呼び出し側の skipTrailingPunctuation()
+  // が返す値）を渡すこと。trimTrailingPunctuation() 後の url の終端をそのまま渡しては
+  // いけない（PR #365 レビュー・HIGH）し、閉じ括弧まで無条件に読み飛ばした生マッチ
+  // 終端（match.index + raw.length）を渡してもいけない（PR #365 再レビュー・植草の
+  // UX 判断で修正。詳しい理由は下の「句読点だけを読み飛ばす理由（B案）」を参照）。
+  //
+  // 罫線テーブルの各行は「ターミナルの折り返し」ではなく独立したバッファ行のため、
+  // xterm の isWrapped は false。terminalLinkProvider.js の getWrappedLineWindow() は
+  // isWrapped な行しか連結しないため、セル幅で見た目上折り返された URL の先頭断片
+  // だけが単独の候補として extractUrlMatches() に渡ってきてしまう
+  // （罫線テーブルの行は isWrapped: false のため、terminalLinkProvider.js が渡す
+  // text は通常その 1 行そのものと一致する。ただしペイン幅より広いテーブルは xterm
+  // 自身が行を折り返すため isWrapped: true になり、merged が罫線を含む複数行の
+  // 連結になることもあり得る。その場合も text 全体を対象に判定すれば「テーブルの
+  // 行らしさ」の検出はできるため、安全側（抑止する方向）に倒れて問題ない）。
+  //
+  // 判定条件（司・issue 起票者・植草の合意事項。issue コメントにあった「テーブル内は
+  // 一律諦める」よりも狭いルール）:
+  //   1. 候補が乗っている行に罫線テーブルの縦線が2つ以上ある（＝テーブルの行らしい）。
+  //   2. 候補より前に縦線が1つ以上ある（＝候補自身がセルの中にある）。これが無いと
+  //      「see https://example.com/a │ x │ y」のような、そもそもテーブルではない
+  //      地の文の行まで抑止してしまう（安藤レビュー指摘・LOW）。
+  //   3. 候補の直後が「0個以上の空白＋縦線文字」で終わっている（＝セルの右端に接している）。
+  // すべて満たす場合だけ「切り詰められている」とみなし、リンク化の対象から外す。
+  //
+  // 「セルの直下の物理行を実際に読んで続きがあるか検証する」というより厳密な判定も
+  // 検討したが、罫線位置の解析・複数セルの対応付けが必要になり、issue のスコープに
+  // 対してコストが不釣り合いなため採用しない（司・植草合意）。境界ケースは
+  // 「非リンク化する」側に倒す方針のため、条件3 は空白の個数を問わない（0個も含む）
+  // 最大限緩い判定にしている。誤って非リンク化した場合の実害は「押せない（テキスト
+  // 選択でのコピーは可能）」に留まり、逆に切り詰められた URL をリンク化したままにした
+  // 場合の実害（404 を開いてしまう）より小さいと判断したため、この非対称性を判定の
+  // 緩さの根拠にしている。
+  //
+  // ただしこの非対称性ゆえに、条件3は空白の個数を問わない（パディングの空白が
+  // 何個挟まっても素通りする）ため、「セル内で URL の直後が句読点だけを挟んで
+  // 縦線に直接接している」場合は、その URL がそのセル内で最長かどうかに関わらず
+  // 非リンク化される（切り詰められた場合と行内の情報だけでは区別できないため、
+  // 原理的に避けられない）。これは意図して受け入れた仕様であり、changelog にも
+  // 明記している。
+  //
+  // なお閉じ括弧（")" "]" 等）はセル内容として扱う（下記「句読点だけを読み飛ばす
+  // 理由（B案）」を参照）ため、"#399 (URL)" のように閉じ括弧がセル右端に来る場合は
+  // この非リンク化の対象にならず、従来どおりリンク化される。
+  //
+  // xterm のバッファには一切触れない（text と start/end というインデックスだけで
+  // 完結する）純粋関数として書けるため、urlLinkify.js の責務境界（バッファに触れない）
+  // を壊さずにここへ置ける。判定に必要なのは「この行に罫線が複数あるか」「候補の前後に
+  // 罫線があるか」という文字列だけの情報であり、バッファ座標や折り返し状態への
+  // アクセスは不要なため。
+  //
+  // borders は scanTableBorders(text) の結果を呼び出し側（extractUrlMatches）が
+  // 候補ごとではなく行ごとに 1 回だけ計算して渡す（性能対策。上記コメント参照）。
+  //
+  // 句読点だけを読み飛ばす理由（B案。PR #365 再レビュー・植草の UX 判断で HIGH 修正
+  // (3b513df) から変更）:
+  // extractUrlMatches() は正規表現でまず「URL らしき塊」を大まかに拾い（raw）、
+  // trimTrailingPunctuation() で末尾の "." "," ")" 等を落とした結果を実際の URL
+  // （url）にしている。HIGH 修正（3b513df）では、この判定に「トリム前の生マッチ終端
+  // （raw の終端）」を渡すことで、句読点で終わる切り詰め断片（例: "vk-agents." の直後
+  // が縦線）を正しく抑止できるようにした。
+  //
+  // ところがこの方式には副作用があった。閉じ括弧（")" "]" や全角の "）" 等）も
+  // trimTrailingPunctuation が落とす対象のため、生マッチ終端まで無条件に読み飛ばすと、
+  // "#399 (URL)" のように「閉じ括弧がセルの右端に来る」だけの完全な URL まで抑止して
+  // しまう。この書式は issue #361 の起票者が最初に貼った再現例そのもので、GitHub CLI
+  // や Claude Code のログで頻出するため、この副作用は「境界ケースを抑止側へ倒す」
+  // という許容範囲を超え、#361 の主目的（押せるはずの URL を押せるようにする）を
+  // 損なう規模だと判断した（司・植草合意）。
+  //
+  // そこで読み飛ばす対象を ALWAYS_TRIM_TRAILING の句読点だけに絞り、CLOSING_BRACKETS
+  // の閉じ括弧（半角・全角とも）は「セル内容」とみなして読み飛ばさない（＝そこで
+  // 立ち止まり、抑止しない）ことにした。閉じ括弧の一覧をここで別途ベタ書きしていない
+  // 点に注意: skipTrailingPunctuation() は ALWAYS_TRIM_TRAILING に含まれる文字だけを
+  // 許可リスト方式で読み飛ばすため、CLOSING_BRACKETS の文字（を含め、それ以外の
+  // あらゆる文字）は「許可リストに無い」という理由だけで自動的に読み飛ばし対象外になる。
+  // CLOSING_BRACKETS 自体をここで参照する必要が無いため、ALWAYS_TRIM_TRAILING と
+  // CLOSING_BRACKETS の定義が二重管理でズレる心配もない。
+  //
+  // 残るリスク（受け入れ済み・司・植草合意）: URL 自身が ")" 等の閉じ括弧を含み、
+  // ちょうどその位置でセル幅に切られた場合だけ、閉じ括弧が「セル内容」と誤認されて
+  // 抑止漏れとなり 404 が開く。「URL のパスに閉じ括弧を含む」かつ「切断位置がちょうど
+  // そこ」の同時成立が必要なため、発生頻度は十分低いと判断した。
+  //
+  // 記号のあとに本当のセル内容（例: "済"）が続く場合は、その文字（句読点でも
+  // 閉じ括弧でもない）で skipTrailingPunctuation() の読み飛ばしが止まるため、
+  // 従来どおり抑止しない（"#363 (https://...) 済 │ done │" のようなケースは壊れない）。
+  function isTruncatedAtTableCellBorder(text, start, end, borders) {
+    if (borders.count < 2) return false;
+    if (borders.firstIndex < 0 || borders.firstIndex >= start) return false;
+
+    let i = end;
+    while (i < text.length && text[i] === ' ') i += 1;
+    return i < text.length && isTableBorderCode(text.charCodeAt(i));
+  }
+
   // ホスト名が「実在しそうな行き先」かどうかの最低限のチェック（安藤レビュー指摘・LOW）。
   // URL_CANDIDATE_REGEX は ASCII 文字だけを候補にしているため、`https://götest.com` は
   // `https://g` のようにホスト名が 1 文字だけ切り取られた状態でも isSafeHttpUrl は
@@ -189,6 +331,10 @@
     if (typeof text !== 'string' || !text) return [];
 
     const results = [];
+    // 罫線の出現数・最初の位置は行（text）ごとに変わらないループ不変量のため、
+    // 候補ごとに数え直さずここで 1 回だけ計算する（安藤レビュー指摘・MEDIUM。
+    // scanTableBorders() のコメント参照）。
+    const borders = scanTableBorders(text);
     // グローバルフラグ付き正規表現は lastIndex を使い回すため、呼び出しのたびに
     // 明示的にリセットする（モジュールスコープの単一インスタンスを使い回すため必須）。
     URL_CANDIDATE_REGEX.lastIndex = 0;
@@ -200,7 +346,17 @@
       // ものは弾く。http(s) 以外を除く判定・長さ上限も isSafeHttpUrl に一本化する
       // （実際に開く経路 openExternalUrlSafe と同じ判定基準に揃えるため）。
       if (url && isSafeHttpUrl(url) && !hasUserInfo(url) && isAcceptableUrlHost(url)) {
-        results.push({ url, start: match.index, end: match.index + url.length });
+        const start = match.index;
+        const end = start + url.length;
+        // 罫線テーブルのセル境界で切り詰められた URL 断片はリンク化しない（issue #361）。
+        // isTruncatedAtTableCellBorder には、トリム後の end でも生マッチ終端
+        // （start + raw.length）でもなく、句読点だけを読み飛ばした終端を渡す
+        // （B案。PR #365 再レビュー。理由は isTruncatedAtTableCellBorder のコメント
+        // 「句読点だけを読み飛ばす理由（B案）」参照）。
+        const rawEnd = start + raw.length;
+        const punctuationSkippedEnd = skipTrailingPunctuation(text, end, rawEnd);
+        if (isTruncatedAtTableCellBorder(text, start, punctuationSkippedEnd, borders)) continue;
+        results.push({ url, start, end });
       }
     }
     return results;
@@ -212,5 +368,8 @@
     getUrlHost,
     hasUserInfo,
     isAcceptableUrlHost,
+    isTruncatedAtTableCellBorder,
+    scanTableBorders,
+    skipTrailingPunctuation,
   };
 });

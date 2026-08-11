@@ -9,6 +9,9 @@ const {
   getUrlHost,
   hasUserInfo,
   isAcceptableUrlHost,
+  isTruncatedAtTableCellBorder,
+  scanTableBorders,
+  skipTrailingPunctuation,
 } = require('../renderer/urlLinkify');
 const { MAX_SAFE_HTTP_URL_LENGTH } = require('../renderer/urlSafety');
 
@@ -215,4 +218,232 @@ test('trimTrailingPunctuation: 単体でも記号の組み合わせを正しく�
     trimTrailingPunctuation('https://en.wikipedia.org/wiki/Foo_(disambiguation)'),
     'https://en.wikipedia.org/wiki/Foo_(disambiguation)',
   );
+});
+
+// ─── 罫線テーブルのセル境界で切り詰められた URL 断片（issue #361） ──────────────────
+// 罫線テーブルの各行は xterm の折り返し（isWrapped）ではなく独立したバッファ行のため、
+// terminalLinkProvider.js の getWrappedLineWindow() は連結しない。結果、セル幅で
+// 見た目上折り返された URL の先頭断片だけが単独の候補として extractUrlMatches() に
+// 渡ってくる。1 行だけでも再現できるため、ここでは text を直接渡して検証する
+// （terminalLinkProvider.test.js 側では実際の xterm バッファ相当のフェイクを使って
+// 同じケースを再現する）。
+test('extractUrlMatches: 罫線テーブルのセル境界で切り詰められた URL 断片はリンク化しない（issue #361）', () => {
+  // issue の再現例そのもの（1行目に断片、2行目に続きが表示される罫線テーブル）。
+  const row = '│ vk-agents   │ #399 (https://github.com/vektor-inc/vk-agen │ feature/coderabbit-code-revi │';
+  assert.deepEqual(extractUrlMatches(row), []);
+});
+
+test('extractUrlMatches: 罫線テーブルの縦線が ASCII の | 単体（シェルパイプ等）では除外しない', () => {
+  // 縦線が1本しかない・そもそも罫線文字（│ ┃ ║）ではない行は「テーブルの行らしさ」の
+  // 条件（2つ以上）を満たさないため、通常どおりリンク化される。
+  assert.equal(
+    extractUrlMatches('cmd1 | grep https://example.com | wc -l').length,
+    1,
+  );
+});
+
+// テスト名を実態に合わせる（安藤レビュー指摘・MEDIUM）: ここで検証しているのは
+// 「URL の後ろにセル内の文字（丸カッコ書きの補足等）が続くケース」のみであり、
+// 「セル内に URL が丸ごと収まっていれば常にリンク化される」という一般命題ではない
+// （末尾ぴったりで収まるケースは下の別テストの通り除外される）。
+test('extractUrlMatches: URL の後ろにセル内の文字が続く場合はリンク化を維持する（issue #361 リグレッション）', () => {
+  // セルの右端（縦線）の直前ではなく、URL の後ろに他の文字（丸カッコ書きの補足など）が
+  // 続いてからセルが終わるケース。候補の直後が「空白+縦線」ではないため除外されない。
+  const row = '│ PR │ #399 (https://github.com/vektor-inc/vk-agents/pull/399) マージ済み │';
+  const matches = extractUrlMatches(row);
+  assert.equal(matches.length, 1);
+  assert.equal(matches[0].url, 'https://github.com/vektor-inc/vk-agents/pull/399');
+});
+
+test('extractUrlMatches: 罫線テーブルではない通常行の URL はリンク化を維持する（issue #361 リグレッション）', () => {
+  assert.equal(extractUrlMatches('詳しくは https://example.com/foo をご覧ください').length, 1);
+});
+
+// 意図して受け入れた仕様（司・植草合意・M2）: テーブルの列幅は「その列の最長内容」で
+// 決まるレンダリングが一般的なため、URL が列内で最長＝ちょうど収まっているケースも
+// 必ず「URL + 空白 + 縦線」の形になり、切り詰められているかどうかを行内の情報だけで
+// 区別できない。そのため「セルの末尾に来た URL」は切り詰めの有無に関わらず一律で
+// リンク化しない（CHANGELOG にも明記）。この受け入れた挙動をテストで固定しておく。
+test('extractUrlMatches: セルの末尾にぴったり収まった（切り詰められていない）URL もリンク化しない（issue #361・意図した仕様）', () => {
+  // 安藤レビューでの実測どおり、末尾に十分な空白があっても無くても除外される。
+  assert.deepEqual(extractUrlMatches('│ https://example.com/a │ ok │'), []);
+  assert.deepEqual(extractUrlMatches('│ https://example.com/a                    │ ok │'), []);
+});
+
+test('extractUrlMatches: 候補の直後に空白を挟まず縦線が直接続く場合もリンク化しない（issue #361・植草指摘）', () => {
+  // 意図して緩めた境界（条件3は空白0個も含む）の担保。
+  const row = '│vk-agents│https://github.com/vektor-inc/vk-agen│feature-branch│';
+  assert.deepEqual(extractUrlMatches(row), []);
+});
+
+test('extractUrlMatches: 候補より前に縦線が無い行は抑止しない（安藤レビュー指摘・LOW）', () => {
+  // 罫線がすべて候補より後ろにしかない場合、そもそも候補自身はセルの中に無い
+  // （地の文に URL があり、その後ろに別の罫線が続くだけのケース）ため抑止しない。
+  assert.equal(
+    extractUrlMatches('see https://example.com/a │ x │ y').length,
+    1,
+  );
+});
+
+// ─── trimTrailingPunctuation で削られた記号がセル境界判定をすり抜ける不具合（PR #365 レビュー・HIGH） ──
+// isTruncatedAtTableCellBorder が見ていた「候補の直後」は trimTrailingPunctuation() で
+// 末尾記号を削った後の end だった。表がちょうどその除去対象文字（. , : ; ! ? や対応の
+// 取れていない閉じ括弧）の直前で URL を切ったとき、end の位置に残るのはその記号自体で、
+// 空白でも縦線でもないため判定が成立せず、切り詰められた URL 断片を抑止し損ねていた
+// （安藤レビュー指摘・HIGH。司が実行して確認した再現例をそのまま fixture にする）。
+test('extractUrlMatches: セル境界の句読点（括弧を含まない）で切り詰められた URL 断片もリンク化しない（issue #361・PR #365 HIGH 修正）', () => {
+  assert.deepEqual(
+    extractUrlMatches('│ #399 (https://github.com/vektor-inc/vk-agents. │ feature-branch │'),
+    [],
+  );
+  assert.deepEqual(
+    extractUrlMatches('│ x │ https://example.com/a/b, │ y │'),
+    [],
+  );
+});
+
+test('extractUrlMatches: 閉じ括弧のあとにセル内の文字が続く場合はリンク化を維持する（PR #365 HIGH 修正のリグレッション）', () => {
+  // 記号の後ろに実際のセル内容（"済"）が続く場合はそこで判定が止まり、誤って抑止しない。
+  const row = '│ #363 (https://github.com/vektor-inc/vk-terminals) 済 │ done │';
+  const matches = extractUrlMatches(row);
+  assert.equal(matches.length, 1);
+  assert.equal(matches[0].url, 'https://github.com/vektor-inc/vk-terminals');
+});
+
+test('extractUrlMatches: 表の外で URL のあとに句読点が来る場合はリンク化を維持する（PR #365 HIGH 修正のリグレッション）', () => {
+  assert.equal(extractUrlMatches('詳しくは https://example.com/foo を参照。').length, 1);
+});
+
+test('extractUrlMatches: 表の外で URL が . で終わり行末になる場合はリンク化を維持する（PR #365 HIGH 修正のリグレッション）', () => {
+  const matches = extractUrlMatches('詳しくは https://example.com/foo.');
+  assert.equal(matches.length, 1);
+  assert.equal(matches[0].url, 'https://example.com/foo');
+});
+
+// ─── 閉じ括弧はセル内容として扱い、句読点だけを読み飛ばす（B案・PR #365 再レビュー） ──────
+// 3b513df（トリム前の生マッチ終端で判定）は HIGH を正しく塞いだが、副作用として
+// `#399 (URL)` のように閉じ括弧がセル右端に来るケースまで抑止するようになった。
+// `#399 (URL)` は issue #361 の起票者が最初に貼った再現例そのもので、GitHub CLI や
+// Claude Code のログで頻出するため、この書式が押せなくなるのは主目的（#361 の解決）を
+// 損なう規模の副作用と判断し、閉じ括弧は「セル内容」として扱い直す（司・植草合意・B案）。
+test('extractUrlMatches: 閉じ括弧で終わる場合はリンク化を維持する（B案・#361 起票者の再現例そのもの）', () => {
+  const row = '│ #399 (https://github.com/vektor-inc/vk-agents/pull/399) │ x │';
+  const matches = extractUrlMatches(row);
+  assert.equal(matches.length, 1);
+  assert.equal(matches[0].url, 'https://github.com/vektor-inc/vk-agents/pull/399');
+});
+
+test('extractUrlMatches: 角括弧で終わる場合もリンク化を維持する（B案）', () => {
+  const row = '│ x │ [https://example.com/a] │ y │';
+  const matches = extractUrlMatches(row);
+  assert.equal(matches.length, 1);
+  assert.equal(matches[0].url, 'https://example.com/a');
+});
+
+test('extractUrlMatches: 全角の閉じ括弧で終わる場合もリンク化を維持する（B案・植草指摘: 全角も含めること）', () => {
+  const row = '│ x │ （https://example.com/a） │ y │';
+  const matches = extractUrlMatches(row);
+  assert.equal(matches.length, 1);
+  assert.equal(matches[0].url, 'https://example.com/a');
+});
+
+test('extractUrlMatches: 句読点が複数連続しても引き続き抑止される（B案・安藤網羅ケース）', () => {
+  assert.deepEqual(extractUrlMatches('│ x │ https://example.com/a: │ y │'), []);
+  assert.deepEqual(extractUrlMatches('│ x │ https://example.com/a; │ y │'), []);
+  assert.deepEqual(extractUrlMatches('│ x │ https://example.com/a! │ y │'), []);
+  assert.deepEqual(extractUrlMatches('│ x │ https://example.com/a? │ y │'), []);
+  // 句読点だけが複数連続する場合（括弧を含まない）はすべて読み飛ばして抑止する。
+  assert.deepEqual(extractUrlMatches('│ x │ https://example.com/a,.;! │ y │'), []);
+});
+
+test('extractUrlMatches: 角括弧 ] 単体で終わる場合はリンク化を維持する（B案・) と対称に扱う）', () => {
+  // CLOSING_BRACKETS の要素はすべて「セル内容」として扱う。] も ) と対称に扱うため、
+  // 単体の ] で終わる場合もリンク化を維持する（前掲の [URL] ケースと同じ理由）。
+  const row = '│ x │ https://example.com/a] │ y │';
+  const matches = extractUrlMatches(row);
+  assert.equal(matches.length, 1);
+  assert.equal(matches[0].url, 'https://example.com/a');
+});
+
+test('extractUrlMatches: 閉じ括弧の後ろに句読点が続く場合もリンク化を維持する（B案・括弧が読み飛ばしを止める）', () => {
+  // 括弧が句読点より先に現れる（"a).," のように括弧が最初に来る）場合、そこで
+  // 読み飛ばしが止まるため、後続の句読点の有無に関わらず「セルの右端に接している」
+  // とは判定しない。文末の "(URL)." のような書式（括弧の直後にピリオドが続く）と
+  // 見分けが付かないため、括弧が絡む時点で抑止しない側へ倒す。
+  const row = '│ x │ https://example.com/a).,  │ y │';
+  const matches = extractUrlMatches(row);
+  assert.equal(matches.length, 1);
+  assert.equal(matches[0].url, 'https://example.com/a');
+});
+
+test('extractUrlMatches: #361 の元の再現例は引き続き抑止される（B案でも回帰なし）', () => {
+  const row = '│ #399 (https://github.com/vektor-inc/vk-agen │ x │';
+  assert.deepEqual(extractUrlMatches(row), []);
+});
+
+test('extractUrlMatches: 表の外の (URL) は影響を受けない（B案）', () => {
+  const matches = extractUrlMatches('(see https://example.com/foo)');
+  assert.equal(matches.length, 1);
+  assert.equal(matches[0].url, 'https://example.com/foo');
+});
+
+// 意図して受け入れた残存リスク（司・植草合意・B案）: URL 自身が ")" を含み、ちょうど
+// その位置でセル幅に切られた場合だけ、閉じ括弧が「セル内容」と誤認されて抑止漏れとなり
+// 404 が開く。「URL のパスに ")" を含む」かつ「切断位置がちょうどそこ」の同時成立が
+// 必要なため発生頻度は低いと判断し、この挙動を意図した仕様としてテストで固定する。
+test('extractUrlMatches: URL 自身の閉じ括弧でちょうど切られた断片は抑止できない（B案・受け入れ済みの残存リスク）', () => {
+  // 対応する "(" がどこにも無い、単独の ")" で終わる断片（＝切り詰め由来かどうか
+  // 行内の情報だけでは区別できないケース）。B案では閉じ括弧をセル内容として扱うため
+  // 抑止せずリンク化される。
+  const row = '│ https://example.com/foo) │ x │';
+  const matches = extractUrlMatches(row);
+  assert.equal(matches.length, 1);
+  assert.equal(matches[0].url, 'https://example.com/foo');
+});
+
+// ─── isTruncatedAtTableCellBorder / scanTableBorders の直接テスト（安藤レビュー指摘・LOW） ──
+// extractUrlMatches() 経由の統合的なテストとは別に、公開ヘルパー単体でも検証する
+// （他の公開ヘルパーはすべて直接テストがある慣習に合わせる）。
+test('scanTableBorders: 罫線の出現数と最初の位置を返す', () => {
+  assert.deepEqual(scanTableBorders('no borders here'), { count: 0, firstIndex: -1 });
+  assert.deepEqual(scanTableBorders('│ a │'), { count: 2, firstIndex: 0 });
+  assert.deepEqual(scanTableBorders('a │ b ┃ c ║ d'), { count: 3, firstIndex: 2 });
+});
+
+test('isTruncatedAtTableCellBorder: borders.count が2未満なら常に false', () => {
+  const text = '│ https://example.com/a';
+  const borders = scanTableBorders(text);
+  assert.equal(isTruncatedAtTableCellBorder(text, 2, text.length, borders), false);
+});
+
+test('isTruncatedAtTableCellBorder: 候補より前に縦線が無ければ false', () => {
+  const text = 'https://example.com/a │ x │ y';
+  const borders = scanTableBorders(text);
+  assert.equal(isTruncatedAtTableCellBorder(text, 0, 21, borders), false);
+});
+
+test('isTruncatedAtTableCellBorder: 縦線2つ以上・候補の前後に縦線があれば true', () => {
+  const text = '│ https://example.com/a │ x │';
+  const borders = scanTableBorders(text);
+  const start = text.indexOf('https://');
+  const end = start + 'https://example.com/a'.length;
+  assert.equal(isTruncatedAtTableCellBorder(text, start, end, borders), true);
+});
+
+// skipTrailingPunctuation の直接テスト（安藤レビュー指摘・LOW。公開ヘルパーには
+// 直接テストを付ける慣習に合わせる）。
+test('skipTrailingPunctuation: 閉じ括弧に当たったところで読み飛ばしを止める', () => {
+  assert.equal(skipTrailingPunctuation('..)..', 0, 5), 2);
+});
+
+test('skipTrailingPunctuation: upTo を超えて読み飛ばさない', () => {
+  assert.equal(skipTrailingPunctuation('.....', 0, 2), 2);
+});
+
+test('skipTrailingPunctuation: 句読点（ALWAYS_TRIM_TRAILING）以外の文字では動かない', () => {
+  assert.equal(skipTrailingPunctuation('a....', 0, 5), 0);
+});
+
+test('skipTrailingPunctuation: 全角句読点も読み飛ばし対象', () => {
+  assert.equal(skipTrailingPunctuation('。、！？x', 0, 5), 4);
 });

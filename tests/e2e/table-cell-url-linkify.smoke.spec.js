@@ -18,8 +18,8 @@ const { closeApp, getFreePort, launchApp } = require('./helpers/electron-app');
 // のように閉じ括弧がセル右端に来る場合は従来どおりリンク化される
 // （renderer/urlLinkify.js の isTruncatedAtTableCellBorder / skipTrailingPunctuation
 // のコメント「句読点だけを読み飛ばす理由（B案）」参照）。
-// この「(URL) がセル右端に来る」ケースは tests/urlLinkify.test.js（純粋関数レベル）で
-// 固定済みのため、このファイルでは対象にしない。
+// この「(URL) がセル右端に来る」ケースは tests/urlLinkify.test.js（純粋関数レベル）に
+// 加えて、このファイルでも実物のホバー・修飾キー+クリックで固定している。
 
 async function postSend(port, input) {
   const res = await fetch(`http://127.0.0.1:${port}/api/send`, {
@@ -276,6 +276,31 @@ test.describe.serial('罫線テーブルのセル境界での URL リンク化�
     const tooltip = await getTooltip(win);
     expect(tooltip).not.toBeNull();
     expect(tooltip.hidden).toBe(false);
+
+    await modifierClickAtOffset(win, pos, 10, mac);
+    expect(await getOpenExternalCalls(app)).toEqual([url]);
+  });
+
+  test('(URL) が丸ごとセルに収まり閉じ括弧がセル右端に来る場合は従来どおりリンクになる（B案・#361 起票者の再現例そのもの）', async () => {
+    // 3b513df（生マッチ終端で判定する初版）は「#399 (URL)」のように閉じ括弧が
+    // セル右端に来るケースまで抑止してしまっていた。これは issue #361 の起票者が
+    // 最初に貼った再現例そのもので、GitHub CLI や Claude Code のログで頻出する
+    // 書式のため、司・植草合意（B案）で閉じ括弧は「セル内容」として扱い直し、
+    // 読み飛ばすのは句読点だけにした（tests/urlLinkify.test.js の同名ケースの
+    // 実物確認）。
+    const url = 'https://github.com/vektor-inc/vk-agents/pull/399';
+    const line = `│ #399 (${url}) │ x │`;
+    await postSend(port, `echo "${line}"\r`);
+    await waitForBufferText(win, line);
+
+    const pos = await findTextPosition(win, url);
+    expect(pos).not.toBeNull();
+    await hoverAtOffset(win, pos, 10);
+
+    const tooltip = await getTooltip(win);
+    expect(tooltip).not.toBeNull();
+    expect(tooltip.hidden).toBe(false);
+    expect(tooltip.text).toContain('github.com');
 
     await modifierClickAtOffset(win, pos, 10, mac);
     expect(await getOpenExternalCalls(app)).toEqual([url]);

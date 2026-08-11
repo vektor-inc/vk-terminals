@@ -4,6 +4,9 @@ const os = require('os');
 const path = require('path');
 // 起動〜初期描画待ちは共通ヘルパーへ集約している（issue #263 / #269）。
 const { getFreePort, launchApp } = require('./helpers/electron-app');
+// border-width / outline-offset の devicePixelRatio 由来の丸めを許容する比較は
+// 共通ヘルパーへ集約している（issue #357）。
+const { expectPxClose } = require('./helpers/focus-ring');
 
 // PR #235 / issue #229: サイドバー／モバイルのタスク UI を、外部（vk-orchestrator）が書き出す
 // 宣言 JSON（tasks-widget.json）を読んで描画する汎用ウィジェットビューアへ刷新したことの
@@ -605,6 +608,11 @@ test.describe.serial('widgetFile 系タスク一覧の描画・操作（issue #2
       })))
     );
     expect(settingsHeaderStyle).toEqual(taskHeaderStyle);
+    // font-size は width / height / border-width / outline-offset と違い、
+    // devicePixelRatio が 1 以外（--force-device-scale-factor=1.24 で実測）でも
+    // "12px" のまま丸めを受けなかった（issue #357 の調査で実測確認済み。文字の
+    // グリフ配置とボックスのレイアウトスナップは別経路のためと見られる）。
+    // 影響を受けないためここは固定値の完全一致のまま書き換えていない。
     expect(settingsHeaderStyle).toEqual({ fontSize: '12px', accentContent: 'none' });
     const taskCenterDifference = await header.evaluate((element) => {
       const labelRect = element.querySelector('.sidebar-section-label').getBoundingClientRect();
@@ -661,23 +669,31 @@ test.describe.serial('widgetFile 系タスク一覧の描画・操作（issue #2
       expect(bounds[1].width).toBeGreaterThanOrEqual(48);
 
       await toggle.focus();
-      const toggleStyle = await toggle.evaluate((element) => {
-        const style = getComputedStyle(element);
-        return {
-          width: style.width,
-          height: style.height,
-          borderWidth: style.borderWidth,
-          borderStyle: style.borderStyle,
-          outlineOffset: style.outlineOffset,
-        };
-      });
-      expect(toggleStyle).toEqual({
-        width: '24px',
-        height: '24px',
-        borderWidth: '1px',
-        borderStyle: 'solid',
-        outlineOffset: '2px',
-      });
+      // width / height / border-width / outline-offset はいずれも devicePixelRatio が 1 以外の
+      // 開発機だと Chromium の丸めで端数になり得る（issue #357。固定サイズのボックスの
+      // getComputedStyle().width / height も、getBoundingClientRect() と違いレイアウト時に
+      // デバイスピクセルへスナップされた値を返すため対象になる。実測: 1.24 倍率だと
+      // "24px" が "23.9919px" になった）。border-style だけは文字列で丸めの対象にならない
+      // ため固定値の完全一致のまま、残り 4 項目は expectPxClose で devicePixelRatio 由来の
+      // 丸めを許容して比較する（detail は helpers/focus-ring.js の冒頭コメントを参照）。
+      const [dpr, toggleStyle] = await Promise.all([
+        win.evaluate(() => window.devicePixelRatio),
+        toggle.evaluate((element) => {
+          const style = getComputedStyle(element);
+          return {
+            width: style.width,
+            height: style.height,
+            borderWidth: style.borderWidth,
+            borderStyle: style.borderStyle,
+            outlineOffset: style.outlineOffset,
+          };
+        }),
+      ]);
+      expect(toggleStyle.borderStyle, 'toggle の border-style').toBe('solid');
+      expectPxClose(toggleStyle.width, 24, dpr, 'toggle の width');
+      expectPxClose(toggleStyle.height, 24, dpr, 'toggle の height');
+      expectPxClose(toggleStyle.borderWidth, 1, dpr, 'toggle の border-width');
+      expectPxClose(toggleStyle.outlineOffset, 2, dpr, 'toggle の outline-offset');
 
       await toggle.click();
       await expect(section.locator('.sidebar-section-body')).toBeHidden();

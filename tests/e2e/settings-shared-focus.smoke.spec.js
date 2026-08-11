@@ -5,6 +5,8 @@ const builtinDescriptor = require('../../settings-schema.json');
 const { closeApp, getFreePort, launchAppAndWait } = require('./helpers/electron-app');
 // 設定ディスクリプタの差し込みと後始末は共通ヘルパーへ集約している（issue #293）。
 const { installDescriptor, restoreInvoke } = require('./helpers/settings-descriptor');
+// キーボードフォーカス操作・outline の読み取り・比較は共通ヘルパーへ集約している（issue #357）。
+const { expectOutline, focusByKeyboard, readOutline } = require('./helpers/focus-ring');
 
 // issue #348: 以下 3 spec（settings-focus-ring / settings-code-wrap /
 // settings-apihost-loopback-notice）を統合したもの。統合の根拠: 全テストが env / config
@@ -61,56 +63,22 @@ test.describe.serial('設定パネル: フォーカス・スタイル系（issue
       return descriptor;
     }
 
-    // キーボード由来のフォーカスでないと :focus-visible は当たらない。
-    // 対象へ focus() したあと Tab で隣の停止位置へ抜け、Shift+Tab で戻すことで
-    // 「キーボードで選んだ状態」を作る（要素の並び順に依存せずどの停止位置でも成立する）。
-    async function focusByKeyboard(win, selector) {
-      await win.evaluate((sel) => {
-        const el = document.querySelector(sel);
-        if (!el) throw new Error(`${sel} が見つからない`);
-        el.scrollIntoView({ block: 'center' });
-        el.focus();
-      }, selector);
-      await win.keyboard.press('Tab');
-      await win.keyboard.press('Shift+Tab');
-      // 戻り先が対象であること（= 以降の computed style がその要素のものであること）を確かめる。
-      // コピーボタンのように同じクラスが複数ある場合に備え、evaluate 側の querySelector と
-      // 同じ「先頭の 1 つ」を見る。
-      await expect(win.locator(selector).first()).toBeFocused();
-      expect(
-        await win.evaluate((sel) => document.querySelector(sel).matches(':focus-visible'), selector),
-        `${selector} が :focus-visible にならない`
-      ).toBe(true);
-    }
-
     // アプリ共通の自前フォーカスリング（.settings-tab / .settings-content-copy 等と同じ）。
+    // width / offset は CSS px の数値で持つ（devicePixelRatio 由来の丸めを許容比較する
+    // helpers/focus-ring.js の expectOutline に渡すため）。丸めの理由と、太さ・オフセットの
+    // 検証を弱めずに倍率非依存にした方針は helpers/focus-ring.js の冒頭コメントを参照
+    // （issue #357）。
     const APP_FOCUS_RING = {
       color: 'rgb(88, 166, 255)',
       style: 'solid',
-      width: '2px',
-      offset: '2px',
+      width: 2,
+      offset: 2,
     };
-
-    // 実際に描かれているリングを読む。期待値との比較にも、既に揃っている要素との
-    // 突き合わせにも同じ読み取りを使い、見る項目が増えたときの直し漏れを防ぐ。
-    async function readRing(win, selector) {
-      return await win.evaluate((sel) => {
-        const el = document.querySelector(sel);
-        if (!el) throw new Error(`${sel} が見つからない`);
-        const s = getComputedStyle(el);
-        return {
-          color: s.outlineColor,
-          style: s.outlineStyle,
-          width: s.outlineWidth,
-          offset: s.outlineOffset,
-        };
-      }, selector);
-    }
 
     async function expectAppFocusRing(win, selector) {
       // OS 標準リングは outline-style が auto（macOS ではアンバー）になる。
       // 色・太さ・オフセットまで見て、アプリ共通の自前リングであることを主張する。
-      expect(await readRing(win, selector), `${selector} のフォーカスリング`).toEqual(APP_FOCUS_RING);
+      await expectOutline(win, selector, APP_FOCUS_RING, `${selector} のフォーカスリング`);
     }
 
     // text/number/password/select/textarea はリングではなく border-color（青枠線）で
@@ -185,12 +153,12 @@ test.describe.serial('設定パネル: フォーカス・スタイル系（issue
       await win.locator('#settings-tab-1').click();
       await expect(win.locator('.settings-content-copy').first()).toBeVisible();
       await focusByKeyboard(win, '.settings-content-copy');
-      const baseline = await readRing(win, '.settings-content-copy');
+      const baseline = await readOutline(win, '.settings-content-copy');
 
       for (const selector of ['.settings-close', '.settings-cancel', ACTIVE_TAB_PANEL]) {
         await focusByKeyboard(win, selector);
         expect(
-          await readRing(win, selector),
+          await readOutline(win, selector),
           `${selector} とコピーボタンでフォーカスリングが揃わない`
         ).toEqual(baseline);
       }
@@ -229,7 +197,7 @@ test.describe.serial('設定パネル: フォーカス・スタイル系（issue
         const fieldId = await field.getAttribute('id');
         await focusByKeyboard(win, `#${fieldId}`);
         // outline は従来どおり none（アプリ共通リングの対象ではない）。
-        const ring = await readRing(win, `#${fieldId}`);
+        const ring = await readOutline(win, `#${fieldId}`);
         expect(ring.style, `#${fieldId} の outline-style`).toBe('none');
         // border-color が従来どおりの青（#58a6ff）に変わっている。
         expect(

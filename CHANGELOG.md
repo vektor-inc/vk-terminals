@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 開発環境 ] devicePixelRatio が 1 以外の開発機だと Chromium の描画丸めでフォーカスリング系 e2e が 5 spec 同時に失敗する不具合を修正し、outline の読み取り・比較を `tests/e2e/helpers/focus-ring.js` へ共通化（[#357](https://github.com/vektor-inc/vk-terminals/issues/357)）
+
 ## 1.57.1
 
 - [ 仕様変更 ] ペイン右上の PR ボタンからマージ待ちかどうかを読み取れず、サイドバーの「マージ待ち」表示と食い違っていたため、「PR が出ただけ（灰）／マージ待ち（青）／マージ済み（紫）」の3状態表示へ変更。これまで緑だった「PR が出ただけ」は灰色へ変更（[#363](https://github.com/vektor-inc/vk-terminals/issues/363)）

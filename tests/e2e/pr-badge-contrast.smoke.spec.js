@@ -4,10 +4,13 @@ const { closeApp, getFreePort, launchApp } = require('./helpers/electron-app');
 
 // issue #123 / PR #124: ペインタイトル行（背景 #101015）の PR バッジ配色を
 // 暗背景で WCAG 2.1 AA を満たすよう再調整した件の実描画確認。
+// issue #363 で open（PR が出ただけ）を緑→灰へ変更し、awaiting-merge（マージ待ち・青）を追加。
 //   getComputedStyle で renderer に実際にレンダリングされた
 //   color / border-color / background-color を取得し、CSS の想定値と一致するか検証する。
-//   - open  base : color #3fb950 / border #3fb950 / bg rgba(63,185,80,0.15)
-//   - open  hover: color #56d364 / border #56d364 / bg rgba(63,185,80,0.25)
+//   - open  base : color #99a1ab / border #99a1ab / bg rgba(153,161,171,0.15)
+//   - open  hover: color #b1bac4 / border #b1bac4 / bg rgba(153,161,171,0.25)
+//   - awaiting-merge base : color #79c0ff / border #79c0ff / bg rgba(121,192,255,0.15)
+//   - awaiting-merge hover: color #a5d6ff / border #a5d6ff / bg rgba(121,192,255,0.25)
 //   - merged base: color #a371f7 / border #a371f7 / bg rgba(130,80,223,0.15)
 //   - merged hover: color #b083f8 / border #b083f8 / bg rgba(130,80,223,0.25)
 
@@ -77,23 +80,43 @@ test('PR バッジの再調整後の色が renderer に想定どおり描画さ�
     const prUrl = `http://127.0.0.1:${port}/?pr=123`;
     const prBadge = win.locator('.pane .pane-task-title-pr').first();
 
-    // ─── open（未マージ）base ───
+    // ─── open（PR が出ただけ）base ───
     await postSetTitle(port, { termId: '1', title: 'open PR バッジ', prUrl });
     await expect(prBadge).toBeVisible();
     await expect(prBadge).not.toHaveClass(/\bmerged\b/);
+    await expect(prBadge).not.toHaveClass(/\bawaiting-merge\b/);
     await expectBadgeStyle(prBadge, {
-      color: 'rgb(63, 185, 80)',            // #3fb950
-      border: 'rgb(63, 185, 80)',           // #3fb950
-      background: 'rgba(63, 185, 80, 0.15)',
+      color: 'rgb(153, 161, 171)',          // #99a1ab
+      border: 'rgb(153, 161, 171)',         // #99a1ab
+      background: 'rgba(153, 161, 171, 0.15)',
     }, 'open base');
 
     // ─── open hover ───
     await prBadge.hover();
     await expectBadgeStyle(prBadge, {
-      color: 'rgb(86, 211, 100)',           // #56d364
-      border: 'rgb(86, 211, 100)',          // #56d364
-      background: 'rgba(63, 185, 80, 0.25)',
+      color: 'rgb(177, 186, 196)',          // #b1bac4
+      border: 'rgb(177, 186, 196)',         // #b1bac4
+      background: 'rgba(153, 161, 171, 0.25)',
     }, 'open hover');
+    // hover 解除（タイトル左端へマウスを退避）
+    await win.locator('.pane-task-title').first().hover({ position: { x: 2, y: 2 } });
+
+    // ─── awaiting-merge（マージ待ち。issue #363）base ───
+    await postSetTitle(port, { termId: '1', title: 'awaiting-merge PR バッジ', prUrl, waitingMerge: true });
+    await expect(prBadge).toHaveClass(/\bawaiting-merge\b/);
+    await expectBadgeStyle(prBadge, {
+      color: 'rgb(121, 192, 255)',          // #79c0ff
+      border: 'rgb(121, 192, 255)',         // #79c0ff
+      background: 'rgba(121, 192, 255, 0.15)',
+    }, 'awaiting-merge base');
+
+    // ─── awaiting-merge hover ───
+    await prBadge.hover();
+    await expectBadgeStyle(prBadge, {
+      color: 'rgb(165, 214, 255)',          // #a5d6ff
+      border: 'rgb(165, 214, 255)',         // #a5d6ff
+      background: 'rgba(121, 192, 255, 0.25)',
+    }, 'awaiting-merge hover');
     // hover 解除（タイトル左端へマウスを退避）
     await win.locator('.pane-task-title').first().hover({ position: { x: 2, y: 2 } });
 

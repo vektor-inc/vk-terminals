@@ -669,6 +669,12 @@ async function createTerminal(paneId, cwd, options = {}) {
     apiPrUrl: '',
     // apiPrMerged: HTTP API（POST /api/set-title）で渡された PR のマージ済み状態。
     apiPrMerged: false,
+    // apiWaitingMerge（issue #363）: HTTP API（POST /api/set-title）で渡された
+    // PR のマージ待ち状態。ワイヤ上のフィールド名は送信側（vk-orchestrator#389）の
+    // 実装に合わせて `waitingMerge`（`prWaitingMerge` ではない）。
+    // apiPrMerged が true のときはこちらより優先される
+    // （マージ済みが最終状態のため。優先順位の実装は getPrBadgePresentation 側）。
+    apiWaitingMerge: false,
     // agentRoom（issue #58）: POST /api/agentroom で受け取ったルーム状態 { name: state }。
     //   null のままなら API 未通知。API が古い（AGENTROOM_API_TTL_MS 超過）場合は
     //   resolveRoomAgents() が PTY 出力ベースのフォールバック表示に切り替える。
@@ -1973,7 +1979,7 @@ function renderStashItem(id, idx, count) {
     + (!title && !taskPrUrl ? ' empty' : '')
     + (taskUrl ? ' has-link' : '')
     + (taskPrUrl ? ' has-pr' : '');
-  renderTaskTitleContent(titleEl, title, taskUrl, taskPrUrl, !!t?.apiPrMerged);
+  renderTaskTitleContent(titleEl, title, taskUrl, taskPrUrl, !!t?.apiPrMerged, !!t?.apiWaitingMerge);
   if (taskUrl) {
     titleEl.removeAttribute('title');
   } else {
@@ -2048,7 +2054,10 @@ function updateStashItem(paneId) {
     const title = getDisplayTitle(t);
     const url = getDisplayUrl(t);
     const prUrl = isSafeExternalUrl(t.apiPrUrl) ? t.apiPrUrl : '';
-    renderTaskTitleContent(titleEl, title, url, prUrl, !!t.apiPrMerged);
+    // 第6引数 waitingMerge（issue #363）の渡し漏れがあると、updatePaneStatus() 経由で
+    // 頻繁に呼ばれるこの関数がステータス更新のたびに「PR が出ただけ」表示へ引き戻してしまい、
+    // 格納カードでマージ待ちの青がほぼ表示されなくなる（安藤レビュー・HIGH）。
+    renderTaskTitleContent(titleEl, title, url, prUrl, !!t.apiPrMerged, !!t.apiWaitingMerge);
     if (url) {
       titleEl.removeAttribute('title');
     } else {
@@ -2149,7 +2158,11 @@ function setupSidebarMenu() {
 // 第4引数 prUrl（issue #44）: 非空のとき、タイトル右側に独立した PR ボタン（<a class="pane-task-title-pr">）を追加する。
 //   apiTitle / taskTitle のいずれが表示中でも、prUrl があれば常時表示する（採用: 案A）。
 // 第5引数 prMerged: true のとき、PR ボタンをマージ済み表示（紫 + 非色アイコン）にする。
-function renderTaskTitleContent(el, title, url, prUrl, prMerged = false) {
+// 第6引数 waitingMerge（issue #363）: true のとき、PR ボタンをマージ待ち表示（青 + 非色アイコン）に
+// する。prMerged が true の場合はこちらより優先される（getPrBadgePresentation 側で判定）。
+// フィールド名はワイヤ上（POST /api/set-title の waitingMerge）に合わせている。getPrBadgePresentation
+// の options キー（prWaitingMerge）は内部限定の名前のため合わせていない（外部 API 名だけ一致していれば十分）。
+function renderTaskTitleContent(el, title, url, prUrl, prMerged = false, waitingMerge = false) {
   // 既存の子要素を全消去（innerHTML は使わずに DOM API で組み立てる）
   while (el.firstChild) el.removeChild(el.firstChild);
 
@@ -2207,13 +2220,15 @@ function renderTaskTitleContent(el, title, url, prUrl, prMerged = false) {
   // タイトル文字列の有無・apiTitle/taskTitle の選択状態に関わらず、prUrl があれば常時表示。
   // .pane-badge（issue #27 で導入した共通バッジ basis）に乗せて見た目を統一する。
   if (prUrl) {
-    const prPresentation = getPrBadgePresentation(prMerged === true);
+    const prPresentation = getPrBadgePresentation(prMerged === true, { prWaitingMerge: waitingMerge === true });
     const prLink = document.createElement('a');
     prLink.className = prPresentation.className;
     prLink.href = '#'; // 実 URL は入れない（タイトルリンクと同じ理由）
     prLink.setAttribute('role', 'link');
     prLink.setAttribute('aria-label', prPresentation.ariaLabel);
-    prLink.title = prUrl;
+    // ホバー時のツールチップはタイトルリンク側（title\nurl 形式）に揃え、
+    // 状態ラベル（PR / マージ待ちのPR / マージ済みのPR）+ 改行 + prUrl にする（issue #363）。
+    prLink.title = `${prPresentation.titleLabel}\n${prUrl}`;
     prLink.draggable = false;
 
     const prLabel = document.createElement('span');
@@ -2255,7 +2270,8 @@ function updatePaneTitle(paneId) {
   // renderer 側でも http(s) 二段チェックを通してから採用する。
   const prUrl = isSafeExternalUrl(t.apiPrUrl) ? t.apiPrUrl : '';
   const prMerged = !!t.apiPrMerged;
-  renderTaskTitleContent(el, title, url, prUrl, prMerged);
+  const waitingMerge = !!t.apiWaitingMerge;
+  renderTaskTitleContent(el, title, url, prUrl, prMerged, waitingMerge);
   // ホバー時のツールチップは has-link 時は子 <a> 側に集約して親子競合を避ける。
   //   - URL 無し: 親 .pane-task-title に title 属性をセット（従来挙動）
   //   - URL 有り: 親 title 属性を削除し、<a> 側の title（タイトル + URL）のみに任せる
@@ -3123,6 +3139,7 @@ function renderLeaf(node) {
   // PR ボタン用 URL（issue #44）。renderer 側でも http(s) 二段チェックを通す。
   const taskPrUrl = isSafeExternalUrl(t?.apiPrUrl) ? t.apiPrUrl : '';
   const taskPrMerged = !!t?.apiPrMerged;
+  const taskWaitingMerge = !!t?.apiWaitingMerge;
   const closeLocked = isCloseLocked(t);
   const closeLabel = closeButtonLabel(closeLocked);
 
@@ -3146,7 +3163,7 @@ function renderLeaf(node) {
     + (isEmpty ? ' empty' : '')
     + (taskUrl ? ' has-link' : '')
     + (taskPrUrl ? ' has-pr' : '');
-  renderTaskTitleContent(taskTitleEl, taskTitle, taskUrl, taskPrUrl, taskPrMerged);
+  renderTaskTitleContent(taskTitleEl, taskTitle, taskUrl, taskPrUrl, taskPrMerged, taskWaitingMerge);
   // URL 有りのときは子 <a> 側の title 属性に集約するため、親には付けない（親子競合回避）。
   if (taskTitle && !taskUrl) taskTitleEl.title = taskTitle;
   if (canDragPane) {
@@ -5184,6 +5201,14 @@ setInterval(() => {
       apiUrl: t.apiUrl || '',
       apiPrUrl: t.apiPrUrl || '',
       apiPrMerged: !!t.apiPrMerged,
+      // apiWaitingMerge（issue #363）: apiPrMerged と同じ経路（POST /api/set-title →
+      // terminal:title IPC）で受け取ったマージ待ち状態。フィールド名は送信側
+      // （vk-orchestrator#389）が GET /api/states から読み戻す名前 `apiWaitingMerge` に
+      // 合わせている（`apiPrWaitingMerge` ではない。合わせないと送信側が毎回 undefined を
+      // 読んで false を送り、マージ待ち表示が巻き戻る）。モバイル（mobile.js）も
+      // この states レポートを GET /api/states 経由でそのまま参照するため、
+      // ここに追加するだけで PC・モバイル双方に配線が乗る。
+      apiWaitingMerge: !!t.apiWaitingMerge,
       displayTitle: getDisplayTitle(t),
       // collapsed: グリッド化で折り畳み機能を撤去したため常に false（後方互換のためキーは維持）。
       collapsed: false,
@@ -5290,8 +5315,12 @@ VKIpc.on('terminal:request-close-pane', (payload = {}) => {
 //   - 空文字  → apiPrUrl をクリア（PR ボタン非表示）
 //   - 文字列 → http(s): スキームのみ（main 側で検証済み）。apiPrUrl にセット
 // 第5引数 prMerged: PR ボタンのマージ済み表示フラグ。boolean のときのみ apiPrMerged に反映する。
-// title / url / prUrl / prMerged はペアで都度送る置換セマンティクス。
-VKIpc.on('terminal:title', (termId, title, url, prUrl, prMerged) => {
+// 第6引数 waitingMerge（issue #363）: PR ボタンのマージ待ち表示フラグ。prMerged と同じく
+// boolean のときのみ apiWaitingMerge に反映する（後方互換のため、それ以外の型は無視して
+// 既存値を保持する）。prMerged と同時に true が来た場合の優先順位は getPrBadgePresentation 側で判定する。
+// フィールド名はワイヤ上（POST /api/set-title の waitingMerge）に合わせている。
+// title / url / prUrl / prMerged / waitingMerge はペアで都度送る置換セマンティクス。
+VKIpc.on('terminal:title', (termId, title, url, prUrl, prMerged, waitingMerge) => {
   const paneId = Object.keys(terminals).find(k => terminals[k]?.termId === termId);
   if (!paneId) return;
   terminals[paneId].apiTitle = title || '';
@@ -5306,6 +5335,10 @@ VKIpc.on('terminal:title', (termId, title, url, prUrl, prMerged) => {
   // prMerged も同様。後方互換のため boolean 以外は無視する。
   if (typeof prMerged === 'boolean') {
     terminals[paneId].apiPrMerged = prMerged;
+  }
+  // waitingMerge も同様。後方互換のため boolean 以外は無視する。
+  if (typeof waitingMerge === 'boolean') {
+    terminals[paneId].apiWaitingMerge = waitingMerge;
   }
   updatePaneTitle(paneId);
 });

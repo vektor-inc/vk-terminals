@@ -883,14 +883,20 @@ function render(data) {
       c.title.classList.remove("is-link");
       c.title.removeAttribute("aria-label");
     }
-    // PR リンク（issue #53）。安全な http(s) URL のときだけ href にセットして表示、
+    // PR リンク（issue #53 / #363）。安全な http(s) URL のときだけ href にセットして表示、
     // そうでなければ href を空にして非表示にする。
+    // apiWaitingMerge は apiPrMerged と同じ states レポート経路（GET /api/states）で
+    // 届くため、PC と同じ 3 状態（open / awaiting-merge / merged）をそのまま表示できる。
+    // フィールド名（apiWaitingMerge）は送信側（vk-orchestrator#389）が GET /api/states から
+    // 読み戻す名前に合わせている。getPrBadgePresentation の options キー（prWaitingMerge）は
+    // 内部限定の名前のため合わせていない。
     if (isSafeHttpUrl(t.apiPrUrl)) {
-      var prPresentation = prBadge.getPrBadgePresentation(t.apiPrMerged, { external: false });
+      var prPresentation = prBadge.getPrBadgePresentation(t.apiPrMerged, { external: false, prWaitingMerge: t.apiWaitingMerge });
       c.prLink.href = t.apiPrUrl;
-      c.prLink.title = t.apiPrUrl;
+      c.prLink.title = prPresentation.titleLabel + "\n" + t.apiPrUrl;
       c.prLink.classList.add("show");
       c.prLink.classList.toggle("merged", prPresentation.merged);
+      c.prLink.classList.toggle("awaiting-merge", prPresentation.waitingMerge);
       c.prLink.setAttribute("aria-label", prPresentation.ariaLabel);
       c.prIcon.textContent = prPresentation.icon;
     } else {
@@ -899,6 +905,7 @@ function render(data) {
       c.prLink.removeAttribute("title");
       c.prLink.classList.remove("show");
       c.prLink.classList.remove("merged");
+      c.prLink.classList.remove("awaiting-merge");
       c.prLink.setAttribute("aria-label", hiddenPrPresentation.ariaLabel);
       c.prIcon.textContent = hiddenPrPresentation.icon;
     }

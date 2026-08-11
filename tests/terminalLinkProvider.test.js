@@ -191,6 +191,11 @@ test('createTerminalLinkProvider: 罫線テーブルのセル境界で切り詰�
   // issue の再現例そのもの。3行目（0-based index 2）にURLの断片、4行目（index 3）に
   // 続きが表示される。どちらの行も isWrapped: false（罫線テーブルの行は xterm の
   // 折り返しではなく独立したバッファ行のため）。
+  //
+  // NOTE: asciiCells() は全角文字（"リポジトリ" 等）・罫線文字も含めてすべて幅1の
+  // セルとして組み立てる。実際の xterm では日本語は幅2のセル（wideCell()）になるが、
+  // このテストで検証するのは「どのバッファ範囲がリンクになるか」ではなく「リンクが
+  // 1件も無いこと」だけなので、幅の正確さは検証対象外（安藤レビュー指摘・LOW）。
   const terminal = makeFakeTerminal([
     { cells: asciiCells('┌─────────────┬─────────────────────────────────────────────┬──────────────────────────────┐'), isWrapped: false },
     { cells: asciiCells('│ リポジトリ  │                     PR                      │           ブランチ           │'), isWrapped: false },
@@ -208,7 +213,7 @@ test('createTerminalLinkProvider: 罫線テーブルのセル境界で切り詰�
   assert.equal(received, undefined);
 });
 
-test('createTerminalLinkProvider: 罫線テーブルでもセル内に丸ごと収まった URL はリンク化を維持する（issue #361 リグレッション）', () => {
+test('createTerminalLinkProvider: 罫線テーブルでも URL の後ろにセル内の文字が続く場合はリンク化を維持する（issue #361 リグレッション）', () => {
   const terminal = makeFakeTerminal([
     { cells: asciiCells('│ PR │ #399 (https://github.com/vektor-inc/vk-agents/pull/399) マージ済み │'), isWrapped: false },
   ]);
@@ -217,4 +222,17 @@ test('createTerminalLinkProvider: 罫線テーブルでもセル内に丸ごと�
   provider.provideLinks(1, (links) => { received = links; });
   assert.equal(received.length, 1);
   assert.equal(received[0].text, 'https://github.com/vektor-inc/vk-agents/pull/399');
+});
+
+// 意図して受け入れた仕様（司・植草合意・M2）。terminalLinkProvider.js を経由した
+// 実際のバッファでも、セルの末尾にぴったり収まった（切り詰められていない）URL は
+// 一律でリンク化されないことを確認する。
+test('createTerminalLinkProvider: 罫線テーブルでもセルの末尾にぴったり収まった URL はリンク化しない（issue #361・意図した仕様）', () => {
+  const terminal = makeFakeTerminal([
+    { cells: asciiCells('│ https://example.com/a │ ok │'), isWrapped: false },
+  ]);
+  const provider = createTerminalLinkProvider(terminal, { activate: () => {} });
+  let received = 'not-called';
+  provider.provideLinks(1, (links) => { received = links; });
+  assert.equal(received, undefined);
 });

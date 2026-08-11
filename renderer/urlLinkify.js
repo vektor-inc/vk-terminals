@@ -144,12 +144,37 @@
     }
   }
 
-  // 罫線テーブルのセル境界とみなす縦線文字（issue #361）。ASCII の '|' は含めない
-  // （シェルパイプ「cmd1 | grep https://example.com | wc -l」のように、URL の直後に
-  // スペース＋パイプが続く正当な出力まで「テーブルの行」と誤検知するリスクが高いため。
-  // 固定幅の罫線テーブルを描画するツールは通常 Unicode の罫線文字（│ U+2502 /
-  // ┃ U+2503）を使い、ASCII パイプでこの種のセル折り返し表示を行うツールは一般的でない）。
-  const TABLE_BORDER_CHARS = new Set(['│', '┃']); // │ ┃
+  // 罫線テーブルのセル境界とみなす縦線の文字コード（issue #361）。ASCII の '|' は
+  // 含めない（シェルパイプ「cmd1 | grep https://example.com | wc -l」のように、URL の
+  // 直後にスペース＋パイプが続く正当な出力まで「テーブルの行」と誤検知するリスクが
+  // 高いため。固定幅の罫線テーブルを描画するツールは通常 Unicode の罫線文字を使い、
+  // ASCII パイプでこの種のセル折り返し表示を行うツールは一般的でない）。
+  // 0x2502 = │（単線） / 0x2503 = ┃（太線） / 0x2551 = ║（二重線）。
+  // 文字コードで比較する（charCodeAt）のは scanTableBorders() 側の性能対策（後述）に
+  // 合わせるため。文字列比較・Set.has(文字) より高速。
+  function isTableBorderCode(code) {
+    return code === 0x2502 || code === 0x2503 || code === 0x2551;
+  }
+
+  // text 全体を 1 回だけ走査し、罫線テーブルの縦線の出現数と最初に出てくる位置を返す。
+  // extractUrlMatches() が候補（URL）ごとに呼び出すのではなく、行（text）ごとに 1 回だけ
+  // 呼び出して結果を使い回す（安藤レビュー指摘・MEDIUM。候補ごとに text 全体を数え直すと
+  // O(候補数 × 行長) になり、URL を多数含む行では provideLinks が呼ばれるたび
+  // （ホバーで移動するたびに呼ばれる経路）に数 ms かかる実測あり。行ごとに 1 回に
+  // まとめることで候補数に依存しない O(行長) に落とす）。
+  // for...of ではなく charCodeAt によるインデックスループを使うのも同じ理由の性能対策
+  // （for...of は文字列に対してコードポイントごとに部分文字列を生成するため遅い）。
+  function scanTableBorders(text) {
+    let count = 0;
+    let firstIndex = -1;
+    for (let i = 0; i < text.length; i += 1) {
+      if (isTableBorderCode(text.charCodeAt(i))) {
+        count += 1;
+        if (firstIndex < 0) firstIndex = i;
+      }
+    }
+    return { count, firstIndex };
+  }
 
   // URL 候補（text.slice(start, end)）が「罫線テーブルのセル境界で切り詰められた断片」
   // らしいかどうかを判定する（issue #361）。
@@ -159,39 +184,51 @@
   // isWrapped な行しか連結しないため、セル幅で見た目上折り返された URL の先頭断片
   // だけが単独の候補として extractUrlMatches() に渡ってきてしまう
   // （罫線テーブルの行は isWrapped: false のため、terminalLinkProvider.js が渡す
-  // text は常にその 1 行そのものと一致する。折り返しをまたいだ本物の連結結果に
-  // 罫線文字が混じることは通常無いため、text 全体を見て判定して問題ない）。
+  // text は通常その 1 行そのものと一致する。ただしペイン幅より広いテーブルは xterm
+  // 自身が行を折り返すため isWrapped: true になり、merged が罫線を含む複数行の
+  // 連結になることもあり得る。その場合も text 全体を対象に判定すれば「テーブルの
+  // 行らしさ」の検出はできるため、安全側（抑止する方向）に倒れて問題ない）。
   //
   // 判定条件（司・issue 起票者・植草の合意事項。issue コメントにあった「テーブル内は
   // 一律諦める」よりも狭いルール）:
   //   1. 候補が乗っている行に罫線テーブルの縦線が2つ以上ある（＝テーブルの行らしい）。
-  //   2. 候補の直後が「0個以上の空白＋縦線文字」で終わっている（＝セルの右端に接している）。
-  // 両方満たす場合だけ「切り詰められている」とみなし、リンク化の対象から外す。
+  //   2. 候補より前に縦線が1つ以上ある（＝候補自身がセルの中にある）。これが無いと
+  //      「see https://example.com/a │ x │ y」のような、そもそもテーブルではない
+  //      地の文の行まで抑止してしまう（安藤レビュー指摘・LOW）。
+  //   3. 候補の直後が「0個以上の空白＋縦線文字」で終わっている（＝セルの右端に接している）。
+  // すべて満たす場合だけ「切り詰められている」とみなし、リンク化の対象から外す。
   //
   // 「セルの直下の物理行を実際に読んで続きがあるか検証する」というより厳密な判定も
   // 検討したが、罫線位置の解析・複数セルの対応付けが必要になり、issue のスコープに
   // 対してコストが不釣り合いなため採用しない（司・植草合意）。境界ケースは
-  // 「非リンク化する」側に倒す方針のため、条件2 は空白の個数を問わない（0個も含む）
+  // 「非リンク化する」側に倒す方針のため、条件3 は空白の個数を問わない（0個も含む）
   // 最大限緩い判定にしている。誤って非リンク化した場合の実害は「押せない（テキスト
   // 選択でのコピーは可能）」に留まり、逆に切り詰められた URL をリンク化したままにした
   // 場合の実害（404 を開いてしまう）より小さいと判断したため、この非対称性を判定の
   // 緩さの根拠にしている。
   //
+  // ただしこの非対称性ゆえに、テーブルの列幅がその列の最長内容で決まる一般的な
+  // レンダリング（`gh pr list` 風の表など）では、URL が列内で最長＝ちょうど収まって
+  // いるケースも必ず「URL + 空白 + 縦線」の形になり、切り詰められていなくても
+  // 非リンク化される（切り詰められた場合と行内の情報だけでは区別できないため、
+  // 原理的に避けられない）。これは意図して受け入れた仕様であり、changelog にも
+  // 明記している。
+  //
   // xterm のバッファには一切触れない（text と start/end というインデックスだけで
   // 完結する）純粋関数として書けるため、urlLinkify.js の責務境界（バッファに触れない）
-  // を壊さずにここへ置ける。判定に必要なのは「この行に罫線が複数あるか」「候補の直後が
-  // 罫線で閉じているか」という文字列だけの情報であり、バッファ座標や折り返し状態への
+  // を壊さずにここへ置ける。判定に必要なのは「この行に罫線が複数あるか」「候補の前後に
+  // 罫線があるか」という文字列だけの情報であり、バッファ座標や折り返し状態への
   // アクセスは不要なため。
-  function isTruncatedAtTableCellBorder(text, start, end) {
-    let borderCount = 0;
-    for (const ch of text) {
-      if (TABLE_BORDER_CHARS.has(ch)) borderCount += 1;
-    }
-    if (borderCount < 2) return false;
+  //
+  // borders は scanTableBorders(text) の結果を呼び出し側（extractUrlMatches）が
+  // 候補ごとではなく行ごとに 1 回だけ計算して渡す（性能対策。上記コメント参照）。
+  function isTruncatedAtTableCellBorder(text, start, end, borders) {
+    if (borders.count < 2) return false;
+    if (borders.firstIndex < 0 || borders.firstIndex >= start) return false;
 
     let i = end;
     while (i < text.length && text[i] === ' ') i += 1;
-    return i < text.length && TABLE_BORDER_CHARS.has(text[i]);
+    return i < text.length && isTableBorderCode(text.charCodeAt(i));
   }
 
   // ホスト名が「実在しそうな行き先」かどうかの最低限のチェック（安藤レビュー指摘・LOW）。
@@ -239,6 +276,10 @@
     if (typeof text !== 'string' || !text) return [];
 
     const results = [];
+    // 罫線の出現数・最初の位置は行（text）ごとに変わらないループ不変量のため、
+    // 候補ごとに数え直さずここで 1 回だけ計算する（安藤レビュー指摘・MEDIUM。
+    // scanTableBorders() のコメント参照）。
+    const borders = scanTableBorders(text);
     // グローバルフラグ付き正規表現は lastIndex を使い回すため、呼び出しのたびに
     // 明示的にリセットする（モジュールスコープの単一インスタンスを使い回すため必須）。
     URL_CANDIDATE_REGEX.lastIndex = 0;
@@ -253,7 +294,7 @@
         const start = match.index;
         const end = start + url.length;
         // 罫線テーブルのセル境界で切り詰められた URL 断片はリンク化しない（issue #361）。
-        if (isTruncatedAtTableCellBorder(text, start, end)) continue;
+        if (isTruncatedAtTableCellBorder(text, start, end, borders)) continue;
         results.push({ url, start, end });
       }
     }
@@ -267,5 +308,6 @@
     hasUserInfo,
     isAcceptableUrlHost,
     isTruncatedAtTableCellBorder,
+    scanTableBorders,
   };
 });

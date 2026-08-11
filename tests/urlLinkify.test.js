@@ -9,6 +9,8 @@ const {
   getUrlHost,
   hasUserInfo,
   isAcceptableUrlHost,
+  isTruncatedAtTableCellBorder,
+  scanTableBorders,
 } = require('../renderer/urlLinkify');
 const { MAX_SAFE_HTTP_URL_LENGTH } = require('../renderer/urlSafety');
 
@@ -231,7 +233,7 @@ test('extractUrlMatches: 罫線テーブルのセル境界で切り詰められ�
 });
 
 test('extractUrlMatches: 罫線テーブルの縦線が ASCII の | 単体（シェルパイプ等）では除外しない', () => {
-  // 縦線が1本しかない・そもそも罫線文字（│ ┃）ではない行は「テーブルの行らしさ」の
+  // 縦線が1本しかない・そもそも罫線文字（│ ┃ ║）ではない行は「テーブルの行らしさ」の
   // 条件（2つ以上）を満たさないため、通常どおりリンク化される。
   assert.equal(
     extractUrlMatches('cmd1 | grep https://example.com | wc -l').length,
@@ -239,7 +241,11 @@ test('extractUrlMatches: 罫線テーブルの縦線が ASCII の | 単体（シ
   );
 });
 
-test('extractUrlMatches: セル内に URL が丸ごと収まっている場合はリンク化を維持する（issue #361 リグレッション）', () => {
+// テスト名を実態に合わせる（安藤レビュー指摘・MEDIUM）: ここで検証しているのは
+// 「URL の後ろにセル内の文字（丸カッコ書きの補足等）が続くケース」のみであり、
+// 「セル内に URL が丸ごと収まっていれば常にリンク化される」という一般命題ではない
+// （末尾ぴったりで収まるケースは下の別テストの通り除外される）。
+test('extractUrlMatches: URL の後ろにセル内の文字が続く場合はリンク化を維持する（issue #361 リグレッション）', () => {
   // セルの右端（縦線）の直前ではなく、URL の後ろに他の文字（丸カッコ書きの補足など）が
   // 続いてからセルが終わるケース。候補の直後が「空白+縦線」ではないため除外されない。
   const row = '│ PR │ #399 (https://github.com/vektor-inc/vk-agents/pull/399) マージ済み │';
@@ -250,4 +256,59 @@ test('extractUrlMatches: セル内に URL が丸ごと収まっている場合�
 
 test('extractUrlMatches: 罫線テーブルではない通常行の URL はリンク化を維持する（issue #361 リグレッション）', () => {
   assert.equal(extractUrlMatches('詳しくは https://example.com/foo をご覧ください').length, 1);
+});
+
+// 意図して受け入れた仕様（司・植草合意・M2）: テーブルの列幅は「その列の最長内容」で
+// 決まるレンダリングが一般的なため、URL が列内で最長＝ちょうど収まっているケースも
+// 必ず「URL + 空白 + 縦線」の形になり、切り詰められているかどうかを行内の情報だけで
+// 区別できない。そのため「セルの末尾に来た URL」は切り詰めの有無に関わらず一律で
+// リンク化しない（CHANGELOG にも明記）。この受け入れた挙動をテストで固定しておく。
+test('extractUrlMatches: セルの末尾にぴったり収まった（切り詰められていない）URL もリンク化しない（issue #361・意図した仕様）', () => {
+  // 安藤レビューでの実測どおり、末尾に十分な空白があっても無くても除外される。
+  assert.deepEqual(extractUrlMatches('│ https://example.com/a │ ok │'), []);
+  assert.deepEqual(extractUrlMatches('│ https://example.com/a                    │ ok │'), []);
+});
+
+test('extractUrlMatches: 候補の直後に空白を挟まず縦線が直接続く場合もリンク化しない（issue #361・植草指摘）', () => {
+  // 意図して緩めた境界（条件3は空白0個も含む）の担保。
+  const row = '│vk-agents│https://github.com/vektor-inc/vk-agen│feature-branch│';
+  assert.deepEqual(extractUrlMatches(row), []);
+});
+
+test('extractUrlMatches: 候補より前に縦線が無い行は抑止しない（安藤レビュー指摘・LOW）', () => {
+  // 罫線がすべて候補より後ろにしかない場合、そもそも候補自身はセルの中に無い
+  // （地の文に URL があり、その後ろに別の罫線が続くだけのケース）ため抑止しない。
+  assert.equal(
+    extractUrlMatches('see https://example.com/a │ x │ y').length,
+    1,
+  );
+});
+
+// ─── isTruncatedAtTableCellBorder / scanTableBorders の直接テスト（安藤レビュー指摘・LOW） ──
+// extractUrlMatches() 経由の統合的なテストとは別に、公開ヘルパー単体でも検証する
+// （他の公開ヘルパーはすべて直接テストがある慣習に合わせる）。
+test('scanTableBorders: 罫線の出現数と最初の位置を返す', () => {
+  assert.deepEqual(scanTableBorders('no borders here'), { count: 0, firstIndex: -1 });
+  assert.deepEqual(scanTableBorders('│ a │'), { count: 2, firstIndex: 0 });
+  assert.deepEqual(scanTableBorders('a │ b ┃ c ║ d'), { count: 3, firstIndex: 2 });
+});
+
+test('isTruncatedAtTableCellBorder: borders.count が2未満なら常に false', () => {
+  const text = '│ https://example.com/a';
+  const borders = scanTableBorders(text);
+  assert.equal(isTruncatedAtTableCellBorder(text, 2, text.length, borders), false);
+});
+
+test('isTruncatedAtTableCellBorder: 候補より前に縦線が無ければ false', () => {
+  const text = 'https://example.com/a │ x │ y';
+  const borders = scanTableBorders(text);
+  assert.equal(isTruncatedAtTableCellBorder(text, 0, 21, borders), false);
+});
+
+test('isTruncatedAtTableCellBorder: 縦線2つ以上・候補の前後に縦線があれば true', () => {
+  const text = '│ https://example.com/a │ x │';
+  const borders = scanTableBorders(text);
+  const start = text.indexOf('https://');
+  const end = start + 'https://example.com/a'.length;
+  assert.equal(isTruncatedAtTableCellBorder(text, start, end, borders), true);
 });

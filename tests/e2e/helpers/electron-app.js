@@ -142,6 +142,37 @@ async function getFreePort() {
 // waitForAppReady と同じ budget を渡し、「electron-launch → firstWindow → sidebar-ready」
 // の 3 段を 1 つの絶対予算で管理する。launchApp を単独で呼ぶ spec（#sidebar を
 // 使わないものも多い）向けに、省略時はこの 2 段だけの新しい budget を作る。
+//
+// --force-device-scale-factor は付けない（issue #357 で一度試して撤回した）。
+//
+// 開発機の OS 表示倍率（例: macOS の「文字を拡大」設定で devicePixelRatio が 1.24 の
+// ような非整数値になる）が Chromium にそのまま伝わると、outline-width /
+// outline-offset / border-width の計算値がデバイスピクセル単位へ丸められ、CSS で
+// 固定している 2px ちょうどではなく 1.6129px・1.99093px のような端数になる
+// （太さは整数デバイスピクセルへ、オフセットは 1/64 デバイスピクセル刻みへ切り捨てる。
+// ただし刻みは環境・Chromium のバージョンで揺れる。詳細は helpers/focus-ring.js の
+// 冒頭コメントを参照）。フォーカスリング系の e2e は太さ・オフセットまで固定値の完全
+// 一致で比較しており、この丸めが直接テスト失敗になる（倍率 1 の環境では発生しないため、
+// 実装を変えていないのに手元だけ落ちる・CI では再現しない、掴みどころのない壊れ方をする）。
+//
+// 対策として一度 --force-device-scale-factor=1 を付け、Chromium 側のレンダリング倍率を
+// 常に 1 へ固定する案を試した。フォーカスリング系の assertion 自体は救えたが、
+// escape-modal-layer-regression.smoke.spec.js の「背景の preventDefault はモーダル内の
+// 選択・クリックを妨げない」（win.mouse.move/down/up によるドラッグでのテキスト選択）が
+// devicePixelRatio が 1 以外の実機（Retina 等）で確実に壊れることが分かった
+// （実測: 同機で通常起動時は 3/3 成功、--force-device-scale-factor=1 を付けると 3/3
+// 失敗）。Electron はマウス入力を OS のネイティブスケール（実機の実倍率）で解釈するため、
+// Chromium の描画倍率だけを別の値へ強制すると、CSS ピクセル座標の変換に実機倍率と
+// 強制倍率のズレが生じ、ドラッグの実際の到達座標が意図した位置からずれて選択が
+// 成立しなくなる。これは pixel 値の assertion を弱めるだけでは直らない実際の入力挙動の
+// 破壊であり、「他の e2e への影響が無いか確認する」を満たせなかったため撤回した。
+//
+// 代わりに、outline-width / outline-offset / border-width を固定値で比較している
+// 側（テストの読み取り）で devicePixelRatio 由来の丸め誤差を許容する方式を採用した
+// （helpers/focus-ring.js の expectPxClose 系）。Electron の起動そのものはどの機の
+// 実表示倍率でも変えず、マウス入力の挙動に影響を与えない。この関数の下の
+// _electron.launch() の args には --force-device-scale-factor を渡していない
+// （＝上記の撤回を反映した現在の状態）。
 async function launchApp({ port, prefix, env = {}, config = {}, budget = createBootBudget(BOOT_TOTAL_BUDGET_MS) }) {
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   let app = null;
@@ -168,33 +199,7 @@ async function launchApp({ port, prefix, env = {}, config = {}, budget = createB
     }), 'utf8');
 
     app = await runStage(budget, 'electron-launch', (fnTimeoutMs) => _electron.launch({
-      // --force-device-scale-factor は付けない（issue #357 で一度試して撤回した）。
-      //
-      // 開発機の OS 表示倍率（例: macOS の「文字を拡大」設定で devicePixelRatio が 1.24 の
-      // ような非整数値になる）が Chromium にそのまま伝わると、outline-width /
-      // outline-offset / border-width の計算値がデバイスピクセル単位へ丸められ、CSS で
-      // 固定している 2px ちょうどではなく 1.6129px・1.99093px のような端数になる
-      // （太さは整数デバイスピクセルへ、オフセットは 1/64 デバイスピクセル刻みへ切り捨てる）。
-      // フォーカスリング系の e2e は太さ・オフセットまで固定値の完全一致で比較しており、
-      // この丸めが直接テスト失敗になる（倍率 1 の環境では発生しないため、実装を変えていない
-      // のに手元だけ落ちる・CI では再現しない、掴みどころのない壊れ方をする）。
-      //
-      // 対策として一度 --force-device-scale-factor=1 を付け、Chromium 側のレンダリング倍率を
-      // 常に 1 へ固定する案を試した。フォーカスリング系の assertion 自体は救えたが、
-      // escape-modal-layer-regression.smoke.spec.js の「背景の preventDefault はモーダル内の
-      // 選択・クリックを妨げない」（win.mouse.move/down/up によるドラッグでのテキスト選択）が
-      // devicePixelRatio が 1 以外の実機（Retina 等）で確実に壊れることが分かった
-      // （実測: 同機で通常起動時は 3/3 成功、--force-device-scale-factor=1 を付けると 3/3
-      // 失敗）。Electron はマウス入力を OS のネイティブスケール（実機の実倍率）で解釈するため、
-      // Chromium の描画倍率だけを別の値へ強制すると、CSS ピクセル座標の変換に実機倍率と
-      // 強制倍率のズレが生じ、ドラッグの実際の到達座標が意図した位置からずれて選択が
-      // 成立しなくなる。これは pixel 値の assertion を弱めるだけでは直らない実際の入力挙動の
-      // 破壊であり、「他の e2e への影響が無いか確認する」を満たせなかったため撤回した。
-      //
-      // 代わりに、outline-width / outline-offset / border-width を固定値で比較している
-      // 側（テストの読み取り）で devicePixelRatio 由来の丸め誤差を許容する方式を採用した
-      // （helpers/focus-ring.js の expectPxClose 系）。Electron の起動そのものはどの機の
-      // 実表示倍率でも変えず、マウス入力の挙動に影響を与えない。
+      // --force-device-scale-factor を付けない理由は launchApp 冒頭のコメントを参照（issue #357）。
       args: ['.', '--no-claude'],
       cwd: repoRoot,
       timeout: fnTimeoutMs,

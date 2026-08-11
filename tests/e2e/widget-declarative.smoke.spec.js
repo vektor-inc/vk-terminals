@@ -669,13 +669,20 @@ test.describe.serial('widgetFile 系タスク一覧の描画・操作（issue #2
       expect(bounds[1].width).toBeGreaterThanOrEqual(48);
 
       await toggle.focus();
-      // width / height / border-width / outline-offset はいずれも devicePixelRatio が 1 以外の
-      // 開発機だと Chromium の丸めで端数になり得る（issue #357。固定サイズのボックスの
-      // getComputedStyle().width / height も、getBoundingClientRect() と違いレイアウト時に
-      // デバイスピクセルへスナップされた値を返すため対象になる。実測: 1.24 倍率だと
-      // "24px" が "23.9919px" になった）。border-style だけは文字列で丸めの対象にならない
-      // ため固定値の完全一致のまま、残り 4 項目は expectPxClose で devicePixelRatio 由来の
-      // 丸めを許容して比較する（detail は helpers/focus-ring.js の冒頭コメントを参照）。
+      // width / height / border-width（四辺）/ outline-offset はいずれも devicePixelRatio が
+      // 1 以外の開発機だと Chromium の丸めで端数になり得る（issue #357。固定サイズの
+      // ボックスの getComputedStyle().width / height も、getBoundingClientRect() と違い
+      // レイアウト時にデバイスピクセルへスナップされた値を返すため対象になる。実測:
+      // 1.24 倍率だと "24px" が "23.9919px" になった）。border-style だけは文字列で丸めの
+      // 対象にならないため固定値の完全一致のまま、残りは expectPxClose で devicePixelRatio
+      // 由来の丸めを許容して比較する（detail は helpers/focus-ring.js の冒頭コメントを参照）。
+      //
+      // border-width は borderTopWidth / borderRightWidth / borderBottomWidth /
+      // borderLeftWidth を個別に読む。ショートハンドの style.borderWidth は四辺が
+      // 揃わないと "1px 0px 1px 1px" のような複数値を返し、parseFloat で先頭値だけを
+      // 見ると「枠が 3 辺だけになる」ような回帰を見逃す（安藤レビュー指摘。共通化前の
+      // toEqual({ borderWidth: '1px' }) はこの複数値を素通りさせない完全一致だったため
+      // 気付けていた検出力を、共通化で落とさないようにする）。
       const [dpr, toggleStyle] = await Promise.all([
         win.evaluate(() => window.devicePixelRatio),
         toggle.evaluate((element) => {
@@ -683,7 +690,10 @@ test.describe.serial('widgetFile 系タスク一覧の描画・操作（issue #2
           return {
             width: style.width,
             height: style.height,
-            borderWidth: style.borderWidth,
+            borderTopWidth: style.borderTopWidth,
+            borderRightWidth: style.borderRightWidth,
+            borderBottomWidth: style.borderBottomWidth,
+            borderLeftWidth: style.borderLeftWidth,
             borderStyle: style.borderStyle,
             outlineOffset: style.outlineOffset,
           };
@@ -692,7 +702,10 @@ test.describe.serial('widgetFile 系タスク一覧の描画・操作（issue #2
       expect(toggleStyle.borderStyle, 'toggle の border-style').toBe('solid');
       expectPxClose(toggleStyle.width, 24, dpr, 'toggle の width');
       expectPxClose(toggleStyle.height, 24, dpr, 'toggle の height');
-      expectPxClose(toggleStyle.borderWidth, 1, dpr, 'toggle の border-width');
+      expectPxClose(toggleStyle.borderTopWidth, 1, dpr, 'toggle の border-top-width');
+      expectPxClose(toggleStyle.borderRightWidth, 1, dpr, 'toggle の border-right-width');
+      expectPxClose(toggleStyle.borderBottomWidth, 1, dpr, 'toggle の border-bottom-width');
+      expectPxClose(toggleStyle.borderLeftWidth, 1, dpr, 'toggle の border-left-width');
       expectPxClose(toggleStyle.outlineOffset, 2, dpr, 'toggle の outline-offset');
 
       await toggle.click();

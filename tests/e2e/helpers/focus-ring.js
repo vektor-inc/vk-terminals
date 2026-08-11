@@ -16,21 +16,36 @@
 // keyboard / locator を持つ）なので、同じ関数をそのまま両方に使える。
 //
 // devicePixelRatio 由来の丸めについて（issue #357 の対策方針）:
-//   Chromium は outline-width / outline-offset / border-width の計算値をデバイス
-//   ピクセル単位へ丸める（太さ・border-width は整数デバイスピクセルへ、outline-offset は
-//   1/64 デバイスピクセル刻みへ切り捨てる）。開発機の OS 表示倍率（devicePixelRatio）が
-//   1 以外だと、CSS で固定している "2px" ちょうどが "1.6129px" のような端数になる。
+//   Chromium は outline-width / outline-offset / border-width、および固定サイズ要素の
+//   width / height の計算値をデバイスピクセル単位へ丸める。刻みはプロパティ・環境・
+//   Chromium のバージョンで揺れる（安藤さんの実測では border-width は整数デバイスピクセル
+//   へ切り捨てだったが、outline-offset は 1/64 デバイスピクセル刻みで切り捨てられた環境と、
+//   整数デバイスピクセルへ切り捨てられた環境の両方が確認できている）。開発機の OS 表示倍率
+//   （devicePixelRatio）が 1 以外だと、CSS で固定している "2px" ちょうどが "1.6129px" の
+//   ような端数になる。
 //   一度は Electron 起動時に --force-device-scale-factor=1 を渡して丸めそのものを
 //   起こさせない案（案 A）を試したが、escape-modal-layer-regression.smoke.spec.js の
 //   マウスドラッグによるテキスト選択が実機（devicePixelRatio が 1 以外）で確実に壊れる
-//   副作用が見つかり撤回した（詳細は helpers/electron-app.js の launchApp 冒頭コメント）。
+//   副作用が見つかり撤回した（詳細は helpers/electron-app.js の launchApp 冒頭のコメント）。
 //   代わりにここでは「読み取った値を丸めごと期待値と比較する」方式（案 C）を採る。
 //   丸めの最大誤差は 1 device pixel（= 1 / devicePixelRatio CSS px）に収まるため、
-//   その範囲のズレは許容し、それを超えるズレだけを実バグとして検出する
-//   （devicePixelRatio が 1 の環境では誤差 0 のため、完全一致と同じ強さで検証できる）。
-//   Chromium 内部の丸めアルゴリズム（太さと offset で刻みが違う等）をテスト側で
-//   再現する案（案 B）は、実装依存のロジックをテストに持ち込み Chromium のバージョンで
-//   崩れうるため採らなかった。
+//   その範囲のズレは許容し、それを超えるズレだけを実バグとして検出する。
+//   ただし「期待値がデバイスピクセル格子にちょうど乗る」場合は、どんな丸め方（切り捨て・
+//   四捨五入等）をしても値は動かないため丸めは起こり得ない。この場合だけ完全一致を要求する
+//   （devicePixelRatio が 1 の環境は常にこちらに該当するため、CI では従来どおり完全一致の
+//   検出力を保つ。詳細は expectPxClose 内のコメントを参照）。
+//   Chromium 内部の丸めアルゴリズムそのもの（太さと offset で刻みが違う、環境によっても
+//   違う）をテスト側で再現する案（案 B）は、実装依存のロジックをテストに持ち込み
+//   Chromium のバージョン・環境で崩れうるため採らなかった。
+//
+//   この方式は window.devicePixelRatio が実際の描画スナップ格子を正しく表していることに
+//   依存する。Playwright の context が deviceScaleFactor をエミュレーションで上書きすると、
+//   実際のレンダリングは（エミュレーション前の）実機倍率の格子で丸められたままなのに
+//   window.devicePixelRatio はエミュレーション後の値を返す食い違いが起こりうる
+//   （安藤さんの実測で確認済み）。今の構成（context の deviceScaleFactor を明示しない）
+//   では tolerance が過大になる方向にしか振れず実害は無いが、将来 chromium.launch() /
+//   newContext() に deviceScaleFactor や倍率系フラグを足す場合は、この前提が崩れて
+//   tolerance が過小（偽陽性の元）になり得るため注意すること。
 
 const { expect } = require('@playwright/test');
 
@@ -74,27 +89,41 @@ async function readOutline(page, selector) {
 
 // "2px" / "-1.99093px" のような px 文字列を数値へ変換する。
 function parsePx(value, label) {
-  const n = parseFloat(value);
+  // "1px 0px 1px 1px" のような複数値ショートハンド（例: border-width が四辺不揃いのとき）を
+  // parseFloat の「先頭値だけ拾う」性質で気付かずに通してしまわないよう、空白を含む値は
+  // ここで弾く。呼び出し側は borderTopWidth / borderRightWidth / ... のように辺ごとの
+  // プロパティを個別に渡すこと。
+  const str = String(value).trim();
+  if (/\s/.test(str)) {
+    throw new Error(`${label}: 複数値のショートハンド "${value}" は 1 値ずつ比較すること（辺ごとのプロパティを個別に渡す）`);
+  }
+  const n = parseFloat(str);
   if (Number.isNaN(n)) throw new Error(`${label}: px 値としてパースできない実測値 "${value}"`);
   return n;
 }
 
 // devicePixelRatio 由来の丸めを許容しつつ、px の実測値（文字列）と期待値（CSS px の数値）を
-// 比較する。許容誤差は「丸めが起こり得る最大値」である 1 device pixel（= 1 / dpr CSS px）。
-// 丸めは floor（切り捨て）で起きるため、ズレは必ず 1 device pixel「未満」に収まる。
-// 1 device pixel ちょうど（またはそれ以上）のズレは丸めでは起こり得ず実バグ側なので、
-// 境界（1 device pixel ちょうど）は許容に含めない。
-// dpr が 1 の環境では許容誤差が実質 0（浮動小数の誤差吸収分のみ）になるため、
-// 固定値の完全一致と同じ強さで検証できる（例: outline-width が 2px → 1px に壊れていたら、
-// diff=1 は tolerance=1-ε を超えるため確実に検出する）。
+// 比較する。
+//
+// 期待値がデバイスピクセル格子にちょうど乗る（= expectedCssPx * dpr が整数に等しい）場合、
+// 切り捨て・四捨五入などどんな丸め方をしても値は動かないため丸めは起こり得ない。この場合は
+// 許容誤差をほぼ 0 にして完全一致を要求する（devicePixelRatio が 1 の環境は
+// expectedCssPx * 1 が常に整数なので必ずこちらに該当し、CI では従来どおり完全一致と
+// 同じ検出力になる。dpr=2 で outline-width 2px を見る場合なども同様に格子に乗る）。
+// 格子に乗らない場合だけ、丸めが起こり得る最大値である 1 device pixel（= 1 / dpr CSS px）
+// 未満（floor による切り捨てのため、ズレは必ず 1 device pixel 未満に収まる。1 device
+// pixel ちょうど以上のズレは丸めでは起こり得ず実バグ側なので境界は含めない）を許容する。
 function expectPxClose(actualPxString, expectedCssPx, dpr, label) {
   const actual = parsePx(actualPxString, label);
-  const tolerance = 1 / dpr - 1e-6;
+  const expectedDevicePx = expectedCssPx * dpr;
+  const onGrid = Math.abs(expectedDevicePx - Math.round(expectedDevicePx)) < 1e-6;
+  const tolerance = onGrid ? 1e-6 : 1 / dpr - 1e-6;
   const diff = Math.abs(actual - expectedCssPx);
   expect(
     diff <= tolerance,
     `${label}: 実測 "${actualPxString}" が期待値 ${expectedCssPx}px から許容誤差 `
-      + `${tolerance.toFixed(4)}px（devicePixelRatio=${dpr} での丸め分）を超えてズレている`
+      + `${tolerance.toFixed(6)}px（devicePixelRatio=${dpr}、`
+      + `${onGrid ? 'デバイスピクセル格子に乗るため丸めは起こらない想定' : '丸めの許容分'}）を超えてズレている`
   ).toBe(true);
 }
 

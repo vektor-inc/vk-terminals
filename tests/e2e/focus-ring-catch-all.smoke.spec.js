@@ -79,6 +79,6 @@ test.describe.serial('shared.css の網羅的フォーカスリング指定（is
   // 戻り値だけで決まるため、現状のアプリでは config を渡しても .agent-room-summary は
   // 一切描画されず、e2e から到達できない。issue #70 が復帰して main.js 側の固定値が
   // 外れたら、このファイルの他テストと同じ形（focusByKeyboard + expectOutline で
-  // offset: '-2px' を確認）でここに追加すること。CSS 側の修正（内側オフセットの個別上書き）
+  // offset: -2 を確認）でここに追加すること。CSS 側の修正（内側オフセットの個別上書き）
   // 自体は、復帰後すぐ正しく動くよう今回のうちに入れてある。
 });

@@ -176,8 +176,13 @@
     return { count, firstIndex };
   }
 
-  // URL 候補（text.slice(start, end)）が「罫線テーブルのセル境界で切り詰められた断片」
-  // らしいかどうかを判定する（issue #361）。
+  // URL 候補が「罫線テーブルのセル境界で切り詰められた断片」らしいかどうかを判定する
+  // （issue #361）。
+  //
+  // end には「トリム前の生マッチ終端」（呼び出し側の言葉で言えば
+  // match.index + raw.length。trimTrailingPunctuation() を通す前の位置）を渡すこと。
+  // trimTrailingPunctuation() 後の url の終端を渡してはいけない（PR #365 レビュー・
+  // HIGH。詳しい理由は下の「なぜ生マッチ終端を使うか」を参照）。
   //
   // 罫線テーブルの各行は「ターミナルの折り返し」ではなく独立したバッファ行のため、
   // xterm の isWrapped は false。terminalLinkProvider.js の getWrappedLineWindow() は
@@ -224,6 +229,21 @@
   //
   // borders は scanTableBorders(text) の結果を呼び出し側（extractUrlMatches）が
   // 候補ごとではなく行ごとに 1 回だけ計算して渡す（性能対策。上記コメント参照）。
+  //
+  // なぜ生マッチ終端を使うか（PR #365 レビュー・HIGH の修正）:
+  // extractUrlMatches() は正規表現でまず「URL らしき塊」を大まかに拾い（raw）、
+  // trimTrailingPunctuation() で末尾の "." "," ")" 等を落とした結果を実際の URL
+  // （url）にしている。以前はこの判定に url 側の終端（トリム後）を渡していたため、
+  // 表がちょうど「trimTrailingPunctuation が削る記号」の直前で URL を切ったとき
+  // （例: "vk-agents." の直後が縦線）、トリム後の終端の位置に残るのはその記号自体で
+  // 空白でも縦線でもなく、条件が成立せず抑止し損ねていた（切り詰められた断片が
+  // そのままリンク化され、404 を開く実バグ）。
+  // 生マッチ終端（raw の終端）を渡せば、そこから「削られる記号」も含めて素通りして
+  // 縦線の有無を見られるため正しく判定できる。trimTrailingPunctuation が削る記号は
+  // 定義上「URL の一部でも意味のあるセル内容でもない」ノイズなので、それを飛ばした
+  // 先に縦線があるかどうかで判定して問題ない。記号のあとに本当のセル内容
+  // （例: "済"）が続く場合は、その文字で while ループが止まり縦線に届かないため、
+  // 従来どおり抑止しない（"#363 (https://...) 済 │ done │" のようなケースは壊れない）。
   function isTruncatedAtTableCellBorder(text, start, end, borders) {
     if (borders.count < 2) return false;
     if (borders.firstIndex < 0 || borders.firstIndex >= start) return false;
@@ -296,7 +316,11 @@
         const start = match.index;
         const end = start + url.length;
         // 罫線テーブルのセル境界で切り詰められた URL 断片はリンク化しない（issue #361）。
-        if (isTruncatedAtTableCellBorder(text, start, end, borders)) continue;
+        // isTruncatedAtTableCellBorder には end（トリム後）ではなく、trimTrailingPunctuation
+        // で削られる前の生マッチ終端 rawEnd を渡す（PR #365 レビュー・HIGH。理由は
+        // isTruncatedAtTableCellBorder のコメント参照）。
+        const rawEnd = start + raw.length;
+        if (isTruncatedAtTableCellBorder(text, start, rawEnd, borders)) continue;
         results.push({ url, start, end });
       }
     }

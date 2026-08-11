@@ -284,6 +284,46 @@ test('extractUrlMatches: 候補より前に縦線が無い行は抑止しない�
   );
 });
 
+// ─── trimTrailingPunctuation で削られた記号がセル境界判定をすり抜ける不具合（PR #365 レビュー・HIGH） ──
+// isTruncatedAtTableCellBorder が見ていた「候補の直後」は trimTrailingPunctuation() で
+// 末尾記号を削った後の end だった。表がちょうどその除去対象文字（. , : ; ! ? や対応の
+// 取れていない閉じ括弧）の直前で URL を切ったとき、end の位置に残るのはその記号自体で、
+// 空白でも縦線でもないため判定が成立せず、切り詰められた URL 断片を抑止し損ねていた
+// （安藤レビュー指摘・HIGH。司が実行して確認した再現例をそのまま fixture にする）。
+test('extractUrlMatches: セル境界のドット等の記号で切り詰められた URL 断片もリンク化しない（issue #361・PR #365 HIGH 修正）', () => {
+  assert.deepEqual(
+    extractUrlMatches('│ #399 (https://github.com/vektor-inc/vk-agents. │ feature-branch │'),
+    [],
+  );
+  assert.deepEqual(
+    extractUrlMatches('│ x │ https://example.com/a/b, │ y │'),
+    [],
+  );
+  assert.deepEqual(
+    extractUrlMatches('│ https://example.com/foo) │ x │'),
+    [],
+  );
+});
+
+test('extractUrlMatches: 閉じ括弧のあとにセル内の文字が続く場合はリンク化を維持する（PR #365 HIGH 修正のリグレッション）', () => {
+  // 上の修正で「トリム前の生マッチ終端」を見るようになっても、記号の後ろに実際の
+  // セル内容（"済"）が続く場合はそこで判定が止まり、誤って抑止しないことを確認する。
+  const row = '│ #363 (https://github.com/vektor-inc/vk-terminals) 済 │ done │';
+  const matches = extractUrlMatches(row);
+  assert.equal(matches.length, 1);
+  assert.equal(matches[0].url, 'https://github.com/vektor-inc/vk-terminals');
+});
+
+test('extractUrlMatches: 表の外で URL のあとに句読点が来る場合はリンク化を維持する（PR #365 HIGH 修正のリグレッション）', () => {
+  assert.equal(extractUrlMatches('詳しくは https://example.com/foo を参照。').length, 1);
+});
+
+test('extractUrlMatches: 表の外で URL が . で終わり行末になる場合はリンク化を維持する（PR #365 HIGH 修正のリグレッション）', () => {
+  const matches = extractUrlMatches('詳しくは https://example.com/foo.');
+  assert.equal(matches.length, 1);
+  assert.equal(matches[0].url, 'https://example.com/foo');
+});
+
 // ─── isTruncatedAtTableCellBorder / scanTableBorders の直接テスト（安藤レビュー指摘・LOW） ──
 // extractUrlMatches() 経由の統合的なテストとは別に、公開ヘルパー単体でも検証する
 // （他の公開ヘルパーはすべて直接テストがある慣習に合わせる）。

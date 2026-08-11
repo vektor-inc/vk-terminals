@@ -1415,14 +1415,18 @@ button.sidebar-section-header:hover {
 .stash-item-head .pane-status[data-status="idle"] {
   display: none;
 }
-.stash-item .pane-task-title-pr {
-  color: #3fb950;
+/* open（PR が出ただけ）/ awaiting-merge（マージ待ち）はどちらも格納カード背景
+ * （#161b22）で AA を満たすため、`.pane-task-title-pr` 基底の値をそのまま使う
+ * （個別上書き不要。issue #363 植草検算）。
+ * merged（マージ済み）だけは基底の値（#a371f7 系）だと格納カード背景で AA 未達
+ * （4.22:1）になるため、hover 用トークンを base へ転用して個別上書きする。 */
+.stash-item .pane-task-title-pr.merged {
+  color: #b083f8;
+  border-color: #b083f8;
 }
-/* hover 時、基底クラスが背景オーバーレイを rgba(63,185,80,.15)→.25 に強める分
- * 文字色 #3fb950 では実効コントラストが約 4.37:1 に落ち AA（4.5:1）未達になる。
- * hover 時だけ文字色を明るい緑 #56d364 に上げて AA を確保する（暗背景で約 5.7:1）。 */
-.stash-item .pane-task-title-pr:hover {
-  color: #56d364;
+.stash-item .pane-task-title-pr.merged:hover {
+  color: #bb96fa;
+  border-color: #bb96fa;
 }
 .stash-item .pane-task-title-link:hover {
   color: #58a6ff;
@@ -2165,44 +2169,58 @@ button.sidebar-section-header:hover {
   opacity: 1;
 }
 
-/* ─── Pane task title PR button (issue #44) ────────────────────────────────
- * タイトル行の右端に独立して表示する [ PR ↗ ] ボタン。
+/* ─── Pane task title PR button (issue #44 / #363) ─────────────────────────
+ * タイトル行の右端に独立して表示する [ PR ↗ ] ボタン。3状態:
+ *   - open（PR が出ただけ）: 追加クラスなし。灰
+ *   - awaiting-merge（マージ待ち。issue #363）: `.awaiting-merge`。青
+ *   - merged（マージ済み）: `.merged`。紫
  *   - `.pane-badge` 共通基底（h18 / font-size 10 / radius 3px）に乗せる
  *   - `margin-left: auto` で右寄せ。`flex-shrink: 0` でタイトル省略時にも縮まない
- *   - 色: GitHub PR グリーン系（背景 rgba(63,185,80,.15) / border #3fb950）
  *   - フォーカスリングは共通の `--vktm--outline--focus-ring` を参照する
- * `.pane-task-title` 親側は現在背景 #101015（暗色）。文字・境界は GitHub Primer
- * ダーク寄りの明るいトークン（open: #3fb950 / merged: #a371f7）を使い、
- * 暗背景で WCAG 2.1 AA（文字 4.5:1 / 境界 3:1）を満たす。
- * hover は現行の塗り不透明度を維持しつつ、文字・境界を一段明るいトーン
- * （open: #56d364 / merged: #b083f8）へ上げて AA を確保する。
- * この hover 作法は `.stash-item .pane-task-title-pr` に揃えている。
- * 境界は半透明だと 3:1 に届かないため、前景と同一の不透明トークンを使う。
- * 概算コントラスト比（植草検算）: open base #3fb950 ≈ 6.0:1 /
- * open hover #56d364 ≈ 6.5:1 / merged base #a371f7 ≈ 5.0:1 /
- * merged hover #b083f8 ≈ 5.3:1 / 境界はいずれも #101015 に対し 3:1 以上。
- * 実測は麗美が行う。
+ * `.pane-task-title` 親側は現在背景 #101015（暗色）。文字・境界は暗背景で
+ * WCAG 2.1 AA（文字 4.5:1 / 境界 3:1）を満たすトークンを使う。
+ * hover は現行の塗り不透明度を維持しつつ、文字・境界を一段明るいトーンへ上げて
+ * AA を確保する。この hover 作法は `.stash-item .pane-task-title-pr.merged` に揃えている。
+ * 境界は半透明だと 3:1 に届かないため、前景と同一の不透明トークンを使う
+ * （awaiting-merge の border もサイドバーの半透明トークン rgba(88,166,255,.30) は使わない）。
+ * 概算コントラスト比（植草検算）: open base #99a1ab ≈ 5.78:1(ペイン)/5.15:1(格納) /
+ * open hover #b1bac4 ≈ 6.33:1/5.65:1 / awaiting-merge base #79c0ff ≈ 7.45:1/6.54:1 /
+ * awaiting-merge hover #a5d6ff ≈ 7.34:1/6.53:1 / merged base #a371f7 ≈ 4.70:1(ペイン) /
+ * merged hover #b083f8 ≈ 4.76:1。格納カードの merged は下記の個別上書きで AA を確保。
+ * 境界はいずれも各面の raw 背景に対し 3:1 以上。実測は麗美が行う。
  */
 .pane-task-title-pr {
   margin-left: auto;
   padding: 0 6px;
   /* badge gap (3px) はやや詰まり気味なのでラベル + ↗ 用に 4px に上書き */
   gap: 4px;
-  background: rgba(63, 185, 80, 0.15);
-  border: 1px solid #3fb950;
+  background: rgba(153, 161, 171, 0.15);
+  border: 1px solid #99a1ab;
   /* `.pane-task-title` の高さ（22px）に対し badge は 18px。
    * border 1px 込みでも親の line-height をはみ出さない。 */
-  color: #3fb950;
+  color: #99a1ab;
   text-decoration: none;
   cursor: pointer;
   transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
 }
 
 .pane-task-title-pr:hover {
-  background: rgba(63, 185, 80, 0.25);
-  border-color: #56d364;
-  color: #56d364;
+  background: rgba(153, 161, 171, 0.25);
+  border-color: #b1bac4;
+  color: #b1bac4;
   text-decoration: none;
+}
+
+.pane-task-title-pr.awaiting-merge {
+  background: rgba(121, 192, 255, 0.15);
+  border-color: #79c0ff;
+  color: #79c0ff;
+}
+
+.pane-task-title-pr.awaiting-merge:hover {
+  background: rgba(121, 192, 255, 0.25);
+  border-color: #a5d6ff;
+  color: #a5d6ff;
 }
 
 .pane-task-title-pr.merged {

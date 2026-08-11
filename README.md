@@ -571,6 +571,12 @@ curl -s -X POST http://127.0.0.1:13847/api/set-title \
   -H 'Content-Type: application/json' \
   -d '{"termId": "1", "title": "issue #44", "prUrl": "https://github.com/vektor-inc/vk-terminals/pull/99", "prMerged": true}'
 
+# PR ボタンをマージ待ち表示（青）にする（issue #363）
+curl -s -X POST http://127.0.0.1:13847/api/set-title \
+  -H 'Authorization: Bearer <アクセストークン>' \
+  -H 'Content-Type: application/json' \
+  -d '{"termId": "1", "title": "issue #44", "prUrl": "https://github.com/vektor-inc/vk-terminals/pull/99", "prWaitingMerge": true}'
+
 # タイトル・URL・PR ボタンをクリア（空文字で消す）
 curl -s -X POST http://127.0.0.1:13847/api/set-title \
   -H 'Authorization: Bearer <アクセストークン>' \
@@ -585,6 +591,7 @@ curl -s -X POST http://127.0.0.1:13847/api/set-title \
 - `url`（任意）: タイトル全体をリンク化するための URL。`http(s):` スキームのみ許可、2048 文字以内、`new URL()` で parse 可能であることが必須。違反時は `400` を返します。空文字 `""` を渡すと既存の URL がクリアされます。省略すると URL なしになります。
 - `prUrl`（任意・issue #44）: タイトル行の右端に独立して表示する `PR ↗` ボタンに紐づける URL。バリデーションは `url` と完全同一（`http(s):` のみ・2048 文字以内・`new URL()` で parse 可）。空文字 `""` を渡すと PR ボタンが消えます。省略すると PR ボタンなしになります。
 - `prMerged`（任意・issue #113）: `PR ↗` ボタンをマージ済み表示（紫背景 + 非色アイコン）にする真偽値。**厳密な `true` のときだけ**マージ済み表示になり、それ以外の値（省略・`false`・文字列など）は通常表示（未マージ）になります。`prUrl` と組み合わせて使います。
+- `prWaitingMerge`（任意・issue #363）: `PR ↗` ボタンをマージ待ち表示（青背景 + 非色アイコン）にする真偽値。`prMerged` と同じく**厳密な `true` のときだけ**マージ待ち表示になり、それ以外の値（省略・`false`・文字列など）は「PR が出ただけ」表示（灰背景）になります。`prMerged` と同時に `true` を送った場合は `prMerged` が優先されます（マージ済みが最終状態のため）。
 
 | 挙動 |
 |---|
@@ -592,12 +599,12 @@ curl -s -X POST http://127.0.0.1:13847/api/set-title \
 | `url` が設定されている間のみ、ペインのタイトル文字列全体が `<a>` として描画され、末尾に外部リンクマーク `↗` が付きます。クリックすると `shell.openExternal()` で OS の既定ブラウザを開きます。 |
 | OSC 0 / OSC 2 由来のタイトル（`taskTitle`）が表示されている間は `url` のリンク化は無効になります。API 由来のタイトル（`apiTitle`）が選択されているときだけリンク化されます。 |
 | `prUrl` で表示される `PR ↗` ボタンは `apiTitle` / `taskTitle` のどちらが表示されている間でも常時表示されます（issue リンクが消える場面でも PR ボタンは独立に出続けます）。 |
-| `prMerged: true` を送ると `PR ↗` ボタンがマージ済み表示（紫背景）に変わります。`prMerged` も他フィールド同様に置換セマンティクスで、送らなければ未マージ表示に戻ります。 |
+| `prUrl` だけを送った場合（`prMerged` も `prWaitingMerge` も省略）は「PR が出ただけ」表示（灰背景）になります。`prMerged: true` を送ると紫（マージ済み）、`prWaitingMerge: true` を送ると青（マージ待ち）に変わります。いずれも他フィールド同様に置換セマンティクスで、送らなければ「PR が出ただけ」表示に戻ります。 |
 
 レスポンス例:
 
 ```json
-{ "ok": true, "termId": "1", "title": "issue #44", "url": "https://github.com/vektor-inc/vk-terminals/issues/44", "prUrl": "https://github.com/vektor-inc/vk-terminals/pull/99", "prMerged": true }
+{ "ok": true, "termId": "1", "title": "issue #44", "url": "https://github.com/vektor-inc/vk-terminals/issues/44", "prUrl": "https://github.com/vektor-inc/vk-terminals/pull/99", "prMerged": true, "prWaitingMerge": false }
 ```
 
 エラー例:

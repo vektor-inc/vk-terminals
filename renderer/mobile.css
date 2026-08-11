@@ -70,16 +70,22 @@ a.card-title { color: inherit; text-decoration: none; }
 .badge[data-status="idle"] { background: #2a2f37; color: #8b949e; border-color: rgba(139,148,158,0.26); }
 .badge[data-status="running"] { background: rgba(63,185,80,0.15); color: #6fd58a; border-color: rgba(63,185,80,0.3); }
 .badge[data-status="waiting"] { background: rgba(210,153,34,0.15); color: #d29922; border-color: rgba(210,153,34,0.3); }
-/* PR リンク（issue #53）。PC 版の [ PR ↗ ] バッジ（GitHub PR グリーン系）に寄せる。
-   ヘッダ帯（暗背景 var(--card)）上に置くため、PC の濃緑ではなく明るい緑文字にする。
-   .badge と同じ角丸・font-size に調和させつつ、タップ領域確保のため min-height 32px・
-   padding 縦広めにして指で押しやすくする（ヘッダ自体は min-height 44px）。 */
+/* PR リンク（issue #53 / #363）。PC 版の [ PR ↗ ] バッジと同じ3状態
+ * （open=灰 / awaiting-merge=マージ待ち・青 / merged=マージ済み・紫）を、PC と同じ
+ * 語彙（apiPrMerged / apiPrWaitingMerge）で表示する。ヘッダ帯（暗背景 var(--card) #1d2127）
+ * 上に置くため、PC のペイン/格納カード向け値をそのまま流用する（issue #363 植草検算で
+ * #1d2127 上でも AA 4.5:1 を満たすことを確認済み）。
+ * .badge と同じ角丸・font-size に調和させつつ、タップ領域確保のため min-height 32px・
+ * padding 縦広めにして指で押しやすくする（ヘッダ自体は min-height 44px）。 */
 a.pr-link { display: none; align-items: center; gap: 4px; flex: none;
   font-size: 10px; font-weight: 700; padding: 4px 8px; min-height: 32px; border-radius: 6px;
   text-transform: uppercase; letter-spacing: 0.04em; text-decoration: none;
-  background: rgba(63,185,80,0.15); border: 1px solid rgba(63,185,80,0.3); color: #6fd58a; }
+  background: rgba(153,161,171,0.15); border: 1px solid rgba(153,161,171,0.3); color: #99a1ab; }
 a.pr-link.show { display: inline-flex; }
-a.pr-link:active { background: rgba(63,185,80,0.28); border-color: rgba(63,185,80,0.5); }
+a.pr-link:active { background: rgba(153,161,171,0.28); border-color: rgba(153,161,171,0.5); color: #b1bac4; }
+/* マージ待ち PR リンク（issue #363）。#79c0ff / active #a5d6ff。 */
+a.pr-link.awaiting-merge { background: rgba(121,192,255,0.15); border-color: rgba(121,192,255,0.45); color: #79c0ff; }
+a.pr-link.awaiting-merge:active { background: rgba(121,192,255,0.28); border-color: rgba(165,214,255,0.62); color: #a5d6ff; }
 /* マージ済み PR リンク（issue #137）。ヘッダ帯 var(--card) #1d2127 上で
    #c8a8ff はコントラスト比 8.08:1、active の #d0b5ff は 9.03:1 で AA 4.5:1 を満たす。 */
 a.pr-link.merged { background: rgba(130,80,223,0.15); border-color: rgba(130,80,223,0.45); color: #c8a8ff; }

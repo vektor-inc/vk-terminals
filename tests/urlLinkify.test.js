@@ -11,6 +11,7 @@ const {
   isAcceptableUrlHost,
   isTruncatedAtTableCellBorder,
   scanTableBorders,
+  skipTrailingPunctuation,
 } = require('../renderer/urlLinkify');
 const { MAX_SAFE_HTTP_URL_LENGTH } = require('../renderer/urlSafety');
 
@@ -427,4 +428,22 @@ test('isTruncatedAtTableCellBorder: 縦線2つ以上・候補の前後に縦線�
   const start = text.indexOf('https://');
   const end = start + 'https://example.com/a'.length;
   assert.equal(isTruncatedAtTableCellBorder(text, start, end, borders), true);
+});
+
+// skipTrailingPunctuation の直接テスト（安藤レビュー指摘・LOW。公開ヘルパーには
+// 直接テストを付ける慣習に合わせる）。
+test('skipTrailingPunctuation: 閉じ括弧に当たったところで読み飛ばしを止める', () => {
+  assert.equal(skipTrailingPunctuation('..)..', 0, 5), 2);
+});
+
+test('skipTrailingPunctuation: upTo を超えて読み飛ばさない', () => {
+  assert.equal(skipTrailingPunctuation('.....', 0, 2), 2);
+});
+
+test('skipTrailingPunctuation: 句読点（ALWAYS_TRIM_TRAILING）以外の文字では動かない', () => {
+  assert.equal(skipTrailingPunctuation('a....', 0, 5), 0);
+});
+
+test('skipTrailingPunctuation: 全角句読点も読み飛ばし対象', () => {
+  assert.equal(skipTrailingPunctuation('。、！？x', 0, 5), 4);
 });

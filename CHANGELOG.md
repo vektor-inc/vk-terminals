@@ -1,6 +1,6 @@
 # Changelog
 
-- [ 開発環境 ] devicePixelRatio が 1 以外の開発機だと Chromium の描画丸めで outline・border・要素サイズを固定値の完全一致で比較する e2e が 6 spec 同時に失敗する不具合を修正し、丸めを許容しつつ比較する共通ヘルパー `tests/e2e/helpers/focus-ring.js` を追加（[#357](https://github.com/vektor-inc/vk-terminals/issues/357)）
+- [ 開発環境 ] devicePixelRatio が 1 以外の開発機だと Chromium の描画丸めで outline・border・要素サイズを固定値の完全一致で比較する e2e が 5 spec 同時に失敗する不具合を修正し、丸めを許容しつつ比較する共通ヘルパー `tests/e2e/helpers/focus-ring.js` を新設して対象 6 spec の比較方法を統一（[#357](https://github.com/vektor-inc/vk-terminals/issues/357)）
 
 ## 1.57.1
 

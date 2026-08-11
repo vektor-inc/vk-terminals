@@ -42,10 +42,13 @@
 //   依存する。Playwright の context が deviceScaleFactor をエミュレーションで上書きすると、
 //   実際のレンダリングは（エミュレーション前の）実機倍率の格子で丸められたままなのに
 //   window.devicePixelRatio はエミュレーション後の値を返す食い違いが起こりうる
-//   （安藤さんの実測で確認済み）。今の構成（context の deviceScaleFactor を明示しない）
-//   では tolerance が過大になる方向にしか振れず実害は無いが、将来 chromium.launch() /
-//   newContext() に deviceScaleFactor や倍率系フラグを足す場合は、この前提が崩れて
-//   tolerance が過小（偽陽性の元）になり得るため注意すること。
+//   （安藤さんの実測で確認済み）。今の構成（context の deviceScaleFactor を明示せず、
+//   chromium.launch() にも倍率フラグを渡さない）では両者が一致するため実害は無い。
+//   ただし将来これを足すと、on-grid 判定が「格子に乗っている」と誤認して完全一致を
+//   要求してしまい、実際には（エミュレーション前の実機倍率で）丸められている値と
+//   必ず食い違って落ちる（偽陽性。安藤さんが devicePixelRatio ≈ 1・実際の描画格子は
+//   1.24 という食い違いを流して即座に再現している）。倍率のエミュレーション／強制
+//   フラグは足さないこと。
 
 const { expect } = require('@playwright/test');
 
@@ -113,6 +116,13 @@ function parsePx(value, label) {
 // 格子に乗らない場合だけ、丸めが起こり得る最大値である 1 device pixel（= 1 / dpr CSS px）
 // 未満（floor による切り捨てのため、ズレは必ず 1 device pixel 未満に収まる。1 device
 // pixel ちょうど以上のズレは丸めでは起こり得ず実バグ側なので境界は含めない）を許容する。
+//
+// 非格子の倍率（1.24 等）では、1 device pixel 未満の値の弱体化は原理的に検出できない
+// （例: 2px → 1.5px という実バグが 1.24 倍では 1.20968px として描かれ、期待値 2 との差
+// 0.79px が許容 0.806px に収まって通ってしまう）。これは案 C を選んだ時点で不可避で、
+// 消すには却下済みの案 B（Chromium の丸めアルゴリズムそのものの再現）へ踏み込むしかない。
+// 番人としての強度は、倍率が格子に乗る環境（CI = 1 倍、Retina = 2 倍）で担保する。
+// 非格子の開発機（1.24 等）はあくまで手元確認の場であり、そこでの検出力低下は許容する。
 function expectPxClose(actualPxString, expectedCssPx, dpr, label) {
   const actual = parsePx(actualPxString, label);
   const expectedDevicePx = expectedCssPx * dpr;

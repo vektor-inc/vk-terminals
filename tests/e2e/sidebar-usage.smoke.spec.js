@@ -1,6 +1,8 @@
 const { test, expect } = require('@playwright/test');
 // 起動〜初期描画待ちは共通ヘルパーへ集約している（issue #263 / #269）。
 const { closeApp, getFreePort, launchAppAndWait } = require('./helpers/electron-app');
+// border-width の devicePixelRatio 由来の丸めを許容する比較は共通ヘルパーへ集約している（issue #357）。
+const { expectPxClose } = require('./helpers/focus-ring');
 
 async function launchSidebarUsageApp(port) {
   return await launchAppAndWait({ port, prefix: 'vk-terminals-e2e-sidebar-usage-' });
@@ -99,19 +101,26 @@ test.describe.serial('デスクトップのサイドバー使用量カード（i
 
     // 使用量カードが両方 hidden でも、固定領域とスクロール領域の境界線は nav 上端に残り、
     // サイドバー上端へ接するため途中で宙に浮かない。
-    const boundary = await win.locator('.sidebar-menu').evaluate((element) => {
-      const sidebarRect = element.parentElement.getBoundingClientRect();
-      const menuRect = element.getBoundingClientRect();
-      const style = getComputedStyle(element);
-      return {
-        borderTopStyle: style.borderTopStyle,
-        borderTopWidth: style.borderTopWidth,
-        menuTop: menuRect.top,
-        sidebarTop: sidebarRect.top,
-      };
-    });
+    // border-top-width は devicePixelRatio が 1 以外の開発機だと Chromium の丸めで
+    // 端数になり得る（issue #357。実測: 1.24 倍率だと "1px" が "0.806452px" になった）ため
+    // expectPxClose で devicePixelRatio 由来の丸めを許容して比較する
+    // （detail は helpers/focus-ring.js の冒頭コメントを参照）。
+    const [dpr, boundary] = await Promise.all([
+      win.evaluate(() => window.devicePixelRatio),
+      win.locator('.sidebar-menu').evaluate((element) => {
+        const sidebarRect = element.parentElement.getBoundingClientRect();
+        const menuRect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return {
+          borderTopStyle: style.borderTopStyle,
+          borderTopWidth: style.borderTopWidth,
+          menuTop: menuRect.top,
+          sidebarTop: sidebarRect.top,
+        };
+      }),
+    ]);
     expect(boundary.borderTopStyle).toBe('solid');
-    expect(boundary.borderTopWidth).toBe('1px');
+    expectPxClose(boundary.borderTopWidth, 1, dpr, '.sidebar-menu の border-top-width');
     expect(boundary.menuTop).toBe(boundary.sidebarTop);
   });
 

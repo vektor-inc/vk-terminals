@@ -1,6 +1,8 @@
 const { test, expect } = require('@playwright/test');
 // 起動〜初期描画待ちは共通ヘルパーへ集約している（issue #263 / #269）。
 const { closeApp, getFreePort, launchAppAndWait } = require('./helpers/electron-app');
+// キーボードフォーカス操作・outline の読み取り・比較は共通ヘルパーへ集約している（issue #357）。
+const { expectOutline, focusByKeyboard } = require('./helpers/focus-ring');
 
 // .sidebar-resizer は、アプリ内で唯一 outline-offset を意図的に「内側」（-2px）にしている
 // 例外（renderer/style.css の .sidebar-resizer:focus-visible）。幅 8px の帯の外側に
@@ -16,24 +18,6 @@ async function launchSidebarResizerApp(port) {
   return await launchAppAndWait({ port, prefix: 'vk-terminals-e2e-sidebar-resizer-focus-ring-' });
 }
 
-// キーボード由来のフォーカスでないと :focus-visible は当たらない
-// （settings-focus-ring.smoke.spec.js の focusByKeyboard と同じ手法）。
-async function focusByKeyboard(win, selector) {
-  await win.evaluate((sel) => {
-    const el = document.querySelector(sel);
-    if (!el) throw new Error(`${sel} が見つからない`);
-    el.scrollIntoView({ block: 'center' });
-    el.focus();
-  }, selector);
-  await win.keyboard.press('Tab');
-  await win.keyboard.press('Shift+Tab');
-  await expect(win.locator(selector).first()).toBeFocused();
-  expect(
-    await win.evaluate((sel) => document.querySelector(sel).matches(':focus-visible'), selector),
-    `${selector} が :focus-visible にならない`
-  ).toBe(true);
-}
-
 test('サイドバーの幅リサイズハンドルは、キーボードフォーカス時に内側オフセットの枠と内側の線を描く（issue #302）', async () => {
   const port = await getFreePort();
   const { app, win, tmpRoot } = await launchSidebarResizerApp(port);
@@ -47,31 +31,32 @@ test('サイドバーの幅リサイズハンドルは、キーボードフォ�
 
     await focusByKeyboard(win, '.sidebar-resizer');
 
-    const style = await win.evaluate(() => {
-      const el = document.querySelector('.sidebar-resizer');
-      const s = getComputedStyle(el);
-      return {
-        outlineColor: s.outlineColor,
-        outlineStyle: s.outlineStyle,
-        outlineWidth: s.outlineWidth,
-        outlineOffset: s.outlineOffset,
-        boxShadow: s.boxShadow,
-      };
-    });
+    // outline は共通ヘルパーの比較を使う。width / offset を devicePixelRatio 由来の
+    // 丸めを許容しつつ比較している理由は helpers/focus-ring.js の冒頭コメントを参照
+    // （issue #357）。色・太さ・スタイルはアプリ共通の値（shared.css の
+    // --vktm--outline--focus-ring）だが、offset だけ共通の外側 2px ではなく内側 -2px の
+    // 個別上書きが効いている。
+    await expectOutline(win, '.sidebar-resizer', {
+      color: 'rgb(88, 166, 255)',
+      style: 'solid',
+      width: 2,
+      offset: -2,
+    }, '.sidebar-resizer');
 
-    // 色・太さ・スタイルはアプリ共通の値（shared.css の --vktm--outline--focus-ring）だが、
-    // offset だけ共通の外側 2px ではなく内側 -2px の個別上書きが効いている。
-    expect(style.outlineColor, '.sidebar-resizer の outline-color').toBe('rgb(88, 166, 255)');
-    expect(style.outlineStyle, '.sidebar-resizer の outline-style').toBe('solid');
-    expect(style.outlineWidth, '.sidebar-resizer の outline-width').toBe('2px');
-    expect(style.outlineOffset, '.sidebar-resizer の outline-offset').toBe('-2px');
-
+    // box-shadow は outline とは別に読む（expectOutline は outline-* だけを扱うヘルパーのため）。
+    // box-shadow の spread（inset の内側の線の太さ）は実測で devicePixelRatio が 1 以外
+    // （1.24 相当）でも "2px" のまま丸めを受けなかった（outline-width / outline-offset /
+    // border-width とは挙動が違う。Chromium が box-shadow をレイアウト単位のデバイスピクセル
+    // 丸めとは別経路で描画しているためと見られる）。影響を受けないためここは固定値の完全
+    // 一致のまま書き換えていない（issue #357）。
+    //
     // box-shadow の inset（内側の線）が重なって描かれている。
     // computed 値は Chromium では「色 offset-x offset-y blur spread inset」の順で
     // 正規化される（実測: "rgb(88, 166, 255) 0px 0px 0px 2px inset"）。toContain('2px') だと
     // spread と offset-y が入れ替わった別物（例: "0px 2px 0px 0px inset"）でも通ってしまうため、
     // 各値の位置まで固定した正規表現で判定する。
-    expect(style.boxShadow, '.sidebar-resizer の box-shadow').toMatch(
+    const boxShadow = await win.evaluate(() => getComputedStyle(document.querySelector('.sidebar-resizer')).boxShadow);
+    expect(boxShadow, '.sidebar-resizer の box-shadow').toMatch(
       /^rgb\(88, 166, 255\) 0px 0px 0px 2px inset$/
     );
   } finally {

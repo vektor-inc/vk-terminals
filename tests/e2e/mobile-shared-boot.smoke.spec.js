@@ -2,6 +2,8 @@ const { test, expect, chromium } = require('@playwright/test');
 const path = require('path');
 // 起動〜初期描画待ちは共通ヘルパーへ集約している（issue #263 / #269）。
 const { closeApp, getFreePort, launchApp } = require('./helpers/electron-app');
+// キーボードフォーカス操作・outline の読み取り・比較は共通ヘルパーへ集約している（issue #357）。
+const { expectOutline, focusByKeyboard } = require('./helpers/focus-ring');
 const { buildMobileCsp } = require('../../utils/csp');
 
 // issue #348: 元々別ファイルだった以下 10 spec を統合したもの。
@@ -115,24 +117,6 @@ async function resetPaneTitle(port) {
   expect(res.status).toBe(200);
 }
 
-// キーボード由来のフォーカスでないと :focus-visible は当たらない
-// （settings-focus-ring.smoke.spec.js の focusByKeyboard と同じ手法）。
-async function focusByKeyboard(page, selector) {
-  await page.evaluate((sel) => {
-    const el = document.querySelector(sel);
-    if (!el) throw new Error(`${sel} が見つからない`);
-    el.scrollIntoView({ block: 'center' });
-    el.focus();
-  }, selector);
-  await page.keyboard.press('Tab');
-  await page.keyboard.press('Shift+Tab');
-  await expect(page.locator(selector).first()).toBeFocused();
-  expect(
-    await page.evaluate((sel) => document.querySelector(sel).matches(':focus-visible'), selector),
-    `${selector} が :focus-visible にならない`
-  ).toBe(true);
-}
-
 test.describe.serial('モバイル版 HTTP 描画の確認（起動共有・issue #348）', () => {
   let app;
   let tmpRoot;
@@ -168,6 +152,12 @@ test.describe.serial('モバイル版 HTTP 描画の確認（起動共有・issu
 
   // ─── 旧 mobile-card-head-focus-ring.smoke.spec.js（issue #302） ──────────
   test('モバイル版のペインカードの見出し（.card-head）は、キーボードフォーカス時に内側オフセットの個別上書きが効く（issue #302）', async () => {
+    // このテストは outline-width / outline-offset を見るため、devicePixelRatio 由来の
+    // 丸めを許容する expectOutline（helpers/focus-ring.js）を使う（issue #357）。
+    // なお headless の chromium.launch()（フラグ無し）は Electron の実ウィンドウと違い、
+    // ホストの実表示倍率を継承せず devicePixelRatio は常に 1 になる（実測確認済み）ため、
+    // このテスト自体は元々開発機の表示倍率の影響を受けていなかった。それでも比較のたびに
+    // 個別実装を持たず共通ヘルパーを使う方針に揃えるため、他の focus-ring 系 spec と同じ形にする。
     const browser = await chromium.launch();
     try {
       await waitForTermId(port, '1');
@@ -180,23 +170,12 @@ test.describe.serial('モバイル版 HTTP 描画の確認（起動共有・issu
 
       await focusByKeyboard(page, '.card-head');
 
-      const style = await page.evaluate(() => {
-        const el = document.querySelector('.card-head');
-        const s = getComputedStyle(el);
-        return {
-          color: s.outlineColor,
-          style: s.outlineStyle,
-          width: s.outlineWidth,
-          offset: s.outlineOffset,
-        };
-      });
-
-      expect(style, '.card-head のフォーカスリング').toEqual({
+      await expectOutline(page, '.card-head', {
         color: 'rgb(88, 166, 255)',
         style: 'solid',
-        width: '2px',
-        offset: '-2px',
-      });
+        width: 2,
+        offset: -2,
+      }, '.card-head のフォーカスリング');
     } finally {
       await browser.close();
     }

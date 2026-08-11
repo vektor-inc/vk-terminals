@@ -216,3 +216,38 @@ test('trimTrailingPunctuation: 単体でも記号の組み合わせを正しく�
     'https://en.wikipedia.org/wiki/Foo_(disambiguation)',
   );
 });
+
+// ─── 罫線テーブルのセル境界で切り詰められた URL 断片（issue #361） ──────────────────
+// 罫線テーブルの各行は xterm の折り返し（isWrapped）ではなく独立したバッファ行のため、
+// terminalLinkProvider.js の getWrappedLineWindow() は連結しない。結果、セル幅で
+// 見た目上折り返された URL の先頭断片だけが単独の候補として extractUrlMatches() に
+// 渡ってくる。1 行だけでも再現できるため、ここでは text を直接渡して検証する
+// （terminalLinkProvider.test.js 側では実際の xterm バッファ相当のフェイクを使って
+// 同じケースを再現する）。
+test('extractUrlMatches: 罫線テーブルのセル境界で切り詰められた URL 断片はリンク化しない（issue #361）', () => {
+  // issue の再現例そのもの（1行目に断片、2行目に続きが表示される罫線テーブル）。
+  const row = '│ vk-agents   │ #399 (https://github.com/vektor-inc/vk-agen │ feature/coderabbit-code-revi │';
+  assert.deepEqual(extractUrlMatches(row), []);
+});
+
+test('extractUrlMatches: 罫線テーブルの縦線が ASCII の | 単体（シェルパイプ等）では除外しない', () => {
+  // 縦線が1本しかない・そもそも罫線文字（│ ┃）ではない行は「テーブルの行らしさ」の
+  // 条件（2つ以上）を満たさないため、通常どおりリンク化される。
+  assert.equal(
+    extractUrlMatches('cmd1 | grep https://example.com | wc -l').length,
+    1,
+  );
+});
+
+test('extractUrlMatches: セル内に URL が丸ごと収まっている場合はリンク化を維持する（issue #361 リグレッション）', () => {
+  // セルの右端（縦線）の直前ではなく、URL の後ろに他の文字（丸カッコ書きの補足など）が
+  // 続いてからセルが終わるケース。候補の直後が「空白+縦線」ではないため除外されない。
+  const row = '│ PR │ #399 (https://github.com/vektor-inc/vk-agents/pull/399) マージ済み │';
+  const matches = extractUrlMatches(row);
+  assert.equal(matches.length, 1);
+  assert.equal(matches[0].url, 'https://github.com/vektor-inc/vk-agents/pull/399');
+});
+
+test('extractUrlMatches: 罫線テーブルではない通常行の URL はリンク化を維持する（issue #361 リグレッション）', () => {
+  assert.equal(extractUrlMatches('詳しくは https://example.com/foo をご覧ください').length, 1);
+});

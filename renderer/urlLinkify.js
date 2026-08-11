@@ -144,6 +144,56 @@
     }
   }
 
+  // 罫線テーブルのセル境界とみなす縦線文字（issue #361）。ASCII の '|' は含めない
+  // （シェルパイプ「cmd1 | grep https://example.com | wc -l」のように、URL の直後に
+  // スペース＋パイプが続く正当な出力まで「テーブルの行」と誤検知するリスクが高いため。
+  // 固定幅の罫線テーブルを描画するツールは通常 Unicode の罫線文字（│ U+2502 /
+  // ┃ U+2503）を使い、ASCII パイプでこの種のセル折り返し表示を行うツールは一般的でない）。
+  const TABLE_BORDER_CHARS = new Set(['│', '┃']); // │ ┃
+
+  // URL 候補（text.slice(start, end)）が「罫線テーブルのセル境界で切り詰められた断片」
+  // らしいかどうかを判定する（issue #361）。
+  //
+  // 罫線テーブルの各行は「ターミナルの折り返し」ではなく独立したバッファ行のため、
+  // xterm の isWrapped は false。terminalLinkProvider.js の getWrappedLineWindow() は
+  // isWrapped な行しか連結しないため、セル幅で見た目上折り返された URL の先頭断片
+  // だけが単独の候補として extractUrlMatches() に渡ってきてしまう
+  // （罫線テーブルの行は isWrapped: false のため、terminalLinkProvider.js が渡す
+  // text は常にその 1 行そのものと一致する。折り返しをまたいだ本物の連結結果に
+  // 罫線文字が混じることは通常無いため、text 全体を見て判定して問題ない）。
+  //
+  // 判定条件（司・issue 起票者・植草の合意事項。issue コメントにあった「テーブル内は
+  // 一律諦める」よりも狭いルール）:
+  //   1. 候補が乗っている行に罫線テーブルの縦線が2つ以上ある（＝テーブルの行らしい）。
+  //   2. 候補の直後が「0個以上の空白＋縦線文字」で終わっている（＝セルの右端に接している）。
+  // 両方満たす場合だけ「切り詰められている」とみなし、リンク化の対象から外す。
+  //
+  // 「セルの直下の物理行を実際に読んで続きがあるか検証する」というより厳密な判定も
+  // 検討したが、罫線位置の解析・複数セルの対応付けが必要になり、issue のスコープに
+  // 対してコストが不釣り合いなため採用しない（司・植草合意）。境界ケースは
+  // 「非リンク化する」側に倒す方針のため、条件2 は空白の個数を問わない（0個も含む）
+  // 最大限緩い判定にしている。誤って非リンク化した場合の実害は「押せない（テキスト
+  // 選択でのコピーは可能）」に留まり、逆に切り詰められた URL をリンク化したままにした
+  // 場合の実害（404 を開いてしまう）より小さいと判断したため、この非対称性を判定の
+  // 緩さの根拠にしている。
+  //
+  // xterm のバッファには一切触れない（text と start/end というインデックスだけで
+  // 完結する）純粋関数として書けるため、urlLinkify.js の責務境界（バッファに触れない）
+  // を壊さずにここへ置ける。判定に必要なのは「この行に罫線が複数あるか」「候補の直後が
+  // 罫線で閉じているか」という文字列だけの情報であり、バッファ座標や折り返し状態への
+  // アクセスは不要なため。
+  function isTruncatedAtTableCellBorder(text, start, end) {
+    let borderCount = 0;
+    for (const ch of text) {
+      if (TABLE_BORDER_CHARS.has(ch)) borderCount += 1;
+    }
+    if (borderCount < 2) return false;
+
+    let i = end;
+    while (i < text.length && text[i] === ' ') i += 1;
+    return i < text.length && TABLE_BORDER_CHARS.has(text[i]);
+  }
+
   // ホスト名が「実在しそうな行き先」かどうかの最低限のチェック（安藤レビュー指摘・LOW）。
   // URL_CANDIDATE_REGEX は ASCII 文字だけを候補にしているため、`https://götest.com` は
   // `https://g` のようにホスト名が 1 文字だけ切り取られた状態でも isSafeHttpUrl は
@@ -200,7 +250,11 @@
       // ものは弾く。http(s) 以外を除く判定・長さ上限も isSafeHttpUrl に一本化する
       // （実際に開く経路 openExternalUrlSafe と同じ判定基準に揃えるため）。
       if (url && isSafeHttpUrl(url) && !hasUserInfo(url) && isAcceptableUrlHost(url)) {
-        results.push({ url, start: match.index, end: match.index + url.length });
+        const start = match.index;
+        const end = start + url.length;
+        // 罫線テーブルのセル境界で切り詰められた URL 断片はリンク化しない（issue #361）。
+        if (isTruncatedAtTableCellBorder(text, start, end)) continue;
+        results.push({ url, start, end });
       }
     }
     return results;
@@ -212,5 +266,6 @@
     getUrlHost,
     hasUserInfo,
     isAcceptableUrlHost,
+    isTruncatedAtTableCellBorder,
   };
 });

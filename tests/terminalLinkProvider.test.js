@@ -182,3 +182,39 @@ function MockEvent() {
   this.metaKey = false;
   this.ctrlKey = false;
 }
+
+// ─── 罫線テーブルのセル境界で切り詰められた URL 断片（issue #361） ──────────────────
+// 罫線テーブルの各行は「ターミナルの折り返し」ではなく独立したバッファ行のため
+// isWrapped は false。getWrappedLineWindow() は連結しないので、1 行目の断片だけが
+// 単独の URL 候補として渡ってしまい、リンク化されると 404 になる。
+test('createTerminalLinkProvider: 罫線テーブルのセル境界で切り詰められた URL 断片はリンク化しない（issue #361）', () => {
+  // issue の再現例そのもの。3行目（0-based index 2）にURLの断片、4行目（index 3）に
+  // 続きが表示される。どちらの行も isWrapped: false（罫線テーブルの行は xterm の
+  // 折り返しではなく独立したバッファ行のため）。
+  const terminal = makeFakeTerminal([
+    { cells: asciiCells('┌─────────────┬─────────────────────────────────────────────┬──────────────────────────────┐'), isWrapped: false },
+    { cells: asciiCells('│ リポジトリ  │                     PR                      │           ブランチ           │'), isWrapped: false },
+    { cells: asciiCells('├─────────────┼─────────────────────────────────────────────┼──────────────────────────────┤'), isWrapped: false },
+    { cells: asciiCells('│ vk-agents   │ #399 (https://github.com/vektor-inc/vk-agen │ feature/coderabbit-code-revi │'), isWrapped: false },
+    { cells: asciiCells('│             │ ts/pull/399)                                │ ew-opt-in                    │'), isWrapped: false },
+    { cells: asciiCells('└─────────────┴─────────────────────────────────────────────┴──────────────────────────────┘'), isWrapped: false },
+  ]);
+
+  const provider = createTerminalLinkProvider(terminal, { activate: () => {} });
+  let received = 'not-called';
+  // 1-based: 4 行目（0-based index 3）＝ 断片 "https://github.com/vektor-inc/vk-agen" が乗る行。
+  provider.provideLinks(4, (links) => { received = links; });
+  // リンクが1件も無いため xterm へは undefined を返す（＝ホバー・クリックとも一切反応しない）。
+  assert.equal(received, undefined);
+});
+
+test('createTerminalLinkProvider: 罫線テーブルでもセル内に丸ごと収まった URL はリンク化を維持する（issue #361 リグレッション）', () => {
+  const terminal = makeFakeTerminal([
+    { cells: asciiCells('│ PR │ #399 (https://github.com/vektor-inc/vk-agents/pull/399) マージ済み │'), isWrapped: false },
+  ]);
+  const provider = createTerminalLinkProvider(terminal, { activate: () => {} });
+  let received;
+  provider.provideLinks(1, (links) => { received = links; });
+  assert.equal(received.length, 1);
+  assert.equal(received[0].text, 'https://github.com/vektor-inc/vk-agents/pull/399');
+});

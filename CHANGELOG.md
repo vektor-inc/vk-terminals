@@ -1,5 +1,7 @@
 # Changelog
 
+## 1.57.2
+
 - [ 不具合修正 ] 罫線テーブルのセル内で URL がセル幅を超えて折り返されると、途中で切り詰められた断片だけがリンク化され、クリックすると 404 になる不具合を修正。あわせて、セル右端の URL の直後が縦線、または句読点（`.` `,` 等）だけを挟んだ縦線である場合は、切り詰めの有無に関わらずリンク化の対象外に変更（`(URL)` のように閉じ括弧で終わる場合は従来どおりリンク化）（[#361](https://github.com/vektor-inc/vk-terminals/issues/361)）
 - [ 開発環境 ] devicePixelRatio が 1 以外の開発機だと Chromium の描画丸めで outline・border・要素サイズを固定値の完全一致で比較する e2e が 5 spec 同時に失敗する不具合を修正し、丸めを許容しつつ比較する共通ヘルパー `tests/e2e/helpers/focus-ring.js` を新設して対象 6 spec の比較方法を統一（[#357](https://github.com/vektor-inc/vk-terminals/issues/357)）
 

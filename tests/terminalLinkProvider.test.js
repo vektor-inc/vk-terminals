@@ -98,12 +98,18 @@ test('getWrappedLineWindow: 折り返し無しの 1 行だけを返す', () => {
 test('getWrappedLineWindow: 次行が折り返し継続行なら前方へ連結する', () => {
   const terminal = makeFakeTerminal([
     { cells: asciiCells('https://example.co'), isWrapped: false },
-    { cells: asciiCells('m/path'), isWrapped: true },
+    // 実 xterm では、折り返し系列の最後の行はペイン幅いっぱいまで埋まっているとは
+    // 限らない（URL がそこで終わっていれば、残りの列は未書き込みセルのまま）。
+    // ここを未パディングのままにすると「行末に未書き込みセルが無い」＝
+    // isForcedMergeSource（issue #368・案D）を意図せず満たしてしまい、この行が
+    // ペイン幅いっぱいだと誤認されて次の無関係な行（' 続きの行'）まで連結されてしまう
+    // ため、pane 幅（20列）ぶんパディングして「まだ列が余っている」ことを明示する。
+    { cells: padCells(asciiCells('m/path'), 20), isWrapped: true },
     { cells: asciiCells(' 続きの行'), isWrapped: false },
   ]);
   const rows = getWrappedLineWindow(terminal.buffer.active, 0);
   assert.deepEqual(rows.map((r) => r.index), [0, 1]);
-  assert.equal(rows.map((r) => r.text).join(''), 'https://example.com/path');
+  assert.equal(rows.map((r) => r.text).join('').trimEnd(), 'https://example.com/path');
 });
 
 test('getWrappedLineWindow: 継続行そのものを起点にしても前方の行まで遡って連結する', () => {
@@ -277,7 +283,11 @@ test('createTerminalLinkProvider: 罫線テーブルでもセルの末尾にぴ�
 // 現に #368 で崩れているという事実と合わせると、実改行（B）が原因である可能性が高いと
 // 推定する（推定であり実測ではない。詳細は報告の「原因の切り分け」参照）。
 //
-// 以下の2ケースはこの A/B を fakeTerminal で再現する回帰・red テスト。
+// 以下は上記 A/B を fakeTerminal で再現するテスト（案D 実装後は全件 green）。
+// 案D の仕様: 1行目がペイン幅いっぱいまで埋まっている場合は isWrapped が false でも
+// 連結候補に含める。ただし連結した URL 候補が「境界（実改行の位置）より前でホストが
+// 確定している」場合に限りリンク化する（境界より前に確定していなければ、1行目の断片も
+// 含め一切リンク化しない。ホストすり替わり対策。司・植草合意）。
 
 test('getWrappedLineWindow: ソフトラップ（isWrapped: true）でペイン幅ちょうどにパディングされた行を連結する（issue #368 回帰確認）', () => {
   const cols = 24;
@@ -297,30 +307,77 @@ test('getWrappedLineWindow: ソフトラップ（isWrapped: true）でペイン�
   assert.equal(received[0].text, 'https://example.com/foo/bar123');
 });
 
-test('createTerminalLinkProvider: (red) 実改行（isWrapped: false）でペイン幅ちょうどに割れた URL は断片のまま誤ってリンク化されてはならない（issue #368）', () => {
-  const cols = 24;
-  const fullUrl = 'https://example.com/foo/bar123';
-  const fullText = `prefix ${fullUrl}`;
-  const row0Text = fullText.slice(0, cols); // ちょうど cols 文字で埋まる（ペイン右端ぴったり）
-  const row1RealText = fullText.slice(cols); // 2行目。列0から始まる（インデント無し）
+// 案D確定後の具体的な期待値（司・植草合意）。
+//   1. 実改行 + 行幅いっぱい + ホスト確定後（パスの途中）で切れている
+//      → 連結された完全な URL 1本がリンク化される。
+//   2. 実改行 + 行幅いっぱい + ホスト未確定（https:// 直後やドメイン名の途中）で切れている
+//      → リンクが1本も作られない（1行目の断片も作られないこと）。
+//   3. ホストすり替わり（1行目が "https://example.com" でちょうど終わり、2行目が
+//      別ホストの続きに見える "evil.example/foo"）→ 連結してもリンク化しない。
+
+test('createTerminalLinkProvider: 実改行でペイン幅いっぱいの行が割れても、ホスト確定後（パスの途中）なら連結した完全な URL をリンク化する（issue #368・案D）', () => {
+  const prefix = 'prefix ';
+  const url = 'https://example.com/foo/bar123';
+  const combined = prefix + url;
+
+  // ホストが確定する位置（スキームの直後に現れる最初の '/' の直後）を求め、
+  // そこから少し先（パスの途中）で行が割れるように cols を決める。
+  const schemeEnd = combined.indexOf('://') + 3;
+  const hostConfirmedAt = combined.indexOf('/', schemeEnd) + 1;
+  const cols = hostConfirmedAt + 2; // パスの途中（"/fo" のように2文字先）で切れる
+
+  const row0Text = combined.slice(0, cols); // ちょうど cols 文字で埋まる（ペイン右端ぴったり）
+  const row1Text = combined.slice(cols); // 2行目。列0から始まる（インデント無し）
 
   const terminal = makeFakeTerminal([
     { cells: asciiCells(row0Text), isWrapped: false },
     // 実改行を想定: 子プロセスが自前で改行したケースなので isWrapped は false のまま。
-    { cells: padCells(asciiCells(row1RealText), cols), isWrapped: false },
+    { cells: padCells(asciiCells(row1Text), cols), isWrapped: false },
   ]);
 
   const provider = createTerminalLinkProvider(terminal, { activate: () => {} });
   let received;
   provider.provideLinks(1, (links) => { received = links; });
+  assert.equal(received && received.length, 1);
+  assert.equal(received[0].text, url);
+});
 
-  // 対応方針（案A/B/C）はまだ未確定のため、ここでは「どの案でも満たすべき最低ライン」
-  // だけを assert する:
-  //   - リンクを作るなら、必ず完全な URL でなければならない（断片だと 404 の原因になる）。
-  //   - リンクを作らない（received === undefined）のも許容する（案B相当・押せないだけ）。
-  // 現状のコードは1行目の断片 "https://example.com/foo/bar1" を単独でリンク化してしまう
-  // ため、このテストは red（失敗）になる。
-  if (received) {
-    assert.equal(received[0].text, fullUrl);
-  }
+test('createTerminalLinkProvider: 実改行でペイン幅いっぱいの行が割れても、ホスト未確定（ドメイン名の途中）なら断片も含め一切リンク化しない（issue #368・案D）', () => {
+  const prefix = 'prefix ';
+  const url = 'https://example.com/foo/bar123';
+  const combined = prefix + url;
+
+  // "example" の途中（ホスト名を書き終える前）で行が割れる位置を選ぶ。
+  const cols = combined.indexOf('example') + 3;
+  const row0Text = combined.slice(0, cols);
+  const row1Text = combined.slice(cols);
+
+  const terminal = makeFakeTerminal([
+    { cells: asciiCells(row0Text), isWrapped: false },
+    { cells: padCells(asciiCells(row1Text), cols), isWrapped: false },
+  ]);
+
+  const provider = createTerminalLinkProvider(terminal, { activate: () => {} });
+  let received = 'not-called';
+  provider.provideLinks(1, (links) => { received = links; });
+  // 1行目の断片 "https://example.c"（等）も含め、一切リンク化されないこと。
+  assert.equal(received, undefined);
+});
+
+test('createTerminalLinkProvider: ホストすり替わり（1行目 https://example.com ちょうど + 2行目 evil.example/foo）は連結してもリンク化しない（issue #368・案D）', () => {
+  const cols = 'https://example.com'.length; // ホスト名の直後・パスの '/' が無い位置でちょうど終わる
+  const terminal = makeFakeTerminal([
+    { cells: asciiCells('https://example.com'), isWrapped: false },
+    // 実改行想定。この行だけを見れば "evil.example/foo" というありふれたパス風の文字列。
+    { cells: padCells(asciiCells('evil.example/foo'), cols), isWrapped: false },
+  ]);
+
+  const provider = createTerminalLinkProvider(terminal, { activate: () => {} });
+  let received = 'not-called';
+  provider.provideLinks(1, (links) => { received = links; });
+  // 連結すると "https://example.comevil.example/foo" となり、構文上は正当な
+  // ホスト名（example.comevil.example）を持つ URL になってしまう。isSafeHttpUrl /
+  // isAcceptableUrlHost / hasUserInfo だけではこのすり替わりを検出できないため、
+  // 案D のホスト確定チェックで一切リンク化しないことを確認する。
+  assert.equal(received, undefined);
 });

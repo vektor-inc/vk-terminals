@@ -31,7 +31,7 @@
   }
 })(typeof self !== 'undefined' ? self : this, function () {
 
-  const { extractUrlMatches } = (typeof require === 'function')
+  const { extractUrlMatches, scanTableBorders } = (typeof require === 'function')
     ? require('./urlLinkify')
     : self.VKUrlLinkify;
 
@@ -40,6 +40,54 @@
   // 異常に多いログで連結処理が際限なく伸びるのを防ぐための安全弁で、実務上の
   // URL 長（isSafeHttpUrl の上限も 2048）を大きく下回ることはない。
   const MAX_WINDOW_CHARS = 2048;
+
+  // バッファ行が「ペイン幅いっぱいまで書き込まれている」（＝行末に未書き込みセルが無い）
+  // かどうかを判定する（issue #368・案D）。
+  //
+  // なぜ必要か: #365 までの getWrappedLineWindow は isWrapped（xterm 自身がソフトラップと
+  // 判定した行）だけを連結していた。しかし #368 の再現は「ペインを描画しているプログラム
+  // 自身が、たまたまペイン幅ちょうどの位置で実改行（\r\n）を出している」ケースで、この
+  // 場合 isWrapped は（xterm 側から見て正しく）false のまま止まる。1行目がペイン幅
+  // いっぱいまで埋まっているのに isWrapped が false というのは「URL が続いていそうな
+  // 見た目」の強いシグナルなので、この条件を満たす行に限って isWrapped が false でも
+  // 連結候補に含める（実測に基づく判断。詳細は司への調査報告・issue #368 コメント参照）。
+  //
+  // 判定方法: 行の最終セル（列 line.length - 1）を見る。
+  //   - 未書き込みのデフォルトセル: getChars() === '' かつ getWidth() === 1（xterm.js が
+  //     何も書いていない列に割り当てるデフォルト値）。→ 「いっぱいではない」。
+  //   - ワイド文字（全角）がちょうど行末に来た場合、その文字自身の「幅 0 の穴埋めセル」が
+  //     最終セルになることがある。これは書き込み済みセルの一部であり、未書き込みとは
+  //     区別する（getWidth() === 0 のセルは常に直前のワイド文字の一部であり、単独では
+  //     現れない。stringIndexToColumn のコメントも参照）。→ 「いっぱい」として扱う。
+  //   - それ以外（実際に文字が書き込まれているセル）→ 「いっぱい」。
+  //
+  // 【既知の限界・修正不要】この判定はバッファの列幅（line.length）を現在のペイン幅と
+  // みなしている。ペインをリサイズすると、過去に書き込まれた行の列幅と現在のペイン幅が
+  // 一致しなくなる余地がある（xterm.js のリサイズ時の再フロー処理に依存する）。案A/C/D
+  // いずれの方式でも避けられない共通の限界のため、今回は対応しない（司・植草合意）。
+  function isRowFullWidth(line) {
+    if (!line || !line.length) return false;
+    const lastCell = line.getCell(line.length - 1);
+    if (!lastCell) return false;
+    if (lastCell.getWidth() === 0) return true; // ワイド文字の穴埋めセル→書き込み済み扱い
+    return lastCell.getChars() !== '';
+  }
+
+  // isRowFullWidth に加えて、「罫線テーブルの行らしい行（縦線が2つ以上ある）」を強制連結の
+  // 起点から除外する（issue #368・案D）。
+  //
+  // なぜ必要か: 罫線テーブルの各行はセル幅ちょうどまで描画され、かつ isWrapped は
+  // 常に false（#365 のコメント参照）。テーブルがペイン幅ぴったりに描画されていると
+  // isRowFullWidth() だけでは「実改行で割れた URL」と区別できず、無関係な独立行同士を
+  // 連結してしまう（#365 の抑止方針である isTruncatedAtTableCellBorder は連結後の文字列
+  // に対しても安全に働くため実害は無いが、罫線テーブルの行を案D の対象にする理由が
+  // そもそも無い＝本来連結すべきでない）。テーブルらしさの判定は文字列だけで完結する
+  // scanTableBorders（urlLinkify.js の純粋関数）をそのまま再利用し、判定基準
+  // （縦線2つ以上）も isTruncatedAtTableCellBorder と揃える。
+  function isForcedMergeSource(line, text) {
+    if (!isRowFullWidth(line)) return false;
+    return scanTableBorders(text).count < 2;
+  }
 
   // lineIndex0（0-based のバッファ行）を起点に、折り返しでつながっている前後の行を
   // 連結し、[{ index: 0-based行番号, text: その行の文字列 }, ...] を返す。
@@ -62,32 +110,51 @@
 
     const rows = [{ index: lineIndex0, text: line.translateToString(false) }];
 
-    // 上方向へ拡張: このバッファ行自体が「前の行からの折り返し」なら、前の行を辿る。
-    if (line.isWrapped) {
+    // 上方向へ拡張: 「前の行からこの行への連結」が成り立つ間、前の行を辿る。
+    // 連結が成り立つ条件（issue #368・案D で拡張。isForcedMergeSource のコメント参照）:
+    //   - このバッファ行自体が xterm の判定で「前の行からの折り返し」（isWrapped）である
+    //     （#349 からの既存条件。挙動は変えない）。
+    //   - または、前の行がペイン幅いっぱいまで埋まっている（isForcedMergeSource）。
+    //     xterm 側の isWrapped が false でも、実改行の直前がペイン幅ちょうどなら URL が
+    //     続いていそうな強いシグナルとみなす。
+    // 起点となるバッファ行自身の isWrapped だけで一度きり判定していた #365 までと異なり、
+    // 案D では連結が続く限り毎回判定し直す（「継続行そのものを起点にしても前方の行まで
+    // 遡って連結する」という既存要件・#349 植草レビューを、強制連結の場合にも保つため）。
+    {
       let idx = lineIndex0;
       let total = rows[0].text.length;
       for (;;) {
         if (total >= MAX_WINDOW_CHARS) break;
         const prevLine = buffer.getLine(idx - 1);
         if (!prevLine) break;
+        const currentLine = buffer.getLine(idx); // これまでに含めた最も手前の行
         const prevText = prevLine.translateToString(false);
+        const canMerge = (currentLine && currentLine.isWrapped)
+          || isForcedMergeSource(prevLine, prevText);
+        if (!canMerge) break;
         rows.unshift({ index: idx - 1, text: prevText });
         total += prevText.length;
         idx -= 1;
-        // 前の行自体が折り返し継続行でなければ、そこが論理行の先頭。
-        // 空白を含む行まで辿り着いたら、それより前に URL の続きは無いとみなして打ち切る。
-        if (!prevLine.isWrapped || /\s/.test(prevText)) break;
+        // 空白を含む行まで辿り着いたら、それより前に URL の続きは無いとみなして打ち切る
+        // （URL は空白を含まないため）。それ以外の続行可否は次の周回の canMerge 判定に
+        // 委ねる（前の行自身の isWrapped / isForcedMergeSource で決まる）。
+        if (/\s/.test(prevText)) break;
       }
     }
 
-    // 下方向へ拡張: 次の行が「この行からの折り返し」である間、連結する。
+    // 下方向へ拡張: 「この行から次の行への連結」が成り立つ間、連結する。
+    // 条件は上方向と対称（次の行の isWrapped、または現在の行の isForcedMergeSource）。
     {
       let idx = lineIndex0;
       let total = rows[rows.length - 1].text.length;
       for (;;) {
         if (total >= MAX_WINDOW_CHARS) break;
         const nextLine = buffer.getLine(idx + 1);
-        if (!nextLine || !nextLine.isWrapped) break;
+        if (!nextLine) break;
+        const currentLine = buffer.getLine(idx);
+        const currentText = rows[rows.length - 1].text;
+        const canMerge = nextLine.isWrapped || isForcedMergeSource(currentLine, currentText);
+        if (!canMerge) break;
         const nextText = nextLine.translateToString(false);
         rows.push({ index: idx + 1, text: nextText });
         total += nextText.length;
@@ -158,12 +225,28 @@
 
     let merged = '';
     const rowOffsets = [];
+    const hardWrapBoundaries = [];
+    // hardWrapBoundaries: rows 内で「xterm の isWrapped ではなく、案D の強制連結
+    // （isForcedMergeSource）によって連結された境界」の merged 内オフセットを集める。
+    // getWrappedLineWindow はどの隣接行が isWrapped 由来で連結されたかを個別に返さない
+    // ため（既存の戻り値の形 [{ index, text }, ...] を変えずに済ませるため。既存テストの
+    // deepEqual がこの形に依存している）、ここで rows[i].index の行を実際に
+    // buffer.getLine() し直して isWrapped を確認するだけで判定できる: getWrappedLineWindow
+    // に含まれているのに isWrapped が false ということは、isWrapped 由来ではなく
+    // 強制連結（案D）で連結されたことを意味する。
     for (const row of rows) {
-      rowOffsets.push({ rowIndex: row.index, startOffset: merged.length });
+      const startOffset = merged.length;
+      if (startOffset > 0) {
+        const rowLine = buffer.getLine(row.index);
+        if (!rowLine || !rowLine.isWrapped) {
+          hardWrapBoundaries.push(startOffset);
+        }
+      }
+      rowOffsets.push({ rowIndex: row.index, startOffset });
       merged += row.text;
     }
 
-    const matches = extractUrlMatches(merged);
+    const matches = extractUrlMatches(merged, hardWrapBoundaries);
     if (matches.length === 0) return [];
 
     const links = [];

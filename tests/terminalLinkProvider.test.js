@@ -55,6 +55,23 @@ function makeLine(cells, isWrapped) {
   };
 }
 
+// cells を cols 列ぶんまで「未書き込みセル」（chars: '', width: 1）で右パディングする。
+//
+// なぜ必要か（issue #368 調査）: 既存の asciiCells() は「実際に書き込んだ文字数ぶん」の
+// セルしか作らないため、行の長さ＝内容の長さになる。しかし実物の xterm.js
+// （@xterm/xterm, node_modules 配下で実測）は各バッファ行が常に buffer.cols 分のセルを
+// 持ち、内容が列幅に満たない行は translateToString(false) で残りを半角スペースとして
+// 返す（中身の無いセルは getChars() === '' で、既存の translateCellsToString ヘルパーが
+// それを ' ' として出力する規則に一致）。
+// 一方、行が「ちょうど列幅いっぱいまで書き込まれて次行へ折り返された」行（このテストの
+// row0 に相当）は、実物の xterm でもパディングは付かない（未書き込みセルが無いため）。
+// パディングが乗るのは、その折り返し系列の最後の行（それ以上先が無い行）だけ。
+function padCells(cells, cols) {
+  const padded = cells.slice();
+  while (padded.length < cols) padded.push({ chars: '', width: 1 });
+  return padded;
+}
+
 // rowsSpec: [{ cells, isWrapped }, ...]（0-based のバッファ行の並びそのもの）から
 // Terminal 相当のフェイクを作る。
 function makeFakeTerminal(rowsSpec) {
@@ -235,4 +252,75 @@ test('createTerminalLinkProvider: 罫線テーブルでもセルの末尾にぴ�
   let received = 'not-called';
   provider.provideLinks(1, (links) => { received = links; });
   assert.equal(received, undefined);
+});
+
+// ─── ペイン幅ちょうどで URL が割れるケース（issue #368） ─────────────────────────────
+//
+// #365（罫線テーブル）と違い、通常のペイン出力で「1行目がペイン右端ぴったりで終わり、
+// 2行目が列0から始まる（インデント無し）」形で URL が割れる再現。
+//
+// 実測（このリポジトリの @xterm/xterm, node_modules 配下・実際に main.js が
+// require.resolve('@xterm/xterm/lib/xterm.js') で読み込むのと同じパッケージ）で
+// term.write() を使い、下記2パターンを直接確認した:
+//   A. xterm 自身の autowrap で折り返した行 → 継続行の isWrapped は true。
+//      getWrappedLineWindow() は正しく連結し、完全な URL 1本のリンクになる（バグ無し）。
+//   B. 子プロセス側が列幅ちょうどの位置で実改行（\r\n）を送ってきた場合 → 継続行の
+//      isWrapped は false（xterm の autowrap ではなく実改行のため、これは xterm 側の
+//      正しい判定）。getWrappedLineWindow() は isWrapped でない行を連結しないため、
+//      1行目の断片だけが URL 候補になり、切り詰められた URL がリンク化される
+//      （クリックすると 404 になりうる）。
+//
+// 実際の issue #368 の再現（司からのライブアプリのバッファ）そのものは未実測
+// （このタスクでは live な Electron アプリのバッファへアクセスできないため、実際の
+// 再現インスタンスの isWrapped 実測値は確認できていない）。ただし上記 A/B の実測により
+// 「xterm 自身の autowrap は既存ロジックで問題なく処理できる」ことが確認できたため、
+// 現に #368 で崩れているという事実と合わせると、実改行（B）が原因である可能性が高いと
+// 推定する（推定であり実測ではない。詳細は報告の「原因の切り分け」参照）。
+//
+// 以下の2ケースはこの A/B を fakeTerminal で再現する回帰・red テスト。
+
+test('getWrappedLineWindow: ソフトラップ（isWrapped: true）でペイン幅ちょうどにパディングされた行を連結する（issue #368 回帰確認）', () => {
+  const cols = 24;
+  const fullText = 'prefix https://example.com/foo/bar123';
+  const row0Text = fullText.slice(0, cols); // ちょうど cols 文字で埋まる（パディング無し）
+  const row1RealText = fullText.slice(cols); // 残り。cols に満たない分は未書き込みセルになる
+
+  const terminal = makeFakeTerminal([
+    { cells: asciiCells(row0Text), isWrapped: false },
+    { cells: padCells(asciiCells(row1RealText), cols), isWrapped: true },
+  ]);
+
+  const provider = createTerminalLinkProvider(terminal, { activate: () => {} });
+  let received;
+  provider.provideLinks(1, (links) => { received = links; });
+  assert.equal(received && received.length, 1);
+  assert.equal(received[0].text, 'https://example.com/foo/bar123');
+});
+
+test('createTerminalLinkProvider: (red) 実改行（isWrapped: false）でペイン幅ちょうどに割れた URL は断片のまま誤ってリンク化されてはならない（issue #368）', () => {
+  const cols = 24;
+  const fullUrl = 'https://example.com/foo/bar123';
+  const fullText = `prefix ${fullUrl}`;
+  const row0Text = fullText.slice(0, cols); // ちょうど cols 文字で埋まる（ペイン右端ぴったり）
+  const row1RealText = fullText.slice(cols); // 2行目。列0から始まる（インデント無し）
+
+  const terminal = makeFakeTerminal([
+    { cells: asciiCells(row0Text), isWrapped: false },
+    // 実改行を想定: 子プロセスが自前で改行したケースなので isWrapped は false のまま。
+    { cells: padCells(asciiCells(row1RealText), cols), isWrapped: false },
+  ]);
+
+  const provider = createTerminalLinkProvider(terminal, { activate: () => {} });
+  let received;
+  provider.provideLinks(1, (links) => { received = links; });
+
+  // 対応方針（案A/B/C）はまだ未確定のため、ここでは「どの案でも満たすべき最低ライン」
+  // だけを assert する:
+  //   - リンクを作るなら、必ず完全な URL でなければならない（断片だと 404 の原因になる）。
+  //   - リンクを作らない（received === undefined）のも許容する（案B相当・押せないだけ）。
+  // 現状のコードは1行目の断片 "https://example.com/foo/bar1" を単独でリンク化してしまう
+  // ため、このテストは red（失敗）になる。
+  if (received) {
+    assert.equal(received[0].text, fullUrl);
+  }
 });

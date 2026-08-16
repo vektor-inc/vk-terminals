@@ -73,11 +73,41 @@ async function waitForCalls(capturePath, expected, timeoutMs = 10_000) {
   throw new Error(`fake executable was not called ${expected} time(s)`);
 }
 
+// main プロセスの console 呼び出しを蓄積する（Playwright の
+// electronApp.on('console')。ElectronApplication は main プロセス内の console API
+// 呼び出しをこのイベントで中継する。renderer 側の window.on('console') とは別物）。
+// 安藤の指摘（必須3）: HTTP 受け口が model を無視したときに実際に console.warn が
+// 出ることを、main.js を直接 require できない e2e 環境で確認するために使う。
+function captureMainProcessConsole(app) {
+  const lines = [];
+  app.on('console', (msg) => {
+    try {
+      lines.push(`[${msg.type()}] ${msg.text()}`);
+    } catch (_e) {
+      // ConsoleMessage の読み取り自体が失敗しても spec を落とさない（無視）。
+    }
+  });
+  return { text: () => lines.join('\n') };
+}
+
+// captureMainProcessConsole が蓄積したテキストに substring が現れるまで待つ。
+async function waitForConsoleContains(capture, substring, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (capture.text().includes(substring)) return true;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return false;
+}
+
 test('POST /api/new-pane は engine を許可リストで検証し、codex を安全に起動する', async () => {
   const port = await getFreePort();
   const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-engine-fixture-'));
   const fakeClaude = createFakeExecutable(fixtureRoot, 'claude', 'VK_TERMINALS_E2E_CLAUDE_CAPTURE');
   const fakeCodex = createFakeExecutable(fixtureRoot, 'codex', 'VK_TERMINALS_E2E_CODEX_CAPTURE');
+  // engine: "codex" のときに model が無視されることの証明用マーカー（安藤の指摘・必須4）。
+  // 他 spec（new-pane-model.smoke.spec.js）のマーカーと衝突しないよう専用の接頭辞を使う。
+  const injectionMarkerPath = path.join(os.tmpdir(), `vk-pwned-engine-${process.pid}-${Date.now()}`);
   let launched = null;
 
   try {
@@ -85,12 +115,13 @@ test('POST /api/new-pane は engine を許可リストで検証し、codex を�
       port,
       prefix: 'vk-terminals-e2e-engine-',
       env: {
-        // 偽 claude と偽 codex を同じ PATH に共存させる（どちらのディレクトリも先頭側）。
+        // 偽 claude と偽 codex を同じ PATH に共存させる(どちらのディレクトリも先頭側)。
         PATH: `${fakeClaude.binDir}${path.delimiter}${fakeCodex.binDir}${path.delimiter}${process.env.PATH || ''}`,
         VK_TERMINALS_E2E_CLAUDE_CAPTURE: fakeClaude.capturePath,
         VK_TERMINALS_E2E_CODEX_CAPTURE: fakeCodex.capturePath,
       },
     });
+    const consoleCapture = captureMainProcessConsole(launched.app);
 
     // 起動直後の既定ペインが states に載るまで待ち、以降の「増えていない」の基準にする。
     await waitForPaneCount(port, 1);
@@ -127,26 +158,51 @@ test('POST /api/new-pane は engine を許可リストで検証し、codex を�
     const codexCalls = await waitForCalls(fakeCodex.capturePath, 1);
     expect(codexCalls[0]).toEqual([]);
 
-    // ★中心仕様: engine: "codex" と model を同時指定しても 400 にならず、
-    // model は無視されて素の codex が起動する（vk-orchestrator 互換のため）。
-    const codexWithModel = await postNewPane(port, {
+    // ★中心リスク（安藤の指摘・必須4）: engine が codex のときに model がただ「無視
+    // される」だけでなく、シェルメタ文字を含む危険な値が実際に捨てられている（起動
+    // コマンドへ一切混入しない）ことを実 PTY で証明する。正当な値（'sonnet' 等）だけの
+    // 確認では、危険な値が捨てられることの証明にはならない。
+    const injectionPayload = `sonnet; touch ${injectionMarkerPath}`;
+    const codexWithInjectedModel = await postNewPane(port, {
       engine: 'codex',
-      model: 'sonnet',
+      model: injectionPayload,
       noClaude: false,
     });
-    expect(codexWithModel.status).toBe(200);
-    expect(codexWithModel.body && codexWithModel.body.ok).toBe(true);
+    // 400 にはしない（★ユーザー承認済みの中心仕様）。
+    expect(codexWithInjectedModel.status).toBe(200);
+    expect(codexWithInjectedModel.body && codexWithInjectedModel.body.ok).toBe(true);
     await waitForPaneCount(port, 3);
-    const codexCallsAfterModel = await waitForCalls(fakeCodex.capturePath, 2);
-    // 2回目の呼び出しも引数なし（model が無視され --model 等が付かない）。
-    expect(codexCallsAfterModel[1]).toEqual([]);
+    const codexCallsAfterInjection = await waitForCalls(fakeCodex.capturePath, 2);
+    // 2回目の呼び出しも引数なし＝model の中身（危険な値を含む）が起動コマンドへ一切
+    // 混入していないこと。
+    expect(codexCallsAfterInjection[1]).toEqual([]);
+    // シェルに渡っていれば実行されたはずの `touch` が実行されていないこと。
+    expect(fs.existsSync(injectionMarkerPath)).toBe(false);
     // model が codex の引数として渡っていないこと（誤って claude 用の --model が付かない）。
     expect(fs.existsSync(fakeClaude.capturePath)).toBe(false);
+    // 安藤・植草の指摘（必須2・必須3）: HTTP 受け口は model を無視した時点で
+    // console.warn を出す（terminal:create の modelIgnored 判定とは別に、ここで
+    // 即座に出ることを確認する）。
+    expect(await waitForConsoleContains(consoleCapture, "model is ignored for engine 'codex'")).toBe(true);
+
+    // 植草の指摘（必須2・必須3）: model が文字列以外（数値）でも、型を問わず
+    // 警告ログが出ることを確認する。旧実装は `typeof parsed.model === 'string'` の
+    // ときしか requestedModel に載らず、非文字列だと警告が一切出ないバグがあった。
+    const codexWithNonStringModel = await postNewPane(port, {
+      engine: 'codex',
+      model: 12345,
+      noClaude: false,
+    });
+    expect(codexWithNonStringModel.status).toBe(200);
+    await waitForPaneCount(port, 4);
+    const codexCallsAfterNonString = await waitForCalls(fakeCodex.capturePath, 3);
+    expect(codexCallsAfterNonString[2]).toEqual([]);
+    expect(await waitForConsoleContains(consoleCapture, "model is ignored for engine 'codex'")).toBe(true);
 
     // engine 未指定は従来どおり claude が起動する（既存呼び出し元は非影響）。
     const defaultEngine = await postNewPane(port, { noClaude: false });
     expect(defaultEngine.status).toBe(200);
-    await waitForPaneCount(port, 4);
+    await waitForPaneCount(port, 5);
     const claudeCalls = await waitForCalls(fakeClaude.capturePath, 1);
     expect(claudeCalls[0]).toEqual([]);
 
@@ -157,11 +213,14 @@ test('POST /api/new-pane は engine を許可リストで検証し、codex を�
       noClaude: false,
     });
     expect(explicitClaudeWithModel.status).toBe(200);
-    await waitForPaneCount(port, 5);
+    await waitForPaneCount(port, 6);
     const claudeCallsWithModel = await waitForCalls(fakeClaude.capturePath, 2);
     expect(claudeCallsWithModel[1]).toEqual(['--model', 'opus']);
   } finally {
     if (launched) await closeApp(launched);
     fs.rmSync(fixtureRoot, { recursive: true, force: true });
+    // テスト失敗時も注入確認用マーカーを残さない（作られていた場合は assertion が
+    // 先に FAIL する）。
+    fs.rmSync(injectionMarkerPath, { force: true });
   }
 });

@@ -754,6 +754,8 @@ curl -s -X POST http://127.0.0.1:13847/api/new-pane \
 | `engine: "claude"`（省略時含む） | 既定 | Claude Code を起動する。`model` 指定が有効 |
 | `model` | `engine` が `"claude"`（既定）のときのみ有効 | `claude --model '<値>'` として起動 |
 
+ただし `engine` 自体の値が不正な場合（許可リストに無い文字列・文字列以外など）は、`noClaude` の値によらず `400` で拒否されペインは作成されません（バリデーションは `engine` の許可リストチェックが `noClaude` の反映より先に行われるため）。
+
 レスポンス:
 
 - 成功時: `200 {"ok": true, "termId": "<新規ターミナルID>"}`

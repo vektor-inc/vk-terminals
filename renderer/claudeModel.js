@@ -42,7 +42,15 @@
   // ─── engine（issue #367） ───────────────────────────────────────────────
   // 新規ペインで起動する AI エンジンの許可リスト。将来エンジンを足すときは
   // この配列（と下の ENGINE_LAUNCH_COMMANDS）だけを直せば済む形にしてある。
-  const ALLOWED_ENGINES = ['claude', 'codex'];
+  // Object.freeze で凍結し、呼び出し側が push() 等で許可値を増やせないようにする
+  // （安藤の指摘・対応6）。
+  //
+  // NOTE（次にエンジンを足すとき向け）: このファイルは元々 claude 専用だったところへ
+  // engine の許可リストという別関心事を後乗せしている。ファイル名 claudeModel.js が
+  // 実態と合わなくなってきているが、今回は差分を広げないため据え置いた。次にエンジンを
+  // 追加するときは、engine 関連のコードを別ファイル（例: renderer/engineModel.js）へ
+  // 切り出すことを検討すること。
+  const ALLOWED_ENGINES = Object.freeze(['claude', 'codex']);
 
   function isValidEngine(value) {
     return typeof value === 'string' && ALLOWED_ENGINES.includes(value);
@@ -52,14 +60,29 @@
   // buildClaudeLaunchCommand を使い、ここには含めない）。値から動的にコマンド文字列を
   // 組み立てず、固定リテラルを返すだけにすることで、任意文字列が起動コマンドへ
   // 混入する余地を無くしている。
-  const ENGINE_LAUNCH_COMMANDS = {
-    codex: 'codex',
-  };
+  //
+  // Object.create(null) で作る（安藤の指摘 MEDIUM・必須1）: 素のオブジェクトリテラル
+  // （`{ codex: 'codex' }`）だと Object.prototype を継承するため、`engine` に
+  // 'constructor' / 'toString' / 'valueOf' / 'hasOwnProperty' のような文字列を渡すと
+  // 添字アクセス（`ENGINE_LAUNCH_COMMANDS[engine]`）が Object.prototype 側のメンバー
+  // （関数）を返してしまい、`|| null` を通過しない（関数は truthy なため）。
+  // Object.create(null) なら継承元が無いため、この経路が構造的に成立しない。
+  const ENGINE_LAUNCH_COMMANDS = Object.create(null);
+  ENGINE_LAUNCH_COMMANDS.codex = 'codex';
 
   // 'claude' 以外の engine の起動コマンドを返す。未対応の engine（'claude' 自身を
   // 含む）には null を返す。'claude' は呼び出し側が buildClaudeLaunchCommand を使うこと。
+  //
+  // 二重の安全策（安藤の指摘・必須1）: ENGINE_LAUNCH_COMMANDS 自体を Object.create(null)
+  // にした上で、さらに Object.prototype.hasOwnProperty.call() で自プロパティかどうかを
+  // 明示確認する。前者だけで prototype 経由の混入は防げるが、将来この定数がまた
+  // オブジェクトリテラルに書き換えられても壊れないよう、値の取り出し方自体を
+  // 「継承を辿らない」形に固定しておく。
   function buildEngineLaunchCommand(engine) {
-    return ENGINE_LAUNCH_COMMANDS[engine] || null;
+    if (typeof engine !== 'string') return null;
+    if (!Object.prototype.hasOwnProperty.call(ENGINE_LAUNCH_COMMANDS, engine)) return null;
+    const command = ENGINE_LAUNCH_COMMANDS[engine];
+    return typeof command === 'string' ? command : null;
   }
 
   // 呼び出し側（main.js の terminal:create）が resolvedEngine（isValidEngine 済み・
@@ -88,8 +111,14 @@
     // フォールバック）。その場合は任意文字列を書き込まないよう安全側の素の claude へ
     // 倒す。この経路では model は使われていないため無視扱いにはしない
     // （claude 起動時は model を弾いていないのと同じ「安全側の既定」の考え方）。
+    //
+    // typeof command !== 'string' で判定する（安藤の指摘・必須1。`=== null` だけの
+    // 判定は buildEngineLaunchCommand 側の実装（prototype 経由の混入対策）に依存して
+    // しまう。呼び出し側でも独立に「文字列以外は絶対に書き込まない」を保証しておけば、
+    // buildEngineLaunchCommand が将来 null 以外の非文字列を返す実装に変わっても
+    // ここで二重に安全側へ倒れる）。
     const command = buildEngineLaunchCommand(resolvedEngine);
-    if (command === null) {
+    if (typeof command !== 'string') {
       return { command: 'claude', modelIgnored: false };
     }
     const modelIgnored = model !== undefined && model !== null;

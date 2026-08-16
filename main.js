@@ -1311,11 +1311,24 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
   // "1. Yes, continue" を指しているため、同じ \r 送信で承認できる。
   const TRUST_PATTERN = /Enter to confirm|Do you trust.{0,40}(?:folder|directory)|Yes,\s*I\s*trust\s*(the\s*files\s*in\s*)?this\s*folder/i;
 
-  // AI エンジンが入力受付状態になったことを検知するパターン
+  // AI エンジンが入力受付状態になったことを検知するパターン。
+  // resolvedEngine で分ける（安藤の指摘 LOW・対応8）: "OpenAI Codex" をエンジン問わず
+  // 全ペインへ適用すると、Claude ペインの出力（会話文・ツール結果等）にたまたま
+  // "OpenAI Codex" という文字列が含まれただけで ready と誤検知し、initialCommand が
+  // 想定より早く送られてしまう。resolvedEngine ごとに別パターンを使うことで、
+  // Claude ペインには従来どおり CLAUDE_READY_PATTERN だけを適用する。
+  //
+  // NOTE: ALLOWED_ENGINES に3つ目以降のエンジンを足すときは、この READY_PATTERNS_BY_ENGINE
+  // にもエントリを追加すること（未登録の engine は安全側で CLAUDE_READY_PATTERN へ倒れる
+  // ため、検知漏れではなく「盲打ちしない」側に倒れる＝実害は無いが、そのエンジンの
+  // ready 検知は機能しない）。
+  const CLAUDE_READY_PATTERN = /\?\s*for\s*shortcuts|\?\s*to\s*show\s*shortcuts|for\s*shortcuts|Welcome to Claude|Try\s*["']?\/help|Bypass(ing)?\s*Permissions|accept edits/i;
   // Codex（issue #367。codex-cli 0.147.0 実機確認）: 起動完了バナーに "OpenAI Codex" が
   // 出る。vk-orchestrator 側の CODEX_READY_PATTERN（setup-entry-autostart.js）と同じ
   // パターンを採用する。
-  const READY_PATTERN = /\?\s*for\s*shortcuts|\?\s*to\s*show\s*shortcuts|for\s*shortcuts|Welcome to Claude|Try\s*["']?\/help|Bypass(ing)?\s*Permissions|accept edits|OpenAI Codex/i;
+  const CODEX_READY_PATTERN = /OpenAI Codex/i;
+  const READY_PATTERNS_BY_ENGINE = { claude: CLAUDE_READY_PATTERN, codex: CODEX_READY_PATTERN };
+  const READY_PATTERN = READY_PATTERNS_BY_ENGINE[resolvedEngine] || CLAUDE_READY_PATTERN;
 
   const WATCH_TIMEOUT_MS = 10000;
 
@@ -1338,13 +1351,28 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
     // タイムアウトによる initialCommand の盲打ちフォールバックは engine が 'claude' の
     // ときだけ行う（issue #367）。Codex 等は READY_PATTERN 検知（OpenAI Codex）でのみ
     // 送信し、起動途中に initialCommand を打ち込んでしまう事故を避ける。
-    if (isFirstTerminal && config.initialCommand && resolvedEngine === 'claude') {
-      promptWatcherTimeoutId = setTimeout(() => {
-        if (!sent) {
-          console.warn(`${LOG_PREFIX} Claude ready prompt not detected within ${WATCH_TIMEOUT_MS}ms, sending initialCommand as fallback`);
-          sendInitialCommand('timeout fallback');
-        }
-      }, WATCH_TIMEOUT_MS);
+    //
+    // ただし claude 以外でも、タイムアウト自体（＝ここまで warn だけ出して盲打ちしない）
+    // は残す（安藤の指摘 LOW・対応7）。盲打ちを完全に止めた結果、例えば codex が未
+    // インストールで `command not found` になった場合など、initialCommand が永久に
+    // 送られないケースで警告ログも一切出ないと、司や利用者が切り分けにくくなる。
+    // 従来（claude 専用実装）は必ず warn が残っていたのと同じ可観測性を保つため、
+    // 「送信はしない・警告だけ出す」タイマーを engine 問わず設定する。
+    if (isFirstTerminal && config.initialCommand) {
+      if (resolvedEngine === 'claude') {
+        promptWatcherTimeoutId = setTimeout(() => {
+          if (!sent) {
+            console.warn(`${LOG_PREFIX} Claude ready prompt not detected within ${WATCH_TIMEOUT_MS}ms, sending initialCommand as fallback`);
+            sendInitialCommand('timeout fallback');
+          }
+        }, WATCH_TIMEOUT_MS);
+      } else {
+        promptWatcherTimeoutId = setTimeout(() => {
+          if (!sent) {
+            console.warn(`${LOG_PREFIX} ready prompt not detected within ${WATCH_TIMEOUT_MS}ms for engine '${resolvedEngine}'; initialCommand was not sent (blind fallback is disabled for non-claude engines)`);
+          }
+        }, WATCH_TIMEOUT_MS);
+      }
     }
 
     promptWatcher = (data) => {
@@ -1361,6 +1389,7 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
         }
         // 信頼承認後はタイムアウトをリセット（initialCommand 待ち継続）。
         // ここも engine が 'claude' のときだけ盲打ちフォールバックを再設定する（issue #367）。
+        // claude 以外は対応7と同じ理由で「送信はしない・警告だけ出す」タイマーを設定する。
         if (isFirstTerminal && config.initialCommand && !sent) {
           clearTimeout(promptWatcherTimeoutId);
           if (resolvedEngine === 'claude') {
@@ -1368,6 +1397,12 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
               if (!sent) {
                 console.warn(`${LOG_PREFIX} Claude ready prompt not detected after trust confirmation, sending initialCommand as fallback`);
                 sendInitialCommand('timeout fallback after trust');
+              }
+            }, WATCH_TIMEOUT_MS);
+          } else {
+            promptWatcherTimeoutId = setTimeout(() => {
+              if (!sent) {
+                console.warn(`${LOG_PREFIX} ready prompt not detected after trust confirmation for engine '${resolvedEngine}'; initialCommand was not sent (blind fallback is disabled for non-claude engines)`);
               }
             }, WATCH_TIMEOUT_MS);
           }
@@ -2232,9 +2267,10 @@ function startHttpApi() {
     //   model を指定すると、そのモデルで claude を起動する（claude --model '<model>'）。
     //     許可するのは英数字・`.`・`_`・`-`・`[`・`]` のみ・64 文字以内で、先頭は英数字。
     //     それ以外は 400 で拒否しペインを作らない。未指定なら従来どおり素の claude を起動する。
-    //     engine が claude 以外のときは model の妥当性検証をスキップして素通しし、
-    //     terminal:create 側で無視＋警告ログという形で処理する（400 にはしない。
-    //     理由は terminal:create 側のコメント参照）。
+    //     engine が claude 以外のときは model は検証せず・IPC の先へも渡さずに無視し
+    //     （400にはしない）、その場で警告ログを出す（型を問わず。#310 の「起動コマンドに
+    //     入りうる値は必ず許可リストを通す」不変条件を守るための措置。詳細は下の
+    //     model 解析処理のコメント参照）。
     if (req.method === 'POST' && url.pathname === '/api/new-pane') {
       if (isForbiddenOrigin(req)) {
         res.writeHead(403, { 'Content-Type': 'application/json' });
@@ -2289,11 +2325,23 @@ function startHttpApi() {
             // 起動コマンドの一部になるため、許可リストを通らない値はペインを作らずに拒否する。
             // 省略時は従来どおり素の claude を起動する＝既存の呼び出し元は非影響。
             //
-            // ただし engine が claude 以外のときは model は無視される値なので、ここでは
-            // 検証せず素通しする（issue #367）。vk-orchestrator は claudeModel 設定が
-            // 空でなければ常に model を載せる作りのため、ここで 400 にすると engine を
-            // 切り替えた瞬間にペイン作成が全て失敗してしまう。実際に無視する判定・警告
-            // ログは terminal:create 側（唯一の起動コマンド決定箇所）に一元化する。
+            // engine が claude 以外のときは model は無視される値だが、型を問わず
+            // 一切検証せずに IPC の向こうへ渡すことはしない（安藤の指摘 MEDIUM・必須2）。
+            // 「起動コマンドに入りうる値は必ず許可リストを通っている」という #310 の
+            // 不変条件を守るため、ここで requestedModel には代入しない＝payload に
+            // 一切載せない。Codex 側のモデル指定（codex --model 等）は本 issue の
+            // スコープ外だが、将来それが実装された瞬間にこの素通しがコマンド
+            // インジェクションになる「時限式の地雷」を残さないための措置。
+            //
+            // 警告ログはここで即座に出す（植草の指摘・必須2: 従来は
+            // `typeof parsed.model === 'string'` のときしか requestedModel に載らず、
+            // 結果 terminal:create 側の modelIgnored 判定にも渡らないため、数値等の
+            // 非文字列を渡すと README の「無視されたことは警告ログに出力される」という
+            // 約束に反して警告が一切出ないケースがあった。型を問わずここで出すことで
+            // 塞ぐ）。terminal:create 側の modelIgnored による警告は、HTTP を経由しない
+            // 内部経路（renderer の splitPane 直呼び等）向けの多層防御として残してある。
+            // HTTP 経由では model が payload に乗らなくなるため、通常経路で二重に出る
+            // ことはない。
             if (parsed?.model !== undefined) {
               const effectiveEngine = requestedEngine || 'claude';
               if (effectiveEngine === 'claude') {
@@ -2303,8 +2351,8 @@ function startHttpApi() {
                   return;
                 }
                 requestedModel = parsed.model;
-              } else if (typeof parsed.model === 'string') {
-                requestedModel = parsed.model;
+              } else {
+                console.warn(`${LOG_PREFIX} model is ignored for engine '${effectiveEngine}'`);
               }
             }
           } catch {

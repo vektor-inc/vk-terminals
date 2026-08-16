@@ -122,11 +122,19 @@
 
     const rows = [{ index: lineIndex0, text: line.translateToString(false) }];
 
-    // 連結後の文字数は上下方向で通算する（安藤レビュー・LOW）。上下を別々に数えると
-    // 実質 2 × MAX_WINDOW_CHARS まで伸びてしまう。#365 まではこの上限に事実上到達し
-    // づらかった（isWrapped の連鎖でしか発動しない＝実際のソフトラップの範囲に自然と
-    // 収まる）が、案D 以降は「全幅行が並んでいるだけ」でも発動するため、通算にしておく。
-    let total = rows[0].text.length;
+    // 連結後の文字数は上下方向で独立に数える（origin/main からの既存の勘定。実質
+    // 2 × MAX_WINDOW_CHARS まで伸びうるが、これは意図した挙動）。
+    //
+    // 【安藤レビュー再検証で取り消し】前回のレビューで一度「上下で通算すべき（安藤
+    // レビュー・LOW）」という指摘を反映したが、これは退行だった。上方向を先に処理する
+    // ため、長い1論理行（例: 空白を含まない2048文字以上のソフトラップ = base64・
+    // minify済みコード・1行JSON等）で上方向が予算を使い切ると、下方向の連結予算が
+    // ゼロになり、URL がホバー位置より手前で切り詰められてリンク化される
+    // （#361・#368 が塞いできた「断片がリンク化されて404」そのもの）。このバッファは
+    // 全行 isWrapped: true の既存ソフトラップ経路であり、案D（強制連結）とは無関係。
+    // 通算にすると origin/main の挙動（方向ごとに独立した予算）より窓が狭くなるため、
+    // 安藤さんの再検証（「LOW と書いたとおり直さなくてよかった箇所」）に従い元へ戻した。
+    // 下記のテスト「getWrappedLineWindow: 連結上限は上下方向で独立に数える」で固定する。
 
     // 上方向へ拡張: 「前の行からこの行への連結」が成り立つ間、前の行を辿る。
     // 連結が成り立つ条件（issue #368・案D で拡張。isForcedMergeSource のコメント参照）:
@@ -158,6 +166,7 @@
     // 無効化される。実 xterm での end-to-end 確認で検出・修正）。
     {
       let idx = lineIndex0;
+      let total = rows[0].text.length;
       for (;;) {
         if (total >= MAX_WINDOW_CHARS) break;
         const prevLine = buffer.getLine(idx - 1);
@@ -182,6 +191,7 @@
     // 条件は上方向と対称（次の行の isWrapped、または現在の行の isForcedMergeSource）。
     {
       let idx = lineIndex0;
+      let total = rows[rows.length - 1].text.length;
       for (;;) {
         if (total >= MAX_WINDOW_CHARS) break;
         const nextLine = buffer.getLine(idx + 1);

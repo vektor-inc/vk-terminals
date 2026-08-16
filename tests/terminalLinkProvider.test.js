@@ -105,7 +105,7 @@ test('getWrappedLineWindow: 次行が折り返し継続行なら前方へ連結�
   // まれてカーソルが折り返した」場合のみ。そのため row0 も cols ちょうどで埋める
   // （row0 だけ未パディングだと、isWrapped: true な row1 が存在するという組み合わせ自体が
   // 実機では起こり得ない状態になってしまう。issue #368・案D 安藤レビュー・MEDIUM）。
-  const row0Text = 'https://example.co'; // 19 文字
+  const row0Text = 'https://example.co'; // 18 文字
   const cols = row0Text.length;
   const terminal = makeFakeTerminal([
     { cells: asciiCells(row0Text), isWrapped: false },
@@ -460,4 +460,82 @@ test('createTerminalLinkProvider: URL がペイン最終列ちょうどで終わ
   // 意図した副作用: 次行の内容まで連結されてしまう（404 等のリスクは #368 本体より
   // 低頻度だが残る。ユーザーには CHANGELOG で周知する）。
   assert.equal(received[0].text, 'https://example.com/abcdefdone-2026-08-16');
+});
+
+// ─── 連結上限（MAX_WINDOW_CHARS）は上下方向で独立に数える（司レビュー・退行の再回帰） ──
+//
+// 一度「上下で通算すべき」という指摘（安藤レビュー・LOW）を反映したが、これは退行
+// だった（司の再レビューで検出・安藤さんも「LOW と書いたとおり直さなくてよかった箇所」
+// と申告）。上方向を先に処理するため、通算にすると長い1論理行（空白を含まない2048文字
+// 以上のソフトラップ = base64・minify済みコード・1行JSON等）で上方向が予算を使い切り、
+// 下方向の連結予算がゼロになる。これは origin/main には無かった挙動で、URL がホバー
+// 位置より手前で切り詰められてリンク化される（#361・#368 と同種の「断片がリンク化
+// されて404」）。方向ごとに独立した予算（origin/main の挙動）へ戻したことをこのテストで
+// 固定する。
+test('getWrappedLineWindow: 連結上限（MAX_WINDOW_CHARS）は上下方向で独立に数える', () => {
+  // 30行 × 100文字（合計3000文字、行内に空白なし）の isWrapped: true チェーンを作り、
+  // 中間の行（index 25）から問い合わせる。上方向だけで 2000 文字超（2048 に迫る／超える
+  // 行数）を消費するため、もし上下で予算を通算していれば下方向の予算はゼロになり、
+  // 最後の行（index 29）まで届かない。
+  const cols = 100;
+  const rowCount = 30;
+  const rowsSpec = [];
+  for (let i = 0; i < rowCount; i += 1) {
+    const text = `row${String(i).padStart(3, '0')}${'x'.repeat(cols - 6)}`;
+    rowsSpec.push({ cells: asciiCells(text), isWrapped: i > 0 });
+  }
+  const terminal = makeFakeTerminal(rowsSpec, cols);
+
+  const rows = getWrappedLineWindow(terminal.buffer.active, 25);
+  const indices = rows.map((r) => r.index);
+  // 下方向は独立した予算を持つため、開始行より後ろの行（26〜29）へ最後まで届く。
+  assert.ok(
+    indices.includes(29),
+    `expected window to reach row 29 (downward budget must be independent), got: ${indices.join(',')}`,
+  );
+});
+
+// ─── ミューテーションガード（安藤レビュー再検証・案D の中核条件を守るネガティブケース） ──
+// isRowFullWidth / isForcedMergeSource のテーブル除外は、どちらも壊しても既存テストが
+// 1件も落ちない状態だった（安藤さんのミューテーションテストで検出）。以下2件はそれぞれの
+// ガードを1つずつ無効化すると壊れる形で書く。
+
+test('getWrappedLineWindow: ペイン幅に満たない（未書き込みセルが残る）行は強制連結の起点にならない（案D・isRowFullWidth のミューテーションガード）', () => {
+  // row0 は cols=10 に対して内容が3文字しか無く、末尾7列は未書き込みセルのまま
+  // （＝ペイン幅いっぱいではない）。isRowFullWidth を常に true にする変更を入れると、
+  // このテストは window=[0, 1] になって落ちる。
+  const cols = 10;
+  const terminal = makeFakeTerminal([
+    { cells: asciiCells('abc'), isWrapped: false },
+    { cells: asciiCells('def'), isWrapped: false },
+  ], cols);
+  const rows = getWrappedLineWindow(terminal.buffer.active, 0);
+  assert.deepEqual(rows.map((r) => r.index), [0]);
+});
+
+test('getWrappedLineWindow: 罫線テーブルのデータ行を起点にしても、テーブル行を挟んで無関係な次の行までは連結しない（案D・isForcedMergeSource のテーブル除外のミューテーションガード）', () => {
+  // row0→row1 は xterm 自身のソフトラップ（isWrapped: true。ペイン幅より広いテーブルが
+  // xterm によって折り返された想定。urlLinkify.js の isTruncatedAtTableCellBorder
+  // コメント参照）で、これは #365 からの既存経路として連結してよい。
+  //
+  // row1 はあえて空白を含まない文字列にする（空白を含めると、テーブル除外の判定に
+  // 到達する前に「空白を含む行まで来たら打ち切る」という既存の停止条件で先に止まって
+  // しまい、テーブル除外を無効化してもテストが検出できなくなるため）。
+  //
+  // row1→row2 は isWrapped: false のうえ row1 が罫線テーブルの行（縦線2つ以上）なので、
+  // isForcedMergeSource のテーブル除外が効いていれば連結されない。この除外を無効化する
+  // 変更を入れると、このテストは window=[0, 1, 2] になって落ちる。
+  const row1Text = '│path│done│'; // 縦線2つ以上・空白無し・ペイン幅ちょうどのテーブル行
+  const cols = row1Text.length;
+  const row0Text = '│https://example.co'; // makeFakeTerminal が cols まで自動パディングする
+  const row2Text = '│nextrow│'; // 独立した別のテーブル行（makeFakeTerminal が自動パディング）
+
+  const terminal = makeFakeTerminal([
+    { cells: asciiCells(row0Text), isWrapped: false },
+    { cells: asciiCells(row1Text), isWrapped: true },
+    { cells: asciiCells(row2Text), isWrapped: false },
+  ], cols);
+
+  const rows = getWrappedLineWindow(terminal.buffer.active, 0);
+  assert.deepEqual(rows.map((r) => r.index), [0, 1]);
 });

@@ -67,8 +67,14 @@
   // 添字アクセス（`ENGINE_LAUNCH_COMMANDS[engine]`）が Object.prototype 側のメンバー
   // （関数）を返してしまい、`|| null` を通過しない（関数は truthy なため）。
   // Object.create(null) なら継承元が無いため、この経路が構造的に成立しない。
+  //
+  // Object.freeze する（安藤の指摘・修正3）: ALLOWED_ENGINES は凍結している一方こちらは
+  // 未凍結だと非対称で意図が読み取りにくい。このオブジェクト自体は export しておらず
+  // （呼び出し側は buildEngineLaunchCommand 経由でしか触れない）実害は無いが、
+  // 「値を書き換えない定数」という扱いを揃えるため凍結する。
   const ENGINE_LAUNCH_COMMANDS = Object.create(null);
   ENGINE_LAUNCH_COMMANDS.codex = 'codex';
+  Object.freeze(ENGINE_LAUNCH_COMMANDS);
 
   // 'claude' 以外の engine の起動コマンドを返す。未対応の engine（'claude' 自身を
   // 含む）には null を返す。'claude' は呼び出し側が buildClaudeLaunchCommand を使うこと。

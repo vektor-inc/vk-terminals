@@ -90,15 +90,33 @@ function captureMainProcessConsole(app) {
   return { text: () => lines.join('\n') };
 }
 
-// captureMainProcessConsole が蓄積したテキストに substring が現れるまで待つ。
-async function waitForConsoleContains(capture, substring, timeoutMs = 10_000) {
+// captureMainProcessConsole が蓄積したテキストのうち、pattern（g フラグ付き）に
+// 一致する件数を返す純粋関数。
+function countConsoleMatches(capture, pattern) {
+  return (capture.text().match(pattern) || []).length;
+}
+
+// 一致件数が expectedMinimum 以上になるまで待つ。
+//
+// 単純な「含まれるか（includes）」判定にしない理由（安藤の指摘・修正2）: このテストは
+// 同じ警告文言（"model is ignored for engine 'codex'"）を複数のリクエストで繰り返し
+// 検証する。captureMainProcessConsole は起動から今までの全 console 出力を蓄積し続ける
+// ため、「含まれるか」だけを見ると、1つ前のリクエストで既に出た警告がバッファに残って
+// いるだけで無条件に true になり、「今回のリクエストで新たに警告が出たか」を判定
+// できない（植草の指摘：非文字列 model のケースの回帰テストとして機能していなかった）。
+// 呼び出し側がリクエスト送信前の件数を記録し、送信後に「件数が +1 以上になったか」を
+// 確認する形にすることで、各リクエストごとに新規の警告が出たことを保証する。
+async function waitForConsoleMatchCountAtLeast(capture, pattern, expectedMinimum, timeoutMs = 10_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (capture.text().includes(substring)) return true;
+    if (countConsoleMatches(capture, pattern) >= expectedMinimum) return true;
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   return false;
 }
+
+// "model is ignored for engine 'codex'" 警告の出現回数を数えるための g フラグ付きパターン。
+const MODEL_IGNORED_FOR_CODEX_PATTERN = /model is ignored for engine 'codex'/g;
 
 test('POST /api/new-pane は engine を許可リストで検証し、codex を安全に起動する', async () => {
   const port = await getFreePort();
@@ -115,7 +133,7 @@ test('POST /api/new-pane は engine を許可リストで検証し、codex を�
       port,
       prefix: 'vk-terminals-e2e-engine-',
       env: {
-        // 偽 claude と偽 codex を同じ PATH に共存させる(どちらのディレクトリも先頭側)。
+        // 偽 claude と偽 codex を同じ PATH に共存させる（どちらのディレクトリも先頭側）。
         PATH: `${fakeClaude.binDir}${path.delimiter}${fakeCodex.binDir}${path.delimiter}${process.env.PATH || ''}`,
         VK_TERMINALS_E2E_CLAUDE_CAPTURE: fakeClaude.capturePath,
         VK_TERMINALS_E2E_CODEX_CAPTURE: fakeCodex.capturePath,
@@ -163,6 +181,7 @@ test('POST /api/new-pane は engine を許可リストで検証し、codex を�
     // コマンドへ一切混入しない）ことを実 PTY で証明する。正当な値（'sonnet' 等）だけの
     // 確認では、危険な値が捨てられることの証明にはならない。
     const injectionPayload = `sonnet; touch ${injectionMarkerPath}`;
+    const warningCountBeforeInjection = countConsoleMatches(consoleCapture, MODEL_IGNORED_FOR_CODEX_PATTERN);
     const codexWithInjectedModel = await postNewPane(port, {
       engine: 'codex',
       model: injectionPayload,
@@ -182,12 +201,19 @@ test('POST /api/new-pane は engine を許可リストで検証し、codex を�
     expect(fs.existsSync(fakeClaude.capturePath)).toBe(false);
     // 安藤・植草の指摘（必須2・必須3）: HTTP 受け口は model を無視した時点で
     // console.warn を出す（terminal:create の modelIgnored 判定とは別に、ここで
-    // 即座に出ることを確認する）。
-    expect(await waitForConsoleContains(consoleCapture, "model is ignored for engine 'codex'")).toBe(true);
+    // 即座に出ることを確認する）。今回のリクエストで新たに警告が1件以上増えたことを
+    // 出現回数で確認する（修正2：単純な includes 判定だと後続ケースが無条件に true に
+    // なってしまうため）。
+    expect(await waitForConsoleMatchCountAtLeast(
+      consoleCapture,
+      MODEL_IGNORED_FOR_CODEX_PATTERN,
+      warningCountBeforeInjection + 1,
+    )).toBe(true);
 
     // 植草の指摘（必須2・必須3）: model が文字列以外（数値）でも、型を問わず
     // 警告ログが出ることを確認する。旧実装は `typeof parsed.model === 'string'` の
     // ときしか requestedModel に載らず、非文字列だと警告が一切出ないバグがあった。
+    const warningCountBeforeNonString = countConsoleMatches(consoleCapture, MODEL_IGNORED_FOR_CODEX_PATTERN);
     const codexWithNonStringModel = await postNewPane(port, {
       engine: 'codex',
       model: 12345,
@@ -197,7 +223,13 @@ test('POST /api/new-pane は engine を許可リストで検証し、codex を�
     await waitForPaneCount(port, 4);
     const codexCallsAfterNonString = await waitForCalls(fakeCodex.capturePath, 3);
     expect(codexCallsAfterNonString[2]).toEqual([]);
-    expect(await waitForConsoleContains(consoleCapture, "model is ignored for engine 'codex'")).toBe(true);
+    // ここが修正2の本題: 直前の注入ケースで既にバッファへ残っている同じ警告文言に
+    // 引きずられず、このリクエスト固有の新規警告が出たことを出現回数で確認する。
+    expect(await waitForConsoleMatchCountAtLeast(
+      consoleCapture,
+      MODEL_IGNORED_FOR_CODEX_PATTERN,
+      warningCountBeforeNonString + 1,
+    )).toBe(true);
 
     // engine 未指定は従来どおり claude が起動する（既存呼び出し元は非影響）。
     const defaultEngine = await postNewPane(port, { noClaude: false });

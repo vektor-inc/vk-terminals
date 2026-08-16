@@ -1318,17 +1318,21 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
   // 想定より早く送られてしまう。resolvedEngine ごとに別パターンを使うことで、
   // Claude ペインには従来どおり CLAUDE_READY_PATTERN だけを適用する。
   //
-  // NOTE: ALLOWED_ENGINES に3つ目以降のエンジンを足すときは、この READY_PATTERNS_BY_ENGINE
-  // にもエントリを追加すること（未登録の engine は安全側で CLAUDE_READY_PATTERN へ倒れる
-  // ため、検知漏れではなく「盲打ちしない」側に倒れる＝実害は無いが、そのエンジンの
-  // ready 検知は機能しない）。
+  // 三項演算子で分岐する（安藤の指摘 LOW・修正1）: 当初はオブジェクトマップ
+  // （{ claude: ..., codex: ... }）で分けていたが、これは renderer/claudeModel.js の
+  // ENGINE_LAUNCH_COMMANDS で今まさに塞いだのと同じ「素のオブジェクトリテラルへの
+  // 変数添字アクセス」だった。resolvedEngine は isValidEngine 済みで到達不能とはいえ、
+  // 仮に未検証の値が来ると Object.prototype 側のメンバー（関数）が返り、
+  // READY_PATTERN.test(buffer) が ptyProcess.onData のたびに TypeError を投げる
+  // （安藤の実測）。エンジンが 'claude' / 'codex' の2つしか無い現状では、素のオブジェクト
+  // アクセスを経由しない三項演算子の方が安全かつ素直。3つ目以降のエンジンを足す際は
+  // ここを見直すこと（未登録の engine は CLAUDE_READY_PATTERN へ倒れる＝安全側）。
   const CLAUDE_READY_PATTERN = /\?\s*for\s*shortcuts|\?\s*to\s*show\s*shortcuts|for\s*shortcuts|Welcome to Claude|Try\s*["']?\/help|Bypass(ing)?\s*Permissions|accept edits/i;
   // Codex（issue #367。codex-cli 0.147.0 実機確認）: 起動完了バナーに "OpenAI Codex" が
   // 出る。vk-orchestrator 側の CODEX_READY_PATTERN（setup-entry-autostart.js）と同じ
   // パターンを採用する。
   const CODEX_READY_PATTERN = /OpenAI Codex/i;
-  const READY_PATTERNS_BY_ENGINE = { claude: CLAUDE_READY_PATTERN, codex: CODEX_READY_PATTERN };
-  const READY_PATTERN = READY_PATTERNS_BY_ENGINE[resolvedEngine] || CLAUDE_READY_PATTERN;
+  const READY_PATTERN = resolvedEngine === 'codex' ? CODEX_READY_PATTERN : CLAUDE_READY_PATTERN;
 
   const WATCH_TIMEOUT_MS = 10000;
 

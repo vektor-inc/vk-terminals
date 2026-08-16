@@ -754,7 +754,7 @@ curl -s -X POST http://127.0.0.1:13847/api/new-pane \
 | `engine: "claude"`（省略時含む） | 既定 | Claude Code を起動する。`model` 指定が有効 |
 | `model` | `engine` が `"claude"`（既定）のときのみ有効 | `claude --model '<値>'` として起動 |
 
-ただし `engine` 自体の値が不正な場合（許可リストに無い文字列・文字列以外など）は、`noClaude` の値によらず `400` で拒否されペインは作成されません（バリデーションは `engine` の許可リストチェックが `noClaude` の反映より先に行われるため）。
+ただし `engine` 自体の値が不正な場合（許可リストに無い文字列・文字列以外など）は、`noClaude` の値によらず `400` で拒否されペインは作成されません。`model`（`engine` が `"claude"` のときのみ検証対象）が不正な場合も同様に、`noClaude` の値によらず `400` で拒否されペインは作成されません（`{"noClaude": true, "model": "bad;value"}` のような組み合わせでも `400 invalid model` になります）。いずれも、不正値のチェックは `noClaude` の反映より先に行われるためです。
 
 レスポンス:
 

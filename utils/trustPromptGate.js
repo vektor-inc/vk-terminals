@@ -146,14 +146,28 @@ function createTrustPromptGate({ spawnTime, trustWindowMs = TRUST_WINDOW_MS, rea
  * e2e テストがこれらの時間窓を短縮し、実時間を待たずに検証できるようにするための入口
  * （安藤の指摘・必須2）。
  *
+ * options.max を指定すると、パースできた値が max を超える場合は max に切り詰める
+ * （安藤の指摘・MEDIUM・必須1）。この2つの環境変数は e2e が実時間の待ちを「短縮」
+ * するためだけの入口であり、上限が無いと逆に時間窓を無制限に「延長」でき、
+ * 信頼確認プロンプトへの自動応答をいつまでも許可し続ける状態を作れてしまう
+ * （＝この PR が塞ごうとしている防御そのものを、環境変数1つで無効化できてしまう）。
+ * main.js はそれぞれの既定値（TRUST_WINDOW_MS / READY_GRACE_MS）を max として渡し、
+ * 「既定値以下への短縮のみ」を許可する形にする。
+ *
  * @param {*} rawValue - 環境変数由来の値（文字列 or undefined）。
  * @param {number} fallback - パースできなかった場合に返す既定値。
+ * @param {object} [options]
+ * @param {number} [options.max] - 採用してよい上限（ms）。指定時、パース結果がこれを
+ *   超える場合は max に切り詰める。
  * @returns {number}
  */
-function resolvePositiveFiniteMs(rawValue, fallback) {
+function resolvePositiveFiniteMs(rawValue, fallback, options = {}) {
+  const { max } = options;
   if (rawValue === undefined || rawValue === null || rawValue === '') return fallback;
   const parsed = Number(rawValue);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  if (typeof max === 'number' && parsed > max) return max;
+  return parsed;
 }
 
 module.exports = {

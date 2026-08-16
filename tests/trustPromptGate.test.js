@@ -252,3 +252,53 @@ test('resolvePositiveFiniteMs: 0以下・NaN・Infinity・数値に変換でき�
   assert.equal(resolvePositiveFiniteMs('Infinity', 30000), 30000);
   assert.equal(resolvePositiveFiniteMs('NaN', 30000), 30000);
 });
+
+// ─── resolvePositiveFiniteMs: options.max による上限クランプ（短縮のみ許可） ────────
+// 安藤のセキュリティレビュー（MEDIUM・issue #371 decision-record）指摘対応: max が
+// 無いと、VK_TERMINALS_TRUST_WINDOW_MS / VK_TERMINALS_READY_GRACE_MS は「時間窓を
+// 延長して自動応答の防御を無効化する」経路にもなってしまう。main.js は両環境変数とも
+// 既定値を max として渡し「既定値以下への短縮のみ」を許可する。ここではその main.js の
+// 使い方（fallback と max に同じ既定値を渡す形）に揃えてテストする。
+
+test('resolvePositiveFiniteMs: TRUST_WINDOW_MS 用途で、既定より大きい値は既定値へクランプされる（延長を許さない）', () => {
+  // main.js の RESOLVED_TRUST_WINDOW_MS と同じ呼び方（fallback = max = 既定値）。
+  assert.equal(
+    resolvePositiveFiniteMs('1000000000', TRUST_WINDOW_MS, { max: TRUST_WINDOW_MS }),
+    TRUST_WINDOW_MS
+  );
+  assert.equal(
+    resolvePositiveFiniteMs('999999999999', TRUST_WINDOW_MS, { max: TRUST_WINDOW_MS }),
+    TRUST_WINDOW_MS
+  );
+  // 既定値以下（短縮方向）はそのまま採用される。
+  assert.equal(
+    resolvePositiveFiniteMs('500', TRUST_WINDOW_MS, { max: TRUST_WINDOW_MS }),
+    500
+  );
+  // 既定値ちょうど（境界）はそのまま採用される。
+  assert.equal(
+    resolvePositiveFiniteMs(String(TRUST_WINDOW_MS), TRUST_WINDOW_MS, { max: TRUST_WINDOW_MS }),
+    TRUST_WINDOW_MS
+  );
+});
+
+test('resolvePositiveFiniteMs: READY_GRACE_MS 用途で、既定より大きい値は既定値へクランプされる（延長を許さない）', () => {
+  // main.js の RESOLVED_READY_GRACE_MS と同じ呼び方（fallback = max = 既定値）。
+  assert.equal(
+    resolvePositiveFiniteMs('1000000000', READY_GRACE_MS, { max: READY_GRACE_MS }),
+    READY_GRACE_MS
+  );
+  assert.equal(
+    resolvePositiveFiniteMs('999999999999', READY_GRACE_MS, { max: READY_GRACE_MS }),
+    READY_GRACE_MS
+  );
+  // 既定値以下（短縮方向）はそのまま採用される。
+  assert.equal(
+    resolvePositiveFiniteMs('300', READY_GRACE_MS, { max: READY_GRACE_MS }),
+    300
+  );
+});
+
+test('resolvePositiveFiniteMs: max 未指定時は従来どおり上限なし（既存呼び出し元は非影響）', () => {
+  assert.equal(resolvePositiveFiniteMs('999999999999', 30000), 999999999999);
+});

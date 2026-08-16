@@ -17,14 +17,6 @@ const {
   READY_GRACE_MS: DEFAULT_READY_GRACE_MS,
   resolvePositiveFiniteMs,
 } = require('./utils/trustPromptGate');
-
-// 信頼確認プロンプトの自動応答に関わる2つの時間窓を、e2e から短縮できるようにする入口
-// （issue #371。安藤のセキュリティレビュー・必須2）。未設定・不正値（0以下・NaN・
-// Infinity・空文字等）は utils/trustPromptGate.js の既定値へ倒す（resolvePositiveFiniteMs）。
-// 実時間で 30 秒（TRUST_WINDOW_MS）待つテストを避けるための調整用で、通常起動では
-// 環境変数を設定しないため既定値のまま動く。
-const RESOLVED_TRUST_WINDOW_MS = resolvePositiveFiniteMs(process.env.VK_TERMINALS_TRUST_WINDOW_MS, DEFAULT_TRUST_WINDOW_MS);
-const RESOLVED_READY_GRACE_MS = resolvePositiveFiniteMs(process.env.VK_TERMINALS_READY_GRACE_MS, DEFAULT_READY_GRACE_MS);
 // 宣言的ウィジェット（tasks-widget.json）契約の共有ロジック（#229 / vk-orchestrator#182）。
 // タスクのドメイン語彙（遷移マトリクス・ラベル・優先度など）はこのプロセスに持たず、
 // orchestrator が書き出す宣言を検証・中継するだけの汎用実装にする。
@@ -111,6 +103,32 @@ let nextClosePaneRequestId = 1;
 const DATA_DIR = path.join(os.homedir(), '.vk-terminals');
 const STATE_FILE = path.join(DATA_DIR, 'states.json');
 const LOG_PREFIX = '[vk-terminals]';
+
+// 信頼確認プロンプトの自動応答に関わる2つの時間窓を、e2e から「短縮」できるようにする
+// 入口（issue #371。安藤のセキュリティレビュー・必須2）。未設定・不正値（0以下・NaN・
+// Infinity・空文字等）は utils/trustPromptGate.js の既定値へ倒す（resolvePositiveFiniteMs）。
+// 実時間で 30 秒（TRUST_WINDOW_MS）待つテストを避けるための調整用で、通常起動では
+// 環境変数を設定しないため既定値のまま動く。
+//
+// max に各既定値を渡し、既定より大きい値は既定値へ切り詰める（安藤の指摘・MEDIUM・
+// 必須1）。上限を設けないと、この2つの環境変数が「時間窓を延長して自動応答の防御を
+// 無効化する」経路にもなってしまう（例: dotfile に export で極端に大きい値を設定される
+// と、以後そのマシンでは信頼確認プロンプトへの自動応答をいつまでも許可し続ける）。
+// e2e が必要としているのは短縮だけなので、上書きを短縮方向のみに制限する。
+const RESOLVED_TRUST_WINDOW_MS = resolvePositiveFiniteMs(
+  process.env.VK_TERMINALS_TRUST_WINDOW_MS, DEFAULT_TRUST_WINDOW_MS, { max: DEFAULT_TRUST_WINDOW_MS }
+);
+const RESOLVED_READY_GRACE_MS = resolvePositiveFiniteMs(
+  process.env.VK_TERMINALS_READY_GRACE_MS, DEFAULT_READY_GRACE_MS, { max: DEFAULT_READY_GRACE_MS }
+);
+// 既定値と異なる値が採用されたときは警告ログを残す（後から切り分けやすくするため）。
+if (RESOLVED_TRUST_WINDOW_MS !== DEFAULT_TRUST_WINDOW_MS) {
+  console.warn(`${LOG_PREFIX} VK_TERMINALS_TRUST_WINDOW_MS override in effect: ${RESOLVED_TRUST_WINDOW_MS}ms (default ${DEFAULT_TRUST_WINDOW_MS}ms)`);
+}
+if (RESOLVED_READY_GRACE_MS !== DEFAULT_READY_GRACE_MS) {
+  console.warn(`${LOG_PREFIX} VK_TERMINALS_READY_GRACE_MS override in effect: ${RESOLVED_READY_GRACE_MS}ms (default ${DEFAULT_READY_GRACE_MS}ms)`);
+}
+
 // ウィンドウタイトルバーおよびヘッダーに表示するアプリ名。既定は 'VK Terminals'。
 // 呼び出し側（例: vk-orchestrator）が env VK_TERMINALS_APP_TITLE を渡すと、その名称
 // （例: 'VK Orchestrator'）を表示する。renderer には app:get-config 経由で伝える。

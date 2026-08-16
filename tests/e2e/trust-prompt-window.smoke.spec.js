@@ -22,20 +22,36 @@ const { closeApp, getFreePort, launchAppAndWait } = require('./helpers/electron-
 // 「自動 Enter が送られたか・何回か」を観測できる。
 //
 // main.js は VK_TERMINALS_TRUST_WINDOW_MS / VK_TERMINALS_READY_GRACE_MS の2つの
-// 環境変数で時間窓・猶予を上書きできる（安藤の指摘・必須2）。実時間で 30 秒（既定の
-// TRUST_WINDOW_MS）待つテストを避けるため、ここでは短縮した値を使う。
+// 環境変数で時間窓・猶予を「短縮」できる（安藤の指摘・必須2）。既定値より大きい値は
+// 既定値へクランプされ「延長」はできない（安藤の指摘・MEDIUM・必須1。
+// utils/trustPromptGate.js の resolvePositiveFiniteMs / tests/trustPromptGate.test.js
+// 参照）。実時間で 30 秒（既定の TRUST_WINDOW_MS）待つテストを避けるため、ここでは
+// 短縮した値を使う。
 //
-// 【2本の e2e が「修正前のコードでも通る」ことにならないよう、出力の組み立てに注意】
+// このファイルには3本の e2e がある。
+//
+//   1) 起動完了検知の猶予を過ぎてから届く信頼確認プロンプトには自動応答しない
+//   2) 自動応答の時間窓を過ぎてから届く信頼確認プロンプトには自動応答しない
+//   3) 起動完了バナーと信頼確認ダイアログが別チャンクで届いても、猶予内であれば自動応答する（正常系）
+//
+// 【1・2 が「修正前のコードでも通る」ことにならないよう、出力の組み立てに注意】
 // 単に「trust → ready → trust」の順で出すと、1回目の trust で修正前（1ペイン1回だけの
 // 単純な回数ガード）の実装も trustHandled を消費してしまい、2回目の trust に応答しない
 // のは修正前後で同じになる（＝どちらの実装でも同じ結果になり、回帰を検知できない）。
-// そこで下記の2本は、どちらも「唯一の trust 出現が、修正前の実装なら応答してしまう
-// はずの状況（ready 検知から猶予を過ぎた後 / 時間窓を過ぎた後）でだけ出る」形にしている。
+// そこで 1・2 は、どちらも「唯一の trust 出現が、修正前の実装なら応答してしまうはずの
+// 状況（ready 検知から猶予を過ぎた後 / 時間窓を過ぎた後）でだけ出る」形にしている。
 // 修正前の実装（1ペイン1回だけの単純な回数ガード。ready・経過時間を一切見ない）なら
 // この唯一の trust にも応答してしまうため、このテストは FAIL するはず。
 // 実際に修正前のコード（コミット 011a41d の main.js。utils/trustPromptGate.js 導入前）へ
-// main.js だけを一時的に差し替えて実行し、2本とも FAIL する（修正後のコードに戻すと
-// 2本とも PASS する）ことを確認済み。
+// main.js だけを一時的に差し替えて実行し、1・2 が FAIL する（修正後のコードに戻すと
+// PASS する）ことを確認済み。
+//
+// 【3（正常系）が無いと、ゲートを常に false にした実装でも 1・2 は通ってしまう点に注意】
+// 1・2 はどちらも「自動応答が送られないこと」しか見ていないため、canAutoRespond が
+// 常に false を返す実装に壊れていても両方 PASS してしまう。3 はここを埋めるために
+// 「送られるべき場面で実際に送られること」を固定する。実際に canAutoRespond を
+// 一時的に `return false;` へ差し替えて実行し、3 だけが FAIL する（1・2 は
+// 「送られないこと」の確認なので、この壊し方では引き続き PASS する）ことを確認済み。
 
 // フェイク claude 実行ファイルを一時ディレクトリに作る。source には生成する
 // フェイクスクリプトの本体（JS ソース文字列）を渡す。
@@ -221,6 +237,59 @@ setTimeout(() => {
 
     // (2) 時間窓を過ぎた後の信頼確認には自動応答していない（自動 Enter が一度も無い）。
     expect(await bufferContains(win, 'AUTO_ENTER_RECEIVED:', paneId)).toBe(false);
+  } finally {
+    if (launched) await closeApp(launched);
+    fs.rmSync(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
+// ─── 正常系: バナーとダイアログが別チャンクで届いても自動応答が維持される ──────────
+// 上の2本はどちらも「自動応答が送られないこと」しか見ていないため、ゲートが常に false を
+// 返す実装に壊れていても両方 PASS してしまう（安藤の指摘・MEDIUM・必須2）。また、
+// main.js の配線側（ready のチャンクを受けた時点で stopWatchingIfDone が promptWatcher を
+// 落としてしまわないこと。HIGH-1 の本体）は、この e2e が無いと検証されない。
+// ここでは READY_GRACE_MS を既定値（3000ms）のまま、起動完了バナーと信頼確認ダイアログを
+// 別々の process.stdout.write（＝別の PTY チャンク）で、猶予の内側（200ms 後）に出す
+// ことで、実 PTY 上で「バナーとダイアログが別チャンクで届いても自動応答が維持される」
+// ことを固定する。
+test('起動完了バナーと信頼確認ダイアログが別チャンクで届いても、猶予内であれば自動応答する（issue #371・正常系）', async () => {
+  const port = await getFreePort();
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-trust-chunk-split-'));
+  const fakeClaude = createFakeClaude(fixtureRoot, `${STDIN_ECHO_PREAMBLE}
+// 1) 起動完了相当の文言（CLAUDE_READY_PATTERN の "Welcome to Claude" に一致）を出す。
+process.stdout.write('Welcome to Claude Code!\\r\\n');
+
+// 2) 200ms 後、別の write（＝別の PTY チャンク）で信頼確認ダイアログを出す。
+//    READY_GRACE_MS は既定の 3000ms のまま（この spec では env を設定しない）なので、
+//    猶予の内側（200ms < 3000ms）であり、自動応答されるはず。
+setTimeout(() => {
+  process.stdout.write('Do you trust the files in this folder?  Enter to confirm\\r\\n');
+}, 200);
+`);
+  let launched = null;
+
+  try {
+    launched = await launchAppAndWait({
+      port,
+      prefix: 'vk-terminals-e2e-trust-chunk-split-',
+      env: {
+        // フェイク claude を PATH の先頭に置く。VK_TERMINALS_READY_GRACE_MS は
+        // 意図的に設定しない（既定の 3000ms を使う）。
+        PATH: `${fakeClaude.binDir}${path.delimiter}${process.env.PATH || ''}`,
+      },
+    });
+    const { win } = launched;
+
+    const created = await postNewPane(port, { noClaude: false });
+    expect(created.status).toBe(200);
+    expect(created.body && created.body.ok).toBe(true);
+    const termId = created.body.termId;
+
+    const paneId = await waitForPaneIdForTermId(win, termId);
+    expect(paneId).not.toBeNull();
+
+    // 起動完了バナーの直後（別チャンク）で届いた信頼確認ダイアログにも自動応答すること。
+    await waitForBufferText(win, 'AUTO_ENTER_RECEIVED:1', paneId);
   } finally {
     if (launched) await closeApp(launched);
     fs.rmSync(fixtureRoot, { recursive: true, force: true });

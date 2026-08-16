@@ -10,6 +10,7 @@ const {
   hasUserInfo,
   isAcceptableUrlHost,
   isTruncatedAtTableCellBorder,
+  isHostConfirmedBeforeBoundary,
   scanTableBorders,
   skipTrailingPunctuation,
 } = require('../renderer/urlLinkify');
@@ -446,4 +447,93 @@ test('skipTrailingPunctuation: 句読点（ALWAYS_TRIM_TRAILING）以外の文�
 
 test('skipTrailingPunctuation: 全角句読点も読み飛ばし対象', () => {
   assert.equal(skipTrailingPunctuation('。、！？x', 0, 5), 4);
+});
+
+// ─── isHostConfirmedBeforeBoundary（issue #368・案D） ────────────────────────────
+// 安藤レビュー・MEDIUM 指摘を受けて、terminalLinkProvider.test.js の xterm フェイク
+// 経由だけでなく、この純粋関数自体をテーブル駆動でユニットテストする
+// （urlLinkify.js 冒頭のコメントが謳う「fixture 文字列だけで完結するテストを書ける」
+// という責務分離の狙いに合わせる）。
+
+test('isHostConfirmedBeforeBoundary: パスに入っていれば true、権威部の途中なら false', () => {
+  // 各ケースの text 全体を「境界より前の部分」とみなす（boundary = text.length）。
+  // 手でインデックスを数えるとズレやすいため、境界は常に text.length から求める。
+  const cases = [
+    // [説明, text（＝境界より前の全文）, 期待値]
+    ['ホスト名の途中', 'https://example.c', false],
+    ['スキーム直後（権威部が空）', 'https://', false],
+    [
+      '"https:///" のように余分な "/" だけで権威部が空（安藤レビュー・MEDIUM 修正。'
+        + '実ホストは境界より後ろの文字列になってしまうため確定扱いにしない）',
+      'https:///', false,
+    ],
+    ['パスの "/" の直後', 'https://example.com/', true],
+    ['パスの途中', 'https://example.com/foo', true],
+    ['ポート番号込みでパスに入っている', 'https://example.com:8080/foo', true],
+    ['ポート番号込みだが権威部を終端する文字（/ ? #）がまだ無い', 'https://example.com:80', false],
+    ['IPv6 リテラルでパスに入っている', 'https://[::1]:3000/foo', true],
+    ['IPv6 リテラルの権威部の途中（"]" の前）', 'https://[::1', false],
+    ['クエリ文字列 "?" で権威部を終端', 'https://example.com?q=abc', true],
+    ['フラグメント "#" で権威部を終端', 'https://example.com#section1', true],
+    ['パス中の %2F（パーセントエンコード）はホスト確定後なので true', 'https://example.com/a%2Fb', true],
+    ['スキームの大文字小文字は無視される（HTTPS）', 'HTTPS://example.com/foo', true],
+    ['スキームの大文字小文字は無視される（HTTP、権威部途中）', 'HTTP://example.c', false],
+  ];
+  for (const [label, text, expected] of cases) {
+    assert.equal(isHostConfirmedBeforeBoundary(text, 0, text.length), expected, label);
+  }
+});
+
+test('isHostConfirmedBeforeBoundary: start が 0 以外でも候補の相対位置で判定する', () => {
+  const text = '見てください https://example.com/foo';
+  const start = text.indexOf('https://');
+  const boundary = start + 'https://example.com/'.length;
+  assert.equal(isHostConfirmedBeforeBoundary(text, start, boundary), true);
+});
+
+test('isHostConfirmedBeforeBoundary: スキームが無ければ false', () => {
+  assert.equal(isHostConfirmedBeforeBoundary('example.com/foo', 0, 11), false);
+});
+
+// ─── extractUrlMatches の第2引数（hardWrapBoundaries。issue #368・案D） ──────────────
+
+test('extractUrlMatches: hardWrapBoundaries を省略すると従来どおり動作する', () => {
+  const url = 'https://example.com/path';
+  const withoutArg = extractUrlMatches(url);
+  const withEmptyArray = extractUrlMatches(url, []);
+  assert.deepEqual(withoutArg, [{ url, start: 0, end: url.length }]);
+  assert.deepEqual(withEmptyArray, withoutArg);
+});
+
+test('extractUrlMatches: 境界をまたいでもホストが確定していれば連結してリンク化する', () => {
+  // "https://example.com/foo" + "bar" という連結（境界=24）。
+  // 境界より前で "example.com/" まで確定しているため許可される。
+  const text = 'https://example.com/foobar';
+  const boundary = 'https://example.com/foo'.length;
+  const matches = extractUrlMatches(text, [boundary]);
+  assert.deepEqual(matches, [{ url: text, start: 0, end: text.length }]);
+});
+
+test('extractUrlMatches: 境界をまたぎ、かつホストが未確定なら候補ごと捨てる（断片も作らない）', () => {
+  // "https://example.c" + "om/foo"（境界=18）。境界より前ではまだホスト名の途中。
+  const text = 'https://example.com/foo';
+  const boundary = 'https://example.c'.length;
+  assert.deepEqual(extractUrlMatches(text, [boundary]), []);
+});
+
+test('extractUrlMatches: 複数の境界をまたぐ場合は最初にまたぐ境界だけを見る', () => {
+  // 1つ目の境界（ホスト未確定の位置）で既に弾かれるべきで、2つ目の境界
+  // （ホスト確定後の位置）が仮に確定していても救済されないことを確認する。
+  const text = 'https://example.com/foo/bar';
+  const firstBoundary = 'https://example.c'.length; // ホスト名の途中（未確定）
+  const secondBoundary = 'https://example.com/foo'.length; // パスの途中（確定済み）
+  assert.deepEqual(extractUrlMatches(text, [firstBoundary, secondBoundary]), []);
+});
+
+test('extractUrlMatches: 境界が候補の start / end と同じ位置なら「またいでいない」として通常どおり扱う', () => {
+  const url = 'https://example.com/foo';
+  // 境界がちょうど候補の開始位置（またぐ、ではなく候補の外側扱い）。
+  assert.deepEqual(extractUrlMatches(url, [0]), [{ url, start: 0, end: url.length }]);
+  // 境界がちょうど候補の終了位置（同上）。
+  assert.deepEqual(extractUrlMatches(url, [url.length]), [{ url, start: 0, end: url.length }]);
 });

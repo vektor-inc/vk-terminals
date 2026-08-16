@@ -310,6 +310,53 @@
     }
   }
 
+  // 実改行（xterm の isWrapped ではなく、ペイン幅いっぱいの行を強制的に連結した境界。
+  // issue #368・案D）をまたぐ URL 候補が「境界より前の部分で、すでにホストを書き終えて
+  // パスに入っているか」を判定する純粋関数。
+  //
+  // なぜ必要か: terminalLinkProvider.js は「1行目がペイン幅いっぱいに埋まっていれば、
+  // 次行の isWrapped が false でも連結候補に含める」（案Dの連結条件）。しかしこの連結は
+  // 「たまたまペイン幅ちょうどで実改行された、無関係な2行」も対象にしうる。例えば
+  // 1行目が "https://example.com" で（ホスト名の直後）ちょうど終わり、2行目が
+  // "evil.example/foo"（攻撃者が制御しうるログ出力）で始まっていた場合、連結すると
+  // "https://example.comevil.example/foo" という 1 本の候補になる。これは構文上正当な
+  // ホスト名（"example.comevil.example"）を持つ URL のため、isSafeHttpUrl /
+  // isAcceptableUrlHost / hasUserInfo のどれも検出できない「行き先すり替わり」になる
+  // （司・植草 案D合意。ターミナル出力は攻撃者が内容を制御しうる前提のため）。
+  //
+  // 対策として、境界をまたぐ候補は「境界より前の部分で、権威部（authority。スキームの
+  // 直後からホスト名・ポート番号までの部分）が確定しているか」を見る。WHATWG URL の
+  // パーサはスキームの直後から '/' '?' '#'（またはスキーム末尾）のいずれかで権威部を
+  // 終端するため、これらのいずれかが境界より前に現れていれば、境界をまたいでもホスト名
+  // 自体が後続の文字で伸びる余地は無い。
+  //
+  // 【安藤レビュー・MEDIUM】当初は「スキーム直後に '/' が1つでもあれば確定」という
+  // 単純な判定だったが、これは誤り。WHATWG URL はスキーム直後の余分な '/' を読み飛ばして
+  // からホスト解析に入るため、境界より前が "https:///"（'/' が3つ）の場合、
+  // 権威部は空のまま '/' だけが見えてしまい、誤って「確定済み」と判定してしまう
+  // （実際には境界より後ろの文字列がそのままホストになる。例:
+  // "https:///" + "evil.example/x" → 実ホストは "evil.example"）。
+  // authority.search(/[/?#]/) が 0（＝スキーム直後がいきなり終端文字）の場合を
+  // 明示的に「未確定」として弾くことでこれを解消する。
+  //
+  // text: extractUrlMatches に渡されたのと同じ（連結済みの）文字列。
+  // start: 候補の開始インデックス（text 内、0-based）。
+  // boundary: 候補がまたいでいる境界の text 内インデックス（この位置の直前まで1行目、
+  //   直後から2行目の内容）。
+  function isHostConfirmedBeforeBoundary(text, start, boundary) {
+    const beforeBoundary = text.slice(start, boundary);
+    const schemeMatch = /^https?:\/\//i.exec(beforeBoundary);
+    if (!schemeMatch) return false;
+    // スキーム直後（権威部の開始位置）から、権威部を終端する文字（'/' '?' '#'）を探す。
+    const authority = beforeBoundary.slice(schemeMatch[0].length);
+    const terminator = authority.search(/[/?#]/);
+    // terminator === 0 は権威部が空、つまり "https:///" のようにスキーム直後に余分な
+    // '/' が続く形。WHATWG URL はこの余分な '/' を読み飛ばしてからホスト解析に入るため、
+    // ホストはまだ書かれておらず、境界より後ろの文字列がそのままホストになる。
+    // 確定扱いにしない（terminator > 0 だけを「確定」とする）。
+    return terminator > 0;
+  }
+
   // text（ANSI 除去済み・折り返しをまたぐ場合は連結済みのプレーンテキスト）から
   // http(s) URL を抽出する純粋関数。
   //
@@ -317,6 +364,12 @@
   //   - url:   末尾記号を落とした後の実際の URL 文字列
   //   - start: text 内での開始インデックス
   //   - end:   text 内での終了インデックス（exclusive。text.slice(start, end) === url）
+  //
+  // hardWrapBoundaries: terminalLinkProvider.js が「ペイン幅いっぱいの行を isWrapped が
+  // false でも強制的に連結した」境界の text 内インデックスの配列（省略可・既定は空配列）。
+  // xterm 自身の isWrapped による連結（従来からある正規のソフトラップ）はここに含まれない
+  // ため、この配列が空である限り（＝案D の新しい連結が発生していない限り）従来の挙動から
+  // 一切変わらない。
   //
   // 見た目（ANSI 前景色など）には一切関与しない。呼び出し側（terminalLinkProvider.js）が
   // この結果をバッファ上の (行, 列) 範囲へ変換し、xterm の registerLinkProvider に渡す。
@@ -327,8 +380,9 @@
   // 論理行では "https://github.com@evil.example/x" という 1 本の候補になる。これは
   // ユーザー情報付き URL に該当するため hasUserInfo() で弾かれ、リンク化されない
   // （安藤レビュー指摘・MEDIUM。折り返しをまたぐケースが特に危険という指摘への対応）。
-  function extractUrlMatches(text) {
+  function extractUrlMatches(text, hardWrapBoundaries) {
     if (typeof text !== 'string' || !text) return [];
+    const boundaries = hardWrapBoundaries || [];
 
     const results = [];
     // 罫線の出現数・最初の位置は行（text）ごとに変わらないループ不変量のため、
@@ -348,6 +402,19 @@
       if (url && isSafeHttpUrl(url) && !hasUserInfo(url) && isAcceptableUrlHost(url)) {
         const start = match.index;
         const end = start + url.length;
+
+        // 案D（issue #368）: 強制連結境界をまたぐ候補は、境界より前でホストが確定して
+        // いない限りリンク化しない（1行目の断片も含め一切リンク化しない）。複数の境界を
+        // またぐ場合は、最初にまたぐ境界（＝候補内で最も手前の境界）だけを見れば十分
+        // （そこでホストが確定していなければ、以降どれだけパスが続いても行き先の安全性は
+        // 保証できないため）。境界そのものと同一位置（start や end に一致）は「またいで
+        // いない」として扱う（find の比較を厳密不等号にしているのはこのため）。
+        const crossedBoundary = boundaries.find((b) => b > start && b < end);
+        if (crossedBoundary !== undefined
+          && !isHostConfirmedBeforeBoundary(text, start, crossedBoundary)) {
+          continue;
+        }
+
         // 罫線テーブルのセル境界で切り詰められた URL 断片はリンク化しない（issue #361）。
         // isTruncatedAtTableCellBorder には、トリム後の end でも生マッチ終端
         // （start + raw.length）でもなく、句読点だけを読み飛ばした終端を渡す
@@ -369,6 +436,7 @@
     hasUserInfo,
     isAcceptableUrlHost,
     isTruncatedAtTableCellBorder,
+    isHostConfirmedBeforeBoundary,
     scanTableBorders,
     skipTrailingPunctuation,
   };

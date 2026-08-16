@@ -11,6 +11,7 @@ const { execFile } = require('child_process');
 const { promisify } = require('util');
 const { pathToFileURL } = require('url');
 const { stripAnsiForPattern } = require('./utils/stripAnsi');
+const { createTrustPromptGate } = require('./utils/trustPromptGate');
 // 宣言的ウィジェット（tasks-widget.json）契約の共有ロジック（#229 / vk-orchestrator#182）。
 // タスクのドメイン語彙（遷移マトリクス・ラベル・優先度など）はこのプロセスに持たず、
 // orchestrator が書き出す宣言を検証・中継するだけの汎用実装にする。
@@ -1295,6 +1296,10 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
     env: { ...process.env, TERM_PROGRAM: 'VKTerminals' },
   });
 
+  // ペイン作成（pty spawn）時刻。信頼確認プロンプトへの自動 Enter 送信を許可する
+  // 時間窓（TRUST_WINDOW_MS。issue #371）の起点として utils/trustPromptGate.js へ渡す。
+  const spawnTime = Date.now();
+
   // initialCommand は最初の 1 ターミナルのみ送信
   const isFirstTerminal = !firstTerminalCreated;
   if (isFirstTerminal) firstTerminalCreated = true;
@@ -1340,8 +1345,26 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
   if (!noClaude) {
     const config = isFirstTerminal ? loadUserConfig() : {};
     let sent = false;
-    let trustHandled = false;
     let buffer = '';
+
+    // 信頼確認プロンプトへの自動 Enter 送信を許可する条件（ペイン作成からの経過時間が
+    // TRUST_WINDOW_MS 以内、かつ READY_PATTERN 未検知）を判定するゲート（issue #371。
+    // utils/trustPromptGate.js）。時刻は Date.now() を都度渡し、内部では時刻を扱わない。
+    const trustGate = createTrustPromptGate({ spawnTime });
+
+    // 自動応答の窓が閉じ（ready 検知済み、または経過時間超過）、かつ initialCommand の
+    // 送信ももう起こらない（送信済み・最初のペインでない・initialCommand 未設定の
+    // いずれか）場合、promptWatcher を無効化して以降の走査を止める。
+    const stopWatchingIfDone = () => {
+      const initialCommandPending = isFirstTerminal && !!config.initialCommand && !sent;
+      if (trustGate.shouldStopWatching(Date.now(), { initialCommandPending })) {
+        if (promptWatcherTimeoutId) {
+          clearTimeout(promptWatcherTimeoutId);
+          promptWatcherTimeoutId = null;
+        }
+        promptWatcher = null;
+      }
+    };
 
     const sendInitialCommand = (reason) => {
       if (sent || !config.initialCommand) return;
@@ -1350,6 +1373,7 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
         ptyProcess.write(config.initialCommand + '\r');
         console.log(`${LOG_PREFIX} initialCommand sent (${reason})`);
       }
+      stopWatchingIfDone();
     };
 
     // タイムアウトによる initialCommand の盲打ちフォールバックは engine が 'claude' の
@@ -1369,12 +1393,14 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
             console.warn(`${LOG_PREFIX} Claude ready prompt not detected within ${WATCH_TIMEOUT_MS}ms, sending initialCommand as fallback`);
             sendInitialCommand('timeout fallback');
           }
+          stopWatchingIfDone();
         }, WATCH_TIMEOUT_MS);
       } else {
         promptWatcherTimeoutId = setTimeout(() => {
           if (!sent) {
             console.warn(`${LOG_PREFIX} ready prompt not detected within ${WATCH_TIMEOUT_MS}ms for engine '${resolvedEngine}'; initialCommand was not sent (blind fallback is disabled for non-claude engines)`);
           }
+          stopWatchingIfDone();
         }, WATCH_TIMEOUT_MS);
       }
     }
@@ -1383,9 +1409,13 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
       const stripped = stripAnsiForPattern(data);
       buffer = (buffer + stripped).slice(-4096);
 
-      // 信頼確認プロンプト → Enter で承認（全ターミナル共通）
-      if (!trustHandled && TRUST_PATTERN.test(buffer)) {
-        trustHandled = true;
+      const now = Date.now();
+
+      // 信頼確認プロンプト → Enter で承認（全ターミナル共通）。ただし自動応答の窓
+      // （ペイン作成から TRUST_WINDOW_MS 以内 かつ READY_PATTERN 未検知）の内側で、
+      // まだ発火していない場合のみ（issue #371。判定は trustGate に委譲）。
+      if (TRUST_PATTERN.test(buffer) && trustGate.canAutoRespond(now)) {
+        trustGate.markTrustHandled();
         buffer = '';
         console.log(`${LOG_PREFIX} trust prompt detected, sending Enter (terminal ${id})`);
         if (ptys.has(id)) {
@@ -1402,16 +1432,27 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
                 console.warn(`${LOG_PREFIX} Claude ready prompt not detected after trust confirmation, sending initialCommand as fallback`);
                 sendInitialCommand('timeout fallback after trust');
               }
+              stopWatchingIfDone();
             }, WATCH_TIMEOUT_MS);
           } else {
             promptWatcherTimeoutId = setTimeout(() => {
               if (!sent) {
                 console.warn(`${LOG_PREFIX} ready prompt not detected after trust confirmation for engine '${resolvedEngine}'; initialCommand was not sent (blind fallback is disabled for non-claude engines)`);
               }
+              stopWatchingIfDone();
             }, WATCH_TIMEOUT_MS);
           }
         }
+        stopWatchingIfDone();
         return;
+      }
+
+      // AI エンジンの起動完了検知（READY_PATTERN）は全ペインで行う（issue #371）。
+      // 信頼確認は必ず起動完了より前に出るため、ready を検知したら trustGate 側で
+      // 以降の自動 Enter 送信を無効化する。ただし initialCommand の送信は従来どおり
+      // 最初のペインのみに限定したまま（ここを崩すと別の回帰になる）。
+      if (READY_PATTERN.test(buffer)) {
+        trustGate.markReadyDetected();
       }
 
       // initialCommand 送信（最初のターミナルのみ）
@@ -1420,6 +1461,8 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
         promptWatcherTimeoutId = null;
         sendInitialCommand('ready detected');
       }
+
+      stopWatchingIfDone();
     };
   }
 

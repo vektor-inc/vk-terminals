@@ -11,6 +11,12 @@ const { execFile } = require('child_process');
 const { promisify } = require('util');
 const { pathToFileURL } = require('url');
 const { stripAnsiForPattern } = require('./utils/stripAnsi');
+const {
+  createTrustPromptGate,
+  TRUST_WINDOW_MS: DEFAULT_TRUST_WINDOW_MS,
+  READY_GRACE_MS: DEFAULT_READY_GRACE_MS,
+  resolvePositiveFiniteMs,
+} = require('./utils/trustPromptGate');
 // 宣言的ウィジェット（tasks-widget.json）契約の共有ロジック（#229 / vk-orchestrator#182）。
 // タスクのドメイン語彙（遷移マトリクス・ラベル・優先度など）はこのプロセスに持たず、
 // orchestrator が書き出す宣言を検証・中継するだけの汎用実装にする。
@@ -97,6 +103,32 @@ let nextClosePaneRequestId = 1;
 const DATA_DIR = path.join(os.homedir(), '.vk-terminals');
 const STATE_FILE = path.join(DATA_DIR, 'states.json');
 const LOG_PREFIX = '[vk-terminals]';
+
+// 信頼確認プロンプトの自動応答に関わる2つの時間窓を、e2e から「短縮」できるようにする
+// 入口（issue #371。安藤のセキュリティレビュー・必須2）。未設定・不正値（0以下・NaN・
+// Infinity・空文字等）は utils/trustPromptGate.js の既定値へ倒す（resolvePositiveFiniteMs）。
+// 実時間で 30 秒（TRUST_WINDOW_MS）待つテストを避けるための調整用で、通常起動では
+// 環境変数を設定しないため既定値のまま動く。
+//
+// max に各既定値を渡し、既定より大きい値は既定値へ切り詰める（安藤の指摘・MEDIUM・
+// 必須1）。上限を設けないと、この2つの環境変数が「時間窓を延長して自動応答の防御を
+// 無効化する」経路にもなってしまう（例: dotfile に export で極端に大きい値を設定される
+// と、以後そのマシンでは信頼確認プロンプトへの自動応答をいつまでも許可し続ける）。
+// e2e が必要としているのは短縮だけなので、上書きを短縮方向のみに制限する。
+const RESOLVED_TRUST_WINDOW_MS = resolvePositiveFiniteMs(
+  process.env.VK_TERMINALS_TRUST_WINDOW_MS, DEFAULT_TRUST_WINDOW_MS, { max: DEFAULT_TRUST_WINDOW_MS }
+);
+const RESOLVED_READY_GRACE_MS = resolvePositiveFiniteMs(
+  process.env.VK_TERMINALS_READY_GRACE_MS, DEFAULT_READY_GRACE_MS, { max: DEFAULT_READY_GRACE_MS }
+);
+// 既定値と異なる値が採用されたときは警告ログを残す（後から切り分けやすくするため）。
+if (RESOLVED_TRUST_WINDOW_MS !== DEFAULT_TRUST_WINDOW_MS) {
+  console.warn(`${LOG_PREFIX} VK_TERMINALS_TRUST_WINDOW_MS override in effect: ${RESOLVED_TRUST_WINDOW_MS}ms (default ${DEFAULT_TRUST_WINDOW_MS}ms)`);
+}
+if (RESOLVED_READY_GRACE_MS !== DEFAULT_READY_GRACE_MS) {
+  console.warn(`${LOG_PREFIX} VK_TERMINALS_READY_GRACE_MS override in effect: ${RESOLVED_READY_GRACE_MS}ms (default ${DEFAULT_READY_GRACE_MS}ms)`);
+}
+
 // ウィンドウタイトルバーおよびヘッダーに表示するアプリ名。既定は 'VK Terminals'。
 // 呼び出し側（例: vk-orchestrator）が env VK_TERMINALS_APP_TITLE を渡すと、その名称
 // （例: 'VK Orchestrator'）を表示する。renderer には app:get-config 経由で伝える。
@@ -1295,6 +1327,14 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
     env: { ...process.env, TERM_PROGRAM: 'VKTerminals' },
   });
 
+  // ペイン作成（pty spawn）時刻。信頼確認プロンプトへの自動 Enter 送信を許可する
+  // 時間窓（TRUST_WINDOW_MS。issue #371）の起点として utils/trustPromptGate.js へ渡す。
+  // Date.now()（システム時刻）ではなく performance.now()（単調増加時計）を使う。
+  // NTP のステップ補正・手動での時刻変更・VM のサスペンド復帰などでシステム時刻が
+  // 巻き戻ると、Date.now() 基準では経過時間が負になり時間窓が開きっぱなしになる
+  // 事故があるため（安藤の指摘・MEDIUM）。
+  const spawnTime = performance.now();
+
   // initialCommand は最初の 1 ターミナルのみ送信
   const isFirstTerminal = !firstTerminalCreated;
   if (isFirstTerminal) firstTerminalCreated = true;
@@ -1340,8 +1380,43 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
   if (!noClaude) {
     const config = isFirstTerminal ? loadUserConfig() : {};
     let sent = false;
-    let trustHandled = false;
+    // 非 claude エンジンで initialCommand が設定されている場合、ready を検知できないまま
+    // WATCH_TIMEOUT_MS の「警告のみ」タイマー（対応7）が発火すると、盲打ちフォールバックを
+    // 行わない設計上 sent は永久に false のまま確定する。initialCommandPending の算出が
+    // sent だけを見ていると「もう二度と送られない」ことを表現できず、promptWatcher が
+    // 一生止まらなくなる（安藤の指摘・LOW）。警告のみで諦めたことを示すこのフラグを
+    // 別に持ち、initialCommandPending の算出に加える。
+    let initialCommandGaveUp = false;
     let buffer = '';
+
+    // 信頼確認プロンプトへの自動 Enter 送信を許可する条件（ペイン作成からの経過時間が
+    // TRUST_WINDOW_MS 以内、かつ ready 検知から READY_GRACE_MS 以内）を判定するゲート
+    // （issue #371。utils/trustPromptGate.js）。時刻は呼び出し側（performance.now()）を
+    // 都度渡し、内部では時刻を取得しない。時間窓・猶予は e2e から短縮できるよう
+    // 環境変数（VK_TERMINALS_TRUST_WINDOW_MS / VK_TERMINALS_READY_GRACE_MS）で
+    // 上書き可能にしている（モジュール冒頭の RESOLVED_TRUST_WINDOW_MS 等を参照）。
+    const trustGate = createTrustPromptGate({
+      spawnTime,
+      trustWindowMs: RESOLVED_TRUST_WINDOW_MS,
+      readyGraceMs: RESOLVED_READY_GRACE_MS,
+    });
+
+    // 自動応答の窓が閉じ（経過時間超過、または ready 検知から猶予超過）、かつ
+    // initialCommand の送信ももう起こらない（送信済み・警告のみで諦めた・最初のペイン
+    // でない・initialCommand 未設定のいずれか）場合、promptWatcher を無効化して
+    // 以降の走査を止める。now は呼び出し側から渡す（未指定時のみ performance.now() を
+    // 読む）。promptWatcher 内は既に読んだ now をそのまま渡すことで、1回の呼び出しで
+    // 時刻を二重に読まないようにしている（安藤の指摘・LOW）。
+    const stopWatchingIfDone = (now = performance.now()) => {
+      const initialCommandPending = isFirstTerminal && !!config.initialCommand && !sent && !initialCommandGaveUp;
+      if (trustGate.shouldStopWatching(now, { initialCommandPending })) {
+        if (promptWatcherTimeoutId) {
+          clearTimeout(promptWatcherTimeoutId);
+          promptWatcherTimeoutId = null;
+        }
+        promptWatcher = null;
+      }
+    };
 
     const sendInitialCommand = (reason) => {
       if (sent || !config.initialCommand) return;
@@ -1350,6 +1425,7 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
         ptyProcess.write(config.initialCommand + '\r');
         console.log(`${LOG_PREFIX} initialCommand sent (${reason})`);
       }
+      stopWatchingIfDone();
     };
 
     // タイムアウトによる initialCommand の盲打ちフォールバックは engine が 'claude' の
@@ -1369,12 +1445,16 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
             console.warn(`${LOG_PREFIX} Claude ready prompt not detected within ${WATCH_TIMEOUT_MS}ms, sending initialCommand as fallback`);
             sendInitialCommand('timeout fallback');
           }
+          stopWatchingIfDone();
         }, WATCH_TIMEOUT_MS);
       } else {
         promptWatcherTimeoutId = setTimeout(() => {
           if (!sent) {
             console.warn(`${LOG_PREFIX} ready prompt not detected within ${WATCH_TIMEOUT_MS}ms for engine '${resolvedEngine}'; initialCommand was not sent (blind fallback is disabled for non-claude engines)`);
+            // 盲打ちを諦めた（＝以後 initialCommand が送られる見込みが無い）ことを記録する。
+            initialCommandGaveUp = true;
           }
+          stopWatchingIfDone();
         }, WATCH_TIMEOUT_MS);
       }
     }
@@ -1383,9 +1463,13 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
       const stripped = stripAnsiForPattern(data);
       buffer = (buffer + stripped).slice(-4096);
 
-      // 信頼確認プロンプト → Enter で承認（全ターミナル共通）
-      if (!trustHandled && TRUST_PATTERN.test(buffer)) {
-        trustHandled = true;
+      const now = performance.now();
+
+      // 信頼確認プロンプト → Enter で承認（全ターミナル共通）。ただし自動応答の窓
+      // （ペイン作成から TRUST_WINDOW_MS 以内 かつ ready 検知から READY_GRACE_MS 以内）の
+      // 内側で、まだ発火していない場合のみ（issue #371。判定は trustGate に委譲）。
+      if (TRUST_PATTERN.test(buffer) && trustGate.canAutoRespond(now)) {
+        trustGate.markTrustHandled();
         buffer = '';
         console.log(`${LOG_PREFIX} trust prompt detected, sending Enter (terminal ${id})`);
         if (ptys.has(id)) {
@@ -1396,30 +1480,48 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
         // claude 以外は対応7と同じ理由で「送信はしない・警告だけ出す」タイマーを設定する。
         if (isFirstTerminal && config.initialCommand && !sent) {
           clearTimeout(promptWatcherTimeoutId);
+          promptWatcherTimeoutId = null;
           if (resolvedEngine === 'claude') {
             promptWatcherTimeoutId = setTimeout(() => {
               if (!sent) {
                 console.warn(`${LOG_PREFIX} Claude ready prompt not detected after trust confirmation, sending initialCommand as fallback`);
                 sendInitialCommand('timeout fallback after trust');
               }
+              stopWatchingIfDone();
             }, WATCH_TIMEOUT_MS);
           } else {
             promptWatcherTimeoutId = setTimeout(() => {
               if (!sent) {
                 console.warn(`${LOG_PREFIX} ready prompt not detected after trust confirmation for engine '${resolvedEngine}'; initialCommand was not sent (blind fallback is disabled for non-claude engines)`);
+                initialCommandGaveUp = true;
               }
+              stopWatchingIfDone();
             }, WATCH_TIMEOUT_MS);
           }
         }
+        stopWatchingIfDone(now);
         return;
       }
 
+      // AI エンジンの起動完了検知（READY_PATTERN）は全ペインで行う（issue #371）。
+      // 信頼確認は起動完了の直前後に出るため、ready を検知したら trustGate 側で
+      // READY_GRACE_MS の猶予後に自動 Enter 送信を無効化する。ただし initialCommand の
+      // 送信は従来どおり最初のペインのみに限定したまま（ここを崩すと別の回帰になる）。
+      // 同一チャンクで READY_PATTERN.test(buffer) を2回評価しないよう、結果を変数へ
+      // まとめて使い回す（安藤の指摘・LOW）。
+      const ready = READY_PATTERN.test(buffer);
+      if (ready) {
+        trustGate.markReadyDetected(now);
+      }
+
       // initialCommand 送信（最初のターミナルのみ）
-      if (isFirstTerminal && !sent && READY_PATTERN.test(buffer)) {
+      if (ready && isFirstTerminal && !sent) {
         clearTimeout(promptWatcherTimeoutId);
         promptWatcherTimeoutId = null;
         sendInitialCommand('ready detected');
       }
+
+      stopWatchingIfDone(now);
     };
   }
 

@@ -839,6 +839,42 @@ test('matchesWaiting: 本物の確認待ち UI は従来どおり検知する（
   }
 });
 
+// ─── Codex の数字選択肢検知（issue #367） ──────────────────────────────────
+// codex-cli 0.147.0 を実機起動して採取した信頼確認画面の実物:
+//   "Do you trust the contents of this directory? ... › 1. Yes, continue / 2. No, quit"
+// Codex の矢印文字は Claude Code（❯ U+276F）と異なり › （U+203A）で、矢印の直後に
+// 番号が続く（"› 1. " の形。既存の `/❯\s*\d+\.\s/` の Codex 版として追加した）。
+test('matchesWaiting: Codex の信頼確認画面の数字選択肢（› 1. 形式）を検知する', () => {
+  // 矢印付きの選択肢1行だけでも検知できること。
+  assert.equal(matchesWaiting('› 1. Yes, continue'), true);
+
+  // 実機の信頼確認画面全体を模した複数行バッファでも検知できること。
+  const trustScreen = [
+    'Do you trust the contents of this directory? Working with untrusted contents comes with higher',
+    'risk of prompt injection. Trusting the directory allows project-local config, hooks, and exec',
+    'policies to load.',
+    '',
+    '› 1. Yes, continue',
+    '  2. No, quit',
+    '',
+    'Press enter to continue',
+  ].join('\n');
+  assert.equal(matchesWaiting(trustScreen), true);
+});
+
+test('matchesWaiting: Codex の idle 画面（プレースホルダ・MCP警告）では誤検知しない', () => {
+  // 実機確認済み: idle 画面のプレースホルダ（"› " の直後が数字選択肢ではなく
+  // 自由文言のプレースホルダ）や MCP の警告行では、新設した /›\s*\d+\.\s/ を含む
+  // どのパターンにも一致しないことを確認する。
+  const cases = [
+    '› Improve documentation in @filename',
+    'MCP client for server "example" failed to start: connection refused',
+  ];
+  for (const sample of cases) {
+    assert.equal(matchesWaiting(sample), false, `誤検知している: ${sample}`);
+  }
+});
+
 // ─── detectBackgroundAgents（バックグラウンドサブエージェント数の検知） ───────────
 // issue vektor-inc/vk-terminals#340:
 //   司令塔（vk-orchestrator）は lastOutputTime（最後の画面出力時刻）が直近かどうかで

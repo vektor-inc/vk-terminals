@@ -500,7 +500,9 @@ function bumpRunning(paneId) {
 // ─── Create terminal ──────────────────────────────────────────────────────────
 // options.noClaude が true の場合、main 側で claude の自動起動をスキップする。
 // 未指定の場合は main 側のグローバル設定（CLI フラグ）にフォールバックする。
+// options.engine が指定されていれば main 側でそのエンジンを起動する（未指定なら claude。issue #367）。
 // options.model が指定されていれば main 側で claude をそのモデルで起動する（未指定なら素の claude）。
+// engine が claude 以外のときは model は無視される（main 側で警告ログ）。
 async function createTerminal(paneId, cwd, options = {}) {
   const result = await VKIpc.invoke('terminal:create', cwd || null, options);
   const { id: termId, cwd: initialCwd } = result;
@@ -5244,7 +5246,7 @@ VKIpc.on('terminal:agentroom', (termId, agents, replace) => {
 
 // ─── New pane request from HTTP API ──────────────────────────────────────────
 VKIpc.on('terminal:request-new-pane', async (payload = {}) => {
-  const { requestId, cwd, noClaude, stashed, useDefaults, model } = payload;
+  const { requestId, cwd, noClaude, engine, stashed, useDefaults, model } = payload;
   const reply = (result) => VKIpc.send('terminal:new-pane-created', { requestId, ...result });
   const targetPaneId = findLargestVisiblePaneId() || focusedPaneId || (tree ? getAllLeafIds(tree)[0] : null);
   if (!targetPaneId) {
@@ -5267,9 +5269,13 @@ VKIpc.on('terminal:request-new-pane', async (payload = {}) => {
       if (typeof cwd !== 'string' || !cwd) effectiveCwd = newPaneStartupDir || null;
       if (typeof noClaude !== 'boolean') splitOptions = { noClaude: !newPaneAutoLaunchClaude };
     }
-    // model は noClaude と同じく main へ素通しする（issue #310）。値の妥当性は
-    // HTTP 受け口と main 側の terminal:create の両方で検証されるため、ここでは判定しない。
-    // 未指定なら splitOptions に載らない＝main 側は従来どおり素の claude を起動する。
+    // engine / model は noClaude と同じく main へ素通しする（issue #367 / #310）。値の
+    // 妥当性は HTTP 受け口と main 側の terminal:create の両方で検証されるため、ここでは
+    // 判定しない。未指定なら splitOptions に載らない＝main 側は従来どおり素の claude を
+    // 起動する。engine が claude 以外のときの model 無視判定・警告ログも main 側
+    // （terminal:create）に一元化してあるため、ここでは engine と model を独立に
+    // 素通しするだけでよい。
+    if (typeof engine === 'string') splitOptions = { ...splitOptions, engine };
     if (typeof model === 'string') splitOptions = { ...splitOptions, model };
     const result = await splitPane(targetPaneId, direction, effectiveCwd, splitOptions);
     if (!result || !result.termId) {

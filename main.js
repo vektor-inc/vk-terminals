@@ -35,9 +35,15 @@ const { normalizeConfirmClose } = require('./utils/closeConfirm');
 // 外部ブラウザで開いてよい URL の判定（renderer と共有）。renderer 側にも同じ判定が
 // あるが、最終防衛線はこのプロセス側（issue #268）。
 const { isSafeHttpUrl } = require('./renderer/urlSafety');
-// 新規ペインで起動する claude のモデル指定の検証と、起動コマンドの組み立て（issue #310）。
-// HTTP 受け口と terminal:create の両方で使い、片方を通らない経路が増えても素通りさせない。
-const { isValidClaudeModel, buildClaudeLaunchCommand } = require('./renderer/claudeModel');
+// 新規ペインで起動する claude のモデル指定・AI エンジン（issue #367）の検証と、
+// 起動コマンドの組み立て（issue #310）。HTTP 受け口と terminal:create の両方で使い、
+// 片方を通らない経路が増えても素通りさせない。
+const {
+  isValidClaudeModel,
+  buildClaudeLaunchCommand,
+  isValidEngine,
+  buildEngineAwareLaunchCommand,
+} = require('./renderer/claudeModel');
 const { resolveInstanceId, buildHealthResponse } = require('./utils/instanceId');
 const {
   describeSettingsValues,
@@ -1275,6 +1281,12 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
   // `noClaude` が true の場合、claude を自動起動せず素のシェルとして開く。
   const noClaude = typeof options.noClaude === 'boolean' ? options.noClaude : globalPlainMode;
 
+  // `options.engine` の再検証（issue #367）。HTTP 受け口（/api/new-pane）でも検証済みだが、
+  // ここでも isValidEngine が再検証する（model と同じ二重化構造・#310 の前例）。
+  // 未指定・不正値では例外を投げず、従来どおりの 'claude' へ倒す（安全側の既定。
+  // buildClaudeLaunchCommand のコメントと同じ考え方）。
+  const resolvedEngine = isValidEngine(options.engine) ? options.engine : 'claude';
+
   const ptyProcess = pty.spawn(shell, [], {
     name: 'xterm-256color',
     cols: 80,
@@ -1292,12 +1304,18 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
 
   // 信頼確認プロンプトの検知パターン（全ターミナル共通）
   // 「Enter to confirm」が出た時点でメニュー描画済みなので、そこで \r を送る
-  // 旧UI: "Do you trust the files in this folder?" / "Yes, I trust this folder"
-  // 新UI: "Quick safety check..." → "Enter to confirm · Esc to cancel"
-  const TRUST_PATTERN = /Enter to confirm|Do you trust.{0,40}folder|Yes,\s*I\s*trust\s*(the\s*files\s*in\s*)?this\s*folder/i;
+  // Claude Code 旧UI: "Do you trust the files in this folder?" / "Yes, I trust this folder"
+  // Claude Code 新UI: "Quick safety check..." → "Enter to confirm · Esc to cancel"
+  // Codex（issue #367。codex-cli 0.147.0 実機確認）: "Do you trust the contents of this
+  // directory?"（Claude Code は folder、Codex は directory と表記が異なる）。矢印は既定で
+  // "1. Yes, continue" を指しているため、同じ \r 送信で承認できる。
+  const TRUST_PATTERN = /Enter to confirm|Do you trust.{0,40}(?:folder|directory)|Yes,\s*I\s*trust\s*(the\s*files\s*in\s*)?this\s*folder/i;
 
-  // Claude Code が入力受付状態になったことを検知するパターン
-  const READY_PATTERN = /\?\s*for\s*shortcuts|\?\s*to\s*show\s*shortcuts|for\s*shortcuts|Welcome to Claude|Try\s*["']?\/help|Bypass(ing)?\s*Permissions|accept edits/i;
+  // AI エンジンが入力受付状態になったことを検知するパターン
+  // Codex（issue #367。codex-cli 0.147.0 実機確認）: 起動完了バナーに "OpenAI Codex" が
+  // 出る。vk-orchestrator 側の CODEX_READY_PATTERN（setup-entry-autostart.js）と同じ
+  // パターンを採用する。
+  const READY_PATTERN = /\?\s*for\s*shortcuts|\?\s*to\s*show\s*shortcuts|for\s*shortcuts|Welcome to Claude|Try\s*["']?\/help|Bypass(ing)?\s*Permissions|accept edits|OpenAI Codex/i;
 
   const WATCH_TIMEOUT_MS = 10000;
 
@@ -1317,7 +1335,10 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
       }
     };
 
-    if (isFirstTerminal && config.initialCommand) {
+    // タイムアウトによる initialCommand の盲打ちフォールバックは engine が 'claude' の
+    // ときだけ行う（issue #367）。Codex 等は READY_PATTERN 検知（OpenAI Codex）でのみ
+    // 送信し、起動途中に initialCommand を打ち込んでしまう事故を避ける。
+    if (isFirstTerminal && config.initialCommand && resolvedEngine === 'claude') {
       promptWatcherTimeoutId = setTimeout(() => {
         if (!sent) {
           console.warn(`${LOG_PREFIX} Claude ready prompt not detected within ${WATCH_TIMEOUT_MS}ms, sending initialCommand as fallback`);
@@ -1338,15 +1359,18 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
         if (ptys.has(id)) {
           ptyProcess.write('\r');
         }
-        // 信頼承認後はタイムアウトをリセット（initialCommand 待ち継続）
+        // 信頼承認後はタイムアウトをリセット（initialCommand 待ち継続）。
+        // ここも engine が 'claude' のときだけ盲打ちフォールバックを再設定する（issue #367）。
         if (isFirstTerminal && config.initialCommand && !sent) {
           clearTimeout(promptWatcherTimeoutId);
-          promptWatcherTimeoutId = setTimeout(() => {
-            if (!sent) {
-              console.warn(`${LOG_PREFIX} Claude ready prompt not detected after trust confirmation, sending initialCommand as fallback`);
-              sendInitialCommand('timeout fallback after trust');
-            }
-          }, WATCH_TIMEOUT_MS);
+          if (resolvedEngine === 'claude') {
+            promptWatcherTimeoutId = setTimeout(() => {
+              if (!sent) {
+                console.warn(`${LOG_PREFIX} Claude ready prompt not detected after trust confirmation, sending initialCommand as fallback`);
+                sendInitialCommand('timeout fallback after trust');
+              }
+            }, WATCH_TIMEOUT_MS);
+          }
         }
         return;
       }
@@ -1381,11 +1405,19 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
 
   ptys.set(id, ptyProcess);
 
-  // 起動後に自動でclaudeを実行（素のターミナルモード時はスキップ）
-  // options.model が指定されていれば --model を付けて起動する（issue #310）。
-  // HTTP 受け口でも検証済みだが、ここでも buildClaudeLaunchCommand が再検証する。
-  // 未指定・不正値では素の `claude` になり、従来と完全に同一の文字列を書き込む。
-  const launchCommand = buildClaudeLaunchCommand(options.model);
+  // 起動後に自動で AI エンジンを実行（素のターミナルモード時はスキップ）
+  // resolvedEngine が 'claude'（省略時含む）なら従来どおり options.model が指定されて
+  // いれば --model を付けて起動する（issue #310）。HTTP 受け口でも検証済みだが、
+  // ここでも buildEngineAwareLaunchCommand（内部で buildClaudeLaunchCommand）が
+  // 再検証する。未指定・不正値では素の `claude` になり、従来と完全に同一の文字列を
+  // 書き込む＝既存の呼び出し元は非影響（issue #367）。
+  //
+  // resolvedEngine が 'claude' 以外のときは model を無視して素のエンジンを起動する
+  // （buildEngineAwareLaunchCommand が判定。理由は同関数のコメント参照）。
+  const { command: launchCommand, modelIgnored } = buildEngineAwareLaunchCommand(resolvedEngine, options.model);
+  if (modelIgnored) {
+    console.warn(`${LOG_PREFIX} model is ignored for engine '${resolvedEngine}'`);
+  }
   if (!noClaude) {
     setTimeout(() => {
       if (ptys.has(id)) {
@@ -2190,13 +2222,19 @@ function startHttpApi() {
       return;
     }
 
-    // POST /api/new-pane  { cwd?: "/path/to/dir", noClaude?: boolean, stashed?: boolean, model?: string } — 新規ペインを作成して termId を返す
+    // POST /api/new-pane  { cwd?: "/path/to/dir", noClaude?: boolean, engine?: "claude"|"codex", stashed?: boolean, model?: string } — 新規ペインを作成して termId を返す
     //   cwd を指定すればそのディレクトリで開く。未指定なら HOME で開く。
     //   noClaude: true を指定すると、新規ペインで claude を自動起動せず素のシェルとして開く。
+    //   engine: 起動する AI エンジン（issue #367）。許可値は "claude" / "codex" のみ
+    //     （許可リスト方式）。未指定なら従来どおり claude を起動する＝既存の呼び出し元は
+    //     非影響。不正値（未対応の文字列・空文字・文字列以外）は 400 で拒否しペインを作らない。
     //   stashed: true を指定すると、サイドバー格納＋折りたたみ状態で開く。
     //   model を指定すると、そのモデルで claude を起動する（claude --model '<model>'）。
     //     許可するのは英数字・`.`・`_`・`-`・`[`・`]` のみ・64 文字以内で、先頭は英数字。
     //     それ以外は 400 で拒否しペインを作らない。未指定なら従来どおり素の claude を起動する。
+    //     engine が claude 以外のときは model の妥当性検証をスキップして素通しし、
+    //     terminal:create 側で無視＋警告ログという形で処理する（400 にはしない。
+    //     理由は terminal:create 側のコメント参照）。
     if (req.method === 'POST' && url.pathname === '/api/new-pane') {
       if (isForbiddenOrigin(req)) {
         res.writeHead(403, { 'Content-Type': 'application/json' });
@@ -2212,6 +2250,7 @@ function startHttpApi() {
       readJsonBody(req, res, MAX_BODY, (body) => {
         let requestedCwd = null;
         let requestedNoClaude;
+        let requestedEngine;
         let requestedStashed;
         let requestedUseDefaults;
         let requestedModel;
@@ -2223,6 +2262,18 @@ function startHttpApi() {
             }
             if (typeof parsed?.noClaude === 'boolean') {
               requestedNoClaude = parsed.noClaude;
+            }
+            // engine: 起動する AI エンジン（issue #367）。許可リスト方式で、
+            // 'claude' / 'codex' 以外（未対応の文字列・空文字・文字列以外）は
+            // ペインを作らず 400 で拒否する。将来エンジンを足すときは
+            // renderer/claudeModel.js の ALLOWED_ENGINES 配列だけを直せば済む形。
+            if (parsed?.engine !== undefined) {
+              if (!isValidEngine(parsed.engine)) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'invalid engine (allowed: "claude", "codex")' }));
+                return;
+              }
+              requestedEngine = parsed.engine;
             }
             if (typeof parsed?.stashed === 'boolean') {
               requestedStashed = parsed.stashed;
@@ -2237,13 +2288,24 @@ function startHttpApi() {
             // model: 起動する claude のモデル名（issue #310）。値はペインへ書き込む
             // 起動コマンドの一部になるため、許可リストを通らない値はペインを作らずに拒否する。
             // 省略時は従来どおり素の claude を起動する＝既存の呼び出し元は非影響。
+            //
+            // ただし engine が claude 以外のときは model は無視される値なので、ここでは
+            // 検証せず素通しする（issue #367）。vk-orchestrator は claudeModel 設定が
+            // 空でなければ常に model を載せる作りのため、ここで 400 にすると engine を
+            // 切り替えた瞬間にペイン作成が全て失敗してしまう。実際に無視する判定・警告
+            // ログは terminal:create 側（唯一の起動コマンド決定箇所）に一元化する。
             if (parsed?.model !== undefined) {
-              if (!isValidClaudeModel(parsed.model)) {
-                res.writeHead(400, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ error: 'invalid model' }));
-                return;
+              const effectiveEngine = requestedEngine || 'claude';
+              if (effectiveEngine === 'claude') {
+                if (!isValidClaudeModel(parsed.model)) {
+                  res.writeHead(400, { 'Content-Type': 'application/json' });
+                  res.end(JSON.stringify({ error: 'invalid model' }));
+                  return;
+                }
+                requestedModel = parsed.model;
+              } else if (typeof parsed.model === 'string') {
+                requestedModel = parsed.model;
               }
-              requestedModel = parsed.model;
             }
           } catch {
             res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -2272,6 +2334,7 @@ function startHttpApi() {
         pendingNewPaneCallbacks.set(requestId, resolve);
         const payload = { requestId, cwd: requestedCwd };
         if (typeof requestedNoClaude === 'boolean') payload.noClaude = requestedNoClaude;
+        if (typeof requestedEngine === 'string') payload.engine = requestedEngine;
         if (typeof requestedStashed === 'boolean') payload.stashed = requestedStashed;
         if (requestedUseDefaults === true) payload.useDefaults = true;
         if (typeof requestedModel === 'string') payload.model = requestedModel;

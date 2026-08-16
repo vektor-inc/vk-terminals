@@ -1,4 +1,10 @@
-// 新規ペインで起動する claude のモデル指定を検証し、ペインへ書き込む起動コマンドを組み立てる。
+// 新規ペインで起動する AI エンジン（claude / codex）とモデル指定を検証し、
+// ペインへ書き込む起動コマンドを組み立てる。
+//
+// 設計思想（崩さないこと）: 実行ファイル名は固定文字列のみを許可リストから返し、
+// 引数（claude の model）も別の許可リストで検証する。API は設定次第でループバック
+// 以外にも公開され得るため、任意文字列が起動コマンドへそのまま混入する口を
+// 絶対に開けない（main.js 冒頭・README のセキュリティ節も参照）。
 //
 // Node（require）とブラウザ（<script>）の両方から使える UMD 形式。
 (function (root, factory) {
@@ -33,10 +39,71 @@
     return `claude --model '${model}'`;
   }
 
+  // ─── engine（issue #367） ───────────────────────────────────────────────
+  // 新規ペインで起動する AI エンジンの許可リスト。将来エンジンを足すときは
+  // この配列（と下の ENGINE_LAUNCH_COMMANDS）だけを直せば済む形にしてある。
+  const ALLOWED_ENGINES = ['claude', 'codex'];
+
+  function isValidEngine(value) {
+    return typeof value === 'string' && ALLOWED_ENGINES.includes(value);
+  }
+
+  // engine → 起動コマンドの固定文字列マッピング（'claude' はモデル対応があるため
+  // buildClaudeLaunchCommand を使い、ここには含めない）。値から動的にコマンド文字列を
+  // 組み立てず、固定リテラルを返すだけにすることで、任意文字列が起動コマンドへ
+  // 混入する余地を無くしている。
+  const ENGINE_LAUNCH_COMMANDS = {
+    codex: 'codex',
+  };
+
+  // 'claude' 以外の engine の起動コマンドを返す。未対応の engine（'claude' 自身を
+  // 含む）には null を返す。'claude' は呼び出し側が buildClaudeLaunchCommand を使うこと。
+  function buildEngineLaunchCommand(engine) {
+    return ENGINE_LAUNCH_COMMANDS[engine] || null;
+  }
+
+  // 呼び出し側（main.js の terminal:create）が resolvedEngine（isValidEngine 済み・
+  // 未指定/不正値は 'claude' に倒した後の値）と options.model から、実際にペインへ
+  // 書き込む起動コマンドを 1 箇所で決める純粋関数（副作用なし。console.warn は main.js
+  // 側が modelIgnored を見て LOG_PREFIX 付きで出す。テスト容易性のため状態を持たせない）。
+  //
+  // 仕様（issue #367 / ユーザー承認済み）: resolvedEngine が 'claude' 以外のときは
+  // model を無視して素のエンジンを起動する（400 にはしない）。vk-orchestrator は
+  // claudeModel 設定が空でなければ常に model を載せる作りのため、ここで弾くと
+  // engine を切り替えた瞬間にペイン作成が全て失敗する。vk-orchestrator の tmux モード
+  // （buildPaneClaudeCommand・vektor-inc/vk-orchestrator#406）が同じ問題を「無視」で
+  // 解決済みで、挙動を揃える。Codex 側のモデル指定（codex --model 等）は本 issue の
+  // スコープ外（後日の追加実装）。
+  //
+  // 戻り値:
+  //   - command: ペインへ書き込む起動コマンド文字列
+  //   - modelIgnored: model が指定されていたが無視された（＝呼び出し側が警告ログを
+  //     出すべき）かどうか
+  function buildEngineAwareLaunchCommand(resolvedEngine, model) {
+    if (resolvedEngine === 'claude') {
+      return { command: buildClaudeLaunchCommand(model), modelIgnored: false };
+    }
+    // ENGINE_LAUNCH_COMMANDS に無い値がここに来るのは、呼び出し側が isValidEngine を
+    // 経由せず未検証の resolvedEngine を渡した場合のみ（本来は起きない想定の防御的
+    // フォールバック）。その場合は任意文字列を書き込まないよう安全側の素の claude へ
+    // 倒す。この経路では model は使われていないため無視扱いにはしない
+    // （claude 起動時は model を弾いていないのと同じ「安全側の既定」の考え方）。
+    const command = buildEngineLaunchCommand(resolvedEngine);
+    if (command === null) {
+      return { command: 'claude', modelIgnored: false };
+    }
+    const modelIgnored = model !== undefined && model !== null;
+    return { command, modelIgnored };
+  }
+
   return {
     MAX_CLAUDE_MODEL_LENGTH,
     CLAUDE_MODEL_PATTERN,
     isValidClaudeModel,
     buildClaudeLaunchCommand,
+    ALLOWED_ENGINES,
+    isValidEngine,
+    buildEngineLaunchCommand,
+    buildEngineAwareLaunchCommand,
   };
 });

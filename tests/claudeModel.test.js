@@ -7,6 +7,10 @@ const {
   MAX_CLAUDE_MODEL_LENGTH,
   isValidClaudeModel,
   buildClaudeLaunchCommand,
+  ALLOWED_ENGINES,
+  isValidEngine,
+  buildEngineLaunchCommand,
+  buildEngineAwareLaunchCommand,
 } = require('../renderer/claudeModel');
 
 test('isValidClaudeModel: 実在するモデル名を許可する', () => {
@@ -103,4 +107,73 @@ test('buildClaudeLaunchCommand: 戻り値に改行・シングルクォートの
     // シングルクォートは開始と終了の 2 個ちょうど。
     assert.equal(command.split("'").length - 1, 2);
   }
+});
+
+// ─── engine（issue #367） ───────────────────────────────────────────────
+
+test('ALLOWED_ENGINES: 許可値は claude / codex の2つだけ', () => {
+  assert.deepEqual(ALLOWED_ENGINES, ['claude', 'codex']);
+});
+
+test('isValidEngine: 許可リストに載っている文字列だけを許可する', () => {
+  assert.equal(isValidEngine('claude'), true);
+  assert.equal(isValidEngine('codex'), true);
+});
+
+test('isValidEngine: 未対応の文字列・空文字・文字列以外を拒否する', () => {
+  assert.equal(isValidEngine('gemini'), false);
+  assert.equal(isValidEngine('Codex'), false); // 大文字小文字も区別する
+  assert.equal(isValidEngine('codex '), false); // 前後の空白も不許可
+  assert.equal(isValidEngine(''), false);
+  assert.equal(isValidEngine(null), false);
+  assert.equal(isValidEngine(undefined), false);
+  assert.equal(isValidEngine(0), false);
+  assert.equal(isValidEngine(true), false);
+  assert.equal(isValidEngine({ engine: 'codex' }), false);
+  assert.equal(isValidEngine(['codex']), false);
+});
+
+test('buildEngineLaunchCommand: codex は固定文字列 "codex" を返す', () => {
+  assert.equal(buildEngineLaunchCommand('codex'), 'codex');
+});
+
+test('buildEngineLaunchCommand: claude・未対応値には null を返す（claude は呼び出し側が buildClaudeLaunchCommand を使う）', () => {
+  assert.equal(buildEngineLaunchCommand('claude'), null);
+  assert.equal(buildEngineLaunchCommand('gemini'), null);
+  assert.equal(buildEngineLaunchCommand(''), null);
+  assert.equal(buildEngineLaunchCommand(undefined), null);
+});
+
+test('buildEngineAwareLaunchCommand: engine が claude のときは model 対応の従来コマンドを返し、modelIgnored は常に false', () => {
+  assert.deepEqual(buildEngineAwareLaunchCommand('claude', 'sonnet'), {
+    command: "claude --model 'sonnet'",
+    modelIgnored: false,
+  });
+  assert.deepEqual(buildEngineAwareLaunchCommand('claude', undefined), {
+    command: 'claude',
+    modelIgnored: false,
+  });
+  assert.deepEqual(buildEngineAwareLaunchCommand('claude', 'sonnet; rm -rf /'), {
+    command: 'claude',
+    modelIgnored: false,
+  });
+});
+
+test('buildEngineAwareLaunchCommand: engine が codex のときは素の codex を返し、model は無視される', () => {
+  // ★ユーザー承認済みの中心仕様: model を無視して素の codex を起動する（400 にはしない）。
+  assert.deepEqual(buildEngineAwareLaunchCommand('codex', 'sonnet'), {
+    command: 'codex',
+    modelIgnored: true,
+  });
+});
+
+test('buildEngineAwareLaunchCommand: engine が codex で model 未指定のときは modelIgnored が false（無視すべきものが無い）', () => {
+  assert.deepEqual(buildEngineAwareLaunchCommand('codex', undefined), {
+    command: 'codex',
+    modelIgnored: false,
+  });
+  assert.deepEqual(buildEngineAwareLaunchCommand('codex', null), {
+    command: 'codex',
+    modelIgnored: false,
+  });
 });

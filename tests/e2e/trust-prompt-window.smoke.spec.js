@@ -11,25 +11,46 @@ const { closeApp, getFreePort, launchAppAndWait } = require('./helpers/electron-
 //
 // utils/trustPromptGate.js（tests/trustPromptGate.test.js で単体テスト済み）が、
 //   1. ペイン作成からの経過時間が TRUST_WINDOW_MS 以内であること
-//   2. AI エンジンの起動完了（READY_PATTERN 一致）をまだ検知していないこと
+//   2. AI エンジンの起動完了（READY_PATTERN 一致）を検知してから READY_GRACE_MS を
+//      超えて経っていないこと
 // の両方を満たす間だけ自動 Enter 送信を許可するようになった。ここでは main.js への
 // 配線（実際の PTY 出力で正しく発火・停止するか）を実 Electron で確認する。
 //
 // 実際の claude バイナリは使わず、new-pane-engine.smoke.spec.js と同じ手法で
-// フェイク claude を PATH の先頭に置く。フェイク claude は次の順で出力する。
-//   1) 起動直後: 信頼確認プロンプト相当の文言（TRUST_PATTERN の "Enter to confirm" に一致）
-//   2) 少し待って: 起動完了相当の文言（CLAUDE_READY_PATTERN の "Welcome to Claude" に一致）
-//   3) さらに待って: 信頼確認プロンプトと同じ文言をもう一度出す（ready 検知後の再現）
-// 標準入力（自動 Enter）を受け取ったら "AUTO_ENTER_RECEIVED:<n>" を出力するため、
-// xterm バッファのテキストだけで「自動 Enter が送られたか・何回か」を観測できる。
+// フェイク claude を PATH の先頭に置く。標準入力（自動 Enter）を受け取ったら
+// "AUTO_ENTER_RECEIVED:<n>" を出力するため、xterm バッファのテキストだけで
+// 「自動 Enter が送られたか・何回か」を観測できる。
+//
+// main.js は VK_TERMINALS_TRUST_WINDOW_MS / VK_TERMINALS_READY_GRACE_MS の2つの
+// 環境変数で時間窓・猶予を上書きできる（安藤の指摘・必須2）。実時間で 30 秒（既定の
+// TRUST_WINDOW_MS）待つテストを避けるため、ここでは短縮した値を使う。
+//
+// 【2本の e2e が「修正前のコードでも通る」ことにならないよう、出力の組み立てに注意】
+// 単に「trust → ready → trust」の順で出すと、1回目の trust で修正前（1ペイン1回だけの
+// 単純な回数ガード）の実装も trustHandled を消費してしまい、2回目の trust に応答しない
+// のは修正前後で同じになる（＝どちらの実装でも同じ結果になり、回帰を検知できない）。
+// そこで下記の2本は、どちらも「唯一の trust 出現が、修正前の実装なら応答してしまう
+// はずの状況（ready 検知から猶予を過ぎた後 / 時間窓を過ぎた後）でだけ出る」形にしている。
+// 修正前の実装（1ペイン1回だけの単純な回数ガード。ready・経過時間を一切見ない）なら
+// この唯一の trust にも応答してしまうため、このテストは FAIL するはず。
+// 実際に修正前のコード（コミット 011a41d の main.js。utils/trustPromptGate.js 導入前）へ
+// main.js だけを一時的に差し替えて実行し、2本とも FAIL する（修正後のコードに戻すと
+// 2本とも PASS する）ことを確認済み。
 
-// フェイク claude 実行ファイルを一時ディレクトリに作る。
-function createFakeClaudeTrustFlow(root) {
+// フェイク claude 実行ファイルを一時ディレクトリに作る。source には生成する
+// フェイクスクリプトの本体（JS ソース文字列）を渡す。
+function createFakeClaude(root, source) {
   const binDir = path.join(root, 'bin');
   const executablePath = path.join(binDir, 'claude');
   fs.mkdirSync(binDir, { recursive: true });
-  fs.writeFileSync(executablePath, `#!/usr/bin/env node
-// issue #371 の e2e 用フェイク claude。
+  fs.writeFileSync(executablePath, `#!/usr/bin/env node\n${source}`, { mode: 0o755 });
+  return { binDir };
+}
+
+// 標準入力（自動 Enter）を受け取るたびに "AUTO_ENTER_RECEIVED:<n>" を出力する
+// 共通の前置き部分。setRawMode で入力をそのままバイト単位で受け取る（TTY の
+// 行バッファリング・エコーに依存しない）。
+const STDIN_ECHO_PREAMBLE = `
 let receivedCount = 0;
 if (process.stdin.isTTY) {
   try { process.stdin.setRawMode(true); } catch (_e) {}
@@ -39,26 +60,9 @@ process.stdin.on('data', () => {
   receivedCount += 1;
   process.stdout.write('AUTO_ENTER_RECEIVED:' + receivedCount + '\\r\\n');
 });
-
-// 1) 起動直後: 信頼確認プロンプト相当の文言。
-process.stdout.write('Enter to confirm to continue\\r\\n');
-
-// 2) 少し待って: 起動完了相当の文言。
-setTimeout(() => {
-  process.stdout.write('Welcome to Claude Code!\\r\\n');
-
-  // 3) さらに待って: 信頼確認プロンプトと同じ文言を再度出す（ready 検知後）。
-  setTimeout(() => {
-    process.stdout.write('Enter to confirm to continue\\r\\n');
-    process.stdout.write('POST_READY_TRUST_MARKER\\r\\n');
-  }, 1000);
-}, 1000);
-
 // プロセスを保持し続ける（実際の対話型 CLI と同様、起動したまま待ち受ける）。
 setInterval(() => {}, 1000);
-`, { mode: 0o755 });
-  return { binDir };
-}
+`;
 
 async function postNewPane(port, payload) {
   const res = await fetch(`http://127.0.0.1:${port}/api/new-pane`, {
@@ -93,19 +97,54 @@ async function waitForBufferText(win, needle, paneId, timeoutMs = 15_000) {
   }, { u: needle, id: paneId }, { timeout: timeoutMs });
 }
 
-test('信頼確認プロンプトには起動直後だけ自動応答し、起動完了検知後の同じ文言には応答しない（issue #371）', async () => {
+// pane の可視バッファに needle を含む行があるかを、待たずに一度だけ調べる。
+async function bufferContains(win, needle, paneId) {
+  return win.evaluate(({ u, id }) => {
+    const t = terminals[id];
+    if (!t) return false;
+    const buf = t.term.buffer.active;
+    for (let i = 0; i < t.term.rows; i += 1) {
+      const line = buf.getLine(buf.viewportY + i);
+      if (line && line.translateToString(true).includes(u)) return true;
+    }
+    return false;
+  }, { u: needle, id: paneId });
+}
+
+test('起動完了検知の猶予を過ぎてから届く信頼確認プロンプトには自動応答しない（issue #371・旧実装からの回帰検知）', async () => {
   const port = await getFreePort();
-  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-trust-window-'));
-  const fakeClaude = createFakeClaudeTrustFlow(fixtureRoot);
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-trust-grace-'));
+  // READY_GRACE_MS を短縮し、実時間の待ちを短く保つ。
+  const readyGraceMs = 300;
+  // ★ trust 文言は「ready の後、猶予を過ぎてから」の1回だけしか出さない。事前に
+  // 別の trust 出現を挟むと（例えば「起動直後の trust → ready → trust」の順にすると）、
+  // 修正前の実装（1ペイン1回だけの単純な回数ガード）は最初の trust で早々に
+  // 消費されてしまい、2回目の trust に応答しないのは修正前でも同じになる＝
+  // 回帰を検知できない（安藤の指摘・必須3）。この唯一の trust 出現だけで、
+  // 修正前の実装なら応答してしまう状況を作る。
+  const fakeClaude = createFakeClaude(fixtureRoot, `${STDIN_ECHO_PREAMBLE}
+// 1) 起動直後: 起動完了相当の文言（CLAUDE_READY_PATTERN の "Welcome to Claude" に一致）。
+process.stdout.write('Welcome to Claude Code!\\r\\n');
+
+// 2) READY_GRACE_MS（${readyGraceMs}ms）を確実に超えてから、信頼確認プロンプト相当の
+//    文言を初めて（唯一）出す。この trust 出現は「ready 検知から猶予を過ぎた後」にしか
+//    現れないため、修正前の実装（ready・時間を見ない単純な回数ガード）なら応答して
+//    しまうはずの状況になっている。
+setTimeout(() => {
+  process.stdout.write('Enter to confirm to continue\\r\\n');
+  process.stdout.write('POST_GRACE_TRUST_MARKER\\r\\n');
+}, ${readyGraceMs * 5});
+`);
   let launched = null;
 
   try {
     launched = await launchAppAndWait({
       port,
-      prefix: 'vk-terminals-e2e-trust-window-',
+      prefix: 'vk-terminals-e2e-trust-grace-',
       env: {
         // フェイク claude を PATH の先頭に置く（実バイナリ・実認証状態には依存しない）。
         PATH: `${fakeClaude.binDir}${path.delimiter}${process.env.PATH || ''}`,
+        VK_TERMINALS_READY_GRACE_MS: String(readyGraceMs),
       },
     });
     const { win } = launched;
@@ -120,32 +159,68 @@ test('信頼確認プロンプトには起動直後だけ自動応答し、起�
     const paneId = await waitForPaneIdForTermId(win, termId);
     expect(paneId).not.toBeNull();
 
-    // (1) 起動直後の信頼確認プロンプト相当の出力には自動 Enter が送られる
-    //     （フェイク claude が標準入力を受け取り AUTO_ENTER_RECEIVED:1 を出力する）。
-    await waitForBufferText(win, 'AUTO_ENTER_RECEIVED:1', paneId);
-
-    // (2) 起動完了相当の出力（READY_PATTERN 一致）が検知される。
+    // (1) 起動完了相当の出力（READY_PATTERN 一致）が検知される。
     await waitForBufferText(win, 'Welcome to Claude Code!', paneId);
 
-    // (3) 起動完了検知後に同じ信頼確認文言が再び出ても、マーカーが出るまで待つ。
-    await waitForBufferText(win, 'POST_READY_TRUST_MARKER', paneId);
+    // (2) 猶予を過ぎてから届いた、唯一の信頼確認文言（マーカーが出るまで待つ）。
+    await waitForBufferText(win, 'POST_GRACE_TRUST_MARKER', paneId);
 
     // マーカー出力後、念のため少し待ってから確認する（誤って自動応答が送られていれば
-    // フェイク claude がこの間に AUTO_ENTER_RECEIVED:2 を出力するはず）。
+    // フェイク claude がこの間に AUTO_ENTER_RECEIVED:1 を出力するはず）。
     await new Promise((resolve) => setTimeout(resolve, 1000));
 
-    // (4) 起動完了検知後の同じ文言には自動応答していない（2 回目の自動 Enter が無い）。
-    const bufferHasSecondAutoEnter = await win.evaluate((id) => {
-      const t = terminals[id];
-      if (!t) return false;
-      const buf = t.term.buffer.active;
-      for (let i = 0; i < t.term.rows; i += 1) {
-        const line = buf.getLine(buf.viewportY + i);
-        if (line && line.translateToString(true).includes('AUTO_ENTER_RECEIVED:2')) return true;
-      }
-      return false;
-    }, paneId);
-    expect(bufferHasSecondAutoEnter).toBe(false);
+    // (3) 猶予を過ぎた後の信頼確認には自動応答していない（自動 Enter が一度も無い）。
+    expect(await bufferContains(win, 'AUTO_ENTER_RECEIVED:', paneId)).toBe(false);
+  } finally {
+    if (launched) await closeApp(launched);
+    fs.rmSync(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
+test('自動応答の時間窓を過ぎてから届く信頼確認プロンプトには自動応答しない（issue #371・旧実装からの回帰検知）', async () => {
+  const port = await getFreePort();
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-trust-timewindow-'));
+  // TRUST_WINDOW_MS（既定 30 秒）を短縮し、実時間で 30 秒待つことを避ける。
+  const trustWindowMs = 500;
+  const fakeClaude = createFakeClaude(fixtureRoot, `${STDIN_ECHO_PREAMBLE}
+// TRUST_WINDOW_MS（${trustWindowMs}ms）を確実に超えてから、信頼確認プロンプト相当の
+// 文言を一度だけ出す。この trust 出現は「ペイン作成から時間窓を過ぎた後」にしか
+// 現れないため、修正前の実装（経過時間を一切見ない単純な回数ガード）なら応答して
+// しまうはずの状況になっている（ready は一切出さない＝猶予の影響を受けない）。
+setTimeout(() => {
+  process.stdout.write('Enter to confirm to continue\\r\\n');
+  process.stdout.write('POST_WINDOW_TRUST_MARKER\\r\\n');
+}, ${trustWindowMs * 4});
+`);
+  let launched = null;
+
+  try {
+    launched = await launchAppAndWait({
+      port,
+      prefix: 'vk-terminals-e2e-trust-timewindow-',
+      env: {
+        PATH: `${fakeClaude.binDir}${path.delimiter}${process.env.PATH || ''}`,
+        VK_TERMINALS_TRUST_WINDOW_MS: String(trustWindowMs),
+      },
+    });
+    const { win } = launched;
+
+    const created = await postNewPane(port, { noClaude: false });
+    expect(created.status).toBe(200);
+    expect(created.body && created.body.ok).toBe(true);
+    const termId = created.body.termId;
+
+    const paneId = await waitForPaneIdForTermId(win, termId);
+    expect(paneId).not.toBeNull();
+
+    // (1) 時間窓を過ぎてから届いた信頼確認文言（マーカーが出るまで待つ）。
+    await waitForBufferText(win, 'POST_WINDOW_TRUST_MARKER', paneId);
+
+    // マーカー出力後、念のため少し待ってから確認する。
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+
+    // (2) 時間窓を過ぎた後の信頼確認には自動応答していない（自動 Enter が一度も無い）。
+    expect(await bufferContains(win, 'AUTO_ENTER_RECEIVED:', paneId)).toBe(false);
   } finally {
     if (launched) await closeApp(launched);
     fs.rmSync(fixtureRoot, { recursive: true, force: true });

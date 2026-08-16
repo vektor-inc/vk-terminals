@@ -120,6 +120,12 @@ const WAITING_PATTERNS = [
   /[↑↓]\/[↑↓]\s+to\s+navigate/,
   /Esc\s+to\s+cancel/i,
   /❯\s*\d+\.\s/,  // `❯ 1. ラベル` 形式（任意ラベルの数字選択肢）
+  // Codex（issue #367。codex-cli 0.147.0 実機確認）の数字選択肢。矢印文字が Claude Code
+  // （❯ U+276F）と異なり › （U+203A）で、矢印の直後に番号が続く（例:
+  // "› 1. Yes, continue"。信頼確認画面の選択肢）。実機で idle 画面のプレースホルダ
+  // （"› Improve documentation in @filename"）や MCP の警告行では誤検知しないことを
+  // 確認済み（idle 画面のプレースホルダは番号 "N. " を伴わないため）。
+  /›\s*\d+\.\s/,
   // 全角「？」で終わる質問文。AskUserQuestion 以外の TUI / 日本語プロンプト
   // でも全角？で末尾するケースを拾うための補助パターン。
   // Claude Code の AskUserQuestion 自体は上の `Enter to select` フッターで

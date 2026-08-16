@@ -35,9 +35,15 @@ const { normalizeConfirmClose } = require('./utils/closeConfirm');
 // 外部ブラウザで開いてよい URL の判定（renderer と共有）。renderer 側にも同じ判定が
 // あるが、最終防衛線はこのプロセス側（issue #268）。
 const { isSafeHttpUrl } = require('./renderer/urlSafety');
-// 新規ペインで起動する claude のモデル指定の検証と、起動コマンドの組み立て（issue #310）。
-// HTTP 受け口と terminal:create の両方で使い、片方を通らない経路が増えても素通りさせない。
-const { isValidClaudeModel, buildClaudeLaunchCommand } = require('./renderer/claudeModel');
+// 新規ペインで起動する claude のモデル指定・AI エンジン（issue #367）の検証と、
+// 起動コマンドの組み立て（issue #310）。HTTP 受け口と terminal:create の両方で使い、
+// 片方を通らない経路が増えても素通りさせない。
+const {
+  isValidClaudeModel,
+  buildClaudeLaunchCommand,
+  isValidEngine,
+  buildEngineAwareLaunchCommand,
+} = require('./renderer/claudeModel');
 const { resolveInstanceId, buildHealthResponse } = require('./utils/instanceId');
 const {
   describeSettingsValues,
@@ -1275,6 +1281,12 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
   // `noClaude` が true の場合、claude を自動起動せず素のシェルとして開く。
   const noClaude = typeof options.noClaude === 'boolean' ? options.noClaude : globalPlainMode;
 
+  // `options.engine` の再検証（issue #367）。HTTP 受け口（/api/new-pane）でも検証済みだが、
+  // ここでも isValidEngine が再検証する（model と同じ二重化構造・#310 の前例）。
+  // 未指定・不正値では例外を投げず、従来どおりの 'claude' へ倒す（安全側の既定。
+  // buildClaudeLaunchCommand のコメントと同じ考え方）。
+  const resolvedEngine = isValidEngine(options.engine) ? options.engine : 'claude';
+
   const ptyProcess = pty.spawn(shell, [], {
     name: 'xterm-256color',
     cols: 80,
@@ -1292,12 +1304,35 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
 
   // 信頼確認プロンプトの検知パターン（全ターミナル共通）
   // 「Enter to confirm」が出た時点でメニュー描画済みなので、そこで \r を送る
-  // 旧UI: "Do you trust the files in this folder?" / "Yes, I trust this folder"
-  // 新UI: "Quick safety check..." → "Enter to confirm · Esc to cancel"
-  const TRUST_PATTERN = /Enter to confirm|Do you trust.{0,40}folder|Yes,\s*I\s*trust\s*(the\s*files\s*in\s*)?this\s*folder/i;
+  // Claude Code 旧UI: "Do you trust the files in this folder?" / "Yes, I trust this folder"
+  // Claude Code 新UI: "Quick safety check..." → "Enter to confirm · Esc to cancel"
+  // Codex（issue #367。codex-cli 0.147.0 実機確認）: "Do you trust the contents of this
+  // directory?"（Claude Code は folder、Codex は directory と表記が異なる）。矢印は既定で
+  // "1. Yes, continue" を指しているため、同じ \r 送信で承認できる。
+  const TRUST_PATTERN = /Enter to confirm|Do you trust.{0,40}(?:folder|directory)|Yes,\s*I\s*trust\s*(the\s*files\s*in\s*)?this\s*folder/i;
 
-  // Claude Code が入力受付状態になったことを検知するパターン
-  const READY_PATTERN = /\?\s*for\s*shortcuts|\?\s*to\s*show\s*shortcuts|for\s*shortcuts|Welcome to Claude|Try\s*["']?\/help|Bypass(ing)?\s*Permissions|accept edits/i;
+  // AI エンジンが入力受付状態になったことを検知するパターン。
+  // resolvedEngine で分ける（安藤の指摘 LOW・対応8）: "OpenAI Codex" をエンジン問わず
+  // 全ペインへ適用すると、Claude ペインの出力（会話文・ツール結果等）にたまたま
+  // "OpenAI Codex" という文字列が含まれただけで ready と誤検知し、initialCommand が
+  // 想定より早く送られてしまう。resolvedEngine ごとに別パターンを使うことで、
+  // Claude ペインには従来どおり CLAUDE_READY_PATTERN だけを適用する。
+  //
+  // 三項演算子で分岐する（安藤の指摘 LOW・修正1）: 当初はオブジェクトマップ
+  // （{ claude: ..., codex: ... }）で分けていたが、これは renderer/claudeModel.js の
+  // ENGINE_LAUNCH_COMMANDS で今まさに塞いだのと同じ「素のオブジェクトリテラルへの
+  // 変数添字アクセス」だった。resolvedEngine は isValidEngine 済みで到達不能とはいえ、
+  // 仮に未検証の値が来ると Object.prototype 側のメンバー（関数）が返り、
+  // READY_PATTERN.test(buffer) が ptyProcess.onData のたびに TypeError を投げる
+  // （安藤の実測）。エンジンが 'claude' / 'codex' の2つしか無い現状では、素のオブジェクト
+  // アクセスを経由しない三項演算子の方が安全かつ素直。3つ目以降のエンジンを足す際は
+  // ここを見直すこと（未登録の engine は CLAUDE_READY_PATTERN へ倒れる＝安全側）。
+  const CLAUDE_READY_PATTERN = /\?\s*for\s*shortcuts|\?\s*to\s*show\s*shortcuts|for\s*shortcuts|Welcome to Claude|Try\s*["']?\/help|Bypass(ing)?\s*Permissions|accept edits/i;
+  // Codex（issue #367。codex-cli 0.147.0 実機確認）: 起動完了バナーに "OpenAI Codex" が
+  // 出る。vk-orchestrator 側の CODEX_READY_PATTERN（setup-entry-autostart.js）と同じ
+  // パターンを採用する。
+  const CODEX_READY_PATTERN = /OpenAI Codex/i;
+  const READY_PATTERN = resolvedEngine === 'codex' ? CODEX_READY_PATTERN : CLAUDE_READY_PATTERN;
 
   const WATCH_TIMEOUT_MS = 10000;
 
@@ -1317,13 +1352,31 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
       }
     };
 
+    // タイムアウトによる initialCommand の盲打ちフォールバックは engine が 'claude' の
+    // ときだけ行う（issue #367）。Codex 等は READY_PATTERN 検知（OpenAI Codex）でのみ
+    // 送信し、起動途中に initialCommand を打ち込んでしまう事故を避ける。
+    //
+    // ただし claude 以外でも、タイムアウト自体（＝ここまで warn だけ出して盲打ちしない）
+    // は残す（安藤の指摘 LOW・対応7）。盲打ちを完全に止めた結果、例えば codex が未
+    // インストールで `command not found` になった場合など、initialCommand が永久に
+    // 送られないケースで警告ログも一切出ないと、司や利用者が切り分けにくくなる。
+    // 従来（claude 専用実装）は必ず warn が残っていたのと同じ可観測性を保つため、
+    // 「送信はしない・警告だけ出す」タイマーを engine 問わず設定する。
     if (isFirstTerminal && config.initialCommand) {
-      promptWatcherTimeoutId = setTimeout(() => {
-        if (!sent) {
-          console.warn(`${LOG_PREFIX} Claude ready prompt not detected within ${WATCH_TIMEOUT_MS}ms, sending initialCommand as fallback`);
-          sendInitialCommand('timeout fallback');
-        }
-      }, WATCH_TIMEOUT_MS);
+      if (resolvedEngine === 'claude') {
+        promptWatcherTimeoutId = setTimeout(() => {
+          if (!sent) {
+            console.warn(`${LOG_PREFIX} Claude ready prompt not detected within ${WATCH_TIMEOUT_MS}ms, sending initialCommand as fallback`);
+            sendInitialCommand('timeout fallback');
+          }
+        }, WATCH_TIMEOUT_MS);
+      } else {
+        promptWatcherTimeoutId = setTimeout(() => {
+          if (!sent) {
+            console.warn(`${LOG_PREFIX} ready prompt not detected within ${WATCH_TIMEOUT_MS}ms for engine '${resolvedEngine}'; initialCommand was not sent (blind fallback is disabled for non-claude engines)`);
+          }
+        }, WATCH_TIMEOUT_MS);
+      }
     }
 
     promptWatcher = (data) => {
@@ -1338,15 +1391,25 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
         if (ptys.has(id)) {
           ptyProcess.write('\r');
         }
-        // 信頼承認後はタイムアウトをリセット（initialCommand 待ち継続）
+        // 信頼承認後はタイムアウトをリセット（initialCommand 待ち継続）。
+        // ここも engine が 'claude' のときだけ盲打ちフォールバックを再設定する（issue #367）。
+        // claude 以外は対応7と同じ理由で「送信はしない・警告だけ出す」タイマーを設定する。
         if (isFirstTerminal && config.initialCommand && !sent) {
           clearTimeout(promptWatcherTimeoutId);
-          promptWatcherTimeoutId = setTimeout(() => {
-            if (!sent) {
-              console.warn(`${LOG_PREFIX} Claude ready prompt not detected after trust confirmation, sending initialCommand as fallback`);
-              sendInitialCommand('timeout fallback after trust');
-            }
-          }, WATCH_TIMEOUT_MS);
+          if (resolvedEngine === 'claude') {
+            promptWatcherTimeoutId = setTimeout(() => {
+              if (!sent) {
+                console.warn(`${LOG_PREFIX} Claude ready prompt not detected after trust confirmation, sending initialCommand as fallback`);
+                sendInitialCommand('timeout fallback after trust');
+              }
+            }, WATCH_TIMEOUT_MS);
+          } else {
+            promptWatcherTimeoutId = setTimeout(() => {
+              if (!sent) {
+                console.warn(`${LOG_PREFIX} ready prompt not detected after trust confirmation for engine '${resolvedEngine}'; initialCommand was not sent (blind fallback is disabled for non-claude engines)`);
+              }
+            }, WATCH_TIMEOUT_MS);
+          }
         }
         return;
       }
@@ -1381,11 +1444,19 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
 
   ptys.set(id, ptyProcess);
 
-  // 起動後に自動でclaudeを実行（素のターミナルモード時はスキップ）
-  // options.model が指定されていれば --model を付けて起動する（issue #310）。
-  // HTTP 受け口でも検証済みだが、ここでも buildClaudeLaunchCommand が再検証する。
-  // 未指定・不正値では素の `claude` になり、従来と完全に同一の文字列を書き込む。
-  const launchCommand = buildClaudeLaunchCommand(options.model);
+  // 起動後に自動で AI エンジンを実行（素のターミナルモード時はスキップ）
+  // resolvedEngine が 'claude'（省略時含む）なら従来どおり options.model が指定されて
+  // いれば --model を付けて起動する（issue #310）。HTTP 受け口でも検証済みだが、
+  // ここでも buildEngineAwareLaunchCommand（内部で buildClaudeLaunchCommand）が
+  // 再検証する。未指定・不正値では素の `claude` になり、従来と完全に同一の文字列を
+  // 書き込む＝既存の呼び出し元は非影響（issue #367）。
+  //
+  // resolvedEngine が 'claude' 以外のときは model を無視して素のエンジンを起動する
+  // （buildEngineAwareLaunchCommand が判定。理由は同関数のコメント参照）。
+  const { command: launchCommand, modelIgnored } = buildEngineAwareLaunchCommand(resolvedEngine, options.model);
+  if (modelIgnored) {
+    console.warn(`${LOG_PREFIX} model is ignored for engine '${resolvedEngine}'`);
+  }
   if (!noClaude) {
     setTimeout(() => {
       if (ptys.has(id)) {
@@ -2190,13 +2261,20 @@ function startHttpApi() {
       return;
     }
 
-    // POST /api/new-pane  { cwd?: "/path/to/dir", noClaude?: boolean, stashed?: boolean, model?: string } — 新規ペインを作成して termId を返す
+    // POST /api/new-pane  { cwd?: "/path/to/dir", noClaude?: boolean, engine?: "claude"|"codex", stashed?: boolean, model?: string } — 新規ペインを作成して termId を返す
     //   cwd を指定すればそのディレクトリで開く。未指定なら HOME で開く。
     //   noClaude: true を指定すると、新規ペインで claude を自動起動せず素のシェルとして開く。
+    //   engine: 起動する AI エンジン（issue #367）。許可値は "claude" / "codex" のみ
+    //     （許可リスト方式）。未指定なら従来どおり claude を起動する＝既存の呼び出し元は
+    //     非影響。不正値（未対応の文字列・空文字・文字列以外）は 400 で拒否しペインを作らない。
     //   stashed: true を指定すると、サイドバー格納＋折りたたみ状態で開く。
     //   model を指定すると、そのモデルで claude を起動する（claude --model '<model>'）。
     //     許可するのは英数字・`.`・`_`・`-`・`[`・`]` のみ・64 文字以内で、先頭は英数字。
     //     それ以外は 400 で拒否しペインを作らない。未指定なら従来どおり素の claude を起動する。
+    //     engine が claude 以外のときは model は検証せず・IPC の先へも渡さずに無視し
+    //     （400にはしない）、その場で警告ログを出す（型を問わず。#310 の「起動コマンドに
+    //     入りうる値は必ず許可リストを通す」不変条件を守るための措置。詳細は下の
+    //     model 解析処理のコメント参照）。
     if (req.method === 'POST' && url.pathname === '/api/new-pane') {
       if (isForbiddenOrigin(req)) {
         res.writeHead(403, { 'Content-Type': 'application/json' });
@@ -2212,6 +2290,7 @@ function startHttpApi() {
       readJsonBody(req, res, MAX_BODY, (body) => {
         let requestedCwd = null;
         let requestedNoClaude;
+        let requestedEngine;
         let requestedStashed;
         let requestedUseDefaults;
         let requestedModel;
@@ -2223,6 +2302,18 @@ function startHttpApi() {
             }
             if (typeof parsed?.noClaude === 'boolean') {
               requestedNoClaude = parsed.noClaude;
+            }
+            // engine: 起動する AI エンジン（issue #367）。許可リスト方式で、
+            // 'claude' / 'codex' 以外（未対応の文字列・空文字・文字列以外）は
+            // ペインを作らず 400 で拒否する。将来エンジンを足すときは
+            // renderer/claudeModel.js の ALLOWED_ENGINES 配列だけを直せば済む形。
+            if (parsed?.engine !== undefined) {
+              if (!isValidEngine(parsed.engine)) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'invalid engine (allowed: "claude", "codex")' }));
+                return;
+              }
+              requestedEngine = parsed.engine;
             }
             if (typeof parsed?.stashed === 'boolean') {
               requestedStashed = parsed.stashed;
@@ -2237,13 +2328,36 @@ function startHttpApi() {
             // model: 起動する claude のモデル名（issue #310）。値はペインへ書き込む
             // 起動コマンドの一部になるため、許可リストを通らない値はペインを作らずに拒否する。
             // 省略時は従来どおり素の claude を起動する＝既存の呼び出し元は非影響。
+            //
+            // engine が claude 以外のときは model は無視される値だが、型を問わず
+            // 一切検証せずに IPC の向こうへ渡すことはしない（安藤の指摘 MEDIUM・必須2）。
+            // 「起動コマンドに入りうる値は必ず許可リストを通っている」という #310 の
+            // 不変条件を守るため、ここで requestedModel には代入しない＝payload に
+            // 一切載せない。Codex 側のモデル指定（codex --model 等）は本 issue の
+            // スコープ外だが、将来それが実装された瞬間にこの素通しがコマンド
+            // インジェクションになる「時限式の地雷」を残さないための措置。
+            //
+            // 警告ログはここで即座に出す（植草の指摘・必須2: 従来は
+            // `typeof parsed.model === 'string'` のときしか requestedModel に載らず、
+            // 結果 terminal:create 側の modelIgnored 判定にも渡らないため、数値等の
+            // 非文字列を渡すと README の「無視されたことは警告ログに出力される」という
+            // 約束に反して警告が一切出ないケースがあった。型を問わずここで出すことで
+            // 塞ぐ）。terminal:create 側の modelIgnored による警告は、HTTP を経由しない
+            // 内部経路（renderer の splitPane 直呼び等）向けの多層防御として残してある。
+            // HTTP 経由では model が payload に乗らなくなるため、通常経路で二重に出る
+            // ことはない。
             if (parsed?.model !== undefined) {
-              if (!isValidClaudeModel(parsed.model)) {
-                res.writeHead(400, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ error: 'invalid model' }));
-                return;
+              const effectiveEngine = requestedEngine || 'claude';
+              if (effectiveEngine === 'claude') {
+                if (!isValidClaudeModel(parsed.model)) {
+                  res.writeHead(400, { 'Content-Type': 'application/json' });
+                  res.end(JSON.stringify({ error: 'invalid model' }));
+                  return;
+                }
+                requestedModel = parsed.model;
+              } else {
+                console.warn(`${LOG_PREFIX} model is ignored for engine '${effectiveEngine}'`);
               }
-              requestedModel = parsed.model;
             }
           } catch {
             res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -2272,6 +2386,7 @@ function startHttpApi() {
         pendingNewPaneCallbacks.set(requestId, resolve);
         const payload = { requestId, cwd: requestedCwd };
         if (typeof requestedNoClaude === 'boolean') payload.noClaude = requestedNoClaude;
+        if (typeof requestedEngine === 'string') payload.engine = requestedEngine;
         if (typeof requestedStashed === 'boolean') payload.stashed = requestedStashed;
         if (requestedUseDefaults === true) payload.useDefaults = true;
         if (typeof requestedModel === 'string') payload.model = requestedModel;

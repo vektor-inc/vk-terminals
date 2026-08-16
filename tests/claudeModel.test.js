@@ -7,6 +7,10 @@ const {
   MAX_CLAUDE_MODEL_LENGTH,
   isValidClaudeModel,
   buildClaudeLaunchCommand,
+  ALLOWED_ENGINES,
+  isValidEngine,
+  buildEngineLaunchCommand,
+  buildEngineAwareLaunchCommand,
 } = require('../renderer/claudeModel');
 
 test('isValidClaudeModel: 実在するモデル名を許可する', () => {
@@ -103,4 +107,106 @@ test('buildClaudeLaunchCommand: 戻り値に改行・シングルクォートの
     // シングルクォートは開始と終了の 2 個ちょうど。
     assert.equal(command.split("'").length - 1, 2);
   }
+});
+
+// ─── engine（issue #367） ───────────────────────────────────────────────
+
+test('ALLOWED_ENGINES: 許可値は claude / codex の2つだけ', () => {
+  assert.deepEqual(ALLOWED_ENGINES, ['claude', 'codex']);
+});
+
+test('isValidEngine: 許可リストに載っている文字列だけを許可する', () => {
+  assert.equal(isValidEngine('claude'), true);
+  assert.equal(isValidEngine('codex'), true);
+});
+
+test('isValidEngine: 未対応の文字列・空文字・文字列以外を拒否する', () => {
+  assert.equal(isValidEngine('gemini'), false);
+  assert.equal(isValidEngine('Codex'), false); // 大文字小文字も区別する
+  assert.equal(isValidEngine('codex '), false); // 前後の空白も不許可
+  assert.equal(isValidEngine(''), false);
+  assert.equal(isValidEngine(null), false);
+  assert.equal(isValidEngine(undefined), false);
+  assert.equal(isValidEngine(0), false);
+  assert.equal(isValidEngine(true), false);
+  assert.equal(isValidEngine({ engine: 'codex' }), false);
+  assert.equal(isValidEngine(['codex']), false);
+});
+
+test('isValidEngine: Object.prototype 由来の名前（__proto__ / constructor 等）も許可リスト外として拒否する（安藤の指摘・必須3の回帰テスト）', () => {
+  assert.equal(isValidEngine('__proto__'), false);
+  assert.equal(isValidEngine('constructor'), false);
+  assert.equal(isValidEngine('toString'), false);
+  assert.equal(isValidEngine('valueOf'), false);
+  assert.equal(isValidEngine('hasOwnProperty'), false);
+});
+
+test('buildEngineLaunchCommand: codex は固定文字列 "codex" を返す', () => {
+  assert.equal(buildEngineLaunchCommand('codex'), 'codex');
+});
+
+test('buildEngineLaunchCommand: claude・未対応値には null を返す（claude は呼び出し側が buildClaudeLaunchCommand を使う）', () => {
+  assert.equal(buildEngineLaunchCommand('claude'), null);
+  assert.equal(buildEngineLaunchCommand('gemini'), null);
+  assert.equal(buildEngineLaunchCommand(''), null);
+  assert.equal(buildEngineLaunchCommand(undefined), null);
+});
+
+test('buildEngineLaunchCommand: Object.prototype 由来のキーを渡しても継承メンバーを返さず null になる（安藤の指摘 MEDIUM・必須1の回帰テスト）', () => {
+  // 修正前は素のオブジェクトリテラル添字アクセスのため、これらのキーで
+  // Object.prototype 側の関数（[Function: Object] 等）が `|| null` を通過せずに
+  // 返っていた（安藤の実測: buildEngineAwareLaunchCommand('constructor') が
+  // { command: [Function: Object] } を返し、PTY へ書き込まれてしまうバグ）。
+  assert.equal(buildEngineLaunchCommand('constructor'), null);
+  assert.equal(buildEngineLaunchCommand('toString'), null);
+  assert.equal(buildEngineLaunchCommand('valueOf'), null);
+  assert.equal(buildEngineLaunchCommand('hasOwnProperty'), null);
+  assert.equal(buildEngineLaunchCommand('__proto__'), null);
+  assert.equal(buildEngineLaunchCommand('isPrototypeOf'), null);
+});
+
+test('buildEngineAwareLaunchCommand: engine が claude のときは model 対応の従来コマンドを返し、modelIgnored は常に false', () => {
+  assert.deepEqual(buildEngineAwareLaunchCommand('claude', 'sonnet'), {
+    command: "claude --model 'sonnet'",
+    modelIgnored: false,
+  });
+  assert.deepEqual(buildEngineAwareLaunchCommand('claude', undefined), {
+    command: 'claude',
+    modelIgnored: false,
+  });
+  assert.deepEqual(buildEngineAwareLaunchCommand('claude', 'sonnet; rm -rf /'), {
+    command: 'claude',
+    modelIgnored: false,
+  });
+});
+
+test('buildEngineAwareLaunchCommand: engine が codex のときは素の codex を返し、model は無視される', () => {
+  // ★ユーザー承認済みの中心仕様: model を無視して素の codex を起動する（400 にはしない）。
+  assert.deepEqual(buildEngineAwareLaunchCommand('codex', 'sonnet'), {
+    command: 'codex',
+    modelIgnored: true,
+  });
+});
+
+test('buildEngineAwareLaunchCommand: Object.prototype 由来の resolvedEngine が渡っても command は必ず文字列で、安全側の claude へ倒す（安藤の指摘 MEDIUM・必須1の回帰テスト）', () => {
+  // resolvedEngine は本来 isValidEngine 済みの値しか来ない想定だが、万一未検証の値が
+  // 渡っても任意文字列（関数など）を PTY へ書き込まないことを固定する。
+  const protoKeys = ['constructor', 'toString', 'valueOf', 'hasOwnProperty', '__proto__', 'isPrototypeOf'];
+  for (const engine of protoKeys) {
+    const result = buildEngineAwareLaunchCommand(engine, undefined);
+    // これだけでも今回のバグ（command が関数になる）は落ちる。
+    assert.equal(typeof result.command, 'string', `${engine}: command が文字列ではない`);
+    assert.deepEqual(result, { command: 'claude', modelIgnored: false }, `${engine}: 安全側の claude へ倒れていない`);
+  }
+});
+
+test('buildEngineAwareLaunchCommand: engine が codex で model 未指定のときは modelIgnored が false（無視すべきものが無い）', () => {
+  assert.deepEqual(buildEngineAwareLaunchCommand('codex', undefined), {
+    command: 'codex',
+    modelIgnored: false,
+  });
+  assert.deepEqual(buildEngineAwareLaunchCommand('codex', null), {
+    command: 'codex',
+    modelIgnored: false,
+  });
 });

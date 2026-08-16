@@ -84,6 +84,18 @@
   // そもそも無い＝本来連結すべきでない）。テーブルらしさの判定は文字列だけで完結する
   // scanTableBorders（urlLinkify.js の純粋関数）をそのまま再利用し、判定基準
   // （縦線2つ以上）も isTruncatedAtTableCellBorder と揃える。
+  //
+  // 【既知の挙動・修正不要（安藤レビュー・LOW）】scanTableBorders は縦線（│┃║）だけを
+  // 数えるため、"├──────┼───────────┤" のような横罫線・接続文字だけの区切り行は
+  // count が 0 になり、この関数の除外対象に入らない（＝強制連結の起点になり得る）。
+  // 罫線文字は urlLinkify.js の URL_CANDIDATE_REGEX の文字集合に含まれないため、この
+  // 区切り行を挟んで URL 候補が連結される・誤ってリンク化されることは無い（起きるのは
+  // 「連結ウィンドウが本来より少し広がる」だけで、isTruncatedAtTableCellBorder は連結後の
+  // 文字列に対しても安全に働くよう設計されている。urlLinkify.js の isTruncatedAtTableCellBorder
+  // コメント参照）。「罫線テーブルの行を案D の対象にする理由がそもそも無い」という上記の
+  // 意図とは厳密には食い違うが、実害が無く、横罫線・接続文字まで判定に含めると
+  // scanTableBorders の判定基準（#365 の isTruncatedAtTableCellBorder と共有）がこの関数
+  // 専用に分岐してしまうため、あえて直さずここに記録するだけに留める（司・安藤合意）。
   function isForcedMergeSource(line, text) {
     if (!isRowFullWidth(line)) return false;
     return scanTableBorders(text).count < 2;
@@ -110,6 +122,12 @@
 
     const rows = [{ index: lineIndex0, text: line.translateToString(false) }];
 
+    // 連結後の文字数は上下方向で通算する（安藤レビュー・LOW）。上下を別々に数えると
+    // 実質 2 × MAX_WINDOW_CHARS まで伸びてしまう。#365 まではこの上限に事実上到達し
+    // づらかった（isWrapped の連鎖でしか発動しない＝実際のソフトラップの範囲に自然と
+    // 収まる）が、案D 以降は「全幅行が並んでいるだけ」でも発動するため、通算にしておく。
+    let total = rows[0].text.length;
+
     // 上方向へ拡張: 「前の行からこの行への連結」が成り立つ間、前の行を辿る。
     // 連結が成り立つ条件（issue #368・案D で拡張。isForcedMergeSource のコメント参照）:
     //   - このバッファ行自体が xterm の判定で「前の行からの折り返し」（isWrapped）である
@@ -120,18 +138,36 @@
     // 起点となるバッファ行自身の isWrapped だけで一度きり判定していた #365 までと異なり、
     // 案D では連結が続く限り毎回判定し直す（「継続行そのものを起点にしても前方の行まで
     // 遡って連結する」という既存要件・#349 植草レビューを、強制連結の場合にも保つため）。
+    //
+    // rows の各要素には、xterm の isWrapped ではなく isForcedMergeSource（案D）で連結した
+    // 行にだけ forcedMerge: true を付ける。computeLinksForLine 側がこれをそのまま
+    // hardWrapBoundaries の算出に使うため、buffer.getLine() を引き直す必要が無い
+    // （安藤レビュー・LOW。以前は「rows の形を変えると deepEqual を使う既存テストが
+    // 壊れる」という理由で引き直していたが、テストが実装の API 形状を縛るのは本末転倒
+    // という指摘を受けて見直した。既存テストは rows.map(r => r.index) 等の形へ更新済み）。
+    //
+    // forcedMerge を付ける行に注意（重要）: 「row.forcedMerge === true は、rows 配列上で
+    // この行の直前にある境界が強制連結（案D）であることを表す」という規約に統一する
+    // （下方向の push と揃える）。上方向は「新しく見つけた prevLine」を配列の先頭に
+    // unshift するため、境界があるのは prevLine の直後＝現在の rows[0] の直前。
+    // つまり forcedMerge は「これから unshift する新しい行」ではなく「今まさに rows[0]
+    // である行」に付ける（unshift の前に判定する）。ここを取り違えると、この行から
+    // 開始したクエリ（xterm が下側の行をホバーしたとき等）では forcedMerge が
+    // computeLinksForLine から見えず、hardWrapBoundaries に載らないまま
+    // isHostConfirmedBeforeBoundary の検証が素通りしてしまう（ホストすり替わり対策が
+    // 無効化される。実 xterm での end-to-end 確認で検出・修正）。
     {
       let idx = lineIndex0;
-      let total = rows[0].text.length;
       for (;;) {
         if (total >= MAX_WINDOW_CHARS) break;
         const prevLine = buffer.getLine(idx - 1);
         if (!prevLine) break;
         const currentLine = buffer.getLine(idx); // これまでに含めた最も手前の行
         const prevText = prevLine.translateToString(false);
-        const canMerge = (currentLine && currentLine.isWrapped)
-          || isForcedMergeSource(prevLine, prevText);
+        const genuineWrap = !!(currentLine && currentLine.isWrapped);
+        const canMerge = genuineWrap || isForcedMergeSource(prevLine, prevText);
         if (!canMerge) break;
+        if (!genuineWrap) rows[0].forcedMerge = true;
         rows.unshift({ index: idx - 1, text: prevText });
         total += prevText.length;
         idx -= 1;
@@ -146,7 +182,6 @@
     // 条件は上方向と対称（次の行の isWrapped、または現在の行の isForcedMergeSource）。
     {
       let idx = lineIndex0;
-      let total = rows[rows.length - 1].text.length;
       for (;;) {
         if (total >= MAX_WINDOW_CHARS) break;
         const nextLine = buffer.getLine(idx + 1);
@@ -156,7 +191,9 @@
         const canMerge = nextLine.isWrapped || isForcedMergeSource(currentLine, currentText);
         if (!canMerge) break;
         const nextText = nextLine.translateToString(false);
-        rows.push({ index: idx + 1, text: nextText });
+        const newRow = { index: idx + 1, text: nextText };
+        if (!nextLine.isWrapped) newRow.forcedMerge = true;
+        rows.push(newRow);
         total += nextText.length;
         idx += 1;
         if (/\s/.test(nextText)) break;
@@ -225,22 +262,14 @@
 
     let merged = '';
     const rowOffsets = [];
+    // hardWrapBoundaries: rows 内で「案D の強制連結（isForcedMergeSource）によって
+    // 連結された境界」の merged 内オフセットを集める。getWrappedLineWindow が付ける
+    // row.forcedMerge をそのまま使う。
     const hardWrapBoundaries = [];
-    // hardWrapBoundaries: rows 内で「xterm の isWrapped ではなく、案D の強制連結
-    // （isForcedMergeSource）によって連結された境界」の merged 内オフセットを集める。
-    // getWrappedLineWindow はどの隣接行が isWrapped 由来で連結されたかを個別に返さない
-    // ため（既存の戻り値の形 [{ index, text }, ...] を変えずに済ませるため。既存テストの
-    // deepEqual がこの形に依存している）、ここで rows[i].index の行を実際に
-    // buffer.getLine() し直して isWrapped を確認するだけで判定できる: getWrappedLineWindow
-    // に含まれているのに isWrapped が false ということは、isWrapped 由来ではなく
-    // 強制連結（案D）で連結されたことを意味する。
     for (const row of rows) {
       const startOffset = merged.length;
-      if (startOffset > 0) {
-        const rowLine = buffer.getLine(row.index);
-        if (!rowLine || !rowLine.isWrapped) {
-          hardWrapBoundaries.push(startOffset);
-        }
+      if (startOffset > 0 && row.forcedMerge) {
+        hardWrapBoundaries.push(startOffset);
       }
       rowOffsets.push({ rowIndex: row.index, startOffset });
       merged += row.text;

@@ -56,16 +56,10 @@ function makeLine(cells, isWrapped) {
 }
 
 // cells を cols 列ぶんまで「未書き込みセル」（chars: '', width: 1）で右パディングする。
-//
-// なぜ必要か（issue #368 調査）: 既存の asciiCells() は「実際に書き込んだ文字数ぶん」の
-// セルしか作らないため、行の長さ＝内容の長さになる。しかし実物の xterm.js
-// （@xterm/xterm, node_modules 配下で実測）は各バッファ行が常に buffer.cols 分のセルを
-// 持ち、内容が列幅に満たない行は translateToString(false) で残りを半角スペースとして
-// 返す（中身の無いセルは getChars() === '' で、既存の translateCellsToString ヘルパーが
-// それを ' ' として出力する規則に一致）。
-// 一方、行が「ちょうど列幅いっぱいまで書き込まれて次行へ折り返された」行（このテストの
-// row0 に相当）は、実物の xterm でもパディングは付かない（未書き込みセルが無いため）。
-// パディングが乗るのは、その折り返し系列の最後の行（それ以上先が無い行）だけ。
+// 実物の xterm.js（@xterm/xterm, node_modules 配下で実測）は各バッファ行が常に
+// buffer.cols 分のセルを持ち、内容が列幅に満たない行は translateToString(false) で
+// 残りを半角スペースとして返すため（中身の無いセルは getChars() === '' で、既存の
+// translateCellsToString ヘルパーがそれを ' ' として出力する規則に一致）。
 function padCells(cells, cols) {
   const padded = cells.slice();
   while (padded.length < cols) padded.push({ chars: '', width: 1 });
@@ -73,9 +67,16 @@ function padCells(cells, cols) {
 }
 
 // rowsSpec: [{ cells, isWrapped }, ...]（0-based のバッファ行の並びそのもの）から
-// Terminal 相当のフェイクを作る。
-function makeFakeTerminal(rowsSpec) {
-  const lines = rowsSpec.map((spec) => makeLine(spec.cells, spec.isWrapped));
+// Terminal 相当のフェイクを作る。cols は必須（このバッファ全体のペイン幅。実物の
+// xterm.js はどの行も常に同じ cols 分のセルを持つため、フェイク側でも共通の値を
+// 全行に適用する）。各行の cells は padCells(..., cols) で右パディングされるため、
+// 呼び出し側は「実際に書き込まれた分だけ」の cells を渡せばよい。ペイン幅いっぱいまで
+// 埋まっている行（isForcedMergeSource の対象にしたい行）を表現したい場合は、その行の
+// cells の長さがちょうど cols と一致するように内容を選ぶ（issue #368・案D 安藤レビュー・
+// MEDIUM。以前は呼び出し側ごとに padCells を個別に呼ぶ／呼ばないが混在しており、
+// 「行長＝内容長」という実機では起こり得ない状態のテストが紛れ込んでいた）。
+function makeFakeTerminal(rowsSpec, cols) {
+  const lines = rowsSpec.map((spec) => makeLine(padCells(spec.cells, cols), spec.isWrapped));
   return {
     buffer: {
       active: {
@@ -88,47 +89,53 @@ function makeFakeTerminal(rowsSpec) {
 }
 
 test('getWrappedLineWindow: 折り返し無しの 1 行だけを返す', () => {
+  const text = 'hello';
   const terminal = makeFakeTerminal([
-    { cells: asciiCells('hello'), isWrapped: false },
-  ]);
+    { cells: asciiCells(text), isWrapped: false },
+  ], text.length); // cols = 内容の長さ（パディング無しと同じ意味）
   const rows = getWrappedLineWindow(terminal.buffer.active, 0);
-  assert.deepEqual(rows, [{ index: 0, text: 'hello' }]);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].index, 0);
+  assert.equal(rows[0].text, text);
+  assert.equal(rows[0].forcedMerge, undefined); // 連結していないので付かない
 });
 
 test('getWrappedLineWindow: 次行が折り返し継続行なら前方へ連結する', () => {
+  // 実 xterm では、isWrapped: true が成り立つのは「前の行がペイン幅いっぱいまで書き込
+  // まれてカーソルが折り返した」場合のみ。そのため row0 も cols ちょうどで埋める
+  // （row0 だけ未パディングだと、isWrapped: true な row1 が存在するという組み合わせ自体が
+  // 実機では起こり得ない状態になってしまう。issue #368・案D 安藤レビュー・MEDIUM）。
+  const row0Text = 'https://example.co'; // 19 文字
+  const cols = row0Text.length;
   const terminal = makeFakeTerminal([
-    { cells: asciiCells('https://example.co'), isWrapped: false },
-    // 実 xterm では、折り返し系列の最後の行はペイン幅いっぱいまで埋まっているとは
-    // 限らない（URL がそこで終わっていれば、残りの列は未書き込みセルのまま）。
-    // ここを未パディングのままにすると「行末に未書き込みセルが無い」＝
-    // isForcedMergeSource（issue #368・案D）を意図せず満たしてしまい、この行が
-    // ペイン幅いっぱいだと誤認されて次の無関係な行（' 続きの行'）まで連結されてしまう
-    // ため、pane 幅（20列）ぶんパディングして「まだ列が余っている」ことを明示する。
-    { cells: padCells(asciiCells('m/path'), 20), isWrapped: true },
+    { cells: asciiCells(row0Text), isWrapped: false },
+    { cells: asciiCells('m/path'), isWrapped: true }, // 折り返し系列の最後の行なので未パディングのままでよい
     { cells: asciiCells(' 続きの行'), isWrapped: false },
-  ]);
+  ], cols);
   const rows = getWrappedLineWindow(terminal.buffer.active, 0);
   assert.deepEqual(rows.map((r) => r.index), [0, 1]);
   assert.equal(rows.map((r) => r.text).join('').trimEnd(), 'https://example.com/path');
 });
 
 test('getWrappedLineWindow: 継続行そのものを起点にしても前方の行まで遡って連結する', () => {
+  const row0Text = 'https://example.co';
   const terminal = makeFakeTerminal([
-    { cells: asciiCells('https://example.co'), isWrapped: false },
+    { cells: asciiCells(row0Text), isWrapped: false },
     { cells: asciiCells('m/path'), isWrapped: true },
-  ]);
+  ], row0Text.length);
   // 折り返し 2 行目（isWrapped: true）を起点に呼んでも、1 行目まで遡って連結できること。
   // 「後半だけホバー/クリックしても反応しない」を防ぐための要件（issue #349 植草レビュー）。
   const rows = getWrappedLineWindow(terminal.buffer.active, 1);
   assert.deepEqual(rows.map((r) => r.index), [0, 1]);
-  assert.equal(rows.map((r) => r.text).join(''), 'https://example.com/path');
+  assert.equal(rows.map((r) => r.text).join('').trimEnd(), 'https://example.com/path');
 });
 
 test('getWrappedLineWindow: 空白を含む行に達したらそこで打ち切る', () => {
+  const row0Text = 'foo bar'; // 7 文字
   const terminal = makeFakeTerminal([
-    { cells: asciiCells('foo bar'), isWrapped: false },
+    { cells: asciiCells(row0Text), isWrapped: false },
     { cells: asciiCells('baz'), isWrapped: true },
-  ]);
+  ], row0Text.length);
   const rows = getWrappedLineWindow(terminal.buffer.active, 1);
   // 1 行目に空白があるため、そこを含めて打ち切り（2 行とも含むが、それ以上遡らない）。
   assert.deepEqual(rows.map((r) => r.index), [0, 1]);
@@ -148,10 +155,11 @@ test('stringIndexToColumn: ワイド文字（全角）を挟んでも列位置�
 });
 
 test('createTerminalLinkProvider: 折り返しをまたいだ URL を 1 本のリンクとして返す', () => {
+  const row0Text = '見てください https://example.co';
   const terminal = makeFakeTerminal([
-    { cells: asciiCells('見てください https://example.co'), isWrapped: false },
+    { cells: asciiCells(row0Text), isWrapped: false },
     { cells: asciiCells('m/path です'), isWrapped: true },
-  ]);
+  ], row0Text.length);
 
   const activateCalls = [];
   const provider = createTerminalLinkProvider(terminal, {
@@ -172,9 +180,10 @@ test('createTerminalLinkProvider: 折り返しをまたいだ URL を 1 本の�
 });
 
 test('createTerminalLinkProvider: URL が無い行は undefined を返す（xterm への「リンク無し」通知）', () => {
+  const text = 'ただのログです';
   const terminal = makeFakeTerminal([
-    { cells: asciiCells('ただのログです'), isWrapped: false },
-  ]);
+    { cells: asciiCells(text), isWrapped: false },
+  ], text.length);
   const provider = createTerminalLinkProvider(terminal, { activate: () => {} });
   let received = 'not-called';
   provider.provideLinks(1, (links) => { received = links; });
@@ -182,9 +191,10 @@ test('createTerminalLinkProvider: URL が無い行は undefined を返す（xter
 });
 
 test('createTerminalLinkProvider: hover/leave ハンドラに URL を渡す', () => {
+  const text = 'https://example.com/path';
   const terminal = makeFakeTerminal([
-    { cells: asciiCells('https://example.com/path'), isWrapped: false },
-  ]);
+    { cells: asciiCells(text), isWrapped: false },
+  ], text.length);
   const hoverCalls = [];
   const leaveCalls = [];
   const provider = createTerminalLinkProvider(terminal, {
@@ -219,14 +229,22 @@ test('createTerminalLinkProvider: 罫線テーブルのセル境界で切り詰�
   // セルとして組み立てる。実際の xterm では日本語は幅2のセル（wideCell()）になるが、
   // このテストで検証するのは「どのバッファ範囲がリンクになるか」ではなく「リンクが
   // 1件も無いこと」だけなので、幅の正確さは検証対象外（安藤レビュー指摘・LOW）。
-  const terminal = makeFakeTerminal([
-    { cells: asciiCells('┌─────────────┬─────────────────────────────────────────────┬──────────────────────────────┐'), isWrapped: false },
-    { cells: asciiCells('│ リポジトリ  │                     PR                      │           ブランチ           │'), isWrapped: false },
-    { cells: asciiCells('├─────────────┼─────────────────────────────────────────────┼──────────────────────────────┤'), isWrapped: false },
-    { cells: asciiCells('│ vk-agents   │ #399 (https://github.com/vektor-inc/vk-agen │ feature/coderabbit-code-revi │'), isWrapped: false },
-    { cells: asciiCells('│             │ ts/pull/399)                                │ ew-opt-in                    │'), isWrapped: false },
-    { cells: asciiCells('└─────────────┴─────────────────────────────────────────────┴──────────────────────────────┘'), isWrapped: false },
-  ]);
+  const rowTexts = [
+    '┌─────────────┬─────────────────────────────────────────────┬──────────────────────────────┐',
+    '│ リポジトリ  │                     PR                      │           ブランチ           │',
+    '├─────────────┼─────────────────────────────────────────────┼──────────────────────────────┤',
+    '│ vk-agents   │ #399 (https://github.com/vektor-inc/vk-agen │ feature/coderabbit-code-revi │',
+    '│             │ ts/pull/399)                                │ ew-opt-in                    │',
+    '└─────────────┴─────────────────────────────────────────────┴──────────────────────────────┘',
+  ];
+  // 罫線テーブルは通常どの行も同じ列幅で描画されるため、cols は各行の最大長に揃える
+  // （issue #368・案D 安藤レビュー・MEDIUM。行ごとに実際の長さがバラついていても、
+  // 一番長い行に他の行を合わせるのが実機に近い）。
+  const cols = Math.max(...rowTexts.map((t) => t.length));
+  const terminal = makeFakeTerminal(
+    rowTexts.map((t) => ({ cells: asciiCells(t), isWrapped: false })),
+    cols,
+  );
 
   const provider = createTerminalLinkProvider(terminal, { activate: () => {} });
   let received = 'not-called';
@@ -237,9 +255,10 @@ test('createTerminalLinkProvider: 罫線テーブルのセル境界で切り詰�
 });
 
 test('createTerminalLinkProvider: 罫線テーブルでも URL の後ろにセル内の文字が続く場合はリンク化を維持する（issue #361 リグレッション）', () => {
+  const text = '│ PR │ #399 (https://github.com/vektor-inc/vk-agents/pull/399) マージ済み │';
   const terminal = makeFakeTerminal([
-    { cells: asciiCells('│ PR │ #399 (https://github.com/vektor-inc/vk-agents/pull/399) マージ済み │'), isWrapped: false },
-  ]);
+    { cells: asciiCells(text), isWrapped: false },
+  ], text.length);
   const provider = createTerminalLinkProvider(terminal, { activate: () => {} });
   let received;
   provider.provideLinks(1, (links) => { received = links; });
@@ -251,9 +270,10 @@ test('createTerminalLinkProvider: 罫線テーブルでも URL の後ろにセ�
 // 実際のバッファでも、セルの末尾にぴったり収まった（切り詰められていない）URL は
 // 一律でリンク化されないことを確認する。
 test('createTerminalLinkProvider: 罫線テーブルでもセルの末尾にぴったり収まった URL はリンク化しない（issue #361・意図した仕様）', () => {
+  const text = '│ https://example.com/a │ ok │';
   const terminal = makeFakeTerminal([
-    { cells: asciiCells('│ https://example.com/a │ ok │'), isWrapped: false },
-  ]);
+    { cells: asciiCells(text), isWrapped: false },
+  ], text.length);
   const provider = createTerminalLinkProvider(terminal, { activate: () => {} });
   let received = 'not-called';
   provider.provideLinks(1, (links) => { received = links; });
@@ -297,8 +317,8 @@ test('getWrappedLineWindow: ソフトラップ（isWrapped: true）でペイン�
 
   const terminal = makeFakeTerminal([
     { cells: asciiCells(row0Text), isWrapped: false },
-    { cells: padCells(asciiCells(row1RealText), cols), isWrapped: true },
-  ]);
+    { cells: asciiCells(row1RealText), isWrapped: true },
+  ], cols);
 
   const provider = createTerminalLinkProvider(terminal, { activate: () => {} });
   let received;
@@ -332,8 +352,8 @@ test('createTerminalLinkProvider: 実改行でペイン幅いっぱいの行が�
   const terminal = makeFakeTerminal([
     { cells: asciiCells(row0Text), isWrapped: false },
     // 実改行を想定: 子プロセスが自前で改行したケースなので isWrapped は false のまま。
-    { cells: padCells(asciiCells(row1Text), cols), isWrapped: false },
-  ]);
+    { cells: asciiCells(row1Text), isWrapped: false },
+  ], cols);
 
   const provider = createTerminalLinkProvider(terminal, { activate: () => {} });
   let received;
@@ -354,8 +374,8 @@ test('createTerminalLinkProvider: 実改行でペイン幅いっぱいの行が�
 
   const terminal = makeFakeTerminal([
     { cells: asciiCells(row0Text), isWrapped: false },
-    { cells: padCells(asciiCells(row1Text), cols), isWrapped: false },
-  ]);
+    { cells: asciiCells(row1Text), isWrapped: false },
+  ], cols);
 
   const provider = createTerminalLinkProvider(terminal, { activate: () => {} });
   let received = 'not-called';
@@ -369,8 +389,8 @@ test('createTerminalLinkProvider: ホストすり替わり（1行目 https://exa
   const terminal = makeFakeTerminal([
     { cells: asciiCells('https://example.com'), isWrapped: false },
     // 実改行想定。この行だけを見れば "evil.example/foo" というありふれたパス風の文字列。
-    { cells: padCells(asciiCells('evil.example/foo'), cols), isWrapped: false },
-  ]);
+    { cells: asciiCells('evil.example/foo'), isWrapped: false },
+  ], cols);
 
   const provider = createTerminalLinkProvider(terminal, { activate: () => {} });
   let received = 'not-called';
@@ -380,4 +400,64 @@ test('createTerminalLinkProvider: ホストすり替わり（1行目 https://exa
   // isAcceptableUrlHost / hasUserInfo だけではこのすり替わりを検出できないため、
   // 案D のホスト確定チェックで一切リンク化しないことを確認する。
   assert.equal(received, undefined);
+});
+
+// クエリの起点行が異なっても同じ結果になることを確認する回帰テスト。
+//
+// なぜ必要か: getWrappedLineWindow は上方向（前の行を遡る）・下方向（次の行へ進む）の
+// 両方から連結ウィンドウを組み立てられるが、強制連結の境界情報（forcedMerge）は
+// 「新しく見つけた行」ではなく「境界の直後に来る行」に付ける必要がある。実装時に
+// これを取り違えたところ、1行目（provideLinks(1)）をクエリしたときは正しく非リンク化
+// される一方、2行目（provideLinks(2)。xterm がユーザーの実際のホバー位置に応じて
+// 呼ぶ行）をクエリしたときは hardWrapBoundaries が空のまま extractUrlMatches に渡り、
+// ホスト確定チェックが素通りしてリンク化されてしまうバグを、実 @xterm/xterm を使った
+// end-to-end 確認で発見した。1行目のテストだけでは検出できなかったため、2行目からの
+// クエリも固定する。
+test('createTerminalLinkProvider: ホストすり替わりは2行目からクエリしても連結してリンク化しない（issue #368・案D リグレッション）', () => {
+  const cols = 'https://example.com'.length;
+  const terminal = makeFakeTerminal([
+    { cells: asciiCells('https://example.com'), isWrapped: false },
+    { cells: asciiCells('evil.example/foo'), isWrapped: false },
+  ], cols);
+
+  const provider = createTerminalLinkProvider(terminal, { activate: () => {} });
+  let received = 'not-called';
+  // 1-based: 2 行目（0-based index 1）から問い合わせる。
+  provider.provideLinks(2, (links) => { received = links; });
+  assert.equal(received, undefined);
+});
+
+// 意図して受け入れた副作用（司判断・issue #368 decision record。
+// https://github.com/vektor-inc/vk-terminals/issues/368#issuecomment-5305135743）。
+//
+// URL がペイン最終列ちょうどで正しく終わり、次行が URL 構成文字（英数字や '-' 等）で
+// 始まる場合、案D の条件2（ホスト確定チェック）はホストが既に確定していると判断する
+// ため、無関係な次行の内容まで連結してリンク化してしまう。行内の情報だけでは
+// 「URL がちょうど終わった直後に無関係な行が続く」場合と「実は続きの URL だった」場合を
+// 区別できず、これは原理的に避けられない。発生には「URL が最終列ちょうどで終わる」必要が
+// あり、issue #368 本体の不具合（1行目の断片だけがリンク化される）より発生頻度は低いと
+// 判断し、#365 で「セルの末尾にぴったり収まった URL は一律リンク化しない」副作用を
+// 受け入れたのと同じ扱いで受け入れる（CHANGELOG.md にも明記）。
+//
+// このテストは「これはバグでは」と後から別方向に直されることを防ぐため、この挙動を
+// 意図した仕様として固定する回帰テスト。
+test('createTerminalLinkProvider: URL がペイン最終列ちょうどで終わり次行がURL構成文字で始まる場合は連結してしまう（issue #368・案D・意図して受け入れた副作用）', () => {
+  const cols = 30;
+  const row0Text = 'see https://example.com/abcdef'; // ちょうど 30 文字（cols と一致）
+  assert.equal(row0Text.length, cols); // フィクスチャの前提条件（ズレたら気付けるように明示）
+  const row1Text = 'done-2026-08-16'; // URL とは無関係の、たまたま URL 構成文字だけの次行
+
+  const terminal = makeFakeTerminal([
+    { cells: asciiCells(row0Text), isWrapped: false },
+    // 実改行想定（isWrapped: false のまま）。
+    { cells: asciiCells(row1Text), isWrapped: false },
+  ], cols);
+
+  const provider = createTerminalLinkProvider(terminal, { activate: () => {} });
+  let received;
+  provider.provideLinks(1, (links) => { received = links; });
+  assert.equal(received && received.length, 1);
+  // 意図した副作用: 次行の内容まで連結されてしまう（404 等のリスクは #368 本体より
+  // 低頻度だが残る。ユーザーには CHANGELOG で周知する）。
+  assert.equal(received[0].text, 'https://example.com/abcdefdone-2026-08-16');
 });

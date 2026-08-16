@@ -61,6 +61,19 @@ function makeLine(cells, isWrapped) {
 // 残りを半角スペースとして返すため（中身の無いセルは getChars() === '' で、既存の
 // translateCellsToString ヘルパーがそれを ' ' として出力する規則に一致）。
 function padCells(cells, cols) {
+  // 実機ではどの行も常に cols 分のセルしか持てない（cols を超える行は原理的に存在
+  // しない）。cells が cols を超えて渡された場合は「実機では起こり得ない行長」の
+  // フィクスチャの書き間違いなので、黙って通さずその場で気付けるように例外にする
+  // （司レビュー・LOW。罫線テーブル除外テストで cols=11 に対し row0Text が19文字ある
+  // フィクスチャが実際に紛れ込んでいた。テスト自体は成立していたためアサーション失敗
+  // では検出できず、実行時にここで初めて気付けるようにした）。
+  if (cells.length > cols) {
+    throw new Error(
+      `padCells: cells.length (${cells.length}) が cols (${cols}) を超えています。`
+        + ' 実機ではどの行も cols 分のセルしか持てないため、フィクスチャの行の内容を'
+        + ' cols 以内に収めてください。',
+    );
+  }
   const padded = cells.slice();
   while (padded.length < cols) padded.push({ chars: '', width: 1 });
   return padded;
@@ -367,8 +380,12 @@ test('createTerminalLinkProvider: 実改行でペイン幅いっぱいの行が�
   const url = 'https://example.com/foo/bar123';
   const combined = prefix + url;
 
-  // "example" の途中（ホスト名を書き終える前）で行が割れる位置を選ぶ。
-  const cols = combined.indexOf('example') + 3;
+  // "example" の途中（ホスト名を書き終える前）で行が割れる位置を選ぶ。あわせて、2行目
+  // （残り）が cols を超えない位置（＝ combined の半分以上）を選ぶ。実機ではどの行も
+  // cols を超えるセル数を持てない（cols を超える内容は必ず次の行へさらに折り返される）
+  // ため（司レビュー・LOW。padCells が cols 超過を検出するようになり、この制約を
+  // 満たさないフィクスチャは書けなくなった）。
+  const cols = Math.max(combined.indexOf('example') + 3, Math.ceil(combined.length / 2));
   const row0Text = combined.slice(0, cols);
   const row1Text = combined.slice(cols);
 
@@ -527,8 +544,13 @@ test('getWrappedLineWindow: 罫線テーブルのデータ行を起点にして�
   // 変更を入れると、このテストは window=[0, 1, 2] になって落ちる。
   const row1Text = '│path│done│'; // 縦線2つ以上・空白無し・ペイン幅ちょうどのテーブル行
   const cols = row1Text.length;
-  const row0Text = '│https://example.co'; // makeFakeTerminal が cols まで自動パディングする
-  const row2Text = '│nextrow│'; // 独立した別のテーブル行（makeFakeTerminal が自動パディング）
+  // row0 / row2 の内容自体はこのテストの検証対象ではない（row0→row1 は isWrapped: true
+  // による既存の連結経路、row1→row2 が連結されないことだけを見ている）ため、cols を
+  // 超えないよう slice しておく。実機ではどの行も同じ cols 分のセルしか持てないため、
+  // cols より長い行というフィクスチャ自体が実機では起こり得ない状態になる
+  // （安藤レビュー・LOW。makeFakeTerminal(rowsSpec, cols) 導入時に埋めきれなかった穴）。
+  const row0Text = '│https://example.co'.slice(0, cols); // makeFakeTerminal が cols まで自動パディングする
+  const row2Text = '│nextrow│'.slice(0, cols); // 独立した別のテーブル行（makeFakeTerminal が自動パディング）
 
   const terminal = makeFakeTerminal([
     { cells: asciiCells(row0Text), isWrapped: false },

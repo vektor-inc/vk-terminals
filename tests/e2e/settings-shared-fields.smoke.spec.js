@@ -687,6 +687,8 @@ test.describe.serial('設定パネル: 基本フィールド系（issue #348 で
       await expect(win.locator('#set-field-4-options option')).toHaveCount(2);
       await expect(win.locator('#set-field-4-options option').nth(0)).toHaveAttribute('value', 'gpt-5.6-sol');
 
+      // <datalist> の候補一覧は Chromium がネイティブ描画するため、自動テストでは
+      // 候補を開く操作・移動・確定を安定して検証できない。ここでは自由入力側のみ検証する。
       // datalist に無い値でも通常の text input と同じくキーボード入力できる。
       await model.fill('custom-model-1');
       await expect(model).toHaveValue('custom-model-1');

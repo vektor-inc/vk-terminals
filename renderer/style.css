@@ -808,6 +808,11 @@ h4.settings-content-heading {
 /* 条件付き無効状態
    ========================================================================== */
 .settings-disabled-reason {
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: 5px;
+  border-left: 3px solid #8b949e;
+  background: #161b22;
   color: #c9d1d9;
   font-size: 12px;
 }

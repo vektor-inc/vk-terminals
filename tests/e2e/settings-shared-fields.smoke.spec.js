@@ -698,10 +698,32 @@ test.describe.serial('設定パネル: 基本フィールド系（issue #348 で
       await expect(preset).toHaveValue('balanced');
       await preset.focus();
 
-      // select では左右・先頭末尾移動キーも選択変更になるため、上下キーと同様に遮断する。
+      // 利用者から見える最終結果を確認するテスト。keydown の遮断に加え、万一
+      // input/change が発火しても restoreDisabledValue が退避値へ戻す多層防御を含む。
+      // そのため、keydown 側の許可リスト単体の回帰はこのテストでは検知しない。
       for (const key of ['ArrowLeft', 'ArrowRight', 'Home', 'End', 'ArrowDown']) {
         await preset.press(key);
         await expect(preset).toHaveValue('balanced');
+      }
+    });
+
+    test('9: disabledWhen の select は選択変更キーの keydown 自体を遮断する', async () => {
+      const preset = win.locator(PRESET_ID);
+      await expect(preset).toHaveAttribute('aria-disabled', 'true');
+
+      // restoreDisabledValue を経由せず、keydown の許可リストだけを検証する。
+      // select では左右・先頭末尾移動キーも選択変更になるため、上下キーと同様に遮断する。
+      for (const key of ['ArrowLeft', 'ArrowRight', 'Home', 'End', 'ArrowDown']) {
+        const defaultPrevented = await preset.evaluate((input, pressedKey) => {
+          const event = new KeyboardEvent('keydown', {
+            key: pressedKey,
+            bubbles: true,
+            cancelable: true,
+          });
+          input.dispatchEvent(event);
+          return event.defaultPrevented;
+        }, key);
+        expect(defaultPrevented, `${key} の keydown が遮断されること`).toBe(true);
       }
     });
   });

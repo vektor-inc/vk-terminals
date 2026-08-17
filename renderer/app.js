@@ -5068,6 +5068,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
       const copyShortcut = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'c';
       // キャレット移動キーを許可するのは text 系 input と textarea だけ。select では
       // 同じキーが選択値を変えるため、Tab とコピー以外をすべて遮断する。
+      // number も矢印キーで値が変わるため、キャレット移動キーを含めて遮断する。
       const textInputTypes = ['text', 'search', 'tel', 'url', 'email', 'password'];
       const hasTextCaret = input.tagName === 'TEXTAREA'
         || (input.tagName === 'INPUT' && textInputTypes.includes(input.type));

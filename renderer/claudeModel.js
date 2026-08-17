@@ -153,10 +153,13 @@
         return { command: buildCommand(model), modelIgnored: false };
       }
     }
-    // ENGINE_LAUNCH_COMMANDS に無い値がここに来るのは、呼び出し側が isValidEngine を
+    // ENGINE_COMMAND_BUILDERS に無い値がここに来るのは、呼び出し側が isValidEngine を
     // 経由せず未検証の resolvedEngine を渡した場合のみ（本来は起きない想定の防御的
-    // フォールバック）。その場合は任意文字列を書き込まないよう安全側の素の claude へ
-    // 倒す。この経路で model が指定されていれば、黙って捨てず警告できるよう無視扱いにする。
+    // フォールバック）。ENGINE_LAUNCH_COMMANDS の唯一の登録値 codex は上のビルダーで
+    // 先に処理されるため、buildEngineAwareLaunchCommand から buildEngineLaunchCommand の
+    // 登録済みコマンドへ到達する経路は現在存在しない。未登録値は任意文字列を書き込まない
+    // よう安全側の素の claude へ倒す。この経路で model が指定されていれば、黙って捨てず
+    // 警告できるよう無視扱いにする。
     //
     // typeof command !== 'string' で判定する（安藤の指摘・必須1。`=== null` だけの
     // 判定は buildEngineLaunchCommand 側の実装（prototype 経由の混入対策）に依存して

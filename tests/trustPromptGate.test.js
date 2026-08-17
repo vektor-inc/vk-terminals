@@ -52,9 +52,21 @@ test('isTrustPrompt: Yes, I trust this directory に一致する', () => {
 });
 
 test('isTrustPrompt: 非文字列は一致しない', () => {
-  for (const output of [null, undefined, 123]) {
+  const trustPromptLikeObject = { toString: () => 'Do you trust this folder' };
+
+  for (const output of [null, undefined, 123, trustPromptLikeObject]) {
     assert.equal(isTrustPrompt(output), false);
   }
+});
+
+test('isTrustPrompt: Do you がない trust this folder には一致しない', () => {
+  assert.equal(isTrustPrompt('Trust this folder?\nEnter to confirm'), false);
+});
+
+test('isTrustPrompt: Do you trust と folder が40文字より離れている場合は一致しない', () => {
+  const distantFolder = 'Do you trust me?\nI will now scan a very long path before the folder';
+
+  assert.equal(isTrustPrompt(distantFolder), false);
 });
 
 test('isTrustPrompt: 一般的な確認画面の Enter to confirm だけでは一致しない', () => {

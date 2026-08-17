@@ -13,6 +13,7 @@ const { pathToFileURL } = require('url');
 const { stripAnsiForPattern } = require('./utils/stripAnsi');
 const {
   createTrustPromptGate,
+  isTrustPrompt,
   TRUST_WINDOW_MS: DEFAULT_TRUST_WINDOW_MS,
   READY_GRACE_MS: DEFAULT_READY_GRACE_MS,
   resolvePositiveFiniteMs,
@@ -1341,15 +1342,6 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
   let promptWatcher = null;
   let promptWatcherTimeoutId = null;
 
-  // 信頼確認プロンプトの検知パターン（全ターミナル共通）
-  // 「Enter to confirm」が出た時点でメニュー描画済みなので、そこで \r を送る
-  // Claude Code 旧UI: "Do you trust the files in this folder?" / "Yes, I trust this folder"
-  // Claude Code 新UI: "Quick safety check..." → "Enter to confirm · Esc to cancel"
-  // Codex（issue #367。codex-cli 0.147.0 実機確認）: "Do you trust the contents of this
-  // directory?"（Claude Code は folder、Codex は directory と表記が異なる）。矢印は既定で
-  // "1. Yes, continue" を指しているため、同じ \r 送信で承認できる。
-  const TRUST_PATTERN = /Enter to confirm|Do you trust.{0,40}(?:folder|directory)|Yes,\s*I\s*trust\s*(the\s*files\s*in\s*)?this\s*folder/i;
-
   // AI エンジンが入力受付状態になったことを検知するパターン。
   // resolvedEngine で分ける（安藤の指摘 LOW・対応8）: "OpenAI Codex" をエンジン問わず
   // 全ペインへ適用すると、Claude ペインの出力（会話文・ツール結果等）にたまたま
@@ -1466,8 +1458,9 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
 
       // 信頼確認プロンプト → Enter で承認（全ターミナル共通）。ただし自動応答の窓
       // （ペイン作成から TRUST_WINDOW_MS 以内 かつ ready 検知から READY_GRACE_MS 以内）の
-      // 内側で、まだ発火していない場合のみ（issue #371。判定は trustGate に委譲）。
-      if (TRUST_PATTERN.test(buffer) && trustGate.canAutoRespond(now)) {
+      // 内側で、信頼確認の文脈があり、まだ発火していない場合のみ。文脈判定は
+      // isTrustPrompt（issue #373）、時間・回数の判定は trustGate（issue #371）へ委譲する。
+      if (isTrustPrompt(buffer) && trustGate.canAutoRespond(now)) {
         trustGate.markTrustHandled();
         buffer = '';
         console.log(`${LOG_PREFIX} trust prompt detected, sending Enter (terminal ${id})`);

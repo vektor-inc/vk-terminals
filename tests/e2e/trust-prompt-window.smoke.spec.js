@@ -4,9 +4,10 @@ const os = require('os');
 const path = require('path');
 // 起動〜初期描画待ちは共通ヘルパーへ集約している（issue #263 / #269）。
 const { closeApp, getFreePort, launchAppAndWait } = require('./helpers/electron-app');
+const { CLAUDE_CURRENT_TRUST_PROMPT } = require('../fixtures/trustPrompts');
 
 // issue #371: 信頼確認プロンプトへの自動 Enter 送信（main.js の promptWatcher。
-// TRUST_PATTERN 一致で ptyProcess.write('\r') する処理）が、時間的な制限なく
+// 信頼確認の文脈一致で ptyProcess.write('\r') する処理）が、時間的な制限なく
 // ペイン生存中いつでも発火できてしまっていた不具合の e2e 回帰テスト。
 //
 // utils/trustPromptGate.js（tests/trustPromptGate.test.js で単体テスト済み）が、
@@ -28,11 +29,12 @@ const { closeApp, getFreePort, launchAppAndWait } = require('./helpers/electron-
 // 参照）。実時間で 30 秒（既定の TRUST_WINDOW_MS）待つテストを避けるため、ここでは
 // 短縮した値を使う。
 //
-// このファイルには3本の e2e がある。
+// このファイルには4本の e2e がある。
 //
 //   1) 起動完了検知の猶予を過ぎてから届く信頼確認プロンプトには自動応答しない
 //   2) 自動応答の時間窓を過ぎてから届く信頼確認プロンプトには自動応答しない
-//   3) 起動完了バナーと信頼確認ダイアログが別チャンクで届いても、猶予内であれば自動応答する（正常系）
+//   3) 時間窓の内側でも、信頼確認ではない一般的な確認画面には自動応答しない
+//   4) 起動完了バナーと実機採取した信頼確認ダイアログが別チャンクで届いても、猶予内であれば自動応答する（正常系）
 //
 // 【1・2 が「修正前のコードでも通る」ことにならないよう、出力の組み立てに注意】
 // 単に「trust → ready → trust」の順で出すと、1回目の trust で修正前（1ペイン1回だけの
@@ -46,11 +48,11 @@ const { closeApp, getFreePort, launchAppAndWait } = require('./helpers/electron-
 // main.js だけを一時的に差し替えて実行し、1・2 が FAIL する（修正後のコードに戻すと
 // PASS する）ことを確認済み。
 //
-// 【3（正常系）が無いと、ゲートを常に false にした実装でも 1・2 は通ってしまう点に注意】
-// 1・2 はどちらも「自動応答が送られないこと」しか見ていないため、canAutoRespond が
-// 常に false を返す実装に壊れていても両方 PASS してしまう。3 はここを埋めるために
+// 【4（正常系）が無いと、ゲートを常に false にした実装でも 1〜3 は通ってしまう点に注意】
+// 1〜3 はどれも「自動応答が送られないこと」しか見ていないため、canAutoRespond が
+// 常に false を返す実装に壊れていてもすべて PASS してしまう。4 はここを埋めるために
 // 「送られるべき場面で実際に送られること」を固定する。実際に canAutoRespond を
-// 一時的に `return false;` へ差し替えて実行し、3 だけが FAIL する（1・2 は
+// 一時的に `return false;` へ差し替えて実行し、4 だけが FAIL する（1〜3 は
 // 「送られないこと」の確認なので、この壊し方では引き続き PASS する）ことを確認済み。
 
 // フェイク claude 実行ファイルを一時ディレクトリに作る。source には生成する
@@ -147,7 +149,7 @@ process.stdout.write('Welcome to Claude Code!\\r\\n');
 //    現れないため、修正前の実装（ready・時間を見ない単純な回数ガード）なら応答して
 //    しまうはずの状況になっている。
 setTimeout(() => {
-  process.stdout.write('Enter to confirm to continue\\r\\n');
+  process.stdout.write('Do you trust the files in this folder?  Enter to confirm\\r\\n');
   process.stdout.write('POST_GRACE_TRUST_MARKER\\r\\n');
 }, ${readyGraceMs * 5});
 `);
@@ -204,7 +206,7 @@ test('自動応答の時間窓を過ぎてから届く信頼確認プロンプ�
 // 現れないため、修正前の実装（経過時間を一切見ない単純な回数ガード）なら応答して
 // しまうはずの状況になっている（ready は一切出さない＝猶予の影響を受けない）。
 setTimeout(() => {
-  process.stdout.write('Enter to confirm to continue\\r\\n');
+  process.stdout.write('Do you trust the files in this folder?  Enter to confirm\\r\\n');
   process.stdout.write('POST_WINDOW_TRUST_MARKER\\r\\n');
 }, ${trustWindowMs * 4});
 `);
@@ -243,12 +245,54 @@ setTimeout(() => {
   }
 });
 
+// ─── issue #373: 時間窓の内側でも、信頼確認の文脈が無ければ応答しない ─────────
+// issue #371 の時間ゲートだけでは、起動直後に出た一般的な選択メニューの
+// "Enter to confirm" にも自動 Enter が送られる。信頼確認とは無関係なモデル選択相当の
+// 画面を即座に出し、時間条件を満たしていても入力されないことを main.js の配線込みで固定する。
+test('時間窓の内側でも、信頼確認ではない Enter to confirm だけの画面には自動応答しない（issue #373）', async () => {
+  const port = await getFreePort();
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-non-trust-confirm-'));
+  const fakeClaude = createFakeClaude(fixtureRoot, `${STDIN_ECHO_PREAMBLE}
+process.stdout.write('Choose a model\\r\\n');
+process.stdout.write('1. Default\\r\\n');
+process.stdout.write('2. Advanced\\r\\n');
+process.stdout.write('Enter to confirm\\r\\n');
+process.stdout.write('NON_TRUST_CONFIRM_MARKER\\r\\n');
+`);
+  let launched = null;
+
+  try {
+    launched = await launchAppAndWait({
+      port,
+      prefix: 'vk-terminals-e2e-non-trust-confirm-',
+      env: {
+        PATH: `${fakeClaude.binDir}${path.delimiter}${process.env.PATH || ''}`,
+      },
+    });
+    const { win } = launched;
+
+    const created = await postNewPane(port, { noClaude: false });
+    expect(created.status).toBe(200);
+    expect(created.body && created.body.ok).toBe(true);
+    const paneId = await waitForPaneIdForTermId(win, created.body.termId);
+    expect(paneId).not.toBeNull();
+
+    await waitForBufferText(win, 'NON_TRUST_CONFIRM_MARKER', paneId);
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    expect(await bufferContains(win, 'AUTO_ENTER_RECEIVED:', paneId)).toBe(false);
+  } finally {
+    if (launched) await closeApp(launched);
+    fs.rmSync(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
 // ─── 正常系: バナーとダイアログが別チャンクで届いても自動応答が維持される ──────────
-// 上の2本はどちらも「自動応答が送られないこと」しか見ていないため、ゲートが常に false を
-// 返す実装に壊れていても両方 PASS してしまう（安藤の指摘・MEDIUM・必須2）。また、
+// 上の3本はどれも「自動応答が送られないこと」しか見ていないため、ゲートが常に false を
+// 返す実装に壊れていてもすべて PASS してしまう（安藤の指摘・MEDIUM・必須2）。また、
 // main.js の配線側（ready のチャンクを受けた時点で stopWatchingIfDone が promptWatcher を
 // 落としてしまわないこと。HIGH-1 の本体）は、この e2e が無いと検証されない。
-// ここでは READY_GRACE_MS を既定値（3000ms）のまま、起動完了バナーと信頼確認ダイアログを
+// ここでは READY_GRACE_MS を既定値（3000ms）のまま、起動完了バナーと実機採取した
+// Claude Code 現行 UI の信頼確認ダイアログを
 // 別々の process.stdout.write（＝別の PTY チャンク）で、猶予の内側（200ms 後）に出す
 // ことで、実 PTY 上で「バナーとダイアログが別チャンクで届いても自動応答が維持される」
 // ことを固定する。
@@ -263,7 +307,7 @@ process.stdout.write('Welcome to Claude Code!\\r\\n');
 //    READY_GRACE_MS は既定の 3000ms のまま（この spec では env を設定しない）なので、
 //    猶予の内側（200ms < 3000ms）であり、自動応答されるはず。
 setTimeout(() => {
-  process.stdout.write('Do you trust the files in this folder?  Enter to confirm\\r\\n');
+  process.stdout.write(${JSON.stringify(CLAUDE_CURRENT_TRUST_PROMPT)});
 }, 200);
 `);
   let launched = null;

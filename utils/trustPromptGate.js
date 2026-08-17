@@ -2,11 +2,10 @@
 
 // ─── 信頼確認プロンプトへの自動 Enter 送信を許可する条件の判定（issue #371）─────
 //
-// main.js の promptWatcher（TRUST_PATTERN 検知時に ptyProcess.write('\r') する処理）は
+// main.js の promptWatcher（信頼確認の文脈検知時に ptyProcess.write('\r') する処理）は
 // 従来 trustHandled（1ペインにつき1回だけ）のガードしか持たず、時間的な制限が無かった。
-// TRUST_PATTERN には「Enter to confirm」のような一般語も含まれるため、起動から
-// どれだけ経っていても、その「1回」が起動直後の信頼確認以外の場面で消費されうる状態
-// だった。
+// issue #371 ではこのモジュールの時間ゲートで発火可能な時間を限定した。issue #373 では
+// 後述の isTrustPrompt も併用し、時間窓の内側でも信頼確認以外には発火させない。
 //
 // これを防ぐため、自動 Enter 送信を次の2条件を両方満たす間だけに限定する（AND 条件）。
 //   1. ペイン作成（pty spawn）からの経過時間が TRUST_WINDOW_MS 以内であること
@@ -16,7 +15,7 @@
 // 条件2を「ready を検知したら即座に禁止」ではなく「検知してから READY_GRACE_MS の
 // 猶予を設ける」形にしているのは、安藤のセキュリティレビュー（issue #371 の
 // decision-record に記録済み）指摘への対応。実機の PTY 出力は「起動バナー」
-// （READY_PATTERN が一致する文言）と「信頼確認ダイアログ」（TRUST_PATTERN が一致する
+// （READY_PATTERN が一致する文言）と「信頼確認ダイアログ」（isTrustPrompt が一致する
 // 文言）が別チャンクで届くことがあり、バナー側のチャンクで ready 判定を即座に確定
 // させてしまうと、直後のチャンクで届く信頼確認ダイアログに自動 Enter を送れなくなる。
 // これは過去に直した「2つ目以降のターミナルで信頼確認プロンプトが自動承認されず
@@ -40,6 +39,35 @@ const TRUST_WINDOW_MS = 30000;
 // 吸収できる一方、無制限に許可し続けると issue #371 の本題（時間が経った場面での
 // 誤発火）を再び許してしまうため、短い値に留める。
 const READY_GRACE_MS = 3000;
+
+// ─── 信頼確認プロンプトの文脈判定（issue #373）──────────────────────────────
+// 2026-08-17 の実機 PTY 採取で確認したキー文言:
+//   Claude Code 現行 UI: "Quick safety check: Is this a project you created or one you trust?"
+//                           / "Yes, I trust this folder"
+//   Codex 現行 UI:         "Do you trust the contents of this directory?"
+// Claude Code 旧 UI の "Do you trust the files in this folder?" も従来どおり対象にする。
+//
+// stripAnsiForPattern 後の PTY 出力では、カーソル移動による描画の単語間に空白が残らず
+// "Doyoutrust..." のように連結されることがある。そのため単語間の空白は0文字以上として
+// 扱い、信頼確認に固有の短い錨を使う。一般的な "Enter to confirm" は信頼確認の文脈を
+// 示さないため、パターンへ含めない。
+const TRUST_CONTEXT_PATTERNS = [
+  /Quick\s*safety\s*check/i,
+  /Do\s*you\s*trust[\s\S]{0,40}(?:folder|directory)/i,
+  /Yes,\s*I\s*trust\s*(?:the\s*files\s*in\s*)?this\s*(?:folder|directory)/i,
+];
+
+/**
+ * PTY 出力に、対応対象の信頼確認画面を示す文脈が含まれるか判定する。
+ * 時間窓・発火回数は createTrustPromptGate が別に判定し、この関数は文言だけを見る。
+ *
+ * @param {*} output - stripAnsiForPattern 適用後の累積 PTY 出力。
+ * @returns {boolean} 信頼確認の文脈が含まれる場合は true。
+ */
+function isTrustPrompt(output) {
+  if (typeof output !== 'string') return false;
+  return TRUST_CONTEXT_PATTERNS.some((pattern) => pattern.test(output));
+}
 
 /**
  * 信頼確認プロンプトへの自動 Enter 送信の可否・監視終了の可否を判定するゲートを作る。
@@ -84,7 +112,7 @@ function createTrustPromptGate({ spawnTime, trustWindowMs = TRUST_WINDOW_MS, rea
     return elapsedSinceReady >= 0 && elapsedSinceReady <= readyGraceMs;
   }
 
-  // いま TRUST_PATTERN 一致に対して自動 Enter 送信をしてよいか
+  // いま信頼確認の文脈一致に対して自動 Enter 送信をしてよいか
   // （窓の内側 かつ ready 猶予内 かつ 未発火）
   function canAutoRespond(now) {
     return !trustHandled && isWindowOpen(now) && isWithinReadyGrace(now);
@@ -174,5 +202,6 @@ module.exports = {
   TRUST_WINDOW_MS,
   READY_GRACE_MS,
   createTrustPromptGate,
+  isTrustPrompt,
   resolvePositiveFiniteMs,
 };

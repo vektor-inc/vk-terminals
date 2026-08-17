@@ -30,6 +30,33 @@ test('isTrustPrompt: Claude Code 旧 UI の信頼確認に一致する', () => {
   assert.equal(isTrustPrompt(CLAUDE_LEGACY_TRUST_PROMPT), true);
 });
 
+test('isTrustPrompt: Do you trust と folder/directory の間の文言差異に一致する', () => {
+  const trustPrompts = [
+    'Do you trust this folder?',
+    'Do you trust this directory?',
+    'Do you trust the files in this directory?',
+    'Do you trust the contents of this folder?',
+    'Do you trust the authors of the files in this folder?',
+    // 実機のカーソル描画による空白なしと、行を跨ぐ出力の両方を固定する。
+    'Doyoutrustthisdirectory?',
+    'Do you trust the contents of this\ndirectory?',
+  ];
+
+  for (const prompt of trustPrompts) {
+    assert.equal(isTrustPrompt(prompt), true, prompt);
+  }
+});
+
+test('isTrustPrompt: Yes, I trust this directory に一致する', () => {
+  assert.equal(isTrustPrompt('Yes, I trust this directory'), true);
+});
+
+test('isTrustPrompt: 非文字列は一致しない', () => {
+  for (const output of [null, undefined, 123]) {
+    assert.equal(isTrustPrompt(output), false);
+  }
+});
+
 test('isTrustPrompt: 一般的な確認画面の Enter to confirm だけでは一致しない', () => {
   const nonTrustConfirmation = [
     'Choose a model',
@@ -39,6 +66,18 @@ test('isTrustPrompt: 一般的な確認画面の Enter to confirm だけでは�
   ].join('\r\n');
 
   assert.equal(isTrustPrompt(nonTrustConfirmation), false);
+});
+
+test('isTrustPrompt: 信頼確認固有の文言がない一般的な確認画面には一致しない', () => {
+  const nonTrustConfirmations = [
+    'Yes, proceed\nEnter to confirm',
+    'Apply these changes?\nPress enter to continue',
+    'Delete this file?\n1. Yes\n2. No',
+  ];
+
+  for (const confirmation of nonTrustConfirmations) {
+    assert.equal(isTrustPrompt(confirmation), false, confirmation);
+  }
 });
 
 // ─── canAutoRespond: 時間窓（TRUST_WINDOW_MS）まわり ──────────────────────────

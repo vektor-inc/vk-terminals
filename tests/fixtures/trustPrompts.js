@@ -18,7 +18,7 @@ const CODEX_CURRENT_TRUST_PROMPT = [
   '› 1. Yes, continue',
   '2.No,quit',
   'Press enter to continue',
-].join('\r\n');
+].join('');
 
 // Claude Code 旧 UI。過去に自動承認していた2種類のキー文言を残し、現行 UI 対応で
 // 旧バージョン利用者を待機状態へ戻さないことを確認する。

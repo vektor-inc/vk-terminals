@@ -48,13 +48,13 @@ const READY_GRACE_MS = 3000;
 // Claude Code 旧 UI の "Do you trust the files in this folder?" も従来どおり対象にする。
 //
 // stripAnsiForPattern 後の PTY 出力では、カーソル移動による描画の単語間に空白が残らず
-// "Doyoutrust..." のように連結されることがある。そのため文言自体は具体的に固定しつつ、
-// 単語間の空白だけは0文字以上として扱う。一般的な "Enter to confirm" は信頼確認の
-// 文脈を示さないため、パターンへ含めない。
+// "Doyoutrust..." のように連結されることがある。そのため単語間の空白は0文字以上として
+// 扱い、信頼確認に固有の短い錨を使う。一般的な "Enter to confirm" は信頼確認の文脈を
+// 示さないため、パターンへ含めない。
 const TRUST_CONTEXT_PATTERNS = [
-  /Quick\s*safety\s*check:\s*Is\s*this\s*a\s*project\s*you\s*created\s*or\s*one\s*you\s*trust/i,
-  /Do\s*you\s*trust\s*(?:the\s*)?(?:files\s*in\s*this\s*folder|contents\s*of\s*this\s*directory)/i,
-  /Yes,\s*I\s*trust\s*(?:the\s*files\s*in\s*)?this\s*folder/i,
+  /Quick\s*safety\s*check/i,
+  /Do\s*you\s*trust[\s\S]{0,40}(?:folder|directory)/i,
+  /Yes,\s*I\s*trust\s*(?:the\s*files\s*in\s*)?this\s*(?:folder|directory)/i,
 ];
 
 /**

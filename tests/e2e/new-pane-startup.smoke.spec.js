@@ -73,9 +73,20 @@ test.describe('新規ペイン起動設定（issue #143 / PR #144）', () => {
 
       // (3) その下に初期コマンド（field-3）が続く（＝2 項目が API ホストと初期コマンドの間に入る）。
       await expect(win.locator('label[for="set-field-3"]')).toHaveText('初期コマンド');
+
+      // .settings-modal は role="dialog" aria-modal="true" でフォーカストラップと
+      // Escape レイヤを張る要素（renderer/app.js）。開いたまま次のテストへ渡さないよう、
+      // 終了時点で元の状態（モーダルが閉じている）へ戻す（settings-shared-tabs.smoke.spec.js
+      // と同じパターン）。
+      await win.locator('.settings-close').click();
+      await expect(win.locator('.settings-modal')).toHaveCount(0);
     });
 
     // ── (2) terminal:create の cwd 解決（PR で追加した実在チェック） ────────────
+    // ⚠ このテストは vkIpc.invoke('terminal:create', ...) を IPC 経由で直接叩くため、
+    // 生成された PTY が renderer 側の `terminals` に登録されず closePane の対象にならない
+    // （孤児 PTY として残る）。このブロック内の他テストへ影響しないよう、このテストは
+    // 常にブロックの最後に置くこと。
     test('terminal:create は実在ディレクトリを使い、不正パスは HOME にフォールバックする', async () => {
       // 実在する一時ディレクトリ（cwd として渡す）。
       const existDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-exist-'));

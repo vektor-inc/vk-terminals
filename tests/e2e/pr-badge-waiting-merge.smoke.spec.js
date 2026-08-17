@@ -240,9 +240,12 @@ test.describe.serial('PR バッジのマージ待ち表示（issue #363）', () 
     await expect(stashItem.locator('.pane-status')).toHaveAttribute('data-status', 'idle');
     await expect(stashPrBadge).toHaveClass(/\bawaiting-merge\b/);
 
-    // #348 で確立した「各テストは終了時点で元の状態（最初のペインだけがグリッドに
-    // 残る）へ戻る」という不変条件を保つため、格納したペインをグリッドへ戻しておく。
+    // #348 で確立した「各テストは終了時点でグリッド構成を元に戻す（最初のペインだけが
+    // グリッドに残る）」という不変条件を保つため、格納したペインをグリッドへ戻しておく
+    // （サイドバーの開閉状態・apiTitle / apiPrUrl / apiWaitingMerge 等は戻していない。
+    // このブロックには後続テストが無いため影響しない）。
     await stashItem.locator('.btn-stash-restore').click();
     await expect(win.locator(`.stash-item[data-id="${paneDomId}"]`)).toHaveCount(0);
+    await expect(win.locator(`.pane[data-id="${paneDomId}"]`)).toBeVisible();
   });
 });

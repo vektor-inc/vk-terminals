@@ -75,7 +75,7 @@ async function launchStashHeaderApp(port) {
 // 呼んでいるため、起動を 1 回に共有する（他 spec と同じ考え方。issue #348）。
 // 各テストは自分が作成したペインだけを対象に操作しており、既存ペイン（termId "1"）の
 // 状態を壊さずに次のテストへ引き継ぐ（1つ目のテストは新規ペインを作って閉じるだけで
-// termId "1" は素の状態のまま残す／2つ目は termId "1" を格納→復帰まで行って状態を
+// termId "1" は素の状態のまま残す／2つ目は termId "1" を格納→復帰までしてグリッド構成を
 // 戻す／3つ目は自分で作った別ペイン2枚だけを見るため、2つ目までの状態に依存しない）。
 test.describe.serial('格納カードのヘッダー構成（PR #117 / issue #112）', () => {
   let app;
@@ -220,10 +220,13 @@ test.describe.serial('格納カードのヘッダー構成（PR #117 / issue #11
     await expect(prBadge).toHaveAttribute('aria-label', 'マージ済みのプルリクエストを開く（外部ブラウザ）');
     await expect(prBadge.locator('.pane-task-title-pr-icon')).toHaveText('✓');
 
-    // #348 で確立した「各テストは終了時点で元の状態（最初のペインだけがグリッドに
-    // 残る）へ戻る」という不変条件を保つため、格納したペインをグリッドへ戻しておく。
+    // #348 で確立した「各テストは終了時点でグリッド構成を元に戻す（最初のペインだけが
+    // グリッドに残る）」という不変条件を保つため、格納したペインをグリッドへ戻しておく
+    // （サイドバーの開閉状態・apiTitle / apiPrUrl / apiPrMerged 等は戻していない。
+    // 次テストは termId "1" の apiTitle 等を毎回上書きするため影響しない）。
     await stashItem.locator('.btn-stash-restore').click();
     await expect(win.locator('.stash-item[data-id="pane-1"]')).toHaveCount(0);
+    await expect(win.locator('.pane[data-id="pane-1"]')).toBeVisible();
   });
 
   test('格納カード: ↑↓で並べ替えできる（デグレ確認）', async () => {

@@ -490,9 +490,53 @@ test.describe.serial('設定パネル: 基本フィールド系（issue #348 で
                 invalidMessage: 'owner/repo の形式で入力してください',
                 visibleWhen: { key: 'confirmClose', value: 'never', hide: true },
               },
+              // combo と disabledWhen の統合確認用。Codex 選択中は値を保持したまま無効化する。
+              {
+                key: 'engine',
+                label: 'AI エンジン',
+                type: 'select',
+                options: [
+                  { value: 'claude', label: 'Claude Code' },
+                  { value: 'codex', label: 'Codex' },
+                ],
+              },
+              {
+                key: 'model',
+                label: 'モデル',
+                type: 'combo',
+                placeholder: '例: gpt-5.6-sol',
+                options: [
+                  { value: 'gpt-5.6-sol', label: 'GPT-5.6 Sol' },
+                  { value: 'gpt-5.5', label: 'GPT-5.5' },
+                ],
+                pattern: '^[A-Za-z0-9][A-Za-z0-9._\\-]{0,63}$',
+                invalidMessage: 'モデル名の形式が正しくありません',
+                disabledWhen: { key: 'engine', value: 'codex' },
+                disabledReason: 'Codex のモデル設定は現在の構成では変更できません。',
+              },
+              {
+                // select の無効状態でも選択変更キーを遮断できることの確認用。
+                key: 'preset',
+                label: '実行プリセット',
+                type: 'select',
+                options: [
+                  { value: 'compact', label: 'コンパクト' },
+                  { value: 'balanced', label: 'バランス' },
+                  { value: 'thorough', label: '詳細' },
+                ],
+                disabledWhen: { key: 'engine', value: 'codex' },
+                disabledReason: 'Codex では実行プリセットを変更できません。',
+              },
             ],
           }],
-          values: { confirmClose: 'busy', initialCommand: '', depPattern: '' },
+          values: {
+            confirmClose: 'busy',
+            initialCommand: '',
+            depPattern: '',
+            engine: 'codex',
+            model: '保存済み value',
+            preset: 'balanced',
+          },
         };
         window.__savedPayloads = [];
         vkIpc.invoke = (channel, payload) => {
@@ -506,10 +550,14 @@ test.describe.serial('設定パネル: 基本フィールド系（issue #348 で
       });
     }
 
-    // フィールド id は描画順採番（confirmClose=0, initialCommand=1, depPattern=2）。
+    // フィールド id は描画順採番（confirmClose=0, initialCommand=1, depPattern=2,
+    // engine=3, model=4, preset=5）。
     const CONFIRM_ID = '#set-field-0';
     const INITIAL_ID = '#set-field-1';
     const DEP_PATTERN_ID = '#set-field-2';
+    const ENGINE_ID = '#set-field-3';
+    const MODEL_ID = '#set-field-4';
+    const PRESET_ID = '#set-field-5';
 
     // 指定入力の属する .settings-row 要素を取得する。
     function rowOf(win, inputSelector) {
@@ -599,6 +647,86 @@ test.describe.serial('設定パネル: 基本フィールド系（issue #348 で
       expect(saved).toBe(0);
       await expect(win.locator('.settings-msg')).toHaveText('入力内容に問題があります');
       await expect(win.locator(DEP_PATTERN_ID)).toHaveAttribute('aria-invalid', 'true');
+    });
+
+    test('6: disabledWhen はフォーカス可能な無効状態にし、理由を読み上げ対象へ関連付ける', async () => {
+      const model = win.locator(MODEL_ID);
+      const reason = win.locator('#set-field-4-disabled-reason');
+
+      await expect(model).toHaveAttribute('aria-disabled', 'true');
+      await expect(model).not.toHaveAttribute('disabled', /.*/);
+      await model.focus();
+      await expect(model).toBeFocused();
+      await expect(reason).toBeVisible();
+      await expect(reason).toHaveText('Codex のモデル設定は現在の構成では変更できません。');
+      await expect(model).toHaveAttribute('aria-describedby', /set-field-4-disabled-reason/);
+
+      // キーボード入力は beforeinput で遮断する。さらに input イベントが直接発火しても
+      // 退避値へ戻し、見た目だけの無効状態にならないことを確認する。
+      await model.press('A');
+      await model.evaluate((input) => {
+        input.value = 'gpt-5.6-sol';
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+      await expect(model).toHaveValue('保存済み value');
+
+      // pattern 違反の保存済み値でも無効状態なら検証対象外。ただし値は保存対象に残す。
+      await win.locator('.settings-save').click();
+      await expect(win.locator('.settings-msg')).toHaveText('保存しました。次回の起動から反映されます。');
+      const payload = await win.evaluate(() => window.__savedPayloads[0]);
+      expect(payload.model).toBe('保存済み value');
+    });
+
+    test('7: combo は候補を提示しつつ一覧に無い値も直接入力できる', async () => {
+      const model = win.locator(MODEL_ID);
+      await win.locator(ENGINE_ID).selectOption('claude');
+
+      await expect(model).not.toHaveAttribute('aria-disabled', 'true');
+      await expect(win.locator('#set-field-4-disabled-reason')).toBeHidden();
+      await expect(model).toHaveAttribute('list', 'set-field-4-options');
+      await expect(win.locator('#set-field-4-options option')).toHaveCount(2);
+      await expect(win.locator('#set-field-4-options option').nth(0)).toHaveAttribute('value', 'gpt-5.6-sol');
+
+      // <datalist> の候補一覧は Chromium がネイティブ描画するため、自動テストでは
+      // 候補を開く操作・移動・確定を安定して検証できない。ここでは自由入力側のみ検証する。
+      // datalist に無い値でも通常の text input と同じくキーボード入力できる。
+      await model.fill('custom-model-1');
+      await expect(model).toHaveValue('custom-model-1');
+    });
+
+    test('8: disabledWhen の select は選択変更キーを押しても値を保持する', async () => {
+      const preset = win.locator(PRESET_ID);
+      await expect(preset).toHaveAttribute('aria-disabled', 'true');
+      await expect(preset).toHaveValue('balanced');
+      await preset.focus();
+
+      // 利用者から見える最終結果を確認するテスト。keydown の遮断に加え、万一
+      // input/change が発火しても restoreDisabledValue が退避値へ戻す多層防御を含む。
+      // そのため、keydown 側の許可リスト単体の回帰はこのテストでは検知しない。
+      for (const key of ['ArrowLeft', 'ArrowRight', 'Home', 'End', 'ArrowDown']) {
+        await preset.press(key);
+        await expect(preset).toHaveValue('balanced');
+      }
+    });
+
+    test('9: disabledWhen の select は選択変更キーの keydown 自体を遮断する', async () => {
+      const preset = win.locator(PRESET_ID);
+      await expect(preset).toHaveAttribute('aria-disabled', 'true');
+
+      // restoreDisabledValue を経由せず、keydown の許可リストだけを検証する。
+      // select では左右・先頭末尾移動キーも選択変更になるため、上下キーと同様に遮断する。
+      for (const key of ['ArrowLeft', 'ArrowRight', 'Home', 'End', 'ArrowDown']) {
+        const defaultPrevented = await preset.evaluate((input, pressedKey) => {
+          const event = new KeyboardEvent('keydown', {
+            key: pressedKey,
+            bubbles: true,
+            cancelable: true,
+          });
+          input.dispatchEvent(event);
+          return event.defaultPrevented;
+        }, key);
+        expect(defaultPrevented, `${key} の keydown が遮断されること`).toBe(true);
+      }
     });
   });
 });

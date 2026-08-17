@@ -75,7 +75,7 @@ const { getApiServerStatusPresentation } = window.VKApiServerStatus;
 const { getPrBadgePresentation } = window.VKPrBadge;
 const { resolveQueueIssuesListUrl } = window.VKTaskQueueLink;
 const { isPatternValid } = window.VKSettingsValidation;
-const { isFieldVisible } = window.VKSettingsVisibility;
+const { isFieldVisible, isFieldDisabled } = window.VKSettingsVisibility;
 const { linesFieldDisplayText } = window.VKSettingsLinesField;
 const { createAutoCloseController } = window.VKAutoClose;
 const { createSingleOpenGuard } = window.VKSettingsModalGuard;
@@ -501,8 +501,7 @@ function bumpRunning(paneId) {
 // options.noClaude が true の場合、main 側で claude の自動起動をスキップする。
 // 未指定の場合は main 側のグローバル設定（CLI フラグ）にフォールバックする。
 // options.engine が指定されていれば main 側でそのエンジンを起動する（未指定なら claude。issue #367）。
-// options.model が指定されていれば main 側で claude をそのモデルで起動する（未指定なら素の claude）。
-// engine が claude 以外のときは model は無視される（main 側で警告ログ）。
+// options.model が指定されていれば main 側で選択エンジンをそのモデルで起動する。
 async function createTerminal(paneId, cwd, options = {}) {
   const result = await VKIpc.invoke('terminal:create', cwd || null, options);
   const { id: termId, cwd: initialCwd } = result;
@@ -3966,13 +3965,18 @@ function renderSettingsField(f, value, id) {
   const label = escText(f.label || f.key);
   // help には id を振り、text/number 分岐で input の aria-describedby から参照する。
   const help = f.help ? `<span class="settings-help" id="${escAttr(id + '-help')}">${escText(f.help)}</span>` : '';
+  // disabledReason は無効状態でだけ表示するが、状態切替のたびに生成・破棄せず DOM に常駐させる。
+  // applyFieldState が hidden と aria-describedby を同期し、入力欄から理由を読み上げられるようにする。
+  const disabledReason = typeof f.disabledReason === 'string' && f.disabledReason.trim()
+    ? `<span class="settings-disabled-reason" id="${escAttr(id + '-disabled-reason')}" role="status" hidden>${escText(f.disabledReason)}</span>`
+    : '';
 
   if (f.type === 'boolean') {
     return `<div class="settings-row settings-row-check">
       <label class="settings-check">
         <input type="checkbox" id="${id}" ${value ? 'checked' : ''}>
         <span class="settings-label">${label}</span>
-      </label>${help}
+      </label>${help}${disabledReason}
     </div>`;
   }
 
@@ -3986,7 +3990,7 @@ function renderSettingsField(f, value, id) {
     // textarea の中身は要素内容なので escText 側でよいが、値は文字列前提なので escAttr で統一。
     const body = value === null || value === undefined ? '' : escText(JSON.stringify(value, null, 2));
     return `<div class="settings-row">
-      <label class="settings-label" for="${id}">${label}</label>${help}
+      <label class="settings-label" for="${id}">${label}</label>${help}${disabledReason}
       <textarea id="${id}" rows="4" spellcheck="false">${body}</textarea>
     </div>`;
   }
@@ -3995,14 +3999,14 @@ function renderSettingsField(f, value, id) {
     // 判定は renderer/settingsLinesField.js の linesFieldDisplayText を参照（issue #339）。
     const body = escText(linesFieldDisplayText(value));
     return `<div class="settings-row">
-      <label class="settings-label" for="${id}">${label}</label>${help}
+      <label class="settings-label" for="${id}">${label}</label>${help}${disabledReason}
       <textarea id="${id}" rows="4" spellcheck="false">${body}</textarea>
     </div>`;
   }
 
   if (f.type === 'password') {
     return `<div class="settings-row">
-      <label class="settings-label" for="${id}">${label}</label>${help}
+      <label class="settings-label" for="${id}">${label}</label>${help}${disabledReason}
       <div class="settings-pwd">
         <input type="password" id="${id}" value="${strVal}" autocomplete="off" spellcheck="false">
         <button type="button" class="settings-reveal" data-target="${id}" title="表示切替">👁</button>
@@ -4022,13 +4026,22 @@ function renderSettingsField(f, value, id) {
       })
       .join('');
     return `<div class="settings-row">
-      <label class="settings-label" for="${id}">${label}</label>${help}
+      <label class="settings-label" for="${id}">${label}</label>${help}${disabledReason}
       <select id="${id}">${opts}</select>
     </div>`;
   }
 
   const inputType = f.type === 'number' ? 'number' : 'text';
   const ph = f.placeholder ? ` placeholder="${escAttr(f.placeholder)}"` : '';
+  const comboListId = f.type === 'combo' ? `${id}-options` : '';
+  const comboListAttr = comboListId ? ` list="${escAttr(comboListId)}"` : '';
+  const comboOptions = comboListId
+    ? `<datalist id="${escAttr(comboListId)}">${(Array.isArray(f.options) ? f.options : []).map((o) => {
+        const optionValue = escAttr(String(o.value ?? ''));
+        const optionLabel = escAttr(String(o.label ?? o.value ?? ''));
+        return `<option value="${optionValue}" label="${optionLabel}"></option>`;
+      }).join('')}</datalist>`
+    : '';
   // pattern 検証のエラー行と aria 関連付け。help があれば help id と error id を
   // スペース区切りで両方指す（無ければ error id のみ）。
   const errorId = escAttr(id + '-error');
@@ -4042,8 +4055,9 @@ function renderSettingsField(f, value, id) {
     ? `${id}-help ${id}-error${f.key === 'apiHost' ? ` ${id}-notice` : ''}`
     : `${id}-error${f.key === 'apiHost' ? ` ${id}-notice` : ''}`);
   return `<div class="settings-row">
-    <label class="settings-label" for="${id}">${label}</label>${help}
-    <input type="${inputType}" id="${id}" value="${strVal}"${ph} spellcheck="false" aria-describedby="${describedBy}">
+    <label class="settings-label" for="${id}">${label}</label>${help}${disabledReason}
+    <input type="${inputType}" id="${id}" value="${strVal}"${ph}${comboListAttr} spellcheck="false" aria-describedby="${describedBy}">
+    ${comboOptions}
     <span class="settings-error" id="${errorId}" role="alert"></span>
     ${inlineNoticeHtml}
   </div>`;
@@ -4494,6 +4508,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
     const row = getEntryRow(id);
     return !row || !row.hidden;
   };
+  const isEntryDisabled = (id) => getEntryInput(id)?.getAttribute('aria-disabled') === 'true';
   const getCurrentSettingValues = () => {
     const values = {};
     for (const { field, id } of entries) {
@@ -4931,7 +4946,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
     const input = getEntryInput(id);
     const errEl = modal.querySelector('#' + id + '-error');
     if (!input) return true;
-    if (!isEntryVisible(id)) {
+    if (!isEntryVisible(id) || isEntryDisabled(id)) {
       input.removeAttribute('aria-invalid');
       if (errEl) errEl.textContent = '';
       return true;
@@ -4955,24 +4970,50 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
     if (errEl) errEl.textContent = '';
   };
 
-  const applyFieldVisibility = () => {
+  const disabledFieldValues = new Map();
+  const applyFieldState = () => {
     const values = getCurrentSettingValues();
     for (const { field, id } of entries) {
       const row = getEntryRow(id);
-      if (!row) continue;
+      const input = getEntryInput(id);
+      if (!row || !input) continue;
       const visible = isFieldVisible(field, values);
+      const disabled = visible && isFieldDisabled(field, values);
       row.hidden = !visible;
-      if (!visible) clearFieldValidity(field, id);
+      row.classList.toggle('settings-row-disabled', disabled);
+
+      const reason = modal.querySelector('#' + id + '-disabled-reason');
+      const reasonId = `${id}-disabled-reason`;
+      const describedBy = new Set((input.getAttribute('aria-describedby') || '').split(/\s+/).filter(Boolean));
+      if (disabled) {
+        if (!isEntryDisabled(id)) {
+          disabledFieldValues.set(id, { value: input.value, checked: input.checked });
+        }
+        input.setAttribute('aria-disabled', 'true');
+        if (reason) {
+          reason.hidden = false;
+          describedBy.add(reasonId);
+        }
+        clearFieldValidity(field, id);
+      } else {
+        input.removeAttribute('aria-disabled');
+        disabledFieldValues.delete(id);
+        if (reason) reason.hidden = true;
+        describedBy.delete(reasonId);
+        if (!visible) clearFieldValidity(field, id);
+      }
+      if (describedBy.size > 0) input.setAttribute('aria-describedby', Array.from(describedBy).join(' '));
+      else input.removeAttribute('aria-describedby');
     }
   };
 
   // 表示中の欄に pattern 違反が残っているか。DOM の aria-invalid ではなく値から判定する。
   // 各欄の再検証リスナはこの下で登録されており、同じ input イベントでは onEntryEdited の
   // 方が先に走るため、この時点の aria-invalid は 1 打鍵ぶん古い。値を見れば登録順に
-  // 依存しない。非表示の欄は applyFieldValidity 同様に検証対象から外す。
+  // 依存しない。非表示・無効の欄は applyFieldValidity 同様に検証対象から外す。
   const hasInvalidVisibleEntry = () => validatable.some(({ field, id }) => {
     const input = getEntryInput(id);
-    if (!input || !isEntryVisible(id)) return false;
+    if (!input || !isEntryVisible(id) || isEntryDisabled(id)) return false;
     return !isPatternValid(field.pattern, input.value);
   });
 
@@ -5003,16 +5044,53 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
     unlockSettingsFooter();
     // 表示中の欄が変わると「不正な欄が残っているか」の答えも変わるので、
     // 総括メッセージの判定より先に表示状態を更新しておく。
-    applyFieldVisibility();
+    applyFieldState();
     clearStaleSettingsMessage();
   };
+  // aria-disabled はフォーカス順を保つ代わりにブラウザ標準では編集を止めないため、
+  // 操作イベントを JavaScript で遮断する。万一 input/change が発火しても退避値へ戻し、
+  // 条件再評価や dirty 化より前で止める。
   for (const { id } of entries) {
     const input = getEntryInput(id);
     if (!input) continue;
+    const blockDisabledPointer = (event) => {
+      if (!isEntryDisabled(id)) return;
+      event.preventDefault();
+      if (event.type === 'mousedown') input.focus();
+    };
+    input.addEventListener('mousedown', blockDisabledPointer);
+    input.addEventListener('click', blockDisabledPointer);
+    input.addEventListener('beforeinput', (event) => {
+      if (isEntryDisabled(id)) event.preventDefault();
+    });
+    input.addEventListener('keydown', (event) => {
+      if (!isEntryDisabled(id) || event.key === 'Tab') return;
+      const copyShortcut = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'c';
+      // キャレット移動キーを許可するのは text 系 input と textarea だけ。select では
+      // 同じキーが選択値を変えるため、Tab とコピー以外をすべて遮断する。
+      // number も矢印キーで値が変わるため、キャレット移動キーを含めて遮断する。
+      const textInputTypes = ['text', 'search', 'tel', 'url', 'email', 'password'];
+      const hasTextCaret = input.tagName === 'TEXTAREA'
+        || (input.tagName === 'INPUT' && textInputTypes.includes(input.type));
+      const textNavigation = hasTextCaret
+        && ['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key);
+      if (!copyShortcut && !textNavigation) event.preventDefault();
+    });
+    const restoreDisabledValue = (event) => {
+      if (!isEntryDisabled(id)) return;
+      const snapshot = disabledFieldValues.get(id);
+      if (snapshot) {
+        input.value = snapshot.value;
+        input.checked = snapshot.checked;
+      }
+      event.stopImmediatePropagation();
+    };
+    input.addEventListener('input', restoreDisabledValue);
+    input.addEventListener('change', restoreDisabledValue);
     input.addEventListener('input', onEntryEdited);
     input.addEventListener('change', onEntryEdited);
   }
-  applyFieldVisibility();
+  applyFieldState();
 
   // apiHost はその場で認証要否の案内を出す（issue #313）。保存・再起動して初めて
   // 気づく流れを避けるため、入力のたびに即時判定する。
@@ -5272,9 +5350,8 @@ VKIpc.on('terminal:request-new-pane', async (payload = {}) => {
     // engine / model は noClaude と同じく main へ素通しする（issue #367 / #310）。値の
     // 妥当性は HTTP 受け口と main 側の terminal:create の両方で検証されるため、ここでは
     // 判定しない。未指定なら splitOptions に載らない＝main 側は従来どおり素の claude を
-    // 起動する。engine が claude 以外のときの model 無視判定・警告ログも main 側
-    // （terminal:create）に一元化してあるため、ここでは engine と model を独立に
-    // 素通しするだけでよい。
+    // 起動する。エンジン別の model 検証とコマンド組み立ては main 側
+    // （terminal:create）に一元化してあるため、ここでは engine と model を独立に素通しする。
     if (typeof engine === 'string') splitOptions = { ...splitOptions, engine };
     if (typeof model === 'string') splitOptions = { ...splitOptions, model };
     const result = await splitPane(targetPaneId, direction, effectiveCwd, splitOptions);

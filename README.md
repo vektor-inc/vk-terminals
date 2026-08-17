@@ -438,6 +438,32 @@ cp config.example.json ~/.vk-terminals/config.json
 - ただし `note` は行き止まり判定を外すための逃げ道ではありません。設定項目が無い理由や、代わりの設定方法を書く場所です（例: 「この機能は環境変数 `VK_TERMINALS_API_PORT` で設定します」）。「準備中です」のような読む価値のない一言だけを書くと、判定上は移動先として有効になっても、ボタンを押した人は結局行き止まりに着きます。移動先のタブを開いた人が次に何をすればよいか分かる内容を書いてください。
 - 欄を持たないグループ（`fields` が空）をタブに置く場合は、`label` を必ず書いてください。そのタブではグループ名がそのタブの唯一の表示内容になるため、`label` が無い（または空白だけの）と枠線だけが表示され、案内も出ないまま行き止まりになります。
 
+### 外部設定ディスクリプタのフィールド契約
+
+外部ディスクリプタの各フィールドでは、通常の `text` / `select` 等に加えて次の指定を使えます。
+
+- `type: "combo"`：候補を示しつつ自由入力も許可する入力欄。`options` は `[{ "value": "保存値", "label": "表示名" }]` の形式で指定します。
+- `visibleWhen`：条件一致時に表示します。条件へ `hide: true` を付けた場合は一致時に非表示になります。
+- `disabledWhen`：条件一致時に値を保持したまま編集を無効化します。`disabledReason` に理由を書くと、無効時だけ表示され、入力欄の読み上げ対象にもなります。
+- 条件を配列で指定すると AND、`{ "anyOf": [...] }` で包むと OR になります。条件は `{ "key": "参照先フィールド", "value": "比較値" }` の形式で、比較時は現在値と `value` を文字列化します。
+
+```json
+{
+  "key": "model",
+  "label": "モデル",
+  "type": "combo",
+  "options": [{ "value": "gpt-5.6-sol", "label": "GPT-5.6 Sol" }],
+  "visibleWhen": { "anyOf": [
+    { "key": "engine", "value": "claude" },
+    { "key": "engine", "value": "codex" }
+  ] },
+  "disabledWhen": { "key": "engine", "value": "codex" },
+  "disabledReason": "Codex 選択中は変更できません。"
+}
+```
+
+参照先キーの欠落は条件不一致として扱います。形式が壊れた条件や 5 段を超える `anyOf` は fail-open とし、設定画面全体を操作不能にしないため、`visibleWhen` では表示、`disabledWhen` では編集可能になります。
+
 ### 組み込み設定スキーマ
 
 単体起動時の設定パネル項目は、リポジトリ直下の `settings-schema.json` を単一ソースとして読み込みます。`settings-schema.json` には `groups` 配列と各 `field` の `key` / `label` / `type` / `default` / `help` / `placeholder` / `options` / `emptyToNull` などの静的な定義だけを置き、実行時に決まる編集対象ファイルの `targetPath` はアプリ側で `loadUserConfig()` と同じ探索順から合成します。
@@ -726,12 +752,11 @@ curl -s -X POST http://127.0.0.1:13847/api/new-pane \
   -H 'Content-Type: application/json' \
   -d '{"model": "sonnet"}'
 
-# engine: "codex" と model を同時指定した例。400 にはならず、model は無視されて
-# 素の codex が起動する（下の早見表・"model" の注記を参照）。
+# モデルを指定して Codex を起動する
 curl -s -X POST http://127.0.0.1:13847/api/new-pane \
   -H 'Authorization: Bearer <アクセストークン>' \
   -H 'Content-Type: application/json' \
-  -d '{"engine": "codex", "model": "sonnet"}'
+  -d '{"engine": "codex", "model": "gpt-5.6-sol"}'
 ```
 
 リクエストボディ（任意）:
@@ -740,27 +765,26 @@ curl -s -X POST http://127.0.0.1:13847/api/new-pane \
 - `noClaude`：`true` の場合、新規ペインで AI を自動起動せず素のシェルとして開く。未指定なら起動時の `--no-claude` フラグの値に従う。名前が `claude` 前提になっているのは歴史的経緯で、`engine: "codex"` と併用した場合も同様に無効化されます（AI は一切起動しません）。
 - `engine`：新規ペインで起動する AI エンジン。指定できるのは `"claude"` / `"codex"` のみ（許可リスト方式）。未指定の場合は従来どおり `"claude"` を起動します＝既存の呼び出し元に影響はありません。それ以外の値（未対応の文字列・空文字・文字列以外）は `400` で拒否され、**ペインは作成されません**。
 - `stashed`：`true` の場合、新規ペインをサイドバー格納＋折りたたみ状態で開く。未指定または `false` ならグリッドに追加。
-- `model`：`engine` が `"claude"`（省略時含む）のときにだけ意味を持つ値です。新規ペインで起動する claude のモデル名を指定すると `claude --model '<model>'` として実行されます。`sonnet` / `opus` のような別名も `claude-opus-5[1m]` のような正式名も指定できる。**未指定の場合は従来どおり `claude` をそのまま実行**し、利用者が `/model` で選んだデフォルトモデルで起動する。
-  - 指定できるのは **英数字・`.`・`_`・`-`・`[`・`]` のみ、64 文字以内、先頭は英数字** の文字列。それ以外の文字（空白・`;`・`&`・`` ` ``・`$`・引用符・改行など）を含む値、長すぎる値、文字列でない値は、`engine` が `"claude"` のときに限り `400` で拒否され、**ペインは作成されません**（値が実際に Claude 用のモデル名かどうかまでは検証していません。文字種・長さのチェックのみです）。
+- `model`：新規ペインで起動する AI エンジンのモデル名。`engine: "claude"`（省略時含む）では `claude --model '<model>'`、`engine: "codex"` では `codex --model '<model>'` として実行されます。Claude Code では `sonnet` / `opus` や `claude-opus-5[1m]`、Codex では `gpt-5.6-sol` / `gpt-5.5` / `o3` のような値を指定できます。**未指定の場合は選択したエンジンを引数なしで実行**し、各エンジン側のデフォルトモデルで起動します。
+  - 指定できるのは **英数字・`.`・`_`・`-`・`[`・`]` のみ、64 文字以内、先頭は英数字** の文字列。それ以外の文字（空白・`;`・`&`・`` ` ``・`$`・引用符・改行など）を含む値、長すぎる値、文字列でない値は、どちらの `engine` でも `400` で拒否され、**ペインは作成されません**（値が実在するモデル名かどうかまでは検証していません。文字種・長さのチェックのみです）。
+  - 値が選択した `engine` に対応するモデル名かどうかは検証しません。エンジンに合わないモデル名を渡すとペインは作成されますが、AI 側の起動時にエラーになります。呼び出し側で `engine` と `model` の組み合わせを確認してから送信してください。
   - `noClaude: true` と同時に指定した場合は AI を起動しないため、`model` は無視されます。
-  - `engine: "codex"` のように `"claude"` 以外の `engine` と同時に指定した場合も、`model` は無視されます（`400` にはなりません）。無視されたことはアプリのログに警告として出力されます。
 
 `noClaude` / `engine` / `model` の優先順位（併用した場合にどれが効くか）:
 
 | 指定 | 優先順位 | 挙動 |
 |---|---|---|
 | `noClaude: true` | 最優先 | `engine`・`model` の指定にかかわらず AI を起動せず素のシェルを開く |
-| `engine: "codex"` | 次点 | Codex を起動する。`model` を同時指定した場合は無視される（警告ログを出力） |
-| `engine: "claude"`（省略時含む） | 既定 | Claude Code を起動する。`model` 指定が有効 |
-| `model` | `engine` が `"claude"`（既定）のときのみ有効 | `claude --model '<値>'` として起動 |
+| `engine` | 次点 | `"claude"`（省略時の既定）なら Claude Code、`"codex"` なら Codex を起動 |
+| `model` | 選択した `engine` に適用 | Claude Code は `claude --model '<値>'`、Codex は `codex --model '<値>'` として起動 |
 
-ただし `engine` 自体の値が不正な場合（許可リストに無い文字列・文字列以外など）は、`noClaude` の値によらず `400` で拒否されペインは作成されません。`model`（`engine` が `"claude"` のときのみ検証対象）が不正な場合も同様に、`noClaude` の値によらず `400` で拒否されペインは作成されません（`{"noClaude": true, "model": "bad;value"}` のような組み合わせでも `400 invalid model` になります）。いずれも、不正値のチェックは `noClaude` の反映より先に行われるためです。
+ただし `engine` 自体の値が不正な場合（許可リストに無い文字列・文字列以外など）は、`noClaude` の値によらず `400` で拒否されペインは作成されません。`model` が不正な場合も同様に、どちらの `engine` でも `noClaude` の値によらず `400` で拒否されます（`{"noClaude": true, "model": "bad;value"}` のような組み合わせでも `400 invalid model` になります）。いずれも、不正値のチェックは `noClaude` の反映より先に行われるためです。
 
 レスポンス:
 
 - 成功時: `200 {"ok": true, "termId": "<新規ターミナルID>"}`
 - `engine` が不正: `400 {"error": "invalid engine (allowed: \"claude\", \"codex\")"}`
-- `model` が不正（`engine` が `"claude"` のときのみ）: `400 {"error": "invalid model"}`
+- `model` が不正: `400 {"error": "invalid model"}`
 - 不正な JSON: `400 {"error": "invalid JSON"}`
 - ウィンドウが利用できない: `503 {"error": "window not available"}`
 - タイムアウト（15秒）: `504 {"error": "timeout waiting for new pane"}`

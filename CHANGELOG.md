@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 開発環境 ] e2e の `stash-header` / `pr-badge-waiting-merge` / `new-pane-startup` spec で、同じ起動設定のテストが個別に Electron を起動していたのを1回の起動へ共有するよう変更し、全件実行時の Electron 起動回数を削減（[#377](https://github.com/vektor-inc/vk-terminals/issues/377)）
+
 ## 1.59.0
 
 - [ 機能追加 ] VK Orchestrator の設定画面で条件に応じた項目の無効化と自由入力可能な候補選択欄を描画し、Codex のモデルを指定して新規ペインを起動できる機能を追加（[#374](https://github.com/vektor-inc/vk-terminals/issues/374)）

@@ -71,13 +71,33 @@ async function launchStashHeaderApp(port) {
   return await launchApp({ port, prefix: 'vk-terminals-e2e-stash-header-', config: { confirmClose: 'never' } });
 }
 
-test('格納カードのヘッダーが2段（タイトル行/操作行）になり、PRバッジ・タイトルリンクが表示される', async () => {
-  const port = await getFreePort();
-  const { app, win, tmpRoot } = await launchStashHeaderApp(port);
-  try {
-    // 起動直後の最初のペイン（termId "1"）が登録されるまで待つ。
-    await waitForTermId(port, '1', true);
+// issue #377: 3 テストとも同じ config（confirmClose: 'never'）で launchApp を
+// 呼んでいるため、起動を 1 回に共有する（他 spec と同じ考え方。issue #348）。
+// 各テストは自分が作成したペインだけを対象に操作しており、既存ペイン（termId "1"）の
+// 状態を壊さずに次のテストへ引き継ぐ（1つ目のテストは新規ペインを作って閉じるだけで
+// termId "1" は素の状態のまま残す／2つ目は termId "1" を格納→復帰までしてグリッド構成を
+// 戻す／3つ目は自分で作った別ペイン2枚だけを見るため、2つ目までの状態に依存しない）。
+test.describe.serial('格納カードのヘッダー構成（PR #117 / issue #112）', () => {
+  let app;
+  let win;
+  let tmpRoot;
+  let port;
 
+  test.beforeAll(async () => {
+    port = await getFreePort();
+    ({ app, win, tmpRoot } = await launchStashHeaderApp(port));
+    // 起動直後の最初のペイン（termId "1"）が登録されるまで待つ。
+    // -g / test.only で 2 つ目・3 つ目だけを単独実行してもペイン登録前に
+    // API を叩いて落ちないよう、起動の前提条件は共有フックに置く
+    // （close-pane.smoke.spec.js と同じ考え方）。
+    await waitForTermId(port, '1', true);
+  });
+
+  test.afterAll(async () => {
+    await closeApp({ app, tmpRoot });
+  });
+
+  test('格納カードのヘッダーが2段（タイトル行/操作行）になり、PRバッジ・タイトルリンクが表示される', async () => {
     // stashed: true を指定して格納状態のペインを作成する。
     const created = await postJson(port, '/api/new-pane', { noClaude: true, stashed: true });
     expect(created.status).toBe(200);
@@ -169,17 +189,11 @@ test('格納カードのヘッダーが2段（タイトル行/操作行）にな
     await waitForTermId(port, termId, false);
     // 最初のペインは残っている。
     expect(termIdsOf(await getStates(port))).toContain('1');
-  } finally {
-    await closeApp({ app, tmpRoot });
-  }
-});
+  });
 
-test('格納カード: マージ済み PR バッジは格納後も紫表示とチェックアイコンを維持する', async () => {
-  const port = await getFreePort();
-  const { app, win, tmpRoot } = await launchStashHeaderApp(port);
-  try {
-    await waitForTermId(port, '1', true);
-
+  test('格納カード: マージ済み PR バッジは格納後も紫表示とチェックアイコンを維持する', async () => {
+    // termId "1" はこの describe 内の直前のテストが読んだ後も stash されず
+    // グリッドに残っているので、ここで初めて格納する側の状態遷移として使える。
     const prUrl = 'https://github.com/vektor-inc/vk-terminals/pull/137';
     const setTitleRes = await postJson(port, '/api/set-title', {
       termId: '1',
@@ -205,18 +219,20 @@ test('格納カード: マージ済み PR バッジは格納後も紫表示と�
     await expect(prBadge).toHaveClass(/\bmerged\b/);
     await expect(prBadge).toHaveAttribute('aria-label', 'マージ済みのプルリクエストを開く（外部ブラウザ）');
     await expect(prBadge.locator('.pane-task-title-pr-icon')).toHaveText('✓');
-  } finally {
-    await closeApp({ app, tmpRoot });
-  }
-});
 
-test('格納カード: ↑↓で並べ替えできる（デグレ確認）', async () => {
-  const port = await getFreePort();
-  const { app, win, tmpRoot } = await launchStashHeaderApp(port);
-  try {
-    await waitForTermId(port, '1', true);
+    // #348 で確立した「各テストは終了時点でグリッド構成を元に戻す（最初のペインだけが
+    // グリッドに残る）」という不変条件を保つため、格納したペインをグリッドへ戻しておく
+    // （サイドバーの開閉状態・apiTitle / apiPrUrl / apiPrMerged 等は戻していない。
+    // 次テストは termId "1" の apiTitle 等を毎回上書きするため影響しない）。
+    await stashItem.locator('.btn-stash-restore').click();
+    await expect(win.locator('.stash-item[data-id="pane-1"]')).toHaveCount(0);
+    await expect(win.locator('.pane[data-id="pane-1"]')).toBeVisible();
+  });
 
-    // 2件のペインを stashed で作成する。
+  test('格納カード: ↑↓で並べ替えできる（デグレ確認）', async () => {
+    // 2件のペインを stashed で作成する。自分で作った2枚だけを見るため、
+    // 直前のテストが termId "1" をグリッドへ戻し終えていること（元の状態）には
+    // 依存するが、それ以外の termId "1" の状態自体には依存しない。
     const created1 = await postJson(port, '/api/new-pane', { noClaude: true, stashed: true });
     const termId1 = String(created1.body.termId);
     await waitForTermId(port, termId1, true);
@@ -247,7 +263,5 @@ test('格納カード: ↑↓で並べ替えできる（デグレ確認）', asy
 
     const after = await getOrder();
     expect(after.indexOf(paneDomId2)).toBeLessThan(after.indexOf(paneDomId1));
-  } finally {
-    await closeApp({ app, tmpRoot });
-  }
+  });
 });

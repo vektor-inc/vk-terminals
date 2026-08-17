@@ -16,14 +16,30 @@ async function launchNewPaneApp(port, config = {}) {
 }
 
 test.describe('新規ペイン起動設定（issue #143 / PR #144）', () => {
-  // ── (1) 設定パネルに新規ペイン設定が表示される ──────────────────────────────
-  // 組み込みディスクリプタの描画順は apiHost=0 / newPaneStartupDir=1 /
-  // newPaneAutoLaunchClaude=2 / initialCommand=3。field id は描画順採番なので、
-  // 「API ホストの直下」に 2 項目が並ぶことを id の連番で担保する。
-  test('設定パネルに新規ペイン設定が API ホストの直下に表示される', async () => {
-    const port = await getFreePort();
-    const { app, win, tmpRoot } = await launchNewPaneApp(port);
-    try {
+  // issue #377: (1)(2) はどちらも launchNewPaneApp(port) を config なしで呼んでいる点が
+  // 同一のため、起動を 1 回に共有する（stash-header.smoke.spec.js と同じ考え方）。
+  // (3)(4) は newPaneStartupDir / newPaneAutoLaunchClaude という起動時 config の値
+  // そのものが検証対象のため、個別起動のまま維持する。
+  test.describe.serial('既定 config での起動時挙動', () => {
+    let app;
+    let win;
+    let tmpRoot;
+    let tmpHome;
+
+    test.beforeAll(async () => {
+      const port = await getFreePort();
+      ({ app, win, tmpRoot, tmpHome } = await launchNewPaneApp(port));
+    });
+
+    test.afterAll(async () => {
+      await closeApp({ app, tmpRoot });
+    });
+
+    // ── (1) 設定パネルに新規ペイン設定が表示される ────────────────────────────
+    // 組み込みディスクリプタの描画順は apiHost=0 / newPaneStartupDir=1 /
+    // newPaneAutoLaunchClaude=2 / initialCommand=3。field id は描画順採番なので、
+    // 「API ホストの直下」に 2 項目が並ぶことを id の連番で担保する。
+    test('設定パネルに新規ペイン設定が API ホストの直下に表示される', async () => {
       // 設定モーダルを開く（組み込みディスクリプタで描画される）。
       await win.evaluate(() => window.openSettingsModal());
       await win.waitForSelector('.settings-modal', { state: 'visible' });
@@ -57,37 +73,43 @@ test.describe('新規ペイン起動設定（issue #143 / PR #144）', () => {
 
       // (3) その下に初期コマンド（field-3）が続く（＝2 項目が API ホストと初期コマンドの間に入る）。
       await expect(win.locator('label[for="set-field-3"]')).toHaveText('初期コマンド');
-    } finally {
-      await closeApp({ app, tmpRoot });
-    }
-  });
 
-  // ── (2) terminal:create の cwd 解決（PR で追加した実在チェック） ──────────────
-  test('terminal:create は実在ディレクトリを使い、不正パスは HOME にフォールバックする', async () => {
-    const port = await getFreePort();
-    const { app, win, tmpRoot, tmpHome } = await launchNewPaneApp(port);
-    // 実在する一時ディレクトリ（cwd として渡す）。
-    const existDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-exist-'));
-    try {
-      // (A) 実在ディレクトリを渡すと、resolvedCwd はそのパスのまま返る。
-      const okCwd = await win.evaluate(async (dir) => {
-        const vkIpc = window.VKIpc;
-        const r = await vkIpc.invoke('terminal:create', dir, { noClaude: true });
-        return r && r.cwd;
-      }, existDir);
-      expect(okCwd).toBe(existDir);
+      // .settings-modal は role="dialog" aria-modal="true" でフォーカストラップと
+      // Escape レイヤを張る要素（renderer/app.js）。開いたまま次のテストへ渡さないよう、
+      // 終了時点で元の状態（モーダルが閉じている）へ戻す（settings-shared-tabs.smoke.spec.js
+      // と同じパターン）。
+      await win.locator('.settings-close').click();
+      await expect(win.locator('.settings-modal')).toHaveCount(0);
+    });
 
-      // (B) 存在しないパスを渡すと HOME(tmpHome) にフォールバックし、起動は失敗しない。
-      const fbCwd = await win.evaluate(async (badPath) => {
-        const vkIpc = window.VKIpc;
-        const r = await vkIpc.invoke('terminal:create', badPath, { noClaude: true });
-        return r && r.cwd;
-      }, path.join(existDir, 'no', 'such', 'dir-xyz'));
-      expect(fbCwd).toBe(tmpHome);
-    } finally {
-      await closeApp({ app, tmpRoot });
-      fs.rmSync(existDir, { recursive: true, force: true });
-    }
+    // ── (2) terminal:create の cwd 解決（PR で追加した実在チェック） ────────────
+    // ⚠ このテストは vkIpc.invoke('terminal:create', ...) を IPC 経由で直接叩くため、
+    // 生成された PTY が renderer 側の `terminals` に登録されず closePane の対象にならない
+    // （孤児 PTY として残る）。このブロック内の他テストへ影響しないよう、このテストは
+    // 常にブロックの最後に置くこと。
+    test('terminal:create は実在ディレクトリを使い、不正パスは HOME にフォールバックする', async () => {
+      // 実在する一時ディレクトリ（cwd として渡す）。
+      const existDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-exist-'));
+      try {
+        // (A) 実在ディレクトリを渡すと、resolvedCwd はそのパスのまま返る。
+        const okCwd = await win.evaluate(async (dir) => {
+          const vkIpc = window.VKIpc;
+          const r = await vkIpc.invoke('terminal:create', dir, { noClaude: true });
+          return r && r.cwd;
+        }, existDir);
+        expect(okCwd).toBe(existDir);
+
+        // (B) 存在しないパスを渡すと HOME(tmpHome) にフォールバックし、起動は失敗しない。
+        const fbCwd = await win.evaluate(async (badPath) => {
+          const vkIpc = window.VKIpc;
+          const r = await vkIpc.invoke('terminal:create', badPath, { noClaude: true });
+          return r && r.cwd;
+        }, path.join(existDir, 'no', 'such', 'dir-xyz'));
+        expect(fbCwd).toBe(tmpHome);
+      } finally {
+        fs.rmSync(existDir, { recursive: true, force: true });
+      }
+    });
   });
 
   // ── (3) ＋ボタンが config を反映する（自動起動オフ → noClaude:true） ───────────

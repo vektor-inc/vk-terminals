@@ -1,6 +1,6 @@
 # Changelog
 
-- [ 開発環境 ] `tests/e2e/stash-header.smoke.spec.js` の3テストが個別に Electron を起動していたのを、同じ起動設定であるため1回の起動を共有するよう変更（[#377](https://github.com/vektor-inc/vk-terminals/issues/377)）
+- [ 開発環境 ] e2e の `stash-header` / `pr-badge-waiting-merge` / `new-pane-startup` spec で、同じ起動設定のテストが個別に Electron を起動していたのを1回の起動へ共有するよう変更し、全件実行時の Electron 起動回数を削減（[#377](https://github.com/vektor-inc/vk-terminals/issues/377)）
 
 ## 1.59.0
 

@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 機能追加 ] VK Orchestrator の設定画面で条件に応じた項目の無効化と自由入力可能な候補選択欄を描画し、Codex のモデルを指定して新規ペインを起動できる機能を追加（[#374](https://github.com/vektor-inc/vk-terminals/issues/374)）
+
 ## 1.58.0
 
 - [ 機能追加 ] `POST /api/new-pane` に `engine`（`"claude"` / `"codex"`）パラメータを追加し、新規ペインで Codex を起動できるよう変更。`engine` が `"codex"` のときは `model` 指定を無視（警告ログを出力）し、未指定時は従来どおり claude を起動（[#367](https://github.com/vektor-inc/vk-terminals/issues/367)）

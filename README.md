@@ -726,12 +726,11 @@ curl -s -X POST http://127.0.0.1:13847/api/new-pane \
   -H 'Content-Type: application/json' \
   -d '{"model": "sonnet"}'
 
-# engine: "codex" と model を同時指定した例。400 にはならず、model は無視されて
-# 素の codex が起動する（下の早見表・"model" の注記を参照）。
+# モデルを指定して Codex を起動する
 curl -s -X POST http://127.0.0.1:13847/api/new-pane \
   -H 'Authorization: Bearer <アクセストークン>' \
   -H 'Content-Type: application/json' \
-  -d '{"engine": "codex", "model": "sonnet"}'
+  -d '{"engine": "codex", "model": "gpt-5.6-sol"}'
 ```
 
 リクエストボディ（任意）:
@@ -740,27 +739,25 @@ curl -s -X POST http://127.0.0.1:13847/api/new-pane \
 - `noClaude`：`true` の場合、新規ペインで AI を自動起動せず素のシェルとして開く。未指定なら起動時の `--no-claude` フラグの値に従う。名前が `claude` 前提になっているのは歴史的経緯で、`engine: "codex"` と併用した場合も同様に無効化されます（AI は一切起動しません）。
 - `engine`：新規ペインで起動する AI エンジン。指定できるのは `"claude"` / `"codex"` のみ（許可リスト方式）。未指定の場合は従来どおり `"claude"` を起動します＝既存の呼び出し元に影響はありません。それ以外の値（未対応の文字列・空文字・文字列以外）は `400` で拒否され、**ペインは作成されません**。
 - `stashed`：`true` の場合、新規ペインをサイドバー格納＋折りたたみ状態で開く。未指定または `false` ならグリッドに追加。
-- `model`：`engine` が `"claude"`（省略時含む）のときにだけ意味を持つ値です。新規ペインで起動する claude のモデル名を指定すると `claude --model '<model>'` として実行されます。`sonnet` / `opus` のような別名も `claude-opus-5[1m]` のような正式名も指定できる。**未指定の場合は従来どおり `claude` をそのまま実行**し、利用者が `/model` で選んだデフォルトモデルで起動する。
-  - 指定できるのは **英数字・`.`・`_`・`-`・`[`・`]` のみ、64 文字以内、先頭は英数字** の文字列。それ以外の文字（空白・`;`・`&`・`` ` ``・`$`・引用符・改行など）を含む値、長すぎる値、文字列でない値は、`engine` が `"claude"` のときに限り `400` で拒否され、**ペインは作成されません**（値が実際に Claude 用のモデル名かどうかまでは検証していません。文字種・長さのチェックのみです）。
+- `model`：新規ペインで起動する AI エンジンのモデル名。`engine: "claude"`（省略時含む）では `claude --model '<model>'`、`engine: "codex"` では `codex --model '<model>'` として実行されます。Claude Code では `sonnet` / `opus` や `claude-opus-5[1m]`、Codex では `gpt-5.6-sol` / `gpt-5.5` / `o3` のような値を指定できます。**未指定の場合は選択したエンジンを引数なしで実行**し、各エンジン側のデフォルトモデルで起動します。
+  - 指定できるのは **英数字・`.`・`_`・`-`・`[`・`]` のみ、64 文字以内、先頭は英数字** の文字列。それ以外の文字（空白・`;`・`&`・`` ` ``・`$`・引用符・改行など）を含む値、長すぎる値、文字列でない値は、どちらの `engine` でも `400` で拒否され、**ペインは作成されません**（値が実在するモデル名かどうかまでは検証していません。文字種・長さのチェックのみです）。
   - `noClaude: true` と同時に指定した場合は AI を起動しないため、`model` は無視されます。
-  - `engine: "codex"` のように `"claude"` 以外の `engine` と同時に指定した場合も、`model` は無視されます（`400` にはなりません）。無視されたことはアプリのログに警告として出力されます。
 
 `noClaude` / `engine` / `model` の優先順位（併用した場合にどれが効くか）:
 
 | 指定 | 優先順位 | 挙動 |
 |---|---|---|
 | `noClaude: true` | 最優先 | `engine`・`model` の指定にかかわらず AI を起動せず素のシェルを開く |
-| `engine: "codex"` | 次点 | Codex を起動する。`model` を同時指定した場合は無視される（警告ログを出力） |
-| `engine: "claude"`（省略時含む） | 既定 | Claude Code を起動する。`model` 指定が有効 |
-| `model` | `engine` が `"claude"`（既定）のときのみ有効 | `claude --model '<値>'` として起動 |
+| `engine` | 次点 | `"claude"`（省略時の既定）なら Claude Code、`"codex"` なら Codex を起動 |
+| `model` | 選択した `engine` に適用 | Claude Code は `claude --model '<値>'`、Codex は `codex --model '<値>'` として起動 |
 
-ただし `engine` 自体の値が不正な場合（許可リストに無い文字列・文字列以外など）は、`noClaude` の値によらず `400` で拒否されペインは作成されません。`model`（`engine` が `"claude"` のときのみ検証対象）が不正な場合も同様に、`noClaude` の値によらず `400` で拒否されペインは作成されません（`{"noClaude": true, "model": "bad;value"}` のような組み合わせでも `400 invalid model` になります）。いずれも、不正値のチェックは `noClaude` の反映より先に行われるためです。
+ただし `engine` 自体の値が不正な場合（許可リストに無い文字列・文字列以外など）は、`noClaude` の値によらず `400` で拒否されペインは作成されません。`model` が不正な場合も同様に、どちらの `engine` でも `noClaude` の値によらず `400` で拒否されます（`{"noClaude": true, "model": "bad;value"}` のような組み合わせでも `400 invalid model` になります）。いずれも、不正値のチェックは `noClaude` の反映より先に行われるためです。
 
 レスポンス:
 
 - 成功時: `200 {"ok": true, "termId": "<新規ターミナルID>"}`
 - `engine` が不正: `400 {"error": "invalid engine (allowed: \"claude\", \"codex\")"}`
-- `model` が不正（`engine` が `"claude"` のときのみ）: `400 {"error": "invalid model"}`
+- `model` が不正: `400 {"error": "invalid model"}`
 - 不正な JSON: `400 {"error": "invalid JSON"}`
 - ウィンドウが利用できない: `503 {"error": "window not available"}`
 - タイムアウト（15秒）: `504 {"error": "timeout waiting for new pane"}`

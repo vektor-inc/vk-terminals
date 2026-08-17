@@ -3,7 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { isFieldVisible } = require('../renderer/settingsVisibility');
+const { isFieldVisible, isFieldDisabled } = require('../renderer/settingsVisibility');
 
 test('isFieldVisible: visibleWhen 未指定は常に visible', () => {
   assert.equal(isFieldVisible({ key: 'target' }, { mode: 'basic' }), true);
@@ -81,4 +81,67 @@ test('isFieldVisible: 壊れた visibleWhen は fail-open で visible', () => {
   assert.equal(isFieldVisible({ key: 'target', visibleWhen: 'mode=advanced' }, { mode: 'basic' }), true);
   assert.equal(isFieldVisible({ key: 'target', visibleWhen: { value: 'advanced' } }, { mode: 'basic' }), true);
   assert.equal(isFieldVisible({ key: 'target', visibleWhen: [null, 'broken'] }, { mode: 'basic' }), true);
+});
+
+test('isFieldVisible: anyOf はどれか1条件を満たせば visible', () => {
+  const field = {
+    key: 'target',
+    visibleWhen: {
+      anyOf: [
+        { key: 'engine', value: 'claude' },
+        { key: 'engine', value: 'codex' },
+      ],
+    },
+  };
+
+  assert.equal(isFieldVisible(field, { engine: 'claude' }), true);
+  assert.equal(isFieldVisible(field, { engine: 'codex' }), true);
+  assert.equal(isFieldVisible(field, { engine: 'other' }), false);
+});
+
+test('isFieldVisible: 配列直下の AND と anyOf の OR を組み合わせられる', () => {
+  const field = {
+    key: 'target',
+    visibleWhen: [
+      { anyOf: [{ key: 'engine', value: 'claude' }, { key: 'engine', value: 'codex' }] },
+      { key: 'hidden', value: true, hide: true },
+    ],
+  };
+
+  assert.equal(isFieldVisible(field, { engine: 'codex', hidden: false }), true);
+  assert.equal(isFieldVisible(field, { engine: 'codex', hidden: true }), false);
+  assert.equal(isFieldVisible(field, { engine: 'other', hidden: false }), false);
+});
+
+test('isFieldVisible: 壊れた anyOf は fail-open で visible', () => {
+  assert.equal(isFieldVisible({ visibleWhen: { anyOf: [] } }, {}), true);
+  assert.equal(isFieldVisible({ visibleWhen: { anyOf: ['broken', null] } }, {}), true);
+  assert.equal(isFieldVisible({ visibleWhen: { anyOf: 'broken' } }, {}), true);
+});
+
+test('isFieldDisabled: disabledWhen の一致時だけ disabled', () => {
+  const field = { disabledWhen: { key: 'engine', value: 'codex' } };
+
+  assert.equal(isFieldDisabled(field, { engine: 'codex' }), true);
+  assert.equal(isFieldDisabled(field, { engine: 'claude' }), false);
+  assert.equal(isFieldDisabled({ key: 'target' }, { engine: 'codex' }), false);
+});
+
+test('isFieldDisabled: 配列は AND、anyOf は OR として visibleWhen と同じ評価器を使う', () => {
+  const field = {
+    disabledWhen: [
+      { anyOf: [{ key: 'engine', value: 'claude' }, { key: 'engine', value: 'codex' }] },
+      { key: 'editable', value: true, hide: true },
+    ],
+  };
+
+  assert.equal(isFieldDisabled(field, { engine: 'codex', editable: false }), true);
+  assert.equal(isFieldDisabled(field, { engine: 'claude', editable: true }), false);
+  assert.equal(isFieldDisabled(field, { engine: 'other', editable: false }), false);
+});
+
+test('isFieldDisabled: 壊れた disabledWhen は fail-open で enabled', () => {
+  assert.equal(isFieldDisabled({ disabledWhen: 'engine=codex' }, { engine: 'codex' }), false);
+  assert.equal(isFieldDisabled({ disabledWhen: { value: 'codex' } }, { engine: 'codex' }), false);
+  assert.equal(isFieldDisabled({ disabledWhen: { anyOf: [] } }, { engine: 'codex' }), false);
 });

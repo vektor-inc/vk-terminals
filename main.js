@@ -41,12 +41,12 @@ const { normalizeConfirmClose } = require('./utils/closeConfirm');
 // 外部ブラウザで開いてよい URL の判定（renderer と共有）。renderer 側にも同じ判定が
 // あるが、最終防衛線はこのプロセス側（issue #268）。
 const { isSafeHttpUrl } = require('./renderer/urlSafety');
-// 新規ペインで起動する claude のモデル指定・AI エンジン（issue #367）の検証と、
+// 新規ペインで起動する AI エンジンとモデル指定（issue #367 / #374）の検証と、
 // 起動コマンドの組み立て（issue #310）。HTTP 受け口と terminal:create の両方で使い、
 // 片方を通らない経路が増えても素通りさせない。
 const {
   isValidClaudeModel,
-  buildClaudeLaunchCommand,
+  isValidCodexModel,
   isValidEngine,
   buildEngineAwareLaunchCommand,
 } = require('./renderer/claudeModel');
@@ -1553,12 +1553,8 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
   // 再検証する。未指定・不正値では素の `claude` になり、従来と完全に同一の文字列を
   // 書き込む＝既存の呼び出し元は非影響（issue #367）。
   //
-  // resolvedEngine が 'claude' 以外のときは model を無視して素のエンジンを起動する
-  // （buildEngineAwareLaunchCommand が判定。理由は同関数のコメント参照）。
-  const { command: launchCommand, modelIgnored } = buildEngineAwareLaunchCommand(resolvedEngine, options.model);
-  if (modelIgnored) {
-    console.warn(`${LOG_PREFIX} model is ignored for engine '${resolvedEngine}'`);
-  }
+  // Codex でも専用の許可リストで再検証し、正常値だけを --model として渡す。
+  const { command: launchCommand } = buildEngineAwareLaunchCommand(resolvedEngine, options.model);
   if (!noClaude) {
     setTimeout(() => {
       if (ptys.has(id)) {
@@ -2370,13 +2366,9 @@ function startHttpApi() {
     //     （許可リスト方式）。未指定なら従来どおり claude を起動する＝既存の呼び出し元は
     //     非影響。不正値（未対応の文字列・空文字・文字列以外）は 400 で拒否しペインを作らない。
     //   stashed: true を指定すると、サイドバー格納＋折りたたみ状態で開く。
-    //   model を指定すると、そのモデルで claude を起動する（claude --model '<model>'）。
+    //   model を指定すると、そのモデルで選択エンジンを起動する（--model '<model>'）。
     //     許可するのは英数字・`.`・`_`・`-`・`[`・`]` のみ・64 文字以内で、先頭は英数字。
-    //     それ以外は 400 で拒否しペインを作らない。未指定なら従来どおり素の claude を起動する。
-    //     engine が claude 以外のときは model は検証せず・IPC の先へも渡さずに無視し
-    //     （400にはしない）、その場で警告ログを出す（型を問わず。#310 の「起動コマンドに
-    //     入りうる値は必ず許可リストを通す」不変条件を守るための措置。詳細は下の
-    //     model 解析処理のコメント参照）。
+    //     それ以外は 400 で拒否しペインを作らない。未指定なら各エンジンを素のコマンドで起動する。
     if (req.method === 'POST' && url.pathname === '/api/new-pane') {
       if (isForbiddenOrigin(req)) {
         res.writeHead(403, { 'Content-Type': 'application/json' });
@@ -2427,39 +2419,22 @@ function startHttpApi() {
             if (typeof parsed?.useDefaults === 'boolean') {
               requestedUseDefaults = parsed.useDefaults;
             }
-            // model: 起動する claude のモデル名（issue #310）。値はペインへ書き込む
+            // model: 起動する AI エンジンのモデル名（issue #310 / #374）。値はペインへ書き込む
             // 起動コマンドの一部になるため、許可リストを通らない値はペインを作らずに拒否する。
-            // 省略時は従来どおり素の claude を起動する＝既存の呼び出し元は非影響。
-            //
-            // engine が claude 以外のときは model は無視される値だが、型を問わず
-            // 一切検証せずに IPC の向こうへ渡すことはしない（安藤の指摘 MEDIUM・必須2）。
-            // 「起動コマンドに入りうる値は必ず許可リストを通っている」という #310 の
-            // 不変条件を守るため、ここで requestedModel には代入しない＝payload に
-            // 一切載せない。Codex 側のモデル指定（codex --model 等）は本 issue の
-            // スコープ外だが、将来それが実装された瞬間にこの素通しがコマンド
-            // インジェクションになる「時限式の地雷」を残さないための措置。
-            //
-            // 警告ログはここで即座に出す（植草の指摘・必須2: 従来は
-            // `typeof parsed.model === 'string'` のときしか requestedModel に載らず、
-            // 結果 terminal:create 側の modelIgnored 判定にも渡らないため、数値等の
-            // 非文字列を渡すと README の「無視されたことは警告ログに出力される」という
-            // 約束に反して警告が一切出ないケースがあった。型を問わずここで出すことで
-            // 塞ぐ）。terminal:create 側の modelIgnored による警告は、HTTP を経由しない
-            // 内部経路（renderer の splitPane 直呼び等）向けの多層防御として残してある。
-            // HTTP 経由では model が payload に乗らなくなるため、通常経路で二重に出る
-            // ことはない。
+            // 省略時は従来どおり各エンジンを素のコマンドで起動する。エンジンごとに
+            // 意味のある別名の検証関数を選び、許可文字種・長さを通った値だけを IPC へ渡す。
+            // terminal:create 側のコマンドビルダーでも同じ検証を行う多層防御は維持する。
             if (parsed?.model !== undefined) {
               const effectiveEngine = requestedEngine || 'claude';
-              if (effectiveEngine === 'claude') {
-                if (!isValidClaudeModel(parsed.model)) {
-                  res.writeHead(400, { 'Content-Type': 'application/json' });
-                  res.end(JSON.stringify({ error: 'invalid model' }));
-                  return;
-                }
-                requestedModel = parsed.model;
-              } else {
-                console.warn(`${LOG_PREFIX} model is ignored for engine '${effectiveEngine}'`);
+              const isValidModel = effectiveEngine === 'codex'
+                ? isValidCodexModel(parsed.model)
+                : isValidClaudeModel(parsed.model);
+              if (!isValidModel) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'invalid model' }));
+                return;
               }
+              requestedModel = parsed.model;
             }
           } catch {
             res.writeHead(400, { 'Content-Type': 'application/json' });

@@ -805,6 +805,21 @@ h4.settings-content-heading {
   /* help 文中の \n を改行として表示する（menuItems の説明文＋例の 2 行表記など） */
   white-space: pre-line;
 }
+/* 条件付き無効状態
+   ========================================================================== */
+.settings-disabled-reason {
+  color: #c9d1d9;
+  font-size: 12px;
+}
+.settings-disabled-reason[hidden] {
+  display: none;
+}
+.settings-row-disabled .settings-label {
+  color: #8b949e;
+}
+.settings-row-disabled .settings-check {
+  cursor: not-allowed;
+}
 .settings-error {
   color: #f85149;
   font-size: 12px;
@@ -865,6 +880,13 @@ h4.settings-content-heading {
 .settings-row textarea {
   resize: vertical;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.settings-row input[aria-disabled="true"],
+.settings-row select[aria-disabled="true"],
+.settings-row textarea[aria-disabled="true"] {
+  background-color: #161b22;
+  color: #c9d1d9;
+  cursor: not-allowed;
 }
 /* pattern 検証エラー時の赤枠。focus 側は type 属性セレクタ（[type="..."]）のぶん
    詳細度が高く（focus 側 (0,3,1) に対しここは (0,2,1)）、ソース順に関わらず常に

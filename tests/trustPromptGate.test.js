@@ -7,8 +7,39 @@ const {
   TRUST_WINDOW_MS,
   READY_GRACE_MS,
   createTrustPromptGate,
+  isTrustPrompt,
   resolvePositiveFiniteMs,
 } = require('../utils/trustPromptGate');
+const {
+  CLAUDE_CURRENT_TRUST_PROMPT,
+  CODEX_CURRENT_TRUST_PROMPT,
+  CLAUDE_LEGACY_TRUST_PROMPT,
+} = require('./fixtures/trustPrompts');
+
+// ─── isTrustPrompt: 信頼確認の文脈判定（issue #373）──────────────────────────
+
+test('isTrustPrompt: 実機採取した Claude Code 現行 UI の信頼確認に一致する', () => {
+  assert.equal(isTrustPrompt(CLAUDE_CURRENT_TRUST_PROMPT), true);
+});
+
+test('isTrustPrompt: 実機採取した Codex 現行 UI の信頼確認に一致する', () => {
+  assert.equal(isTrustPrompt(CODEX_CURRENT_TRUST_PROMPT), true);
+});
+
+test('isTrustPrompt: Claude Code 旧 UI の信頼確認に一致する', () => {
+  assert.equal(isTrustPrompt(CLAUDE_LEGACY_TRUST_PROMPT), true);
+});
+
+test('isTrustPrompt: 一般的な確認画面の Enter to confirm だけでは一致しない', () => {
+  const nonTrustConfirmation = [
+    'Choose a model',
+    '1. Default',
+    '2. Advanced',
+    'Enter to confirm',
+  ].join('\r\n');
+
+  assert.equal(isTrustPrompt(nonTrustConfirmation), false);
+});
 
 // ─── canAutoRespond: 時間窓（TRUST_WINDOW_MS）まわり ──────────────────────────
 

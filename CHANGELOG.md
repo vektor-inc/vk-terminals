@@ -1,5 +1,7 @@
 # Changelog
 
+- [ セキュリティ修正 ] ペイン起動時の確認プロンプトへの自動応答を意図した画面に限定（[#373](https://github.com/vektor-inc/vk-terminals/issues/373)）
+
 ## 1.58.0
 
 - [ 機能追加 ] `POST /api/new-pane` に `engine`（`"claude"` / `"codex"`）パラメータを追加し、新規ペインで Codex を起動できるよう変更。`engine` が `"codex"` のときは `model` 指定を無視（警告ログを出力）し、未指定時は従来どおり claude を起動（[#367](https://github.com/vektor-inc/vk-terminals/issues/367)）

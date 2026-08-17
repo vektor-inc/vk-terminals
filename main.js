@@ -45,8 +45,7 @@ const { isSafeHttpUrl } = require('./renderer/urlSafety');
 // 起動コマンドの組み立て（issue #310）。HTTP 受け口と terminal:create の両方で使い、
 // 片方を通らない経路が増えても素通りさせない。
 const {
-  isValidClaudeModel,
-  isValidCodexModel,
+  isValidModelForEngine,
   isValidEngine,
   buildEngineAwareLaunchCommand,
 } = require('./renderer/claudeModel');
@@ -1554,7 +1553,10 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
   // 書き込む＝既存の呼び出し元は非影響（issue #367）。
   //
   // Codex でも専用の許可リストで再検証し、正常値だけを --model として渡す。
-  const { command: launchCommand } = buildEngineAwareLaunchCommand(resolvedEngine, options.model);
+  const { command: launchCommand, modelIgnored } = buildEngineAwareLaunchCommand(resolvedEngine, options.model);
+  if (modelIgnored) {
+    console.warn(`${LOG_PREFIX} model is ignored for engine '${resolvedEngine}'`);
+  }
   if (!noClaude) {
     setTimeout(() => {
       if (ptys.has(id)) {
@@ -2426,10 +2428,7 @@ function startHttpApi() {
             // terminal:create 側のコマンドビルダーでも同じ検証を行う多層防御は維持する。
             if (parsed?.model !== undefined) {
               const effectiveEngine = requestedEngine || 'claude';
-              const isValidModel = effectiveEngine === 'codex'
-                ? isValidCodexModel(parsed.model)
-                : isValidClaudeModel(parsed.model);
-              if (!isValidModel) {
+              if (!isValidModelForEngine(effectiveEngine, parsed.model)) {
                 res.writeHead(400, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ error: 'invalid model' }));
                 return;

@@ -8,6 +8,7 @@ const {
   MAX_CODEX_MODEL_LENGTH,
   isValidClaudeModel,
   isValidCodexModel,
+  isValidModelForEngine,
   buildClaudeLaunchCommand,
   buildCodexLaunchCommand,
   ALLOWED_ENGINES,
@@ -100,15 +101,20 @@ test('buildClaudeLaunchCommand: 正常値はシングルクォートで囲んで
   assert.equal(buildClaudeLaunchCommand('claude-opus-5[1m]'), "claude --model 'claude-opus-5[1m]'");
 });
 
-test('buildClaudeLaunchCommand: 戻り値に改行・シングルクォートの脱出が混入しない', () => {
-  // 許可文字にシングルクォートが無いため、クォートが閉じられることはない。
-  const candidates = ['sonnet', 'opus', 'claude-opus-5[1m]', 'claude-3.5-sonnet_20240620'];
-  for (const model of candidates) {
-    const command = buildClaudeLaunchCommand(model);
-    assert.equal(command.includes('\r'), false);
-    assert.equal(command.includes('\n'), false);
-    // シングルクォートは開始と終了の 2 個ちょうど。
-    assert.equal(command.split("'").length - 1, 2);
+test('モデル対応ビルダー: 戻り値に改行・シングルクォートの脱出が混入しない', () => {
+  // エンジンごとに命名規則が変わっても、どちらのビルダーも同じ不変条件を守る。
+  const cases = [
+    [buildClaudeLaunchCommand, ['sonnet', 'opus', 'claude-opus-5[1m]', 'claude-3.5-sonnet_20240620']],
+    [buildCodexLaunchCommand, ['gpt-5.6-sol', 'gpt-5.5', 'o3']],
+  ];
+  for (const [buildCommand, candidates] of cases) {
+    for (const model of candidates) {
+      const command = buildCommand(model);
+      assert.equal(command.includes('\r'), false);
+      assert.equal(command.includes('\n'), false);
+      // シングルクォートは開始と終了の 2 個ちょうど。
+      assert.equal(command.split("'").length - 1, 2);
+    }
   }
 });
 
@@ -166,6 +172,20 @@ test('buildCodexLaunchCommand: 正常値だけをシングルクォート付き 
 
 test('ALLOWED_ENGINES: 許可値は claude / codex の2つだけ', () => {
   assert.deepEqual(ALLOWED_ENGINES, ['claude', 'codex']);
+});
+
+test('isValidModelForEngine: 登録済みエンジンの専用検証関数を使う', () => {
+  assert.equal(isValidModelForEngine('claude', 'sonnet'), true);
+  assert.equal(isValidModelForEngine('codex', 'gpt-5.6-sol'), true);
+  assert.equal(isValidModelForEngine('claude', 'sonnet; whoami'), false);
+  assert.equal(isValidModelForEngine('codex', 'gpt-5.6-sol; whoami'), false);
+});
+
+test('isValidModelForEngine: 未登録エンジンと継承プロパティは fail-closed で拒否する', () => {
+  assert.equal(isValidModelForEngine('gemini', 'gemini-pro'), false);
+  assert.equal(isValidModelForEngine('constructor', 'sonnet'), false);
+  assert.equal(isValidModelForEngine('__proto__', 'sonnet'), false);
+  assert.equal(isValidModelForEngine(undefined, 'sonnet'), false);
 });
 
 test('isValidEngine: 許可リストに載っている文字列だけを許可する', () => {
@@ -254,6 +274,21 @@ test('buildEngineAwareLaunchCommand: Object.prototype 由来の resolvedEngine �
     assert.equal(typeof result.command, 'string', `${engine}: command が文字列ではない`);
     assert.deepEqual(result, { command: 'claude', modelIgnored: false }, `${engine}: 安全側の claude へ倒れていない`);
   }
+});
+
+test('buildEngineAwareLaunchCommand: 未登録エンジンの model 指定を無視した場合は警告用状態を返す', () => {
+  assert.deepEqual(buildEngineAwareLaunchCommand('gemini', 'gemini-pro'), {
+    command: 'claude',
+    modelIgnored: true,
+  });
+  assert.deepEqual(buildEngineAwareLaunchCommand('gemini', undefined), {
+    command: 'claude',
+    modelIgnored: false,
+  });
+  assert.deepEqual(buildEngineAwareLaunchCommand('gemini', null), {
+    command: 'claude',
+    modelIgnored: true,
+  });
 });
 
 test('buildEngineAwareLaunchCommand: engine が codex で model 未指定のときは modelIgnored が false（無視すべきものが無い）', () => {

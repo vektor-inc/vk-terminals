@@ -27,19 +27,27 @@ function evaluateSimpleCondition(condition, values) {
   if (typeof condition.key !== 'string' || condition.key.trim() === '') return null;
   if (!values || typeof values !== 'object' || Array.isArray(values)) return null;
 
+  // 継承プロパティは設定値として扱わない。参照先 key が無い場合の既存仕様に合わせ、
+  // positive 条件は不一致、hide:true は非表示条件に不一致として扱う。
+  if (!Object.prototype.hasOwnProperty.call(values, condition.key)) {
+    return condition.hide === true;
+  }
   const currentValue = values[condition.key];
   const matched = currentValue !== undefined && String(currentValue) === String(condition.value);
   return condition.hide === true ? !matched : matched;
 }
 
+const MAX_CONDITION_DEPTH = 5;
+
 // 戻り値 null は壊れた条件を表す。AND では通過、OR では不一致として扱いつつ、
 // 全要素が壊れていた場合だけ呼び出し元の fail-open 既定値へ戻せるよう区別する。
-function evaluateCondition(condition, values) {
+function evaluateCondition(condition, values, depth = 0) {
+  if (depth > MAX_CONDITION_DEPTH) return null;
   if (!condition || typeof condition !== 'object' || Array.isArray(condition)) return null;
   if (Object.prototype.hasOwnProperty.call(condition, 'anyOf')) {
     if (!Array.isArray(condition.anyOf) || condition.anyOf.length === 0) return null;
     const results = condition.anyOf
-      .map((candidate) => evaluateCondition(candidate, values))
+      .map((candidate) => evaluateCondition(candidate, values, depth + 1))
       .filter((result) => result !== null);
     return results.length > 0 ? results.some(Boolean) : null;
   }

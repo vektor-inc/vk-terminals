@@ -514,6 +514,19 @@ test.describe.serial('設定パネル: 基本フィールド系（issue #348 で
                 disabledWhen: { key: 'engine', value: 'codex' },
                 disabledReason: 'Codex のモデル設定は現在の構成では変更できません。',
               },
+              {
+                // select の無効状態でも選択変更キーを遮断できることの確認用。
+                key: 'preset',
+                label: '実行プリセット',
+                type: 'select',
+                options: [
+                  { value: 'compact', label: 'コンパクト' },
+                  { value: 'balanced', label: 'バランス' },
+                  { value: 'thorough', label: '詳細' },
+                ],
+                disabledWhen: { key: 'engine', value: 'codex' },
+                disabledReason: 'Codex では実行プリセットを変更できません。',
+              },
             ],
           }],
           values: {
@@ -522,6 +535,7 @@ test.describe.serial('設定パネル: 基本フィールド系（issue #348 で
             depPattern: '',
             engine: 'codex',
             model: '保存済み value',
+            preset: 'balanced',
           },
         };
         window.__savedPayloads = [];
@@ -536,12 +550,14 @@ test.describe.serial('設定パネル: 基本フィールド系（issue #348 で
       });
     }
 
-    // フィールド id は描画順採番（confirmClose=0, initialCommand=1, depPattern=2）。
+    // フィールド id は描画順採番（confirmClose=0, initialCommand=1, depPattern=2,
+    // engine=3, model=4, preset=5）。
     const CONFIRM_ID = '#set-field-0';
     const INITIAL_ID = '#set-field-1';
     const DEP_PATTERN_ID = '#set-field-2';
     const ENGINE_ID = '#set-field-3';
     const MODEL_ID = '#set-field-4';
+    const PRESET_ID = '#set-field-5';
 
     // 指定入力の属する .settings-row 要素を取得する。
     function rowOf(win, inputSelector) {
@@ -674,6 +690,19 @@ test.describe.serial('設定パネル: 基本フィールド系（issue #348 で
       // datalist に無い値でも通常の text input と同じくキーボード入力できる。
       await model.fill('custom-model-1');
       await expect(model).toHaveValue('custom-model-1');
+    });
+
+    test('8: disabledWhen の select は選択変更キーを押しても値を保持する', async () => {
+      const preset = win.locator(PRESET_ID);
+      await expect(preset).toHaveAttribute('aria-disabled', 'true');
+      await expect(preset).toHaveValue('balanced');
+      await preset.focus();
+
+      // select では左右・先頭末尾移動キーも選択変更になるため、上下キーと同様に遮断する。
+      for (const key of ['ArrowLeft', 'ArrowRight', 'Home', 'End', 'ArrowDown']) {
+        await preset.press(key);
+        await expect(preset).toHaveValue('balanced');
+      }
     });
   });
 });

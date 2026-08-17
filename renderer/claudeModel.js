@@ -45,6 +45,21 @@
     return isValidEngineModel(value, MAX_CODEX_MODEL_LENGTH, CODEX_MODEL_PATTERN);
   }
 
+  // engine → その engine の model 検証関数。未登録の engine は「通してよい値が
+  // 定義されていない」ものとして必ず拒否する。エンジン追加時にこの対応表を更新すれば、
+  // HTTP 受け口もコマンド組み立ても同じ検証規則へ追随する。
+  const ENGINE_MODEL_VALIDATORS = Object.create(null);
+  ENGINE_MODEL_VALIDATORS.claude = isValidClaudeModel;
+  ENGINE_MODEL_VALIDATORS.codex = isValidCodexModel;
+  Object.freeze(ENGINE_MODEL_VALIDATORS);
+
+  function isValidModelForEngine(engine, value) {
+    if (typeof engine !== 'string') return false;
+    if (!Object.prototype.hasOwnProperty.call(ENGINE_MODEL_VALIDATORS, engine)) return false;
+    const validate = ENGINE_MODEL_VALIDATORS[engine];
+    return typeof validate === 'function' ? validate(value) : false;
+  }
+
   // ペインへ書き込む claude の起動コマンド（末尾の改行は含めない）を返す。
   // 未指定・不正値では例外を投げず、従来どおりの素の `claude` へ倒す（安全側の既定）。
   function buildClaudeLaunchCommand(model) {
@@ -59,9 +74,16 @@
     return `codex --model '${model}'`;
   }
 
+  // engine → model 対応の起動コマンドビルダー。検証関数の対応表と同じキーだけを
+  // 登録し、エンジン別の分岐が複数箇所へ増えないようにする。
+  const ENGINE_COMMAND_BUILDERS = Object.create(null);
+  ENGINE_COMMAND_BUILDERS.claude = buildClaudeLaunchCommand;
+  ENGINE_COMMAND_BUILDERS.codex = buildCodexLaunchCommand;
+  Object.freeze(ENGINE_COMMAND_BUILDERS);
+
   // ─── engine（issue #367） ───────────────────────────────────────────────
   // 新規ペインで起動する AI エンジンの許可リスト。将来エンジンを足すときは
-  // この配列（と下の ENGINE_LAUNCH_COMMANDS）だけを直せば済む形にしてある。
+  // この配列とエンジン別の検証・ビルダー・固定コマンド対応表を揃えて更新する。
   // Object.freeze で凍結し、呼び出し側が push() 等で許可値を増やせないようにする
   // （安藤の指摘・対応6）。
   //
@@ -113,8 +135,8 @@
 
   // 呼び出し側（main.js の terminal:create）が resolvedEngine（isValidEngine 済み・
   // 未指定/不正値は 'claude' に倒した後の値）と options.model から、実際にペインへ
-  // 書き込む起動コマンドを 1 箇所で決める純粋関数（副作用なし。console.warn は main.js
-  // 側が戻り値を使う。テスト容易性のため状態を持たせない）。
+  // 書き込む起動コマンドを 1 箇所で決める純粋関数。副作用を持たせず、警告が必要かは
+  // 戻り値の modelIgnored を使って main.js 側で判断する。
   //
   // 仕様（issue #374）: Claude / Codex はそれぞれ専用の検証関数を通した model を
   // `--model` 引数として受け取る。未指定・不正値は各ビルダー内で素のコマンドへ倒し、
@@ -122,19 +144,19 @@
   //
   // 戻り値:
   //   - command: ペインへ書き込む起動コマンド文字列
-  //   - modelIgnored: 後方互換のため残す状態値。対応中のエンジンでは常に false
+  //   - modelIgnored: 未登録エンジンで指定された model を無視したか
   function buildEngineAwareLaunchCommand(resolvedEngine, model) {
-    if (resolvedEngine === 'claude') {
-      return { command: buildClaudeLaunchCommand(model), modelIgnored: false };
-    }
-    if (resolvedEngine === 'codex') {
-      return { command: buildCodexLaunchCommand(model), modelIgnored: false };
+    if (typeof resolvedEngine === 'string'
+      && Object.prototype.hasOwnProperty.call(ENGINE_COMMAND_BUILDERS, resolvedEngine)) {
+      const buildCommand = ENGINE_COMMAND_BUILDERS[resolvedEngine];
+      if (typeof buildCommand === 'function') {
+        return { command: buildCommand(model), modelIgnored: false };
+      }
     }
     // ENGINE_LAUNCH_COMMANDS に無い値がここに来るのは、呼び出し側が isValidEngine を
     // 経由せず未検証の resolvedEngine を渡した場合のみ（本来は起きない想定の防御的
     // フォールバック）。その場合は任意文字列を書き込まないよう安全側の素の claude へ
-    // 倒す。この経路では model は使われていないため無視扱いにはしない
-    // （claude 起動時は model を弾いていないのと同じ「安全側の既定」の考え方）。
+    // 倒す。この経路で model が指定されていれば、黙って捨てず警告できるよう無視扱いにする。
     //
     // typeof command !== 'string' で判定する（安藤の指摘・必須1。`=== null` だけの
     // 判定は buildEngineLaunchCommand 側の実装（prototype 経由の混入対策）に依存して
@@ -142,8 +164,10 @@
     // buildEngineLaunchCommand が将来 null 以外の非文字列を返す実装に変わっても
     // ここで二重に安全側へ倒れる）。
     const command = buildEngineLaunchCommand(resolvedEngine);
-    if (typeof command !== 'string') return { command: 'claude', modelIgnored: false };
-    return { command, modelIgnored: false };
+    if (typeof command !== 'string') {
+      return { command: 'claude', modelIgnored: model !== undefined };
+    }
+    return { command, modelIgnored: model !== undefined };
   }
 
   return {
@@ -154,6 +178,7 @@
     MAX_CODEX_MODEL_LENGTH,
     CODEX_MODEL_PATTERN,
     isValidCodexModel,
+    isValidModelForEngine,
     buildCodexLaunchCommand,
     ALLOWED_ENGINES,
     isValidEngine,

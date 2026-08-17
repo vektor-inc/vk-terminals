@@ -1,6 +1,7 @@
 # Changelog
 
 - [ 機能追加 ] VK Orchestrator の設定画面で条件に応じた項目の無効化と自由入力可能な候補選択欄を描画し、Codex のモデルを指定して新規ペインを起動できる機能を追加（[#374](https://github.com/vektor-inc/vk-terminals/issues/374)）
+- [ 仕様変更 ] 1.58.0 で `engine` が `"codex"` のとき無視していた `POST /api/new-pane` の `model` を `codex --model` として渡すよう変更（不正な値はどちらのエンジンでも 400）（[#374](https://github.com/vektor-inc/vk-terminals/issues/374)）
 
 ## 1.58.0
 

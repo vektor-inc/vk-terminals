@@ -66,6 +66,19 @@ test('isFieldVisible: 参照 key 欠落は不一致扱い', () => {
   );
 });
 
+test('isFieldVisible: values の継承プロパティは参照先 key として扱わない', () => {
+  const values = Object.create({ constructor: 'advanced', inheritedMode: 'advanced' });
+
+  assert.equal(
+    isFieldVisible({ visibleWhen: { key: 'inheritedMode', value: 'advanced' } }, values),
+    false
+  );
+  assert.equal(
+    isFieldVisible({ visibleWhen: { key: 'constructor', value: 'advanced', hide: true } }, values),
+    true
+  );
+});
+
 test('isFieldVisible: boolean と文字列の型混在でも String 比較で一致する', () => {
   assert.equal(
     isFieldVisible({ key: 'target', visibleWhen: { key: 'enabled', value: 'true' } }, { enabled: true }),
@@ -119,6 +132,17 @@ test('isFieldVisible: 壊れた anyOf は fail-open で visible', () => {
   assert.equal(isFieldVisible({ visibleWhen: { anyOf: 'broken' } }, {}), true);
 });
 
+test('isFieldVisible: anyOf の深さ上限までは評価し、超過した条件は fail-open にする', () => {
+  const nestAnyOf = (depth) => {
+    let condition = { key: 'mode', value: 'advanced' };
+    for (let i = 0; i < depth; i++) condition = { anyOf: [condition] };
+    return condition;
+  };
+
+  assert.equal(isFieldVisible({ visibleWhen: nestAnyOf(5) }, { mode: 'basic' }), false);
+  assert.equal(isFieldVisible({ visibleWhen: nestAnyOf(6) }, { mode: 'basic' }), true);
+});
+
 test('isFieldDisabled: disabledWhen の一致時だけ disabled', () => {
   const field = { disabledWhen: { key: 'engine', value: 'codex' } };
 
@@ -144,4 +168,11 @@ test('isFieldDisabled: 壊れた disabledWhen は fail-open で enabled', () => 
   assert.equal(isFieldDisabled({ disabledWhen: 'engine=codex' }, { engine: 'codex' }), false);
   assert.equal(isFieldDisabled({ disabledWhen: { value: 'codex' } }, { engine: 'codex' }), false);
   assert.equal(isFieldDisabled({ disabledWhen: { anyOf: [] } }, { engine: 'codex' }), false);
+});
+
+test('isFieldDisabled: 深さ上限を超えた anyOf は fail-open で enabled', () => {
+  let condition = { key: 'engine', value: 'codex' };
+  for (let i = 0; i < 6; i++) condition = { anyOf: [condition] };
+
+  assert.equal(isFieldDisabled({ disabledWhen: condition }, { engine: 'codex' }), false);
 });

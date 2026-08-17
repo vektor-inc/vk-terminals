@@ -78,6 +78,7 @@ test('POST /api/new-pane は engine を許可リストで検証し、codex を�
   const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-engine-fixture-'));
   const fakeClaude = createFakeExecutable(fixtureRoot, 'claude', 'VK_TERMINALS_E2E_CLAUDE_CAPTURE');
   const fakeCodex = createFakeExecutable(fixtureRoot, 'codex', 'VK_TERMINALS_E2E_CODEX_CAPTURE');
+  const markerPath = path.join(os.tmpdir(), `vk-codex-pwned-${process.pid}-${Date.now()}`);
   let launched = null;
 
   try {
@@ -130,12 +131,13 @@ test('POST /api/new-pane は engine を許可リストで検証し、codex を�
     // ペインも偽実行ファイルの呼び出しも増えないことを確認する。
     const codexWithInjectedModel = await postNewPane(port, {
       engine: 'codex',
-      model: 'gpt-5.6-sol; whoami',
+      model: `gpt-5.6-sol; touch ${markerPath}`,
       noClaude: false,
     });
     expect(codexWithInjectedModel).toEqual({ status: 400, body: { error: 'invalid model' } });
     expect(await getPaneCount(port)).toBe(2);
     expect((await waitForCalls(fakeCodex.capturePath, 1)).length).toBe(1);
+    expect(fs.existsSync(markerPath)).toBe(false);
 
     // 文字列以外の model も同じく拒否する。
     const codexWithNonStringModel = await postNewPane(port, {
@@ -177,5 +179,7 @@ test('POST /api/new-pane は engine を許可リストで検証し、codex を�
   } finally {
     if (launched) await closeApp(launched);
     fs.rmSync(fixtureRoot, { recursive: true, force: true });
+    // テスト失敗時も注入確認用パスを残さない（作られていた場合は assertion が先に FAIL する）。
+    fs.rmSync(markerPath, { force: true });
   }
 });

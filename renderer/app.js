@@ -5066,8 +5066,13 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
     input.addEventListener('keydown', (event) => {
       if (!isEntryDisabled(id) || event.key === 'Tab') return;
       const copyShortcut = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'c';
-      const textNavigation = !['SELECT', 'INPUT'].includes(input.tagName)
-        || ['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key);
+      // キャレット移動キーを許可するのは text 系 input と textarea だけ。select では
+      // 同じキーが選択値を変えるため、Tab とコピー以外をすべて遮断する。
+      const textInputTypes = ['text', 'search', 'tel', 'url', 'email', 'password'];
+      const hasTextCaret = input.tagName === 'TEXTAREA'
+        || (input.tagName === 'INPUT' && textInputTypes.includes(input.type));
+      const textNavigation = hasTextCaret
+        && ['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key);
       if (!copyShortcut && !textNavigation) event.preventDefault();
     });
     const restoreDisabledValue = (event) => {

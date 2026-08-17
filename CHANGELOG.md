@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 開発環境 ] `tests/e2e/stash-header.smoke.spec.js` の3テストが個別に Electron を起動していたのを、同じ起動設定であるため1回の起動を共有するよう変更（[#377](https://github.com/vektor-inc/vk-terminals/issues/377)）
+
 ## 1.59.0
 
 - [ 機能追加 ] VK Orchestrator の設定画面で条件に応じた項目の無効化と自由入力可能な候補選択欄を描画し、Codex のモデルを指定して新規ペインを起動できる機能を追加（[#374](https://github.com/vektor-inc/vk-terminals/issues/374)）

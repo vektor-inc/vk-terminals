@@ -546,18 +546,15 @@ h4.settings-content-heading {
 }
 /* 説明タブ唯一の CTA。二次ボタンの既定境界は #8b949e へ変更したが、このボタンは
    アクセントカラー #58a6ff のままにする。モーダルの面 #0d1117 に対して 7.49:1、
-   ボタンの面 #21262d に対して 6.03:1 で WCAG 1.4.11（UI 部品 3:1）を満たす。 */
-.settings-content-tablink {
-  /* inline-flex（インラインレベル）だと匿名の行ボックスに包まれ、後続ブロックとの
-     マージン相殺が起きない。行ボックスの余り分がそのまま加算されるため、直後の見出しの
-     上余白が意図より約 12px 広がり（h4 の 18px → 30px）、余白で示している見出しの階層が
-     崩れる。ブロックレベルにして相殺を回復させ、幅は fit-content で内容ぴったりに保つ。
-     隣接セレクタで余白を打ち消す方法は取らない（ボタンの padding / line-height を
-     変えると崩れるマジックナンバーになり、後続が段落の場合も直らないため）。 */
-  display: flex;
-  width: fit-content;
-  align-items: center;
-  margin: 0 0 12px;
+   ボタンの面 #21262d に対して 6.03:1 で WCAG 1.4.11（UI 部品 3:1）を満たす。
+   一括切り替えボタン（.settings-content-apply-button・issue #380）も同じ配色・
+   タイポグラフィにするため、基本宣言はここでまとめて共有する（css.md「既存クラス・
+   変数を優先し、独自クラスをむやみに増やさない」・安藤のレビュー指摘）。クラス名
+   自体は分けたまま: renderApiTokenPanel のコメントにあるとおり、同じクラス名を
+   共有すると既存のイベント委譲（コピー・タブ移動）がこのボタンにも反応してしまう
+   ため、CSS だけをセレクタ共有で揃える。 */
+.settings-content-tablink,
+.settings-content-apply-button {
   padding: 6px 14px;
   background: #21262d;
   border: 1px solid #58a6ff;
@@ -567,8 +564,24 @@ h4.settings-content-heading {
   font-size: 12px;
   cursor: pointer;
 }
-.settings-content-tablink:hover { background: #30363d; }
-.settings-content-tablink:focus-visible {
+/* tablink 固有のレイアウト。inline-flex（インラインレベル）だと匿名の行ボックスに
+   包まれ、後続ブロックとのマージン相殺が起きない。行ボックスの余り分がそのまま
+   加算されるため、直後の見出しの上余白が意図より約 12px 広がり（h4 の 18px →
+   30px）、余白で示している見出しの階層が崩れる。ブロックレベルにして相殺を回復させ、
+   幅は fit-content で内容ぴったりに保つ。隣接セレクタで余白を打ち消す方法は取らない
+   （ボタンの padding / line-height を変えると崩れるマジックナンバーになり、後続が
+   段落の場合も直らないため）。apply-button は親（.settings-content-table-actions）
+   側で flex レイアウト・余白を組むため、この配置指定は持たない。 */
+.settings-content-tablink {
+  display: flex;
+  width: fit-content;
+  align-items: center;
+  margin: 0 0 12px;
+}
+.settings-content-tablink:hover,
+.settings-content-apply-button:hover { background: #30363d; }
+.settings-content-tablink:focus-visible,
+.settings-content-apply-button:focus-visible {
   outline: var(--vktm--outline--focus-ring);
   outline-offset: var(--vktm--outline-offset--focus-ring);
 }
@@ -750,6 +763,212 @@ h4.settings-content-heading {
 }
 .settings-content-apitoken-reissue-status[data-state="error"] {
   color: #f85149;
+}
+
+/* 表ブロック・一括切り替えボタン（issue #380）
+   ========================================================================== */
+/* 右端に「まだ続きがある」ことを示す固定フェード（issue #380 麗美の実機確認指摘）。
+   macOS のスクロールバーは静止時に非表示になり、境界にちょうど収まる列では文字の
+   途中切れという手がかりも出ないため、視覚的な手がかりを追加した。常時表示にするか
+   （スクロール可能なときだけ出すかの出し分けをしないか）は実装時の判断で、UX レビュー
+   （植草）で事後に妥当と評価されている。新しい色は増やさず、この表自体が既に
+   ボタンの背景として使っている既存トークン #21262d（.settings-content-apply-button
+   等と共通）を使う。
+   .settings-content-table-fade は overflow を持たない外側の箱で、フェード
+   （::after）専用。スクロール担当の .settings-content-table-wrap（内側）とは別要素に
+   分けている（安藤の実測指摘・issue #380）。overflow-x: auto を持つ要素の内側にある
+   絶対配置ボックスは、その要素のスクロールコンテンツの一部として一緒にスクロールして
+   しまう。wrap 自身に ::after を付けていた版では、右へスクロールした分だけ帯が左へ
+   流れ、表の途中でセルの文字を分断していた（scrollLeft が最大のとき帯が領域の左端
+   付近まで移動する実測が取れている）。overflow を持たない外側の箱に分けることで、
+   帯は内側のスクロール量の影響を受けず常に領域の右端に留まる。
+   さらにその前の版（.settings-content-table-wrap 自身の background-image）では、
+   子要素（thead th の見出し行全体・tbody th[scope=row] の行見出し列）が持つ
+   不透明な背景 #161b22 にラッパーの背景ごと覆い隠され、見出し行だけフェードが
+   消える帯になっていた（植草の UX レビュー指摘）。position: absolute を付けた
+   生成要素は通常フローの子要素（<table> とその中の <th>）より後に描かれるため、
+   ::after の絶対配置オーバーレイならその上に出せる。今回の 2 段構成は、この
+   「<th> の背景に隠れない」性質を保ったまま、「スクロールに追従しない」性質も
+   両立させるためのもの。
+   pointer-events: none で、24px の帯がクリック・スクロール操作を邪魔しないようにする。 */
+.settings-content-table-fade {
+  position: relative;
+  /* margin はここで持つ（内側の .settings-content-table-wrap には残さない）。
+     子の margin-bottom は border / padding の無い親を素通りして外側で相殺されうる
+     ため、境界をこの外側の箱ではっきりさせておく。 */
+  margin: 0 0 8px;
+}
+.settings-content-table-fade::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 24px;
+  pointer-events: none;
+  background-image: linear-gradient(to left, #21262d, rgba(33, 38, 45, 0));
+}
+/* 表全体の横スクロール領域。.settings-tab-panel の実効幅は実測 522px で、列が
+   収まらない場合はここで横スクロールする（表側で列を折り返さない）。キーボードでも
+   到達できるよう tabindex="0" + role="region" + aria-label を HTML 側で付与している。
+   矢印キー / Home / End での実際のスクロールは renderer/app.js のキー操作ハンドラを
+   参照（issue #380 麗美の実機確認指摘: Chromium は overflow-x のみのフォーカス可能要素へ
+   既定のキーボードスクロールを割り当てないため、明示的な配線が要る）。フェード
+   （::after）は外側の .settings-content-table-fade へ移したため、ここには
+   position: relative は不要（安藤の実測指摘・issue #380）。 */
+.settings-content-table-wrap {
+  overflow-x: auto;
+  border: 1px solid #21262d;
+  border-radius: 5px;
+}
+.settings-content-table-wrap:focus-visible {
+  outline: var(--vktm--outline--focus-ring);
+  outline-offset: var(--vktm--outline-offset--focus-ring);
+}
+.settings-content-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  /* 列を折り返さず、ラッパー側の横スクロールへ逃がす（狭い幅で単位や記号だけが
+     次行に落ちるのを防ぐ）。 */
+  white-space: nowrap;
+}
+.settings-content-table-caption {
+  padding: 8px 10px;
+  text-align: left;
+  color: #e6edf3;
+  font-weight: 600;
+  font-size: 12px;
+  border-bottom: 1px solid #21262d;
+}
+.settings-content-table th,
+.settings-content-table td {
+  padding: 6px 10px;
+  text-align: left;
+  border-bottom: 1px solid #21262d;
+  color: #c9d1d9;
+}
+.settings-content-table thead th {
+  color: #8b949e;
+  font-weight: 600;
+  background: #161b22;
+}
+.settings-content-table tbody th[scope="row"] {
+  color: #c9d1d9;
+  font-weight: 500;
+  background: #161b22;
+}
+.settings-content-table tbody tr:last-child th,
+.settings-content-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+/* savedValue セルの取得中表示（issue #380）。色だけに依存せず「確認中…」の文字自体で
+   状態を示す。 */
+.settings-content-table td[aria-busy="true"] {
+  color: #8b949e;
+  font-style: italic;
+}
+/* 表セルの状態バッジ。callout / status と同じトーン語彙（info/warning/error/success/
+   neutral）を使い、色だけに頼らず見出し語も併記する（.settings-content-table-badge-label）。 */
+.settings-content-table-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border: 1px solid #30363d;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.settings-content-table-badge[data-tone="success"] { border-color: #3fb950; color: #3fb950; }
+.settings-content-table-badge[data-tone="info"],
+.settings-content-table-badge[data-tone="neutral"] { border-color: #8b949e; color: #8b949e; }
+.settings-content-table-badge[data-tone="warning"] { border-color: #d29922; color: #d29922; }
+.settings-content-table-badge[data-tone="error"] { border-color: #f85149; color: #f85149; }
+.settings-content-table-badge-label {
+  font-weight: 700;
+}
+.settings-content-table-retry {
+  margin-left: 4px;
+  padding: 1px 8px;
+  background: #21262d;
+  border: 1px solid var(--vktm--color--border-interactive);
+  border-radius: 5px;
+  color: #c9d1d9;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.settings-content-table-retry:hover { background: #30363d; }
+.settings-content-table-retry:focus-visible {
+  outline: var(--vktm--outline--focus-ring);
+  outline-offset: var(--vktm--outline-offset--focus-ring);
+}
+
+/* 保存前の入力値から計算していることの明示（issue #380）。.settings-inline-notice と
+   同じ配色（色だけに依存しないラベル付き注記）。role="status" aria-live="polite" は
+   HTML 側で付与し、表本体・各セルには aria-live を付けない（セルごとの通知が重なって
+   聞き取れなくなるのを防ぐ。renderer/app.js の 300ms デバウンスと対）。 */
+.settings-content-table-livehint {
+  margin: 6px 0 12px;
+  padding: 6px 8px;
+  border-radius: 5px;
+  border-left: 3px solid #8b949e;
+  background: #161b22;
+  color: #c9d1d9;
+  font-size: 12px;
+}
+.settings-content-table-livehint[hidden] { display: none; }
+.settings-content-table-livehint-label {
+  margin-right: 4px;
+  font-weight: 600;
+  color: #d29922;
+}
+
+/* 一括切り替えボタン。表の直下（.settings-content-table-actions）に置く。基本の配色・
+   タイポグラフィは .settings-content-tablink と共有している（同ファイル該当箇所を
+   参照）。危険色は .settings-content-apitoken-btn-danger と同じトークンを再利用し、
+   新しい色は増やさない。 */
+.settings-content-table-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  margin: 0 0 12px;
+}
+.settings-content-apply-button[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+/* savedValue セルの取得待ち（issue #380 植草さんレビュー指摘）。何も見た目が変わらないと
+   押しても反応しないボタンが故障して見えるため、aria-disabled と同じ見た目にする。 */
+.settings-content-apply-button[aria-busy="true"] {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+.settings-content-apply-button-danger {
+  background: #da3633;
+  border-color: #f85149;
+  color: #fff;
+  font-weight: 600;
+}
+.settings-content-apply-button-danger:hover { background: #f85149; }
+.settings-content-table-action-reason {
+  flex-basis: 100%;
+}
+
+/* 一括切り替え直後、今見ているタブ内で変わった行を一時的にフラッシュして示す
+   （issue #380）。prefers-reduced-motion のユーザーには適用しない。 */
+@keyframes settings-content-table-flash {
+  from { background-color: rgba(88, 166, 255, 0.35); }
+  to { background-color: transparent; }
+}
+.settings-content-table-flash {
+  animation: settings-content-table-flash 0.3s ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+  .settings-content-table-flash { animation: none; }
 }
 
 .settings-group {
@@ -2901,3 +3120,12 @@ body.pane-dragging * {
   font-weight: 600;
 }
 .confirm-reissue-token:hover { background: #f85149; }
+/* 表の一括切り替え（issue #380）の上書き確認も同様に不可逆な破壊的操作のため、
+   同じ危険色トークン（#da3633 / #f85149）を再利用する。新しい色は増やさない。 */
+.confirm-apply-content-table {
+  background: #da3633;
+  border-color: #f85149;
+  color: #fff;
+  font-weight: 600;
+}
+.confirm-apply-content-table:hover { background: #f85149; }

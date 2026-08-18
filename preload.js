@@ -54,6 +54,7 @@ const INVOKE_CHANNELS = new Set([
   'settings:describe',
   'settings:api-server-status',
   'settings:save',
+  'settings:content-table-saved-value',
   'settings:api-token-info',
   'settings:reissue-api-token',
   'terminal:create',

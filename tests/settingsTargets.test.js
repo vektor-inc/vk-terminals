@@ -15,6 +15,7 @@ const {
   groupFieldsByTargetPath,
   isValidSettingsDescriptor,
   resolveFieldTargetPath,
+  resolveSavedFieldValues,
   resolveTargetPath,
   saveSettingsToTargets,
 } = require('../settingsTargets');
@@ -528,4 +529,243 @@ test('saveSettingsToTargets: 型変換バリデーションエラー時はどの
   assert.match(result.error, /数値として不正/);
   assert.deepEqual(readJson(firstPath), { name: 'before' });
   assert.deepEqual(readJson(secondPath), { count: 1 });
+});
+
+// resolveSavedFieldValue（単数版）は issue #380 導入時（f0c7faa）にバッチ化前の窓口として
+// 追加したが、main.js からは resolveSavedFieldValues（バッチ版）だけが呼ばれるようになり
+// production では未使用になった。単数版はまだ世に出ていない（同じ PR 内でのみ存在した）ため
+// 互換のために残す理由が無く、削除した（安藤のレビュー指摘）。以下のテストはすべて
+// resolveSavedFieldValues（バッチ版）へ寄せてある。
+test('resolveSavedFieldValues: ディスクリプタが宣言するキーなら保存済みの値を返す', () => {
+  const dir = makeTempDir();
+  const targetPath = path.join(dir, 'config.json');
+  writeJson(targetPath, { engine: 'claude' });
+
+  const descriptor = {
+    targetPath,
+    groups: [{ fields: [{ key: 'engine', label: 'エンジン', type: 'text' }] }],
+  };
+
+  assert.deepEqual(resolveSavedFieldValues(descriptor, ['engine']).engine, { ok: true, value: 'claude' });
+});
+
+test('resolveSavedFieldValues: 未保存（ファイルに無い）キーは null を返す', () => {
+  const dir = makeTempDir();
+  const targetPath = path.join(dir, 'config.json');
+  writeJson(targetPath, {});
+
+  const descriptor = {
+    targetPath,
+    groups: [{ fields: [{ key: 'engine', label: 'エンジン', type: 'text' }] }],
+  };
+
+  assert.deepEqual(resolveSavedFieldValues(descriptor, ['engine']).engine, { ok: true, value: null });
+});
+
+test('resolveSavedFieldValues: ディスクリプタが宣言していないキーは拒否する（許可制）', () => {
+  const dir = makeTempDir();
+  const targetPath = path.join(dir, 'config.json');
+  // ファイル自体には値があっても、ディスクリプタが宣言していないキーは読めない。
+  writeJson(targetPath, { secret: 'leaked' });
+
+  const descriptor = {
+    targetPath,
+    groups: [{ fields: [{ key: 'engine', label: 'エンジン', type: 'text' }] }],
+  };
+
+  const result = resolveSavedFieldValues(descriptor, ['secret']).secret;
+  assert.equal(result.ok, false);
+  assert.match(result.error, /許可されていない/);
+});
+
+test('resolveSavedFieldValues: 危険なキーセグメントは宣言の有無に関わらず拒否する', () => {
+  const dir = makeTempDir();
+  const targetPath = path.join(dir, 'config.json');
+  writeJson(targetPath, {});
+
+  const descriptor = {
+    targetPath,
+    // 万一 __proto__ を key として宣言していても、拒否が先に働く（isValidSettingsDescriptor
+    // で通常は弾かれるが、多重防御としてこの関数自身でも判定する）。
+    groups: [{ fields: [{ key: '__proto__.polluted', label: '危険', type: 'text' }] }],
+  };
+
+  const result = resolveSavedFieldValues(descriptor, ['__proto__.polluted'])['__proto__.polluted'];
+  assert.equal(result.ok, false);
+  assert.match(result.error, /許可されていない/);
+});
+
+test('resolveSavedFieldValues: 空文字キーはエラーを結果に含め、非文字列キーは結果に含めない', () => {
+  // resolveSavedFieldValues は keys 配列をそのまま受ける設計のため、単数版ラッパーが
+  // 担っていた「呼び出し前のガード」は無い。空文字は結果に ok:false のエントリとして残り、
+  // 文字列以外（undefined・数値等）は最初のフィルタで静かに間引かれ、結果オブジェクトに
+  // そのキー自体が現れない（「空配列・非配列・非文字列要素は空の結果を返す」テストと対）。
+  const descriptor = { targetPath: '/dev/null', groups: [] };
+  const result = resolveSavedFieldValues(descriptor, ['', undefined, 42]);
+  assert.equal(result[''].ok, false);
+  assert.equal(Object.prototype.hasOwnProperty.call(result, 'undefined'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(result, '42'), false);
+});
+
+test('resolveSavedFieldValues: field 単位の targetPath 上書きも解決する', () => {
+  const dir = makeTempDir();
+  const defaultPath = path.join(dir, 'default.json');
+  const fieldPath = path.join(dir, 'field.json');
+  writeJson(defaultPath, { engine: 'should-not-be-read' });
+  writeJson(fieldPath, { engine: 'codex' });
+
+  const descriptor = {
+    targetPath: defaultPath,
+    groups: [{ fields: [{ key: 'engine', label: 'エンジン', type: 'text', targetPath: fieldPath }] }],
+  };
+
+  assert.deepEqual(resolveSavedFieldValues(descriptor, ['engine']).engine, { ok: true, value: 'codex' });
+});
+
+test('resolveSavedFieldValues: type が password の欄は拒否する（安藤のセキュリティレビュー指摘・issue #380）', () => {
+  const dir = makeTempDir();
+  const targetPath = path.join(dir, 'config.json');
+  writeJson(targetPath, { apiToken: 'super-secret-should-not-leak' });
+
+  const descriptor = {
+    targetPath,
+    groups: [{ fields: [{ key: 'apiToken', label: 'トークン', type: 'password' }] }],
+  };
+
+  const result = resolveSavedFieldValues(descriptor, ['apiToken']).apiToken;
+  assert.equal(result.ok, false);
+  assert.match(result.error, /マスク対象/);
+  assert.equal(result.value, undefined);
+});
+
+// ─── resolveSavedFieldValues（バッチ版。issue #380 安藤のセキュリティレビュー指摘）───
+test('resolveSavedFieldValues: 複数キーを 1 回で解決し、同一 targetPath のキーも正しく個別解決する', () => {
+  const dir = makeTempDir();
+  const firstPath = path.join(dir, 'first.json');
+  const secondPath = path.join(dir, 'second.json');
+  writeJson(firstPath, { engine: 'claude', model: 'claude-sonnet-5' });
+  writeJson(secondPath, { apiKeyProvider: 'anthropic' });
+
+  const descriptor = {
+    targetPath: firstPath,
+    groups: [
+      {
+        fields: [
+          { key: 'engine', label: 'エンジン', type: 'text' },
+          { key: 'model', label: 'モデル', type: 'text' },
+        ],
+      },
+      {
+        targetPath: secondPath,
+        fields: [{ key: 'apiKeyProvider', label: 'プロバイダ', type: 'text' }],
+      },
+    ],
+  };
+
+  // resolveSavedFieldValues は __proto__ 経由の汚染を避けるため Object.create(null) を
+  // 返す。deepEqual はプロトタイプの違いも比較するため、プレーンオブジェクトへ写してから比較する。
+  assert.deepEqual({ ...resolveSavedFieldValues(descriptor, ['engine', 'model', 'apiKeyProvider']) }, {
+    engine: { ok: true, value: 'claude' },
+    model: { ok: true, value: 'claude-sonnet-5' },
+    apiKeyProvider: { ok: true, value: 'anthropic' },
+  });
+});
+
+test('resolveSavedFieldValues: 壊れた JSON の targetPath は 1 回だけ読み、同じキーが重複しても再読み込みしない（安藤のレビュー指摘・issue #380）', () => {
+  // readJsonObject は JSON.parse で例外を投げる。その例外を呼び出し側のループ内
+  // （Map#set(...) の引数評価中）で受けると set 自体が実行されずキャッシュに載らないため、
+  // 同じ壊れたファイルを参照するキーの数だけ fs.readFileSync + JSON.parse が繰り返されて
+  // しまう不具合の回帰テスト。fs.readFileSync を実体ごと差し替えて呼び出し回数を数える
+  // （settingsTargets.js と本テストは同じ require('fs') のシングルトンを参照するため、
+  // ここでの差し替えが実装側にも反映される）。
+  const dir = makeTempDir();
+  const targetPath = path.join(dir, 'broken.json');
+  fs.writeFileSync(targetPath, '{ this is not valid json');
+
+  const descriptor = {
+    targetPath,
+    groups: [{ fields: [{ key: 'engine', label: 'エンジン', type: 'text' }] }],
+  };
+
+  const originalReadFileSync = fs.readFileSync;
+  let callCount = 0;
+  fs.readFileSync = (...args) => {
+    callCount += 1;
+    return originalReadFileSync(...args);
+  };
+  try {
+    // 表の同じ列に同じ key を持つセルが複数ある状況を模して、同じキーを 3 回渡す。
+    const result = resolveSavedFieldValues(descriptor, ['engine', 'engine', 'engine']);
+    assert.equal(callCount, 1);
+    assert.equal(result.engine.ok, false);
+    assert.match(result.engine.error, /読み込みに失敗しました/);
+  } finally {
+    // 他のテストへ影響しないよう、成功・失敗どちらの経路でも必ず元に戻す。
+    fs.readFileSync = originalReadFileSync;
+  }
+});
+
+test('resolveSavedFieldValues: 1 回の呼び出し内で password・未宣言・危険キーが混ざっても他のキーの解決を妨げない', () => {
+  const dir = makeTempDir();
+  const targetPath = path.join(dir, 'config.json');
+  writeJson(targetPath, { engine: 'claude', apiToken: 'leak-me-not' });
+
+  const descriptor = {
+    targetPath,
+    groups: [
+      { fields: [{ key: 'engine', label: 'エンジン', type: 'text' }] },
+      { fields: [{ key: 'apiToken', label: 'トークン', type: 'password' }] },
+    ],
+  };
+
+  const result = resolveSavedFieldValues(descriptor, ['engine', 'apiToken', 'undeclared', '__proto__.x']);
+  assert.deepEqual(result.engine, { ok: true, value: 'claude' });
+  assert.equal(result.apiToken.ok, false);
+  assert.match(result.apiToken.error, /マスク対象/);
+  assert.equal(result.undeclared.ok, false);
+  assert.match(result.undeclared.error, /許可されていない/);
+  assert.equal(result['__proto__.x'].ok, false);
+  assert.match(result['__proto__.x'].error, /許可されていない/);
+});
+
+test('resolveSavedFieldValues: __proto__ 自体をキーに渡してもプロトタイプ汚染しない', () => {
+  const dir = makeTempDir();
+  const targetPath = path.join(dir, 'config.json');
+  writeJson(targetPath, { a: 'value' });
+  const descriptor = { targetPath, groups: [{ fields: [{ key: 'a', type: 'text' }] }] };
+
+  const result = resolveSavedFieldValues(descriptor, ['__proto__', 'a']);
+  assert.equal(Object.getPrototypeOf(result), null);
+  assert.deepEqual(result.a, { ok: true, value: 'value' });
+  assert.equal(result.__proto__.ok, false);
+  assert.match(result.__proto__.error, /許可されていない/);
+  assert.equal(Object.prototype.polluted, undefined);
+});
+
+test('resolveSavedFieldValues: 空配列・非配列・非文字列要素は空の結果を返す', () => {
+  const descriptor = { targetPath: '/dev/null', groups: [] };
+  assert.deepEqual({ ...resolveSavedFieldValues(descriptor, []) }, {});
+  assert.deepEqual({ ...resolveSavedFieldValues(descriptor, undefined) }, {});
+  assert.deepEqual({ ...resolveSavedFieldValues(descriptor, [42, null]) }, {});
+});
+
+test('resolveSavedFieldValues: 重複キーは先勝ち（renderer の dedupeSettingsFieldsByKeyQuiet と揃える・安藤のレビュー指摘）', () => {
+  // 重複 key を持つディスクリプタ自体は isValidSettingsDescriptor が丸ごと拒否するため
+  // 通常の main.js 経路では到達しないが、この関数自身は重複を検証しないため、
+  // 先勝ち・後勝ちのどちらで実装されているかをここで直接固定する。
+  const dir = makeTempDir();
+  const firstPath = path.join(dir, 'first.json');
+  const secondPath = path.join(dir, 'second.json');
+  writeJson(firstPath, { engine: 'from-first' });
+  writeJson(secondPath, { engine: 'from-second' });
+
+  const descriptor = {
+    targetPath: firstPath,
+    groups: [
+      { fields: [{ key: 'engine', label: '1 件目', type: 'text' }] },
+      { targetPath: secondPath, fields: [{ key: 'engine', label: '2 件目（重複）', type: 'text' }] },
+    ],
+  };
+
+  assert.deepEqual(resolveSavedFieldValues(descriptor, ['engine']).engine, { ok: true, value: 'from-first' });
 });

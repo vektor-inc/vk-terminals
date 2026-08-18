@@ -55,6 +55,7 @@ const {
   describeSettingsValues,
   describeTargetPaths,
   isValidSettingsDescriptor,
+  resolveSavedFieldValues,
   saveSettingsToTargets,
   readJsonObject,
 } = require('./settingsTargets');
@@ -1192,6 +1193,28 @@ ipcMain.handle('settings:save', (event, incoming) => {
   if (!descriptor) return { ok: false, error: '設定ディスクリプタが見つかりません' };
 
   return saveSettingsToTargets(descriptor, incoming);
+});
+
+// 設定コンテンツテーブルの savedValue セル（issue #380）用。キーの配列を 1 回で受け、
+// 「設定ファイルに実際に保存されている値」をキーごとにまとめて返す（バッチ IPC）。
+// 表の行数だけ IPC を往復させると、行の多い表でメインプロセス（pty・HTTP API も
+// 同じスレッドで抱えている）が同期 I/O の直列実行で固まるため、1 回の呼び出しに
+// まとめている（安藤のセキュリティレビュー指摘・issue #380）。読めるキーの許可判定
+// （groups[].fields[].key として宣言されているか・危険なキーセグメントを含まないか・
+// password 型でないか）と targetPath ごとの読み込みキャッシュは resolveSavedFieldValues
+// （settingsTargets.js）に集約してある（VK_TERMINALS_SETTINGS は外部から差し替えられる
+// 信頼できない入力のため、任意のキー・任意のパスを読み出せる窓口にしないための必須要件）。
+ipcMain.handle('settings:content-table-saved-value', (_event, keys) => {
+  const descriptor = loadSettingsDescriptor();
+  if (!descriptor) {
+    const error = '設定ディスクリプタが見つかりません';
+    const result = Object.create(null);
+    (Array.isArray(keys) ? keys : []).forEach((key) => {
+      if (typeof key === 'string') result[key] = { ok: false, error };
+    });
+    return result;
+  }
+  return resolveSavedFieldValues(descriptor, keys);
 });
 
 // ─── アクセストークン（issue #313）: 設定パネルからの表示・再発行 ─────────────

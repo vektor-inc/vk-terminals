@@ -984,8 +984,25 @@ function ensureExternalUrlToast() {
 function showExternalUrlOpenFailedToast(url) {
   const toast = ensureExternalUrlToast();
   if (!toast) return;
+  const copyButton = toast.querySelector('.vk-toast-copy');
+  if (copyButton) copyButton.hidden = false;
   externalUrlToastCopyUrl = url;
   setExternalUrlToastMessage(EXTERNAL_URL_TOAST_FAILED_MESSAGE);
+  toast.hidden = false;
+  reconsiderExternalUrlToastTimer();
+}
+
+// コピー対象を伴わない汎用メッセージ用（issue #380: 設定コンテンツテーブルの一括切り替え
+// 結果の要約など）。同じ .vk-toast インフラ（issue #326）を再利用し、URL コピー専用の
+// ボタンだけ隠す。「呼び出し箇所ごとに吹き出しを出さない」という汎用トーストの設計方針
+// （冒頭コメント参照）どおり、新しいトースト実装を増やさない。
+function showGenericToast(message) {
+  const toast = ensureExternalUrlToast();
+  if (!toast) return;
+  const copyButton = toast.querySelector('.vk-toast-copy');
+  if (copyButton) copyButton.hidden = true;
+  externalUrlToastCopyUrl = '';
+  setExternalUrlToastMessage(message);
   toast.hidden = false;
   reconsiderExternalUrlToastTimer();
 }
@@ -2664,6 +2681,76 @@ function openReissueTokenConfirmDialog(onConfirm) {
   releaseFocusTrap = focusTraps.activate(modal, { initialFocus: cancelBtn });
 }
 
+// ─── 設定コンテンツテーブルの一括切り替え確認（issue #380）─────────────────────
+// openCloseConfirmDialog / openReissueTokenConfirmDialog と全く同じパターン
+// （アプリ内モーダル・role="alertdialog"・フォーカストラップ・Escape レイヤー・復帰
+// フォーカス）を再利用する。message は呼び出し側（applyButton の click ハンドラ）が
+// 「{count}」を実際の対象件数へ置き換え済みの文字列を渡す。
+let contentTableApplyConfirmOpen = false;
+
+function openApplyContentTableConfirmDialog(message, onConfirm) {
+  if (contentTableApplyConfirmOpen) return;
+  const restoreFocusElement = document.activeElement;
+  contentTableApplyConfirmOpen = true;
+
+  const overlay = document.createElement('div');
+  overlay.className = 'confirm-overlay';
+  const modal = document.createElement('div');
+  modal.className = 'confirm-modal';
+  modal.setAttribute('role', 'alertdialog');
+  modal.setAttribute('aria-modal', 'true');
+  modal.setAttribute('aria-label', '設定の一括切り替え確認');
+
+  const msgEl = document.createElement('p');
+  msgEl.className = 'confirm-message';
+  msgEl.textContent = message;
+
+  const actions = document.createElement('div');
+  actions.className = 'confirm-actions';
+  const cancelBtn = document.createElement('button');
+  cancelBtn.type = 'button';
+  cancelBtn.className = 'confirm-cancel';
+  cancelBtn.textContent = 'キャンセル';
+  const confirmBtn = document.createElement('button');
+  confirmBtn.type = 'button';
+  confirmBtn.className = 'confirm-apply-content-table';
+  confirmBtn.textContent = '上書きする';
+  actions.appendChild(cancelBtn);
+  actions.appendChild(confirmBtn);
+
+  modal.appendChild(msgEl);
+  modal.appendChild(actions);
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+
+  let unregisterEscapeLayer = () => {};
+  let releaseFocusTrap = () => {};
+  const cleanup = () => {
+    unregisterEscapeLayer();
+    releaseFocusTrap();
+    const active = document.activeElement;
+    const shouldRestore = !active || active === document.body || overlay.contains(active);
+    overlay.remove();
+    contentTableApplyConfirmOpen = false;
+    if (shouldRestore && restoreFocusElement?.isConnected) restoreFocusElement.focus();
+  };
+  unregisterEscapeLayer = escapeLayers.register(cleanup);
+
+  overlay.addEventListener('mousedown', (e) => {
+    if (e.target !== overlay) return;
+    e.preventDefault();
+    cleanup();
+  });
+  cancelBtn.addEventListener('click', cleanup);
+  confirmBtn.addEventListener('click', () => {
+    cleanup();
+    onConfirm();
+  });
+
+  // 既定フォーカスは安全側（キャンセル）。Enter 誤爆で上書きしてしまわないようにする。
+  releaseFocusTrap = focusTraps.activate(modal, { initialFocus: cancelBtn });
+}
+
 // ペインをグリッド上で左右の隣と入れ替える。端で隣が無ければ何もしない。
 function movePane(paneId, dir) {
   const order = tree.order;
@@ -4159,6 +4246,148 @@ function renderApiTokenPanel(persisted) {
   </section>`;
 }
 
+// ─── 表ブロック・一括切り替えボタン（issue #380）───────────────────────────────
+// callout / status と同じ「色だけに依存させない」方針で、バッジには必ず見出し語を
+// 前置する。neutral は「特に注意を要さない値」を示すだけの中立色なので見出し語を省く。
+const SETTINGS_CONTENT_TABLE_BADGE_TONE_LABELS = {
+  info: '情報',
+  warning: '注意',
+  error: 'エラー',
+  success: '良好',
+};
+// fieldValue / savedValue セルが null・undefined・空文字を受け取ったときの表示。
+const SETTINGS_CONTENT_TABLE_EMPTY_VALUE_LABEL = '未設定';
+// type: 'password' の欄を参照する fieldValue / savedValue セルの表示（安藤のセキュリティ
+// レビュー指摘・issue #380）。設定画面は password 型を <input type="password"> + 👁 で
+// 意図的にマスクしているため、表がそれを迂回して平文表示・伏せ字なしで出さないようにする。
+const SETTINGS_CONTENT_TABLE_MASKED_VALUE_LABEL = '（マスク中）';
+// 横スクロール領域（.settings-content-table-wrap）をキーボードの矢印キーで動かす際の
+// 1 回あたりの移動量（px）。マウスホイールの実測（60px 相当で確実に動く）に寄せた
+// 控えめな値。厳密な整合性は求められていないため定数 1 つで足りる（issue #380 麗美の
+// 実機確認指摘）。
+const SETTINGS_CONTENT_TABLE_SCROLL_STEP = 48;
+
+// values から own property のときだけ値を取り出す。素の [] アクセスは
+// constructor / toString のようなプロトタイプ継承プロパティも拾ってしまい、
+// { type: 'fieldValue', key: 'constructor' } のようなディスクリプタで
+// "function Object() { [native code] }" のような値が表示されうる
+// （安藤のセキュリティレビュー指摘・issue #380。escText を通るため XSS ではないが、
+// savedValue 側は main プロセスの許可リストで守られているのに fieldValue だけ
+// 無防備という非対称を解消する）。
+function getOwnFieldValue(values, key) {
+  return (values && Object.prototype.hasOwnProperty.call(values, key)) ? values[key] : undefined;
+}
+
+function renderSettingsTableBadgeHtml(tone, text) {
+  const toneLabel = SETTINGS_CONTENT_TABLE_BADGE_TONE_LABELS[tone] || '';
+  const labelHtml = toneLabel
+    ? `<span class="settings-content-table-badge-label">${escText(toneLabel)}</span>`
+    : '';
+  return `<span class="settings-content-table-badge" data-tone="${escAttr(tone)}">${labelHtml}${escText(text)}</span>`;
+}
+
+// fieldValue セルの表示本体。map に一致すればバッジ（状態表現）、一致しなければ
+// 現在の生の値をそのままテキスト表示する。未知の値を隠さないのは、この表自体が
+// 「今どうなっているか」を 1 か所に示すための仕組みだから（issue #380 の背景）。
+function renderSettingsFieldValueCellBody(rawValue, map) {
+  if (rawValue === null || rawValue === undefined || rawValue === '') {
+    return escText(SETTINGS_CONTENT_TABLE_EMPTY_VALUE_LABEL);
+  }
+  const stringValue = String(rawValue);
+  const matched = (Array.isArray(map) ? map : []).find((entry) => entry.value === stringValue);
+  return matched ? renderSettingsTableBadgeHtml(matched.tone, matched.label) : escText(stringValue);
+}
+
+// table ブロックの 1 セルを <td> として描く。
+// - fieldValue: 今の入力値（未保存を含む）から都度計算し直す対象。data-fieldvalue-key /
+//   data-fieldvalue-map を持たせ、buildSettingsModal 側が applyFieldState と同じ発火点で
+//   再計算する（renderSettingsFieldValueCellBody を使い回す）。
+// - savedValue: 「設定ファイルに実際に保存されている値」。renderer だけでは分からないため
+//   IPC で都度取得する対象。初期表示は「確認中…」にしておき、buildSettingsModal 側が
+//   モーダル生成後に settings:content-table-saved-value を呼んで書き換える。
+// passwordFieldKeys: type: 'password' な設定欄の key 集合。参照先が password 型なら、
+// fieldValue / savedValue のどちらでも値を出さず「（マスク中）」に固定する
+// （main 側の resolveSavedFieldValues も password を拒否する多重防御。fieldValue は
+// renderer だけで完結するためここでしか守れない）。
+function renderSettingsTableCellHtml(cell, values, passwordFieldKeys) {
+  if (cell.type === 'badge') {
+    return `<td>${renderSettingsTableBadgeHtml(cell.tone, cell.text)}</td>`;
+  }
+  const masked = !!(passwordFieldKeys && passwordFieldKeys.has(cell.key));
+  if (cell.type === 'fieldValue') {
+    if (masked) {
+      return `<td data-fieldvalue-key="${escAttr(cell.key)}" data-fieldvalue-masked="true">${escText(SETTINGS_CONTENT_TABLE_MASKED_VALUE_LABEL)}</td>`;
+    }
+    const rawValue = getOwnFieldValue(values, cell.key);
+    const mapAttr = escAttr(JSON.stringify(cell.map));
+    return `<td data-fieldvalue-key="${escAttr(cell.key)}" data-fieldvalue-map="${mapAttr}">${renderSettingsFieldValueCellBody(rawValue, cell.map)}</td>`;
+  }
+  if (cell.type === 'savedValue') {
+    if (masked) {
+      // password 型は data-savedvalue-key を持たせない（IPC 問い合わせ自体を発生させない）。
+      return `<td data-savedvalue-masked="true">${escText(SETTINGS_CONTENT_TABLE_MASKED_VALUE_LABEL)}</td>`;
+    }
+    return `<td data-savedvalue-key="${escAttr(cell.key)}" tabindex="-1" aria-busy="true">確認中…</td>`;
+  }
+  return `<td>${escText(cell.text)}</td>`;
+}
+
+// table ブロック本体。植草の確定仕様（issue #380 decision-record）どおり、横スクロール
+// 領域はラッパーに tabindex="0" + role="region" + aria-label を持たせてキーボードでも
+// 到達できるようにする。id はモーダル全体で 1 系列（tableIdState）にして、タブをまたいでも
+// 重複しないようにする（applyButton 側が「表の直下」を previousElementSibling で
+// 見つけるための目印にもなる）。
+function renderSettingsTableHtml(block, values, tableIdState, passwordFieldKeys) {
+  const tableId = `settings-content-table-${tableIdState.n}`;
+  tableIdState.n += 1;
+  const colHeadersHtml = block.columns
+    .map((column) => `<th scope="col">${escText(column.label)}</th>`)
+    .join('');
+  const rowsHtml = block.rows.map((row) => {
+    const cellsHtml = row.cells.map((cell) => renderSettingsTableCellHtml(cell, values, passwordFieldKeys)).join('');
+    return `<tr><th scope="row">${escText(row.label)}</th>${cellsHtml}</tr>`;
+  }).join('');
+  // 入力値から計算した fieldValue セルを 1 つでも持つ表にだけ、「保存前の入力内容を
+  // もとに計算している」という注記を出す（savedValue / badge / text だけの表は
+  // 未保存の入力に連動しないため出す意味が無い）。
+  const hasFieldValueCell = block.rows.some((row) => row.cells.some((cell) => cell.type === 'fieldValue'));
+  const livehintHtml = hasFieldValueCell
+    ? `<p class="settings-content-table-livehint" role="status" aria-live="polite" hidden>
+        <span class="settings-content-table-livehint-label">未保存</span>
+        この表は保存前の入力内容をもとに計算しています。実際に反映するには保存してください。
+      </p>`
+    : '';
+  // フェード（::after）はスクロール担当の .settings-content-table-wrap の外側、
+  // overflow を持たない .settings-content-table-fade へ付ける（issue #380 安藤の実測
+  // 指摘）。overflow-x: auto を持つ要素の内側にある絶対配置ボックスはスクロール
+  // コンテンツの一部として一緒にスクロールしてしまうため、wrap 自身に付けると
+  // スクロール量ぶん帯が流れてセルの文字を分断する。id / tabindex=0 / role=region /
+  // aria-label は引き続き内側の .settings-content-table-wrap に残す（キーボード
+  // ハンドラ・フォーカスリング・fetchSavedValues の closest() がいずれも内側を
+  // 見ているため）。
+  return `<div class="settings-content-table-fade"><div class="settings-content-table-wrap" id="${escAttr(tableId)}" tabindex="0" role="region" aria-label="${escAttr(`${block.caption}（横にスクロールできます）`)}">
+    <table class="settings-content-table">
+      <caption class="settings-content-table-caption">${escText(block.caption)}</caption>
+      <thead><tr><th scope="col"></th>${colHeadersHtml}</tr></thead>
+      <tbody>${rowsHtml}</tbody>
+    </table>
+  </div></div>${livehintHtml}`;
+}
+
+// applyButton ブロック本体。その場では保存しない（renderer 側の click ハンドラが
+// markDirty を発火させるだけで、実際の書き込みは既存の「保存」ボタンに委ねる）。
+// aria-disabled の理由表示は既存の .settings-disabled-reason と見た目を揃えるため、
+// 専用クラスと一緒にそのクラスも付ける（新しい見た目を増やさない）。
+function renderSettingsApplyButtonHtml(block) {
+  const dangerClass = block.danger ? ' settings-content-apply-button-danger' : '';
+  const setsAttr = escAttr(JSON.stringify(block.sets));
+  const templateAttr = escAttr(block.confirmTemplate);
+  return `<div class="settings-content-table-actions">
+    <button type="button" class="settings-content-apply-button${dangerClass}" data-apply-sets="${setsAttr}" data-apply-confirm-template="${templateAttr}">${escText(block.label)}</button>
+    <p class="settings-content-table-action-reason settings-disabled-reason" role="status" hidden></p>
+  </div>`;
+}
+
 // 説明タブ（tabs[].content）の読み取り専用ブロックを HTML 化する。
 // blocks は settingsTabs.js の normalizeSettingsTabContent で正規化済み（未知の type や
 // 非 http(s) の URL は除去済み）である前提。content は外部ディスクリプタ
@@ -4167,7 +4396,10 @@ function renderApiTokenPanel(persisted) {
 // tabIndexById: tabLink ブロックの参照先タブ ID → タブ番号の Map。
 // extraClass: 容器（.settings-content）へ足すクラス。入力欄グループの後ろへ置くときに
 // 節の変わり目の余白を戻すために使う（下の .settings-content-after 参照）。
-function renderSettingsTabContent(blocks, tabIndexById, runtimeStatus = {}, entries = [], extraClass = '') {
+// tableIdState: table ブロックの id 採番用カウンタ（{ n: number }）。呼び出し側
+// （buildSettingsModal）がモーダル全体で 1 個だけ生成し、content / contentAfter・
+// タブをまたいで使い回すことで id の重複を防ぐ。
+function renderSettingsTabContent(blocks, tabIndexById, runtimeStatus = {}, entries = [], extraClass = '', tableIdState = { n: 0 }) {
   const html = (Array.isArray(blocks) ? blocks : []).map((block) => {
     if (block.type === 'heading') {
       // モーダル見出しが <h2> なので、その配下は h3（親セクション）/ h4（子セクション）。
@@ -4209,6 +4441,12 @@ function renderSettingsTabContent(blocks, tabIndexById, runtimeStatus = {}, entr
     }
     if (block.type === 'apiTokenPanel') {
       return renderApiTokenPanel(runtimeStatus.apiTokenPersisted);
+    }
+    if (block.type === 'table') {
+      return renderSettingsTableHtml(block, runtimeStatus.fieldValues, tableIdState, runtimeStatus.passwordFieldKeys);
+    }
+    if (block.type === 'applyButton') {
+      return renderSettingsApplyButtonHtml(block);
     }
     if (block.type === 'tabLink') {
       const targetIndex = tabIndexById.get(block.tab);
@@ -4290,6 +4528,9 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
     (group) => Array.isArray(group.fields) && group.fields.length > 0
   ));
   const tabIndexById = new Map(settingsTabs.map((tab, index) => [tab.id, index]));
+  // table ブロックの id 採番はモーダル全体で 1 系列にする（タブをまたいでも、
+  // content / contentAfter をまたいでも重複しない）。
+  const settingsContentTableIdState = { n: 0 };
   // content より先に全タブのフィールドを組み立て、status ブロックの移動先も
   // スキーマ由来の entries から確実に参照できるようにする。
   const tabGroupsHtml = useTabbedSettings
@@ -4302,6 +4543,12 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
       omitLegend: groups.length === 1 && Array.isArray(group.fields) && group.fields.length > 0,
     })).join(''))
     : [];
+  // password 型の欄を参照する fieldValue / savedValue セルをマスクするための key 集合
+  // （安藤のセキュリティレビュー指摘・issue #380）。tabGroupsHtml の組み立てで entries が
+  // 出揃った直後に 1 回だけ求め、以降のタブ・content / contentAfter で使い回す。
+  const settingsContentTablePasswordFieldKeys = new Set(
+    entries.filter(({ field }) => field.type === 'password').map(({ field }) => field.key)
+  );
   const settingsTabsHtml = useTabbedSettings ? `<div class="settings-tabs" role="tablist" aria-label="設定カテゴリ">
     ${settingsTabs.map((tab, index) => {
       const tabId = `settings-tab-${index}`;
@@ -4328,11 +4575,15 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
           const runtimeStatus = {
             apiServer: desc.apiServerStatus,
             apiTokenPersisted: desc.apiTokenPersisted,
+            // table ブロックの fieldValue セルが初期表示に使う「今の入力値」。開いた直後は
+            // 保存済みの値そのものなので、entries の初期値と同じ desc.values を渡す。
+            fieldValues: desc.values,
+            passwordFieldKeys: settingsContentTablePasswordFieldKeys,
           };
-          const contentHtml = renderSettingsTabContent(tab && tab.content, tabIndexById, runtimeStatus, entries);
+          const contentHtml = renderSettingsTabContent(tab && tab.content, tabIndexById, runtimeStatus, entries, '', settingsContentTableIdState);
           // 入力欄グループの後ろに描く説明ブロック。content と同じ種別・同じ描画処理で、
           // 置く位置だけが違う（入力欄を読み終えたあとに読ませたい補足はこちらに書く）。
-          const contentAfterHtml = renderSettingsTabContent(tab && tab.contentAfter, tabIndexById, runtimeStatus, entries, 'settings-content-after');
+          const contentAfterHtml = renderSettingsTabContent(tab && tab.contentAfter, tabIndexById, runtimeStatus, entries, 'settings-content-after', settingsContentTableIdState);
           // 説明コンテンツ（content / contentAfter）も設定グループも注記も無い、完全に空の
           // タブだけに空状態を示す。
           // 案内文の役目は「意図せず白紙になった画面で、何も見落としていないと伝える」ことなので、
@@ -4413,6 +4664,13 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
   // 外れたノードへ書き込むのとタイマーが残るのを防ぐ）。
   const copyResetTimers = new Map();
   let apiServerStatusPollTimer = null;
+  // 表の「未保存」注記（.settings-content-table-livehint）の更新デバウンス用（issue #380）。
+  // 一括切り替えボタンで複数欄が同時に変わったとき、欄ごとに読み上げが重なって
+  // 聞き取れなくなるのを避けるため、300ms 静止してから 1 回だけ更新する。
+  let contentTableLivehintTimer = null;
+  // 一括切り替え直後のフラッシュ演出を解除するタイマー（issue #380）。複数行を
+  // 同時にフラッシュしうるので、コピーのフィードバックと同じく Set で束ねて管理する。
+  const flashResetTimers = new Set();
   const clearCopyResetTimers = () => {
     copyResetTimers.forEach((timerId) => clearTimeout(timerId));
     copyResetTimers.clear();
@@ -4420,6 +4678,14 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
   const stopApiServerStatusPolling = () => {
     if (apiServerStatusPollTimer) clearInterval(apiServerStatusPollTimer);
     apiServerStatusPollTimer = null;
+  };
+  const clearContentTableLivehintTimer = () => {
+    if (contentTableLivehintTimer) clearTimeout(contentTableLivehintTimer);
+    contentTableLivehintTimer = null;
+  };
+  const clearFlashResetTimers = () => {
+    flashResetTimers.forEach((timerId) => clearTimeout(timerId));
+    flashResetTimers.clear();
   };
 
   // 保存成功後の自動クローズ。武装したまま放置すると、遅れて発火した close() が
@@ -4439,6 +4705,8 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
     releaseFocusTrap();
     clearCopyResetTimers();
     stopApiServerStatusPolling();
+    clearContentTableLivehintTimer();
+    clearFlashResetTimers();
     // 画面から消す前に、いまフォーカスが設定パネル内にあるかを見る。#257 ではこれが
     // 「自動クローズを待つ間に Tab でパネル外へ出た場合に、操作先からフォーカスを
     // 奪わない」ための条件だったが、#282 のトラップでその経路自体は無くなった。
@@ -4523,6 +4791,22 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
   let clearDirtyTabs = () => {};
   let lockSettingsFooter = () => {};
   let unlockSettingsFooter = () => {};
+  // 表ブロック・一括切り替えボタン（issue #380）。table / applyButton は
+  // tabs[].content / tabs[].contentAfter にしか現れない（どちらも useTabbedSettings が
+  // true のときしか描画されない。renderSettingsTabContent の呼び出し元を参照）ため、
+  // 実体は下の if 節の中だけで差し替える。settingsAvailable な間は applyFieldState
+  // （このずっと下で定義）がタブ表示かどうかを問わず呼ばれるため、ここで no-op を
+  // 既定にしておき、タブ無しモードでは何もしないで済むようにする（食い違いの指摘を
+  // 受けて、content だけに触れていた誤りをコメント側で修正: 実際は contentAfter にも
+  // 置ける）。
+  let refreshSettingsContentTables = () => {};
+  let updateSettingsApplyButtons = () => {};
+  let scheduleSettingsContentTableLivehint = () => {};
+  // 保存成功後に savedValue セル（＝設定ファイルに実際に保存されている値）を取り直す
+  // ためのフック（issue #380 安藤のレビュー指摘）。保存でファイルの中身が変わったのに
+  // 取り直さないと、保存後も編集を続けた場合に savedValue が古い値を表示し続ける。
+  let refreshSettingsContentSavedValues = () => {};
+
   if (useTabbedSettings) {
     const tablist = modal.querySelector('.settings-tabs');
     const tabButtons = Array.from(modal.querySelectorAll('.settings-tab'));
@@ -4917,6 +5201,343 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
       };
       apiServerStatusPollTimer = setInterval(refreshApiServerStatus, 250);
     }
+
+    // ─── 表ブロック・一括切り替えボタン（issue #380） ─────────────────────────
+    // fieldValue セルの再計算・savedValue セルの取得・applyButton の状態更新・
+    // 「未保存」注記の更新デバウンスをまとめて配線する。
+    refreshSettingsContentTables = (values) => {
+      const currentValues = values || getCurrentSettingValues();
+      modal.querySelectorAll('[data-fieldvalue-key]').forEach((td) => {
+        // password 型はマスク済み固定表示のまま動かさない（renderSettingsTableCellHtml が
+        // data-fieldvalue-map を持たせていないので、そもそも書き換える材料が無い）。
+        if (td.dataset.fieldvalueMasked === 'true') return;
+        const key = td.dataset.fieldvalueKey;
+        let map = [];
+        try {
+          map = JSON.parse(td.dataset.fieldvalueMap || '[]');
+        } catch (_e) {
+          map = [];
+        }
+        // 素の [] アクセスはプロトタイプ継承プロパティを拾うため getOwnFieldValue を通す
+        // （renderSettingsTableCellHtml の初期描画と同じ判断・安藤のレビュー指摘）。
+        td.innerHTML = renderSettingsFieldValueCellBody(getOwnFieldValue(currentValues, key), map);
+      });
+    };
+
+    // 対象欄として扱ってよいか（issue #380）。無効化中（disabledWhen）・非表示
+    // （visibleWhen で隠れている）・type: 'password'（マスク対象）のいずれかに該当する
+    // 欄は一括切り替えの対象から外す。判定はこの 1 箇所へ集約し、確認ダイアログの
+    // 件数計算・実際の書き込み・aria-disabled の判定のすべてがここを通る
+    // （安藤のセキュリティレビュー指摘: 非表示の欄は disabled 判定をすり抜けて書き込め、
+    // pattern 検証も非表示中は素通りするため、書き込み自体をここで止める必要がある）。
+    const isApplyTarget = (entry) => (
+      !!entry
+      && entry.field.type !== 'password'
+      && isEntryVisible(entry.id)
+      && !isEntryDisabled(entry.id)
+    );
+
+    // 一括切り替えの 1 件（set）が、対象フィールドへ実際にセットする「次の値」を求める。
+    // boolean は checked 判定用の真偽値、それ以外は value 比較・代入用の文字列を返す。
+    // 確認ダイアログの要否判定（willOverwrite）と実際の書き込み
+    // （applySettingsContentTableTargets）で判定基準がずれないよう 1 箇所へ集約する
+    // （boolean 欄へ value: null を指定すると "false" !== "" で常に確認ダイアログが
+    // 出ていた不具合の再発防止・安藤のレビュー指摘）。
+    const resolveApplySetNextValue = (field, rawValue) => {
+      if (field.type === 'boolean') {
+        return rawValue === true || rawValue === 'true';
+      }
+      return String((rawValue === null || rawValue === undefined) ? '' : rawValue);
+    };
+
+    // savedValue セルは「設定ファイルに実際に保存されている値」を表すため、入力のたびに
+    // 取り直す必要は無い（入力しても保存するまでファイルは変わらない）。開いたときと
+    // 再試行ボタンを押したときにだけ IPC（settings:content-table-saved-value）へ問い合わせる。
+    // 行数の多い表でも 1 回の invoke にまとめる（main.js 側の直列 I/O でアプリごと
+    // 固まるのを防ぐ・安藤のセキュリティレビュー指摘）。
+    // tableId → 問い合わせ中の td 集合。一括切り替えボタンを「確認中のセルが残っている間は
+    // 待たせる」ための判定に使う。key ではなく td を単位にするのは、同じ key を参照する
+    // セルが同じ表に複数あっても、片方が完了しただけで busy が解けないようにするため。
+    const pendingSavedValueByTable = new Map();
+    const markSavedValuePending = (tableId, td, pending) => {
+      if (!tableId) return;
+      if (!pendingSavedValueByTable.has(tableId)) pendingSavedValueByTable.set(tableId, new Set());
+      const tds = pendingSavedValueByTable.get(tableId);
+      if (pending) tds.add(td);
+      else tds.delete(td);
+    };
+    const renderSavedValueCellError = (td, onRetry) => {
+      td.textContent = '';
+      const errText = document.createElement('span');
+      errText.textContent = '取得できません';
+      const retryBtn = document.createElement('button');
+      retryBtn.type = 'button';
+      retryBtn.className = 'settings-content-table-retry';
+      retryBtn.textContent = '再試行';
+      retryBtn.addEventListener('click', onRetry);
+      td.appendChild(errText);
+      td.appendChild(document.createTextNode(' '));
+      td.appendChild(retryBtn);
+    };
+    // 複数セル分をまとめて 1 回の IPC 呼び出しで取得する。再試行は対象を 1 件に絞った
+    // 同じ経路を通す（バッチ IPC 自体は 1 件でも複数件でも同じ形）。
+    const fetchSavedValues = async (tds) => {
+      if (tds.length === 0) return;
+      tds.forEach((td) => {
+        // 再試行ボタン押下時、非同期処理の直前でセルの中身を丸ごと置き換えるとボタン
+        // 自身が DOM から消えてフォーカスが body へ落ちる（植草さんの指摘）。フォーカスが
+        // このセルの中にあるときだけ、消える前に td 自身（レンダリング時に付与した
+        // tabindex="-1"）へ退避させる。自動起動時（フォーカスがまだ他所にある）は
+        // 何もしないので、開いた直後にフォーカスを奪うことはない。
+        if (td.contains(document.activeElement)) {
+          td.focus({ preventScroll: true });
+        }
+        const wrap = td.closest('.settings-content-table-wrap');
+        markSavedValuePending(wrap ? wrap.id : '', td, true);
+        td.textContent = '確認中…';
+        td.setAttribute('aria-busy', 'true');
+      });
+      updateSettingsApplyButtons();
+
+      const keys = tds.map((td) => td.dataset.savedvalueKey);
+      let resultMap;
+      try {
+        resultMap = await VKIpc.invoke('settings:content-table-saved-value', keys);
+      } catch (e) {
+        // main 側（resolveSavedFieldValues）が Object.create(null) を返すのに合わせ、
+        // フォールバックも同じ形にする（安藤のレビュー指摘。到達経路は無いが意図を揃える）。
+        resultMap = Object.create(null);
+        const error = e && e.message;
+        keys.forEach((key) => { resultMap[key] = { ok: false, error }; });
+      }
+      // 取得中にモーダルが閉じられていたら、切り離し済みの DOM へは反映しない。
+      if (!modal.isConnected) return;
+
+      tds.forEach((td) => {
+        const key = td.dataset.savedvalueKey;
+        const wrap = td.closest('.settings-content-table-wrap');
+        markSavedValuePending(wrap ? wrap.id : '', td, false);
+        td.removeAttribute('aria-busy');
+        const result = resultMap ? resultMap[key] : null;
+        if (result && result.ok) {
+          const value = result.value;
+          td.textContent = (value === null || value === undefined || value === '')
+            ? SETTINGS_CONTENT_TABLE_EMPTY_VALUE_LABEL
+            : String(value);
+        } else {
+          // 失敗したセルだけに留める（表全体は止めない）。「取得できません」＋再試行ボタン。
+          renderSavedValueCellError(td, () => fetchSavedValues([td]));
+        }
+      });
+      updateSettingsApplyButtons();
+    };
+    // 保存成功後、表内の savedValue セル全部を取り直す（フックの実体。保存ハンドラから
+    // 呼ばれる。issue #380 安藤のレビュー指摘）。
+    refreshSettingsContentSavedValues = () => (
+      fetchSavedValues(Array.from(modal.querySelectorAll('[data-savedvalue-key]')))
+    );
+
+    // applyButton の aria-disabled（対象が全件無効化・非表示・マスク対象の場合）と
+    // aria-busy（リンクした表の savedValue セルが確認中の場合）を、対象欄の状態から
+    // 再計算する。
+    updateSettingsApplyButtons = () => {
+      modal.querySelectorAll('.settings-content-apply-button').forEach((button) => {
+        let sets = [];
+        try {
+          sets = JSON.parse(button.dataset.applySets || '[]');
+        } catch (_e) {
+          sets = [];
+        }
+        const foundEntries = sets
+          .map((set) => entries.find(({ field }) => field.key === set.key))
+          .filter((entry) => entry !== undefined);
+        const allIneligible = foundEntries.length === 0 || foundEntries.every((entry) => !isApplyTarget(entry));
+        const reasonEl = button.parentElement
+          ? button.parentElement.querySelector('.settings-content-table-action-reason')
+          : null;
+        if (allIneligible) {
+          button.setAttribute('aria-disabled', 'true');
+          if (reasonEl) {
+            reasonEl.hidden = false;
+            reasonEl.textContent = '対象の項目がすべて無効化されているため使用できません';
+          }
+        } else {
+          button.removeAttribute('aria-disabled');
+          if (reasonEl) reasonEl.hidden = true;
+        }
+
+        // 表の直下（previousElementSibling）に置かれた表とだけ紐付ける（issue #380
+        // decision-record）。表を伴わない単独ボタンは busy 判定の対象外。表と
+        // ボタンの間に「未保存」注記（.settings-content-table-livehint）が挟まる
+        // ことがあるため、1 つだけ読み飛ばして表を探す。
+        // フェード用の外側の箱（.settings-content-table-fade）が
+        // .settings-content-table-wrap を包んでいるため（issue #380 安藤の実測指摘・
+        // フェードがスクロールに追従してセルの文字を分断する不具合の修正）、直前の
+        // 兄弟要素は外側の箱になる。id を持つのは内側の .settings-content-table-wrap の
+        // ままなので、querySelector で潜って取る。
+        const actionsEl = button.closest('.settings-content-table-actions');
+        let prevEl = actionsEl ? actionsEl.previousElementSibling : null;
+        if (prevEl && prevEl.classList.contains('settings-content-table-livehint')) {
+          prevEl = prevEl.previousElementSibling;
+        }
+        const linkedTableWrap = prevEl && prevEl.classList.contains('settings-content-table-fade')
+          ? prevEl.querySelector('.settings-content-table-wrap')
+          : null;
+        const linkedTableId = linkedTableWrap ? linkedTableWrap.id : '';
+        const pendingTds = linkedTableId ? pendingSavedValueByTable.get(linkedTableId) : null;
+        if (pendingTds && pendingTds.size > 0) {
+          button.setAttribute('aria-busy', 'true');
+        } else {
+          button.removeAttribute('aria-busy');
+        }
+      });
+    };
+
+    // 「未保存」注記（.settings-content-table-livehint）は 300ms デバウンスしてから
+    // 1 回だけ更新する。セルごとに aria-live を付けず、この 1 か所へ読み上げ通知を
+    // 集約するための仕組み（一括切り替えで複数欄が同時に変わっても読み上げが重ならない）。
+    scheduleSettingsContentTableLivehint = () => {
+      clearContentTableLivehintTimer();
+      contentTableLivehintTimer = setTimeout(() => {
+        contentTableLivehintTimer = null;
+        if (!modal.isConnected) return;
+        const dirty = tabButtons.some((button) => button.classList.contains('is-dirty'));
+        modal.querySelectorAll('.settings-content-table-livehint').forEach((el) => {
+          el.hidden = !dirty;
+        });
+      }, 300);
+    };
+
+    // 一括切り替えボタンの本体。press 直後は保存せず、対象の入力欄へ値をセットして
+    // 既存の input/change イベント経路（markDirty・applyFieldState・pattern 再検証）に
+    // 乗せるだけにする。対象は isApplyTarget を対象ごとにその場で取り直しながら判定する
+    // （直前の書き込みで連動して無効化・非表示になる欄があるため、事前に一括で確定させず、
+    // 迂回せず最初から対象外にする）。
+    const applySettingsContentTableTargets = (button, sets) => {
+      const currentActiveIndex = tabButtons.findIndex((b) => b.getAttribute('aria-selected') === 'true');
+      let appliedCount = 0;
+      const changedEntries = [];
+      for (const set of sets) {
+        const entry = entries.find(({ field }) => field.key === set.key);
+        if (!isApplyTarget(entry)) continue;
+        const input = getEntryInput(entry.id);
+        if (!input) continue;
+        const nextValue = resolveApplySetNextValue(entry.field, set.value);
+        if (entry.field.type === 'boolean') {
+          input.checked = nextValue;
+        } else {
+          const previousValue = input.value;
+          input.value = nextValue;
+          // number / select はブラウザが受理しない値（非数値・未知の選択肢）を書き込むと
+          // 黙って空文字・未選択へ落ちる。書き込んだ直後に読み直し、意図どおり入らなかった
+          // 場合は値を元へ戻したうえで対象外（skippedCount）へ回す。型に合わない値を
+          // 「切り替えました」と誤報告しない・欄の見た目を空のまま残さないための対応
+          // （安藤のレビュー指摘）。
+          if (input.value !== nextValue) {
+            input.value = previousValue;
+            continue;
+          }
+        }
+        input.dispatchEvent(new Event('input'));
+        input.dispatchEvent(new Event('change'));
+        appliedCount += 1;
+        changedEntries.push(entry);
+      }
+
+      // 今見ているタブ内で変わった行だけを一時的にフラッシュする。アニメーションは
+      // prefers-reduced-motion を CSS 側で尊重する（renderer/style.css 参照）。タイマーは
+      // モーダルを閉じるときに clearFlashResetTimers() でまとめて片付ける。
+      changedEntries
+        .filter((entry) => entry.tabIndex === currentActiveIndex)
+        .forEach((entry) => {
+          const row = getEntryRow(entry.id);
+          if (!row) return;
+          row.classList.add('settings-content-table-flash');
+          const timerId = setTimeout(() => {
+            flashResetTimers.delete(timerId);
+            row.classList.remove('settings-content-table-flash');
+          }, 300);
+          flashResetTimers.add(timerId);
+        });
+
+      const skippedCount = sets.length - appliedCount;
+      // 「変更できない状態」は無効化中・非表示の欄にしか当てはまらない。password 欄
+      // （isApplyTarget が除外）は普通に編集できる欄だし、型不一致（number への非数値・
+      // select の未知の選択肢）も欄自体は変更可能で今回のセット内容が受理されなかった
+      // だけなので、理由を問わない中立な言い回しにする（植草さんのレビュー指摘）。
+      const summary = skippedCount > 0
+        ? `${appliedCount}件の設定を切り替えました（${skippedCount}件は対象外です。無効化中・非表示・保護対象の項目や、反映できない値だったため）。保存するには「保存」を押してください。`
+        : `${appliedCount}件の設定を切り替えました。保存するには「保存」を押してください。`;
+      showGenericToast(summary);
+    };
+
+    modal.querySelectorAll('.settings-content-apply-button').forEach((button) => {
+      button.addEventListener('click', () => {
+        if (button.getAttribute('aria-disabled') === 'true' || button.getAttribute('aria-busy') === 'true') return;
+        let sets = [];
+        try {
+          sets = JSON.parse(button.dataset.applySets || '[]');
+        } catch (_e) {
+          sets = [];
+        }
+        // 押した時点のスナップショットで、確認ダイアログを挟むかどうかと表示件数を決める。
+        // 実際の書き込みは applySettingsContentTableTargets 側で対象ごとに状態を取り直す
+        // ため、連動で状態が変わるケースでは適用結果の件数と多少ずれうる（許容する）。
+        const eligible = sets
+          .map((set) => ({ set, entry: entries.find(({ field }) => field.key === set.key) }))
+          .filter(({ entry }) => isApplyTarget(entry));
+        if (eligible.length === 0) return; // ボタンは aria-disabled のはずだが念のための保険
+
+        const willOverwrite = eligible.some(({ set, entry }) => {
+          const input = getEntryInput(entry.id);
+          if (!input) return false;
+          const nextValue = resolveApplySetNextValue(entry.field, set.value);
+          const currentValue = entry.field.type === 'boolean' ? input.checked : input.value;
+          return currentValue !== nextValue;
+        });
+
+        const doApply = () => applySettingsContentTableTargets(button, sets);
+
+        if (willOverwrite) {
+          const template = button.dataset.applyConfirmTemplate || '';
+          const message = template.replace('{count}', String(eligible.length));
+          openApplyContentTableConfirmDialog(message, doApply);
+        } else {
+          doApply();
+        }
+      });
+    });
+
+    // 横スクロール領域（.settings-content-table-wrap）のキーボード操作（issue #380
+    // 麗美の実機確認指摘）。tabindex="0" で Tab 到達はできても、Chromium は
+    // overflow-x だけを持つフォーカス可能要素に既定のキーボードスクロールを割り当てない
+    // ため、到達しても隠れた列を読む手段が無かった（マウスホイールでは実際にスクロール
+    // できており、実装そのものは機能している）。ArrowLeft/ArrowRight で少しずつ、
+    // Home/End で両端へ移動できるようにする。
+    modal.addEventListener('keydown', (event) => {
+      // event.target は「今フォーカスしている要素」そのもの。closest() で祖先まで
+      // 拾わないのは、ラッパー内の子（再試行ボタン等、実際にフォーカスを持てる要素）に
+      // フォーカスがあるときはこの分岐を素通りさせ、表の外・入力欄・ボタンでの
+      // キー操作を奪わないため（「スクロール領域自体にフォーカスがあるときだけ」）。
+      const wrap = event.target;
+      if (!(wrap instanceof HTMLElement) || !wrap.classList.contains('settings-content-table-wrap')) return;
+      if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight' && event.key !== 'Home' && event.key !== 'End') return;
+      // 収まりきっている表（スクロールの必要が無い）では既定動作に任せ、キー操作を
+      // 飲み込まない。Tab はそもそもこの 4 キーに含まれないため常に素通しされる。
+      if (wrap.scrollWidth <= wrap.clientWidth) return;
+      if (event.key === 'ArrowLeft') wrap.scrollLeft -= SETTINGS_CONTENT_TABLE_SCROLL_STEP;
+      else if (event.key === 'ArrowRight') wrap.scrollLeft += SETTINGS_CONTENT_TABLE_SCROLL_STEP;
+      else if (event.key === 'Home') wrap.scrollLeft = 0;
+      else wrap.scrollLeft = wrap.scrollWidth;
+      event.preventDefault();
+    });
+
+    // savedValue セルの初期取得は、updateSettingsApplyButtons の実体（上の代入）より
+    // 後ろで蹴る。ここより前で呼ぶと fetchSavedValues 内の呼び出しが代入前の no-op
+    // スタブを掴んだままになり、初回だけ aria-busy が反映されない（安藤のレビュー指摘）。
+    fetchSavedValues(Array.from(modal.querySelectorAll('[data-savedvalue-key]')));
+
+    updateSettingsApplyButtons();
     updateSettingsFooter();
   }
 
@@ -5005,6 +5626,12 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
       if (describedBy.size > 0) input.setAttribute('aria-describedby', Array.from(describedBy).join(' '));
       else input.removeAttribute('aria-describedby');
     }
+    // 表ブロック・一括切り替えボタン（issue #380）も、入力欄の表示・無効化と同じ
+    // 発火点（applyFieldState）で再計算する。useTabbedSettings が false のときは
+    // no-op（宣言側の既定値のまま）。
+    refreshSettingsContentTables(values);
+    updateSettingsApplyButtons();
+    scheduleSettingsContentTableLivehint();
   };
 
   // 表示中の欄に pattern 違反が残っているか。DOM の aria-invalid ではなく値から判定する。
@@ -5163,6 +5790,10 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
         // dirty 解除でフッターの構成が変わらないよう、先に固定してから解除する。
         lockSettingsFooter();
         clearDirtyTabs();
+        // 保存でファイルの中身が変わったので、savedValue セル（＝保存済みの値）を
+        // 取り直す。取り直さないと、保存後も編集を続けた場合に古い値が残り続ける
+        // （安藤のレビュー指摘・issue #380）。
+        refreshSettingsContentSavedValues();
         msg.textContent = '保存しました。次回の起動から反映されます。';
         msg.classList.add('ok');
         autoClose.arm();

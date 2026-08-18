@@ -4261,6 +4261,11 @@ const SETTINGS_CONTENT_TABLE_EMPTY_VALUE_LABEL = '未設定';
 // レビュー指摘・issue #380）。設定画面は password 型を <input type="password"> + 👁 で
 // 意図的にマスクしているため、表がそれを迂回して平文表示・伏せ字なしで出さないようにする。
 const SETTINGS_CONTENT_TABLE_MASKED_VALUE_LABEL = '（マスク中）';
+// 横スクロール領域（.settings-content-table-wrap）をキーボードの矢印キーで動かす際の
+// 1 回あたりの移動量（px）。マウスホイールの実測（60px 相当で確実に動く）に寄せた
+// 控えめな値。厳密な整合性は求められていないため定数 1 つで足りる（issue #380 麗美の
+// 実機確認指摘）。
+const SETTINGS_CONTENT_TABLE_SCROLL_STEP = 48;
 
 // values から own property のときだけ値を取り出す。素の [] アクセスは
 // constructor / toString のようなプロトタイプ継承プロパティも拾ってしまい、
@@ -5487,6 +5492,30 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
           doApply();
         }
       });
+    });
+
+    // 横スクロール領域（.settings-content-table-wrap）のキーボード操作（issue #380
+    // 麗美の実機確認指摘）。tabindex="0" で Tab 到達はできても、Chromium は
+    // overflow-x だけを持つフォーカス可能要素に既定のキーボードスクロールを割り当てない
+    // ため、到達しても隠れた列を読む手段が無かった（マウスホイールでは実際にスクロール
+    // できており、実装そのものは機能している）。ArrowLeft/ArrowRight で少しずつ、
+    // Home/End で両端へ移動できるようにする。
+    modal.addEventListener('keydown', (event) => {
+      // event.target は「今フォーカスしている要素」そのもの。closest() で祖先まで
+      // 拾わないのは、ラッパー内の子（再試行ボタン等、実際にフォーカスを持てる要素）に
+      // フォーカスがあるときはこの分岐を素通りさせ、表の外・入力欄・ボタンでの
+      // キー操作を奪わないため（「スクロール領域自体にフォーカスがあるときだけ」）。
+      const wrap = event.target;
+      if (!(wrap instanceof HTMLElement) || !wrap.classList.contains('settings-content-table-wrap')) return;
+      if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight' && event.key !== 'Home' && event.key !== 'End') return;
+      // 収まりきっている表（スクロールの必要が無い）では既定動作に任せ、キー操作を
+      // 飲み込まない。Tab はそもそもこの 4 キーに含まれないため常に素通しされる。
+      if (wrap.scrollWidth <= wrap.clientWidth) return;
+      if (event.key === 'ArrowLeft') wrap.scrollLeft -= SETTINGS_CONTENT_TABLE_SCROLL_STEP;
+      else if (event.key === 'ArrowRight') wrap.scrollLeft += SETTINGS_CONTENT_TABLE_SCROLL_STEP;
+      else if (event.key === 'Home') wrap.scrollLeft = 0;
+      else wrap.scrollLeft = wrap.scrollWidth;
+      event.preventDefault();
     });
 
     // savedValue セルの初期取得は、updateSettingsApplyButtons の実体（上の代入）より

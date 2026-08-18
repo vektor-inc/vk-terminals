@@ -769,12 +769,30 @@ h4.settings-content-heading {
    ========================================================================== */
 /* 表全体の横スクロール領域。.settings-tab-panel の実効幅は実測 522px で、列が
    収まらない場合はここで横スクロールする（表側で列を折り返さない）。キーボードでも
-   到達できるよう tabindex="0" + role="region" + aria-label を HTML 側で付与している。 */
+   到達できるよう tabindex="0" + role="region" + aria-label を HTML 側で付与している。
+   矢印キー / Home / End での実際のスクロールは renderer/app.js のキー操作ハンドラを
+   参照（issue #380 麗美の実機確認指摘: Chromium は overflow-x のみのフォーカス可能要素へ
+   既定のキーボードスクロールを割り当てないため、明示的な配線が要る）。 */
 .settings-content-table-wrap {
+  position: relative;
   margin: 0 0 8px;
   overflow-x: auto;
   border: 1px solid #21262d;
   border-radius: 5px;
+  /* 右端に「まだ続きがある」ことを示す固定フェード（issue #380 麗美の実機確認指摘）。
+     macOS のスクロールバーは静止時に非表示になり、境界にちょうど収まる列では文字の
+     途中切れという手がかりも出ないため、常時表示の視覚的な手がかりを追加した。
+     新しい色は増やさず、この表自体が既にボタンの背景として使っている既存トークン
+     #21262d（.settings-content-apply-button 等と共通）を使う。
+     background-attachment の既定（scroll）は要素自身の内部スクロール（scrollLeft）には
+     追従せず要素の境界へ固定されるため、スクロール位置によらず常に右端に留まる
+     （sticky 要素や JS を使わずに実現できる）。実際にスクロールできない表でもうっすら
+     影が出るが、常時表示は仕様として許容している（司・植草の判断）。
+     セルの文字より手前に出ないよう、常に文字の背後（この要素自身の背景）に留まる。 */
+  background-image: linear-gradient(to left, #21262d, rgba(33, 38, 45, 0));
+  background-repeat: no-repeat;
+  background-position: right top;
+  background-size: 24px 100%;
 }
 .settings-content-table-wrap:focus-visible {
   outline: var(--vktm--outline--focus-ring);

@@ -289,7 +289,7 @@ test.describe.serial('設定パネル: コンテンツテーブル（issue #380,
     expect(saved.engine).toBe('codex');
   });
 
-  test('横スクロール領域はキーボード（Tab）で到達できる', async () => {
+  test('横スクロール領域はキーボードで到達でき、矢印キー・Home/End で実際にスクロールできる', async () => {
     await win.locator('#settings-tab-1').click();
     const wrap = win.locator('.settings-content-table-wrap').first();
     await expect(wrap).toHaveAttribute('tabindex', '0');
@@ -306,28 +306,49 @@ test.describe.serial('設定パネル: コンテンツテーブル（issue #380,
     const reached = await tabUntilFocused(win, wrap);
     expect(reached).toBe(true);
 
-    // 【重要な指摘（麗美の実測）】到達（フォーカス）はできるが、到達後の矢印キー・End・
-    // PageDown はいずれもこの領域をスクロールしない（Chromium は overflow-x のみを持つ
-    // フォーカス可能な要素に対して既定のキーボードスクロールを割り当てていない模様。
-    // 実測: ArrowRight/End は scrollLeft 不変、マウスホイールでは実際にスクロールする）。
-    // つまりキーボードのみの利用者は表の存在・隠れた列に「到達」はできても、そこから
-    // 先の内容を「見る」手段が無い。ここは e2e として結論を出さず、司への報告に委ねる。
-    const before = await wrap.evaluate((el) => el.scrollLeft);
+    // 【issue #380 麗美の実機確認指摘への対応】到達（フォーカス）はできても、Chromium は
+    // overflow-x のみのフォーカス可能要素へ既定のキーボードスクロールを割り当てないため、
+    // renderer/app.js 側に矢印キー / Home / End の配線を追加した。ここではその実効を
+    // 確認する（devicePixelRatio による丸めの影響を避けるため、絶対値ではなく方向・
+    // 大小関係・端での idempotency で確認する）。
+    const initial = await wrap.evaluate((el) => el.scrollLeft);
     await win.keyboard.press('ArrowRight');
+    const afterArrowRight = await wrap.evaluate((el) => el.scrollLeft);
+    expect(afterArrowRight).toBeGreaterThan(initial);
+
+    // ArrowLeft で戻る方向にも動く。
+    await win.keyboard.press('ArrowLeft');
+    const afterArrowLeft = await wrap.evaluate((el) => el.scrollLeft);
+    expect(afterArrowLeft).toBeLessThan(afterArrowRight);
+
+    // End で右端まで到達し、そこで押し続けても変化しない（＝実際に右端に達している）。
     await win.keyboard.press('End');
-    const afterKeys = await wrap.evaluate((el) => el.scrollLeft);
-    // マウスホイールでは実際にスクロールできることの確認（実装が完全に壊れているの
-    // ではなく、キーボード操作の経路だけが未実装であることの切り分け）。
+    const afterEnd1 = await wrap.evaluate((el) => el.scrollLeft);
+    expect(afterEnd1).toBeGreaterThan(afterArrowLeft);
+    await win.keyboard.press('End');
+    const afterEnd2 = await wrap.evaluate((el) => el.scrollLeft);
+    expect(afterEnd2).toBe(afterEnd1);
+
+    // Home で左端（0）へ戻る。
+    await win.keyboard.press('Home');
+    const afterHome = await wrap.evaluate((el) => el.scrollLeft);
+    expect(afterHome).toBe(0);
+
+    // マウスホイールでも変わらずスクロールできる（キーボード対応の追加で既存のマウス
+    // 操作を壊していないことの確認）。
     const box = await wrap.boundingBox();
     await win.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
     await win.mouse.wheel(60, 0);
     const afterWheel = await wrap.evaluate((el) => el.scrollLeft);
-    expect(afterWheel).toBeGreaterThan(before);
-    // 分析用に記録するだけで、ここでは assert しない（矢印キーでの操作可否は司へ報告）。
-    test.info().annotations.push({
-      type: 'keyboard-scroll-check',
-      description: `scrollLeft before=${before} afterArrowKeys=${afterKeys} afterWheel=${afterWheel}`,
-    });
+    expect(afterWheel).toBeGreaterThan(afterHome);
+
+    // Tab はこのキー操作の配線に奪われず、通常どおりフォーカスを次へ送る
+    // （「Tab は必ず素通しする」の確認）。
+    const stillFocused = await wrap.evaluate((el) => el === document.activeElement);
+    expect(stillFocused).toBe(true);
+    await win.keyboard.press('Tab');
+    const movedAway = await wrap.evaluate((el) => el !== document.activeElement);
+    expect(movedAway).toBe(true);
   });
 });
 

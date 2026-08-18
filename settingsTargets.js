@@ -134,36 +134,80 @@ function describeSettingsValues(descriptor, options = {}) {
 }
 
 // 設定コンテンツテーブルの savedValue セル（issue #380）用。「設定ファイルに実際に
-// 保存されている値」を 1 キーだけ返す。
+// 保存されている値」を、複数キーまとめて 1 回の呼び出しで返す。
 //
 // セキュリティ上の必須要件: 設定ディスクリプタは環境変数 VK_TERMINALS_SETTINGS で
 // 外部から差し替えられる信頼できない入力のため、読めるキーはそのディスクリプタ自身が
 // groups[].fields[].key として宣言しているキーだけに限定する（許可制）。任意のキー・
 // 任意のパスを読み出せる汎用の問い合わせ窓口にしないこと。呼び出し元（main.js）は
 // renderer から届いた key をそのまま渡してよく、許可判定はこの関数の中で完結する。
+// あわせて type: 'password' のフィールドは拒否する（マスク対象の秘密情報を表へ
+// 平文で漏らさないための必須要件・安藤のセキュリティレビュー指摘・issue #380）。
+//
+// main.js:1 セルごとに loadSettingsDescriptor() + readJsonObject() を直列実行すると
+// 行数の多い表でメインプロセスが固まる（同レビュー指摘）。ここでは
+// describeSettingsValues と同じ方針で targetPath ごとに読み込みをキャッシュし、
+// 同じファイルへの重複読み込みを避ける。
+//
+// 戻り値はキーをそのままプロパティ名にした素のオブジェクトを返す想定だが、
+// __proto__ 等のキーで自身のプロトタイプを書き換えられないよう、プロトタイプを
+// 持たないオブジェクト（Object.create(null)）に積む
+// （dedupeSettingsFieldsByKeyQuiet が seenKeys を Set にしているのと同じ配慮）。
+function resolveSavedFieldValues(descriptor, keys) {
+  const keyList = (Array.isArray(keys) ? keys : []).filter((key) => typeof key === 'string');
+  const entryByKey = new Map(
+    descriptorFieldTargetEntries(descriptor).map((entry) => [entry.field.key, entry])
+  );
+  const jsonCache = new Map(); // targetPath -> パース済みオブジェクト（読み込みは 1 回だけ）
+  const results = Object.create(null);
+
+  for (const key of keyList) {
+    if (!key.trim()) {
+      results[key] = { ok: false, error: '対象の設定キーが指定されていません' };
+      continue;
+    }
+    if (hasUnsafeKeySegment(key)) {
+      results[key] = { ok: false, error: '許可されていない設定キーです' };
+      continue;
+    }
+    // ディスクリプタが宣言しているフィールドの中に無いキーは、たとえ実在の設定
+    // ファイルに同名のキーがあっても拒否する（宣言されていないキー・パスを
+    // 読み出せる窓口を作らない）。
+    const entry = entryByKey.get(key);
+    if (!entry) {
+      results[key] = { ok: false, error: '許可されていない設定キーです' };
+      continue;
+    }
+    if (entry.field.type === 'password') {
+      results[key] = { ok: false, error: 'マスク対象の設定キーです' };
+      continue;
+    }
+    if (typeof entry.targetPath !== 'string' || entry.targetPath === '') {
+      results[key] = { ok: false, error: '保存先が未設定です' };
+      continue;
+    }
+    try {
+      if (!jsonCache.has(entry.targetPath)) {
+        jsonCache.set(entry.targetPath, readJsonObject(entry.targetPath));
+      }
+      const current = jsonCache.get(entry.targetPath);
+      const value = deepGet(current, key);
+      results[key] = { ok: true, value: value === undefined ? null : value };
+    } catch (error) {
+      results[key] = { ok: false, error: `読み込みに失敗しました: ${error.message}` };
+    }
+  }
+
+  return results;
+}
+
+// 単発呼び出し用の薄いラッパー。実体は resolveSavedFieldValues（バッチ版）で、
+// キャッシュ・許可判定・password 拒否のロジックを二重に持たない。
 function resolveSavedFieldValue(descriptor, key) {
   if (typeof key !== 'string' || !key.trim()) {
     return { ok: false, error: '対象の設定キーが指定されていません' };
   }
-  if (hasUnsafeKeySegment(key)) {
-    return { ok: false, error: '許可されていない設定キーです' };
-  }
-  // ディスクリプタが宣言しているフィールドの中に無いキーは、たとえ実在の設定ファイルに
-  // 同名のキーがあっても拒否する（宣言されていないキー・パスを読み出せる窓口を作らない）。
-  const entry = descriptorFieldTargetEntries(descriptor).find(({ field }) => field.key === key);
-  if (!entry) {
-    return { ok: false, error: '許可されていない設定キーです' };
-  }
-  if (typeof entry.targetPath !== 'string' || entry.targetPath === '') {
-    return { ok: false, error: '保存先が未設定です' };
-  }
-  try {
-    const current = readJsonObject(entry.targetPath);
-    const value = deepGet(current, key);
-    return { ok: true, value: value === undefined ? null : value };
-  } catch (error) {
-    return { ok: false, error: `読み込みに失敗しました: ${error.message}` };
-  }
+  return resolveSavedFieldValues(descriptor, [key])[key];
 }
 
 function coerceFieldValue(field, raw) {
@@ -342,6 +386,7 @@ module.exports = {
   readJsonObject,
   resolveFieldTargetPath,
   resolveSavedFieldValue,
+  resolveSavedFieldValues,
   resolveTargetPath,
   saveSettingsToTargets,
 };

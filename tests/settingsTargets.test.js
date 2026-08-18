@@ -16,6 +16,7 @@ const {
   isValidSettingsDescriptor,
   resolveFieldTargetPath,
   resolveSavedFieldValue,
+  resolveSavedFieldValues,
   resolveTargetPath,
   saveSettingsToTargets,
 } = require('../settingsTargets');
@@ -611,4 +612,97 @@ test('resolveSavedFieldValue: field 単位の targetPath 上書きも解決す�
   };
 
   assert.deepEqual(resolveSavedFieldValue(descriptor, 'engine'), { ok: true, value: 'codex' });
+});
+
+test('resolveSavedFieldValue: type が password の欄は拒否する（安藤のセキュリティレビュー指摘・issue #380）', () => {
+  const dir = makeTempDir();
+  const targetPath = path.join(dir, 'config.json');
+  writeJson(targetPath, { apiToken: 'super-secret-should-not-leak' });
+
+  const descriptor = {
+    targetPath,
+    groups: [{ fields: [{ key: 'apiToken', label: 'トークン', type: 'password' }] }],
+  };
+
+  const result = resolveSavedFieldValue(descriptor, 'apiToken');
+  assert.equal(result.ok, false);
+  assert.match(result.error, /マスク対象/);
+  assert.equal(result.value, undefined);
+});
+
+// ─── resolveSavedFieldValues（バッチ版。issue #380 安藤のセキュリティレビュー指摘）───
+test('resolveSavedFieldValues: 複数キーを 1 回で解決し、同一 targetPath のキーも正しく個別解決する', () => {
+  const dir = makeTempDir();
+  const firstPath = path.join(dir, 'first.json');
+  const secondPath = path.join(dir, 'second.json');
+  writeJson(firstPath, { engine: 'claude', model: 'claude-sonnet-5' });
+  writeJson(secondPath, { apiKeyProvider: 'anthropic' });
+
+  const descriptor = {
+    targetPath: firstPath,
+    groups: [
+      {
+        fields: [
+          { key: 'engine', label: 'エンジン', type: 'text' },
+          { key: 'model', label: 'モデル', type: 'text' },
+        ],
+      },
+      {
+        targetPath: secondPath,
+        fields: [{ key: 'apiKeyProvider', label: 'プロバイダ', type: 'text' }],
+      },
+    ],
+  };
+
+  // resolveSavedFieldValues は __proto__ 経由の汚染を避けるため Object.create(null) を
+  // 返す。deepEqual はプロトタイプの違いも比較するため、プレーンオブジェクトへ写してから比較する。
+  assert.deepEqual({ ...resolveSavedFieldValues(descriptor, ['engine', 'model', 'apiKeyProvider']) }, {
+    engine: { ok: true, value: 'claude' },
+    model: { ok: true, value: 'claude-sonnet-5' },
+    apiKeyProvider: { ok: true, value: 'anthropic' },
+  });
+});
+
+test('resolveSavedFieldValues: 1 回の呼び出し内で password・未宣言・危険キーが混ざっても他のキーの解決を妨げない', () => {
+  const dir = makeTempDir();
+  const targetPath = path.join(dir, 'config.json');
+  writeJson(targetPath, { engine: 'claude', apiToken: 'leak-me-not' });
+
+  const descriptor = {
+    targetPath,
+    groups: [
+      { fields: [{ key: 'engine', label: 'エンジン', type: 'text' }] },
+      { fields: [{ key: 'apiToken', label: 'トークン', type: 'password' }] },
+    ],
+  };
+
+  const result = resolveSavedFieldValues(descriptor, ['engine', 'apiToken', 'undeclared', '__proto__.x']);
+  assert.deepEqual(result.engine, { ok: true, value: 'claude' });
+  assert.equal(result.apiToken.ok, false);
+  assert.match(result.apiToken.error, /マスク対象/);
+  assert.equal(result.undeclared.ok, false);
+  assert.match(result.undeclared.error, /許可されていない/);
+  assert.equal(result['__proto__.x'].ok, false);
+  assert.match(result['__proto__.x'].error, /許可されていない/);
+});
+
+test('resolveSavedFieldValues: __proto__ 自体をキーに渡してもプロトタイプ汚染しない', () => {
+  const dir = makeTempDir();
+  const targetPath = path.join(dir, 'config.json');
+  writeJson(targetPath, { a: 'value' });
+  const descriptor = { targetPath, groups: [{ fields: [{ key: 'a', type: 'text' }] }] };
+
+  const result = resolveSavedFieldValues(descriptor, ['__proto__', 'a']);
+  assert.equal(Object.getPrototypeOf(result), null);
+  assert.deepEqual(result.a, { ok: true, value: 'value' });
+  assert.equal(result.__proto__.ok, false);
+  assert.match(result.__proto__.error, /許可されていない/);
+  assert.equal(Object.prototype.polluted, undefined);
+});
+
+test('resolveSavedFieldValues: 空配列・非配列・非文字列要素は空の結果を返す', () => {
+  const descriptor = { targetPath: '/dev/null', groups: [] };
+  assert.deepEqual({ ...resolveSavedFieldValues(descriptor, []) }, {});
+  assert.deepEqual({ ...resolveSavedFieldValues(descriptor, undefined) }, {});
+  assert.deepEqual({ ...resolveSavedFieldValues(descriptor, [42, null]) }, {});
 });

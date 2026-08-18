@@ -896,6 +896,12 @@ h4.settings-content-heading {
   cursor: not-allowed;
   opacity: 0.5;
 }
+/* savedValue セルの取得待ち（issue #380 植草さんレビュー指摘）。何も見た目が変わらないと
+   押しても反応しないボタンが故障して見えるため、aria-disabled と同じ見た目にする。 */
+.settings-content-apply-button[aria-busy="true"] {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
 .settings-content-apply-button-danger {
   background: #da3633;
   border-color: #f85149;

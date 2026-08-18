@@ -776,6 +776,18 @@ test('normalizeSettingsTabContent: table セルの savedValue は key 必須（�
   ]);
 });
 
+test('normalizeSettingsTabContent: table の rows は 200 行を超えると黙って切り詰める（安藤のセキュリティレビュー指摘）', () => {
+  // 設定ディスクリプタは VK_TERMINALS_SETTINGS で外部から差し替えられる信頼できない
+  // 入力のため、行数を定義側の良識に任せず上限を設けている。
+  const rows = Array.from({ length: 250 }, (_, i) => ({ label: `行${i}`, cells: [`値${i}`] }));
+  const [normalized] = normalizeSettingsTabContent([
+    { type: 'table', caption: '大量行', rows },
+  ]);
+  assert.equal(normalized.rows.length, 200);
+  assert.equal(normalized.rows[0].label, '行0');
+  assert.equal(normalized.rows[199].label, '行199');
+});
+
 // ─── applyButton（issue #380）─────────────────────────────────────────────────
 test('normalizeSettingsTabContent: applyButton は label / confirmTemplate / sets が必須', () => {
   assert.deepEqual(normalizeSettingsTabContent([

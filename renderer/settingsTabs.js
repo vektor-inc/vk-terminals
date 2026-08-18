@@ -32,6 +32,9 @@ const SETTINGS_CONTENT_STATUS_SOURCES = new Set(['apiServer']);
 // table セルの badge / applyButton の状態表現で使うトーン語彙（issue #380）。
 // callout / status の info・warning に success・error・neutral を加えた 5 種。
 const SETTINGS_CONTENT_TABLE_BADGE_TONES = new Set(['info', 'warning', 'error', 'success', 'neutral']);
+// 設定ディスクリプタは信頼できない入力（VK_TERMINALS_SETTINGS で外部から差し替え可能）
+// のため、行数を定義側の良識に任せず上限を設ける（安藤のセキュリティレビュー指摘・issue #380）。
+const SETTINGS_CONTENT_TABLE_MAX_ROWS = 200;
 
 function nonEmptyString(value) {
   return typeof value === 'string' && value.trim() !== '' ? value : '';
@@ -224,7 +227,10 @@ const SETTINGS_CONTENT_BLOCK_HANDLERS = Object.freeze({
         }
         return { label, cells };
       })
-      .filter((row) => row !== null);
+      .filter((row) => row !== null)
+      // 行数の上限（安藤のセキュリティレビュー指摘・issue #380）。超過分は黙って
+      // 切り詰める（表自体は表示し続ける。ブロックごと落とすと表題ごと消えてしまう）。
+      .slice(0, SETTINGS_CONTENT_TABLE_MAX_ROWS);
     if (rows.length === 0) return null;
 
     return { type, caption, columns, rows };

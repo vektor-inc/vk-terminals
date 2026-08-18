@@ -1,5 +1,7 @@
 # Changelog
 
+## 1.60.1
+
 - [ 開発環境 ] e2e の `external-url-toast.smoke.spec.js` が PR バッジを `title` の完全一致で探しており、#364 の書式変更に追随できず失敗していたのを修正（[#379](https://github.com/vektor-inc/vk-terminals/issues/379)）
 
 ## 1.60.0

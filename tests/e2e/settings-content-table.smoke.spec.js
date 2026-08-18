@@ -358,6 +358,53 @@ test.describe.serial('設定パネル: コンテンツテーブル（issue #380,
     const movedAway = await wrap.evaluate((el) => el !== document.activeElement);
     expect(movedAway).toBe(true);
   });
+
+  // issue #380 安藤の実測指摘（回帰テスト）: 右端の「続きがある」フェード（::after）を
+  // 最初 .settings-content-table-wrap 自身（overflow-x: auto を持つ、スクロールする
+  // 要素そのもの）へ付けていたところ、overflow を持つ要素の内側の絶対配置ボックスは
+  // その要素のスクロールコンテンツの一部として一緒にスクロールしてしまい、右へ
+  // スクロールした分だけ帯が左（表の途中）へ流れてセルの文字を分断する不具合があった。
+  // 修正は overflow を持たない外側の箱（.settings-content-table-fade）へフェードを
+  // 移し、スクロール担当（.settings-content-table-wrap、内側）と分離すること。
+  // ここでは「フェードを描く要素自身が overflow-x: auto を持っていない（＝スクロール
+  // 対象そのものではない）」ことと、「内側をスクロールしても、フェードを描く要素の
+  // 画面上の位置（getBoundingClientRect）が動かない」ことの 2 点を確認する。前者は
+  // 「.settings-content-table-fade が存在しない・スクロール要素と同一」という壊れた
+  // 構成そのものを検出し、後者は実際に画面上で流れていないことを検出する。
+  test('右端フェードは overflow を持たない外側の箱に付き、内側をスクロールしても画面上の位置が動かない（回帰）', async () => {
+    await win.locator('#settings-tab-1').click();
+    const wrap = win.locator('.settings-content-table-wrap').first();
+    const fade = win.locator('.settings-content-table-fade').first();
+
+    // フェードを描く要素（fade）と、実際にスクロールする要素（wrap）が別要素であること。
+    await expect(fade).toHaveCount(1);
+    const fadeHasOwnScroll = await fade.evaluate((el) => getComputedStyle(el).overflowX === 'auto');
+    expect(fadeHasOwnScroll).toBe(false);
+    const wrapHasOwnScroll = await wrap.evaluate((el) => getComputedStyle(el).overflowX === 'auto');
+    expect(wrapHasOwnScroll).toBe(true);
+    // fade が wrap を実際に包んでいること（別要素なだけでなく祖先関係にあること）。
+    const fadeContainsWrap = await fade.evaluate(
+      (fadeEl, wrapSelector) => fadeEl.contains(document.querySelector(wrapSelector)),
+      '.settings-content-table-wrap'
+    );
+    expect(fadeContainsWrap).toBe(true);
+
+    // 内側（wrap）を右端までスクロールしても、フェードを描く要素（fade）自身の画面上の
+    // 位置は動かない。fade が overflow を持たず、スクロールの影響を受けない祖先だから。
+    const before = await fade.evaluate((el) => {
+      const r = el.getBoundingClientRect();
+      return { x: r.x, right: r.right, y: r.y, width: r.width, height: r.height };
+    });
+    await wrap.focus();
+    await win.keyboard.press('End');
+    const scrolled = await wrap.evaluate((el) => el.scrollLeft > 0);
+    expect(scrolled).toBe(true);
+    const after = await fade.evaluate((el) => {
+      const r = el.getBoundingClientRect();
+      return { x: r.x, right: r.right, y: r.y, width: r.width, height: r.height };
+    });
+    expect(after).toEqual(before);
+  });
 });
 
 // ─── Group B: 一括切り替えボタン（applyButton）。cross 依存（disabledWhen が別の

@@ -4357,13 +4357,21 @@ function renderSettingsTableHtml(block, values, tableIdState, passwordFieldKeys)
         この表は保存前の入力内容をもとに計算しています。実際に反映するには保存してください。
       </p>`
     : '';
-  return `<div class="settings-content-table-wrap" id="${escAttr(tableId)}" tabindex="0" role="region" aria-label="${escAttr(`${block.caption}（横にスクロールできます）`)}">
+  // フェード（::after）はスクロール担当の .settings-content-table-wrap の外側、
+  // overflow を持たない .settings-content-table-fade へ付ける（issue #380 安藤の実測
+  // 指摘）。overflow-x: auto を持つ要素の内側にある絶対配置ボックスはスクロール
+  // コンテンツの一部として一緒にスクロールしてしまうため、wrap 自身に付けると
+  // スクロール量ぶん帯が流れてセルの文字を分断する。id / tabindex=0 / role=region /
+  // aria-label は引き続き内側の .settings-content-table-wrap に残す（キーボード
+  // ハンドラ・フォーカスリング・fetchSavedValues の closest() がいずれも内側を
+  // 見ているため）。
+  return `<div class="settings-content-table-fade"><div class="settings-content-table-wrap" id="${escAttr(tableId)}" tabindex="0" role="region" aria-label="${escAttr(`${block.caption}（横にスクロールできます）`)}">
     <table class="settings-content-table">
       <caption class="settings-content-table-caption">${escText(block.caption)}</caption>
       <thead><tr><th scope="col"></th>${colHeadersHtml}</tr></thead>
       <tbody>${rowsHtml}</tbody>
     </table>
-  </div>${livehintHtml}`;
+  </div></div>${livehintHtml}`;
 }
 
 // applyButton ブロック本体。その場では保存しない（renderer 側の click ハンドラが
@@ -5362,14 +5370,20 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
         // decision-record）。表を伴わない単独ボタンは busy 判定の対象外。表と
         // ボタンの間に「未保存」注記（.settings-content-table-livehint）が挟まる
         // ことがあるため、1 つだけ読み飛ばして表を探す。
+        // フェード用の外側の箱（.settings-content-table-fade）が
+        // .settings-content-table-wrap を包んでいるため（issue #380 安藤の実測指摘・
+        // フェードがスクロールに追従してセルの文字を分断する不具合の修正）、直前の
+        // 兄弟要素は外側の箱になる。id を持つのは内側の .settings-content-table-wrap の
+        // ままなので、querySelector で潜って取る。
         const actionsEl = button.closest('.settings-content-table-actions');
         let prevEl = actionsEl ? actionsEl.previousElementSibling : null;
         if (prevEl && prevEl.classList.contains('settings-content-table-livehint')) {
           prevEl = prevEl.previousElementSibling;
         }
-        const linkedTableId = prevEl && prevEl.classList.contains('settings-content-table-wrap')
-          ? prevEl.id
-          : '';
+        const linkedTableWrap = prevEl && prevEl.classList.contains('settings-content-table-fade')
+          ? prevEl.querySelector('.settings-content-table-wrap')
+          : null;
+        const linkedTableId = linkedTableWrap ? linkedTableWrap.id : '';
         const pendingTds = linkedTableId ? pendingSavedValueByTable.get(linkedTableId) : null;
         if (pendingTds && pendingTds.size > 0) {
           button.setAttribute('aria-busy', 'true');

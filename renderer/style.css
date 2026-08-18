@@ -767,19 +767,6 @@ h4.settings-content-heading {
 
 /* 表ブロック・一括切り替えボタン（issue #380）
    ========================================================================== */
-/* 表全体の横スクロール領域。.settings-tab-panel の実効幅は実測 522px で、列が
-   収まらない場合はここで横スクロールする（表側で列を折り返さない）。キーボードでも
-   到達できるよう tabindex="0" + role="region" + aria-label を HTML 側で付与している。
-   矢印キー / Home / End での実際のスクロールは renderer/app.js のキー操作ハンドラを
-   参照（issue #380 麗美の実機確認指摘: Chromium は overflow-x のみのフォーカス可能要素へ
-   既定のキーボードスクロールを割り当てないため、明示的な配線が要る）。 */
-.settings-content-table-wrap {
-  position: relative;
-  margin: 0 0 8px;
-  overflow-x: auto;
-  border: 1px solid #21262d;
-  border-radius: 5px;
-}
 /* 右端に「まだ続きがある」ことを示す固定フェード（issue #380 麗美の実機確認指摘）。
    macOS のスクロールバーは静止時に非表示になり、境界にちょうど収まる列では文字の
    途中切れという手がかりも出ないため、視覚的な手がかりを追加した。常時表示にするか
@@ -787,15 +774,31 @@ h4.settings-content-heading {
    （植草）で事後に妥当と評価されている。新しい色は増やさず、この表自体が既に
    ボタンの背景として使っている既存トークン #21262d（.settings-content-apply-button
    等と共通）を使う。
-   当初は .settings-content-table-wrap 自身の background-image として描いていたが、
+   .settings-content-table-fade は overflow を持たない外側の箱で、フェード
+   （::after）専用。スクロール担当の .settings-content-table-wrap（内側）とは別要素に
+   分けている（安藤の実測指摘・issue #380）。overflow-x: auto を持つ要素の内側にある
+   絶対配置ボックスは、その要素のスクロールコンテンツの一部として一緒にスクロールして
+   しまう。wrap 自身に ::after を付けていた版では、右へスクロールした分だけ帯が左へ
+   流れ、表の途中でセルの文字を分断していた（scrollLeft が最大のとき帯が領域の左端
+   付近まで移動する実測が取れている）。overflow を持たない外側の箱に分けることで、
+   帯は内側のスクロール量の影響を受けず常に領域の右端に留まる。
+   さらにその前の版（.settings-content-table-wrap 自身の background-image）では、
    子要素（thead th の見出し行全体・tbody th[scope=row] の行見出し列）が持つ
    不透明な背景 #161b22 にラッパーの背景ごと覆い隠され、見出し行だけフェードが
-   消える帯になってしまっていた（植草の UX レビュー指摘）。position: absolute を
-   付けた生成要素は通常フローの子要素（<table> とその中の <th>）より後に描かれるため、
-   ::after の絶対配置オーバーレイに変更し、<th> の背景があっても最前面に出るようにした
-   （.settings-content-table-wrap 自身の position: relative が疑似要素の配置起点になる）。
+   消える帯になっていた（植草の UX レビュー指摘）。position: absolute を付けた
+   生成要素は通常フローの子要素（<table> とその中の <th>）より後に描かれるため、
+   ::after の絶対配置オーバーレイならその上に出せる。今回の 2 段構成は、この
+   「<th> の背景に隠れない」性質を保ったまま、「スクロールに追従しない」性質も
+   両立させるためのもの。
    pointer-events: none で、24px の帯がクリック・スクロール操作を邪魔しないようにする。 */
-.settings-content-table-wrap::after {
+.settings-content-table-fade {
+  position: relative;
+  /* margin はここで持つ（内側の .settings-content-table-wrap には残さない）。
+     子の margin-bottom は border / padding の無い親を素通りして外側で相殺されうる
+     ため、境界をこの外側の箱ではっきりさせておく。 */
+  margin: 0 0 8px;
+}
+.settings-content-table-fade::after {
   content: '';
   position: absolute;
   top: 0;
@@ -804,6 +807,19 @@ h4.settings-content-heading {
   width: 24px;
   pointer-events: none;
   background-image: linear-gradient(to left, #21262d, rgba(33, 38, 45, 0));
+}
+/* 表全体の横スクロール領域。.settings-tab-panel の実効幅は実測 522px で、列が
+   収まらない場合はここで横スクロールする（表側で列を折り返さない）。キーボードでも
+   到達できるよう tabindex="0" + role="region" + aria-label を HTML 側で付与している。
+   矢印キー / Home / End での実際のスクロールは renderer/app.js のキー操作ハンドラを
+   参照（issue #380 麗美の実機確認指摘: Chromium は overflow-x のみのフォーカス可能要素へ
+   既定のキーボードスクロールを割り当てないため、明示的な配線が要る）。フェード
+   （::after）は外側の .settings-content-table-fade へ移したため、ここには
+   position: relative は不要（安藤の実測指摘・issue #380）。 */
+.settings-content-table-wrap {
+  overflow-x: auto;
+  border: 1px solid #21262d;
+  border-radius: 5px;
 }
 .settings-content-table-wrap:focus-visible {
   outline: var(--vktm--outline--focus-ring);

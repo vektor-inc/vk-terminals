@@ -1,5 +1,7 @@
 # Changelog
 
+## 1.60.0
+
 - [ 機能追加 ] 設定画面の説明ブロックに、今の入力値・保存済みの値を示す読み取り専用の表（`table`）と、複数の設定欄をまとめて切り替える一括切り替えボタン（`applyButton`）を追加（[#380](https://github.com/vektor-inc/vk-terminals/issues/380)）
 
 ## 1.59.1

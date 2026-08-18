@@ -371,8 +371,9 @@ test.describe.serial('外部ブラウザを開けなかったときのトース�
   //
   // .pane .pane-task-title-pr の先頭要素を掴む書き方ではなく、prBadgeLocator()
   // （title 属性の末尾一致 + クラス指定。issue #379）で対象の prUrl を持つバッジだけを
-  // 狙い撃ちする。ペイン追加後は画面上に PR バッジが複数になりうり、DOM 順が
-  // termId "1" のペインと一致する保証が無いため。
+  // 狙い撃ちする。splitPane() が作る新規ペインは prUrl を引き継がないため同じ
+  // prUrl のバッジが複数になるわけではないが、ペイン自体は増えるため、DOM 順の
+  // 先頭が termId "1" のペインである保証は無いため。
   test('ペインを追加した後（render() の再構築後）も、トーストは再び表示される', async () => {
     await stubShellOpenExternal(app, { fail: true });
     try {

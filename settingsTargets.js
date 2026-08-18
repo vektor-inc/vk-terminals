@@ -164,7 +164,26 @@ function resolveSavedFieldValues(descriptor, keys) {
   for (const entry of descriptorFieldTargetEntries(descriptor)) {
     if (!entryByKey.has(entry.field.key)) entryByKey.set(entry.field.key, entry);
   }
-  const jsonCache = new Map(); // targetPath -> パース済みオブジェクト（読み込みは 1 回だけ）
+  // targetPath -> { ok: true, data } | { ok: false, error }。壊れた JSON でも
+  // 「読み込みに失敗した」という結果を 1 回だけキャッシュする（describeSettingsValues と
+  // 同じ考え方）。try/catch を呼び出し側のループ内に書くと、readJsonObject が投げた例外は
+  // Map#set(...) の引数評価中に飛ぶため set 自体が実行されず、キャッシュに一切載らない
+  // （安藤のレビュー指摘）。同じ壊れたファイルを参照するキーが多いと、そのキーの数だけ
+  // fs.readFileSync + JSON.parse をやり直すことになり、この関数がバッチ化で潰したはずの
+  // メインプロセスの同期 I/O ブロックが壊れたファイルのときだけ再発する。
+  const jsonCache = new Map();
+  const readJsonCached = (targetPath) => {
+    if (jsonCache.has(targetPath)) return jsonCache.get(targetPath);
+    let cached;
+    try {
+      cached = { ok: true, data: readJsonObject(targetPath) };
+    } catch (error) {
+      cached = { ok: false, error: `読み込みに失敗しました: ${error.message}` };
+    }
+    // 成功・失敗のどちらでも、try/catch の外（このスコープ内）で無条件に set する。
+    jsonCache.set(targetPath, cached);
+    return cached;
+  };
   const results = Object.create(null);
 
   for (const key of keyList) {
@@ -192,16 +211,13 @@ function resolveSavedFieldValues(descriptor, keys) {
       results[key] = { ok: false, error: '保存先が未設定です' };
       continue;
     }
-    try {
-      if (!jsonCache.has(entry.targetPath)) {
-        jsonCache.set(entry.targetPath, readJsonObject(entry.targetPath));
-      }
-      const current = jsonCache.get(entry.targetPath);
-      const value = deepGet(current, key);
-      results[key] = { ok: true, value: value === undefined ? null : value };
-    } catch (error) {
-      results[key] = { ok: false, error: `読み込みに失敗しました: ${error.message}` };
+    const cachedRead = readJsonCached(entry.targetPath);
+    if (!cachedRead.ok) {
+      results[key] = { ok: false, error: cachedRead.error };
+      continue;
     }
+    const value = deepGet(cachedRead.data, key);
+    results[key] = { ok: true, value: value === undefined ? null : value };
   }
 
   return results;

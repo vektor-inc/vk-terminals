@@ -546,18 +546,15 @@ h4.settings-content-heading {
 }
 /* 説明タブ唯一の CTA。二次ボタンの既定境界は #8b949e へ変更したが、このボタンは
    アクセントカラー #58a6ff のままにする。モーダルの面 #0d1117 に対して 7.49:1、
-   ボタンの面 #21262d に対して 6.03:1 で WCAG 1.4.11（UI 部品 3:1）を満たす。 */
-.settings-content-tablink {
-  /* inline-flex（インラインレベル）だと匿名の行ボックスに包まれ、後続ブロックとの
-     マージン相殺が起きない。行ボックスの余り分がそのまま加算されるため、直後の見出しの
-     上余白が意図より約 12px 広がり（h4 の 18px → 30px）、余白で示している見出しの階層が
-     崩れる。ブロックレベルにして相殺を回復させ、幅は fit-content で内容ぴったりに保つ。
-     隣接セレクタで余白を打ち消す方法は取らない（ボタンの padding / line-height を
-     変えると崩れるマジックナンバーになり、後続が段落の場合も直らないため）。 */
-  display: flex;
-  width: fit-content;
-  align-items: center;
-  margin: 0 0 12px;
+   ボタンの面 #21262d に対して 6.03:1 で WCAG 1.4.11（UI 部品 3:1）を満たす。
+   一括切り替えボタン（.settings-content-apply-button・issue #380）も同じ配色・
+   タイポグラフィにするため、基本宣言はここでまとめて共有する（css.md「既存クラス・
+   変数を優先し、独自クラスをむやみに増やさない」・安藤のレビュー指摘）。クラス名
+   自体は分けたまま: renderApiTokenPanel のコメントにあるとおり、同じクラス名を
+   共有すると既存のイベント委譲（コピー・タブ移動）がこのボタンにも反応してしまう
+   ため、CSS だけをセレクタ共有で揃える。 */
+.settings-content-tablink,
+.settings-content-apply-button {
   padding: 6px 14px;
   background: #21262d;
   border: 1px solid #58a6ff;
@@ -567,8 +564,24 @@ h4.settings-content-heading {
   font-size: 12px;
   cursor: pointer;
 }
-.settings-content-tablink:hover { background: #30363d; }
-.settings-content-tablink:focus-visible {
+/* tablink 固有のレイアウト。inline-flex（インラインレベル）だと匿名の行ボックスに
+   包まれ、後続ブロックとのマージン相殺が起きない。行ボックスの余り分がそのまま
+   加算されるため、直後の見出しの上余白が意図より約 12px 広がり（h4 の 18px →
+   30px）、余白で示している見出しの階層が崩れる。ブロックレベルにして相殺を回復させ、
+   幅は fit-content で内容ぴったりに保つ。隣接セレクタで余白を打ち消す方法は取らない
+   （ボタンの padding / line-height を変えると崩れるマジックナンバーになり、後続が
+   段落の場合も直らないため）。apply-button は親（.settings-content-table-actions）
+   側で flex レイアウト・余白を組むため、この配置指定は持たない。 */
+.settings-content-tablink {
+  display: flex;
+  width: fit-content;
+  align-items: center;
+  margin: 0 0 12px;
+}
+.settings-content-tablink:hover,
+.settings-content-apply-button:hover { background: #30363d; }
+.settings-content-tablink:focus-visible,
+.settings-content-apply-button:focus-visible {
   outline: var(--vktm--outline--focus-ring);
   outline-offset: var(--vktm--outline-offset--focus-ring);
 }
@@ -868,29 +881,16 @@ h4.settings-content-heading {
   color: #d29922;
 }
 
-/* 一括切り替えボタン。表の直下（.settings-content-table-actions）に置く。危険色は
-   .settings-content-apitoken-btn-danger と同じトークンを再利用し、新しい色は増やさない。 */
+/* 一括切り替えボタン。表の直下（.settings-content-table-actions）に置く。基本の配色・
+   タイポグラフィは .settings-content-tablink と共有している（同ファイル該当箇所を
+   参照）。危険色は .settings-content-apitoken-btn-danger と同じトークンを再利用し、
+   新しい色は増やさない。 */
 .settings-content-table-actions {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 6px 8px;
   margin: 0 0 12px;
-}
-.settings-content-apply-button {
-  padding: 6px 14px;
-  background: #21262d;
-  border: 1px solid #58a6ff;
-  border-radius: 5px;
-  color: #58a6ff;
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
-}
-.settings-content-apply-button:hover { background: #30363d; }
-.settings-content-apply-button:focus-visible {
-  outline: var(--vktm--outline--focus-ring);
-  outline-offset: var(--vktm--outline-offset--focus-ring);
 }
 .settings-content-apply-button[aria-disabled="true"] {
   cursor: not-allowed;

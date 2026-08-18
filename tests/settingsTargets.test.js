@@ -671,6 +671,40 @@ test('resolveSavedFieldValues: 複数キーを 1 回で解決し、同一 target
   });
 });
 
+test('resolveSavedFieldValues: 壊れた JSON の targetPath は 1 回だけ読み、同じキーが重複しても再読み込みしない（安藤のレビュー指摘・issue #380）', () => {
+  // readJsonObject は JSON.parse で例外を投げる。その例外を呼び出し側のループ内
+  // （Map#set(...) の引数評価中）で受けると set 自体が実行されずキャッシュに載らないため、
+  // 同じ壊れたファイルを参照するキーの数だけ fs.readFileSync + JSON.parse が繰り返されて
+  // しまう不具合の回帰テスト。fs.readFileSync を実体ごと差し替えて呼び出し回数を数える
+  // （settingsTargets.js と本テストは同じ require('fs') のシングルトンを参照するため、
+  // ここでの差し替えが実装側にも反映される）。
+  const dir = makeTempDir();
+  const targetPath = path.join(dir, 'broken.json');
+  fs.writeFileSync(targetPath, '{ this is not valid json');
+
+  const descriptor = {
+    targetPath,
+    groups: [{ fields: [{ key: 'engine', label: 'エンジン', type: 'text' }] }],
+  };
+
+  const originalReadFileSync = fs.readFileSync;
+  let callCount = 0;
+  fs.readFileSync = (...args) => {
+    callCount += 1;
+    return originalReadFileSync(...args);
+  };
+  try {
+    // 表の同じ列に同じ key を持つセルが複数ある状況を模して、同じキーを 3 回渡す。
+    const result = resolveSavedFieldValues(descriptor, ['engine', 'engine', 'engine']);
+    assert.equal(callCount, 1);
+    assert.equal(result.engine.ok, false);
+    assert.match(result.engine.error, /読み込みに失敗しました/);
+  } finally {
+    // 他のテストへ影響しないよう、成功・失敗どちらの経路でも必ず元に戻す。
+    fs.readFileSync = originalReadFileSync;
+  }
+});
+
 test('resolveSavedFieldValues: 1 回の呼び出し内で password・未宣言・危険キーが混ざっても他のキーの解決を妨げない', () => {
   const dir = makeTempDir();
   const targetPath = path.join(dir, 'config.json');

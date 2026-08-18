@@ -75,9 +75,12 @@ function normalizeSettingsTableCell(cell) {
     const map = (Array.isArray(cell.map) ? cell.map : [])
       .map((entry) => {
         if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
-        // value は現在値との文字列比較に使う。applyButton の sets と同じ判断で、
-        // string / number / boolean だけを許可し（意図せぬ '' 一致を避けるため value 省略は
-        // 無効とする）、比較対象と揃えて文字列化する。
+        // value は現在値との文字列比較に使う。string / number / boolean だけを許可し、
+        // 比較対象と揃えて文字列化する。applyButton の sets とは異なり null は許可しない
+        // （食い違いの指摘を受けて実装ではなくコメントを修正: renderSettingsFieldValueCellBody
+        // は現在値が null / undefined / 空文字なら map を見る前に「未設定」を返すため、
+        // value: null の map エントリはどのみち一致しえない死んだ設定になる。value 省略
+        // （undefined）も typeof がどれにも当てはまらず、同じく無効として弾かれる）。
         const rawValue = entry.value;
         const validValueType = typeof rawValue === 'string' || typeof rawValue === 'number' || typeof rawValue === 'boolean';
         if (!validValueType) return null;

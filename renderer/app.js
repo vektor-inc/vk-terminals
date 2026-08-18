@@ -4778,10 +4778,14 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
   let clearDirtyTabs = () => {};
   let lockSettingsFooter = () => {};
   let unlockSettingsFooter = () => {};
-  // 表ブロック・一括切り替えボタン（issue #380）。table / applyButton は tabs[].content
-  // にしか現れない（useTabbedSettings 前提）ため、実体は下の if 節の中だけで差し替える。
-  // applyFieldState（このずっと下で定義）はタブ表示かどうかを問わず必ず呼ばれるため、
-  // ここで no-op を既定にしておき、タブ無しモードでは何もしないで済むようにする。
+  // 表ブロック・一括切り替えボタン（issue #380）。table / applyButton は
+  // tabs[].content / tabs[].contentAfter にしか現れない（どちらも useTabbedSettings が
+  // true のときしか描画されない。renderSettingsTabContent の呼び出し元を参照）ため、
+  // 実体は下の if 節の中だけで差し替える。settingsAvailable な間は applyFieldState
+  // （このずっと下で定義）がタブ表示かどうかを問わず呼ばれるため、ここで no-op を
+  // 既定にしておき、タブ無しモードでは何もしないで済むようにする（食い違いの指摘を
+  // 受けて、content だけに触れていた誤りをコメント側で修正: 実際は contentAfter にも
+  // 置ける）。
   let refreshSettingsContentTables = () => {};
   let updateSettingsApplyButtons = () => {};
   let scheduleSettingsContentTableLivehint = () => {};

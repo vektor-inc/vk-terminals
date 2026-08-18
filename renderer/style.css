@@ -752,6 +752,174 @@ h4.settings-content-heading {
   color: #f85149;
 }
 
+/* 表ブロック・一括切り替えボタン（issue #380）
+   ========================================================================== */
+/* 表全体の横スクロール領域。.settings-tab-panel の実効幅は実測 522px で、列が
+   収まらない場合はここで横スクロールする（表側で列を折り返さない）。キーボードでも
+   到達できるよう tabindex="0" + role="region" + aria-label を HTML 側で付与している。 */
+.settings-content-table-wrap {
+  margin: 0 0 8px;
+  overflow-x: auto;
+  border: 1px solid #21262d;
+  border-radius: 5px;
+}
+.settings-content-table-wrap:focus-visible {
+  outline: var(--vktm--outline--focus-ring);
+  outline-offset: var(--vktm--outline-offset--focus-ring);
+}
+.settings-content-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  /* 列を折り返さず、ラッパー側の横スクロールへ逃がす（狭い幅で単位や記号だけが
+     次行に落ちるのを防ぐ）。 */
+  white-space: nowrap;
+}
+.settings-content-table-caption {
+  padding: 8px 10px;
+  text-align: left;
+  color: #e6edf3;
+  font-weight: 600;
+  font-size: 12px;
+  border-bottom: 1px solid #21262d;
+}
+.settings-content-table th,
+.settings-content-table td {
+  padding: 6px 10px;
+  text-align: left;
+  border-bottom: 1px solid #21262d;
+  color: #c9d1d9;
+}
+.settings-content-table thead th {
+  color: #8b949e;
+  font-weight: 600;
+  background: #161b22;
+}
+.settings-content-table tbody th[scope="row"] {
+  color: #c9d1d9;
+  font-weight: 500;
+  background: #161b22;
+}
+.settings-content-table tbody tr:last-child th,
+.settings-content-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+/* savedValue セルの取得中表示（issue #380）。色だけに依存せず「確認中…」の文字自体で
+   状態を示す。 */
+.settings-content-table td[aria-busy="true"] {
+  color: #8b949e;
+  font-style: italic;
+}
+/* 表セルの状態バッジ。callout / status と同じトーン語彙（info/warning/error/success/
+   neutral）を使い、色だけに頼らず見出し語も併記する（.settings-content-table-badge-label）。 */
+.settings-content-table-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border: 1px solid #30363d;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.settings-content-table-badge[data-tone="success"] { border-color: #3fb950; color: #3fb950; }
+.settings-content-table-badge[data-tone="info"],
+.settings-content-table-badge[data-tone="neutral"] { border-color: #8b949e; color: #8b949e; }
+.settings-content-table-badge[data-tone="warning"] { border-color: #d29922; color: #d29922; }
+.settings-content-table-badge[data-tone="error"] { border-color: #f85149; color: #f85149; }
+.settings-content-table-badge-label {
+  font-weight: 700;
+}
+.settings-content-table-retry {
+  margin-left: 4px;
+  padding: 1px 8px;
+  background: #21262d;
+  border: 1px solid var(--vktm--color--border-interactive);
+  border-radius: 5px;
+  color: #c9d1d9;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.settings-content-table-retry:hover { background: #30363d; }
+.settings-content-table-retry:focus-visible {
+  outline: var(--vktm--outline--focus-ring);
+  outline-offset: var(--vktm--outline-offset--focus-ring);
+}
+
+/* 保存前の入力値から計算していることの明示（issue #380）。.settings-inline-notice と
+   同じ配色（色だけに依存しないラベル付き注記）。role="status" aria-live="polite" は
+   HTML 側で付与し、表本体・各セルには aria-live を付けない（セルごとの通知が重なって
+   聞き取れなくなるのを防ぐ。renderer/app.js の 300ms デバウンスと対）。 */
+.settings-content-table-livehint {
+  margin: 6px 0 12px;
+  padding: 6px 8px;
+  border-radius: 5px;
+  border-left: 3px solid #8b949e;
+  background: #161b22;
+  color: #c9d1d9;
+  font-size: 12px;
+}
+.settings-content-table-livehint[hidden] { display: none; }
+.settings-content-table-livehint-label {
+  margin-right: 4px;
+  font-weight: 600;
+  color: #d29922;
+}
+
+/* 一括切り替えボタン。表の直下（.settings-content-table-actions）に置く。危険色は
+   .settings-content-apitoken-btn-danger と同じトークンを再利用し、新しい色は増やさない。 */
+.settings-content-table-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  margin: 0 0 12px;
+}
+.settings-content-apply-button {
+  padding: 6px 14px;
+  background: #21262d;
+  border: 1px solid #58a6ff;
+  border-radius: 5px;
+  color: #58a6ff;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.settings-content-apply-button:hover { background: #30363d; }
+.settings-content-apply-button:focus-visible {
+  outline: var(--vktm--outline--focus-ring);
+  outline-offset: var(--vktm--outline-offset--focus-ring);
+}
+.settings-content-apply-button[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+.settings-content-apply-button-danger {
+  background: #da3633;
+  border-color: #f85149;
+  color: #fff;
+  font-weight: 600;
+}
+.settings-content-apply-button-danger:hover { background: #f85149; }
+.settings-content-table-action-reason {
+  flex-basis: 100%;
+}
+
+/* 一括切り替え直後、今見ているタブ内で変わった行を一時的にフラッシュして示す
+   （issue #380）。prefers-reduced-motion のユーザーには適用しない。 */
+@keyframes settings-content-table-flash {
+  from { background-color: rgba(88, 166, 255, 0.35); }
+  to { background-color: transparent; }
+}
+.settings-content-table-flash {
+  animation: settings-content-table-flash 0.3s ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+  .settings-content-table-flash { animation: none; }
+}
+
 .settings-group {
   border: 1px solid #21262d;
   border-radius: 6px;
@@ -2901,3 +3069,12 @@ body.pane-dragging * {
   font-weight: 600;
 }
 .confirm-reissue-token:hover { background: #f85149; }
+/* 表の一括切り替え（issue #380）の上書き確認も同様に不可逆な破壊的操作のため、
+   同じ危険色トークン（#da3633 / #f85149）を再利用する。新しい色は増やさない。 */
+.confirm-apply-content-table {
+  background: #da3633;
+  border-color: #f85149;
+  color: #fff;
+  font-weight: 600;
+}
+.confirm-apply-content-table:hover { background: #f85149; }

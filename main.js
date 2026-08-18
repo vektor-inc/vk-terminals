@@ -55,6 +55,7 @@ const {
   describeSettingsValues,
   describeTargetPaths,
   isValidSettingsDescriptor,
+  resolveSavedFieldValue,
   saveSettingsToTargets,
   readJsonObject,
 } = require('./settingsTargets');
@@ -1192,6 +1193,18 @@ ipcMain.handle('settings:save', (event, incoming) => {
   if (!descriptor) return { ok: false, error: '設定ディスクリプタが見つかりません' };
 
   return saveSettingsToTargets(descriptor, incoming);
+});
+
+// 設定コンテンツテーブルの savedValue セル（issue #380）用。settings:api-server-status
+// と同じ作り（軽量・単一責務のハンドラ）で、「設定ファイルに実際に保存されている値」を
+// 1 キーだけ返す。読めるキーの許可判定（groups[].fields[].key として宣言されているか・
+// 危険なキーセグメントを含まないか）は resolveSavedFieldValue（settingsTargets.js）に
+// 集約してある（VK_TERMINALS_SETTINGS は外部から差し替えられる信頼できない入力のため、
+// 任意のキー・任意のパスを読み出せる窓口にしないための必須要件）。
+ipcMain.handle('settings:content-table-saved-value', (_event, key) => {
+  const descriptor = loadSettingsDescriptor();
+  if (!descriptor) return { ok: false, error: '設定ディスクリプタが見つかりません' };
+  return resolveSavedFieldValue(descriptor, key);
 });
 
 // ─── アクセストークン（issue #313）: 設定パネルからの表示・再発行 ─────────────

@@ -133,6 +133,39 @@ function describeSettingsValues(descriptor, options = {}) {
   return values;
 }
 
+// 設定コンテンツテーブルの savedValue セル（issue #380）用。「設定ファイルに実際に
+// 保存されている値」を 1 キーだけ返す。
+//
+// セキュリティ上の必須要件: 設定ディスクリプタは環境変数 VK_TERMINALS_SETTINGS で
+// 外部から差し替えられる信頼できない入力のため、読めるキーはそのディスクリプタ自身が
+// groups[].fields[].key として宣言しているキーだけに限定する（許可制）。任意のキー・
+// 任意のパスを読み出せる汎用の問い合わせ窓口にしないこと。呼び出し元（main.js）は
+// renderer から届いた key をそのまま渡してよく、許可判定はこの関数の中で完結する。
+function resolveSavedFieldValue(descriptor, key) {
+  if (typeof key !== 'string' || !key.trim()) {
+    return { ok: false, error: '対象の設定キーが指定されていません' };
+  }
+  if (hasUnsafeKeySegment(key)) {
+    return { ok: false, error: '許可されていない設定キーです' };
+  }
+  // ディスクリプタが宣言しているフィールドの中に無いキーは、たとえ実在の設定ファイルに
+  // 同名のキーがあっても拒否する（宣言されていないキー・パスを読み出せる窓口を作らない）。
+  const entry = descriptorFieldTargetEntries(descriptor).find(({ field }) => field.key === key);
+  if (!entry) {
+    return { ok: false, error: '許可されていない設定キーです' };
+  }
+  if (typeof entry.targetPath !== 'string' || entry.targetPath === '') {
+    return { ok: false, error: '保存先が未設定です' };
+  }
+  try {
+    const current = readJsonObject(entry.targetPath);
+    const value = deepGet(current, key);
+    return { ok: true, value: value === undefined ? null : value };
+  } catch (error) {
+    return { ok: false, error: `読み込みに失敗しました: ${error.message}` };
+  }
+}
+
 function coerceFieldValue(field, raw) {
   const label = field.label || field.key;
   switch (field.type) {
@@ -308,6 +341,7 @@ module.exports = {
   isValidSettingsDescriptor,
   readJsonObject,
   resolveFieldTargetPath,
+  resolveSavedFieldValue,
   resolveTargetPath,
   saveSettingsToTargets,
 };

@@ -15,6 +15,7 @@ const {
   groupFieldsByTargetPath,
   isValidSettingsDescriptor,
   resolveFieldTargetPath,
+  resolveSavedFieldValue,
   resolveTargetPath,
   saveSettingsToTargets,
 } = require('../settingsTargets');
@@ -528,4 +529,86 @@ test('saveSettingsToTargets: 型変換バリデーションエラー時はどの
   assert.match(result.error, /数値として不正/);
   assert.deepEqual(readJson(firstPath), { name: 'before' });
   assert.deepEqual(readJson(secondPath), { count: 1 });
+});
+
+// ─── resolveSavedFieldValue（issue #380: 設定コンテンツテーブルの savedValue セル）───
+test('resolveSavedFieldValue: ディスクリプタが宣言するキーなら保存済みの値を返す', () => {
+  const dir = makeTempDir();
+  const targetPath = path.join(dir, 'config.json');
+  writeJson(targetPath, { engine: 'claude' });
+
+  const descriptor = {
+    targetPath,
+    groups: [{ fields: [{ key: 'engine', label: 'エンジン', type: 'text' }] }],
+  };
+
+  assert.deepEqual(resolveSavedFieldValue(descriptor, 'engine'), { ok: true, value: 'claude' });
+});
+
+test('resolveSavedFieldValue: 未保存（ファイルに無い）キーは null を返す', () => {
+  const dir = makeTempDir();
+  const targetPath = path.join(dir, 'config.json');
+  writeJson(targetPath, {});
+
+  const descriptor = {
+    targetPath,
+    groups: [{ fields: [{ key: 'engine', label: 'エンジン', type: 'text' }] }],
+  };
+
+  assert.deepEqual(resolveSavedFieldValue(descriptor, 'engine'), { ok: true, value: null });
+});
+
+test('resolveSavedFieldValue: ディスクリプタが宣言していないキーは拒否する（許可制）', () => {
+  const dir = makeTempDir();
+  const targetPath = path.join(dir, 'config.json');
+  // ファイル自体には値があっても、ディスクリプタが宣言していないキーは読めない。
+  writeJson(targetPath, { secret: 'leaked' });
+
+  const descriptor = {
+    targetPath,
+    groups: [{ fields: [{ key: 'engine', label: 'エンジン', type: 'text' }] }],
+  };
+
+  const result = resolveSavedFieldValue(descriptor, 'secret');
+  assert.equal(result.ok, false);
+  assert.match(result.error, /許可されていない/);
+});
+
+test('resolveSavedFieldValue: 危険なキーセグメントは宣言の有無に関わらず拒否する', () => {
+  const dir = makeTempDir();
+  const targetPath = path.join(dir, 'config.json');
+  writeJson(targetPath, {});
+
+  const descriptor = {
+    targetPath,
+    // 万一 __proto__ を key として宣言していても、拒否が先に働く（isValidSettingsDescriptor
+    // で通常は弾かれるが、多重防御としてこの関数自身でも判定する）。
+    groups: [{ fields: [{ key: '__proto__.polluted', label: '危険', type: 'text' }] }],
+  };
+
+  const result = resolveSavedFieldValue(descriptor, '__proto__.polluted');
+  assert.equal(result.ok, false);
+  assert.match(result.error, /許可されていない/);
+});
+
+test('resolveSavedFieldValue: key の指定が無い・空文字はエラーを返す', () => {
+  const descriptor = { targetPath: '/dev/null', groups: [] };
+  assert.equal(resolveSavedFieldValue(descriptor, '').ok, false);
+  assert.equal(resolveSavedFieldValue(descriptor, undefined).ok, false);
+  assert.equal(resolveSavedFieldValue(descriptor, 42).ok, false);
+});
+
+test('resolveSavedFieldValue: field 単位の targetPath 上書きも解決する', () => {
+  const dir = makeTempDir();
+  const defaultPath = path.join(dir, 'default.json');
+  const fieldPath = path.join(dir, 'field.json');
+  writeJson(defaultPath, { engine: 'should-not-be-read' });
+  writeJson(fieldPath, { engine: 'codex' });
+
+  const descriptor = {
+    targetPath: defaultPath,
+    groups: [{ fields: [{ key: 'engine', label: 'エンジン', type: 'text', targetPath: fieldPath }] }],
+  };
+
+  assert.deepEqual(resolveSavedFieldValue(descriptor, 'engine'), { ok: true, value: 'codex' });
 });

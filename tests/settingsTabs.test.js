@@ -598,6 +598,251 @@ test('normalizeSettingsTabContent: apiTokenPanel はプロパティを持たず�
   ]);
 });
 
+// ─── table（issue #380）───────────────────────────────────────────────────────
+test('normalizeSettingsTabContent: table は caption 必須で、columns 省略時は 1 列に補う', () => {
+  assert.deepEqual(normalizeSettingsTabContent([
+    {
+      type: 'table',
+      caption: '現在値',
+      rows: [{ label: 'エンジン', cells: ['Claude'] }],
+    },
+  ]), [
+    {
+      type: 'table',
+      caption: '現在値',
+      columns: [{ label: '' }],
+      rows: [{ label: 'エンジン', cells: [{ type: 'text', text: 'Claude' }] }],
+    },
+  ]);
+
+  // caption が無い・空白だけの表はブロックごと落とす（fail-closed）。
+  assert.deepEqual(normalizeSettingsTabContent([
+    { type: 'table', rows: [{ label: 'A', cells: ['x'] }] },
+    { type: 'table', caption: '   ', rows: [{ label: 'A', cells: ['x'] }] },
+  ]), []);
+
+  // 行が 1 つも無い表（rows 省略・全行 label 欠落）も意味が無いため落とす。
+  assert.deepEqual(normalizeSettingsTabContent([
+    { type: 'table', caption: '空の表' },
+    { type: 'table', caption: '見出しの無い行だけ', rows: [{ cells: ['x'] }, { label: '  ', cells: ['y'] }] },
+  ]), []);
+});
+
+test('normalizeSettingsTabContent: table の行見出しが無い行だけを間引く（表自体は残す）', () => {
+  assert.deepEqual(normalizeSettingsTabContent([
+    {
+      type: 'table',
+      caption: '現在値',
+      rows: [
+        { label: 'エンジン', cells: ['Claude'] },
+        { cells: ['見出し無しなので落ちる'] },
+        { label: '  ', cells: ['空白だけの見出しも落ちる'] },
+        { label: 'モデル', cells: ['claude-sonnet-5'] },
+      ],
+    },
+  ]), [
+    {
+      type: 'table',
+      caption: '現在値',
+      columns: [{ label: '' }],
+      rows: [
+        { label: 'エンジン', cells: [{ type: 'text', text: 'Claude' }] },
+        { label: 'モデル', cells: [{ type: 'text', text: 'claude-sonnet-5' }] },
+      ],
+    },
+  ]);
+});
+
+test('normalizeSettingsTabContent: table の cells は columns 数へ pad / truncate する', () => {
+  assert.deepEqual(normalizeSettingsTabContent([
+    {
+      type: 'table',
+      caption: '複数列',
+      columns: [{ label: '列1' }, { label: '列2' }],
+      rows: [
+        { label: '足りない行', cells: ['A'] },
+        { label: '多すぎる行', cells: ['B', 'C', 'D'] },
+      ],
+    },
+  ]), [
+    {
+      type: 'table',
+      caption: '複数列',
+      columns: [{ label: '列1' }, { label: '列2' }],
+      rows: [
+        { label: '足りない行', cells: [{ type: 'text', text: 'A' }, { type: 'text', text: '' }] },
+        { label: '多すぎる行', cells: [{ type: 'text', text: 'B' }, { type: 'text', text: 'C' }] },
+      ],
+    },
+  ]);
+});
+
+test('normalizeSettingsTabContent: table セルの badge は tone 既定 neutral・文字必須（無ければ text へ降格）', () => {
+  assert.deepEqual(normalizeSettingsTabContent([
+    {
+      type: 'table',
+      caption: 'badge',
+      rows: [
+        { label: 'A', cells: [{ type: 'badge', text: '有効', tone: 'success' }] },
+        { label: 'B', cells: [{ type: 'badge', text: '未知トーン', tone: 'danger' }] },
+        { label: 'C', cells: [{ type: 'badge', text: 'トーン省略' }] },
+        // 色だけの空バッジは成立しないため、空文字の text セルへ降格する（行自体は残す）。
+        { label: 'D', cells: [{ type: 'badge', tone: 'error' }] },
+      ],
+    },
+  ]), [
+    {
+      type: 'table',
+      caption: 'badge',
+      columns: [{ label: '' }],
+      rows: [
+        { label: 'A', cells: [{ type: 'badge', tone: 'success', text: '有効' }] },
+        { label: 'B', cells: [{ type: 'badge', tone: 'neutral', text: '未知トーン' }] },
+        { label: 'C', cells: [{ type: 'badge', tone: 'neutral', text: 'トーン省略' }] },
+        { label: 'D', cells: [{ type: 'text', text: '' }] },
+      ],
+    },
+  ]);
+});
+
+test('normalizeSettingsTabContent: table セルの fieldValue は key 必須・map の不正要素を間引く', () => {
+  assert.deepEqual(normalizeSettingsTabContent([
+    {
+      type: 'table',
+      caption: 'fieldValue',
+      rows: [
+        {
+          label: 'エンジン',
+          cells: [{
+            type: 'fieldValue',
+            key: 'engine',
+            map: [
+              { value: 'claude', label: 'Claude', tone: 'success' },
+              { value: 'codex', label: 'Codex' }, // tone 省略 → neutral
+              { value: 'unknown-tone', label: 'X', tone: 'danger' }, // 未知トーン → neutral
+              { label: 'label だけは無効（value 必須ではないが label が無いと無効）' },
+              null,
+            ],
+          }],
+        },
+        // key の無い fieldValue は空の text セルへ降格する。
+        { label: 'key 無し', cells: [{ type: 'fieldValue' }] },
+      ],
+    },
+  ]), [
+    {
+      type: 'table',
+      caption: 'fieldValue',
+      columns: [{ label: '' }],
+      rows: [
+        {
+          label: 'エンジン',
+          cells: [{
+            type: 'fieldValue',
+            key: 'engine',
+            map: [
+              { value: 'claude', label: 'Claude', tone: 'success' },
+              { value: 'codex', label: 'Codex', tone: 'neutral' },
+              { value: 'unknown-tone', label: 'X', tone: 'neutral' },
+            ],
+          }],
+        },
+        { label: 'key 無し', cells: [{ type: 'text', text: '' }] },
+      ],
+    },
+  ]);
+});
+
+test('normalizeSettingsTabContent: table セルの savedValue は key 必須（無ければ text へ降格）', () => {
+  assert.deepEqual(normalizeSettingsTabContent([
+    {
+      type: 'table',
+      caption: 'savedValue',
+      rows: [
+        { label: 'A', cells: [{ type: 'savedValue', key: 'apiKeyProvider' }] },
+        { label: 'B', cells: [{ type: 'savedValue' }] },
+      ],
+    },
+  ]), [
+    {
+      type: 'table',
+      caption: 'savedValue',
+      columns: [{ label: '' }],
+      rows: [
+        { label: 'A', cells: [{ type: 'savedValue', key: 'apiKeyProvider' }] },
+        { label: 'B', cells: [{ type: 'text', text: '' }] },
+      ],
+    },
+  ]);
+});
+
+// ─── applyButton（issue #380）─────────────────────────────────────────────────
+test('normalizeSettingsTabContent: applyButton は label / confirmTemplate / sets が必須', () => {
+  assert.deepEqual(normalizeSettingsTabContent([
+    {
+      type: 'applyButton',
+      label: 'Claude に揃える',
+      confirmTemplate: '{count}件を上書きします。よろしいですか？',
+      sets: [{ key: 'engine', value: 'claude' }, { key: 'model', value: 'claude-sonnet-5' }],
+    },
+  ]), [
+    {
+      type: 'applyButton',
+      label: 'Claude に揃える',
+      confirmTemplate: '{count}件を上書きします。よろしいですか？',
+      sets: [{ key: 'engine', value: 'claude' }, { key: 'model', value: 'claude-sonnet-5' }],
+      danger: false,
+    },
+  ]);
+
+  // label / confirmTemplate のいずれか欠落はブロックごと落とす。
+  assert.deepEqual(normalizeSettingsTabContent([
+    { type: 'applyButton', confirmTemplate: '{count}件…', sets: [{ key: 'a', value: 1 }] },
+    { type: 'applyButton', label: 'ラベルのみ', sets: [{ key: 'a', value: 1 }] },
+  ]), []);
+
+  // 有効な sets が 1 つも残らない場合もブロックごと落とす（何もしないボタンを出さない）。
+  assert.deepEqual(normalizeSettingsTabContent([
+    { type: 'applyButton', label: 'L', confirmTemplate: 'T', sets: [] },
+    { type: 'applyButton', label: 'L', confirmTemplate: 'T', sets: [{ key: '', value: 1 }] },
+    { type: 'applyButton', label: 'L', confirmTemplate: 'T', sets: [{ key: 'a', value: { nested: true } }] },
+  ]), []);
+});
+
+test('normalizeSettingsTabContent: applyButton の sets は string/number/boolean/null だけ許可し、danger は真偽値のみ true を採用する', () => {
+  assert.deepEqual(normalizeSettingsTabContent([
+    {
+      type: 'applyButton',
+      label: 'L',
+      confirmTemplate: 'T',
+      sets: [
+        { key: 'a', value: 'text' },
+        { key: 'b', value: 42 },
+        { key: 'c', value: true },
+        { key: 'd', value: null },
+        { key: 'e', value: { nested: true } }, // オブジェクトは除外
+        { key: 'f', value: ['array'] }, // 配列は除外
+        { key: 'g', value: undefined }, // undefined は除外
+        { key: '', value: 'no-key' }, // key 欠落は除外
+      ],
+      danger: 'yes', // 真偽値以外は false 扱い
+    },
+  ]), [
+    {
+      type: 'applyButton',
+      label: 'L',
+      confirmTemplate: 'T',
+      sets: [
+        { key: 'a', value: 'text' },
+        { key: 'b', value: 42 },
+        { key: 'c', value: true },
+        { key: 'd', value: null },
+      ],
+      danger: false,
+    },
+  ]);
+});
+
 test('normalizeSettingsTabContent: tabLink の field は実在するキーだけ採用する', () => {
   const options = {
     tabIds: ['general'],

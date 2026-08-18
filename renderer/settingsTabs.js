@@ -29,9 +29,67 @@ const { isSafeHttpUrl } = (typeof require === 'function')
 // 必ず h3 になり、間に入力欄グループを挟んでもレベルが飛ばない。
 const SETTINGS_CONTENT_CALLOUT_TONES = new Set(['info', 'warning']);
 const SETTINGS_CONTENT_STATUS_SOURCES = new Set(['apiServer']);
+// table セルの badge / applyButton の状態表現で使うトーン語彙（issue #380）。
+// callout / status の info・warning に success・error・neutral を加えた 5 種。
+const SETTINGS_CONTENT_TABLE_BADGE_TONES = new Set(['info', 'warning', 'error', 'success', 'neutral']);
 
 function nonEmptyString(value) {
   return typeof value === 'string' && value.trim() !== '' ? value : '';
+}
+
+// text セルは空文字も正当な値（意図的な空欄）として許容するため、nonEmptyString とは
+// 別に「文字列なら何でも通す」判定を用意する。
+function toCellDisplayText(value) {
+  return typeof value === 'string' ? value : '';
+}
+
+// 表セル 1 個を正規化する（issue #380）。他ブロックのように壊れた要素を丸ごと落とすと
+// 列数がずれ、後続の行のセルが本来と違う列見出しの下に並んでしまうため、壊れたセルは
+// 空文字の text セルへ「降格」させる（fail-open）。caption・行見出しの必須化（fail-closed）
+// とは方針を変えている理由はこの列整合性を守るため。
+function normalizeSettingsTableCell(cell) {
+  if (typeof cell === 'string') return { type: 'text', text: cell };
+  if (!cell || typeof cell !== 'object' || Array.isArray(cell)) return { type: 'text', text: '' };
+
+  const cellType = typeof cell.type === 'string' ? cell.type : 'text';
+
+  if (cellType === 'badge') {
+    const text = toCellDisplayText(cell.text);
+    // バッジは「色だけに頼らず文字でも状態が分かる」ことが要件のため、文字の無い
+    // バッジ（色だけの空箱）は成立しない。text セル（空文字）へ降格する。
+    if (!text.trim()) return { type: 'text', text: '' };
+    const tone = SETTINGS_CONTENT_TABLE_BADGE_TONES.has(cell.tone) ? cell.tone : 'neutral';
+    return { type: 'badge', tone, text };
+  }
+
+  if (cellType === 'fieldValue') {
+    const key = nonEmptyString(cell.key);
+    if (!key) return { type: 'text', text: '' };
+    const map = (Array.isArray(cell.map) ? cell.map : [])
+      .map((entry) => {
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
+        // value は現在値との文字列比較に使う。applyButton の sets と同じ判断で、
+        // string / number / boolean だけを許可し（意図せぬ '' 一致を避けるため value 省略は
+        // 無効とする）、比較対象と揃えて文字列化する。
+        const rawValue = entry.value;
+        const validValueType = typeof rawValue === 'string' || typeof rawValue === 'number' || typeof rawValue === 'boolean';
+        if (!validValueType) return null;
+        const label = nonEmptyString(entry.label);
+        if (!label) return null;
+        const tone = SETTINGS_CONTENT_TABLE_BADGE_TONES.has(entry.tone) ? entry.tone : 'neutral';
+        return { value: String(rawValue), label, tone };
+      })
+      .filter((entry) => entry !== null);
+    return { type: 'fieldValue', key, map };
+  }
+
+  if (cellType === 'savedValue') {
+    const key = nonEmptyString(cell.key);
+    return key ? { type: 'savedValue', key } : { type: 'text', text: '' };
+  }
+
+  // 未知の cellType も含め、既定は text 扱い（空文字許容）。
+  return { type: 'text', text: toCellDisplayText(cell.text) };
 }
 
 function toStringSet(value) {
@@ -139,6 +197,66 @@ const SETTINGS_CONTENT_BLOCK_HANDLERS = Object.freeze({
   // 秘密情報のため、この静的なディスクリプタには載せず、renderer が IPC で都度取得する）。
   apiTokenPanel(block, type) {
     return { type };
+  },
+
+  // 読み取り専用の表（issue #380）。caption（表題）と各行の見出し（label）は必須で、
+  // どちらか欠けたらブロック（または該当行）ごと落とす（fail-closed。表題や行見出しの
+  // 無い表・行は「何を表しているか」が読み取れず、意味を持たないため）。
+  // columns は列見出しの配列（{ label } の配列）。省略・空なら 1 列（見出し無し）に補う。
+  // 各行の cells は columns の数へ pad / truncate し、列の対応がずれないようにする。
+  table(block, type) {
+    const caption = nonEmptyString(block.caption);
+    if (!caption) return null;
+
+    const rawColumns = (Array.isArray(block.columns) ? block.columns : [])
+      .map((column) => ({ label: nonEmptyString(column && column.label) }));
+    const columns = rawColumns.length > 0 ? rawColumns : [{ label: '' }];
+
+    const rows = (Array.isArray(block.rows) ? block.rows : [])
+      .map((row) => {
+        if (!row || typeof row !== 'object' || Array.isArray(row)) return null;
+        const label = nonEmptyString(row.label);
+        if (!label) return null;
+        const rawCells = Array.isArray(row.cells) ? row.cells : [];
+        const cells = [];
+        for (let i = 0; i < columns.length; i += 1) {
+          cells.push(normalizeSettingsTableCell(rawCells[i]));
+        }
+        return { label, cells };
+      })
+      .filter((row) => row !== null);
+    if (rows.length === 0) return null;
+
+    return { type, caption, columns, rows };
+  },
+
+  // 一括切り替えボタン（issue #380）。押すと sets で宣言した複数の設定欄へ値をセットする
+  // （保存はしない。既存の「保存」ボタンで保存する。renderer 側の実装を参照）。
+  // label / confirmTemplate は必須。sets は { key, value } の配列で、value は
+  // string / number / boolean / null のみ許可する（それ以外の型を持つ要素だけを間引く）。
+  // 有効な set が 1 つも残らなければ、何もしないボタンを表示しても意味が無いため
+  // ブロックごと落とす（fail-closed）。
+  applyButton(block, type) {
+    const label = nonEmptyString(block.label);
+    const confirmTemplate = nonEmptyString(block.confirmTemplate);
+    if (!label || !confirmTemplate) return null;
+
+    const sets = (Array.isArray(block.sets) ? block.sets : [])
+      .map((set) => {
+        if (!set || typeof set !== 'object' || Array.isArray(set)) return null;
+        const key = nonEmptyString(set.key);
+        if (!key) return null;
+        const value = set.value;
+        const validValueType = value === null
+          || typeof value === 'string'
+          || typeof value === 'number'
+          || typeof value === 'boolean';
+        return validValueType ? { key, value } : null;
+      })
+      .filter((set) => set !== null);
+    if (sets.length === 0) return null;
+
+    return { type, label, confirmTemplate, sets, danger: block.danger === true };
   },
 
   tabLink(block, type, tabIds, fieldTabs) {

@@ -335,12 +335,20 @@ test.describe.serial('設定パネル: コンテンツテーブル（issue #380,
     expect(afterHome).toBe(0);
 
     // マウスホイールでも変わらずスクロールできる（キーボード対応の追加で既存のマウス
-    // 操作を壊していないことの確認）。
+    // 操作を壊していないことの確認）。実装側はホイール操作に一切関与せず（キーボード
+    // だけを配線しており、ホイールはブラウザ既定の overflow-x スクロールに委ねている）、
+    // 司の実機実行で「直前の keyboard.press による scrollLeft 直接代入の直後だと、
+    // ホイール由来の scrollLeft 更新がコンポジタスレッド側で確定するまで一瞬遅れる」
+    // ケースが確認された（同期読み取りだと 0 のまま観測されて flaky になる）。
+    // 実装ではなくテストの読み取りタイミングの問題のため、即時 1 回読みではなく
+    // expect.poll で反映を待つ（固定 sleep ではなく、反映され次第すぐ進む）。
     const box = await wrap.boundingBox();
     await win.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
     await win.mouse.wheel(60, 0);
-    const afterWheel = await wrap.evaluate((el) => el.scrollLeft);
-    expect(afterWheel).toBeGreaterThan(afterHome);
+    await expect.poll(() => wrap.evaluate((el) => el.scrollLeft), {
+      message: 'マウスホイール操作後、scrollLeft が更新されない',
+      timeout: 2000,
+    }).toBeGreaterThan(afterHome);
 
     // Tab はこのキー操作の配線に奪われず、通常どおりフォーカスを次へ送る
     // （「Tab は必ず素通しする」の確認）。

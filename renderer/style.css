@@ -779,20 +779,31 @@ h4.settings-content-heading {
   overflow-x: auto;
   border: 1px solid #21262d;
   border-radius: 5px;
-  /* 右端に「まだ続きがある」ことを示す固定フェード（issue #380 麗美の実機確認指摘）。
-     macOS のスクロールバーは静止時に非表示になり、境界にちょうど収まる列では文字の
-     途中切れという手がかりも出ないため、常時表示の視覚的な手がかりを追加した。
-     新しい色は増やさず、この表自体が既にボタンの背景として使っている既存トークン
-     #21262d（.settings-content-apply-button 等と共通）を使う。
-     background-attachment の既定（scroll）は要素自身の内部スクロール（scrollLeft）には
-     追従せず要素の境界へ固定されるため、スクロール位置によらず常に右端に留まる
-     （sticky 要素や JS を使わずに実現できる）。実際にスクロールできない表でもうっすら
-     影が出るが、常時表示は仕様として許容している（司・植草の判断）。
-     セルの文字より手前に出ないよう、常に文字の背後（この要素自身の背景）に留まる。 */
+}
+/* 右端に「まだ続きがある」ことを示す固定フェード（issue #380 麗美の実機確認指摘）。
+   macOS のスクロールバーは静止時に非表示になり、境界にちょうど収まる列では文字の
+   途中切れという手がかりも出ないため、視覚的な手がかりを追加した。常時表示にするか
+   （スクロール可能なときだけ出すかの出し分けをしないか）は実装時の判断で、UX レビュー
+   （植草）で事後に妥当と評価されている。新しい色は増やさず、この表自体が既に
+   ボタンの背景として使っている既存トークン #21262d（.settings-content-apply-button
+   等と共通）を使う。
+   当初は .settings-content-table-wrap 自身の background-image として描いていたが、
+   子要素（thead th の見出し行全体・tbody th[scope=row] の行見出し列）が持つ
+   不透明な背景 #161b22 にラッパーの背景ごと覆い隠され、見出し行だけフェードが
+   消える帯になってしまっていた（植草の UX レビュー指摘）。position: absolute を
+   付けた生成要素は通常フローの子要素（<table> とその中の <th>）より後に描かれるため、
+   ::after の絶対配置オーバーレイに変更し、<th> の背景があっても最前面に出るようにした
+   （.settings-content-table-wrap 自身の position: relative が疑似要素の配置起点になる）。
+   pointer-events: none で、24px の帯がクリック・スクロール操作を邪魔しないようにする。 */
+.settings-content-table-wrap::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 24px;
+  pointer-events: none;
   background-image: linear-gradient(to left, #21262d, rgba(33, 38, 45, 0));
-  background-repeat: no-repeat;
-  background-position: right top;
-  background-size: 24px 100%;
 }
 .settings-content-table-wrap:focus-visible {
   outline: var(--vktm--outline--focus-ring);

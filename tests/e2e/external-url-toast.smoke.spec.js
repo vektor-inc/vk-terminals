@@ -179,11 +179,13 @@ function escapeRegExp(text) {
 // CSS の属性セレクター（[title$="..."]）は値に生の改行文字を含められない
 // （Playwright のセレクターパーサーが BADSTRING として弾く）ため、getByTitle の
 // 正規表現マッチと `.pane-task-title-pr` クラスの絞り込みを and() で掛け合わせる。
+// .first() はここでは付けない。同じ prUrl のバッジが誤って複数描画される回帰が
+// 起きた場合に strict mode 違反で検知できるようにするため（呼び出し側で複数
+// マッチが正当なケースがあれば、そこでだけ .first() を付ける）。
 function prBadgeLocator(win, url) {
   return win
     .getByTitle(new RegExp(`\\n${escapeRegExp(url)}$`))
-    .and(win.locator('.pane-task-title-pr'))
-    .first();
+    .and(win.locator('.pane-task-title-pr'));
 }
 
 test.describe.serial('外部ブラウザを開けなかったときのトースト（issue #326）', () => {
@@ -367,9 +369,10 @@ test.describe.serial('外部ブラウザを開けなかったときのトース�
   // 切り離し済みノードをそのまま返すため以後二度と表示されなくなっていた。
   // トーストを document.body 直下へ移すことの回帰テスト。
   //
-  // .first() ではなく PR バッジの title 属性（= prUrl）で狙い撃ちする。ペイン追加後は
-  // 画面上に PR バッジが 2 つになりうり、DOM 順が termId "1" のペインと一致する保証が
-  // 無いため。
+  // .pane .pane-task-title-pr の先頭要素を掴む書き方ではなく、prBadgeLocator()
+  // （title 属性の末尾一致 + クラス指定。issue #379）で対象の prUrl を持つバッジだけを
+  // 狙い撃ちする。ペイン追加後は画面上に PR バッジが複数になりうり、DOM 順が
+  // termId "1" のペインと一致する保証が無いため。
   test('ペインを追加した後（render() の再構築後）も、トーストは再び表示される', async () => {
     await stubShellOpenExternal(app, { fail: true });
     try {

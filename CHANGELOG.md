@@ -1,6 +1,6 @@
 # Changelog
 
-- [ 開発環境 ] e2e の `external-url-toast.smoke.spec.js` が PR バッジを `title` 属性の完全一致（`prUrl` そのもの）で探しており、#364 で `title` が「状態ラベル + 改行 + URL」形式へ変わったことに追随できず1件失敗・後続4件が未実行のままになっていたのを修正（[#379](https://github.com/vektor-inc/vk-terminals/issues/379)）
+- [ 開発環境 ] e2e の `external-url-toast.smoke.spec.js` が PR バッジを `title` の完全一致で探しており、#364 の書式変更に追随できず失敗していたのを修正（[#379](https://github.com/vektor-inc/vk-terminals/issues/379)）
 
 ## 1.60.0
 

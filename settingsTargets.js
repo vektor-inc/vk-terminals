@@ -155,9 +155,15 @@ function describeSettingsValues(descriptor, options = {}) {
 // （dedupeSettingsFieldsByKeyQuiet が seenKeys を Set にしているのと同じ配慮）。
 function resolveSavedFieldValues(descriptor, keys) {
   const keyList = (Array.isArray(keys) ? keys : []).filter((key) => typeof key === 'string');
-  const entryByKey = new Map(
-    descriptorFieldTargetEntries(descriptor).map((entry) => [entry.field.key, entry])
-  );
+  // new Map(...) へ重複キーの配列をそのまま渡すと後勝ちになる。renderer 側の
+  // dedupeSettingsFieldsByKeyQuiet は描画順で最初の 1 件を残す先勝ちのため、判定基準が
+  // 割れないよう main 側もここで先勝ちに揃える（安藤のレビュー指摘。重複 key を持つ
+  // ディスクリプタ自体は isValidSettingsDescriptor が丸ごと拒否するため到達経路は無いが、
+  // 片方だけを見て直すと将来また食い違う）。
+  const entryByKey = new Map();
+  for (const entry of descriptorFieldTargetEntries(descriptor)) {
+    if (!entryByKey.has(entry.field.key)) entryByKey.set(entry.field.key, entry);
+  }
   const jsonCache = new Map(); // targetPath -> パース済みオブジェクト（読み込みは 1 回だけ）
   const results = Object.create(null);
 
@@ -199,15 +205,6 @@ function resolveSavedFieldValues(descriptor, keys) {
   }
 
   return results;
-}
-
-// 単発呼び出し用の薄いラッパー。実体は resolveSavedFieldValues（バッチ版）で、
-// キャッシュ・許可判定・password 拒否のロジックを二重に持たない。
-function resolveSavedFieldValue(descriptor, key) {
-  if (typeof key !== 'string' || !key.trim()) {
-    return { ok: false, error: '対象の設定キーが指定されていません' };
-  }
-  return resolveSavedFieldValues(descriptor, [key])[key];
 }
 
 function coerceFieldValue(field, raw) {
@@ -385,7 +382,6 @@ module.exports = {
   isValidSettingsDescriptor,
   readJsonObject,
   resolveFieldTargetPath,
-  resolveSavedFieldValue,
   resolveSavedFieldValues,
   resolveTargetPath,
   saveSettingsToTargets,

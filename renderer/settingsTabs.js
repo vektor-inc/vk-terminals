@@ -35,6 +35,10 @@ const SETTINGS_CONTENT_TABLE_BADGE_TONES = new Set(['info', 'warning', 'error', 
 // 設定ディスクリプタは信頼できない入力（VK_TERMINALS_SETTINGS で外部から差し替え可能）
 // のため、行数を定義側の良識に任せず上限を設ける（安藤のセキュリティレビュー指摘・issue #380）。
 const SETTINGS_CONTENT_TABLE_MAX_ROWS = 200;
+// 列数にも rows と対称に上限を設ける（安藤のセキュリティレビュー指摘・issue #380）。
+// 上限を付けないと、各行のセル詰め・切り詰め処理（columns.length ぶんのループ）が
+// 列数に比例して膨らみ、rows の上限だけでは負荷を抑えきれない。
+const SETTINGS_CONTENT_TABLE_MAX_COLUMNS = 200;
 
 function nonEmptyString(value) {
   return typeof value === 'string' && value.trim() !== '' ? value : '';
@@ -212,7 +216,8 @@ const SETTINGS_CONTENT_BLOCK_HANDLERS = Object.freeze({
     if (!caption) return null;
 
     const rawColumns = (Array.isArray(block.columns) ? block.columns : [])
-      .map((column) => ({ label: nonEmptyString(column && column.label) }));
+      .map((column) => ({ label: nonEmptyString(column && column.label) }))
+      .slice(0, SETTINGS_CONTENT_TABLE_MAX_COLUMNS);
     const columns = rawColumns.length > 0 ? rawColumns : [{ label: '' }];
 
     const rows = (Array.isArray(block.rows) ? block.rows : [])

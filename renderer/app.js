@@ -4785,6 +4785,11 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
   let refreshSettingsContentTables = () => {};
   let updateSettingsApplyButtons = () => {};
   let scheduleSettingsContentTableLivehint = () => {};
+  // 保存成功後に savedValue セル（＝設定ファイルに実際に保存されている値）を取り直す
+  // ためのフック（issue #380 安藤のレビュー指摘）。保存でファイルの中身が変わったのに
+  // 取り直さないと、保存後も編集を続けた場合に savedValue が古い値を表示し続ける。
+  let refreshSettingsContentSavedValues = () => {};
+
   if (useTabbedSettings) {
     const tablist = modal.querySelector('.settings-tabs');
     const tabButtons = Array.from(modal.querySelectorAll('.settings-tab'));
@@ -5282,7 +5287,9 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
       try {
         resultMap = await VKIpc.invoke('settings:content-table-saved-value', keys);
       } catch (e) {
-        resultMap = {};
+        // main 側（resolveSavedFieldValues）が Object.create(null) を返すのに合わせ、
+        // フォールバックも同じ形にする（安藤のレビュー指摘。到達経路は無いが意図を揃える）。
+        resultMap = Object.create(null);
         const error = e && e.message;
         keys.forEach((key) => { resultMap[key] = { ok: false, error }; });
       }
@@ -5307,6 +5314,11 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
       });
       updateSettingsApplyButtons();
     };
+    // 保存成功後、表内の savedValue セル全部を取り直す（フックの実体。保存ハンドラから
+    // 呼ばれる。issue #380 安藤のレビュー指摘）。
+    refreshSettingsContentSavedValues = () => (
+      fetchSavedValues(Array.from(modal.querySelectorAll('[data-savedvalue-key]')))
+    );
 
     // applyButton の aria-disabled（対象が全件無効化・非表示・マスク対象の場合）と
     // aria-busy（リンクした表の savedValue セルが確認中の場合）を、対象欄の状態から
@@ -5426,8 +5438,12 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
         });
 
       const skippedCount = sets.length - appliedCount;
+      // 「変更できない状態」は無効化中・非表示の欄にしか当てはまらない。password 欄
+      // （isApplyTarget が除外）は普通に編集できる欄だし、型不一致（number への非数値・
+      // select の未知の選択肢）も欄自体は変更可能で今回のセット内容が受理されなかった
+      // だけなので、理由を問わない中立な言い回しにする（植草さんのレビュー指摘）。
       const summary = skippedCount > 0
-        ? `${appliedCount}件の設定を切り替えました（${skippedCount}件は現在変更できない状態のため対象外です）。保存するには「保存」を押してください。`
+        ? `${appliedCount}件の設定を切り替えました（${skippedCount}件は対象外です。無効化中・非表示・保護対象の項目や、反映できない値だったため）。保存するには「保存」を押してください。`
         : `${appliedCount}件の設定を切り替えました。保存するには「保存」を押してください。`;
       showGenericToast(summary);
     };
@@ -5727,6 +5743,10 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
         // dirty 解除でフッターの構成が変わらないよう、先に固定してから解除する。
         lockSettingsFooter();
         clearDirtyTabs();
+        // 保存でファイルの中身が変わったので、savedValue セル（＝保存済みの値）を
+        // 取り直す。取り直さないと、保存後も編集を続けた場合に古い値が残り続ける
+        // （安藤のレビュー指摘・issue #380）。
+        refreshSettingsContentSavedValues();
         msg.textContent = '保存しました。次回の起動から反映されます。';
         msg.classList.add('ok');
         autoClose.arm();

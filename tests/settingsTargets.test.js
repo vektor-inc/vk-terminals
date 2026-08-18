@@ -15,7 +15,6 @@ const {
   groupFieldsByTargetPath,
   isValidSettingsDescriptor,
   resolveFieldTargetPath,
-  resolveSavedFieldValue,
   resolveSavedFieldValues,
   resolveTargetPath,
   saveSettingsToTargets,
@@ -532,8 +531,12 @@ test('saveSettingsToTargets: 型変換バリデーションエラー時はどの
   assert.deepEqual(readJson(secondPath), { count: 1 });
 });
 
-// ─── resolveSavedFieldValue（issue #380: 設定コンテンツテーブルの savedValue セル）───
-test('resolveSavedFieldValue: ディスクリプタが宣言するキーなら保存済みの値を返す', () => {
+// resolveSavedFieldValue（単数版）は issue #380 導入時（f0c7faa）にバッチ化前の窓口として
+// 追加したが、main.js からは resolveSavedFieldValues（バッチ版）だけが呼ばれるようになり
+// production では未使用になった。単数版はまだ世に出ていない（同じ PR 内でのみ存在した）ため
+// 互換のために残す理由が無く、削除した（安藤のレビュー指摘）。以下のテストはすべて
+// resolveSavedFieldValues（バッチ版）へ寄せてある。
+test('resolveSavedFieldValues: ディスクリプタが宣言するキーなら保存済みの値を返す', () => {
   const dir = makeTempDir();
   const targetPath = path.join(dir, 'config.json');
   writeJson(targetPath, { engine: 'claude' });
@@ -543,10 +546,10 @@ test('resolveSavedFieldValue: ディスクリプタが宣言するキーなら�
     groups: [{ fields: [{ key: 'engine', label: 'エンジン', type: 'text' }] }],
   };
 
-  assert.deepEqual(resolveSavedFieldValue(descriptor, 'engine'), { ok: true, value: 'claude' });
+  assert.deepEqual(resolveSavedFieldValues(descriptor, ['engine']).engine, { ok: true, value: 'claude' });
 });
 
-test('resolveSavedFieldValue: 未保存（ファイルに無い）キーは null を返す', () => {
+test('resolveSavedFieldValues: 未保存（ファイルに無い）キーは null を返す', () => {
   const dir = makeTempDir();
   const targetPath = path.join(dir, 'config.json');
   writeJson(targetPath, {});
@@ -556,10 +559,10 @@ test('resolveSavedFieldValue: 未保存（ファイルに無い）キーは null
     groups: [{ fields: [{ key: 'engine', label: 'エンジン', type: 'text' }] }],
   };
 
-  assert.deepEqual(resolveSavedFieldValue(descriptor, 'engine'), { ok: true, value: null });
+  assert.deepEqual(resolveSavedFieldValues(descriptor, ['engine']).engine, { ok: true, value: null });
 });
 
-test('resolveSavedFieldValue: ディスクリプタが宣言していないキーは拒否する（許可制）', () => {
+test('resolveSavedFieldValues: ディスクリプタが宣言していないキーは拒否する（許可制）', () => {
   const dir = makeTempDir();
   const targetPath = path.join(dir, 'config.json');
   // ファイル自体には値があっても、ディスクリプタが宣言していないキーは読めない。
@@ -570,12 +573,12 @@ test('resolveSavedFieldValue: ディスクリプタが宣言していないキ�
     groups: [{ fields: [{ key: 'engine', label: 'エンジン', type: 'text' }] }],
   };
 
-  const result = resolveSavedFieldValue(descriptor, 'secret');
+  const result = resolveSavedFieldValues(descriptor, ['secret']).secret;
   assert.equal(result.ok, false);
   assert.match(result.error, /許可されていない/);
 });
 
-test('resolveSavedFieldValue: 危険なキーセグメントは宣言の有無に関わらず拒否する', () => {
+test('resolveSavedFieldValues: 危険なキーセグメントは宣言の有無に関わらず拒否する', () => {
   const dir = makeTempDir();
   const targetPath = path.join(dir, 'config.json');
   writeJson(targetPath, {});
@@ -587,19 +590,24 @@ test('resolveSavedFieldValue: 危険なキーセグメントは宣言の有無�
     groups: [{ fields: [{ key: '__proto__.polluted', label: '危険', type: 'text' }] }],
   };
 
-  const result = resolveSavedFieldValue(descriptor, '__proto__.polluted');
+  const result = resolveSavedFieldValues(descriptor, ['__proto__.polluted'])['__proto__.polluted'];
   assert.equal(result.ok, false);
   assert.match(result.error, /許可されていない/);
 });
 
-test('resolveSavedFieldValue: key の指定が無い・空文字はエラーを返す', () => {
+test('resolveSavedFieldValues: 空文字キーはエラーを結果に含め、非文字列キーは結果に含めない', () => {
+  // resolveSavedFieldValues は keys 配列をそのまま受ける設計のため、単数版ラッパーが
+  // 担っていた「呼び出し前のガード」は無い。空文字は結果に ok:false のエントリとして残り、
+  // 文字列以外（undefined・数値等）は最初のフィルタで静かに間引かれ、結果オブジェクトに
+  // そのキー自体が現れない（「空配列・非配列・非文字列要素は空の結果を返す」テストと対）。
   const descriptor = { targetPath: '/dev/null', groups: [] };
-  assert.equal(resolveSavedFieldValue(descriptor, '').ok, false);
-  assert.equal(resolveSavedFieldValue(descriptor, undefined).ok, false);
-  assert.equal(resolveSavedFieldValue(descriptor, 42).ok, false);
+  const result = resolveSavedFieldValues(descriptor, ['', undefined, 42]);
+  assert.equal(result[''].ok, false);
+  assert.equal(Object.prototype.hasOwnProperty.call(result, 'undefined'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(result, '42'), false);
 });
 
-test('resolveSavedFieldValue: field 単位の targetPath 上書きも解決する', () => {
+test('resolveSavedFieldValues: field 単位の targetPath 上書きも解決する', () => {
   const dir = makeTempDir();
   const defaultPath = path.join(dir, 'default.json');
   const fieldPath = path.join(dir, 'field.json');
@@ -611,10 +619,10 @@ test('resolveSavedFieldValue: field 単位の targetPath 上書きも解決す�
     groups: [{ fields: [{ key: 'engine', label: 'エンジン', type: 'text', targetPath: fieldPath }] }],
   };
 
-  assert.deepEqual(resolveSavedFieldValue(descriptor, 'engine'), { ok: true, value: 'codex' });
+  assert.deepEqual(resolveSavedFieldValues(descriptor, ['engine']).engine, { ok: true, value: 'codex' });
 });
 
-test('resolveSavedFieldValue: type が password の欄は拒否する（安藤のセキュリティレビュー指摘・issue #380）', () => {
+test('resolveSavedFieldValues: type が password の欄は拒否する（安藤のセキュリティレビュー指摘・issue #380）', () => {
   const dir = makeTempDir();
   const targetPath = path.join(dir, 'config.json');
   writeJson(targetPath, { apiToken: 'super-secret-should-not-leak' });
@@ -624,7 +632,7 @@ test('resolveSavedFieldValue: type が password の欄は拒否する（安藤�
     groups: [{ fields: [{ key: 'apiToken', label: 'トークン', type: 'password' }] }],
   };
 
-  const result = resolveSavedFieldValue(descriptor, 'apiToken');
+  const result = resolveSavedFieldValues(descriptor, ['apiToken']).apiToken;
   assert.equal(result.ok, false);
   assert.match(result.error, /マスク対象/);
   assert.equal(result.value, undefined);
@@ -705,4 +713,25 @@ test('resolveSavedFieldValues: 空配列・非配列・非文字列要素は空�
   assert.deepEqual({ ...resolveSavedFieldValues(descriptor, []) }, {});
   assert.deepEqual({ ...resolveSavedFieldValues(descriptor, undefined) }, {});
   assert.deepEqual({ ...resolveSavedFieldValues(descriptor, [42, null]) }, {});
+});
+
+test('resolveSavedFieldValues: 重複キーは先勝ち（renderer の dedupeSettingsFieldsByKeyQuiet と揃える・安藤のレビュー指摘）', () => {
+  // 重複 key を持つディスクリプタ自体は isValidSettingsDescriptor が丸ごと拒否するため
+  // 通常の main.js 経路では到達しないが、この関数自身は重複を検証しないため、
+  // 先勝ち・後勝ちのどちらで実装されているかをここで直接固定する。
+  const dir = makeTempDir();
+  const firstPath = path.join(dir, 'first.json');
+  const secondPath = path.join(dir, 'second.json');
+  writeJson(firstPath, { engine: 'from-first' });
+  writeJson(secondPath, { engine: 'from-second' });
+
+  const descriptor = {
+    targetPath: firstPath,
+    groups: [
+      { fields: [{ key: 'engine', label: '1 件目', type: 'text' }] },
+      { targetPath: secondPath, fields: [{ key: 'engine', label: '2 件目（重複）', type: 'text' }] },
+    ],
+  };
+
+  assert.deepEqual(resolveSavedFieldValues(descriptor, ['engine']).engine, { ok: true, value: 'from-first' });
 });

@@ -788,6 +788,20 @@ test('normalizeSettingsTabContent: table の rows は 200 行を超えると黙�
   assert.equal(normalized.rows[199].label, '行199');
 });
 
+test('normalizeSettingsTabContent: table の columns も 200 列を超えると黙って切り詰める（rows と対称・安藤のセキュリティレビュー指摘）', () => {
+  const columns = Array.from({ length: 250 }, (_, i) => ({ label: `列${i}` }));
+  const cells = Array.from({ length: 250 }, (_, i) => `値${i}`);
+  const [normalized] = normalizeSettingsTabContent([
+    { type: 'table', caption: '大量列', columns, rows: [{ label: '行', cells }] },
+  ]);
+  assert.equal(normalized.columns.length, 200);
+  assert.equal(normalized.columns[0].label, '列0');
+  assert.equal(normalized.columns[199].label, '列199');
+  // 行のセルも切り詰め後の列数（200）にちょうど合わせて詰められる。
+  assert.equal(normalized.rows[0].cells.length, 200);
+  assert.deepEqual(normalized.rows[0].cells[199], { type: 'text', text: '値199' });
+});
+
 // ─── applyButton（issue #380）─────────────────────────────────────────────────
 test('normalizeSettingsTabContent: applyButton は label / confirmTemplate / sets が必須', () => {
   assert.deepEqual(normalizeSettingsTabContent([

@@ -165,6 +165,29 @@ async function isOnTopAtOwnCenter(win, selector) {
   }, selector);
 }
 
+// 正規表現の特殊文字（URL に含まれる `.` `?` など）をエスケープする。
+function escapeRegExp(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// prUrl で PR バッジを狙い撃ちするロケーター（issue #379）。
+// renderTaskTitleContent()（renderer/app.js）は PR バッジの title 属性を
+// `${prPresentation.titleLabel}\n${prUrl}` の形式で設定する（issue #363 で
+// 「PR / マージ待ちのPR / マージ済みのPR」の状態ラベルを先頭へ付与するように
+// なったため、以前の `title === prUrl` 前提が崩れていた）。ここでは状態ラベルの
+// 内容に依存せず、末尾が `\n${prUrl}` で終わることだけを見る。
+// CSS の属性セレクター（[title$="..."]）は値に生の改行文字を含められない
+// （Playwright のセレクターパーサーが BADSTRING として弾く）ため、getByTitle の
+// 正規表現マッチと `.pane-task-title-pr` クラスの絞り込みを and() で掛け合わせる。
+// .first() はここでは付けない。同じ prUrl のバッジが誤って複数描画される回帰が
+// 起きた場合に strict mode 違反で検知できるようにするため（呼び出し側で複数
+// マッチが正当なケースがあれば、そこでだけ .first() を付ける）。
+function prBadgeLocator(win, url) {
+  return win
+    .getByTitle(new RegExp(`\\n${escapeRegExp(url)}$`))
+    .and(win.locator('.pane-task-title-pr'));
+}
+
 test.describe.serial('外部ブラウザを開けなかったときのトースト（issue #326）', () => {
   let app;
   let win;
@@ -308,7 +331,7 @@ test.describe.serial('外部ブラウザを開けなかったときのトース�
     try {
       // ① リンク A（prUrl）が失敗しトースト表示。
       await postSetTitle(port, { termId: '1', title: 'issue #326 中: 失敗A', prUrl });
-      const prBadgeA = win.locator(`.pane-task-title-pr[title="${prUrl}"]`).first();
+      const prBadgeA = prBadgeLocator(win, prUrl);
       await expect(prBadgeA).toBeVisible();
       await prBadgeA.click();
       await expect(win.locator('.vk-toast')).toBeVisible();
@@ -320,7 +343,7 @@ test.describe.serial('外部ブラウザを開けなかったときのトース�
       // （安藤レビュー指摘）。title 属性が succeedingUrl に描き直されるまで待ってから
       // クリックする。
       await postSetTitle(port, { termId: '1', title: 'issue #326 中: 成功B', prUrl: succeedingUrl });
-      const prBadgeB = win.locator(`.pane-task-title-pr[title="${succeedingUrl}"]`).first();
+      const prBadgeB = prBadgeLocator(win, succeedingUrl);
       await expect(prBadgeB).toBeVisible();
       await prBadgeB.click();
 
@@ -346,13 +369,15 @@ test.describe.serial('外部ブラウザを開けなかったときのトース�
   // 切り離し済みノードをそのまま返すため以後二度と表示されなくなっていた。
   // トーストを document.body 直下へ移すことの回帰テスト。
   //
-  // .first() ではなく PR バッジの title 属性（= prUrl）で狙い撃ちする。ペイン追加後は
-  // 画面上に PR バッジが 2 つになりうり、DOM 順が termId "1" のペインと一致する保証が
-  // 無いため。
+  // .pane .pane-task-title-pr の先頭要素を掴む書き方ではなく、prBadgeLocator()
+  // （title 属性の末尾一致 + クラス指定。issue #379）で対象の prUrl を持つバッジだけを
+  // 狙い撃ちする。splitPane() が作る新規ペインは prUrl を引き継がないため同じ
+  // prUrl のバッジが複数になるわけではないが、ペイン自体は増えるため、DOM 順の
+  // 先頭が termId "1" のペインである保証は無いため。
   test('ペインを追加した後（render() の再構築後）も、トーストは再び表示される', async () => {
     await stubShellOpenExternal(app, { fail: true });
     try {
-      const prBadge = win.locator(`.pane-task-title-pr[title="${prUrl}"]`).first();
+      const prBadge = prBadgeLocator(win, prUrl);
       await postSetTitle(port, { termId: '1', title: 'issue #326 ペイン追加前', prUrl });
       await expect(prBadge).toBeVisible();
       await prBadge.click();
@@ -389,7 +414,7 @@ test.describe.serial('外部ブラウザを開けなかったときのトース�
     await stubShellOpenExternal(app, { fail: true });
     await stubClipboardWrite(app);
     try {
-      const prBadge = win.locator(`.pane-task-title-pr[title="${prUrl}"]`).first();
+      const prBadge = prBadgeLocator(win, prUrl);
       await postSetTitle(port, { termId: '1', title: 'issue #326 モーダル前の失敗', prUrl });
       await prBadge.click();
       await expect(win.locator('.vk-toast')).toBeVisible();
@@ -481,7 +506,7 @@ test.describe.serial('外部ブラウザを開けなかったときのトース�
     try {
       await withSmallWindow(app, win, async () => {
         // まずリンクを失敗させてトーストを表示する（確認ダイアログとは無関係の経路）。
-        const prBadge = win.locator(`.pane-task-title-pr[title="${prUrl}"]`).first();
+        const prBadge = prBadgeLocator(win, prUrl);
         await postSetTitle(port, { termId: '1', title: 'issue #326 中: 確認ダイアログ前', prUrl });
         await expect(prBadge).toBeVisible();
         await prBadge.click();

@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 開発環境 ] e2e の `external-url-toast.smoke.spec.js` が PR バッジを `title` 属性の完全一致（`prUrl` そのもの）で探しており、#364 で `title` が「状態ラベル + 改行 + URL」形式へ変わったことに追随できず1件失敗・後続4件が未実行のままになっていたのを修正（[#379](https://github.com/vektor-inc/vk-terminals/issues/379)）
+
 ## 1.60.0
 
 - [ 機能追加 ] 設定画面の説明ブロックに、今の入力値・保存済みの値を示す読み取り専用の表（`table`）と、複数の設定欄をまとめて切り替える一括切り替えボタン（`applyButton`）を追加（[#380](https://github.com/vektor-inc/vk-terminals/issues/380)）

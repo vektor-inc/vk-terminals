@@ -389,8 +389,21 @@ test.describe.serial('設定パネル: コンテンツテーブル（issue #380,
     );
     expect(fadeContainsWrap).toBe(true);
 
-    // 内側（wrap）を右端までスクロールしても、フェードを描く要素（fade）自身の画面上の
-    // 位置は動かない。fade が overflow を持たず、スクロールの影響を受けない祖先だから。
+    // フェード（::after）の付け先そのものを固定する（司の指摘・安藤の実証）。構造
+    // （クラス名・入れ子・overflow）だけを見ていると、::after が再びスクロール担当の
+    // wrap 側へ戻されたときに、上の assert がすべて通ったまま同じ不具合が再発する
+    // （fade は overflow を持たない要素なので、::after の付け先を問わず fade 自身の
+    // rect は元々動きようがなく、下の rect 比較だけでは検出できない）。疑似要素は
+    // DOM に無くても getComputedStyle(el, '::after') で読める。
+    const fadeAfter = await fade.evaluate((el) => getComputedStyle(el, '::after').content);
+    expect(fadeAfter).not.toBe('none'); // フェードは外側の箱に付いている
+    const wrapAfter = await wrap.evaluate((el) => getComputedStyle(el, '::after').content);
+    expect(wrapAfter).toBe('none'); // スクロールする要素側には付いていない
+
+    // 内側（wrap）を右端までスクロールしても、フェードの付け先である fade 自身の
+    // 画面上の位置は動かない。fade が overflow を持たず、スクロールの影響を受けない
+    // 祖先だから（上の 2 行で「フェードは fade に付いている」ことを固定した前提で、
+    // この比較は fade 自身の位置が動かないことだけを見ている）。
     const before = await fade.evaluate((el) => {
       const r = el.getBoundingClientRect();
       return { x: r.x, right: r.right, y: r.y, width: r.width, height: r.height };

@@ -48,6 +48,7 @@ test('設定項目の説明を初期状態では隠し、ボタンで開閉し�
             disabledReason: '選択が 1 の間は変更できません。',
           },
           { key: 'withoutHelp', label: '説明なし', type: 'text' },
+          { key: 'blankHelp', label: '空白だけの説明', type: 'text', help: '   ' },
         ],
       }],
       values: {
@@ -60,6 +61,7 @@ test('設定項目の説明を初期状態では隠し、ボタンで開閉し�
         count: 1,
         model: 'sample',
         withoutHelp: '',
+        blankHelp: '',
       },
     });
 
@@ -77,6 +79,12 @@ test('設定項目の説明を初期状態では隠し、ボタンで開閉し�
     const withoutHelpRow = win.locator('#set-field-8').locator('..');
     await expect(withoutHelpRow.locator('.settings-help-toggle')).toHaveCount(0);
     await expect(withoutHelpRow.locator('.settings-label-row')).toHaveCount(0);
+
+    // 空白だけの help も説明なしとして扱い、説明関連の DOM を一切描画しない。
+    const blankHelpRow = win.locator('#set-field-9').locator('..');
+    await expect(blankHelpRow.locator('.settings-help-toggle')).toHaveCount(0);
+    await expect(blankHelpRow.locator('.settings-label-row')).toHaveCount(0);
+    await expect(blankHelpRow.locator('.settings-help')).toHaveCount(0);
 
     // boolean はチェックラベルを包む専用分岐でも、入力自身の読み上げ対象を更新する。
     const booleanInput = win.getByLabel('有効化', { exact: true });

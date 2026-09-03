@@ -1035,6 +1035,11 @@ h4.settings-content-heading {
   text-align: center;
   cursor: pointer;
 }
+/* 無効行の通常色は、同じ詳細度を持つ hover・展開状態より前に置く。
+   ソース順の後勝ちで状態側の明るい文字色を優先するため、並び替えると結果が変わる。 */
+.settings-row-disabled .settings-help-toggle {
+  color: #8b949e;
+}
 .settings-help-toggle:hover {
   background: #21262d;
   color: #c9d1d9;
@@ -1079,9 +1084,6 @@ h4.settings-content-heading {
   display: none;
 }
 .settings-row-disabled .settings-label {
-  color: #8b949e;
-}
-.settings-row-disabled .settings-help-toggle {
   color: #8b949e;
 }
 .settings-row-disabled .settings-check {

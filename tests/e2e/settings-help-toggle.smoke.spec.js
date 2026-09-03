@@ -47,6 +47,7 @@ test('設定項目の説明を初期状態では隠し、ボタンで開閉し�
             disabledWhen: { key: 'choice', value: 'one' },
             disabledReason: '選択が 1 の間は変更できません。',
           },
+          { key: 'withoutHelp', label: '説明なし', type: 'text' },
         ],
       }],
       values: {
@@ -58,6 +59,7 @@ test('設定項目の説明を初期状態では隠し、ボタンで開閉し�
         apiHost: '127.0.0.1',
         count: 1,
         model: 'sample',
+        withoutHelp: '',
       },
     });
 
@@ -70,6 +72,33 @@ test('設定項目の説明を初期状態では隠し、ボタンで開閉し�
     for (const help of await win.locator('.settings-help').all()) {
       await expect(help).toBeHidden();
     }
+
+    // help が無い項目はラベル用ラッパーもトグルも増やさず、従来の DOM を保つ。
+    const withoutHelpRow = win.locator('#set-field-8').locator('..');
+    await expect(withoutHelpRow.locator('.settings-help-toggle')).toHaveCount(0);
+    await expect(withoutHelpRow.locator('.settings-label-row')).toHaveCount(0);
+
+    // boolean はチェックラベルを包む専用分岐でも、入力自身の読み上げ対象を更新する。
+    const booleanInput = win.getByLabel('有効化', { exact: true });
+    const booleanToggle = win.getByRole('button', { name: '有効化の説明' });
+    await expect(booleanInput).not.toHaveAttribute('aria-describedby');
+    await booleanToggle.click();
+    await expect(win.locator('#set-field-0-help')).toBeVisible();
+    await expect(booleanInput).toHaveAttribute('aria-describedby', 'set-field-0-help');
+    await booleanToggle.click();
+    await expect(win.locator('#set-field-0-help')).toBeHidden();
+    await expect(booleanInput).not.toHaveAttribute('aria-describedby');
+
+    // password は同じ行の表示切替ボタンと取り違えず、パスワード入力を更新する。
+    const passwordInput = win.getByLabel('パスワード', { exact: true });
+    const passwordToggle = win.getByRole('button', { name: 'パスワードの説明' });
+    await expect(passwordInput).not.toHaveAttribute('aria-describedby');
+    await passwordToggle.click();
+    await expect(win.locator('#set-field-3-help')).toBeVisible();
+    await expect(passwordInput).toHaveAttribute('aria-describedby', 'set-field-3-help');
+    await passwordToggle.click();
+    await expect(win.locator('#set-field-3-help')).toBeHidden();
+    await expect(passwordInput).not.toHaveAttribute('aria-describedby');
 
     const input = win.getByLabel('API ホスト', { exact: true });
     const toggle = win.getByRole('button', { name: 'API ホストの説明' });

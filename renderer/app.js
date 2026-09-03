@@ -4049,18 +4049,19 @@ function getApiHostAuthNotice(rawValue) {
 // id は描画順で採番したユニークな値を呼び出し側から受け取る（キーから id を導出すると
 // "a.b" と "a_b" のような別キーがサニタイズ後に衝突しうるため、キー由来にしない）。
 function renderSettingsField(f, value, id) {
-  const labelText = f.label || f.key;
+  const labelText = String(f.label || f.key || '');
+  const hasHelp = typeof f.help === 'string' && f.help.trim() !== '';
   const label = escText(labelText);
   // help は初期状態では閉じ、ラベル横のボタンから必要なときだけ開けるようにする。
   // ラベル自体は help が無い行では従来どおり裸で置き、不要な DOM 変更を避ける。
-  const help = f.help
+  const help = hasHelp
     ? `<span class="settings-help" id="${escAttr(id + '-help')}" hidden>${escText(f.help)}</span>`
     : '';
-  const helpToggle = f.help
+  const helpToggle = hasHelp
     ? `<button type="button" class="settings-help-toggle" id="${escAttr(id + '-help-toggle')}" aria-expanded="false" aria-controls="${escAttr(id + '-help')}" aria-label="${escAttr(labelText + 'の説明')}">?</button>`
     : '';
   const labelHtml = `<label class="settings-label" for="${escAttr(id)}">${label}</label>`;
-  const labelRow = f.help
+  const labelRow = hasHelp
     ? `<div class="settings-label-row">${labelHtml}${helpToggle}</div>`
     : labelHtml;
   // disabledReason は無効状態でだけ表示するが、状態切替のたびに生成・破棄せず DOM に常駐させる。
@@ -4074,7 +4075,7 @@ function renderSettingsField(f, value, id) {
         <input type="checkbox" id="${id}" ${value ? 'checked' : ''}>
         <span class="settings-label">${label}</span>
       </label>`;
-    const checkLabelRow = f.help
+    const checkLabelRow = hasHelp
       ? `<div class="settings-label-row">${checkLabel}${helpToggle}</div>`
       : checkLabel;
     return `<div class="settings-row settings-row-check">
@@ -4818,9 +4819,9 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
     const expanded = button.getAttribute('aria-expanded') === 'true';
     help.hidden = expanded;
     button.setAttribute('aria-expanded', expanded ? 'false' : 'true');
-    const row = button.closest('.settings-row');
-    const input = row ? row.querySelector('input, textarea, select') : null;
-    if (input?.id) syncEntryDescribedBy(input.id);
+    // ボタンの id が対応するエントリ id の唯一の正なので、行内の DOM 構造には依存しない。
+    const entryId = button.id.slice(0, -'-help-toggle'.length);
+    syncEntryDescribedBy(entryId);
   });
   const getCurrentSettingValues = () => {
     const values = {};

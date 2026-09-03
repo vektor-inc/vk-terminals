@@ -1018,6 +1018,9 @@ h4.settings-content-heading {
   align-items: center;
   gap: 6px;
 }
+.settings-label-row .settings-label {
+  min-width: 0;
+}
 .settings-help-toggle {
   flex: 0 0 18px;
   width: 18px;
@@ -1026,7 +1029,7 @@ h4.settings-content-heading {
   border: 1px solid var(--vktm--color--border-interactive);
   border-radius: 50%;
   background: transparent;
-  color: #8b949e;
+  color: #c9d1d9;
   font-size: 12px;
   line-height: 16px;
   text-align: center;
@@ -1058,6 +1061,9 @@ h4.settings-content-heading {
   /* help 文中の \n を改行として表示する（menuItems の説明文＋例の 2 行表記など） */
   white-space: pre-line;
 }
+.settings-help[hidden] {
+  display: none;
+}
 /* 条件付き無効状態
    ========================================================================== */
 .settings-disabled-reason {
@@ -1073,6 +1079,9 @@ h4.settings-content-heading {
   display: none;
 }
 .settings-row-disabled .settings-label {
+  color: #8b949e;
+}
+.settings-row-disabled .settings-help-toggle {
   color: #8b949e;
 }
 .settings-row-disabled .settings-check {

@@ -343,9 +343,9 @@ test.describe.serial('設定パネル: 基本フィールド系（issue #348 で
       await expect(err).toBeVisible();
       await expect(err).toHaveText(INVALID_MSG);
       await expect(err).toHaveAttribute('role', 'alert');
-      // aria-describedby が help と error の両方を関連付けている。
+      // 閉じている help は読み上げ対象へ含めず、エラーだけを関連付ける。
       await expect(win.locator(REPO_ID)).toHaveAttribute(
-        'aria-describedby', 'set-field-0-help set-field-0-error'
+        'aria-describedby', 'set-field-0-error'
       );
       // 赤枠が実際に適用されているか（computed border-color を確認）。
       const borderColor = await win.locator(REPO_ID).evaluate(

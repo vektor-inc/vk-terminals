@@ -4049,9 +4049,20 @@ function getApiHostAuthNotice(rawValue) {
 // id は描画順で採番したユニークな値を呼び出し側から受け取る（キーから id を導出すると
 // "a.b" と "a_b" のような別キーがサニタイズ後に衝突しうるため、キー由来にしない）。
 function renderSettingsField(f, value, id) {
-  const label = escText(f.label || f.key);
-  // help には id を振り、text/number 分岐で input の aria-describedby から参照する。
-  const help = f.help ? `<span class="settings-help" id="${escAttr(id + '-help')}">${escText(f.help)}</span>` : '';
+  const labelText = f.label || f.key;
+  const label = escText(labelText);
+  // help は初期状態では閉じ、ラベル横のボタンから必要なときだけ開けるようにする。
+  // ラベル自体は help が無い行では従来どおり裸で置き、不要な DOM 変更を避ける。
+  const help = f.help
+    ? `<span class="settings-help" id="${escAttr(id + '-help')}" hidden>${escText(f.help)}</span>`
+    : '';
+  const helpToggle = f.help
+    ? `<button type="button" class="settings-help-toggle" id="${escAttr(id + '-help-toggle')}" aria-expanded="false" aria-controls="${escAttr(id + '-help')}" aria-label="${escAttr(labelText + 'の説明')}">?</button>`
+    : '';
+  const labelHtml = `<label class="settings-label" for="${escAttr(id)}">${label}</label>`;
+  const labelRow = f.help
+    ? `<div class="settings-label-row">${labelHtml}${helpToggle}</div>`
+    : labelHtml;
   // disabledReason は無効状態でだけ表示するが、状態切替のたびに生成・破棄せず DOM に常駐させる。
   // applyFieldState が hidden と aria-describedby を同期し、入力欄から理由を読み上げられるようにする。
   const disabledReason = typeof f.disabledReason === 'string' && f.disabledReason.trim()
@@ -4059,11 +4070,15 @@ function renderSettingsField(f, value, id) {
     : '';
 
   if (f.type === 'boolean') {
-    return `<div class="settings-row settings-row-check">
-      <label class="settings-check">
+    const checkLabel = `<label class="settings-check">
         <input type="checkbox" id="${id}" ${value ? 'checked' : ''}>
         <span class="settings-label">${label}</span>
-      </label>${help}${disabledReason}
+      </label>`;
+    const checkLabelRow = f.help
+      ? `<div class="settings-label-row">${checkLabel}${helpToggle}</div>`
+      : checkLabel;
+    return `<div class="settings-row settings-row-check">
+      ${checkLabelRow}${help}${disabledReason}
     </div>`;
   }
 
@@ -4077,7 +4092,7 @@ function renderSettingsField(f, value, id) {
     // textarea の中身は要素内容なので escText 側でよいが、値は文字列前提なので escAttr で統一。
     const body = value === null || value === undefined ? '' : escText(JSON.stringify(value, null, 2));
     return `<div class="settings-row">
-      <label class="settings-label" for="${id}">${label}</label>${help}${disabledReason}
+      ${labelRow}${help}${disabledReason}
       <textarea id="${id}" rows="4" spellcheck="false">${body}</textarea>
     </div>`;
   }
@@ -4086,14 +4101,14 @@ function renderSettingsField(f, value, id) {
     // 判定は renderer/settingsLinesField.js の linesFieldDisplayText を参照（issue #339）。
     const body = escText(linesFieldDisplayText(value));
     return `<div class="settings-row">
-      <label class="settings-label" for="${id}">${label}</label>${help}${disabledReason}
+      ${labelRow}${help}${disabledReason}
       <textarea id="${id}" rows="4" spellcheck="false">${body}</textarea>
     </div>`;
   }
 
   if (f.type === 'password') {
     return `<div class="settings-row">
-      <label class="settings-label" for="${id}">${label}</label>${help}${disabledReason}
+      ${labelRow}${help}${disabledReason}
       <div class="settings-pwd">
         <input type="password" id="${id}" value="${strVal}" autocomplete="off" spellcheck="false">
         <button type="button" class="settings-reveal" data-target="${id}" title="表示切替">👁</button>
@@ -4113,7 +4128,7 @@ function renderSettingsField(f, value, id) {
       })
       .join('');
     return `<div class="settings-row">
-      <label class="settings-label" for="${id}">${label}</label>${help}${disabledReason}
+      ${labelRow}${help}${disabledReason}
       <select id="${id}">${opts}</select>
     </div>`;
   }
@@ -4129,8 +4144,7 @@ function renderSettingsField(f, value, id) {
         return `<option value="${optionValue}" label="${optionLabel}"></option>`;
       }).join('')}</datalist>`
     : '';
-  // pattern 検証のエラー行と aria 関連付け。help があれば help id と error id を
-  // スペース区切りで両方指す（無ければ error id のみ）。
+  // pattern 検証のエラー行と aria 関連付け。help は開いた間だけイベント側で先頭へ足す。
   const errorId = escAttr(id + '-error');
   // apiHost だけ、保存・再起動を待たずその場で認証要否の案内を出すための空の通知欄を
   // 併設する（issue #313）。中身は buildSettingsModal 側で入力イベントに応じて書き換える。
@@ -4138,11 +4152,9 @@ function renderSettingsField(f, value, id) {
   const inlineNoticeHtml = f.key === 'apiHost'
     ? `<p class="settings-inline-notice" id="${inlineNoticeId}" role="status" aria-live="polite" hidden></p>`
     : '';
-  const describedBy = escAttr(f.help
-    ? `${id}-help ${id}-error${f.key === 'apiHost' ? ` ${id}-notice` : ''}`
-    : `${id}-error${f.key === 'apiHost' ? ` ${id}-notice` : ''}`);
+  const describedBy = escAttr(`${id}-error${f.key === 'apiHost' ? ` ${id}-notice` : ''}`);
   return `<div class="settings-row">
-    <label class="settings-label" for="${id}">${label}</label>${help}${disabledReason}
+    ${labelRow}${help}${disabledReason}
     <input type="${inputType}" id="${id}" value="${strVal}"${ph}${comboListAttr} spellcheck="false" aria-describedby="${describedBy}">
     ${comboOptions}
     <span class="settings-error" id="${errorId}" role="alert"></span>
@@ -4777,6 +4789,39 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
     return !row || !row.hidden;
   };
   const isEntryDisabled = (id) => getEntryInput(id)?.getAttribute('aria-disabled') === 'true';
+  // 読み上げ順が開閉の回数に左右されないよう、存在・表示状態から毎回固定順で組み立てる。
+  // disabledReason は既存仕様どおり無効時だけ末尾へ加え、help の開閉とは独立させる。
+  const syncEntryDescribedBy = (id) => {
+    const input = getEntryInput(id);
+    if (!input) return;
+    const help = modal.querySelector('#' + id + '-help');
+    const error = modal.querySelector('#' + id + '-error');
+    const notice = modal.querySelector('#' + id + '-notice');
+    const reason = modal.querySelector('#' + id + '-disabled-reason');
+    const describedBy = [
+      help && !help.hidden ? help.id : '',
+      error ? error.id : '',
+      notice ? notice.id : '',
+      reason && !reason.hidden ? reason.id : '',
+    ].filter(Boolean);
+    if (describedBy.length > 0) input.setAttribute('aria-describedby', describedBy.join(' '));
+    else input.removeAttribute('aria-describedby');
+  };
+  // help はモーダルを開くたびに閉じた DOM から始まる。個別配線ではなく委譲にすることで、
+  // 全フィールド型を同じ経路で扱い、ボタン上のフォーカスもブラウザ標準どおり維持する。
+  modal.addEventListener('click', (event) => {
+    const button = event.target.closest('.settings-help-toggle');
+    if (!button) return;
+    const helpId = button.getAttribute('aria-controls');
+    const help = helpId ? modal.querySelector('#' + helpId) : null;
+    if (!help) return;
+    const expanded = button.getAttribute('aria-expanded') === 'true';
+    help.hidden = expanded;
+    button.setAttribute('aria-expanded', expanded ? 'false' : 'true');
+    const row = button.closest('.settings-row');
+    const input = row ? row.querySelector('input, textarea, select') : null;
+    if (input?.id) syncEntryDescribedBy(input.id);
+  });
   const getCurrentSettingValues = () => {
     const values = {};
     for (const { field, id } of entries) {
@@ -5604,8 +5649,6 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
       row.classList.toggle('settings-row-disabled', disabled);
 
       const reason = modal.querySelector('#' + id + '-disabled-reason');
-      const reasonId = `${id}-disabled-reason`;
-      const describedBy = new Set((input.getAttribute('aria-describedby') || '').split(/\s+/).filter(Boolean));
       if (disabled) {
         if (!isEntryDisabled(id)) {
           disabledFieldValues.set(id, { value: input.value, checked: input.checked });
@@ -5613,18 +5656,15 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
         input.setAttribute('aria-disabled', 'true');
         if (reason) {
           reason.hidden = false;
-          describedBy.add(reasonId);
         }
         clearFieldValidity(field, id);
       } else {
         input.removeAttribute('aria-disabled');
         disabledFieldValues.delete(id);
         if (reason) reason.hidden = true;
-        describedBy.delete(reasonId);
         if (!visible) clearFieldValidity(field, id);
       }
-      if (describedBy.size > 0) input.setAttribute('aria-describedby', Array.from(describedBy).join(' '));
-      else input.removeAttribute('aria-describedby');
+      syncEntryDescribedBy(id);
     }
     // 表ブロック・一括切り替えボタン（issue #380）も、入力欄の表示・無効化と同じ
     // 発火点（applyFieldState）で再計算する。useTabbedSettings が false のときは

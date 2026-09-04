@@ -1011,6 +1011,43 @@ h4.settings-content-heading {
   font-weight: 500;
   white-space: nowrap;
 }
+/* 入力欄の説明トグル
+   ========================================================================== */
+.settings-label-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.settings-label-row .settings-label {
+  min-width: 0;
+}
+.settings-help-toggle {
+  flex: 0 0 18px;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid var(--vktm--color--border-interactive);
+  border-radius: 50%;
+  background: transparent;
+  color: #c9d1d9;
+  font-size: 12px;
+  line-height: 16px;
+  text-align: center;
+  cursor: pointer;
+}
+/* 無効行の通常色は、同じ詳細度を持つ hover・展開状態より前に置く。
+   ソース順の後勝ちで状態側の明るい文字色を優先するため、並び替えると結果が変わる。 */
+.settings-row-disabled .settings-help-toggle {
+  color: #8b949e;
+}
+.settings-help-toggle:hover {
+  background: #21262d;
+  color: #c9d1d9;
+}
+.settings-help-toggle[aria-expanded="true"] {
+  background: #30363d;
+  color: #c9d1d9;
+}
 /* 入力欄の説明文。同じパネル内の説明タブ本文（.settings-content）と同じ #c9d1d9 にする。
    #8b949e は非アクティブタブ・info ラベル等で「メタ情報／不活性」を意味する色で、
    コントラスト比も 6.1:1（対 #0d1117）と低く、12px の本文では読み取りにくかった。
@@ -1019,10 +1056,18 @@ h4.settings-content-heading {
    font-weight（500 / 既定）で付ける。説明タブが見出し #e6edf3 / 本文 #c9d1d9 で
    差を付けているのと同じ考え方。 */
 .settings-help {
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: 5px;
+  border-left: 3px solid #8b949e;
+  background: #161b22;
   color: #c9d1d9;
   font-size: 12px;
   /* help 文中の \n を改行として表示する（menuItems の説明文＋例の 2 行表記など） */
   white-space: pre-line;
+}
+.settings-help[hidden] {
+  display: none;
 }
 /* 条件付き無効状態
    ========================================================================== */

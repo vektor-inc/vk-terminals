@@ -302,9 +302,12 @@ test.describe.serial('Escape レイヤー導入後のデグレ確認（issue #25
       // 選択が成立しないことがあるため、ドラッグごとやり直す（1 回のドラッグ結果を
       // ポーリングしても、成立しなかった回は何度見ても空のままで意味がない）。
       const helpText = win.locator('.settings-modal .settings-help').first();
+      const helpToggle = win.locator('.settings-modal .settings-help-toggle').first();
       // 説明文はスキーマ側の help の有無で存在が決まる。将来 .first() が非表示タブの
       // ものを掴むと boundingBox() が null になり、toPass を 10 秒回した末に box.x の
-      // 例外という読めない失敗になるため、先に可視であることを確かめて理由を明示する。
+      // 例外という読めない失敗になるため、対応するボタンで開いてから可視性を確かめる。
+      await expect(helpToggle).toBeVisible();
+      await helpToggle.click();
       await expect(helpText).toBeVisible();
       await expect(async () => {
         await win.evaluate(() => window.getSelection()?.removeAllRanges());

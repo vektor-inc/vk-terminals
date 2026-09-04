@@ -1,5 +1,7 @@
 # Changelog
 
+## 1.60.2
+
 - [ 仕様変更 ] 設定パネルの各入力欄にある説明文を初期状態では隠し、ラベル横の `?` ボタンで開閉できるよう変更（[#383](https://github.com/vektor-inc/vk-terminals/issues/383)）
 
 ## 1.60.1

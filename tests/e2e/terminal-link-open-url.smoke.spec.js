@@ -68,8 +68,16 @@ async function waitForBufferText(win, needle, paneId = 'pane-1', timeout = 15_00
 // セル座標へ変換するための情報を返す。見つからなければ null。
 // 「最後の出現」を選ぶのは、`echo "url"` と打鍵したときにコマンドライン自体にも
 // 同じ文字列が現れるため、実際の出力行（後に描画される方）を優先するため。
-async function findTextPosition(win, needle, paneId = 'pane-1') {
-  return win.evaluate(({ u, id }) => {
+//
+// containerSelector（省略可）: xterm の描画要素（.xterm-screen）を探す起点の CSS
+// セレクタ。既定はグリッド表示（.pane[data-id="..."]）。格納ペイン（.stash-item[data-id=
+// "..."]）内で xterm を開いた状態（issue #385 レビュー指摘・MEDIUM-4 の回帰テスト）を
+// 見る場合は呼び出し側から `.stash-item[data-id="${paneId}"]` を渡す。xterm 要素自体は
+// render() の再アタッチで .stash-item .term-container へ移されるだけで生きたまま
+// （renderer/app.js のコメント参照）なので、terminals[id].term のバッファ内容・
+// cols/rows は共通のまま、DOM 上の位置だけがコンテナに応じて変わる。
+async function findTextPosition(win, needle, paneId = 'pane-1', containerSelector = null) {
+  return win.evaluate(({ u, id, selector }) => {
     const t = terminals[id];
     if (!t) return null;
     const buf = t.term.buffer.active;
@@ -83,7 +91,7 @@ async function findTextPosition(win, needle, paneId = 'pane-1') {
       if (idx >= 0) { rowFound = i; col = idx; }
     }
     if (rowFound < 0) return null;
-    const container = document.querySelector(`.pane[data-id="${id}"] .xterm-screen`);
+    const container = document.querySelector(`${selector} .xterm-screen`);
     if (!container) return null;
     const rect = container.getBoundingClientRect();
     return {
@@ -93,7 +101,7 @@ async function findTextPosition(win, needle, paneId = 'pane-1') {
       rows: t.term.rows,
       rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
     };
-  }, { u: needle, id: paneId });
+  }, { u: needle, id: paneId, selector: containerSelector || `.pane[data-id="${paneId}"]` });
 }
 
 // pos（findTextPosition の戻り値）の col から colOffset 分だけ右のセル中央へマウスを
@@ -595,6 +603,102 @@ test.describe.serial('ペイン内 URL クリック: terminalLinkClickMode が m
     expect(pos).not.toBeNull();
     await modifierClickAtOffset(win, pos, 3, mac);
 
+    expect(await getOpenExternalCalls(app)).toEqual([url]);
+  });
+});
+
+// ─── フォーカスガード: グリッド・格納どちらでも機能する（issue #385 レビュー指摘・MEDIUM-4） ──
+// 安藤（セキュリティ）・植草（UX）の両方から、フォーカスガードの e2e が無いという指摘を
+// 受けて追加。既定モード（'click'）専用の独立したアプリインスタンスで検証する（上の共有
+// describe.serial の pane-1 消費順・後続テストへの影響を避けるため、あえて別インスタンスに
+// 分けている）。
+test.describe.serial('ペイン内 URL クリック: フォーカスされていないペインでは開かず、フォーカス済みなら開く（issue #385 レビュー指摘・MEDIUM-4）', () => {
+  let app;
+  let win;
+  let tmpRoot;
+  let port;
+
+  test.beforeAll(async () => {
+    port = await getFreePort();
+    ({ app, win, tmpRoot } = await launchApp({
+      port,
+      prefix: 'vk-terminals-e2e-terminal-link-focus-guard-',
+    }));
+    await waitForPtyRegistration(port);
+    await stubShellOpenExternal(app);
+  });
+
+  test.afterAll(async () => {
+    await restoreShellOpenExternal(app);
+    await closeApp({ app, tmpRoot });
+  });
+
+  test.beforeEach(async () => {
+    await clearOpenExternalCalls(app);
+    await moveMouseAway(win);
+  });
+
+  // ⚠ このファイルは describe.serial 内で 1 つのアプリインスタンスを両テストで共有して
+  // おり、実行順に依存する（1つ目のテストが作った「pane-1 が非フォーカスの2ペイン構成」
+  // を2つ目のテストがそのまま引き継いで使う）。順序を入れ替えないこと。
+  test('グリッド: フォーカスされていないペインの URL は最初のクリックでは開かず、次のクリックで開く', async () => {
+    // pane-1 を分割してもう1枚作る。addPane()（renderer/app.js）は新ペインを自動で
+    // フォーカスするため、この時点で pane-1 は非フォーカスになる。
+    await win.locator('.pane-header .btn-split').first().click();
+    await expect(win.locator('.pane')).toHaveCount(2);
+    await expect(win.locator('.pane[data-id="pane-1"]')).not.toHaveClass(/\bfocused\b/);
+
+    const url = 'https://example.com/vk-terminals-e2e-grid-unfocused-guard';
+    await postSend(port, `echo "${url}"\r`);
+    await waitForBufferText(win, url, 'pane-1');
+
+    const pos = await findTextPosition(win, url, 'pane-1');
+    expect(pos).not.toBeNull();
+
+    // 1回目のクリック: フォーカス移動だけに使われ、リンクは開かない
+    // （修正前の MEDIUM-1/HIGH-2 とは別の穴・issue #385 本来のガード）。
+    await plainClickAtOffset(win, pos, 3);
+    expect(await getOpenExternalCalls(app)).toEqual([]);
+    await expect(win.locator('.pane[data-id="pane-1"]')).toHaveClass(/\bfocused\b/);
+
+    // 2回目のクリック: 既にフォーカス済みのため開く。
+    await plainClickAtOffset(win, pos, 3);
+    expect(await getOpenExternalCalls(app)).toEqual([url]);
+  });
+
+  test('格納（サイドバー）: フォーカス済みのまま格納したペインでも、最初のクリックでは開かず、次のクリックで開く（レビュー指摘・MEDIUM-1 の回帰）', async () => {
+    // 直前のテストの末尾で pane-1 はフォーカス済み。ここで .btn-stash をクリックする
+    // （click の直前に mousedown が .pane へバブリングし、フォーカス済みの状態のまま
+    // paneFocusBeforeMousedown へ記録される → その直後に stashPane() でフォーカスが
+    // 他ペインへ移る、という MEDIUM-1 の再現条件そのもの）。
+    await expect(win.locator('.pane[data-id="pane-1"]')).toHaveClass(/\bfocused\b/);
+    await win.locator('.pane[data-id="pane-1"] .btn-stash').click();
+
+    await expect(win.locator('.pane[data-id="pane-1"]')).toHaveCount(0);
+    const stashItem = win.locator('.stash-item[data-id="pane-1"]');
+    await expect(stashItem).toBeVisible({ timeout: 10_000 });
+
+    // 格納直後は xterm が折り畳まれているため、まずカード内で開く。
+    await stashItem.locator('.btn-stash-toggle').click();
+    await expect(stashItem.locator('.term-container')).toBeVisible();
+
+    const url = 'https://example.com/vk-terminals-e2e-stash-unfocused-guard';
+    await postSend(port, `echo "${url}"\r`);
+    await waitForBufferText(win, url, 'pane-1');
+
+    const pos = await findTextPosition(win, url, 'pane-1', '.stash-item[data-id="pane-1"]');
+    expect(pos).not.toBeNull();
+
+    // 1回目のクリック: 格納カードはこの時点で非フォーカスのため、フォーカス移動だけに
+    // 使われ開かない。MEDIUM-1 の修正前は、.stash-item の mousedown が
+    // recordPaneFocusBeforeMousedown() を呼んでおらず、格納前の「フォーカス済み」の
+    // 記録が残ったままだったためここで誤って開いてしまっていた。
+    await plainClickAtOffset(win, pos, 3);
+    expect(await getOpenExternalCalls(app)).toEqual([]);
+    await expect(stashItem).toHaveClass(/\bfocused\b/);
+
+    // 2回目のクリック: 既にフォーカス済みのため開く。
+    await plainClickAtOffset(win, pos, 3);
     expect(await getOpenExternalCalls(app)).toEqual([url]);
   });
 });

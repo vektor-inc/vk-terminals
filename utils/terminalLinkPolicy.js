@@ -10,6 +10,11 @@
 // ただし従来挙動へ戻す設定（config.json の terminalLinkClickMode）も用意するため、
 // 判定ロジックはモード分岐を持つ。config.json 側の正規化は normalizeTerminalLinkClickMode。
 //
+// #385 のレビュー（安藤・植草）で、単クリック化が開けた穴が複数見つかっている
+// （右クリック・中クリックでも開いてしまう／URL をドラッグ選択しようとすると開いてしまう）。
+// activate() のガードの並びと各コメントは、その指摘を踏まえたもの。安易に順序を
+// 入れ替えたり削ったりしないこと。
+//
 // Node（require）とブラウザ（<script>）の両方から使える UMD 形式（issue #268）。
 // renderer は nodeIntegration 無効のため require が無く、index.html が <script> で読む。
 (function (root, factory) {
@@ -63,8 +68,14 @@ function normalizeTerminalLinkClickMode(value) {
 //     を渡す想定。新しい「開く経路」は増やさない・issue #385）。
 //   - showTooltip(event, url) / hideTooltip(event, url): ホバー時・ホバー解除時のツールチップ制御。
 //   - isMac: テストで明示指定するための上書き（省略時は isMacPlatform()）。
-//   - clickMode: normalizeTerminalLinkClickMode() 済みの値（'click' | 'modifier'）。
-//     省略時は 'click'（既定）として扱う。
+//   - getClickMode(): 呼び出しの都度モード（'click' | 'modifier'。正規化前の値でよい。
+//     ここで normalizeTerminalLinkClickMode() する）を取得する関数。省略時は 'click'（既定）。
+//     生成時に固定値を1回だけ渡す形（旧 clickMode 引数）にはしていない。renderer/app.js
+//     側にはツールチップ文言（termLinkTooltipMessage）が実行時に読む生きたグローバル変数
+//     terminalLinkClickModePref があり、固定値を別途渡すとモード参照経路が2本に分かれ、
+//     将来設定のライブリロードを入れた瞬間に「表示は単クリック、実際の判定は修飾キー必須」
+//     のような食い違いが起きうる（レビュー指摘・LOW-2）。関数で毎回取りに行くことで
+//     参照経路を1本化する。
 //   - wasPaneFocused(): このクリックがフォーカスされていないペインへの最初のクリック
 //     だったかどうかを呼び出し側が判定して返す関数（issue #385）。
 //
@@ -76,21 +87,53 @@ function normalizeTerminalLinkClickMode(value) {
 //     切り替わった後の値になってしまい、「フォーカス未取得ペインへの最初のクリックか」を
 //     判定できない。呼び出し側は、focusPane() を呼ぶ“前”の mousedown ハンドラで
 //     「切り替わる直前の状態」を記録しておき、wasPaneFocused() はその記録値を返すこと
-//     （renderer/app.js の paneFocusBeforeMousedown 参照）。
+//     （renderer/app.js の paneFocusBeforeMousedown / recordPaneFocusBeforeMousedown 参照）。
+//     グリッド（.pane）だけでなく格納ペイン（.stash-item）の mousedown からも同じ記録
+//     ヘルパーを呼ぶこと（レビュー指摘・MEDIUM-1。ヘルパーを分けて片方でしか呼ばないと、
+//     もう片方の経路でガードが機能しない・もしくは逆に常に開かなくなる）。
 //
 //     wasPaneFocused() が false を返した場合、activate() は preventDefault() を呼ばずに
 //     openUrl の呼び出しだけをスキップする（xterm 本来のフォーカス移譲・カーソル配置を
-//     妨げないため）。deps 省略時（テスト等）は true 相当として扱う。
+//     妨げないため）。deps 省略時は false 相当（fail-closed）として扱う（レビュー指摘・
+//     MEDIUM-2）。wasPaneFocused はこの issue #385 で新設した依存であり、世の中に既に
+//     出回っている「渡し忘れたら true 扱いになる旧挙動」は存在しないため、渡し忘れを
+//     安全側（開く）へ倒す理由が無い。渡し忘れ・接続ミスは黙って「開かない」側に倒し、
+//     気づきやすくする。
+//   - wasDragged(): このクリックがドラッグ選択だったかどうかを呼び出し側が判定して
+//     返す関数（issue #385 レビュー指摘・HIGH-2）。
+//
+//     xterm.js の Linkifier の activate 発火条件は「mousedown 時点のリンクと mouseup
+//     時点のリンクが一致し、かつ mouseup 位置がその範囲内」であることだけで、選択の
+//     有無やポインタの移動量は一切見ない。これは「別々のリンクをまたぐドラッグ」だけで
+//     なく「同一リンクの中をなぞって選択する（＝ URL をコピーしようとする）」操作も
+//     満たしてしまう。つまり URL をコピーしようとドラッグしただけでブラウザが開く
+//     （#349 で植草が避けたかった誤爆そのもの。以前このファイル・renderer/app.js に
+//     あった「単クリックにしてもドラッグ選択とは元々衝突しない」という趣旨のコメントは、
+//     この「同一リンク内のドラッグ」を見落とした誤った安全性の主張だったため削除した）。
+//     xterm.js 本体はこの区別をしないため、呼び出し側（renderer/app.js）で mousedown から
+//     mouseup までの移動量を計測し、判定結果をここへ渡してもらう。deps 省略時は false
+//     相当（＝ドラッグ扱いしない）として扱う。
 function createTerminalLinkHandlers(deps) {
-  const { openUrl, showTooltip, hideTooltip, isMac, clickMode, wasPaneFocused } = deps || {};
+  const { openUrl, showTooltip, hideTooltip, isMac, getClickMode, wasPaneFocused, wasDragged } = deps || {};
   return {
     activate(event, url) {
+      // 主ボタン（左クリック）以外では開かない（issue #385 レビュー指摘・HIGH-1）。
+      // xterm.js の Linkifier は event.button を見ずに mouseup で activate を呼ぶため、
+      // 右クリック・中クリック（Linux のプライマリ選択貼り付け操作を含む）でも無条件に
+      // 呼ばれてしまう。'modifier' モードでは metaKey/ctrlKey 判定が偶然フィルタとして
+      // 働いていたが、既定の 'click' モードにはそのフィルタが無いため、ここで明示的に弾く。
+      if (event && typeof event.button === 'number' && event.button !== 0) return;
+
+      // ドラッグ選択では開かない（issue #385 レビュー指摘・HIGH-2。詳細は上の
+      // wasDragged() の説明を参照）。
+      if (typeof wasDragged === 'function' && wasDragged()) return;
+
       // フォーカス移動だけに使う最初のクリックでは開かない（issue #385）。
-      const focused = typeof wasPaneFocused === 'function' ? wasPaneFocused() : true;
+      const focused = typeof wasPaneFocused === 'function' ? wasPaneFocused() : false;
       if (!focused) return;
 
       // 'modifier' モードでは従来どおり修飾キー必須（このガードだけは仕様を変えない）。
-      const mode = normalizeTerminalLinkClickMode(clickMode);
+      const mode = normalizeTerminalLinkClickMode(typeof getClickMode === 'function' ? getClickMode() : undefined);
       if (mode === 'modifier' && !isLinkOpenModifierPressed(event, isMac)) return;
 
       if (event && typeof event.preventDefault === 'function') event.preventDefault();

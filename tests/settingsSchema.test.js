@@ -113,7 +113,7 @@ test('buildBuiltinSettingsDescriptor: JSON から targetPath 付きの組み込�
     label: 'ペイン内 URL クリック挙動（既定: 単クリックで開く）',
     type: 'select',
     default: 'click',
-    help: 'ペイン内の URL リンクをクリックしたときに外部ブラウザで開く条件。フォーカスされていないペインへの最初のクリックはどちらの場合もフォーカス移動のみに使われ、リンクは開きません。',
+    help: 'ペイン内の URL リンクをクリックしたときに外部ブラウザで開く条件。フォーカスされていないペインへの最初のクリックは、どちらの場合もフォーカス移動に使われます。元の挙動に戻したい場合は「⌘ / Ctrl+クリックが必要（従来の挙動）」を選んでください。',
     options: [
       { value: 'click', label: '単クリックで開く（既定）' },
       { value: 'modifier', label: '⌘ / Ctrl+クリックが必要（従来の挙動）' },

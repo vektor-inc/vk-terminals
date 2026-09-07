@@ -10,6 +10,18 @@ const {
   createTerminalLinkHandlers,
 } = require('../utils/terminalLinkPolicy');
 
+// 各テストで使う既定の event を作るヘルパー。button 省略時は「左クリック相当」
+// （実際の左クリックイベントは button === 0 だが、activate() は button が number 型で
+// ないときは弾かないため、テストでは省略して「主ボタン扱い」を表現する）。
+function makeEvent(overrides = {}) {
+  return {
+    metaKey: false,
+    ctrlKey: false,
+    preventDefault() { this.prevented = true; },
+    ...overrides,
+  };
+}
+
 test('isMacPlatform: platform 文字列から macOS 系かどうかを判定する', () => {
   assert.equal(isMacPlatform('MacIntel'), true);
   assert.equal(isMacPlatform('iPhone'), true);
@@ -41,15 +53,104 @@ test('normalizeTerminalLinkClickMode: 既知の値はそのまま通し、未知
   assert.equal(normalizeTerminalLinkClickMode(''), 'click');
 });
 
+// ─── HIGH-1: 主ボタン以外（右クリック・中クリック）では開かない ──────────────────────
+test('createTerminalLinkHandlers: click モードでも、右クリック（button: 2）では openUrl を呼ばない（レビュー指摘・HIGH-1）', () => {
+  const calls = [];
+  const handlers = createTerminalLinkHandlers({
+    isMac: true,
+    getClickMode: () => 'click',
+    wasPaneFocused: () => true,
+    wasDragged: () => false,
+    openUrl: (url) => calls.push(url),
+  });
+  const event = makeEvent({ button: 2 });
+  handlers.activate(event, 'https://example.com');
+  assert.deepEqual(calls, []);
+  assert.equal(event.prevented, undefined);
+});
+
+test('createTerminalLinkHandlers: click モードでも、中クリック（button: 1）では openUrl を呼ばない（Linux のプライマリ選択貼り付けと衝突するため・レビュー指摘・HIGH-1）', () => {
+  const calls = [];
+  const handlers = createTerminalLinkHandlers({
+    isMac: true,
+    getClickMode: () => 'click',
+    wasPaneFocused: () => true,
+    wasDragged: () => false,
+    openUrl: (url) => calls.push(url),
+  });
+  const event = makeEvent({ button: 1 });
+  handlers.activate(event, 'https://example.com');
+  assert.deepEqual(calls, []);
+});
+
+test('createTerminalLinkHandlers: 左クリック（button: 0）は主ボタンとして扱う', () => {
+  const calls = [];
+  const handlers = createTerminalLinkHandlers({
+    isMac: true,
+    getClickMode: () => 'click',
+    wasPaneFocused: () => true,
+    wasDragged: () => false,
+    openUrl: (url) => calls.push(url),
+  });
+  const event = makeEvent({ button: 0 });
+  handlers.activate(event, 'https://example.com');
+  assert.deepEqual(calls, ['https://example.com']);
+  assert.equal(event.prevented, true);
+});
+
+// ─── HIGH-2: ドラッグ選択（同一リンク内をなぞる操作を含む）では開かない ────────────────
+test('createTerminalLinkHandlers: wasDragged() が true のときは openUrl を呼ばない（URL をドラッグしてコピーしようとした操作・レビュー指摘・HIGH-2）', () => {
+  const calls = [];
+  const handlers = createTerminalLinkHandlers({
+    isMac: true,
+    getClickMode: () => 'click',
+    wasPaneFocused: () => true,
+    wasDragged: () => true,
+    openUrl: (url) => calls.push(url),
+  });
+  const event = makeEvent();
+  handlers.activate(event, 'https://example.com');
+  assert.deepEqual(calls, []);
+  assert.equal(event.prevented, undefined);
+});
+
+test('createTerminalLinkHandlers: modifier モードでも、ドラッグ選択では修飾キー付きでも openUrl を呼ばない（フォーカスガードと同様、両モード共通）', () => {
+  const calls = [];
+  const handlers = createTerminalLinkHandlers({
+    isMac: true,
+    getClickMode: () => 'modifier',
+    wasPaneFocused: () => true,
+    wasDragged: () => true,
+    openUrl: (url) => calls.push(url),
+  });
+  const event = makeEvent({ metaKey: true });
+  handlers.activate(event, 'https://example.com');
+  assert.deepEqual(calls, []);
+});
+
+test('createTerminalLinkHandlers: wasDragged 未指定時はドラッグ扱いしない（false 相当）', () => {
+  const calls = [];
+  const handlers = createTerminalLinkHandlers({
+    isMac: true,
+    getClickMode: () => 'click',
+    wasPaneFocused: () => true,
+    openUrl: (url) => calls.push(url),
+  });
+  handlers.activate(makeEvent(), 'https://example.com');
+  assert.deepEqual(calls, ['https://example.com']);
+});
+
+// ─── フォーカスガード（issue #385） ──────────────────────────────────────────────
 test('createTerminalLinkHandlers: click モード（既定）・フォーカス済みペインなら修飾キー無しでも openUrl を呼ぶ（issue #385）', () => {
   const calls = [];
   const handlers = createTerminalLinkHandlers({
     isMac: true,
-    clickMode: 'click',
+    getClickMode: () => 'click',
     wasPaneFocused: () => true,
+    wasDragged: () => false,
     openUrl: (url) => calls.push(url),
   });
-  const event = { metaKey: false, ctrlKey: false, preventDefault() { this.prevented = true; } };
+  const event = makeEvent();
   handlers.activate(event, 'https://example.com');
   assert.deepEqual(calls, ['https://example.com']);
   assert.equal(event.prevented, true);
@@ -59,11 +160,12 @@ test('createTerminalLinkHandlers: click モードでも、フォーカスされ�
   const calls = [];
   const handlers = createTerminalLinkHandlers({
     isMac: true,
-    clickMode: 'click',
+    getClickMode: () => 'click',
     wasPaneFocused: () => false,
+    wasDragged: () => false,
     openUrl: (url) => calls.push(url),
   });
-  const event = { metaKey: false, ctrlKey: false, preventDefault() { this.prevented = true; } };
+  const event = makeEvent();
   handlers.activate(event, 'https://example.com');
   assert.deepEqual(calls, []);
   // フォーカス移動だけに使うクリックのため、xterm 本来の挙動（フォーカス移譲・カーソル配置）を
@@ -71,15 +173,30 @@ test('createTerminalLinkHandlers: click モードでも、フォーカスされ�
   assert.equal(event.prevented, undefined);
 });
 
+test('createTerminalLinkHandlers: wasPaneFocused 未指定時は fail-closed（false 相当）として扱う（レビュー指摘・MEDIUM-2）', () => {
+  // wasPaneFocused はこの issue #385 で新設した依存で、世の中に「渡し忘れたら true 扱い」の
+  // 旧挙動は存在しない。渡し忘れ・接続ミスは安全側（開かない）へ倒れることを確認する。
+  const calls = [];
+  const handlers = createTerminalLinkHandlers({
+    isMac: true,
+    getClickMode: () => 'click',
+    wasDragged: () => false,
+    openUrl: (url) => calls.push(url),
+  });
+  handlers.activate(makeEvent(), 'https://example.com');
+  assert.deepEqual(calls, []);
+});
+
 test('createTerminalLinkHandlers: modifier モードでは従来どおり修飾キー無しのクリックでは openUrl を呼ばない（最重要のセキュリティ分岐）', () => {
   const calls = [];
   const handlers = createTerminalLinkHandlers({
     isMac: true,
-    clickMode: 'modifier',
+    getClickMode: () => 'modifier',
     wasPaneFocused: () => true,
+    wasDragged: () => false,
     openUrl: (url) => calls.push(url),
   });
-  const event = { metaKey: false, ctrlKey: false, preventDefault() { this.prevented = true; } };
+  const event = makeEvent();
   handlers.activate(event, 'https://example.com');
   assert.deepEqual(calls, []);
   assert.equal(event.prevented, undefined);
@@ -89,11 +206,12 @@ test('createTerminalLinkHandlers: modifier モードで修飾キー付きクリ�
   const calls = [];
   const handlers = createTerminalLinkHandlers({
     isMac: true,
-    clickMode: 'modifier',
+    getClickMode: () => 'modifier',
     wasPaneFocused: () => true,
+    wasDragged: () => false,
     openUrl: (url) => calls.push(url),
   });
-  const event = { metaKey: true, ctrlKey: false, preventDefault() { this.prevented = true; } };
+  const event = makeEvent({ metaKey: true });
   handlers.activate(event, 'https://example.com');
   assert.deepEqual(calls, ['https://example.com']);
   assert.equal(event.prevented, true);
@@ -103,13 +221,14 @@ test('createTerminalLinkHandlers: modifier モードでは Windows/Linux では 
   const calls = [];
   const handlers = createTerminalLinkHandlers({
     isMac: false,
-    clickMode: 'modifier',
+    getClickMode: () => 'modifier',
     wasPaneFocused: () => true,
+    wasDragged: () => false,
     openUrl: (url) => calls.push(url),
   });
-  handlers.activate({ metaKey: true, ctrlKey: false }, 'https://example.com');
+  handlers.activate(makeEvent({ metaKey: true }), 'https://example.com');
   assert.deepEqual(calls, []);
-  handlers.activate({ metaKey: false, ctrlKey: true }, 'https://example.com');
+  handlers.activate(makeEvent({ ctrlKey: true }), 'https://example.com');
   assert.deepEqual(calls, ['https://example.com']);
 });
 
@@ -117,36 +236,39 @@ test('createTerminalLinkHandlers: modifier モードでも、フォーカスさ�
   const calls = [];
   const handlers = createTerminalLinkHandlers({
     isMac: true,
-    clickMode: 'modifier',
+    getClickMode: () => 'modifier',
     wasPaneFocused: () => false,
+    wasDragged: () => false,
     openUrl: (url) => calls.push(url),
   });
-  const event = { metaKey: true, ctrlKey: false, preventDefault() { this.prevented = true; } };
+  const event = makeEvent({ metaKey: true });
   handlers.activate(event, 'https://example.com');
   assert.deepEqual(calls, []);
   assert.equal(event.prevented, undefined);
 });
 
-test('createTerminalLinkHandlers: 未知の clickMode 値は click として扱う（正規化のフォールバック）', () => {
+test('createTerminalLinkHandlers: 未知の getClickMode() 戻り値は click として扱う（正規化のフォールバック）', () => {
   const calls = [];
   const handlers = createTerminalLinkHandlers({
     isMac: true,
-    clickMode: 'nonsense',
+    getClickMode: () => 'nonsense',
     wasPaneFocused: () => true,
+    wasDragged: () => false,
     openUrl: (url) => calls.push(url),
   });
-  handlers.activate({ metaKey: false, ctrlKey: false }, 'https://example.com');
+  handlers.activate(makeEvent(), 'https://example.com');
   assert.deepEqual(calls, ['https://example.com']);
 });
 
-test('createTerminalLinkHandlers: wasPaneFocused 未指定時はフォーカス済み相当として扱う（後方互換）', () => {
+test('createTerminalLinkHandlers: getClickMode 未指定時は click（既定）として扱う', () => {
   const calls = [];
   const handlers = createTerminalLinkHandlers({
     isMac: true,
-    clickMode: 'click',
+    wasPaneFocused: () => true,
+    wasDragged: () => false,
     openUrl: (url) => calls.push(url),
   });
-  handlers.activate({ metaKey: false, ctrlKey: false }, 'https://example.com');
+  handlers.activate(makeEvent(), 'https://example.com');
   assert.deepEqual(calls, ['https://example.com']);
 });
 
@@ -165,10 +287,10 @@ test('createTerminalLinkHandlers: hover/leave はツールチップの表示・�
   assert.deepEqual(hidden, ['https://example.com']);
 });
 
-test('createTerminalLinkHandlers: deps 未指定でも例外を投げない（no-op フォールバック）', () => {
+test('createTerminalLinkHandlers: deps 未指定でも例外を投げない（no-op フォールバック。fail-closed のため openUrl は呼ばれない）', () => {
   const handlers = createTerminalLinkHandlers();
   assert.doesNotThrow(() => {
-    handlers.activate({ metaKey: true, ctrlKey: true }, 'https://example.com');
+    handlers.activate(makeEvent({ metaKey: true, ctrlKey: true }), 'https://example.com');
     handlers.hover({}, 'https://example.com');
     handlers.leave({}, 'https://example.com');
   });

@@ -212,7 +212,10 @@ test.describe.serial('ペイン内 URL の Cmd/Ctrl+クリック（issue #349 / 
     await moveMouseAway(win);
   });
 
-  test('URL にホバーすると、解決後のホスト名と修飾キー案内をツールチップに出す', async () => {
+  // issue #385: terminalLinkClickMode の既定は 'click'（単クリックで開く）に変更された。
+  // ツールチップは予告文（「◯◯ を開きます」）になり、修飾キー案内は 'modifier' モード
+  // 専用になった（'modifier' モードの回帰は本ファイル末尾の別 describe ブロック参照）。
+  test('URL にホバーすると、解決後のホスト名と単クリックで開く予告をツールチップに出す（issue #385）', async () => {
     const url = 'https://example.com/vk-terminals-e2e-hover';
     await postSend(port, `echo "${url}"\r`);
     await waitForBufferText(win, url);
@@ -225,11 +228,16 @@ test.describe.serial('ペイン内 URL の Cmd/Ctrl+クリック（issue #349 / 
     expect(tooltip).not.toBeNull();
     expect(tooltip.hidden).toBe(false);
     // ホストは new URL(url).host（VKUrlLinkify.getUrlHost）による解決後の値。
+    // なりすまし対策としてのホスト表示は 'click' モードでも維持される（安藤指摘）。
     expect(tooltip.text).toContain('example.com');
-    expect(tooltip.text).toContain(mac ? '⌘+クリック' : 'Ctrl+クリック');
+    expect(tooltip.text).toContain('を開きます');
   });
 
-  test('修飾キー無しのクリックではブラウザを開かない（誤操作防止の最重要仕様）', async () => {
+  // issue #385: 既定モードでは、フォーカス済みペインへの修飾キー無しクリックで開く
+  // （旧仕様「修飾キー無しでは開かない」を上書き。pane-1 はこの describe.serial の
+  // 起動直後から常にフォーカス済みのため、このテストはフォーカス済みペインの経路を見る。
+  // フォーカス未取得ペインへの最初のクリックでは開かないガードの検証は別途必要）。
+  test('フォーカス済みペインでは修飾キー無しの単クリックでブラウザを開く（issue #385）', async () => {
     const url = 'https://example.com/vk-terminals-e2e-plain-click';
     await postSend(port, `echo "${url}"\r`);
     await waitForBufferText(win, url);
@@ -238,7 +246,7 @@ test.describe.serial('ペイン内 URL の Cmd/Ctrl+クリック（issue #349 / 
     expect(pos).not.toBeNull();
     await plainClickAtOffset(win, pos, 3);
 
-    expect(await getOpenExternalCalls(app)).toEqual([]);
+    expect(await getOpenExternalCalls(app)).toEqual([url]);
   });
 
   test('Cmd/Ctrl+クリックでブラウザが開く（openExternal に正しい URL が渡る）', async () => {
@@ -514,5 +522,79 @@ test.describe.serial('ペイン内 URL の Cmd/Ctrl+クリック（issue #349 / 
     await new Promise((resolve) => setTimeout(resolve, 150));
     tooltip = await getTooltip(win);
     expect(tooltip.hidden).toBe(true);
+  });
+});
+
+// ─── terminalLinkClickMode: 'modifier'（従来挙動へ戻す設定・issue #385） ────────────
+// 既定は 'click' へ変わったが、config.json の terminalLinkClickMode: 'modifier' で
+// 旧仕様（修飾キー必須）へ戻せる。この設定を使うユーザー向けの回帰を維持するため、
+// 上の describe.serial とは別に config を注入したアプリインスタンスで確認する。
+test.describe.serial('ペイン内 URL クリック: terminalLinkClickMode が modifier のときは従来どおり修飾キー必須（issue #385）', () => {
+  let app;
+  let win;
+  let tmpRoot;
+  let port;
+  let mac;
+
+  test.beforeAll(async () => {
+    port = await getFreePort();
+    ({ app, win, tmpRoot } = await launchApp({
+      port,
+      prefix: 'vk-terminals-e2e-terminal-link-modifier-mode-',
+      config: { terminalLinkClickMode: 'modifier' },
+    }));
+    await waitForPtyRegistration(port);
+    await stubShellOpenExternal(app);
+    mac = await isMacPlatform(win);
+  });
+
+  test.afterAll(async () => {
+    await restoreShellOpenExternal(app);
+    await closeApp({ app, tmpRoot });
+  });
+
+  test.beforeEach(async () => {
+    await clearOpenExternalCalls(app);
+    await moveMouseAway(win);
+  });
+
+  test('ホバー時のツールチップに修飾キー案内を出す（従来どおり）', async () => {
+    const url = 'https://example.com/vk-terminals-e2e-modifier-mode-hover';
+    await postSend(port, `echo "${url}"\r`);
+    await waitForBufferText(win, url);
+
+    const pos = await findTextPosition(win, url);
+    expect(pos).not.toBeNull();
+    await hoverAtOffset(win, pos, 3);
+
+    const tooltip = await getTooltip(win);
+    expect(tooltip).not.toBeNull();
+    expect(tooltip.hidden).toBe(false);
+    expect(tooltip.text).toContain('example.com');
+    expect(tooltip.text).toContain(mac ? '⌘+クリック' : 'Ctrl+クリック');
+  });
+
+  test('修飾キー無しのクリックではブラウザを開かない（誤操作防止・従来どおり）', async () => {
+    const url = 'https://example.com/vk-terminals-e2e-modifier-mode-plain-click';
+    await postSend(port, `echo "${url}"\r`);
+    await waitForBufferText(win, url);
+
+    const pos = await findTextPosition(win, url);
+    expect(pos).not.toBeNull();
+    await plainClickAtOffset(win, pos, 3);
+
+    expect(await getOpenExternalCalls(app)).toEqual([]);
+  });
+
+  test('Cmd/Ctrl+クリックでブラウザが開く（従来どおり）', async () => {
+    const url = 'https://example.com/vk-terminals-e2e-modifier-mode-modifier-click';
+    await postSend(port, `echo "${url}"\r`);
+    await waitForBufferText(win, url);
+
+    const pos = await findTextPosition(win, url);
+    expect(pos).not.toBeNull();
+    await modifierClickAtOffset(win, pos, 3, mac);
+
+    expect(await getOpenExternalCalls(app)).toEqual([url]);
   });
 });

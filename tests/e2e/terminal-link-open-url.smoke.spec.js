@@ -50,7 +50,20 @@ async function waitForPtyRegistration(port) {
   throw lastError || new Error('terminal 1 was not registered in time');
 }
 
-// pane-1 の可視バッファ（折り返しを含む全行）に needle を含む行が現れるまで待つ。
+// pane-1 の可視バッファの各行を走査し、needle を含む行が現れるまで待つ。
+//
+// 【既知の穴・麗美の切り分け（issue #385 レビュー指摘）】この関数は行を1行ずつ
+// line.includes(needle) で見るだけで、xterm の折り返し（isWrapped）を一切考慮して
+// いない。ペイン幅が狭く（cols が数十程度）、needle が cols を超える長さの場合、
+// 入力エコー行・出力行のどちらも複数行にまたがって折り返され、needle がどの1行にも
+// 単独では現れなくなるため見つからない（15秒でタイムアウトする）。グリッド表示の
+// ような十分広い幅（cols=100+ 程度）では表面化しない。折り返し行の連結対応は
+// renderer/terminalLinkProvider.js の getWrappedLineWindow() 相当の実装が要り、
+// 「連結後の座標をどう画面座標へ戻すか」という別の設計判断も伴うため、このヘルパー
+// 自体は対応していない（司・麗美合意。tests/e2e/terminal-link-open-url.smoke.spec.js
+// の「格納（サイドバー）」テストで実際に踏んだ）。細い幅のペインで長い URL を使う
+// テストを新しく書く場合は、この関数を直さず、needle 自体をそのペイン幅で折り返さない
+// 短さにすること。
 async function waitForBufferText(win, needle, paneId = 'pane-1', timeout = 15_000) {
   await win.waitForFunction(({ u, id }) => {
     const t = terminals[id];
@@ -68,6 +81,9 @@ async function waitForBufferText(win, needle, paneId = 'pane-1', timeout = 15_00
 // セル座標へ変換するための情報を返す。見つからなければ null。
 // 「最後の出現」を選ぶのは、`echo "url"` と打鍵したときにコマンドライン自体にも
 // 同じ文字列が現れるため、実際の出力行（後に描画される方）を優先するため。
+//
+// 【既知の穴】waitForBufferText() と同じ理由（折り返しを連結しない）で、needle が
+// 折り返されると見つからない。詳細・対処方針は waitForBufferText() 冒頭のコメント参照。
 //
 // containerSelector（省略可）: xterm の描画要素（.xterm-screen）を探す起点の CSS
 // セレクタ。既定はグリッド表示（.pane[data-id="..."]）。格納ペイン（.stash-item[data-id=
@@ -802,10 +818,44 @@ test.describe.serial('ペイン内 URL クリック: フォーカスされてい
     await expect(stashItem).toBeVisible({ timeout: 10_000 });
 
     // 格納直後は xterm が折り畳まれているため、まずカード内で開く。
+    //
+    // 【原因B・麗美の切り分け】.btn-stash-toggle は renderer/app.js の
+    // toggleStashXterm()（この PR の差分ではない既存コード）の副作用で、カードを開くと
+    // 同時にそのペインへ focusPane() も呼ぶ（stashXtermOpen 時に
+    // requestAnimationFrame(() => { fitTerminal(paneId); focusPane(paneId); }) している
+    // ため）。つまりこの時点で格納カード（pane-1）の方こそがフォーカス済みになっており、
+    // このテストが検証したい「非フォーカスな格納ペインへの最初のクリック」の前提には
+    // まだ到達できていない。実際に麗美が手で確認済み: トグル直後にすぐ URL をクリック
+    // すると1回目で開いてしまう（副作用でフォーカス済みのため、これ自体は正しい挙動）。
+    // 次にこのカードのテストを書く人が同じ前提のズレで詰まらないよう、必ずこの後
+    // 「別のグリッドペインをクリックしてフォーカスを移す」手順を入れること。
     await stashItem.locator('.btn-stash-toggle').click();
     await expect(stashItem.locator('.term-container')).toBeVisible();
 
-    const url = 'https://example.com/vk-terminals-e2e-stash-unfocused-guard';
+    // pane-2（上の「グリッド」テストの分割で作られ、以後空のまま残っているグリッド
+    // ペイン）をクリックしてフォーカスを移し、格納カードを本当に非フォーカスの状態に
+    // する。これでようやく MEDIUM-1 が検証したい前提（非フォーカスな格納ペインへの
+    // 最初のクリック）に到達する。
+    await win.locator('.pane[data-id="pane-2"] .pane-header').click();
+    await expect(stashItem).not.toHaveClass(/\bfocused\b/);
+
+    // 【原因A・麗美の切り分け】格納カードを開いた .term-container は幅が大きく縮む
+    // （実測: グリッドの pane-1 は cols=131 だが、この格納カードは cols=34 程度まで
+    // 狭くなる）。waitForBufferText() / findTextPosition()（このファイル冒頭のヘルパー）
+    // はバッファを1行ずつ needle.includes()/indexOf() で見ているだけで、xterm 側の
+    // 折り返し（isWrapped）を一切考慮していない。狭い幅で長い URL を echo すると
+    // 入力エコー行・出力行のどちらも折り返されて2行にまたがり、needle がどの1行にも
+    // 単独で現れなくなって見つからない（waitForBufferText は15秒でタイムアウトする。
+    // URL 自体はバッファに正しく描画されていることは麗美がダンプで確認済みで、実装の
+    // バグではない）。グリッド側（cols=131）で表面化しなかっただけで、ヘルパー自体が
+    // 元々持っていた穴。
+    //
+    // 対処はヘルパーを折り返し対応にする（案 i）のではなく、この URL をこの幅でも
+    // 折り返さない短さにする（案 ii）を採用した。ヘルパーの折り返し対応は
+    // 「折り返した文字列のどの座標を返すか」という別の設計判断を含み、既存テストへの
+    // 影響範囲も広がるため（司・麗美合意）。次に細い幅（cols が数十程度）のペインで
+    // 長い URL を使うテストを書く人は、同じ穴を踏むのでこのコメントを参照すること。
+    const url = 'https://example.com/385s';
     await postSend(port, `echo "${url}"\r`);
     await waitForBufferText(win, url, 'pane-1');
 
@@ -829,7 +879,8 @@ test.describe.serial('ペイン内 URL クリック: フォーカスされてい
 
     // 2回目のクリック: 既にフォーカス済みのため開く。colOffset を 1回目（3）から
     // 4 へずらす（同じセルに戻すと xterm.js のキャッシュに引っかかって開かなくなるため。
-    // 詳細は上のグリッドのテストのコメント参照）。
+    // 詳細は上のグリッドのテストのコメント参照）。url を短くした（原因A対処）ため、
+    // colOffset 4 でも url の文字範囲（24文字）に収まる。
     await plainClickAtOffset(win, pos, 4);
     expect(await getOpenExternalCalls(app)).toEqual([url]);
   });

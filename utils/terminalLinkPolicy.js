@@ -56,6 +56,20 @@ function normalizeTerminalLinkClickMode(value) {
   return TERMINAL_LINK_CLICK_MODES.includes(value) ? value : DEFAULT_TERMINAL_LINK_CLICK_MODE;
 }
 
+// ─── ドラッグ距離の判定（issue #385 レビュー指摘・HIGH-2 / MEDIUM-B）─────────────────
+// mousedown から mouseup までの移動距離がしきい値を超えたかどうかを判定する純粋関数。
+// renderer/app.js は document への capture リスナーで from/to の座標を集めるだけにし、
+// 距離計算そのものはここへ切り出してユニットテストで固定する（安藤の案）。
+// from / to はどちらも { x, y }（ピクセル座標）。どちらか欠けている場合は「ドラッグでは
+// ない」側（false）へ倒す。理由は下記 isDragDistance の呼び出し側コメント、および
+// renderer/app.js の TERM_LINK_DRAG_THRESHOLD_PX の説明を参照。
+function isDragDistance(from, to, threshold) {
+  if (!from || !to) return false;
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  return Math.hypot(dx, dy) > threshold;
+}
+
 // term.registerLinkProvider() に渡すハンドラ一式を作る。
 // 見た目（ホバー時の下線・pointer カーソル）は xterm.js 本体が自動で付けるため、ここでは
 // 「クリックで開くべきかどうかの判定」と「ツールチップ表示への橋渡し」だけを扱う。
@@ -111,10 +125,37 @@ function normalizeTerminalLinkClickMode(value) {
 //     あった「単クリックにしてもドラッグ選択とは元々衝突しない」という趣旨のコメントは、
 //     この「同一リンク内のドラッグ」を見落とした誤った安全性の主張だったため削除した）。
 //     xterm.js 本体はこの区別をしないため、呼び出し側（renderer/app.js）で mousedown から
-//     mouseup までの移動量を計測し、判定結果をここへ渡してもらう。deps 省略時は false
-//     相当（＝ドラッグ扱いしない）として扱う。
+//     mouseup までの移動量を isDragDistance() で計測し、判定結果をここへ渡してもらう。
+//     deps 省略時は false 相当（＝ドラッグ扱いしない）として扱う。
+//
+//     【訂正・レビュー指摘 LOW-A】以前このコメントには「term.hasSelection() を使わず
+//     移動距離方式にしたのは、xterm.js 内部で SelectionService の mouseup ハンドラが
+//     Linkifier の mouseup ハンドラより先に走るとは限らない（実行順に依存する）ため」
+//     という理由づけを書いていたが、これは事実として誤り。xterm.js の選択は
+//     SelectionService._handleMouseMove（mousedown 時に document へ足される一時
+//     リスナー）でドラッグ中に組み立てられ、mouseup の時点ではすでに確定している。
+//     つまり hasSelection() は mouseup 同士の発火順序に依存せず、方式として使えなくは
+//     ない。移動距離方式を選んだ正しい理由は、hasSelection() が xterm.js 内部の
+//     選択実装（将来のバージョンで変わりうる非公開の詳細）に依存するのに対し、移動距離は
+//     renderer/app.js 側の自前の document capture リスナーだけで完結し、xterm.js の
+//     内部実装に一切依存しないため、かつ isDragDistance() のような座標だけを扱う純粋
+//     関数としてユニットテストしやすいため。しきい値（4px）未満の極小な移動で
+//     1〜2 文字だけ選択が成立する隙間は残るが、URL をコピーしようとする操作が
+//     そこに収まることは実用上考えにくいため許容している（司・安藤合意）。将来この
+//     隙間まで塞ぎたくなった場合は、移動距離の判定を `isDragDistance(...) ||
+//     term.hasSelection()` のように OR で足す形が、既存の判定を壊さず安全。
 function createTerminalLinkHandlers(deps) {
   const { openUrl, showTooltip, hideTooltip, isMac, getClickMode, wasPaneFocused, wasDragged } = deps || {};
+  // 必須級の依存（フォーカスガード・ドラッグガードの実体）が渡されていない場合に警告する
+  // （レビュー指摘・LOW-C）。wasDragged 側を「渡し忘れ＝常にドラッグ扱い（fail-closed）」
+  // にはしない。それだと一切リンクを開けなくなり実用的でないため、渡し忘れに気づける
+  // よう console.warn に留め、実際の判定は「ドラッグしていない」（false 相当）のまま進める。
+  if (typeof wasPaneFocused !== 'function') {
+    console.warn('[VKTerminalLinkPolicy] createTerminalLinkHandlers: wasPaneFocused が渡されていません。フォーカスガード（issue #385）が働かず、常に開かない（fail-closed）動作になります。');
+  }
+  if (typeof wasDragged !== 'function') {
+    console.warn('[VKTerminalLinkPolicy] createTerminalLinkHandlers: wasDragged が渡されていません。ドラッグ選択のガード（issue #385 HIGH-2）が働きません。');
+  }
   return {
     activate(event, url) {
       // 主ボタン（左クリック）以外では開かない（issue #385 レビュー指摘・HIGH-1）。
@@ -123,6 +164,17 @@ function createTerminalLinkHandlers(deps) {
       // 呼ばれてしまう。'modifier' モードでは metaKey/ctrlKey 判定が偶然フィルタとして
       // 働いていたが、既定の 'click' モードにはそのフィルタが無いため、ここで明示的に弾く。
       if (event && typeof event.button === 'number' && event.button !== 0) return;
+
+      // 2 回目以降のクリック（ダブルクリック＝単語選択・トリプルクリック＝行選択）では
+      // 開かない（issue #385 レビュー指摘・MEDIUM-A）。xterm.js の Linkifier は
+      // event.detail（クリック回数）も見ずに mouseup のたびに activate を呼ぶ。
+      // ダブルクリックの2打目はマウスが動いていないため wasDragged() は false・
+      // ボタンは 0 のままで、上の2つのガードを素通りしてしまう。ダブルクリックでの
+      // 単語選択・トリプルクリックでの行選択は URL をコピーする最も自然な操作の一つで、
+      // HIGH-2（なぞって選択）と動機はまったく同じ。かつフォーカス済みペインでは
+      // 1打目・2打目の両方で activate が呼ばれるため、対策しないと同じ URL のタブが
+      // クリック回数ぶん重複して開く。
+      if (event && typeof event.detail === 'number' && event.detail > 1) return;
 
       // ドラッグ選択では開かない（issue #385 レビュー指摘・HIGH-2。詳細は上の
       // wasDragged() の説明を参照）。
@@ -154,6 +206,7 @@ return {
   TERMINAL_LINK_CLICK_MODES,
   DEFAULT_TERMINAL_LINK_CLICK_MODE,
   normalizeTerminalLinkClickMode,
+  isDragDistance,
   createTerminalLinkHandlers,
 };
 });

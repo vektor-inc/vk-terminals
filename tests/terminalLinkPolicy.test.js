@@ -7,8 +7,22 @@ const {
   isMacPlatform,
   isLinkOpenModifierPressed,
   normalizeTerminalLinkClickMode,
+  isDragDistance,
   createTerminalLinkHandlers,
 } = require('../utils/terminalLinkPolicy');
+
+// createTerminalLinkHandlers() は必須級の deps（wasPaneFocused / wasDragged）が
+// 欠けていると console.warn を出す（レビュー指摘・LOW-C）。多くのテストが意図的に
+// これらを省略するため、各テストで console.warn を退避・復元して出力を汚さない。
+function withSilencedWarn(fn) {
+  const original = console.warn;
+  console.warn = () => {};
+  try {
+    return fn();
+  } finally {
+    console.warn = original;
+  }
+}
 
 // 各テストで使う既定の event を作るヘルパー。button 省略時は「左クリック相当」
 // （実際の左クリックイベントは button === 0 だが、activate() は button が number 型で
@@ -130,10 +144,65 @@ test('createTerminalLinkHandlers: modifier モードでも、ドラッグ選択�
 
 test('createTerminalLinkHandlers: wasDragged 未指定時はドラッグ扱いしない（false 相当）', () => {
   const calls = [];
+  const handlers = withSilencedWarn(() => createTerminalLinkHandlers({
+    isMac: true,
+    getClickMode: () => 'click',
+    wasPaneFocused: () => true,
+    openUrl: (url) => calls.push(url),
+  }));
+  handlers.activate(makeEvent(), 'https://example.com');
+  assert.deepEqual(calls, ['https://example.com']);
+});
+
+// ─── MEDIUM-A: ダブルクリック・トリプルクリック（event.detail > 1）では開かない ───────────
+test('createTerminalLinkHandlers: ダブルクリック（event.detail: 2）では openUrl を呼ばない（単語選択と同じ操作・レビュー指摘・MEDIUM-A）', () => {
+  const calls = [];
   const handlers = createTerminalLinkHandlers({
     isMac: true,
     getClickMode: () => 'click',
     wasPaneFocused: () => true,
+    wasDragged: () => false,
+    openUrl: (url) => calls.push(url),
+  });
+  const event = makeEvent({ detail: 2 });
+  handlers.activate(event, 'https://example.com');
+  assert.deepEqual(calls, []);
+  assert.equal(event.prevented, undefined);
+});
+
+test('createTerminalLinkHandlers: トリプルクリック（event.detail: 3）では openUrl を呼ばない（行選択と同じ操作）', () => {
+  const calls = [];
+  const handlers = createTerminalLinkHandlers({
+    isMac: true,
+    getClickMode: () => 'click',
+    wasPaneFocused: () => true,
+    wasDragged: () => false,
+    openUrl: (url) => calls.push(url),
+  });
+  handlers.activate(makeEvent({ detail: 3 }), 'https://example.com');
+  assert.deepEqual(calls, []);
+});
+
+test('createTerminalLinkHandlers: 1回目のクリック（event.detail: 1）は開く。連続クリックのたびに何度も開くわけではないことの対比', () => {
+  const calls = [];
+  const handlers = createTerminalLinkHandlers({
+    isMac: true,
+    getClickMode: () => 'click',
+    wasPaneFocused: () => true,
+    wasDragged: () => false,
+    openUrl: (url) => calls.push(url),
+  });
+  handlers.activate(makeEvent({ detail: 1 }), 'https://example.com');
+  assert.deepEqual(calls, ['https://example.com']);
+});
+
+test('createTerminalLinkHandlers: event.detail 未指定（テストの makeEvent 既定）では開く（1回目クリック相当）', () => {
+  const calls = [];
+  const handlers = createTerminalLinkHandlers({
+    isMac: true,
+    getClickMode: () => 'click',
+    wasPaneFocused: () => true,
+    wasDragged: () => false,
     openUrl: (url) => calls.push(url),
   });
   handlers.activate(makeEvent(), 'https://example.com');
@@ -177,12 +246,12 @@ test('createTerminalLinkHandlers: wasPaneFocused 未指定時は fail-closed（f
   // wasPaneFocused はこの issue #385 で新設した依存で、世の中に「渡し忘れたら true 扱い」の
   // 旧挙動は存在しない。渡し忘れ・接続ミスは安全側（開かない）へ倒れることを確認する。
   const calls = [];
-  const handlers = createTerminalLinkHandlers({
+  const handlers = withSilencedWarn(() => createTerminalLinkHandlers({
     isMac: true,
     getClickMode: () => 'click',
     wasDragged: () => false,
     openUrl: (url) => calls.push(url),
-  });
+  }));
   handlers.activate(makeEvent(), 'https://example.com');
   assert.deepEqual(calls, []);
 });
@@ -275,12 +344,12 @@ test('createTerminalLinkHandlers: getClickMode 未指定時は click（既定）
 test('createTerminalLinkHandlers: hover/leave はツールチップの表示・非表示へ橋渡しするだけ', () => {
   const shown = [];
   const hidden = [];
-  const handlers = createTerminalLinkHandlers({
+  const handlers = withSilencedWarn(() => createTerminalLinkHandlers({
     isMac: true,
     openUrl: () => {},
     showTooltip: (event, url) => shown.push(url),
     hideTooltip: (event, url) => hidden.push(url),
-  });
+  }));
   handlers.hover({}, 'https://example.com');
   handlers.leave({}, 'https://example.com');
   assert.deepEqual(shown, ['https://example.com']);
@@ -288,10 +357,63 @@ test('createTerminalLinkHandlers: hover/leave はツールチップの表示・�
 });
 
 test('createTerminalLinkHandlers: deps 未指定でも例外を投げない（no-op フォールバック。fail-closed のため openUrl は呼ばれない）', () => {
-  const handlers = createTerminalLinkHandlers();
+  const handlers = withSilencedWarn(() => createTerminalLinkHandlers());
   assert.doesNotThrow(() => {
     handlers.activate(makeEvent({ metaKey: true, ctrlKey: true }), 'https://example.com');
     handlers.hover({}, 'https://example.com');
     handlers.leave({}, 'https://example.com');
   });
+});
+
+// ─── LOW-C: 必須級 deps の渡し忘れを console.warn で知らせる ───────────────────────────
+test('createTerminalLinkHandlers: wasPaneFocused / wasDragged が無いと console.warn を出す（レビュー指摘・LOW-C）', () => {
+  const warnings = [];
+  const original = console.warn;
+  console.warn = (msg) => warnings.push(msg);
+  try {
+    createTerminalLinkHandlers({ isMac: true, openUrl: () => {} });
+  } finally {
+    console.warn = original;
+  }
+  assert.equal(warnings.length, 2);
+  assert.ok(warnings.some((m) => /wasPaneFocused/.test(m)));
+  assert.ok(warnings.some((m) => /wasDragged/.test(m)));
+});
+
+test('createTerminalLinkHandlers: wasPaneFocused / wasDragged を両方渡していれば console.warn を出さない', () => {
+  const warnings = [];
+  const original = console.warn;
+  console.warn = (msg) => warnings.push(msg);
+  try {
+    createTerminalLinkHandlers({
+      isMac: true,
+      openUrl: () => {},
+      wasPaneFocused: () => true,
+      wasDragged: () => false,
+    });
+  } finally {
+    console.warn = original;
+  }
+  assert.deepEqual(warnings, []);
+});
+
+// ─── isDragDistance: ドラッグ距離判定の純粋関数（レビュー指摘・MEDIUM-B） ───────────────
+test('isDragDistance: しきい値を超える移動はドラッグと判定する', () => {
+  assert.equal(isDragDistance({ x: 0, y: 0 }, { x: 10, y: 0 }, 4), true);
+  assert.equal(isDragDistance({ x: 0, y: 0 }, { x: 0, y: 10 }, 4), true);
+  // 3-4-5 の直角三角形（斜辺 5）でしきい値 4 を超える。
+  assert.equal(isDragDistance({ x: 0, y: 0 }, { x: 3, y: 4 }, 4), true);
+});
+
+test('isDragDistance: しきい値以下の移動はドラッグと判定しない', () => {
+  assert.equal(isDragDistance({ x: 0, y: 0 }, { x: 0, y: 0 }, 4), false);
+  assert.equal(isDragDistance({ x: 0, y: 0 }, { x: 2, y: 0 }, 4), false);
+  // ちょうどしきい値と同じ距離は「超える」の対象外（境界は超えない側）。
+  assert.equal(isDragDistance({ x: 0, y: 0 }, { x: 4, y: 0 }, 4), false);
+});
+
+test('isDragDistance: from / to のどちらかが欠けている場合はドラッグ扱いしない（false 相当）', () => {
+  assert.equal(isDragDistance(null, { x: 100, y: 100 }, 4), false);
+  assert.equal(isDragDistance({ x: 0, y: 0 }, null, 4), false);
+  assert.equal(isDragDistance(undefined, undefined, 4), false);
 });

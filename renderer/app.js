@@ -143,7 +143,20 @@ const paneFocusBeforeMousedown = new Map();
 // isPostWindowBlurMousedown へ確定させてからフラグを消費する。
 // recordPaneFocusBeforeMousedown() はこの値が true のときフォーカス状態を強制的に
 // false 扱いにする（＝フォーカス移動だけの操作とみなし、リンクは開かせない）。
-let pendingWindowRefocusClick = false;
+//
+// 【設計メモ・崩さないこと】この仕組みは「blur で印を立て、次の mousedown で消費する」
+// 形でなければ成立しない。「focus イベントで印を消す」形に直すと、クリックでウィンドウを
+// 前面化する場合は OS ネイティブの focus イベントの方が mousedown より先に飛ぶため
+// （フォーカス移動が先に確定してからアプリ側に mousedown が届く）、印を立てる暇なく
+// 消えてしまい、ガードが丸ごと効かなくなる（レビュー指摘・MEDIUM-5 の補足）。
+//
+// 【レビュー指摘・LOW-B】既定値を false にしていると、アプリがバックグラウンド起動
+// （最初からウィンドウが前面に無い状態）した場合は blur が一度も飛ばないため、
+// 前面に出すための最初のクリックが通常のクリック扱いになってしまう。それが起動時に
+// 自動フォーカスされる最初のペイン（initApp() 参照）の URL 上に落ちると開く。
+// 起動時点で document がフォーカスを持っていなければ、最初から「復帰クリック待ち」
+// 状態で始める。
+let pendingWindowRefocusClick = !document.hasFocus();
 let isPostWindowBlurMousedown = false;
 
 // URL のドラッグ選択判定用の状態（issue #385 レビュー指摘・HIGH-2）。xterm.js の
@@ -160,6 +173,14 @@ let isPostWindowBlurMousedown = false;
 // 場合の実害は「まれにクリックし直しが要る」程度で小さく、逆に閾値を大きくしすぎて
 // ドラッグをクリック扱いしてしまう実害（誤って外部ブラウザが開く）の方が大きいため、
 // 小さめ（＝ドラッグ判定側に倒れやすい）の値をあえて選んでいる。
+//
+// なぜ term.hasSelection() ではなく移動距離で判定するのか（レビュー指摘・LOW-A の
+// 訂正版。詳しい理由づけは utils/terminalLinkPolicy.js の wasDragged() 依存関数の
+// 説明コメント参照）: hasSelection() は xterm.js 内部の選択実装（将来変わりうる非公開の
+// 詳細）に依存するのに対し、移動距離は自前の document capture リスナーだけで完結し
+// xterm.js の内部実装に一切依存しない。距離計算そのもの（isDragDistance()）は
+// utils/terminalLinkPolicy.js の純粋関数へ切り出し、ユニットテストで固定している
+// （安藤の案・レビュー指摘・MEDIUM-B）。
 const TERM_LINK_DRAG_THRESHOLD_PX = 4;
 let lastMousedownClientPos = null;
 let lastClickWasDrag = false;
@@ -176,13 +197,11 @@ document.addEventListener('mousedown', (event) => {
   pendingWindowRefocusClick = false;
 }, true);
 document.addEventListener('mouseup', (event) => {
-  if (!lastMousedownClientPos) {
-    lastClickWasDrag = false;
-    return;
-  }
-  const dx = event.clientX - lastMousedownClientPos.x;
-  const dy = event.clientY - lastMousedownClientPos.y;
-  lastClickWasDrag = Math.hypot(dx, dy) > TERM_LINK_DRAG_THRESHOLD_PX;
+  lastClickWasDrag = isDragDistance(
+    lastMousedownClientPos,
+    { x: event.clientX, y: event.clientY },
+    TERM_LINK_DRAG_THRESHOLD_PX
+  );
 }, true);
 
 // .pane（グリッド）・.stash-item（格納・サイドバー）のどちらの mousedown からも
@@ -1175,7 +1194,7 @@ function openExternalUrlSafe(url, options = {}) {
 // 絶対に外部 URL を開かせない）を renderer/app.js の非エクスポート関数のままにせず、
 // tests/terminalLinkPolicy.test.js から直接ユニットテストできるようにするため
 // （安藤レビュー指摘・MEDIUM）。
-const { isMacPlatform, createTerminalLinkHandlers, normalizeTerminalLinkClickMode } = window.VKTerminalLinkPolicy;
+const { isMacPlatform, createTerminalLinkHandlers, normalizeTerminalLinkClickMode, isDragDistance } = window.VKTerminalLinkPolicy;
 const IS_MAC_PLATFORM = isMacPlatform();
 // 'modifier' モード専用のラベル（'click' モードでは使わない。termLinkTooltipMessage 参照）。
 const TERM_LINK_MODIFIER_LABEL = IS_MAC_PLATFORM ? '⌘+クリックで開く' : 'Ctrl+クリックで開く';

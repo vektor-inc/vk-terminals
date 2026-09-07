@@ -166,6 +166,37 @@ async function plainClickAtOffset(win, pos, colOffset) {
   await new Promise((resolve) => setTimeout(resolve, 250));
 }
 
+// 右クリック（button: 2）で pos.col + colOffset のセルをクリックする（issue #385
+// レビュー指摘・MEDIUM-B・HIGH-1 の計測側回帰）。
+async function rightClickAtOffset(win, pos, colOffset) {
+  const cellW = pos.rect.width / pos.cols;
+  const cellH = pos.rect.height / pos.rows;
+  const x = pos.rect.x + (pos.col + colOffset) * cellW;
+  const y = pos.rect.y + (pos.row + 0.5) * cellH;
+  await win.mouse.move(x, y);
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  await win.mouse.down({ button: 'right' });
+  await win.mouse.up({ button: 'right' });
+  await new Promise((resolve) => setTimeout(resolve, 250));
+}
+
+// 同一リンク（同じ URL）の中だけをドラッグする（issue #385 レビュー指摘・MEDIUM-B・
+// HIGH-2 の計測側回帰）。fromColOffset・toColOffset は両方とも pos の URL の文字範囲に
+// 収まる値を渡すこと（呼び出し側の責務。ここでは範囲チェックしない）。
+async function dragWithinLinkAtOffset(win, pos, fromColOffset, toColOffset) {
+  const cellW = pos.rect.width / pos.cols;
+  const cellH = pos.rect.height / pos.rows;
+  const fromX = pos.rect.x + (pos.col + fromColOffset) * cellW;
+  const toX = pos.rect.x + (pos.col + toColOffset) * cellW;
+  const y = pos.rect.y + (pos.row + 0.5) * cellH;
+  await win.mouse.move(fromX, y);
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  await win.mouse.down();
+  await win.mouse.move(toX, y, { steps: 5 });
+  await win.mouse.up();
+  await new Promise((resolve) => setTimeout(resolve, 250));
+}
+
 // shell.openExternal を main プロセス側で差し替える（external-url-toast.smoke.spec.js と
 // 同じ手口）。実際に OS のブラウザは開かせず、呼び出しだけを記録する。
 async function stubShellOpenExternal(app) {
@@ -323,10 +354,17 @@ test.describe.serial('ペイン内 URL の Cmd/Ctrl+クリック（issue #349 / 
   });
 
   test('URL を含む行をドラッグして範囲選択できる（従来どおりの選択・コピー操作のデグレ確認）', async () => {
-    // xterm.js の Linkifier は mousedown 時点のリンクと mouseup 時点のリンクが一致した
-    // ときだけ activate を呼ぶ（renderer/app.js のコメント・xterm.js 本体の
-    // src/browser/Linkifier.ts で保証されている挙動）。ドラッグ選択は mousedown と
-    // mouseup の位置が変わるため、この経路と衝突しないはず。ここでは実際にマウスで
+    // 【訂正・issue #385 レビュー指摘（植草）】ここでのドラッグは startX〜endX が
+    // 同じ URL（同一リンク）の中に収まっている。以前このコメントには「xterm.js の
+    // Linkifier は mousedown 時点のリンクと mouseup 時点のリンクが一致したときだけ
+    // activate を呼ぶため、ドラッグ選択はこの経路と衝突しないはず」と書いていたが、
+    // これは誤り。この一致条件は「別々のリンクをまたぐドラッグ」は弾けても、この
+    // テストのように「同一リンクの中だけをなぞる」ドラッグはまさにその条件を満たして
+    // しまい、対策前は activate が呼ばれて開いてしまっていた（HIGH-2 として修正済み。
+    // utils/terminalLinkPolicy.js の wasDragged() 依存関数の説明コメント参照）。
+    // このテストで実際に openExternal が呼ばれないのは、mousedown → mouseup の移動量が
+    // HIGH-2 のドラッグしきい値（4px）を大きく超え、wasDragged() のガードに引っかかる
+    // ためであり、「リンクの不一致」によるものではない。ここでは実際にマウスで
     // ドラッグして、選択できること・その間 openExternal が呼ばれないことを確認する。
     const url = 'https://example.com/vk-terminals-e2e-drag-select';
     await postSend(port, `echo "${url}"\r`);
@@ -348,7 +386,7 @@ test.describe.serial('ペイン内 URL の Cmd/Ctrl+クリック（issue #349 / 
 
     const selection = await win.evaluate(() => terminals['pane-1'].term.getSelection());
     expect(selection).toContain('example.com/vk-terminals-e2e-drag-select');
-    // ドラッグはクリックではないため、ブラウザは開かない。
+    // wasDragged() のガード（HIGH-2）により、同一リンク内のドラッグでも開かない。
     expect(await getOpenExternalCalls(app)).toEqual([]);
   });
 
@@ -661,6 +699,15 @@ test.describe.serial('ペイン内 URL クリック: フォーカスされてい
     expect(await getOpenExternalCalls(app)).toEqual([]);
     await expect(win.locator('.pane[data-id="pane-1"]')).toHaveClass(/\bfocused\b/);
 
+    // MEDIUM-A: 同じ座標への連続クリックは、間隔が短いとブラウザ側でダブルクリック
+    // （event.detail > 1）と判定され、そのガード（issue #385 レビュー指摘・MEDIUM-A）に
+    // 引っかかって2回目のクリックまで「開かない」側になってしまう。ダブルクリック判定は
+    // 最終的なクリック位置とクリック間隔で決まり、途中でポインタを動かしても位置が
+    // 同じなら解除されないため、moveMouseAway() に加えて既定のダブルクリック間隔
+    // （OS・ブラウザ既定でおおむね 500ms 前後）を確実に超える待ちを明示的に挟む。
+    await moveMouseAway(win);
+    await new Promise((resolve) => setTimeout(resolve, 700));
+
     // 2回目のクリック: 既にフォーカス済みのため開く。
     await plainClickAtOffset(win, pos, 3);
     expect(await getOpenExternalCalls(app)).toEqual([url]);
@@ -697,7 +744,101 @@ test.describe.serial('ペイン内 URL クリック: フォーカスされてい
     expect(await getOpenExternalCalls(app)).toEqual([]);
     await expect(stashItem).toHaveClass(/\bfocused\b/);
 
+    // MEDIUM-A: 上のグリッドのテストと同じ理由で、連続クリックがダブルクリック
+    // 扱いにならないよう moveMouseAway() ＋明示的な待ちを挟む。
+    await moveMouseAway(win);
+    await new Promise((resolve) => setTimeout(resolve, 700));
+
     // 2回目のクリック: 既にフォーカス済みのため開く。
+    await plainClickAtOffset(win, pos, 3);
+    expect(await getOpenExternalCalls(app)).toEqual([url]);
+  });
+});
+
+// ─── 計測側（renderer/app.js）の回帰テスト（issue #385 レビュー指摘・MEDIUM-B） ─────────
+// utils/terminalLinkPolicy.js 側のユニットテストは wasDragged() / wasPaneFocused() を
+// スタブで渡しており、実際に判定値を作っている renderer/app.js 側（document の capture
+// リスナー・距離計算・pendingWindowRefocusClick → isPostWindowBlurMousedown の受け渡し）
+// は一切検証されていなかった（安藤レビュー指摘。MEDIUM-1 が最初に見落とされた構図と
+// 同じ：ガードは書いたが、そのガードに値を渡す側が試されていない）。専用の新規アプリ
+// インスタンスで、実際のマウス操作・window blur を使って検証する。
+test.describe.serial('ペイン内 URL クリック: 計測側（右クリック・ドラッグ・ウィンドウ復帰）の回帰（issue #385 レビュー指摘・MEDIUM-B）', () => {
+  let app;
+  let win;
+  let tmpRoot;
+  let port;
+
+  test.beforeAll(async () => {
+    port = await getFreePort();
+    ({ app, win, tmpRoot } = await launchApp({
+      port,
+      prefix: 'vk-terminals-e2e-terminal-link-measurement-',
+    }));
+    await waitForPtyRegistration(port);
+    await stubShellOpenExternal(app);
+  });
+
+  test.afterAll(async () => {
+    await restoreShellOpenExternal(app);
+    await closeApp({ app, tmpRoot });
+  });
+
+  test.beforeEach(async () => {
+    await clearOpenExternalCalls(app);
+    await moveMouseAway(win);
+  });
+
+  test('右クリックでは openExternal が呼ばれない（HIGH-1 の計測側回帰）', async () => {
+    const url = 'https://example.com/vk-terminals-e2e-measurement-right-click';
+    await postSend(port, `echo "${url}"\r`);
+    await waitForBufferText(win, url);
+
+    const pos = await findTextPosition(win, url);
+    expect(pos).not.toBeNull();
+    await rightClickAtOffset(win, pos, 3);
+
+    expect(await getOpenExternalCalls(app)).toEqual([]);
+  });
+
+  test('URL 内をドラッグ（20〜30px 相当・同一リンク内で完結）しても openExternal が呼ばれない（HIGH-2 の計測側回帰）', async () => {
+    const url = 'https://example.com/vk-terminals-e2e-measurement-drag';
+    await postSend(port, `echo "${url}"\r`);
+    await waitForBufferText(win, url);
+
+    const pos = await findTextPosition(win, url);
+    expect(pos).not.toBeNull();
+    // colOffset 2 → 6（4 セル分）。既定フォント（13px monospace）でおおむね 20〜30px の
+    // 移動になり、かつ url の文字範囲（先頭から4文字以上）に収まるため同一リンク内で
+    // 完結する。TERM_LINK_DRAG_THRESHOLD_PX（4px）を確実に超える。
+    await dragWithinLinkAtOffset(win, pos, 2, 6);
+
+    expect(await getOpenExternalCalls(app)).toEqual([]);
+  });
+
+  test('ウィンドウ blur の直後の最初のクリックでは開かず、次のクリックで開く（MEDIUM-5 の計測側回帰。植草からも優先度「中」）', async () => {
+    const url = 'https://example.com/vk-terminals-e2e-measurement-blur';
+    await postSend(port, `echo "${url}"\r`);
+    await waitForBufferText(win, url);
+
+    const pos = await findTextPosition(win, url);
+    expect(pos).not.toBeNull();
+
+    // renderer/app.js の window blur ハンドラ（hideTermLinkTooltip 起点のテストと同じ
+    // 手口・issue #385 の pendingWindowRefocusClick）を発火させる。実際の OS フォーカス
+    // 喪失を伴わない合成イベントだが、同じ 'blur' リスナーが動くため等価に検証できる。
+    await win.evaluate(() => window.dispatchEvent(new Event('blur')));
+
+    // 1回目のクリック: 「ウィンドウを前面に出すためのクリック」扱いになり、
+    // フォーカス移動だけに使われて開かない。
+    await plainClickAtOffset(win, pos, 3);
+    expect(await getOpenExternalCalls(app)).toEqual([]);
+
+    // MEDIUM-A: 連続クリックがダブルクリック扱いにならないよう間隔を空ける
+    // （上のグリッド／格納テストと同じ理由）。
+    await moveMouseAway(win);
+    await new Promise((resolve) => setTimeout(resolve, 700));
+
+    // 2回目のクリック: 復帰クリックの印は1回目で消費済みのため、通常どおり開く。
     await plainClickAtOffset(win, pos, 3);
     expect(await getOpenExternalCalls(app)).toEqual([url]);
   });

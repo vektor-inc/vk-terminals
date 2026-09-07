@@ -1019,9 +1019,11 @@ function ensureExternalUrlToast() {
   const layer = document.createElement('div');
   layer.className = 'vk-toast-layer';
   // document.body 直下だと確認ダイアログ（.confirm-overlay / .confirm-modal）より
-  // 前面に来る（z-index 2200 > 2100）。外側コンテナは pointer-events: none にし、
-  // 実際に見える箱（.vk-toast）だけへ pointer-events: auto を戻すことで、トーストの
-  // 表示領域以外がダイアログのクリックを吸わないようにする（安藤レビュー指摘・高）。
+  // 前面に来る（z-index 2200 > 2100）。外側コンテナは常に pointer-events: none にし、
+  // トーストの表示領域以外がダイアログのクリックを吸わないようにする（安藤レビュー
+  // 指摘・高）。実際に見える箱（.vk-toast）側の pointer-events は固定 auto ではなく、
+  // コピーボタンの有無（操作できる部品があるか）に応じて動的に切り替える
+  // （setExternalUrlToastInteractive 参照。issue #385 レビュー指摘）。
   // focusTrap.js の applyInert が body 直下の子へ inert を付けて回るため、この要素は
   // その対象から除外してもらう目印を付ける（同ファイル参照）。
   layer.setAttribute('data-vk-inert-exempt', '');
@@ -1087,6 +1089,28 @@ function ensureExternalUrlToast() {
   return toast;
 }
 
+// トースト内に操作できる部品（コピーボタン）があるかどうかで、トースト自身の
+// pointer-events を切り替える（issue #385 レビュー指摘。麗美の e2e で発見）。
+//
+// issue #385 でリンクを開くたびに毎回「◯◯ を開きました」トーストを出すようになった
+// 結果、従来は「開けなかったとき」など稀にしか出なかった .vk-toast の露出が桁違いに
+// 増えた。.vk-toast は pointer-events: auto（コピーボタンを押せるようにするため）かつ
+// 画面右下に最大 EXTERNAL_URL_TOAST_AUTO_DISMISS_MS（5秒）居座るため、そこにたまたま
+// 別の URL が重なっていると、リンクを開いた直後にその URL をクリックしてもトーストに
+// 吸われてターミナルへ届かず「クリックしても何も起きない」という、この PR が改善
+// しようとしている操作そのものを壊す不具合になっていた（実測で document.elementFromPoint
+// がターミナルではなくトースト内の要素を返すことを確認済み）。
+//
+// 対処方針は .term-link-tooltip と同じ（renderer/style.css の同要素のコメント参照）:
+// 操作できる部品が無いときは pointer-events: none にしてクリックを下（ターミナル）へ
+// 素通りさせる。コピーボタンを持つ失敗トースト（showExternalUrlOpenFailedToast）は
+// ボタンが押せなくなるため対象外とし、常時 pointer-events: auto のままにする。
+// トーストの箱を固定で none にはせず、CSS クラス（.vk-toast--interactive）の有無で
+// 都度切り替える。新しいトースト実装は増やさない（既存の .vk-toast インフラを流用）。
+function setExternalUrlToastInteractive(toast, interactive) {
+  toast.classList.toggle('vk-toast--interactive', interactive);
+}
+
 // 外部ブラウザを開けなかったときに呼ぶ。同時発生時は積み上げず、前のトーストを
 // 新しい内容で上書きする（積み上げると読み上げが渋滞するため）。
 // 出現時にフォーカスは奪わない（操作中の要素にフォーカスを残す）。
@@ -1095,6 +1119,9 @@ function showExternalUrlOpenFailedToast(url) {
   if (!toast) return;
   const copyButton = toast.querySelector('.vk-toast-copy');
   if (copyButton) copyButton.hidden = false;
+  // コピーボタンを持つため、クリックを透過させない（上の setExternalUrlToastInteractive
+  // のコメント参照）。
+  setExternalUrlToastInteractive(toast, true);
   externalUrlToastCopyUrl = url;
   setExternalUrlToastMessage(EXTERNAL_URL_TOAST_FAILED_MESSAGE);
   toast.hidden = false;
@@ -1102,14 +1129,18 @@ function showExternalUrlOpenFailedToast(url) {
 }
 
 // コピー対象を伴わない汎用メッセージ用（issue #380: 設定コンテンツテーブルの一括切り替え
-// 結果の要約など）。同じ .vk-toast インフラ（issue #326）を再利用し、URL コピー専用の
-// ボタンだけ隠す。「呼び出し箇所ごとに吹き出しを出さない」という汎用トーストの設計方針
-// （冒頭コメント参照）どおり、新しいトースト実装を増やさない。
+// 結果の要約、issue #385: ペイン内 URL クリックの「開きました」など）。同じ .vk-toast
+// インフラ（issue #326）を再利用し、URL コピー専用のボタンだけ隠す。「呼び出し箇所ごとに
+// 吹き出しを出さない」という汎用トーストの設計方針（冒頭コメント参照）どおり、新しい
+// トースト実装は増やさない。
 function showGenericToast(message) {
   const toast = ensureExternalUrlToast();
   if (!toast) return;
   const copyButton = toast.querySelector('.vk-toast-copy');
   if (copyButton) copyButton.hidden = true;
+  // 操作できる部品が無いため、クリックを下（ターミナル等）へ透過させる（上の
+  // setExternalUrlToastInteractive のコメント参照。issue #385 レビュー指摘）。
+  setExternalUrlToastInteractive(toast, false);
   externalUrlToastCopyUrl = '';
   setExternalUrlToastMessage(message);
   toast.hidden = false;

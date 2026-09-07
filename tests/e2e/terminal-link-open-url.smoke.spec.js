@@ -308,6 +308,23 @@ test.describe.serial('ペイン内 URL の Cmd/Ctrl+クリック（issue #349 / 
     await plainClickAtOffset(win, pos, 3);
 
     expect(await getOpenExternalCalls(app)).toEqual([url]);
+
+    // レビュー指摘（麗美の e2e で発見）の回帰確認: 開いた直後に出る「開きました」トーストは
+    // コピーボタンを持たない（＝操作できる部品が無い）ため、クリックを下（ターミナル等）へ
+    // 透過させる pointer-events: none になっていること。ここでは実際のクリック透過を
+    // 画面上の座標（ウィンドウサイズ・フォント計測に依存し不安定になりやすい）で証明する
+    // 代わりに、実際の変更点である computed style を直接確認する（renderer/app.js の
+    // setExternalUrlToastInteractive / renderer/style.css の .vk-toast--interactive 参照）。
+    // 失敗トースト側（コピーボタンを持つ＝押せる必要がある）が pointer-events: auto の
+    // ままであることは、既存の tests/e2e/external-url-toast.smoke.spec.js が
+    // toast.locator('.vk-toast-copy').click() で実際にクリックしており、Playwright の
+    // クリックは対象要素が操作可能（pointer-events が click を妨げない）であることを
+    // 自動で検証するため、そちら側の回帰はそのテスト群がそのまま守ってくれる。
+    const toastPointerEvents = await win.evaluate(() => {
+      const toast = document.querySelector('.vk-toast');
+      return toast ? getComputedStyle(toast).pointerEvents : null;
+    });
+    expect(toastPointerEvents).toBe('none');
   });
 
   test('Cmd/Ctrl+クリックでブラウザが開く（openExternal に正しい URL が渡る）', async () => {
@@ -733,11 +750,42 @@ test.describe.serial('ペイン内 URL クリック: フォーカスされてい
     // 最終的なクリック位置とクリック間隔で決まり、途中でポインタを動かしても位置が
     // 同じなら解除されないため、moveMouseAway() に加えて既定のダブルクリック間隔
     // （OS・ブラウザ既定でおおむね 500ms 前後）を確実に超える待ちを明示的に挟む。
+    //
+    // moveMouseAway() を残すかどうかは判断が割れた点なので経緯を残す。実は Playwright/
+    // CDP 経由の合成クリックでは、同一セルへ約400msの通常間隔で連続クリックしても
+    // event.detail は 2 にならない（実測・司への報告済み）。つまり moveMouseAway() が
+    // このテストの安定性に本当に必要かは未確定のまま（Chromium/CDP のクリック合成が
+    // 実ハードウェアのダブルクリック計数と同じ挙動をするとは限らないため）。実 macOS
+    // ハードウェアでの検証はしていないので、安全側に倒してここでは残している
+    // （司・安藤合意。「本当に必要かの検証」は今回のスコープ外として記録に留める）。
+    //
+    // 【xterm.js 6.0.0 の既知の挙動・重要】moveMouseAway() を残す以上、2回目のクリックを
+    // 1回目と「同じセル」（同じ colOffset）へ戻してはいけない。これは #385 実装の
+    // バグではなく、xterm.js 本体 Linkifier._handleMouseMove のキャッシュに起因する
+    // ライブラリ側の挙動で、npm から実際に取得した @xterm/xterm 6.0.0 の
+    // src/browser/Linkifier.ts で再現・特定済み（司への調査報告参照）。
+    //   - moveMouseAway()（要素外への瞬間移動）で本物の mouseleave が起きると、
+    //     Linkifier は _currentLink をクリアするが _lastBufferCell はクリアしない。
+    //   - その状態で「中間セルを一切経由せず」元のセルへ瞬間移動すると、
+    //     _handleMouseMove が「同じセルへの再訪問」と誤認してホバー解決処理
+    //     （_handleHover）を丸ごとスキップし、_currentLink が二度と復元されない。
+    //     結果、後続の mousedown/mouseup で activate() まで到達しなくなる。
+    //   - 本物の物理マウス・トラックパッドは、離れた2点間を移動する際に必ず中間セルを
+    //     経由する連続的な mousemove を発生させるため、この「中間点ゼロの瞬間移動」は
+    //     起こり得ず、実利用でこの問題が発生することはない（Playwright の mouse.move()
+    //     が既定で中間点を生成しないテスト自動化特有の現象であることを、
+    //     { steps: 30 } で経路移動させると再現しなくなることまで確認して切り分け済み）。
+    //   - このため製品コード側の対処（合成 mousemove でのキャッシュ洗浄。動作確認は
+    //     できている）は行わず、テスト側で「2回目のクリック位置を1セルずらす」ことで
+    //     この罠を避ける方針にした（司・安藤合意）。次にここで同じ落ち方を見た人が
+    //     「実装のバグだ」と誤診しないよう、必ずこのコメントを先に読むこと。
     await moveMouseAway(win);
     await new Promise((resolve) => setTimeout(resolve, 700));
 
-    // 2回目のクリック: 既にフォーカス済みのため開く。
-    await plainClickAtOffset(win, pos, 3);
+    // 2回目のクリック: 既にフォーカス済みのため開く。colOffset を 1回目（3）から
+    // 4 へ意図的にずらしている（上のコメント参照。同じセルに戻すと xterm.js の
+    // キャッシュに引っかかって開かなくなる）。
+    await plainClickAtOffset(win, pos, 4);
     expect(await getOpenExternalCalls(app)).toEqual([url]);
   });
 
@@ -773,12 +821,16 @@ test.describe.serial('ペイン内 URL クリック: フォーカスされてい
     await expect(stashItem).toHaveClass(/\bfocused\b/);
 
     // MEDIUM-A: 上のグリッドのテストと同じ理由で、連続クリックがダブルクリック
-    // 扱いにならないよう moveMouseAway() ＋明示的な待ちを挟む。
+    // 扱いにならないよう moveMouseAway() ＋明示的な待ちを挟む（moveMouseAway() を
+    // 残す理由・xterm.js のキャッシュの罠で2回目を同じセルへ戻してはいけない理由は、
+    // 上のグリッドのテストのコメントを参照。ここでは重複を避けて要点だけ記す）。
     await moveMouseAway(win);
     await new Promise((resolve) => setTimeout(resolve, 700));
 
-    // 2回目のクリック: 既にフォーカス済みのため開く。
-    await plainClickAtOffset(win, pos, 3);
+    // 2回目のクリック: 既にフォーカス済みのため開く。colOffset を 1回目（3）から
+    // 4 へずらす（同じセルに戻すと xterm.js のキャッシュに引っかかって開かなくなるため。
+    // 詳細は上のグリッドのテストのコメント参照）。
+    await plainClickAtOffset(win, pos, 4);
     expect(await getOpenExternalCalls(app)).toEqual([url]);
   });
 });
@@ -873,12 +925,17 @@ test.describe.serial('ペイン内 URL クリック: 計測側（右クリック
     expect(await getOpenExternalCalls(app)).toEqual([]);
 
     // MEDIUM-A: 連続クリックがダブルクリック扱いにならないよう間隔を空ける
-    // （上のグリッド／格納テストと同じ理由）。
+    // （上の「グリッド」テスト（terminal-link-open-url.smoke.spec.js 内、フォーカス
+    // ガードの describe ブロック）と同じ理由。moveMouseAway() を残す理由・2回目を
+    // 同じセルへ戻してはいけない xterm.js のキャッシュの罠については、そちらの
+    // コメントを参照。ここでは重複を避けて要点だけ記す）。
     await moveMouseAway(win);
     await new Promise((resolve) => setTimeout(resolve, 700));
 
     // 2回目のクリック: 復帰クリックの印は1回目で消費済みのため、通常どおり開く。
-    await plainClickAtOffset(win, pos, 3);
+    // colOffset を 1回目（3）から 4 へずらす（同じセルに戻すと xterm.js のキャッシュに
+    // 引っかかって開かなくなるため。詳細は上記「グリッド」テストのコメント参照）。
+    await plainClickAtOffset(win, pos, 4);
     expect(await getOpenExternalCalls(app)).toEqual([url]);
   });
 });

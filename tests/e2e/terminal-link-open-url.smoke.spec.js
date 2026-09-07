@@ -134,6 +134,25 @@ async function isMacPlatform(win) {
   return win.evaluate(() => window.VKTerminalLinkPolicy.isMacPlatform());
 }
 
+// issue #385 レビュー指摘・MEDIUM-D: main.js の e2e 起動は show: false（ウィンドウを
+// 表示しない）ため、起動直後は document.hasFocus() が false になりうる。renderer/app.js
+// はその場合 pendingWindowRefocusClick を true で初期化する（LOW-B）ため、各アプリ
+// インスタンスの「最初の mousedown」が本題と無関係に「復帰クリック」として消費され、
+// フォーカス済みペインの最初のクリックでも開かない、という誤った結果を生みうる
+// （Playwright/Chromium 側のフォーカスエミュレーションが効いて document.hasFocus() が
+// true を返す環境では発生しないため、再現するかどうか自体が環境依存で不確か。この
+// 不確かさ自体が問題）。
+//
+// 各 describe の beforeAll の最後でこれを呼び、実際の要素に触れない合成 mousedown で
+// 印だけを無害に消費しておく。renderer/app.js の document 上の mousedown リスナーは
+// capture: true で登録されているが、target が document 自身のイベントは capture/bubble
+// の区別なく「AT_TARGET」フェーズとして document 上の全リスナーに配送されるため
+// （DOM イベント仕様）、bubbles の有無によらずこの合成イベントは確実に拾われる
+// （bubbles: true は実際のクリックに近い形にするための保険で必須ではない）。
+async function consumePendingWindowRefocusClick(win) {
+  await win.evaluate(() => document.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })));
+}
+
 // pos の col + colOffset のセルへ、実行環境の修飾キー（mac なら Cmd、それ以外は Ctrl）を
 // 押しながらクリックする。
 async function modifierClickAtOffset(win, pos, colOffset, mac) {
@@ -239,6 +258,9 @@ test.describe.serial('ペイン内 URL の Cmd/Ctrl+クリック（issue #349 / 
     await waitForPtyRegistration(port);
     await stubShellOpenExternal(app);
     mac = await isMacPlatform(win);
+    // MEDIUM-D: 起動直後の「復帰クリック」の印を無害に消費する（詳細は
+    // consumePendingWindowRefocusClick() の説明コメント参照）。
+    await consumePendingWindowRefocusClick(win);
   });
 
   test.afterAll(async () => {
@@ -592,6 +614,9 @@ test.describe.serial('ペイン内 URL クリック: terminalLinkClickMode が m
     await waitForPtyRegistration(port);
     await stubShellOpenExternal(app);
     mac = await isMacPlatform(win);
+    // MEDIUM-D: 起動直後の「復帰クリック」の印を無害に消費する（詳細は
+    // consumePendingWindowRefocusClick() の説明コメント参照）。
+    await consumePendingWindowRefocusClick(win);
   });
 
   test.afterAll(async () => {
@@ -664,6 +689,9 @@ test.describe.serial('ペイン内 URL クリック: フォーカスされてい
     }));
     await waitForPtyRegistration(port);
     await stubShellOpenExternal(app);
+    // MEDIUM-D: 起動直後の「復帰クリック」の印を無害に消費する（詳細は
+    // consumePendingWindowRefocusClick() の説明コメント参照）。
+    await consumePendingWindowRefocusClick(win);
   });
 
   test.afterAll(async () => {
@@ -776,6 +804,9 @@ test.describe.serial('ペイン内 URL クリック: 計測側（右クリック
     }));
     await waitForPtyRegistration(port);
     await stubShellOpenExternal(app);
+    // MEDIUM-D: 起動直後の「復帰クリック」の印を無害に消費する（詳細は
+    // consumePendingWindowRefocusClick() の説明コメント参照）。
+    await consumePendingWindowRefocusClick(win);
   });
 
   test.afterAll(async () => {
@@ -811,6 +842,14 @@ test.describe.serial('ペイン内 URL クリック: 計測側（右クリック
     // 移動になり、かつ url の文字範囲（先頭から4文字以上）に収まるため同一リンク内で
     // 完結する。TERM_LINK_DRAG_THRESHOLD_PX（4px）を確実に超える。
     await dragWithinLinkAtOffset(win, pos, 2, 6);
+
+    // 選択が実際に成立したことも確認する（安藤の案・LOW-H）。既存の「URL を含む行を
+    // ドラッグして範囲選択できる」テストと同じ形にすることで、「ガードが効いて開かな
+    // かった」のか「そもそも activate が呼ばれる状況になっていなかった」のかを
+    // 区別できるようにする。
+    const selection = await win.evaluate(() => terminals['pane-1'].term.getSelection());
+    expect(selection.length).toBeGreaterThan(0);
+    expect(url).toContain(selection);
 
     expect(await getOpenExternalCalls(app)).toEqual([]);
   });

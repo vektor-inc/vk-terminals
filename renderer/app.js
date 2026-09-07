@@ -934,7 +934,11 @@ function isSafeExternalUrl(url) {
 // 少なくとも「ページ先頭から」の距離を一定に保つ（クリック位置からの距離そのものを
 // 短縮する手段は、出現時にフォーカスを奪わない制約の中では無い）。
 //
-// 成功時は何も出さない（ブラウザが実際に開くこと自体がフィードバックのため）。
+// 成功時は基本的に何も出さない（ブラウザが実際に開くこと自体がフィードバックのため）。
+// 例外はペイン内 URL クリック（openTerminalLinkUrl 経由）で、issue #385 でこの同じ
+// トースト基盤を再利用して遷移先ホスト名を知らせる「◯◯ を開きました」を出すように
+// なった（showTerminalLinkOpenedToast 参照）。それ以外の呼び出し元（サイドバーメニュー
+// 等）は従来どおり成功時に何も出さない。
 let externalUrlToastLayerEl = null; // document.body 直下へ挿入する外側コンテナ（pointer-events: none）
 let externalUrlToastEl = null; // 実際に見える箱（pointer-events: auto）。中身の差し替えはこちらへ行う
 let externalUrlToastDismissTimer = null;
@@ -1124,8 +1128,9 @@ function showGenericToast(message) {
 // （issue #385）。ペイン内 URL クリック（openTerminalLinkUrl）専用の「開きました」トースト
 // 表示に使う。他の呼び出し元（サイドバーメニュー等）は指定しないため挙動は変わらない。
 //
-// 【内部専用・レビュー指摘・LOW-1】この関数は ensureWidgetViewController()（1789 行目
-// 付近）や widgetView.js の wireExternalLink() のように、汎用の 1 引数コールバック
+// 【内部専用・レビュー指摘・LOW-1】この関数は ensureWidgetViewController()（本ファイル
+// 内。widgetView.js へ渡す openUrl 依存の生成元）や widgetView.js の wireExternalLink()
+// のように、汎用の 1 引数コールバック
 // openUrl(url) としても複数箇所へ配られている。それらの呼び出し元は現状すべて
 // openUrl(url) の 1 引数でしか呼んでいないため実害は無いが、options はあくまで
 // openTerminalLinkUrl() からの内部専用の呼び出し規約であり、汎用の openUrl(url)

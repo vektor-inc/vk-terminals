@@ -14,6 +14,10 @@ const { closeApp, getFreePort, launchAppAndWait } = require('./helpers/electron-
 //   - HTTP API で engine を明示した場合は引き継ぎより明示指定が優先されること
 //   - useDefaults を伴わない（＝ inherit の対象外の）呼び出しは従来どおり
 //     engine 省略時に claude を起動すること（既存呼び出し元の互換性）
+//   - POST /api/restart-agent で engine が入れ替わった場合も terminals[paneId].engine が
+//     追従し、以降の追加・分割はその新しい engine を引き継ぐこと（安藤レビュー指摘・MEDIUM）
+//   - ✕（closePane）で最後の可視ペインを閉じてグリッドが空になり focusedPaneId が
+//     null になった場合も、格納中ペインの engine を引き継ぐこと（安藤レビュー指摘・LOW）
 // も確認する。
 //
 // 実バイナリ・認証状態に依存しないよう、tests/e2e/new-pane-engine.smoke.spec.js と
@@ -62,6 +66,27 @@ async function waitForPaneIdForTermId(port, termId, timeoutMs = 20_000) {
     await new Promise((r) => setTimeout(r, 250));
   }
   throw new Error(`paneId for termId ${termId} not found in time`);
+}
+
+// 指定 termId が指定 status（'idle' 等）になるまで待ち、paneId を返す
+// （close-pane-confirm.smoke.spec.js と同じ手法。✕ クリック前に idle を確認しておくと
+// confirmClose の確認ダイアログを気にせず即クローズを検証できる）。
+async function waitForStatus(port, termId, status, timeoutMs = 20_000) {
+  const deadline = Date.now() + timeoutMs;
+  let last = null;
+  while (Date.now() < deadline) {
+    try {
+      const states = await getStates(port);
+      for (const [paneId, t] of Object.entries(states)) {
+        if (t && String(t.termId) === String(termId)) {
+          last = t.status;
+          if (t.status === status) return paneId;
+        }
+      }
+    } catch (_e) { /* 起動待ちと同様に吸収 */ }
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  throw new Error(`termId ${termId} did not become ${status} in time (last: ${last})`);
 }
 
 async function postJson(port, pathname, payload) {
@@ -370,6 +395,126 @@ test('HTTP API: useDefaults:true（モバイルの「ペインを追加」ボタ
     await waitForTermId(port, String(legacyCall.body.termId), true);
     await waitForCallCount(fakeClaude.capturePath, 2);
     expect(readCalls(fakeCodex.capturePath).length).toBe(2);
+  } finally {
+    if (launched) await closeApp(launched);
+    fs.rmSync(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
+test('restart-agent: engine を切り替えると terminals[paneId].engine が追従し、以降の分割も新しい engine を引き継ぐ（issue #394・安藤レビュー指摘 MEDIUM）', async () => {
+  const port = await getFreePort();
+  const { fixtureRoot, fakeClaude, fakeCodex, env } = setupFakeEngines();
+  let launched = null;
+
+  try {
+    launched = await launchAppAndWait({
+      port,
+      prefix: 'vk-terminals-e2e-pane-engine-inherit-restart-',
+      env,
+      config: { newPaneAutoLaunchClaude: true },
+    });
+    const { win } = launched;
+
+    await waitForTermId(port, '1', true);
+
+    // Codex のペインを作る。
+    const codexCreated = await postJson(port, '/api/new-pane', { engine: 'codex', noClaude: false });
+    expect(codexCreated.status).toBe(200);
+    const termId = String(codexCreated.body.termId);
+    await waitForTermId(port, termId, true);
+    await waitForCallCount(fakeCodex.capturePath, 1);
+    const paneId = await waitForPaneIdForTermId(port, termId);
+
+    // 作成直後は terminals[paneId].engine === 'codex'（作成時の値）。
+    await expect.poll(() => win.evaluate((id) => window.getPaneEngine(id), paneId)).toBe('codex');
+
+    // restart-agent の expectedGeneration に使う現在の世代番号を取得する。
+    const states = await getStates(port);
+    const generation = states[paneId] && states[paneId].agentGeneration;
+    expect(typeof generation).toBe('number');
+
+    // engine: 'claude' を指定して restart-agent → 実体は claude に切り替わる。
+    const restarted = await postJson(port, '/api/restart-agent', {
+      termId,
+      expectedGeneration: generation,
+      engine: 'claude',
+    });
+    expect(restarted.status).toBe(200);
+    await waitForCallCount(fakeClaude.capturePath, 1);
+
+    // main → renderer の terminal:engine-changed 通知により、保持している engine が
+    // 'claude' に追従する（ここを直さないと 'codex' のまま取り残される＝MEDIUM 指摘の再現）。
+    await expect.poll(() => win.evaluate((id) => window.getPaneEngine(id), paneId)).toBe('claude');
+
+    // 分割すると、追従後の保持値どおり claude が起動する（codex は再度呼ばれない）。
+    await win.locator(`.pane[data-id="${paneId}"] .btn-split`).click();
+    await waitForCallCount(fakeClaude.capturePath, 2);
+    expect(readCalls(fakeCodex.capturePath).length).toBe(1);
+  } finally {
+    if (launched) await closeApp(launched);
+    fs.rmSync(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
+test('desktop: ✕ で最後の可視ペインを閉じてグリッドが空になっても、格納中ペインの engine を引き継ぐ（issue #394・安藤レビュー指摘 LOW）', async () => {
+  const port = await getFreePort();
+  const { fixtureRoot, fakeClaude, fakeCodex, env } = setupFakeEngines();
+  let launched = null;
+
+  try {
+    launched = await launchAppAndWait({
+      port,
+      prefix: 'vk-terminals-e2e-pane-engine-inherit-closed-focus-',
+      env,
+      // confirmClose: 'never' にして、✕ クリックが誤って確認ダイアログを開き
+      // closePane が早期 return する（＝この観点と無関係な理由でテストが不安定になる）
+      // 事故を避ける（close-pane-confirm.smoke.spec.js が別途 confirmClose 自体は検証済み）。
+      config: { newPaneAutoLaunchClaude: true, confirmClose: 'never' },
+    });
+    const { win } = launched;
+
+    await waitForTermId(port, '1', true);
+    const initialPaneId = await waitForPaneIdForTermId(port, '1');
+
+    // Codex のペインを作り、サイドバーへ格納する（＝空グリッドになったときの唯一の
+    // 候補ペインにする）。
+    const codexCreated = await postJson(port, '/api/new-pane', { engine: 'codex', noClaude: false });
+    expect(codexCreated.status).toBe(200);
+    const codexTermId = String(codexCreated.body.termId);
+    await waitForTermId(port, codexTermId, true);
+    await waitForCallCount(fakeCodex.capturePath, 1);
+    const codexPaneId = await waitForPaneIdForTermId(port, codexTermId);
+    await win.locator(`.pane[data-id="${codexPaneId}"] .btn-stash`).click();
+    await expect(win.locator(`.stash-item[data-id="${codexPaneId}"]`)).toBeVisible({ timeout: 10_000 });
+
+    // 唯一の可視ペイン（初期ペイン）を stash ではなく ✕（closePane）で閉じる。
+    // closePane() は可視ペインが尽きると focusedPaneId を null にする
+    // （stashPane 経由で空にした場合は、格納したペインを指したまま残るのとの違い）。
+    // idle であることを確認してから閉じ、confirmClose の確認ダイアログを避ける。
+    await waitForStatus(port, '1', 'idle');
+    await win.locator(`.pane[data-id="${initialPaneId}"] .btn-close`).click();
+    await waitForTermId(port, '1', false);
+
+    const emptyAddBtn = win.locator('[aria-label="新規ペインを追加"]');
+    await expect(emptyAddBtn).toBeVisible({ timeout: 10_000 });
+
+    const beforeAdd = termIdsOf(await getStates(port));
+    await emptyAddBtn.click();
+    const afterAdd = await (async () => {
+      const deadline = Date.now() + 20_000;
+      while (Date.now() < deadline) {
+        const ids = termIdsOf(await getStates(port));
+        if (ids.length > beforeAdd.length) return ids;
+        await new Promise((r) => setTimeout(r, 250));
+      }
+      throw new Error('add did not create a new pane in time');
+    })();
+    expect(afterAdd.length).toBe(beforeAdd.length + 1);
+
+    // focusedPaneId が null でも、格納中の codex ペイン（tree.stashOrder 末尾）の engine を
+    // 引き継いで codex が起動する（claude は一度も呼ばれない）。
+    await waitForCallCount(fakeCodex.capturePath, 2);
+    expect(readCalls(fakeClaude.capturePath).length).toBe(0);
   } finally {
     if (launched) await closeApp(launched);
     fs.rmSync(fixtureRoot, { recursive: true, force: true });

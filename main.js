@@ -2758,6 +2758,14 @@ function startHttpApi() {
               return;
             }
             const generation = agentGenerations.increment(request.termId);
+            // renderer 側の terminals[paneId].engine を実体に追従させる（issue #394 の
+            // 安藤レビュー指摘・MEDIUM）。restart-agent は同じペインで engine を入れ替えられる
+            // 唯一の main→renderer 経路（安藤の確認結果）のため、成功時にだけ通知する。
+            // request.engine は validateRestartAgentRequest が既に isValidEngine で検証・
+            // 解決済み（省略時は 'claude'）の値なので、そのまま渡してよい。
+            if (win && !win.isDestroyed()) {
+              win.webContents.send('terminal:engine-changed', request.termId, request.engine);
+            }
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({
               ok: true,

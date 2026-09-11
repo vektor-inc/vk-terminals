@@ -1,5 +1,7 @@
 # Changelog
 
+## 1.63.1
+
 - [ 不具合修正 ] Codex のペインから「ペインを追加」または分割操作をすると、新しいペインが Claude Code で起動してしまう不具合を修正。操作元または現在選択中のペインの AI エンジンを新しいペインへ引き継ぐよう変更（[#394](https://github.com/vektor-inc/vk-terminals/issues/394)）
 
 ## 1.63.0

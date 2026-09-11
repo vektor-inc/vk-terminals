@@ -1627,7 +1627,12 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
     }, 200);
   }
 
-  return { id, cwd: resolvedCwd };
+  // engine（resolvedEngine）も返す（issue #394）。renderer 側がこのペインの
+  // terminals[paneId].engine として保持し、追加・分割時に操作元ペインの engine を
+  // 新ペインへ引き継ぐための唯一の情報源にする。noClaude が true でも値は返す
+  // （AI を起動しなかったペインでも「この engine 指定で作られた」という事実は残るため。
+  // 素のシェルのまま分割された場合に inherit すべき値が無くなるのを避ける）。
+  return { id, cwd: resolvedCwd, engine: resolvedEngine };
 });
 
 ipcMain.on('terminal:input', (event, id, data) => {
@@ -2753,6 +2758,14 @@ function startHttpApi() {
               return;
             }
             const generation = agentGenerations.increment(request.termId);
+            // renderer 側の terminals[paneId].engine を実体に追従させる（issue #394 の
+            // 安藤レビュー指摘・MEDIUM）。restart-agent は同じペインで engine を入れ替えられる
+            // 唯一の main→renderer 経路（安藤の確認結果）のため、成功時にだけ通知する。
+            // request.engine は validateRestartAgentRequest が既に isValidEngine で検証・
+            // 解決済み（省略時は 'claude'）の値なので、そのまま渡してよい。
+            if (win && !win.isDestroyed()) {
+              win.webContents.send('terminal:engine-changed', request.termId, request.engine);
+            }
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({
               ok: true,

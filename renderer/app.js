@@ -597,7 +597,7 @@ function bumpRunning(paneId) {
 // options.model が指定されていれば main 側で選択エンジンをそのモデルで起動する。
 async function createTerminal(paneId, cwd, options = {}) {
   const result = await VKIpc.invoke('terminal:create', cwd || null, options);
-  const { id: termId, cwd: initialCwd } = result;
+  const { id: termId, cwd: initialCwd, engine: resolvedEngine } = result;
 
   const term = new Terminal({
     fontFamily: 'Menlo, Monaco, "Courier New", monospace',
@@ -701,6 +701,23 @@ async function createTerminal(paneId, cwd, options = {}) {
     opened: false,
     cwd: shortCwd,
     cwdFull: initialCwd,
+    // engine: このペインが実際に起動した（または起動しようとした）AI エンジン
+    // （issue #394）。作成時は main 側の terminal:create が isValidEngine で検証・
+    // 解決した値（未指定・不正値は 'claude'）を保持し、その後 POST /api/restart-agent で
+    // engine が入れ替わった場合は terminal:engine-changed ハンドラが追従させる（安藤
+    // レビュー指摘・MEDIUM）。追加・分割操作で操作元ペイン・現在選択中のペインの engine を
+    // 新ペインへ引き継ぐための唯一の情報源として使う（withInheritedEngine 参照）。
+    // `|| 'claude'` は到達しないはずの防御的フォールバック（main が契約どおり
+    // resolvedEngine を返す限り常に 'claude' か 'codex' の文字列であり、falsy にはならない）。
+    // 呼び出し契約が将来崩れて main が engine を返さなくなった場合に、undefined を
+    // そのまま保持して以降の引き継ぎが壊れる（addPane/splitPane に engine: undefined が
+    // 渡り、main 側の型チェックに弾かれるだけならまだしも、意図と違う値が混入する余地を
+    // 残す）事故を避けるための保険として残している。既定値 'claude' が main.js の
+    // resolvedEngine（isValidEngine(options.engine) ? options.engine : 'claude'）と
+    // 2箇所に散っている点は把握済み。共有定数化も検討したが、renderer/app.js は
+    // ブラウザ側で renderer/claudeModel.js を script 読み込みしておらず、それだけの
+    // ために読み込みを追加するほどの重複ではないと判断し、現状のリテラル維持とした。
+    engine: resolvedEngine || 'claude',
     waiting: false,
     // externalWaiting: オーケストレーター等が POST /api/set-status で明示 push する外部権威の入力待ちフラグ。
     // ローカル PTY 検知(waiting)と OR で status に合流する。markPaneInput / リサイズ / 再描画 /
@@ -2173,6 +2190,13 @@ window.getLocalWaitingOnset = (paneId) => {
   return { at: onset.at, lastOutputTime: onset.lastOutputTime };
 };
 
+// e2e / デバッグ用の読み取り専用フック（issue #394）。terminals[paneId].engine は
+// POST /api/restart-agent 経由の terminal:engine-changed で非同期に更新されるため、
+// e2e からは「実際に追加・分割が実行されるまで」ではなく「保持値が更新された時点」を
+// 直接ポーリングして確認したい。プレーンな文字列（'claude' | 'codex'）または
+// 対象ペインが無ければ null を返すだけで、内部状態を書き換える口は開けない。
+window.getPaneEngine = (paneId) => terminals[paneId]?.engine ?? null;
+
 // 格納ペイン 1 件分（コンパクトカード）を生成する。
 //   - タイトル行: タスク名 / タイトルリンク / PR リンク
 //   - 操作行: 状態バッジ + アクション（↑ ↓ 表示トグル(▸/▾) →(復帰) ✕）
@@ -2628,6 +2652,18 @@ function findLargestVisiblePaneId() {
 // ─── Collapse / expand ────────────────────────────────────────────────────────
 // （グリッドレイアウト化により折り畳み機能は撤去。行の高さは同一行の全ペインで共有されるため、
 //   単一ペインだけを縦に畳む操作がグリッドでは成立しないため。）
+
+// 指定した paneId が実際に使っている engine を options.engine へ引き継ぐ共通ヘルパー
+// （issue #394。addBtn（空グリッドの「新規ペインを追加」）／.btn-split（ペイン単位の
+// ＋ボタン）／terminal:request-new-pane（HTTP API の useDefaults 経路）の3箇所で同じ
+// 3行を重複させないための切り出し。安藤レビュー指摘・LOW）。
+// 対象ペインが存在しない・engine が未設定（terminals[paneId] が無い等）の場合は options を
+// そのまま返す＝engine を渡さない＝main 側の既定（claude）に委ねる、という各呼び出し元の
+// 「未指定時のフォールバック」を崩さない。options は変更せず、新しいオブジェクトを返す。
+function withInheritedEngine(options, paneId) {
+  const inheritedEngine = terminals[paneId]?.engine;
+  return inheritedEngine ? { ...options, engine: inheritedEngine } : options;
+}
 
 // ─── Pane actions ─────────────────────────────────────────────────────────────
 // グリッド化により「分割」は入れ子を作らず、新ペインをグリッド末尾に追加する操作になった。
@@ -3283,7 +3319,26 @@ function renderEmptyGrid() {
   addBtn.className = 'grid-empty-btn';
   addBtn.textContent = '新規ペインを追加';
   addBtn.setAttribute('aria-label', '新規ペインを追加');
-  addBtn.addEventListener('click', () => { addPane(newPaneStartupDir || null, { noClaude: !newPaneAutoLaunchClaude }); });
+  addBtn.addEventListener('click', () => {
+    // 現在選択中（フォーカス中）のペインの engine を新ペインへ引き継ぐ（issue #394）。
+    // 全ペインが格納中でグリッドが空でも、focusedPaneId は直前に格納したペインを
+    // 指し続ける（stashPane 参照）ため、そのペインの engine を「現在選択中のペイン」
+    // として扱える。
+    //
+    // ただし ✕（closePane）で最後の可視ペインを閉じてグリッドが空になった場合は
+    // focusedPaneId が null になる（stashPane 経由で空にした場合との違い。安藤レビュー
+    // 指摘・LOW）。renderEmptyGrid はグリッドが空＝全ペインが格納中のときにしか出ない
+    // （このプレースホルダの見出し「すべてのペインを格納中です」のとおり。paneExists は
+    // tree.order か tree.stashOrder のどちらかに居ることを前提にしている）ため、
+    // focusedPaneId が無くても tree.stashOrder の末尾（最後に格納された＝直近まで
+    // 触っていた可能性が高いペイン）を「現在選択中のペイン」の代わりとして使う。
+    // どちらも無ければ（アプリ起動直後で1ペインも作られていない等）withInheritedEngine が
+    // options をそのまま返し、従来どおり main 側の既定（claude）に委ねる。
+    const stashOrder = (tree && Array.isArray(tree.stashOrder)) ? tree.stashOrder : [];
+    const fallbackPaneId = focusedPaneId || (stashOrder.length > 0 ? stashOrder[stashOrder.length - 1] : null);
+    const options = withInheritedEngine({ noClaude: !newPaneAutoLaunchClaude }, fallbackPaneId);
+    addPane(newPaneStartupDir || null, options);
+  });
 
   const openBtn = document.createElement('button');
   openBtn.type = 'button';
@@ -3565,7 +3620,11 @@ function renderLeaf(node) {
   });
   header.querySelector('.btn-split').addEventListener('click', e => {
     e.stopPropagation();
-    splitPane(node.id, 'h', newPaneStartupDir || null, { noClaude: !newPaneAutoLaunchClaude });
+    // 操作元ペイン（この ＋ ボタンが属するペイン＝ node.id）の engine を新ペインへ
+    // 引き継ぐ（issue #394）。Codex のペインから追加すれば Codex が、Claude Code の
+    // ペインから追加すれば従来どおり Claude Code が起動する。
+    const options = withInheritedEngine({ noClaude: !newPaneAutoLaunchClaude }, node.id);
+    splitPane(node.id, 'h', newPaneStartupDir || null, options);
   });
   header.querySelector('.btn-close').addEventListener('click', e => {
     e.stopPropagation();
@@ -6260,7 +6319,17 @@ VKIpc.on('terminal:request-new-pane', async (payload = {}) => {
     // 判定しない。未指定なら splitOptions に載らない＝main 側は従来どおり素の claude を
     // 起動する。エンジン別の model 検証とコマンド組み立ては main 側
     // （terminal:create）に一元化してあるため、ここでは engine と model を独立に素通しする。
-    if (typeof engine === 'string') splitOptions = { ...splitOptions, engine };
+    if (typeof engine === 'string') {
+      splitOptions = { ...splitOptions, engine };
+    } else if (useDefaults === true) {
+      // モバイルの「ペインを追加」ボタン（useDefaults: true, engine 省略）は、desktop の
+      // ＋ / 分割ボタンと挙動を揃えるため、分割対象ペイン（targetPaneId＝表示面積が
+      // 最大のペイン。無ければフォーカス中のペイン。直前で分割方向決定にも使った値を
+      // そのまま使う）の engine を引き継ぐ（issue #394）。useDefaults を渡さない既存
+      // 呼び出し元（orchestrator 等）はこのブロックに入らず、engine 省略時は従来どおり
+      // main 側の既定（claude）に委ねる＝互換性を維持する。
+      splitOptions = withInheritedEngine(splitOptions, targetPaneId);
+    }
     if (typeof model === 'string') splitOptions = { ...splitOptions, model };
     const result = await splitPane(targetPaneId, direction, effectiveCwd, splitOptions);
     if (!result || !result.termId) {
@@ -6332,6 +6401,22 @@ VKIpc.on('terminal:title', (termId, title, url, prUrl, prMerged, waitingMerge) =
     terminals[paneId].apiWaitingMerge = waitingMerge;
   }
   updatePaneTitle(paneId);
+});
+
+// ─── Engine change notification from main (HTTP API POST /api/restart-agent) ──
+// issue #394（安藤レビュー指摘・MEDIUM）: POST /api/restart-agent は同じペインで
+// 実行中の AI エンジンを入れ替えられる唯一の main→renderer 経路。ここを反映せずに
+// terminals[paneId].engine を作成時の値のまま放置すると、追加・分割時の engine
+// 引き継ぎ元（createTerminal 冒頭のコメント参照）が実体と食い違う
+// （例: codex ペインを engine 省略で再起動＝実体は claude なのに保持値は codex のまま）。
+// main 側（POST /api/restart-agent 成功時）は isValidEngine 検証済みの値だけを送るため、
+// ここでは文字列であることだけ確認してそのまま反映する。
+VKIpc.on('terminal:engine-changed', (termId, engine) => {
+  const paneId = Object.keys(terminals).find(k => terminals[k]?.termId === termId);
+  if (!paneId) return;
+  const t = terminals[paneId];
+  if (!t || typeof engine !== 'string') return;
+  t.engine = engine;
 });
 
 // ─── Status update from main (HTTP API POST /api/set-status) ────────────────

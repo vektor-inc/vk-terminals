@@ -597,7 +597,7 @@ function bumpRunning(paneId) {
 // options.model が指定されていれば main 側で選択エンジンをそのモデルで起動する。
 async function createTerminal(paneId, cwd, options = {}) {
   const result = await VKIpc.invoke('terminal:create', cwd || null, options);
-  const { id: termId, cwd: initialCwd } = result;
+  const { id: termId, cwd: initialCwd, engine: resolvedEngine } = result;
 
   const term = new Terminal({
     fontFamily: 'Menlo, Monaco, "Courier New", monospace',
@@ -701,6 +701,12 @@ async function createTerminal(paneId, cwd, options = {}) {
     opened: false,
     cwd: shortCwd,
     cwdFull: initialCwd,
+    // engine: このペインが実際に起動した（または起動しようとした）AI エンジン
+    // （issue #394）。main 側の terminal:create が isValidEngine で検証・解決した
+    // 値（未指定・不正値は 'claude'）をそのまま保持する。追加・分割操作で
+    // 操作元ペイン・現在選択中のペインの engine を新ペインへ引き継ぐための
+    // 唯一の情報源として使う（addBtn / .btn-split / terminal:request-new-pane 参照）。
+    engine: resolvedEngine || 'claude',
     waiting: false,
     // externalWaiting: オーケストレーター等が POST /api/set-status で明示 push する外部権威の入力待ちフラグ。
     // ローカル PTY 検知(waiting)と OR で status に合流する。markPaneInput / リサイズ / 再描画 /
@@ -3283,7 +3289,17 @@ function renderEmptyGrid() {
   addBtn.className = 'grid-empty-btn';
   addBtn.textContent = '新規ペインを追加';
   addBtn.setAttribute('aria-label', '新規ペインを追加');
-  addBtn.addEventListener('click', () => { addPane(newPaneStartupDir || null, { noClaude: !newPaneAutoLaunchClaude }); });
+  addBtn.addEventListener('click', () => {
+    const options = { noClaude: !newPaneAutoLaunchClaude };
+    // 現在選択中（フォーカス中）のペインの engine を新ペインへ引き継ぐ（issue #394）。
+    // 全ペインが格納中でグリッドが空でも、focusedPaneId は直前に格納したペインを
+    // 指し続ける（stashPane 参照）ため、そのペインの engine を「現在選択中のペイン」
+    // として扱える。該当ペインが無い（アプリ起動直後で1ペインも作られていない等）
+    // 場合は engine を渡さず、従来どおり main 側の既定（claude）に委ねる。
+    const inheritedEngine = terminals[focusedPaneId]?.engine;
+    if (inheritedEngine) options.engine = inheritedEngine;
+    addPane(newPaneStartupDir || null, options);
+  });
 
   const openBtn = document.createElement('button');
   openBtn.type = 'button';
@@ -3565,7 +3581,13 @@ function renderLeaf(node) {
   });
   header.querySelector('.btn-split').addEventListener('click', e => {
     e.stopPropagation();
-    splitPane(node.id, 'h', newPaneStartupDir || null, { noClaude: !newPaneAutoLaunchClaude });
+    const options = { noClaude: !newPaneAutoLaunchClaude };
+    // 操作元ペイン（この ＋ ボタンが属するペイン＝ node.id）の engine を新ペインへ
+    // 引き継ぐ（issue #394）。Codex のペインから追加すれば Codex が、Claude Code の
+    // ペインから追加すれば従来どおり Claude Code が起動する。
+    const inheritedEngine = terminals[node.id]?.engine;
+    if (inheritedEngine) options.engine = inheritedEngine;
+    splitPane(node.id, 'h', newPaneStartupDir || null, options);
   });
   header.querySelector('.btn-close').addEventListener('click', e => {
     e.stopPropagation();
@@ -6260,7 +6282,18 @@ VKIpc.on('terminal:request-new-pane', async (payload = {}) => {
     // 判定しない。未指定なら splitOptions に載らない＝main 側は従来どおり素の claude を
     // 起動する。エンジン別の model 検証とコマンド組み立ては main 側
     // （terminal:create）に一元化してあるため、ここでは engine と model を独立に素通しする。
-    if (typeof engine === 'string') splitOptions = { ...splitOptions, engine };
+    if (typeof engine === 'string') {
+      splitOptions = { ...splitOptions, engine };
+    } else if (useDefaults === true) {
+      // モバイルの「ペインを追加」ボタン（useDefaults: true, engine 省略）は、desktop の
+      // ＋ / 分割ボタンと挙動を揃えるため、分割対象ペイン（targetPaneId＝現在の
+      // 「選択中」に相当する、直前で分割方向決定にも使ったペイン）の engine を
+      // 引き継ぐ（issue #394）。useDefaults を渡さない既存呼び出し元（orchestrator 等）は
+      // このブロックに入らず、engine 省略時は従来どおり main 側の既定（claude）に
+      // 委ねる＝互換性を維持する。
+      const inheritedEngine = terminals[targetPaneId]?.engine;
+      if (inheritedEngine) splitOptions = { ...splitOptions, engine: inheritedEngine };
+    }
     if (typeof model === 'string') splitOptions = { ...splitOptions, model };
     const result = await splitPane(targetPaneId, direction, effectiveCwd, splitOptions);
     if (!result || !result.termId) {

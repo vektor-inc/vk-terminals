@@ -1627,7 +1627,12 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
     }, 200);
   }
 
-  return { id, cwd: resolvedCwd };
+  // engine（resolvedEngine）も返す（issue #394）。renderer 側がこのペインの
+  // terminals[paneId].engine として保持し、追加・分割時に操作元ペインの engine を
+  // 新ペインへ引き継ぐための唯一の情報源にする。noClaude が true でも値は返す
+  // （AI を起動しなかったペインでも「この engine 指定で作られた」という事実は残るため。
+  // 素のシェルのまま分割された場合に inherit すべき値が無くなるのを避ける）。
+  return { id, cwd: resolvedCwd, engine: resolvedEngine };
 });
 
 ipcMain.on('terminal:input', (event, id, data) => {

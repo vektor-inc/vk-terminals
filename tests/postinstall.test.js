@@ -7,11 +7,35 @@ const os = require('os');
 const path = require('path');
 
 const {
+  getFailedExitCode,
   getElectronRebuildBinCandidates,
   getElectronRebuildBinName,
   resolveElectronRebuildBin,
   resolveElectronRebuildBinDetails,
+  runElectronInstall,
 } = require('../scripts/postinstall');
+
+test('runElectronInstall: 現在の Node.js で Electron の install.js を同期実行する', () => {
+  const calls = [];
+  const env = { ELECTRON_INSTALL_PLATFORM: 'darwin' };
+  const result = runElectronInstall('/tmp/electron/install.js', (command, args, options) => {
+    calls.push({ command, args, options });
+    return { status: 0 };
+  }, env);
+
+  assert.equal(result.status, 0);
+  assert.deepEqual(calls, [{
+    command: process.execPath,
+    args: ['/tmp/electron/install.js'],
+    options: { stdio: 'inherit', env },
+  }]);
+});
+
+test('getFailedExitCode: signal 終了や起動失敗は postinstall を失敗させる', () => {
+  assert.equal(getFailedExitCode({ status: 7 }), 7);
+  assert.equal(getFailedExitCode({ status: null }), 1);
+  assert.equal(getFailedExitCode({ status: 0 }), 0);
+});
 
 test('resolveElectronRebuildBin: hoisted electron-rebuild bin を親 node_modules/.bin から解決する', () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-postinstall-'));

@@ -21,6 +21,7 @@ const workers = Math.max(1, Math.min(8, Math.floor(os.availableParallelism() / 2
 
 module.exports = defineConfig({
   testDir: 'tests/e2e',
+  globalSetup: require.resolve('./tests/e2e/global-setup'),
   // 1 テスト（および beforeAll / afterAll の各フック）の上限。
   // 全件を並列実行しているときは Electron の起動・IPC 応答・PTY 登録待ちが実測で
   // 4〜8 倍に伸び、旧値 60s では pass したテストでも 57.9s まで達していた（issue #263）。

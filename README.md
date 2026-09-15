@@ -10,7 +10,7 @@
 ## 必要環境
 
 - Node.js 22.12.0 以上
-- macOS / Windows（`node-pty` のネイティブビルドが必要。Windows でのセットアップは[後述](#windows-での起動)）
+- macOS 13 (Ventura) 以上 / Windows 64bit 版（`node-pty` のネイティブビルドが必要。Windows でのセットアップは[後述](#windows-での起動)）
 
 ## セットアップ
 
@@ -127,7 +127,7 @@ curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:13847/
 
 ## Windows での起動
 
-macOS 前提の部分があるため、まっさらな Windows 環境でセットアップする場合は以下を確認してください。
+macOS 前提の部分があるため、まっさらな Windows 64bit 環境でセットアップする場合は以下を確認してください。
 
 ### 1. 前提ツール
 

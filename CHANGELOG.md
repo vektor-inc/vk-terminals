@@ -1,5 +1,6 @@
 # Changelog
 
+- [ 仕様変更 ] 動作環境を Node.js 22.12.0 以上・macOS 13 (Ventura) 以上・Windows 64bit 版のみに変更（[#397](https://github.com/vektor-inc/vk-terminals/issues/397)）
 - [ セキュリティ修正 ] Electron を 28.3.3 から 44.3.0 にアップデート（[#397](https://github.com/vektor-inc/vk-terminals/issues/397)）
 
 ## 1.63.1

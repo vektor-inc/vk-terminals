@@ -2664,8 +2664,8 @@ function startHttpApi() {
         return;
       }
       readJsonBody(req, res, 10 * 1024, async (body) => {
-        // ここで捕まえられない例外は unhandled rejection になり、対応対象の Node 22.12.0 以降では
-        // プロセスごと落ちてしまう。想定外の分岐も 500 で返せるよう全体を try で囲む。
+        // ここで捕まえられない例外は未処理の Promise の reject になる。
+        // 想定外の分岐も 500 で返せるよう全体を try で囲む。
         try {
           let parsed;
           try {

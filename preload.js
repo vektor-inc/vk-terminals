@@ -197,8 +197,13 @@ contextBridge.exposeInMainWorld('vkBridge', {
   files: {
     // Electron 32 で File.path が削除されたため、ドラッグされた File のパスは
     // renderer に Electron API 自体を公開せず webUtils 経由で取得する。
+    // File 以外が渡された場合も renderer 側へ例外を漏らさず、空文字を返す。
     getPath(file) {
-      return webUtils.getPathForFile(file);
+      try {
+        return webUtils.getPathForFile(file);
+      } catch (_error) {
+        return '';
+      }
     },
   },
 

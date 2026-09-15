@@ -1340,11 +1340,11 @@ ipcMain.on('shell:beep', () => {
 // 呼び出しでも青天井にならないようにする最終防衛線。
 
 // 設定パネルのコピーボタン（issue #262 / #266）用。成否を boolean で返す。
-ipcMain.handle('clipboard:write-text', (_event, text) => {
+ipcMain.handle('clipboard:write-text', async (_event, text) => {
   if (typeof text !== 'string' || !text) return false;
   if (text.length > MAX_CLIPBOARD_TEXT_LENGTH) return false;
   try {
-    clipboard.writeText(text);
+    await clipboard.writeText(text);
     return true;
   } catch (e) {
     console.error(`${LOG_PREFIX} clipboard.writeText failed:`, e.message);
@@ -2664,7 +2664,7 @@ function startHttpApi() {
         return;
       }
       readJsonBody(req, res, 10 * 1024, async (body) => {
-        // ここで捕まえられない例外は unhandled rejection になり、Node 20 以降の既定では
+        // ここで捕まえられない例外は unhandled rejection になり、対応対象の Node 22.12.0 以降では
         // プロセスごと落ちてしまう。想定外の分岐も 500 で返せるよう全体を try で囲む。
         try {
           let parsed;

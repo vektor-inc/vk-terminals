@@ -72,16 +72,18 @@ test.describe.serial('renderer の隔離（issue #268）', () => {
       ipcKeys: Object.keys(window.vkBridge.ipc).sort(),
       shellKeys: Object.keys(window.vkBridge.shell).sort(),
       clipboardKeys: Object.keys(window.vkBridge.clipboard).sort(),
+      fileKeys: Object.keys(window.vkBridge.files).sort(),
       // 生の ipcRenderer が漏れていれば sendSync / postMessage などが生えている。
       hasSendSync: typeof window.vkBridge.ipc.sendSync,
       hasPostMessage: typeof window.vkBridge.ipc.postMessage,
     }));
-    expect(shape.bridgeKeys).toEqual(['agentRoomSprites', 'clipboard', 'ipc', 'shell', 'xterm']);
+    expect(shape.bridgeKeys).toEqual(['agentRoomSprites', 'clipboard', 'files', 'ipc', 'shell', 'xterm']);
     // 解除は on() の戻り値の unsubscribe だけ。off(channel, listener) は contextBridge 越しに
     // 関数の同一性が保てず成立しないので公開しない（preload.js の addListener を参照）。
     expect(shape.ipcKeys).toEqual(['invoke', 'on', 'send']);
     expect(shape.shellKeys).toEqual(['beep', 'openExternal']);
     expect(shape.clipboardKeys).toEqual(['writeText']);
+    expect(shape.fileKeys).toEqual(['getPath']);
     expect(shape.hasSendSync).toBe('undefined');
     expect(shape.hasPostMessage).toBe('undefined');
   });

@@ -3734,7 +3734,7 @@ function renderLeaf(node) {
 
     // Always wrap in single quotes for shell safety (handles spaces, quotes, and all metacharacters)
     const paths = files
-      .map(f => f.path)
+      .map(f => VKFiles.getPath(f))
       .filter(Boolean)
       .map(p => `'${p.replace(/'/g, "'\\''")}'`);
 

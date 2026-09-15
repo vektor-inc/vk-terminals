@@ -9,8 +9,8 @@
 
 ## 必要環境
 
-- Node.js 20 以上
-- macOS / Windows（`node-pty` のネイティブビルドが必要。Windows でのセットアップは[後述](#windows-での起動)）
+- Node.js 22.12.0 以上
+- macOS 13 (Ventura) 以上 / Windows 64bit 版（`node-pty` のネイティブビルドが必要。Windows でのセットアップは[後述](#windows-での起動)）
 
 ## セットアップ
 
@@ -127,11 +127,11 @@ curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:13847/
 
 ## Windows での起動
 
-macOS 前提の部分があるため、まっさらな Windows 環境でセットアップする場合は以下を確認してください。
+macOS 前提の部分があるため、まっさらな Windows 64bit 環境でセットアップする場合は以下を確認してください。
 
 ### 1. 前提ツール
 
-- Node.js 20 以上（[Volta](https://volta.sh/) や [nvm-windows](https://github.com/coreybutler/nvm-windows) 経由でも可）
+- Node.js 22.12.0 以上（[Volta](https://volta.sh/) や [nvm-windows](https://github.com/coreybutler/nvm-windows) 経由でも可）
 - `node-pty` のネイティブビルドに必要な C++ ビルドツール
   - [Visual Studio Build Tools](https://visualstudio.microsoft.com/ja/downloads/)（「C++ によるデスクトップ開発」ワークロード）
   - もしくは `npm install -g windows-build-tools`（環境によっては非推奨）

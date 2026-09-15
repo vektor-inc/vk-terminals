@@ -15,12 +15,13 @@ process.env.VK_TERMINALS_E2E ??= '1';
 // テストタイムアウトで数件落ちた。使える並列度の 50% を基本にしつつ、コア数の多いマシンで
 // 上限を踏み越えないよう 8 で頭を抑える。
 // 並列度は os.cpus().length ではなく os.availableParallelism() から採る。CPU affinity や
-// コンテナの制限を反映するため、CI に載せたときに実際に使える数に合う（Node 20 以降で利用可能。
-// package.json の engines.node は >=20）。
+// コンテナの制限を反映するため、CI に載せたときに実際に使える数に合う。この API は
+// Node.js v18.14.0 / v19.4.0 で追加済みで、package.json の engines.node は >=22.12.0 のため常に利用できる。
 const workers = Math.max(1, Math.min(8, Math.floor(os.availableParallelism() / 2)));
 
 module.exports = defineConfig({
   testDir: 'tests/e2e',
+  globalSetup: require.resolve('./tests/e2e/global-setup'),
   // 1 テスト（および beforeAll / afterAll の各フック）の上限。
   // 全件を並列実行しているときは Electron の起動・IPC 応答・PTY 登録待ちが実測で
   // 4〜8 倍に伸び、旧値 60s では pass したテストでも 57.9s まで達していた（issue #263）。

@@ -1,5 +1,8 @@
 # Changelog
 
+- [ 仕様変更 ] 動作環境を Node.js 22.12.0 以上・macOS 13 (Ventura) 以上・Windows 64bit 版のみに変更（[#397](https://github.com/vektor-inc/vk-terminals/issues/397)）
+- [ セキュリティ修正 ] Electron を 28.3.3 から 44.3.0 にアップデート（[#397](https://github.com/vektor-inc/vk-terminals/issues/397)）
+
 ## 1.63.1
 
 - [ 不具合修正 ] Codex のペインから「ペインを追加」または分割操作をすると、新しいペインが Claude Code で起動してしまう不具合を修正。操作元または現在選択中のペインの AI エンジンを新しいペインへ引き継ぐよう変更（[#394](https://github.com/vektor-inc/vk-terminals/issues/394)）

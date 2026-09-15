@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 'use strict';
 
-// postinstall: node-pty のネイティブビルドを electron-rebuild で行う。
+// postinstall: Electron 本体を取得した後、node-pty のネイティブビルドを
+// electron-rebuild で行う。
 //
 // 以前は package.json に bash 前提のシェル構文（CXXFLAGS のインライン代入 + $(...) の
 // コマンド置換）を直書きしていたが、npm は postinstall を Windows では既定で cmd.exe 経由
@@ -11,6 +12,35 @@
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
+
+/**
+ * electron パッケージが提供する本体取得スクリプトを解決する。
+ */
+function resolveElectronInstallScript() {
+  return require.resolve('electron/install.js');
+}
+
+/**
+ * Electron 本体の取得スクリプトを、現在の Node.js で同期実行する。
+ * install.js が参照する環境変数は加工せず渡し、利用者のダウンロード設定を尊重する。
+ */
+function runElectronInstall(
+  installScript = resolveElectronInstallScript(),
+  spawn = spawnSync,
+  env = process.env
+) {
+  return spawn(process.execPath, [installScript], {
+    stdio: 'inherit',
+    env,
+  });
+}
+
+/**
+ * Electron 本体の取得に失敗した場合、後続処理へ進めない終了コードを返す。
+ */
+function getFailedExitCode(result) {
+  return result && result.status === 0 ? 0 : (result && result.status) || 1;
+}
 
 /**
  * macOS の Command Line Tools が同梱する libc++ ヘッダを指す CXXFLAGS の追加分（-I<path>）を返す。
@@ -224,6 +254,16 @@ function logSpawnError(result) {
 }
 
 function main() {
+  // Electron 42 以降はパッケージの postinstall だけでは本体が取得されない。
+  // 初回起動や e2e の並列ワーカーへ持ち越すと同時展開が衝突するため、ここで直列に取得する。
+  const installResult = runElectronInstall();
+  if (installResult.error) {
+    console.error('[postinstall] Electron 本体の取得処理を起動できませんでした:', installResult.error);
+  }
+  if (installResult.status !== 0) {
+    process.exit(getFailedExitCode(installResult));
+  }
+
   // macOS のみ、Command Line Tools の libc++ ヘッダを CXXFLAGS に付与して試す。
   // Windows / Linux では最初から追加フラグなしでビルドする。
   const cxxflags = process.platform === 'darwin' ? getMacCxxFlagsInclude() : null;
@@ -250,13 +290,16 @@ if (require.main === module) {
 
 module.exports = {
   compareSdkVersions,
+  getFailedExitCode,
   getElectronRebuildBinCandidates,
   getElectronRebuildBinName,
   getMacCxxFlagsInclude,
   logMissingElectronRebuildBin,
   logSpawnError,
   main,
+  resolveElectronInstallScript,
   resolveElectronRebuildBin,
   resolveElectronRebuildBinDetails,
+  runElectronInstall,
   runElectronRebuild,
 };

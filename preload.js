@@ -22,7 +22,7 @@
 //   webPreferences.additionalArguments 経由で main.js から受け取っている
 //  （詳細は下の定義箇所のコメントを参照）。
 
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 // renderer/urlSafety.js の isSafeHttpUrl / MAX_SAFE_HTTP_URL_LENGTH と完全に同じ実装。
 // sandbox 下の preload からはローカルファイルの require ができないため複製している
@@ -191,6 +191,19 @@ contextBridge.exposeInMainWorld('vkBridge', {
       // main 側の最終防衛線（ipcMain.handle('clipboard:write-text')）の判定に委ねる。
       if (text.length > MAX_CLIPBOARD_TEXT_LENGTH) return Promise.resolve(false);
       return ipcRenderer.invoke('clipboard:write-text', text);
+    },
+  },
+
+  files: {
+    // Electron 32 で File.path が削除されたため、ドラッグされた File のパスは
+    // renderer に Electron API 自体を公開せず webUtils 経由で取得する。
+    // File 以外が渡された場合も renderer 側へ例外を漏らさず、空文字を返す。
+    getPath(file) {
+      try {
+        return webUtils.getPathForFile(file);
+      } catch (_error) {
+        return '';
+      }
     },
   },
 

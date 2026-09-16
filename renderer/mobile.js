@@ -701,24 +701,57 @@ function fmtResetDayTimeJa(ms) {
   return wd + " " + hh + ":" + mm + " にリセット";
 }
 
+// 期限切れ（Codex のみ・issue #399）区分の案内文。値・進捗バー・リセット行を差し替える。
+var USAGE_EXPIRED_VALUE_TEXT = "未確認";
+var USAGE_EXPIRED_RESET_TEXT = "次に使うと最新の状態に更新されます";
+var USAGE_EXPIRED_VALUETEXT = "未確認（リセット時刻を過ぎたため確認できていません）";
+
 // 公式データ 1 区分（セッション / 週間）の行を更新する。
 // mode: "remaining" は残り時間表示、"datetime" はリセット日時表示。
+// entry.expired === true （Codex がリセット時刻を過ぎても再取得で確認できない区分）のときは
+// 「〇% 使用済み」を出さず、バー幅 0%・ニュートラル色（level-unknown）、リセット行は案内文に
+// 差し替える。要素を使い回すため、通常表示に戻ったときに前回の状態（aria-valuetext・title 等）
+// が残らないよう明示的に消す。
 function renderOauthRow(prefix, entry, mode) {
   var sec = document.getElementById(prefix + "-sec");
   if (!sec) return;
+  var pctEl = document.getElementById(prefix + "-pct");
+  var fill = document.getElementById(prefix + "-fill");
+  var track = document.getElementById(prefix + "-track");
+  var resetEl = document.getElementById(prefix + "-reset");
+
+  if (!entry) { sec.hidden = true; return; }
+
+  if (entry.expired === true) {
+    sec.hidden = false;
+    pctEl.textContent = USAGE_EXPIRED_VALUE_TEXT;
+    pctEl.title = USAGE_EXPIRED_VALUE_TEXT;
+    fill.style.width = "0%";
+    fill.className = "u-fill level-unknown";
+    if (track) {
+      track.removeAttribute("aria-valuenow");
+      track.setAttribute("aria-valuetext", USAGE_EXPIRED_VALUETEXT);
+    }
+    resetEl.textContent = USAGE_EXPIRED_RESET_TEXT;
+    resetEl.title = USAGE_EXPIRED_RESET_TEXT;
+    return;
+  }
+
   var pct = entry && typeof entry.percent === "number" && isFinite(entry.percent)
     ? Math.max(0, Math.min(100, entry.percent)) : null;
   if (pct === null) { sec.hidden = true; return; }
   sec.hidden = false;
-  document.getElementById(prefix + "-pct").textContent = Math.round(pct) + "% 使用済み";
-  var fill = document.getElementById(prefix + "-fill");
+  pctEl.textContent = Math.round(pct) + "% 使用済み";
+  pctEl.removeAttribute("title");
   fill.style.width = pct + "%";
   // 公式% のみ閾値カラー（〜70% 青 / 70〜90% アンバー / 90%〜 赤）
   fill.className = "u-fill" + (pct >= 90 ? " level-crit" : pct >= 70 ? " level-warn" : "");
-  // SR 向け progressbar の現在値を更新（role / min / max は HTML 側で静的付与済み）
-  var track = document.getElementById(prefix + "-track");
-  if (track) track.setAttribute("aria-valuenow", String(Math.round(pct)));
-  var resetEl = document.getElementById(prefix + "-reset");
+  // SR 向け progressbar の現在値を更新（role / min / max は HTML 側で静的付与済み）。
+  // 期限切れ表示から戻った場合に備え aria-valuetext は明示的に外す。
+  if (track) {
+    track.setAttribute("aria-valuenow", String(Math.round(pct)));
+    track.removeAttribute("aria-valuetext");
+  }
   if (entry.resetAtMs && isFinite(entry.resetAtMs)) {
     resetEl.textContent = mode === "remaining"
       ? fmtRemainingJa(entry.resetAtMs - Date.now())
@@ -726,6 +759,7 @@ function renderOauthRow(prefix, entry, mode) {
   } else {
     resetEl.textContent = "";
   }
+  resetEl.removeAttribute("title");
 }
 
 function renderUsage(usage) {

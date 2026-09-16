@@ -299,21 +299,45 @@ function describeUsage(snapshot, nowMs) {
  * loader() の結果を ttlMs だけメモ化する小さなラッパ（CR-1）。
  * ホットパス（GET /api/states の ~2s ポーリング）で同期 I/O を繰り返さないために使う。
  * clock を注入できるのでテストで時刻を固定できる。
+ * 返り値の関数には invalidate() が生えており、呼ぶと次回呼び出しで必ず loader を
+ * 実行させる（TTL 内でも強制的に取り直したいとき用。issue #399: usage のリセット時刻
+ * 検知での即時再取得に使う）。
  * @param {() => any} loader 実際に値を読む関数（例: loadUserConfig）
  * @param {number} ttlMs メモの有効期間（ms）
  * @param {() => number} [clock] 現在時刻を返す関数（既定 Date.now）
- * @returns {() => any} メモ化された取得関数
+ * @returns {(() => any) & { invalidate: () => void }} メモ化された取得関数
  */
 function createTtlMemo(loader, ttlMs, clock = Date.now) {
   let value;
   let at = -Infinity;
-  return () => {
+  const memo = () => {
     const now = clock();
     if (now - at < ttlMs) return value;
     value = loader();
     at = now;
     return value;
   };
+  memo.invalidate = () => { at = -Infinity; };
+  return memo;
+}
+
+/**
+ * usage スナップショットの session / weekly のいずれかが、resetAtMs を過ぎているか判定する
+ * （純粋。oauthUsage / codexUsage 共通）。TTL キャッシュを bypass してでも取り直すべきかの
+ * 判定材料として使う。resetAtMs が null（判定不能）の区分は対象外（issue #399）。
+ * @param {null | { session?: {resetAtMs?: number|null}|null, weekly?: {resetAtMs?: number|null}|null }} snapshot
+ * @param {number} nowMs
+ * @returns {boolean}
+ */
+function hasExpiredResetCategory(snapshot, nowMs) {
+  if (!snapshot || typeof snapshot !== 'object') return false;
+  for (const key of ['session', 'weekly']) {
+    const cat = snapshot[key];
+    if (cat && typeof cat === 'object' && Number.isFinite(cat.resetAtMs) && cat.resetAtMs <= nowMs) {
+      return true;
+    }
+  }
+  return false;
 }
 
 // ─── fs / IO 層（stale-while-revalidate キャッシュ付き） ──────────────────────
@@ -520,6 +544,7 @@ module.exports = {
   describeUsage,
   // ユーティリティ
   createTtlMemo,
+  hasExpiredResetCategory,
   // fs 層
   createUsageTracker,
   listRecentFiles,

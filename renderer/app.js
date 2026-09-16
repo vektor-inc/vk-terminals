@@ -3991,10 +3991,18 @@ function setTextWithTitle(el, text) {
   el.title = text;
 }
 
+// 期限切れ（Codex のみ・issue #399）区分の案内文。値・進捗バー・リセット行を差し替える。
+const USAGE_EXPIRED_VALUE_TEXT = '未確認';
+const USAGE_EXPIRED_RESET_TEXT = '次に使うと最新の状態に更新されます';
+const USAGE_EXPIRED_VALUETEXT = '未確認（リセット時刻を過ぎたため確認できていません）';
+
 // 公式データ 1 区分（セッション / 週間）のセクションを組み立てる。
 //   resetMode: 'remaining' … 「◯時間◯分後にリセット」。data-reset-at を付け、
 //              サイドバーの低頻度ティッカーがポーリングを待たず再計算する。
 //   resetMode: 'datetime'  … 「金 18:59 にリセット」（週間制限向け・静的表示）。
+//   entry.expired === true … Codex でリセット時刻を過ぎても再取得で確認できない区分。
+//              「〇% 使用済み」は出さず、バーは幅 0%・ニュートラル色（level-unknown）にし、
+//              リセット行は案内文に置き換える。Claude 側は expired を持たないため無関係。
 function buildOauthUsageSection(title, entry, resetMode, options = {}) {
   const sec = document.createElement('div');
   sec.className = 'usage-section';
@@ -4010,28 +4018,41 @@ function buildOauthUsageSection(title, entry, resetMode, options = {}) {
   }
   const valueEl = document.createElement('span');
   valueEl.className = 'usage-value';
-  valueEl.textContent = Number.isFinite(entry.percent) ? `${Math.round(entry.percent)}% 使用済み` : '—';
   head.appendChild(titleEl);
   head.appendChild(valueEl);
   sec.appendChild(head);
 
   const track = document.createElement('div');
   track.className = 'usage-bar-track';
-  const width = Number.isFinite(entry.percent) ? Math.min(100, Math.max(0, entry.percent)) : 0;
   // SR 向けにバーを progressbar として公開する（数値ラベル併記に加えた a11y 対応）。
   track.setAttribute('role', 'progressbar');
   track.setAttribute('aria-label', title);
   track.setAttribute('aria-valuemin', '0');
   track.setAttribute('aria-valuemax', '100');
-  track.setAttribute('aria-valuenow', String(Math.round(width)));
   const fill = document.createElement('div');
-  fill.className = `usage-bar-fill ${usageLevelClass(entry.percent)}`.trim();
-  fill.style.width = `${width}%`;
   track.appendChild(fill);
   sec.appendChild(track);
 
   const reset = document.createElement('div');
   reset.className = 'usage-reset';
+
+  if (entry.expired === true) {
+    setTextWithTitle(valueEl, USAGE_EXPIRED_VALUE_TEXT);
+    fill.className = 'usage-bar-fill level-unknown';
+    fill.style.width = '0%';
+    // aria-valuenow は付けず、状態を aria-valuetext で読み上げる（数値が読めないことを明示）。
+    track.setAttribute('aria-valuetext', USAGE_EXPIRED_VALUETEXT);
+    setTextWithTitle(reset, USAGE_EXPIRED_RESET_TEXT);
+    sec.appendChild(reset);
+    return sec;
+  }
+
+  valueEl.textContent = Number.isFinite(entry.percent) ? `${Math.round(entry.percent)}% 使用済み` : '—';
+  const width = Number.isFinite(entry.percent) ? Math.min(100, Math.max(0, entry.percent)) : 0;
+  track.setAttribute('aria-valuenow', String(Math.round(width)));
+  fill.className = `usage-bar-fill ${usageLevelClass(entry.percent)}`.trim();
+  fill.style.width = `${width}%`;
+
   if (Number.isFinite(entry.resetAtMs)) {
     if (resetMode === 'remaining') {
       reset.dataset.resetAt = String(entry.resetAtMs);
@@ -4237,6 +4258,43 @@ function tickSidebarUsageReset() {
   });
 }
 
+// 表示中区分（Claude / Codex 共通）のリセット時刻を過ぎたら、60 秒ポーリングを
+// 待たずに再取得する（issue #399）。同じ resetAtMs に対しては 1 回だけ再取得する
+// （連打防止。usageResetHandledAtMs に「最後に再取得のきっかけにした resetAtMs」を
+// 区分ごとに記録し、同じ値の間は再トリガーしない。新しい値が来れば別の resetAtMs に
+// なるので次のリセットも検知できる）。週間区分は静的表示（datetime）で data-reset-at を
+// 持たないため、DOM ではなく直近スナップショット（lastUsageSnapshot / lastCodexUsageSnapshot）
+// を参照して判定する。
+const usageResetHandledAtMs = {
+  oauth: { session: null, weekly: null },
+  codex: { session: null, weekly: null },
+};
+
+function usageResetNeedsRefetch(kind, category, entry, nowMs) {
+  if (!entry || !Number.isFinite(entry.resetAtMs) || entry.resetAtMs > nowMs) return false;
+  return usageResetHandledAtMs[kind][category] !== entry.resetAtMs;
+}
+
+function checkUsageResetAndRefetch() {
+  const now = Date.now();
+  const oauth = lastUsageSnapshot && lastUsageSnapshot.source === 'oauth' ? lastUsageSnapshot : null;
+  const codex = lastCodexUsageSnapshot;
+  const targets = [
+    ['oauth', 'session', oauth && oauth.session],
+    ['oauth', 'weekly', oauth && oauth.weekly],
+    ['codex', 'session', codex && codex.session],
+    ['codex', 'weekly', codex && codex.weekly],
+  ];
+  let needsRefetch = false;
+  for (const [kind, category, entry] of targets) {
+    if (usageResetNeedsRefetch(kind, category, entry, now)) {
+      usageResetHandledAtMs[kind][category] = entry.resetAtMs;
+      needsRefetch = true;
+    }
+  }
+  if (needsRefetch) refreshUsageAndBadge();
+}
+
 // ☰ メニューボタンの警告ドットバッジ（issue #73）。
 // 公式の使用率（セッション・週間のいずれか）が 80% を超えたときだけドットを重ねる
 // （80〜90%: アンバー / 90%〜: 赤）。フォールバック（自己ピーク比）は上限比ではないため
@@ -4275,38 +4333,47 @@ function usageAlertMaxPercent(...snapshots) {
   for (const usage of snapshots) {
     if (!usage) continue;
     for (const entry of [usage.session, usage.weekly]) {
-      if (entry && Number.isFinite(entry.percent)) pcts.push(entry.percent);
+      // 期限切れ（Codex の「未確認」区分・issue #399）の percent は実態と無関係な
+      // 古い値なので、警告バッジの判定材料に使わない。
+      if (entry && entry.expired !== true && Number.isFinite(entry.percent)) pcts.push(entry.percent);
     }
   }
   return pcts.length ? Math.max(...pcts) : null;
 }
 
+// 使用状況を取得し、サイドバーカードとメニューの警告バッジへ反映する。
+// 60 秒ポーリングと、リセット時刻検知時の即時再取得（checkUsageResetAndRefetch）の
+// どちらからも呼ばれる共通処理（issue #399）。
+async function refreshUsageAndBadge() {
+  let level = '';
+  let usage = null;
+  let codexUsage = null;
+  try {
+    [usage, codexUsage] = await Promise.all([
+      VKIpc.invoke('usage:get'),
+      VKIpc.invoke('codex-usage:get'),
+    ]);
+    const max = usageAlertMaxPercent(
+      usage && usage.source === 'oauth' ? usage : null,
+      codexUsage,
+    );
+    if (max !== null && max > 80) level = max >= 90 ? 'crit' : 'warn';
+  } catch (_e) {
+    level = ''; // 取得失敗時はバッジを消す（古い警告を残さない）
+  }
+  renderSidebarUsage(usage);
+  renderSidebarCodexUsage(codexUsage);
+  usageAlertLevel = level;
+  applyUsageBadge();
+}
+
 function setupUsageBadge() {
-  const refresh = async () => {
-    let level = '';
-    let usage = null;
-    let codexUsage = null;
-    try {
-      [usage, codexUsage] = await Promise.all([
-        VKIpc.invoke('usage:get'),
-        VKIpc.invoke('codex-usage:get'),
-      ]);
-      const max = usageAlertMaxPercent(
-        usage && usage.source === 'oauth' ? usage : null,
-        codexUsage,
-      );
-      if (max !== null && max > 80) level = max >= 90 ? 'crit' : 'warn';
-    } catch (_e) {
-      level = ''; // 取得失敗時はバッジを消す（古い警告を残さない）
-    }
-    renderSidebarUsage(usage);
-    renderSidebarCodexUsage(codexUsage);
-    usageAlertLevel = level;
-    applyUsageBadge();
-  };
-  refresh();
-  setInterval(refresh, USAGE_POLL_INTERVAL_MS);
-  setInterval(tickSidebarUsageReset, USAGE_SIDEBAR_TICK_INTERVAL_MS);
+  refreshUsageAndBadge();
+  setInterval(refreshUsageAndBadge, USAGE_POLL_INTERVAL_MS);
+  setInterval(() => {
+    tickSidebarUsageReset();
+    checkUsageResetAndRefetch();
+  }, USAGE_SIDEBAR_TICK_INTERVAL_MS);
 }
 
 // apiHost の入力値から、その場で出す認証関連の案内を判定する（issue #313）。

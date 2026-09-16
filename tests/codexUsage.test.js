@@ -13,6 +13,7 @@ const {
   parseTokenCountLine,
   extractLastTokenCount,
   isStickyUsable,
+  markExpiredCategories,
   createCodexUsageProvider,
 } = require('../codexUsage');
 const {
@@ -199,6 +200,167 @@ test('createCodexUsageProvider: 一時失敗時は stickyMaxMs 以内だけ直�
 
   now = NOW + 5001;
   assert.equal(await provider.get(), null);
+});
+
+// ── markExpiredCategories（issue #399: Codex「未確認」表示の判定コア）──────────
+test('markExpiredCategories: resetAtMs を過ぎた区分だけに expired: true を付ける', () => {
+  const now = 100000;
+  // 両方とも未来 → どちらにも expired を付けない
+  const untouched = markExpiredCategories(
+    { source: 'codex', session: { percent: 10, resetAtMs: now + 1 }, weekly: { percent: 20, resetAtMs: now + 1 } },
+    now,
+  );
+  assert.equal(untouched.session.expired, undefined);
+  assert.equal(untouched.weekly.expired, undefined);
+
+  // session だけ過去 → session だけ expired（区分ごとに独立）
+  const sessionOnly = markExpiredCategories(
+    { source: 'codex', session: { percent: 100, resetAtMs: now - 1 }, weekly: { percent: 20, resetAtMs: now + 1 } },
+    now,
+  );
+  assert.equal(sessionOnly.session.expired, true);
+  assert.equal(sessionOnly.session.percent, 100); // 元のフィールドは保持する
+  assert.equal(sessionOnly.weekly.expired, undefined);
+
+  // resetAtMs が null（判定不能）の区分は expired にしない
+  const nullResetAt = markExpiredCategories(
+    { source: 'codex', session: { percent: 100, resetAtMs: null }, weekly: null },
+    now,
+  );
+  assert.equal(nullResetAt.session.expired, undefined);
+  assert.equal(nullResetAt.weekly, null);
+
+  // null / 非オブジェクトはそのまま返す
+  assert.equal(markExpiredCategories(null, now), null);
+});
+
+// ── createCodexUsageProvider: resetAtMs 経過での bypass + expired 付与（issue #399）──
+// 修正前（bypass 無し・markExpiredCategories 無し）はこのテストが失敗する
+// （calls が増えない・expired が付かない）。
+test('createCodexUsageProvider: resetAtMs を過ぎたら TTL 内でも取り直し、区分ごとに expired を付ける', async () => {
+  let now = NOW;
+  let calls = 0;
+  // Codex を使っていないので毎回同じ古い値（session だけ resetAtMs 経過）が返り続ける想定。
+  const provider = createCodexUsageProvider({
+    ttlMs: 60000,
+    clock: () => now,
+    load: async () => {
+      calls += 1;
+      return {
+        source: 'codex',
+        session: { percent: 100, resetAtMs: NOW - 1000 },
+        weekly: { percent: 40, resetAtMs: NOW + 60 * 60 * 1000 },
+        fetchedAtMs: now,
+      };
+    },
+  });
+
+  const first = await provider.get();
+  assert.equal(calls, 1);
+  assert.equal(first.session.expired, true);
+  assert.equal(first.weekly.expired, undefined); // weekly はまだ未来なので expired を付けない
+
+  now += 1000; // TTL（60s）内だが session の resetAtMs はすでに過去
+  const second = await provider.get();
+  assert.equal(calls, 2, 'resetAtMs 経過を検知して TTL 内でも取り直すはず');
+  assert.equal(second.session.expired, true);
+  assert.equal(second.session.percent, 100);
+});
+
+test('createCodexUsageProvider: 新しい resetAtMs（未来）が来たら expired から通常表示に戻る', async () => {
+  let now = NOW;
+  let calls = 0;
+  const provider = createCodexUsageProvider({
+    ttlMs: 1000,
+    clock: () => now,
+    load: async () => {
+      calls += 1;
+      // 1 回目は期限切れの古い値、2 回目以降は新しいログ（未来の resetAtMs）を模す。
+      if (calls === 1) {
+        return { source: 'codex', session: { percent: 100, resetAtMs: NOW - 1000 }, weekly: null, fetchedAtMs: now };
+      }
+      return { source: 'codex', session: { percent: 5, resetAtMs: now + 60 * 60 * 1000 }, weekly: null, fetchedAtMs: now };
+    },
+  });
+
+  const expired = await provider.get();
+  assert.equal(expired.session.expired, true);
+
+  now += 1001; // TTL 超過で自然に再取得
+  const recovered = await provider.get();
+  assert.equal(recovered.session.expired, undefined);
+  assert.equal(recovered.session.percent, 5);
+});
+
+// issue #399 レビュー指摘（LOW #2）: 期限切れ検知による取り直しは連打しない
+// （bypass 直後は最低 ttlMs 空けるまで次の bypass を見送る）。
+// この間隔条件（`now - lastBypassAt >= ttlMs`）を外す・壊すと、Codex は使わない限り
+// ログが更新されず毎回同じ古い値が返り続けるため、この assert（calls, 2）が
+// calls, 3 になって失敗する。
+test('createCodexUsageProvider: resetAtMs 経過による取り直しは連打しない（ttlMs 未満の間隔では見送る）', async () => {
+  let now = NOW;
+  let calls = 0;
+  const provider = createCodexUsageProvider({
+    ttlMs: 60000,
+    clock: () => now,
+    load: async () => {
+      calls += 1;
+      // Codex を使っていないので、取り直しても常に同じ期限切れの値が返る想定。
+      return { source: 'codex', session: { percent: 50, resetAtMs: NOW - 1 }, weekly: null, fetchedAtMs: now };
+    },
+  });
+
+  await provider.get();
+  assert.equal(calls, 1);
+
+  now += 100; // 直後（resetAtMs は依然過去）→ 1 回目の bypass による取り直しが発生する
+  await provider.get();
+  assert.equal(calls, 2, '1 回目の bypass 直後の取り直しは発生する');
+
+  now += 100; // 前回 bypass から ttlMs 未満なので、連打せず TTL 内キャッシュを据え置くはず
+  await provider.get();
+  assert.equal(calls, 2, '直近の bypass から ttlMs 未満は連打しない');
+
+  now += 100; // さらに直後でも同様
+  await provider.get();
+  assert.equal(calls, 2, '間隔条件が無いと毎回取り直してしまい、ここで calls が増える');
+});
+
+// issue #399 レビュー指摘（LOW #3）: 「読み込みが失敗し、直近値の期限が切れている」
+// ケースでは、トップレベルの stale（取得失敗の注記）と区分ごとの expired（未確認表示）が
+// 独立して両方付くことを確認する（stale と expired は別の意味なので、片方が付いたら
+// もう片方を隠す、といった相互排他にはしない）。
+test('createCodexUsageProvider: 取得失敗時、直近値の resetAtMs が過ぎていれば stale と expired が両方付く', async () => {
+  let now = NOW;
+  let calls = 0;
+  const first = {
+    source: 'codex',
+    session: { percent: 80, resetAtMs: NOW - 1000 }, // 直近成功値の時点で既に期限切れ
+    weekly: { percent: 20, resetAtMs: NOW + 60 * 60 * 1000 },
+    fetchedAtMs: NOW,
+  };
+  const provider = createCodexUsageProvider({
+    ttlMs: 1000,
+    stickyMaxMs: 5000,
+    clock: () => now,
+    load: async () => {
+      calls += 1;
+      return calls === 1 ? first : null; // 2 回目以降は読み込み失敗（ログ探索/読取エラー等）を模す
+    },
+  });
+
+  const fresh = await provider.get();
+  assert.equal(calls, 1);
+  assert.equal(fresh.session.expired, true);
+  assert.equal(fresh.stale, undefined);
+
+  now += 1001; // TTL 超過 → 取得失敗（null）→ sticky（直近成功値）へフォールバック
+  const staleAndExpired = await provider.get();
+  assert.equal(calls, 2);
+  assert.equal(staleAndExpired.stale, true, 'トップレベルの stale（取得失敗の注記）が付く');
+  assert.equal(staleAndExpired.session.expired, true, '区分ごとの expired（未確認表示）も独立して付く');
+  assert.equal(staleAndExpired.session.percent, 80);
+  assert.equal(staleAndExpired.weekly.expired, undefined); // weekly はまだ未来なので expired なし
 });
 
 test('parseTokenCountRecord / parseCodexJsonl: total_token_usage をトークン数として取り出す', () => {

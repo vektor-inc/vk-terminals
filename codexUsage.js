@@ -15,7 +15,7 @@ const fsp = fs.promises;
 const path = require('path');
 const os = require('os');
 const { normalizePercent } = require('./oauthUsage');
-const { createTtlMemo } = require('./usageTracker');
+const { createTtlMemo, hasExpiredResetCategory } = require('./usageTracker');
 
 const CODEX_SESSIONS_DIR = path.join(os.homedir(), '.codex', 'sessions');
 const LATEST_READ_BYTES = 256 * 1024;
@@ -134,6 +134,27 @@ function isStickyUsable(snapshot, nowMs, maxMs) {
   return elapsed >= 0 && elapsed <= maxMs;
 }
 
+// Codex は使わない限りログが更新されず、TTL 内で取り直しても同じ古い値が返り続ける
+// （renderer 側で言う「未確認」表示）。session / weekly は独立に判定し、片方だけ
+// resetAtMs を過ぎているケースも扱う（issue #399）。
+/**
+ * session / weekly のうち、resetAtMs を過ぎている区分に expired: true を付与する（純粋）。
+ * resetAtMs が null（判定不能）の区分は対象外。新しい値（resetAtMs が未来）に更新された
+ * 区分は expired を付けない＝通常表示に戻る。
+ * @param {null | { session?: object|null, weekly?: object|null }} snapshot
+ * @param {number} nowMs
+ * @returns {null | object} snapshot と同じ形。session / weekly は該当すれば { ...cat, expired: true }
+ */
+function markExpiredCategories(snapshot, nowMs) {
+  if (!snapshot || typeof snapshot !== 'object') return snapshot;
+  const mark = (cat) => (
+    cat && typeof cat === 'object' && Number.isFinite(cat.resetAtMs) && cat.resetAtMs <= nowMs
+      ? { ...cat, expired: true }
+      : cat
+  );
+  return { ...snapshot, session: mark(snapshot.session), weekly: mark(snapshot.weekly) };
+}
+
 // ─── IO 層 ──────────────────────────────────────────────────────────────────
 
 function sortDesc(a, b) {
@@ -232,22 +253,40 @@ async function loadCodexUsageSnapshot(options = {}) {
   }
 }
 
+/**
+ * Codex usage のプロバイダ。60 秒 TTL キャッシュ（createTtlMemo 流用）でログの探索・
+ * 読み取りを抑制する。main プロセスから 1 個だけ生成して使う。
+ *
+ * リセット時刻を過ぎた値を TTL 内で持ち続けないための bypass（issue #399）:
+ *   直近成功値（lastGood）の session / weekly のいずれかの resetAtMs が現在時刻以前なら、
+ *   TTL が残っていても memo を invalidate して取り直す。Codex は使わない限りログが更新
+ *   されず取り直しても同じ古い値が返り続けるため、bypass の連打を防ぐ意味でも 1 回
+ *   bypass したら次の bypass までは最低 ttlMs は空ける。
+ *   返す値には markExpiredCategories で session / weekly ごとに expired フラグを付ける
+ *   （resetAtMs が現在時刻以前の区分のみ。片方だけ期限切れのケースもある）。
+ */
 function createCodexUsageProvider(options = {}) {
   const ttlMs = options.ttlMs != null ? options.ttlMs : CODEX_USAGE_TTL_MS;
   const stickyMaxMs = options.stickyMaxMs != null ? options.stickyMaxMs : CODEX_STICKY_MAX_MS;
   const clock = options.clock || Date.now;
   const load = typeof options.load === 'function' ? options.load : loadCodexUsageSnapshot;
   let lastGood = null;
+  let lastBypassAt = -Infinity;
   const memo = createTtlMemo(() => Promise.resolve(load()).catch(() => null), ttlMs, clock);
   return {
     get: async () => {
+      const now = clock();
+      if (hasExpiredResetCategory(lastGood, now) && now - lastBypassAt >= ttlMs) {
+        memo.invalidate();
+        lastBypassAt = now;
+      }
       const fresh = await memo();
       if (fresh) {
         lastGood = fresh;
-        return fresh;
+        return markExpiredCategories(fresh, clock());
       }
       if (isStickyUsable(lastGood, clock(), stickyMaxMs)) {
-        return { ...lastGood, stale: true };
+        return markExpiredCategories({ ...lastGood, stale: true }, clock());
       }
       return null;
     },
@@ -263,6 +302,7 @@ module.exports = {
   parseTokenCountLine,
   extractLastTokenCount,
   isStickyUsable,
+  markExpiredCategories,
   findLatestSessionFile,
   readTail,
   loadCodexUsageSnapshot,

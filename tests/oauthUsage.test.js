@@ -274,3 +274,52 @@ test('createOauthUsageProvider: 一時失敗時は stickyMaxMs 以内だけ直�
   assert.equal(calls, 3);
   assert.equal(expired, null);
 });
+
+// issue #399: resetAtMs を過ぎた値は TTL 内でもキャッシュを使わず取り直す。
+// 修正前（bypass 無し）はこのテストが失敗する（calls が 1 のまま・古い percent が返り続ける）。
+test('createOauthUsageProvider: session の resetAtMs を過ぎたら TTL 内でも取り直す', async () => {
+  let now = NOW;
+  let calls = 0;
+  const provider = createOauthUsageProvider({
+    ttlMs: 60000, // TTL はまだ残っている想定
+    clock: () => now,
+    load: async () => {
+      calls += 1;
+      // resetAtMs は最初から過去（Codex 同様「読めたが古い」を模す）。
+      return { source: 'oauth', session: { percent: 100, resetAtMs: NOW - 1000 }, weekly: null, fetchedAtMs: now };
+    },
+  });
+
+  const first = await provider.get();
+  assert.equal(calls, 1);
+  assert.equal(first.session.percent, 100);
+
+  now += 1000; // TTL（60s）内だが、resetAtMs はすでに過去
+  const second = await provider.get();
+  assert.equal(calls, 2, 'resetAtMs 経過を検知して TTL 内でも取り直すはず');
+  assert.equal(second.session.percent, 100);
+});
+
+test('createOauthUsageProvider: resetAtMs 経過による取り直しは連打しない（ttlMs 未満の間隔では見送る）', async () => {
+  let now = NOW;
+  let calls = 0;
+  const provider = createOauthUsageProvider({
+    ttlMs: 60000,
+    clock: () => now,
+    load: async () => {
+      calls += 1;
+      return { source: 'oauth', session: { percent: 50, resetAtMs: NOW - 1 }, weekly: null, fetchedAtMs: now };
+    },
+  });
+
+  await provider.get();
+  assert.equal(calls, 1);
+
+  now += 100; // 直後（resetAtMs は依然過去）
+  await provider.get();
+  assert.equal(calls, 2, '1 回目の bypass 直後の取り直しは発生する');
+
+  now += 100; // 前回 bypass から ttlMs 未満なので、まだ TTL 内キャッシュを返すはず
+  await provider.get();
+  assert.equal(calls, 2, '直近の bypass から ttlMs 未満は連打せず据え置く');
+});

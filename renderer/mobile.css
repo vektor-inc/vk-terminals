@@ -217,6 +217,9 @@ button.k.kill.is-locked:active { background: #6b3f3f; border-color: #7c4a4a; }
 #usage-oauth .u-fill, #codex-usage-oauth .u-fill { height: 100%; border-radius: 4px; background: #58a6ff; }
 #usage-oauth .u-fill.level-warn, #codex-usage-oauth .u-fill.level-warn { background: #d29922; }
 #usage-oauth .u-fill.level-crit, #codex-usage-oauth .u-fill.level-crit { background: #f85149; }
+/* 期限切れ（Codex「未確認」・issue #399）。幅 0% で見えないが、ニュートラルなグレーにして
+   警告色（黄・赤）と誤解されないようにする。PC 版 .usage-bar-fill.level-unknown と同色。 */
+#usage-oauth .u-fill.level-unknown, #codex-usage-oauth .u-fill.level-unknown { background: #484f58; }
 #usage-oauth .u-reset, #codex-usage-oauth .u-reset { margin-top: 4px; font-size: 10px; color: var(--muted); }
 
 /* Codex トークン数（今日 / 今週）行（issue #218）。PC 版と同じ「今日 ◯ / 今週 ◯ トークン」表記。 */

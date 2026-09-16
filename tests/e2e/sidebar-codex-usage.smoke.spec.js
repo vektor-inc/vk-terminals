@@ -101,4 +101,48 @@ test.describe.serial('デスクトップのサイドバー Codex 使用量カー
     await expect(usage).toHaveAttribute('hidden', '');
     await expect(usage).toBeHidden();
   });
+
+  // issue #399: リセット時刻を過ぎても再取得で確認できない区分（session だけ expired、
+  // weekly は通常表示）を「未確認」表示にする。バー幅 0%・level-unknown・aria-valuenow 無し・
+  // aria-valuetext あり・リセット行が案内文になることを確認する。
+  test('Codex のセッションが期限切れ（未確認）のとき、値・バー・リセット行が案内表示になる', async () => {
+    await win.evaluate(() => {
+      window.renderSidebarCodexUsage({
+        source: 'codex',
+        session: {
+          percent: 100,
+          resetAtMs: Date.now() - 60 * 1000,
+          expired: true,
+        },
+        weekly: {
+          percent: 12,
+          resetAtMs: Date.now() + 4 * 24 * 60 * 60 * 1000,
+        },
+      });
+    });
+
+    const usage = win.locator('#sidebar-codex-usage');
+    await expect(usage).toBeVisible();
+
+    const sessionValue = usage.locator('.usage-value').nth(0);
+    await expect(sessionValue).toHaveText('未確認');
+    await expect(sessionValue).toHaveAttribute('title', '未確認');
+
+    const sessionTrack = usage.locator('.usage-bar-track').nth(0);
+    await expect(sessionTrack).not.toHaveAttribute('aria-valuenow', /.+/);
+    await expect(sessionTrack).toHaveAttribute('aria-valuetext', '未確認（リセット時刻を過ぎたため確認できていません）');
+    const sessionFill = sessionTrack.locator('.usage-bar-fill');
+    await expect(sessionFill).toHaveClass(/level-unknown/);
+    await expect(sessionFill).not.toHaveClass(/level-warn|level-crit/);
+    await expect(sessionFill).toHaveCSS('width', '0px');
+
+    const sessionReset = usage.locator('.usage-reset').nth(0);
+    await expect(sessionReset).toHaveText('次に使うと最新の状態に更新されます');
+
+    // weekly は通常表示のまま（expired が独立して効くことの確認）。
+    const weeklyValue = usage.locator('.usage-value').nth(1);
+    await expect(weeklyValue).toHaveText('12% 使用済み');
+    const weeklyTrack = usage.locator('.usage-bar-track').nth(1);
+    await expect(weeklyTrack).toHaveAttribute('aria-valuenow', '12');
+  });
 });

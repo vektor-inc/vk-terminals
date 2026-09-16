@@ -316,6 +316,9 @@ html, body {
 }
 .usage-bar-fill.level-warn { background: #d29922; }
 .usage-bar-fill.level-crit { background: #f85149; }
+/* 期限切れ（Codex「未確認」・issue #399）。幅 0% で見えないが、ニュートラルなグレーにして
+   警告色（黄・赤）と誤解されないようにする。 */
+.usage-bar-fill.level-unknown { background: #484f58; }
 .usage-reset {
   margin-top: 5px;
   font-size: 11px;

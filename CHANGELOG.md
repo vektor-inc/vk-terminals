@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 不具合修正 ] サイドバーの使用状況カードで、リセット予定時刻を過ぎても古い使用率と「まもなくリセット」が表示され続ける不具合を修正。リセット時刻を過ぎたら定期取得を待たず取り直すよう変更し、Codex で再取得しても確認できない区分は「未確認」表示にする（[#399](https://github.com/vektor-inc/vk-terminals/issues/399)）
+
 ## 1.64.0
 
 - [ 仕様変更 ] 動作環境を Node.js 22.12.0 以上・macOS 13 (Ventura) 以上・Windows 64bit 版のみに変更（[#397](https://github.com/vektor-inc/vk-terminals/issues/397)）

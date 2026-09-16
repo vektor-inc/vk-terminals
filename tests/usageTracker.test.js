@@ -22,6 +22,7 @@ const {
   progressBar,
   describeUsage,
   createTtlMemo,
+  hasExpiredResetCategory,
   clampReadStart,
   readSliceComplete,
   SESSION_DURATION_MS,
@@ -291,6 +292,43 @@ test('createTtlMemo: TTL 内は再読込せず、TTL 経過で再読込する', 
   clock = 6002;               // 直後（TTL 内）
   assert.equal(memo(), 'v2'); // 再利用
   assert.equal(calls, 2);
+});
+
+// issue #399: リセット時刻を過ぎた usage 値を TTL 内で持ち続けないための invalidate()。
+test('createTtlMemo: invalidate() 後は TTL 内でも次回呼び出しで再読込する', () => {
+  let calls = 0;
+  let clock = 1000;
+  const memo = createTtlMemo(() => { calls++; return `v${calls}`; }, 5000, () => clock);
+
+  assert.equal(memo(), 'v1');
+  assert.equal(calls, 1);
+  clock = 2000; // TTL 内
+  memo.invalidate();
+  assert.equal(memo(), 'v2'); // invalidate 済みなので TTL 内でも再ロードする
+  assert.equal(calls, 2);
+  clock = 2001; // 直後（invalidate していない）は通常の TTL キャッシュに従う
+  assert.equal(memo(), 'v2');
+  assert.equal(calls, 2);
+});
+
+// ── hasExpiredResetCategory（issue #399: bypass 判定の共通材料）─────────────
+test('hasExpiredResetCategory: session / weekly のいずれかの resetAtMs が現在時刻以前なら true', () => {
+  const now = 100000;
+  assert.equal(hasExpiredResetCategory(null, now), false);
+  assert.equal(hasExpiredResetCategory({}, now), false);
+  assert.equal(hasExpiredResetCategory({ session: null, weekly: null }, now), false);
+  // resetAtMs が null（判定不能）の区分は対象外
+  assert.equal(hasExpiredResetCategory({ session: { resetAtMs: null }, weekly: null }, now), false);
+  // 未来の resetAtMs は期限切れではない
+  assert.equal(hasExpiredResetCategory({ session: { resetAtMs: now + 1 }, weekly: null }, now), false);
+  // ちょうど現在時刻・過去は期限切れ
+  assert.equal(hasExpiredResetCategory({ session: { resetAtMs: now }, weekly: null }, now), true);
+  assert.equal(hasExpiredResetCategory({ session: null, weekly: { resetAtMs: now - 1 } }, now), true);
+  // session は未来、weekly だけ過去（片方だけ期限切れ）でも true
+  assert.equal(
+    hasExpiredResetCategory({ session: { resetAtMs: now + 1 }, weekly: { resetAtMs: now - 1 } }, now),
+    true,
+  );
 });
 
 // ── clampReadStart（SEC-1: 1 回の読取上限） ──────────────────────────────────

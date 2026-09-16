@@ -677,6 +677,8 @@ function getUsageForDisplay() {
 // 公式 usage API のプロバイダ（issue #73）。60 秒 TTL キャッシュを内包し、renderer の
 // ポーリング（設定モーダルの使用状況ビュー・歯車バッジ）やモバイルページの /api/states
 // ポーリングが重なっても API / Keychain への問い合わせは 60 秒に 1 回に抑えられる。
+// いずれのプロバイダも、session / weekly の resetAtMs を過ぎた値は TTL 内でも
+// キャッシュを使わず取り直す（issue #399: リセット後も古い値が出続ける不具合の対応）。
 const oauthUsage = createOauthUsageProvider();
 const codexUsage = createCodexUsageProvider();
 const codexUsageTracker = createCodexUsageTracker();
@@ -700,6 +702,11 @@ async function getUsageUnified() {
   return getUsageForDisplay();
 }
 
+// Codex 使用状況の統一構造を返す（issue #218）。
+//   - session / weekly は codexUsage.get() が返す値をそのまま使う。resetAtMs を過ぎても
+//     ログが更新されず古い値しか取れない区分には expired: true が付いている
+//     （codexUsage.js の markExpiredCategories 参照。renderer 側は「未確認」表示にする。
+//     issue #399）。expired はトップレベルの stale（取得失敗時の直近値表示）とは独立。
 async function getCodexUsageUnified() {
   if (!codexUsageEnabled()) return null;
   let limits = null;

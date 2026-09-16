@@ -29,7 +29,7 @@ const { execFile } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { createTtlMemo } = require('./usageTracker');
+const { createTtlMemo, hasExpiredResetCategory } = require('./usageTracker');
 
 // macOS Keychain 上のサービス名（Claude Code が保存する認証情報）。
 const KEYCHAIN_SERVICE = 'Claude Code-credentials';
@@ -268,6 +268,12 @@ async function loadUsageSnapshot() {
  * Keychain / API への問い合わせを抑制する。取得失敗（null）も TTL の間はキャッシュし、
  * 失敗のたびに Keychain へアクセスして許可ダイアログを乱発しないようにする。
  * main プロセスから 1 個だけ生成して使う。
+ *
+ * リセット時刻を過ぎた値を TTL 内で持ち続けないための bypass（issue #399）:
+ *   直近成功値（lastGood）の session / weekly のいずれかの resetAtMs が現在時刻以前なら、
+ *   TTL が残っていても memo を invalidate して取り直す。取り直しの連打を防ぐため、
+ *   1 回 bypass したら次の bypass までは最低 ttlMs は空ける
+ *   （それより短い間隔で呼ばれても通常の TTL キャッシュ挙動に従う）。
  * @param {{ ttlMs?: number, stickyMaxMs?: number, clock?: () => number, load?: () => Promise<any> }} [options]
  * @returns {{ get: () => Promise<ReturnType<typeof parseUsageResponse>> }}
  */
@@ -277,12 +283,18 @@ function createOauthUsageProvider(options = {}) {
   const clock = options.clock || Date.now;
   const load = typeof options.load === 'function' ? options.load : loadUsageSnapshot;
   let lastGood = null;
+  let lastBypassAt = -Infinity;
   // memo は API / Keychain 問い合わせを 60s に抑えるスロットル。
   // createTtlMemo は Promise をそのままメモ化する。同時呼び出しは同じ Promise を共有し、
   // reject は load 側で握りつぶして null 解決にしているため rejection は漏れない。
   const memo = createTtlMemo(() => Promise.resolve(load()).catch(() => null), ttlMs, clock);
   return {
     get: async () => {
+      const now = clock();
+      if (hasExpiredResetCategory(lastGood, now) && now - lastBypassAt >= ttlMs) {
+        memo.invalidate();
+        lastBypassAt = now;
+      }
       const fresh = await memo();
       if (fresh) {
         lastGood = fresh;

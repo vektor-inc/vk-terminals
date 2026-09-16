@@ -292,6 +292,77 @@ test('createCodexUsageProvider: 新しい resetAtMs（未来）が来たら expi
   assert.equal(recovered.session.percent, 5);
 });
 
+// issue #399 レビュー指摘（LOW #2）: 期限切れ検知による取り直しは連打しない
+// （bypass 直後は最低 ttlMs 空けるまで次の bypass を見送る）。
+// この間隔条件（`now - lastBypassAt >= ttlMs`）を外す・壊すと、Codex は使わない限り
+// ログが更新されず毎回同じ古い値が返り続けるため、この assert（calls, 2）が
+// calls, 3 になって失敗する。
+test('createCodexUsageProvider: resetAtMs 経過による取り直しは連打しない（ttlMs 未満の間隔では見送る）', async () => {
+  let now = NOW;
+  let calls = 0;
+  const provider = createCodexUsageProvider({
+    ttlMs: 60000,
+    clock: () => now,
+    load: async () => {
+      calls += 1;
+      // Codex を使っていないので、取り直しても常に同じ期限切れの値が返る想定。
+      return { source: 'codex', session: { percent: 50, resetAtMs: NOW - 1 }, weekly: null, fetchedAtMs: now };
+    },
+  });
+
+  await provider.get();
+  assert.equal(calls, 1);
+
+  now += 100; // 直後（resetAtMs は依然過去）→ 1 回目の bypass による取り直しが発生する
+  await provider.get();
+  assert.equal(calls, 2, '1 回目の bypass 直後の取り直しは発生する');
+
+  now += 100; // 前回 bypass から ttlMs 未満なので、連打せず TTL 内キャッシュを据え置くはず
+  await provider.get();
+  assert.equal(calls, 2, '直近の bypass から ttlMs 未満は連打しない');
+
+  now += 100; // さらに直後でも同様
+  await provider.get();
+  assert.equal(calls, 2, '間隔条件が無いと毎回取り直してしまい、ここで calls が増える');
+});
+
+// issue #399 レビュー指摘（LOW #3）: 「読み込みが失敗し、直近値の期限が切れている」
+// ケースでは、トップレベルの stale（取得失敗の注記）と区分ごとの expired（未確認表示）が
+// 独立して両方付くことを確認する（stale と expired は別の意味なので、片方が付いたら
+// もう片方を隠す、といった相互排他にはしない）。
+test('createCodexUsageProvider: 取得失敗時、直近値の resetAtMs が過ぎていれば stale と expired が両方付く', async () => {
+  let now = NOW;
+  let calls = 0;
+  const first = {
+    source: 'codex',
+    session: { percent: 80, resetAtMs: NOW - 1000 }, // 直近成功値の時点で既に期限切れ
+    weekly: { percent: 20, resetAtMs: NOW + 60 * 60 * 1000 },
+    fetchedAtMs: NOW,
+  };
+  const provider = createCodexUsageProvider({
+    ttlMs: 1000,
+    stickyMaxMs: 5000,
+    clock: () => now,
+    load: async () => {
+      calls += 1;
+      return calls === 1 ? first : null; // 2 回目以降は読み込み失敗（ログ探索/読取エラー等）を模す
+    },
+  });
+
+  const fresh = await provider.get();
+  assert.equal(calls, 1);
+  assert.equal(fresh.session.expired, true);
+  assert.equal(fresh.stale, undefined);
+
+  now += 1001; // TTL 超過 → 取得失敗（null）→ sticky（直近成功値）へフォールバック
+  const staleAndExpired = await provider.get();
+  assert.equal(calls, 2);
+  assert.equal(staleAndExpired.stale, true, 'トップレベルの stale（取得失敗の注記）が付く');
+  assert.equal(staleAndExpired.session.expired, true, '区分ごとの expired（未確認表示）も独立して付く');
+  assert.equal(staleAndExpired.session.percent, 80);
+  assert.equal(staleAndExpired.weekly.expired, undefined); // weekly はまだ未来なので expired なし
+});
+
 test('parseTokenCountRecord / parseCodexJsonl: total_token_usage をトークン数として取り出す', () => {
   const obj = JSON.parse(tokenCountLine({
     primary: { used_percent: 1, window_minutes: 300, resets_at: 1783306800 },

@@ -4333,7 +4333,9 @@ function usageAlertMaxPercent(...snapshots) {
   for (const usage of snapshots) {
     if (!usage) continue;
     for (const entry of [usage.session, usage.weekly]) {
-      if (entry && Number.isFinite(entry.percent)) pcts.push(entry.percent);
+      // 期限切れ（Codex の「未確認」区分・issue #399）の percent は実態と無関係な
+      // 古い値なので、警告バッジの判定材料に使わない。
+      if (entry && entry.expired !== true && Number.isFinite(entry.percent)) pcts.push(entry.percent);
     }
   }
   return pcts.length ? Math.max(...pcts) : null;

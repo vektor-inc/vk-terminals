@@ -145,4 +145,38 @@ test.describe.serial('デスクトップのサイドバー Codex 使用量カー
     const weeklyTrack = usage.locator('.usage-bar-track').nth(1);
     await expect(weeklyTrack).toHaveAttribute('aria-valuenow', '12');
   });
+
+  // issue #399 レビュー指摘（MEDIUM）: 期限切れ（未確認）区分の古い percent を
+  // ☰メニューボタンの警告バッジ判定に使ってしまうと、実際には確認できていない
+  // 100% 等で誤って警告が出る。usageAlertMaxPercent は expired な区分を除外する。
+  test('usageAlertMaxPercent: expired な区分の percent は警告バッジの判定に使わない', async () => {
+    const max = await win.evaluate(() => {
+      return window.usageAlertMaxPercent(
+        {
+          source: 'oauth',
+          session: { percent: 42, resetAtMs: Date.now() + 60 * 60 * 1000 },
+          weekly: null,
+        },
+        {
+          source: 'codex',
+          // session は期限切れの古い 100%（実態不明）→ 判定対象から除外されるはず
+          session: { percent: 100, resetAtMs: Date.now() - 1000, expired: true },
+          weekly: { percent: 30, resetAtMs: Date.now() + 60 * 60 * 1000 },
+        },
+      );
+    });
+    // expired な 100% を含めれば 100 になってしまうが、除外されるので
+    // 有効な値（oauth session 42 / codex weekly 30）の最大である 42 になる。
+    expect(max).toBe(42);
+
+    // 全区分が expired なら判定材料が無いので null（バッジは表示されない）。
+    const allExpired = await win.evaluate(() => {
+      return window.usageAlertMaxPercent(null, {
+        source: 'codex',
+        session: { percent: 99, resetAtMs: Date.now() - 1000, expired: true },
+        weekly: { percent: 99, resetAtMs: Date.now() - 1000, expired: true },
+      });
+    });
+    expect(allExpired).toBe(null);
+  });
 });

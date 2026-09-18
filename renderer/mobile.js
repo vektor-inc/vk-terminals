@@ -109,19 +109,22 @@ var notifyStateEls = {
   "unsupported": document.getElementById("notify-state-unsupported")
 };
 var notifyLiveEl = document.getElementById("notify-live");
-// 通知の登録・停止に関する失敗文言（issue #396 植草の UX レビュー・U-3）。#err /
+// 通知の登録・停止に関する失敗文言（issue #396 植草の UX レビュー・U-3・U-4）。#err /
 // showErr() は poll（状態取得、2秒周期）のたびに成功時に呼ばれて消えるため、
 // 「登録できる端末が20台に達しています」のような読んで行動してほしい文言が
 // 読み終える前に消えてしまう。この要素は poll に連動させず、通知の登録・停止操作の
 // 先頭（処理を始める瞬間）と、その操作が成功した表示更新と同時にだけ消す。
 // role="alert" は mobile.html 側で最初から静的に付けてある（暗黙で
 // aria-live="assertive"）。showErr() / #err 自体はここでは一切変更しない。
+// U-4（植草）: hidden による表示・非表示の切り替えはしない。hidden はアクセシビリティ
+// ツリーから要素ごと除外するため、切り替え前に本文を代入すると「ツリーから外れている
+// 間に本文が書き換わる」状態になり、読み上げソフトが新しい本文の出現を確実に検知できる
+// 保証が無い。#notify-live と同じ「常にツリーに置いたまま本文だけを差し替える」方針に
+// 揃え、空文字のときは mobile.css の .notify-error:empty で視覚的にだけ畳む。
 var notifyErrorEl = document.getElementById("notify-error");
 function setNotifyError(msg) {
   if (!notifyErrorEl) return;
-  if (!msg) { notifyErrorEl.hidden = true; notifyErrorEl.textContent = ""; return; }
-  notifyErrorEl.textContent = msg;
-  notifyErrorEl.hidden = false;
+  notifyErrorEl.textContent = msg || "";
 }
 var notifyRequestBtn = document.getElementById("notify-request-btn");
 var notifyStopBtn = document.getElementById("notify-stop-btn");

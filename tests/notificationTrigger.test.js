@@ -12,6 +12,7 @@ const {
   buildNotificationPayload,
   truncateNotificationTitle,
   MAX_NOTIFICATION_TITLE_LENGTH,
+  MAX_NOTIFICATION_TITLE_BYTES,
   TITLE_TRUNCATION_SUFFIX,
 } = require('../utils/notificationTrigger');
 
@@ -216,4 +217,32 @@ test('truncateNotificationTitle: ZWJ結合絵文字（サロゲートペア4つ�
 test('truncateNotificationTitle: 上限以内なら省略記号を付けずそのまま返す', () => {
   assert.equal(truncateNotificationTitle('短いタイトル', MAX_NOTIFICATION_TITLE_LENGTH), '短いタイトル');
   assert.equal(truncateNotificationTitle('', MAX_NOTIFICATION_TITLE_LENGTH), '');
+});
+
+test('truncateNotificationTitle: 結合文字を大量に含むタイトルでも、組み立てた結果の UTF-8 バイト長は上限以内に収まる（安藤のセキュリティレビュー再指摘・A-5-b）', () => {
+  // 書記素数（見た目上の1文字数）の上限だけでは、1つの書記素クラスタが結合文字
+  // （U+0301 結合アキュートアクセント）をいくらでも含みうるためバイト長を保証しない。
+  // 安藤が実測した2例（それぞれ旧実装で 10,078 バイト・8,177 バイトになっていた入力）。
+
+  // 例1: 書記素数はちょうど1（'a' に結合文字 5000 個が全て1つの書記素クラスタとして
+  // 扱われる）。MAX_NOTIFICATION_TITLE_LENGTH（書記素数）の判定を素通りしてしまう入力。
+  const singleGraphemeHeavy = 'a' + '́'.repeat(5000);
+  const title1 = buildNotificationPayload({ termId: '1', kind: 'waiting', paneLabel: singleGraphemeHeavy }).title;
+  assert.ok(
+    Buffer.byteLength(title1, 'utf8') <= MAX_NOTIFICATION_TITLE_BYTES,
+    `バイト長が上限を超えている: ${Buffer.byteLength(title1, 'utf8')} bytes`
+  );
+
+  // 例2: 書記素数はちょうど MAX_NOTIFICATION_TITLE_LENGTH（100）。書記素数の上限判定
+  // だけでは切り詰められない入力。
+  const hundredGraphemesHeavy = ('a' + '́'.repeat(40)).repeat(100);
+  const title2 = buildNotificationPayload({ termId: '1', kind: 'waiting', paneLabel: hundredGraphemesHeavy }).title;
+  assert.ok(
+    Buffer.byteLength(title2, 'utf8') <= MAX_NOTIFICATION_TITLE_BYTES,
+    `バイト長が上限を超えている: ${Buffer.byteLength(title2, 'utf8')} bytes`
+  );
+
+  // どちらも切り詰めが発生した結果、省略記号が付いていること。
+  assert.ok(title1.endsWith(TITLE_TRUNCATION_SUFFIX));
+  assert.ok(title2.endsWith(TITLE_TRUNCATION_SUFFIX));
 });

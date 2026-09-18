@@ -118,6 +118,22 @@ const MAX_NOTIFICATION_TITLE_LENGTH = 100;
 // いることに気づけない。
 const TITLE_TRUNCATION_SUFFIX = '…';
 
+// 通知タイトルの UTF-8 バイト長の上限（安藤のセキュリティレビュー再指摘・A-5-b）。
+//
+// 【書記素数の上限だけでは足りない理由】A-5 で文字（書記素クラスタ）単位の切り詰めに
+// 変えたのは正しい対応だったが、1つの書記素クラスタは結合文字（例: U+0301 結合アキュート
+// アクセント）をいくらでも含みうるため、「MAX_NOTIFICATION_TITLE_LENGTH 書記素以内」は
+// バイト長を何も保証しない。安藤の実測: `'a' + U+0301 × 5000` は書記素数1（上限を素通り）
+// だが 10,078 バイト、`('a' + U+0301 × 40) × 100` は書記素数ちょうど100だが 8,177 バイト。
+// 一方 `web-push@3.6.7` にローカルのペイロード長チェックは無いため、過大なペイロードは
+// そのまま送信され配信サーバーが 413 を返す。413 は 404 / 410 ではないため
+// isExpiredSubscriptionStatus() の削除対象に当たらず、宛先は残ったままそのペインの通知
+// だけが届かずエラーログが出続ける（LOW-6 で避けたかった状態の再発）。
+// 1024 バイトあれば、ロック画面表示に十分な情報量（数百文字相当）を保ちつつ、
+// Web Push の通知本体のサイズ上限（プッシュ配信サーバー側でおおむね 4KB 程度。本文・
+// tag 等 title 以外のフィールドの分の余裕も見込む）を十分に下回る。
+const MAX_NOTIFICATION_TITLE_BYTES = 1024;
+
 /**
  * 文字列を Unicode の書記素クラスタ（見た目上の1文字）単位の配列に分解する
  * （安藤のセキュリティレビュー再指摘・A-5）。JS の文字列インデックス・length は
@@ -138,18 +154,40 @@ function toGraphemes(str) {
 }
 
 /**
- * タイトルを文字（書記素）単位で MAX_NOTIFICATION_TITLE_LENGTH 以内に切り詰める。
- * 切り詰めが発生した場合だけ末尾に省略記号を付け、合計の書記素数が上限を超えない
- * ようにする（安藤のセキュリティレビュー再指摘・A-5、植草の UX レビュー再指摘・U-2）。
+ * タイトルを文字（書記素）単位で maxLength 以内に切り詰め、さらに UTF-8 バイト長を
+ * maxBytes 以内に収める。切り詰めが発生した場合（書記素数・バイト長のどちらか一方でも
+ * 超えていた場合）だけ末尾に省略記号を付ける（安藤のセキュリティレビュー再指摘・A-5・
+ * A-5-b、植草の UX レビュー再指摘・U-2）。
+ *
+ * 【手順】まず書記素数で切る（A-5）。その結果を UTF-8 バイト長で測り、省略記号のバイト数
+ * を含めた合計が maxBytes を超えている間、末尾の書記素を1つずつ落とす（A-5-b）。
+ * このファイルは Node / Electron 本体側専用でモバイルページへは配信されないため、
+ * Buffer.byteLength（グローバル）をそのまま使って問題ない。
  * @param {string} rawTitle
- * @param {number} maxLength
+ * @param {number} maxLength 書記素数の上限
+ * @param {number} [maxBytes] UTF-8 バイト長の上限（既定 MAX_NOTIFICATION_TITLE_BYTES）
  * @returns {string}
  */
-function truncateNotificationTitle(rawTitle, maxLength) {
-  const graphemes = toGraphemes(rawTitle);
-  if (graphemes.length <= maxLength) return rawTitle;
-  const keep = Math.max(maxLength - TITLE_TRUNCATION_SUFFIX.length, 0);
-  return graphemes.slice(0, keep).join('') + TITLE_TRUNCATION_SUFFIX;
+function truncateNotificationTitle(rawTitle, maxLength, maxBytes = MAX_NOTIFICATION_TITLE_BYTES) {
+  let graphemes = toGraphemes(rawTitle);
+  let truncated = false;
+  if (graphemes.length > maxLength) {
+    const keep = Math.max(maxLength - TITLE_TRUNCATION_SUFFIX.length, 0);
+    graphemes = graphemes.slice(0, keep);
+    truncated = true;
+  }
+
+  const suffixBytes = Buffer.byteLength(TITLE_TRUNCATION_SUFFIX, 'utf8');
+  while (
+    graphemes.length > 0
+    && Buffer.byteLength(graphemes.join(''), 'utf8') + (truncated ? suffixBytes : 0) > maxBytes
+  ) {
+    graphemes.pop();
+    truncated = true;
+  }
+
+  const joined = graphemes.join('');
+  return truncated ? joined + TITLE_TRUNCATION_SUFFIX : joined;
 }
 
 /**
@@ -174,6 +212,7 @@ function buildNotificationPayload(event) {
 
 module.exports = {
   MAX_NOTIFICATION_TITLE_LENGTH,
+  MAX_NOTIFICATION_TITLE_BYTES,
   TITLE_TRUNCATION_SUFFIX,
   derivePaneNotificationState,
   computeNotificationEvents,

@@ -10,6 +10,7 @@ const {
   derivePaneNotificationState,
   computeNotificationEvents,
   buildNotificationPayload,
+  MAX_NOTIFICATION_TITLE_LENGTH,
 } = require('../utils/notificationTrigger');
 
 function pane(overrides) {
@@ -172,4 +173,16 @@ test('buildNotificationPayload: 同じペイン・同じ種別なら常に同じ
   const first = buildNotificationPayload({ termId: '1', kind: 'waiting', paneLabel: 'A' });
   const second = buildNotificationPayload({ termId: '1', kind: 'waiting', paneLabel: 'A（更新後）' });
   assert.equal(first.tag, second.tag);
+});
+
+test('buildNotificationPayload: タイトルが上限を超えると切り詰める（安藤のセキュリティレビュー指摘・LOW-6）', () => {
+  const longLabel = 'あ'.repeat(MAX_NOTIFICATION_TITLE_LENGTH + 50);
+  const payload = buildNotificationPayload({ termId: '1', kind: 'waiting', paneLabel: longLabel });
+  assert.equal(payload.title.length, MAX_NOTIFICATION_TITLE_LENGTH);
+  assert.equal(payload.title, longLabel.slice(0, MAX_NOTIFICATION_TITLE_LENGTH));
+});
+
+test('buildNotificationPayload: タイトルが上限以内ならそのまま', () => {
+  const payload = buildNotificationPayload({ termId: '1', kind: 'waiting', paneLabel: 'ちょうどいい長さのペイン名' });
+  assert.equal(payload.title, 'ちょうどいい長さのペイン名');
 });

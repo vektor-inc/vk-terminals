@@ -2,10 +2,15 @@
 
 // HTTP API（既定 13847 番ポート）へのアクセストークン認証（issue #313）に関する
 // 純粋関数群。main.js から Electron 依存を切り離してテストしやすくするため、
-// このファイルは Node 標準の crypto にのみ依存する。
+// このファイルは Node 標準の crypto と、同じく Electron 非依存の utils/loopbackHost.js /
+// utils/staticRoutes.js にのみ依存する。
 
 const crypto = require('crypto');
 const { isLoopbackHost } = require('./loopbackHost');
+// 認証を免除する静的ファイルの一覧は utils/staticRoutes.js を正とする（issue #396
+// 安藤のセキュリティレビュー指摘・LOW-9。「配信する表」と「免除する集合」が別々の
+// 2つのリストだと、新しい静的ファイルを追加する際に片方だけ書き足す事故が起こりうるため）。
+const { allExemptStaticPaths } = require('./staticRoutes');
 
 // トークンは crypto.randomBytes で生成する暗号論的に安全な乱数（32byte = 256bit）を
 // 16進文字列（64文字固定長）にしたもの。固定長にしておくことで、
@@ -204,37 +209,21 @@ function buildAuthCookieHeader(token) {
 }
 
 // 認証を課さない GET パス（issue #313 レビュー対応・重大-2）。
-//   - `/api/health`: ヘルスチェック用途。
-//   - それ以外はいずれも「ページ本体を構成する静的ファイル」で、アプリに同梱された
-//     固定の内容のみを返し、利用者データを一切含まない（誰が読んでも実害が無い）。
-//     ここを免除しないと、未登録・Cookie 失効の端末がブラウザでモバイルページを
-//     開いた際にページの HTML/CSS/JS 自体が読み込めず、`{"error":"unauthorized"}` という
-//     生の JSON しか出せない（画面側の JS が 401 を検知して確定文言を出す、という
-//     設計そのものが成立しない）。データを返す `/api/*` はここに載せず、引き続き
-//     すべて認証対象のままにする。
-//   - `/sw.js`・`/manifest.webmanifest`・`/icons/icon-*.png`（issue #396）も同じ理由で
-//     免除する。ブラウザは Service Worker の登録・Web App Manifest の解決を、ページ本体
-//     読み込み時（未登録端末でも到達する経路）に自動で行うため、他の静的ファイルと同様に
-//     認証不要にしないとインストール自体ができない。いずれも固定の内容のみを返す。
+//   - `/api/health`: ヘルスチェック用途。ここだけこのファイルで直接管理する
+//     （utils/staticRoutes.js は「静的ファイル」の一覧であり、動的な /api/* は含めない）。
+//   - それ以外（utils/staticRoutes.js の allExemptStaticPaths()）はいずれも
+//     「ページ本体を構成する静的ファイル」で、アプリに同梱された固定の内容のみを返し、
+//     利用者データを一切含まない（誰が読んでも実害が無い）。ここを免除しないと、
+//     未登録・Cookie 失効の端末がブラウザでモバイルページを開いた際にページの
+//     HTML/CSS/JS 自体が読み込めず、`{"error":"unauthorized"}` という生の JSON しか
+//     出せない（画面側の JS が 401 を検知して確定文言を出す、という設計そのものが
+//     成立しない）。データを返す `/api/*` はここに載せず、引き続きすべて認証対象のまま。
+//     一覧の実体（パスとファイルの対応）は utils/staticRoutes.js を正としており
+//     （issue #396 安藤のセキュリティレビュー指摘・LOW-9）、ここでは免除集合として
+//     取り込むだけにする。
 const AUTH_EXEMPT_GET_PATHS = new Set([
   '/api/health',
-  '/',
-  '/index.html',
-  '/mobile.css',
-  '/shared.css',
-  '/mobile.js',
-  '/widgetContract.js',
-  '/widgetView.js',
-  '/terminalDisplay.js',
-  '/urlSafety.js',
-  '/prBadge.js',
-  '/statusPresentation.js',
-  '/mobilePreviewText.js',
-  '/notificationUiState.js',
-  '/sw.js',
-  '/manifest.webmanifest',
-  '/icons/icon-192.png',
-  '/icons/icon-512.png',
+  ...allExemptStaticPaths(),
 ]);
 
 /**

@@ -188,8 +188,20 @@ function refreshNotifyCard() {
   });
 }
 
+// ボタンの通常ラベルと処理中ラベル（issue #396 植草の UX レビュー指摘・低優先度）。
+// 許可ダイアログの通過〜サーバー登録・解除が完了するまでの通信中、押せなくなるだけでは
+// 「いま何が起きているか」が画面上・読み上げソフト上ともに伝わらないため、disabled と
+// 同時にラベルも一時的に切り替える。
+var NOTIFY_REQUEST_LABEL = "通知を受け取る";
+var NOTIFY_REQUEST_LABEL_BUSY = "登録中…";
+var NOTIFY_STOP_LABEL = "停止";
+var NOTIFY_STOP_LABEL_BUSY = "停止中…";
+
 async function handleNotifyRequestClick() {
-  if (notifyRequestBtn) notifyRequestBtn.disabled = true;
+  if (notifyRequestBtn) {
+    notifyRequestBtn.disabled = true;
+    notifyRequestBtn.textContent = NOTIFY_REQUEST_LABEL_BUSY;
+  }
   try {
     var permission = await Notification.requestPermission();
     if (permission !== "granted") {
@@ -223,12 +235,18 @@ async function handleNotifyRequestClick() {
     showErr("通知の登録に失敗しました: " + (e && e.message ? e.message : e));
     await refreshNotifyCard();
   } finally {
-    if (notifyRequestBtn) notifyRequestBtn.disabled = false;
+    if (notifyRequestBtn) {
+      notifyRequestBtn.disabled = false;
+      notifyRequestBtn.textContent = NOTIFY_REQUEST_LABEL;
+    }
   }
 }
 
 async function handleNotifyStopClick() {
-  if (notifyStopBtn) notifyStopBtn.disabled = true;
+  if (notifyStopBtn) {
+    notifyStopBtn.disabled = true;
+    notifyStopBtn.textContent = NOTIFY_STOP_LABEL_BUSY;
+  }
   try {
     var reg = await ensureServiceWorkerRegistration();
     var subscription = reg ? await reg.pushManager.getSubscription() : null;
@@ -250,7 +268,10 @@ async function handleNotifyStopClick() {
   } catch (e) {
     showErr("通知の停止に失敗しました: " + (e && e.message ? e.message : e));
   } finally {
-    if (notifyStopBtn) notifyStopBtn.disabled = false;
+    if (notifyStopBtn) {
+      notifyStopBtn.disabled = false;
+      notifyStopBtn.textContent = NOTIFY_STOP_LABEL;
+    }
   }
 }
 

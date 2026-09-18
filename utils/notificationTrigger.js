@@ -107,6 +107,12 @@ const NOTIFICATION_BODY_TEXT = {
   merge: 'マージ待ちになりました。',
 };
 
+// 通知タイトルの長さ上限（安藤のセキュリティレビュー指摘・LOW-6）。ペイン名（POST /api/set-title
+// の title、または OSC タイトル）には長さ上限が無いため、そのまま使うと Web Push の通知本体の
+// サイズ上限（プッシュ配信サーバー側でおおむね 4KB 程度）を超えて送信そのものが失敗しうる。
+// ロック画面での可読性の観点でも、100 文字あれば十分な情報量。
+const MAX_NOTIFICATION_TITLE_LENGTH = 100;
+
 /**
  * computeNotificationEvents() が返した 1 件のイベントから、Web Push の通知ペイロード
  * （Service Worker の push イベントハンドラがそのまま showNotification に渡す形）を組み立てる。
@@ -118,7 +124,10 @@ const NOTIFICATION_BODY_TEXT = {
 function buildNotificationPayload(event) {
   const kind = event && event.kind === 'merge' ? 'merge' : 'waiting';
   const termId = event && event.termId != null ? String(event.termId) : '';
-  const title = (event && event.paneLabel) || `Terminal ${termId}`;
+  const rawTitle = (event && event.paneLabel) || `Terminal ${termId}`;
+  const title = rawTitle.length > MAX_NOTIFICATION_TITLE_LENGTH
+    ? rawTitle.slice(0, MAX_NOTIFICATION_TITLE_LENGTH)
+    : rawTitle;
   return {
     title,
     body: NOTIFICATION_BODY_TEXT[kind],
@@ -127,6 +136,7 @@ function buildNotificationPayload(event) {
 }
 
 module.exports = {
+  MAX_NOTIFICATION_TITLE_LENGTH,
   derivePaneNotificationState,
   computeNotificationEvents,
   buildNotificationPayload,

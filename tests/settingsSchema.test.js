@@ -83,6 +83,8 @@ test('buildBuiltinSettingsDescriptor: JSON から targetPath 付きの組み込�
     'terminalLinkClickMode',
     'showUsage',
     'showCodexUsage',
+    'notifyOnWaiting',
+    'notifyOnWaitingMerge',
     'gpu',
     'menuItems',
     'additionalPanes',

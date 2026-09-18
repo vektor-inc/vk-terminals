@@ -263,6 +263,13 @@ test('isAuthExemptPath: ページ本体を構成する静的ファイルは true
   assert.equal(isAuthExemptPath('GET', '/prBadge.js'), true);
   assert.equal(isAuthExemptPath('GET', '/statusPresentation.js'), true);
   assert.equal(isAuthExemptPath('GET', '/mobilePreviewText.js'), true);
+  // issue #396: Service Worker・Web App Manifest・アイコン・通知 UI 状態判定モジュールも
+  // 同じ理由（固定の内容のみを返し、ページ本体の読み込みに必須）で免除する。
+  assert.equal(isAuthExemptPath('GET', '/notificationUiState.js'), true);
+  assert.equal(isAuthExemptPath('GET', '/sw.js'), true);
+  assert.equal(isAuthExemptPath('GET', '/manifest.webmanifest'), true);
+  assert.equal(isAuthExemptPath('GET', '/icons/icon-192.png'), true);
+  assert.equal(isAuthExemptPath('GET', '/icons/icon-512.png'), true);
 });
 
 test('isAuthExemptPath: データを返す /api/* はすべて false（唯一の例外は /api/health）', () => {
@@ -271,6 +278,10 @@ test('isAuthExemptPath: データを返す /api/* はすべて false（唯一の
   assert.equal(isAuthExemptPath('POST', '/api/send'), false);
   assert.equal(isAuthExemptPath('POST', '/api/set-title'), false);
   assert.equal(isAuthExemptPath('POST', '/api/new-pane'), false);
+  // issue #396: VAPID 公開鍵・購読情報の登録/解除は利用者データを含むため免除しない。
+  assert.equal(isAuthExemptPath('GET', '/api/push-public-key'), false);
+  assert.equal(isAuthExemptPath('POST', '/api/push-subscribe'), false);
+  assert.equal(isAuthExemptPath('POST', '/api/push-unsubscribe'), false);
 });
 
 test('isAuthExemptPath: メソッドが GET 以外なら免除パスでも false', () => {

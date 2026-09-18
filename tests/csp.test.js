@@ -37,9 +37,12 @@ const EXPECTED_INDEX_CSP = "default-src 'none'; script-src 'self'; style-src 'se
 
 // mobile.html（HTTP 配信）向けの CSP。index.html との違いは utils/csp.js の
 // buildMobileCsp() のコメントを参照（connect-src が 'self'・frame-ancestors 'none' を持つ）。
+// worker-src / manifest-src（issue #396）: Service Worker 登録・Web App Manifest の
+// 読み込みを許可する（default-src 'none' の下ではこれらを明示しないとブロックされる）。
 const EXPECTED_MOBILE_CSP = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
   + "img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; "
-  + "base-uri 'none'; form-action 'none'; frame-src 'none'; frame-ancestors 'none'";
+  + "base-uri 'none'; form-action 'none'; frame-src 'none'; frame-ancestors 'none'; "
+  + "worker-src 'self'; manifest-src 'self'";
 
 test('renderer/index.html の CSP <meta> は期待した全ディレクティブと完全一致する', () => {
   assert.equal(readIndexCspMetaContent(), EXPECTED_INDEX_CSP);
@@ -57,4 +60,10 @@ test('buildMobileCsp() は frame-src none と frame-ancestors none の両方を�
   const csp = buildMobileCsp();
   assert.match(csp, /(?:^|;\s*)frame-src 'none'/);
   assert.match(csp, /(?:^|;\s*)frame-ancestors 'none'/);
+});
+
+test('buildMobileCsp() は worker-src self と manifest-src self を持つ（issue #396: Service Worker 登録・Manifest 読み込みの許可）', () => {
+  const csp = buildMobileCsp();
+  assert.match(csp, /(?:^|;\s*)worker-src 'self'/);
+  assert.match(csp, /(?:^|;\s*)manifest-src 'self'/);
 });

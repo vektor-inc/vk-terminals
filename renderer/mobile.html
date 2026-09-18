@@ -7,6 +7,13 @@
 <title>VK Terminals - Remote</title>
 <link rel="stylesheet" href="/shared.css">
 <link rel="stylesheet" href="mobile.css">
+<!-- Web App Manifest（issue #396）。iOS の「ホーム画面に追加」・Android の PWA インストールが
+     アプリ名・アイコンを読み取るのに使う。iOS 16.4 以降、ホーム画面に追加したページでないと
+     Web Push の通知を受け取れないため必須。 -->
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/icons/icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="VK Terminals">
 </head>
 <body>
 <header>
@@ -24,6 +31,34 @@
     <p>パソコンの VK Terminals を開き、設定パネルの「外出先から確認」タブに表示されている初回登録用の URL を、このスマートフォンでもう一度開いてください。</p>
     <button type="button" id="auth-expired-reload">再読み込み</button>
   </div>
+</div>
+<!-- 通知カード（issue #396）。header の直後・#usage-card の直前に置き、機能の入口が
+     初回に目に入る位置にする（司・植草が決めた画面設計）。状態ごとに5つの表示を
+     切り替える（まだ許可を求めていない / 許可済み・登録済み / ブラウザ側で拒否済み /
+     HTTPS でない / 通知に対応していないブラウザ）。切り替えロジックは mobile.js。 -->
+<div id="notify-card" role="group" aria-labelledby="notify-card-title">
+  <div class="u-card-title" id="notify-card-title">🔔 通知</div>
+  <div id="notify-state-not-requested">
+    <p class="notify-text">ペインが入力待ち・マージ待ちになった瞬間に、このスマートフォンへ通知を送ります。ページを閉じていても届きます。</p>
+    <button type="button" id="notify-request-btn" class="notify-btn">通知を受け取る</button>
+  </div>
+  <div id="notify-state-granted-registered" class="notify-row" hidden>
+    <p class="notify-text notify-text-compact">🔔 通知はこの端末で有効です</p>
+    <button type="button" id="notify-stop-btn" class="notify-btn notify-btn-secondary" aria-label="この端末の通知を停止する">停止</button>
+  </div>
+  <div id="notify-state-denied" hidden>
+    <p class="notify-text">このブラウザで通知がブロックされています。ブラウザのサイト設定で通知を「許可」に変更し、このページを再読み込みしてください。</p>
+    <button type="button" id="notify-reload-btn" class="notify-btn">再読み込み</button>
+  </div>
+  <div id="notify-state-insecure" hidden>
+    <p class="notify-text">通知を使うには、方法を切り替える必要があります。パソコンの VK Terminals で ⚙ →「モバイルから確認」タブ →「別の方法: tailscale serve で公開する」の手順に沿って、このページを https:// のアドレスで開き直してください。</p>
+  </div>
+  <div id="notify-state-unsupported" hidden>
+    <p class="notify-text">ご利用のブラウザは通知に対応していません。Android の Chrome、または iPhone の Safari（ホーム画面に追加）でお試しください。</p>
+  </div>
+  <!-- 状態変化の読み上げ（#task-list-live と同じ仕組みを流用）。視覚的には隠すが
+       スクリーンリーダーには伝える。 -->
+  <div class="notify-live" id="notify-live" aria-live="polite"></div>
 </div>
 <div id="usage-card" role="group" aria-labelledby="usage-card-title">
   <div class="u-card-title" id="usage-card-title">Claude使用量</div>
@@ -111,6 +146,9 @@
 <script src="/prBadge.js"></script>
 <script src="/statusPresentation.js"></script>
 <script src="/mobilePreviewText.js"></script>
+<!-- 通知カード（issue #396）の状態判定ロジック。utils/notificationUiState.js の UMD を
+     main.js が GET /notificationUiState.js で配信する（Node 側テストと共有）。 -->
+<script src="/notificationUiState.js"></script>
 <script src="/mobile.js"></script>
 </body>
 </html>

@@ -212,6 +212,10 @@ function buildAuthCookieHeader(token) {
 //     生の JSON しか出せない（画面側の JS が 401 を検知して確定文言を出す、という
 //     設計そのものが成立しない）。データを返す `/api/*` はここに載せず、引き続き
 //     すべて認証対象のままにする。
+//   - `/sw.js`・`/manifest.webmanifest`・`/icons/icon-*.png`（issue #396）も同じ理由で
+//     免除する。ブラウザは Service Worker の登録・Web App Manifest の解決を、ページ本体
+//     読み込み時（未登録端末でも到達する経路）に自動で行うため、他の静的ファイルと同様に
+//     認証不要にしないとインストール自体ができない。いずれも固定の内容のみを返す。
 const AUTH_EXEMPT_GET_PATHS = new Set([
   '/api/health',
   '/',
@@ -226,6 +230,11 @@ const AUTH_EXEMPT_GET_PATHS = new Set([
   '/prBadge.js',
   '/statusPresentation.js',
   '/mobilePreviewText.js',
+  '/notificationUiState.js',
+  '/sw.js',
+  '/manifest.webmanifest',
+  '/icons/icon-192.png',
+  '/icons/icon-512.png',
 ]);
 
 /**

@@ -174,6 +174,83 @@ button.k.kill.is-locked:active { background: #6b3f3f; border-color: #7c4a4a; }
   padding: 2px; }
 #err { display: none; background: #4a1e1e; color: #ffb4b4; font-size: 12px; padding: 6px 12px; }
 /* ==========================================================================
+   通知カード（issue #396）
+   header 直後・#usage-card 直前に常設。5状態（まだ許可を求めていない /
+   許可済み・登録済み / ブラウザ側で拒否済み / HTTPS でない / 通知に対応していない
+   ブラウザ）を mobile.js が hidden 属性で切り替える。
+   ========================================================================== */
+#notify-card {
+  margin: 10px 10px 0;
+  padding: 11px 13px;
+  background: var(--card);
+  border: 1px solid var(--card-border);
+  border-radius: 12px;
+}
+/* 見出しは使用量カードと同じ .u-card-title を共用し、様式を統一する。 */
+#notify-card .u-card-title { margin-bottom: 8px; }
+.notify-text {
+  margin: 0 0 10px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--fg);
+}
+/* 「許可済み・登録済み」状態は主役を譲って1行に縮める（司・植草が決めた画面設計）。
+   本文とボタンを横並びにし、縦の専有面積を最小限にする。 */
+.notify-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.notify-row .notify-text-compact {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg);
+}
+/* ボタンはアイコン単体にせずテキストラベルを持たせ、タップ標的を #add-pane-btn と
+   同じ min-height: 44px・padding・border-radius に揃える（デザインルール: リスト内の
+   ボタン様式は統一する）。 */
+.notify-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 44px;
+  padding: 10px 16px;
+  border-radius: 8px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.notify-btn:active { background: #1d4fd0; border-color: #1d4fd0; }
+.notify-btn:focus-visible { outline: 2px solid #58a6ff; outline-offset: 2px; }
+.notify-btn:disabled { opacity: 0.7; cursor: default; }
+/* 「停止」ボタンは能動的な導線と区別し、ニュートラルな配色にする
+   （.pane-order-button と同じ配色）。 */
+.notify-btn-secondary {
+  background: #2f353e;
+  border-color: #606c7c;
+  color: var(--fg);
+}
+.notify-btn-secondary:active { background: #3a424d; }
+/* 状態変化の読み上げ（issue #396）。#task-list-live と同じ視覚的に隠す実装。 */
+.notify-live {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* ==========================================================================
    使用量カード（Claude: issue #69/#73 / Codex: issue #218）
    data.usage / data.codexUsage があるときだけ #list の先頭に表示する。
    両カードは共通の構造（u-sec / u-track / u-fill / u-reset / u-note）を共有する。

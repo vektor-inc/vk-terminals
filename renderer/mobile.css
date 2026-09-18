@@ -202,6 +202,7 @@ button.k.kill.is-locked:active { background: #6b3f3f; border-color: #7c4a4a; }
   justify-content: space-between;
   gap: 10px;
 }
+.notify-row[hidden] { display: none; }
 .notify-row .notify-text-compact {
   margin: 0;
   font-size: 12px;

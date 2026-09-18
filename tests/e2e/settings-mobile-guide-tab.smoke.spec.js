@@ -145,6 +145,7 @@ test.describe.serial('設定パネルの説明タブ「モバイルから確認�
       'うまく開けないときは',
       'Tailscale とは',
       '別の方法: tailscale serve で公開する',
+      '通知を受け取る（方法 2 でお使いの場合）',
       'セキュリティ上の注意',
     ]);
 
@@ -207,7 +208,9 @@ test.describe.serial('設定パネルの説明タブ「モバイルから確認�
       .toContainText('同じプライベートネットワーク（tailnet）');
 
     // 手順 1 は番号付きリスト、開けないときの確認点は順序を持たないリスト。
-    await expect(win.locator(`${PANEL_MOBILE} ol.settings-content-list li`)).toHaveCount(3);
+    // 「通知を受け取る（方法 2 でお使いの場合）」節（issue #396）にも番号付きリストが
+    // あり、手順 1（3件）と合わせて ol の li は 6 件になる。
+    await expect(win.locator(`${PANEL_MOBILE} ol.settings-content-list li`)).toHaveCount(6);
     await expect(win.locator(`${PANEL_MOBILE} ul.settings-content-list li`)).toHaveCount(3);
 
     // コードブロックは「IP の調べ方（手順 2）→ 現在の待ち受けアドレス（手順 3）→
@@ -251,9 +254,15 @@ test.describe.serial('設定パネルの説明タブ「モバイルから確認�
     // 注意書きは role="note" + トーンを表す語（色だけに依存しない）で伝える。
     // issue #313: 「保護されている」安心情報（info）と「0.0.0.0 は暗号化されない」
     // 警告（warning）を 2 ブロックに分けている（安心情報と警告を 1 つに同居させない）。
+    // issue #396: 「通知を受け取る（方法 2 でお使いの場合）」節にも info トーンの
+    // callout が 2 件あるため、callout 総数は 4 件（info 3 + warning 1）になる。
+    // 「保護されています」の callout はテキストで絞って特定する（data-tone="info"
+    // だけでは新設の2件も含めて複数ヒットしてしまうため）。
     const callouts = win.locator(`${PANEL_MOBILE} .settings-content-callout`);
-    await expect(callouts).toHaveCount(2);
-    const infoCallout = win.locator(`${PANEL_MOBILE} .settings-content-callout[data-tone="info"]`);
+    await expect(callouts).toHaveCount(4);
+    const infoCallout = win.locator(`${PANEL_MOBILE} .settings-content-callout[data-tone="info"]`, {
+      hasText: 'アクセストークンによる認証で保護されています',
+    });
     await expect(infoCallout).toHaveAttribute('role', 'note');
     await expect(infoCallout.locator('.settings-content-callout-label')).toHaveText('補足');
     await expect(infoCallout).toContainText('アクセストークンによる認証で保護されています');

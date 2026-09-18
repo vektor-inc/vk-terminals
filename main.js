@@ -94,6 +94,32 @@ const { buildMobileCsp } = require('./utils/csp');
 const { MAX_CLIPBOARD_TEXT_LENGTH, CLIPBOARD_MAX_LENGTH_ARG_PREFIX } = require('./utils/clipboardLimits');
 // POST /api/set-title の prMerged / waitingMerge（issue #44 / #363）共通の真偽値パーサ。
 const { parseStrictBoolFlag } = require('./utils/strictBoolFlag');
+// Web Push 通知（issue #396）。VAPID 鍵の生成・通知の暗号化と送信は web-push
+// （npm パッケージ）に任せる。採用理由は PR 本文を参照
+// （VAPID の JWT 署名・aes128gcm 暗号化を自前実装するコスト・実装ミスのリスクに対し、
+// 業界標準で保守されている実装を使う判断）。
+const webpush = require('web-push');
+const {
+  computeNotificationEvents,
+  buildNotificationPayload,
+} = require('./utils/notificationTrigger');
+const {
+  normalizeSubscription,
+  upsertSubscription,
+  removeSubscriptionByEndpoint,
+  canAddSubscription,
+  isExpiredSubscriptionStatus,
+} = require('./utils/webPushSubscriptions');
+// VAPID 鍵の形式検証（issue #396 安藤のセキュリティレビュー指摘・HIGH-1）。
+const { isValidVapidKeyPair } = require('./utils/webPushKeys');
+// 静的ファイル配信の一覧（issue #396 安藤のセキュリティレビュー指摘・LOW-9）。
+// utils/apiAuth.js の認証免除集合もここを正として導出しているため、配信対象を
+// 増減するときはこのファイル1か所を直せばよい。
+const { STATIC_FILES, resolveStaticFilePath } = require('./utils/staticRoutes');
+// ファイル読み込みエラーをログへ渡す前に例外オブジェクトをそのまま出さないよう変換する
+// （安藤の指摘・A-7）。VAPID 鍵ファイル・購読情報ファイルの両方の読み込みから使うため、
+// 単体テストで固定できるよう utils/ へ切り出している（司の指摘・B-2）。
+const { sanitizeFileReadErrorForLog } = require('./utils/fileReadError');
 const execFileAsync = promisify(execFile);
 
 let win;
@@ -134,6 +160,22 @@ let nextClosePaneRequestId = 1;
 const DATA_DIR = path.join(os.homedir(), '.vk-terminals');
 const STATE_FILE = path.join(DATA_DIR, 'states.json');
 const LOG_PREFIX = '[vk-terminals]';
+// Web Push（issue #396）: VAPID 鍵・購読情報（スマートフォンごとの通知の宛先）の保存先。
+// apiToken（config.json の apiToken）と同様に DATA_DIR（~/.vk-terminals/）配下に置くが、
+// あえて config.json とは別ファイルにする。理由（PR 本文にも記載）:
+//   - config.json は利用者が手で編集する前提のファイル（README にも編集手順がある）。
+//     VAPID 鍵はいったん生成したら二度と変わってはいけない値（変わると登録済みの端末
+//     すべてに通知が届かなくなる）で、apiToken のような「形式が壊れていたら安全側で
+//     再発行する」フォールバックは持たせられない（誤って書き換えられても検出できない）。
+//   - 購読情報はサーバー（VK Terminals）が管理する状態であり、config.json のような
+//     「設定」ではない。states.json（renderer から受け取った状態のキャッシュ）と
+//     同じ性質の実行時データのため、同じ DATA_DIR 直下に専用ファイルとして置く。
+const WEBPUSH_KEYS_FILE = path.join(DATA_DIR, 'webpush-keys.json');
+const WEBPUSH_SUBSCRIPTIONS_FILE = path.join(DATA_DIR, 'webpush-subscriptions.json');
+// VAPID の JWT（sub claim）に必須の連絡先識別子。個人の連絡先を埋め込まず、
+// プロジェクトの配布元 URL にする（https: を要求するプッシュ配信サーバーもあるため
+// mailto: ではなく https: を使う）。
+const WEBPUSH_VAPID_SUBJECT = 'https://github.com/vektor-inc/vk-terminals';
 
 // 信頼確認プロンプトの自動応答に関わる2つの時間窓を、e2e から「短縮」できるようにする
 // 入口（issue #371。安藤のセキュリティレビュー・必須2）。未設定・不正値（0以下・NaN・
@@ -611,6 +653,288 @@ if (!apiTokenPersisted) {
 
 function normalizeApiHost(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : '127.0.0.1';
+}
+
+// ─── Web Push（issue #396）────────────────────────────────────────────────────
+// VAPID 鍵の準備状況。
+//   - vapidKeys: 準備できた鍵ペア（{ publicKey, privateKey }）。未準備なら null。
+//   - vapidUnavailable: 生成・検証・setVapidDetails() のいずれかに失敗し、通知機能を
+//     使えないと確定した状態（安藤のセキュリティレビュー指摘・HIGH-1）。この状態でも
+//     アプリの起動・他機能には影響させない（通知機能だけを無効化する）。
+// 生成そのものは ensurePushReady() が遅延して行う（下記 LOW-8 対応）。ここでは
+// 「既に有効な鍵ファイルがあるなら読み込む」ところまでを起動時に済ませる。
+let vapidKeys = null;
+let vapidUnavailable = false;
+tryLoadExistingVapidKeys();
+
+// 購読情報（端末ごとの通知の宛先）はメモリ上に保持し、起動時に一度だけファイルから読み込む。
+// 追加・削除のたびに savePushSubscriptions() で永続化する（apiToken 同様、頻繁に書き換わる
+// ものではないため TTL メモ化はせずファイル I/O のたびに読み書きしても実用上問題ない）。
+let pushSubscriptions = loadPushSubscriptions();
+
+// 通知の送信契機（状態が変わった瞬間）を判定するための直前スナップショット
+// （termId → { waiting, waitingMerge }）。ipcMain.on('terminal:report-states', ...) の
+// たびに computeNotificationEvents() で更新する（utils/notificationTrigger.js 参照）。
+let notificationSnapshot = {};
+// プロセス起動後、terminal:report-states を最初に受け取ったかどうか（司の指摘・W-2）。
+// notificationSnapshot はプロセス起動のたびに空から始まるため、最初の報告では
+// 「既に入力待ち・マージ待ちだったペイン」も prevSnapshot 側が空 = 未入力待ち扱いになり、
+// 実際には状態が変わっていないのに通知イベントとして計算されてしまう。とくにマージ待ちは
+// vk-orchestrator が同じ値を送り続けるため、再起動のたびに同じペインへ通知が飛ぶ形になり、
+// issue #396 の完了条件「状態が変わった瞬間だけ送る」に反する。
+// そのため最初の1回の報告はスナップショットの「基準」を記録するだけにし、通知は送らない
+// （handleNotificationTriggers() 側で判定）。この判定はペインごとではなく、このフラグで
+// プロセス全体で1回だけに揃える。terminal:report-states は renderer が2秒ごとに全ペイン分の
+// states をまとめて1回の IPC で送る構成（renderer/app.js）のため、ipcMain.on の1回目の
+// 呼び出しが「起動後最初の報告」と一致し、ペイン単位のずれは生じない。
+let notificationBaselineEstablished = false;
+
+// 通知の有効期限（TTL）と、応答の無い宛先への接続を打ち切るまでの時間
+// （安藤のセキュリティレビュー指摘・MEDIUM-5）。
+//   - web-push の既定 TTL は 4 週間（実装を確認済み。PR 本文に記載）。通信できない間に
+//     溜まった通知が数日後にまとめてロック画面へ並ぶのを避けるため、900 秒（15分）に
+//     短縮する。入力待ち・マージ待ちは「今すぐ気づいてほしい」通知であり、届かないまま
+//     長時間経った通知はもう気づく意味が薄いため。
+//   - timeout 未指定だと応答しない宛先への接続が開いたままになりうるため 10 秒で打ち切る。
+const PUSH_TTL_SECONDS = 900;
+const PUSH_TIMEOUT_MS = 10000;
+
+/**
+ * 通知機能を使う直前（VAPID 公開鍵の取得・購読登録・送信）に呼ぶ。鍵がまだ無ければ
+ * ここで初めて生成する（LOW-8: 一度も通知を使ったことが無い環境に秘密鍵ファイルを
+ * 新規生成しない）。生成・検証・setVapidDetails() のいずれかに失敗した場合は
+ * vapidUnavailable を立てて以後は再試行せず false を返す（HIGH-1: 例外でアプリの
+ * 起動自体を落とさず、通知機能だけを無効化する）。
+ *
+ * 【生成の前に必ず読み直す理由（安藤のセキュリティレビュー再指摘・A-3）】鍵の生成を
+ * 初回利用まで遅らせたことで、生成が起こるタイミングが起動時から後ろへずれた。もし
+ * 他プロセス・別の起動から鍵ファイルが後から書き込まれていた場合、それを読まずに
+ * 新規生成して上書きしてしまうと、旧鍵で登録済みの端末の endpoint がプッシュ配信
+ * サーバー側で 403（署名鍵不一致）を返すようになる。403 は 404 / 410 ではないため
+ * isExpiredSubscriptionStatus() の削除対象に当たらず、宛先は永久に残ったまま
+ * エラーログを出し続け、利用者には「通知が来ない」としか見えない。そのため生成する
+ * 前に必ず tryLoadExistingVapidKeys() を試し、既にある鍵を拾えるならそれを使う。
+ * （単一プロセス内での二重生成は起きない。生成・setVapidDetails・書き込みがすべて
+ * 同期処理のため、この関数の呼び出し中に割り込みは入らない。二重起動そのものを防ぐ
+ * 対応（requestSingleInstanceLock）は今回のスコープ外。）
+ *
+ * 【鍵ファイルが壊れている場合は生成しない（司の指摘・W-1）】
+ * tryLoadExistingVapidKeys() が false を返す理由は2通りある。(a) 鍵ファイルが
+ * そもそも存在しない（初回起動）→ このあと新規生成してよい。(b) 鍵ファイルは存在するが
+ * 読み込み・形式検証に失敗した（壊れている）→ tryLoadExistingVapidKeys() 内で
+ * vapidUnavailable を立てて返ってくるため、ここではその値を見て生成をスキップする。
+ * (b) で無警告に新しい鍵を生成して上書きすると、登録済みの端末すべてが通知を
+ * 受け取れなくなる（このファイル冒頭のコメント・WEBPUSH_KEYS_FILE の説明のとおり、
+ * VAPID 鍵は apiToken と違って「壊れていたら安全側で再発行する」フォールバックを
+ * 持たせられない値）。
+ * @returns {boolean} 通知機能が使える状態なら true
+ */
+function ensurePushReady() {
+  if (vapidKeys) return true;
+  if (vapidUnavailable) return false;
+  if (tryLoadExistingVapidKeys()) return true;
+  // 鍵ファイルが「存在するが壊れている」場合は tryLoadExistingVapidKeys() が
+  // vapidUnavailable を立てて false を返す。この場合は新しい鍵を生成せず、
+  // 通知機能を無効のままにする（W-1）。
+  if (vapidUnavailable) return false;
+  try {
+    const generated = webpush.generateVAPIDKeys();
+    if (!isValidVapidKeyPair(generated)) {
+      throw new Error('generateVAPIDKeys() returned a key pair that failed format validation');
+    }
+    webpush.setVapidDetails(WEBPUSH_VAPID_SUBJECT, generated.publicKey, generated.privateKey);
+    if (!writeJsonFileSecure(WEBPUSH_KEYS_FILE, generated)) {
+      console.error(`${LOG_PREFIX} Failed to persist newly generated VAPID keys. Notifications will stop working after the next restart until this is fixed.`);
+    }
+    vapidKeys = { publicKey: generated.publicKey, privateKey: generated.privateKey };
+    return true;
+  } catch (e) {
+    console.error(`${LOG_PREFIX} Web Push disabled: failed to prepare VAPID keys`, e);
+    vapidUnavailable = true;
+    return false;
+  }
+}
+
+/**
+ * VAPID 鍵ファイルが読めない・壊れている場合の警告ログ（司の指摘・W-1・A-8・A-11・B-1）。
+ *
+ * 【呼び出し元の区別で分岐する（安藤の指摘・B-1）】以前は `e.code === 'EACCES'` かどうかで
+ * 「権限エラー」と「それ以外（形式不正扱い）」を分けていたが、読み込みエラーのコードは
+ * EACCES だけではない（EPERM・EBUSY・EIO・EMFILE・ENOTDIR・ELOOP・EROFS 等）。1.64.0 で
+ * Windows 対応が入っており、Node は Windows のアクセス拒否・排他ロックを EACCES ではなく
+ * EPERM・EBUSY で返すことがあるため、許可リスト方式では取りこぼしが起きる。取りこぼした
+ * 場合、中身は壊れていないのに「バックアップから復元するか削除して再生成」側の案内へ
+ * 落ちてしまい、運用者が正常な鍵ファイルを削除しかねない（登録済み端末全台の再登録が
+ * 必要になる。W-1・A-11 が防ごうとしていた結果そのもの）。
+ * そのため e.code を見る分岐はやめ、呼び出し元が既に知っている「読み込み
+ * （fs.readFileSync）自体が失敗したのか、読み込めた中身の形式検証（JSON.parse・鍵の形式
+ * 検証）が失敗したのか」の区別を options.readFailed として渡してもらう。
+ *   - readFailed: true（読み込み自体の失敗）→ 削除は案内せず、権限・入出力を直して
+ *     再起動するよう案内する（中身が壊れているとは限らないため）。
+ *   - readFailed 省略（形式検証の失敗）→ 従来どおりバックアップから復元／削除して
+ *     再生成の2択を案内する。
+ * @param {unknown} e
+ * @param {{ readFailed?: boolean }} [options]
+ */
+function logInvalidVapidKeyFile(e, options) {
+  const readFailed = !!(options && options.readFailed);
+  const safeError = sanitizeFileReadErrorForLog(e);
+  if (readFailed) {
+    console.error(
+      `${LOG_PREFIX} Cannot read the VAPID key file; notifications are disabled until this is fixed: ${WEBPUSH_KEYS_FILE}\n`
+      + `${LOG_PREFIX} To recover: fix the underlying file/directory permission or I/O issue so VK Terminals can read it, then restart VK Terminals.`,
+      safeError
+    );
+    return;
+  }
+  console.error(
+    `${LOG_PREFIX} VAPID key file exists but is invalid, refusing to regenerate it (regenerating would silently stop push notifications for every already-registered device): ${WEBPUSH_KEYS_FILE}\n`
+    + `${LOG_PREFIX} To recover, do one of the following: (1) restore ${WEBPUSH_KEYS_FILE} from a backup, or `
+    + `(2) delete ${WEBPUSH_KEYS_FILE} and restart VK Terminals to generate a new key pair — note that already-registered devices will need to re-register to receive notifications again.`,
+    safeError
+  );
+}
+
+/**
+ * 起動時に呼ぶ。WEBPUSH_KEYS_FILE に既に有効な鍵があれば読み込んで setVapidDetails() まで
+ * 済ませる。ファイルが無い場合は何もしない（false を返す。新規生成はここではしない＝LOW-8。
+ * 生成は ensurePushReady() が行う）。
+ * 読み込みに成功した鍵ファイルの権限は 0600 に直す（安藤のセキュリティレビュー指摘・
+ * MEDIUM-3: 外部から 0644 で置かれた鍵をそのまま使い続けないようにするため。
+ * 失敗しても警告のみで処理は続ける）。
+ *
+ * 【ファイルが存在するのに壊れている場合（司の指摘・W-1）】読み込み・JSON パース・形式
+ * 検証のいずれかに失敗した場合は、vapidUnavailable を立てて通知機能を無効化し、false を
+ * 返す。以前はこのケースでも「無い」場合と同じ false を返していたため、呼び出し元の
+ * ensurePushReady() が区別できず新しい鍵を生成して上書きしていた。壊れたファイルを
+ * 上書きすると、登録済みの端末すべてが無警告で通知を受け取れなくなる（鍵が変わると
+ * プッシュ配信サーバーが 403 を返すようになるため。このファイル冒頭の WEBPUSH_KEYS_FILE
+ * の説明を参照）。そのためここでは「存在しない」と「存在するが壊れている」を区別し、
+ * 後者は vapidUnavailable を立てて呼び出し元に伝える。
+ *
+ * 【存在判定に fs.existsSync() を使わない理由（司の指摘・A-8）】以前は existsSync() で
+ * 「無い」を判定していたが、「ファイルはあるが親ディレクトリの権限が無くて読めない」
+ * 場合にも existsSync() は false を返すことがあり、「無い」と誤認して新しい鍵を
+ * 生成 → 保存が権限エラーで失敗 → メモリ上の新しい鍵で起動を続けてしまっていた
+ * （ディスク上には正しい鍵が残ったままアプリだけ別の鍵で動く。W-1 が防ごうとした
+ * 「無警告の実質的な鍵変更」が別経路から起こる）。readFileSync() 1回の結果（成功／
+ * ENOENT／その他のエラー）だけで判定すれば、この競合が起こらない。また、存在判定を
+ * try の外に出していたことで「この関数は例外を投げない」という前提（安藤の HIGH-1）が
+ * 「existsSync() は例外を投げない」という1点に依存する形になっていたが、全体を
+ * try/catch の中へ戻すことでこの依存も無くなる。
+ * @returns {boolean}
+ */
+function tryLoadExistingVapidKeys() {
+  let text;
+  try {
+    text = fs.readFileSync(WEBPUSH_KEYS_FILE, 'utf8');
+  } catch (readError) {
+    if (readError && readError.code === 'ENOENT') return false; // 初回起動。生成してよい（LOW-8）
+    // ENOENT 以外（権限不足・入出力エラー等）。ファイルの実在も中身も確定できないため、
+    // 安全側として「壊れている」場合と同じ扱いにする（上書き生成しない）。ただし読み込み
+    // 自体の失敗であり中身の形式は未確認のため、ログの案内は「削除」を勧めない側にする
+    // （readFailed: true。安藤の指摘・B-1）。
+    vapidUnavailable = true;
+    logInvalidVapidKeyFile(readError, { readFailed: true });
+    return false;
+  }
+  try {
+    const raw = JSON.parse(text);
+    if (!isValidVapidKeyPair(raw)) {
+      throw new Error('file does not contain a valid VAPID key pair');
+    }
+    try {
+      fs.chmodSync(WEBPUSH_KEYS_FILE, 0o600);
+    } catch (chmodError) {
+      console.warn(`${LOG_PREFIX} Failed to tighten permissions on ${WEBPUSH_KEYS_FILE}`, chmodError);
+    }
+    webpush.setVapidDetails(WEBPUSH_VAPID_SUBJECT, raw.publicKey, raw.privateKey);
+    vapidKeys = { publicKey: raw.publicKey, privateKey: raw.privateKey };
+    return true;
+  } catch (e) {
+    // JSON パース失敗・形式不正のいずれか。新しい鍵を生成して上書きしないよう、
+    // ここで確定的に通知機能を無効化する（W-1）。
+    vapidUnavailable = true;
+    logInvalidVapidKeyFile(e);
+    return false;
+  }
+}
+
+/**
+ * 現在登録されている全端末へ Web Push 通知を送る。プッシュ配信サーバーから
+ * 404 / 410（宛先が無効）が返った購読情報は削除する（issue #396 必須条件）。
+ * それ以外のエラー（一時的なネットワーク障害等）は購読情報を保持したまま次回に委ねる。
+ * VAPID 鍵が準備できていない（ensurePushReady() が false）場合は何もしない。
+ * @param {{ title: string, body: string, tag: string }} payload
+ */
+async function sendPushNotificationToAllSubscriptions(payload) {
+  if (!pushSubscriptions.length) return;
+  if (!ensurePushReady()) return;
+  const body = JSON.stringify(payload);
+  // 送信対象の一覧はここ（await の前）でスナップショットする。送信中に別のリクエストで
+  // 新規登録・解除があっても、この一覧自体は取りこぼしなく送信を試みる。一方、削除処理の
+  // 基準にする pushSubscriptions（下の `next`）は await の後に改めて読むことで、送信中に
+  // 増えた新規登録を削除計算から誤って落とさないようにする（安藤のセキュリティレビュー
+  // 指摘・LOW-9 のコメント要望）。
+  const targets = pushSubscriptions;
+  const results = await Promise.allSettled(
+    targets.map((subscription) => webpush.sendNotification(subscription, body, {
+      TTL: PUSH_TTL_SECONDS,
+      timeout: PUSH_TIMEOUT_MS,
+    }))
+  );
+  let changed = false;
+  let next = pushSubscriptions;
+  results.forEach((result, index) => {
+    if (result.status === 'fulfilled') return;
+    const statusCode = result.reason && result.reason.statusCode;
+    if (isExpiredSubscriptionStatus(statusCode)) {
+      next = removeSubscriptionByEndpoint(next, targets[index].endpoint);
+      changed = true;
+      console.warn(`${LOG_PREFIX} Push subscription expired (HTTP ${statusCode}); removed.`);
+    } else {
+      console.error(`${LOG_PREFIX} Failed to send push notification`, result.reason);
+    }
+  });
+  if (changed) {
+    pushSubscriptions = next;
+    savePushSubscriptions(pushSubscriptions);
+  }
+}
+
+/**
+ * cachedStates（terminal:report-states で届いた最新の状態）から、入力待ち・マージ待ちへの
+ * 遷移を検知し、該当ペインへ通知を送る。設定（notifyOnWaiting / notifyOnWaitingMerge）が
+ * 無効な種別はイベント自体は計算するが送信しない（両方無効の間に始まった遷移は、有効化
+ * 後に再度遷移するまで通知されない。「状態が変わった瞬間だけ送る」という条件と矛盾しない）。
+ * 【起動直後の最初の報告は通知しない（司の指摘・W-2）】notificationSnapshot は
+ * プロセス起動のたびに空から始まるため、最初の報告をそのまま比較に使うと、既に
+ * 入力待ち・マージ待ちだったペインについて「変化した」と誤検知してしまう
+ * （notificationBaselineEstablished の定義コメントを参照）。そのため最初の1回かどうかを
+ * computeNotificationEvents() の isFirstReport に渡し、最初の1回は nextSnapshot を
+ * 基準として記録するだけにとどめる判断を utils/notificationTrigger.js 側に任せている。
+ * @param {object} states terminal:report-states の payload
+ */
+function handleNotificationTriggers(states) {
+  const config = usageConfig();
+  const notifyWaiting = config.notifyOnWaiting !== false;
+  const notifyMerge = config.notifyOnWaitingMerge !== false;
+  const isFirstReport = !notificationBaselineEstablished;
+  const { events, nextSnapshot } = computeNotificationEvents({
+    prevSnapshot: notificationSnapshot,
+    states,
+    excludePatterns: config.waitingExcludeCwdPatterns,
+    isFirstReport,
+  });
+  notificationSnapshot = nextSnapshot;
+  notificationBaselineEstablished = true;
+  events.forEach((event) => {
+    if (event.kind === 'waiting' && !notifyWaiting) return;
+    if (event.kind === 'merge' && !notifyMerge) return;
+    sendPushNotificationToAllSubscriptions(buildNotificationPayload(event)).catch((e) => {
+      console.error(`${LOG_PREFIX} Unexpected error while sending push notification`, e);
+    });
+  });
 }
 
 // 設定パネルへ渡す API サーバー状態。bind 結果は起動処理が確定した値を保持し、
@@ -1153,6 +1477,56 @@ function ensureApiToken() {
   const token = generateApiToken();
   const persisted = persistApiToken(token);
   return { token, persisted };
+}
+
+// ─── Web Push（issue #396）: VAPID 鍵・購読情報の保存に使う汎用の秘匿書き込み ───────
+// 汎用の atomicWriteJsonFile（settingsTargets.js）は「既存ファイルの権限を引き継ぐ」
+// 実装のため、persistApiToken と同じ理由でここでも専用の書き込みにし、秘密情報を
+// 常に 0600（所有者のみ読み書き可）で保存する。VAPID 鍵の確保自体（生成・検証・
+// setVapidDetails）は ensurePushReady() / tryLoadExistingVapidKeys()（上の「Web Push」節）
+// に集約している。
+function writeJsonFileSecure(targetPath, data) {
+  const dir = path.dirname(targetPath);
+  const tmpPath = path.join(dir, `.${path.basename(targetPath)}.${process.pid}.${Date.now()}.tmp`);
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
+    fs.chmodSync(tmpPath, 0o600);
+    fs.renameSync(tmpPath, targetPath);
+    fs.chmodSync(targetPath, 0o600);
+    return true;
+  } catch (e) {
+    console.error(`${LOG_PREFIX} Failed to write ${targetPath}`, e);
+    try {
+      if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
+    } catch (_cleanupError) {
+      // 元の保存エラーを優先する。
+    }
+    return false;
+  }
+}
+
+// ─── Web Push（issue #396）: 購読情報（端末ごとの通知の宛先）の永続化 ─────────────
+function loadPushSubscriptions() {
+  try {
+    if (!fs.existsSync(WEBPUSH_SUBSCRIPTIONS_FILE)) return [];
+    const raw = JSON.parse(fs.readFileSync(WEBPUSH_SUBSCRIPTIONS_FILE, 'utf8'));
+    if (!Array.isArray(raw)) return [];
+    return raw.map((item) => normalizeSubscription(item)).filter((item) => item !== null);
+  } catch (e) {
+    // ログに例外オブジェクトをそのまま出さないよう変更（安藤の指摘・A-7）。
+    console.error(
+      `${LOG_PREFIX} Failed to read push subscriptions: ${WEBPUSH_SUBSCRIPTIONS_FILE}`,
+      sanitizeFileReadErrorForLog(e)
+    );
+    return [];
+  }
+}
+
+function savePushSubscriptions(list) {
+  if (!writeJsonFileSecure(WEBPUSH_SUBSCRIPTIONS_FILE, Array.isArray(list) ? list : [])) {
+    console.error(`${LOG_PREFIX} Failed to persist push subscriptions: ${WEBPUSH_SUBSCRIPTIONS_FILE}`);
+  }
 }
 
 // env 未指定（スタンドアロン起動）時に使う組み込みディスクリプタ。静的な項目定義は
@@ -1747,6 +2121,11 @@ ipcMain.on('terminal:report-states', (event, states) => {
   const statesWithGenerations = mergeAgentGenerations(states, (termId) => agentGenerations.get(termId));
   const payload = JSON.stringify({ updatedAt: new Date().toISOString(), terminals: statesWithGenerations }, null, 2);
   fs.writeFile(STATE_FILE, payload, 'utf8', () => {});
+  // Web Push 通知（issue #396）: 入力待ち・マージ待ちへ変わった瞬間を検知して送信する。
+  // POST /api/set-status・POST /api/set-title 由来の値も、renderer 側の terminals[paneId] を
+  // 経由してこの states に反映されるため（renderer/app.js の VKIpc.on('terminal:set-status'|
+  // 'terminal:title', ...)）、ここ 1 か所で両方の経路を拾える。
+  handleNotificationTriggers(states);
 });
 
 async function isExistingDirectory(value) {
@@ -2016,66 +2395,123 @@ function startHttpApi() {
       return;
     }
 
-    // GET /mobile.css — mobile.html は静的ファイルサーバーではないため、
-    // CSS を外部化したファイルも明示的に配信する。
-    if (req.method === 'GET' && url.pathname === '/mobile.css') {
-      fs.readFile(path.join(__dirname, 'renderer', 'mobile.css'), (err, data) => {
+    // GET /mobile.css・/shared.css・宣言的ウィジェットの共有 UMD・/mobile.js・
+    // Service Worker（/sw.js）・Web App Manifest（/manifest.webmanifest）・
+    // アイコン（/icons/icon-*.png）— mobile.html は静的ファイルサーバーではないため、
+    // これらを明示的に配信する。配信対象・Content-Type・Cache-Control は
+    // utils/staticRoutes.js の STATIC_FILES を正とする（安藤のセキュリティレビュー
+    // 指摘・LOW-9: 「配信する表」と utils/apiAuth.js の「認証を免除する集合」が別々の
+    // 2つのリストになっていると、新しいファイルを追加する際に片方だけ書き足す事故が
+    // 起こりうるため、両方がこの1つの表を参照するようにした）。
+    if (req.method === 'GET' && Object.prototype.hasOwnProperty.call(STATIC_FILES, url.pathname)) {
+      const entry = STATIC_FILES[url.pathname];
+      fs.readFile(resolveStaticFilePath(__dirname, entry), (err, data) => {
         if (err) {
           res.writeHead(500, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'mobile css not found' }));
+          res.end(JSON.stringify({ error: 'static file not found' }));
           return;
         }
-        res.writeHead(200, { 'Content-Type': 'text/css; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.writeHead(200, {
+          'Content-Type': entry.contentType,
+          'Cache-Control': entry.cacheControl || 'no-store',
+        });
         res.end(data);
       });
       return;
     }
 
-    // GET /shared.css — mobile.html は静的ファイルサーバーではないため、
-    // PC / モバイル共通 CSS も明示的に配信する。
-    if (req.method === 'GET' && url.pathname === '/shared.css') {
-      fs.readFile(path.join(__dirname, 'renderer', 'shared.css'), (err, data) => {
-        if (err) {
-          res.writeHead(500, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'shared css not found' }));
+    // GET /api/push-public-key（issue #396）— モバイルページが PushManager.subscribe() の
+    // applicationServerKey に渡す VAPID 公開鍵。公開鍵自体は秘密情報ではないが、他の
+    // データ系 /api/* と同じく認証必須のままにする（一貫性のため。この 1 か所だけ免除する
+    // 理由が無い）。ensurePushReady() が false（VAPID 鍵の用意に失敗した。安藤のセキュリティ
+    // レビュー指摘・HIGH-1）の場合は 503 を返し、通知機能だけが使えないことを伝える。
+    if (req.method === 'GET' && url.pathname === '/api/push-public-key') {
+      if (!ensurePushReady()) {
+        res.writeHead(503, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ error: 'push notifications unavailable' }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ publicKey: vapidKeys.publicKey }));
+      return;
+    }
+
+    // POST /api/push-subscribe  { subscription: { endpoint, keys: { p256dh, auth } } }
+    //   — モバイルページが「通知を受け取る」を押し、PushManager.subscribe() で得た購読情報を
+    //   登録する（issue #396）。既存の更新系 API と同じ CSRF 対策（isForbiddenOrigin）と
+    //   認証（この関数より上のグローバル認証ゲート）を必須にする。
+    if (req.method === 'POST' && url.pathname === '/api/push-subscribe') {
+      if (isForbiddenOrigin(req)) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'forbidden origin' }));
+        return;
+      }
+      // VAPID 鍵が用意できない状態で登録しても送信できないため、先に確認する
+      // （安藤のセキュリティレビュー指摘・HIGH-1）。
+      if (!ensurePushReady()) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'push notifications unavailable' }));
+        return;
+      }
+      readJsonBody(req, res, 10 * 1024, (body) => {
+        let parsed;
+        try {
+          parsed = JSON.parse(body);
+        } catch (_e) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'invalid JSON' }));
           return;
         }
-        res.writeHead(200, { 'Content-Type': 'text/css; charset=utf-8', 'Cache-Control': 'no-store' });
-        res.end(data);
+        const normalized = normalizeSubscription(parsed && parsed.subscription);
+        if (!normalized) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'invalid subscription' }));
+          return;
+        }
+        // 保存件数の上限（安藤のセキュリティレビュー指摘・MEDIUM-4）。既存 endpoint の
+        // 更新（置き換え）は上限に関わらず常に許可する（canAddSubscription 参照）。
+        if (!canAddSubscription(pushSubscriptions, normalized.endpoint)) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'too many subscriptions' }));
+          return;
+        }
+        pushSubscriptions = upsertSubscription(pushSubscriptions, normalized);
+        savePushSubscriptions(pushSubscriptions);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
       });
       return;
     }
 
-    // GET /widgetContract.js / /widgetView.js / 共有 UMD / /mobile.js — モバイルは静的ファイルサーバーではないため、
-    // 宣言的ウィジェットの共有描画モジュール（PC 版と共通）とモバイル用 JS を明示的に配信する。
-    if (req.method === 'GET' && (
-      url.pathname === '/widgetContract.js'
-      || url.pathname === '/widgetView.js'
-      || url.pathname === '/terminalDisplay.js'
-      || url.pathname === '/urlSafety.js'
-      || url.pathname === '/prBadge.js'
-      || url.pathname === '/statusPresentation.js'
-      || url.pathname === '/mobilePreviewText.js'
-      || url.pathname === '/mobile.js'
-    )) {
-      const fileMap = {
-        '/widgetContract.js': path.join(__dirname, 'utils', 'widgetContract.js'),
-        '/widgetView.js': path.join(__dirname, 'renderer', 'widgetView.js'),
-        '/terminalDisplay.js': path.join(__dirname, 'renderer', 'terminalDisplay.js'),
-        '/urlSafety.js': path.join(__dirname, 'renderer', 'urlSafety.js'),
-        '/prBadge.js': path.join(__dirname, 'renderer', 'prBadge.js'),
-        '/statusPresentation.js': path.join(__dirname, 'renderer', 'statusPresentation.js'),
-        '/mobilePreviewText.js': path.join(__dirname, 'renderer', 'mobilePreviewText.js'),
-        '/mobile.js': path.join(__dirname, 'renderer', 'mobile.js'),
-      };
-      fs.readFile(fileMap[url.pathname], (err, data) => {
-        if (err) {
-          res.writeHead(500, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'widget module not found' }));
+    // POST /api/push-unsubscribe  { endpoint: "https://..." }
+    //   — モバイルページの「停止」ボタン。指定した endpoint の購読情報を削除する（issue #396）。
+    //   存在しない endpoint を指定してもエラーにはしない（既に削除済み・他端末のものでも
+    //   冪等に成功扱いにする。呼び出し元は自分の subscription の unsubscribe() 成否だけを見る）。
+    if (req.method === 'POST' && url.pathname === '/api/push-unsubscribe') {
+      if (isForbiddenOrigin(req)) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'forbidden origin' }));
+        return;
+      }
+      readJsonBody(req, res, 10 * 1024, (body) => {
+        let parsed;
+        try {
+          parsed = JSON.parse(body);
+        } catch (_e) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'invalid JSON' }));
           return;
         }
-        res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'no-store' });
-        res.end(data);
+        const endpoint = typeof parsed?.endpoint === 'string' ? parsed.endpoint : '';
+        if (!endpoint) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'endpoint required' }));
+          return;
+        }
+        pushSubscriptions = removeSubscriptionByEndpoint(pushSubscriptions, endpoint);
+        savePushSubscriptions(pushSubscriptions);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
       });
       return;
     }

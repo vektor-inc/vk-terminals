@@ -20,6 +20,7 @@ const {
   evaluateTokenRegistration,
   AUTH_COOKIE_NAME,
   AUTH_COOKIE_MAX_AGE_SECONDS,
+  AUTH_EXEMPT_GET_PATHS,
 } = require('../utils/apiAuth');
 
 test('generateApiToken: 64文字の16進文字列を生成する', () => {
@@ -263,6 +264,53 @@ test('isAuthExemptPath: ページ本体を構成する静的ファイルは true
   assert.equal(isAuthExemptPath('GET', '/prBadge.js'), true);
   assert.equal(isAuthExemptPath('GET', '/statusPresentation.js'), true);
   assert.equal(isAuthExemptPath('GET', '/mobilePreviewText.js'), true);
+  // issue #396: Service Worker・Web App Manifest・アイコン・通知 UI 状態判定モジュールも
+  // 同じ理由（固定の内容のみを返し、ページ本体の読み込みに必須）で免除する。
+  assert.equal(isAuthExemptPath('GET', '/notificationUiState.js'), true);
+  assert.equal(isAuthExemptPath('GET', '/sw.js'), true);
+  assert.equal(isAuthExemptPath('GET', '/manifest.webmanifest'), true);
+  assert.equal(isAuthExemptPath('GET', '/icons/icon-192.png'), true);
+  assert.equal(isAuthExemptPath('GET', '/icons/icon-512.png'), true);
+  // 植草の UX レビュー再指摘・U-1 で追加した宛先登録失敗時の理由別文言モジュール。
+  assert.equal(isAuthExemptPath('GET', '/pushErrorMessages.js'), true);
+});
+
+// 免除パスの表を utils/staticRoutes.js の1か所に正を寄せた副作用（安藤のセキュリティ
+// レビュー再指摘・A-4）。以前は「main.js が配信するパスの表」と「utils/apiAuth.js が
+// 免除するパスの集合」が別々の2リストだったため、書き漏れは「配信はされるが認証が
+// 必要」という壊れ方をして開発中に必ず気づけた。正を1か所（STATIC_FILES）にまとめた
+// ことで、今度は表に1行足すだけで静かに認証免除が広がる形に変わった。上のテストは
+// 「表のパスが免除されること」しか見ておらず、表が増えても落ちない。
+// このテストは免除パスの集合が、ここに明示列挙した 19 パスと完全一致することを固定し、
+// STATIC_FILES が増減したときに必ずここを通らせる（authExempt フラグ方式は正を1か所に
+// 保つ方針を崩すため採らない）。
+const EXPECTED_AUTH_EXEMPT_GET_PATHS = [
+  '/api/health',
+  '/',
+  '/index.html',
+  '/mobile.css',
+  '/shared.css',
+  '/widgetContract.js',
+  '/widgetView.js',
+  '/terminalDisplay.js',
+  '/urlSafety.js',
+  '/prBadge.js',
+  '/statusPresentation.js',
+  '/mobilePreviewText.js',
+  '/mobile.js',
+  '/notificationUiState.js',
+  '/pushErrorMessages.js',
+  '/sw.js',
+  '/manifest.webmanifest',
+  '/icons/icon-192.png',
+  '/icons/icon-512.png',
+];
+
+test('AUTH_EXEMPT_GET_PATHS: 免除パスの集合は明示列挙した19パスと完全一致する（安藤のセキュリティレビュー再指摘・A-4。新しい静的ファイルを STATIC_FILES に足したら、このテストを更新する意思決定を必ず一度通す）', () => {
+  const actual = [...AUTH_EXEMPT_GET_PATHS].sort();
+  const expected = [...EXPECTED_AUTH_EXEMPT_GET_PATHS].sort();
+  assert.deepEqual(actual, expected);
+  assert.equal(AUTH_EXEMPT_GET_PATHS.size, EXPECTED_AUTH_EXEMPT_GET_PATHS.length, '重複無しで19件であること');
 });
 
 test('isAuthExemptPath: データを返す /api/* はすべて false（唯一の例外は /api/health）', () => {
@@ -271,6 +319,10 @@ test('isAuthExemptPath: データを返す /api/* はすべて false（唯一の
   assert.equal(isAuthExemptPath('POST', '/api/send'), false);
   assert.equal(isAuthExemptPath('POST', '/api/set-title'), false);
   assert.equal(isAuthExemptPath('POST', '/api/new-pane'), false);
+  // issue #396: VAPID 公開鍵・購読情報の登録/解除は利用者データを含むため免除しない。
+  assert.equal(isAuthExemptPath('GET', '/api/push-public-key'), false);
+  assert.equal(isAuthExemptPath('POST', '/api/push-subscribe'), false);
+  assert.equal(isAuthExemptPath('POST', '/api/push-unsubscribe'), false);
 });
 
 test('isAuthExemptPath: メソッドが GET 以外なら免除パスでも false', () => {

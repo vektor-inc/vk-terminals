@@ -90,8 +90,253 @@ function showAuthExpired() {
   if (usageCardEl) usageCardEl.hidden = true;
   var codexUsageCardEl = document.getElementById("codex-usage-card");
   if (codexUsageCardEl) codexUsageCardEl.hidden = true;
+  var notifyCardEl = document.getElementById("notify-card");
+  if (notifyCardEl) notifyCardEl.hidden = true;
   if (addPaneBtn) addPaneBtn.hidden = true;
 }
+
+// ─── 通知カード（issue #396）───────────────────────────────────────────────
+// Web Push（ブラウザが標準で持つ、ページを閉じていても通知を受け取れる仕組み）の登録・
+// 停止。表示状態（5状態）の判定は utils/notificationUiState.js（Node/ブラウザ共有の
+// 純粋関数）に委ね、ここではブラウザ API とのやり取り・DOM 更新だけを行う。
+var notifyUiState = window.VKNotificationUiState;
+var notifyCard = document.getElementById("notify-card");
+var notifyStateEls = {
+  "not-requested": document.getElementById("notify-state-not-requested"),
+  "granted-registered": document.getElementById("notify-state-granted-registered"),
+  "denied": document.getElementById("notify-state-denied"),
+  "insecure": document.getElementById("notify-state-insecure"),
+  "unsupported": document.getElementById("notify-state-unsupported")
+};
+var notifyLiveEl = document.getElementById("notify-live");
+// 通知の登録・停止に関する失敗文言（issue #396 植草の UX レビュー・U-3・U-4）。#err /
+// showErr() は poll（状態取得、2秒周期）のたびに成功時に呼ばれて消えるため、
+// 「登録できる端末が20台に達しています」のような読んで行動してほしい文言が
+// 読み終える前に消えてしまう。この要素は poll に連動させず、通知の登録・停止操作の
+// 先頭（処理を始める瞬間）と、その操作が成功した表示更新と同時にだけ消す。
+// role="alert" は mobile.html 側で最初から静的に付けてある（暗黙で
+// aria-live="assertive"）。showErr() / #err 自体はここでは一切変更しない。
+// U-4（植草）: hidden による表示・非表示の切り替えはしない。hidden はアクセシビリティ
+// ツリーから要素ごと除外するため、切り替え前に本文を代入すると「ツリーから外れている
+// 間に本文が書き換わる」状態になり、読み上げソフトが新しい本文の出現を確実に検知できる
+// 保証が無い。#notify-live と同じ「常にツリーに置いたまま本文だけを差し替える」方針に
+// 揃え、空文字のときは mobile.css の .notify-error:empty で視覚的にだけ畳む。
+var notifyErrorEl = document.getElementById("notify-error");
+function setNotifyError(msg) {
+  if (!notifyErrorEl) return;
+  notifyErrorEl.textContent = msg || "";
+}
+var notifyRequestBtn = document.getElementById("notify-request-btn");
+var notifyStopBtn = document.getElementById("notify-stop-btn");
+var notifyReloadBtn = document.getElementById("notify-reload-btn");
+
+function isPushSupported() {
+  return ("Notification" in window) && ("serviceWorker" in navigator) && ("PushManager" in window);
+}
+
+function getNotificationPermission() {
+  return ("Notification" in window) ? Notification.permission : undefined;
+}
+
+// Service Worker の登録は一度だけ行い、以後は同じ Promise を使い回す
+// （通知ボタン連打・複数箇所からの呼び出しで多重登録しないため）。
+var swRegistrationPromise = null;
+function ensureServiceWorkerRegistration() {
+  if (!("serviceWorker" in navigator)) return Promise.resolve(null);
+  if (!swRegistrationPromise) {
+    swRegistrationPromise = navigator.serviceWorker.register("/sw.js").catch(function () {
+      swRegistrationPromise = null;
+      return null;
+    });
+  }
+  return swRegistrationPromise;
+}
+
+function getExistingPushSubscription() {
+  if (!isPushSupported()) return Promise.resolve(null);
+  return ensureServiceWorkerRegistration().then(function (reg) {
+    return reg ? reg.pushManager.getSubscription() : null;
+  }).catch(function () { return null; });
+}
+
+// PushManager.subscribe() の applicationServerKey は Uint8Array（バイナリ）を要求するため、
+// サーバーから受け取る base64url 文字列の VAPID 公開鍵を変換する。
+function urlBase64ToUint8Array(base64String) {
+  var padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  var base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+  var rawData = window.atob(base64);
+  var outputArray = new Uint8Array(rawData.length);
+  for (var i = 0; i < rawData.length; i++) {
+    outputArray[i] = rawData.charCodeAt(i);
+  }
+  return outputArray;
+}
+
+function showNotifyState(state) {
+  Object.keys(notifyStateEls).forEach(function (key) {
+    var el = notifyStateEls[key];
+    if (el) el.hidden = (key !== state);
+  });
+}
+
+function setNotifyLive(message) {
+  if (notifyLiveEl) notifyLiveEl.textContent = message || "";
+}
+
+// 現在のブラウザの状態（HTTPS か・対応ブラウザか・許可状態・購読済みか）から表示を切り替える。
+// 「停止」を押した直後は Notification.permission が "granted" のまま残る（ブラウザの仕様）ため、
+// permission ではなく hasSubscription（購読情報の有無）で granted-registered を判定する
+// （utils/notificationUiState.js のコメント参照。これにより停止後は未許可時と同じ
+// "通知を受け取る" 表示に戻る）。
+function refreshNotifyCard() {
+  if (!notifyCard || !notifyUiState) return Promise.resolve(null);
+  var isSecureContext = window.isSecureContext !== false;
+  var supported = isPushSupported();
+  var permission = getNotificationPermission();
+  return getExistingPushSubscription().then(function (sub) {
+    var state = notifyUiState.determineNotificationUiState({
+      isSecureContext: isSecureContext,
+      supported: supported,
+      permission: permission,
+      hasSubscription: !!sub
+    });
+    showNotifyState(state);
+    return state;
+  });
+}
+
+// ボタンの通常ラベルと処理中ラベル（issue #396 植草の UX レビュー指摘・低優先度）。
+// 許可ダイアログの通過〜サーバー登録・解除が完了するまでの通信中、押せなくなるだけでは
+// 「いま何が起きているか」が画面上・読み上げソフト上ともに伝わらないため、disabled と
+// 同時にラベルも一時的に切り替える。
+var NOTIFY_REQUEST_LABEL = "通知を受け取る";
+var NOTIFY_REQUEST_LABEL_BUSY = "登録中…";
+var NOTIFY_STOP_LABEL = "停止";
+var NOTIFY_STOP_LABEL_BUSY = "停止中…";
+
+var pushErrorMessages = window.VKPushErrorMessages;
+
+// 宛先登録に関わる fetch（GET /api/push-public-key・POST /api/push-subscribe）が
+// 失敗（!res.ok）を返したときに、利用者へ見せる文言を組み立てる（issue #396 植草の
+// UX レビュー再指摘・U-1）。以前は応答本文を読まず「通知の登録に失敗しました:
+// HTTP <番号>」とだけ表示しており、「登録できる端末が20台に達している」ことも
+// 「サーバー側で通知の準備に失敗している」ことも利用者に伝わらなかった。
+// 応答本文が読めない・JSON でない・理由が未知の場合は、従来どおりの HTTP ステータス
+// ベースの文言にフォールバックする（司の差し戻し指示: 未知の値は現状どおりでよい）。
+async function describePushRequestFailure(res) {
+  var reason = null;
+  try {
+    var json = await res.json();
+    if (json && typeof json.error === "string") reason = json.error;
+  } catch (e) {
+    // 本文が読めない・JSON でない場合はそのまま status ベースの文言にフォールバックする。
+  }
+  var known = pushErrorMessages && pushErrorMessages.describePushErrorReason(reason);
+  return known || ("通知の登録に失敗しました: HTTP " + res.status);
+}
+
+async function handleNotifyRequestClick() {
+  // 処理の先頭で前回の失敗文言を消す（司の差し戻し指示・U-3）。poll（状態取得）の
+  // タイミングには連動させない。
+  setNotifyError("");
+  if (notifyRequestBtn) {
+    notifyRequestBtn.disabled = true;
+    notifyRequestBtn.textContent = NOTIFY_REQUEST_LABEL_BUSY;
+  }
+  try {
+    var permission = await Notification.requestPermission();
+    if (permission !== "granted") {
+      await refreshNotifyCard();
+      return;
+    }
+    var reg = await ensureServiceWorkerRegistration();
+    if (!reg) {
+      setNotifyError("通知の登録に失敗しました");
+      await refreshNotifyCard();
+      return;
+    }
+    var keyRes = await fetch("/api/push-public-key", { cache: "no-store" });
+    if (keyRes.status === 401) { showAuthExpired(); return; }
+    if (!keyRes.ok) {
+      setNotifyError(await describePushRequestFailure(keyRes));
+      await refreshNotifyCard();
+      return;
+    }
+    var keyJson = await keyRes.json();
+    var subscription = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(keyJson.publicKey)
+    });
+    var res = await fetch("/api/push-subscribe", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ subscription: subscription.toJSON() })
+    });
+    if (res.status === 401) { showAuthExpired(); return; }
+    if (!res.ok) {
+      setNotifyError(await describePushRequestFailure(res));
+      await refreshNotifyCard();
+      return;
+    }
+    // 成功時の表示更新と同時に消す（司の差し戻し指示・U-3）。
+    setNotifyError("");
+    setNotifyLive("通知を有効にしました");
+    await refreshNotifyCard();
+  } catch (e) {
+    setNotifyError("通知の登録に失敗しました: " + (e && e.message ? e.message : e));
+    await refreshNotifyCard();
+  } finally {
+    if (notifyRequestBtn) {
+      notifyRequestBtn.disabled = false;
+      notifyRequestBtn.textContent = NOTIFY_REQUEST_LABEL;
+    }
+  }
+}
+
+// 「停止」の失敗も #notify-error に出す（司の判断: 植草の指摘は登録失敗が対象だが、
+// 同じ通知カード内の操作のため表示場所を揃えて一貫性を保つ）。
+async function handleNotifyStopClick() {
+  // 処理の先頭で前回の失敗文言を消す（登録側と同じ規則）。
+  setNotifyError("");
+  if (notifyStopBtn) {
+    notifyStopBtn.disabled = true;
+    notifyStopBtn.textContent = NOTIFY_STOP_LABEL_BUSY;
+  }
+  try {
+    var reg = await ensureServiceWorkerRegistration();
+    var subscription = reg ? await reg.pushManager.getSubscription() : null;
+    var endpoint = subscription ? subscription.endpoint : "";
+    if (subscription) {
+      try { await subscription.unsubscribe(); }
+      catch (e) { /* ブラウザ側の解除に失敗しても、サーバー側の登録削除は試みる */ }
+    }
+    if (endpoint) {
+      var res = await fetch("/api/push-unsubscribe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ endpoint: endpoint })
+      });
+      if (res.status === 401) { showAuthExpired(); return; }
+    }
+    // 成功時の表示更新と同時に消す（登録側と同じ規則）。
+    setNotifyError("");
+    setNotifyLive("通知を停止しました");
+    await refreshNotifyCard();
+  } catch (e) {
+    setNotifyError("通知の停止に失敗しました: " + (e && e.message ? e.message : e));
+  } finally {
+    if (notifyStopBtn) {
+      notifyStopBtn.disabled = false;
+      notifyStopBtn.textContent = NOTIFY_STOP_LABEL;
+    }
+  }
+}
+
+if (notifyRequestBtn) notifyRequestBtn.addEventListener("click", handleNotifyRequestClick);
+if (notifyStopBtn) notifyStopBtn.addEventListener("click", handleNotifyStopClick);
+if (notifyReloadBtn) notifyReloadBtn.addEventListener("click", function () { location.reload(); });
+
+if (notifyCard) refreshNotifyCard();
 
 // タスクの語彙・遷移・確認文言・色は自前に持たず、GET /api/widgets が返す宣言（tasks-widget.json の
 // サニタイズ済みペイロード）を共有レンダラ（/widgetView.js）で描画する。契約ロジックは

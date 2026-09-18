@@ -162,6 +162,39 @@
         },
         {
           "type": "heading",
+          "text": "通知を受け取る（方法 2 でお使いの場合）"
+        },
+        {
+          "type": "paragraph",
+          "text": "方法 2（tailscale serve で公開する）で開いている場合のみ、ペインが入力待ち・マージ待ちになった瞬間にスマートフォンへ通知を送れます。方法 1（apiHost に Tailscale IP を指定する方法）では、ブラウザの仕様により通知を使えません。"
+        },
+        {
+          "type": "list",
+          "ordered": true,
+          "items": [
+            "上記の手順で tailscale serve を実行し、表示された https:// のアドレスをスマートフォンで開きます。",
+            "iPhone の場合は、Safari の共有ボタンから「ホーム画面に追加」を行い、追加したアイコンから開き直してください（iOS の仕様により、ホーム画面に追加したページでないと通知を受け取れません）。Android の Chrome ではこの操作は不要です。",
+            "モバイルページ最上部の「通知」カードで「通知を受け取る」を押し、ブラウザの確認ダイアログで「許可」を選びます。"
+          ]
+        },
+        {
+          "type": "callout",
+          "tone": "info",
+          "text": "Safari で登録済みの状態からホーム画面に追加すると、Cookie が引き継がれず端末登録をやり直す必要がある場合があります。その場合は追加後の画面の案内に従って再登録してください。"
+        },
+        {
+          "type": "callout",
+          "tone": "info",
+          "text": "tailscale serve の公開アドレス（マシン名や tailnet 名）が変わると、登録済みの通知は届かなくなります。その場合はモバイルページで「通知を受け取る」を押し直してください。"
+        },
+        {
+          "type": "tabLink",
+          "label": "通知の送信設定（オン・オフ）へ移動",
+          "tab": "general",
+          "field": "notifyOnWaiting"
+        },
+        {
+          "type": "heading",
           "text": "セキュリティ上の注意"
         },
         {
@@ -259,6 +292,20 @@
           "type": "boolean",
           "default": true,
           "help": "Codex CLI の利用状況（セッション% / 週間制限% / トークン数）をサイドバーの「Codex使用量」に表示します。"
+        },
+        {
+          "key": "notifyOnWaiting",
+          "label": "入力待ちになったら通知する",
+          "type": "boolean",
+          "default": true,
+          "help": "ペインが入力待ちになった瞬間に、登録済みのスマートフォンへ通知を送ります。通知の受け取り方は「モバイルから確認」タブを参照してください。"
+        },
+        {
+          "key": "notifyOnWaitingMerge",
+          "label": "マージ待ちになったら通知する",
+          "type": "boolean",
+          "default": true,
+          "help": "ペインが PR のマージ待ちになった瞬間に、登録済みのスマートフォンへ通知を送ります。通知の受け取り方は「モバイルから確認」タブを参照してください。"
         },
         {
           "key": "gpu",

@@ -23,6 +23,13 @@
  *   - script-src はどちらも 'self' のみで、追加の許可は無い（mobile.js 等の
  *     スクリプトはこのサーバーが同一オリジンの絶対パスで配信するため、xterm 実体の
  *     ような file:// 越しの読み込みが発生しない）。
+ *   - worker-src 'self'（issue #396）。default-src 'none' の下では、Service Worker
+ *     登録（navigator.serviceWorker.register('/sw.js')）の取得先は script-src ではなく
+ *     worker-src が適用される。明示しないと default-src の 'none' にフォールバックし、
+ *     通知（Web Push）の受信に必須の Service Worker 登録がブロックされる。
+ *   - manifest-src 'self'（issue #396）。<link rel="manifest"> による
+ *     manifest.webmanifest の取得先。iOS の「ホーム画面に追加」・Android の
+ *     PWA インストールに使う。
  *
  * @returns {string} Content-Security-Policy ヘッダーの値
  */
@@ -39,6 +46,8 @@ function buildMobileCsp() {
     "form-action 'none'",
     "frame-src 'none'",
     "frame-ancestors 'none'",
+    "worker-src 'self'",
+    "manifest-src 'self'",
   ].join('; ');
 }
 

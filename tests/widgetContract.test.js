@@ -162,6 +162,31 @@ test('sanitizeWidget: reviewCoderabbit / reviewCodeReview の select コント�
   assert.equal(controls[1].options[1].command.action, 'set-review-code-review');
 });
 
+test('sanitizeWidget: specModel の select コントロールを保持する', () => {
+  const w = contract.sanitizeWidget(baseRawWidget({
+    groups: [{ id: 'ready', label: '準備完了', tone: 'info', items: [{
+      id: '254', title: 'spec model task', editable: true,
+      controls: [{
+        type: 'select',
+        field: 'specModel',
+        label: '仕様検討モデル',
+        ariaLabel: '仕様検討モデルを選択',
+        current: 'inherit',
+        options: [
+          { value: 'inherit', label: '継承' },
+          { value: 'high', label: '高', command: { action: 'set-spec-model', taskId: '254', to: 'high', expected: 'inherit' } },
+          { value: 'mid', label: '中', command: { action: 'set-spec-model', taskId: '254', to: 'mid', expected: 'inherit' } },
+          { value: 'low', label: '低', command: { action: 'set-spec-model', taskId: '254', to: 'low', expected: 'inherit' } },
+        ],
+      }],
+    }] }],
+  }));
+  const control = w.groups[0].items[0].controls[0];
+  assert.equal(control.field, 'specModel');
+  assert.equal(control.type, 'select');
+  assert.equal(control.options[1].command.action, 'set-spec-model');
+});
+
 test('sanitizeWidget: control.section は id / label を保持する（issue #389）', () => {
   const w = contract.sanitizeWidget(baseRawWidget({
     groups: [{ id: 'ready', label: '準備完了', tone: 'info', items: [{
@@ -298,6 +323,20 @@ test('sanitizeCommand: set-review-coderabbit / set-review-code-review の単一�
   });
 });
 
+test('sanitizeCommand: set-spec-model の単一コマンドを保持する', () => {
+  assert.deepEqual(contract.sanitizeCommand({
+    action: 'set-spec-model',
+    taskId: '254',
+    to: 'high',
+    expected: 'inherit',
+  }), {
+    action: 'set-spec-model',
+    taskId: '254',
+    to: 'high',
+    expected: 'inherit',
+  });
+});
+
 test('buildBatchCommandLine: apply-batch 断片に id / requestedAt を付与し ops を保持する', () => {
   const line = contract.buildBatchCommandLine(
     {
@@ -356,6 +395,24 @@ test('sanitizeBatchCommand: apply-batch の ops に set-review-coderabbit / set-
     ops: [
       { action: 'set-review-coderabbit', to: 'enabled', expected: 'disabled' },
       { action: 'set-review-code-review', to: 'enabled', expected: 'disabled' },
+    ],
+  });
+});
+
+test('sanitizeBatchCommand: apply-batch の ops に set-spec-model を含められる', () => {
+  assert.deepEqual(contract.sanitizeBatchCommand({
+    action: 'apply-batch',
+    taskId: '254',
+    ops: [
+      { action: 'set-status', to: 'awaiting-approval', expected: 'ready' },
+      { action: 'set-spec-model', to: 'mid', expected: 'inherit' },
+    ],
+  }), {
+    action: 'apply-batch',
+    taskId: '254',
+    ops: [
+      { action: 'set-status', to: 'awaiting-approval', expected: 'ready' },
+      { action: 'set-spec-model', to: 'mid', expected: 'inherit' },
     ],
   });
 });

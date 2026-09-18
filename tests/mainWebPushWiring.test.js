@@ -27,6 +27,18 @@
 //
 // 安藤の指摘どおり、当てて落ちることを手元で確認済み（確認後はバックアップとの差分
 // 比較で main.js を元に戻している。完了報告に手順と結果を記載）。
+//
+// 追加した不変条件（安藤の7ラウンド目レビュー・B-1・B-2）:
+//   7. logInvalidVapidKeyFile() は e.code の許可リスト（EACCES のみ特別扱い）で判定しない
+//      （B-1。EPERM・EBUSY 等の取りこぼしを検出）。
+//   8. tryLoadExistingVapidKeys() の読み込み失敗（ENOENT 以外）の catch は
+//      logInvalidVapidKeyFile() を readFailed: true 付きで呼び、形式不正の catch は
+//      readFailed を渡さずに呼ぶ（B-1。呼び出し元の区別が失われる変異を検出）。
+//   9. logInvalidVapidKeyFile() の readFailed 側の案内は削除を勧めない（B-1）。
+//   10. sanitizeFileReadErrorForLog() は utils/fileReadError.js から読み込み、main.js 内に
+//       再定義していない（B-2。切り出しの巻き戻しを検出）。
+//   11. loadPushSubscriptions() と logInvalidVapidKeyFile() は、ログへ渡す前に必ず
+//       sanitizeFileReadErrorForLog(e) を経由する（B-2。e を直接渡す形へ戻す変異を検出）。
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -57,6 +69,8 @@ function extractFunctionSource(signature) {
 const ensurePushReadySrc = extractFunctionSource('function ensurePushReady()');
 const tryLoadExistingVapidKeysSrc = extractFunctionSource('function tryLoadExistingVapidKeys()');
 const handleNotificationTriggersSrc = extractFunctionSource('function handleNotificationTriggers(states)');
+const logInvalidVapidKeyFileSrc = extractFunctionSource('function logInvalidVapidKeyFile(e, options)');
+const loadPushSubscriptionsSrc = extractFunctionSource('function loadPushSubscriptions()');
 
 test('ensurePushReady(): tryLoadExistingVapidKeys() の直後に vapidUnavailable ガードがある（W-1 のガード削除を検出）', () => {
   const callIdx = ensurePushReadySrc.indexOf('if (tryLoadExistingVapidKeys()) return true;');
@@ -117,5 +131,94 @@ test('handleNotificationTriggers(): isFirstReport の算出は notificationBasel
   assert.ok(
     computeIdx < updateIdx,
     'notificationBaselineEstablished の更新が isFirstReport の算出より前に来ている（起動後最初の報告を判定できなくなる）'
+  );
+});
+
+// ─── B-1（司の指摘。安藤の7ラウンド目レビュー） ──────────────────────────────
+// logInvalidVapidKeyFile() が e.code === 'EACCES' だけを権限エラーとして分岐していたため、
+// EPERM・EBUSY・EIO 等の他の読み込みエラーがすべて「削除して再生成」側の案内へ落ちていた
+// 問題（A-11 の取りこぼし）への回帰保護。
+
+test('logInvalidVapidKeyFile(): e.code の許可リスト判定（EACCES のみ特別扱い）を行わない（B-1。EPERM/EBUSY 等の取りこぼしを検出）', () => {
+  assert.doesNotMatch(
+    logInvalidVapidKeyFileSrc,
+    /e\.code === 'EACCES'/,
+    "e.code === 'EACCES' の判定が残っている（EPERM 等、他のエラー種別が削除案内側へ落ちる）"
+  );
+});
+
+test('tryLoadExistingVapidKeys(): 読み込み失敗（ENOENT 以外）の catch は logInvalidVapidKeyFile() を readFailed: true で呼ぶ（B-1。読み込み失敗と形式不正の呼び出し元を区別する）', () => {
+  assert.match(
+    tryLoadExistingVapidKeysSrc,
+    /logInvalidVapidKeyFile\(readError,\s*\{\s*readFailed:\s*true\s*\}\)/,
+    'readFileSync() の catch が readFailed: true を渡していない'
+  );
+});
+
+test('tryLoadExistingVapidKeys(): 形式不正（JSON パース失敗・鍵の形式検証失敗）の catch は readFailed を渡さずに呼ぶ（B-1。読み込み失敗と同じ扱いに戻す変異を検出）', () => {
+  const occurrences = [...tryLoadExistingVapidKeysSrc.matchAll(/logInvalidVapidKeyFile\(([^)]*)\)/g)];
+  assert.equal(occurrences.length, 2, `logInvalidVapidKeyFile() の呼び出しが2箇所であること（実際: ${occurrences.length}）`);
+  const readFailedCalls = occurrences.filter((m) => /readFailed/.test(m[1]));
+  const otherCalls = occurrences.filter((m) => !/readFailed/.test(m[1]));
+  assert.equal(readFailedCalls.length, 1, 'readFailed を渡す呼び出しが1箇所であること');
+  assert.equal(otherCalls.length, 1, 'readFailed を渡さない呼び出しが1箇所であること');
+});
+
+test('logInvalidVapidKeyFile(): readFailed 側の案内は削除を勧めず、権限・入出力の修正と再起動だけを案内する（B-1）', () => {
+  const ifIdx = logInvalidVapidKeyFileSrc.indexOf('if (readFailed) {');
+  assert.ok(ifIdx !== -1, 'readFailed の分岐が見つからない');
+  const returnIdx = logInvalidVapidKeyFileSrc.indexOf('return;', ifIdx);
+  assert.ok(returnIdx !== -1, 'readFailed 分岐の return が見つからない');
+  const block = logInvalidVapidKeyFileSrc.slice(ifIdx, returnIdx);
+  assert.doesNotMatch(block, /delete/i, 'readFailed 側の案内に削除の案内が含まれている（形式不正側の案内と混同している）');
+  assert.match(block, /restart/i, 'readFailed 側の案内に再起動の案内が含まれていない');
+});
+
+test('logInvalidVapidKeyFile(): readFailed でない場合（形式不正）は、従来どおりバックアップから復元／削除して再生成の2択を案内する（B-1）', () => {
+  const ifIdx = logInvalidVapidKeyFileSrc.indexOf('if (readFailed) {');
+  const returnIdx = logInvalidVapidKeyFileSrc.indexOf('return;', ifIdx);
+  const afterReadFailedBlock = logInvalidVapidKeyFileSrc.slice(returnIdx);
+  assert.match(afterReadFailedBlock, /restore/i, '形式不正側の案内にバックアップから復元する案内が含まれていない');
+  assert.match(afterReadFailedBlock, /delete/i, '形式不正側の案内に削除して再生成する案内が含まれていない');
+});
+
+// ─── B-2（司の指摘。安藤の7ラウンド目レビュー） ──────────────────────────────
+// sanitizeFileReadErrorForLog() を main.js から utils/fileReadError.js へ切り出したことへの
+// 回帰保護。切り出しの巻き戻し（main.js 内への再定義）と、2つの呼び出し元（鍵ファイル側・
+// 購読情報ファイル側）がこの関数を経由しなくなる変異の両方を検出する。
+
+test('main.js: sanitizeFileReadErrorForLog は utils/fileReadError.js から読み込み、main.js 内に再定義していない（B-2。切り出しの巻き戻しを検出）', () => {
+  assert.match(
+    source,
+    /require\(['"]\.\/utils\/fileReadError['"]\)/,
+    'utils/fileReadError.js からの require が見つからない'
+  );
+  assert.doesNotMatch(
+    source,
+    /function sanitizeFileReadErrorForLog\(/,
+    'main.js 内に sanitizeFileReadErrorForLog のローカル定義が残っている（utils/ への切り出しが巻き戻っている）'
+  );
+});
+
+test('loadPushSubscriptions(): 読み込み失敗のログは sanitizeFileReadErrorForLog(e) を経由する（B-2。e をそのまま渡す形へ戻す変異を検出）', () => {
+  assert.match(
+    loadPushSubscriptionsSrc,
+    /console\.error\(\s*[\s\S]*?sanitizeFileReadErrorForLog\(e\)/,
+    'console.error() が sanitizeFileReadErrorForLog(e) を経由していない'
+  );
+});
+
+test('logInvalidVapidKeyFile(): safeError（sanitizeFileReadErrorForLog(e) の結果）を算出してから console.error() へ渡す。e を直接渡す変異を検出（B-2）', () => {
+  assert.match(
+    logInvalidVapidKeyFileSrc,
+    /const safeError = sanitizeFileReadErrorForLog\(e\);/,
+    'safeError の算出が sanitizeFileReadErrorForLog(e) を経由していない'
+  );
+  const consoleErrorCalls = logInvalidVapidKeyFileSrc.match(/console\.error\(/g) || [];
+  assert.equal(consoleErrorCalls.length, 2, `console.error() の呼び出しが2箇所であること（実際: ${consoleErrorCalls.length}）`);
+  assert.doesNotMatch(
+    logInvalidVapidKeyFileSrc,
+    /console\.error\(\s*[\s\S]*?,\s*e\s*\);/,
+    'console.error() が safeError ではなく e を直接渡している箇所がある'
   );
 });

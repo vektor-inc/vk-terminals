@@ -116,6 +116,10 @@ const { isValidVapidKeyPair } = require('./utils/webPushKeys');
 // utils/apiAuth.js の認証免除集合もここを正として導出しているため、配信対象を
 // 増減するときはこのファイル1か所を直せばよい。
 const { STATIC_FILES, resolveStaticFilePath } = require('./utils/staticRoutes');
+// ファイル読み込みエラーをログへ渡す前に例外オブジェクトをそのまま出さないよう変換する
+// （安藤の指摘・A-7）。VAPID 鍵ファイル・購読情報ファイルの両方の読み込みから使うため、
+// 単体テストで固定できるよう utils/ へ切り出している（司の指摘・B-2）。
+const { sanitizeFileReadErrorForLog } = require('./utils/fileReadError');
 const execFileAsync = promisify(execFile);
 
 let win;
@@ -752,28 +756,33 @@ function ensurePushReady() {
 }
 
 /**
- * ファイル読み込みエラーをログへ渡す前に、例外オブジェクトをそのまま出さないよう
- * 変換する（安藤の指摘・A-7）。
+ * VAPID 鍵ファイルが読めない・壊れている場合の警告ログ（司の指摘・W-1・A-8・A-11・B-1）。
+ *
+ * 【呼び出し元の区別で分岐する（安藤の指摘・B-1）】以前は `e.code === 'EACCES'` かどうかで
+ * 「権限エラー」と「それ以外（形式不正扱い）」を分けていたが、読み込みエラーのコードは
+ * EACCES だけではない（EPERM・EBUSY・EIO・EMFILE・ENOTDIR・ELOOP・EROFS 等）。1.64.0 で
+ * Windows 対応が入っており、Node は Windows のアクセス拒否・排他ロックを EACCES ではなく
+ * EPERM・EBUSY で返すことがあるため、許可リスト方式では取りこぼしが起きる。取りこぼした
+ * 場合、中身は壊れていないのに「バックアップから復元するか削除して再生成」側の案内へ
+ * 落ちてしまい、運用者が正常な鍵ファイルを削除しかねない（登録済み端末全台の再登録が
+ * 必要になる。W-1・A-11 が防ごうとしていた結果そのもの）。
+ * そのため e.code を見る分岐はやめ、呼び出し元が既に知っている「読み込み
+ * （fs.readFileSync）自体が失敗したのか、読み込めた中身の形式検証（JSON.parse・鍵の形式
+ * 検証）が失敗したのか」の区別を options.readFailed として渡してもらう。
+ *   - readFailed: true（読み込み自体の失敗）→ 削除は案内せず、権限・入出力を直して
+ *     再起動するよう案内する（中身が壊れているとは限らないため）。
+ *   - readFailed 省略（形式検証の失敗）→ 従来どおりバックアップから復元／削除して
+ *     再生成の2択を案内する。
  * @param {unknown} e
- * @returns {unknown}
+ * @param {{ readFailed?: boolean }} [options]
  */
-function sanitizeFileReadErrorForLog(e) {
-  return e instanceof SyntaxError ? `${e.name} while parsing the file` : e;
-}
-
-/**
- * VAPID 鍵ファイルが読めない・壊れている場合の警告ログ（司の指摘・W-1・A-8・A-11）。
- * EACCES（権限不足で読めない）の場合は、ファイルの中身が壊れているとは限らないため
- * 「削除」を案内せず、権限を直すよう案内する。それ以外（形式不正・その他の読み込み
- * エラー）は、バックアップから復元するか削除して再生成する2択を案内する。
- * @param {unknown} e
- */
-function logInvalidVapidKeyFile(e) {
+function logInvalidVapidKeyFile(e, options) {
+  const readFailed = !!(options && options.readFailed);
   const safeError = sanitizeFileReadErrorForLog(e);
-  if (e && e.code === 'EACCES') {
+  if (readFailed) {
     console.error(
-      `${LOG_PREFIX} Cannot read the VAPID key file due to a permission error; notifications are disabled until this is fixed: ${WEBPUSH_KEYS_FILE}\n`
-      + `${LOG_PREFIX} To recover: fix the file/directory permissions so VK Terminals can read it, then restart VK Terminals.`,
+      `${LOG_PREFIX} Cannot read the VAPID key file; notifications are disabled until this is fixed: ${WEBPUSH_KEYS_FILE}\n`
+      + `${LOG_PREFIX} To recover: fix the underlying file/directory permission or I/O issue so VK Terminals can read it, then restart VK Terminals.`,
       safeError
     );
     return;
@@ -821,10 +830,12 @@ function tryLoadExistingVapidKeys() {
     text = fs.readFileSync(WEBPUSH_KEYS_FILE, 'utf8');
   } catch (readError) {
     if (readError && readError.code === 'ENOENT') return false; // 初回起動。生成してよい（LOW-8）
-    // ENOENT 以外（権限不足等）。ファイルの実在も中身も確定できないため、安全側として
-    // 「壊れている」場合と同じ扱いにする（上書き生成しない）。
+    // ENOENT 以外（権限不足・入出力エラー等）。ファイルの実在も中身も確定できないため、
+    // 安全側として「壊れている」場合と同じ扱いにする（上書き生成しない）。ただし読み込み
+    // 自体の失敗であり中身の形式は未確認のため、ログの案内は「削除」を勧めない側にする
+    // （readFailed: true。安藤の指摘・B-1）。
     vapidUnavailable = true;
-    logInvalidVapidKeyFile(readError);
+    logInvalidVapidKeyFile(readError, { readFailed: true });
     return false;
   }
   try {

@@ -16,11 +16,19 @@ const {
   TITLE_TRUNCATION_SUFFIX,
 } = require('../utils/notificationTrigger');
 
+// 実物の renderer/app.js が terminal:report-states で送る形に合わせ、waiting・
+// externalWaiting は常に boolean で持たせる（司の指摘・B-3）。以前はこの2フィールドを
+// 一切セットしておらず、derivePaneNotificationState() の後方互換フォールバック
+// （t.waiting が無い場合に t.status === 'waiting' を内部判定として扱う）を経由する形に
+// なっていたため、externalWaiting: true を computeNotificationEvents() へ渡すテストが
+// リポジトリ全体で0件だった（安藤の7ラウンド目レビュー・B-3）。
 function pane(overrides) {
   return {
     termId: '1',
     cwd: '/Users/dev/project',
     status: 'idle',
+    waiting: false,
+    externalWaiting: false,
     apiWaitingMerge: false,
     displayTitle: '',
     apiTitle: '',
@@ -29,9 +37,13 @@ function pane(overrides) {
   };
 }
 
-test('derivePaneNotificationState: status が waiting なら waiting: true', () => {
-  const result = derivePaneNotificationState(pane({ status: 'waiting' }), []);
+test('derivePaneNotificationState: waiting フィールドが無い（後方互換）場合、status が waiting なら内部判定 waiting: true として扱う', () => {
+  // pane() は実物の送出形（waiting フィールドあり）を模すため、ここだけ pane() を経由せず
+  // waiting フィールド自体を持たない生のオブジェクトで、フォールバック経路を直接検証する。
+  const result = derivePaneNotificationState({ cwd: '/Users/dev/project', status: 'waiting' }, []);
   assert.equal(result.waiting, true);
+  assert.equal(result.waitingInternal, true);
+  assert.equal(result.waitingExternal, false);
   assert.equal(result.waitingMerge, false);
 });
 
@@ -40,25 +52,27 @@ test('derivePaneNotificationState: apiWaitingMerge が true なら waitingMerge:
   assert.equal(result.waitingMerge, true);
 });
 
-test('derivePaneNotificationState: waitingExcludeCwdPatterns に一致する cwd は waiting も waitingMerge も false になる（externalWaiting 経由でも除外する）', () => {
+test('derivePaneNotificationState: waitingExcludeCwdPatterns に一致する cwd は waiting も waitingMerge も false になる（externalWaiting 経由でも除外する。司の指摘・B-3。以前は status: \'waiting\' だけで externalWaiting をセットしておらず、内部判定側しか検証できていなかった）', () => {
   const result = derivePaneNotificationState(
-    pane({ cwd: '/Users/dev/orchestrator-worktree', status: 'waiting', apiWaitingMerge: true }),
+    pane({ cwd: '/Users/dev/orchestrator-worktree', externalWaiting: true, apiWaitingMerge: true }),
     ['orchestrator-worktree']
   );
   assert.equal(result.waiting, false);
+  assert.equal(result.waitingInternal, false);
+  assert.equal(result.waitingExternal, false);
   assert.equal(result.waitingMerge, false);
 });
 
 test('derivePaneNotificationState: 除外パターンに一致しない cwd は通常どおり判定する', () => {
   const result = derivePaneNotificationState(
-    pane({ cwd: '/Users/dev/other-project', status: 'waiting' }),
+    pane({ cwd: '/Users/dev/other-project', waiting: true }),
     ['orchestrator-worktree']
   );
   assert.equal(result.waiting, true);
 });
 
 test('computeNotificationEvents: 入力待ちでない→入力待ちの遷移だけがイベントになる', () => {
-  const states = { 'pane-1': pane({ termId: '1', status: 'waiting' }) };
+  const states = { 'pane-1': pane({ termId: '1', waiting: true, status: 'waiting' }) };
   const { events } = computeNotificationEvents({ prevSnapshot: {}, states, excludePatterns: [] });
   assert.equal(events.length, 1);
   assert.equal(events[0].kind, 'waiting');
@@ -66,7 +80,7 @@ test('computeNotificationEvents: 入力待ちでない→入力待ちの遷移�
 });
 
 test('computeNotificationEvents: 既に waiting だったペインが waiting のままなら再通知しない（連発防止）', () => {
-  const states = { 'pane-1': pane({ termId: '1', status: 'waiting' }) };
+  const states = { 'pane-1': pane({ termId: '1', waiting: true, status: 'waiting' }) };
   const prevSnapshot = { '1': { waiting: true, waitingMerge: false } };
   const { events } = computeNotificationEvents({ prevSnapshot, states, excludePatterns: [] });
   assert.equal(events.length, 0);
@@ -77,7 +91,7 @@ test('computeNotificationEvents: waiting → 非waiting → waiting と再度変
   let snapshot = {};
   const step1 = computeNotificationEvents({
     prevSnapshot: snapshot,
-    states: { 'pane-1': pane({ termId: '1', status: 'waiting' }) },
+    states: { 'pane-1': pane({ termId: '1', waiting: true, status: 'waiting' }) },
     excludePatterns,
   });
   snapshot = step1.nextSnapshot;
@@ -93,7 +107,7 @@ test('computeNotificationEvents: waiting → 非waiting → waiting と再度変
 
   const step3 = computeNotificationEvents({
     prevSnapshot: snapshot,
-    states: { 'pane-1': pane({ termId: '1', status: 'waiting' }) },
+    states: { 'pane-1': pane({ termId: '1', waiting: true, status: 'waiting' }) },
     excludePatterns,
   });
   assert.equal(step3.events.length, 1); // 再度 waiting になったら再通知する
@@ -162,7 +176,7 @@ test('computeNotificationEvents: 同一ペインで waiting（内部判定）と
   // waiting・merge それぞれ独立に判定され、2件のイベントになる。
   const step4 = computeNotificationEvents({
     prevSnapshot: step3.nextSnapshot,
-    states: { 'pane-1': pane({ termId: '1', status: 'waiting', apiWaitingMerge: true }) },
+    states: { 'pane-1': pane({ termId: '1', waiting: true, status: 'waiting', apiWaitingMerge: true }) },
     excludePatterns,
     isFirstReport: false,
   });
@@ -172,7 +186,7 @@ test('computeNotificationEvents: 同一ペインで waiting（内部判定）と
 });
 
 test('computeNotificationEvents: 除外パターンに一致するペインは waiting になってもイベントを出さない', () => {
-  const states = { 'pane-1': pane({ termId: '1', cwd: '/x/orchestrator', status: 'waiting' }) };
+  const states = { 'pane-1': pane({ termId: '1', cwd: '/x/orchestrator', waiting: true, status: 'waiting' }) };
   const { events } = computeNotificationEvents({ prevSnapshot: {}, states, excludePatterns: ['orchestrator'] });
   assert.equal(events.length, 0);
 });
@@ -180,7 +194,7 @@ test('computeNotificationEvents: 除外パターンに一致するペインは w
 test('computeNotificationEvents: states から消えた termId は nextSnapshot からも消える（ペインを閉じた場合の GC）', () => {
   const step1 = computeNotificationEvents({
     prevSnapshot: {},
-    states: { 'pane-1': pane({ termId: '1', status: 'waiting' }) },
+    states: { 'pane-1': pane({ termId: '1', waiting: true, status: 'waiting' }) },
     excludePatterns: [],
   });
   assert.ok('1' in step1.nextSnapshot);
@@ -194,7 +208,7 @@ test('computeNotificationEvents: states から消えた termId は nextSnapshot 
 
 test('computeNotificationEvents: isFirstReport が true の最初の報告では、入力待ち・マージ待ちのペインが含まれていても events は0件（司の指摘・W-2）', () => {
   const states = {
-    'pane-1': pane({ termId: '1', status: 'waiting' }),
+    'pane-1': pane({ termId: '1', waiting: true, status: 'waiting' }),
     'pane-2': pane({ termId: '2', status: 'idle', apiWaitingMerge: true }),
   };
   const { events, nextSnapshot } = computeNotificationEvents({
@@ -218,7 +232,7 @@ test('computeNotificationEvents: isFirstReport が true の最初の報告では
 test('computeNotificationEvents: 2回目の報告（isFirstReport: false）では、最初の報告から状態が変わったペインだけ通知される（司の指摘・W-2）', () => {
   const excludePatterns = [];
   const firstStates = {
-    'pane-1': pane({ termId: '1', status: 'waiting' }), // 起動時点で既に入力待ち
+    'pane-1': pane({ termId: '1', waiting: true, status: 'waiting' }), // 起動時点で既に入力待ち
     'pane-2': pane({ termId: '2', status: 'idle' }),
   };
   const first = computeNotificationEvents({
@@ -231,8 +245,8 @@ test('computeNotificationEvents: 2回目の報告（isFirstReport: false）で�
 
   // 2回目: pane-2 が新たに waiting になった（pane-1 は waiting のまま = 変化なし）。
   const secondStates = {
-    'pane-1': pane({ termId: '1', status: 'waiting' }),
-    'pane-2': pane({ termId: '2', status: 'waiting' }),
+    'pane-1': pane({ termId: '1', waiting: true, status: 'waiting' }),
+    'pane-2': pane({ termId: '2', waiting: true, status: 'waiting' }),
   };
   const second = computeNotificationEvents({
     prevSnapshot: first.nextSnapshot,
@@ -248,7 +262,7 @@ test('computeNotificationEvents: 2回目の報告（isFirstReport: false）で�
 test('computeNotificationEvents: 2回目の報告で最初の報告から状態が変わっていないペインには通知されない（司の指摘・W-2）', () => {
   const excludePatterns = [];
   const firstStates = {
-    'pane-1': pane({ termId: '1', status: 'waiting', apiWaitingMerge: true }), // 起動時点で既に両方
+    'pane-1': pane({ termId: '1', waiting: true, status: 'waiting', apiWaitingMerge: true }), // 起動時点で既に両方
   };
   const first = computeNotificationEvents({
     prevSnapshot: {},
@@ -356,17 +370,107 @@ test('computeNotificationEvents: 内部判定の入力待ちには A-10 の抑�
   assert.equal(second.events[0].termId, '1');
 });
 
+// ─── B-3（司の指摘。安藤の7ラウンド目レビュー） ──────────────────────────────
+// 上の一連の A-10 テストは、マージ待ち（apiWaitingMerge・完全に外部由来のフィールド）
+// 側は手厚く検証されていたが、「入力待ち」の外部由来（externalWaiting・POST
+// /api/set-status 由来）側には computeNotificationEvents() へ externalWaiting: true を
+// 渡すテストが1件も無く、安藤が当てた4つの変異（外部由来の抑制を丸ごと削除／抑制を
+// 内部判定にも広げる〔司が明示した線引きの違反〕／入力待ち除外の設定を外部由来にだけ
+// 効かせない／内部判定と外部由来の分離を潰す）がすべてすり抜けていた。ここに追加する。
+
+test('computeNotificationEvents: 外部由来の入力待ち（externalWaiting）の最初の true は基準記録のみで通知されず、false を経た2回目の true は通知される（司の指摘・B-3。マージ待ち側の既存テストの入力待ち版）', () => {
+  const excludePatterns = [];
+  const baseline = computeNotificationEvents({
+    prevSnapshot: {},
+    states: { 'pane-1': pane({ termId: '1', externalWaiting: true, status: 'waiting' }) },
+    excludePatterns,
+  });
+  assert.equal(baseline.events.length, 0);
+  assert.equal(baseline.nextSnapshot['1'].waitingExternalBaselineSeen, true);
+
+  const cleared = computeNotificationEvents({
+    prevSnapshot: baseline.nextSnapshot,
+    states: { 'pane-1': pane({ termId: '1', externalWaiting: false, status: 'idle' }) },
+    excludePatterns,
+  });
+  assert.equal(cleared.events.length, 0);
+
+  const second = computeNotificationEvents({
+    prevSnapshot: cleared.nextSnapshot,
+    states: { 'pane-1': pane({ termId: '1', externalWaiting: true, status: 'waiting' }) },
+    excludePatterns,
+  });
+  assert.equal(second.events.length, 1);
+  assert.equal(second.events[0].kind, 'waiting');
+  assert.equal(second.events[0].termId, '1');
+});
+
+test('computeNotificationEvents: 外部由来の入力待ちの初回 true と内部判定の入力待ち true が同時に来ても通知される（内部判定が外部の抑制に巻き込まれない。司の指摘・B-3）', () => {
+  const excludePatterns = [];
+  const first = computeNotificationEvents({
+    prevSnapshot: {},
+    states: { 'pane-1': pane({ termId: '1' }) }, // waiting: false, externalWaiting: false（pane() の既定値）
+    excludePatterns,
+    isFirstReport: true,
+  });
+  assert.equal(first.events.length, 0);
+
+  const second = computeNotificationEvents({
+    prevSnapshot: first.nextSnapshot,
+    states: { 'pane-1': pane({ termId: '1', waiting: true, externalWaiting: true, status: 'waiting' }) },
+    excludePatterns,
+    isFirstReport: false,
+  });
+  assert.equal(second.events.length, 1);
+  assert.equal(second.events[0].kind, 'waiting');
+});
+
+test('computeNotificationEvents: 除外 cwd のペインは内部判定・外部由来・マージ待ちのいずれが true でも通知されない（除外設定が外部由来にだけ効いていない状態を検出。司の指摘・B-3）', () => {
+  const excludePatterns = ['excluded'];
+  const excludedPane = (overrides) => pane({ cwd: '/Users/dev/excluded', ...overrides });
+  const first = computeNotificationEvents({
+    prevSnapshot: {},
+    states: { 'pane-1': excludedPane({}) },
+    excludePatterns,
+    isFirstReport: true,
+  });
+  assert.equal(first.events.length, 0);
+
+  const second = computeNotificationEvents({
+    prevSnapshot: first.nextSnapshot,
+    states: { 'pane-1': excludedPane({ waiting: true, externalWaiting: true, apiWaitingMerge: true, status: 'waiting' }) },
+    excludePatterns,
+  });
+  assert.equal(second.events.length, 0);
+});
+
+test('computeNotificationEvents: 除外パターンを外すと同じ入力で通知が出る（上のテストが除外なしでも空振りでないことの確認。司の指摘・B-3）', () => {
+  const pane1 = (overrides) => pane({ cwd: '/Users/dev/excluded', ...overrides });
+  const first = computeNotificationEvents({
+    prevSnapshot: {},
+    states: { 'pane-1': pane1({}) },
+    excludePatterns: [],
+    isFirstReport: true,
+  });
+  const second = computeNotificationEvents({
+    prevSnapshot: first.nextSnapshot,
+    states: { 'pane-1': pane1({ waiting: true, status: 'waiting' }) },
+    excludePatterns: [],
+  });
+  assert.equal(second.events.length, 1);
+});
+
 test('computeNotificationEvents: paneLabel は displayTitle を優先し、無ければ既定名 "Terminal <termId>"', () => {
   const withTitle = computeNotificationEvents({
     prevSnapshot: {},
-    states: { 'pane-1': pane({ termId: '3', status: 'waiting', displayTitle: 'PR #123 の対応' }) },
+    states: { 'pane-1': pane({ termId: '3', waiting: true, status: 'waiting', displayTitle: 'PR #123 の対応' }) },
     excludePatterns: [],
   });
   assert.equal(withTitle.events[0].paneLabel, 'PR #123 の対応');
 
   const withoutTitle = computeNotificationEvents({
     prevSnapshot: {},
-    states: { 'pane-1': pane({ termId: '3', status: 'waiting' }) },
+    states: { 'pane-1': pane({ termId: '3', waiting: true, status: 'waiting' }) },
     excludePatterns: [],
   });
   assert.equal(withoutTitle.events[0].paneLabel, 'Terminal 3');

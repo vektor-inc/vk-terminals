@@ -663,6 +663,53 @@ test('render: 同じ section.id でも間に別項目を挟んで再登場した
   assert.equal(fieldsets[2].querySelectorAll((el) => el.tagName === 'SELECT').length, 1);
 });
 
+test('render: 実際の並び（ステータス/優先度/実行方式/自動マージ → 仕様検討 → レビュー）で、仕様検討セクションを挟んでもレビューの見出しは消えない（issue #401）', () => {
+  const widget = sanitized([
+    { id: 'ready', label: '実行待ち', tone: 'info', items: [{
+      id: '10', title: 'T', editable: true,
+      controls: [
+        { type: 'select', field: 'status', label: 'ステータス', current: 'ready',
+          options: [{ value: 'ready', label: '実行待ち' }] },
+        { type: 'select', field: 'priority', label: '優先度', current: 'medium',
+          options: [{ value: 'medium', label: '中' }] },
+        { type: 'select', field: 'sequential', label: '実行方式', current: 'parallel',
+          options: [{ value: 'parallel', label: '並列' }] },
+        { type: 'select', field: 'automerge', label: '自動マージ', current: 'disabled',
+          options: [{ value: 'disabled', label: 'しない' }] },
+        { type: 'select', field: 'specModel', label: 'モデル', current: 'inherit',
+          section: { id: 'spec-model', label: '仕様検討' },
+          options: [{ value: 'inherit', label: '継承' }] },
+        { type: 'select', field: 'reviewCodeReview', label: 'コードレビュー', current: 'disabled',
+          section: { id: 'review', label: 'レビュー' },
+          options: [{ value: 'disabled', label: 'しない' }] },
+        { type: 'select', field: 'reviewCoderabbit', label: 'CodeRabbit', current: 'disabled',
+          section: { id: 'review', label: 'レビュー' },
+          options: [{ value: 'disabled', label: 'しない' }] },
+      ],
+    }] },
+  ]);
+  const { groupsEl } = openEditPanel(widget);
+
+  const fieldsets = groupsEl.querySelectorAll((el) => el.classList.contains('task-edit-section'));
+  // 仕様検討・レビューの 2 グループ（section 無しの 4 項目は fieldset を作らない）。
+  assert.equal(fieldsets.length, 2);
+  const legends = groupsEl.querySelectorAll((el) => el.tagName === 'LEGEND');
+  assert.deepEqual(legends.map((l) => l.textContent), ['仕様検討', 'レビュー']);
+
+  // 仕様検討の fieldset には specModel の select が 1 個入る。
+  assert.equal(fieldsets[0].querySelectorAll((el) => el.tagName === 'SELECT').length, 1);
+  // レビューの fieldset には reviewCodeReview / reviewCoderabbit の 2 個が、仕様検討を挟んでも分断されずに入る。
+  assert.equal(fieldsets[1].querySelectorAll((el) => el.tagName === 'SELECT').length, 2);
+
+  // section 無しの 4 項目（ステータス/優先度/実行方式/自動マージ）は fieldset の外に平坦に並ぶ。
+  const controlsContainer = groupsEl.querySelectorAll((el) => el.classList.contains('task-edit-controls'))[0];
+  assert.deepEqual(
+    controlsContainer.children.map((c) => c.tagName),
+    ['LABEL', 'LABEL', 'LABEL', 'LABEL', 'FIELDSET', 'FIELDSET'],
+  );
+  assert.equal(groupsEl.querySelectorAll((el) => el.tagName === 'SELECT').length, 7);
+});
+
 test('render: section 付きと section 無しの項目が混在する場合、無し項目を挟むと前後の同じ section.id は別グループになる', () => {
   const widget = sanitized([
     { id: 'ready', label: '実行待ち', tone: 'info', items: [{

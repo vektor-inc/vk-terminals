@@ -271,4 +271,9 @@ module.exports = {
   buildAuthCookieHeader,
   isAuthExemptPath,
   evaluateTokenRegistration,
+  // テスト専用の公開（安藤のセキュリティレビュー再指摘・A-4）。utils/staticRoutes.js の
+  // 表が増えるだけで静かに認証免除が広がらないよう、tests/apiAuth.test.js が
+  // 「免除パスの集合 === 明示列挙したパス」の完全一致を確認するために使う。
+  // アプリ本体（main.js）はこの値を直接参照せず isAuthExemptPath() 経由で使うこと。
+  AUTH_EXEMPT_GET_PATHS,
 };

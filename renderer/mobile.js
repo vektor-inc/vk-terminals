@@ -197,6 +197,27 @@ var NOTIFY_REQUEST_LABEL_BUSY = "登録中…";
 var NOTIFY_STOP_LABEL = "停止";
 var NOTIFY_STOP_LABEL_BUSY = "停止中…";
 
+var pushErrorMessages = window.VKPushErrorMessages;
+
+// 宛先登録に関わる fetch（GET /api/push-public-key・POST /api/push-subscribe）が
+// 失敗（!res.ok）を返したときに、利用者へ見せる文言を組み立てる（issue #396 植草の
+// UX レビュー再指摘・U-1）。以前は応答本文を読まず「通知の登録に失敗しました:
+// HTTP <番号>」とだけ表示しており、「登録できる端末が20台に達している」ことも
+// 「サーバー側で通知の準備に失敗している」ことも利用者に伝わらなかった。
+// 応答本文が読めない・JSON でない・理由が未知の場合は、従来どおりの HTTP ステータス
+// ベースの文言にフォールバックする（司の差し戻し指示: 未知の値は現状どおりでよい）。
+async function describePushRequestFailure(res) {
+  var reason = null;
+  try {
+    var json = await res.json();
+    if (json && typeof json.error === "string") reason = json.error;
+  } catch (e) {
+    // 本文が読めない・JSON でない場合はそのまま status ベースの文言にフォールバックする。
+  }
+  var known = pushErrorMessages && pushErrorMessages.describePushErrorReason(reason);
+  return known || ("通知の登録に失敗しました: HTTP " + res.status);
+}
+
 async function handleNotifyRequestClick() {
   if (notifyRequestBtn) {
     notifyRequestBtn.disabled = true;
@@ -216,7 +237,11 @@ async function handleNotifyRequestClick() {
     }
     var keyRes = await fetch("/api/push-public-key", { cache: "no-store" });
     if (keyRes.status === 401) { showAuthExpired(); return; }
-    if (!keyRes.ok) throw new Error("HTTP " + keyRes.status);
+    if (!keyRes.ok) {
+      showErr(await describePushRequestFailure(keyRes));
+      await refreshNotifyCard();
+      return;
+    }
     var keyJson = await keyRes.json();
     var subscription = await reg.pushManager.subscribe({
       userVisibleOnly: true,
@@ -228,7 +253,11 @@ async function handleNotifyRequestClick() {
       body: JSON.stringify({ subscription: subscription.toJSON() })
     });
     if (res.status === 401) { showAuthExpired(); return; }
-    if (!res.ok) throw new Error("HTTP " + res.status);
+    if (!res.ok) {
+      showErr(await describePushRequestFailure(res));
+      await refreshNotifyCard();
+      return;
+    }
     setNotifyLive("通知を有効にしました");
     await refreshNotifyCard();
   } catch (e) {

@@ -113,6 +113,45 @@ const NOTIFICATION_BODY_TEXT = {
 // ロック画面での可読性の観点でも、100 文字あれば十分な情報量。
 const MAX_NOTIFICATION_TITLE_LENGTH = 100;
 
+// 切り詰めが発生したことを示す省略記号（植草の UX レビュー再指摘・U-2）。ロック画面では
+// 通知本体の続きを確認する手段が無いため、無音で切れているとタイトルの途中で終わって
+// いることに気づけない。
+const TITLE_TRUNCATION_SUFFIX = '…';
+
+/**
+ * 文字列を Unicode の書記素クラスタ（見た目上の1文字）単位の配列に分解する
+ * （安藤のセキュリティレビュー再指摘・A-5）。JS の文字列インデックス・length は
+ * UTF-16 コード単位基準のため、サロゲートペア（絵文字等）や結合文字列（肌色修飾・
+ * ZWJ で連結した家族絵文字・国旗など複数コードポイントで1つの見た目になる列）を
+ * 単純な slice() で切ると、組を割って壊れた表示（片割れの絵文字・置換文字）になる。
+ * Intl.Segmenter（Node 16+ で利用可能）が使えない環境ではコードポイント単位
+ * （サロゲートペアは保持するが、結合絵文字までは保証しない）にフォールバックする。
+ * @param {string} str
+ * @returns {string[]}
+ */
+function toGraphemes(str) {
+  if (typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function') {
+    const segmenter = new Intl.Segmenter('ja', { granularity: 'grapheme' });
+    return Array.from(segmenter.segment(str), (s) => s.segment);
+  }
+  return Array.from(str); // フォールバック: コードポイント単位
+}
+
+/**
+ * タイトルを文字（書記素）単位で MAX_NOTIFICATION_TITLE_LENGTH 以内に切り詰める。
+ * 切り詰めが発生した場合だけ末尾に省略記号を付け、合計の書記素数が上限を超えない
+ * ようにする（安藤のセキュリティレビュー再指摘・A-5、植草の UX レビュー再指摘・U-2）。
+ * @param {string} rawTitle
+ * @param {number} maxLength
+ * @returns {string}
+ */
+function truncateNotificationTitle(rawTitle, maxLength) {
+  const graphemes = toGraphemes(rawTitle);
+  if (graphemes.length <= maxLength) return rawTitle;
+  const keep = Math.max(maxLength - TITLE_TRUNCATION_SUFFIX.length, 0);
+  return graphemes.slice(0, keep).join('') + TITLE_TRUNCATION_SUFFIX;
+}
+
 /**
  * computeNotificationEvents() が返した 1 件のイベントから、Web Push の通知ペイロード
  * （Service Worker の push イベントハンドラがそのまま showNotification に渡す形）を組み立てる。
@@ -125,9 +164,7 @@ function buildNotificationPayload(event) {
   const kind = event && event.kind === 'merge' ? 'merge' : 'waiting';
   const termId = event && event.termId != null ? String(event.termId) : '';
   const rawTitle = (event && event.paneLabel) || `Terminal ${termId}`;
-  const title = rawTitle.length > MAX_NOTIFICATION_TITLE_LENGTH
-    ? rawTitle.slice(0, MAX_NOTIFICATION_TITLE_LENGTH)
-    : rawTitle;
+  const title = truncateNotificationTitle(rawTitle, MAX_NOTIFICATION_TITLE_LENGTH);
   return {
     title,
     body: NOTIFICATION_BODY_TEXT[kind],
@@ -137,7 +174,9 @@ function buildNotificationPayload(event) {
 
 module.exports = {
   MAX_NOTIFICATION_TITLE_LENGTH,
+  TITLE_TRUNCATION_SUFFIX,
   derivePaneNotificationState,
   computeNotificationEvents,
   buildNotificationPayload,
+  truncateNotificationTitle,
 };

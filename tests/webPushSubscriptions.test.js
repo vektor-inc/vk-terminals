@@ -127,6 +127,40 @@ test('isPrivateOrLoopbackHostname: ループバック・リンクローカル・
   assert.equal(isPrivateOrLoopbackHostname('8.8.8.8'), false);
 });
 
+test('isPrivateOrLoopbackHostname: fe80::/10 の上半分（安藤のセキュリティレビュー再指摘・A-1）も判定する', () => {
+  // 以前は "fe80:" の前方一致のみで、同じ /10 の上半分（fe90::/12・fea0::/11・febf::1 等）を
+  // 取りこぼしていた。
+  assert.equal(isPrivateOrLoopbackHostname('fe80::1'), true);
+  assert.equal(isPrivateOrLoopbackHostname('fe90::1'), true);
+  assert.equal(isPrivateOrLoopbackHostname('fea0::1'), true);
+  assert.equal(isPrivateOrLoopbackHostname('febf::1'), true);
+  assert.equal(isPrivateOrLoopbackHostname('fec0::1'), false); // fe80::/10 の範囲外
+});
+
+test('isPrivateOrLoopbackHostname: IPv4 射影アドレス（::ffff:0:0/96）に埋め込んだ IPv4 での回避表記を落とす（安藤のセキュリティレビュー再指摘・A-1）', () => {
+  // 実際に安藤が動作確認した回避表記。new URL('https://[::ffff:127.0.0.1]/x').hostname は
+  // "[::ffff:7f00:1]" に正規化されるため（URL 実装の正規化仕様）、両方の表記を落とせる
+  // 必要がある。
+  assert.equal(isPrivateOrLoopbackHostname('::ffff:127.0.0.1'), true); // ドット区切り表記
+  assert.equal(isPrivateOrLoopbackHostname('::ffff:7f00:1'), true); // URL 正規化後の16進数表記
+  assert.equal(isPrivateOrLoopbackHostname('::ffff:10.0.0.1'), true);
+  assert.equal(isPrivateOrLoopbackHostname('::ffff:a00:1'), true);
+  assert.equal(isPrivateOrLoopbackHostname('::ffff:192.168.0.1'), true);
+  assert.equal(isPrivateOrLoopbackHostname('::ffff:c0a8:1'), true);
+  // ブラケット付き表記（URL#hostname の実際の返り値）でも同様に落とせること。
+  assert.equal(isPrivateOrLoopbackHostname('[::ffff:7f00:1]'), true);
+  // 公開アドレスを射影した場合は通す（誤検知しないこと）。8.8.8.8 = ::ffff:0808:0808
+  assert.equal(isPrivateOrLoopbackHostname('::ffff:8.8.8.8'), false);
+  assert.equal(isPrivateOrLoopbackHostname('::ffff:808:808'), false);
+});
+
+test('normalizeSubscription: IPv4 射影アドレスで私的アドレス判定を回避する endpoint は null（安藤のセキュリティレビュー再指摘・A-1）', () => {
+  assert.equal(normalizeSubscription({ endpoint: 'https://[::ffff:127.0.0.1]/x', keys: VALID_KEYS }), null);
+  assert.equal(normalizeSubscription({ endpoint: 'https://[::ffff:10.0.0.1]/x', keys: VALID_KEYS }), null);
+  assert.equal(normalizeSubscription({ endpoint: 'https://[::ffff:192.168.0.1]/x', keys: VALID_KEYS }), null);
+  assert.equal(normalizeSubscription({ endpoint: 'https://[febf::1]/x', keys: VALID_KEYS }), null);
+});
+
 test('upsertSubscription: 新規 endpoint は追加される', () => {
   const result = upsertSubscription([], VALID_SUB);
   assert.deepEqual(result, [VALID_SUB]);

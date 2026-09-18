@@ -149,6 +149,10 @@
 <!-- 通知カード（issue #396）の状態判定ロジック。utils/notificationUiState.js の UMD を
      main.js が GET /notificationUiState.js で配信する（Node 側テストと共有）。 -->
 <script src="/notificationUiState.js"></script>
+<!-- 宛先登録失敗時の理由別文言（issue #396 植草の UX レビュー再指摘・U-1）。
+     utils/pushErrorMessages.js の UMD を main.js が GET /pushErrorMessages.js で配信する
+     （Node 側テストと共有）。 -->
+<script src="/pushErrorMessages.js"></script>
 <script src="/mobile.js"></script>
 </body>
 </html>

@@ -62,6 +62,12 @@ const STATIC_FILES = {
     relPath: ['utils', 'notificationUiState.js'],
     contentType: 'text/javascript; charset=utf-8',
   },
+  // issue #396 植草の UX レビュー再指摘・U-1 で追加。宛先登録失敗時の理由別文言
+  // （Node/ブラウザ共有）。
+  '/pushErrorMessages.js': {
+    relPath: ['utils', 'pushErrorMessages.js'],
+    contentType: 'text/javascript; charset=utf-8',
+  },
   '/sw.js': {
     relPath: ['renderer', 'sw.js'],
     contentType: 'text/javascript; charset=utf-8',

@@ -36,6 +36,39 @@ const MAX_SUBSCRIPTIONS = 20;
 // 公開ドメイン・公開 IP を持つのが通常のため、プライベートアドレス制限とは両立する
 // （もし本当に private network 内でホストする要件が出た場合は、明示的な allowlist 設定を
 // 別途追加する形にすべきで、既定を緩めるべきではないと判断した）。
+// IPv4 射影アドレス（IPv4-mapped IPv6 address, ::ffff:0:0/96）に埋め込まれた IPv4 部分を
+// 取り出す（安藤のセキュリティレビュー再指摘・A-1）。
+//
+// 【回避の実例】`https://[::ffff:127.0.0.1]/x` を渡すと、Node の URL 実装は
+// ホスト名を正規化して `[::ffff:7f00:1]`（16進数2グループ表記）にする。以前の実装は
+// IPv4 パターン（ドット区切り10進数）にも fe80:/fc00: 系の判定にも一致しないため、
+// この表記のまま素通りしていた。`::ffff:10.0.0.1` → `::ffff:a00:1`、
+// `::ffff:192.168.0.1` → `::ffff:c0a8:1` も同様。実際に web-push（Node の https.request）は
+// このアドレスを IPv4 として解釈して接続するため、表記を変えるだけでプライベート
+// アドレス拒否をすり抜けられてしまっていた。
+//
+// ドット区切り表記（`::ffff:127.0.0.1`）と、URL 正規化後の16進数2グループ表記
+// （`::ffff:7f00:1`）の両方が入力として来うるため、両方を展開する。
+// @param {string} h 小文字化・ブラケット除去済みのホスト名
+// @returns {string|null} 埋め込まれた IPv4 アドレス（ドット区切り10進数）。埋め込みが無ければ null
+function extractIPv4MappedAddress(h) {
+  const dotted = h.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+  if (dotted) return dotted[1];
+
+  const hexGroups = h.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+  if (hexGroups) {
+    const g1 = parseInt(hexGroups[1], 16);
+    const g2 = parseInt(hexGroups[2], 16);
+    return [
+      (g1 >> 8) & 0xff,
+      g1 & 0xff,
+      (g2 >> 8) & 0xff,
+      g2 & 0xff,
+    ].join('.');
+  }
+  return null;
+}
+
 function isPrivateOrLoopbackHostname(hostname) {
   let h = typeof hostname === 'string' ? hostname.toLowerCase() : '';
   if (!h) return true; // 空はどのみち URL パースで弾かれるはずだが、念のため安全側に倒す。
@@ -56,12 +89,25 @@ function isPrivateOrLoopbackHostname(hostname) {
     return false;
   }
 
+  // IPv4 射影アドレス（::ffff:a.b.c.d 系）は埋め込まれた IPv4 部分で判定し直す（A-1）。
+  const mappedIPv4 = extractIPv4MappedAddress(h);
+  if (mappedIPv4) return isPrivateOrLoopbackHostname(mappedIPv4);
+
   // IPv6（ブラケットは上で除去済み）。
   if (h === '::1' || h === '::') return true; // loopback / unspecified
-  if (h.startsWith('fe80:')) return true; // fe80::/10 link-local
+  // fe80::/10 link-local。先頭16bitは "fe80"〜"febf" の範囲全体（第2バイトの上位2bitが
+  // "10" となる 0x80〜0xbf）を覆う必要がある。以前は "fe80:" の前方一致のみだったため、
+  // 同じ /10 の上半分（例: "febf::1"）を取りこぼしていた（安藤のセキュリティレビュー
+  // 再指摘・A-1）。
+  if (/^fe[89ab][0-9a-f]:/.test(h)) return true;
   if (/^f[cd][0-9a-f]{0,2}:/.test(h)) return true; // fc00::/7 unique local
   return false;
 }
+// 【拒否リスト方式の限界】この関数は拒否リスト方式であり完全ではない（例:
+// 100.64.0.0/10 の CGNAT 共有アドレス空間、192.0.0.0/24 の IETF Protocol Assignments
+// 等は今も通る）。目的は「主要な内部アドレスを塞ぐ」ことであり、全てのプライベート・
+// 特殊用途アドレス空間を網羅することは求めていない（司からの差し戻し・A-1 の修正方針に
+// 明記）。
 
 // PushManager.subscribe() の戻り値（JSON 化したもの）の形。endpoint はプッシュ配信サーバーが
 // 発行する宛先 URL（端末ごとに一意）で、これを購読情報の識別キーとして使う。

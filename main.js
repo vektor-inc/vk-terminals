@@ -689,11 +689,24 @@ const PUSH_TIMEOUT_MS = 10000;
  * 新規生成しない）。生成・検証・setVapidDetails() のいずれかに失敗した場合は
  * vapidUnavailable を立てて以後は再試行せず false を返す（HIGH-1: 例外でアプリの
  * 起動自体を落とさず、通知機能だけを無効化する）。
+ *
+ * 【生成の前に必ず読み直す理由（安藤のセキュリティレビュー再指摘・A-3）】鍵の生成を
+ * 初回利用まで遅らせたことで、生成が起こるタイミングが起動時から後ろへずれた。もし
+ * 他プロセス・別の起動から鍵ファイルが後から書き込まれていた場合、それを読まずに
+ * 新規生成して上書きしてしまうと、旧鍵で登録済みの端末の endpoint がプッシュ配信
+ * サーバー側で 403（署名鍵不一致）を返すようになる。403 は 404 / 410 ではないため
+ * isExpiredSubscriptionStatus() の削除対象に当たらず、宛先は永久に残ったまま
+ * エラーログを出し続け、利用者には「通知が来ない」としか見えない。そのため生成する
+ * 前に必ず tryLoadExistingVapidKeys() を試し、既にある鍵を拾えるならそれを使う。
+ * （単一プロセス内での二重生成は起きない。生成・setVapidDetails・書き込みがすべて
+ * 同期処理のため、この関数の呼び出し中に割り込みは入らない。二重起動そのものを防ぐ
+ * 対応（requestSingleInstanceLock）は今回のスコープ外。）
  * @returns {boolean} 通知機能が使える状態なら true
  */
 function ensurePushReady() {
   if (vapidKeys) return true;
   if (vapidUnavailable) return false;
+  if (tryLoadExistingVapidKeys()) return true;
   try {
     const generated = webpush.generateVAPIDKeys();
     if (!isValidVapidKeyPair(generated)) {

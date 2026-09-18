@@ -10,7 +10,9 @@ const {
   derivePaneNotificationState,
   computeNotificationEvents,
   buildNotificationPayload,
+  truncateNotificationTitle,
   MAX_NOTIFICATION_TITLE_LENGTH,
+  TITLE_TRUNCATION_SUFFIX,
 } = require('../utils/notificationTrigger');
 
 function pane(overrides) {
@@ -175,14 +177,43 @@ test('buildNotificationPayload: 同じペイン・同じ種別なら常に同じ
   assert.equal(first.tag, second.tag);
 });
 
-test('buildNotificationPayload: タイトルが上限を超えると切り詰める（安藤のセキュリティレビュー指摘・LOW-6）', () => {
+test('buildNotificationPayload: タイトルが上限を超えると切り詰め、末尾に省略記号を付ける（安藤のセキュリティレビュー指摘・LOW-6、植草の UX レビュー再指摘・U-2）', () => {
   const longLabel = 'あ'.repeat(MAX_NOTIFICATION_TITLE_LENGTH + 50);
   const payload = buildNotificationPayload({ termId: '1', kind: 'waiting', paneLabel: longLabel });
+  // 省略記号を含めた合計が上限を超えないこと。
   assert.equal(payload.title.length, MAX_NOTIFICATION_TITLE_LENGTH);
-  assert.equal(payload.title, longLabel.slice(0, MAX_NOTIFICATION_TITLE_LENGTH));
+  assert.ok(payload.title.endsWith(TITLE_TRUNCATION_SUFFIX), '切り詰めが発生したことが分かるよう末尾に省略記号が付くこと');
+  assert.equal(payload.title, 'あ'.repeat(MAX_NOTIFICATION_TITLE_LENGTH - TITLE_TRUNCATION_SUFFIX.length) + TITLE_TRUNCATION_SUFFIX);
 });
 
-test('buildNotificationPayload: タイトルが上限以内ならそのまま', () => {
+test('buildNotificationPayload: タイトルが上限以内ならそのまま（省略記号は付かない）', () => {
   const payload = buildNotificationPayload({ termId: '1', kind: 'waiting', paneLabel: 'ちょうどいい長さのペイン名' });
   assert.equal(payload.title, 'ちょうどいい長さのペイン名');
+});
+
+test('truncateNotificationTitle: ZWJ結合絵文字（サロゲートペア4つを連結した1書記素）の組を割らずに切り詰める（安藤のセキュリティレビュー再指摘・A-5）', () => {
+  // 家族の絵文字（👨‍👩‍👧‍👦）は4つのコードポイント（サロゲートペア）を ZWJ で連結した
+  // 1書記素。単純な文字列 slice()（UTF-16 コード単位基準）だと途中で割れて、
+  // 壊れた表示（片割れの絵文字・置換文字）になりうる。
+  const familyEmoji = '\u{1F468}‍\u{1F469}‍\u{1F467}‍\u{1F466}';
+
+  // ちょうど上限（グラフェム数100）なら絵文字を含めて切り詰めなし。
+  const exactLabel = 'x'.repeat(MAX_NOTIFICATION_TITLE_LENGTH - 1) + familyEmoji;
+  assert.equal(truncateNotificationTitle(exactLabel, MAX_NOTIFICATION_TITLE_LENGTH), exactLabel);
+
+  // 上限を1書記素超える（絵文字の直後にもう1文字ある）と切り詰めが発生する。
+  const overLabel = 'x'.repeat(MAX_NOTIFICATION_TITLE_LENGTH - 1) + familyEmoji + 'y';
+  const truncated = truncateNotificationTitle(overLabel, MAX_NOTIFICATION_TITLE_LENGTH);
+  // ZWJ（結合子）を含む断片が残っていないこと＝絵文字が割れていないことの直接的な確認。
+  assert.ok(!truncated.includes('‍'), 'ZWJ 結合絵文字が途中で割れて断片が残っている');
+  // 絵文字の先頭コードポイントだけが残っている（片割れ）ことが無いこと。
+  // 含むなら必ず完全な形（familyEmoji 全体）で含まれる。
+  if (truncated.includes('\u{1F468}')) {
+    assert.ok(truncated.includes(familyEmoji), '絵文字が丸ごとではなく断片で含まれている');
+  }
+});
+
+test('truncateNotificationTitle: 上限以内なら省略記号を付けずそのまま返す', () => {
+  assert.equal(truncateNotificationTitle('短いタイトル', MAX_NOTIFICATION_TITLE_LENGTH), '短いタイトル');
+  assert.equal(truncateNotificationTitle('', MAX_NOTIFICATION_TITLE_LENGTH), '');
 });

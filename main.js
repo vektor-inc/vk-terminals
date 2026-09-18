@@ -672,6 +672,18 @@ let pushSubscriptions = loadPushSubscriptions();
 // （termId → { waiting, waitingMerge }）。ipcMain.on('terminal:report-states', ...) の
 // たびに computeNotificationEvents() で更新する（utils/notificationTrigger.js 参照）。
 let notificationSnapshot = {};
+// プロセス起動後、terminal:report-states を最初に受け取ったかどうか（司の指摘・W-2）。
+// notificationSnapshot はプロセス起動のたびに空から始まるため、最初の報告では
+// 「既に入力待ち・マージ待ちだったペイン」も prevSnapshot 側が空 = 未入力待ち扱いになり、
+// 実際には状態が変わっていないのに通知イベントとして計算されてしまう。とくにマージ待ちは
+// vk-orchestrator が同じ値を送り続けるため、再起動のたびに同じペインへ通知が飛ぶ形になり、
+// issue #396 の完了条件「状態が変わった瞬間だけ送る」に反する。
+// そのため最初の1回の報告はスナップショットの「基準」を記録するだけにし、通知は送らない
+// （handleNotificationTriggers() 側で判定）。この判定はペインごとではなく、このフラグで
+// プロセス全体で1回だけに揃える。terminal:report-states は renderer が2秒ごとに全ペイン分の
+// states をまとめて1回の IPC で送る構成（renderer/app.js）のため、ipcMain.on の1回目の
+// 呼び出しが「起動後最初の報告」と一致し、ペイン単位のずれは生じない。
+let notificationBaselineEstablished = false;
 
 // 通知の有効期限（TTL）と、応答の無い宛先への接続を打ち切るまでの時間
 // （安藤のセキュリティレビュー指摘・MEDIUM-5）。
@@ -701,12 +713,26 @@ const PUSH_TIMEOUT_MS = 10000;
  * （単一プロセス内での二重生成は起きない。生成・setVapidDetails・書き込みがすべて
  * 同期処理のため、この関数の呼び出し中に割り込みは入らない。二重起動そのものを防ぐ
  * 対応（requestSingleInstanceLock）は今回のスコープ外。）
+ *
+ * 【鍵ファイルが壊れている場合は生成しない（司の指摘・W-1）】
+ * tryLoadExistingVapidKeys() が false を返す理由は2通りある。(a) 鍵ファイルが
+ * そもそも存在しない（初回起動）→ このあと新規生成してよい。(b) 鍵ファイルは存在するが
+ * 読み込み・形式検証に失敗した（壊れている）→ tryLoadExistingVapidKeys() 内で
+ * vapidUnavailable を立てて返ってくるため、ここではその値を見て生成をスキップする。
+ * (b) で無警告に新しい鍵を生成して上書きすると、登録済みの端末すべてが通知を
+ * 受け取れなくなる（このファイル冒頭のコメント・WEBPUSH_KEYS_FILE の説明のとおり、
+ * VAPID 鍵は apiToken と違って「壊れていたら安全側で再発行する」フォールバックを
+ * 持たせられない値）。
  * @returns {boolean} 通知機能が使える状態なら true
  */
 function ensurePushReady() {
   if (vapidKeys) return true;
   if (vapidUnavailable) return false;
   if (tryLoadExistingVapidKeys()) return true;
+  // 鍵ファイルが「存在するが壊れている」場合は tryLoadExistingVapidKeys() が
+  // vapidUnavailable を立てて false を返す。この場合は新しい鍵を生成せず、
+  // 通知機能を無効のままにする（W-1）。
+  if (vapidUnavailable) return false;
   try {
     const generated = webpush.generateVAPIDKeys();
     if (!isValidVapidKeyPair(generated)) {
@@ -727,19 +753,28 @@ function ensurePushReady() {
 
 /**
  * 起動時に呼ぶ。WEBPUSH_KEYS_FILE に既に有効な鍵があれば読み込んで setVapidDetails() まで
- * 済ませる。無い・壊れている場合は何もしない（false を返す。新規生成はしない＝LOW-8）。
+ * 済ませる。ファイルが無い場合は何もしない（false を返す。新規生成はここではしない＝LOW-8。
+ * 生成は ensurePushReady() が行う）。
  * 読み込みに成功した鍵ファイルの権限は 0600 に直す（安藤のセキュリティレビュー指摘・
  * MEDIUM-3: 外部から 0644 で置かれた鍵をそのまま使い続けないようにするため。
  * 失敗しても警告のみで処理は続ける）。
+ *
+ * 【ファイルが存在するのに壊れている場合（司の指摘・W-1）】読み込み・JSON パース・形式
+ * 検証のいずれかに失敗した場合は、vapidUnavailable を立てて通知機能を無効化し、false を
+ * 返す。以前はこのケースでも「無い」場合と同じ false を返していたため、呼び出し元の
+ * ensurePushReady() が区別できず新しい鍵を生成して上書きしていた。壊れたファイルを
+ * 上書きすると、登録済みの端末すべてが無警告で通知を受け取れなくなる（鍵が変わると
+ * プッシュ配信サーバーが 403 を返すようになるため。このファイル冒頭の WEBPUSH_KEYS_FILE
+ * の説明を参照）。そのためここでは「存在しない」と「存在するが壊れている」を区別し、
+ * 後者は vapidUnavailable を立てて呼び出し元に伝える。
  * @returns {boolean}
  */
 function tryLoadExistingVapidKeys() {
+  if (!fs.existsSync(WEBPUSH_KEYS_FILE)) return false;
   try {
-    if (!fs.existsSync(WEBPUSH_KEYS_FILE)) return false;
     const raw = JSON.parse(fs.readFileSync(WEBPUSH_KEYS_FILE, 'utf8'));
     if (!isValidVapidKeyPair(raw)) {
-      console.warn(`${LOG_PREFIX} ${WEBPUSH_KEYS_FILE} does not contain a valid VAPID key pair; it will be regenerated when notifications are next used.`);
-      return false;
+      throw new Error('file does not contain a valid VAPID key pair');
     }
     try {
       fs.chmodSync(WEBPUSH_KEYS_FILE, 0o600);
@@ -750,7 +785,15 @@ function tryLoadExistingVapidKeys() {
     vapidKeys = { publicKey: raw.publicKey, privateKey: raw.privateKey };
     return true;
   } catch (e) {
-    console.error(`${LOG_PREFIX} Failed to read existing VAPID keys: ${WEBPUSH_KEYS_FILE}`, e);
+    // ファイルは存在するが読めない・パースできない・形式が不正のいずれか。新しい鍵を
+    // 生成して上書きしないよう、ここで確定的に通知機能を無効化する（W-1）。
+    vapidUnavailable = true;
+    console.error(
+      `${LOG_PREFIX} VAPID key file exists but is invalid, refusing to regenerate it (regenerating would silently stop push notifications for every already-registered device): ${WEBPUSH_KEYS_FILE}\n`
+      + `${LOG_PREFIX} To recover, do one of the following: (1) restore ${WEBPUSH_KEYS_FILE} from a backup, or `
+      + `(2) delete ${WEBPUSH_KEYS_FILE} and restart VK Terminals to generate a new key pair — note that already-registered devices will need to re-register to receive notifications again.`,
+      e
+    );
     return false;
   }
 }
@@ -802,18 +845,27 @@ async function sendPushNotificationToAllSubscriptions(payload) {
  * 遷移を検知し、該当ペインへ通知を送る。設定（notifyOnWaiting / notifyOnWaitingMerge）が
  * 無効な種別はイベント自体は計算するが送信しない（両方無効の間に始まった遷移は、有効化
  * 後に再度遷移するまで通知されない。「状態が変わった瞬間だけ送る」という条件と矛盾しない）。
+ * 【起動直後の最初の報告は通知しない（司の指摘・W-2）】notificationSnapshot は
+ * プロセス起動のたびに空から始まるため、最初の報告をそのまま比較に使うと、既に
+ * 入力待ち・マージ待ちだったペインについて「変化した」と誤検知してしまう
+ * （notificationBaselineEstablished の定義コメントを参照）。そのため最初の1回かどうかを
+ * computeNotificationEvents() の isFirstReport に渡し、最初の1回は nextSnapshot を
+ * 基準として記録するだけにとどめる判断を utils/notificationTrigger.js 側に任せている。
  * @param {object} states terminal:report-states の payload
  */
 function handleNotificationTriggers(states) {
   const config = usageConfig();
   const notifyWaiting = config.notifyOnWaiting !== false;
   const notifyMerge = config.notifyOnWaitingMerge !== false;
+  const isFirstReport = !notificationBaselineEstablished;
   const { events, nextSnapshot } = computeNotificationEvents({
     prevSnapshot: notificationSnapshot,
     states,
     excludePatterns: config.waitingExcludeCwdPatterns,
+    isFirstReport,
   });
   notificationSnapshot = nextSnapshot;
+  notificationBaselineEstablished = true;
   events.forEach((event) => {
     if (event.kind === 'waiting' && !notifyWaiting) return;
     if (event.kind === 'merge' && !notifyMerge) return;

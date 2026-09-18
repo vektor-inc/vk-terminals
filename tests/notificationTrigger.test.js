@@ -135,6 +135,78 @@ test('computeNotificationEvents: states から消えた termId は nextSnapshot 
   assert.deepEqual(step2.nextSnapshot, {});
 });
 
+test('computeNotificationEvents: isFirstReport が true の最初の報告では、入力待ち・マージ待ちのペインが含まれていても events は0件（司の指摘・W-2）', () => {
+  const states = {
+    'pane-1': pane({ termId: '1', status: 'waiting' }),
+    'pane-2': pane({ termId: '2', status: 'idle', apiWaitingMerge: true }),
+  };
+  const { events, nextSnapshot } = computeNotificationEvents({
+    prevSnapshot: {},
+    states,
+    excludePatterns: [],
+    isFirstReport: true,
+  });
+  assert.equal(events.length, 0);
+  // events は抑制されるが、次回比較の基準となる nextSnapshot は通常どおり計算される。
+  assert.deepEqual(nextSnapshot, {
+    '1': { waiting: true, waitingMerge: false },
+    '2': { waiting: false, waitingMerge: true },
+  });
+});
+
+test('computeNotificationEvents: 2回目の報告（isFirstReport: false）では、最初の報告から状態が変わったペインだけ通知される（司の指摘・W-2）', () => {
+  const excludePatterns = [];
+  const firstStates = {
+    'pane-1': pane({ termId: '1', status: 'waiting' }), // 起動時点で既に入力待ち
+    'pane-2': pane({ termId: '2', status: 'idle' }),
+  };
+  const first = computeNotificationEvents({
+    prevSnapshot: {},
+    states: firstStates,
+    excludePatterns,
+    isFirstReport: true,
+  });
+  assert.equal(first.events.length, 0);
+
+  // 2回目: pane-2 が新たに waiting になった（pane-1 は waiting のまま = 変化なし）。
+  const secondStates = {
+    'pane-1': pane({ termId: '1', status: 'waiting' }),
+    'pane-2': pane({ termId: '2', status: 'waiting' }),
+  };
+  const second = computeNotificationEvents({
+    prevSnapshot: first.nextSnapshot,
+    states: secondStates,
+    excludePatterns,
+    isFirstReport: false,
+  });
+  assert.equal(second.events.length, 1);
+  assert.equal(second.events[0].termId, '2');
+  assert.equal(second.events[0].kind, 'waiting');
+});
+
+test('computeNotificationEvents: 2回目の報告で最初の報告から状態が変わっていないペインには通知されない（司の指摘・W-2）', () => {
+  const excludePatterns = [];
+  const firstStates = {
+    'pane-1': pane({ termId: '1', status: 'waiting', apiWaitingMerge: true }), // 起動時点で既に両方
+  };
+  const first = computeNotificationEvents({
+    prevSnapshot: {},
+    states: firstStates,
+    excludePatterns,
+    isFirstReport: true,
+  });
+  assert.equal(first.events.length, 0);
+
+  // 2回目: pane-1 は入力待ち・マージ待ちのまま何も変わっていない。
+  const second = computeNotificationEvents({
+    prevSnapshot: first.nextSnapshot,
+    states: firstStates,
+    excludePatterns,
+    isFirstReport: false,
+  });
+  assert.equal(second.events.length, 0);
+});
+
 test('computeNotificationEvents: paneLabel は displayTitle を優先し、無ければ既定名 "Terminal <termId>"', () => {
   const withTitle = computeNotificationEvents({
     prevSnapshot: {},

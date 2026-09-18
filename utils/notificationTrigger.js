@@ -72,12 +72,25 @@ function resolvePaneLabel(paneState, termId) {
  *
  * states に存在しなくなった termId（ペインを閉じた等）は次回スナップショットに残らない
  * （自然に GC される）。
+ *
+ * 【isFirstReport（司の指摘・W-2）】呼び出し側（main.js）はプロセス起動のたびに
+ * prevSnapshot（notificationSnapshot）を空から始める。そのため起動後最初の報告を
+ * そのまま比較すると、既に入力待ち・マージ待ちだったペインについて「変化した」と
+ * 誤検知してしまう（とくにマージ待ちは vk-orchestrator が同じ値を送り続けるため、
+ * 再起動のたびに同じペインへ通知が飛ぶ形になる）。これは issue #396 の完了条件
+ * 「状態が変わった瞬間だけ送る」に反するため、isFirstReport が true の間は
+ * nextSnapshot を「基準」として計算はするが、events は送信対象として返さない
+ * （空配列にする）。呼び出し側はプロセス全体で最初の1回だけ true を渡す。
+ * この結果、アプリ起動の瞬間に入力待ちへ変わったペインの通知を1回だけ取りこぼす
+ * 可能性があるが、起動直後は利用者がその画面を見ている可能性が高いため許容する
+ * （司の判断）。
  * @param {{ prevSnapshot: Record<string, {waiting:boolean, waitingMerge:boolean}>,
- *           states: Record<string, object>, excludePatterns: string[] }} params
+ *           states: Record<string, object>, excludePatterns: string[],
+ *           isFirstReport?: boolean }} params
  * @returns {{ events: Array<{termId:string, kind:'waiting'|'merge', paneLabel:string}>,
  *             nextSnapshot: Record<string, {waiting:boolean, waitingMerge:boolean}> }}
  */
-function computeNotificationEvents({ prevSnapshot, states, excludePatterns }) {
+function computeNotificationEvents({ prevSnapshot, states, excludePatterns, isFirstReport }) {
   const prev = prevSnapshot && typeof prevSnapshot === 'object' ? prevSnapshot : {};
   const nextSnapshot = {};
   const events = [];
@@ -98,7 +111,7 @@ function computeNotificationEvents({ prevSnapshot, states, excludePatterns }) {
     nextSnapshot[termId] = current;
   });
 
-  return { events, nextSnapshot };
+  return { events: isFirstReport ? [] : events, nextSnapshot };
 }
 
 // 通知本文（issue #396: ペイン名と種別以外の情報は載せない）。

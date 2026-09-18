@@ -15,6 +15,17 @@ const { isWaitingCwdExcluded } = require('../renderer/waitingState');
  * 「入力待ち」「マージ待ち」の現在値を、waitingExcludeCwdPatterns による除外を
  * 反映したうえで導出する。
  *
+ * 【入力待ちの由来を分けて返す理由（司の指摘・A-10）】入力待ちは2つの由来を持つ:
+ *   - waitingExternal: POST /api/set-status 由来の外部権威フラグ（t.externalWaiting）。
+ *     vk-orchestrator 側が状態を保持しており、再起動後に同じ値を再送してくる。
+ *   - waitingInternal: ターミナル出力からの内部判定（t.waiting）。再起動後は生きた
+ *     出力から都度導出し直される。
+ * computeNotificationEvents() 側で、外部由来にだけ「プロセス起動後に最初に観測した
+ * true は基準として記録するだけで通知しない」という抑制（A-10）を掛け、内部判定には
+ * 掛けない（既存の W-2 の挙動をそのまま残す）ため、ここで両者を分けて返す。
+ * t.waiting フィールドが無い呼び出し（後方互換）は、t.externalWaiting が立っていない
+ * 限り t.status === 'waiting' を内部判定由来として扱う。
+ *
  * status（'idle' | 'running' | 'waiting'）は renderer 側の deriveStatus が
  * localWaiting（cwd 除外を反映済み）と externalWaiting（POST /api/set-status 由来、
  * cwd 除外は未反映）の OR で決めているため、ここで cwd 除外を再度掛けないと、
@@ -23,14 +34,25 @@ const { isWaitingCwdExcluded } = require('../renderer/waitingState');
  * cwd 除外が未反映のため、ここで掛ける。
  * @param {object} paneState cachedStates[paneId] 相当の1エントリ
  * @param {string[]} excludePatterns waitingExcludeCwdPatterns（正規化前でも可）
- * @returns {{ waiting: boolean, waitingMerge: boolean }}
+ * @returns {{ waiting: boolean, waitingInternal: boolean, waitingExternal: boolean,
+ *             waitingMerge: boolean }}
  */
 function derivePaneNotificationState(paneState, excludePatterns) {
   const t = paneState || {};
   const excluded = isWaitingCwdExcluded(typeof t.cwd === 'string' ? t.cwd : '', excludePatterns);
-  if (excluded) return { waiting: false, waitingMerge: false };
+  if (excluded) {
+    return {
+      waiting: false, waitingInternal: false, waitingExternal: false, waitingMerge: false,
+    };
+  }
+  const waitingExternal = !!t.externalWaiting;
+  const waitingInternal = typeof t.waiting === 'boolean'
+    ? t.waiting
+    : (t.status === 'waiting' && !waitingExternal);
   return {
-    waiting: t.status === 'waiting',
+    waiting: waitingInternal || waitingExternal,
+    waitingInternal,
+    waitingExternal,
     waitingMerge: !!t.apiWaitingMerge,
   };
 }
@@ -84,11 +106,35 @@ function resolvePaneLabel(paneState, termId) {
  * この結果、アプリ起動の瞬間に入力待ちへ変わったペインの通知を1回だけ取りこぼす
  * 可能性があるが、起動直後は利用者がその画面を見ている可能性が高いため許容する
  * （司の判断）。
- * @param {{ prevSnapshot: Record<string, {waiting:boolean, waitingMerge:boolean}>,
+ *
+ * 【isFirstReport だけでは足りなかった理由（司の指摘・A-10）】外部由来の2つの値
+ * （t.externalWaiting・t.apiWaitingMerge）はどちらも「ペイン生成時に false で初期化され、
+ * POST /api/set-status・POST /api/set-title が来たときだけ true になる」フィールドで、
+ * 永続化されない。つまり isFirstReport（起動後“最初の報告”）が false の報告
+ * （起動から数秒後、vk-orchestrator が値を再送してきたタイミング）で初めて true が
+ * 届くことがあり、その回は isFirstReport による一律抑制の外に出てしまう。にもかかわらず
+ * これは実際の状態変化ではなく、再起動前から既に true だった値が遅れて届いただけである。
+ * そのため外部由来の waitingExternal・waitingMerge に限り、「isFirstReport の1回」では
+ * なく「そのペイン・その種別について、プロセス起動後に初めて観測した true」を基準
+ * として記録するだけにし、通知しない（baselineSeen フラグを nextSnapshot に持ち回す）。
+ * 一度 true を観測した後は通常どおりの遷移検出に戻る（true→false→true と変化すれば
+ * 2回目の true は通知する）。
+ *
+ * 内部判定（waitingInternal）にはこの抑制を広げない。再起動後も生きた出力から
+ * 都度導出し直されるため同じ問題を持たず、広げると各ペインについて「アプリ起動後に
+ * 最初に本当に入力待ちになったとき」の通知を1回失い、この機能の主目的（入力待ちに
+ * 気づく）を損なうため。マージ待ち（waitingMerge）は完全に外部由来のフィールドのため、
+ * この抑制を全面的に適用する。
+ *
+ * 【残る性質（司が承知のうえで進める。司の指摘・A-10）】各ペインについて、アプリ起動後に
+ * 最初に来る外部由来の入力待ち・マージ待ちの通知は1回取りこぼす。
+ * @param {{ prevSnapshot: Record<string, {waiting:boolean, waitingMerge:boolean,
+ *             waitingExternalBaselineSeen?:boolean, waitingMergeBaselineSeen?:boolean}>,
  *           states: Record<string, object>, excludePatterns: string[],
  *           isFirstReport?: boolean }} params
  * @returns {{ events: Array<{termId:string, kind:'waiting'|'merge', paneLabel:string}>,
- *             nextSnapshot: Record<string, {waiting:boolean, waitingMerge:boolean}> }}
+ *             nextSnapshot: Record<string, {waiting:boolean, waitingMerge:boolean,
+ *             waitingExternalBaselineSeen:boolean, waitingMergeBaselineSeen:boolean}> }}
  */
 function computeNotificationEvents({ prevSnapshot, states, excludePatterns, isFirstReport }) {
   const prev = prevSnapshot && typeof prevSnapshot === 'object' ? prevSnapshot : {};
@@ -100,15 +146,40 @@ function computeNotificationEvents({ prevSnapshot, states, excludePatterns, isFi
     if (!paneState) return;
     const termId = resolveTermId(paneId, paneState);
     const current = derivePaneNotificationState(paneState, excludePatterns);
-    const previous = prev[termId] || { waiting: false, waitingMerge: false };
+    const previous = prev[termId] || {
+      waiting: false,
+      waitingMerge: false,
+      waitingExternalBaselineSeen: false,
+      waitingMergeBaselineSeen: false,
+    };
 
-    if (!previous.waiting && current.waiting) {
+    // 「入力待ち」: 外部由来（waitingExternal）だけ、プロセス起動後に初めて観測した
+    // true を基準記録に留める（A-10）。内部判定（waitingInternal）は通常どおり
+    // 前回 false → 今回 true の遷移で判定する（W-2 の挙動のまま）。
+    const isFirstExternalWaitingTrue = current.waitingExternal && !previous.waitingExternalBaselineSeen;
+    const waitingFires = isFirstExternalWaitingTrue
+      ? (!previous.waiting && current.waitingInternal)
+      : (!previous.waiting && current.waiting);
+    if (waitingFires) {
       events.push({ termId, kind: 'waiting', paneLabel: resolvePaneLabel(paneState, termId) });
     }
-    if (!previous.waitingMerge && current.waitingMerge) {
+
+    // 「マージ待ち」: 完全に外部由来のため、同じ抑制を全面的に適用する（A-10）。
+    const isFirstWaitingMergeTrue = current.waitingMerge && !previous.waitingMergeBaselineSeen;
+    const waitingMergeFires = !isFirstWaitingMergeTrue && !previous.waitingMerge && current.waitingMerge;
+    if (waitingMergeFires) {
       events.push({ termId, kind: 'merge', paneLabel: resolvePaneLabel(paneState, termId) });
     }
-    nextSnapshot[termId] = current;
+
+    nextSnapshot[termId] = {
+      waiting: current.waiting,
+      waitingMerge: current.waitingMerge,
+      // 一度 true を観測したら以後もずっと true のまま（sticky）。false に戻っても
+      // 「未観測」には戻さない（true→false→true の2回目の true は通常の遷移として
+      // 通知したいため）。
+      waitingExternalBaselineSeen: previous.waitingExternalBaselineSeen || current.waitingExternal,
+      waitingMergeBaselineSeen: previous.waitingMergeBaselineSeen || current.waitingMerge,
+    };
   });
 
   return { events: isFirstReport ? [] : events, nextSnapshot };

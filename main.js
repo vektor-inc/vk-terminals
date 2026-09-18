@@ -752,6 +752,41 @@ function ensurePushReady() {
 }
 
 /**
+ * ファイル読み込みエラーをログへ渡す前に、例外オブジェクトをそのまま出さないよう
+ * 変換する（安藤の指摘・A-7）。
+ * @param {unknown} e
+ * @returns {unknown}
+ */
+function sanitizeFileReadErrorForLog(e) {
+  return e instanceof SyntaxError ? `${e.name} while parsing the file` : e;
+}
+
+/**
+ * VAPID 鍵ファイルが読めない・壊れている場合の警告ログ（司の指摘・W-1・A-8・A-11）。
+ * EACCES（権限不足で読めない）の場合は、ファイルの中身が壊れているとは限らないため
+ * 「削除」を案内せず、権限を直すよう案内する。それ以外（形式不正・その他の読み込み
+ * エラー）は、バックアップから復元するか削除して再生成する2択を案内する。
+ * @param {unknown} e
+ */
+function logInvalidVapidKeyFile(e) {
+  const safeError = sanitizeFileReadErrorForLog(e);
+  if (e && e.code === 'EACCES') {
+    console.error(
+      `${LOG_PREFIX} Cannot read the VAPID key file due to a permission error; notifications are disabled until this is fixed: ${WEBPUSH_KEYS_FILE}\n`
+      + `${LOG_PREFIX} To recover: fix the file/directory permissions so VK Terminals can read it, then restart VK Terminals.`,
+      safeError
+    );
+    return;
+  }
+  console.error(
+    `${LOG_PREFIX} VAPID key file exists but is invalid, refusing to regenerate it (regenerating would silently stop push notifications for every already-registered device): ${WEBPUSH_KEYS_FILE}\n`
+    + `${LOG_PREFIX} To recover, do one of the following: (1) restore ${WEBPUSH_KEYS_FILE} from a backup, or `
+    + `(2) delete ${WEBPUSH_KEYS_FILE} and restart VK Terminals to generate a new key pair — note that already-registered devices will need to re-register to receive notifications again.`,
+    safeError
+  );
+}
+
+/**
  * 起動時に呼ぶ。WEBPUSH_KEYS_FILE に既に有効な鍵があれば読み込んで setVapidDetails() まで
  * 済ませる。ファイルが無い場合は何もしない（false を返す。新規生成はここではしない＝LOW-8。
  * 生成は ensurePushReady() が行う）。
@@ -767,12 +802,33 @@ function ensurePushReady() {
  * プッシュ配信サーバーが 403 を返すようになるため。このファイル冒頭の WEBPUSH_KEYS_FILE
  * の説明を参照）。そのためここでは「存在しない」と「存在するが壊れている」を区別し、
  * 後者は vapidUnavailable を立てて呼び出し元に伝える。
+ *
+ * 【存在判定に fs.existsSync() を使わない理由（司の指摘・A-8）】以前は existsSync() で
+ * 「無い」を判定していたが、「ファイルはあるが親ディレクトリの権限が無くて読めない」
+ * 場合にも existsSync() は false を返すことがあり、「無い」と誤認して新しい鍵を
+ * 生成 → 保存が権限エラーで失敗 → メモリ上の新しい鍵で起動を続けてしまっていた
+ * （ディスク上には正しい鍵が残ったままアプリだけ別の鍵で動く。W-1 が防ごうとした
+ * 「無警告の実質的な鍵変更」が別経路から起こる）。readFileSync() 1回の結果（成功／
+ * ENOENT／その他のエラー）だけで判定すれば、この競合が起こらない。また、存在判定を
+ * try の外に出していたことで「この関数は例外を投げない」という前提（安藤の HIGH-1）が
+ * 「existsSync() は例外を投げない」という1点に依存する形になっていたが、全体を
+ * try/catch の中へ戻すことでこの依存も無くなる。
  * @returns {boolean}
  */
 function tryLoadExistingVapidKeys() {
-  if (!fs.existsSync(WEBPUSH_KEYS_FILE)) return false;
+  let text;
   try {
-    const raw = JSON.parse(fs.readFileSync(WEBPUSH_KEYS_FILE, 'utf8'));
+    text = fs.readFileSync(WEBPUSH_KEYS_FILE, 'utf8');
+  } catch (readError) {
+    if (readError && readError.code === 'ENOENT') return false; // 初回起動。生成してよい（LOW-8）
+    // ENOENT 以外（権限不足等）。ファイルの実在も中身も確定できないため、安全側として
+    // 「壊れている」場合と同じ扱いにする（上書き生成しない）。
+    vapidUnavailable = true;
+    logInvalidVapidKeyFile(readError);
+    return false;
+  }
+  try {
+    const raw = JSON.parse(text);
     if (!isValidVapidKeyPair(raw)) {
       throw new Error('file does not contain a valid VAPID key pair');
     }
@@ -785,15 +841,10 @@ function tryLoadExistingVapidKeys() {
     vapidKeys = { publicKey: raw.publicKey, privateKey: raw.privateKey };
     return true;
   } catch (e) {
-    // ファイルは存在するが読めない・パースできない・形式が不正のいずれか。新しい鍵を
-    // 生成して上書きしないよう、ここで確定的に通知機能を無効化する（W-1）。
+    // JSON パース失敗・形式不正のいずれか。新しい鍵を生成して上書きしないよう、
+    // ここで確定的に通知機能を無効化する（W-1）。
     vapidUnavailable = true;
-    console.error(
-      `${LOG_PREFIX} VAPID key file exists but is invalid, refusing to regenerate it (regenerating would silently stop push notifications for every already-registered device): ${WEBPUSH_KEYS_FILE}\n`
-      + `${LOG_PREFIX} To recover, do one of the following: (1) restore ${WEBPUSH_KEYS_FILE} from a backup, or `
-      + `(2) delete ${WEBPUSH_KEYS_FILE} and restart VK Terminals to generate a new key pair — note that already-registered devices will need to re-register to receive notifications again.`,
-      e
-    );
+    logInvalidVapidKeyFile(e);
     return false;
   }
 }
@@ -1452,7 +1503,11 @@ function loadPushSubscriptions() {
     if (!Array.isArray(raw)) return [];
     return raw.map((item) => normalizeSubscription(item)).filter((item) => item !== null);
   } catch (e) {
-    console.error(`${LOG_PREFIX} Failed to read push subscriptions: ${WEBPUSH_SUBSCRIPTIONS_FILE}`, e);
+    // ログに例外オブジェクトをそのまま出さないよう変更（安藤の指摘・A-7）。
+    console.error(
+      `${LOG_PREFIX} Failed to read push subscriptions: ${WEBPUSH_SUBSCRIPTIONS_FILE}`,
+      sanitizeFileReadErrorForLog(e)
+    );
     return [];
   }
 }

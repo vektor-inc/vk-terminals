@@ -99,18 +99,75 @@ test('computeNotificationEvents: waiting → 非waiting → waiting と再度変
   assert.equal(step3.events.length, 1); // 再度 waiting になったら再通知する
 });
 
-test('computeNotificationEvents: マージ待ちでない→マージ待ちの遷移もイベントになる（waiting とは独立）', () => {
-  const states = { 'pane-1': pane({ termId: '1', status: 'idle', apiWaitingMerge: true }) };
-  const { events } = computeNotificationEvents({ prevSnapshot: {}, states, excludePatterns: [] });
-  assert.equal(events.length, 1);
-  assert.equal(events[0].kind, 'merge');
+test('computeNotificationEvents: マージ待ちでない→マージ待ちの遷移もイベントになる（waiting とは独立。ただしプロセス起動後に初めて観測した true は基準記録のみ・司の指摘・A-10）', () => {
+  // apiWaitingMerge は完全に外部由来のため、空の prevSnapshot からの最初の true は
+  // A-10 により基準記録のみで通知されない。いったん false を経てから true になった
+  // 2回目の遷移は通常どおり通知される（waiting とは独立に判定されることも併せて確認）。
+  const excludePatterns = [];
+  const baseline = computeNotificationEvents({
+    prevSnapshot: {},
+    states: { 'pane-1': pane({ termId: '1', status: 'idle', apiWaitingMerge: true }) },
+    excludePatterns,
+  });
+  assert.equal(baseline.events.length, 0);
+
+  const cleared = computeNotificationEvents({
+    prevSnapshot: baseline.nextSnapshot,
+    states: { 'pane-1': pane({ termId: '1', status: 'idle', apiWaitingMerge: false }) },
+    excludePatterns,
+  });
+  assert.equal(cleared.events.length, 0);
+
+  const second = computeNotificationEvents({
+    prevSnapshot: cleared.nextSnapshot,
+    states: { 'pane-1': pane({ termId: '1', status: 'idle', apiWaitingMerge: true }) },
+    excludePatterns,
+  });
+  assert.equal(second.events.length, 1);
+  assert.equal(second.events[0].kind, 'merge');
 });
 
-test('computeNotificationEvents: 同一ペインで waiting と merge が同時に新規発生すれば2件のイベントになる', () => {
-  const states = { 'pane-1': pane({ termId: '1', status: 'waiting', apiWaitingMerge: true }) };
-  const { events } = computeNotificationEvents({ prevSnapshot: {}, states, excludePatterns: [] });
-  assert.equal(events.length, 2);
-  const kinds = events.map((e) => e.kind).sort();
+test('computeNotificationEvents: 同一ペインで waiting（内部判定）と merge（外部由来）の“本当の”遷移が同時に起きれば2件のイベントになる（waiting と merge が独立に判定されることの確認。司の指摘・A-10）', () => {
+  const excludePatterns = [];
+  // 1回目（isFirstReport）: idle・マージ待ちでない。基準を記録するだけ。
+  const step1 = computeNotificationEvents({
+    prevSnapshot: {},
+    states: { 'pane-1': pane({ termId: '1', status: 'idle', apiWaitingMerge: false }) },
+    excludePatterns,
+    isFirstReport: true,
+  });
+  assert.equal(step1.events.length, 0);
+
+  // 2回目: マージ待ちだけ true になる。外部由来の初回 true のため A-10 により
+  // 基準記録のみ（通知しない）。
+  const step2 = computeNotificationEvents({
+    prevSnapshot: step1.nextSnapshot,
+    states: { 'pane-1': pane({ termId: '1', status: 'idle', apiWaitingMerge: true }) },
+    excludePatterns,
+    isFirstReport: false,
+  });
+  assert.equal(step2.events.length, 0);
+
+  // 3回目: マージ待ちがいったん false に戻る（waiting はまだ idle）。
+  const step3 = computeNotificationEvents({
+    prevSnapshot: step2.nextSnapshot,
+    states: { 'pane-1': pane({ termId: '1', status: 'idle', apiWaitingMerge: false }) },
+    excludePatterns,
+    isFirstReport: false,
+  });
+  assert.equal(step3.events.length, 0);
+
+  // 4回目: 内部判定の入力待ち（waiting）が新規に true になるのと同時に、
+  // マージ待ち（既に基準は記録済み）も false→true の“本当の”遷移として true になる。
+  // waiting・merge それぞれ独立に判定され、2件のイベントになる。
+  const step4 = computeNotificationEvents({
+    prevSnapshot: step3.nextSnapshot,
+    states: { 'pane-1': pane({ termId: '1', status: 'waiting', apiWaitingMerge: true }) },
+    excludePatterns,
+    isFirstReport: false,
+  });
+  assert.equal(step4.events.length, 2);
+  const kinds = step4.events.map((e) => e.kind).sort();
   assert.deepEqual(kinds, ['merge', 'waiting']);
 });
 
@@ -149,8 +206,12 @@ test('computeNotificationEvents: isFirstReport が true の最初の報告では
   assert.equal(events.length, 0);
   // events は抑制されるが、次回比較の基準となる nextSnapshot は通常どおり計算される。
   assert.deepEqual(nextSnapshot, {
-    '1': { waiting: true, waitingMerge: false },
-    '2': { waiting: false, waitingMerge: true },
+    '1': {
+      waiting: true, waitingMerge: false, waitingExternalBaselineSeen: false, waitingMergeBaselineSeen: false,
+    },
+    '2': {
+      waiting: false, waitingMerge: true, waitingExternalBaselineSeen: false, waitingMergeBaselineSeen: true,
+    },
   });
 });
 
@@ -205,6 +266,94 @@ test('computeNotificationEvents: 2回目の報告で最初の報告から状態�
     isFirstReport: false,
   });
   assert.equal(second.events.length, 0);
+});
+
+test('computeNotificationEvents: 外部由来のマージ待ちが false→true になった最初の1回は通知されず、基準として記録される（司の指摘・A-10）', () => {
+  const excludePatterns = [];
+  const first = computeNotificationEvents({
+    prevSnapshot: {},
+    states: { 'pane-1': pane({ termId: '1', status: 'idle', apiWaitingMerge: true }) },
+    excludePatterns,
+    isFirstReport: false, // 起動後最初の報告そのものではない（＝ isFirstReport による一律抑制とは別の経路であることを確認する）
+  });
+  assert.equal(first.events.length, 0);
+  assert.equal(first.nextSnapshot['1'].waitingMergeBaselineSeen, true);
+});
+
+test('computeNotificationEvents: 同じペインで外部由来のマージ待ちが true → false → true と戻った場合、2回目の true では通知される（司の指摘・A-10）', () => {
+  const excludePatterns = [];
+  const first = computeNotificationEvents({
+    prevSnapshot: {},
+    states: { 'pane-1': pane({ termId: '1', status: 'idle', apiWaitingMerge: true }) },
+    excludePatterns,
+  });
+  assert.equal(first.events.length, 0); // 最初の true は基準記録のみ
+
+  const cleared = computeNotificationEvents({
+    prevSnapshot: first.nextSnapshot,
+    states: { 'pane-1': pane({ termId: '1', status: 'idle', apiWaitingMerge: false }) },
+    excludePatterns,
+  });
+  assert.equal(cleared.events.length, 0);
+
+  const second = computeNotificationEvents({
+    prevSnapshot: cleared.nextSnapshot,
+    states: { 'pane-1': pane({ termId: '1', status: 'idle', apiWaitingMerge: true }) },
+    excludePatterns,
+  });
+  assert.equal(second.events.length, 1);
+  assert.equal(second.events[0].kind, 'merge');
+  assert.equal(second.events[0].termId, '1');
+});
+
+test('computeNotificationEvents: 別のペインの外部由来 true も、そのペインにとって最初の1回は通知されない（基準はペインごとに独立。司の指摘・A-10）', () => {
+  const excludePatterns = [];
+  // pane-1 は既に基準を記録済み（1回 true を観測済み）にしておく。
+  const seeded = computeNotificationEvents({
+    prevSnapshot: {},
+    states: { 'pane-1': pane({ termId: '1', status: 'idle', apiWaitingMerge: true }) },
+    excludePatterns,
+  });
+  assert.equal(seeded.events.length, 0);
+
+  // pane-2 は初登場で、今回初めて apiWaitingMerge が true になる。
+  const withNewPane = computeNotificationEvents({
+    prevSnapshot: seeded.nextSnapshot,
+    states: {
+      'pane-1': pane({ termId: '1', status: 'idle', apiWaitingMerge: true }), // 変化なし
+      'pane-2': pane({ termId: '2', status: 'idle', apiWaitingMerge: true }), // 新規ペインの最初の true
+    },
+    excludePatterns,
+  });
+  // pane-1 は既に基準記録済みだが値自体は変わっていないため通知されない。
+  // pane-2 は今回が最初の観測のため、pane-1 の基準とは独立に抑制される。
+  assert.equal(withNewPane.events.length, 0);
+  assert.equal(withNewPane.nextSnapshot['2'].waitingMergeBaselineSeen, true);
+});
+
+test('computeNotificationEvents: 内部判定の入力待ちには A-10 の抑制が適用されず、2回目以降の報告で false→true になれば通知される（W-2 の既存挙動の確認。司の指摘・A-10）', () => {
+  const excludePatterns = [];
+  // 1回目（プロセス起動後最初の報告）: idle。
+  const first = computeNotificationEvents({
+    prevSnapshot: {},
+    states: { 'pane-1': pane({ termId: '1', waiting: false, status: 'idle' }) },
+    excludePatterns,
+    isFirstReport: true,
+  });
+  assert.equal(first.events.length, 0);
+
+  // 2回目: 内部判定で新たに waiting: true になった（externalWaiting は伴わない）。
+  // isFirstReport ではないため、A-10 の「最初の観測は基準のみ」を内部判定へ広げていなければ、
+  // ここで通常どおり通知されるはず。
+  const second = computeNotificationEvents({
+    prevSnapshot: first.nextSnapshot,
+    states: { 'pane-1': pane({ termId: '1', waiting: true, status: 'waiting' }) },
+    excludePatterns,
+    isFirstReport: false,
+  });
+  assert.equal(second.events.length, 1);
+  assert.equal(second.events[0].kind, 'waiting');
+  assert.equal(second.events[0].termId, '1');
 });
 
 test('computeNotificationEvents: paneLabel は displayTitle を優先し、無ければ既定名 "Terminal <termId>"', () => {

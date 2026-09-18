@@ -59,6 +59,14 @@
   <!-- 状態変化の読み上げ（#task-list-live と同じ仕組みを流用）。視覚的には隠すが
        スクリーンリーダーには伝える。 -->
   <div class="notify-live" id="notify-live" aria-live="polite"></div>
+  <!-- 通知の登録・停止に関する失敗文言（issue #396 植草の UX レビュー・U-3）。#err は
+       poll（状態取得、2秒周期）のたびに成功時へ空文字を渡して消えるため、次の行動を
+       促す長い文言（登録上限など）が読み終える前に消えてしまう。この要素は poll に
+       連動させず、次に「通知を受け取る」／「停止」を押した処理の先頭で消し、登録・停止が
+       成功した表示更新と同時にも消す（mobile.js の setNotifyError 参照）。role="alert" を
+       最初から付け、表示時に読み上げソフトへ即座に伝える（暗黙で aria-live="assertive"
+       になる）。#notify-live は視覚的に隠す実装のため視覚表示には転用しない。 -->
+  <div class="notify-error" id="notify-error" role="alert" hidden></div>
 </div>
 <div id="usage-card" role="group" aria-labelledby="usage-card-title">
   <div class="u-card-title" id="usage-card-title">Claude使用量</div>

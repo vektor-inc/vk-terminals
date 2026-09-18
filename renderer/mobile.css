@@ -249,6 +249,18 @@ button.k.kill.is-locked:active { background: #6b3f3f; border-color: #7c4a4a; }
   clip: rect(0 0 0 0);
   white-space: nowrap;
 }
+/* 通知の登録・停止に関する失敗文言（issue #396 植草の UX レビュー・U-3）。
+   独自の色を持ち込まず、#err と同じ配色（背景 #4a1e1e・文字 #ffb4b4）を再利用する。
+   余白・文字サイズは .notify-text と揃え、カード内要素の作法に合わせる。 */
+.notify-error {
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #4a1e1e;
+  color: #ffb4b4;
+  font-size: 12px;
+  line-height: 1.6;
+}
 
 /* ==========================================================================
    使用量カード（Claude: issue #69/#73 / Codex: issue #218）

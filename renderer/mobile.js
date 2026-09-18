@@ -109,6 +109,20 @@ var notifyStateEls = {
   "unsupported": document.getElementById("notify-state-unsupported")
 };
 var notifyLiveEl = document.getElementById("notify-live");
+// 通知の登録・停止に関する失敗文言（issue #396 植草の UX レビュー・U-3）。#err /
+// showErr() は poll（状態取得、2秒周期）のたびに成功時に呼ばれて消えるため、
+// 「登録できる端末が20台に達しています」のような読んで行動してほしい文言が
+// 読み終える前に消えてしまう。この要素は poll に連動させず、通知の登録・停止操作の
+// 先頭（処理を始める瞬間）と、その操作が成功した表示更新と同時にだけ消す。
+// role="alert" は mobile.html 側で最初から静的に付けてある（暗黙で
+// aria-live="assertive"）。showErr() / #err 自体はここでは一切変更しない。
+var notifyErrorEl = document.getElementById("notify-error");
+function setNotifyError(msg) {
+  if (!notifyErrorEl) return;
+  if (!msg) { notifyErrorEl.hidden = true; notifyErrorEl.textContent = ""; return; }
+  notifyErrorEl.textContent = msg;
+  notifyErrorEl.hidden = false;
+}
 var notifyRequestBtn = document.getElementById("notify-request-btn");
 var notifyStopBtn = document.getElementById("notify-stop-btn");
 var notifyReloadBtn = document.getElementById("notify-reload-btn");
@@ -219,6 +233,9 @@ async function describePushRequestFailure(res) {
 }
 
 async function handleNotifyRequestClick() {
+  // 処理の先頭で前回の失敗文言を消す（司の差し戻し指示・U-3）。poll（状態取得）の
+  // タイミングには連動させない。
+  setNotifyError("");
   if (notifyRequestBtn) {
     notifyRequestBtn.disabled = true;
     notifyRequestBtn.textContent = NOTIFY_REQUEST_LABEL_BUSY;
@@ -231,14 +248,14 @@ async function handleNotifyRequestClick() {
     }
     var reg = await ensureServiceWorkerRegistration();
     if (!reg) {
-      showErr("通知の登録に失敗しました");
+      setNotifyError("通知の登録に失敗しました");
       await refreshNotifyCard();
       return;
     }
     var keyRes = await fetch("/api/push-public-key", { cache: "no-store" });
     if (keyRes.status === 401) { showAuthExpired(); return; }
     if (!keyRes.ok) {
-      showErr(await describePushRequestFailure(keyRes));
+      setNotifyError(await describePushRequestFailure(keyRes));
       await refreshNotifyCard();
       return;
     }
@@ -254,14 +271,16 @@ async function handleNotifyRequestClick() {
     });
     if (res.status === 401) { showAuthExpired(); return; }
     if (!res.ok) {
-      showErr(await describePushRequestFailure(res));
+      setNotifyError(await describePushRequestFailure(res));
       await refreshNotifyCard();
       return;
     }
+    // 成功時の表示更新と同時に消す（司の差し戻し指示・U-3）。
+    setNotifyError("");
     setNotifyLive("通知を有効にしました");
     await refreshNotifyCard();
   } catch (e) {
-    showErr("通知の登録に失敗しました: " + (e && e.message ? e.message : e));
+    setNotifyError("通知の登録に失敗しました: " + (e && e.message ? e.message : e));
     await refreshNotifyCard();
   } finally {
     if (notifyRequestBtn) {
@@ -271,7 +290,11 @@ async function handleNotifyRequestClick() {
   }
 }
 
+// 「停止」の失敗も #notify-error に出す（司の判断: 植草の指摘は登録失敗が対象だが、
+// 同じ通知カード内の操作のため表示場所を揃えて一貫性を保つ）。
 async function handleNotifyStopClick() {
+  // 処理の先頭で前回の失敗文言を消す（登録側と同じ規則）。
+  setNotifyError("");
   if (notifyStopBtn) {
     notifyStopBtn.disabled = true;
     notifyStopBtn.textContent = NOTIFY_STOP_LABEL_BUSY;
@@ -292,10 +315,12 @@ async function handleNotifyStopClick() {
       });
       if (res.status === 401) { showAuthExpired(); return; }
     }
+    // 成功時の表示更新と同時に消す（登録側と同じ規則）。
+    setNotifyError("");
     setNotifyLive("通知を停止しました");
     await refreshNotifyCard();
   } catch (e) {
-    showErr("通知の停止に失敗しました: " + (e && e.message ? e.message : e));
+    setNotifyError("通知の停止に失敗しました: " + (e && e.message ? e.message : e));
   } finally {
     if (notifyStopBtn) {
       notifyStopBtn.disabled = false;

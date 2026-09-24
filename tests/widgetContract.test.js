@@ -207,6 +207,25 @@ test('sanitizeWidget: 実際に使う 10 件のコントロールをすべて保
   assert.deepEqual(w.groups[0].items[0].controls.map((control) => control.field), fields);
 });
 
+test('sanitizeWidget: controls は上限 20 件まで保持し超過分を捨てる', () => {
+  assert.equal(contract.LIMITS.controls, 20);
+  const controls = Array.from({ length: contract.LIMITS.controls + 1 }, (_, index) => ({
+    type: 'select', field: 'status', label: `control-${index}`, current: 'ready',
+    options: [{ value: 'ready', label: '実行待ち' }],
+  }));
+  const w = contract.sanitizeWidget(baseRawWidget({
+    groups: [{ id: 'ready', label: '準備完了', tone: 'info', items: [{
+      id: '404', title: 'controls limit task', editable: true, controls,
+    }] }],
+  }));
+  const sanitizedControls = w.groups[0].items[0].controls;
+  assert.equal(sanitizedControls.length, contract.LIMITS.controls);
+  assert.deepEqual(
+    sanitizedControls.map((control) => control.label),
+    controls.slice(0, contract.LIMITS.controls).map((control) => control.label),
+  );
+});
+
 test('sanitizeWidget: specModel の select コントロールを保持する', () => {
   const w = contract.sanitizeWidget(baseRawWidget({
     groups: [{ id: 'ready', label: '準備完了', tone: 'info', items: [{

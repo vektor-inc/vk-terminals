@@ -29,12 +29,12 @@
   const WIDGET_TONE_SET = new Set(WIDGET_TONES);
   const DEFAULT_TONE = 'neutral';
 
-  // コマンドの action は 7 種のみ（新規作成しない）。
-  const COMMAND_ACTIONS = Object.freeze(['set-status', 'set-priority', 'set-sequential', 'set-automerge', 'set-review-coderabbit', 'set-review-code-review', 'set-spec-model']);
+  // コマンドの action は 10 種のみ（新規作成しない）。
+  const COMMAND_ACTIONS = Object.freeze(['set-status', 'set-priority', 'set-sequential', 'set-automerge', 'set-review-ux', 'set-review-security', 'set-review-e2e', 'set-review-coderabbit', 'set-review-code-review', 'set-spec-model']);
   const COMMAND_ACTION_SET = new Set(COMMAND_ACTIONS);
 
-  // コントロールの field は 7 種、type は select のみ。
-  const CONTROL_FIELDS = Object.freeze(['status', 'priority', 'sequential', 'automerge', 'reviewCoderabbit', 'reviewCodeReview', 'specModel']);
+  // コントロールの field は 10 種、type は select のみ。
+  const CONTROL_FIELDS = Object.freeze(['status', 'priority', 'sequential', 'automerge', 'reviewUx', 'reviewSecurity', 'reviewE2e', 'reviewCoderabbit', 'reviewCodeReview', 'specModel']);
   const CONTROL_FIELD_SET = new Set(CONTROL_FIELDS);
   const CONTROL_TYPES = Object.freeze(['select']);
   const CONTROL_TYPE_SET = new Set(CONTROL_TYPES);
@@ -59,7 +59,7 @@
     items: 1000,      // per group
     badges: 20,
     links: 10,
-    controls: 10,
+    controls: 20,
     options: 60,
     lang: 16,
   });

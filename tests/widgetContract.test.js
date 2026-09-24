@@ -162,6 +162,70 @@ test('sanitizeWidget: reviewCoderabbit / reviewCodeReview の select コント�
   assert.equal(controls[1].options[1].command.action, 'set-review-code-review');
 });
 
+test('sanitizeWidget: reviewUx / reviewSecurity / reviewE2e の select コントロールを保持する', () => {
+  const reviewFields = [
+    ['reviewUx', 'set-review-ux'],
+    ['reviewSecurity', 'set-review-security'],
+    ['reviewE2e', 'set-review-e2e'],
+  ];
+  const w = contract.sanitizeWidget(baseRawWidget({
+    groups: [{ id: 'ready', label: '準備完了', tone: 'info', items: [{
+      id: '404', title: 'review task', editable: true,
+      controls: reviewFields.map(([field, action]) => ({
+        type: 'select',
+        field,
+        label: field,
+        current: 'auto',
+        options: [
+          { value: 'auto', label: '自動' },
+          { value: 'skip', label: 'スキップする', command: { action, taskId: '404', to: 'skip', expected: 'auto' } },
+        ],
+      })),
+    }] }],
+  }));
+  const controls = w.groups[0].items[0].controls;
+  assert.deepEqual(controls.map((control) => control.field), reviewFields.map(([field]) => field));
+  assert.deepEqual(controls.map((control) => control.options[1].command.action), reviewFields.map(([, action]) => action));
+  assert.deepEqual(controls.map((control) => control.options.map((option) => option.value)), [
+    ['auto', 'skip'],
+    ['auto', 'skip'],
+    ['auto', 'skip'],
+  ]);
+});
+
+test('sanitizeWidget: 実際に使う 10 件のコントロールをすべて保持する', () => {
+  const fields = ['status', 'priority', 'sequential', 'automerge', 'specModel', 'reviewUx', 'reviewSecurity', 'reviewE2e', 'reviewCodeReview', 'reviewCoderabbit'];
+  const w = contract.sanitizeWidget(baseRawWidget({
+    groups: [{ id: 'ready', label: '準備完了', tone: 'info', items: [{
+      id: '404', title: 'controls task', editable: true,
+      controls: fields.map((field) => ({
+        type: 'select', field, label: field, current: 'auto',
+        options: [{ value: 'auto', label: '自動' }],
+      })),
+    }] }],
+  }));
+  assert.deepEqual(w.groups[0].items[0].controls.map((control) => control.field), fields);
+});
+
+test('sanitizeWidget: controls は上限 20 件まで保持し超過分を捨てる', () => {
+  assert.equal(contract.LIMITS.controls, 20);
+  const controls = Array.from({ length: contract.LIMITS.controls + 1 }, (_, index) => ({
+    type: 'select', field: 'status', label: `control-${index}`, current: 'ready',
+    options: [{ value: 'ready', label: '実行待ち' }],
+  }));
+  const w = contract.sanitizeWidget(baseRawWidget({
+    groups: [{ id: 'ready', label: '準備完了', tone: 'info', items: [{
+      id: '404', title: 'controls limit task', editable: true, controls,
+    }] }],
+  }));
+  const sanitizedControls = w.groups[0].items[0].controls;
+  assert.equal(sanitizedControls.length, contract.LIMITS.controls);
+  assert.deepEqual(
+    sanitizedControls.map((control) => control.label),
+    controls.slice(0, contract.LIMITS.controls).map((control) => control.label),
+  );
+});
+
 test('sanitizeWidget: specModel の select コントロールを保持する', () => {
   const w = contract.sanitizeWidget(baseRawWidget({
     groups: [{ id: 'ready', label: '準備完了', tone: 'info', items: [{
@@ -323,6 +387,22 @@ test('sanitizeCommand: set-review-coderabbit / set-review-code-review の単一�
   });
 });
 
+test('sanitizeCommand: set-review-ux / set-review-security / set-review-e2e の単一コマンドを保持する', () => {
+  for (const action of ['set-review-ux', 'set-review-security', 'set-review-e2e']) {
+    assert.deepEqual(contract.sanitizeCommand({
+      action,
+      taskId: '404',
+      to: 'skip',
+      expected: 'auto',
+    }), {
+      action,
+      taskId: '404',
+      to: 'skip',
+      expected: 'auto',
+    });
+  }
+});
+
 test('sanitizeCommand: set-spec-model の単一コマンドを保持する', () => {
   assert.deepEqual(contract.sanitizeCommand({
     action: 'set-spec-model',
@@ -396,6 +476,21 @@ test('sanitizeBatchCommand: apply-batch の ops に set-review-coderabbit / set-
       { action: 'set-review-coderabbit', to: 'enabled', expected: 'disabled' },
       { action: 'set-review-code-review', to: 'enabled', expected: 'disabled' },
     ],
+  });
+});
+
+test('sanitizeBatchCommand: apply-batch の ops に set-review-ux / set-review-security / set-review-e2e を保持する', () => {
+  const ops = ['set-review-ux', 'set-review-security', 'set-review-e2e'].map((action) => ({
+    action, to: 'skip', expected: 'auto',
+  }));
+  assert.deepEqual(contract.sanitizeBatchCommand({
+    action: 'apply-batch',
+    taskId: '404',
+    ops,
+  }), {
+    action: 'apply-batch',
+    taskId: '404',
+    ops,
   });
 });
 

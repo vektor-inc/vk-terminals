@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 機能追加 ] タスクの編集画面で、UX・セキュリティー・e2e のレビューをタスクごとに「自動／スキップする」から選べるようにする対応を追加（実際に選択肢が表示されるのは VK Orchestrator 側の対応が入ってから）（[#404](https://github.com/vektor-inc/vk-terminals/issues/404)）
+
 ## 1.65.0
 
 - [ 機能追加 ] タスクの編集画面で、そのタスクの仕様検討で使う AI モデルの重さ（高／中／低）を選べるようにする対応を追加（実際に選択肢が表示されるのは VK Orchestrator 側の対応が入ってから）（[#401](https://github.com/vektor-inc/vk-terminals/issues/401)）

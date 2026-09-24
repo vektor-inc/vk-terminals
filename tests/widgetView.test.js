@@ -663,7 +663,7 @@ test('render: 同じ section.id でも間に別項目を挟んで再登場した
   assert.equal(fieldsets[2].querySelectorAll((el) => el.tagName === 'SELECT').length, 1);
 });
 
-test('render: 実際の並び（ステータス/優先度/実行方式/自動マージ → 仕様検討 → レビュー）で、仕様検討セクションを挟んでもレビューの見出しは消えない（issue #401）', () => {
+test('render: 実際の並び（ステータス/優先度/実行方式/自動マージ → 仕様検討 → レビュー）で、レビュー 5 項目の見出しは保たれる（issue #404）', () => {
   const widget = sanitized([
     { id: 'ready', label: '実行待ち', tone: 'info', items: [{
       id: '10', title: 'T', editable: true,
@@ -679,6 +679,15 @@ test('render: 実際の並び（ステータス/優先度/実行方式/自動マ
         { type: 'select', field: 'specModel', label: 'モデル', current: 'inherit',
           section: { id: 'spec-model', label: '仕様検討' },
           options: [{ value: 'inherit', label: '継承' }] },
+        { type: 'select', field: 'reviewUx', label: 'UX', current: 'auto',
+          section: { id: 'review', label: 'レビュー' },
+          options: [{ value: 'auto', label: '自動' }] },
+        { type: 'select', field: 'reviewSecurity', label: 'セキュリティー', current: 'auto',
+          section: { id: 'review', label: 'レビュー' },
+          options: [{ value: 'auto', label: '自動' }] },
+        { type: 'select', field: 'reviewE2e', label: 'e2e', current: 'auto',
+          section: { id: 'review', label: 'レビュー' },
+          options: [{ value: 'auto', label: '自動' }] },
         { type: 'select', field: 'reviewCodeReview', label: 'コードレビュー', current: 'disabled',
           section: { id: 'review', label: 'レビュー' },
           options: [{ value: 'disabled', label: 'しない' }] },
@@ -698,8 +707,11 @@ test('render: 実際の並び（ステータス/優先度/実行方式/自動マ
 
   // 仕様検討の fieldset には specModel の select が 1 個入る。
   assert.equal(fieldsets[0].querySelectorAll((el) => el.tagName === 'SELECT').length, 1);
-  // レビューの fieldset には reviewCodeReview / reviewCoderabbit の 2 個が、仕様検討を挟んでも分断されずに入る。
-  assert.equal(fieldsets[1].querySelectorAll((el) => el.tagName === 'SELECT').length, 2);
+  // レビューの fieldset には UX → セキュリティー → e2e → /code-review → CodeRabbit の 5 個が入る。
+  const reviewSelects = fieldsets[1].querySelectorAll((el) => el.tagName === 'SELECT');
+  assert.deepEqual(reviewSelects.map((select) => select.dataset.field), [
+    'reviewUx', 'reviewSecurity', 'reviewE2e', 'reviewCodeReview', 'reviewCoderabbit',
+  ]);
 
   // section 無しの 4 項目（ステータス/優先度/実行方式/自動マージ）は fieldset の外に平坦に並ぶ。
   const controlsContainer = groupsEl.querySelectorAll((el) => el.classList.contains('task-edit-controls'))[0];
@@ -707,7 +719,7 @@ test('render: 実際の並び（ステータス/優先度/実行方式/自動マ
     controlsContainer.children.map((c) => c.tagName),
     ['LABEL', 'LABEL', 'LABEL', 'LABEL', 'FIELDSET', 'FIELDSET'],
   );
-  assert.equal(groupsEl.querySelectorAll((el) => el.tagName === 'SELECT').length, 7);
+  assert.equal(groupsEl.querySelectorAll((el) => el.tagName === 'SELECT').length, 10);
 });
 
 test('render: section 付きと section 無しの項目が混在する場合、無し項目を挟むと前後の同じ section.id は別グループになる', () => {

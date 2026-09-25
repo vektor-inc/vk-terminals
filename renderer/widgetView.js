@@ -102,6 +102,12 @@
     const savingTasks = new Set();
     const renderedEditButtons = new Map();
     const renderedPanels = new Map();
+    // focusKey -> 今回の render で作った要素。render() は毎回 groupsEl.replaceChildren() で
+    // DOM を作り直すため、フォーカス中の要素が消えて実ブラウザでは body へ落ちてしまう
+    // （issue #406 差し戻し: 安藤 MEDIUM。反映待ちのタイマーや widgets:update 起因の再描画のたびに、
+    // 別タスクの編集パネルを操作中のフォーカスが失われていた）。render() の先頭でフォーカス中の
+    // 要素の focusKey を控え、再構築後に同じ focusKey の要素へフォーカスを戻す。
+    const focusTargets = new Map();
     let lastWidget = null;
     let editingTaskId = null;
     let pendingFocus = null;
@@ -365,6 +371,39 @@
       else if (panel && panel.node) safeFocus(panel.node);
     }
 
+    // ── フォーカス保持（issue #406 差し戻し: 安藤 MEDIUM）────────────────────
+    // タスク ID + 要素の種類でキーを作る。同じ種類・同じタスクの要素が再構築後も
+    // 同じキーを持つことを利用して、フォーカスを戻す先を突き止める。
+    function focusKeyForEditButton(taskId) { return `edit-button:${taskId}`; }
+    function focusKeyForPanel(taskId) { return `panel:${taskId}`; }
+    function focusKeyForField(taskId, field) { return `field:${taskId}:${field}`; }
+    function focusKeyForSave(taskId) { return `save-button:${taskId}`; }
+    function focusKeyForCancel(taskId) { return `cancel-button:${taskId}`; }
+
+    // render() 冒頭（groupsEl を作り直す前）に呼ぶ。フォーカス中の要素が groupsEl の外なら
+    // 何もしない（このウィジェット以外の操作を邪魔しない）。data-focus-key が無い要素
+    // （担当者フィルタや外部リンクなど、本対応の対象外）も対象外。
+    function captureFocusKey() {
+      const active = doc.activeElement;
+      if (!active || !active.dataset) return null;
+      const contains = typeof groupsEl.contains === 'function' ? groupsEl.contains(active) : false;
+      if (!contains) return null;
+      return active.dataset.focusKey || null;
+    }
+
+    // 再構築後にフォーカスを戻す。pendingFocus（畳んだパネルの続きを編集ボタンへ戻す、など
+    // 既存の意図的なフォーカス移動）がある場合はそちらを優先し、無い場合だけ capturedFocusKey で
+    // 復帰を試みる。対応する要素が無い・disabled で focus() が効かない場合は何もしない
+    // （safeFocus が例外を吸収する。disabled な select はネイティブ動作として focus が効かない）。
+    function restoreFocus(capturedFocusKey) {
+      if (pendingFocus) {
+        applyPendingFocus();
+        return;
+      }
+      if (!capturedFocusKey) return;
+      safeFocus(focusTargets.get(capturedFocusKey));
+    }
+
     function cleanupEditorForWidget(widget) {
       if (!editingTaskId) return;
       const exists = contract.flatItems(widget).some((item) => item.id === editingTaskId);
@@ -515,6 +554,9 @@
       const select = el('select', 'widget-control-select');
       select.dataset.taskId = item.id;
       select.dataset.field = control.field;
+      const selectFocusKey = focusKeyForField(item.id, control.field);
+      select.dataset.focusKey = selectFocusKey;
+      focusTargets.set(selectFocusKey, select);
       if (control.ariaLabel) select.setAttribute('aria-label', control.ariaLabel);
       select.disabled = disabled;
       if (disabled) select.setAttribute('aria-disabled', 'true');
@@ -567,6 +609,9 @@
       const panelId = panelIdForItem(item);
       panel.id = panelId;
       panel.setAttribute('tabindex', '-1');
+      const panelFocusKey = focusKeyForPanel(item.id);
+      panel.dataset.focusKey = panelFocusKey;
+      focusTargets.set(panelFocusKey, panel);
 
       panel.addEventListener('keydown', (e) => {
         if (e && e.key === 'Escape') {
@@ -634,12 +679,18 @@
         cancel.textContent = 'キャンセル';
       }
       cancel.disabled = false;
+      const cancelFocusKey = focusKeyForCancel(item.id);
+      cancel.dataset.focusKey = cancelFocusKey;
+      focusTargets.set(cancelFocusKey, cancel);
       cancel.addEventListener('click', () => cancelEditor(item));
 
       const save = el('button', 'task-edit-save');
       save.type = 'button';
       save.textContent = '保存';
       save.disabled = !canSaveItem(item) || saving;
+      const saveFocusKey = focusKeyForSave(item.id);
+      save.dataset.focusKey = saveFocusKey;
+      focusTargets.set(saveFocusKey, save);
       save.addEventListener('click', () => { saveEditor(item); });
 
       actions.appendChild(cancel);
@@ -695,6 +746,9 @@
         // aria-disabled でフォーカス可能なまま見た目だけ無効化し、操作はクリックハンドラの
         // 先頭で止める（openEditor 自体も同条件で二重に止める。安藤 LOW）。
         if (savingSelf) editButton.setAttribute('aria-disabled', 'true');
+        const editButtonFocusKey = focusKeyForEditButton(item.id);
+        editButton.dataset.focusKey = editButtonFocusKey;
+        focusTargets.set(editButtonFocusKey, editButton);
         editButton.addEventListener('click', () => {
           if (savingTasks.has(item.id)) return;
           if (isEditing) {
@@ -766,6 +820,10 @@
      * @returns {object} 描画に付随する情報（chrome 更新用）
      */
     function render(widget, options = {}) {
+      // groupsEl を作り直す前に、その時点でフォーカスが当たっている要素の focusKey を控える
+      // （issue #406 差し戻し: 安藤 MEDIUM）。以降のクリーンアップ処理は DOM に触れないため、
+      // ここで捕まえておけば groupsEl.replaceChildren() 直前の状態と一致する。
+      const capturedFocusKey = captureFocusKey();
       lastWidget = widget || null;
       // syncPending の前後で、消滅した編集対象アイテム由来の draft/pending を掃除する。
       cleanupEditorForWidget(lastWidget);
@@ -773,6 +831,7 @@
       cleanupEditorForWidget(lastWidget);
       renderedEditButtons.clear();
       renderedPanels.clear();
+      focusTargets.clear();
 
       const now = (typeof options.now === 'number') ? options.now : Date.now();
       const stale = contract.isWidgetStale(lastWidget, { now });
@@ -793,7 +852,7 @@
       let emptyReason = '';
 
       if (!lastWidget) {
-        applyPendingFocus();
+        restoreFocus(capturedFocusKey);
         return { stale, viewer, githubMode, filterEnabled, filterOptions, filterMode: mode, totalItems, visibleItems, emptyReason, emptyText: '' };
       }
 
@@ -815,7 +874,7 @@
         groupsEl.appendChild(empty);
       }
 
-      applyPendingFocus();
+      restoreFocus(capturedFocusKey);
       return {
         stale, viewer, githubMode, filterEnabled, filterOptions, filterMode: mode,
         totalItems, visibleItems, emptyReason, emptyText: lastWidget.emptyText || '',

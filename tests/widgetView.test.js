@@ -63,10 +63,16 @@ class FakeElement {
   get firstChild() { return this.children[0] || null; }
 
   appendChild(node) { node.parentNode = this; this.children.push(node); return node; }
-  removeChild(node) { const i = this.children.indexOf(node); if (i >= 0) this.children.splice(i, 1); return node; }
+  removeChild(node) {
+    const i = this.children.indexOf(node);
+    if (i >= 0) { this.children.splice(i, 1); detachFocusIfRemoved(node); }
+    return node;
+  }
   replaceChildren() {
     const nodes = Array.prototype.slice.call(arguments);
+    const removed = this.children;
     this.children = [];
+    removed.forEach((n) => detachFocusIfRemoved(n));
     nodes.forEach((n) => this.appendChild(n));
   }
 
@@ -111,6 +117,25 @@ class FakeElement {
     walk(this);
     return out;
   }
+
+  // 実 DOM の Node.contains 相当（自分自身も含む）。widgetView.js の captureFocusKey が
+  // 「フォーカス中の要素が groupsEl 配下か」を判定するのに使う（issue #406 差し戻し: 安藤 MEDIUM）。
+  contains(node) {
+    if (node === this) return true;
+    return this.children.some((child) => child instanceof FakeElement && child.contains(node));
+  }
+}
+
+// フォーカス中の要素（の祖先を含む）が DOM から外れたら、実ブラウザ同様 activeElement を
+// 手放す（body が無ければ null）。これが無いと removeChild/replaceChildren で古い要素を
+// 消しても doc.activeElement が古い（もう画面上に無い）要素を指したままになり、フォーカス
+// 喪失の不具合（issue #406 差し戻し: 安藤 MEDIUM）をテストで検出できない。
+function detachFocusIfRemoved(node) {
+  const doc = node && node.ownerDocument;
+  if (!doc || !doc.activeElement) return;
+  if (node === doc.activeElement || (node instanceof FakeElement && node.contains(doc.activeElement))) {
+    doc.activeElement = doc.body || null;
+  }
 }
 
 class FakeTextNode {
@@ -119,7 +144,9 @@ class FakeTextNode {
 }
 
 function makeDoc() {
-  const doc = { activeElement: null };
+  // body は持たない最小スタブ（この harness に body 概念は無い）。フォーカス中の要素が
+  // DOM から外れたときは null へ落ちる（実ブラウザの「body が無ければ null」相当）。
+  const doc = { activeElement: null, body: null };
   doc.createElement = (tag) => new FakeElement(tag, doc);
   return doc;
 }
@@ -832,6 +859,148 @@ test('render: 保存中に閉じたタスクの反映が確認されても、別
   const panels = groupsEl.querySelectorAll((el) => el.classList.contains('task-edit-panel'));
   assert.equal(panels.length, 1);
   assert.equal(panels[0].getAttribute('id'), 'task-edit-panel-20');
+});
+
+// ── 安藤レビュー指摘（MEDIUM）: 反映待ち中に別タスクを編集していると、
+//    背景の再描画（groupsEl.replaceChildren() での作り直し）でフォーカスが失われる ──────
+//
+// render() は毎回 groupsEl を作り直すため、フォーカス中の要素が消えると実ブラウザでは
+// フォーカスが body へ落ちる。反映待ちのタスクがあっても別タスクの編集を開始できる
+// （issue #406）ようになったことで、1段目タイマー（scheduleWarnTimeout）の requestRerender、
+// および widgets:update 起因の再描画のたびに、別タスクの編集パネル内で操作中の要素
+// （select・保存ボタン等）からフォーカスが外れていた。
+
+test('render: 1段目タイマー（scheduleWarnTimeout）の requestRerender による再描画でも、別タスクの編集パネルの select フォーカスを保持する', async () => {
+  const widget = twoEditableTasksWidget();
+  let viewRef;
+  const { doc, groupsEl, view } = makeView({
+    sendCommand: async () => ({ ok: true }),
+    pendingTimeoutMs: 30,
+    pendingErrorTimeoutMs: 5000,
+    // アプリ側（app.js／mobile.js）と同じく、requestRerender は実際に再描画を行う。
+    requestRerender: () => viewRef.render(widget, { now: Date.parse('2026-07-21T00:00:10.000Z') }),
+  });
+  viewRef = view;
+
+  // タスクA（'10'）を編集して保存する（反映待ちになる。1段目タイマーが pendingTimeoutMs 後に発火）。
+  openAndSaveTaskA(groupsEl, view, widget);
+  await Promise.resolve();
+  assert.equal(view.hasPending(), true);
+
+  // タスクB（'20'）の編集を開く。openEditor の pendingFocus によりパネルの最初の control
+  // （B の select）へ自動でフォーカスが移る。
+  const editButtons = groupsEl.querySelectorAll((el) => el.classList.contains('task-item-edit'));
+  editButtons[1].dispatch('click');
+  const selectBBefore = groupsEl.querySelectorAll((el) => el.tagName === 'SELECT')
+    .find((el) => el.dataset.taskId === '20' && el.dataset.field === 'status');
+  assert.equal(doc.activeElement, selectBBefore);
+
+  // 1段目タイマー（pendingTimeoutMs=30ms）が発火し、内部の requestRerender() 経由で
+  // render() が呼ばれる（テストコードから明示的に render() を呼ばない点が本来のバグ経路）。
+  await new Promise((resolve) => setTimeout(resolve, 60));
+
+  // タスクA は「時間がかかっています」表示へ切り替わっている（1段目通過の確認）。
+  const pendingEl = groupsEl.querySelectorAll((el) => el.classList.contains('task-item-pending'))[0];
+  assert.equal(pendingEl.dataset.state, 'slow');
+
+  // タスクB のパネルは開いたままで、同じ select（作り直された新しい DOM ノード）へ
+  // フォーカスが戻っている（body へ落ちていない）。
+  assert.equal(view.hasOpenEditor(), true);
+  const selectBAfter = groupsEl.querySelectorAll((el) => el.tagName === 'SELECT')
+    .find((el) => el.dataset.taskId === '20' && el.dataset.field === 'status');
+  assert.ok(selectBAfter);
+  assert.notEqual(selectBAfter, selectBBefore); // DOM は作り直されている。
+  assert.equal(doc.activeElement, selectBAfter);
+
+  // 後始末: 2段目タイムアウトでプロセスを生かし続けない。
+  const updatedWidget = twoEditableTasksWidget({ a: { current: 'in-progress' } });
+  viewRef.render(updatedWidget, { now: Date.parse('2026-07-21T00:00:11.000Z') });
+  assert.equal(view.hasPending(), false);
+});
+
+test('render: widgets:update 起因の再描画でも、別タスクの編集パネルの保存ボタンのフォーカスを保持する', async () => {
+  const widget = twoEditableTasksWidget();
+  const { doc, groupsEl, view } = makeView({
+    sendCommand: async () => ({ ok: true }),
+  });
+
+  // タスクA（'10'）を編集して保存する（反映待ちになる）。
+  openAndSaveTaskA(groupsEl, view, widget);
+  await Promise.resolve();
+  view.render(widget, { now: Date.parse('2026-07-21T00:00:10.000Z') });
+  assert.equal(view.hasPending(), true);
+
+  // タスクB（'20'）の編集を開く。
+  const editButtons = groupsEl.querySelectorAll((el) => el.classList.contains('task-item-edit'));
+  editButtons[1].dispatch('click');
+  view.render(widget, { now: Date.parse('2026-07-21T00:00:10.000Z') });
+
+  // B の select を変更して dirty にし、保存ボタンを有効化してからフォーカスする
+  // （disabled な要素は実ブラウザ同様 focus() が効かないため）。
+  const selectB = groupsEl.querySelectorAll((el) => el.tagName === 'SELECT')
+    .find((el) => el.dataset.taskId === '20' && el.dataset.field === 'status');
+  selectB.value = 'in-progress';
+  selectB.dispatch('change');
+  const saveBBefore = groupsEl.querySelectorAll((el) => el.classList.contains('task-edit-save'))[0];
+  assert.equal(saveBBefore.disabled, false);
+  saveBBefore.focus();
+  assert.equal(doc.activeElement, saveBBefore);
+
+  // widgets:update 起因の再描画を模す（orchestrator からの新しいペイロードで再描画。
+  // タスクA の反映内容は変わっていない＝ pending は継続）。
+  view.render(widget, { now: Date.parse('2026-07-21T00:00:10.500Z') });
+
+  // B のパネルは開いたままで、同じ保存ボタン（作り直された新しい DOM ノード）へ
+  // フォーカスが戻っている。
+  assert.equal(view.hasOpenEditor(), true);
+  const saveBAfter = groupsEl.querySelectorAll((el) => el.classList.contains('task-edit-save'))[0];
+  assert.ok(saveBAfter);
+  assert.notEqual(saveBAfter, saveBBefore);
+  assert.equal(doc.activeElement, saveBAfter);
+
+  // 後始末。
+  const updatedWidget = twoEditableTasksWidget({ a: { current: 'in-progress' } });
+  view.render(updatedWidget, { now: Date.parse('2026-07-21T00:00:11.000Z') });
+  assert.equal(view.hasPending(), false);
+});
+
+test('render: pendingFocus が設定されている場合は、直前にキャプチャしたフォーカスより優先される（保存中パネルを閉じると編集ボタンへ戻る）', async () => {
+  const widget = twoEditableTasksWidget();
+  let viewRef;
+  const { doc, groupsEl, view } = makeView({
+    sendCommand: async () => ({ ok: true }),
+    // ぶら下がったタイマーでプロセスを長く生かさない（後始末を待たずアサーションで
+    // 失敗してもテストプロセスが 30 秒／5 分の実タイマーで止まらないようにする）。
+    pendingTimeoutMs: 30,
+    pendingErrorTimeoutMs: 60,
+    // アプリ側と同じく requestRerender は実際に再描画を行う（pendingFocus は openEditor /
+    // closeEditorWhileSaving が requestRerender 経由の render() 内で適用される）。
+    requestRerender: () => viewRef.render(widget, { now: Date.parse('2026-07-21T00:00:10.000Z') }),
+  });
+  viewRef = view;
+
+  // タスクA を編集して保存する（反映待ちになる。select は保存中は disabled になりフォーカス
+  // できないため、閉じるボタン（常に disabled にならない）へ明示的にフォーカスしてから押す）。
+  openAndSaveTaskA(groupsEl, view, widget);
+  await Promise.resolve();
+  const cancelBeforeClose = groupsEl.querySelectorAll((el) => el.classList.contains('task-edit-cancel'))[0];
+  cancelBeforeClose.focus();
+  assert.equal(doc.activeElement, cancelBeforeClose);
+
+  // 保存中のまま「閉じる」を押す。closeEditorWhileSaving が pendingFocus を
+  // { type: 'edit-button', taskId: '10' } に設定してから requestRerender() を呼ぶ。
+  // その時点の capturedFocusKey（A の閉じるボタン）はパネルが畳まれたことで再構築後に
+  // 存在しなくなるが、それ以前に pendingFocus が優先され編集ボタンへ戻る。
+  cancelBeforeClose.dispatch('click');
+
+  assert.equal(view.hasOpenEditor(), false);
+  const editButtonA = groupsEl.querySelectorAll((el) => el.classList.contains('task-item-edit'))[0];
+  assert.equal(doc.activeElement, editButtonA);
+
+  // 後始末。
+  const updatedWidget = twoEditableTasksWidget({ a: { current: 'in-progress' } });
+  viewRef.render(updatedWidget, { now: Date.parse('2026-07-21T00:00:11.000Z') });
+  assert.equal(view.hasPending(), false);
 });
 
 // ── 安藤レビュー指摘（LOW）: slow 表示の固定と2段目タイマーの再検証 ──────────

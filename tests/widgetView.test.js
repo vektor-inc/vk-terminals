@@ -379,8 +379,9 @@ test('render: select 変更は下書きだけ更新し、保存時に apply-batc
   const { groupsEl, view } = makeView({
     sendCommand: async (cmd) => { sent.push(cmd); return { ok: true }; },
     requestRerender: () => { rerenders += 1; },
-    // 反映待ちタイマーがテストプロセスを長く生かさないよう短くする。
+    // 反映待ちタイマー（1段目・2段目とも）がテストプロセスを長く生かさないよう短くする。
     pendingTimeoutMs: 40,
+    pendingErrorTimeoutMs: 40,
   });
   view.render(widget, { now: Date.parse('2026-07-21T00:00:10.000Z') });
   groupsEl.querySelectorAll((el) => el.classList.contains('task-item-edit'))[0].dispatch('click');
@@ -443,6 +444,155 @@ test('render: 保存後の widget 更新で current が追いつくと pending �
   assert.equal(groupsEl.querySelectorAll((el) => el.classList.contains('task-edit-panel')).length, 0);
   const editButton = groupsEl.querySelectorAll((el) => el.classList.contains('task-item-edit'))[0];
   assert.equal(doc.activeElement, editButton);
+});
+
+// ── 反映待ちの2段階タイムアウト（issue #406）───────────────────────────────
+// vk-orchestrator 側の反映は 30〜55 秒かかることがあり、旧実装は 1 段のタイムアウト
+// （既定 30 秒）で pending・savingTasks を消して timeoutError を出していたため、再試行で
+// apply-batch が二重送信されていた。1段目は表示切り替えのみに留め、2段目（既定 5 分）で
+// 初めて pending・savingTasks を消してエラーにする。
+
+test('render: 1段目のタイムアウトを過ぎてから widget の current が追いついた場合、エラーにならず保存完了になる', async () => {
+  const widget = editableWidgetWithControls();
+  const updatedWidget = editableWidgetWithControls({
+    controls: [
+      { type: 'select', field: 'status', label: 'ステータス', current: 'in-progress', options: [
+        { value: 'ready', label: '実行待ち', command: { action: 'set-status', taskId: '10', to: 'ready', expected: 'in-progress' } },
+        { value: 'in-progress', label: '実行中' },
+      ] },
+    ],
+  });
+  const { doc, groupsEl, view } = makeView({
+    sendCommand: async () => ({ ok: true }),
+    // 1段目（警告）だけ短くし、2段目（エラー）は既定のまま長く保つ。反映が追いつく前に
+    // 2段目が誤って発火しないことを確認する意図。
+    pendingTimeoutMs: 40,
+  });
+  view.render(widget, { now: Date.parse('2026-07-21T00:00:10.000Z') });
+  groupsEl.querySelectorAll((el) => el.classList.contains('task-item-edit'))[0].dispatch('click');
+  view.render(widget, { now: Date.parse('2026-07-21T00:00:10.000Z') });
+
+  const status = groupsEl.querySelectorAll((el) => el.tagName === 'SELECT').find((el) => el.dataset.field === 'status');
+  status.value = 'in-progress';
+  status.dispatch('change');
+  groupsEl.querySelectorAll((el) => el.classList.contains('task-edit-save'))[0].dispatch('click');
+  await Promise.resolve();
+  assert.equal(view.hasPending(), true);
+
+  // 1段目のタイムアウト（pendingTimeoutMs）を過ぎるまで待つ。
+  await new Promise((resolve) => setTimeout(resolve, 60));
+
+  // widget の current が追いついた状態で再描画する。従来はここまでに timeoutError が出て
+  // pending・savingTasks が消え、再試行できる状態になっていた（issue #406 の不具合）。
+  view.render(updatedWidget, { now: Date.parse('2026-07-21T00:00:11.000Z') });
+  assert.equal(view.hasPending(), false);
+  assert.equal(view.hasOpenEditor(), false);
+  assert.equal(groupsEl.querySelectorAll((el) => el.classList.contains('task-edit-panel')).length, 0);
+  assert.equal(groupsEl.querySelectorAll((el) => el.classList.contains('task-item-action-error')).length, 0);
+  const editButton = groupsEl.querySelectorAll((el) => el.classList.contains('task-item-edit'))[0];
+  assert.equal(doc.activeElement, editButton);
+});
+
+test('render: 1段目のタイムアウトを過ぎると「時間がかかっています」表示に切り替わり、エラーは出ず、保存・編集ボタンは無効のまま（二重送信されない）', async () => {
+  const widget = editableWidgetWithControls();
+  const sent = [];
+  const { groupsEl, view } = makeView({
+    sendCommand: async (cmd) => { sent.push(cmd); return { ok: true }; },
+    pendingTimeoutMs: 40,
+  });
+  view.render(widget, { now: Date.parse('2026-07-21T00:00:10.000Z') });
+  groupsEl.querySelectorAll((el) => el.classList.contains('task-item-edit'))[0].dispatch('click');
+  view.render(widget, { now: Date.parse('2026-07-21T00:00:10.000Z') });
+
+  const status = groupsEl.querySelectorAll((el) => el.tagName === 'SELECT').find((el) => el.dataset.field === 'status');
+  status.value = 'in-progress';
+  status.dispatch('change');
+  groupsEl.querySelectorAll((el) => el.classList.contains('task-edit-save'))[0].dispatch('click');
+  await Promise.resolve();
+  assert.equal(sent.length, 1);
+
+  // 1段目のタイムアウトを過ぎるまで待つ。
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  view.render(widget, { now: Date.parse('2026-07-21T00:00:10.000Z') });
+
+  assert.equal(view.hasPending(), true);
+  assert.equal(groupsEl.querySelectorAll((el) => el.classList.contains('task-item-action-error')).length, 0);
+  const pendingEl = groupsEl.querySelectorAll((el) => el.classList.contains('task-item-pending'))[0];
+  assert.equal(pendingEl.textContent, DEFAULT_STRINGS.savingPendingSlow);
+  assert.equal(pendingEl.dataset.state, 'slow');
+
+  const save = groupsEl.querySelectorAll((el) => el.classList.contains('task-edit-save'))[0];
+  assert.equal(save.disabled, true);
+  const editButton = groupsEl.querySelectorAll((el) => el.classList.contains('task-item-edit'))[0];
+  assert.equal(editButton.disabled, true);
+
+  // 保存ボタンを再度押しても savingTasks による無効化で二重送信されない。
+  save.dispatch('click');
+  await Promise.resolve();
+  assert.equal(sent.length, 1);
+
+  // widget の current を追いつかせて後始末する（2段目タイマーを残したままにしない）。
+  const updatedWidget = editableWidgetWithControls({
+    controls: [
+      { type: 'select', field: 'status', label: 'ステータス', current: 'in-progress', options: [
+        { value: 'ready', label: '実行待ち', command: { action: 'set-status', taskId: '10', to: 'ready', expected: 'in-progress' } },
+        { value: 'in-progress', label: '実行中' },
+      ] },
+    ],
+  });
+  view.render(updatedWidget, { now: Date.parse('2026-07-21T00:00:11.000Z') });
+  assert.equal(view.hasPending(), false);
+});
+
+test('render: 2段目のタイムアウトを過ぎると timeoutError が表示され、保存ボタンが再び押せる', async () => {
+  const widget = editableWidgetWithControls();
+  const sent = [];
+  const { groupsEl, view } = makeView({
+    sendCommand: async (cmd) => { sent.push(cmd); return { ok: true }; },
+    pendingTimeoutMs: 20,
+    pendingErrorTimeoutMs: 50,
+  });
+  view.render(widget, { now: Date.parse('2026-07-21T00:00:10.000Z') });
+  groupsEl.querySelectorAll((el) => el.classList.contains('task-item-edit'))[0].dispatch('click');
+  view.render(widget, { now: Date.parse('2026-07-21T00:00:10.000Z') });
+
+  const status = groupsEl.querySelectorAll((el) => el.tagName === 'SELECT').find((el) => el.dataset.field === 'status');
+  status.value = 'in-progress';
+  status.dispatch('change');
+  groupsEl.querySelectorAll((el) => el.classList.contains('task-edit-save'))[0].dispatch('click');
+  await Promise.resolve();
+  assert.equal(sent.length, 1);
+
+  // 2段目のタイムアウト（pendingErrorTimeoutMs）を過ぎるまで待つ。
+  await new Promise((resolve) => setTimeout(resolve, 90));
+  view.render(widget, { now: Date.parse('2026-07-21T00:00:10.000Z') });
+
+  assert.equal(view.hasPending(), false);
+  assert.equal(groupsEl.querySelectorAll((el) => el.classList.contains('task-item-pending')).length, 0);
+  const error = groupsEl.querySelectorAll((el) => el.classList.contains('task-item-action-error'))[0];
+  assert.equal(error.getAttribute('role'), 'alert');
+  assert.equal(error.textContent, DEFAULT_STRINGS.timeoutError);
+  assert.equal(view.hasOpenEditor(), true);
+
+  const save = groupsEl.querySelectorAll((el) => el.classList.contains('task-edit-save'))[0];
+  assert.equal(save.disabled, false);
+
+  // 保存ボタンが再び押せる（再試行できる）ことを確認する。
+  save.dispatch('click');
+  await Promise.resolve();
+  assert.equal(sent.length, 2);
+
+  // 再試行分の反映待ちタイマーを片付ける（widget の current を追いつかせて自然に消す）。
+  const updatedWidget = editableWidgetWithControls({
+    controls: [
+      { type: 'select', field: 'status', label: 'ステータス', current: 'in-progress', options: [
+        { value: 'ready', label: '実行待ち', command: { action: 'set-status', taskId: '10', to: 'ready', expected: 'in-progress' } },
+        { value: 'in-progress', label: '実行中' },
+      ] },
+    ],
+  });
+  view.render(updatedWidget, { now: Date.parse('2026-07-21T00:00:11.000Z') });
+  assert.equal(view.hasPending(), false);
 });
 
 test('render: キャンセルで下書きを破棄し畳みに戻る', () => {
@@ -611,8 +761,9 @@ test('render: specModel の変更は保存時に set-spec-model のコマンド�
   const sent = [];
   const { groupsEl, view } = makeView({
     sendCommand: async (cmd) => { sent.push(cmd); return { ok: true }; },
-    // 反映待ちタイマーがテストプロセスを長く生かさないよう短くする。
+    // 反映待ちタイマー（1段目・2段目とも）がテストプロセスを長く生かさないよう短くする。
     pendingTimeoutMs: 40,
+    pendingErrorTimeoutMs: 40,
   });
   view.render(widget, { now: Date.parse('2026-07-21T00:00:10.000Z') });
   groupsEl.querySelectorAll((el) => el.classList.contains('task-item-edit'))[0].dispatch('click');

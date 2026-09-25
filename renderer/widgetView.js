@@ -34,6 +34,10 @@
     sendError: '送信に失敗しました（再試行してください）',
     timeoutError: '反映を確認できませんでした（内容は保持しています。再試行できます）',
     savingPending: '保存中…（反映待ち）',
+    // 1段目のタイムアウト（既定 pendingTimeoutMs）を過ぎても反映が確認できない間の表示。
+    // まだエラーにはせず、pending / savingTasks は保持したまま文言だけ切り替える（issue #406）。
+    pendingSlow: '反映待ち（時間がかかっています）',
+    savingPendingSlow: '保存中…（反映待ち・時間がかかっています）',
     empty: 'タスクはありません',
     emptySelf: '自分に割り当てられたタスクはありません',
     emptyFiltered: '該当するタスクはありません',
@@ -66,7 +70,8 @@
    * @param {()=>void} [deps.requestRerender]  pending タイムアウト時などの再描画要求
    * @param {object} [deps.strings]
    * @param {object} [deps.contract]
-   * @param {number} [deps.pendingTimeoutMs]
+   * @param {number} [deps.pendingTimeoutMs]  1段目（警告）のタイムアウト。既定 30000ms。
+   * @param {number} [deps.pendingErrorTimeoutMs]  2段目（エラー）のタイムアウト。既定 300000ms（5分）。
    */
   function createTaskWidgetView(deps) {
     const contract = resolveContract(deps.contract);
@@ -80,8 +85,12 @@
     const getFilterMode = deps.getFilterMode || (() => 'all');
     const requestRerender = deps.requestRerender || (() => {});
     const pendingTimeoutMs = Number.isFinite(deps.pendingTimeoutMs) ? deps.pendingTimeoutMs : 30000;
+    // vk-orchestrator 側の反映は 30〜55 秒かかることがある（issue #406）。1段目を過ぎても
+    // 即エラーにはせず「時間がかかっています」表示へ切り替えるだけに留め、pending / savingTasks は
+    // 2段目のこのタイムアウトまで保持し続ける（保存・編集ボタンは無効のままで二重送信を防ぐ）。
+    const pendingErrorTimeoutMs = Number.isFinite(deps.pendingErrorTimeoutMs) ? deps.pendingErrorTimeoutMs : 300000;
 
-    // pending: taskId -> { fields: [{ field, expected }], timeoutId }
+    // pending: taskId -> { fields: [{ field, expected }], warnTimeoutId, errorTimeoutId, slow }
     const pending = new Map();
     const errors = new Map();
     const drafts = new Map();
@@ -94,24 +103,48 @@
 
     function getPending(taskId) { return pending.get(taskId) || null; }
 
+    // pending の両タイマー（警告・エラー）を確実に解除する。片方だけ消すとタイマーの
+    // 取りこぼしが起き、テストプロセスが終わらない・古いタイマーが後から発火する原因になる。
     function clearPending(taskId) {
       const p = pending.get(taskId);
-      if (p && p.timeoutId) clearTimeout(p.timeoutId);
+      if (p) {
+        if (p.warnTimeoutId) clearTimeout(p.warnTimeoutId);
+        if (p.errorTimeoutId) clearTimeout(p.errorTimeoutId);
+      }
       pending.delete(taskId);
+    }
+
+    // 1段目: エラーにはせず「時間がかかっています」表示へ切り替えるだけ（pending / savingTasks は保持）。
+    function scheduleWarnTimeout(taskId) {
+      return setTimeout(() => {
+        const p = pending.get(taskId);
+        if (!p || p.slow) return;
+        p.slow = true;
+        requestRerender();
+      }, pendingTimeoutMs);
+    }
+
+    // 2段目: ここで初めて従来どおり pending・savingTasks を消してエラー表示にし、再試行できるようにする。
+    function scheduleErrorTimeout(taskId) {
+      return setTimeout(() => {
+        clearPending(taskId);
+        savingTasks.delete(taskId);
+        errors.set(taskId, strings.timeoutError);
+        requestRerender();
+      }, pendingErrorTimeoutMs);
     }
 
     function setPendingField(taskId, field, expected) {
       const existing = pending.get(taskId);
       const fields = existing ? existing.fields.filter((f) => f.field !== field) : [];
       fields.push({ field, expected });
-      if (existing && existing.timeoutId) clearTimeout(existing.timeoutId);
-      const timeoutId = setTimeout(() => {
-        clearPending(taskId);
-        savingTasks.delete(taskId);
-        errors.set(taskId, strings.timeoutError);
-        requestRerender();
-      }, pendingTimeoutMs);
-      pending.set(taskId, { fields, timeoutId });
+      if (existing) {
+        if (existing.warnTimeoutId) clearTimeout(existing.warnTimeoutId);
+        if (existing.errorTimeoutId) clearTimeout(existing.errorTimeoutId);
+      }
+      const warnTimeoutId = scheduleWarnTimeout(taskId);
+      const errorTimeoutId = scheduleErrorTimeout(taskId);
+      pending.set(taskId, { fields, warnTimeoutId, errorTimeoutId, slow: false });
       errors.delete(taskId);
     }
 
@@ -308,14 +341,16 @@
             }
           }
         } else if (remaining.length !== p.fields.length) {
-          if (p.timeoutId) clearTimeout(p.timeoutId);
-          const timeoutId = setTimeout(() => {
-            clearPending(taskId);
-            savingTasks.delete(taskId);
-            errors.set(taskId, strings.timeoutError);
-            requestRerender();
-          }, pendingTimeoutMs);
-          pending.set(taskId, { fields: remaining, timeoutId });
+          // 一部の項目だけ反映された＝進捗があったとみなし、両タイマーを今から数え直す
+          // （反映が進んでいるのに期限切れでエラーにしてしまうのを防ぐ。既存の単段タイマーが
+          // 部分反映のたびに延長していた挙動を、2段構成でもそのまま踏襲する）。
+          // ただし「時間がかかっています」表示は一度出たら普通の pending 表示へ戻さない
+          // （slow フラグは維持し、既に発火済みの警告タイマーは再セットしない）。
+          if (p.warnTimeoutId) clearTimeout(p.warnTimeoutId);
+          if (p.errorTimeoutId) clearTimeout(p.errorTimeoutId);
+          const warnTimeoutId = p.slow ? null : scheduleWarnTimeout(taskId);
+          const errorTimeoutId = scheduleErrorTimeout(taskId);
+          pending.set(taskId, { fields: remaining, warnTimeoutId, errorTimeoutId, slow: p.slow });
         }
       }
       for (const taskId of Array.from(errors.keys())) {
@@ -590,7 +625,15 @@
         if (isPending) {
           const p = el('span', 'task-item-pending');
           p.setAttribute('role', 'status');
-          p.textContent = savingTasks.has(item.id) ? strings.savingPending : strings.pending;
+          const pendingInfo = getPending(item.id);
+          const slow = !!(pendingInfo && pendingInfo.slow);
+          if (slow) p.dataset.state = 'slow';
+          const saving = savingTasks.has(item.id);
+          if (saving) {
+            p.textContent = slow ? strings.savingPendingSlow : strings.savingPending;
+          } else {
+            p.textContent = slow ? strings.pendingSlow : strings.pending;
+          }
           feedback.appendChild(p);
         }
         if (errorMessage) {

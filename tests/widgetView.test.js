@@ -76,9 +76,9 @@ class FakeElement {
 
   addEventListener(type, fn) { (this.listeners[type] = this.listeners[type] || []).push(fn); }
   focus() { if (this.ownerDocument) this.ownerDocument.activeElement = this; }
-  // テスト用: イベントを発火する。
-  dispatch(type) {
-    const ev = { preventDefault() {}, stopPropagation() {} };
+  // テスト用: イベントを発火する。extra で key 等の追加プロパティ（Escape 判定など）を渡せる。
+  dispatch(type, extra) {
+    const ev = Object.assign({ preventDefault() {}, stopPropagation() {} }, extra || {});
     (this.listeners[type] || []).forEach((fn) => fn(ev));
   }
 
@@ -593,6 +593,283 @@ test('render: 2段目のタイムアウトを過ぎると timeoutError が表示
   });
   view.render(updatedWidget, { now: Date.parse('2026-07-21T00:00:11.000Z') });
   assert.equal(view.hasPending(), false);
+});
+
+// ── 保存中にパネルを閉じられる（issue #406 植草 UX レビュー指摘）─────────────
+// 送信成功後も savingTasks が反映確認（または2段目のエラー）まで残り続けるため、旧実装は
+// パネルを閉じられず、キャンセルも他タスクの編集ボタンも押せず「アプリが固まったように見える」
+// 状態が最大5分続いた。保存中はキャンセルボタンを「閉じる」として働かせ、確認なしでパネルだけ
+// 閉じられるようにする。pending・savingTasks・タイマーは維持し、自タスクの編集ボタンだけ無効の
+// ままにして二重送信を防ぐ。他タスクの編集ボタンは押せるようにする。
+
+function twoEditableTasksWidget(overrides) {
+  const aCurrent = (overrides && overrides.a && overrides.a.current) || 'ready';
+  const aOptions = aCurrent === 'ready'
+    ? [
+      { value: 'ready', label: '実行待ち' },
+      { value: 'in-progress', label: '実行中', command: { action: 'set-status', taskId: '10', to: 'in-progress', expected: 'ready' } },
+    ]
+    : [
+      { value: 'ready', label: '実行待ち', command: { action: 'set-status', taskId: '10', to: 'ready', expected: 'in-progress' } },
+      { value: 'in-progress', label: '実行中' },
+    ];
+  return sanitized([
+    { id: 'ready', label: '実行待ち', tone: 'info', items: [
+      { id: '10', title: 'タスクA', editable: true,
+        controls: [{ type: 'select', field: 'status', label: 'ステータス', current: aCurrent, options: aOptions }] },
+      { id: '20', title: 'タスクB', editable: true,
+        controls: [{ type: 'select', field: 'status', label: 'ステータス', current: 'ready', options: [
+          { value: 'ready', label: '実行待ち' },
+          { value: 'in-progress', label: '実行中', command: { action: 'set-status', taskId: '20', to: 'in-progress', expected: 'ready' } },
+        ] }] },
+    ] },
+  ]);
+}
+
+// タスクA（id '10'）の編集を開き、status を in-progress にして保存する（送信のみ。await は呼び出し側）。
+function openAndSaveTaskA(groupsEl, view, widget) {
+  view.render(widget, { now: Date.parse('2026-07-21T00:00:10.000Z') });
+  groupsEl.querySelectorAll((el) => el.classList.contains('task-item-edit'))[0].dispatch('click');
+  view.render(widget, { now: Date.parse('2026-07-21T00:00:10.000Z') });
+  const status = groupsEl.querySelectorAll((el) => el.tagName === 'SELECT').find((el) => el.dataset.field === 'status');
+  status.value = 'in-progress';
+  status.dispatch('change');
+  groupsEl.querySelectorAll((el) => el.classList.contains('task-edit-save'))[0].dispatch('click');
+}
+
+test('render: 保存中はキャンセルが「閉じる」として働き、確認なしでパネルだけ閉じる。pending・savingTasks は維持し、他タスクの編集ボタンは押せる', async () => {
+  const widget = twoEditableTasksWidget();
+  const sent = [];
+  const confirms = [];
+  const { groupsEl, view } = makeView({
+    sendCommand: async (cmd) => { sent.push(cmd); return { ok: true }; },
+    confirm: (text) => { confirms.push(text); return true; },
+  });
+  openAndSaveTaskA(groupsEl, view, widget);
+  await Promise.resolve();
+  assert.equal(sent.length, 1);
+  assert.equal(view.hasPending(), true);
+  view.render(widget, { now: Date.parse('2026-07-21T00:00:10.000Z') });
+
+  const cancel = groupsEl.querySelectorAll((el) => el.classList.contains('task-edit-cancel'))[0];
+  assert.equal(cancel.textContent, '閉じる');
+  assert.equal(cancel.disabled, false);
+  cancel.dispatch('click');
+
+  // 下書き破棄の確認ダイアログは出ない（変更は送信済みのため）。
+  assert.equal(confirms.length, 0);
+  assert.equal(view.hasOpenEditor(), false);
+  // pending・savingTasks は維持されている（表示はパネル外のカード下に出続ける）。
+  assert.equal(view.hasPending(), true);
+
+  view.render(widget, { now: Date.parse('2026-07-21T00:00:10.000Z') });
+  assert.equal(groupsEl.querySelectorAll((el) => el.classList.contains('task-edit-panel')).length, 0);
+  const pendingEl = groupsEl.querySelectorAll((el) => el.classList.contains('task-item-pending'))[0];
+  assert.equal(pendingEl.textContent, DEFAULT_STRINGS.savingPending);
+
+  const editButtons = groupsEl.querySelectorAll((el) => el.classList.contains('task-item-edit'));
+  assert.equal(editButtons[0].disabled, true); // タスクA（保存中）自身は無効のまま。
+  assert.equal(editButtons[1].disabled, false); // タスクB は押せる。
+
+  // タスクA を再送信しても二重送信にならない（disabled のため実 UI では押せないが念のため回数も確認）。
+  assert.equal(sent.length, 1);
+
+  // 後始末: widget の current を追いつかせて pending を解消する。
+  const updatedWidget = twoEditableTasksWidget({ a: { current: 'in-progress' } });
+  view.render(updatedWidget, { now: Date.parse('2026-07-21T00:00:11.000Z') });
+  assert.equal(view.hasPending(), false);
+});
+
+test('render: 保存中のパネルを開いたまま他タスクの編集ボタンを押すと、保存中パネルを閉じてから新しいパネルを開く', async () => {
+  const widget = twoEditableTasksWidget();
+  const sent = [];
+  const { groupsEl, view } = makeView({
+    sendCommand: async (cmd) => { sent.push(cmd); return { ok: true }; },
+  });
+  openAndSaveTaskA(groupsEl, view, widget);
+  await Promise.resolve();
+  assert.equal(view.hasPending(), true);
+  view.render(widget, { now: Date.parse('2026-07-21T00:00:10.000Z') });
+
+  // タスクB の編集ボタンを押す（タスクA は保存中のまま）。
+  const editButtons = groupsEl.querySelectorAll((el) => el.classList.contains('task-item-edit'));
+  editButtons[1].dispatch('click');
+  view.render(widget, { now: Date.parse('2026-07-21T00:00:10.000Z') });
+
+  // タスクA のパネルは畳まれ、タスクB のパネルだけが開いている。
+  const panels = groupsEl.querySelectorAll((el) => el.classList.contains('task-edit-panel'));
+  assert.equal(panels.length, 1);
+  assert.equal(panels[0].getAttribute('id'), 'task-edit-panel-20');
+  assert.equal(view.hasOpenEditor(), true);
+
+  // タスクA の pending・savingTasks は維持されたまま（二重送信されない）。
+  assert.equal(view.hasPending(), true);
+  assert.equal(sent.length, 1);
+
+  const updatedWidget = twoEditableTasksWidget({ a: { current: 'in-progress' } });
+  view.render(updatedWidget, { now: Date.parse('2026-07-21T00:00:11.000Z') });
+  assert.equal(view.hasPending(), false);
+});
+
+test('render: 保存中に Escape を押しても確認なしでパネルだけ閉じる', async () => {
+  const widget = twoEditableTasksWidget();
+  const { groupsEl, view } = makeView({
+    sendCommand: async () => ({ ok: true }),
+    confirm: () => { throw new Error('保存中の Escape で confirm は呼ばれないはず'); },
+  });
+  openAndSaveTaskA(groupsEl, view, widget);
+  await Promise.resolve();
+  view.render(widget, { now: Date.parse('2026-07-21T00:00:10.000Z') });
+
+  const panel = groupsEl.querySelectorAll((el) => el.classList.contains('task-edit-panel'))[0];
+  panel.dispatch('keydown', { key: 'Escape' });
+
+  assert.equal(view.hasOpenEditor(), false);
+  assert.equal(view.hasPending(), true);
+
+  const updatedWidget = twoEditableTasksWidget({ a: { current: 'in-progress' } });
+  view.render(updatedWidget, { now: Date.parse('2026-07-21T00:00:11.000Z') });
+  assert.equal(view.hasPending(), false);
+});
+
+test('render: 保存中に閉じたタスクの反映が確認されても、別タスクを編集中ならそのパネル・フォーカスを奪わない', async () => {
+  const widget = twoEditableTasksWidget();
+  const { groupsEl, view } = makeView({
+    sendCommand: async () => ({ ok: true }),
+  });
+  openAndSaveTaskA(groupsEl, view, widget);
+  await Promise.resolve();
+  view.render(widget, { now: Date.parse('2026-07-21T00:00:10.000Z') });
+
+  // タスクA を保存中のまま閉じる。
+  groupsEl.querySelectorAll((el) => el.classList.contains('task-edit-cancel'))[0].dispatch('click');
+  view.render(widget, { now: Date.parse('2026-07-21T00:00:10.000Z') });
+
+  // タスクB の編集を開く。
+  const editButtons = groupsEl.querySelectorAll((el) => el.classList.contains('task-item-edit'));
+  editButtons[1].dispatch('click');
+  view.render(widget, { now: Date.parse('2026-07-21T00:00:10.000Z') });
+  assert.equal(view.hasOpenEditor(), true);
+  const panelBBefore = groupsEl.querySelectorAll((el) => el.classList.contains('task-edit-panel'))[0];
+  assert.equal(panelBBefore.getAttribute('id'), 'task-edit-panel-20');
+
+  // タスクA の反映が確認された状態で再描画する。
+  const updatedWidget = twoEditableTasksWidget({ a: { current: 'in-progress' } });
+  view.render(updatedWidget, { now: Date.parse('2026-07-21T00:00:11.000Z') });
+
+  assert.equal(view.hasPending(), false);
+  // タスクB のパネルはそのまま開いたまま（フォーカス・パネルを奪われていない）。
+  assert.equal(view.hasOpenEditor(), true);
+  const panels = groupsEl.querySelectorAll((el) => el.classList.contains('task-edit-panel'));
+  assert.equal(panels.length, 1);
+  assert.equal(panels[0].getAttribute('id'), 'task-edit-panel-20');
+});
+
+// ── 安藤レビュー指摘（LOW）: slow 表示の固定と2段目タイマーの再検証 ──────────
+
+test('render: 1段目通過後に一部の項目だけ反映されても「時間がかかっています」表示のままで、2段目のタイムアウトだけが延長される', async () => {
+  const widget = editableWidgetWithControls();
+  const { groupsEl, view } = makeView({
+    sendCommand: async () => ({ ok: true }),
+    pendingTimeoutMs: 30,
+    pendingErrorTimeoutMs: 80,
+  });
+  view.render(widget, { now: Date.parse('2026-07-21T00:00:10.000Z') });
+  groupsEl.querySelectorAll((el) => el.classList.contains('task-item-edit'))[0].dispatch('click');
+  view.render(widget, { now: Date.parse('2026-07-21T00:00:10.000Z') });
+
+  const status = groupsEl.querySelectorAll((el) => el.tagName === 'SELECT').find((el) => el.dataset.field === 'status');
+  status.value = 'in-progress';
+  status.dispatch('change');
+  const priority = groupsEl.querySelectorAll((el) => el.tagName === 'SELECT').find((el) => el.dataset.field === 'priority');
+  priority.value = 'high';
+  priority.dispatch('change');
+  groupsEl.querySelectorAll((el) => el.classList.contains('task-edit-save'))[0].dispatch('click');
+  await Promise.resolve();
+
+  // 1段目（30ms）を過ぎるまで待ち、slow 表示になることを確認する。
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  view.render(widget, { now: Date.parse('2026-07-21T00:00:10.000Z') });
+  let pendingEl = groupsEl.querySelectorAll((el) => el.classList.contains('task-item-pending'))[0];
+  assert.equal(pendingEl.dataset.state, 'slow');
+
+  // status だけ反映された状態（priority は未反映）で再描画する＝部分反映。
+  const partialWidget = editableWidgetWithControls({
+    controls: [
+      { type: 'select', field: 'status', label: 'ステータス', current: 'in-progress', options: [
+        { value: 'ready', label: '実行待ち', command: { action: 'set-status', taskId: '10', to: 'ready', expected: 'in-progress' } },
+        { value: 'in-progress', label: '実行中' },
+      ] },
+      { type: 'select', field: 'priority', label: '優先度', current: 'medium', options: [
+        { value: 'medium', label: '中' },
+        { value: 'high', label: '高', command: { action: 'set-priority', taskId: '10', to: 'high', expected: 'medium' } },
+      ] },
+    ],
+  });
+  view.render(partialWidget, { now: Date.parse('2026-07-21T00:00:10.500Z') });
+
+  // 部分反映のあとも slow 表示のままで、pending は継続している（priority が残っている）。
+  assert.equal(view.hasPending(), true);
+  pendingEl = groupsEl.querySelectorAll((el) => el.classList.contains('task-item-pending'))[0];
+  assert.equal(pendingEl.dataset.state, 'slow');
+  assert.equal(pendingEl.textContent, DEFAULT_STRINGS.savingPendingSlow);
+  assert.equal(groupsEl.querySelectorAll((el) => el.classList.contains('task-item-action-error')).length, 0);
+
+  // 元の2段目タイムアウト（保存から80ms後）を過ぎても、部分反映で延長されているためまだエラーにならない。
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  view.render(partialWidget, { now: Date.parse('2026-07-21T00:00:10.500Z') });
+  assert.equal(view.hasPending(), true);
+  assert.equal(groupsEl.querySelectorAll((el) => el.classList.contains('task-item-action-error')).length, 0);
+
+  // 延長後の2段目タイムアウトを過ぎるとエラーになる。
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  view.render(partialWidget, { now: Date.parse('2026-07-21T00:00:10.500Z') });
+  assert.equal(view.hasPending(), false);
+  const error = groupsEl.querySelectorAll((el) => el.classList.contains('task-item-action-error'))[0];
+  assert.equal(error.textContent, DEFAULT_STRINGS.timeoutError);
+});
+
+test('render: 保存中に閉じたタスクが完全に消えても savingTasks・drafts を後片付けし、古いタイマーで誤って timeoutError を出さない', async () => {
+  const widget = editableWidgetWithControls();
+  const { groupsEl, view } = makeView({
+    sendCommand: async () => ({ ok: true }),
+    pendingTimeoutMs: 20,
+    pendingErrorTimeoutMs: 40,
+  });
+  view.render(widget, { now: Date.parse('2026-07-21T00:00:10.000Z') });
+  groupsEl.querySelectorAll((el) => el.classList.contains('task-item-edit'))[0].dispatch('click');
+  view.render(widget, { now: Date.parse('2026-07-21T00:00:10.000Z') });
+
+  const status = groupsEl.querySelectorAll((el) => el.tagName === 'SELECT').find((el) => el.dataset.field === 'status');
+  status.value = 'in-progress';
+  status.dispatch('change');
+  groupsEl.querySelectorAll((el) => el.classList.contains('task-edit-save'))[0].dispatch('click');
+  await Promise.resolve();
+  assert.equal(view.hasPending(), true);
+
+  // 保存中のまま閉じる（editingTaskId が null になり、cleanupEditorForWidget の対象外になる）。
+  groupsEl.querySelectorAll((el) => el.classList.contains('task-edit-cancel'))[0].dispatch('click');
+  assert.equal(view.hasOpenEditor(), false);
+
+  // 閉じたタスクが、反映確認を待たずにウィジェットから完全に消える（完了・削除等）。
+  const emptyWidget = sanitized([]);
+  view.render(emptyWidget, { now: Date.parse('2026-07-21T00:00:10.010Z') });
+  assert.equal(view.hasPending(), false);
+
+  // 同じ id で、まったく別の（保存していない）タスクが再度現れる。
+  const freshWidget = editableWidgetWithControls();
+  view.render(freshWidget, { now: Date.parse('2026-07-21T00:00:10.020Z') });
+
+  // 元のタイマー（20ms・40ms）が過ぎても、後片付け済みのため誤って timeoutError にならない。
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  view.render(freshWidget, { now: Date.parse('2026-07-21T00:00:10.020Z') });
+  assert.equal(groupsEl.querySelectorAll((el) => el.classList.contains('task-item-action-error')).length, 0);
+  assert.equal(groupsEl.querySelectorAll((el) => el.classList.contains('task-item-pending')).length, 0);
+  assert.equal(view.hasPending(), false);
+
+  // savingTasks が引き継がれておらず、編集ボタンが無効なまま固まっていないことも確認する。
+  const editButton = groupsEl.querySelectorAll((el) => el.classList.contains('task-item-edit'))[0];
+  assert.equal(editButton.disabled, false);
 });
 
 test('render: キャンセルで下書きを破棄し畳みに戻る', () => {

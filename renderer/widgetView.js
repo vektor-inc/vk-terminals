@@ -36,8 +36,9 @@
     savingPending: '保存中…（反映待ち）',
     // 1段目のタイムアウト（既定 pendingTimeoutMs）を過ぎても反映が確認できない間の表示。
     // まだエラーにはせず、pending / savingTasks は保持したまま文言だけ切り替える（issue #406）。
-    pendingSlow: '反映待ち（時間がかかっています）',
-    savingPendingSlow: '保存中…（反映待ち・時間がかかっています）',
+    // 「待てばよい」ことと「パネルを閉じてもよい」ことを明示する（植草 UX レビュー指摘）。
+    pendingSlow: '反映に時間がかかっています。このままお待ちください',
+    savingPendingSlow: '反映に時間がかかっています。このままお待ちください（パネルは閉じてもかまいません）',
     empty: 'タスクはありません',
     emptySelf: '自分に割り当てられたタスクはありません',
     emptyFiltered: '該当するタスクはありません',
@@ -103,45 +104,52 @@
 
     function getPending(taskId) { return pending.get(taskId) || null; }
 
-    // pending の両タイマー（警告・エラー）を確実に解除する。片方だけ消すとタイマーの
+    // pending エントリが持つ両タイマー（警告・エラー）を解除する。setPendingField・syncPending の
+    // 部分反映分岐・clearPending の3箇所から呼ぶ共通処理（安藤レビュー指摘）。片方だけ消すとタイマーの
     // 取りこぼしが起き、テストプロセスが終わらない・古いタイマーが後から発火する原因になる。
+    function clearPendingTimers(p) {
+      if (!p) return;
+      if (p.warnTimeoutId) clearTimeout(p.warnTimeoutId);
+      if (p.errorTimeoutId) clearTimeout(p.errorTimeoutId);
+    }
+
     function clearPending(taskId) {
-      const p = pending.get(taskId);
-      if (p) {
-        if (p.warnTimeoutId) clearTimeout(p.warnTimeoutId);
-        if (p.errorTimeoutId) clearTimeout(p.errorTimeoutId);
-      }
+      clearPendingTimers(pending.get(taskId));
       pending.delete(taskId);
     }
 
     // 1段目: エラーにはせず「時間がかかっています」表示へ切り替えるだけ（pending / savingTasks は保持）。
+    // コールバック内で「自分がまだ現行のタイマーか」を id で照合してから作用する（安藤レビュー指摘・
+    // LOW）。clearTimeout の取りこぼしがあっても、後片付け済みの pending には作用しないための保険。
     function scheduleWarnTimeout(taskId) {
-      return setTimeout(() => {
+      const timeoutId = setTimeout(() => {
         const p = pending.get(taskId);
-        if (!p || p.slow) return;
+        if (!p || p.warnTimeoutId !== timeoutId || p.slow) return;
         p.slow = true;
         requestRerender();
       }, pendingTimeoutMs);
+      return timeoutId;
     }
 
     // 2段目: ここで初めて従来どおり pending・savingTasks を消してエラー表示にし、再試行できるようにする。
+    // 同様に id 照合を行い、後片付け済み（別サイクルに置き換わった）pending には作用しない。
     function scheduleErrorTimeout(taskId) {
-      return setTimeout(() => {
+      const timeoutId = setTimeout(() => {
+        const p = pending.get(taskId);
+        if (!p || p.errorTimeoutId !== timeoutId) return;
         clearPending(taskId);
         savingTasks.delete(taskId);
         errors.set(taskId, strings.timeoutError);
         requestRerender();
       }, pendingErrorTimeoutMs);
+      return timeoutId;
     }
 
     function setPendingField(taskId, field, expected) {
       const existing = pending.get(taskId);
       const fields = existing ? existing.fields.filter((f) => f.field !== field) : [];
       fields.push({ field, expected });
-      if (existing) {
-        if (existing.warnTimeoutId) clearTimeout(existing.warnTimeoutId);
-        if (existing.errorTimeoutId) clearTimeout(existing.errorTimeoutId);
-      }
+      clearPendingTimers(existing);
       const warnTimeoutId = scheduleWarnTimeout(taskId);
       const errorTimeoutId = scheduleErrorTimeout(taskId);
       pending.set(taskId, { fields, warnTimeoutId, errorTimeoutId, slow: false });
@@ -222,6 +230,15 @@
       pendingFocus = options.restoreFocus ? { type: 'edit-button', taskId } : null;
     }
 
+    // 保存中（送信済み・反映待ち）のままパネルだけ閉じる。変更は既に送信済みのため下書き破棄の
+    // 確認は出さない。drafts・savingTasks・pending・両タイマーは維持し、反映確認または2段目の
+    // エラーまで二重送信を防ぐ（issue #406 植草 UX レビュー指摘）。フォーカスは編集ボタンへ戻す。
+    function closeEditorWhileSaving(taskId) {
+      if (editingTaskId !== taskId) return;
+      editingTaskId = null;
+      pendingFocus = { type: 'edit-button', taskId };
+    }
+
     function confirmDiscardIfNeeded(taskId) {
       if (!taskId) return true;
       const item = contract.flatItems(lastWidget).find((candidate) => candidate.id === taskId);
@@ -231,11 +248,16 @@
 
     function openEditor(item) {
       if (editingTaskId === item.id) return;
-      if (editingTaskId && savingTasks.has(editingTaskId)) return;
-      if (editingTaskId && !confirmDiscardIfNeeded(editingTaskId)) return;
       if (editingTaskId) {
-        drafts.delete(editingTaskId);
-        savingTasks.delete(editingTaskId);
+        if (savingTasks.has(editingTaskId)) {
+          // 保存中の別タスクのパネルが開いたままでも、確認なしで閉じてから新しいパネルを開く
+          // （pending・savingTasks・タイマーは維持したまま。issue #406 植草 UX レビュー指摘）。
+          closeEditorWhileSaving(editingTaskId);
+        } else {
+          if (!confirmDiscardIfNeeded(editingTaskId)) return;
+          drafts.delete(editingTaskId);
+          savingTasks.delete(editingTaskId);
+        }
       }
       editingTaskId = item.id;
       drafts.set(item.id, buildDraftFromItem(item));
@@ -245,7 +267,11 @@
     }
 
     function cancelEditor(item) {
-      if (savingTasks.has(item.id)) return;
+      if (savingTasks.has(item.id)) {
+        closeEditorWhileSaving(item.id);
+        requestRerender();
+        return;
+      }
       if (!confirmDiscardIfNeeded(item.id)) return;
       closeEditor(item.id, { restoreFocus: true });
       requestRerender();
@@ -325,7 +351,15 @@
       for (const item of items) byId.set(item.id, item);
       for (const taskId of Array.from(pending.keys())) {
         const item = byId.get(taskId);
-        if (!item) { clearPending(taskId); continue; }
+        if (!item) {
+          // アイテムごとウィジェットから消えた場合、pending だけでなく savingTasks・drafts も
+          // 片付ける。パネルを保存中に閉じられる（issue #406）ようになったことで、消えたときに
+          // editingTaskId と一致していない＝cleanupEditorForWidget の対象外なケースが生じうる。
+          clearPending(taskId);
+          savingTasks.delete(taskId);
+          drafts.delete(taskId);
+          continue;
+        }
         const currentByField = {};
         for (const control of (item.controls || [])) currentByField[control.field] = control.current;
         const p = pending.get(taskId);
@@ -334,9 +368,12 @@
           clearPending(taskId);
           if (savingTasks.has(taskId)) {
             savingTasks.delete(taskId);
+            // パネルを閉じたあとに反映が確認された場合も下書きを片付ける。editingTaskId が
+            // 一致する（＝パネルがまだ開いている）ときだけ畳んでフォーカスを戻す。別タスクを
+            // 編集中ならそのパネル・フォーカスには干渉しない（issue #406 植草 UX レビュー指摘）。
+            drafts.delete(taskId);
             if (editingTaskId === taskId) {
               editingTaskId = null;
-              drafts.delete(taskId);
               pendingFocus = { type: 'edit-button', taskId };
             }
           }
@@ -346,8 +383,7 @@
           // 部分反映のたびに延長していた挙動を、2段構成でもそのまま踏襲する）。
           // ただし「時間がかかっています」表示は一度出たら普通の pending 表示へ戻さない
           // （slow フラグは維持し、既に発火済みの警告タイマーは再セットしない）。
-          if (p.warnTimeoutId) clearTimeout(p.warnTimeoutId);
-          if (p.errorTimeoutId) clearTimeout(p.errorTimeoutId);
+          clearPendingTimers(p);
           const warnTimeoutId = p.slow ? null : scheduleWarnTimeout(taskId);
           const errorTimeoutId = scheduleErrorTimeout(taskId);
           pending.set(taskId, { fields: remaining, warnTimeoutId, errorTimeoutId, slow: p.slow });
@@ -546,8 +582,15 @@
       const actions = el('div', 'task-edit-actions');
       const cancel = el('button', 'task-edit-cancel');
       cancel.type = 'button';
-      cancel.textContent = 'キャンセル';
-      cancel.disabled = saving;
+      // 保存中（送信済み・反映待ち）は下書き破棄ではなく「パネルを閉じる」操作になるため、
+      // ボタンの文言・aria-label をその旨に切り替える（issue #406 植草 UX レビュー指摘）。
+      if (saving) {
+        cancel.textContent = '閉じる';
+        cancel.setAttribute('aria-label', '保存中のためパネルを閉じる（保存処理は続きます）');
+      } else {
+        cancel.textContent = 'キャンセル';
+      }
+      cancel.disabled = false;
       cancel.addEventListener('click', () => cancelEditor(item));
 
       const save = el('button', 'task-edit-save');
@@ -594,7 +637,10 @@
         editButton.setAttribute('aria-controls', panelId);
         editButton.setAttribute('aria-label', `「${item.title}」を編集`);
         editButton.textContent = '編集';
-        editButton.disabled = savingTasks.has(item.id) || (editingTaskId && savingTasks.has(editingTaskId) && editingTaskId !== item.id);
+        // 無効化するのは「自分自身が保存中（反映待ち）」のときだけにする。別タスクが保存中でも
+        // 編集ボタンは押せる（openEditor 側で、保存中の別パネルは確認なしで閉じてから新しいパネルを
+        // 開く。issue #406 植草 UX レビュー指摘: 他タスクまで巻き添えで固まって見えるのを解消）。
+        editButton.disabled = savingTasks.has(item.id);
         editButton.addEventListener('click', () => {
           if (isEditing) {
             cancelEditor(item);

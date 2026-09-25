@@ -3280,6 +3280,16 @@ function fitTerminal(paneId) {
     const cols = Math.max(FIT_MIN_COLS, dims.cols - FIT_SAFETY_MARGIN_COLS);
     const rows = dims.rows;
     if (cols !== t.term.cols || rows !== t.term.rows) {
+      // 安藤レビュー指摘・PR #410 差し戻し・HIGH-1: @xterm/addon-fit 0.11.0 の
+      // FitAddon.fit() は、サイズが変わる resize の直前に非公開 API
+      // `_core._renderService.clear()`（描画キャッシュを破棄し全体を描き直させる処理）
+      // を呼んでいる。ここでは fit() を使わず resize() を直接呼んでいるため、この
+      // クリアが欠けたままだと列・行数が変わる操作（ウィンドウのリサイズ・ペイン分割・
+      // サイドバー開閉など）でリサイズ前の描画が一部残ったまま表示されるおそれがある。
+      // addon-fit と同じ非公開 API に依存するため、存在しない場合に備えてオプショナル
+      // チェイニングで安全に呼ぶ（将来のバージョンで内部実装が変わっても例外で
+      // fitTerminal() 全体が落ちないよう、この呼び出しは try で囲まれた本関数内に置く）。
+      t.term._core?._renderService?.clear?.();
       t.term.resize(cols, rows);
     }
     VKIpc.send('terminal:resize', t.termId, t.term.cols, t.term.rows);

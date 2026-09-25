@@ -24,8 +24,9 @@ const { closeApp, getFreePort, launchApp } = require('./helpers/electron-app');
 //     CSS の visible/非visible 混在時の自動変換規則で auto に化けて効かない。安藤レビュー
 //     指摘・HIGH-1）。
 //  2. renderer/app.js の fitTerminal() で、fitAddon.proposeDimensions() の cols から
-//     安全マージン（2 列。実測根拠は fitTerminal() 直前のコメント参照）を引いて
-//     .term-container 側の可視範囲そのものからもはみ出さないようにする。
+//     安全マージン（renderer/app.js の FIT_SAFETY_MARGIN_COLS。実測根拠はその定数の
+//     直前のコメント参照）を引いて .term-container 側の可視範囲そのものからもはみ出さ
+//     ないようにする。
 // 1 だけでは .term-container レベルでわずかにはみ出す場合があり、2 だけでは行自身の
 // overflow: hidden が先に効くため見た目は変わらない。両対処が揃って初めて解消する
 // （司への調査報告に実測値つきで記録済み）。
@@ -74,6 +75,12 @@ async function waitForPtyRegistration(port) {
 // ため、単独の行には現れないことがある（tests/e2e/terminal-link-open-url.smoke.spec.js の
 // findTailRow と同じ考え方。詳細コメントは重複させずそちらを参照）。固定の setTimeout
 // 待ちを使わず、実際にバッファへ描画されたことをポーリングで確認する。
+// 安藤レビュー指摘・LOW-b: 送信するコマンドはシェル上で `printf '%s\n' "<文>"` として
+// エコー表示されるため、そのコマンド行自体にも送った文の末尾（tail）がそのまま現れる。
+// この行だけを見て待ちを終えてしまうと、実際の出力（printf の実行結果）が描画される前に
+// 次へ進んでしまうことがある。printf コマンドのエコー行には常に "printf" という語が
+// 含まれる一方、実際の出力行（文そのもの）には含まれないため、"printf" を含む行（および
+// それが前半に来る折り返しの連結）は判定対象から除外し、実際の出力行だけで一致を見る。
 async function waitForWrappedTail(win, needle, paneId = 'pane-1', tailLen = 10, timeout = 15_000) {
   const tail = needle.slice(-tailLen);
   await win.waitForFunction(({ u, id }) => {
@@ -84,7 +91,8 @@ async function waitForWrappedTail(win, needle, paneId = 'pane-1', tailLen = 10, 
     for (let i = 0; i < t.term.rows; i += 1) {
       const line = buf.getLine(buf.viewportY + i);
       const text = line ? line.translateToString(true) : '';
-      if (text.includes(u) || (prevText + text).includes(u)) return true;
+      const isCommandEcho = text.includes('printf') || prevText.includes('printf');
+      if (!isCommandEcho && (text.includes(u) || (prevText + text).includes(u))) return true;
       prevText = text;
     }
     return false;
@@ -105,13 +113,17 @@ async function countFullyPackedRows(win, paneId = 'pane-1') {
     for (let i = 0; i < term.rows; i += 1) {
       const line = buf.getLine(buf.viewportY + i);
       if (!line) continue;
-      const isNonSpace = (x) => {
+      // 安藤レビュー指摘・LOW-c: 半角文字で右端まで埋まった行はこの不具合（全角文字の
+      // 幅補正不足）とは無関係なため、再現条件としては数えない。xterm.js では全角
+      // （ワイド）文字が占有する先頭セルの getWidth() が 2 を返す（半角文字・空セルは
+      // 1 または 0）ため、これで全角文字によって埋まった行だけを数える。
+      const isWideCell = (x) => {
         const cell = line.getCell(x);
         if (!cell) return false;
         const ch = cell.getChars();
-        return ch !== '' && ch !== ' ';
+        return ch !== '' && ch !== ' ' && cell.getWidth() === 2;
       };
-      if (isNonSpace(term.cols - 1) || isNonSpace(term.cols - 2)) count += 1;
+      if (isWideCell(term.cols - 1) || isWideCell(term.cols - 2)) count += 1;
     }
     return count;
   }, { id: paneId });
@@ -158,6 +170,40 @@ async function measureRowOverflow(win, paneId = 'pane-1') {
       });
     }
     return { cols: term.cols, rows };
+  }, { id: paneId });
+}
+
+// 安藤レビュー指摘・PR #410 差し戻し・HIGH-1: リサイズ後に、可視行の DOM 描画内容が
+// バッファの内容と一致しているかを確認する。@xterm/addon-fit 0.11.0 の fit() は、列・行数
+// が変わる resize の直前に非公開 API `_core._renderService.clear()`（描画キャッシュを
+// 破棄し全体を描き直させる処理）を呼んでいる。renderer/app.js の fitTerminal() は fit() を
+// 使わず resize() を直接呼ぶため、この clear() が抜けていると、列数・行数が変わる操作
+// （ウィンドウのリサイズ・ペイン分割・サイドバー開閉など）のあとに古い描画が残ったまま
+// 表示される可能性がある。ここでは、DOM 側の行のテキストとバッファ側の行のテキストが
+// 一致しない箇所（＝再描画が漏れて古い内容が残っている行）を検出する。
+async function findRowRenderMismatches(win, paneId = 'pane-1') {
+  return win.evaluate(({ id }) => {
+    const t = terminals[id];
+    if (!t) return null;
+    const term = t.term;
+    const screenEl = document.querySelector(`.pane[data-id="${id}"] .xterm-screen`);
+    const rowsContainer = screenEl.querySelector('.xterm-rows');
+    const buf = term.buffer.active;
+    const mismatches = [];
+    for (let i = 0; i < term.rows; i += 1) {
+      const line = buf.getLine(buf.viewportY + i);
+      const bufText = line ? line.translateToString(true) : '';
+      const rowEl = rowsContainer.children[i];
+      const domText = rowEl ? rowEl.textContent : '';
+      // translateToString(true) は末尾の空白を落とす仕様な一方、DOM 側はカーソル位置の
+      // セルに空白の文字ノードが残る場合があり、実際の表示に影響しない前後の空白差は
+      // 「古い描画が残っている」判定の対象にしない（trim して突き合わせる。行内部の
+      // 空白・文字順はそのまま突き合わせる）。
+      if (domText.trim() !== bufText.trim()) {
+        mismatches.push({ i, bufText, domText });
+      }
+    }
+    return mismatches;
   }, { id: paneId });
 }
 
@@ -219,5 +265,48 @@ test.describe('ペイン右端の文字が見切れる不具合の回帰確認�
         overflowingRows.map((r) => `  row ${r.i}: +${r.overflowVsContainer.toFixed(2)}px "${r.text}"`).join('\n')
       }`,
     ).toEqual([]);
+  });
+
+  test('サイドバー開閉でペイン幅が変わっても、行の描画内容がバッファ内容と一致する（PR #410 差し戻し・HIGH-1 回帰確認）', async () => {
+    // サイドバーを閉じると .term-container の幅が広がり、fitTerminal() が cols の
+    // 異なる resize を実際に発生させる。resize が起きたこと自体を確認してから、
+    // その直後に可視行の DOM 描画内容がバッファ内容とずれていないか（＝古い描画が
+    // 残っていないか）を確認する。
+    const beforeCols = await win.evaluate(() => terminals['pane-1']?.term.cols ?? null);
+    expect(beforeCols).not.toBeNull();
+
+    await win.click('#menu-btn');
+
+    // 固定時間の待ちではなく、実際に cols が変化したこと（resize が発生したこと）を
+    // ポーリングで確認してから次に進む（サイドバーの開閉トランジション分の余裕を見て
+    // タイムアウトは長めに取る）。
+    await win.waitForFunction((prevCols) => {
+      const t = terminals['pane-1'];
+      return !!t && t.term.cols !== prevCols;
+    }, beforeCols, { timeout: 5_000 });
+
+    const mismatches = await findRowRenderMismatches(win);
+    expect(mismatches).not.toBeNull();
+    expect(
+      mismatches,
+      `リサイズ後、以下の行で DOM の描画内容がバッファ内容と一致していない（古い描画が残っている可能性）:\n${
+        mismatches.map((m) => `  row ${m.i}: buf="${m.bufText}" dom="${m.domText}"`).join('\n')
+      }`,
+    ).toEqual([]);
+
+    // ついでに、サイズが変わった後も右端の見切れが再発していないことを確認する。
+    const result = await measureRowOverflow(win);
+    expect(result).not.toBeNull();
+    const overflowingRows = result.rows.filter((r) => r.overflowVsContainer > 0.5);
+    expect(
+      overflowingRows,
+      `リサイズ後に以下の行が見切れている:\n${
+        overflowingRows.map((r) => `  row ${r.i}: +${r.overflowVsContainer.toFixed(2)}px "${r.text}"`).join('\n')
+      }`,
+    ).toEqual([]);
+
+    // サイドバーを元の状態（開）へ戻し、後続テスト・後片付けへの影響を残さない。
+    await win.click('#menu-btn');
+    await win.waitForFunction(() => document.getElementById('root')?.classList.contains('sidebar-open'), null, { timeout: 5_000 });
   });
 });

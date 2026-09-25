@@ -255,7 +255,10 @@ const AGENTROOM_API_TTL_MS = 90000;
 // updatedAt が無い・宣言が無いときのフォールバック既定値（ハードコードのドメイン定数ではない）。
 const WIDGET_STALE_FALLBACK_MS = widgetContract.DEFAULT_STALE_THRESHOLD_MS;
 const TASKS_ELAPSED_TICK_MS = 30000;
-// 反映待ちがこの時間内に反映されない場合はタイムアウトで解除する（ms）。
+// 反映待ちの1段目（警告）タイムアウト（ms）。この時間内に反映が確認できなくても、まだ
+// エラーにはせず「時間がかかっています」表示へ切り替えるだけ（共有レンダラ widgetView.js
+// 側の pendingTimeoutMs へ渡す）。エラー扱いにして再試行できるようにするのは2段目
+// （pendingErrorTimeoutMs、共有レンダラの既定は5分）に達したとき。
 const TASK_PENDING_TIMEOUT_MS = 30000;
 // dual-write 期間: 新 tasks-widget.json が無く旧 tasks-view.json だけがある場合の後方互換注記。
 const WIDGET_LEGACY_NOTICE_TEXT = 'orchestrator の更新が必要な可能性があります';

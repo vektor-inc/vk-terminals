@@ -34,6 +34,11 @@
     sendError: '送信に失敗しました（再試行してください）',
     timeoutError: '反映を確認できませんでした（内容は保持しています。再試行できます）',
     savingPending: '保存中…（反映待ち）',
+    // 1段目のタイムアウト（既定 pendingTimeoutMs）を過ぎても反映が確認できない間の表示。
+    // まだエラーにはせず、pending / savingTasks は保持したまま文言だけ切り替える（issue #406）。
+    // 「待てばよい」ことと「パネルを閉じてもよい」ことを明示する（植草 UX レビュー指摘）。
+    pendingSlow: '反映に時間がかかっています。このままお待ちください',
+    savingPendingSlow: '反映に時間がかかっています。このままお待ちください（パネルは閉じてもかまいません）',
     empty: 'タスクはありません',
     emptySelf: '自分に割り当てられたタスクはありません',
     emptyFiltered: '該当するタスクはありません',
@@ -66,7 +71,8 @@
    * @param {()=>void} [deps.requestRerender]  pending タイムアウト時などの再描画要求
    * @param {object} [deps.strings]
    * @param {object} [deps.contract]
-   * @param {number} [deps.pendingTimeoutMs]
+   * @param {number} [deps.pendingTimeoutMs]  1段目（警告）のタイムアウト。既定 30000ms。
+   * @param {number} [deps.pendingErrorTimeoutMs]  2段目（エラー）のタイムアウト。既定 300000ms（5分）。
    */
   function createTaskWidgetView(deps) {
     const contract = resolveContract(deps.contract);
@@ -80,38 +86,83 @@
     const getFilterMode = deps.getFilterMode || (() => 'all');
     const requestRerender = deps.requestRerender || (() => {});
     const pendingTimeoutMs = Number.isFinite(deps.pendingTimeoutMs) ? deps.pendingTimeoutMs : 30000;
+    // vk-orchestrator 側の反映は 30〜55 秒かかることがある（issue #406）。1段目を過ぎても
+    // 即エラーにはせず「時間がかかっています」表示へ切り替えるだけに留め、pending / savingTasks は
+    // 2段目のこのタイムアウトまで保持し続ける（保存・編集ボタンは無効のままで二重送信を防ぐ）。
+    const pendingErrorTimeoutMs = Number.isFinite(deps.pendingErrorTimeoutMs) ? deps.pendingErrorTimeoutMs : 300000;
 
-    // pending: taskId -> { fields: [{ field, expected }], timeoutId }
+    // pending: taskId -> { fields: [{ field, expected }], warnTimeoutId, errorTimeoutId, slow }
     const pending = new Map();
     const errors = new Map();
     const drafts = new Map();
+    // taskId -> 直近の保存で送った field 名の配列。エラー後に openEditor で下書きを作り直す際、
+    // 保存した項目だけ古い値を残し、触っていない項目は最新値にするために使う（issue #406 差し戻し:
+    // 安藤 LOW）。drafts を消す箇所では必ず一緒に消す（保存記録だけが取り残されるのを防ぐ）。
+    const savedFields = new Map();
     const savingTasks = new Set();
     const renderedEditButtons = new Map();
     const renderedPanels = new Map();
+    // focusKey -> 今回の render で作った要素。render() は毎回 groupsEl.replaceChildren() で
+    // DOM を作り直すため、フォーカス中の要素が消えて実ブラウザでは body へ落ちてしまう
+    // （issue #406 差し戻し: 安藤 MEDIUM。反映待ちのタイマーや widgets:update 起因の再描画のたびに、
+    // 別タスクの編集パネルを操作中のフォーカスが失われていた）。render() の先頭でフォーカス中の
+    // 要素の focusKey を控え、再構築後に同じ focusKey の要素へフォーカスを戻す。
+    const focusTargets = new Map();
     let lastWidget = null;
     let editingTaskId = null;
     let pendingFocus = null;
 
     function getPending(taskId) { return pending.get(taskId) || null; }
 
+    // pending エントリが持つ両タイマー（警告・エラー）を解除する。setPendingField・syncPending の
+    // 部分反映分岐・clearPending の3箇所から呼ぶ共通処理（安藤レビュー指摘）。片方だけ消すとタイマーの
+    // 取りこぼしが起き、テストプロセスが終わらない・古いタイマーが後から発火する原因になる。
+    function clearPendingTimers(p) {
+      if (!p) return;
+      if (p.warnTimeoutId) clearTimeout(p.warnTimeoutId);
+      if (p.errorTimeoutId) clearTimeout(p.errorTimeoutId);
+    }
+
     function clearPending(taskId) {
-      const p = pending.get(taskId);
-      if (p && p.timeoutId) clearTimeout(p.timeoutId);
+      clearPendingTimers(pending.get(taskId));
       pending.delete(taskId);
+    }
+
+    // 1段目: エラーにはせず「時間がかかっています」表示へ切り替えるだけ（pending / savingTasks は保持）。
+    // コールバック内で「自分がまだ現行のタイマーか」を id で照合してから作用する（安藤レビュー指摘・
+    // LOW）。clearTimeout の取りこぼしがあっても、後片付け済みの pending には作用しないための保険。
+    function scheduleWarnTimeout(taskId) {
+      const timeoutId = setTimeout(() => {
+        const p = pending.get(taskId);
+        if (!p || p.warnTimeoutId !== timeoutId || p.slow) return;
+        p.slow = true;
+        requestRerender();
+      }, pendingTimeoutMs);
+      return timeoutId;
+    }
+
+    // 2段目: ここで初めて従来どおり pending・savingTasks を消してエラー表示にし、再試行できるようにする。
+    // 同様に id 照合を行い、後片付け済み（別サイクルに置き換わった）pending には作用しない。
+    function scheduleErrorTimeout(taskId) {
+      const timeoutId = setTimeout(() => {
+        const p = pending.get(taskId);
+        if (!p || p.errorTimeoutId !== timeoutId) return;
+        clearPending(taskId);
+        savingTasks.delete(taskId);
+        errors.set(taskId, strings.timeoutError);
+        requestRerender();
+      }, pendingErrorTimeoutMs);
+      return timeoutId;
     }
 
     function setPendingField(taskId, field, expected) {
       const existing = pending.get(taskId);
       const fields = existing ? existing.fields.filter((f) => f.field !== field) : [];
       fields.push({ field, expected });
-      if (existing && existing.timeoutId) clearTimeout(existing.timeoutId);
-      const timeoutId = setTimeout(() => {
-        clearPending(taskId);
-        savingTasks.delete(taskId);
-        errors.set(taskId, strings.timeoutError);
-        requestRerender();
-      }, pendingTimeoutMs);
-      pending.set(taskId, { fields, timeoutId });
+      clearPendingTimers(existing);
+      const warnTimeoutId = scheduleWarnTimeout(taskId);
+      const errorTimeoutId = scheduleErrorTimeout(taskId);
+      pending.set(taskId, { fields, warnTimeoutId, errorTimeoutId, slow: false });
       errors.delete(taskId);
     }
 
@@ -185,8 +236,18 @@
       if (editingTaskId !== taskId) return;
       editingTaskId = null;
       drafts.delete(taskId);
+      savedFields.delete(taskId);
       savingTasks.delete(taskId);
       pendingFocus = options.restoreFocus ? { type: 'edit-button', taskId } : null;
+    }
+
+    // 保存中（送信済み・反映待ち）のままパネルだけ閉じる。変更は既に送信済みのため下書き破棄の
+    // 確認は出さない。drafts・savingTasks・pending・両タイマーは維持し、反映確認または2段目の
+    // エラーまで二重送信を防ぐ（issue #406 植草 UX レビュー指摘）。フォーカスは編集ボタンへ戻す。
+    function closeEditorWhileSaving(taskId) {
+      if (editingTaskId !== taskId) return;
+      editingTaskId = null;
+      pendingFocus = { type: 'edit-button', taskId };
     }
 
     function confirmDiscardIfNeeded(taskId) {
@@ -197,22 +258,57 @@
     }
 
     function openEditor(item) {
+      // 編集ボタンは保存中でも aria-disabled のみでフォーカス可能なため、クリックが素通りしても
+      // ここで確実に止める（issue #406 差し戻し: 安藤 LOW）。
+      if (savingTasks.has(item.id)) return;
       if (editingTaskId === item.id) return;
-      if (editingTaskId && savingTasks.has(editingTaskId)) return;
-      if (editingTaskId && !confirmDiscardIfNeeded(editingTaskId)) return;
       if (editingTaskId) {
-        drafts.delete(editingTaskId);
-        savingTasks.delete(editingTaskId);
+        if (savingTasks.has(editingTaskId)) {
+          // 保存中の別タスクのパネルが開いたままでも、確認なしで閉じてから新しいパネルを開く
+          // （pending・savingTasks・タイマーは維持したまま。issue #406 植草 UX レビュー指摘）。
+          closeEditorWhileSaving(editingTaskId);
+        } else {
+          if (!confirmDiscardIfNeeded(editingTaskId)) return;
+          drafts.delete(editingTaskId);
+          // drafts を消す箇所は savedFields も一緒に消す（同じ原因の箇所。issue #406 差し戻し:
+          // 安藤 LOW）。ここで捨てるのは別タスクの編集セッションのため、以後 editingTaskId が
+          // 再びこのタスクに戻ってきたときに古い保存記録で誤って上書きしないようにする。
+          savedFields.delete(editingTaskId);
+          savingTasks.delete(editingTaskId);
+        }
       }
       editingTaskId = item.id;
-      drafts.set(item.id, buildDraftFromItem(item));
+      // エラー表示中（timeoutError／sendError）で下書きが残っている場合は、buildDraftFromItem で
+      // 全項目を反映前の値へ作り直さない。ただし保存した項目（savedFields）以外は、保存から
+      // 最大5分の間に外部（vk-orchestrator 等）で値が変わっている可能性があるため、最新値を
+      // 優先する。保存した項目だけ、まだ反映されていない古い値を残す（issue #406 差し戻し:
+      // 安藤 LOW。「エラー後に開き直すと触っていない項目まで古い値で送ってしまう」の修正）。
+      if (errors.has(item.id) && drafts.has(item.id)) {
+        const staleDraft = drafts.get(item.id);
+        const freshDraft = buildDraftFromItem(item);
+        const fields = savedFields.get(item.id);
+        if (Array.isArray(fields)) {
+          for (const field of fields) {
+            if (Object.prototype.hasOwnProperty.call(staleDraft, field)) freshDraft[field] = staleDraft[field];
+          }
+        }
+        drafts.set(item.id, freshDraft);
+      } else {
+        drafts.set(item.id, buildDraftFromItem(item));
+      }
+      // 使い終えた保存記録は消す（次回の開き直しで誤って再適用しないため）。
+      savedFields.delete(item.id);
       errors.delete(item.id);
       pendingFocus = { type: 'first-control', taskId: item.id };
       requestRerender();
     }
 
     function cancelEditor(item) {
-      if (savingTasks.has(item.id)) return;
+      if (savingTasks.has(item.id)) {
+        closeEditorWhileSaving(item.id);
+        requestRerender();
+        return;
+      }
       if (!confirmDiscardIfNeeded(item.id)) return;
       closeEditor(item.id, { restoreFocus: true });
       requestRerender();
@@ -225,6 +321,9 @@
       const confirmText = batch.confirms.map(joinConfirm).filter(Boolean).join('\n\n---\n\n');
       if (confirmText && !confirmFn(confirmText)) return;
 
+      // 今回の保存で送る項目を記録する（openEditor がエラー後に下書きを作り直す際、この項目
+      // だけ古い値を残すために使う。issue #406 差し戻し: 安藤 LOW）。
+      savedFields.set(item.id, batch.fields.slice());
       for (const field of batch.fields) {
         const control = getControls(item).find((candidate) => candidate.field === field);
         if (control) setPendingField(item.id, field, control.current);
@@ -272,11 +371,45 @@
       else if (panel && panel.node) safeFocus(panel.node);
     }
 
+    // ── フォーカス保持（issue #406 差し戻し: 安藤 MEDIUM）────────────────────
+    // タスク ID + 要素の種類でキーを作る。同じ種類・同じタスクの要素が再構築後も
+    // 同じキーを持つことを利用して、フォーカスを戻す先を突き止める。
+    function focusKeyForEditButton(taskId) { return `edit-button:${taskId}`; }
+    function focusKeyForPanel(taskId) { return `panel:${taskId}`; }
+    function focusKeyForField(taskId, field) { return `field:${taskId}:${field}`; }
+    function focusKeyForSave(taskId) { return `save-button:${taskId}`; }
+    function focusKeyForCancel(taskId) { return `cancel-button:${taskId}`; }
+
+    // render() 冒頭（groupsEl を作り直す前）に呼ぶ。フォーカス中の要素が groupsEl の外なら
+    // 何もしない（このウィジェット以外の操作を邪魔しない）。data-focus-key が無い要素
+    // （担当者フィルタや外部リンクなど、本対応の対象外）も対象外。
+    function captureFocusKey() {
+      const active = doc.activeElement;
+      if (!active || !active.dataset) return null;
+      const contains = typeof groupsEl.contains === 'function' ? groupsEl.contains(active) : false;
+      if (!contains) return null;
+      return active.dataset.focusKey || null;
+    }
+
+    // 再構築後にフォーカスを戻す。pendingFocus（畳んだパネルの続きを編集ボタンへ戻す、など
+    // 既存の意図的なフォーカス移動）がある場合はそちらを優先し、無い場合だけ capturedFocusKey で
+    // 復帰を試みる。対応する要素が無い・disabled で focus() が効かない場合は何もしない
+    // （safeFocus が例外を吸収する。disabled な select はネイティブ動作として focus が効かない）。
+    function restoreFocus(capturedFocusKey) {
+      if (pendingFocus) {
+        applyPendingFocus();
+        return;
+      }
+      if (!capturedFocusKey) return;
+      safeFocus(focusTargets.get(capturedFocusKey));
+    }
+
     function cleanupEditorForWidget(widget) {
       if (!editingTaskId) return;
       const exists = contract.flatItems(widget).some((item) => item.id === editingTaskId);
       if (exists) return;
       drafts.delete(editingTaskId);
+      savedFields.delete(editingTaskId);
       savingTasks.delete(editingTaskId);
       clearPending(editingTaskId);
       errors.delete(editingTaskId);
@@ -292,7 +425,16 @@
       for (const item of items) byId.set(item.id, item);
       for (const taskId of Array.from(pending.keys())) {
         const item = byId.get(taskId);
-        if (!item) { clearPending(taskId); continue; }
+        if (!item) {
+          // アイテムごとウィジェットから消えた場合、pending だけでなく savingTasks・drafts も
+          // 片付ける。パネルを保存中に閉じられる（issue #406）ようになったことで、消えたときに
+          // editingTaskId と一致していない＝cleanupEditorForWidget の対象外なケースが生じうる。
+          clearPending(taskId);
+          savingTasks.delete(taskId);
+          drafts.delete(taskId);
+          savedFields.delete(taskId);
+          continue;
+        }
         const currentByField = {};
         for (const control of (item.controls || [])) currentByField[control.field] = control.current;
         const p = pending.get(taskId);
@@ -301,25 +443,36 @@
           clearPending(taskId);
           if (savingTasks.has(taskId)) {
             savingTasks.delete(taskId);
+            // パネルを閉じたあとに反映が確認された場合も下書きを片付ける。editingTaskId が
+            // 一致する（＝パネルがまだ開いている）ときだけ畳んでフォーカスを戻す。別タスクを
+            // 編集中ならそのパネル・フォーカスには干渉しない（issue #406 植草 UX レビュー指摘）。
+            drafts.delete(taskId);
+            savedFields.delete(taskId);
             if (editingTaskId === taskId) {
               editingTaskId = null;
-              drafts.delete(taskId);
               pendingFocus = { type: 'edit-button', taskId };
             }
           }
         } else if (remaining.length !== p.fields.length) {
-          if (p.timeoutId) clearTimeout(p.timeoutId);
-          const timeoutId = setTimeout(() => {
-            clearPending(taskId);
-            savingTasks.delete(taskId);
-            errors.set(taskId, strings.timeoutError);
-            requestRerender();
-          }, pendingTimeoutMs);
-          pending.set(taskId, { fields: remaining, timeoutId });
+          // 一部の項目だけ反映された＝進捗があったとみなし、両タイマーを今から数え直す
+          // （反映が進んでいるのに期限切れでエラーにしてしまうのを防ぐ。既存の単段タイマーが
+          // 部分反映のたびに延長していた挙動を、2段構成でもそのまま踏襲する）。
+          // ただし「時間がかかっています」表示は一度出たら普通の pending 表示へ戻さない
+          // （slow フラグは維持し、既に発火済みの警告タイマーは再セットしない）。
+          clearPendingTimers(p);
+          const warnTimeoutId = p.slow ? null : scheduleWarnTimeout(taskId);
+          const errorTimeoutId = scheduleErrorTimeout(taskId);
+          pending.set(taskId, { fields: remaining, warnTimeoutId, errorTimeoutId, slow: p.slow });
         }
       }
       for (const taskId of Array.from(errors.keys())) {
-        if (!byId.has(taskId)) errors.delete(taskId);
+        if (!byId.has(taskId)) {
+          errors.delete(taskId);
+          // エラー表示中に保持していた再試行用の下書き・保存記録も、タスクごと一覧から消えた
+          // 以上は使い道が無いため一緒に片付ける（issue #406 差し戻し: 安藤 LOW）。
+          drafts.delete(taskId);
+          savedFields.delete(taskId);
+        }
       }
     }
 
@@ -401,6 +554,9 @@
       const select = el('select', 'widget-control-select');
       select.dataset.taskId = item.id;
       select.dataset.field = control.field;
+      const selectFocusKey = focusKeyForField(item.id, control.field);
+      select.dataset.focusKey = selectFocusKey;
+      focusTargets.set(selectFocusKey, select);
       if (control.ariaLabel) select.setAttribute('aria-label', control.ariaLabel);
       select.disabled = disabled;
       if (disabled) select.setAttribute('aria-disabled', 'true');
@@ -453,6 +609,9 @@
       const panelId = panelIdForItem(item);
       panel.id = panelId;
       panel.setAttribute('tabindex', '-1');
+      const panelFocusKey = focusKeyForPanel(item.id);
+      panel.dataset.focusKey = panelFocusKey;
+      focusTargets.set(panelFocusKey, panel);
 
       panel.addEventListener('keydown', (e) => {
         if (e && e.key === 'Escape') {
@@ -511,14 +670,27 @@
       const actions = el('div', 'task-edit-actions');
       const cancel = el('button', 'task-edit-cancel');
       cancel.type = 'button';
-      cancel.textContent = 'キャンセル';
-      cancel.disabled = saving;
+      // 保存中（送信済み・反映待ち）は下書き破棄ではなく「パネルを閉じる」操作になるため、
+      // ボタンの文言・aria-label をその旨に切り替える（issue #406 植草 UX レビュー指摘）。
+      if (saving) {
+        cancel.textContent = '閉じる';
+        cancel.setAttribute('aria-label', '保存中のためパネルを閉じる（保存処理は続きます）');
+      } else {
+        cancel.textContent = 'キャンセル';
+      }
+      cancel.disabled = false;
+      const cancelFocusKey = focusKeyForCancel(item.id);
+      cancel.dataset.focusKey = cancelFocusKey;
+      focusTargets.set(cancelFocusKey, cancel);
       cancel.addEventListener('click', () => cancelEditor(item));
 
       const save = el('button', 'task-edit-save');
       save.type = 'button';
       save.textContent = '保存';
       save.disabled = !canSaveItem(item) || saving;
+      const saveFocusKey = focusKeyForSave(item.id);
+      save.dataset.focusKey = saveFocusKey;
+      focusTargets.set(saveFocusKey, save);
       save.addEventListener('click', () => { saveEditor(item); });
 
       actions.appendChild(cancel);
@@ -553,14 +725,32 @@
       const isEditing = editable && editingTaskId === item.id;
       const panelId = panelIdForItem(item);
       if (editable) {
+        const savingSelf = savingTasks.has(item.id);
         const editButton = el('button', 'task-item-edit');
         editButton.type = 'button';
         editButton.setAttribute('aria-expanded', isEditing ? 'true' : 'false');
         editButton.setAttribute('aria-controls', panelId);
-        editButton.setAttribute('aria-label', `「${item.title}」を編集`);
+        // 保存中は「押せない」ことを aria-label にも明示する（見た目の aria-disabled だけだと
+        // スクリーンリーダー利用者に伝わらない。issue #406 差し戻し: 植草 低）。
+        editButton.setAttribute('aria-label', savingSelf
+          ? `「${item.title}」を編集（保存中のため操作できません）`
+          : `「${item.title}」を編集`);
         editButton.textContent = '編集';
-        editButton.disabled = savingTasks.has(item.id) || (editingTaskId && savingTasks.has(editingTaskId) && editingTaskId !== item.id);
+        // 無効化するのは「自分自身が保存中（反映待ち）」のときだけにする。別タスクが保存中でも
+        // 編集ボタンは押せる（openEditor 側で、保存中の別パネルは確認なしで閉じてから新しいパネルを
+        // 開く。issue #406 植草 UX レビュー指摘: 他タスクまで巻き添えで固まって見えるのを解消）。
+        //
+        // ネイティブの disabled は使わない。「閉じる」／Escape で保存中パネルを閉じたあと
+        // pendingFocus でこのボタンへフォーカスを戻すが、disabled な要素は実ブラウザでは
+        // focus() が効かず body へ落ちてしまう（issue #406 差し戻し: 植草 FAIL／安藤 MEDIUM）。
+        // aria-disabled でフォーカス可能なまま見た目だけ無効化し、操作はクリックハンドラの
+        // 先頭で止める（openEditor 自体も同条件で二重に止める。安藤 LOW）。
+        if (savingSelf) editButton.setAttribute('aria-disabled', 'true');
+        const editButtonFocusKey = focusKeyForEditButton(item.id);
+        editButton.dataset.focusKey = editButtonFocusKey;
+        focusTargets.set(editButtonFocusKey, editButton);
         editButton.addEventListener('click', () => {
+          if (savingTasks.has(item.id)) return;
           if (isEditing) {
             cancelEditor(item);
           } else {
@@ -590,7 +780,15 @@
         if (isPending) {
           const p = el('span', 'task-item-pending');
           p.setAttribute('role', 'status');
-          p.textContent = savingTasks.has(item.id) ? strings.savingPending : strings.pending;
+          const pendingInfo = getPending(item.id);
+          const slow = !!(pendingInfo && pendingInfo.slow);
+          if (slow) p.dataset.state = 'slow';
+          const saving = savingTasks.has(item.id);
+          if (saving) {
+            p.textContent = slow ? strings.savingPendingSlow : strings.savingPending;
+          } else {
+            p.textContent = slow ? strings.pendingSlow : strings.pending;
+          }
           feedback.appendChild(p);
         }
         if (errorMessage) {
@@ -622,6 +820,10 @@
      * @returns {object} 描画に付随する情報（chrome 更新用）
      */
     function render(widget, options = {}) {
+      // groupsEl を作り直す前に、その時点でフォーカスが当たっている要素の focusKey を控える
+      // （issue #406 差し戻し: 安藤 MEDIUM）。以降のクリーンアップ処理は DOM に触れないため、
+      // ここで捕まえておけば groupsEl.replaceChildren() 直前の状態と一致する。
+      const capturedFocusKey = captureFocusKey();
       lastWidget = widget || null;
       // syncPending の前後で、消滅した編集対象アイテム由来の draft/pending を掃除する。
       cleanupEditorForWidget(lastWidget);
@@ -629,6 +831,7 @@
       cleanupEditorForWidget(lastWidget);
       renderedEditButtons.clear();
       renderedPanels.clear();
+      focusTargets.clear();
 
       const now = (typeof options.now === 'number') ? options.now : Date.now();
       const stale = contract.isWidgetStale(lastWidget, { now });
@@ -649,7 +852,7 @@
       let emptyReason = '';
 
       if (!lastWidget) {
-        applyPendingFocus();
+        restoreFocus(capturedFocusKey);
         return { stale, viewer, githubMode, filterEnabled, filterOptions, filterMode: mode, totalItems, visibleItems, emptyReason, emptyText: '' };
       }
 
@@ -671,7 +874,7 @@
         groupsEl.appendChild(empty);
       }
 
-      applyPendingFocus();
+      restoreFocus(capturedFocusKey);
       return {
         stale, viewer, githubMode, filterEnabled, filterOptions, filterMode: mode,
         totalItems, visibleItems, emptyReason, emptyText: lastWidget.emptyText || '',

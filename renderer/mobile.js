@@ -341,7 +341,10 @@ if (notifyCard) refreshNotifyCard();
 // タスクの語彙・遷移・確認文言・色は自前に持たず、GET /api/widgets が返す宣言（tasks-widget.json の
 // サニタイズ済みペイロード）を共有レンダラ（/widgetView.js）で描画する。契約ロジックは
 // window.VKWidgetContract（/widgetContract.js）にある。ここではその周辺の最小限だけを定義する。
-// 反映待ちがこの時間内に反映されない場合はタイムアウトで解除する（ms）。共有レンダラへ渡す。
+// 反映待ちの1段目（警告）タイムアウト（ms）。この時間内に反映が確認できなくても、まだ
+// エラーにはせず「時間がかかっています」表示へ切り替えるだけ（共有レンダラ widgetView.js
+// 側の pendingTimeoutMs へ渡す）。エラー扱いにして再試行できるようにするのは2段目
+// （pendingErrorTimeoutMs、共有レンダラの既定は5分）に達したとき。
 var TASK_PENDING_TIMEOUT_MS = 30000;
 // コマンド送信失敗時のエラーメッセージ（send() などでも共用）。
 var TASK_COMMAND_SEND_ERROR_MESSAGE = "送信に失敗しました（再試行してください）";

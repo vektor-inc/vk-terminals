@@ -3235,14 +3235,37 @@ function focusPane(paneId) {
   terminals[paneId]?.term.focus();
 }
 
-// issue #408: fitAddon.fit() が算出する cols は「行が折り返し直前まで全角文字で
-// 埋まった（余りセルが無い）とき」を想定していない。xterm.js（DOM レンダラー）が
-// letter-spacing で行なう CJK フォールバックフォントの幅補正がこのケースだけわずかに
-// 足りず、行の実描画幅が計算上の幅をはみ出す（詳細は renderer/style.css の
-// `.xterm-rows > div` 上書きのコメント参照。そちらで行自身のクリップは解除済み）。
-// 常に 1 列分を安全マージンとして残すことで、.term-container 側の可視範囲に収まるように
-// する（addon-fit の下限と同じ 2 列を割らないようガードする）。
-const FIT_SAFETY_MARGIN_COLS = 1;
+// issue #408: fitAddon.proposeDimensions() が返す cols は「行が折り返し直前まで
+// 全角文字で埋まった（余りセルが無い）とき」を想定していない。xterm.js（DOM
+// レンダラー）が letter-spacing で行なう CJK フォールバックフォントの幅補正が
+// このケースだけわずかに足りず、行の実描画幅が計算上の幅をはみ出す（詳細は
+// renderer/style.css の `.xterm-rows > div` 上書きのコメント参照。そちらで行自身の
+// クリップは解除済み）。常に安全マージン分を残すことで、.term-container 側の可視範囲に
+// 収まるようにする（addon-fit の下限と同じ 2 列を割らないようガードする）。
+//
+// マージンの値の根拠（安藤レビュー指摘・LOW-5・植草の主指摘）: renderer/style.css の
+// 行自身のクリップ解除（HIGH-1 対応）を適用したうえで、日本語主体の実運用に近い長文
+// （司への調査報告の再現文）を送って .term-container との超過量を実測した。
+//   - マージン 0 列: 最悪 +6.31px はみ出す（実際に見切れる）
+//   - マージン 1 列: 単体実行では最悪 -7.05px（はみ出さないが、余裕は 1 列ぶんしか無い）
+//   - マージン 2 列: 単体実行では最悪 -8.69px。ただし他 e2e と並列実行（4 worker）した
+//     ときに一度だけ +4.14px のはみ出しを実測した（`npx playwright test
+//     tests/e2e/terminal-link-open-url.smoke.spec.js tests/e2e/table-cell-url-linkify.smoke.spec.js
+//     tests/e2e/pane-right-edge-clipped.smoke.spec.js` を複数回実行して発見。単体実行を
+//     5 回・同じ並列実行を追加 3 回試しても再現せず、条件は特定できていないが、
+//     「単体実行での最悪値」だけでは実運用の変動（負荷・タイミング等）を見込めていない
+//     ことは実測で確認できた）。
+// マージン 2 列でも上記のとおり実測で一度はみ出しを観測しているため、2 列の実測余裕
+// （-8.69px）に対してさらに 1 列分（約 7.8px）を積み増したマージン 3 列を採用する。
+// マージン 3 列適用後、上記と同じ並列実行を 4 回・単体実行を複数回試し、はみ出しは
+// 再現していない（完全な保証ではなく実測に基づく安全側の見積もり）。
+//
+// 安藤レビュー指摘・HIGH-2: 以前は fitAddon.fit() を呼んだあとに追加で
+// term.resize(cols - margin) していたため、サイズが変わらない場合でも呼ばれるたびに
+// fit() 内部の resize（再描画つき）→ margin 分の再 resize、と2回走っていた。
+// fitAddon.fit() を使わず、公開 API の proposeDimensions() から得た値にマージンを
+// 適用してから、実際に変化がある場合だけ resize を1回呼ぶ形にする。
+const FIT_SAFETY_MARGIN_COLS = 3;
 const FIT_MIN_COLS = 2;
 
 function fitTerminal(paneId) {
@@ -3252,10 +3275,12 @@ function fitTerminal(paneId) {
   // 0 サイズでのフィット→pty への誤リサイズを避けるためスキップする（issue #89）。
   if (t.element && t.element.offsetParent === null) return;
   try {
-    t.fitAddon.fit();
-    const marginedCols = Math.max(FIT_MIN_COLS, t.term.cols - FIT_SAFETY_MARGIN_COLS);
-    if (marginedCols !== t.term.cols) {
-      t.term.resize(marginedCols, t.term.rows);
+    const dims = t.fitAddon.proposeDimensions();
+    if (!dims || Number.isNaN(dims.cols) || Number.isNaN(dims.rows)) return;
+    const cols = Math.max(FIT_MIN_COLS, dims.cols - FIT_SAFETY_MARGIN_COLS);
+    const rows = dims.rows;
+    if (cols !== t.term.cols || rows !== t.term.rows) {
+      t.term.resize(cols, rows);
     }
     VKIpc.send('terminal:resize', t.termId, t.term.cols, t.term.rows);
   } catch (e) {}

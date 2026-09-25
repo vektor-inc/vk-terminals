@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 不具合修正 ] ペイン内のターミナル出力で、日本語主体の長い行が折り返し直前まで全角文字で埋まると右端の文字が見切れて読めなくなる不具合を修正（[#408](https://github.com/vektor-inc/vk-terminals/issues/408)）
+
 ## 1.66.0
 
 - [ 機能追加 ] タスクの編集画面で、UX・セキュリティー・e2e のレビューをタスクごとに「自動／スキップする」から選べるようにする対応を追加（実際に選択肢が表示されるのは VK Orchestrator 側の対応が入ってから）（[#404](https://github.com/vektor-inc/vk-terminals/issues/404)）

@@ -3235,6 +3235,16 @@ function focusPane(paneId) {
   terminals[paneId]?.term.focus();
 }
 
+// issue #408: fitAddon.fit() が算出する cols は「行が折り返し直前まで全角文字で
+// 埋まった（余りセルが無い）とき」を想定していない。xterm.js（DOM レンダラー）が
+// letter-spacing で行なう CJK フォールバックフォントの幅補正がこのケースだけわずかに
+// 足りず、行の実描画幅が計算上の幅をはみ出す（詳細は renderer/style.css の
+// `.xterm-rows > div` 上書きのコメント参照。そちらで行自身のクリップは解除済み）。
+// 常に 1 列分を安全マージンとして残すことで、.term-container 側の可視範囲に収まるように
+// する（addon-fit の下限と同じ 2 列を割らないようガードする）。
+const FIT_SAFETY_MARGIN_COLS = 1;
+const FIT_MIN_COLS = 2;
+
 function fitTerminal(paneId) {
   const t = terminals[paneId];
   if (!t) return;
@@ -3243,6 +3253,10 @@ function fitTerminal(paneId) {
   if (t.element && t.element.offsetParent === null) return;
   try {
     t.fitAddon.fit();
+    const marginedCols = Math.max(FIT_MIN_COLS, t.term.cols - FIT_SAFETY_MARGIN_COLS);
+    if (marginedCols !== t.term.cols) {
+      t.term.resize(marginedCols, t.term.rows);
+    }
     VKIpc.send('terminal:resize', t.termId, t.term.cols, t.term.rows);
   } catch (e) {}
 }

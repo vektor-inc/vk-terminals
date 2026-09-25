@@ -2829,6 +2829,25 @@ button.sidebar-section-header:hover {
   width: 100% !important;
 }
 
+/* issue #408: ペイン右端の文字が見切れる不具合の対処。
+ * xterm.js（DOM レンダラー）は各行（.xterm-rows の直下の div）に
+ * `overflow: hidden` と `width: cols * セル幅(px)` を JS で直接設定し、フォールバック
+ * フォント（Menlo は CJK 非対応のため、日本語は別フォントで描画される）の実際の文字幅と
+ * セル幅のずれを letter-spacing で補正して cols 分の幅に収めようとする。実測したところ、
+ * 行が折り返し直前まで全角文字で埋まる（余りセルが無い）ときにこの補正がわずかに
+ * 足りず、行自身の描画幅が `width` を最大 30px 程度（文字2つ分弱）超え、行の
+ * overflow: hidden によって末尾の文字がそのまま見えなくなる（.term-container 側の
+ * 余白に届くより先に、行自身でクリップされてしまう）。
+ * これは行の width 計算そのものの誤差なので、常に .term-container 側（addon-fit が
+ * スクロールバー分の余白を見込んで広めに確保している）をクリップ境界として使うよう、
+ * 行の水平方向のクリップだけを解除する。fitTerminal()（renderer/app.js）側で cols を
+ * 1 列分減らす安全マージンとセットで、.term-container の可視範囲に収まるようにしている。
+ * inline style で overflow を設定してくるため、上書きには !important が要る
+ * （.xterm-screen の width 上書きと同じ事情）。 */
+.xterm-rows > div {
+  overflow-x: visible !important;
+}
+
 /* ─── Terminal link tooltip（issue #349）────────────────────────────────────── */
 /* ペイン内の URL 上にホバーしたときだけ出す「Cmd/Ctrl+クリックで開く」の案内。
  * 下線・pointer カーソル自体は xterm.js 本体（Linkifier）が自動で付けるため、ここでは

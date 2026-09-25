@@ -75,7 +75,10 @@ class FakeElement {
   removeAttribute(k) { delete this.attributes[k]; }
 
   addEventListener(type, fn) { (this.listeners[type] = this.listeners[type] || []).push(fn); }
-  focus() { if (this.ownerDocument) this.ownerDocument.activeElement = this; }
+  // 実ブラウザ同様、ネイティブ disabled な要素には focus() が効かない（aria-disabled は効く）。
+  // これを無視すると、disabled な編集ボタンへのフォーカス復帰が「成功したように見えて実は
+  // body へ落ちる」不具合（issue #406 差し戻し: 植草 FAIL／安藤 MEDIUM）をテストで検出できない。
+  focus() { if (this.disabled) return; if (this.ownerDocument) this.ownerDocument.activeElement = this; }
   // テスト用: イベントを発火する。extra で key 等の追加プロパティ（Escape 判定など）を渡せる。
   dispatch(type, extra) {
     const ev = Object.assign({ preventDefault() {}, stopPropagation() {} }, extra || {});
@@ -524,12 +527,21 @@ test('render: 1段目のタイムアウトを過ぎると「時間がかかっ�
   const save = groupsEl.querySelectorAll((el) => el.classList.contains('task-edit-save'))[0];
   assert.equal(save.disabled, true);
   const editButton = groupsEl.querySelectorAll((el) => el.classList.contains('task-item-edit'))[0];
-  assert.equal(editButton.disabled, true);
+  // ネイティブ disabled ではなく aria-disabled にする（フォーカス復帰を効かせるため。
+  // issue #406 差し戻し: 植草 FAIL／安藤 MEDIUM）。見た目は無効のまま、操作はクリック
+  // ハンドラ側の savingTasks チェックで止める。
+  assert.equal(editButton.disabled, false);
+  assert.equal(editButton.getAttribute('aria-disabled'), 'true');
 
   // 保存ボタンを再度押しても savingTasks による無効化で二重送信されない。
   save.dispatch('click');
   await Promise.resolve();
   assert.equal(sent.length, 1);
+
+  // 編集ボタンは aria-disabled のみで実際にはクリックできてしまうが、クリックハンドラと
+  // openEditor 側の savingTasks ガードで無視される（issue #406 差し戻し: 安藤 LOW）。
+  editButton.dispatch('click');
+  assert.equal(view.hasOpenEditor(), true);
 
   // widget の current を追いつかせて後始末する（2段目タイマーを残したままにしない）。
   const updatedWidget = editableWidgetWithControls({
@@ -641,7 +653,7 @@ test('render: 保存中はキャンセルが「閉じる」として働き、確
   const widget = twoEditableTasksWidget();
   const sent = [];
   const confirms = [];
-  const { groupsEl, view } = makeView({
+  const { doc, groupsEl, view } = makeView({
     sendCommand: async (cmd) => { sent.push(cmd); return { ok: true }; },
     confirm: (text) => { confirms.push(text); return true; },
   });
@@ -668,10 +680,21 @@ test('render: 保存中はキャンセルが「閉じる」として働き、確
   assert.equal(pendingEl.textContent, DEFAULT_STRINGS.savingPending);
 
   const editButtons = groupsEl.querySelectorAll((el) => el.classList.contains('task-item-edit'));
-  assert.equal(editButtons[0].disabled, true); // タスクA（保存中）自身は無効のまま。
+  // タスクA（保存中）自身は見た目のみ無効（aria-disabled）。ネイティブ disabled にすると
+  // pendingFocus によるフォーカス復帰が実ブラウザでは効かず body へ落ちる
+  // （issue #406 差し戻し: 植草 FAIL／安藤 MEDIUM）。
+  assert.equal(editButtons[0].disabled, false);
+  assert.equal(editButtons[0].getAttribute('aria-disabled'), 'true');
   assert.equal(editButtons[1].disabled, false); // タスクB は押せる。
+  assert.equal(editButtons[1].getAttribute('aria-disabled'), null);
 
-  // タスクA を再送信しても二重送信にならない（disabled のため実 UI では押せないが念のため回数も確認）。
+  // 「閉じる」で閉じたあと、フォーカスはタスクA の編集ボタンに戻る（body へ落ちない）。
+  assert.equal(doc.activeElement, editButtons[0]);
+
+  // タスクA の編集ボタンは見た目こそクリックできるが、クリックハンドラと openEditor 側の
+  // savingTasks ガードで無視され、二重送信・二重オープンにはならない（安藤 LOW）。
+  editButtons[0].dispatch('click');
+  assert.equal(view.hasOpenEditor(), false);
   assert.equal(sent.length, 1);
 
   // 後始末: widget の current を追いつかせて pending を解消する。
@@ -711,9 +734,9 @@ test('render: 保存中のパネルを開いたまま他タスクの編集ボタ
   assert.equal(view.hasPending(), false);
 });
 
-test('render: 保存中に Escape を押しても確認なしでパネルだけ閉じる', async () => {
+test('render: 保存中に Escape を押しても確認なしでパネルだけ閉じ、フォーカスは編集ボタンに戻る（body へ落ちない）', async () => {
   const widget = twoEditableTasksWidget();
-  const { groupsEl, view } = makeView({
+  const { doc, groupsEl, view } = makeView({
     sendCommand: async () => ({ ok: true }),
     confirm: () => { throw new Error('保存中の Escape で confirm は呼ばれないはず'); },
   });
@@ -726,6 +749,13 @@ test('render: 保存中に Escape を押しても確認なしでパネルだけ�
 
   assert.equal(view.hasOpenEditor(), false);
   assert.equal(view.hasPending(), true);
+
+  // 保存中のまま（編集ボタンが aria-disabled の状態のまま）再描画し、フォーカスが
+  // タスクA の編集ボタンへ戻ることを確認する。ネイティブ disabled のままだと実ブラウザでは
+  // focus() が効かず body へ落ちる（issue #406 差し戻し: 植草 FAIL／安藤 MEDIUM）。
+  view.render(widget, { now: Date.parse('2026-07-21T00:00:10.000Z') });
+  const editButtons = groupsEl.querySelectorAll((el) => el.classList.contains('task-item-edit'));
+  assert.equal(doc.activeElement, editButtons[0]);
 
   const updatedWidget = twoEditableTasksWidget({ a: { current: 'in-progress' } });
   view.render(updatedWidget, { now: Date.parse('2026-07-21T00:00:11.000Z') });
@@ -870,6 +900,47 @@ test('render: 保存中に閉じたタスクが完全に消えても savingTasks
   // savingTasks が引き継がれておらず、編集ボタンが無効なまま固まっていないことも確認する。
   const editButton = groupsEl.querySelectorAll((el) => el.classList.contains('task-item-edit'))[0];
   assert.equal(editButton.disabled, false);
+  assert.equal(editButton.getAttribute('aria-disabled'), null);
+});
+
+test('render: 保存中に閉じたあと2段目のタイムアウトでエラーになっても、再度開くと下書きの値が残っている（反映前の値に戻らない）', async () => {
+  const widget = editableWidgetWithControls();
+  const { groupsEl, view } = makeView({
+    sendCommand: async () => ({ ok: true }),
+    pendingTimeoutMs: 20,
+    pendingErrorTimeoutMs: 40,
+  });
+  view.render(widget, { now: Date.parse('2026-07-21T00:00:10.000Z') });
+  groupsEl.querySelectorAll((el) => el.classList.contains('task-item-edit'))[0].dispatch('click');
+  view.render(widget, { now: Date.parse('2026-07-21T00:00:10.000Z') });
+
+  const status = groupsEl.querySelectorAll((el) => el.tagName === 'SELECT').find((el) => el.dataset.field === 'status');
+  status.value = 'in-progress';
+  status.dispatch('change');
+  groupsEl.querySelectorAll((el) => el.classList.contains('task-edit-save'))[0].dispatch('click');
+  await Promise.resolve();
+  assert.equal(view.hasPending(), true);
+
+  // 保存中のまま「閉じる」で閉じる（下書き・pending・savingTasks は維持される）。
+  groupsEl.querySelectorAll((el) => el.classList.contains('task-edit-cancel'))[0].dispatch('click');
+  assert.equal(view.hasOpenEditor(), false);
+
+  // 2段目のタイムアウトを過ぎ、timeoutError が表示される（「内容は保持しています。
+  // 再試行できます」という文言）。
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  view.render(widget, { now: Date.parse('2026-07-21T00:00:10.010Z') });
+  assert.equal(view.hasPending(), false);
+  const error = groupsEl.querySelectorAll((el) => el.classList.contains('task-item-action-error'))[0];
+  assert.equal(error.textContent, DEFAULT_STRINGS.timeoutError);
+
+  // 再試行のため編集を開き直す。旧実装は openEditor が buildDraftFromItem で下書きを
+  // 反映前の値へ作り直しており、「内容は保持しています」という文言と食い違っていた
+  // （issue #406 差し戻し: 安藤 MEDIUM）。
+  groupsEl.querySelectorAll((el) => el.classList.contains('task-item-edit'))[0].dispatch('click');
+  view.render(widget, { now: Date.parse('2026-07-21T00:00:10.010Z') });
+
+  const reopenedStatus = groupsEl.querySelectorAll((el) => el.tagName === 'SELECT').find((el) => el.dataset.field === 'status');
+  assert.equal(reopenedStatus.value, 'in-progress');
 });
 
 test('render: キャンセルで下書きを破棄し畳みに戻る', () => {

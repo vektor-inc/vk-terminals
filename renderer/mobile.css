@@ -516,7 +516,8 @@ button.k.kill.is-locked:active { background: #6b3f3f; border-color: #7c4a4a; }
   outline: 2px solid #58a6ff;
   outline-offset: 2px;
 }
-.task-item-edit:disabled {
+.task-item-edit:disabled,
+.task-item-edit[aria-disabled="true"] {
   opacity: 0.6;
   cursor: default;
 }

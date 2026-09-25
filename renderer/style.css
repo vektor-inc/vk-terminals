@@ -1983,7 +1983,8 @@ button.sidebar-section-header:hover {
   outline: var(--vktm--outline--focus-ring);
   outline-offset: var(--vktm--outline-offset--focus-ring);
 }
-.task-item-edit:disabled {
+.task-item-edit:disabled,
+.task-item-edit[aria-disabled="true"] {
   opacity: 0.55;
   cursor: default;
 }

@@ -247,6 +247,9 @@
     }
 
     function openEditor(item) {
+      // 編集ボタンは保存中でも aria-disabled のみでフォーカス可能なため、クリックが素通りしても
+      // ここで確実に止める（issue #406 差し戻し: 安藤 LOW）。
+      if (savingTasks.has(item.id)) return;
       if (editingTaskId === item.id) return;
       if (editingTaskId) {
         if (savingTasks.has(editingTaskId)) {
@@ -260,7 +263,12 @@
         }
       }
       editingTaskId = item.id;
-      drafts.set(item.id, buildDraftFromItem(item));
+      // エラー表示中（timeoutError／sendError）で下書きが残っている場合は作り直さない。
+      // buildDraftFromItem は反映前の値へ戻してしまい、「内容は保持しています」という
+      // エラー文言と食い違う（issue #406 差し戻し: 安藤 MEDIUM）。
+      if (!(errors.has(item.id) && drafts.has(item.id))) {
+        drafts.set(item.id, buildDraftFromItem(item));
+      }
       errors.delete(item.id);
       pendingFocus = { type: 'first-control', taskId: item.id };
       requestRerender();
@@ -640,8 +648,15 @@
         // 無効化するのは「自分自身が保存中（反映待ち）」のときだけにする。別タスクが保存中でも
         // 編集ボタンは押せる（openEditor 側で、保存中の別パネルは確認なしで閉じてから新しいパネルを
         // 開く。issue #406 植草 UX レビュー指摘: 他タスクまで巻き添えで固まって見えるのを解消）。
-        editButton.disabled = savingTasks.has(item.id);
+        //
+        // ネイティブの disabled は使わない。「閉じる」／Escape で保存中パネルを閉じたあと
+        // pendingFocus でこのボタンへフォーカスを戻すが、disabled な要素は実ブラウザでは
+        // focus() が効かず body へ落ちてしまう（issue #406 差し戻し: 植草 FAIL／安藤 MEDIUM）。
+        // aria-disabled でフォーカス可能なまま見た目だけ無効化し、操作はクリックハンドラの
+        // 先頭で止める（openEditor 自体も同条件で二重に止める。安藤 LOW）。
+        if (savingTasks.has(item.id)) editButton.setAttribute('aria-disabled', 'true');
         editButton.addEventListener('click', () => {
+          if (savingTasks.has(item.id)) return;
           if (isEditing) {
             cancelEditor(item);
           } else {

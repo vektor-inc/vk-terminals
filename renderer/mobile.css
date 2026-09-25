@@ -509,7 +509,7 @@ button.k.kill.is-locked:active { background: #6b3f3f; border-color: #7c4a4a; }
   cursor: pointer;
   white-space: nowrap;
 }
-.task-item-edit:active {
+.task-item-edit:active:not([aria-disabled="true"]) {
   background: #30363d;
 }
 .task-item-edit:focus-visible {

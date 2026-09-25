@@ -95,6 +95,10 @@
     const pending = new Map();
     const errors = new Map();
     const drafts = new Map();
+    // taskId -> 直近の保存で送った field 名の配列。エラー後に openEditor で下書きを作り直す際、
+    // 保存した項目だけ古い値を残し、触っていない項目は最新値にするために使う（issue #406 差し戻し:
+    // 安藤 LOW）。drafts を消す箇所では必ず一緒に消す（保存記録だけが取り残されるのを防ぐ）。
+    const savedFields = new Map();
     const savingTasks = new Set();
     const renderedEditButtons = new Map();
     const renderedPanels = new Map();
@@ -226,6 +230,7 @@
       if (editingTaskId !== taskId) return;
       editingTaskId = null;
       drafts.delete(taskId);
+      savedFields.delete(taskId);
       savingTasks.delete(taskId);
       pendingFocus = options.restoreFocus ? { type: 'edit-button', taskId } : null;
     }
@@ -259,16 +264,34 @@
         } else {
           if (!confirmDiscardIfNeeded(editingTaskId)) return;
           drafts.delete(editingTaskId);
+          // drafts を消す箇所は savedFields も一緒に消す（同じ原因の箇所。issue #406 差し戻し:
+          // 安藤 LOW）。ここで捨てるのは別タスクの編集セッションのため、以後 editingTaskId が
+          // 再びこのタスクに戻ってきたときに古い保存記録で誤って上書きしないようにする。
+          savedFields.delete(editingTaskId);
           savingTasks.delete(editingTaskId);
         }
       }
       editingTaskId = item.id;
-      // エラー表示中（timeoutError／sendError）で下書きが残っている場合は作り直さない。
-      // buildDraftFromItem は反映前の値へ戻してしまい、「内容は保持しています」という
-      // エラー文言と食い違う（issue #406 差し戻し: 安藤 MEDIUM）。
-      if (!(errors.has(item.id) && drafts.has(item.id))) {
+      // エラー表示中（timeoutError／sendError）で下書きが残っている場合は、buildDraftFromItem で
+      // 全項目を反映前の値へ作り直さない。ただし保存した項目（savedFields）以外は、保存から
+      // 最大5分の間に外部（vk-orchestrator 等）で値が変わっている可能性があるため、最新値を
+      // 優先する。保存した項目だけ、まだ反映されていない古い値を残す（issue #406 差し戻し:
+      // 安藤 LOW。「エラー後に開き直すと触っていない項目まで古い値で送ってしまう」の修正）。
+      if (errors.has(item.id) && drafts.has(item.id)) {
+        const staleDraft = drafts.get(item.id);
+        const freshDraft = buildDraftFromItem(item);
+        const fields = savedFields.get(item.id);
+        if (Array.isArray(fields)) {
+          for (const field of fields) {
+            if (Object.prototype.hasOwnProperty.call(staleDraft, field)) freshDraft[field] = staleDraft[field];
+          }
+        }
+        drafts.set(item.id, freshDraft);
+      } else {
         drafts.set(item.id, buildDraftFromItem(item));
       }
+      // 使い終えた保存記録は消す（次回の開き直しで誤って再適用しないため）。
+      savedFields.delete(item.id);
       errors.delete(item.id);
       pendingFocus = { type: 'first-control', taskId: item.id };
       requestRerender();
@@ -292,6 +315,9 @@
       const confirmText = batch.confirms.map(joinConfirm).filter(Boolean).join('\n\n---\n\n');
       if (confirmText && !confirmFn(confirmText)) return;
 
+      // 今回の保存で送る項目を記録する（openEditor がエラー後に下書きを作り直す際、この項目
+      // だけ古い値を残すために使う。issue #406 差し戻し: 安藤 LOW）。
+      savedFields.set(item.id, batch.fields.slice());
       for (const field of batch.fields) {
         const control = getControls(item).find((candidate) => candidate.field === field);
         if (control) setPendingField(item.id, field, control.current);
@@ -344,6 +370,7 @@
       const exists = contract.flatItems(widget).some((item) => item.id === editingTaskId);
       if (exists) return;
       drafts.delete(editingTaskId);
+      savedFields.delete(editingTaskId);
       savingTasks.delete(editingTaskId);
       clearPending(editingTaskId);
       errors.delete(editingTaskId);
@@ -366,6 +393,7 @@
           clearPending(taskId);
           savingTasks.delete(taskId);
           drafts.delete(taskId);
+          savedFields.delete(taskId);
           continue;
         }
         const currentByField = {};
@@ -380,6 +408,7 @@
             // 一致する（＝パネルがまだ開いている）ときだけ畳んでフォーカスを戻す。別タスクを
             // 編集中ならそのパネル・フォーカスには干渉しない（issue #406 植草 UX レビュー指摘）。
             drafts.delete(taskId);
+            savedFields.delete(taskId);
             if (editingTaskId === taskId) {
               editingTaskId = null;
               pendingFocus = { type: 'edit-button', taskId };
@@ -398,7 +427,13 @@
         }
       }
       for (const taskId of Array.from(errors.keys())) {
-        if (!byId.has(taskId)) errors.delete(taskId);
+        if (!byId.has(taskId)) {
+          errors.delete(taskId);
+          // エラー表示中に保持していた再試行用の下書き・保存記録も、タスクごと一覧から消えた
+          // 以上は使い道が無いため一緒に片付ける（issue #406 差し戻し: 安藤 LOW）。
+          drafts.delete(taskId);
+          savedFields.delete(taskId);
+        }
       }
     }
 
@@ -639,11 +674,16 @@
       const isEditing = editable && editingTaskId === item.id;
       const panelId = panelIdForItem(item);
       if (editable) {
+        const savingSelf = savingTasks.has(item.id);
         const editButton = el('button', 'task-item-edit');
         editButton.type = 'button';
         editButton.setAttribute('aria-expanded', isEditing ? 'true' : 'false');
         editButton.setAttribute('aria-controls', panelId);
-        editButton.setAttribute('aria-label', `「${item.title}」を編集`);
+        // 保存中は「押せない」ことを aria-label にも明示する（見た目の aria-disabled だけだと
+        // スクリーンリーダー利用者に伝わらない。issue #406 差し戻し: 植草 低）。
+        editButton.setAttribute('aria-label', savingSelf
+          ? `「${item.title}」を編集（保存中のため操作できません）`
+          : `「${item.title}」を編集`);
         editButton.textContent = '編集';
         // 無効化するのは「自分自身が保存中（反映待ち）」のときだけにする。別タスクが保存中でも
         // 編集ボタンは押せる（openEditor 側で、保存中の別パネルは確認なしで閉じてから新しいパネルを
@@ -654,7 +694,7 @@
         // focus() が効かず body へ落ちてしまう（issue #406 差し戻し: 植草 FAIL／安藤 MEDIUM）。
         // aria-disabled でフォーカス可能なまま見た目だけ無効化し、操作はクリックハンドラの
         // 先頭で止める（openEditor 自体も同条件で二重に止める。安藤 LOW）。
-        if (savingTasks.has(item.id)) editButton.setAttribute('aria-disabled', 'true');
+        if (savingSelf) editButton.setAttribute('aria-disabled', 'true');
         editButton.addEventListener('click', () => {
           if (savingTasks.has(item.id)) return;
           if (isEditing) {

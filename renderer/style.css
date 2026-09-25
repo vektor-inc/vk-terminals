@@ -2829,6 +2829,40 @@ button.sidebar-section-header:hover {
   width: 100% !important;
 }
 
+/* issue #408: ペイン右端の文字が見切れる不具合の対処。
+ * xterm.js（DOM レンダラー）は各行（.xterm-rows の直下の div）に
+ * `overflow: hidden` と `width: cols * セル幅(px)` を JS で直接設定し、フォールバック
+ * フォント（Menlo は CJK 非対応のため、日本語は別フォントで描画される）の実際の文字幅と
+ * セル幅のずれを letter-spacing で補正して cols 分の幅に収めようとする。実測したところ、
+ * 行が折り返し直前まで全角文字で埋まる（余りセルが無い）ときにこの補正がわずかに
+ * 足りず、行自身の描画幅が行自身の `width`（box）を最大 30px 程度（文字2つ分弱）超え、
+ * 行の overflow: hidden によって末尾の文字がそのまま見えなくなる（.term-container 側の
+ * 余白に届くより先に、行自身でクリップされてしまう）。
+ * この「行自身の box に対する超過量（最大 30px 程度）」と、下記で解決する
+ * 「.term-container の可視範囲に対する超過量（実測 +6.31px 程度。renderer/app.js の
+ * fitTerminal() コメント参照）」は別の値（前者は行の width 計算の誤差量そのもの、
+ * 後者は .term-container が addon-fit の余白ぶん行の box より広いために相殺された
+ * あとの残り）。混同すると安全マージンの見積もりを誤るため注意（安藤レビュー指摘・
+ * LOW-5）。
+ * これは行の width 計算そのものの誤差なので、常に .term-container 側（addon-fit が
+ * スクロールバー分の余白を見込んで広めに確保している）をクリップ境界として使うよう、
+ * 行の水平方向のクリップだけを解除する。fitTerminal()（renderer/app.js）側で cols を
+ * 安全マージン分減らす対応とセットで、.term-container の可視範囲（＝後者の超過量）に
+ * 収まるようにしている。
+ * inline style で overflow を設定してくるため、上書きには !important が要る
+ * （.xterm-screen の width 上書きと同じ事情）。
+ * overflow-x だけを visible にしても効かない（安藤レビュー指摘・HIGH-1）: CSS の仕様上、
+ * overflow-x と overflow-y の一方が visible で他方がそれ以外（この場合 inline の
+ * overflow-y: hidden）だと、visible 側は auto に変換されてクリップが残ってしまう
+ * （実測: overflow-x を visible !important だけにすると computed は auto のまま、
+ * scrollWidth 1018 > clientWidth 1017 でクリップが残存）。overflow-y も明示的に
+ * `clip`（hidden 相当だが visible との自動変換ペア規則の対象外）で上書きし、
+ * overflow-x が本当に visible のまま計算されることを実測で確認済み。 */
+.xterm-rows > div {
+  overflow-x: visible !important;
+  overflow-y: clip !important;
+}
+
 /* ─── Terminal link tooltip（issue #349）────────────────────────────────────── */
 /* ペイン内の URL 上にホバーしたときだけ出す「Cmd/Ctrl+クリックで開く」の案内。
  * 下線・pointer カーソル自体は xterm.js 本体（Linkifier）が自動で付けるため、ここでは

@@ -20,10 +20,13 @@ const DEFAULT_GRACE_MS = 1500;
 const DEFAULT_FORCE_MS = 500;
 
 /**
- * 単一の pty プロセスへ kill を送り、onExit 通知が届くまで待つ。
+ * 単一の pty プロセスへ kill を送り、onExit 通知が届くまで待って終わらせる。
  * 上限（graceMs）を超えても生きていれば SIGKILL を送り、追加で forceMs だけ待って
  * 諦める（諦めた場合も reject はしない。呼び出し元は「終了処理を続けてよいか」だけを
  * 知りたいため、待ちきれなかったこと自体では失敗にしない）。
+ * 名称は「実際に終わらせる（kill・SIGKILL を送る）」ことが呼び出し元から分かるように
+ * terminatePtyAndWait とした（安藤の指摘・LOW-4。旧名 waitForPtyExit は「待つだけ」に
+ * 読めてしまい、実際の役割と食い違っていた）。
  * @param {{kill: Function, onExit: Function}} ptyProcess node-pty の IPty 互換オブジェクト
  * @param {object} [opts]
  * @param {number} [opts.graceMs] 通常終了（kill()）を待つ上限（既定 1500ms）
@@ -32,7 +35,7 @@ const DEFAULT_FORCE_MS = 500;
  * @param {Function} [opts.clearTimeout] 差し替え用（既定はグローバル clearTimeout）
  * @returns {Promise<void>} 終了通知を受け取るか、待ちきれず諦めた時点で解決する
  */
-function waitForPtyExit(ptyProcess, opts = {}) {
+function terminatePtyAndWait(ptyProcess, opts = {}) {
   const graceMs = opts.graceMs ?? DEFAULT_GRACE_MS;
   const forceMs = opts.forceMs ?? DEFAULT_FORCE_MS;
   const scheduleTimeout = opts.setTimeout ?? setTimeout;
@@ -70,6 +73,10 @@ function waitForPtyExit(ptyProcess, opts = {}) {
     } catch (_e) { /* 既に終了している等は無視 */ }
 
     graceTimer = scheduleTimeout(() => {
+      // 子プロセスの回収（OS がプロセステーブルから消す）から、node-pty がそれを検知して
+      // JS の onExit を呼ぶまでには最大 200ms 程度のずれがありうる。理論上はその間に
+      // 既に回収済みの pid へ SIGKILL を送る余地があるが、無効な pid への signal は
+      // 通常 ESRCH で失敗するだけで害が無いため、ここでは直さない（安藤の指摘・LOW-3）。
       try { ptyProcess.kill('SIGKILL'); } catch (_e) { /* 既に終了している等は無視 */ }
       forceTimer = scheduleTimeout(finish, forceMs);
     }, graceMs);
@@ -77,20 +84,20 @@ function waitForPtyExit(ptyProcess, opts = {}) {
 }
 
 /**
- * 複数の pty プロセスの終了をまとめて待つ。0件なら待たずに即解決する。
+ * 複数の pty プロセスの終了をまとめて待って終わらせる。0件なら待たずに即解決する。
  * @param {Iterable<{kill: Function, onExit: Function}>} ptyProcesses
- * @param {object} [opts] waitForPtyExit と同じオプション
+ * @param {object} [opts] terminatePtyAndWait と同じオプション
  * @returns {Promise<void>}
  */
-async function waitForAllPtysExit(ptyProcesses, opts = {}) {
+async function terminateAllPtysAndWait(ptyProcesses, opts = {}) {
   const list = Array.from(ptyProcesses);
   if (list.length === 0) return;
-  await Promise.all(list.map((p) => waitForPtyExit(p, opts)));
+  await Promise.all(list.map((p) => terminatePtyAndWait(p, opts)));
 }
 
 module.exports = {
   DEFAULT_GRACE_MS,
   DEFAULT_FORCE_MS,
-  waitForPtyExit,
-  waitForAllPtysExit,
+  terminatePtyAndWait,
+  terminateAllPtysAndWait,
 };

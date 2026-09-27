@@ -23,6 +23,9 @@ const {
 // getReadyPatternForEngine は「起動完了検知」の正規表現選択、attachTrustAutoResponder は
 // pty の出力を読んで trustPromptGate へ渡し、許可されたときだけ Enter を書き込む監視。
 const { getReadyPatternForEngine, attachTrustAutoResponder } = require('./utils/trustPromptWatcher');
+// 終了時、各 pty の onExit（終了通知）が届くまで待ってから終了処理を続けるための小道具
+// （issue #409）。詳細は utils/ptyShutdown.js のコメントを参照。
+const { waitForAllPtysExit } = require('./utils/ptyShutdown');
 // 宣言的ウィジェット（tasks-widget.json）契約の共有ロジック（#229 / vk-orchestrator#182）。
 // タスクのドメイン語彙（遷移マトリクス・ラベル・優先度など）はこのプロセスに持たず、
 // orchestrator が書き出す宣言を検証・中継するだけの汎用実装にする。
@@ -1082,11 +1085,16 @@ function compareSemver(a, b) {
   return (aMajor - bMajor) || (aMinor - bMinor) || (aPatch - bPatch);
 }
 
-/** すべての PTY プロセスを終了する */
-function cleanupPtys() {
-  for (const [, p] of ptys) {
-    try { p.kill(); } catch (e) {}
-  }
+/**
+ * すべての PTY プロセスへ kill を送り、各 pty の onExit（終了通知）が届くまで待つ。
+ * kill を送るだけで終了を待たずに次の終了処理へ進むと、pty 側の終了通知（node-pty の
+ * ThreadSafeFunction 経由の onExit 呼び出し）と Node 環境破棄が競合し、SIGABRT で
+ * プロセスごと落ちることがある（issue #409）。待ち合わせの実処理は utils/ptyShutdown.js
+ * に切り出し、単体テストしやすくしている。
+ * @returns {Promise<void>}
+ */
+async function cleanupPtys() {
+  await waitForAllPtysExit(ptys.values());
 }
 
 /**
@@ -1140,8 +1148,10 @@ async function checkAndUpdate() {
     });
 
     if (response === 0) {
-      // app.exit(0) は通常の終了フックを通らないため、PTY を明示的にクリーンアップする
-      cleanupPtys();
+      // app.exit(0) は通常の終了フックを通らないため、PTY を明示的にクリーンアップする。
+      // cleanupPtys() は各 pty の終了通知が届くまで待つため、ここで await してから
+      // 再起動する（待たずに app.exit(0) すると issue #409 と同じ SIGABRT を踏みうる）。
+      await cleanupPtys();
       app.relaunch();
       app.exit(0);
     }
@@ -1299,16 +1309,43 @@ app.whenReady().then(async () => {
   if (codexUsageEnabled()) Promise.all([codexUsage.get(), codexUsageTracker.warmup()]).catch(() => {});
 });
 
-app.on('window-all-closed', () => {
-  cleanupPtys();
+app.on('window-all-closed', async () => {
+  await cleanupPtys();
   if (process.platform !== 'darwin') app.quit();
 });
 
-app.on('before-quit', () => {
-  cleanupPtys();
+// before-quit 到達時に生きている pty があれば、終了を待つ間だけ quit を止める（issue #409）。
+// 'idle'    … まだ待ち合わせを始めていない
+// 'pending' … cleanupPtys() の完了待ち（この間に before-quit が再度来ても preventDefault で待たせる）
+// 'done'    … 後始末済み。素通りさせて実際に終了させる
+// フラグで管理することで、cleanupPtys() 完了後に自分で呼ぶ app.quit() が
+// before-quit を再度発火させても無限ループにならないようにしている。
+let ptyShutdownState = 'idle';
+
+function finalizeBeforeQuit() {
   stopWidgetWatcher();
   try { fs.unlinkSync(STATE_FILE); } catch (e) {}
   if (httpServer) httpServer.close();
+}
+
+app.on('before-quit', (event) => {
+  if (ptyShutdownState === 'done') return;
+  if (ptyShutdownState === 'pending') {
+    event.preventDefault();
+    return;
+  }
+  if (ptys.size === 0) {
+    ptyShutdownState = 'done';
+    finalizeBeforeQuit();
+    return;
+  }
+  event.preventDefault();
+  ptyShutdownState = 'pending';
+  cleanupPtys().then(() => {
+    ptyShutdownState = 'done';
+    finalizeBeforeQuit();
+    app.quit();
+  });
 });
 
 // renderer がエージェントルーム（issue #58）の有効/無効を知るための設定取得。

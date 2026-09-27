@@ -74,9 +74,13 @@ function terminatePtyAndWait(ptyProcess, opts = {}) {
 
     graceTimer = scheduleTimeout(() => {
       // 子プロセスの回収（OS がプロセステーブルから消す）から、node-pty がそれを検知して
-      // JS の onExit を呼ぶまでには最大 200ms 程度のずれがありうる。理論上はその間に
-      // 既に回収済みの pid へ SIGKILL を送る余地があるが、無効な pid への signal は
-      // 通常 ESRCH で失敗するだけで害が無いため、ここでは直さない（安藤の指摘・LOW-3）。
+      // JS の onExit を呼ぶまでには最大 200ms 程度のずれがありうる
+      // （node-pty の unixTerminal.js DESTROY_SOCKET_TIMEOUT_MS = 200）。理論上はその間に
+      // 同じ pid が OS に再利用され、無関係な別プロセスへ SIGKILL を送ってしまう余地が
+      // ある（無効な pid なら ESRCH で失敗するだけだが、再利用されていれば ESRCH には
+      // ならない）。ただし pid が再利用されるまでの猶予（OS のプロセス ID 使い回し間隔）
+      // に対して 200ms は非常に短く、この窓の中で同じ pid が再利用される見込みは
+      // 極めて小さいため、ここでは直さない（安藤の指摘・LOW-3 / LOW-A）。
       try { ptyProcess.kill('SIGKILL'); } catch (_e) { /* 既に終了している等は無視 */ }
       forceTimer = scheduleTimeout(finish, forceMs);
     }, graceMs);
@@ -95,9 +99,30 @@ async function terminateAllPtysAndWait(ptyProcesses, opts = {}) {
   await Promise.all(list.map((p) => terminatePtyAndWait(p, opts)));
 }
 
+/**
+ * main.js の cleanupPtys() が実際に行う待ち合わせをここへ集約したもの（安藤の指摘・
+ * LOW-B）。まだ terminate していない pty（main.js の `ptys`）をまとめて terminate しつつ、
+ * 既に terminate 済み・terminate 中で完了待ち Promise だけが残っている pty（main.js の
+ * `exitingPtys`。ペインを閉じた直後の pty。issue #409 レビュー対応・MEDIUM-1）も
+ * 合わせて待つ。main.js の cleanupPtys() とテストの両方がこの関数を呼ぶことで、
+ * 「合成の仕方」の実装が2箇所に分かれてズレる（テストは通るのに main.js 側は
+ * 待っていない、という事故）のを防ぐ。
+ * @param {Iterable<{kill: Function, onExit: Function}>} ptyProcesses まだ terminate していない pty
+ * @param {Iterable<Promise<void>>} exitingPromises 既に terminate 済み・terminate 中の pty の完了待ち Promise
+ * @param {object} [opts] terminateAllPtysAndWait と同じオプション（ptyProcesses 側にのみ適用）
+ * @returns {Promise<void>}
+ */
+async function terminateAllPtysAndWaitIncludingExiting(ptyProcesses, exitingPromises, opts = {}) {
+  await Promise.all([
+    terminateAllPtysAndWait(ptyProcesses, opts),
+    ...Array.from(exitingPromises),
+  ]);
+}
+
 module.exports = {
   DEFAULT_GRACE_MS,
   DEFAULT_FORCE_MS,
   terminatePtyAndWait,
   terminateAllPtysAndWait,
+  terminateAllPtysAndWaitIncludingExiting,
 };

@@ -25,7 +25,7 @@ const {
 const { getReadyPatternForEngine, attachTrustAutoResponder } = require('./utils/trustPromptWatcher');
 // 終了時、各 pty の onExit（終了通知）が届くまで待ってから終わらせるための小道具
 // （issue #409）。詳細は utils/ptyShutdown.js のコメントを参照。
-const { terminatePtyAndWait, terminateAllPtysAndWait } = require('./utils/ptyShutdown');
+const { terminatePtyAndWait, terminateAllPtysAndWaitIncludingExiting } = require('./utils/ptyShutdown');
 // before-quit の待ち合わせ状態（idle/pending/done）とペイン作成の可否判定を切り出した
 // 状態機械（issue #409 レビュー対応・MEDIUM-2）。詳細は utils/ptyShutdownGate.js を参照。
 const { createPtyShutdownGate } = require('./utils/ptyShutdownGate');
@@ -1103,14 +1103,14 @@ function compareSemver(a, b) {
  * に切り出し、単体テストしやすくしている。
  * ptys（生きているペインの pty）だけでなく、terminal:kill で既にペインを閉じたが
  * 終了通知をまだ待っている pty（exitingPtys）も合わせて待つ（MEDIUM-1。ペインを
- * 閉じた直後にアプリを終了する競合を防ぐ）。
+ * 閉じた直後にアプリを終了する競合を防ぐ）。合成の実処理は
+ * terminateAllPtysAndWaitIncludingExiting（utils/ptyShutdown.js）に集約してあり、
+ * tests/ptyShutdown.test.js も同じ関数を呼んで検証する（安藤の指摘・LOW-B。合成の
+ * 実装がこことテストの2箇所に分かれてズレるのを防ぐ）。
  * @returns {Promise<void>}
  */
 async function cleanupPtys() {
-  await Promise.all([
-    terminateAllPtysAndWait(ptys.values()),
-    ...exitingPtys.values(),
-  ]);
+  await terminateAllPtysAndWaitIncludingExiting(ptys.values(), exitingPtys.values());
 }
 
 /**
@@ -1167,6 +1167,11 @@ async function checkAndUpdate() {
       // app.exit(0) は通常の終了フックを通らないため、PTY を明示的にクリーンアップする。
       // cleanupPtys() は各 pty の終了通知が届くまで待つため、ここで await してから
       // 再起動する（待たずに app.exit(0) すると issue #409 と同じ SIGABRT を踏みうる）。
+      // この経路は before-quit を通らずゲートが 'idle' のままになるため、待っている間に
+      // 作られたペインが誰にも待たれない（安藤の指摘・LOW-C）。cleanupPtys() の前に
+      // markShuttingDown() でゲートへ「待ち合わせを始めた」ことを伝え、待っている間は
+      // 新しいペイン作成を拒否する（詳細は utils/ptyShutdownGate.js のコメントを参照）。
+      ptyShutdownGate.markShuttingDown();
       await cleanupPtys();
       app.relaunch();
       app.exit(0);

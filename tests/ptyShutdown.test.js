@@ -3,7 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { terminatePtyAndWait, terminateAllPtysAndWait } = require('../utils/ptyShutdown');
+const { terminatePtyAndWait, terminateAllPtysAndWait, terminateAllPtysAndWaitIncludingExiting } = require('../utils/ptyShutdown');
 
 // 実時間を待たずに検証できるよう、setTimeout / clearTimeout を差し替える簡易クロック
 // （tests/autoClose.test.js と同じ手法）。
@@ -137,6 +137,29 @@ test('terminateAllPtysAndWait: すべての pty の onExit が届くまで resol
   assert.equal(resolved, true);
 });
 
+test('terminateAllPtysAndWaitIncludingExiting: ptys・exitingPromises とも0件なら待たずに即 resolve する', async () => {
+  await terminateAllPtysAndWaitIncludingExiting([], []);
+  assert.ok(true); // ここに到達すれば待ち時間なしに解決している
+});
+
+test('terminateAllPtysAndWaitIncludingExiting: ptys 側と exitingPromises 側の両方が揃うまで resolve しない', async () => {
+  const livePty = createFakePty(); // ptys 側（まだ terminate していない pty）
+  let resolveExiting;
+  const exitingPromise = new Promise((resolve) => { resolveExiting = resolve; }); // exitingPromises 側（terminate 中の pty の待ち Promise）
+
+  let resolved = false;
+  const promise = terminateAllPtysAndWaitIncludingExiting([livePty], [exitingPromise])
+    .then(() => { resolved = true; });
+
+  livePty._fireExit();
+  await Promise.resolve();
+  assert.equal(resolved, false); // exitingPromise がまだ解決していない
+
+  resolveExiting();
+  await promise;
+  assert.equal(resolved, true);
+});
+
 test('terminatePtyAndWait: onExit を持たないオブジェクトは待たずに resolve する', async () => {
   const brokenPty = {
     kill() {},
@@ -200,10 +223,11 @@ test('terminatePtyAndWait: kill() が例外を出し続けても、待ちきれ�
 
 // レビュー指摘・LOW-5(2) / MEDIUM-1 の回帰防止。main.js の terminal:kill はペインを
 // 閉じた時点で ptys（生きているペインの Map）から即削除し、終了待ち Promise だけを
-// 別の Map（exitingPtys）に残す。cleanupPtys() は ptys 側の terminateAllPtysAndWait と
-// exitingPtys に積まれた個別の待ち Promise をまとめて Promise.all で待つ。
-// main.js 本体は Electron 依存で直接 require できないため、この合成をここで同じ形に
-// 再現し、「ptys からは既に消えたペインの pty」も待ち合わせに含まれることを確認する
+// 別の Map（exitingPtys）に残す。main.js の cleanupPtys() は
+// terminateAllPtysAndWaitIncludingExiting（本体）を呼んでこれを待つ。ここでも
+// 同じ関数を直接呼ぶことで、合成ロジックが main.js 側とここでズレて（例: main.js が
+// exitingPtys を渡し忘れる）検知できなくなる事故を防ぐ（安藤の指摘・LOW-B）。
+// 「ptys からは既に消えたペインの pty」も待ち合わせに含まれることを確認する
 // （修正前は kill() を送るだけで誰も待っておらず、ここでアプリを終了すると #409 と
 // 同じ競合になっていた）。
 test('MEDIUM-1 回帰防止: 閉じたペイン（ptys からは削除済み・exitingPtys で追跡中）の pty も、cleanupPtys 相当の待ち合わせに含まれる', async () => {
@@ -215,12 +239,10 @@ test('MEDIUM-1 回帰防止: 閉じたペイン（ptys からは削除済み・e
   const exitPromise = terminatePtyAndWait(closedPty).finally(() => exitingPtys.delete('closed-1'));
   exitingPtys.set('closed-1', exitPromise);
 
-  // main.js の cleanupPtys() と同じ合成
+  // main.js の cleanupPtys() が実際に呼ぶのと同じ関数
   let resolved = false;
-  const cleanup = Promise.all([
-    terminateAllPtysAndWait(ptys.values()),
-    ...exitingPtys.values(),
-  ]).then(() => { resolved = true; });
+  const cleanup = terminateAllPtysAndWaitIncludingExiting(ptys.values(), exitingPtys.values())
+    .then(() => { resolved = true; });
 
   await Promise.resolve();
   assert.equal(resolved, false); // closedPty がまだ onExit を出していない間は解決しない

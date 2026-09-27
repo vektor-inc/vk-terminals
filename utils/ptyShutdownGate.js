@@ -25,6 +25,7 @@
  *   beginBeforeQuit: (hasPendingPtys: boolean) => 'skip'|'finalize'|'wait'|'start',
  *   finish: () => void,
  *   isPaneCreationBlocked: () => boolean,
+ *   markShuttingDown: () => void,
  * }}
  */
 function createPtyShutdownGate() {
@@ -73,6 +74,27 @@ function createPtyShutdownGate() {
      */
     isPaneCreationBlocked() {
       return state !== 'idle';
+    },
+
+    /**
+     * before-quit を経由しない終了経路（アップデート検知後の再起動。
+     * main.js の checkAndUpdate() が `app.relaunch(); app.exit(0);` の前に呼ぶ）から、
+     * 「pty の終了待ちを始めた」ことをゲートへ伝える（安藤の指摘・LOW-C）。
+     * app.exit() は before-quit を発火させないため、beginBeforeQuit() を経由せずに
+     * 直接 'pending' へ遷移させる必要がある。呼び出し後は isPaneCreationBlocked() が
+     * true になり、この経路の cleanupPtys() が完了するまで新しいペイン作成を拒否する。
+     *
+     * 既に 'pending'（同じ経路の多重発火、または他経路が先に待ち合わせを始めていた場合）
+     * や 'done' のときは何もしない（idle からのみ遷移する。二重に待ち合わせを始めない）。
+     * 呼び出し後に before-quit が発火しても、beginBeforeQuit() は state が 'pending' なら
+     * 'wait' を返すため、cleanupPtys() を二重に起動することはない（この経路の
+     * cleanupPtys() 完了後は app.exit(0) がプロセスを直接終了させるため、before-quit 側
+     * からの追加の後始末は不要。状態を 'done' へ戻す処理もここでは行わない）。
+     */
+    markShuttingDown() {
+      if (state === 'idle') {
+        state = 'pending';
+      }
     },
   };
 }

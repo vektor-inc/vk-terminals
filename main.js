@@ -1171,10 +1171,24 @@ async function checkAndUpdate() {
       // 作られたペインが誰にも待たれない（安藤の指摘・LOW-C）。cleanupPtys() の前に
       // markShuttingDown() でゲートへ「待ち合わせを始めた」ことを伝え、待っている間は
       // 新しいペイン作成を拒否する（詳細は utils/ptyShutdownGate.js のコメントを参照）。
+      // markShuttingDown() 後は try/finally で app.relaunch() / app.exit(0) まで必ず
+      // 到達させる（安藤の指摘・再レビュー LOW。1回目の LOW-1（before-quit 側）と同じ
+      // 考え方で、途中で例外が出て外側の catch（ログのみ）に落ちると、ゲートが
+      // pending のまま残ってペイン作成拒否と before-quit の 'wait' が続き、
+      // アプリを終了できなくなってしまう）。
       ptyShutdownGate.markShuttingDown();
-      await cleanupPtys();
-      app.relaunch();
-      app.exit(0);
+      try {
+        await cleanupPtys();
+      } finally {
+        // app.relaunch() 自体が例外を出しても app.exit(0) に届くよう、ログのみ出して
+        // 握りつぶす（relaunch に失敗しても、再起動なしで終了できる方がまだよい）。
+        try {
+          app.relaunch();
+        } catch (e) {
+          console.error(`${LOG_PREFIX} app.relaunch() failed`, e);
+        }
+        app.exit(0);
+      }
     }
   } catch (e) {
     // ネットワーク不通などは無視

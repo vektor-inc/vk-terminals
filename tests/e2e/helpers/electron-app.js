@@ -173,6 +173,16 @@ async function getFreePort() {
 // 実表示倍率でも変えず、マウス入力の挙動に影響を与えない。この関数の下の
 // _electron.launch() の args には --force-device-scale-factor を渡していない
 // （＝上記の撤回を反映した現在の状態）。
+//
+// 【追記・issue #412】main で毎回再現した escape-modal-layer-regression の同じテストの
+// 別の失敗は、上記の devicePixelRatio とは無関係だった。devicePixelRatio 1 の環境でも
+// 再現し、--force-device-scale-factor も付けていない状態での失敗だったため。実際の
+// 原因はテスト側の座標計算（複数行に折り返した説明文の「要素全体の中央」を Y 座標に
+// 使うと、折り返し行数の偶奇によっては行と行の隙間に落ちうる）で、fieldset・flex
+// コンテナ・表示切替のタイミングなど devicePixelRatio 以外の複数の仮説も実測で
+// 否定している。対応は spec 側（Range.getClientRects() で実在する行の矩形を使う）に
+// 閉じており、この関数やアプリ本体の変更は不要だった。詳細はテスト本体のコメントと
+// issue #412 の対応 PR を参照。
 async function launchApp({ port, prefix, env = {}, config = {}, budget = createBootBudget(BOOT_TOTAL_BUDGET_MS) }) {
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   let app = null;

@@ -309,12 +309,37 @@ test.describe.serial('Escape レイヤー導入後のデグレ確認（issue #25
       await expect(helpToggle).toBeVisible();
       await helpToggle.click();
       await expect(helpText).toBeVisible();
+      // 【ドラッグの Y 座標に要素全体の中央を使わない理由（issue #412）】当初は
+      // boundingBox() が返す説明文「全体」の中央（box.y + box.height / 2）をドラッグの
+      // Y 座標にしていたが、これは複数行に折り返す説明文では実在する行の上に来る保証が
+      // ない。行は line-height 分の間隔を空けて並ぶため（今回のケースでは 1 行 15px の
+      // 文字に対し行間が数 px 空く）、折り返し行数の偶奇によっては、要素全体の中央が
+      // ちょうど行と行の「隙間」（どちらの行の文字にも乗っていない座標）に落ちる。
+      // 実測（devicePixelRatio 1 の環境。#294 が対策した表示倍率のズレとは別物で、
+      // --force-device-scale-factor も付けていない）では、この隙間座標へ mousedown →
+      // mousemove → mouseup を送っても、イベント自体は説明文へ正しく届く
+      // （document.elementFromPoint も説明文を指し、mousedown の defaultPrevented も
+      // false）のに、選択の起点（anchor）が終点（focus）へ毎回コラプスし、
+      // window.getSelection() が常に空文字列のままになる（10 秒 toPass で待っても
+      // 直らない）。fieldset・flex コンテナ・display:none からの表示切替タイミング・
+      // devicePixelRatio 強制など複数の仮説を実測で 1 つずつ潰したうえでの結論であり、
+      // アプリ側の CSS/JS に退行は無い（詳細は issue #412 の対応 PR を参照）。
+      // boundingBox() の代わりに Range.getClientRects() で実在する行ごとの矩形を取り、
+      // その 1 行（折り返しの有無によらず必ず存在する最初の行）の垂直中央をドラッグの
+      // Y 座標にすることで、常に文字の上をなぞるようにして解消する。
       await expect(async () => {
         await win.evaluate(() => window.getSelection()?.removeAllRanges());
-        const box = await helpText.boundingBox();
-        await win.mouse.move(box.x + 2, box.y + box.height / 2);
+        const firstLineBox = await helpText.evaluate((el) => {
+          const range = document.createRange();
+          range.selectNodeContents(el);
+          const rect = range.getClientRects()[0];
+          return rect ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height } : null;
+        });
+        expect(firstLineBox, '説明文の行の矩形が取得できない（折り返しが無い等の想定外の状態）').not.toBeNull();
+        const y = firstLineBox.y + firstLineBox.height / 2;
+        await win.mouse.move(firstLineBox.x + 2, y);
         await win.mouse.down();
-        await win.mouse.move(box.x + box.width - 2, box.y + box.height / 2, { steps: 10 });
+        await win.mouse.move(firstLineBox.x + firstLineBox.width - 2, y, { steps: 10 });
         await win.mouse.up();
         expect(await win.evaluate(() => String(window.getSelection()))).not.toBe('');
       }).toPass({ timeout: 10_000 });

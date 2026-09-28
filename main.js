@@ -23,6 +23,12 @@ const {
 // getReadyPatternForEngine は「起動完了検知」の正規表現選択、attachTrustAutoResponder は
 // pty の出力を読んで trustPromptGate へ渡し、許可されたときだけ Enter を書き込む監視。
 const { getReadyPatternForEngine, attachTrustAutoResponder } = require('./utils/trustPromptWatcher');
+// 終了時、各 pty の onExit（終了通知）が届くまで待ってから終わらせるための小道具
+// （issue #409）。詳細は utils/ptyShutdown.js のコメントを参照。
+const { terminatePtyAndWait, terminateAllPtysAndWaitIncludingExiting } = require('./utils/ptyShutdown');
+// before-quit の待ち合わせ状態（idle/pending/done）とペイン作成の可否判定を切り出した
+// 状態機械（issue #409 レビュー対応・MEDIUM-2）。詳細は utils/ptyShutdownGate.js を参照。
+const { createPtyShutdownGate } = require('./utils/ptyShutdownGate');
 // 宣言的ウィジェット（tasks-widget.json）契約の共有ロジック（#229 / vk-orchestrator#182）。
 // タスクのドメイン語彙（遷移マトリクス・ラベル・優先度など）はこのプロセスに持たず、
 // orchestrator が書き出す宣言を検証・中継するだけの汎用実装にする。
@@ -124,6 +130,13 @@ const execFileAsync = promisify(execFile);
 
 let win;
 const ptys = new Map();
+// ペインを閉じた直後（terminal:kill）に kill() を送った pty のうち、終了通知（onExit）を
+// まだ待っている最中のものを id で追跡する（issue #409 レビュー対応・MEDIUM-1）。
+// ptys からは terminal:kill の時点で既に削除済みだが、cleanupPtys() がこれも合わせて
+// 待たないと、ペインを閉じた直後にアプリを終了したときその pty の終了は誰にも待たれず
+// #409 と同じ競合になりうる。値は終了待ち Promise（onExit が届くか、待ちきれず諦めた
+// 時点で解決する。reject はしない）で、解決後は自分で自分を削除する。
+const exitingPtys = new Map();
 const agentGenerations = createAgentGenerationStore();
 // 同じペインへの同時再起動は先行処理の完了後に世代を再照合する。
 // これが無いと同じ expectedGeneration の2要求が両方通り、後発が先発の新しい AI を止めうる。
@@ -1082,11 +1095,22 @@ function compareSemver(a, b) {
   return (aMajor - bMajor) || (aMinor - bMinor) || (aPatch - bPatch);
 }
 
-/** すべての PTY プロセスを終了する */
-function cleanupPtys() {
-  for (const [, p] of ptys) {
-    try { p.kill(); } catch (e) {}
-  }
+/**
+ * すべての PTY プロセスへ kill を送り、各 pty の onExit（終了通知）が届くまで待つ。
+ * kill を送るだけで終了を待たずに次の終了処理へ進むと、pty 側の終了通知（node-pty の
+ * ThreadSafeFunction 経由の onExit 呼び出し）と Node 環境破棄が競合し、SIGABRT で
+ * プロセスごと落ちることがある（issue #409）。待ち合わせの実処理は utils/ptyShutdown.js
+ * に切り出し、単体テストしやすくしている。
+ * ptys（生きているペインの pty）だけでなく、terminal:kill で既にペインを閉じたが
+ * 終了通知をまだ待っている pty（exitingPtys）も合わせて待つ（MEDIUM-1。ペインを
+ * 閉じた直後にアプリを終了する競合を防ぐ）。合成の実処理は
+ * terminateAllPtysAndWaitIncludingExiting（utils/ptyShutdown.js）に集約してあり、
+ * tests/ptyShutdown.test.js も同じ関数を呼んで検証する（安藤の指摘・LOW-B。合成の
+ * 実装がこことテストの2箇所に分かれてズレるのを防ぐ）。
+ * @returns {Promise<void>}
+ */
+async function cleanupPtys() {
+  await terminateAllPtysAndWaitIncludingExiting(ptys.values(), exitingPtys.values());
 }
 
 /**
@@ -1140,10 +1164,31 @@ async function checkAndUpdate() {
     });
 
     if (response === 0) {
-      // app.exit(0) は通常の終了フックを通らないため、PTY を明示的にクリーンアップする
-      cleanupPtys();
-      app.relaunch();
-      app.exit(0);
+      // app.exit(0) は通常の終了フックを通らないため、PTY を明示的にクリーンアップする。
+      // cleanupPtys() は各 pty の終了通知が届くまで待つため、ここで await してから
+      // 再起動する（待たずに app.exit(0) すると issue #409 と同じ SIGABRT を踏みうる）。
+      // この経路は before-quit を通らずゲートが 'idle' のままになるため、待っている間に
+      // 作られたペインが誰にも待たれない（安藤の指摘・LOW-C）。cleanupPtys() の前に
+      // markShuttingDown() でゲートへ「待ち合わせを始めた」ことを伝え、待っている間は
+      // 新しいペイン作成を拒否する（詳細は utils/ptyShutdownGate.js のコメントを参照）。
+      // markShuttingDown() 後は try/finally で app.relaunch() / app.exit(0) まで必ず
+      // 到達させる（安藤の指摘・再レビュー LOW。1回目の LOW-1（before-quit 側）と同じ
+      // 考え方で、途中で例外が出て外側の catch（ログのみ）に落ちると、ゲートが
+      // pending のまま残ってペイン作成拒否と before-quit の 'wait' が続き、
+      // アプリを終了できなくなってしまう）。
+      ptyShutdownGate.markShuttingDown();
+      try {
+        await cleanupPtys();
+      } finally {
+        // app.relaunch() 自体が例外を出しても app.exit(0) に届くよう、ログのみ出して
+        // 握りつぶす（relaunch に失敗しても、再起動なしで終了できる方がまだよい）。
+        try {
+          app.relaunch();
+        } catch (e) {
+          console.error(`${LOG_PREFIX} app.relaunch() failed`, e);
+        }
+        app.exit(0);
+      }
     }
   } catch (e) {
     // ネットワーク不通などは無視
@@ -1299,16 +1344,73 @@ app.whenReady().then(async () => {
   if (codexUsageEnabled()) Promise.all([codexUsage.get(), codexUsageTracker.warmup()]).catch(() => {});
 });
 
+// window-all-closed と before-quit で終了待ちを二重に行わない（LOW-2）。実際に pty の
+// 終了を待つのは、アプリを本当に終了させる before-quit 側に一本化する。
 app.on('window-all-closed', () => {
-  cleanupPtys();
-  if (process.platform !== 'darwin') app.quit();
+  if (process.platform === 'darwin') {
+    // macOS ではウィンドウを閉じてもアプリは終了せず Dock に残る＝Node 環境の破棄
+    // （FreeEnvironment）は起きないため、issue #409 の競合（それと onExit 通知の競合）は
+    // ここでは発生しない。待つ理由が無いので、従来どおり各 pty へ kill を送るだけに
+    // 留める（終了通知は待たない）。ユーザーが本当にアプリを終了する（Cmd+Q 等）ときは
+    // before-quit が ptys を見て改めて終了を待つため、後始末が抜けることもない。
+    for (const p of ptys.values()) {
+      try { p.kill(); } catch (_e) { /* 既に終了している等は無視 */ }
+    }
+    return;
+  }
+  // macOS 以外は最後のウィンドウを閉じるとアプリごと終了する。ここで cleanupPtys() を
+  // 待ってから app.quit() すると、その直後に発火する before-quit 側でも待ち合わせが
+  // 起こるため、二重に待って最大で ~4 秒（グレース 1.5 秒＋強制終了 0.5 秒 の2倍）かかる
+  // ことがあった（LOW-2）。ここでは待たずに app.quit() のみ行い、実際の終了待ちは
+  // before-quit に任せる。
+  app.quit();
 });
 
-app.on('before-quit', () => {
-  cleanupPtys();
+// before-quit 到達時に生きている pty があれば、終了を待つ間だけ quit を止める（issue #409）。
+// 状態（idle/pending/done）の判断は utils/ptyShutdownGate.js の状態機械に委譲している
+// （安藤の指摘・LOW-5(3)。main.js はそのまま単体テストしにくいため、判断部分だけを
+// 切り出してテストできるようにした）。
+// 'pending' … cleanupPtys() の完了待ち（この間に before-quit が再度来ても preventDefault で待たせる）
+// 'done'    … 後始末済み。素通りさせて実際に終了させる
+// 状態機械で管理することで、cleanupPtys() 完了後に自分で呼ぶ app.quit() が
+// before-quit を再度発火させても無限ループにならないようにしている。
+const ptyShutdownGate = createPtyShutdownGate();
+
+function finalizeBeforeQuit() {
   stopWidgetWatcher();
   try { fs.unlinkSync(STATE_FILE); } catch (e) {}
   if (httpServer) httpServer.close();
+}
+
+app.on('before-quit', (event) => {
+  // ptys（生きているペイン）だけでなく、ペインを閉じた直後で終了通知をまだ待っている
+  // pty（exitingPtys）も「待つべき pty」に含める（MEDIUM-1）。
+  const hasPendingPtys = ptys.size > 0 || exitingPtys.size > 0;
+  const action = ptyShutdownGate.beginBeforeQuit(hasPendingPtys);
+
+  if (action === 'skip') return;
+  if (action === 'finalize') {
+    finalizeBeforeQuit();
+    return;
+  }
+  event.preventDefault();
+  if (action === 'wait') return;
+
+  // action === 'start'
+  // cleanupPtys() 自体は reject しない設計だが、finalizeBeforeQuit() が例外を投げても
+  // 必ず app.quit() まで到達するよう、.then() ではなく .finally() でまとめ、
+  // finalizeBeforeQuit() は try/catch で包む（安藤の指摘・LOW-1。従来は
+  // .then(() => { ...; finalizeBeforeQuit(); app.quit(); }) で、finalizeBeforeQuit() が
+  // 例外を出すと app.quit() に届かず、アプリが終了できなくなっていた）。
+  cleanupPtys().finally(() => {
+    ptyShutdownGate.finish();
+    try {
+      finalizeBeforeQuit();
+    } catch (e) {
+      console.error(`${LOG_PREFIX} finalizeBeforeQuit failed during shutdown`, e);
+    }
+    app.quit();
+  });
 });
 
 // renderer がエージェントルーム（issue #58）の有効/無効を知るための設定取得。
@@ -1734,6 +1836,13 @@ ipcMain.handle('clipboard:write-text', async (_event, text) => {
 });
 
 ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
+  // アプリ終了処理（before-quit）が pty の終了を待っている最中・待ち終えたあとは、
+  // 新しいペインを作らせない（issue #409 レビュー対応・MEDIUM-2）。ここで作った pty は
+  // cleanupPtys() の待ち対象に含まれないまま終了処理に巻き込まれ、#409 と同じ競合に
+  // なりうる。詳細・却下した代替案は utils/ptyShutdownGate.js のコメントを参照。
+  if (ptyShutdownGate.isPaneCreationBlocked()) {
+    throw new Error('App is shutting down; new panes cannot be created.');
+  }
   const id = String(nextId++);
   const shell = process.env.SHELL || (process.platform === 'win32' ? (process.env.COMSPEC || 'powershell.exe') : '/bin/zsh');
   let resolvedCwd = cwd || process.env.HOME || process.env.USERPROFILE || os.tmpdir();
@@ -2031,7 +2140,6 @@ ipcMain.on('terminal:resize', (event, id, cols, rows) => {
 ipcMain.on('terminal:kill', (event, id) => {
   const p = ptys.get(id);
   if (p) {
-    try { p.kill(); } catch (e) {}
     ptys.delete(id);
     agentGenerations.delete(id);
     restartAgentOperations.delete(id);
@@ -2041,6 +2149,15 @@ ipcMain.on('terminal:kill', (event, id) => {
     if (restartTrustResponder) restartTrustResponder.dispose();
     restartTrustResponders.delete(id);
     paneCreationTrustWatchers.delete(id);
+    // ペインを閉じた直後にアプリを終了しても、この pty の終了が誰にも待たれないまま
+    // #409 と同じ競合になることがあった（安藤の指摘・MEDIUM-1）。kill() は
+    // terminatePtyAndWait 内で送るので、ここでは exitingPtys に登録して
+    // cleanupPtys() が拾えるようにするだけでよい（終了通知が届く・待ちきれず諦める
+    // のいずれでも reject はしないため、ここでの catch は不要）。
+    const exitPromise = terminatePtyAndWait(p).finally(() => {
+      exitingPtys.delete(id);
+    });
+    exitingPtys.set(id, exitPromise);
   }
 });
 
@@ -3001,6 +3118,15 @@ function startHttpApi() {
       if (isForbiddenOrigin(req)) {
         res.writeHead(403, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'forbidden origin' }));
+        return;
+      }
+      // アプリ終了処理（before-quit）の pty 終了待ち中・待ち終えたあとは新規ペイン作成を
+      // 拒否する（安藤の指摘・MEDIUM-2）。terminal:create 側でも同じ判定を行うが、ここで
+      // 早期に拒否しておくことで、renderer との往復（最大 15 秒の /api/new-pane タイムアウト）
+      // を待たせず 503 を即返せる。判定・却下した代替案は utils/ptyShutdownGate.js を参照。
+      if (ptyShutdownGate.isPaneCreationBlocked()) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'app is shutting down' }));
         return;
       }
       if (!win || win.isDestroyed()) {

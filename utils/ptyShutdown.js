@@ -1,0 +1,128 @@
+'use strict';
+
+// ─── アプリ終了時、PTY の終了通知を待ってから終了処理を続ける（issue #409）────────
+// node-pty（1.1.0）の終了通知は ThreadSafeFunction 経由で JS の onExit コールバックを
+// 呼び出す。アプリ終了処理（Node 環境破棄 = FreeEnvironment）が先に始まってしまうと、
+// この呼び出しが JS を呼べず C++ 側で例外→terminate し、Electron プロセスが SIGABRT で
+// 落ちる（クラッシュレポート 13 件で同一スタックを確認済み）。
+// 対策として、kill() を送るだけで終了を進めていた従来の cleanupPtys() をやめ、
+// 生きている pty それぞれの onExit が届く（＝プロセスが本当に終わった）まで
+// 上限つきで待ってから終了処理を続行する。
+//
+// 上限（GRACE_MS）は 1.5 秒とした。シェルやその配下（claude/codex 等の CLI）が
+// SIGHUP/SIGTERM を受けてから後始末して終了するまでの猶予として、e2e で多数の
+// ペインを連続開閉しても待ち時間が体感できるほど伸びない一方、通常のシェル終了には
+// 十分な長さ（既存の DEFAULT_TERM_GRACE_MS 系の待ち時間と同オーダー）として選んだ。
+// 上限を超えて生きているものは SIGKILL で強制終了し、その終了通知も
+// 短時間（FORCE_MS = 500ms）だけ待つ。SIGKILL は原則即座に処理されるため、
+// GRACE_MS よりかなり短い値で十分と判断した。
+const DEFAULT_GRACE_MS = 1500;
+const DEFAULT_FORCE_MS = 500;
+
+/**
+ * 単一の pty プロセスへ kill を送り、onExit 通知が届くまで待って終わらせる。
+ * 上限（graceMs）を超えても生きていれば SIGKILL を送り、追加で forceMs だけ待って
+ * 諦める（諦めた場合も reject はしない。呼び出し元は「終了処理を続けてよいか」だけを
+ * 知りたいため、待ちきれなかったこと自体では失敗にしない）。
+ * 名称は「実際に終わらせる（kill・SIGKILL を送る）」ことが呼び出し元から分かるように
+ * terminatePtyAndWait とした（安藤の指摘・LOW-4。旧名 waitForPtyExit は「待つだけ」に
+ * 読めてしまい、実際の役割と食い違っていた）。
+ * @param {{kill: Function, onExit: Function}} ptyProcess node-pty の IPty 互換オブジェクト
+ * @param {object} [opts]
+ * @param {number} [opts.graceMs] 通常終了（kill()）を待つ上限（既定 1500ms）
+ * @param {number} [opts.forceMs] SIGKILL 後に追加で待つ上限（既定 500ms）
+ * @param {Function} [opts.setTimeout] 差し替え用（テストで実時間を待たないため。既定はグローバル setTimeout）
+ * @param {Function} [opts.clearTimeout] 差し替え用（既定はグローバル clearTimeout）
+ * @returns {Promise<void>} 終了通知を受け取るか、待ちきれず諦めた時点で解決する
+ */
+function terminatePtyAndWait(ptyProcess, opts = {}) {
+  const graceMs = opts.graceMs ?? DEFAULT_GRACE_MS;
+  const forceMs = opts.forceMs ?? DEFAULT_FORCE_MS;
+  const scheduleTimeout = opts.setTimeout ?? setTimeout;
+  const cancelTimeout = opts.clearTimeout ?? clearTimeout;
+
+  return new Promise((resolve) => {
+    let settled = false;
+    let disposable = null;
+    let graceTimer = null;
+    let forceTimer = null;
+
+    // onExit・タイムアウトのどちらが先に来ても、後始末を一度だけ行って解決する。
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      if (graceTimer) cancelTimeout(graceTimer);
+      if (forceTimer) cancelTimeout(forceTimer);
+      if (disposable && typeof disposable.dispose === 'function') {
+        try { disposable.dispose(); } catch (_e) { /* 後始末失敗は無視 */ }
+      }
+      resolve();
+    };
+
+    try {
+      disposable = ptyProcess.onExit(() => finish());
+    } catch (_e) {
+      // onExit を持たない／呼べないオブジェクトは終了を追跡できないため、
+      // 待たずに進める（呼び出し元の終了処理を止めないことを優先する）。
+      finish();
+      return;
+    }
+
+    try {
+      ptyProcess.kill();
+    } catch (_e) { /* 既に終了している等は無視 */ }
+
+    graceTimer = scheduleTimeout(() => {
+      // 子プロセスの回収（OS がプロセステーブルから消す）から、node-pty がそれを検知して
+      // JS の onExit を呼ぶまでには最大 200ms 程度のずれがありうる
+      // （node-pty の unixTerminal.js DESTROY_SOCKET_TIMEOUT_MS = 200）。理論上はその間に
+      // 同じ pid が OS に再利用され、無関係な別プロセスへ SIGKILL を送ってしまう余地が
+      // ある（無効な pid なら ESRCH で失敗するだけだが、再利用されていれば ESRCH には
+      // ならない）。ただし pid が再利用されるまでの猶予（OS のプロセス ID 使い回し間隔）
+      // に対して 200ms は非常に短く、この窓の中で同じ pid が再利用される見込みは
+      // 極めて小さいため、ここでは直さない（安藤の指摘・LOW-3 / LOW-A）。
+      try { ptyProcess.kill('SIGKILL'); } catch (_e) { /* 既に終了している等は無視 */ }
+      forceTimer = scheduleTimeout(finish, forceMs);
+    }, graceMs);
+  });
+}
+
+/**
+ * 複数の pty プロセスの終了をまとめて待って終わらせる。0件なら待たずに即解決する。
+ * @param {Iterable<{kill: Function, onExit: Function}>} ptyProcesses
+ * @param {object} [opts] terminatePtyAndWait と同じオプション
+ * @returns {Promise<void>}
+ */
+async function terminateAllPtysAndWait(ptyProcesses, opts = {}) {
+  const list = Array.from(ptyProcesses);
+  if (list.length === 0) return;
+  await Promise.all(list.map((p) => terminatePtyAndWait(p, opts)));
+}
+
+/**
+ * main.js の cleanupPtys() が実際に行う待ち合わせをここへ集約したもの（安藤の指摘・
+ * LOW-B）。まだ terminate していない pty（main.js の `ptys`）をまとめて terminate しつつ、
+ * 既に terminate 済み・terminate 中で完了待ち Promise だけが残っている pty（main.js の
+ * `exitingPtys`。ペインを閉じた直後の pty。issue #409 レビュー対応・MEDIUM-1）も
+ * 合わせて待つ。main.js の cleanupPtys() とテストの両方がこの関数を呼ぶことで、
+ * 「合成の仕方」の実装が2箇所に分かれてズレる（テストは通るのに main.js 側は
+ * 待っていない、という事故）のを防ぐ。
+ * @param {Iterable<{kill: Function, onExit: Function}>} ptyProcesses まだ terminate していない pty
+ * @param {Iterable<Promise<void>>} exitingPromises 既に terminate 済み・terminate 中の pty の完了待ち Promise
+ * @param {object} [opts] terminateAllPtysAndWait と同じオプション（ptyProcesses 側にのみ適用）
+ * @returns {Promise<void>}
+ */
+async function terminateAllPtysAndWaitIncludingExiting(ptyProcesses, exitingPromises, opts = {}) {
+  await Promise.all([
+    terminateAllPtysAndWait(ptyProcesses, opts),
+    ...Array.from(exitingPromises),
+  ]);
+}
+
+module.exports = {
+  DEFAULT_GRACE_MS,
+  DEFAULT_FORCE_MS,
+  terminatePtyAndWait,
+  terminateAllPtysAndWait,
+  terminateAllPtysAndWaitIncludingExiting,
+};

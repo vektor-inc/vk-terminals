@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 開発環境 ] e2e の `escape-modal-layer-regression.smoke.spec.js` で、複数行に折り返した説明文をドラッグ選択する座標が行と行の隙間に落ち、毎回失敗していたのを修正（[#412](https://github.com/vektor-inc/vk-terminals/issues/412)）
+
 ## 1.66.2
 
 - [ 不具合修正 ] ペインを開いたままアプリを終了すると、まれに「Electron が予期しない理由で終了しました」というクラッシュダイアログが表示される不具合を修正。終了時は各ペインのプロセスが完全に終わるのを待ってから終了処理を続けるよう変更（[#409](https://github.com/vektor-inc/vk-terminals/issues/409)）

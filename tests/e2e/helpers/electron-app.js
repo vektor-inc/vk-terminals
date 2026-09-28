@@ -173,6 +173,11 @@ async function getFreePort() {
 // 実表示倍率でも変えず、マウス入力の挙動に影響を与えない。この関数の下の
 // _electron.launch() の args には --force-device-scale-factor を渡していない
 // （＝上記の撤回を反映した現在の状態）。
+//
+// 【追記・issue #412】main で毎回再現した escape-modal-layer-regression の同じテストの
+// 別の失敗は、devicePixelRatio 1 の環境でも再現しており上記とは無関係だった。原因と
+// 対応（spec 側の座標計算のみで解決し、この関数・アプリ本体は無改造）は
+// escape-modal-layer-regression.smoke.spec.js 側のコメントを参照。
 async function launchApp({ port, prefix, env = {}, config = {}, budget = createBootBudget(BOOT_TOTAL_BUDGET_MS) }) {
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   let app = null;

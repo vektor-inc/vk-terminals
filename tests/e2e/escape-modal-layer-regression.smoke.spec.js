@@ -309,12 +309,44 @@ test.describe.serial('Escape レイヤー導入後のデグレ確認（issue #25
       await expect(helpToggle).toBeVisible();
       await helpToggle.click();
       await expect(helpText).toBeVisible();
+      // 【ドラッグの Y 座標に要素全体の中央を使わない理由（issue #412）】当初は
+      // boundingBox() が返す説明文「全体」の中央（box.y + box.height / 2）をドラッグの
+      // Y 座標にしていたが、これは複数行に折り返す説明文では実在する行の上に来る保証が
+      // ない。実測（本フィールドの help 文・幅 496px・devicePixelRatio 1 の環境。
+      // --force-device-scale-factor も付けていない）では 6 行に折り返り、3 行目の下端
+      // （y=313.5）と 4 行目の上端（y=316.5）の間、つまりどちらの行の文字にも乗って
+      // いない座標に要素全体の中央が落ちていた。この座標へ mousedown → mousemove →
+      // mouseup を送っても、イベント自体は説明文へ正しく届く（document.elementFromPoint
+      // も説明文を指し、mousedown の defaultPrevented も false）のに、選択の起点
+      // （anchor）が終点（focus）へ毎回コラプスし、window.getSelection() が常に空文字列
+      // のままになる（10 秒 toPass で待っても直らない）。fieldset・flex コンテナ・
+      // display:none からの表示切替タイミング・devicePixelRatio 強制など複数の仮説を
+      // 実測で 1 つずつ潰したうえでの結論であり、アプリ側の CSS/JS に退行は無い
+      // （詳細は issue #412 の対応 PR を参照）。
+      //
+      // boundingBox() の代わりに Range.getClientRects() で実在する行ごとの矩形を取り、
+      // その中で最も幅の広い行の垂直中央をドラッグの Y 座標にする。.settings-help は
+      // white-space: pre-line のため、将来 \n を含む help 文が渡ると先頭行が極端に
+      // 短くなることがあり、単純に getClientRects()[0]（先頭行）を使うと左右のドラッグ
+      // 距離が短すぎて選択が安定しない恐れがある（安藤のレビュー指摘・LOW2）。最も幅の
+      // 広い行を選べばこの懸念を避けられる。
       await expect(async () => {
         await win.evaluate(() => window.getSelection()?.removeAllRanges());
-        const box = await helpText.boundingBox();
-        await win.mouse.move(box.x + 2, box.y + box.height / 2);
+        const widestLineBox = await helpText.evaluate((el) => {
+          const range = document.createRange();
+          range.selectNodeContents(el);
+          const widest = Array.from(range.getClientRects()).reduce(
+            (a, b) => (b.width > a.width ? b : a),
+            { width: 0 }
+          );
+          if (widest.width === 0) return null;
+          return { x: widest.x, y: widest.y, width: widest.width, height: widest.height };
+        });
+        expect(widestLineBox, '説明文の文字の矩形が取得できない（非表示・空文字等の想定外の状態）').not.toBeNull();
+        const y = widestLineBox.y + widestLineBox.height / 2;
+        await win.mouse.move(widestLineBox.x + 2, y);
         await win.mouse.down();
-        await win.mouse.move(box.x + box.width - 2, box.y + box.height / 2, { steps: 10 });
+        await win.mouse.move(widestLineBox.x + widestLineBox.width - 2, y, { steps: 10 });
         await win.mouse.up();
         expect(await win.evaluate(() => String(window.getSelection()))).not.toBe('');
       }).toPass({ timeout: 10_000 });

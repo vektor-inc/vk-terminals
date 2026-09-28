@@ -1,6 +1,6 @@
 # Changelog
 
-- [ 開発環境 ] e2e の `escape-modal-layer-regression.smoke.spec.js` で、複数行に折り返した設定パネルの説明文をドラッグ選択するテストが main でも毎回失敗していたのを修正。要素全体の中央を Y 座標に使うと折り返し行数の偶奇によっては行と行の隙間に座標が落ちて選択が成立しないことがあったため、実在する行の矩形（Range.getClientRects()）から Y 座標を取るよう変更（[#412](https://github.com/vektor-inc/vk-terminals/issues/412)）
+- [ 開発環境 ] e2e の `escape-modal-layer-regression.smoke.spec.js` で、複数行に折り返した説明文をドラッグ選択する座標が行と行の隙間に落ち、毎回失敗していたのを修正（[#412](https://github.com/vektor-inc/vk-terminals/issues/412)）
 
 ## 1.66.2
 

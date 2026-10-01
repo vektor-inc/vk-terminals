@@ -1,5 +1,7 @@
 # Changelog
 
+## 1.66.3
+
 - [ 不具合修正 ] サイドバー・モバイルのタスクカードの「PR」リンクが、PR の状態（マージ待ち・マージ済み）に関わらず常に水色で表示され、ペインの PR ボタンと色が食い違う不具合を修正（[#415](https://github.com/vektor-inc/vk-terminals/issues/415)）
 - [ 開発環境 ] e2e の `escape-modal-layer-regression.smoke.spec.js` で、複数行に折り返した説明文をドラッグ選択する座標が行と行の隙間に落ち、毎回失敗していたのを修正（[#412](https://github.com/vektor-inc/vk-terminals/issues/412)）
 

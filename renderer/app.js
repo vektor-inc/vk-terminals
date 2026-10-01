@@ -6343,6 +6343,10 @@ setInterval(() => {
       termId: t.termId,
       cwd: t.cwdFull || '',
       cwdShort: t.cwd || '~',
+      // engine（issue #417）: このペインが起動した AI エンジン（'claude' | 'codex'）。
+      // GET /api/transcript-evidence が Codex ペインを対象外にするために main 側が参照する
+      // 追加のみのフィールド（未設定は null）。
+      engine: t.engine || null,
       // waiting は内部判定フラグ。後方互換のため引き続き出力（task-queue 連携などが参照）。
       waiting: t.waiting,
       // externalWaiting は POST /api/set-status 由来の外部権威フラグ。

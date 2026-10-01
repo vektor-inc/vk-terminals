@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 機能追加 ] 指示文がペインの Claude Code に届いたかを、会話記録から確認できる HTTP API（`GET /api/transcript-evidence`）を追加。あわせて `GET /api/states` の各ペインにエンジン名（`engine`）を追加（[#417](https://github.com/vektor-inc/vk-terminals/issues/417)）
+
 ## 1.66.3
 
 - [ 不具合修正 ] サイドバー・モバイルのタスクカードの「PR」リンクが、PR の状態（マージ待ち・マージ済み）に関わらず常に水色で表示され、ペインの PR ボタンと色が食い違う不具合を修正（[#415](https://github.com/vektor-inc/vk-terminals/issues/415)）

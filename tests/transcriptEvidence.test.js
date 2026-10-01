@@ -303,6 +303,38 @@ test('読み始め位置で途中から切れた 1 行に token が入ってい�
   assert.ok(dropped.includes(TOKEN));
 });
 
+test('途中から切れた行を捨てる処理: ちょうど { から読み始めても、完全な行の先頭ではないので数えない', async (t) => {
+  const iso = new Date(AFTER).toISOString();
+  const text = 'GARBAGE' + userLine(TOKEN, iso) + assistantLine(iso, 50);
+  const s = setup({ 'a.jsonl': { text, mtimeMs: AFTER } });
+  t.after(s.cleanup);
+  // 'GARBAGE' の直後の { から読み始める。この断片は有効な JSON 行で token も入っているので、
+  // 捨てる処理が無ければ delivered になってしまう
+  const maxReadBytes = Buffer.byteLength(text) - Buffer.byteLength('GARBAGE');
+  assert.deepEqual(await s.run({ maxReadBytes }), { result: 'pending' });
+});
+
+test('読み始めがちょうど改行の直後なら、完全な行として判定する', async (t) => {
+  const iso = new Date(AFTER).toISOString();
+  const tail = assistantLine(iso, 50);
+  const text = assistantLine(iso, 50) + userLine(TOKEN, iso) + tail;
+  const s = setup({ 'a.jsonl': { text, mtimeMs: AFTER } });
+  t.after(s.cleanup);
+  // user 行の先頭（直前が改行）から読み始める
+  const maxReadBytes = Buffer.byteLength(text) - Buffer.byteLength(assistantLine(iso, 50));
+  assert.deepEqual(await s.run({ maxReadBytes }), { result: 'delivered' });
+});
+
+test('末尾読みでも、改行で終わらない最終行の token は判定する', async (t) => {
+  const iso = new Date(AFTER).toISOString();
+  const last = userLine(TOKEN, iso).trimEnd();
+  const text = assistantLine(iso, 300) + last;
+  const s = setup({ 'a.jsonl': { text, mtimeMs: AFTER } });
+  t.after(s.cleanup);
+  assert.ok(Buffer.byteLength(text) > Buffer.byteLength(last) + 50);
+  assert.deepEqual(await s.run({ maxReadBytes: Buffer.byteLength(last) + 50 }), { result: 'delivered' });
+});
+
 test('末尾読みでも、途中から切れた行を捨てたあとの完全な行は判定する', async (t) => {
   const iso = new Date(AFTER).toISOString();
   const text = assistantLine(iso, 300) + userLine(TOKEN, iso);

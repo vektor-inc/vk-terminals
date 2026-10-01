@@ -173,7 +173,13 @@ async function scanFileForToken(handle, token, { maxBytes, chunkSize, sinceTimeM
   const startPosition = size > maxBytes ? size - maxBytes : 0;
   const endPosition = startPosition + maxBytes;
   let position = startPosition;
-  let skippingPartialLine = startPosition > 0;
+  // 読み始め位置の直前のバイトが改行なら、そこから始まる行は完全な行なので捨てない。
+  let skippingPartialLine = false;
+  if (startPosition > 0) {
+    const prev = Buffer.alloc(1);
+    const { bytesRead: prevRead } = await handle.read(prev, 0, 1, startPosition - 1);
+    skippingPartialLine = !(prevRead === 1 && prev[0] === 0x0a);
+  }
   let pending = [];
   let hitEof = false;
 
@@ -213,6 +219,9 @@ async function scanFileForToken(handle, token, { maxBytes, chunkSize, sinceTimeM
       break;
     }
   }
+
+  // 末尾読みで fstat のサイズまで読み切った場合も EOF として扱う（上限以下のファイルと揃える）。
+  if (startPosition > 0 && position >= size) hitEof = true;
 
   // 上限で切れた途中の断片は捨てる。EOF の最終行（改行なし）は判定する。
   // 途中から切れた先頭行を読み飛ばしている最中に EOF に達した場合、pending は空なので判定しない。

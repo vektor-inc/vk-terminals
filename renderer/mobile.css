@@ -606,6 +606,27 @@ button.k.kill.is-locked:active { background: #6b3f3f; border-color: #7c4a4a; }
   line-height: 1;
 }
 
+/* PR リンクの状態（PR カードの state。ペインの PR ボタンと同じ色。issue #415）。
+   open / waiting-merge / merged 以外（state 無し・未知値）は上の既定色のまま。 */
+.widget-link.is-pr-open {
+  color: var(--vktm--color--pr-badge-open, #99a1ab);
+}
+.widget-link.is-pr-open:active {
+  color: var(--vktm--color--pr-badge-open-hover, #b1bac4);
+}
+.widget-link.is-pr-waiting-merge {
+  color: var(--vktm--color--pr-badge-awaiting-merge, #79c0ff);
+}
+.widget-link.is-pr-waiting-merge:active {
+  color: var(--vktm--color--pr-badge-awaiting-merge-hover, #a5d6ff);
+}
+.widget-link.is-pr-merged {
+  color: #a371f7;
+}
+.widget-link.is-pr-merged:active {
+  color: #b083f8;
+}
+
 /* ─── 反映待ち・エラーのフィードバック ───────────────────────────────────── */
 .task-item-feedback {
   display: flex;

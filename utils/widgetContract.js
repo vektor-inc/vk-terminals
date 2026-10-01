@@ -218,11 +218,15 @@
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
     if (!LINK_REL_SET.has(raw.rel)) return null; // 未知 rel は無視
     if (!isHttpUrl(raw.url)) return null; // http(s) 以外は落とす（二重防御）
-    return {
+    const link = {
       rel: raw.rel,
       url: raw.url.trim(),
       label: clampStr(typeof raw.label === 'string' ? raw.label : raw.rel, LIMITS.text),
     };
+    // rel:"pr" の任意フィールド state（open / waiting-merge / merged）。値の解釈（未知値の無視）は
+    // 描画側（widgetView）が行うため、ここでは文字列のときだけそのまま通す（issue #415）。
+    if (raw.rel === 'pr' && typeof raw.state === 'string') link.state = clampStr(raw.state, LIMITS.text);
+    return link;
   }
 
   function sanitizeBadge(raw) {

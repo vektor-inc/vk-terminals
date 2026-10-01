@@ -29,6 +29,24 @@
     throw new Error('VKWidgetContract not available');
   }
 
+  // PR バッジの表示情報（ペインの PR ボタンと共通）。ブラウザでは prBadge.js が後から読み込まれる
+  // 場合があるため、createTaskWidgetView 呼び出し時に遅延解決する。無ければ null（従来表示）。
+  function resolvePrBadge(injected) {
+    if (injected) return injected;
+    if (typeof require === 'function') {
+      try { return require('./prBadge'); } catch (_e) { /* fallthrough */ }
+    }
+    if (typeof self !== 'undefined' && self.VKPrBadge) return self.VKPrBadge;
+    return null;
+  }
+
+  // rel:"pr" リンクの state → getPrBadgePresentation の引数。未知値は null（従来どおりの表示）。
+  const PR_LINK_STATES = Object.freeze({
+    'open': { merged: false, options: { prWaitingMerge: false }, cls: 'is-pr-open' },
+    'waiting-merge': { merged: false, options: { prWaitingMerge: true }, cls: 'is-pr-waiting-merge' },
+    'merged': { merged: true, options: {}, cls: 'is-pr-merged' },
+  });
+
   const DEFAULT_STRINGS = Object.freeze({
     pending: '反映待ち',
     sendError: '送信に失敗しました（再試行してください）',
@@ -76,6 +94,7 @@
    */
   function createTaskWidgetView(deps) {
     const contract = resolveContract(deps.contract);
+    const prBadge = resolvePrBadge(deps.prBadge);
     const doc = deps.doc;
     const groupsEl = deps.groupsEl;
     const strings = Object.assign({}, DEFAULT_STRINGS, deps.strings || {});
@@ -483,10 +502,10 @@
       return node;
     }
 
-    function appendExternalIcon(text) {
+    function appendExternalIcon(text, glyph) {
       const icon = el('span', 'widget-link-icon');
       icon.setAttribute('aria-hidden', 'true');
-      icon.textContent = '⁠↗';
+      icon.textContent = '⁠' + (glyph || '↗');
       text.appendChild(icon);
     }
 
@@ -503,13 +522,29 @@
       });
     }
 
+    // rel:"pr" かつ state が既知のときだけ PR バッジ共通関数の結果を返す。それ以外は null。
+    function resolvePrLinkState(link) {
+      if (link.rel !== 'pr' || typeof link.state !== 'string' || !prBadge) return null;
+      if (!Object.prototype.hasOwnProperty.call(PR_LINK_STATES, link.state)) return null;
+      const def = PR_LINK_STATES[link.state];
+      const presentation = prBadge.getPrBadgePresentation(def.merged, def.options);
+      return { def, presentation };
+    }
+
     function buildLink(link) {
       const a = el('a', 'widget-link');
       a.dataset.rel = link.rel;
       wireExternalLink(a, link.label, link.url);
+      const prState = resolvePrLinkState(link);
+      if (prState) {
+        // 色は状態クラス、アイコン・読み上げ・ツールチップは共通関数の結果。可視ラベルは固定のまま。
+        a.className = `widget-link ${prState.def.cls}`;
+        a.setAttribute('aria-label', prState.presentation.ariaLabel);
+        a.title = `${prState.presentation.titleLabel}\n${link.url}`;
+      }
       const text = el('span', 'widget-link-text');
       text.textContent = link.label;
-      appendExternalIcon(text);
+      appendExternalIcon(text, prState ? prState.presentation.icon : null);
       a.appendChild(text);
       return a;
     }

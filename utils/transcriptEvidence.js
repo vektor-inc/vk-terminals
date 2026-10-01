@@ -34,7 +34,8 @@ const SINCE_RE = /^[0-9]{1,16}$/;
 
 // 1 回の走査で見る最大ファイル数（更新時刻が新しい順）。
 const DEFAULT_MAX_FILES_SCANNED = 20;
-// 1 ファイルあたり読む総バイト数の上限（先頭から読む。8MiB）。
+// 1 ファイルあたり読む総バイト数の上限（8MiB）。これを超えるファイルは末尾の 8MiB だけを読む
+// （長い会話に後から追記した指示文は末尾にあるため。issue #417 レビュー HIGH）。
 const DEFAULT_MAX_READ_BYTES = 8 * 1024 * 1024;
 // 1 回の読み取り単位。
 const DEFAULT_READ_CHUNK_BYTES = 64 * 1024;
@@ -161,16 +162,23 @@ function createDefaultFsApi() {
   };
 }
 
-// 先頭からチャンク単位で読み、一致する行が現れた時点で true。チャンク境界をまたぐ行は
-// 断片の配列（pending）にためておき、改行が見つかったときに 1 回だけ連結する。
+// ファイルサイズが maxBytes 以下なら先頭から全部、超えるなら末尾の maxBytes だけをチャンク単位で読み、
+// 一致する行が現れた時点で true。サイズは開いたファイルディスクリプタの fstat（handle.stat）で取る
+// （lstat とのあいだにファイルが伸びても、読む範囲は open 後のサイズで決まる）。
+// 読み始め位置が 0 でないとき、最初の改行までは「途中から切れた 1 行」なので判定に使わず捨てる。
+// チャンク境界をまたぐ行は断片の配列（pending）にためておき、改行が見つかったときに 1 回だけ連結する。
 // 改行の無い長い行でも、読み進めるたびにそれまでの分をコピーし直さない（issue #417 LOW-2）。
 async function scanFileForToken(handle, token, { maxBytes, chunkSize, sinceTimeMs }) {
-  let position = 0;
+  const { size } = await handle.stat();
+  const startPosition = size > maxBytes ? size - maxBytes : 0;
+  const endPosition = startPosition + maxBytes;
+  let position = startPosition;
+  let skippingPartialLine = startPosition > 0;
   let pending = [];
   let hitEof = false;
 
-  while (position < maxBytes) {
-    const toRead = Math.min(chunkSize, maxBytes - position);
+  while (position < endPosition) {
+    const toRead = Math.min(chunkSize, endPosition - position);
     const chunkBuffer = Buffer.alloc(toRead);
     const { bytesRead } = await handle.read(chunkBuffer, 0, toRead, position);
     position += bytesRead;
@@ -178,10 +186,18 @@ async function scanFileForToken(handle, token, { maxBytes, chunkSize, sinceTimeM
     if (bytesRead > 0) {
       const chunk = chunkBuffer.subarray(0, bytesRead);
       let start = 0;
-      for (;;) {
+      if (skippingPartialLine) {
+        const firstNewline = chunk.indexOf(0x0a);
+        if (firstNewline === -1) start = chunk.length;
+        else {
+          start = firstNewline + 1;
+          skippingPartialLine = false;
+        }
+      }
+      for (; start < chunk.length;) {
         const newlineIndex = chunk.indexOf(0x0a, start);
         if (newlineIndex === -1) {
-          if (start < chunk.length) pending.push(chunk.subarray(start));
+          pending.push(chunk.subarray(start));
           break;
         }
         pending.push(chunk.subarray(start, newlineIndex));
@@ -199,6 +215,7 @@ async function scanFileForToken(handle, token, { maxBytes, chunkSize, sinceTimeM
   }
 
   // 上限で切れた途中の断片は捨てる。EOF の最終行（改行なし）は判定する。
+  // 途中から切れた先頭行を読み飛ばしている最中に EOF に達した場合、pending は空なので判定しない。
   return hitEof && pending.length > 0
     && transcriptLineMatchesUserToken(Buffer.concat(pending).toString('utf8'), token, sinceTimeMs);
 }

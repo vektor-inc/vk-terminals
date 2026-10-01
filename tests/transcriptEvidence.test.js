@@ -203,9 +203,9 @@ test('走査するファイル数の上限（maxFiles）を超えた古い側は
   assert.deepEqual(await s.run({ maxFiles: 2 }), { result: 'delivered' });
 });
 
-test('読み取りバイト数の上限（maxReadBytes）を超えた先は見ない', async (t) => {
+test('読み取りバイト数の上限（maxReadBytes）を超えるファイルは末尾の上限バイト分だけを読む（先頭側の token は数えない）', async (t) => {
   const iso = new Date(AFTER).toISOString();
-  const s = setup({ 'a.jsonl': { text: assistantLine(iso, 500).repeat(4) + userLine(TOKEN, iso), mtimeMs: AFTER } });
+  const s = setup({ 'a.jsonl': { text: userLine(TOKEN, iso) + assistantLine(iso, 500).repeat(4), mtimeMs: AFTER } });
   t.after(s.cleanup);
   assert.deepEqual(await s.run({ maxReadBytes: 1024 }), { result: 'pending' });
 });
@@ -263,6 +263,53 @@ test('上限で切れた断片は捨てる（長い行の途中で止まった�
   t.after(s.cleanup);
   // 行の途中（改行の手前）で上限に達する。完全な行ではないので判定しない
   assert.deepEqual(await s.run({ maxReadBytes: text.length - 5 }), { result: 'pending' });
+});
+
+// ─── 上限を超える長い会話の末尾読み（issue #417 レビュー HIGH）────────────────
+
+test('上限を超えるファイルの末尾にある token は delivered になる', async (t) => {
+  const iso = new Date(AFTER).toISOString();
+  const text = assistantLine(iso, 500).repeat(4) + userLine(TOKEN, iso);
+  const s = setup({ 'a.jsonl': { text, mtimeMs: AFTER } });
+  t.after(s.cleanup);
+  assert.ok(Buffer.byteLength(text) > 1024);
+  assert.deepEqual(await s.run({ maxReadBytes: 1024 }), { result: 'delivered' });
+  // チャンクが小さくても（境界をまたいでも）同じ
+  assert.deepEqual(await s.run({ maxReadBytes: 1024, readChunkBytes: 100 }), { result: 'delivered' });
+});
+
+test('上限以下のファイルは今までどおり先頭から全部読む', async (t) => {
+  const iso = new Date(AFTER).toISOString();
+  const text = userLine(TOKEN, iso) + assistantLine(iso, 100);
+  const s = setup({ 'a.jsonl': { text, mtimeMs: AFTER } });
+  t.after(s.cleanup);
+  assert.deepEqual(await s.run({ maxReadBytes: Buffer.byteLength(text) }), { result: 'delivered' });
+});
+
+test('読み始め位置で途中から切れた 1 行に token が入っていても数えない', async (t) => {
+  const iso = new Date(AFTER).toISOString();
+  const target = userLine(TOKEN, iso);
+  const tail = assistantLine(iso, 200);
+  const text = target + tail;
+  const s = setup({ 'a.jsonl': { text, mtimeMs: AFTER } });
+  t.after(s.cleanup);
+  // 読み始め位置を token 行の途中（token の手前。残る断片は token を含むが、先頭が欠けた JSON になる）に置く。
+  // token を含み、かつ途中から JSON として解釈できてしまう形にならないことを確認する。
+  const maxReadBytes = Buffer.byteLength(tail) + 45;
+  assert.ok(Buffer.byteLength(text) - maxReadBytes > 0);
+  assert.deepEqual(await s.run({ maxReadBytes }), { result: 'pending' });
+  // 読み始め位置が token 行の中にあり、その行に token が残っている（捨てた行に token がある前提）
+  const dropped = Buffer.from(text).subarray(Buffer.byteLength(text) - maxReadBytes).toString().split('\n')[0];
+  assert.ok(dropped.includes(TOKEN));
+});
+
+test('末尾読みでも、途中から切れた行を捨てたあとの完全な行は判定する', async (t) => {
+  const iso = new Date(AFTER).toISOString();
+  const text = assistantLine(iso, 300) + userLine(TOKEN, iso);
+  const s = setup({ 'a.jsonl': { text, mtimeMs: AFTER } });
+  t.after(s.cleanup);
+  // 先頭の assistant 行の途中から読み始める
+  assert.deepEqual(await s.run({ maxReadBytes: Buffer.byteLength(userLine(TOKEN, iso)) + 50 }), { result: 'delivered' });
 });
 
 // ─── クエリ検証・応答の組み立て ─────────────────────────────────────────────

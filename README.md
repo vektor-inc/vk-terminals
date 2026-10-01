@@ -661,16 +661,16 @@ curl -s "http://127.0.0.1:13847/api/transcript-evidence?termId=1&token=3f2b8c1e-
 | クエリ | 説明 |
 |---|---|
 | `termId` | ペイン番号（`/api/states` の `termId`） |
-| `token` | 指示文に埋め込んだ識別子。UUID 形式のみ受け付ける |
-| `since` | 指示文を送り始めた時刻（エポックミリ秒の整数）。5 秒の猶予を見て、それ以降の行だけを数える |
+| `token` | 指示文に埋め込んだ識別子。**小文字の** UUID 形式のみ受け付ける（大文字は `400`）。アクセストークン（ログイン用の鍵）ではなく、会話記録の照合用の識別子 |
+| `since` | 指示文を送り始めた時刻（エポックミリ秒の整数）。5 秒の猶予を見て、それ以降の行だけを数える。今より 24 時間以上前、または今より 1 分を超えて先の時刻は `400` |
 
-レスポンスは `200` で `{ "result": "delivered" | "pending" | "unknown" }` です。`unknown` のときは理由 `reason` が付きます。
+レスポンスは `200` で `{ "result": "delivered" | "pending" | "unknown" }` です。`unknown` のときは理由 `reason` が付きます。存在しないペインも `404` ではなく `200` の `unknown` で返します（`404` は呼び出し側が「この API を持たない古い版」とみなすため）。
 
 - `delivered`: 届いている
 - `pending`: まだ届いていない（会話記録ディレクトリがまだ無い場合を含む）
-- `unknown`: 判定できない。`reason` は `engine-codex`（Codex ペインは対象外）/ `cwd-unknown`（ペインの作業ディレクトリが分からない）/ `transcript-unreadable`（会話記録が読めない）
+- `unknown`: 判定できない。`reason` は `engine-codex`（Codex ペインは対象外）/ `cwd-unknown`（ペインの作業ディレクトリが分からない）/ `transcript-unreadable`（会話記録が読めない）/ `pane-not-found`（そのペインが存在しない）/ `busy`（同じペインの確認が進行中。待たずに即答するので、呼び出し側が間隔を空けて再確認する）
 
-`termId`・`token`・`since` の形式が不正なら `400`、存在しない `termId` なら `404` を返します。会話記録の中身・ファイルの場所は返さず、ログにも出しません。認証は他の `/api/*` と同じです。
+`termId`・`token`・`since` の形式が不正なら `400` を返します。会話記録の中身・ファイルの場所は返さず、ログにも出しません。認証は他の `/api/*` と同じです。
 
 #### `POST /api/send`
 

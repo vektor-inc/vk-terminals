@@ -24,7 +24,9 @@ const nodeOs = require('os');
 const nodePath = require('path');
 
 // 一般的な UUID（バージョン 1〜5）の形。外部から来た値を文字列一致に使う前に形だけ確かめる。
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+// 小文字のみ受け付ける（/i を付けない）。照合（line.includes）は大文字小文字を区別するため、
+// 大文字を通すと「届いているのに pending のまま」になる。形式確認と照合の規則を揃えるため 400 にする。
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 // termId は main.js が採番する 1 以上の整数文字列（`String(nextId++)`）。
 const TERM_ID_RE = /^[1-9][0-9]{0,8}$/;
 // since はエポックミリ秒の整数（桁数の上限は現実的な時刻より十分大きい 16 桁）。
@@ -39,12 +41,24 @@ const DEFAULT_READ_CHUNK_BYTES = 64 * 1024;
 // since からの許容余裕（mtime 粒度・時計のわずかなずれを吸収する）。
 const DEFAULT_SINCE_GRACE_MS = 5000;
 
+// since の受け付け範囲（issue #417 安藤レビュー MEDIUM-1）。since=0 のような古い値を許すと
+// 1 回の要求で全ファイル・全バイト（最大 20 ファイル × 8MiB）を読ませる手段になるため、
+// 「今より 24 時間以内」に絞る。呼び出し側は指示文を送った直後の時刻を渡すので十分な余裕がある。
+const SINCE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+// 未来側は、呼び出し元との時計のずれを吸収する分だけ許す（1 分）。
+const SINCE_FUTURE_TOLERANCE_MS = 60 * 1000;
+
 // 応答の result 値と reason 値（綴りはここを正とする）。
 const RESULT = Object.freeze({ DELIVERED: 'delivered', PENDING: 'pending', UNKNOWN: 'unknown' });
 const REASON = Object.freeze({
   ENGINE_CODEX: 'engine-codex',
   CWD_UNKNOWN: 'cwd-unknown',
   TRANSCRIPT_UNREADABLE: 'transcript-unreadable',
+  // 存在しないペイン。404 は呼び出し側（vk-orchestrator）が「この API を持たない古い版」と
+  // みなす約束のため使わず、200 の unknown で返す。
+  PANE_NOT_FOUND: 'pane-not-found',
+  // 同じペインの照合が進行中。待たせず即答する。
+  BUSY: 'busy',
 });
 
 function isValidTranscriptToken(token) {
@@ -54,9 +68,10 @@ function isValidTranscriptToken(token) {
 /**
  * クエリ（URLSearchParams）の形式検証。不正なら { ok:false, error }（呼び出し側が 400 にする）。
  * @param {URLSearchParams} searchParams
+ * @param {number} [now] 現在時刻（テスト用に差し替え可能）
  * @returns {{ ok: true, termId: string, token: string, sinceTimeMs: number } | { ok: false, error: string }}
  */
-function parseTranscriptEvidenceQuery(searchParams) {
+function parseTranscriptEvidenceQuery(searchParams, now = Date.now()) {
   const termId = searchParams.get('termId');
   const token = searchParams.get('token');
   const since = searchParams.get('since');
@@ -72,6 +87,9 @@ function parseTranscriptEvidenceQuery(searchParams) {
   const sinceTimeMs = Number(since);
   if (!Number.isSafeInteger(sinceTimeMs)) {
     return { ok: false, error: 'invalid since (epoch milliseconds integer required)' };
+  }
+  if (sinceTimeMs < now - SINCE_MAX_AGE_MS || sinceTimeMs > now + SINCE_FUTURE_TOLERANCE_MS) {
+    return { ok: false, error: 'invalid since (must be within the last 24 hours)' };
   }
   return { ok: true, termId, token, sinceTimeMs };
 }
@@ -143,10 +161,12 @@ function createDefaultFsApi() {
   };
 }
 
-// 先頭からチャンク単位で読み、一致する行が現れた時点で true。チャンク境界をまたぐ行は持ち越す。
+// 先頭からチャンク単位で読み、一致する行が現れた時点で true。チャンク境界をまたぐ行は
+// 断片の配列（pending）にためておき、改行が見つかったときに 1 回だけ連結する。
+// 改行の無い長い行でも、読み進めるたびにそれまでの分をコピーし直さない（issue #417 LOW-2）。
 async function scanFileForToken(handle, token, { maxBytes, chunkSize, sinceTimeMs }) {
   let position = 0;
-  let carry = Buffer.alloc(0);
+  let pending = [];
   let hitEof = false;
 
   while (position < maxBytes) {
@@ -156,17 +176,17 @@ async function scanFileForToken(handle, token, { maxBytes, chunkSize, sinceTimeM
     position += bytesRead;
 
     if (bytesRead > 0) {
-      const combined = carry.length > 0
-        ? Buffer.concat([carry, chunkBuffer.subarray(0, bytesRead)])
-        : chunkBuffer.subarray(0, bytesRead);
+      const chunk = chunkBuffer.subarray(0, bytesRead);
       let start = 0;
       for (;;) {
-        const newlineIndex = combined.indexOf(0x0a, start);
+        const newlineIndex = chunk.indexOf(0x0a, start);
         if (newlineIndex === -1) {
-          carry = Buffer.from(combined.subarray(start));
+          if (start < chunk.length) pending.push(chunk.subarray(start));
           break;
         }
-        const lineText = combined.toString('utf8', start, newlineIndex);
+        pending.push(chunk.subarray(start, newlineIndex));
+        const lineText = (pending.length === 1 ? pending[0] : Buffer.concat(pending)).toString('utf8');
+        pending = [];
         start = newlineIndex + 1;
         if (transcriptLineMatchesUserToken(lineText, token, sinceTimeMs)) return true;
       }
@@ -179,8 +199,8 @@ async function scanFileForToken(handle, token, { maxBytes, chunkSize, sinceTimeM
   }
 
   // 上限で切れた途中の断片は捨てる。EOF の最終行（改行なし）は判定する。
-  return hitEof && carry.length > 0
-    && transcriptLineMatchesUserToken(carry.toString('utf8'), token, sinceTimeMs);
+  return hitEof && pending.length > 0
+    && transcriptLineMatchesUserToken(Buffer.concat(pending).toString('utf8'), token, sinceTimeMs);
 }
 
 // ディレクトリを 1 回だけ走査する。ENOENT（まだ書かれていない）は false、それ以外の I/O エラーは投げる。
@@ -304,13 +324,18 @@ async function checkTranscriptEvidence({
   }
 }
 
+// 照合中の termId（同じペインの同時実行を 1 件に絞る。issue #417 MEDIUM-1）。
+const defaultInFlight = new Set();
+
 /**
  * GET /api/transcript-evidence の応答（HTTP ステータスと本文）を組み立てる。main.js の
  * ハンドラはこの戻り値をそのまま書き出すだけにして、分岐をここでテストできるようにする。
  *
- *   - クエリの形式不正               → 400 { error }
- *   - 存在しない termId              → 404 { error }
- *   - それ以外                        → 200 { result, reason? }
+ *   - クエリの形式不正（since が 24 時間より前・未来を含む） → 400 { error }
+ *   - 存在しない termId               → 200 { result: 'unknown', reason: 'pane-not-found' }
+ *     （404 は呼び出し側が「この API を持たない古い版」とみなす約束のため使わない）
+ *   - 同じ termId の照合が進行中        → 200 { result: 'unknown', reason: 'busy' }（待たせない）
+ *   - それ以外                          → 200 { result, reason? }
  *
  * @param {object} params
  * @param {URLSearchParams} params.searchParams
@@ -318,25 +343,42 @@ async function checkTranscriptEvidence({
  * @param {(termId: string) => ({ cwd?: string, engine?: string } | undefined)} params.getPaneState
  *        renderer が報告した、そのペインの実際の作業ディレクトリ・エンジン
  * @param {object} [params.checkOptions]  checkTranscriptEvidence へ渡す差し替え（テスト用）
+ * @param {() => number} [params.now]     現在時刻（テスト用）
+ * @param {Set<string>} [params.inFlight] 照合中 termId の集合（テスト用に差し替え可能）
  * @returns {Promise<{ status: number, body: object }>}
  */
-async function buildTranscriptEvidenceResponse({ searchParams, paneExists, getPaneState, checkOptions = {} }) {
-  const parsed = parseTranscriptEvidenceQuery(searchParams);
+async function buildTranscriptEvidenceResponse({
+  searchParams,
+  paneExists,
+  getPaneState,
+  checkOptions = {},
+  now = () => Date.now(),
+  inFlight = defaultInFlight,
+}) {
+  const parsed = parseTranscriptEvidenceQuery(searchParams, now());
   if (!parsed.ok) {
     return { status: 400, body: { error: parsed.error } };
   }
   if (!paneExists(parsed.termId)) {
-    return { status: 404, body: { error: `terminal ${parsed.termId} not found` } };
+    return { status: 200, body: { result: RESULT.UNKNOWN, reason: REASON.PANE_NOT_FOUND } };
   }
-  const state = getPaneState(parsed.termId) || {};
-  const outcome = await checkTranscriptEvidence({
-    ...checkOptions,
-    cwd: state.cwd,
-    engine: state.engine,
-    token: parsed.token,
-    sinceTimeMs: parsed.sinceTimeMs,
-  });
-  return { status: 200, body: outcome };
+  if (inFlight.has(parsed.termId)) {
+    return { status: 200, body: { result: RESULT.UNKNOWN, reason: REASON.BUSY } };
+  }
+  inFlight.add(parsed.termId);
+  try {
+    const state = getPaneState(parsed.termId) || {};
+    const outcome = await checkTranscriptEvidence({
+      ...checkOptions,
+      cwd: state.cwd,
+      engine: state.engine,
+      token: parsed.token,
+      sinceTimeMs: parsed.sinceTimeMs,
+    });
+    return { status: 200, body: outcome };
+  } finally {
+    inFlight.delete(parsed.termId);
+  }
 }
 
 module.exports = {

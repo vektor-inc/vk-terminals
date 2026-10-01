@@ -2672,7 +2672,9 @@ function startHttpApi() {
     //   指示文に埋め込んだ識別子（token）が、そのペインの Claude Code の会話記録に
     //   since 以降のユーザー発話として現れたかを 1 回だけ確認して即答する（待ち合わせはしない）。
     //   応答は 200 { result: "delivered"|"pending"|"unknown", reason? }。会話記録の中身・
-    //   ファイルパスは返さず、ログにも出さない。形式不正は 400、存在しない termId は 404。
+    //   ファイルパスは返さず、ログにも出さない。形式不正（since が 24 時間より前・未来を含む）は 400。
+    //   存在しない termId は 404 にせず 200 { result: "unknown", reason: "pane-not-found" }（404 は呼び出し側
+    //   vk-orchestrator が「この API を持たない古い版」とみなす約束のため）。同じペインの照合中は reason: "busy"。
     //   認証は上の認証ゲートが担う（免除リストには入れない）。GET のため CSRF 対策
     //   （isForbiddenOrigin）は他の GET API と同じく掛けない。
     //   ペインの作業ディレクトリ・エンジンは renderer が terminal:report-states で報告した

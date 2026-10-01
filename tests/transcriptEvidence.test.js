@@ -21,6 +21,7 @@ const TOKEN = '3f2b8c1e-5a4d-4e7f-9b6a-0c1d2e3f4a5b';
 const OTHER_TOKEN = '11111111-2222-4333-8444-555555555555';
 const SINCE = Date.parse('2026-10-02T00:00:00.000Z');
 const AFTER = SINCE + 60_000;
+const NOW = SINCE + 120_000; // クエリ検証・応答テストで使う「現在時刻」
 const CWD = '/work/my project';
 
 function userLine(token, iso, extra = {}) {
@@ -209,12 +210,67 @@ test('読み取りバイト数の上限（maxReadBytes）を超えた先は見�
   assert.deepEqual(await s.run({ maxReadBytes: 1024 }), { result: 'pending' });
 });
 
+// ─── 追加の照合テスト（issue #417 安藤レビュー LOW-2 / LOW-3）────────────────────
+
+test('cwd がシンボリックリンクを含む場合、realpath で解決したディレクトリで照合する', async (t) => {
+  const real = '/real/work/dir';
+  const s = setup({ 'a.jsonl': { text: userLine(TOKEN, new Date(AFTER).toISOString()), mtimeMs: AFTER } }, real);
+  t.after(s.cleanup);
+  const link = '/link/to/work';
+  const seen = [];
+  const run = (fsApi) => checkTranscriptEvidence({
+    cwd: link, token: TOKEN, sinceTimeMs: SINCE, engine: 'claude', homeDir: s.home, env: {}, fsApi,
+  });
+  // 解決しなければ link 側のディレクトリ（存在しない）を見て pending になる
+  assert.deepEqual(await run({ realpath: async (p) => { seen.push(p); throw new Error('x'); } }), { result: 'pending' });
+  // realpath で real へ解決できれば delivered
+  assert.deepEqual(await run({ realpath: async (p) => { seen.push(p); return real; } }), { result: 'delivered' });
+  assert.deepEqual(seen, [link, link]);
+});
+
+test('open が ELOOP を投げたファイルは飛ばして続行する', async (t) => {
+  const line = userLine(TOKEN, new Date(AFTER).toISOString());
+  const s = setup({
+    'swapped.jsonl': { text: 'noise\n', mtimeMs: AFTER + 2000 },
+    'ok.jsonl': { text: line, mtimeMs: AFTER },
+  });
+  t.after(s.cleanup);
+  const realOpen = (p) => fs.promises.open(p, 'r');
+  const out = await s.run({
+    fsApi: {
+      realpath: async (p) => p,
+      open: async (p) => {
+        if (p.endsWith('swapped.jsonl')) throw Object.assign(new Error('ELOOP'), { code: 'ELOOP' });
+        return realOpen(p);
+      },
+    },
+  });
+  assert.deepEqual(out, { result: 'delivered' });
+});
+
+test('改行の無い長い行（チャンク多数）を連結しても、後続の行を判定できる', async (t) => {
+  const iso = new Date(AFTER).toISOString();
+  const longLine = JSON.stringify({ type: 'assistant', timestamp: iso, message: { content: 'y'.repeat(20000) } }) + '\n';
+  const s = setup({ 'a.jsonl': { text: longLine + userLine(TOKEN, iso), mtimeMs: AFTER } });
+  t.after(s.cleanup);
+  assert.deepEqual(await s.run({ readChunkBytes: 128 }), { result: 'delivered' });
+});
+
+test('上限で切れた断片は捨てる（長い行の途中で止まった場合に誤一致しない）', async (t) => {
+  const iso = new Date(AFTER).toISOString();
+  const text = userLine(TOKEN, iso);
+  const s = setup({ 'a.jsonl': { text, mtimeMs: AFTER } });
+  t.after(s.cleanup);
+  // 行の途中（改行の手前）で上限に達する。完全な行ではないので判定しない
+  assert.deepEqual(await s.run({ maxReadBytes: text.length - 5 }), { result: 'pending' });
+});
+
 // ─── クエリ検証・応答の組み立て ─────────────────────────────────────────────
 
 const q = (obj) => new URLSearchParams(obj);
 
 test('クエリ検証: 正常な形式を受け付ける', () => {
-  const r = parseTranscriptEvidenceQuery(q({ termId: '3', token: TOKEN, since: String(SINCE) }));
+  const r = parseTranscriptEvidenceQuery(q({ termId: '3', token: TOKEN, since: String(SINCE) }), NOW);
   assert.deepEqual(r, { ok: true, termId: '3', token: TOKEN, sinceTimeMs: SINCE });
 });
 
@@ -222,41 +278,109 @@ test('クエリ検証: token が UUID でない・欠落は 400 相当', () => {
   for (const token of ['', 'abc', `${TOKEN}x`, '../../etc/passwd', undefined]) {
     const params = { termId: '1', since: String(SINCE) };
     if (token !== undefined) params.token = token;
-    assert.equal(parseTranscriptEvidenceQuery(q(params)).ok, false, String(token));
+    assert.equal(parseTranscriptEvidenceQuery(q(params), NOW).ok, false, String(token));
   }
+});
+
+test('クエリ検証: 大文字を含む UUID は 400 相当（小文字のみ受け付ける）', () => {
+  assert.equal(parseTranscriptEvidenceQuery(q({ termId: '1', token: TOKEN.toUpperCase(), since: String(SINCE) }), NOW).ok, false);
+  assert.equal(parseTranscriptEvidenceQuery(q({ termId: '1', token: '3F2b8c1e-5a4d-4e7f-9b6a-0c1d2e3f4a5b', since: String(SINCE) }), NOW).ok, false);
 });
 
 test('クエリ検証: termId / since の不正値は 400 相当', () => {
   for (const termId of ['', '0', '-1', '1.5', 'abc', '1 ', '12345678901']) {
-    assert.equal(parseTranscriptEvidenceQuery(q({ termId, token: TOKEN, since: String(SINCE) })).ok, false, termId);
+    assert.equal(parseTranscriptEvidenceQuery(q({ termId, token: TOKEN, since: String(SINCE) }), NOW).ok, false, termId);
   }
   for (const since of ['', '-1', '1.5', 'abc', '1e3', '99999999999999999', '0x10']) {
-    assert.equal(parseTranscriptEvidenceQuery(q({ termId: '1', token: TOKEN, since })).ok, false, since);
+    assert.equal(parseTranscriptEvidenceQuery(q({ termId: '1', token: TOKEN, since }), NOW).ok, false, since);
   }
-  assert.equal(parseTranscriptEvidenceQuery(q({ token: TOKEN, since: '1' })).ok, false);
+  assert.equal(parseTranscriptEvidenceQuery(q({ token: TOKEN, since: '1' }), NOW).ok, false);
 });
 
-test('応答: 不正形式は 400、存在しない termId は 404', async () => {
-  const deps = { paneExists: (id) => id === '1', getPaneState: () => ({ cwd: CWD, engine: 'claude' }) };
-  const bad = await buildTranscriptEvidenceResponse({ searchParams: q({ termId: '1', token: 'x', since: '1' }), ...deps });
+test('クエリ検証: since の下限（24 時間前）と未来（1 分超）は 400 相当、境界は受け付ける', () => {
+  const day = 24 * 60 * 60 * 1000;
+  const parse = (since) => parseTranscriptEvidenceQuery(q({ termId: '1', token: TOKEN, since: String(since) }), NOW).ok;
+  assert.equal(parse(0), false);
+  assert.equal(parse(NOW - day - 1), false);
+  assert.equal(parse(NOW - day), true);
+  assert.equal(parse(NOW + 60_000), true);
+  assert.equal(parse(NOW + 60_001), false);
+});
+
+const baseDeps = (overrides = {}) => ({
+  paneExists: (id) => id === '1',
+  getPaneState: () => ({ cwd: CWD, engine: 'claude' }),
+  now: () => NOW,
+  ...overrides,
+});
+
+test('応答: 不正形式は 400、存在しないペインは 404 ではなく 200 unknown / pane-not-found', async () => {
+  const bad = await buildTranscriptEvidenceResponse({ searchParams: q({ termId: '1', token: 'x', since: String(SINCE) }), ...baseDeps() });
   assert.equal(bad.status, 400);
-  const missing = await buildTranscriptEvidenceResponse({ searchParams: q({ termId: '9', token: TOKEN, since: '1' }), ...deps });
-  assert.equal(missing.status, 404);
+  const old = await buildTranscriptEvidenceResponse({ searchParams: q({ termId: '1', token: TOKEN, since: '0' }), ...baseDeps() });
+  assert.equal(old.status, 400);
+  const missing = await buildTranscriptEvidenceResponse({ searchParams: q({ termId: '9', token: TOKEN, since: String(SINCE) }), ...baseDeps() });
+  assert.deepEqual(missing, { status: 200, body: { result: 'unknown', reason: 'pane-not-found' } });
 });
 
 test('応答: 実際の cwd / engine を使って 200 で返し、中身・パスを含めない', async (t) => {
   const s = setup({ 'a.jsonl': { text: userLine(TOKEN, new Date(AFTER).toISOString()), mtimeMs: AFTER } });
   t.after(s.cleanup);
-  const base = {
+  const base = baseDeps({
     paneExists: () => true,
     checkOptions: { homeDir: s.home, env: {}, fsApi: { realpath: async (p) => p } },
-    searchParams: q({ termId: '1', token: TOKEN, since: String(SINCE) }),
-  };
-  const ok = await buildTranscriptEvidenceResponse({ ...base, getPaneState: () => ({ cwd: CWD, engine: 'claude' }) });
+  });
+  const searchParams = q({ termId: '1', token: TOKEN, since: String(SINCE) });
+  const ok = await buildTranscriptEvidenceResponse({ ...base, searchParams, getPaneState: () => ({ cwd: CWD, engine: 'claude' }) });
   assert.deepEqual(ok, { status: 200, body: { result: 'delivered' } });
-  const codex = await buildTranscriptEvidenceResponse({ ...base, getPaneState: () => ({ cwd: CWD, engine: 'codex' }) });
+  const codex = await buildTranscriptEvidenceResponse({ ...base, searchParams, getPaneState: () => ({ cwd: CWD, engine: 'codex' }) });
   assert.deepEqual(codex, { status: 200, body: { result: 'unknown', reason: 'engine-codex' } });
-  const noState = await buildTranscriptEvidenceResponse({ ...base, getPaneState: () => undefined });
+  const noState = await buildTranscriptEvidenceResponse({ ...base, searchParams, getPaneState: () => undefined });
   assert.deepEqual(noState, { status: 200, body: { result: 'unknown', reason: 'cwd-unknown' } });
   assert.ok(!JSON.stringify(ok).includes(s.home));
+});
+
+test('応答: 照合の途中に同じペインへ来た要求は busy、別ペインは影響を受けない', async () => {
+  const inFlight = new Set();
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  // realpath を止めて「照合の途中」を作る
+  const checkOptions = { homeDir: '/nonexistent-home', env: {}, fsApi: { realpath: async (p) => { await gate; return p; }, readdir: async () => [] } };
+  const searchParams = q({ termId: '1', token: TOKEN, since: String(SINCE) });
+  const deps = baseDeps({ paneExists: () => true, checkOptions, inFlight });
+
+  const first = buildTranscriptEvidenceResponse({ searchParams, ...deps });
+  const second = await buildTranscriptEvidenceResponse({ searchParams, ...deps });
+  assert.deepEqual(second, { status: 200, body: { result: 'unknown', reason: 'busy' } });
+  assert.equal(inFlight.has('1'), true);
+
+  const other = buildTranscriptEvidenceResponse({ searchParams: q({ termId: '2', token: TOKEN, since: String(SINCE) }), ...deps });
+  release();
+  assert.deepEqual((await first).body, { result: 'pending' });
+  assert.deepEqual((await other).body, { result: 'pending' });
+  assert.equal(inFlight.size, 0);
+
+  // 終わった後は再び受け付ける
+  assert.deepEqual((await buildTranscriptEvidenceResponse({ searchParams, ...deps })).body, { result: 'pending' });
+});
+
+test('応答: 処理中に例外が出ても処理中の印は外れる', async () => {
+  const inFlight = new Set();
+  const searchParams = q({ termId: '1', token: TOKEN, since: String(SINCE) });
+  const deps = baseDeps({
+    paneExists: () => true,
+    getPaneState: () => { throw new Error('boom'); },
+    inFlight,
+  });
+  await assert.rejects(buildTranscriptEvidenceResponse({ searchParams, ...deps }), /boom/);
+  assert.equal(inFlight.size, 0);
+});
+
+test('応答: ペインが無いときは処理中の印を付けない', async () => {
+  const inFlight = new Set();
+  await buildTranscriptEvidenceResponse({
+    searchParams: q({ termId: '9', token: TOKEN, since: String(SINCE) }),
+    ...baseDeps({ inFlight }),
+  });
+  assert.equal(inFlight.size, 0);
 });

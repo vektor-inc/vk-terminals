@@ -539,8 +539,13 @@
       if (prState) {
         // 色は状態クラス、アイコン・読み上げ・ツールチップは共通関数の結果。可視ラベルは固定のまま。
         a.className = `widget-link ${prState.def.cls}`;
-        a.setAttribute('aria-label', prState.presentation.ariaLabel);
-        a.title = `${prState.presentation.titleLabel}\n${link.url}`;
+        // WCAG 2.5.3（Label in Name）: 状態の文言に可視ラベル（link.label）を含める。
+        // 「外部ブラウザ」の接尾辞は共通関数の external 有無の差分から取り、文言を二重に持たない。
+        const pres = prState.presentation;
+        const bare = prBadge.getPrBadgePresentation(prState.def.merged, Object.assign({ external: false }, prState.def.options)).ariaLabel;
+        const suffix = pres.ariaLabel.slice(bare.length);
+        a.setAttribute('aria-label', `${bare}: ${link.label}${suffix}`);
+        a.title = `${pres.titleLabel}: ${link.label}\n${link.url}`;
       }
       const text = el('span', 'widget-link-text');
       text.textContent = link.label;

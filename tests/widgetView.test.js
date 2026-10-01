@@ -1634,8 +1634,10 @@ for (const c of PR_STATE_CASES) {
     // ペイン用のクラス（pane-badge 等）は混ぜない。
     assert.equal(link.classList.contains('pane-badge'), false);
     assert.equal(link.classList.contains('pane-task-title-pr'), false);
-    assert.equal(link.attributes['aria-label'], expected.ariaLabel);
-    assert.equal(link.title, `${expected.titleLabel}\nhttps://example.com/pull/1`);
+    // 可視ラベル「PR #1」を aria-label / title の両方に含める（WCAG 2.5.3 Label in Name）。
+    const bare = prBadge.getPrBadgePresentation(c.merged, Object.assign({ external: false }, c.opts)).ariaLabel;
+    assert.equal(link.attributes['aria-label'], `${bare}: PR #1（外部ブラウザ）`);
+    assert.equal(link.title, `${expected.titleLabel}: PR #1\nhttps://example.com/pull/1`);
     assert.equal(icon.textContent, '⁠' + expected.icon);
     // 可視ラベルは固定（状態で変えない）。
     assert.equal(link.textContent, 'PR #1⁠' + expected.icon);

@@ -42,6 +42,8 @@
   // リンクの rel。
   const LINK_RELS = Object.freeze(['queue', 'pr']);
   const LINK_REL_SET = new Set(LINK_RELS);
+  // rel:"pr" リンクの state（任意）。
+  const PR_LINK_STATE_SET = new Set(['open', 'waiting-merge', 'merged']);
 
   const WIDGET_KIND = 'task-list';
   const DEFAULT_STALE_THRESHOLD_MS = 120000;
@@ -223,9 +225,8 @@
       url: raw.url.trim(),
       label: clampStr(typeof raw.label === 'string' ? raw.label : raw.rel, LIMITS.text),
     };
-    // rel:"pr" の任意フィールド state（open / waiting-merge / merged）。値の解釈（未知値の無視）は
-    // 描画側（widgetView）が行うため、ここでは文字列のときだけそのまま通す（issue #415）。
-    if (raw.rel === 'pr' && typeof raw.state === 'string') link.state = clampStr(raw.state, LIMITS.text);
+    // rel:"pr" の任意フィールド state。既知の3値だけ通し、それ以外（未知値・非文字列）は落とす（issue #415）。
+    if (raw.rel === 'pr' && PR_LINK_STATE_SET.has(raw.state)) link.state = raw.state;
     return link;
   }
 

@@ -2085,6 +2085,27 @@ button.sidebar-section-header:hover {
   opacity: 1;
 }
 
+/* PR リンクの状態（PR カードの state。ペインの PR ボタンと同じ色。issue #415）。
+   open / waiting-merge / merged 以外（state 無し・未知値）は上の既定色のまま。 */
+.widget-link.is-pr-open {
+  color: var(--vktm--color--pr-badge-open, #99a1ab);
+}
+.widget-link.is-pr-open:hover {
+  color: var(--vktm--color--pr-badge-open-hover, #b1bac4);
+}
+.widget-link.is-pr-waiting-merge {
+  color: var(--vktm--color--pr-badge-awaiting-merge, #79c0ff);
+}
+.widget-link.is-pr-waiting-merge:hover {
+  color: var(--vktm--color--pr-badge-awaiting-merge-hover, #a5d6ff);
+}
+.widget-link.is-pr-merged {
+  color: #a371f7;
+}
+.widget-link.is-pr-merged:hover {
+  color: #b083f8;
+}
+
 /* 編集パネル（ステータス / 優先度 / 実行方式の select）
    ========================================================================== */
 /* 宣言的ウィジェットの editable タスクは、編集ボタンでパネルを開き、保存でまとめて確定する。 */

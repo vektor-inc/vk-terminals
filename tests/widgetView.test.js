@@ -1602,3 +1602,71 @@ test('render: firstControl はグループ化しても、パネル全体で最�
   const statusSelect = groupsEl.querySelectorAll((el) => el.tagName === 'SELECT').find((el) => el.dataset.field === 'status');
   assert.equal(doc.activeElement, statusSelect);
 });
+
+// ── PR リンクの state 別表示（issue #415）────────────────────────────────────
+const prBadge = require('../renderer/prBadge');
+
+function renderPrLink(rel, extra) {
+  const widget = sanitized([
+    { id: 'g', label: 'G', tone: 'info', items: [{ id: '1', title: 't', editable: false, links: [
+      Object.assign({ rel, url: 'https://example.com/pull/1', label: 'PR #1' }, extra || {}),
+    ] }] },
+  ]);
+  const { groupsEl, view } = makeView();
+  view.render(widget, { now: Date.parse('2026-07-21T00:00:10.000Z') });
+  const link = groupsEl.querySelectorAll((el) => el.classList.contains('widget-link'))[0];
+  const icon = link.querySelectorAll((el) => el.classList.contains('widget-link-icon'))[0];
+  return { link, icon };
+}
+
+const PR_STATE_CASES = [
+  { state: 'open', cls: 'is-pr-open', merged: false, opts: { prWaitingMerge: false } },
+  { state: 'waiting-merge', cls: 'is-pr-waiting-merge', merged: false, opts: { prWaitingMerge: true } },
+  { state: 'merged', cls: 'is-pr-merged', merged: true, opts: {} },
+];
+
+for (const c of PR_STATE_CASES) {
+  test(`render: rel="pr" の state="${c.state}" は getPrBadgePresentation に合わせた属性になる`, () => {
+    const expected = prBadge.getPrBadgePresentation(c.merged, c.opts);
+    const { link, icon } = renderPrLink('pr', { state: c.state });
+    assert.ok(link.classList.contains('widget-link'));
+    assert.ok(link.classList.contains(c.cls));
+    // ペイン用のクラス（pane-badge 等）は混ぜない。
+    assert.equal(link.classList.contains('pane-badge'), false);
+    assert.equal(link.classList.contains('pane-task-title-pr'), false);
+    // 可視ラベル「PR #1」を aria-label / title の両方に含める（WCAG 2.5.3 Label in Name）。
+    const bare = prBadge.getPrBadgePresentation(c.merged, Object.assign({ external: false }, c.opts)).ariaLabel;
+    assert.equal(link.attributes['aria-label'], `${bare}: PR #1（外部ブラウザ）`);
+    assert.equal(link.title, `${expected.titleLabel}: PR #1\nhttps://example.com/pull/1`);
+    assert.equal(icon.textContent, '⁠' + expected.icon);
+    // 可視ラベルは固定（状態で変えない）。
+    assert.equal(link.textContent, 'PR #1⁠' + expected.icon);
+  });
+}
+
+for (const [name, extra] of [['state 無し', {}], ['未知の state', { state: 'closed' }], ['文字列でない state', { state: 1 }]]) {
+  test(`render: rel="pr" で ${name} は従来どおりの表示`, () => {
+    const { link, icon } = renderPrLink('pr', extra);
+    assert.equal(link.className, 'widget-link');
+    assert.equal(link.title, 'PR #1\nhttps://example.com/pull/1');
+    assert.equal(link.attributes['aria-label'], 'PR #1' + DEFAULT_STRINGS.openExternal);
+    assert.equal(icon.textContent, '⁠↗');
+  });
+}
+
+test('render: PR 以外の rel（queue / target）は state が付いても PR 用の見た目にならない', () => {
+  const widget = sanitized([
+    { id: 'g', label: 'G', tone: 'info', items: [{ id: '1', title: 't', editable: false, links: [
+      { rel: 'queue', url: 'https://example.com/issues/1', label: 'Issue', state: 'merged' },
+      { rel: 'target', url: 'https://example.com/t/1', label: 'T', state: 'merged' },
+    ] }] },
+  ]);
+  const { groupsEl, view } = makeView();
+  view.render(widget, { now: Date.parse('2026-07-21T00:00:10.000Z') });
+  // target は契約上の未知 rel なので描画されず、queue はタイトルリンクになる（チップは出ない）。
+  assert.equal(groupsEl.querySelectorAll((el) => el.classList.contains('widget-link')).length, 0);
+  const title = groupsEl.querySelectorAll((el) => el.classList.contains('task-item-title'))[0];
+  assert.equal(title.className, 'task-item-title task-item-title-link');
+  assert.equal(title.title, 't\nhttps://example.com/issues/1');
+  assert.equal(groupsEl.querySelectorAll((el) => /is-pr-/.test(el.className)).length, 0);
+});

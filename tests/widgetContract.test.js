@@ -591,3 +591,16 @@ test('isHttpUrl: http(s) のみ true', () => {
   assert.equal(contract.isHttpUrl('data:text/html,x'), false);
   assert.equal(contract.isHttpUrl(''), false);
 });
+
+test('sanitizeWidget: rel="pr" の state は既知の3値だけ残し、それ以外は落とす（issue #415）', () => {
+  const linkOf = (link) => contract.sanitizeWidget(baseRawWidget({
+    groups: [{ id: 'g', label: 'G', tone: 'info', items: [{ id: '1', title: 'T', editable: false, links: [link] }] }],
+  })).groups[0].items[0].links[0];
+  for (const state of ['open', 'waiting-merge', 'merged']) {
+    assert.equal(linkOf({ rel: 'pr', url: 'https://example.com/pr/1', label: 'pr', state }).state, state);
+  }
+  assert.equal('state' in linkOf({ rel: 'queue', url: 'https://example.com/issues/1', label: 'q', state: 'merged' }), false);
+  assert.equal('state' in linkOf({ rel: 'pr', url: 'https://example.com/pr/1', label: 'pr', state: 1 }), false);
+  assert.equal('state' in linkOf({ rel: 'pr', url: 'https://example.com/pr/1', label: 'pr', state: 'closed' }), false);
+  assert.equal('state' in linkOf({ rel: 'pr', url: 'https://example.com/pr/1', label: 'pr' }), false);
+});

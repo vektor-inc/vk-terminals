@@ -100,6 +100,7 @@ const { buildMobileCsp } = require('./utils/csp');
 const { MAX_CLIPBOARD_TEXT_LENGTH, CLIPBOARD_MAX_LENGTH_ARG_PREFIX } = require('./utils/clipboardLimits');
 // POST /api/set-title の prMerged / waitingMerge（issue #44 / #363）共通の真偽値パーサ。
 const { parseStrictBoolFlag } = require('./utils/strictBoolFlag');
+const { buildTranscriptEvidenceResponse } = require('./utils/transcriptEvidence');
 // Web Push 通知（issue #396）。VAPID 鍵の生成・通知の暗号化と送信は web-push
 // （npm パッケージ）に任せる。採用理由は PR 本文を参照
 // （VAPID の JWT 署名・aes128gcm 暗号化を自前実装するコスト・実装ミスのリスクに対し、
@@ -2663,6 +2664,34 @@ function startHttpApi() {
           version: require('./package.json').version,
           appTitle: APP_TITLE,
         }));
+      });
+      return;
+    }
+
+    // GET /api/transcript-evidence?termId=<ペイン番号>&token=<UUID>&since=<エポックミリ秒>（issue #417）
+    //   指示文に埋め込んだ識別子（token）が、そのペインの Claude Code の会話記録に
+    //   since 以降のユーザー発話として現れたかを 1 回だけ確認して即答する（待ち合わせはしない）。
+    //   応答は 200 { result: "delivered"|"pending"|"unknown", reason? }。会話記録の中身・
+    //   ファイルパスは返さず、ログにも出さない。形式不正は 400、存在しない termId は 404。
+    //   認証は上の認証ゲートが担う（免除リストには入れない）。GET のため CSRF 対策
+    //   （isForbiddenOrigin）は他の GET API と同じく掛けない。
+    //   ペインの作業ディレクトリ・エンジンは renderer が terminal:report-states で報告した
+    //   最新値（cwd は OSC 7 で追従した実際の作業ディレクトリ）を使う。照合は utils/transcriptEvidence.js。
+    if (req.method === 'GET' && url.pathname === '/api/transcript-evidence') {
+      buildTranscriptEvidenceResponse({
+        searchParams: url.searchParams,
+        paneExists: (termId) => ptys.has(termId),
+        getPaneState: (termId) => {
+          const entry = Object.values(cachedStates || {}).find((s) => s && String(s.termId) === termId);
+          return entry ? { cwd: entry.cwd, engine: entry.engine } : undefined;
+        },
+      }).then(({ status, body }) => {
+        res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify(body));
+      }).catch(() => {
+        // 例外メッセージにはパスが含まれうるためログへ出さない。
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ result: 'unknown', reason: 'transcript-unreadable' }));
       });
       return;
     }

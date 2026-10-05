@@ -358,6 +358,8 @@ cp config.example.json ~/.vk-terminals/config.json
 ```json
 {
   "initialCommand": "スキルでタスク管理を呼び出して",
+  "initialEngine": "codex",
+  "initialCodexModel": "gpt-5.5",
   "additionalPanes": [
     { "cwd": "/Users/you/Documents/git/your-project" },
     { "cwd": "/Users/you/Documents/git/other-project", "noClaude": true }
@@ -366,6 +368,8 @@ cp config.example.json ~/.vk-terminals/config.json
 ```
 
 - `initialCommand`：1 ペイン目で claude が起動した直後に自動実行されるコマンド。省略または空にすると自動実行は行われません。`--no-claude` 起動時は送信されません。
+- `initialEngine`：起動時の最初のペインで起動する AI エンジン。`"claude"` / `"codex"` のどちらか。省略時・不正値は `"claude"`（従来どおり Claude Code）。`"codex"` にすると、そのペインから追加・分割したペインも Codex を引き継ぎます（issue #394 / #419）。`--no-claude` 起動時は AI を起動しません。
+- `initialCodexModel`：`initialEngine` が `"codex"` のときに最初のペインへ渡すモデル名（`codex --model '<値>'` として起動）。省略時は Codex の既定モデルで起動します。英数字と `.` `_` `-` `[` `]` のみ使用でき、使えない文字を含む場合は無視されます。`initialEngine` が `"claude"` のときは無視されます。
 - `additionalPanes`：起動時に追加で開くペインのリスト。各要素の `cwd`（絶対パス）でペインが分割作成され、その作業ディレクトリで claude が立ち上がります。複数指定可。省略または空配列の場合は 1 ペインのみで起動します。
   - `noClaude: true` を指定すると、そのペインのみ claude を自動起動せず素のシェルとして開きます（省略時は CLI フラグの設定に従う）。
 - `showUsage`：Claude の使用量表示（サイドバー最上部の「Claude使用量」・モバイルページ）の ON/OFF。opt-out 方式で、省略時は ON。明示的に `false` にしたときだけ無効化されます（後述の[Claude 使用量表示](#claude-使用量表示)を参照）。

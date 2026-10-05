@@ -233,6 +233,9 @@ let agentRoomEnabled = false;
 // 値は起動時に main（app:get-config）から取得する。設定反映には再起動が必要（設定パネルの note 参照）。
 let newPaneStartupDir = '';
 let newPaneAutoLaunchClaude = false;
+// 起動時の最初のペインだけが使う AI エンジン・モデル（issue #419）。既定は従来どおり Claude Code。
+let initialPaneEngine = 'claude';
+let initialPaneCodexModel = '';
 // ペインを閉じる時の確認（issue #184）。'never' | 'busy' | 'always'（既定 'busy'）。
 // 値は起動時に main（app:get-config）から取得する。設定反映には再起動が必要（設定パネルの note 参照）。
 let confirmClosePref = 'busy';
@@ -6267,6 +6270,9 @@ async function initApp() {
     agentRoomEnabled = !!(cfg && cfg.agentroom);
     newPaneStartupDir = (cfg && typeof cfg.newPaneStartupDir === 'string') ? cfg.newPaneStartupDir : '';
     newPaneAutoLaunchClaude = !!(cfg && cfg.newPaneAutoLaunchClaude);
+    // main 側で検証済みの値。取得失敗・欠落時は従来どおり Claude Code のまま。
+    initialPaneEngine = (cfg && cfg.initialEngine === 'codex') ? 'codex' : 'claude';
+    initialPaneCodexModel = (cfg && typeof cfg.initialCodexModel === 'string') ? cfg.initialCodexModel : '';
     // main 側でも正規化済みだが、取得失敗・欠落に備えてここでも既定 'busy' に落とす。
     confirmClosePref = normalizeConfirmClose(cfg && cfg.confirmClose);
     // main 側でも正規化済みだが、取得失敗・欠落に備えてここでも既定 'click' に落とす（issue #385）。
@@ -6306,7 +6312,12 @@ async function initApp() {
   tree = { type: 'grid', order: [paneId], colFr: null, rowFr: null, stashOrder: [], sidebarWidth: DEFAULT_SIDEBAR_WIDTH };
   // 起動時の初回ペインも手動の新規ペイン（＋ボタン・分割）と同じく newPaneStartupDir に従う。
   // 存在しないパスは main 側 terminal:create が HOME へフォールバックする。
-  await createTerminal(paneId, newPaneStartupDir || null);
+  // エンジンが Codex の場合だけ engine / model を渡す。Claude のときは options を空にして従来と同一にする。
+  // 以降の追加・分割は withInheritedEngine がこのペインの engine を引き継ぐ（issue #394）。
+  const initialPaneOptions = initialPaneEngine === 'codex'
+    ? { engine: 'codex', ...(initialPaneCodexModel ? { model: initialPaneCodexModel } : {}) }
+    : {};
+  await createTerminal(paneId, newPaneStartupDir || null, initialPaneOptions);
   focusedPaneId = paneId;
 
   render();

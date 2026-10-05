@@ -169,7 +169,7 @@ test.describe.serial('設定パネル: フォーカス・スタイル系（issue
       // .settings-row input:focus の outline: none だけが効くとフォーカス時に何も
       // 表示されなくなる（WCAG 2.4.7 違反）。.settings-check input:focus-visible で
       // 別途アプリ共通のリングを出す指定が効いていることを確認する。
-      const checkboxRow = win.locator('.settings-row-check', { hasText: 'Claude Code を自動的に起動する' });
+      const checkboxRow = win.locator('.settings-row-check', { hasText: 'AI（Claude Code / Codex）を自動的に起動する' });
       const checkbox = checkboxRow.locator('input[type="checkbox"]');
       await expect(checkbox).toBeVisible();
       const checkboxId = await checkbox.getAttribute('id');

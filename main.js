@@ -62,6 +62,10 @@ const {
   isValidEngine,
   buildEngineAwareLaunchCommand,
 } = require('./renderer/claudeModel');
+// 最初のペインで起動する AI エンジン・モデルの設定解決（issue #419）と、
+// ペインのシェルへ渡す環境変数（Volta の bin を PATH へ補う）の組み立て。
+const { resolveInitialPaneLaunch } = require('./utils/initialPaneLaunch');
+const { buildPtyEnv } = require('./utils/ptyEnv');
 const {
   createAgentGenerationStore,
   mergeAgentGenerations,
@@ -1429,11 +1433,15 @@ ipcMain.handle('app:get-config', () => {
   const widgetFile = normalizeTasksWidgetFile(config);
   const tasksFile = normalizeTasksFile(config);
   const commandsFile = normalizeCommandsFile(config);
+  const initialPaneLaunch = resolveInitialPaneLaunch(config);
   return {
     agentroom: false,
     appTitle: APP_TITLE,
     newPaneStartupDir: typeof config.newPaneStartupDir === 'string' ? config.newPaneStartupDir.trim() : '',
     newPaneAutoLaunchClaude: config.newPaneAutoLaunchClaude === true,
+    // 起動時の最初のペインで使う AI エンジン・モデル（issue #419）。不正値・未指定は claude へ正規化済み。
+    initialEngine: initialPaneLaunch.engine,
+    initialCodexModel: initialPaneLaunch.model,
     // ペインを閉じる時の確認（issue #184）。不正値・未指定は既定 'busy' に正規化して渡す。
     confirmClose: normalizeConfirmClose(config.confirmClose),
     // ペイン内 URL のクリック挙動（issue #385）。不正値・未指定は既定 'click' に正規化して渡す。
@@ -1870,7 +1878,7 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
     cols: 80,
     rows: 24,
     cwd: resolvedCwd,
-    env: { ...process.env, TERM_PROGRAM: 'VKTerminals' },
+    env: buildPtyEnv(process.env),
   });
 
   // ペイン作成（pty spawn）時刻。信頼確認プロンプトへの自動 Enter 送信を許可する

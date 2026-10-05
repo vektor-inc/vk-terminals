@@ -138,6 +138,8 @@ async function getFreePort() {
 //     一時ディレクトリのパスを設定値に使いたい場合（例: 自分の cwd に一致する除外パターンを
 //     与えたい spec）は、パスが mkdtemp まで決まらないためオブジェクトの代わりに
 //     ({ tmpRoot, tmpHome, configPath }) => ({ ... }) の関数を渡せる。
+// launchAi: true を渡すと --no-claude を付けず、最初のペインで AI を実際に起動する（既定 false。
+//   起動時の AI エンジン設定を確かめる spec だけが opt-in する。偽の claude / codex を PATH に置いて使う）。
 // budget は起動シーケンス全体で共有する単一の予算。launchAppAndWait から呼ぶ場合は
 // waitForAppReady と同じ budget を渡し、「electron-launch → firstWindow → sidebar-ready」
 // の 3 段を 1 つの絶対予算で管理する。launchApp を単独で呼ぶ spec（#sidebar を
@@ -178,7 +180,7 @@ async function getFreePort() {
 // 別の失敗は、devicePixelRatio 1 の環境でも再現しており上記とは無関係だった。原因と
 // 対応（spec 側の座標計算のみで解決し、この関数・アプリ本体は無改造）は
 // escape-modal-layer-regression.smoke.spec.js 側のコメントを参照。
-async function launchApp({ port, prefix, env = {}, config = {}, budget = createBootBudget(BOOT_TOTAL_BUDGET_MS) }) {
+async function launchApp({ port, prefix, env = {}, config = {}, launchAi = false, budget = createBootBudget(BOOT_TOTAL_BUDGET_MS) }) {
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   let app = null;
   try {
@@ -205,7 +207,7 @@ async function launchApp({ port, prefix, env = {}, config = {}, budget = createB
 
     app = await runStage(budget, 'electron-launch', (fnTimeoutMs) => _electron.launch({
       // --force-device-scale-factor を付けない理由は launchApp 冒頭のコメントを参照（issue #357）。
-      args: ['.', '--no-claude'],
+      args: launchAi ? ['.'] : ['.', '--no-claude'],
       cwd: repoRoot,
       timeout: fnTimeoutMs,
       env: {

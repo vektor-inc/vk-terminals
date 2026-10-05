@@ -89,14 +89,35 @@ test('buildBuiltinSettingsDescriptor: JSON から targetPath 付きの組み込�
     'menuItems',
     'additionalPanes',
     'apiRequireAuthAlways',
+    'initialEngine',
+    'initialCodexModel',
   ]);
+
+  // 追加・分割ペインの AI 自動起動は Claude Code / Codex 共通のため、ラベルとヘルプで両方を示す。
+  const autoLaunchField = fields.find((field) => field.key === 'newPaneAutoLaunchClaude');
+  assert.equal(autoLaunchField.label, 'AI（Claude Code / Codex）を自動的に起動する');
+  assert.match(autoLaunchField.help, /Codex/);
+
+  // initialEngine は「自動起動がオンの場合だけ追加・分割ペインが同じ AI」「additionalPanes は対象外」「再起動後に反映」を示す。
+  const engineField = fields.find((field) => field.key === 'initialEngine');
+  assert.match(engineField.help, /再起動後に反映/);
+  assert.match(engineField.help, /自動的に起動する」がオンの場合だけ/);
+  assert.match(engineField.help, /additionalPanes.*対象外/);
+
+  // initialCodexModel は再起動後反映を示し、許可文字の pattern 検証を持つ（renderer/claudeModel.js と同じ規則）。
+  const codexModelField = fields.find((field) => field.key === 'initialCodexModel');
+  assert.match(codexModelField.help, /再起動後に反映/);
+  assert.equal(typeof codexModelField.invalidMessage, 'string');
+  const codexModelRe = new RegExp(codexModelField.pattern);
+  for (const ok of ['gpt-5.5', 'o3', 'gpt-5[1m]', 'a_b.c-d']) assert.ok(codexModelRe.test(ok), ok);
+  for (const ng of ['-bad', 'a b', 'a;b', "a'b", '$(x)', 'a'.repeat(65)]) assert.ok(!codexModelRe.test(ng), ng);
 
   assert.deepEqual(fields.find((field) => field.key === 'newPaneStartupDir'), {
     key: 'newPaneStartupDir',
     label: '新規ペインを開く時の初期ディレクトリ',
     type: 'text',
     placeholder: '/path/to/project',
-    help: '新規ペインを開く時の作業ディレクトリを絶対パスで指定します。起動時の初回ペインにも適用されます。「Claude Code を自動起動する」設定が有効な場合は Claude もこのディレクトリで起動します。未入力の場合、または存在しないパスの場合はホームディレクトリで起動します。',
+    help: '新規ペインを開く時の作業ディレクトリを絶対パスで指定します。起動時の初回ペインにも適用されます。「AI（Claude Code / Codex）を自動的に起動する」設定が有効な場合は AI もこのディレクトリで起動します。未入力の場合、または存在しないパスの場合はホームディレクトリで起動します。',
   });
   assert.deepEqual(fields.find((field) => field.key === 'confirmClose'), {
     key: 'confirmClose',

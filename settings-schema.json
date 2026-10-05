@@ -226,14 +226,14 @@
           "label": "新規ペインを開く時の初期ディレクトリ",
           "type": "text",
           "placeholder": "/path/to/project",
-          "help": "新規ペインを開く時の作業ディレクトリを絶対パスで指定します。起動時の初回ペインにも適用されます。「Claude Code を自動起動する」設定が有効な場合は Claude もこのディレクトリで起動します。未入力の場合、または存在しないパスの場合はホームディレクトリで起動します。"
+          "help": "新規ペインを開く時の作業ディレクトリを絶対パスで指定します。起動時の初回ペインにも適用されます。「AI（Claude Code / Codex）を自動的に起動する」設定が有効な場合は AI もこのディレクトリで起動します。未入力の場合、または存在しないパスの場合はホームディレクトリで起動します。"
         },
         {
           "key": "newPaneAutoLaunchClaude",
-          "label": "Claude Code を自動的に起動する",
+          "label": "AI（Claude Code / Codex）を自動的に起動する",
           "type": "boolean",
           "default": false,
-          "help": "チェックが入っている場合、新規ペインを開いた時に自動的に Claude Code が起動します。オフの場合は素のターミナルで起動します。"
+          "help": "チェックが入っている場合、ペインの追加・分割時に AI（Claude Code または Codex）が自動で起動します。オフの場合は素のターミナルで開きます。"
         },
         {
           "key": "initialCommand",
@@ -353,7 +353,7 @@
           "label": "起動時の最初のペインの AI エンジン",
           "type": "select",
           "default": "claude",
-          "help": "起動時の最初のペインで起動する AI エンジンです。Codex を選ぶと、そのペインから追加・分割したペインも Codex を引き継ぎます。未設定の場合は Claude Code を起動します。「Claude Code を自動起動する」設定とは独立しており、--no-claude / --plain で起動した場合は AI を起動しません。",
+          "help": "起動時の最初のペインで使う AI を選びます。変更は再起動後に反映されます。そのペインから追加・分割したペインは、「AI（Claude Code / Codex）を自動的に起動する」がオンの場合だけ同じ AI で起動します。起動時に追加で開くペイン（additionalPanes）は対象外です。",
           "options": [
             { "value": "claude", "label": "Claude Code（既定）" },
             { "value": "codex", "label": "Codex" }
@@ -364,7 +364,9 @@
           "label": "起動時の最初のペインの Codex モデル",
           "type": "text",
           "placeholder": "gpt-5.5",
-          "help": "AI エンジンに Codex を選んだ場合に、最初のペインで起動するモデル名です（codex --model で指定する値）。未入力の場合は Codex の既定モデルで起動します。英数字と . _ - [ ] のみ使用できます。使えない文字を含む場合は未入力として扱います。",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._\\-\\[\\]]{0,63}$",
+          "invalidMessage": "モデル名に使えない文字が含まれています。英数字と . _ - [ ] で入力してください。",
+          "help": "Codex を選んだ場合に使うモデル名を入力します。空欄の場合は Codex の既定モデルで起動します。変更は再起動後に反映されます。",
           "visibleWhen": { "key": "initialEngine", "value": "codex" }
         }
       ]

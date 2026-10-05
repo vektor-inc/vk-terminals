@@ -1,7 +1,10 @@
 # Changelog
 
+## 1.68.0
+
 - [ 機能追加 ] 起動時の最初のペインで使う AI エンジンを設定（`initialEngine`）で Claude Code か Codex から選べるように追加。Codex を選んだ場合は起動モデルも設定（`initialCodexModel`）で指定でき、そのペインから追加・分割したペインも Codex を引き継ぐ。未設定なら従来どおり Claude Code を起動（[#419](https://github.com/vektor-inc/vk-terminals/issues/419)）
 - [ 不具合修正 ] Volta で導入した `codex` などのコマンドが、ペインのシェルの PATH に載らず `command not found` で起動できないことがある不具合を修正（[#419](https://github.com/vektor-inc/vk-terminals/issues/419)）
+
 ## 1.67.0
 
 - [ 機能追加 ] 指示文がペインの Claude Code に届いたかを、会話記録から確認できる HTTP API（`GET /api/transcript-evidence`）を追加。あわせて `GET /api/states` の各ペインにエンジン名（`engine`）を追加（[#417](https://github.com/vektor-inc/vk-terminals/issues/417)）

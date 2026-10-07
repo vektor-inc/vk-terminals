@@ -6096,6 +6096,10 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
       }
       syncEntryDescribedBy(id);
     }
+    // 区分（issue #421）: 中の項目がすべて隠れたら、見出し・説明文・区切り線も残さず区分ごと隠す。
+    for (const sectionEl of modal.querySelectorAll('fieldset.settings-section')) {
+      sectionEl.hidden = !sectionEl.querySelector('.settings-row:not([hidden])');
+    }
     // 表ブロック・一括切り替えボタン（issue #380）も、入力欄の表示・無効化と同じ
     // 発火点（applyFieldState）で再計算する。useTabbedSettings が false のときは
     // no-op（宣言側の既定値のまま）。

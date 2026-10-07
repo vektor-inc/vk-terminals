@@ -80,6 +80,7 @@ test.describe.serial('設定パネル: 項目の区分（section）の描画（i
     await expect(win.locator(`#${descId}`)).toHaveText('区分一の説明です。');
     await expect(first.locator(`#${descId}`)).toHaveClass(/settings-section-description/);
 
+    // 説明文のある区分が複数あっても id は別々になる（後述の別テストで 2 区分以上を確認）。
     // 読み上げ名: 入力欄は外側・内側の両方の fieldset 配下にある。
     const a1 = win.getByLabel('欄A1', { exact: true });
     await expect(a1.locator('xpath=ancestor::fieldset')).toHaveCount(2);
@@ -136,5 +137,67 @@ test.describe.serial('設定パネル: 項目の区分（section）の描画（i
     await expect(win.locator('fieldset.settings-group')).toHaveCount(1);
     await expect(win.locator('fieldset.settings-section')).toHaveCount(0);
     await expect(win.locator('fieldset.settings-group > .settings-row')).toHaveCount(2);
+  });
+
+  test('区分内の項目がすべて隠れたら区分ごと隠れ、条件が戻れば再表示される', async () => {
+    await installDescriptorRecordingSaves(win, baseDescriptor([{
+      label: '外側グループ',
+      fields: [
+        { key: 'engine', label: 'エンジン', type: 'select', options: [{ value: 'claude', label: 'Claude' }, { value: 'codex', label: 'Codex' }] },
+        {
+          key: 'codexModel',
+          label: 'Codex モデル',
+          type: 'text',
+          section: { label: 'Codex 区分', description: 'Codex の説明' },
+          visibleWhen: { key: 'engine', value: 'codex' },
+        },
+      ],
+    }], { engine: 'claude', codexModel: 'm' }));
+
+    await win.evaluate(() => window.openSettingsModal());
+    const section = win.locator('fieldset.settings-section');
+    await expect(section).toBeHidden();
+    await expect(section.locator('legend')).toBeHidden();
+    await win.getByLabel('エンジン', { exact: true }).selectOption('codex');
+    await expect(section).toBeVisible();
+    await expect(section.locator('legend')).toBeVisible();
+    await win.getByLabel('エンジン', { exact: true }).selectOption('claude');
+    await expect(section).toBeHidden();
+  });
+
+  test('説明文のある複数の区分は説明文の id がそれぞれ別になり、タブ移動リンクで区分内の入力欄に着地する', async () => {
+    await installDescriptorRecordingSaves(win, {
+      ...baseDescriptor([{
+        label: '外側グループ',
+        tab: 'fields',
+        fields: [
+          { key: 'a1', label: '欄A1', type: 'text', section: { label: '区分一', description: '説明一' } },
+          { key: 'b1', label: '欄B1', type: 'text', section: { label: '区分二', description: '説明二' } },
+        ],
+      }], { a1: 'A', b1: 'B' }),
+      tabs: [
+        {
+          id: 'guide',
+          label: 'ガイド',
+          content: [{ type: 'tabLink', label: '欄B1へ移動', tab: 'fields', field: 'b1' }],
+        },
+        { id: 'fields', label: '設定' },
+      ],
+    });
+
+    await win.evaluate(() => window.openSettingsModal());
+    const ids = await win.locator('fieldset.settings-section').evaluateAll(
+      (els) => els.map((el) => el.getAttribute('aria-describedby'))
+    );
+    expect(ids).toHaveLength(2);
+    expect(ids[0]).toBeTruthy();
+    expect(ids[1]).toBeTruthy();
+    expect(new Set(ids).size).toBe(2);
+    await expect(win.locator(`#${ids[0]}`)).toHaveText('説明一');
+    await expect(win.locator(`#${ids[1]}`)).toHaveText('説明二');
+
+    await win.getByRole('tab', { name: 'ガイド' }).click();
+    await win.getByRole('button', { name: '欄B1へ移動' }).click();
+    await expect(win.getByLabel('欄B1', { exact: true })).toBeFocused();
   });
 });

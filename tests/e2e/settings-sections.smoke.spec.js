@@ -165,6 +165,56 @@ test.describe.serial('設定パネル: 項目の区分（section）の描画（i
     await expect(section).toBeHidden();
   });
 
+  test('先頭の区分が隠れたとき、表示中の最初の区分は区切り線なしになり、戻れば次の区分に線が戻る', async () => {
+    await installDescriptorRecordingSaves(win, baseDescriptor([{
+      label: '切り替え',
+      fields: [
+        { key: 'engine', label: 'エンジン', type: 'select', options: [{ value: 'claude', label: 'Claude' }, { value: 'codex', label: 'Codex' }] },
+      ],
+    }, {
+      label: '区分グループ',
+      fields: [
+        {
+          key: 'c1',
+          label: 'Codex 欄',
+          type: 'text',
+          section: { label: '先頭区分', description: '先頭の説明' },
+          visibleWhen: { key: 'engine', value: 'codex' },
+        },
+        { key: 'o1', label: '常時欄', type: 'text', section: { label: '二番目区分' } },
+      ],
+    }], { engine: 'claude', c1: 'x', o1: 'y' }));
+
+    await win.evaluate(() => window.openSettingsModal());
+    const second = win.locator('fieldset.settings-section', { hasText: '二番目区分' });
+    const borderTop = () => second.evaluate((el) => {
+      const cs = getComputedStyle(el);
+      return { width: cs.borderTopWidth, margin: cs.marginTop };
+    });
+    // 先頭区分が隠れている間は、2 番目の区分が先頭として扱われ線も上余白も無い。
+    expect(await borderTop()).toEqual({ width: '0px', margin: '0px' });
+    await win.getByLabel('エンジン', { exact: true }).selectOption('codex');
+    // 先頭区分が表示されると、2 番目の区分には区切り線が戻る。
+    expect(await borderTop()).toEqual({ width: '1px', margin: '18px' });
+    await win.getByLabel('エンジン', { exact: true }).selectOption('claude');
+    expect(await borderTop()).toEqual({ width: '0px', margin: '0px' });
+  });
+
+  test('区分の説明文の直後の行は上余白 10px が効く', async () => {
+    await installDescriptorRecordingSaves(win, baseDescriptor([{
+      label: '外側グループ',
+      fields: [
+        { key: 'a1', label: '欄A1', type: 'text', section: { label: '区分一', description: '説明' } },
+        { key: 'a2', label: '欄A2', type: 'text' },
+      ],
+    }], { a1: 'A', a2: 'B' }));
+
+    await win.evaluate(() => window.openSettingsModal());
+    const margin = await win.locator('.settings-section-description + .settings-row')
+      .evaluate((el) => getComputedStyle(el).marginTop);
+    expect(margin).toBe('10px');
+  });
+
   test('説明文のある複数の区分は説明文の id がそれぞれ別になり、タブ移動リンクで区分内の入力欄に着地する', async () => {
     await installDescriptorRecordingSaves(win, {
       ...baseDescriptor([{

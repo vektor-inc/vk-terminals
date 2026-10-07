@@ -1008,6 +1008,11 @@ h4.settings-content-heading {
   margin-top: 0;
   border-top: 0;
 }
+/* 先頭の区分が visibleWhen で隠れたとき、表示中の最初の区分に applyFieldState が付けるクラス。 */
+.settings-group > .settings-section.settings-section-first {
+  margin-top: 0;
+  border-top: 0;
+}
 .settings-group .settings-section legend {
   padding: 0 6px 0 0;
   color: #c9d1d9;
@@ -1021,7 +1026,8 @@ h4.settings-content-heading {
   font-size: 12px;
   line-height: 1.5;
 }
-.settings-section-description + .settings-row {
+/* 詳細度を .settings-row:first-of-type（0,2,0）より上げ、ソース順に依らず 10px が効くようにする。 */
+.settings-section .settings-section-description + .settings-row {
   margin-top: 10px;
 }
 .settings-group-target {

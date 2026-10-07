@@ -6100,6 +6100,18 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
     for (const sectionEl of modal.querySelectorAll('fieldset.settings-section')) {
       sectionEl.hidden = !sectionEl.querySelector('.settings-row:not([hidden])');
     }
+    // 先頭の区分が隠れても、表示中の最初の区分（手前に表示中の項目が無いもの）は区切り線なしにする。
+    for (const groupEl of modal.querySelectorAll('fieldset.settings-group')) {
+      let hasVisibleBefore = false;
+      for (const child of groupEl.children) {
+        if (child.matches('fieldset.settings-section')) {
+          child.classList.toggle('settings-section-first', !child.hidden && !hasVisibleBefore);
+          if (!child.hidden) hasVisibleBefore = true;
+        } else if (child.matches('.settings-row') && !child.hidden) {
+          hasVisibleBefore = true;
+        }
+      }
+    }
     // 表ブロック・一括切り替えボタン（issue #380）も、入力欄の表示・無効化と同じ
     // 発火点（applyFieldState）で再計算する。useTabbedSettings が false のときは
     // no-op（宣言側の既定値のまま）。

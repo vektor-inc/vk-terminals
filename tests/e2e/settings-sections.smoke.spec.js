@@ -1,0 +1,253 @@
+const { test, expect } = require('@playwright/test');
+const { closeApp, getFreePort, launchAppAndWait } = require('./helpers/electron-app');
+const {
+  installDescriptorRecordingSaves,
+  lastSavedPayload,
+  restoreInvoke,
+} = require('./helpers/settings-descriptor');
+
+// issue #421: 項目の section 属性で、1 つのグループの中を内側 fieldset + legend の区分に分ける。
+test.describe.serial('設定パネル: 項目の区分（section）の描画（issue #421）', () => {
+  let app;
+  let win;
+  let tmpRoot;
+
+  test.beforeAll(async () => {
+    const port = await getFreePort();
+    ({ app, win, tmpRoot } = await launchAppAndWait({
+      port,
+      prefix: 'vk-terminals-e2e-settings-sections-',
+    }));
+  });
+
+  test.afterAll(async () => {
+    await closeApp({ app, tmpRoot });
+  });
+
+  test.beforeEach(async () => {
+    await win.reload();
+    await win.waitForSelector('#sidebar', { state: 'attached' });
+  });
+
+  test.afterEach(async () => {
+    await restoreInvoke(win);
+  });
+
+  const baseDescriptor = (groups, values) => ({
+    available: true,
+    title: '区分確認',
+    note: '',
+    targetPath: '/tmp/settings-sections.json',
+    appVersion: '0.0.0-test',
+    groups,
+    values,
+  });
+
+  test('区分を内側の fieldset と legend で描き、説明文を aria-describedby で関連づける', async () => {
+    await installDescriptorRecordingSaves(win, baseDescriptor([{
+      label: '外側グループ',
+      fields: [
+        { key: 'lead', label: '区分外の欄', type: 'text' },
+        {
+          key: 'a1',
+          label: '欄A1',
+          type: 'text',
+          section: { label: '区分一', description: '区分一の説明です。' },
+        },
+        { key: 'a2', label: '欄A2', type: 'text' },
+        // 説明文なし。型が不正な description は空として扱い aria-describedby を付けない。
+        { key: 'b1', label: '欄B1', type: 'text', section: { label: '<b>区分二</b>', description: 5 } },
+        // 型が不正な section は無視して直前の区分（区分二）に残る。
+        { key: 'b2', label: '欄B2', type: 'text', section: 'broken' },
+      ],
+    }], { lead: 'L', a1: 'A1', a2: 'A2', b1: 'B1', b2: 'B2' }));
+
+    await win.evaluate(() => window.openSettingsModal());
+    await expect(win.locator('.settings-modal')).toBeVisible();
+
+    const outer = win.locator('fieldset.settings-group');
+    await expect(outer).toHaveCount(1);
+    await expect(outer.locator('fieldset.settings-section')).toHaveCount(2);
+
+    // 区分外の欄は外側グループ直下（内側 fieldset の外）に残る。
+    await expect(outer.locator(':scope > .settings-row #set-field-0')).toHaveCount(1);
+
+    const first = outer.locator('fieldset.settings-section').nth(0);
+    await expect(first.locator('legend')).toHaveText('区分一');
+    await expect(first.locator('input')).toHaveCount(2);
+    const descId = await first.getAttribute('aria-describedby');
+    expect(descId).toBeTruthy();
+    await expect(win.locator(`#${descId}`)).toHaveText('区分一の説明です。');
+    await expect(first.locator(`#${descId}`)).toHaveClass(/settings-section-description/);
+
+    // 説明文のある区分が複数あっても id は別々になる（後述の別テストで 2 区分以上を確認）。
+    // 読み上げ名: 入力欄は外側・内側の両方の fieldset 配下にある。
+    const a1 = win.getByLabel('欄A1', { exact: true });
+    await expect(a1.locator('xpath=ancestor::fieldset')).toHaveCount(2);
+
+    // label は HTML ではなくテキストとして出す。説明文が無ければ aria-describedby も無い。
+    const second = outer.locator('fieldset.settings-section').nth(1);
+    await expect(second.locator('legend')).toHaveText('<b>区分二</b>');
+    await expect(second.locator('legend b')).toHaveCount(0);
+    await expect(second).not.toHaveAttribute('aria-describedby');
+    await expect(second.locator('input')).toHaveCount(2);
+
+    // 内側は枠線なし・上側だけ区切り線。
+    const border = await first.evaluate((el) => {
+      const s = getComputedStyle(el);
+      return { top: s.borderTopWidth, left: s.borderLeftWidth, bottom: s.borderBottomWidth };
+    });
+    expect(border).toEqual({ top: '1px', left: '0px', bottom: '0px' });
+  });
+
+  test('区分があっても保存値・disabledWhen の連動は変わらない', async () => {
+    await installDescriptorRecordingSaves(win, baseDescriptor([{
+      label: '外側グループ',
+      fields: [
+        { key: 'engine', label: 'エンジン', type: 'select', options: [{ value: 'claude', label: 'Claude' }, { value: 'codex', label: 'Codex' }], section: { label: '区分一' } },
+        { key: 'model', label: 'モデル', type: 'text', section: { label: '区分二' }, disabledWhen: { key: 'engine', value: 'codex' }, disabledReason: 'Codex 中は変更できません。' },
+      ],
+    }], { engine: 'claude', model: 'm1' }));
+
+    await win.evaluate(() => window.openSettingsModal());
+    const model = win.getByLabel('モデル', { exact: true });
+    await expect(model).toBeEnabled();
+    await win.getByLabel('エンジン', { exact: true }).selectOption('codex');
+    await expect(model).toBeDisabled();
+
+    await win.getByLabel('エンジン', { exact: true }).selectOption('claude');
+    await model.fill('m2');
+    await win.locator('.settings-save').click();
+    await expect(win.locator('.settings-msg')).toHaveClass(/ok/);
+    const payload = await lastSavedPayload(win);
+    expect(payload.engine).toBe('claude');
+    expect(payload.model).toBe('m2');
+  });
+
+  test('section の無い項目は従来どおり内側 fieldset を作らない', async () => {
+    await installDescriptorRecordingSaves(win, baseDescriptor([{
+      label: '区分なし',
+      fields: [
+        { key: 'x', label: '欄X', type: 'text' },
+        { key: 'y', label: '欄Y', type: 'text', section: { label: '', description: 'x' } },
+      ],
+    }], { x: 'X', y: 'Y' }));
+
+    await win.evaluate(() => window.openSettingsModal());
+    await expect(win.locator('fieldset.settings-group')).toHaveCount(1);
+    await expect(win.locator('fieldset.settings-section')).toHaveCount(0);
+    await expect(win.locator('fieldset.settings-group > .settings-row')).toHaveCount(2);
+  });
+
+  test('区分内の項目がすべて隠れたら区分ごと隠れ、条件が戻れば再表示される', async () => {
+    await installDescriptorRecordingSaves(win, baseDescriptor([{
+      label: '外側グループ',
+      fields: [
+        { key: 'engine', label: 'エンジン', type: 'select', options: [{ value: 'claude', label: 'Claude' }, { value: 'codex', label: 'Codex' }] },
+        {
+          key: 'codexModel',
+          label: 'Codex モデル',
+          type: 'text',
+          section: { label: 'Codex 区分', description: 'Codex の説明' },
+          visibleWhen: { key: 'engine', value: 'codex' },
+        },
+      ],
+    }], { engine: 'claude', codexModel: 'm' }));
+
+    await win.evaluate(() => window.openSettingsModal());
+    const section = win.locator('fieldset.settings-section');
+    await expect(section).toBeHidden();
+    await expect(section.locator('legend')).toBeHidden();
+    await win.getByLabel('エンジン', { exact: true }).selectOption('codex');
+    await expect(section).toBeVisible();
+    await expect(section.locator('legend')).toBeVisible();
+    await win.getByLabel('エンジン', { exact: true }).selectOption('claude');
+    await expect(section).toBeHidden();
+  });
+
+  test('先頭の区分が隠れたとき、表示中の最初の区分は区切り線なしになり、戻れば次の区分に線が戻る', async () => {
+    await installDescriptorRecordingSaves(win, baseDescriptor([{
+      label: '切り替え',
+      fields: [
+        { key: 'engine', label: 'エンジン', type: 'select', options: [{ value: 'claude', label: 'Claude' }, { value: 'codex', label: 'Codex' }] },
+      ],
+    }, {
+      label: '区分グループ',
+      fields: [
+        {
+          key: 'c1',
+          label: 'Codex 欄',
+          type: 'text',
+          section: { label: '先頭区分', description: '先頭の説明' },
+          visibleWhen: { key: 'engine', value: 'codex' },
+        },
+        { key: 'o1', label: '常時欄', type: 'text', section: { label: '二番目区分' } },
+      ],
+    }], { engine: 'claude', c1: 'x', o1: 'y' }));
+
+    await win.evaluate(() => window.openSettingsModal());
+    const second = win.locator('fieldset.settings-section', { hasText: '二番目区分' });
+    const borderTop = () => second.evaluate((el) => {
+      const cs = getComputedStyle(el);
+      return { width: cs.borderTopWidth, margin: cs.marginTop };
+    });
+    // 先頭区分が隠れている間は、2 番目の区分が先頭として扱われ線も上余白も無い。
+    expect(await borderTop()).toEqual({ width: '0px', margin: '0px' });
+    await win.getByLabel('エンジン', { exact: true }).selectOption('codex');
+    // 先頭区分が表示されると、2 番目の区分には区切り線が戻る。
+    expect(await borderTop()).toEqual({ width: '1px', margin: '18px' });
+    await win.getByLabel('エンジン', { exact: true }).selectOption('claude');
+    expect(await borderTop()).toEqual({ width: '0px', margin: '0px' });
+  });
+
+  test('区分の説明文の直後の行は上余白 10px が効く', async () => {
+    await installDescriptorRecordingSaves(win, baseDescriptor([{
+      label: '外側グループ',
+      fields: [
+        { key: 'a1', label: '欄A1', type: 'text', section: { label: '区分一', description: '説明' } },
+        { key: 'a2', label: '欄A2', type: 'text' },
+      ],
+    }], { a1: 'A', a2: 'B' }));
+
+    await win.evaluate(() => window.openSettingsModal());
+    const margin = await win.locator('.settings-section-description + .settings-row')
+      .evaluate((el) => getComputedStyle(el).marginTop);
+    expect(margin).toBe('10px');
+  });
+
+  test('説明文のある複数の区分は説明文の id がそれぞれ別になり、タブ移動リンクで区分内の入力欄に着地する', async () => {
+    await installDescriptorRecordingSaves(win, {
+      ...baseDescriptor([{
+        label: '外側グループ',
+        tab: 'fields',
+        fields: [
+          { key: 'a1', label: '欄A1', type: 'text', section: { label: '区分一', description: '説明一' } },
+          { key: 'b1', label: '欄B1', type: 'text', section: { label: '区分二', description: '説明二' } },
+        ],
+      }], { a1: 'A', b1: 'B' }),
+      tabs: [
+        {
+          id: 'guide',
+          label: 'ガイド',
+          content: [{ type: 'tabLink', label: '欄B1へ移動', tab: 'fields', field: 'b1' }],
+        },
+        { id: 'fields', label: '設定' },
+      ],
+    });
+
+    await win.evaluate(() => window.openSettingsModal());
+    const ids = await win.locator('fieldset.settings-section').evaluateAll(
+      (els) => els.map((el) => el.getAttribute('aria-describedby'))
+    );
+    expect(ids).toHaveLength(2);
+    expect(ids[0]).toBeTruthy();
+    expect(ids[1]).toBeTruthy();
+    expect(new Set(ids).size).toBe(2);
+    await expect(win.locator(`#${ids[0]}`)).toHaveText('説明一');
+    await expect(win.locator(`#${ids[1]}`)).toHaveText('説明二');
+
+    await win.getByRole('tab', { name: 'ガイド' }).click();
+    await win.getByRole('button', { name: '欄B1へ移動' }).click();
+    await expect(win.getByLabel('欄B1', { exact: true })).toBeFocused();
+  });
+});

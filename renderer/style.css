@@ -989,6 +989,47 @@ h4.settings-content-heading {
   font-size: 13px;
   font-weight: 600;
 }
+/* 区分（issue #421）: 外側の .settings-group の中の内側 fieldset。枠線は付けず、上側の
+   区切り線と小見出し風の文字だけにして、枠が二重に見えないようにする。
+   小見出しは配下のラベル（.settings-label）より暗く小さくならないよう #c9d1d9 / 13px / 600。 */
+.settings-group .settings-section {
+  min-width: 0;
+  margin: 18px 0 0;
+  padding: 0;
+  border: 0;
+  border-top: 1px solid #21262d;
+}
+.settings-group .settings-section[hidden] { display: none; }
+/* グループ先頭（legend・保存先表示の直後、または legend 省略時の先頭）の区分は、
+   外側の枠線と二重にならないよう区切り線と上余白を消す。 */
+.settings-group > .settings-section:first-child,
+.settings-group > legend + .settings-section,
+.settings-group > .settings-group-target + .settings-section {
+  margin-top: 0;
+  border-top: 0;
+}
+/* 先頭の区分が visibleWhen で隠れたとき、表示中の最初の区分に applyFieldState が付けるクラス。 */
+.settings-group > .settings-section.settings-section-first {
+  margin-top: 0;
+  border-top: 0;
+}
+.settings-group .settings-section legend {
+  padding: 0 6px 0 0;
+  color: #c9d1d9;
+  font-size: 13px;
+  font-weight: 600;
+}
+/* 区分の説明文。入力欄の説明文（.settings-help）と同じ 12px / #c9d1d9（経緯は .settings-help のコメント）。 */
+.settings-section-description {
+  margin: 6px 0 0;
+  color: #c9d1d9;
+  font-size: 12px;
+  line-height: 1.5;
+}
+/* 詳細度を .settings-row:first-of-type（0,2,0）より上げ、ソース順に依らず 10px が効くようにする。 */
+.settings-section .settings-section-description + .settings-row {
+  margin-top: 10px;
+}
 .settings-group-target {
   margin-bottom: 8px;
   padding-left: 6px;

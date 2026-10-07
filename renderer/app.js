@@ -4932,11 +4932,27 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
   const settingsSaveHintId = 'settings-save-hint';
   // ダイアログ名（支援技術の読み上げ）に見出しを使うための id。
   const settingsTitleId = 'settings-modal-title';
+  // 区分の説明文 id を一意にするためのモーダル全体の連番（タブ・グループをまたぐ）。
+  let settingsSectionCount = 0;
   const renderGroupHtml = (g, options = {}) => {
-    const rows = (g.fields || []).map(f => {
+    const renderRow = (f) => {
       const id = 'set-field-' + entries.length;
       entries.push({ field: f, id, tabIndex: options.tabIndex });
       return renderSettingsField(f, desc.values[f.key], id);
+    };
+    // section 属性の付いた項目から次の区分の手前までを、外側グループの中の内側 fieldset にする
+    // （issue #421）。属性の無い項目は従来どおり外側の直下へ描く。行の描画順（= entries の
+    // 採番順）は区分の有無で変えない。label / description は escText でテキストとして出す。
+    const rows = VKSettingsSections.splitFieldsIntoSections(g.fields || []).map(({ section, fields }) => {
+      const rowsHtml = fields.map(renderRow).join('');
+      if (!section) return rowsHtml;
+      settingsSectionCount += 1;
+      const descId = `settings-section-desc-${settingsSectionCount}`;
+      const descHtml = section.description
+        ? `<p class="settings-section-description" id="${escAttr(descId)}">${escText(section.description)}</p>`
+        : '';
+      const describedBy = section.description ? ` aria-describedby="${escAttr(descId)}"` : '';
+      return `<fieldset class="settings-section"${describedBy}><legend>${escText(section.label)}</legend>${descHtml}${rowsHtml}</fieldset>`;
     }).join('');
     const groupTargets = Array.isArray(g.targetPaths) ? g.targetPaths : [];
     const groupTargetHtml = !useTabbedSettings && desc.hasMultipleTargets && groupTargets.length
@@ -6079,6 +6095,22 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
         if (!visible) clearFieldValidity(field, id);
       }
       syncEntryDescribedBy(id);
+    }
+    // 区分（issue #421）: 中の項目がすべて隠れたら、見出し・説明文・区切り線も残さず区分ごと隠す。
+    for (const sectionEl of modal.querySelectorAll('fieldset.settings-section')) {
+      sectionEl.hidden = !sectionEl.querySelector('.settings-row:not([hidden])');
+    }
+    // 先頭の区分が隠れても、表示中の最初の区分（手前に表示中の項目が無いもの）は区切り線なしにする。
+    for (const groupEl of modal.querySelectorAll('fieldset.settings-group')) {
+      let hasVisibleBefore = false;
+      for (const child of groupEl.children) {
+        if (child.matches('fieldset.settings-section')) {
+          child.classList.toggle('settings-section-first', !child.hidden && !hasVisibleBefore);
+          if (!child.hidden) hasVisibleBefore = true;
+        } else if (child.matches('.settings-row') && !child.hidden) {
+          hasVisibleBefore = true;
+        }
+      }
     }
     // 表ブロック・一括切り替えボタン（issue #380）も、入力欄の表示・無効化と同じ
     // 発火点（applyFieldState）で再計算する。useTabbedSettings が false のときは

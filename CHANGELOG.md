@@ -1,5 +1,7 @@
 # Changelog
 
+## 1.69.0
+
 - [ 機能追加 ] 設定ディスクリプタの項目に `section`（`{ label, description }`）を付けると、設定画面の 1 つのグループの中を小見出し付きの区分に分けて表示できるように追加（[#421](https://github.com/vektor-inc/vk-terminals/issues/421)）
 
 ## 1.68.0

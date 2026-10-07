@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 機能追加 ] 設定ディスクリプタの項目に `section`（`{ label, description }`）を付けると、設定画面の 1 つのグループの中を小見出し付きの区分に分けて表示できるように追加（[#421](https://github.com/vektor-inc/vk-terminals/issues/421)）
+
 ## 1.68.0
 
 - [ 機能追加 ] 起動時の最初のペインで使う AI エンジンを設定（`initialEngine`）で Claude Code か Codex から選べるように追加。Codex を選んだ場合は起動モデルも設定（`initialCodexModel`）で指定でき、そのペインから追加・分割したペインも Codex を引き継ぐ。未設定なら従来どおり Claude Code を起動（[#419](https://github.com/vektor-inc/vk-terminals/issues/419)）

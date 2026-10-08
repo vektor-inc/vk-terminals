@@ -369,7 +369,7 @@ cp config.example.json ~/.vk-terminals/config.json
 
 - `initialCommand`：1 ペイン目で claude が起動した直後に自動実行されるコマンド。省略または空にすると自動実行は行われません。`--no-claude` 起動時は送信されません。
 - `initialEngine`：起動時の最初のペインで起動する AI エンジン。`"claude"` / `"codex"` のどちらか。省略時・不正値は `"claude"`（従来どおり Claude Code）。`"codex"` にすると、そのペインから追加・分割したペインも Codex を引き継ぎます（issue #394 / #419）。追加・分割したペインで AI が自動起動するのは `newPaneAutoLaunchClaude`（設定パネルの「AI（Claude Code / Codex）を自動的に起動する」。キー名は互換性のため `Claude` のまま）が有効な場合だけです。`--no-claude` / `--plain` で起動した場合は AI を起動しません。起動時に追加で開く `additionalPanes` は対象外で、この設定の影響を受けません。変更は再起動後に反映されます。
-- `initialCodexModel`：`initialEngine` が `"codex"` のときに最初のペインへ渡すモデル名（`codex --model '<値>'` として起動）。省略時は Codex の既定モデルで起動します。使用できるのは英数字と `.` `_` `-` `[` `]`（先頭は英数字、64 文字以内）です。設定パネルでは使えない文字を含むとエラーが表示され保存できません。`config.json` を直接編集して使えない文字を含めた場合は無視され、既定モデルで起動します。`initialEngine` が `"claude"` のときは無視されます。
+- `initialCodexModel`：`initialEngine` が `"codex"` のときに最初のペインへ渡すモデル名（`codex --no-daemon --model '<値>'` として起動）。省略時は `codex --no-daemon` で Codex の既定モデルを起動します。使用できるのは英数字と `.` `_` `-` `[` `]`（先頭は英数字、64 文字以内）です。設定パネルでは使えない文字を含むとエラーが表示され保存できません。`config.json` を直接編集して使えない文字を含めた場合は無視され、既定モデルで起動します。`initialEngine` が `"claude"` のときは無視されます。
 - `additionalPanes`：起動時に追加で開くペインのリスト。各要素の `cwd`（絶対パス）でペインが分割作成され、その作業ディレクトリで claude が立ち上がります。複数指定可。省略または空配列の場合は 1 ペインのみで起動します。
   - `noClaude: true` を指定すると、そのペインのみ claude を自動起動せず素のシェルとして開きます（省略時は CLI フラグの設定に従う）。
 - `showUsage`：Claude の使用量表示（サイドバー最上部の「Claude使用量」・モバイルページ）の ON/OFF。opt-out 方式で、省略時は ON。明示的に `false` にしたときだけ無効化されます（後述の[Claude 使用量表示](#claude-使用量表示)を参照）。
@@ -894,7 +894,7 @@ curl -s -X POST http://127.0.0.1:13847/api/new-pane \
 - `noClaude`：`true` の場合、新規ペインで AI を自動起動せず素のシェルとして開く。未指定なら起動時の `--no-claude` フラグの値に従う。名前が `claude` 前提になっているのは歴史的経緯で、`engine: "codex"` と併用した場合も同様に無効化されます（AI は一切起動しません）。
 - `engine`：新規ペインで起動する AI エンジン。指定できるのは `"claude"` / `"codex"` のみ（許可リスト方式）。**明示的に指定した場合は常にその値が使われます**。未指定の場合、この HTTP API を直接呼び出す既存の呼び出し元（vk-orchestrator 等）は従来どおり `"claude"` を起動します＝影響はありません。一方、アプリ画面から操作した場合（デスクトップの ＋ / 分割ボタン、モバイルの `useDefaults: true` を伴う「ペインを追加」ボタン）は、操作元ペイン（デスクトップの ＋ / 分割ボタン）または分割先となるペイン（表示面積が最大のペイン。無ければフォーカス中のペイン。モバイルの `useDefaults: true`）で実際に使われている engine を引き継ぎます（issue #394）。それ以外の値（未対応の文字列・空文字・文字列以外）は `400` で拒否され、**ペインは作成されません**。
 - `stashed`：`true` の場合、新規ペインをサイドバー格納＋折りたたみ状態で開く。未指定または `false` ならグリッドに追加。
-- `model`：新規ペインで起動する AI エンジンのモデル名。`engine: "claude"`（省略時含む）では `claude --model '<model>'`、`engine: "codex"` では `codex --model '<model>'` として実行されます。Claude Code では `sonnet` / `opus` や `claude-opus-5[1m]`、Codex では `gpt-5.6-sol` / `gpt-5.5` / `o3` のような値を指定できます。**未指定の場合は選択したエンジンを引数なしで実行**し、各エンジン側のデフォルトモデルで起動します。
+- `model`：新規ペインで起動する AI エンジンのモデル名。`engine: "claude"`（省略時含む）では `claude --model '<model>'`、`engine: "codex"` では `codex --no-daemon --model '<model>'` として実行されます。Claude Code では `sonnet` / `opus` や `claude-opus-5[1m]`、Codex では `gpt-5.6-sol` / `gpt-5.5` / `o3` のような値を指定できます。未指定の場合、Claude Code は引数なし、Codex は `--no-daemon` 付きで実行し、各エンジン側のデフォルトモデルで起動します。
   - 指定できるのは **英数字・`.`・`_`・`-`・`[`・`]` のみ、64 文字以内、先頭は英数字** の文字列。それ以外の文字（空白・`;`・`&`・`` ` ``・`$`・引用符・改行など）を含む値、長すぎる値、文字列でない値は、どちらの `engine` でも `400` で拒否され、**ペインは作成されません**（値が実在するモデル名かどうかまでは検証していません。文字種・長さのチェックのみです）。
   - 値が選択した `engine` に対応するモデル名かどうかは検証しません。エンジンに合わないモデル名を渡すとペインは作成されますが、AI 側の起動時にエラーになります。呼び出し側で `engine` と `model` の組み合わせを確認してから送信してください。
   - `noClaude: true` と同時に指定した場合は AI を起動しないため、`model` は無視されます。
@@ -905,7 +905,7 @@ curl -s -X POST http://127.0.0.1:13847/api/new-pane \
 |---|---|---|
 | `noClaude: true` | 最優先 | `engine`・`model` の指定にかかわらず AI を起動せず素のシェルを開く |
 | `engine` | 次点 | `"claude"`（省略時の既定）なら Claude Code、`"codex"` なら Codex を起動 |
-| `model` | 選択した `engine` に適用 | Claude Code は `claude --model '<値>'`、Codex は `codex --model '<値>'` として起動 |
+| `model` | 選択した `engine` に適用 | Claude Code は `claude --model '<値>'`、Codex は `codex --no-daemon --model '<値>'` として起動 |
 
 ただし `engine` 自体の値が不正な場合（許可リストに無い文字列・文字列以外など）は、`noClaude` の値によらず `400` で拒否されペインは作成されません。`model` が不正な場合も同様に、どちらの `engine` でも `noClaude` の値によらず `400` で拒否されます（`{"noClaude": true, "model": "bad;value"}` のような組み合わせでも `400 invalid model` になります）。いずれも、不正値のチェックは `noClaude` の反映より先に行われるためです。
 

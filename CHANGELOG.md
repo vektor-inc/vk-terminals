@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 不具合修正 ] Codex ペインの起動時に共有 daemon の設定と衝突し、選択画面で停止する不具合を修正（[#423](https://github.com/vektor-inc/vk-terminals/issues/423)）
+
 ## 1.69.0
 
 - [ 機能追加 ] 設定ディスクリプタの項目に `section`（`{ label, description }`）を付けると、設定画面の 1 つのグループの中を小見出し付きの区分に分けて表示できるように追加（[#421](https://github.com/vektor-inc/vk-terminals/issues/421)）

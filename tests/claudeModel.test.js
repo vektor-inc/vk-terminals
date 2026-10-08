@@ -160,12 +160,12 @@ test('isValidCodexModel: 空文字・長さ超過・先頭記号・非文字列�
 });
 
 test('buildCodexLaunchCommand: 正常値だけをシングルクォート付き --model 引数へ渡す', () => {
-  assert.equal(buildCodexLaunchCommand('gpt-5.6-sol'), "codex --model 'gpt-5.6-sol'");
-  assert.equal(buildCodexLaunchCommand('gpt-5.5'), "codex --model 'gpt-5.5'");
-  assert.equal(buildCodexLaunchCommand('o3'), "codex --model 'o3'");
-  assert.equal(buildCodexLaunchCommand(undefined), 'codex');
-  assert.equal(buildCodexLaunchCommand('gpt-5.6-sol; whoami'), 'codex');
-  assert.equal(buildCodexLaunchCommand('gpt-5.6-sol\nwhoami'), 'codex');
+  assert.equal(buildCodexLaunchCommand('gpt-5.6-sol'), "codex --no-daemon --model 'gpt-5.6-sol'");
+  assert.equal(buildCodexLaunchCommand('gpt-5.5'), "codex --no-daemon --model 'gpt-5.5'");
+  assert.equal(buildCodexLaunchCommand('o3'), "codex --no-daemon --model 'o3'");
+  assert.equal(buildCodexLaunchCommand(undefined), 'codex --no-daemon');
+  assert.equal(buildCodexLaunchCommand('gpt-5.6-sol; whoami'), 'codex --no-daemon');
+  assert.equal(buildCodexLaunchCommand('gpt-5.6-sol\nwhoami'), 'codex --no-daemon');
 });
 
 // ─── engine（issue #367） ───────────────────────────────────────────────
@@ -214,8 +214,8 @@ test('isValidEngine: Object.prototype 由来の名前（__proto__ / constructor 
   assert.equal(isValidEngine('hasOwnProperty'), false);
 });
 
-test('buildEngineLaunchCommand: codex は固定文字列 "codex" を返す', () => {
-  assert.equal(buildEngineLaunchCommand('codex'), 'codex');
+test('buildEngineLaunchCommand: codex は共有 daemon を使わない固定コマンドを返す', () => {
+  assert.equal(buildEngineLaunchCommand('codex'), 'codex --no-daemon');
 });
 
 test('buildEngineLaunchCommand: claude・未対応値には null を返す（claude は呼び出し側が buildClaudeLaunchCommand を使う）', () => {
@@ -255,11 +255,11 @@ test('buildEngineAwareLaunchCommand: engine が claude のときは model 対応
 
 test('buildEngineAwareLaunchCommand: engine が codex のときは検証済み model を渡す', () => {
   assert.deepEqual(buildEngineAwareLaunchCommand('codex', 'gpt-5.6-sol'), {
-    command: "codex --model 'gpt-5.6-sol'",
+    command: "codex --no-daemon --model 'gpt-5.6-sol'",
     modelIgnored: false,
   });
   assert.deepEqual(buildEngineAwareLaunchCommand('codex', 'gpt-5.6-sol; whoami'), {
-    command: 'codex',
+    command: 'codex --no-daemon',
     modelIgnored: false,
   });
 });
@@ -293,11 +293,11 @@ test('buildEngineAwareLaunchCommand: 未登録エンジンの model 指定を無
 
 test('buildEngineAwareLaunchCommand: engine が codex で model 未指定のときは modelIgnored が false（無視すべきものが無い）', () => {
   assert.deepEqual(buildEngineAwareLaunchCommand('codex', undefined), {
-    command: 'codex',
+    command: 'codex --no-daemon',
     modelIgnored: false,
   });
   assert.deepEqual(buildEngineAwareLaunchCommand('codex', null), {
-    command: 'codex',
+    command: 'codex --no-daemon',
     modelIgnored: false,
   });
 });

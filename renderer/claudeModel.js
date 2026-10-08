@@ -67,11 +67,12 @@
     return `claude --model '${model}'`;
   }
 
-  // Codex も固定実行ファイル名と検証済み引数だけで組み立てる。未指定・不正値は
-  // HTTP を通らない内部経路への最終防衛線として、素の `codex` へ安全に倒す。
+  // Codex も固定実行ファイル名と検証済み引数だけで組み立てる。共有 daemon の設定と
+  // 衝突して起動が止まるのを防ぐため、すべての起動経路で `--no-daemon` を付ける。
+  // 未指定・不正値は HTTP を通らない内部経路への最終防衛線として既定モデルへ倒す。
   function buildCodexLaunchCommand(model) {
-    if (!isValidCodexModel(model)) return 'codex';
-    return `codex --model '${model}'`;
+    if (!isValidCodexModel(model)) return 'codex --no-daemon';
+    return `codex --no-daemon --model '${model}'`;
   }
 
   // engine → model 対応の起動コマンドビルダー。検証関数の対応表と同じキーだけを
@@ -115,7 +116,7 @@
   // （呼び出し側は buildEngineLaunchCommand 経由でしか触れない）実害は無いが、
   // 「値を書き換えない定数」という扱いを揃えるため凍結する。
   const ENGINE_LAUNCH_COMMANDS = Object.create(null);
-  ENGINE_LAUNCH_COMMANDS.codex = 'codex';
+  ENGINE_LAUNCH_COMMANDS.codex = 'codex --no-daemon';
   Object.freeze(ENGINE_LAUNCH_COMMANDS);
 
   // 'claude' 以外の engine の起動コマンドを返す。未対応の engine（'claude' 自身を

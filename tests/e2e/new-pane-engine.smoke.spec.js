@@ -119,13 +119,13 @@ test('POST /api/new-pane は engine を許可リストで検証し、codex を�
     });
     expect(await getPaneCount(port)).toBe(1);
 
-    // engine: "codex" が実 PTY で素の codex コマンド（引数なし）を起動する。
+    // engine: "codex" が実 PTY で共有 daemon を使わない codex コマンドを起動する。
     const codexLaunch = await postNewPane(port, { engine: 'codex', noClaude: false });
     expect(codexLaunch.status).toBe(200);
     expect(codexLaunch.body && codexLaunch.body.ok).toBe(true);
     await waitForPaneCount(port, 2);
     const codexCalls = await waitForCalls(fakeCodex.capturePath, 1);
-    expect(codexCalls[0]).toEqual([]);
+    expect(codexCalls[0]).toEqual(['--no-daemon']);
 
     // Codex の model も起動コマンドへ入るため、シェルメタ文字を含む値は 400 で拒否し、
     // ペインも偽実行ファイルの呼び出しも増えないことを確認する。
@@ -157,7 +157,7 @@ test('POST /api/new-pane は engine を許可リストで検証し、codex を�
     expect(codexWithModel.status).toBe(200);
     await waitForPaneCount(port, 3);
     const codexCallsWithModel = await waitForCalls(fakeCodex.capturePath, 2);
-    expect(codexCallsWithModel[1]).toEqual(['--model', 'gpt-5.6-sol']);
+    expect(codexCallsWithModel[1]).toEqual(['--no-daemon', '--model', 'gpt-5.6-sol']);
 
     // engine 未指定は従来どおり claude が起動する（既存呼び出し元は非影響）。
     const defaultEngine = await postNewPane(port, { noClaude: false });

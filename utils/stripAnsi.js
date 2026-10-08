@@ -26,7 +26,7 @@
 
 // terminalDisplay は Node では require、ブラウザでは先に読み込まれた
 // window.VKTerminalDisplay から受け取る（index.html の <script> 順で保証する）。
-const { applyDisplayControls } = (typeof require === 'function')
+const { applyDisplayControls, createDisplayScreen } = (typeof require === 'function')
   ? require('../renderer/terminalDisplay')
   : self.VKTerminalDisplay;
 
@@ -42,6 +42,7 @@ const stripAnsiForPattern = (data) =>
 
 return {
   appendAnsiForDisplay,
+  createDisplayScreen,
   stripAnsiForDisplay,
   stripAnsiForPattern,
 };

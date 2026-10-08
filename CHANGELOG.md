@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 不具合修正 ] 外部へ渡す各ペインの画面の文字（`lastLines`）に、色指定の断片が文字として残ったり、画面下部のステータス行が同じ行への描き直しではなく何行も積み重なったりする不具合を修正（[#413](https://github.com/vektor-inc/vk-terminals/issues/413)）
+
 ## 1.69.1
 
 - [ 不具合修正 ] Codex ペインの起動時に共有 daemon の設定と衝突し、選択画面で停止する不具合を修正（[#423](https://github.com/vektor-inc/vk-terminals/issues/423)）

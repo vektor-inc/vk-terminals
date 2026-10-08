@@ -123,3 +123,23 @@ test('reset() で画面・カーソル・持ち越しを初期化する', () => 
   screen.write('1mX');
   assert.equal(screen.text(), '1mX');
 });
+
+// e2e（lastlines-screen-state.smoke.spec.js）と同じシナリオ。
+// 分割された SGR は、あとで消されない行（SPLITLINE）へ出し、
+// 枠（罫線・入力行・罫線・ステータス行）の描き直しは入力行へ戻る形を繰り返す。
+test('分割 SGR の行が完全一致で残り、枠の描き直しを繰り返してもステータス行は 1 行だけ', () => {
+  const RULE = '────413';
+  const chunks = [
+    '\x1b[3',
+    '1mSPLITLINE413\x1b[0m\r\n',
+    `${RULE}\r\n❯ INPUT413\r\n${RULE}\r\nSTATUS413 v1\x1b[2A\r`,
+    '\x1b[2B\r\x1b[2KSTATUS413 v2\x1b[2A\r',
+    '\x1b[2B\r\x1b[2KSTATUS413 v3\x1b[2A\r',
+    '\x1b[2B\r\x1b[2KSTATUS413 v4\x1b[2A\r',
+    '\x1b[2B\r\nMARK413\r\n',
+  ];
+  const lines = feed(chunks).split('\n').map((l) => l.trimEnd());
+  assert.deepEqual(lines, [
+    'SPLITLINE413', RULE, '❯ INPUT413', RULE, 'STATUS413 v4', 'MARK413', '',
+  ]);
+});

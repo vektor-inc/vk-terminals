@@ -105,22 +105,22 @@ test('initialEngine / initialCodexModel が未設定なら最初のペインは�
 test('initialEngine: codex なら最初のペインで codex を起動し、claude は起動しない', async () => {
   await runWithConfig({ initialEngine: 'codex' }, async ({ port, fixture }) => {
     const calls = await waitForCallCount(fixture.fakeCodex.capturePath, 1);
-    expect(calls[0]).toEqual([]);
+    expect(calls[0]).toEqual(['--no-daemon']);
     await waitForFirstPaneEngine(port, 'codex');
     expect(readCalls(fixture.fakeClaude.capturePath)).toEqual([]);
   });
 });
 
-test('initialCodexModel を指定すると codex --model で起動し、追加ペインも codex を引き継ぐ', async () => {
+test('initialCodexModel を指定すると codex --no-daemon --model で起動し、追加ペインも codex を引き継ぐ', async () => {
   await runWithConfig({ initialEngine: 'codex', initialCodexModel: 'gpt-5.5', newPaneAutoLaunchClaude: true }, async ({ port, fixture, win }) => {
     const calls = await waitForCallCount(fixture.fakeCodex.capturePath, 1);
-    expect(calls[0]).toEqual(['--model', 'gpt-5.5']);
+    expect(calls[0]).toEqual(['--no-daemon', '--model', 'gpt-5.5']);
     await waitForFirstPaneEngine(port, 'codex');
 
     // 最初のペインの「＋」から追加したペインも、モデル指定なしの codex として起動する。
     await win.locator('.pane .btn-split').first().click();
     const afterSplit = await waitForCallCount(fixture.fakeCodex.capturePath, 2);
-    expect(afterSplit[1]).toEqual([]);
+    expect(afterSplit[1]).toEqual(['--no-daemon']);
     expect(readCalls(fixture.fakeClaude.capturePath)).toEqual([]);
   });
 });

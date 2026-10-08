@@ -23,7 +23,7 @@ const Terminal = window.Terminal;
 const FitAddon = window.FitAddon.FitAddon;
 
 // 3. アプリ内の共有モジュール（index.html の <script> 順で読み込み済み）
-const { appendAnsiForDisplay, stripAnsiForDisplay } = window.VKStripAnsi;
+const { createDisplayScreen, stripAnsiForDisplay } = window.VKStripAnsi;
 const { normalizeConfirmClose, shouldConfirmClose } = window.VKCloseConfirm;
 // apiHost の即時案内（getApiHostAuthNotice）と utils/apiAuth.js の認証要否判定
 // （shouldRequireAuth）が同じループバック定義を参照するための共有モジュール
@@ -338,6 +338,7 @@ function checkWaiting(paneId) {
   const matchKey = stripVolatileForKey(matchText);
   // 次回の上限評価は「ここから先に届いた出力」だけを対象にする。
   t.recentLines = '';
+  t.recentScreen.reset();
   // 静止評価・非マッチ・かつ現在入力待ち中のときだけ、点灯根拠がまだ画面
   // （lastLines）に見えるかを調べる。上の条件に当たらない呼び出しでは
   // nextWaitingState 側で使われないため計算を省く。
@@ -458,13 +459,15 @@ function clearWaitingCheckTimer(t) {
 // issue #32: 直近 N 行のウィンドウが小さすぎると、Claude Code TUI のプロンプト枠や
 // recap メッセージの再描画で本来の確認文が押し出されて検知できなくなる。
 // 行数とトータル文字数の両方で上限を設けてメモリ膨張も防ぎつつ十分なウィンドウを確保する。
-function appendWaitingBuffer(prev, data) {
-  let merged = appendAnsiForDisplay(prev, data).split('\n').slice(-LASTLINES_MAX_LINES).join('\n');
-  if (merged.length > LASTLINES_MAX_CHARS) {
-    // 行を跨いだ単純な末尾切り出し（マルチバイトでも安全）。
-    merged = merged.slice(-LASTLINES_MAX_CHARS);
-  }
-  return merged;
+//
+// issue #413: 処理済みの平文と生の出力を毎回つなぎ直して再生すると、チャンク境界で
+// 途切れた SGR が文字として残り、カーソル位置も末尾に戻って描き直しが別の行に当たる。
+// そのため画面状態（行・カーソル・未完のエスケープ列）を screen に持ち、届いたチャンク
+// だけを適用する。切り詰めはカーソル行も同じだけずらす。戻り値は t.lastLines と同じ文字列。
+function appendWaitingBuffer(screen, data) {
+  screen.write(data);
+  screen.trim(LASTLINES_MAX_LINES, LASTLINES_MAX_CHARS);
+  return screen.text();
 }
 
 // バックグラウンドサブエージェント数（issue #340）を、xterm の画面バッファから
@@ -521,7 +524,9 @@ function markPaneInput(paneId) {
   if (t.waiting) {
     t.waiting = false;
     t.lastLines = '';
+    t.lastScreen.reset();
     t.recentLines = '';
+    t.recentScreen.reset();
     t.waitingOnsetMatch = null;
     t.waitingOnsetKey = null;
   }
@@ -776,6 +781,10 @@ async function createTerminal(paneId, cwd, options = {}) {
     waitingOnsetKey: null,
     lastBeepedOnsetKey: null,
     lastLines: '',
+    // lastLines / recentLines を組み立てる画面状態（カーソル位置・未完のエスケープ列を保持）。
+    //   lastLines / recentLines を空にするときは必ず一緒に reset() する。
+    lastScreen: createDisplayScreen(),
+    recentScreen: createDisplayScreen(),
     // recentLines: 前回の waiting 評価以降に届いた出力だけを貯めるバッファ。
     //   上限評価（出力が流れている最中の判定）で使う。lastLines と同じ上限でトリムする。
     recentLines: '',
@@ -877,10 +886,10 @@ VKIpc.on('terminal:data', (id, data) => {
   }
 
   // Accumulate last lines for waiting detection
-  t.lastLines = appendWaitingBuffer(t.lastLines, data);
+  t.lastLines = appendWaitingBuffer(t.lastScreen, data);
   // 上限評価（出力が流れている最中の判定）用に、前回の評価以降の出力も別に貯める。
   // checkWaiting() が評価のたびにリセットする（issue vektor-inc/vk-orchestrator#212）。
-  t.recentLines = appendWaitingBuffer(t.recentLines, data);
+  t.recentLines = appendWaitingBuffer(t.recentScreen, data);
   t.lastOutputTime = Date.now();
   // 判定は出力が静止してから行う（即時判定はしない）。
   scheduleWaitingCheck(paneId);

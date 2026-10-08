@@ -109,6 +109,35 @@
     // 持ち越すエスケープ列の上限。終端が来ないまま膨らみ続けるのを防ぐ。
     const MAX_PENDING = 4096;
     let pending = '';
+    // 持ち越しが上限を超えたあと、終端が来るまで中身を読み捨てている制御列の種類
+    // （'csi' または 'str' = OSC/DCS 等の文字列型）。null なら通常処理。
+    let discardMode = null;
+    // 'str' の読み捨て中に、直前のチャンク末尾が ESC だったか（ESC と `\` の分割対策）。
+    let discardEsc = false;
+
+    // 読み捨て中のデータから終端までを取り除き、終端より後ろを返す。終端が無ければ null。
+    const skipDiscarded = (str) => {
+      if (discardMode === 'csi') {
+        for (let k = 0; k < str.length; k += 1) {
+          if (/[\x40-\x7e]/.test(str[k])) {
+            discardMode = null;
+            return str.slice(k + 1);
+          }
+        }
+        return null;
+      }
+      let prevEsc = discardEsc;
+      for (let k = 0; k < str.length; k += 1) {
+        if (str[k] === '\x07' || (prevEsc && str[k] === '\\')) {
+          discardMode = null;
+          discardEsc = false;
+          return str.slice(k + 1);
+        }
+        prevEsc = str[k] === '\x1b';
+      }
+      discardEsc = prevEsc;
+      return null;
+    };
 
     // str を適用する。末尾で途切れた ESC 列があれば、その開始位置を返す（無ければ -1）。
     const apply = (str) => {
@@ -213,10 +242,20 @@
     return {
       // チャンクを適用する。前回の未完の列があれば先頭に連結して読み直す。
       write(data) {
-        const str = pending + (data || '');
+        let input = data || '';
+        if (discardMode) {
+          input = skipDiscarded(input);
+          if (input === null) return;
+        }
+        const str = pending + input;
         const incomplete = apply(str);
         pending = incomplete >= 0 ? str.slice(incomplete) : '';
-        if (pending.length > MAX_PENDING) pending = '';
+        if (pending.length > MAX_PENDING) {
+          // 中身は捨てるが制御列の種類は覚え、終端まで読み捨てる（続きが文字として混ざらないように）。
+          discardMode = pending[1] === '[' ? 'csi' : 'str';
+          discardEsc = discardMode === 'str' && pending.endsWith('\x1b');
+          pending = '';
+        }
       },
       text,
       // 先頭側を maxLines 行・maxChars 文字に切り詰める。カーソル行も同じだけずらす。
@@ -227,7 +266,8 @@
           row = Math.max(0, row - drop);
         }
         let over = text().length - maxChars;
-        while (over > 0 && lines.length > 1) {
+        // 削る量が先頭行の全体（行の長さ + 改行）に満たないときは行を消さず、下で先頭だけ削る。
+        while (over > 0 && lines.length > 1 && over >= lines[0].length + 1) {
           over -= lines[0].length + 1;
           lines.shift();
           row = Math.max(0, row - 1);
@@ -243,6 +283,8 @@
         row = 0;
         col = 0;
         pending = '';
+        discardMode = null;
+        discardEsc = false;
       },
     };
   }

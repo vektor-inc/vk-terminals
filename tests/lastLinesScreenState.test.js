@@ -77,6 +77,45 @@ test('文字数上限で切り詰めた後も、カーソル行が負になら�
   assert.equal(screen.text().split('\n')[0], 'ok');
 });
 
+test('文字数上限を少し超えただけなら、先頭行の先頭だけを削り確認文を残す', () => {
+  const screen = createDisplayScreen();
+  const confirm = 'ご確認をお願いします。';
+  screen.write('a'.repeat(30) + '\r\n' + confirm);
+  const max = confirm.length + 1 + 25; // 先頭行は 25 文字だけ残る
+  screen.trim(80, max);
+  assert.equal(screen.text(), 'a'.repeat(25) + '\n' + confirm);
+});
+
+// 上限（4096 文字）を超えて終端が来ない制御列を流し、続きが文字として混ざらないことを確かめる。
+const BIG = 'x'.repeat(5000);
+
+test('CSI の持ち越しが上限を超えても、終端までを読み捨てて後ろだけを通す', () => {
+  const body = '1;'.repeat(2500);
+  assert.equal(feed(['a\x1b[' + body, '1;2mnormal']), 'anormal');
+  assert.equal(feed([...('a\x1b[' + body + 'mnormal')]), 'anormal');
+});
+
+test('OSC の持ち越しが上限を超えても、BEL まで読み捨てて後ろだけを通す', () => {
+  assert.equal(feed(['a\x1b]0;' + BIG, 'continuation\x07normal']), 'anormal');
+});
+
+test('OSC の持ち越しが上限を超え、ESC と \\ が別チャンクに分かれても終端として扱う', () => {
+  assert.equal(feed(['a\x1b]0;' + BIG + '\x1b', '\\normal']), 'anormal');
+  assert.equal(feed(['a\x1b]0;' + BIG, 'mid\x1b', '\\normal']), 'anormal');
+});
+
+test('DCS の持ち越しが上限を超えても、終端まで読み捨てて後ろだけを通す', () => {
+  assert.equal(feed(['a\x1bP' + BIG, 'continuation\x1b\\normal']), 'anormal');
+});
+
+test('reset() で読み捨て状態も初期化する', () => {
+  const screen = createDisplayScreen();
+  screen.write('\x1b]0;' + BIG);
+  screen.reset();
+  screen.write('plain');
+  assert.equal(screen.text(), 'plain');
+});
+
 test('reset() で画面・カーソル・持ち越しを初期化する', () => {
   const screen = createDisplayScreen();
   screen.write('abc\r\ndef\x1b[3');

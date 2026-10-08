@@ -1,5 +1,7 @@
 # Changelog
 
+## 1.69.1
+
 - [ 不具合修正 ] Codex ペインの起動時に共有 daemon の設定と衝突し、選択画面で停止する不具合を修正（[#423](https://github.com/vektor-inc/vk-terminals/issues/423)）
 
 ## 1.69.0

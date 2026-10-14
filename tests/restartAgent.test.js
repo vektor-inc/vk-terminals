@@ -23,6 +23,18 @@ const validators = {
   isValidModelForEngine: (engine, value) => (
     (engine === 'claude' && value === 'sonnet') || (engine === 'codex' && value === 'gpt-5.6-sol')
   ),
+  validateCodexLaunchOptions: (engine, value) => {
+    if ((value.approvalPolicy !== undefined || value.sandboxMode !== undefined) && engine !== 'codex') {
+      return { ok: false, error: 'Codex options require engine "codex"' };
+    }
+    if (value.approvalPolicy !== undefined && !['untrusted', 'on-failure', 'on-request', 'never'].includes(value.approvalPolicy)) {
+      return { ok: false, error: 'invalid approvalPolicy' };
+    }
+    if (value.sandboxMode !== undefined && !['read-only', 'workspace-write'].includes(value.sandboxMode)) {
+      return { ok: false, error: 'invalid sandboxMode' };
+    }
+    return { ok: true, approvalPolicy: value.approvalPolicy, sandboxMode: value.sandboxMode };
+  },
 };
 
 test('世代番号: AI 起動ペインは 1、素のシェルは 0 で始まり、成功時だけ増やせる', () => {
@@ -57,9 +69,12 @@ test('restart-agent 検証: 必須値を正規化し、engine 省略時は claud
     cwd: undefined,
     engine: 'claude',
     model: undefined,
+    approvalPolicy: undefined,
+    sandboxMode: undefined,
   });
   assert.deepEqual(validateRestartAgentRequest({
     termId: '2', expectedGeneration: 3, cwd: '/valid dir', engine: 'codex', model: 'gpt-5.6-sol',
+    approvalPolicy: 'never', sandboxMode: 'workspace-write',
   }, validators), {
     ok: true,
     termId: '2',
@@ -67,6 +82,8 @@ test('restart-agent 検証: 必須値を正規化し、engine 省略時は claud
     cwd: '/valid dir',
     engine: 'codex',
     model: 'gpt-5.6-sol',
+    approvalPolicy: 'never',
+    sandboxMode: 'workspace-write',
   });
 });
 
@@ -78,6 +95,9 @@ test('restart-agent 検証: 不正値をペイン操作前に拒否する', () =
     [{ termId: '1', expectedGeneration: 1.5 }, 'expectedGeneration required'],
     [{ termId: '1', expectedGeneration: Number.MAX_SAFE_INTEGER + 1 }, 'expectedGeneration required'],
     [{ termId: '1', expectedGeneration: 0, engine: 'gemini' }, 'invalid engine'],
+    [{ termId: '1', expectedGeneration: 0, approvalPolicy: 'never' }, 'Codex options require engine "codex"'],
+    [{ termId: '1', expectedGeneration: 0, engine: 'codex', approvalPolicy: 'always' }, 'invalid approvalPolicy'],
+    [{ termId: '1', expectedGeneration: 0, engine: 'codex', sandboxMode: 'danger-full-access' }, 'invalid sandboxMode'],
     [{ termId: '1', expectedGeneration: 0, model: 'opus; whoami' }, 'invalid model'],
     [{ termId: '1', expectedGeneration: 0, cwd: '' }, 'invalid cwd'],
     [{ termId: '1', expectedGeneration: 0, cwd: '/tmp/a\rb' }, 'invalid cwd'],

@@ -120,12 +120,25 @@ test('POST /api/new-pane は engine を許可リストで検証し、codex を�
     expect(await getPaneCount(port)).toBe(1);
 
     // engine: "codex" が実 PTY で共有 daemon を使わない codex コマンドを起動する。
-    const codexLaunch = await postNewPane(port, { engine: 'codex', noClaude: false });
+    const codexLaunch = await postNewPane(port, {
+      engine: 'codex', noClaude: false, approvalPolicy: 'never', sandboxMode: 'workspace-write',
+    });
     expect(codexLaunch.status).toBe(200);
     expect(codexLaunch.body && codexLaunch.body.ok).toBe(true);
     await waitForPaneCount(port, 2);
     const codexCalls = await waitForCalls(fakeCodex.capturePath, 1);
-    expect(codexCalls[0]).toEqual(['--no-daemon']);
+    expect(codexCalls[0]).toEqual([
+      '--no-daemon', '--ask-for-approval', 'never', '--sandbox', 'workspace-write',
+    ]);
+
+    const unsafeSandbox = await postNewPane(port, {
+      engine: 'codex', sandboxMode: 'danger-full-access',
+    });
+    expect(unsafeSandbox).toEqual({ status: 400, body: { error: 'invalid sandboxMode' } });
+    const claudeOptions = await postNewPane(port, { engine: 'claude', approvalPolicy: 'never' });
+    expect(claudeOptions).toEqual({
+      status: 400, body: { error: 'Codex options require engine "codex"' },
+    });
 
     // Codex の model も起動コマンドへ入るため、シェルメタ文字を含む値は 400 で拒否し、
     // ペインも偽実行ファイルの呼び出しも増えないことを確認する。

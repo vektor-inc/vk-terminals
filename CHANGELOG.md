@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 機能追加 ] Codex の承認方針とサンドボックスを `POST /api/new-pane` と `POST /api/restart-agent` から安全な許可値で指定可能に（[#426](https://github.com/vektor-inc/vk-terminals/issues/426)）
+
 ## 1.69.2
 
 - [ 不具合修正 ] 外部へ渡す各ペインの画面の文字（`lastLines`）に、色指定の断片が残ったりステータス行が何行も積み重なったりして、オーケストレーターが指示文を送信できたか判定できず、タスクが止まる不具合を修正（[#413](https://github.com/vektor-inc/vk-terminals/issues/413)）

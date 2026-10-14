@@ -168,6 +168,13 @@ test('buildCodexLaunchCommand: 正常値だけをシングルクォート付き 
   assert.equal(buildCodexLaunchCommand('gpt-5.6-sol\nwhoami'), 'codex --no-daemon');
 });
 
+test('Codex 起動設定: 許可値だけをシェル展開されない固定引数へ変換する', () => {
+  assert.equal(
+    buildCodexLaunchCommand('gpt-5.6-sol', { approvalPolicy: 'never', sandboxMode: 'workspace-write' }),
+    "codex --no-daemon --model 'gpt-5.6-sol' --ask-for-approval 'never' --sandbox 'workspace-write'"
+  );
+});
+
 // ─── engine（issue #367） ───────────────────────────────────────────────
 
 test('ALLOWED_ENGINES: 許可値は claude / codex の2つだけ', () => {

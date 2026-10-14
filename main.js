@@ -61,6 +61,7 @@ const {
   isValidModelForEngine,
   isValidEngine,
   buildEngineAwareLaunchCommand,
+  validateCodexLaunchOptions,
 } = require('./renderer/claudeModel');
 // 最初のペインで起動する AI エンジン・モデルの設定解決（issue #419）と、
 // ペインのシェルへ渡す環境変数（Volta の bin を PATH へ補う）の組み立て。
@@ -2114,7 +2115,7 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
   // 書き込む＝既存の呼び出し元は非影響（issue #367）。
   //
   // Codex でも専用の許可リストで再検証し、正常値だけを --model として渡す。
-  const { command: launchCommand, modelIgnored } = buildEngineAwareLaunchCommand(resolvedEngine, options.model);
+  const { command: launchCommand, modelIgnored } = buildEngineAwareLaunchCommand(resolvedEngine, options.model, options);
   if (modelIgnored) {
     console.warn(`${LOG_PREFIX} model is ignored for engine '${resolvedEngine}'`);
   }
@@ -2336,7 +2337,7 @@ async function restartAgentInTerminal(ptyProcess, request) {
   if (request.cwd !== undefined) {
     ptyProcess.write(`cd -- ${quoteShellArgument(request.cwd)}\r`);
   }
-  const { command, modelIgnored } = buildEngineAwareLaunchCommand(request.engine, request.model);
+  const { command, modelIgnored } = buildEngineAwareLaunchCommand(request.engine, request.model, request);
   if (modelIgnored) {
     console.warn(`${LOG_PREFIX} model is ignored for engine '${request.engine}'`);
   }
@@ -3181,6 +3182,8 @@ function startHttpApi() {
         let requestedStashed;
         let requestedUseDefaults;
         let requestedModel;
+        let requestedApprovalPolicy;
+        let requestedSandboxMode;
         if (body.length > 0) {
           try {
             const parsed = JSON.parse(body);
@@ -3226,6 +3229,14 @@ function startHttpApi() {
               }
               requestedModel = parsed.model;
             }
+            const codexOptions = validateCodexLaunchOptions(requestedEngine || 'claude', parsed);
+            if (!codexOptions.ok) {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: codexOptions.error }));
+              return;
+            }
+            requestedApprovalPolicy = codexOptions.approvalPolicy;
+            requestedSandboxMode = codexOptions.sandboxMode;
           } catch {
             res.writeHead(400, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: 'invalid JSON' }));
@@ -3257,6 +3268,8 @@ function startHttpApi() {
         if (typeof requestedStashed === 'boolean') payload.stashed = requestedStashed;
         if (requestedUseDefaults === true) payload.useDefaults = true;
         if (typeof requestedModel === 'string') payload.model = requestedModel;
+        if (typeof requestedApprovalPolicy === 'string') payload.approvalPolicy = requestedApprovalPolicy;
+        if (typeof requestedSandboxMode === 'string') payload.sandboxMode = requestedSandboxMode;
         win.webContents.send('terminal:request-new-pane', payload);
       });
       return;
@@ -3287,6 +3300,7 @@ function startHttpApi() {
           const request = validateRestartAgentRequest(parsed, {
             isValidEngine,
             isValidModelForEngine,
+            validateCodexLaunchOptions,
           });
           if (!request.ok) {
             res.writeHead(400, { 'Content-Type': 'application/json' });

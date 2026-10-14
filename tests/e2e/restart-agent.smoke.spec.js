@@ -290,6 +290,8 @@ test.describe.serial('POST /api/restart-agent によるペイン内 AI の再起
       termId: '1',
       expectedGeneration: 0,
       engine: 'codex',
+      approvalPolicy: 'never',
+      sandboxMode: 'workspace-write',
     });
 
     expect(res.status).toBe(200);
@@ -304,7 +306,10 @@ test.describe.serial('POST /api/restart-agent によるペイン内 AI の再起
     const statesAfter = await getStates(port);
     expect(Object.keys(statesAfter)).toEqual(orderBefore);
 
-    await waitForCallCount(fakeCodex.capturePath, 1);
+    const codexCalls = await waitForCallCount(fakeCodex.capturePath, 1);
+    expect(codexCalls[0]).toEqual([
+      '--no-daemon', '--ask-for-approval', 'never', '--sandbox', 'workspace-write',
+    ]);
     const t = await waitForAgentGeneration(port, '1', 1);
     expect(t.agentGeneration).toBe(1);
   });

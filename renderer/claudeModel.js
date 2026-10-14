@@ -27,6 +27,31 @@
   // シングルクォートは許可文字に含めないため、クォートの脱出は成立しない。
   const CLAUDE_MODEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._\-\[\]]{0,63}$/;
   const CODEX_MODEL_PATTERN = CLAUDE_MODEL_PATTERN;
+  const ALLOWED_CODEX_APPROVAL_POLICIES = Object.freeze(['untrusted', 'on-failure', 'on-request', 'never']);
+  // danger-full-access は作業フォルダ外への書き込み制限を外すため、API 経由では許可しない。
+  const ALLOWED_CODEX_SANDBOX_MODES = Object.freeze(['read-only', 'workspace-write']);
+
+  function isValidCodexApprovalPolicy(value) {
+    return typeof value === 'string' && ALLOWED_CODEX_APPROVAL_POLICIES.includes(value);
+  }
+
+  function isValidCodexSandboxMode(value) {
+    return typeof value === 'string' && ALLOWED_CODEX_SANDBOX_MODES.includes(value);
+  }
+
+  function validateCodexLaunchOptions(engine, options = {}) {
+    const approvalPolicy = options.approvalPolicy;
+    const sandboxMode = options.sandboxMode;
+    const hasCodexOptions = approvalPolicy !== undefined || sandboxMode !== undefined;
+    if (hasCodexOptions && engine !== 'codex') return { ok: false, error: 'Codex options require engine "codex"' };
+    if (approvalPolicy !== undefined && !isValidCodexApprovalPolicy(approvalPolicy)) {
+      return { ok: false, error: 'invalid approvalPolicy' };
+    }
+    if (sandboxMode !== undefined && !isValidCodexSandboxMode(sandboxMode)) {
+      return { ok: false, error: 'invalid sandboxMode' };
+    }
+    return { ok: true, approvalPolicy, sandboxMode };
+  }
 
   // Claude と Codex は現時点で必要な文字種・上限が同じなので、許可リストの本体を共有する。
   // エンジン別の関数名は残し、将来どちらかの命名規則だけが変わったときに呼び出し側の
@@ -70,9 +95,17 @@
   // Codex も固定実行ファイル名と検証済み引数だけで組み立てる。共有 daemon の設定と
   // 衝突して起動が止まるのを防ぐため、すべての起動経路で `--no-daemon` を付ける。
   // 未指定・不正値は HTTP を通らない内部経路への最終防衛線として既定モデルへ倒す。
-  function buildCodexLaunchCommand(model) {
-    if (!isValidCodexModel(model)) return 'codex --no-daemon';
-    return `codex --no-daemon --model '${model}'`;
+  function buildCodexLaunchCommand(model, options = {}) {
+    const parts = ['codex', '--no-daemon'];
+    if (isValidCodexModel(model)) parts.push('--model', `'${model}'`);
+    const validated = validateCodexLaunchOptions('codex', options);
+    if (validated.ok && validated.approvalPolicy !== undefined) {
+      parts.push('--ask-for-approval', `'${validated.approvalPolicy}'`);
+    }
+    if (validated.ok && validated.sandboxMode !== undefined) {
+      parts.push('--sandbox', `'${validated.sandboxMode}'`);
+    }
+    return parts.join(' ');
   }
 
   // engine → model 対応の起動コマンドビルダー。検証関数の対応表と同じキーだけを
@@ -146,12 +179,12 @@
   // 戻り値:
   //   - command: ペインへ書き込む起動コマンド文字列
   //   - modelIgnored: 未登録エンジンで指定された model を無視したか
-  function buildEngineAwareLaunchCommand(resolvedEngine, model) {
+  function buildEngineAwareLaunchCommand(resolvedEngine, model, options = {}) {
     if (typeof resolvedEngine === 'string'
       && Object.prototype.hasOwnProperty.call(ENGINE_COMMAND_BUILDERS, resolvedEngine)) {
       const buildCommand = ENGINE_COMMAND_BUILDERS[resolvedEngine];
       if (typeof buildCommand === 'function') {
-        return { command: buildCommand(model), modelIgnored: false };
+        return { command: buildCommand(model, options), modelIgnored: false };
       }
     }
     // ENGINE_COMMAND_BUILDERS に無い値がここに来るのは、呼び出し側が isValidEngine を
@@ -184,6 +217,11 @@
     isValidCodexModel,
     isValidModelForEngine,
     buildCodexLaunchCommand,
+    ALLOWED_CODEX_APPROVAL_POLICIES,
+    ALLOWED_CODEX_SANDBOX_MODES,
+    isValidCodexApprovalPolicy,
+    isValidCodexSandboxMode,
+    validateCodexLaunchOptions,
     ALLOWED_ENGINES,
     isValidEngine,
     buildEngineLaunchCommand,

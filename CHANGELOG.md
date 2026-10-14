@@ -1,5 +1,7 @@
 # Changelog
 
+## 1.70.0
+
 - [ 機能追加 ] Codex の承認方針とサンドボックスを `POST /api/new-pane` と `POST /api/restart-agent` から安全な許可値で指定可能に（[#426](https://github.com/vektor-inc/vk-terminals/issues/426)）
 
 ## 1.69.2

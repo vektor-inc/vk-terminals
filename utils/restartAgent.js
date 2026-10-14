@@ -75,6 +75,8 @@ function validateRestartAgentRequest(value, validators) {
   if (value.model !== undefined && !validators.isValidModelForEngine(engine, value.model)) {
     return { ok: false, error: 'invalid model' };
   }
+  const codexOptions = validators.validateCodexLaunchOptions(engine, value);
+  if (!codexOptions.ok) return codexOptions;
   if (value.cwd !== undefined) {
     // PTY への write はキーストロークとして扱われるため、制御文字はクォートに渡さない。
     if (typeof value.cwd !== 'string' || !value.cwd || /[\x00-\x1f\x7f]/.test(value.cwd)) {
@@ -91,6 +93,8 @@ function validateRestartAgentRequest(value, validators) {
     cwd: value.cwd,
     engine,
     model: value.model,
+    approvalPolicy: codexOptions.approvalPolicy,
+    sandboxMode: codexOptions.sandboxMode,
   };
 }
 

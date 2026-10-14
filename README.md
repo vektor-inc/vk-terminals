@@ -898,6 +898,8 @@ curl -s -X POST http://127.0.0.1:13847/api/new-pane \
   - 指定できるのは **英数字・`.`・`_`・`-`・`[`・`]` のみ、64 文字以内、先頭は英数字** の文字列。それ以外の文字（空白・`;`・`&`・`` ` ``・`$`・引用符・改行など）を含む値、長すぎる値、文字列でない値は、どちらの `engine` でも `400` で拒否され、**ペインは作成されません**（値が実在するモデル名かどうかまでは検証していません。文字種・長さのチェックのみです）。
   - 値が選択した `engine` に対応するモデル名かどうかは検証しません。エンジンに合わないモデル名を渡すとペインは作成されますが、AI 側の起動時にエラーになります。呼び出し側で `engine` と `model` の組み合わせを確認してから送信してください。
   - `noClaude: true` と同時に指定した場合は AI を起動しないため、`model` は無視されます。
+- `approvalPolicy`：`engine: "codex"` のときだけ指定できる承認方針。`"untrusted"` / `"on-failure"` / `"on-request"` / `"never"` の許可値だけを受け付け、Codex の `--ask-for-approval` へ渡します。
+- `sandboxMode`：`engine: "codex"` のときだけ指定できるサンドボックス。`"read-only"` / `"workspace-write"` のみ許可し、Codex の `--sandbox` へ渡します。作業フォルダ外への書き込み制限を外す `"danger-full-access"` は受け付けません。
 
 `noClaude` / `engine` / `model` の優先順位（併用した場合にどれが効くか）:
 
@@ -938,6 +940,7 @@ curl -s -X POST http://127.0.0.1:13847/api/restart-agent \
 - `cwd`：再起動後の作業ディレクトリ（任意）。省略時は現在のディレクトリを維持します。存在するディレクトリだけを指定できます。
 - `engine`：`"claude"` / `"codex"`（任意、省略時は `"claude"`）。
 - `model`：選択エンジンへ渡すモデル名（任意）。検証規則は `POST /api/new-pane` と同じです。
+- `approvalPolicy` / `sandboxMode`：Codex の承認方針とサンドボックス（任意）。許可値と制約は `POST /api/new-pane` と同じです。
 
 レスポンス:
 

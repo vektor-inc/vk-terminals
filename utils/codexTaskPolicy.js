@@ -8,6 +8,9 @@
 //   - 専用 CODEX_HOME は起動のたびに新規に作る（~/.vk-terminals/codex-task-policy/<preset>/<ランダム名>/）。
 //     使い回さないので、事前に置かれた AGENTS.md・hooks.json・未知の設定ファイルを Codex が読む余地が無い。
 //     作った直後に中身が許可した生成物だけであることを検証し、違えば Codex を起動させない。
+//   - 拘束するリポジトリは config.toml に trust_level = "untrusted" で記録する。Codex は信頼済みのプロジェクトの
+//     .codex（config.toml・rules・hooks）だけを実効設定へ重ねるので、リポジトリ側から network_access や
+//     writable_roots を広げられない。記録が無いと信頼確認で「信頼して続行」を選べてしまうため、必ず記録する。
 //   - 生成するのは preset ごとの固定テンプレートだけ。API の入力値は preset 名の選択以外、
 //     ファイルの内容にも起動コマンドにも一切入らない（拘束するリポジトリは cwd から本アプリが実在確認して決める）。
 //   - 承認なしで動かせる Git / GitHub 操作は、信頼済みランチャー（vk-task-ops）→ 検証付きの固定入口
@@ -117,10 +120,14 @@ function renderAgentsGuide(launcherPath) {
 /**
  * config.toml の本文を組み立てる。
  * 外部コマンドの起動前読み込みにつながる環境変数は、Codex が起動するコマンドへ渡さない。
+ * 拘束するリポジトリ（と作業フォルダ）は trust_level = "untrusted" で記録する。Codex は信頼済みのプロジェクトだけ
+ * プロジェクト側の .codex（config.toml・rules・hooks）を実効設定へ重ねるため、network_access や writable_roots などを
+ * リポジトリ側から広げられない。記録が無いと起動時に「信頼して続行」が選べ、Enter 1 回で信頼済みになってしまう。
  * @param {string} handoffDir 会話整理の引き継ぎ先（唯一の追加書き込み先）
+ * @param {string[]} untrustedProjectPaths 信頼しないプロジェクトとして記録する実パス
  * @returns {string}
  */
-function renderConfigToml(handoffDir) {
+function renderConfigToml(handoffDir, untrustedProjectPaths) {
   return [
     '# VK Terminals が生成。起動のたびに作り直される。',
     'approval_policy = "on-request"',
@@ -134,6 +141,7 @@ function renderConfigToml(handoffDir) {
     '[sandbox_workspace_write]',
     'network_access = false',
     `writable_roots = [${JSON.stringify(handoffDir)}]`,
+    ...untrustedProjectPaths.flatMap((projectPath) => ['', `[projects.${JSON.stringify(projectPath)}]`, 'trust_level = "untrusted"']),
     '',
   ].join('\n');
 }
@@ -516,6 +524,9 @@ function prepareCodexTaskPolicyHome(params) {
     const repository = inspectRepository({ cwd, run: runGit, homeDir: home.realPath, fsImpl });
     if (!repository.ok) throw new PolicyError(repository.error.replace(/^task command rejected: /, ''));
     if (!isSafeAbsolutePath(repository.root)) throw new PolicyError('unsafe repository path');
+    // 信頼しないプロジェクトとして記録する場所。Codex が信頼を引く単位（Git ルート・作業フォルダ）の両方を実パスで固定する。
+    const untrustedProjectPaths = [...new Set([repository.root, fsImpl.realpathSync(cwd)])];
+    if (!untrustedProjectPaths.every(isSafeAbsolutePath)) throw new PolicyError('unsafe repository path');
 
     // 親フォルダは 1 段ずつ作り、実体・所有者・0700 を毎回確認する（リンク経由で別の場所へ書かせない）。
     const baseDir = path.join(data.realPath, POLICY_DIR_NAME);
@@ -553,7 +564,7 @@ function prepareCodexTaskPolicyHome(params) {
     const binding = { root: repository.root, repo: repository.repo, git: gitPath, gh: ghPath, home: home.realPath, gitConfig: gitConfigPath, ghConfig: ghConfigDir };
     const expected = {
       files: {
-        'config.toml': { content: template.renderConfigToml(handoff.realPath), mode: 0o600 },
+        'config.toml': { content: template.renderConfigToml(handoff.realPath, untrustedProjectPaths), mode: 0o600 },
         'AGENTS.md': { content: template.renderAgentsGuide(launcherPath), mode: 0o600 },
         [GIT_CONFIG_NAME]: { content: template.renderGitConfig(identity), mode: 0o600 },
         [OPS_SCRIPT_NAME]: { content: fsImpl.readFileSync(OPS_SOURCE_PATH, 'utf8'), mode: 0o400 },

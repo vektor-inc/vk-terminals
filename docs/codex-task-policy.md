@@ -30,7 +30,7 @@ vk-orchestrator などが自動処理用の Codex を起動するとき、次の
 1. VK Terminals が起動のたびに、固定内容の専用 `CODEX_HOME`（`~/.vk-terminals/codex-task-policy/<preset>/<ランダム名>/`）を**新規に**作る（実装: `utils/codexTaskPolicy.js`）。前回の専用フォルダは使い回さない。
 2. その Codex の起動だけ、`CODEX_HOME='<専用フォルダ>' codex --no-daemon …` のように環境変数を前置する。ペインのシェルへ書き込む文字列は、固定の実行ファイル名と検証済みの許可値だけで組み立てる。
 3. 専用フォルダの中身は次の 8 つだけ。作った直後に一覧を検証し、これ以外があれば Codex を起動しない。
-   - `config.toml`: `sandbox_mode = "workspace-write"`、`network_access = false`、`web_search = "disabled"`、追加の書き込み先は会話整理の引き継ぎ先 `~/.claude/handoff` のみ。Codex が起動するコマンドへ `LD_*`・`DYLD_*`・`NODE_*`・`BASH_ENV`・`ENV`・`GIT_*`・`GH_*`・`GITHUB_*` の環境変数を渡さない設定（`shell_environment_policy.exclude`）も入る
+   - `config.toml`: `sandbox_mode = "workspace-write"`、`network_access = false`、`web_search = "disabled"`、追加の書き込み先は会話整理の引き継ぎ先 `~/.claude/handoff` のみ。拘束するリポジトリと作業フォルダ（実パス）は `[projects."<パス>"] trust_level = "untrusted"` で記録する（下記「リポジトリ側の `.codex` で広げられない」）。Codex が起動するコマンドへ `LD_*`・`DYLD_*`・`NODE_*`・`BASH_ENV`・`ENV`・`GIT_*`・`GH_*`・`GITHUB_*` の環境変数を渡さない設定（`shell_environment_policy.exclude`）も入る
    - `rules/vk-terminals-task.rules`: 承認なしで実行してよいもの。信頼済みランチャー 1 つ（`<専用フォルダ>/vk-task-ops`）の実行だけ
    - `vk-task-ops`: 信頼済みランチャー（0500 の `sh` スクリプト）。下記
    - `vk-task-ops.js`: 承認なしの Git / GitHub 操作の入口（`utils/codexTaskOps.js` の複製。0400）
@@ -45,6 +45,16 @@ vk-orchestrator などが自動処理用の Codex を起動するとき、次の
 - `-c` は指定したキーしか上書きできない。個人設定にある `writable_roots`・`network_access`・`profile`・`default_permissions` などを 1 つずつ打ち消す必要があり、Codex の更新で設定キーが増えると抜けが出る。
 - `-p` は「個人設定の上に重ねる」仕組みで、個人設定を無効にできない。
 - 固定の許可コマンド（rules）は `CODEX_HOME/rules/` からしか読み込めず、`-c` では渡せない。起動ごとに新規の専用 `CODEX_HOME` なら設定・rules・hooks・`AGENTS.md`・信頼済みプロジェクトの記録がすべて固定内容になる。
+
+### リポジトリ側の `.codex` で広げられない
+
+専用 `CODEX_HOME` を使っても、作業フォルダのリポジトリに `.codex/config.toml`（や `rules`・`hooks`）が置かれていると、Codex は**信頼済みのプロジェクトに限り**これを実効設定へ重ねる（`network_access = true` や `writable_roots`、`sandbox_mode` を広げられる）。この環境（Codex 0.162.1）で次を確認した。
+
+- 信頼の記録が無いプロジェクトは、起動時に「Trust this folder?」（選択肢は「Trust and continue」と「Quit」）が出る。Enter 1 回で「信頼済み」が `config.toml` に保存され、プロジェクト側の設定が効く。
+- `trust_level = "untrusted"` を記録したプロジェクトは、プロジェクト側の config・hooks・execpolicies が無効のまま。画面は「Open restricted」（既定）で、Enter を押しても信頼の記録は変わらない。
+- 「信頼しない」の記録は Git ルートに置けばサブフォルダ・worktree にも効く。作業フォルダ自体も記録している。
+
+そのため `config.toml` には、拘束するリポジトリの Git ルートと作業フォルダ（どちらも実パス。同じなら 1 件）を `untrusted` で必ず書く。新規作成と再起動は同じ関数を通るので、どちらも同じ記録になる。「Open restricted」の画面は信頼を与えないため、自動 Enter（`utils/trustPromptGate.js`）の対象にしている。「Trust and continue」の画面は従来どおり対象外。安全に記録できない（パスが不正など）ときは Codex を起動しない。プロジェクト側の `AGENTS.md` や skills は読まれるが、権限（sandbox・承認・rules）は広がらない。
 
 ### 承認なしで実行できる固定の入口
 
@@ -61,7 +71,7 @@ rules の `prefix_rule` は先頭の単語列しか指定できず、後ろに�
   - `node` / `git` / `gh` は PATH を使わず、起動時に固定の探索先（`/opt/homebrew/bin`・`/usr/local/bin`・`/usr/bin`・`/bin`・`~/.volta/bin`、およびアプリ自身の `PATH` にある絶対パス）から、所有者（自分か root）・他人が書き込めない権限・祖先フォルダの安全性を検証した絶対パスだけを選ぶ。見つからなければ起動しない。入口も実行のたびに git / gh を再検証する
   - git / gh の子プロセスの環境変数は許可リストで一から組み立てる（`PATH`・`HOME`・`XDG_CONFIG_HOME`・`GH_CONFIG_DIR`（いずれも専用の `gh/` を指す）と、Git の設定隔離・非対話の指定のみ）。親の `NODE_OPTIONS`・`LD_PRELOAD`・`GIT_*`・`GH_*` などは引き継がない
   - Git の system / global 設定は使わない。global 設定の代わりに、ランチャーが生成した author 情報だけの設定ファイルを指す。リポジトリ内の設定に外部コマンドを起動しうる項目（clean/smudge/process filter・`diff.external`・textconv・`merge.*.driver`・`gpg.*.program`・`core.sshCommand`・`core.askPass`・`core.editor`・`core.pager`・`credential.*.helper`・`include`・`includeIf` など）があるリポジトリでは、閲覧系も `git add` / `git commit` も実行を拒否する
-  - git には `core.fsmonitor=false`・`core.hooksPath=/dev/null`・`commit.gpgsign=false`・`tag.gpgsign=false` をコマンドラインで指定する。**リポジトリのフック（pre-commit など）は入口経由の commit では実行されない**。diff / show / log は `--no-ext-diff --no-textconv` も付ける
+  - git には `core.fsmonitor=false`・`core.hooksPath=/dev/null`・`maintenance.auto=false`・`gc.auto=0`・`commit.gpgsign=false`・`tag.gpgsign=false` をコマンドラインで指定する。`maintenance.auto` と `gc.auto` は、commit の後に走る自動保守（`maintenance run --auto` → `gc --auto`）が `gc.recentObjectsHook` で外部コマンドを起動する経路を止めるもの（どちらか片方でも止まるが、経路が別なので両方指定する）。`gc.recentObjectsHook`・`core.alternateRefsCommand`・`uploadpack.packObjectsHook` がリポジトリの設定にあれば、入口は実行を拒否する。**リポジトリのフック（pre-commit など）は入口経由の commit では実行されない**。diff / show / log は `--no-ext-diff --no-textconv` も付ける
 - リポジトリへの拘束:
   - 起動時に、`cwd` から Git の実ルートと `origin` の GitHub の `owner/repo` を確定し、ランチャーに固定する（実行中は変更できない）。確定できないとき（Git 管理下でない・ホームや `/` そのもの・外部コマンドを起動しうる設定がある）は起動を拒否する。`origin` が github.com でない場合は owner/repo を固定せず、gh 系の操作だけを拒否する（git の操作は使える）
   - 実行のたびに、作業フォルダの Git ルートが固定したルートと一致すること（別のリポジトリ・入れ子のリポジトリは拒否）、gh を使う操作では `origin` が固定した `owner/repo` と一致することを確認する

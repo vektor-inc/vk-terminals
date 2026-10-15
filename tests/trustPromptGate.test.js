@@ -51,6 +51,13 @@ test('isTrustPrompt: Yes, I trust this directory に一致する', () => {
   assert.equal(isTrustPrompt('Yes, I trust this directory'), true);
 });
 
+test('isTrustPrompt: 信頼しない記録済みの Codex が出す「制限付きで開く」画面に一致する（実機採取。信頼を与える画面ではない）', () => {
+  const restrictedPrompt = 'Folder access /private/tmp/proj\nConfig, hooks, and execpolicies from untrusted folders stay disabled.\n› 1. Open restricted\n  2. Quit';
+  assert.equal(isTrustPrompt(restrictedPrompt), true);
+  // 信頼を与える選択肢のある画面（Trust and continue）は、従来どおり対象にしない。
+  assert.equal(isTrustPrompt('Trust this folder?\n› 1. Trust and continue\n  2. Quit'), false);
+});
+
 test('isTrustPrompt: 非文字列は一致しない', () => {
   const trustPromptLikeObject = { toString: () => 'Do you trust this folder' };
 

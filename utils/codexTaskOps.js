@@ -37,9 +37,13 @@ const NO_VALUE_FLAGS = Object.freeze({
 
 // 外部コマンドを起動しうる設定を、コマンドライン指定（リポジトリ内の設定より優先）で無効にする。
 // フックは無効化する（リポジトリ内のフックは承認なしの経路では実行しない）。
+// commit の後に走る自動保守（maintenance run --auto → gc --auto）は gc.recentObjectsHook などで外部コマンドを起動できるため、
+// 自動保守そのものを止める（2 つの指定は経路が別。片方だけにしない）。
 const GIT_SAFETY_CONFIG = Object.freeze([
   'core.fsmonitor=false',
   'core.hooksPath=/dev/null',
+  'maintenance.auto=false',
+  'gc.auto=0',
   'commit.gpgsign=false',
   'tag.gpgsign=false',
   'diff.ignoreSubmodules=all',
@@ -468,6 +472,10 @@ const UNSAFE_GIT_CONFIG_PATTERNS = Object.freeze([
   /^credential\.helper$/,
   /^sequence\.editor$/,
   /^trailer\..*\.cmd$/,
+  // 自動保守（gc・repack）や代替オブジェクト参照の途中で外部コマンドを起動する項目。
+  /^gc\.recentobjectshook$/,
+  /^core\.alternaterefscommand$/,
+  /^uploadpack\.packobjectshook$/,
   // 部分クローン（不足オブジェクトを参照すると自動で通信する）と、外部のリモートヘルパーの起動につながる項目。
   /^extensions\.partialclone$/,
   /^remote\..*\.(promisor|partialclonefilter|vcs)$/,

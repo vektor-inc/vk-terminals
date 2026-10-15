@@ -358,6 +358,83 @@ test('実行: リポジトリのフック（local の core.hooksPath を含む�
   }
 });
 
+// 自動保守（commit の後に走る maintenance run --auto → gc --auto）が、gc.recentObjectsHook で外部コマンドを起動する経路の検証。
+// 未参照の古いオブジェクトを大量に作り、gc.auto を 1 にして、commit のたびに自動 gc が走る状態にする。
+function prepareAutoGcRepository(fixture) {
+  const marker = path.join(fixture.root, 'gc-hook-ran');
+  const script = path.join(fixture.root, 'gc-hook.sh');
+  fs.writeFileSync(script, `#!/bin/sh\ntouch ${marker}\n`, { mode: 0o755 });
+  git(fixture.repo, 'config', 'gc.recentObjectsHook', script);
+  git(fixture.repo, 'config', 'gc.auto', '1');
+  git(fixture.repo, 'config', 'gc.autoDetach', 'false');
+  git(fixture.repo, 'config', 'gc.pruneExpire', 'now');
+  const loose = path.join(fixture.root, 'loose');
+  fs.mkdirSync(loose);
+  const names = [];
+  for (let i = 0; i < 700; i += 1) {
+    const name = path.join(loose, `o${i}`);
+    fs.writeFileSync(name, `unreachable ${i}\n`);
+    names.push(name);
+  }
+  childProcess.execFileSync(GIT_PATH, ['hash-object', '-w', '--stdin-paths'], { cwd: fixture.repo, input: names.join('\n'), stdio: ['pipe', 'ignore', 'inherit'] });
+  fs.writeFileSync(path.join(fixture.repo, 'next.txt'), 'next\n');
+  git(fixture.repo, 'add', 'next.txt');
+  return marker;
+}
+
+test('自動保守: commit 後の自動 gc で gc.recentObjectsHook の外部コマンドが起動しない（固定の指定が無ければ起動する対照つき）', () => {
+  assert.ok(FIXED_GIT_PREFIX.includes('maintenance.auto=false'));
+  assert.ok(FIXED_GIT_PREFIX.includes('gc.auto=0'));
+  // FIXED_GIT_PREFIX から、指定した設定（-c <設定> の組）だけを取り除いた引数列を返す。
+  const withoutConfig = (settings) => GIT_PREFIX.filter((arg, index) => !settings.includes(arg) && !(arg === '-c' && settings.includes(GIT_PREFIX[index + 1])));
+  const commitWith = (fixture, prefix) => childProcess.spawnSync(GIT_PATH, [...prefix, 'commit', '-q', '-m', 'auto'], {
+    cwd: fixture.repo,
+    env: { PATH: '/usr/bin:/bin', HOME: fixture.home, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' },
+    encoding: 'utf8',
+  });
+
+  // 対照: 自動保守の無効化を外すと、この構成では外部コマンドが起動する（テストが意味を持つ確認）。
+  const control = createFixture();
+  try {
+    const marker = prepareAutoGcRepository(control);
+    const withoutMaintenanceSwitches = withoutConfig(['maintenance.auto=false', 'gc.auto=0']);
+    assert.equal(commitWith(control, withoutMaintenanceSwitches).status, 0);
+    assert.equal(fs.existsSync(marker), true);
+  } finally {
+    control.cleanup();
+  }
+
+  // 固定の指定（commit にそのまま付く）では起動しない。片方ずつでも止まることを確認する。
+  for (const dropped of [null, 'maintenance.auto=false', 'gc.auto=0']) {
+    const fixture = createFixture();
+    try {
+      const marker = prepareAutoGcRepository(fixture);
+      assert.equal(commitWith(fixture, withoutConfig(dropped === null ? [] : [dropped])).status, 0, String(dropped));
+      assert.equal(fs.existsSync(marker), false, String(dropped));
+    } finally {
+      fixture.cleanup();
+    }
+  }
+});
+
+test('自動保守: 入口経由では、gc.recentObjectsHook などの外部コマンド起動設定があるリポジトリの commit を拒否し、何も実行しない', () => {
+  for (const key of ['gc.recentObjectsHook', 'core.alternateRefsCommand', 'uploadpack.packObjectsHook']) {
+    const fixture = createFixture();
+    try {
+      const marker = prepareAutoGcRepository(fixture);
+      git(fixture.repo, 'config', key, path.join(fixture.root, 'gc-hook.sh'));
+      for (const command of [['git', 'commit', '-m', 'x'], ['git', 'status'], ['git', 'add', '-A']]) {
+        const result = run(fixture, command);
+        assert.equal(result.code, 2, `${key}: ${command.join(' ')}`);
+        assert.match(result.messages.join(''), /can run external commands/);
+      }
+      assert.equal(fs.existsSync(marker), false, key);
+    } finally {
+      fixture.cleanup();
+    }
+  }
+});
+
 test('実行: commit.gpgsign が有効でも署名プログラムは呼ばれない', () => {
   const fixture = createFixture();
   try {
@@ -509,7 +586,7 @@ test('環境: 子プロセスへは許可リストの変数だけを渡し、親
 test('設定の解析: 外部コマンドを起動しうる項目だけを見つけ、origin の生の URL を返す', () => {
   const listing = (...entries) => entries.map(([key, value]) => `${key}\n${value}\0`).join('');
   assert.deepEqual(inspectGitConfigListing(listing(['core.bare', 'false'], ['remote.origin.url', GITHUB_ORIGIN], ['user.name', 'x'])), { unsafeKey: null, originUrl: GITHUB_ORIGIN });
-  for (const key of ['filter.lfs.clean', 'filter.a.b.smudge', 'diff.x.textconv', 'diff.external', 'gpg.program', 'gpg.ssh.program', 'core.sshcommand', 'include.path', 'includeif.gitdir:/x.path', 'credential.https://x.helper', 'merge.m.driver', 'remote.origin.promisor', 'remote.o.partialclonefilter', 'remote.o.vcs', 'extensions.partialclone']) {
+  for (const key of ['filter.lfs.clean', 'filter.a.b.smudge', 'diff.x.textconv', 'diff.external', 'gpg.program', 'gpg.ssh.program', 'core.sshcommand', 'include.path', 'includeif.gitdir:/x.path', 'credential.https://x.helper', 'merge.m.driver', 'remote.origin.promisor', 'remote.o.partialclonefilter', 'remote.o.vcs', 'extensions.partialclone', 'gc.recentObjectsHook', 'gc.recentobjectshook', 'core.alternateRefsCommand', 'uploadpack.packObjectsHook']) {
     assert.equal(inspectGitConfigListing(listing([key, 'v'])).unsafeKey, key, key);
   }
   assert.equal(parseGitHubRepo('https://github.com/o/r.git'), 'o/r');

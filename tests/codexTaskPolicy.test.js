@@ -195,9 +195,11 @@ test('生成: 個人設定が広くても継承せず、個人の config.toml �
     assert.match(config, new RegExp(`^writable_roots = \\[${JSON.stringify(sandbox.deps.handoffDir).replace(/[\\/]/g, '\\$&')}\\]$`, 'm'));
     // 外部コマンドの事前読み込みにつながる環境変数は、Codex が起動するコマンドへ渡さない。
     assert.match(config, /^exclude = \[.*"LD_\*".*"DYLD_\*".*"NODE_\*".*"GIT_\*".*"GH_\*".*\]$/m);
-    for (const forbidden of ['danger-full-access', 'network_access = true', '"/"', '.ssh', 'profile', 'trust_level']) {
+    for (const forbidden of ['danger-full-access', 'network_access = true', '"/"', '.ssh', 'profile', 'trust_level = "trusted"']) {
       assert.equal(config.includes(forbidden), false, forbidden);
     }
+    // 拘束するリポジトリは「信頼しない」と記録する（個人設定の信頼済みプロジェクトは引き継がない）。
+    assert.match(config, new RegExp(`^\\[projects\\.${JSON.stringify(fs.realpathSync(sandbox.repo)).replace(/[\\/]/g, '\\$&')}\\]\\ntrust_level = "untrusted"$`, 'm'));
     assert.equal(sha256(personalConfigPath), before);
     assert.deepEqual(fs.readdirSync(sandbox.personalCodexHome).sort(), ['auth.json', 'config.toml']);
     // ログイン状態だけは共有する（個人の設定ファイルは共有しない）。
@@ -210,6 +212,125 @@ test('生成: 個人設定が広くても継承せず、個人の config.toml �
     sandbox.cleanup();
   }
 });
+
+// ─── プロジェクト側の .codex 層（config.toml・rules・hooks）による実効ポリシーの拡大 ───────────
+
+// 実際の Codex（app-server の config/read）に、専用 CODEX_HOME と作業フォルダを渡して実効設定を読ませる。
+// Codex が無い環境では null を返し、呼び出し側のテストは skip する。
+function readEffectiveCodexConfig(codexHome, cwd) {
+  return new Promise((resolve) => {
+    const child = childProcess.spawn('codex', ['app-server'], { env: { ...process.env, CODEX_HOME: codexHome }, cwd, stdio: ['pipe', 'pipe', 'ignore'] });
+    let buffer = '';
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.kill();
+      resolve(value);
+    };
+    const timer = setTimeout(() => finish(null), 30000);
+    child.on('error', () => finish(null));
+    child.stdout.on('data', (chunk) => {
+      buffer += chunk;
+      let newline;
+      while ((newline = buffer.indexOf('\n')) >= 0) {
+        const line = buffer.slice(0, newline);
+        buffer = buffer.slice(newline + 1);
+        let message;
+        try { message = JSON.parse(line); } catch (_error) { continue; }
+        if (message.id === 1) {
+          child.stdin.write(`${JSON.stringify({ method: 'initialized' })}\n${JSON.stringify({ id: 2, method: 'config/read', params: { includeLayers: true, cwd } })}\n`);
+        } else if (message.id === 2) {
+          finish(message.result ? message.result.config : null);
+        }
+      }
+    });
+    child.stdin.write(`${JSON.stringify({ id: 1, method: 'initialize', params: { clientInfo: { name: 'vk-terminals-test', version: '0' } } })}\n`);
+  });
+}
+
+const CODEX_AVAILABLE = childProcess.spawnSync('codex', ['--version'], { encoding: 'utf8' }).status === 0;
+const WIDENING_PROJECT_CONFIG = [
+  'sandbox_mode = "danger-full-access"',
+  'approval_policy = "never"',
+  '[sandbox_workspace_write]',
+  'network_access = true',
+  'writable_roots = ["/"]',
+  '',
+].join('\n');
+
+test('プロジェクト側の .codex: 拘束するリポジトリと作業フォルダ（サブフォルダ・worktree を含む）を、新規作成でも再起動でも「信頼しない」と記録する', () => {
+  const sandbox = createSandbox();
+  try {
+    const subdir = path.join(sandbox.repo, 'packages', 'app');
+    fs.mkdirSync(subdir, { recursive: true });
+    const deps = { ...sandbox.deps, cwd: subdir };
+    const restartRequest = { termId: '3', expectedGeneration: 1, cwd: subdir, engine: 'codex', approvalPolicy: 'never', codexPolicy: { preset: 'orchestrated-task' } };
+    const fromNewPane = resolveCodexTaskPolicyLaunchOptions('codex', { approvalPolicy: 'never', codexPolicy: { preset: 'orchestrated-task' } }, deps);
+    const fromRestart = resolveCodexTaskPolicyLaunchOptions('codex', restartRequest, deps);
+    for (const resolved of [fromNewPane, fromRestart]) {
+      assert.equal(resolved.ok, true, resolved.error);
+      const config = fs.readFileSync(path.join(resolved.options.codexPolicyHome, 'config.toml'), 'utf8');
+      const projects = [...config.matchAll(/^\[projects\.("(?:[^"\\]|\\.)*")\]\ntrust_level = "(\w+)"$/gm)].map((match) => [JSON.parse(match[1]), match[2]]);
+      assert.deepEqual(projects, [[fs.realpathSync(sandbox.repo), 'untrusted'], [fs.realpathSync(subdir), 'untrusted']]);
+      assert.equal(/trust_level = "trusted"/.test(config), false);
+    }
+    // 作業フォルダがリポジトリのルートそのものなら 1 件だけ。
+    const atRoot = prepare(sandbox);
+    assert.equal(atRoot.ok, true, atRoot.error);
+    assert.equal((fs.readFileSync(path.join(atRoot.home, 'config.toml'), 'utf8').match(/^\[projects\./gm) || []).length, 1);
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('プロジェクト側の .codex: 特殊文字を含むパスも TOML のキーとして壊れず、別の設定を差し込めない', () => {
+  const sandbox = createSandbox();
+  try {
+    const odd = path.join(sandbox.repo, 'a"b]\\c [x]');
+    fs.mkdirSync(odd);
+    const result = prepare(sandbox, { cwd: odd });
+    assert.equal(result.ok, true, result.error);
+    const config = fs.readFileSync(path.join(result.home, 'config.toml'), 'utf8');
+    assert.ok(config.includes(`[projects.${JSON.stringify(fs.realpathSync(odd))}]`));
+    assert.equal((config.match(/^trust_level = /gm) || []).length, 2);
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('プロジェクト側の .codex: 実際の Codex で、リポジトリ側の config.toml が network_access や writable_roots を広げても実効設定に反映されない（信頼済みの対照つき）',
+  { skip: !CODEX_AVAILABLE && 'codex コマンドが無い環境' },
+  async () => {
+    const sandbox = createSandbox();
+    try {
+      fs.mkdirSync(path.join(sandbox.repo, '.codex'));
+      fs.writeFileSync(path.join(sandbox.repo, '.codex', 'config.toml'), WIDENING_PROJECT_CONFIG);
+      const subdir = path.join(sandbox.repo, 'sub');
+      fs.mkdirSync(subdir);
+      for (const cwd of [sandbox.repo, subdir]) {
+        const policyOptions = { approvalPolicy: 'never', codexPolicy: { preset: 'orchestrated-task' } };
+        const resolved = resolveCodexTaskPolicyLaunchOptions('codex', policyOptions, { ...sandbox.deps, cwd });
+        assert.equal(resolved.ok, true, resolved.error);
+        const effective = await readEffectiveCodexConfig(resolved.options.codexPolicyHome, cwd);
+        assert.notEqual(effective, null, 'Codex の実効設定を読めなかった');
+        assert.equal(effective.sandbox_mode, 'workspace-write');
+        assert.equal(effective.sandbox_workspace_write.network_access, false);
+        assert.deepEqual(effective.sandbox_workspace_write.writable_roots, [fs.realpathSync(sandbox.deps.handoffDir)]);
+
+        // 対照: 同じリポジトリを「信頼済み」にすると、リポジトリ側の設定が実効設定へ反映される（この検証が意味を持つ確認）。
+        const configPath = path.join(resolved.options.codexPolicyHome, 'config.toml');
+        const trusted = fs.readFileSync(configPath, 'utf8').replace(/trust_level = "untrusted"/g, 'trust_level = "trusted"');
+        fs.writeFileSync(configPath, trusted);
+        const widened = await readEffectiveCodexConfig(resolved.options.codexPolicyHome, cwd);
+        assert.equal(widened.sandbox_mode, 'danger-full-access');
+        assert.equal(widened.sandbox_workspace_write.network_access, true);
+      }
+    } finally {
+      sandbox.cleanup();
+    }
+  });
 
 test('生成: rules は信頼済みランチャーの実行だけを許可し、Git / GitHub / node の先頭一致は持たない', () => {
   const sandbox = createSandbox();

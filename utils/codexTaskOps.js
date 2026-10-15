@@ -1,8 +1,9 @@
 // 自動処理用 Codex に「承認なし」で許す Git / GitHub 操作の固定入口（issue #428）。
 //
 // このファイルは 2 つの使われ方をする（どちらも同じ検証を通す）。
-//   1. テストと main 側からの require（parseTaskCommand など）
-//   2. 専用 CODEX_HOME へ複製され、Codex の rules（`node <このファイル>` の完全一致）経由で実行される
+//   1. テストと main 側からの require（parseTaskCommand・信頼検証・リポジトリ拘束など）
+//   2. 専用 CODEX_HOME へ複製され、信頼済みランチャー（vk-task-ops。Codex の rules が完全一致で許可する唯一の実行物）
+//      から、環境を空にした絶対パスの Node で実行される
 //
 // 複製して単体で動かすため、node 標準モジュール以外を require しないこと（崩すと複製先で動かない）。
 //
@@ -11,10 +12,12 @@
 //     引数の検証はこのファイルで行う。許可する操作・フラグ・位置引数はすべて下の許可リストにあるものだけで、
 //     未知のフラグ・パス・リポジトリ指定（--repo など）・ファイル出力系（--output / --body-file など）は拒否する。
 //   - git / gh へ渡す argv は検証済みの値だけで組み立て直す（呼び出し側の文字列をそのまま連結しない）。
-//   - 実行前に、作業フォルダが Git 管理下で、ホームや / そのものではないことを確認する。
-//     gh を使う操作は origin が github.com であることも確認する。
+//   - 実行環境は信頼済みランチャーが固定する。git / gh / Node は起動時に所有者・権限を検証した絶対パスだけを使い、
+//     子プロセスの環境変数は許可リストで一から組み立てる（PATH・NODE_OPTIONS・LD_PRELOAD・GIT_*・GH_* は引き継がない）。
+//   - Git の system / global 設定は使わず、リポジトリ内の設定に外部コマンドを起動しうる項目があれば実行しない。
+//   - 操作の対象は起動時に確定したリポジトリ（実ルートと GitHub の owner/repo）に拘束する。実行のたびに一致を検証し、
+//     gh には検証済みの --repo を必ず付ける。
 const nodeFs = require('fs');
-const os = require('os');
 const path = require('path');
 const childProcess = require('child_process');
 
@@ -32,7 +35,16 @@ const NO_VALUE_FLAGS = Object.freeze({
   'git commit': ['-a', '--all'],
 });
 
-const FIXED_GIT_PREFIX = Object.freeze(['--no-pager', '-c', 'core.fsmonitor=false']);
+// 外部コマンドを起動しうる設定を、コマンドライン指定（リポジトリ内の設定より優先）で無効にする。
+// フックは無効化する（リポジトリ内のフックは承認なしの経路では実行しない）。
+const GIT_SAFETY_CONFIG = Object.freeze([
+  'core.fsmonitor=false',
+  'core.hooksPath=/dev/null',
+  'commit.gpgsign=false',
+  'tag.gpgsign=false',
+  'diff.ignoreSubmodules=all',
+]);
+const FIXED_GIT_PREFIX = Object.freeze(['--no-pager', ...GIT_SAFETY_CONFIG.flatMap((setting) => ['-c', setting])]);
 
 // diff / show / log はユーザー指定の外部コマンド（diff.external・textconv）を呼べるため常に無効化する。
 const DIFF_SAFETY_FLAGS = Object.freeze(['--no-ext-diff', '--no-textconv']);
@@ -271,12 +283,12 @@ function parseTaskCommand(argv) {
       return parsed.ok ? ghCommand(['issue', 'comment', parsed.number], parsed.args) : parsed;
     }
     if (group === 'pr' && action === 'view') {
-      const parsed = parseGhView(tokens, { allowedBooleanFlags: ['--comments'], numberRequired: false });
-      return parsed.ok ? ghCommand(['pr', 'view', ...(parsed.number ? [parsed.number] : [])], parsed.args) : parsed;
+      const parsed = parseGhView(tokens, { allowedBooleanFlags: ['--comments'], numberRequired: true });
+      return parsed.ok ? ghCommand(['pr', 'view', parsed.number], parsed.args) : parsed;
     }
     if (group === 'pr' && action === 'checks') {
-      const parsed = parseGhView(tokens, { allowedBooleanFlags: [], numberRequired: false });
-      return parsed.ok ? ghCommand(['pr', 'checks', ...(parsed.number ? [parsed.number] : [])], parsed.args) : parsed;
+      const parsed = parseGhView(tokens, { allowedBooleanFlags: [], numberRequired: true });
+      return parsed.ok ? ghCommand(['pr', 'checks', parsed.number], parsed.args) : parsed;
     }
     if (group === 'pr' && action === 'comment') {
       const parsed = parseGhComment(tokens);
@@ -291,80 +303,316 @@ function parseTaskCommand(argv) {
   return fail('only git and gh are allowed');
 }
 
-// 設定の差し替えで外部コマンド・出力先・対象リポジトリを変えられないよう、環境変数を整理する。
-function sanitizeEnvironment(env) {
-  const next = {};
-  for (const [key, value] of Object.entries(env)) {
-    if (/^GIT_(AUTHOR|COMMITTER)_(NAME|EMAIL|DATE)$/.test(key)) next[key] = value;
-    else if (/^(GIT_|GH_REPO$|GH_HOST$|GH_PAGER$|GH_EDITOR$|GH_BROWSER$|BROWSER$|PAGER$|EDITOR$|VISUAL$)/.test(key)) continue;
-    else next[key] = value;
-  }
-  next.GIT_TERMINAL_PROMPT = '0';
-  next.GH_PROMPT_DISABLED = '1';
-  return next;
+// ─── 信頼境界の検証（所有者・権限・リンク） ─────────────────────────────
+
+// グループ書き込みを許す信頼済みグループ（root 系の wheel と、macOS の admin。Homebrew の bin は admin が書ける）。
+const TRUSTED_GROUP_IDS = Object.freeze([0, 80]);
+
+function currentUid(deps = {}) {
+  if (deps.uid !== undefined) return deps.uid;
+  return typeof process.getuid === 'function' ? process.getuid() : undefined;
 }
 
-const GITHUB_REMOTE_PATTERN = /^(?:https:\/\/(?:[^@/]+@)?github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?(?:\.git)?\/?$/;
+function isTrustedOwner(stat, uid) {
+  return stat.uid === 0 || (uid !== undefined && stat.uid === uid);
+}
+
+// 他人が書き込める（差し替えられる）権限かを判定する。
+// 他者書き込みは常に不可（ただし sticky の root/自分所有フォルダは、他人の作ったエントリを置換できないので祖先に限り許す）。
+// グループ書き込みは、管理者グループ（root 系の wheel と macOS の admin。Homebrew の bin は admin が書ける）だけを信頼する。
+// 利用者の既定グループ（macOS の staff など）は他のアカウントと共有されうるため信頼しない。
+function hasUntrustedWrite(stat, { isAncestor }) {
+  if (stat.mode & 0o002) return !(isAncestor && stat.isDirectory() && (stat.mode & 0o1000) && stat.uid === 0);
+  if (stat.mode & 0o020) return !TRUSTED_GROUP_IDS.includes(stat.gid);
+  return false;
+}
 
 /**
- * 作業フォルダが実行してよいリポジトリかを確認する。
- * Git 管理下で、ホームや / そのものではないこと。gh を使う操作は origin が github.com であること。
- * @returns {{ok: true} | {ok: false, error: string}}
+ * 絶対パスの根から末端までの各階層について、実体（リンクでない）・信頼できる所有者・他人が書き込めない権限を検証する。
+ * 検証後にパスの途中を差し替えられないことを保証するための確認で、結果の識別子（dev/ino）は後から再照合できる。
+ * @param {object} fsImpl fs 互換
+ * @param {string} targetPath 絶対パス（シンボリックリンクを含まない実パス）
+ * @param {{uid?: number, finalKind?: 'directory'|'file'|'any'}} [options]
+ * @returns {Array<{path: string, dev: number, ino: number}>}
  */
-function verifyRepository({ cwd, needsGitHub, run, homeDir, fsImpl }) {
-  const toplevel = run('git', ['rev-parse', '--show-toplevel'], cwd);
+function verifyTrustedChain(fsImpl, targetPath, options = {}) {
+  const { finalKind = 'directory' } = options;
+  const uid = currentUid(options);
+  const parts = path.resolve(targetPath).split(path.sep).filter(Boolean);
+  const snapshot = [];
+  let current = path.parse(path.resolve(targetPath)).root;
+  for (let index = -1; index < parts.length; index += 1) {
+    if (index >= 0) current = path.join(current, parts[index]);
+    const isFinal = index === parts.length - 1;
+    const stat = fsImpl.lstatSync(current);
+    if (stat.isSymbolicLink()) throw new TrustError(`path contains a symbolic link: ${current}`);
+    const mustBeDirectory = !isFinal || finalKind === 'directory';
+    if (mustBeDirectory && !stat.isDirectory()) throw new TrustError(`path is not a directory: ${current}`);
+    if (isFinal && finalKind === 'file' && !stat.isFile()) throw new TrustError(`path is not a regular file: ${current}`);
+    if (!isTrustedOwner(stat, uid)) throw new TrustError(`path is not owned by the current user or root: ${current}`);
+    if (hasUntrustedWrite(stat, { isAncestor: !isFinal })) throw new TrustError(`path is writable by other users: ${current}`);
+    snapshot.push({ path: current, dev: stat.dev, ino: stat.ino });
+  }
+  return snapshot;
+}
+
+/** verifyTrustedChain の結果と、現在の同じパスが同一（dev/ino が不変）であることを再確認する。 */
+function assertChainUnchanged(fsImpl, snapshot) {
+  for (const entry of snapshot) {
+    const stat = fsImpl.lstatSync(entry.path);
+    if (stat.isSymbolicLink() || stat.dev !== entry.dev || stat.ino !== entry.ino) {
+      throw new TrustError(`path changed after it was verified: ${entry.path}`);
+    }
+  }
+}
+
+class TrustError extends Error {}
+
+const TOOL_NAME_PATTERN = /^[a-z][a-z0-9-]*$/;
+
+/**
+ * 固定の探索先から、所有者・権限を検証済みの実行ファイルの絶対パスを 1 つ決める。環境変数 PATH は使わない。
+ * 候補ごとに「置かれたフォルダは実体で信頼できる」「実行ファイル（リンクなら実体）は通常ファイルで他人が書けない」を検証し、
+ * 通らない候補は飛ばす。リンクは実体まで検証したうえで、ツールが argv[0] で挙動を変えうるためリンク側のパスを返す。
+ * @returns {string|null} 見つからなければ null
+ */
+function resolveTrustedExecutable(fsImpl, name, searchDirs, options = {}) {
+  if (!TOOL_NAME_PATTERN.test(name)) return null;
+  for (const dir of searchDirs) {
+    const candidate = path.join(dir, name);
+    try {
+      verifyTrustedChain(fsImpl, dir, options);
+      const realPath = fsImpl.realpathSync(candidate);
+      const realStat = fsImpl.statSync(realPath);
+      if (!realStat.isFile() || (realStat.mode & 0o111) === 0) continue;
+      verifyTrustedChain(fsImpl, realPath, { ...options, finalKind: 'file' });
+      return candidate;
+    } catch (_error) {
+      // 候補が無い・信頼できない場合は次へ。
+    }
+  }
+  return null;
+}
+
+// ─── リポジトリの拘束 ───────────────────────────────────────────────────────
+
+const GITHUB_REMOTE_PATTERN = /^(?:https:\/\/(?:[^@/]+@)?github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/;
+const GITHUB_REPO_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+
+// 外部コマンドの起動・設定の取り込みにつながる、リポジトリ内の設定項目（git config --list の小文字化したキー）。
+const UNSAFE_GIT_CONFIG_PATTERNS = Object.freeze([
+  /^include\./,
+  /^includeif\./,
+  /^filter\..*\.(clean|smudge|process)$/,
+  /^diff\.external$/,
+  /^diff\..*\.(textconv|command)$/,
+  /^merge\..*\.driver$/,
+  /^(difftool|mergetool)\..*\.(cmd|path)$/,
+  /^gpg\..*program$/,
+  /^gpg\.program$/,
+  /^gpg\.ssh\.defaultkeycommand$/,
+  /^core\.(sshcommand|askpass|editor|pager|gitproxy)$/,
+  /^credential\..*helper$/,
+  /^credential\.helper$/,
+  /^sequence\.editor$/,
+  /^trailer\..*\.cmd$/,
+]);
+
+/**
+ * `git config --list --null` の出力から、外部コマンドを起動しうる設定項目を探す。
+ * @param {string} output
+ * @returns {{unsafeKey: string|null, originUrl: string|null}} 見つかった危険なキー（無ければ null）と、origin の生の URL
+ */
+function inspectGitConfigListing(output) {
+  let unsafeKey = null;
+  let originUrl = null;
+  for (const record of String(output).split('\0')) {
+    if (record === '') continue;
+    const newline = record.indexOf('\n');
+    const rawKey = newline === -1 ? record : record.slice(0, newline);
+    const value = newline === -1 ? '' : record.slice(newline + 1);
+    const parts = rawKey.split('.');
+    const key = parts.length > 2
+      ? `${parts[0].toLowerCase()}.${parts.slice(1, -1).join('.')}.${parts[parts.length - 1].toLowerCase()}`
+      : rawKey.toLowerCase();
+    if (unsafeKey === null && UNSAFE_GIT_CONFIG_PATTERNS.some((pattern) => pattern.test(key.toLowerCase()))) unsafeKey = rawKey;
+    if (key === 'remote.origin.url') originUrl = value;
+  }
+  return { unsafeKey, originUrl };
+}
+
+/**
+ * origin の URL から GitHub の owner/repo を取り出す。github.com 以外・解釈できない形は null。
+ * @param {string|null} url
+ * @returns {string|null}
+ */
+function parseGitHubRepo(url) {
+  const match = GITHUB_REMOTE_PATTERN.exec(String(url || '').trim());
+  if (!match) return null;
+  const repo = `${match[1]}/${match[2]}`;
+  return GITHUB_REPO_PATTERN.test(repo) ? repo : null;
+}
+
+/**
+ * 作業フォルダの Git リポジトリを調べ、拘束に使う実ルートと GitHub の owner/repo を返す。
+ * 起動時の確定と、実行のたびの一致検証の両方が同じ関数を通る。
+ * Git 管理下でない・ホームや / そのもの・外部コマンドを起動しうる設定がある場合は失敗する。
+ * @param {{cwd: string, run: Function, homeDir: string, fsImpl: object}} params run(args, cwd) は信頼済みの git を固定環境で実行する
+ * @returns {{ok: true, root: string, repo: string|null} | {ok: false, error: string}}
+ */
+function inspectRepository({ cwd, run, homeDir, fsImpl }) {
+  const toplevel = run(['rev-parse', '--show-toplevel'], cwd);
   if (toplevel.status !== 0) return fail('not inside a git repository');
-  let topPath;
+  let root;
   try {
-    topPath = fsImpl.realpathSync(String(toplevel.stdout).trim());
+    root = fsImpl.realpathSync(String(toplevel.stdout).trim());
   } catch (_error) {
     return fail('repository path could not be resolved');
   }
-  const forbidden = new Set([path.parse(topPath).root]);
+  const forbidden = new Set([path.parse(root).root]);
   try { forbidden.add(fsImpl.realpathSync(homeDir)); } catch (_error) { /* ホームが無ければ比較対象にしない */ }
-  if (forbidden.has(topPath)) return fail('repository root is not a project directory');
-  if (needsGitHub) {
-    const remote = run('git', ['remote', 'get-url', 'origin'], cwd);
-    if (remote.status !== 0 || !GITHUB_REMOTE_PATTERN.test(String(remote.stdout).trim())) return fail('origin is not a github.com repository');
-  }
-  return { ok: true };
+  if (forbidden.has(root)) return fail('repository root is not a project directory');
+  const listing = run(['config', '--list', '--null'], cwd);
+  if (listing.status !== 0) return fail('repository configuration could not be read');
+  const { unsafeKey, originUrl } = inspectGitConfigListing(listing.stdout);
+  if (unsafeKey !== null) return fail(`repository configuration can run external commands: ${JSON.stringify(unsafeKey)}`);
+  return { ok: true, root, repo: parseGitHubRepo(originUrl) };
+}
+
+// ─── 子プロセスの環境 ───────────────────────────────────────────────────────
+
+const SAFE_VALUE_PATTERN = /^[^\x00-\x1f\x7f']+$/;
+
+function isSafeBindingPath(value) {
+  return typeof value === 'string' && path.isAbsolute(value) && SAFE_VALUE_PATTERN.test(value);
+}
+
+/**
+ * ランチャーが固定した値（環境変数 VK_TASK_*）を読み、拘束の設定として検証する。1 つでも不正なら null。
+ * @param {Record<string, string|undefined>} env
+ * @returns {{root: string, repo: string|null, git: string, gh: string|null, home: string, gitConfig: string}|null}
+ */
+function readBinding(env) {
+  const root = env.VK_TASK_ROOT;
+  const git = env.VK_TASK_GIT;
+  const gh = env.VK_TASK_GH || null;
+  const home = env.VK_TASK_HOME;
+  const gitConfig = env.VK_TASK_GITCONFIG;
+  const repo = env.VK_TASK_REPO || null;
+  if (![root, git, home, gitConfig].every(isSafeBindingPath)) return null;
+  if (gh !== null && !isSafeBindingPath(gh)) return null;
+  if (repo !== null && !GITHUB_REPO_PATTERN.test(repo)) return null;
+  return { root, repo, git, gh, home, gitConfig };
+}
+
+/**
+ * git / gh の子プロセスに渡す環境変数を、許可リストで一から組み立てる。親の環境は一切引き継がない。
+ * HOME・設定ディレクトリは信頼値に固定し、Git の system / global 設定は使わない
+ * （global の代わりに、ランチャーが生成した author 情報だけの設定ファイルを指す）。
+ * @param {{git: string, gh: string|null, home: string, gitConfig: string}} binding
+ * @returns {Record<string, string>}
+ */
+function buildChildEnvironment(binding) {
+  const toolDirs = [path.dirname(binding.git), ...(binding.gh ? [path.dirname(binding.gh)] : []), '/usr/bin', '/bin'];
+  return {
+    PATH: [...new Set(toolDirs)].join(':'),
+    HOME: binding.home,
+    XDG_CONFIG_HOME: path.join(binding.home, '.config'),
+    GH_CONFIG_DIR: path.join(binding.home, '.config', 'gh'),
+    GIT_CONFIG_GLOBAL: binding.gitConfig,
+    GIT_CONFIG_SYSTEM: '/dev/null',
+    GIT_CONFIG_NOSYSTEM: '1',
+    GIT_ATTR_NOSYSTEM: '1',
+    GIT_TERMINAL_PROMPT: '0',
+    GH_PROMPT_DISABLED: '1',
+    GH_NO_UPDATE_NOTIFIER: '1',
+    GH_PAGER: 'cat',
+    NO_COLOR: '1',
+    LC_ALL: 'C',
+  };
+}
+
+/**
+ * 検証済みの gh の argv に、拘束したリポジトリを必ず付ける。
+ * @param {string[]} args parseTaskCommand が組み立てた gh の argv
+ * @param {string} repo 拘束した owner/repo
+ * @returns {string[]}
+ */
+function withBoundRepository(args, repo) {
+  return [...args, '--repo', repo];
 }
 
 /**
  * 検証を通った操作だけを実行し、終了コードを返す。
+ * 実行環境・git / gh の絶対パス・対象リポジトリはランチャーが固定した VK_TASK_*（deps.env）から読み、
+ * 呼び出し元の環境には依存しない。
  * @param {ReadonlyArray<string>} argv 先頭が git / gh の引数列
- * @param {object} [deps] テスト用の差し替え（cwd / env / spawnSync / homeDir / fs / write）
+ * @param {object} [deps] テスト用の差し替え（cwd / env / spawnSync / fs / write / uid）
  * @returns {number} プロセスの終了コード（拒否・検証失敗は 2）
  */
 function runTaskCommand(argv, deps = {}) {
   const cwd = deps.cwd || process.cwd();
-  const env = sanitizeEnvironment(deps.env || process.env);
+  const fsImpl = deps.fs || nodeFs;
   const spawnSync = deps.spawnSync || childProcess.spawnSync;
   const write = deps.write || ((message) => process.stderr.write(message));
-  const run = (bin, args, runCwd, stdio) => spawnSync(bin, args, { cwd: runCwd, env, encoding: 'utf8', ...(stdio ? { stdio } : {}) });
+  const reject = (message) => {
+    write(`${message}\n`);
+    return 2;
+  };
+
   const parsed = parseTaskCommand(argv);
-  if (!parsed.ok) {
-    write(`${parsed.error}\n`);
-    return 2;
+  if (!parsed.ok) return reject(parsed.error);
+
+  const binding = readBinding(deps.env || process.env);
+  if (binding === null) return reject('task command rejected: launcher binding is missing or invalid');
+
+  // git / gh の実行ファイルを毎回検証する（起動後に差し替えられていないこと）。
+  const trustOptions = { uid: deps.uid };
+  try {
+    for (const tool of [binding.git, ...(parsed.bin === 'gh' ? [binding.gh] : [])]) {
+      if (tool === null) return reject('task command rejected: gh is not available');
+      verifyTrustedChain(fsImpl, path.dirname(tool), trustOptions);
+      verifyTrustedChain(fsImpl, fsImpl.realpathSync(tool), { ...trustOptions, finalKind: 'file' });
+    }
+  } catch (error) {
+    return reject(`task command rejected: ${error instanceof TrustError ? error.message : 'executable could not be verified'}`);
   }
-  const verified = verifyRepository({
-    cwd, needsGitHub: parsed.needsGitHub, run, homeDir: deps.homeDir || os.homedir(), fsImpl: deps.fs || nodeFs,
-  });
-  if (!verified.ok) {
-    write(`${verified.error}\n`);
-    return 2;
+
+  const env = buildChildEnvironment(binding);
+  const runGit = (args, runCwd) => spawnSync(binding.git, [...FIXED_GIT_PREFIX, ...args], { cwd: runCwd, env, encoding: 'utf8' });
+
+  // 作業フォルダが、起動時に拘束したリポジトリそのものであることを確認する。
+  const inspected = inspectRepository({ cwd, run: runGit, homeDir: binding.home, fsImpl });
+  if (!inspected.ok) return reject(inspected.error);
+  if (inspected.root !== binding.root) return reject('task command rejected: working directory is not the bound repository');
+  if (parsed.needsGitHub) {
+    if (binding.repo === null || inspected.repo !== binding.repo) return reject('task command rejected: origin does not match the bound github.com repository');
   }
-  const result = run(parsed.bin, parsed.args, cwd, 'inherit');
-  if (result.error) {
-    write(`task command failed to start: ${result.error.code || 'error'}\n`);
-    return 2;
-  }
+
+  const bin = parsed.bin === 'gh' ? binding.gh : binding.git;
+  const args = parsed.bin === 'gh' ? withBoundRepository(parsed.args, binding.repo) : parsed.args;
+  const result = spawnSync(bin, args, { cwd, env, encoding: 'utf8', stdio: 'inherit' });
+  if (result.error) return reject(`task command failed to start: ${result.error.code || 'error'}`);
   return typeof result.status === 'number' ? result.status : 2;
 }
 
-module.exports = { parseTaskCommand, runTaskCommand, sanitizeEnvironment, verifyRepository };
+module.exports = {
+  parseTaskCommand,
+  runTaskCommand,
+  readBinding,
+  buildChildEnvironment,
+  withBoundRepository,
+  inspectRepository,
+  inspectGitConfigListing,
+  parseGitHubRepo,
+  verifyTrustedChain,
+  assertChainUnchanged,
+  resolveTrustedExecutable,
+  TrustError,
+  FIXED_GIT_PREFIX,
+};
 
-// 複製先（専用 CODEX_HOME）では node の直接実行になる。require された場合は何もしない。
+// 複製先（専用 CODEX_HOME）では、ランチャーからの Node 直接実行になる。require された場合は何もしない。
 if (require.main === module) {
   process.exitCode = runTaskCommand(process.argv.slice(2));
 }

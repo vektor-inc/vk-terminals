@@ -3,6 +3,7 @@
 // 否定ケース（広い個人設定・未知キー・不正値・競合・再起動）をまとめて確認する。
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const childProcess = require('node:child_process');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -20,21 +21,33 @@ const { validateRestartAgentRequest } = require('../utils/restartAgent');
 
 const { validateCodexLaunchOptions, buildCodexLaunchCommand, buildEngineAwareLaunchCommand } = claudeModel;
 
-// 一時ディレクトリ上に「個人の CODEX_HOME」「アプリのデータ」「引き継ぎ先」を作る。
-function createSandbox(personalConfigToml) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-codex-policy-'));
+// 一時ディレクトリ上に「個人の CODEX_HOME」「アプリのデータ」「引き継ぎ先」「ホーム」「タスクのリポジトリ」を作る。
+function createSandbox(personalConfigToml, { origin = 'https://github.com/vektor-inc/vk-terminals.git' } = {}) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'vk-codex-policy-')));
   const personalCodexHome = path.join(root, 'personal-codex');
   fs.mkdirSync(personalCodexHome, { recursive: true });
   fs.writeFileSync(path.join(personalCodexHome, 'auth.json'), '{"token":"secret"}');
   if (personalConfigToml !== undefined) fs.writeFileSync(path.join(personalCodexHome, 'config.toml'), personalConfigToml);
+  const homeDir = path.join(root, 'home');
+  fs.mkdirSync(homeDir);
+  const repo = path.join(root, 'repo');
+  fs.mkdirSync(repo);
+  const git = (...args) => childProcess.execFileSync('git', args, { cwd: repo, encoding: 'utf8' });
+  git('init', '-q', '-b', 'main');
+  if (origin) git('remote', 'add', 'origin', origin);
   return {
     root,
     personalCodexHome,
+    homeDir,
+    repo,
+    git,
     deps: {
       validateCodexLaunchOptions,
       dataDir: path.join(root, 'data'),
       handoffDir: path.join(root, 'handoff'),
       personalCodexHome,
+      homeDir,
+      cwd: repo,
     },
     policyBase: path.join(root, 'data', 'codex-task-policy', 'orchestrated-task'),
     cleanup: () => fs.rmSync(root, { recursive: true, force: true }),
@@ -95,15 +108,22 @@ test('restart-agent 検証: codexPolicy を同じ規則で検証し、新規作�
     validateCodexLaunchOptions,
   };
   const ok = validateRestartAgentRequest({
-    termId: '1', expectedGeneration: 2, engine: 'codex', approvalPolicy: 'never', codexPolicy: { preset: 'orchestrated-task' },
+    termId: '1', expectedGeneration: 2, engine: 'codex', approvalPolicy: 'never', codexPolicy: { preset: 'orchestrated-task' }, cwd: '/tmp',
   }, validators);
   assert.equal(ok.ok, true);
   assert.deepEqual(ok.codexPolicy, { preset: 'orchestrated-task' });
   assert.equal(validateRestartAgentRequest({
     termId: '1', expectedGeneration: 2, codexPolicy: { preset: 'orchestrated-task' },
   }, validators).error, 'Codex options require engine "codex"');
+  // 操作を拘束するリポジトリは cwd から決めるため、ポリシー付きでは cwd が必須。
   assert.equal(validateRestartAgentRequest({
-    termId: '1', expectedGeneration: 2, engine: 'codex', codexPolicy: { preset: 'orchestrated-task', x: 1 },
+    termId: '1', expectedGeneration: 2, engine: 'codex', codexPolicy: { preset: 'orchestrated-task' },
+  }, validators).error, 'codexPolicy requires cwd');
+  assert.equal(validateRestartAgentRequest({
+    termId: '1', expectedGeneration: 2, engine: 'codex', cwd: '/tmp',
+  }, validators).ok, true);
+  assert.equal(validateRestartAgentRequest({
+    termId: '1', expectedGeneration: 2, engine: 'codex', codexPolicy: { preset: 'orchestrated-task', x: 1 }, cwd: '/tmp',
   }, validators).error, 'unknown codexPolicy key: x');
 });
 
@@ -147,8 +167,10 @@ test('起動コマンド: ポリシー無しの Codex（手動の通常セッシ
 // ─── 専用 CODEX_HOME の生成 ──────────────────────────────────────────────
 
 const OPS_SOURCE = fs.readFileSync(path.join(__dirname, '..', 'utils', 'codexTaskOps.js'), 'utf8');
+const HOME_ENTRIES = ['AGENTS.md', 'auth.json', 'config.toml', 'gitconfig', 'rules', 'vk-task-ops', 'vk-task-ops.js'];
 const modeOf = (target) => fs.lstatSync(target).mode & 0o777;
 const prepare = (sandbox, extra = {}) => prepareCodexTaskPolicyHome({ preset: 'orchestrated-task', ...sandbox.deps, ...extra });
+const launchHomes = (sandbox) => (fs.existsSync(sandbox.policyBase) ? fs.readdirSync(sandbox.policyBase) : []);
 
 test('生成: 個人設定が広くても継承せず、個人の config.toml は変更しない', () => {
   const broadPersonalConfig = [
@@ -166,11 +188,13 @@ test('生成: 個人設定が広くても継承せず、個人の config.toml �
     const personalConfigPath = path.join(sandbox.personalCodexHome, 'config.toml');
     const before = sha256(personalConfigPath);
     const result = prepare(sandbox);
-    assert.equal(result.ok, true);
+    assert.equal(result.ok, true, result.error);
     const config = fs.readFileSync(path.join(result.home, 'config.toml'), 'utf8');
     assert.match(config, /^sandbox_mode = "workspace-write"$/m);
     assert.match(config, /^network_access = false$/m);
     assert.match(config, new RegExp(`^writable_roots = \\[${JSON.stringify(sandbox.deps.handoffDir).replace(/[\\/]/g, '\\$&')}\\]$`, 'm'));
+    // 外部コマンドの事前読み込みにつながる環境変数は、Codex が起動するコマンドへ渡さない。
+    assert.match(config, /^exclude = \[.*"LD_\*".*"DYLD_\*".*"NODE_\*".*"GIT_\*".*"GH_\*".*\]$/m);
     for (const forbidden of ['danger-full-access', 'network_access = true', '"/"', '.ssh', 'profile', 'trust_level']) {
       assert.equal(config.includes(forbidden), false, forbidden);
     }
@@ -179,7 +203,7 @@ test('生成: 個人設定が広くても継承せず、個人の config.toml �
     // ログイン状態だけは共有する（個人の設定ファイルは共有しない）。
     assert.equal(fs.readlinkSync(path.join(result.home, 'auth.json')), fs.realpathSync(path.join(sandbox.personalCodexHome, 'auth.json')));
     // 中身は許可した生成物だけ（hooks.json など他のファイルは無い）。
-    assert.deepEqual(fs.readdirSync(result.home).sort(), ['AGENTS.md', 'auth.json', 'config.toml', 'rules', 'vk-task-ops.js']);
+    assert.deepEqual(fs.readdirSync(result.home).sort(), HOME_ENTRIES);
     assert.deepEqual(fs.readdirSync(path.join(result.home, 'rules')), ['vk-terminals-task.rules']);
     assert.equal(fs.existsSync(sandbox.deps.handoffDir), true);
   } finally {
@@ -187,22 +211,81 @@ test('生成: 個人設定が広くても継承せず、個人の config.toml �
   }
 });
 
-test('生成: rules は検証付きの固定入口の実行だけを許可し、Git / GitHub の先頭一致は持たない', () => {
+test('生成: rules は信頼済みランチャーの実行だけを許可し、Git / GitHub / node の先頭一致は持たない', () => {
   const sandbox = createSandbox();
   try {
     const { home } = prepare(sandbox);
     const rules = fs.readFileSync(path.join(home, 'rules', 'vk-terminals-task.rules'), 'utf8');
     const ruleLines = rules.split('\n').filter((line) => line.startsWith('prefix_rule('));
-    assert.deepEqual(ruleLines, [`prefix_rule(pattern=${JSON.stringify(['node', path.join(home, 'vk-task-ops.js')])}, decision="allow")`]);
-    // `git` / `gh` を先頭に持つ許可は無い（後続の引数を制限できないため）。
-    for (const forbidden of ['"git"', '"gh"', '"push"', '"api"', '"merge"', '"bash"', '"sh"', '"curl"', '"rm"']) {
+    assert.deepEqual(ruleLines, [`prefix_rule(pattern=${JSON.stringify([path.join(home, 'vk-task-ops')])}, decision="allow")`]);
+    // PATH で解決される `node` / `git` / `gh` を先頭に持つ許可は無い（後続の引数や環境を制限できないため）。
+    for (const forbidden of ['"node"', '"git"', '"gh"', '"push"', '"api"', '"merge"', '"bash"', '"sh"', '"curl"', '"rm"']) {
       assert.equal(rules.includes(forbidden), false, forbidden);
     }
     // 入口は検証ロジック本体の複製で、案内（AGENTS.md）は入口と許可する操作だけを示す。
     assert.equal(fs.readFileSync(path.join(home, 'vk-task-ops.js'), 'utf8'), OPS_SOURCE);
     const guide = fs.readFileSync(path.join(home, 'AGENTS.md'), 'utf8');
-    assert.ok(guide.includes(`node '${path.join(home, 'vk-task-ops.js')}'`));
+    assert.ok(guide.includes(`'${path.join(home, 'vk-task-ops')}' <git|gh>`));
+    assert.equal(guide.includes('node '), false);
     for (const operation of ORCHESTRATED_TASK_OPERATIONS) assert.ok(guide.includes(`\`${operation}\``), operation);
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('生成: ランチャーは環境を空にして検証済みの絶対パスの Node を起動し、拘束するリポジトリを固定する', () => {
+  const sandbox = createSandbox();
+  try {
+    const { home } = prepare(sandbox);
+    const launcher = fs.readFileSync(path.join(home, 'vk-task-ops'), 'utf8');
+    assert.match(launcher, /^#!\/bin\/sh\n/);
+    assert.match(launcher, /^exec '\/usr\/bin\/env' -i \\$/m);
+    const assign = (name) => new RegExp(`^  '${name}=(.*)' \\\\$`, 'm').exec(launcher)[1];
+    assert.equal(assign('VK_TASK_ROOT'), sandbox.repo);
+    assert.equal(assign('VK_TASK_REPO'), 'vektor-inc/vk-terminals');
+    assert.equal(assign('VK_TASK_HOME'), sandbox.homeDir);
+    assert.equal(assign('VK_TASK_GITCONFIG'), path.join(home, 'gitconfig'));
+    for (const name of ['VK_TASK_GIT', 'VK_TASK_GH']) assert.ok(path.isAbsolute(assign(name)), name);
+    // 実行ファイルは PATH 解決ではなく絶対パス。
+    const lastLine = launcher.trimEnd().split('\n').pop();
+    const [nodePath, scriptPath] = [...lastLine.matchAll(/'([^']+)'/g)].map((match) => match[1]);
+    assert.ok(path.isAbsolute(nodePath));
+    assert.equal(scriptPath, path.join(home, 'vk-task-ops.js'));
+    assert.ok(lastLine.endsWith('"$@"'));
+    // origin が GitHub でないリポジトリでは owner/repo を固定できず、空になる（gh は拒否される）。
+    sandbox.git('remote', 'set-url', 'origin', 'https://example.com/o/r.git');
+    const other = prepare(sandbox);
+    assert.match(fs.readFileSync(path.join(other.home, 'vk-task-ops'), 'utf8'), /^  'VK_TASK_REPO=' \\$/m);
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('ランチャー: 環境変数で Node 起動前にコードを差し込めず、拘束した以外のリポジトリでは動かない', () => {
+  const sandbox = createSandbox();
+  try {
+    const { home } = prepare(sandbox);
+    const launcher = path.join(home, 'vk-task-ops');
+    const marker = path.join(sandbox.root, 'preload-ran');
+    const preload = path.join(sandbox.root, 'preload.js');
+    fs.writeFileSync(preload, `require('fs').writeFileSync(${JSON.stringify(marker)}, 'ran');\n`);
+    const poisoned = {
+      ...process.env, NODE_OPTIONS: `--require ${preload}`, NODE_PATH: sandbox.root, GIT_DIR: '/nonexistent', GH_REPO: 'evil/repo',
+      GIT_CONFIG_GLOBAL: path.join(sandbox.root, 'evil-gitconfig'), BASH_ENV: preload, ENV: preload,
+    };
+    const ok = childProcess.spawnSync(launcher, ['git', 'status', '--short'], { cwd: sandbox.repo, env: poisoned, encoding: 'utf8' });
+    assert.equal(ok.status, 0, ok.stderr);
+    assert.equal(fs.existsSync(marker), false);
+
+    const other = path.join(sandbox.root, 'other');
+    fs.mkdirSync(other);
+    childProcess.execFileSync('git', ['init', '-q'], { cwd: other });
+    const rejected = childProcess.spawnSync(launcher, ['git', 'status'], { cwd: other, env: poisoned, encoding: 'utf8' });
+    assert.equal(rejected.status, 2);
+    assert.match(rejected.stderr, /not the bound repository/);
+    const refusedOp = childProcess.spawnSync(launcher, ['git', 'diff', `--output=${path.join(sandbox.root, 'written')}`], { cwd: sandbox.repo, env: poisoned, encoding: 'utf8' });
+    assert.equal(refusedOp.status, 2);
+    assert.equal(fs.existsSync(path.join(sandbox.root, 'written')), false);
   } finally {
     sandbox.cleanup();
   }
@@ -218,7 +301,7 @@ test('生成: 起動のたびに新しい専用フォルダを作り、前回の
     const second = prepare(sandbox);
     assert.equal(second.ok, true);
     assert.notEqual(second.home, first.home);
-    assert.deepEqual(fs.readdirSync(second.home).sort(), ['AGENTS.md', 'auth.json', 'config.toml', 'rules', 'vk-task-ops.js']);
+    assert.deepEqual(fs.readdirSync(second.home).sort(), HOME_ENTRIES);
     assert.match(fs.readFileSync(path.join(second.home, 'config.toml'), 'utf8'), /^network_access = false$/m);
     assert.deepEqual(fs.readdirSync(path.join(second.home, 'rules')), ['vk-terminals-task.rules']);
   } finally {
@@ -235,10 +318,10 @@ test('生成: 事前に置かれた AGENTS.md・hooks.json・未知のファイ�
     fs.mkdirSync(path.join(sandbox.policyBase, 'rules'));
     const clean = prepare(sandbox);
     assert.equal(clean.ok, true);
-    assert.deepEqual(fs.readdirSync(clean.home).sort(), ['AGENTS.md', 'auth.json', 'config.toml', 'rules', 'vk-task-ops.js']);
+    assert.deepEqual(fs.readdirSync(clean.home).sort(), HOME_ENTRIES);
     assert.notEqual(fs.readFileSync(path.join(clean.home, 'AGENTS.md'), 'utf8'), 'planted');
 
-    // 専用フォルダの名前が衝突し、事前配置済みのフォルダだった場合は再利用せず拒否する。
+    // 専用フォルダの名前が衝突し、事前配置済みのフォルダだった場合は再利用せず拒否する（事前配置の物は消さない）。
     const planted = path.join(sandbox.policyBase, 'a'.repeat(24));
     fs.mkdirSync(path.join(planted, 'rules'), { recursive: true, mode: 0o700 });
     for (const name of ['AGENTS.md', 'hooks.json', 'config.toml']) fs.writeFileSync(path.join(planted, name), 'planted');
@@ -255,35 +338,37 @@ test('検証: 許可した生成物以外のファイル・リンク・緩い権
   try {
     const { home } = prepare(sandbox);
     const authTarget = fs.realpathSync(path.join(sandbox.personalCodexHome, 'auth.json'));
+    const fileSpec = (name) => ({ content: fs.readFileSync(path.join(home, name), 'utf8'), mode: modeOf(path.join(home, name)) });
     const pristine = {
-      files: {
-        'config.toml': fs.readFileSync(path.join(home, 'config.toml'), 'utf8'),
-        'AGENTS.md': fs.readFileSync(path.join(home, 'AGENTS.md'), 'utf8'),
-        'vk-task-ops.js': OPS_SOURCE,
-      },
+      files: Object.fromEntries(['config.toml', 'AGENTS.md', 'gitconfig', 'vk-task-ops.js', 'vk-task-ops'].map((name) => [name, fileSpec(name)])),
       rulesBody: fs.readFileSync(path.join(home, 'rules', 'vk-terminals-task.rules'), 'utf8'),
       authTarget,
     };
-    const expected = () => pristine;
     const uid = process.getuid();
-    assert.doesNotThrow(() => verifyPolicyHome(fs, home, expected(), uid));
+    assert.doesNotThrow(() => verifyPolicyHome(fs, home, pristine, uid));
 
     fs.writeFileSync(path.join(home, 'hooks.json'), '{}');
-    assert.throws(() => verifyPolicyHome(fs, home, expected(), uid), /unexpected entries/);
+    assert.throws(() => verifyPolicyHome(fs, home, pristine, uid), /unexpected entries/);
     fs.rmSync(path.join(home, 'hooks.json'));
 
     fs.writeFileSync(path.join(home, 'rules', 'extra.rules'), '');
-    assert.throws(() => verifyPolicyHome(fs, home, expected(), uid), /unexpected entries/);
+    assert.throws(() => verifyPolicyHome(fs, home, pristine, uid), /unexpected entries/);
     fs.rmSync(path.join(home, 'rules', 'extra.rules'));
 
     fs.chmodSync(path.join(home, 'config.toml'), 0o644);
-    assert.throws(() => verifyPolicyHome(fs, home, expected(), uid), /permissions are not 0600/);
+    assert.throws(() => verifyPolicyHome(fs, home, pristine, uid), /permissions are not 0600/);
     fs.chmodSync(path.join(home, 'config.toml'), 0o600);
 
-    fs.appendFileSync(path.join(home, 'AGENTS.md'), 'tampered');
-    assert.throws(() => verifyPolicyHome(fs, home, expected(), uid), /could not be verified/);
+    // ランチャー・入口が書き換え可能になっていたら拒否する。
+    fs.chmodSync(path.join(home, 'vk-task-ops'), 0o700);
+    assert.throws(() => verifyPolicyHome(fs, home, pristine, uid), /permissions are not 0500/);
+    fs.chmodSync(path.join(home, 'vk-task-ops'), 0o500);
 
-    assert.throws(() => verifyPolicyHome(fs, home, { ...expected(), authTarget: null }, uid), /unexpected entries/);
+    fs.chmodSync(path.join(home, 'AGENTS.md'), 0o600);
+    fs.appendFileSync(path.join(home, 'AGENTS.md'), 'tampered');
+    assert.throws(() => verifyPolicyHome(fs, home, pristine, uid), /could not be verified/);
+
+    assert.throws(() => verifyPolicyHome(fs, home, { ...pristine, authTarget: null }, uid), /unexpected entries/);
   } finally {
     sandbox.cleanup();
   }
@@ -327,6 +412,63 @@ test('生成: データフォルダ自体・引き継ぎ先がシンボリック
   }
 });
 
+test('信頼境界: データ・引き継ぎ先・ホーム・認証元の祖先が他人に書き込める、または他人の所有なら拒否する', () => {
+  const makeWritable = (target) => fs.chmodSync(target, 0o777);
+  const cases = [
+    ['データフォルダの親', (sandbox) => { fs.mkdirSync(path.join(sandbox.root, 'shared')); makeWritable(path.join(sandbox.root, 'shared')); return { dataDir: path.join(sandbox.root, 'shared', 'data') }; }, /writable by other users/],
+    ['データフォルダ自体', (sandbox) => { fs.mkdirSync(sandbox.deps.dataDir); makeWritable(sandbox.deps.dataDir); return {}; }, /writable by other users/],
+    ['引き継ぎ先の親', (sandbox) => { fs.mkdirSync(path.join(sandbox.root, 'shared')); makeWritable(path.join(sandbox.root, 'shared')); return { handoffDir: path.join(sandbox.root, 'shared', 'handoff') }; }, /writable by other users/],
+    ['引き継ぎ先自体', (sandbox) => { fs.mkdirSync(sandbox.deps.handoffDir); makeWritable(sandbox.deps.handoffDir); return {}; }, /writable by other users/],
+    ['認証元の親', (sandbox) => { makeWritable(sandbox.personalCodexHome); return {}; }, /writable by other users/],
+    ['認証元のファイル', (sandbox) => { fs.chmodSync(path.join(sandbox.personalCodexHome, 'auth.json'), 0o666); return {}; }, /writable by other users/],
+  ];
+  for (const [label, setup, pattern] of cases) {
+    const sandbox = createSandbox();
+    try {
+      const extra = setup(sandbox);
+      const result = prepare(sandbox, extra);
+      assert.equal(result.ok, false, label);
+      assert.match(result.error, pattern, label);
+      assert.deepEqual(launchHomes(sandbox), [], label);
+    } finally {
+      sandbox.cleanup();
+    }
+  }
+  // 所有者が違う（実行ユーザーでも root でもない）場合。
+  const sandbox = createSandbox();
+  try {
+    assert.match(prepare(sandbox, { uid: process.getuid() + 1 }).error, /not owned by/);
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('信頼境界: 検証した祖先が準備の途中で差し替えられたら、作った専用フォルダを片付けて拒否する', () => {
+  const sandbox = createSandbox();
+  try {
+    let swapped = false;
+    // 専用フォルダの書き込み後（返す直前の再確認より前）に、検証済みのデータフォルダの親を別の物へ入れ替える。
+    const swappingFs = {
+      ...fs,
+      readFileSync: (...args) => {
+        if (!swapped && String(args[0]).endsWith('gitconfig')) {
+          swapped = true;
+          fs.renameSync(sandbox.deps.handoffDir, `${sandbox.deps.handoffDir}-old`);
+          fs.mkdirSync(sandbox.deps.handoffDir);
+        }
+        return fs.readFileSync(...args);
+      },
+    };
+    const result = prepare(sandbox, { fs: swappingFs });
+    assert.equal(swapped, true);
+    assert.equal(result.ok, false);
+    assert.match(result.error, /changed after it was verified/);
+    assert.deepEqual(launchHomes(sandbox), []);
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
 test('生成: 固定ファイル・一時ファイルの位置にリンクが置かれていても、リンク先へ書かずに失敗する', () => {
   const sandbox = createSandbox();
   try {
@@ -335,7 +477,7 @@ test('生成: 固定ファイル・一時ファイルの位置にリンクが置
     // 名前が衝突した専用フォルダに、固定ファイル・一時ファイル名のリンクが先回りで置かれている状況。
     const planted = path.join(sandbox.policyBase, 'b'.repeat(24));
     fs.mkdirSync(planted, { recursive: true, mode: 0o700 });
-    for (const name of ['config.toml', 'AGENTS.md', 'vk-task-ops.js', 'config.toml.tmp', 'auth.json']) {
+    for (const name of ['config.toml', 'AGENTS.md', 'vk-task-ops.js', 'vk-task-ops', 'gitconfig', 'config.toml.tmp', 'auth.json']) {
       fs.symlinkSync(victim, path.join(planted, name));
     }
     const result = prepare(sandbox, { randomId: () => 'b'.repeat(24) });
@@ -351,19 +493,20 @@ test('生成: 固定ファイル・一時ファイルの位置にリンクが置
   }
 });
 
-test('権限: 緩い既存フォルダは 0700 に直し、生成物は 0700 / 0600 で作る', () => {
+test('権限: 緩い既存フォルダは 0700 に直し、生成物は所定の権限で作る', () => {
   const sandbox = createSandbox();
   try {
     fs.mkdirSync(sandbox.policyBase, { recursive: true, mode: 0o755 });
     fs.chmodSync(path.dirname(sandbox.policyBase), 0o755);
     fs.chmodSync(sandbox.policyBase, 0o755);
     const result = prepare(sandbox);
-    assert.equal(result.ok, true);
+    assert.equal(result.ok, true, result.error);
     for (const dir of [path.dirname(sandbox.policyBase), sandbox.policyBase, result.home, path.join(result.home, 'rules')]) {
       assert.equal(modeOf(dir), 0o700, dir);
     }
-    for (const file of ['config.toml', 'AGENTS.md', 'vk-task-ops.js', path.join('rules', 'vk-terminals-task.rules')]) {
-      assert.equal(modeOf(path.join(result.home, file)), 0o600, file);
+    const expectedModes = { 'config.toml': 0o600, 'AGENTS.md': 0o600, gitconfig: 0o600, 'vk-task-ops.js': 0o400, 'vk-task-ops': 0o500 };
+    for (const [file, mode] of Object.entries({ ...expectedModes, [path.join('rules', 'vk-terminals-task.rules')]: 0o600 })) {
+      assert.equal(modeOf(path.join(result.home, file)), mode, file);
     }
   } finally {
     sandbox.cleanup();
@@ -377,7 +520,8 @@ test('権限: 緩い権限を直せない・所有者が違うときは拒否す
     fs.chmodSync(sandbox.policyBase, 0o755);
     const cannotChmod = { ...fs, fchmodSync: () => {} };
     assert.match(prepare(sandbox, { fs: cannotChmod }).error, /permissions could not be restricted/);
-    assert.match(prepare(sandbox, { uid: process.getuid() + 1 }).error, /not owned by the current user/);
+    assert.match(prepare(sandbox, { uid: process.getuid() + 1 }).error, /not owned by/);
+    assert.deepEqual(launchHomes(sandbox), []);
   } finally {
     sandbox.cleanup();
   }
@@ -396,19 +540,16 @@ test('auth.json: 共有元が無ければ専用側にも作らず、種別・リ
     assert.equal(without.ok, true);
     assert.equal(fs.existsSync(path.join(without.home, 'auth.json')), false);
 
-    // 共有元が通常ファイルでない（ディレクトリ）・リンク切れ・他人の所有は拒否する。
+    // 共有元が通常ファイルでない（ディレクトリ）・リンク切れは拒否する。
     fs.mkdirSync(authPath);
     assert.match(prepare(sandbox).error, /not a regular file/);
     fs.rmdirSync(authPath);
     fs.symlinkSync(path.join(sandbox.root, 'missing'), authPath);
     assert.match(prepare(sandbox).error, /broken link/);
     fs.rmSync(authPath);
-    fs.writeFileSync(authPath, '{}');
-    assert.match(prepare(sandbox, { uid: process.getuid() + 1 }).error, /not owned by the current user/);
 
     // 共有元がリンクなら、リンクの最終的な実体を指す。
     const realAuth = path.join(sandbox.root, 'dotfiles-auth.json');
-    fs.rmSync(authPath);
     fs.writeFileSync(realAuth, '{}');
     fs.symlinkSync(realAuth, authPath);
     const linked = prepare(sandbox);
@@ -418,21 +559,113 @@ test('auth.json: 共有元が無ければ専用側にも作らず、種別・リ
   }
 });
 
-test('掃除: 古い起動ごとの専用フォルダだけを消し、新しいもの・形式の違うものは残す', () => {
+test('拘束: 作業フォルダが無い・Git 管理外・ホームそのもの・外部実行設定のあるリポジトリでは専用フォルダを作らず拒否する', () => {
   const sandbox = createSandbox();
   try {
-    const first = prepare(sandbox, { now: () => 0 });
-    const stray = path.join(sandbox.policyBase, 'hooks.json');
-    fs.writeFileSync(stray, 'x');
-    const day = 24 * 60 * 60 * 1000;
-    const old = new Date(Date.now() - 40 * day);
+    const without = prepare(sandbox, { cwd: undefined });
+    assert.deepEqual(without, { ok: false, error: 'codex task policy unavailable: working directory required' });
+    assert.match(prepare(sandbox, { cwd: 'relative' }).error, /unsafe directory path/);
+
+    const plain = path.join(sandbox.root, 'plain');
+    fs.mkdirSync(plain);
+    assert.match(prepare(sandbox, { cwd: plain }).error, /not inside a git repository/);
+    assert.match(prepare(sandbox, { cwd: sandbox.repo, homeDir: sandbox.repo }).error, /not a project directory/);
+
+    sandbox.git('config', 'filter.evil.clean', 'cat');
+    assert.match(prepare(sandbox).error, /can run external commands/);
+    sandbox.git('config', '--unset', 'filter.evil.clean');
+    assert.equal(prepare(sandbox).ok, true);
+    assert.equal(launchHomes(sandbox).length, 1);
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('信頼済みの実行ファイル: 見つからない・信頼できない場所のものは使わず、検証を通ったものだけをランチャーへ固定する', () => {
+  const sandbox = createSandbox();
+  try {
+    assert.match(prepare(sandbox, { toolDirs: [] }).error, /trusted node\/git\/env executable not found/);
+    assert.deepEqual(launchHomes(sandbox), []);
+    // 他人が書き込める場所の node は候補から外れる。
+    const open = path.join(sandbox.root, 'open');
+    fs.mkdirSync(open);
+    fs.writeFileSync(path.join(open, 'node'), '#!/bin/sh\n', { mode: 0o755 });
+    fs.chmodSync(open, 0o777);
+    const realDirs = process.env.PATH.split(path.delimiter).filter(path.isAbsolute);
+    const result = prepare(sandbox, { toolDirs: [open, ...realDirs] });
+    assert.equal(result.ok, true, result.error);
+    assert.equal(fs.readFileSync(path.join(result.home, 'vk-task-ops'), 'utf8').includes(open), false);
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('自動削除はしない: 古い専用フォルダも起動で消さず、削除は利用者の責務', () => {
+  const sandbox = createSandbox();
+  try {
+    const first = prepare(sandbox);
+    const old = new Date(Date.now() - 400 * 24 * 60 * 60 * 1000);
     fs.utimesSync(first.home, old, old);
-    const recent = prepare(sandbox);
     const second = prepare(sandbox);
-    assert.equal(fs.existsSync(first.home), false);
-    assert.equal(fs.existsSync(recent.home), true);
-    assert.equal(fs.existsSync(second.home), true);
-    assert.equal(fs.existsSync(stray), true);
+    const third = prepare(sandbox);
+    for (const result of [first, second, third]) assert.equal(fs.existsSync(result.home), true);
+    assert.equal(launchHomes(sandbox).length, 3);
+    const source = fs.readFileSync(path.join(__dirname, '..', 'utils', 'codexTaskPolicy.js'), 'utf8');
+    assert.equal(/pruneStale|STALE_LAUNCH/.test(source), false);
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('回収: 使われなかった専用フォルダは作った本人だけが片付け、差し替えられたものは消さない', () => {
+  const sandbox = createSandbox();
+  try {
+    const mine = prepare(sandbox);
+    const other = prepare(sandbox);
+    assert.equal(mine.discard(), true);
+    assert.equal(fs.existsSync(mine.home), false);
+    assert.equal(mine.discard(), false);
+    assert.equal(fs.existsSync(other.home), true);
+
+    // 作ったフォルダが別の物（同名の別フォルダ・リンク）に入れ替わっていたら消さない。
+    const replaced = prepare(sandbox);
+    fs.rmSync(replaced.home, { recursive: true });
+    fs.mkdirSync(replaced.home, { mode: 0o700 });
+    fs.writeFileSync(path.join(replaced.home, 'keep'), 'x');
+    assert.equal(replaced.discard(), false);
+    assert.equal(fs.existsSync(path.join(replaced.home, 'keep')), true);
+
+    const linked = prepare(sandbox);
+    const elsewhere = path.join(sandbox.root, 'elsewhere');
+    fs.mkdirSync(elsewhere);
+    fs.writeFileSync(path.join(elsewhere, 'keep'), 'x');
+    fs.rmSync(linked.home, { recursive: true });
+    fs.symlinkSync(elsewhere, linked.home);
+    assert.equal(linked.discard(), false);
+    assert.equal(fs.existsSync(path.join(elsewhere, 'keep')), true);
+
+    // 事前確認（dryRun）は作るものが無く、回収は何もしない。
+    const dry = prepare(sandbox, { dryRun: true });
+    assert.equal(dry.discard(), false);
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('回収: 生成の途中・検証で失敗したら、その呼び出しで作った専用フォルダを残さない', () => {
+  const sandbox = createSandbox();
+  try {
+    const kept = prepare(sandbox);
+    const failures = {
+      '書き込み失敗': { ...fs, writeFileSync: (target, content) => { if (typeof target === 'number') throw Object.assign(new Error('disk full'), { code: 'ENOSPC' }); return fs.writeFileSync(target, content); } },
+      '読み戻しの不一致': { ...fs, readFileSync: (target, encoding) => (String(target).endsWith('config.toml') ? 'tampered' : fs.readFileSync(target, encoding)) },
+      'リンク作成失敗': { ...fs, symlinkSync: () => { throw Object.assign(new Error('denied'), { code: 'EPERM' }); } },
+    };
+    for (const [label, failingFs] of Object.entries(failures)) {
+      const result = prepare(sandbox, { fs: failingFs });
+      assert.equal(result.ok, false, label);
+      assert.deepEqual(launchHomes(sandbox), [path.basename(kept.home)], label);
+    }
   } finally {
     sandbox.cleanup();
   }
@@ -445,6 +678,7 @@ test('生成: 固定できないときは ok: false と理由を返す（未知 
     assert.match(prepare(sandbox, { preset: 'toString' }).error, /unknown preset/);
     assert.match(prepare(sandbox, { handoffDir: "/tmp/a'b" }).error, /unsafe directory path/);
     assert.match(prepare(sandbox, { dataDir: 'relative' }).error, /unsafe directory path/);
+    assert.match(prepare(sandbox, { homeDir: 'relative' }).error, /unsafe directory path/);
     assert.match(prepare(sandbox, { randomId: () => '../escape' }).error, /invalid launch directory name/);
 
     // ファイルシステムが書き込めない場合。
@@ -463,12 +697,12 @@ test('新規作成と再起動は同じ入力から（専用フォルダ名以�
     const newPaneOptions = { approvalPolicy: 'never', codexPolicy: { preset: 'orchestrated-task' } };
     // renderer / HTTP 経由で余計な項目（偽の codexPolicyHome を含む）が混ざっても、検証済みの項目だけが残る。
     const restartRequest = {
-      termId: '3', expectedGeneration: 1, cwd: '/tmp', engine: 'codex', model: 'gpt-5.6-sol', ...newPaneOptions,
+      termId: '3', expectedGeneration: 1, cwd: sandbox.repo, engine: 'codex', model: 'gpt-5.6-sol', ...newPaneOptions,
       codexPolicyHome: '/etc',
     };
     const fromNewPane = resolveCodexTaskPolicyLaunchOptions('codex', { ...newPaneOptions, codexPolicyHome: '/etc' }, sandbox.deps);
     const fromRestart = resolveCodexTaskPolicyLaunchOptions('codex', restartRequest, sandbox.deps);
-    assert.equal(fromNewPane.ok, true);
+    assert.equal(fromNewPane.ok, true, fromNewPane.error);
     const commandOf = (resolved) => buildEngineAwareLaunchCommand('codex', 'gpt-5.6-sol', resolved.options).command;
     const normalized = (resolved) => commandOf(resolved).replace(resolved.options.codexPolicyHome, '<home>');
     assert.equal(normalized(fromRestart), normalized(fromNewPane));
@@ -486,6 +720,7 @@ test('新規作成と再起動は同じ入力から（専用フォルダ名以�
     // ポリシー無しで再起動した場合は専用 CODEX_HOME を付けない（権限が持ち越されない）。
     const withoutPolicy = resolveCodexTaskPolicyLaunchOptions('codex', { approvalPolicy: 'never' }, sandbox.deps);
     assert.equal(withoutPolicy.options.codexPolicyHome, undefined);
+    assert.equal(withoutPolicy.discard(), false);
     assert.ok(!buildEngineAwareLaunchCommand('codex', undefined, withoutPolicy.options).command.includes('CODEX_HOME'));
   } finally {
     sandbox.cleanup();
@@ -496,7 +731,9 @@ test('解決: Claude Code にはポリシーを適用せず、固定できない
   const sandbox = createSandbox();
   try {
     const request = { approvalPolicy: 'never', codexPolicy: { preset: 'orchestrated-task' }, codexPolicyHome: '/etc' };
-    assert.deepEqual(resolveCodexTaskPolicyLaunchOptions('claude', request, sandbox.deps), { ok: true, options: {} });
+    const claude = resolveCodexTaskPolicyLaunchOptions('claude', request, sandbox.deps);
+    assert.deepEqual({ ok: claude.ok, options: claude.options }, { ok: true, options: {} });
+    assert.equal(claude.discard(), false);
     assert.equal(resolveCodexTaskPolicyLaunchOptions('codex', { codexPolicy: { preset: 'x' } }, sandbox.deps).ok, false);
     assert.equal(
       resolveCodexTaskPolicyLaunchOptions('codex', { codexPolicy: { preset: 'orchestrated-task', args: [] } }, sandbox.deps).ok,
@@ -506,6 +743,10 @@ test('解決: Claude Code にはポリシーを適用せず、固定できない
     assert.equal(unavailable.ok, false);
     assert.match(unavailable.error, /^codex task policy unavailable/);
     assert.equal('options' in unavailable, false);
+    // 作業フォルダが無ければ（ポリシー付きでは必須）、専用フォルダを作らず拒否する。
+    const noCwd = resolveCodexTaskPolicyLaunchOptions('codex', request, { ...sandbox.deps, cwd: undefined });
+    assert.equal(noCwd.error, 'codex task policy unavailable: working directory required');
+    assert.deepEqual(launchHomes(sandbox), []);
   } finally {
     sandbox.cleanup();
   }
@@ -518,9 +759,13 @@ test('事前確認（dryRun）は専用フォルダを作らず、通った後�
   try {
     const request = { approvalPolicy: 'never', codexPolicy: { preset: 'orchestrated-task' } };
     const dry = resolveCodexTaskPolicyLaunchOptions('codex', request, { ...sandbox.deps, dryRun: true });
-    assert.equal(dry.ok, true);
+    assert.equal(dry.ok, true, dry.error);
     assert.equal('codexPolicyHome' in dry.options, false);
     assert.deepEqual(fs.readdirSync(sandbox.policyBase), []);
+    // 事前確認でも、作業フォルダ・リポジトリの検証は本番と同じ（固定できない状態は事前に分かる）。
+    const plain = path.join(sandbox.root, 'plain');
+    fs.mkdirSync(plain);
+    assert.match(resolveCodexTaskPolicyLaunchOptions('codex', request, { ...sandbox.deps, dryRun: true, cwd: plain }).error, /not inside a git repository/);
 
     // 事前確認の後に、専用フォルダの作成先が差し替えられた（リンクにされた）ケース。
     const elsewhere = path.join(sandbox.root, 'elsewhere');
@@ -536,12 +781,13 @@ test('事前確認（dryRun）は専用フォルダを作らず、通った後�
   }
 });
 
+const mainSource = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+
 test('terminal:create は PTY を作る前に起動オプションを解決し、失敗したら例外で返す（Codex 未起動のペインを成功にしない）', () => {
-  const source = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
-  const handlerStart = source.indexOf("ipcMain.handle('terminal:create'");
-  const handlerEnd = source.indexOf("ipcMain.on('terminal:input'");
-  const handler = source.slice(handlerStart, handlerEnd);
-  const resolveAt = handler.indexOf('resolveCodexLaunchOptions(resolvedEngine, options)');
+  const handlerStart = mainSource.indexOf("ipcMain.handle('terminal:create'");
+  const handlerEnd = mainSource.indexOf("ipcMain.on('terminal:input'");
+  const handler = mainSource.slice(handlerStart, handlerEnd);
+  const resolveAt = handler.indexOf('resolveCodexLaunchOptions(resolvedEngine, options, { cwd: resolvedCwd })');
   const throwAt = handler.indexOf('throw new Error(launchResolution.error)');
   const spawnAt = handler.indexOf('pty.spawn(');
   assert.ok(resolveAt > 0 && throwAt > resolveAt && spawnAt > throwAt, 'resolve → throw → pty.spawn の順であること');
@@ -549,4 +795,38 @@ test('terminal:create は PTY を作る前に起動オプションを解決し�
   assert.equal(handler.includes('codex launch refused (terminal'), false);
   // 起動コマンドの組み立ても PTY 作成より前にあり、作成後に失敗して PTY が残る経路が無いこと。
   assert.ok(handler.indexOf('buildEngineAwareLaunchCommand(') < spawnAt);
+  // 組み立て・PTY 作成の失敗で、使われない専用フォルダを回収すること。
+  const afterSpawn = handler.slice(spawnAt);
+  assert.ok(/catch \(error\) \{\s*discardLaunchHome\(\);\s*throw error;/.test(handler.slice(resolveAt, spawnAt + afterSpawn.indexOf('});'))));
+  assert.equal((handler.match(/discardLaunchHome\(\);/g) || []).length, 2);
+});
+
+test('restart-agent: 専用フォルダは待機・存在確認・世代確認の後、AI を止める前にだけ作り、使われなければ回収する', () => {
+  const start = mainSource.indexOf("url.pathname === '/api/restart-agent'");
+  const end = mainSource.indexOf("url.pathname === '/api/close-pane'");
+  const handler = mainSource.slice(start, end);
+  const at = (needle) => {
+    const index = handler.indexOf(needle);
+    assert.ok(index >= 0, needle);
+    return index;
+  };
+  const dryRunAt = at('{ dryRun: true, cwd: request.cwd }');
+  const waitAt = at('restartAgentOperations.get(request.termId)))');
+  const notFoundAt = at('not found');
+  const mismatchAt = at('generation mismatch');
+  const prepareAt = at('resolveCodexLaunchOptions(request.engine, request, { cwd: request.cwd })');
+  const operationAt = at('restartAgentInTerminal(ptyProcess');
+  assert.ok(dryRunAt < waitAt && waitAt < notFoundAt && notFoundAt < mismatchAt && mismatchAt < prepareAt && prepareAt < operationAt);
+  // 本番の準備から operation の登録までに await を挟まない（直列化の隙間を作らない）。
+  assert.equal(/await/.test(handler.slice(prepareAt, at('restartAgentOperations.set('))), false);
+  // 停止失敗・PTY 消滅・例外のどれでも、起動に使われなかった専用フォルダを回収する。
+  assert.ok(/finally \{\s*if \(!launchHomeInUse\) launchResolution\.discard\(\);/.test(handler));
+  assert.ok(handler.indexOf('launchHomeInUse = true;') > handler.indexOf("error: 'failed to stop agent'"));
+});
+
+test('new-pane: ポリシー付きは cwd が必須で、事前確認にも同じ cwd を渡す', () => {
+  const start = mainSource.indexOf("url.pathname === '/api/new-pane'");
+  const handler = mainSource.slice(start, mainSource.indexOf("url.pathname === '/api/restart-agent'"));
+  assert.ok(handler.includes("error: 'codexPolicy requires cwd'"));
+  assert.ok(handler.includes('{ dryRun: true, cwd: requestedCwd }'));
 });

@@ -1,4 +1,5 @@
 const { test, expect } = require('@playwright/test');
+const childProcess = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -81,6 +82,10 @@ test('POST /api/new-pane は engine を許可リストで検証し、codex を�
   const fakeClaude = createFakeExecutable(fixtureRoot, 'claude', 'VK_TERMINALS_E2E_CLAUDE_CAPTURE');
   const fakeCodex = createFakeExecutable(fixtureRoot, 'codex', 'VK_TERMINALS_E2E_CODEX_CAPTURE');
   const markerPath = path.join(os.tmpdir(), `vk-codex-pwned-${process.pid}-${Date.now()}`);
+  // タスク用ポリシーは作業フォルダの Git リポジトリに操作を拘束するため、cwd に使う空のリポジトリを用意する。
+  const repoDir = path.join(fixtureRoot, 'repo');
+  fs.mkdirSync(repoDir);
+  childProcess.execFileSync('git', ['init', '-q'], { cwd: repoDir });
   let launched = null;
 
   try {
@@ -198,6 +203,7 @@ test('POST /api/new-pane は engine を許可リストで検証し、codex を�
       [{ engine: 'codex', codexPolicy: { preset: 'full-access' } }, 'invalid codexPolicy preset'],
       [{ engine: 'codex', codexPolicy: 'orchestrated-task' }, 'invalid codexPolicy'],
       [{ engine: 'claude', codexPolicy: { preset: 'orchestrated-task' } }, 'Codex options require engine "codex"'],
+      [{ engine: 'codex', codexPolicy: { preset: 'orchestrated-task' } }, 'codexPolicy requires cwd'],
     ]) {
       expect(await postNewPane(port, payload)).toEqual({ status: 400, body: { error } });
     }
@@ -205,7 +211,7 @@ test('POST /api/new-pane は engine を許可リストで検証し、codex を�
 
     // 正常なポリシーは専用 CODEX_HOME 付きで起動し、sandbox を明示する。ポリシー無しの起動には CODEX_HOME が付かない。
     const policyLaunch = await postNewPane(port, {
-      engine: 'codex', noClaude: false, approvalPolicy: 'never', codexPolicy: { preset: 'orchestrated-task' },
+      engine: 'codex', noClaude: false, approvalPolicy: 'never', codexPolicy: { preset: 'orchestrated-task' }, cwd: repoDir,
     });
     expect(policyLaunch.status).toBe(200);
     await waitForPaneCount(port, 6);
@@ -216,7 +222,7 @@ test('POST /api/new-pane は engine を許可リストで検証し、codex を�
     expect(codexHomes[1]).toBeNull();
     expect(codexHomes[2]).toMatch(/\.vk-terminals\/codex-task-policy\/orchestrated-task\/[0-9a-f]{24}$/);
     expect(fs.readFileSync(path.join(codexHomes[2], 'config.toml'), 'utf8')).toContain('network_access = false');
-    expect(fs.readdirSync(codexHomes[2]).sort()).toEqual(['AGENTS.md', 'config.toml', 'rules', 'vk-task-ops.js']);
+    expect(fs.readdirSync(codexHomes[2]).sort()).toEqual(['AGENTS.md', 'config.toml', 'gitconfig', 'rules', 'vk-task-ops', 'vk-task-ops.js']);
   } finally {
     if (launched) await closeApp(launched);
     fs.rmSync(fixtureRoot, { recursive: true, force: true });

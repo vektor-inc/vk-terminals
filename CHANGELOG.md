@@ -1,6 +1,6 @@
 # Changelog
 
-- [ 機能追加 ] 自動処理用 Codex にタスク単位のポリシー（`codexPolicy`）を指定可能に。個人の Codex 設定を継承せず、検証付きの固定入口を通した Git / GitHub 操作と会話整理先だけを承認なしで使える（[#428](https://github.com/vektor-inc/vk-terminals/issues/428)）
+- [ 機能追加 ] 自動処理用 Codex にタスク単位のポリシー（`codexPolicy`）を指定可能に。個人の Codex 設定を継承せず、検証付きの固定入口を通したタスクのリポジトリへの Git / GitHub 操作と会話整理先だけを承認なしで使える（[#428](https://github.com/vektor-inc/vk-terminals/issues/428)）
 
 ## 1.70.0
 

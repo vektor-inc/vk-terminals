@@ -187,9 +187,13 @@ const CODEX_TASK_POLICY_HANDOFF_DIR = path.join(os.homedir(), '.claude', 'handof
 // 新規ペイン作成（HTTP 受け口・terminal:create）と再起動（restart-agent）が全てここを通る。
 // ok: false のときは Codex を起動してはならない（承認方針だけを付けた起動にもしない）。
 // dryRun: true は専用 CODEX_HOME を作らず、固定できる状態かの事前確認だけを行う（HTTP 受け口用）。
-function resolveCodexLaunchOptions(engine, options, { dryRun = false } = {}) {
+// cwd はタスクの作業フォルダで、タスク用ポリシーが操作を拘束するリポジトリを決める（ポリシー付きでは必須）。
+// 戻り値の discard() は、専用 CODEX_HOME を作ったのに Codex の起動に使わなかったときに呼んで回収する。
+function resolveCodexLaunchOptions(engine, options, { dryRun = false, cwd } = {}) {
   return resolveCodexTaskPolicyLaunchOptions(engine, options, {
     dryRun,
+    cwd,
+    homeDir: os.homedir(),
     validateCodexLaunchOptions,
     dataDir: DATA_DIR,
     handoffDir: CODEX_TASK_POLICY_HANDOFF_DIR,
@@ -1896,27 +1900,41 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
   // 用意できない・起動コマンドを組み立てられないときは、PTY を作らずここで例外にして、
   // 呼び出し元（renderer → HTTP 応答）へ失敗として返す。Codex が起動していないペインを
   // 成功として返さないため。素のシェルで開く（noClaude）場合は AI を起動しないので対象外。
+  // 専用 CODEX_HOME を作った後で組み立て・PTY 作成が失敗したら、使われないフォルダを回収する。
   let launchCommand = null;
+  let discardLaunchHome = () => false;
   if (!noClaude) {
-    const launchResolution = resolveCodexLaunchOptions(resolvedEngine, options);
+    const launchResolution = resolveCodexLaunchOptions(resolvedEngine, options, { cwd: resolvedCwd });
     if (!launchResolution.ok) {
       console.error(`${LOG_PREFIX} codex launch refused: ${launchResolution.error}`);
       throw new Error(launchResolution.error);
     }
-    const built = buildEngineAwareLaunchCommand(resolvedEngine, options.model, launchResolution.options);
-    if (built.modelIgnored) {
-      console.warn(`${LOG_PREFIX} model is ignored for engine '${resolvedEngine}'`);
+    discardLaunchHome = launchResolution.discard;
+    try {
+      const built = buildEngineAwareLaunchCommand(resolvedEngine, options.model, launchResolution.options);
+      if (built.modelIgnored) {
+        console.warn(`${LOG_PREFIX} model is ignored for engine '${resolvedEngine}'`);
+      }
+      launchCommand = built.command;
+    } catch (error) {
+      discardLaunchHome();
+      throw error;
     }
-    launchCommand = built.command;
   }
 
-  const ptyProcess = pty.spawn(shell, [], {
-    name: 'xterm-256color',
-    cols: 80,
-    rows: 24,
-    cwd: resolvedCwd,
-    env: buildPtyEnv(process.env),
-  });
+  let ptyProcess;
+  try {
+    ptyProcess = pty.spawn(shell, [], {
+      name: 'xterm-256color',
+      cols: 80,
+      rows: 24,
+      cwd: resolvedCwd,
+      env: buildPtyEnv(process.env),
+    });
+  } catch (error) {
+    discardLaunchHome();
+    throw error;
+  }
 
   // ペイン作成（pty spawn）時刻。信頼確認プロンプトへの自動 Enter 送信を許可する
   // 時間窓（TRUST_WINDOW_MS。issue #371）の起点として utils/trustPromptGate.js へ渡す。
@@ -3281,11 +3299,17 @@ function startHttpApi() {
         // タスク用ポリシーを固定できないときは、ペインを作らず理由を返して止める
         // （承認方針だけを付けた Codex を個人設定のまま起動しない。issue #428）。
         if (requestedCodexPolicy !== undefined) {
+          // 操作を拘束するリポジトリは作業フォルダから決めるため、ポリシー付きでは cwd を必須にする。
+          if (typeof requestedCwd !== 'string') {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'codexPolicy requires cwd' }));
+            return;
+          }
           const policyCheck = resolveCodexLaunchOptions('codex', {
             approvalPolicy: requestedApprovalPolicy,
             sandboxMode: requestedSandboxMode,
             codexPolicy: requestedCodexPolicy,
-          }, { dryRun: true });
+          }, { dryRun: true, cwd: requestedCwd });
           if (!policyCheck.ok) {
             res.writeHead(503, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: policyCheck.error }));
@@ -3367,10 +3391,12 @@ function startHttpApi() {
 
           // タスク用ポリシーを固定できないときは、実行中の AI を止める前に理由を返して終える
           // （承認方針だけを付けた Codex を個人設定のまま再起動しない。issue #428）。
-          const launchResolution = resolveCodexLaunchOptions(request.engine, request);
-          if (!launchResolution.ok) {
+          // ここは事前確認だけで専用 CODEX_HOME を作らない。待機・存在確認（404）・世代確認（409）を通る前に
+          // 作ると、これらで終わるリクエストの専用フォルダが残るため、本番の準備は確認の後で行う。
+          const policyCheck = resolveCodexLaunchOptions(request.engine, request, { dryRun: true, cwd: request.cwd });
+          if (!policyCheck.ok) {
             res.writeHead(503, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: launchResolution.error }));
+            res.end(JSON.stringify({ error: policyCheck.error }));
             return;
           }
 
@@ -3428,6 +3454,16 @@ function startHttpApi() {
             return;
           }
 
+          // 専用 CODEX_HOME は、直列化の待機・存在確認・世代確認を通った後、AI を止める前に用意する。
+          // 同期処理だけで operation の登録まで進むので、待機ループとの間に隙間は生じない。
+          // 停止に失敗する・PTY が消える・起動コマンドを書けない場合は、使われなかった専用フォルダを回収する。
+          const launchResolution = resolveCodexLaunchOptions(request.engine, request, { cwd: request.cwd });
+          if (!launchResolution.ok) {
+            res.writeHead(503, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: launchResolution.error }));
+            return;
+          }
+          let launchHomeInUse = false;
           const operation = restartAgentInTerminal(ptyProcess, request, launchResolution.options);
           restartAgentOperations.set(request.termId, operation);
           try {
@@ -3438,6 +3474,7 @@ function startHttpApi() {
               res.end(JSON.stringify({ error: 'failed to stop agent' }));
               return;
             }
+            launchHomeInUse = true;
             const generation = agentGenerations.increment(request.termId);
             // renderer 側の terminals[paneId].engine を実体に追従させる（issue #394 の
             // 安藤レビュー指摘・MEDIUM）。restart-agent は同じペインで engine を入れ替えられる
@@ -3459,6 +3496,7 @@ function startHttpApi() {
             res.writeHead(500, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: 'failed to stop agent' }));
           } finally {
+            if (!launchHomeInUse) launchResolution.discard();
             if (restartAgentOperations.get(request.termId) === operation) {
               restartAgentOperations.delete(request.termId);
             }

@@ -1,4 +1,5 @@
 const { test, expect } = require('@playwright/test');
+const childProcess = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -166,10 +167,15 @@ test.describe.serial('POST /api/restart-agent によるペイン内 AI の再起
   let fakeCodex;
   let port;
   let agentPaneTermId;
+  let policyRepoDir;
 
   test.beforeAll(async () => {
     port = await getFreePort();
     fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-restart-agent-fixture-'));
+    // タスク用ポリシーは作業フォルダの Git リポジトリに操作を拘束するため、cwd に使う空のリポジトリを用意する。
+    policyRepoDir = path.join(fixtureRoot, 'repo');
+    fs.mkdirSync(policyRepoDir);
+    childProcess.execFileSync('git', ['init', '-q'], { cwd: policyRepoDir });
     fakeClaude = createFakeExecutable(fixtureRoot, 'claude', 'VK_TERMINALS_E2E_CLAUDE_CAPTURE');
     fakeCodex = createFakeExecutable(fixtureRoot, 'codex', 'VK_TERMINALS_E2E_CODEX_CAPTURE');
 
@@ -359,9 +365,28 @@ test.describe.serial('POST /api/restart-agent によるペイン内 AI の再起
     expect((await waitForAgentGeneration(port, '1', 1)).agentGeneration).toBe(1);
     expect(readCalls(fakeCodex.capturePath).length).toBe(baseCalls);
 
+    // 専用フォルダを作る前に終わるリクエスト（cwd 無し 400・存在しないペイン 404・世代違い 409）は、専用フォルダを残さない。
+    const policyBaseDir = path.join(launched.tmpHome, '.vk-terminals', 'codex-task-policy', 'orchestrated-task');
+    const countLaunchHomes = () => (fs.existsSync(policyBaseDir) ? fs.readdirSync(policyBaseDir).length : 0);
+    const homesBefore = countLaunchHomes();
+    const withoutCwd = await postJson(port, '/api/restart-agent', {
+      termId: '1', expectedGeneration: 1, engine: 'codex', approvalPolicy: 'never', codexPolicy: policy,
+    });
+    expect(withoutCwd).toEqual({ status: 400, body: { error: 'codexPolicy requires cwd' } });
+    const missingPane = await postJson(port, '/api/restart-agent', {
+      termId: '999999', expectedGeneration: 0, engine: 'codex', approvalPolicy: 'never', codexPolicy: policy, cwd: policyRepoDir,
+    });
+    expect(missingPane.status).toBe(404);
+    const staleGeneration = await postJson(port, '/api/restart-agent', {
+      termId: '1', expectedGeneration: 99, engine: 'codex', approvalPolicy: 'never', codexPolicy: policy, cwd: policyRepoDir,
+    });
+    expect(staleGeneration.status).toBe(409);
+    expect(countLaunchHomes()).toBe(homesBefore);
+    expect(readCalls(fakeCodex.capturePath).length).toBe(baseCalls);
+
     // 再起動（ポリシー付き）。
     const restarted = await postJson(port, '/api/restart-agent', {
-      termId: '1', expectedGeneration: 1, engine: 'codex', approvalPolicy: 'never', codexPolicy: policy,
+      termId: '1', expectedGeneration: 1, engine: 'codex', approvalPolicy: 'never', codexPolicy: policy, cwd: policyRepoDir,
     });
     expect(restarted.status).toBe(200);
     const restartCalls = await waitForCallCount(fakeCodex.capturePath, baseCalls + 1);
@@ -369,7 +394,7 @@ test.describe.serial('POST /api/restart-agent によるペイン内 AI の再起
 
     // 新規ペイン（同じポリシー）。
     const created = await postJson(port, '/api/new-pane', {
-      engine: 'codex', noClaude: false, approvalPolicy: 'never', codexPolicy: policy,
+      engine: 'codex', noClaude: false, approvalPolicy: 'never', codexPolicy: policy, cwd: policyRepoDir,
     });
     expect(created.status).toBe(200);
     const createdCalls = await waitForCallCount(fakeCodex.capturePath, baseCalls + 2);
@@ -388,5 +413,7 @@ test.describe.serial('POST /api/restart-agent によるペイン内 AI の再起
     const plainCalls = await waitForCallCount(fakeCodex.capturePath, baseCalls + 3);
     expect(plainCalls[baseCalls + 2]).toEqual(['--no-daemon']);
     expect((await waitForCallCount(homesPath, baseCalls + 3))[baseCalls + 2]).toBeNull();
+    // 起動に使った専用フォルダ（再起動 1 回 + 新規ペイン 1 回）だけが残る。
+    expect(countLaunchHomes()).toBe(homesBefore + 2);
   });
 });

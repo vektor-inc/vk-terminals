@@ -900,7 +900,7 @@ curl -s -X POST http://127.0.0.1:13847/api/new-pane \
   - `noClaude: true` と同時に指定した場合は AI を起動しないため、`model` は無視されます。
 - `approvalPolicy`：`engine: "codex"` のときだけ指定できる承認方針。`"untrusted"` / `"on-failure"` / `"on-request"` / `"never"` の許可値だけを受け付け、Codex の `--ask-for-approval` へ渡します。
 - `sandboxMode`：`engine: "codex"` のときだけ指定できるサンドボックス。`"read-only"` / `"workspace-write"` のみ許可し、Codex の `--sandbox` へ渡します。作業フォルダ外への書き込み制限を外す `"danger-full-access"` は受け付けません。
-- `codexPolicy`：`engine: "codex"` のときだけ指定できる、そのペインの Codex だけに適用するタスク用ポリシー（issue #428）。`{"preset": "orchestrated-task"}` の形で、設定キーは `preset` の 1 つ、値は固定の名前だけを受け付けます。未知のキー・未知の preset・オブジェクト以外は `400` で拒否され、**ペインは作成されません**。任意のコマンドライン引数・追加フォルダ・ネットワーク許可は指定できません。指定すると利用者個人の `~/.codex` の設定を読まない、起動ごとに新規作成する専用の設定で Codex が起動します。仕様と安全性の判断は [docs/codex-task-policy.md](docs/codex-task-policy.md) を参照してください。
+- `codexPolicy`：`engine: "codex"` のときだけ指定できる、そのペインの Codex だけに適用するタスク用ポリシー（issue #428）。`{"preset": "orchestrated-task"}` の形で、設定キーは `preset` の 1 つ、値は固定の名前だけを受け付けます。未知のキー・未知の preset・オブジェクト以外は `400` で拒否され、**ペインは作成されません**。任意のコマンドライン引数・追加フォルダ・ネットワーク許可は指定できません。指定すると利用者個人の `~/.codex` の設定を読まない、起動ごとに新規作成する専用の設定で Codex が起動します。承認なしで使える Git / GitHub 操作は `cwd` のリポジトリ（Git の実ルートと GitHub のリポジトリ）に限定されるため、**`cwd` が必須**です（省略すると `400 {"error": "codexPolicy requires cwd"}`。`cwd` が Git 管理下でない・ホームそのもの・外部コマンドを起動する Git 設定があるリポジトリの場合は `503` で起動しません）。仕様と安全性の判断は [docs/codex-task-policy.md](docs/codex-task-policy.md) を参照してください。
 
 `noClaude` / `engine` / `model` の優先順位（併用した場合にどれが効くか）:
 
@@ -942,7 +942,7 @@ curl -s -X POST http://127.0.0.1:13847/api/restart-agent \
 - `cwd`：再起動後の作業ディレクトリ（任意）。省略時は現在のディレクトリを維持します。存在するディレクトリだけを指定できます。
 - `engine`：`"claude"` / `"codex"`（任意、省略時は `"claude"`）。
 - `model`：選択エンジンへ渡すモデル名（任意）。検証規則は `POST /api/new-pane` と同じです。
-- `approvalPolicy` / `sandboxMode` / `codexPolicy`：Codex の承認方針・サンドボックス・タスク用ポリシー（任意）。許可値と制約は `POST /api/new-pane` と同じで、同じ指定なら新規作成と同じ実効ポリシーで起動し直します。`codexPolicy` を付けずに再起動すると、前回のポリシーは引き継がれません。
+- `approvalPolicy` / `sandboxMode` / `codexPolicy`：Codex の承認方針・サンドボックス・タスク用ポリシー（任意）。許可値と制約は `POST /api/new-pane` と同じで、同じ指定なら新規作成と同じ実効ポリシーで起動し直します。`codexPolicy` を付けるときは `cwd` も必須です（省略すると `400 {"error":"codexPolicy requires cwd"}`）。専用設定は、対象ペインの存在と世代を確認した後、AI を止める前に用意します。`codexPolicy` を付けずに再起動すると、前回のポリシーは引き継がれません。
 
 レスポンス:
 

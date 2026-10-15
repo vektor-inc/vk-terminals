@@ -444,7 +444,7 @@ function listToolSearchDirs(homeDir, pathEnv) {
 
 // Git の author 情報を、信頼済みの git で個人の global 設定から読む（読み取りのみ。実行を伴う設定は引き継がない）。
 function readGitIdentity(spawnSync, gitPath, homeDir) {
-  const env = { PATH: `${path.dirname(gitPath)}:/usr/bin:/bin`, HOME: homeDir, GIT_CONFIG_NOSYSTEM: '1', GIT_TERMINAL_PROMPT: '0', LC_ALL: 'C' };
+  const env = { PATH: `${path.dirname(gitPath)}:/usr/bin:/bin`, HOME: homeDir, GIT_CONFIG_NOSYSTEM: '1', GIT_TERMINAL_PROMPT: '0', GIT_NO_LAZY_FETCH: '1', GIT_ALLOW_PROTOCOL: '', LC_ALL: 'C' };
   const read = (key) => {
     const result = spawnSync(gitPath, ['config', '--global', '--get', key], { env, encoding: 'utf8' });
     const value = result.status === 0 ? String(result.stdout).replace(/\n$/, '') : '';

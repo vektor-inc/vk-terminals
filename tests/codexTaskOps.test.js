@@ -13,6 +13,8 @@ const {
   assertChainUnchanged,
   buildChildEnvironment,
   inspectGitConfigListing,
+  isSupportedGitVersion,
+  inspectRepository,
   parseGitHubRepo,
   parseTaskCommand,
   readBinding,
@@ -496,6 +498,8 @@ test('環境: 子プロセスへは許可リストの変数だけを渡し、親
     assert.equal(expected.XDG_CONFIG_HOME, path.dirname(fixture.env.VK_TASK_GHCONFIG));
     assert.ok(!expected.GH_CONFIG_DIR.startsWith(fixture.home));
     assert.equal(expected.GIT_CONFIG_SYSTEM, '/dev/null');
+    assert.equal(expected.GIT_NO_LAZY_FETCH, '1');
+    assert.equal(expected.GIT_ALLOW_PROTOCOL, '');
     assert.match(expected.PATH, new RegExp(`^${path.dirname(GIT_PATH)}`));
   } finally {
     fixture.cleanup();
@@ -505,7 +509,7 @@ test('環境: 子プロセスへは許可リストの変数だけを渡し、親
 test('設定の解析: 外部コマンドを起動しうる項目だけを見つけ、origin の生の URL を返す', () => {
   const listing = (...entries) => entries.map(([key, value]) => `${key}\n${value}\0`).join('');
   assert.deepEqual(inspectGitConfigListing(listing(['core.bare', 'false'], ['remote.origin.url', GITHUB_ORIGIN], ['user.name', 'x'])), { unsafeKey: null, originUrl: GITHUB_ORIGIN });
-  for (const key of ['filter.lfs.clean', 'filter.a.b.smudge', 'diff.x.textconv', 'diff.external', 'gpg.program', 'gpg.ssh.program', 'core.sshcommand', 'include.path', 'includeif.gitdir:/x.path', 'credential.https://x.helper', 'merge.m.driver']) {
+  for (const key of ['filter.lfs.clean', 'filter.a.b.smudge', 'diff.x.textconv', 'diff.external', 'gpg.program', 'gpg.ssh.program', 'core.sshcommand', 'include.path', 'includeif.gitdir:/x.path', 'credential.https://x.helper', 'merge.m.driver', 'remote.origin.promisor', 'remote.o.partialclonefilter', 'remote.o.vcs', 'extensions.partialclone']) {
     assert.equal(inspectGitConfigListing(listing([key, 'v'])).unsafeKey, key, key);
   }
   assert.equal(parseGitHubRepo('https://github.com/o/r.git'), 'o/r');
@@ -513,6 +517,59 @@ test('設定の解析: 外部コマンドを起動しうる項目だけを見つ
   assert.equal(parseGitHubRepo('ssh://git@github.com/o/r.git'), 'o/r');
   for (const url of [null, '', 'https://example.com/o/r', 'https://github.com.evil.example/o/r', 'https://evil.example/https://github.com/o/r', 'https://github.com/o']) {
     assert.equal(parseGitHubRepo(url), null, String(url));
+  }
+});
+
+test('遅延取得: 部分クローンで不足オブジェクトを参照しても通信・外部コマンドは起動せず、環境が無ければ起動する（対照）', () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'vk-task-lazy-')));
+  try {
+    const server = path.join(root, 'server');
+    initRepo(server, { origin: null });
+    git(server, 'config', 'uploadpack.allowFilter', 'true');
+    git(server, 'config', 'uploadpack.allowAnySHA1InWant', 'true');
+    const clone = path.join(root, 'clone');
+    git(root, '-c', 'protocol.file.allow=always', 'clone', '-q', '--no-checkout', '--filter=blob:none', `file://${server}`, clone);
+    // 通信が起きると印のファイルが作られる偽のアップロードパック。
+    const marker = path.join(root, 'marker');
+    const helper = path.join(root, 'upload-pack.sh');
+    fs.writeFileSync(helper, `#!/bin/sh\ntouch ${marker}\nexec git-upload-pack "$@"\n`, { mode: 0o755 });
+    git(clone, 'config', 'remote.origin.uploadpack', helper);
+    const spawn = (env) => childProcess.spawnSync(GIT_PATH, ['-c', 'protocol.file.allow=always', 'show', 'HEAD:a.txt'], { cwd: clone, env, encoding: 'utf8' });
+    const base = { PATH: `${path.dirname(GIT_PATH)}:/usr/bin:/bin`, HOME: root, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' };
+
+    // 対照: 無効化しなければ自動取得が走る（この対照が通らないと、下の検証は意味を持たない）。
+    assert.equal(spawn(base).status, 0);
+    assert.ok(fs.existsSync(marker));
+    fs.rmSync(marker);
+    // 対照で取得済みになったため、取り直して再び不足オブジェクトのある状態にする。
+    fs.rmSync(clone, { recursive: true });
+    git(root, '-c', 'protocol.file.allow=always', 'clone', '-q', '--no-checkout', '--filter=blob:none', `file://${server}`, clone);
+    git(clone, 'config', 'remote.origin.uploadpack', helper);
+
+    // 固定環境: 失敗はするが、通信も外部コマンドの起動も起きない。環境変数ごとに単独でも止まる。
+    const env = buildChildEnvironment({ git: GIT_PATH, gh: null, home: root, gitConfig: '/dev/null', ghConfig: null });
+    for (const guarded of [env, { ...base, GIT_NO_LAZY_FETCH: '1' }, { ...base, GIT_ALLOW_PROTOCOL: '' }]) {
+      assert.notEqual(spawn(guarded).status, 0);
+      assert.ok(!fs.existsSync(marker));
+    }
+
+    // 部分クローンのリポジトリは、入口の検証が先に拒否する。
+    const rejected = run({ repo: clone, env: { VK_TASK_ROOT: clone, VK_TASK_REPO: '', VK_TASK_GIT: GIT_PATH, VK_TASK_HOME: root, VK_TASK_GITCONFIG: path.join(root, 'gitconfig') } }, ['git', 'show', 'HEAD:a.txt']);
+    assert.equal(rejected.code, 2);
+    assert.ok(!fs.existsSync(marker));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('Git バージョン: 遅延取得を無効化できる 2.44 以上だけを受け入れ、読めない出力は拒否する', () => {
+  for (const output of ['git version 2.44.0\n', 'git version 2.47.0', 'git version 3.0.1', 'git version 2.50.1 (Apple Git-155)']) assert.equal(isSupportedGitVersion(output), true, output);
+  for (const output of ['git version 2.43.5', 'git version 2.39.5 (Apple Git-154)', 'git version 1.9.0', '', 'fatal: error', 'git version x.y']) assert.equal(isSupportedGitVersion(output), false, output);
+  const fakeRun = (stdout, status = 0) => (args) => (args[0] === 'version' ? { status, stdout } : { status: 1, stdout: '' });
+  for (const [stdout, status] of [['git version 2.43.0', 0], ['git version 2.47.0', 1]]) {
+    const result = inspectRepository({ cwd: '/tmp', run: fakeRun(stdout, status), homeDir: '/tmp', fsImpl: fs });
+    assert.equal(result.ok, false);
+    assert.match(result.error, /2\.44 or later/);
   }
 });
 

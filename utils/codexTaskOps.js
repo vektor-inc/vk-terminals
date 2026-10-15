@@ -468,7 +468,25 @@ const UNSAFE_GIT_CONFIG_PATTERNS = Object.freeze([
   /^credential\.helper$/,
   /^sequence\.editor$/,
   /^trailer\..*\.cmd$/,
+  // 部分クローン（不足オブジェクトを参照すると自動で通信する）と、外部のリモートヘルパーの起動につながる項目。
+  /^extensions\.partialclone$/,
+  /^remote\..*\.(promisor|partialclonefilter|vcs)$/,
 ]);
+
+// GIT_NO_LAZY_FETCH（不足オブジェクトの自動取得の無効化）が使える最小の Git バージョン。
+const MIN_GIT_VERSION = Object.freeze([2, 44]);
+
+/**
+ * `git version` の出力が、遅延取得を環境変数で無効化できるバージョンか判定する。読み取れない場合も非対応とみなす。
+ * @param {string} output
+ * @returns {boolean}
+ */
+function isSupportedGitVersion(output) {
+  const match = /^git version (\d+)\.(\d+)/.exec(String(output).trim());
+  if (!match) return false;
+  const [major, minor] = [Number(match[1]), Number(match[2])];
+  return major > MIN_GIT_VERSION[0] || (major === MIN_GIT_VERSION[0] && minor >= MIN_GIT_VERSION[1]);
+}
 
 /**
  * `git config --list --null` の出力から、外部コマンドを起動しうる設定項目を探す。
@@ -513,6 +531,9 @@ function parseGitHubRepo(url) {
  * @returns {{ok: true, root: string, repo: string|null} | {ok: false, error: string}}
  */
 function inspectRepository({ cwd, run, homeDir, fsImpl }) {
+  // 不足オブジェクトの自動取得を無効化できない Git では、通信・外部コマンド起動を防げないため使わない。
+  const version = run(['version'], cwd);
+  if (version.status !== 0 || !isSupportedGitVersion(version.stdout)) return fail(`git ${MIN_GIT_VERSION.join('.')} or later is required`);
   const toplevel = run(['rev-parse', '--show-toplevel'], cwd);
   if (toplevel.status !== 0) return fail('not inside a git repository');
   let root;
@@ -565,6 +586,7 @@ function readBinding(env) {
  * git / gh の子プロセスに渡す環境変数を、許可リストで一から組み立てる。親の環境は一切引き継がない。
  * HOME は信頼値に固定し、Git の system / global 設定は使わない
  * （global の代わりに、ランチャーが生成した author 情報だけの設定ファイルを指す）。
+ * 不足オブジェクトの自動取得は GIT_NO_LAZY_FETCH で、通信は GIT_ALLOW_PROTOCOL（空 = 全プロトコル不許可）で止める。
  * gh の設定は、個人の ~/.config/gh ではなくランチャーが生成した専用フォルダ（通信設定を持たず、認証だけを引き継いだもの）を指す。
  * @param {{git: string, gh: string|null, home: string, gitConfig: string, ghConfig: string|null}} binding
  * @returns {Record<string, string>}
@@ -583,6 +605,9 @@ function buildChildEnvironment(binding) {
     GIT_CONFIG_NOSYSTEM: '1',
     GIT_ATTR_NOSYSTEM: '1',
     GIT_TERMINAL_PROMPT: '0',
+    // 部分クローンの不足オブジェクトを参照しても、通信（自動取得）と remote 設定由来の外部コマンド起動を行わない。
+    GIT_NO_LAZY_FETCH: '1',
+    GIT_ALLOW_PROTOCOL: '',
     GH_PROMPT_DISABLED: '1',
     GH_NO_UPDATE_NOTIFIER: '1',
     GH_PAGER: 'cat',
@@ -664,6 +689,7 @@ module.exports = {
   withBoundRepository,
   inspectRepository,
   inspectGitConfigListing,
+  isSupportedGitVersion,
   parseGitHubRepo,
   assertChainUnchanged,
   resolveTrustedPath,

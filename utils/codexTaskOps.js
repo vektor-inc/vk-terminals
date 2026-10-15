@@ -474,7 +474,7 @@ const UNSAFE_GIT_CONFIG_PATTERNS = Object.freeze([
 ]);
 
 // GIT_NO_LAZY_FETCH（不足オブジェクトの自動取得の無効化）が使える最小の Git バージョン。
-const MIN_GIT_VERSION = Object.freeze([2, 44]);
+const MIN_GIT_VERSION = Object.freeze([2, 46]);
 
 /**
  * `git version` の出力が、遅延取得を環境変数で無効化できるバージョンか判定する。読み取れない場合も非対応とみなす。

@@ -780,6 +780,16 @@ test('拘束: 作業フォルダが無い・Git 管理外・ホームそのも�
     sandbox.git('config', '--unset', 'filter.evil.clean');
     assert.equal(prepare(sandbox).ok, true);
     assert.equal(launchHomes(sandbox).length, 1);
+
+    // 部分クローンの設定（不足オブジェクトの自動取得につながる）も、専用フォルダを増やさず拒否する。
+    for (const key of ['remote.origin.promisor', 'remote.origin.partialclonefilter', 'extensions.partialclone']) {
+      sandbox.git('config', key, 'true');
+      const rejected = prepare(sandbox);
+      assert.equal(rejected.ok, false, key);
+      assert.ok(rejected.error.includes('can run external commands') && rejected.error.includes(key), rejected.error);
+      sandbox.git('config', '--unset', key);
+      assert.equal(launchHomes(sandbox).length, 1, key);
+    }
   } finally {
     sandbox.cleanup();
   }

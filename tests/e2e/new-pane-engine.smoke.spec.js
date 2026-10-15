@@ -1,4 +1,5 @@
 const { test, expect } = require('@playwright/test');
+const childProcess = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -53,6 +54,8 @@ function createFakeExecutable(root, binName, captureEnvVar) {
   fs.writeFileSync(executablePath, `#!/usr/bin/env node
 const fs = require('fs');
 fs.appendFileSync(process.env.${captureEnvVar}, JSON.stringify(process.argv.slice(2)) + '\\n');
+// タスク用ポリシー（issue #428）の確認用に、起動時の CODEX_HOME も別ファイルへ残す。
+fs.appendFileSync(process.env.${captureEnvVar} + '.codex-home', JSON.stringify(process.env.CODEX_HOME || null) + '\\n');
 `, { mode: 0o755 });
   return { binDir, capturePath };
 }
@@ -79,6 +82,10 @@ test('POST /api/new-pane は engine を許可リストで検証し、codex を�
   const fakeClaude = createFakeExecutable(fixtureRoot, 'claude', 'VK_TERMINALS_E2E_CLAUDE_CAPTURE');
   const fakeCodex = createFakeExecutable(fixtureRoot, 'codex', 'VK_TERMINALS_E2E_CODEX_CAPTURE');
   const markerPath = path.join(os.tmpdir(), `vk-codex-pwned-${process.pid}-${Date.now()}`);
+  // タスク用ポリシーは作業フォルダの Git リポジトリに操作を拘束するため、cwd に使う空のリポジトリを用意する。
+  const repoDir = path.join(fixtureRoot, 'repo');
+  fs.mkdirSync(repoDir);
+  childProcess.execFileSync('git', ['init', '-q'], { cwd: repoDir });
   let launched = null;
 
   try {
@@ -189,6 +196,33 @@ test('POST /api/new-pane は engine を許可リストで検証し、codex を�
     await waitForPaneCount(port, 5);
     const claudeCallsWithModel = await waitForCalls(fakeClaude.capturePath, 2);
     expect(claudeCallsWithModel[1]).toEqual(['--model', 'opus']);
+
+    // タスク用ポリシー（issue #428）: 未知キー・不正値・Claude 指定は 400 でペインを増やさない。
+    for (const [payload, error] of [
+      [{ engine: 'codex', codexPolicy: { preset: 'orchestrated-task', args: ['--add-dir', '/'] } }, 'unknown codexPolicy key: args'],
+      [{ engine: 'codex', codexPolicy: { preset: 'full-access' } }, 'invalid codexPolicy preset'],
+      [{ engine: 'codex', codexPolicy: 'orchestrated-task' }, 'invalid codexPolicy'],
+      [{ engine: 'claude', codexPolicy: { preset: 'orchestrated-task' } }, 'Codex options require engine "codex"'],
+      [{ engine: 'codex', codexPolicy: { preset: 'orchestrated-task' } }, 'codexPolicy requires cwd'],
+    ]) {
+      expect(await postNewPane(port, payload)).toEqual({ status: 400, body: { error } });
+    }
+    expect(await getPaneCount(port)).toBe(5);
+
+    // 正常なポリシーは専用 CODEX_HOME 付きで起動し、sandbox を明示する。ポリシー無しの起動には CODEX_HOME が付かない。
+    const policyLaunch = await postNewPane(port, {
+      engine: 'codex', noClaude: false, approvalPolicy: 'never', codexPolicy: { preset: 'orchestrated-task' }, cwd: repoDir,
+    });
+    expect(policyLaunch.status).toBe(200);
+    await waitForPaneCount(port, 6);
+    const policyCalls = await waitForCalls(fakeCodex.capturePath, 3);
+    expect(policyCalls[2]).toEqual(['--no-daemon', '--ask-for-approval', 'never', '--sandbox', 'workspace-write']);
+    const codexHomes = (await waitForCalls(`${fakeCodex.capturePath}.codex-home`, 3)).map((line) => line);
+    expect(codexHomes[0]).toBeNull();
+    expect(codexHomes[1]).toBeNull();
+    expect(codexHomes[2]).toMatch(/\.vk-terminals\/codex-task-policy\/orchestrated-task\/[0-9a-f]{24}$/);
+    expect(fs.readFileSync(path.join(codexHomes[2], 'config.toml'), 'utf8')).toContain('network_access = false');
+    expect(fs.readdirSync(codexHomes[2]).sort()).toEqual(['AGENTS.md', 'config.toml', 'gh', 'gitconfig', 'rules', 'vk-task-ops', 'vk-task-ops.js']);
   } finally {
     if (launched) await closeApp(launched);
     fs.rmSync(fixtureRoot, { recursive: true, force: true });

@@ -1,5 +1,8 @@
 # Changelog
 
+- [ 不具合修正 ] タスク用ポリシーの固定入口で、部分クローンの不足オブジェクトを参照しても通信や外部コマンドの起動が起きないよう、Git の自動取得を無効化し、部分クローンと非対応の Git バージョンを拒否（[#428](https://github.com/vektor-inc/vk-terminals/issues/428)）
+- [ 機能追加 ] 自動処理用 Codex にタスク単位のポリシー（`codexPolicy`）を指定可能に。個人の Codex 設定を継承せず、検証付きの固定入口を通したタスクのリポジトリへの Git / GitHub 操作と会話整理先だけを承認なしで使える（[#428](https://github.com/vektor-inc/vk-terminals/issues/428)）
+
 ## 1.70.0
 
 - [ 機能追加 ] Codex の承認方針とサンドボックスを `POST /api/new-pane` と `POST /api/restart-agent` から安全な許可値で指定可能に（[#426](https://github.com/vektor-inc/vk-terminals/issues/426)）

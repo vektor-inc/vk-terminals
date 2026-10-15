@@ -63,6 +63,9 @@ const {
   buildEngineAwareLaunchCommand,
   validateCodexLaunchOptions,
 } = require('./renderer/claudeModel');
+// 自動処理用 Codex のタスク用ポリシー（専用 CODEX_HOME の生成。issue #428）。
+const { resolveCodexTaskPolicyLaunchOptions } = require('./utils/codexTaskPolicy');
+const { scheduleLaunchCommand } = require('./utils/delayedLaunch');
 // 最初のペインで起動する AI エンジン・モデルの設定解決（issue #419）と、
 // ペインのシェルへ渡す環境変数（Volta の bin を PATH へ補う）の組み立て。
 const { resolveInitialPaneLaunch } = require('./utils/initialPaneLaunch');
@@ -178,6 +181,26 @@ let nextClosePaneRequestId = 1;
 // ─── Terminal state & HTTP API ───────────────────────────────────────────────
 const DATA_DIR = path.join(os.homedir(), '.vk-terminals');
 const STATE_FILE = path.join(DATA_DIR, 'states.json');
+// 自動処理用 Codex に許す唯一の追加書き込み先（会話整理の引き継ぎ先。issue #428）。
+const CODEX_TASK_POLICY_HANDOFF_DIR = path.join(os.homedir(), '.claude', 'handoff');
+
+// Codex の起動オプションを検証し、タスク用ポリシーがあれば専用 CODEX_HOME を用意する。
+// 新規ペイン作成（HTTP 受け口・terminal:create）と再起動（restart-agent）が全てここを通る。
+// ok: false のときは Codex を起動してはならない（承認方針だけを付けた起動にもしない）。
+// dryRun: true は専用 CODEX_HOME を作らず、固定できる状態かの事前確認だけを行う（HTTP 受け口用）。
+// cwd はタスクの作業フォルダで、タスク用ポリシーが操作を拘束するリポジトリを決める（ポリシー付きでは必須）。
+// 戻り値の discard() は、専用 CODEX_HOME を作ったのに Codex の起動に使わなかったときに呼んで回収する。
+function resolveCodexLaunchOptions(engine, options, { dryRun = false, cwd } = {}) {
+  return resolveCodexTaskPolicyLaunchOptions(engine, options, {
+    dryRun,
+    cwd,
+    homeDir: os.homedir(),
+    validateCodexLaunchOptions,
+    dataDir: DATA_DIR,
+    handoffDir: CODEX_TASK_POLICY_HANDOFF_DIR,
+    personalCodexHome: process.env.CODEX_HOME || path.join(os.homedir(), '.codex'),
+  });
+}
 const LOG_PREFIX = '[vk-terminals]';
 // Web Push（issue #396）: VAPID 鍵・購読情報（スマートフォンごとの通知の宛先）の保存先。
 // apiToken（config.json の apiToken）と同様に DATA_DIR（~/.vk-terminals/）配下に置くが、
@@ -1874,13 +1897,45 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
   // buildClaudeLaunchCommand のコメントと同じ考え方）。
   const resolvedEngine = isValidEngine(options.engine) ? options.engine : 'claude';
 
-  const ptyProcess = pty.spawn(shell, [], {
-    name: 'xterm-256color',
-    cols: 80,
-    rows: 24,
-    cwd: resolvedCwd,
-    env: buildPtyEnv(process.env),
-  });
+  // 起動コマンドは PTY を作る前に確定させる（issue #428）。タスク用ポリシーの専用 CODEX_HOME を
+  // 用意できない・起動コマンドを組み立てられないときは、PTY を作らずここで例外にして、
+  // 呼び出し元（renderer → HTTP 応答）へ失敗として返す。Codex が起動していないペインを
+  // 成功として返さないため。素のシェルで開く（noClaude）場合は AI を起動しないので対象外。
+  // 専用 CODEX_HOME を作った後で組み立て・PTY 作成が失敗したら、使われないフォルダを回収する。
+  let launchCommand = null;
+  let discardLaunchHome = () => false;
+  if (!noClaude) {
+    const launchResolution = resolveCodexLaunchOptions(resolvedEngine, options, { cwd: resolvedCwd });
+    if (!launchResolution.ok) {
+      console.error(`${LOG_PREFIX} codex launch refused: ${launchResolution.error}`);
+      throw new Error(launchResolution.error);
+    }
+    discardLaunchHome = launchResolution.discard;
+    try {
+      const built = buildEngineAwareLaunchCommand(resolvedEngine, options.model, launchResolution.options);
+      if (built.modelIgnored) {
+        console.warn(`${LOG_PREFIX} model is ignored for engine '${resolvedEngine}'`);
+      }
+      launchCommand = built.command;
+    } catch (error) {
+      discardLaunchHome();
+      throw error;
+    }
+  }
+
+  let ptyProcess;
+  try {
+    ptyProcess = pty.spawn(shell, [], {
+      name: 'xterm-256color',
+      cols: 80,
+      rows: 24,
+      cwd: resolvedCwd,
+      env: buildPtyEnv(process.env),
+    });
+  } catch (error) {
+    discardLaunchHome();
+    throw error;
+  }
 
   // ペイン作成（pty spawn）時刻。信頼確認プロンプトへの自動 Enter 送信を許可する
   // 時間窓（TRUST_WINDOW_MS。issue #371）の起点として utils/trustPromptGate.js へ渡す。
@@ -2107,7 +2162,8 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
   ptys.set(id, ptyProcess);
   agentGenerations.initialize(id, !noClaude);
 
-  // 起動後に自動で AI エンジンを実行（素のターミナルモード時はスキップ）
+  // 起動後に自動で AI エンジンを実行（素のターミナルモード時はスキップ）。
+  // 起動コマンドは PTY を作る前に組み立て済み（launchCommand。issue #428）。
   // resolvedEngine が 'claude'（省略時含む）なら従来どおり options.model が指定されて
   // いれば --model を付けて起動する（issue #310）。HTTP 受け口でも検証済みだが、
   // ここでも buildEngineAwareLaunchCommand（内部で buildClaudeLaunchCommand）が
@@ -2115,16 +2171,17 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
   // 書き込む＝既存の呼び出し元は非影響（issue #367）。
   //
   // Codex でも専用の許可リストで再検証し、正常値だけを --model として渡す。
-  const { command: launchCommand, modelIgnored } = buildEngineAwareLaunchCommand(resolvedEngine, options.model, options);
-  if (modelIgnored) {
-    console.warn(`${LOG_PREFIX} model is ignored for engine '${resolvedEngine}'`);
-  }
-  if (!noClaude) {
-    setTimeout(() => {
-      if (ptys.has(id)) {
-        ptyProcess.write(`${launchCommand}\r`);
-      }
-    }, 200);
+  if (launchCommand !== null) {
+    // 待っている間に PTY が消えた・書き込みが例外になった場合は、使われない専用 CODEX_HOME を回収する。
+    scheduleLaunchCommand({
+      ptys,
+      id,
+      ptyProcess,
+      command: launchCommand,
+      discard: discardLaunchHome,
+      delayMs: 200,
+      log: (message) => console.error(`${LOG_PREFIX} ${message}`),
+    });
   }
 
   // engine（resolvedEngine）も返す（issue #394）。renderer 側がこのペインの
@@ -2284,7 +2341,7 @@ async function listProcessesForRestart() {
   return stdout;
 }
 
-async function restartAgentInTerminal(ptyProcess, request) {
+async function restartAgentInTerminal(ptyProcess, request, launchOptions) {
   const stopped = await stopAgentChildren(ptyProcess.pid, {
     platform: process.platform,
     listProcesses: listProcessesForRestart,
@@ -2337,7 +2394,7 @@ async function restartAgentInTerminal(ptyProcess, request) {
   if (request.cwd !== undefined) {
     ptyProcess.write(`cd -- ${quoteShellArgument(request.cwd)}\r`);
   }
-  const { command, modelIgnored } = buildEngineAwareLaunchCommand(request.engine, request.model, request);
+  const { command, modelIgnored } = buildEngineAwareLaunchCommand(request.engine, request.model, launchOptions);
   if (modelIgnored) {
     console.warn(`${LOG_PREFIX} model is ignored for engine '${request.engine}'`);
   }
@@ -3184,6 +3241,7 @@ function startHttpApi() {
         let requestedModel;
         let requestedApprovalPolicy;
         let requestedSandboxMode;
+        let requestedCodexPolicy;
         if (body.length > 0) {
           try {
             const parsed = JSON.parse(body);
@@ -3237,9 +3295,30 @@ function startHttpApi() {
             }
             requestedApprovalPolicy = codexOptions.approvalPolicy;
             requestedSandboxMode = codexOptions.sandboxMode;
+            requestedCodexPolicy = codexOptions.codexPolicy;
           } catch {
             res.writeHead(400, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: 'invalid JSON' }));
+            return;
+          }
+        }
+        // タスク用ポリシーを固定できないときは、ペインを作らず理由を返して止める
+        // （承認方針だけを付けた Codex を個人設定のまま起動しない。issue #428）。
+        if (requestedCodexPolicy !== undefined) {
+          // 操作を拘束するリポジトリは作業フォルダから決めるため、ポリシー付きでは cwd を必須にする。
+          if (typeof requestedCwd !== 'string') {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'codexPolicy requires cwd' }));
+            return;
+          }
+          const policyCheck = resolveCodexLaunchOptions('codex', {
+            approvalPolicy: requestedApprovalPolicy,
+            sandboxMode: requestedSandboxMode,
+            codexPolicy: requestedCodexPolicy,
+          }, { dryRun: true, cwd: requestedCwd });
+          if (!policyCheck.ok) {
+            res.writeHead(503, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: policyCheck.error }));
             return;
           }
         }
@@ -3270,6 +3349,7 @@ function startHttpApi() {
         if (typeof requestedModel === 'string') payload.model = requestedModel;
         if (typeof requestedApprovalPolicy === 'string') payload.approvalPolicy = requestedApprovalPolicy;
         if (typeof requestedSandboxMode === 'string') payload.sandboxMode = requestedSandboxMode;
+        if (requestedCodexPolicy !== undefined) payload.codexPolicy = requestedCodexPolicy;
         win.webContents.send('terminal:request-new-pane', payload);
       });
       return;
@@ -3312,6 +3392,17 @@ function startHttpApi() {
           if (request.cwd !== undefined && !(await isExistingDirectory(request.cwd))) {
             res.writeHead(400, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: 'invalid cwd' }));
+            return;
+          }
+
+          // タスク用ポリシーを固定できないときは、実行中の AI を止める前に理由を返して終える
+          // （承認方針だけを付けた Codex を個人設定のまま再起動しない。issue #428）。
+          // ここは事前確認だけで専用 CODEX_HOME を作らない。待機・存在確認（404）・世代確認（409）を通る前に
+          // 作ると、これらで終わるリクエストの専用フォルダが残るため、本番の準備は確認の後で行う。
+          const policyCheck = resolveCodexLaunchOptions(request.engine, request, { dryRun: true, cwd: request.cwd });
+          if (!policyCheck.ok) {
+            res.writeHead(503, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: policyCheck.error }));
             return;
           }
 
@@ -3369,7 +3460,17 @@ function startHttpApi() {
             return;
           }
 
-          const operation = restartAgentInTerminal(ptyProcess, request);
+          // 専用 CODEX_HOME は、直列化の待機・存在確認・世代確認を通った後、AI を止める前に用意する。
+          // 同期処理だけで operation の登録まで進むので、待機ループとの間に隙間は生じない。
+          // 停止に失敗する・PTY が消える・起動コマンドを書けない場合は、使われなかった専用フォルダを回収する。
+          const launchResolution = resolveCodexLaunchOptions(request.engine, request, { cwd: request.cwd });
+          if (!launchResolution.ok) {
+            res.writeHead(503, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: launchResolution.error }));
+            return;
+          }
+          let launchHomeInUse = false;
+          const operation = restartAgentInTerminal(ptyProcess, request, launchResolution.options);
           restartAgentOperations.set(request.termId, operation);
           try {
             const stopped = await operation;
@@ -3379,6 +3480,7 @@ function startHttpApi() {
               res.end(JSON.stringify({ error: 'failed to stop agent' }));
               return;
             }
+            launchHomeInUse = true;
             const generation = agentGenerations.increment(request.termId);
             // renderer 側の terminals[paneId].engine を実体に追従させる（issue #394 の
             // 安藤レビュー指摘・MEDIUM）。restart-agent は同じペインで engine を入れ替えられる
@@ -3400,6 +3502,7 @@ function startHttpApi() {
             res.writeHead(500, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: 'failed to stop agent' }));
           } finally {
+            if (!launchHomeInUse) launchResolution.discard();
             if (restartAgentOperations.get(request.termId) === operation) {
               restartAgentOperations.delete(request.termId);
             }

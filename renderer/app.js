@@ -6466,7 +6466,7 @@ VKIpc.on('terminal:agentroom', (termId, agents, replace) => {
 
 // ─── New pane request from HTTP API ──────────────────────────────────────────
 VKIpc.on('terminal:request-new-pane', async (payload = {}) => {
-  const { requestId, cwd, noClaude, engine, stashed, useDefaults, model, approvalPolicy, sandboxMode } = payload;
+  const { requestId, cwd, noClaude, engine, stashed, useDefaults, model, approvalPolicy, sandboxMode, codexPolicy } = payload;
   const reply = (result) => VKIpc.send('terminal:new-pane-created', { requestId, ...result });
   const targetPaneId = findLargestVisiblePaneId() || focusedPaneId || (tree ? getAllLeafIds(tree)[0] : null);
   if (!targetPaneId) {
@@ -6508,6 +6508,7 @@ VKIpc.on('terminal:request-new-pane', async (payload = {}) => {
     if (typeof model === 'string') splitOptions = { ...splitOptions, model };
     if (typeof approvalPolicy === 'string') splitOptions = { ...splitOptions, approvalPolicy };
     if (typeof sandboxMode === 'string') splitOptions = { ...splitOptions, sandboxMode };
+    if (codexPolicy && typeof codexPolicy === 'object') splitOptions = { ...splitOptions, codexPolicy };
     const result = await splitPane(targetPaneId, direction, effectiveCwd, splitOptions);
     if (!result || !result.termId) {
       reply({ error: 'split failed or termId unavailable' });

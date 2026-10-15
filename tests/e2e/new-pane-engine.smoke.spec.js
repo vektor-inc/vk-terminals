@@ -222,7 +222,7 @@ test('POST /api/new-pane は engine を許可リストで検証し、codex を�
     expect(codexHomes[1]).toBeNull();
     expect(codexHomes[2]).toMatch(/\.vk-terminals\/codex-task-policy\/orchestrated-task\/[0-9a-f]{24}$/);
     expect(fs.readFileSync(path.join(codexHomes[2], 'config.toml'), 'utf8')).toContain('network_access = false');
-    expect(fs.readdirSync(codexHomes[2]).sort()).toEqual(['AGENTS.md', 'config.toml', 'gitconfig', 'rules', 'vk-task-ops', 'vk-task-ops.js']);
+    expect(fs.readdirSync(codexHomes[2]).sort()).toEqual(['AGENTS.md', 'config.toml', 'gh', 'gitconfig', 'rules', 'vk-task-ops', 'vk-task-ops.js']);
   } finally {
     if (launched) await closeApp(launched);
     fs.rmSync(fixtureRoot, { recursive: true, force: true });

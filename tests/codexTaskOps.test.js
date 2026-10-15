@@ -17,8 +17,9 @@ const {
   parseTaskCommand,
   readBinding,
   resolveTrustedExecutable,
+  resolveTrustedExecutableDetailed,
+  resolveTrustedPath,
   runTaskCommand,
-  verifyTrustedChain,
 } = require('../utils/codexTaskOps');
 
 const GIT_PREFIX = [...FIXED_GIT_PREFIX];
@@ -211,6 +212,8 @@ function createFixture({ origin = GITHUB_ORIGIN } = {}) {
   const home = path.join(root, 'home');
   fs.mkdirSync(binDir);
   fs.mkdirSync(home);
+  const ghConfig = path.join(root, 'gh-config');
+  fs.mkdirSync(ghConfig, { mode: 0o700 });
   const ghPath = path.join(binDir, 'gh');
   fs.writeFileSync(ghPath, `#!${process.execPath}\nrequire('fs').appendFileSync(${JSON.stringify(record)}, JSON.stringify({ args: process.argv.slice(2), env: process.env }) + '\\n');\n`, { mode: 0o755 });
   const gitConfig = path.join(root, 'gitconfig');
@@ -222,6 +225,7 @@ function createFixture({ origin = GITHUB_ORIGIN } = {}) {
     VK_TASK_GH: ghPath,
     VK_TASK_HOME: home,
     VK_TASK_GITCONFIG: gitConfig,
+    VK_TASK_GHCONFIG: ghConfig,
   };
   const readCalls = () => (fs.existsSync(record) ? fs.readFileSync(record, 'utf8').trim().split('\n').map((line) => JSON.parse(line)) : []);
   return { root, repo, home, env, readCalls, cleanup: () => fs.rmSync(root, { recursive: true, force: true }) };
@@ -454,6 +458,8 @@ test('拘束: Git 管理外・ホームそのもの・拘束の設定が無い�
       { ...fixture.env, VK_TASK_GITCONFIG: "/tmp/a'b" },
       { ...fixture.env, VK_TASK_REPO: 'not a repo' },
       { ...fixture.env, VK_TASK_GH: 'gh' },
+      { ...fixture.env, VK_TASK_GHCONFIG: '' },
+      { ...fixture.env, VK_TASK_GHCONFIG: 'relative' },
     ];
     for (const env of broken) {
       const rejected = run(fixture, ['git', 'status'], { env });
@@ -462,7 +468,7 @@ test('拘束: Git 管理外・ホームそのもの・拘束の設定が無い�
     }
     assert.equal(readBinding({}), null);
     assert.deepEqual(readBinding(fixture.env), {
-      root: fixture.repo, repo: 'vektor-inc/vk-terminals', git: GIT_PATH, gh: fixture.env.VK_TASK_GH, home: fixture.home, gitConfig: fixture.env.VK_TASK_GITCONFIG,
+      root: fixture.repo, repo: 'vektor-inc/vk-terminals', git: GIT_PATH, gh: fixture.env.VK_TASK_GH, home: fixture.home, gitConfig: fixture.env.VK_TASK_GITCONFIG, ghConfig: fixture.env.VK_TASK_GHCONFIG,
     });
   } finally {
     fixture.cleanup();
@@ -480,13 +486,15 @@ test('環境: 子プロセスへは許可リストの変数だけを渡し、親
     };
     assert.equal(run(fixture, ['gh', 'issue', 'view', '1'], { env: poisoned }).code, 0);
     const [{ env }] = fixture.readCalls();
-    const expected = buildChildEnvironment({ git: GIT_PATH, gh: fixture.env.VK_TASK_GH, home: fixture.home, gitConfig: fixture.env.VK_TASK_GITCONFIG });
+    const expected = buildChildEnvironment({ git: GIT_PATH, gh: fixture.env.VK_TASK_GH, home: fixture.home, gitConfig: fixture.env.VK_TASK_GITCONFIG, ghConfig: fixture.env.VK_TASK_GHCONFIG });
     // 子プロセスの環境は、固定値だけ（Node が自分で足す変数を除く）。
     for (const [key, value] of Object.entries(expected)) assert.equal(env[key], value, key);
     for (const key of Object.keys(env)) assert.ok(key in expected || /^(__CF_USER_TEXT_ENCODING|SHLVL|_)$/.test(key), key);
     assert.equal(expected.HOME, fixture.home);
-    assert.equal(expected.XDG_CONFIG_HOME, path.join(fixture.home, '.config'));
-    assert.equal(expected.GH_CONFIG_DIR, path.join(fixture.home, '.config', 'gh'));
+    // gh の設定は個人の ~/.config/gh ではなく、ランチャーが生成した専用フォルダだけを指す。
+    assert.equal(expected.GH_CONFIG_DIR, fixture.env.VK_TASK_GHCONFIG);
+    assert.equal(expected.XDG_CONFIG_HOME, path.dirname(fixture.env.VK_TASK_GHCONFIG));
+    assert.ok(!expected.GH_CONFIG_DIR.startsWith(fixture.home));
     assert.equal(expected.GIT_CONFIG_SYSTEM, '/dev/null');
     assert.match(expected.PATH, new RegExp(`^${path.dirname(GIT_PATH)}`));
   } finally {
@@ -515,32 +523,35 @@ test('信頼境界: 根から末端までの全階層について、リンク・
   try {
     const dir = path.join(root, 'a', 'b');
     fs.mkdirSync(dir, { recursive: true });
-    const snapshot = verifyTrustedChain(fs, dir);
+    const { chain: snapshot, realPath } = resolveTrustedPath(fs, dir);
     assert.equal(snapshot[snapshot.length - 1].path, dir);
+    assert.equal(realPath, dir);
 
     // 他人（グループ・その他）が書き込める祖先／末端。
     for (const [target, mode] of [[path.join(root, 'a'), 0o777], [path.join(root, 'a'), 0o775], [dir, 0o757]]) {
       const original = fs.statSync(target).mode & 0o777;
       fs.chmodSync(target, mode);
       try {
-        assert.throws(() => verifyTrustedChain(fs, dir), /writable by other users/, `${target} ${mode.toString(8)}`);
+        assert.throws(() => resolveTrustedPath(fs, dir), /writable by other users/, `${target} ${mode.toString(8)}`);
       } finally {
         fs.chmodSync(target, original);
       }
     }
     // 所有者が違う。
-    assert.throws(() => verifyTrustedChain(fs, dir, { uid: process.getuid() + 1 }), /not owned by/);
-    // 祖先がリンク。
+    assert.throws(() => resolveTrustedPath(fs, dir, { uid: process.getuid() + 1 }), /not owned by/);
+    // 祖先がリンク（自分の所有で、向き先の全階層が検証を通れば実パスへ解決される）。末端自体のリンクは rejectFinalLink で拒否する。
     fs.symlinkSync(path.join(root, 'a'), path.join(root, 'link'));
-    assert.throws(() => verifyTrustedChain(fs, path.join(root, 'link', 'b')), /symbolic link/);
+    assert.equal(resolveTrustedPath(fs, path.join(root, 'link', 'b')).realPath, dir);
+    assert.throws(() => resolveTrustedPath(fs, path.join(root, 'link'), { rejectFinalLink: true }), /path is a symbolic link/);
+    assert.throws(() => resolveTrustedPath(fs, path.join(root, 'link', 'b'), { uid: process.getuid() + 1 }), /not owned by/);
     // 末端が種別違い。
     fs.writeFileSync(path.join(root, 'file'), 'x');
-    assert.throws(() => verifyTrustedChain(fs, path.join(root, 'file')), /not a directory/);
-    assert.doesNotThrow(() => verifyTrustedChain(fs, path.join(root, 'file'), { finalKind: 'file' }));
-    assert.throws(() => verifyTrustedChain(fs, dir, { finalKind: 'file' }), /not a regular file/);
+    assert.throws(() => resolveTrustedPath(fs, path.join(root, 'file')), /not a directory/);
+    assert.doesNotThrow(() => resolveTrustedPath(fs, path.join(root, 'file'), { finalKind: 'file' }));
+    assert.throws(() => resolveTrustedPath(fs, dir, { finalKind: 'file' }), /not a regular file/);
 
     // 検証後に祖先が別のフォルダへ差し替えられたことを検知する。
-    const verified = verifyTrustedChain(fs, dir);
+    const verified = resolveTrustedPath(fs, dir).chain;
     fs.renameSync(path.join(root, 'a'), path.join(root, 'a-old'));
     fs.mkdirSync(path.join(root, 'a', 'b'), { recursive: true });
     assert.throws(() => assertChainUnchanged(fs, verified), /changed after it was verified/);
@@ -569,7 +580,7 @@ test('信頼境界: 実行ファイルは固定の探索先から、他人が書
     fs.writeFileSync(path.join(trusted, 'writable'), '#!/bin/sh\n', { mode: 0o755 });
     fs.chmodSync(path.join(trusted, 'writable'), 0o757);
     assert.equal(resolveTrustedExecutable(fs, 'writable', [trusted]), null);
-    // リンクは実体まで検証し、リンク側のパスを返す（argv[0] で挙動を変えるツールのため）。
+    // リンクは向き先を 1 段ずつ検証し、リンク側のパスを返す（argv[0] で挙動を変えるツールのため）。
     fs.writeFileSync(path.join(real, 'impl'), '#!/bin/sh\n', { mode: 0o755 });
     fs.symlinkSync(path.join(real, 'impl'), path.join(trusted, 'linked'));
     assert.equal(resolveTrustedExecutable(fs, 'linked', [trusted]), path.join(trusted, 'linked'));
@@ -577,6 +588,140 @@ test('信頼境界: 実行ファイルは固定の探索先から、他人が書
     assert.equal(resolveTrustedExecutable(fs, 'linked', [trusted]), null);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// 実行ファイルへのリンクを検証する一時ツリー（trusted/tool → hop/tool → store/impl）。
+function createLinkTree() {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'vk-link-')));
+  const dirs = Object.fromEntries(['trusted', 'hop', 'store', 'open'].map((name) => [name, path.join(root, name)]));
+  for (const dir of Object.values(dirs)) fs.mkdirSync(dir);
+  fs.writeFileSync(path.join(dirs.store, 'impl'), '#!/bin/sh\n', { mode: 0o755 });
+  fs.symlinkSync(path.join(dirs.store, 'impl'), path.join(dirs.hop, 'tool'));
+  fs.symlinkSync(path.join(dirs.hop, 'tool'), path.join(dirs.trusted, 'tool'));
+  return { root, ...dirs };
+}
+
+test('信頼境界: 実行ファイルへのリンクは途中の全階層（リンク・フォルダ）を検証し、未検証の経路を残さない', () => {
+  const tree = createLinkTree();
+  try {
+    const resolved = resolveTrustedExecutableDetailed(fs, 'tool', [tree.trusted]);
+    assert.equal(resolved.path, path.join(tree.trusted, 'tool'));
+    // 途中のリンクが検証結果に残り、向き先まで記録される。
+    assert.deepEqual(resolved.chain.filter((entry) => entry.link !== undefined).map((entry) => entry.path), [path.join(tree.trusted, 'tool'), path.join(tree.hop, 'tool')]);
+    assert.doesNotThrow(() => assertChainUnchanged(fs, resolved.chain));
+
+    // 途中のリンクの向き先が検証後に別の実行物へ張り替えられたら検知する。
+    fs.writeFileSync(path.join(tree.open, 'evil'), '#!/bin/sh\n', { mode: 0o755 });
+    fs.rmSync(path.join(tree.hop, 'tool'));
+    fs.symlinkSync(path.join(tree.open, 'evil'), path.join(tree.hop, 'tool'));
+    assert.throws(() => assertChainUnchanged(fs, resolved.chain), /changed after it was verified/);
+    // 張り替え先が他人の書けるフォルダなら、候補ごと採用しない。
+    fs.chmodSync(tree.open, 0o777);
+    assert.equal(resolveTrustedExecutable(fs, 'tool', [tree.trusted]), null);
+  } finally {
+    fs.rmSync(tree.root, { recursive: true, force: true });
+  }
+});
+
+test('信頼境界: 途中のリンクを置いたフォルダが他人に書ける・リンクの所有者が違う・相対リンクで書込可能な場所へ出る場合は拒否する', () => {
+  // 途中のリンクを置くフォルダが他人に書ける（リンクを差し替えられる）。
+  let tree = createLinkTree();
+  try {
+    fs.chmodSync(tree.hop, 0o777);
+    assert.equal(resolveTrustedExecutable(fs, 'tool', [tree.trusted]), null);
+    assert.throws(() => resolveTrustedPath(fs, path.join(tree.trusted, 'tool'), { finalKind: 'file' }), /writable by other users/);
+  } finally {
+    fs.rmSync(tree.root, { recursive: true, force: true });
+  }
+  // リンクの所有者が、実行ユーザーでも root でもない。
+  tree = createLinkTree();
+  try {
+    assert.equal(resolveTrustedExecutable(fs, 'tool', [tree.trusted], { uid: process.getuid() + 1 }), null);
+  } finally {
+    fs.rmSync(tree.root, { recursive: true, force: true });
+  }
+  // 相対リンクの '..' 経由で、他人の書けるフォルダの実行物へ出る。
+  tree = createLinkTree();
+  try {
+    fs.writeFileSync(path.join(tree.open, 'evil'), '#!/bin/sh\n', { mode: 0o755 });
+    fs.chmodSync(tree.open, 0o777);
+    fs.rmSync(path.join(tree.trusted, 'tool'));
+    fs.symlinkSync('../hop/../open/evil', path.join(tree.trusted, 'tool'));
+    assert.equal(resolveTrustedExecutable(fs, 'tool', [tree.trusted]), null);
+  } finally {
+    fs.rmSync(tree.root, { recursive: true, force: true });
+  }
+  // リンクの循環・長すぎる連鎖。
+  tree = createLinkTree();
+  try {
+    fs.rmSync(path.join(tree.hop, 'tool'));
+    fs.symlinkSync(path.join(tree.trusted, 'tool'), path.join(tree.hop, 'tool'));
+    assert.equal(resolveTrustedExecutable(fs, 'tool', [tree.trusted]), null);
+  } finally {
+    fs.rmSync(tree.root, { recursive: true, force: true });
+  }
+});
+
+test('信頼境界: 無いフォルダは検証済みの親の下に 1 段ずつ 0700 で作り、書込可能な親の下には作らない', () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'vk-create-')));
+  try {
+    const target = path.join(root, 'a', 'b', 'c');
+    const { realPath, chain } = resolveTrustedPath(fs, target, { createMissing: true });
+    assert.equal(realPath, target);
+    assert.equal(fs.statSync(target).mode & 0o777, 0o700);
+    assert.equal(chain[chain.length - 1].path, target);
+    assert.throws(() => resolveTrustedPath(fs, path.join(root, 'x', 'y')), /ENOENT/);
+    assert.equal(fs.existsSync(path.join(root, 'x')), false);
+    // 書込可能な親の下には作らない（検証が作成より先）。
+    fs.mkdirSync(path.join(root, 'shared'));
+    fs.chmodSync(path.join(root, 'shared'), 0o777);
+    assert.throws(() => resolveTrustedPath(fs, path.join(root, 'shared', 'new', 'dir'), { createMissing: true }), /writable by other users/);
+    assert.equal(fs.existsSync(path.join(root, 'shared', 'new')), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('実行: gh へのリンクの途中が他人に書ける場所へ張り替えられた場合は実行しない', () => {
+  const fixture = createFixture();
+  try {
+    const hop = path.join(fixture.root, 'hop');
+    fs.mkdirSync(hop);
+    const realGh = path.join(fixture.root, 'bin', 'gh');
+    const linked = path.join(fixture.root, 'linked-gh');
+    fs.symlinkSync(path.join(hop, 'gh'), linked);
+    fs.symlinkSync(realGh, path.join(hop, 'gh'));
+    const env = { ...fixture.env, VK_TASK_GH: linked };
+    assert.equal(run(fixture, ['gh', 'issue', 'view', '1'], { env }).code, 0);
+    fs.chmodSync(hop, 0o777);
+    const result = run(fixture, ['gh', 'issue', 'view', '2'], { env });
+    assert.equal(result.code, 2);
+    assert.match(result.messages.join(''), /writable by other users/);
+    assert.equal(fixture.readCalls().length, 1);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('実行: gh の専用設定フォルダが他人に書ける・リンクの場合は gh を実行しない', () => {
+  const fixture = createFixture();
+  try {
+    fs.chmodSync(fixture.env.VK_TASK_GHCONFIG, 0o777);
+    const writable = run(fixture, ['gh', 'issue', 'view', '1']);
+    assert.equal(writable.code, 2);
+    assert.match(writable.messages.join(''), /writable by other users/);
+    fs.chmodSync(fixture.env.VK_TASK_GHCONFIG, 0o700);
+    const elsewhere = path.join(fixture.root, 'personal-gh');
+    fs.mkdirSync(elsewhere);
+    fs.rmSync(fixture.env.VK_TASK_GHCONFIG, { recursive: true });
+    fs.symlinkSync(elsewhere, fixture.env.VK_TASK_GHCONFIG);
+    const linked = run(fixture, ['gh', 'issue', 'view', '1']);
+    assert.equal(linked.code, 2);
+    assert.match(linked.messages.join(''), /symbolic link/);
+    assert.deepEqual(fixture.readCalls(), []);
+  } finally {
+    fixture.cleanup();
   }
 });
 

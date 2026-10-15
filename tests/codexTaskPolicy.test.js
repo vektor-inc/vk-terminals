@@ -167,7 +167,7 @@ test('起動コマンド: ポリシー無しの Codex（手動の通常セッシ
 // ─── 専用 CODEX_HOME の生成 ──────────────────────────────────────────────
 
 const OPS_SOURCE = fs.readFileSync(path.join(__dirname, '..', 'utils', 'codexTaskOps.js'), 'utf8');
-const HOME_ENTRIES = ['AGENTS.md', 'auth.json', 'config.toml', 'gitconfig', 'rules', 'vk-task-ops', 'vk-task-ops.js'];
+const HOME_ENTRIES = ['AGENTS.md', 'auth.json', 'config.toml', 'gh', 'gitconfig', 'rules', 'vk-task-ops', 'vk-task-ops.js'];
 const modeOf = (target) => fs.lstatSync(target).mode & 0o777;
 const prepare = (sandbox, extra = {}) => prepareCodexTaskPolicyHome({ preset: 'orchestrated-task', ...sandbox.deps, ...extra });
 const launchHomes = (sandbox) => (fs.existsSync(sandbox.policyBase) ? fs.readdirSync(sandbox.policyBase) : []);
@@ -245,6 +245,7 @@ test('生成: ランチャーは環境を空にして検証済みの絶対パス
     assert.equal(assign('VK_TASK_REPO'), 'vektor-inc/vk-terminals');
     assert.equal(assign('VK_TASK_HOME'), sandbox.homeDir);
     assert.equal(assign('VK_TASK_GITCONFIG'), path.join(home, 'gitconfig'));
+    assert.equal(assign('VK_TASK_GHCONFIG'), path.join(home, 'gh'));
     for (const name of ['VK_TASK_GIT', 'VK_TASK_GH']) assert.ok(path.isAbsolute(assign(name)), name);
     // 実行ファイルは PATH 解決ではなく絶対パス。
     const lastLine = launcher.trimEnd().split('\n').pop();
@@ -341,6 +342,7 @@ test('検証: 許可した生成物以外のファイル・リンク・緩い権
     const fileSpec = (name) => ({ content: fs.readFileSync(path.join(home, name), 'utf8'), mode: modeOf(path.join(home, name)) });
     const pristine = {
       files: Object.fromEntries(['config.toml', 'AGENTS.md', 'gitconfig', 'vk-task-ops.js', 'vk-task-ops'].map((name) => [name, fileSpec(name)])),
+      ghFiles: { 'config.yml': fileSpec('gh/config.yml') },
       rulesBody: fs.readFileSync(path.join(home, 'rules', 'vk-terminals-task.rules'), 'utf8'),
       authTarget,
     };
@@ -369,6 +371,16 @@ test('検証: 許可した生成物以外のファイル・リンク・緩い権
     assert.throws(() => verifyPolicyHome(fs, home, pristine, uid), /could not be verified/);
 
     assert.throws(() => verifyPolicyHome(fs, home, { ...pristine, authTarget: null }, uid), /unexpected entries/);
+
+    // gh の専用設定フォルダに余計なファイル・緩い権限・中身の違いがあれば拒否する。
+    fs.writeFileSync(path.join(home, 'gh', 'extra.yml'), 'http_unix_socket: /tmp/x\n');
+    assert.throws(() => verifyPolicyHome(fs, home, pristine, uid), /unexpected entries/);
+    fs.rmSync(path.join(home, 'gh', 'extra.yml'));
+    fs.chmodSync(path.join(home, 'gh', 'config.yml'), 0o644);
+    assert.throws(() => verifyPolicyHome(fs, home, pristine, uid), /permissions are not 0600/);
+    fs.chmodSync(path.join(home, 'gh', 'config.yml'), 0o600);
+    fs.appendFileSync(path.join(home, 'gh', 'config.yml'), 'http_unix_socket: /tmp/x\n');
+    assert.throws(() => verifyPolicyHome(fs, home, pristine, uid), /could not be verified/);
   } finally {
     sandbox.cleanup();
   }
@@ -399,13 +411,13 @@ test('生成: データフォルダ自体・引き継ぎ先がシンボリック
     const elsewhere = path.join(sandbox.root, 'elsewhere');
     fs.mkdirSync(elsewhere);
     fs.symlinkSync(elsewhere, sandbox.deps.dataDir);
-    assert.match(prepare(sandbox).error, /not a plain directory/);
+    assert.match(prepare(sandbox).error, /symbolic link/);
     assert.deepEqual(fs.readdirSync(elsewhere), []);
     fs.rmSync(sandbox.deps.dataDir);
     fs.rmSync(sandbox.deps.handoffDir, { recursive: true, force: true });
 
     fs.symlinkSync(elsewhere, sandbox.deps.handoffDir);
-    assert.match(prepare(sandbox).error, /not a plain directory/);
+    assert.match(prepare(sandbox).error, /symbolic link/);
     assert.deepEqual(fs.readdirSync(elsewhere), []);
   } finally {
     sandbox.cleanup();
@@ -438,6 +450,198 @@ test('信頼境界: データ・引き継ぎ先・ホーム・認証元の祖先
   const sandbox = createSandbox();
   try {
     assert.match(prepare(sandbox, { uid: process.getuid() + 1 }).error, /not owned by/);
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+// ─── gh の専用設定（個人の ~/.config/gh を継承しない） ─────────────────────
+
+// 受け取った環境変数と引数を記録するだけの偽の gh。実行ファイルの探索先として渡す。
+function createFakeGh(sandbox) {
+  const binDir = path.join(sandbox.root, 'fake-bin');
+  fs.mkdirSync(binDir);
+  const record = path.join(sandbox.root, 'gh-record.json');
+  fs.writeFileSync(path.join(binDir, 'gh'), `#!${process.execPath}\nrequire('fs').writeFileSync(${JSON.stringify(record)}, JSON.stringify({ args: process.argv.slice(2), env: process.env }));\n`, { mode: 0o755 });
+  return { toolDirs: [binDir, '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin', ...String(process.env.PATH).split(path.delimiter).filter(path.isAbsolute)], readRecord: () => JSON.parse(fs.readFileSync(record, 'utf8')) };
+}
+
+const PERSONAL_HOSTS = [
+  'github.com:',
+  '    http_unix_socket: /tmp/evil.sock',
+  '    browser: /tmp/evil-browser',
+  '    editor: /tmp/evil-editor',
+  '    users:',
+  '        octocat:',
+  '            oauth_token: gho_secretToken123',
+  '        keyring-user:',
+  '    git_protocol: ssh',
+  '    user: octocat',
+  'evil.example.com:',
+  '    oauth_token: other_host_token',
+  '    user: other',
+  '',
+].join('\n');
+
+test('gh: 個人の ~/.config/gh を継承せず、専用フォルダには固定の設定と github.com の認証だけを置く', () => {
+  const sandbox = createSandbox();
+  try {
+    const fakeGh = createFakeGh(sandbox);
+    const personalGh = path.join(sandbox.homeDir, '.config', 'gh');
+    fs.mkdirSync(personalGh, { recursive: true });
+    fs.writeFileSync(path.join(personalGh, 'config.yml'), 'http_unix_socket: /tmp/evil.sock\nbrowser: /tmp/evil\npager: /tmp/evil\naliases:\n    issue: "!/tmp/evil"\n');
+    fs.writeFileSync(path.join(personalGh, 'hosts.yml'), PERSONAL_HOSTS);
+    const result = prepare(sandbox, { toolDirs: fakeGh.toolDirs });
+    assert.equal(result.ok, true, result.error);
+
+    const ghDir = path.join(result.home, 'gh');
+    assert.equal(modeOf(ghDir), 0o700);
+    assert.deepEqual(fs.readdirSync(ghDir).sort(), ['config.yml', 'hosts.yml']);
+    const config = fs.readFileSync(path.join(ghDir, 'config.yml'), 'utf8');
+    for (const forbidden of ['http_unix_socket', 'browser', 'editor', 'aliases', 'evil']) assert.equal(config.includes(forbidden), false, forbidden);
+    // 認証だけを引き継ぐ。通信設定・他のホスト・元の git_protocol は引き継がない。
+    const hosts = fs.readFileSync(path.join(ghDir, 'hosts.yml'), 'utf8');
+    assert.equal(modeOf(path.join(ghDir, 'hosts.yml')), 0o600);
+    assert.match(hosts, /^github\.com:$/m);
+    assert.match(hosts, /^    user: octocat$/m);
+    assert.match(hosts, /^            oauth_token: gho_secretToken123$/m);
+    assert.match(hosts, /^        keyring-user:$/m);
+    for (const forbidden of ['http_unix_socket', 'browser', 'editor', 'evil', 'other_host_token', 'ssh']) assert.equal(hosts.includes(forbidden), false, forbidden);
+    // 個人の設定は変更しない。
+    assert.equal(fs.readFileSync(path.join(personalGh, 'hosts.yml'), 'utf8'), PERSONAL_HOSTS);
+
+    // ランチャー経由の gh は、専用フォルダだけを設定として見る。
+    const launcher = path.join(result.home, 'vk-task-ops');
+    const run = childProcess.spawnSync(launcher, ['gh', 'issue', 'view', '1'], {
+      cwd: sandbox.repo, env: { ...process.env, GH_CONFIG_DIR: personalGh, XDG_CONFIG_HOME: path.join(sandbox.homeDir, '.config') }, encoding: 'utf8',
+    });
+    assert.equal(run.status, 0, run.stderr);
+    const { env } = fakeGh.readRecord();
+    assert.equal(env.GH_CONFIG_DIR, ghDir);
+    assert.equal(env.XDG_CONFIG_HOME, result.home);
+    assert.equal(env.HOME, sandbox.homeDir);
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('gh: 個人の hosts.yml が無い・認証項目が読めない・不正な値だけのときは認証を引き継がない', () => {
+  const cases = [
+    ['hosts.yml が無い', undefined],
+    ['他のホストだけ', 'evil.example.com:\n    oauth_token: abc\n    user: other\n'],
+    ['不正なトークン・ユーザー名', "github.com:\n    oauth_token: 'a b;rm -rf'\n    user: '../x'\n    users:\n        '../y':\n            oauth_token: z\n"],
+    ['通信設定だけ', 'github.com:\n    http_unix_socket: /tmp/evil.sock\n'],
+  ];
+  for (const [label, content] of cases) {
+    const sandbox = createSandbox();
+    try {
+      const fakeGh = createFakeGh(sandbox);
+      const personalGh = path.join(sandbox.homeDir, '.config', 'gh');
+      fs.mkdirSync(personalGh, { recursive: true });
+      if (content !== undefined) fs.writeFileSync(path.join(personalGh, 'hosts.yml'), content);
+      const result = prepare(sandbox, { toolDirs: fakeGh.toolDirs });
+      assert.equal(result.ok, true, `${label}: ${result.error}`);
+      assert.deepEqual(fs.readdirSync(path.join(result.home, 'gh')), ['config.yml'], label);
+    } finally {
+      sandbox.cleanup();
+    }
+  }
+});
+
+test('gh: 認証元の hosts.yml の祖先・実体が他人に書ける、または途中のリンクが書込可能な場所を通る場合は拒否する', () => {
+  const cases = [
+    ['hosts.yml が他人に書ける', (sandbox, personalGh) => fs.chmodSync(path.join(personalGh, 'hosts.yml'), 0o666), /writable by other users/],
+    ['gh 設定フォルダが他人に書ける', (sandbox, personalGh) => fs.chmodSync(personalGh, 0o777), /writable by other users/],
+    ['リンクの向き先が書込可能なフォルダ', (sandbox, personalGh) => {
+      const open = path.join(sandbox.root, 'open');
+      fs.mkdirSync(open);
+      fs.renameSync(path.join(personalGh, 'hosts.yml'), path.join(open, 'hosts.yml'));
+      fs.chmodSync(open, 0o777);
+      fs.symlinkSync(path.join(open, 'hosts.yml'), path.join(personalGh, 'hosts.yml'));
+    }, /writable by other users/],
+  ];
+  for (const [label, setup, pattern] of cases) {
+    const sandbox = createSandbox();
+    try {
+      const fakeGh = createFakeGh(sandbox);
+      const personalGh = path.join(sandbox.homeDir, '.config', 'gh');
+      fs.mkdirSync(personalGh, { recursive: true });
+      fs.writeFileSync(path.join(personalGh, 'hosts.yml'), PERSONAL_HOSTS);
+      setup(sandbox, personalGh);
+      const result = prepare(sandbox, { toolDirs: fakeGh.toolDirs });
+      assert.equal(result.ok, false, label);
+      assert.match(result.error, pattern, label);
+      assert.deepEqual(launchHomes(sandbox), [], label);
+    } finally {
+      sandbox.cleanup();
+    }
+  }
+});
+
+// ─── 元の絶対パスの階層ごとの検証 ───────────────────────────────────────
+
+test('信頼境界: 元のパスの祖先にあるリンクも検証する（書込可能なフォルダ内のリンクは拒否し、何も作らない）', () => {
+  const sandbox = createSandbox();
+  try {
+    const open = path.join(sandbox.root, 'open');
+    const elsewhere = path.join(sandbox.root, 'elsewhere');
+    fs.mkdirSync(open);
+    fs.mkdirSync(elsewhere);
+    fs.chmodSync(open, 0o777);
+    // 書込可能なフォルダの中にあるリンク（他人が張り替えられる）を、データフォルダの祖先にする。
+    fs.symlinkSync(elsewhere, path.join(open, 'link'));
+    const result = prepare(sandbox, { dataDir: path.join(open, 'link', 'data') });
+    assert.equal(result.ok, false);
+    assert.match(result.error, /writable by other users/);
+    assert.deepEqual(fs.readdirSync(elsewhere), []);
+
+    // 引き継ぎ先も同じ。検証より先に再帰作成しないので、書込可能な親の下には何も作られない。
+    const handoff = prepare(sandbox, { handoffDir: path.join(open, 'new', 'deep', 'handoff') });
+    assert.equal(handoff.ok, false);
+    assert.match(handoff.error, /writable by other users/);
+    assert.deepEqual(fs.readdirSync(open), ['link']);
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('信頼境界: 自分所有のリンクを祖先に持つデータ・引き継ぎ先は、向き先まで検証して実パスで使う。無い階層は 1 段ずつ作る', () => {
+  const sandbox = createSandbox();
+  try {
+    const real = path.join(sandbox.root, 'real');
+    fs.mkdirSync(real);
+    fs.symlinkSync(real, path.join(sandbox.root, 'via-link'));
+    const result = prepare(sandbox, {
+      dataDir: path.join(sandbox.root, 'via-link', 'data', 'nested'),
+      handoffDir: path.join(sandbox.root, 'via-link', 'handoff', 'deeper'),
+    });
+    assert.equal(result.ok, true, result.error);
+    assert.ok(result.home.startsWith(path.join(real, 'data', 'nested')));
+    assert.equal(modeOf(path.join(real, 'data')), 0o700);
+    assert.equal(modeOf(path.join(real, 'handoff', 'deeper')), 0o700);
+    assert.match(fs.readFileSync(path.join(result.home, 'config.toml'), 'utf8'), new RegExp(`writable_roots = \\["${path.join(real, 'handoff', 'deeper').replace(/[\\/]/g, '\\$&')}"\\]`));
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('信頼境界: 認証元（auth.json）のリンクは途中の階層まで検証し、書込可能な場所を通るものは共有しない', () => {
+  const sandbox = createSandbox();
+  try {
+    const open = path.join(sandbox.root, 'open');
+    fs.mkdirSync(open);
+    fs.renameSync(path.join(sandbox.personalCodexHome, 'auth.json'), path.join(open, 'auth.json'));
+    fs.chmodSync(open, 0o777);
+    fs.symlinkSync(path.join(open, 'auth.json'), path.join(sandbox.personalCodexHome, 'auth.json'));
+    const result = prepare(sandbox);
+    assert.equal(result.ok, false);
+    assert.match(result.error, /writable by other users/);
+    assert.deepEqual(launchHomes(sandbox), []);
+    // 検証を通る場所へのリンク（dotfiles 管理など）は共有できる。
+    fs.chmodSync(open, 0o700);
+    const shared = prepare(sandbox);
+    assert.equal(shared.ok, true, shared.error);
+    assert.equal(fs.readlinkSync(path.join(shared.home, 'auth.json')), path.join(open, 'auth.json'));
   } finally {
     sandbox.cleanup();
   }

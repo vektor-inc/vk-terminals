@@ -15,8 +15,11 @@
 //     ランチャーの実行だけを許可し、引数・パス・リポジトリの検証は入口側で行う。
 //   - ランチャーは Node を起動する前に `env -i` で環境を空にし、起動時に所有者・権限を検証した絶対パスの
 //     Node / git / gh と、拘束したリポジトリ（実ルート・GitHub の owner/repo）だけを渡す。PATH は使わない。
-//   - 信頼境界（データ・引き継ぎ先・認証元・実行ファイル）は、根から末端までの全階層について実体・所有者・
-//     他人の書き込み不可を検証し、返す直前に同一性を再確認する。
+//   - 信頼境界（データ・引き継ぎ先・ホーム・認証元・実行ファイル）は、元の絶対パスを根から 1 階層ずつ辿り、
+//     リンクは向き先まで 1 段ずつ解決して、通る全ての階層の所有者・他人の書き込み不可を検証する（resolveTrustedPath）。
+//     無いフォルダは検証済みの親の下に 1 段ずつ作る（検証前の再帰作成はしない）。返す直前に同一性を再確認する。
+//   - gh は個人の ~/.config/gh を読まない。専用フォルダ（gh/）に固定内容の config.yml と、個人の hosts.yml から
+//     許可した項目（github.com のユーザー名とトークン）だけを再生成した hosts.yml を置く。通信設定などは引き継がない。
 //   - ディレクトリは実体（非シンボリックリンク）・自分の所有・0700、ファイルは通常ファイル・所定の権限を毎回検証する。
 //     ファイルは排他的作成（既存なら失敗）・リンク非追跡で作る。
 //   - 生成・検証のどこかで失敗したら ok: false を返し、途中まで作った専用フォルダは自分が作ったものだけ片付ける。
@@ -35,19 +38,26 @@ const {
   assertChainUnchanged,
   buildChildEnvironment,
   inspectRepository,
-  resolveTrustedExecutable,
-  verifyTrustedChain,
+  resolveTrustedExecutableDetailed,
+  resolveTrustedPath,
 } = require('./codexTaskOps');
 
 const POLICY_DIR_NAME = 'codex-task-policy';
 const OPS_SCRIPT_NAME = 'vk-task-ops.js';
 const LAUNCHER_NAME = 'vk-task-ops';
 const GIT_CONFIG_NAME = 'gitconfig';
+const GH_CONFIG_DIR_NAME = 'gh';
+const GH_CONFIG_FILE_NAME = 'config.yml';
+const GH_HOSTS_FILE_NAME = 'hosts.yml';
+const GH_HOST = 'github.com';
 const RULES_FILE_NAME = 'vk-terminals-task.rules';
 const OPS_SOURCE_PATH = path.join(__dirname, 'codexTaskOps.js');
 const LAUNCH_HOME_NAME_PATTERN = /^[0-9a-f]{24}$/;
 const ENV_COMMAND_PATH = '/usr/bin/env';
 const MAX_IDENTITY_LENGTH = 200;
+const MAX_GH_HOSTS_BYTES = 64 * 1024;
+const GH_USER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/;
+const GH_TOKEN_PATTERN = /^[A-Za-z0-9_.-]{1,255}$/;
 // 実行ファイル（node / git / gh）を探す固定の場所。環境変数 PATH は使わない。
 const TRUSTED_TOOL_DIRS = Object.freeze(['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin']);
 
@@ -164,6 +174,7 @@ function renderLauncher({ envPath, nodePath, opsScriptPath, binding }) {
     `VK_TASK_GH=${binding.gh || ''}`,
     `VK_TASK_HOME=${binding.home}`,
     `VK_TASK_GITCONFIG=${binding.gitConfig}`,
+    `VK_TASK_GHCONFIG=${binding.ghConfig}`,
   ];
   return [
     '#!/bin/sh',
@@ -173,6 +184,72 @@ function renderLauncher({ envPath, nodePath, opsScriptPath, binding }) {
     `  '${nodePath}' '${opsScriptPath}' "$@"`,
     '',
   ].join('\n');
+}
+
+/**
+ * gh の専用設定（config.yml）の本文。通信設定（プロキシ・UNIX ソケット・ブラウザ・エディタなど）を持たない固定内容。
+ * @returns {string}
+ */
+function renderGhConfig() {
+  return [
+    '# VK Terminals が生成。起動のたびに作り直される。',
+    'version: "1"',
+    'git_protocol: https',
+    'prompt: disabled',
+    'pager: cat',
+    '',
+  ].join('\n');
+}
+
+/**
+ * 個人の gh の hosts.yml から、github.com の認証に必要な項目（ユーザー名・トークン）だけを取り出して
+ * 専用の hosts.yml の本文を作り直す。それ以外の項目（通信設定など）と他のホストは引き継がない。
+ * 読み取れる項目が無ければ null（認証を引き継がない）。
+ * @param {string} source 個人の hosts.yml の本文
+ * @returns {string|null}
+ */
+function renderGhHosts(source) {
+  const unquote = (value) => value.trim().replace(/^(['"])(.*)\1$/, '$2');
+  let inHost = false;
+  let section = null;
+  let accountName = null;
+  let user = null;
+  let hostToken = null;
+  const accounts = new Map();
+  for (const line of String(source).split(/\r?\n/)) {
+    if (line.trim() === '' || line.trim().startsWith('#')) continue;
+    const match = /^( *)([^\s:][^:]*):(?: (.*))?$/.exec(line);
+    if (!match) continue;
+    const [, indent, key, rawValue = ''] = match;
+    const value = unquote(rawValue);
+    if (indent.length === 0) {
+      inHost = key === GH_HOST;
+      section = null;
+    } else if (inHost && indent.length === 4) {
+      section = key;
+      accountName = null;
+      if (key === 'user' && GH_USER_PATTERN.test(value)) user = value;
+      if (key === 'oauth_token' && GH_TOKEN_PATTERN.test(value)) hostToken = value;
+    } else if (inHost && section === 'users' && indent.length === 8) {
+      accountName = GH_USER_PATTERN.test(key) ? key : null;
+      if (accountName !== null && !accounts.has(accountName)) accounts.set(accountName, null);
+    } else if (inHost && section === 'users' && indent.length === 12 && accountName !== null) {
+      if (key === 'oauth_token' && GH_TOKEN_PATTERN.test(value)) accounts.set(accountName, value);
+    }
+  }
+  if (user === null && hostToken === null && accounts.size === 0) return null;
+  const lines = [`${GH_HOST}:`, '    git_protocol: https'];
+  if (accounts.size > 0) {
+    lines.push('    users:');
+    for (const [name, token] of accounts) {
+      lines.push(`        ${name}:`);
+      if (token !== null) lines.push(`            oauth_token: ${token}`);
+    }
+  }
+  if (user !== null) lines.push(`    user: ${user}`);
+  if (hostToken !== null) lines.push(`    oauth_token: ${hostToken}`);
+  lines.push('');
+  return lines.join('\n');
 }
 
 // preset 名 → 生成物。キーが API で選べる preset の正（claudeModel.js の許可リストと一致させる。
@@ -239,16 +316,14 @@ function ensureDirectory(fsImpl, dirPath) {
 }
 
 /**
- * 作った（または既にある）信頼境界のフォルダを用意し、リンクを解決した実パスと検証結果を返す。
- * 末端がリンクなら拒否する。祖先を含む全階層の実体・所有者・他人の書き込み不可を検証する。
- * @returns {{realPath: string, chain: Array<{path: string, dev: number, ino: number}>}}
+ * 信頼境界のフォルダを用意し、リンクを解決した実パスと検証結果を返す。
+ * 元の絶対パスを根から 1 階層ずつ検証し（リンクは向き先まで）、create なら無い階層を 1 段ずつ作る。
+ * @returns {{realPath: string, chain: Array<{path: string, dev: number, ino: number, link?: string}>}}
  */
 function prepareTrustedDirectory(fsImpl, dirPath, uid, { create }) {
-  if (create) fsImpl.mkdirSync(dirPath, { recursive: true });
-  if (fsImpl.lstatSync(dirPath).isSymbolicLink()) throw new PolicyError('policy directory is not a plain directory');
-  const realPath = fsImpl.realpathSync(dirPath);
+  const { realPath, chain } = resolveTrustedPath(fsImpl, dirPath, { uid, finalKind: 'directory', createMissing: create, rejectFinalLink: true });
   if (!isSafeAbsolutePath(realPath)) throw new PolicyError('unsafe directory path');
-  return { realPath, chain: verifyTrustedChain(fsImpl, realPath, { uid }) };
+  return { realPath, chain };
 }
 
 /**
@@ -274,42 +349,64 @@ function verifyFile(fsImpl, filePath, expectedContent, uid, mode = 0o600) {
 }
 
 /**
- * 個人の auth.json（ログイン状態の共有元）を解決する。無ければ null（共有しない）。
- * 通常ファイル・自分の所有でなければ拒否する。リンクの場合は最終的な実体のパスを返す。
- * 実体までの全階層は、実体・所有者・他人の書き込み不可を検証する。
+ * 個人の認証ファイルを解決する。無ければ null（共有しない）。
+ * 元のパスを根から 1 階層ずつ（リンクは向き先まで）検証し、実体は通常ファイル・自分の所有であることを求める。
+ * @param {object} fsImpl fs 互換
+ * @param {string} sourcePath 認証ファイルの絶対パス
+ * @param {number|undefined} uid
+ * @param {string} label エラーメッセージに使う名前
  * @returns {{target: string, chain: Array<object>}|null}
  */
-function resolveAuthSource(fsImpl, personalCodexHome, uid) {
-  const sourcePath = path.join(personalCodexHome, 'auth.json');
+function resolveAuthFile(fsImpl, sourcePath, uid, label) {
   try {
     fsImpl.lstatSync(sourcePath);
   } catch (error) {
-    if (error && error.code === 'ENOENT') return null;
+    if (error && (error.code === 'ENOENT' || error.code === 'ENOTDIR')) return null;
     throw error;
   }
-  let realPath;
+  let resolved;
   try {
-    realPath = fsImpl.realpathSync(sourcePath);
-  } catch (_error) {
-    throw new PolicyError('personal auth.json is a broken link');
+    resolved = resolveTrustedPath(fsImpl, sourcePath, { uid, finalKind: 'file' });
+  } catch (error) {
+    if (error instanceof TrustError || (error && error.code === 'ENOENT')) {
+      throw new PolicyError(`${label} could not be verified: ${error instanceof TrustError ? error.message : 'broken link'}`);
+    }
+    throw error;
   }
-  const stat = fsImpl.statSync(realPath);
-  if (!stat.isFile()) throw new PolicyError('personal auth.json is not a regular file');
-  if (uid !== undefined && stat.uid !== uid) throw new PolicyError('personal auth.json is not owned by the current user');
-  if (hasControlCharacter(realPath)) throw new PolicyError('personal auth.json path is unsafe');
-  return { target: realPath, chain: verifyTrustedChain(fsImpl, realPath, { uid, finalKind: 'file' }) };
+  if (uid !== undefined && fsImpl.statSync(resolved.realPath).uid !== uid) throw new PolicyError(`${label} is not owned by the current user`);
+  if (hasControlCharacter(resolved.realPath)) throw new PolicyError(`${label} path is unsafe`);
+  return { target: resolved.realPath, chain: resolved.chain };
+}
+
+/**
+ * 個人の gh の hosts.yml から、専用の hosts.yml の本文を作る。元ファイルが無い・認証項目が無ければ null。
+ * 元のパスの検証は resolveAuthFile と同じ。
+ * @returns {{content: string, chain: Array<object>}|null}
+ */
+function resolveGhHostsSource(fsImpl, personalGhConfigDir, uid) {
+  const source = resolveAuthFile(fsImpl, path.join(personalGhConfigDir, GH_HOSTS_FILE_NAME), uid, 'personal gh hosts.yml');
+  if (source === null) return null;
+  if (fsImpl.statSync(source.target).size > MAX_GH_HOSTS_BYTES) throw new PolicyError('personal gh hosts.yml is too large');
+  const content = renderGhHosts(fsImpl.readFileSync(source.target, 'utf8'));
+  return content === null ? null : { content, chain: source.chain };
 }
 
 // 専用フォルダの中身が、許可した生成物だけであることを検証する（余計なファイルがあれば拒否）。
 function verifyPolicyHome(fsImpl, home, expected, uid) {
   const names = fsImpl.readdirSync(home).sort();
-  const expectedNames = [...Object.keys(expected.files), 'rules', ...(expected.authTarget ? ['auth.json'] : [])].sort();
+  const expectedNames = [...Object.keys(expected.files), 'rules', GH_CONFIG_DIR_NAME, ...(expected.authTarget ? ['auth.json'] : [])].sort();
   if (JSON.stringify(names) !== JSON.stringify(expectedNames)) throw new PolicyError('policy home contains unexpected entries');
   verifyDirectory(fsImpl, path.join(home, 'rules'), { uid, enforceOwnerOnly: true });
   if (JSON.stringify(fsImpl.readdirSync(path.join(home, 'rules'))) !== JSON.stringify([RULES_FILE_NAME])) {
     throw new PolicyError('policy home contains unexpected entries');
   }
   verifyFile(fsImpl, path.join(home, 'rules', RULES_FILE_NAME), expected.rulesBody, uid);
+  const ghDir = path.join(home, GH_CONFIG_DIR_NAME);
+  verifyDirectory(fsImpl, ghDir, { uid, enforceOwnerOnly: true });
+  if (JSON.stringify(fsImpl.readdirSync(ghDir).sort()) !== JSON.stringify(Object.keys(expected.ghFiles).sort())) {
+    throw new PolicyError('policy home contains unexpected entries');
+  }
+  for (const [name, { content, mode }] of Object.entries(expected.ghFiles)) verifyFile(fsImpl, path.join(ghDir, name), content, uid, mode);
   for (const [name, { content, mode }] of Object.entries(expected.files)) verifyFile(fsImpl, path.join(home, name), content, uid, mode);
   if (expected.authTarget) {
     const authPath = path.join(home, 'auth.json');
@@ -337,7 +434,7 @@ function removeCreatedLaunchHome(fsImpl, home, identity, uid) {
 
 /**
  * 実行ファイルの探索先を決める。固定の場所を先に、次にアプリ自身の PATH の絶対パス（Volta など利用者がインストールした場所）。
- * ここで挙げるのは候補だけで、採用するかは resolveTrustedExecutable が所有者・権限で検証する。
+ * ここで挙げるのは候補だけで、採用するかは resolveTrustedExecutableDetailed が所有者・権限で検証する。
  * Codex 実行時の PATH は使わない（決めた絶対パスをランチャーへ固定する）。
  */
 function listToolSearchDirs(homeDir, pathEnv) {
@@ -367,7 +464,7 @@ function readGitIdentity(spawnSync, gitPath, homeDir) {
  * @param {string} params.handoffDir 会話整理の引き継ぎ先
  * @param {string} params.personalCodexHome 利用者個人の CODEX_HOME（認証情報の共有元。設定は読まない）
  * @param {string} params.cwd タスクの作業フォルダ（拘束するリポジトリを決める）
- * @param {string} params.homeDir 利用者のホーム（gh の認証情報の場所。実行環境の HOME に固定する）
+ * @param {string} params.homeDir 利用者のホーム（実行環境の HOME に固定する。gh の認証情報の共有元もここから決める）
  * @param {boolean} [params.dryRun] 専用 CODEX_HOME を作らず事前確認だけ行う
  * @param {object} [params.fs] テスト用の fs 差し替え
  * @param {number} [params.uid] テスト用の所有者 ID 差し替え
@@ -400,15 +497,21 @@ function prepareCodexTaskPolicyHome(params) {
 
     // 実行ファイルは固定の場所から、所有者・権限を検証したものだけを使う。
     const toolDirs = params.toolDirs || listToolSearchDirs(home.realPath, params.pathEnv === undefined ? process.env.PATH : params.pathEnv);
-    const nodePath = resolveTrustedExecutable(fsImpl, 'node', toolDirs, { uid });
-    const gitPath = resolveTrustedExecutable(fsImpl, 'git', toolDirs, { uid });
-    const ghPath = resolveTrustedExecutable(fsImpl, 'gh', toolDirs, { uid });
-    const envPath = resolveTrustedExecutable(fsImpl, path.basename(ENV_COMMAND_PATH), [path.dirname(ENV_COMMAND_PATH)], { uid });
-    if (nodePath === null || gitPath === null || envPath === null) throw new PolicyError('trusted node/git/env executable not found');
-    if (![nodePath, gitPath, envPath, ...(ghPath ? [ghPath] : [])].every(isSafeAbsolutePath)) throw new PolicyError('unsafe executable path');
+    const nodeTool = resolveTrustedExecutableDetailed(fsImpl, 'node', toolDirs, { uid });
+    const gitTool = resolveTrustedExecutableDetailed(fsImpl, 'git', toolDirs, { uid });
+    const ghTool = resolveTrustedExecutableDetailed(fsImpl, 'gh', toolDirs, { uid });
+    const envTool = resolveTrustedExecutableDetailed(fsImpl, path.basename(ENV_COMMAND_PATH), [path.dirname(ENV_COMMAND_PATH)], { uid });
+    if (nodeTool === null || gitTool === null || envTool === null) throw new PolicyError('trusted node/git/env executable not found');
+    const tools = [nodeTool, gitTool, envTool, ...(ghTool ? [ghTool] : [])];
+    if (!tools.every((tool) => isSafeAbsolutePath(tool.path))) throw new PolicyError('unsafe executable path');
+    const nodePath = nodeTool.path;
+    const gitPath = gitTool.path;
+    const envPath = envTool.path;
+    const ghPath = ghTool ? ghTool.path : null;
+    const toolChains = tools.flatMap((tool) => tool.chain);
 
     // 作業フォルダの Git リポジトリ（実ルート・GitHub の owner/repo）をここで確定し、以後は変更できない設定として保持する。
-    const trustedEnv = buildChildEnvironment({ git: gitPath, gh: ghPath, home: home.realPath, gitConfig: '/dev/null' });
+    const trustedEnv = buildChildEnvironment({ git: gitPath, gh: ghPath, home: home.realPath, gitConfig: '/dev/null', ghConfig: null });
     const runGit = (args, runCwd) => spawnSync(gitPath, [...FIXED_GIT_PREFIX, ...args], { cwd: runCwd, env: trustedEnv, encoding: 'utf8' });
     const repository = inspectRepository({ cwd, run: runGit, homeDir: home.realPath, fsImpl });
     if (!repository.ok) throw new PolicyError(repository.error.replace(/^task command rejected: /, ''));
@@ -422,12 +525,13 @@ function prepareCodexTaskPolicyHome(params) {
       verifyDirectory(fsImpl, dir, { uid, enforceOwnerOnly: true });
     }
     if (dryRun) {
-      assertChainUnchanged(fsImpl, [...handoff.chain, ...data.chain, ...home.chain]);
+      assertChainUnchanged(fsImpl, [...handoff.chain, ...data.chain, ...home.chain, ...toolChains]);
       return { ok: true, home: null, discard: () => false };
     }
 
     const identity = readGitIdentity(spawnSync, gitPath, home.realPath);
-    const auth = resolveAuthSource(fsImpl, personalCodexHome, uid);
+    const auth = resolveAuthFile(fsImpl, path.join(personalCodexHome, 'auth.json'), uid, 'personal auth.json');
+    const ghHosts = ghPath === null ? null : resolveGhHostsSource(fsImpl, path.join(homeDir, '.config', 'gh'), uid);
 
     // 起動ごとに新規のフォルダを作る。既にある名前（リンクや事前配置を含む）は使わず失敗させる。
     const launchName = (params.randomId || (() => crypto.randomBytes(12).toString('hex')))();
@@ -439,11 +543,14 @@ function prepareCodexTaskPolicyHome(params) {
     verifyDirectory(fsImpl, launchHome, { uid, enforceOwnerOnly: true });
     fsImpl.mkdirSync(path.join(launchHome, 'rules'), { mode: 0o700 });
     verifyDirectory(fsImpl, path.join(launchHome, 'rules'), { uid, enforceOwnerOnly: true });
+    const ghConfigDir = path.join(launchHome, GH_CONFIG_DIR_NAME);
+    fsImpl.mkdirSync(ghConfigDir, { mode: 0o700 });
+    verifyDirectory(fsImpl, ghConfigDir, { uid, enforceOwnerOnly: true });
 
     const opsScriptPath = path.join(launchHome, OPS_SCRIPT_NAME);
     const launcherPath = path.join(launchHome, LAUNCHER_NAME);
     const gitConfigPath = path.join(launchHome, GIT_CONFIG_NAME);
-    const binding = { root: repository.root, repo: repository.repo, git: gitPath, gh: ghPath, home: home.realPath, gitConfig: gitConfigPath };
+    const binding = { root: repository.root, repo: repository.repo, git: gitPath, gh: ghPath, home: home.realPath, gitConfig: gitConfigPath, ghConfig: ghConfigDir };
     const expected = {
       files: {
         'config.toml': { content: template.renderConfigToml(handoff.realPath), mode: 0o600 },
@@ -452,17 +559,22 @@ function prepareCodexTaskPolicyHome(params) {
         [OPS_SCRIPT_NAME]: { content: fsImpl.readFileSync(OPS_SOURCE_PATH, 'utf8'), mode: 0o400 },
         [LAUNCHER_NAME]: { content: template.renderLauncher({ envPath, nodePath, opsScriptPath, binding }), mode: 0o500 },
       },
+      ghFiles: {
+        [GH_CONFIG_FILE_NAME]: { content: renderGhConfig(), mode: 0o600 },
+        ...(ghHosts ? { [GH_HOSTS_FILE_NAME]: { content: ghHosts.content, mode: 0o600 } } : {}),
+      },
       rulesBody: template.renderRules(launcherPath),
       authTarget: auth ? auth.target : null,
     };
     for (const [name, { content, mode }] of Object.entries(expected.files)) writeNewFile(fsImpl, path.join(launchHome, name), content, mode);
     writeNewFile(fsImpl, path.join(launchHome, 'rules', RULES_FILE_NAME), expected.rulesBody);
+    for (const [name, { content, mode }] of Object.entries(expected.ghFiles)) writeNewFile(fsImpl, path.join(ghConfigDir, name), content, mode);
     // ログイン状態だけは個人の auth.json の実体へのリンクで共有する（個人の設定ファイルは共有しない）。
     if (expected.authTarget) fsImpl.symlinkSync(expected.authTarget, path.join(launchHome, 'auth.json'));
 
     // 書き込み後に読み戻し、中身が許可した生成物だけであること、検証した信頼境界が差し替えられていないことを確認してから返す。
     verifyPolicyHome(fsImpl, launchHome, expected, uid);
-    assertChainUnchanged(fsImpl, [...handoff.chain, ...data.chain, ...home.chain, ...(auth ? auth.chain : [])]);
+    assertChainUnchanged(fsImpl, [...handoff.chain, ...data.chain, ...home.chain, ...toolChains, ...(auth ? auth.chain : []), ...(ghHosts ? ghHosts.chain : [])]);
     const discardTarget = created;
     return { ok: true, home: launchHome, discard: () => removeCreatedLaunchHome(fsImpl, discardTarget.home, discardTarget, uid) };
   } catch (error) {

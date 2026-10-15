@@ -328,70 +328,122 @@ function hasUntrustedWrite(stat, { isAncestor }) {
 }
 
 /**
- * 絶対パスの根から末端までの各階層について、実体（リンクでない）・信頼できる所有者・他人が書き込めない権限を検証する。
- * 検証後にパスの途中を差し替えられないことを保証するための確認で、結果の識別子（dev/ino）は後から再照合できる。
- * @param {object} fsImpl fs 互換
- * @param {string} targetPath 絶対パス（シンボリックリンクを含まない実パス）
- * @param {{uid?: number, finalKind?: 'directory'|'file'|'any'}} [options]
- * @returns {Array<{path: string, dev: number, ino: number}>}
+ * 検証結果（resolveTrustedPath が返す chain）と、現在の同じパスが同一であることを再確認する。
+ * リンクの階層は向き先の文字列と識別子、それ以外はリンクでないことと識別子（dev/ino）を照合する。
  */
-function verifyTrustedChain(fsImpl, targetPath, options = {}) {
-  const { finalKind = 'directory' } = options;
-  const uid = currentUid(options);
-  const parts = path.resolve(targetPath).split(path.sep).filter(Boolean);
-  const snapshot = [];
-  let current = path.parse(path.resolve(targetPath)).root;
-  for (let index = -1; index < parts.length; index += 1) {
-    if (index >= 0) current = path.join(current, parts[index]);
-    const isFinal = index === parts.length - 1;
-    const stat = fsImpl.lstatSync(current);
-    if (stat.isSymbolicLink()) throw new TrustError(`path contains a symbolic link: ${current}`);
-    const mustBeDirectory = !isFinal || finalKind === 'directory';
-    if (mustBeDirectory && !stat.isDirectory()) throw new TrustError(`path is not a directory: ${current}`);
-    if (isFinal && finalKind === 'file' && !stat.isFile()) throw new TrustError(`path is not a regular file: ${current}`);
-    if (!isTrustedOwner(stat, uid)) throw new TrustError(`path is not owned by the current user or root: ${current}`);
-    if (hasUntrustedWrite(stat, { isAncestor: !isFinal })) throw new TrustError(`path is writable by other users: ${current}`);
-    snapshot.push({ path: current, dev: stat.dev, ino: stat.ino });
-  }
-  return snapshot;
-}
-
-/** verifyTrustedChain の結果と、現在の同じパスが同一（dev/ino が不変）であることを再確認する。 */
 function assertChainUnchanged(fsImpl, snapshot) {
   for (const entry of snapshot) {
     const stat = fsImpl.lstatSync(entry.path);
-    if (stat.isSymbolicLink() || stat.dev !== entry.dev || stat.ino !== entry.ino) {
-      throw new TrustError(`path changed after it was verified: ${entry.path}`);
-    }
+    const changed = stat.dev !== entry.dev || stat.ino !== entry.ino
+      || (entry.link === undefined ? stat.isSymbolicLink() : !stat.isSymbolicLink() || fsImpl.readlinkSync(entry.path) !== entry.link);
+    if (changed) throw new TrustError(`path changed after it was verified: ${entry.path}`);
   }
 }
 
 class TrustError extends Error {}
 
 const TOOL_NAME_PATTERN = /^[a-z][a-z0-9-]*$/;
+const MAX_LINK_HOPS = 16;
 
 /**
- * 固定の探索先から、所有者・権限を検証済みの実行ファイルの絶対パスを 1 つ決める。環境変数 PATH は使わない。
- * 候補ごとに「置かれたフォルダは実体で信頼できる」「実行ファイル（リンクなら実体）は通常ファイルで他人が書けない」を検証し、
- * 通らない候補は飛ばす。リンクは実体まで検証したうえで、ツールが argv[0] で挙動を変えうるためリンク側のパスを返す。
- * @returns {string|null} 見つからなければ null
+ * 絶対パスを根から 1 階層ずつ辿り、通る全ての階層（フォルダ・リンク・末端）を検証して実パスを返す。
+ * リンクは「自分か root の所有であること」を確認して向き先を 1 段ずつ解決し、向き先の階層も同じ検証に通す。
+ * リンクを置く親フォルダは他人が書き込めないこと（リンクを差し替えられないこと）を、通常のフォルダと同じ規則で確認する。
+ * 検証を通らない階層が 1 つでもあれば TrustError。実行・読み込みに使うパスの途中に、未検証のリンクは残らない。
+ * rejectFinalLink なら、末端そのものがリンクのときは拒否する（フォルダの実体を求める用途。祖先のリンクは検証のうえ許す）。
+ * createMissing なら、存在しない階層を親の検証後に 1 段ずつ 0700 で作る（再帰作成はしない）。
+ * @param {object} fsImpl fs 互換
+ * @param {string} inputPath 絶対パス（リンクを含んでよい）
+ * @param {{uid?: number, finalKind?: 'directory'|'file'|'any', createMissing?: boolean, rejectFinalLink?: boolean}} [options]
+ * @returns {{realPath: string, chain: Array<{path: string, dev: number, ino: number, link?: string}>}}
  */
-function resolveTrustedExecutable(fsImpl, name, searchDirs, options = {}) {
+function resolveTrustedPath(fsImpl, inputPath, options = {}) {
+  const { finalKind = 'directory', createMissing = false, rejectFinalLink = false } = options;
+  const uid = currentUid(options);
+  if (typeof inputPath !== 'string' || !path.isAbsolute(inputPath)) throw new TrustError('path is not absolute');
+  const root = path.parse(inputPath).root;
+  const snapshot = [];
+  const checkDirectory = (dirPath, stat, isAncestor) => {
+    if (!stat.isDirectory()) throw new TrustError(`path is not a directory: ${dirPath}`);
+    if (!isTrustedOwner(stat, uid)) throw new TrustError(`path is not owned by the current user or root: ${dirPath}`);
+    if (hasUntrustedWrite(stat, { isAncestor })) throw new TrustError(`path is writable by other users: ${dirPath}`);
+  };
+  const rootStat = fsImpl.lstatSync(root);
+  checkDirectory(root, rootStat, true);
+  snapshot.push({ path: root, dev: rootStat.dev, ino: rootStat.ino });
+
+  let current = root;
+  let pending = inputPath.slice(root.length).split(path.sep).filter(Boolean);
+  let hops = 0;
+  while (pending.length > 0) {
+    const name = pending.shift();
+    if (name === '.') continue;
+    // current は検証済みの実フォルダだけなので、'..' は検証済みの親へ戻るだけになる。
+    if (name === '..') {
+      current = path.dirname(current);
+      continue;
+    }
+    const next = path.join(current, name);
+    let stat;
+    try {
+      stat = fsImpl.lstatSync(next);
+    } catch (error) {
+      if (!createMissing || !error || error.code !== 'ENOENT') throw error;
+      fsImpl.mkdirSync(next, { mode: 0o700 });
+      stat = fsImpl.lstatSync(next);
+    }
+    if (stat.isSymbolicLink()) {
+      if (rejectFinalLink && pending.length === 0) throw new TrustError(`path is a symbolic link: ${next}`);
+      hops += 1;
+      if (hops > MAX_LINK_HOPS) throw new TrustError(`too many symbolic links: ${next}`);
+      if (!isTrustedOwner(stat, uid)) throw new TrustError(`symbolic link is not owned by the current user or root: ${next}`);
+      const target = fsImpl.readlinkSync(next);
+      if (typeof target !== 'string' || target === '' || /[\x00]/.test(target)) throw new TrustError(`symbolic link target is invalid: ${next}`);
+      snapshot.push({ path: next, dev: stat.dev, ino: stat.ino, link: target });
+      if (path.isAbsolute(target)) current = root;
+      pending = [...target.split(path.sep).filter(Boolean), ...pending];
+      continue;
+    }
+    const isFinal = pending.length === 0;
+    if (!isFinal || finalKind === 'directory') {
+      checkDirectory(next, stat, !isFinal);
+    } else {
+      if (finalKind === 'file' && !stat.isFile()) throw new TrustError(`path is not a regular file: ${next}`);
+      if (!isTrustedOwner(stat, uid)) throw new TrustError(`path is not owned by the current user or root: ${next}`);
+      if (hasUntrustedWrite(stat, { isAncestor: false })) throw new TrustError(`path is writable by other users: ${next}`);
+    }
+    snapshot.push({ path: next, dev: stat.dev, ino: stat.ino });
+    current = next;
+  }
+  return { realPath: current, chain: snapshot };
+}
+
+/**
+ * 固定の探索先から、所有者・権限を検証済みの実行ファイルを 1 つ決める。環境変数 PATH は使わない。
+ * 候補ごとに、候補のパスを根から 1 階層ずつ（リンクは向き先まで 1 段ずつ）検証する（resolveTrustedPath）。
+ * 通らない候補は飛ばす。ツールが argv[0] で挙動を変えうるため返すのは候補のパスだが、
+ * そのパスの途中にある全てのリンク・フォルダが検証済みで、検証結果（chain）は後から同一性を再確認できる。
+ * @returns {{path: string, chain: Array<object>}|null} 見つからなければ null
+ */
+function resolveTrustedExecutableDetailed(fsImpl, name, searchDirs, options = {}) {
   if (!TOOL_NAME_PATTERN.test(name)) return null;
   for (const dir of searchDirs) {
     const candidate = path.join(dir, name);
     try {
-      verifyTrustedChain(fsImpl, dir, options);
-      const realPath = fsImpl.realpathSync(candidate);
-      const realStat = fsImpl.statSync(realPath);
-      if (!realStat.isFile() || (realStat.mode & 0o111) === 0) continue;
-      verifyTrustedChain(fsImpl, realPath, { ...options, finalKind: 'file' });
-      return candidate;
+      const { realPath, chain } = resolveTrustedPath(fsImpl, candidate, { ...options, finalKind: 'file' });
+      if ((fsImpl.statSync(realPath).mode & 0o111) === 0) continue;
+      return { path: candidate, chain };
     } catch (_error) {
       // 候補が無い・信頼できない場合は次へ。
     }
   }
   return null;
+}
+
+/** resolveTrustedExecutableDetailed のパスだけ版。見つからなければ null。 */
+function resolveTrustedExecutable(fsImpl, name, searchDirs, options = {}) {
+  const resolved = resolveTrustedExecutableDetailed(fsImpl, name, searchDirs, options);
+  return resolved === null ? null : resolved.path;
 }
 
 // ─── リポジトリの拘束 ───────────────────────────────────────────────────────
@@ -490,7 +542,7 @@ function isSafeBindingPath(value) {
 /**
  * ランチャーが固定した値（環境変数 VK_TASK_*）を読み、拘束の設定として検証する。1 つでも不正なら null。
  * @param {Record<string, string|undefined>} env
- * @returns {{root: string, repo: string|null, git: string, gh: string|null, home: string, gitConfig: string}|null}
+ * @returns {{root: string, repo: string|null, git: string, gh: string|null, home: string, gitConfig: string, ghConfig: string|null}|null}
  */
 function readBinding(env) {
   const root = env.VK_TASK_ROOT;
@@ -498,27 +550,34 @@ function readBinding(env) {
   const gh = env.VK_TASK_GH || null;
   const home = env.VK_TASK_HOME;
   const gitConfig = env.VK_TASK_GITCONFIG;
+  const ghConfig = env.VK_TASK_GHCONFIG || null;
   const repo = env.VK_TASK_REPO || null;
   if (![root, git, home, gitConfig].every(isSafeBindingPath)) return null;
   if (gh !== null && !isSafeBindingPath(gh)) return null;
+  // gh を使えるときは、ランチャーが生成した専用の設定フォルダが必須（個人の gh 設定は読まない）。
+  if (gh !== null && !isSafeBindingPath(ghConfig)) return null;
+  if (ghConfig !== null && !isSafeBindingPath(ghConfig)) return null;
   if (repo !== null && !GITHUB_REPO_PATTERN.test(repo)) return null;
-  return { root, repo, git, gh, home, gitConfig };
+  return { root, repo, git, gh, home, gitConfig, ghConfig };
 }
 
 /**
  * git / gh の子プロセスに渡す環境変数を、許可リストで一から組み立てる。親の環境は一切引き継がない。
- * HOME・設定ディレクトリは信頼値に固定し、Git の system / global 設定は使わない
+ * HOME は信頼値に固定し、Git の system / global 設定は使わない
  * （global の代わりに、ランチャーが生成した author 情報だけの設定ファイルを指す）。
- * @param {{git: string, gh: string|null, home: string, gitConfig: string}} binding
+ * gh の設定は、個人の ~/.config/gh ではなくランチャーが生成した専用フォルダ（通信設定を持たず、認証だけを引き継いだもの）を指す。
+ * @param {{git: string, gh: string|null, home: string, gitConfig: string, ghConfig: string|null}} binding
  * @returns {Record<string, string>}
  */
 function buildChildEnvironment(binding) {
   const toolDirs = [path.dirname(binding.git), ...(binding.gh ? [path.dirname(binding.gh)] : []), '/usr/bin', '/bin'];
+  // gh の設定フォルダが無いとき（git だけの実行）も、個人の ~/.config を指さないよう XDG は専用の場所へ向ける。
+  const ghConfigDir = binding.ghConfig || path.join(path.dirname(binding.gitConfig), 'gh');
   return {
     PATH: [...new Set(toolDirs)].join(':'),
     HOME: binding.home,
-    XDG_CONFIG_HOME: path.join(binding.home, '.config'),
-    GH_CONFIG_DIR: path.join(binding.home, '.config', 'gh'),
+    XDG_CONFIG_HOME: path.dirname(ghConfigDir),
+    GH_CONFIG_DIR: ghConfigDir,
     GIT_CONFIG_GLOBAL: binding.gitConfig,
     GIT_CONFIG_SYSTEM: '/dev/null',
     GIT_CONFIG_NOSYSTEM: '1',
@@ -571,9 +630,10 @@ function runTaskCommand(argv, deps = {}) {
   try {
     for (const tool of [binding.git, ...(parsed.bin === 'gh' ? [binding.gh] : [])]) {
       if (tool === null) return reject('task command rejected: gh is not available');
-      verifyTrustedChain(fsImpl, path.dirname(tool), trustOptions);
-      verifyTrustedChain(fsImpl, fsImpl.realpathSync(tool), { ...trustOptions, finalKind: 'file' });
+      resolveTrustedPath(fsImpl, tool, { ...trustOptions, finalKind: 'file' });
     }
+    // gh の専用設定フォルダ（認証だけを引き継いだもの）も、実体・所有者・他人の書き込み不可を確認する。
+    if (parsed.bin === 'gh') resolveTrustedPath(fsImpl, binding.ghConfig, { ...trustOptions, rejectFinalLink: true });
   } catch (error) {
     return reject(`task command rejected: ${error instanceof TrustError ? error.message : 'executable could not be verified'}`);
   }
@@ -605,9 +665,10 @@ module.exports = {
   inspectRepository,
   inspectGitConfigListing,
   parseGitHubRepo,
-  verifyTrustedChain,
   assertChainUnchanged,
+  resolveTrustedPath,
   resolveTrustedExecutable,
+  resolveTrustedExecutableDetailed,
   TrustError,
   FIXED_GIT_PREFIX,
 };

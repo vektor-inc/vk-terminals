@@ -65,6 +65,7 @@ const {
 } = require('./renderer/claudeModel');
 // 自動処理用 Codex のタスク用ポリシー（専用 CODEX_HOME の生成。issue #428）。
 const { resolveCodexTaskPolicyLaunchOptions } = require('./utils/codexTaskPolicy');
+const { scheduleLaunchCommand } = require('./utils/delayedLaunch');
 // 最初のペインで起動する AI エンジン・モデルの設定解決（issue #419）と、
 // ペインのシェルへ渡す環境変数（Volta の bin を PATH へ補う）の組み立て。
 const { resolveInitialPaneLaunch } = require('./utils/initialPaneLaunch');
@@ -2171,11 +2172,16 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
   //
   // Codex でも専用の許可リストで再検証し、正常値だけを --model として渡す。
   if (launchCommand !== null) {
-    setTimeout(() => {
-      if (ptys.has(id)) {
-        ptyProcess.write(`${launchCommand}\r`);
-      }
-    }, 200);
+    // 待っている間に PTY が消えた・書き込みが例外になった場合は、使われない専用 CODEX_HOME を回収する。
+    scheduleLaunchCommand({
+      ptys,
+      id,
+      ptyProcess,
+      command: launchCommand,
+      discard: discardLaunchHome,
+      delayMs: 200,
+      log: (message) => console.error(`${LOG_PREFIX} ${message}`),
+    });
   }
 
   // engine（resolvedEngine）も返す（issue #394）。renderer 側がこのペインの

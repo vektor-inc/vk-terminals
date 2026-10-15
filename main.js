@@ -63,6 +63,8 @@ const {
   buildEngineAwareLaunchCommand,
   validateCodexLaunchOptions,
 } = require('./renderer/claudeModel');
+// 自動処理用 Codex のタスク用ポリシー（専用 CODEX_HOME の生成。issue #428）。
+const { resolveCodexTaskPolicyLaunchOptions } = require('./utils/codexTaskPolicy');
 // 最初のペインで起動する AI エンジン・モデルの設定解決（issue #419）と、
 // ペインのシェルへ渡す環境変数（Volta の bin を PATH へ補う）の組み立て。
 const { resolveInitialPaneLaunch } = require('./utils/initialPaneLaunch');
@@ -178,6 +180,20 @@ let nextClosePaneRequestId = 1;
 // ─── Terminal state & HTTP API ───────────────────────────────────────────────
 const DATA_DIR = path.join(os.homedir(), '.vk-terminals');
 const STATE_FILE = path.join(DATA_DIR, 'states.json');
+// 自動処理用 Codex に許す唯一の追加書き込み先（会話整理の引き継ぎ先。issue #428）。
+const CODEX_TASK_POLICY_HANDOFF_DIR = path.join(os.homedir(), '.claude', 'handoff');
+
+// Codex の起動オプションを検証し、タスク用ポリシーがあれば専用 CODEX_HOME を用意する。
+// 新規ペイン作成（HTTP 受け口・terminal:create）と再起動（restart-agent）が全てここを通る。
+// ok: false のときは Codex を起動してはならない（承認方針だけを付けた起動にもしない）。
+function resolveCodexLaunchOptions(engine, options) {
+  return resolveCodexTaskPolicyLaunchOptions(engine, options, {
+    validateCodexLaunchOptions,
+    dataDir: DATA_DIR,
+    handoffDir: CODEX_TASK_POLICY_HANDOFF_DIR,
+    personalCodexHome: process.env.CODEX_HOME || path.join(os.homedir(), '.codex'),
+  });
+}
 const LOG_PREFIX = '[vk-terminals]';
 // Web Push（issue #396）: VAPID 鍵・購読情報（スマートフォンごとの通知の宛先）の保存先。
 // apiToken（config.json の apiToken）と同様に DATA_DIR（~/.vk-terminals/）配下に置くが、
@@ -2115,16 +2131,24 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
   // 書き込む＝既存の呼び出し元は非影響（issue #367）。
   //
   // Codex でも専用の許可リストで再検証し、正常値だけを --model として渡す。
-  const { command: launchCommand, modelIgnored } = buildEngineAwareLaunchCommand(resolvedEngine, options.model, options);
-  if (modelIgnored) {
-    console.warn(`${LOG_PREFIX} model is ignored for engine '${resolvedEngine}'`);
-  }
-  if (!noClaude) {
-    setTimeout(() => {
-      if (ptys.has(id)) {
-        ptyProcess.write(`${launchCommand}\r`);
-      }
-    }, 200);
+  //
+  // タスク用ポリシー（issue #428）は専用 CODEX_HOME を用意できたときだけ適用する。用意できない
+  // ときは Codex を起動せず、ログに理由を残して止める（個人設定のまま起動しない）。
+  const launchResolution = resolveCodexLaunchOptions(resolvedEngine, options);
+  if (!launchResolution.ok) {
+    console.error(`${LOG_PREFIX} codex launch refused (terminal ${id}): ${launchResolution.error}`);
+  } else {
+    const { command: launchCommand, modelIgnored } = buildEngineAwareLaunchCommand(resolvedEngine, options.model, launchResolution.options);
+    if (modelIgnored) {
+      console.warn(`${LOG_PREFIX} model is ignored for engine '${resolvedEngine}'`);
+    }
+    if (!noClaude) {
+      setTimeout(() => {
+        if (ptys.has(id)) {
+          ptyProcess.write(`${launchCommand}\r`);
+        }
+      }, 200);
+    }
   }
 
   // engine（resolvedEngine）も返す（issue #394）。renderer 側がこのペインの
@@ -2284,7 +2308,7 @@ async function listProcessesForRestart() {
   return stdout;
 }
 
-async function restartAgentInTerminal(ptyProcess, request) {
+async function restartAgentInTerminal(ptyProcess, request, launchOptions) {
   const stopped = await stopAgentChildren(ptyProcess.pid, {
     platform: process.platform,
     listProcesses: listProcessesForRestart,
@@ -2337,7 +2361,7 @@ async function restartAgentInTerminal(ptyProcess, request) {
   if (request.cwd !== undefined) {
     ptyProcess.write(`cd -- ${quoteShellArgument(request.cwd)}\r`);
   }
-  const { command, modelIgnored } = buildEngineAwareLaunchCommand(request.engine, request.model, request);
+  const { command, modelIgnored } = buildEngineAwareLaunchCommand(request.engine, request.model, launchOptions);
   if (modelIgnored) {
     console.warn(`${LOG_PREFIX} model is ignored for engine '${request.engine}'`);
   }
@@ -3184,6 +3208,7 @@ function startHttpApi() {
         let requestedModel;
         let requestedApprovalPolicy;
         let requestedSandboxMode;
+        let requestedCodexPolicy;
         if (body.length > 0) {
           try {
             const parsed = JSON.parse(body);
@@ -3237,9 +3262,24 @@ function startHttpApi() {
             }
             requestedApprovalPolicy = codexOptions.approvalPolicy;
             requestedSandboxMode = codexOptions.sandboxMode;
+            requestedCodexPolicy = codexOptions.codexPolicy;
           } catch {
             res.writeHead(400, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: 'invalid JSON' }));
+            return;
+          }
+        }
+        // タスク用ポリシーを固定できないときは、ペインを作らず理由を返して止める
+        // （承認方針だけを付けた Codex を個人設定のまま起動しない。issue #428）。
+        if (requestedCodexPolicy !== undefined) {
+          const policyCheck = resolveCodexLaunchOptions('codex', {
+            approvalPolicy: requestedApprovalPolicy,
+            sandboxMode: requestedSandboxMode,
+            codexPolicy: requestedCodexPolicy,
+          });
+          if (!policyCheck.ok) {
+            res.writeHead(503, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: policyCheck.error }));
             return;
           }
         }
@@ -3270,6 +3310,7 @@ function startHttpApi() {
         if (typeof requestedModel === 'string') payload.model = requestedModel;
         if (typeof requestedApprovalPolicy === 'string') payload.approvalPolicy = requestedApprovalPolicy;
         if (typeof requestedSandboxMode === 'string') payload.sandboxMode = requestedSandboxMode;
+        if (requestedCodexPolicy !== undefined) payload.codexPolicy = requestedCodexPolicy;
         win.webContents.send('terminal:request-new-pane', payload);
       });
       return;
@@ -3312,6 +3353,15 @@ function startHttpApi() {
           if (request.cwd !== undefined && !(await isExistingDirectory(request.cwd))) {
             res.writeHead(400, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: 'invalid cwd' }));
+            return;
+          }
+
+          // タスク用ポリシーを固定できないときは、実行中の AI を止める前に理由を返して終える
+          // （承認方針だけを付けた Codex を個人設定のまま再起動しない。issue #428）。
+          const launchResolution = resolveCodexLaunchOptions(request.engine, request);
+          if (!launchResolution.ok) {
+            res.writeHead(503, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: launchResolution.error }));
             return;
           }
 
@@ -3369,7 +3419,7 @@ function startHttpApi() {
             return;
           }
 
-          const operation = restartAgentInTerminal(ptyProcess, request);
+          const operation = restartAgentInTerminal(ptyProcess, request, launchResolution.options);
           restartAgentOperations.set(request.termId, operation);
           try {
             const stopped = await operation;

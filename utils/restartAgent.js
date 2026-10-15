@@ -95,6 +95,7 @@ function validateRestartAgentRequest(value, validators) {
     model: value.model,
     approvalPolicy: codexOptions.approvalPolicy,
     sandboxMode: codexOptions.sandboxMode,
+    codexPolicy: codexOptions.codexPolicy,
   };
 }
 

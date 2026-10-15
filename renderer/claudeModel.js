@@ -39,10 +39,34 @@
     return typeof value === 'string' && ALLOWED_CODEX_SANDBOX_MODES.includes(value);
   }
 
+  // タスク用ポリシー（issue #428）。API で選べるのは固定の preset 名だけで、設定キーも
+  // `preset` の 1 つに限る。ポリシーの中身（設定ファイル・許可コマンド）は
+  // utils/codexTaskPolicy.js の固定テンプレートで、API の入力値は一切入らない。
+  // 名前は utils/codexTaskPolicy.js の CODEX_TASK_POLICY_PRESETS のキーと一致させること
+  // （片方だけ変えると壊れる。tests/codexTaskPolicy.test.js が一致を検証している）。
+  const ALLOWED_CODEX_POLICY_KEYS = Object.freeze(['preset']);
+  const ALLOWED_CODEX_POLICY_PRESETS = Object.freeze(['orchestrated-task']);
+  // ポリシーの CODEX_HOME はアプリ（main.js）が生成した絶対パスだけを受け付け、
+  // シングルクォートと制御文字は拒否する（クォートの脱出を成立させない）。
+  const CODEX_POLICY_HOME_PATTERN = /^\/[^'\x00-\x1f\x7f]+$/;
+
+  function validateCodexPolicy(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return { ok: false, error: 'invalid codexPolicy' };
+    }
+    for (const key of Object.keys(value)) {
+      if (!ALLOWED_CODEX_POLICY_KEYS.includes(key)) return { ok: false, error: `unknown codexPolicy key: ${key}` };
+    }
+    if (typeof value.preset !== 'string' || !ALLOWED_CODEX_POLICY_PRESETS.includes(value.preset)) {
+      return { ok: false, error: 'invalid codexPolicy preset' };
+    }
+    return { ok: true, codexPolicy: { preset: value.preset } };
+  }
+
   function validateCodexLaunchOptions(engine, options = {}) {
     const approvalPolicy = options.approvalPolicy;
     const sandboxMode = options.sandboxMode;
-    const hasCodexOptions = approvalPolicy !== undefined || sandboxMode !== undefined;
+    const hasCodexOptions = approvalPolicy !== undefined || sandboxMode !== undefined || options.codexPolicy !== undefined;
     if (hasCodexOptions && engine !== 'codex') return { ok: false, error: 'Codex options require engine "codex"' };
     if (approvalPolicy !== undefined && !isValidCodexApprovalPolicy(approvalPolicy)) {
       return { ok: false, error: 'invalid approvalPolicy' };
@@ -50,7 +74,13 @@
     if (sandboxMode !== undefined && !isValidCodexSandboxMode(sandboxMode)) {
       return { ok: false, error: 'invalid sandboxMode' };
     }
-    return { ok: true, approvalPolicy, sandboxMode };
+    let codexPolicy;
+    if (options.codexPolicy !== undefined) {
+      const validatedPolicy = validateCodexPolicy(options.codexPolicy);
+      if (!validatedPolicy.ok) return validatedPolicy;
+      codexPolicy = validatedPolicy.codexPolicy;
+    }
+    return { ok: true, approvalPolicy, sandboxMode, codexPolicy };
   }
 
   // Claude と Codex は現時点で必要な文字種・上限が同じなので、許可リストの本体を共有する。
@@ -95,15 +125,34 @@
   // Codex も固定実行ファイル名と検証済み引数だけで組み立てる。共有 daemon の設定と
   // 衝突して起動が止まるのを防ぐため、すべての起動経路で `--no-daemon` を付ける。
   // 未指定・不正値は HTTP を通らない内部経路への最終防衛線として既定モデルへ倒す。
+  //
+  // タスク用ポリシー付き（options.codexPolicy）の場合は、main.js が生成した専用 CODEX_HOME
+  // （options.codexPolicyHome）を必須とし、その起動だけ CODEX_HOME を向ける。専用 CODEX_HOME が
+  // 無い・不正なときは承認方針だけを付けた起動にせず、例外で止める（呼び出し側は事前に
+  // resolveCodexTaskPolicyLaunchOptions で用意するため、通常ここには来ない最終防衛線）。
+  // sandboxMode 未指定でも workspace-write を明示し、新規作成と再起動で同じ実効ポリシーにする。
   function buildCodexLaunchCommand(model, options = {}) {
+    const validated = validateCodexLaunchOptions('codex', options);
     const parts = ['codex', '--no-daemon'];
     if (isValidCodexModel(model)) parts.push('--model', `'${model}'`);
-    const validated = validateCodexLaunchOptions('codex', options);
+    if (options.codexPolicy !== undefined && !validated.ok) {
+      throw new Error('invalid codex task policy');
+    }
+    if (validated.ok && validated.codexPolicy !== undefined) {
+      const home = options.codexPolicyHome;
+      if (typeof home !== 'string' || !CODEX_POLICY_HOME_PATTERN.test(home)) {
+        throw new Error('codex task policy requires a prepared policy home');
+      }
+      parts.unshift(`CODEX_HOME='${home}'`);
+    }
     if (validated.ok && validated.approvalPolicy !== undefined) {
       parts.push('--ask-for-approval', `'${validated.approvalPolicy}'`);
     }
-    if (validated.ok && validated.sandboxMode !== undefined) {
-      parts.push('--sandbox', `'${validated.sandboxMode}'`);
+    const sandboxMode = validated.ok && validated.sandboxMode === undefined && validated.codexPolicy !== undefined
+      ? 'workspace-write'
+      : validated.sandboxMode;
+    if (validated.ok && sandboxMode !== undefined) {
+      parts.push('--sandbox', `'${sandboxMode}'`);
     }
     return parts.join(' ');
   }
@@ -221,6 +270,9 @@
     ALLOWED_CODEX_SANDBOX_MODES,
     isValidCodexApprovalPolicy,
     isValidCodexSandboxMode,
+    ALLOWED_CODEX_POLICY_KEYS,
+    ALLOWED_CODEX_POLICY_PRESETS,
+    validateCodexPolicy,
     validateCodexLaunchOptions,
     ALLOWED_ENGINES,
     isValidEngine,

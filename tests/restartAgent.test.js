@@ -33,7 +33,7 @@ const validators = {
     if (value.sandboxMode !== undefined && !['read-only', 'workspace-write'].includes(value.sandboxMode)) {
       return { ok: false, error: 'invalid sandboxMode' };
     }
-    return { ok: true, approvalPolicy: value.approvalPolicy, sandboxMode: value.sandboxMode };
+    return { ok: true, approvalPolicy: value.approvalPolicy, sandboxMode: value.sandboxMode, codexPolicy: value.codexPolicy };
   },
 };
 
@@ -71,6 +71,7 @@ test('restart-agent 検証: 必須値を正規化し、engine 省略時は claud
     model: undefined,
     approvalPolicy: undefined,
     sandboxMode: undefined,
+    codexPolicy: undefined,
   });
   assert.deepEqual(validateRestartAgentRequest({
     termId: '2', expectedGeneration: 3, cwd: '/valid dir', engine: 'codex', model: 'gpt-5.6-sol',
@@ -84,6 +85,7 @@ test('restart-agent 検証: 必須値を正規化し、engine 省略時は claud
     model: 'gpt-5.6-sol',
     approvalPolicy: 'never',
     sandboxMode: 'workspace-write',
+    codexPolicy: undefined,
   });
 });
 

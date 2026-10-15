@@ -186,8 +186,10 @@ const CODEX_TASK_POLICY_HANDOFF_DIR = path.join(os.homedir(), '.claude', 'handof
 // Codex の起動オプションを検証し、タスク用ポリシーがあれば専用 CODEX_HOME を用意する。
 // 新規ペイン作成（HTTP 受け口・terminal:create）と再起動（restart-agent）が全てここを通る。
 // ok: false のときは Codex を起動してはならない（承認方針だけを付けた起動にもしない）。
-function resolveCodexLaunchOptions(engine, options) {
+// dryRun: true は専用 CODEX_HOME を作らず、固定できる状態かの事前確認だけを行う（HTTP 受け口用）。
+function resolveCodexLaunchOptions(engine, options, { dryRun = false } = {}) {
   return resolveCodexTaskPolicyLaunchOptions(engine, options, {
+    dryRun,
     validateCodexLaunchOptions,
     dataDir: DATA_DIR,
     handoffDir: CODEX_TASK_POLICY_HANDOFF_DIR,
@@ -1890,6 +1892,24 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
   // buildClaudeLaunchCommand のコメントと同じ考え方）。
   const resolvedEngine = isValidEngine(options.engine) ? options.engine : 'claude';
 
+  // 起動コマンドは PTY を作る前に確定させる（issue #428）。タスク用ポリシーの専用 CODEX_HOME を
+  // 用意できない・起動コマンドを組み立てられないときは、PTY を作らずここで例外にして、
+  // 呼び出し元（renderer → HTTP 応答）へ失敗として返す。Codex が起動していないペインを
+  // 成功として返さないため。素のシェルで開く（noClaude）場合は AI を起動しないので対象外。
+  let launchCommand = null;
+  if (!noClaude) {
+    const launchResolution = resolveCodexLaunchOptions(resolvedEngine, options);
+    if (!launchResolution.ok) {
+      console.error(`${LOG_PREFIX} codex launch refused: ${launchResolution.error}`);
+      throw new Error(launchResolution.error);
+    }
+    const built = buildEngineAwareLaunchCommand(resolvedEngine, options.model, launchResolution.options);
+    if (built.modelIgnored) {
+      console.warn(`${LOG_PREFIX} model is ignored for engine '${resolvedEngine}'`);
+    }
+    launchCommand = built.command;
+  }
+
   const ptyProcess = pty.spawn(shell, [], {
     name: 'xterm-256color',
     cols: 80,
@@ -2123,7 +2143,8 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
   ptys.set(id, ptyProcess);
   agentGenerations.initialize(id, !noClaude);
 
-  // 起動後に自動で AI エンジンを実行（素のターミナルモード時はスキップ）
+  // 起動後に自動で AI エンジンを実行（素のターミナルモード時はスキップ）。
+  // 起動コマンドは PTY を作る前に組み立て済み（launchCommand。issue #428）。
   // resolvedEngine が 'claude'（省略時含む）なら従来どおり options.model が指定されて
   // いれば --model を付けて起動する（issue #310）。HTTP 受け口でも検証済みだが、
   // ここでも buildEngineAwareLaunchCommand（内部で buildClaudeLaunchCommand）が
@@ -2131,24 +2152,12 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
   // 書き込む＝既存の呼び出し元は非影響（issue #367）。
   //
   // Codex でも専用の許可リストで再検証し、正常値だけを --model として渡す。
-  //
-  // タスク用ポリシー（issue #428）は専用 CODEX_HOME を用意できたときだけ適用する。用意できない
-  // ときは Codex を起動せず、ログに理由を残して止める（個人設定のまま起動しない）。
-  const launchResolution = resolveCodexLaunchOptions(resolvedEngine, options);
-  if (!launchResolution.ok) {
-    console.error(`${LOG_PREFIX} codex launch refused (terminal ${id}): ${launchResolution.error}`);
-  } else {
-    const { command: launchCommand, modelIgnored } = buildEngineAwareLaunchCommand(resolvedEngine, options.model, launchResolution.options);
-    if (modelIgnored) {
-      console.warn(`${LOG_PREFIX} model is ignored for engine '${resolvedEngine}'`);
-    }
-    if (!noClaude) {
-      setTimeout(() => {
-        if (ptys.has(id)) {
-          ptyProcess.write(`${launchCommand}\r`);
-        }
-      }, 200);
-    }
+  if (launchCommand !== null) {
+    setTimeout(() => {
+      if (ptys.has(id)) {
+        ptyProcess.write(`${launchCommand}\r`);
+      }
+    }, 200);
   }
 
   // engine（resolvedEngine）も返す（issue #394）。renderer 側がこのペインの
@@ -3276,7 +3285,7 @@ function startHttpApi() {
             approvalPolicy: requestedApprovalPolicy,
             sandboxMode: requestedSandboxMode,
             codexPolicy: requestedCodexPolicy,
-          });
+          }, { dryRun: true });
           if (!policyCheck.ok) {
             res.writeHead(503, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: policyCheck.error }));

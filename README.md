@@ -900,7 +900,7 @@ curl -s -X POST http://127.0.0.1:13847/api/new-pane \
   - `noClaude: true` と同時に指定した場合は AI を起動しないため、`model` は無視されます。
 - `approvalPolicy`：`engine: "codex"` のときだけ指定できる承認方針。`"untrusted"` / `"on-failure"` / `"on-request"` / `"never"` の許可値だけを受け付け、Codex の `--ask-for-approval` へ渡します。
 - `sandboxMode`：`engine: "codex"` のときだけ指定できるサンドボックス。`"read-only"` / `"workspace-write"` のみ許可し、Codex の `--sandbox` へ渡します。作業フォルダ外への書き込み制限を外す `"danger-full-access"` は受け付けません。
-- `codexPolicy`：`engine: "codex"` のときだけ指定できる、そのペインの Codex だけに適用するタスク用ポリシー（issue #428）。`{"preset": "orchestrated-task"}` の形で、設定キーは `preset` の 1 つ、値は固定の名前だけを受け付けます。未知のキー・未知の preset・オブジェクト以外は `400` で拒否され、**ペインは作成されません**。任意のコマンドライン引数・追加フォルダ・ネットワーク許可は指定できません。指定すると利用者個人の `~/.codex` の設定を読まない専用の設定で Codex が起動します。仕様と安全性の判断は [docs/codex-task-policy.md](docs/codex-task-policy.md) を参照してください。
+- `codexPolicy`：`engine: "codex"` のときだけ指定できる、そのペインの Codex だけに適用するタスク用ポリシー（issue #428）。`{"preset": "orchestrated-task"}` の形で、設定キーは `preset` の 1 つ、値は固定の名前だけを受け付けます。未知のキー・未知の preset・オブジェクト以外は `400` で拒否され、**ペインは作成されません**。任意のコマンドライン引数・追加フォルダ・ネットワーク許可は指定できません。指定すると利用者個人の `~/.codex` の設定を読まない、起動ごとに新規作成する専用の設定で Codex が起動します。仕様と安全性の判断は [docs/codex-task-policy.md](docs/codex-task-policy.md) を参照してください。
 
 `noClaude` / `engine` / `model` の優先順位（併用した場合にどれが効くか）:
 
@@ -919,7 +919,7 @@ curl -s -X POST http://127.0.0.1:13847/api/new-pane \
 - `model` が不正: `400 {"error": "invalid model"}`
 - 不正な JSON: `400 {"error": "invalid JSON"}`
 - ウィンドウが利用できない: `503 {"error": "window not available"}`
-- `codexPolicy` を固定できない（専用設定を作れない・検証できない）: `503 {"error": "codex task policy unavailable: <理由>"}`。ペインは作成されず、承認方針だけを付けた Codex も起動しません。
+- `codexPolicy` を固定できない（専用設定を作れない・検証できない）: `503 {"error": "codex task policy unavailable: <理由>"}`。ペインは作成されず、承認方針だけを付けた Codex も起動しません。事前確認の後でペイン作成側だけが失敗した場合も、PTY を作らずに `500` で理由を返します。
 - タイムアウト（15秒）: `504 {"error": "timeout waiting for new pane"}`
 - renderer 側でペイン作成に失敗（既存ペインなし／分割失敗など）: `500 {"error": "<renderer からのエラーメッセージ>"}`
 

@@ -375,8 +375,10 @@ test.describe.serial('POST /api/restart-agent によるペイン内 AI の再起
     const createdCalls = await waitForCallCount(fakeCodex.capturePath, baseCalls + 2);
     expect(createdCalls[baseCalls + 1]).toEqual(expectedArgs);
     const homes = await waitForCallCount(homesPath, baseCalls + 2);
-    expect(homes[baseCalls]).toMatch(/\.vk-terminals\/codex-task-policy\/orchestrated-task$/);
-    expect(homes[baseCalls + 1]).toBe(homes[baseCalls]);
+    // 専用 CODEX_HOME は起動のたびに新しく作られる（前回の内容を引き継がない）。
+    expect(homes[baseCalls]).toMatch(/\.vk-terminals\/codex-task-policy\/orchestrated-task\/[0-9a-f]{24}$/);
+    expect(homes[baseCalls + 1]).toMatch(/\.vk-terminals\/codex-task-policy\/orchestrated-task\/[0-9a-f]{24}$/);
+    expect(homes[baseCalls + 1]).not.toBe(homes[baseCalls]);
 
     // ポリシー無しで再起動し直すと、専用 CODEX_HOME は持ち越されない。
     const plain = await postJson(port, '/api/restart-agent', {

@@ -17,6 +17,8 @@
 //   - Git の system / global 設定は使わず、リポジトリ内の設定に外部コマンドを起動しうる項目があれば実行しない。
 //   - 操作の対象は起動時に確定したリポジトリ（実ルートと GitHub の owner/repo）に拘束する。実行のたびに一致を検証し、
 //     gh には検証済みの --repo を必ず付ける。
+//   - 通信する Git 操作（git push / prepare worktree の fetch）は origin の設定値を使わない。拘束した owner/repo から
+//     入口が組み立てた固定 URL と固定 refspec だけに送り、資格情報は検証済み gh の `auth git-credential` だけを使う（issue #440）。
 const nodeFs = require('fs');
 const path = require('path');
 const childProcess = require('child_process');
@@ -55,6 +57,12 @@ const FIXED_GIT_PREFIX = Object.freeze(['--no-pager', ...GIT_SAFETY_CONFIG.flatM
 
 // diff / show / log はユーザー指定の外部コマンド（diff.external・textconv）を呼べるため常に無効化する。
 const DIFF_SAFETY_FLAGS = Object.freeze(['--no-ext-diff', '--no-textconv']);
+
+// push 先・fetch 元の基点。ランチャーが固定する（本番は常に GitHub。テストだけが一時フォルダの bare リポジトリを指す）。
+const DEFAULT_REMOTE_BASE = 'https://github.com';
+// main / master への push・worktree 準備は作業ブランチとして使えない名前。
+const PROTECTED_BRANCH_NAMES = Object.freeze(['main', 'master', 'HEAD']);
+const WORKTREE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9-]{0,99}$/;
 
 function fail(error) {
   return { ok: false, error: `task command rejected: ${error}` };
@@ -289,6 +297,32 @@ function parseGhIssueCreate(tokens) {
   return { ok: true, args };
 }
 
+// push は `git push <ブランチ名>` だけ。フラグ・refspec・複数指定は受けない（送る内容は入口が refs/heads/<b>:refs/heads/<b> に固定する）。
+function parseGitPush(tokens) {
+  if (tokens.length !== 1) return fail('git push takes exactly one branch name');
+  const [branch] = tokens;
+  if (hasUnsafeCharacter(branch) || branch === '') return fail('invalid argument');
+  if (branch.startsWith('-')) return fail(`flag not allowed: ${JSON.stringify(branch)}`);
+  if (/[+:*?\[\\^~\s]/.test(branch)) return fail(`refspec not allowed: ${JSON.stringify(branch)}`);
+  if (!isSafeBranchName(branch)) return fail(`unsafe branch name: ${JSON.stringify(branch)}`);
+  if (PROTECTED_BRANCH_NAMES.includes(branch) || branch.startsWith('refs/')) return fail(`cannot push ${JSON.stringify(branch)}`);
+  return { ok: true, bin: 'git', operation: 'push', branch, needsGitHub: true, needsGh: true };
+}
+
+// 作業フォルダ準備は `prepare worktree <base> <issue番号> <ブランチ> <worktree名>` だけ（owner/repo は拘束済みなので引数に取らない）。
+function parsePrepareWorktree(tokens) {
+  if (tokens.length !== 4) return fail('usage: prepare worktree <base> <issue number> <branch> <worktree name>');
+  const [base, issue, branch, name] = tokens;
+  if (tokens.some(hasUnsafeCharacter)) return fail('invalid argument');
+  if (!isSafeBranchName(base) || base.startsWith('refs/')) return fail(`unsafe base: ${JSON.stringify(base)}`);
+  if (!DIGITS_PATTERN.test(issue) || Number(issue) === 0) return fail('invalid issue number');
+  if (!isSafeBranchName(branch) || branch.startsWith('refs/')) return fail(`unsafe branch name: ${JSON.stringify(branch)}`);
+  if (branch === base || PROTECTED_BRANCH_NAMES.includes(branch)) return fail('working branch cannot be the base or a protected name');
+  if (!branch.includes(`/${issue}-`)) return fail(`branch must look like <kind>/${issue}-...`);
+  if (!WORKTREE_NAME_PATTERN.test(name)) return fail('worktree name must be letters, digits and hyphens only');
+  return { ok: true, bin: 'git', operation: 'prepare-worktree', base, issue, branch, name, needsGitHub: true, needsGh: true };
+}
+
 function ghCommand(parts, args) {
   return { ok: true, bin: 'gh', args: [...parts, ...args], needsGitHub: true };
 }
@@ -323,6 +357,7 @@ function parseTaskCommand(argv) {
       }
       case 'add': return parseGitAdd(tokens);
       case 'commit': return parseGitCommit(tokens);
+      case 'push': return parseGitPush(tokens);
       default: return fail(`git ${subcommand === undefined ? '' : JSON.stringify(subcommand)} is not allowed`);
     }
   }
@@ -358,7 +393,12 @@ function parseTaskCommand(argv) {
     }
     return fail(`gh ${[group, action].filter((part) => part !== undefined).map((part) => JSON.stringify(part)).join(' ')} is not allowed`);
   }
-  return fail('only git and gh are allowed');
+  if (tool === 'prepare') {
+    const [target, ...tokens] = rest;
+    if (target === 'worktree') return parsePrepareWorktree(tokens);
+    return fail(`prepare ${target === undefined ? '' : JSON.stringify(target)} is not allowed`);
+  }
+  return fail('only git, gh and prepare are allowed');
 }
 
 // ─── 信頼境界の検証（所有者・権限・リンク） ─────────────────────────────
@@ -535,6 +575,16 @@ const UNSAFE_GIT_CONFIG_PATTERNS = Object.freeze([
   /^remote\..*\.(promisor|partialclonefilter|vcs)$/,
 ]);
 
+// 通信する操作（push・prepare worktree の fetch）だけが追加で拒否する項目。接続先の書き換え（url.*.insteadOf）や、
+// 通信の経路・認証ヘッダー・証明書の検証を変える http.*（プロキシ・extraHeader・sslVerify など）は、資格情報の送り先をすり替えうる。
+const NETWORK_UNSAFE_GIT_CONFIG_PATTERNS = Object.freeze([
+  /^url\..*\.(insteadof|pushinsteadof)$/,
+  /^http\./,
+  /^remote\..*\.(proxy|receivepack|uploadpack|pushurl)$/,
+  /^core\.(gitproxy|sshcommand)$/,
+  /^push\.(gpgsign|recursesubmodules)$/,
+]);
+
 // GIT_NO_LAZY_FETCH（不足オブジェクトの自動取得の無効化）が使える最小の Git バージョン。
 const MIN_GIT_VERSION = Object.freeze([2, 46]);
 
@@ -550,14 +600,9 @@ function isSupportedGitVersion(output) {
   return major > MIN_GIT_VERSION[0] || (major === MIN_GIT_VERSION[0] && minor >= MIN_GIT_VERSION[1]);
 }
 
-/**
- * `git config --list --null` の出力から、外部コマンドを起動しうる設定項目を探す。
- * @param {string} output
- * @returns {{unsafeKey: string|null, originUrl: string|null}} 見つかった危険なキー（無ければ null）と、origin の生の URL
- */
-function inspectGitConfigListing(output) {
-  let unsafeKey = null;
-  let originUrl = null;
+// `git config --list --null` の 1 件ずつを、キーの正規化（セクション名と変数名だけ小文字化。サブセクションは大文字小文字を保つ）つきで返す。
+function listConfigRecords(output) {
+  const records = [];
   for (const record of String(output).split('\0')) {
     if (record === '') continue;
     const newline = record.indexOf('\n');
@@ -567,6 +612,32 @@ function inspectGitConfigListing(output) {
     const key = parts.length > 2
       ? `${parts[0].toLowerCase()}.${parts.slice(1, -1).join('.')}.${parts[parts.length - 1].toLowerCase()}`
       : rawKey.toLowerCase();
+    records.push({ rawKey, key, value });
+  }
+  return records;
+}
+
+/**
+ * 通信する操作の前に、接続先や経路を書き換えうる設定項目を探す。見つかった最初のキー（無ければ null）。
+ * @param {string} output `git config --list --null` の出力
+ * @returns {string|null}
+ */
+function findNetworkUnsafeKey(output) {
+  for (const { rawKey, key } of listConfigRecords(output)) {
+    if (NETWORK_UNSAFE_GIT_CONFIG_PATTERNS.some((pattern) => pattern.test(key.toLowerCase()))) return rawKey;
+  }
+  return null;
+}
+
+/**
+ * `git config --list --null` の出力から、外部コマンドを起動しうる設定項目を探す。
+ * @param {string} output
+ * @returns {{unsafeKey: string|null, originUrl: string|null}} 見つかった危険なキー（無ければ null）と、origin の生の URL
+ */
+function inspectGitConfigListing(output) {
+  let unsafeKey = null;
+  let originUrl = null;
+  for (const { rawKey, key, value } of listConfigRecords(output)) {
     if (unsafeKey === null && UNSAFE_GIT_CONFIG_PATTERNS.some((pattern) => pattern.test(key.toLowerCase()))) unsafeKey = rawKey;
     if (key === 'remote.origin.url') originUrl = value;
   }
@@ -611,7 +682,7 @@ function inspectRepository({ cwd, run, homeDir, fsImpl }) {
   if (listing.status !== 0) return fail('repository configuration could not be read');
   const { unsafeKey, originUrl } = inspectGitConfigListing(listing.stdout);
   if (unsafeKey !== null) return fail(`repository configuration can run external commands: ${JSON.stringify(unsafeKey)}`);
-  return { ok: true, root, repo: parseGitHubRepo(originUrl) };
+  return { ok: true, root, repo: parseGitHubRepo(originUrl), networkUnsafeKey: findNetworkUnsafeKey(listing.stdout) };
 }
 
 // ─── worktree の受け入れと既定ブランチの保護 ──────────────────────────────
@@ -679,6 +750,22 @@ function isBoundWorktree({ cwd, run, bindingRoot, inspectedRoot, fsImpl, uid }) 
 }
 
 /**
+ * 既定ブランチの完全名の集合（main / master と、refs/remotes/origin/HEAD が指す先）。
+ * @param {{cwd: string, run: Function}} params
+ * @returns {Set<string>}
+ */
+function defaultBranchRefs({ cwd, run }) {
+  const defaults = new Set(['refs/heads/main', 'refs/heads/master']);
+  const remoteHead = run(['symbolic-ref', '-q', 'refs/remotes/origin/HEAD'], cwd);
+  if (remoteHead.status === 0) {
+    const remoteRef = String(remoteHead.stdout).trim();
+    const prefix = 'refs/remotes/origin/';
+    if (remoteRef.startsWith(prefix) && remoteRef.length > prefix.length) defaults.add(`refs/heads/${remoteRef.slice(prefix.length)}`);
+  }
+  return defaults;
+}
+
+/**
  * git commit の前に、現在のブランチが既定ブランチ（main / master / origin/HEAD の指す先）か、
  * ブランチに属さない状態（detached HEAD）でないことを確認する。問題なければ null、拒否するならメッセージ。
  * 同名のタグがあると短縮名が `heads/main` のように変わり比較をすり抜けるため、symbolic-ref の完全名で比較する。
@@ -690,13 +777,7 @@ function checkCommitBranch({ cwd, run }) {
   const ref = head.status === 0 ? String(head.stdout).trim() : '';
   if (ref === '') return 'task command rejected: cannot commit on a detached HEAD; switch to a working branch first';
   if (!ref.startsWith('refs/heads/')) return 'task command rejected: HEAD does not point to a local branch; switch to a working branch first';
-  const defaults = new Set(['refs/heads/main', 'refs/heads/master']);
-  const remoteHead = run(['symbolic-ref', '-q', 'refs/remotes/origin/HEAD'], cwd);
-  if (remoteHead.status === 0) {
-    const remoteRef = String(remoteHead.stdout).trim();
-    const prefix = 'refs/remotes/origin/';
-    if (remoteRef.startsWith(prefix) && remoteRef.length > prefix.length) defaults.add(`refs/heads/${remoteRef.slice(prefix.length)}`);
-  }
+  const defaults = defaultBranchRefs({ cwd, run });
   if (defaults.has(ref)) return `task command rejected: cannot commit on the default branch ${JSON.stringify(ref.slice('refs/heads/'.length))}; switch to a working branch first`;
   return null;
 }
@@ -712,7 +793,7 @@ function isSafeBindingPath(value) {
 /**
  * ランチャーが固定した値（環境変数 VK_TASK_*）を読み、拘束の設定として検証する。1 つでも不正なら null。
  * @param {Record<string, string|undefined>} env
- * @returns {{root: string, repo: string|null, git: string, gh: string|null, home: string, gitConfig: string, ghConfig: string|null}|null}
+ * @returns {{root: string, repo: string|null, git: string, gh: string|null, home: string, gitConfig: string, ghConfig: string|null, remoteBase: string}|null}
  */
 function readBinding(env) {
   const root = env.VK_TASK_ROOT;
@@ -722,13 +803,17 @@ function readBinding(env) {
   const gitConfig = env.VK_TASK_GITCONFIG;
   const ghConfig = env.VK_TASK_GHCONFIG || null;
   const repo = env.VK_TASK_REPO || null;
+  const remoteBase = env.VK_TASK_REMOTE_BASE || DEFAULT_REMOTE_BASE;
   if (![root, git, home, gitConfig].every(isSafeBindingPath)) return null;
   if (gh !== null && !isSafeBindingPath(gh)) return null;
   // gh を使えるときは、ランチャーが生成した専用の設定フォルダが必須（個人の gh 設定は読まない）。
   if (gh !== null && !isSafeBindingPath(ghConfig)) return null;
   if (ghConfig !== null && !isSafeBindingPath(ghConfig)) return null;
   if (repo !== null && !GITHUB_REPO_PATTERN.test(repo)) return null;
-  return { root, repo, git, gh, home, gitConfig, ghConfig };
+  // push 先・fetch 元の基点は GitHub の固定値。例外はテスト用に一時フォルダの絶対パスを渡すときだけで、
+  // 値はランチャー（Codex から書き換えられない）が固定する。
+  if (remoteBase !== DEFAULT_REMOTE_BASE && (!isSafeBindingPath(remoteBase) || remoteBase.split('/').includes('..'))) return null;
+  return { root, repo, git, gh, home, gitConfig, ghConfig, remoteBase };
 }
 
 /**
@@ -737,10 +822,12 @@ function readBinding(env) {
  * （global の代わりに、ランチャーが生成した author 情報だけの設定ファイルを指す）。
  * 不足オブジェクトの自動取得は GIT_NO_LAZY_FETCH で、通信は GIT_ALLOW_PROTOCOL（空 = 全プロトコル不許可）で止める。
  * gh の設定は、個人の ~/.config/gh ではなくランチャーが生成した専用フォルダ（通信設定を持たず、認証だけを引き継いだもの）を指す。
+ * 通信する操作（push・fetch）だけ、options.allowProtocol で許可するプロトコルを 1 つに限る（既定は空 = 全プロトコル不許可）。
  * @param {{git: string, gh: string|null, home: string, gitConfig: string, ghConfig: string|null}} binding
+ * @param {{allowProtocol?: string}} [options]
  * @returns {Record<string, string>}
  */
-function buildChildEnvironment(binding) {
+function buildChildEnvironment(binding, options = {}) {
   const toolDirs = [path.dirname(binding.git), ...(binding.gh ? [path.dirname(binding.gh)] : []), '/usr/bin', '/bin'];
   // gh の設定フォルダが無いとき（git だけの実行）も、個人の ~/.config を指さないよう XDG は専用の場所へ向ける。
   const ghConfigDir = binding.ghConfig || path.join(path.dirname(binding.gitConfig), 'gh');
@@ -756,7 +843,7 @@ function buildChildEnvironment(binding) {
     GIT_TERMINAL_PROMPT: '0',
     // 部分クローンの不足オブジェクトを参照しても、通信（自動取得）と remote 設定由来の外部コマンド起動を行わない。
     GIT_NO_LAZY_FETCH: '1',
-    GIT_ALLOW_PROTOCOL: '',
+    GIT_ALLOW_PROTOCOL: options.allowProtocol || '',
     GH_PROMPT_DISABLED: '1',
     GH_NO_UPDATE_NOTIFIER: '1',
     GH_PAGER: 'cat',
@@ -775,6 +862,140 @@ function withBoundRepository(args, repo) {
   return [...args, '--repo', repo];
 }
 
+// ─── 通信する操作（git push / prepare worktree） ─────────────────────────────
+
+/** 拘束した owner/repo から、push 先・fetch 元の URL を組み立てる（origin の設定値は使わない）。 */
+function boundRemoteUrl(binding) {
+  return `${binding.remoteBase}/${binding.repo}.git`;
+}
+
+/** 通信する git に付ける指定。既存の credential helper を空にしたうえで、検証済みの gh の `auth git-credential` だけを使う。 */
+function networkGitConfig(binding) {
+  return [
+    '-c', 'credential.helper=',
+    '-c', 'credential.https://github.com.helper=',
+    '-c', `credential.https://github.com.helper=!'${binding.gh}' auth git-credential`,
+  ];
+}
+
+function networkEnvironment(binding) {
+  return buildChildEnvironment(binding, { allowProtocol: binding.remoteBase.startsWith('https://') ? 'https' : 'file' });
+}
+
+function lstatOrNull(fsImpl, target) {
+  try {
+    return fsImpl.lstatSync(target);
+  } catch (error) {
+    if (error && error.code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+/**
+ * `git push <ブランチ>`。送る内容は refs/heads/<b>:refs/heads/<b> に固定し、強制上書き・削除・タグ・任意の refspec の経路を作らない。
+ * 新規作成と早送りだけが通る（非早送りは + の無い refspec なので push 側が拒否する）。
+ */
+function executePush({ parsed, binding, cwd, runGit, spawnSync, networkEnv, reject, inspected }) {
+  if (inspected.networkUnsafeKey) return reject(`task command rejected: repository configuration can redirect network access: ${JSON.stringify(inspected.networkUnsafeKey)}`);
+  const head = runGit(['symbolic-ref', '-q', 'HEAD'], cwd);
+  if (head.status !== 0 || String(head.stdout).trim() === '') return reject('task command rejected: cannot push on a detached HEAD; switch to a working branch first');
+  const ref = `refs/heads/${parsed.branch}`;
+  if (runGit(['show-ref', '--verify', '--quiet', ref], cwd).status !== 0) return reject(`task command rejected: local branch does not exist: ${JSON.stringify(parsed.branch)}`);
+  if (defaultBranchRefs({ cwd, run: runGit }).has(ref)) return reject(`task command rejected: cannot push the default branch ${JSON.stringify(parsed.branch)}`);
+
+  const url = boundRemoteUrl(binding);
+  const networkArgs = [...FIXED_GIT_PREFIX, ...networkGitConfig(binding)];
+  // origin/HEAD が無い clone でも既定ブランチを守る。リモートの HEAD を取得できたときだけ判定に使う（取得できなければ push 自体が失敗する）。
+  const remoteHead = spawnSync(binding.git, [...networkArgs, 'ls-remote', '--symref', url, 'HEAD'], { cwd, env: networkEnv, encoding: 'utf8' });
+  if (remoteHead.status === 0) {
+    const match = /^ref: (refs\/heads\/\S+)\tHEAD$/m.exec(String(remoteHead.stdout));
+    if (match && match[1] === ref) return reject(`task command rejected: cannot push the remote default branch ${JSON.stringify(parsed.branch)}`);
+  }
+
+  const args = [
+    ...networkArgs, 'push', '--no-verify', '--no-follow-tags', '--no-recurse-submodules', '--no-signed',
+    url, `${ref}:${ref}`,
+  ];
+  const result = spawnSync(binding.git, args, { cwd, env: networkEnv, encoding: 'utf8', stdio: 'inherit' });
+  if (result.error) return reject(`task command failed to start: ${result.error.code || 'error'}`);
+  return typeof result.status === 'number' ? result.status : 2;
+}
+
+/**
+ * `prepare worktree <base> <issue番号> <ブランチ> <worktree名>`。vk-agents の repo-prepare.sh issue-worktree と同じ処理を、
+ * この入口の中で行う（対象が vk-agents 自身でも、Codex が書き換えられるスクリプトを囲いの外で動かさないため）。
+ * 作るのは <拘束ルート>/.claude/worktrees/<名前> の worktree だけで、通常のクローンの切り替えや未コミット変更には触れない。
+ */
+function executePrepareWorktree({ parsed, binding, cwd, fsImpl, runGit, spawnSync, networkEnv, plainEnv, reject, inspected, write, writeOut }) {
+  if (inspected.networkUnsafeKey) return reject(`task command rejected: repository configuration can redirect network access: ${JSON.stringify(inspected.networkUnsafeKey)}`);
+  if (inspected.root !== binding.root || fsImpl.realpathSync(cwd) !== binding.root) return reject('task command rejected: prepare worktree must run at the bound repository root');
+  const root = binding.root;
+  const claudeDir = path.join(root, '.claude');
+  const worktreeRoot = path.join(claudeDir, 'worktrees');
+  const worktreePath = path.join(worktreeRoot, parsed.name);
+  const remoteRef = `refs/remotes/origin/${parsed.base}`;
+  const branchRef = `refs/heads/${parsed.branch}`;
+
+  // 事前の検証（取得より前に、作れないと分かるものを止める）。
+  for (const dir of [claudeDir, worktreeRoot]) {
+    const stat = lstatOrNull(fsImpl, dir);
+    if (stat !== null && (stat.isSymbolicLink() || !stat.isDirectory())) return reject(`task command rejected: ${path.relative(root, dir)} is a symbolic link or not a directory`);
+  }
+  if (lstatOrNull(fsImpl, worktreePath) !== null) return reject(`task command rejected: worktree path already exists: ${worktreePath}`);
+  if (runGit(['show-ref', '--verify', '--quiet', branchRef], cwd).status === 0) return reject(`task command rejected: working branch already exists: ${JSON.stringify(parsed.branch)}`);
+
+  const fetchArgs = [
+    ...FIXED_GIT_PREFIX, ...networkGitConfig(binding),
+    'fetch', '--no-tags', '--no-recurse-submodules', '--refmap=', boundRemoteUrl(binding), `+refs/heads/${parsed.base}:${remoteRef}`,
+  ];
+  const fetched = spawnSync(binding.git, fetchArgs, { cwd, env: networkEnv, encoding: 'utf8', stdio: 'inherit' });
+  if (fetched.error) return reject(`task command failed to start: ${fetched.error.code || 'error'}`);
+  if (fetched.status !== 0) return typeof fetched.status === 'number' ? fetched.status : 2;
+  if (runGit(['show-ref', '--verify', '--quiet', remoteRef], cwd).status !== 0) return reject(`task command rejected: could not fetch the base branch ${JSON.stringify(parsed.base)}`);
+
+  // 通常のクローンの status に worktree が未追跡として現れないよう、このクローンだけの除外設定へ作成先を登録する（共有の .gitignore は変えない）。
+  const excludeResult = runGit(['rev-parse', '--git-path', 'info/exclude'], cwd);
+  if (excludeResult.status !== 0) return reject('task command rejected: could not resolve the local exclude file');
+  const excludeFile = path.resolve(cwd, String(excludeResult.stdout).trim());
+  const commonDir = resolveGitCommonDir({ dir: cwd, run: runGit, fsImpl });
+  const excludeDir = path.dirname(excludeFile);
+  let excludeParent = null;
+  try {
+    excludeParent = fsImpl.realpathSync(path.dirname(excludeDir));
+  } catch (_error) {
+    excludeParent = null;
+  }
+  if (commonDir === null || excludeParent !== commonDir || path.basename(excludeDir) !== 'info' || path.basename(excludeFile) !== 'exclude') {
+    return reject('task command rejected: local exclude file is outside the repository');
+  }
+  const entry = `/.claude/worktrees/${parsed.name}/`;
+  try {
+    const excludeStat = lstatOrNull(fsImpl, excludeFile);
+    if (excludeStat !== null && (excludeStat.isSymbolicLink() || !excludeStat.isFile())) return reject('task command rejected: local exclude file is not a regular file');
+    const existing = excludeStat === null ? '' : String(fsImpl.readFileSync(excludeFile, 'utf8'));
+    if (!existing.split('\n').includes(entry)) {
+      fsImpl.mkdirSync(path.dirname(excludeFile), { recursive: true });
+      fsImpl.appendFileSync(excludeFile, `\n${entry}\n`);
+    }
+    fsImpl.mkdirSync(worktreeRoot, { recursive: true });
+    // 作成後にも、リンクに差し替えられていないことを確かめる。
+    for (const dir of [claudeDir, worktreeRoot]) {
+      const stat = fsImpl.lstatSync(dir);
+      if (stat.isSymbolicLink() || !stat.isDirectory()) return reject(`task command rejected: ${path.relative(root, dir)} is a symbolic link or not a directory`);
+    }
+  } catch (error) {
+    write(`task command failed: ${error && error.code ? error.code : 'filesystem error'}\n`);
+    return 2;
+  }
+
+  const added = spawnSync(binding.git, [...FIXED_GIT_PREFIX, 'worktree', 'add', '--quiet', '--no-track', '-b', parsed.branch, worktreePath, remoteRef], { cwd, env: plainEnv, encoding: 'utf8', stdio: 'inherit' });
+  if (added.error) return reject(`task command failed to start: ${added.error.code || 'error'}`);
+  if (added.status !== 0) return typeof added.status === 'number' ? added.status : 2;
+  const baseSha = runGit(['rev-parse', remoteRef], cwd);
+  writeOut(`TARGET_REPO=${worktreePath}\nWORK_BRANCH=${parsed.branch}\nBASE_SHA=${String(baseSha.stdout).trim()}\n`);
+  return 0;
+}
+
 /**
  * 検証を通った操作だけを実行し、終了コードを返す。
  * 実行環境・git / gh の絶対パス・対象リポジトリはランチャーが固定した VK_TASK_*（deps.env）から読み、
@@ -788,6 +1009,7 @@ function runTaskCommand(argv, deps = {}) {
   const fsImpl = deps.fs || nodeFs;
   const spawnSync = deps.spawnSync || childProcess.spawnSync;
   const write = deps.write || ((message) => process.stderr.write(message));
+  const writeOut = deps.writeOut || ((message) => process.stdout.write(message));
   const reject = (message) => {
     write(`${message}\n`);
     return 2;
@@ -802,12 +1024,13 @@ function runTaskCommand(argv, deps = {}) {
   // git / gh の実行ファイルを毎回検証する（起動後に差し替えられていないこと）。
   const trustOptions = { uid: deps.uid };
   try {
-    for (const tool of [binding.git, ...(parsed.bin === 'gh' ? [binding.gh] : [])]) {
+    const usesGh = parsed.bin === 'gh' || parsed.needsGh === true;
+    for (const tool of [binding.git, ...(usesGh ? [binding.gh] : [])]) {
       if (tool === null) return reject('task command rejected: gh is not available');
       resolveTrustedPath(fsImpl, tool, { ...trustOptions, finalKind: 'file' });
     }
     // gh の専用設定フォルダ（認証だけを引き継いだもの）も、実体・所有者・他人の書き込み不可を確認する。
-    if (parsed.bin === 'gh') resolveTrustedPath(fsImpl, binding.ghConfig, { ...trustOptions, rejectFinalLink: true });
+    if (usesGh) resolveTrustedPath(fsImpl, binding.ghConfig, { ...trustOptions, rejectFinalLink: true });
   } catch (error) {
     return reject(`task command rejected: ${error instanceof TrustError ? error.message : 'executable could not be verified'}`);
   }
@@ -830,6 +1053,12 @@ function runTaskCommand(argv, deps = {}) {
     if (branchError !== null) return reject(branchError);
   }
 
+  if (parsed.operation === 'push' || parsed.operation === 'prepare-worktree') {
+    const networkEnv = networkEnvironment(binding);
+    const context = { parsed, binding, cwd, fsImpl, runGit, spawnSync, networkEnv, plainEnv: env, reject, inspected, write, writeOut };
+    return parsed.operation === 'push' ? executePush(context) : executePrepareWorktree(context);
+  }
+
   const bin = parsed.bin === 'gh' ? binding.gh : binding.git;
   const args = parsed.bin === 'gh' ? withBoundRepository(parsed.args, binding.repo) : parsed.args;
   const result = spawnSync(bin, args, { cwd, env, encoding: 'utf8', stdio: 'inherit' });
@@ -847,6 +1076,7 @@ module.exports = {
   isBoundWorktree,
   checkCommitBranch,
   inspectGitConfigListing,
+  findNetworkUnsafeKey,
   isSupportedGitVersion,
   parseGitHubRepo,
   assertChainUnchanged,
@@ -855,6 +1085,7 @@ module.exports = {
   resolveTrustedExecutableDetailed,
   TrustError,
   FIXED_GIT_PREFIX,
+  DEFAULT_REMOTE_BASE,
 };
 
 // 複製先（専用 CODEX_HOME）では、ランチャーからの Node 直接実行になる。require された場合は何もしない。

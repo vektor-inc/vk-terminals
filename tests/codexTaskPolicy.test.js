@@ -346,7 +346,7 @@ test('生成: rules は信頼済みランチャーの実行だけを許可し、
     // 入口は検証ロジック本体の複製で、案内（AGENTS.md）は入口と許可する操作だけを示す。
     assert.equal(fs.readFileSync(path.join(home, 'vk-task-ops.js'), 'utf8'), OPS_SOURCE);
     const guide = fs.readFileSync(path.join(home, 'AGENTS.md'), 'utf8');
-    assert.ok(guide.includes(`'${path.join(home, 'vk-task-ops')}' <git|gh>`));
+    assert.ok(guide.includes(`'${path.join(home, 'vk-task-ops')}' <git|gh|prepare>`));
     assert.equal(guide.includes('node '), false);
     for (const operation of ORCHESTRATED_TASK_OPERATIONS) assert.ok(guide.includes(`\`${operation}\``), operation);
     assert.match(guide, /`gh issue create` は `--title <題> --body <本文>` が必須/);
@@ -1167,4 +1167,150 @@ test('new-pane: ポリシー付きは cwd が必須で、事前確認にも同�
   const handler = mainSource.slice(start, mainSource.indexOf("url.pathname === '/api/restart-agent'"));
   assert.ok(handler.includes("error: 'codexPolicy requires cwd'"));
   assert.ok(handler.includes('{ dryRun: true, cwd: requestedCwd }'));
+});
+
+// ─── git push / prepare worktree（issue #440。実ランチャー経由） ───────────────
+
+// 一時フォルダの bare リポジトリを GitHub の代わりにする（remoteBase は prepareCodexTaskPolicyHome のテスト用引数。
+// main.js からも API の入力からも渡せず、実ランチャーに固定される）。
+function createPushSandbox() {
+  const sandbox = createSandbox();
+  const gitIn = (cwd, ...args) => childProcess.execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+  fs.writeFileSync(path.join(sandbox.homeDir, '.gitconfig'), '[user]\n\tname = Policy Tester\n\temail = policy@example.com\n');
+  sandbox.git('-c', 'user.name=T', '-c', 'user.email=t@example.com', 'commit', '-q', '--allow-empty', '-m', 'init');
+  const remoteBase = path.join(sandbox.root, 'remote');
+  const bare = path.join(remoteBase, 'vektor-inc', 'vk-terminals.git');
+  fs.mkdirSync(bare, { recursive: true });
+  gitIn(bare, 'init', '-q', '--bare', '-b', 'main');
+  sandbox.git('push', '-q', bare, 'main:main');
+  const fakeGh = createFakeGh(sandbox);
+  const launch = prepare(sandbox, { remoteBase, toolDirs: fakeGh.toolDirs });
+  assert.equal(launch.ok, true, launch.error);
+  const launcher = path.join(launch.home, 'vk-task-ops');
+  const ops = (cwd, ...args) => childProcess.spawnSync(launcher, args, { cwd, env: { ...process.env, GIT_DIR: '/nonexistent', NODE_OPTIONS: '' }, encoding: 'utf8' });
+  const remoteRef = (ref) => {
+    try {
+      return gitIn(bare, 'rev-parse', '--verify', '-q', ref);
+    } catch (_error) {
+      return null;
+    }
+  };
+  return { sandbox, launch, launcher, ops, bare, remoteBase, remoteRef, gitIn };
+}
+
+test('ランチャー: push 先の基点は本番では GitHub に固定され、テスト用の差し替えは絶対パスだけで API の入力からは渡せない', () => {
+  const sandbox = createSandbox();
+  try {
+    const defaults = prepare(sandbox);
+    assert.equal(defaults.ok, true, defaults.error);
+    const launcher = fs.readFileSync(path.join(defaults.home, 'vk-task-ops'), 'utf8');
+    assert.match(launcher, /^  'VK_TASK_REMOTE_BASE=https:\/\/github\.com' \\$/m);
+    for (const remoteBase of ['relative/path', 'https://evil.example', "/tmp/a'b", '']) {
+      const result = prepare(sandbox, { remoteBase });
+      assert.equal(result.ok, false, remoteBase);
+      assert.match(result.error, /unsafe remote base/);
+    }
+    // API の入力（codexPolicy）に基点を入れても、未知のキーとして拒否される。
+    assert.equal(validateCodexLaunchOptions('codex', { approvalPolicy: 'never', codexPolicy: { preset: 'orchestrated-task', remoteBase: '/tmp/x' } }).ok, false);
+    // 案内文には、追加した 2 つの操作と、許可外の指定が使えないことが書かれている。
+    const guide = fs.readFileSync(path.join(defaults.home, 'AGENTS.md'), 'utf8');
+    assert.match(guide, /`git push`/);
+    assert.match(guide, /`prepare worktree`/);
+    assert.match(guide, /強制上書き・削除・タグは使えない/);
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('ランチャー: 拘束先と worktree の両方から push が通り、force 系・既定ブランチ・別リポジトリ・同じ origin の別クローンからは通らない', () => {
+  const env = createPushSandbox();
+  const { sandbox } = env;
+  try {
+    // 拘束先（通常のクローン）から。
+    sandbox.git('checkout', '-q', '-b', 'feature/440-root');
+    sandbox.git('-c', 'user.name=T', '-c', 'user.email=t@example.com', 'commit', '-q', '--allow-empty', '-m', 'root work');
+    let result = env.ops(sandbox.repo, 'git', 'push', 'feature/440-root');
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(env.remoteRef('refs/heads/feature/440-root'), sandbox.git('rev-parse', 'HEAD').trim());
+
+    // worktree から。
+    const worktree = path.join(sandbox.repo, '.claude', 'worktrees', 'plain');
+    sandbox.git('worktree', 'add', '-q', '-b', 'feature/440-wt', worktree);
+    const wt = fs.realpathSync(worktree);
+    childProcess.execFileSync('git', ['-c', 'user.name=T', '-c', 'user.email=t@example.com', 'commit', '-q', '--allow-empty', '-m', 'wt work'], { cwd: wt });
+    result = env.ops(wt, 'git', 'push', 'feature/440-wt');
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(env.remoteRef('refs/heads/feature/440-wt'), env.gitIn(wt, 'rev-parse', 'HEAD'));
+
+    // 許可外は、送られない。
+    const mainBefore = env.remoteRef('refs/heads/main');
+    for (const args of [
+      ['git', 'push', '--force', 'feature/440-wt'],
+      ['git', 'push', '--force-with-lease', 'feature/440-wt'],
+      ['git', 'push', '--delete', 'feature/440-wt'],
+      ['git', 'push', '--tags'],
+      ['git', 'push', '--mirror'],
+      ['git', 'push', 'origin', 'feature/440-wt'],
+      ['git', 'push', '+feature/440-wt'],
+      ['git', 'push', 'feature/440-wt:main'],
+      ['git', 'push', ':feature/440-wt'],
+      ['git', 'push', 'main'],
+      ['git', 'push', 'feature/440-never'],
+    ]) {
+      result = env.ops(wt, ...args);
+      assert.equal(result.status, 2, args.join(' '));
+    }
+    assert.equal(env.remoteRef('refs/heads/main'), mainBefore);
+    assert.equal(env.remoteRef('refs/heads/feature/440-wt'), env.gitIn(wt, 'rev-parse', 'HEAD'));
+
+    // 同じ origin を持つ別クローン・別のリポジトリ。
+    const clone = path.join(sandbox.root, 'clone');
+    fs.mkdirSync(clone);
+    for (const [dir, origin] of [[clone, 'https://github.com/vektor-inc/vk-terminals.git'], [path.join(sandbox.root, 'stranger'), 'https://github.com/other/repo.git']]) {
+      fs.mkdirSync(dir, { recursive: true });
+      childProcess.execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: dir });
+      childProcess.execFileSync('git', ['remote', 'add', 'origin', origin], { cwd: dir });
+      childProcess.execFileSync('git', ['-c', 'user.name=T', '-c', 'user.email=t@example.com', 'commit', '-q', '--allow-empty', '-m', 'x'], { cwd: dir });
+      childProcess.execFileSync('git', ['checkout', '-q', '-b', 'feature/440-other'], { cwd: dir });
+      result = env.ops(dir, 'git', 'push', 'feature/440-other');
+      assert.equal(result.status, 2, dir);
+      assert.match(result.stderr, /not the bound repository/, dir);
+      result = env.ops(dir, 'prepare', 'worktree', 'main', '440', 'feature/440-z', 'z');
+      assert.equal(result.status, 2, dir);
+    }
+    assert.equal(env.remoteRef('refs/heads/feature/440-other'), null);
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('ランチャー: prepare で作った worktree で、そのまま add・commit・push が通る', () => {
+  const env = createPushSandbox();
+  const { sandbox } = env;
+  try {
+    const prepared = env.ops(sandbox.repo, 'prepare', 'worktree', 'main', '440', 'feature/440-flow', 'codex-440');
+    assert.equal(prepared.status, 0, prepared.stderr);
+    const worktree = path.join(fs.realpathSync(sandbox.repo), '.claude', 'worktrees', 'codex-440');
+    assert.match(prepared.stdout, new RegExp(`^TARGET_REPO=${worktree.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\nWORK_BRANCH=feature/440-flow\\nBASE_SHA=${env.remoteRef('refs/heads/main')}\\n$`));
+    // 通常のクローンは main のまま切り替わらない。
+    assert.equal(sandbox.git('symbolic-ref', '--short', 'HEAD').trim(), 'main');
+    fs.writeFileSync(path.join(worktree, 'feature.txt'), 'feature\n');
+    let result = env.ops(worktree, 'git', 'add', '--', 'feature.txt');
+    assert.equal(result.status, 0, result.stderr);
+    result = env.ops(worktree, 'git', 'commit', '-m', '[ 機能追加 ] 例');
+    assert.equal(result.status, 0, result.stderr);
+    result = env.ops(worktree, 'git', 'push', 'feature/440-flow');
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(env.remoteRef('refs/heads/feature/440-flow'), env.gitIn(worktree, 'rev-parse', 'HEAD'));
+    assert.equal(env.gitIn(env.bare, 'log', '-1', '--format=%s', 'feature/440-flow'), '[ 機能追加 ] 例');
+    assert.equal(env.gitIn(env.bare, 'log', '-1', '--format=%an', 'feature/440-flow'), 'Policy Tester');
+
+    // 同名のブランチ・パスは作り直さない。許可外の引数は実行前に拒否される。
+    assert.equal(env.ops(sandbox.repo, 'prepare', 'worktree', 'main', '440', 'feature/440-flow', 'other-name').status, 2);
+    assert.equal(env.ops(sandbox.repo, 'prepare', 'worktree', 'main', '440', 'feature/440-second', 'codex-440').status, 2);
+    assert.equal(env.ops(sandbox.repo, 'prepare', 'worktree', 'main', '440', 'feature/440-third', '../escape').status, 2);
+    assert.equal(fs.existsSync(path.join(sandbox.repo, '.claude', 'escape')), false);
+  } finally {
+    sandbox.cleanup();
+  }
 });

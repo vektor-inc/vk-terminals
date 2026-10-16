@@ -16,6 +16,7 @@ const {
   isSupportedGitVersion,
   inspectRepository,
   findNetworkUnsafeKey,
+  restrictWrites,
   parseGitHubRepo,
   parseTaskCommand,
   readBinding,
@@ -1729,9 +1730,12 @@ test('実行: prepare worktree は最新の base から .claude/worktrees/<名�
     assert.equal(git(fixture.repo, 'status', '--porcelain'), '');
     // 取得は origin の設定値ではなく固定の URL・固定の refspec・固定の資格情報の指定。
     const fetchCall = calls.find((call) => call.args.includes('fetch'));
-    const fetchIndex = fetchCall.args.indexOf('fetch');
-    assert.deepEqual(fetchCall.args.slice(fetchIndex), ['fetch', '--no-tags', '--no-recurse-submodules', '--refmap=', remote.url, '+refs/heads/main:refs/remotes/origin/main']);
-    assert.deepEqual(fetchCall.args.slice(FIXED_GIT_PREFIX.length, fetchIndex), [
+    // 書き込みを制限する OS の仕組みで包んで実行する（git 本体の引数は包みの後ろ）。
+    assert.equal(fetchCall.bin, '/usr/bin/sandbox-exec');
+    const fetchArgs = fetchCall.args.slice(fetchCall.args.indexOf(GIT_PATH) + 1);
+    const fetchIndex = fetchArgs.indexOf('fetch');
+    assert.deepEqual(fetchArgs.slice(fetchIndex), ['fetch', '--no-tags', '--no-recurse-submodules', '--refmap=', remote.url, '+refs/heads/main:refs/remotes/origin/main']);
+    assert.deepEqual(fetchArgs.slice(FIXED_GIT_PREFIX.length, fetchIndex), [
       '-c', 'credential.helper=',
       '-c', 'credential.https://github.com.helper=',
       '-c', `credential.https://github.com.helper=!'${fixture.env.VK_TASK_GH}' auth git-credential`,
@@ -1850,5 +1854,167 @@ test('拒否: prepare worktree の同名ブランチ・同名パス・.claude �
     assert.equal(worktreeCount(), baseCount + 1); // outside-wt だけ（このテスト自身が作ったもの）
   } finally {
     fixture.cleanup();
+  }
+});
+
+// ─── 書き込み先の制限とリモート既定ブランチの確定（差し戻し対応） ───────────────
+
+test('制限: 書き込みは許可した実パスの配下だけで、リンクを辿って外へ出る書き込みと禁止した場所への書き込みは OS が拒否する', () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'vk-restrict-')));
+  try {
+    const allowed = path.join(root, 'allowed');
+    const outside = path.join(root, 'outside');
+    fs.mkdirSync(path.join(allowed, 'sub'), { recursive: true });
+    fs.mkdirSync(path.join(allowed, 'hooks'));
+    fs.mkdirSync(outside);
+    fs.symlinkSync(outside, path.join(allowed, 'link'));
+    const tryWrite = (target) => {
+      const command = restrictWrites({ bin: '/bin/sh', args: ['-c', 'echo x > "$1"', 'sh', target], allowWrite: [allowed], denyWrite: [path.join(allowed, 'hooks')] });
+      return childProcess.spawnSync(command.bin, command.args, { encoding: 'utf8' }).status === 0;
+    };
+    assert.equal(tryWrite(path.join(allowed, 'sub', 'ok.txt')), true);
+    assert.equal(tryWrite(path.join(outside, 'no.txt')), false);
+    assert.equal(tryWrite(path.join(allowed, 'link', 'no.txt')), false);
+    assert.equal(tryWrite(path.join(allowed, 'hooks', 'pre-commit')), false);
+    assert.equal(fs.existsSync(path.join(outside, 'no.txt')), false);
+    // パスはプロファイルの文字列に入らない（引用符を含む名前でも許可範囲は変わらない）。
+    const odd = path.join(root, 'odd"name');
+    fs.mkdirSync(odd);
+    const command = restrictWrites({ bin: '/bin/sh', args: ['-c', 'echo x > "$1"', 'sh', path.join(outside, 'no2.txt')], allowWrite: [odd] });
+    assert.notEqual(childProcess.spawnSync(command.bin, command.args, { encoding: 'utf8' }).status, 0);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// 呼び出しの前後に任意の処理（フォルダのリンクへの差し替え）を挟める spawnSync。実際の実行は本物。
+function interposeSpawn({ before = () => {}, after = () => {} }) {
+  return (bin, args, options) => {
+    before(bin, args);
+    const result = childProcess.spawnSync(bin, args, { ...options, stdio: 'pipe' });
+    after(bin, args);
+    return result;
+  };
+}
+
+const involves = (args, word) => args.includes(word);
+
+test('競合: 取得の最中に .claude が外部フォルダへのリンクへ差し替えられても、拘束ルートの外には何も作られない', () => {
+  for (const variant of ['claude', 'worktrees']) {
+    const fixture = createFixture();
+    try {
+      attachRemote(fixture);
+      const outside = path.join(fixture.root, 'outside-target');
+      fs.mkdirSync(outside);
+      fs.mkdirSync(path.join(fixture.repo, '.claude', 'worktrees'), { recursive: true });
+      const swap = () => {
+        if (variant === 'claude') {
+          fs.rmSync(path.join(fixture.repo, '.claude'), { recursive: true });
+          fs.symlinkSync(outside, path.join(fixture.repo, '.claude'));
+        } else {
+          fs.rmSync(path.join(fixture.repo, '.claude', 'worktrees'), { recursive: true });
+          fs.symlinkSync(outside, path.join(fixture.repo, '.claude', 'worktrees'));
+        }
+      };
+      let swapped = false;
+      const result = run(fixture, ['prepare', 'worktree', 'main', '440', 'issue/440-race', 'wt-race'], {
+        spawnSync: interposeSpawn({ after: (_bin, args) => { if (involves(args, 'fetch') && !swapped) { swapped = true; swap(); } } }),
+      });
+      assert.equal(swapped, true, variant);
+      assert.notEqual(result.code, 0, variant);
+      assert.deepEqual(fs.readdirSync(outside), [], variant);
+      assert.equal(fs.existsSync(path.join(outside, 'wt-race')), false, variant);
+    } finally {
+      fixture.cleanup();
+    }
+  }
+});
+
+test('競合: 最後の検査の後（worktree の追加の直前）に .claude 系のフォルダが外部へのリンクへ差し替えられても、拘束ルートの外には何も作られない', () => {
+  for (const variant of ['claude', 'worktrees', 'hooks']) {
+    const fixture = createFixture();
+    try {
+      attachRemote(fixture);
+      const outside = path.join(fixture.root, 'outside-target');
+      fs.mkdirSync(outside);
+      // hooks: 拘束ルートの内側でも、フックのフォルダへ向けたリンクには書けない。
+      const target = variant === 'hooks' ? path.join(fixture.repo, '.git', 'hooks') : outside;
+      fs.mkdirSync(target, { recursive: true });
+      const hooksBefore = fs.readdirSync(path.join(fixture.repo, '.git', 'hooks')).sort();
+      let swapped = false;
+      const swap = () => {
+        const claude = path.join(fixture.repo, '.claude');
+        if (variant === 'claude') {
+          fs.rmSync(claude, { recursive: true });
+          fs.symlinkSync(target, claude);
+        } else {
+          fs.rmSync(path.join(claude, 'worktrees'), { recursive: true });
+          fs.symlinkSync(target, path.join(claude, 'worktrees'));
+        }
+      };
+      const result = run(fixture, ['prepare', 'worktree', 'main', '440', 'issue/440-race', 'wt-race'], {
+        spawnSync: interposeSpawn({ before: (_bin, args) => { if (involves(args, 'worktree') && involves(args, '--no-track') && !swapped) { swapped = true; swap(); } } }),
+      });
+      assert.equal(swapped, true, variant);
+      assert.notEqual(result.code, 0, variant);
+      assert.deepEqual(fs.readdirSync(outside), [], variant);
+      assert.deepEqual(fs.readdirSync(path.join(fixture.repo, '.git', 'hooks')).sort(), hooksBefore, variant);
+    } finally {
+      fixture.cleanup();
+    }
+  }
+});
+
+test('競合: 親フォルダの作成の直前に差し替えられても、拘束ルートの外にはフォルダが作られない', () => {
+  const fixture = createFixture();
+  try {
+    attachRemote(fixture);
+    const outside = path.join(fixture.root, 'outside-target');
+    fs.mkdirSync(outside);
+    let swapped = false;
+    const result = run(fixture, ['prepare', 'worktree', 'main', '440', 'issue/440-race', 'wt-race'], {
+      spawnSync: interposeSpawn({
+        before: (_bin, args) => {
+          if (args.includes('/bin/mkdir') && !swapped) {
+            swapped = true;
+            fs.symlinkSync(outside, path.join(fixture.repo, '.claude'));
+          }
+        },
+      }),
+    });
+    assert.equal(swapped, true);
+    assert.notEqual(result.code, 0);
+    assert.deepEqual(fs.readdirSync(outside), []);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('拒否: リモートの既定ブランチを確定できない（ls-remote の失敗・symref の欠落）ときは push を実行しない', () => {
+  const cases = [
+    ['通信の失敗', { status: 128, stdout: '', stderr: 'fatal: unable to access' }],
+    ['symref の欠落', { status: 0, stdout: '', stderr: '' }],
+    ['HEAD の行だけで symref が無い', { status: 0, stdout: '0123456789012345678901234567890123456789\tHEAD\n', stderr: '' }],
+    ['ブランチでない symref', { status: 0, stdout: 'ref: refs/tags/v1\tHEAD\n', stderr: '' }],
+  ];
+  for (const [label, fake] of cases) {
+    const fixture = createFixture();
+    try {
+      const remote = attachRemote(fixture);
+      commitFile(fixture.repo, 'c.txt');
+      const calls = [];
+      const result = run(fixture, ['git', 'push', 'work/test'], {
+        spawnSync: (bin, args, options) => {
+          calls.push({ bin, args });
+          return args.includes('ls-remote') ? { ...fake, error: undefined } : childProcess.spawnSync(bin, args, { ...options, stdio: 'pipe' });
+        },
+      });
+      assert.equal(result.code, 2, label);
+      assert.match(result.messages.join(''), /remote default branch could not be verified/, label);
+      assert.equal(hasPushCall(calls), false, label);
+      assert.equal(remote.remoteRef('refs/heads/work/test'), null, label);
+    } finally {
+      fixture.cleanup();
+    }
   }
 });

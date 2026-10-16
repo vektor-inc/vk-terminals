@@ -882,6 +882,36 @@ function networkEnvironment(binding) {
   return buildChildEnvironment(binding, { allowProtocol: binding.remoteBase.startsWith('https://') ? 'https' : 'file' });
 }
 
+// ─── 書き込み先を OS が制限して実行する（書き込み先の制限） ─────────────
+
+const SANDBOX_EXEC_PATH = '/usr/bin/sandbox-exec';
+
+/**
+ * コマンドを、書き込み先を allowWrite 配下に限る OS のファイルシステム制限（macOS の sandbox-exec）つきで実行する形に包む。
+ * 制限は書き込みの時点で、リンクを解決した後の実パスに対して判定される。
+ * 許可した場所の外には書けない。denyWrite は allowWrite の内側で、書き込みを禁じる場所（フックや設定ファイルなど）。
+ * パスは -D の値として渡すので、プロファイルの文字列には入らない。
+ * @param {{bin: string, args: string[], allowWrite: string[], denyWrite?: string[]}} params 許可・禁止のパスは実パス（絶対パス）
+ * @returns {{bin: string, args: string[]}}
+ */
+function restrictWrites({ bin, args, allowWrite, denyWrite = [] }) {
+  const params = [];
+  const rules = (list, prefix) => list.map((target, index) => {
+    params.push('-D', `${prefix}${index}=${target}`);
+    return `(subpath (param "${prefix}${index}"))`;
+  });
+  const allowed = rules(allowWrite, 'ALLOW');
+  const denied = rules(denyWrite, 'DENY');
+  const profile = [
+    '(version 1)',
+    '(allow default)',
+    '(deny file-write*)',
+    `(allow file-write* ${allowed.join(' ')} (literal "/dev/null"))`,
+    ...(denied.length > 0 ? [`(deny file-write* ${denied.join(' ')})`] : []),
+  ].join('\n');
+  return { bin: SANDBOX_EXEC_PATH, args: [...params, '-p', profile, bin, ...args] };
+}
+
 function lstatOrNull(fsImpl, target) {
   try {
     return fsImpl.lstatSync(target);
@@ -905,12 +935,11 @@ function executePush({ parsed, binding, cwd, runGit, spawnSync, networkEnv, reje
 
   const url = boundRemoteUrl(binding);
   const networkArgs = [...FIXED_GIT_PREFIX, ...networkGitConfig(binding)];
-  // origin/HEAD が無い clone でも既定ブランチを守る。リモートの HEAD を取得できたときだけ判定に使う（取得できなければ push 自体が失敗する）。
+  // origin/HEAD が無い clone でも既定ブランチを守る。リモートの既定ブランチを確定できないときは push しない。
   const remoteHead = spawnSync(binding.git, [...networkArgs, 'ls-remote', '--symref', url, 'HEAD'], { cwd, env: networkEnv, encoding: 'utf8' });
-  if (remoteHead.status === 0) {
-    const match = /^ref: (refs\/heads\/\S+)\tHEAD$/m.exec(String(remoteHead.stdout));
-    if (match && match[1] === ref) return reject(`task command rejected: cannot push the remote default branch ${JSON.stringify(parsed.branch)}`);
-  }
+  const match = remoteHead.status === 0 ? /^ref: (refs\/heads\/\S+)\tHEAD$/m.exec(String(remoteHead.stdout)) : null;
+  if (match === null) return reject('task command rejected: remote default branch could not be verified');
+  if (match[1] === ref) return reject(`task command rejected: cannot push the remote default branch ${JSON.stringify(parsed.branch)}`);
 
   const args = [
     ...networkArgs, 'push', '--no-verify', '--no-follow-tags', '--no-recurse-submodules', '--no-signed',
@@ -926,7 +955,7 @@ function executePush({ parsed, binding, cwd, runGit, spawnSync, networkEnv, reje
  * この入口の中で行う（対象が vk-agents 自身でも、Codex が書き換えられるスクリプトを囲いの外で動かさないため）。
  * 作るのは <拘束ルート>/.claude/worktrees/<名前> の worktree だけで、通常のクローンの切り替えや未コミット変更には触れない。
  */
-function executePrepareWorktree({ parsed, binding, cwd, fsImpl, runGit, spawnSync, networkEnv, plainEnv, reject, inspected, write, writeOut }) {
+function executePrepareWorktree({ parsed, binding, cwd, fsImpl, runGit, spawnSync, networkEnv, plainEnv, reject, inspected, write, writeOut, deps }) {
   if (inspected.networkUnsafeKey) return reject(`task command rejected: repository configuration can redirect network access: ${JSON.stringify(inspected.networkUnsafeKey)}`);
   if (inspected.root !== binding.root || fsImpl.realpathSync(cwd) !== binding.root) return reject('task command rejected: prepare worktree must run at the bound repository root');
   const root = binding.root;
@@ -944,11 +973,25 @@ function executePrepareWorktree({ parsed, binding, cwd, fsImpl, runGit, spawnSyn
   if (lstatOrNull(fsImpl, worktreePath) !== null) return reject(`task command rejected: worktree path already exists: ${worktreePath}`);
   if (runGit(['show-ref', '--verify', '--quiet', branchRef], cwd).status === 0) return reject(`task command rejected: working branch already exists: ${JSON.stringify(parsed.branch)}`);
 
+  // 書き込みを伴う実行はすべて、書き込み先を OS が制限した形で行う。制限をかけられない環境（sandbox-exec が無い・信頼できない）では準備しない。
+  const earlyCommonDir = resolveGitCommonDir({ dir: cwd, run: runGit, fsImpl });
+  let ghConfigReal = null;
+  try {
+    resolveTrustedPath(fsImpl, SANDBOX_EXEC_PATH, { uid: deps.uid, finalKind: 'file' });
+    if (earlyCommonDir === null) throw new TrustError('git directory could not be resolved');
+    ghConfigReal = resolveTrustedPath(fsImpl, binding.ghConfig, { uid: deps.uid, rejectFinalLink: true }).realPath;
+  } catch (_error) {
+    return reject('task command rejected: write-restricted execution is not available');
+  }
+  const gitDenied = ['hooks', 'config', 'config.worktree', path.join('info', 'attributes')].map((name) => path.join(earlyCommonDir, name));
+  const restricted = (command, allowWrite) => restrictWrites({ ...command, allowWrite, denyWrite: gitDenied });
+
   const fetchArgs = [
     ...FIXED_GIT_PREFIX, ...networkGitConfig(binding),
     'fetch', '--no-tags', '--no-recurse-submodules', '--refmap=', boundRemoteUrl(binding), `+refs/heads/${parsed.base}:${remoteRef}`,
   ];
-  const fetched = spawnSync(binding.git, fetchArgs, { cwd, env: networkEnv, encoding: 'utf8', stdio: 'inherit' });
+  const fetchCommand = restricted({ bin: binding.git, args: fetchArgs }, [earlyCommonDir, ghConfigReal]);
+  const fetched = spawnSync(fetchCommand.bin, fetchCommand.args, { cwd, env: networkEnv, encoding: 'utf8', stdio: 'inherit' });
   if (fetched.error) return reject(`task command failed to start: ${fetched.error.code || 'error'}`);
   if (fetched.status !== 0) return typeof fetched.status === 'number' ? fetched.status : 2;
   if (runGit(['show-ref', '--verify', '--quiet', remoteRef], cwd).status !== 0) return reject(`task command rejected: could not fetch the base branch ${JSON.stringify(parsed.base)}`);
@@ -977,8 +1020,11 @@ function executePrepareWorktree({ parsed, binding, cwd, fsImpl, runGit, spawnSyn
       fsImpl.mkdirSync(path.dirname(excludeFile), { recursive: true });
       fsImpl.appendFileSync(excludeFile, `\n${entry}\n`);
     }
-    fsImpl.mkdirSync(worktreeRoot, { recursive: true });
-    // 作成後にも、リンクに差し替えられていないことを確かめる。
+    // 作成先の親フォルダは、書き込みを .claude 配下の実パスに限った子プロセスで作る。
+    const mkdirCommand = restricted({ bin: '/bin/mkdir', args: ['-p', '--', worktreeRoot] }, [claudeDir]);
+    const made = spawnSync(mkdirCommand.bin, mkdirCommand.args, { cwd, env: plainEnv, encoding: 'utf8' });
+    if (made.error || made.status !== 0) return reject('task command rejected: could not create the worktree parent directory');
+    // 作成後の状態を確かめる（拒否の理由を分かりやすくするための検査。安全性は上の書き込み制限が担う）。
     for (const dir of [claudeDir, worktreeRoot]) {
       const stat = fsImpl.lstatSync(dir);
       if (stat.isSymbolicLink() || !stat.isDirectory()) return reject(`task command rejected: ${path.relative(root, dir)} is a symbolic link or not a directory`);
@@ -988,7 +1034,8 @@ function executePrepareWorktree({ parsed, binding, cwd, fsImpl, runGit, spawnSyn
     return 2;
   }
 
-  const added = spawnSync(binding.git, [...FIXED_GIT_PREFIX, 'worktree', 'add', '--quiet', '--no-track', '-b', parsed.branch, worktreePath, remoteRef], { cwd, env: plainEnv, encoding: 'utf8', stdio: 'inherit' });
+  const addCommand = restricted({ bin: binding.git, args: [...FIXED_GIT_PREFIX, 'worktree', 'add', '--quiet', '--no-track', '-b', parsed.branch, worktreePath, remoteRef] }, [claudeDir, earlyCommonDir]);
+  const added = spawnSync(addCommand.bin, addCommand.args, { cwd, env: plainEnv, encoding: 'utf8', stdio: 'inherit' });
   if (added.error) return reject(`task command failed to start: ${added.error.code || 'error'}`);
   if (added.status !== 0) return typeof added.status === 'number' ? added.status : 2;
   const baseSha = runGit(['rev-parse', remoteRef], cwd);
@@ -1055,7 +1102,7 @@ function runTaskCommand(argv, deps = {}) {
 
   if (parsed.operation === 'push' || parsed.operation === 'prepare-worktree') {
     const networkEnv = networkEnvironment(binding);
-    const context = { parsed, binding, cwd, fsImpl, runGit, spawnSync, networkEnv, plainEnv: env, reject, inspected, write, writeOut };
+    const context = { parsed, binding, cwd, fsImpl, runGit, spawnSync, networkEnv, plainEnv: env, reject, inspected, write, writeOut, deps };
     return parsed.operation === 'push' ? executePush(context) : executePrepareWorktree(context);
   }
 
@@ -1086,6 +1133,7 @@ module.exports = {
   TrustError,
   FIXED_GIT_PREFIX,
   DEFAULT_REMOTE_BASE,
+  restrictWrites,
 };
 
 // 複製先（専用 CODEX_HOME）では、ランチャーからの Node 直接実行になる。require された場合は何もしない。

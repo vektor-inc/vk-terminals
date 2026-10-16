@@ -159,12 +159,12 @@ test('restart-agent 検証: codexPolicy を同じ規則で検証し、新規作�
 test('起動コマンド: ポリシー付きは専用 CODEX_HOME と sandbox を明示し、シェル文字列にユーザー入力を混ぜない', () => {
   const home = '/Users/test user/.vk-terminals/codex-task-policy/orchestrated-task';
   assert.equal(
-    buildCodexLaunchCommand('gpt-5.6-sol', { approvalPolicy: 'never', codexPolicy: { preset: 'orchestrated-task' }, codexPolicyHome: home }),
-    `CODEX_HOME='${home}' codex --no-daemon --model 'gpt-5.6-sol' --ask-for-approval 'never' --sandbox 'workspace-write'`,
+    buildCodexLaunchCommand('gpt-5.6-sol', { approvalPolicy: 'never', codexPolicy: { preset: 'orchestrated-task' }, codexPolicyHome: home, codexPolicyTmpdir: '/var/folders/x y/T' }),
+    `TMPDIR='/var/folders/x y/T' CODEX_HOME='${home}' codex --no-daemon --model 'gpt-5.6-sol' --ask-for-approval 'never' --sandbox 'workspace-write'`,
   );
   // 明示した sandbox（より狭い read-only）は上書きしない。
   assert.match(
-    buildCodexLaunchCommand(undefined, { sandboxMode: 'read-only', codexPolicy: { preset: 'orchestrated-task' }, codexPolicyHome: home }),
+    buildCodexLaunchCommand(undefined, { sandboxMode: 'read-only', codexPolicy: { preset: 'orchestrated-task' }, codexPolicyHome: home, codexPolicyTmpdir: '/tmp' }),
     /--sandbox 'read-only'$/,
   );
 });
@@ -175,8 +175,12 @@ test('起動コマンド: 専用 CODEX_HOME が無い・不正なときは起動
   for (const codexPolicyHome of ['relative/path', "/tmp/a'b", '/tmp/a\nb', '', 42, null]) {
     assert.throws(() => buildCodexLaunchCommand(undefined, { ...options, codexPolicyHome }), /policy home/, String(codexPolicyHome));
   }
+  // 判定に使った TMPDIR が無い・不正なときも止める。
+  for (const codexPolicyTmpdir of [undefined, 'relative', "/tmp/a'b", '/tmp/a\nb', '', 42, null]) {
+    assert.throws(() => buildCodexLaunchCommand(undefined, { ...options, codexPolicyHome: '/tmp/ok', codexPolicyTmpdir }), /policy tmpdir/, String(codexPolicyTmpdir));
+  }
   assert.throws(
-    () => buildCodexLaunchCommand(undefined, { codexPolicy: { preset: 'x' }, codexPolicyHome: '/tmp/ok' }),
+    () => buildCodexLaunchCommand(undefined, { codexPolicy: { preset: 'x' }, codexPolicyHome: '/tmp/ok', codexPolicyTmpdir: '/tmp' }),
     /invalid codex task policy/,
   );
 });
@@ -1090,15 +1094,15 @@ test('新規作成と再起動は同じ入力から（専用フォルダ名以�
     // renderer / HTTP 経由で余計な項目（偽の codexPolicyHome を含む）が混ざっても、検証済みの項目だけが残る。
     const restartRequest = {
       termId: '3', expectedGeneration: 1, cwd: sandbox.repo, engine: 'codex', model: 'gpt-5.6-sol', ...newPaneOptions,
-      codexPolicyHome: '/etc',
+      codexPolicyHome: '/etc', codexPolicyTmpdir: '/etc',
     };
-    const fromNewPane = resolveCodexTaskPolicyLaunchOptions('codex', { ...newPaneOptions, codexPolicyHome: '/etc' }, sandbox.deps);
+    const fromNewPane = resolveCodexTaskPolicyLaunchOptions('codex', { ...newPaneOptions, codexPolicyHome: '/etc', codexPolicyTmpdir: '/etc' }, sandbox.deps);
     const fromRestart = resolveCodexTaskPolicyLaunchOptions('codex', restartRequest, sandbox.deps);
     assert.equal(fromNewPane.ok, true, fromNewPane.error);
     const commandOf = (resolved) => buildEngineAwareLaunchCommand('codex', 'gpt-5.6-sol', resolved.options).command;
     const normalized = (resolved) => commandOf(resolved).replace(resolved.options.codexPolicyHome, '<home>');
     assert.equal(normalized(fromRestart), normalized(fromNewPane));
-    assert.ok(commandOf(fromNewPane).startsWith(`CODEX_HOME='${fromNewPane.options.codexPolicyHome}' codex --no-daemon`));
+    assert.ok(commandOf(fromNewPane).startsWith(`TMPDIR='${fromNewPane.options.codexPolicyTmpdir}' CODEX_HOME='${fromNewPane.options.codexPolicyHome}' codex --no-daemon`));
     assert.ok(!commandOf(fromNewPane).includes('/etc'));
 
     // 再起動を繰り返しても、生成物は同じ固定内容になる。
@@ -1543,6 +1547,77 @@ test('親の起動 cwd が親自身の書き込み先（引き継ぎ用フォル
     assert.equal(normal.ok, true, normal.error);
     assert.deepEqual(fs.readdirSync(normal.home).sort(), HOME_ENTRIES);
     assert.equal(launcherAssignments(path.join(normal.home, 'vk-task-ops')).VK_TASK_PARENT_CWD, fs.realpathSync(sandbox.repo));
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('親の起動 cwd が ..repo のように .. で始まる普通のフォルダ名の配下でも、書き込み先の中として member を無効にする', () => {
+  const sandbox = createSandbox();
+  try {
+    const makeRepo = (dir) => {
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      childProcess.execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: dir });
+      childProcess.execFileSync('git', ['remote', 'add', 'origin', 'https://github.com/vektor-inc/vk-terminals.git'], { cwd: dir });
+      return fs.realpathSync(dir);
+    };
+    const tmpRoot = path.join(sandbox.root, 'tmp-root');
+    fs.mkdirSync(tmpRoot, { mode: 0o700 });
+    fs.mkdirSync(sandbox.deps.handoffDir, { mode: 0o700 });
+    const cases = [
+      ['引き継ぎ用フォルダ配下の ..repo', makeRepo(path.join(sandbox.deps.handoffDir, '..repo'))],
+      ['引き継ぎ用フォルダ配下の ..repo の子', makeRepo(path.join(sandbox.deps.handoffDir, '..repo', 'child'))],
+      ['一時フォルダ配下の ..repo', makeRepo(path.join(tmpRoot, '..repo'))],
+      ['一時フォルダ配下の ..repo の子', makeRepo(path.join(tmpRoot, '..repo', 'child'))],
+    ];
+    for (const [label, cwd] of cases) {
+      const result = prepare(sandbox, { cwd, tmpRoots: [tmpRoot] });
+      assert.equal(result.ok, true, `${label}: ${result.error}`);
+      assert.deepEqual(fs.readdirSync(result.home).sort(), HOME_ENTRIES.filter((name) => !name.startsWith('member')), label);
+      assert.equal(launcherAssignments(path.join(result.home, 'vk-task-ops')).VK_TASK_PARENT_CWD, '', label);
+      assert.equal(result.discard(), true);
+    }
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('親へ渡す TMPDIR は判定に使った一時フォルダと同じ1つの値（シェル側の TMPDIR に左右されない）。新規作成と再起動の両方で起動コマンドに入る', () => {
+  const sandbox = createSandbox();
+  try {
+    const tmpRoot = path.join(sandbox.root, 'tmp-root');
+    fs.mkdirSync(tmpRoot, { mode: 0o700 });
+    const tmpLink = path.join(sandbox.root, 'tmp-link');
+    fs.symlinkSync(tmpRoot, tmpLink);
+    const { tmpRoots: _unused, ...deps } = sandbox.deps;
+    // 判定に使う TMPDIR の実パスが、そのまま返る（リンクは解決される）。
+    const prepared = prepareCodexTaskPolicyHome({ preset: 'orchestrated-task', ...deps, tmpdir: tmpLink });
+    assert.equal(prepared.ok, true, prepared.error);
+    assert.equal(prepared.tmpdir, fs.realpathSync(tmpRoot));
+    assert.equal(prepared.discard(), true);
+    // 安全でない TMPDIR（相対・単一引用符）は使わず /tmp の実パスに倒す。
+    for (const bad of ['relative', "/tmp/a'b"]) {
+      const fallback = prepareCodexTaskPolicyHome({ preset: 'orchestrated-task', ...deps, tmpdir: bad });
+      assert.equal(fallback.tmpdir, fs.realpathSync('/tmp'), bad);
+      assert.equal(fallback.discard(), true);
+    }
+    // 新規作成も再起動も、同じ値が起動コマンドに入る。
+    const request = { approvalPolicy: 'never', codexPolicy: { preset: 'orchestrated-task' } };
+    const before = process.env.TMPDIR;
+    process.env.TMPDIR = tmpLink;
+    try {
+      const fromNewPane = resolveCodexTaskPolicyLaunchOptions('codex', request, deps);
+      const fromRestart = resolveCodexTaskPolicyLaunchOptions('codex', { termId: '3', expectedGeneration: 1, cwd: sandbox.repo, engine: 'codex', ...request }, deps);
+      for (const resolved of [fromNewPane, fromRestart]) {
+        assert.equal(resolved.ok, true, resolved.error);
+        assert.equal(resolved.options.codexPolicyTmpdir, fs.realpathSync(tmpRoot));
+        const command = buildEngineAwareLaunchCommand('codex', undefined, resolved.options).command;
+        assert.ok(command.startsWith(`TMPDIR='${fs.realpathSync(tmpRoot)}' CODEX_HOME='${resolved.options.codexPolicyHome}' codex`), command);
+        assert.equal(resolved.discard(), true);
+      }
+    } finally {
+      if (before === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = before;
+    }
   } finally {
     sandbox.cleanup();
   }

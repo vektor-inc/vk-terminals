@@ -555,14 +555,13 @@ function readGitIdentity(spawnSync, gitPath, homeDir) {
  * workspace-write が標準で許す一時フォルダ（/tmp と $TMPDIR。config.toml で除外していないため含める）。実パスで比べる。
  * @param {string} parentWorkingDir 親の起動 cwd の実パス
  * @param {string[]} writableRoots 親の config.toml の writable_roots（実パス）
- * @param {string[]|undefined} tmpRoots 一時フォルダの上書き（テスト用）。省略時は /tmp と $TMPDIR
+ * @param {string[]} tmpRoots 一時フォルダ（呼び出し側が /tmp と固定した TMPDIR を渡す。テストでは差し替える）
  * @param {object} fsImpl
  * @returns {boolean}
  */
 function isParentCwdWritableByParent(parentWorkingDir, writableRoots, tmpRoots, fsImpl) {
-  const temporary = tmpRoots === undefined ? ['/tmp', process.env.TMPDIR] : tmpRoots;
   const roots = [...writableRoots];
-  for (const dir of temporary) {
+  for (const dir of tmpRoots) {
     if (typeof dir !== 'string' || !path.isAbsolute(dir)) continue;
     try {
       roots.push(fsImpl.realpathSync(dir));
@@ -571,6 +570,27 @@ function isParentCwdWritableByParent(parentWorkingDir, writableRoots, tmpRoots, 
     }
   }
   return roots.some((root) => isWithinDirectory(parentWorkingDir, root));
+}
+
+/**
+ * 親 Codex に固定して渡す TMPDIR（実パス）を決める。メンバー起動の判定に使う一時フォルダと、親の起動コマンドへ渡す TMPDIR は、
+ * この1つの値から作る（PTY のシェルの設定で別の TMPDIR を受け取って判定をすり抜けないようにするため）。
+ * VK Terminals 自身の $TMPDIR が絶対パスで安全な文字だけなら、その実パス。そうでなければ /tmp の実パス。
+ * @param {string|undefined} candidate 候補（省略時は process.env.TMPDIR。テスト用に差し替え可）
+ * @param {object} fsImpl
+ * @returns {string}
+ */
+function resolveParentTmpdir(candidate, fsImpl) {
+  for (const dir of [candidate, '/tmp']) {
+    if (!isSafeAbsolutePath(dir)) continue;
+    try {
+      const real = fsImpl.realpathSync(dir);
+      if (isSafeAbsolutePath(real)) return real;
+    } catch (_error) {
+      // 次の候補へ
+    }
+  }
+  return '/tmp';
 }
 
 function prepareCodexTaskPolicyHome(params) {
@@ -655,10 +675,12 @@ function prepareCodexTaskPolicyHome(params) {
     // 子用の CODEX_HOME・実行の記録フォルダ（子から書き込めない場所）を、この起動のぶんだけ新規に作る。
     let memberIoDir = null;
     // 親の起動 cwd が親の書き込み先の中にある配置では、メンバー起動を有効にしない（子用 CODEX_HOME・member 設定・入出力フォルダを作らない）。
+    // 判定に使う一時フォルダ（/tmp と、親へ固定して渡す TMPDIR）。tmpRoots はテスト用の差し替え口。
+    const parentTmpdir = resolveParentTmpdir(params.tmpdir === undefined ? process.env.TMPDIR : params.tmpdir, fsImpl);
     const memberAllowed = codexPath !== null && !isParentCwdWritableByParent(
       parentWorkingDir,
       [handoff.realPath, path.join(data.realPath, MEMBER_IO_DIR_NAME, launchName)],
-      params.tmpRoots,
+      params.tmpRoots === undefined ? ['/tmp', parentTmpdir] : params.tmpRoots,
       fsImpl,
     );
     const memberHome = path.join(launchHome, MEMBER_HOME_NAME);
@@ -720,7 +742,7 @@ function prepareCodexTaskPolicyHome(params) {
     if (memberIoDir !== null && fsImpl.readdirSync(memberIoDir).length !== 0) throw new PolicyError('policy home contains unexpected entries');
     assertChainUnchanged(fsImpl, [...handoff.chain, ...data.chain, ...home.chain, ...toolChains, ...(auth ? auth.chain : []), ...(ghHosts ? ghHosts.chain : [])]);
     const discardTarget = created;
-    return { ok: true, home: launchHome, discard: () => removeCreatedLaunchHome(fsImpl, discardTarget.home, discardTarget, uid) };
+    return { ok: true, home: launchHome, tmpdir: parentTmpdir, discard: () => removeCreatedLaunchHome(fsImpl, discardTarget.home, discardTarget, uid) };
   } catch (error) {
     if (created !== null) removeCreatedLaunchHome(fsImpl, created.home, created, uid);
     const reason = error instanceof PolicyError || error instanceof TrustError ? error.message : (error && error.code ? error.code : 'filesystem error');
@@ -753,7 +775,10 @@ function resolveCodexTaskPolicyLaunchOptions(engine, options, deps) {
   if (!prepared.ok) return prepared;
   // dryRun（事前確認）では専用 CODEX_HOME が無い。起動には使えない値なので options へ載せない。
   const policyOptions = { ...launchOptions, codexPolicy: validated.codexPolicy };
-  if (prepared.home !== null) policyOptions.codexPolicyHome = prepared.home;
+  if (prepared.home !== null) {
+    policyOptions.codexPolicyHome = prepared.home;
+    policyOptions.codexPolicyTmpdir = prepared.tmpdir;
+  }
   return { ok: true, options: policyOptions, discard: prepared.discard };
 }
 

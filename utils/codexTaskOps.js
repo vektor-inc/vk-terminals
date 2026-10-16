@@ -1185,7 +1185,7 @@ function executePrepareWorktree({ parsed, binding, cwd, fsImpl, runGit, spawnSyn
  */
 function isWithinDirectory(target, base) {
   const relative = path.relative(base, target);
-  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+  return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 }
 
 /**

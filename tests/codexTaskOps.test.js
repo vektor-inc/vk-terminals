@@ -2720,6 +2720,10 @@ test('親の書き込み範囲を超えない: 子の -C と監督プロセス�
       assert.equal(isWithinDirectory(inWorktree.repo, fs.realpathSync(wt)), false);
       assert.equal(isWithinDirectory(`${fs.realpathSync(wt)}-other`, fs.realpathSync(wt)), false);
       assert.equal(isWithinDirectory(path.join(fs.realpathSync(wt), 'a', 'b'), fs.realpathSync(wt)), true);
+      // .. で始まる普通のフォルダ名は配下として扱う。本物の親（..）は範囲外。
+      assert.equal(isWithinDirectory(path.join(fs.realpathSync(wt), '..repo'), fs.realpathSync(wt)), true);
+      assert.equal(isWithinDirectory(path.join(fs.realpathSync(wt), '..repo', 'sub'), fs.realpathSync(wt)), true);
+      assert.equal(isWithinDirectory(path.dirname(fs.realpathSync(wt)), fs.realpathSync(wt)), false);
       assert.equal(inWorktree.runMember(MEMBER_START, { cwd: inWorktree.repo }).code, 2);
     } finally {
       inWorktree.cleanup();

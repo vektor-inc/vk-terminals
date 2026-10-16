@@ -581,36 +581,69 @@ function resolveGitCommonDir({ dir, run, fsImpl }) {
 }
 
 /**
- * 作業フォルダが、拘束したリポジトリの worktree（Git 管理領域が拘束先と同一）かを確認する。
- * 別のリポジトリ・入れ子のリポジトリ・同じ origin を持つだけの別クローンは Git 管理領域が異なるため false。
+ * 作業フォルダが、拘束したリポジトリに登録された worktree かを確認する。次をすべて満たすときだけ true。
+ *   1. Git 管理領域（common-dir）の実パスが拘束先と同一（別リポジトリ・入れ子・同じ origin の別クローンを除く）
+ *   2. 作業フォルダの実 gitdir が、拘束先の common-dir 直下の worktrees/ の 1 つ下である（.git ファイルが任意の場所を指す偽装を除く）
+ *   3. その gitdir の `gitdir` ファイル（逆参照）が、検査対象ルートの .git ファイルを指している
+ *      （登録済み worktree の gitdir を指す .git ファイルを別フォルダへ複製した場合を除く）。
+ *      逆参照ファイルは通常ファイル・リンクでない・自分（または root）の所有のときだけ読む。
  * 拘束先側の値は起動時に固定せず、実行のたびに拘束先のフォルダから求め直す。
- * @param {{cwd: string, run: Function, bindingRoot: string, fsImpl: object}} params
+ * @param {{cwd: string, run: Function, bindingRoot: string, inspectedRoot: string, fsImpl: object, uid?: number}} params
  * @returns {boolean}
  */
-function isBoundWorktree({ cwd, run, bindingRoot, fsImpl }) {
+function isBoundWorktree({ cwd, run, bindingRoot, inspectedRoot, fsImpl, uid }) {
   const own = resolveGitCommonDir({ dir: cwd, run, fsImpl });
   if (own === null) return false;
   const bound = resolveGitCommonDir({ dir: bindingRoot, run, fsImpl });
-  return bound !== null && own === bound;
+  if (bound === null || own !== bound) return false;
+
+  const gitDirResult = run(['rev-parse', '--path-format=absolute', '--git-dir'], cwd);
+  if (gitDirResult.status !== 0) return false;
+  let gitDir;
+  try {
+    gitDir = fsImpl.realpathSync(path.resolve(cwd, String(gitDirResult.stdout).trim()));
+  } catch (_error) {
+    return false;
+  }
+  if (path.dirname(gitDir) !== path.join(bound, 'worktrees')) return false;
+
+  try {
+    // 検査対象ルートの .git は、リンクでない通常ファイル（worktree の目印）でなければならない。
+    const dotGit = path.join(inspectedRoot, '.git');
+    const dotGitStat = fsImpl.lstatSync(dotGit);
+    if (dotGitStat.isSymbolicLink() || !dotGitStat.isFile()) return false;
+    const backRef = path.join(gitDir, 'gitdir');
+    const stat = fsImpl.lstatSync(backRef);
+    if (stat.isSymbolicLink() || !stat.isFile()) return false;
+    if (!(uid === undefined || stat.uid === uid || stat.uid === 0)) return false;
+    const target = String(fsImpl.readFileSync(backRef, 'utf8')).trim();
+    if (target === '' || !path.isAbsolute(target)) return false;
+    return fsImpl.realpathSync(target) === dotGit;
+  } catch (_error) {
+    return false;
+  }
 }
 
 /**
  * git commit の前に、現在のブランチが既定ブランチ（main / master / origin/HEAD の指す先）か、
  * ブランチに属さない状態（detached HEAD）でないことを確認する。問題なければ null、拒否するならメッセージ。
+ * 同名のタグがあると短縮名が `heads/main` のように変わり比較をすり抜けるため、symbolic-ref の完全名で比較する。
  * @param {{cwd: string, run: Function}} params
  * @returns {string|null}
  */
 function checkCommitBranch({ cwd, run }) {
-  const head = run(['symbolic-ref', '-q', '--short', 'HEAD'], cwd);
-  const branch = head.status === 0 ? String(head.stdout).trim() : '';
-  if (branch === '') return 'task command rejected: cannot commit on a detached HEAD; switch to a working branch first';
-  const defaults = new Set(['main', 'master']);
-  const remoteHead = run(['symbolic-ref', '-q', '--short', 'refs/remotes/origin/HEAD'], cwd);
+  const head = run(['symbolic-ref', '-q', 'HEAD'], cwd);
+  const ref = head.status === 0 ? String(head.stdout).trim() : '';
+  if (ref === '') return 'task command rejected: cannot commit on a detached HEAD; switch to a working branch first';
+  if (!ref.startsWith('refs/heads/')) return 'task command rejected: HEAD does not point to a local branch; switch to a working branch first';
+  const defaults = new Set(['refs/heads/main', 'refs/heads/master']);
+  const remoteHead = run(['symbolic-ref', '-q', 'refs/remotes/origin/HEAD'], cwd);
   if (remoteHead.status === 0) {
-    const remoteBranch = String(remoteHead.stdout).trim().replace(/^origin\//, '');
-    if (remoteBranch !== '') defaults.add(remoteBranch);
+    const remoteRef = String(remoteHead.stdout).trim();
+    const prefix = 'refs/remotes/origin/';
+    if (remoteRef.startsWith(prefix) && remoteRef.length > prefix.length) defaults.add(`refs/heads/${remoteRef.slice(prefix.length)}`);
   }
-  if (defaults.has(branch)) return `task command rejected: cannot commit on the default branch ${JSON.stringify(branch)}; switch to a working branch first`;
+  if (defaults.has(ref)) return `task command rejected: cannot commit on the default branch ${JSON.stringify(ref.slice('refs/heads/'.length))}; switch to a working branch first`;
   return null;
 }
 
@@ -731,7 +764,7 @@ function runTaskCommand(argv, deps = {}) {
   // 作業フォルダが、起動時に拘束したリポジトリそのものであることを確認する。
   const inspected = inspectRepository({ cwd, run: runGit, homeDir: binding.home, fsImpl });
   if (!inspected.ok) return reject(inspected.error);
-  if (inspected.root !== binding.root && !isBoundWorktree({ cwd, run: runGit, bindingRoot: binding.root, fsImpl })) {
+  if (inspected.root !== binding.root && !isBoundWorktree({ cwd, run: runGit, bindingRoot: binding.root, inspectedRoot: inspected.root, fsImpl, uid: currentUid(deps) })) {
     return reject('task command rejected: working directory is not the bound repository');
   }
   if (parsed.needsGitHub) {

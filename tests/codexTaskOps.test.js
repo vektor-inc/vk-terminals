@@ -1083,3 +1083,138 @@ test('再起動: 拘束は起動時の cwd（通常のクローン）だけで�
     fixture.cleanup();
   }
 });
+
+// ─── worktree の登録確認（偽装の拒否）と既定ブランチの完全名比較（issue #433 レビュー対応） ─────
+
+test('worktree 偽装: 偽の commondir・複製した .git ファイル・リンク経由は拒否し、正規の worktree は通る', () => {
+  const fixture = createFixture();
+  try {
+    const adminRoot = path.join(fixture.repo, '.git', 'worktrees');
+    const legit = addWorktree(fixture, path.join(fixture.root, 'wt-legit'), 'work/legit');
+    const legitInside = addWorktree(fixture, path.join(fixture.repo, '.claude', 'worktrees', 'legit'), 'work/legit-inside');
+    const attempt = (cwd, label) => {
+      fs.writeFileSync(path.join(cwd, 'z.txt'), `${label}\n`);
+      const results = [['git', 'add', '-A'], ['git', 'commit', '-m', label], ['git', 'status']].map((command) => run(fixture, command, { cwd }));
+      return results;
+    };
+    const assertRejected = (cwd, label) => {
+      for (const result of attempt(cwd, label)) {
+        assert.equal(result.code, 2, label);
+        assert.match(result.messages.join(''), /not the bound repository/, label);
+      }
+    };
+
+    // 1. 偽の gitdir / commondir（worktrees/ の外に置く）。Git 自身は拘束先の管理領域として解決できる状態にしておく。
+    const fakeGitDir = path.join(fixture.root, 'fake-gitdir');
+    fs.mkdirSync(fakeGitDir);
+    fs.writeFileSync(path.join(fakeGitDir, 'HEAD'), 'ref: refs/heads/work/test\n');
+    fs.writeFileSync(path.join(fakeGitDir, 'commondir'), `${path.join(fixture.repo, '.git')}\n`);
+    const fake = path.join(fixture.root, 'fake');
+    fs.mkdirSync(fake);
+    fs.writeFileSync(path.join(fake, '.git'), `gitdir: ${fakeGitDir}\n`);
+    assert.equal(fs.realpathSync(git(fake, 'rev-parse', '--path-format=absolute', '--git-common-dir')), path.join(fixture.repo, '.git'));
+    assertRejected(fake, 'fake commondir');
+
+    // 2. worktrees/ の直下に置いた未登録の管理領域（逆参照が無い／別の場所を指す）。
+    for (const [name, backRef] of [['nobackref', null], ['wrongref', path.join(fixture.root, 'elsewhere', '.git')]]) {
+      const dir = path.join(adminRoot, name);
+      fs.mkdirSync(dir);
+      fs.writeFileSync(path.join(dir, 'HEAD'), 'ref: refs/heads/work/test\n');
+      fs.writeFileSync(path.join(dir, 'commondir'), '../..\n');
+      if (backRef !== null) fs.writeFileSync(path.join(dir, 'gitdir'), `${backRef}\n`);
+      const unregistered = path.join(fixture.root, `unregistered-${name}`);
+      fs.mkdirSync(unregistered);
+      fs.writeFileSync(path.join(unregistered, '.git'), `gitdir: ${dir}\n`);
+      assertRejected(fs.realpathSync(unregistered), name);
+    }
+
+    // 3. 登録済み worktree の .git ファイルを別フォルダへ複製（gitdir は登録済みの管理領域を指す）。
+    const copy = path.join(fixture.root, 'copy');
+    fs.mkdirSync(copy);
+    fs.copyFileSync(path.join(legit, '.git'), path.join(copy, '.git'));
+    assert.equal(git(copy, 'rev-parse', '--abbrev-ref', 'HEAD'), 'work/legit');
+    assertRejected(fs.realpathSync(copy), 'copied .git file');
+
+    // 4. .git がリンク（登録済み worktree の .git ファイルへ）／逆参照ファイルがリンク。
+    const linked = path.join(fixture.root, 'linked');
+    fs.mkdirSync(linked);
+    fs.symlinkSync(path.join(legit, '.git'), path.join(linked, '.git'));
+    assertRejected(fs.realpathSync(linked), 'symlinked .git');
+
+    const legitAdmin = path.join(adminRoot, path.basename(git(legit, 'rev-parse', '--git-dir')));
+    const backRefFile = path.join(legitAdmin, 'gitdir');
+    const original = fs.readFileSync(backRefFile, 'utf8');
+    const realBackRef = path.join(fixture.root, 'real-gitdir-file');
+    fs.writeFileSync(realBackRef, original);
+    fs.rmSync(backRefFile);
+    fs.symlinkSync(realBackRef, backRefFile);
+    assertRejected(legit, 'symlinked back reference');
+    fs.rmSync(backRefFile);
+    fs.writeFileSync(backRefFile, original);
+
+    // 5. 正規の worktree（拘束先の外側・内側）は引き続き通る。
+    for (const [cwd, label] of [[legit, 'legit outside'], [legitInside, 'legit inside']]) {
+      const [add, commit, status] = attempt(cwd, label);
+      assert.deepEqual([add.code, commit.code, status.code], [0, 0, 0], label);
+    }
+    assert.deepEqual(fixture.readCalls(), []);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('worktree 偽装: extensions.worktreeConfig と config.worktree に外部コマンドを起動しうる設定を置いた worktree は拒否する', () => {
+  const fixture = createFixture();
+  try {
+    const wt = addWorktree(fixture, path.join(fixture.root, 'wt-wtcfg'), 'work/wtcfg');
+    git(fixture.repo, 'config', 'extensions.worktreeConfig', 'true');
+    const adminDir = path.resolve(wt, git(wt, 'rev-parse', '--git-dir'));
+    const marker = path.join(fixture.root, 'editor-ran');
+    fs.writeFileSync(path.join(adminDir, 'config.worktree'), `[core]\n\teditor = touch ${marker}\n`);
+    assert.equal(git(wt, 'config', '--worktree', 'core.editor'), `touch ${marker}`);
+    fs.writeFileSync(path.join(wt, 'w.txt'), 'w\n');
+    for (const command of [['git', 'status'], ['git', 'add', '-A'], ['git', 'commit', '-m', 'x']]) {
+      const result = run(fixture, command, { cwd: wt });
+      assert.equal(result.code, 2, command.join(' '));
+      assert.match(result.messages.join(''), /can run external commands/);
+    }
+    assert.equal(fs.existsSync(marker), false);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('既定ブランチ: 同名のタグや origin/ で始まるローカルブランチ名があっても、完全名で判定して拒否する', () => {
+  const fixture = createFixture();
+  try {
+    const attempt = (label) => {
+      fs.writeFileSync(path.join(fixture.repo, 'c.txt'), `${label}\n`);
+      assert.equal(run(fixture, ['git', 'add', '-A']).code, 0);
+      return run(fixture, ['git', 'commit', '-m', label]);
+    };
+    // main と同名のタグ。短縮名は heads/main になる（ここで前提を確かめる）。
+    git(fixture.repo, 'checkout', '-q', '-B', 'main');
+    git(fixture.repo, 'tag', 'main');
+    assert.equal(git(fixture.repo, 'symbolic-ref', '--short', 'HEAD'), 'heads/main');
+    const tagged = attempt('main with tag');
+    assert.equal(tagged.code, 2);
+    assert.match(tagged.messages.join(''), /default branch "main"/);
+
+    // origin/HEAD の指す先と同名のタグ。
+    git(fixture.repo, 'checkout', '-q', '-B', 'work/test');
+    git(fixture.repo, 'branch', 'develop');
+    git(fixture.repo, 'update-ref', 'refs/remotes/origin/develop', 'HEAD');
+    git(fixture.repo, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/develop');
+    git(fixture.repo, 'tag', 'develop');
+    git(fixture.repo, 'checkout', '-q', 'develop');
+    const remoteTagged = attempt('develop with tag');
+    assert.equal(remoteTagged.code, 2);
+    assert.match(remoteTagged.messages.join(''), /default branch "develop"/);
+
+    // origin/ で始まる名前のローカルブランチは、既定ブランチではない（短縮名の origin/develop と取り違えない）。
+    git(fixture.repo, 'checkout', '-q', '-b', 'origin/develop');
+    assert.equal(attempt('local branch named origin/develop').code, 0);
+  } finally {
+    fixture.cleanup();
+  }
+});

@@ -243,10 +243,10 @@ function parseGhPrCreate(tokens) {
 }
 
 // ラベル名は日本語・空白・`:` を含みうるので文字種は絞らず、危険なものだけを拒否する。
-// 制御文字・改行・カンマ（gh が複数指定の区切りに使う）・先頭 `-`・前後の空白・空文字・過度な長さ（GitHub の上限 50 文字）。
+// 制御文字・改行・カンマとダブルクォート（gh の --label は CSV として解析されるため、判定と実際の解釈を一致させる）・先頭 `-`・前後の空白・空文字・過度な長さ（GitHub の上限 50 文字）。
 function isSafeLabelName(value) {
   if (typeof value !== 'string' || value === '' || value !== value.trim()) return false;
-  if (/[\x00-\x1f\x7f]/.test(value) || value.includes(',') || value.startsWith('-')) return false;
+  if (/[\x00-\x1f\x7f]/.test(value) || value.includes(',') || value.includes('"') || value.startsWith('-')) return false;
   return [...value].length <= MAX_LABEL_LENGTH;
 }
 

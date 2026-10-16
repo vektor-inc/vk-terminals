@@ -72,6 +72,11 @@ const MEMBER_FILE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 const MEMBER_MODEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._[\]-]{0,63}$/;
 const MEMBER_RUN_ID_PATTERN = /^[0-9a-f]{24}$/;
 const MEMBER_SUPPORTED_ENGINES = Object.freeze(['codex']);
+const MEMBER_PARENT_SANDBOXES = Object.freeze(['read-only', 'workspace-write']);
+const MEMBER_MAX_RESULT_BYTES = 16 * 1024 * 1024;
+// 実行の監督プロセス（member start が起動する、子の Codex の終了を見届ける常駐プロセス）へ設定を渡す環境変数。
+// ランチャーは環境を空にして入口を起動するため、Codex（親）からこの変数を差し込む経路は無い。
+const MEMBER_SUPERVISE_ENV = 'VK_TASK_MEMBER_SUPERVISE';
 const MEMBER_MAX_PROMPT_BYTES = 1024 * 1024;
 const MEMBER_MAX_SCHEMA_BYTES = 256 * 1024;
 const MEMBER_LOG_TAIL_BYTES = 4096;
@@ -852,7 +857,7 @@ function isSafeBindingPath(value) {
 /**
  * ランチャーが固定した値（環境変数 VK_TASK_*）を読み、拘束の設定として検証する。1 つでも不正なら null。
  * @param {Record<string, string|undefined>} env
- * @returns {{root: string, repo: string|null, git: string, gh: string|null, home: string, gitConfig: string, ghConfig: string|null, remoteBase: string, member: {codex: string, home: string, io: string, runs: string}|null}|null}
+ * @returns {{root: string, repo: string|null, git: string, gh: string|null, home: string, gitConfig: string, ghConfig: string|null, remoteBase: string, member: {codex: string, home: string, io: string, runs: string, parentCwd: string, parentSandbox: string}|null}|null}
  */
 function readBinding(env) {
   const root = env.VK_TASK_ROOT;
@@ -874,11 +879,13 @@ function readBinding(env) {
   if (remoteBase !== DEFAULT_REMOTE_BASE && (!isSafeBindingPath(remoteBase) || remoteBase.split('/').includes('..'))) return null;
   // メンバー起動の設定は 4 つがそろったときだけ有効。すべて空（子用ランチャー・Codex が見つからない場合）なら member 操作は拒否する。
   // 一部だけ設定されている状態は不正として、束縛全体を無効にする。
-  const memberValues = [env.VK_TASK_CODEX, env.VK_TASK_MEMBER_HOME, env.VK_TASK_MEMBER_IO, env.VK_TASK_MEMBER_RUNS];
+  // parentCwd / parentSandbox は、親の Codex を起動したときの作業フォルダと sandbox。子はこの範囲を超えない。
+  const memberValues = [env.VK_TASK_CODEX, env.VK_TASK_MEMBER_HOME, env.VK_TASK_MEMBER_IO, env.VK_TASK_MEMBER_RUNS, env.VK_TASK_PARENT_CWD, env.VK_TASK_PARENT_SANDBOX];
   let member = null;
   if (memberValues.some((value) => value)) {
-    if (!memberValues.every(isSafeBindingPath)) return null;
-    member = { codex: memberValues[0], home: memberValues[1], io: memberValues[2], runs: memberValues[3] };
+    if (!memberValues.slice(0, 5).every(isSafeBindingPath)) return null;
+    if (!MEMBER_PARENT_SANDBOXES.includes(memberValues[5])) return null;
+    member = { codex: memberValues[0], home: memberValues[1], io: memberValues[2], runs: memberValues[3], parentCwd: memberValues[4], parentSandbox: memberValues[5] };
   }
   return { root, repo, git, gh, home, gitConfig, ghConfig, remoteBase, member };
 }
@@ -1168,6 +1175,20 @@ function executePrepareWorktree({ parsed, binding, cwd, fsImpl, runGit, spawnSyn
 // ─── メンバー起動（member start / member status） ──────────────────────────
 
 /**
+ * target が base そのもの、または base の配下（どちらも実パス）かを判定する。
+ * 親の書き込み範囲は、親を起動した作業フォルダ（Codex の workspace-write はその配下全体）なので、
+ * 後から `prepare worktree` で作った worktree（拘束ルート配下の `.claude/worktrees/`）は、親をルートで起動していれば範囲に入る。
+ * 親をサブフォルダで起動した場合や、範囲の外に登録された worktree は入らない。
+ * @param {string} target
+ * @param {string} base
+ * @returns {boolean}
+ */
+function isWithinDirectory(target, base) {
+  const relative = path.relative(base, target);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+/**
  * 子の Codex の起動引数を組み立てる（codex の後ろに続く部分）。
  * 親と同じ範囲の sandbox（workspace-write。--readonly なら read-only）と `-a never` を必ず付け、
  * 囲いを外す指定（--dangerously-bypass-approvals-and-sandbox など）はここからも入らない。
@@ -1234,18 +1255,103 @@ function createExclusiveFile(fsImpl, filePath, content, mode = 0o600) {
   }
 }
 
-// 子の終了を待たずに入口を終えるため、子は shell の薄い包みの中で動かし、終了コードを専用フォルダのファイルへ書く。
-// 引数はすべて位置引数で渡し、shell の文字列には入れない。
-const MEMBER_WRAPPER_SCRIPT = 'prompt=$1; log=$2; exit_file=$3; shift 3; "$@" <"$prompt" >"$log" 2>&1; rc=$?; printf "%s\\n" "$rc" >"$exit_file.tmp" && mv "$exit_file.tmp" "$exit_file"';
+// 実行の監督プロセスに渡された設定が、想定した形かを確かめる（異常なら起動しない）。
+function readSupervisePayload(raw) {
+  let payload;
+  try {
+    payload = JSON.parse(raw);
+  } catch (_error) {
+    return null;
+  }
+  const isPath = (value) => typeof value === 'string' && path.isAbsolute(value) && !/[\x00]/.test(value);
+  const valid = payload && isPath(payload.codex) && isPath(payload.cwd) && isPath(payload.runDir)
+    && Array.isArray(payload.args) && payload.args.every((arg) => typeof arg === 'string' && !/[\x00]/.test(arg))
+    && payload.env && typeof payload.env === 'object' && Object.values(payload.env).every((value) => typeof value === 'string');
+  return valid ? payload : null;
+}
+
+/**
+ * 子の Codex を起動して終了を見届ける、`member start` が切り離して起動する監督プロセスの本体。
+ * 入口（member start）は子の終了を待たずに返るため、終了コードの記録と結果の公開はここで行う。
+ *   - 子の標準入力・出力は、実行の記録フォルダ内のファイル（プロンプトの写し・ログ）に直接つなぐ。
+ *   - 子の結果（codex の `-o`）は、子から書き換えられない実行の記録フォルダ内に書かれる。
+ *   - 入出力フォルダへの公開は、member start が先に排他的作成して渡した記述子（outFd）へ書くだけにする。
+ *     入出力フォルダのパスは開き直さないので、作成後にその名前がリンクに差し替えられても、別のファイルは書き換わらない。
+ *   - 公開が済んでから終了コードを書く（`exit` が在る = 結果の公開も終わっている）。
+ * @param {{codex: string, args: string[], cwd: string, env: Record<string, string>, runDir: string}} payload
+ * @param {{fs?: object, spawn?: Function, outFd?: number}} [deps] テスト用の差し替え（outFd は結果の公開先の記述子。既定は 3）
+ * @returns {Promise<number>} 記録した終了コード
+ */
+function superviseMemberRun(payload, deps = {}) {
+  const fsImpl = deps.fs || nodeFs;
+  const spawnChild = deps.spawn || childProcess.spawn;
+  const outFd = deps.outFd === undefined ? 3 : deps.outFd;
+  const constants = fsImpl.constants || nodeFs.constants;
+  const inRunDir = (name) => path.join(payload.runDir, name);
+  return new Promise((resolve) => {
+    let promptFd;
+    let logFd;
+    let finished = false;
+    const closeQuietly = (fd) => {
+      if (fd === undefined) return;
+      try { fsImpl.closeSync(fd); } catch (_error) { /* 既に閉じている */ }
+    };
+    // 子の結果を、保持している記述子へコピーする。結果が無い・通常ファイルでない・大きすぎるときは何も書かない。
+    const publishResult = () => {
+      let resultFd;
+      try {
+        resultFd = fsImpl.openSync(inRunDir('result.txt'), constants.O_RDONLY | (constants.O_NOFOLLOW || 0));
+        const stat = fsImpl.fstatSync(resultFd);
+        if (stat.isFile() && stat.size <= MEMBER_MAX_RESULT_BYTES) fsImpl.writeFileSync(outFd, fsImpl.readFileSync(resultFd));
+      } catch (_error) {
+        // 結果を公開できなくても、終了コードの記録は続ける。
+      } finally {
+        closeQuietly(resultFd);
+      }
+    };
+    const finish = (code) => {
+      if (finished) return;
+      finished = true;
+      closeQuietly(promptFd);
+      closeQuietly(logFd);
+      publishResult();
+      closeQuietly(outFd);
+      try {
+        createExclusiveFile(fsImpl, inRunDir('exit.tmp'), Buffer.from(`${code}\n`));
+        fsImpl.renameSync(inRunDir('exit.tmp'), inRunDir('exit'));
+      } catch (_error) {
+        // 記録できなければ、状態確認は lost になる。
+      }
+      resolve(code);
+    };
+    let child;
+    try {
+      promptFd = fsImpl.openSync(inRunDir('prompt.txt'), constants.O_RDONLY | (constants.O_NOFOLLOW || 0));
+      logFd = fsImpl.openSync(inRunDir('log.txt'), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW || 0), 0o600);
+      child = spawnChild(payload.codex, payload.args, { cwd: payload.cwd, env: payload.env, stdio: [promptFd, logFd, logFd] });
+    } catch (_error) {
+      finish(127);
+      return;
+    }
+    child.on('error', () => finish(127));
+    child.on('close', (code) => finish(Number.isInteger(code) && code >= 0 && code <= 255 ? code : 128));
+  });
+}
 
 /**
  * `member start`。子の Codex をバックグラウンドで起動し、実行 ID を返す。子の実行は数十分かかりうるため、完了は待たない。
- * 作業フォルダは拘束ルートか検証済み worktree のルートに限り、入出力は専用フォルダ直下の名前だけを受ける。
+ * 子は親と同じ範囲を超えない場合にだけ起動する。
+ *   - sandbox: 親が read-only なら、`--readonly` の有無にかかわらず read-only（`--ignore-rules` 付き）にする。
+ *   - 作業フォルダ: 拘束ルートか検証済み worktree のルートで、かつ親を起動した作業フォルダ（親の書き込み範囲）の中にあるときだけ。
+ * 入出力は専用フォルダ直下の名前だけを受ける。
  */
 function executeMemberStart({ parsed, binding, cwd, fsImpl, inspected, reject, writeOut, deps }) {
   const member = binding.member;
   if (member === null) return reject('task command rejected: member is not available from this launcher');
   if (fsImpl.realpathSync(cwd) !== inspected.root) return reject('task command rejected: member start must run at the root of the bound repository or a bound worktree');
+  // 子の書き込み範囲（-C の作業フォルダ + 親と同じ追加の書き込み先）が、親の範囲（親の作業フォルダ + 同じ追加の書き込み先）に収まること。
+  if (!isWithinDirectory(inspected.root, member.parentCwd)) return reject('task command rejected: member working directory is outside the parent working directory');
+  const readonly = parsed.readonly || member.parentSandbox === 'read-only';
   const uid = currentUid(deps);
   let promptBody;
   let schemaBody;
@@ -1263,14 +1369,16 @@ function executeMemberStart({ parsed, binding, cwd, fsImpl, inspected, reject, w
     return reject(`task command rejected: ${error instanceof TrustError ? error.message : 'member input could not be verified'}`);
   }
 
+  const constants = fsImpl.constants || nodeFs.constants;
   const outPath = path.join(member.io, parsed.out);
   const runId = (deps.randomId || (() => crypto.randomBytes(12).toString('hex')))();
   const runDir = path.join(member.runs, runId);
-  const paths = { prompt: path.join(runDir, 'prompt.txt'), schema: path.join(runDir, 'schema.json'), log: path.join(runDir, 'log.txt'), exit: path.join(runDir, 'exit'), meta: path.join(runDir, 'meta.json') };
+  const paths = { prompt: path.join(runDir, 'prompt.txt'), schema: path.join(runDir, 'schema.json'), result: path.join(runDir, 'result.txt'), log: path.join(runDir, 'log.txt'), meta: path.join(runDir, 'meta.json') };
+  let outFd;
   try {
-    // 出力先は先に新規作成して確保する（事前に置かれたリンクや既存ファイルへ書かせない）。
+    // 出力先は先に新規作成して記述子を保持する（事前に置かれたリンクや既存ファイルへ書かない）。以後このパスは開き直さない。
     try {
-      createExclusiveFile(fsImpl, outPath, Buffer.alloc(0));
+      outFd = fsImpl.openSync(outPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW || 0), 0o600);
     } catch (error) {
       return reject(`task command rejected: ${parsed.out} ${error && error.code === 'EEXIST' ? 'already exists' : 'could not be created'}`);
     }
@@ -1278,30 +1386,31 @@ function executeMemberStart({ parsed, binding, cwd, fsImpl, inspected, reject, w
     fsImpl.mkdirSync(runDir, { mode: 0o700 });
     createExclusiveFile(fsImpl, paths.prompt, promptBody);
     createExclusiveFile(fsImpl, paths.schema, schemaBody);
-  } catch (error) {
-    return reject(`task command failed: ${error && error.code ? error.code : 'filesystem error'}`);
-  }
 
-  const codexArgs = buildMemberCodexArgs({ root: inspected.root, schemaPath: paths.schema, outPath, model: parsed.model, readonly: parsed.readonly });
-  const spawnDetached = deps.spawn || childProcess.spawn;
-  let child;
-  try {
-    child = spawnDetached('/bin/sh', ['-c', MEMBER_WRAPPER_SCRIPT, 'sh', paths.prompt, paths.log, paths.exit, member.codex, ...codexArgs], {
-      cwd: inspected.root, env: buildMemberEnvironment(binding), detached: true, stdio: 'ignore',
-    });
-  } catch (error) {
-    return reject(`task command failed to start: ${error && error.code ? error.code : 'error'}`);
-  }
-  if (!child || typeof child.pid !== 'number') return reject('task command failed to start: error');
-  if (typeof child.unref === 'function') child.unref();
-  try {
-    createExclusiveFile(fsImpl, paths.meta, Buffer.from(`${JSON.stringify({ pid: child.pid, startedAt: new Date().toISOString(), readonly: parsed.readonly, out: outPath })}\n`));
+    // 子の結果（-o）は、子から書き換えられない実行の記録フォルダ内に書かせる。入出力フォルダへの公開は監督プロセスが行う。
+    const codexArgs = buildMemberCodexArgs({ root: inspected.root, schemaPath: paths.schema, outPath: paths.result, model: parsed.model, readonly });
+    const payload = { codex: member.codex, args: codexArgs, cwd: inspected.root, env: buildMemberEnvironment(binding), runDir };
+    const spawnDetached = deps.spawn || childProcess.spawn;
+    let supervisor;
+    try {
+      supervisor = spawnDetached(process.execPath, [__filename], {
+        cwd: inspected.root, env: { [MEMBER_SUPERVISE_ENV]: JSON.stringify(payload) }, detached: true, stdio: ['ignore', 'ignore', 'ignore', outFd],
+      });
+    } catch (error) {
+      return reject(`task command failed to start: ${error && error.code ? error.code : 'error'}`);
+    }
+    if (!supervisor || typeof supervisor.pid !== 'number') return reject('task command failed to start: error');
+    if (typeof supervisor.unref === 'function') supervisor.unref();
+    createExclusiveFile(fsImpl, paths.meta, Buffer.from(`${JSON.stringify({ pid: supervisor.pid, startedAt: new Date().toISOString(), readonly, out: outPath })}\n`));
   } catch (error) {
     return reject(`task command failed: ${error && error.code ? error.code : 'filesystem error'}`);
+  } finally {
+    if (outFd !== undefined) fsImpl.closeSync(outFd);
   }
   writeOut(`MEMBER_ID=${runId}\nOUT=${outPath}\nLOG=${paths.log}\n`);
   return 0;
 }
+
 
 // 通常ファイルの末尾を、リンクをたどらずに最大 MEMBER_LOG_TAIL_BYTES だけ読む。読めなければ null。
 function readFileTail(fsImpl, filePath) {
@@ -1472,9 +1581,20 @@ module.exports = {
   restrictWrites,
   buildMemberCodexArgs,
   buildMemberEnvironment,
+  isWithinDirectory,
+  superviseMemberRun,
+  MEMBER_SUPERVISE_ENV,
 };
 
 // 複製先（専用 CODEX_HOME）では、ランチャーからの Node 直接実行になる。require された場合は何もしない。
+// 環境変数 VK_TASK_MEMBER_SUPERVISE があるときは、`member start` が切り離して起動した監督プロセス（ランチャーは環境を空にするため、
+// 親の Codex からこの変数は渡せない）。
 if (require.main === module) {
-  process.exitCode = runTaskCommand(process.argv.slice(2));
+  if (process.env[MEMBER_SUPERVISE_ENV] !== undefined) {
+    const payload = readSupervisePayload(process.env[MEMBER_SUPERVISE_ENV]);
+    if (payload === null) process.exitCode = 2;
+    else superviseMemberRun(payload).then((code) => { process.exitCode = code; });
+  } else {
+    process.exitCode = runTaskCommand(process.argv.slice(2));
+  }
 }

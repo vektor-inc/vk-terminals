@@ -1403,7 +1403,10 @@ test('生成: 子用 CODEX_HOME とランチャーが親と一緒に作られ、
     assert.equal(parentBinding.VK_TASK_MEMBER_HOME, childHome);
     assert.equal(parentBinding.VK_TASK_MEMBER_IO, ioDir);
     assert.equal(parentBinding.VK_TASK_MEMBER_RUNS, runsDir);
-    for (const name of ['VK_TASK_CODEX', 'VK_TASK_MEMBER_HOME', 'VK_TASK_MEMBER_IO', 'VK_TASK_MEMBER_RUNS']) assert.equal(childBinding[name], '', name);
+    for (const name of ['VK_TASK_CODEX', 'VK_TASK_MEMBER_HOME', 'VK_TASK_MEMBER_IO', 'VK_TASK_MEMBER_RUNS', 'VK_TASK_PARENT_CWD', 'VK_TASK_PARENT_SANDBOX']) assert.equal(childBinding[name], '', name);
+    // 親を起動した作業フォルダ（実パス）と sandbox が固定される（既定は workspace-write）。
+    assert.equal(parentBinding.VK_TASK_PARENT_CWD, fs.realpathSync(sandbox.repo));
+    assert.equal(parentBinding.VK_TASK_PARENT_SANDBOX, 'workspace-write');
     // 拘束先・実行ファイル・fetch 元は親と同じで、子の設定ファイルは子用の専用フォルダ内のもの。
     for (const name of ['VK_TASK_ROOT', 'VK_TASK_REPO', 'VK_TASK_GIT', 'VK_TASK_GH', 'VK_TASK_HOME', 'VK_TASK_REMOTE_BASE']) assert.equal(childBinding[name], parentBinding[name], name);
     assert.equal(childBinding.VK_TASK_GITCONFIG, path.join(childHome, 'gitconfig'));
@@ -1439,6 +1442,56 @@ test('生成: 子用 CODEX_HOME とランチャーが親と一緒に作られ、
     assert.equal(result.discard(), true);
     assert.equal(fs.existsSync(parentHome), false);
     assert.equal(fs.existsSync(ioDir), false);
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('親の範囲: 親の sandbox と作業フォルダがランチャーに固定され、read-only の親や、サブフォルダで起動した親は、子を親より広い範囲では起動できない', async () => {
+  const sandbox = createSandbox();
+  try {
+    const subDir = path.join(sandbox.repo, 'sub');
+    fs.mkdirSync(subDir);
+    const waitForExit = async (home, id) => {
+      for (let i = 0; i < 100 && !fs.existsSync(path.join(home, 'member-runs', id, 'exit')); i += 1) await new Promise((resolve) => setTimeout(resolve, 100));
+    };
+    const startArgs = ['member', 'start', '--engine', 'codex', '--prompt', 'prompt.md', '--schema', 'schema.json', '--out', 'out.json'];
+    const ops = (launcher, cwd, ...args) => childProcess.spawnSync(launcher, args, { cwd, env: { ...process.env }, encoding: 'utf8' });
+    const stage = (home) => {
+      const ioDir = path.join(sandbox.deps.dataDir, 'codex-task-io', path.basename(home));
+      fs.writeFileSync(path.join(ioDir, 'prompt.md'), 'work\n');
+      fs.writeFileSync(path.join(ioDir, 'schema.json'), '{"type":"object"}');
+      return ioDir;
+    };
+
+    // 親が read-only: 起動引数の sandboxMode が、そのままランチャーに固定される。--readonly を省略しても、子は read-only。
+    const resolved = resolveCodexTaskPolicyLaunchOptions('codex', { approvalPolicy: 'never', sandboxMode: 'read-only', codexPolicy: { preset: 'orchestrated-task' } }, sandbox.deps);
+    assert.equal(resolved.ok, true, resolved.error);
+    const readOnlyHome = resolved.options.codexPolicyHome;
+    assert.equal(launcherAssignments(path.join(readOnlyHome, 'vk-task-ops')).VK_TASK_PARENT_SANDBOX, 'read-only');
+    stage(readOnlyHome);
+    const started = ops(path.join(readOnlyHome, 'vk-task-ops'), sandbox.repo, ...startArgs);
+    assert.equal(started.status, 0, started.stderr);
+    await waitForExit(readOnlyHome, /^MEMBER_ID=([0-9a-f]{24})$/m.exec(started.stdout)[1]);
+    const recorded = JSON.parse(fs.readFileSync(sandbox.codexRecord, 'utf8'));
+    assert.deepEqual(recorded.args.slice(5, 7), ['-s', 'read-only']);
+    assert.ok(recorded.args.includes('--ignore-rules'));
+    // sandboxMode を省略した親は workspace-write、不正な値は準備の段階で拒否される。
+    const omitted = resolveCodexTaskPolicyLaunchOptions('codex', { approvalPolicy: 'never', codexPolicy: { preset: 'orchestrated-task' } }, sandbox.deps);
+    assert.equal(launcherAssignments(path.join(omitted.options.codexPolicyHome, 'vk-task-ops')).VK_TASK_PARENT_SANDBOX, 'workspace-write');
+    assert.equal(prepare(sandbox, { sandboxMode: 'danger-full-access' }).ok, false);
+
+    // 親をサブフォルダで起動した: 作業フォルダがサブフォルダに固定され、ルートで入口を呼んでも子は起動しない。
+    const narrow = prepare(sandbox, { cwd: subDir });
+    assert.equal(narrow.ok, true, narrow.error);
+    assert.equal(launcherAssignments(path.join(narrow.home, 'vk-task-ops')).VK_TASK_PARENT_CWD, fs.realpathSync(subDir));
+    const ioDir = stage(narrow.home);
+    const rejected = ops(path.join(narrow.home, 'vk-task-ops'), sandbox.repo, ...startArgs);
+    assert.equal(rejected.status, 2);
+    assert.match(rejected.stderr, /outside the parent working directory/);
+    assert.equal(fs.existsSync(path.join(ioDir, 'out.json')), false);
+    // サブフォルダ自身は、リポジトリのルートではないので、そもそも子の作業フォルダにできない。
+    assert.equal(ops(path.join(narrow.home, 'vk-task-ops'), subDir, ...startArgs).status, 2);
   } finally {
     sandbox.cleanup();
   }

@@ -217,6 +217,9 @@ function renderLauncher({ envPath, nodePath, opsScriptPath, binding }) {
     `VK_TASK_MEMBER_HOME=${binding.memberHome || ''}`,
     `VK_TASK_MEMBER_IO=${binding.memberIo || ''}`,
     `VK_TASK_MEMBER_RUNS=${binding.memberRuns || ''}`,
+    // 親の Codex を起動したときの作業フォルダ（実パス）と sandbox。子はこれを超えて起動しない（親が read-only なら子も read-only）。
+    `VK_TASK_PARENT_CWD=${binding.parentCwd || ''}`,
+    `VK_TASK_PARENT_SANDBOX=${binding.parentSandbox || ''}`,
   ];
   return [
     '#!/bin/sh',
@@ -534,6 +537,7 @@ function readGitIdentity(spawnSync, gitPath, homeDir) {
  * @param {string} params.cwd タスクの作業フォルダ（拘束するリポジトリを決める）
  * @param {string} params.homeDir 利用者のホーム（実行環境の HOME に固定する。gh の認証情報の共有元もここから決める）
  * @param {boolean} [params.dryRun] 専用 CODEX_HOME を作らず事前確認だけ行う
+ * @param {string} [params.sandboxMode] 親の Codex の sandbox（read-only / workspace-write。省略時は workspace-write）。メンバー起動の子の上限になる
  * @param {object} [params.fs] テスト用の fs 差し替え
  * @param {number} [params.uid] テスト用の所有者 ID 差し替え
  * @param {Function} [params.spawnSync] テスト用のプロセス実行差し替え
@@ -589,7 +593,11 @@ function prepareCodexTaskPolicyHome(params) {
     if (!repository.ok) throw new PolicyError(repository.error.replace(/^task command rejected: /, ''));
     if (!isSafeAbsolutePath(repository.root)) throw new PolicyError('unsafe repository path');
     // 信頼しないプロジェクトとして記録する場所。Codex が信頼を引く単位（Git ルート・作業フォルダ）の両方を実パスで固定する。
-    const untrustedProjectPaths = [...new Set([repository.root, fsImpl.realpathSync(cwd)])];
+    const parentWorkingDir = fsImpl.realpathSync(cwd);
+    const untrustedProjectPaths = [...new Set([repository.root, parentWorkingDir])];
+    // 親の実効 sandbox（起動引数 --sandbox の値。省略時は workspace-write）。メンバー起動の子はこれより広くしない。
+    const parentSandbox = params.sandboxMode === undefined ? 'workspace-write' : params.sandboxMode;
+    if (!['read-only', 'workspace-write'].includes(parentSandbox)) throw new PolicyError('invalid sandbox mode');
     if (!untrustedProjectPaths.every(isSafeAbsolutePath)) throw new PolicyError('unsafe repository path');
 
     // 親フォルダは 1 段ずつ作り、実体・所有者・0700 を毎回確認する（リンク経由で別の場所へ書かせない）。
@@ -649,7 +657,7 @@ function prepareCodexTaskPolicyHome(params) {
       const memberEnabled = memberIoDir !== null && !child;
       const binding = {
         root: repository.root, repo: repository.repo, git: gitPath, gh: ghPath, home: home.realPath, gitConfig: path.join(targetHome, GIT_CONFIG_NAME), ghConfig: ghConfigDir, remoteBase,
-        ...(memberEnabled ? { codex: codexPath, memberHome, memberIo: memberIoDir, memberRuns: memberRunsDir } : {}),
+        ...(memberEnabled ? { codex: codexPath, memberHome, memberIo: memberIoDir, memberRuns: memberRunsDir, parentCwd: parentWorkingDir, parentSandbox } : {}),
       };
       return {
         files: {
@@ -708,7 +716,7 @@ function resolveCodexTaskPolicyLaunchOptions(engine, options, deps) {
   if (!validated.ok) return validated;
   const launchOptions = { approvalPolicy: validated.approvalPolicy, sandboxMode: validated.sandboxMode };
   if (validated.codexPolicy === undefined) return { ok: true, options: launchOptions, discard: NOT_CREATED };
-  const prepared = prepareCodexTaskPolicyHome({ preset: validated.codexPolicy.preset, ...prepareDeps });
+  const prepared = prepareCodexTaskPolicyHome({ preset: validated.codexPolicy.preset, sandboxMode: validated.sandboxMode, ...prepareDeps });
   if (!prepared.ok) return prepared;
   // dryRun（事前確認）では専用 CODEX_HOME が無い。起動には使えない値なので options へ載せない。
   const policyOptions = { ...launchOptions, codexPolicy: validated.codexPolicy };

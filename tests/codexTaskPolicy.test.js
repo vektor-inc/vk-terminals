@@ -349,6 +349,9 @@ test('生成: rules は信頼済みランチャーの実行だけを許可し、
     assert.ok(guide.includes(`'${path.join(home, 'vk-task-ops')}' <git|gh>`));
     assert.equal(guide.includes('node '), false);
     for (const operation of ORCHESTRATED_TASK_OPERATIONS) assert.ok(guide.includes(`\`${operation}\``), operation);
+    assert.match(guide, /`gh issue create` は `--title <題> --body <本文>` が必須/);
+    assert.match(guide, /--assignee/);
+    assert.match(guide, /--label/);
   } finally {
     sandbox.cleanup();
   }

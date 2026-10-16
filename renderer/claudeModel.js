@@ -143,7 +143,12 @@
       if (typeof home !== 'string' || !CODEX_POLICY_HOME_PATTERN.test(home)) {
         throw new Error('codex task policy requires a prepared policy home');
       }
-      parts.unshift(`CODEX_HOME='${home}'`);
+      // 判定に使った一時フォルダと同じ値を TMPDIR として固定する（シェル側の TMPDIR で判定をすり抜けられないように）。
+      const tmpdir = options.codexPolicyTmpdir;
+      if (typeof tmpdir !== 'string' || !CODEX_POLICY_HOME_PATTERN.test(tmpdir)) {
+        throw new Error('codex task policy requires a prepared policy tmpdir');
+      }
+      parts.unshift(`TMPDIR='${tmpdir}'`, `CODEX_HOME='${home}'`);
     }
     if (validated.ok && validated.approvalPolicy !== undefined) {
       parts.push('--ask-for-approval', `'${validated.approvalPolicy}'`);

@@ -21,6 +21,21 @@ const { validateRestartAgentRequest } = require('../utils/restartAgent');
 
 const { validateCodexLaunchOptions, buildCodexLaunchCommand, buildEngineAwareLaunchCommand } = claudeModel;
 
+// 偽の codex。起動引数・環境・標準入力を記録し、`-o` の出力ファイルへ結果を書く。
+// 入力に FAIL が含まれれば終了コード 3、SLEEP が含まれれば短く待ってから終わる（状態の観測用）。
+const FAKE_CODEX_SCRIPT = (recordPath) => [
+  `#!${process.execPath}`,
+  "const fs = require('fs');",
+  'const input = fs.readFileSync(0, \'utf8\');',
+  `fs.writeFileSync(${JSON.stringify(recordPath)}, JSON.stringify({ args: process.argv.slice(2), env: process.env, input, cwd: process.cwd() }));`,
+  "const outIndex = process.argv.indexOf('-o');",
+  "if (outIndex >= 0) fs.writeFileSync(process.argv[outIndex + 1], JSON.stringify({ ok: true }));",
+  "console.log('fake codex output');",
+  "if (input.includes('SLEEP')) setTimeout(() => process.exit(0), 1500);",
+  "else process.exit(input.includes('FAIL') ? 3 : 0);",
+  '',
+].join('\n');
+
 // 一時ディレクトリ上に「個人の CODEX_HOME」「アプリのデータ」「引き継ぎ先」「ホーム」「タスクのリポジトリ」を作る。
 function createSandbox(personalConfigToml, { origin = 'https://github.com/vektor-inc/vk-terminals.git' } = {}) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'vk-codex-policy-')));
@@ -35,19 +50,31 @@ function createSandbox(personalConfigToml, { origin = 'https://github.com/vektor
   const git = (...args) => childProcess.execFileSync('git', args, { cwd: repo, encoding: 'utf8' });
   git('init', '-q', '-b', 'main');
   if (origin) git('remote', 'add', 'origin', origin);
+  // メンバー起動の試験用に、本物の Codex の代わりになる偽の codex を最優先の探索先へ置く（実機の Codex の有無に依存させない）。
+  const codexBinDir = path.join(root, 'fake-codex-bin');
+  fs.mkdirSync(codexBinDir);
+  const codexRecord = path.join(root, 'codex-record.json');
+  fs.writeFileSync(path.join(codexBinDir, 'codex'), FAKE_CODEX_SCRIPT(codexRecord), { mode: 0o755 });
+  const toolDirs = [codexBinDir, '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin', ...String(process.env.PATH).split(path.delimiter).filter(path.isAbsolute)];
   return {
     root,
     personalCodexHome,
     homeDir,
     repo,
     git,
+    codexBinDir,
+    codexRecord,
+    toolDirs,
     deps: {
+      toolDirs,
       validateCodexLaunchOptions,
       dataDir: path.join(root, 'data'),
       handoffDir: path.join(root, 'handoff'),
       personalCodexHome,
       homeDir,
       cwd: repo,
+      // 試験の作業フォルダは一時フォルダの中にあるため、一時フォルダの書き込み許可の判定は既定では外す（専用のテストで指定する）。
+      tmpRoots: [],
     },
     policyBase: path.join(root, 'data', 'codex-task-policy', 'orchestrated-task'),
     cleanup: () => fs.rmSync(root, { recursive: true, force: true }),
@@ -132,12 +159,12 @@ test('restart-agent 検証: codexPolicy を同じ規則で検証し、新規作�
 test('起動コマンド: ポリシー付きは専用 CODEX_HOME と sandbox を明示し、シェル文字列にユーザー入力を混ぜない', () => {
   const home = '/Users/test user/.vk-terminals/codex-task-policy/orchestrated-task';
   assert.equal(
-    buildCodexLaunchCommand('gpt-5.6-sol', { approvalPolicy: 'never', codexPolicy: { preset: 'orchestrated-task' }, codexPolicyHome: home }),
-    `CODEX_HOME='${home}' codex --no-daemon --model 'gpt-5.6-sol' --ask-for-approval 'never' --sandbox 'workspace-write'`,
+    buildCodexLaunchCommand('gpt-5.6-sol', { approvalPolicy: 'never', codexPolicy: { preset: 'orchestrated-task' }, codexPolicyHome: home, codexPolicyTmpdir: '/var/folders/x y/T' }),
+    `TMPDIR='/var/folders/x y/T' CODEX_HOME='${home}' codex --no-daemon --model 'gpt-5.6-sol' --ask-for-approval 'never' --sandbox 'workspace-write'`,
   );
   // 明示した sandbox（より狭い read-only）は上書きしない。
   assert.match(
-    buildCodexLaunchCommand(undefined, { sandboxMode: 'read-only', codexPolicy: { preset: 'orchestrated-task' }, codexPolicyHome: home }),
+    buildCodexLaunchCommand(undefined, { sandboxMode: 'read-only', codexPolicy: { preset: 'orchestrated-task' }, codexPolicyHome: home, codexPolicyTmpdir: '/tmp' }),
     /--sandbox 'read-only'$/,
   );
 });
@@ -148,8 +175,12 @@ test('起動コマンド: 専用 CODEX_HOME が無い・不正なときは起動
   for (const codexPolicyHome of ['relative/path', "/tmp/a'b", '/tmp/a\nb', '', 42, null]) {
     assert.throws(() => buildCodexLaunchCommand(undefined, { ...options, codexPolicyHome }), /policy home/, String(codexPolicyHome));
   }
+  // 判定に使った TMPDIR が無い・不正なときも止める。
+  for (const codexPolicyTmpdir of [undefined, 'relative', "/tmp/a'b", '/tmp/a\nb', '', 42, null]) {
+    assert.throws(() => buildCodexLaunchCommand(undefined, { ...options, codexPolicyHome: '/tmp/ok', codexPolicyTmpdir }), /policy tmpdir/, String(codexPolicyTmpdir));
+  }
   assert.throws(
-    () => buildCodexLaunchCommand(undefined, { codexPolicy: { preset: 'x' }, codexPolicyHome: '/tmp/ok' }),
+    () => buildCodexLaunchCommand(undefined, { codexPolicy: { preset: 'x' }, codexPolicyHome: '/tmp/ok', codexPolicyTmpdir: '/tmp' }),
     /invalid codex task policy/,
   );
 });
@@ -167,7 +198,7 @@ test('起動コマンド: ポリシー無しの Codex（手動の通常セッシ
 // ─── 専用 CODEX_HOME の生成 ──────────────────────────────────────────────
 
 const OPS_SOURCE = fs.readFileSync(path.join(__dirname, '..', 'utils', 'codexTaskOps.js'), 'utf8');
-const HOME_ENTRIES = ['AGENTS.md', 'auth.json', 'config.toml', 'gh', 'gitconfig', 'rules', 'vk-task-ops', 'vk-task-ops.js'];
+const HOME_ENTRIES = ['AGENTS.md', 'auth.json', 'config.toml', 'gh', 'gitconfig', 'member', 'member-runs', 'rules', 'vk-task-ops', 'vk-task-ops.js'];
 const modeOf = (target) => fs.lstatSync(target).mode & 0o777;
 const prepare = (sandbox, extra = {}) => prepareCodexTaskPolicyHome({ preset: 'orchestrated-task', ...sandbox.deps, ...extra });
 const launchHomes = (sandbox) => (fs.existsSync(sandbox.policyBase) ? fs.readdirSync(sandbox.policyBase) : []);
@@ -192,7 +223,10 @@ test('生成: 個人設定が広くても継承せず、個人の config.toml �
     const config = fs.readFileSync(path.join(result.home, 'config.toml'), 'utf8');
     assert.match(config, /^sandbox_mode = "workspace-write"$/m);
     assert.match(config, /^network_access = false$/m);
-    assert.match(config, new RegExp(`^writable_roots = \\[${JSON.stringify(sandbox.deps.handoffDir).replace(/[\\/]/g, '\\$&')}\\]$`, 'm'));
+    // 書き込める場所は、引き継ぎ先と、メンバー起動の入出力フォルダ（この起動ぶんの専用フォルダ）だけ。
+    const ioDir = path.join(sandbox.deps.dataDir, 'codex-task-io', path.basename(result.home));
+    const expectedRoots = [sandbox.deps.handoffDir, ioDir].map((dir) => JSON.stringify(dir)).join(', ');
+    assert.match(config, new RegExp(`^writable_roots = \\[${expectedRoots.replace(/[\\/]/g, '\\$&')}\\]$`, 'm'));
     // 外部コマンドの事前読み込みにつながる環境変数は、Codex が起動するコマンドへ渡さない。
     assert.match(config, /^exclude = \[.*"LD_\*".*"DYLD_\*".*"NODE_\*".*"GIT_\*".*"GH_\*".*\]$/m);
     for (const forbidden of ['danger-full-access', 'network_access = true', '"/"', '.ssh', 'profile', 'trust_level = "trusted"']) {
@@ -317,7 +351,15 @@ test('プロジェクト側の .codex: 実際の Codex で、リポジトリ側�
         assert.notEqual(effective, null, 'Codex の実効設定を読めなかった');
         assert.equal(effective.sandbox_mode, 'workspace-write');
         assert.equal(effective.sandbox_workspace_write.network_access, false);
-        assert.deepEqual(effective.sandbox_workspace_write.writable_roots, [fs.realpathSync(sandbox.deps.handoffDir)]);
+        const ioDir = path.join(fs.realpathSync(sandbox.deps.dataDir), 'codex-task-io', path.basename(resolved.options.codexPolicyHome));
+        assert.deepEqual(effective.sandbox_workspace_write.writable_roots, [fs.realpathSync(sandbox.deps.handoffDir), ioDir]);
+        // 子の Codex 用 CODEX_HOME も、書き込み範囲・ネットワーク・sandbox は親と同じ（承認だけ求めない）。
+        const child = await readEffectiveCodexConfig(path.join(resolved.options.codexPolicyHome, 'member'), cwd);
+        assert.notEqual(child, null, '子用 CODEX_HOME の実効設定を読めなかった');
+        assert.equal(child.sandbox_mode, 'workspace-write');
+        assert.equal(child.approval_policy, 'never');
+        assert.equal(child.sandbox_workspace_write.network_access, false);
+        assert.deepEqual(child.sandbox_workspace_write.writable_roots, effective.sandbox_workspace_write.writable_roots);
 
         // 対照: 同じリポジトリを「信頼済み」にすると、リポジトリ側の設定が実効設定へ反映される（この検証が意味を持つ確認）。
         const configPath = path.join(resolved.options.codexPolicyHome, 'config.toml');
@@ -346,7 +388,7 @@ test('生成: rules は信頼済みランチャーの実行だけを許可し、
     // 入口は検証ロジック本体の複製で、案内（AGENTS.md）は入口と許可する操作だけを示す。
     assert.equal(fs.readFileSync(path.join(home, 'vk-task-ops.js'), 'utf8'), OPS_SOURCE);
     const guide = fs.readFileSync(path.join(home, 'AGENTS.md'), 'utf8');
-    assert.ok(guide.includes(`'${path.join(home, 'vk-task-ops')}' <git|gh|prepare>`));
+    assert.ok(guide.includes(`'${path.join(home, 'vk-task-ops')}' <git|gh|prepare|member>`));
     assert.equal(guide.includes('node '), false);
     for (const operation of ORCHESTRATED_TASK_OPERATIONS) assert.ok(guide.includes(`\`${operation}\``), operation);
     assert.match(guide, /`gh issue create` は `--title <題> --body <本文>` が必須/);
@@ -463,15 +505,30 @@ test('検証: 許可した生成物以外のファイル・リンク・緩い権
   try {
     const { home } = prepare(sandbox);
     const authTarget = fs.realpathSync(path.join(sandbox.personalCodexHome, 'auth.json'));
-    const fileSpec = (name) => ({ content: fs.readFileSync(path.join(home, name), 'utf8'), mode: modeOf(path.join(home, name)) });
-    const pristine = {
-      files: Object.fromEntries(['config.toml', 'AGENTS.md', 'gitconfig', 'vk-task-ops.js', 'vk-task-ops'].map((name) => [name, fileSpec(name)])),
-      ghFiles: { 'config.yml': fileSpec('gh/config.yml') },
-      rulesBody: fs.readFileSync(path.join(home, 'rules', 'vk-terminals-task.rules'), 'utf8'),
-      authTarget,
+    const expectedOf = (dir) => {
+      const fileSpec = (name) => ({ content: fs.readFileSync(path.join(dir, name), 'utf8'), mode: modeOf(path.join(dir, name)) });
+      return {
+        files: Object.fromEntries(['config.toml', 'AGENTS.md', 'gitconfig', 'vk-task-ops.js', 'vk-task-ops'].map((name) => [name, fileSpec(name)])),
+        ghFiles: { 'config.yml': fileSpec('gh/config.yml') },
+        rulesBody: fs.readFileSync(path.join(dir, 'rules', 'vk-terminals-task.rules'), 'utf8'),
+        authTarget,
+      };
     };
+    const pristine = { ...expectedOf(home), member: expectedOf(path.join(home, 'member')) };
     const uid = process.getuid();
     assert.doesNotThrow(() => verifyPolicyHome(fs, home, pristine, uid));
+
+    // 子用 CODEX_HOME・実行の記録フォルダにも、許可した生成物以外のファイル・緩い権限・中身の違いがあれば拒否する。
+    fs.writeFileSync(path.join(home, 'member', 'hooks.json'), '{}');
+    assert.throws(() => verifyPolicyHome(fs, home, pristine, uid), /unexpected entries/);
+    fs.rmSync(path.join(home, 'member', 'hooks.json'));
+    fs.writeFileSync(path.join(home, 'member-runs', 'stray'), '');
+    assert.throws(() => verifyPolicyHome(fs, home, pristine, uid), /unexpected entries/);
+    fs.rmSync(path.join(home, 'member-runs', 'stray'));
+    fs.chmodSync(path.join(home, 'member', 'vk-task-ops'), 0o700);
+    assert.throws(() => verifyPolicyHome(fs, home, pristine, uid), /permissions are not 0500/);
+    fs.chmodSync(path.join(home, 'member', 'vk-task-ops'), 0o500);
+    assert.throws(() => verifyPolicyHome(fs, home, { ...pristine, member: undefined }, uid), /unexpected entries/);
 
     fs.writeFileSync(path.join(home, 'hooks.json'), '{}');
     assert.throws(() => verifyPolicyHome(fs, home, pristine, uid), /unexpected entries/);
@@ -587,7 +644,7 @@ function createFakeGh(sandbox) {
   fs.mkdirSync(binDir);
   const record = path.join(sandbox.root, 'gh-record.json');
   fs.writeFileSync(path.join(binDir, 'gh'), `#!${process.execPath}\nrequire('fs').writeFileSync(${JSON.stringify(record)}, JSON.stringify({ args: process.argv.slice(2), env: process.env }));\n`, { mode: 0o755 });
-  return { toolDirs: [binDir, '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin', ...String(process.env.PATH).split(path.delimiter).filter(path.isAbsolute)], readRecord: () => JSON.parse(fs.readFileSync(record, 'utf8')) };
+  return { toolDirs: [binDir, ...sandbox.toolDirs], readRecord: () => JSON.parse(fs.readFileSync(record, 'utf8')) };
 }
 
 const PERSONAL_HOSTS = [
@@ -743,7 +800,8 @@ test('信頼境界: 自分所有のリンクを祖先に持つデータ・引き
     assert.ok(result.home.startsWith(path.join(real, 'data', 'nested')));
     assert.equal(modeOf(path.join(real, 'data')), 0o700);
     assert.equal(modeOf(path.join(real, 'handoff', 'deeper')), 0o700);
-    assert.match(fs.readFileSync(path.join(result.home, 'config.toml'), 'utf8'), new RegExp(`writable_roots = \\["${path.join(real, 'handoff', 'deeper').replace(/[\\/]/g, '\\$&')}"\\]`));
+    const rootsPattern = `"${path.join(real, 'handoff', 'deeper')}", "${path.join(real, 'data', 'nested', 'codex-task-io')}/[0-9a-f]{24}"`;
+    assert.match(fs.readFileSync(path.join(result.home, 'config.toml'), 'utf8'), new RegExp(`writable_roots = \\[${rootsPattern.replace(/[\\/]/g, '\\$&')}\\]`));
   } finally {
     sandbox.cleanup();
   }
@@ -1036,19 +1094,19 @@ test('新規作成と再起動は同じ入力から（専用フォルダ名以�
     // renderer / HTTP 経由で余計な項目（偽の codexPolicyHome を含む）が混ざっても、検証済みの項目だけが残る。
     const restartRequest = {
       termId: '3', expectedGeneration: 1, cwd: sandbox.repo, engine: 'codex', model: 'gpt-5.6-sol', ...newPaneOptions,
-      codexPolicyHome: '/etc',
+      codexPolicyHome: '/etc', codexPolicyTmpdir: '/etc',
     };
-    const fromNewPane = resolveCodexTaskPolicyLaunchOptions('codex', { ...newPaneOptions, codexPolicyHome: '/etc' }, sandbox.deps);
+    const fromNewPane = resolveCodexTaskPolicyLaunchOptions('codex', { ...newPaneOptions, codexPolicyHome: '/etc', codexPolicyTmpdir: '/etc' }, sandbox.deps);
     const fromRestart = resolveCodexTaskPolicyLaunchOptions('codex', restartRequest, sandbox.deps);
     assert.equal(fromNewPane.ok, true, fromNewPane.error);
     const commandOf = (resolved) => buildEngineAwareLaunchCommand('codex', 'gpt-5.6-sol', resolved.options).command;
     const normalized = (resolved) => commandOf(resolved).replace(resolved.options.codexPolicyHome, '<home>');
     assert.equal(normalized(fromRestart), normalized(fromNewPane));
-    assert.ok(commandOf(fromNewPane).startsWith(`CODEX_HOME='${fromNewPane.options.codexPolicyHome}' codex --no-daemon`));
+    assert.ok(commandOf(fromNewPane).startsWith(`TMPDIR='${fromNewPane.options.codexPolicyTmpdir}' CODEX_HOME='${fromNewPane.options.codexPolicyHome}' codex --no-daemon`));
     assert.ok(!commandOf(fromNewPane).includes('/etc'));
 
     // 再起動を繰り返しても、生成物は同じ固定内容になる。
-    const contentOf = (resolved) => fs.readFileSync(path.join(resolved.options.codexPolicyHome, 'config.toml'), 'utf8');
+    const contentOf = (resolved) => fs.readFileSync(path.join(resolved.options.codexPolicyHome, 'config.toml'), 'utf8').replace(path.basename(resolved.options.codexPolicyHome), '<launch>');
     for (let i = 0; i < 3; i += 1) {
       const again = resolveCodexTaskPolicyLaunchOptions('codex', restartRequest, sandbox.deps);
       assert.equal(normalized(again), normalized(fromNewPane));
@@ -1310,6 +1368,350 @@ test('ランチャー: prepare で作った worktree で、そのまま add・co
     assert.equal(env.ops(sandbox.repo, 'prepare', 'worktree', 'main', '440', 'feature/440-second', 'codex-440').status, 2);
     assert.equal(env.ops(sandbox.repo, 'prepare', 'worktree', 'main', '440', 'feature/440-third', '../escape').status, 2);
     assert.equal(fs.existsSync(path.join(sandbox.repo, '.claude', 'escape')), false);
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+// ─── メンバー起動（issue #441。子用 CODEX_HOME・入出力フォルダ・実ランチャー経由） ───────────
+
+const launcherAssignments = (launcherPath) => {
+  const launcher = fs.readFileSync(launcherPath, 'utf8');
+  return Object.fromEntries([...launcher.matchAll(/^  '(VK_TASK_[A-Z_]+)=(.*)' \\$/gm)].map((match) => [match[1], match[2]]));
+};
+
+test('生成: 子用 CODEX_HOME とランチャーが親と一緒に作られ、子側の許可・設定は親と同じ範囲で、member 操作だけを持たない', () => {
+  const sandbox = createSandbox();
+  try {
+    const result = prepare(sandbox);
+    assert.equal(result.ok, true, result.error);
+    const parentHome = result.home;
+    const childHome = path.join(parentHome, 'member');
+    const ioDir = path.join(sandbox.deps.dataDir, 'codex-task-io', path.basename(parentHome));
+    const runsDir = path.join(parentHome, 'member-runs');
+    const fakeCodex = path.join(sandbox.codexBinDir, 'codex');
+
+    // 子用の専用フォルダは、親と同じ生成物だけ。入出力フォルダと実行の記録フォルダは空の 0700。
+    assert.deepEqual(fs.readdirSync(childHome).sort(), HOME_ENTRIES.filter((name) => !name.startsWith('member')));
+    for (const dir of [childHome, ioDir, runsDir]) assert.equal(modeOf(dir), 0o700, dir);
+    assert.deepEqual(fs.readdirSync(ioDir), []);
+    assert.deepEqual(fs.readdirSync(runsDir), []);
+    assert.equal(fs.readlinkSync(path.join(childHome, 'auth.json')), fs.readlinkSync(path.join(parentHome, 'auth.json')));
+    for (const name of ['gitconfig', 'vk-task-ops.js', 'gh/config.yml']) {
+      assert.equal(fs.readFileSync(path.join(childHome, name), 'utf8'), fs.readFileSync(path.join(parentHome, name), 'utf8'), name);
+    }
+    assert.equal(modeOf(path.join(childHome, 'vk-task-ops')), 0o500);
+
+    // 親のランチャーだけがメンバー起動の設定を持ち、子のランチャーでは空（member 操作が無効）。
+    const parentBinding = launcherAssignments(path.join(parentHome, 'vk-task-ops'));
+    const childBinding = launcherAssignments(path.join(childHome, 'vk-task-ops'));
+    assert.equal(parentBinding.VK_TASK_CODEX, fakeCodex);
+    assert.equal(parentBinding.VK_TASK_MEMBER_HOME, childHome);
+    assert.equal(parentBinding.VK_TASK_MEMBER_IO, ioDir);
+    assert.equal(parentBinding.VK_TASK_MEMBER_RUNS, runsDir);
+    for (const name of ['VK_TASK_CODEX', 'VK_TASK_MEMBER_HOME', 'VK_TASK_MEMBER_IO', 'VK_TASK_MEMBER_RUNS', 'VK_TASK_PARENT_CWD', 'VK_TASK_PARENT_SANDBOX']) assert.equal(childBinding[name], '', name);
+    // 親を起動した作業フォルダ（実パス）と sandbox が固定される（既定は workspace-write）。
+    assert.equal(parentBinding.VK_TASK_PARENT_CWD, fs.realpathSync(sandbox.repo));
+    assert.equal(parentBinding.VK_TASK_PARENT_SANDBOX, 'workspace-write');
+    // 拘束先・実行ファイル・fetch 元は親と同じで、子の設定ファイルは子用の専用フォルダ内のもの。
+    for (const name of ['VK_TASK_ROOT', 'VK_TASK_REPO', 'VK_TASK_GIT', 'VK_TASK_GH', 'VK_TASK_HOME', 'VK_TASK_REMOTE_BASE']) assert.equal(childBinding[name], parentBinding[name], name);
+    assert.equal(childBinding.VK_TASK_GITCONFIG, path.join(childHome, 'gitconfig'));
+    assert.equal(childBinding.VK_TASK_GHCONFIG, path.join(childHome, 'gh'));
+
+    // 子の許可は子のランチャーの実行だけ。
+    const childRules = fs.readFileSync(path.join(childHome, 'rules', 'vk-terminals-task.rules'), 'utf8');
+    assert.deepEqual(childRules.split('\n').filter((line) => line.startsWith('prefix_rule(')), [`prefix_rule(pattern=${JSON.stringify([path.join(childHome, 'vk-task-ops')])}, decision="allow")`]);
+    assert.equal(childRules.includes(parentHome + '/vk-task-ops'), false);
+
+    // 設定は親と同じ範囲（sandbox・ネットワーク・書き込み先・信頼しないプロジェクト）。違うのは承認だけ（子は承認を求める相手がいない）。
+    const parentConfig = fs.readFileSync(path.join(parentHome, 'config.toml'), 'utf8');
+    const childConfig = fs.readFileSync(path.join(childHome, 'config.toml'), 'utf8');
+    assert.match(parentConfig, /^approval_policy = "on-request"$/m);
+    assert.match(childConfig, /^approval_policy = "never"$/m);
+    assert.equal(childConfig.replace('approval_policy = "never"', 'approval_policy = "on-request"'), parentConfig);
+    const rootsLine = `writable_roots = [${JSON.stringify(sandbox.deps.handoffDir)}, ${JSON.stringify(ioDir)}]`;
+    assert.ok(parentConfig.split('\n').includes(rootsLine));
+    assert.match(childConfig, /^sandbox_mode = "workspace-write"$/m);
+    assert.match(childConfig, /^network_access = false$/m);
+
+    // 案内: 親には member の使い方と入出力フォルダ、子には member の案内が無い。
+    const parentGuide = fs.readFileSync(path.join(parentHome, 'AGENTS.md'), 'utf8');
+    const childGuide = fs.readFileSync(path.join(childHome, 'AGENTS.md'), 'utf8');
+    assert.match(parentGuide, /`member start`/);
+    assert.match(parentGuide, /`member status`/);
+    assert.ok(parentGuide.includes(`\`${ioDir}\``));
+    assert.equal(childGuide.includes('member start'), false);
+    assert.equal(childGuide.includes('member status'), false);
+    assert.ok(childGuide.includes(`'${path.join(childHome, 'vk-task-ops')}' <git|gh|prepare>`));
+
+    // 使われなければ、入出力フォルダも一緒に回収される。
+    assert.equal(result.discard(), true);
+    assert.equal(fs.existsSync(parentHome), false);
+    assert.equal(fs.existsSync(ioDir), false);
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('親の範囲: 親の sandbox と作業フォルダがランチャーに固定され、read-only の親や、サブフォルダで起動した親は、子を親より広い範囲では起動できない', async () => {
+  const sandbox = createSandbox();
+  try {
+    const subDir = path.join(sandbox.repo, 'sub');
+    fs.mkdirSync(subDir);
+    const waitForExit = async (home, id) => {
+      for (let i = 0; i < 100 && !fs.existsSync(path.join(home, 'member-runs', id, 'exit')); i += 1) await new Promise((resolve) => setTimeout(resolve, 100));
+    };
+    const startArgs = ['member', 'start', '--engine', 'codex', '--prompt', 'prompt.md', '--schema', 'schema.json', '--out', 'out.json'];
+    const ops = (launcher, cwd, ...args) => childProcess.spawnSync(launcher, args, { cwd, env: { ...process.env }, encoding: 'utf8' });
+    const stage = (home) => {
+      const ioDir = path.join(sandbox.deps.dataDir, 'codex-task-io', path.basename(home));
+      fs.writeFileSync(path.join(ioDir, 'prompt.md'), 'work\n');
+      fs.writeFileSync(path.join(ioDir, 'schema.json'), '{"type":"object"}');
+      return ioDir;
+    };
+
+    // 親が read-only: 起動引数の sandboxMode が、そのままランチャーに固定される。--readonly を省略しても、子は read-only。
+    const resolved = resolveCodexTaskPolicyLaunchOptions('codex', { approvalPolicy: 'never', sandboxMode: 'read-only', codexPolicy: { preset: 'orchestrated-task' } }, sandbox.deps);
+    assert.equal(resolved.ok, true, resolved.error);
+    const readOnlyHome = resolved.options.codexPolicyHome;
+    assert.equal(launcherAssignments(path.join(readOnlyHome, 'vk-task-ops')).VK_TASK_PARENT_SANDBOX, 'read-only');
+    stage(readOnlyHome);
+    const started = ops(path.join(readOnlyHome, 'vk-task-ops'), sandbox.repo, ...startArgs);
+    assert.equal(started.status, 0, started.stderr);
+    await waitForExit(readOnlyHome, /^MEMBER_ID=([0-9a-f]{24})$/m.exec(started.stdout)[1]);
+    const recorded = JSON.parse(fs.readFileSync(sandbox.codexRecord, 'utf8'));
+    assert.deepEqual(recorded.args.slice(5, 7), ['-s', 'read-only']);
+    assert.ok(recorded.args.includes('--ignore-rules'));
+    // sandboxMode を省略した親は workspace-write、不正な値は準備の段階で拒否される。
+    const omitted = resolveCodexTaskPolicyLaunchOptions('codex', { approvalPolicy: 'never', codexPolicy: { preset: 'orchestrated-task' } }, sandbox.deps);
+    assert.equal(launcherAssignments(path.join(omitted.options.codexPolicyHome, 'vk-task-ops')).VK_TASK_PARENT_SANDBOX, 'workspace-write');
+    assert.equal(prepare(sandbox, { sandboxMode: 'danger-full-access' }).ok, false);
+
+    // 親をサブフォルダで起動した: 作業フォルダがサブフォルダに固定され、ルートで入口を呼んでも子は起動しない。
+    const narrow = prepare(sandbox, { cwd: subDir });
+    assert.equal(narrow.ok, true, narrow.error);
+    assert.equal(launcherAssignments(path.join(narrow.home, 'vk-task-ops')).VK_TASK_PARENT_CWD, fs.realpathSync(subDir));
+    const ioDir = stage(narrow.home);
+    const rejected = ops(path.join(narrow.home, 'vk-task-ops'), sandbox.repo, ...startArgs);
+    assert.equal(rejected.status, 2);
+    assert.match(rejected.stderr, /must run inside the parent working directory/);
+    assert.equal(fs.existsSync(path.join(ioDir, 'out.json')), false);
+    // サブフォルダ（親の起動 cwd そのもの）から呼べば起動でき、子の -C は親の起動 cwd になる。
+    const fromSub = ops(path.join(narrow.home, 'vk-task-ops'), subDir, ...startArgs);
+    assert.equal(fromSub.status, 0, fromSub.stderr);
+    await waitForExit(narrow.home, /^MEMBER_ID=([0-9a-f]{24})$/m.exec(fromSub.stdout)[1]);
+    const narrowRecord = JSON.parse(fs.readFileSync(sandbox.codexRecord, 'utf8'));
+    assert.equal(narrowRecord.args[narrowRecord.args.indexOf('-C') + 1], fs.realpathSync(subDir));
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('親の起動 cwd が親自身の書き込み先（引き継ぎ用フォルダ・入出力フォルダ・一時フォルダ）の中にあるときは、member を有効にせず（子用フォルダ・member 設定を作らず）、入口が member を拒否する。通常のリポジトリ配下では有効', () => {
+  const sandbox = createSandbox();
+  try {
+    const makeRepo = (dir) => {
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      childProcess.execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: dir });
+      childProcess.execFileSync('git', ['remote', 'add', 'origin', 'https://github.com/vektor-inc/vk-terminals.git'], { cwd: dir });
+      return fs.realpathSync(dir);
+    };
+    const launchName = 'a'.repeat(24);
+    const tmpRoot = path.join(sandbox.root, 'tmp-root');
+    fs.mkdirSync(tmpRoot, { mode: 0o700 });
+    // /tmp → /private/tmp のようなリンクの先も、実パスで比べる。
+    const tmpLink = path.join(sandbox.root, 'tmp-link');
+    fs.symlinkSync(tmpRoot, tmpLink);
+    fs.mkdirSync(sandbox.deps.handoffDir, { mode: 0o700 });
+    fs.mkdirSync(path.join(sandbox.deps.dataDir, 'codex-task-io'), { recursive: true, mode: 0o700 });
+    const cases = [
+      ['引き継ぎ用フォルダ配下', makeRepo(path.join(sandbox.deps.handoffDir, 'repo'))],
+      ['入出力フォルダ配下', makeRepo(path.join(sandbox.deps.dataDir, 'codex-task-io', launchName, 'repo'))],
+      ['一時フォルダ配下', makeRepo(path.join(tmpRoot, 'repo'))],
+    ];
+    for (const [label, cwd] of cases) {
+      const result = prepare(sandbox, { cwd, randomId: () => launchName, tmpRoots: [tmpLink] });
+      assert.equal(result.ok, true, `${label}: ${result.error}`);
+      assert.deepEqual(fs.readdirSync(result.home).sort(), HOME_ENTRIES.filter((name) => !name.startsWith('member')), label);
+      const assignments = launcherAssignments(path.join(result.home, 'vk-task-ops'));
+      for (const name of ['VK_TASK_CODEX', 'VK_TASK_MEMBER_HOME', 'VK_TASK_MEMBER_IO', 'VK_TASK_MEMBER_RUNS', 'VK_TASK_PARENT_CWD', 'VK_TASK_PARENT_SANDBOX']) assert.equal(assignments[name], '', `${label}: ${name}`);
+      assert.equal(fs.readFileSync(path.join(result.home, 'AGENTS.md'), 'utf8').includes('member start'), false, label);
+      assert.ok(fs.readFileSync(path.join(result.home, 'config.toml'), 'utf8').split('\n').includes(`writable_roots = [${JSON.stringify(sandbox.deps.handoffDir)}]`), label);
+      const rejected = childProcess.spawnSync(path.join(result.home, 'vk-task-ops'), ['member', 'start', '--engine', 'codex', '--prompt', 'p.md', '--schema', 's.json', '--out', 'o.json'], { cwd, env: { ...process.env }, encoding: 'utf8' });
+      assert.equal(rejected.status, 2, label);
+      assert.match(rejected.stderr, /member is not available from this launcher/, label);
+      assert.equal(result.discard(), true);
+    }
+    // 通常のリポジトリ（書き込み先の外の祖先だけ）では有効。
+    const normal = prepare(sandbox, { tmpRoots: [tmpLink] });
+    assert.equal(normal.ok, true, normal.error);
+    assert.deepEqual(fs.readdirSync(normal.home).sort(), HOME_ENTRIES);
+    assert.equal(launcherAssignments(path.join(normal.home, 'vk-task-ops')).VK_TASK_PARENT_CWD, fs.realpathSync(sandbox.repo));
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('親の起動 cwd が ..repo のように .. で始まる普通のフォルダ名の配下でも、書き込み先の中として member を無効にする', () => {
+  const sandbox = createSandbox();
+  try {
+    const makeRepo = (dir) => {
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      childProcess.execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: dir });
+      childProcess.execFileSync('git', ['remote', 'add', 'origin', 'https://github.com/vektor-inc/vk-terminals.git'], { cwd: dir });
+      return fs.realpathSync(dir);
+    };
+    const tmpRoot = path.join(sandbox.root, 'tmp-root');
+    fs.mkdirSync(tmpRoot, { mode: 0o700 });
+    fs.mkdirSync(sandbox.deps.handoffDir, { mode: 0o700 });
+    const cases = [
+      ['引き継ぎ用フォルダ配下の ..repo', makeRepo(path.join(sandbox.deps.handoffDir, '..repo'))],
+      ['引き継ぎ用フォルダ配下の ..repo の子', makeRepo(path.join(sandbox.deps.handoffDir, '..repo', 'child'))],
+      ['一時フォルダ配下の ..repo', makeRepo(path.join(tmpRoot, '..repo'))],
+      ['一時フォルダ配下の ..repo の子', makeRepo(path.join(tmpRoot, '..repo', 'child'))],
+    ];
+    for (const [label, cwd] of cases) {
+      const result = prepare(sandbox, { cwd, tmpRoots: [tmpRoot] });
+      assert.equal(result.ok, true, `${label}: ${result.error}`);
+      assert.deepEqual(fs.readdirSync(result.home).sort(), HOME_ENTRIES.filter((name) => !name.startsWith('member')), label);
+      assert.equal(launcherAssignments(path.join(result.home, 'vk-task-ops')).VK_TASK_PARENT_CWD, '', label);
+      assert.equal(result.discard(), true);
+    }
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('親へ渡す TMPDIR は判定に使った一時フォルダと同じ1つの値（シェル側の TMPDIR に左右されない）。新規作成と再起動の両方で起動コマンドに入る', () => {
+  const sandbox = createSandbox();
+  try {
+    const tmpRoot = path.join(sandbox.root, 'tmp-root');
+    fs.mkdirSync(tmpRoot, { mode: 0o700 });
+    const tmpLink = path.join(sandbox.root, 'tmp-link');
+    fs.symlinkSync(tmpRoot, tmpLink);
+    const { tmpRoots: _unused, ...deps } = sandbox.deps;
+    // 判定に使う TMPDIR の実パスが、そのまま返る（リンクは解決される）。
+    const prepared = prepareCodexTaskPolicyHome({ preset: 'orchestrated-task', ...deps, tmpdir: tmpLink });
+    assert.equal(prepared.ok, true, prepared.error);
+    assert.equal(prepared.tmpdir, fs.realpathSync(tmpRoot));
+    assert.equal(prepared.discard(), true);
+    // 安全でない TMPDIR（相対・単一引用符）は使わず /tmp の実パスに倒す。
+    for (const bad of ['relative', "/tmp/a'b"]) {
+      const fallback = prepareCodexTaskPolicyHome({ preset: 'orchestrated-task', ...deps, tmpdir: bad });
+      assert.equal(fallback.tmpdir, fs.realpathSync('/tmp'), bad);
+      assert.equal(fallback.discard(), true);
+    }
+    // 新規作成も再起動も、同じ値が起動コマンドに入る。
+    const request = { approvalPolicy: 'never', codexPolicy: { preset: 'orchestrated-task' } };
+    const before = process.env.TMPDIR;
+    process.env.TMPDIR = tmpLink;
+    try {
+      const fromNewPane = resolveCodexTaskPolicyLaunchOptions('codex', request, deps);
+      const fromRestart = resolveCodexTaskPolicyLaunchOptions('codex', { termId: '3', expectedGeneration: 1, cwd: sandbox.repo, engine: 'codex', ...request }, deps);
+      for (const resolved of [fromNewPane, fromRestart]) {
+        assert.equal(resolved.ok, true, resolved.error);
+        assert.equal(resolved.options.codexPolicyTmpdir, fs.realpathSync(tmpRoot));
+        const command = buildEngineAwareLaunchCommand('codex', undefined, resolved.options).command;
+        assert.ok(command.startsWith(`TMPDIR='${fs.realpathSync(tmpRoot)}' CODEX_HOME='${resolved.options.codexPolicyHome}' codex`), command);
+        assert.equal(resolved.discard(), true);
+      }
+    } finally {
+      if (before === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = before;
+    }
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('生成: codex が見つからなければメンバー起動だけを持たず（入出力フォルダ・子用フォルダを作らない）、途中で失敗したら入出力フォルダも残さない', () => {
+  const sandbox = createSandbox();
+  try {
+    // codex を含まない探索先（node と、通常の探索で見つかる git へのリンクだけを置く）。
+    const bin = path.join(sandbox.root, 'no-codex-bin');
+    fs.mkdirSync(bin);
+    fs.symlinkSync(process.execPath, path.join(bin, 'node'));
+    const gitCandidate = sandbox.toolDirs.map((dir) => path.join(dir, 'git')).find((candidate) => fs.existsSync(candidate));
+    fs.symlinkSync(gitCandidate, path.join(bin, 'git'));
+    const result = prepare(sandbox, { toolDirs: [bin] });
+    assert.equal(result.ok, true, result.error);
+    assert.deepEqual(fs.readdirSync(result.home).sort(), HOME_ENTRIES.filter((name) => !name.startsWith('member')));
+    assert.equal(fs.existsSync(path.join(sandbox.deps.dataDir, 'codex-task-io')), false);
+    assert.equal(launcherAssignments(path.join(result.home, 'vk-task-ops')).VK_TASK_CODEX, '');
+    assert.equal(fs.readFileSync(path.join(result.home, 'AGENTS.md'), 'utf8').includes('member start'), false);
+    assert.ok(fs.readFileSync(path.join(result.home, 'config.toml'), 'utf8').split('\n').includes(`writable_roots = [${JSON.stringify(sandbox.deps.handoffDir)}]`));
+
+    // 準備の途中で失敗した場合は、作った入出力フォルダも片付ける。
+    const failed = prepare(sandbox, { remoteBase: 'relative/path' });
+    assert.equal(failed.ok, false);
+    assert.deepEqual(fs.readdirSync(path.join(sandbox.deps.dataDir, 'codex-task-io')), []);
+    assert.deepEqual(launchHomes(sandbox).length, 1);
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('ランチャー: 親のランチャーは member start/status を通し、子のランチャーは member を拒否する（入れ子の起動を防ぐ）。--repo・絶対パス・..・別リポジトリも拒否', async () => {
+  const sandbox = createSandbox();
+  try {
+    const launch = prepare(sandbox);
+    assert.equal(launch.ok, true, launch.error);
+    const ioDir = path.join(sandbox.deps.dataDir, 'codex-task-io', path.basename(launch.home));
+    const parentLauncher = path.join(launch.home, 'vk-task-ops');
+    const childLauncher = path.join(launch.home, 'member', 'vk-task-ops');
+    const ops = (launcher, cwd, ...args) => childProcess.spawnSync(launcher, args, { cwd, env: { ...process.env, GIT_DIR: '/nonexistent', NODE_OPTIONS: '' }, encoding: 'utf8' });
+    fs.writeFileSync(path.join(ioDir, 'prompt.md'), 'work please\n');
+    fs.writeFileSync(path.join(ioDir, 'schema.json'), '{"type":"object"}');
+    const startArgs = ['member', 'start', '--engine', 'codex', '--prompt', 'prompt.md', '--schema', 'schema.json', '--out', 'out.json'];
+
+    // 子のランチャーでは member が使えない。一方で Git の閲覧など他の操作は同じ拘束先で使える。
+    const nested = ops(childLauncher, sandbox.repo, ...startArgs);
+    assert.equal(nested.status, 2);
+    assert.match(nested.stderr, /member is not available from this launcher/);
+    assert.equal(ops(childLauncher, sandbox.repo, 'member', 'status', '0123456789abcdef01234567').status, 2);
+    assert.equal(fs.existsSync(path.join(ioDir, 'out.json')), false);
+    assert.equal(ops(childLauncher, sandbox.repo, 'git', 'status', '--short').status, 0);
+    assert.equal(ops(childLauncher, path.join(sandbox.root, 'elsewhere-missing'), 'git', 'status').status !== 0, true);
+
+    // 親のランチャーでも、許可外の指定・別リポジトリは起動前に拒否される。
+    const stranger = path.join(sandbox.root, 'stranger');
+    fs.mkdirSync(stranger);
+    childProcess.execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: stranger });
+    childProcess.execFileSync('git', ['remote', 'add', 'origin', 'https://github.com/other/repo.git'], { cwd: stranger });
+    for (const [cwd, args] of [
+      [sandbox.repo, [...startArgs, '--repo', stranger]],
+      [sandbox.repo, [...startArgs, '--dangerously-bypass-approvals-and-sandbox']],
+      [sandbox.repo, startArgs.map((token) => (token === 'prompt.md' ? '/etc/passwd' : token))],
+      [sandbox.repo, startArgs.map((token) => (token === 'out.json' ? '../out.json' : token))],
+      [sandbox.repo, startArgs.map((token) => (token === 'codex' ? 'claude' : token))],
+      [stranger, startArgs],
+    ]) {
+      const rejected = ops(parentLauncher, cwd, ...args);
+      assert.equal(rejected.status, 2, args.join(' '));
+    }
+    assert.equal(fs.existsSync(sandbox.codexRecord), false);
+    assert.equal(fs.existsSync(path.join(ioDir, 'out.json')), false);
+    assert.deepEqual(fs.readdirSync(path.join(launch.home, 'member-runs')), []);
+
+    // 親のランチャー: 起動 → 状態確認。子は子用の CODEX_HOME と親と同じ sandbox の指定で起動する。
+    const started = ops(parentLauncher, sandbox.repo, ...startArgs);
+    assert.equal(started.status, 0, started.stderr);
+    const id = /^MEMBER_ID=([0-9a-f]{24})$/m.exec(started.stdout)[1];
+    for (let i = 0; i < 100 && !fs.existsSync(path.join(launch.home, 'member-runs', id, 'exit')); i += 1) await new Promise((resolve) => setTimeout(resolve, 100));
+    const status = ops(parentLauncher, sandbox.repo, 'member', 'status', id);
+    assert.equal(status.status, 0, status.stderr);
+    assert.match(status.stdout, /^STATE=exited$/m);
+    assert.match(status.stdout, /^EXIT_CODE=0$/m);
+    assert.equal(fs.readFileSync(path.join(ioDir, 'out.json'), 'utf8'), '{"ok":true}');
+    const recorded = JSON.parse(fs.readFileSync(sandbox.codexRecord, 'utf8'));
+    assert.equal(recorded.env.CODEX_HOME, path.join(launch.home, 'member'));
+    assert.equal(recorded.input, 'work please\n');
+    assert.deepEqual(recorded.args.slice(0, 7), ['-a', 'never', 'exec', '-C', fs.realpathSync(sandbox.repo), '-s', 'workspace-write']);
+    assert.equal(recorded.args.some((arg) => /dangerously|danger-full-access/.test(arg)), false);
+    // 親の環境変数（NODE_OPTIONS・GIT_DIR）は子へ渡らない。
+    assert.equal(recorded.env.GIT_DIR, undefined);
+    assert.equal(recorded.env.NODE_OPTIONS, undefined);
+    // 同じ出力先は再利用できない。
+    assert.equal(ops(parentLauncher, sandbox.repo, ...startArgs).status, 2);
   } finally {
     sandbox.cleanup();
   }

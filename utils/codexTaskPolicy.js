@@ -16,6 +16,9 @@
 //   - 承認なしで動かせる Git / GitHub 操作は、信頼済みランチャー（vk-task-ops）→ 検証付きの固定入口
 //     （utils/codexTaskOps.js の複製）だけ。rules の prefix_rule は後続の引数を制限できないので、rules には
 //     ランチャーの実行だけを許可し、引数・パス・リポジトリの検証は入口側で行う。
+//   - メンバー起動（issue #441）の子の Codex には、親と同じ作り方の子用 CODEX_HOME（専用フォルダ内の member/）を渡す。
+//     子用ランチャーは member 操作の設定を持たない（入れ子の起動を防ぐ）。入出力フォルダ（~/.vk-terminals/codex-task-io/<名前>/）は
+//     親と子の書き込み範囲に足し、終了コード・ログの置き場（member-runs/）は子の書き込み範囲に入れない。
 //   - ランチャーは Node を起動する前に `env -i` で環境を空にし、起動時に所有者・権限を検証した絶対パスの
 //     Node / git / gh と、拘束したリポジトリ（実ルート・GitHub の owner/repo）だけを渡す。PATH は使わない。
 //   - 信頼境界（データ・引き継ぎ先・ホーム・認証元・実行ファイル）は、元の絶対パスを根から 1 階層ずつ辿り、
@@ -42,6 +45,7 @@ const {
   DEFAULT_REMOTE_BASE,
   buildChildEnvironment,
   inspectRepository,
+  isWithinDirectory,
   resolveTrustedExecutableDetailed,
   resolveTrustedPath,
 } = require('./codexTaskOps');
@@ -54,6 +58,11 @@ const GH_CONFIG_DIR_NAME = 'gh';
 const GH_CONFIG_FILE_NAME = 'config.yml';
 const GH_HOSTS_FILE_NAME = 'hosts.yml';
 const GH_HOST = 'github.com';
+// メンバー起動（issue #441）。子の Codex 用 CODEX_HOME と実行の記録フォルダは、親の専用フォルダの中に一緒に作る。
+// 入出力フォルダは子から書き込めるので、実行の記録（終了コード・ログ）とは別の場所に置く。
+const MEMBER_HOME_NAME = 'member';
+const MEMBER_RUNS_NAME = 'member-runs';
+const MEMBER_IO_DIR_NAME = 'codex-task-io';
 const RULES_FILE_NAME = 'vk-terminals-task.rules';
 const OPS_SOURCE_PATH = path.join(__dirname, 'codexTaskOps.js');
 const LAUNCH_HOME_NAME_PATTERN = /^[0-9a-f]{24}$/;
@@ -76,6 +85,8 @@ const ORCHESTRATED_TASK_OPERATIONS = Object.freeze([
   'git commit',
   'git push',
   'prepare worktree',
+  'member start',
+  'member status',
   'gh issue view',
   'gh issue comment',
   'gh issue create',
@@ -101,22 +112,28 @@ function renderRules(launcherPath) {
 /**
  * AGENTS.md の本文を組み立てる（Codex が使う入口の案内）。
  * @param {string} launcherPath 専用 CODEX_HOME 内のランチャーの絶対パス
+ * @param {string|null} memberIoDir メンバー起動の入出力フォルダ。null（メンバー起動を持たない入口）なら member の案内を書かない
  * @returns {string}
  */
-function renderAgentsGuide(launcherPath) {
+function renderAgentsGuide(launcherPath, memberIoDir = null) {
+  const operations = ORCHESTRATED_TASK_OPERATIONS.filter((operation) => memberIoDir !== null || !operation.startsWith('member '));
   return [
     '# VK Terminals 自動処理用の操作入口',
     '',
     'Git / GitHub の次の操作は、承認なしで動く固定の入口 1 つだけを通して実行する。',
-    `入口: \`'${launcherPath}' <git|gh|prepare> <操作> ...\``,
+    `入口: \`'${launcherPath}' <git|gh|prepare${memberIoDir === null ? '' : '|member'}> <操作> ...\``,
     '',
-    ...ORCHESTRATED_TASK_OPERATIONS.map((operation) => `- \`${operation}\``),
+    ...operations.map((operation) => `- \`${operation}\``),
     '',
     '- 入口は許可した操作・オプションだけを通す。許可外（reset・gh api・--repo・--body-file・--output など）は拒否される。',
     '- 入口はこのタスクのリポジトリ（起動時に確定したフォルダと GitHub のリポジトリ）と、その worktree（`git worktree add` で作った作業フォルダ）にだけ働く。別のリポジトリ・入れ子のリポジトリでは拒否される。gh には対象リポジトリが自動で付く。',
     '- `git commit` は作業ブランチ上でだけ通る。main / master・リモートの既定ブランチ・detached HEAD 上では拒否されるので、先に作業ブランチを作ってから commit する。',
     '- `git push <ブランチ名>` はブランチ名 1 つだけを受け付ける。送り先は入口が固定する（このタスクの GitHub リポジトリ）ので、リモート名・オプション・refspec は渡せない。新規作成と早送りだけが通り、強制上書き・削除・タグは使えない。main / master・リモートの既定ブランチ・detached HEAD・存在しないブランチへの push は拒否される。',
     '- `prepare worktree <base> <issue番号> <ブランチ> <worktree名>` は、最新の origin/<base> から作業ブランチ付きの worktree（`<リポジトリ>/.claude/worktrees/<worktree名>`）を作る。ブランチ名は `<種類>/<issue番号>-...` の形で、同名のブランチ・パスがあると失敗する。通常のクローンの切り替えはしない。リポジトリのルートで実行する。',
+    ...(memberIoDir === null ? [] : [
+      `- \`member start --engine codex --prompt <名前> --schema <名前> --out <名前> [--model <名前>] [--readonly]\` は、メンバー（子の Codex）をバックグラウンドで起動し、実行 ID を返す。子の実行は数十分かかることがあるので、完了は待たず、\`member status <実行 ID>\` で状態（running / exited / lost）・終了コード・結果の公開の成否（\`RESULT_STATE=published|failed\`。failed のときは \`EXIT_CODE=0\` でも結果を使わない）・ログの末尾を確かめる。子は親と同じ範囲の sandbox（\`--readonly\` なら読み取り専用）の中で動き、入口の \`member\` 操作は使えない。子の作業フォルダは、どこから呼んでも親を起動した作業フォルダに固定される（親の作業フォルダの配下から呼ぶ。配下の worktree から呼んでも読み替えられる）。どの worktree で作業させるかは、prompt に worktree の絶対パスを書いて子へ伝える。`,
+      `- メンバーの入出力ファイルは専用フォルダ \`${memberIoDir}\` の直下にだけ置く。\`--prompt\` / \`--schema\` はそこに作った既存のファイル名、\`--out\` はまだ無いファイル名で、パス・\`..\`・サブフォルダ・リンクは指定できない。結果は \`--out\` のファイルに書かれる。`,
+    ]),
     '- `gh pr view` / `gh pr checks` は PR 番号が必須。`gh pr create` は `--head <ブランチ名> --title <題> --body <本文>` が必須。`gh pr create` 自体は push しないので、先に `git push` する。',
     '- `gh issue create` は `--title <題> --body <本文>` が必須。任意で `--assignee <GitHub アカウント名>`・`--label <ラベル名>` を複数回指定できる（`@me` は不可）。作成された issue の URL が標準出力に返る。',
     '- Git のフックは入口経由では実行されない。外部コマンドを起動する設定（clean filter・署名プログラムなど）があるリポジトリでは入口は拒否する。',
@@ -133,12 +150,15 @@ function renderAgentsGuide(launcherPath) {
  * リポジトリ側から広げられない。記録が無いと起動時に「信頼して続行」が選べ、Enter 1 回で信頼済みになってしまう。
  * @param {string} handoffDir 会話整理の引き継ぎ先（唯一の追加書き込み先）
  * @param {string[]} untrustedProjectPaths 信頼しないプロジェクトとして記録する実パス
+ * @param {{extraWritableRoots?: string[], approvalPolicy?: string}} [options] extraWritableRoots はメンバー起動の入出力フォルダ。
+ *   approvalPolicy は子の Codex だけ "never"（承認を求める相手がいないため、承認が要る操作は実行せず失敗させる）
  * @returns {string}
  */
-function renderConfigToml(handoffDir, untrustedProjectPaths) {
+function renderConfigToml(handoffDir, untrustedProjectPaths, options = {}) {
+  const { extraWritableRoots = [], approvalPolicy = 'on-request' } = options;
   return [
     '# VK Terminals が生成。起動のたびに作り直される。',
-    'approval_policy = "on-request"',
+    `approval_policy = ${JSON.stringify(approvalPolicy)}`,
     'sandbox_mode = "workspace-write"',
     'web_search = "disabled"',
     '',
@@ -148,7 +168,7 @@ function renderConfigToml(handoffDir, untrustedProjectPaths) {
     '',
     '[sandbox_workspace_write]',
     'network_access = false',
-    `writable_roots = [${JSON.stringify(handoffDir)}]`,
+    `writable_roots = [${[handoffDir, ...extraWritableRoots].map((root) => JSON.stringify(root)).join(', ')}]`,
     ...untrustedProjectPaths.flatMap((projectPath) => ['', `[projects.${JSON.stringify(projectPath)}]`, 'trust_level = "untrusted"']),
     '',
   ].join('\n');
@@ -193,6 +213,14 @@ function renderLauncher({ envPath, nodePath, opsScriptPath, binding }) {
     `VK_TASK_GHCONFIG=${binding.ghConfig}`,
     // push 先・fetch 元の基点。本番は常に GitHub（テストだけが一時フォルダを指す）。Codex からは書き換えられない。
     `VK_TASK_REMOTE_BASE=${binding.remoteBase}`,
+    // メンバー起動の設定。子用ランチャーでは 4 つとも空にして、member 操作を無効にする（入れ子の起動を防ぐ）。
+    `VK_TASK_CODEX=${binding.codex || ''}`,
+    `VK_TASK_MEMBER_HOME=${binding.memberHome || ''}`,
+    `VK_TASK_MEMBER_IO=${binding.memberIo || ''}`,
+    `VK_TASK_MEMBER_RUNS=${binding.memberRuns || ''}`,
+    // 親の Codex を起動したときの作業フォルダ（実パス）と sandbox。子はこれを超えて起動しない（親が read-only なら子も read-only）。
+    `VK_TASK_PARENT_CWD=${binding.parentCwd || ''}`,
+    `VK_TASK_PARENT_SANDBOX=${binding.parentSandbox || ''}`,
   ];
   return [
     '#!/bin/sh',
@@ -409,11 +437,35 @@ function resolveGhHostsSource(fsImpl, personalGhConfigDir, uid) {
   return content === null ? null : { content, chain: source.chain };
 }
 
+/**
+ * 専用 CODEX_HOME 1 つぶんの生成物を書き出す（フォルダ自体は作成・検証済みで、中身は空であること）。
+ * 既にある名前（リンクを含む）には書かず失敗する。
+ */
+function populatePolicyHome(fsImpl, targetHome, expected, uid) {
+  fsImpl.mkdirSync(path.join(targetHome, 'rules'), { mode: 0o700 });
+  verifyDirectory(fsImpl, path.join(targetHome, 'rules'), { uid, enforceOwnerOnly: true });
+  const ghConfigDir = path.join(targetHome, GH_CONFIG_DIR_NAME);
+  fsImpl.mkdirSync(ghConfigDir, { mode: 0o700 });
+  verifyDirectory(fsImpl, ghConfigDir, { uid, enforceOwnerOnly: true });
+  for (const [name, { content, mode }] of Object.entries(expected.files)) writeNewFile(fsImpl, path.join(targetHome, name), content, mode);
+  writeNewFile(fsImpl, path.join(targetHome, 'rules', RULES_FILE_NAME), expected.rulesBody);
+  for (const [name, { content, mode }] of Object.entries(expected.ghFiles)) writeNewFile(fsImpl, path.join(ghConfigDir, name), content, mode);
+  // ログイン状態だけは個人の auth.json の実体へのリンクで共有する（個人の設定ファイルは共有しない）。
+  if (expected.authTarget) fsImpl.symlinkSync(expected.authTarget, path.join(targetHome, 'auth.json'));
+}
+
 // 専用フォルダの中身が、許可した生成物だけであることを検証する（余計なファイルがあれば拒否）。
 function verifyPolicyHome(fsImpl, home, expected, uid) {
   const names = fsImpl.readdirSync(home).sort();
-  const expectedNames = [...Object.keys(expected.files), 'rules', GH_CONFIG_DIR_NAME, ...(expected.authTarget ? ['auth.json'] : [])].sort();
+  const expectedNames = [...Object.keys(expected.files), 'rules', GH_CONFIG_DIR_NAME, ...(expected.authTarget ? ['auth.json'] : []), ...(expected.member ? [MEMBER_HOME_NAME, MEMBER_RUNS_NAME] : [])].sort();
   if (JSON.stringify(names) !== JSON.stringify(expectedNames)) throw new PolicyError('policy home contains unexpected entries');
+  if (expected.member) {
+    // 子用の CODEX_HOME は親と同じ検証を通し、実行の記録フォルダは空であること。
+    verifyDirectory(fsImpl, path.join(home, MEMBER_HOME_NAME), { uid, enforceOwnerOnly: true });
+    verifyPolicyHome(fsImpl, path.join(home, MEMBER_HOME_NAME), expected.member, uid);
+    verifyDirectory(fsImpl, path.join(home, MEMBER_RUNS_NAME), { uid, enforceOwnerOnly: true });
+    if (fsImpl.readdirSync(path.join(home, MEMBER_RUNS_NAME)).length !== 0) throw new PolicyError('policy home contains unexpected entries');
+  }
   verifyDirectory(fsImpl, path.join(home, 'rules'), { uid, enforceOwnerOnly: true });
   if (JSON.stringify(fsImpl.readdirSync(path.join(home, 'rules'))) !== JSON.stringify([RULES_FILE_NAME])) {
     throw new PolicyError('policy home contains unexpected entries');
@@ -444,6 +496,8 @@ function removeCreatedLaunchHome(fsImpl, home, identity, uid) {
     if (stat.isSymbolicLink() || !stat.isDirectory() || stat.dev !== identity.dev || stat.ino !== identity.ino) return false;
     if (uid !== undefined && stat.uid !== uid) return false;
     fsImpl.rmSync(home, { recursive: true, force: true });
+    // 一緒に作った入出力フォルダ（メンバー起動用）も、作ったときの識別子と一致するものだけ片付ける。
+    for (const extra of identity.extras || []) removeCreatedLaunchHome(fsImpl, extra.home, extra, uid);
     return true;
   } catch (_error) {
     return false;
@@ -472,6 +526,51 @@ function readGitIdentity(spawnSync, gitPath, homeDir) {
 }
 
 /**
+ * 親の起動 cwd が、親自身が書き換えられる場所の中（または同一）にあるか。ある場合はメンバー起動を有効にしない。
+ * 親の起動 cwd の祖先（cwd を含む）が親の書き込み先の配下なら、親は cwd を移動して範囲外へのリンクに置き換えられ、
+ * 子の -C・監督プロセスの cwd が置き換え先を解決し直せてしまう。書き込み先は、writable_roots の全部と、
+ * workspace-write が標準で許す一時フォルダ（/tmp と $TMPDIR。config.toml で除外していないため含める）。実パスで比べる。
+ * @param {string} parentWorkingDir 親の起動 cwd の実パス
+ * @param {string[]} writableRoots 親の config.toml の writable_roots（実パス）
+ * @param {string[]} tmpRoots 一時フォルダ（呼び出し側が /tmp と固定した TMPDIR を渡す。テストでは差し替える）
+ * @param {object} fsImpl
+ * @returns {boolean}
+ */
+function isParentCwdWritableByParent(parentWorkingDir, writableRoots, tmpRoots, fsImpl) {
+  const roots = [...writableRoots];
+  for (const dir of tmpRoots) {
+    if (typeof dir !== 'string' || !path.isAbsolute(dir)) continue;
+    try {
+      roots.push(fsImpl.realpathSync(dir));
+    } catch (_error) {
+      roots.push(dir);
+    }
+  }
+  return roots.some((root) => isWithinDirectory(parentWorkingDir, root));
+}
+
+/**
+ * 親 Codex に固定して渡す TMPDIR（実パス）を決める。メンバー起動の判定に使う一時フォルダと、親の起動コマンドへ渡す TMPDIR は、
+ * この1つの値から作る（PTY のシェルの設定で別の TMPDIR を受け取って判定をすり抜けないようにするため）。
+ * VK Terminals 自身の $TMPDIR が絶対パスで安全な文字だけなら、その実パス。そうでなければ /tmp の実パス。
+ * @param {string|undefined} candidate 候補（省略時は process.env.TMPDIR。テスト用に差し替え可）
+ * @param {object} fsImpl
+ * @returns {string}
+ */
+function resolveParentTmpdir(candidate, fsImpl) {
+  for (const dir of [candidate, '/tmp']) {
+    if (!isSafeAbsolutePath(dir)) continue;
+    try {
+      const real = fsImpl.realpathSync(dir);
+      if (isSafeAbsolutePath(real)) return real;
+    } catch (_error) {
+      // 次の候補へ
+    }
+  }
+  return '/tmp';
+}
+
+/**
  * タスク用ポリシーの専用 CODEX_HOME を起動ごとに新規生成・検証して返す。
  * 失敗時は ok: false と理由を返す。この場合、呼び出し側は Codex を起動してはならない（途中まで作ったフォルダは片付け済み）。
  * 成功して Codex の起動に使わなかった場合は、返された discard() で専用フォルダを回収する。
@@ -484,6 +583,7 @@ function readGitIdentity(spawnSync, gitPath, homeDir) {
  * @param {string} params.cwd タスクの作業フォルダ（拘束するリポジトリを決める）
  * @param {string} params.homeDir 利用者のホーム（実行環境の HOME に固定する。gh の認証情報の共有元もここから決める）
  * @param {boolean} [params.dryRun] 専用 CODEX_HOME を作らず事前確認だけ行う
+ * @param {string} [params.sandboxMode] 親の Codex の sandbox（read-only / workspace-write。省略時は workspace-write）。メンバー起動の子の上限になる
  * @param {object} [params.fs] テスト用の fs 差し替え
  * @param {number} [params.uid] テスト用の所有者 ID 差し替え
  * @param {Function} [params.spawnSync] テスト用のプロセス実行差し替え
@@ -520,13 +620,16 @@ function prepareCodexTaskPolicyHome(params) {
     const gitTool = resolveTrustedExecutableDetailed(fsImpl, 'git', toolDirs, { uid });
     const ghTool = resolveTrustedExecutableDetailed(fsImpl, 'gh', toolDirs, { uid });
     const envTool = resolveTrustedExecutableDetailed(fsImpl, path.basename(ENV_COMMAND_PATH), [path.dirname(ENV_COMMAND_PATH)], { uid });
+    // メンバー起動に使う codex も、git / gh と同じ所有者・権限の検証で選ぶ。見つからなければメンバー起動だけを持たない（他の操作は使える）。
+    const codexTool = resolveTrustedExecutableDetailed(fsImpl, 'codex', toolDirs, { uid });
     if (nodeTool === null || gitTool === null || envTool === null) throw new PolicyError('trusted node/git/env executable not found');
-    const tools = [nodeTool, gitTool, envTool, ...(ghTool ? [ghTool] : [])];
+    const tools = [nodeTool, gitTool, envTool, ...(ghTool ? [ghTool] : []), ...(codexTool ? [codexTool] : [])];
     if (!tools.every((tool) => isSafeAbsolutePath(tool.path))) throw new PolicyError('unsafe executable path');
     const nodePath = nodeTool.path;
     const gitPath = gitTool.path;
     const envPath = envTool.path;
     const ghPath = ghTool ? ghTool.path : null;
+    const codexPath = codexTool ? codexTool.path : null;
     const toolChains = tools.flatMap((tool) => tool.chain);
 
     // 作業フォルダの Git リポジトリ（実ルート・GitHub の owner/repo）をここで確定し、以後は変更できない設定として保持する。
@@ -536,7 +639,11 @@ function prepareCodexTaskPolicyHome(params) {
     if (!repository.ok) throw new PolicyError(repository.error.replace(/^task command rejected: /, ''));
     if (!isSafeAbsolutePath(repository.root)) throw new PolicyError('unsafe repository path');
     // 信頼しないプロジェクトとして記録する場所。Codex が信頼を引く単位（Git ルート・作業フォルダ）の両方を実パスで固定する。
-    const untrustedProjectPaths = [...new Set([repository.root, fsImpl.realpathSync(cwd)])];
+    const parentWorkingDir = fsImpl.realpathSync(cwd);
+    const untrustedProjectPaths = [...new Set([repository.root, parentWorkingDir])];
+    // 親の実効 sandbox（起動引数 --sandbox の値。省略時は workspace-write）。メンバー起動の子はこれより広くしない。
+    const parentSandbox = params.sandboxMode === undefined ? 'workspace-write' : params.sandboxMode;
+    if (!['read-only', 'workspace-write'].includes(parentSandbox)) throw new PolicyError('invalid sandbox mode');
     if (!untrustedProjectPaths.every(isSafeAbsolutePath)) throw new PolicyError('unsafe repository path');
 
     // 親フォルダは 1 段ずつ作り、実体・所有者・0700 を毎回確認する（リンク経由で別の場所へ書かせない）。
@@ -561,46 +668,81 @@ function prepareCodexTaskPolicyHome(params) {
     const launchHome = path.join(presetDir, launchName);
     fsImpl.mkdirSync(launchHome, { mode: 0o700 });
     const createdStat = fsImpl.lstatSync(launchHome);
-    created = { home: launchHome, dev: createdStat.dev, ino: createdStat.ino };
+    created = { home: launchHome, dev: createdStat.dev, ino: createdStat.ino, extras: [] };
     verifyDirectory(fsImpl, launchHome, { uid, enforceOwnerOnly: true });
-    fsImpl.mkdirSync(path.join(launchHome, 'rules'), { mode: 0o700 });
-    verifyDirectory(fsImpl, path.join(launchHome, 'rules'), { uid, enforceOwnerOnly: true });
-    const ghConfigDir = path.join(launchHome, GH_CONFIG_DIR_NAME);
-    fsImpl.mkdirSync(ghConfigDir, { mode: 0o700 });
-    verifyDirectory(fsImpl, ghConfigDir, { uid, enforceOwnerOnly: true });
 
-    const opsScriptPath = path.join(launchHome, OPS_SCRIPT_NAME);
-    const launcherPath = path.join(launchHome, LAUNCHER_NAME);
-    const gitConfigPath = path.join(launchHome, GIT_CONFIG_NAME);
+    // メンバー起動（codex が見つかったときだけ）。入出力フォルダ（子から書き込める唯一の追加の場所）と、
+    // 子用の CODEX_HOME・実行の記録フォルダ（子から書き込めない場所）を、この起動のぶんだけ新規に作る。
+    let memberIoDir = null;
+    // 親の起動 cwd が親の書き込み先の中にある配置では、メンバー起動を有効にしない（子用 CODEX_HOME・member 設定・入出力フォルダを作らない）。
+    // 判定に使う一時フォルダ（/tmp と、親へ固定して渡す TMPDIR）。tmpRoots はテスト用の差し替え口。
+    const parentTmpdir = resolveParentTmpdir(params.tmpdir === undefined ? process.env.TMPDIR : params.tmpdir, fsImpl);
+    const memberAllowed = codexPath !== null && !isParentCwdWritableByParent(
+      parentWorkingDir,
+      [handoff.realPath, path.join(data.realPath, MEMBER_IO_DIR_NAME, launchName)],
+      params.tmpRoots === undefined ? ['/tmp', parentTmpdir] : params.tmpRoots,
+      fsImpl,
+    );
+    const memberHome = path.join(launchHome, MEMBER_HOME_NAME);
+    const memberRunsDir = path.join(launchHome, MEMBER_RUNS_NAME);
+    if (memberAllowed) {
+      const ioBase = path.join(data.realPath, MEMBER_IO_DIR_NAME);
+      ensureDirectory(fsImpl, ioBase);
+      verifyDirectory(fsImpl, ioBase, { uid, enforceOwnerOnly: true });
+      memberIoDir = path.join(ioBase, launchName);
+      fsImpl.mkdirSync(memberIoDir, { mode: 0o700 });
+      const ioStat = fsImpl.lstatSync(memberIoDir);
+      created.extras.push({ home: memberIoDir, dev: ioStat.dev, ino: ioStat.ino });
+      verifyDirectory(fsImpl, memberIoDir, { uid, enforceOwnerOnly: true });
+      if (!isSafeAbsolutePath(memberIoDir) || fsImpl.realpathSync(memberIoDir) !== memberIoDir) throw new PolicyError('unsafe member io directory');
+      for (const dir of [memberHome, memberRunsDir]) {
+        fsImpl.mkdirSync(dir, { mode: 0o700 });
+        verifyDirectory(fsImpl, dir, { uid, enforceOwnerOnly: true });
+      }
+    }
+
     const remoteBase = params.remoteBase === undefined ? DEFAULT_REMOTE_BASE : params.remoteBase;
     if (remoteBase !== DEFAULT_REMOTE_BASE && !isSafeAbsolutePath(remoteBase)) throw new PolicyError('unsafe remote base');
-    const binding = { root: repository.root, repo: repository.repo, git: gitPath, gh: ghPath, home: home.realPath, gitConfig: gitConfigPath, ghConfig: ghConfigDir, remoteBase };
-    const expected = {
-      files: {
-        'config.toml': { content: template.renderConfigToml(handoff.realPath, untrustedProjectPaths), mode: 0o600 },
-        'AGENTS.md': { content: template.renderAgentsGuide(launcherPath), mode: 0o600 },
-        [GIT_CONFIG_NAME]: { content: template.renderGitConfig(identity), mode: 0o600 },
-        [OPS_SCRIPT_NAME]: { content: fsImpl.readFileSync(OPS_SOURCE_PATH, 'utf8'), mode: 0o400 },
-        [LAUNCHER_NAME]: { content: template.renderLauncher({ envPath, nodePath, opsScriptPath, binding }), mode: 0o500 },
-      },
-      ghFiles: {
-        [GH_CONFIG_FILE_NAME]: { content: renderGhConfig(), mode: 0o600 },
-        ...(ghHosts ? { [GH_HOSTS_FILE_NAME]: { content: ghHosts.content, mode: 0o600 } } : {}),
-      },
-      rulesBody: template.renderRules(launcherPath),
-      authTarget: auth ? auth.target : null,
+    // 専用 CODEX_HOME 1 つぶんの生成物。親と子は同じ作り方で、子だけが次の 3 点で違う。
+    //   member 操作を持たない（ランチャーの member 設定が空）、承認を求めない（approval_policy = "never"）、案内に member を書かない。
+    const buildExpected = (targetHome, { child }) => {
+      const launcherPath = path.join(targetHome, LAUNCHER_NAME);
+      const opsScriptPath = path.join(targetHome, OPS_SCRIPT_NAME);
+      const ghConfigDir = path.join(targetHome, GH_CONFIG_DIR_NAME);
+      const memberEnabled = memberIoDir !== null && !child;
+      const binding = {
+        root: repository.root, repo: repository.repo, git: gitPath, gh: ghPath, home: home.realPath, gitConfig: path.join(targetHome, GIT_CONFIG_NAME), ghConfig: ghConfigDir, remoteBase,
+        ...(memberEnabled ? { codex: codexPath, memberHome, memberIo: memberIoDir, memberRuns: memberRunsDir, parentCwd: parentWorkingDir, parentSandbox } : {}),
+      };
+      return {
+        files: {
+          'config.toml': { content: template.renderConfigToml(handoff.realPath, untrustedProjectPaths, { extraWritableRoots: memberIoDir === null ? [] : [memberIoDir], approvalPolicy: child ? 'never' : 'on-request' }), mode: 0o600 },
+          'AGENTS.md': { content: template.renderAgentsGuide(launcherPath, memberEnabled ? memberIoDir : null), mode: 0o600 },
+          [GIT_CONFIG_NAME]: { content: template.renderGitConfig(identity), mode: 0o600 },
+          [OPS_SCRIPT_NAME]: { content: fsImpl.readFileSync(OPS_SOURCE_PATH, 'utf8'), mode: 0o400 },
+          [LAUNCHER_NAME]: { content: template.renderLauncher({ envPath, nodePath, opsScriptPath, binding }), mode: 0o500 },
+        },
+        ghFiles: {
+          [GH_CONFIG_FILE_NAME]: { content: renderGhConfig(), mode: 0o600 },
+          ...(ghHosts ? { [GH_HOSTS_FILE_NAME]: { content: ghHosts.content, mode: 0o600 } } : {}),
+        },
+        rulesBody: template.renderRules(launcherPath),
+        authTarget: auth ? auth.target : null,
+      };
     };
-    for (const [name, { content, mode }] of Object.entries(expected.files)) writeNewFile(fsImpl, path.join(launchHome, name), content, mode);
-    writeNewFile(fsImpl, path.join(launchHome, 'rules', RULES_FILE_NAME), expected.rulesBody);
-    for (const [name, { content, mode }] of Object.entries(expected.ghFiles)) writeNewFile(fsImpl, path.join(ghConfigDir, name), content, mode);
-    // ログイン状態だけは個人の auth.json の実体へのリンクで共有する（個人の設定ファイルは共有しない）。
-    if (expected.authTarget) fsImpl.symlinkSync(expected.authTarget, path.join(launchHome, 'auth.json'));
+    const expected = buildExpected(launchHome, { child: false });
+    populatePolicyHome(fsImpl, launchHome, expected, uid);
+    if (memberIoDir !== null) {
+      expected.member = buildExpected(memberHome, { child: true });
+      populatePolicyHome(fsImpl, memberHome, expected.member, uid);
+    }
 
     // 書き込み後に読み戻し、中身が許可した生成物だけであること、検証した信頼境界が差し替えられていないことを確認してから返す。
     verifyPolicyHome(fsImpl, launchHome, expected, uid);
+    if (memberIoDir !== null && fsImpl.readdirSync(memberIoDir).length !== 0) throw new PolicyError('policy home contains unexpected entries');
     assertChainUnchanged(fsImpl, [...handoff.chain, ...data.chain, ...home.chain, ...toolChains, ...(auth ? auth.chain : []), ...(ghHosts ? ghHosts.chain : [])]);
     const discardTarget = created;
-    return { ok: true, home: launchHome, discard: () => removeCreatedLaunchHome(fsImpl, discardTarget.home, discardTarget, uid) };
+    return { ok: true, home: launchHome, tmpdir: parentTmpdir, discard: () => removeCreatedLaunchHome(fsImpl, discardTarget.home, discardTarget, uid) };
   } catch (error) {
     if (created !== null) removeCreatedLaunchHome(fsImpl, created.home, created, uid);
     const reason = error instanceof PolicyError || error instanceof TrustError ? error.message : (error && error.code ? error.code : 'filesystem error');
@@ -629,11 +771,14 @@ function resolveCodexTaskPolicyLaunchOptions(engine, options, deps) {
   if (!validated.ok) return validated;
   const launchOptions = { approvalPolicy: validated.approvalPolicy, sandboxMode: validated.sandboxMode };
   if (validated.codexPolicy === undefined) return { ok: true, options: launchOptions, discard: NOT_CREATED };
-  const prepared = prepareCodexTaskPolicyHome({ preset: validated.codexPolicy.preset, ...prepareDeps });
+  const prepared = prepareCodexTaskPolicyHome({ preset: validated.codexPolicy.preset, sandboxMode: validated.sandboxMode, ...prepareDeps });
   if (!prepared.ok) return prepared;
   // dryRun（事前確認）では専用 CODEX_HOME が無い。起動には使えない値なので options へ載せない。
   const policyOptions = { ...launchOptions, codexPolicy: validated.codexPolicy };
-  if (prepared.home !== null) policyOptions.codexPolicyHome = prepared.home;
+  if (prepared.home !== null) {
+    policyOptions.codexPolicyHome = prepared.home;
+    policyOptions.codexPolicyTmpdir = prepared.tmpdir;
+  }
   return { ok: true, options: policyOptions, discard: prepared.discard };
 }
 

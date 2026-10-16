@@ -55,11 +55,19 @@ test('起動行: 元コマンドを改変せず監視プロセスの単一引数
     executable: '/path with quote/node', monitorPath: "/app/it's monitor.js",
   });
   assert.equal(command.includes('\x1b'), false);
-  assert.match(command, /^ELECTRON_RUN_AS_NODE=1 /);
-  assert.match(command, / 7 a{64} b{64} /);
-  const encoded = command.match(/ b{64} ([A-Za-z0-9+/=]+);/)[1];
+  assert.match(command, /^\/bin\/sh /);
+  assert.match(command, / '7' 'a{64}' 'b{64}' /);
+  const encoded = command.match(/ 'b{64}' '([A-Za-z0-9+/=]+)'$/)[1];
   assert.equal(Buffer.from(encoded, 'base64').toString(), original);
-  assert.match(command, /agent-unknown;7;b{64}/);
+});
+
+test('起動行: fish に互換性のない外側シェル構文を含まない', () => {
+  const command = buildTrackedLaunchCommand('codex --version', {
+    generation: 7, startToken: TOKEN_A, exitToken: TOKEN_B,
+  });
+  assert.equal(command.includes('$?'), false);
+  assert.equal(/[;{}]/.test(command), false);
+  assert.match(command, /^\/bin\/sh(?: '[^']*'){7}$/);
 });
 
 test('出力パーサー: 分割された start/exit マーカーだけを画面から除き、厳密に通知する', () => {

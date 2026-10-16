@@ -3,7 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
-const { spawn } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 const { buildTrackedLaunchCommand, createAgentLifecycleMarkerParser, createAgentLifecycleStore } = require('../utils/agentLifecycle');
 
 const monitor = path.join(__dirname, '..', 'utils', 'agentLifecycleMonitor.js');
@@ -115,4 +115,69 @@ test('監視プロセス: 同じプロセスグループの停止中は exit マ
   process.kill(-child.pid, 'SIGCONT');
   assert.deepEqual(await result.closed, { code: 0, signal: null });
   assert.equal(result.output().includes(`agent-exit;9;${EXIT}`), true);
+});
+
+test('実PTY: zsh の Ctrl+Z で停止し、fg 後の実終了で exited になる', {
+  skip: process.platform === 'win32' || spawnSync('zsh', ['--version']).status !== 0,
+  timeout: 10000,
+}, async (t) => {
+  const pty = require('node-pty');
+  const tokens = [START, EXIT];
+  const store = createAgentLifecycleStore(() => tokens.shift());
+  const marker = store.prepare('pty', 9);
+  const aiCommand = `${process.execPath} -e 'process.on("SIGCONT",()=>console.log("AI_RESUMED")); console.log("AI_READY"); process.stdin.once("data",()=>process.exit(0)); setInterval(()=>{},1000)'`;
+  const launchCommand = buildTrackedLaunchCommand(aiCommand, marker, {
+    executable: process.execPath,
+    monitorPath: monitor,
+  });
+  const shell = pty.spawn('zsh', ['-f'], {
+    cols: 100,
+    rows: 30,
+    env: { ...process.env, TERM: 'xterm-256color', PS1: 'VK_PROMPT> ' },
+  });
+  t.after(() => {
+    try { shell.kill(); } catch (_error) { /* 終了済みなら何もしない。 */ }
+  });
+
+  let output = '';
+  const waitForPtyOutput = (pattern) => new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error(`PTY output timeout: ${pattern}\n${output}`)), 3000);
+    const inspect = () => {
+      if (!pattern.test(output)) return;
+      clearTimeout(timeout);
+      subscription.dispose();
+      resolve();
+    };
+    const subscription = shell.onData((data) => { output += data; inspect(); });
+    inspect();
+  });
+  const parser = createAgentLifecycleMarkerParser((type, generation, token) => {
+    if (type === 'start') store.markStarted('pty', generation, token);
+    else if (type === 'exit') store.markExited('pty', generation, token);
+    else store.markUnknown('pty', generation, token);
+  });
+  const parserSubscription = shell.onData((data) => parser.push(data));
+  t.after(() => parserSubscription.dispose());
+
+  await waitForPtyOutput(/VK_PROMPT>/);
+  output = '';
+  shell.write(`${launchCommand}\r`);
+  await waitForPtyOutput(/AI_READY/);
+  assert.equal(store.get('pty', 9), 'running');
+
+  output = '';
+  shell.write('\x1a');
+  await waitForPtyOutput(/suspended/);
+  assert.equal(store.get('pty', 9), 'running');
+  assert.equal(output.includes('agent-unknown'), false);
+  assert.equal(output.includes('agent-exit'), false);
+
+  output = '';
+  shell.write('fg\r');
+  await waitForPtyOutput(/AI_RESUMED/);
+  output = '';
+  shell.write('finish\r');
+  await waitForPtyOutput(/VK_PROMPT>/);
+  parser.flush();
+  assert.equal(store.get('pty', 9), 'exited');
 });

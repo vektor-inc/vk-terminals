@@ -74,11 +74,10 @@ function buildTrackedLaunchCommand(command, marker, options = {}) {
   if (!TOKEN_PATTERN.test(marker?.startToken || '') || !TOKEN_PATTERN.test(marker?.exitToken || '')) throw new Error('invalid agent lifecycle token');
   const executable = options.executable || process.execPath;
   const monitorPath = options.monitorPath || require.resolve('./agentLifecycleMonitor');
+  const wrapperPath = options.wrapperPath || require.resolve('./agentLifecycleWrapper.sh');
   const encodedCommand = Buffer.from(command, 'utf8').toString('base64');
-  const monitorCommand = `ELECTRON_RUN_AS_NODE=1 ${quoteShellArgument(executable)} ${quoteShellArgument(monitorPath)} ${marker.generation} ${marker.startToken} ${marker.exitToken} ${encodedCommand}`;
-  const unknownMarker = `\\033]777;vk-terminals;agent-unknown;${marker.generation};${marker.exitToken}\\007`;
-  // 監視が exit を出せず終了しても、シェルへ制御が戻れば現在世代だけを不明へ戻す。
-  return `${monitorCommand}; __vk_agent_status=$?; printf '${unknownMarker}'; (exit "$__vk_agent_status")`;
+  // 利用者のシェルに依存する後処理は置かず、停止中もラッパーと監視を同じ前景ジョブに保つ。
+  return `/bin/sh ${quoteShellArgument(wrapperPath)} ${quoteShellArgument(executable)} ${quoteShellArgument(monitorPath)} ${quoteShellArgument(marker.generation)} ${quoteShellArgument(marker.startToken)} ${quoteShellArgument(marker.exitToken)} ${quoteShellArgument(encodedCommand)}`;
 }
 
 /** 分割チャンクをまたぐ start/exit/unknown マーカーを取り除き、検証済み通知だけを返す。 */

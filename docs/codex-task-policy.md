@@ -29,8 +29,8 @@ vk-orchestrator などが自動処理用の Codex を起動するとき、次の
 
 1. VK Terminals が起動のたびに、固定内容の専用 `CODEX_HOME`（`~/.vk-terminals/codex-task-policy/<preset>/<ランダム名>/`）を**新規に**作る（実装: `utils/codexTaskPolicy.js`）。前回の専用フォルダは使い回さない。
 2. その Codex の起動だけ、`CODEX_HOME='<専用フォルダ>' codex --no-daemon …` のように環境変数を前置する。ペインのシェルへ書き込む文字列は、固定の実行ファイル名と検証済みの許可値だけで組み立てる。
-3. 専用フォルダの中身は次の 8 つだけ。作った直後に一覧を検証し、これ以外があれば Codex を起動しない。
-   - `config.toml`: `sandbox_mode = "workspace-write"`、`network_access = false`、`web_search = "disabled"`、追加の書き込み先は会話整理の引き継ぎ先 `~/.claude/handoff` のみ。拘束するリポジトリと作業フォルダ（実パス）は `[projects."<パス>"] trust_level = "untrusted"` で記録する（下記「リポジトリ側の `.codex` で広げられない」）。Codex が起動するコマンドへ `LD_*`・`DYLD_*`・`NODE_*`・`BASH_ENV`・`ENV`・`GIT_*`・`GH_*`・`GITHUB_*` の環境変数を渡さない設定（`shell_environment_policy.exclude`）も入る
+3. 専用フォルダの中身は次の 10 個だけ（`codex` が見つかった場合。見つからなければ末尾の `member` / `member-runs` を除く 8 つ）。作った直後に一覧を検証し、これ以外があれば Codex を起動しない。
+   - `config.toml`: `sandbox_mode = "workspace-write"`、`network_access = false`、`web_search = "disabled"`、追加の書き込み先は会話整理の引き継ぎ先 `~/.claude/handoff` と、メンバー起動の入出力フォルダ（下記「メンバー起動」。`codex` が見つかった場合だけ）。拘束するリポジトリと作業フォルダ（実パス）は `[projects."<パス>"] trust_level = "untrusted"` で記録する（下記「リポジトリ側の `.codex` で広げられない」）。Codex が起動するコマンドへ `LD_*`・`DYLD_*`・`NODE_*`・`BASH_ENV`・`ENV`・`GIT_*`・`GH_*`・`GITHUB_*` の環境変数を渡さない設定（`shell_environment_policy.exclude`）も入る
    - `rules/vk-terminals-task.rules`: 承認なしで実行してよいもの。信頼済みランチャー 1 つ（`<専用フォルダ>/vk-task-ops`）の実行だけ
    - `vk-task-ops`: 信頼済みランチャー（0500 の `sh` スクリプト）。下記
    - `vk-task-ops.js`: 承認なしの Git / GitHub 操作の入口（`utils/codexTaskOps.js` の複製。0400）
@@ -38,6 +38,8 @@ vk-orchestrator などが自動処理用の Codex を起動するとき、次の
    - `gh/`: gh 専用の設定フォルダ（0700）。固定内容の `config.yml`（通信設定・ブラウザ・エディタ・alias を持たない）と、個人の `hosts.yml` から github.com のユーザー名とトークンだけを再生成した `hosts.yml`（0600。個人側に無い・読み取れる認証項目が無ければ作らない）だけが入る。個人の `~/.config/gh` は読み込まず、通信設定や他のホストは引き継がない
    - `AGENTS.md`: 入口の使い方の案内（Codex がこの入口を知るための固定文）
    - `auth.json`: 個人の `auth.json`（最終的な実体）へのシンボリックリンク（ログイン状態を引き継ぐためだけ。個人の設定ファイルは共有しない）。個人側に無ければ作らない
+   - `member/`: メンバー起動の子の Codex 用の `CODEX_HOME`（0700）。親と同じ作り方で、上の 8 つ（`member/` 自身を除く）が入る。親との違いは「`member` 操作を持たない」「承認を求めない（`approval_policy = "never"`）」の 2 点だけ。下記「メンバー起動」
+   - `member-runs/`: メンバー起動の実行の記録（終了コード・ログ）の置き場（0700。作った時点では空）。子の書き込み範囲に入れない
 4. `--ask-for-approval` と `--sandbox` は従来どおりコマンドライン引数で渡す。`sandboxMode` を省略してもポリシー付きなら `workspace-write` を明示する。
 
 ### 判断: `-c`（設定上書き）や `-p`（プロファイル）を使わない理由
@@ -60,9 +62,9 @@ vk-orchestrator などが自動処理用の Codex を起動するとき、次の
 
 rules の `prefix_rule` は先頭の単語列しか指定できず、後ろに続く引数や実行時の環境を制限できない。`git diff` を許可すると `--output=<任意のファイル>` で任意の場所へ書き込め、`gh pr create` を許可すると暗黙の push が起きる。`node` を許可すると `NODE_OPTIONS` などの環境変数で検証の前に別のコードを実行できる。そのため `git` / `gh` / `node` 自体は rules で許可せず、**信頼済みランチャー 1 つだけ**を許可する。
 
-- 呼び方: `'<専用フォルダ>/vk-task-ops' <git|gh|prepare> <操作> …`（AGENTS.md に書いてある）
+- 呼び方: `'<専用フォルダ>/vk-task-ops' <git|gh|prepare|member> <操作> …`（AGENTS.md に書いてある）
 - ランチャーは Node を起動する前に `env -i` で環境を空にし、起動時に確定した値（拘束するリポジトリ・git / gh / Node の絶対パス・固定した HOME）だけを渡して、絶対パスの Node で入口を実行する。ランチャーは起動ごとに専用フォルダへ書かれ、Codex からは書き換えられない（0500・所有者のみ）
-- 許可する操作: `git status` / `git diff` / `git log` / `git show` / `git add` / `git commit` / `git push <ブランチ名>`、`prepare worktree <base> <issue番号> <ブランチ> <worktree名>`、`gh issue view` / `gh issue comment` / `gh pr view` / `gh pr create` / `gh pr comment` / `gh pr checks`
+- 許可する操作: `git status` / `git diff` / `git log` / `git show` / `git add` / `git commit` / `git push <ブランチ名>`、`prepare worktree <base> <issue番号> <ブランチ> <worktree名>`、`member start …` / `member status <実行ID>`、`gh issue view` / `gh issue comment` / `gh pr view` / `gh pr create` / `gh pr comment` / `gh pr checks`
 - 引数の検証（`utils/codexTaskOps.js` の `parseTaskCommand`）:
   - オプションは操作ごとの許可リストだけ。未知のオプション（`--output`・`--ext-diff`・`--body-file`・`--repo`・`--web`・`--amend` など）は拒否
   - パスはリポジトリ内の相対パスだけ（絶対パス・`..`・`.git`・pathspec の特殊記法は拒否）。リビジョンは英数字と `._/@^~{}-` のみ
@@ -95,10 +97,30 @@ rules の `prefix_rule` は先頭の単語列しか指定できず、後ろに�
   - 処理: 固定 URL からの `git fetch --no-tags --no-recurse-submodules --refmap= <固定 URL> +refs/heads/<base>:refs/remotes/origin/<base>`（資格情報の指定は push と同じ）→ `info/exclude` へ `/.claude/worktrees/<名前>/` を 1 行追加（共有の `.gitignore` は変えない。`info/exclude` はリポジトリの Git 管理領域の中であること・リンクでないことを確認する）→ `git branch --no-track <ブランチ> refs/remotes/origin/<base>`（作業ブランチの作成。別プロセス）→ `git worktree add --quiet --no-checkout <拘束ルート>/.claude/worktrees/<名前> <ブランチ>`（`-b` は使わず、作成済みのブランチを指定する）。通常のクローンのブランチ切り替えと、未コミット変更への操作は行わない
   - 書き込み先の制限: 書き込みを伴う処理は、Node 自身のファイル書き込みを含めてすべて、OS のファイルシステム制限（macOS の `/usr/bin/sandbox-exec`）の中の子プロセスで行う。制限は書き込みの時点でリンクを解決した後の実パスに対して判定されるため、事前の検査（拒否理由を分かりやすくするためのもの）と実行の間にパスが差し替えられても、許可した場所の外には書けない。段階ごとに書ける場所を必要最小限に分ける（Git 管理領域全体は許さない）。(1) Git 管理領域の置き場所の作成: ref・ログ・worktree 管理情報の親フォルダのうち、まだ存在しないものだけ（既存のフォルダの中身には書き込みを許さない）。(2) fetch: 取得したオブジェクト、取得先の 1 本の追跡 ref・ログとそれぞれのロックファイル（`refs/remotes` などの階層全体は許さない）、gh の専用設定フォルダ。gh の設定フォルダへ書く必要があるかは実機で未確認のため、念のため許可している。(3) 除外設定の追記: `info/exclude` ファイル 1 つだけ（`info` フォルダが無い場合の作成は、(1) と同じく存在しないフォルダだけ）。(4) 作成先の親フォルダの作成: `.claude` と `.claude/worktrees` のうち、まだ存在しないものだけ（既存のフォルダには書き込みを許さず、全部存在すれば実行しない）。(5) 作業ブランチの作成（`git branch`）: そのブランチの ref・ログとそれぞれのロックファイルの 4 ファイルだけ。(6) worktree の管理情報の作成（`worktree add --no-checkout`）: この worktree 自身の管理情報と、作成先の事前に計算した実パスだけ。ref・ログの階層（`refs/heads` など）には一切書けないので、この段階の失敗時の後片付けで既存ブランチの記録を消すことはできない。(7) index の作成（`read-tree --reset HEAD`。管理領域と作業フォルダは引数で明示し、作業ファイルには触れない）: この worktree 自身の管理情報だけ。(8) 作業ファイルの展開（`checkout-index --all --force`。別プロセス）: 作成先の実パスだけで、展開プロセスには管理領域を一切許可しない。ブランチの作成と worktree の追加を別プロセスに分けているため、worktree の追加は ref・ログの階層に書き込めず、その段階の失敗時の後片付けで既存ブランチの記録を消すことはできない。ブランチの作成のあとに worktree の追加が失敗した場合は、作業ブランチが残り、同じ引数の再実行は「working branch already exists」で拒否される（自動削除は現状していない）。どの段階でも、Git の制御ファイル（`hooks` / `config` / `config.worktree` / `info/attributes` / `objects/info` 配下など）には書けない。`sandbox-exec` が無い・信頼検証を通らない環境（現状は macOS 以外）では、prepare は `write-restricted execution is not available` で拒否する（無効化はせず、拒否のまま）
   - 標準出力に `TARGET_REPO=<worktree の絶対パス>` / `WORK_BRANCH=<ブランチ>` / `BASE_SHA=<取得した base の SHA>` を返す。作った worktree は拘束先の worktree として受け入れ判定を通り、そのまま add・commit・push できる
+- `member start --engine codex --prompt <名前> --schema <名前> --out <名前> [--model <名前>] [--readonly]` / `member status <実行ID>`（メンバー起動。issue #441。仕様の決定は vektor-inc/vk-terminals#438 の「メンバー起動」。今回は Codex だけに対応し、Claude Code は別対応）:
+  - 目的: 自動処理の作業ペインの Codex（親）が、レビュアーなどのメンバーを子の Codex として起動する。vk-agents の `run-member-agent.sh` はそのまま通さない。`--dangerously-bypass-approvals-and-sandbox` で囲いを外して起動でき、`--repo` で別リポジトリも指定できるため、通すと「任意の指示を囲いの外で別リポジトリにも実行できる」経路になる。囲いの中の親が `codex exec` を入れ子で起動すると `Operation not permitted` になる（推測。未検証）ため、入口経由で囲いの外から起動する
+  - 安全の条件は「子の囲いが親の範囲を超えない」こと。親も任意の指示で動く AI なので、子が同じ制限の中で動く限り、できることは増えない
+  - 子の起動引数（`buildMemberCodexArgs`）: `codex -a never exec -C <拘束ルートか検証済み worktree のルート> -s workspace-write --color never --output-schema <実行の記録フォルダ内の写し> -o <出力ファイル> [--model <名前>] -`（プロンプトは標準入力から渡す）。`--readonly` なら `-s read-only` にし、さらに `--ignore-rules` を付けて入口の許可ルールを読み込ませない（読み取り専用のメンバーが、ランチャー経由の push などの書き込みを使えないようにする）。`--dangerously-bypass-approvals-and-sandbox`・`--full-auto`・`-s` / `-a` / `-c` / `-C` / `--add-dir` / `--profile` などの囲い・作業フォルダに関わる指定は、許可リストに無いので `member start` の引数としては受け付けない。`--engine` は `codex` だけ
+  - 作業フォルダ: 拘束先のルートか、検証済み worktree（`git worktree add` で作った作業フォルダ）のルートで実行したときだけ。サブフォルダ・別リポジトリ・同じ origin を持つ別クローンは、入口の拘束で拒否される。`--repo` や作業フォルダを指定する引数は無い
+  - 子の書き込み範囲は親と同じ: 親の作業フォルダ（拘束ルート配下。worktree から起動した場合はその worktree）と、`config.toml` の `writable_roots`（会話整理の引き継ぎ先と入出力フォルダ）。子用 `CODEX_HOME`（`member/`）の `config.toml` は、親と同じ内容から `approval_policy` だけを `"never"` にしたもの（実機の Codex で、実効設定が親と同じ sandbox・ネットワーク・書き込み先になることをテストで確認する）
+  - 子用ランチャー（`member/vk-task-ops`）は `VK_TASK_CODEX` / `VK_TASK_MEMBER_HOME` / `VK_TASK_MEMBER_IO` / `VK_TASK_MEMBER_RUNS` を空にして書かれるため、`member` 操作は `member is not available from this launcher` で拒否される（入れ子の起動を防ぐ）。子の rules は子用ランチャーの実行だけを許可する。他の操作（`git` / `gh` / `prepare`）は親と同じ拘束先で使える
+  - `codex` の実行ファイルも、`git` / `gh` と同じ所有者・権限の検証（`resolveTrustedExecutableDetailed`）で選び、起動前に入口が再検証する。見つからなければ、メンバー起動だけを持たない（`member` / `member-runs` / 入出力フォルダを作らず、案内にも書かない）
+  - 入出力ファイル: 起動ごとの専用フォルダ `~/.vk-terminals/codex-task-io/<ランダム名>/`（0700。親の専用 `CODEX_HOME` と同じランダム名）の直下の名前だけを受ける。`--prompt` / `--schema` は親が作った既存のファイル、`--out` は存在しない名前で、3 つとも別の名前。名前は英数字で始まり、英数字・`.`・`_`・`-` だけ・100 文字まで（絶対パス・`/`・`..`・先頭 `.`・サブフォルダは不可）。入口は、入力をリンクをたどらずに開き、通常ファイル・自分の所有・他に実体の参照が無い（nlink = 1）・サイズ上限内（プロンプト 1 MiB、スキーマ 256 KiB・JSON として読める）を確かめ、**内容を実行の記録フォルダへ写し取って**そこから子に渡す（検証後に、子から書き換えられる場所を開き直さない）。出力ファイルは入口が先に排他的作成（`O_EXCL | O_NOFOLLOW`）で確保するので、事前に置かれたリンクや既存ファイルには書かない。入出力フォルダは親と子の書き込み範囲に足す。専用フォルダの実パスは、実行のたびに「リンクでない・自分の所有・他人の書き込み不可」を確認する
+  - 実行は `start` / `status` に分ける: メンバーの実行は数十分かかることがあり、Codex のツール呼び出しは長い間ひとつのコマンドを待たせ続けることを前提にしていない（根拠は下記「メンバー実行を start / status に分けた根拠」）。`member start` は子を新しいセッション（`detached`）の `/bin/sh` の薄い包みで起動して、すぐに `MEMBER_ID` / `OUT` / `LOG` を返す。包みは子の標準入力を写し取ったプロンプトに、標準出力・標準エラーを `member-runs/<実行ID>/log.txt` につなぎ、子の終了後に終了コードを `member-runs/<実行ID>/exit` へ書く（`mv` による置き換え）。引数はすべて位置引数で渡し、shell の文字列には入れない。`member status <実行ID>` は `STATE=running|exited|lost`・`EXIT_CODE`（終了後）・`OUT`・`LOG` とログの末尾（4 KiB）を返す。`lost` は、終了コードのファイルが無く、記録した pid のプロセスも見つからない場合（異常終了や再起動）。実行の記録フォルダ（`member-runs/`）は子の書き込み範囲に入れないので、子が終了コードやログを書き換えられない（入出力フォルダとは別の場所）
+  - 子の環境変数は一から組み立てる: `PATH`（codex・git・gh のあるフォルダと `/opt/homebrew/bin`・`/usr/local/bin`・`/usr/bin`・`/bin`）・`HOME`（固定した HOME）・`CODEX_HOME`（子用の専用フォルダ）・`NO_COLOR` だけ。親の環境は引き継がない
+  - 既知の制約: 同時に起動できる子の数に上限は設けていない（親の Codex も、許可された入口を何度でも呼べるのと同じ）。`member start` で作った実行の記録・入出力フォルダは、親の専用フォルダ・入出力フォルダとともに自動では消さない（「専用フォルダの回収と削除」と同じ理由）。親が worktree を `prepare worktree` で作ったあとにその worktree を子の `-C` にする場合、Codex のプロジェクト信頼の記録（`trust_level = "untrusted"`）は親の起動時に確定した拘束ルートと作業フォルダにしか無い。worktree は Git の共通のリポジトリに属するので、Codex は拘束ルートの記録を引くはずだが、実機の長時間実行では未確認
 - テスト用の差し替え口: push 先・fetch 元の基点（`https://github.com`）は、ランチャーが固定する値 `VK_TASK_REMOTE_BASE` で決まる。本番のランチャーは常に `https://github.com` を書く。テストだけが `prepareCodexTaskPolicyHome` の `remoteBase` 引数（一時フォルダの絶対パス）で、bare リポジトリを remote にできる。`main.js` と API の入力（`codexPolicy`）からはこの値を渡せない（`codexPolicy` に未知のキーを入れると `400`）。入口は基点が `https://github.com` か安全な絶対パス以外なら拘束の設定を不正として拒否する
 - 入口を通さない `git` / `gh` は sandbox の制限内（ネットワーク無し）で動く。
 - 認証: gh は専用の `gh/hosts.yml`（個人の `hosts.yml` から引き継いだ github.com のユーザー名・トークン。キーチェーン保管のトークンはユーザー名から引ける）の認証だけを使う。`GH_TOKEN` などの環境変数のトークンは入口へ渡らない。トークンを引き継ぐ場合、専用フォルダ内にトークンの写しが残るため、専用フォルダを消すときに一緒に消える（権限は個人の `hosts.yml` と同じ 0600・所有者のみ）。入口は実行のたびに `gh/` が実体・自分の所有・他人の書き込み不可であることも確認する。
 - 既知の制約: 設定の検査から実行までの間にリポジトリの設定が書き換えられる競合は、同じユーザーの別プロセスが書き換える場合に限り残る（実行のたびに検査し直すことで窓を狭めている）。Git LFS など、外部コマンドを起動する filter を使うリポジトリは、安全に固定できないため入口が拒否する。
+
+### メンバー実行を start / status に分けた根拠
+
+issue #441 は「Codex のツール呼び出しのタイムアウトで打ち切られるなら `member start` / `member status` に分ける」としていた。実機で数十分の長時間実行はしていないため、次の確認できた範囲の根拠で、**分ける方を選んだ**（分けておけば、打ち切られる場合も打ち切られない場合も同じ手順で動く。分けない案は、打ち切られた場合に子が途中で止まり、結果が失われる）。
+
+- Codex CLI 0.162.1 の実行ファイルの内蔵文字列に、シェルコマンドの `timeout_ms`（コマンドごとのタイムアウトをモデルが指定する引数）と、既定の設定値 `background_terminal_max_timeout = 300000`（バックグラウンドの端末を待つ 1 回あたりの上限 = 5 分）がある。標準の `codex exec` の既定では、1 回の待ちは最長 5 分で、数十分続く子を 1 回の呼び出しで待たせ続ける前提になっていない
+- `exec` ツールには `yield_time_ms` があり、指定時間を過ぎると結果を返して処理を続ける作りで、完了の確認は「あとで状態を見に行く」形になる
+- 確かめていないこと: 実際に数十分かかるコマンドを入口経由で動かして打ち切られるかどうか。ここは vk-orchestrator#592 の手順での通し確認に委ねる
 
 ### ファイルシステムの検証
 
@@ -111,9 +133,9 @@ rules の `prefix_rule` は先頭の単語列しか指定できず、後ろに�
 ### 専用フォルダの回収と削除
 
 - 生成の途中で失敗したときは、その呼び出しで**自分が作った**専用フォルダ（作成時の識別子が一致する実体のフォルダ）だけを片付けてから拒否を返す。事前に置かれていたフォルダ・他の起動のフォルダには触らない。
-- 専用フォルダを作ったのに Codex の起動に使わなかった場合（再起動での停止失敗・PTY の消滅・起動コマンドの書き込み失敗、新規作成での PTY 作成失敗）も、同じ条件で回収する。
+- 専用フォルダを作ったのに Codex の起動に使わなかった場合（再起動での停止失敗・PTY の消滅・起動コマンドの書き込み失敗、新規作成での PTY 作成失敗）も、同じ条件で回収する。メンバー起動の入出力フォルダ（`~/.vk-terminals/codex-task-io/<ランダム名>/`）は、この専用フォルダと一緒に作ったものとして、作ったときの識別子が一致する場合に同時に回収する。
 - 再起動では、直列化の待機・ペインの存在確認（404）・世代確認（409）を通った後、AI を止める前に専用フォルダを作る。これらで終わるリクエストは専用フォルダを作らない。事前確認（`dryRun`）は専用フォルダを作らない。
-- **起動に使った専用フォルダは自動では消さない。** 複数のアプリプロセスをまたいで「使用中でない」ことを確実に判定する方法が無く、古さ（更新時刻）だけで消すと長く動いている Codex のセッションの設定を消してしまうため。削除は利用者の責務で、Codex が動いていないときに `~/.vk-terminals/codex-task-policy/` 以下を消してよい（次の起動で作り直される）。
+- **起動に使った専用フォルダは自動では消さない。** 複数のアプリプロセスをまたいで「使用中でない」ことを確実に判定する方法が無く、古さ（更新時刻）だけで消すと長く動いている Codex のセッションの設定を消してしまうため。削除は利用者の責務で、Codex が動いていないときに `~/.vk-terminals/codex-task-policy/` 以下と `~/.vk-terminals/codex-task-io/` 以下（メンバー起動の入出力フォルダ。子の出力ファイルもここに残る）を消してよい（次の起動で作り直される）。
 
 ## 固定できないときは止める
 

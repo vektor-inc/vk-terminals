@@ -12,6 +12,7 @@ const {
   FIXED_GIT_PREFIX,
   assertChainUnchanged,
   buildChildEnvironment,
+  buildMemberCodexArgs,
   inspectGitConfigListing,
   isSupportedGitVersion,
   inspectRepository,
@@ -644,7 +645,7 @@ test('拘束: Git 管理外・ホームそのもの・拘束の設定が無い�
     }
     assert.equal(readBinding({}), null);
     assert.deepEqual(readBinding(fixture.env), {
-      root: fixture.repo, repo: 'vektor-inc/vk-terminals', git: GIT_PATH, gh: fixture.env.VK_TASK_GH, home: fixture.home, gitConfig: fixture.env.VK_TASK_GITCONFIG, ghConfig: fixture.env.VK_TASK_GHCONFIG, remoteBase: 'https://github.com',
+      root: fixture.repo, repo: 'vektor-inc/vk-terminals', git: GIT_PATH, gh: fixture.env.VK_TASK_GH, home: fixture.home, gitConfig: fixture.env.VK_TASK_GITCONFIG, ghConfig: fixture.env.VK_TASK_GHCONFIG, remoteBase: 'https://github.com', member: null,
     });
   } finally {
     fixture.cleanup();
@@ -2292,5 +2293,311 @@ test('拒否: リモートの既定ブランチを確定できない（ls-remote
     } finally {
       fixture.cleanup();
     }
+  }
+});
+
+// ─── メンバー起動（member start / member status。issue #441） ─────────────────
+
+const MEMBER_START = ['member', 'start', '--engine', 'codex', '--prompt', 'prompt.md', '--schema', 'schema.json', '--out', 'out.json'];
+
+test('許可: member start は engine・入出力の名前・モデル・readonly だけを受け、member status は実行 ID だけを受ける', () => {
+  assert.deepEqual(parseTaskCommand(MEMBER_START), {
+    ok: true, bin: 'codex', operation: 'member-start', engine: 'codex', prompt: 'prompt.md', schema: 'schema.json', out: 'out.json', model: null, readonly: false, needsGitHub: false,
+  });
+  const full = parseTaskCommand([...MEMBER_START, '--model', 'gpt-5.5', '--readonly']);
+  assert.equal(full.ok, true);
+  assert.equal(full.model, 'gpt-5.5');
+  assert.equal(full.readonly, true);
+  assert.equal(parseTaskCommand(['member', 'start', '--engine=codex', '--prompt=a.md', '--schema=b.json', '--out=c.json', '--model=gpt-5.5']).ok, true);
+  assert.deepEqual(parseTaskCommand(['member', 'status', '0123456789abcdef01234567']), { ok: true, bin: 'codex', operation: 'member-status', id: '0123456789abcdef01234567', needsGitHub: false });
+});
+
+test('拒否: member start の --repo・絶対パス・..・サブフォルダ・囲いを外す指定・codex 以外の engine・未知のオプション', () => {
+  const withOption = (...extra) => [...MEMBER_START, ...extra];
+  const replaceValue = (option, value) => MEMBER_START.map((token, index) => (MEMBER_START[index - 1] === option ? value : token));
+  const rejected = [
+    // 対象リポジトリや作業フォルダの指定
+    withOption('--repo', '/tmp/other'),
+    withOption('--repo=/tmp/other'),
+    withOption('--cwd', '/tmp'),
+    withOption('-C', '/tmp'),
+    withOption('--cd', '/tmp'),
+    withOption('--add-dir', '/'),
+    // 囲いを外す指定・sandbox や承認の上書き
+    withOption('--dangerously-bypass-approvals-and-sandbox'),
+    withOption('--dangerously-bypass-hook-trust'),
+    withOption('--sandbox', 'danger-full-access'),
+    withOption('-s', 'danger-full-access'),
+    withOption('--full-auto'),
+    withOption('-a', 'never'),
+    withOption('-c', 'sandbox_mode="danger-full-access"'),
+    withOption('--config', 'x=y'),
+    withOption('--profile', 'wide'),
+    withOption('--worktree'),
+    // パスの指定
+    replaceValue('--prompt', '/etc/passwd'),
+    replaceValue('--prompt', '../prompt.md'),
+    replaceValue('--prompt', 'sub/prompt.md'),
+    replaceValue('--prompt', '..'),
+    replaceValue('--prompt', 'a..b.md'),
+    replaceValue('--prompt', '.hidden'),
+    replaceValue('--prompt', '~/prompt.md'),
+    replaceValue('--schema', '/dev/fd/3'),
+    replaceValue('--schema', 'sub\\schema.json'),
+    replaceValue('--out', '/tmp/out.json'),
+    replaceValue('--out', '../out.json'),
+    replaceValue('--out', ''),
+    // engine
+    replaceValue('--engine', 'claude'),
+    replaceValue('--engine', 'Codex'),
+    // 必須・重複・同名・値の欠落・未知
+    MEMBER_START.filter((_token, index) => index !== 2 && index !== 3),
+    MEMBER_START.filter((_token, index) => index < 4 || index > 5),
+    MEMBER_START.filter((_token, index) => index < 6 || index > 7),
+    MEMBER_START.filter((_token, index) => index < 8),
+    withOption('--prompt', 'other.md'),
+    withOption('--readonly', '--readonly'),
+    replaceValue('--out', 'prompt.md'),
+    MEMBER_START.slice(0, -1),
+    withOption('--model', '-x'),
+    withOption('--model', 'a b'),
+    withOption('--model', 'x'.repeat(65)),
+    withOption('--unknown'),
+    withOption('extra'),
+    ['member', 'run', ...MEMBER_START.slice(2)],
+    ['member'],
+    ['member', 'start'],
+    ['member', 'status'],
+    ['member', 'status', 'abc'],
+    ['member', 'status', '0123456789abcdef01234567', 'extra'],
+    ['member', 'status', '../0123456789abcdef0123'],
+  ];
+  for (const command of rejected) {
+    const parsed = parseTaskCommand(command);
+    assert.equal(parsed.ok, false, command.join(' '));
+    assert.match(parsed.error, /^task command rejected: /);
+  }
+});
+
+test('子の起動引数: 親と同じ sandbox（-s workspace-write / read-only）・-a never・-C が付き、囲いを外す指定は入らない', () => {
+  const base = { root: '/work/repo', schemaPath: '/runs/a/schema.json', outPath: '/io/out.json', model: null, readonly: false };
+  const normal = buildMemberCodexArgs(base);
+  assert.deepEqual(normal, ['-a', 'never', 'exec', '-C', '/work/repo', '-s', 'workspace-write', '--color', 'never', '--output-schema', '/runs/a/schema.json', '-o', '/io/out.json', '-']);
+  const readonly = buildMemberCodexArgs({ ...base, readonly: true, model: 'gpt-5.5' });
+  assert.deepEqual(readonly, ['-a', 'never', 'exec', '-C', '/work/repo', '-s', 'read-only', '--ignore-rules', '--color', 'never', '--output-schema', '/runs/a/schema.json', '-o', '/io/out.json', '--model', 'gpt-5.5', '-']);
+  for (const args of [normal, readonly]) {
+    assert.equal(args.some((arg) => /dangerously|full-auto|danger-full-access/.test(arg)), false);
+    assert.equal(args.includes('workspace-write') !== args.includes('read-only'), true);
+  }
+});
+
+// メンバー起動の試験環境。専用の入出力フォルダ・実行の記録フォルダ・子用 CODEX_HOME・偽の codex を用意する。
+function createMemberFixture({ withMember = true } = {}) {
+  const fixture = createFixture();
+  const codexPath = path.join(fixture.root, 'bin', 'codex');
+  const io = path.join(fixture.root, 'io');
+  const runs = path.join(fixture.root, 'runs');
+  const memberHome = path.join(fixture.root, 'member-home');
+  for (const dir of [io, runs, memberHome]) fs.mkdirSync(dir, { mode: 0o700 });
+  const record = path.join(fixture.root, 'codex-record.json');
+  fs.writeFileSync(codexPath, `#!${process.execPath}\nconst fs = require('fs');\nconst input = fs.readFileSync(0, 'utf8');\nfs.writeFileSync(${JSON.stringify(record)}, JSON.stringify({ args: process.argv.slice(2), env: process.env, input, cwd: process.cwd() }));\nconst outIndex = process.argv.indexOf('-o');\nfs.writeFileSync(process.argv[outIndex + 1], '{"ok":true}');\nconsole.log('fake codex output');\nprocess.exit(input.includes('FAIL') ? 3 : 0);\n`, { mode: 0o755 });
+  const env = withMember
+    ? { ...fixture.env, VK_TASK_CODEX: codexPath, VK_TASK_MEMBER_HOME: memberHome, VK_TASK_MEMBER_IO: io, VK_TASK_MEMBER_RUNS: runs }
+    : fixture.env;
+  fs.writeFileSync(path.join(io, 'prompt.md'), 'do the task\n');
+  fs.writeFileSync(path.join(io, 'schema.json'), '{"type":"object"}');
+  const calls = [];
+  const spawn = (bin, args, options) => {
+    calls.push({ bin, args, options });
+    return { pid: 424242, unref: () => {} };
+  };
+  const outputs = [];
+  const runMember = (command, extra = {}) => run({ ...fixture, env }, command, { spawn, writeOut: (text) => outputs.push(text), randomId: () => 'aaaaaaaaaaaaaaaaaaaaaaaa', ...extra });
+  return { ...fixture, env, io, runs, memberHome, codexPath, record, calls, outputs, runMember };
+}
+
+test('実行: member start は拘束ルートで、親と同じ sandbox の子 Codex をバックグラウンドで起動し、子用の CODEX_HOME と最小の環境だけを渡す', () => {
+  const fixture = createMemberFixture();
+  try {
+    const result = fixture.runMember(MEMBER_START);
+    assert.equal(result.code, 0, result.messages.join(''));
+    assert.equal(fixture.outputs.join(''), `MEMBER_ID=aaaaaaaaaaaaaaaaaaaaaaaa\nOUT=${path.join(fixture.io, 'out.json')}\nLOG=${path.join(fixture.runs, 'aaaaaaaaaaaaaaaaaaaaaaaa', 'log.txt')}\n`);
+    assert.equal(fixture.calls.length, 1);
+    const [{ bin, args, options }] = fixture.calls;
+    const runDir = path.join(fixture.runs, 'aaaaaaaaaaaaaaaaaaaaaaaa');
+    // 包みの shell の位置引数: 入力・ログ・終了コードの場所、続いて codex と起動引数。
+    assert.equal(bin, '/bin/sh');
+    assert.deepEqual(args.slice(2, 7), ['sh', path.join(runDir, 'prompt.txt'), path.join(runDir, 'log.txt'), path.join(runDir, 'exit'), fixture.codexPath]);
+    assert.deepEqual(args.slice(7), ['-a', 'never', 'exec', '-C', fixture.repo, '-s', 'workspace-write', '--color', 'never', '--output-schema', path.join(runDir, 'schema.json'), '-o', path.join(fixture.io, 'out.json'), '-']);
+    assert.equal(args.some((arg) => /dangerously|danger-full-access/.test(arg)), false);
+    // 子の環境は親から引き継がず、CODEX_HOME は子用の専用フォルダ。
+    assert.equal(options.cwd, fixture.repo);
+    assert.equal(options.detached, true);
+    assert.equal(options.stdio, 'ignore');
+    assert.equal(options.env.CODEX_HOME, fixture.memberHome);
+    assert.deepEqual(Object.keys(options.env).sort(), ['CODEX_HOME', 'HOME', 'NO_COLOR', 'PATH']);
+    assert.equal(options.env.HOME, fixture.home);
+    // 入力は実行用の専用フォルダへ写し取られ、出力先は新規に確保される。
+    assert.equal(fs.readFileSync(path.join(runDir, 'prompt.txt'), 'utf8'), 'do the task\n');
+    assert.equal(fs.readFileSync(path.join(runDir, 'schema.json'), 'utf8'), '{"type":"object"}');
+    assert.equal(fs.readFileSync(path.join(fixture.io, 'out.json'), 'utf8'), '');
+    assert.equal(JSON.parse(fs.readFileSync(path.join(runDir, 'meta.json'), 'utf8')).pid, 424242);
+
+    // --readonly と --model。
+    fixture.calls.length = 0;
+    const readonly = fixture.runMember([...MEMBER_START.slice(0, -1), 'out2.json', '--readonly', '--model', 'gpt-5.5'], { randomId: () => 'bbbbbbbbbbbbbbbbbbbbbbbb' });
+    assert.equal(readonly.code, 0, readonly.messages.join(''));
+    const childArgs = fixture.calls[0].args.slice(7);
+    assert.deepEqual(childArgs.slice(0, 7), ['-a', 'never', 'exec', '-C', fixture.repo, '-s', 'read-only']);
+    assert.ok(childArgs.includes('--ignore-rules'));
+    assert.deepEqual(childArgs.slice(childArgs.indexOf('--model')), ['--model', 'gpt-5.5', '-']);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('拒否: 子用ランチャー（member の設定が空）では member 操作が使えず、入れ子の起動を防ぐ', () => {
+  const fixture = createMemberFixture({ withMember: false });
+  try {
+    for (const command of [MEMBER_START, ['member', 'status', '0123456789abcdef01234567']]) {
+      const result = fixture.runMember(command);
+      assert.equal(result.code, 2);
+      assert.match(result.messages.join(''), /member is not available from this launcher/);
+    }
+    assert.equal(fixture.calls.length, 0);
+    // 設定が一部だけ残っている不正な束縛も拒否する。
+    assert.equal(readBinding({ ...fixture.env, VK_TASK_CODEX: '/bin/echo' }), null);
+    assert.equal(readBinding({ ...fixture.env, VK_TASK_CODEX: 'codex', VK_TASK_MEMBER_HOME: '/a', VK_TASK_MEMBER_IO: '/b', VK_TASK_MEMBER_RUNS: '/c' }), null);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('拒否: member start は別リポジトリ・同じ origin の別クローン・サブフォルダからは起動しない', () => {
+  const fixture = createMemberFixture();
+  try {
+    const stranger = path.join(fixture.root, 'stranger');
+    const clone = path.join(fixture.root, 'clone');
+    initRepo(stranger, { origin: 'https://github.com/other/repo.git' });
+    initRepo(clone, { origin: GITHUB_ORIGIN });
+    const sub = path.join(fixture.repo, 'sub');
+    fs.mkdirSync(sub);
+    for (const cwd of [stranger, clone]) {
+      const result = fixture.runMember(MEMBER_START, { cwd });
+      assert.equal(result.code, 2, cwd);
+      assert.match(result.messages.join(''), /not the bound repository/);
+    }
+    const inSub = fixture.runMember(MEMBER_START, { cwd: sub });
+    assert.equal(inSub.code, 2);
+    assert.match(inSub.messages.join(''), /must run at the root/);
+    assert.equal(fixture.calls.length, 0);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('拒否: 入力ファイルがリンク・欠落・不正、出力先が既存（リンクを含む）、専用フォルダがリンクなら、子を起動しない', () => {
+  const fixture = createMemberFixture();
+  try {
+    const secret = path.join(fixture.root, 'secret.txt');
+    fs.writeFileSync(secret, 'secret');
+    const withPrompt = (name) => MEMBER_START.map((token) => (token === 'prompt.md' ? name : token));
+    // 入力ファイルがシンボリックリンク。
+    fs.symlinkSync(secret, path.join(fixture.io, 'linked.md'));
+    let result = fixture.runMember(withPrompt('linked.md'));
+    assert.equal(result.code, 2);
+    assert.match(result.messages.join(''), /linked\.md is not a plain file/);
+    // 入力ファイルが無い・空・スキーマが JSON でない・サブフォルダ。
+    result = fixture.runMember(withPrompt('missing.md'));
+    assert.match(result.messages.join(''), /missing\.md does not exist/);
+    fs.writeFileSync(path.join(fixture.io, 'empty.md'), '');
+    result = fixture.runMember(withPrompt('empty.md'));
+    assert.match(result.messages.join(''), /empty\.md is empty or too large/);
+    fs.writeFileSync(path.join(fixture.io, 'bad.json'), 'not json');
+    result = fixture.runMember(MEMBER_START.map((token) => (token === 'schema.json' ? 'bad.json' : token)));
+    assert.equal(result.code, 2);
+    fs.mkdirSync(path.join(fixture.io, 'dir.md'));
+    result = fixture.runMember(withPrompt('dir.md'));
+    assert.match(result.messages.join(''), /dir\.md is not a plain file/);
+    // 出力先に事前に置かれたリンクや既存ファイルへは書かない。
+    fs.symlinkSync(secret, path.join(fixture.io, 'out.json'));
+    result = fixture.runMember(MEMBER_START);
+    assert.equal(result.code, 2);
+    assert.match(result.messages.join(''), /out\.json already exists/);
+    assert.equal(fs.readFileSync(secret, 'utf8'), 'secret');
+    assert.equal(fixture.calls.length, 0);
+
+    // 専用フォルダ自体がリンクに差し替えられている。
+    fs.rmSync(path.join(fixture.io, 'out.json'));
+    const elsewhere = path.join(fixture.root, 'elsewhere');
+    fs.cpSync(fixture.io, elsewhere, { recursive: true, verbatimSymlinks: true });
+    fs.rmSync(fixture.io, { recursive: true });
+    fs.symlinkSync(elsewhere, fixture.io);
+    result = fixture.runMember(MEMBER_START);
+    assert.equal(result.code, 2);
+    assert.equal(fixture.calls.length, 0);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('実行: member start → member status で、実際のプロセスの終了コード・結果ファイル・ログ末尾を確かめられる（失敗した子は exited と終了コードを返す）', async () => {
+  const fixture = createMemberFixture();
+  try {
+    const start = (prompt, out, id) => {
+      fs.writeFileSync(path.join(fixture.io, prompt), prompt.includes('fail') ? 'FAIL please' : 'fine');
+      const result = run(fixture, ['member', 'start', '--engine', 'codex', '--prompt', prompt, '--schema', 'schema.json', '--out', out], { writeOut: () => {}, randomId: () => id });
+      assert.equal(result.code, 0, result.messages.join(''));
+      return id;
+    };
+    const status = (id, extra = {}) => {
+      const outputs = [];
+      const result = run(fixture, ['member', 'status', id], { writeOut: (text) => outputs.push(text), ...extra });
+      assert.equal(result.code, 0, result.messages.join(''));
+      return outputs.join('');
+    };
+    const waitForExit = async (id) => {
+      for (let i = 0; i < 100; i += 1) {
+        if (fs.existsSync(path.join(fixture.runs, id, 'exit'))) return;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      throw new Error('member run did not finish');
+    };
+
+    const ok = start('ok.md', 'ok-out.json', '111111111111111111111111');
+    await waitForExit(ok);
+    const okStatus = status(ok);
+    assert.match(okStatus, /^STATE=exited$/m);
+    assert.match(okStatus, /^EXIT_CODE=0$/m);
+    assert.ok(okStatus.includes(`OUT=${path.join(fixture.io, 'ok-out.json')}\n`));
+    assert.match(okStatus, /--- log tail ---\nfake codex output/);
+    assert.equal(fs.readFileSync(path.join(fixture.io, 'ok-out.json'), 'utf8'), '{"ok":true}');
+    // 子には、プロンプトが標準入力で渡され、CODEX_HOME は子用の専用フォルダ。
+    const recorded = JSON.parse(fs.readFileSync(fixture.record, 'utf8'));
+    assert.equal(recorded.input, 'fine');
+    assert.equal(recorded.env.CODEX_HOME, fixture.memberHome);
+    assert.equal(fs.realpathSync(recorded.cwd), fixture.repo);
+    assert.deepEqual(recorded.args.slice(0, 7), ['-a', 'never', 'exec', '-C', fixture.repo, '-s', 'workspace-write']);
+
+    const failed = start('fail.md', 'fail-out.json', '222222222222222222222222');
+    await waitForExit(failed);
+    assert.match(status(failed), /^EXIT_CODE=3$/m);
+
+    // 見つからない場合と、終了コードのファイルが無い場合（プロセスがいれば running、いなければ lost）。
+    const unknown = run(fixture, ['member', 'status', '333333333333333333333333']);
+    assert.equal(unknown.code, 2);
+    assert.match(unknown.messages.join(''), /unknown member run/);
+    const lostId = '444444444444444444444444';
+    fs.mkdirSync(path.join(fixture.runs, lostId), { mode: 0o700 });
+    fs.writeFileSync(path.join(fixture.runs, lostId, 'meta.json'), JSON.stringify({ pid: 999999, out: '/x' }));
+    const noProcess = () => {
+      const error = new Error('no such process');
+      error.code = 'ESRCH';
+      throw error;
+    };
+    assert.match(status(lostId, { kill: noProcess }), /^STATE=lost$/m);
+    assert.match(status(lostId, { kill: () => true }), /^STATE=running$/m);
+  } finally {
+    fixture.cleanup();
   }
 });

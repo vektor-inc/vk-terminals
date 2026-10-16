@@ -19,7 +19,11 @@
 //     gh には検証済みの --repo を必ず付ける。
 //   - 通信する Git 操作（git push / prepare worktree の fetch）は origin の設定値を使わない。拘束した owner/repo から
 //     入口が組み立てた固定 URL と固定 refspec だけに送り、資格情報は検証済み gh の `auth git-credential` だけを使う（issue #440）。
+//   - メンバー起動（member start / member status。issue #441）は、子の Codex を親と同じ範囲の sandbox（-s workspace-write か read-only、
+//     -a never）で起動する。囲いを外す指定は受け付けず、子には専用の CODEX_HOME（member 操作を持たない入口）を渡して入れ子の起動を防ぐ。
+//     入出力ファイルは起動ごとの専用フォルダ直下の名前だけで、子の実行は数十分かかりうるためバックグラウンドで行う。
 const nodeFs = require('fs');
+const crypto = require('crypto');
 const path = require('path');
 const childProcess = require('child_process');
 
@@ -63,6 +67,14 @@ const DEFAULT_REMOTE_BASE = 'https://github.com';
 // main / master への push・worktree 準備は作業ブランチとして使えない名前。
 const PROTECTED_BRANCH_NAMES = Object.freeze(['main', 'master', 'HEAD']);
 const WORKTREE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9-]{0,99}$/;
+// メンバー起動の入出力ファイル名（専用フォルダ直下の名前だけ。パス区切り・先頭 `.` は通らない）、モデル名、実行 ID。
+const MEMBER_FILE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
+const MEMBER_MODEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._[\]-]{0,63}$/;
+const MEMBER_RUN_ID_PATTERN = /^[0-9a-f]{24}$/;
+const MEMBER_SUPPORTED_ENGINES = Object.freeze(['codex']);
+const MEMBER_MAX_PROMPT_BYTES = 1024 * 1024;
+const MEMBER_MAX_SCHEMA_BYTES = 256 * 1024;
+const MEMBER_LOG_TAIL_BYTES = 4096;
 
 function fail(error) {
   return { ok: false, error: `task command rejected: ${error}` };
@@ -323,6 +335,52 @@ function parsePrepareWorktree(tokens) {
   return { ok: true, bin: 'git', operation: 'prepare-worktree', base, issue, branch, name, needsGitHub: true, needsGh: true };
 }
 
+function isSafeMemberFileName(value) {
+  return !hasUnsafeCharacter(value) && MEMBER_FILE_NAME_PATTERN.test(value) && !value.includes('..') && !value.endsWith('.');
+}
+
+// メンバー起動は `member start --engine codex --prompt <名前> --schema <名前> --out <名前> [--model <名前>] [--readonly]` と
+// `member status <ID>` だけ。--repo・絶対パス・囲いを外す指定は許可リストに無いので、未知のオプションとして拒否される。
+function parseMemberStart(tokens) {
+  const values = {};
+  let readonly = false;
+  for (let i = 0; i < tokens.length; i += 1) {
+    const token = tokens[i];
+    if (hasUnsafeCharacter(token)) return fail('invalid argument');
+    const [name, inlineValue] = token.startsWith('--') && token.includes('=') ? [token.slice(0, token.indexOf('=')), token.slice(token.indexOf('=') + 1)] : [token, undefined];
+    if (name === '--readonly' && inlineValue === undefined && !readonly) {
+      readonly = true;
+    } else if (['--engine', '--prompt', '--schema', '--out', '--model'].includes(name) && values[name] === undefined) {
+      const value = inlineValue !== undefined ? inlineValue : tokens[i + 1];
+      if (hasUnsafeCharacter(value)) return fail(`${name} needs a value`);
+      if (inlineValue === undefined) i += 1;
+      values[name] = value;
+    } else return fail(`argument not allowed: ${JSON.stringify(token)}`);
+  }
+  if (values['--engine'] === undefined) return fail('--engine is required');
+  if (!MEMBER_SUPPORTED_ENGINES.includes(values['--engine'])) return fail(`engine not supported: ${JSON.stringify(values['--engine'])}`);
+  for (const option of ['--prompt', '--schema', '--out']) {
+    if (values[option] === undefined) return fail(`${option} is required`);
+    if (!isSafeMemberFileName(values[option])) return fail(`${option} must be a plain file name in the member input/output folder`);
+  }
+  if (new Set([values['--prompt'], values['--schema'], values['--out']]).size !== 3) return fail('--prompt, --schema and --out must be different files');
+  if (values['--model'] !== undefined && !MEMBER_MODEL_PATTERN.test(values['--model'])) return fail('invalid --model');
+  return {
+    ok: true, bin: 'codex', operation: 'member-start', engine: values['--engine'], prompt: values['--prompt'], schema: values['--schema'], out: values['--out'],
+    model: values['--model'] === undefined ? null : values['--model'], readonly, needsGitHub: false,
+  };
+}
+
+function parseMember(tokens) {
+  const [action, ...rest] = tokens;
+  if (action === 'start') return parseMemberStart(rest);
+  if (action === 'status') {
+    if (rest.length !== 1 || hasUnsafeCharacter(rest[0]) || !MEMBER_RUN_ID_PATTERN.test(rest[0])) return fail('usage: member status <run id>');
+    return { ok: true, bin: 'codex', operation: 'member-status', id: rest[0], needsGitHub: false };
+  }
+  return fail(`member ${action === undefined ? '' : JSON.stringify(action)} is not allowed`);
+}
+
 function ghCommand(parts, args) {
   return { ok: true, bin: 'gh', args: [...parts, ...args], needsGitHub: true };
 }
@@ -398,7 +456,8 @@ function parseTaskCommand(argv) {
     if (target === 'worktree') return parsePrepareWorktree(tokens);
     return fail(`prepare ${target === undefined ? '' : JSON.stringify(target)} is not allowed`);
   }
-  return fail('only git, gh and prepare are allowed');
+  if (tool === 'member') return parseMember(rest);
+  return fail('only git, gh, prepare and member are allowed');
 }
 
 // ─── 信頼境界の検証（所有者・権限・リンク） ─────────────────────────────
@@ -793,7 +852,7 @@ function isSafeBindingPath(value) {
 /**
  * ランチャーが固定した値（環境変数 VK_TASK_*）を読み、拘束の設定として検証する。1 つでも不正なら null。
  * @param {Record<string, string|undefined>} env
- * @returns {{root: string, repo: string|null, git: string, gh: string|null, home: string, gitConfig: string, ghConfig: string|null, remoteBase: string}|null}
+ * @returns {{root: string, repo: string|null, git: string, gh: string|null, home: string, gitConfig: string, ghConfig: string|null, remoteBase: string, member: {codex: string, home: string, io: string, runs: string}|null}|null}
  */
 function readBinding(env) {
   const root = env.VK_TASK_ROOT;
@@ -813,7 +872,15 @@ function readBinding(env) {
   // push 先・fetch 元の基点は GitHub の固定値。例外はテスト用に一時フォルダの絶対パスを渡すときだけで、
   // 値はランチャー（Codex から書き換えられない）が固定する。
   if (remoteBase !== DEFAULT_REMOTE_BASE && (!isSafeBindingPath(remoteBase) || remoteBase.split('/').includes('..'))) return null;
-  return { root, repo, git, gh, home, gitConfig, ghConfig, remoteBase };
+  // メンバー起動の設定は 4 つがそろったときだけ有効。すべて空（子用ランチャー・Codex が見つからない場合）なら member 操作は拒否する。
+  // 一部だけ設定されている状態は不正として、束縛全体を無効にする。
+  const memberValues = [env.VK_TASK_CODEX, env.VK_TASK_MEMBER_HOME, env.VK_TASK_MEMBER_IO, env.VK_TASK_MEMBER_RUNS];
+  let member = null;
+  if (memberValues.some((value) => value)) {
+    if (!memberValues.every(isSafeBindingPath)) return null;
+    member = { codex: memberValues[0], home: memberValues[1], io: memberValues[2], runs: memberValues[3] };
+  }
+  return { root, repo, git, gh, home, gitConfig, ghConfig, remoteBase, member };
 }
 
 /**
@@ -1098,6 +1165,215 @@ function executePrepareWorktree({ parsed, binding, cwd, fsImpl, runGit, spawnSyn
   return 0;
 }
 
+// ─── メンバー起動（member start / member status） ──────────────────────────
+
+/**
+ * 子の Codex の起動引数を組み立てる（codex の後ろに続く部分）。
+ * 親と同じ範囲の sandbox（workspace-write。--readonly なら read-only）と `-a never` を必ず付け、
+ * 囲いを外す指定（--dangerously-bypass-approvals-and-sandbox など）はここからも入らない。
+ * read-only の子は、入口の許可ルールを読み込ませず（--ignore-rules）、書き込みを伴う入口操作も使わせない。
+ * @param {{root: string, schemaPath: string, outPath: string, model: string|null, readonly: boolean}} params
+ * @returns {string[]}
+ */
+function buildMemberCodexArgs({ root, schemaPath, outPath, model, readonly }) {
+  return [
+    '-a', 'never', 'exec', '-C', root,
+    '-s', readonly ? 'read-only' : 'workspace-write',
+    ...(readonly ? ['--ignore-rules'] : []),
+    '--color', 'never',
+    '--output-schema', schemaPath, '-o', outPath,
+    ...(model === null ? [] : ['--model', model]),
+    '-',
+  ];
+}
+
+/**
+ * 子の Codex の環境変数を一から組み立てる。親の環境は引き継がず、CODEX_HOME は子用の専用フォルダに固定する。
+ * @param {{git: string, gh: string|null, home: string, member: {codex: string, home: string}}} binding
+ * @returns {Record<string, string>}
+ */
+function buildMemberEnvironment(binding) {
+  const dirs = [path.dirname(binding.member.codex), path.dirname(binding.git), ...(binding.gh ? [path.dirname(binding.gh)] : []), '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin'];
+  return {
+    PATH: [...new Set(dirs)].join(':'),
+    HOME: binding.home,
+    CODEX_HOME: binding.member.home,
+    NO_COLOR: '1',
+  };
+}
+
+// 起動のたびの専用フォルダ直下にある入力ファイルを、リンクをたどらず・通常ファイル・自分の所有・サイズ上限内で読む。
+function readMemberInput(fsImpl, dir, name, maxBytes, uid) {
+  const constants = fsImpl.constants || nodeFs.constants;
+  let fd;
+  try {
+    fd = fsImpl.openSync(path.join(dir, name), constants.O_RDONLY | (constants.O_NOFOLLOW || 0));
+  } catch (error) {
+    const reason = error && error.code === 'ENOENT' ? 'does not exist' : 'is not a plain file';
+    throw new TrustError(`${name} ${reason}`);
+  }
+  try {
+    const stat = fsImpl.fstatSync(fd);
+    if (!stat.isFile() || stat.nlink !== 1) throw new TrustError(`${name} is not a plain file`);
+    if (uid !== undefined && stat.uid !== uid) throw new TrustError(`${name} is not owned by the current user`);
+    if (stat.size === 0 || stat.size > maxBytes) throw new TrustError(`${name} is empty or too large`);
+    return fsImpl.readFileSync(fd);
+  } finally {
+    fsImpl.closeSync(fd);
+  }
+}
+
+// 新規ファイルを、既にある（リンクを含む）なら失敗する形で作って書く。
+function createExclusiveFile(fsImpl, filePath, content, mode = 0o600) {
+  const constants = fsImpl.constants || nodeFs.constants;
+  const fd = fsImpl.openSync(filePath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW || 0), mode);
+  try {
+    if (content.length > 0) fsImpl.writeFileSync(fd, content);
+  } finally {
+    fsImpl.closeSync(fd);
+  }
+}
+
+// 子の終了を待たずに入口を終えるため、子は shell の薄い包みの中で動かし、終了コードを専用フォルダのファイルへ書く。
+// 引数はすべて位置引数で渡し、shell の文字列には入れない。
+const MEMBER_WRAPPER_SCRIPT = 'prompt=$1; log=$2; exit_file=$3; shift 3; "$@" <"$prompt" >"$log" 2>&1; rc=$?; printf "%s\\n" "$rc" >"$exit_file.tmp" && mv "$exit_file.tmp" "$exit_file"';
+
+/**
+ * `member start`。子の Codex をバックグラウンドで起動し、実行 ID を返す。子の実行は数十分かかりうるため、完了は待たない。
+ * 作業フォルダは拘束ルートか検証済み worktree のルートに限り、入出力は専用フォルダ直下の名前だけを受ける。
+ */
+function executeMemberStart({ parsed, binding, cwd, fsImpl, inspected, reject, writeOut, deps }) {
+  const member = binding.member;
+  if (member === null) return reject('task command rejected: member is not available from this launcher');
+  if (fsImpl.realpathSync(cwd) !== inspected.root) return reject('task command rejected: member start must run at the root of the bound repository or a bound worktree');
+  const uid = currentUid(deps);
+  let promptBody;
+  let schemaBody;
+  try {
+    resolveTrustedPath(fsImpl, member.codex, { uid, finalKind: 'file' });
+    resolveTrustedPath(fsImpl, member.home, { uid, rejectFinalLink: true });
+    // 専用フォルダはランチャーが実パスで固定している。リンクを通る場合は拒否する。
+    for (const dir of [member.io, member.runs]) {
+      if (resolveTrustedPath(fsImpl, dir, { uid, rejectFinalLink: true }).realPath !== dir) throw new TrustError(`path is not a real directory: ${dir}`);
+    }
+    promptBody = readMemberInput(fsImpl, member.io, parsed.prompt, MEMBER_MAX_PROMPT_BYTES, uid);
+    schemaBody = readMemberInput(fsImpl, member.io, parsed.schema, MEMBER_MAX_SCHEMA_BYTES, uid);
+    JSON.parse(schemaBody.toString('utf8'));
+  } catch (error) {
+    return reject(`task command rejected: ${error instanceof TrustError ? error.message : 'member input could not be verified'}`);
+  }
+
+  const outPath = path.join(member.io, parsed.out);
+  const runId = (deps.randomId || (() => crypto.randomBytes(12).toString('hex')))();
+  const runDir = path.join(member.runs, runId);
+  const paths = { prompt: path.join(runDir, 'prompt.txt'), schema: path.join(runDir, 'schema.json'), log: path.join(runDir, 'log.txt'), exit: path.join(runDir, 'exit'), meta: path.join(runDir, 'meta.json') };
+  try {
+    // 出力先は先に新規作成して確保する（事前に置かれたリンクや既存ファイルへ書かせない）。
+    try {
+      createExclusiveFile(fsImpl, outPath, Buffer.alloc(0));
+    } catch (error) {
+      return reject(`task command rejected: ${parsed.out} ${error && error.code === 'EEXIST' ? 'already exists' : 'could not be created'}`);
+    }
+    // 入力は実行用の専用フォルダへ写し取る。子から書き換えられる場所（入出力フォルダ）を、検証後に再び開かない。
+    fsImpl.mkdirSync(runDir, { mode: 0o700 });
+    createExclusiveFile(fsImpl, paths.prompt, promptBody);
+    createExclusiveFile(fsImpl, paths.schema, schemaBody);
+  } catch (error) {
+    return reject(`task command failed: ${error && error.code ? error.code : 'filesystem error'}`);
+  }
+
+  const codexArgs = buildMemberCodexArgs({ root: inspected.root, schemaPath: paths.schema, outPath, model: parsed.model, readonly: parsed.readonly });
+  const spawnDetached = deps.spawn || childProcess.spawn;
+  let child;
+  try {
+    child = spawnDetached('/bin/sh', ['-c', MEMBER_WRAPPER_SCRIPT, 'sh', paths.prompt, paths.log, paths.exit, member.codex, ...codexArgs], {
+      cwd: inspected.root, env: buildMemberEnvironment(binding), detached: true, stdio: 'ignore',
+    });
+  } catch (error) {
+    return reject(`task command failed to start: ${error && error.code ? error.code : 'error'}`);
+  }
+  if (!child || typeof child.pid !== 'number') return reject('task command failed to start: error');
+  if (typeof child.unref === 'function') child.unref();
+  try {
+    createExclusiveFile(fsImpl, paths.meta, Buffer.from(`${JSON.stringify({ pid: child.pid, startedAt: new Date().toISOString(), readonly: parsed.readonly, out: outPath })}\n`));
+  } catch (error) {
+    return reject(`task command failed: ${error && error.code ? error.code : 'filesystem error'}`);
+  }
+  writeOut(`MEMBER_ID=${runId}\nOUT=${outPath}\nLOG=${paths.log}\n`);
+  return 0;
+}
+
+// 通常ファイルの末尾を、リンクをたどらずに最大 MEMBER_LOG_TAIL_BYTES だけ読む。読めなければ null。
+function readFileTail(fsImpl, filePath) {
+  const constants = fsImpl.constants || nodeFs.constants;
+  let fd;
+  try {
+    fd = fsImpl.openSync(filePath, constants.O_RDONLY | (constants.O_NOFOLLOW || 0));
+  } catch (_error) {
+    return null;
+  }
+  try {
+    const stat = fsImpl.fstatSync(fd);
+    if (!stat.isFile()) return null;
+    const length = Math.min(stat.size, MEMBER_LOG_TAIL_BYTES);
+    const buffer = Buffer.alloc(length);
+    if (length > 0) fsImpl.readSync(fd, buffer, 0, length, stat.size - length);
+    return buffer.toString('utf8');
+  } catch (_error) {
+    return null;
+  } finally {
+    fsImpl.closeSync(fd);
+  }
+}
+
+/**
+ * `member status <ID>`。子の状態（running / exited / lost）、終了コード、結果ファイル・ログの場所と、ログの末尾を返す。
+ * 終了コードは子の終了時に包みの shell が書いたファイルから読む。それが無く、プロセスも見つからなければ lost（異常終了）。
+ */
+function executeMemberStatus({ parsed, binding, fsImpl, reject, writeOut, deps }) {
+  const member = binding.member;
+  if (member === null) return reject('task command rejected: member is not available from this launcher');
+  const uid = currentUid(deps);
+  const runDir = path.join(member.runs, parsed.id);
+  let meta;
+  let exitCode = null;
+  try {
+    if (resolveTrustedPath(fsImpl, member.runs, { uid, rejectFinalLink: true }).realPath !== member.runs) throw new TrustError(`path is not a real directory: ${member.runs}`);
+    const stat = lstatOrNull(fsImpl, runDir);
+    if (stat === null) return reject(`task command rejected: unknown member run: ${parsed.id}`);
+    if (stat.isSymbolicLink() || !stat.isDirectory() || (uid !== undefined && stat.uid !== uid)) throw new TrustError('member run folder is not a plain directory');
+    meta = JSON.parse(String(readMemberInput(fsImpl, runDir, 'meta.json', 64 * 1024, uid)));
+    if (lstatOrNull(fsImpl, path.join(runDir, 'exit')) !== null) {
+      const raw = String(readMemberInput(fsImpl, runDir, 'exit', 16, uid)).trim();
+      if (!/^[0-9]{1,3}$/.test(raw)) throw new TrustError('member exit file is invalid');
+      exitCode = Number(raw);
+    }
+  } catch (error) {
+    return reject(`task command rejected: ${error instanceof TrustError ? error.message : 'member run could not be read'}`);
+  }
+  let alive = false;
+  if (exitCode === null && Number.isInteger(meta.pid) && meta.pid > 0) {
+    try {
+      (deps.kill || process.kill)(meta.pid, 0);
+      alive = true;
+    } catch (error) {
+      alive = Boolean(error && error.code === 'EPERM');
+    }
+  }
+  const state = exitCode !== null ? 'exited' : alive ? 'running' : 'lost';
+  const tail = readFileTail(fsImpl, path.join(runDir, 'log.txt'));
+  writeOut([
+    `MEMBER_ID=${parsed.id}`,
+    `STATE=${state}`,
+    ...(exitCode === null ? [] : [`EXIT_CODE=${exitCode}`]),
+    `OUT=${String(meta.out)}`,
+    `LOG=${path.join(runDir, 'log.txt')}`,
+    ...(tail === null || tail === '' ? [] : ['--- log tail ---', tail.replace(/\n$/, '')]),
+    '',
+  ].join('\n'));
+  return 0;
+}
+
 /**
  * 検証を通った操作だけを実行し、終了コードを返す。
  * 実行環境・git / gh の絶対パス・対象リポジトリはランチャーが固定した VK_TASK_*（deps.env）から読み、
@@ -1155,6 +1431,11 @@ function runTaskCommand(argv, deps = {}) {
     if (branchError !== null) return reject(branchError);
   }
 
+  if (parsed.operation === 'member-start' || parsed.operation === 'member-status') {
+    const context = { parsed, binding, cwd, fsImpl, inspected, reject, writeOut, deps };
+    return parsed.operation === 'member-start' ? executeMemberStart(context) : executeMemberStatus(context);
+  }
+
   if (parsed.operation === 'push' || parsed.operation === 'prepare-worktree') {
     const networkEnv = networkEnvironment(binding);
     const context = { parsed, binding, cwd, fsImpl, runGit, spawnSync, networkEnv, plainEnv: env, reject, inspected, write, writeOut, deps };
@@ -1189,6 +1470,8 @@ module.exports = {
   FIXED_GIT_PREFIX,
   DEFAULT_REMOTE_BASE,
   restrictWrites,
+  buildMemberCodexArgs,
+  buildMemberEnvironment,
 };
 
 // 複製先（専用 CODEX_HOME）では、ランチャーからの Node 直接実行になる。require された場合は何もしない。

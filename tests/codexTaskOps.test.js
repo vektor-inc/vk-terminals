@@ -209,6 +209,8 @@ function createFixture({ origin = GITHUB_ORIGIN } = {}) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'vk-task-ops-')));
   const repo = path.join(root, 'repo');
   initRepo(repo, { origin });
+  // 入口は main / master への commit を拒否するため、既定では作業ブランチに切り替えておく（既定ブランチ上の挙動は専用テストで確かめる）。
+  git(repo, 'checkout', '-q', '-b', 'work/test');
   const binDir = path.join(root, 'bin');
   const record = path.join(root, 'gh-calls.jsonl');
   const home = path.join(root, 'home');
@@ -872,6 +874,211 @@ test('実行: git / gh の実行ファイルが他人の書ける場所へ移さ
     assert.equal(run(fixture, ['git', 'status']).code, 0);
     const missingGh = run(fixture, ['gh', 'issue', 'view', '1'], { env: { ...fixture.env, VK_TASK_GH: '' } });
     assert.match(missingGh.messages.join(''), /gh is not available/);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+// ─── worktree の受け入れと既定ブランチへの commit 拒否（issue #433） ────────────
+
+// 拘束先のリポジトリに worktree を作る。dir は worktree の置き場所（拘束先の内側・外側のどちらでもよい）。
+function addWorktree(fixture, dir, branch) {
+  fs.mkdirSync(path.dirname(dir), { recursive: true });
+  git(fixture.repo, 'worktree', 'add', '-q', '-b', branch, dir);
+  return fs.realpathSync(dir);
+}
+
+test('worktree: 拘束先の内側・外側のどちらの worktree でも add / commit / 閲覧ができる', () => {
+  const fixture = createFixture();
+  try {
+    const inside = addWorktree(fixture, path.join(fixture.repo, '.claude', 'worktrees', 'x'), 'work/inside');
+    const outside = addWorktree(fixture, path.join(fixture.root, 'outside-wt'), 'work/outside');
+    for (const [cwd, branch] of [[inside, 'work/inside'], [outside, 'work/outside']]) {
+      fs.writeFileSync(path.join(cwd, 'wt.txt'), `${branch}\n`);
+      assert.equal(run(fixture, ['git', 'status', '--short'], { cwd }).code, 0, cwd);
+      assert.equal(run(fixture, ['git', 'add', '--', 'wt.txt'], { cwd }).code, 0, cwd);
+      assert.equal(run(fixture, ['git', 'commit', '-m', `in ${branch}`], { cwd }).code, 0, cwd);
+      assert.equal(git(cwd, 'log', '-1', '--format=%s'), `in ${branch}`);
+      // 拘束先のブランチは動かない。
+      assert.equal(git(fixture.repo, 'rev-parse', '--abbrev-ref', 'HEAD'), 'work/test');
+    }
+    // 拘束先の下位フォルダと同様、worktree の下位フォルダからも実行できる。
+    fs.mkdirSync(path.join(outside, 'sub'));
+    assert.equal(run(fixture, ['git', 'status', '--short'], { cwd: path.join(outside, 'sub') }).code, 0);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('worktree: gh pr create は worktree からも、拘束した --repo 付きで呼ばれる（origin が違えば呼ばれない）', () => {
+  const fixture = createFixture();
+  try {
+    const wt = addWorktree(fixture, path.join(fixture.root, 'wt-gh'), 'work/gh');
+    assert.equal(run(fixture, ['gh', 'pr', 'create', '--head', 'work/gh', '--title', 't', '--body', 'b'], { cwd: wt }).code, 0);
+    assert.deepEqual(fixture.readCalls().map((call) => call.args), [
+      ['pr', 'create', '--head', 'work/gh', '--title', 't', '--body', 'b', '--repo', 'vektor-inc/vk-terminals'],
+    ]);
+    git(fixture.repo, 'remote', 'set-url', 'origin', 'https://github.com/someone/else.git');
+    const result = run(fixture, ['gh', 'issue', 'view', '1'], { cwd: wt });
+    assert.equal(result.code, 2);
+    assert.match(result.messages.join(''), /does not match the bound github\.com repository/);
+    assert.equal(fixture.readCalls().length, 1);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('worktree: 同じ origin を持つ別クローン・別リポジトリの worktree・入れ子のリポジトリは、Git 管理領域が違うので拒否する', () => {
+  const fixture = createFixture();
+  try {
+    const clone = path.join(fixture.root, 'clone');
+    git(fixture.root, 'clone', '-q', fixture.repo, clone);
+    git(clone, 'remote', 'set-url', 'origin', GITHUB_ORIGIN);
+    git(clone, 'checkout', '-q', '-b', 'work/clone');
+    const other = path.join(fixture.root, 'other');
+    initRepo(other, { origin: GITHUB_ORIGIN });
+    git(other, 'checkout', '-q', '-b', 'work/other');
+    const otherWt = path.join(fixture.root, 'other-wt');
+    git(other, 'worktree', 'add', '-q', '-b', 'work/other-wt', otherWt);
+    const nested = path.join(fixture.repo, 'nested');
+    initRepo(nested, { origin: GITHUB_ORIGIN });
+    git(nested, 'checkout', '-q', '-b', 'work/nested');
+    for (const cwd of [clone, other, fs.realpathSync(otherWt), nested]) {
+      fs.writeFileSync(path.join(cwd, 'b.txt'), 'two\n');
+      for (const command of [['git', 'add', '-A'], ['git', 'commit', '-m', 'x'], ['gh', 'pr', 'view', '1']]) {
+        const result = run(fixture, command, { cwd });
+        assert.equal(result.code, 2, `${cwd}: ${command.join(' ')}`);
+        assert.match(result.messages.join(''), /not the bound repository/);
+      }
+    }
+    assert.deepEqual(fixture.readCalls(), []);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('worktree: worktree 側の cwd でも、外部コマンドを起動しうる設定があれば拒否する', () => {
+  const fixture = createFixture();
+  try {
+    const wt = addWorktree(fixture, path.join(fixture.root, 'wt-cfg'), 'work/cfg');
+    git(fixture.repo, 'config', 'core.editor', 'sh -c "touch /tmp/never"');
+    const result = run(fixture, ['git', 'status'], { cwd: wt });
+    assert.equal(result.code, 2);
+    assert.match(result.messages.join(''), /can run external commands/);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('既定ブランチ: main / master / origin/HEAD の指す先 / detached HEAD では commit を拒否し、作業ブランチなら通る（拘束先・worktree の両方）', () => {
+  const fixture = createFixture();
+  try {
+    const wt = addWorktree(fixture, path.join(fixture.root, 'wt-branch'), 'work/wt');
+    // 変更を add してから commit を試み、拒否された場合は HEAD が動いていないことも確かめる。
+    const attempt = (cwd, label) => {
+      fs.writeFileSync(path.join(cwd, 'c.txt'), `${label}\n`);
+      assert.equal(run(fixture, ['git', 'add', '-A'], { cwd }).code, 0);
+      const before = git(cwd, 'rev-parse', 'HEAD');
+      const result = run(fixture, ['git', 'commit', '-m', label], { cwd });
+      if (result.code === 2) assert.equal(git(cwd, 'rev-parse', 'HEAD'), before, `${label}: 拒否されたのに commit された`);
+      return result;
+    };
+
+    // main / master（拘束先）。
+    for (const name of ['main', 'master']) {
+      git(fixture.repo, 'checkout', '-q', '-B', name);
+      const result = attempt(fixture.repo, `repo on ${name}`);
+      assert.equal(result.code, 2);
+      assert.match(result.messages.join(''), /task command rejected: cannot commit on the default branch/);
+    }
+    // detached HEAD（拘束先）。
+    git(fixture.repo, 'checkout', '-q', '--detach');
+    const detachedRepo = attempt(fixture.repo, 'repo detached');
+    assert.equal(detachedRepo.code, 2);
+    assert.match(detachedRepo.messages.join(''), /cannot commit on a detached HEAD/);
+    // 作業ブランチに戻せば通る。
+    git(fixture.repo, 'checkout', '-q', '-B', 'work/test');
+    assert.equal(attempt(fixture.repo, 'repo on work').code, 0);
+
+    // worktree: 同じブランチ名は 2 か所で開けないので、拘束先を切り離してから worktree 側で切り替える。
+    git(fixture.repo, 'checkout', '-q', '--detach');
+    for (const name of ['main', 'master']) {
+      git(wt, 'checkout', '-q', '-B', name);
+      const result = attempt(wt, `wt on ${name}`);
+      assert.equal(result.code, 2, name);
+      assert.match(result.messages.join(''), /cannot commit on the default branch/);
+    }
+    git(wt, 'checkout', '-q', '--detach');
+    const detachedWt = attempt(wt, 'wt detached');
+    assert.equal(detachedWt.code, 2);
+    assert.match(detachedWt.messages.join(''), /cannot commit on a detached HEAD/);
+    git(wt, 'checkout', '-q', '-B', 'work/wt');
+    assert.equal(attempt(wt, 'wt on work').code, 0);
+
+    // リモートの既定ブランチ（origin/HEAD の指す先）。main / master 以外の名前でも拒否する。
+    git(fixture.repo, 'update-ref', 'refs/remotes/origin/develop', 'HEAD');
+    git(fixture.repo, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/develop');
+    git(wt, 'checkout', '-q', '-B', 'develop');
+    const remoteDefault = attempt(wt, 'wt on remote default');
+    assert.equal(remoteDefault.code, 2);
+    assert.match(remoteDefault.messages.join(''), /default branch "develop"/);
+    // origin/HEAD が無ければ判定に使わない（develop は通常の作業ブランチ）。
+    git(fixture.repo, 'symbolic-ref', '--delete', 'refs/remotes/origin/HEAD');
+    assert.equal(attempt(wt, 'wt on develop without origin/HEAD').code, 0);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('既定ブランチ: commit 以外（add / status / gh）は既定ブランチ上でも拒否しない', () => {
+  const fixture = createFixture();
+  try {
+    git(fixture.repo, 'checkout', '-q', '-B', 'main');
+    fs.writeFileSync(path.join(fixture.repo, 'b.txt'), 'two\n');
+    assert.equal(run(fixture, ['git', 'add', '-A']).code, 0);
+    assert.equal(run(fixture, ['git', 'status']).code, 0);
+    assert.equal(run(fixture, ['gh', 'issue', 'view', '1']).code, 0);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('結合: worktree 作成 → 編集 → add → commit → gh pr create の経路が入口経由で通る', () => {
+  const fixture = createFixture();
+  try {
+    // 拘束先は main のまま（Codex が通常クローンで main にいる状態）。
+    git(fixture.repo, 'checkout', '-q', '-B', 'main');
+    const wt = addWorktree(fixture, path.join(fixture.repo, '.claude', 'worktrees', 'codex-1303'), 'issue/433-flow');
+    fs.writeFileSync(path.join(wt, 'feature.txt'), 'feature\n');
+    fs.writeFileSync(path.join(wt, 'a.txt'), 'edited\n');
+    assert.equal(run(fixture, ['git', 'add', '--', 'feature.txt', 'a.txt'], { cwd: wt }).code, 0);
+    assert.equal(run(fixture, ['git', 'commit', '-m', '[ 機能追加 ] 例'], { cwd: wt }).code, 0);
+    assert.equal(git(wt, 'log', '-1', '--format=%s'), '[ 機能追加 ] 例');
+    assert.equal(git(wt, 'status', '--porcelain'), '');
+    assert.equal(run(fixture, ['gh', 'pr', 'create', '--head', 'issue/433-flow', '--title', '題', '--body', '本文'], { cwd: wt }).code, 0);
+    assert.deepEqual(fixture.readCalls().map((call) => call.args), [
+      ['pr', 'create', '--head', 'issue/433-flow', '--title', '題', '--body', '本文', '--repo', 'vektor-inc/vk-terminals'],
+    ]);
+    // 拘束先の main には何も積まれていない。
+    assert.equal(git(fixture.repo, 'log', '-1', '--format=%s'), 'init');
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('再起動: 拘束は起動時の cwd（通常のクローン）だけで決まるため、同じ拘束の設定のまま既存の worktree で作業を続けられる', () => {
+  const fixture = createFixture();
+  try {
+    const wt = addWorktree(fixture, path.join(fixture.root, 'wt-restart'), 'work/restart');
+    fs.writeFileSync(path.join(wt, 'r.txt'), '1\n');
+    assert.equal(run(fixture, ['git', 'add', '-A'], { cwd: wt }).code, 0);
+    assert.equal(run(fixture, ['git', 'commit', '-m', 'before restart'], { cwd: wt }).code, 0);
+    // 再起動 = 通常のクローンから決まる同じ VK_TASK_* で、入口が新しいプロセスとして呼ばれる。
+    const restartedEnv = { ...fixture.env };
+    fs.writeFileSync(path.join(wt, 'r.txt'), '2\n');
+    assert.equal(run(fixture, ['git', 'add', '-A'], { cwd: wt, env: restartedEnv }).code, 0);
+    assert.equal(run(fixture, ['git', 'commit', '-m', 'after restart'], { cwd: wt, env: restartedEnv }).code, 0);
+    assert.equal(git(wt, 'log', '--format=%s', '-2'), 'after restart\nbefore restart');
   } finally {
     fixture.cleanup();
   }

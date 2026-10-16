@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 不具合修正 ] 自動処理用 Codex の固定入口が、拘束したリポジトリの worktree での `git add` / `git commit` / `gh pr create` を拒否していた不具合を修正。あわせて、既定ブランチ（main / master など）と detached HEAD への `git commit` を拒否（[#433](https://github.com/vektor-inc/vk-terminals/issues/433)）
+
 ## 1.72.0
 
 - [ 機能追加 ] VK Terminals が無加工で起動した現在世代のメイン AI コマンドについて、restart 開始時の旧 launch 無効化、既存 prompt 処理後の取得開始、baseline ancestor を含む世代・launch token・前景グループ・process identity の照合状態を `GET /api/states` から取得可能に（[#434](https://github.com/vektor-inc/vk-terminals/issues/434)）

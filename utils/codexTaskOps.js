@@ -161,7 +161,7 @@ function parseGitCommit(tokens) {
     } else return fail(`flag not allowed: ${JSON.stringify(token)}`);
   }
   if (messages.length === 0) return fail('commit message required');
-  return { ok: true, bin: 'git', args: [...FIXED_GIT_PREFIX, 'commit', ...flags, ...messages.flatMap((message) => ['-m', message])], needsGitHub: false };
+  return { ok: true, bin: 'git', args: [...FIXED_GIT_PREFIX, 'commit', ...flags, ...messages.flatMap((message) => ['-m', message])], needsGitHub: false, guardsDefaultBranch: true };
 }
 
 // `--json a,b` / `--json=a,b` の読み取りと、値を取らない許可フラグだけを受ける（gh の閲覧系）。
@@ -560,6 +560,60 @@ function inspectRepository({ cwd, run, homeDir, fsImpl }) {
   return { ok: true, root, repo: parseGitHubRepo(originUrl) };
 }
 
+// ─── worktree の受け入れと既定ブランチの保護 ──────────────────────────────
+
+/**
+ * 指定フォルダの Git 管理領域（全 worktree が共有する .git）の実パスを返す。解決できなければ null。
+ * 相対パスで返る場合に備え、そのフォルダ基準で解決してから realpath にする。
+ * @param {{dir: string, run: Function, fsImpl: object}} params
+ * @returns {string|null}
+ */
+function resolveGitCommonDir({ dir, run, fsImpl }) {
+  const result = run(['rev-parse', '--path-format=absolute', '--git-common-dir'], dir);
+  if (result.status !== 0) return null;
+  const output = String(result.stdout).trim();
+  if (output === '') return null;
+  try {
+    return fsImpl.realpathSync(path.resolve(dir, output));
+  } catch (_error) {
+    return null;
+  }
+}
+
+/**
+ * 作業フォルダが、拘束したリポジトリの worktree（Git 管理領域が拘束先と同一）かを確認する。
+ * 別のリポジトリ・入れ子のリポジトリ・同じ origin を持つだけの別クローンは Git 管理領域が異なるため false。
+ * 拘束先側の値は起動時に固定せず、実行のたびに拘束先のフォルダから求め直す。
+ * @param {{cwd: string, run: Function, bindingRoot: string, fsImpl: object}} params
+ * @returns {boolean}
+ */
+function isBoundWorktree({ cwd, run, bindingRoot, fsImpl }) {
+  const own = resolveGitCommonDir({ dir: cwd, run, fsImpl });
+  if (own === null) return false;
+  const bound = resolveGitCommonDir({ dir: bindingRoot, run, fsImpl });
+  return bound !== null && own === bound;
+}
+
+/**
+ * git commit の前に、現在のブランチが既定ブランチ（main / master / origin/HEAD の指す先）か、
+ * ブランチに属さない状態（detached HEAD）でないことを確認する。問題なければ null、拒否するならメッセージ。
+ * @param {{cwd: string, run: Function}} params
+ * @returns {string|null}
+ */
+function checkCommitBranch({ cwd, run }) {
+  const head = run(['symbolic-ref', '-q', '--short', 'HEAD'], cwd);
+  const branch = head.status === 0 ? String(head.stdout).trim() : '';
+  if (branch === '') return 'task command rejected: cannot commit on a detached HEAD; switch to a working branch first';
+  const defaults = new Set(['main', 'master']);
+  const remoteHead = run(['symbolic-ref', '-q', '--short', 'refs/remotes/origin/HEAD'], cwd);
+  if (remoteHead.status === 0) {
+    const remoteBranch = String(remoteHead.stdout).trim().replace(/^origin\//, '');
+    if (remoteBranch !== '') defaults.add(remoteBranch);
+  }
+  if (defaults.has(branch)) return `task command rejected: cannot commit on the default branch ${JSON.stringify(branch)}; switch to a working branch first`;
+  return null;
+}
+
 // ─── 子プロセスの環境 ───────────────────────────────────────────────────────
 
 const SAFE_VALUE_PATTERN = /^[^\x00-\x1f\x7f']+$/;
@@ -677,9 +731,16 @@ function runTaskCommand(argv, deps = {}) {
   // 作業フォルダが、起動時に拘束したリポジトリそのものであることを確認する。
   const inspected = inspectRepository({ cwd, run: runGit, homeDir: binding.home, fsImpl });
   if (!inspected.ok) return reject(inspected.error);
-  if (inspected.root !== binding.root) return reject('task command rejected: working directory is not the bound repository');
+  if (inspected.root !== binding.root && !isBoundWorktree({ cwd, run: runGit, bindingRoot: binding.root, fsImpl })) {
+    return reject('task command rejected: working directory is not the bound repository');
+  }
   if (parsed.needsGitHub) {
     if (binding.repo === null || inspected.repo !== binding.repo) return reject('task command rejected: origin does not match the bound github.com repository');
+  }
+
+  if (parsed.guardsDefaultBranch) {
+    const branchError = checkCommitBranch({ cwd, run: runGit });
+    if (branchError !== null) return reject(branchError);
   }
 
   const bin = parsed.bin === 'gh' ? binding.gh : binding.git;
@@ -696,6 +757,8 @@ module.exports = {
   buildChildEnvironment,
   withBoundRepository,
   inspectRepository,
+  isBoundWorktree,
+  checkCommitBranch,
   inspectGitConfigListing,
   isSupportedGitVersion,
   parseGitHubRepo,

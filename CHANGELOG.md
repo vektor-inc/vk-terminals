@@ -1,6 +1,6 @@
 # Changelog
 
-- [ 機能追加 ] VK Terminals が無加工で起動した現在世代のメイン AI コマンドについて、世代と launch token、prompt hook、ログインシェル配下の全生存子孫を照合した状態を `GET /api/states` から取得可能に（[#434](https://github.com/vektor-inc/vk-terminals/issues/434)）
+- [ 機能追加 ] VK Terminals が無加工で起動した現在世代のメイン AI コマンドについて、世代と launch token、prompt hook、前景グループおよび継続性を確認した process identity を照合した状態を `GET /api/states` から取得可能に（[#434](https://github.com/vektor-inc/vk-terminals/issues/434)）
 - [ 不具合修正 ] タスク用ポリシーで Codex を起動すると「Open restricted」画面で停止し、自動処理が始まらない不具合を修正（[#430](https://github.com/vektor-inc/vk-terminals/issues/430)）
 
 ## 1.71.0

@@ -99,7 +99,7 @@ test('最初のgroup消失後もmarkerまでは遅延した後継groupを同じ�
   assert.equal(afterAllGroupsExit.terminal, true);
 });
 
-test('completion先着時も前景から外れたbaseline外の停止中後継子孫を取得してexitedにしない', () => {
+test('completion後の由来不明なbaseline外子孫はrunningにもexitedにもせずnull', () => {
   const snapshot = {
     ...tracking(20, [[20, START]], true),
     baselinePgids: new Set([10]),
@@ -109,9 +109,35 @@ test('completion先着時も前景から外れたbaseline外の停止中後継�
     row(10, 1, 10, 10),
     row(30, 10, 30, 10, 'T'),
   ));
+  assert.equal(result.state, null);
+  assert.equal(result.terminal, true);
+  assert.equal(result.trackedGroups.has(30), false);
+});
+
+test('既知identityは親終了後にreparent・PGID変更しても全体表から追跡する', () => {
+  const snapshot = tracking(20, [[20, START], [21, START]], true);
+  const result = inspectLifecycle(snapshot, table(
+    row(10, 1, 10, 10),
+    row(21, 1, 21, 10),
+  ));
   assert.equal(result.state, 'running');
-  assert.equal(result.trackedGroups.has(30), true);
-  assert.equal(result.trackedGroups.get(30).get(30), START);
+  assert.equal(result.trackedGroups.get(20).has(21), false);
+  assert.equal(result.trackedGroups.get(21).get(21), START);
+});
+
+test('既知identityの子孫は別groupでも取得し、reparent後もidentityで追跡する', () => {
+  const snapshot = tracking(20, [[20, START]]);
+  const withChild = inspectLifecycle(snapshot, table(
+    row(10, 1, 10, 20),
+    row(20, 10, 20, 20),
+    row(21, 20, 21, 20),
+  ));
+  assert.equal(withChild.trackedGroups.get(21).get(21), START);
+  const reparented = inspectLifecycle({ ...snapshot, trackedGroups: withChild.trackedGroups }, table(
+    row(10, 1, 10, 10),
+    row(21, 1, 21, 10),
+  ));
+  assert.equal(reparented.state, 'running');
 });
 
 test('poll間に親が生成して先に終了した子を追跡集合へ引き継ぐ', () => {
@@ -138,6 +164,49 @@ test('既知identity消失後に同PGIDの未観測memberが残ればnull', () =
 test('baselineに存在したgroupとidentityは取得しない', () => {
   const snapshot = { ...initial(), baselinePgids: new Set([20]), baselineIdentities: new Map([[20, START]]) };
   assert.equal(inspectLifecycle(snapshot, table(row(10, 1, 10, 20), row(20, 10, 20, 20))).state, null);
+});
+
+test('既存background jobが生成したbaseline外の子を取得しない', () => {
+  const snapshot = {
+    ...initial(),
+    baselinePgids: new Set([10, 40]),
+    baselineIdentities: new Map([[10, START], [40, START]]),
+  };
+  const result = inspectLifecycle(snapshot, table(
+    row(10, 1, 10, 10),
+    row(40, 10, 40, 10),
+    row(41, 40, 40, 10),
+  ));
+  assert.equal(result.state, null);
+  assert.equal(result.trackedGroups.size, 0);
+});
+
+test('存在しないAIのcompletion後に開始した別の前景jobを取得しない', () => {
+  const result = inspectLifecycle(
+    { ...initial(), completionReceived: true },
+    table(row(10, 1, 10, 30), row(30, 10, 30, 30)),
+  );
+  assert.equal(result.state, null);
+  assert.equal(result.trackedGroups.size, 0);
+});
+
+test('Ctrl+Z中の既知identityが残る間は別の前景groupを後継取得しない', () => {
+  const result = inspectLifecycle(
+    tracking(20, [[20, START]]),
+    table(row(10, 1, 10, 30), row(20, 10, 20, 30, 'T'), row(30, 10, 30, 30)),
+  );
+  assert.equal(result.state, 'running');
+  assert.equal(result.trackedGroups.has(20), true);
+  assert.equal(result.trackedGroups.has(30), false);
+});
+
+test('shellと同じPGIDの子は追跡memberに含めない', () => {
+  const result = inspectLifecycle(initial(), table(
+    row(10, 1, 10, 10),
+    row(11, 10, 10, 10),
+  ));
+  assert.equal(result.state, null);
+  assert.equal(result.trackedGroups.size, 0);
 });
 
 test('同じPID/PGIDでもlstartが変われば再利用としてnull', () => {
@@ -204,7 +273,7 @@ test('ready markerは画面から除去してhook待機を解決する', async (
   await store.close();
 });
 
-test('準備group後の後継AIが次poll前に停止してcompletionが先着してもfresh snapshotでrunningにする', async () => {
+test('準備group後の由来不明な子孫にcompletionが先着した場合はnullにする', async () => {
   const timers = [];
   let processes = table(row(10, 1, 10, 10));
   const store = createAgentLifecycleStore({
@@ -219,7 +288,7 @@ test('準備group後の後継AIが次poll前に停止してcompletionが先着�
   processes = table(row(10, 1, 10, 10), row(30, 10, 30, 10, 'T'));
   store.filterOutput('1', `${MARKER_PREFIX}${markerToken}${String.fromCharCode(7)}`);
   await timers[2]();
-  assert.equal(store.get('1', 1), 'running');
+  assert.equal(store.get('1', 1), null);
   await store.close();
 });
 

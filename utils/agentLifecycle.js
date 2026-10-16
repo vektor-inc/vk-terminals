@@ -55,29 +55,30 @@ function inspectLifecycle(snapshot, processes) {
   const shell = processes.get(snapshot.shellPid);
   if (!shell || !isSameProcessStart(shell.lstart, snapshot.shellLstart)) return { state: null, terminal: true };
   const trackedGroups = new Map(snapshot.trackedGroups || []);
-  const outsideBaseline = [...processes.values()].filter((process) => {
+  const shellDescendants = [...processes.values()].filter((process) => {
     if (process.pid === shell.pid || !isDescendant(processes, process.pid, shell.pid, shell.lstart)) return false;
     const baselineStart = snapshot.baselineIdentities?.get(process.pid);
     return baselineStart === undefined || !isSameProcessStart(process.lstart, baselineStart);
   });
-  const candidate = shell.tpgid;
-  if (Number.isSafeInteger(candidate) && candidate > 0 && candidate !== shell.pgid && !trackedGroups.has(candidate)) {
-    const members = [...processes.values()].filter((process) =>
-      process.pgid === candidate && isDescendant(processes, process.pid, shell.pid, shell.lstart));
-    const isBaselineGroup = snapshot.baselinePgids?.has(candidate);
-    const hasBaselineMember = members.some((process) => {
-      const baselineStart = snapshot.baselineIdentities?.get(process.pid);
-      return baselineStart !== undefined && isSameProcessStart(process.lstart, baselineStart);
-    });
-    // completion の前後を問わず、シェル関数内で順次起動される別 PGID も同じ世代として取得する。
-    if (members.length > 0 && !isBaselineGroup && !hasBaselineMember) {
-      trackedGroups.set(candidate, new Map(members.map((process) => [process.pid, process.lstart])));
-    }
+  const knownIdentities = new Map();
+  for (const identities of trackedGroups.values()) {
+    for (const [pid, lstart] of identities) knownIdentities.set(pid, lstart);
+  }
+  const aliveKnown = new Map();
+  for (const [pid, lstart] of knownIdentities) {
+    const process = processes.get(pid);
+    if (!process) continue;
+    if (!isSameProcessStart(process.lstart, lstart)) return { state: null, terminal: true };
+    aliveKnown.set(pid, process);
   }
 
-  // 終了判定と同じ fresh snapshot で、前景から外れた停止中プロセスも含む全子孫を確認する。
-  // shell まで親子関係を辿れたものは今回世代との連続性が証明できるため後継 group として追跡する。
-  for (const process of outsideBaseline) {
+  // identity は PGID や PPID より強い連続性の根拠になる。fresh snapshot 全体で照合し、
+  // orphan 化や group 移動後も同じ PID + lstart を追跡し続ける。
+  for (const process of aliveKnown.values()) {
+    if (!Number.isSafeInteger(process.pgid) || process.pgid <= 0 || process.pgid === shell.pgid) {
+      return { state: null, trackedGroups, hasAliveGroup: false, terminal: true };
+    }
+    for (const identities of trackedGroups.values()) identities.delete(process.pid);
     let identities = trackedGroups.get(process.pgid);
     if (!identities) {
       identities = new Map();
@@ -86,22 +87,60 @@ function inspectLifecycle(snapshot, processes) {
     identities.set(process.pid, process.lstart);
   }
 
-  let hasAliveGroup = false;
-  for (const [pgid, identities] of trackedGroups) {
+  // 新規 member は、既知 identity と同じ group、または既知 identity の子孫である場合だけ追加する。
+  // baseline 外という理由だけでは、既存 background job の子を今回世代へ取り込まない。
+  const continuousProcesses = [...processes.values()].filter((process) => {
+    if (process.pid === shell.pid || process.pgid === shell.pgid) return false;
+    if ([...aliveKnown.values()].some((known) => known.pgid === process.pgid)) return true;
+    return [...aliveKnown.values()].some((known) =>
+      process.pid !== known.pid && isDescendant(processes, process.pid, known.pid, known.lstart));
+  });
+  for (const process of continuousProcesses) {
+    let identities = trackedGroups.get(process.pgid);
+    if (!identities) {
+      identities = new Map();
+      trackedGroups.set(process.pgid, identities);
+    }
+    identities.set(process.pid, process.lstart);
+    aliveKnown.set(process.pid, process);
+  }
+
+  const candidate = shell.tpgid;
+  const trackedGroupStillPresent = [...trackedGroups.keys()].some((pgid) =>
+    [...processes.values()].some((process) => process.pgid === pgid));
+  const mayAcquireInitial = trackedGroups.size === 0 && !snapshot.completionReceived;
+  const mayAcquireSuccessor = trackedGroups.size > 0 && !snapshot.completionReceived &&
+    aliveKnown.size === 0 && !trackedGroupStillPresent;
+  if ((mayAcquireInitial || mayAcquireSuccessor) && Number.isSafeInteger(candidate) &&
+      candidate > 0 && candidate !== shell.pgid && !trackedGroups.has(candidate)) {
+    const members = [...processes.values()].filter((process) =>
+      process.pgid === candidate && isDescendant(processes, process.pid, shell.pid, shell.lstart));
+    const isBaselineGroup = snapshot.baselinePgids?.has(candidate);
+    const hasBaselineMember = members.some((process) => {
+      const baselineStart = snapshot.baselineIdentities?.get(process.pid);
+      return baselineStart !== undefined && isSameProcessStart(process.lstart, baselineStart);
+    });
+    const hasDirectShellChild = members.some((process) => process.ppid === shell.pid);
+    // 初回は厳格な前景条件を満たす group だけを取得する。後継は、直前の group と identity が
+    // 全消失した gap に限り、shell function が次に起動した shell 直下の sibling を受け入れる。
+    if (members.length > 0 && (mayAcquireInitial || hasDirectShellChild) && !isBaselineGroup && !hasBaselineMember) {
+      trackedGroups.set(candidate, new Map(members.map((process) => [process.pid, process.lstart])));
+      for (const process of members) aliveKnown.set(process.pid, process);
+    }
+  }
+
+  for (const [pgid] of trackedGroups) {
     const members = [...processes.values()].filter((process) => process.pgid === pgid);
     if (members.length === 0) continue;
-    const knownAlive = members.some((process) => {
-      const knownStart = identities.get(process.pid);
-      return knownStart !== undefined && isSameProcessStart(process.lstart, knownStart);
-    });
-    // 同じ PGID の再利用と未観測 member を区別できない場合は終了を断定しない。
-    if (!knownAlive) return { state: null, terminal: true };
-    hasAliveGroup = true;
-    for (const process of members) identities.set(process.pid, process.lstart);
+    // 既知 identity が全消失した古い PGID に別プロセスだけが残る場合は再利用等を判別できない。
+    if (!members.some((process) => aliveKnown.has(process.pid))) return { state: null, terminal: true };
   }
 
   if (trackedGroups.size === 0) return { state: null, trackedGroups, hasAliveGroup: false, terminal: Boolean(snapshot.completionReceived) };
-  if (hasAliveGroup || outsideBaseline.length > 0 || !snapshot.completionReceived) return { state: 'running', trackedGroups, hasAliveGroup: hasAliveGroup || outsideBaseline.length > 0 };
+  if (aliveKnown.size > 0) return { state: 'running', trackedGroups, hasAliveGroup: true };
+  if (!snapshot.completionReceived) return { state: 'running', trackedGroups, hasAliveGroup: false };
+  // completion 後に由来不明の baseline 外子孫が残る場合は終了も実行中も断定しない。
+  if (shellDescendants.length > 0) return { state: null, trackedGroups, hasAliveGroup: false, terminal: true };
   return { state: 'exited', trackedGroups, hasAliveGroup: false, terminal: true };
 }
 

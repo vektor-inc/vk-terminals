@@ -82,6 +82,24 @@ test('同じ ID が別の PTY に差し替わっていたら、元の PTY へは
   assert.deepEqual(discarded, ['discard']);
 });
 
+test('baseline取得中にPTYが消えたら、取得完了後も書き込まない', async () => {
+  const pane = createPane();
+  const ptys = new Map([['1', pane.ptyProcess]]);
+  let resolvePreparation;
+  const preparation = new Promise((resolve) => { resolvePreparation = resolve; });
+  const { timers, discarded } = schedule({
+    ptyProcess: pane.ptyProcess,
+    ptys,
+    prepareCommand: () => preparation,
+  });
+  timers.fire();
+  ptys.delete('1');
+  resolvePreparation('tracked-command');
+  await Promise.resolve();
+  assert.deepEqual(pane.written, []);
+  assert.deepEqual(discarded, ['discard']);
+});
+
 test('書き込みが例外になっても、例外をタイマーの外へ出さず専用フォルダを回収して記録する', () => {
   const { ptyProcess } = createPane({ writeError: new Error('pty closed') });
   const { timers, discarded, logs } = schedule({ ptyProcess, ptys: new Map([['1', ptyProcess]]) });

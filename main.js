@@ -2143,8 +2143,9 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
 
   ptyProcess.onData((data) => {
     if (promptWatcher) promptWatcher(data);
+    const visibleData = agentLifecycles.filterOutput(id, data);
     if (win && !win.isDestroyed()) {
-      win.webContents.send('terminal:data', id, data);
+      if (visibleData) win.webContents.send('terminal:data', id, visibleData);
     }
   });
 
@@ -2188,8 +2189,8 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
       id,
       ptyProcess,
       command: launchCommand,
+      prepareCommand: (command) => agentLifecycles.prepare(id, 1, ptyProcess.pid, command, shell),
       discard: discardLaunchHome,
-      onWriteSuccess: () => { agentLifecycles.monitor(id, 1, ptyProcess.pid); },
       delayMs: 200,
       log: (message) => console.error(`${LOG_PREFIX} ${message}`),
     });
@@ -2414,8 +2415,8 @@ async function restartAgentInTerminal(ptyProcess, request, launchOptions, lifecy
     console.warn(`${LOG_PREFIX} model is ignored for engine '${request.engine}'`);
   }
   const generation = lifecycleLaunch.beforeWrite();
-  ptyProcess.write(`${command}\r`);
-  lifecycleLaunch.afterWrite(generation);
+  const trackedCommand = await lifecycleLaunch.prepareWrite(generation, command);
+  ptyProcess.write(`${trackedCommand}\r`);
 
   // 既知の未対応事項（issue #392・安藤の指摘・LOW-G）: responder は cd の書き込みより前に
   // 取り付けているため、シェルがエコーバックする `cd` 行（cwd のディレクトリ名を含む）が
@@ -3495,8 +3496,8 @@ function startHttpApi() {
               agentLifecycles.initialize(request.termId, startedGeneration);
               return startedGeneration;
             },
-            afterWrite(generation) {
-              agentLifecycles.monitor(request.termId, generation, ptyProcess.pid);
+            prepareWrite(generation, command) {
+              return agentLifecycles.prepare(request.termId, generation, ptyProcess.pid, command, process.env.SHELL);
             },
           };
           const operation = restartAgentInTerminal(ptyProcess, request, launchResolution.options, lifecycleLaunch);

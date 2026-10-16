@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
-const { PS_ARGS, MARKER_PREFIX, parseProcessTable, inspectLifecycle, buildTrackedLaunchCommand, createAgentLifecycleStore, mergeAgentLifecycleStates } = require('../utils/agentLifecycle');
+const { PS_ARGS, MARKER_PREFIX, READY_MARKER_PREFIX, parseProcessTable, inspectLifecycle, buildPromptHookCommand, createAgentLifecycleStore, mergeAgentLifecycleStates } = require('../utils/agentLifecycle');
 
 const START = 'Fri Oct 16 10:00:00 2026';
 const LATER = 'Fri Oct 16 10:01:00 2026';
@@ -42,6 +42,8 @@ async function launchTracked(store, shell, command, shellPath = '/bin/zsh') {
   shell.onData((data) => { store.filterOutput('pty', data); });
   const launchToken = store.initialize('pty', 1);
   const prepared = await store.prepare('pty', 1, launchToken, shell.pid, command, shellPath);
+  shell.write(`${prepared.setupCommand}\r`);
+  await prepared.ready;
   shell.write(`${prepared.command}\r`);
 }
 
@@ -95,6 +97,21 @@ test('最初のgroup消失後もmarkerまでは遅延した後継groupを同じ�
   );
   assert.equal(afterAllGroupsExit.state, 'exited');
   assert.equal(afterAllGroupsExit.terminal, true);
+});
+
+test('completion先着時も前景から外れたbaseline外の停止中後継子孫を取得してexitedにしない', () => {
+  const snapshot = {
+    ...tracking(20, [[20, START]], true),
+    baselinePgids: new Set([10]),
+    baselineIdentities: new Map([[10, START]]),
+  };
+  const result = inspectLifecycle(snapshot, table(
+    row(10, 1, 10, 10),
+    row(30, 10, 30, 10, 'T'),
+  ));
+  assert.equal(result.state, 'running');
+  assert.equal(result.trackedGroups.has(30), true);
+  assert.equal(result.trackedGroups.get(30).get(30), START);
 });
 
 test('poll間に親が生成して先に終了した子を追跡集合へ引き継ぐ', () => {
@@ -167,13 +184,43 @@ test('completion markerは未取得の取得期間だけを閉じ、画面から
   });
   const launchToken = store.initialize('1', 1);
   const prepared = await store.prepare('1', 1, launchToken, 10, 'missing-command', '/bin/zsh');
-  const markerToken = prepared.command.match(/VKAgentLifecycle=([a-f0-9]+)/)[1];
+  const markerToken = prepared.setupCommand.match(/VKAgentLifecycle=([a-f0-9]+)/)[1];
   const marker = `${MARKER_PREFIX}${markerToken}${String.fromCharCode(7)}`;
   const splitAt = Math.floor(marker.length / 2);
   assert.equal(store.filterOutput('1', `before${marker.slice(0, splitAt)}`), 'before');
   assert.equal(store.filterOutput('1', `${marker.slice(splitAt)}after`), 'after');
   assert.equal(store.get('1', 1), null);
   assert.ok(timers.length >= 2);
+});
+
+test('ready markerは画面から除去してhook待機を解決する', async () => {
+  const store = createAgentLifecycleStore({ listProcesses: async () => table(row(10, 1, 10, 10)) });
+  const token = store.initialize('1', 1);
+  const prepared = await store.prepare('1', 1, token, 10, 'claude', '/bin/zsh');
+  const markerToken = prepared.setupCommand.match(/VKAgentLifecycle=([a-f0-9]+)/)[1];
+  const ready = `${READY_MARKER_PREFIX}${markerToken}:ok${String.fromCharCode(7)}`;
+  assert.equal(store.filterOutput('1', `before${ready}after`), 'beforeafter');
+  assert.equal(await prepared.ready, true);
+  await store.close();
+});
+
+test('準備group後の後継AIが次poll前に停止してcompletionが先着してもfresh snapshotでrunningにする', async () => {
+  const timers = [];
+  let processes = table(row(10, 1, 10, 10));
+  const store = createAgentLifecycleStore({
+    listProcesses: async () => processes,
+    setTimer: (callback) => { timers.push(callback); return callback; },
+    clearTimer: () => {},
+  });
+  const token = store.initialize('1', 1);
+  const prepared = await store.prepare('1', 1, token, 10, 'claude', '/bin/zsh');
+  const markerToken = prepared.setupCommand.match(/VKAgentLifecycle=([a-f0-9]+)/)[1];
+  store.filterOutput('1', `${READY_MARKER_PREFIX}${markerToken}:ok${String.fromCharCode(7)}`);
+  processes = table(row(10, 1, 10, 10), row(30, 10, 30, 10, 'T'));
+  store.filterOutput('1', `${MARKER_PREFIX}${markerToken}${String.fromCharCode(7)}`);
+  await timers[2]();
+  assert.equal(store.get('1', 1), 'running');
+  await store.close();
 });
 
 test('completion marker spoofと取得期限切れはnullへ確定する', async () => {
@@ -186,10 +233,12 @@ test('completion marker spoofと取得期限切れはnullへ確定する', async
     acquisitionTimeoutMs: 25,
   });
   const token = store.initialize('1', 1);
-  await store.prepare('1', 1, token, 10, 'claude', '/bin/zsh');
-  timers[0]();
+  const prepared = await store.prepare('1', 1, token, 10, 'claude', '/bin/zsh');
+  const markerToken = prepared.setupCommand.match(/VKAgentLifecycle=([a-f0-9]+)/)[1];
+  store.filterOutput('1', `${READY_MARKER_PREFIX}${markerToken}:ok${String.fromCharCode(7)}`);
+  timers[1]();
   processes = table(row(10, 1, 10, 20), row(20, 10, 20, 20));
-  await timers[1]();
+  await timers[2]();
   assert.equal(store.get('1', 1), null);
   assert.equal(store.filterOutput('1', `${MARKER_PREFIX}wrong${String.fromCharCode(7)}`), `${MARKER_PREFIX}wrong${String.fromCharCode(7)}`);
 });
@@ -212,15 +261,17 @@ test('group消失後にmarker未受信のまま後継取得期限が切れた場
   };
 
   const token = store.initialize('1', 1);
-  await store.prepare('1', 1, token, 10, 'claude', '/bin/zsh');
+  const prepared = await store.prepare('1', 1, token, 10, 'claude', '/bin/zsh');
+  const markerToken = prepared.setupCommand.match(/VKAgentLifecycle=([a-f0-9]+)/)[1];
+  store.filterOutput('1', `${READY_MARKER_PREFIX}${markerToken}:ok${String.fromCharCode(7)}`);
   processes = table(row(10, 1, 10, 20), row(20, 10, 20, 20));
-  await runTimer(1);
+  await runTimer(2);
   assert.equal(store.get('1', 1), 'running');
 
   processes = table(row(10, 1, 10, 10));
-  await runTimer(2);
-  assert.equal(store.get('1', 1), 'running');
   await runTimer(3);
+  assert.equal(store.get('1', 1), 'running');
+  await runTimer(4);
   assert.equal(store.get('1', 1), null);
 });
 
@@ -232,9 +283,11 @@ test('世代更新とdeleteはpoll・取得期限timerを回収する', async ()
     clearTimer: (timer) => { cleared.push(timer); },
   });
   const token = store.initialize('1', 1);
-  await store.prepare('1', 1, token, 10, 'claude', '/bin/zsh');
+  const prepared = await store.prepare('1', 1, token, 10, 'claude', '/bin/zsh');
+  const markerToken = prepared.setupCommand.match(/VKAgentLifecycle=([a-f0-9]+)/)[1];
+  store.filterOutput('1', `${READY_MARKER_PREFIX}${markerToken}:ok${String.fromCharCode(7)}`);
   store.initialize('1', 2);
-  assert.equal(cleared.length, 2);
+  assert.ok(cleared.length >= 2);
   store.delete('1');
   assert.equal(store.get('1', 2), null);
 });
@@ -253,20 +306,26 @@ test('状態マージはagentCommandState APIの後方互換を維持する', ()
   });
 });
 
-test('zsh/bashとfishは独立evalで元コマンドを実行し終了コードを維持する', () => {
+test('zsh/bash/fishは元コマンドと分離した世代固有prompt hookを登録する', () => {
   const marker = 'a'.repeat(48);
-  const zsh = buildTrackedLaunchCommand('claude --model sonnet', marker, '/bin/zsh');
-  const fish = buildTrackedLaunchCommand('claude --model sonnet', marker, '/usr/bin/fish');
-  assert.match(zsh, /^vk_agent_command_[a-f0-9]+='claude --model sonnet'; eval \"\$vk_agent_command_/);
-  assert.match(zsh, /eval "unset vk_agent_status_/);
-  assert.match(fish, /^begin; set -l vk_agent_command_[a-f0-9]+ 'claude --model sonnet'; eval \"\$vk_agent_command_/);
-  assert.match(fish, /command sh -c "exit \$vk_agent_status_/);
+  const zsh = buildPromptHookCommand(marker, '/bin/zsh');
+  const bash = buildPromptHookCommand(marker, '/bin/bash');
+  const fish = buildPromptHookCommand(marker, '/usr/bin/fish');
+  assert.match(zsh, /precmd_functions/);
+  assert.match(bash, /PROMPT_COMMAND/);
+  assert.match(fish, /--on-event fish_prompt/);
   assert.ok(zsh.includes('\\033]1337;VKAgentLifecycle='));
-  for (const shellPath of ['/bin/zsh', '/bin/bash']) {
-    if (spawnSync(shellPath, ['--version']).status !== 0) continue;
-    const result = spawnSync(shellPath, ['-c', buildTrackedLaunchCommand('exit 23', marker, shellPath)]);
-    assert.equal(result.status, 23);
-  }
+  for (const setup of [zsh, bash, fish]) assert.doesNotMatch(setup, /claude --model sonnet/);
+});
+
+test('prepareは元AIコマンド行を一文字も加工しない', async () => {
+  const store = createAgentLifecycleStore({ listProcesses: async () => table(row(10, 1, 10, 10)) });
+  const token = store.initialize('1', 1);
+  const command = `claude --model 'sonnet' # alias comment`;
+  const prepared = await store.prepare('1', 1, token, 10, command, '/bin/zsh');
+  assert.equal(prepared.command, command);
+  assert.doesNotMatch(prepared.setupCommand, /claude|sonnet|alias comment/);
+  await store.close();
 });
 
 test('実PTY: function内のcd・export・変数・PATH変更と引用が親の対話シェルへ残る', {
@@ -334,7 +393,8 @@ test('実PTY: zsh functionとaliasを従来どおり解決する', {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-agent-zsh-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const marker = path.join(root, 'called');
-  fs.writeFileSync(path.join(root, '.zshrc'), `PS1='VK_PROMPT> '\nvk_agent_function() { printf alias-ok >> ${marker}; ${process.execPath} -e 'setTimeout(()=>{},1000)'; }\nalias claude='vk_agent_function # alias comment'\n`);
+  const preexecLog = path.join(root, 'preexec');
+  fs.writeFileSync(path.join(root, '.zshrc'), `PS1='VK_PROMPT> '\nautoload -Uz add-zsh-hook\nvk_capture_preexec() { print -r -- \"$1\" >> ${preexecLog}; }\nadd-zsh-hook preexec vk_capture_preexec\nvk_agent_function() { cd ${root}; export VK_AGENT_FROM_FUNCTION=yes; printf alias-ok >> ${marker}; ${process.execPath} -e 'setTimeout(()=>{},1000)'; }\nalias claude='vk_agent_function # alias comment'\n`);
   const ptyModule = require('node-pty');
   const shell = ptyModule.spawn('/bin/zsh', [], { env: { ...process.env, ZDOTDIR: root, TERM: 'xterm-256color', PS1: 'VK_PROMPT> ' } });
   t.after(() => { try { shell.kill(); } catch (_error) {} });
@@ -347,8 +407,11 @@ test('実PTY: zsh functionとaliasを従来どおり解決する', {
   await waitFor(() => store.get('pty', 1) === 'running');
   await waitFor(() => store.get('pty', 1) === 'exited');
   assert.equal(fs.readFileSync(marker, 'utf8'), 'alias-ok');
-  shell.write(`if typeset | grep -q '^vk_agent_\\(command\\|status\\)_'; then printf 'TEMP:leaked\\n'; else printf 'TEMP:clean\\n'; fi\r`);
+  assert.ok(fs.readFileSync(preexecLog, 'utf8').split('\n').includes('claude'));
+  shell.write(`if typeset | grep -q '^vk_agent_\\(prompt\\|armed\\|saved_prompt\\)_'; then printf 'TEMP:leaked\\n'; else printf 'TEMP:clean\\n'; fi\r`);
   await waitFor(() => output.includes('TEMP:clean'));
+  shell.write('printf "FUNCTION:%s:%s\\n" "$PWD" "$VK_AGENT_FROM_FUNCTION"\r');
+  await waitFor(() => output.includes(`FUNCTION:${root}:yes`));
 });
 
 test('実PTY: Ctrl+Z中はrunningを維持し、fg後の終了でexited', {

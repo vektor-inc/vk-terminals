@@ -2418,6 +2418,12 @@ async function restartAgentInTerminal(ptyProcess, request, launchOptions, lifecy
   const launch = lifecycleLaunch.beforeWrite();
   const prepared = await lifecycleLaunch.prepareWrite(launch, command);
   if (prepared.status === 'cancelled' || !lifecycleLaunch.isCurrent(launch) || ptys.get(request.termId) !== ptyProcess) return false;
+  if (prepared.status === 'ready') {
+    ptyProcess.write(`${prepared.setupCommand}\r`);
+    await prepared.ready;
+    if (!lifecycleLaunch.isCurrent(launch) || ptys.get(request.termId) !== ptyProcess) return false;
+  }
+  if (!lifecycleLaunch.isCurrent(launch) || ptys.get(request.termId) !== ptyProcess) return false;
   ptyProcess.write(`${prepared.command}\r`);
 
   // 既知の未対応事項（issue #392・安藤の指摘・LOW-G）: responder は cd の書き込みより前に

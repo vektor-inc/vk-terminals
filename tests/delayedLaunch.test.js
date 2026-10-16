@@ -121,6 +121,42 @@ test('prepare完了後にlaunch tokenが旧世代になったら旧コマンド�
   assert.deepEqual(discarded, ['discard']);
 });
 
+test('hook ready失敗でも元コマンドを無加工送信する', async () => {
+  const pane = createPane();
+  const ptys = new Map([['1', pane.ptyProcess]]);
+  const { timers, logs } = schedule({
+    ptyProcess: pane.ptyProcess,
+    ptys,
+    prepareCommand: (command) => ({ status: 'ready', setupCommand: 'setup-hook', command, ready: Promise.resolve(false) }),
+  });
+  timers.fire();
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.deepEqual(pane.written, ['setup-hook\r', 'codex --no-daemon\r']);
+  assert.ok(logs.some((message) => /lifecycle state is unknown/.test(message)));
+});
+
+test('hook ready待機中に世代が変わったら旧世代は元コマンドを書かない', async () => {
+  const pane = createPane();
+  const ptys = new Map([['1', pane.ptyProcess]]);
+  let current = true;
+  let resolveReady;
+  const ready = new Promise((resolve) => { resolveReady = resolve; });
+  const { timers, discarded } = schedule({
+    ptyProcess: pane.ptyProcess,
+    ptys,
+    isLaunchCurrent: () => current,
+    prepareCommand: (command) => ({ status: 'ready', setupCommand: 'setup-hook', command, ready }),
+  });
+  timers.fire();
+  current = false;
+  resolveReady(true);
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.deepEqual(pane.written, ['setup-hook\r']);
+  assert.deepEqual(discarded, ['discard']);
+});
+
 test('初回遅延起動のprepare待ち中にrestartしても世代2監視を維持する', async () => {
   const pane = createPane();
   const ptys = new Map([['1', pane.ptyProcess]]);

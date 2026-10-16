@@ -33,7 +33,7 @@ function scheduleLaunchCommand({ ptys, id, ptyProcess, command, prepareCommand =
       discardSafely();
       return;
     }
-    const writePreparedCommand = (result) => {
+    const writePreparedCommand = async (result) => {
       if (result?.status === 'cancelled') {
         discardSafely();
         return;
@@ -48,6 +48,20 @@ function scheduleLaunchCommand({ ptys, id, ptyProcess, command, prepareCommand =
         return;
       }
       try {
+        if (result.status === 'ready') {
+          ptyProcess.write(`${result.setupCommand}\r`);
+          const hookReady = await result.ready;
+          // hook の出力待ちの間にも PTY identity・世代を再確認する。失敗時も元行は無加工で送る。
+          if (ptys.get(id) !== ptyProcess || !isLaunchCurrent()) {
+            discardSafely();
+            return;
+          }
+          if (!hookReady) log(`prompt hook setup failed for terminal ${id}; lifecycle state is unknown`);
+        }
+        if (ptys.get(id) !== ptyProcess || !isLaunchCurrent()) {
+          discardSafely();
+          return;
+        }
         ptyProcess.write(`${result.command}\r`);
         onWriteSuccess();
       } catch (error) {

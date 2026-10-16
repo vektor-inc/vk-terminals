@@ -1255,6 +1255,15 @@ function createExclusiveFile(fsImpl, filePath, content, mode = 0o600) {
   }
 }
 
+// 失敗した起動の後始末用。消せなくても（元から無い等）他の後始末を止めない。
+function removeQuietly(fsImpl, targetPath, method) {
+  try {
+    fsImpl[method](targetPath);
+  } catch (_error) {
+    // 後始末は最善努力。
+  }
+}
+
 // 実行の監督プロセスに渡された設定が、想定した形かを確かめる（異常なら起動しない）。
 function readSupervisePayload(raw) {
   let payload;
@@ -1393,17 +1402,26 @@ function executeMemberStart({ parsed, binding, cwd, fsImpl, inspected, reject, w
   const runDir = path.join(member.runs, runId);
   const paths = { prompt: path.join(runDir, 'prompt.txt'), schema: path.join(runDir, 'schema.json'), result: path.join(runDir, 'result.txt'), log: path.join(runDir, 'log.txt'), meta: path.join(runDir, 'meta.json') };
   let outFd;
+  let outCreated = false;
+  let runDirCreated = false;
+  let supervisorPid = null;
+  let started = false;
   try {
     // 出力先は先に新規作成して記述子を保持する（事前に置かれたリンクや既存ファイルへ書かない）。以後このパスは開き直さない。
     try {
       outFd = fsImpl.openSync(outPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW || 0), 0o600);
+      outCreated = true;
     } catch (error) {
       return reject(`task command rejected: ${parsed.out} ${error && error.code === 'EEXIST' ? 'already exists' : 'could not be created'}`);
     }
     // 入力は実行用の専用フォルダへ写し取る。子から書き換えられる場所（入出力フォルダ）を、検証後に再び開かない。
     fsImpl.mkdirSync(runDir, { mode: 0o700 });
+    runDirCreated = true;
     createExclusiveFile(fsImpl, paths.prompt, promptBody);
     createExclusiveFile(fsImpl, paths.schema, schemaBody);
+    // 状態確認が起動直後から読めるよう、記録は監督プロセスの起動より先に書く。pid は起動後にしか分からないので、起動前は null（status では STATE=starting）。
+    const meta = { pid: null, startedAt: new Date().toISOString(), readonly, out: outPath };
+    createExclusiveFile(fsImpl, paths.meta, Buffer.from(`${JSON.stringify(meta)}\n`));
 
     // 子の結果（-o）は、子から書き換えられない実行の記録フォルダ内に書かせる。入出力フォルダへの公開は監督プロセスが行う。
     const codexArgs = buildMemberCodexArgs({ root: memberRoot, schemaPath: paths.schema, outPath: paths.result, model: parsed.model, readonly });
@@ -1418,11 +1436,30 @@ function executeMemberStart({ parsed, binding, cwd, fsImpl, inspected, reject, w
       return reject(`task command failed to start: ${error && error.code ? error.code : 'error'}`);
     }
     if (!supervisor || typeof supervisor.pid !== 'number') return reject('task command failed to start: error');
+    supervisorPid = supervisor.pid;
     if (typeof supervisor.unref === 'function') supervisor.unref();
-    createExclusiveFile(fsImpl, paths.meta, Buffer.from(`${JSON.stringify({ pid: supervisor.pid, startedAt: new Date().toISOString(), readonly, out: outPath })}\n`));
+    // pid を記録する。置き換えで書くので、status が書きかけの記録を読むことはない。
+    createExclusiveFile(fsImpl, path.join(runDir, 'meta.tmp'), Buffer.from(`${JSON.stringify({ ...meta, pid: supervisorPid })}\n`));
+    fsImpl.renameSync(path.join(runDir, 'meta.tmp'), paths.meta);
+    started = true;
   } catch (error) {
     return reject(`task command failed: ${error && error.code ? error.code : 'filesystem error'}`);
   } finally {
+    if (!started) {
+      // 失敗した起動の後始末。この起動で作ったものだけを、リンクをたどらない unlink / rmdir で消す（パスを開き直さない）。
+      if (supervisorPid !== null) {
+        try {
+          (deps.kill || process.kill)(-supervisorPid, 'SIGTERM');
+        } catch (_error) {
+          // 既に終わっていれば何もしない。
+        }
+      }
+      if (runDirCreated) {
+        for (const name of ['prompt.txt', 'schema.json', 'meta.json', 'meta.tmp', 'log.txt']) removeQuietly(fsImpl, path.join(runDir, name), 'unlinkSync');
+        removeQuietly(fsImpl, runDir, 'rmdirSync');
+      }
+      if (outCreated) removeQuietly(fsImpl, outPath, 'unlinkSync');
+    }
     if (outFd !== undefined) fsImpl.closeSync(outFd);
   }
   writeOut(`MEMBER_ID=${runId}\nOUT=${outPath}\nLOG=${paths.log}\n`);
@@ -1495,7 +1532,8 @@ function executeMemberStatus({ parsed, binding, fsImpl, reject, writeOut, deps }
       alive = Boolean(error && error.code === 'EPERM');
     }
   }
-  const state = exitCode !== null ? 'exited' : alive ? 'running' : 'lost';
+  // pid が null の間は、member start が監督プロセスを起動している途中（記録は起動の前に書かれる）。
+  const state = exitCode !== null ? 'exited' : alive ? 'running' : meta.pid === null ? 'starting' : 'lost';
   const tail = readFileTail(fsImpl, path.join(runDir, 'log.txt'));
   writeOut([
     `MEMBER_ID=${parsed.id}`,

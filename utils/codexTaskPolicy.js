@@ -526,29 +526,6 @@ function readGitIdentity(spawnSync, gitPath, homeDir) {
 }
 
 /**
- * タスク用ポリシーの専用 CODEX_HOME を起動ごとに新規生成・検証して返す。
- * 失敗時は ok: false と理由を返す。この場合、呼び出し側は Codex を起動してはならない（途中まで作ったフォルダは片付け済み）。
- * 成功して Codex の起動に使わなかった場合は、返された discard() で専用フォルダを回収する。
- * dryRun: true なら実行ファイル・リポジトリ・親フォルダの検証までで止め、専用 CODEX_HOME は作らない（事前確認用）。
- * @param {object} params
- * @param {string} params.preset 許可リストにある preset 名
- * @param {string} params.dataDir VK Terminals のデータディレクトリ（~/.vk-terminals）
- * @param {string} params.handoffDir 会話整理の引き継ぎ先
- * @param {string} params.personalCodexHome 利用者個人の CODEX_HOME（認証情報の共有元。設定は読まない）
- * @param {string} params.cwd タスクの作業フォルダ（拘束するリポジトリを決める）
- * @param {string} params.homeDir 利用者のホーム（実行環境の HOME に固定する。gh の認証情報の共有元もここから決める）
- * @param {boolean} [params.dryRun] 専用 CODEX_HOME を作らず事前確認だけ行う
- * @param {string} [params.sandboxMode] 親の Codex の sandbox（read-only / workspace-write。省略時は workspace-write）。メンバー起動の子の上限になる
- * @param {object} [params.fs] テスト用の fs 差し替え
- * @param {number} [params.uid] テスト用の所有者 ID 差し替え
- * @param {Function} [params.spawnSync] テスト用のプロセス実行差し替え
- * @param {string} [params.remoteBase] テスト用の push 先・fetch 元の基点の差し替え（絶対パス。省略時は https://github.com。main.js からは渡さない）
- * @param {string[]} [params.toolDirs] テスト用の実行ファイル探索先の差し替え
- * @param {string} [params.pathEnv] テスト用のアプリ自身の PATH の差し替え
- * @param {() => string} [params.randomId] テスト用の起動ごとの名前の差し替え
- * @returns {{ok: true, home: string|null, discard: () => boolean} | {ok: false, error: string}}
- */
-/**
  * 親の起動 cwd が、親自身が書き換えられる場所の中（または同一）にあるか。ある場合はメンバー起動を有効にしない。
  * 親の起動 cwd の祖先（cwd を含む）が親の書き込み先の配下なら、親は cwd を移動して範囲外へのリンクに置き換えられ、
  * 子の -C・監督プロセスの cwd が置き換え先を解決し直せてしまう。書き込み先は、writable_roots の全部と、
@@ -593,6 +570,29 @@ function resolveParentTmpdir(candidate, fsImpl) {
   return '/tmp';
 }
 
+/**
+ * タスク用ポリシーの専用 CODEX_HOME を起動ごとに新規生成・検証して返す。
+ * 失敗時は ok: false と理由を返す。この場合、呼び出し側は Codex を起動してはならない（途中まで作ったフォルダは片付け済み）。
+ * 成功して Codex の起動に使わなかった場合は、返された discard() で専用フォルダを回収する。
+ * dryRun: true なら実行ファイル・リポジトリ・親フォルダの検証までで止め、専用 CODEX_HOME は作らない（事前確認用）。
+ * @param {object} params
+ * @param {string} params.preset 許可リストにある preset 名
+ * @param {string} params.dataDir VK Terminals のデータディレクトリ（~/.vk-terminals）
+ * @param {string} params.handoffDir 会話整理の引き継ぎ先
+ * @param {string} params.personalCodexHome 利用者個人の CODEX_HOME（認証情報の共有元。設定は読まない）
+ * @param {string} params.cwd タスクの作業フォルダ（拘束するリポジトリを決める）
+ * @param {string} params.homeDir 利用者のホーム（実行環境の HOME に固定する。gh の認証情報の共有元もここから決める）
+ * @param {boolean} [params.dryRun] 専用 CODEX_HOME を作らず事前確認だけ行う
+ * @param {string} [params.sandboxMode] 親の Codex の sandbox（read-only / workspace-write。省略時は workspace-write）。メンバー起動の子の上限になる
+ * @param {object} [params.fs] テスト用の fs 差し替え
+ * @param {number} [params.uid] テスト用の所有者 ID 差し替え
+ * @param {Function} [params.spawnSync] テスト用のプロセス実行差し替え
+ * @param {string} [params.remoteBase] テスト用の push 先・fetch 元の基点の差し替え（絶対パス。省略時は https://github.com。main.js からは渡さない）
+ * @param {string[]} [params.toolDirs] テスト用の実行ファイル探索先の差し替え
+ * @param {string} [params.pathEnv] テスト用のアプリ自身の PATH の差し替え
+ * @param {() => string} [params.randomId] テスト用の起動ごとの名前の差し替え
+ * @returns {{ok: true, home: string|null, discard: () => boolean} | {ok: false, error: string}}
+ */
 function prepareCodexTaskPolicyHome(params) {
   const { preset, dataDir, handoffDir, personalCodexHome, cwd, homeDir, dryRun = false, fs: fsImpl = nodeFs } = params;
   const spawnSync = params.spawnSync || childProcess.spawnSync;

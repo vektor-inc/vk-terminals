@@ -2467,6 +2467,68 @@ test('実行: member start は拘束ルートで、親と同じ sandbox の子 C
   }
 });
 
+test('実行: member start が途中で失敗したら、この起動で作った --out と実行の記録を消し、同じ名前で再実行できる', () => {
+  const fixture = createMemberFixture();
+  try {
+    const outPath = path.join(fixture.io, 'out.json');
+    const runDir = path.join(fixture.runs, 'aaaaaaaaaaaaaaaaaaaaaaaa');
+    // 監督プロセスの起動が例外・pid なしで失敗する場合。
+    for (const brokenSpawn of [() => { throw Object.assign(new Error('x'), { code: 'EAGAIN' }); }, () => ({})]) {
+      const failed = fixture.runMember(MEMBER_START, { spawn: brokenSpawn });
+      assert.equal(failed.code, 2);
+      assert.equal(fs.existsSync(outPath), false);
+      assert.equal(fs.existsSync(runDir), false);
+    }
+    // 実行の記録フォルダを作れない場合（同名が既にある）。既にあったものは消さず、--out だけ消す。
+    fs.mkdirSync(runDir, { mode: 0o700 });
+    fs.writeFileSync(path.join(runDir, 'keep.txt'), 'x');
+    const mkdirFailed = fixture.runMember(MEMBER_START);
+    assert.equal(mkdirFailed.code, 2);
+    assert.equal(fs.existsSync(outPath), false);
+    assert.equal(fs.existsSync(path.join(runDir, 'keep.txt')), true);
+    fs.rmSync(runDir, { recursive: true });
+    // pid の記録に失敗した場合は、起動した監督プロセスを止めて後始末する。
+    const killed = [];
+    const renameFailed = fixture.runMember(MEMBER_START, { kill: (pid, signal) => killed.push([pid, signal]), fs: { ...fs, constants: fs.constants, renameSync: () => { throw Object.assign(new Error('x'), { code: 'EIO' }); } } });
+    assert.equal(renameFailed.code, 2);
+    assert.deepEqual(killed, [[-424242, 'SIGTERM']]);
+    assert.equal(fs.existsSync(outPath), false);
+    assert.equal(fs.existsSync(runDir), false);
+    // 失敗のあとに同じ名前で再実行できる。
+    const retry = fixture.runMember(MEMBER_START);
+    assert.equal(retry.code, 0, retry.messages.join(''));
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('実行: member start の直後でも member status は拒否されず、監督プロセスの pid が記録されるまでは starting を返す', () => {
+  const fixture = createMemberFixture();
+  try {
+    const runDir = path.join(fixture.runs, 'aaaaaaaaaaaaaaaaaaaaaaaa');
+    let metaBeforeSpawn = null;
+    let statusDuringSpawn = null;
+    const spawn = () => {
+      metaBeforeSpawn = JSON.parse(fs.readFileSync(path.join(runDir, 'meta.json'), 'utf8'));
+      const lines = [];
+      statusDuringSpawn = { code: run(fixture, ['member', 'status', 'aaaaaaaaaaaaaaaaaaaaaaaa'], { writeOut: (text) => lines.push(text) }).code, text: lines.join('') };
+      return { pid: 424242, unref: () => {} };
+    };
+    const started = fixture.runMember(MEMBER_START, { spawn });
+    assert.equal(started.code, 0, started.messages.join(''));
+    assert.equal(metaBeforeSpawn.pid, null);
+    assert.equal(statusDuringSpawn.code, 0);
+    assert.match(statusDuringSpawn.text, /^STATE=starting$/m);
+    // 起動後は pid が記録され、実行中として見える。
+    assert.equal(JSON.parse(fs.readFileSync(path.join(runDir, 'meta.json'), 'utf8')).pid, 424242);
+    const after = [];
+    assert.equal(run(fixture, ['member', 'status', 'aaaaaaaaaaaaaaaaaaaaaaaa'], { writeOut: (text) => after.push(text), kill: () => true }).code, 0);
+    assert.match(after.join(''), /^STATE=running$/m);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
 test('拒否: 子用ランチャー（member の設定が空）では member 操作が使えず、入れ子の起動を防ぐ', () => {
   const fixture = createMemberFixture({ withMember: false });
   try {

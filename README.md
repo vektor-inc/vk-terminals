@@ -634,7 +634,8 @@ curl -s http://127.0.0.1:13847/api/states \
       "lastInputTime": 1713340790000,
       "lastLines": "最近の出力15行分...",
       "backgroundAgents": 0,
-      "agentGeneration": 1
+      "agentGeneration": 1,
+      "agentCommandState": "running"
     }
   }
 }
@@ -651,6 +652,7 @@ curl -s http://127.0.0.1:13847/api/states \
 | `lastOutputTime` | 最後に出力があった時刻（Unix ms） |
 | `lastInputTime` | 最後にユーザーが入力した時刻（Unix ms） |
 | `agentGeneration` | ペイン内で起動した AI の世代番号。AI 起動ペインは `1`、素のシェルは `0` で始まり、`POST /api/restart-agent` 成功ごとに 1 増加 |
+| `agentCommandState` | VK Terminals が現在世代で起動したメイン AI コマンドの客観状態。one-shot prompt hook の ready 後、AI コマンド投入直前に取得したプロセス表を基準に、Electron main が PTY ログインシェルと異なる前景グループを OS のプロセス表から監視する。初回は現在の前景グループが shell 子孫かつ baseline 外で、shell までの途中 ancestor に baseline identity がない場合だけ取得し、以後は同一グループの member と既知 identity の子孫だけを追加する。既知の PID + 起動時刻はプロセス表全体で照合するため、前景を外れた停止中プロセスや orphan 化・PGID 変更後のプロセスも追跡を続ける。shell function 内の後継グループは、完了前に直前のグループと既知 identity が全消失した場合だけ同じ世代として取得する。`exited` になるのは、実グループを1つ以上確認し、完了マーカーを受信し、追跡した全 identity の消失と由来不明な baseline 外子孫がないことを同じ process snapshot で確認した場合だけ。投入前から存在したプロセスやその新しい子を連続性なしに取得せず、初回または後継グループを750ms以内に取得できない場合、完了マーカー未受信のまま追跡グループが消失した場合も `null` で確定する。各起動は世代と launch token で識別し、restart 開始時には公開世代を進めず内部 token だけを同期的に無効化するため、停止 snapshot の取得中も旧コマンドを投入しない。元の AI コマンド行は一文字も加工せず単独行で投入し、その前に登録した zsh・bash・fish の世代固有 one-shot prompt hook が ready／completion marker を発行して自己削除する。bash の hook は既存の文字列 `PROMPT_COMMAND` を一文字も変えず改行の後ろへ追加し、配列では既存順序・要素を維持して末尾要素へ追加する。完了・準備失敗・timeout・世代 cancel では既存値を正確に復元して一時定義を削除し、安全に順序・cleanup を保証できない形式では状態を `null` にする。hook を安全に登録できない場合も元コマンドだけは無加工で実行する。marker は画面から除去する delimiter であり、それだけでは `running` / `exited` を証明しない。プロセス表の取得失敗、PID/PGID再利用などの判定不能、Windows は `null` へ安全に倒す。起動行の PTY 書き込み成功、画面出力の静止、`waiting` / `backgroundAgents` からも状態を推測しない |
 | `lastLines` | 最近の出力テキスト（ANSI除去済み、最大15行） |
 | `backgroundAgents` | そのペインでバックグラウンドに動いている Claude Code サブエージェント数（issue #340）。画面末尾のフッター表示（`← N agents` 等）から判定した整数（0 以上）、または判定できないときは `null`（不明）。`0` と `null` は区別されており、`null` は「フッターが読み取れる Claude Code の画面ではない」等の判定不能を表す（バックグラウンドで動くサブエージェントが無いことが確定した状態は `0`）。ペイン幅が狭くフッター表示が `…` で截断され、agents 表示の有無を確認しきれない場合も `0` と断定せず `null` になる。サブエージェントが終了すると `0` に戻る。司令塔（vk-orchestrator）はこの値が `null` のときは、従来どおり `lastOutputTime` だけでペインの稼働を判定する想定 |
 

@@ -1,177 +1,126 @@
 'use strict';
 
-const crypto = require('node:crypto');
-const fs = require('node:fs');
-const net = require('node:net');
-const os = require('node:os');
-const path = require('node:path');
-const { buildTrackedShellCommand } = require('./userShellCommand');
+const { execFile } = require('node:child_process');
+const { promisify } = require('node:util');
 
-const TOKEN_PATTERN = /^[a-f0-9]{64}$/;
-const MAX_MESSAGE_BYTES = 1024;
+const execFileAsync = promisify(execFile);
+const PS_ARGS = ['-A', '-o', 'pid=,ppid=,pgid=,tpgid=,stat=,lstart='];
+const LSTART_TOLERANCE_MS = 2000;
 
-function quoteShellArgument(value) {
-  return `'${String(value).replace(/'/g, `'\\''`)}'`;
+function isSameProcessStart(a, b) {
+  const first = Date.parse(a);
+  const second = Date.parse(b);
+  return Number.isFinite(first) && Number.isFinite(second) && Math.abs(first - second) <= LSTART_TOLERANCE_MS;
 }
 
-/** terminal:create と監視付き再起動で共通の、信頼済み起動環境からユーザーシェルを解決する。 */
-function resolveUserShell(env = process.env, platform = process.platform) {
-  return env.SHELL || (platform === 'win32' ? (env.COMSPEC || 'powershell.exe') : '/bin/zsh');
+function parseProcessTable(output) {
+  if (typeof output !== 'string') throw new Error('invalid process table');
+  const processes = new Map();
+  for (const line of output.split('\n')) {
+    if (!line.trim()) continue;
+    const match = line.match(/^\s*(\d+)\s+(\d+)\s+(-?\d+)\s+(-?\d+)\s+(\S+)\s+(.+?)\s*$/);
+    if (!match) throw new Error('invalid process table');
+    const [, pid, ppid, pgid, tpgid, stat, lstart] = match;
+    processes.set(Number(pid), { pid: Number(pid), ppid: Number(ppid), pgid: Number(pgid), tpgid: Number(tpgid), stat, lstart });
+  }
+  if (processes.size === 0) throw new Error('invalid process table');
+  return processes;
 }
 
-/** main プロセスが所有する、世代単位の認証済みライフサイクル接続を管理する。 */
+async function listProcessTable() {
+  const { stdout } = await execFileAsync('ps', PS_ARGS, {
+    encoding: 'utf8', timeout: 2000, maxBuffer: 4 * 1024 * 1024,
+    killSignal: 'SIGKILL', env: { ...process.env, LC_ALL: 'C' },
+  });
+  return parseProcessTable(stdout);
+}
+
+function isDescendant(processes, pid, ancestorPid, ancestorLstart) {
+  const visited = new Set();
+  let current = processes.get(pid);
+  while (current && !visited.has(current.pid)) {
+    if (current.pid === ancestorPid) return isSameProcessStart(current.lstart, ancestorLstart);
+    visited.add(current.pid);
+    current = processes.get(current.ppid);
+  }
+  return false;
+}
+
+function inspectLifecycle(snapshot, processes) {
+  const shell = processes.get(snapshot.shellPid);
+  if (!shell || !isSameProcessStart(shell.lstart, snapshot.shellLstart)) return { state: null, terminal: true };
+  if (snapshot.trackedPgid === null) {
+    const candidate = shell.tpgid;
+    if (!Number.isSafeInteger(candidate) || candidate <= 0 || candidate === shell.pgid) return { state: null };
+    const members = [...processes.values()].filter((process) =>
+      process.pgid === candidate && isDescendant(processes, process.pid, shell.pid, shell.lstart));
+    if (members.length === 0) return { state: null };
+    return { state: 'running', trackedPgid: candidate, identities: new Map(members.map((process) => [process.pid, process.lstart])) };
+  }
+  const members = [...processes.values()].filter((process) => process.pgid === snapshot.trackedPgid);
+  const knownAlive = members.some((process) => {
+    const knownStart = snapshot.identities.get(process.pid);
+    return knownStart !== undefined && isSameProcessStart(process.lstart, knownStart);
+  });
+  if (!knownAlive) return { state: 'exited', terminal: true };
+  const identities = new Map(snapshot.identities);
+  for (const process of members) identities.set(process.pid, process.lstart);
+  return { state: 'running', identities };
+}
+
 function createAgentLifecycleStore(options = {}) {
-  const createToken = options.createToken || (() => crypto.randomBytes(32).toString('hex'));
   const platform = options.platform || process.platform;
+  const listProcesses = options.listProcesses || listProcessTable;
+  const pollIntervalMs = options.pollIntervalMs ?? 100;
+  const setTimer = options.setTimer || setTimeout;
+  const clearTimer = options.clearTimer || clearTimeout;
   const states = new Map();
-  const sockets = new Set();
-  let server = null;
-  let runtimeDir = null;
-  let socketPath = null;
-
-  const clearConnection = (current, socket) => {
-    if (current.connection !== socket) return;
-    current.connection = null;
-    if (current.phase !== 'exited') {
-      current.phase = 'unknown';
-      current.state = null;
+  let closed = false;
+  const stop = (entry) => { entry.cancelled = true; if (entry.timer) clearTimer(entry.timer); entry.timer = null; };
+  const schedule = (id, entry) => {
+    if (!entry.cancelled && !closed && states.get(id) === entry) entry.timer = setTimer(() => poll(id, entry), pollIntervalMs);
+  };
+  const poll = async (id, entry) => {
+    if (entry.polling || entry.cancelled || closed || states.get(id) !== entry) return;
+    entry.polling = true;
+    let processes;
+    try { processes = await listProcesses(); } catch (_error) {
+      if (states.get(id) === entry && !entry.cancelled) entry.state = null;
+      entry.polling = false;
+      stop(entry);
+      return;
     }
+    if (states.get(id) !== entry || entry.cancelled || closed) { entry.polling = false; return; }
+    const result = inspectLifecycle(entry, processes);
+    entry.state = result.state;
+    if (result.trackedPgid !== undefined) entry.trackedPgid = result.trackedPgid;
+    if (result.identities) entry.identities = result.identities;
+    entry.polling = false;
+    if (result.terminal) stop(entry); else schedule(id, entry);
   };
-  const rejectSocket = (socket) => { if (!socket.destroyed) socket.destroy(); };
-  const handleConnection = (socket) => {
-    sockets.add(socket);
-    let buffer = Buffer.alloc(0);
-    let current = null;
-    let authenticated = false;
-    socket.on('data', (chunk) => {
-      buffer = Buffer.concat([buffer, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)]);
-      if (buffer.length > MAX_MESSAGE_BYTES) return rejectSocket(socket);
-      let newline;
-      while ((newline = buffer.indexOf(0x0a)) >= 0) {
-        const line = buffer.subarray(0, newline);
-        buffer = buffer.subarray(newline + 1);
-        if (line.length === 0 || line.length > MAX_MESSAGE_BYTES) return rejectSocket(socket);
-        let message;
-        try { message = JSON.parse(line.toString('utf8')); } catch (_error) { return rejectSocket(socket); }
-        if (!message || typeof message !== 'object' || Array.isArray(message)) return rejectSocket(socket);
-        if (!authenticated) {
-          if (message.type !== 'auth' || typeof message.termId !== 'string' ||
-              !Number.isSafeInteger(message.generation) || !TOKEN_PATTERN.test(message.token || '')) return rejectSocket(socket);
-          current = states.get(message.termId);
-          if (!current || current.generation !== message.generation || current.token !== message.token ||
-              current.phase !== 'prepared' || current.connection) return rejectSocket(socket);
-          authenticated = true;
-          current.connection = socket;
-          current.phase = 'connected';
-          current.token = null;
-          socket.write('{"type":"ready"}\n');
-          continue;
-        }
-        if (message.type === 'started' && current.phase === 'connected') {
-          current.phase = 'running';
-          current.state = 'running';
-        } else if (message.type === 'exited' && current.phase === 'running') {
-          current.phase = 'exited';
-          current.state = 'exited';
-        } else return rejectSocket(socket);
-      }
-    });
-    socket.on('error', () => {});
-    socket.on('close', () => {
-      sockets.delete(socket);
-      if (current) clearConnection(current, socket);
-    });
-  };
-
   return {
-    async start() {
-      if (platform === 'win32' || server) return false;
-      try {
-        runtimeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-agent-'));
-        fs.chmodSync(runtimeDir, 0o700);
-        socketPath = path.join(runtimeDir, 'lifecycle.sock');
-        server = net.createServer(handleConnection);
-        await new Promise((resolve, reject) => {
-          server.once('error', reject);
-          server.listen(socketPath, () => { server.off('error', reject); resolve(); });
-        });
-        // listen 後の socket エラーで main プロセスを落とさず、既存接続の切断検知を継続する。
-        server.on('error', () => {});
-        fs.chmodSync(socketPath, 0o600);
-        return true;
-      } catch (_error) {
-        if (server) server.close();
-        server = null;
-        socketPath = null;
-        if (runtimeDir) fs.rmSync(runtimeDir, { recursive: true, force: true });
-        runtimeDir = null;
-        return false;
-      }
-    },
     initialize(termId, generation) {
-      states.set(String(termId), { generation, state: null, phase: 'idle', token: null, connection: null });
+      const id = String(termId); const previous = states.get(id); if (previous) stop(previous);
+      states.set(id, { generation, state: null, cancelled: false, timer: null, polling: false });
     },
-    prepare(termId, generation) {
-      const id = String(termId);
-      const previous = states.get(id);
-      if (previous?.connection) previous.connection.destroy();
-      if (!server || !socketPath) {
-        states.set(id, { generation, state: null, phase: 'unavailable', token: null, connection: null });
-        return null;
-      }
-      const token = createToken();
-      if (!TOKEN_PATTERN.test(token)) throw new Error('invalid agent lifecycle token');
-      states.set(id, { generation, state: null, phase: 'prepared', token, connection: null });
-      return { termId: id, generation, token, socketPath };
-    },
-    reset(termId, generation) {
-      const current = states.get(String(termId));
-      if (!current || current.generation !== generation) return false;
-      if (current.connection) current.connection.destroy();
-      current.state = null;
-      current.phase = 'unknown';
-      current.token = null;
-      current.connection = null;
+    async monitor(termId, generation, shellPid) {
+      const id = String(termId); const previous = states.get(id); if (previous) stop(previous);
+      const entry = { generation, state: null, shellPid, shellLstart: null, trackedPgid: null, identities: new Map(), cancelled: false, timer: null, polling: false };
+      states.set(id, entry);
+      if (platform === 'win32' || !Number.isSafeInteger(shellPid) || shellPid <= 0) return false;
+      let processes;
+      try { processes = await listProcesses(); } catch (_error) { return false; }
+      if (states.get(id) !== entry || entry.cancelled || closed) return false;
+      const shell = processes.get(shellPid);
+      if (!shell) return false;
+      entry.shellLstart = shell.lstart;
+      schedule(id, entry);
       return true;
     },
-    get(termId, generation) {
-      const current = states.get(String(termId));
-      return current && current.generation === generation ? current.state : null;
-    },
-    delete(termId) {
-      const current = states.get(String(termId));
-      if (current?.connection) current.connection.destroy();
-      states.delete(String(termId));
-    },
-    async close() {
-      for (const socket of sockets) socket.destroy();
-      sockets.clear();
-      const closingServer = server;
-      server = null;
-      socketPath = null;
-      if (closingServer) await new Promise((resolve) => closingServer.close(resolve));
-      if (runtimeDir) fs.rmSync(runtimeDir, { recursive: true, force: true });
-      runtimeDir = null;
-    },
+    get(termId, generation) { const entry = states.get(String(termId)); return entry && entry.generation === generation ? entry.state : null; },
+    delete(termId) { const id = String(termId); const entry = states.get(id); if (entry) stop(entry); states.delete(id); },
+    async close() { closed = true; for (const entry of states.values()) stop(entry); states.clear(); },
   };
-}
-
-/** 外部入力をシェル構文として再解釈せず、監視プロセスの固定引数へ渡す。 */
-function buildTrackedLaunchCommand(command, credentials, options = {}) {
-  if (typeof command !== 'string' || !command) throw new Error('launch command required');
-  if (!credentials || typeof credentials.termId !== 'string' ||
-      !Number.isSafeInteger(credentials.generation) || credentials.generation < 1 ||
-      !TOKEN_PATTERN.test(credentials.token || '') || typeof credentials.socketPath !== 'string') {
-    throw new Error('invalid agent lifecycle credentials');
-  }
-  const executable = options.executable || process.execPath;
-  const monitorPath = options.monitorPath || require.resolve('./agentLifecycleMonitor');
-  const userShell = options.userShell || resolveUserShell();
-  const specPath = `${credentials.socketPath}.${credentials.termId}.${credentials.generation}.${credentials.token.slice(0, 16)}.json`;
-  const readyPath = `${specPath}.ready`;
-  fs.writeFileSync(specPath, JSON.stringify({ ...credentials, command }), { flag: 'wx', mode: 0o600 });
-  const monitorCommand = `env ELECTRON_RUN_AS_NODE=1 ${quoteShellArgument(executable)} ${quoteShellArgument(monitorPath)} ${quoteShellArgument(specPath)}`;
-  return buildTrackedShellCommand(userShell, monitorCommand, readyPath);
 }
 
 function mergeAgentLifecycleStates(states, getGeneration, getLifecycleState) {
@@ -183,10 +132,4 @@ function mergeAgentLifecycleStates(states, getGeneration, getLifecycleState) {
   }));
 }
 
-module.exports = {
-  MAX_MESSAGE_BYTES,
-  createAgentLifecycleStore,
-  resolveUserShell,
-  buildTrackedLaunchCommand,
-  mergeAgentLifecycleStates,
-};
+module.exports = { PS_ARGS, parseProcessTable, listProcessTable, isDescendant, inspectLifecycle, createAgentLifecycleStore, mergeAgentLifecycleStates };

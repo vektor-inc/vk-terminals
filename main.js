@@ -68,8 +68,6 @@ const { resolveCodexTaskPolicyLaunchOptions } = require('./utils/codexTaskPolicy
 const { scheduleLaunchCommand } = require('./utils/delayedLaunch');
 const {
   createAgentLifecycleStore,
-  resolveUserShell,
-  buildTrackedLaunchCommand,
   mergeAgentLifecycleStates,
 } = require('./utils/agentLifecycle');
 // 最初のペインで起動する AI エンジン・モデルの設定解決（issue #419）と、
@@ -1371,7 +1369,6 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
-  await agentLifecycles.start();
   createWindow();
   startWidgetWatcher();
   await checkAndUpdate();
@@ -1888,7 +1885,7 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
     throw new Error('App is shutting down; new panes cannot be created.');
   }
   const id = String(nextId++);
-  const shell = resolveUserShell();
+  const shell = process.env.SHELL || (process.platform === 'win32' ? (process.env.COMSPEC || 'powershell.exe') : '/bin/zsh');
   let resolvedCwd = cwd || process.env.HOME || process.env.USERPROFILE || os.tmpdir();
   try {
     if (!fs.existsSync(resolvedCwd) || !fs.statSync(resolvedCwd).isDirectory()) {
@@ -2147,7 +2144,7 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
   ptyProcess.onData((data) => {
     if (promptWatcher) promptWatcher(data);
     if (win && !win.isDestroyed()) {
-      if (data) win.webContents.send('terminal:data', id, data);
+      win.webContents.send('terminal:data', id, data);
     }
   });
 
@@ -2185,20 +2182,14 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
   //
   // Codex でも専用の許可リストで再検証し、正常値だけを --model として渡す。
   if (launchCommand !== null) {
-    // POSIX では専用監視プロセスが実際の spawn/close を通知する。
-    let commandToWrite = launchCommand;
-    if (process.platform !== 'win32') {
-      const credentials = agentLifecycles.prepare(id, 1);
-      if (credentials) commandToWrite = buildTrackedLaunchCommand(launchCommand, credentials, { userShell: shell });
-    }
     // 待っている間に PTY が消えた・書き込みが例外になった場合は、使われない専用 CODEX_HOME を回収する。
     scheduleLaunchCommand({
       ptys,
       id,
       ptyProcess,
-      command: commandToWrite,
+      command: launchCommand,
       discard: discardLaunchHome,
-      onWriteFailure: () => agentLifecycles.reset(id, 1),
+      onWriteSuccess: () => { agentLifecycles.monitor(id, 1, ptyProcess.pid); },
       delayMs: 200,
       log: (message) => console.error(`${LOG_PREFIX} ${message}`),
     });
@@ -2422,8 +2413,9 @@ async function restartAgentInTerminal(ptyProcess, request, launchOptions, lifecy
   if (modelIgnored) {
     console.warn(`${LOG_PREFIX} model is ignored for engine '${request.engine}'`);
   }
-  const trackedCommand = lifecycleLaunch.wrap(command);
-  ptyProcess.write(`${trackedCommand}\r`);
+  const generation = lifecycleLaunch.beforeWrite();
+  ptyProcess.write(`${command}\r`);
+  lifecycleLaunch.afterWrite(generation);
 
   // 既知の未対応事項（issue #392・安藤の指摘・LOW-G）: responder は cd の書き込みより前に
   // 取り付けているため、シェルがエコーバックする `cd` 行（cwd のディレクトリ名を含む）が
@@ -3498,12 +3490,13 @@ function startHttpApi() {
           let launchHomeInUse = false;
           let startedGeneration = null;
           const lifecycleLaunch = {
-            wrap(command) {
-              // 新世代を公開してから、その世代の認証情報を含むコマンドを書き込む。
-              // 書き込み失敗時も停止済みの旧世代へ戻さず、不明として安全側に倒す。
+            beforeWrite() {
               startedGeneration = agentGenerations.increment(request.termId);
-              const credentials = agentLifecycles.prepare(request.termId, startedGeneration);
-              return credentials ? buildTrackedLaunchCommand(command, credentials, { userShell: resolveUserShell() }) : command;
+              agentLifecycles.initialize(request.termId, startedGeneration);
+              return startedGeneration;
+            },
+            afterWrite(generation) {
+              agentLifecycles.monitor(request.termId, generation, ptyProcess.pid);
             },
           };
           const operation = restartAgentInTerminal(ptyProcess, request, launchResolution.options, lifecycleLaunch);
@@ -3534,7 +3527,7 @@ function startHttpApi() {
               generation,
             }));
           } catch (error) {
-            if (startedGeneration !== null) agentLifecycles.reset(request.termId, startedGeneration);
+            if (startedGeneration !== null) agentLifecycles.initialize(request.termId, startedGeneration);
             console.error(`${LOG_PREFIX} restart-agent failed for terminal ${request.termId}:`, error.message);
             res.writeHead(500, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: 'failed to stop agent' }));

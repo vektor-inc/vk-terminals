@@ -2,113 +2,175 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const net = require('node:net');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
-const { MAX_MESSAGE_BYTES, createAgentLifecycleStore, buildTrackedLaunchCommand, mergeAgentLifecycleStates } = require('../utils/agentLifecycle');
+const { spawnSync } = require('node:child_process');
+const { PS_ARGS, parseProcessTable, inspectLifecycle, createAgentLifecycleStore, mergeAgentLifecycleStates } = require('../utils/agentLifecycle');
 
-const TOKEN_A = 'a'.repeat(64);
-function waitFor(predicate, timeoutMs = 2000) {
+const START = 'Fri Oct 16 10:00:00 2026';
+const LATER = 'Fri Oct 16 10:01:00 2026';
+const row = (pid, ppid, pgid, tpgid, stat = 'S', lstart = START) => ({ pid, ppid, pgid, tpgid, stat, lstart });
+const table = (...rows) => new Map(rows.map((process) => [process.pid, process]));
+const initial = () => ({ shellPid: 10, shellLstart: START, trackedPgid: null, identities: new Map() });
+
+function waitFor(predicate, timeoutMs = 5000) {
   const deadline = Date.now() + timeoutMs;
   return new Promise((resolve, reject) => {
     const inspect = () => {
       if (predicate()) return resolve();
       if (Date.now() >= deadline) return reject(new Error('condition timeout'));
-      setTimeout(inspect, 10);
+      setTimeout(inspect, 20);
     };
     inspect();
   });
 }
 
-test('IPC: 認証後の started/exited だけを厳密な順序で反映する', async (t) => {
-  const store = createAgentLifecycleStore({ createToken: () => TOKEN_A });
-  await store.start();
-  t.after(() => store.close());
-  const credentials = store.prepare('1', 1);
-  const socket = net.createConnection(credentials.socketPath);
-  t.after(() => socket.destroy());
-  socket.write(`${JSON.stringify({ type: 'auth', termId: '1', generation: 1, token: TOKEN_A })}\n`);
-  await new Promise((resolve) => socket.once('data', resolve));
-  const duplicate = net.createConnection(credentials.socketPath);
-  const duplicateClosed = new Promise((resolve) => duplicate.once('close', resolve));
-  duplicate.write(`${JSON.stringify({ type: 'auth', termId: '1', generation: 1, token: TOKEN_A })}\n`);
-  await duplicateClosed;
-  socket.write('{"type":"started"}\n');
-  await waitFor(() => store.get('1', 1) === 'running');
-  socket.end('{"type":"exited"}\n');
-  await waitFor(() => store.get('1', 1) === 'exited');
+function createRealPty(t, env = process.env) {
+  const pty = require('node-pty');
+  const shell = pty.spawn('/bin/zsh', ['-f'], { env: { ...env, TERM: 'xterm-256color', PS1: 'VK_PROMPT> ' } });
+  let output = '';
+  shell.onData((data) => { output += data; });
+  t.after(() => { try { shell.kill(); } catch (_error) {} });
+  return { shell, output: () => output, clear: () => { output = ''; } };
+}
+
+test('psはshellを介さない固定引数で必要な列を取得する', () => {
+  assert.deepEqual(PS_ARGS, ['-A', '-o', 'pid=,ppid=,pgid=,tpgid=,stat=,lstart=']);
+  const parsed = parseProcessTable(` 10 1 10 20 Ss ${START}\n 20 10 20 20 T ${START}\n`);
+  assert.deepEqual(parsed.get(20), row(20, 10, 20, 20, 'T'));
 });
 
-test('IPC: exited 前の接続消失は現在世代だけを null に戻す', async (t) => {
-  const tokens = [TOKEN_A, 'b'.repeat(64)];
-  const store = createAgentLifecycleStore({ createToken: () => tokens.shift() });
-  await store.start();
-  t.after(() => store.close());
-  const first = store.prepare('1', 1);
-  const oldSocket = net.createConnection(first.socketPath);
-  oldSocket.write(`${JSON.stringify({ type: 'auth', termId: '1', generation: 1, token: first.token })}\n`);
-  await new Promise((resolve) => oldSocket.once('data', resolve));
-  oldSocket.write('{"type":"started"}\n');
-  await waitFor(() => store.get('1', 1) === 'running');
-  oldSocket.destroy();
-  await waitFor(() => store.get('1', 1) === null);
-
-  const second = store.prepare('1', 2);
-  const currentSocket = net.createConnection(second.socketPath);
-  t.after(() => currentSocket.destroy());
-  currentSocket.write(`${JSON.stringify({ type: 'auth', termId: '1', generation: 2, token: second.token })}\n`);
-  await new Promise((resolve) => currentSocket.once('data', resolve));
-  currentSocket.write('{"type":"started"}\n');
-  await waitFor(() => store.get('1', 2) === 'running');
-  assert.equal(store.get('1', 2), 'running');
+test('シェルと異なる前景groupにシェル子孫がいる場合だけrunning', () => {
+  const yes = inspectLifecycle(initial(), table(row(10, 1, 10, 20), row(20, 10, 20, 20)));
+  assert.equal(yes.state, 'running');
+  assert.equal(yes.trackedPgid, 20);
+  assert.equal(inspectLifecycle(initial(), table(row(10, 1, 10, 10))).state, null);
+  assert.equal(inspectLifecycle(initial(), table(row(10, 1, 10, 20), row(20, 1, 20, 20))).state, null);
 });
 
-test('IPC: 不正資格情報と巨大メッセージを拒否し、socketをprivateにする', async (t) => {
-  const store = createAgentLifecycleStore({ createToken: () => TOKEN_A });
-  await store.start();
-  t.after(() => store.close());
-  const credentials = store.prepare('1', 1);
-  assert.equal(fs.statSync(credentials.socketPath).mode & 0o777, 0o600);
-  assert.equal(fs.statSync(path.dirname(credentials.socketPath)).mode & 0o777, 0o700);
-  for (const payload of [
-    `${JSON.stringify({ type: 'auth', termId: '1', generation: 1, token: 'b'.repeat(64) })}\n`,
-    'x'.repeat(MAX_MESSAGE_BYTES + 1),
-  ]) {
-    const socket = net.createConnection(credentials.socketPath);
-    const closed = new Promise((resolve) => socket.once('close', resolve));
-    socket.write(payload);
-    await closed;
-  }
+test('停止中groupは前景がシェルへ戻ってもrunningを維持する', () => {
+  const snapshot = { ...initial(), trackedPgid: 20, identities: new Map([[20, START]]) };
+  assert.equal(inspectLifecycle(snapshot, table(row(10, 1, 10, 10), row(20, 10, 20, 10, 'T'))).state, 'running');
+});
+
+test('追跡groupの全member消失時だけexited', () => {
+  const snapshot = { ...initial(), trackedPgid: 20, identities: new Map([[20, START], [21, START]]) };
+  assert.equal(inspectLifecycle(snapshot, table(row(10, 1, 10, 10), row(21, 1, 20, 10))).state, 'running');
+  assert.deepEqual(inspectLifecycle(snapshot, table(row(10, 1, 10, 10))), { state: 'exited', terminal: true });
+});
+
+test('同じPID/PGIDでもlstartが変われば再利用としてexited', () => {
+  const snapshot = { ...initial(), trackedPgid: 20, identities: new Map([[20, START]]) };
+  assert.deepEqual(inspectLifecycle(snapshot, table(row(10, 1, 10, 10), row(20, 1, 20, 10, 'S', LATER))), { state: 'exited', terminal: true });
+});
+
+test('ps失敗はnullへ倒し、古い世代の非同期結果は新世代を上書きしない', async () => {
+  let resolveOld;
+  const oldRead = new Promise((resolve) => { resolveOld = resolve; });
+  const store = createAgentLifecycleStore({ listProcesses: () => oldRead });
+  const oldMonitor = store.monitor('1', 1, 10);
+  store.initialize('1', 2);
+  resolveOld(table(row(10, 1, 10, 10)));
+  assert.equal(await oldMonitor, false);
+  assert.equal(store.get('1', 2), null);
+  assert.equal(store.get('1', 1), null);
+  await store.close();
+
+  const failed = createAgentLifecycleStore({ listProcesses: () => Promise.reject(new Error('ps failed')) });
+  assert.equal(await failed.monitor('1', 1, 10), false);
+  assert.equal(failed.get('1', 1), null);
+});
+
+test('Windowsでは監視せずnullを維持する', async () => {
+  const store = createAgentLifecycleStore({ platform: 'win32', listProcesses: () => { throw new Error('should not run'); } });
+  assert.equal(await store.monitor('1', 1, 10), false);
   assert.equal(store.get('1', 1), null);
 });
 
-test('起動行: 認証情報と元コマンドを固定引数としてクォートする', () => {
-  const original = `env FOO='a b' codex --config 'x="y"'`;
-  const command = buildTrackedLaunchCommand(original, {
-    socketPath: "/tmp/it's.sock", termId: '7', generation: 3, token: TOKEN_A,
-  }, { executable: '/path/node', monitorPath: '/app/monitor.js' });
-  assert.match(command, /env ELECTRON_RUN_AS_NODE=1 /);
-  assert.equal(command.includes('\x1b'), false);
-  assert.match(command, /eval "\$vk_command"/);
-  assert.match(command, /env ELECTRON_RUN_AS_NODE=1/);
-  const specPath = command.match(/'(\/tmp\/it'\\''s\.sock\.7\.3\.[a-f0-9]+\.json)'/)[1].replace(/'\\''/g, "'");
-  const spec = JSON.parse(fs.readFileSync(specPath, 'utf8'));
-  fs.unlinkSync(specPath);
-  assert.equal(spec.command, original);
-  assert.equal(spec.token, TOKEN_A);
-});
-
-test('Windows相当: IPCが無効でも状態はnullのまま', async () => {
-  const store = createAgentLifecycleStore({ platform: 'win32' });
-  assert.equal(await store.start(), false);
-  store.initialize('1', 1);
-  assert.equal(store.prepare('1', 1), null);
-  assert.equal(store.get('1', 1), null);
-});
-
-test('状態マージ: 既存値を保ち、世代と客観状態を追加する', () => {
+test('状態マージはagentCommandState APIの後方互換を維持する', () => {
   const states = { pane: { termId: '4', status: 'idle' } };
   assert.deepEqual(mergeAgentLifecycleStates(states, () => 2, () => 'exited'), {
     pane: { termId: '4', status: 'idle', agentGeneration: 2, agentCommandState: 'exited' },
   });
+});
+
+test('fishを含む全シェルへ元コマンドを一字も加工せず渡す配線', () => {
+  const source = fs.readFileSync(require.resolve('../main'), 'utf8');
+  assert.match(source, /command: launchCommand,/);
+  assert.match(source, /ptyProcess\.write\(`\$\{command\}\\r`\)/);
+  assert.doesNotMatch(source, /buildTrackedShellCommand|eval \"\$vk_command\"/);
+});
+
+test('実PTY: 通常起動はrunningから全member消失後exitedへ移る', {
+  skip: process.platform === 'win32' || spawnSync('/bin/zsh', ['--version']).status !== 0,
+}, async (t) => {
+  const pty = createRealPty(t);
+  const store = createAgentLifecycleStore({ pollIntervalMs: 20 });
+  t.after(() => store.close());
+  await waitFor(() => pty.output().includes('VK_PROMPT>'));
+  pty.clear();
+  pty.shell.write(`${process.execPath} -e 'setTimeout(()=>{},400)'\r`);
+  await store.monitor('pty', 1, pty.shell.pid);
+  await waitFor(() => store.get('pty', 1) === 'running');
+  await waitFor(() => store.get('pty', 1) === 'exited');
+  assert.match(pty.output(), /VK_PROMPT>/);
+});
+
+test('実PTY: 存在しないコマンドと監視前に終わる短命コマンドはnull', {
+  skip: process.platform === 'win32' || spawnSync('/bin/zsh', ['--version']).status !== 0,
+}, async (t) => {
+  const pty = createRealPty(t);
+  const store = createAgentLifecycleStore({ pollIntervalMs: 20 });
+  t.after(() => store.close());
+  await waitFor(() => pty.output().includes('VK_PROMPT>'));
+  pty.clear();
+  pty.shell.write('/definitely/missing/vk-agent-command\r');
+  await waitFor(() => pty.output().includes('VK_PROMPT>'));
+  await store.monitor('pty', 1, pty.shell.pid);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(store.get('pty', 1), null);
+});
+
+test('実PTY: zsh functionとaliasを従来どおり解決する', {
+  skip: process.platform === 'win32' || spawnSync('/bin/zsh', ['--version']).status !== 0,
+}, async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-agent-zsh-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const marker = path.join(root, 'called');
+  fs.writeFileSync(path.join(root, '.zshrc'), `PS1='VK_PROMPT> '\nvk_agent_function() { printf alias-ok >> ${marker}; ${process.execPath} -e 'setTimeout(()=>{},1000)'; }\nalias claude=vk_agent_function\n`);
+  const ptyModule = require('node-pty');
+  const shell = ptyModule.spawn('/bin/zsh', [], { env: { ...process.env, ZDOTDIR: root, TERM: 'xterm-256color', PS1: 'VK_PROMPT> ' } });
+  t.after(() => { try { shell.kill(); } catch (_error) {} });
+  let output = '';
+  shell.onData((data) => { output += data; });
+  const store = createAgentLifecycleStore({ pollIntervalMs: 20 });
+  t.after(() => store.close());
+  await waitFor(() => output.includes('VK_PROMPT>'));
+  shell.write('claude\r');
+  await store.monitor('pty', 1, shell.pid);
+  await waitFor(() => store.get('pty', 1) === 'running');
+  await waitFor(() => store.get('pty', 1) === 'exited');
+  assert.equal(fs.readFileSync(marker, 'utf8'), 'alias-ok');
+});
+
+test('実PTY: Ctrl+Z中はrunningを維持し、fg後の終了でexited', {
+  skip: process.platform === 'win32' || spawnSync('/bin/zsh', ['--version']).status !== 0,
+  timeout: 10000,
+}, async (t) => {
+  const pty = createRealPty(t);
+  const store = createAgentLifecycleStore({ pollIntervalMs: 20 });
+  t.after(() => store.close());
+  await waitFor(() => pty.output().includes('VK_PROMPT>'));
+  pty.clear();
+  pty.shell.write(`${process.execPath} -e 'process.stdin.once("data",()=>process.exit()); setInterval(()=>{},1000)'\r`);
+  await store.monitor('pty', 1, pty.shell.pid);
+  await waitFor(() => store.get('pty', 1) === 'running');
+  pty.shell.write('\x1a');
+  await waitFor(() => /suspended/i.test(pty.output()));
+  assert.equal(store.get('pty', 1), 'running');
+  pty.shell.write('fg\r');
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  pty.shell.write('finish\r');
+  await waitFor(() => store.get('pty', 1) === 'exited');
 });

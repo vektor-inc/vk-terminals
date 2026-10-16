@@ -13,12 +13,11 @@
  * @param {() => unknown} params.discard 書き込めなかったときに専用 CODEX_HOME を回収する関数
  * @param {number} params.delayMs 書き込むまでの待ち時間
  * @param {() => void} [params.onWriteSuccess] 書き込み成功時の通知先
- * @param {() => void} [params.onWriteFailure] 書き込み不能時の通知先
  * @param {(message: string) => void} [params.log] 失敗の記録先
  * @param {Function} [params.setTimer] テスト用の setTimeout 差し替え
  * @returns {unknown} タイマーのハンドル
  */
-function scheduleLaunchCommand({ ptys, id, ptyProcess, command, discard, delayMs, onWriteSuccess = () => {}, onWriteFailure = () => {}, log = () => {}, setTimer = setTimeout }) {
+function scheduleLaunchCommand({ ptys, id, ptyProcess, command, discard, delayMs, onWriteSuccess = () => {}, log = () => {}, setTimer = setTimeout }) {
   const discardSafely = () => {
     try {
       discard();
@@ -29,7 +28,6 @@ function scheduleLaunchCommand({ ptys, id, ptyProcess, command, discard, delayMs
   return setTimer(() => {
     // 待っている間にペインが閉じた・同じ ID が別の PTY になった場合は、書き込まず回収する。
     if (ptys.get(id) !== ptyProcess) {
-      onWriteFailure();
       discardSafely();
       return;
     }
@@ -37,7 +35,6 @@ function scheduleLaunchCommand({ ptys, id, ptyProcess, command, discard, delayMs
       ptyProcess.write(`${command}\r`);
       onWriteSuccess();
     } catch (error) {
-      onWriteFailure();
       log(`failed to write launch command to terminal ${id}: ${error && error.message ? error.message : error}`);
       discardSafely();
     }

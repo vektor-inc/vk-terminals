@@ -36,7 +36,7 @@ test.describe.serial('main所有のAIライフサイクル監視', () => {
   let pidFile;
 
   test.beforeAll(async () => {
-    test.skip(process.platform === 'win32', 'Unix socketとprocess groupのテスト');
+    test.skip(process.platform === 'win32', 'process groupのテスト');
     port = await getFreePort();
     fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-agent-lifecycle-'));
     const binDir = path.join(fixtureRoot, 'bin');
@@ -63,7 +63,7 @@ setInterval(() => {}, 1000);
   });
 
   for (const signal of ['SIGTERM', 'SIGKILL']) {
-    test(`前景プロセスグループ全体への${signal}で、PTYを残したままrunningをnullへ戻す`, async () => {
+    test(`前景プロセスグループ全体への${signal}で、PTYを残したままrunningからexitedへ移る`, async () => {
       const created = await postJson(port, '/api/new-pane', { engine: 'claude', noClaude: false });
       expect(created.status).toBe(200);
       const termId = String(created.body.termId);
@@ -76,9 +76,9 @@ setInterval(() => {}, 1000);
       const pgid = Number(childProcess.execFileSync('ps', ['-o', 'pgid=', '-p', String(pid)], { encoding: 'utf8' }).trim());
       process.kill(-pgid, signal);
 
-      const state = await waitForValue(() => getTerm(port, termId), (term) => term?.agentCommandState === null);
+      const state = await waitForValue(() => getTerm(port, termId), (term) => term?.agentCommandState === 'exited');
       expect(state.termId).toBe(termId);
-      expect(state.agentCommandState).toBeNull();
+      expect(state.agentCommandState).toBe('exited');
     });
   }
 });

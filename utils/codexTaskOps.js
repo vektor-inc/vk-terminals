@@ -161,7 +161,7 @@ function parseGitCommit(tokens) {
     } else return fail(`flag not allowed: ${JSON.stringify(token)}`);
   }
   if (messages.length === 0) return fail('commit message required');
-  return { ok: true, bin: 'git', args: [...FIXED_GIT_PREFIX, 'commit', ...flags, ...messages.flatMap((message) => ['-m', message])], needsGitHub: false };
+  return { ok: true, bin: 'git', args: [...FIXED_GIT_PREFIX, 'commit', ...flags, ...messages.flatMap((message) => ['-m', message])], needsGitHub: false, guardsDefaultBranch: true };
 }
 
 // `--json a,b` / `--json=a,b` の読み取りと、値を取らない許可フラグだけを受ける（gh の閲覧系）。
@@ -560,6 +560,93 @@ function inspectRepository({ cwd, run, homeDir, fsImpl }) {
   return { ok: true, root, repo: parseGitHubRepo(originUrl) };
 }
 
+// ─── worktree の受け入れと既定ブランチの保護 ──────────────────────────────
+
+/**
+ * 指定フォルダの Git 管理領域（全 worktree が共有する .git）の実パスを返す。解決できなければ null。
+ * 相対パスで返る場合に備え、そのフォルダ基準で解決してから realpath にする。
+ * @param {{dir: string, run: Function, fsImpl: object}} params
+ * @returns {string|null}
+ */
+function resolveGitCommonDir({ dir, run, fsImpl }) {
+  const result = run(['rev-parse', '--path-format=absolute', '--git-common-dir'], dir);
+  if (result.status !== 0) return null;
+  const output = String(result.stdout).trim();
+  if (output === '') return null;
+  try {
+    return fsImpl.realpathSync(path.resolve(dir, output));
+  } catch (_error) {
+    return null;
+  }
+}
+
+/**
+ * 作業フォルダが、拘束したリポジトリに登録された worktree かを確認する。次をすべて満たすときだけ true。
+ *   1. Git 管理領域（common-dir）の実パスが拘束先と同一（別リポジトリ・入れ子・同じ origin の別クローンを除く）
+ *   2. 作業フォルダの実 gitdir が、拘束先の common-dir 直下の worktrees/ の 1 つ下である（.git ファイルが任意の場所を指す偽装を除く）
+ *   3. その gitdir の `gitdir` ファイル（逆参照）が、検査対象ルートの .git ファイルを指している
+ *      （登録済み worktree の gitdir を指す .git ファイルを別フォルダへ複製した場合を除く）。
+ *      逆参照ファイルは通常ファイル・リンクでない・自分（または root）の所有のときだけ読む。
+ * 拘束先側の値は起動時に固定せず、実行のたびに拘束先のフォルダから求め直す。
+ * @param {{cwd: string, run: Function, bindingRoot: string, inspectedRoot: string, fsImpl: object, uid?: number}} params
+ * @returns {boolean}
+ */
+function isBoundWorktree({ cwd, run, bindingRoot, inspectedRoot, fsImpl, uid }) {
+  const own = resolveGitCommonDir({ dir: cwd, run, fsImpl });
+  if (own === null) return false;
+  const bound = resolveGitCommonDir({ dir: bindingRoot, run, fsImpl });
+  if (bound === null || own !== bound) return false;
+
+  const gitDirResult = run(['rev-parse', '--path-format=absolute', '--git-dir'], cwd);
+  if (gitDirResult.status !== 0) return false;
+  let gitDir;
+  try {
+    gitDir = fsImpl.realpathSync(path.resolve(cwd, String(gitDirResult.stdout).trim()));
+  } catch (_error) {
+    return false;
+  }
+  if (path.dirname(gitDir) !== path.join(bound, 'worktrees')) return false;
+
+  try {
+    // 検査対象ルートの .git は、リンクでない通常ファイル（worktree の目印）でなければならない。
+    const dotGit = path.join(inspectedRoot, '.git');
+    const dotGitStat = fsImpl.lstatSync(dotGit);
+    if (dotGitStat.isSymbolicLink() || !dotGitStat.isFile()) return false;
+    const backRef = path.join(gitDir, 'gitdir');
+    const stat = fsImpl.lstatSync(backRef);
+    if (stat.isSymbolicLink() || !stat.isFile()) return false;
+    if (!(uid === undefined || stat.uid === uid || stat.uid === 0)) return false;
+    const target = String(fsImpl.readFileSync(backRef, 'utf8')).trim();
+    if (target === '' || !path.isAbsolute(target)) return false;
+    return fsImpl.realpathSync(target) === dotGit;
+  } catch (_error) {
+    return false;
+  }
+}
+
+/**
+ * git commit の前に、現在のブランチが既定ブランチ（main / master / origin/HEAD の指す先）か、
+ * ブランチに属さない状態（detached HEAD）でないことを確認する。問題なければ null、拒否するならメッセージ。
+ * 同名のタグがあると短縮名が `heads/main` のように変わり比較をすり抜けるため、symbolic-ref の完全名で比較する。
+ * @param {{cwd: string, run: Function}} params
+ * @returns {string|null}
+ */
+function checkCommitBranch({ cwd, run }) {
+  const head = run(['symbolic-ref', '-q', 'HEAD'], cwd);
+  const ref = head.status === 0 ? String(head.stdout).trim() : '';
+  if (ref === '') return 'task command rejected: cannot commit on a detached HEAD; switch to a working branch first';
+  if (!ref.startsWith('refs/heads/')) return 'task command rejected: HEAD does not point to a local branch; switch to a working branch first';
+  const defaults = new Set(['refs/heads/main', 'refs/heads/master']);
+  const remoteHead = run(['symbolic-ref', '-q', 'refs/remotes/origin/HEAD'], cwd);
+  if (remoteHead.status === 0) {
+    const remoteRef = String(remoteHead.stdout).trim();
+    const prefix = 'refs/remotes/origin/';
+    if (remoteRef.startsWith(prefix) && remoteRef.length > prefix.length) defaults.add(`refs/heads/${remoteRef.slice(prefix.length)}`);
+  }
+  if (defaults.has(ref)) return `task command rejected: cannot commit on the default branch ${JSON.stringify(ref.slice('refs/heads/'.length))}; switch to a working branch first`;
+  return null;
+}
+
 // ─── 子プロセスの環境 ───────────────────────────────────────────────────────
 
 const SAFE_VALUE_PATTERN = /^[^\x00-\x1f\x7f']+$/;
@@ -677,9 +764,16 @@ function runTaskCommand(argv, deps = {}) {
   // 作業フォルダが、起動時に拘束したリポジトリそのものであることを確認する。
   const inspected = inspectRepository({ cwd, run: runGit, homeDir: binding.home, fsImpl });
   if (!inspected.ok) return reject(inspected.error);
-  if (inspected.root !== binding.root) return reject('task command rejected: working directory is not the bound repository');
+  if (inspected.root !== binding.root && !isBoundWorktree({ cwd, run: runGit, bindingRoot: binding.root, inspectedRoot: inspected.root, fsImpl, uid: currentUid(deps) })) {
+    return reject('task command rejected: working directory is not the bound repository');
+  }
   if (parsed.needsGitHub) {
     if (binding.repo === null || inspected.repo !== binding.repo) return reject('task command rejected: origin does not match the bound github.com repository');
+  }
+
+  if (parsed.guardsDefaultBranch) {
+    const branchError = checkCommitBranch({ cwd, run: runGit });
+    if (branchError !== null) return reject(branchError);
   }
 
   const bin = parsed.bin === 'gh' ? binding.gh : binding.git;
@@ -696,6 +790,8 @@ module.exports = {
   buildChildEnvironment,
   withBoundRepository,
   inspectRepository,
+  isBoundWorktree,
+  checkCommitBranch,
   inspectGitConfigListing,
   isSupportedGitVersion,
   parseGitHubRepo,

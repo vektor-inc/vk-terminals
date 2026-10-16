@@ -983,61 +983,95 @@ function executePrepareWorktree({ parsed, binding, cwd, fsImpl, runGit, spawnSyn
   } catch (_error) {
     return reject('task command rejected: write-restricted execution is not available');
   }
-  const gitDenied = ['hooks', 'config', 'config.worktree', path.join('info', 'attributes')].map((name) => path.join(earlyCommonDir, name));
-  const restricted = (command, allowWrite) => restrictWrites({ ...command, allowWrite, denyWrite: gitDenied });
+  // 各段階が書いてよい場所は、その段階が実際に書く場所だけに絞る（Git 管理領域全体は許さない）。
+  // Git の制御ファイル（hooks・config・各 worktree の config.worktree・objects/info 配下の alternates など）は、どの段階でも書けない。
+  const adminDir = path.join(earlyCommonDir, 'worktrees', parsed.name);
+  const gitPath = (...parts) => path.join(earlyCommonDir, ...parts);
+  const controlFiles = [
+    gitPath('hooks'), gitPath('config'), gitPath('config.worktree'), gitPath('info', 'attributes'), gitPath('objects', 'info'),
+    path.join(adminDir, 'config.worktree'), path.join(adminDir, 'hooks'),
+  ];
+  const restricted = (command, allowWrite) => restrictWrites({ ...command, allowWrite, denyWrite: controlFiles });
+  const runRestricted = (command, options) => spawnSync(command.bin, command.args, { cwd, encoding: 'utf8', ...options });
+  const infoDir = gitPath('info');
+  const excludeFile = path.join(infoDir, 'exclude');
+  const refsRemotes = gitPath('refs', 'remotes');
+  const logsRemotes = gitPath('logs', 'refs', 'remotes');
+  const refsHeads = gitPath('refs', 'heads');
+  const logsHeads = gitPath('logs', 'refs', 'heads');
 
+  // 事前検査: 管理領域側の置き場所がリンクや別種のファイルでないこと、同名の管理情報が無いこと。
+  const infoStat = lstatOrNull(fsImpl, infoDir);
+  if (infoStat !== null && (infoStat.isSymbolicLink() || !infoStat.isDirectory())) return reject('task command rejected: local exclude directory is a symbolic link or not a directory');
+  const excludeStat = lstatOrNull(fsImpl, excludeFile);
+  if (excludeStat !== null && (excludeStat.isSymbolicLink() || !excludeStat.isFile())) return reject('task command rejected: local exclude file is not a regular file');
+  if (lstatOrNull(fsImpl, adminDir) !== null) return reject('task command rejected: worktree administrative entry already exists');
+
+  // Git 管理領域側の置き場所（ref・ログ・worktree 管理情報の親）を先に作る。作るだけで、中身は書かない。
+  const gitDirs = [refsRemotes, logsRemotes, refsHeads, logsHeads, gitPath('worktrees')];
+  const dirsMade = runRestricted(restricted({ bin: '/bin/mkdir', args: ['-p', '--', ...gitDirs] }, [gitPath('refs'), gitPath('logs'), gitPath('worktrees')]), { env: plainEnv });
+  if (dirsMade.error || dirsMade.status !== 0) return reject('task command rejected: could not prepare the git directories');
+
+  // 取得（通信あり）。書き込み先は、取得したオブジェクトと origin の追跡 ref と gh の設定だけ。
   const fetchArgs = [
     ...FIXED_GIT_PREFIX, ...networkGitConfig(binding),
-    'fetch', '--no-tags', '--no-recurse-submodules', '--refmap=', boundRemoteUrl(binding), `+refs/heads/${parsed.base}:${remoteRef}`,
+    'fetch', '--no-tags', '--no-recurse-submodules', '--no-write-fetch-head', '--refmap=', boundRemoteUrl(binding), `+refs/heads/${parsed.base}:${remoteRef}`,
   ];
-  const fetchCommand = restricted({ bin: binding.git, args: fetchArgs }, [earlyCommonDir, ghConfigReal]);
-  const fetched = spawnSync(fetchCommand.bin, fetchCommand.args, { cwd, env: networkEnv, encoding: 'utf8', stdio: 'inherit' });
+  const fetched = runRestricted(restricted({ bin: binding.git, args: fetchArgs }, [gitPath('objects'), refsRemotes, logsRemotes, ghConfigReal]), { env: networkEnv, stdio: 'inherit' });
   if (fetched.error) return reject(`task command failed to start: ${fetched.error.code || 'error'}`);
   if (fetched.status !== 0) return typeof fetched.status === 'number' ? fetched.status : 2;
   if (runGit(['show-ref', '--verify', '--quiet', remoteRef], cwd).status !== 0) return reject(`task command rejected: could not fetch the base branch ${JSON.stringify(parsed.base)}`);
 
   // 通常のクローンの status に worktree が未追跡として現れないよう、このクローンだけの除外設定へ作成先を登録する（共有の .gitignore は変えない）。
-  const excludeResult = runGit(['rev-parse', '--git-path', 'info/exclude'], cwd);
-  if (excludeResult.status !== 0) return reject('task command rejected: could not resolve the local exclude file');
-  const excludeFile = path.resolve(cwd, String(excludeResult.stdout).trim());
-  const commonDir = resolveGitCommonDir({ dir: cwd, run: runGit, fsImpl });
-  const excludeDir = path.dirname(excludeFile);
-  let excludeParent = null;
-  try {
-    excludeParent = fsImpl.realpathSync(path.dirname(excludeDir));
-  } catch (_error) {
-    excludeParent = null;
-  }
-  if (commonDir === null || excludeParent !== commonDir || path.basename(excludeDir) !== 'info' || path.basename(excludeFile) !== 'exclude') {
-    return reject('task command rejected: local exclude file is outside the repository');
-  }
+  // 書き込みは Node ではなく、除外ファイルだけに書き込みを限った子プロセスで行う。
   const entry = `/.claude/worktrees/${parsed.name}/`;
+  let existing = '';
   try {
-    const excludeStat = lstatOrNull(fsImpl, excludeFile);
-    if (excludeStat !== null && (excludeStat.isSymbolicLink() || !excludeStat.isFile())) return reject('task command rejected: local exclude file is not a regular file');
-    const existing = excludeStat === null ? '' : String(fsImpl.readFileSync(excludeFile, 'utf8'));
-    if (!existing.split('\n').includes(entry)) {
-      fsImpl.mkdirSync(path.dirname(excludeFile), { recursive: true });
-      fsImpl.appendFileSync(excludeFile, `\n${entry}\n`);
-    }
-    // 作成先の親フォルダは、書き込みを .claude 配下の実パスに限った子プロセスで作る。
-    const mkdirCommand = restricted({ bin: '/bin/mkdir', args: ['-p', '--', worktreeRoot] }, [claudeDir]);
-    const made = spawnSync(mkdirCommand.bin, mkdirCommand.args, { cwd, env: plainEnv, encoding: 'utf8' });
-    if (made.error || made.status !== 0) return reject('task command rejected: could not create the worktree parent directory');
-    // 作成後の状態を確かめる（拒否の理由を分かりやすくするための検査。安全性は上の書き込み制限が担う）。
+    existing = excludeStat === null ? '' : String(fsImpl.readFileSync(excludeFile, 'utf8'));
+  } catch (error) {
+    write(`task command failed: ${error && error.code ? error.code : 'filesystem error'}\n`);
+    return 2;
+  }
+  if (!existing.split('\n').includes(entry)) {
+    const infoMade = runRestricted(restricted({ bin: '/bin/mkdir', args: ['-p', '--', infoDir] }, [infoDir]), { env: plainEnv });
+    if (infoMade.error || infoMade.status !== 0) return reject('task command rejected: could not create the local exclude directory');
+    const appended = runRestricted(restricted({ bin: '/bin/sh', args: ['-c', 'printf "\\n%s\\n" "$2" >> "$1"', 'sh', excludeFile, entry] }, [excludeFile]), { env: plainEnv });
+    if (appended.error || appended.status !== 0) return reject('task command rejected: could not update the local exclude file');
+  }
+
+  // 作成先の親フォルダは、書き込みを .claude 配下の実パスに限った子プロセスで作る。
+  const mkdirCommand = restricted({ bin: '/bin/mkdir', args: ['-p', '--', worktreeRoot] }, [claudeDir]);
+  const made = runRestricted(mkdirCommand, { env: plainEnv });
+  if (made.error || made.status !== 0) return reject('task command rejected: could not create the worktree parent directory');
+  // 作成後の状態を確かめる（拒否の理由を分かりやすくするための検査。安全性は書き込み制限が担う）。
+  try {
     for (const dir of [claudeDir, worktreeRoot]) {
       const stat = fsImpl.lstatSync(dir);
-      if (stat.isSymbolicLink() || !stat.isDirectory()) return reject(`task command rejected: ${path.relative(root, dir)} is a symbolic link or not a directory`);
+      if (stat.isSymbolicLink() || !stat.isDirectory() || fsImpl.realpathSync(dir) !== dir) return reject(`task command rejected: ${path.relative(root, dir)} is a symbolic link or not a directory`);
     }
   } catch (error) {
     write(`task command failed: ${error && error.code ? error.code : 'filesystem error'}\n`);
     return 2;
   }
 
-  const addCommand = restricted({ bin: binding.git, args: [...FIXED_GIT_PREFIX, 'worktree', 'add', '--quiet', '--no-track', '-b', parsed.branch, worktreePath, remoteRef] }, [claudeDir, earlyCommonDir]);
-  const added = spawnSync(addCommand.bin, addCommand.args, { cwd, env: plainEnv, encoding: 'utf8', stdio: 'inherit' });
+  // 管理情報の作成（チェックアウトしない）。書けるのは新しいブランチの ref とログ、この worktree の管理情報、作成先の事前に計算した実パスだけ。
+  const addCommand = restricted({
+    bin: binding.git,
+    args: [...FIXED_GIT_PREFIX, 'worktree', 'add', '--quiet', '--no-checkout', '--no-track', '-b', parsed.branch, worktreePath, remoteRef],
+  }, [worktreePath, refsHeads, logsHeads, adminDir]);
+  const added = runRestricted(addCommand, { env: plainEnv, stdio: 'inherit' });
   if (added.error) return reject(`task command failed to start: ${added.error.code || 'error'}`);
   if (added.status !== 0) return typeof added.status === 'number' ? added.status : 2;
+
+  // 作業ファイルの展開。管理領域と作業フォルダは引数で明示する（作業フォルダの .git ファイルは信用しない）。
+  // 書けるのは作業フォルダの事前に計算した実パス配下と、この worktree の管理情報（index など）だけ。
+  const checkoutCommand = restricted({
+    bin: binding.git,
+    args: [...FIXED_GIT_PREFIX, `--git-dir=${adminDir}`, `--work-tree=${worktreePath}`, 'read-tree', '--reset', '-u', 'HEAD'],
+  }, [worktreePath, adminDir]);
+  const checkedOut = runRestricted(checkoutCommand, { env: plainEnv, stdio: 'inherit' });
+  if (checkedOut.error) return reject(`task command failed to start: ${checkedOut.error.code || 'error'}`);
+  if (checkedOut.status !== 0) return typeof checkedOut.status === 'number' ? checkedOut.status : 2;
   const baseSha = runGit(['rev-parse', remoteRef], cwd);
   writeOut(`TARGET_REPO=${worktreePath}\nWORK_BRANCH=${parsed.branch}\nBASE_SHA=${String(baseSha.stdout).trim()}\n`);
   return 0;

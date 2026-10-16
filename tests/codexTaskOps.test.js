@@ -1734,7 +1734,7 @@ test('実行: prepare worktree は最新の base から .claude/worktrees/<名�
     assert.equal(fetchCall.bin, '/usr/bin/sandbox-exec');
     const fetchArgs = fetchCall.args.slice(fetchCall.args.indexOf(GIT_PATH) + 1);
     const fetchIndex = fetchArgs.indexOf('fetch');
-    assert.deepEqual(fetchArgs.slice(fetchIndex), ['fetch', '--no-tags', '--no-recurse-submodules', '--refmap=', remote.url, '+refs/heads/main:refs/remotes/origin/main']);
+    assert.deepEqual(fetchArgs.slice(fetchIndex), ['fetch', '--no-tags', '--no-recurse-submodules', '--no-write-fetch-head', '--refmap=', remote.url, '+refs/heads/main:refs/remotes/origin/main']);
     assert.deepEqual(fetchArgs.slice(FIXED_GIT_PREFIX.length, fetchIndex), [
       '-c', 'credential.helper=',
       '-c', 'credential.https://github.com.helper=',
@@ -1975,7 +1975,7 @@ test('競合: 親フォルダの作成の直前に差し替えられても、拘
     const result = run(fixture, ['prepare', 'worktree', 'main', '440', 'issue/440-race', 'wt-race'], {
       spawnSync: interposeSpawn({
         before: (_bin, args) => {
-          if (args.includes('/bin/mkdir') && !swapped) {
+          if (args.includes('/bin/mkdir') && args.includes(path.join(fixture.repo, '.claude', 'worktrees')) && !swapped) {
             swapped = true;
             fs.symlinkSync(outside, path.join(fixture.repo, '.claude'));
           }
@@ -1985,6 +1985,167 @@ test('競合: 親フォルダの作成の直前に差し替えられても、拘
     assert.equal(swapped, true);
     assert.notEqual(result.code, 0);
     assert.deepEqual(fs.readdirSync(outside), []);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+// 差し替え先を、拘束ルートの外または Git 管理領域の中に用意して prepare を走らせ、差し替えが起きても何も書かれないことを確かめる。
+function raceCase({ label, prepareTarget, trigger, swap, untouched }) {
+  const fixture = createFixture();
+  try {
+    attachRemote(fixture);
+    const target = prepareTarget(fixture);
+    const snapshot = () => untouched(fixture).map((dir) => [dir, fs.existsSync(dir) ? fs.readdirSync(dir).sort() : null]);
+    const before = snapshot();
+    let swapped = false;
+    const result = run(fixture, ['prepare', 'worktree', 'main', '440', 'issue/440-race', 'wt-race'], {
+      spawnSync: interposeSpawn({ before: (_bin, args) => { if (trigger(args) && !swapped) { swapped = true; swap(fixture, target); } } }),
+    });
+    assert.equal(swapped, true, label);
+    assert.notEqual(result.code, 0, label);
+    assert.deepEqual(snapshot(), before, label);
+  } finally {
+    fixture.cleanup();
+  }
+}
+
+test('競合: info/exclude の追記は書き込み制限つきの子プロセスで行い、info や exclude が差し替えられても拘束ルートの外へは追記されない', () => {
+  const appendTrigger = (args) => args.includes('/bin/sh') && args.some((arg) => arg.includes('printf'));
+  // info 自体が外部フォルダへのリンク（検査前から）。
+  {
+    const fixture = createFixture();
+    try {
+      attachRemote(fixture);
+      const outside = path.join(fixture.root, 'outside-info');
+      fs.mkdirSync(outside);
+      fs.rmSync(path.join(fixture.repo, '.git', 'info'), { recursive: true });
+      fs.symlinkSync(outside, path.join(fixture.repo, '.git', 'info'));
+      assert.notEqual(run(fixture, ['prepare', 'worktree', 'main', '440', 'issue/440-race', 'wt-race']).code, 0);
+      assert.deepEqual(fs.readdirSync(outside), []);
+    } finally {
+      fixture.cleanup();
+    }
+  }
+  // 検査の後（追記の直前）に info がリンクへ差し替えられる。差し替え先は外部と、Git 管理領域の中（objects 配下）。
+  for (const variant of ['outside', 'objects']) {
+    raceCase({
+      label: `info:${variant}`,
+      prepareTarget: (fixture) => {
+        const dir = variant === 'outside' ? path.join(fixture.root, 'outside-info') : path.join(fixture.repo, '.git', 'objects', 'info');
+        fs.mkdirSync(dir, { recursive: true });
+        return dir;
+      },
+      trigger: appendTrigger,
+      swap: (fixture, target) => {
+        fs.rmSync(path.join(fixture.repo, '.git', 'info'), { recursive: true });
+        fs.symlinkSync(target, path.join(fixture.repo, '.git', 'info'));
+      },
+      untouched: (fixture) => [path.join(fixture.root, 'outside-info'), path.join(fixture.repo, '.git', 'objects', 'info')],
+    });
+  }
+  // 検査の後に exclude 自体が外部ファイルへのリンクへ差し替えられる。
+  {
+    const fixture = createFixture();
+    try {
+      attachRemote(fixture);
+      const outsideFile = path.join(fixture.root, 'outside-exclude');
+      fs.writeFileSync(outsideFile, 'original\n');
+      let swapped = false;
+      const result = run(fixture, ['prepare', 'worktree', 'main', '440', 'issue/440-race', 'wt-race'], {
+        spawnSync: interposeSpawn({
+          before: (_bin, args) => {
+            if (appendTrigger(args) && !swapped) {
+              swapped = true;
+              fs.rmSync(path.join(fixture.repo, '.git', 'info', 'exclude'), { force: true });
+              fs.symlinkSync(outsideFile, path.join(fixture.repo, '.git', 'info', 'exclude'));
+            }
+          },
+        }),
+      });
+      assert.equal(swapped, true);
+      assert.notEqual(result.code, 0);
+      assert.equal(fs.readFileSync(outsideFile, 'utf8'), 'original\n');
+    } finally {
+      fixture.cleanup();
+    }
+  }
+});
+
+test('競合: 作業フォルダの置き場所が Git 管理領域の中や .claude 内の別フォルダへのリンクに差し替えられても、制御ファイルや別の場所には何も書かれない', () => {
+  const places = {
+    'objects/info': (fixture) => path.join(fixture.repo, '.git', 'objects', 'info'),
+    'hooks': (fixture) => path.join(fixture.repo, '.git', 'hooks'),
+    '.claude 内の別フォルダ': (fixture) => path.join(fixture.repo, '.claude', 'other'),
+    '拘束ルートの外': (fixture) => path.join(fixture.root, 'outside-target'),
+  };
+  const worktreePath = (fixture) => path.join(fixture.repo, '.claude', 'worktrees', 'wt-race');
+  const watched = (fixture) => Object.values(places).map((place) => place(fixture));
+  const triggers = [
+    ['追加の直前', (args) => involves(args, 'worktree') && involves(args, '--no-checkout')],
+    ['展開の直前', (args) => involves(args, 'read-tree')],
+  ];
+  for (const [placeLabel, place] of Object.entries(places)) {
+    for (const [timing, trigger] of triggers) {
+      raceCase({
+        label: `${placeLabel} / ${timing}`,
+        prepareTarget: (fixture) => {
+          fs.mkdirSync(place(fixture), { recursive: true });
+          return place(fixture);
+        },
+        trigger,
+        // 追加の直前は空のフォルダへのリンク（Git が既存の空フォルダとして受け入れる形）。展開の直前は作成済みの作業フォルダを置き換える。
+        swap: (fixture, target) => {
+          fs.rmSync(worktreePath(fixture), { recursive: true, force: true });
+          fs.symlinkSync(target, worktreePath(fixture));
+        },
+        untouched: watched,
+      });
+    }
+  }
+});
+
+test('競合: worktree の管理情報（.git/worktrees/<名前>）が展開の直前に別の場所へのリンクへ差し替えられても、Git の制御ファイルには書かれない', () => {
+  for (const variant of ['objects/info', 'hooks', '外部']) {
+    raceCase({
+      label: variant,
+      prepareTarget: (fixture) => {
+        const dir = variant === '外部' ? path.join(fixture.root, 'outside-target') : path.join(fixture.repo, '.git', ...variant.split('/'));
+        fs.mkdirSync(dir, { recursive: true });
+        return dir;
+      },
+      trigger: (args) => involves(args, 'read-tree'),
+      swap: (fixture, target) => {
+        const admin = path.join(fixture.repo, '.git', 'worktrees', 'wt-race');
+        fs.rmSync(admin, { recursive: true, force: true });
+        fs.symlinkSync(target, admin);
+      },
+      untouched: (fixture) => [path.join(fixture.root, 'outside-target'), path.join(fixture.repo, '.git', 'objects', 'info'), path.join(fixture.repo, '.git', 'hooks')],
+    });
+  }
+});
+
+test('実行: prepare は Git の制御ファイル（hooks・config・objects/info）を書き換えず、書き込みを伴う呼び出しはすべて書き込み制限つきで行う', () => {
+  const fixture = createFixture();
+  try {
+    attachRemote(fixture);
+    const gitDir = path.join(fixture.repo, '.git');
+    const config = fs.readFileSync(path.join(gitDir, 'config'), 'utf8');
+    const hooks = fs.readdirSync(path.join(gitDir, 'hooks')).sort();
+    const objectsInfo = fs.readdirSync(path.join(gitDir, 'objects', 'info')).sort();
+    const calls = [];
+    const result = run(fixture, ['prepare', 'worktree', 'main', '440', 'issue/440-flow', 'codex-440'], { spawnSync: recordingSpawn(calls) });
+    assert.equal(result.code, 0, result.messages.join(''));
+    assert.equal(fs.readFileSync(path.join(gitDir, 'config'), 'utf8'), config);
+    assert.deepEqual(fs.readdirSync(path.join(gitDir, 'hooks')).sort(), hooks);
+    assert.deepEqual(fs.readdirSync(path.join(gitDir, 'objects', 'info')).sort(), objectsInfo);
+    const worktree = path.join(fixture.repo, '.claude', 'worktrees', 'codex-440');
+    assert.equal(git(worktree, 'status', '--porcelain'), '');
+    assert.ok(fs.readdirSync(worktree).length > 1);
+    const mentions = (call, word) => call.args.some((arg) => arg === word);
+    const writers = calls.filter((call) => ['fetch', 'worktree', 'read-tree', '/bin/mkdir'].some((word) => mentions(call, word)) || call.args.some((arg) => arg.includes('printf')));
+    assert.ok(writers.length >= 6);
+    for (const call of writers) assert.equal(call.bin, '/usr/bin/sandbox-exec');
   } finally {
     fixture.cleanup();
   }

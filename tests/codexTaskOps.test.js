@@ -123,7 +123,6 @@ test('拒否: gh のリポジトリ指定・ファイル読み込み・ブラウ
     ['gh', 'pr', 'close', '1'],
     ['gh', 'pr', 'edit', '1'],
     ['gh', 'pr', 'checkout', '1'],
-    ['gh', 'issue', 'create'],
     ['gh', 'issue', 'close', '1'],
     ['gh', 'repo', 'delete', 'x/y'],
     ['gh', 'auth', 'token'],
@@ -167,6 +166,95 @@ test('拒否: gh のリポジトリ指定・ファイル読み込み・ブラウ
   for (const command of rejected) {
     const result = parseTaskCommand(command);
     assert.equal(result.ok, false, JSON.stringify(command));
+  }
+});
+
+test('許可: gh issue create は title/body 必須で、担当者・ラベルを複数指定でき、検証済みの値だけで組み立て直す', () => {
+  assert.deepEqual(parseTaskCommand(['gh', 'issue', 'create', '--title', '題', '--body', '本文']), { ok: true, bin: 'gh', args: ['issue', 'create', '--title', '題', '--body', '本文'], needsGitHub: true });
+  assert.deepEqual(
+    parseTaskCommand(['gh', 'issue', 'create', '--label', 'task-queue', '--title', '題', '--assignee', 'kurudrive', '--body', '本文', '--label', 'bug', '--assignee', 'a-b']).args,
+    ['issue', 'create', '--title', '題', '--body', '本文', '--assignee', 'kurudrive', '--assignee', 'a-b', '--label', 'task-queue', '--label', 'bug'],
+  );
+  assert.deepEqual(parseTaskCommand(['gh', 'issue', 'create', '--title=題', '--body=--本文', '--assignee=kurudrive', '--label=status:waiting-merge']).args, ['issue', 'create', '--title', '題', '--body', '--本文', '--assignee', 'kurudrive', '--label', 'status:waiting-merge']);
+  assert.deepEqual(parseTaskCommand(['gh', 'issue', 'create', '-t', 't', '-b', 'b', '-a', 'u', '-l', 'good first issue']).args, ['issue', 'create', '--title', 't', '--body', 'b', '--assignee', 'u', '--label', 'good first issue']);
+  for (const label of ['task-queue', 'status:waiting-merge', '不具合', '要 確認', 'a'.repeat(50)]) {
+    assert.equal(parseTaskCommand(['gh', 'issue', 'create', '--title', 't', '--body', 'b', '--label', label]).ok, true, label);
+  }
+});
+
+test('拒否: gh issue create の必須欠落・許可外オプション・不正な担当者とラベル', () => {
+  const base = ['gh', 'issue', 'create', '--title', 't', '--body', 'b'];
+  const rejected = [
+    ['gh', 'issue', 'create'],
+    ['gh', 'issue', 'create', '--title', 't'],
+    ['gh', 'issue', 'create', '--body', 'b'],
+    ['gh', 'issue', 'create', '--title', ' ', '--body', 'b'],
+    ['gh', 'issue', 'create', '--title', 't', '--body', ''],
+    ['gh', 'issue', 'create', '--title', 't', '--body'],
+    ['gh', 'issue', 'create', '--title', 't', '--title', 'u', '--body', 'b'],
+    [...base, '--repo', 'o/r'],
+    [...base, '-R', 'o/r'],
+    [...base, '--repo=o/r'],
+    ['gh', 'issue', 'create', '--title', 't', '--body-file', '/etc/passwd'],
+    [...base, '--body-file', '/etc/passwd'],
+    [...base, '--web'],
+    [...base, '--editor'],
+    [...base, '-e'],
+    [...base, '--template', 'bug'],
+    [...base, '--project', 'p'],
+    [...base, '--milestone', 'm'],
+    [...base, '--recover', 'f'],
+    [...base, 'extra'],
+    [...base, '--assignee', '@me'],
+    [...base, '--assignee', '-evil'],
+    [...base, '--assignee', 'a,b'],
+    [...base, '--assignee', 'a b'],
+    [...base, '--assignee', ''],
+    [...base, '--assignee', 'a'.repeat(40)],
+    [...base, '--assignee'],
+    [...base, '--label', ''],
+    [...base, '--label', ' '],
+    [...base, '--label', ' lead'],
+    [...base, '--label', 'trail '],
+    [...base, '--label', '-bug'],
+    [...base, '--label', 'a,b'],
+    [...base, '--label', 'a\nb'],
+    [...base, '--label', 'a\u0007b'],
+    [...base, '--label', 'a\u0000b'],
+    [...base, '--label', 'a'.repeat(51)],
+    [...base, '--label'],
+  ];
+  for (const command of rejected) {
+    const result = parseTaskCommand(command);
+    assert.equal(result.ok, false, JSON.stringify(command));
+    assert.match(result.error, /^task command rejected/);
+  }
+});
+
+test('実行: gh issue create は拘束した --repo が付き、作成された issue の URL がそのまま標準出力に返る', () => {
+  const fixture = createFixture();
+  try {
+    let stdout = '';
+    let stdio;
+    const result = run(fixture, ['gh', 'issue', 'create', '--title', '題', '--body', '本文', '--assignee', 'kurudrive', '--label', 'task-queue', '--label', 'bug'], {
+      spawnSync: (bin, args, options) => {
+        stdio = options.stdio;
+        const spawned = childProcess.spawnSync(bin, args, { ...options, stdio: 'pipe' });
+        stdout = spawned.stdout;
+        return spawned;
+      },
+    });
+    assert.equal(result.code, 0);
+    assert.equal(stdio, 'inherit');
+    assert.equal(stdout.trim(), 'https://github.com/vektor-inc/vk-terminals/issues/999');
+    assert.deepEqual(fixture.readCalls().map((call) => call.args), [
+      ['issue', 'create', '--title', '題', '--body', '本文', '--assignee', 'kurudrive', '--label', 'task-queue', '--label', 'bug', '--repo', 'vektor-inc/vk-terminals'],
+    ]);
+    // 拒否された issue 作成は gh を呼ばない。
+    assert.equal(run(fixture, ['gh', 'issue', 'create', '--title', 't', '--body', 'b', '--repo', 'other/repo']).code, 2);
+    assert.equal(fixture.readCalls().length, 1);
+  } finally {
+    fixture.cleanup();
   }
 });
 
@@ -219,7 +307,7 @@ function createFixture({ origin = GITHUB_ORIGIN } = {}) {
   const ghConfig = path.join(root, 'gh-config');
   fs.mkdirSync(ghConfig, { mode: 0o700 });
   const ghPath = path.join(binDir, 'gh');
-  fs.writeFileSync(ghPath, `#!${process.execPath}\nrequire('fs').appendFileSync(${JSON.stringify(record)}, JSON.stringify({ args: process.argv.slice(2), env: process.env }) + '\\n');\n`, { mode: 0o755 });
+  fs.writeFileSync(ghPath, `#!${process.execPath}\nrequire('fs').appendFileSync(${JSON.stringify(record)}, JSON.stringify({ args: process.argv.slice(2), env: process.env }) + '\\n');\nif (process.argv[2] === 'issue' && process.argv[3] === 'create') console.log('https://github.com/vektor-inc/vk-terminals/issues/999');\n`, { mode: 0o755 });
   const gitConfig = path.join(root, 'gitconfig');
   fs.writeFileSync(gitConfig, '[user]\n\tname = "Bound User"\n\temail = "bound@example.com"\n');
   const env = {

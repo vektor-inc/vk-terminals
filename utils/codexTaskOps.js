@@ -25,6 +25,9 @@ const REVISION_PATTERN = /^[A-Za-z0-9_][A-Za-z0-9._/@^~{}-]*$/;
 const BRANCH_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
 const JSON_FIELDS_PATTERN = /^[A-Za-z]+(,[A-Za-z]+)*$/;
 const DIGITS_PATTERN = /^[0-9]{1,9}$/;
+// issue 作成の担当者は GitHub のアカウント名だけ（@me は通さない。utils/codexTaskPolicy.js の GH_USER_PATTERN と同じ形）。
+const ASSIGNEE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/;
+const MAX_LABEL_LENGTH = 50;
 
 const NO_VALUE_FLAGS = Object.freeze({
   'git status': ['-s', '--short', '-b', '--branch', '--porcelain', '--porcelain=v1', '--porcelain=v2'],
@@ -239,6 +242,53 @@ function parseGhPrCreate(tokens) {
   return { ok: true, args };
 }
 
+// ラベル名は日本語・空白・`:` を含みうるので文字種は絞らず、危険なものだけを拒否する。
+// 制御文字・改行・カンマ（gh が複数指定の区切りに使う）・先頭 `-`・前後の空白・空文字・過度な長さ（GitHub の上限 50 文字）。
+function isSafeLabelName(value) {
+  if (typeof value !== 'string' || value === '' || value !== value.trim()) return false;
+  if (/[\x00-\x1f\x7f]/.test(value) || value.includes(',') || value.startsWith('-')) return false;
+  return [...value].length <= MAX_LABEL_LENGTH;
+}
+
+// issue 作成は --title / --body を必須にし、--assignee / --label（複数可）だけを任意で受ける。
+// --repo・--body-file・--web・--editor・--template・--project・--milestone などは許可リストに無いので拒否される。
+function parseGhIssueCreate(tokens) {
+  let title;
+  let body;
+  const assignees = [];
+  const labels = [];
+  for (let i = 0; i < tokens.length; i += 1) {
+    const token = tokens[i];
+    if (hasUnsafeCharacter(token)) return fail('invalid argument');
+    const [name, inlineValue] = token.startsWith('--') && token.includes('=') ? [token.slice(0, token.indexOf('=')), token.slice(token.indexOf('=') + 1)] : [token, undefined];
+    const readValue = () => {
+      if (inlineValue !== undefined) return inlineValue;
+      const value = tokens[i + 1];
+      if (typeof value !== 'string') return undefined;
+      i += 1;
+      return value;
+    };
+    if ((name === '--title' || name === '-t') && title === undefined) title = readValue();
+    else if ((name === '--body' || name === '-b') && body === undefined) body = readValue();
+    else if (name === '--assignee' || name === '-a') {
+      const value = readValue();
+      if (typeof value !== 'string' || !ASSIGNEE_PATTERN.test(value)) return fail('invalid --assignee');
+      assignees.push(value);
+    } else if (name === '--label' || name === '-l') {
+      const value = readValue();
+      if (!isSafeLabelName(value)) return fail('invalid --label');
+      labels.push(value);
+    } else return fail(`argument not allowed: ${JSON.stringify(token)}`);
+    if ((name === '--title' || name === '-t') && hasUnsafeCharacter(title)) return fail('invalid argument');
+    if ((name === '--body' || name === '-b') && hasUnsafeCharacter(body)) return fail('invalid argument');
+  }
+  if (title === undefined || body === undefined || title.trim() === '' || body.trim() === '') return fail('--title and --body are required');
+  const args = ['--title', title, '--body', body];
+  for (const assignee of assignees) args.push('--assignee', assignee);
+  for (const label of labels) args.push('--label', label);
+  return { ok: true, args };
+}
+
 function ghCommand(parts, args) {
   return { ok: true, bin: 'gh', args: [...parts, ...args], needsGitHub: true };
 }
@@ -285,6 +335,10 @@ function parseTaskCommand(argv) {
     if (group === 'issue' && action === 'comment') {
       const parsed = parseGhComment(tokens);
       return parsed.ok ? ghCommand(['issue', 'comment', parsed.number], parsed.args) : parsed;
+    }
+    if (group === 'issue' && action === 'create') {
+      const parsed = parseGhIssueCreate(tokens);
+      return parsed.ok ? ghCommand(['issue', 'create'], parsed.args) : parsed;
     }
     if (group === 'pr' && action === 'view') {
       const parsed = parseGhView(tokens, { allowedBooleanFlags: ['--comments'], numberRequired: true });

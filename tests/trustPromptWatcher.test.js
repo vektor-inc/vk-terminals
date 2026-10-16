@@ -119,6 +119,30 @@ test('再起動経路: codex の信頼確認プロンプトにも Enter を送�
   assert.deepEqual(pty.writes, ['\r']);
 });
 
+test('再起動経路: Codex の「制限付きで開く」画面に空白の有無を問わず Enter を送る', () => {
+  const restrictedPrompts = [
+    'Config, hooks, and exec policies from untrusted folders stay disabled.\n› 1. Open restricted\n  2. Quit',
+    'Config,hooks,andexecpoliciesfromuntrustedfoldersstaydisabled.\n›1.Openrestricted\n2.Quit',
+  ];
+
+  // 再起動ごとに独立した pty と監視を作り、両方の表示を同じ経路で確認する。
+  for (const restrictedPrompt of restrictedPrompts) {
+    const pty = createFakePty();
+    const clock = createFakeClock(0);
+
+    attachTrustAutoResponder(pty, {
+      spawnTime: 0,
+      engine: 'codex',
+      now: clock.now,
+    });
+
+    clock.advance(500);
+    pty.emit(restrictedPrompt);
+
+    assert.deepEqual(pty.writes, ['\r'], restrictedPrompt);
+  }
+});
+
 test('再起動経路: 再起動時刻からの時間窓（trustWindowMs）を過ぎたら自動応答しない', () => {
   const pty = createFakePty();
   const clock = createFakeClock(0);

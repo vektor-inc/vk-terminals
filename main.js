@@ -142,6 +142,9 @@ const execFileAsync = promisify(execFile);
 
 let win;
 const ptys = new Map();
+// terminal:create で実際に node-pty へ渡した shell を保持する。restart 時に環境変数を
+// 再解決すると、SHELL 未設定の Unix で初回だけ /bin/zsh、restart は undefined になる。
+const ptyShellExecutables = new Map();
 // ペインを閉じた直後（terminal:kill）に kill() を送った pty のうち、終了通知（onExit）を
 // まだ待っている最中のものを id で追跡する（issue #409 レビュー対応・MEDIUM-1）。
 // ptys からは terminal:kill の時点で既に削除済みだが、cleanupPtys() がこれも合わせて
@@ -2156,6 +2159,7 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
       promptWatcherTimeoutId = null;
     }
     ptys.delete(id);
+    ptyShellExecutables.delete(id);
     agentGenerations.delete(id);
     agentLifecycles.delete(id);
     restartAgentOperations.delete(id);
@@ -2170,6 +2174,7 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
   });
 
   ptys.set(id, ptyProcess);
+  ptyShellExecutables.set(id, shell);
   agentGenerations.initialize(id, !noClaude);
   const initialLaunchToken = agentLifecycles.initialize(id, !noClaude ? 1 : 0);
 
@@ -2423,11 +2428,24 @@ async function restartAgentInTerminal(ptyProcess, request, launchOptions, lifecy
   const prepared = await lifecycleLaunch.prepareWrite(launch, command);
   if (prepared.status === 'cancelled' || !lifecycleLaunch.isCurrent(launch) || ptys.get(request.termId) !== ptyProcess) return false;
   if (prepared.status === 'ready') {
+    let setupWritten = false;
+    const cleanupPromptHook = () => {
+      if (!setupWritten || !prepared.cleanupCommand || ptys.get(request.termId) !== ptyProcess) return;
+      try { ptyProcess.write(`${prepared.cleanupCommand}\r`); } catch (_error) {}
+    };
     ptyProcess.write(`${prepared.setupCommand}\r`);
+    setupWritten = true;
     const hookReady = await prepared.ready;
-    if (!lifecycleLaunch.isCurrent(launch) || ptys.get(request.termId) !== ptyProcess) return false;
+    if (!lifecycleLaunch.isCurrent(launch) || ptys.get(request.termId) !== ptyProcess) {
+      cleanupPromptHook();
+      return false;
+    }
+    if (!hookReady) cleanupPromptHook();
     if (hookReady) await lifecycleLaunch.activate(launch);
-    if (!lifecycleLaunch.isCurrent(launch) || ptys.get(request.termId) !== ptyProcess) return false;
+    if (!lifecycleLaunch.isCurrent(launch) || ptys.get(request.termId) !== ptyProcess) {
+      cleanupPromptHook();
+      return false;
+    }
   }
   if (!lifecycleLaunch.isCurrent(launch) || ptys.get(request.termId) !== ptyProcess) return false;
   ptyProcess.write(`${prepared.command}\r`);
@@ -3516,7 +3534,7 @@ function startHttpApi() {
               return { generation: startedGeneration, launchToken };
             },
             prepareWrite(launch, command) {
-              return agentLifecycles.prepare(request.termId, launch.generation, launch.launchToken, ptyProcess.pid, command, process.env.SHELL);
+              return agentLifecycles.prepare(request.termId, launch.generation, launch.launchToken, ptyProcess.pid, command, ptyShellExecutables.get(request.termId));
             },
             activate(launch) {
               return agentLifecycles.activate(request.termId, launch.generation, launch.launchToken);

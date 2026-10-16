@@ -182,7 +182,10 @@ function buildPromptHookCommand(marker, shellPath) {
   if (shell === 'bash') {
     const mode = `vk_agent_mode_${marker}`;
     const index = `vk_agent_index_${marker}`;
-    return `case \"$(declare -p PROMPT_COMMAND 2>/dev/null)\" in \"declare -a\"*) if [ \"\${BASH_VERSINFO[0]}\" -ge 5 ]; then ${mode}=array; else ${mode}=; printf %b ${failed}; fi;; \"\"|\"declare --\"*) ${mode}=string;; *) ${mode}=; printf %b ${failed};; esac; if [ -n \"\$${mode}\" ]; then ${armed}=0; ${name}() { if [ \"\$${armed}\" = 0 ]; then ${armed}=1; printf %b ${ready}; return; fi; if [ \"\$${mode}\" = array ]; then for ${index} in \"\${!PROMPT_COMMAND[@]}\"; do [ \"\${PROMPT_COMMAND[\$${index}]}\" = ${name} ] && unset \"PROMPT_COMMAND[\$${index}]\"; done; elif [ \"\$PROMPT_COMMAND\" = ${name} ]; then PROMPT_COMMAND=; else PROMPT_COMMAND=\"\${PROMPT_COMMAND%;${name}}\"; fi; unset ${mode} ${index} ${armed}; unset -f ${name}; printf %b ${completion}; }; if [ \"\$${mode}\" = array ]; then PROMPT_COMMAND+=( ${name} ); else PROMPT_COMMAND=\"\${PROMPT_COMMAND-}\${PROMPT_COMMAND:+;}${name}\"; fi; fi`;
+    const saved = `vk_agent_saved_prompt_${marker}`;
+    const wasSet = `vk_agent_prompt_was_set_${marker}`;
+    const cleanup = `vk_agent_cleanup_${marker}`;
+    return `case \"$(declare -p PROMPT_COMMAND 2>/dev/null)\" in \"declare -a\"*) if [ \"\${BASH_VERSINFO[0]}\" -ge 5 ]; then ${mode}=array; else ${mode}=; printf %b ${failed}; fi;; \"\"|\"declare --\"*) ${mode}=string;; *) ${mode}=; printf %b ${failed};; esac; if [ -n \"\$${mode}\" ]; then ${armed}=0; ${wasSet}=0; ${saved}=; if [ \"\$${mode}\" = string ]; then if declare -p PROMPT_COMMAND >/dev/null 2>&1; then ${wasSet}=1; fi; ${saved}=\${PROMPT_COMMAND-}; fi; ${cleanup}() { if [ \"\$${mode}\" = array ]; then for ${index} in \"\${!PROMPT_COMMAND[@]}\"; do [ \"\${PROMPT_COMMAND[\$${index}]}\" = ${name} ] && unset \"PROMPT_COMMAND[\$${index}]\"; done; elif [ \"\$${wasSet}\" = 1 ]; then PROMPT_COMMAND=\$${saved}; else unset PROMPT_COMMAND; fi; unset ${mode} ${index} ${armed} ${saved} ${wasSet}; unset -f ${name} ${cleanup}; }; ${name}() { if [ \"\$${armed}\" = 0 ]; then ${armed}=1; printf %b ${ready}; return; fi; ${cleanup}; printf %b ${completion}; }; if [ \"\$${mode}\" = array ]; then PROMPT_COMMAND+=( ${name} ); else PROMPT_COMMAND=\"\${PROMPT_COMMAND-}\"$'\\n'${name}; fi; fi`;
   }
   if (shell === 'fish') {
     return `set -g ${armed} 0; function ${name} --on-event fish_prompt; if test \$${armed} -eq 0; set -g ${armed} 1; printf %b ${ready}; else; functions -e ${name}; set -e ${armed}; printf %b ${completion}; end; end`;
@@ -274,7 +277,11 @@ function createAgentLifecycleStore(options = {}) {
       entry.marker = crypto.randomBytes(24).toString('hex');
       const ready = new Promise((resolve) => { entry.readyResolve = resolve; });
       entry.readyTimer = setTimer(() => finishAcquisition(entry), acquisitionTimeoutMs);
-      return { status: 'ready', command, setupCommand: buildPromptHookCommand(entry.marker, shellPath), ready };
+      const setupCommand = buildPromptHookCommand(entry.marker, shellPath);
+      const cleanupCommand = pathBasename(shellPath) === 'bash'
+        ? `type vk_agent_cleanup_${entry.marker} >/dev/null 2>&1 && vk_agent_cleanup_${entry.marker}`
+        : null;
+      return { status: 'ready', command, setupCommand, cleanupCommand, ready };
     },
     async activate(termId, generation, launchToken) {
       const id = String(termId);

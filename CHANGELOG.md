@@ -1,6 +1,7 @@
 # Changelog
 
 - [ 機能追加 ] VK Terminals が無加工で起動した現在世代のメイン AI コマンドについて、restart 開始時の旧 launch 無効化、既存 prompt 処理後の取得開始、baseline ancestor を含む世代・launch token・前景グループ・process identity の照合状態を `GET /api/states` から取得可能に（[#434](https://github.com/vektor-inc/vk-terminals/issues/434)）
+- [ 不具合修正 ] bash の既存 `PROMPT_COMMAND` を末尾構文に左右されず保持・復元し、`SHELL` 未設定時の restart でもペイン作成時に解決した shell で前景プロセスを監視するよう修正（[#434](https://github.com/vektor-inc/vk-terminals/issues/434)）
 - [ 不具合修正 ] タスク用ポリシーで Codex を起動すると「Open restricted」画面で停止し、自動処理が始まらない不具合を修正（[#430](https://github.com/vektor-inc/vk-terminals/issues/430)）
 
 ## 1.71.0

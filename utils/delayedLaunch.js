@@ -35,6 +35,11 @@ function scheduleLaunchCommand({ ptys, id, ptyProcess, command, prepareCommand =
       return;
     }
     const writePreparedCommand = async (result) => {
+      let setupWritten = false;
+      const cleanupPromptHook = () => {
+        if (!setupWritten || !result?.cleanupCommand || ptys.get(id) !== ptyProcess) return;
+        try { ptyProcess.write(`${result.cleanupCommand}\r`); } catch (_error) {}
+      };
       if (result?.status === 'cancelled') {
         discardSafely();
         return;
@@ -51,15 +56,21 @@ function scheduleLaunchCommand({ ptys, id, ptyProcess, command, prepareCommand =
       try {
         if (result.status === 'ready') {
           ptyProcess.write(`${result.setupCommand}\r`);
+          setupWritten = true;
           const hookReady = await result.ready;
           // hook の出力待ちの間にも PTY identity・世代を再確認する。失敗時も元行は無加工で送る。
           if (ptys.get(id) !== ptyProcess || !isLaunchCurrent()) {
+            cleanupPromptHook();
             discardSafely();
             return;
           }
-          if (!hookReady) log(`prompt hook setup failed for terminal ${id}; lifecycle state is unknown`);
+          if (!hookReady) {
+            cleanupPromptHook();
+            log(`prompt hook setup failed for terminal ${id}; lifecycle state is unknown`);
+          }
           if (hookReady) await activateCommand();
           if (ptys.get(id) !== ptyProcess || !isLaunchCurrent()) {
+            cleanupPromptHook();
             discardSafely();
             return;
           }

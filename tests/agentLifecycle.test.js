@@ -398,6 +398,8 @@ test('新規起動とrestartの双方が書き込み前baseline取得を通る',
   const source = fs.readFileSync(require.resolve('../main'), 'utf8');
   assert.match(source, /prepareCommand: \(command\) => agentLifecycles\.prepare\(id, 1, initialLaunchToken, ptyProcess\.pid, command, shell\)/);
   assert.match(source, /prepareWrite\(launch, command\)[\s\S]*?agentLifecycles\.prepare\(request\.termId, launch\.generation, launch\.launchToken/);
+  assert.match(source, /ptyShellExecutables\.set\(id, shell\)[\s\S]*?ptyShellExecutables\.get\(request\.termId\)/);
+  assert.match(source, /ptyProcess\.onExit[\s\S]*?ptyShellExecutables\.delete\(id\)/);
   assert.match(source, /async function restartAgentInTerminal[\s\S]*?lifecycleLaunch\.cancelPending\(\);[\s\S]*?await stopAgentChildren/);
   assert.match(source, /const hookReady = await prepared\.ready;[\s\S]*?await lifecycleLaunch\.activate\(launch\);[\s\S]*?ptyProcess\.write\(`\$\{prepared\.command\}\\r`\)/);
   assert.match(source, /const prepared = await lifecycleLaunch\.prepareWrite\(launch, command\);[\s\S]*?lifecycleLaunch\.isCurrent\(launch\)[\s\S]*?ptyProcess\.write\(`\$\{prepared\.command\}\\r`\)/);
@@ -418,7 +420,8 @@ test('zsh/bash/fishは元コマンドと分離した世代固有prompt hookを�
   assert.match(zsh, /precmd_functions/);
   assert.match(bash, /PROMPT_COMMAND/);
   assert.match(bash, /PROMPT_COMMAND\+=\( vk_agent_prompt_/);
-  assert.match(bash, /PROMPT_COMMAND="\$\{PROMPT_COMMAND-\}\$\{PROMPT_COMMAND:\+;\}vk_agent_prompt_/);
+  assert.match(bash, /PROMPT_COMMAND="\$\{PROMPT_COMMAND-\}"\$'\\n'vk_agent_prompt_/);
+  assert.match(bash, /PROMPT_COMMAND=\$vk_agent_saved_prompt_/);
   assert.match(bash, /unset "PROMPT_COMMAND\[\$vk_agent_index_/);
   assert.match(fish, /--on-event fish_prompt/);
   assert.ok(zsh.includes('\\033]1337;VKAgentLifecycle='));
@@ -574,4 +577,72 @@ test('実PTY: bashの既存PROMPT_COMMAND完了後だけreadyとなり、AI grou
     await waitFor(() => store.get('bash', generation) === 'running');
     await waitFor(() => store.get('bash', generation) === 'exited');
   }
+});
+
+test('実PTY: bash文字列の末尾構文を壊さず、完了後にPROMPT_COMMANDを正確に復元する', {
+  skip: process.platform === 'win32' || spawnSync('/bin/bash', ['--version']).status !== 0,
+  timeout: 15000,
+}, async (t) => {
+  const shell = require('node-pty').spawn('/bin/bash', ['--noprofile', '--norc'], {
+    env: { ...process.env, TERM: 'xterm-256color', PS1: 'VK_BASH> ' },
+  });
+  let output = '';
+  const store = createAgentLifecycleStore({ pollIntervalMs: 20 });
+  shell.onData((data) => { output += store.filterOutput('bash-edge', data); });
+  t.after(() => { store.close(); try { shell.kill(); } catch (_error) {} });
+  await waitFor(() => output.includes('VK_BASH>'));
+  const cases = [
+    ['semicolon', `PROMPT_COMMAND='printf "PC_SEMI\\n";'`, 'PC_SEMI'],
+    ['newlines', `PROMPT_COMMAND=$'printf "PC_NEWLINES\\\\n"\\n\\n'`, 'PC_NEWLINES'],
+    ['comment', `PROMPT_COMMAND='printf "PC_COMMENT\\n" # trailing comment'`, 'PC_COMMENT'],
+    ['empty', `PROMPT_COMMAND=''`, null],
+  ];
+  const bashMajor = Number(spawnSync('/bin/bash', ['-c', 'printf %s "$BASH_VERSINFO"'], { encoding: 'utf8' }).stdout);
+  if (bashMajor >= 5) cases.push(['array', `PROMPT_COMMAND=('printf "PC_ARRAY_1\\n"' 'printf "PC_ARRAY_2\\n"')`, 'PC_ARRAY_2']);
+  for (let generation = 1; generation <= cases.length; generation += 1) {
+    const [label, declaration, expectedOutput] = cases[generation - 1];
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), `vk-agent-bash-${label}-`));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const before = path.join(root, 'before');
+    const after = path.join(root, 'after');
+    shell.write(`${declaration}; declare -p PROMPT_COMMAND > ${before}\r`);
+    await waitFor(() => fs.existsSync(before));
+    output = '';
+    const token = store.initialize('bash-edge', generation);
+    const prepared = await store.prepare('bash-edge', generation, token, shell.pid, `${process.execPath} -e 'setTimeout(()=>{},120)'`, '/bin/bash');
+    shell.write(`${prepared.setupCommand}\r`);
+    assert.equal(await prepared.ready, true);
+    if (expectedOutput) assert.ok(output.includes(expectedOutput), `${label}: 既存prompt処理が実行されていない`);
+    await store.activate('bash-edge', generation, token);
+    shell.write(`${prepared.command}\r`);
+    await waitFor(() => store.get('bash-edge', generation) === 'running');
+    await waitFor(() => store.get('bash-edge', generation) === 'exited');
+    shell.write(`declare -p PROMPT_COMMAND > ${after}\r`);
+    await waitFor(() => fs.existsSync(after));
+    assert.equal(fs.readFileSync(after, 'utf8'), fs.readFileSync(before, 'utf8'), `${label}: 復元値`);
+    if (expectedOutput) await waitFor(() => output.split(expectedOutput).length >= 3);
+  }
+});
+
+test('実PTY: bash hookのsetup待機中cancelは既存値を復元して一時定義を削除する', {
+  skip: process.platform === 'win32' || spawnSync('/bin/bash', ['--version']).status !== 0,
+}, async (t) => {
+  const shell = require('node-pty').spawn('/bin/bash', ['--noprofile', '--norc'], {
+    env: { ...process.env, TERM: 'xterm-256color', PS1: 'VK_BASH> ' },
+  });
+  let output = '';
+  const store = createAgentLifecycleStore();
+  shell.onData((data) => { output += store.filterOutput('bash-cancel', data); });
+  t.after(() => { store.close(); try { shell.kill(); } catch (_error) {} });
+  await waitFor(() => output.includes('VK_BASH>'));
+  shell.write(`PROMPT_COMMAND='printf "PC_CANCEL\\n" # trailing comment'\r`);
+  await waitFor(() => output.includes('PC_CANCEL'));
+  const token = store.initialize('bash-cancel', 1);
+  const prepared = await store.prepare('bash-cancel', 1, token, shell.pid, 'never-written', '/bin/bash');
+  shell.write(`${prepared.setupCommand}\r`);
+  store.initialize('bash-cancel', 2);
+  assert.equal(await prepared.ready, false);
+  shell.write(`${prepared.cleanupCommand}\r`);
+  shell.write(`case "$(declare -p PROMPT_COMMAND)" in *'trailing comment'*) printf 'RESTORED:yes\\n';; *) printf 'RESTORED:no\\n';; esac; if compgen -A variable vk_agent_ | grep -q . || compgen -A function vk_agent_ | grep -q .; then printf 'TEMP:leaked\\n'; else printf 'TEMP:clean\\n'; fi\r`);
+  await waitFor(() => output.includes('RESTORED:yes') && output.includes('TEMP:clean'));
 });

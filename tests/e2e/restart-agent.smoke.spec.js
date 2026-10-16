@@ -200,6 +200,8 @@ test.describe.serial('POST /api/restart-agent によるペイン内 AI の再起
       port,
       prefix: 'vk-terminals-e2e-restart-agent-',
       env: {
+        // terminal:create が Unix 既定の /bin/zsh を解決した値を restart でも再利用することを確認する。
+        SHELL: '',
         // 偽 claude と偽 codex を同じ PATH に共存させる（どちらのディレクトリも先頭側）。
         PATH: `${fakeClaude.binDir}${path.delimiter}${fakeCodex.binDir}${path.delimiter}${process.env.PATH || ''}`,
         VK_TERMINALS_E2E_CLAUDE_CAPTURE: fakeClaude.capturePath,

@@ -127,12 +127,12 @@ test('hook ready失敗でも元コマンドを無加工送信する', async () =
   const { timers, logs } = schedule({
     ptyProcess: pane.ptyProcess,
     ptys,
-    prepareCommand: (command) => ({ status: 'ready', setupCommand: 'setup-hook', command, ready: Promise.resolve(false) }),
+    prepareCommand: (command) => ({ status: 'ready', setupCommand: 'setup-hook', cleanupCommand: 'cleanup-hook', command, ready: Promise.resolve(false) }),
   });
   timers.fire();
   await Promise.resolve();
   await Promise.resolve();
-  assert.deepEqual(pane.written, ['setup-hook\r', 'codex --no-daemon\r']);
+  assert.deepEqual(pane.written, ['setup-hook\r', 'cleanup-hook\r', 'codex --no-daemon\r']);
   assert.ok(logs.some((message) => /lifecycle state is unknown/.test(message)));
 });
 
@@ -146,14 +146,14 @@ test('hook ready待機中に世代が変わったら旧世代は元コマンド�
     ptyProcess: pane.ptyProcess,
     ptys,
     isLaunchCurrent: () => current,
-    prepareCommand: (command) => ({ status: 'ready', setupCommand: 'setup-hook', command, ready }),
+    prepareCommand: (command) => ({ status: 'ready', setupCommand: 'setup-hook', cleanupCommand: 'cleanup-hook', command, ready }),
   });
   timers.fire();
   current = false;
   resolveReady(true);
   await Promise.resolve();
   await Promise.resolve();
-  assert.deepEqual(pane.written, ['setup-hook\r']);
+  assert.deepEqual(pane.written, ['setup-hook\r', 'cleanup-hook\r']);
   assert.deepEqual(discarded, ['discard']);
 });
 

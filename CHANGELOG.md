@@ -1,5 +1,7 @@
 # Changelog
 
+## 1.73.0
+
 - [ 機能追加 ] 自動処理用 Codex の固定入口に `gh issue create` を追加し、作業中に見つけた別対応を対象リポジトリの issue として起票できるように（`--title` / `--body` 必須、`--assignee` / `--label` は複数指定可。`--repo`・`--body-file`・`--web` などは拒否）（[#431](https://github.com/vektor-inc/vk-terminals/issues/431)）
 - [ 不具合修正 ] 自動処理用 Codex の固定入口が、拘束したリポジトリの worktree での `git add` / `git commit` / `gh pr create` を拒否していた不具合を修正。あわせて、既定ブランチ（main / master など）と detached HEAD への `git commit` を拒否（[#433](https://github.com/vektor-inc/vk-terminals/issues/433)）
 

@@ -2487,13 +2487,50 @@ test('実行: member start が途中で失敗したら、この起動で作っ�
     assert.equal(fs.existsSync(outPath), false);
     assert.equal(fs.existsSync(path.join(runDir, 'keep.txt')), true);
     fs.rmSync(runDir, { recursive: true });
-    // pid の記録に失敗した場合は、起動した監督プロセスを止めて後始末する。
-    const killed = [];
-    const renameFailed = fixture.runMember(MEMBER_START, { kill: (pid, signal) => killed.push([pid, signal]), fs: { ...fs, constants: fs.constants, renameSync: () => { throw Object.assign(new Error('x'), { code: 'EIO' }); } } });
-    assert.equal(renameFailed.code, 2);
-    assert.deepEqual(killed, [[-424242, 'SIGTERM']]);
+    // pid の記録に失敗した場合は、起動した監督プロセスを止め、終了を確かめてから後始末する。
+    const brokenRename = { ...fs, constants: fs.constants, renameSync: () => { throw Object.assign(new Error('x'), { code: 'EIO' }); } };
+    const supervisorOutputs = ['result.txt', 'result-state.tmp', 'result-state', 'exit.tmp', 'exit'];
+    // 監督プロセスを模す。SIGTERM のあと stopsAfterSleeps 回待ったら終了し、止まる直前（最後の待ちの間）にも生成物を書く。
+    const simulateSupervisor = ({ stopsAfterSleeps, existingOutputs }) => {
+      const state = { signals: [], sleeps: 0, stopped: false };
+      const spawn = () => {
+        for (const name of existingOutputs) fs.writeFileSync(path.join(runDir, name), 'x');
+        return { pid: 424242, unref: () => {} };
+      };
+      const kill = (pid, signal) => {
+        if (signal === 0) {
+          if (state.stopped) throw Object.assign(new Error('gone'), { code: 'ESRCH' });
+          return true;
+        }
+        state.signals.push([pid, signal]);
+        return true;
+      };
+      const sleep = () => {
+        state.sleeps += 1;
+        if (state.sleeps >= stopsAfterSleeps) {
+          for (const name of supervisorOutputs) fs.writeFileSync(path.join(runDir, name), 'late');
+          state.stopped = true;
+        }
+      };
+      return { state, options: { spawn, kill, sleep, fs: brokenRename } };
+    };
+    for (const existingOutputs of [supervisorOutputs, []]) {
+      const { state, options } = simulateSupervisor({ stopsAfterSleeps: 2, existingOutputs });
+      const renameFailed = fixture.runMember(MEMBER_START, options);
+      assert.equal(renameFailed.code, 2);
+      assert.deepEqual(state.signals, [[-424242, 'SIGTERM']]);
+      assert.equal(state.stopped, true);
+      assert.equal(fs.existsSync(outPath), false);
+      assert.equal(fs.existsSync(runDir), false);
+    }
+    // 止まったと確かめられないときは、書き込みの競合を避けて記録フォルダには触れない（SIGKILL まで送り、--out は消す）。
+    const stuck = simulateSupervisor({ stopsAfterSleeps: Infinity, existingOutputs: ['exit'] });
+    const stuckResult = fixture.runMember(MEMBER_START, stuck.options);
+    assert.equal(stuckResult.code, 2);
+    assert.deepEqual(stuck.state.signals, [[-424242, 'SIGTERM'], [-424242, 'SIGKILL']]);
+    assert.equal(fs.existsSync(path.join(runDir, 'exit')), true);
     assert.equal(fs.existsSync(outPath), false);
-    assert.equal(fs.existsSync(runDir), false);
+    fs.rmSync(runDir, { recursive: true });
     // 失敗のあとに同じ名前で再実行できる。
     const retry = fixture.runMember(MEMBER_START);
     assert.equal(retry.code, 0, retry.messages.join(''));

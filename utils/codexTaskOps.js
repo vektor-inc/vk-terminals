@@ -1255,6 +1255,49 @@ function createExclusiveFile(fsImpl, filePath, content, mode = 0o600) {
   }
 }
 
+// 実行の記録フォルダに、member start 自身または監督プロセスが作りうるファイル名（失敗した起動の後始末で消す）。
+const MEMBER_RUN_FILES = ['prompt.txt', 'schema.json', 'meta.json', 'meta.tmp', 'log.txt', 'result.txt', 'result-state.tmp', 'result-state', 'exit.tmp', 'exit'];
+const MEMBER_STOP_POLL_MS = 100;
+const MEMBER_STOP_POLLS = 30;
+
+// 同期的に待つ（member start は同期処理のため）。
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+// プロセスが無い、または終了済みで回収待ち（ゾンビ）なら true。
+function isProcessGone(pid, deps) {
+  try {
+    (deps.kill || process.kill)(pid, 0);
+  } catch (error) {
+    return !(error && error.code === 'EPERM');
+  }
+  if (deps.kill) return false;
+  const result = childProcess.spawnSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' });
+  return result.status !== 0 || String(result.stdout).trim().startsWith('Z');
+}
+
+/**
+ * 起動に失敗した監督プロセス（とその子）を止め、終了を待つ。最初は SIGTERM、待っても残れば SIGKILL。
+ * @returns {boolean} 終了を確かめられたら true（待ち切れなければ false。呼び出し側は競合を避けて記録フォルダを消さない）
+ */
+function stopSupervisor(pid, deps) {
+  const kill = deps.kill || process.kill;
+  const sleep = deps.sleep || sleepSync;
+  for (let poll = 0; poll <= MEMBER_STOP_POLLS; poll += 1) {
+    if (poll === 0 || poll === MEMBER_STOP_POLLS / 2) {
+      try {
+        kill(-pid, poll === 0 ? 'SIGTERM' : 'SIGKILL');
+      } catch (_error) {
+        // 既に終わっていれば何もしない。
+      }
+    }
+    if (isProcessGone(pid, deps)) return true;
+    if (poll < MEMBER_STOP_POLLS) sleep(MEMBER_STOP_POLL_MS);
+  }
+  return false;
+}
+
 // 失敗した起動の後始末用。消せなくても（元から無い等）他の後始末を止めない。
 function removeQuietly(fsImpl, targetPath, method) {
   try {
@@ -1447,15 +1490,11 @@ function executeMemberStart({ parsed, binding, cwd, fsImpl, inspected, reject, w
   } finally {
     if (!started) {
       // 失敗した起動の後始末。この起動で作ったものだけを、リンクをたどらない unlink / rmdir で消す（パスを開き直さない）。
-      if (supervisorPid !== null) {
-        try {
-          (deps.kill || process.kill)(-supervisorPid, 'SIGTERM');
-        } catch (_error) {
-          // 既に終わっていれば何もしない。
-        }
-      }
-      if (runDirCreated) {
-        for (const name of ['prompt.txt', 'schema.json', 'meta.json', 'meta.tmp', 'log.txt']) removeQuietly(fsImpl, path.join(runDir, name), 'unlinkSync');
+      // 監督プロセスを起動済みなら、止まったことを確かめてから消す（動いたままだと、消している最中に結果や終了コードを書かれる）。
+      const supervisorStopped = supervisorPid === null || stopSupervisor(supervisorPid, deps);
+      // 止まったと確かめられないときは、書き込みが競合しないよう実行の記録フォルダには触れない（--out は記述子で書かれるだけなので消してよい）。
+      if (runDirCreated && supervisorStopped) {
+        for (const name of MEMBER_RUN_FILES) removeQuietly(fsImpl, path.join(runDir, name), 'unlinkSync');
         removeQuietly(fsImpl, runDir, 'rmdirSync');
       }
       if (outCreated) removeQuietly(fsImpl, outPath, 'unlinkSync');

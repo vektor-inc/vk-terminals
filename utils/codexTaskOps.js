@@ -1296,15 +1296,23 @@ function superviseMemberRun(payload, deps = {}) {
       if (fd === undefined) return;
       try { fsImpl.closeSync(fd); } catch (_error) { /* 既に閉じている */ }
     };
-    // 子の結果を、保持している記述子へコピーする。結果が無い・通常ファイルでない・大きすぎるときは何も書かない。
+    // 子の結果を、保持している記述子へコピーする。成否と理由（固定の語）を返す。公開できなかった場合は何も書かない（途中までの書き込みは起こさない）。
     const publishResult = () => {
       let resultFd;
       try {
-        resultFd = fsImpl.openSync(inRunDir('result.txt'), constants.O_RDONLY | (constants.O_NOFOLLOW || 0));
+        try {
+          resultFd = fsImpl.openSync(inRunDir('result.txt'), constants.O_RDONLY | (constants.O_NOFOLLOW || 0));
+        } catch (error) {
+          // リンク（O_NOFOLLOW で ELOOP）など、開けたが通常ファイルでないものは別の理由にする。
+          return { ok: false, reason: error && error.code === 'ENOENT' ? 'result-missing' : 'result-not-a-regular-file' };
+        }
         const stat = fsImpl.fstatSync(resultFd);
-        if (stat.isFile() && stat.size <= MEMBER_MAX_RESULT_BYTES) fsImpl.writeFileSync(outFd, fsImpl.readFileSync(resultFd));
+        if (!stat.isFile()) return { ok: false, reason: 'result-not-a-regular-file' };
+        if (stat.size > MEMBER_MAX_RESULT_BYTES) return { ok: false, reason: 'result-too-large' };
+        fsImpl.writeFileSync(outFd, fsImpl.readFileSync(resultFd));
+        return { ok: true, reason: null };
       } catch (_error) {
-        // 結果を公開できなくても、終了コードの記録は続ける。
+        return { ok: false, reason: 'result-write-failed' };
       } finally {
         closeQuietly(resultFd);
       }
@@ -1314,8 +1322,15 @@ function superviseMemberRun(payload, deps = {}) {
       finished = true;
       closeQuietly(promptFd);
       closeQuietly(logFd);
-      publishResult();
+      const published = publishResult();
       closeQuietly(outFd);
+      // 結果の公開の成否は、終了コードより先に保護された実行の記録フォルダへ書く（exit が在る = 成否の記録も済んでいる）。
+      try {
+        createExclusiveFile(fsImpl, inRunDir('result-state.tmp'), Buffer.from(published.ok ? 'published\n' : `failed ${published.reason}\n`));
+        fsImpl.renameSync(inRunDir('result-state.tmp'), inRunDir('result-state'));
+      } catch (_error) {
+        // 記録できなければ、状態確認は failed（result-state-unrecorded）になる。
+      }
       try {
         createExclusiveFile(fsImpl, inRunDir('exit.tmp'), Buffer.from(`${code}\n`));
         fsImpl.renameSync(inRunDir('exit.tmp'), inRunDir('exit'));
@@ -1342,15 +1357,18 @@ function superviseMemberRun(payload, deps = {}) {
  * `member start`。子の Codex をバックグラウンドで起動し、実行 ID を返す。子の実行は数十分かかりうるため、完了は待たない。
  * 子は親と同じ範囲を超えない場合にだけ起動する。
  *   - sandbox: 親が read-only なら、`--readonly` の有無にかかわらず read-only（`--ignore-rules` 付き）にする。
- *   - 作業フォルダ: 拘束ルートか検証済み worktree のルートで、かつ親を起動した作業フォルダ（親の書き込み範囲）の中にあるときだけ。
+ *   - 作業フォルダ: 常に親を起動した作業フォルダ（VK_TASK_PARENT_CWD の実パス）。呼び出し位置がその配下のときだけ起動し、配下の worktree・サブフォルダから呼んでも読み替える。
  * 入出力は専用フォルダ直下の名前だけを受ける。
  */
 function executeMemberStart({ parsed, binding, cwd, fsImpl, inspected, reject, writeOut, deps }) {
   const member = binding.member;
   if (member === null) return reject('task command rejected: member is not available from this launcher');
-  if (fsImpl.realpathSync(cwd) !== inspected.root) return reject('task command rejected: member start must run at the root of the bound repository or a bound worktree');
-  // 子の書き込み範囲（-C の作業フォルダ + 親と同じ追加の書き込み先）が、親の範囲（親の作業フォルダ + 同じ追加の書き込み先）に収まること。
-  if (!isWithinDirectory(inspected.root, member.parentCwd)) return reject('task command rejected: member working directory is outside the parent working directory');
+  // 子の作業フォルダ（-C）と監督プロセスの cwd は、呼び出し位置にかかわらず、親の起動 cwd（ランチャーが実パスで固定した値）そのものにする。
+  // 呼び出し位置（配下の worktree・サブフォルダ）は検査にしか使わず、起動には使わない。検査のあとに配下のフォルダがリンクに置き換えられても、範囲外は子に渡らない。
+  // 呼び出し位置が親の起動 cwd の配下でなければ拒否する。どの worktree で作業させるかは prompt で伝える。
+  if (!isWithinDirectory(fsImpl.realpathSync(cwd), member.parentCwd)) return reject('task command rejected: member start must run inside the parent working directory');
+  if (fsImpl.realpathSync(member.parentCwd) !== member.parentCwd) return reject('task command rejected: parent working directory is not a real directory');
+  const memberRoot = member.parentCwd;
   const readonly = parsed.readonly || member.parentSandbox === 'read-only';
   const uid = currentUid(deps);
   let promptBody;
@@ -1388,13 +1406,13 @@ function executeMemberStart({ parsed, binding, cwd, fsImpl, inspected, reject, w
     createExclusiveFile(fsImpl, paths.schema, schemaBody);
 
     // 子の結果（-o）は、子から書き換えられない実行の記録フォルダ内に書かせる。入出力フォルダへの公開は監督プロセスが行う。
-    const codexArgs = buildMemberCodexArgs({ root: inspected.root, schemaPath: paths.schema, outPath: paths.result, model: parsed.model, readonly });
-    const payload = { codex: member.codex, args: codexArgs, cwd: inspected.root, env: buildMemberEnvironment(binding), runDir };
+    const codexArgs = buildMemberCodexArgs({ root: memberRoot, schemaPath: paths.schema, outPath: paths.result, model: parsed.model, readonly });
+    const payload = { codex: member.codex, args: codexArgs, cwd: memberRoot, env: buildMemberEnvironment(binding), runDir };
     const spawnDetached = deps.spawn || childProcess.spawn;
     let supervisor;
     try {
       supervisor = spawnDetached(process.execPath, [__filename], {
-        cwd: inspected.root, env: { [MEMBER_SUPERVISE_ENV]: JSON.stringify(payload) }, detached: true, stdio: ['ignore', 'ignore', 'ignore', outFd],
+        cwd: memberRoot, env: { [MEMBER_SUPERVISE_ENV]: JSON.stringify(payload) }, detached: true, stdio: ['ignore', 'ignore', 'ignore', outFd],
       });
     } catch (error) {
       return reject(`task command failed to start: ${error && error.code ? error.code : 'error'}`);
@@ -1446,6 +1464,7 @@ function executeMemberStatus({ parsed, binding, fsImpl, reject, writeOut, deps }
   const runDir = path.join(member.runs, parsed.id);
   let meta;
   let exitCode = null;
+  let resultState = null;
   try {
     if (resolveTrustedPath(fsImpl, member.runs, { uid, rejectFinalLink: true }).realPath !== member.runs) throw new TrustError(`path is not a real directory: ${member.runs}`);
     const stat = lstatOrNull(fsImpl, runDir);
@@ -1456,6 +1475,13 @@ function executeMemberStatus({ parsed, binding, fsImpl, reject, writeOut, deps }
       const raw = String(readMemberInput(fsImpl, runDir, 'exit', 16, uid)).trim();
       if (!/^[0-9]{1,3}$/.test(raw)) throw new TrustError('member exit file is invalid');
       exitCode = Number(raw);
+      // 結果の公開の成否。exit より先に書かれるので、exit が在って成否が無いのは記録の失敗（成功とは扱わない）。
+      if (lstatOrNull(fsImpl, path.join(runDir, 'result-state')) === null) {
+        resultState = 'failed result-state-unrecorded';
+      } else {
+        const rawState = String(readMemberInput(fsImpl, runDir, 'result-state', 128, uid)).trim();
+        resultState = /^(published|failed [a-z-]{1,64})$/.test(rawState) ? rawState : 'failed result-state-invalid';
+      }
     }
   } catch (error) {
     return reject(`task command rejected: ${error instanceof TrustError ? error.message : 'member run could not be read'}`);
@@ -1475,6 +1501,7 @@ function executeMemberStatus({ parsed, binding, fsImpl, reject, writeOut, deps }
     `MEMBER_ID=${parsed.id}`,
     `STATE=${state}`,
     ...(exitCode === null ? [] : [`EXIT_CODE=${exitCode}`]),
+    ...(resultState === null ? [] : resultState === 'published' ? ['RESULT_STATE=published'] : ['RESULT_STATE=failed', `RESULT_FAILURE=${resultState.slice('failed '.length)}`]),
     `OUT=${String(meta.out)}`,
     `LOG=${path.join(runDir, 'log.txt')}`,
     ...(tail === null || tail === '' ? [] : ['--- log tail ---', tail.replace(/\n$/, '')]),

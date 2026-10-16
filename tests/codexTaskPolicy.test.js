@@ -1488,10 +1488,14 @@ test('親の範囲: 親の sandbox と作業フォルダがランチャーに固
     const ioDir = stage(narrow.home);
     const rejected = ops(path.join(narrow.home, 'vk-task-ops'), sandbox.repo, ...startArgs);
     assert.equal(rejected.status, 2);
-    assert.match(rejected.stderr, /outside the parent working directory/);
+    assert.match(rejected.stderr, /must run inside the parent working directory/);
     assert.equal(fs.existsSync(path.join(ioDir, 'out.json')), false);
-    // サブフォルダ自身は、リポジトリのルートではないので、そもそも子の作業フォルダにできない。
-    assert.equal(ops(path.join(narrow.home, 'vk-task-ops'), subDir, ...startArgs).status, 2);
+    // サブフォルダ（親の起動 cwd そのもの）から呼べば起動でき、子の -C は親の起動 cwd になる。
+    const fromSub = ops(path.join(narrow.home, 'vk-task-ops'), subDir, ...startArgs);
+    assert.equal(fromSub.status, 0, fromSub.stderr);
+    await waitForExit(narrow.home, /^MEMBER_ID=([0-9a-f]{24})$/m.exec(fromSub.stdout)[1]);
+    const narrowRecord = JSON.parse(fs.readFileSync(sandbox.codexRecord, 'utf8'));
+    assert.equal(narrowRecord.args[narrowRecord.args.indexOf('-C') + 1], fs.realpathSync(subDir));
   } finally {
     sandbox.cleanup();
   }

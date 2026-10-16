@@ -2484,7 +2484,7 @@ test('拒否: 子用ランチャー（member の設定が空）では member 操
   }
 });
 
-test('拒否: member start は別リポジトリ・同じ origin の別クローン・サブフォルダからは起動しない', () => {
+test('拒否: member start は別リポジトリ・同じ origin の別クローンからは起動しない（サブフォルダからは親の起動 cwd に読み替えて起動する）', () => {
   const fixture = createMemberFixture();
   try {
     const stranger = path.join(fixture.root, 'stranger');
@@ -2498,10 +2498,12 @@ test('拒否: member start は別リポジトリ・同じ origin の別クロー
       assert.equal(result.code, 2, cwd);
       assert.match(result.messages.join(''), /not the bound repository/);
     }
+    // 親の起動 cwd の配下（サブフォルダ）から呼んでも拒否せず、子の作業フォルダは親の起動 cwd に読み替える。
     const inSub = fixture.runMember(MEMBER_START, { cwd: sub });
-    assert.equal(inSub.code, 2);
-    assert.match(inSub.messages.join(''), /must run at the root/);
-    assert.equal(fixture.calls.length, 0);
+    assert.equal(inSub.code, 0, inSub.messages.join(''));
+    assert.equal(fixture.calls.length, 1);
+    assert.equal(fixture.calls[0].options.cwd, fixture.repo);
+    assert.deepEqual(JSON.parse(fixture.calls[0].options.env.VK_TASK_MEMBER_SUPERVISE).args.slice(3, 5), ['-C', fixture.repo]);
   } finally {
     fixture.cleanup();
   }
@@ -2580,6 +2582,8 @@ test('実行: member start → member status で、実際のプロセスの終�
     const okStatus = status(ok);
     assert.match(okStatus, /^STATE=exited$/m);
     assert.match(okStatus, /^EXIT_CODE=0$/m);
+    assert.match(okStatus, /^RESULT_STATE=published$/m);
+    assert.equal(/RESULT_FAILURE/.test(okStatus), false);
     assert.ok(okStatus.includes(`OUT=${path.join(fixture.io, 'ok-out.json')}\n`));
     assert.match(okStatus, /--- log tail ---\nfake codex output/);
     assert.equal(fs.readFileSync(path.join(fixture.io, 'ok-out.json'), 'utf8'), '{"ok":true}');
@@ -2636,44 +2640,79 @@ test('親の sandbox を超えない: 親が read-only なら、--readonly を�
   }
 });
 
-test('親の書き込み範囲を超えない: 親をサブフォルダで起動したときはルートから、親の範囲外の登録済み worktree からは起動しない。ルート起動の親は、配下に作った worktree から起動できる', () => {
+test('親の書き込み範囲を超えない: 子の -C と監督プロセスの cwd は常に親の起動 cwd。配下の worktree から呼んでも、そこがリンクに置き換えられても、範囲外は渡らない。親の範囲外からは起動しない', () => {
   const root = createMemberFixture();
   const sub = createMemberFixture();
   try {
-    // 親をルートで起動した場合: 配下の worktree（prepare worktree が作る .claude/worktrees/ の下）は親の書き込み範囲に入る。
+    const supervisePayload = (fixture) => JSON.parse(fixture.calls[fixture.calls.length - 1].options.env.VK_TASK_MEMBER_SUPERVISE);
+    const assertPinned = (fixture, pinned) => {
+      const call = fixture.calls[fixture.calls.length - 1];
+      const payload = supervisePayload(fixture);
+      assert.equal(call.options.cwd, pinned);
+      assert.equal(payload.cwd, pinned);
+      assert.equal(payload.args[payload.args.indexOf('-C') + 1], pinned);
+      assert.equal(payload.args.filter((arg) => arg === '-C').length, 1);
+    };
+    // 親をルートで起動した場合: ルート・配下の worktree（prepare worktree が作る .claude/worktrees/ の下）のどちらから呼んでも、-C と cwd は親の起動 cwd。
     const inside = path.join(root.repo, '.claude', 'worktrees', 'inside');
     git(root.repo, 'worktree', 'add', '-q', '-b', 'work/inside', inside);
     const outside = path.join(root.root, 'outside-worktree');
     git(root.repo, 'worktree', 'add', '-q', '-b', 'work/outside', outside);
+    const insideReal = fs.realpathSync(inside);
     let result = root.runMember(MEMBER_START, { cwd: root.repo });
     assert.equal(result.code, 0, result.messages.join(''));
-    root.calls.length = 0;
-    result = root.runMember([...MEMBER_START.slice(0, -1), 'wt-out.json'], { cwd: fs.realpathSync(inside), randomId: () => 'cccccccccccccccccccccccc' });
+    assertPinned(root, root.repo);
+    result = root.runMember([...MEMBER_START.slice(0, -1), 'wt-out.json'], { cwd: insideReal, randomId: () => 'cccccccccccccccccccccccc' });
     assert.equal(result.code, 0, result.messages.join(''));
-    assert.equal(JSON.parse(root.calls[0].options.env.VK_TASK_MEMBER_SUPERVISE).cwd, fs.realpathSync(inside));
-    // 親の範囲の外に登録された worktree は、拘束先の worktree として受け入れられても、子の作業フォルダにはしない。
+    assertPinned(root, root.repo);
+
+    // 検査のあとに配下の worktree が範囲外へのリンクに置き換えられても、範囲外は -C にも cwd にも渡らない（起動の時点で置き換えを再現する）。
+    const escapeTarget = path.join(root.root, 'escape-target');
+    fs.mkdirSync(escapeTarget);
+    const spawnThenSwap = (bin, args, options) => {
+      root.calls.push({ bin, args, options });
+      fs.rmSync(inside, { recursive: true, force: true });
+      fs.symlinkSync(escapeTarget, inside);
+      return { pid: 424242, unref: () => {} };
+    };
+    root.calls.length = 0;
+    result = root.runMember([...MEMBER_START.slice(0, -1), 'swap-out.json'], { cwd: insideReal, randomId: () => 'eeeeeeeeeeeeeeeeeeeeeeee', spawn: spawnThenSwap });
+    assert.equal(result.code, 0, result.messages.join(''));
+    assertPinned(root, root.repo);
+    const swappedPayload = supervisePayload(root);
+    for (const value of [root.calls[0].options.cwd, swappedPayload.cwd, ...swappedPayload.args]) {
+      assert.equal(String(value).includes('escape-target'), false);
+      assert.equal(String(value).includes('inside'), false);
+    }
+    // すでにリンクに置き換わった配下から呼ばれた場合は、呼び出し位置の実パスが親の範囲外になるので拒否する。
+    root.calls.length = 0;
+    result = root.runMember([...MEMBER_START.slice(0, -1), 'link-out.json'], { cwd: inside, randomId: () => 'ffffffffffffffffffffffff' });
+    assert.equal(result.code, 2);
+    assert.equal(root.calls.length, 0);
+
+    // 親の範囲の外に登録された worktree から呼んだ場合は拒否する。
     root.calls.length = 0;
     result = root.runMember([...MEMBER_START.slice(0, -1), 'outside-out.json'], { cwd: fs.realpathSync(outside), randomId: () => 'dddddddddddddddddddddddd' });
     assert.equal(result.code, 2);
-    assert.match(result.messages.join(''), /outside the parent working directory/);
+    assert.match(result.messages.join(''), /must run inside the parent working directory/);
     assert.equal(root.calls.length, 0);
     assert.equal(fs.existsSync(path.join(root.io, 'outside-out.json')), false);
 
-    // 親をサブフォルダで起動した場合: ルートで入口を呼んでも、親の範囲より広い子は起動しない。
+    // 親をサブフォルダで起動した場合: ルートで入口を呼んでも起動しない。
     const subDir = path.join(sub.repo, 'sub');
     fs.mkdirSync(subDir);
     const narrow = createMemberFixture({ parentCwd: fs.realpathSync(subDir) });
     try {
       result = narrow.runMember(MEMBER_START, { cwd: narrow.repo });
       assert.equal(result.code, 2);
-      assert.match(result.messages.join(''), /outside the parent working directory/);
+      assert.match(result.messages.join(''), /must run inside the parent working directory/);
       assert.equal(narrow.calls.length, 0);
       assert.equal(fs.existsSync(path.join(narrow.io, 'out.json')), false);
     } finally {
       narrow.cleanup();
     }
 
-    // 親が worktree で起動された場合: その worktree からは起動でき、ルートからは起動しない。
+    // 親が worktree で起動された場合: ルートからは起動しない。
     const wt = path.join(sub.repo, '.claude', 'worktrees', 'parent-wt');
     git(sub.repo, 'worktree', 'add', '-q', '-b', 'work/parent-wt', wt);
     const inWorktree = createMemberFixture({ parentCwd: fs.realpathSync(wt) });
@@ -2684,6 +2723,16 @@ test('親の書き込み範囲を超えない: 親をサブフォルダで起動
       assert.equal(inWorktree.runMember(MEMBER_START, { cwd: inWorktree.repo }).code, 2);
     } finally {
       inWorktree.cleanup();
+    }
+    // 親の起動 cwd が実パスでない（リンクを通る）場合は拒否する。
+    const linkParent = path.join(sub.root, 'parent-link');
+    fs.symlinkSync(sub.repo, linkParent);
+    const linked = createMemberFixture({ parentCwd: linkParent });
+    try {
+      assert.equal(linked.runMember(MEMBER_START, { cwd: linked.repo }).code, 2);
+      assert.equal(linked.calls.length, 0);
+    } finally {
+      linked.cleanup();
     }
   } finally {
     root.cleanup();
@@ -2729,6 +2778,64 @@ test('出力先の差し替え: 作成後に出力先の名前がリンクへ差
   }
 });
 
+test('結果の公開に失敗した実行は、正常終了（EXIT_CODE=0）でも RESULT_STATE=failed と理由で区別できる（結果なし・大きすぎる・書き込み失敗・成否の記録なし）', async () => {
+  const fixture = createMemberFixture();
+  try {
+    const exitZero = ['-e', 'process.exit(0)'];
+    const supervise = async (name, prepare, deps = {}) => {
+      const id = name.repeat(24);
+      const runDir = path.join(fixture.runs, id);
+      fs.mkdirSync(runDir, { mode: 0o700 });
+      fs.writeFileSync(path.join(runDir, 'prompt.txt'), 'x');
+      prepare(runDir);
+      const published = path.join(fixture.root, `published-${name}.txt`);
+      const outFd = fs.openSync(published, 'wx', 0o600);
+      const code = await superviseMemberRun({ codex: process.execPath, args: exitZero, cwd: fixture.repo, env: {}, runDir }, { outFd, ...deps });
+      assert.equal(code, 0);
+      fs.writeFileSync(path.join(runDir, 'meta.json'), JSON.stringify({ pid: 1, out: published }));
+      const outputs = [];
+      assert.equal(run(fixture, ['member', 'status', id], { writeOut: (text) => outputs.push(text) }).code, 0);
+      return { text: outputs.join(''), published };
+    };
+    // 結果ファイルが無い。
+    let result = await supervise('a', () => {});
+    assert.match(result.text, /^EXIT_CODE=0$/m);
+    assert.match(result.text, /^RESULT_STATE=failed$/m);
+    assert.match(result.text, /^RESULT_FAILURE=result-missing$/m);
+    // サイズ超過。
+    result = await supervise('b', (runDir) => { fs.writeFileSync(path.join(runDir, 'result.txt'), ''); fs.truncateSync(path.join(runDir, 'result.txt'), 16 * 1024 * 1024 + 1); });
+    assert.match(result.text, /^RESULT_STATE=failed$/m);
+    assert.match(result.text, /^RESULT_FAILURE=result-too-large$/m);
+    assert.equal(fs.readFileSync(result.published, 'utf8'), '');
+    // 書き込み失敗（公開先の記述子が使えない）。
+    result = await supervise('c', (runDir) => fs.writeFileSync(path.join(runDir, 'result.txt'), '{"ok":true}'), { outFd: 9999 });
+    assert.match(result.text, /^RESULT_STATE=failed$/m);
+    assert.match(result.text, /^RESULT_FAILURE=result-write-failed$/m);
+    // 成功。
+    result = await supervise('d', (runDir) => fs.writeFileSync(path.join(runDir, 'result.txt'), '{"ok":true}'));
+    assert.match(result.text, /^RESULT_STATE=published$/m);
+    assert.equal(fs.readFileSync(result.published, 'utf8'), '{"ok":true}');
+    // exit だけがあって成否の記録が無い実行は、成功として扱わない。
+    const bareId = 'e'.repeat(24);
+    fs.mkdirSync(path.join(fixture.runs, bareId), { mode: 0o700 });
+    fs.writeFileSync(path.join(fixture.runs, bareId, 'meta.json'), JSON.stringify({ pid: 1, out: '/x' }));
+    fs.writeFileSync(path.join(fixture.runs, bareId, 'exit'), '0\n');
+    const bare = [];
+    assert.equal(run(fixture, ['member', 'status', bareId], { writeOut: (text) => bare.push(text) }).code, 0);
+    assert.match(bare.join(''), /^RESULT_STATE=failed$/m);
+    assert.match(bare.join(''), /^RESULT_FAILURE=result-state-unrecorded$/m);
+    // 実行中は RESULT_STATE を出さない。
+    const runningId = 'f'.repeat(24);
+    fs.mkdirSync(path.join(fixture.runs, runningId), { mode: 0o700 });
+    fs.writeFileSync(path.join(fixture.runs, runningId, 'meta.json'), JSON.stringify({ pid: 1, out: '/x' }));
+    const running = [];
+    run(fixture, ['member', 'status', runningId], { writeOut: (text) => running.push(text), kill: () => true });
+    assert.equal(/RESULT_STATE/.test(running.join('')), false);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
 test('監督プロセス: 結果ファイルがリンクなら公開せず、子の終了コードを記録する。設定が不正なら起動しない', async () => {
   const fixture = createMemberFixture();
   try {
@@ -2744,6 +2851,8 @@ test('監督プロセス: 結果ファイルがリンクなら公開せず、子
     assert.equal(code, 5);
     assert.equal(fs.readFileSync(path.join(runDir, 'exit'), 'utf8'), '5\n');
     assert.equal(fs.readFileSync(outPath, 'utf8'), '');
+    // 公開できなかったことは、終了コードとは別に保護された実行の記録フォルダへ残る（正常終了と区別できる）。
+    assert.equal(fs.readFileSync(path.join(runDir, 'result-state'), 'utf8'), 'failed result-not-a-regular-file\n');
     // 起動できない子は 127 を記録する。
     const missingDir = path.join(fixture.root, 'supervised-missing');
     fs.mkdirSync(missingDir, { mode: 0o700 });
@@ -2751,6 +2860,7 @@ test('監督プロセス: 結果ファイルがリンクなら公開せず、子
     const outFd2 = fs.openSync(path.join(fixture.root, 'published2.txt'), 'wx', 0o600);
     assert.equal(await superviseMemberRun({ codex: path.join(fixture.root, 'no-such-codex'), args: [], cwd: fixture.repo, env: {}, runDir: missingDir }, { outFd: outFd2 }), 127);
     assert.equal(fs.readFileSync(path.join(missingDir, 'exit'), 'utf8'), '127\n');
+    assert.equal(fs.readFileSync(path.join(missingDir, 'result-state'), 'utf8'), 'failed result-missing\n');
     // 環境変数から入口を差し込まれても、不正な設定では何もしない。
     const bad = childProcess.spawnSync(process.execPath, [path.join(__dirname, '..', 'utils', 'codexTaskOps.js')], { env: { VK_TASK_MEMBER_SUPERVISE: '{"codex":"relative"}' }, encoding: 'utf8' });
     assert.equal(bad.status, 2);

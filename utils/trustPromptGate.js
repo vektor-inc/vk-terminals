@@ -57,7 +57,7 @@ const TRUST_CONTEXT_PATTERNS = [
   /Yes,\s*I\s*trust\s*(?:the\s*files\s*in\s*)?this\s*(?:folder|directory)/i,
   // タスク用ポリシー付きの Codex は作業フォルダを「信頼しない」と記録済みで、この制限付きで開く画面が出る
   // （既定の選択肢は "Open restricted" で、信頼の記録は変わらない）。信頼を与える画面ではないので自動 Enter の対象にしてよい。
-  /Config,\s*hooks,\s*and\s*execpolicies\s*from\s*untrusted\s*folders\s*stay\s*disabled/i,
+  /Config,\s*hooks,\s*and\s*exec\s*policies\s*from\s*untrusted\s*folders\s*stay\s*disabled/i,
 ];
 
 /**

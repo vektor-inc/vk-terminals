@@ -51,9 +51,17 @@ test('isTrustPrompt: Yes, I trust this directory に一致する', () => {
   assert.equal(isTrustPrompt('Yes, I trust this directory'), true);
 });
 
-test('isTrustPrompt: 信頼しない記録済みの Codex が出す「制限付きで開く」画面に一致する（実機採取。信頼を与える画面ではない）', () => {
-  const restrictedPrompt = 'Folder access /private/tmp/proj\nConfig, hooks, and execpolicies from untrusted folders stay disabled.\n› 1. Open restricted\n  2. Quit';
-  assert.equal(isTrustPrompt(restrictedPrompt), true);
+test('isTrustPrompt: 新規ペインで Codex が出す「制限付きで開く」画面に空白の有無を問わず一致する', () => {
+  const restrictedPrompts = [
+    'Folder access /private/tmp/proj\nConfig, hooks, and exec policies from untrusted folders stay disabled.\n› 1. Open restricted\n  2. Quit',
+    'Folderaccess/private/tmp/proj\nConfig,hooks,andexecpoliciesfromuntrustedfoldersstaydisabled.\n›1.Openrestricted\n2.Quit',
+  ];
+
+  // 実機表示と、PTY のカーソル描画で空白が失われた表示の両方を対象にする。
+  for (const restrictedPrompt of restrictedPrompts) {
+    assert.equal(isTrustPrompt(restrictedPrompt), true, restrictedPrompt);
+  }
+
   // 信頼を与える選択肢のある画面（Trust and continue）は、従来どおり対象にしない。
   assert.equal(isTrustPrompt('Trust this folder?\n› 1. Trust and continue\n  2. Quit'), false);
 });

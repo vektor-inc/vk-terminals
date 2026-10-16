@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 不具合修正 ] タスク用ポリシーで Codex を起動すると「Open restricted」画面で停止し、自動処理が始まらない不具合を修正（[#430](https://github.com/vektor-inc/vk-terminals/issues/430)）
+
 ## 1.71.0
 
 - [ 機能追加 ] 自動処理用 Codex にタスク単位のポリシー（`codexPolicy`）を指定可能に。個人の Codex 設定を継承せず、検証付きの固定入口を通したタスクのリポジトリへの Git / GitHub 操作と会話整理先だけを承認なしで使える（[#428](https://github.com/vektor-inc/vk-terminals/issues/428)）

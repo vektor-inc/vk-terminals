@@ -1990,24 +1990,69 @@ test('競合: 親フォルダの作成の直前に差し替えられても、拘
   }
 });
 
-// 差し替え先を、拘束ルートの外または Git 管理領域の中に用意して prepare を走らせ、差し替えが起きても何も書かれないことを確かめる。
-function raceCase({ label, prepareTarget, trigger, swap, untouched }) {
+// フォルダ配下の全ファイルについて、種類・リンク先・内容を再帰的に並べる（直下の名前だけでは中身の書き換えを検知できないため）。
+function deepSnapshot(dir) {
+  const stat = (() => {
+    try {
+      return fs.lstatSync(dir);
+    } catch (_error) {
+      return null;
+    }
+  })();
+  if (stat === null) return ['(missing)'];
+  const lines = [];
+  const walk = (current, label) => {
+    const info = fs.lstatSync(current);
+    if (info.isSymbolicLink()) {
+      lines.push(`${label} -> ${fs.readlinkSync(current)}`);
+    } else if (info.isDirectory()) {
+      lines.push(`${label}/`);
+      for (const name of fs.readdirSync(current).sort()) walk(path.join(current, name), `${label}/${name}`);
+    } else {
+      lines.push(`${label} #${fs.readFileSync(current).toString('base64')}`);
+    }
+  };
+  walk(dir, '.');
+  return lines;
+}
+
+// 差し替え先に、Git が書き込み段階まで進める有効な管理領域（HEAD・commondir・gitdir 等）を用意し、差し替え後の状態を基準にする。
+// 制限が効いていれば、その後の prepare は基準の内容を 1 バイトも変えない。
+function raceCase({ label, trigger, makeTarget, swap, untouched, mustFail = true }) {
   const fixture = createFixture();
   try {
     attachRemote(fixture);
-    const target = prepareTarget(fixture);
-    const snapshot = () => untouched(fixture).map((dir) => [dir, fs.existsSync(dir) ? fs.readdirSync(dir).sort() : null]);
-    const before = snapshot();
     let swapped = false;
+    let before = null;
+    const snapshot = () => untouched(fixture).map((dir) => [dir, deepSnapshot(dir)]);
     const result = run(fixture, ['prepare', 'worktree', 'main', '440', 'issue/440-race', 'wt-race'], {
-      spawnSync: interposeSpawn({ before: (_bin, args) => { if (trigger(args) && !swapped) { swapped = true; swap(fixture, target); } } }),
+      spawnSync: interposeSpawn({
+        before: (_bin, args) => {
+          if (trigger(args) && !swapped) {
+            swapped = true;
+            swap(fixture, makeTarget(fixture));
+            before = snapshot();
+          }
+        },
+      }),
     });
     assert.equal(swapped, true, label);
-    assert.notEqual(result.code, 0, label);
+    if (mustFail) assert.notEqual(result.code, 0, label);
     assert.deepEqual(snapshot(), before, label);
   } finally {
     fixture.cleanup();
   }
+}
+
+const adminOf = (fixture) => path.join(fixture.repo, '.git', 'worktrees', 'wt-race');
+const worktreeOf = (fixture) => path.join(fixture.repo, '.claude', 'worktrees', 'wt-race');
+// 現在の管理領域の写し（HEAD・commondir・gitdir を含む）を target に作る。
+function copyAdmin(fixture, target) {
+  fs.rmSync(target, { recursive: true, force: true });
+  fs.cpSync(adminOf(fixture), target, { recursive: true });
+  // 相対の commondir は写し先では別の場所を指すので、Git が書き込み段階まで進めるよう絶対パスにする。
+  fs.writeFileSync(path.join(target, 'commondir'), `${path.join(fixture.repo, '.git')}\n`);
+  return target;
 }
 
 test('競合: info/exclude の追記は書き込み制限つきの子プロセスで行い、info や exclude が差し替えられても拘束ルートの外へは追記されない', () => {
@@ -2028,100 +2073,111 @@ test('競合: info/exclude の追記は書き込み制限つきの子プロセ�
     }
   }
   // 検査の後（追記の直前）に info がリンクへ差し替えられる。差し替え先は外部と、Git 管理領域の中（objects 配下）。
-  for (const variant of ['outside', 'objects']) {
+  for (const variant of ['outside', 'objects/info', 'objects/pack']) {
     raceCase({
       label: `info:${variant}`,
-      prepareTarget: (fixture) => {
-        const dir = variant === 'outside' ? path.join(fixture.root, 'outside-info') : path.join(fixture.repo, '.git', 'objects', 'info');
+      trigger: appendTrigger,
+      makeTarget: (fixture) => {
+        const dir = variant === 'outside' ? path.join(fixture.root, 'outside-info') : path.join(fixture.repo, '.git', ...variant.split('/'));
         fs.mkdirSync(dir, { recursive: true });
         return dir;
       },
-      trigger: appendTrigger,
       swap: (fixture, target) => {
         fs.rmSync(path.join(fixture.repo, '.git', 'info'), { recursive: true });
         fs.symlinkSync(target, path.join(fixture.repo, '.git', 'info'));
       },
-      untouched: (fixture) => [path.join(fixture.root, 'outside-info'), path.join(fixture.repo, '.git', 'objects', 'info')],
+      untouched: (fixture) => [path.join(fixture.root, 'outside-info'), path.join(fixture.repo, '.git', 'objects', 'info'), path.join(fixture.repo, '.git', 'objects', 'pack')],
     });
   }
   // 検査の後に exclude 自体が外部ファイルへのリンクへ差し替えられる。
-  {
-    const fixture = createFixture();
-    try {
-      attachRemote(fixture);
-      const outsideFile = path.join(fixture.root, 'outside-exclude');
-      fs.writeFileSync(outsideFile, 'original\n');
-      let swapped = false;
-      const result = run(fixture, ['prepare', 'worktree', 'main', '440', 'issue/440-race', 'wt-race'], {
-        spawnSync: interposeSpawn({
-          before: (_bin, args) => {
-            if (appendTrigger(args) && !swapped) {
-              swapped = true;
-              fs.rmSync(path.join(fixture.repo, '.git', 'info', 'exclude'), { force: true });
-              fs.symlinkSync(outsideFile, path.join(fixture.repo, '.git', 'info', 'exclude'));
-            }
-          },
-        }),
-      });
-      assert.equal(swapped, true);
-      assert.notEqual(result.code, 0);
-      assert.equal(fs.readFileSync(outsideFile, 'utf8'), 'original\n');
-    } finally {
-      fixture.cleanup();
-    }
-  }
+  raceCase({
+    label: 'exclude',
+    trigger: appendTrigger,
+    makeTarget: (fixture) => {
+      const file = path.join(fixture.root, 'outside-exclude');
+      fs.writeFileSync(file, 'original\n');
+      return file;
+    },
+    swap: (fixture, target) => {
+      fs.rmSync(path.join(fixture.repo, '.git', 'info', 'exclude'), { force: true });
+      fs.symlinkSync(target, path.join(fixture.repo, '.git', 'info', 'exclude'));
+    },
+    untouched: (fixture) => [path.join(fixture.root, 'outside-exclude')],
+  });
 });
 
-test('競合: 作業フォルダの置き場所が Git 管理領域の中や .claude 内の別フォルダへのリンクに差し替えられても、制御ファイルや別の場所には何も書かれない', () => {
+test('競合: 作業フォルダの置き場所が Git 管理領域・.claude 内の別フォルダ・外部へのリンクに差し替えられても、どこにも書かれない（追加の直前・index 作成の直前・展開の直前）', () => {
+  const outsideDirs = (fixture) => [
+    path.join(fixture.repo, '.git', 'objects', 'info'),
+    path.join(fixture.repo, '.git', 'objects', 'pack'),
+    path.join(fixture.repo, '.git', 'refs', 'tags'),
+    path.join(fixture.repo, '.git', 'hooks'),
+    path.join(fixture.repo, '.claude', 'other'),
+    path.join(fixture.root, 'outside-target'),
+  ];
   const places = {
     'objects/info': (fixture) => path.join(fixture.repo, '.git', 'objects', 'info'),
+    'objects/pack': (fixture) => path.join(fixture.repo, '.git', 'objects', 'pack'),
+    'refs/tags': (fixture) => path.join(fixture.repo, '.git', 'refs', 'tags'),
     'hooks': (fixture) => path.join(fixture.repo, '.git', 'hooks'),
     '.claude 内の別フォルダ': (fixture) => path.join(fixture.repo, '.claude', 'other'),
     '拘束ルートの外': (fixture) => path.join(fixture.root, 'outside-target'),
   };
-  const worktreePath = (fixture) => path.join(fixture.repo, '.claude', 'worktrees', 'wt-race');
-  const watched = (fixture) => Object.values(places).map((place) => place(fixture));
   const triggers = [
     ['追加の直前', (args) => involves(args, 'worktree') && involves(args, '--no-checkout')],
-    ['展開の直前', (args) => involves(args, 'read-tree')],
+    ['index 作成の直前', (args) => involves(args, 'read-tree')],
+    ['展開の直前', (args) => involves(args, 'checkout-index')],
   ];
+  const swapWorktree = (fixture, target) => {
+    fs.rmSync(worktreeOf(fixture), { recursive: true, force: true });
+    fs.symlinkSync(target, worktreeOf(fixture));
+  };
   for (const [placeLabel, place] of Object.entries(places)) {
     for (const [timing, trigger] of triggers) {
       raceCase({
         label: `${placeLabel} / ${timing}`,
-        prepareTarget: (fixture) => {
+        trigger,
+        makeTarget: (fixture) => {
           fs.mkdirSync(place(fixture), { recursive: true });
           return place(fixture);
         },
-        trigger,
-        // 追加の直前は空のフォルダへのリンク（Git が既存の空フォルダとして受け入れる形）。展開の直前は作成済みの作業フォルダを置き換える。
-        swap: (fixture, target) => {
-          fs.rmSync(worktreePath(fixture), { recursive: true, force: true });
-          fs.symlinkSync(target, worktreePath(fixture));
-        },
-        untouched: watched,
+        swap: swapWorktree,
+        untouched: outsideDirs,
       });
     }
   }
+  // 展開先が、この worktree 自身の管理領域（commondir・gitdir・HEAD を持つ）へのリンクに差し替えられる（index 作成は管理領域に書くのが正当なので、展開の直前だけ）。
+  for (const [timing, trigger] of triggers.slice(2)) {
+    raceCase({
+      label: `管理領域そのもの / ${timing}`,
+      trigger,
+      makeTarget: (fixture) => adminOf(fixture),
+      swap: swapWorktree,
+      untouched: (fixture) => [adminOf(fixture)],
+    });
+  }
 });
 
-test('競合: worktree の管理情報（.git/worktrees/<名前>）が展開の直前に別の場所へのリンクへ差し替えられても、Git の制御ファイルには書かれない', () => {
-  for (const variant of ['objects/info', 'hooks', '外部']) {
-    raceCase({
-      label: variant,
-      prepareTarget: (fixture) => {
-        const dir = variant === '外部' ? path.join(fixture.root, 'outside-target') : path.join(fixture.repo, '.git', ...variant.split('/'));
-        fs.mkdirSync(dir, { recursive: true });
-        return dir;
-      },
-      trigger: (args) => involves(args, 'read-tree'),
-      swap: (fixture, target) => {
-        const admin = path.join(fixture.repo, '.git', 'worktrees', 'wt-race');
-        fs.rmSync(admin, { recursive: true, force: true });
-        fs.symlinkSync(target, admin);
-      },
-      untouched: (fixture) => [path.join(fixture.root, 'outside-target'), path.join(fixture.repo, '.git', 'objects', 'info'), path.join(fixture.repo, '.git', 'hooks')],
-    });
+test('競合: worktree の管理情報（.git/worktrees/<名前>）が index 作成・展開の直前に、有効な管理領域を備えた別の場所へのリンクへ差し替えられても、そこには書かれない', () => {
+  for (const [timing, trigger] of [['index 作成の直前', (args) => involves(args, 'read-tree')], ['展開の直前', (args) => involves(args, 'checkout-index')]]) {
+    for (const variant of ['objects/info', 'objects/pack', 'hooks', '外部']) {
+      const targetOf = (fixture) => (variant === '外部' ? path.join(fixture.root, 'outside-target') : path.join(fixture.repo, '.git', ...variant.split('/'), 'evil-admin'));
+      raceCase({
+        label: `${variant} / ${timing}`,
+        trigger,
+        makeTarget: (fixture) => {
+          fs.mkdirSync(path.dirname(targetOf(fixture)), { recursive: true });
+          return copyAdmin(fixture, targetOf(fixture));
+        },
+        swap: (fixture, target) => {
+          fs.rmSync(adminOf(fixture), { recursive: true, force: true });
+          fs.symlinkSync(target, adminOf(fixture));
+        },
+        untouched: (fixture) => [targetOf(fixture)],
+        // 展開の直前の差し替えは、展開が管理領域に書かないので成功してよい（差し替え先が変わらないことだけを確かめる）。
+        mustFail: timing === 'index 作成の直前',
+      });
+    }
   }
 });
 
@@ -2143,8 +2199,8 @@ test('実行: prepare は Git の制御ファイル（hooks・config・objects/i
     assert.equal(git(worktree, 'status', '--porcelain'), '');
     assert.ok(fs.readdirSync(worktree).length > 1);
     const mentions = (call, word) => call.args.some((arg) => arg === word);
-    const writers = calls.filter((call) => ['fetch', 'worktree', 'read-tree', '/bin/mkdir'].some((word) => mentions(call, word)) || call.args.some((arg) => arg.includes('printf')));
-    assert.ok(writers.length >= 6);
+    const writers = calls.filter((call) => ['fetch', 'worktree', 'read-tree', 'checkout-index', '/bin/mkdir'].some((word) => mentions(call, word)) || call.args.some((arg) => arg.includes('printf')));
+    assert.ok(writers.length >= 7);
     for (const call of writers) assert.equal(call.bin, '/usr/bin/sandbox-exec');
   } finally {
     fixture.cleanup();

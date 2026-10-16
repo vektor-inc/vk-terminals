@@ -990,6 +990,8 @@ function executePrepareWorktree({ parsed, binding, cwd, fsImpl, runGit, spawnSyn
   const controlFiles = [
     gitPath('hooks'), gitPath('config'), gitPath('config.worktree'), gitPath('info', 'attributes'), gitPath('objects', 'info'),
     path.join(adminDir, 'config.worktree'), path.join(adminDir, 'hooks'),
+    // 作成先と補助の書き込み先が重なっても、管理領域の中に作業フォルダ用の固定名のファイルを置けないようにする。
+    gitPath('refs', 'heads', '.git'), gitPath('logs', 'refs', 'heads', '.git'), path.join(adminDir, '.git'),
   ];
   const restricted = (command, allowWrite) => restrictWrites({ ...command, allowWrite, denyWrite: controlFiles });
   const runRestricted = (command, options) => spawnSync(command.bin, command.args, { cwd, encoding: 'utf8', ...options });
@@ -1063,13 +1065,14 @@ function executePrepareWorktree({ parsed, binding, cwd, fsImpl, runGit, spawnSyn
   if (added.error) return reject(`task command failed to start: ${added.error.code || 'error'}`);
   if (added.status !== 0) return typeof added.status === 'number' ? added.status : 2;
 
-  // 作業ファイルの展開。管理領域と作業フォルダは引数で明示する（作業フォルダの .git ファイルは信用しない）。
-  // 書けるのは作業フォルダの事前に計算した実パス配下と、この worktree の管理情報（index など）だけ。
-  const checkoutCommand = restricted({
-    bin: binding.git,
-    args: [...FIXED_GIT_PREFIX, `--git-dir=${adminDir}`, `--work-tree=${worktreePath}`, 'read-tree', '--reset', '-u', 'HEAD'],
-  }, [worktreePath, adminDir]);
-  const checkedOut = runRestricted(checkoutCommand, { env: plainEnv, stdio: 'inherit' });
+  // 展開は 2 つの別プロセスに分ける。管理領域と作業フォルダは引数で明示する（作業フォルダの .git ファイルは信用しない）。
+  // 1) index の作成（作業ファイルには触れない）: 書けるのはこの worktree の管理情報だけ。
+  // 2) 作業ファイルの展開: 書けるのは作業フォルダの事前に計算した実パスだけ。展開プロセスには管理領域を一切許可しない。
+  const explicit = [...FIXED_GIT_PREFIX, '-c', 'core.splitIndex=false', `--git-dir=${adminDir}`, `--work-tree=${worktreePath}`];
+  const indexed = runRestricted(restricted({ bin: binding.git, args: [...explicit, 'read-tree', '--reset', 'HEAD'] }, [adminDir]), { env: plainEnv, stdio: 'inherit' });
+  if (indexed.error) return reject(`task command failed to start: ${indexed.error.code || 'error'}`);
+  if (indexed.status !== 0) return typeof indexed.status === 'number' ? indexed.status : 2;
+  const checkedOut = runRestricted(restricted({ bin: binding.git, args: [...explicit, 'checkout-index', '--all', '--force'] }, [worktreePath]), { env: plainEnv, stdio: 'inherit' });
   if (checkedOut.error) return reject(`task command failed to start: ${checkedOut.error.code || 'error'}`);
   if (checkedOut.status !== 0) return typeof checkedOut.status === 'number' ? checkedOut.status : 2;
   const baseSha = runGit(['rev-parse', remoteRef], cwd);

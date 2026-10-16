@@ -68,6 +68,7 @@ const { resolveCodexTaskPolicyLaunchOptions } = require('./utils/codexTaskPolicy
 const { scheduleLaunchCommand } = require('./utils/delayedLaunch');
 const {
   createAgentLifecycleStore,
+  resolveUserShell,
   buildTrackedLaunchCommand,
   mergeAgentLifecycleStates,
 } = require('./utils/agentLifecycle');
@@ -1887,7 +1888,7 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
     throw new Error('App is shutting down; new panes cannot be created.');
   }
   const id = String(nextId++);
-  const shell = process.env.SHELL || (process.platform === 'win32' ? (process.env.COMSPEC || 'powershell.exe') : '/bin/zsh');
+  const shell = resolveUserShell();
   let resolvedCwd = cwd || process.env.HOME || process.env.USERPROFILE || os.tmpdir();
   try {
     if (!fs.existsSync(resolvedCwd) || !fs.statSync(resolvedCwd).isDirectory()) {
@@ -2188,7 +2189,7 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
     let commandToWrite = launchCommand;
     if (process.platform !== 'win32') {
       const credentials = agentLifecycles.prepare(id, 1);
-      if (credentials) commandToWrite = buildTrackedLaunchCommand(launchCommand, credentials);
+      if (credentials) commandToWrite = buildTrackedLaunchCommand(launchCommand, credentials, { userShell: shell });
     }
     // 待っている間に PTY が消えた・書き込みが例外になった場合は、使われない専用 CODEX_HOME を回収する。
     scheduleLaunchCommand({
@@ -3502,7 +3503,7 @@ function startHttpApi() {
               // 書き込み失敗時も停止済みの旧世代へ戻さず、不明として安全側に倒す。
               startedGeneration = agentGenerations.increment(request.termId);
               const credentials = agentLifecycles.prepare(request.termId, startedGeneration);
-              return credentials ? buildTrackedLaunchCommand(command, credentials) : command;
+              return credentials ? buildTrackedLaunchCommand(command, credentials, { userShell: resolveUserShell() }) : command;
             },
           };
           const operation = restartAgentInTerminal(ptyProcess, request, launchResolution.options, lifecycleLaunch);

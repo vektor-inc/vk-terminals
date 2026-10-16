@@ -5,12 +5,18 @@ const fs = require('node:fs');
 const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
+const { buildTrackedShellCommand } = require('./userShellCommand');
 
 const TOKEN_PATTERN = /^[a-f0-9]{64}$/;
 const MAX_MESSAGE_BYTES = 1024;
 
 function quoteShellArgument(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`;
+}
+
+/** terminal:create と監視付き再起動で共通の、信頼済み起動環境からユーザーシェルを解決する。 */
+function resolveUserShell(env = process.env, platform = process.platform) {
+  return env.SHELL || (platform === 'win32' ? (env.COMSPEC || 'powershell.exe') : '/bin/zsh');
 }
 
 /** main プロセスが所有する、世代単位の認証済みライフサイクル接続を管理する。 */
@@ -160,8 +166,12 @@ function buildTrackedLaunchCommand(command, credentials, options = {}) {
   }
   const executable = options.executable || process.execPath;
   const monitorPath = options.monitorPath || require.resolve('./agentLifecycleMonitor');
-  const encodedCommand = Buffer.from(command, 'utf8').toString('base64');
-  return `ELECTRON_RUN_AS_NODE=1 ${quoteShellArgument(executable)} ${quoteShellArgument(monitorPath)} ${quoteShellArgument(credentials.socketPath)} ${quoteShellArgument(credentials.termId)} ${quoteShellArgument(credentials.generation)} ${quoteShellArgument(credentials.token)} ${quoteShellArgument(encodedCommand)}`;
+  const userShell = options.userShell || resolveUserShell();
+  const specPath = `${credentials.socketPath}.${credentials.termId}.${credentials.generation}.${credentials.token.slice(0, 16)}.json`;
+  const readyPath = `${specPath}.ready`;
+  fs.writeFileSync(specPath, JSON.stringify({ ...credentials, command }), { flag: 'wx', mode: 0o600 });
+  const monitorCommand = `env ELECTRON_RUN_AS_NODE=1 ${quoteShellArgument(executable)} ${quoteShellArgument(monitorPath)} ${quoteShellArgument(specPath)}`;
+  return buildTrackedShellCommand(userShell, monitorCommand, readyPath);
 }
 
 function mergeAgentLifecycleStates(states, getGeneration, getLifecycleState) {
@@ -173,4 +183,10 @@ function mergeAgentLifecycleStates(states, getGeneration, getLifecycleState) {
   }));
 }
 
-module.exports = { MAX_MESSAGE_BYTES, createAgentLifecycleStore, buildTrackedLaunchCommand, mergeAgentLifecycleStates };
+module.exports = {
+  MAX_MESSAGE_BYTES,
+  createAgentLifecycleStore,
+  resolveUserShell,
+  buildTrackedLaunchCommand,
+  mergeAgentLifecycleStates,
+};

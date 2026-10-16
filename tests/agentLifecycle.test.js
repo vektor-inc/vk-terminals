@@ -87,9 +87,15 @@ test('起動行: 認証情報と元コマンドを固定引数としてクォー
   const command = buildTrackedLaunchCommand(original, {
     socketPath: "/tmp/it's.sock", termId: '7', generation: 3, token: TOKEN_A,
   }, { executable: '/path/node', monitorPath: '/app/monitor.js' });
-  assert.match(command, /^ELECTRON_RUN_AS_NODE=1 /);
+  assert.match(command, /env ELECTRON_RUN_AS_NODE=1 /);
   assert.equal(command.includes('\x1b'), false);
-  assert.ok(command.endsWith(`'${Buffer.from(original).toString('base64')}'`));
+  assert.match(command, /eval "\$vk_command"/);
+  assert.match(command, /env ELECTRON_RUN_AS_NODE=1/);
+  const specPath = command.match(/'(\/tmp\/it'\\''s\.sock\.7\.3\.[a-f0-9]+\.json)'/)[1].replace(/'\\''/g, "'");
+  const spec = JSON.parse(fs.readFileSync(specPath, 'utf8'));
+  fs.unlinkSync(specPath);
+  assert.equal(spec.command, original);
+  assert.equal(spec.token, TOKEN_A);
 });
 
 test('Windows相当: IPCが無効でも状態はnullのまま', async () => {

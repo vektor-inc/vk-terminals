@@ -2,117 +2,107 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-
-const {
-  MARKER_PREFIX,
-  MAX_MARKER_LENGTH,
-  createAgentLifecycleStore,
-  buildTrackedLaunchCommand,
-  createAgentLifecycleMarkerParser,
-  mergeAgentLifecycleStates,
-} = require('../utils/agentLifecycle');
+const net = require('node:net');
+const fs = require('node:fs');
+const path = require('node:path');
+const { MAX_MESSAGE_BYTES, createAgentLifecycleStore, buildTrackedLaunchCommand, mergeAgentLifecycleStates } = require('../utils/agentLifecycle');
 
 const TOKEN_A = 'a'.repeat(64);
-const TOKEN_B = 'b'.repeat(64);
+function waitFor(predicate, timeoutMs = 2000) {
+  const deadline = Date.now() + timeoutMs;
+  return new Promise((resolve, reject) => {
+    const inspect = () => {
+      if (predicate()) return resolve();
+      if (Date.now() >= deadline) return reject(new Error('condition timeout'));
+      setTimeout(inspect, 10);
+    };
+    inspect();
+  });
+}
 
-test('ライフサイクル: spawn と exit の現在世代トークンを別々に厳密照合する', () => {
-  const tokens = [TOKEN_A, TOKEN_B, 'c'.repeat(64), 'd'.repeat(64)];
-  const store = createAgentLifecycleStore(() => tokens.shift());
-  store.initialize('1', 1);
+test('IPC: 認証後の started/exited だけを厳密な順序で反映する', async (t) => {
+  const store = createAgentLifecycleStore({ createToken: () => TOKEN_A });
+  await store.start();
+  t.after(() => store.close());
+  const credentials = store.prepare('1', 1);
+  const socket = net.createConnection(credentials.socketPath);
+  t.after(() => socket.destroy());
+  socket.write(`${JSON.stringify({ type: 'auth', termId: '1', generation: 1, token: TOKEN_A })}\n`);
+  await new Promise((resolve) => socket.once('data', resolve));
+  const duplicate = net.createConnection(credentials.socketPath);
+  const duplicateClosed = new Promise((resolve) => duplicate.once('close', resolve));
+  duplicate.write(`${JSON.stringify({ type: 'auth', termId: '1', generation: 1, token: TOKEN_A })}\n`);
+  await duplicateClosed;
+  socket.write('{"type":"started"}\n');
+  await waitFor(() => store.get('1', 1) === 'running');
+  socket.end('{"type":"exited"}\n');
+  await waitFor(() => store.get('1', 1) === 'exited');
+});
+
+test('IPC: exited 前の接続消失は現在世代だけを null に戻す', async (t) => {
+  const tokens = [TOKEN_A, 'b'.repeat(64)];
+  const store = createAgentLifecycleStore({ createToken: () => tokens.shift() });
+  await store.start();
+  t.after(() => store.close());
   const first = store.prepare('1', 1);
-  assert.equal(store.get('1', 1), null);
-  assert.equal(store.markExited('1', 1, first.exitToken), false);
-  assert.equal(store.markStarted('1', 1, first.startToken), true);
-  assert.equal(store.get('1', 1), 'running');
+  const oldSocket = net.createConnection(first.socketPath);
+  oldSocket.write(`${JSON.stringify({ type: 'auth', termId: '1', generation: 1, token: first.token })}\n`);
+  await new Promise((resolve) => oldSocket.once('data', resolve));
+  oldSocket.write('{"type":"started"}\n');
+  await waitFor(() => store.get('1', 1) === 'running');
+  oldSocket.destroy();
+  await waitFor(() => store.get('1', 1) === null);
+
   const second = store.prepare('1', 2);
-  assert.equal(store.markStarted('1', 2, TOKEN_A), false);
-  assert.equal(store.get('1', 2), null);
-  assert.equal(store.markStarted('1', 2, second.startToken), true);
+  const currentSocket = net.createConnection(second.socketPath);
+  t.after(() => currentSocket.destroy());
+  currentSocket.write(`${JSON.stringify({ type: 'auth', termId: '1', generation: 2, token: second.token })}\n`);
+  await new Promise((resolve) => currentSocket.once('data', resolve));
+  currentSocket.write('{"type":"started"}\n');
+  await waitFor(() => store.get('1', 2) === 'running');
+  assert.equal(store.get('1', 2), 'running');
+});
+
+test('IPC: 不正資格情報と巨大メッセージを拒否し、socketをprivateにする', async (t) => {
+  const store = createAgentLifecycleStore({ createToken: () => TOKEN_A });
+  await store.start();
+  t.after(() => store.close());
+  const credentials = store.prepare('1', 1);
+  assert.equal(fs.statSync(credentials.socketPath).mode & 0o777, 0o600);
+  assert.equal(fs.statSync(path.dirname(credentials.socketPath)).mode & 0o777, 0o700);
+  for (const payload of [
+    `${JSON.stringify({ type: 'auth', termId: '1', generation: 1, token: 'b'.repeat(64) })}\n`,
+    'x'.repeat(MAX_MESSAGE_BYTES + 1),
+  ]) {
+    const socket = net.createConnection(credentials.socketPath);
+    const closed = new Promise((resolve) => socket.once('close', resolve));
+    socket.write(payload);
+    await closed;
+  }
   assert.equal(store.get('1', 1), null);
-  assert.equal(store.get('1', 2), 'running');
-  assert.equal(store.markExited('1', first.generation, first.exitToken), false);
-  assert.equal(store.markExited('1', second.generation, TOKEN_A), false);
-  assert.equal(store.get('1', 2), 'running');
-  assert.equal(store.markExited('1', second.generation, second.exitToken), true);
-  assert.equal(store.get('1', 2), 'exited');
 });
 
-test('ライフサイクル: 起動を書き込めない世代と追跡できない状態は null に倒す', () => {
-  const tokens = [TOKEN_A, TOKEN_B];
-  const store = createAgentLifecycleStore(() => tokens.shift());
-  store.initialize('plain', 0);
-  assert.equal(store.get('plain', 0), null);
-  const marker = store.prepare('agent', 1);
-  store.markStarted('agent', 1, marker.startToken);
-  assert.equal(store.markUnknown('agent', 1, TOKEN_A), false);
-  assert.equal(store.markUnknown('agent', 1, marker.exitToken), true);
-  assert.equal(store.get('agent', 1), null);
-});
-
-test('起動行: 元コマンドを改変せず監視プロセスの単一引数へ渡す', () => {
+test('起動行: 認証情報と元コマンドを固定引数としてクォートする', () => {
   const original = `env FOO='a b' codex --config 'x="y"'`;
-  const command = buildTrackedLaunchCommand(original, { generation: 7, startToken: TOKEN_A, exitToken: TOKEN_B }, {
-    executable: '/path with quote/node', monitorPath: "/app/it's monitor.js",
-  });
+  const command = buildTrackedLaunchCommand(original, {
+    socketPath: "/tmp/it's.sock", termId: '7', generation: 3, token: TOKEN_A,
+  }, { executable: '/path/node', monitorPath: '/app/monitor.js' });
+  assert.match(command, /^ELECTRON_RUN_AS_NODE=1 /);
   assert.equal(command.includes('\x1b'), false);
-  assert.match(command, /^\/bin\/sh /);
-  assert.match(command, / '7' 'a{64}' 'b{64}' /);
-  const encoded = command.match(/ 'b{64}' '([A-Za-z0-9+/=]+)'$/)[1];
-  assert.equal(Buffer.from(encoded, 'base64').toString(), original);
+  assert.ok(command.endsWith(`'${Buffer.from(original).toString('base64')}'`));
 });
 
-test('起動行: fish に互換性のない外側シェル構文を含まない', () => {
-  const command = buildTrackedLaunchCommand('codex --version', {
-    generation: 7, startToken: TOKEN_A, exitToken: TOKEN_B,
-  });
-  assert.equal(command.includes('$?'), false);
-  assert.equal(/[;{}]/.test(command), false);
-  assert.match(command, /^\/bin\/sh(?: '[^']*'){7}$/);
-});
-
-test('出力パーサー: 分割された start/exit マーカーだけを画面から除き、厳密に通知する', () => {
-  const markers = [];
-  const parser = createAgentLifecycleMarkerParser((type, generation, token) => markers.push({ type, generation, token }));
-  const startMarker = `${MARKER_PREFIX}start;3;${TOKEN_A}\x07`;
-  const exitMarker = `${MARKER_PREFIX}exit;3;${TOKEN_B}\x07`;
-  const unknownMarker = `${MARKER_PREFIX}unknown;3;${TOKEN_B}\x07`;
-  const markersText = startMarker + exitMarker + unknownMarker;
-  const chunks = ['before', markersText.slice(0, 2), markersText.slice(2, 91), markersText.slice(91), 'after'];
-  const visible = chunks.map((chunk) => parser.push(chunk)).join('') + parser.flush();
-  assert.equal(visible, 'beforeafter');
-  assert.deepEqual(markers, [
-    { type: 'start', generation: 3, token: TOKEN_A },
-    { type: 'exit', generation: 3, token: TOKEN_B },
-    { type: 'unknown', generation: 3, token: TOKEN_B },
-  ]);
-});
-
-test('ライフサイクル: 正常な exit 後と異なる世代・トークンの unknown は無視する', () => {
-  const tokens = [TOKEN_A, TOKEN_B];
-  const store = createAgentLifecycleStore(() => tokens.shift());
-  const marker = store.prepare('1', 3);
-  store.markStarted('1', 3, marker.startToken);
-  assert.equal(store.markUnknown('1', 2, marker.exitToken), false);
-  assert.equal(store.markUnknown('1', 3, TOKEN_A), false);
-  assert.equal(store.markExited('1', 3, marker.exitToken), true);
-  assert.equal(store.markUnknown('1', 3, marker.exitToken), false);
-  assert.equal(store.get('1', 3), 'exited');
-});
-
-test('出力パーサー: 類似文字列は消さず、未完候補を上限なく保持しない', () => {
-  const markers = [];
-  const parser = createAgentLifecycleMarkerParser((type, generation, token) => markers.push({ type, generation, token }));
-  const malformed = `${MARKER_PREFIX}exit;3;short`;
-  const visible = parser.push(malformed + 'x'.repeat(MAX_MARKER_LENGTH + 10)) + parser.flush();
-  assert.equal(visible, malformed + 'x'.repeat(MAX_MARKER_LENGTH + 10));
-  assert.deepEqual(markers, []);
+test('Windows相当: IPCが無効でも状態はnullのまま', async () => {
+  const store = createAgentLifecycleStore({ platform: 'win32' });
+  assert.equal(await store.start(), false);
+  store.initialize('1', 1);
+  assert.equal(store.prepare('1', 1), null);
+  assert.equal(store.get('1', 1), null);
 });
 
 test('状態マージ: 既存値を保ち、世代と客観状態を追加する', () => {
   const states = { pane: { termId: '4', status: 'idle' } };
-  assert.deepEqual(
-    mergeAgentLifecycleStates(states, () => 2, () => 'exited'),
-    { pane: { termId: '4', status: 'idle', agentGeneration: 2, agentCommandState: 'exited' } }
-  );
-  assert.equal(states.pane.agentCommandState, undefined);
+  assert.deepEqual(mergeAgentLifecycleStates(states, () => 2, () => 'exited'), {
+    pane: { termId: '4', status: 'idle', agentGeneration: 2, agentCommandState: 'exited' },
+  });
 });

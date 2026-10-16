@@ -1,56 +1,131 @@
 'use strict';
 
 const crypto = require('node:crypto');
-const MARKER_PREFIX = '\x1b]777;vk-terminals;agent-';
-const MARKER_TERMINATOR = '\x07';
-const TOKEN_PATTERN = /^[a-f0-9]{64}$/;
-const MAX_MARKER_LENGTH = 240;
+const fs = require('node:fs');
+const net = require('node:net');
+const os = require('node:os');
+const path = require('node:path');
 
-/** ペインごとの現在世代、起動状態、世代固有トークンを保持する。 */
-function createAgentLifecycleStore(createToken = () => crypto.randomBytes(32).toString('hex')) {
+const TOKEN_PATTERN = /^[a-f0-9]{64}$/;
+const MAX_MESSAGE_BYTES = 1024;
+
+function quoteShellArgument(value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`;
+}
+
+/** main プロセスが所有する、世代単位の認証済みライフサイクル接続を管理する。 */
+function createAgentLifecycleStore(options = {}) {
+  const createToken = options.createToken || (() => crypto.randomBytes(32).toString('hex'));
+  const platform = options.platform || process.platform;
   const states = new Map();
-  const newToken = () => {
-    const token = createToken();
-    if (!TOKEN_PATTERN.test(token)) throw new Error('invalid agent lifecycle token');
-    return token;
+  const sockets = new Set();
+  let server = null;
+  let runtimeDir = null;
+  let socketPath = null;
+
+  const clearConnection = (current, socket) => {
+    if (current.connection !== socket) return;
+    current.connection = null;
+    if (current.phase !== 'exited') {
+      current.phase = 'unknown';
+      current.state = null;
+    }
   };
+  const rejectSocket = (socket) => { if (!socket.destroyed) socket.destroy(); };
+  const handleConnection = (socket) => {
+    sockets.add(socket);
+    let buffer = Buffer.alloc(0);
+    let current = null;
+    let authenticated = false;
+    socket.on('data', (chunk) => {
+      buffer = Buffer.concat([buffer, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)]);
+      if (buffer.length > MAX_MESSAGE_BYTES) return rejectSocket(socket);
+      let newline;
+      while ((newline = buffer.indexOf(0x0a)) >= 0) {
+        const line = buffer.subarray(0, newline);
+        buffer = buffer.subarray(newline + 1);
+        if (line.length === 0 || line.length > MAX_MESSAGE_BYTES) return rejectSocket(socket);
+        let message;
+        try { message = JSON.parse(line.toString('utf8')); } catch (_error) { return rejectSocket(socket); }
+        if (!message || typeof message !== 'object' || Array.isArray(message)) return rejectSocket(socket);
+        if (!authenticated) {
+          if (message.type !== 'auth' || typeof message.termId !== 'string' ||
+              !Number.isSafeInteger(message.generation) || !TOKEN_PATTERN.test(message.token || '')) return rejectSocket(socket);
+          current = states.get(message.termId);
+          if (!current || current.generation !== message.generation || current.token !== message.token ||
+              current.phase !== 'prepared' || current.connection) return rejectSocket(socket);
+          authenticated = true;
+          current.connection = socket;
+          current.phase = 'connected';
+          current.token = null;
+          socket.write('{"type":"ready"}\n');
+          continue;
+        }
+        if (message.type === 'started' && current.phase === 'connected') {
+          current.phase = 'running';
+          current.state = 'running';
+        } else if (message.type === 'exited' && current.phase === 'running') {
+          current.phase = 'exited';
+          current.state = 'exited';
+        } else return rejectSocket(socket);
+      }
+    });
+    socket.on('error', () => {});
+    socket.on('close', () => {
+      sockets.delete(socket);
+      if (current) clearConnection(current, socket);
+    });
+  };
+
   return {
+    async start() {
+      if (platform === 'win32' || server) return false;
+      try {
+        runtimeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-agent-'));
+        fs.chmodSync(runtimeDir, 0o700);
+        socketPath = path.join(runtimeDir, 'lifecycle.sock');
+        server = net.createServer(handleConnection);
+        await new Promise((resolve, reject) => {
+          server.once('error', reject);
+          server.listen(socketPath, () => { server.off('error', reject); resolve(); });
+        });
+        // listen 後の socket エラーで main プロセスを落とさず、既存接続の切断検知を継続する。
+        server.on('error', () => {});
+        fs.chmodSync(socketPath, 0o600);
+        return true;
+      } catch (_error) {
+        if (server) server.close();
+        server = null;
+        socketPath = null;
+        if (runtimeDir) fs.rmSync(runtimeDir, { recursive: true, force: true });
+        runtimeDir = null;
+        return false;
+      }
+    },
     initialize(termId, generation) {
-      states.set(String(termId), { generation, state: null, startToken: null, exitToken: null });
+      states.set(String(termId), { generation, state: null, phase: 'idle', token: null, connection: null });
     },
     prepare(termId, generation) {
-      const marker = { generation, startToken: newToken(), exitToken: newToken() };
-      states.set(String(termId), { ...marker, state: null });
-      return marker;
-    },
-    markStarted(termId, generation, token) {
-      const current = states.get(String(termId));
-      if (!current || current.generation !== generation || current.startToken !== token) return false;
-      current.state = 'running';
-      current.startToken = null;
-      return true;
-    },
-    markExited(termId, generation, token) {
-      const current = states.get(String(termId));
-      if (!current || current.generation !== generation || current.state !== 'running' || current.exitToken !== token) return false;
-      current.state = 'exited';
-      current.exitToken = null;
-      return true;
-    },
-    markUnknown(termId, generation, token) {
-      const current = states.get(String(termId));
-      if (!current || current.generation !== generation || current.state !== 'running' || current.exitToken !== token) return false;
-      current.state = null;
-      current.startToken = null;
-      current.exitToken = null;
-      return true;
+      const id = String(termId);
+      const previous = states.get(id);
+      if (previous?.connection) previous.connection.destroy();
+      if (!server || !socketPath) {
+        states.set(id, { generation, state: null, phase: 'unavailable', token: null, connection: null });
+        return null;
+      }
+      const token = createToken();
+      if (!TOKEN_PATTERN.test(token)) throw new Error('invalid agent lifecycle token');
+      states.set(id, { generation, state: null, phase: 'prepared', token, connection: null });
+      return { termId: id, generation, token, socketPath };
     },
     reset(termId, generation) {
       const current = states.get(String(termId));
       if (!current || current.generation !== generation) return false;
+      if (current.connection) current.connection.destroy();
       current.state = null;
-      current.startToken = null;
-      current.exitToken = null;
+      current.phase = 'unknown';
+      current.token = null;
+      current.connection = null;
       return true;
     },
     get(termId, generation) {
@@ -58,90 +133,37 @@ function createAgentLifecycleStore(createToken = () => crypto.randomBytes(32).to
       return current && current.generation === generation ? current.state : null;
     },
     delete(termId) {
+      const current = states.get(String(termId));
+      if (current?.connection) current.connection.destroy();
       states.delete(String(termId));
     },
+    async close() {
+      for (const socket of sockets) socket.destroy();
+      sockets.clear();
+      const closingServer = server;
+      server = null;
+      socketPath = null;
+      if (closingServer) await new Promise((resolve) => closingServer.close(resolve));
+      if (runtimeDir) fs.rmSync(runtimeDir, { recursive: true, force: true });
+      runtimeDir = null;
+    },
   };
 }
 
-function quoteShellArgument(value) {
-  return `'${String(value).replace(/'/g, `'"'"'`)}'`;
-}
-
-/** 元のコマンド文字列を改変せず、専用監視プロセスへ渡す起動行を作る。 */
-function buildTrackedLaunchCommand(command, marker, options = {}) {
+/** 外部入力をシェル構文として再解釈せず、監視プロセスの固定引数へ渡す。 */
+function buildTrackedLaunchCommand(command, credentials, options = {}) {
   if (typeof command !== 'string' || !command) throw new Error('launch command required');
-  if (!Number.isSafeInteger(marker?.generation) || marker.generation < 1) throw new Error('invalid agent lifecycle generation');
-  if (!TOKEN_PATTERN.test(marker?.startToken || '') || !TOKEN_PATTERN.test(marker?.exitToken || '')) throw new Error('invalid agent lifecycle token');
+  if (!credentials || typeof credentials.termId !== 'string' ||
+      !Number.isSafeInteger(credentials.generation) || credentials.generation < 1 ||
+      !TOKEN_PATTERN.test(credentials.token || '') || typeof credentials.socketPath !== 'string') {
+    throw new Error('invalid agent lifecycle credentials');
+  }
   const executable = options.executable || process.execPath;
   const monitorPath = options.monitorPath || require.resolve('./agentLifecycleMonitor');
-  const wrapperPath = options.wrapperPath || require.resolve('./agentLifecycleWrapper.sh');
   const encodedCommand = Buffer.from(command, 'utf8').toString('base64');
-  // 利用者のシェルに依存する後処理は置かず、停止中もラッパーと監視を同じ前景ジョブに保つ。
-  return `/bin/sh ${quoteShellArgument(wrapperPath)} ${quoteShellArgument(executable)} ${quoteShellArgument(monitorPath)} ${quoteShellArgument(marker.generation)} ${quoteShellArgument(marker.startToken)} ${quoteShellArgument(marker.exitToken)} ${quoteShellArgument(encodedCommand)}`;
+  return `ELECTRON_RUN_AS_NODE=1 ${quoteShellArgument(executable)} ${quoteShellArgument(monitorPath)} ${quoteShellArgument(credentials.socketPath)} ${quoteShellArgument(credentials.termId)} ${quoteShellArgument(credentials.generation)} ${quoteShellArgument(credentials.token)} ${quoteShellArgument(encodedCommand)}`;
 }
 
-/** 分割チャンクをまたぐ start/exit/unknown マーカーを取り除き、検証済み通知だけを返す。 */
-function createAgentLifecycleMarkerParser(onMarker) {
-  let pending = '';
-  const parse = (flush) => {
-    let output = '';
-    while (pending) {
-      const start = pending.indexOf(MARKER_PREFIX);
-      if (start < 0) {
-        if (flush) {
-          output += pending;
-          pending = '';
-          break;
-        }
-        let retained = 0;
-        for (let length = Math.min(pending.length, MARKER_PREFIX.length - 1); length > 0; length -= 1) {
-          if (MARKER_PREFIX.startsWith(pending.slice(-length))) {
-            retained = length;
-            break;
-          }
-        }
-        output += pending.slice(0, pending.length - retained);
-        pending = pending.slice(pending.length - retained);
-        break;
-      }
-      output += pending.slice(0, start);
-      pending = pending.slice(start);
-      const end = pending.indexOf(MARKER_TERMINATOR, MARKER_PREFIX.length);
-      if (end < 0) {
-        if (!flush && pending.length <= MAX_MARKER_LENGTH) break;
-        output += pending[0];
-        pending = pending.slice(1);
-        continue;
-      }
-      const match = pending.slice(MARKER_PREFIX.length, end).match(/^(start|exit|unknown);(\d+);([a-f0-9]{64})$/);
-      if (!match || end + 1 > MAX_MARKER_LENGTH) {
-        output += pending[0];
-        pending = pending.slice(1);
-        continue;
-      }
-      const generation = Number(match[2]);
-      if (!Number.isSafeInteger(generation) || generation < 1) {
-        output += pending[0];
-        pending = pending.slice(1);
-        continue;
-      }
-      onMarker(match[1], generation, match[3]);
-      pending = pending.slice(end + 1);
-    }
-    return output;
-  };
-  return {
-    push(chunk) {
-      pending += String(chunk);
-      return parse(false);
-    },
-    flush() {
-      return parse(true);
-    },
-  };
-}
-
-// renderer の状態を変更せず、現在世代の客観的な AI コマンド状態だけを追加する。
 function mergeAgentLifecycleStates(states, getGeneration, getLifecycleState) {
   if (!states || typeof states !== 'object' || Array.isArray(states)) return states;
   return Object.fromEntries(Object.entries(states).map(([paneId, state]) => {
@@ -151,11 +173,4 @@ function mergeAgentLifecycleStates(states, getGeneration, getLifecycleState) {
   }));
 }
 
-module.exports = {
-  MARKER_PREFIX,
-  MAX_MARKER_LENGTH,
-  createAgentLifecycleStore,
-  buildTrackedLaunchCommand,
-  createAgentLifecycleMarkerParser,
-  mergeAgentLifecycleStates,
-};
+module.exports = { MAX_MESSAGE_BYTES, createAgentLifecycleStore, buildTrackedLaunchCommand, mergeAgentLifecycleStates };

@@ -2,12 +2,13 @@
 'use strict';
 
 const { spawn } = require('node:child_process');
+const net = require('node:net');
+
 const TOKEN_PATTERN = /^[a-f0-9]{64}$/;
-const [generationText, startToken, exitToken, encodedCommand] = process.argv.slice(2);
+const MAX_REPLY_BYTES = 1024;
+const [socketPath, termId, generationText, token, encodedCommand] = process.argv.slice(2);
 const generation = Number(generationText);
 
-// 前景プロセスグループへの割り込みでは子にも同じ信号が届く。監視側だけ先に終了せず、
-// 子が終了する場合も処理を継続する場合も close を客観的に確認する。
 process.on('SIGINT', () => {});
 process.on('SIGQUIT', () => {});
 
@@ -40,17 +41,12 @@ function splitCommand(command) {
   return words;
 }
 
-if (!Number.isSafeInteger(generation) || generation < 1 || !TOKEN_PATTERN.test(startToken || '') ||
-    !TOKEN_PATTERN.test(exitToken || '') || !/^[A-Za-z0-9+/]*={0,2}$/.test(encodedCommand || '')) {
-  process.exitCode = 64;
-} else {
-  const command = Buffer.from(encodedCommand, 'base64').toString('utf8');
+function spawnCommand(command, socket) {
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;
   let words;
-  try {
-    words = splitCommand(command);
-  } catch (_error) {
+  try { words = splitCommand(command); } catch (_error) {
+    if (socket) socket.destroy();
     process.exitCode = 64;
     return;
   }
@@ -60,21 +56,57 @@ if (!Number.isSafeInteger(generation) || generation < 1 || !TOKEN_PATTERN.test(s
     env[assignment.slice(0, separator)] = assignment.slice(separator + 1);
   }
   if (words.length === 0) {
+    if (socket) socket.destroy();
     process.exitCode = 64;
     return;
   }
-  // shell を介さず実コマンドを spawn するため、spawn は AI プロセスの生成成功を示す。
   const child = spawn(words[0], words.slice(1), { stdio: 'inherit', env, detached: false });
   let spawned = false;
   child.once('spawn', () => {
     spawned = true;
-    process.stdout.write(`\x1b]777;vk-terminals;agent-start;${generation};${startToken}\x07`);
+    if (socket && !socket.destroyed) socket.write('{"type":"started"}\n');
   });
-  child.once('error', () => { process.exitCode = 127; });
+  child.once('error', () => {
+    if (socket) socket.destroy();
+    process.exitCode = 127;
+  });
   child.once('close', (code, signal) => {
     if (!spawned) return;
-    process.stdout.write(`\x1b]777;vk-terminals;agent-exit;${generation};${exitToken}\x07`, () => {
-      process.exitCode = signal ? 128 : (Number.isInteger(code) ? code : 1);
-    });
+    const finish = () => { process.exitCode = signal ? 128 : (Number.isInteger(code) ? code : 1); };
+    if (socket && !socket.destroyed) socket.end('{"type":"exited"}\n', finish);
+    else finish();
   });
+}
+
+if (typeof socketPath !== 'string' || !socketPath || typeof termId !== 'string' || !termId ||
+    !Number.isSafeInteger(generation) || generation < 1 || !TOKEN_PATTERN.test(token || '') ||
+    !/^[A-Za-z0-9+/]*={0,2}$/.test(encodedCommand || '')) {
+  process.exitCode = 64;
+} else {
+  const command = Buffer.from(encodedCommand, 'base64').toString('utf8');
+  const socket = net.createConnection(socketPath);
+  let reply = Buffer.alloc(0);
+  let settled = false;
+  const fallback = () => {
+    if (settled) return;
+    settled = true;
+    socket.destroy();
+    // IPC を利用できない環境でも AI 起動は維持し、状態だけを追跡不能の null にする。
+    spawnCommand(command, null);
+  };
+  socket.once('connect', () => socket.write(`${JSON.stringify({ type: 'auth', termId, generation, token })}\n`));
+  socket.on('data', (chunk) => {
+    if (settled) return;
+    reply = Buffer.concat([reply, chunk]);
+    if (reply.length > MAX_REPLY_BYTES) return fallback();
+    const newline = reply.indexOf(0x0a);
+    if (newline < 0) return;
+    let message;
+    try { message = JSON.parse(reply.subarray(0, newline).toString('utf8')); } catch (_error) { return fallback(); }
+    if (!message || message.type !== 'ready') return fallback();
+    settled = true;
+    spawnCommand(command, socket);
+  });
+  socket.once('error', fallback);
+  socket.once('close', fallback);
 }

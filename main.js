@@ -69,7 +69,6 @@ const { scheduleLaunchCommand } = require('./utils/delayedLaunch');
 const {
   createAgentLifecycleStore,
   buildTrackedLaunchCommand,
-  createAgentLifecycleMarkerParser,
   mergeAgentLifecycleStates,
 } = require('./utils/agentLifecycle');
 // 最初のペインで起動する AI エンジン・モデルの設定解決（issue #419）と、
@@ -1146,6 +1145,7 @@ function compareSemver(a, b) {
  */
 async function cleanupPtys() {
   await terminateAllPtysAndWaitIncludingExiting(ptys.values(), exitingPtys.values());
+  await agentLifecycles.close();
 }
 
 /**
@@ -1370,6 +1370,7 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
+  await agentLifecycles.start();
   createWindow();
   startWidgetWatcher();
   await checkAndUpdate();
@@ -1415,6 +1416,9 @@ function finalizeBeforeQuit() {
   stopWidgetWatcher();
   try { fs.unlinkSync(STATE_FILE); } catch (e) {}
   if (httpServer) httpServer.close();
+  agentLifecycles.close().catch((e) => {
+    console.error(`${LOG_PREFIX} agent lifecycle server cleanup failed`, e && e.message);
+  });
 }
 
 app.on('before-quit', (event) => {
@@ -2139,17 +2143,10 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
     paneCreationTrustWatchers.set(id, () => { trustGate.markTrustHandled(); });
   }
 
-  const lifecycleParser = createAgentLifecycleMarkerParser((type, generation, token) => {
-    if (type === 'start') agentLifecycles.markStarted(id, generation, token);
-    else if (type === 'exit') agentLifecycles.markExited(id, generation, token);
-    else agentLifecycles.markUnknown(id, generation, token);
-  });
-
   ptyProcess.onData((data) => {
-    const visibleData = lifecycleParser.push(data);
-    if (promptWatcher) promptWatcher(visibleData);
+    if (promptWatcher) promptWatcher(data);
     if (win && !win.isDestroyed()) {
-      if (visibleData) win.webContents.send('terminal:data', id, visibleData);
+      if (data) win.webContents.send('terminal:data', id, data);
     }
   });
 
@@ -2190,8 +2187,8 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
     // POSIX では専用監視プロセスが実際の spawn/close を通知する。
     let commandToWrite = launchCommand;
     if (process.platform !== 'win32') {
-      const marker = agentLifecycles.prepare(id, 1);
-      commandToWrite = buildTrackedLaunchCommand(launchCommand, marker);
+      const credentials = agentLifecycles.prepare(id, 1);
+      if (credentials) commandToWrite = buildTrackedLaunchCommand(launchCommand, credentials);
     }
     // 待っている間に PTY が消えた・書き込みが例外になった場合は、使われない専用 CODEX_HOME を回収する。
     scheduleLaunchCommand({
@@ -2200,7 +2197,7 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
       ptyProcess,
       command: commandToWrite,
       discard: discardLaunchHome,
-      onWriteFailure: () => agentLifecycles.markUnknown(id, 1),
+      onWriteFailure: () => agentLifecycles.reset(id, 1),
       delayMs: 200,
       log: (message) => console.error(`${LOG_PREFIX} ${message}`),
     });
@@ -3501,11 +3498,11 @@ function startHttpApi() {
           let startedGeneration = null;
           const lifecycleLaunch = {
             wrap(command) {
-              // 新世代を公開してから、その世代のマーカーを含むコマンドを書き込む。
+              // 新世代を公開してから、その世代の認証情報を含むコマンドを書き込む。
               // 書き込み失敗時も停止済みの旧世代へ戻さず、不明として安全側に倒す。
               startedGeneration = agentGenerations.increment(request.termId);
-              const marker = agentLifecycles.prepare(request.termId, startedGeneration);
-              return buildTrackedLaunchCommand(command, marker);
+              const credentials = agentLifecycles.prepare(request.termId, startedGeneration);
+              return credentials ? buildTrackedLaunchCommand(command, credentials) : command;
             },
           };
           const operation = restartAgentInTerminal(ptyProcess, request, launchResolution.options, lifecycleLaunch);

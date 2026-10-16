@@ -53,30 +53,39 @@ function isDescendant(processes, pid, ancestorPid, ancestorLstart) {
 function inspectLifecycle(snapshot, processes) {
   const shell = processes.get(snapshot.shellPid);
   if (!shell || !isSameProcessStart(shell.lstart, snapshot.shellLstart)) return { state: null, terminal: true };
-  if (snapshot.trackedPgid === null) {
-    const candidate = shell.tpgid;
-    if (!Number.isSafeInteger(candidate) || candidate <= 0 || candidate === shell.pgid) return { state: null };
+  const trackedGroups = new Map(snapshot.trackedGroups || []);
+  const candidate = shell.tpgid;
+  if (Number.isSafeInteger(candidate) && candidate > 0 && candidate !== shell.pgid && !trackedGroups.has(candidate)) {
     const members = [...processes.values()].filter((process) =>
       process.pgid === candidate && isDescendant(processes, process.pid, shell.pid, shell.lstart));
-    if (members.length === 0) return { state: null };
-    if (snapshot.baselinePgids?.has(candidate)) return { state: null };
-    if (members.some((process) => {
+    const isBaselineGroup = snapshot.baselinePgids?.has(candidate);
+    const hasBaselineMember = members.some((process) => {
       const baselineStart = snapshot.baselineIdentities?.get(process.pid);
       return baselineStart !== undefined && isSameProcessStart(process.lstart, baselineStart);
-    })) return { state: null };
-    return { state: 'running', trackedPgid: candidate, identities: new Map(members.map((process) => [process.pid, process.lstart])) };
+    });
+    // marker 前は、シェル関数内で順次起動される別 PGID も同じ世代として取得する。
+    if (members.length > 0 && !isBaselineGroup && !hasBaselineMember && !snapshot.completionReceived) {
+      trackedGroups.set(candidate, new Map(members.map((process) => [process.pid, process.lstart])));
+    }
   }
-  const members = [...processes.values()].filter((process) => process.pgid === snapshot.trackedPgid);
-  if (members.length === 0) return { state: 'exited', terminal: true };
-  const knownAlive = members.some((process) => {
-    const knownStart = snapshot.identities.get(process.pid);
-    return knownStart !== undefined && isSameProcessStart(process.lstart, knownStart);
-  });
-  // 同じ PGID にプロセスが残る限り、未観測の子と PGID 再利用を区別できないため終了とは断定しない。
-  if (!knownAlive) return { state: null, terminal: true };
-  const identities = new Map(snapshot.identities);
-  for (const process of members) identities.set(process.pid, process.lstart);
-  return { state: 'running', identities };
+
+  let hasAliveGroup = false;
+  for (const [pgid, identities] of trackedGroups) {
+    const members = [...processes.values()].filter((process) => process.pgid === pgid);
+    if (members.length === 0) continue;
+    const knownAlive = members.some((process) => {
+      const knownStart = identities.get(process.pid);
+      return knownStart !== undefined && isSameProcessStart(process.lstart, knownStart);
+    });
+    // 同じ PGID の再利用と未観測 member を区別できない場合は終了を断定しない。
+    if (!knownAlive) return { state: null, terminal: true };
+    hasAliveGroup = true;
+    for (const process of members) identities.set(process.pid, process.lstart);
+  }
+
+  if (trackedGroups.size === 0) return { state: null, trackedGroups, hasAliveGroup: false };
+  if (hasAliveGroup || !snapshot.completionReceived) return { state: 'running', trackedGroups, hasAliveGroup };
+  return { state: 'exited', trackedGroups, hasAliveGroup: false, terminal: true };
 }
 
 function quoteForSingleShellArgument(value) {
@@ -86,11 +95,14 @@ function quoteForSingleShellArgument(value) {
 function buildTrackedLaunchCommand(command, marker, shellPath) {
   // 制御文字を起動行へ直接埋め込むと PTY のエコーを完了通知と誤認するため、printf で復元する。
   const markerArgument = quoteForSingleShellArgument(`\\033]1337;VKAgentLifecycle=${marker}\\007`);
+  const commandName = `vk_agent_command_${marker}`;
+  const commandArgument = quoteForSingleShellArgument(command);
   if (pathBasename(shellPath) === 'fish') {
-    return `begin; ${command}; set -l vk_agent_status_${marker} $status; printf %b ${markerArgument}; command sh -c "exit \$vk_agent_status_${marker}"; end`;
+    const statusName = `vk_agent_status_${marker}`;
+    return `begin; set -l ${commandName} ${commandArgument}; eval \"\$${commandName}\"; set -l ${statusName} \$status; set -e ${commandName}; printf %b ${markerArgument}; command sh -c \"exit \$${statusName}\"; end`;
   }
   const statusName = `vk_agent_status_${marker}`;
-  return `{ ${command}; ${statusName}=$?; printf %b ${markerArgument}; eval "unset ${statusName}; command sh -c 'exit \$${statusName}'"; }`;
+  return `${commandName}=${commandArgument}; eval \"\$${commandName}\"; ${statusName}=$?; unset ${commandName}; printf %b ${markerArgument}; eval \"unset ${statusName}; command sh -c 'exit \$${statusName}'\"`;
 }
 
 function pathBasename(filePath) {
@@ -129,16 +141,20 @@ function createAgentLifecycleStore(options = {}) {
     if (states.get(id) !== entry || entry.cancelled || closed) { entry.polling = false; return; }
     const result = inspectLifecycle(entry, processes);
     entry.state = result.state;
-    if (result.trackedPgid !== undefined) entry.trackedPgid = result.trackedPgid;
-    if (result.identities) entry.identities = result.identities;
+    if (result.trackedGroups) entry.trackedGroups = result.trackedGroups;
+    if (result.hasAliveGroup && entry.acquisitionTimer) {
+      clearTimer(entry.acquisitionTimer);
+      entry.acquisitionTimer = null;
+    } else if (entry.trackedGroups.size > 0 && !result.hasAliveGroup && !entry.completionReceived && !entry.acquisitionTimer) {
+      // group 間の builtin 処理を許容しつつ、後継を確認できない状態は有限時間で null に倒す。
+      entry.acquisitionTimer = setTimer(() => finishAcquisition(entry), acquisitionTimeoutMs);
+    }
     entry.polling = false;
     if (result.terminal) stop(entry); else schedule(id, entry);
   };
   const finishAcquisition = (entry) => {
-    if (entry.trackedPgid === null) {
-      entry.state = null;
-      stop(entry);
-    }
+    entry.state = null;
+    stop(entry);
   };
   return {
     initialize(termId, generation) {
@@ -152,7 +168,7 @@ function createAgentLifecycleStore(options = {}) {
       const entry = states.get(id);
       const isCurrent = () => states.get(id) === entry && entry?.generation === generation && entry?.launchToken === launchToken && !entry.cancelled && !closed;
       if (!isCurrent()) return { status: 'cancelled' };
-      Object.assign(entry, { shellPid, shellLstart: null, trackedPgid: null, identities: new Map(), baselinePgids: new Set(), baselineIdentities: new Map(), marker: null, markerBuffer: '', acquisitionOpen: false, acquisitionTimer: null });
+      Object.assign(entry, { shellPid, shellLstart: null, trackedGroups: new Map(), baselinePgids: new Set(), baselineIdentities: new Map(), marker: null, markerBuffer: '', completionReceived: false, acquisitionOpen: false, acquisitionTimer: null });
       if (platform === 'win32' || !Number.isSafeInteger(shellPid) || shellPid <= 0) return { status: 'passthrough', command };
       let processes;
       try { processes = await listProcesses(); } catch (_error) {
@@ -183,12 +199,15 @@ function createAgentLifecycleStore(options = {}) {
       const combined = entry.markerBuffer + data;
       entry.markerBuffer = '';
       if (combined.includes(marker)) {
+        entry.completionReceived = true;
         if (entry.acquisitionOpen) {
           entry.acquisitionOpen = false;
           if (entry.acquisitionTimer) clearTimer(entry.acquisitionTimer);
           entry.acquisitionTimer = null;
-          finishAcquisition(entry);
+          if (entry.trackedGroups.size === 0) finishAcquisition(entry);
         }
+        // marker が group の消失より先に届いた場合も、次回の OS 観測まで running を維持する。
+        if (!entry.cancelled && !closed && entry.trackedGroups.size > 0 && !entry.timer && !entry.polling) schedule(String(termId), entry);
         return combined.replaceAll(marker, '');
       }
       // PTY は任意の位置でデータを分割するため、正しいマーカーの接頭辞だけを次回へ持ち越す。

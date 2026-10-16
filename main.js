@@ -2171,7 +2171,7 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
 
   ptys.set(id, ptyProcess);
   agentGenerations.initialize(id, !noClaude);
-  agentLifecycles.initialize(id, !noClaude ? 1 : 0);
+  const initialLaunchToken = agentLifecycles.initialize(id, !noClaude ? 1 : 0);
 
   // 起動後に自動で AI エンジンを実行（素のターミナルモード時はスキップ）。
   // 起動コマンドは PTY を作る前に組み立て済み（launchCommand。issue #428）。
@@ -2189,7 +2189,8 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
       id,
       ptyProcess,
       command: launchCommand,
-      prepareCommand: (command) => agentLifecycles.prepare(id, 1, ptyProcess.pid, command, shell),
+      prepareCommand: (command) => agentLifecycles.prepare(id, 1, initialLaunchToken, ptyProcess.pid, command, shell),
+      isLaunchCurrent: () => agentLifecycles.isCurrent(id, 1, initialLaunchToken),
       discard: discardLaunchHome,
       delayMs: 200,
       log: (message) => console.error(`${LOG_PREFIX} ${message}`),
@@ -2414,9 +2415,10 @@ async function restartAgentInTerminal(ptyProcess, request, launchOptions, lifecy
   if (modelIgnored) {
     console.warn(`${LOG_PREFIX} model is ignored for engine '${request.engine}'`);
   }
-  const generation = lifecycleLaunch.beforeWrite();
-  const trackedCommand = await lifecycleLaunch.prepareWrite(generation, command);
-  ptyProcess.write(`${trackedCommand}\r`);
+  const launch = lifecycleLaunch.beforeWrite();
+  const prepared = await lifecycleLaunch.prepareWrite(launch, command);
+  if (prepared.status === 'cancelled' || !lifecycleLaunch.isCurrent(launch) || ptys.get(request.termId) !== ptyProcess) return false;
+  ptyProcess.write(`${prepared.command}\r`);
 
   // 既知の未対応事項（issue #392・安藤の指摘・LOW-G）: responder は cd の書き込みより前に
   // 取り付けているため、シェルがエコーバックする `cd` 行（cwd のディレクトリ名を含む）が
@@ -3490,14 +3492,19 @@ function startHttpApi() {
           }
           let launchHomeInUse = false;
           let startedGeneration = null;
+          let startedLaunchToken = null;
           const lifecycleLaunch = {
             beforeWrite() {
               startedGeneration = agentGenerations.increment(request.termId);
-              agentLifecycles.initialize(request.termId, startedGeneration);
-              return startedGeneration;
+              const launchToken = agentLifecycles.initialize(request.termId, startedGeneration);
+              startedLaunchToken = launchToken;
+              return { generation: startedGeneration, launchToken };
             },
-            prepareWrite(generation, command) {
-              return agentLifecycles.prepare(request.termId, generation, ptyProcess.pid, command, process.env.SHELL);
+            prepareWrite(launch, command) {
+              return agentLifecycles.prepare(request.termId, launch.generation, launch.launchToken, ptyProcess.pid, command, process.env.SHELL);
+            },
+            isCurrent(launch) {
+              return agentLifecycles.isCurrent(request.termId, launch.generation, launch.launchToken);
             },
           };
           const operation = restartAgentInTerminal(ptyProcess, request, launchResolution.options, lifecycleLaunch);
@@ -3511,7 +3518,6 @@ function startHttpApi() {
               return;
             }
             launchHomeInUse = true;
-            const generation = startedGeneration;
             // renderer 側の terminals[paneId].engine を実体に追従させる（issue #394 の
             // 安藤レビュー指摘・MEDIUM）。restart-agent は同じペインで engine を入れ替えられる
             // 唯一の main→renderer 経路（安藤の確認結果）のため、成功時にだけ通知する。
@@ -3525,10 +3531,12 @@ function startHttpApi() {
               ok: true,
               termId: request.termId,
               stopped: true,
-              generation,
+              generation: startedGeneration,
             }));
           } catch (error) {
-            if (startedGeneration !== null) agentLifecycles.initialize(request.termId, startedGeneration);
+            if (startedGeneration !== null && agentLifecycles.isCurrent(request.termId, startedGeneration, startedLaunchToken)) {
+              agentLifecycles.initialize(request.termId, startedGeneration);
+            }
             console.error(`${LOG_PREFIX} restart-agent failed for terminal ${request.termId}:`, error.message);
             res.writeHead(500, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: 'failed to stop agent' }));

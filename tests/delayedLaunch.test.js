@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const { scheduleLaunchCommand } = require('../utils/delayedLaunch');
+const { createAgentLifecycleStore } = require('../utils/agentLifecycle');
 
 // 登録した関数を溜めるだけの setTimeout 差し替え。テストが好きなタイミングで発火させる。
 function createTimers() {
@@ -94,10 +95,56 @@ test('baseline取得中にPTYが消えたら、取得完了後も書き込まな
   });
   timers.fire();
   ptys.delete('1');
-  resolvePreparation('tracked-command');
+  resolvePreparation({ status: 'ready', command: 'tracked-command' });
   await Promise.resolve();
   assert.deepEqual(pane.written, []);
   assert.deepEqual(discarded, ['discard']);
+});
+
+test('prepare完了後にlaunch tokenが旧世代になったら旧コマンドを書かない', async () => {
+  const pane = createPane();
+  const ptys = new Map([['1', pane.ptyProcess]]);
+  let current = true;
+  let resolvePreparation;
+  const preparation = new Promise((resolve) => { resolvePreparation = resolve; });
+  const { timers, discarded } = schedule({
+    ptyProcess: pane.ptyProcess,
+    ptys,
+    prepareCommand: () => preparation,
+    isLaunchCurrent: () => current,
+  });
+  timers.fire();
+  current = false;
+  resolvePreparation({ status: 'ready', command: 'old-generation-command' });
+  await Promise.resolve();
+  assert.deepEqual(pane.written, []);
+  assert.deepEqual(discarded, ['discard']);
+});
+
+test('初回遅延起動のprepare待ち中にrestartしても世代2監視を維持する', async () => {
+  const pane = createPane();
+  const ptys = new Map([['1', pane.ptyProcess]]);
+  let resolveBaseline;
+  const baseline = new Promise((resolve) => { resolveBaseline = resolve; });
+  const processes = new Map([[10, { pid: 10, ppid: 1, pgid: 10, tpgid: 10, stat: 'S', lstart: 'Fri Oct 16 10:00:00 2026' }]]);
+  const store = createAgentLifecycleStore({ listProcesses: () => baseline });
+  const initialToken = store.initialize('1', 1);
+  const { timers, discarded } = schedule({
+    ptyProcess: pane.ptyProcess,
+    ptys,
+    prepareCommand: (command) => store.prepare('1', 1, initialToken, 10, command, '/bin/zsh'),
+    isLaunchCurrent: () => store.isCurrent('1', 1, initialToken),
+  });
+  timers.fire();
+  const restartToken = store.initialize('1', 2);
+  resolveBaseline(processes);
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.deepEqual(pane.written, []);
+  assert.deepEqual(discarded, ['discard']);
+  assert.equal(store.isCurrent('1', 2, restartToken), true);
+  assert.equal(store.get('1', 2), null);
+  await store.close();
 });
 
 test('書き込みが例外になっても、例外をタイマーの外へ出さず専用フォルダを回収して記録する', () => {

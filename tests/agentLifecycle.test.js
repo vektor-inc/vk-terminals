@@ -37,8 +37,9 @@ function createRealPty(t, env = process.env) {
 
 async function launchTracked(store, shell, command, shellPath = '/bin/zsh') {
   shell.onData((data) => { store.filterOutput('pty', data); });
-  const trackedCommand = await store.prepare('pty', 1, shell.pid, command, shellPath);
-  shell.write(`${trackedCommand}\r`);
+  const launchToken = store.initialize('pty', 1);
+  const prepared = await store.prepare('pty', 1, launchToken, shell.pid, command, shellPath);
+  shell.write(`${prepared.command}\r`);
 }
 
 test('psはshellを介さない固定引数で必要な列を取得する', () => {
@@ -95,26 +96,30 @@ test('同じPID/PGIDでもlstartが変われば再利用としてnull', () => {
   assert.deepEqual(inspectLifecycle(snapshot, table(row(10, 1, 10, 10), row(20, 1, 20, 10, 'S', LATER))), { state: null, terminal: true });
 });
 
-test('baseline取得失敗は元コマンドを返し、古い世代の非同期結果は新世代を上書きしない', async () => {
+test('baseline取得失敗と世代変更によるcancelを区別し、旧prepareは新世代を変更しない', async () => {
   let resolveOld;
   const oldRead = new Promise((resolve) => { resolveOld = resolve; });
   const store = createAgentLifecycleStore({ listProcesses: () => oldRead });
-  const oldMonitor = store.prepare('1', 1, 10, 'claude', '/bin/zsh');
-  store.initialize('1', 2);
+  const oldToken = store.initialize('1', 1);
+  const oldMonitor = store.prepare('1', 1, oldToken, 10, 'claude', '/bin/zsh');
+  const newToken = store.initialize('1', 2);
   resolveOld(table(row(10, 1, 10, 10)));
-  assert.equal(await oldMonitor, 'claude');
+  assert.deepEqual(await oldMonitor, { status: 'cancelled' });
+  assert.equal(store.isCurrent('1', 2, newToken), true);
   assert.equal(store.get('1', 2), null);
   assert.equal(store.get('1', 1), null);
   await store.close();
 
   const failed = createAgentLifecycleStore({ listProcesses: () => Promise.reject(new Error('ps failed')) });
-  assert.equal(await failed.prepare('1', 1, 10, 'claude', '/bin/zsh'), 'claude');
+  const failedToken = failed.initialize('1', 1);
+  assert.deepEqual(await failed.prepare('1', 1, failedToken, 10, 'claude', '/bin/zsh'), { status: 'passthrough', command: 'claude' });
   assert.equal(failed.get('1', 1), null);
 });
 
 test('Windowsでは監視せずnullを維持する', async () => {
   const store = createAgentLifecycleStore({ platform: 'win32', listProcesses: () => { throw new Error('should not run'); } });
-  assert.equal(await store.prepare('1', 1, 10, 'claude', '/bin/zsh'), 'claude');
+  const token = store.initialize('1', 1);
+  assert.deepEqual(await store.prepare('1', 1, token, 10, 'claude', '/bin/zsh'), { status: 'passthrough', command: 'claude' });
   assert.equal(store.get('1', 1), null);
 });
 
@@ -126,9 +131,10 @@ test('completion markerは未取得の取得期間だけを閉じ、画面から
     setTimer: (callback) => { timers.push(callback); return callback; },
     clearTimer: () => {},
   });
-  const command = await store.prepare('1', 1, 10, 'missing-command', '/bin/zsh');
-  const token = command.match(/VKAgentLifecycle=([a-f0-9]+)/)[1];
-  const marker = `${MARKER_PREFIX}${token}${String.fromCharCode(7)}`;
+  const launchToken = store.initialize('1', 1);
+  const prepared = await store.prepare('1', 1, launchToken, 10, 'missing-command', '/bin/zsh');
+  const markerToken = prepared.command.match(/VKAgentLifecycle=([a-f0-9]+)/)[1];
+  const marker = `${MARKER_PREFIX}${markerToken}${String.fromCharCode(7)}`;
   const splitAt = Math.floor(marker.length / 2);
   assert.equal(store.filterOutput('1', `before${marker.slice(0, splitAt)}`), 'before');
   assert.equal(store.filterOutput('1', `${marker.slice(splitAt)}after`), 'after');
@@ -145,7 +151,8 @@ test('completion marker spoofと取得期限切れはnullへ確定する', async
     clearTimer: () => {},
     acquisitionTimeoutMs: 25,
   });
-  await store.prepare('1', 1, 10, 'claude', '/bin/zsh');
+  const token = store.initialize('1', 1);
+  await store.prepare('1', 1, token, 10, 'claude', '/bin/zsh');
   timers[0]();
   processes = table(row(10, 1, 10, 20), row(20, 10, 20, 20));
   await timers[1]();
@@ -160,7 +167,8 @@ test('世代更新とdeleteはpoll・取得期限timerを回収する', async ()
     setTimer: (callback) => callback,
     clearTimer: (timer) => { cleared.push(timer); },
   });
-  await store.prepare('1', 1, 10, 'claude', '/bin/zsh');
+  const token = store.initialize('1', 1);
+  await store.prepare('1', 1, token, 10, 'claude', '/bin/zsh');
   store.initialize('1', 2);
   assert.equal(cleared.length, 2);
   store.delete('1');
@@ -169,9 +177,9 @@ test('世代更新とdeleteはpoll・取得期限timerを回収する', async ()
 
 test('新規起動とrestartの双方が書き込み前baseline取得を通る', () => {
   const source = fs.readFileSync(require.resolve('../main'), 'utf8');
-  assert.match(source, /prepareCommand: \(command\) => agentLifecycles\.prepare\(id, 1, ptyProcess\.pid, command, shell\)/);
-  assert.match(source, /prepareWrite\(generation, command\)[\s\S]*?agentLifecycles\.prepare\(request\.termId, generation, ptyProcess\.pid, command/);
-  assert.match(source, /const trackedCommand = await lifecycleLaunch\.prepareWrite\(generation, command\);[\s\S]*?ptyProcess\.write\(`\$\{trackedCommand\}\\r`\)/);
+  assert.match(source, /prepareCommand: \(command\) => agentLifecycles\.prepare\(id, 1, initialLaunchToken, ptyProcess\.pid, command, shell\)/);
+  assert.match(source, /prepareWrite\(launch, command\)[\s\S]*?agentLifecycles\.prepare\(request\.termId, launch\.generation, launch\.launchToken/);
+  assert.match(source, /const prepared = await lifecycleLaunch\.prepareWrite\(launch, command\);[\s\S]*?lifecycleLaunch\.isCurrent\(launch\)[\s\S]*?ptyProcess\.write\(`\$\{prepared\.command\}\\r`\)/);
 });
 
 test('状態マージはagentCommandState APIの後方互換を維持する', () => {
@@ -185,16 +193,33 @@ test('zsh/bashとfishは現在シェルで元コマンドを実行し終了コ�
   const marker = 'a'.repeat(48);
   const zsh = buildTrackedLaunchCommand('claude --model sonnet', marker, '/bin/zsh');
   const fish = buildTrackedLaunchCommand('claude --model sonnet', marker, '/usr/bin/fish');
-  assert.match(zsh, /^\( claude --model sonnet;/);
-  assert.match(zsh, /exit "\$vk_agent_status" \)$/);
+  assert.match(zsh, /^\{ claude --model sonnet;/);
+  assert.match(zsh, /eval "unset vk_agent_status_/);
   assert.match(fish, /^begin; claude --model sonnet;/);
-  assert.match(fish, /command sh -c "exit \$vk_agent_status"/);
+  assert.match(fish, /command sh -c "exit \$vk_agent_status_/);
   assert.ok(zsh.includes('\\033]1337;VKAgentLifecycle='));
   for (const shellPath of ['/bin/zsh', '/bin/bash']) {
     if (spawnSync(shellPath, ['--version']).status !== 0) continue;
     const result = spawnSync(shellPath, ['-c', buildTrackedLaunchCommand('exit 23', marker, shellPath)]);
     assert.equal(result.status, 23);
   }
+});
+
+test('実PTY: function内のcd・export・変数変更が親の対話シェルへ残る', {
+  skip: process.platform === 'win32' || spawnSync('/bin/zsh', ['--version']).status !== 0,
+}, async (t) => {
+  const pty = createRealPty(t);
+  const store = createAgentLifecycleStore({ pollIntervalMs: 20 });
+  t.after(() => store.close());
+  await waitFor(() => pty.output().includes('VK_PROMPT>'));
+  const target = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-agent-cwd-'));
+  t.after(() => fs.rmSync(target, { recursive: true, force: true }));
+  pty.shell.write(`vk_change_shell() { cd ${target}; export VK_AGENT_PERSIST=yes; VK_AGENT_VALUE=kept; }; vk_change_shell\r`);
+  await waitFor(() => pty.output().includes('VK_PROMPT>'));
+  await launchTracked(store, pty.shell, 'vk_change_shell');
+  await waitFor(() => pty.output().split('VK_PROMPT>').length >= 4);
+  pty.shell.write('printf "PERSIST:%s:%s:%s\\n" "$PWD" "$VK_AGENT_PERSIST" "$VK_AGENT_VALUE"\r');
+  await waitFor(() => pty.output().includes(`PERSIST:${target}:yes:kept`));
 });
 
 test('実PTY: 通常起動はrunningから全member消失後exitedへ移る', {

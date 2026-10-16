@@ -87,9 +87,10 @@ function buildTrackedLaunchCommand(command, marker, shellPath) {
   // 制御文字を起動行へ直接埋め込むと PTY のエコーを完了通知と誤認するため、printf で復元する。
   const markerArgument = quoteForSingleShellArgument(`\\033]1337;VKAgentLifecycle=${marker}\\007`);
   if (pathBasename(shellPath) === 'fish') {
-    return `begin; ${command}; set -l vk_agent_status $status; printf %b ${markerArgument}; command sh -c "exit $vk_agent_status"; end`;
+    return `begin; ${command}; set -l vk_agent_status_${marker} $status; printf %b ${markerArgument}; command sh -c "exit \$vk_agent_status_${marker}"; end`;
   }
-  return `( ${command}; vk_agent_status=$?; printf %b ${markerArgument}; exit "$vk_agent_status" )`;
+  const statusName = `vk_agent_status_${marker}`;
+  return `{ ${command}; ${statusName}=$?; printf %b ${markerArgument}; eval "unset ${statusName}; command sh -c 'exit \$${statusName}'"; }`;
 }
 
 function pathBasename(filePath) {
@@ -142,18 +143,24 @@ function createAgentLifecycleStore(options = {}) {
   return {
     initialize(termId, generation) {
       const id = String(termId); const previous = states.get(id); if (previous) stop(previous);
-      states.set(id, { generation, state: null, cancelled: false, timer: null, polling: false });
+      const launchToken = crypto.randomBytes(24).toString('hex');
+      states.set(id, { generation, launchToken, state: null, cancelled: false, timer: null, polling: false });
+      return launchToken;
     },
-    async prepare(termId, generation, shellPid, command, shellPath) {
-      const id = String(termId); const previous = states.get(id); if (previous) stop(previous);
-      const entry = { generation, state: null, shellPid, shellLstart: null, trackedPgid: null, identities: new Map(), baselinePgids: new Set(), baselineIdentities: new Map(), marker: null, markerBuffer: '', acquisitionOpen: false, cancelled: false, timer: null, acquisitionTimer: null, polling: false };
-      states.set(id, entry);
-      if (platform === 'win32' || !Number.isSafeInteger(shellPid) || shellPid <= 0) return command;
+    async prepare(termId, generation, launchToken, shellPid, command, shellPath) {
+      const id = String(termId);
+      const entry = states.get(id);
+      const isCurrent = () => states.get(id) === entry && entry?.generation === generation && entry?.launchToken === launchToken && !entry.cancelled && !closed;
+      if (!isCurrent()) return { status: 'cancelled' };
+      Object.assign(entry, { shellPid, shellLstart: null, trackedPgid: null, identities: new Map(), baselinePgids: new Set(), baselineIdentities: new Map(), marker: null, markerBuffer: '', acquisitionOpen: false, acquisitionTimer: null });
+      if (platform === 'win32' || !Number.isSafeInteger(shellPid) || shellPid <= 0) return { status: 'passthrough', command };
       let processes;
-      try { processes = await listProcesses(); } catch (_error) { return command; }
-      if (states.get(id) !== entry || entry.cancelled || closed) return command;
+      try { processes = await listProcesses(); } catch (_error) {
+        return isCurrent() ? { status: 'passthrough', command } : { status: 'cancelled' };
+      }
+      if (!isCurrent()) return { status: 'cancelled' };
       const shell = processes.get(shellPid);
-      if (!shell) return command;
+      if (!shell) return { status: 'passthrough', command };
       entry.shellLstart = shell.lstart;
       for (const process of processes.values()) {
         entry.baselinePgids.add(process.pgid);
@@ -163,7 +170,11 @@ function createAgentLifecycleStore(options = {}) {
       entry.acquisitionOpen = true;
       entry.acquisitionTimer = setTimer(() => finishAcquisition(entry), acquisitionTimeoutMs);
       schedule(id, entry);
-      return buildTrackedLaunchCommand(command, entry.marker, shellPath);
+      return { status: 'ready', command: buildTrackedLaunchCommand(command, entry.marker, shellPath) };
+    },
+    isCurrent(termId, generation, launchToken) {
+      const entry = states.get(String(termId));
+      return Boolean(entry && !entry.cancelled && !closed && entry.generation === generation && entry.launchToken === launchToken);
     },
     filterOutput(termId, data) {
       const entry = states.get(String(termId));

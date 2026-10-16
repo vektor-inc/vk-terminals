@@ -10,7 +10,8 @@
  * @param {string} params.id ペイン ID
  * @param {{write: Function}} params.ptyProcess 書き込み先の PTY
  * @param {string} params.command 書き込む起動コマンド（改行は付けない）
- * @param {(command: string) => string|Promise<string>} [params.prepareCommand] 書き込み直前の変換
+ * @param {(command: string) => object|Promise<object>} [params.prepareCommand] 書き込み直前の変換
+ * @param {() => boolean} [params.isLaunchCurrent] 起動世代と token の最終照合
  * @param {() => unknown} params.discard 書き込めなかったときに専用 CODEX_HOME を回収する関数
  * @param {number} params.delayMs 書き込むまでの待ち時間
  * @param {() => void} [params.onWriteSuccess] 書き込み成功時の通知先
@@ -18,7 +19,7 @@
  * @param {Function} [params.setTimer] テスト用の setTimeout 差し替え
  * @returns {unknown} タイマーのハンドル
  */
-function scheduleLaunchCommand({ ptys, id, ptyProcess, command, prepareCommand = (value) => value, discard, delayMs, onWriteSuccess = () => {}, log = () => {}, setTimer = setTimeout }) {
+function scheduleLaunchCommand({ ptys, id, ptyProcess, command, prepareCommand = (value) => ({ status: 'passthrough', command: value }), isLaunchCurrent = () => true, discard, delayMs, onWriteSuccess = () => {}, log = () => {}, setTimer = setTimeout }) {
   const discardSafely = () => {
     try {
       discard();
@@ -32,13 +33,22 @@ function scheduleLaunchCommand({ ptys, id, ptyProcess, command, prepareCommand =
       discardSafely();
       return;
     }
-    const writePreparedCommand = (preparedCommand) => {
-      if (ptys.get(id) !== ptyProcess) {
+    const writePreparedCommand = (result) => {
+      if (result?.status === 'cancelled') {
+        discardSafely();
+        return;
+      }
+      if (!result || (result.status !== 'ready' && result.status !== 'passthrough')) {
+        log(`failed to prepare launch command for terminal ${id}: invalid result`);
+        discardSafely();
+        return;
+      }
+      if (ptys.get(id) !== ptyProcess || !isLaunchCurrent()) {
         discardSafely();
         return;
       }
       try {
-        ptyProcess.write(`${preparedCommand}\r`);
+        ptyProcess.write(`${result.command}\r`);
         onWriteSuccess();
       } catch (error) {
         log(`failed to write launch command to terminal ${id}: ${error && error.message ? error.message : error}`);

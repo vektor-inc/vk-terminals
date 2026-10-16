@@ -1,6 +1,6 @@
 # Changelog
 
-- [ 機能追加 ] VK Terminals が起動した現在世代のメイン AI コマンドについて、実行中・終了済み・不明を `GET /api/states` から客観的に確認できる状態を追加（[#434](https://github.com/vektor-inc/vk-terminals/issues/434)）
+- [ 機能追加 ] VK Terminals が起動した現在世代のメイン AI コマンドについて、専用監視プロセスが実際の起動・終了を確認した状態を `GET /api/states` から取得可能に（[#434](https://github.com/vektor-inc/vk-terminals/issues/434)）
 - [ 不具合修正 ] タスク用ポリシーで Codex を起動すると「Open restricted」画面で停止し、自動処理が始まらない不具合を修正（[#430](https://github.com/vektor-inc/vk-terminals/issues/430)）
 
 ## 1.71.0

@@ -2139,8 +2139,9 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
     paneCreationTrustWatchers.set(id, () => { trustGate.markTrustHandled(); });
   }
 
-  const lifecycleParser = createAgentLifecycleMarkerParser((generation, token) => {
-    agentLifecycles.markExited(id, generation, token);
+  const lifecycleParser = createAgentLifecycleMarkerParser((type, generation, token) => {
+    if (type === 'start') agentLifecycles.markStarted(id, generation, token);
+    else agentLifecycles.markExited(id, generation, token);
   });
 
   ptyProcess.onData((data) => {
@@ -2185,14 +2186,11 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
   //
   // Codex でも専用の許可リストで再検証し、正常値だけを --model として渡す。
   if (launchCommand !== null) {
-    // 完了マーカーは POSIX シェルの printf を使う。PowerShell では同じ終了証明を
-    // 構成できないため、起動方法を変えず状態を null（不明）のままにする。
+    // POSIX では専用監視プロセスが実際の spawn/close を通知する。
     let commandToWrite = launchCommand;
-    let onWriteSuccess = () => {};
     if (process.platform !== 'win32') {
       const marker = agentLifecycles.prepare(id, 1);
       commandToWrite = buildTrackedLaunchCommand(launchCommand, marker);
-      onWriteSuccess = () => agentLifecycles.markRunning(id, 1);
     }
     // 待っている間に PTY が消えた・書き込みが例外になった場合は、使われない専用 CODEX_HOME を回収する。
     scheduleLaunchCommand({
@@ -2201,7 +2199,6 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
       ptyProcess,
       command: commandToWrite,
       discard: discardLaunchHome,
-      onWriteSuccess,
       onWriteFailure: () => agentLifecycles.markUnknown(id, 1),
       delayMs: 200,
       log: (message) => console.error(`${LOG_PREFIX} ${message}`),
@@ -2428,7 +2425,6 @@ async function restartAgentInTerminal(ptyProcess, request, launchOptions, lifecy
   }
   const trackedCommand = lifecycleLaunch.wrap(command);
   ptyProcess.write(`${trackedCommand}\r`);
-  lifecycleLaunch.markRunning();
 
   // 既知の未対応事項（issue #392・安藤の指摘・LOW-G）: responder は cd の書き込みより前に
   // 取り付けているため、シェルがエコーバックする `cd` 行（cwd のディレクトリ名を含む）が
@@ -3509,9 +3505,6 @@ function startHttpApi() {
               startedGeneration = agentGenerations.increment(request.termId);
               const marker = agentLifecycles.prepare(request.termId, startedGeneration);
               return buildTrackedLaunchCommand(command, marker);
-            },
-            markRunning() {
-              agentLifecycles.markRunning(request.termId, startedGeneration);
             },
           };
           const operation = restartAgentInTerminal(ptyProcess, request, launchResolution.options, lifecycleLaunch);

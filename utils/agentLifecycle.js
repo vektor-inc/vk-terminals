@@ -1,54 +1,48 @@
 'use strict';
 
 const crypto = require('node:crypto');
-
-const MARKER_PREFIX = '\x1b]777;vk-terminals;agent-exit;';
+const MARKER_PREFIX = '\x1b]777;vk-terminals;agent-';
 const MARKER_TERMINATOR = '\x07';
 const TOKEN_PATTERN = /^[a-f0-9]{64}$/;
-const MAX_MARKER_LENGTH = 160;
+const MAX_MARKER_LENGTH = 240;
 
-/**
- * ペインごとの、VK Terminals が起動した AI コマンドの状態を保持する。
- * 世代とトークンが現在値に一致する通知だけを終了証明として受け付ける。
- *
- * @param {() => string} [createToken] テスト時に差し替えるトークン生成関数。
- * @returns {object} ライフサイクル状態ストア。
- */
+/** ペインごとの現在世代、起動状態、世代固有トークンを保持する。 */
 function createAgentLifecycleStore(createToken = () => crypto.randomBytes(32).toString('hex')) {
   const states = new Map();
-
+  const newToken = () => {
+    const token = createToken();
+    if (!TOKEN_PATTERN.test(token)) throw new Error('invalid agent lifecycle token');
+    return token;
+  };
   return {
     initialize(termId, generation) {
-      states.set(String(termId), {
-        generation,
-        state: null,
-        token: null,
-      });
+      states.set(String(termId), { generation, state: null, startToken: null, exitToken: null });
     },
     prepare(termId, generation) {
-      const token = createToken();
-      if (!TOKEN_PATTERN.test(token)) throw new Error('invalid agent lifecycle token');
-      states.set(String(termId), { generation, state: null, token });
-      return { generation, token };
+      const marker = { generation, startToken: newToken(), exitToken: newToken() };
+      states.set(String(termId), { ...marker, state: null });
+      return marker;
     },
-    markRunning(termId, generation) {
+    markStarted(termId, generation, token) {
       const current = states.get(String(termId));
-      if (!current || current.generation !== generation || current.token === null) return false;
+      if (!current || current.generation !== generation || current.startToken !== token) return false;
       current.state = 'running';
+      current.startToken = null;
       return true;
     },
     markExited(termId, generation, token) {
       const current = states.get(String(termId));
-      if (!current || current.generation !== generation || current.token !== token) return false;
+      if (!current || current.generation !== generation || current.state !== 'running' || current.exitToken !== token) return false;
       current.state = 'exited';
-      current.token = null;
+      current.exitToken = null;
       return true;
     },
     markUnknown(termId, generation) {
       const current = states.get(String(termId));
       if (!current || current.generation !== generation) return false;
       current.state = null;
-      current.token = null;
+      current.startToken = null;
+      current.exitToken = null;
       return true;
     },
     get(termId, generation) {
@@ -61,34 +55,24 @@ function createAgentLifecycleStore(createToken = () => crypto.randomBytes(32).to
   };
 }
 
-/**
- * AI コマンドの終了直後に、シェル自身が認証用マーカーを出す起動行を組み立てる。
- * マーカーは入力行ではバックスラッシュ表現のため、PTY 出力の実 ESC と一致しない。
- *
- * @param {string} command 起動する AI コマンド。
- * @param {{generation: number, token: string}} marker 世代固有のマーカー情報。
- * @returns {string} シェルへ書き込むコマンド。
- */
-function buildTrackedLaunchCommand(command, marker) {
-  if (typeof command !== 'string' || !command) throw new Error('launch command required');
-  if (!Number.isSafeInteger(marker?.generation) || marker.generation < 1) {
-    throw new Error('invalid agent lifecycle generation');
-  }
-  if (!TOKEN_PATTERN.test(marker?.token || '')) throw new Error('invalid agent lifecycle token');
-  const payload = `777;vk-terminals;agent-exit;${marker.generation};${marker.token}`;
-  return `{ ${command}; printf '\\033]${payload}\\007'; }`;
+function quoteShellArgument(value) {
+  return `'${String(value).replace(/'/g, `'"'"'`)}'`;
 }
 
-/**
- * PTY 出力からライフサイクルマーカーだけを除去し、通常出力を返すストリームパーサー。
- * 分割チャンクをまたぐ候補だけを上限付きで保持する。
- *
- * @param {(generation: number, token: string) => void} onMarker 検証済みマーカーの通知先。
- * @returns {{push: (chunk: string) => string, flush: () => string}}
- */
+/** 元のコマンド文字列を改変せず、専用監視プロセスへ渡す起動行を作る。 */
+function buildTrackedLaunchCommand(command, marker, options = {}) {
+  if (typeof command !== 'string' || !command) throw new Error('launch command required');
+  if (!Number.isSafeInteger(marker?.generation) || marker.generation < 1) throw new Error('invalid agent lifecycle generation');
+  if (!TOKEN_PATTERN.test(marker?.startToken || '') || !TOKEN_PATTERN.test(marker?.exitToken || '')) throw new Error('invalid agent lifecycle token');
+  const executable = options.executable || process.execPath;
+  const monitorPath = options.monitorPath || require.resolve('./agentLifecycleMonitor');
+  const encodedCommand = Buffer.from(command, 'utf8').toString('base64');
+  return `ELECTRON_RUN_AS_NODE=1 ${quoteShellArgument(executable)} ${quoteShellArgument(monitorPath)} ${marker.generation} ${marker.startToken} ${marker.exitToken} ${encodedCommand}`;
+}
+
+/** 分割チャンクをまたぐ start/exit マーカーを取り除き、検証済み通知だけを返す。 */
 function createAgentLifecycleMarkerParser(onMarker) {
   let pending = '';
-
   const parse = (flush) => {
     let output = '';
     while (pending) {
@@ -100,8 +84,7 @@ function createAgentLifecycleMarkerParser(onMarker) {
           break;
         }
         let retained = 0;
-        const limit = Math.min(pending.length, MARKER_PREFIX.length - 1);
-        for (let length = limit; length > 0; length -= 1) {
+        for (let length = Math.min(pending.length, MARKER_PREFIX.length - 1); length > 0; length -= 1) {
           if (MARKER_PREFIX.startsWith(pending.slice(-length))) {
             retained = length;
             break;
@@ -111,7 +94,6 @@ function createAgentLifecycleMarkerParser(onMarker) {
         pending = pending.slice(pending.length - retained);
         break;
       }
-
       output += pending.slice(0, start);
       pending = pending.slice(start);
       const end = pending.indexOf(MARKER_TERMINATOR, MARKER_PREFIX.length);
@@ -121,26 +103,23 @@ function createAgentLifecycleMarkerParser(onMarker) {
         pending = pending.slice(1);
         continue;
       }
-
-      const candidate = pending.slice(MARKER_PREFIX.length, end);
-      const match = candidate.match(/^(\d+);([a-f0-9]{64})$/);
-      if (!match || pending.slice(0, end + 1).length > MAX_MARKER_LENGTH) {
+      const match = pending.slice(MARKER_PREFIX.length, end).match(/^(start|exit);(\d+);([a-f0-9]{64})$/);
+      if (!match || end + 1 > MAX_MARKER_LENGTH) {
         output += pending[0];
         pending = pending.slice(1);
         continue;
       }
-      const generation = Number(match[1]);
+      const generation = Number(match[2]);
       if (!Number.isSafeInteger(generation) || generation < 1) {
         output += pending[0];
         pending = pending.slice(1);
         continue;
       }
-      onMarker(generation, match[2]);
+      onMarker(match[1], generation, match[3]);
       pending = pending.slice(end + 1);
     }
     return output;
   };
-
   return {
     push(chunk) {
       pending += String(chunk);

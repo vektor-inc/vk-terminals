@@ -991,16 +991,24 @@ function executePrepareWorktree({ parsed, binding, cwd, fsImpl, runGit, spawnSyn
     gitPath('hooks'), gitPath('config'), gitPath('config.worktree'), gitPath('info', 'attributes'), gitPath('objects', 'info'),
     path.join(adminDir, 'config.worktree'), path.join(adminDir, 'hooks'),
     // 作成先と補助の書き込み先が重なっても、管理領域の中に作業フォルダ用の固定名のファイルを置けないようにする。
-    gitPath('refs', 'heads', '.git'), gitPath('logs', 'refs', 'heads', '.git'), path.join(adminDir, '.git'),
+    path.join(adminDir, '.git'),
   ];
   const restricted = (command, allowWrite) => restrictWrites({ ...command, allowWrite, denyWrite: controlFiles });
   const runRestricted = (command, options) => spawnSync(command.bin, command.args, { cwd, encoding: 'utf8', ...options });
   const infoDir = gitPath('info');
   const excludeFile = path.join(infoDir, 'exclude');
-  const refsRemotes = gitPath('refs', 'remotes');
-  const logsRemotes = gitPath('logs', 'refs', 'remotes');
-  const refsHeads = gitPath('refs', 'heads');
-  const logsHeads = gitPath('logs', 'refs', 'heads');
+  // ref とログは「その 1 本のファイルとロックファイル」だけに書き込みを許す（refs/heads などの階層全体は許さない）。
+  const refFile = (...parts) => gitPath('refs', ...parts);
+  const logFile = (...parts) => gitPath('logs', 'refs', ...parts);
+  const remoteParts = ['remotes', 'origin', ...parsed.base.split('/')];
+  const branchParts = ['heads', ...parsed.branch.split('/')];
+  const writableRef = (parts) => [refFile(...parts), `${refFile(...parts)}.lock`, logFile(...parts), `${logFile(...parts)}.lock`];
+  // 作る必要がある親フォルダ（mkdir は作るだけで、既存の中身には触れない）。
+  const parentDirs = (parts) => {
+    const dirs = [];
+    for (let i = 1; i < parts.length; i += 1) dirs.push(refFile(...parts.slice(0, i)), logFile(...parts.slice(0, i)));
+    return dirs;
+  };
 
   // 事前検査: 管理領域側の置き場所がリンクや別種のファイルでないこと、同名の管理情報が無いこと。
   const infoStat = lstatOrNull(fsImpl, infoDir);
@@ -1010,16 +1018,22 @@ function executePrepareWorktree({ parsed, binding, cwd, fsImpl, runGit, spawnSyn
   if (lstatOrNull(fsImpl, adminDir) !== null) return reject('task command rejected: worktree administrative entry already exists');
 
   // Git 管理領域側の置き場所（ref・ログ・worktree 管理情報の親）を先に作る。作るだけで、中身は書かない。
-  const gitDirs = [refsRemotes, logsRemotes, refsHeads, logsHeads, gitPath('worktrees')];
-  const dirsMade = runRestricted(restricted({ bin: '/bin/mkdir', args: ['-p', '--', ...gitDirs] }, [gitPath('refs'), gitPath('logs'), gitPath('worktrees')]), { env: plainEnv });
-  if (dirsMade.error || dirsMade.status !== 0) return reject('task command rejected: could not prepare the git directories');
+  const gitDirs = [...new Set([...parentDirs(remoteParts), ...parentDirs(branchParts), gitPath('worktrees')])];
+  // 書き込みを許すのは「まだ存在しないフォルダ」だけ（既存のフォルダの中身には書き込み権を与えない）。
+  const makeDirs = (dirs) => {
+    const missing = dirs.filter((dir) => lstatOrNull(fsImpl, dir) === null);
+    if (missing.length === 0) return true;
+    const made = runRestricted(restricted({ bin: '/bin/mkdir', args: ['-p', '--', ...missing] }, missing), { env: plainEnv });
+    return !made.error && made.status === 0;
+  };
+  if (!makeDirs([gitPath('refs'), gitPath('logs'), gitPath('logs', 'refs'), ...gitDirs])) return reject('task command rejected: could not prepare the git directories');
 
   // 取得（通信あり）。書き込み先は、取得したオブジェクトと origin の追跡 ref と gh の設定だけ。
   const fetchArgs = [
     ...FIXED_GIT_PREFIX, ...networkGitConfig(binding),
     'fetch', '--no-tags', '--no-recurse-submodules', '--no-write-fetch-head', '--refmap=', boundRemoteUrl(binding), `+refs/heads/${parsed.base}:${remoteRef}`,
   ];
-  const fetched = runRestricted(restricted({ bin: binding.git, args: fetchArgs }, [gitPath('objects'), refsRemotes, logsRemotes, ghConfigReal]), { env: networkEnv, stdio: 'inherit' });
+  const fetched = runRestricted(restricted({ bin: binding.git, args: fetchArgs }, [gitPath('objects'), ...writableRef(remoteParts), ghConfigReal]), { env: networkEnv, stdio: 'inherit' });
   if (fetched.error) return reject(`task command failed to start: ${fetched.error.code || 'error'}`);
   if (fetched.status !== 0) return typeof fetched.status === 'number' ? fetched.status : 2;
   if (runGit(['show-ref', '--verify', '--quiet', remoteRef], cwd).status !== 0) return reject(`task command rejected: could not fetch the base branch ${JSON.stringify(parsed.base)}`);
@@ -1035,16 +1049,13 @@ function executePrepareWorktree({ parsed, binding, cwd, fsImpl, runGit, spawnSyn
     return 2;
   }
   if (!existing.split('\n').includes(entry)) {
-    const infoMade = runRestricted(restricted({ bin: '/bin/mkdir', args: ['-p', '--', infoDir] }, [infoDir]), { env: plainEnv });
-    if (infoMade.error || infoMade.status !== 0) return reject('task command rejected: could not create the local exclude directory');
+    if (!makeDirs([infoDir])) return reject('task command rejected: could not create the local exclude directory');
     const appended = runRestricted(restricted({ bin: '/bin/sh', args: ['-c', 'printf "\\n%s\\n" "$2" >> "$1"', 'sh', excludeFile, entry] }, [excludeFile]), { env: plainEnv });
     if (appended.error || appended.status !== 0) return reject('task command rejected: could not update the local exclude file');
   }
 
   // 作成先の親フォルダは、書き込みを .claude 配下の実パスに限った子プロセスで作る。
-  const mkdirCommand = restricted({ bin: '/bin/mkdir', args: ['-p', '--', worktreeRoot] }, [claudeDir]);
-  const made = runRestricted(mkdirCommand, { env: plainEnv });
-  if (made.error || made.status !== 0) return reject('task command rejected: could not create the worktree parent directory');
+  if (!makeDirs([claudeDir, worktreeRoot])) return reject('task command rejected: could not create the worktree parent directory');
   // 作成後の状態を確かめる（拒否の理由を分かりやすくするための検査。安全性は書き込み制限が担う）。
   try {
     for (const dir of [claudeDir, worktreeRoot]) {
@@ -1056,11 +1067,18 @@ function executePrepareWorktree({ parsed, binding, cwd, fsImpl, runGit, spawnSyn
     return 2;
   }
 
-  // 管理情報の作成（チェックアウトしない）。書けるのは新しいブランチの ref とログ、この worktree の管理情報、作成先の事前に計算した実パスだけ。
+  // 作業ブランチの作成は、worktree の追加とは別のプロセスで行う。書けるのはそのブランチの ref・ログとそれぞれのロックファイルだけ。
+  const branchMade = runRestricted(restricted({
+    bin: binding.git, args: [...FIXED_GIT_PREFIX, 'branch', '--quiet', '--no-track', parsed.branch, remoteRef],
+  }, writableRef(branchParts)), { env: plainEnv, stdio: 'inherit' });
+  if (branchMade.error) return reject(`task command failed to start: ${branchMade.error.code || 'error'}`);
+  if (branchMade.status !== 0) return typeof branchMade.status === 'number' ? branchMade.status : 2;
+
+  // 管理情報の作成（チェックアウトしない・既存のブランチを指定する）。書けるのはこの worktree の管理情報と、作成先の事前に計算した実パスだけで、ref やログの階層には書けない。
   const addCommand = restricted({
     bin: binding.git,
-    args: [...FIXED_GIT_PREFIX, 'worktree', 'add', '--quiet', '--no-checkout', '--no-track', '-b', parsed.branch, worktreePath, remoteRef],
-  }, [worktreePath, refsHeads, logsHeads, adminDir]);
+    args: [...FIXED_GIT_PREFIX, 'worktree', 'add', '--quiet', '--no-checkout', worktreePath, parsed.branch],
+  }, [worktreePath, adminDir]);
   const added = runRestricted(addCommand, { env: plainEnv, stdio: 'inherit' });
   if (added.error) return reject(`task command failed to start: ${added.error.code || 'error'}`);
   if (added.status !== 0) return typeof added.status === 'number' ? added.status : 2;

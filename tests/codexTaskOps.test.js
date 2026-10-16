@@ -1953,7 +1953,7 @@ test('競合: 最後の検査の後（worktree の追加の直前）に .claude 
         }
       };
       const result = run(fixture, ['prepare', 'worktree', 'main', '440', 'issue/440-race', 'wt-race'], {
-        spawnSync: interposeSpawn({ before: (_bin, args) => { if (involves(args, 'worktree') && involves(args, '--no-track') && !swapped) { swapped = true; swap(); } } }),
+        spawnSync: interposeSpawn({ before: (_bin, args) => { if (involves(args, 'worktree') && involves(args, '--no-checkout') && !swapped) { swapped = true; swap(); } } }),
       });
       assert.equal(swapped, true, variant);
       assert.notEqual(result.code, 0, variant);
@@ -2202,6 +2202,65 @@ test('実行: prepare は Git の制御ファイル（hooks・config・objects/i
     const writers = calls.filter((call) => ['fetch', 'worktree', 'read-tree', 'checkout-index', '/bin/mkdir'].some((word) => mentions(call, word)) || call.args.some((arg) => arg.includes('printf')));
     assert.ok(writers.length >= 7);
     for (const call of writers) assert.equal(call.bin, '/usr/bin/sandbox-exec');
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('制限: ブランチの作成は別プロセスで ref・ログ（とロック）だけに書き込みを許し、worktree の追加を含む他の段階は refs/heads・logs/refs/heads の既存データを消せない', () => {
+  const fixture = createFixture();
+  try {
+    attachRemote(fixture);
+    const gitDir = path.join(fixture.repo, '.git');
+    // 既存のブランチ（packed と loose の両方）と、それぞれの記録を用意する。
+    git(fixture.repo, 'branch', 'packed-one');
+    git(fixture.repo, 'pack-refs', '--all');
+    git(fixture.repo, 'branch', 'loose-one');
+    const protectedPaths = [
+      path.join(gitDir, 'refs', 'heads', 'loose-one'), path.join(gitDir, 'logs', 'refs', 'heads', 'loose-one'),
+      path.join(gitDir, 'logs', 'refs', 'heads', 'main'), path.join(gitDir, 'packed-refs'),
+    ];
+    const heads = [path.join(gitDir, 'refs', 'heads'), path.join(gitDir, 'logs', 'refs', 'heads'), path.join(gitDir, 'packed-refs')];
+    const calls = [];
+    assert.equal(run(fixture, ['prepare', 'worktree', 'main', '440', 'issue/440-flow', 'codex-440'], { spawnSync: recordingSpawn(calls) }).code, 0);
+
+    const allowOf = (call) => call.args.filter((arg, i) => call.args[i - 1] === '-D' && arg.startsWith('ALLOW')).map((arg) => arg.slice(arg.indexOf('=') + 1));
+    const sandboxed = calls.filter((call) => call.bin === '/usr/bin/sandbox-exec');
+    const branchCall = sandboxed.find((call) => call.args.includes('branch'));
+    const addCall = sandboxed.find((call) => call.args.includes('worktree'));
+    // 構造: add は -b を使わず既存のブランチを指定し、書き込みの許可に refs / logs の階層を含まない。
+    assert.equal(addCall.args.includes('-b'), false);
+    assert.ok(addCall.args.includes('issue/440-flow'));
+    for (const allowed of allowOf(addCall)) assert.equal(/\/(refs|logs)(\/|$)/.test(allowed), false, allowed);
+    // ブランチの作成は、そのブランチの ref・ログとロックの 4 ファイルだけ。
+    assert.deepEqual(allowOf(branchCall).map((p) => path.relative(gitDir, p)).sort(), [
+      'logs/refs/heads/issue/440-flow', 'logs/refs/heads/issue/440-flow.lock', 'refs/heads/issue/440-flow', 'refs/heads/issue/440-flow.lock',
+    ]);
+
+    // 実効: 各段階のプロセスに与えた書き込み制限（実際のプロファイル）の下で、Git の代わりに
+    // 「refs/heads・logs/refs/heads・packed-refs を再帰的に消す／追記する／動かす」処理を走らせ、既存データが変わらないことを確かめる。
+    // （Git 内部の失敗時の後片付けが走る時点を外から作ることはできないため、後片付けが最大限に働いた場合に相当する操作で代替する。）
+    const newBranchFiles = [path.join(gitDir, 'refs', 'heads', 'issue', '440-flow'), path.join(gitDir, 'logs', 'refs', 'heads', 'issue', '440-flow')];
+    const snapshot = (extra) => [...protectedPaths, ...extra].map((target) => [target, deepSnapshot(target)]);
+    const standIn = 'for t in "$@"; do rm -rf "$t" 2>/dev/null; printf x >> "$t" 2>/dev/null; done; for t in "$@"; do if [ -d "$t" ]; then mv "$t" "$t.moved" 2>/dev/null; fi; done; exit 0';
+    const replay = (call) => {
+      const head = call.args.slice(0, call.args.indexOf('-p') + 2);
+      return childProcess.spawnSync(call.bin, [...head, '/bin/sh', '-c', standIn, 'sh', ...heads], { encoding: 'utf8' });
+    };
+    const others = sandboxed.filter((call) => call !== branchCall);
+    assert.ok(others.length >= 7);
+    for (const call of others) {
+      // フォルダ作成の段階が書けるのは、実行前には存在しなかったフォルダだけ（作成したブランチの置き場所は、その配下に新しい ref ができる前から許可されたもの）。
+      const extra = call.args.includes('/bin/mkdir') ? [] : newBranchFiles;
+      const before = snapshot(extra);
+      replay(call);
+      assert.deepEqual(snapshot(extra), before, allowOf(call).join(' '));
+    }
+    // 作成の段階は自分の 1 本の ref とログには書ける（代替処理が効いている確認）が、既存のブランチには触れない。
+    const before = snapshot([]);
+    replay(branchCall);
+    assert.deepEqual(snapshot([]), before);
+    assert.equal(fs.existsSync(newBranchFiles[0]), false);
   } finally {
     fixture.cleanup();
   }

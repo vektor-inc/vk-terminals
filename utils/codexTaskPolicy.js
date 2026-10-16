@@ -39,6 +39,7 @@ const {
   FIXED_GIT_PREFIX,
   TrustError,
   assertChainUnchanged,
+  DEFAULT_REMOTE_BASE,
   buildChildEnvironment,
   inspectRepository,
   resolveTrustedExecutableDetailed,
@@ -73,6 +74,8 @@ const ORCHESTRATED_TASK_OPERATIONS = Object.freeze([
   'git show',
   'git add',
   'git commit',
+  'git push',
+  'prepare worktree',
   'gh issue view',
   'gh issue comment',
   'gh issue create',
@@ -105,14 +108,16 @@ function renderAgentsGuide(launcherPath) {
     '# VK Terminals 自動処理用の操作入口',
     '',
     'Git / GitHub の次の操作は、承認なしで動く固定の入口 1 つだけを通して実行する。',
-    `入口: \`'${launcherPath}' <git|gh> <操作> ...\``,
+    `入口: \`'${launcherPath}' <git|gh|prepare> <操作> ...\``,
     '',
     ...ORCHESTRATED_TASK_OPERATIONS.map((operation) => `- \`${operation}\``),
     '',
-    '- 入口は許可した操作・オプションだけを通す。許可外（push・reset・gh api・--repo・--body-file・--output など）は拒否される。',
+    '- 入口は許可した操作・オプションだけを通す。許可外（reset・gh api・--repo・--body-file・--output など）は拒否される。',
     '- 入口はこのタスクのリポジトリ（起動時に確定したフォルダと GitHub のリポジトリ）と、その worktree（`git worktree add` で作った作業フォルダ）にだけ働く。別のリポジトリ・入れ子のリポジトリでは拒否される。gh には対象リポジトリが自動で付く。',
     '- `git commit` は作業ブランチ上でだけ通る。main / master・リモートの既定ブランチ・detached HEAD 上では拒否されるので、先に作業ブランチを作ってから commit する。',
-    '- `gh pr view` / `gh pr checks` は PR 番号が必須。`gh pr create` は `--head <ブランチ名> --title <題> --body <本文>` が必須。push は行われない。',
+    '- `git push <ブランチ名>` はブランチ名 1 つだけを受け付ける。送り先は入口が固定する（このタスクの GitHub リポジトリ）ので、リモート名・オプション・refspec は渡せない。新規作成と早送りだけが通り、強制上書き・削除・タグは使えない。main / master・リモートの既定ブランチ・detached HEAD・存在しないブランチへの push は拒否される。',
+    '- `prepare worktree <base> <issue番号> <ブランチ> <worktree名>` は、最新の origin/<base> から作業ブランチ付きの worktree（`<リポジトリ>/.claude/worktrees/<worktree名>`）を作る。ブランチ名は `<種類>/<issue番号>-...` の形で、同名のブランチ・パスがあると失敗する。通常のクローンの切り替えはしない。リポジトリのルートで実行する。',
+    '- `gh pr view` / `gh pr checks` は PR 番号が必須。`gh pr create` は `--head <ブランチ名> --title <題> --body <本文>` が必須。`gh pr create` 自体は push しないので、先に `git push` する。',
     '- `gh issue create` は `--title <題> --body <本文>` が必須。任意で `--assignee <GitHub アカウント名>`・`--label <ラベル名>` を複数回指定できる（`@me` は不可）。作成された issue の URL が標準出力に返る。',
     '- Git のフックは入口経由では実行されない。外部コマンドを起動する設定（clean filter・署名プログラムなど）があるリポジトリでは入口は拒否する。',
     '- 入口を通さない git / gh は sandbox の制限内（ネットワーク無し）で動く。',
@@ -186,6 +191,8 @@ function renderLauncher({ envPath, nodePath, opsScriptPath, binding }) {
     `VK_TASK_HOME=${binding.home}`,
     `VK_TASK_GITCONFIG=${binding.gitConfig}`,
     `VK_TASK_GHCONFIG=${binding.ghConfig}`,
+    // push 先・fetch 元の基点。本番は常に GitHub（テストだけが一時フォルダを指す）。Codex からは書き換えられない。
+    `VK_TASK_REMOTE_BASE=${binding.remoteBase}`,
   ];
   return [
     '#!/bin/sh',
@@ -480,6 +487,7 @@ function readGitIdentity(spawnSync, gitPath, homeDir) {
  * @param {object} [params.fs] テスト用の fs 差し替え
  * @param {number} [params.uid] テスト用の所有者 ID 差し替え
  * @param {Function} [params.spawnSync] テスト用のプロセス実行差し替え
+ * @param {string} [params.remoteBase] テスト用の push 先・fetch 元の基点の差し替え（絶対パス。省略時は https://github.com。main.js からは渡さない）
  * @param {string[]} [params.toolDirs] テスト用の実行ファイル探索先の差し替え
  * @param {string} [params.pathEnv] テスト用のアプリ自身の PATH の差し替え
  * @param {() => string} [params.randomId] テスト用の起動ごとの名前の差し替え
@@ -564,7 +572,9 @@ function prepareCodexTaskPolicyHome(params) {
     const opsScriptPath = path.join(launchHome, OPS_SCRIPT_NAME);
     const launcherPath = path.join(launchHome, LAUNCHER_NAME);
     const gitConfigPath = path.join(launchHome, GIT_CONFIG_NAME);
-    const binding = { root: repository.root, repo: repository.repo, git: gitPath, gh: ghPath, home: home.realPath, gitConfig: gitConfigPath, ghConfig: ghConfigDir };
+    const remoteBase = params.remoteBase === undefined ? DEFAULT_REMOTE_BASE : params.remoteBase;
+    if (remoteBase !== DEFAULT_REMOTE_BASE && !isSafeAbsolutePath(remoteBase)) throw new PolicyError('unsafe remote base');
+    const binding = { root: repository.root, repo: repository.repo, git: gitPath, gh: ghPath, home: home.realPath, gitConfig: gitConfigPath, ghConfig: ghConfigDir, remoteBase };
     const expected = {
       files: {
         'config.toml': { content: template.renderConfigToml(handoff.realPath, untrustedProjectPaths), mode: 0o600 },

@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 機能追加 ] 自動処理用 Codex の固定入口に `git push <ブランチ名>` と作業フォルダ（worktree）の準備 `prepare worktree <base> <issue番号> <ブランチ> <worktree名>` を追加し、push と準備で承認待ちにならないように（push 先は拘束した GitHub リポジトリに固定し、新規作成と早送りだけを許可。強制上書き・削除・タグ・任意の refspec・main / 既定ブランチへの push は拒否）（[#440](https://github.com/vektor-inc/vk-terminals/issues/440)）
+
 ## 1.73.0
 
 - [ 機能追加 ] 自動処理用 Codex の固定入口に `gh issue create` を追加し、作業中に見つけた別対応を対象リポジトリの issue として起票できるように（`--title` / `--body` 必須、`--assignee` / `--label` は複数指定可。`--repo`・`--body-file`・`--web` などは拒否）（[#431](https://github.com/vektor-inc/vk-terminals/issues/431)）

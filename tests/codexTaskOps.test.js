@@ -15,6 +15,8 @@ const {
   inspectGitConfigListing,
   isSupportedGitVersion,
   inspectRepository,
+  findNetworkUnsafeKey,
+  restrictWrites,
   parseGitHubRepo,
   parseTaskCommand,
   readBinding,
@@ -642,7 +644,7 @@ test('拘束: Git 管理外・ホームそのもの・拘束の設定が無い�
     }
     assert.equal(readBinding({}), null);
     assert.deepEqual(readBinding(fixture.env), {
-      root: fixture.repo, repo: 'vektor-inc/vk-terminals', git: GIT_PATH, gh: fixture.env.VK_TASK_GH, home: fixture.home, gitConfig: fixture.env.VK_TASK_GITCONFIG, ghConfig: fixture.env.VK_TASK_GHCONFIG,
+      root: fixture.repo, repo: 'vektor-inc/vk-terminals', git: GIT_PATH, gh: fixture.env.VK_TASK_GH, home: fixture.home, gitConfig: fixture.env.VK_TASK_GITCONFIG, ghConfig: fixture.env.VK_TASK_GHCONFIG, remoteBase: 'https://github.com',
     });
   } finally {
     fixture.cleanup();
@@ -1309,5 +1311,986 @@ test('既定ブランチ: 同名のタグや origin/ で始まるローカルブ
     assert.equal(attempt('local branch named origin/develop').code, 0);
   } finally {
     fixture.cleanup();
+  }
+});
+
+// ─── git push / prepare worktree（issue #440） ─────────────────────────────
+
+// 一時フォルダの bare リポジトリを GitHub の代わりにする。基点（VK_TASK_REMOTE_BASE）はランチャーが固定する値で、
+// 入口は `<基点>/<owner>/<repo>.git` を組み立てて送る。origin（偽の github.com の URL）には一切通信しない。
+function attachRemote(fixture) {
+  const base = path.join(fixture.root, 'remote-base');
+  const bare = path.join(base, 'vektor-inc', 'vk-terminals.git');
+  fs.mkdirSync(bare, { recursive: true });
+  git(bare, 'init', '-q', '--bare', '-b', 'main');
+  git(fixture.repo, 'push', '-q', bare, 'main:main');
+  fixture.env.VK_TASK_REMOTE_BASE = base;
+  const remoteRef = (ref) => {
+    try {
+      return git(bare, 'rev-parse', '--verify', '-q', ref);
+    } catch (_error) {
+      return null;
+    }
+  };
+  return { base, bare, url: bare, remoteRef };
+}
+
+// 実行した外部コマンドの argv と環境を記録する spawnSync。
+function recordingSpawn(calls) {
+  return (bin, args, options) => {
+    calls.push({ bin, args, env: options.env });
+    return childProcess.spawnSync(bin, args, { ...options, stdio: 'pipe' });
+  };
+}
+
+function commitFile(cwd, name, content = 'x\n') {
+  fs.writeFileSync(path.join(cwd, name), content);
+  git(cwd, 'add', name);
+  git(cwd, '-c', 'user.name=T', '-c', 'user.email=t@example.com', 'commit', '-q', '-m', `add ${name}`);
+}
+
+const hasPushCall = (calls) => calls.some((call) => call.args.includes('push'));
+
+test('許可: git push はブランチ名 1 つだけを受け付け、prepare worktree は 4 つの引数だけを受け付ける', () => {
+  assert.deepEqual(parseTaskCommand(argv('git push issue/440-x')), { ok: true, bin: 'git', operation: 'push', branch: 'issue/440-x', needsGitHub: true, needsGh: true });
+  assert.deepEqual(parseTaskCommand(argv('prepare worktree main 440 issue/440-x codex-440')), {
+    ok: true, bin: 'git', operation: 'prepare-worktree', base: 'main', issue: '440', branch: 'issue/440-x', name: 'codex-440', needsGitHub: true, needsGh: true,
+  });
+});
+
+test('拒否: git push の force 系・削除・タグ・任意の refspec・別の remote・既定ブランチ・不正なブランチ名', () => {
+  const rejected = [
+    ['git', 'push'],
+    ['git', 'push', '--force'],
+    ['git', 'push', '-f', 'issue/440-x'],
+    ['git', 'push', '--force-with-lease', 'issue/440-x'],
+    ['git', 'push', '--force-with-lease=issue/440-x', 'issue/440-x'],
+    ['git', 'push', '--force-if-includes', 'issue/440-x'],
+    ['git', 'push', 'issue/440-x', '--force'],
+    ['git', 'push', '--delete', 'issue/440-x'],
+    ['git', 'push', '-d', 'issue/440-x'],
+    ['git', 'push', '--mirror'],
+    ['git', 'push', '--tags'],
+    ['git', 'push', '--all'],
+    ['git', 'push', '--prune'],
+    ['git', 'push', '--follow-tags'],
+    ['git', 'push', '--no-verify', 'issue/440-x'],
+    ['git', 'push', '-u', 'issue/440-x'],
+    ['git', 'push', '--set-upstream', 'issue/440-x'],
+    ['git', 'push', '--receive-pack=x', 'issue/440-x'],
+    ['git', 'push', '--repo=https://example.com/x.git', 'issue/440-x'],
+    ['git', 'push', '-o', 'x', 'issue/440-x'],
+    // 別の remote・URL・複数指定
+    ['git', 'push', 'origin', 'issue/440-x'],
+    ['git', 'push', 'https://example.com/o/r.git', 'issue/440-x'],
+    ['git', 'push', 'https://example.com/o/r.git'],
+    ['git', 'push', 'git@github.com:o/r.git'],
+    ['git', 'push', 'issue/440-x', 'issue/440-y'],
+    // 任意の refspec・強制を意味する + や削除を意味する :
+    ['git', 'push', '+issue/440-x'],
+    ['git', 'push', '+issue/440-x:issue/440-x'],
+    ['git', 'push', ':issue/440-x'],
+    ['git', 'push', 'issue/440-x:issue/440-x'],
+    ['git', 'push', 'issue/440-x:main'],
+    ['git', 'push', 'HEAD:refs/heads/issue/440-x'],
+    ['git', 'push', 'refs/heads/issue/440-x'],
+    ['git', 'push', 'refs/tags/v1'],
+    ['git', 'push', 'issue/440-*'],
+    ['git', 'push', 'issue/440-x^'],
+    // 既定ブランチ・HEAD
+    ['git', 'push', 'main'],
+    ['git', 'push', 'master'],
+    ['git', 'push', 'HEAD'],
+    // 不正なブランチ名・パス
+    ['git', 'push', ''],
+    ['git', 'push', '..'],
+    ['git', 'push', 'a/../b'],
+    ['git', 'push', '../x'],
+    ['git', 'push', '/etc/passwd'],
+    ['git', 'push', 'a//b'],
+    ['git', 'push', 'a/'],
+    ['git', 'push', 'x.lock'],
+    ['git', 'push', '.hidden'],
+    ['git', 'push', 'a b'],
+    ['git', 'push', 'a\0b'],
+    ['git', 'push', '-'],
+  ];
+  for (const command of rejected) {
+    const result = parseTaskCommand(command);
+    assert.equal(result.ok, false, JSON.stringify(command));
+    assert.match(result.error, /^task command rejected/);
+  }
+});
+
+test('拒否: prepare の許可外の操作・引数・不正なブランチ名と worktree 名・.. ・owner/repo の指定', () => {
+  const rejected = [
+    ['prepare'],
+    ['prepare', 'branch', 'main', '440', 'issue/440-x'],
+    ['prepare', 'switch', 'main', '440', 'issue/440-x', 'wt'],
+    ['prepare', 'worktree'],
+    ['prepare', 'worktree', 'main', '440', 'issue/440-x'],
+    ['prepare', 'worktree', 'main', '440', 'issue/440-x', 'wt', 'extra'],
+    // owner/repo を引数に取らない（付けると引数の数が合わない・base として不正になる）。
+    ['prepare', 'worktree', 'vektor-inc/vk-terminals', 'main', '440', 'issue/440-x', 'wt'],
+    ['prepare', 'worktree', '--repo=o/r', 'main', '440', 'issue/440-x'],
+    // base
+    ['prepare', 'worktree', '../main', '440', 'issue/440-x', 'wt'],
+    ['prepare', 'worktree', 'a..b', '440', 'issue/440-x', 'wt'],
+    ['prepare', 'worktree', '+main', '440', 'issue/440-x', 'wt'],
+    ['prepare', 'worktree', 'main:other', '440', 'issue/440-x', 'wt'],
+    ['prepare', 'worktree', '-main', '440', 'issue/440-x', 'wt'],
+    ['prepare', 'worktree', 'refs/heads/main', '440', 'issue/440-x', 'wt'],
+    ['prepare', 'worktree', '', '440', 'issue/440-x', 'wt'],
+    // issue 番号
+    ['prepare', 'worktree', 'main', 'x', 'issue/440-x', 'wt'],
+    ['prepare', 'worktree', 'main', '0', 'issue/0-x', 'wt'],
+    ['prepare', 'worktree', 'main', '-1', 'issue/-1-x', 'wt'],
+    ['prepare', 'worktree', 'main', '44 0', 'issue/44 0-x', 'wt'],
+    // ブランチ名
+    ['prepare', 'worktree', 'main', '440', 'issue/441-x', 'wt'],
+    ['prepare', 'worktree', 'main', '44', 'issue/440-x', 'wt'],
+    ['prepare', 'worktree', 'main', '440', '440-x', 'wt'],
+    ['prepare', 'worktree', 'main', '440', 'issue/440', 'wt'],
+    ['prepare', 'worktree', 'main', '440', 'main', 'wt'],
+    ['prepare', 'worktree', 'main', '440', 'issue/../440-x', 'wt'],
+    ['prepare', 'worktree', 'main', '440', '../issue/440-x', 'wt'],
+    ['prepare', 'worktree', 'main', '440', '+issue/440-x', 'wt'],
+    ['prepare', 'worktree', 'main', '440', 'issue/440-x:y', 'wt'],
+    ['prepare', 'worktree', 'main', '440', '-b/440-x', 'wt'],
+    ['prepare', 'worktree', 'main', '440', 'refs/heads/issue/440-x', 'wt'],
+    ['prepare', 'worktree', 'issue/440-x', '440', 'issue/440-x', 'wt'],
+    // worktree 名（フォルダの外へ出られない）
+    ['prepare', 'worktree', 'main', '440', 'issue/440-x', '..'],
+    ['prepare', 'worktree', 'main', '440', 'issue/440-x', '../wt'],
+    ['prepare', 'worktree', 'main', '440', 'issue/440-x', 'a/b'],
+    ['prepare', 'worktree', 'main', '440', 'issue/440-x', '/tmp/wt'],
+    ['prepare', 'worktree', 'main', '440', 'issue/440-x', '-wt'],
+    ['prepare', 'worktree', 'main', '440', 'issue/440-x', 'w t'],
+    ['prepare', 'worktree', 'main', '440', 'issue/440-x', '.hidden'],
+    ['prepare', 'worktree', 'main', '440', 'issue/440-x', ''],
+    ['prepare', 'worktree', 'main', '440', 'issue/440-x', 'a'.repeat(101)],
+  ];
+  for (const command of rejected) {
+    const result = parseTaskCommand(command);
+    assert.equal(result.ok, false, JSON.stringify(command));
+    assert.match(result.error, /^task command rejected/);
+  }
+});
+
+test('実行: git push は拘束先でも worktree でも、固定の URL・refspec・資格情報の指定で bare リポジトリへ通る（origin は使わない）', () => {
+  const fixture = createFixture();
+  try {
+    const remote = attachRemote(fixture);
+    const calls = [];
+    const options = (cwd) => ({ cwd, spawnSync: recordingSpawn(calls) });
+    commitFile(fixture.repo, 'root.txt');
+    const rootPush = run(fixture, ['git', 'push', 'work/test'], options(fixture.repo));
+    assert.equal(rootPush.code, 0, rootPush.messages.join(''));
+    assert.equal(remote.remoteRef('refs/heads/work/test'), git(fixture.repo, 'rev-parse', 'work/test'));
+
+    // 実行した push の引数: origin ではなく入口が組み立てた URL、固定の refspec、+ や --force は無い。
+    const pushCall = calls.find((call) => call.args.includes('push'));
+    const pushIndex = pushCall.args.indexOf('push');
+    assert.deepEqual(pushCall.args.slice(pushIndex), ['push', '--no-verify', '--no-follow-tags', '--no-recurse-submodules', '--no-signed', remote.url, 'refs/heads/work/test:refs/heads/work/test']);
+    assert.deepEqual(pushCall.args.slice(0, FIXED_GIT_PREFIX.length), FIXED_GIT_PREFIX);
+    // 資格情報: 既存の指定を空にしてから、検証済み gh の auth git-credential だけを指定する。
+    assert.deepEqual(pushCall.args.slice(FIXED_GIT_PREFIX.length, pushIndex), [
+      '-c', 'credential.helper=',
+      '-c', 'credential.https://github.com.helper=',
+      '-c', `credential.https://github.com.helper=!'${fixture.env.VK_TASK_GH}' auth git-credential`,
+    ]);
+    assert.equal(pushCall.args.some((arg) => /--force|--delete|--mirror|--tags|--all|--prune|^\+/.test(arg)), false);
+    assert.equal(pushCall.args.some((arg) => arg.includes('github.com/vektor-inc')), false);
+    // 通信を許すプロトコルは 1 つだけ（既定の空 = 不許可のままにはしない）。
+    assert.equal(pushCall.env.GIT_ALLOW_PROTOCOL, 'file');
+    assert.equal(pushCall.env.GIT_TERMINAL_PROMPT, '0');
+
+    // worktree からも通る。
+    const wt = addWorktree(fixture, path.join(fixture.repo, '.claude', 'worktrees', 'p1'), 'work/440-wt');
+    commitFile(wt, 'wt.txt');
+    assert.equal(run(fixture, ['git', 'push', 'work/440-wt'], options(wt)).code, 0);
+    assert.equal(remote.remoteRef('refs/heads/work/440-wt'), git(wt, 'rev-parse', 'HEAD'));
+
+    // 早送り（追記）は通る。
+    commitFile(wt, 'wt2.txt');
+    assert.equal(run(fixture, ['git', 'push', 'work/440-wt'], options(wt)).code, 0);
+    assert.equal(remote.remoteRef('refs/heads/work/440-wt'), git(wt, 'rev-parse', 'HEAD'));
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('実行: git push は新規作成と早送りだけで、履歴を書き換えた（非早送りの）push は強制せず失敗する', () => {
+  const fixture = createFixture();
+  try {
+    const remote = attachRemote(fixture);
+    commitFile(fixture.repo, 'a1.txt');
+    assert.equal(run(fixture, ['git', 'push', 'work/test']).code, 0);
+    const pushed = remote.remoteRef('refs/heads/work/test');
+    // 直前のコミットを作り直す（リモートの履歴と枝分かれする）。
+    git(fixture.repo, '-c', 'user.name=T', '-c', 'user.email=t@example.com', 'commit', '-q', '--amend', '-m', 'rewritten');
+    const result = run(fixture, ['git', 'push', 'work/test']);
+    assert.notEqual(result.code, 0);
+    assert.equal(remote.remoteRef('refs/heads/work/test'), pushed);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('拒否: git push は main / 既定ブランチ / リモートの既定ブランチ / detached HEAD / 存在しないブランチへは送らない', () => {
+  const fixture = createFixture();
+  try {
+    const remote = attachRemote(fixture);
+    const calls = [];
+    const attempt = (branch) => run(fixture, ['git', 'push', branch], { spawnSync: recordingSpawn(calls) });
+
+    // 存在しないローカルブランチ。
+    let result = attempt('work/never-created');
+    assert.equal(result.code, 2);
+    assert.match(result.messages.join(''), /local branch does not exist/);
+    // main（パースの段階で拒否。ローカルに存在しても同じ）。
+    result = run(fixture, ['git', 'push', 'main']);
+    assert.equal(result.code, 2);
+    assert.match(result.messages.join(''), /cannot push "main"/);
+
+    // origin/HEAD の指す先（develop）。
+    git(fixture.repo, 'branch', 'develop');
+    git(fixture.repo, 'update-ref', 'refs/remotes/origin/develop', 'HEAD');
+    git(fixture.repo, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/develop');
+    result = attempt('develop');
+    assert.equal(result.code, 2);
+    assert.match(result.messages.join(''), /default branch "develop"/);
+    assert.equal(remote.remoteRef('refs/heads/develop'), null);
+
+    // origin/HEAD が無い clone でも、リモートの既定ブランチ（bare の HEAD）は拒否する。
+    git(fixture.repo, 'symbolic-ref', '--delete', 'refs/remotes/origin/HEAD');
+    git(fixture.repo, 'branch', 'trunk');
+    git(fixture.repo, 'push', '-q', remote.url, 'trunk:trunk');
+    git(remote.bare, 'symbolic-ref', 'HEAD', 'refs/heads/trunk');
+    const before = remote.remoteRef('refs/heads/trunk');
+    result = attempt('trunk');
+    assert.equal(result.code, 2);
+    assert.match(result.messages.join(''), /remote default branch "trunk"/);
+    assert.equal(remote.remoteRef('refs/heads/trunk'), before);
+
+    // detached HEAD。
+    git(fixture.repo, 'checkout', '-q', '--detach');
+    result = attempt('work/test');
+    assert.equal(result.code, 2);
+    assert.match(result.messages.join(''), /detached HEAD/);
+    assert.equal(remote.remoteRef('refs/heads/work/test'), null);
+    // どの拒否でも、push そのものは一度も実行されていない。
+    assert.equal(hasPushCall(calls), false);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('拘束: git push は別のリポジトリ・同じ origin を持つ別クローン・入れ子のリポジトリからは送らず、origin が違えば拒否する', () => {
+  const fixture = createFixture();
+  try {
+    const remote = attachRemote(fixture);
+    const calls = [];
+    const options = (cwd) => ({ cwd, spawnSync: recordingSpawn(calls) });
+    // 同じ origin を持つ別クローン。
+    const clone = path.join(fixture.root, 'clone');
+    initRepo(clone, { origin: GITHUB_ORIGIN });
+    git(clone, 'checkout', '-q', '-b', 'work/clone');
+    // 別のリポジトリ。
+    const stranger = path.join(fixture.root, 'stranger');
+    initRepo(stranger, { origin: 'https://github.com/other/repo.git' });
+    git(stranger, 'checkout', '-q', '-b', 'work/stranger');
+    // 入れ子のリポジトリ。
+    const nested = path.join(fixture.repo, 'nested');
+    initRepo(nested, { origin: GITHUB_ORIGIN });
+    git(nested, 'checkout', '-q', '-b', 'work/nested');
+    for (const [cwd, branch] of [[clone, 'work/clone'], [stranger, 'work/stranger'], [nested, 'work/nested']]) {
+      const result = run(fixture, ['git', 'push', branch], options(cwd));
+      assert.equal(result.code, 2, cwd);
+      assert.match(result.messages.join(''), /not the bound repository/, cwd);
+      assert.equal(remote.remoteRef(`refs/heads/${branch}`), null, branch);
+    }
+    // 拘束先であっても、origin が拘束した GitHub のリポジトリと違えば送らない。
+    git(fixture.repo, 'remote', 'set-url', 'origin', 'https://github.com/other/repo.git');
+    const mismatch = run(fixture, ['git', 'push', 'work/test'], options(fixture.repo));
+    assert.equal(mismatch.code, 2);
+    assert.match(mismatch.messages.join(''), /origin does not match/);
+    assert.equal(remote.remoteRef('refs/heads/work/test'), null);
+    assert.equal(hasPushCall(calls), false);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('拒否: 接続先や経路を書き換えうるリポジトリ設定（url.*.insteadOf・http.*）があれば push も prepare も通信しない（閲覧系は従来どおり）', () => {
+  const settings = [
+    ['url.https://evil.example/.insteadOf', 'https://github.com/'],
+    ['url.file:///tmp/evil/.pushInsteadOf', 'file:///x/'],
+    ['http.proxy', 'http://evil.example:8080'],
+    ['http.https://github.com/.extraHeader', 'X: y'],
+    ['http.sslVerify', 'false'],
+  ];
+  for (const [key, value] of settings) {
+    const fixture = createFixture();
+    try {
+      const remote = attachRemote(fixture);
+      git(fixture.repo, 'config', key, value);
+      const calls = [];
+      const options = { spawnSync: recordingSpawn(calls) };
+      const pushed = run(fixture, ['git', 'push', 'work/test'], options);
+      assert.equal(pushed.code, 2, key);
+      assert.match(pushed.messages.join(''), /can redirect network access/, key);
+      const prepared = run(fixture, ['prepare', 'worktree', 'main', '440', 'issue/440-x', 'wt'], options);
+      assert.equal(prepared.code, 2, key);
+      assert.match(prepared.messages.join(''), /can redirect network access/, key);
+      assert.equal(remote.remoteRef('refs/heads/work/test'), null, key);
+      assert.equal(fs.existsSync(path.join(fixture.repo, '.claude')), false, key);
+      assert.equal(run(fixture, ['git', 'status', '--short']).code, 0, key);
+    } finally {
+      fixture.cleanup();
+    }
+  }
+  assert.equal(findNetworkUnsafeKey('core.bare\nfalse\0user.name\nx\0'), null);
+  assert.equal(findNetworkUnsafeKey('url.https://x/.insteadof\nhttps://github.com/\0'), 'url.https://x/.insteadof');
+});
+
+test('実行: git push では、リポジトリのフック（pre-push）は実行されず、リポジトリ内の credential helper の設定は拒否される', () => {
+  const fixture = createFixture();
+  try {
+    const remote = attachRemote(fixture);
+    const marker = path.join(fixture.root, 'hook-ran');
+    const hooks = path.join(fixture.repo, '.git', 'hooks');
+    fs.mkdirSync(hooks, { recursive: true });
+    fs.writeFileSync(path.join(hooks, 'pre-push'), `#!/bin/sh\ntouch ${JSON.stringify(marker)}\n`, { mode: 0o755 });
+    commitFile(fixture.repo, 'hook.txt');
+    const result = run(fixture, ['git', 'push', 'work/test']);
+    assert.equal(result.code, 0, result.messages.join(''));
+    assert.equal(fs.existsSync(marker), false);
+    assert.ok(remote.remoteRef('refs/heads/work/test'));
+    git(fixture.repo, 'config', 'credential.helper', '!echo username=evil');
+    assert.equal(run(fixture, ['git', 'push', 'work/test']).code, 2);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('実行: gh が使えない（VK_TASK_GH が空）ときは push も prepare も通信しない', () => {
+  const fixture = createFixture();
+  try {
+    const remote = attachRemote(fixture);
+    const env = { ...fixture.env, VK_TASK_GH: '' };
+    delete env.VK_TASK_GHCONFIG;
+    const pushed = run(fixture, ['git', 'push', 'work/test'], { env });
+    assert.equal(pushed.code, 2);
+    assert.equal(remote.remoteRef('refs/heads/work/test'), null);
+    assert.equal(run(fixture, ['prepare', 'worktree', 'main', '440', 'issue/440-x', 'wt'], { env }).code, 2);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('設定: 基点の指定は GitHub の固定値か絶対パスだけで、相対パス・.. ・未知の URL は拘束の設定として不正になる', () => {
+  const fixture = createFixture();
+  try {
+    assert.equal(readBinding(fixture.env).remoteBase, 'https://github.com');
+    assert.equal(readBinding({ ...fixture.env, VK_TASK_REMOTE_BASE: '' }).remoteBase, 'https://github.com');
+    assert.equal(readBinding({ ...fixture.env, VK_TASK_REMOTE_BASE: '/tmp/remote' }).remoteBase, '/tmp/remote');
+    for (const value of ['relative/path', 'https://evil.example', 'http://github.com', 'ssh://git@github.com', 'git@github.com:', 'file:///tmp/x', '/tmp/../etc', "/tmp/a'b", 'https://github.com/']) {
+      assert.equal(readBinding({ ...fixture.env, VK_TASK_REMOTE_BASE: value }), null, value);
+    }
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('実行: prepare worktree は最新の base から .claude/worktrees/<名前> に作業ブランチ付きの worktree を作り、通常のクローンは切り替えない', () => {
+  const fixture = createFixture();
+  try {
+    const remote = attachRemote(fixture);
+    // 取得されることを確かめるため、リモートの main だけを先に進める。
+    const other = path.join(fixture.root, 'other-clone');
+    git(fixture.root, 'clone', '-q', remote.bare, other);
+    commitFile(other, 'latest.txt');
+    git(other, 'push', '-q', 'origin', 'main');
+    const latest = git(other, 'rev-parse', 'HEAD');
+    const rootBefore = { head: git(fixture.repo, 'rev-parse', 'HEAD'), branch: git(fixture.repo, 'symbolic-ref', '--short', 'HEAD') };
+
+    const out = [];
+    const calls = [];
+    const result = run(fixture, ['prepare', 'worktree', 'main', '440', 'issue/440-flow', 'codex-440'], { writeOut: (message) => out.push(message), spawnSync: recordingSpawn(calls) });
+    assert.equal(result.code, 0, result.messages.join(''));
+    const worktree = path.join(fixture.repo, '.claude', 'worktrees', 'codex-440');
+    assert.equal(out.join(''), `TARGET_REPO=${worktree}\nWORK_BRANCH=issue/440-flow\nBASE_SHA=${latest}\n`);
+    assert.equal(git(worktree, 'rev-parse', 'HEAD'), latest);
+    assert.equal(git(worktree, 'symbolic-ref', '--short', 'HEAD'), 'issue/440-flow');
+    // 追跡先を持たない（--no-track）。
+    assert.throws(() => git(worktree, 'config', '--get', 'branch.issue/440-flow.remote'));
+    // 通常のクローンは切り替えず、worktree は未追跡として現れない。
+    assert.deepEqual({ head: git(fixture.repo, 'rev-parse', 'HEAD'), branch: git(fixture.repo, 'symbolic-ref', '--short', 'HEAD') }, rootBefore);
+    assert.equal(git(fixture.repo, 'status', '--porcelain'), '');
+    // 取得は origin の設定値ではなく固定の URL・固定の refspec・固定の資格情報の指定。
+    const fetchCall = calls.find((call) => call.args.includes('fetch'));
+    // 書き込みを制限する OS の仕組みで包んで実行する（git 本体の引数は包みの後ろ）。
+    assert.equal(fetchCall.bin, '/usr/bin/sandbox-exec');
+    const fetchArgs = fetchCall.args.slice(fetchCall.args.indexOf(GIT_PATH) + 1);
+    const fetchIndex = fetchArgs.indexOf('fetch');
+    assert.deepEqual(fetchArgs.slice(fetchIndex), ['fetch', '--no-tags', '--no-recurse-submodules', '--no-write-fetch-head', '--refmap=', remote.url, '+refs/heads/main:refs/remotes/origin/main']);
+    assert.deepEqual(fetchArgs.slice(FIXED_GIT_PREFIX.length, fetchIndex), [
+      '-c', 'credential.helper=',
+      '-c', 'credential.https://github.com.helper=',
+      '-c', `credential.https://github.com.helper=!'${fixture.env.VK_TASK_GH}' auth git-credential`,
+    ]);
+    assert.equal(fetchCall.env.GIT_ALLOW_PROTOCOL, 'file');
+    // worktree の追加は通信しない環境（プロトコル不許可）で行う。
+    assert.equal(calls.find((call) => call.args.includes('worktree')).env.GIT_ALLOW_PROTOCOL, '');
+
+    // info/exclude へ 1 行。別の名前で作ると行が増える。
+    const exclude = () => fs.readFileSync(path.join(fixture.repo, '.git', 'info', 'exclude'), 'utf8').split('\n').filter((line) => line.startsWith('/.claude/worktrees/'));
+    assert.deepEqual(exclude(), ['/.claude/worktrees/codex-440/']);
+    assert.equal(run(fixture, ['prepare', 'worktree', 'main', '441', 'issue/441-second', 'codex-441']).code, 0);
+    assert.deepEqual(exclude(), ['/.claude/worktrees/codex-440/', '/.claude/worktrees/codex-441/']);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('結合: prepare で作った worktree で、そのまま add・commit・push が通り、bare リポジトリにブランチができる', () => {
+  const fixture = createFixture();
+  try {
+    const remote = attachRemote(fixture);
+    git(fixture.repo, 'checkout', '-q', 'main');
+    assert.equal(run(fixture, ['prepare', 'worktree', 'main', '440', 'issue/440-flow', 'codex-440']).code, 0);
+    const worktree = fs.realpathSync(path.join(fixture.repo, '.claude', 'worktrees', 'codex-440'));
+    fs.writeFileSync(path.join(worktree, 'feature.txt'), 'feature\n');
+    assert.equal(run(fixture, ['git', 'add', '--', 'feature.txt'], { cwd: worktree }).code, 0);
+    assert.equal(run(fixture, ['git', 'commit', '-m', '[ 機能追加 ] 例'], { cwd: worktree }).code, 0);
+    const pushed = run(fixture, ['git', 'push', 'issue/440-flow'], { cwd: worktree });
+    assert.equal(pushed.code, 0, pushed.messages.join(''));
+    assert.equal(remote.remoteRef('refs/heads/issue/440-flow'), git(worktree, 'rev-parse', 'HEAD'));
+    assert.equal(git(remote.bare, 'log', '-1', '--format=%s', 'issue/440-flow'), '[ 機能追加 ] 例');
+    // main は動いていない。
+    assert.equal(remote.remoteRef('refs/heads/main'), git(fixture.repo, 'rev-parse', 'main'));
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('拒否: prepare worktree の同名ブランチ・同名パス・.claude のリンク・取得できない base・ルート以外での実行・別クローン', () => {
+  const fixture = createFixture();
+  try {
+    attachRemote(fixture);
+    const worktreeCount = () => git(fixture.repo, 'worktree', 'list', '--porcelain').split('\n').filter((line) => line.startsWith('worktree ')).length;
+    const baseCount = worktreeCount();
+    const prepare = (args, extra = {}) => run(fixture, ['prepare', 'worktree', 'main', '440', ...args], extra);
+    const branchExists = (name) => {
+      try {
+        git(fixture.repo, 'rev-parse', '--verify', '-q', `refs/heads/${name}`);
+        return true;
+      } catch (_error) {
+        return false;
+      }
+    };
+
+    // 同名のブランチ。
+    git(fixture.repo, 'branch', 'issue/440-dup');
+    let result = prepare(['issue/440-dup', 'wt-a']);
+    assert.equal(result.code, 2);
+    assert.match(result.messages.join(''), /working branch already exists/);
+    // 同名のパス。
+    fs.mkdirSync(path.join(fixture.repo, '.claude', 'worktrees', 'wt-b'), { recursive: true });
+    result = prepare(['issue/440-b', 'wt-b']);
+    assert.equal(result.code, 2);
+    assert.match(result.messages.join(''), /worktree path already exists/);
+    assert.equal(branchExists('issue/440-b'), false);
+
+    // .claude/worktrees がリンク。
+    const elsewhere = path.join(fixture.root, 'elsewhere');
+    fs.mkdirSync(elsewhere);
+    fs.rmSync(path.join(fixture.repo, '.claude'), { recursive: true });
+    fs.mkdirSync(path.join(fixture.repo, '.claude'));
+    fs.symlinkSync(elsewhere, path.join(fixture.repo, '.claude', 'worktrees'));
+    result = prepare(['issue/440-c', 'wt-c']);
+    assert.equal(result.code, 2);
+    assert.match(result.messages.join(''), /symbolic link/);
+    // .claude がリンク。
+    fs.rmSync(path.join(fixture.repo, '.claude'), { recursive: true });
+    fs.symlinkSync(elsewhere, path.join(fixture.repo, '.claude'));
+    result = prepare(['issue/440-d', 'wt-d']);
+    assert.equal(result.code, 2);
+    assert.match(result.messages.join(''), /symbolic link/);
+    assert.deepEqual(fs.readdirSync(elsewhere), []);
+    fs.unlinkSync(path.join(fixture.repo, '.claude'));
+
+    // リモートに無い base（取得に失敗する）。worktree もブランチも作られない。
+    result = run(fixture, ['prepare', 'worktree', 'no-such-base', '440', 'issue/440-e', 'wt-e']);
+    assert.notEqual(result.code, 0);
+    assert.equal(fs.existsSync(path.join(fixture.repo, '.claude', 'worktrees', 'wt-e')), false);
+    assert.equal(branchExists('issue/440-e'), false);
+
+    // 拘束先のルート以外（worktree の中・サブフォルダ）からは作らない。
+    const inner = addWorktree(fixture, path.join(fixture.root, 'outside-wt'), 'work/outside');
+    result = prepare(['issue/440-f', 'wt-f'], { cwd: inner });
+    assert.equal(result.code, 2);
+    assert.match(result.messages.join(''), /bound repository root/);
+    fs.mkdirSync(path.join(fixture.repo, 'sub'));
+    result = prepare(['issue/440-g', 'wt-g'], { cwd: path.join(fixture.repo, 'sub') });
+    assert.equal(result.code, 2);
+
+    // 同じ origin を持つ別クローン・別のリポジトリ。
+    const clone = path.join(fixture.root, 'clone');
+    initRepo(clone, { origin: GITHUB_ORIGIN });
+    const stranger = path.join(fixture.root, 'stranger');
+    initRepo(stranger, { origin: 'https://github.com/other/repo.git' });
+    for (const cwd of [clone, stranger]) {
+      result = prepare(['issue/440-h', 'wt-h'], { cwd });
+      assert.equal(result.code, 2, cwd);
+      assert.equal(fs.existsSync(path.join(cwd, '.claude')), false, cwd);
+    }
+    // origin が拘束した GitHub のリポジトリと違えば作らない。
+    git(fixture.repo, 'remote', 'set-url', 'origin', 'https://github.com/other/repo.git');
+    result = prepare(['issue/440-i', 'wt-i']);
+    assert.equal(result.code, 2);
+    assert.match(result.messages.join(''), /origin does not match/);
+    assert.equal(worktreeCount(), baseCount + 1); // outside-wt だけ（このテスト自身が作ったもの）
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+// ─── 書き込み先の制限とリモート既定ブランチの確定（差し戻し対応） ───────────────
+
+test('制限: 書き込みは許可した実パスの配下だけで、リンクを辿って外へ出る書き込みと禁止した場所への書き込みは OS が拒否する', () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'vk-restrict-')));
+  try {
+    const allowed = path.join(root, 'allowed');
+    const outside = path.join(root, 'outside');
+    fs.mkdirSync(path.join(allowed, 'sub'), { recursive: true });
+    fs.mkdirSync(path.join(allowed, 'hooks'));
+    fs.mkdirSync(outside);
+    fs.symlinkSync(outside, path.join(allowed, 'link'));
+    const tryWrite = (target) => {
+      const command = restrictWrites({ bin: '/bin/sh', args: ['-c', 'echo x > "$1"', 'sh', target], allowWrite: [allowed], denyWrite: [path.join(allowed, 'hooks')] });
+      return childProcess.spawnSync(command.bin, command.args, { encoding: 'utf8' }).status === 0;
+    };
+    assert.equal(tryWrite(path.join(allowed, 'sub', 'ok.txt')), true);
+    assert.equal(tryWrite(path.join(outside, 'no.txt')), false);
+    assert.equal(tryWrite(path.join(allowed, 'link', 'no.txt')), false);
+    assert.equal(tryWrite(path.join(allowed, 'hooks', 'pre-commit')), false);
+    assert.equal(fs.existsSync(path.join(outside, 'no.txt')), false);
+    // パスはプロファイルの文字列に入らない（引用符を含む名前でも許可範囲は変わらない）。
+    const odd = path.join(root, 'odd"name');
+    fs.mkdirSync(odd);
+    const command = restrictWrites({ bin: '/bin/sh', args: ['-c', 'echo x > "$1"', 'sh', path.join(outside, 'no2.txt')], allowWrite: [odd] });
+    assert.notEqual(childProcess.spawnSync(command.bin, command.args, { encoding: 'utf8' }).status, 0);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// 呼び出しの前後に任意の処理（フォルダのリンクへの差し替え）を挟める spawnSync。実際の実行は本物。
+function interposeSpawn({ before = () => {}, after = () => {} }) {
+  return (bin, args, options) => {
+    before(bin, args);
+    const result = childProcess.spawnSync(bin, args, { ...options, stdio: 'pipe' });
+    after(bin, args);
+    return result;
+  };
+}
+
+const involves = (args, word) => args.includes(word);
+
+test('競合: 取得の最中に .claude が外部フォルダへのリンクへ差し替えられても、拘束ルートの外には何も作られない', () => {
+  for (const variant of ['claude', 'worktrees']) {
+    const fixture = createFixture();
+    try {
+      attachRemote(fixture);
+      const outside = path.join(fixture.root, 'outside-target');
+      fs.mkdirSync(outside);
+      fs.mkdirSync(path.join(fixture.repo, '.claude', 'worktrees'), { recursive: true });
+      const swap = () => {
+        if (variant === 'claude') {
+          fs.rmSync(path.join(fixture.repo, '.claude'), { recursive: true });
+          fs.symlinkSync(outside, path.join(fixture.repo, '.claude'));
+        } else {
+          fs.rmSync(path.join(fixture.repo, '.claude', 'worktrees'), { recursive: true });
+          fs.symlinkSync(outside, path.join(fixture.repo, '.claude', 'worktrees'));
+        }
+      };
+      let swapped = false;
+      const result = run(fixture, ['prepare', 'worktree', 'main', '440', 'issue/440-race', 'wt-race'], {
+        spawnSync: interposeSpawn({ after: (_bin, args) => { if (involves(args, 'fetch') && !swapped) { swapped = true; swap(); } } }),
+      });
+      assert.equal(swapped, true, variant);
+      assert.notEqual(result.code, 0, variant);
+      assert.deepEqual(fs.readdirSync(outside), [], variant);
+      assert.equal(fs.existsSync(path.join(outside, 'wt-race')), false, variant);
+    } finally {
+      fixture.cleanup();
+    }
+  }
+});
+
+test('競合: 最後の検査の後（worktree の追加の直前）に .claude 系のフォルダが外部へのリンクへ差し替えられても、拘束ルートの外には何も作られない', () => {
+  for (const variant of ['claude', 'worktrees', 'hooks']) {
+    const fixture = createFixture();
+    try {
+      attachRemote(fixture);
+      const outside = path.join(fixture.root, 'outside-target');
+      fs.mkdirSync(outside);
+      // hooks: 拘束ルートの内側でも、フックのフォルダへ向けたリンクには書けない。
+      const target = variant === 'hooks' ? path.join(fixture.repo, '.git', 'hooks') : outside;
+      fs.mkdirSync(target, { recursive: true });
+      const hooksBefore = fs.readdirSync(path.join(fixture.repo, '.git', 'hooks')).sort();
+      let swapped = false;
+      const swap = () => {
+        const claude = path.join(fixture.repo, '.claude');
+        if (variant === 'claude') {
+          fs.rmSync(claude, { recursive: true });
+          fs.symlinkSync(target, claude);
+        } else {
+          fs.rmSync(path.join(claude, 'worktrees'), { recursive: true });
+          fs.symlinkSync(target, path.join(claude, 'worktrees'));
+        }
+      };
+      const result = run(fixture, ['prepare', 'worktree', 'main', '440', 'issue/440-race', 'wt-race'], {
+        spawnSync: interposeSpawn({ before: (_bin, args) => { if (involves(args, 'worktree') && involves(args, '--no-checkout') && !swapped) { swapped = true; swap(); } } }),
+      });
+      assert.equal(swapped, true, variant);
+      assert.notEqual(result.code, 0, variant);
+      assert.deepEqual(fs.readdirSync(outside), [], variant);
+      assert.deepEqual(fs.readdirSync(path.join(fixture.repo, '.git', 'hooks')).sort(), hooksBefore, variant);
+    } finally {
+      fixture.cleanup();
+    }
+  }
+});
+
+test('競合: 親フォルダの作成の直前に差し替えられても、拘束ルートの外にはフォルダが作られない', () => {
+  const fixture = createFixture();
+  try {
+    attachRemote(fixture);
+    const outside = path.join(fixture.root, 'outside-target');
+    fs.mkdirSync(outside);
+    let swapped = false;
+    const result = run(fixture, ['prepare', 'worktree', 'main', '440', 'issue/440-race', 'wt-race'], {
+      spawnSync: interposeSpawn({
+        before: (_bin, args) => {
+          if (args.includes('/bin/mkdir') && args.includes(path.join(fixture.repo, '.claude', 'worktrees')) && !swapped) {
+            swapped = true;
+            fs.symlinkSync(outside, path.join(fixture.repo, '.claude'));
+          }
+        },
+      }),
+    });
+    assert.equal(swapped, true);
+    assert.notEqual(result.code, 0);
+    assert.deepEqual(fs.readdirSync(outside), []);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+// フォルダ配下の全ファイルについて、種類・リンク先・内容を再帰的に並べる（直下の名前だけでは中身の書き換えを検知できないため）。
+function deepSnapshot(dir) {
+  const stat = (() => {
+    try {
+      return fs.lstatSync(dir);
+    } catch (_error) {
+      return null;
+    }
+  })();
+  if (stat === null) return ['(missing)'];
+  const lines = [];
+  const walk = (current, label) => {
+    const info = fs.lstatSync(current);
+    if (info.isSymbolicLink()) {
+      lines.push(`${label} -> ${fs.readlinkSync(current)}`);
+    } else if (info.isDirectory()) {
+      lines.push(`${label}/`);
+      for (const name of fs.readdirSync(current).sort()) walk(path.join(current, name), `${label}/${name}`);
+    } else {
+      lines.push(`${label} #${fs.readFileSync(current).toString('base64')}`);
+    }
+  };
+  walk(dir, '.');
+  return lines;
+}
+
+// 差し替え先に、Git が書き込み段階まで進める有効な管理領域（HEAD・commondir・gitdir 等）を用意し、差し替え後の状態を基準にする。
+// 制限が効いていれば、その後の prepare は基準の内容を 1 バイトも変えない。
+function raceCase({ label, trigger, makeTarget, swap, untouched, mustFail = true }) {
+  const fixture = createFixture();
+  try {
+    attachRemote(fixture);
+    let swapped = false;
+    let before = null;
+    const snapshot = () => untouched(fixture).map((dir) => [dir, deepSnapshot(dir)]);
+    const result = run(fixture, ['prepare', 'worktree', 'main', '440', 'issue/440-race', 'wt-race'], {
+      spawnSync: interposeSpawn({
+        before: (_bin, args) => {
+          if (trigger(args) && !swapped) {
+            swapped = true;
+            swap(fixture, makeTarget(fixture));
+            before = snapshot();
+          }
+        },
+      }),
+    });
+    assert.equal(swapped, true, label);
+    if (mustFail) assert.notEqual(result.code, 0, label);
+    assert.deepEqual(snapshot(), before, label);
+  } finally {
+    fixture.cleanup();
+  }
+}
+
+const adminOf = (fixture) => path.join(fixture.repo, '.git', 'worktrees', 'wt-race');
+const worktreeOf = (fixture) => path.join(fixture.repo, '.claude', 'worktrees', 'wt-race');
+// 現在の管理領域の写し（HEAD・commondir・gitdir を含む）を target に作る。
+function copyAdmin(fixture, target) {
+  fs.rmSync(target, { recursive: true, force: true });
+  fs.cpSync(adminOf(fixture), target, { recursive: true });
+  // 相対の commondir は写し先では別の場所を指すので、Git が書き込み段階まで進めるよう絶対パスにする。
+  fs.writeFileSync(path.join(target, 'commondir'), `${path.join(fixture.repo, '.git')}\n`);
+  return target;
+}
+
+test('競合: info/exclude の追記は書き込み制限つきの子プロセスで行い、info や exclude が差し替えられても拘束ルートの外へは追記されない', () => {
+  const appendTrigger = (args) => args.includes('/bin/sh') && args.some((arg) => arg.includes('printf'));
+  // info 自体が外部フォルダへのリンク（検査前から）。
+  {
+    const fixture = createFixture();
+    try {
+      attachRemote(fixture);
+      const outside = path.join(fixture.root, 'outside-info');
+      fs.mkdirSync(outside);
+      fs.rmSync(path.join(fixture.repo, '.git', 'info'), { recursive: true });
+      fs.symlinkSync(outside, path.join(fixture.repo, '.git', 'info'));
+      assert.notEqual(run(fixture, ['prepare', 'worktree', 'main', '440', 'issue/440-race', 'wt-race']).code, 0);
+      assert.deepEqual(fs.readdirSync(outside), []);
+    } finally {
+      fixture.cleanup();
+    }
+  }
+  // 検査の後（追記の直前）に info がリンクへ差し替えられる。差し替え先は外部と、Git 管理領域の中（objects 配下）。
+  for (const variant of ['outside', 'objects/info', 'objects/pack']) {
+    raceCase({
+      label: `info:${variant}`,
+      trigger: appendTrigger,
+      makeTarget: (fixture) => {
+        const dir = variant === 'outside' ? path.join(fixture.root, 'outside-info') : path.join(fixture.repo, '.git', ...variant.split('/'));
+        fs.mkdirSync(dir, { recursive: true });
+        return dir;
+      },
+      swap: (fixture, target) => {
+        fs.rmSync(path.join(fixture.repo, '.git', 'info'), { recursive: true });
+        fs.symlinkSync(target, path.join(fixture.repo, '.git', 'info'));
+      },
+      untouched: (fixture) => [path.join(fixture.root, 'outside-info'), path.join(fixture.repo, '.git', 'objects', 'info'), path.join(fixture.repo, '.git', 'objects', 'pack')],
+    });
+  }
+  // 検査の後に exclude 自体が外部ファイルへのリンクへ差し替えられる。
+  raceCase({
+    label: 'exclude',
+    trigger: appendTrigger,
+    makeTarget: (fixture) => {
+      const file = path.join(fixture.root, 'outside-exclude');
+      fs.writeFileSync(file, 'original\n');
+      return file;
+    },
+    swap: (fixture, target) => {
+      fs.rmSync(path.join(fixture.repo, '.git', 'info', 'exclude'), { force: true });
+      fs.symlinkSync(target, path.join(fixture.repo, '.git', 'info', 'exclude'));
+    },
+    untouched: (fixture) => [path.join(fixture.root, 'outside-exclude')],
+  });
+});
+
+test('競合: 作業フォルダの置き場所が Git 管理領域・.claude 内の別フォルダ・外部へのリンクに差し替えられても、どこにも書かれない（追加の直前・index 作成の直前・展開の直前）', () => {
+  const outsideDirs = (fixture) => [
+    path.join(fixture.repo, '.git', 'objects', 'info'),
+    path.join(fixture.repo, '.git', 'objects', 'pack'),
+    path.join(fixture.repo, '.git', 'refs', 'tags'),
+    path.join(fixture.repo, '.git', 'hooks'),
+    path.join(fixture.repo, '.claude', 'other'),
+    path.join(fixture.root, 'outside-target'),
+  ];
+  const places = {
+    'objects/info': (fixture) => path.join(fixture.repo, '.git', 'objects', 'info'),
+    'objects/pack': (fixture) => path.join(fixture.repo, '.git', 'objects', 'pack'),
+    'refs/tags': (fixture) => path.join(fixture.repo, '.git', 'refs', 'tags'),
+    'hooks': (fixture) => path.join(fixture.repo, '.git', 'hooks'),
+    '.claude 内の別フォルダ': (fixture) => path.join(fixture.repo, '.claude', 'other'),
+    '拘束ルートの外': (fixture) => path.join(fixture.root, 'outside-target'),
+  };
+  const triggers = [
+    ['追加の直前', (args) => involves(args, 'worktree') && involves(args, '--no-checkout')],
+    ['index 作成の直前', (args) => involves(args, 'read-tree')],
+    ['展開の直前', (args) => involves(args, 'checkout-index')],
+  ];
+  const swapWorktree = (fixture, target) => {
+    fs.rmSync(worktreeOf(fixture), { recursive: true, force: true });
+    fs.symlinkSync(target, worktreeOf(fixture));
+  };
+  for (const [placeLabel, place] of Object.entries(places)) {
+    for (const [timing, trigger] of triggers) {
+      raceCase({
+        label: `${placeLabel} / ${timing}`,
+        trigger,
+        makeTarget: (fixture) => {
+          fs.mkdirSync(place(fixture), { recursive: true });
+          return place(fixture);
+        },
+        swap: swapWorktree,
+        untouched: outsideDirs,
+      });
+    }
+  }
+  // 展開先が、この worktree 自身の管理領域（commondir・gitdir・HEAD を持つ）へのリンクに差し替えられる（index 作成は管理領域に書くのが正当なので、展開の直前だけ）。
+  for (const [timing, trigger] of triggers.slice(2)) {
+    raceCase({
+      label: `管理領域そのもの / ${timing}`,
+      trigger,
+      makeTarget: (fixture) => adminOf(fixture),
+      swap: swapWorktree,
+      untouched: (fixture) => [adminOf(fixture)],
+    });
+  }
+});
+
+test('競合: worktree の管理情報（.git/worktrees/<名前>）が index 作成・展開の直前に、有効な管理領域を備えた別の場所へのリンクへ差し替えられても、そこには書かれない', () => {
+  for (const [timing, trigger] of [['index 作成の直前', (args) => involves(args, 'read-tree')], ['展開の直前', (args) => involves(args, 'checkout-index')]]) {
+    for (const variant of ['objects/info', 'objects/pack', 'hooks', '外部']) {
+      const targetOf = (fixture) => (variant === '外部' ? path.join(fixture.root, 'outside-target') : path.join(fixture.repo, '.git', ...variant.split('/'), 'evil-admin'));
+      raceCase({
+        label: `${variant} / ${timing}`,
+        trigger,
+        makeTarget: (fixture) => {
+          fs.mkdirSync(path.dirname(targetOf(fixture)), { recursive: true });
+          return copyAdmin(fixture, targetOf(fixture));
+        },
+        swap: (fixture, target) => {
+          fs.rmSync(adminOf(fixture), { recursive: true, force: true });
+          fs.symlinkSync(target, adminOf(fixture));
+        },
+        untouched: (fixture) => [targetOf(fixture)],
+        // 展開の直前の差し替えは、展開が管理領域に書かないので成功してよい（差し替え先が変わらないことだけを確かめる）。
+        mustFail: timing === 'index 作成の直前',
+      });
+    }
+  }
+});
+
+test('実行: prepare は Git の制御ファイル（hooks・config・objects/info）を書き換えず、書き込みを伴う呼び出しはすべて書き込み制限つきで行う', () => {
+  const fixture = createFixture();
+  try {
+    attachRemote(fixture);
+    const gitDir = path.join(fixture.repo, '.git');
+    const config = fs.readFileSync(path.join(gitDir, 'config'), 'utf8');
+    const hooks = fs.readdirSync(path.join(gitDir, 'hooks')).sort();
+    const objectsInfo = fs.readdirSync(path.join(gitDir, 'objects', 'info')).sort();
+    const calls = [];
+    const result = run(fixture, ['prepare', 'worktree', 'main', '440', 'issue/440-flow', 'codex-440'], { spawnSync: recordingSpawn(calls) });
+    assert.equal(result.code, 0, result.messages.join(''));
+    assert.equal(fs.readFileSync(path.join(gitDir, 'config'), 'utf8'), config);
+    assert.deepEqual(fs.readdirSync(path.join(gitDir, 'hooks')).sort(), hooks);
+    assert.deepEqual(fs.readdirSync(path.join(gitDir, 'objects', 'info')).sort(), objectsInfo);
+    const worktree = path.join(fixture.repo, '.claude', 'worktrees', 'codex-440');
+    assert.equal(git(worktree, 'status', '--porcelain'), '');
+    assert.ok(fs.readdirSync(worktree).length > 1);
+    const mentions = (call, word) => call.args.some((arg) => arg === word);
+    const writers = calls.filter((call) => ['fetch', 'worktree', 'read-tree', 'checkout-index', '/bin/mkdir'].some((word) => mentions(call, word)) || call.args.some((arg) => arg.includes('printf')));
+    assert.ok(writers.length >= 7);
+    for (const call of writers) assert.equal(call.bin, '/usr/bin/sandbox-exec');
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('制限: ブランチの作成は別プロセスで ref・ログ（とロック）だけに書き込みを許し、worktree の追加を含む他の段階は refs/heads・logs/refs/heads の既存データを消せない', () => {
+  const fixture = createFixture();
+  try {
+    attachRemote(fixture);
+    const gitDir = path.join(fixture.repo, '.git');
+    // 既存のブランチ（packed と loose の両方）と、それぞれの記録を用意する。
+    git(fixture.repo, 'branch', 'packed-one');
+    git(fixture.repo, 'pack-refs', '--all');
+    git(fixture.repo, 'branch', 'loose-one');
+    const protectedPaths = [
+      path.join(gitDir, 'refs', 'heads', 'loose-one'), path.join(gitDir, 'logs', 'refs', 'heads', 'loose-one'),
+      path.join(gitDir, 'logs', 'refs', 'heads', 'main'), path.join(gitDir, 'packed-refs'),
+    ];
+    const heads = [path.join(gitDir, 'refs', 'heads'), path.join(gitDir, 'logs', 'refs', 'heads'), path.join(gitDir, 'packed-refs')];
+    const calls = [];
+    assert.equal(run(fixture, ['prepare', 'worktree', 'main', '440', 'issue/440-flow', 'codex-440'], { spawnSync: recordingSpawn(calls) }).code, 0);
+
+    const allowOf = (call) => call.args.filter((arg, i) => call.args[i - 1] === '-D' && arg.startsWith('ALLOW')).map((arg) => arg.slice(arg.indexOf('=') + 1));
+    const sandboxed = calls.filter((call) => call.bin === '/usr/bin/sandbox-exec');
+    const branchCall = sandboxed.find((call) => call.args.includes('branch'));
+    const addCall = sandboxed.find((call) => call.args.includes('worktree'));
+    // 構造: add は -b を使わず既存のブランチを指定し、書き込みの許可に refs / logs の階層を含まない。
+    assert.equal(addCall.args.includes('-b'), false);
+    assert.ok(addCall.args.includes('issue/440-flow'));
+    for (const allowed of allowOf(addCall)) assert.equal(/\/(refs|logs)(\/|$)/.test(allowed), false, allowed);
+    // ブランチの作成は、そのブランチの ref・ログとロックの 4 ファイルだけ。
+    assert.deepEqual(allowOf(branchCall).map((p) => path.relative(gitDir, p)).sort(), [
+      'logs/refs/heads/issue/440-flow', 'logs/refs/heads/issue/440-flow.lock', 'refs/heads/issue/440-flow', 'refs/heads/issue/440-flow.lock',
+    ]);
+
+    // 実効: 各段階のプロセスに与えた書き込み制限（実際のプロファイル）の下で、Git の代わりに
+    // 「refs/heads・logs/refs/heads・packed-refs を再帰的に消す／追記する／動かす」処理を走らせ、既存データが変わらないことを確かめる。
+    // （Git 内部の失敗時の後片付けが走る時点を外から作ることはできないため、後片付けが最大限に働いた場合に相当する操作で代替する。）
+    const newBranchFiles = [path.join(gitDir, 'refs', 'heads', 'issue', '440-flow'), path.join(gitDir, 'logs', 'refs', 'heads', 'issue', '440-flow')];
+    const snapshot = (extra) => [...protectedPaths, ...extra].map((target) => [target, deepSnapshot(target)]);
+    const standIn = 'for t in "$@"; do rm -rf "$t" 2>/dev/null; printf x >> "$t" 2>/dev/null; done; for t in "$@"; do if [ -d "$t" ]; then mv "$t" "$t.moved" 2>/dev/null; fi; done; exit 0';
+    const replay = (call) => {
+      const head = call.args.slice(0, call.args.indexOf('-p') + 2);
+      return childProcess.spawnSync(call.bin, [...head, '/bin/sh', '-c', standIn, 'sh', ...heads], { encoding: 'utf8' });
+    };
+    const others = sandboxed.filter((call) => call !== branchCall);
+    assert.ok(others.length >= 7);
+    for (const call of others) {
+      // フォルダ作成の段階が書けるのは、実行前には存在しなかったフォルダだけ（作成したブランチの置き場所は、その配下に新しい ref ができる前から許可されたもの）。
+      const extra = call.args.includes('/bin/mkdir') ? [] : newBranchFiles;
+      const before = snapshot(extra);
+      replay(call);
+      assert.deepEqual(snapshot(extra), before, allowOf(call).join(' '));
+    }
+    // 作成の段階は自分の 1 本の ref とログには書ける（代替処理が効いている確認）が、既存のブランチには触れない。
+    const before = snapshot([]);
+    replay(branchCall);
+    assert.deepEqual(snapshot([]), before);
+    assert.equal(fs.existsSync(newBranchFiles[0]), false);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('拒否: リモートの既定ブランチを確定できない（ls-remote の失敗・symref の欠落）ときは push を実行しない', () => {
+  const cases = [
+    ['通信の失敗', { status: 128, stdout: '', stderr: 'fatal: unable to access' }],
+    ['symref の欠落', { status: 0, stdout: '', stderr: '' }],
+    ['HEAD の行だけで symref が無い', { status: 0, stdout: '0123456789012345678901234567890123456789\tHEAD\n', stderr: '' }],
+    ['ブランチでない symref', { status: 0, stdout: 'ref: refs/tags/v1\tHEAD\n', stderr: '' }],
+  ];
+  for (const [label, fake] of cases) {
+    const fixture = createFixture();
+    try {
+      const remote = attachRemote(fixture);
+      commitFile(fixture.repo, 'c.txt');
+      const calls = [];
+      const result = run(fixture, ['git', 'push', 'work/test'], {
+        spawnSync: (bin, args, options) => {
+          calls.push({ bin, args });
+          return args.includes('ls-remote') ? { ...fake, error: undefined } : childProcess.spawnSync(bin, args, { ...options, stdio: 'pipe' });
+        },
+      });
+      assert.equal(result.code, 2, label);
+      assert.match(result.messages.join(''), /remote default branch could not be verified/, label);
+      assert.equal(hasPushCall(calls), false, label);
+      assert.equal(remote.remoteRef('refs/heads/work/test'), null, label);
+    } finally {
+      fixture.cleanup();
+    }
   }
 });

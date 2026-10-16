@@ -51,6 +51,24 @@ function isDescendant(processes, pid, ancestorPid, ancestorLstart) {
   return false;
 }
 
+function hasBaselineAncestor(processes, process, shell, baselineIdentities) {
+  const visited = new Set();
+  let current = process;
+  while (current && current.pid !== shell.pid) {
+    if (visited.has(current.pid)) return null;
+    visited.add(current.pid);
+    if (current.pid !== process.pid) {
+      const baselineStart = baselineIdentities?.get(current.pid);
+      if (baselineStart !== undefined) {
+        if (!isSameProcessStart(current.lstart, baselineStart)) return null;
+        return true;
+      }
+    }
+    current = processes.get(current.ppid);
+  }
+  return current?.pid === shell.pid ? false : null;
+}
+
 function inspectLifecycle(snapshot, processes) {
   const shell = processes.get(snapshot.shellPid);
   if (!shell || !isSameProcessStart(shell.lstart, snapshot.shellLstart)) return { state: null, terminal: true };
@@ -121,9 +139,12 @@ function inspectLifecycle(snapshot, processes) {
       return baselineStart !== undefined && isSameProcessStart(process.lstart, baselineStart);
     });
     const hasDirectShellChild = members.some((process) => process.ppid === shell.pid);
+    const ancestryIsSafe = members.every((process) =>
+      hasBaselineAncestor(processes, process, shell, snapshot.baselineIdentities) === false);
     // 初回は厳格な前景条件を満たす group だけを取得する。後継は、直前の group と identity が
     // 全消失した gap に限り、shell function が次に起動した shell 直下の sibling を受け入れる。
-    if (members.length > 0 && (mayAcquireInitial || hasDirectShellChild) && !isBaselineGroup && !hasBaselineMember) {
+    if (members.length > 0 && (mayAcquireInitial || hasDirectShellChild) && !isBaselineGroup && !hasBaselineMember &&
+        (!mayAcquireInitial || ancestryIsSafe)) {
       trackedGroups.set(candidate, new Map(members.map((process) => [process.pid, process.lstart])));
       for (const process of members) aliveKnown.set(process.pid, process);
     }
@@ -159,8 +180,9 @@ function buildPromptHookCommand(marker, shellPath) {
     return `function ${name} { if (( \${+${armed}} == 0 )); then typeset -g ${armed}=1; printf %b ${ready}; return; fi; precmd_functions=(\${precmd_functions:#${name}}); unfunction ${name}; unset ${armed}; printf %b ${completion}; }; precmd_functions+=( ${name} )`;
   }
   if (shell === 'bash') {
-    const saved = `vk_agent_saved_prompt_${marker}`;
-    return `if declare -p PROMPT_COMMAND 2>/dev/null | grep -q '^declare -a'; then printf %b ${failed}; else ${saved}=\"\${PROMPT_COMMAND-}\"; ${armed}=0; ${name}() { if [ \"\$${armed}\" = 0 ]; then ${armed}=1; printf %b ${ready}; return; fi; PROMPT_COMMAND=\"\$${saved}\"; unset ${saved} ${armed}; unset -f ${name}; printf %b ${completion}; }; PROMPT_COMMAND=\"${name}\${PROMPT_COMMAND:+;}\${PROMPT_COMMAND-}\"; fi`;
+    const mode = `vk_agent_mode_${marker}`;
+    const index = `vk_agent_index_${marker}`;
+    return `case \"$(declare -p PROMPT_COMMAND 2>/dev/null)\" in \"declare -a\"*) if [ \"\${BASH_VERSINFO[0]}\" -ge 5 ]; then ${mode}=array; else ${mode}=; printf %b ${failed}; fi;; \"\"|\"declare --\"*) ${mode}=string;; *) ${mode}=; printf %b ${failed};; esac; if [ -n \"\$${mode}\" ]; then ${armed}=0; ${name}() { if [ \"\$${armed}\" = 0 ]; then ${armed}=1; printf %b ${ready}; return; fi; if [ \"\$${mode}\" = array ]; then for ${index} in \"\${!PROMPT_COMMAND[@]}\"; do [ \"\${PROMPT_COMMAND[\$${index}]}\" = ${name} ] && unset \"PROMPT_COMMAND[\$${index}]\"; done; elif [ \"\$PROMPT_COMMAND\" = ${name} ]; then PROMPT_COMMAND=; else PROMPT_COMMAND=\"\${PROMPT_COMMAND%;${name}}\"; fi; unset ${mode} ${index} ${armed}; unset -f ${name}; printf %b ${completion}; }; if [ \"\$${mode}\" = array ]; then PROMPT_COMMAND+=( ${name} ); else PROMPT_COMMAND=\"\${PROMPT_COMMAND-}\${PROMPT_COMMAND:+;}${name}\"; fi; fi`;
   }
   if (shell === 'fish') {
     return `set -g ${armed} 0; function ${name} --on-event fish_prompt; if test \$${armed} -eq 0; set -g ${armed} 1; printf %b ${ready}; else; functions -e ${name}; set -e ${armed}; printf %b ${completion}; end; end`;
@@ -187,8 +209,10 @@ function createAgentLifecycleStore(options = {}) {
     entry.readyResolve = null;
     if (entry.timer) clearTimer(entry.timer);
     if (entry.acquisitionTimer) clearTimer(entry.acquisitionTimer);
+    if (entry.readyTimer) clearTimer(entry.readyTimer);
     entry.timer = null;
     entry.acquisitionTimer = null;
+    entry.readyTimer = null;
   };
   const schedule = (id, entry) => {
     if (!entry.cancelled && !closed && states.get(id) === entry) entry.timer = setTimer(() => poll(id, entry), pollIntervalMs);
@@ -233,7 +257,7 @@ function createAgentLifecycleStore(options = {}) {
       const entry = states.get(id);
       const isCurrent = () => states.get(id) === entry && entry?.generation === generation && entry?.launchToken === launchToken && !closed;
       if (!isCurrent()) return { status: 'cancelled' };
-      Object.assign(entry, { shellPid, shellLstart: null, trackedGroups: new Map(), baselinePgids: new Set(), baselineIdentities: new Map(), marker: null, markerBuffer: '', completionReceived: false, acquisitionOpen: false, acquisitionTimer: null, readyResolve: null });
+      Object.assign(entry, { shellPid, shellLstart: null, trackedGroups: new Map(), baselinePgids: new Set(), baselineIdentities: new Map(), marker: null, markerBuffer: '', completionReceived: false, acquisitionOpen: false, acquisitionTimer: null, readyResolve: null, readyTimer: null, activated: false });
       if (platform === 'win32' || !Number.isSafeInteger(shellPid) || shellPid <= 0) return { status: 'passthrough', command };
       let processes;
       try { processes = await listProcesses(); } catch (_error) {
@@ -249,9 +273,33 @@ function createAgentLifecycleStore(options = {}) {
       }
       entry.marker = crypto.randomBytes(24).toString('hex');
       const ready = new Promise((resolve) => { entry.readyResolve = resolve; });
+      entry.readyTimer = setTimer(() => finishAcquisition(entry), acquisitionTimeoutMs);
+      return { status: 'ready', command, setupCommand: buildPromptHookCommand(entry.marker, shellPath), ready };
+    },
+    async activate(termId, generation, launchToken) {
+      const id = String(termId);
+      const entry = states.get(id);
+      const isCurrent = () => states.get(id) === entry && entry?.generation === generation && entry?.launchToken === launchToken && !closed;
+      if (!isCurrent() || entry.cancelled) return false;
+      let processes;
+      try { processes = await listProcesses(); } catch (_error) { return false; }
+      if (!isCurrent() || entry.cancelled) return false;
+      const shell = processes.get(entry.shellPid);
+      if (!shell || !isSameProcessStart(shell.lstart, entry.shellLstart)) return false;
+      entry.baselinePgids = new Set();
+      entry.baselineIdentities = new Map();
+      for (const process of processes.values()) {
+        entry.baselinePgids.add(process.pgid);
+        entry.baselineIdentities.set(process.pid, process.lstart);
+      }
+      entry.activated = true;
       entry.acquisitionOpen = true;
       entry.acquisitionTimer = setTimer(() => finishAcquisition(entry), acquisitionTimeoutMs);
-      return { status: 'ready', command, setupCommand: buildPromptHookCommand(entry.marker, shellPath), ready };
+      schedule(id, entry);
+      return true;
+    },
+    cancelPending(termId, generation) {
+      return this.initialize(termId, generation);
     },
     isCurrent(termId, generation, launchToken) {
       const entry = states.get(String(termId));
@@ -271,11 +319,9 @@ function createAgentLifecycleStore(options = {}) {
         visible = visible.replaceAll(readyOk, '').replaceAll(readyFail, '');
         if (entry.readyResolve) entry.readyResolve(ok);
         entry.readyResolve = null;
-        if (ok) {
-          if (entry.acquisitionTimer) clearTimer(entry.acquisitionTimer);
-          entry.acquisitionTimer = setTimer(() => finishAcquisition(entry), acquisitionTimeoutMs);
-          if (!entry.cancelled && !closed && !entry.timer && !entry.polling) schedule(String(termId), entry);
-        } else {
+        if (entry.readyTimer) clearTimer(entry.readyTimer);
+        entry.readyTimer = null;
+        if (!ok) {
           finishAcquisition(entry);
         }
       }
@@ -287,7 +333,7 @@ function createAgentLifecycleStore(options = {}) {
           entry.acquisitionTimer = null;
         }
         // marker が先着しても、終了判定は必ず次の fresh process snapshot で行う。
-        if (!entry.cancelled && !closed && !entry.timer && !entry.polling) schedule(String(termId), entry);
+        if (entry.activated && !entry.cancelled && !closed && !entry.timer && !entry.polling) schedule(String(termId), entry);
         visible = visible.replaceAll(marker, '');
       }
       // PTY は任意の位置でデータを分割するため、正しいマーカーの接頭辞だけを次回へ持ち越す。

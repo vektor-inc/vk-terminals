@@ -44,6 +44,7 @@ async function launchTracked(store, shell, command, shellPath = '/bin/zsh') {
   const prepared = await store.prepare('pty', 1, launchToken, shell.pid, command, shellPath);
   shell.write(`${prepared.setupCommand}\r`);
   await prepared.ready;
+  await store.activate('pty', 1, launchToken);
   shell.write(`${prepared.command}\r`);
 }
 
@@ -181,6 +182,31 @@ test('既存background jobが生成したbaseline外の子を取得しない', (
   assert.equal(result.trackedGroups.size, 0);
 });
 
+test('baseline既存jobを祖先に持つ別PGIDの前景子を初回取得しない', () => {
+  const snapshot = {
+    ...initial(),
+    baselinePgids: new Set([10, 40]),
+    baselineIdentities: new Map([[10, START], [40, START]]),
+  };
+  const result = inspectLifecycle(snapshot, table(
+    row(10, 1, 10, 41),
+    row(40, 10, 40, 41),
+    row(41, 40, 41, 41),
+  ));
+  assert.equal(result.state, null);
+  assert.equal(result.trackedGroups.size, 0);
+});
+
+test('初回候補の祖先chainが循環・欠損なら安全側で取得しない', () => {
+  const snapshot = { ...initial(), baselinePgids: new Set([10]), baselineIdentities: new Map([[10, START]]) };
+  for (const processes of [
+    table(row(10, 1, 10, 41), row(40, 41, 40, 41), row(41, 40, 41, 41)),
+    table(row(10, 1, 10, 41), row(41, 999, 41, 41)),
+  ]) {
+    assert.equal(inspectLifecycle(snapshot, processes).trackedGroups.size, 0);
+  }
+});
+
 test('存在しないAIのcompletion後に開始した別の前景jobを取得しない', () => {
   const result = inspectLifecycle(
     { ...initial(), completionReceived: true },
@@ -254,6 +280,8 @@ test('completion markerは未取得の取得期間だけを閉じ、画面から
   const launchToken = store.initialize('1', 1);
   const prepared = await store.prepare('1', 1, launchToken, 10, 'missing-command', '/bin/zsh');
   const markerToken = prepared.setupCommand.match(/VKAgentLifecycle=([a-f0-9]+)/)[1];
+  store.filterOutput('1', `${READY_MARKER_PREFIX}${markerToken}:ok${String.fromCharCode(7)}`);
+  await store.activate('1', 1, launchToken);
   const marker = `${MARKER_PREFIX}${markerToken}${String.fromCharCode(7)}`;
   const splitAt = Math.floor(marker.length / 2);
   assert.equal(store.filterOutput('1', `before${marker.slice(0, splitAt)}`), 'before');
@@ -270,6 +298,7 @@ test('ready markerは画面から除去してhook待機を解決する', async (
   const ready = `${READY_MARKER_PREFIX}${markerToken}:ok${String.fromCharCode(7)}`;
   assert.equal(store.filterOutput('1', `before${ready}after`), 'beforeafter');
   assert.equal(await prepared.ready, true);
+  assert.equal(await store.activate('1', 1, token), true);
   await store.close();
 });
 
@@ -285,6 +314,7 @@ test('準備group後の由来不明な子孫にcompletionが先着した場合�
   const prepared = await store.prepare('1', 1, token, 10, 'claude', '/bin/zsh');
   const markerToken = prepared.setupCommand.match(/VKAgentLifecycle=([a-f0-9]+)/)[1];
   store.filterOutput('1', `${READY_MARKER_PREFIX}${markerToken}:ok${String.fromCharCode(7)}`);
+  await store.activate('1', 1, token);
   processes = table(row(10, 1, 10, 10), row(30, 10, 30, 10, 'T'));
   store.filterOutput('1', `${MARKER_PREFIX}${markerToken}${String.fromCharCode(7)}`);
   await timers[2]();
@@ -305,6 +335,7 @@ test('completion marker spoofと取得期限切れはnullへ確定する', async
   const prepared = await store.prepare('1', 1, token, 10, 'claude', '/bin/zsh');
   const markerToken = prepared.setupCommand.match(/VKAgentLifecycle=([a-f0-9]+)/)[1];
   store.filterOutput('1', `${READY_MARKER_PREFIX}${markerToken}:ok${String.fromCharCode(7)}`);
+  await store.activate('1', 1, token);
   timers[1]();
   processes = table(row(10, 1, 10, 20), row(20, 10, 20, 20));
   await timers[2]();
@@ -333,6 +364,7 @@ test('group消失後にmarker未受信のまま後継取得期限が切れた場
   const prepared = await store.prepare('1', 1, token, 10, 'claude', '/bin/zsh');
   const markerToken = prepared.setupCommand.match(/VKAgentLifecycle=([a-f0-9]+)/)[1];
   store.filterOutput('1', `${READY_MARKER_PREFIX}${markerToken}:ok${String.fromCharCode(7)}`);
+  await store.activate('1', 1, token);
   processes = table(row(10, 1, 10, 20), row(20, 10, 20, 20));
   await runTimer(2);
   assert.equal(store.get('1', 1), 'running');
@@ -355,6 +387,7 @@ test('世代更新とdeleteはpoll・取得期限timerを回収する', async ()
   const prepared = await store.prepare('1', 1, token, 10, 'claude', '/bin/zsh');
   const markerToken = prepared.setupCommand.match(/VKAgentLifecycle=([a-f0-9]+)/)[1];
   store.filterOutput('1', `${READY_MARKER_PREFIX}${markerToken}:ok${String.fromCharCode(7)}`);
+  await store.activate('1', 1, token);
   store.initialize('1', 2);
   assert.ok(cleared.length >= 2);
   store.delete('1');
@@ -365,6 +398,8 @@ test('新規起動とrestartの双方が書き込み前baseline取得を通る',
   const source = fs.readFileSync(require.resolve('../main'), 'utf8');
   assert.match(source, /prepareCommand: \(command\) => agentLifecycles\.prepare\(id, 1, initialLaunchToken, ptyProcess\.pid, command, shell\)/);
   assert.match(source, /prepareWrite\(launch, command\)[\s\S]*?agentLifecycles\.prepare\(request\.termId, launch\.generation, launch\.launchToken/);
+  assert.match(source, /async function restartAgentInTerminal[\s\S]*?lifecycleLaunch\.cancelPending\(\);[\s\S]*?await stopAgentChildren/);
+  assert.match(source, /const hookReady = await prepared\.ready;[\s\S]*?await lifecycleLaunch\.activate\(launch\);[\s\S]*?ptyProcess\.write\(`\$\{prepared\.command\}\\r`\)/);
   assert.match(source, /const prepared = await lifecycleLaunch\.prepareWrite\(launch, command\);[\s\S]*?lifecycleLaunch\.isCurrent\(launch\)[\s\S]*?ptyProcess\.write\(`\$\{prepared\.command\}\\r`\)/);
 });
 
@@ -382,6 +417,9 @@ test('zsh/bash/fishは元コマンドと分離した世代固有prompt hookを�
   const fish = buildPromptHookCommand(marker, '/usr/bin/fish');
   assert.match(zsh, /precmd_functions/);
   assert.match(bash, /PROMPT_COMMAND/);
+  assert.match(bash, /PROMPT_COMMAND\+=\( vk_agent_prompt_/);
+  assert.match(bash, /PROMPT_COMMAND="\$\{PROMPT_COMMAND-\}\$\{PROMPT_COMMAND:\+;\}vk_agent_prompt_/);
+  assert.match(bash, /unset "PROMPT_COMMAND\[\$vk_agent_index_/);
   assert.match(fish, /--on-event fish_prompt/);
   assert.ok(zsh.includes('\\033]1337;VKAgentLifecycle='));
   for (const setup of [zsh, bash, fish]) assert.doesNotMatch(setup, /claude --model sonnet/);
@@ -501,4 +539,39 @@ test('実PTY: Ctrl+Z中はrunningを維持し、fg後の終了でexited', {
   await new Promise((resolve) => setTimeout(resolve, 100));
   pty.shell.write('finish\r');
   await waitFor(() => store.get('pty', 1) === 'exited');
+});
+
+test('実PTY: bashの既存PROMPT_COMMAND完了後だけreadyとなり、AI groupだけを取得する', {
+  skip: process.platform === 'win32' || spawnSync('/bin/bash', ['--version']).status !== 0,
+}, async (t) => {
+  const shell = require('node-pty').spawn('/bin/bash', ['--noprofile', '--norc'], {
+    env: { ...process.env, TERM: 'xterm-256color', PS1: 'VK_BASH> ' },
+  });
+  let output = '';
+  const store = createAgentLifecycleStore({ pollIntervalMs: 20 });
+  shell.onData((data) => { output += store.filterOutput('bash', data); });
+  t.after(() => { store.close(); try { shell.kill(); } catch (_error) {} });
+  await waitFor(() => output.includes('VK_BASH>'));
+
+  const bashMajor = Number(spawnSync('/bin/bash', ['-c', 'printf %s "$BASH_VERSINFO"'], { encoding: 'utf8' }).stdout);
+  const cases = [[1, `PROMPT_COMMAND='printf "EXTERNAL_STRING\\n"; sleep 0.12'`, 'EXTERNAL_STRING']];
+  if (bashMajor >= 5) cases.push([2, `PROMPT_COMMAND=('printf "EXTERNAL_ARRAY\\n"' 'sleep 0.12')`, 'EXTERNAL_ARRAY']);
+  for (const [generation, declaration, externalOutput] of cases) {
+    shell.write(`${declaration}\r`);
+    await waitFor(() => output.includes(externalOutput));
+    await waitFor(() => output.lastIndexOf('VK_BASH>') > output.lastIndexOf(externalOutput));
+    output = '';
+    const token = store.initialize('bash', generation);
+    const command = `${process.execPath} -e 'setTimeout(()=>{},300)'`;
+    const prepared = await store.prepare('bash', generation, token, shell.pid, command, '/bin/bash');
+    shell.write(`${prepared.setupCommand}\r`);
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    assert.equal(store.get('bash', generation), null);
+    assert.equal(await prepared.ready, true);
+    assert.ok(output.includes(externalOutput));
+    assert.equal(await store.activate('bash', generation, token), true);
+    shell.write(`${prepared.command}\r`);
+    await waitFor(() => store.get('bash', generation) === 'running');
+    await waitFor(() => store.get('bash', generation) === 'exited');
+  }
 });

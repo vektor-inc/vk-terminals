@@ -2190,6 +2190,7 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
       ptyProcess,
       command: launchCommand,
       prepareCommand: (command) => agentLifecycles.prepare(id, 1, initialLaunchToken, ptyProcess.pid, command, shell),
+      activateCommand: () => agentLifecycles.activate(id, 1, initialLaunchToken),
       isLaunchCurrent: () => agentLifecycles.isCurrent(id, 1, initialLaunchToken),
       discard: discardLaunchHome,
       delayMs: 200,
@@ -2359,6 +2360,9 @@ async function listProcessesForRestart() {
 }
 
 async function restartAgentInTerminal(ptyProcess, request, launchOptions, lifecycleLaunch) {
+  // stop 用 snapshot の取得中にも、作成時の遅延 launch は進み得る。公開 generation は
+  // 停止成功まで進めず、内部 token だけを最初の await より前に同期更新して旧 write を止める。
+  lifecycleLaunch.cancelPending();
   const stopped = await stopAgentChildren(ptyProcess.pid, {
     platform: process.platform,
     listProcesses: listProcessesForRestart,
@@ -2420,7 +2424,9 @@ async function restartAgentInTerminal(ptyProcess, request, launchOptions, lifecy
   if (prepared.status === 'cancelled' || !lifecycleLaunch.isCurrent(launch) || ptys.get(request.termId) !== ptyProcess) return false;
   if (prepared.status === 'ready') {
     ptyProcess.write(`${prepared.setupCommand}\r`);
-    await prepared.ready;
+    const hookReady = await prepared.ready;
+    if (!lifecycleLaunch.isCurrent(launch) || ptys.get(request.termId) !== ptyProcess) return false;
+    if (hookReady) await lifecycleLaunch.activate(launch);
     if (!lifecycleLaunch.isCurrent(launch) || ptys.get(request.termId) !== ptyProcess) return false;
   }
   if (!lifecycleLaunch.isCurrent(launch) || ptys.get(request.termId) !== ptyProcess) return false;
@@ -3500,6 +3506,9 @@ function startHttpApi() {
           let startedGeneration = null;
           let startedLaunchToken = null;
           const lifecycleLaunch = {
+            cancelPending() {
+              agentLifecycles.cancelPending(request.termId, agentGenerations.get(request.termId));
+            },
             beforeWrite() {
               startedGeneration = agentGenerations.increment(request.termId);
               const launchToken = agentLifecycles.initialize(request.termId, startedGeneration);
@@ -3508,6 +3517,9 @@ function startHttpApi() {
             },
             prepareWrite(launch, command) {
               return agentLifecycles.prepare(request.termId, launch.generation, launch.launchToken, ptyProcess.pid, command, process.env.SHELL);
+            },
+            activate(launch) {
+              return agentLifecycles.activate(request.termId, launch.generation, launch.launchToken);
             },
             isCurrent(launch) {
               return agentLifecycles.isCurrent(request.termId, launch.generation, launch.launchToken);

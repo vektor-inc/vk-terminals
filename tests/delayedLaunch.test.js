@@ -183,6 +183,45 @@ test('初回遅延起動のprepare待ち中にrestartしても世代2監視を�
   await store.close();
 });
 
+test('restartの停止snapshot待ちより前に旧launchをcancelし、成功時だけ新コマンドを書く', async () => {
+  const pane = createPane();
+  const ptys = new Map([['1', pane.ptyProcess]]);
+  let resolveBaseline;
+  const baseline = new Promise((resolve) => { resolveBaseline = resolve; });
+  const processes = new Map([[10, { pid: 10, ppid: 1, pgid: 10, tpgid: 10, stat: 'S', lstart: 'Fri Oct 16 10:00:00 2026' }]]);
+  const store = createAgentLifecycleStore({ listProcesses: () => baseline });
+  const oldToken = store.initialize('1', 1);
+  const old = schedule({
+    ptyProcess: pane.ptyProcess,
+    ptys,
+    command: 'old-command',
+    prepareCommand: (command) => store.prepare('1', 1, oldToken, 10, command, '/bin/zsh'),
+    isLaunchCurrent: () => store.isCurrent('1', 1, oldToken),
+  });
+  old.timers.fire();
+
+  // restartAgentInTerminal の同期冒頭に相当する。stop の成否にかかわらず旧 token は復活しない。
+  store.cancelPending('1', 1);
+  resolveBaseline(processes);
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.deepEqual(pane.written, []);
+  assert.equal(store.isCurrent('1', 1, oldToken), false);
+
+  const newToken = store.initialize('1', 2);
+  const restarted = schedule({
+    ptyProcess: pane.ptyProcess,
+    ptys,
+    command: 'new-command',
+    prepareCommand: (command) => ({ status: 'passthrough', command }),
+    isLaunchCurrent: () => store.isCurrent('1', 2, newToken),
+  });
+  restarted.timers.fire();
+  await Promise.resolve();
+  assert.deepEqual(pane.written, ['new-command\r']);
+  await store.close();
+});
+
 test('書き込みが例外になっても、例外をタイマーの外へ出さず専用フォルダを回収して記録する', () => {
   const { ptyProcess } = createPane({ writeError: new Error('pty closed') });
   const { timers, discarded, logs } = schedule({ ptyProcess, ptys: new Map([['1', ptyProcess]]) });

@@ -11,6 +11,7 @@
  * @param {{write: Function}} params.ptyProcess 書き込み先の PTY
  * @param {string} params.command 書き込む起動コマンド（改行は付けない）
  * @param {(command: string) => object|Promise<object>} [params.prepareCommand] 書き込み直前の変換
+ * @param {() => boolean|Promise<boolean>} [params.activateCommand] ready 後の取得開始
  * @param {() => boolean} [params.isLaunchCurrent] 起動世代と token の最終照合
  * @param {() => unknown} params.discard 書き込めなかったときに専用 CODEX_HOME を回収する関数
  * @param {number} params.delayMs 書き込むまでの待ち時間
@@ -19,7 +20,7 @@
  * @param {Function} [params.setTimer] テスト用の setTimeout 差し替え
  * @returns {unknown} タイマーのハンドル
  */
-function scheduleLaunchCommand({ ptys, id, ptyProcess, command, prepareCommand = (value) => ({ status: 'passthrough', command: value }), isLaunchCurrent = () => true, discard, delayMs, onWriteSuccess = () => {}, log = () => {}, setTimer = setTimeout }) {
+function scheduleLaunchCommand({ ptys, id, ptyProcess, command, prepareCommand = (value) => ({ status: 'passthrough', command: value }), activateCommand = () => true, isLaunchCurrent = () => true, discard, delayMs, onWriteSuccess = () => {}, log = () => {}, setTimer = setTimeout }) {
   const discardSafely = () => {
     try {
       discard();
@@ -57,6 +58,11 @@ function scheduleLaunchCommand({ ptys, id, ptyProcess, command, prepareCommand =
             return;
           }
           if (!hookReady) log(`prompt hook setup failed for terminal ${id}; lifecycle state is unknown`);
+          if (hookReady) await activateCommand();
+          if (ptys.get(id) !== ptyProcess || !isLaunchCurrent()) {
+            discardSafely();
+            return;
+          }
         }
         if (ptys.get(id) !== ptyProcess || !isLaunchCurrent()) {
           discardSafely();

@@ -45,6 +45,7 @@ const {
   DEFAULT_REMOTE_BASE,
   buildChildEnvironment,
   inspectRepository,
+  isWithinDirectory,
   resolveTrustedExecutableDetailed,
   resolveTrustedPath,
 } = require('./codexTaskOps');
@@ -547,6 +548,31 @@ function readGitIdentity(spawnSync, gitPath, homeDir) {
  * @param {() => string} [params.randomId] テスト用の起動ごとの名前の差し替え
  * @returns {{ok: true, home: string|null, discard: () => boolean} | {ok: false, error: string}}
  */
+/**
+ * 親の起動 cwd が、親自身が書き換えられる場所の中（または同一）にあるか。ある場合はメンバー起動を有効にしない。
+ * 親の起動 cwd の祖先（cwd を含む）が親の書き込み先の配下なら、親は cwd を移動して範囲外へのリンクに置き換えられ、
+ * 子の -C・監督プロセスの cwd が置き換え先を解決し直せてしまう。書き込み先は、writable_roots の全部と、
+ * workspace-write が標準で許す一時フォルダ（/tmp と $TMPDIR。config.toml で除外していないため含める）。実パスで比べる。
+ * @param {string} parentWorkingDir 親の起動 cwd の実パス
+ * @param {string[]} writableRoots 親の config.toml の writable_roots（実パス）
+ * @param {string[]|undefined} tmpRoots 一時フォルダの上書き（テスト用）。省略時は /tmp と $TMPDIR
+ * @param {object} fsImpl
+ * @returns {boolean}
+ */
+function isParentCwdWritableByParent(parentWorkingDir, writableRoots, tmpRoots, fsImpl) {
+  const temporary = tmpRoots === undefined ? ['/tmp', process.env.TMPDIR] : tmpRoots;
+  const roots = [...writableRoots];
+  for (const dir of temporary) {
+    if (typeof dir !== 'string' || !path.isAbsolute(dir)) continue;
+    try {
+      roots.push(fsImpl.realpathSync(dir));
+    } catch (_error) {
+      roots.push(dir);
+    }
+  }
+  return roots.some((root) => isWithinDirectory(parentWorkingDir, root));
+}
+
 function prepareCodexTaskPolicyHome(params) {
   const { preset, dataDir, handoffDir, personalCodexHome, cwd, homeDir, dryRun = false, fs: fsImpl = nodeFs } = params;
   const spawnSync = params.spawnSync || childProcess.spawnSync;
@@ -628,9 +654,16 @@ function prepareCodexTaskPolicyHome(params) {
     // メンバー起動（codex が見つかったときだけ）。入出力フォルダ（子から書き込める唯一の追加の場所）と、
     // 子用の CODEX_HOME・実行の記録フォルダ（子から書き込めない場所）を、この起動のぶんだけ新規に作る。
     let memberIoDir = null;
+    // 親の起動 cwd が親の書き込み先の中にある配置では、メンバー起動を有効にしない（子用 CODEX_HOME・member 設定・入出力フォルダを作らない）。
+    const memberAllowed = codexPath !== null && !isParentCwdWritableByParent(
+      parentWorkingDir,
+      [handoff.realPath, path.join(data.realPath, MEMBER_IO_DIR_NAME, launchName)],
+      params.tmpRoots,
+      fsImpl,
+    );
     const memberHome = path.join(launchHome, MEMBER_HOME_NAME);
     const memberRunsDir = path.join(launchHome, MEMBER_RUNS_NAME);
-    if (codexPath !== null) {
+    if (memberAllowed) {
       const ioBase = path.join(data.realPath, MEMBER_IO_DIR_NAME);
       ensureDirectory(fsImpl, ioBase);
       verifyDirectory(fsImpl, ioBase, { uid, enforceOwnerOnly: true });

@@ -73,6 +73,8 @@ function createSandbox(personalConfigToml, { origin = 'https://github.com/vektor
       personalCodexHome,
       homeDir,
       cwd: repo,
+      // 試験の作業フォルダは一時フォルダの中にあるため、一時フォルダの書き込み許可の判定は既定では外す（専用のテストで指定する）。
+      tmpRoots: [],
     },
     policyBase: path.join(root, 'data', 'codex-task-policy', 'orchestrated-task'),
     cleanup: () => fs.rmSync(root, { recursive: true, force: true }),
@@ -1496,6 +1498,51 @@ test('親の範囲: 親の sandbox と作業フォルダがランチャーに固
     await waitForExit(narrow.home, /^MEMBER_ID=([0-9a-f]{24})$/m.exec(fromSub.stdout)[1]);
     const narrowRecord = JSON.parse(fs.readFileSync(sandbox.codexRecord, 'utf8'));
     assert.equal(narrowRecord.args[narrowRecord.args.indexOf('-C') + 1], fs.realpathSync(subDir));
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('親の起動 cwd が親自身の書き込み先（引き継ぎ用フォルダ・入出力フォルダ・一時フォルダ）の中にあるときは、member を有効にせず（子用フォルダ・member 設定を作らず）、入口が member を拒否する。通常のリポジトリ配下では有効', () => {
+  const sandbox = createSandbox();
+  try {
+    const makeRepo = (dir) => {
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      childProcess.execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: dir });
+      childProcess.execFileSync('git', ['remote', 'add', 'origin', 'https://github.com/vektor-inc/vk-terminals.git'], { cwd: dir });
+      return fs.realpathSync(dir);
+    };
+    const launchName = 'a'.repeat(24);
+    const tmpRoot = path.join(sandbox.root, 'tmp-root');
+    fs.mkdirSync(tmpRoot, { mode: 0o700 });
+    // /tmp → /private/tmp のようなリンクの先も、実パスで比べる。
+    const tmpLink = path.join(sandbox.root, 'tmp-link');
+    fs.symlinkSync(tmpRoot, tmpLink);
+    fs.mkdirSync(sandbox.deps.handoffDir, { mode: 0o700 });
+    fs.mkdirSync(path.join(sandbox.deps.dataDir, 'codex-task-io'), { recursive: true, mode: 0o700 });
+    const cases = [
+      ['引き継ぎ用フォルダ配下', makeRepo(path.join(sandbox.deps.handoffDir, 'repo'))],
+      ['入出力フォルダ配下', makeRepo(path.join(sandbox.deps.dataDir, 'codex-task-io', launchName, 'repo'))],
+      ['一時フォルダ配下', makeRepo(path.join(tmpRoot, 'repo'))],
+    ];
+    for (const [label, cwd] of cases) {
+      const result = prepare(sandbox, { cwd, randomId: () => launchName, tmpRoots: [tmpLink] });
+      assert.equal(result.ok, true, `${label}: ${result.error}`);
+      assert.deepEqual(fs.readdirSync(result.home).sort(), HOME_ENTRIES.filter((name) => !name.startsWith('member')), label);
+      const assignments = launcherAssignments(path.join(result.home, 'vk-task-ops'));
+      for (const name of ['VK_TASK_CODEX', 'VK_TASK_MEMBER_HOME', 'VK_TASK_MEMBER_IO', 'VK_TASK_MEMBER_RUNS', 'VK_TASK_PARENT_CWD', 'VK_TASK_PARENT_SANDBOX']) assert.equal(assignments[name], '', `${label}: ${name}`);
+      assert.equal(fs.readFileSync(path.join(result.home, 'AGENTS.md'), 'utf8').includes('member start'), false, label);
+      assert.ok(fs.readFileSync(path.join(result.home, 'config.toml'), 'utf8').split('\n').includes(`writable_roots = [${JSON.stringify(sandbox.deps.handoffDir)}]`), label);
+      const rejected = childProcess.spawnSync(path.join(result.home, 'vk-task-ops'), ['member', 'start', '--engine', 'codex', '--prompt', 'p.md', '--schema', 's.json', '--out', 'o.json'], { cwd, env: { ...process.env }, encoding: 'utf8' });
+      assert.equal(rejected.status, 2, label);
+      assert.match(rejected.stderr, /member is not available from this launcher/, label);
+      assert.equal(result.discard(), true);
+    }
+    // 通常のリポジトリ（書き込み先の外の祖先だけ）では有効。
+    const normal = prepare(sandbox, { tmpRoots: [tmpLink] });
+    assert.equal(normal.ok, true, normal.error);
+    assert.deepEqual(fs.readdirSync(normal.home).sort(), HOME_ENTRIES);
+    assert.equal(launcherAssignments(path.join(normal.home, 'vk-task-ops')).VK_TASK_PARENT_CWD, fs.realpathSync(sandbox.repo));
   } finally {
     sandbox.cleanup();
   }

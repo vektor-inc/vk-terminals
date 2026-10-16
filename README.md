@@ -652,7 +652,7 @@ curl -s http://127.0.0.1:13847/api/states \
 | `lastOutputTime` | 最後に出力があった時刻（Unix ms） |
 | `lastInputTime` | 最後にユーザーが入力した時刻（Unix ms） |
 | `agentGeneration` | ペイン内で起動した AI の世代番号。AI 起動ペインは `1`、素のシェルは `0` で始まり、`POST /api/restart-agent` 成功ごとに 1 増加 |
-| `agentCommandState` | VK Terminals が現在世代で起動したメイン AI コマンドの客観状態。専用監視プロセスが AI の spawn 成功を世代固有の start トークンで通知した後だけ `running`、実際の close を別の exit トークンで通知した後だけ `exited`、それ以外は `null`。起動行の PTY 書き込み成功だけでは `running` にしない。Ctrl+Z では監視プロセスも AI と同じ前景プロセスグループで停止するため `exited` にならない。画面出力の静止や `waiting` / `backgroundAgents` からは推測しない |
+| `agentCommandState` | VK Terminals が現在世代で起動したメイン AI コマンドの客観状態。専用監視プロセスが AI の spawn 成功を世代固有の start トークンで通知した後だけ `running`、実際の close を別の exit トークンで通知した後だけ `exited`、それ以外は `null`。起動行の PTY 書き込み成功だけでは `running` にしない。Ctrl+C 等では監視プロセスが子の close を待ち、子が処理を継続すれば `running` を維持する。監視プロセスが異常終了した場合は、シェルへ制御が戻った時点で世代・トークンを検証して `null` に戻す。Ctrl+Z では監視プロセスとシェルも AI と同じ前景プロセスグループで停止するため状態を変えない。画面出力の静止や `waiting` / `backgroundAgents` からは推測しない |
 | `lastLines` | 最近の出力テキスト（ANSI除去済み、最大15行） |
 | `backgroundAgents` | そのペインでバックグラウンドに動いている Claude Code サブエージェント数（issue #340）。画面末尾のフッター表示（`← N agents` 等）から判定した整数（0 以上）、または判定できないときは `null`（不明）。`0` と `null` は区別されており、`null` は「フッターが読み取れる Claude Code の画面ではない」等の判定不能を表す（バックグラウンドで動くサブエージェントが無いことが確定した状態は `0`）。ペイン幅が狭くフッター表示が `…` で截断され、agents 表示の有無を確認しきれない場合も `0` と断定せず `null` になる。サブエージェントが終了すると `0` に戻る。司令塔（vk-orchestrator）はこの値が `null` のときは、従来どおり `lastOutputTime` だけでペインの稼働を判定する想定 |
 

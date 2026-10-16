@@ -37,7 +37,15 @@ function createAgentLifecycleStore(createToken = () => crypto.randomBytes(32).to
       current.exitToken = null;
       return true;
     },
-    markUnknown(termId, generation) {
+    markUnknown(termId, generation, token) {
+      const current = states.get(String(termId));
+      if (!current || current.generation !== generation || current.state !== 'running' || current.exitToken !== token) return false;
+      current.state = null;
+      current.startToken = null;
+      current.exitToken = null;
+      return true;
+    },
+    reset(termId, generation) {
       const current = states.get(String(termId));
       if (!current || current.generation !== generation) return false;
       current.state = null;
@@ -67,10 +75,13 @@ function buildTrackedLaunchCommand(command, marker, options = {}) {
   const executable = options.executable || process.execPath;
   const monitorPath = options.monitorPath || require.resolve('./agentLifecycleMonitor');
   const encodedCommand = Buffer.from(command, 'utf8').toString('base64');
-  return `ELECTRON_RUN_AS_NODE=1 ${quoteShellArgument(executable)} ${quoteShellArgument(monitorPath)} ${marker.generation} ${marker.startToken} ${marker.exitToken} ${encodedCommand}`;
+  const monitorCommand = `ELECTRON_RUN_AS_NODE=1 ${quoteShellArgument(executable)} ${quoteShellArgument(monitorPath)} ${marker.generation} ${marker.startToken} ${marker.exitToken} ${encodedCommand}`;
+  const unknownMarker = `\\033]777;vk-terminals;agent-unknown;${marker.generation};${marker.exitToken}\\007`;
+  // 監視が exit を出せず終了しても、シェルへ制御が戻れば現在世代だけを不明へ戻す。
+  return `${monitorCommand}; __vk_agent_status=$?; printf '${unknownMarker}'; (exit "$__vk_agent_status")`;
 }
 
-/** 分割チャンクをまたぐ start/exit マーカーを取り除き、検証済み通知だけを返す。 */
+/** 分割チャンクをまたぐ start/exit/unknown マーカーを取り除き、検証済み通知だけを返す。 */
 function createAgentLifecycleMarkerParser(onMarker) {
   let pending = '';
   const parse = (flush) => {
@@ -103,7 +114,7 @@ function createAgentLifecycleMarkerParser(onMarker) {
         pending = pending.slice(1);
         continue;
       }
-      const match = pending.slice(MARKER_PREFIX.length, end).match(/^(start|exit);(\d+);([a-f0-9]{64})$/);
+      const match = pending.slice(MARKER_PREFIX.length, end).match(/^(start|exit|unknown);(\d+);([a-f0-9]{64})$/);
       if (!match || end + 1 > MAX_MARKER_LENGTH) {
         output += pending[0];
         pending = pending.slice(1);

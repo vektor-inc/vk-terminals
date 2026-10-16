@@ -44,7 +44,8 @@ test('ライフサイクル: 起動を書き込めない世代と追跡できな
   assert.equal(store.get('plain', 0), null);
   const marker = store.prepare('agent', 1);
   store.markStarted('agent', 1, marker.startToken);
-  assert.equal(store.markUnknown('agent', 1), true);
+  assert.equal(store.markUnknown('agent', 1, TOKEN_A), false);
+  assert.equal(store.markUnknown('agent', 1, marker.exitToken), true);
   assert.equal(store.get('agent', 1), null);
 });
 
@@ -56,8 +57,9 @@ test('起動行: 元コマンドを改変せず監視プロセスの単一引数
   assert.equal(command.includes('\x1b'), false);
   assert.match(command, /^ELECTRON_RUN_AS_NODE=1 /);
   assert.match(command, / 7 a{64} b{64} /);
-  const encoded = command.split(' ').at(-1);
+  const encoded = command.match(/ b{64} ([A-Za-z0-9+/=]+);/)[1];
   assert.equal(Buffer.from(encoded, 'base64').toString(), original);
+  assert.match(command, /agent-unknown;7;b{64}/);
 });
 
 test('出力パーサー: 分割された start/exit マーカーだけを画面から除き、厳密に通知する', () => {
@@ -65,14 +67,28 @@ test('出力パーサー: 分割された start/exit マーカーだけを画面
   const parser = createAgentLifecycleMarkerParser((type, generation, token) => markers.push({ type, generation, token }));
   const startMarker = `${MARKER_PREFIX}start;3;${TOKEN_A}\x07`;
   const exitMarker = `${MARKER_PREFIX}exit;3;${TOKEN_B}\x07`;
-  const markersText = startMarker + exitMarker;
+  const unknownMarker = `${MARKER_PREFIX}unknown;3;${TOKEN_B}\x07`;
+  const markersText = startMarker + exitMarker + unknownMarker;
   const chunks = ['before', markersText.slice(0, 2), markersText.slice(2, 91), markersText.slice(91), 'after'];
   const visible = chunks.map((chunk) => parser.push(chunk)).join('') + parser.flush();
   assert.equal(visible, 'beforeafter');
   assert.deepEqual(markers, [
     { type: 'start', generation: 3, token: TOKEN_A },
     { type: 'exit', generation: 3, token: TOKEN_B },
+    { type: 'unknown', generation: 3, token: TOKEN_B },
   ]);
+});
+
+test('ライフサイクル: 正常な exit 後と異なる世代・トークンの unknown は無視する', () => {
+  const tokens = [TOKEN_A, TOKEN_B];
+  const store = createAgentLifecycleStore(() => tokens.shift());
+  const marker = store.prepare('1', 3);
+  store.markStarted('1', 3, marker.startToken);
+  assert.equal(store.markUnknown('1', 2, marker.exitToken), false);
+  assert.equal(store.markUnknown('1', 3, TOKEN_A), false);
+  assert.equal(store.markExited('1', 3, marker.exitToken), true);
+  assert.equal(store.markUnknown('1', 3, marker.exitToken), false);
+  assert.equal(store.get('1', 3), 'exited');
 });
 
 test('出力パーサー: 類似文字列は消さず、未完候補を上限なく保持しない', () => {

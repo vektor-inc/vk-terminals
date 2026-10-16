@@ -6,6 +6,11 @@ const TOKEN_PATTERN = /^[a-f0-9]{64}$/;
 const [generationText, startToken, exitToken, encodedCommand] = process.argv.slice(2);
 const generation = Number(generationText);
 
+// 前景プロセスグループへの割り込みでは子にも同じ信号が届く。監視側だけ先に終了せず、
+// 子が終了する場合も処理を継続する場合も close を客観的に確認する。
+process.on('SIGINT', () => {});
+process.on('SIGQUIT', () => {});
+
 function splitCommand(command) {
   const words = [];
   let word = '';

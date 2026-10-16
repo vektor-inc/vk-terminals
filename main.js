@@ -2141,7 +2141,8 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
 
   const lifecycleParser = createAgentLifecycleMarkerParser((type, generation, token) => {
     if (type === 'start') agentLifecycles.markStarted(id, generation, token);
-    else agentLifecycles.markExited(id, generation, token);
+    else if (type === 'exit') agentLifecycles.markExited(id, generation, token);
+    else agentLifecycles.markUnknown(id, generation, token);
   });
 
   ptyProcess.onData((data) => {
@@ -3535,7 +3536,7 @@ function startHttpApi() {
               generation,
             }));
           } catch (error) {
-            if (startedGeneration !== null) agentLifecycles.markUnknown(request.termId, startedGeneration);
+            if (startedGeneration !== null) agentLifecycles.reset(request.termId, startedGeneration);
             console.error(`${LOG_PREFIX} restart-agent failed for terminal ${request.termId}:`, error.message);
             res.writeHead(500, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: 'failed to stop agent' }));

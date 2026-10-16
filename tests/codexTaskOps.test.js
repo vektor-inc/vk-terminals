@@ -2531,6 +2531,46 @@ test('実行: member start が途中で失敗したら、この起動で作っ�
     assert.equal(fs.existsSync(path.join(runDir, 'exit')), true);
     assert.equal(fs.existsSync(outPath), false);
     fs.rmSync(runDir, { recursive: true });
+    // グループの確認に失敗したとき（ps の失敗、kill の EPERM）は終了済みと扱わず、記録フォルダを保持する。
+    const unconfirmable = [
+      ['ps の失敗', { listProcessStates: () => null }],
+      ['kill の EPERM', { kill: () => { throw Object.assign(new Error('x'), { code: 'EPERM' }); }, listProcessStates: () => false }],
+    ];
+    for (const [label, override] of unconfirmable) {
+      const sim = simulateSupervisor({ stopsAfterSleeps: Infinity, existingOutputs: ['exit'] });
+      const result = fixture.runMember(MEMBER_START, { ...sim.options, ...override });
+      assert.equal(result.code, 2, label);
+      assert.equal(fs.existsSync(path.join(runDir, 'exit')), true, label);
+      assert.equal(fs.existsSync(outPath), false, label);
+      fs.rmSync(runDir, { recursive: true });
+    }
+    // 監督プロセスが先に終わっても、同じグループに子が残る間は終了と扱わない。SIGTERM を無視する子には SIGKILL まで進む。
+    const orphanChild = (killedBySigkill) => {
+      const state = { signals: [], sleeps: 0, childAlive: true };
+      const spawn = () => {
+        fs.writeFileSync(path.join(runDir, 'exit'), 'x');
+        return { pid: 424242, unref: () => {} };
+      };
+      const kill = (pid, signal) => {
+        if (signal === 0) return true;
+        state.signals.push([pid, signal]);
+        if (signal === 'SIGKILL' && killedBySigkill) state.childAlive = false;
+        return true;
+      };
+      const sleep = () => { state.sleeps += 1; };
+      const listProcessStates = () => state.childAlive;
+      return { state, options: { spawn, kill, sleep, listProcessStates, fs: brokenRename } };
+    };
+    const killable = orphanChild(true);
+    assert.equal(fixture.runMember(MEMBER_START, killable.options).code, 2);
+    assert.deepEqual(killable.state.signals, [[-424242, 'SIGTERM'], [-424242, 'SIGKILL']]);
+    assert.equal(fs.existsSync(runDir), false);
+    const unkillable = orphanChild(false);
+    assert.equal(fixture.runMember(MEMBER_START, unkillable.options).code, 2);
+    assert.deepEqual(unkillable.state.signals, [[-424242, 'SIGTERM'], [-424242, 'SIGKILL']]);
+    assert.equal(fs.existsSync(path.join(runDir, 'exit')), true);
+    assert.equal(fs.existsSync(outPath), false);
+    fs.rmSync(runDir, { recursive: true });
     // 失敗のあとに同じ名前で再実行できる。
     const retry = fixture.runMember(MEMBER_START);
     assert.equal(retry.code, 0, retry.messages.join(''));

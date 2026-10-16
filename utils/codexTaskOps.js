@@ -1265,16 +1265,27 @@ function sleepSync(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
-// プロセスが無い、または終了済みで回収待ち（ゾンビ）なら true。
-function isProcessGone(pid, deps) {
+// プロセスグループに実行中（ゾンビ以外）のプロセスが残っているかを ps で調べる。取得できなければ null（確認できない）。
+function hasLiveProcessInGroup(pgid, deps) {
+  if (deps.listProcessStates) return deps.listProcessStates(pgid);
+  const result = childProcess.spawnSync('ps', ['-A', '-o', 'pgid=,stat='], { encoding: 'utf8' });
+  if (result.error || result.status !== 0) return null;
+  return String(result.stdout).split('\n').some((line) => {
+    const match = line.trim().match(/^(\d+)\s+(\S+)/);
+    return match !== null && Number(match[1]) === pgid && !match[2].startsWith('Z');
+  });
+}
+
+// 監督プロセスのグループ（監督プロセスと、その子）が全て消えた、または終了済みで回収待ち（ゾンビ）だけなら true。
+// 確認できないとき（kill が ESRCH 以外で失敗、ps の失敗）は false を返す。
+function isSupervisorGroupGone(pid, deps) {
   try {
-    (deps.kill || process.kill)(pid, 0);
+    (deps.kill || process.kill)(-pid, 0);
   } catch (error) {
-    return !(error && error.code === 'EPERM');
+    return Boolean(error && error.code === 'ESRCH');
   }
-  if (deps.kill) return false;
-  const result = childProcess.spawnSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' });
-  return result.status !== 0 || String(result.stdout).trim().startsWith('Z');
+  if (deps.kill && !deps.listProcessStates) return false;
+  return hasLiveProcessInGroup(pid, deps) === false;
 }
 
 /**
@@ -1292,7 +1303,7 @@ function stopSupervisor(pid, deps) {
         // 既に終わっていれば何もしない。
       }
     }
-    if (isProcessGone(pid, deps)) return true;
+    if (isSupervisorGroupGone(pid, deps)) return true;
     if (poll < MEMBER_STOP_POLLS) sleep(MEMBER_STOP_POLL_MS);
   }
   return false;

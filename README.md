@@ -634,7 +634,8 @@ curl -s http://127.0.0.1:13847/api/states \
       "lastInputTime": 1713340790000,
       "lastLines": "最近の出力15行分...",
       "backgroundAgents": 0,
-      "agentGeneration": 1
+      "agentGeneration": 1,
+      "agentCommandState": "running"
     }
   }
 }
@@ -651,6 +652,7 @@ curl -s http://127.0.0.1:13847/api/states \
 | `lastOutputTime` | 最後に出力があった時刻（Unix ms） |
 | `lastInputTime` | 最後にユーザーが入力した時刻（Unix ms） |
 | `agentGeneration` | ペイン内で起動した AI の世代番号。AI 起動ペインは `1`、素のシェルは `0` で始まり、`POST /api/restart-agent` 成功ごとに 1 増加 |
+| `agentCommandState` | VK Terminals が現在世代で起動したメイン AI コマンドの客観状態。シェルへ制御が戻る前は `running`、戻ったことを世代固有の完了通知で確認できた後は `exited`、AI を起動していない・起動行を書き込めない・状態を証明できない場合は `null`。画面出力の静止や `waiting` / `backgroundAgents` からは推測しない |
 | `lastLines` | 最近の出力テキスト（ANSI除去済み、最大15行） |
 | `backgroundAgents` | そのペインでバックグラウンドに動いている Claude Code サブエージェント数（issue #340）。画面末尾のフッター表示（`← N agents` 等）から判定した整数（0 以上）、または判定できないときは `null`（不明）。`0` と `null` は区別されており、`null` は「フッターが読み取れる Claude Code の画面ではない」等の判定不能を表す（バックグラウンドで動くサブエージェントが無いことが確定した状態は `0`）。ペイン幅が狭くフッター表示が `…` で截断され、agents 表示の有無を確認しきれない場合も `0` と断定せず `null` になる。サブエージェントが終了すると `0` に戻る。司令塔（vk-orchestrator）はこの値が `null` のときは、従来どおり `lastOutputTime` だけでペインの稼働を判定する想定 |
 

@@ -66,13 +66,18 @@ const {
 // 自動処理用 Codex のタスク用ポリシー（専用 CODEX_HOME の生成。issue #428）。
 const { resolveCodexTaskPolicyLaunchOptions } = require('./utils/codexTaskPolicy');
 const { scheduleLaunchCommand } = require('./utils/delayedLaunch');
+const {
+  createAgentLifecycleStore,
+  buildTrackedLaunchCommand,
+  createAgentLifecycleMarkerParser,
+  mergeAgentLifecycleStates,
+} = require('./utils/agentLifecycle');
 // 最初のペインで起動する AI エンジン・モデルの設定解決（issue #419）と、
 // ペインのシェルへ渡す環境変数（Volta の bin を PATH へ補う）の組み立て。
 const { resolveInitialPaneLaunch } = require('./utils/initialPaneLaunch');
 const { buildPtyEnv } = require('./utils/ptyEnv');
 const {
   createAgentGenerationStore,
-  mergeAgentGenerations,
   validateRestartAgentRequest,
   quoteShellArgument,
   stopAgentChildren,
@@ -147,6 +152,7 @@ const ptys = new Map();
 // 時点で解決する。reject はしない）で、解決後は自分で自分を削除する。
 const exitingPtys = new Map();
 const agentGenerations = createAgentGenerationStore();
+const agentLifecycles = createAgentLifecycleStore();
 // 同じペインへの同時再起動は先行処理の完了後に世代を再照合する。
 // これが無いと同じ expectedGeneration の2要求が両方通り、後発が先発の新しい AI を止めうる。
 const restartAgentOperations = new Map();
@@ -2133,10 +2139,15 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
     paneCreationTrustWatchers.set(id, () => { trustGate.markTrustHandled(); });
   }
 
+  const lifecycleParser = createAgentLifecycleMarkerParser((generation, token) => {
+    agentLifecycles.markExited(id, generation, token);
+  });
+
   ptyProcess.onData((data) => {
-    if (promptWatcher) promptWatcher(data);
+    const visibleData = lifecycleParser.push(data);
+    if (promptWatcher) promptWatcher(visibleData);
     if (win && !win.isDestroyed()) {
-      win.webContents.send('terminal:data', id, data);
+      if (visibleData) win.webContents.send('terminal:data', id, visibleData);
     }
   });
 
@@ -2148,6 +2159,7 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
     }
     ptys.delete(id);
     agentGenerations.delete(id);
+    agentLifecycles.delete(id);
     restartAgentOperations.delete(id);
     // 再起動後の信頼確認プロンプト自動応答（issue #392）が残っていれば解除する。
     const restartTrustResponder = restartTrustResponders.get(id);
@@ -2161,6 +2173,7 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
 
   ptys.set(id, ptyProcess);
   agentGenerations.initialize(id, !noClaude);
+  agentLifecycles.initialize(id, !noClaude ? 1 : 0);
 
   // 起動後に自動で AI エンジンを実行（素のターミナルモード時はスキップ）。
   // 起動コマンドは PTY を作る前に組み立て済み（launchCommand。issue #428）。
@@ -2172,13 +2185,24 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
   //
   // Codex でも専用の許可リストで再検証し、正常値だけを --model として渡す。
   if (launchCommand !== null) {
+    // 完了マーカーは POSIX シェルの printf を使う。PowerShell では同じ終了証明を
+    // 構成できないため、起動方法を変えず状態を null（不明）のままにする。
+    let commandToWrite = launchCommand;
+    let onWriteSuccess = () => {};
+    if (process.platform !== 'win32') {
+      const marker = agentLifecycles.prepare(id, 1);
+      commandToWrite = buildTrackedLaunchCommand(launchCommand, marker);
+      onWriteSuccess = () => agentLifecycles.markRunning(id, 1);
+    }
     // 待っている間に PTY が消えた・書き込みが例外になった場合は、使われない専用 CODEX_HOME を回収する。
     scheduleLaunchCommand({
       ptys,
       id,
       ptyProcess,
-      command: launchCommand,
+      command: commandToWrite,
       discard: discardLaunchHome,
+      onWriteSuccess,
+      onWriteFailure: () => agentLifecycles.markUnknown(id, 1),
       delayMs: 200,
       log: (message) => console.error(`${LOG_PREFIX} ${message}`),
     });
@@ -2302,7 +2326,11 @@ fs.mkdirSync(DATA_DIR, { recursive: true });
 ipcMain.on('terminal:report-states', (event, states) => {
   cachedStates = states;
   // 状態ファイルに書き出し（非同期、エラーは無視）
-  const statesWithGenerations = mergeAgentGenerations(states, (termId) => agentGenerations.get(termId));
+  const statesWithGenerations = mergeAgentLifecycleStates(
+    states,
+    (termId) => agentGenerations.get(termId),
+    (termId, generation) => agentLifecycles.get(termId, generation)
+  );
   const payload = JSON.stringify({ updatedAt: new Date().toISOString(), terminals: statesWithGenerations }, null, 2);
   fs.writeFile(STATE_FILE, payload, 'utf8', () => {});
   // Web Push 通知（issue #396）: 入力待ち・マージ待ちへ変わった瞬間を検知して送信する。
@@ -2341,7 +2369,7 @@ async function listProcessesForRestart() {
   return stdout;
 }
 
-async function restartAgentInTerminal(ptyProcess, request, launchOptions) {
+async function restartAgentInTerminal(ptyProcess, request, launchOptions, lifecycleLaunch) {
   const stopped = await stopAgentChildren(ptyProcess.pid, {
     platform: process.platform,
     listProcesses: listProcessesForRestart,
@@ -2398,7 +2426,9 @@ async function restartAgentInTerminal(ptyProcess, request, launchOptions) {
   if (modelIgnored) {
     console.warn(`${LOG_PREFIX} model is ignored for engine '${request.engine}'`);
   }
-  ptyProcess.write(`${command}\r`);
+  const trackedCommand = lifecycleLaunch.wrap(command);
+  ptyProcess.write(`${trackedCommand}\r`);
+  lifecycleLaunch.markRunning();
 
   // 既知の未対応事項（issue #392・安藤の指摘・LOW-G）: responder は cd の書き込みより前に
   // 取り付けているため、シェルがエコーバックする `cd` 行（cwd のディレクトリ名を含む）が
@@ -2717,9 +2747,10 @@ function startHttpApi() {
       ]).then(([usage, codexUsage]) => {
         // 世代番号は renderer に持たせず、main が管理する termId の記録を応答時に加える。
         // cachedStates の既存キー・値は変更しないため、既存クライアントには additive。
-        const statesWithGenerations = mergeAgentGenerations(
+        const statesWithGenerations = mergeAgentLifecycleStates(
           cachedStates,
-          (termId) => agentGenerations.get(termId)
+          (termId) => agentGenerations.get(termId),
+          (termId, generation) => agentLifecycles.get(termId, generation)
         );
         res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
         res.end(JSON.stringify({
@@ -3470,7 +3501,20 @@ function startHttpApi() {
             return;
           }
           let launchHomeInUse = false;
-          const operation = restartAgentInTerminal(ptyProcess, request, launchResolution.options);
+          let startedGeneration = null;
+          const lifecycleLaunch = {
+            wrap(command) {
+              // 新世代を公開してから、その世代のマーカーを含むコマンドを書き込む。
+              // 書き込み失敗時も停止済みの旧世代へ戻さず、不明として安全側に倒す。
+              startedGeneration = agentGenerations.increment(request.termId);
+              const marker = agentLifecycles.prepare(request.termId, startedGeneration);
+              return buildTrackedLaunchCommand(command, marker);
+            },
+            markRunning() {
+              agentLifecycles.markRunning(request.termId, startedGeneration);
+            },
+          };
+          const operation = restartAgentInTerminal(ptyProcess, request, launchResolution.options, lifecycleLaunch);
           restartAgentOperations.set(request.termId, operation);
           try {
             const stopped = await operation;
@@ -3481,7 +3525,7 @@ function startHttpApi() {
               return;
             }
             launchHomeInUse = true;
-            const generation = agentGenerations.increment(request.termId);
+            const generation = startedGeneration;
             // renderer 側の terminals[paneId].engine を実体に追従させる（issue #394 の
             // 安藤レビュー指摘・MEDIUM）。restart-agent は同じペインで engine を入れ替えられる
             // 唯一の main→renderer 経路（安藤の確認結果）のため、成功時にだけ通知する。
@@ -3498,6 +3542,7 @@ function startHttpApi() {
               generation,
             }));
           } catch (error) {
+            if (startedGeneration !== null) agentLifecycles.markUnknown(request.termId, startedGeneration);
             console.error(`${LOG_PREFIX} restart-agent failed for terminal ${request.termId}:`, error.message);
             res.writeHead(500, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: 'failed to stop agent' }));

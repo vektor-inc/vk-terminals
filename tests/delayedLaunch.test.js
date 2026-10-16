@@ -33,6 +33,7 @@ function schedule(overrides) {
   const timers = createTimers();
   const discarded = [];
   const logs = [];
+  const writes = [];
   const params = {
     ptys: new Map(),
     id: '1',
@@ -40,31 +41,35 @@ function schedule(overrides) {
     discard: () => discarded.push('discard'),
     delayMs: 200,
     log: (message) => logs.push(message),
+    onWriteSuccess: () => writes.push('success'),
+    onWriteFailure: () => writes.push('failure'),
     setTimer: timers.setTimer,
     ...overrides,
   };
   scheduleLaunchCommand(params);
-  return { timers, discarded, logs, params };
+  return { timers, discarded, logs, writes, params };
 }
 
 test('PTY が残っていれば待ち時間の後に起動コマンドを書き込み、専用フォルダは回収しない', () => {
   const { ptyProcess, written } = createPane();
-  const { timers, discarded } = schedule({ ptyProcess, ptys: new Map([['1', ptyProcess]]) });
+  const { timers, discarded, writes } = schedule({ ptyProcess, ptys: new Map([['1', ptyProcess]]) });
   assert.equal(timers.pending[0].delayMs, 200);
   assert.deepEqual(written, []);
   timers.fire();
   assert.deepEqual(written, ['codex --no-daemon\r']);
   assert.deepEqual(discarded, []);
+  assert.deepEqual(writes, ['success']);
 });
 
 test('待っている間に PTY が消えたら、書き込まずに専用フォルダを回収する', () => {
   const { ptyProcess, written } = createPane();
   const ptys = new Map([['1', ptyProcess]]);
-  const { timers, discarded } = schedule({ ptyProcess, ptys });
+  const { timers, discarded, writes } = schedule({ ptyProcess, ptys });
   ptys.delete('1');
   assert.doesNotThrow(() => timers.fire());
   assert.deepEqual(written, []);
   assert.deepEqual(discarded, ['discard']);
+  assert.deepEqual(writes, ['failure']);
 });
 
 test('同じ ID が別の PTY に差し替わっていたら、元の PTY へは書き込まず専用フォルダを回収する', () => {
@@ -81,11 +86,12 @@ test('同じ ID が別の PTY に差し替わっていたら、元の PTY へは
 
 test('書き込みが例外になっても、例外をタイマーの外へ出さず専用フォルダを回収して記録する', () => {
   const { ptyProcess } = createPane({ writeError: new Error('pty closed') });
-  const { timers, discarded, logs } = schedule({ ptyProcess, ptys: new Map([['1', ptyProcess]]) });
+  const { timers, discarded, logs, writes } = schedule({ ptyProcess, ptys: new Map([['1', ptyProcess]]) });
   assert.doesNotThrow(() => timers.fire());
   assert.deepEqual(discarded, ['discard']);
   assert.equal(logs.length, 1);
   assert.match(logs[0], /failed to write launch command to terminal 1: pty closed/);
+  assert.deepEqual(writes, ['failure']);
 });
 
 test('回収そのものが例外になっても、タイマーの外へ出さず記録する', () => {

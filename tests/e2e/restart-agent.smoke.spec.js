@@ -109,6 +109,21 @@ async function waitForAgentGeneration(port, termId, expected, timeoutMs = 10_000
   );
 }
 
+// 現在世代の AI コマンド状態が期待値になるまで待つ。
+async function waitForAgentCommandState(port, termId, expected, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  let lastSeen;
+  while (Date.now() < deadline) {
+    const t = findTermState(await getStates(port), termId);
+    lastSeen = t ? t.agentCommandState : undefined;
+    if (t && t.agentCommandState === expected) return t;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(
+    `agentCommandState for ${termId} did not become ${JSON.stringify(expected)}; last seen: ${JSON.stringify(lastSeen)}`
+  );
+}
+
 async function postJson(port, pathname, payload) {
   const res = await fetch(`http://127.0.0.1:${port}${pathname}`, {
     method: 'POST',
@@ -132,6 +147,8 @@ const fs = require('fs');
 fs.appendFileSync(process.env.${captureEnvVar}, JSON.stringify(process.argv.slice(2)) + '\\n');
 // タスク用ポリシー（issue #428）の確認用に、起動時の CODEX_HOME も別ファイルへ残す。
 fs.appendFileSync(process.env.${captureEnvVar} + '.codex-home', JSON.stringify(process.env.CODEX_HOME || null) + '\\n');
+// running と exited の両方を API から観測できるだけの短時間、プロセスを維持する。
+setTimeout(() => {}, 3000);
 `, { mode: 0o755 });
   return { binDir, capturePath };
 }
@@ -203,12 +220,14 @@ test.describe.serial('POST /api/restart-agent によるペイン内 AI の再起
     const t = await waitForTermId(port, '1', true);
     // 観点4: 素のシェルのペインは 0 で始まる。
     expect(t.agentGeneration).toBe(0);
+    expect(t.agentCommandState).toBeNull();
     // 観点5: 既存キーのデグレが無いこと（今回の PR は additive のはず）。
     expect(t.termId).not.toBeUndefined();
     expect(typeof t.cwd).toBe('string');
     expect(typeof t.status).toBe('string');
     expect(typeof t.lastOutputTime).toBe('number');
     expect(t).toHaveProperty('backgroundAgents');
+    expect(t).toHaveProperty('agentCommandState');
   });
 
   test('POST /api/new-pane で AI を起動したペインは agentGeneration が 1 で始まる', async () => {
@@ -222,6 +241,8 @@ test.describe.serial('POST /api/restart-agent によるペイン内 AI の再起
     await waitForPaneCount(port, beforeCount + 1);
     // 起動コマンドが PTY へ書き込まれ、偽 claude が呼ばれたことを確認する（実 AI 起動の代替確認）。
     await waitForCallCount(fakeClaude.capturePath, 1);
+    await waitForAgentCommandState(port, agentPaneTermId, 'running');
+    await waitForAgentCommandState(port, agentPaneTermId, 'exited');
 
     // 観点4: AI 起動ペインは 1 で始まる。
     const t = await waitForAgentGeneration(port, agentPaneTermId, 1);
@@ -255,6 +276,7 @@ test.describe.serial('POST /api/restart-agent によるペイン内 AI の再起
 
     // 起動コマンドが再度 PTY へ書き込まれ、偽 claude が再度呼ばれたこと。
     await waitForCallCount(fakeClaude.capturePath, 2);
+    await waitForAgentCommandState(port, agentPaneTermId, 'exited');
 
     // 観点4: GET /api/states からも増えた世代番号が読める。
     const t = await waitForAgentGeneration(port, agentPaneTermId, 2);
@@ -320,6 +342,7 @@ test.describe.serial('POST /api/restart-agent によるペイン内 AI の再起
     ]);
     const t = await waitForAgentGeneration(port, '1', 1);
     expect(t.agentGeneration).toBe(1);
+    await waitForAgentCommandState(port, '1', 'exited');
   });
 
   test('異常系（任意項目）: 存在しないディレクトリを cwd に指定すると 400、存在しない termId は 404', async () => {

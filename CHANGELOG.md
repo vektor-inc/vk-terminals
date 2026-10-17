@@ -1,5 +1,7 @@
 # Changelog
 
+## 1.74.0
+
 - [ 機能追加 ] 自動処理用 Codex の固定入口に `git push <ブランチ名>` と作業フォルダ（worktree）の準備 `prepare worktree <base> <issue番号> <ブランチ> <worktree名>` を追加し、push と準備で承認待ちにならないように（push 先は拘束した GitHub リポジトリに固定し、新規作成と早送りだけを許可。強制上書き・削除・タグ・任意の refspec・main / 既定ブランチへの push は拒否）（[#440](https://github.com/vektor-inc/vk-terminals/issues/440)）
 - [ 機能追加 ] 自動処理用 Codex の固定入口に、メンバー（子の Codex）の起動 `member start` と状態確認 `member status` を追加し、親と同じ範囲の sandbox の中でメンバーを動かせるように（Codex のみ対応。囲いを外す指定・`--repo`・パス指定は拒否し、子では `member` を使えない）（[#441](https://github.com/vektor-inc/vk-terminals/issues/441)）
 

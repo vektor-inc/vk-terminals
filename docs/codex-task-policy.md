@@ -165,9 +165,10 @@ issue #441 は「Codex のツール呼び出しのタイムアウトで打ち切
 - **同じ関数から作る:** 値は `utils/codexTaskPolicy.js` の `buildCodexPolicyContext` が組み立てる。事前確認（`prepareCodexTaskPolicyHome` の `dryRun`）も実際の準備も、この1つの関数から作り、親へ固定して渡す `TMPDIR`（`resolveParentTmpdir`）とメンバー起動の可否（`memberAllowed`）は `dryRun` の判定より前で決める。そのため事前確認でも、`codex` が見つからない・`cwd` が書き込み先の配下にある配置では `member-io` の行が出ない。
 - **「実際の起動と同じ値」の定義:**
   - `tmpdir` は完全一致（実際の起動コマンドに入る `TMPDIR='…'` と同じ）。
-  - `effectiveWritableRoots` は、実際の起動で書き込める各フォルダ（生成した `config.toml` の `writable_roots` の各値、作業フォルダ、`/tmp`、`TMPDIR`）が、一覧のどれかの配下に入っていること。メンバーの入出力フォルダは起動ごとの乱数の名前で作られ事前には確定しないため、親フォルダ（`~/.vk-terminals/codex-task-io`）を `scope: "child-created-at-launch"` で返し、実際のフォルダはその配下に入る。
+  - `effectiveWritableRoots` は、実際の起動で書き込める各フォルダ（生成した `config.toml` の `writable_roots` の各値、作業フォルダ、`/tmp`、`TMPDIR`、固定入口が書き込むリポジトリのルートと Git 管理領域）が、一覧のどれかの配下に入っていること。専用 `CODEX_HOME`（場所は返さない。`~/.vk-terminals/` 配下で VK Terminals が管理する）は含めない。メンバーの入出力フォルダは起動ごとの乱数の名前で作られ事前には確定しないため、親フォルダ（`~/.vk-terminals/codex-task-io`）を `scope: "child-created-at-launch"` で返し、実際のフォルダはその配下に入る。
   - 比較は実パス同士で行う（`/tmp` は macOS では `/private/tmp`）。
-- **read-only の扱い:** Codex 0.162.1 の `codex sandbox` で、`sandbox_mode = "read-only"` のときは作業フォルダ・`/tmp`・`sandbox_workspace_write.writable_roots` のどれにも書き込めない（`Operation not permitted`）ことを確認した。`workspace-write` では 3 つとも書き込める。この実挙動に合わせ、`read-only` では `effectiveWritableRoots` を空にする。
+- **固定入口の書き込み先:** rules の許可で sandbox の外で動くランチャーは、sandbox の種別によらず、拘束したリポジトリの実ルート（`git add` / `git commit`・`prepare worktree` の `<ルート>/.claude/worktrees`）と Git 管理領域（common-dir。linked worktree なら元のクローンの共通 `.git`）へ書き込む。そのため `task-ops-repository` / `task-ops-git-dir` として常に一覧へ入れる。通常のクローンでは common-dir がルートの配下になるが、形を固定するため重複していても 2 行とも出す（`tests/codexTaskPolicy.test.js` で固定）。
+- **read-only の扱い:** Codex 0.162.1 の `codex sandbox` で、`sandbox_mode = "read-only"` のシェルは作業フォルダ・`/tmp`・`sandbox_workspace_write.writable_roots` のどれにも書き込めない（`Operation not permitted`）ことを確認した。`workspace-write` では 3 つとも書き込める。この実挙動に合わせ、`read-only` では `workspace` / `tmp` / `tmpdir` / `handoff` の行を外し、固定入口の 2 行とメンバー起動が有効なときの `member-io` は残す。
 - **秘密情報:** 応答は許可した項目から明示的に組み立てる（入力のオブジェクトを丸ごと展開しない）。専用 `CODEX_HOME` の場所、`auth.json`・`gh` の認証情報の場所や中身、Git の名前とメール、環境変数、信頼しないプロジェクトの一覧は返さない（`tests/codexTaskPolicy.test.js` で項目名と値を照合）。
 - **副作用:** 専用フォルダと入出力フォルダは作らない。引き継ぎ先とポリシー用の親フォルダ（`~/.vk-terminals/codex-task-policy/<preset>/`）は、従来の事前確認と同じく無ければ作る。
 - **エラー:** `codexPolicy` 無し・`engine` が `codex` 以外・`cwd` 無しは `400`、ポリシーを用意できなければ `503 {"error":"codex task policy unavailable: <理由>"}`。

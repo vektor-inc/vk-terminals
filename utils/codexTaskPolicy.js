@@ -46,6 +46,7 @@ const {
   buildChildEnvironment,
   inspectRepository,
   isWithinDirectory,
+  resolveGitCommonDir,
   resolveTrustedExecutableDetailed,
   resolveTrustedPath,
 } = require('./codexTaskOps');
@@ -66,8 +67,6 @@ const MEMBER_IO_DIR_NAME = 'codex-task-io';
 const RULES_FILE_NAME = 'vk-terminals-task.rules';
 const OPS_SOURCE_PATH = path.join(__dirname, 'codexTaskOps.js');
 const LAUNCH_HOME_NAME_PATTERN = /^[0-9a-f]{24}$/;
-// 事前確認（dryRun）でメンバー起動の可否を判定するときに使う、起動ごとの名前の代わり（実在しない）。
-const DRY_RUN_LAUNCH_NAME = '0'.repeat(24);
 const CODEX_POLICY_CONTEXT_VERSION = 1;
 const ENV_COMMAND_PATH = '/usr/bin/env';
 const MAX_IDENTITY_LENGTH = 200;
@@ -577,19 +576,25 @@ function resolveParentTmpdir(candidate, fsImpl) {
  * 利用者（オーケストレーターなど）へ返す「実際の起動と同じ値」を組み立てる（issue #446）。
  * 事前確認（dryRun）と実際の準備の両方が、この1つの関数から作る。返す項目は許可したものだけを明示的に並べ、
  * 入力のオブジェクトを丸ごと展開しない（専用 CODEX_HOME の場所・認証情報・Git の名前とメール・環境変数・信頼しないプロジェクトの一覧は含めない）。
- * workspace-write では Codex が cwd・/tmp・TMPDIR と config.toml の writable_roots（引き継ぎ先・メンバーの入出力フォルダ）へ書き込める。
- * read-only の Codex は config.toml の writable_roots を無視し、cwd・/tmp・TMPDIR を含めどこへも書き込めない（Codex の sandbox で確認済み）ため空にする。
+ * workspace-write では Codex のシェルが cwd・/tmp・TMPDIR と config.toml の writable_roots（引き継ぎ先・メンバーの入出力フォルダ）へ書き込める。
+ * read-only のシェルは config.toml の writable_roots を無視し、cwd・/tmp・TMPDIR を含めどこへも書き込めない（Codex の sandbox で確認済み）。
+ * 一方、固定入口（rules の許可で sandbox の外で動くランチャー）は sandbox の種別によらず、拘束したリポジトリの実ルートと Git 管理領域（common-dir）へ書き込む
+ * （git add / commit、prepare worktree の <ルート>/.claude/worktrees）。そのため task-ops-repository / task-ops-git-dir は常に含める。
+ * common-dir がリポジトリのルートの配下にある通常のクローンでも、形を固定するため 2 行とも出す。
+ * Codex 自身の設定フォルダ（専用 CODEX_HOME。VK Terminals が管理する ~/.vk-terminals/ 配下）は含めない。
  * @param {object} params
  * @param {string} params.preset preset 名
  * @param {string} params.sandboxMode 親の Codex の sandbox（read-only / workspace-write）
  * @param {string} params.tmpdir 親へ固定して渡す TMPDIR（実パス）
  * @param {string} params.cwd 作業フォルダの実パス
  * @param {string} params.handoffDir 引き継ぎ先の実パス
+ * @param {string} params.repositoryRoot 固定入口が拘束するリポジトリの実ルート
+ * @param {string} params.gitCommonDir 同リポジトリの Git 管理領域（common-dir）の実パス
  * @param {string|null} params.memberIoBaseDir メンバーの入出力フォルダの親フォルダ（実パス）。メンバー起動が無効なら null
  * @param {object} params.fs fs
  * @returns {{version: number, preset: string, sandboxMode: string, tmpdir: string, effectiveWritableRoots: Array<{path: string, source: string, scope: string}>}}
  */
-function buildCodexPolicyContext({ preset, sandboxMode, tmpdir, cwd, handoffDir, memberIoBaseDir, fs: fsImpl }) {
+function buildCodexPolicyContext({ preset, sandboxMode, tmpdir, cwd, handoffDir, repositoryRoot, gitCommonDir, memberIoBaseDir, fs: fsImpl }) {
   let tmpRoot = '/tmp';
   try {
     tmpRoot = fsImpl.realpathSync('/tmp');
@@ -604,8 +609,12 @@ function buildCodexPolicyContext({ preset, sandboxMode, tmpdir, cwd, handoffDir,
       { path: tmpdir, source: 'tmpdir', scope: 'subtree' },
       { path: handoffDir, source: 'handoff', scope: 'subtree' },
     );
-    if (memberIoBaseDir !== null) roots.push({ path: memberIoBaseDir, source: 'member-io', scope: 'child-created-at-launch' });
   }
+  roots.push(
+    { path: repositoryRoot, source: 'task-ops-repository', scope: 'subtree' },
+    { path: gitCommonDir, source: 'task-ops-git-dir', scope: 'subtree' },
+  );
+  if (memberIoBaseDir !== null) roots.push({ path: memberIoBaseDir, source: 'member-io', scope: 'child-created-at-launch' });
   return { version: CODEX_POLICY_CONTEXT_VERSION, preset, sandboxMode, tmpdir, effectiveWritableRoots: roots };
 }
 
@@ -679,6 +688,9 @@ function prepareCodexTaskPolicyHome(params) {
     if (!isSafeAbsolutePath(repository.root)) throw new PolicyError('unsafe repository path');
     // 信頼しないプロジェクトとして記録する場所。Codex が信頼を引く単位（Git ルート・作業フォルダ）の両方を実パスで固定する。
     const parentWorkingDir = fsImpl.realpathSync(cwd);
+    // 固定入口が書き込む Git 管理領域（linked worktree なら元のクローンの共通 .git）。
+    const gitCommonDir = resolveGitCommonDir({ dir: cwd, run: runGit, fsImpl });
+    if (gitCommonDir === null || !isSafeAbsolutePath(gitCommonDir)) throw new PolicyError('git common directory could not be resolved');
     const untrustedProjectPaths = [...new Set([repository.root, parentWorkingDir])];
     // 親の実効 sandbox（起動引数 --sandbox の値。省略時は workspace-write）。メンバー起動の子はこれより広くしない。
     const parentSandbox = params.sandboxMode === undefined ? 'workspace-write' : params.sandboxMode;
@@ -697,9 +709,10 @@ function prepareCodexTaskPolicyHome(params) {
     // 判定に使う一時フォルダは /tmp と、親へ固定して渡す TMPDIR。tmpRoots はテスト用の差し替え口。
     const parentTmpdir = resolveParentTmpdir(params.tmpdir === undefined ? process.env.TMPDIR : params.tmpdir, fsImpl);
     const ioBase = path.join(data.realPath, MEMBER_IO_DIR_NAME);
-    const isMemberAllowed = (ioName) => codexPath !== null && !isParentCwdWritableByParent(
+    // 入出力フォルダは実際の準備で必ず新規に作るため、cwd がその中に入ることは無い。書き込み先の候補は引き継ぎ先だけで判定する。
+    const isMemberAllowed = () => codexPath !== null && !isParentCwdWritableByParent(
       parentWorkingDir,
-      [handoff.realPath, path.join(ioBase, ioName)],
+      [handoff.realPath],
       params.tmpRoots === undefined ? ['/tmp', parentTmpdir] : params.tmpRoots,
       fsImpl,
     );
@@ -709,12 +722,14 @@ function prepareCodexTaskPolicyHome(params) {
       tmpdir: parentTmpdir,
       cwd: parentWorkingDir,
       handoffDir: handoff.realPath,
+      repositoryRoot: repository.root,
+      gitCommonDir,
       memberIoBaseDir: memberAllowed ? ioBase : null,
       fs: fsImpl,
     });
     if (dryRun) {
-      // 起動ごとの名前は事前には決まらないため、存在しない仮の名前で判定する。入出力フォルダの親は作らない（既にあれば検証する）。
-      const memberAllowedInDryRun = isMemberAllowed(DRY_RUN_LAUNCH_NAME);
+      // 入出力フォルダの親は作らない（既にあれば検証する）。
+      const memberAllowedInDryRun = isMemberAllowed();
       if (memberAllowedInDryRun) {
         let ioBaseExists = true;
         try {
@@ -745,7 +760,7 @@ function prepareCodexTaskPolicyHome(params) {
     // メンバー起動（codex が見つかったときだけ）。入出力フォルダ（子から書き込める唯一の追加の場所）と、
     // 子用の CODEX_HOME・実行の記録フォルダ（子から書き込めない場所）を、この起動のぶんだけ新規に作る。
     let memberIoDir = null;
-    const memberAllowed = isMemberAllowed(launchName);
+    const memberAllowed = isMemberAllowed();
     const memberHome = path.join(launchHome, MEMBER_HOME_NAME);
     const memberRunsDir = path.join(launchHome, MEMBER_RUNS_NAME);
     if (memberAllowed) {

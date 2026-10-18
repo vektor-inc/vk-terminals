@@ -954,6 +954,8 @@ curl -s -X POST http://127.0.0.1:13847/api/codex-policy-context \
       { "path": "/private/tmp", "source": "tmp", "scope": "subtree" },
       { "path": "/private/var/folders/.../T", "source": "tmpdir", "scope": "subtree" },
       { "path": "/Users/you/.claude/handoff", "source": "handoff", "scope": "subtree" },
+      { "path": "/path/to/repo", "source": "task-ops-repository", "scope": "subtree" },
+      { "path": "/path/to/repo/.git", "source": "task-ops-git-dir", "scope": "subtree" },
       { "path": "/Users/you/.vk-terminals/codex-task-io", "source": "member-io", "scope": "child-created-at-launch" }
     ]
   }
@@ -962,14 +964,16 @@ curl -s -X POST http://127.0.0.1:13847/api/codex-policy-context \
 
 - `version`：形式の版（現在 `1`）。形が変わったときに受け取る側が判定できます。
 - `tmpdir`：実際の起動で Codex に固定して渡す `TMPDIR` と完全に一致する値（実パス）です。
-- `effectiveWritableRoots`：**Codex の設定 `writable_roots` ではなく、実際に書き込める範囲の全部**です。Codex の `workspace-write` が自動で許す作業フォルダ・`/tmp`・`TMPDIR` と、設定 `writable_roots` に入る 2 つを、出所付きで並べます。パスはすべて実パス（macOS の `/tmp` は `/private/tmp`）です。
+- `effectiveWritableRoots`：**Codex の設定 `writable_roots` ではなく、Codex が実際に書き込める範囲**です。Codex のシェルが `workspace-write` で自動的に書ける作業フォルダ・`/tmp`・`TMPDIR`、設定 `writable_roots` に入る 2 つ、sandbox の外で動く固定入口（承認なしで使える Git / GitHub 操作）が書き込む 2 つを、出所付きで並べます。Codex 自身の設定フォルダ（専用 `CODEX_HOME`。場所は返しません。VK Terminals が管理する `~/.vk-terminals/` 配下）は含みません。パスはすべて実パス（macOS の `/tmp` は `/private/tmp`）です。
   - `source: "workspace"`：作業フォルダ（`cwd`）
   - `source: "tmp"`：`/tmp`
   - `source: "tmpdir"`：`tmpdir` と同じ値
   - `source: "handoff"`：会話整理の引き継ぎ先（`~/.claude/handoff`）
+  - `source: "task-ops-repository"`：固定入口が拘束するリポジトリの実ルート（`prepare worktree` が作る `<ルート>/.claude/worktrees` もこの配下）。`cwd` が linked worktree のときは、その worktree のルート
+  - `source: "task-ops-git-dir"`：同リポジトリの Git 管理領域（common-dir）。linked worktree なら元のクローンの共通 `.git` で、`task-ops-repository` の外になります。通常のクローンでは `task-ops-repository` の配下ですが、形を固定するため重複していても 2 行とも出します
   - `source: "member-io"`：メンバー（子の Codex）の入出力フォルダの**親**フォルダ。実際のフォルダは起動ごとに乱数の名前で作られ、起動前には確定しないため、親フォルダを返します。メンバー起動が無効になる配置（`codex` が見つからない、`cwd` が書き込み先の配下にある）では、この行は出ません。
 - `scope`：`"subtree"` は、そのフォルダとその配下のすべてに書き込めることを表します。`"child-created-at-launch"` は、そのフォルダの配下に、起動時に 1 つだけ（乱数の名前で）作られ、そのフォルダだけに書き込めることを表します。受け取る側は、実際の値を含む広めの範囲として扱うと安全側に倒れます。
-- `sandboxMode` が `read-only` のときは、Codex は `writable_roots` を無視し、作業フォルダ・`/tmp`・`TMPDIR` を含めどこにも書き込めないため、`effectiveWritableRoots` は空配列です。
+- `sandboxMode` が `read-only` のときは、Codex のシェルは `writable_roots` を無視し、作業フォルダ・`/tmp`・`TMPDIR`・引き継ぎ先に書き込めないため、`workspace` / `tmp` / `tmpdir` / `handoff` の行は出ません。sandbox の外で動く固定入口の書き込み先（`task-ops-repository` / `task-ops-git-dir`）と、メンバー起動が有効な配置の `member-io` は残ります。
 
 「実際の起動と同じ値」とは、`tmpdir` は完全一致、`effectiveWritableRoots` は、実際の起動で書き込める各フォルダが一覧のどれかの**配下に入る**ことを指します。比べるときは、配下かどうかを**実パス同士**で判定してください（`/tmp` と `/private/tmp` のようにリンクで別名になるため）。また、返る `tmpdir` や各パスは VK Terminals が動くマシンのものなので、オーケストレーターと同じマシンのときだけ使ってください。
 

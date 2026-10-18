@@ -1698,6 +1698,7 @@ module.exports = {
   buildMemberEnvironment,
   isWithinDirectory,
   superviseMemberRun,
+  resolveGitCommonDir,
   MEMBER_SUPERVISE_ENV,
 };
 

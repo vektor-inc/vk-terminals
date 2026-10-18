@@ -1526,7 +1526,6 @@ test('親の起動 cwd が親自身の書き込み先（引き継ぎ用フォル
     fs.mkdirSync(path.join(sandbox.deps.dataDir, 'codex-task-io'), { recursive: true, mode: 0o700 });
     const cases = [
       ['引き継ぎ用フォルダ配下', makeRepo(path.join(sandbox.deps.handoffDir, 'repo'))],
-      ['入出力フォルダ配下', makeRepo(path.join(sandbox.deps.dataDir, 'codex-task-io', launchName, 'repo'))],
       ['一時フォルダ配下', makeRepo(path.join(tmpRoot, 'repo'))],
     ];
     for (const [label, cwd] of cases) {
@@ -1758,7 +1757,13 @@ test('書き込める範囲: 事前確認と実際の準備で同じ tmpdir と�
     assert.equal(dry.tmpdir, real.tmpdir);
     // 事前確認と実際の準備は、同じ関数から同じ一覧を作る。
     assert.deepEqual(dry.context, real.context);
-    assert.deepEqual(dry.context.effectiveWritableRoots.map((root) => root.source), ['workspace', 'tmp', 'tmpdir', 'handoff', 'member-io']);
+    assert.deepEqual(dry.context.effectiveWritableRoots.map((root) => root.source), ['workspace', 'tmp', 'tmpdir', 'handoff', 'task-ops-repository', 'task-ops-git-dir', 'member-io']);
+    // 固定入口の書き込み先（git add / commit の .git、prepare worktree の <ルート>/.claude/worktrees）も一覧の配下に入る。
+    const repoReal = fs.realpathSync(sandbox.repo);
+    assert.deepEqual(dry.context.effectiveWritableRoots.filter((root) => root.source.startsWith('task-ops')).map((root) => root.path), [repoReal, path.join(repoReal, '.git')]);
+    for (const target of [path.join(repoReal, '.git', 'index'), path.join(repoReal, '.git', 'worktrees'), path.join(repoReal, '.claude', 'worktrees')]) {
+      assert.ok(isCovered(dry.context, target), target);
+    }
     const memberIo = dry.context.effectiveWritableRoots.find((root) => root.source === 'member-io');
     assert.equal(memberIo.scope, 'child-created-at-launch');
     assert.equal(memberIo.path, path.join(fs.realpathSync(sandbox.deps.dataDir), 'codex-task-io'));
@@ -1798,6 +1803,12 @@ test('書き込める範囲: メンバー起動が無効な配置（codex が無
       const real = prepare(sandbox, deps);
       assert.equal(real.ok, true, `${label}: ${real.error}`);
       assert.equal(dry.context.effectiveWritableRoots.some((root) => root.source === 'member-io'), false, label);
+      // メンバー起動が無い配置でも、起動コマンドの TMPDIR は context.tmpdir と同じ。
+      const launched = resolveCodexTaskPolicyLaunchOptions('codex', { approvalPolicy: 'never', codexPolicy: { preset: 'orchestrated-task' } }, deps);
+      assert.equal(launched.ok, true, `${label}: ${launched.error}`);
+      assert.equal(launched.options.codexPolicyTmpdir, dry.context.tmpdir, label);
+      assert.ok(buildEngineAwareLaunchCommand('codex', undefined, launched.options).command.startsWith(`TMPDIR='${dry.context.tmpdir}' CODEX_HOME=`), label);
+      assert.equal(launched.discard(), true);
       assert.deepEqual(dry.context, real.context, label);
       for (const target of [...readWritableRoots(real.home), fs.realpathSync(sandbox.repo), real.tmpdir]) {
         assert.ok(isCovered(dry.context, target), `${label}: ${target}`);
@@ -1811,17 +1822,42 @@ test('書き込める範囲: メンバー起動が無効な配置（codex が無
   }
 });
 
-test('書き込める範囲: read-only の Codex はどこへも書き込めないため一覧は空（Codex の sandbox の実挙動）', () => {
+test('書き込める範囲: read-only ではシェルの書き込み先が外れ、固定入口とメンバーの入出力フォルダだけが残る（Codex の sandbox の実挙動）', () => {
   const { sandbox, tmpLink } = createContextSandbox();
   try {
     const deps = { ...sandbox.deps, tmpdir: tmpLink, tmpRoots: [tmpLink] };
     const result = resolveCodexPolicyContext({ approvalPolicy: 'never', sandboxMode: 'read-only', codexPolicy: { preset: 'orchestrated-task' } }, deps);
     assert.equal(result.ok, true, result.error);
     assert.equal(result.codexPolicyContext.sandboxMode, 'read-only');
-    assert.deepEqual(result.codexPolicyContext.effectiveWritableRoots, []);
+    // シェルからの cwd・/tmp・TMPDIR・引き継ぎ先は外れる。固定入口（sandbox の外で動く）の書き込み先とメンバーの入出力フォルダは残る。
+    assert.deepEqual(result.codexPolicyContext.effectiveWritableRoots.map((root) => root.source), ['task-ops-repository', 'task-ops-git-dir', 'member-io']);
     // sandboxMode 省略時は、実際の起動と同じ workspace-write。
     const omitted = resolveCodexPolicyContext({ approvalPolicy: 'never', codexPolicy: { preset: 'orchestrated-task' } }, deps);
     assert.equal(omitted.codexPolicyContext.sandboxMode, 'workspace-write');
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('書き込める範囲: linked worktree から起動しても、固定入口の Git 管理領域は元のクローンの共通 .git を指す', () => {
+  const { sandbox, tmpLink } = createContextSandbox();
+  try {
+    sandbox.git('-c', 'user.name=T', '-c', 'user.email=t@example.com', 'commit', '-q', '--allow-empty', '-m', 'init');
+    const linked = path.join(sandbox.root, 'linked');
+    sandbox.git('worktree', 'add', '-q', '-b', 'linked-branch', linked);
+    const linkedReal = fs.realpathSync(linked);
+    const deps = { ...sandbox.deps, cwd: linked, tmpdir: tmpLink, tmpRoots: [tmpLink] };
+    const dry = prepare(sandbox, { ...deps, dryRun: true });
+    assert.equal(dry.ok, true, dry.error);
+    const real = prepare(sandbox, deps);
+    assert.equal(real.ok, true, real.error);
+    assert.deepEqual(dry.context, real.context);
+    const byName = Object.fromEntries(dry.context.effectiveWritableRoots.map((root) => [root.source, root.path]));
+    assert.equal(byName['task-ops-repository'], linkedReal);
+    // 共通 .git は元のクローンにあり、リンクした作業フォルダの外。重複ではなく別の行として残す。
+    assert.equal(byName['task-ops-git-dir'], path.join(fs.realpathSync(sandbox.repo), '.git'));
+    assert.equal(isWithinDirectory(byName['task-ops-git-dir'], byName['task-ops-repository']), false);
+    assert.equal(real.discard(), true);
   } finally {
     sandbox.cleanup();
   }

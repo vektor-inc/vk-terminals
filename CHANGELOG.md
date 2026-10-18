@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 不具合修正 ] 「承認待ち」などをタスクの状態名として書いた文言（「承認待ち」から「実行待ち」に変える説明など）にも入力待ちが点灯していた不具合を修正（[#444](https://github.com/vektor-inc/vk-terminals/issues/444)）
+
 ## 1.74.0
 
 - [ 機能追加 ] 自動処理用 Codex の固定入口に `git push <ブランチ名>` と作業フォルダ（worktree）の準備 `prepare worktree <base> <issue番号> <ブランチ> <worktree名>` を追加し、push と準備で承認待ちにならないように（push 先は拘束した GitHub リポジトリに固定し、新規作成と早送りだけを許可。強制上書き・削除・タグ・任意の refspec・main / 既定ブランチへの push は拒否）（[#440](https://github.com/vektor-inc/vk-terminals/issues/440)）

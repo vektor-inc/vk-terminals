@@ -1320,3 +1320,48 @@ test('extractScreenLines: maxLines が数値でない・0 以下なら null', ()
   assert.equal(extractScreenLines(buffer, -5), null);
   assert.equal(extractScreenLines(buffer, 'twenty'), null);
 });
+
+// ─── タスクの状態名としての「承認待ち」等は拾わない（issue #444） ─────────────────
+// 「タスク #1325 を「承認待ち」から「実行待ち」に変えます」のような状態名の説明は、
+// ユーザーへの呼びかけではないので「入力待ち」にしない。
+
+test('WAITING_TARGET_NOUNS_PATTERN: 状態名の文脈（」閉じ・並列・から/へ/に変え/に切り替え・のタスク/状態/まま）は一致しない（#444）', () => {
+  const excluded = [
+    'タスク #1325 を「承認待ち」から「実行待ち」に変えます',
+    '入力待ち・マージ待ちは除く',
+    '承認待ち、実行待ちの順に並べます',
+    '承認待ちから実行待ちに移ります',
+    '承認待ちへ移行します',
+    '状態を承認待ちに変えます',
+    '状態を回答待ちに切り替えます',
+    '承認待ちのタスクを一覧にします',
+    '承認待ちの状態を確認します',
+    '承認待ちのままにしておきます',
+  ];
+  for (const text of excluded) {
+    assert.equal(matchesWaiting(text), false, text);
+    assert.equal(findWaitingMatch(text), null, text);
+  }
+});
+
+test('WAITING_TARGET_NOUNS_PATTERN: ユーザーへの呼びかけは引き続き一致する（#444）', () => {
+  const included = [
+    '承認をお待ちしています',
+    'ご返信をお待ちしています',
+    '回答待ちです',
+    '承認待ちです。',
+    '入力を待っています',
+  ];
+  for (const text of included) {
+    assert.equal(matchesWaiting(text), true, text);
+  }
+});
+
+test('状態名の行と本来の待ち文言が同じバッファにあれば入力待ちと判定する（#444）', () => {
+  const text = [
+    'タスク #1325 を「承認待ち」から「実行待ち」に変えます',
+    '承認をお待ちしています',
+  ].join('\n');
+  assert.equal(matchesWaiting(text), true);
+  assert.notEqual(findWaitingMatch(text), null);
+});

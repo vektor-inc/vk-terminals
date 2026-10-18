@@ -1,5 +1,7 @@
 # Changelog
 
+## 1.75.0
+
 - [ 機能追加 ] 自動処理用 Codex を起動する前に、実際に書き込める範囲（作業フォルダ・`/tmp`・`TMPDIR`・引き継ぎ先・固定入口が書き込むリポジトリと Git 管理領域・メンバーの入出力フォルダ）を、ペインを作らず AI も止めずに確認できる `POST /api/codex-policy-context` を追加（旧版では `404` になり、何も起動しない）（[#446](https://github.com/vektor-inc/vk-terminals/issues/446)）
 - [ 不具合修正 ] 「承認待ち」などをタスクの状態名として書いた文言（「承認待ち」から「実行待ち」に変える説明など）にも入力待ちが点灯していた不具合を修正（[#444](https://github.com/vektor-inc/vk-terminals/issues/444)）
 

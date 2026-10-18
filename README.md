@@ -925,6 +925,73 @@ curl -s -X POST http://127.0.0.1:13847/api/new-pane \
 - タイムアウト（15秒）: `504 {"error": "timeout waiting for new pane"}`
 - renderer 側でペイン作成に失敗（既存ペインなし／分割失敗など）: `500 {"error": "<renderer からのエラーメッセージ>"}`
 
+`codexPolicy` を付けて起動する前に、その Codex が書き込める範囲を知りたいときは [`POST /api/codex-policy-context`](#post-apicodex-policy-context) を使います（ペインは作られません）。
+
+#### `POST /api/codex-policy-context`
+
+`codexPolicy` を付けて Codex を起動したとき実際に書き込める範囲を、ペインを作らず AI も止めずに、値だけ返す確認専用の API です（issue #446）。`POST /api/new-pane` / `POST /api/restart-agent` の事前確認に使えます。認証・Origin の判定は他の API と同じです。
+
+```bash
+curl -s -X POST http://127.0.0.1:13847/api/codex-policy-context \
+  -H 'Content-Type: application/json' \
+  -d '{"cwd": "/path/to/repo", "engine": "codex", "approvalPolicy": "on-request", "sandboxMode": "workspace-write", "codexPolicy": {"preset": "orchestrated-task"}}'
+```
+
+リクエストは `POST /api/new-pane` と同じ項目です（`engine: "codex"`・`cwd`・`codexPolicy` が必須。`approvalPolicy` / `sandboxMode` は任意で、`sandboxMode` を省略すると実際の起動と同じ `workspace-write` として扱います）。
+
+レスポンス（成功時 `200`）:
+
+```json
+{
+  "ok": true,
+  "codexPolicyContext": {
+    "version": 1,
+    "preset": "orchestrated-task",
+    "sandboxMode": "workspace-write",
+    "tmpdir": "/private/var/folders/.../T",
+    "effectiveWritableRoots": [
+      { "path": "/path/to/repo", "source": "workspace", "scope": "subtree" },
+      { "path": "/private/tmp", "source": "tmp", "scope": "subtree" },
+      { "path": "/private/var/folders/.../T", "source": "tmpdir", "scope": "subtree" },
+      { "path": "/Users/you/.claude/handoff", "source": "handoff", "scope": "subtree" },
+      { "path": "/path/to/repo", "source": "task-ops-repository", "scope": "subtree" },
+      { "path": "/path/to/repo/.git", "source": "task-ops-git-dir", "scope": "subtree" },
+      { "path": "/Users/you/.vk-terminals/codex-task-io", "source": "member-io", "scope": "child-created-at-launch" }
+    ]
+  }
+}
+```
+
+- `version`：形式の版（現在 `1`）。形が変わったときに受け取る側が判定できます。
+- `tmpdir`：実際の起動で Codex に固定して渡す `TMPDIR` と完全に一致する値（実パス）です。
+- `effectiveWritableRoots`：**Codex の設定 `writable_roots` ではなく、Codex が実際に書き込める範囲**です。Codex のシェルが `workspace-write` で自動的に書ける作業フォルダ・`/tmp`・`TMPDIR`、設定 `writable_roots` に入る 2 つ、sandbox の外で動く固定入口（承認なしで使える Git / GitHub 操作）が書き込む 2 つを、出所付きで並べます。Codex 自身の設定フォルダ（専用 `CODEX_HOME`。場所は返しません。VK Terminals が管理する `~/.vk-terminals/` 配下）は含みません。パスはすべて実パス（macOS の `/tmp` は `/private/tmp`）です。
+  - `source: "workspace"`：作業フォルダ（`cwd`）
+  - `source: "tmp"`：`/tmp`
+  - `source: "tmpdir"`：`tmpdir` と同じ値
+  - `source: "handoff"`：会話整理の引き継ぎ先（`~/.claude/handoff`）
+  - `source: "task-ops-repository"`：固定入口が拘束するリポジトリの実ルート（`prepare worktree` が作る `<ルート>/.claude/worktrees` もこの配下）。`cwd` が linked worktree のときは、その worktree のルート
+  - `source: "task-ops-git-dir"`：同リポジトリの Git 管理領域（common-dir）。linked worktree なら元のクローンの共通 `.git` で、`task-ops-repository` の外になります。通常のクローンでは `task-ops-repository` の配下ですが、形を固定するため重複していても 2 行とも出します
+  - `source: "member-io"`：メンバー（子の Codex）の入出力フォルダの**親**フォルダ。実際のフォルダは起動ごとに乱数の名前で作られ、起動前には確定しないため、親フォルダを返します。メンバー起動が無効になる配置（`codex` が見つからない、`cwd` が書き込み先の配下にある）では、この行は出ません。
+- `scope`：`"subtree"` は、そのフォルダとその配下のすべてに書き込めることを表します。`"child-created-at-launch"` は、そのフォルダの配下に、起動時に 1 つだけ（乱数の名前で）作られ、そのフォルダだけに書き込めることを表します。受け取る側は、実際の値を含む広めの範囲として扱うと安全側に倒れます。
+- `sandboxMode` が `read-only` のときは、Codex のシェルは `writable_roots` を無視し、作業フォルダ・`/tmp`・`TMPDIR`・引き継ぎ先に書き込めないため、`workspace` / `tmp` / `tmpdir` / `handoff` の行は出ません。sandbox の外で動く固定入口の書き込み先（`task-ops-repository` / `task-ops-git-dir`）と、メンバー起動が有効な配置の `member-io` は残ります。
+
+「実際の起動と同じ値」とは、`tmpdir` は完全一致、`effectiveWritableRoots` は、実際の起動で書き込める各フォルダが一覧のどれかの**配下に入る**ことを指します。比べるときは、配下かどうかを**実パス同士**で判定してください（`/tmp` と `/private/tmp` のようにリンクで別名になるため）。また、返る `tmpdir` や各パスは VK Terminals が動くマシンのものなので、オーケストレーターと同じマシンのときだけ使ってください。
+
+エラー:
+
+- `codexPolicy` が無い・`engine` が `"codex"` 以外・`cwd` が無い・値が不正: `400 {"error": "<理由>"}`
+- 不正な JSON: `400 {"error": "invalid JSON"}`
+- ポリシーを用意できない: `503 {"error": "codex task policy unavailable: <理由>"}`（`POST /api/new-pane` と同じ）
+- 旧版の VK Terminals にはこの API が無く `404` になります。その場合は未対応として扱ってください（旧版でも何も起動しません）。
+
+注意:
+
+- 秘密情報は返しません。専用 `CODEX_HOME` の場所、`auth.json`・`gh` の認証情報の場所や中身、Git の名前とメールアドレス、環境変数、信頼しないプロジェクトの一覧は、応答に含まれません（許可した項目から明示的に組み立てています）。
+- 副作用：専用 `CODEX_HOME` は作りませんが、実際の起動の事前確認と同じく、引き継ぎ先（`~/.claude/handoff`）とポリシー用の親フォルダ（`~/.vk-terminals/codex-task-policy/<preset>/`）は、無ければ作ります。
+- `POST /api/new-pane` / `POST /api/restart-agent` の応答には、この値は含まれません（応答は変わりません）。
+
+仕様と判断は [docs/codex-task-policy.md](docs/codex-task-policy.md#実際の起動と同じ値を返す事前確認issue-446) を参照してください。
+
 #### `POST /api/restart-agent`
 
 ペインを閉じずに、ログインシェル配下で動く AI だけを停止確認して起動し直します。別タスクへ入れ替わったペインを誤って止めないよう、直前の `GET /api/states` で得た `agentGeneration` を必ず指定します。
@@ -944,7 +1011,7 @@ curl -s -X POST http://127.0.0.1:13847/api/restart-agent \
 - `cwd`：再起動後の作業ディレクトリ（任意）。省略時は現在のディレクトリを維持します。存在するディレクトリだけを指定できます。
 - `engine`：`"claude"` / `"codex"`（任意、省略時は `"claude"`）。
 - `model`：選択エンジンへ渡すモデル名（任意）。検証規則は `POST /api/new-pane` と同じです。
-- `approvalPolicy` / `sandboxMode` / `codexPolicy`：Codex の承認方針・サンドボックス・タスク用ポリシー（任意）。許可値と制約は `POST /api/new-pane` と同じで、同じ指定なら新規作成と同じ実効ポリシーで起動し直します。`codexPolicy` を付けるときは `cwd` も必須です（省略すると `400 {"error":"codexPolicy requires cwd"}`）。専用設定は、対象ペインの存在と世代を確認した後、AI を止める前に用意します。`codexPolicy` を付けずに再起動すると、前回のポリシーは引き継がれません。
+- `approvalPolicy` / `sandboxMode` / `codexPolicy`：Codex の承認方針・サンドボックス・タスク用ポリシー（任意）。許可値と制約は `POST /api/new-pane` と同じで、同じ指定なら新規作成と同じ実効ポリシーで起動し直します。`codexPolicy` を付けるときは `cwd` も必須です（省略すると `400 {"error":"codexPolicy requires cwd"}`）。専用設定は、対象ペインの存在と世代を確認した後、AI を止める前に用意します。`codexPolicy` を付けずに再起動すると、前回のポリシーは引き継がれません。再起動前に書き込める範囲を確認するには [`POST /api/codex-policy-context`](#post-apicodex-policy-context) を使います。
 
 レスポンス:
 

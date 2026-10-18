@@ -1526,7 +1526,6 @@ test('親の起動 cwd が親自身の書き込み先（引き継ぎ用フォル
     fs.mkdirSync(path.join(sandbox.deps.dataDir, 'codex-task-io'), { recursive: true, mode: 0o700 });
     const cases = [
       ['引き継ぎ用フォルダ配下', makeRepo(path.join(sandbox.deps.handoffDir, 'repo'))],
-      ['入出力フォルダ配下', makeRepo(path.join(sandbox.deps.dataDir, 'codex-task-io', launchName, 'repo'))],
       ['一時フォルダ配下', makeRepo(path.join(tmpRoot, 'repo'))],
     ];
     for (const [label, cwd] of cases) {
@@ -1715,4 +1714,221 @@ test('ランチャー: 親のランチャーは member start/status を通し、
   } finally {
     sandbox.cleanup();
   }
+});
+
+// ─── 書き込める範囲の事前確認（issue #446。POST /api/codex-policy-context） ───────────────
+
+const { isWithinDirectory } = require('../utils/codexTaskOps');
+const { resolveCodexPolicyContext, buildCodexPolicyContext } = require('../utils/codexTaskPolicy');
+
+const CONTEXT_KEYS = ['effectiveWritableRoots', 'preset', 'sandboxMode', 'tmpdir', 'version'];
+const CONTEXT_ROOT_KEYS = ['path', 'scope', 'source'];
+
+// 実際の config.toml の writable_roots（TOML の文字列配列）を取り出す。
+function readWritableRoots(home) {
+  const line = fs.readFileSync(path.join(home, 'config.toml'), 'utf8').split('\n').find((candidate) => candidate.startsWith('writable_roots = '));
+  return JSON.parse(line.slice('writable_roots = '.length));
+}
+
+// 一覧のどれかの配下に入っているか。
+const isCovered = (context, target) => context.effectiveWritableRoots.some((root) => isWithinDirectory(target, root.path));
+
+// TMPDIR 用のリンクつき一時フォルダを足した試験環境。
+function createContextSandbox() {
+  const sandbox = createSandbox();
+  const tmpRoot = path.join(sandbox.root, 'tmp-root');
+  fs.mkdirSync(tmpRoot, { mode: 0o700 });
+  const tmpLink = path.join(sandbox.root, 'tmp-link');
+  fs.symlinkSync(tmpRoot, tmpLink);
+  return { sandbox, tmpLink, tmpReal: fs.realpathSync(tmpRoot) };
+}
+
+test('書き込める範囲: 事前確認と実際の準備で同じ tmpdir と一覧になり、実際の config.toml・TMPDIR・cwd・/tmp が一覧のどれかの配下に入る（メンバー起動あり）', () => {
+  const { sandbox, tmpLink, tmpReal } = createContextSandbox();
+  try {
+    const deps = { ...sandbox.deps, tmpdir: tmpLink, tmpRoots: [tmpLink] };
+    const dry = prepare(sandbox, { ...deps, dryRun: true });
+    assert.equal(dry.ok, true, dry.error);
+    const real = prepare(sandbox, deps);
+    assert.equal(real.ok, true, real.error);
+    // tmpdir は完全一致（リンクは実パスに解決される）。
+    assert.equal(dry.context.tmpdir, tmpReal);
+    assert.equal(dry.context.tmpdir, real.context.tmpdir);
+    assert.equal(dry.tmpdir, real.tmpdir);
+    // 事前確認と実際の準備は、同じ関数から同じ一覧を作る。
+    assert.deepEqual(dry.context, real.context);
+    assert.deepEqual(dry.context.effectiveWritableRoots.map((root) => root.source), ['workspace', 'tmp', 'tmpdir', 'handoff', 'task-ops-repository', 'task-ops-git-dir', 'member-io']);
+    // 固定入口の書き込み先（git add / commit の .git、prepare worktree の <ルート>/.claude/worktrees）も一覧の配下に入る。
+    const repoReal = fs.realpathSync(sandbox.repo);
+    assert.deepEqual(dry.context.effectiveWritableRoots.filter((root) => root.source.startsWith('task-ops')).map((root) => root.path), [repoReal, path.join(repoReal, '.git')]);
+    for (const target of [path.join(repoReal, '.git', 'index'), path.join(repoReal, '.git', 'worktrees'), path.join(repoReal, '.claude', 'worktrees')]) {
+      assert.ok(isCovered(dry.context, target), target);
+    }
+    const memberIo = dry.context.effectiveWritableRoots.find((root) => root.source === 'member-io');
+    assert.equal(memberIo.scope, 'child-created-at-launch');
+    assert.equal(memberIo.path, path.join(fs.realpathSync(sandbox.deps.dataDir), 'codex-task-io'));
+    // 実際の起動で書き込める場所は、全て事前確認の一覧のどれかの配下に入る。
+    const writableRoots = readWritableRoots(real.home);
+    assert.equal(writableRoots.length, 2);
+    for (const target of [...writableRoots, fs.realpathSync(sandbox.repo), fs.realpathSync('/tmp'), real.tmpdir]) {
+      assert.ok(isCovered(dry.context, target), target);
+    }
+    // 起動コマンドに入る TMPDIR は tmpdir と同じ。
+    const resolved = resolveCodexTaskPolicyLaunchOptions('codex', { approvalPolicy: 'never', codexPolicy: { preset: 'orchestrated-task' } }, deps);
+    assert.equal(resolved.ok, true, resolved.error);
+    assert.equal(resolved.options.codexPolicyTmpdir, dry.context.tmpdir);
+    assert.ok(buildEngineAwareLaunchCommand('codex', undefined, resolved.options).command.startsWith(`TMPDIR='${dry.context.tmpdir}' CODEX_HOME=`));
+    assert.equal(real.discard(), true);
+    assert.equal(resolved.discard(), true);
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('書き込める範囲: メンバー起動が無効な配置（codex が無い・cwd が書き込み先の中）では member-io を出さず、実際の準備と一致する', () => {
+  const { sandbox, tmpLink } = createContextSandbox();
+  try {
+    // codex が見つからない配置。
+    const bin = path.join(sandbox.root, 'no-codex-bin');
+    fs.mkdirSync(bin);
+    fs.symlinkSync(process.execPath, path.join(bin, 'node'));
+    const gitCandidate = sandbox.toolDirs.map((dir) => path.join(dir, 'git')).find((candidate) => fs.existsSync(candidate));
+    fs.symlinkSync(gitCandidate, path.join(bin, 'git'));
+    const noCodex = { ...sandbox.deps, tmpdir: tmpLink, tmpRoots: [tmpLink], toolDirs: [bin] };
+    // cwd が一時フォルダの中にある配置（作業フォルダは試験用の一時フォルダの中なので、TMPDIR をその親にする）。
+    const cwdInTmp = { ...sandbox.deps, tmpdir: path.dirname(sandbox.root), tmpRoots: [path.dirname(sandbox.root)] };
+    for (const [label, deps] of [['codex 無し', noCodex], ['cwd が一時フォルダの中', cwdInTmp]]) {
+      const dry = prepare(sandbox, { ...deps, dryRun: true });
+      assert.equal(dry.ok, true, `${label}: ${dry.error}`);
+      const real = prepare(sandbox, deps);
+      assert.equal(real.ok, true, `${label}: ${real.error}`);
+      assert.equal(dry.context.effectiveWritableRoots.some((root) => root.source === 'member-io'), false, label);
+      // メンバー起動が無い配置でも、起動コマンドの TMPDIR は context.tmpdir と同じ。
+      const launched = resolveCodexTaskPolicyLaunchOptions('codex', { approvalPolicy: 'never', codexPolicy: { preset: 'orchestrated-task' } }, deps);
+      assert.equal(launched.ok, true, `${label}: ${launched.error}`);
+      assert.equal(launched.options.codexPolicyTmpdir, dry.context.tmpdir, label);
+      assert.ok(buildEngineAwareLaunchCommand('codex', undefined, launched.options).command.startsWith(`TMPDIR='${dry.context.tmpdir}' CODEX_HOME=`), label);
+      assert.equal(launched.discard(), true);
+      assert.deepEqual(dry.context, real.context, label);
+      for (const target of [...readWritableRoots(real.home), fs.realpathSync(sandbox.repo), real.tmpdir]) {
+        assert.ok(isCovered(dry.context, target), `${label}: ${target}`);
+      }
+      assert.equal(real.discard(), true);
+    }
+    // 事前確認では入出力フォルダの親も作らない。
+    assert.equal(fs.existsSync(path.join(sandbox.deps.dataDir, 'codex-task-io')), false);
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('書き込める範囲: read-only ではシェルの書き込み先が外れ、固定入口とメンバーの入出力フォルダだけが残る（Codex の sandbox の実挙動）', () => {
+  const { sandbox, tmpLink } = createContextSandbox();
+  try {
+    const deps = { ...sandbox.deps, tmpdir: tmpLink, tmpRoots: [tmpLink] };
+    const result = resolveCodexPolicyContext({ approvalPolicy: 'never', sandboxMode: 'read-only', codexPolicy: { preset: 'orchestrated-task' } }, deps);
+    assert.equal(result.ok, true, result.error);
+    assert.equal(result.codexPolicyContext.sandboxMode, 'read-only');
+    // シェルからの cwd・/tmp・TMPDIR・引き継ぎ先は外れる。固定入口（sandbox の外で動く）の書き込み先とメンバーの入出力フォルダは残る。
+    assert.deepEqual(result.codexPolicyContext.effectiveWritableRoots.map((root) => root.source), ['task-ops-repository', 'task-ops-git-dir', 'member-io']);
+    // sandboxMode 省略時は、実際の起動と同じ workspace-write。
+    const omitted = resolveCodexPolicyContext({ approvalPolicy: 'never', codexPolicy: { preset: 'orchestrated-task' } }, deps);
+    assert.equal(omitted.codexPolicyContext.sandboxMode, 'workspace-write');
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('書き込める範囲: linked worktree から起動しても、固定入口の Git 管理領域は元のクローンの共通 .git を指す', () => {
+  const { sandbox, tmpLink } = createContextSandbox();
+  try {
+    sandbox.git('-c', 'user.name=T', '-c', 'user.email=t@example.com', 'commit', '-q', '--allow-empty', '-m', 'init');
+    const linked = path.join(sandbox.root, 'linked');
+    sandbox.git('worktree', 'add', '-q', '-b', 'linked-branch', linked);
+    const linkedReal = fs.realpathSync(linked);
+    const deps = { ...sandbox.deps, cwd: linked, tmpdir: tmpLink, tmpRoots: [tmpLink] };
+    const dry = prepare(sandbox, { ...deps, dryRun: true });
+    assert.equal(dry.ok, true, dry.error);
+    const real = prepare(sandbox, deps);
+    assert.equal(real.ok, true, real.error);
+    assert.deepEqual(dry.context, real.context);
+    const byName = Object.fromEntries(dry.context.effectiveWritableRoots.map((root) => [root.source, root.path]));
+    assert.equal(byName['task-ops-repository'], linkedReal);
+    // 共通 .git は元のクローンにあり、リンクした作業フォルダの外。重複ではなく別の行として残す。
+    assert.equal(byName['task-ops-git-dir'], path.join(fs.realpathSync(sandbox.repo), '.git'));
+    assert.equal(isWithinDirectory(byName['task-ops-git-dir'], byName['task-ops-repository']), false);
+    assert.equal(real.discard(), true);
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('書き込める範囲: 事前確認では専用フォルダ・入出力フォルダを作らない（引き継ぎ先とポリシー用の親フォルダは作る）', () => {
+  const { sandbox, tmpLink } = createContextSandbox();
+  try {
+    const result = resolveCodexPolicyContext({ codexPolicy: { preset: 'orchestrated-task' } }, { ...sandbox.deps, tmpdir: tmpLink, tmpRoots: [tmpLink] });
+    assert.equal(result.ok, true, result.error);
+    assert.deepEqual(fs.readdirSync(sandbox.policyBase), []);
+    assert.equal(fs.existsSync(path.join(sandbox.deps.dataDir, 'codex-task-io')), false);
+    assert.equal(fs.existsSync(sandbox.deps.handoffDir), true);
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('書き込める範囲: 応答は許可した項目だけで、秘密情報（CODEX_HOME・認証・Git の名前とメール・環境変数・信頼しないプロジェクト）を含まない', () => {
+  const { sandbox, tmpLink } = createContextSandbox();
+  try {
+    fs.writeFileSync(path.join(sandbox.homeDir, '.gitconfig'), '[user]\n\tname = Secret Name\n\temail = secret-mail@example.com\n');
+    const result = resolveCodexPolicyContext({ codexPolicy: { preset: 'orchestrated-task' } }, { ...sandbox.deps, tmpdir: tmpLink, tmpRoots: [tmpLink] });
+    assert.equal(result.ok, true, result.error);
+    assert.deepEqual(Object.keys(result).sort(), ['codexPolicyContext', 'ok']);
+    const context = result.codexPolicyContext;
+    assert.deepEqual(Object.keys(context).sort(), CONTEXT_KEYS);
+    assert.equal(context.version, 1);
+    for (const root of context.effectiveWritableRoots) assert.deepEqual(Object.keys(root).sort(), CONTEXT_ROOT_KEYS);
+    const serialized = JSON.stringify(result);
+    for (const secret of [sandbox.personalCodexHome, 'auth.json', 'Secret Name', 'secret-mail', 'codex-task-policy', 'untrusted', 'CODEX_HOME']) {
+      assert.equal(serialized.includes(secret), false, secret);
+    }
+    // 入力のオブジェクトを丸ごと展開しない（余計な項目を渡しても出てこない）。
+    const extra = buildCodexPolicyContext({ preset: 'orchestrated-task', sandboxMode: 'workspace-write', tmpdir: '/tmp', cwd: '/x', handoffDir: '/h', memberIoBaseDir: null, fs, leaked: 'leak-value', env: { A: 'leak-value' } });
+    assert.equal(JSON.stringify(extra).includes('leak-value'), false);
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('書き込める範囲: codexPolicy 無し・cwd 無しは 400、ポリシーを用意できないときは 503', () => {
+  const { sandbox, tmpLink } = createContextSandbox();
+  try {
+    const deps = { ...sandbox.deps, tmpdir: tmpLink, tmpRoots: [tmpLink] };
+    assert.deepEqual(resolveCodexPolicyContext({}, deps), { ok: false, status: 400, error: 'codexPolicy required' });
+    assert.deepEqual(resolveCodexPolicyContext({ codexPolicy: { preset: 'full-access' } }, deps), { ok: false, status: 400, error: 'invalid codexPolicy preset' });
+    assert.deepEqual(resolveCodexPolicyContext({ codexPolicy: { preset: 'orchestrated-task' } }, { ...deps, cwd: undefined }), { ok: false, status: 400, error: 'codexPolicy requires cwd' });
+    const plain = path.join(sandbox.root, 'plain');
+    fs.mkdirSync(plain);
+    const unavailable = resolveCodexPolicyContext({ codexPolicy: { preset: 'orchestrated-task' } }, { ...deps, cwd: plain });
+    assert.equal(unavailable.status, 503);
+    assert.match(unavailable.error, /^codex task policy unavailable: /);
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('POST /api/codex-policy-context: Codex 以外は 400。ペインの作成・AI の停止・画面側の処理を呼ばず、既存 API の応答は変えない', () => {
+  const start = mainSource.indexOf("url.pathname === '/api/codex-policy-context'");
+  const handler = mainSource.slice(start, mainSource.indexOf("url.pathname === '/api/restart-agent'"));
+  assert.ok(start > 0);
+  assert.ok(handler.includes('isForbiddenOrigin(req)'));
+  assert.ok(handler.includes("error: 'engine must be \"codex\"'"));
+  for (const forbidden of ['webContents.send', 'pendingNewPaneCallbacks', 'restartAgentInTerminal', 'ptyProcess', 'resolveCodexLaunchOptions', 'discard']) {
+    assert.equal(handler.includes(forbidden), false, forbidden);
+  }
+  // 認証はルーティングの前段で全 API に掛かる（この API だけ外れない）。
+  assert.ok(mainSource.indexOf('isAuthorizedRequest(req, API_TOKEN)') < start);
+  // 実際の起動（new-pane）の応答には値を足さない。
+  const newPane = mainSource.slice(mainSource.indexOf("url.pathname === '/api/new-pane'"), start);
+  assert.ok(newPane.includes('JSON.stringify({ ok: true, termId: result.termId })'));
+  assert.equal(newPane.includes('codexPolicyContext'), false);
 });

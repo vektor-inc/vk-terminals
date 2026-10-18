@@ -1357,6 +1357,20 @@ test('WAITING_TARGET_NOUNS_PATTERN: ユーザーへの呼びかけは引き続�
   }
 });
 
+test('状態名の並び（最後の項目が判定対象の名詞でも）は一致しない（#444 安藤レビュー MEDIUM-1）', () => {
+  for (const text of ['入力待ち・承認待ち', '入力待ち、承認待ちを一覧にします']) {
+    assert.equal(matchesWaiting(text), false, text);
+    assert.equal(findWaitingMatch(text), null, text);
+  }
+});
+
+test('「、」の直後が状態名でなければ従来どおり一致する（#444 安藤レビュー MEDIUM-2）', () => {
+  for (const text of ['回答待ち、よろしくお願いします。', '承認待ち、承認後に進めます。']) {
+    assert.equal(matchesWaiting(text), true, text);
+    assert.notEqual(findWaitingMatch(text), null, text);
+  }
+});
+
 test('状態名の行と本来の待ち文言が同じバッファにあれば入力待ちと判定する（#444）', () => {
   const text = [
     'タスク #1325 を「承認待ち」から「実行待ち」に変えます',

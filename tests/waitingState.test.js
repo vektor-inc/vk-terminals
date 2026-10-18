@@ -1364,6 +1364,20 @@ test('状態名の並び（最後の項目が判定対象の名詞でも）は�
   }
 });
 
+test('並びの末尾が接頭辞付き（ご返信待ち）でも一致しない（#444 安藤再レビュー MEDIUM-1）', () => {
+  for (const text of ['入力待ち・ご返信待ち', '入力待ち、ご返信待ちを一覧にします']) {
+    assert.equal(matchesWaiting(text), false, text);
+    assert.equal(findWaitingMatch(text), null, text);
+  }
+});
+
+test('直前が状態名＋区切りでも、一致箇所が状態名の形でなければ呼びかけとして一致する（#444 安藤再レビュー MEDIUM-2）', () => {
+  for (const text of ['実行待ち、入力をお待ちしています。', '実行待ち、承認をお待ちしています。']) {
+    assert.equal(matchesWaiting(text), true, text);
+    assert.notEqual(findWaitingMatch(text), null, text);
+  }
+});
+
 test('「、」の直後が状態名でなければ従来どおり一致する（#444 安藤レビュー MEDIUM-2）', () => {
   for (const text of ['回答待ち、よろしくお願いします。', '承認待ち、承認後に進めます。']) {
     assert.equal(matchesWaiting(text), true, text);

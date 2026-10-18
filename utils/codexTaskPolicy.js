@@ -66,6 +66,9 @@ const MEMBER_IO_DIR_NAME = 'codex-task-io';
 const RULES_FILE_NAME = 'vk-terminals-task.rules';
 const OPS_SOURCE_PATH = path.join(__dirname, 'codexTaskOps.js');
 const LAUNCH_HOME_NAME_PATTERN = /^[0-9a-f]{24}$/;
+// 事前確認（dryRun）でメンバー起動の可否を判定するときに使う、起動ごとの名前の代わり（実在しない）。
+const DRY_RUN_LAUNCH_NAME = '0'.repeat(24);
+const CODEX_POLICY_CONTEXT_VERSION = 1;
 const ENV_COMMAND_PATH = '/usr/bin/env';
 const MAX_IDENTITY_LENGTH = 200;
 const MAX_GH_HOSTS_BYTES = 64 * 1024;
@@ -571,6 +574,42 @@ function resolveParentTmpdir(candidate, fsImpl) {
 }
 
 /**
+ * 利用者（オーケストレーターなど）へ返す「実際の起動と同じ値」を組み立てる（issue #446）。
+ * 事前確認（dryRun）と実際の準備の両方が、この1つの関数から作る。返す項目は許可したものだけを明示的に並べ、
+ * 入力のオブジェクトを丸ごと展開しない（専用 CODEX_HOME の場所・認証情報・Git の名前とメール・環境変数・信頼しないプロジェクトの一覧は含めない）。
+ * workspace-write では Codex が cwd・/tmp・TMPDIR と config.toml の writable_roots（引き継ぎ先・メンバーの入出力フォルダ）へ書き込める。
+ * read-only の Codex は config.toml の writable_roots を無視し、cwd・/tmp・TMPDIR を含めどこへも書き込めない（Codex の sandbox で確認済み）ため空にする。
+ * @param {object} params
+ * @param {string} params.preset preset 名
+ * @param {string} params.sandboxMode 親の Codex の sandbox（read-only / workspace-write）
+ * @param {string} params.tmpdir 親へ固定して渡す TMPDIR（実パス）
+ * @param {string} params.cwd 作業フォルダの実パス
+ * @param {string} params.handoffDir 引き継ぎ先の実パス
+ * @param {string|null} params.memberIoBaseDir メンバーの入出力フォルダの親フォルダ（実パス）。メンバー起動が無効なら null
+ * @param {object} params.fs fs
+ * @returns {{version: number, preset: string, sandboxMode: string, tmpdir: string, effectiveWritableRoots: Array<{path: string, source: string, scope: string}>}}
+ */
+function buildCodexPolicyContext({ preset, sandboxMode, tmpdir, cwd, handoffDir, memberIoBaseDir, fs: fsImpl }) {
+  let tmpRoot = '/tmp';
+  try {
+    tmpRoot = fsImpl.realpathSync('/tmp');
+  } catch (_error) {
+    // /tmp の実パスが引けなければ、そのまま返す
+  }
+  const roots = [];
+  if (sandboxMode === 'workspace-write') {
+    roots.push(
+      { path: cwd, source: 'workspace', scope: 'subtree' },
+      { path: tmpRoot, source: 'tmp', scope: 'subtree' },
+      { path: tmpdir, source: 'tmpdir', scope: 'subtree' },
+      { path: handoffDir, source: 'handoff', scope: 'subtree' },
+    );
+    if (memberIoBaseDir !== null) roots.push({ path: memberIoBaseDir, source: 'member-io', scope: 'child-created-at-launch' });
+  }
+  return { version: CODEX_POLICY_CONTEXT_VERSION, preset, sandboxMode, tmpdir, effectiveWritableRoots: roots };
+}
+
+/**
  * タスク用ポリシーの専用 CODEX_HOME を起動ごとに新規生成・検証して返す。
  * 失敗時は ok: false と理由を返す。この場合、呼び出し側は Codex を起動してはならない（途中まで作ったフォルダは片付け済み）。
  * 成功して Codex の起動に使わなかった場合は、返された discard() で専用フォルダを回収する。
@@ -591,7 +630,7 @@ function resolveParentTmpdir(candidate, fsImpl) {
  * @param {string[]} [params.toolDirs] テスト用の実行ファイル探索先の差し替え
  * @param {string} [params.pathEnv] テスト用のアプリ自身の PATH の差し替え
  * @param {() => string} [params.randomId] テスト用の起動ごとの名前の差し替え
- * @returns {{ok: true, home: string|null, discard: () => boolean} | {ok: false, error: string}}
+ * @returns {{ok: true, home: string|null, tmpdir: string, context: object, discard: () => boolean} | {ok: false, error: string}} context は buildCodexPolicyContext の結果
  */
 function prepareCodexTaskPolicyHome(params) {
   const { preset, dataDir, handoffDir, personalCodexHome, cwd, homeDir, dryRun = false, fs: fsImpl = nodeFs } = params;
@@ -653,9 +692,41 @@ function prepareCodexTaskPolicyHome(params) {
       ensureDirectory(fsImpl, dir);
       verifyDirectory(fsImpl, dir, { uid, enforceOwnerOnly: true });
     }
+    // 親へ固定して渡す TMPDIR と、メンバー起動の可否。事前確認と実際の準備で同じ値になるよう、dryRun より前で決める。
+    // 親の起動 cwd が親の書き込み先の中にある配置では、メンバー起動を有効にしない（子用 CODEX_HOME・member 設定・入出力フォルダを作らない）。
+    // 判定に使う一時フォルダは /tmp と、親へ固定して渡す TMPDIR。tmpRoots はテスト用の差し替え口。
+    const parentTmpdir = resolveParentTmpdir(params.tmpdir === undefined ? process.env.TMPDIR : params.tmpdir, fsImpl);
+    const ioBase = path.join(data.realPath, MEMBER_IO_DIR_NAME);
+    const isMemberAllowed = (ioName) => codexPath !== null && !isParentCwdWritableByParent(
+      parentWorkingDir,
+      [handoff.realPath, path.join(ioBase, ioName)],
+      params.tmpRoots === undefined ? ['/tmp', parentTmpdir] : params.tmpRoots,
+      fsImpl,
+    );
+    const buildContext = (memberAllowed) => buildCodexPolicyContext({
+      preset,
+      sandboxMode: parentSandbox,
+      tmpdir: parentTmpdir,
+      cwd: parentWorkingDir,
+      handoffDir: handoff.realPath,
+      memberIoBaseDir: memberAllowed ? ioBase : null,
+      fs: fsImpl,
+    });
     if (dryRun) {
+      // 起動ごとの名前は事前には決まらないため、存在しない仮の名前で判定する。入出力フォルダの親は作らない（既にあれば検証する）。
+      const memberAllowedInDryRun = isMemberAllowed(DRY_RUN_LAUNCH_NAME);
+      if (memberAllowedInDryRun) {
+        let ioBaseExists = true;
+        try {
+          fsImpl.lstatSync(ioBase);
+        } catch (error) {
+          if (!error || error.code !== 'ENOENT') throw error;
+          ioBaseExists = false;
+        }
+        if (ioBaseExists) verifyDirectory(fsImpl, ioBase, { uid, enforceOwnerOnly: true });
+      }
       assertChainUnchanged(fsImpl, [...handoff.chain, ...data.chain, ...home.chain, ...toolChains]);
-      return { ok: true, home: null, discard: () => false };
+      return { ok: true, home: null, tmpdir: parentTmpdir, context: buildContext(memberAllowedInDryRun), discard: () => false };
     }
 
     const identity = readGitIdentity(spawnSync, gitPath, home.realPath);
@@ -674,19 +745,10 @@ function prepareCodexTaskPolicyHome(params) {
     // メンバー起動（codex が見つかったときだけ）。入出力フォルダ（子から書き込める唯一の追加の場所）と、
     // 子用の CODEX_HOME・実行の記録フォルダ（子から書き込めない場所）を、この起動のぶんだけ新規に作る。
     let memberIoDir = null;
-    // 親の起動 cwd が親の書き込み先の中にある配置では、メンバー起動を有効にしない（子用 CODEX_HOME・member 設定・入出力フォルダを作らない）。
-    // 判定に使う一時フォルダ（/tmp と、親へ固定して渡す TMPDIR）。tmpRoots はテスト用の差し替え口。
-    const parentTmpdir = resolveParentTmpdir(params.tmpdir === undefined ? process.env.TMPDIR : params.tmpdir, fsImpl);
-    const memberAllowed = codexPath !== null && !isParentCwdWritableByParent(
-      parentWorkingDir,
-      [handoff.realPath, path.join(data.realPath, MEMBER_IO_DIR_NAME, launchName)],
-      params.tmpRoots === undefined ? ['/tmp', parentTmpdir] : params.tmpRoots,
-      fsImpl,
-    );
+    const memberAllowed = isMemberAllowed(launchName);
     const memberHome = path.join(launchHome, MEMBER_HOME_NAME);
     const memberRunsDir = path.join(launchHome, MEMBER_RUNS_NAME);
     if (memberAllowed) {
-      const ioBase = path.join(data.realPath, MEMBER_IO_DIR_NAME);
       ensureDirectory(fsImpl, ioBase);
       verifyDirectory(fsImpl, ioBase, { uid, enforceOwnerOnly: true });
       memberIoDir = path.join(ioBase, launchName);
@@ -742,7 +804,7 @@ function prepareCodexTaskPolicyHome(params) {
     if (memberIoDir !== null && fsImpl.readdirSync(memberIoDir).length !== 0) throw new PolicyError('policy home contains unexpected entries');
     assertChainUnchanged(fsImpl, [...handoff.chain, ...data.chain, ...home.chain, ...toolChains, ...(auth ? auth.chain : []), ...(ghHosts ? ghHosts.chain : [])]);
     const discardTarget = created;
-    return { ok: true, home: launchHome, tmpdir: parentTmpdir, discard: () => removeCreatedLaunchHome(fsImpl, discardTarget.home, discardTarget, uid) };
+    return { ok: true, home: launchHome, tmpdir: parentTmpdir, context: buildContext(memberIoDir !== null), discard: () => removeCreatedLaunchHome(fsImpl, discardTarget.home, discardTarget, uid) };
   } catch (error) {
     if (created !== null) removeCreatedLaunchHome(fsImpl, created.home, created, uid);
     const reason = error instanceof PolicyError || error instanceof TrustError ? error.message : (error && error.code ? error.code : 'filesystem error');
@@ -782,9 +844,29 @@ function resolveCodexTaskPolicyLaunchOptions(engine, options, deps) {
   return { ok: true, options: policyOptions, discard: prepared.discard };
 }
 
+/**
+ * POST /api/codex-policy-context 用。専用 CODEX_HOME を作らずに、実際の起動と同じ値（codexPolicyContext）を返す（issue #446）。
+ * 起動オプションの検証・ポリシーの用意は実際の起動と同じ経路（prepareCodexTaskPolicyHome の dryRun）を通る。
+ * @param {object} options approvalPolicy / sandboxMode / codexPolicy を含みうる要求
+ * @param {object} deps resolveCodexTaskPolicyLaunchOptions と同じ（validateCodexLaunchOptions・cwd ほか）
+ * @returns {{ok: true, codexPolicyContext: object} | {ok: false, status: number, error: string}}
+ */
+function resolveCodexPolicyContext(options, deps) {
+  const { validateCodexLaunchOptions, ...prepareDeps } = deps;
+  const validated = validateCodexLaunchOptions('codex', options || {});
+  if (!validated.ok) return { ok: false, status: 400, error: validated.error };
+  if (validated.codexPolicy === undefined) return { ok: false, status: 400, error: 'codexPolicy required' };
+  if (typeof prepareDeps.cwd !== 'string' || prepareDeps.cwd === '') return { ok: false, status: 400, error: 'codexPolicy requires cwd' };
+  const prepared = prepareCodexTaskPolicyHome({ preset: validated.codexPolicy.preset, sandboxMode: validated.sandboxMode, ...prepareDeps, dryRun: true });
+  if (!prepared.ok) return { ok: false, status: 503, error: prepared.error };
+  return { ok: true, codexPolicyContext: prepared.context };
+}
+
 module.exports = {
   CODEX_TASK_POLICY_PRESETS,
   ORCHESTRATED_TASK_OPERATIONS,
+  buildCodexPolicyContext,
+  resolveCodexPolicyContext,
   prepareCodexTaskPolicyHome,
   verifyPolicyHome,
   resolveCodexTaskPolicyLaunchOptions,

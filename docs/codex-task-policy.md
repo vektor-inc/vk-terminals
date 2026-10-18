@@ -157,6 +157,21 @@ issue #441 は「Codex のツール呼び出しのタイムアウトで打ち切
 
 `POST /api/new-pane` は受付時に事前確認（専用フォルダを作らず、親フォルダ・引き継ぎ先・実行ファイル・`cwd` のリポジトリの検証だけ。`dryRun`）を行い、その後ペイン作成（`terminal:create`）側で専用フォルダを作る。この間に状態が変わって本番だけが失敗しうるため、`terminal:create` は **PTY を作る前に**起動オプションの解決と起動コマンドの組み立てを済ませ、失敗したら例外で返す。失敗は renderer から HTTP の `500` として呼び出し元へ伝わり、Codex が起動していないペインを成功として返さない。PTY を作る前なので、破棄すべき PTY・管理状態は残らない。
 
+## 実際の起動と同じ値を返す事前確認（issue #446）
+
+`POST /api/codex-policy-context`（仕様の一覧は README）は、ペインを作らず AI も止めずに、実際の起動と同じ値（`codexPolicyContext`）だけを返す。
+
+- **API を分けた理由:** `POST /api/new-pane` / `POST /api/restart-agent` は知らない項目を黙って無視する。確認専用の指定（`dryRun` など）をそこへ足すと、旧版の VK Terminals に送ったとき、確認のつもりが本当にペインを作り、再起動では実行中の AI を止めてしまう。別の API なら旧版は `404` を返すだけなので、呼び出し側は「未対応」と安全に判断できる。実際の起動の応答（new-pane / restart-agent）には値を足さない。
+- **同じ関数から作る:** 値は `utils/codexTaskPolicy.js` の `buildCodexPolicyContext` が組み立てる。事前確認（`prepareCodexTaskPolicyHome` の `dryRun`）も実際の準備も、この1つの関数から作り、親へ固定して渡す `TMPDIR`（`resolveParentTmpdir`）とメンバー起動の可否（`memberAllowed`）は `dryRun` の判定より前で決める。そのため事前確認でも、`codex` が見つからない・`cwd` が書き込み先の配下にある配置では `member-io` の行が出ない。
+- **「実際の起動と同じ値」の定義:**
+  - `tmpdir` は完全一致（実際の起動コマンドに入る `TMPDIR='…'` と同じ）。
+  - `effectiveWritableRoots` は、実際の起動で書き込める各フォルダ（生成した `config.toml` の `writable_roots` の各値、作業フォルダ、`/tmp`、`TMPDIR`）が、一覧のどれかの配下に入っていること。メンバーの入出力フォルダは起動ごとの乱数の名前で作られ事前には確定しないため、親フォルダ（`~/.vk-terminals/codex-task-io`）を `scope: "child-created-at-launch"` で返し、実際のフォルダはその配下に入る。
+  - 比較は実パス同士で行う（`/tmp` は macOS では `/private/tmp`）。
+- **read-only の扱い:** Codex 0.162.1 の `codex sandbox` で、`sandbox_mode = "read-only"` のときは作業フォルダ・`/tmp`・`sandbox_workspace_write.writable_roots` のどれにも書き込めない（`Operation not permitted`）ことを確認した。`workspace-write` では 3 つとも書き込める。この実挙動に合わせ、`read-only` では `effectiveWritableRoots` を空にする。
+- **秘密情報:** 応答は許可した項目から明示的に組み立てる（入力のオブジェクトを丸ごと展開しない）。専用 `CODEX_HOME` の場所、`auth.json`・`gh` の認証情報の場所や中身、Git の名前とメール、環境変数、信頼しないプロジェクトの一覧は返さない（`tests/codexTaskPolicy.test.js` で項目名と値を照合）。
+- **副作用:** 専用フォルダと入出力フォルダは作らない。引き継ぎ先とポリシー用の親フォルダ（`~/.vk-terminals/codex-task-policy/<preset>/`）は、従来の事前確認と同じく無ければ作る。
+- **エラー:** `codexPolicy` 無し・`engine` が `codex` 以外・`cwd` 無しは `400`、ポリシーを用意できなければ `503 {"error":"codex task policy unavailable: <理由>"}`。
+
 ## 新規作成と再起動で同じ実効ポリシーにする
 
 新規ペイン作成（`terminal:create`）と再起動（`restart-agent`）は、どちらも `resolveCodexTaskPolicyLaunchOptions` を通して「検証 → 専用フォルダの用意 → 起動オプションへの変換」を行い、拘束するリポジトリも同じ関数で `cwd` から決める。専用フォルダは起動のたびに固定内容で新規に作るので、再起動を繰り返しても権限は広がらず、失われもしない（会話の履歴は起動ごとの専用フォルダに残り、再起動後の Codex には引き継がれない）。

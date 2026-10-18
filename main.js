@@ -64,7 +64,7 @@ const {
   validateCodexLaunchOptions,
 } = require('./renderer/claudeModel');
 // 自動処理用 Codex のタスク用ポリシー（専用 CODEX_HOME の生成。issue #428）。
-const { resolveCodexTaskPolicyLaunchOptions } = require('./utils/codexTaskPolicy');
+const { resolveCodexTaskPolicyLaunchOptions, resolveCodexPolicyContext } = require('./utils/codexTaskPolicy');
 const { scheduleLaunchCommand } = require('./utils/delayedLaunch');
 const {
   createAgentLifecycleStore,
@@ -3402,6 +3402,50 @@ function startHttpApi() {
         if (typeof requestedSandboxMode === 'string') payload.sandboxMode = requestedSandboxMode;
         if (requestedCodexPolicy !== undefined) payload.codexPolicy = requestedCodexPolicy;
         win.webContents.send('terminal:request-new-pane', payload);
+      });
+      return;
+    }
+
+    // POST /api/codex-policy-context  { cwd, engine: "codex", approvalPolicy?, sandboxMode?, codexPolicy } — 確認専用（issue #446）
+    //   new-pane / restart-agent と同じ要求の形で、実際の起動と同じ値（書き込める範囲など）だけを返す。
+    //   ペインを作らず、AI も止めない。専用 CODEX_HOME も作らない（引き継ぎ先・ポリシー用の親フォルダは作る）。
+    //   旧版ではこの経路が無く 404 になる（new-pane に確認専用の指定を足すと旧版では本当に起動してしまうため別の API にした）。
+    if (req.method === 'POST' && url.pathname === '/api/codex-policy-context') {
+      if (isForbiddenOrigin(req)) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'forbidden origin' }));
+        return;
+      }
+      readJsonBody(req, res, 10 * 1024, (body) => {
+        let parsed;
+        try {
+          parsed = JSON.parse(body);
+        } catch {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'invalid JSON' }));
+          return;
+        }
+        // Codex 以外のエンジン・cwd 無し・codexPolicy 無しは 400。ポリシーを用意できないときは 503。
+        if (parsed?.engine !== 'codex') {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'engine must be "codex"' }));
+          return;
+        }
+        const result = resolveCodexPolicyContext(parsed, {
+          cwd: typeof parsed.cwd === 'string' && parsed.cwd.trim() ? parsed.cwd : undefined,
+          homeDir: os.homedir(),
+          validateCodexLaunchOptions,
+          dataDir: DATA_DIR,
+          handoffDir: CODEX_TASK_POLICY_HANDOFF_DIR,
+          personalCodexHome: process.env.CODEX_HOME || path.join(os.homedir(), '.codex'),
+        });
+        if (!result.ok) {
+          res.writeHead(result.status, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: result.error }));
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, codexPolicyContext: result.codexPolicyContext }));
       });
       return;
     }

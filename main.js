@@ -199,15 +199,19 @@ const CODEX_TASK_POLICY_HANDOFF_DIR = path.join(os.homedir(), '.claude', 'handof
 // cwd はタスクの作業フォルダで、タスク用ポリシーが操作を拘束するリポジトリを決める（ポリシー付きでは必須）。
 // 戻り値の discard() は、専用 CODEX_HOME を作ったのに Codex の起動に使わなかったときに呼んで回収する。
 function resolveCodexLaunchOptions(engine, options, { dryRun = false, cwd } = {}) {
-  return resolveCodexTaskPolicyLaunchOptions(engine, options, {
-    dryRun,
-    cwd,
+  return resolveCodexTaskPolicyLaunchOptions(engine, options, createCodexPolicyDeps({ dryRun, cwd }));
+}
+
+// Codex ポリシーの事前確認と実起動で、同じ依存値を使う。
+function createCodexPolicyDeps(overrides = {}) {
+  return {
     homeDir: os.homedir(),
     validateCodexLaunchOptions,
     dataDir: DATA_DIR,
     handoffDir: CODEX_TASK_POLICY_HANDOFF_DIR,
     personalCodexHome: process.env.CODEX_HOME || path.join(os.homedir(), '.codex'),
-  });
+    ...overrides,
+  };
 }
 const LOG_PREFIX = '[vk-terminals]';
 // Web Push（issue #396）: VAPID 鍵・購読情報（スマートフォンごとの通知の宛先）の保存先。
@@ -2291,7 +2295,13 @@ function createAdditionalPane(cwd, options = {}) {
     });
     const payload = { requestId, cwd };
     if (typeof options.noClaude === 'boolean') payload.noClaude = options.noClaude;
-    win.webContents.send('terminal:request-new-pane', payload);
+    try {
+      win.webContents.send('terminal:request-new-pane', payload);
+    } catch (_error) {
+      clearTimeout(timeoutId);
+      pendingNewPaneCallbacks.delete(requestId);
+      resolve({ error: 'failed to request new pane' });
+    }
   });
 }
 
@@ -3413,12 +3423,16 @@ function startHttpApi() {
           if (typeof requestedApprovalPolicy === 'string') payload.approvalPolicy = requestedApprovalPolicy;
           if (typeof requestedSandboxMode === 'string') payload.sandboxMode = requestedSandboxMode;
           if (requestedCodexPolicy !== undefined) payload.codexPolicy = requestedCodexPolicy;
-          win.webContents.send('terminal:request-new-pane', payload);
+          try {
+            win.webContents.send('terminal:request-new-pane', payload);
+          } catch (_error) {
+            clearTimeout(timeoutId);
+            pendingNewPaneCallbacks.delete(requestId);
+            return { ok: false, status: 500, error: 'failed to request new pane' };
+          }
           return { ok: true };
         };
-        const result = policyCheck
-          ? await runGitHubReachabilityGate(policyCheck, { check: checkGitHubReachability, proceed: requestPane })
-          : requestPane();
+        const result = await runGitHubReachabilityGate(policyCheck, { check: checkGitHubReachability, proceed: requestPane });
         if (!result.ok) {
           res.writeHead(result.status, { 'Content-Type': 'application/json' });
           const response = { error: result.error };
@@ -3461,15 +3475,10 @@ function startHttpApi() {
           res.end(JSON.stringify({ error }));
           return;
         }
-        const result = await resolveCodexPolicyContext(parsed, {
+        const result = await resolveCodexPolicyContext(parsed, createCodexPolicyDeps({
           cwd: parsed.cwd,
-          homeDir: os.homedir(),
-          validateCodexLaunchOptions,
-          dataDir: DATA_DIR,
-          handoffDir: CODEX_TASK_POLICY_HANDOFF_DIR,
-          personalCodexHome: process.env.CODEX_HOME || path.join(os.homedir(), '.codex'),
           checkGitHubReachability,
-        });
+        }));
         if (!result.ok) {
           res.writeHead(result.status, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: result.error }));
@@ -3532,146 +3541,146 @@ function startHttpApi() {
             return;
           }
           const gate = await runGitHubReachabilityGate(policyCheck, { check: checkGitHubReachability, proceed: async () => {
-          // 到達確認後にだけ直列化・停止・再起動へ進む。待機中に終了状態が変わった場合も再確認する。
-          if (ptyShutdownGate.isPaneCreationBlocked()) {
-            res.writeHead(503, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: 'app is shutting down' }));
-            return;
-          }
-          if (!win || win.isDestroyed()) {
-            res.writeHead(503, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: 'window not available' }));
-            return;
-          }
-
-          // 同じペインへの並行要求が来た場合、先行処理が終わるたびに Map を読み直して待つ。
-          // 1回だけ待つ形だと、同じ先行処理にぶら下がった2件目以降が互いを認識できず、後発が
-          // 先発の起動した AI を停止してしまう。while ループは呼び出し側（このスコープ）に
-          // 直接置くこと。while ループ自体を別の async 関数へ切り出すと、ループを抜けてから
-          // 呼び出し元へ制御が戻るまでに 1 microtask 分の隙間ができ、その隙間で複数の待機者が
-          // 同時に「Map が空」と誤認する余地が生まれる（実際に発生することを確認済み）。
-          //
-          // 待ち行列に積まれた件数が増えるほど、末尾のリクエストは先行するすべての処理の
-          // 完了を待つため待ち時間が線形に伸びる。無期限に待たせず、呼び出し元が「詰まった」
-          // ことを検知できるよう、待ち行列全体にリクエスト単位の上限（/api/new-pane と同じ
-          // 秒数）を設ける。タイムアウトで打ち切った場合、このリクエストは何も停止・起動
-          // しておらず世代も進めていないため、そのまま 504 を返して終了してよい。
-          const queueDeadline = Date.now() + RESTART_AGENT_QUEUE_TIMEOUT_MS;
-          let previousOperation;
-          while ((previousOperation = restartAgentOperations.get(request.termId))) {
-            const remainingMs = queueDeadline - Date.now();
-            if (remainingMs <= 0) {
-              res.writeHead(504, { 'Content-Type': 'application/json' });
-              res.end(JSON.stringify({ error: 'timeout waiting for previous restart-agent operation' }));
+            // 到達確認後にだけ直列化・停止・再起動へ進む。待機中に終了状態が変わった場合も再確認する。
+            if (ptyShutdownGate.isPaneCreationBlocked()) {
+              res.writeHead(503, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'app is shutting down' }));
               return;
             }
-            // setTimeout 側は「待ち行列全体の残り時間」を測るためだけのタイマーで、
-            // 先行処理が先に終わった場合は不要になる。clearTimeout せずに抜けると
-            // remainingMs 分（最大 RESTART_AGENT_QUEUE_TIMEOUT_MS）残り続け、待ち行列の
-            // 段数だけ積み上がる（安藤の指摘・LOW-B）。タイマー ID を保持し、待機が
-            // 終わったら必ず片付ける。utils/trustPromptWatcher.js の safetyTimeoutId と
-            // 同じく unref() も付け、このタイマー自体がプロセスの終了を止めないようにする。
-            let queueWaitTimeoutId;
-            try {
-              await Promise.race([
-                previousOperation.catch(() => {}),
-                new Promise((resolve) => {
-                  queueWaitTimeoutId = setTimeout(resolve, remainingMs);
-                  if (typeof queueWaitTimeoutId.unref === 'function') queueWaitTimeoutId.unref();
-                }),
-              ]);
-            } finally {
-              clearTimeout(queueWaitTimeoutId);
+            if (!win || win.isDestroyed()) {
+              res.writeHead(503, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'window not available' }));
+              return;
             }
-          }
 
-          const ptyProcess = ptys.get(request.termId);
-          if (!ptyProcess) {
-            res.writeHead(404, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: `terminal ${request.termId} not found` }));
-            return;
-          }
-          const currentGeneration = agentGenerations.get(request.termId);
-          if (request.expectedGeneration !== currentGeneration) {
-            res.writeHead(409, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: 'generation mismatch', currentGeneration }));
-            return;
-          }
+            // 同じペインへの並行要求が来た場合、先行処理が終わるたびに Map を読み直して待つ。
+            // 1回だけ待つ形だと、同じ先行処理にぶら下がった2件目以降が互いを認識できず、後発が
+            // 先発の起動した AI を停止してしまう。while ループは呼び出し側（このスコープ）に
+            // 直接置くこと。while ループ自体を別の async 関数へ切り出すと、ループを抜けてから
+            // 呼び出し元へ制御が戻るまでに 1 microtask 分の隙間ができ、その隙間で複数の待機者が
+            // 同時に「Map が空」と誤認する余地が生まれる（実際に発生することを確認済み）。
+            //
+            // 待ち行列に積まれた件数が増えるほど、末尾のリクエストは先行するすべての処理の
+            // 完了を待つため待ち時間が線形に伸びる。無期限に待たせず、呼び出し元が「詰まった」
+            // ことを検知できるよう、待ち行列全体にリクエスト単位の上限（/api/new-pane と同じ
+            // 秒数）を設ける。タイムアウトで打ち切った場合、このリクエストは何も停止・起動
+            // しておらず世代も進めていないため、そのまま 504 を返して終了してよい。
+            const queueDeadline = Date.now() + RESTART_AGENT_QUEUE_TIMEOUT_MS;
+            let previousOperation;
+            while ((previousOperation = restartAgentOperations.get(request.termId))) {
+              const remainingMs = queueDeadline - Date.now();
+              if (remainingMs <= 0) {
+                res.writeHead(504, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'timeout waiting for previous restart-agent operation' }));
+                return;
+              }
+              // setTimeout 側は「待ち行列全体の残り時間」を測るためだけのタイマーで、
+              // 先行処理が先に終わった場合は不要になる。clearTimeout せずに抜けると
+              // remainingMs 分（最大 RESTART_AGENT_QUEUE_TIMEOUT_MS）残り続け、待ち行列の
+              // 段数だけ積み上がる（安藤の指摘・LOW-B）。タイマー ID を保持し、待機が
+              // 終わったら必ず片付ける。utils/trustPromptWatcher.js の safetyTimeoutId と
+              // 同じく unref() も付け、このタイマー自体がプロセスの終了を止めないようにする。
+              let queueWaitTimeoutId;
+              try {
+                await Promise.race([
+                  previousOperation.catch(() => {}),
+                  new Promise((resolve) => {
+                    queueWaitTimeoutId = setTimeout(resolve, remainingMs);
+                    if (typeof queueWaitTimeoutId.unref === 'function') queueWaitTimeoutId.unref();
+                  }),
+                ]);
+              } finally {
+                clearTimeout(queueWaitTimeoutId);
+              }
+            }
 
-          // 専用 CODEX_HOME は、直列化の待機・存在確認・世代確認を通った後、AI を止める前に用意する。
-          // 同期処理だけで operation の登録まで進むので、待機ループとの間に隙間は生じない。
-          // 停止に失敗する・PTY が消える・起動コマンドを書けない場合は、使われなかった専用フォルダを回収する。
-          const launchResolution = resolveCodexLaunchOptions(request.engine, request, { cwd: request.cwd });
-          if (!launchResolution.ok) {
-            res.writeHead(503, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: launchResolution.error }));
-            return;
-          }
-          let launchHomeInUse = false;
-          let startedGeneration = null;
-          let startedLaunchToken = null;
-          const lifecycleLaunch = {
-            cancelPending() {
-              agentLifecycles.cancelPending(request.termId, agentGenerations.get(request.termId));
-            },
-            beforeWrite() {
-              startedGeneration = agentGenerations.increment(request.termId);
-              const launchToken = agentLifecycles.initialize(request.termId, startedGeneration);
-              startedLaunchToken = launchToken;
-              return { generation: startedGeneration, launchToken };
-            },
-            prepareWrite(launch, command) {
-              return agentLifecycles.prepare(request.termId, launch.generation, launch.launchToken, ptyProcess.pid, command, ptyShellExecutables.get(request.termId));
-            },
-            activate(launch) {
-              return agentLifecycles.activate(request.termId, launch.generation, launch.launchToken);
-            },
-            isCurrent(launch) {
-              return agentLifecycles.isCurrent(request.termId, launch.generation, launch.launchToken);
-            },
-          };
-          const operation = restartAgentInTerminal(ptyProcess, request, launchResolution.options, lifecycleLaunch);
-          restartAgentOperations.set(request.termId, operation);
-          try {
-            const stopped = await operation;
-            // 停止中に PTY 自体が終了した場合も成功扱いにはせず、世代を進めない。
-            if (!stopped || ptys.get(request.termId) !== ptyProcess) {
+            const ptyProcess = ptys.get(request.termId);
+            if (!ptyProcess) {
+              res.writeHead(404, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: `terminal ${request.termId} not found` }));
+              return;
+            }
+            const currentGeneration = agentGenerations.get(request.termId);
+            if (request.expectedGeneration !== currentGeneration) {
+              res.writeHead(409, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'generation mismatch', currentGeneration }));
+              return;
+            }
+
+            // 専用 CODEX_HOME は、直列化の待機・存在確認・世代確認を通った後、AI を止める前に用意する。
+            // 同期処理だけで operation の登録まで進むので、待機ループとの間に隙間は生じない。
+            // 停止に失敗する・PTY が消える・起動コマンドを書けない場合は、使われなかった専用フォルダを回収する。
+            const launchResolution = resolveCodexLaunchOptions(request.engine, request, { cwd: request.cwd });
+            if (!launchResolution.ok) {
+              res.writeHead(503, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: launchResolution.error }));
+              return;
+            }
+            let launchHomeInUse = false;
+            let startedGeneration = null;
+            let startedLaunchToken = null;
+            const lifecycleLaunch = {
+              cancelPending() {
+                agentLifecycles.cancelPending(request.termId, agentGenerations.get(request.termId));
+              },
+              beforeWrite() {
+                startedGeneration = agentGenerations.increment(request.termId);
+                const launchToken = agentLifecycles.initialize(request.termId, startedGeneration);
+                startedLaunchToken = launchToken;
+                return { generation: startedGeneration, launchToken };
+              },
+              prepareWrite(launch, command) {
+                return agentLifecycles.prepare(request.termId, launch.generation, launch.launchToken, ptyProcess.pid, command, ptyShellExecutables.get(request.termId));
+              },
+              activate(launch) {
+                return agentLifecycles.activate(request.termId, launch.generation, launch.launchToken);
+              },
+              isCurrent(launch) {
+                return agentLifecycles.isCurrent(request.termId, launch.generation, launch.launchToken);
+              },
+            };
+            const operation = restartAgentInTerminal(ptyProcess, request, launchResolution.options, lifecycleLaunch);
+            restartAgentOperations.set(request.termId, operation);
+            try {
+              const stopped = await operation;
+              // 停止中に PTY 自体が終了した場合も成功扱いにはせず、世代を進めない。
+              if (!stopped || ptys.get(request.termId) !== ptyProcess) {
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'failed to stop agent' }));
+                return;
+              }
+              launchHomeInUse = true;
+              // renderer 側の terminals[paneId].engine を実体に追従させる（issue #394 の
+              // 安藤レビュー指摘・MEDIUM）。restart-agent は同じペインで engine を入れ替えられる
+              // 唯一の main→renderer 経路（安藤の確認結果）のため、成功時にだけ通知する。
+              // request.engine は validateRestartAgentRequest が既に isValidEngine で検証・
+              // 解決済み（省略時は 'claude'）の値なので、そのまま渡してよい。
+              if (win && !win.isDestroyed()) {
+                win.webContents.send('terminal:engine-changed', request.termId, request.engine);
+              }
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({
+                ok: true,
+                termId: request.termId,
+                stopped: true,
+                generation: startedGeneration,
+              }));
+            } catch (error) {
+              if (startedGeneration !== null && agentLifecycles.isCurrent(request.termId, startedGeneration, startedLaunchToken)) {
+                agentLifecycles.initialize(request.termId, startedGeneration);
+              }
+              console.error(`${LOG_PREFIX} restart-agent failed for terminal ${request.termId}:`, error.message);
               res.writeHead(500, { 'Content-Type': 'application/json' });
               res.end(JSON.stringify({ error: 'failed to stop agent' }));
-              return;
+            } finally {
+              if (!launchHomeInUse) launchResolution.discard();
+              if (restartAgentOperations.get(request.termId) === operation) {
+                restartAgentOperations.delete(request.termId);
+              }
             }
-            launchHomeInUse = true;
-            // renderer 側の terminals[paneId].engine を実体に追従させる（issue #394 の
-            // 安藤レビュー指摘・MEDIUM）。restart-agent は同じペインで engine を入れ替えられる
-            // 唯一の main→renderer 経路（安藤の確認結果）のため、成功時にだけ通知する。
-            // request.engine は validateRestartAgentRequest が既に isValidEngine で検証・
-            // 解決済み（省略時は 'claude'）の値なので、そのまま渡してよい。
-            if (win && !win.isDestroyed()) {
-              win.webContents.send('terminal:engine-changed', request.termId, request.engine);
-            }
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({
-              ok: true,
-              termId: request.termId,
-              stopped: true,
-              generation: startedGeneration,
-            }));
-          } catch (error) {
-            if (startedGeneration !== null && agentLifecycles.isCurrent(request.termId, startedGeneration, startedLaunchToken)) {
-              agentLifecycles.initialize(request.termId, startedGeneration);
-            }
-            console.error(`${LOG_PREFIX} restart-agent failed for terminal ${request.termId}:`, error.message);
-            res.writeHead(500, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: 'failed to stop agent' }));
-          } finally {
-            if (!launchHomeInUse) launchResolution.discard();
-            if (restartAgentOperations.get(request.termId) === operation) {
-              restartAgentOperations.delete(request.termId);
-            }
-          }
           } });
           if (gate && !gate.ok) {
-            res.writeHead(503, { 'Content-Type': 'application/json' });
+            res.writeHead(gate.status, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: gate.error, githubReachability: gate.githubReachability }));
           }
         } catch (error) {

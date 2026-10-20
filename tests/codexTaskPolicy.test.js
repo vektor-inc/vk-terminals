@@ -1795,6 +1795,8 @@ const isCovered = (context, target) => context.effectiveWritableRoots.some((root
 // TMPDIR 用のリンクつき一時フォルダを足した試験環境。
 function createContextSandbox() {
   const sandbox = createSandbox();
+  // codex-policy-context の試験を実環境の GitHub 接続・ログイン状態から切り離す。
+  sandbox.deps.checkGitHubReachability = async () => ({ ok: true });
   const tmpRoot = path.join(sandbox.root, 'tmp-root');
   fs.mkdirSync(tmpRoot, { mode: 0o700 });
   const tmpLink = path.join(sandbox.root, 'tmp-link');
@@ -1990,4 +1992,14 @@ test('POST /api/codex-policy-context: Codex 以外は 400。ペインの作成�
   const newPane = mainSource.slice(mainSource.indexOf("url.pathname === '/api/new-pane'"), start);
   assert.ok(newPane.includes('JSON.stringify({ ok: true, termId: result.termId })'));
   assert.equal(newPane.includes('codexPolicyContext'), false);
+});
+
+test('main.js: new-pane と restart-agent は同じ GitHub 到達確認ゲートを使う', () => {
+  const newPaneStart = mainSource.indexOf("url.pathname === '/api/new-pane'");
+  const contextStart = mainSource.indexOf("url.pathname === '/api/codex-policy-context'");
+  const restartStart = mainSource.indexOf("url.pathname === '/api/restart-agent'");
+  const closePaneStart = mainSource.indexOf("url.pathname === '/api/close-pane'");
+  const gateCall = 'runGitHubReachabilityGate(policyCheck, { check: checkGitHubReachability, proceed:';
+  assert.equal(mainSource.slice(newPaneStart, contextStart).split(gateCall).length - 1, 1);
+  assert.equal(mainSource.slice(restartStart, closePaneStart).split(gateCall).length - 1, 1);
 });

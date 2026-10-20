@@ -38,6 +38,7 @@ const nodeFs = require('fs');
 const childProcess = require('child_process');
 const crypto = require('crypto');
 const path = require('path');
+const { resolveGitHubReachability } = require('./githubReachability');
 const {
   FIXED_GIT_PREFIX,
   TrustError,
@@ -898,14 +899,10 @@ function resolveCodexTaskPolicyLaunchOptions(engine, options, deps) {
  * @returns {{ok: true, codexPolicyContext: object} | {ok: false, status: number, error: string}}
  */
 async function resolveCodexPolicyContext(options, deps) {
-  const validated = deps.validateCodexLaunchOptions('codex', options || {});
-  if (!validated.ok) return { ok: false, status: 400, error: validated.error };
-  if (validated.codexPolicy === undefined) return { ok: false, status: 400, error: 'codexPolicy required' };
+  if (options?.codexPolicy === undefined) return { ok: false, status: 400, error: 'codexPolicy required' };
   if (typeof deps.cwd !== 'string' || deps.cwd === '') return { ok: false, status: 400, error: 'codexPolicy requires cwd' };
   const resolved = resolveCodexTaskPolicyLaunchOptions('codex', options, { ...deps, dryRun: true });
   if (!resolved.ok) return { ...resolved, status: resolved.error.startsWith('codex task policy unavailable:') ? 503 : 400 };
-  if (!resolved.context) return { ok: false, status: 400, error: 'codexPolicy required' };
-  const { resolveGitHubReachability } = require('./githubReachability');
   const githubReachability = await resolveGitHubReachability(resolved, deps.checkGitHubReachability);
   return { ok: true, codexPolicyContext: { ...resolved.context, githubReachability } };
 }

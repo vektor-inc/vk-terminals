@@ -17,7 +17,7 @@ function unknownFailure() {
 
 /** GitHub 到達確認の失敗を、外部 API の固定した3分類へ変換する。 */
 function classifyGitHubReachabilityResult(result) {
-  if (result?.error?.code === 'ETIMEDOUT' || result?.error?.killed === true) {
+  if (result?.error?.code === 'ETIMEDOUT' || (result?.error?.killed === true && result?.error?.signal === 'SIGTERM')) {
     return failure('transient', 'GitHub からの応答が時間内に得られませんでした。しばらく待ってから、もう一度お試しください');
   }
   const output = `${result?.stdout || ''}\n${result?.stderr || ''}`;
@@ -99,6 +99,7 @@ async function checkGitHubReachability({
 
 /** 差し替えた確認関数の例外も HTTP 応答可能な結果へ変換する。 */
 async function resolveGitHubReachability(policyCheck, check = checkGitHubReachability) {
+  if (!policyCheck?.githubCheck) return { ok: true };
   try {
     return await check(policyCheck.githubCheck);
   } catch (_error) {
@@ -108,6 +109,8 @@ async function resolveGitHubReachability(policyCheck, check = checkGitHubReachab
 
 /** HTTP 入口で dryRun の直後に1回だけ確認し、後続処理を呼ぶか決める。 */
 async function runGitHubReachabilityGate(policyCheck, { check = checkGitHubReachability, proceed }) {
+  // ポリシーを持たない Codex と Claude Code は到達確認の対象外にする。
+  if (!policyCheck?.githubCheck) return proceed();
   const githubReachability = await resolveGitHubReachability(policyCheck, check);
   if (!githubReachability.ok) return { ok: false, status: 503, error: 'github unreachable', githubReachability };
   return proceed(githubReachability);

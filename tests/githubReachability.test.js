@@ -55,6 +55,11 @@ test('GitHub 到達確認: 成功・接続不能・ログイン無効・時間�
     [{ error: new Error('failed'), stderr: 'SSO authorization required' }, 'auth_invalid'],
   ];
   for (const [input, expected] of cases) assert.equal(classifyGitHubReachabilityResult(input).reason, expected);
+  const outputLimit = classifyGitHubReachabilityResult({
+    error: Object.assign(new Error('stdout maxBuffer exceeded'), { killed: true, signal: undefined }),
+  });
+  assert.equal(outputLimit.reason, 'transient');
+  assert.equal(outputLimit.message.includes('時間内'), false);
 });
 
 test('GitHub 到達確認: gh が使えない場合は auth_invalid、例外は transient にし、一時フォルダを回収する', async () => {
@@ -82,6 +87,17 @@ test('GitHub 到達確認: hosts.yml を再生成できない場合は gh を実
 });
 
 test('HTTP 到達確認ゲート: 失敗時は503を返して本番処理を呼ばず、成功時だけ本番処理を呼ぶ', async () => {
+  for (const policyCheck of [null, { ok: true, options: {} }]) {
+    let checked = false;
+    let proceeded = false;
+    const skipped = await runGitHubReachabilityGate(policyCheck, {
+      check: async () => { checked = true; return { ok: false }; },
+      proceed: () => { proceeded = true; return { ok: true, operation: 'restartAgentInTerminal' }; },
+    });
+    assert.equal(checked, false);
+    assert.equal(proceeded, true);
+    assert.equal(skipped.ok, true);
+  }
   for (const operation of ['terminal:request-new-pane', 'restartAgentInTerminal']) {
     let called = false;
     const result = await runGitHubReachabilityGate({ githubCheck: {} }, {

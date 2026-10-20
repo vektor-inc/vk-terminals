@@ -922,7 +922,7 @@ curl -s -X POST http://127.0.0.1:13847/api/new-pane \
 - 不正な JSON: `400 {"error": "invalid JSON"}`
 - ウィンドウが利用できない: `503 {"error": "window not available"}`
 - `codexPolicy` を固定できない（専用設定を作れない・検証できない）: `503 {"error": "codex task policy unavailable: <理由>"}`。ペインは作成されず、承認方針だけを付けた Codex も起動しません。事前確認の後でペイン作成側だけが失敗した場合も、PTY を作らずに `500` で理由を返します。
-- GitHub への到達確認に失敗: `503 {"error":"github unreachable","githubReachability":{"ok":false,"reason":"unreachable|auth_invalid|transient","message":"<短い説明>"}}`。ペインは作成されません。
+- GitHub への到達確認に失敗: `503 {"error":"github unreachable","githubReachability":{"ok":false,"reason":"unreachable|auth_invalid|transient","message":"<利用者向けの日本語文>"}}`。ペインは作成されません。
 - タイムアウト（15秒）: `504 {"error": "timeout waiting for new pane"}`
 - renderer 側でペイン作成に失敗（既存ペインなし／分割失敗など）: `500 {"error": "<renderer からのエラーメッセージ>"}`
 
@@ -965,7 +965,7 @@ curl -s -X POST http://127.0.0.1:13847/api/codex-policy-context \
 ```
 
 - `version`：形式の版（現在 `1`）。形が変わったときに受け取る側が判定できます。
-- `githubReachability`：対象リポジトリへの読み取り専用の到達確認結果です。成功時は `{ "ok": true }`、失敗時は `{ "ok": false, "reason": "unreachable|auth_invalid|transient", "message": "<短い説明>" }` です。確認に失敗してもこの API は `200` のまま結果を返します。
+- `githubReachability`：対象リポジトリへの読み取り専用の到達確認結果です。成功時は `{ "ok": true }`、失敗時は `{ "ok": false, "reason": "unreachable|auth_invalid|transient", "message": "<利用者向けの日本語文>" }` です。`unreachable` は GitHub へのネットワーク接続失敗、`auth_invalid` は GitHub のログイン・権限・準備に人の操作が必要な状態、`transient` は時間切れ・GitHub 側の障害・レート制限など待てば直る見込みの状態を表します。`reason` は将来増える可能性があります。知らない値では `message` をそのまま利用者に表示して構いません。確認に失敗してもこの API は `200` のまま結果を返します。
 - `tmpdir`：実際の起動で Codex に固定して渡す `TMPDIR` と完全に一致する値（実パス）です。
 - `effectiveWritableRoots`：**Codex の設定 `writable_roots` ではなく、Codex が実際に書き込める範囲**です。Codex のシェルが `workspace-write` で自動的に書ける作業フォルダ・`/tmp`・`TMPDIR`、設定 `writable_roots` に入る 2 つ、sandbox の外で動く固定入口（承認なしで使える Git / GitHub 操作）が書き込む 2 つを、出所付きで並べます。Codex 自身の設定フォルダ（専用 `CODEX_HOME`。場所は返しません。VK Terminals が管理する `~/.vk-terminals/` 配下）は含みません。パスはすべて実パス（macOS の `/tmp` は `/private/tmp`）です。
   - `source: "workspace"`：作業フォルダ（`cwd`）
@@ -1024,7 +1024,7 @@ curl -s -X POST http://127.0.0.1:13847/api/restart-agent \
 - 指定ペインが存在しない: `404 {"error":"terminal <id> not found"}`
 - 世代が一致しない: `409 {"error":"generation mismatch","currentGeneration":<現在の世代>}`
 - `codexPolicy` を固定できない: `503 {"error":"codex task policy unavailable: <理由>"}`（実行中の AI は止めません。承認方針だけを付けた Codex も起動しません）
-- GitHub への到達確認に失敗: `503 {"error":"github unreachable","githubReachability":{"ok":false,"reason":"unreachable|auth_invalid|transient","message":"<短い説明>"}}`（実行中の AI は止めません）
+- GitHub への到達確認に失敗: `503 {"error":"github unreachable","githubReachability":{"ok":false,"reason":"unreachable|auth_invalid|transient","message":"<利用者向けの日本語文>"}}`（実行中の AI は止めません）
 - 子プロセスの停止を確認できない: `500 {"error":"failed to stop agent"}`（`SIGKILL` まで送った後でも消滅を確認できなかった場合を含みます。この場合「何も起きなかった」わけではなく、対象ペインの AI が停止した状態のまま残っている可能性があるため、呼び出し元は再試行や状態確認を行ってください）
 - 同一ペインへの先行リクエストの完了待ちが 15 秒を超えた: `504 {"error":"timeout waiting for previous restart-agent operation"}`（同じ `termId` への要求は完全に一列に直列化されるため、先行する要求が積み重なっていると待ち時間が伸びます。このリクエスト自身は何も停止・起動しておらず、世代も進んでいません）
 

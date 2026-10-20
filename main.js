@@ -64,8 +64,8 @@ const {
   validateCodexLaunchOptions,
 } = require('./renderer/claudeModel');
 // 自動処理用 Codex のタスク用ポリシー（専用 CODEX_HOME の生成。issue #428）。
-const { resolveCodexTaskPolicyLaunchOptions, resolveCodexPolicyContext } = require('./utils/codexTaskPolicy');
-const { checkGitHubReachability } = require('./utils/githubReachability');
+const { resolveCodexTaskPolicyLaunchOptions } = require('./utils/codexTaskPolicy');
+const { checkGitHubReachability, resolveGitHubReachability, runGitHubReachabilityGate } = require('./utils/githubReachability');
 const { scheduleLaunchCommand } = require('./utils/delayedLaunch');
 const {
   createAgentLifecycleStore,
@@ -207,7 +207,6 @@ function resolveCodexLaunchOptions(engine, options, { dryRun = false, cwd } = {}
     dataDir: DATA_DIR,
     handoffDir: CODEX_TASK_POLICY_HANDOFF_DIR,
     personalCodexHome: process.env.CODEX_HOME || path.join(os.homedir(), '.codex'),
-    checkGitHubReachability,
   });
 }
 const LOG_PREFIX = '[vk-terminals]';
@@ -3285,7 +3284,7 @@ function startHttpApi() {
         return;
       }
       const MAX_BODY = 10 * 1024;
-      readJsonBody(req, res, MAX_BODY, (body) => {
+      readJsonBody(req, res, MAX_BODY, async (body) => {
         let requestedCwd = null;
         let requestedNoClaude;
         let requestedEngine;
@@ -3371,7 +3370,13 @@ function startHttpApi() {
           }, { dryRun: true, cwd: requestedCwd });
           if (!policyCheck.ok) {
             res.writeHead(503, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: policyCheck.error, ...(policyCheck.githubReachability ? { githubReachability: policyCheck.githubReachability } : {}) }));
+            res.end(JSON.stringify({ error: policyCheck.error }));
+            return;
+          }
+          const gate = await runGitHubReachabilityGate(policyCheck, { check: checkGitHubReachability, proceed: () => ({ ok: true }) });
+          if (!gate.ok) {
+            res.writeHead(503, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: gate.error, githubReachability: gate.githubReachability }));
             return;
           }
         }
@@ -3418,7 +3423,7 @@ function startHttpApi() {
         res.end(JSON.stringify({ error: 'forbidden origin' }));
         return;
       }
-      readJsonBody(req, res, 10 * 1024, (body) => {
+      readJsonBody(req, res, 10 * 1024, async (body) => {
         let parsed;
         try {
           parsed = JSON.parse(body);
@@ -3433,20 +3438,24 @@ function startHttpApi() {
           res.end(JSON.stringify({ error: 'engine must be "codex"' }));
           return;
         }
-        const result = resolveCodexPolicyContext(parsed, {
-          cwd: typeof parsed.cwd === 'string' && parsed.cwd.trim() ? parsed.cwd : undefined,
-          homeDir: os.homedir(),
-          validateCodexLaunchOptions,
-          dataDir: DATA_DIR,
-          handoffDir: CODEX_TASK_POLICY_HANDOFF_DIR,
-          personalCodexHome: process.env.CODEX_HOME || path.join(os.homedir(), '.codex'),
-          checkGitHubReachability,
-        });
-        if (!result.ok) {
-          res.writeHead(result.status, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: result.error }));
+        const validated = validateCodexLaunchOptions('codex', parsed);
+        if (!validated.ok || validated.codexPolicy === undefined || typeof parsed.cwd !== 'string' || parsed.cwd.trim() === '') {
+          const error = !validated.ok ? validated.error : (validated.codexPolicy === undefined ? 'codexPolicy required' : 'codexPolicy requires cwd');
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error }));
           return;
         }
+        const policyCheck = resolveCodexLaunchOptions('codex', parsed, {
+          dryRun: true,
+          cwd: typeof parsed.cwd === 'string' && parsed.cwd.trim() ? parsed.cwd : undefined,
+        });
+        if (!policyCheck.ok) {
+          res.writeHead(503, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: policyCheck.error }));
+          return;
+        }
+        const githubReachability = await resolveGitHubReachability(policyCheck, checkGitHubReachability);
+        const result = { ok: true, codexPolicyContext: { ...policyCheck.context, githubReachability } };
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, codexPolicyContext: result.codexPolicyContext }));
       });
@@ -3500,7 +3509,13 @@ function startHttpApi() {
           const policyCheck = resolveCodexLaunchOptions(request.engine, request, { dryRun: true, cwd: request.cwd });
           if (!policyCheck.ok) {
             res.writeHead(503, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: policyCheck.error, ...(policyCheck.githubReachability ? { githubReachability: policyCheck.githubReachability } : {}) }));
+            res.end(JSON.stringify({ error: policyCheck.error }));
+            return;
+          }
+          const gate = await runGitHubReachabilityGate(policyCheck, { check: checkGitHubReachability, proceed: () => ({ ok: true }) });
+          if (!gate.ok) {
+            res.writeHead(503, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: gate.error, githubReachability: gate.githubReachability }));
             return;
           }
 
@@ -3564,7 +3579,7 @@ function startHttpApi() {
           const launchResolution = resolveCodexLaunchOptions(request.engine, request, { cwd: request.cwd });
           if (!launchResolution.ok) {
             res.writeHead(503, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: launchResolution.error, ...(launchResolution.githubReachability ? { githubReachability: launchResolution.githubReachability } : {}) }));
+            res.end(JSON.stringify({ error: launchResolution.error }));
             return;
           }
           let launchHomeInUse = false;

@@ -156,13 +156,18 @@ issue #441 は「Codex のツール呼び出しのタイムアウトで打ち切
 
 ### 事前確認と本番の食い違い
 
-`POST /api/new-pane` は受付時に事前確認（専用フォルダを作らず、親フォルダ・引き継ぎ先・実行ファイル・`cwd` のリポジトリの検証だけ。`dryRun`）を行い、その後ペイン作成（`terminal:create`）側で専用フォルダを作る。この間に状態が変わって本番だけが失敗しうるため、`terminal:create` は **PTY を作る前に**起動オプションの解決と起動コマンドの組み立てを済ませ、失敗したら例外で返す。失敗は renderer から HTTP の `500` として呼び出し元へ伝わり、Codex が起動していないペインを成功として返さない。PTY を作る前なので、破棄すべき PTY・管理状態は残らない。
+`POST /api/new-pane` は受付時に事前確認（専用フォルダを作らず、親フォルダ・引き継ぎ先・実行ファイル・`cwd` のリポジトリの検証だけ。`dryRun`）と GitHub 到達確認を行い、その後ペイン作成（`terminal:create`）側で専用フォルダを作る。到達確認は HTTP 入口で1回だけ行い、renderer の手動作成など HTTP を通らない `terminal:create` では行わない。本番準備は **PTY を作る前に**同期で済ませ、失敗したら例外で返す。
 
 ## 実際の起動と同じ値を返す事前確認（issue #446）
 
 `POST /api/codex-policy-context`（仕様の一覧は README）は、ペインを作らず AI も止めずに、実際の起動と同じ値（`codexPolicyContext`）だけを返す。
 
-起動前には、個人の `GH_TOKEN` などを引き継がない固定環境と固定入口と同じ gh ログイン元を使い、拘束した GitHub リポジトリを `gh repo view` で読み取り確認する。上限は 10 秒で、`POST /api/new-pane` の renderer 待ち 15 秒より先に終わる。失敗は DNS・接続失敗の `unreachable`、ログイン無効の `auth_invalid`、時間切れ・GitHub 側 5xx・判別不能な一時失敗の `transient` に分類し、標準エラーの生の内容は API に返さない。
+起動前の確認は次のとおり。
+
+- **何を確認するか:** 本番準備と同じ所有者・権限検証を通った GitHub CLI（gh）だけを使う。個人の `hosts.yml` から GitHub のログイン情報だけを固定入口と同じ方法で再生成し、0700 の一時フォルダ内の 0600 の設定から、拘束したリポジトリを `gh repo view --json name -- <owner/repo>` で読み取る。個人の `GH_TOKEN` や通信設定は引き継がず、確認後は一時フォルダを回収する。
+- **上限時間:** 10 秒。メインプロセスを止めない非同期実行で、`POST /api/new-pane` の renderer 待ち 15 秒より先に終える。
+- **分類:** `unreachable` は名前解決・接続失敗、`auth_invalid` はログイン無効・権限不足・SSO 未承認・対象を読めない 404・検証済み gh が無い場合、`transient` は時間切れ・GitHub 側の HTTP 5xx・レート制限・判別不能な失敗。標準エラーの生の内容は返さない。
+- **API ごとの挙動:** `POST /api/new-pane` と `POST /api/restart-agent` は dryRun 成功直後に1回だけ確認し、失敗時は `503` で後続処理へ進まない。`POST /api/codex-policy-context` は失敗時も `200` で結果を返す。restart-agent は到達確認を直列化待ちの前に終え、本番準備は operation 登録まで同期のままにする。
 
 - `POST /api/new-pane` と `POST /api/restart-agent` は、失敗時に `503` と `githubReachability` を返し、ペイン作成要求や AI の停止・起動へ進まない。
 - `POST /api/codex-policy-context` は失敗時も `200` のまま、`codexPolicyContext.githubReachability` に結果を返す。専用 `CODEX_HOME` は作らない。

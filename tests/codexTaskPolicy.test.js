@@ -1981,7 +1981,7 @@ test('POST /api/codex-policy-context: Codex 以外は 400。ペインの作成�
   assert.ok(start > 0);
   assert.ok(handler.includes('isForbiddenOrigin(req)'));
   assert.ok(handler.includes("error: 'engine must be \"codex\"'"));
-  for (const forbidden of ['webContents.send', 'pendingNewPaneCallbacks', 'restartAgentInTerminal', 'ptyProcess', 'resolveCodexLaunchOptions', 'discard']) {
+  for (const forbidden of ['webContents.send', 'pendingNewPaneCallbacks', 'restartAgentInTerminal', 'ptyProcess', 'discard']) {
     assert.equal(handler.includes(forbidden), false, forbidden);
   }
   // 認証はルーティングの前段で全 API に掛かる（この API だけ外れない）。

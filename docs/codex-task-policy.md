@@ -167,10 +167,7 @@ issue #441 は「Codex のツール呼び出しのタイムアウトで打ち切
 - **何を確認するか:** 本番準備と同じ所有者・権限検証を通った GitHub CLI（gh）だけを使う。個人の `hosts.yml` から GitHub のログイン情報だけを固定入口と同じ方法で再生成し、0700 の一時フォルダ内の 0600 の設定から、拘束したリポジトリを `gh repo view --json name -- <owner/repo>` で読み取る。個人の `GH_TOKEN` や通信設定は引き継がず、確認後は一時フォルダを回収する。
 - **上限時間:** 10 秒。メインプロセスを止めない非同期実行で、`POST /api/new-pane` の renderer 待ち 15 秒より先に終える。
 - **分類:** `unreachable` は名前解決・接続失敗、`auth_invalid` はログイン無効・権限不足・SSO 未承認・対象を読めない 404・検証済み gh が無い場合、`transient` は時間切れ・GitHub 側の HTTP 5xx・レート制限・判別不能な失敗。標準エラーの生の内容は返さない。
-- **API ごとの挙動:** `POST /api/new-pane` と `POST /api/restart-agent` は dryRun 成功直後に1回だけ確認し、失敗時は `503` で後続処理へ進まない。`POST /api/codex-policy-context` は失敗時も `200` で結果を返す。restart-agent は到達確認を直列化待ちの前に終え、本番準備は operation 登録まで同期のままにする。
-
-- `POST /api/new-pane` と `POST /api/restart-agent` は、失敗時に `503` と `githubReachability` を返し、ペイン作成要求や AI の停止・起動へ進まない。
-- `POST /api/codex-policy-context` は失敗時も `200` のまま、`codexPolicyContext.githubReachability` に結果を返す。専用 `CODEX_HOME` は作らない。
+- **API ごとの挙動:** `POST /api/new-pane` と `POST /api/restart-agent` は dryRun 成功直後に1回だけ確認し、失敗時は `503` と `githubReachability` を返してペイン作成要求や AI の停止・起動へ進まない。`POST /api/codex-policy-context` は失敗時も `200` のまま `codexPolicyContext.githubReachability` に結果を返し、専用 `CODEX_HOME` は作らない。restart-agent は到達確認を直列化待ちの前に終え、本番準備は operation 登録まで同期のままにする。
 - `codexPolicy` の無い通常の Codex と Claude Code は確認対象外。
 
 - **API を分けた理由:** `POST /api/new-pane` / `POST /api/restart-agent` は知らない項目を黙って無視する。確認専用の指定（`dryRun` など）をそこへ足すと、旧版の VK Terminals に送ったとき、確認のつもりが本当にペインを作り、再起動では実行中の AI を止めてしまう。別の API なら旧版は `404` を返すだけなので、呼び出し側は「未対応」と安全に判断できる。実際の起動の成功応答には値を足さず、到達確認に失敗した `503` だけ `githubReachability` を返す。

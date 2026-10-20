@@ -5,6 +5,7 @@ const path = require('path');
 const { buildChildEnvironment } = require('./codexTaskOps');
 
 const DEFAULT_TIMEOUT_MS = 10000;
+const LOGIN_MESSAGE = 'GitHub にログインしていません。ターミナルで gh auth login を実行してから、もう一度お試しください';
 
 function failure(reason, message) {
   return { ok: false, reason, message };
@@ -16,10 +17,13 @@ function unknownFailure() {
 
 /** GitHub 到達確認の失敗を、外部 API の固定した3分類へ変換する。 */
 function classifyGitHubReachabilityResult(result) {
-  if (result?.error?.code === 'ETIMEDOUT') {
+  if (result?.error?.code === 'ETIMEDOUT' || result?.error?.killed === true) {
     return failure('transient', 'GitHub からの応答が時間内に得られませんでした。しばらく待ってから、もう一度お試しください');
   }
   const output = `${result?.stdout || ''}\n${result?.stderr || ''}`;
+  if (result?.error?.code === 4 || /gh auth login/i.test(output)) {
+    return failure('auth_invalid', LOGIN_MESSAGE);
+  }
   if (/rate limit|secondary rate limit|api rate limit exceeded/i.test(output)) {
     return failure('transient', 'GitHub の利用回数の上限に達しました。しばらく待ってから、もう一度お試しください');
   }
@@ -29,13 +33,18 @@ function classifyGitHubReachabilityResult(result) {
   if (/error connecting to|could not resolve host|name or service not known|connection refused|failed to connect|network is unreachable|no route to host/i.test(output)) {
     return failure('unreachable', 'GitHub に接続できません。ネットワーク接続を確認してから、もう一度お試しください');
   }
-  if (/\b(?:403|404)\b|could not resolve to a repository|resource not accessible|sso|permission denied/i.test(output)) {
+  if (/HTTP\s+(?:403|404)\b|could not resolve to a repository|resource not accessible|\b(?:SSO|SAML)\b/i.test(output)) {
     return failure('auth_invalid', 'このリポジトリを GitHub のログインで読み取れません。アカウントのアクセス権を確認してから、もう一度お試しください');
   }
   if (/\b401\b|authentication failed|bad credentials|http basic: access denied|not logged in|authentication required/i.test(output)) {
     return failure('auth_invalid', 'GitHub のログインが無効になっています。ターミナルで gh auth login を実行してから、もう一度お試しください');
   }
   return unknownFailure();
+}
+
+/** 到達確認専用の gh 環境を、固定入口と同じ最小構成で作る。 */
+function buildGitHubReachabilityEnvironment({ ghPath, homeDir, ghConfigDir }) {
+  return buildChildEnvironment({ git: ghPath, gh: ghPath, home: homeDir, gitConfig: '/dev/null', ghConfig: ghConfigDir });
 }
 
 /** 固定入口と同じ gh 設定を一時フォルダへ作り、対象リポジトリを非同期で読み取る。 */
@@ -54,14 +63,15 @@ async function checkGitHubReachability({
   if (typeof ghPath !== 'string' || ghPath === '') {
     return failure('auth_invalid', 'GitHub CLI（gh）が見つからないか、安全に使えません。gh をインストールし、ターミナルで gh auth login を実行してから、もう一度お試しください');
   }
+  if (typeof ghHosts !== 'string') return failure('auth_invalid', LOGIN_MESSAGE);
   let temporaryDir = null;
   try {
     // 認証情報以外の個人設定を持ち込まないよう、固定内容だけを新規作成する。
     temporaryDir = fsImpl.mkdtempSync(path.join(tmpdir, 'vk-github-reachability-'));
     fsImpl.chmodSync(temporaryDir, 0o700);
     fsImpl.writeFileSync(path.join(temporaryDir, 'config.yml'), ghConfig, { mode: 0o600, flag: 'wx' });
-    if (typeof ghHosts === 'string') fsImpl.writeFileSync(path.join(temporaryDir, 'hosts.yml'), ghHosts, { mode: 0o600, flag: 'wx' });
-    const env = buildChildEnvironment({ git: ghPath, gh: ghPath, home: homeDir, gitConfig: '/dev/null', ghConfig: temporaryDir });
+    fsImpl.writeFileSync(path.join(temporaryDir, 'hosts.yml'), ghHosts, { mode: 0o600, flag: 'wx' });
+    const env = buildGitHubReachabilityEnvironment({ ghPath, homeDir, ghConfigDir: temporaryDir });
     const result = await new Promise((resolve) => {
       execFile(ghPath, ['repo', 'view', '--json', 'name', '--', repo], {
         cwd,

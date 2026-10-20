@@ -1881,17 +1881,17 @@ test('書き込める範囲: メンバー起動が無効な配置（codex が無
   }
 });
 
-test('書き込める範囲: read-only ではシェルの書き込み先が外れ、固定入口とメンバーの入出力フォルダだけが残る（Codex の sandbox の実挙動）', () => {
+test('書き込める範囲: read-only ではシェルの書き込み先が外れ、固定入口とメンバーの入出力フォルダだけが残る（Codex の sandbox の実挙動）', async () => {
   const { sandbox, tmpLink } = createContextSandbox();
   try {
     const deps = { ...sandbox.deps, tmpdir: tmpLink, tmpRoots: [tmpLink] };
-    const result = resolveCodexPolicyContext({ approvalPolicy: 'never', sandboxMode: 'read-only', codexPolicy: { preset: 'orchestrated-task' } }, deps);
+    const result = await resolveCodexPolicyContext({ approvalPolicy: 'never', sandboxMode: 'read-only', codexPolicy: { preset: 'orchestrated-task' } }, deps);
     assert.equal(result.ok, true, result.error);
     assert.equal(result.codexPolicyContext.sandboxMode, 'read-only');
     // シェルからの cwd・/tmp・TMPDIR・引き継ぎ先は外れる。固定入口（sandbox の外で動く）の書き込み先とメンバーの入出力フォルダは残る。
     assert.deepEqual(result.codexPolicyContext.effectiveWritableRoots.map((root) => root.source), ['task-ops-repository', 'task-ops-git-dir', 'member-io']);
     // sandboxMode 省略時は、実際の起動と同じ workspace-write。
-    const omitted = resolveCodexPolicyContext({ approvalPolicy: 'never', codexPolicy: { preset: 'orchestrated-task' } }, deps);
+    const omitted = await resolveCodexPolicyContext({ approvalPolicy: 'never', codexPolicy: { preset: 'orchestrated-task' } }, deps);
     assert.equal(omitted.codexPolicyContext.sandboxMode, 'workspace-write');
   } finally {
     sandbox.cleanup();
@@ -1922,10 +1922,10 @@ test('書き込める範囲: linked worktree から起動しても、固定入�
   }
 });
 
-test('書き込める範囲: 事前確認では専用フォルダ・入出力フォルダを作らない（引き継ぎ先とポリシー用の親フォルダは作る）', () => {
+test('書き込める範囲: 事前確認では専用フォルダ・入出力フォルダを作らない（引き継ぎ先とポリシー用の親フォルダは作る）', async () => {
   const { sandbox, tmpLink } = createContextSandbox();
   try {
-    const result = resolveCodexPolicyContext({ codexPolicy: { preset: 'orchestrated-task' } }, { ...sandbox.deps, tmpdir: tmpLink, tmpRoots: [tmpLink] });
+    const result = await resolveCodexPolicyContext({ codexPolicy: { preset: 'orchestrated-task' } }, { ...sandbox.deps, tmpdir: tmpLink, tmpRoots: [tmpLink] });
     assert.equal(result.ok, true, result.error);
     assert.deepEqual(fs.readdirSync(sandbox.policyBase), []);
     assert.equal(fs.existsSync(path.join(sandbox.deps.dataDir, 'codex-task-io')), false);
@@ -1935,11 +1935,11 @@ test('書き込める範囲: 事前確認では専用フォルダ・入出力フ
   }
 });
 
-test('書き込める範囲: 応答は許可した項目だけで、秘密情報（CODEX_HOME・認証・Git の名前とメール・環境変数・信頼しないプロジェクト）を含まない', () => {
+test('書き込める範囲: 応答は許可した項目だけで、秘密情報（CODEX_HOME・認証・Git の名前とメール・環境変数・信頼しないプロジェクト）を含まない', async () => {
   const { sandbox, tmpLink } = createContextSandbox();
   try {
     fs.writeFileSync(path.join(sandbox.homeDir, '.gitconfig'), '[user]\n\tname = Secret Name\n\temail = secret-mail@example.com\n');
-    const result = resolveCodexPolicyContext({ codexPolicy: { preset: 'orchestrated-task' } }, { ...sandbox.deps, tmpdir: tmpLink, tmpRoots: [tmpLink] });
+    const result = await resolveCodexPolicyContext({ codexPolicy: { preset: 'orchestrated-task' } }, { ...sandbox.deps, tmpdir: tmpLink, tmpRoots: [tmpLink] });
     assert.equal(result.ok, true, result.error);
     assert.deepEqual(Object.keys(result).sort(), ['codexPolicyContext', 'ok']);
     const context = result.codexPolicyContext;
@@ -1958,16 +1958,16 @@ test('書き込める範囲: 応答は許可した項目だけで、秘密情報
   }
 });
 
-test('書き込める範囲: codexPolicy 無し・cwd 無しは 400、ポリシーを用意できないときは 503', () => {
+test('書き込める範囲: codexPolicy 無し・cwd 無しは 400、ポリシーを用意できないときは 503', async () => {
   const { sandbox, tmpLink } = createContextSandbox();
   try {
     const deps = { ...sandbox.deps, tmpdir: tmpLink, tmpRoots: [tmpLink] };
-    assert.deepEqual(resolveCodexPolicyContext({}, deps), { ok: false, status: 400, error: 'codexPolicy required' });
-    assert.deepEqual(resolveCodexPolicyContext({ codexPolicy: { preset: 'full-access' } }, deps), { ok: false, status: 400, error: 'invalid codexPolicy preset' });
-    assert.deepEqual(resolveCodexPolicyContext({ codexPolicy: { preset: 'orchestrated-task' } }, { ...deps, cwd: undefined }), { ok: false, status: 400, error: 'codexPolicy requires cwd' });
+    assert.deepEqual(await resolveCodexPolicyContext({}, deps), { ok: false, status: 400, error: 'codexPolicy required' });
+    assert.deepEqual(await resolveCodexPolicyContext({ codexPolicy: { preset: 'full-access' } }, deps), { ok: false, status: 400, error: 'invalid codexPolicy preset' });
+    assert.deepEqual(await resolveCodexPolicyContext({ codexPolicy: { preset: 'orchestrated-task' } }, { ...deps, cwd: undefined }), { ok: false, status: 400, error: 'codexPolicy requires cwd' });
     const plain = path.join(sandbox.root, 'plain');
     fs.mkdirSync(plain);
-    const unavailable = resolveCodexPolicyContext({ codexPolicy: { preset: 'orchestrated-task' } }, { ...deps, cwd: plain });
+    const unavailable = await resolveCodexPolicyContext({ codexPolicy: { preset: 'orchestrated-task' } }, { ...deps, cwd: plain });
     assert.equal(unavailable.status, 503);
     assert.match(unavailable.error, /^codex task policy unavailable: /);
   } finally {

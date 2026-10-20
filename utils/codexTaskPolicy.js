@@ -759,7 +759,7 @@ function prepareCodexTaskPolicyHome(params) {
         if (ioBaseExists) verifyDirectory(fsImpl, ioBase, { uid, enforceOwnerOnly: true });
       }
       assertChainUnchanged(fsImpl, [...handoff.chain, ...data.chain, ...home.chain, ...toolChains, ...(ghHosts ? ghHosts.chain : [])]);
-      return { ok: true, home: null, tmpdir: parentTmpdir, repository: repository.repo, context: buildContext(memberAllowedInDryRun), ghPath, ghConfig: renderGhConfig(), ghHosts: ghHosts?.content || null, discard: () => false };
+      return { ok: true, home: null, homeDir: home.realPath, tmpdir: parentTmpdir, repository: repository.repo, context: buildContext(memberAllowedInDryRun), ghPath, ghConfig: renderGhConfig(), ghHosts: ghHosts?.content || null, discard: () => false };
     }
 
     const identity = readGitIdentity(spawnSync, gitPath, home.realPath);
@@ -862,7 +862,6 @@ const NOT_CREATED = () => false;
 function resolveCodexTaskPolicyLaunchOptions(engine, options, deps) {
   if (engine !== 'codex') return { ok: true, options: {}, discard: NOT_CREATED };
   const { validateCodexLaunchOptions, ...prepareDeps } = deps;
-  delete prepareDeps.checkGitHubReachability;
   const validated = validateCodexLaunchOptions('codex', options || {});
   if (!validated.ok) return validated;
   const launchOptions = { approvalPolicy: validated.approvalPolicy, sandboxMode: validated.sandboxMode };
@@ -884,7 +883,7 @@ function resolveCodexTaskPolicyLaunchOptions(engine, options, deps) {
       ghPath: prepared.ghPath,
       ghConfig: prepared.ghConfig,
       ghHosts: prepared.ghHosts,
-      homeDir: deps.homeDir,
+      homeDir: prepared.homeDir,
       repo: prepared.repository,
     },
     ...(prepared.context ? { context: prepared.context } : {}),
@@ -898,18 +897,17 @@ function resolveCodexTaskPolicyLaunchOptions(engine, options, deps) {
  * @param {object} deps resolveCodexTaskPolicyLaunchOptions と同じ（validateCodexLaunchOptions・cwd ほか）
  * @returns {{ok: true, codexPolicyContext: object} | {ok: false, status: number, error: string}}
  */
-function resolveCodexPolicyContext(options, deps) {
-  const { validateCodexLaunchOptions, ...prepareDeps } = deps;
-  const validated = validateCodexLaunchOptions('codex', options || {});
+async function resolveCodexPolicyContext(options, deps) {
+  const validated = deps.validateCodexLaunchOptions('codex', options || {});
   if (!validated.ok) return { ok: false, status: 400, error: validated.error };
   if (validated.codexPolicy === undefined) return { ok: false, status: 400, error: 'codexPolicy required' };
-  if (typeof prepareDeps.cwd !== 'string' || prepareDeps.cwd === '') return { ok: false, status: 400, error: 'codexPolicy requires cwd' };
-  const prepared = prepareCodexTaskPolicyHome({ preset: validated.codexPolicy.preset, sandboxMode: validated.sandboxMode, ...prepareDeps, dryRun: true });
-  if (!prepared.ok) return { ok: false, status: 503, error: prepared.error };
-  const githubReachability = typeof deps.checkGitHubReachability === 'function'
-    ? deps.checkGitHubReachability({ cwd: deps.cwd, homeDir: deps.homeDir, repo: prepared.repository })
-    : { ok: true };
-  return { ok: true, codexPolicyContext: { ...prepared.context, githubReachability } };
+  if (typeof deps.cwd !== 'string' || deps.cwd === '') return { ok: false, status: 400, error: 'codexPolicy requires cwd' };
+  const resolved = resolveCodexTaskPolicyLaunchOptions('codex', options, { ...deps, dryRun: true });
+  if (!resolved.ok) return { ...resolved, status: resolved.error.startsWith('codex task policy unavailable:') ? 503 : 400 };
+  if (!resolved.context) return { ok: false, status: 400, error: 'codexPolicy required' };
+  const { resolveGitHubReachability } = require('./githubReachability');
+  const githubReachability = await resolveGitHubReachability(resolved, deps.checkGitHubReachability);
+  return { ok: true, codexPolicyContext: { ...resolved.context, githubReachability } };
 }
 
 module.exports = {

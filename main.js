@@ -64,8 +64,8 @@ const {
   validateCodexLaunchOptions,
 } = require('./renderer/claudeModel');
 // 自動処理用 Codex のタスク用ポリシー（専用 CODEX_HOME の生成。issue #428）。
-const { resolveCodexTaskPolicyLaunchOptions } = require('./utils/codexTaskPolicy');
-const { checkGitHubReachability, resolveGitHubReachability, runGitHubReachabilityGate } = require('./utils/githubReachability');
+const { resolveCodexTaskPolicyLaunchOptions, resolveCodexPolicyContext } = require('./utils/codexTaskPolicy');
+const { checkGitHubReachability, runGitHubReachabilityGate } = require('./utils/githubReachability');
 const { scheduleLaunchCommand } = require('./utils/delayedLaunch');
 const {
   createAgentLifecycleStore,
@@ -2514,7 +2514,13 @@ function startHttpApi() {
     });
     req.on('end', () => {
       if (aborted) return;
-      onBody(Buffer.concat(chunks).toString('utf8'));
+      Promise.resolve(onBody(Buffer.concat(chunks).toString('utf8'))).catch((error) => {
+        console.error(`${LOG_PREFIX} HTTP request callback failed:`, error?.message || error);
+        if (!res.headersSent) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'internal server error' }));
+        }
+      });
     });
   };
 
@@ -3356,6 +3362,7 @@ function startHttpApi() {
         }
         // タスク用ポリシーを固定できないときは、ペインを作らず理由を返して止める
         // （承認方針だけを付けた Codex を個人設定のまま起動しない。issue #428）。
+        let policyCheck = null;
         if (requestedCodexPolicy !== undefined) {
           // 操作を拘束するリポジトリは作業フォルダから決めるため、ポリシー付きでは cwd を必須にする。
           if (typeof requestedCwd !== 'string') {
@@ -3363,7 +3370,7 @@ function startHttpApi() {
             res.end(JSON.stringify({ error: 'codexPolicy requires cwd' }));
             return;
           }
-          const policyCheck = resolveCodexLaunchOptions('codex', {
+          policyCheck = resolveCodexLaunchOptions('codex', {
             approvalPolicy: requestedApprovalPolicy,
             sandboxMode: requestedSandboxMode,
             codexPolicy: requestedCodexPolicy,
@@ -3373,42 +3380,51 @@ function startHttpApi() {
             res.end(JSON.stringify({ error: policyCheck.error }));
             return;
           }
-          const gate = await runGitHubReachabilityGate(policyCheck, { check: checkGitHubReachability, proceed: () => ({ ok: true }) });
-          if (!gate.ok) {
-            res.writeHead(503, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: gate.error, githubReachability: gate.githubReachability }));
-            return;
-          }
         }
-        const requestId = String(nextNewPaneRequestId++);
-        const timeoutId = setTimeout(() => {
-          if (pendingNewPaneCallbacks.has(requestId)) {
-            pendingNewPaneCallbacks.delete(requestId);
-            res.writeHead(504, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: 'timeout waiting for new pane' }));
-          }
-        }, 15000);
-        const resolve = (result) => {
-          clearTimeout(timeoutId);
-          if (result.error) {
-            res.writeHead(500, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: result.error }));
-          } else {
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ ok: true, termId: result.termId }));
-          }
+        // 到達確認の待機中に終了処理やウィンドウ破棄が始まる可能性があるため、後続処理の直前にも確認する。
+        const requestPane = () => {
+          if (ptyShutdownGate.isPaneCreationBlocked()) return { ok: false, status: 503, error: 'app is shutting down' };
+          if (!win || win.isDestroyed()) return { ok: false, status: 503, error: 'window not available' };
+          const requestId = String(nextNewPaneRequestId++);
+          const timeoutId = setTimeout(() => {
+            if (pendingNewPaneCallbacks.has(requestId)) {
+              pendingNewPaneCallbacks.delete(requestId);
+              res.writeHead(504, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'timeout waiting for new pane' }));
+            }
+          }, 15000);
+          const resolve = (result) => {
+            clearTimeout(timeoutId);
+            if (result.error) {
+              res.writeHead(500, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: result.error }));
+            } else {
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ ok: true, termId: result.termId }));
+            }
+          };
+          pendingNewPaneCallbacks.set(requestId, resolve);
+          const payload = { requestId, cwd: requestedCwd };
+          if (typeof requestedNoClaude === 'boolean') payload.noClaude = requestedNoClaude;
+          if (typeof requestedEngine === 'string') payload.engine = requestedEngine;
+          if (typeof requestedStashed === 'boolean') payload.stashed = requestedStashed;
+          if (requestedUseDefaults === true) payload.useDefaults = true;
+          if (typeof requestedModel === 'string') payload.model = requestedModel;
+          if (typeof requestedApprovalPolicy === 'string') payload.approvalPolicy = requestedApprovalPolicy;
+          if (typeof requestedSandboxMode === 'string') payload.sandboxMode = requestedSandboxMode;
+          if (requestedCodexPolicy !== undefined) payload.codexPolicy = requestedCodexPolicy;
+          win.webContents.send('terminal:request-new-pane', payload);
+          return { ok: true };
         };
-        pendingNewPaneCallbacks.set(requestId, resolve);
-        const payload = { requestId, cwd: requestedCwd };
-        if (typeof requestedNoClaude === 'boolean') payload.noClaude = requestedNoClaude;
-        if (typeof requestedEngine === 'string') payload.engine = requestedEngine;
-        if (typeof requestedStashed === 'boolean') payload.stashed = requestedStashed;
-        if (requestedUseDefaults === true) payload.useDefaults = true;
-        if (typeof requestedModel === 'string') payload.model = requestedModel;
-        if (typeof requestedApprovalPolicy === 'string') payload.approvalPolicy = requestedApprovalPolicy;
-        if (typeof requestedSandboxMode === 'string') payload.sandboxMode = requestedSandboxMode;
-        if (requestedCodexPolicy !== undefined) payload.codexPolicy = requestedCodexPolicy;
-        win.webContents.send('terminal:request-new-pane', payload);
+        const result = policyCheck
+          ? await runGitHubReachabilityGate(policyCheck, { check: checkGitHubReachability, proceed: requestPane })
+          : requestPane();
+        if (!result.ok) {
+          res.writeHead(result.status, { 'Content-Type': 'application/json' });
+          const response = { error: result.error };
+          if (result.githubReachability) response.githubReachability = result.githubReachability;
+          res.end(JSON.stringify(response));
+        }
       });
       return;
     }
@@ -3445,17 +3461,20 @@ function startHttpApi() {
           res.end(JSON.stringify({ error }));
           return;
         }
-        const policyCheck = resolveCodexLaunchOptions('codex', parsed, {
-          dryRun: true,
-          cwd: typeof parsed.cwd === 'string' && parsed.cwd.trim() ? parsed.cwd : undefined,
+        const result = await resolveCodexPolicyContext(parsed, {
+          cwd: parsed.cwd,
+          homeDir: os.homedir(),
+          validateCodexLaunchOptions,
+          dataDir: DATA_DIR,
+          handoffDir: CODEX_TASK_POLICY_HANDOFF_DIR,
+          personalCodexHome: process.env.CODEX_HOME || path.join(os.homedir(), '.codex'),
+          checkGitHubReachability,
         });
-        if (!policyCheck.ok) {
-          res.writeHead(503, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: policyCheck.error }));
+        if (!result.ok) {
+          res.writeHead(result.status, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: result.error }));
           return;
         }
-        const githubReachability = await resolveGitHubReachability(policyCheck, checkGitHubReachability);
-        const result = { ok: true, codexPolicyContext: { ...policyCheck.context, githubReachability } };
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, codexPolicyContext: result.codexPolicyContext }));
       });
@@ -3512,10 +3531,16 @@ function startHttpApi() {
             res.end(JSON.stringify({ error: policyCheck.error }));
             return;
           }
-          const gate = await runGitHubReachabilityGate(policyCheck, { check: checkGitHubReachability, proceed: () => ({ ok: true }) });
-          if (!gate.ok) {
+          const gate = await runGitHubReachabilityGate(policyCheck, { check: checkGitHubReachability, proceed: async () => {
+          // 到達確認後にだけ直列化・停止・再起動へ進む。待機中に終了状態が変わった場合も再確認する。
+          if (ptyShutdownGate.isPaneCreationBlocked()) {
             res.writeHead(503, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: gate.error, githubReachability: gate.githubReachability }));
+            res.end(JSON.stringify({ error: 'app is shutting down' }));
+            return;
+          }
+          if (!win || win.isDestroyed()) {
+            res.writeHead(503, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'window not available' }));
             return;
           }
 
@@ -3643,6 +3668,11 @@ function startHttpApi() {
             if (restartAgentOperations.get(request.termId) === operation) {
               restartAgentOperations.delete(request.termId);
             }
+          }
+          } });
+          if (gate && !gate.ok) {
+            res.writeHead(503, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: gate.error, githubReachability: gate.githubReachability }));
           }
         } catch (error) {
           console.error(`${LOG_PREFIX} restart-agent unexpected error:`, error?.message || error);

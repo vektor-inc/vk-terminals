@@ -131,6 +131,7 @@ function renderAgentsGuide(launcherPath, memberIoDir = null) {
     '',
     '- 入口は許可した操作・オプションだけを通す。許可外（reset・gh api・--repo・--body-file・--output など）は拒否される。',
     '- 入口は、引用符・`cd`・パイプ・リダイレクト・`2>&1` を付けず、上記の形で単独のコマンドとして呼ぶ。作業フォルダはシェルの `cd` ではなく、コマンド実行ツールの workdir で指定する。',
+    '- サンドボックスの中から呼ぶと、入口は何も実行せずに止まる（終了コード 78）。その場合は、上記「入口:」の形に直して呼び直す。',
     '- 入口はこのタスクのリポジトリ（起動時に確定したフォルダと GitHub のリポジトリ）と、その worktree（`git worktree add` で作った作業フォルダ）にだけ働く。別のリポジトリ・入れ子のリポジトリでは拒否される。gh には対象リポジトリが自動で付く。',
     '- `git commit` は作業ブランチ上でだけ通る。main / master・リモートの既定ブランチ・detached HEAD 上では拒否されるので、先に作業ブランチを作ってから commit する。',
     '- `git push <ブランチ名>` はブランチ名 1 つだけを受け付ける。送り先は入口が固定する（このタスクの GitHub リポジトリ）ので、リモート名・オプション・refspec は渡せない。新規作成と早送りだけが通り、強制上書き・削除・タグは使えない。main / master・リモートの既定ブランチ・detached HEAD・存在しないブランチへの push は拒否される。',
@@ -206,10 +207,11 @@ function renderGitConfig(identity) {
 /**
  * 信頼済みランチャー（sh スクリプト）の本文を組み立てる。
  * sandbox 内からの誤起動を止めてから `env -i` で環境を空にし、検証済みの絶対パスの Node と拘束の設定だけを渡す。
- * @param {{envPath: string, nodePath: string, opsScriptPath: string, launcherPath: string, binding: object}} params
+ * @param {{envPath: string, nodePath: string, opsScriptPath: string, launcherPath: string, memberEnabled: boolean, binding: object}} params
  * @returns {string}
  */
-function renderLauncher({ envPath, nodePath, opsScriptPath, launcherPath, binding }) {
+function renderLauncher({ envPath, nodePath, opsScriptPath, launcherPath, memberEnabled, binding }) {
+  const commandKinds = `<git|gh|prepare${memberEnabled ? '|member' : ''}>`;
   const assignments = [
     'PATH=/usr/bin:/bin',
     `VK_TASK_ROOT=${binding.root}`,
@@ -234,7 +236,7 @@ function renderLauncher({ envPath, nodePath, opsScriptPath, launcherPath, bindin
     '#!/bin/sh',
     '# VK Terminals が生成。起動のたびに作り直される。環境を空にして、検証済みの Node で固定の入口を実行する。',
     'if [ -n "${CODEX_SANDBOX:-}" ]; then',
-    `  echo 'サンドボックスの中で呼ばれました。${launcherPath} gh … の形で、引用符・cd・パイプを付けずに単独で呼び直してください。' >&2`,
+    `  echo 'サンドボックスの中から呼ばれたため、何も実行せずに止めました。${launcherPath} ${commandKinds} <操作> ... の形で、引用符・cd・パイプ・リダイレクト・2>&1 を付けず単独のコマンドとして、同じ内容を呼び直してください。' >&2`,
     `  exit ${SANDBOX_INVOCATION_EXIT_CODE}`,
     'fi',
     `exec '${envPath}' -i \\`,
@@ -811,7 +813,7 @@ function prepareCodexTaskPolicyHome(params) {
           'AGENTS.md': { content: template.renderAgentsGuide(launcherPath, memberEnabled ? memberIoDir : null), mode: 0o600 },
           [GIT_CONFIG_NAME]: { content: template.renderGitConfig(identity), mode: 0o600 },
           [OPS_SCRIPT_NAME]: { content: fsImpl.readFileSync(OPS_SOURCE_PATH, 'utf8'), mode: 0o400 },
-          [LAUNCHER_NAME]: { content: template.renderLauncher({ envPath, nodePath, opsScriptPath, launcherPath, binding }), mode: 0o500 },
+          [LAUNCHER_NAME]: { content: template.renderLauncher({ envPath, nodePath, opsScriptPath, launcherPath, memberEnabled, binding }), mode: 0o500 },
         },
         ghFiles: {
           [GH_CONFIG_FILE_NAME]: { content: renderGhConfig(), mode: 0o600 },

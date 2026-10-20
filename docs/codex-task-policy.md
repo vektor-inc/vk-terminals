@@ -189,6 +189,7 @@ issue #441 は「Codex のツール呼び出しのタイムアウトで打ち切
 
 - 管理者配布の設定（managed config / requirements）は Codex 自体が最優先で適用する。VK Terminals からは無効化できない（制限を強める方向にしか働かない）。
 - VK Terminals と vk-orchestrator が別マシンでも、専用フォルダは「実際に Codex を起動する側」の VK Terminals が生成するため、同じポリシーが適用される。
+- VK Terminals 本体の環境に `CODEX_SANDBOX` が残っていると（本体をサンドボックスの中のシェルから起動した場合など）、`shell_environment_policy.inherit = "all"` によってサンドボックスの外のコマンドにも渡る。その結果、入口を正しく呼んでも終了コード `78` で止まる。これは安全側の誤りなので、その場合は VK Terminals 本体をサンドボックスの外から起動し直す。
 - rules の `allow` が sandbox の外で動く挙動は Codex の仕様に依存する。この環境（Codex 0.163.0）で、引用符を付けず単独でランチャーを呼ぶ場合は `CODEX_SANDBOX` が未設定になり、引用符付き・`cd ... &&`・パイプ付きでは `CODEX_SANDBOX=seatbelt` になることを確認した。`codex execpolicy check` は `zsh -lc "…"` のスクリプトを内部のコマンドへ分解しないため、引用符などによる呼び方の不一致はこの確認では検出できない。入口の引数・拘束・環境の検証は `tests/codexTaskOps.test.js`、ランチャーを実際に起動する検証は `tests/codexTaskPolicy.test.js` で行う。
 - Git LFS のようにリポジトリ内の設定で外部コマンドを起動する filter を使うリポジトリでは、入口を使えない（起動自体は拒否される）。
 - 実行ファイルの探索先に含まれない場所（独自のインストール先）の `node` / `git` は、アプリ自身の `PATH` に絶対パスで含まれていて検証を通れば使える。通らなければ起動を拒否する。実際の GUI での標準工程の通しの確認は vk-orchestrator#592 の手順で行う。

@@ -394,6 +394,7 @@ test('生成: rules は信頼済みランチャーの実行だけを許可し、
     assert.equal(guide.includes(`'${path.join(home, 'vk-task-ops')}'`), false);
     assert.match(guide, /引用符・`cd`・パイプ・リダイレクト・`2>&1` を付けず/);
     assert.match(guide, /workdir で指定/);
+    assert.match(guide, /サンドボックスの中から呼ぶと、入口は何も実行せずに止まる（終了コード 78）。その場合は、上記「入口:」の形に直して呼び直す。/);
     assert.equal(guide.includes('node '), false);
     for (const operation of ORCHESTRATED_TASK_OPERATIONS) assert.ok(guide.includes(`\`${operation}\``), operation);
     assert.match(guide, /`gh issue create` は `--title <題> --body <本文>` が必須/);
@@ -472,9 +473,10 @@ test('ランチャー: sandbox の中から呼ぶと固有の終了コードと�
       cwd: sandbox.repo, env: { ...process.env, CODEX_SANDBOX: 'seatbelt' }, encoding: 'utf8',
     });
     assert.equal(blocked.status, 78);
-    assert.match(blocked.stderr, /サンドボックスの中で呼ばれました/);
-    assert.ok(blocked.stderr.includes(`${launcher} gh …`));
-    assert.match(blocked.stderr, /引用符・cd・パイプを付けずに単独で呼び直してください/);
+    assert.match(blocked.stderr, /サンドボックスの中から呼ばれたため、何も実行せずに止めました/);
+    assert.ok(blocked.stderr.includes(`${launcher} <git|gh|prepare|member> <操作> ...`));
+    assert.match(blocked.stderr, /引用符・cd・パイプ・リダイレクト・2>&1 を付けず単独のコマンドとして、同じ内容を呼び直してください/);
+    assert.equal(blocked.stderr.includes("'"), false);
 
     const allowedEnv = { ...process.env };
     delete allowedEnv.CODEX_SANDBOX;
@@ -1493,6 +1495,9 @@ test('生成: 子用 CODEX_HOME とランチャーが親と一緒に作られ、
     assert.equal(childGuide.includes('member start'), false);
     assert.equal(childGuide.includes('member status'), false);
     assert.ok(childGuide.includes(`${path.join(childHome, 'vk-task-ops')} <git|gh|prepare>`));
+    const childLauncher = fs.readFileSync(path.join(childHome, 'vk-task-ops'), 'utf8');
+    assert.ok(childLauncher.includes(`${path.join(childHome, 'vk-task-ops')} <git|gh|prepare> <操作> ...`));
+    assert.equal(childLauncher.includes('<git|gh|prepare|member>'), false);
 
     // 使われなければ、入出力フォルダも一緒に回収される。
     assert.equal(result.discard(), true);

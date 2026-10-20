@@ -1,6 +1,7 @@
 # Changelog
 
-- [ 不具合修正 ] 自動処理用 Codex が固定入口を sandbox 内から呼び GitHub 操作に失敗する問題を、確実に sandbox 外で呼ぶ案内と誤った呼び方の検出で修正し、固定入口を迂回する GitHub アプリ連携も無効化（[#449](https://github.com/vektor-inc/vk-terminals/issues/449)）
+- [ 仕様変更 ] 自動処理用 Codex の GitHub アプリ連携を無効化し、GitHub 操作は固定入口だけを通るように（[#449](https://github.com/vektor-inc/vk-terminals/issues/449)）
+- [ 不具合修正 ] 自動処理用 Codex が固定入口をサンドボックスの中から呼び、GitHub 操作に失敗する問題を、サンドボックスの外で呼ぶ案内と、誤った呼び方の検出で修正（[#449](https://github.com/vektor-inc/vk-terminals/issues/449)）
 
 ## 1.75.0
 

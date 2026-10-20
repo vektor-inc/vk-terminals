@@ -1780,7 +1780,7 @@ test('ランチャー: 親のランチャーは member start/status を通し、
 const { isWithinDirectory } = require('../utils/codexTaskOps');
 const { resolveCodexPolicyContext, buildCodexPolicyContext } = require('../utils/codexTaskPolicy');
 
-const CONTEXT_KEYS = ['effectiveWritableRoots', 'preset', 'sandboxMode', 'tmpdir', 'version'];
+const CONTEXT_KEYS = ['effectiveWritableRoots', 'githubReachability', 'preset', 'sandboxMode', 'tmpdir', 'version'];
 const CONTEXT_ROOT_KEYS = ['path', 'scope', 'source'];
 
 // 実際の config.toml の writable_roots（TOML の文字列配列）を取り出す。

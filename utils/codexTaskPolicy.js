@@ -756,7 +756,7 @@ function prepareCodexTaskPolicyHome(params) {
         if (ioBaseExists) verifyDirectory(fsImpl, ioBase, { uid, enforceOwnerOnly: true });
       }
       assertChainUnchanged(fsImpl, [...handoff.chain, ...data.chain, ...home.chain, ...toolChains]);
-      return { ok: true, home: null, tmpdir: parentTmpdir, context: buildContext(memberAllowedInDryRun), discard: () => false };
+      return { ok: true, home: null, tmpdir: parentTmpdir, repository: repository.repo, context: buildContext(memberAllowedInDryRun), discard: () => false };
     }
 
     const identity = readGitIdentity(spawnSync, gitPath, home.realPath);
@@ -835,7 +835,7 @@ function prepareCodexTaskPolicyHome(params) {
     if (memberIoDir !== null && fsImpl.readdirSync(memberIoDir).length !== 0) throw new PolicyError('policy home contains unexpected entries');
     assertChainUnchanged(fsImpl, [...handoff.chain, ...data.chain, ...home.chain, ...toolChains, ...(auth ? auth.chain : []), ...(ghHosts ? ghHosts.chain : [])]);
     const discardTarget = created;
-    return { ok: true, home: launchHome, tmpdir: parentTmpdir, context: buildContext(memberIoDir !== null), discard: () => removeCreatedLaunchHome(fsImpl, discardTarget.home, discardTarget, uid) };
+    return { ok: true, home: launchHome, tmpdir: parentTmpdir, repository: repository.repo, context: buildContext(memberIoDir !== null), discard: () => removeCreatedLaunchHome(fsImpl, discardTarget.home, discardTarget, uid) };
   } catch (error) {
     if (created !== null) removeCreatedLaunchHome(fsImpl, created.home, created, uid);
     const reason = error instanceof PolicyError || error instanceof TrustError ? error.message : (error && error.code ? error.code : 'filesystem error');
@@ -866,6 +866,13 @@ function resolveCodexTaskPolicyLaunchOptions(engine, options, deps) {
   if (validated.codexPolicy === undefined) return { ok: true, options: launchOptions, discard: NOT_CREATED };
   const prepared = prepareCodexTaskPolicyHome({ preset: validated.codexPolicy.preset, sandboxMode: validated.sandboxMode, ...prepareDeps });
   if (!prepared.ok) return prepared;
+  const githubReachability = typeof deps.checkGitHubReachability === 'function'
+    ? deps.checkGitHubReachability({ cwd: deps.cwd, homeDir: deps.homeDir, repo: prepared.repository })
+    : { ok: true };
+  if (!githubReachability.ok) {
+    prepared.discard();
+    return { ok: false, error: 'github unreachable', githubReachability };
+  }
   // dryRun（事前確認）では専用 CODEX_HOME が無い。起動には使えない値なので options へ載せない。
   const policyOptions = { ...launchOptions, codexPolicy: validated.codexPolicy };
   if (prepared.home !== null) {
@@ -890,7 +897,10 @@ function resolveCodexPolicyContext(options, deps) {
   if (typeof prepareDeps.cwd !== 'string' || prepareDeps.cwd === '') return { ok: false, status: 400, error: 'codexPolicy requires cwd' };
   const prepared = prepareCodexTaskPolicyHome({ preset: validated.codexPolicy.preset, sandboxMode: validated.sandboxMode, ...prepareDeps, dryRun: true });
   if (!prepared.ok) return { ok: false, status: 503, error: prepared.error };
-  return { ok: true, codexPolicyContext: prepared.context };
+  const githubReachability = typeof deps.checkGitHubReachability === 'function'
+    ? deps.checkGitHubReachability({ cwd: deps.cwd, homeDir: deps.homeDir, repo: prepared.repository })
+    : { ok: true };
+  return { ok: true, codexPolicyContext: { ...prepared.context, githubReachability } };
 }
 
 module.exports = {

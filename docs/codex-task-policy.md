@@ -162,7 +162,13 @@ issue #441 は「Codex のツール呼び出しのタイムアウトで打ち切
 
 `POST /api/codex-policy-context`（仕様の一覧は README）は、ペインを作らず AI も止めずに、実際の起動と同じ値（`codexPolicyContext`）だけを返す。
 
-- **API を分けた理由:** `POST /api/new-pane` / `POST /api/restart-agent` は知らない項目を黙って無視する。確認専用の指定（`dryRun` など）をそこへ足すと、旧版の VK Terminals に送ったとき、確認のつもりが本当にペインを作り、再起動では実行中の AI を止めてしまう。別の API なら旧版は `404` を返すだけなので、呼び出し側は「未対応」と安全に判断できる。実際の起動の応答（new-pane / restart-agent）には値を足さない。
+起動前には、個人の `GH_TOKEN` などを引き継がない固定環境と固定入口と同じ gh ログイン元を使い、拘束した GitHub リポジトリを `gh repo view` で読み取り確認する。上限は 10 秒で、`POST /api/new-pane` の renderer 待ち 15 秒より先に終わる。失敗は DNS・接続失敗の `unreachable`、ログイン無効の `auth_invalid`、時間切れ・GitHub 側 5xx・判別不能な一時失敗の `transient` に分類し、標準エラーの生の内容は API に返さない。
+
+- `POST /api/new-pane` と `POST /api/restart-agent` は、失敗時に `503` と `githubReachability` を返し、ペイン作成要求や AI の停止・起動へ進まない。
+- `POST /api/codex-policy-context` は失敗時も `200` のまま、`codexPolicyContext.githubReachability` に結果を返す。専用 `CODEX_HOME` は作らない。
+- `codexPolicy` の無い通常の Codex と Claude Code は確認対象外。
+
+- **API を分けた理由:** `POST /api/new-pane` / `POST /api/restart-agent` は知らない項目を黙って無視する。確認専用の指定（`dryRun` など）をそこへ足すと、旧版の VK Terminals に送ったとき、確認のつもりが本当にペインを作り、再起動では実行中の AI を止めてしまう。別の API なら旧版は `404` を返すだけなので、呼び出し側は「未対応」と安全に判断できる。実際の起動の成功応答には値を足さず、到達確認に失敗した `503` だけ `githubReachability` を返す。
 - **同じ関数から作る:** 値は `utils/codexTaskPolicy.js` の `buildCodexPolicyContext` が組み立てる。事前確認（`prepareCodexTaskPolicyHome` の `dryRun`）も実際の準備も、この1つの関数から作り、親へ固定して渡す `TMPDIR`（`resolveParentTmpdir`）とメンバー起動の可否（`memberAllowed`）は `dryRun` の判定より前で決める。そのため事前確認でも、`codex` が見つからない・`cwd` が書き込み先の配下にある配置では `member-io` の行が出ない。
 - **「実際の起動と同じ値」の定義:**
   - `tmpdir` は完全一致（実際の起動コマンドに入る `TMPDIR='…'` と同じ）。

@@ -65,6 +65,7 @@ const {
 } = require('./renderer/claudeModel');
 // 自動処理用 Codex のタスク用ポリシー（専用 CODEX_HOME の生成。issue #428）。
 const { resolveCodexTaskPolicyLaunchOptions, resolveCodexPolicyContext } = require('./utils/codexTaskPolicy');
+const { checkGitHubReachability } = require('./utils/githubReachability');
 const { scheduleLaunchCommand } = require('./utils/delayedLaunch');
 const {
   createAgentLifecycleStore,
@@ -206,6 +207,7 @@ function resolveCodexLaunchOptions(engine, options, { dryRun = false, cwd } = {}
     dataDir: DATA_DIR,
     handoffDir: CODEX_TASK_POLICY_HANDOFF_DIR,
     personalCodexHome: process.env.CODEX_HOME || path.join(os.homedir(), '.codex'),
+    checkGitHubReachability,
   });
 }
 const LOG_PREFIX = '[vk-terminals]';
@@ -3369,7 +3371,7 @@ function startHttpApi() {
           }, { dryRun: true, cwd: requestedCwd });
           if (!policyCheck.ok) {
             res.writeHead(503, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: policyCheck.error }));
+            res.end(JSON.stringify({ error: policyCheck.error, ...(policyCheck.githubReachability ? { githubReachability: policyCheck.githubReachability } : {}) }));
             return;
           }
         }
@@ -3438,6 +3440,7 @@ function startHttpApi() {
           dataDir: DATA_DIR,
           handoffDir: CODEX_TASK_POLICY_HANDOFF_DIR,
           personalCodexHome: process.env.CODEX_HOME || path.join(os.homedir(), '.codex'),
+          checkGitHubReachability,
         });
         if (!result.ok) {
           res.writeHead(result.status, { 'Content-Type': 'application/json' });
@@ -3497,7 +3500,7 @@ function startHttpApi() {
           const policyCheck = resolveCodexLaunchOptions(request.engine, request, { dryRun: true, cwd: request.cwd });
           if (!policyCheck.ok) {
             res.writeHead(503, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: policyCheck.error }));
+            res.end(JSON.stringify({ error: policyCheck.error, ...(policyCheck.githubReachability ? { githubReachability: policyCheck.githubReachability } : {}) }));
             return;
           }
 
@@ -3561,7 +3564,7 @@ function startHttpApi() {
           const launchResolution = resolveCodexLaunchOptions(request.engine, request, { cwd: request.cwd });
           if (!launchResolution.ok) {
             res.writeHead(503, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: launchResolution.error }));
+            res.end(JSON.stringify({ error: launchResolution.error, ...(launchResolution.githubReachability ? { githubReachability: launchResolution.githubReachability } : {}) }));
             return;
           }
           let launchHomeInUse = false;

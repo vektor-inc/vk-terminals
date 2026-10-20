@@ -386,3 +386,61 @@ test('LOW-G（未対応・既知事象の固定）: cd 行のエコー相当の�
   pty.emit(CLAUDE_CURRENT_TRUST_PROMPT);
   assert.deepEqual(pty.writes, ['\r']);
 });
+
+// ─── issue #448: 起動完了検出から3秒を超えて「制限付きで開く」画面が出るケース ───────────
+// 実機の Codex は "OpenAI Codex" バナーの描画と Folder access の描画が別になり、後者が
+// ready 検知から READY_GRACE_MS（3秒）を超えて出ることがある。
+
+const RESTRICTED_OPEN_PROMPT = 'Folder access\nConfig, hooks, and exec policies from untrusted folders stay disabled.\n› 1. Open restricted\n  2. Quit';
+
+test('issue #448 再起動経路: タスク用ポリシー付き Codex は ready 検知から3秒を超えた「制限付きで開く」画面にも1回だけ Enter を送る', () => {
+  const pty = createFakePty();
+  const clock = createFakeClock(0);
+  attachTrustAutoResponder(pty, { spawnTime: 0, engine: 'codex', taskPolicyLaunch: true, now: clock.now });
+
+  clock.advance(500);
+  pty.emit('OpenAI Codex (v0.0.0)');
+  clock.advance(6000); // READY_GRACE_MS（3000）超過・TRUST_WINDOW_MS（30000）以内
+  pty.emit(RESTRICTED_OPEN_PROMPT);
+  assert.deepEqual(pty.writes, ['\r']);
+
+  clock.advance(100);
+  pty.emit(RESTRICTED_OPEN_PROMPT);
+  assert.deepEqual(pty.writes, ['\r'], '2回目は送らない');
+});
+
+test('issue #448 再起動経路: タスク用ポリシーでない Codex は ready 検知から3秒を超えた「制限付きで開く」画面に Enter を送らない', () => {
+  const pty = createFakePty();
+  const clock = createFakeClock(0);
+  attachTrustAutoResponder(pty, { spawnTime: 0, engine: 'codex', now: clock.now });
+
+  clock.advance(500);
+  pty.emit('OpenAI Codex (v0.0.0)');
+  clock.advance(6000);
+  pty.emit(RESTRICTED_OPEN_PROMPT);
+  assert.deepEqual(pty.writes, []);
+});
+
+test('issue #448 再起動経路: タスク用ポリシー付きでも、信頼を与える画面は ready 検知から3秒を超えたら Enter を送らない', () => {
+  const pty = createFakePty();
+  const clock = createFakeClock(0);
+  attachTrustAutoResponder(pty, { spawnTime: 0, engine: 'codex', taskPolicyLaunch: true, now: clock.now });
+
+  clock.advance(500);
+  pty.emit('OpenAI Codex (v0.0.0)');
+  clock.advance(6000);
+  pty.emit(CODEX_CURRENT_TRUST_PROMPT);
+  assert.deepEqual(pty.writes, []);
+});
+
+test('issue #448 再起動経路: タスク用ポリシー付きでも、時間窓（30秒）を過ぎた「制限付きで開く」画面には Enter を送らない', () => {
+  const pty = createFakePty();
+  const clock = createFakeClock(0);
+  attachTrustAutoResponder(pty, { spawnTime: 0, engine: 'codex', taskPolicyLaunch: true, now: clock.now });
+
+  clock.advance(500);
+  pty.emit('OpenAI Codex (v0.0.0)');
+  clock.advance(31000);
+  pty.emit(RESTRICTED_OPEN_PROMPT);
+  assert.deepEqual(pty.writes, []);
+});

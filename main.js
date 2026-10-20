@@ -13,7 +13,7 @@ const { pathToFileURL } = require('url');
 const { stripAnsiForPattern } = require('./utils/stripAnsi');
 const {
   createTrustPromptGate,
-  isTrustPrompt,
+  isTaskPolicyCodexLaunch,
   TRUST_WINDOW_MS: DEFAULT_TRUST_WINDOW_MS,
   READY_GRACE_MS: DEFAULT_READY_GRACE_MS,
   resolvePositiveFiniteMs,
@@ -1915,6 +1915,8 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
   // 専用 CODEX_HOME を作った後で組み立て・PTY 作成が失敗したら、使われないフォルダを回収する。
   let launchCommand = null;
   let discardLaunchHome = () => false;
+  // タスク用ポリシー（専用 CODEX_HOME）で起動する Codex か。信頼確認の自動応答の判定に使う（issue #448）。
+  let taskPolicyLaunch = false;
   if (!noClaude) {
     const launchResolution = resolveCodexLaunchOptions(resolvedEngine, options, { cwd: resolvedCwd });
     if (!launchResolution.ok) {
@@ -1922,6 +1924,7 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
       throw new Error(launchResolution.error);
     }
     discardLaunchHome = launchResolution.discard;
+    taskPolicyLaunch = isTaskPolicyCodexLaunch(resolvedEngine, launchResolution.options);
     try {
       const built = buildEngineAwareLaunchCommand(resolvedEngine, options.model, launchResolution.options);
       if (built.modelIgnored) {
@@ -2001,6 +2004,7 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
       spawnTime,
       trustWindowMs: RESOLVED_TRUST_WINDOW_MS,
       readyGraceMs: RESOLVED_READY_GRACE_MS,
+      taskPolicyLaunch,
     });
 
     // 自動応答の窓が閉じ（経過時間超過、または ready 検知から猶予超過）、かつ
@@ -2071,7 +2075,7 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
       // （ペイン作成から TRUST_WINDOW_MS 以内 かつ ready 検知から READY_GRACE_MS 以内）の
       // 内側で、信頼確認の文脈があり、まだ発火していない場合のみ。文脈判定は
       // isTrustPrompt（issue #373）、時間・回数の判定は trustGate（issue #371）へ委譲する。
-      if (isTrustPrompt(buffer) && trustGate.canAutoRespond(now)) {
+      if (trustGate.canAutoRespondToPrompt(buffer, now)) {
         trustGate.markTrustHandled();
         buffer = '';
         console.log(`${LOG_PREFIX} trust prompt detected, sending Enter (terminal ${id})`);
@@ -2410,6 +2414,7 @@ async function restartAgentInTerminal(ptyProcess, request, launchOptions, lifecy
     engine: request.engine,
     trustWindowMs: RESOLVED_TRUST_WINDOW_MS,
     readyGraceMs: RESOLVED_READY_GRACE_MS,
+    taskPolicyLaunch: isTaskPolicyCodexLaunch(request.engine, launchOptions),
     isAlive: () => ptys.get(request.termId) === ptyProcess,
     log: (message) => console.log(`${LOG_PREFIX} ${message} (terminal ${request.termId})`),
   });

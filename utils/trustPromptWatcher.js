@@ -3,7 +3,6 @@
 const { stripAnsiForPattern } = require('./stripAnsi');
 const {
   createTrustPromptGate,
-  isTrustPrompt,
   TRUST_WINDOW_MS: DEFAULT_TRUST_WINDOW_MS,
   READY_GRACE_MS: DEFAULT_READY_GRACE_MS,
 } = require('./trustPromptGate');
@@ -66,6 +65,8 @@ function getReadyPatternForEngine(engine) {
  *   （既定 utils/trustPromptGate.js の TRUST_WINDOW_MS）。
  * @param {number} [options.readyGraceMs] - createTrustPromptGate へそのまま渡す
  *   （既定 utils/trustPromptGate.js の READY_GRACE_MS）。
+ * @param {boolean} [options.taskPolicyLaunch] - タスク用ポリシー付きの Codex か（issue #448。
+ *   trustPromptGate.js の isTaskPolicyCodexLaunch の結果を渡す。出力文字列からは推測しない）。
  * @param {() => boolean} [options.isAlive] - 自動 Enter 送信の直前に呼び、false の場合は
  *   write しない（対象の pty が既に入れ替わっている・終了している場合の保険）。
  *   既定は常に true。
@@ -97,12 +98,13 @@ function attachTrustAutoResponder(ptyProcess, options = {}) {
     engine,
     trustWindowMs = DEFAULT_TRUST_WINDOW_MS,
     readyGraceMs = DEFAULT_READY_GRACE_MS,
+    taskPolicyLaunch = false,
     isAlive = () => true,
     now = () => performance.now(),
     log = () => {},
   } = options;
 
-  const trustGate = createTrustPromptGate({ spawnTime, trustWindowMs, readyGraceMs });
+  const trustGate = createTrustPromptGate({ spawnTime, trustWindowMs, readyGraceMs, taskPolicyLaunch });
   const READY_PATTERN = getReadyPatternForEngine(engine);
 
   let buffer = '';
@@ -139,7 +141,7 @@ function attachTrustAutoResponder(ptyProcess, options = {}) {
     buffer = (buffer + stripped).slice(-4096);
     const nowValue = now();
 
-    if (isTrustPrompt(buffer) && trustGate.canAutoRespond(nowValue)) {
+    if (trustGate.canAutoRespondToPrompt(buffer, nowValue)) {
       trustGate.markTrustHandled();
       buffer = '';
       log('trust prompt detected after restart, sending Enter');

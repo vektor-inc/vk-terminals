@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 不具合修正 ] 自動処理用 Codex の起動完了表示から3秒を超えて `Folder access`（`Open restricted`）の確認画面が出ると、自動で確定されず利用者が Enter を押すまで作業が始まらなかった不具合を修正（信頼を与える画面への自動応答の条件は変更なし）（[#448](https://github.com/vektor-inc/vk-terminals/issues/448)）
+
 ## 1.75.0
 
 - [ 機能追加 ] 自動処理用 Codex を起動する前に、実際に書き込める範囲（作業フォルダ・`/tmp`・`TMPDIR`・引き継ぎ先・固定入口が書き込むリポジトリと Git 管理領域・メンバーの入出力フォルダ）を、ペインを作らず AI も止めずに確認できる `POST /api/codex-policy-context` を追加（旧版では `404` になり、何も起動しない）（[#446](https://github.com/vektor-inc/vk-terminals/issues/446)）

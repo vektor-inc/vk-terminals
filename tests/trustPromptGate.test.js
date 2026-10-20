@@ -399,3 +399,82 @@ test('resolvePositiveFiniteMs: READY_GRACE_MS 用途で、既定より大きい�
 test('resolvePositiveFiniteMs: max 未指定時は従来どおり上限なし（既存呼び出し元は非影響）', () => {
   assert.equal(resolvePositiveFiniteMs('999999999999', 30000), 999999999999);
 });
+
+// ─── issue #448: 「制限付きで開く」画面と信頼を与える画面の分離 ───────────────────────────
+
+const {
+  isTrustGrantPrompt,
+  isRestrictedOpenPrompt,
+  isTaskPolicyCodexLaunch,
+} = require('../utils/trustPromptGate');
+
+const RESTRICTED_OPEN_PROMPT_448 = 'Config, hooks, and exec policies from untrusted folders stay disabled.\n› 1. Open restricted\n  2. Quit';
+
+test('issue #448: 制限付きで開く画面と信頼を与える画面は別の判定になる', () => {
+  assert.equal(isRestrictedOpenPrompt(RESTRICTED_OPEN_PROMPT_448), true);
+  assert.equal(isTrustGrantPrompt(RESTRICTED_OPEN_PROMPT_448), false);
+  assert.equal(isTrustGrantPrompt(CODEX_CURRENT_TRUST_PROMPT), true);
+  assert.equal(isRestrictedOpenPrompt(CODEX_CURRENT_TRUST_PROMPT), false);
+  assert.equal(isTrustPrompt(RESTRICTED_OPEN_PROMPT_448), true);
+});
+
+test('issue #448: isTaskPolicyCodexLaunch は Codex かつ専用 CODEX_HOME がある起動オプションだけ true', () => {
+  assert.equal(isTaskPolicyCodexLaunch('codex', { codexPolicyHome: '/tmp/home' }), true);
+  assert.equal(isTaskPolicyCodexLaunch('codex', { approvalPolicy: 'never' }), false);
+  assert.equal(isTaskPolicyCodexLaunch('codex', { codexPolicyHome: '' }), false);
+  assert.equal(isTaskPolicyCodexLaunch('codex', undefined), false);
+  assert.equal(isTaskPolicyCodexLaunch('claude', { codexPolicyHome: '/tmp/home' }), false);
+});
+
+test('issue #448: タスク用ポリシー付きは ready 検知から3秒を超えた制限付き画面にも1回だけ応答する', () => {
+  const gate = createTrustPromptGate({ spawnTime: 0, taskPolicyLaunch: true });
+  gate.markReadyDetected(500);
+  const late = 500 + READY_GRACE_MS + 3000;
+  assert.equal(gate.canAutoRespondToPrompt(RESTRICTED_OPEN_PROMPT_448, late), true);
+  gate.markTrustHandled();
+  assert.equal(gate.canAutoRespondToPrompt(RESTRICTED_OPEN_PROMPT_448, late), false);
+});
+
+test('issue #448: タスク用ポリシーでないペインは ready 猶予後の制限付き画面に応答しない', () => {
+  const gate = createTrustPromptGate({ spawnTime: 0 });
+  gate.markReadyDetected(500);
+  assert.equal(gate.canAutoRespondToPrompt(RESTRICTED_OPEN_PROMPT_448, 500 + READY_GRACE_MS + 1), false);
+  // 猶予内は従来どおり応答する。
+  assert.equal(gate.canAutoRespondToPrompt(RESTRICTED_OPEN_PROMPT_448, 500 + READY_GRACE_MS - 1), true);
+});
+
+test('issue #448: 信頼を与える画面は、タスク用ポリシー付きでも猶予後は応答しない', () => {
+  const gate = createTrustPromptGate({ spawnTime: 0, taskPolicyLaunch: true });
+  gate.markReadyDetected(500);
+  assert.equal(gate.canAutoRespondToPrompt(CODEX_CURRENT_TRUST_PROMPT, 500 + READY_GRACE_MS + 1), false);
+  assert.equal(gate.canAutoRespondToPrompt(CLAUDE_CURRENT_TRUST_PROMPT, 500 + READY_GRACE_MS + 1), false);
+});
+
+test('issue #448: 猶予後の制限付き画面は選択肢（Open restricted）が無ければ応答しない', () => {
+  const gate = createTrustPromptGate({ spawnTime: 0, taskPolicyLaunch: true });
+  gate.markReadyDetected(500);
+  const sentenceOnly = 'Config, hooks, and exec policies from untrusted folders stay disabled.';
+  assert.equal(gate.canAutoRespondToPrompt(sentenceOnly, 500 + READY_GRACE_MS + 1), false);
+});
+
+test('issue #448: タスク用ポリシー付きでも時間窓（30秒）を過ぎたら応答せず、監視も終わる', () => {
+  const gate = createTrustPromptGate({ spawnTime: 0, taskPolicyLaunch: true });
+  gate.markReadyDetected(500);
+  assert.equal(gate.canAutoRespondToPrompt(RESTRICTED_OPEN_PROMPT_448, TRUST_WINDOW_MS + 1), false);
+  assert.equal(gate.shouldStopWatching(TRUST_WINDOW_MS + 1), true);
+});
+
+test('issue #448: タスク用ポリシー付きは猶予切れだけでは監視を止めず、通常ペインは止める', () => {
+  const policyGate = createTrustPromptGate({ spawnTime: 0, taskPolicyLaunch: true });
+  const normalGate = createTrustPromptGate({ spawnTime: 0 });
+  for (const gate of [policyGate, normalGate]) gate.markReadyDetected(500);
+  const afterGrace = 500 + READY_GRACE_MS + 1;
+  assert.equal(policyGate.shouldStopWatching(afterGrace), false);
+  assert.equal(normalGate.shouldStopWatching(afterGrace), true);
+  policyGate.markTrustHandled();
+  assert.equal(policyGate.shouldStopWatching(afterGrace), true);
+});
+
+test('issue #448: 環境変数での時間窓の上限（max）による制限は変わらない', () => {
+  assert.equal(resolvePositiveFiniteMs('999999', TRUST_WINDOW_MS, { max: TRUST_WINDOW_MS }), TRUST_WINDOW_MS);
+});

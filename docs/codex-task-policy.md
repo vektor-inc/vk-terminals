@@ -30,7 +30,7 @@ vk-orchestrator などが自動処理用の Codex を起動するとき、次の
 1. VK Terminals が起動のたびに、固定内容の専用 `CODEX_HOME`（`~/.vk-terminals/codex-task-policy/<preset>/<ランダム名>/`）を**新規に**作る（実装: `utils/codexTaskPolicy.js`）。前回の専用フォルダは使い回さない。
 2. その Codex の起動だけ、`CODEX_HOME='<専用フォルダ>' codex --no-daemon …` のように環境変数を前置する。ペインのシェルへ書き込む文字列は、固定の実行ファイル名と検証済みの許可値だけで組み立てる。
 3. 専用フォルダの中身は次の 10 個だけ（`codex` が見つかった場合。見つからなければ末尾の `member` / `member-runs` を除く 8 つ）。作った直後に一覧を検証し、これ以外があれば Codex を起動しない。
-   - `config.toml`: `sandbox_mode = "workspace-write"`、`network_access = false`、`web_search = "disabled"`、追加の書き込み先は会話整理の引き継ぎ先 `~/.claude/handoff` と、メンバー起動の入出力フォルダ（下記「メンバー起動」。`codex` が見つかった場合だけ）。拘束するリポジトリと作業フォルダ（実パス）は `[projects."<パス>"] trust_level = "untrusted"` で記録する（下記「リポジトリ側の `.codex` で広げられない」）。Codex が起動するコマンドへ `LD_*`・`DYLD_*`・`NODE_*`・`BASH_ENV`・`ENV`・`GIT_*`・`GH_*`・`GITHUB_*` の環境変数を渡さない設定（`shell_environment_policy.exclude`）も入る
+   - `config.toml`: `sandbox_mode = "workspace-write"`、`network_access = false`、`web_search = "disabled"`、`[features] apps = false`（GitHub 連携など、固定入口を通らないアプリ経由のツールを無効化）、追加の書き込み先は会話整理の引き継ぎ先 `~/.claude/handoff` と、メンバー起動の入出力フォルダ（下記「メンバー起動」。`codex` が見つかった場合だけ）。拘束するリポジトリと作業フォルダ（実パス）は `[projects."<パス>"] trust_level = "untrusted"` で記録する（下記「リポジトリ側の `.codex` で広げられない」）。Codex が起動するコマンドへ `LD_*`・`DYLD_*`・`NODE_*`・`BASH_ENV`・`ENV`・`GIT_*`・`GH_*`・`GITHUB_*` の環境変数を渡さない設定（`shell_environment_policy.exclude`）も入る
    - `rules/vk-terminals-task.rules`: 承認なしで実行してよいもの。信頼済みランチャー 1 つ（`<専用フォルダ>/vk-task-ops`）の実行だけ
    - `vk-task-ops`: 信頼済みランチャー（0500 の `sh` スクリプト）。下記
    - `vk-task-ops.js`: 承認なしの Git / GitHub 操作の入口（`utils/codexTaskOps.js` の複製。0400）
@@ -62,8 +62,9 @@ vk-orchestrator などが自動処理用の Codex を起動するとき、次の
 
 rules の `prefix_rule` は先頭の単語列しか指定できず、後ろに続く引数や実行時の環境を制限できない。`git diff` を許可すると `--output=<任意のファイル>` で任意の場所へ書き込め、`gh pr create` を許可すると暗黙の push が起きる。`node` を許可すると `NODE_OPTIONS` などの環境変数で検証の前に別のコードを実行できる。そのため `git` / `gh` / `node` 自体は rules で許可せず、**信頼済みランチャー 1 つだけ**を許可する。
 
-- 呼び方: `'<専用フォルダ>/vk-task-ops' <git|gh|prepare|member> <操作> …`（AGENTS.md に書いてある）
-- ランチャーは Node を起動する前に `env -i` で環境を空にし、起動時に確定した値（拘束するリポジトリ・git / gh / Node の絶対パス・固定した HOME）だけを渡して、絶対パスの Node で入口を実行する。ランチャーは起動ごとに専用フォルダへ書かれ、Codex からは書き換えられない（0500・所有者のみ）
+- 呼び方: `<専用フォルダ>/vk-task-ops <git|gh|prepare|member> <操作> …`（AGENTS.md に書いてある）。引用符・`cd`・パイプ・リダイレクト・`2>&1` を付けず、単独のコマンドとして呼ぶ。作業フォルダはコマンド実行ツールの workdir で指定する
+- ランチャーの絶対パスは、rules の先頭一致を確実に働かせるため、英数字と `/`・`.`・`_`・`-` だけを許可する。シェルで特別な意味を持ちうる文字を増やす必要が無いため、`+`・`@`・`:`・`,`・`=` なども許可しない。生成前の事前確認と実生成で検証し、満たさなければ `503` の拒否経路へ合流して Codex を起動しない
+- ランチャーは Node を起動する前、かつ `env -i` で環境を空にする前に `CODEX_SANDBOX` を確認する。空でなければ終了コード `78`（入口本体の成功 `0`・操作拒否 `2` と区別でき、呼び出し条件の不備を表す EX_CONFIG 相当）で止まり、実際の入口パスを含む呼び直し案内を標準エラーへ出す。未設定なら、起動時に確定した値（拘束するリポジトリ・git / gh / Node の絶対パス・固定した HOME）だけを `env -i` で渡して、絶対パスの Node で入口を実行する。ランチャーは起動ごとに専用フォルダへ書かれ、Codex からは書き換えられない（0500・所有者のみ）。`CODEX_SANDBOX_NETWORK_DISABLED=1` は sandbox の外にも付くため、内外の判定には使わない
 - 許可する操作: `git status` / `git diff` / `git log` / `git show` / `git add` / `git commit` / `git push <ブランチ名>`、`prepare worktree <base> <issue番号> <ブランチ> <worktree名>`、`member start …` / `member status <実行ID>`、`gh issue view` / `gh issue comment` / `gh pr view` / `gh pr create` / `gh pr comment` / `gh pr checks`
 - 引数の検証（`utils/codexTaskOps.js` の `parseTaskCommand`）:
   - オプションは操作ごとの許可リストだけ。未知のオプション（`--output`・`--ext-diff`・`--body-file`・`--repo`・`--web`・`--amend` など）は拒否
@@ -188,6 +189,6 @@ issue #441 は「Codex のツール呼び出しのタイムアウトで打ち切
 
 - 管理者配布の設定（managed config / requirements）は Codex 自体が最優先で適用する。VK Terminals からは無効化できない（制限を強める方向にしか働かない）。
 - VK Terminals と vk-orchestrator が別マシンでも、専用フォルダは「実際に Codex を起動する側」の VK Terminals が生成するため、同じポリシーが適用される。
-- rules の `allow` が sandbox の外で動く挙動は Codex の仕様に依存する。この環境（Codex 0.162.1）で `codex execpolicy check` により、ランチャーの実行だけが `allow` になり `git` / `gh` / `node` の直接実行は一致しないことを確認する（入口の引数・拘束・環境の検証は `tests/codexTaskOps.test.js`、ランチャーを実際に起動する検証は `tests/codexTaskPolicy.test.js`）。
+- rules の `allow` が sandbox の外で動く挙動は Codex の仕様に依存する。この環境（Codex 0.163.0）で、引用符を付けず単独でランチャーを呼ぶ場合は `CODEX_SANDBOX` が未設定になり、引用符付き・`cd ... &&`・パイプ付きでは `CODEX_SANDBOX=seatbelt` になることを確認した。`codex execpolicy check` は `zsh -lc "…"` のスクリプトを内部のコマンドへ分解しないため、引用符などによる呼び方の不一致はこの確認では検出できない。入口の引数・拘束・環境の検証は `tests/codexTaskOps.test.js`、ランチャーを実際に起動する検証は `tests/codexTaskPolicy.test.js` で行う。
 - Git LFS のようにリポジトリ内の設定で外部コマンドを起動する filter を使うリポジトリでは、入口を使えない（起動自体は拒否される）。
 - 実行ファイルの探索先に含まれない場所（独自のインストール先）の `node` / `git` は、アプリ自身の `PATH` に絶対パスで含まれていて検証を通れば使える。通らなければ起動を拒否する。実際の GUI での標準工程の通しの確認は vk-orchestrator#592 の手順で行う。

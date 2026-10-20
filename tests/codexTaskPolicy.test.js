@@ -223,6 +223,8 @@ test('生成: 個人設定が広くても継承せず、個人の config.toml �
     const config = fs.readFileSync(path.join(result.home, 'config.toml'), 'utf8');
     assert.match(config, /^sandbox_mode = "workspace-write"$/m);
     assert.match(config, /^network_access = false$/m);
+    assert.match(config, /^\[features\]\napps = false$/m);
+    assert.equal((config.match(/^\[features\]$/gm) || []).length, 1);
     // 書き込める場所は、引き継ぎ先と、メンバー起動の入出力フォルダ（この起動ぶんの専用フォルダ）だけ。
     const ioDir = path.join(sandbox.deps.dataDir, 'codex-task-io', path.basename(result.home));
     const expectedRoots = [sandbox.deps.handoffDir, ioDir].map((dir) => JSON.stringify(dir)).join(', ');
@@ -388,7 +390,10 @@ test('生成: rules は信頼済みランチャーの実行だけを許可し、
     // 入口は検証ロジック本体の複製で、案内（AGENTS.md）は入口と許可する操作だけを示す。
     assert.equal(fs.readFileSync(path.join(home, 'vk-task-ops.js'), 'utf8'), OPS_SOURCE);
     const guide = fs.readFileSync(path.join(home, 'AGENTS.md'), 'utf8');
-    assert.ok(guide.includes(`'${path.join(home, 'vk-task-ops')}' <git|gh|prepare|member>`));
+    assert.ok(guide.includes(`${path.join(home, 'vk-task-ops')} <git|gh|prepare|member>`));
+    assert.equal(guide.includes(`'${path.join(home, 'vk-task-ops')}'`), false);
+    assert.match(guide, /引用符・`cd`・パイプ・リダイレクト・`2>&1` を付けず/);
+    assert.match(guide, /workdir で指定/);
     assert.equal(guide.includes('node '), false);
     for (const operation of ORCHESTRATED_TASK_OPERATIONS) assert.ok(guide.includes(`\`${operation}\``), operation);
     assert.match(guide, /`gh issue create` は `--title <題> --body <本文>` が必須/);
@@ -455,6 +460,47 @@ test('ランチャー: 環境変数で Node 起動前にコードを差し込め
     assert.equal(fs.existsSync(path.join(sandbox.root, 'written')), false);
   } finally {
     sandbox.cleanup();
+  }
+});
+
+test('ランチャー: sandbox の中から呼ぶと固有の終了コードと呼び直し案内で止まり、外なら従来どおり動く', () => {
+  const sandbox = createSandbox();
+  try {
+    const { home } = prepare(sandbox);
+    const launcher = path.join(home, 'vk-task-ops');
+    const blocked = childProcess.spawnSync(launcher, ['git', 'status', '--short'], {
+      cwd: sandbox.repo, env: { ...process.env, CODEX_SANDBOX: 'seatbelt' }, encoding: 'utf8',
+    });
+    assert.equal(blocked.status, 78);
+    assert.match(blocked.stderr, /サンドボックスの中で呼ばれました/);
+    assert.ok(blocked.stderr.includes(`${launcher} gh …`));
+    assert.match(blocked.stderr, /引用符・cd・パイプを付けずに単独で呼び直してください/);
+
+    const allowedEnv = { ...process.env };
+    delete allowedEnv.CODEX_SANDBOX;
+    const allowed = childProcess.spawnSync(launcher, ['git', 'status', '--short'], {
+      cwd: sandbox.repo, env: allowedEnv, encoding: 'utf8',
+    });
+    assert.equal(allowed.status, 0, allowed.stderr);
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('生成: 入口パスに空白や引用符を含む場合は事前確認・本生成とも拒否する', () => {
+  for (const unsafeName of ['data with space', 'data\'quote']) {
+    const sandbox = createSandbox();
+    try {
+      const dataDir = path.join(sandbox.root, unsafeName);
+      const actual = prepare(sandbox, { dataDir });
+      assert.equal(actual.ok, false, unsafeName);
+      assert.match(actual.error, /unsafe directory path|launcher path contains unsafe characters/, unsafeName);
+      const dryRun = prepare(sandbox, { dataDir, dryRun: true });
+      assert.equal(dryRun.ok, false, unsafeName);
+      assert.match(dryRun.error, /unsafe directory path|launcher path contains unsafe characters/, unsafeName);
+    } finally {
+      sandbox.cleanup();
+    }
   }
 });
 
@@ -1433,6 +1479,10 @@ test('生成: 子用 CODEX_HOME とランチャーが親と一緒に作られ、
     assert.ok(parentConfig.split('\n').includes(rootsLine));
     assert.match(childConfig, /^sandbox_mode = "workspace-write"$/m);
     assert.match(childConfig, /^network_access = false$/m);
+    for (const config of [parentConfig, childConfig]) {
+      assert.match(config, /^\[features\]\napps = false$/m);
+      assert.equal((config.match(/^\[features\]$/gm) || []).length, 1);
+    }
 
     // 案内: 親には member の使い方と入出力フォルダ、子には member の案内が無い。
     const parentGuide = fs.readFileSync(path.join(parentHome, 'AGENTS.md'), 'utf8');
@@ -1442,7 +1492,7 @@ test('生成: 子用 CODEX_HOME とランチャーが親と一緒に作られ、
     assert.ok(parentGuide.includes(`\`${ioDir}\``));
     assert.equal(childGuide.includes('member start'), false);
     assert.equal(childGuide.includes('member status'), false);
-    assert.ok(childGuide.includes(`'${path.join(childHome, 'vk-task-ops')}' <git|gh|prepare>`));
+    assert.ok(childGuide.includes(`${path.join(childHome, 'vk-task-ops')} <git|gh|prepare>`));
 
     // 使われなければ、入出力フォルダも一緒に回収される。
     assert.equal(result.discard(), true);

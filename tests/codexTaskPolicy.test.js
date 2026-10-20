@@ -202,6 +202,12 @@ const HOME_ENTRIES = ['AGENTS.md', 'auth.json', 'config.toml', 'gh', 'gitconfig'
 const modeOf = (target) => fs.lstatSync(target).mode & 0o777;
 const prepare = (sandbox, extra = {}) => prepareCodexTaskPolicyHome({ preset: 'orchestrated-task', ...sandbox.deps, ...extra });
 const launchHomes = (sandbox) => (fs.existsSync(sandbox.policyBase) ? fs.readdirSync(sandbox.policyBase) : []);
+// ランチャー自体の検証では、テスト実行元の Codex sandbox を子プロセスへ引き継がない。
+const launcherEnv = (extra = {}) => {
+  const env = { ...process.env, ...extra };
+  delete env.CODEX_SANDBOX;
+  return env;
+};
 
 test('生成: 個人設定が広くても継承せず、個人の config.toml は変更しない', () => {
   const broadPersonalConfig = [
@@ -442,10 +448,10 @@ test('ランチャー: 環境変数で Node 起動前にコードを差し込め
     const marker = path.join(sandbox.root, 'preload-ran');
     const preload = path.join(sandbox.root, 'preload.js');
     fs.writeFileSync(preload, `require('fs').writeFileSync(${JSON.stringify(marker)}, 'ran');\n`);
-    const poisoned = {
-      ...process.env, NODE_OPTIONS: `--require ${preload}`, NODE_PATH: sandbox.root, GIT_DIR: '/nonexistent', GH_REPO: 'evil/repo',
+    const poisoned = launcherEnv({
+      NODE_OPTIONS: `--require ${preload}`, NODE_PATH: sandbox.root, GIT_DIR: '/nonexistent', GH_REPO: 'evil/repo',
       GIT_CONFIG_GLOBAL: path.join(sandbox.root, 'evil-gitconfig'), BASH_ENV: preload, ENV: preload,
-    };
+    });
     const ok = childProcess.spawnSync(launcher, ['git', 'status', '--short'], { cwd: sandbox.repo, env: poisoned, encoding: 'utf8' });
     assert.equal(ok.status, 0, ok.stderr);
     assert.equal(fs.existsSync(marker), false);
@@ -478,10 +484,8 @@ test('ランチャー: sandbox の中から呼ぶと固有の終了コードと�
     assert.match(blocked.stderr, /引用符・cd・パイプ・リダイレクト・2>&1 を付けず単独のコマンドとして、同じ内容を呼び直してください/);
     assert.equal(blocked.stderr.includes("'"), false);
 
-    const allowedEnv = { ...process.env };
-    delete allowedEnv.CODEX_SANDBOX;
     const allowed = childProcess.spawnSync(launcher, ['git', 'status', '--short'], {
-      cwd: sandbox.repo, env: allowedEnv, encoding: 'utf8',
+      cwd: sandbox.repo, env: launcherEnv(), encoding: 'utf8',
     });
     assert.equal(allowed.status, 0, allowed.stderr);
   } finally {
@@ -742,7 +746,7 @@ test('gh: 個人の ~/.config/gh を継承せず、専用フォルダには固�
     // ランチャー経由の gh は、専用フォルダだけを設定として見る。
     const launcher = path.join(result.home, 'vk-task-ops');
     const run = childProcess.spawnSync(launcher, ['gh', 'issue', 'view', '1'], {
-      cwd: sandbox.repo, env: { ...process.env, GH_CONFIG_DIR: personalGh, XDG_CONFIG_HOME: path.join(sandbox.homeDir, '.config') }, encoding: 'utf8',
+      cwd: sandbox.repo, env: launcherEnv({ GH_CONFIG_DIR: personalGh, XDG_CONFIG_HOME: path.join(sandbox.homeDir, '.config') }), encoding: 'utf8',
     });
     assert.equal(run.status, 0, run.stderr);
     const { env } = fakeGh.readRecord();
@@ -1293,7 +1297,7 @@ function createPushSandbox() {
   const launch = prepare(sandbox, { remoteBase, toolDirs: fakeGh.toolDirs });
   assert.equal(launch.ok, true, launch.error);
   const launcher = path.join(launch.home, 'vk-task-ops');
-  const ops = (cwd, ...args) => childProcess.spawnSync(launcher, args, { cwd, env: { ...process.env, GIT_DIR: '/nonexistent', NODE_OPTIONS: '' }, encoding: 'utf8' });
+  const ops = (cwd, ...args) => childProcess.spawnSync(launcher, args, { cwd, env: launcherEnv({ GIT_DIR: '/nonexistent', NODE_OPTIONS: '' }), encoding: 'utf8' });
   const remoteRef = (ref) => {
     try {
       return gitIn(bare, 'rev-parse', '--verify', '-q', ref);
@@ -1517,7 +1521,7 @@ test('親の範囲: 親の sandbox と作業フォルダがランチャーに固
       for (let i = 0; i < 100 && !fs.existsSync(path.join(home, 'member-runs', id, 'exit')); i += 1) await new Promise((resolve) => setTimeout(resolve, 100));
     };
     const startArgs = ['member', 'start', '--engine', 'codex', '--prompt', 'prompt.md', '--schema', 'schema.json', '--out', 'out.json'];
-    const ops = (launcher, cwd, ...args) => childProcess.spawnSync(launcher, args, { cwd, env: { ...process.env }, encoding: 'utf8' });
+    const ops = (launcher, cwd, ...args) => childProcess.spawnSync(launcher, args, { cwd, env: launcherEnv(), encoding: 'utf8' });
     const stage = (home) => {
       const ioDir = path.join(sandbox.deps.dataDir, 'codex-task-io', path.basename(home));
       fs.writeFileSync(path.join(ioDir, 'prompt.md'), 'work\n');
@@ -1591,7 +1595,7 @@ test('親の起動 cwd が親自身の書き込み先（引き継ぎ用フォル
       for (const name of ['VK_TASK_CODEX', 'VK_TASK_MEMBER_HOME', 'VK_TASK_MEMBER_IO', 'VK_TASK_MEMBER_RUNS', 'VK_TASK_PARENT_CWD', 'VK_TASK_PARENT_SANDBOX']) assert.equal(assignments[name], '', `${label}: ${name}`);
       assert.equal(fs.readFileSync(path.join(result.home, 'AGENTS.md'), 'utf8').includes('member start'), false, label);
       assert.ok(fs.readFileSync(path.join(result.home, 'config.toml'), 'utf8').split('\n').includes(`writable_roots = [${JSON.stringify(sandbox.deps.handoffDir)}]`), label);
-      const rejected = childProcess.spawnSync(path.join(result.home, 'vk-task-ops'), ['member', 'start', '--engine', 'codex', '--prompt', 'p.md', '--schema', 's.json', '--out', 'o.json'], { cwd, env: { ...process.env }, encoding: 'utf8' });
+      const rejected = childProcess.spawnSync(path.join(result.home, 'vk-task-ops'), ['member', 'start', '--engine', 'codex', '--prompt', 'p.md', '--schema', 's.json', '--out', 'o.json'], { cwd, env: launcherEnv(), encoding: 'utf8' });
       assert.equal(rejected.status, 2, label);
       assert.match(rejected.stderr, /member is not available from this launcher/, label);
       assert.equal(result.discard(), true);
@@ -1712,7 +1716,7 @@ test('ランチャー: 親のランチャーは member start/status を通し、
     const ioDir = path.join(sandbox.deps.dataDir, 'codex-task-io', path.basename(launch.home));
     const parentLauncher = path.join(launch.home, 'vk-task-ops');
     const childLauncher = path.join(launch.home, 'member', 'vk-task-ops');
-    const ops = (launcher, cwd, ...args) => childProcess.spawnSync(launcher, args, { cwd, env: { ...process.env, GIT_DIR: '/nonexistent', NODE_OPTIONS: '' }, encoding: 'utf8' });
+    const ops = (launcher, cwd, ...args) => childProcess.spawnSync(launcher, args, { cwd, env: launcherEnv({ GIT_DIR: '/nonexistent', NODE_OPTIONS: '' }), encoding: 'utf8' });
     fs.writeFileSync(path.join(ioDir, 'prompt.md'), 'work please\n');
     fs.writeFileSync(path.join(ioDir, 'schema.json'), '{"type":"object"}');
     const startArgs = ['member', 'start', '--engine', 'codex', '--prompt', 'prompt.md', '--schema', 'schema.json', '--out', 'out.json'];

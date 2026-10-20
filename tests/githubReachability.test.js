@@ -4,8 +4,31 @@ const assert = require('node:assert/strict');
 const {
   checkGitHubReachability,
   classifyGitHubReachabilityResult,
+  resolveE2EGitHubReachabilityOverride,
   runGitHubReachabilityGate,
 } = require('../utils/githubReachability');
+
+test('GitHub 到達確認の e2e 固定値: e2e の印がある非パッケージ版で完全一致した値だけを採用する', () => {
+  for (const value of ['ok', 'unreachable', 'auth_invalid', 'transient']) {
+    const result = resolveE2EGitHubReachabilityOverride({
+      VK_TERMINALS_E2E: '1',
+      VK_TERMINALS_E2E_GITHUB_REACHABILITY: value,
+    }, false);
+    assert.equal(result.ok, value === 'ok');
+    if (value !== 'ok') {
+      assert.equal(result.reason, value);
+      assert.equal(typeof result.message, 'string');
+    }
+  }
+  for (const [env, isPackaged] of [
+    [{ VK_TERMINALS_E2E_GITHUB_REACHABILITY: 'ok' }, false],
+    [{ VK_TERMINALS_E2E: '1', VK_TERMINALS_E2E_GITHUB_REACHABILITY: 'OK' }, false],
+    [{ VK_TERMINALS_E2E: '1', VK_TERMINALS_E2E_GITHUB_REACHABILITY: 'unreachable ' }, false],
+    [{ VK_TERMINALS_E2E: '1', VK_TERMINALS_E2E_GITHUB_REACHABILITY: 'ok' }, true],
+  ]) {
+    assert.equal(resolveE2EGitHubReachabilityOverride(env, isPackaged), null);
+  }
+});
 
 test('GitHub 到達確認: 検証済み gh と固定入口と同じ設定・環境で repo view を1回だけ非同期実行する', async () => {
   const calls = [];

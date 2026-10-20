@@ -1249,7 +1249,7 @@ test('terminal:create は PTY を作る前に起動オプションを解決し�
   assert.equal((handler.match(/discardLaunchHome\(\);/g) || []).length, 2);
 });
 
-test('restart-agent: 専用フォルダは待機・存在確認・世代確認の後、AI を止める前にだけ作り、使われなければ回収する', () => {
+test('restart-agent: 到達確認前と待機後に存在・世代を確認し、専用フォルダは正式確認後だけ作る', () => {
   const start = mainSource.indexOf("url.pathname === '/api/restart-agent'");
   const end = mainSource.indexOf("url.pathname === '/api/close-pane'");
   const handler = mainSource.slice(start, end);
@@ -1258,12 +1258,15 @@ test('restart-agent: 専用フォルダは待機・存在確認・世代確認�
     assert.ok(index >= 0, needle);
     return index;
   };
+  const earlyNotFoundAt = at('if (!ptys.has(request.termId))');
+  const earlyMismatchAt = at('generationBeforeReachabilityCheck');
   const dryRunAt = at('{ dryRun: true, cwd: request.cwd }');
   const waitAt = at('restartAgentOperations.get(request.termId)))');
-  const notFoundAt = at('not found');
-  const mismatchAt = at('generation mismatch');
+  const notFoundAt = handler.indexOf('if (!ptyProcess)', waitAt);
+  const mismatchAt = handler.indexOf('generation mismatch', waitAt);
   const prepareAt = at('resolveCodexLaunchOptions(request.engine, request, { cwd: request.cwd })');
   const operationAt = at('restartAgentInTerminal(ptyProcess');
+  assert.ok(earlyNotFoundAt < earlyMismatchAt && earlyMismatchAt < dryRunAt);
   assert.ok(dryRunAt < waitAt && waitAt < notFoundAt && notFoundAt < mismatchAt && mismatchAt < prepareAt && prepareAt < operationAt);
   // 本番の準備から operation の登録までに await を挟まない（直列化の隙間を作らない）。
   assert.equal(/await/.test(handler.slice(prepareAt, at('restartAgentOperations.set('))), false);
@@ -1999,7 +2002,7 @@ test('main.js: new-pane と restart-agent は同じ GitHub 到達確認ゲート
   const contextStart = mainSource.indexOf("url.pathname === '/api/codex-policy-context'");
   const restartStart = mainSource.indexOf("url.pathname === '/api/restart-agent'");
   const closePaneStart = mainSource.indexOf("url.pathname === '/api/close-pane'");
-  const gateCall = 'runGitHubReachabilityGate(policyCheck, { check: checkGitHubReachability, proceed:';
+  const gateCall = 'runGitHubReachabilityGate(policyCheck, { check: githubReachabilityCheck, proceed:';
   assert.equal(mainSource.slice(newPaneStart, contextStart).split(gateCall).length - 1, 1);
   assert.equal(mainSource.slice(restartStart, closePaneStart).split(gateCall).length - 1, 1);
 });

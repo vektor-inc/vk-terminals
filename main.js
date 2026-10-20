@@ -65,7 +65,11 @@ const {
 } = require('./renderer/claudeModel');
 // 自動処理用 Codex のタスク用ポリシー（専用 CODEX_HOME の生成。issue #428）。
 const { resolveCodexTaskPolicyLaunchOptions, resolveCodexPolicyContext } = require('./utils/codexTaskPolicy');
-const { checkGitHubReachability, runGitHubReachabilityGate } = require('./utils/githubReachability');
+const {
+  checkGitHubReachability,
+  resolveE2EGitHubReachabilityOverride,
+  runGitHubReachabilityGate,
+} = require('./utils/githubReachability');
 const { scheduleLaunchCommand } = require('./utils/delayedLaunch');
 const {
   createAgentLifecycleStore,
@@ -214,6 +218,15 @@ function createCodexPolicyDeps(overrides = {}) {
   };
 }
 const LOG_PREFIX = '[vk-terminals]';
+// 起動後に環境が変わっても判定を変えない。e2e の印がある非パッケージ版だけで有効になり、
+// 配布版から GitHub 到達確認を迂回できない条件は resolver 側で固定している。
+const E2E_GITHUB_REACHABILITY_OVERRIDE = resolveE2EGitHubReachabilityOverride(process.env, app.isPackaged);
+const githubReachabilityCheck = E2E_GITHUB_REACHABILITY_OVERRIDE === null
+  ? checkGitHubReachability
+  : async () => E2E_GITHUB_REACHABILITY_OVERRIDE;
+if (E2E_GITHUB_REACHABILITY_OVERRIDE !== null) {
+  console.warn(`${LOG_PREFIX} VK_TERMINALS_E2E_GITHUB_REACHABILITY override in effect: ${process.env.VK_TERMINALS_E2E_GITHUB_REACHABILITY}`);
+}
 // Web Push（issue #396）: VAPID 鍵・購読情報（スマートフォンごとの通知の宛先）の保存先。
 // apiToken（config.json の apiToken）と同様に DATA_DIR（~/.vk-terminals/）配下に置くが、
 // あえて config.json とは別ファイルにする。理由（PR 本文にも記載）:
@@ -3432,7 +3445,7 @@ function startHttpApi() {
           }
           return { ok: true };
         };
-        const result = await runGitHubReachabilityGate(policyCheck, { check: checkGitHubReachability, proceed: requestPane });
+        const result = await runGitHubReachabilityGate(policyCheck, { check: githubReachabilityCheck, proceed: requestPane });
         if (!result.ok) {
           res.writeHead(result.status, { 'Content-Type': 'application/json' });
           const response = { error: result.error };
@@ -3477,7 +3490,7 @@ function startHttpApi() {
         }
         const result = await resolveCodexPolicyContext(parsed, createCodexPolicyDeps({
           cwd: parsed.cwd,
-          checkGitHubReachability,
+          checkGitHubReachability: githubReachabilityCheck,
         }));
         if (!result.ok) {
           res.writeHead(result.status, { 'Content-Type': 'application/json' });
@@ -3530,6 +3543,20 @@ function startHttpApi() {
             return;
           }
 
+          // 存在しないペインや古い世代の要求では、外部通信を始めず従来の 404 / 409 を返す。
+          // 到達確認中や直列化待ちの間に状態は変わりうるため、待機後の正式な再確認も残す。
+          if (!ptys.has(request.termId)) {
+            res.writeHead(404, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: `terminal ${request.termId} not found` }));
+            return;
+          }
+          const generationBeforeReachabilityCheck = agentGenerations.get(request.termId);
+          if (request.expectedGeneration !== generationBeforeReachabilityCheck) {
+            res.writeHead(409, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'generation mismatch', currentGeneration: generationBeforeReachabilityCheck }));
+            return;
+          }
+
           // タスク用ポリシーを固定できないときは、実行中の AI を止める前に理由を返して終える
           // （承認方針だけを付けた Codex を個人設定のまま再起動しない。issue #428）。
           // ここは事前確認だけで専用 CODEX_HOME を作らない。待機・存在確認（404）・世代確認（409）を通る前に
@@ -3540,7 +3567,7 @@ function startHttpApi() {
             res.end(JSON.stringify({ error: policyCheck.error }));
             return;
           }
-          const gate = await runGitHubReachabilityGate(policyCheck, { check: checkGitHubReachability, proceed: async () => {
+          const gate = await runGitHubReachabilityGate(policyCheck, { check: githubReachabilityCheck, proceed: async () => {
             // 到達確認後にだけ直列化・停止・再起動へ進む。待機中に終了状態が変わった場合も再確認する。
             if (ptyShutdownGate.isPaneCreationBlocked()) {
               res.writeHead(503, { 'Content-Type': 'application/json' });

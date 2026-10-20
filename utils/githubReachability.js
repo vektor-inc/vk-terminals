@@ -6,6 +6,20 @@ const { buildChildEnvironment } = require('./codexTaskOps');
 
 const DEFAULT_TIMEOUT_MS = 10000;
 const LOGIN_MESSAGE = 'GitHub にログインしていません。ターミナルで gh auth login を実行してから、もう一度お試しください';
+const E2E_OVERRIDE_RESULTS = Object.freeze({
+  ok: Object.freeze({ ok: true }),
+  unreachable: Object.freeze({
+    ok: false,
+    reason: 'unreachable',
+    message: 'GitHub に接続できません。ネットワーク接続を確認してから、もう一度お試しください',
+  }),
+  auth_invalid: Object.freeze({ ok: false, reason: 'auth_invalid', message: LOGIN_MESSAGE }),
+  transient: Object.freeze({
+    ok: false,
+    reason: 'transient',
+    message: 'GitHub への接続を確認できませんでした。しばらく待ってもう一度試し、続く場合は VK Terminals を再起動してください',
+  }),
+});
 
 function failure(reason, message) {
   return { ok: false, reason, message };
@@ -13,6 +27,14 @@ function failure(reason, message) {
 
 function unknownFailure() {
   return failure('transient', 'GitHub への接続を確認できませんでした。しばらく待ってもう一度試し、続く場合は VK Terminals を再起動してください');
+}
+
+/** 開発中の e2e だけで、外部通信の結果を再現可能な固定値へ差し替える。 */
+function resolveE2EGitHubReachabilityOverride(env, isPackaged) {
+  // 配布版で環境変数から到達判定を迂回できないよう、e2e の印と非パッケージ版の両方を必須にする。
+  if (env?.VK_TERMINALS_E2E !== '1' || isPackaged !== false) return null;
+  const value = env.VK_TERMINALS_E2E_GITHUB_REACHABILITY;
+  return Object.hasOwn(E2E_OVERRIDE_RESULTS, value) ? E2E_OVERRIDE_RESULTS[value] : null;
 }
 
 /** GitHub 到達確認の失敗を、外部 API の固定した3分類へ変換する。 */
@@ -120,6 +142,7 @@ module.exports = {
   DEFAULT_TIMEOUT_MS,
   checkGitHubReachability,
   classifyGitHubReachabilityResult,
+  resolveE2EGitHubReachabilityOverride,
   resolveGitHubReachability,
   runGitHubReachabilityGate,
 };

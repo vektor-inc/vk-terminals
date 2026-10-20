@@ -169,6 +169,7 @@ issue #441 は「Codex のツール呼び出しのタイムアウトで打ち切
 - **分類:** `unreachable` は名前解決・接続失敗、`auth_invalid` はログイン無効・権限不足・SSO 未承認・対象を読めない 404・検証済み gh が無い場合、`transient` は時間切れ・GitHub 側の HTTP 5xx・レート制限・判別不能な失敗。標準エラーの生の内容は返さない。
 - **API ごとの挙動:** `POST /api/new-pane` と `POST /api/restart-agent` は dryRun 成功直後に1回だけ確認し、失敗時は `503` と `githubReachability` を返してペイン作成要求や AI の停止・起動へ進まない。`POST /api/codex-policy-context` は失敗時も `200` のまま `codexPolicyContext.githubReachability` に結果を返し、専用 `CODEX_HOME` は作らない。restart-agent は到達確認を直列化待ちの前に終え、本番準備は operation 登録まで同期のままにする。
 - `codexPolicy` の無い通常の Codex と Claude Code は確認対象外。
+- e2e では `VK_TERMINALS_E2E=1` の非パッケージ版に限り、`VK_TERMINALS_E2E_GITHUB_REACHABILITY` で到達確認結果を固定できる。配布版ではこの上書きを読まない。
 
 - **API を分けた理由:** `POST /api/new-pane` / `POST /api/restart-agent` は知らない項目を黙って無視する。確認専用の指定（`dryRun` など）をそこへ足すと、旧版の VK Terminals に送ったとき、確認のつもりが本当にペインを作り、再起動では実行中の AI を止めてしまう。別の API なら旧版は `404` を返すだけなので、呼び出し側は「未対応」と安全に判断できる。実際の起動の成功応答には値を足さず、到達確認に失敗した `503` だけ `githubReachability` を返す。
 - **同じ関数から作る:** 値は `utils/codexTaskPolicy.js` の `buildCodexPolicyContext` が組み立てる。事前確認（`prepareCodexTaskPolicyHome` の `dryRun`）も実際の準備も、この1つの関数から作り、親へ固定して渡す `TMPDIR`（`resolveParentTmpdir`）とメンバー起動の可否（`memberAllowed`）は `dryRun` の判定より前で決める。そのため事前確認でも、`codex` が見つからない・`cwd` が書き込み先の配下にある配置では `member-io` の行が出ない。

@@ -1,0 +1,148 @@
+const childProcess = require('child_process');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { buildChildEnvironment } = require('./codexTaskOps');
+
+const DEFAULT_TIMEOUT_MS = 10000;
+const LOGIN_MESSAGE = 'GitHub にログインしていません。ターミナルで gh auth login を実行してから、もう一度お試しください';
+const E2E_OVERRIDE_RESULTS = Object.freeze({
+  ok: Object.freeze({ ok: true }),
+  unreachable: Object.freeze({
+    ok: false,
+    reason: 'unreachable',
+    message: 'GitHub に接続できません。ネットワーク接続を確認してから、もう一度お試しください',
+  }),
+  auth_invalid: Object.freeze({ ok: false, reason: 'auth_invalid', message: LOGIN_MESSAGE }),
+  transient: Object.freeze({
+    ok: false,
+    reason: 'transient',
+    message: 'GitHub への接続を確認できませんでした。しばらく待ってもう一度試し、続く場合は VK Terminals を再起動してください',
+  }),
+});
+
+function failure(reason, message) {
+  return { ok: false, reason, message };
+}
+
+function unknownFailure() {
+  return failure('transient', 'GitHub への接続を確認できませんでした。しばらく待ってもう一度試し、続く場合は VK Terminals を再起動してください');
+}
+
+/** 開発中の e2e だけで、外部通信の結果を再現可能な固定値へ差し替える。 */
+function resolveE2EGitHubReachabilityOverride(env, isPackaged) {
+  // 配布版で環境変数から到達判定を迂回できないよう、e2e の印と非パッケージ版の両方を必須にする。
+  if (env?.VK_TERMINALS_E2E !== '1' || isPackaged !== false) return null;
+  const value = env.VK_TERMINALS_E2E_GITHUB_REACHABILITY;
+  return Object.hasOwn(E2E_OVERRIDE_RESULTS, value) ? E2E_OVERRIDE_RESULTS[value] : null;
+}
+
+/** GitHub 到達確認の失敗を、外部 API の固定した3分類へ変換する。 */
+function classifyGitHubReachabilityResult(result) {
+  if (result?.error?.code === 'ETIMEDOUT' || (result?.error?.killed === true && result?.error?.signal === 'SIGTERM')) {
+    return failure('transient', 'GitHub からの応答が時間内に得られませんでした。しばらく待ってから、もう一度お試しください');
+  }
+  const output = `${result?.stdout || ''}\n${result?.stderr || ''}`;
+  if (result?.error?.code === 4 || /gh auth login/i.test(output)) {
+    return failure('auth_invalid', LOGIN_MESSAGE);
+  }
+  if (/rate limit|secondary rate limit|api rate limit exceeded/i.test(output)) {
+    return failure('transient', 'GitHub の利用回数の上限に達しました。しばらく待ってから、もう一度お試しください');
+  }
+  if (/HTTP\s+5\d\d\b|service unavailable|bad gateway|gateway timeout|internal server error/i.test(output)) {
+    return failure('transient', 'GitHub 側で一時的な問題が起きています。しばらく待ってから、もう一度お試しください');
+  }
+  if (/error connecting to|could not resolve host|name or service not known|connection refused|failed to connect|network is unreachable|no route to host/i.test(output)) {
+    return failure('unreachable', 'GitHub に接続できません。ネットワーク接続を確認してから、もう一度お試しください');
+  }
+  if (/HTTP\s+(?:403|404)\b|could not resolve to a repository|resource not accessible|\b(?:SSO|SAML)\b/i.test(output)) {
+    return failure('auth_invalid', 'このリポジトリを GitHub のログインで読み取れません。アカウントのアクセス権を確認してから、もう一度お試しください');
+  }
+  if (/\b401\b|authentication failed|bad credentials|http basic: access denied|not logged in|authentication required/i.test(output)) {
+    return failure('auth_invalid', 'GitHub のログインが無効になっています。ターミナルで gh auth login を実行してから、もう一度お試しください');
+  }
+  return unknownFailure();
+}
+
+/** 到達確認専用の gh 環境を、固定入口と同じ最小構成で作る。 */
+function buildGitHubReachabilityEnvironment({ ghPath, homeDir, ghConfigDir }) {
+  return buildChildEnvironment({ git: ghPath, gh: ghPath, home: homeDir, gitConfig: '/dev/null', ghConfig: ghConfigDir });
+}
+
+/** 固定入口と同じ gh 設定を一時フォルダへ作り、対象リポジトリを非同期で読み取る。 */
+async function checkGitHubReachability({
+  cwd,
+  ghConfig,
+  ghPath,
+  ghHosts,
+  homeDir,
+  repo,
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+  execFile = childProcess.execFile,
+  fsImpl = fs,
+  tmpdir = os.tmpdir(),
+}) {
+  if (typeof ghPath !== 'string' || ghPath === '') {
+    return failure('auth_invalid', 'GitHub CLI（gh）が見つからないか、安全に使えません。gh をインストールし、ターミナルで gh auth login を実行してから、もう一度お試しください');
+  }
+  if (typeof ghHosts !== 'string') return failure('auth_invalid', LOGIN_MESSAGE);
+  let temporaryDir = null;
+  try {
+    // 認証情報以外の個人設定を持ち込まないよう、固定内容だけを新規作成する。
+    temporaryDir = fsImpl.mkdtempSync(path.join(tmpdir, 'vk-github-reachability-'));
+    fsImpl.chmodSync(temporaryDir, 0o700);
+    fsImpl.writeFileSync(path.join(temporaryDir, 'config.yml'), ghConfig, { mode: 0o600, flag: 'wx' });
+    fsImpl.writeFileSync(path.join(temporaryDir, 'hosts.yml'), ghHosts, { mode: 0o600, flag: 'wx' });
+    const env = buildGitHubReachabilityEnvironment({ ghPath, homeDir, ghConfigDir: temporaryDir });
+    const result = await new Promise((resolve) => {
+      execFile(ghPath, ['repo', 'view', '--json', 'name', '--', repo], {
+        cwd,
+        env,
+        encoding: 'utf8',
+        timeout: timeoutMs,
+        killSignal: 'SIGTERM',
+        maxBuffer: 64 * 1024,
+      }, (error, stdout, stderr) => resolve({ error, stdout, stderr }));
+    });
+    if (!result.error) return { ok: true };
+    return classifyGitHubReachabilityResult(result);
+  } catch (_error) {
+    return unknownFailure();
+  } finally {
+    if (temporaryDir !== null) {
+      try {
+        fsImpl.rmSync(temporaryDir, { recursive: true, force: true });
+      } catch (_error) {
+        // 回収失敗で HTTP 応答まで失わない。
+      }
+    }
+  }
+}
+
+/** 差し替えた確認関数の例外も HTTP 応答可能な結果へ変換する。 */
+async function resolveGitHubReachability(policyCheck, check = checkGitHubReachability) {
+  if (!policyCheck?.githubCheck) return { ok: true };
+  try {
+    return await check(policyCheck.githubCheck);
+  } catch (_error) {
+    return unknownFailure();
+  }
+}
+
+/** HTTP 入口で dryRun の直後に1回だけ確認し、後続処理を呼ぶか決める。 */
+async function runGitHubReachabilityGate(policyCheck, { check = checkGitHubReachability, proceed }) {
+  // ポリシーを持たない Codex と Claude Code は到達確認の対象外にする。
+  if (!policyCheck?.githubCheck) return proceed();
+  const githubReachability = await resolveGitHubReachability(policyCheck, check);
+  if (!githubReachability.ok) return { ok: false, status: 503, error: 'github unreachable', githubReachability };
+  return proceed(githubReachability);
+}
+
+module.exports = {
+  DEFAULT_TIMEOUT_MS,
+  checkGitHubReachability,
+  classifyGitHubReachabilityResult,
+  resolveE2EGitHubReachabilityOverride,
+  resolveGitHubReachability,
+  runGitHubReachabilityGate,
+};

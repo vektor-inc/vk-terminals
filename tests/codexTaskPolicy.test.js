@@ -1249,7 +1249,7 @@ test('terminal:create は PTY を作る前に起動オプションを解決し�
   assert.equal((handler.match(/discardLaunchHome\(\);/g) || []).length, 2);
 });
 
-test('restart-agent: 専用フォルダは待機・存在確認・世代確認の後、AI を止める前にだけ作り、使われなければ回収する', () => {
+test('restart-agent: 到達確認前と待機後に存在・世代を確認し、専用フォルダは正式確認後だけ作る', () => {
   const start = mainSource.indexOf("url.pathname === '/api/restart-agent'");
   const end = mainSource.indexOf("url.pathname === '/api/close-pane'");
   const handler = mainSource.slice(start, end);
@@ -1258,12 +1258,15 @@ test('restart-agent: 専用フォルダは待機・存在確認・世代確認�
     assert.ok(index >= 0, needle);
     return index;
   };
+  const earlyNotFoundAt = at('if (!ptys.has(request.termId))');
+  const earlyMismatchAt = at('generationBeforeReachabilityCheck');
   const dryRunAt = at('{ dryRun: true, cwd: request.cwd }');
   const waitAt = at('restartAgentOperations.get(request.termId)))');
-  const notFoundAt = at('not found');
-  const mismatchAt = at('generation mismatch');
+  const notFoundAt = handler.indexOf('if (!ptyProcess)', waitAt);
+  const mismatchAt = handler.indexOf('generation mismatch', waitAt);
   const prepareAt = at('resolveCodexLaunchOptions(request.engine, request, { cwd: request.cwd })');
   const operationAt = at('restartAgentInTerminal(ptyProcess');
+  assert.ok(earlyNotFoundAt < earlyMismatchAt && earlyMismatchAt < dryRunAt);
   assert.ok(dryRunAt < waitAt && waitAt < notFoundAt && notFoundAt < mismatchAt && mismatchAt < prepareAt && prepareAt < operationAt);
   // 本番の準備から operation の登録までに await を挟まない（直列化の隙間を作らない）。
   assert.equal(/await/.test(handler.slice(prepareAt, at('restartAgentOperations.set('))), false);
@@ -1780,7 +1783,7 @@ test('ランチャー: 親のランチャーは member start/status を通し、
 const { isWithinDirectory } = require('../utils/codexTaskOps');
 const { resolveCodexPolicyContext, buildCodexPolicyContext } = require('../utils/codexTaskPolicy');
 
-const CONTEXT_KEYS = ['effectiveWritableRoots', 'preset', 'sandboxMode', 'tmpdir', 'version'];
+const CONTEXT_KEYS = ['effectiveWritableRoots', 'githubReachability', 'preset', 'sandboxMode', 'tmpdir', 'version'];
 const CONTEXT_ROOT_KEYS = ['path', 'scope', 'source'];
 
 // 実際の config.toml の writable_roots（TOML の文字列配列）を取り出す。
@@ -1795,6 +1798,8 @@ const isCovered = (context, target) => context.effectiveWritableRoots.some((root
 // TMPDIR 用のリンクつき一時フォルダを足した試験環境。
 function createContextSandbox() {
   const sandbox = createSandbox();
+  // codex-policy-context の試験を実環境の GitHub 接続・ログイン状態から切り離す。
+  sandbox.deps.checkGitHubReachability = async () => ({ ok: true });
   const tmpRoot = path.join(sandbox.root, 'tmp-root');
   fs.mkdirSync(tmpRoot, { mode: 0o700 });
   const tmpLink = path.join(sandbox.root, 'tmp-link');
@@ -1881,17 +1886,17 @@ test('書き込める範囲: メンバー起動が無効な配置（codex が無
   }
 });
 
-test('書き込める範囲: read-only ではシェルの書き込み先が外れ、固定入口とメンバーの入出力フォルダだけが残る（Codex の sandbox の実挙動）', () => {
+test('書き込める範囲: read-only ではシェルの書き込み先が外れ、固定入口とメンバーの入出力フォルダだけが残る（Codex の sandbox の実挙動）', async () => {
   const { sandbox, tmpLink } = createContextSandbox();
   try {
     const deps = { ...sandbox.deps, tmpdir: tmpLink, tmpRoots: [tmpLink] };
-    const result = resolveCodexPolicyContext({ approvalPolicy: 'never', sandboxMode: 'read-only', codexPolicy: { preset: 'orchestrated-task' } }, deps);
+    const result = await resolveCodexPolicyContext({ approvalPolicy: 'never', sandboxMode: 'read-only', codexPolicy: { preset: 'orchestrated-task' } }, deps);
     assert.equal(result.ok, true, result.error);
     assert.equal(result.codexPolicyContext.sandboxMode, 'read-only');
     // シェルからの cwd・/tmp・TMPDIR・引き継ぎ先は外れる。固定入口（sandbox の外で動く）の書き込み先とメンバーの入出力フォルダは残る。
     assert.deepEqual(result.codexPolicyContext.effectiveWritableRoots.map((root) => root.source), ['task-ops-repository', 'task-ops-git-dir', 'member-io']);
     // sandboxMode 省略時は、実際の起動と同じ workspace-write。
-    const omitted = resolveCodexPolicyContext({ approvalPolicy: 'never', codexPolicy: { preset: 'orchestrated-task' } }, deps);
+    const omitted = await resolveCodexPolicyContext({ approvalPolicy: 'never', codexPolicy: { preset: 'orchestrated-task' } }, deps);
     assert.equal(omitted.codexPolicyContext.sandboxMode, 'workspace-write');
   } finally {
     sandbox.cleanup();
@@ -1922,10 +1927,10 @@ test('書き込める範囲: linked worktree から起動しても、固定入�
   }
 });
 
-test('書き込める範囲: 事前確認では専用フォルダ・入出力フォルダを作らない（引き継ぎ先とポリシー用の親フォルダは作る）', () => {
+test('書き込める範囲: 事前確認では専用フォルダ・入出力フォルダを作らない（引き継ぎ先とポリシー用の親フォルダは作る）', async () => {
   const { sandbox, tmpLink } = createContextSandbox();
   try {
-    const result = resolveCodexPolicyContext({ codexPolicy: { preset: 'orchestrated-task' } }, { ...sandbox.deps, tmpdir: tmpLink, tmpRoots: [tmpLink] });
+    const result = await resolveCodexPolicyContext({ codexPolicy: { preset: 'orchestrated-task' } }, { ...sandbox.deps, tmpdir: tmpLink, tmpRoots: [tmpLink] });
     assert.equal(result.ok, true, result.error);
     assert.deepEqual(fs.readdirSync(sandbox.policyBase), []);
     assert.equal(fs.existsSync(path.join(sandbox.deps.dataDir, 'codex-task-io')), false);
@@ -1935,11 +1940,11 @@ test('書き込める範囲: 事前確認では専用フォルダ・入出力フ
   }
 });
 
-test('書き込める範囲: 応答は許可した項目だけで、秘密情報（CODEX_HOME・認証・Git の名前とメール・環境変数・信頼しないプロジェクト）を含まない', () => {
+test('書き込める範囲: 応答は許可した項目だけで、秘密情報（CODEX_HOME・認証・Git の名前とメール・環境変数・信頼しないプロジェクト）を含まない', async () => {
   const { sandbox, tmpLink } = createContextSandbox();
   try {
     fs.writeFileSync(path.join(sandbox.homeDir, '.gitconfig'), '[user]\n\tname = Secret Name\n\temail = secret-mail@example.com\n');
-    const result = resolveCodexPolicyContext({ codexPolicy: { preset: 'orchestrated-task' } }, { ...sandbox.deps, tmpdir: tmpLink, tmpRoots: [tmpLink] });
+    const result = await resolveCodexPolicyContext({ codexPolicy: { preset: 'orchestrated-task' } }, { ...sandbox.deps, tmpdir: tmpLink, tmpRoots: [tmpLink] });
     assert.equal(result.ok, true, result.error);
     assert.deepEqual(Object.keys(result).sort(), ['codexPolicyContext', 'ok']);
     const context = result.codexPolicyContext;
@@ -1958,16 +1963,16 @@ test('書き込める範囲: 応答は許可した項目だけで、秘密情報
   }
 });
 
-test('書き込める範囲: codexPolicy 無し・cwd 無しは 400、ポリシーを用意できないときは 503', () => {
+test('書き込める範囲: codexPolicy 無し・cwd 無しは 400、ポリシーを用意できないときは 503', async () => {
   const { sandbox, tmpLink } = createContextSandbox();
   try {
     const deps = { ...sandbox.deps, tmpdir: tmpLink, tmpRoots: [tmpLink] };
-    assert.deepEqual(resolveCodexPolicyContext({}, deps), { ok: false, status: 400, error: 'codexPolicy required' });
-    assert.deepEqual(resolveCodexPolicyContext({ codexPolicy: { preset: 'full-access' } }, deps), { ok: false, status: 400, error: 'invalid codexPolicy preset' });
-    assert.deepEqual(resolveCodexPolicyContext({ codexPolicy: { preset: 'orchestrated-task' } }, { ...deps, cwd: undefined }), { ok: false, status: 400, error: 'codexPolicy requires cwd' });
+    assert.deepEqual(await resolveCodexPolicyContext({}, deps), { ok: false, status: 400, error: 'codexPolicy required' });
+    assert.deepEqual(await resolveCodexPolicyContext({ codexPolicy: { preset: 'full-access' } }, deps), { ok: false, status: 400, error: 'invalid codexPolicy preset' });
+    assert.deepEqual(await resolveCodexPolicyContext({ codexPolicy: { preset: 'orchestrated-task' } }, { ...deps, cwd: undefined }), { ok: false, status: 400, error: 'codexPolicy requires cwd' });
     const plain = path.join(sandbox.root, 'plain');
     fs.mkdirSync(plain);
-    const unavailable = resolveCodexPolicyContext({ codexPolicy: { preset: 'orchestrated-task' } }, { ...deps, cwd: plain });
+    const unavailable = await resolveCodexPolicyContext({ codexPolicy: { preset: 'orchestrated-task' } }, { ...deps, cwd: plain });
     assert.equal(unavailable.status, 503);
     assert.match(unavailable.error, /^codex task policy unavailable: /);
   } finally {
@@ -1981,7 +1986,7 @@ test('POST /api/codex-policy-context: Codex 以外は 400。ペインの作成�
   assert.ok(start > 0);
   assert.ok(handler.includes('isForbiddenOrigin(req)'));
   assert.ok(handler.includes("error: 'engine must be \"codex\"'"));
-  for (const forbidden of ['webContents.send', 'pendingNewPaneCallbacks', 'restartAgentInTerminal', 'ptyProcess', 'resolveCodexLaunchOptions', 'discard']) {
+  for (const forbidden of ['webContents.send', 'pendingNewPaneCallbacks', 'restartAgentInTerminal', 'ptyProcess', 'discard']) {
     assert.equal(handler.includes(forbidden), false, forbidden);
   }
   // 認証はルーティングの前段で全 API に掛かる（この API だけ外れない）。
@@ -1990,4 +1995,14 @@ test('POST /api/codex-policy-context: Codex 以外は 400。ペインの作成�
   const newPane = mainSource.slice(mainSource.indexOf("url.pathname === '/api/new-pane'"), start);
   assert.ok(newPane.includes('JSON.stringify({ ok: true, termId: result.termId })'));
   assert.equal(newPane.includes('codexPolicyContext'), false);
+});
+
+test('main.js: new-pane と restart-agent は同じ GitHub 到達確認ゲートを使う', () => {
+  const newPaneStart = mainSource.indexOf("url.pathname === '/api/new-pane'");
+  const contextStart = mainSource.indexOf("url.pathname === '/api/codex-policy-context'");
+  const restartStart = mainSource.indexOf("url.pathname === '/api/restart-agent'");
+  const closePaneStart = mainSource.indexOf("url.pathname === '/api/close-pane'");
+  const gateCall = 'runGitHubReachabilityGate(policyCheck, { check: githubReachabilityCheck, proceed:';
+  assert.equal(mainSource.slice(newPaneStart, contextStart).split(gateCall).length - 1, 1);
+  assert.equal(mainSource.slice(restartStart, closePaneStart).split(gateCall).length - 1, 1);
 });

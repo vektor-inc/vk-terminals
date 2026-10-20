@@ -38,6 +38,7 @@ const nodeFs = require('fs');
 const childProcess = require('child_process');
 const crypto = require('crypto');
 const path = require('path');
+const { resolveGitHubReachability } = require('./githubReachability');
 const {
   FIXED_GIT_PREFIX,
   TrustError,
@@ -742,6 +743,9 @@ function prepareCodexTaskPolicyHome(params) {
       memberIoBaseDir: memberAllowed ? ioBase : null,
       fs: fsImpl,
     });
+    // 到達確認も固定入口と同じ検証済みの gh とログイン元を使う。dryRun でも読み取りだけを行い、
+    // 専用 CODEX_HOME は作らない。
+    const ghHosts = ghPath === null ? null : resolveGhHostsSource(fsImpl, path.join(homeDir, '.config', 'gh'), uid);
     if (dryRun) {
       // 入出力フォルダの親は作らない（既にあれば検証する）。
       const memberAllowedInDryRun = isMemberAllowed();
@@ -755,13 +759,12 @@ function prepareCodexTaskPolicyHome(params) {
         }
         if (ioBaseExists) verifyDirectory(fsImpl, ioBase, { uid, enforceOwnerOnly: true });
       }
-      assertChainUnchanged(fsImpl, [...handoff.chain, ...data.chain, ...home.chain, ...toolChains]);
-      return { ok: true, home: null, tmpdir: parentTmpdir, context: buildContext(memberAllowedInDryRun), discard: () => false };
+      assertChainUnchanged(fsImpl, [...handoff.chain, ...data.chain, ...home.chain, ...toolChains, ...(ghHosts ? ghHosts.chain : [])]);
+      return { ok: true, home: null, homeDir: home.realPath, tmpdir: parentTmpdir, repository: repository.repo, context: buildContext(memberAllowedInDryRun), ghPath, ghConfig: renderGhConfig(), ghHosts: ghHosts?.content || null, discard: () => false };
     }
 
     const identity = readGitIdentity(spawnSync, gitPath, home.realPath);
     const auth = resolveAuthFile(fsImpl, path.join(personalCodexHome, 'auth.json'), uid, 'personal auth.json');
-    const ghHosts = ghPath === null ? null : resolveGhHostsSource(fsImpl, path.join(homeDir, '.config', 'gh'), uid);
 
     // 起動ごとに新規のフォルダを作る。既にある名前（リンクや事前配置を含む）は使わず失敗させる。
     const launchName = (params.randomId || (() => crypto.randomBytes(12).toString('hex')))();
@@ -835,7 +838,7 @@ function prepareCodexTaskPolicyHome(params) {
     if (memberIoDir !== null && fsImpl.readdirSync(memberIoDir).length !== 0) throw new PolicyError('policy home contains unexpected entries');
     assertChainUnchanged(fsImpl, [...handoff.chain, ...data.chain, ...home.chain, ...toolChains, ...(auth ? auth.chain : []), ...(ghHosts ? ghHosts.chain : [])]);
     const discardTarget = created;
-    return { ok: true, home: launchHome, tmpdir: parentTmpdir, context: buildContext(memberIoDir !== null), discard: () => removeCreatedLaunchHome(fsImpl, discardTarget.home, discardTarget, uid) };
+    return { ok: true, home: launchHome, tmpdir: parentTmpdir, repository: repository.repo, context: buildContext(memberIoDir !== null), ghPath, ghConfig: renderGhConfig(), ghHosts: ghHosts?.content || null, discard: () => removeCreatedLaunchHome(fsImpl, discardTarget.home, discardTarget, uid) };
   } catch (error) {
     if (created !== null) removeCreatedLaunchHome(fsImpl, created.home, created, uid);
     const reason = error instanceof PolicyError || error instanceof TrustError ? error.message : (error && error.code ? error.code : 'filesystem error');
@@ -872,7 +875,20 @@ function resolveCodexTaskPolicyLaunchOptions(engine, options, deps) {
     policyOptions.codexPolicyHome = prepared.home;
     policyOptions.codexPolicyTmpdir = prepared.tmpdir;
   }
-  return { ok: true, options: policyOptions, discard: prepared.discard };
+  return {
+    ok: true,
+    options: policyOptions,
+    discard: prepared.discard,
+    githubCheck: {
+      cwd: deps.cwd,
+      ghPath: prepared.ghPath,
+      ghConfig: prepared.ghConfig,
+      ghHosts: prepared.ghHosts,
+      homeDir: prepared.homeDir,
+      repo: prepared.repository,
+    },
+    ...(prepared.context ? { context: prepared.context } : {}),
+  };
 }
 
 /**
@@ -882,15 +898,13 @@ function resolveCodexTaskPolicyLaunchOptions(engine, options, deps) {
  * @param {object} deps resolveCodexTaskPolicyLaunchOptions と同じ（validateCodexLaunchOptions・cwd ほか）
  * @returns {{ok: true, codexPolicyContext: object} | {ok: false, status: number, error: string}}
  */
-function resolveCodexPolicyContext(options, deps) {
-  const { validateCodexLaunchOptions, ...prepareDeps } = deps;
-  const validated = validateCodexLaunchOptions('codex', options || {});
-  if (!validated.ok) return { ok: false, status: 400, error: validated.error };
-  if (validated.codexPolicy === undefined) return { ok: false, status: 400, error: 'codexPolicy required' };
-  if (typeof prepareDeps.cwd !== 'string' || prepareDeps.cwd === '') return { ok: false, status: 400, error: 'codexPolicy requires cwd' };
-  const prepared = prepareCodexTaskPolicyHome({ preset: validated.codexPolicy.preset, sandboxMode: validated.sandboxMode, ...prepareDeps, dryRun: true });
-  if (!prepared.ok) return { ok: false, status: 503, error: prepared.error };
-  return { ok: true, codexPolicyContext: prepared.context };
+async function resolveCodexPolicyContext(options, deps) {
+  if (options?.codexPolicy === undefined) return { ok: false, status: 400, error: 'codexPolicy required' };
+  if (typeof deps.cwd !== 'string' || deps.cwd === '') return { ok: false, status: 400, error: 'codexPolicy requires cwd' };
+  const resolved = resolveCodexTaskPolicyLaunchOptions('codex', options, { ...deps, dryRun: true });
+  if (!resolved.ok) return { ...resolved, status: resolved.error.startsWith('codex task policy unavailable:') ? 503 : 400 };
+  const githubReachability = await resolveGitHubReachability(resolved, deps.checkGitHubReachability);
+  return { ok: true, codexPolicyContext: { ...resolved.context, githubReachability } };
 }
 
 module.exports = {

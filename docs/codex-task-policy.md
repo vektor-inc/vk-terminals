@@ -113,7 +113,7 @@ rules の `prefix_rule` は先頭の単語列しか指定できず、後ろに�
   - 既知の制約: 同時に起動できる子の数に上限は設けていない（親の Codex も、許可された入口を何度でも呼べるのと同じ）。`member start` で作った実行の記録・入出力フォルダは、親の専用フォルダ・入出力フォルダとともに自動では消さない（「専用フォルダの回収と削除」と同じ理由）。親が worktree を `prepare worktree` で作ったあとに、子へその worktree で作業させる場合、Codex のプロジェクト信頼の記録（`trust_level = "untrusted"`）は親の起動時に確定した拘束ルートと作業フォルダにしか無い。worktree は Git の共通のリポジトリに属するので、Codex は拘束ルートの記録を引くはずだが、実機の長時間実行では未確認
 - テスト用の差し替え口: push 先・fetch 元の基点（`https://github.com`）は、ランチャーが固定する値 `VK_TASK_REMOTE_BASE` で決まる。本番のランチャーは常に `https://github.com` を書く。テストだけが `prepareCodexTaskPolicyHome` の `remoteBase` 引数（一時フォルダの絶対パス）で、bare リポジトリを remote にできる。`main.js` と API の入力（`codexPolicy`）からはこの値を渡せない（`codexPolicy` に未知のキーを入れると `400`）。入口は基点が `https://github.com` か安全な絶対パス以外なら拘束の設定を不正として拒否する
 - 入口を通さない `git` / `gh` は sandbox の制限内（ネットワーク無し）で動く。
-- 認証: gh は専用の `gh/hosts.yml`（個人の `hosts.yml` から引き継いだ github.com のユーザー名・トークン。キーチェーン保管のトークンはユーザー名から引ける）の認証だけを使う。`GH_TOKEN` などの環境変数のトークンは入口へ渡らない。トークンを引き継ぐ場合、専用フォルダ内にトークンの写しが残るため、専用フォルダを消すときに一緒に消える（権限は個人の `hosts.yml` と同じ 0600・所有者のみ）。入口は実行のたびに `gh/` が実体・自分の所有・他人の書き込み不可であることも確認する。
+- 認証: gh は専用の `gh/hosts.yml`（個人の `hosts.yml` から引き継いだ github.com のユーザー名・トークン）の認証だけを使う。ログイン情報は個人の `hosts.yml` に保存されている前提で、キーチェーンだけに保存している場合は「ログインしていません」と判定される（固定入口も同じ前提）。`GH_TOKEN` などの環境変数のトークンは入口へ渡らない。トークンを引き継ぐ場合、専用フォルダ内にトークンの写しが残るため、専用フォルダを消すときに一緒に消える（権限は個人の `hosts.yml` と同じ 0600・所有者のみ）。入口は実行のたびに `gh/` が実体・自分の所有・他人の書き込み不可であることも確認する。
 - 既知の制約: 設定の検査から実行までの間にリポジトリの設定が書き換えられる競合は、同じユーザーの別プロセスが書き換える場合に限り残る（実行のたびに検査し直すことで窓を狭めている）。Git LFS など、外部コマンドを起動する filter を使うリポジトリは、安全に固定できないため入口が拒否する。
 
 ### メンバー実行を start / status に分けた根拠
@@ -156,13 +156,22 @@ issue #441 は「Codex のツール呼び出しのタイムアウトで打ち切
 
 ### 事前確認と本番の食い違い
 
-`POST /api/new-pane` は受付時に事前確認（専用フォルダを作らず、親フォルダ・引き継ぎ先・実行ファイル・`cwd` のリポジトリの検証だけ。`dryRun`）を行い、その後ペイン作成（`terminal:create`）側で専用フォルダを作る。この間に状態が変わって本番だけが失敗しうるため、`terminal:create` は **PTY を作る前に**起動オプションの解決と起動コマンドの組み立てを済ませ、失敗したら例外で返す。失敗は renderer から HTTP の `500` として呼び出し元へ伝わり、Codex が起動していないペインを成功として返さない。PTY を作る前なので、破棄すべき PTY・管理状態は残らない。
+`POST /api/new-pane` は受付時に事前確認（専用フォルダを作らず、親フォルダ・引き継ぎ先・実行ファイル・`cwd` のリポジトリの検証だけ。`dryRun`）と GitHub 到達確認を行い、その後ペイン作成（`terminal:create`）側で専用フォルダを作る。到達確認は HTTP 入口で1回だけ行い、renderer の手動作成など HTTP を通らない `terminal:create` では行わない。本番準備は **PTY を作る前に**同期で済ませ、失敗したら例外で返す。
 
 ## 実際の起動と同じ値を返す事前確認（issue #446）
 
 `POST /api/codex-policy-context`（仕様の一覧は README）は、ペインを作らず AI も止めずに、実際の起動と同じ値（`codexPolicyContext`）だけを返す。
 
-- **API を分けた理由:** `POST /api/new-pane` / `POST /api/restart-agent` は知らない項目を黙って無視する。確認専用の指定（`dryRun` など）をそこへ足すと、旧版の VK Terminals に送ったとき、確認のつもりが本当にペインを作り、再起動では実行中の AI を止めてしまう。別の API なら旧版は `404` を返すだけなので、呼び出し側は「未対応」と安全に判断できる。実際の起動の応答（new-pane / restart-agent）には値を足さない。
+起動前の確認は次のとおり。
+
+- **何を確認するか:** 本番準備と同じ所有者・権限検証を通った GitHub CLI（gh）だけを使う。個人の `hosts.yml` から GitHub のログイン情報だけを固定入口と同じ方法で再生成し、0700 の一時フォルダ内の 0600 の設定から、拘束したリポジトリを `gh repo view --json name -- <owner/repo>` で読み取る。個人の `GH_TOKEN` や通信設定は引き継がず、確認後は一時フォルダを回収する。
+- **上限時間:** 10 秒。メインプロセスを止めない非同期実行で、`POST /api/new-pane` の renderer 待ち 15 秒より先に終える。
+- **分類:** `unreachable` は名前解決・接続失敗、`auth_invalid` はログイン無効・権限不足・SSO 未承認・対象を読めない 404・検証済み gh が無い場合、`transient` は時間切れ・GitHub 側の HTTP 5xx・レート制限・判別不能な失敗。標準エラーの生の内容は返さない。
+- **API ごとの挙動:** `POST /api/new-pane` と `POST /api/restart-agent` は dryRun 成功直後に1回だけ確認し、失敗時は `503` と `githubReachability` を返してペイン作成要求や AI の停止・起動へ進まない。`POST /api/codex-policy-context` は失敗時も `200` のまま `codexPolicyContext.githubReachability` に結果を返し、専用 `CODEX_HOME` は作らない。restart-agent は到達確認を直列化待ちの前に終え、本番準備は operation 登録まで同期のままにする。
+- `codexPolicy` の無い通常の Codex と Claude Code は確認対象外。
+- e2e では `VK_TERMINALS_E2E=1` の非パッケージ版に限り、`VK_TERMINALS_E2E_GITHUB_REACHABILITY` で到達確認結果を固定できる。配布版ではこの上書きを読まない。
+
+- **API を分けた理由:** `POST /api/new-pane` / `POST /api/restart-agent` は知らない項目を黙って無視する。確認専用の指定（`dryRun` など）をそこへ足すと、旧版の VK Terminals に送ったとき、確認のつもりが本当にペインを作り、再起動では実行中の AI を止めてしまう。別の API なら旧版は `404` を返すだけなので、呼び出し側は「未対応」と安全に判断できる。実際の起動の成功応答には値を足さず、到達確認に失敗した `503` だけ `githubReachability` を返す。
 - **同じ関数から作る:** 値は `utils/codexTaskPolicy.js` の `buildCodexPolicyContext` が組み立てる。事前確認（`prepareCodexTaskPolicyHome` の `dryRun`）も実際の準備も、この1つの関数から作り、親へ固定して渡す `TMPDIR`（`resolveParentTmpdir`）とメンバー起動の可否（`memberAllowed`）は `dryRun` の判定より前で決める。そのため事前確認でも、`codex` が見つからない・`cwd` が書き込み先の配下にある配置では `member-io` の行が出ない。
 - **「実際の起動と同じ値」の定義:**
   - `tmpdir` は完全一致（実際の起動コマンドに入る `TMPDIR='…'` と同じ）。

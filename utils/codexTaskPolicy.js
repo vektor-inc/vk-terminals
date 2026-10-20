@@ -69,6 +69,8 @@ const OPS_SOURCE_PATH = path.join(__dirname, 'codexTaskOps.js');
 const LAUNCH_HOME_NAME_PATTERN = /^[0-9a-f]{24}$/;
 const CODEX_POLICY_CONTEXT_VERSION = 1;
 const ENV_COMMAND_PATH = '/usr/bin/env';
+const SAFE_LAUNCHER_PATH_PATTERN = /^[A-Za-z0-9/._-]+$/;
+const SANDBOX_INVOCATION_EXIT_CODE = 78;
 const MAX_IDENTITY_LENGTH = 200;
 const MAX_GH_HOSTS_BYTES = 64 * 1024;
 const GH_USER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/;
@@ -123,11 +125,13 @@ function renderAgentsGuide(launcherPath, memberIoDir = null) {
     '# VK Terminals 自動処理用の操作入口',
     '',
     'Git / GitHub の次の操作は、承認なしで動く固定の入口 1 つだけを通して実行する。',
-    `入口: \`'${launcherPath}' <git|gh|prepare${memberIoDir === null ? '' : '|member'}> <操作> ...\``,
+    `入口: \`${launcherPath} <git|gh|prepare${memberIoDir === null ? '' : '|member'}> <操作> ...\``,
     '',
     ...operations.map((operation) => `- \`${operation}\``),
     '',
     '- 入口は許可した操作・オプションだけを通す。許可外（reset・gh api・--repo・--body-file・--output など）は拒否される。',
+    '- 入口は、引用符・`cd`・パイプ・リダイレクト・`2>&1` を付けず、上記の形で単独のコマンドとして呼ぶ。作業フォルダはシェルの `cd` ではなく、コマンド実行ツールの workdir で指定する。',
+    '- サンドボックスの中から呼ぶと、入口は何も実行せずに止まる（終了コード 78）。その場合は、上記「入口:」の形に直して呼び直す。',
     '- 入口はこのタスクのリポジトリ（起動時に確定したフォルダと GitHub のリポジトリ）と、その worktree（`git worktree add` で作った作業フォルダ）にだけ働く。別のリポジトリ・入れ子のリポジトリでは拒否される。gh には対象リポジトリが自動で付く。',
     '- `git commit` は作業ブランチ上でだけ通る。main / master・リモートの既定ブランチ・detached HEAD 上では拒否されるので、先に作業ブランチを作ってから commit する。',
     '- `git push <ブランチ名>` はブランチ名 1 つだけを受け付ける。送り先は入口が固定する（このタスクの GitHub リポジトリ）ので、リモート名・オプション・refspec は渡せない。新規作成と早送りだけが通り、強制上書き・削除・タグは使えない。main / master・リモートの既定ブランチ・detached HEAD・存在しないブランチへの push は拒否される。',
@@ -164,6 +168,9 @@ function renderConfigToml(handoffDir, untrustedProjectPaths, options = {}) {
     'sandbox_mode = "workspace-write"',
     'web_search = "disabled"',
     '',
+    '[features]',
+    'apps = false',
+    '',
     '[shell_environment_policy]',
     'inherit = "all"',
     'exclude = ["LD_*", "DYLD_*", "NODE_*", "BASH_ENV", "ENV", "GIT_*", "GH_*", "GITHUB_*"]',
@@ -199,11 +206,12 @@ function renderGitConfig(identity) {
 
 /**
  * 信頼済みランチャー（sh スクリプト）の本文を組み立てる。
- * Node を起動する前に `env -i` で環境を空にし、検証済みの絶対パスの Node と、拘束の設定だけを渡す。
- * @param {{envPath: string, nodePath: string, opsScriptPath: string, binding: object}} params
+ * sandbox 内からの誤起動を止めてから `env -i` で環境を空にし、検証済みの絶対パスの Node と拘束の設定だけを渡す。
+ * @param {{envPath: string, nodePath: string, opsScriptPath: string, launcherPath: string, memberEnabled: boolean, binding: object}} params
  * @returns {string}
  */
-function renderLauncher({ envPath, nodePath, opsScriptPath, binding }) {
+function renderLauncher({ envPath, nodePath, opsScriptPath, launcherPath, memberEnabled, binding }) {
+  const commandKinds = `<git|gh|prepare${memberEnabled ? '|member' : ''}>`;
   const assignments = [
     'PATH=/usr/bin:/bin',
     `VK_TASK_ROOT=${binding.root}`,
@@ -227,6 +235,10 @@ function renderLauncher({ envPath, nodePath, opsScriptPath, binding }) {
   return [
     '#!/bin/sh',
     '# VK Terminals が生成。起動のたびに作り直される。環境を空にして、検証済みの Node で固定の入口を実行する。',
+    'if [ -n "${CODEX_SANDBOX:-}" ]; then',
+    `  echo 'サンドボックスの中から呼ばれたため、何も実行せずに止めました。${launcherPath} ${commandKinds} <操作> ... の形で、引用符・cd・パイプ・リダイレクト・2>&1 を付けず単独のコマンドとして、同じ内容を呼び直してください。' >&2`,
+    `  exit ${SANDBOX_INVOCATION_EXIT_CODE}`,
+    'fi',
     `exec '${envPath}' -i \\`,
     ...assignments.map((assignment) => `  '${assignment}' \\`),
     `  '${nodePath}' '${opsScriptPath}' "$@"`,
@@ -700,6 +712,9 @@ function prepareCodexTaskPolicyHome(params) {
     // 親フォルダは 1 段ずつ作り、実体・所有者・0700 を毎回確認する（リンク経由で別の場所へ書かせない）。
     const baseDir = path.join(data.realPath, POLICY_DIR_NAME);
     const presetDir = path.join(baseDir, preset);
+    // rules の先頭一致を確実に働かせるため、入口はシェルで引用符を要しない保守的な文字だけに限定する。
+    const launcherPathShape = path.join(presetDir, 'a'.repeat(24), LAUNCHER_NAME);
+    if (!SAFE_LAUNCHER_PATH_PATTERN.test(launcherPathShape)) throw new PolicyError('launcher path contains unsafe characters');
     for (const dir of [baseDir, presetDir]) {
       ensureDirectory(fsImpl, dir);
       verifyDirectory(fsImpl, dir, { uid, enforceOwnerOnly: true });
@@ -784,6 +799,7 @@ function prepareCodexTaskPolicyHome(params) {
     //   member 操作を持たない（ランチャーの member 設定が空）、承認を求めない（approval_policy = "never"）、案内に member を書かない。
     const buildExpected = (targetHome, { child }) => {
       const launcherPath = path.join(targetHome, LAUNCHER_NAME);
+      if (!SAFE_LAUNCHER_PATH_PATTERN.test(launcherPath)) throw new PolicyError('launcher path contains unsafe characters');
       const opsScriptPath = path.join(targetHome, OPS_SCRIPT_NAME);
       const ghConfigDir = path.join(targetHome, GH_CONFIG_DIR_NAME);
       const memberEnabled = memberIoDir !== null && !child;
@@ -797,7 +813,7 @@ function prepareCodexTaskPolicyHome(params) {
           'AGENTS.md': { content: template.renderAgentsGuide(launcherPath, memberEnabled ? memberIoDir : null), mode: 0o600 },
           [GIT_CONFIG_NAME]: { content: template.renderGitConfig(identity), mode: 0o600 },
           [OPS_SCRIPT_NAME]: { content: fsImpl.readFileSync(OPS_SOURCE_PATH, 'utf8'), mode: 0o400 },
-          [LAUNCHER_NAME]: { content: template.renderLauncher({ envPath, nodePath, opsScriptPath, binding }), mode: 0o500 },
+          [LAUNCHER_NAME]: { content: template.renderLauncher({ envPath, nodePath, opsScriptPath, launcherPath, memberEnabled, binding }), mode: 0o500 },
         },
         ghFiles: {
           [GH_CONFIG_FILE_NAME]: { content: renderGhConfig(), mode: 0o600 },

@@ -202,6 +202,12 @@ const HOME_ENTRIES = ['AGENTS.md', 'auth.json', 'config.toml', 'gh', 'gitconfig'
 const modeOf = (target) => fs.lstatSync(target).mode & 0o777;
 const prepare = (sandbox, extra = {}) => prepareCodexTaskPolicyHome({ preset: 'orchestrated-task', ...sandbox.deps, ...extra });
 const launchHomes = (sandbox) => (fs.existsSync(sandbox.policyBase) ? fs.readdirSync(sandbox.policyBase) : []);
+// ランチャー自体の検証では、テスト実行元の Codex sandbox を子プロセスへ引き継がない。
+const launcherEnv = (extra = {}) => {
+  const env = { ...process.env, ...extra };
+  delete env.CODEX_SANDBOX;
+  return env;
+};
 
 test('生成: 個人設定が広くても継承せず、個人の config.toml は変更しない', () => {
   const broadPersonalConfig = [
@@ -223,6 +229,8 @@ test('生成: 個人設定が広くても継承せず、個人の config.toml �
     const config = fs.readFileSync(path.join(result.home, 'config.toml'), 'utf8');
     assert.match(config, /^sandbox_mode = "workspace-write"$/m);
     assert.match(config, /^network_access = false$/m);
+    assert.match(config, /^\[features\]\napps = false$/m);
+    assert.equal((config.match(/^\[features\]$/gm) || []).length, 1);
     // 書き込める場所は、引き継ぎ先と、メンバー起動の入出力フォルダ（この起動ぶんの専用フォルダ）だけ。
     const ioDir = path.join(sandbox.deps.dataDir, 'codex-task-io', path.basename(result.home));
     const expectedRoots = [sandbox.deps.handoffDir, ioDir].map((dir) => JSON.stringify(dir)).join(', ');
@@ -388,7 +396,11 @@ test('生成: rules は信頼済みランチャーの実行だけを許可し、
     // 入口は検証ロジック本体の複製で、案内（AGENTS.md）は入口と許可する操作だけを示す。
     assert.equal(fs.readFileSync(path.join(home, 'vk-task-ops.js'), 'utf8'), OPS_SOURCE);
     const guide = fs.readFileSync(path.join(home, 'AGENTS.md'), 'utf8');
-    assert.ok(guide.includes(`'${path.join(home, 'vk-task-ops')}' <git|gh|prepare|member>`));
+    assert.ok(guide.includes(`${path.join(home, 'vk-task-ops')} <git|gh|prepare|member>`));
+    assert.equal(guide.includes(`'${path.join(home, 'vk-task-ops')}'`), false);
+    assert.match(guide, /引用符・`cd`・パイプ・リダイレクト・`2>&1` を付けず/);
+    assert.match(guide, /workdir で指定/);
+    assert.match(guide, /サンドボックスの中から呼ぶと、入口は何も実行せずに止まる（終了コード 78）。その場合は、上記「入口:」の形に直して呼び直す。/);
     assert.equal(guide.includes('node '), false);
     for (const operation of ORCHESTRATED_TASK_OPERATIONS) assert.ok(guide.includes(`\`${operation}\``), operation);
     assert.match(guide, /`gh issue create` は `--title <題> --body <本文>` が必須/);
@@ -436,10 +448,10 @@ test('ランチャー: 環境変数で Node 起動前にコードを差し込め
     const marker = path.join(sandbox.root, 'preload-ran');
     const preload = path.join(sandbox.root, 'preload.js');
     fs.writeFileSync(preload, `require('fs').writeFileSync(${JSON.stringify(marker)}, 'ran');\n`);
-    const poisoned = {
-      ...process.env, NODE_OPTIONS: `--require ${preload}`, NODE_PATH: sandbox.root, GIT_DIR: '/nonexistent', GH_REPO: 'evil/repo',
+    const poisoned = launcherEnv({
+      NODE_OPTIONS: `--require ${preload}`, NODE_PATH: sandbox.root, GIT_DIR: '/nonexistent', GH_REPO: 'evil/repo',
       GIT_CONFIG_GLOBAL: path.join(sandbox.root, 'evil-gitconfig'), BASH_ENV: preload, ENV: preload,
-    };
+    });
     const ok = childProcess.spawnSync(launcher, ['git', 'status', '--short'], { cwd: sandbox.repo, env: poisoned, encoding: 'utf8' });
     assert.equal(ok.status, 0, ok.stderr);
     assert.equal(fs.existsSync(marker), false);
@@ -455,6 +467,46 @@ test('ランチャー: 環境変数で Node 起動前にコードを差し込め
     assert.equal(fs.existsSync(path.join(sandbox.root, 'written')), false);
   } finally {
     sandbox.cleanup();
+  }
+});
+
+test('ランチャー: sandbox の中から呼ぶと固有の終了コードと呼び直し案内で止まり、外なら従来どおり動く', () => {
+  const sandbox = createSandbox();
+  try {
+    const { home } = prepare(sandbox);
+    const launcher = path.join(home, 'vk-task-ops');
+    const blocked = childProcess.spawnSync(launcher, ['git', 'status', '--short'], {
+      cwd: sandbox.repo, env: { ...process.env, CODEX_SANDBOX: 'seatbelt' }, encoding: 'utf8',
+    });
+    assert.equal(blocked.status, 78);
+    assert.match(blocked.stderr, /サンドボックスの中から呼ばれたため、何も実行せずに止めました/);
+    assert.ok(blocked.stderr.includes(`${launcher} <git|gh|prepare|member> <操作> ...`));
+    assert.match(blocked.stderr, /引用符・cd・パイプ・リダイレクト・2>&1 を付けず単独のコマンドとして、同じ内容を呼び直してください/);
+    assert.equal(blocked.stderr.includes("'"), false);
+
+    const allowed = childProcess.spawnSync(launcher, ['git', 'status', '--short'], {
+      cwd: sandbox.repo, env: launcherEnv(), encoding: 'utf8',
+    });
+    assert.equal(allowed.status, 0, allowed.stderr);
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('生成: 入口パスに空白や引用符を含む場合は事前確認・本生成とも拒否する', () => {
+  for (const unsafeName of ['data with space', 'data\'quote']) {
+    const sandbox = createSandbox();
+    try {
+      const dataDir = path.join(sandbox.root, unsafeName);
+      const actual = prepare(sandbox, { dataDir });
+      assert.equal(actual.ok, false, unsafeName);
+      assert.match(actual.error, /unsafe directory path|launcher path contains unsafe characters/, unsafeName);
+      const dryRun = prepare(sandbox, { dataDir, dryRun: true });
+      assert.equal(dryRun.ok, false, unsafeName);
+      assert.match(dryRun.error, /unsafe directory path|launcher path contains unsafe characters/, unsafeName);
+    } finally {
+      sandbox.cleanup();
+    }
   }
 });
 
@@ -694,7 +746,7 @@ test('gh: 個人の ~/.config/gh を継承せず、専用フォルダには固�
     // ランチャー経由の gh は、専用フォルダだけを設定として見る。
     const launcher = path.join(result.home, 'vk-task-ops');
     const run = childProcess.spawnSync(launcher, ['gh', 'issue', 'view', '1'], {
-      cwd: sandbox.repo, env: { ...process.env, GH_CONFIG_DIR: personalGh, XDG_CONFIG_HOME: path.join(sandbox.homeDir, '.config') }, encoding: 'utf8',
+      cwd: sandbox.repo, env: launcherEnv({ GH_CONFIG_DIR: personalGh, XDG_CONFIG_HOME: path.join(sandbox.homeDir, '.config') }), encoding: 'utf8',
     });
     assert.equal(run.status, 0, run.stderr);
     const { env } = fakeGh.readRecord();
@@ -1245,7 +1297,7 @@ function createPushSandbox() {
   const launch = prepare(sandbox, { remoteBase, toolDirs: fakeGh.toolDirs });
   assert.equal(launch.ok, true, launch.error);
   const launcher = path.join(launch.home, 'vk-task-ops');
-  const ops = (cwd, ...args) => childProcess.spawnSync(launcher, args, { cwd, env: { ...process.env, GIT_DIR: '/nonexistent', NODE_OPTIONS: '' }, encoding: 'utf8' });
+  const ops = (cwd, ...args) => childProcess.spawnSync(launcher, args, { cwd, env: launcherEnv({ GIT_DIR: '/nonexistent', NODE_OPTIONS: '' }), encoding: 'utf8' });
   const remoteRef = (ref) => {
     try {
       return gitIn(bare, 'rev-parse', '--verify', '-q', ref);
@@ -1433,6 +1485,10 @@ test('生成: 子用 CODEX_HOME とランチャーが親と一緒に作られ、
     assert.ok(parentConfig.split('\n').includes(rootsLine));
     assert.match(childConfig, /^sandbox_mode = "workspace-write"$/m);
     assert.match(childConfig, /^network_access = false$/m);
+    for (const config of [parentConfig, childConfig]) {
+      assert.match(config, /^\[features\]\napps = false$/m);
+      assert.equal((config.match(/^\[features\]$/gm) || []).length, 1);
+    }
 
     // 案内: 親には member の使い方と入出力フォルダ、子には member の案内が無い。
     const parentGuide = fs.readFileSync(path.join(parentHome, 'AGENTS.md'), 'utf8');
@@ -1442,7 +1498,10 @@ test('生成: 子用 CODEX_HOME とランチャーが親と一緒に作られ、
     assert.ok(parentGuide.includes(`\`${ioDir}\``));
     assert.equal(childGuide.includes('member start'), false);
     assert.equal(childGuide.includes('member status'), false);
-    assert.ok(childGuide.includes(`'${path.join(childHome, 'vk-task-ops')}' <git|gh|prepare>`));
+    assert.ok(childGuide.includes(`${path.join(childHome, 'vk-task-ops')} <git|gh|prepare>`));
+    const childLauncher = fs.readFileSync(path.join(childHome, 'vk-task-ops'), 'utf8');
+    assert.ok(childLauncher.includes(`${path.join(childHome, 'vk-task-ops')} <git|gh|prepare> <操作> ...`));
+    assert.equal(childLauncher.includes('<git|gh|prepare|member>'), false);
 
     // 使われなければ、入出力フォルダも一緒に回収される。
     assert.equal(result.discard(), true);
@@ -1462,7 +1521,7 @@ test('親の範囲: 親の sandbox と作業フォルダがランチャーに固
       for (let i = 0; i < 100 && !fs.existsSync(path.join(home, 'member-runs', id, 'exit')); i += 1) await new Promise((resolve) => setTimeout(resolve, 100));
     };
     const startArgs = ['member', 'start', '--engine', 'codex', '--prompt', 'prompt.md', '--schema', 'schema.json', '--out', 'out.json'];
-    const ops = (launcher, cwd, ...args) => childProcess.spawnSync(launcher, args, { cwd, env: { ...process.env }, encoding: 'utf8' });
+    const ops = (launcher, cwd, ...args) => childProcess.spawnSync(launcher, args, { cwd, env: launcherEnv(), encoding: 'utf8' });
     const stage = (home) => {
       const ioDir = path.join(sandbox.deps.dataDir, 'codex-task-io', path.basename(home));
       fs.writeFileSync(path.join(ioDir, 'prompt.md'), 'work\n');
@@ -1536,7 +1595,7 @@ test('親の起動 cwd が親自身の書き込み先（引き継ぎ用フォル
       for (const name of ['VK_TASK_CODEX', 'VK_TASK_MEMBER_HOME', 'VK_TASK_MEMBER_IO', 'VK_TASK_MEMBER_RUNS', 'VK_TASK_PARENT_CWD', 'VK_TASK_PARENT_SANDBOX']) assert.equal(assignments[name], '', `${label}: ${name}`);
       assert.equal(fs.readFileSync(path.join(result.home, 'AGENTS.md'), 'utf8').includes('member start'), false, label);
       assert.ok(fs.readFileSync(path.join(result.home, 'config.toml'), 'utf8').split('\n').includes(`writable_roots = [${JSON.stringify(sandbox.deps.handoffDir)}]`), label);
-      const rejected = childProcess.spawnSync(path.join(result.home, 'vk-task-ops'), ['member', 'start', '--engine', 'codex', '--prompt', 'p.md', '--schema', 's.json', '--out', 'o.json'], { cwd, env: { ...process.env }, encoding: 'utf8' });
+      const rejected = childProcess.spawnSync(path.join(result.home, 'vk-task-ops'), ['member', 'start', '--engine', 'codex', '--prompt', 'p.md', '--schema', 's.json', '--out', 'o.json'], { cwd, env: launcherEnv(), encoding: 'utf8' });
       assert.equal(rejected.status, 2, label);
       assert.match(rejected.stderr, /member is not available from this launcher/, label);
       assert.equal(result.discard(), true);
@@ -1657,7 +1716,7 @@ test('ランチャー: 親のランチャーは member start/status を通し、
     const ioDir = path.join(sandbox.deps.dataDir, 'codex-task-io', path.basename(launch.home));
     const parentLauncher = path.join(launch.home, 'vk-task-ops');
     const childLauncher = path.join(launch.home, 'member', 'vk-task-ops');
-    const ops = (launcher, cwd, ...args) => childProcess.spawnSync(launcher, args, { cwd, env: { ...process.env, GIT_DIR: '/nonexistent', NODE_OPTIONS: '' }, encoding: 'utf8' });
+    const ops = (launcher, cwd, ...args) => childProcess.spawnSync(launcher, args, { cwd, env: launcherEnv({ GIT_DIR: '/nonexistent', NODE_OPTIONS: '' }), encoding: 'utf8' });
     fs.writeFileSync(path.join(ioDir, 'prompt.md'), 'work please\n');
     fs.writeFileSync(path.join(ioDir, 'schema.json'), '{"type":"object"}');
     const startArgs = ['member', 'start', '--engine', 'codex', '--prompt', 'prompt.md', '--schema', 'schema.json', '--out', 'out.json'];

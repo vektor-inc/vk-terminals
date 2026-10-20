@@ -1,5 +1,8 @@
 # Changelog
 
+- [ 仕様変更 ] 自動処理用 Codex の GitHub アプリ連携を無効化し、GitHub 操作は固定入口だけを通るように（[#449](https://github.com/vektor-inc/vk-terminals/issues/449)）
+- [ 不具合修正 ] 自動処理用 Codex が固定入口をサンドボックスの中から呼び、GitHub 操作に失敗する問題を、サンドボックスの外で呼ぶ案内と、誤った呼び方の検出で修正（[#449](https://github.com/vektor-inc/vk-terminals/issues/449)）
+
 ## 1.75.0
 
 - [ 機能追加 ] 自動処理用 Codex を起動する前に、実際に書き込める範囲（作業フォルダ・`/tmp`・`TMPDIR`・引き継ぎ先・固定入口が書き込むリポジトリと Git 管理領域・メンバーの入出力フォルダ）を、ペインを作らず AI も止めずに確認できる `POST /api/codex-policy-context` を追加（旧版では `404` になり、何も起動しない）（[#446](https://github.com/vektor-inc/vk-terminals/issues/446)）

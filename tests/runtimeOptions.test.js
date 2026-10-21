@@ -23,7 +23,8 @@ const {
   shouldSelfUpdate,
   shouldGuardAlreadyRunning,
   resolveSettingsDescriptorPath,
-  resolveOwnConfigTargetPath,
+  pickOwnConfigTargetPath,
+  listUserConfigCandidatePaths,
 } = require('../utils/runtimeOptions');
 const { ALREADY_RUNNING_MESSAGE, isPortInUse, buildAlreadyRunningNotice } = require('../utils/alreadyRunning');
 
@@ -125,19 +126,19 @@ test('resolveSettingsDescriptorPath: 組み込みの指定 > 環境変数 > null
 test('resolveOwnConfigTargetPath: 書き込める置き場所なら従来どおり（既存優先、無ければ資源側）', () => {
   const base = { dataDir: '/home/.vk-terminals', resourceRoot: '/repo', resourceRootWritable: true };
   assert.equal(
-    resolveOwnConfigTargetPath({ ...base, existsSync: (p) => p === '/home/.vk-terminals/config.json' }),
+    pickOwnConfigTargetPath({ ...base, existsSync: (p) => p === '/home/.vk-terminals/config.json' }),
     '/home/.vk-terminals/config.json'
   );
-  assert.equal(resolveOwnConfigTargetPath({ ...base, existsSync: (p) => p === '/repo/config.json' }), '/repo/config.json');
-  assert.equal(resolveOwnConfigTargetPath({ ...base, existsSync: () => false }), '/repo/config.json');
+  assert.equal(pickOwnConfigTargetPath({ ...base, existsSync: (p) => p === '/repo/config.json' }), '/repo/config.json');
+  assert.equal(pickOwnConfigTargetPath({ ...base, existsSync: () => false }), '/repo/config.json');
 });
 
 test('resolveOwnConfigTargetPath: 読み取り専用の置き場所には書かず、dataDir を保存先にする', () => {
   const base = { dataDir: '/home/.vk-terminals', resourceRoot: '/app.asar', resourceRootWritable: false };
-  assert.equal(resolveOwnConfigTargetPath({ ...base, existsSync: () => false }), '/home/.vk-terminals/config.json');
+  assert.equal(pickOwnConfigTargetPath({ ...base, existsSync: () => false }), '/home/.vk-terminals/config.json');
   // 資源側に config.json があっても保存先にはしない
   assert.equal(
-    resolveOwnConfigTargetPath({ ...base, existsSync: (p) => p === '/app.asar/config.json' }),
+    pickOwnConfigTargetPath({ ...base, existsSync: (p) => p === '/app.asar/config.json' }),
     '/home/.vk-terminals/config.json'
   );
 });
@@ -163,13 +164,34 @@ test('isPortInUse: EADDRINUSE 以外のエラーは判定不能として false�
   assert.equal(await isPortInUse(80, '127.0.0.1', { createServer }), false);
 });
 
-test('buildAlreadyRunningNotice: 案内文は「すでに起動しています。終了してから開いてください。」', () => {
+test('listUserConfigCandidatePaths: electron . は資源側 config.json も候補に含む', () => {
+  assert.deepEqual(
+    listUserConfigCandidatePaths({ dataDir: '/d', resourceRoot: '/r', homeDir: '/h', bundled: false }),
+    ['/d/config.json', '/r/config.json', '/h/.claude/terminals-config.json']
+  );
+});
+
+test('listUserConfigCandidatePaths: bundled のときは資源側 config.json を読み込み候補にも出さない', () => {
+  const list = listUserConfigCandidatePaths({ dataDir: '/d', resourceRoot: '/app.asar', homeDir: '/h', bundled: true });
+  assert.deepEqual(list, ['/d/config.json', '/h/.claude/terminals-config.json']);
+  assert.equal(list.includes('/app.asar/config.json'), false);
+});
+
+test('buildAlreadyRunningNotice: ロック衝突は表示名に追従し、前面表示を言い切らない', () => {
+  const n = buildAlreadyRunningNotice({ appTitle: 'VK Orchestrator', reason: 'lock', port: 13847 });
+  assert.equal(n.title, 'VK Orchestrator');
+  assert.equal(n.message, 'VK Orchestrator はすでに起動しています。');
+  assert.equal(n.detail, '開いているウィンドウをお使いください。');
+  assert.doesNotMatch(n.detail, /前面/);
+});
+
+test('buildAlreadyRunningNotice: ポート衝突は固定の案内文で、実際のポート番号を含み断定しない', () => {
   assert.equal(ALREADY_RUNNING_MESSAGE, 'すでに起動しています。終了してから開いてください。');
-  const lock = buildAlreadyRunningNotice({ appTitle: 'VK Orchestrator', reason: 'lock', port: 13847 });
-  assert.equal(lock.message, ALREADY_RUNNING_MESSAGE);
-  assert.equal(lock.title, 'VK Orchestrator');
-  const port = buildAlreadyRunningNotice({ appTitle: 'VK Orchestrator', reason: 'port', port: 13847 });
-  assert.match(port.detail, /13847/);
+  const n = buildAlreadyRunningNotice({ appTitle: 'VK Orchestrator', reason: 'port', port: 4321 });
+  assert.equal(n.message, ALREADY_RUNNING_MESSAGE);
+  assert.match(n.detail, /可能性があります/);
+  assert.match(n.detail, /使用中のポート: 4321/);
+  assert.doesNotMatch(n.detail, /zip|API のポート/);
 });
 
 // ─── main.js の配線（Electron を起動せずソースで確認する。tests/clipboardLimits.test.js と同じ方式）───
@@ -194,4 +216,16 @@ test('main.js: checkAndUpdate は先頭で shouldSelfUpdate を見て、git よ�
 test('main.js: 二重起動の判定は electron . で動かない（GUARD_ALREADY_RUNNING で囲われている）', () => {
   assert.match(mainSource, /if \(GUARD_ALREADY_RUNNING\) \{\s*\n\s*if \(!app\.requestSingleInstanceLock\(\)\)/);
   assert.match(mainSource, /if \(GUARD_ALREADY_RUNNING\) \{\s*\n\s*const apiHost/);
+});
+
+test('main.js: ロック判定は ensureApiToken の実行より前、ポート判定後に initApiToken を呼ぶ', () => {
+  const lock = mainSource.indexOf('app.requestSingleInstanceLock()');
+  const initDef = mainSource.indexOf('function initApiToken()');
+  const unguardedInit = mainSource.indexOf('if (!GUARD_ALREADY_RUNNING) initApiToken();');
+  const portCheck = mainSource.indexOf('await isPortInUse(');
+  const guardedInit = mainSource.indexOf('initApiToken();', portCheck);
+  assert.ok(lock > 0 && lock < initDef, 'ロック判定が initApiToken 定義より前にあること');
+  assert.ok(unguardedInit > initDef, 'electron . は従来どおりモジュール読み込み時に実行');
+  assert.ok(guardedInit > portCheck, 'ガード有効時はポート判定の後に実行');
+  assert.equal(mainSource.match(/= ensureApiToken\(\)\)/g).length, 1, 'ensureApiToken の呼び出しは initApiToken の中だけ');
 });

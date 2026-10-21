@@ -95,7 +95,8 @@ const {
   shouldSelfUpdate,
   shouldGuardAlreadyRunning,
   resolveSettingsDescriptorPath,
-  resolveOwnConfigTargetPath: resolveConfigTargetPathFor,
+  listUserConfigCandidatePaths,
+  pickOwnConfigTargetPath,
 } = require('./utils/runtimeOptions');
 const { isPortInUse, buildAlreadyRunningNotice } = require('./utils/alreadyRunning');
 const {
@@ -212,6 +213,45 @@ const EMBEDDED_OPTIONS = getEmbeddedOptions();
 const RESOURCE_ROOT = resolveResourceRoot({ embedded: EMBEDDED_OPTIONS, defaultRoot: __dirname });
 // アプリにまとめられて動いている間は、資源の置き場所を読み取り専用として扱う。
 const BUNDLED_RUN = isBundledRun({ isPackaged: app.isPackaged, embedded: EMBEDDED_OPTIONS });
+// 二重起動の検知（issue #455）。electron . （開発・zip 版）では行わず、アプリにまとめられた
+// 起動のときだけ行う。同じアプリの二重起動は requestSingleInstanceLock、zip 版との衝突は
+// API サーバーのポートが埋まっているかで見分ける（ロックは userData ごとなので zip 版とは別扱いになる）。
+// 知らせたあとは app.quit() ではなく app.exit(0) で抜ける。app.quit() は before-quit を通り、
+// finalizeBeforeQuit() が STATE_FILE（先に動いている側が使っている states.json）を消してしまうため。
+// ロックの判定は、config.json へ書き込む ensureApiToken() より前に行う（止められる側が先に動いている側の
+// 設定を書き換えないため）。ポート判定は非同期なので、ensureApiToken() は whenReady 内のポート判定の後に回す。
+const GUARD_ALREADY_RUNNING = shouldGuardAlreadyRunning({ isPackaged: app.isPackaged, embedded: EMBEDDED_OPTIONS });
+let blockedByAlreadyRunning = false;
+
+function showAlreadyRunningNotice(reason) {
+  const notice = buildAlreadyRunningNotice({ appTitle: APP_TITLE, reason, port: API_PORT });
+  dialog.showMessageBoxSync({
+    type: 'info',
+    title: notice.title,
+    message: notice.message,
+    detail: notice.detail,
+    buttons: ['OK'],
+  });
+}
+
+if (GUARD_ALREADY_RUNNING) {
+  if (!app.requestSingleInstanceLock()) {
+    blockedByAlreadyRunning = true;
+    app.whenReady().then(() => {
+      showAlreadyRunningNotice('lock');
+      app.exit(0);
+    });
+  } else {
+    // 先に動いている側は、後から開かれたら前面に出す。
+    app.on('second-instance', () => {
+      const [existingWindow] = BrowserWindow.getAllWindows();
+      if (!existingWindow) return;
+      if (existingWindow.isMinimized()) existingWindow.restore();
+      existingWindow.focus();
+    });
+  }
+}
+
 const STATE_FILE = path.join(DATA_DIR, 'states.json');
 // 自動処理用 Codex に許す唯一の追加書き込み先（会話整理の引き継ぎ先。issue #428）。
 const CODEX_TASK_POLICY_HANDOFF_DIR = path.join(os.homedir(), '.claude', 'handoff');
@@ -677,18 +717,19 @@ function stopWidgetWatcher() {
 // 見つけて他方が見つけない、という事故が起きる（issue #313 レビュー対応・中-1/中-2）ため、
 // 候補配列そのものをこの 1 か所で共有する。
 function userConfigCandidatePaths() {
-  return [
-    path.join(DATA_DIR, 'config.json'),
-    path.join(RESOURCE_ROOT, 'config.json'),
-    path.join(os.homedir(), '.claude', 'terminals-config.json'), // 後方互換
-  ];
+  return listUserConfigCandidatePaths({
+    dataDir: DATA_DIR,
+    resourceRoot: RESOURCE_ROOT,
+    homeDir: os.homedir(),
+    bundled: BUNDLED_RUN,
+  });
 }
 
 /**
  * ユーザー設定を読み込む。
  * 読み込み順:
  *   1. ~/.vk-terminals/config.json（ユーザー固有設定）
- *   2. {appDir}/config.json（リポジトリローカル設定）
+ *   2. {appDir}/config.json（リポジトリローカル設定。アプリにまとめられた起動では読まない）
  *   3. ~/.claude/terminals-config.json（後方互換）
  * どちらも存在しない場合は空オブジェクトを返す。
  *
@@ -731,10 +772,16 @@ const API_PORT = (() => {
 // 実害が無いため、警告ログのみでそのまま起動する）。
 // ensureApiToken / persistApiToken は resolveOwnConfigTargetPath 定義の直後にある
 // （関数宣言は巻き上げられるため、定義位置がここより下でも呼び出せる）。
-let { token: API_TOKEN, persisted: apiTokenPersisted } = ensureApiToken();
-if (!apiTokenPersisted) {
-  console.warn(`${LOG_PREFIX} Failed to persist API token to config.json. Using an in-memory token for this session only; it will change (and re-registration will be required on mobile) after the next restart.`);
+let API_TOKEN = '';
+let apiTokenPersisted = false;
+function initApiToken() {
+  ({ token: API_TOKEN, persisted: apiTokenPersisted } = ensureApiToken());
+  if (!apiTokenPersisted) {
+    console.warn(`${LOG_PREFIX} Failed to persist API token to config.json. Using an in-memory token for this session only; it will change (and re-registration will be required on mobile) after the next restart.`);
+  }
 }
+// 二重起動の検知を行う起動では、ポート判定を通ってから whenReady 内で呼ぶ。
+if (!GUARD_ALREADY_RUNNING) initApiToken();
 
 function normalizeApiHost(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : '127.0.0.1';
@@ -1409,43 +1456,6 @@ function createWindow() {
   // win.webContents.openDevTools(); // uncomment to debug
 }
 
-// 二重起動の検知（issue #455）。electron . （開発・zip 版）では行わず、アプリにまとめられた
-// 起動のときだけ行う。同じアプリの二重起動は requestSingleInstanceLock、zip 版との衝突は
-// API サーバーのポートが埋まっているかで見分ける（ロックは userData ごとなので zip 版とは別扱いになる）。
-// 知らせたあとは app.quit() ではなく app.exit(0) で抜ける。app.quit() は before-quit を通り、
-// finalizeBeforeQuit() が STATE_FILE（先に動いている側が使っている states.json）を消してしまうため。
-const GUARD_ALREADY_RUNNING = shouldGuardAlreadyRunning({ isPackaged: app.isPackaged, embedded: EMBEDDED_OPTIONS });
-let blockedByAlreadyRunning = false;
-
-function showAlreadyRunningNotice(reason) {
-  const notice = buildAlreadyRunningNotice({ appTitle: APP_TITLE, reason, port: API_PORT });
-  dialog.showMessageBoxSync({
-    type: 'info',
-    title: notice.title,
-    message: notice.message,
-    detail: notice.detail,
-    buttons: ['OK'],
-  });
-}
-
-if (GUARD_ALREADY_RUNNING) {
-  if (!app.requestSingleInstanceLock()) {
-    blockedByAlreadyRunning = true;
-    app.whenReady().then(() => {
-      showAlreadyRunningNotice('lock');
-      app.exit(0);
-    });
-  } else {
-    // 先に動いている側は、後から開かれたら前面に出す。
-    app.on('second-instance', () => {
-      const [existingWindow] = BrowserWindow.getAllWindows();
-      if (!existingWindow) return;
-      if (existingWindow.isMinimized()) existingWindow.restore();
-      existingWindow.focus();
-    });
-  }
-}
-
 app.whenReady().then(async () => {
   if (blockedByAlreadyRunning) return;
   if (GUARD_ALREADY_RUNNING) {
@@ -1455,6 +1465,7 @@ app.whenReady().then(async () => {
       app.exit(0);
       return;
     }
+    initApiToken();
   }
   createWindow();
   startWidgetWatcher();
@@ -1601,7 +1612,7 @@ function settingsDescriptorPath() {
 // loadUserConfig() の読み込み順に合わせ、既存の候補があればそれを、無ければ appDir 直下
 // （README の `cp config.example.json config.json` の既定先）を対象にする。
 function resolveOwnConfigTargetPath() {
-  return resolveConfigTargetPathFor({
+  return pickOwnConfigTargetPath({
     existsSync: fs.existsSync,
     dataDir: DATA_DIR,
     resourceRoot: RESOURCE_ROOT,

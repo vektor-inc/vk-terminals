@@ -120,11 +120,22 @@ function resolveSettingsDescriptorPath({ embedded = null, env = {} } = {}) {
 }
 
 /**
+ * config.json の探索候補（優先順）。loadUserConfig と API トークンの保存先解決が共有する。
+ * アプリにまとめられた起動では、同梱の資源側 config.json（配布物の一部）を設定として読まない。
+ */
+function listUserConfigCandidatePaths({ dataDir, resourceRoot, homeDir, bundled }) {
+  const candidates = [path.join(dataDir, 'config.json')];
+  if (!bundled) candidates.push(path.join(resourceRoot, 'config.json'));
+  candidates.push(path.join(homeDir, '.claude', 'terminals-config.json')); // 後方互換
+  return candidates;
+}
+
+/**
  * VK Terminals 自身の config.json の保存先。
  * 既存の候補があればそれを使う。無いときの新規作成先は、資源の置き場所が読み取り専用なら
  * 書き込める dataDir 側にする（ASAR 内・署名済みアプリ内へは書けないため）。
  */
-function resolveOwnConfigTargetPath({ existsSync, dataDir, resourceRoot, resourceRootWritable }) {
+function pickOwnConfigTargetPath({ existsSync, dataDir, resourceRoot, resourceRootWritable }) {
   const dataDirConfig = path.join(dataDir, 'config.json');
   const resourceRootConfig = path.join(resourceRoot, 'config.json');
   if (existsSync(dataDirConfig)) return dataDirConfig;
@@ -147,5 +158,6 @@ module.exports = {
   shouldSelfUpdate,
   shouldGuardAlreadyRunning,
   resolveSettingsDescriptorPath,
-  resolveOwnConfigTargetPath,
+  pickOwnConfigTargetPath,
+  listUserConfigCandidatePaths,
 };

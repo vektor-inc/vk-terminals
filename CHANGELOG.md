@@ -1,6 +1,7 @@
 # Changelog
 
-- [ 機能追加 ] VK Orchestrator のアプリに部品として組み込めるよう、表示名・資源の置き場所・更新方針・設定ファイルの場所を渡して起動できる組み込み用の入口 `embedded.js` を追加。アプリにまとめられて動くときは git による自己更新を行わず、二重起動やポートの衝突を「すでに起動しています。終了してから開いてください。」と知らせる（`electron .` での起動は従来どおり）（[#455](https://github.com/vektor-inc/vk-terminals/issues/455)）
+- [ 機能追加 ] 同じアプリや、以前の方法で開いた VK Orchestrator がすでに動いているときに開こうとすると、黙って失敗せず「すでに起動しています。終了してから開いてください。」と案内するように（`electron .` での起動は従来どおり案内しない）（[#455](https://github.com/vektor-inc/vk-terminals/issues/455)）
+- [ 機能追加 ] VK Orchestrator のアプリに部品として組み込めるよう、表示名・資源の置き場所・更新方針・設定ファイルの場所を渡して起動できる組み込み用の入口 `embedded.js` を追加。アプリにまとめられて動くときは git による自己更新を行わず、同梱の `config.json` も読み込まない（[#455](https://github.com/vektor-inc/vk-terminals/issues/455)）
 
 ## 1.76.1
 

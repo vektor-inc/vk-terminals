@@ -33,14 +33,23 @@ function isPortInUse(port, host, deps = {}) {
 
 /**
  * 二重起動の案内ダイアログの文言。
+ * lock: 同じアプリを二重に開いた。port: 別のアプリが API のポートを使っている（断定しない）。
  * @param {{ appTitle: string, reason: 'lock'|'port', port?: number }} params
  * @returns {{ title: string, message: string, detail: string }}
  */
 function buildAlreadyRunningNotice({ appTitle, reason, port }) {
-  const detail = reason === 'port'
-    ? `API のポート ${port} を、すでに起動している別の ${appTitle}（zip 版など）が使っています。`
-    : `${appTitle} はすでに起動しています。`;
-  return { title: appTitle, message: ALREADY_RUNNING_MESSAGE, detail };
+  if (reason === 'port') {
+    return {
+      title: appTitle,
+      message: ALREADY_RUNNING_MESSAGE,
+      detail: `以前の方法で開いた ${appTitle} など、同じ画面を提供するアプリがすでに動いている可能性があります。Dock やメニューバーからそのアプリを終了してから、もう一度開いてください。（使用中のポート: ${port}）`,
+    };
+  }
+  return {
+    title: appTitle,
+    message: `${appTitle} はすでに起動しています。`,
+    detail: '開いているウィンドウをお使いください。',
+  };
 }
 
 module.exports = {

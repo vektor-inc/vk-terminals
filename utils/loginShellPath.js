@@ -57,7 +57,10 @@ function sanitizePath(value) {
 
 // 子プロセスの実行（既定実装）。stdin は ignore、タイムアウトでプロセスグループごと kill する。
 // 成功時は stdout 文字列、失敗・タイムアウト時は reject。
-function defaultRunShell(shell, args, { timeoutMs, env }) {
+// marker を渡すと、stdout に開始目印→終了目印が揃った時点でプロセスグループを kill して成功にする。
+// .zshrc の `some-daemon &` のように出力先を変えない背景プロセスがあるとパイプが閉じず close が来ないため、
+// close を待たずにデータを受けた時点で確定させる。close 時も、目印が揃っていれば終了コードを問わず成功とする。
+function defaultRunShell(shell, args, { timeoutMs, env, marker }) {
   return new Promise((resolve, reject) => {
     let child;
     try {
@@ -94,10 +97,17 @@ function defaultRunShell(shell, args, { timeoutMs, env }) {
         return;
       }
       chunks.push(chunk);
+      if (marker && extractMarkedPath(Buffer.concat(chunks).toString('utf8'), marker) !== null) {
+        const output = Buffer.concat(chunks).toString('utf8');
+        killTree();
+        finish(resolve, output);
+      }
     });
     child.on('error', (error) => finish(reject, error));
     child.on('close', (code) => {
-      if (code === 0) finish(resolve, Buffer.concat(chunks).toString('utf8'));
+      const output = Buffer.concat(chunks).toString('utf8');
+      if (marker && extractMarkedPath(output, marker) !== null) finish(resolve, output);
+      else if (code === 0) finish(resolve, output);
       else finish(reject, new Error(`login shell exited with ${code}`));
     });
   });
@@ -136,7 +146,7 @@ async function fetchLoginShellPath(options = {}) {
   try {
     const shell = pickShell(env, shellExists, platform);
     const script = `printf '%s%s%s' '${marker}S' "$PATH" '${marker}E'`;
-    const stdout = await runShell(shell, ['-l', '-i', '-c', script], { timeoutMs, env });
+    const stdout = await runShell(shell, ['-l', '-i', '-c', script], { timeoutMs, env, marker });
     return sanitizePath(extractMarkedPath(stdout, marker));
   } catch (_e) {
     return null;

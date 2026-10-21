@@ -676,7 +676,7 @@ function prepareCodexTaskPolicyHome(params) {
     const home = prepareTrustedDirectory(fsImpl, homeDir, uid, { create: false });
 
     // 実行ファイルは固定の場所から、所有者・権限を検証したものだけを使う。
-    const toolDirs = params.toolDirs || listToolSearchDirs(home.realPath, params.pathEnv === undefined ? process.env.PATH : params.pathEnv);
+    const toolDirs = params.toolDirs || listToolSearchDirs(home.realPath, params.pathEnv === undefined ? '' : params.pathEnv);
     const nodeTool = resolveTrustedExecutableDetailed(fsImpl, 'node', toolDirs, { uid });
     const gitTool = resolveTrustedExecutableDetailed(fsImpl, 'git', toolDirs, { uid });
     const ghTool = resolveTrustedExecutableDetailed(fsImpl, 'gh', toolDirs, { uid });

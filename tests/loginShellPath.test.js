@@ -109,6 +109,32 @@ test('main.js: Codex 側へは起動時の PATH を渡し、PATH の反映は cr
   assert.ok(apply < source.indexOf('  createWindow();\n  startWidgetWatcher();'));
 });
 
+test('既定の実行: 背景プロセスがパイプを握っていても、目印が揃えばタイムアウトせず PATH が返る', posixOnly, async () => {
+  const started = Date.now();
+  const script = `sleep 10 & printf '%s%s%s' '${MARKER}S' '/opt/bin' '${MARKER}E'`;
+  const out = await defaultRunShell('/bin/sh', ['-c', script], { timeoutMs: 3000, env: process.env, marker: MARKER });
+  assert.equal(extractMarkedPath(out, MARKER), '/opt/bin');
+  assert.ok(Date.now() - started < 2000);
+});
+
+test('既定の実行: 目印が揃っていれば終了コードが 0 以外でも成功にする', posixOnly, async () => {
+  const script = `printf '%s%s%s' '${MARKER}S' '/opt/bin' '${MARKER}E'; exit 3`;
+  const out = await defaultRunShell('/bin/sh', ['-c', script], { timeoutMs: 3000, env: process.env, marker: MARKER });
+  assert.equal(extractMarkedPath(out, MARKER), '/opt/bin');
+});
+
+test('既定の実行: タイムアウト時は孫プロセスまで終了する', posixOnly, async () => {
+  const pidFile = path.join(require('os').tmpdir(), `vkt-grandchild-${process.pid}-${Date.now()}`);
+  const script = `sleep 30 & echo $! > '${pidFile}'; wait`;
+  await assert.rejects(defaultRunShell('/bin/sh', ['-c', script], { timeoutMs: 400, env: process.env }), /timed out/);
+  const fs = require('node:fs');
+  const grandchild = Number(fs.readFileSync(pidFile, 'utf8').trim());
+  fs.unlinkSync(pidFile);
+  assert.ok(grandchild > 0);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.throws(() => process.kill(grandchild, 0));
+});
+
 test('既定の実行: exit 1 は reject、正常終了は stdout を返す', posixOnly, async () => {
   await assert.rejects(defaultRunShell('/bin/sh', ['-c', 'echo hi; exit 1'], { timeoutMs: 3000, env: process.env }), /exited with 1/);
   assert.equal(await defaultRunShell('/bin/sh', ['-c', 'printf ok'], { timeoutMs: 3000, env: process.env }), 'ok');

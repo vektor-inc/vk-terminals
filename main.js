@@ -216,6 +216,12 @@ const EMBEDDED_OPTIONS = getEmbeddedOptions();
 // セットアップ状況の一覧を出すための部品（issue #456）。組み込みのオプションに無ければ null で、
 // その場合は IPC も画面の要素も作らず、従来と同じ画面のままにする（electron . ・zip 版）。
 const SETUP_FEATURE = resolveSetupFeature({ embedded: EMBEDDED_OPTIONS });
+// 確認は上限 20 秒・同時 1 本。startupSetupCheck は起動時に始めた確認（最初のペインの判断で待つ）。
+const SETUP_INITIAL_WAIT_MS = 5000;
+const setupStatusChecker = SETUP_FEATURE
+  ? createSetupStatusChecker({ getSetupStatus: SETUP_FEATURE.getSetupStatus })
+  : null;
+let startupSetupCheck = null;
 // 画面（renderer）・preload・アイコン・スプライト・設定スキーマ等の読み取り専用の資源の置き場所。
 // 書き込みが必要なファイル（config.json 等）はここへ置かず DATA_DIR 側に置く。
 const RESOURCE_ROOT = resolveResourceRoot({ embedded: EMBEDDED_OPTIONS, defaultRoot: __dirname });
@@ -1603,12 +1609,7 @@ ipcMain.handle('app:get-config', () => {
 // 組み込み側が渡した getSetupStatus（doctor の結果を返す関数）の呼び出しを、上限 20 秒・同時 1 本で行い、
 // 結果を renderer へ返す。vk-terminals は doctor を自分で起動しない。
 // この if の外には setup:* のハンドラを作らない（部品が無いときは受け口自体を作らない）。
-const SETUP_INITIAL_WAIT_MS = 5000;
-let setupStatusChecker = null;
-let startupSetupCheck = null;
 if (SETUP_FEATURE) {
-  setupStatusChecker = createSetupStatusChecker({ getSetupStatus: SETUP_FEATURE.getSetupStatus });
-
   // 「もう一度確認」。実行中ならその結果を共有する。
   ipcMain.handle('setup:check', () => setupStatusChecker.check());
 
@@ -2039,11 +2040,16 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
   let resolvedCwd = setupLaunch
     ? SETUP_FEATURE.setupPane.cwd
     : (cwd || process.env.HOME || process.env.USERPROFILE || os.tmpdir());
+  let cwdUsable = false;
   try {
-    if (!fs.existsSync(resolvedCwd) || !fs.statSync(resolvedCwd).isDirectory()) {
-      resolvedCwd = process.env.HOME || process.env.USERPROFILE || os.tmpdir();
-    }
+    cwdUsable = fs.existsSync(resolvedCwd) && fs.statSync(resolvedCwd).isDirectory();
   } catch (_e) {
+    cwdUsable = false;
+  }
+  if (!cwdUsable) {
+    // セットアップ用ペインは、作業フォルダが消えていてもホームへ切り替えず、作成失敗として返す
+    // （別のフォルダで claude を起動して、意図しない場所で作業が始まらないようにするため）。
+    if (setupLaunch) throw new Error('Setup pane directory does not exist.');
     resolvedCwd = process.env.HOME || process.env.USERPROFILE || os.tmpdir();
   }
 
@@ -2112,7 +2118,8 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
   const spawnTime = performance.now();
 
   // initialCommand は最初の 1 ターミナルのみ送信
-  const isFirstTerminal = !firstTerminalCreated;
+  // セットアップ用ペインは「最初のターミナル」に数えない（次の通常のペインに initialCommand を送るため）。
+  const isFirstTerminal = !firstTerminalCreated && !setupLaunch;
   if (isFirstTerminal) firstTerminalCreated = true;
 
   let promptWatcher = null;
@@ -2135,8 +2142,7 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
 
   // 素のターミナルモードでは claude を起動しないため、信頼確認や initialCommand の監視も不要
   if (!noClaude) {
-    // セットアップ用ペインには initialCommand を送らない（セットアップの最初のプロンプトと混ざるため）。
-    const config = isFirstTerminal && !setupLaunch ? loadUserConfig() : {};
+    const config = isFirstTerminal ? loadUserConfig() : {};
     let sent = false;
     // 非 claude エンジンで initialCommand が設定されている場合、ready を検知できないまま
     // WATCH_TIMEOUT_MS の「警告のみ」タイマー（対応7）が発火すると、盲打ちフォールバックを

@@ -11,7 +11,8 @@
 //   settingsDescriptorPath 追加の設定画面ディスクリプタのパス（絶対パス）
 //   singleInstance         二重起動を検知して知らせるか（既定 true）
 //   getSetupStatus         セットアップ状況の一覧を出すための非同期関数。VK Orchestrator の doctor の結果
-//                          { requirements, summary } を返す（引数に { signal } を渡す。20 秒で abort する）。
+//                          { requirements, summary } を返す（引数に { signal } を渡す。20 秒で abort するので、signal を受けて処理を止めること。
+//                          止まらない間は、新しい確認は始まらず時間切れとして返る）。
 //                          別プロセスで動かすかは呼び出し側が決める（画面を固めないため）。
 //   setupPane              セットアップ用ペインの { cwd, prompt }。cwd は実在する絶対パス、
 //                          prompt は /^\/[a-z0-9-]+$/ に一致するスキル名（例 '/vk-orchestrator-setup'）。

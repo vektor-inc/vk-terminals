@@ -26,6 +26,9 @@ function describeError(error) {
  */
 function createSetupStatusChecker({ getSetupStatus, timeoutMs = DEFAULT_TIMEOUT_MS, now = Date.now }) {
   let inFlight = null;
+  // 時間切れのあとも、元の getSetupStatus が終わる（signal で止まる）までは true。
+  // その間は新しい確認を始めない（古い確認と新しい確認が同時に走らないように）。
+  let underlyingPending = false;
 
   function failure(reason, extra = {}) {
     const checkedAt = now();
@@ -54,12 +57,11 @@ function createSetupStatusChecker({ getSetupStatus, timeoutMs = DEFAULT_TIMEOUT_
       }, timeoutMs);
     });
     try {
-      const outcome = await Promise.race([
-        Promise.resolve()
-          .then(() => getSetupStatus({ signal: controller.signal }))
-          .then((value) => ({ value })),
-        timeout,
-      ]);
+      underlyingPending = true;
+      const call = Promise.resolve().then(() => getSetupStatus({ signal: controller.signal }));
+      const settle = () => { underlyingPending = false; };
+      call.then(settle, settle);
+      const outcome = await Promise.race([call.then((value) => ({ value })), timeout]);
       if (outcome.timedOut) return failure('timeout');
       const normalized = normalizeSetupStatus(outcome.value);
       if (!normalized.ok) return failure('invalid');
@@ -74,11 +76,13 @@ function createSetupStatusChecker({ getSetupStatus, timeoutMs = DEFAULT_TIMEOUT_
   function check() {
     // 実行中に呼ばれたら、新しく始めず同じ確認の結果を返す（同時に走らせるのは 1 本だけ）。
     if (inFlight) return inFlight;
+    // 前の確認が時間切れのまま終わっていないときは、新しく始めず時間切れとして返す。
+    if (underlyingPending) return Promise.resolve(failure('timeout'));
     inFlight = run().finally(() => { inFlight = null; });
     return inFlight;
   }
 
-  return { check, isRunning: () => inFlight !== null };
+  return { check, isRunning: () => inFlight !== null || underlyingPending };
 }
 
 module.exports = { DEFAULT_TIMEOUT_MS, createSetupStatusChecker };

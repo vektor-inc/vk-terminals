@@ -111,9 +111,12 @@ test.describe('セットアップ状況の一覧（組み込み用の入口か�
     await expect(win.locator('.pane')).toHaveCount(1);
     // 記録は VK Terminals のデータフォルダに残る。
     expect(fs.existsSync(path.join(tmpHome, '.vk-terminals', 'setup-auto-open.json'))).toBe(true);
-    // セットアップ用ペインが開いているので、ボタンは「表示」に変わり、2 枚目は開かない。
-    await expect(panel.getByRole('button', { name: 'セットアップ用のペインを表示' })).toBeVisible();
-    await expect(panel.getByText('Claude Code が「このフォルダを信頼しますか」と聞いてきたら、Enter で進めてください。')).toBeVisible();
+    // Claude Code が無いので、開いたのは Claude 無しのシェル。「信頼しますか」の案内ではなく、入れる案内を出す。
+    await expect(panel.getByText('このペインで Claude Code を入れてください。入れたら「もう一度確認」を押してください。')).toBeVisible();
+    await expect(panel.getByText('このフォルダを信頼しますか')).toHaveCount(0);
+    // 「セットアップ用のペインを表示」には変わらず、「セットアップを始める」は押せない状態のまま。
+    await expect(panel.getByRole('button', { name: 'セットアップ用のペインを表示' })).toHaveCount(0);
+    await expect(panel.getByRole('button', { name: 'セットアップを始める' })).toHaveAttribute('aria-disabled', 'true');
   });
 
   test('サイドバーのタスク欄は隠れず、停止理由と「セットアップ状況を見る」リンクが出る', async () => {
@@ -146,7 +149,27 @@ test.describe('セットアップ状況の一覧（組み込み用の入口か�
     const { win } = ctx;
     await expect(win.locator('.setup-cmd')).toHaveCount(0);
     await expect(win.locator('.setup-item-state')).toHaveCount(0);
-    await expect(win.getByText('Claude Code を入れてください')).toBeVisible();
+    await expect(win.locator('.setup-item-hint', { hasText: 'Claude Code を入れてください' })).toBeVisible();
+  });
+
+  test('Claude 無しで開いたペインのまま Claude Code が入ったら、「セットアップを始める」で Claude 付きのペインを開ける', async () => {
+    const { win, setStatus } = ctx;
+    const panel = win.locator('.setup-panel');
+    setStatus(CLAUDE_OK);
+    await panel.getByRole('button', { name: 'もう一度確認' }).click();
+    await expect(panel.locator('.setup-lead')).toHaveText('あと 2 件で使えるようになります。上から順に進めてください。');
+    // 入れる案内は消え、始められる。
+    await expect(panel.getByText('このペインで Claude Code を入れてください。入れたら「もう一度確認」を押してください。')).toHaveCount(0);
+    const start = panel.getByRole('button', { name: 'セットアップを始める' });
+    await expect(start).not.toHaveAttribute('aria-disabled', 'true');
+    await start.click();
+    await expect(win.locator('.pane')).toHaveCount(2);
+    await expect(panel.getByRole('button', { name: 'セットアップ用のペインを表示' })).toBeVisible();
+    await expect(panel.getByText('Claude Code が「このフォルダを信頼しますか」と聞いてきたら、Enter で進めてください。')).toBeVisible();
+    // 以降のケースのために、Claude Code が無い状態へ戻す。
+    setStatus(CLAUDE_MISSING);
+    await panel.getByRole('button', { name: 'もう一度確認' }).click();
+    await expect(panel.locator('.setup-lead')).toHaveText('あと 3 件で使えるようになります。上から順に進めてください。');
   });
 
   test('ペインを閉じると「並べる」から「主役」に戻り、Claude Code が無いと「セットアップを始める」は押せない', async () => {
@@ -182,6 +205,10 @@ test.describe('セットアップ状況の一覧（組み込み用の入口か�
     // 結果の変化は role="status" でも伝える。
     await expect(panel.locator('[role="status"]').first()).toHaveText('セットアップ状況を確認できませんでした');
     await expect(panel.getByText('確認に 20 秒以上かかったため、途中で止めました。')).toBeVisible();
+    // 失敗しても直近に確認できた一覧は消さず、薄くして残す。最終確認の時刻も残る。
+    await expect(panel.locator('.setup-group')).toHaveCount(2);
+    await expect(panel.locator('.setup-body')).toHaveClass(/is-checking/);
+    await expect(panel.locator('.setup-checked')).toHaveText(/^最終確認 \d{2}:\d{2}$/);
     await expect(panel.getByRole('button', { name: '詳細をコピー' })).toBeVisible();
     // 失敗してもサイドバーの文言は変えない（セットアップ済みの表示に戻さない）。
     await expect(win.locator('#task-list .task-list-stale')).toContainText('セットアップ未完了のため停止中');
@@ -223,8 +250,10 @@ test.describe('セットアップ状況の一覧（組み込み用の入口か�
     const code = panel.locator('.setup-cmd-code');
     await expect(code).toHaveText('npm install -g @anthropic-ai/claude-code');
     // 折り返さず、枠の中で横スクロールできる。
-    expect(await code.evaluate((el) => getComputedStyle(el).whiteSpace)).toBe('pre');
-    expect(await code.evaluate((el) => getComputedStyle(el).overflowX)).toBe('auto');
+    // 折り返して全文を見せる（見切れない）。
+    expect(await code.evaluate((el) => getComputedStyle(el).whiteSpace)).toBe('pre-wrap');
+    expect(await code.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+    await expect(panel.getByRole('group', { name: 'Claude Codeの導入コマンド' })).toBeVisible();
     const copy = panel.locator('.setup-cmd-copy');
     await copy.click();
     await expect(copy).toHaveText('コピーしました');
@@ -248,6 +277,32 @@ test.describe('セットアップ状況の一覧（組み込み用の入口か�
       return (hi + 0.05) / (lo + 0.05);
     });
     expect(ratio).toBeGreaterThanOrEqual(4.5);
+  });
+
+  test('ウィンドウが 1000px より狭いと自動で畳み、利用者が開けば広げ、広げ直すと元に戻る', async () => {
+    const { app, win } = ctx;
+    const setWidth = (width) => app.evaluate(({ BrowserWindow }, w) => {
+      const [window] = BrowserWindow.getAllWindows();
+      window.setSize(w, 800);
+    }, width);
+    try {
+      await setWidth(900);
+      await expect(win.locator('.setup-band')).toBeVisible();
+      await expect(win.locator('.setup-panel')).toHaveCount(0);
+      const paneWidth = () => win.locator('.grid').evaluate((el) => el.getBoundingClientRect().width);
+      const foldedWidth = await paneWidth();
+      await win.locator('.setup-band').getByRole('button', { name: '一覧を開く' }).click();
+      await expect(win.locator('.setup-panel')).toBeVisible();
+      // 開いたときでも、パネルが縮んでターミナルの幅を確保する（潰れない）。
+      const openWidth = await paneWidth();
+      expect(openWidth).toBeGreaterThanOrEqual(300);
+      expect(foldedWidth).toBeGreaterThan(openWidth);
+      await setWidth(1300);
+      await expect(win.locator('.setup-panel')).toBeVisible();
+      await expect(win.locator('.setup-band')).toHaveCount(0);
+    } finally {
+      await setWidth(1300);
+    }
   });
 
   test('「閉じる」で上端の 1 行の帯に畳まれ、「一覧を開く」で戻って見出しにフォーカスが移る', async () => {
@@ -282,6 +337,8 @@ test.describe('セットアップ状況の一覧（組み込み用の入口か�
     await panel.getByRole('button', { name: '閉じる' }).click();
     await expect(win.locator('.setup-panel')).toHaveCount(0);
     await expect(win.locator('.setup-band')).toHaveCount(0);
+    // フォーカスは直前に使っていたターミナルへ戻る。
+    await expect.poll(() => win.evaluate(() => !!document.activeElement?.closest?.('.xterm'))).toBe(true);
   });
 });
 

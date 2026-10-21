@@ -253,6 +253,8 @@ let hasSeenFreshWidget = false;
 let setupPanel = null;
 // セットアップ用ペインのペイン ID。無い・閉じたあとは null。
 let setupPaneId = null;
+// セットアップ用ペインの種類。'claude' は Claude 付き、'plain' は Claude Code が無いときの素のシェル。
+let setupPaneKind = null;
 let startingSetupPane = false;
 // 最初の render() が済むまでは、パネルの再配置要求で render() を呼ばない（ペインがまだ無いため）。
 let initialRenderDone = false;
@@ -6345,14 +6347,16 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
 
 // ─── セットアップ状況の一覧（issue #456）──────────────────────────────────────
 // セットアップ用ペインが開いているか（グリッドにも格納にも居るか）。
-function isSetupPaneOpen() {
-  return setupPaneId !== null && paneExists(setupPaneId);
+function getSetupPaneState() {
+  if (setupPaneId === null || !paneExists(setupPaneId)) return 'none';
+  return setupPaneKind === 'plain' ? 'plain' : 'claude';
 }
 
 // 「セットアップを始める」。作業フォルダとプロンプトは main が持つ検証済みの値を使うため、
 // ここからは setupPane: true とだけ伝える。開いているときは 2 枚目を作らない。
 async function startSetupPane() {
-  if (isSetupPaneOpen()) {
+  // Claude 付きのセットアップ用ペインが開いていれば、2 枚目は開かず、そのペインを表示する。
+  if (getSetupPaneState() === 'claude') {
     showSetupPane();
     return;
   }
@@ -6361,6 +6365,7 @@ async function startSetupPane() {
   try {
     const created = await addPane(null, { setupPane: true });
     setupPaneId = created.paneId;
+    setupPaneKind = 'claude';
     // ペインが並んだので、パネルを「並べる」状態に直す。
     render();
   } catch (error) {
@@ -6372,7 +6377,7 @@ async function startSetupPane() {
 
 // 開いているセットアップ用ペインへフォーカスを移す（格納中なら戻す）。
 function showSetupPane() {
-  if (!isSetupPaneOpen()) return;
+  if (getSetupPaneState() === 'none') return;
   if (Array.isArray(tree.stashOrder) && tree.stashOrder.includes(setupPaneId)) {
     unstashPane(setupPaneId);
     return;
@@ -6384,7 +6389,8 @@ function createSetupPanelController() {
   return VKSetupPanel.create({
     invoke: (channel, ...args) => VKIpc.invoke(channel, ...args),
     writeClipboard: (text) => VKClipboard.writeText(text),
-    isSetupPaneOpen,
+    getSetupPaneState,
+    restoreFocus: () => { if (focusedPaneId && paneExists(focusedPaneId)) focusPane(focusedPaneId); },
     startSetup: startSetupPane,
     showSetupPane,
     requestLayout: () => { if (initialRenderDone) render(); },
@@ -6456,13 +6462,26 @@ async function initApp() {
   if (setupPanel) {
     try { setupInitial = await VKIpc.invoke('setup:initial-pane'); } catch (_e) { setupInitial = null; }
   }
+  const normalPaneOptions = initialPaneOptions;
   const openAsSetupPane = !!(setupInitial && setupInitial.autoOpen === true);
   if (openAsSetupPane) {
     initialPaneOptions = { setupPane: true, ...(setupInitial.claudeOk === true ? {} : { noClaude: true }) };
   }
-  await createTerminal(paneId, newPaneStartupDir || null, initialPaneOptions);
+  let openedAsSetupPane = openAsSetupPane;
+  try {
+    await createTerminal(paneId, newPaneStartupDir || null, initialPaneOptions);
+  } catch (error) {
+    if (!openAsSetupPane) throw error;
+    // 記録は書き終えているので、ここで失敗を残す。起動は通常のペインで続ける。
+    console.error('failed to open the setup pane at startup; opening a normal pane instead', error);
+    openedAsSetupPane = false;
+    await createTerminal(paneId, newPaneStartupDir || null, normalPaneOptions);
+  }
   focusedPaneId = paneId;
-  if (openAsSetupPane) setupPaneId = paneId;
+  if (openedAsSetupPane) {
+    setupPaneId = paneId;
+    setupPaneKind = setupInitial.claudeOk === true ? 'claude' : 'plain';
+  }
   // 最初の描画の前に結果を取り込み、パネルが必要なら最初の描画から並べる。
   if (setupPanel && setupInitial && setupInitial.result) setupPanel.applyResult(setupInitial.result);
 

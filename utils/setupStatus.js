@@ -42,6 +42,7 @@ const SETUP_TEXT = Object.freeze({
   leadRemaining: (n) => `あと ${n} 件で使えるようになります。上から順に進めてください。`,
   leadComplete: 'セットアップが完了しました',
   leadCompleteDetail: 'すべての必須項目がそろいました。',
+  guideOnPlainPane: 'このペインで Claude Code を入れてください。入れたら「もう一度確認」を押してください。',
   guideOnSetupPane: 'Claude Code が「このフォルダを信頼しますか」と聞いてきたら、Enter で進めてください。',
   startButton: 'セットアップを始める',
   showPaneButton: 'セットアップ用のペインを表示',
@@ -82,7 +83,7 @@ const SETUP_TEXT = Object.freeze({
 function sanitizeText(value, max) {
   if (typeof value !== 'string') return null;
   // 制御文字（改行・タブ・ANSI の ESC を含む）は空白 1 つにまとめる。
-  const flat = value.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim();
+  const flat = value.replace(/[\u0000-\u001f\u007f-\u009f​-‏‪-‮⁦-⁩]+/g, ' ').trim();
   if (!flat) return '';
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }
@@ -99,7 +100,8 @@ function sanitizeCommands(rawCommands) {
     if (typeof command !== 'string') continue;
     const trimmed = command.trim();
     if (!trimmed || trimmed.length > LIMITS.command) continue;
-    if (/[\u0000-\u001f\u007f]/.test(trimmed)) continue;
+    // 改行・制御文字・見えない文字（ゼロ幅・向き制御）を含むものは、貼る前に目で確かめられないので捨てる。
+    if (/[\u0000-\u001f\u007f-\u009f​-‏‪-‮⁦-⁩]/.test(trimmed)) continue;
     const os = sanitizeText(entry.os, LIMITS.os);
     commands.push({ command: trimmed, os: os || '' });
   }
@@ -150,12 +152,11 @@ function normalizeSetupStatus(raw) {
   }
 
   // summary と項目の食い違いは、どちらが正しいか決められないので確認できなかった扱いにする
-  // （項目を切り詰めたときは件数が合わないため、この照合はしない）。
-  if (!truncated) {
-    const hasMissingRequired = requirements.some((r) => r.required && !r.ok);
-    if (rawSummary.allRequiredOk === true && hasMissingRequired) return { ok: false };
-    if (rawSummary.allRequiredOk === false && !hasMissingRequired) return { ok: false };
-  }
+  // （項目を切り詰めたときは、読めなかった分に未充足があり得るため、「未完了なのに未充足が無い」の照合だけしない）。
+  const hasMissingRequired = requirements.some((r) => r.required && !r.ok);
+  // 「そろっている」と言いながら、読めた範囲に未充足の必須があれば、切り詰めたかどうかに関わらず不正。
+  if (rawSummary.allRequiredOk === true && hasMissingRequired) return { ok: false };
+  if (!truncated && rawSummary.allRequiredOk === false && !hasMissingRequired) return { ok: false };
 
   return {
     ok: true,

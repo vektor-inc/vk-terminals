@@ -28,7 +28,8 @@
    * @param {object} deps
    * @param {(channel: string, ...args: any[]) => Promise<any>} deps.invoke        IPC（setup:check）
    * @param {(text: string) => Promise<boolean>} deps.writeClipboard               上限つきのコピー経路
-   * @param {() => boolean} deps.isSetupPaneOpen                                   セットアップ用ペインが開いているか
+   * @param {() => ('none'|'plain'|'claude')} deps.getSetupPaneState               セットアップ用ペインの状態（plain は Claude 無しのシェル）
+   * @param {() => void} deps.restoreFocus                                         パネルを消したあと、直前のターミナルへフォーカスを戻す
    * @param {() => void} deps.startSetup                                           セットアップ用ペインを開く
    * @param {() => void} deps.showSetupPane                                        開いているペインへフォーカスを移す
    * @param {() => void} deps.requestLayout                                        パネルの置き場所が変わったので再配置してほしい
@@ -43,7 +44,13 @@
     let folded = false;
     let dismissed = false;
     let built = false;
-    let renderedPaneOpen = false;
+    let renderedPaneState = 'none';
+    // 直近に確認できた結果。確認に失敗しても、一覧はこれを薄く残す。
+    let lastGood = null;
+    // ウィンドウが狭いとき（ターミナルが潰れるため）は自動で畳む。利用者が開いたときだけ広げる。
+    const NARROW_WINDOW_MAX = 1000;
+    let forceOpenWhenNarrow = false;
+    let narrowNow = root.innerWidth < NARROW_WINDOW_MAX;
 
     let panel = null;
     let content = null;
@@ -68,8 +75,8 @@
 
     function mode() {
       if (!built || dismissed) return 'hidden';
-      if (folded) return 'folded';
-      return deps.isSetupPaneOpen() ? 'side' : 'main';
+      if (folded || (root.innerWidth < NARROW_WINDOW_MAX && !forceOpenWhenNarrow)) return 'folded';
+      return deps.getSetupPaneState() !== 'none' ? 'side' : 'main';
     }
 
     // ─── 部品 ───────────────────────────────────────────────────────────
@@ -92,8 +99,12 @@
 
     function announce(text) {
       if (!live) return;
-      live.textContent = '';
-      // 同じ文言でも読み上げ直されるよう、いったん空にしてから入れる。
+      if (live.textContent === text) {
+        // 同じ文言を読み直させるときだけ、いったん空にして次の描画で入れ直す。
+        live.textContent = '';
+        requestAnimationFrame(() => { live.textContent = text; });
+        return;
+      }
       live.textContent = text;
     }
 
@@ -113,12 +124,11 @@
       const wrap = el('div', 'setup-cmd-list');
       row.commands.forEach((entry, index) => {
         const item = el('div', 'setup-cmd');
+        item.setAttribute('role', 'group');
+        item.setAttribute('aria-label', `${row.label}の導入コマンド`);
         if (entry.os) item.appendChild(el('span', 'setup-cmd-os', entry.os));
         const line = el('div', 'setup-cmd-line');
         const code = el('code', 'setup-cmd-code', entry.command);
-        // 横スクロールする領域はキーボードでも動かせるようにする。
-        code.tabIndex = 0;
-        code.setAttribute('aria-label', `${row.label}の導入コマンド`);
         const copy = actionButton(`copy-${row.id}-${index}`, T.copyButton, 'setup-btn setup-btn-secondary setup-cmd-copy', (button) => {
           copyWithFeedback(button, entry.command, T.copyButton);
         });
@@ -190,11 +200,11 @@
       return section;
     }
 
-    function actionsRow(vm) {
+    function actionsRow(vm, view, skipRecheck) {
       const row = el('div', 'setup-actions');
       const buttons = el('div', 'setup-actions-buttons');
       if (vm && !vm.allRequiredOk) {
-        if (deps.isSetupPaneOpen()) {
+        if (deps.getSetupPaneState() === 'claude') {
           buttons.appendChild(actionButton('show-pane', T.showPaneButton, 'setup-btn setup-btn-primary', () => deps.showSetupPane()));
         } else {
           const needsClaude = !vm.claudeOk;
@@ -212,12 +222,16 @@
           buttons.appendChild(start);
         }
       }
-      buttons.appendChild(actionButton('recheck', checking ? T.checkingButton : T.recheckButton, 'setup-btn setup-btn-secondary', () => recheck(), {
-        ariaDisabled: checking,
-      }));
-      row.appendChild(buttons);
-      if (result && Number.isFinite(result.checkedAt)) {
-        const time = S.formatCheckedTime(result.checkedAt);
+      // 確認に失敗しているときの「もう一度確認」は、失敗の帯の側に出す。
+      if (!skipRecheck) {
+        buttons.appendChild(actionButton('recheck', checking ? T.checkingButton : T.recheckButton, 'setup-btn setup-btn-secondary', () => recheck(), {
+          ariaDisabled: checking,
+        }));
+      }
+      if (buttons.childNodes.length > 0) row.appendChild(buttons);
+      // 失敗の帯が最終確認の時刻を出すので、ここでは重ねて出さない。
+      if (!skipRecheck && view && Number.isFinite(view.checkedAt)) {
+        const time = S.formatCheckedTime(view.checkedAt);
         if (time) row.appendChild(el('span', 'setup-checked', T.lastChecked(time)));
       }
       return row;
@@ -236,8 +250,10 @@
         copyWithFeedback(button, result && typeof result.detail === 'string' ? result.detail : '', T.copyDetail);
       }));
       row.appendChild(buttons);
-      if (result && Number.isFinite(result.checkedAt)) {
-        const time = S.formatCheckedTime(result.checkedAt);
+      // 「最終確認」は、直近に確認できた時刻（無ければ今回の時刻）。
+      const timeSource = lastGood || result;
+      if (timeSource && Number.isFinite(timeSource.checkedAt)) {
+        const time = S.formatCheckedTime(timeSource.checkedAt);
         if (time) row.appendChild(el('span', 'setup-checked', T.lastChecked(time)));
       }
       block.appendChild(row);
@@ -251,7 +267,7 @@
       const active = document.activeElement;
       const focusKey = active && panel && panel.contains(active) ? (active.dataset && active.dataset.setupKey) : null;
 
-      renderedPaneOpen = deps.isSetupPaneOpen();
+      renderedPaneState = deps.getSetupPaneState();
       const nodes = [];
 
       const header = el('div', 'setup-header');
@@ -264,20 +280,28 @@
       header.appendChild(actionButton(foldKey, T.foldButton, 'setup-btn setup-btn-secondary setup-fold', () => fold()));
       nodes.push(header);
 
-      if (result && result.ok === false) {
+      const failed = !!(result && result.ok === false);
+      // 失敗したときは、失敗の帯を一覧の上に出し、直近に確認できた一覧を薄く残す。
+      const view = result && result.ok === true ? result : lastGood;
+      if (failed) {
         const block = unavailableBlock();
         block.classList.toggle('is-checking', checking);
         block.setAttribute('aria-busy', checking ? 'true' : 'false');
         nodes.push(block);
-      } else if (result && result.ok === true) {
-        const vm = S.buildSetupViewModel(result.status);
+      }
+      if (view) {
+        const vm = S.buildSetupViewModel(view.status);
         const complete = vm.allRequiredOk === true;
         nodes.push(el('p', 'setup-lead', complete ? T.leadComplete : T.leadRemaining(vm.remaining)));
         if (complete) nodes.push(el('p', 'setup-sub', T.leadCompleteDetail));
-        if (!complete && renderedPaneOpen) nodes.push(el('p', 'setup-guide', T.guideOnSetupPane));
-        nodes.push(actionsRow(vm));
+        if (!complete) {
+          // 信頼の案内は Claude 付きのペインのときだけ。Claude 無しのシェルでは、入れる案内に差し替える。
+          if (renderedPaneState === 'claude') nodes.push(el('p', 'setup-guide', T.guideOnSetupPane));
+          else if (renderedPaneState === 'plain' && !vm.claudeOk) nodes.push(el('p', 'setup-guide', T.guideOnPlainPane));
+        }
+        nodes.push(actionsRow(vm, view, failed));
         const body = el('div', 'setup-body');
-        body.classList.toggle('is-checking', checking);
+        body.classList.toggle('is-checking', checking || failed);
         body.setAttribute('aria-busy', checking ? 'true' : 'false');
         vm.groups.forEach((group) => body.appendChild(groupBlock(group)));
         nodes.push(body);
@@ -299,6 +323,8 @@
         text = result.status.summary.allRequiredOk === true
           ? T.bandComplete
           : T.bandIncomplete(S.buildSetupViewModel(result.status).remaining);
+      } else if (lastGood && lastGood.status.summary.allRequiredOk === false) {
+        text = `${T.bandUnavailable}（${T.bandIncomplete(S.buildSetupViewModel(lastGood.status).remaining)}）`;
       }
       bandText.textContent = text;
     }
@@ -334,10 +360,14 @@
         dismissed = true;
       } else {
         folded = true;
+        forceOpenWhenNarrow = false;
       }
       deps.requestLayout();
       onStatusChange();
-      if (!dismissed && band) {
+      if (dismissed) {
+        // パネルが消えるので、フォーカスは直前に使っていたターミナルへ戻す。
+        deps.restoreFocus();
+      } else if (band) {
         const open = band.querySelector('[data-setup-key="open"]');
         if (open) open.focus();
       }
@@ -346,6 +376,7 @@
     function reveal() {
       folded = false;
       dismissed = false;
+      forceOpenWhenNarrow = true;
       ensureBuilt();
       renderContent();
       deps.requestLayout();
@@ -366,7 +397,10 @@
       const before = layoutKey();
       checking = true;
       // 初回の確認は、パネルが無いうちは何も出さない（未完了と分かってから組み立てる）。
-      if (built && !silent) renderContent();
+      if (built && !silent) {
+        renderContent();
+        announce(T.checkingButton);
+      }
       let next;
       try {
         next = await deps.invoke('setup:check');
@@ -389,7 +423,10 @@
     function applyResult(next, { announceResult = false, layoutBefore = null } = {}) {
       const before = layoutBefore !== null ? layoutBefore : layoutKey();
       result = next && typeof next === 'object' ? next : null;
-      if (result && result.ok === true) lastKnownAllRequiredOk = result.status.summary.allRequiredOk;
+      if (result && result.ok === true) {
+        lastKnownAllRequiredOk = result.status.summary.allRequiredOk;
+        lastGood = result;
+      }
       const complete = isComplete(result);
       if (!result) {
         onStatusChange();
@@ -421,7 +458,7 @@
       const current = mode();
       if (current === 'hidden') return [gridContent];
       // ペインの開閉でボタンの文言・案内が変わるため、変化があれば中身を作り直す。
-      if (renderedPaneOpen !== deps.isSetupPaneOpen()) renderContent();
+      if (renderedPaneState !== deps.getSetupPaneState()) renderContent();
       panel.dataset.mode = current;
       if (current === 'folded') {
         mainArea.replaceChildren(band, gridContent);
@@ -429,6 +466,15 @@
       }
       return [gridContent, panel];
     }
+
+    // 幅が 1000px を境に変わったら、畳む・広げるを切り替えるため再配置を頼む。
+    root.addEventListener('resize', () => {
+      const narrow = root.innerWidth < NARROW_WINDOW_MAX;
+      if (narrow === narrowNow) return;
+      narrowNow = narrow;
+      if (!narrow) forceOpenWhenNarrow = false;
+      if (built && !dismissed) deps.requestLayout();
+    });
 
     // 初回の判定結果・「もう一度確認」の結果は applyResult / recheck から入る。
     return {

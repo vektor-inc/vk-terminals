@@ -111,7 +111,7 @@ test('buildSetupPaneLaunchCommand: 検証を通ったプロンプトだけを cl
 
 test('main.js: setup:* の受け口は SETUP_FEATURE があるときの if の中にだけある', () => {
   const main = read('main.js');
-  const blockStart = main.indexOf('if (SETUP_FEATURE) {\n  setupStatusChecker');
+  const blockStart = main.indexOf('if (SETUP_FEATURE) {\n  // 「もう一度確認」');
   assert.ok(blockStart > 0, 'if (SETUP_FEATURE) のブロックが見つからない');
   const handlerPositions = [...main.matchAll(/ipcMain\.handle\('setup:[a-z-]+'/g)].map((m) => m.index);
   assert.equal(handlerPositions.length, 2);

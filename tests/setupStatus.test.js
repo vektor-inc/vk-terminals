@@ -132,6 +132,28 @@ test('normalizeSetupStatus: commands 欄は { command, os } の形だけを残�
   ]);
 });
 
+test('normalizeSetupStatus: 見えない文字・向き制御を含むコマンドは捨て、テキストでは空白にする', () => {
+  const result = normalizeSetupStatus(status([
+    row({
+      label: 'A\u202eB',
+      ok: false,
+      commands: [
+        { command: 'echo\u200bhi' },
+        { command: 'echo \u202ehi' },
+        { command: 'echo\u0085hi' },
+        { command: 'echo hi' },
+      ],
+    }),
+  ]));
+  assert.equal(result.status.requirements[0].label, 'A B');
+  assert.deepEqual(result.status.requirements[0].commands, [{ command: 'echo hi', os: '' }]);
+});
+
+test('normalizeSetupStatus: 切り詰めた範囲に未充足の必須があるのに allRequiredOk:true なら不正', () => {
+  const many = Array.from({ length: LIMITS.requirements + 5 }, (_v, i) => row({ id: `r${i}`, label: `R${i}`, ok: i !== 3 }));
+  assert.equal(normalizeSetupStatus(status(many, true)).ok, false);
+});
+
 test('normalizeSetupStatus: commands が配列でないときは空配列', () => {
   const result = normalizeSetupStatus(status([row({ commands: 'brew install gh' })]));
   assert.deepEqual(result.status.requirements[0].commands, []);

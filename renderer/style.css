@@ -3370,9 +3370,9 @@ body.pane-dragging * {
   /* 幅は固定し、ペインのグリッドが残りを使う。container-type は下のボタンの 2 段積みの判定に使う。 */
   container-type: inline-size;
   container-name: setup-panel;
-  flex: 0 0 360px;
-  width: 360px;
-  min-width: 0;
+  /* 幅が足りないときはパネルが縮み、ターミナル側の最小幅を確保する（1000px 未満では畳む）。 */
+  flex: 0 1 360px;
+  min-width: 240px;
   height: 100%;
   display: flex;
   flex-direction: column;
@@ -3390,7 +3390,10 @@ body.pane-dragging * {
 }
 .setup-panel[data-mode="main"] {
   flex-basis: 440px;
-  width: 440px;
+}
+/* パネルを並べているあいだ、ペイン側にも最小幅を確保する（ここより狭くなる前にパネルが縮む）。 */
+.grid:has(+ .setup-panel) {
+  min-width: 320px;
 }
 .setup-content {
   display: flex;
@@ -3641,7 +3644,7 @@ body.pane-dragging * {
 }
 .setup-cmd-line {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
   /* 背景つきの箱の内側の余白は、中の間隔（8px）以上にする。 */
   padding: 8px;
@@ -3652,9 +3655,9 @@ body.pane-dragging * {
 .setup-cmd-code {
   flex: 1 1 auto;
   min-width: 0;
-  /* コマンドは折り返さず、枠の中で横にスクロールする。 */
-  overflow-x: auto;
-  white-space: pre;
+  /* コマンドは折り返して全文を見せる（長い 1 語でも枠からはみ出さないよう、文字単位で折り返す）。 */
+  white-space: pre-wrap;
+  word-break: break-all;
   font-family: Menlo, Monaco, "Courier New", monospace;
   font-size: 12px;
   line-height: 1.4;

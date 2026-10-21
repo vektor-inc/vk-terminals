@@ -60,16 +60,44 @@ test('時間切れ: 上限で待つのをやめ、中断を知らせる（signal
   assert.equal(receivedSignal.aborted, true);
 });
 
-test('時間切れのあとでも、次の確認を新しく始められる', async () => {
+test('時間切れのあと、元の処理が終わるまでは新しい確認を始めず、時間切れとして返す', async () => {
   let calls = 0;
+  let settleFirst;
   const checker = createSetupStatusChecker({
-    getSetupStatus: () => { calls += 1; return calls === 1 ? new Promise(() => {}) : Promise.resolve(VALID); },
+    getSetupStatus: () => {
+      calls += 1;
+      if (calls === 1) return new Promise((resolve) => { settleFirst = () => resolve(VALID); });
+      return Promise.resolve(VALID);
+    },
     timeoutMs: 20,
   });
   assert.equal((await checker.check()).reason, 'timeout');
+  // 元の処理がまだ動いているので「実行中」のまま。新しい確認は始めない。
+  assert.equal(checker.isRunning(), true);
+  const blocked = await checker.check();
+  assert.equal(blocked.reason, 'timeout');
+  assert.equal(calls, 1);
+  // 元の処理が終わったら、次の確認を新しく始められる。
+  settleFirst();
+  await new Promise((resolve) => setImmediate(resolve));
   assert.equal(checker.isRunning(), false);
   assert.equal((await checker.check()).ok, true);
   assert.equal(calls, 2);
+});
+
+test('時間切れで abort された処理が止まれば（reject すれば）、次の確認を始められる', async () => {
+  let calls = 0;
+  const checker = createSetupStatusChecker({
+    getSetupStatus: ({ signal }) => {
+      calls += 1;
+      if (calls > 1) return Promise.resolve(VALID);
+      return new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(new Error('aborted'))));
+    },
+    timeoutMs: 20,
+  });
+  assert.equal((await checker.check()).reason, 'timeout');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal((await checker.check()).ok, true);
 });
 
 test('同時 1 本: 実行中に呼ばれたら新しく始めず、同じ結果を共有する', async () => {

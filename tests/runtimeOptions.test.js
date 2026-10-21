@@ -35,6 +35,8 @@ test('normalizeEmbeddedOptions: 未指定は既定値（自己更新は未指定
     selfUpdate: null,
     settingsDescriptorPath: null,
     singleInstance: true,
+    getSetupStatus: null,
+    setupPane: null,
   });
 });
 

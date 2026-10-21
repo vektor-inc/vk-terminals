@@ -4,6 +4,7 @@
 // 検証と、main.js が使う各種の解決（表示名・資源の置き場所・更新方針・設定の置き場所）。
 // Electron に依存しない純粋な関数だけを置き、tests/runtimeOptions.test.js で検証する。
 
+const fs = require('fs');
 const path = require('path');
 
 const DEFAULT_APP_TITLE = 'VK Terminals';
@@ -14,6 +15,25 @@ const SETTINGS_DESCRIPTOR_ENV_KEY = 'VK_TERMINALS_SETTINGS';
 // electron . で起動した場合は null のまま（従来どおりの挙動）。
 let storedEmbeddedOptions = null;
 
+// セットアップ用ペインの最初のプロンプト（スキル名）として受け付ける形。claude '<prompt>' の
+// 引数としてシェルへ渡るため、この形以外（空白・引用符・記号）は一切通さない。
+const SETUP_PROMPT_PATTERN = /^\/[a-z0-9-]+$/;
+
+/** セットアップ用ペインの最初のプロンプトとして安全な形か。 */
+function isSetupPrompt(value) {
+  return typeof value === 'string' && SETUP_PROMPT_PATTERN.test(value);
+}
+
+/** 実在するフォルダの絶対パスか。 */
+function isExistingAbsoluteDirectory(value) {
+  if (typeof value !== 'string' || !path.isAbsolute(value)) return false;
+  try {
+    return fs.statSync(value).isDirectory();
+  } catch (_e) {
+    return false;
+  }
+}
+
 function nonEmptyString(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
@@ -21,8 +41,8 @@ function nonEmptyString(value) {
 /**
  * 組み込み用の入口に渡されたオプションを検証して正規化する。
  * 不明なキーは捨てる。型が違うものは黙って無視せず例外にする（呼び出し側の設定ミスを早く知らせるため）。
- * @param {object} [raw] { appTitle, resourceRoot, selfUpdate, settingsDescriptorPath, singleInstance }
- * @returns {{ appTitle: string|null, resourceRoot: string|null, selfUpdate: boolean|null, settingsDescriptorPath: string|null, singleInstance: boolean }}
+ * @param {object} [raw] { appTitle, resourceRoot, selfUpdate, settingsDescriptorPath, singleInstance, getSetupStatus, setupPane }
+ * @returns {{ appTitle: string|null, resourceRoot: string|null, selfUpdate: boolean|null, settingsDescriptorPath: string|null, singleInstance: boolean, getSetupStatus: Function|null, setupPane: { cwd: string, prompt: string }|null }}
  */
 function normalizeEmbeddedOptions(raw) {
   const options = raw == null ? {} : raw;
@@ -51,6 +71,29 @@ function normalizeEmbeddedOptions(raw) {
     }
   }
 
+  // セットアップ状況の一覧（issue #456）。確認する関数とセットアップ用ペインの指定は必ず対で渡す
+  // （片方だけだと「一覧は出るが始められない」「始められるが状況が見えない」状態になるため）。
+  if (options.getSetupStatus != null && typeof options.getSetupStatus !== 'function') {
+    throw new TypeError('embedded options: getSetupStatus must be a function');
+  }
+  let setupPane = null;
+  if (options.setupPane != null) {
+    const pane = options.setupPane;
+    if (typeof pane !== 'object' || Array.isArray(pane)) {
+      throw new TypeError('embedded options: setupPane must be an object');
+    }
+    if (!isExistingAbsoluteDirectory(pane.cwd)) {
+      throw new TypeError('embedded options: setupPane.cwd must be an existing absolute directory');
+    }
+    if (!isSetupPrompt(pane.prompt)) {
+      throw new TypeError('embedded options: setupPane.prompt must match /^\\/[a-z0-9-]+$/');
+    }
+    setupPane = { cwd: pane.cwd, prompt: pane.prompt };
+  }
+  if ((options.getSetupStatus != null) !== (setupPane !== null)) {
+    throw new TypeError('embedded options: getSetupStatus and setupPane must be given together');
+  }
+
   return {
     appTitle: nonEmptyString(options.appTitle),
     resourceRoot: nonEmptyString(options.resourceRoot),
@@ -59,6 +102,8 @@ function normalizeEmbeddedOptions(raw) {
     settingsDescriptorPath: nonEmptyString(options.settingsDescriptorPath),
     // 組み込み用の入口から起動したときは既定で二重起動を防ぐ。
     singleInstance: options.singleInstance !== false,
+    getSetupStatus: options.getSetupStatus != null ? options.getSetupStatus : null,
+    setupPane,
   };
 }
 
@@ -112,6 +157,16 @@ function shouldGuardAlreadyRunning({ isPackaged = false, embedded = null } = {})
   return isPackaged === true;
 }
 
+/**
+ * セットアップ状況の一覧を出すための部品。組み込みのオプションに無ければ null
+ * （electron . ・zip 版。null のとき main.js は IPC も画面の要素も作らない）。
+ * @returns {{ getSetupStatus: Function, setupPane: { cwd: string, prompt: string } }|null}
+ */
+function resolveSetupFeature({ embedded = null } = {}) {
+  if (!embedded || typeof embedded.getSetupStatus !== 'function' || !embedded.setupPane) return null;
+  return { getSetupStatus: embedded.getSetupStatus, setupPane: embedded.setupPane };
+}
+
 /** 設定ディスクリプタのパス。組み込みの指定 > 環境変数。無ければ null。 */
 function resolveSettingsDescriptorPath({ embedded = null, env = {} } = {}) {
   return (embedded && embedded.settingsDescriptorPath)
@@ -146,6 +201,9 @@ function pickOwnConfigTargetPath({ existsSync, dataDir, resourceRoot, resourceRo
 
 module.exports = {
   DEFAULT_APP_TITLE,
+  SETUP_PROMPT_PATTERN,
+  isSetupPrompt,
+  resolveSetupFeature,
   APP_TITLE_ENV_KEY,
   SETTINGS_DESCRIPTOR_ENV_KEY,
   normalizeEmbeddedOptions,

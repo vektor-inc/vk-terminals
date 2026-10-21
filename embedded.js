@@ -10,6 +10,12 @@
 //   selfUpdate             git による自己更新をするか（既定 false。app.isPackaged のときは true でも行わない）
 //   settingsDescriptorPath 追加の設定画面ディスクリプタのパス（絶対パス）
 //   singleInstance         二重起動を検知して知らせるか（既定 true）
+//   getSetupStatus         セットアップ状況の一覧を出すための非同期関数。VK Orchestrator の doctor の結果
+//                          { requirements, summary } を返す（引数に { signal } を渡す。20 秒で abort する）。
+//                          別プロセスで動かすかは呼び出し側が決める（画面を固めないため）。
+//   setupPane              セットアップ用ペインの { cwd, prompt }。cwd は実在する絶対パス、
+//                          prompt は /^\/[a-z0-9-]+$/ に一致するスキル名（例 '/vk-orchestrator-setup'）。
+//                          getSetupStatus と必ず対で渡す。どちらも渡さなければ一覧は出ない。
 //
 // main.js は require した時点で起動処理を登録する作りのため、オプションを先に保存してから require する。
 const { setEmbeddedOptions } = require('./utils/runtimeOptions');

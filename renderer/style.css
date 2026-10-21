@@ -3346,3 +3346,355 @@ body.pane-dragging * {
   font-weight: 600;
 }
 .confirm-apply-content-table:hover { background: #f85149; }
+
+
+/* ==========================================================================
+   セットアップ状況の一覧パネル（issue #456）
+   組み込み側のオプションがあるときだけ DOM が作られる（renderer/setupPanel.js）。
+   ========================================================================== */
+
+/* 配色は既存のダークテーマ（サイドバーのカード #1c2128 / 地 #0d1117 / 枠 #30363d）に揃える。
+ * 本文 #e6edf3・補足 #9da7b3 は #0d1117・#1c2128 のどちらの上でも 4.5:1 以上。
+ * コマンド枠の文字 #e6edf3 は枠の地 #010409 上で 17:1。 */
+.setup-panel,
+.setup-band {
+  --vktm--setup-text: #e6edf3;
+  --vktm--setup-muted: #9da7b3;
+  --vktm--setup-surface: #1c2128;
+  --vktm--setup-border: #30363d;
+}
+
+/* 配置（主役 / 並べる / 畳む）
+   ========================================================================== */
+.setup-panel {
+  /* 幅は固定し、ペインのグリッドが残りを使う。container-type は下のボタンの 2 段積みの判定に使う。 */
+  container-type: inline-size;
+  container-name: setup-panel;
+  flex: 0 0 360px;
+  width: 360px;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden auto;
+  /* 背景つきの箱の内側の余白は、中の最大の間隔（グループ間 20px）以上にする。 */
+  padding: 20px;
+  background: #0d1117;
+  border-left: 1px solid var(--vktm--setup-border);
+  color: var(--vktm--setup-text);
+  font-size: 13px;
+  line-height: 1.5;
+  /* 日本語を文節の切れ目で折り返し、「ください」の途中で割れないようにする。 */
+  word-break: auto-phrase;
+  text-wrap: pretty;
+}
+.setup-panel[data-mode="main"] {
+  flex-basis: 440px;
+  width: 440px;
+}
+.setup-content {
+  display: flex;
+  flex-direction: column;
+  /* 見出し・案内・ボタン行・一覧の各ブロックの間。 */
+  gap: 16px;
+}
+
+/* 畳んだ状態の上端 1 行の帯とその下のグリッドを縦に積む。 */
+.setup-main-area {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.setup-band {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 12px;
+  background: var(--vktm--setup-surface);
+  border-bottom: 1px solid var(--vktm--setup-border);
+  color: var(--vktm--setup-text);
+  font-size: 12px;
+  line-height: 1.3;
+}
+.setup-band-text {
+  min-width: 0;
+}
+
+/* 見出し・本文
+   ========================================================================== */
+.setup-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.setup-title {
+  min-width: 0;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+.setup-title:focus-visible {
+  outline: var(--vktm--outline--focus-ring);
+  outline-offset: var(--vktm--outline-offset--focus-ring);
+}
+.setup-lead {
+  font-size: 14px;
+  font-weight: 600;
+}
+.setup-sub,
+.setup-guide,
+.setup-start-note {
+  color: var(--vktm--setup-muted);
+}
+/* 押せない「セットアップを始める」の理由は、ボタンと同じ列の直下に置く。 */
+.setup-start {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.setup-checked {
+  color: var(--vktm--setup-muted);
+  font-size: 12px;
+  line-height: 1.3;
+}
+.setup-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* ボタン
+   ========================================================================== */
+.setup-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+.setup-actions-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  /* 押せない理由の文を添えたボタンの高さに、隣のボタンが引き伸ばされないようにする。 */
+  align-items: flex-start;
+  gap: 8px;
+}
+.setup-btn {
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--vktm--color--border-interactive);
+  border-radius: var(--vktm--border-radius--md);
+  background: #21262d;
+  color: var(--vktm--setup-text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.3;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.setup-btn:hover {
+  background: #30363d;
+}
+.setup-btn-primary {
+  border-color: #2ea043;
+  background: #238636;
+  color: #ffffff;
+}
+.setup-btn-primary:hover {
+  background: #2ea043;
+}
+/* 押せない状態。aria-disabled にしてフォーカスは残す（理由をキーボードでも読めるように）。 */
+.setup-btn.is-disabled,
+.setup-btn.is-disabled:hover {
+  border-color: var(--vktm--setup-border);
+  background: #21262d;
+  color: #8b949e;
+  cursor: not-allowed;
+}
+.setup-fold {
+  flex: 0 0 auto;
+}
+/* 幅 360px 前後の「並べる」状態ではボタンを 2 段に積み、幅をそろえる。 */
+@container setup-panel (max-width: 380px) {
+  .setup-actions-buttons {
+    flex-direction: column;
+    align-items: stretch;
+    flex: 1 1 100%;
+  }
+  .setup-actions-buttons .setup-btn,
+  .setup-start {
+    width: 100%;
+  }
+}
+
+/* 一覧
+   ========================================================================== */
+.setup-body {
+  display: flex;
+  flex-direction: column;
+  /* グループ間は、グループの中の間隔より広くする。 */
+  gap: 20px;
+}
+.setup-body.is-checking,
+.setup-unavailable.is-checking {
+  opacity: 0.55;
+}
+.setup-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.setup-group-title {
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+.setup-kind-title {
+  margin-top: 4px;
+  color: var(--vktm--setup-muted);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+.setup-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  list-style: none;
+}
+.setup-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px;
+  border: 1px solid var(--vktm--setup-border);
+  border-radius: var(--vktm--border-radius--md);
+  background: var(--vktm--setup-surface);
+}
+.setup-item-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+}
+.setup-item-label {
+  font-weight: 700;
+  line-height: 1.3;
+}
+.setup-item-first {
+  padding: 1px 6px;
+  border: 1px solid rgba(210, 153, 34, 0.4);
+  border-radius: var(--vktm--border-radius--sm);
+  background: rgba(210, 153, 34, 0.12);
+  color: #f0c36a;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+.setup-item-state {
+  color: #ffa198;
+  font-weight: 600;
+}
+.setup-item-note,
+.setup-item-hint {
+  color: var(--vktm--setup-muted);
+}
+.setup-item-detail > summary,
+.setup-satisfied > summary {
+  color: var(--vktm--setup-muted);
+  font-size: 12px;
+  line-height: 1.3;
+  cursor: pointer;
+}
+.setup-item-detail > p {
+  margin-top: 4px;
+}
+.setup-satisfied-list {
+  margin-top: 4px;
+  padding-left: 16px;
+  color: var(--vktm--setup-muted);
+}
+
+/* 導入コマンド（コピーするだけで、ここからは実行しない）
+   ========================================================================== */
+.setup-cmd-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.setup-cmd {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.setup-cmd-os {
+  color: var(--vktm--setup-muted);
+  font-size: 11px;
+  line-height: 1.3;
+}
+.setup-cmd-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  /* 背景つきの箱の内側の余白は、中の間隔（8px）以上にする。 */
+  padding: 8px;
+  border: 1px solid var(--vktm--setup-border);
+  border-radius: var(--vktm--border-radius--md);
+  background: #010409;
+}
+.setup-cmd-code {
+  flex: 1 1 auto;
+  min-width: 0;
+  /* コマンドは折り返さず、枠の中で横にスクロールする。 */
+  overflow-x: auto;
+  white-space: pre;
+  font-family: Menlo, Monaco, "Courier New", monospace;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--vktm--setup-text);
+}
+.setup-cmd-copy {
+  flex: 0 0 auto;
+}
+
+/* 確認できなかったとき
+   ========================================================================== */
+.setup-unavailable {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid rgba(248, 81, 73, 0.35);
+  border-radius: var(--vktm--border-radius--md);
+  background: rgba(248, 81, 73, 0.12);
+}
+.setup-unavailable-title {
+  color: #ffa198;
+  font-weight: 700;
+}
+
+/* サイドバーの停止注記（セットアップ未完了）
+   ========================================================================== */
+.task-list-stale[data-kind="setup"] {
+  border-color: rgba(210, 153, 34, 0.4);
+  color: #f0c36a;
+  background: rgba(210, 153, 34, 0.12);
+}
+.task-list-setup-link {
+  display: block;
+  margin-top: 4px;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: #79c0ff;
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}

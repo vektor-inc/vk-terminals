@@ -22,7 +22,7 @@ VK Orchestrator のアプリ（VK Terminals を部品として組み込んだも
 
 `embedded.start()` に次の 2 つを足す。**必ず対で渡す**（片方だけだと起動時に例外）。どちらも渡さなければ一覧は出ない。
 
-- `getSetupStatus`: `doctor` の結果 `{ requirements, summary }` を返す非同期関数。引数に `{ signal }`（20 秒で abort される）を渡す。別プロセスで動かすかは組み込み側が決める（画面を固めないため）。
+- `getSetupStatus`: `doctor` の結果 `{ requirements, summary }` を返す非同期関数。引数に `{ signal }`（20 秒で abort される）を渡す。別プロセスで動かすかは組み込み側が決める（画面を固めないため）。Claude Code の有無は id が `claude` の行で判定する。行が無い場合は Claude Code が無いものとして扱う。
 - `setupPane`: `{ cwd, prompt }`。
   - `cwd`: セットアップ用ペインの作業フォルダ。**実在する絶対パス**のみ受け付ける。
   - `prompt`: 最初のプロンプト。`/^\/[a-z0-9-]+$/` に一致するものだけ（例 `/vk-orchestrator-setup`）。
@@ -139,7 +139,9 @@ VK Orchestrator のアプリ（VK Terminals を部品として組み込んだも
 
 - このパソコンで**初めて「未完了」と判定されたとき 1 回だけ**、起動時に必ず作るペインそのものをセットアップ用ペインにする（2 枚目を足さない）。
 - Claude Code が無いときは、Claude 無しのシェルで開き、`command not found` を見せない。
-- 判断は起動時の確認結果を最大 5 秒待って行う。間に合わないとき・確認できなかったときは通常のペインで開き、自動では開かず記録も残さない（次回また判断する）。
+- 記録が既にあるとき（2 回目以降）は、自動で開かないことが確定しているので、確認の結果を待たずに通常のペインを作る。パネルや理由表示は、確認が終わってから「もう一度確認」と同じ取り込み経路（無言の再確認）で反映する。
+- 記録が無いときだけ、起動時の確認結果を最大 5 秒待って判断する。間に合わないとき・確認できなかったときは通常のペインで開き、自動では開かず記録も残さない（次回また判断する）。
+- Claude Code の有無は、`getSetupStatus` の結果のうち id が `claude` の行で判定する（`ok` なら Claude Code あり）。行が無いときは Claude Code が無いものとして扱い、Claude を起動しないシェルで開く（`command not found` を見せないため）。
 - 記録は `~/.vk-terminals/setup-auto-open.json`（`{ "openedAt": ISO 時刻 }`）。vk-orchestrator の `setup.completedAt` には書かない。記録が読めない・書けないときは自動で開かない側へ倒す。実装は `utils/setupAutoOpen.js`。
 - セットアップ用ペインには `initialCommand` を送らない（セットアップの最初のプロンプトと混ざるため）。セットアップ用ペインは「最初のターミナル」に数えないので、次の通常のペインに `initialCommand` が送られる。
 - 起動時にセットアップ用ペインの作成に失敗したら、ログを残して通常のペインで開く（記録は書き終えている）。

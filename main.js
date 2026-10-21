@@ -101,7 +101,7 @@ const {
 } = require('./utils/runtimeOptions');
 // セットアップ状況の一覧（issue #456）。組み込みのオプションがあるときだけ使う。
 const { createSetupStatusChecker } = require('./utils/setupStatusCheck');
-const { hasAutoOpenRecord, writeAutoOpenRecord, shouldAutoOpenSetupPane } = require('./utils/setupAutoOpen');
+const { hasAutoOpenRecord, writeAutoOpenRecord, decideSetupInitialPane } = require('./utils/setupAutoOpen');
 const { buildSetupPaneLaunchCommand } = require('./utils/setupPaneLaunch');
 const { isPortInUse, buildAlreadyRunningNotice } = require('./utils/alreadyRunning');
 const {
@@ -1613,23 +1613,14 @@ if (SETUP_FEATURE) {
   // 「もう一度確認」。実行中ならその結果を共有する。
   ipcMain.handle('setup:check', () => setupStatusChecker.check());
 
-  // 起動時に作るペインをセットアップ用ペインにするかの判断。起動時に始めた確認の結果を最大
-  // SETUP_INITIAL_WAIT_MS だけ待ち、間に合わなければ通常のペインで開く（自動では開かず、記録も残さない）。
-  ipcMain.handle('setup:initial-pane', async () => {
-    let timer = null;
-    const result = await Promise.race([
-      startupSetupCheck || setupStatusChecker.check(),
-      new Promise((resolve) => { timer = setTimeout(() => resolve(null), SETUP_INITIAL_WAIT_MS); }),
-    ]);
-    clearTimeout(timer);
-    if (!result) return { autoOpen: false, claudeOk: false, result: null };
-    const claudeOk = result.ok === true
-      && result.status.requirements.some((row) => row.id === 'claude' && row.ok);
-    const recorded = hasAutoOpenRecord(DATA_DIR);
-    // 記録を書けたときだけ自動で開く（書けないまま開くと、起動のたびに開いてしまうため）。
-    const autoOpen = shouldAutoOpenSetupPane({ result, recorded }) && writeAutoOpenRecord(DATA_DIR);
-    return { autoOpen, claudeOk, result };
-  });
+  // 起動時に作るペインをセットアップ用ペインにするかの判断。記録がある（2 回目以降）ときは確認を待たずに返し、
+  // 無いときだけ起動時に始めた確認の結果を最大 SETUP_INITIAL_WAIT_MS 待つ（判断の中身は utils/setupAutoOpen.js）。
+  ipcMain.handle('setup:initial-pane', () => decideSetupInitialPane({
+    recorded: hasAutoOpenRecord(DATA_DIR),
+    getResult: () => startupSetupCheck || setupStatusChecker.check(),
+    waitMs: SETUP_INITIAL_WAIT_MS,
+    writeRecord: () => writeAutoOpenRecord(DATA_DIR),
+  }));
 }
 
 // 宣言的ウィジェットのコマンド中継（汎用）。renderer は宣言に載っていたコマンド断片

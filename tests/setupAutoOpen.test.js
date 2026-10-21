@@ -73,3 +73,50 @@ test('記録: 書き込みに失敗したら false（呼び出し側は自動で
   const fsImpl = { mkdirSync: () => {}, writeFileSync: () => { throw new Error('read-only'); } };
   assert.equal(writeAutoOpenRecord('/nowhere', Date.now, fsImpl), false);
 });
+
+// ─── 起動時の初回ペイン判断（記録があるときは確認を待たない）──────────────────────
+const { decideSetupInitialPane } = require('../utils/setupAutoOpen');
+
+test('decideSetupInitialPane: 記録があれば、判定が遅くても待たずに返し、確認の結果も待たない', async () => {
+  let asked = false;
+  const never = () => { asked = true; return new Promise(() => {}); };
+  const started = Date.now();
+  const out = await decideSetupInitialPane({
+    recorded: true, getResult: never, waitMs: 5000, writeRecord: () => true,
+  });
+  assert.ok(Date.now() - started < 500, '待たされている');
+  assert.equal(asked, false);
+  assert.deepEqual(out, { autoOpen: false, claudeOk: false, result: null });
+});
+
+test('decideSetupInitialPane: 記録が無く判定が間に合わなければ、待ち時間だけ待って通常ペイン', async () => {
+  const out = await decideSetupInitialPane({
+    recorded: false, getResult: () => new Promise(() => {}), waitMs: 30, writeRecord: () => true,
+  });
+  assert.deepEqual(out, { autoOpen: false, claudeOk: false, result: null });
+});
+
+test('decideSetupInitialPane: 記録が無く未完了なら記録を書いて自動で開く。claudeOk は id が claude の行で決まる', async () => {
+  const withClaude = { ok: true, status: { requirements: [{ id: 'claude', ok: true }], summary: { allRequiredOk: false } } };
+  let wrote = 0;
+  const out = await decideSetupInitialPane({
+    recorded: false, getResult: async () => withClaude, waitMs: 1000, writeRecord: () => { wrote += 1; return true; },
+  });
+  assert.deepEqual(out, { autoOpen: true, claudeOk: true, result: withClaude });
+  assert.equal(wrote, 1);
+
+  // claude の行が無いときは Claude 無しとして扱う（command not found を見せない側へ倒す）。
+  const noRow = { ok: true, status: { requirements: [{ id: 'git', ok: true }], summary: { allRequiredOk: false } } };
+  const out2 = await decideSetupInitialPane({
+    recorded: false, getResult: async () => noRow, waitMs: 1000, writeRecord: () => true,
+  });
+  assert.equal(out2.claudeOk, false);
+});
+
+test('decideSetupInitialPane: 記録を書けなければ自動で開かない', async () => {
+  const r = { ok: true, status: { requirements: [], summary: { allRequiredOk: false } } };
+  const out = await decideSetupInitialPane({
+    recorded: false, getResult: async () => r, waitMs: 1000, writeRecord: () => false,
+  });
+  assert.equal(out.autoOpen, false);
+});

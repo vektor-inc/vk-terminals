@@ -13,6 +13,8 @@
 //   getSetupStatus         セットアップ状況の一覧を出すための非同期関数。VK Orchestrator の doctor の結果
 //                          { requirements, summary } を返す（引数に { signal } を渡す。20 秒で abort するので、signal を受けて処理を止めること。
 //                          止まらない間は、新しい確認は始まらず時間切れとして返る）。
+//                          Claude Code の有無は、requirements のうち id が 'claude' の行で判定する。
+//                          その行が無いときは Claude Code が無いものとして扱う。
 //                          別プロセスで動かすかは呼び出し側が決める（画面を固めないため）。
 //   setupPane              セットアップ用ペインの { cwd, prompt }。cwd は実在する絶対パス、
 //                          prompt は /^\/[a-z0-9-]+$/ に一致するスキル名（例 '/vk-orchestrator-setup'）。

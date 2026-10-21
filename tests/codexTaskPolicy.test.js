@@ -1192,8 +1192,21 @@ test('terminal:create の initialCommand と利用者入力は信頼確認の自
   const createHandler = mainSource.slice(handlerStart, inputStart);
   const inputHandler = mainSource.slice(inputStart, mainSource.indexOf("ipcMain.on('terminal:resize'"));
   assert.match(createHandler, /trustGate\.markTrustHandled\(\);\s*ptyProcess\.write\(config\.initialCommand/);
-  assert.match(inputHandler, /disarmPaneCreationWatcher\(\)/);
-  assert.match(inputHandler, /restartTrustResponder\.markInputSent\(\)/);
+  assert.match(inputHandler, /disarmTrustAutomationForUserInput\(id, data\)/);
+});
+
+test('terminal:input と HTTP 入力 API は同じ利用者入力判定で信頼確認の自動応答を無効化する', () => {
+  const helperStart = mainSource.indexOf('function disarmTrustAutomationForUserInput');
+  const inputStart = mainSource.indexOf("ipcMain.on('terminal:input'");
+  const helper = mainSource.slice(helperStart, inputStart);
+  const httpSendStart = mainSource.indexOf("url.pathname === '/api/send'");
+  const httpSendEnd = mainSource.indexOf('// renderer に通知（バッジ表示用）', httpSendStart);
+  const httpSendHandler = mainSource.slice(httpSendStart, httpSendEnd);
+
+  assert.match(helper, /containsUserTerminalInput\(data\)/);
+  assert.match(helper, /disarmPaneCreationWatcher\(\)/);
+  assert.match(helper, /restartTrustResponder\.markInputSent\(\)/);
+  assert.match(httpSendHandler, /disarmTrustAutomationForUserInput\(String\(termId\), input\)/);
 });
 
 test('terminal:create は PTY を作る前に起動オプションを解決し、失敗したら例外で返す（Codex 未起動のペインを成功にしない）', () => {

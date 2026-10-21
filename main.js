@@ -103,6 +103,7 @@ const {
   evaluateTokenRegistration,
 } = require('./utils/apiAuth');
 const { isAllowedApiHost } = require('./utils/apiHostAllowlist');
+const { containsUserTerminalInput } = require('./utils/terminalUserInput');
 // mobile.html（HTTP 配信）向け CSP ヘッダーの組み立て（issue #324）。
 const { buildMobileCsp } = require('./utils/csp');
 // clipboard へ書き込んでよい文字列の上限（issue #325）。定義はここ（utils/clipboardLimits.js）
@@ -2221,14 +2222,22 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
   return { id, cwd: resolvedCwd, engine: resolvedEngine };
 });
 
+// renderer と HTTP API のどちらから届いた入力でも、端末自身が返す制御応答だけなら
+// 信頼確認の監視を維持する。通常文字・キー操作・外部ツールの送信は同じ扱いで止める。
+function disarmTrustAutomationForUserInput(id, data) {
+  if (!containsUserTerminalInput(data)) return;
+  const disarmPaneCreationWatcher = paneCreationTrustWatchers.get(id);
+  if (disarmPaneCreationWatcher) disarmPaneCreationWatcher();
+  const restartTrustResponder = restartTrustResponders.get(id);
+  if (restartTrustResponder) restartTrustResponder.markInputSent();
+}
+
 ipcMain.on('terminal:input', (event, id, data) => {
   const p = ptys.get(id);
   if (p) {
-    // 利用者入力後は、過去の表示を根拠に信頼関連の自動 Enter を送らない。
-    const disarmPaneCreationWatcher = paneCreationTrustWatchers.get(id);
-    if (disarmPaneCreationWatcher) disarmPaneCreationWatcher();
-    const restartTrustResponder = restartTrustResponders.get(id);
-    if (restartTrustResponder) restartTrustResponder.markInputSent();
+    // 端末の自動応答・通知では監視を維持し、実際の入力後だけ過去の表示を根拠とする
+    // 信頼関連の自動 Enter を止める。
+    disarmTrustAutomationForUserInput(id, data);
     p.write(data);
   }
 });
@@ -2871,6 +2880,9 @@ function startHttpApi() {
             res.end(JSON.stringify({ error: `terminal ${termId} not found` }));
             return;
           }
+          // モバイル UI や VK Orchestrator からの入力も利用者操作として扱い、過去の表示を
+          // 根拠に信頼関連の自動 Enter を送らない。
+          disarmTrustAutomationForUserInput(String(termId), input);
           // 「本文 + 末尾 Enter」を 1 リクエストで受け取った場合は、本文と Enter を
           // 別々の write に分割して送る（まとめて送ると Claude Code が末尾 \r を
           // ペーストの改行として吸収し Enter 確定にならないため。SEND_ENTER_SPLIT_DELAY_MS 参照）。

@@ -7,10 +7,12 @@
 // issue #371 ではこのモジュールの時間ゲートで発火可能な時間を限定した。issue #373 では
 // 後述の isTrustPrompt も併用し、時間窓の内側でも信頼確認以外には発火させない。
 //
-// これを防ぐため、自動 Enter 送信を次の2条件を両方満たす間だけに限定する（AND 条件）。
+// これを防ぐため、自動 Enter 送信を原則として次の2条件を両方満たす間だけに限定する（AND 条件）。
 //   1. ペイン作成（pty spawn）からの経過時間が TRUST_WINDOW_MS 以内であること
 //   2. AI エンジンの起動完了（READY_PATTERN 一致）を検知してから READY_GRACE_MS を
 //      超えて経っていないこと（未検知を含む）
+// 例外として、タスク用ポリシー付き Codex の「制限付きで開く」画面には条件2を過ぎても
+// 応答できる。この遅延応答は initialCommand 送信後に無効化し、過去の表示では発火させない。
 //
 // 条件2を「ready を検知したら即座に禁止」ではなく「検知してから READY_GRACE_MS の
 // 猶予を設ける」形にしているのは、安藤のセキュリティレビュー（issue #371 の
@@ -134,6 +136,7 @@ function isTaskPolicyCodexLaunch(engine, launchOptions) {
  *   canAutoRespond: (now: number) => boolean,
  *   canAutoRespondToPrompt: (output: string, now: number, recentOutput?: string) => boolean,
  *   markTrustHandled: () => void,
+ *   disableDelayedRestrictedResponse: () => void,
  *   markReadyDetected: (now: number) => void,
  *   isReadyDetected: () => boolean,
  *   isTrustHandled: () => boolean,
@@ -152,6 +155,7 @@ function createTrustPromptGate({
   }
 
   let trustHandled = false;
+  let delayedRestrictedResponseEnabled = true;
   // ready を検知した時刻。未検知は null（＝猶予の制約を受けない）。
   let readyAt = null;
 
@@ -189,6 +193,7 @@ function createTrustPromptGate({
     if (!isRestrictedOpenPrompt(output)) return false;
     if (isWithinReadyGrace(now)) return true;
     return taskPolicyLaunch
+      && delayedRestrictedResponseEnabled
       && typeof recentOutput === 'string'
       && RESTRICTED_OPEN_SCREEN_PATTERN.test(recentOutput)
       && !COMMAND_APPROVAL_PATTERN.test(recentOutput);
@@ -197,6 +202,12 @@ function createTrustPromptGate({
   // 自動 Enter を送信した（以後は二度と送らない）
   function markTrustHandled() {
     trustHandled = true;
+  }
+
+  // initialCommand 送信後は、過去の表示を根拠に ready 猶予後の例外応答をしない。
+  // 猶予内の通常応答はチャンク分割対策として引き続き許可する。
+  function disableDelayedRestrictedResponse() {
+    delayedRestrictedResponseEnabled = false;
   }
 
   // AI エンジンの起動完了を検知した時刻を記録する。以後は readyGraceMs の間だけ
@@ -228,7 +239,8 @@ function createTrustPromptGate({
     const { initialCommandPending = false } = opts;
     // タスク用ポリシー付きペインは、ready 猶予を過ぎてからも「制限付きで開く」画面を待つため、
     // 未発火の間は時間窓が閉じるまで監視を続ける（猶予切れだけでは止めない。issue #448）。
-    const graceClosed = !isWithinReadyGrace(now) && !(taskPolicyLaunch && !trustHandled);
+    const graceClosed = !isWithinReadyGrace(now)
+      && !(taskPolicyLaunch && delayedRestrictedResponseEnabled && !trustHandled);
     const windowClosed = !isWindowOpen(now) || graceClosed;
     return windowClosed && !initialCommandPending;
   }
@@ -237,6 +249,7 @@ function createTrustPromptGate({
     canAutoRespond,
     canAutoRespondToPrompt,
     markTrustHandled,
+    disableDelayedRestrictedResponse,
     markReadyDetected,
     isReadyDetected,
     isTrustHandled,

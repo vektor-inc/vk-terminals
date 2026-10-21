@@ -1238,12 +1238,12 @@ test('terminal:create はタスク用ポリシー判定を信頼確認ゲート�
   assert.match(handler, /createTrustPromptGate\(\{[\s\S]{0,300}?taskPolicyLaunch,[\s\S]{0,40}?\}\)/);
 });
 
-test('terminal:create の initialCommand と利用者入力は信頼確認の自動応答を無効化する', () => {
+test('terminal:create の initialCommand は遅延応答だけを無効化し、利用者入力は自動応答を完全に無効化する', () => {
   const handlerStart = mainSource.indexOf("ipcMain.handle('terminal:create'");
   const inputStart = mainSource.indexOf("ipcMain.on('terminal:input'");
   const createHandler = mainSource.slice(handlerStart, inputStart);
   const inputHandler = mainSource.slice(inputStart, mainSource.indexOf("ipcMain.on('terminal:resize'"));
-  assert.match(createHandler, /trustGate\.markTrustHandled\(\);\s*ptyProcess\.write\(config\.initialCommand/);
+  assert.match(createHandler, /trustGate\.disableDelayedRestrictedResponse\(\);\s*ptyProcess\.write\(config\.initialCommand/);
   assert.match(inputHandler, /disarmTrustAutomationForUserInput\(id, data\)/);
 });
 

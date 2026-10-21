@@ -2048,8 +2048,9 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
       if (sent || !config.initialCommand) return;
       sent = true;
       if (ptys.has(id)) {
-        // initialCommand 後に過去の表示を根拠として猶予後の自動応答をしない。
-        trustGate.markTrustHandled();
+        // initialCommand 後に過去の表示を根拠として猶予後の例外応答をしない。
+        // ready 猶予内の通常応答は、分割された信頼確認画面を処理するため維持する。
+        trustGate.disableDelayedRestrictedResponse();
         ptyProcess.write(config.initialCommand + '\r');
         console.log(`${LOG_PREFIX} initialCommand sent (${reason})`);
       }

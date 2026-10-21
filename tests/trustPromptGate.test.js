@@ -435,6 +435,23 @@ test('issue #448: タスク用ポリシー付きは ready 検知から3秒を超
   assert.equal(gate.canAutoRespondToPrompt(RESTRICTED_OPEN_PROMPT_448, late), false);
 });
 
+test('issue #448: 遅延応答を無効化しても ready 猶予内の信頼確認には応答する', () => {
+  const gate = createTrustPromptGate({ spawnTime: 0, taskPolicyLaunch: true });
+  gate.markReadyDetected(500);
+  gate.disableDelayedRestrictedResponse();
+  assert.equal(gate.canAutoRespondToPrompt(CODEX_CURRENT_TRUST_PROMPT, 500 + READY_GRACE_MS - 1), true);
+});
+
+test('issue #448: 遅延応答の無効化後だけ ready 猶予後の制限付き画面に応答しない', () => {
+  const enabledGate = createTrustPromptGate({ spawnTime: 0, taskPolicyLaunch: true });
+  const disabledGate = createTrustPromptGate({ spawnTime: 0, taskPolicyLaunch: true });
+  for (const gate of [enabledGate, disabledGate]) gate.markReadyDetected(500);
+  disabledGate.disableDelayedRestrictedResponse();
+  const late = 500 + READY_GRACE_MS + 1;
+  assert.equal(enabledGate.canAutoRespondToPrompt(RESTRICTED_OPEN_PROMPT_448, late), true);
+  assert.equal(disabledGate.canAutoRespondToPrompt(RESTRICTED_OPEN_PROMPT_448, late), false);
+});
+
 test('issue #448: タスク用ポリシーでないペインは ready 猶予後の制限付き画面に応答しない', () => {
   const gate = createTrustPromptGate({ spawnTime: 0 });
   gate.markReadyDetected(500);

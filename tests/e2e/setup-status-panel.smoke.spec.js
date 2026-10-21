@@ -66,7 +66,7 @@ const ALL_OK = buildStatus([
   requirement({ id: 'claude', label: 'Claude Code', ok: true, current: '2.0.14' }),
 ]);
 
-async function launchEmbedded({ initialStatus, prefix }) {
+async function launchEmbedded({ initialStatus, prefix, seedHome }) {
   const port = await getFreePort();
   const statusDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-setup-status-'));
   const statusFile = path.join(statusDir, 'status.json');
@@ -76,6 +76,7 @@ async function launchEmbedded({ initialStatus, prefix }) {
   const launched = await launchAppAndWait({
     port,
     prefix,
+    seedHome,
     entry: launcherPath,
     env: { VK_TEST_SETUP_STATUS_FILE: statusFile, VK_TEST_SETUP_CWD: setupCwd },
   });
@@ -436,6 +437,30 @@ test('確認に失敗したときは「確認できませんでした」と再�
     await panel.getByRole('button', { name: 'もう一度確認' }).click();
     await expect(panel.locator('.setup-lead')).toBeVisible();
     await expect(win.locator('#task-list .task-list-setup-link')).toBeVisible();
+  } finally {
+    await ctx.cleanup();
+  }
+});
+
+test('2 回目以降の起動（記録あり）で未完了でも、最初のペインは通常のまま、確認が終わってからパネルとサイドバーの停止理由が出る', async () => {
+  // 記録がある起動は確認を待たずに通常のペインを作り、パネルとサイドバーの表示は無言の再確認（renderer/app.js の initApp 末尾）だけで出る。
+  const ctx = await launchEmbedded({
+    initialStatus: CLAUDE_MISSING,
+    prefix: 'vk-terminals-e2e-setup-recorded-',
+    seedHome: ({ configDir }) => {
+      fs.writeFileSync(path.join(configDir, 'setup-auto-open.json'), `${JSON.stringify({ openedAt: '2026-10-01T00:00:00.000Z' })}\n`);
+    },
+  });
+  try {
+    const { win } = ctx;
+    await expect(win.locator('.pane')).toHaveCount(1);
+    await expect(win.locator('#setup-panel-title')).toBeVisible({ timeout: 20_000 });
+    // 最初のペインはセットアップ用ペインではない（Claude 無しのシェルの案内も、セットアップ用ペインの表示ボタンも出ない）。
+    const panel = win.locator('.setup-panel');
+    await expect(panel.getByText('このペインで Claude Code を入れてください')).toHaveCount(0);
+    await expect(panel.getByRole('button', { name: 'セットアップ用のペインを表示' })).toHaveCount(0);
+    await expect(win.locator('.pane')).toHaveCount(1);
+    await expect(win.locator('#task-list .task-list-stale')).toContainText('セットアップ未完了のため停止中');
   } finally {
     await ctx.cleanup();
   }

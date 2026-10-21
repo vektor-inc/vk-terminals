@@ -181,7 +181,9 @@ async function getFreePort() {
 // 別の失敗は、devicePixelRatio 1 の環境でも再現しており上記とは無関係だった。原因と
 // 対応（spec 側の座標計算のみで解決し、この関数・アプリ本体は無改造）は
 // escape-modal-layer-regression.smoke.spec.js 側のコメントを参照。
-async function launchApp({ port, prefix, env = {}, config = {}, launchAi = false, entry = '.', budget = createBootBudget(BOOT_TOTAL_BUDGET_MS) }) {
+// seedHome: 起動前に隔離した HOME へファイルを置くための関数 ({ tmpHome, configDir }) => void。
+//   ~/.vk-terminals/ 配下に「2 回目以降の起動」の記録（setup-auto-open.json 等）を作っておきたい spec が使う。
+async function launchApp({ port, prefix, env = {}, config = {}, launchAi = false, entry = '.', seedHome = null, budget = createBootBudget(BOOT_TOTAL_BUDGET_MS) }) {
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   let app = null;
   try {
@@ -205,6 +207,7 @@ async function launchApp({ port, prefix, env = {}, config = {}, launchAi = false
       additionalPanes: [],
       ...resolvedConfig,
     }), 'utf8');
+    if (typeof seedHome === 'function') seedHome({ tmpHome, configDir });
 
     app = await runStage(budget, 'electron-launch', (fnTimeoutMs) => _electron.launch({
       // --force-device-scale-factor を付けない理由は launchApp 冒頭のコメントを参照（issue #357）。

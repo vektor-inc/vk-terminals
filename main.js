@@ -2222,8 +2222,7 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
   return { id, cwd: resolvedCwd, engine: resolvedEngine };
 });
 
-// renderer と HTTP API のどちらから届いた入力でも、端末自身が返す制御応答だけなら
-// 信頼確認の監視を維持する。通常文字・キー操作・外部ツールの送信は同じ扱いで止める。
+// renderer から届く端末自身の制御応答では監視を維持し、実際の利用者入力で止める。
 function disarmTrustAutomationForUserInput(id, data) {
   if (!containsUserTerminalInput(data)) return;
   const disarmPaneCreationWatcher = paneCreationTrustWatchers.get(id);
@@ -2880,9 +2879,7 @@ function startHttpApi() {
             res.end(JSON.stringify({ error: `terminal ${termId} not found` }));
             return;
           }
-          // モバイル UI や VK Orchestrator からの入力も利用者操作として扱い、過去の表示を
-          // 根拠に信頼関連の自動 Enter を送らない。
-          disarmTrustAutomationForUserInput(String(termId), input);
+          // 認証済みの自動化経路は確認画面より先に入力しうるため、信頼確認の監視を止めない。
           // 「本文 + 末尾 Enter」を 1 リクエストで受け取った場合は、本文と Enter を
           // 別々の write に分割して送る（まとめて送ると Claude Code が末尾 \r を
           // ペーストの改行として吸収し Enter 確定にならないため。SEND_ENTER_SPLIT_DELAY_MS 参照）。

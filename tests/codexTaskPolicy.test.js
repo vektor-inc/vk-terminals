@@ -1195,7 +1195,7 @@ test('terminal:create の initialCommand と利用者入力は信頼確認の自
   assert.match(inputHandler, /disarmTrustAutomationForUserInput\(id, data\)/);
 });
 
-test('terminal:input と HTTP 入力 API は同じ利用者入力判定で信頼確認の自動応答を無効化する', () => {
+test('terminal:input は利用者入力判定で無効化し、HTTP 入力 API は信頼確認の監視を維持する', () => {
   const helperStart = mainSource.indexOf('function disarmTrustAutomationForUserInput');
   const inputStart = mainSource.indexOf("ipcMain.on('terminal:input'");
   const helper = mainSource.slice(helperStart, inputStart);
@@ -1206,7 +1206,7 @@ test('terminal:input と HTTP 入力 API は同じ利用者入力判定で信頼
   assert.match(helper, /containsUserTerminalInput\(data\)/);
   assert.match(helper, /disarmPaneCreationWatcher\(\)/);
   assert.match(helper, /restartTrustResponder\.markInputSent\(\)/);
-  assert.match(httpSendHandler, /disarmTrustAutomationForUserInput\(String\(termId\), input\)/);
+  assert.doesNotMatch(httpSendHandler, /disarmTrustAutomationForUserInput/);
 });
 
 test('terminal:create は PTY を作る前に起動オプションを解決し、失敗したら例外で返す（Codex 未起動のペインを成功にしない）', () => {

@@ -1993,6 +1993,7 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
     // 別に持ち、initialCommandPending の算出に加える。
     let initialCommandGaveUp = false;
     let buffer = '';
+    let recentChunks = [];
 
     // 信頼確認プロンプトへの自動 Enter 送信を許可する条件（ペイン作成からの経過時間が
     // TRUST_WINDOW_MS 以内、かつ ready 検知から READY_GRACE_MS 以内）を判定するゲート
@@ -2028,6 +2029,8 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
       if (sent || !config.initialCommand) return;
       sent = true;
       if (ptys.has(id)) {
+        // initialCommand 後に過去の表示を根拠として猶予後の自動応答をしない。
+        trustGate.markTrustHandled();
         ptyProcess.write(config.initialCommand + '\r');
         console.log(`${LOG_PREFIX} initialCommand sent (${reason})`);
       }
@@ -2068,6 +2071,9 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
     promptWatcher = (data) => {
       const stripped = stripAnsiForPattern(data);
       buffer = (buffer + stripped).slice(-4096);
+      // 画面分割を吸収しつつ、累積バッファ内の古い引用文言は構造照合から外す。
+      recentChunks = [...recentChunks, stripped].slice(-3);
+      const recentOutput = recentChunks.join('').slice(-1024);
 
       const now = performance.now();
 
@@ -2075,7 +2081,7 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
       // （ペイン作成から TRUST_WINDOW_MS 以内 かつ ready 検知から READY_GRACE_MS 以内）の
       // 内側で、信頼確認の文脈があり、まだ発火していない場合のみ。文脈判定は
       // isTrustPrompt（issue #373）、時間・回数の判定は trustGate（issue #371）へ委譲する。
-      if (trustGate.canAutoRespondToPrompt(buffer, now)) {
+      if (trustGate.canAutoRespondToPrompt(buffer, now, recentOutput)) {
         trustGate.markTrustHandled();
         buffer = '';
         console.log(`${LOG_PREFIX} trust prompt detected, sending Enter (terminal ${id})`);
@@ -2217,7 +2223,14 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
 
 ipcMain.on('terminal:input', (event, id, data) => {
   const p = ptys.get(id);
-  if (p) p.write(data);
+  if (p) {
+    // 利用者入力後は、過去の表示を根拠に信頼関連の自動 Enter を送らない。
+    const disarmPaneCreationWatcher = paneCreationTrustWatchers.get(id);
+    if (disarmPaneCreationWatcher) disarmPaneCreationWatcher();
+    const restartTrustResponder = restartTrustResponders.get(id);
+    if (restartTrustResponder) restartTrustResponder.markInputSent();
+    p.write(data);
+  }
 });
 
 ipcMain.on('terminal:resize', (event, id, cols, rows) => {

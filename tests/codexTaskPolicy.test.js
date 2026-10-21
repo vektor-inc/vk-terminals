@@ -1179,6 +1179,23 @@ test('事前確認（dryRun）は専用フォルダを作らず、通った後�
 
 const mainSource = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
 
+test('terminal:create はタスク用ポリシー判定を信頼確認ゲートへ渡す', () => {
+  const handlerStart = mainSource.indexOf("ipcMain.handle('terminal:create'");
+  const handlerEnd = mainSource.indexOf("ipcMain.on('terminal:input'");
+  const handler = mainSource.slice(handlerStart, handlerEnd);
+  assert.match(handler, /createTrustPromptGate\(\{[\s\S]{0,300}?taskPolicyLaunch,[\s\S]{0,40}?\}\)/);
+});
+
+test('terminal:create の initialCommand と利用者入力は信頼確認の自動応答を無効化する', () => {
+  const handlerStart = mainSource.indexOf("ipcMain.handle('terminal:create'");
+  const inputStart = mainSource.indexOf("ipcMain.on('terminal:input'");
+  const createHandler = mainSource.slice(handlerStart, inputStart);
+  const inputHandler = mainSource.slice(inputStart, mainSource.indexOf("ipcMain.on('terminal:resize'"));
+  assert.match(createHandler, /trustGate\.markTrustHandled\(\);\s*ptyProcess\.write\(config\.initialCommand/);
+  assert.match(inputHandler, /disarmPaneCreationWatcher\(\)/);
+  assert.match(inputHandler, /restartTrustResponder\.markInputSent\(\)/);
+});
+
 test('terminal:create は PTY を作る前に起動オプションを解決し、失敗したら例外で返す（Codex 未起動のペインを成功にしない）', () => {
   const handlerStart = mainSource.indexOf("ipcMain.handle('terminal:create'");
   const handlerEnd = mainSource.indexOf("ipcMain.on('terminal:input'");

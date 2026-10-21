@@ -409,6 +409,42 @@ test('issue #448 再起動経路: タスク用ポリシー付き Codex は ready
   assert.deepEqual(pty.writes, ['\r'], '2回目は送らない');
 });
 
+test('issue #448 再起動経路: 入力後に制限付き画面が出ても Enter を送らない', () => {
+  const pty = createFakePty();
+  const clock = createFakeClock(0);
+  const responder = attachTrustAutoResponder(pty, { spawnTime: 0, engine: 'codex', taskPolicyLaunch: true, now: clock.now });
+  clock.advance(500);
+  pty.emit('OpenAI Codex (v0.0.0)');
+  responder.markInputSent();
+  clock.advance(6000);
+  pty.emit(RESTRICTED_OPEN_PROMPT);
+  assert.deepEqual(pty.writes, []);
+});
+
+test('issue #448 再起動経路: 引用された画面とコマンド承認が同じ直近出力にあれば Enter を送らない', () => {
+  const pty = createFakePty();
+  const clock = createFakeClock(0);
+  attachTrustAutoResponder(pty, { spawnTime: 0, engine: 'codex', taskPolicyLaunch: true, now: clock.now });
+  clock.advance(500);
+  pty.emit('OpenAI Codex (v0.0.0)');
+  clock.advance(6000);
+  pty.emit(`${RESTRICTED_OPEN_PROMPT}\nAllow command?\n1. Yes, proceed`);
+  assert.deepEqual(pty.writes, []);
+});
+
+test('issue #448 再起動経路: 3チャンクに分割された本物の制限付き画面には1回だけ Enter を送る', () => {
+  const pty = createFakePty();
+  const clock = createFakeClock(0);
+  attachTrustAutoResponder(pty, { spawnTime: 0, engine: 'codex', taskPolicyLaunch: true, now: clock.now });
+  clock.advance(500);
+  pty.emit('OpenAI Codex (v0.0.0)');
+  clock.advance(6000);
+  pty.emit('Folder access\nConfig, hooks, and exec policies ');
+  pty.emit('from untrusted folders stay disabled.\n› 1. Open ');
+  pty.emit('restricted\n  2. Quit');
+  assert.deepEqual(pty.writes, ['\r']);
+});
+
 test('issue #448 再起動経路: タスク用ポリシーでない Codex は ready 検知から3秒を超えた「制限付きで開く」画面に Enter を送らない', () => {
   const pty = createFakePty();
   const clock = createFakeClock(0);

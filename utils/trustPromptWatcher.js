@@ -108,6 +108,7 @@ function attachTrustAutoResponder(ptyProcess, options = {}) {
   const READY_PATTERN = getReadyPatternForEngine(engine);
 
   let buffer = '';
+  let recentChunks = [];
   let subscription = null;
 
   // データが一切届かない場合でも（想定外の異常系。通常は起動バナー等で必ず何か届く）
@@ -139,9 +140,13 @@ function attachTrustAutoResponder(ptyProcess, options = {}) {
   subscription = ptyProcess.onData((data) => {
     const stripped = stripAnsiForPattern(data);
     buffer = (buffer + stripped).slice(-4096);
+    // 実機では1画面が複数チャンクに分かれるため、直近3チャンクだけを構造照合に使う。
+    // 累積バッファに残った過去の引用文言では猶予後に発火させない。
+    recentChunks = [...recentChunks, stripped].slice(-3);
+    const recentOutput = recentChunks.join('').slice(-1024);
     const nowValue = now();
 
-    if (trustGate.canAutoRespondToPrompt(buffer, nowValue)) {
+    if (trustGate.canAutoRespondToPrompt(buffer, nowValue, recentOutput)) {
       trustGate.markTrustHandled();
       buffer = '';
       log('trust prompt detected after restart, sending Enter');
@@ -161,6 +166,7 @@ function attachTrustAutoResponder(ptyProcess, options = {}) {
 
   return {
     dispose,
+    markInputSent: trustGate.markTrustHandled,
   };
 }
 

@@ -408,7 +408,7 @@ const {
   isTaskPolicyCodexLaunch,
 } = require('../utils/trustPromptGate');
 
-const RESTRICTED_OPEN_PROMPT_448 = 'Config, hooks, and exec policies from untrusted folders stay disabled.\n› 1. Open restricted\n  2. Quit';
+const RESTRICTED_OPEN_PROMPT_448 = 'Folder access\nConfig, hooks, and exec policies from untrusted folders stay disabled.\n› 1. Open restricted\n  2. Quit';
 
 test('issue #448: 制限付きで開く画面と信頼を与える画面は別の判定になる', () => {
   assert.equal(isRestrictedOpenPrompt(RESTRICTED_OPEN_PROMPT_448), true);
@@ -455,6 +455,14 @@ test('issue #448: 猶予後の制限付き画面は選択肢（Open restricted�
   gate.markReadyDetected(500);
   const sentenceOnly = 'Config, hooks, and exec policies from untrusted folders stay disabled.';
   assert.equal(gate.canAutoRespondToPrompt(sentenceOnly, 500 + READY_GRACE_MS + 1), false);
+});
+
+test('issue #448: 猶予後は累積バッファ内の引用文言とコマンド承認画面へ応答しない', () => {
+  const gate = createTrustPromptGate({ spawnTime: 0, taskPolicyLaunch: true });
+  gate.markReadyDetected(500);
+  const approval = `${RESTRICTED_OPEN_PROMPT_448}\nAllow command?\n1. Yes, proceed`;
+  assert.equal(gate.canAutoRespondToPrompt(approval, 500 + READY_GRACE_MS + 1, 'Allow command?\n1. Yes, proceed'), false);
+  assert.equal(gate.canAutoRespondToPrompt(approval, 500 + READY_GRACE_MS + 1, approval), false);
 });
 
 test('issue #448: タスク用ポリシー付きでも時間窓（30秒）を過ぎたら応答せず、監視も終わる', () => {

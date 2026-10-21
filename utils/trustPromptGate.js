@@ -66,7 +66,11 @@ const RESTRICTED_OPEN_PATTERNS = [
 
 // ready 猶予を過ぎてから出た「制限付きで開く」画面に応答するときだけ追加で要求する、選択肢の文言（issue #448）。
 // 起動後に Codex の出力へ説明文だけが引用された場合に、遅れて誤発火しないための絞り込み。
-const RESTRICTED_OPEN_CHOICE_PATTERN = /Open\s*restricted/i;
+const RESTRICTED_OPEN_SCREEN_PATTERN = /Folder\s*access[\s\S]{0,400}?Config,\s*hooks,\s*and\s*exec\s*policies\s*from\s*untrusted\s*folders\s*stay\s*disabled\.?[\s\S]{0,80}?1\.\s*Open\s*restricted[\s\S]{0,40}?2\.\s*Quit/i;
+
+// コマンド承認画面と同居する出力には Enter を送らない。引用された Folder access 画面の
+// 直後に承認画面が出た場合も、既定選択を誤って承認しないため安全側へ倒す。
+const COMMAND_APPROVAL_PATTERN = /Allow\s*command|Yes,\s*proceed/i;
 
 /**
  * PTY 出力に、リポジトリを信頼済みにする確認画面を示す文脈が含まれるか判定する（issue #448 で分離）。
@@ -128,7 +132,7 @@ function isTaskPolicyCodexLaunch(engine, launchOptions) {
  *   true のときに限り、「制限付きで開く」画面は ready 猶予を過ぎても時間窓の中なら1回だけ自動応答する（issue #448）。
  * @returns {{
  *   canAutoRespond: (now: number) => boolean,
- *   canAutoRespondToPrompt: (output: string, now: number) => boolean,
+ *   canAutoRespondToPrompt: (output: string, now: number, recentOutput?: string) => boolean,
  *   markTrustHandled: () => void,
  *   markReadyDetected: (now: number) => void,
  *   isReadyDetected: () => boolean,
@@ -179,12 +183,15 @@ function createTrustPromptGate({
   //   - 「制限付きで開く」画面: 猶予内は従来どおり。タスク用ポリシー付きペインに限り、猶予を過ぎていても
   //     窓の内側で未発火なら許可する（起動完了バナーと Folder access の描画が別で、3秒を超えて出ても止まらない
   //     ようにするため。issue #448）。猶予後は選択肢の文言（Open restricted）も要求する。
-  function canAutoRespondToPrompt(output, now) {
+  function canAutoRespondToPrompt(output, now, recentOutput = output) {
     if (trustHandled || !isWindowOpen(now)) return false;
     if (isTrustGrantPrompt(output)) return isWithinReadyGrace(now);
     if (!isRestrictedOpenPrompt(output)) return false;
     if (isWithinReadyGrace(now)) return true;
-    return taskPolicyLaunch && RESTRICTED_OPEN_CHOICE_PATTERN.test(output);
+    return taskPolicyLaunch
+      && typeof recentOutput === 'string'
+      && RESTRICTED_OPEN_SCREEN_PATTERN.test(recentOutput)
+      && !COMMAND_APPROVAL_PATTERN.test(recentOutput);
   }
 
   // 自動 Enter を送信した（以後は二度と送らない）

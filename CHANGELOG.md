@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 機能追加 ] VK Orchestrator のアプリに部品として組み込めるよう、表示名・資源の置き場所・更新方針・設定ファイルの場所を渡して起動できる組み込み用の入口 `embedded.js` を追加。アプリにまとめられて動くときは git による自己更新を行わず、二重起動やポートの衝突を「すでに起動しています。終了してから開いてください。」と知らせる（`electron .` での起動は従来どおり）（[#455](https://github.com/vektor-inc/vk-terminals/issues/455)）
+
 ## 1.76.1
 
 - [ 不具合修正 ] 自動処理用 Codex の起動完了表示から3秒を超えて `Folder access`（`Open restricted`）の確認画面が出ると、自動で確定されず利用者が Enter を押すまで作業が始まらなかった不具合を修正（信頼を与える画面への自動応答の条件は変更なし）（[#448](https://github.com/vektor-inc/vk-terminals/issues/448)）

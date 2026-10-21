@@ -86,6 +86,18 @@ const {
   stopAgentChildren,
 } = require('./utils/restartAgent');
 const { resolveInstanceId, buildHealthResponse } = require('./utils/instanceId');
+// 組み込み用の入口（embedded.js）から渡される起動オプションと、その解決（issue #455）。
+const {
+  getEmbeddedOptions,
+  resolveAppTitle,
+  resolveResourceRoot,
+  isBundledRun,
+  shouldSelfUpdate,
+  shouldGuardAlreadyRunning,
+  resolveSettingsDescriptorPath,
+  resolveOwnConfigTargetPath: resolveConfigTargetPathFor,
+} = require('./utils/runtimeOptions');
+const { isPortInUse, buildAlreadyRunningNotice } = require('./utils/alreadyRunning');
 const {
   describeSettingsValues,
   describeTargetPaths,
@@ -193,6 +205,13 @@ let nextClosePaneRequestId = 1;
 
 // ─── Terminal state & HTTP API ───────────────────────────────────────────────
 const DATA_DIR = path.join(os.homedir(), '.vk-terminals');
+// 組み込み用の入口（embedded.js）から起動されたときだけ値が入る。electron . では null。
+const EMBEDDED_OPTIONS = getEmbeddedOptions();
+// 画面（renderer）・preload・アイコン・スプライト・設定スキーマ等の読み取り専用の資源の置き場所。
+// 書き込みが必要なファイル（config.json 等）はここへ置かず DATA_DIR 側に置く。
+const RESOURCE_ROOT = resolveResourceRoot({ embedded: EMBEDDED_OPTIONS, defaultRoot: __dirname });
+// アプリにまとめられて動いている間は、資源の置き場所を読み取り専用として扱う。
+const BUNDLED_RUN = isBundledRun({ isPackaged: app.isPackaged, embedded: EMBEDDED_OPTIONS });
 const STATE_FILE = path.join(DATA_DIR, 'states.json');
 // 自動処理用 Codex に許す唯一の追加書き込み先（会話整理の引き継ぎ先。issue #428）。
 const CODEX_TASK_POLICY_HANDOFF_DIR = path.join(os.homedir(), '.claude', 'handoff');
@@ -273,10 +292,8 @@ if (RESOLVED_READY_GRACE_MS !== DEFAULT_READY_GRACE_MS) {
 // ウィンドウタイトルバーおよびヘッダーに表示するアプリ名。既定は 'VK Terminals'。
 // 呼び出し側（例: vk-orchestrator）が env VK_TERMINALS_APP_TITLE を渡すと、その名称
 // （例: 'VK Orchestrator'）を表示する。renderer には app:get-config 経由で伝える。
-const APP_TITLE = (() => {
-  const t = process.env.VK_TERMINALS_APP_TITLE;
-  return typeof t === 'string' && t.trim() ? t.trim() : 'VK Terminals';
-})();
+// 組み込み用の入口から渡された表示名を優先する。
+const APP_TITLE = resolveAppTitle({ embedded: EMBEDDED_OPTIONS, env: process.env });
 // 呼び出し側（例: vk-orchestrator）が起動時に渡した GUI インスタンス識別子。
 // /api/health で同じポート上の別インスタンスとの取り違えを検出できるようにする。
 // 未指定・空文字の場合は後方互換のため health レスポンスへ instanceId を含めない。
@@ -662,7 +679,7 @@ function stopWidgetWatcher() {
 function userConfigCandidatePaths() {
   return [
     path.join(DATA_DIR, 'config.json'),
-    path.join(__dirname, 'config.json'),
+    path.join(RESOURCE_ROOT, 'config.json'),
     path.join(os.homedir(), '.claude', 'terminals-config.json'), // 後方互換
   ];
 }
@@ -1173,6 +1190,8 @@ async function cleanupPtys() {
  * 起動時に新バージョンがあるか確認し、あれば git pull して再起動を促す
  */
 async function checkAndUpdate() {
+  // アプリにまとめられている場合は git の作業ツリーではなく、読み取り専用のため更新しない。
+  if (!shouldSelfUpdate({ isPackaged: app.isPackaged, embedded: EMBEDDED_OPTIONS })) return;
   const appDir = __dirname;
   const opts = { cwd: appDir };
   try {
@@ -1285,7 +1304,7 @@ function readXtermCss() {
 // アプリ同梱の静的ファイルだが、renderer からは fs で読めないのでここで読んで渡す。
 // 読めなかったものは載せない（renderer/agentRoom.js が手続き生成へフォールバックする）。
 function readAgentRoomSprites() {
-  const dir = path.join(__dirname, 'renderer', 'sprites');
+  const dir = path.join(RESOURCE_ROOT, 'renderer', 'sprites');
   const sprites = {};
   let files = [];
   try {
@@ -1348,7 +1367,7 @@ function createWindow() {
       // おり、sandbox: true にすると preload から Node の require が使えず解決できなかった。
       // 現在はその解決を main プロセス側（本ファイルの ipcMain.handle('app:get-xterm-resources')
       // 等）へ移し、preload は IPC 経由で受け取るだけにしたため、sandbox を有効にできる。
-      preload: path.join(__dirname, 'preload.js'),
+      preload: path.join(RESOURCE_ROOT, 'preload.js'),
       // clipboard 書き込み上限（issue #325）を preload へ渡す。sandbox: true の preload は
       // ローカルファイルの相対 require ができず utils/clipboardLimits.js を直接 require
       // できないため、Electron が公式に用意している「preload へ小さな値を渡す」仕組み
@@ -1386,11 +1405,57 @@ function createWindow() {
     pushMenuUpdate();
     pushWidgetUpdate();
   });
-  win.loadFile('renderer/index.html');
+  win.loadFile(path.join(RESOURCE_ROOT, 'renderer', 'index.html'));
   // win.webContents.openDevTools(); // uncomment to debug
 }
 
+// 二重起動の検知（issue #455）。electron . （開発・zip 版）では行わず、アプリにまとめられた
+// 起動のときだけ行う。同じアプリの二重起動は requestSingleInstanceLock、zip 版との衝突は
+// API サーバーのポートが埋まっているかで見分ける（ロックは userData ごとなので zip 版とは別扱いになる）。
+// 知らせたあとは app.quit() ではなく app.exit(0) で抜ける。app.quit() は before-quit を通り、
+// finalizeBeforeQuit() が STATE_FILE（先に動いている側が使っている states.json）を消してしまうため。
+const GUARD_ALREADY_RUNNING = shouldGuardAlreadyRunning({ isPackaged: app.isPackaged, embedded: EMBEDDED_OPTIONS });
+let blockedByAlreadyRunning = false;
+
+function showAlreadyRunningNotice(reason) {
+  const notice = buildAlreadyRunningNotice({ appTitle: APP_TITLE, reason, port: API_PORT });
+  dialog.showMessageBoxSync({
+    type: 'info',
+    title: notice.title,
+    message: notice.message,
+    detail: notice.detail,
+    buttons: ['OK'],
+  });
+}
+
+if (GUARD_ALREADY_RUNNING) {
+  if (!app.requestSingleInstanceLock()) {
+    blockedByAlreadyRunning = true;
+    app.whenReady().then(() => {
+      showAlreadyRunningNotice('lock');
+      app.exit(0);
+    });
+  } else {
+    // 先に動いている側は、後から開かれたら前面に出す。
+    app.on('second-instance', () => {
+      const [existingWindow] = BrowserWindow.getAllWindows();
+      if (!existingWindow) return;
+      if (existingWindow.isMinimized()) existingWindow.restore();
+      existingWindow.focus();
+    });
+  }
+}
+
 app.whenReady().then(async () => {
+  if (blockedByAlreadyRunning) return;
+  if (GUARD_ALREADY_RUNNING) {
+    const apiHost = normalizeApiHost(loadUserConfig().apiHost);
+    if (await isPortInUse(API_PORT, apiHost)) {
+      showAlreadyRunningNotice('port');
+      app.exit(0);
+      return;
+    }
+  }
   createWindow();
   startWidgetWatcher();
   await checkAndUpdate();
@@ -1529,22 +1594,20 @@ ipcMain.handle('codex-usage:get', () => getCodexUsageUnified());
 // 汎用実装にすることで、スタンドアロン利用時は影響を受けない（env 未指定なら
 // settings:describe が available:false を返し、ボタンごと非表示になる）。
 function settingsDescriptorPath() {
-  const p = process.env.VK_TERMINALS_SETTINGS;
-  return p && p.trim() ? p : null;
+  return resolveSettingsDescriptorPath({ embedded: EMBEDDED_OPTIONS, env: process.env });
 }
 
 // 組み込みディスクリプタが編集する「vk-terminals 自身の config.json」のパスを解決する。
 // loadUserConfig() の読み込み順に合わせ、既存の候補があればそれを、無ければ appDir 直下
 // （README の `cp config.example.json config.json` の既定先）を対象にする。
 function resolveOwnConfigTargetPath() {
-  const candidates = [
-    path.join(DATA_DIR, 'config.json'),
-    path.join(__dirname, 'config.json'),
-  ];
-  for (const c of candidates) {
-    if (fs.existsSync(c)) return c;
-  }
-  return path.join(__dirname, 'config.json');
+  return resolveConfigTargetPathFor({
+    existsSync: fs.existsSync,
+    dataDir: DATA_DIR,
+    resourceRoot: RESOURCE_ROOT,
+    // アプリにまとめられている間は資源の置き場所へ書かず、~/.vk-terminals/ に保存する。
+    resourceRootWritable: !BUNDLED_RUN,
+  });
 }
 
 // アクセストークン専用のパス解決（issue #313）。loadUserConfig() と探索順を完全に
@@ -1699,6 +1762,7 @@ function savePushSubscriptions(list) {
 function builtinSettingsDescriptor() {
   return buildBuiltinSettingsDescriptor({
     targetPath: resolveOwnConfigTargetPath(),
+    schemaPath: path.join(RESOURCE_ROOT, 'settings-schema.json'),
     onError: (error, schemaPath) => {
       console.error(`${LOG_PREFIX} Failed to load built-in settings schema: ${schemaPath}`, error);
     },
@@ -2658,7 +2722,7 @@ function startHttpApi() {
     // GET /  — スマホ等から状態確認・応答するモバイルページ
     //   tailscale serve 等で 127.0.0.1:13847 を tailnet に公開して使う想定。
     if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {
-      fs.readFile(path.join(__dirname, 'renderer', 'mobile.html'), (err, data) => {
+      fs.readFile(path.join(RESOURCE_ROOT, 'renderer', 'mobile.html'), (err, data) => {
         if (err) {
           res.writeHead(500, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'mobile page not found' }));
@@ -2696,7 +2760,7 @@ function startHttpApi() {
     // 起こりうるため、両方がこの1つの表を参照するようにした）。
     if (req.method === 'GET' && Object.prototype.hasOwnProperty.call(STATIC_FILES, url.pathname)) {
       const entry = STATIC_FILES[url.pathname];
-      fs.readFile(resolveStaticFilePath(__dirname, entry), (err, data) => {
+      fs.readFile(resolveStaticFilePath(RESOURCE_ROOT, entry), (err, data) => {
         if (err) {
           res.writeHead(500, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'static file not found' }));

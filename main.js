@@ -13,7 +13,7 @@ const { pathToFileURL } = require('url');
 const { stripAnsiForPattern } = require('./utils/stripAnsi');
 const {
   createTrustPromptGate,
-  isTrustPrompt,
+  isTaskPolicyCodexLaunch,
   TRUST_WINDOW_MS: DEFAULT_TRUST_WINDOW_MS,
   READY_GRACE_MS: DEFAULT_READY_GRACE_MS,
   resolvePositiveFiniteMs,
@@ -108,6 +108,7 @@ const {
   evaluateTokenRegistration,
 } = require('./utils/apiAuth');
 const { isAllowedApiHost } = require('./utils/apiHostAllowlist');
+const { containsUserTerminalInput } = require('./utils/terminalUserInput');
 // mobile.html（HTTP 配信）向け CSP ヘッダーの組み立て（issue #324）。
 const { buildMobileCsp } = require('./utils/csp');
 // clipboard へ書き込んでよい文字列の上限（issue #325）。定義はここ（utils/clipboardLimits.js）
@@ -1933,6 +1934,8 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
   // 専用 CODEX_HOME を作った後で組み立て・PTY 作成が失敗したら、使われないフォルダを回収する。
   let launchCommand = null;
   let discardLaunchHome = () => false;
+  // タスク用ポリシー（専用 CODEX_HOME）で起動する Codex か。信頼確認の自動応答の判定に使う（issue #448）。
+  let taskPolicyLaunch = false;
   if (!noClaude) {
     const launchResolution = resolveCodexLaunchOptions(resolvedEngine, options, { cwd: resolvedCwd });
     if (!launchResolution.ok) {
@@ -1940,6 +1943,7 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
       throw new Error(launchResolution.error);
     }
     discardLaunchHome = launchResolution.discard;
+    taskPolicyLaunch = isTaskPolicyCodexLaunch(resolvedEngine, launchResolution.options);
     try {
       const built = buildEngineAwareLaunchCommand(resolvedEngine, options.model, launchResolution.options);
       if (built.modelIgnored) {
@@ -2008,6 +2012,7 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
     // 別に持ち、initialCommandPending の算出に加える。
     let initialCommandGaveUp = false;
     let buffer = '';
+    let recentChunks = [];
 
     // 信頼確認プロンプトへの自動 Enter 送信を許可する条件（ペイン作成からの経過時間が
     // TRUST_WINDOW_MS 以内、かつ ready 検知から READY_GRACE_MS 以内）を判定するゲート
@@ -2019,6 +2024,7 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
       spawnTime,
       trustWindowMs: RESOLVED_TRUST_WINDOW_MS,
       readyGraceMs: RESOLVED_READY_GRACE_MS,
+      taskPolicyLaunch,
     });
 
     // 自動応答の窓が閉じ（経過時間超過、または ready 検知から猶予超過）、かつ
@@ -2042,6 +2048,9 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
       if (sent || !config.initialCommand) return;
       sent = true;
       if (ptys.has(id)) {
+        // initialCommand 後に過去の表示を根拠として猶予後の例外応答をしない。
+        // ready 猶予内の通常応答は、分割された信頼確認画面を処理するため維持する。
+        trustGate.disableDelayedRestrictedResponse();
         ptyProcess.write(config.initialCommand + '\r');
         console.log(`${LOG_PREFIX} initialCommand sent (${reason})`);
       }
@@ -2082,6 +2091,9 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
     promptWatcher = (data) => {
       const stripped = stripAnsiForPattern(data);
       buffer = (buffer + stripped).slice(-4096);
+      // 画面分割を吸収しつつ、累積バッファ内の古い引用文言は構造照合から外す。
+      recentChunks = [...recentChunks, stripped].slice(-3);
+      const recentOutput = recentChunks.join('').slice(-1024);
 
       const now = performance.now();
 
@@ -2089,7 +2101,7 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
       // （ペイン作成から TRUST_WINDOW_MS 以内 かつ ready 検知から READY_GRACE_MS 以内）の
       // 内側で、信頼確認の文脈があり、まだ発火していない場合のみ。文脈判定は
       // isTrustPrompt（issue #373）、時間・回数の判定は trustGate（issue #371）へ委譲する。
-      if (isTrustPrompt(buffer) && trustGate.canAutoRespond(now)) {
+      if (trustGate.canAutoRespondToPrompt(buffer, now, recentOutput)) {
         trustGate.markTrustHandled();
         buffer = '';
         console.log(`${LOG_PREFIX} trust prompt detected, sending Enter (terminal ${id})`);
@@ -2229,9 +2241,23 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
   return { id, cwd: resolvedCwd, engine: resolvedEngine };
 });
 
+// renderer から届く端末自身の制御応答では監視を維持し、実際の利用者入力で止める。
+function disarmTrustAutomationForUserInput(id, data) {
+  if (!containsUserTerminalInput(data)) return;
+  const disarmPaneCreationWatcher = paneCreationTrustWatchers.get(id);
+  if (disarmPaneCreationWatcher) disarmPaneCreationWatcher();
+  const restartTrustResponder = restartTrustResponders.get(id);
+  if (restartTrustResponder) restartTrustResponder.markInputSent();
+}
+
 ipcMain.on('terminal:input', (event, id, data) => {
   const p = ptys.get(id);
-  if (p) p.write(data);
+  if (p) {
+    // 端末の自動応答・通知では監視を維持し、実際の入力後だけ過去の表示を根拠とする
+    // 信頼関連の自動 Enter を止める。
+    disarmTrustAutomationForUserInput(id, data);
+    p.write(data);
+  }
 });
 
 ipcMain.on('terminal:resize', (event, id, cols, rows) => {
@@ -2434,6 +2460,7 @@ async function restartAgentInTerminal(ptyProcess, request, launchOptions, lifecy
     engine: request.engine,
     trustWindowMs: RESOLVED_TRUST_WINDOW_MS,
     readyGraceMs: RESOLVED_READY_GRACE_MS,
+    taskPolicyLaunch: isTaskPolicyCodexLaunch(request.engine, launchOptions),
     isAlive: () => ptys.get(request.termId) === ptyProcess,
     log: (message) => console.log(`${LOG_PREFIX} ${message} (terminal ${request.termId})`),
   });
@@ -2883,6 +2910,7 @@ function startHttpApi() {
             res.end(JSON.stringify({ error: `terminal ${termId} not found` }));
             return;
           }
+          // 認証済みの自動化経路は確認画面より先に入力しうるため、信頼確認の監視を止めない。
           // 「本文 + 末尾 Enter」を 1 リクエストで受け取った場合は、本文と Enter を
           // 別々の write に分割して送る（まとめて送ると Claude Code が末尾 \r を
           // ペーストの改行として吸収し Enter 確定にならないため。SEND_ENTER_SPLIT_DELAY_MS 参照）。

@@ -7,10 +7,12 @@
 // issue #371 ではこのモジュールの時間ゲートで発火可能な時間を限定した。issue #373 では
 // 後述の isTrustPrompt も併用し、時間窓の内側でも信頼確認以外には発火させない。
 //
-// これを防ぐため、自動 Enter 送信を次の2条件を両方満たす間だけに限定する（AND 条件）。
+// これを防ぐため、自動 Enter 送信を原則として次の2条件を両方満たす間だけに限定する（AND 条件）。
 //   1. ペイン作成（pty spawn）からの経過時間が TRUST_WINDOW_MS 以内であること
 //   2. AI エンジンの起動完了（READY_PATTERN 一致）を検知してから READY_GRACE_MS を
 //      超えて経っていないこと（未検知を含む）
+// 例外として、タスク用ポリシー付き Codex の「制限付きで開く」画面には条件2を過ぎても
+// 応答できる。この遅延応答は initialCommand 送信後に無効化し、過去の表示では発火させない。
 //
 // 条件2を「ready を検知したら即座に禁止」ではなく「検知してから READY_GRACE_MS の
 // 猶予を設ける」形にしているのは、安藤のセキュリティレビュー（issue #371 の
@@ -51,14 +53,48 @@ const READY_GRACE_MS = 3000;
 // "Doyoutrust..." のように連結されることがある。そのため単語間の空白は0文字以上として
 // 扱い、信頼確認に固有の短い錨を使う。一般的な "Enter to confirm" は信頼確認の文脈を
 // 示さないため、パターンへ含めない。
-const TRUST_CONTEXT_PATTERNS = [
+const TRUST_GRANT_PATTERNS = [
   /Quick\s*safety\s*check/i,
   /Do\s*you\s*trust[\s\S]{0,40}(?:folder|directory)/i,
   /Yes,\s*I\s*trust\s*(?:the\s*files\s*in\s*)?this\s*(?:folder|directory)/i,
-  // タスク用ポリシー付きの Codex は作業フォルダを「信頼しない」と記録済みで、この制限付きで開く画面が出る
-  // （既定の選択肢は "Open restricted" で、信頼の記録は変わらない）。信頼を与える画面ではないので自動 Enter の対象にしてよい。
+];
+
+// タスク用ポリシー付きの Codex は作業フォルダを「信頼しない」と記録済みで、この制限付きで開く画面が出る
+// （既定の選択肢は "Open restricted" で、信頼の記録は変わらない）。信頼を与える画面ではないので自動 Enter の対象にしてよい。
+// 信頼を与える画面（TRUST_GRANT_PATTERNS）とは別の判定として持つ（issue #448）。
+const RESTRICTED_OPEN_PATTERNS = [
   /Config,\s*hooks,\s*and\s*exec\s*policies\s*from\s*untrusted\s*folders\s*stay\s*disabled/i,
 ];
+
+// ready 猶予を過ぎてから出た「制限付きで開く」画面に応答するときだけ追加で要求する、選択肢の文言（issue #448）。
+// 起動後に Codex の出力へ説明文だけが引用された場合に、遅れて誤発火しないための絞り込み。
+const RESTRICTED_OPEN_SCREEN_PATTERN = /Folder\s*access[\s\S]{0,400}?Config,\s*hooks,\s*and\s*exec\s*policies\s*from\s*untrusted\s*folders\s*stay\s*disabled\.?[\s\S]{0,80}?1\.\s*Open\s*restricted[\s\S]{0,40}?2\.\s*Quit/i;
+
+// コマンド承認画面と同居する出力には Enter を送らない。引用された Folder access 画面の
+// 直後に承認画面が出た場合も、既定選択を誤って承認しないため安全側へ倒す。
+const COMMAND_APPROVAL_PATTERN = /Allow\s*command|Yes,\s*proceed/i;
+
+/**
+ * PTY 出力に、リポジトリを信頼済みにする確認画面を示す文脈が含まれるか判定する（issue #448 で分離）。
+ *
+ * @param {*} output - stripAnsiForPattern 適用後の累積 PTY 出力。
+ * @returns {boolean}
+ */
+function isTrustGrantPrompt(output) {
+  if (typeof output !== 'string') return false;
+  return TRUST_GRANT_PATTERNS.some((pattern) => pattern.test(output));
+}
+
+/**
+ * PTY 出力に、信頼を与えない「制限付きで開く」確認画面（Open restricted）の文脈が含まれるか判定する（issue #448）。
+ *
+ * @param {*} output - stripAnsiForPattern 適用後の累積 PTY 出力。
+ * @returns {boolean}
+ */
+function isRestrictedOpenPrompt(output) {
+  if (typeof output !== 'string') return false;
+  return RESTRICTED_OPEN_PATTERNS.some((pattern) => pattern.test(output));
+}
 
 /**
  * PTY 出力に、対応対象の信頼確認画面を示す文脈が含まれるか判定する。
@@ -68,8 +104,23 @@ const TRUST_CONTEXT_PATTERNS = [
  * @returns {boolean} 信頼確認の文脈が含まれる場合は true。
  */
 function isTrustPrompt(output) {
-  if (typeof output !== 'string') return false;
-  return TRUST_CONTEXT_PATTERNS.some((pattern) => pattern.test(output));
+  return isTrustGrantPrompt(output) || isRestrictedOpenPrompt(output);
+}
+
+/**
+ * Codex をタスク用ポリシー（専用 CODEX_HOME・対象を untrusted と記録）で起動したかを判定する（issue #448）。
+ * 判定には main.js が resolveCodexLaunchOptions で用意した起動オプション（専用 CODEX_HOME を実際に
+ * 用意できたときだけ codexPolicyHome が入る）だけを使い、PTY 出力など外部入力の文字列からは推測しない。
+ *
+ * @param {string} engine - 解決済みのエンジン名。
+ * @param {object} [launchOptions] - resolveCodexLaunchOptions が返した options。
+ * @returns {boolean}
+ */
+function isTaskPolicyCodexLaunch(engine, launchOptions) {
+  return engine === 'codex'
+    && !!launchOptions
+    && typeof launchOptions.codexPolicyHome === 'string'
+    && launchOptions.codexPolicyHome !== '';
 }
 
 /**
@@ -79,9 +130,13 @@ function isTrustPrompt(output) {
  * @param {number} options.spawnTime - ペイン作成（pty spawn）時刻（呼び出し側の時計と同じ単位・原点の値。main.js は performance.now() を使う）
  * @param {number} [options.trustWindowMs] - 自動応答を許可する経過時間の上限（ms）。既定 TRUST_WINDOW_MS
  * @param {number} [options.readyGraceMs] - ready 検知後もなお自動応答を許可する猶予（ms）。既定 READY_GRACE_MS
+ * @param {boolean} [options.taskPolicyLaunch] - タスク用ポリシー付きの Codex ペインか（isTaskPolicyCodexLaunch の結果）。
+ *   true のときに限り、「制限付きで開く」画面は ready 猶予を過ぎても時間窓の中なら1回だけ自動応答する（issue #448）。
  * @returns {{
  *   canAutoRespond: (now: number) => boolean,
+ *   canAutoRespondToPrompt: (output: string, now: number, recentOutput?: string) => boolean,
  *   markTrustHandled: () => void,
+ *   disableDelayedRestrictedResponse: () => void,
  *   markReadyDetected: (now: number) => void,
  *   isReadyDetected: () => boolean,
  *   isTrustHandled: () => boolean,
@@ -89,12 +144,18 @@ function isTrustPrompt(output) {
  *   shouldStopWatching: (now: number, opts?: { initialCommandPending?: boolean }) => boolean,
  * }}
  */
-function createTrustPromptGate({ spawnTime, trustWindowMs = TRUST_WINDOW_MS, readyGraceMs = READY_GRACE_MS } = {}) {
+function createTrustPromptGate({
+  spawnTime,
+  trustWindowMs = TRUST_WINDOW_MS,
+  readyGraceMs = READY_GRACE_MS,
+  taskPolicyLaunch = false,
+} = {}) {
   if (typeof spawnTime !== 'number' || Number.isNaN(spawnTime)) {
     throw new TypeError('createTrustPromptGate: spawnTime must be a number');
   }
 
   let trustHandled = false;
+  let delayedRestrictedResponseEnabled = true;
   // ready を検知した時刻。未検知は null（＝猶予の制約を受けない）。
   let readyAt = null;
 
@@ -121,9 +182,32 @@ function createTrustPromptGate({ spawnTime, trustWindowMs = TRUST_WINDOW_MS, rea
     return !trustHandled && isWindowOpen(now) && isWithinReadyGrace(now);
   }
 
+  // 累積 PTY 出力に対して、いま自動 Enter を送ってよいか（文言と時間・回数を合わせて判定する）。
+  //   - 信頼を与える画面: 従来どおり canAutoRespond（窓の内側 かつ ready 猶予内 かつ 未発火）のみ。
+  //   - 「制限付きで開く」画面: 猶予内は従来どおり。タスク用ポリシー付きペインに限り、猶予を過ぎていても
+  //     窓の内側で未発火なら許可する（起動完了バナーと Folder access の描画が別で、3秒を超えて出ても止まらない
+  //     ようにするため。issue #448）。猶予後は選択肢の文言（Open restricted）も要求する。
+  function canAutoRespondToPrompt(output, now, recentOutput = output) {
+    if (trustHandled || !isWindowOpen(now)) return false;
+    if (isTrustGrantPrompt(output)) return isWithinReadyGrace(now);
+    if (!isRestrictedOpenPrompt(output)) return false;
+    if (isWithinReadyGrace(now)) return true;
+    return taskPolicyLaunch
+      && delayedRestrictedResponseEnabled
+      && typeof recentOutput === 'string'
+      && RESTRICTED_OPEN_SCREEN_PATTERN.test(recentOutput)
+      && !COMMAND_APPROVAL_PATTERN.test(recentOutput);
+  }
+
   // 自動 Enter を送信した（以後は二度と送らない）
   function markTrustHandled() {
     trustHandled = true;
+  }
+
+  // initialCommand 送信後は、過去の表示を根拠に ready 猶予後の例外応答をしない。
+  // 猶予内の通常応答はチャンク分割対策として引き続き許可する。
+  function disableDelayedRestrictedResponse() {
+    delayedRestrictedResponseEnabled = false;
   }
 
   // AI エンジンの起動完了を検知した時刻を記録する。以後は readyGraceMs の間だけ
@@ -153,13 +237,19 @@ function createTrustPromptGate({ spawnTime, trustWindowMs = TRUST_WINDOW_MS, rea
   // 呼び出し側から opts.initialCommandPending として渡してもらう。
   function shouldStopWatching(now, opts = {}) {
     const { initialCommandPending = false } = opts;
-    const windowClosed = !isWindowOpen(now) || !isWithinReadyGrace(now);
+    // タスク用ポリシー付きペインは、ready 猶予を過ぎてからも「制限付きで開く」画面を待つため、
+    // 未発火の間は時間窓が閉じるまで監視を続ける（猶予切れだけでは止めない。issue #448）。
+    const graceClosed = !isWithinReadyGrace(now)
+      && !(taskPolicyLaunch && delayedRestrictedResponseEnabled && !trustHandled);
+    const windowClosed = !isWindowOpen(now) || graceClosed;
     return windowClosed && !initialCommandPending;
   }
 
   return {
     canAutoRespond,
+    canAutoRespondToPrompt,
     markTrustHandled,
+    disableDelayedRestrictedResponse,
     markReadyDetected,
     isReadyDetected,
     isTrustHandled,
@@ -206,5 +296,8 @@ module.exports = {
   READY_GRACE_MS,
   createTrustPromptGate,
   isTrustPrompt,
+  isTrustGrantPrompt,
+  isRestrictedOpenPrompt,
+  isTaskPolicyCodexLaunch,
   resolvePositiveFiniteMs,
 };

@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 不具合修正 ] 自動処理用 Codex の起動完了表示から3秒を超えて `Folder access`（`Open restricted`）の確認画面が出ると、自動で確定されず利用者が Enter を押すまで作業が始まらなかった不具合を修正（信頼を与える画面への自動応答の条件は変更なし）（[#448](https://github.com/vektor-inc/vk-terminals/issues/448)）
+
 ## 1.76.0
 
 - [ 機能追加 ] 自動処理用 Codex の起動前に GitHub への到達とログイン状態を確認し、接続できないまま作業ペインが開くことを防ぐ機能を追加（[#450](https://github.com/vektor-inc/vk-terminals/issues/450)）

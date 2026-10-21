@@ -1,5 +1,7 @@
 # Changelog
 
+## 1.78.0
+
 - [ 機能追加 ] VK Orchestrator のアプリで、セットアップが済んでいないときに、足りないものの一覧と「セットアップを始める」ボタンを画面に出し、サイドバーにも停止の理由を表示するように（[#456](https://github.com/vektor-inc/vk-terminals/issues/456)）
 - [ 不具合修正 ] Finder やドックから開くと、ターミナルでは使える claude / gh / codex が見つからず、ペインで起動できなかった不具合を修正（[#454](https://github.com/vektor-inc/vk-terminals/issues/454)）
 

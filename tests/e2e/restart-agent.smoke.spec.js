@@ -206,6 +206,7 @@ test.describe.serial('POST /api/restart-agent によるペイン内 AI の再起
         PATH: `${fakeClaude.binDir}${path.delimiter}${fakeCodex.binDir}${path.delimiter}${process.env.PATH || ''}`,
         VK_TERMINALS_E2E_CLAUDE_CAPTURE: fakeClaude.capturePath,
         VK_TERMINALS_E2E_CODEX_CAPTURE: fakeCodex.capturePath,
+        VK_TERMINALS_E2E_GITHUB_REACHABILITY: 'ok',
       },
     });
     // 起動直後の最初のペイン（termId "1"。launchApp は常に --no-claude を渡すため素のシェル）
@@ -440,5 +441,69 @@ test.describe.serial('POST /api/restart-agent によるペイン内 AI の再起
     expect((await waitForCallCount(homesPath, baseCalls + 3))[baseCalls + 2]).toBeNull();
     // 起動に使った専用フォルダ（再起動 1 回 + 新規ペイン 1 回）だけが残る。
     expect(countLaunchHomes()).toBe(homesBefore + 2);
+  });
+});
+
+test.describe.serial('GitHub 到達確認失敗時の Codex 起動ゲート（issue #450）', () => {
+  let launched;
+  let fixtureRoot;
+  let fakeCodex;
+  let policyRepoDir;
+  let port;
+
+  test.beforeAll(async () => {
+    port = await getFreePort();
+    fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-github-gate-fixture-'));
+    policyRepoDir = path.join(fixtureRoot, 'repo');
+    fs.mkdirSync(policyRepoDir);
+    childProcess.execFileSync('git', ['init', '-q'], { cwd: policyRepoDir });
+    fakeCodex = createFakeExecutable(fixtureRoot, 'codex', 'VK_TERMINALS_E2E_CODEX_CAPTURE');
+    launched = await launchAppAndWait({
+      port,
+      prefix: 'vk-terminals-e2e-github-gate-',
+      env: {
+        PATH: `${fakeCodex.binDir}${path.delimiter}${process.env.PATH || ''}`,
+        VK_TERMINALS_E2E_CODEX_CAPTURE: fakeCodex.capturePath,
+        VK_TERMINALS_E2E_GITHUB_REACHABILITY: 'unreachable',
+      },
+    });
+    await waitForTermId(port, '1', true);
+  });
+
+  test.afterAll(async () => {
+    if (launched) await closeApp(launched);
+    if (fixtureRoot) fs.rmSync(fixtureRoot, { recursive: true, force: true });
+  });
+
+  test('restart-agent と new-pane は 503 と reason を返し、Codex も専用 CODEX_HOME も作らない', async () => {
+    const policy = { preset: 'orchestrated-task' };
+    const policyBaseDir = path.join(launched.tmpHome, '.vk-terminals', 'codex-task-policy', 'orchestrated-task');
+    const countLaunchHomes = () => (fs.existsSync(policyBaseDir) ? fs.readdirSync(policyBaseDir).length : 0);
+
+    // 既存ペインへの再起動は到達確認で止まり、AI の停止・起動へ進まない。
+    const restarted = await postJson(port, '/api/restart-agent', {
+      termId: '1', expectedGeneration: 0, engine: 'codex', approvalPolicy: 'never', codexPolicy: policy, cwd: policyRepoDir,
+    });
+    expect(restarted).toEqual({
+      status: 503,
+      body: {
+        error: 'github unreachable',
+        githubReachability: {
+          ok: false,
+          reason: 'unreachable',
+          message: 'GitHub に接続できません。ネットワーク接続を確認してから、もう一度お試しください',
+        },
+      },
+    });
+
+    // 新規ペインも同じ失敗形式で止まり、renderer への作成要求を送らない。
+    const created = await postJson(port, '/api/new-pane', {
+      engine: 'codex', noClaude: false, approvalPolicy: 'never', codexPolicy: policy, cwd: policyRepoDir,
+    });
+    expect(created).toEqual({ status: 503, body: restarted.body });
+    expect(readCalls(fakeCodex.capturePath)).toEqual([]);
+    expect(countLaunchHomes()).toBe(0);
+    expect((await waitForAgentGeneration(port, '1', 0)).agentGeneration).toBe(0);
+    await waitForPaneCount(port, 1);
   });
 });

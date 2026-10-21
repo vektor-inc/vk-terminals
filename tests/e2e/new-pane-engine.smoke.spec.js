@@ -97,6 +97,7 @@ test('POST /api/new-pane は engine を許可リストで検証し、codex を�
         PATH: `${fakeClaude.binDir}${path.delimiter}${fakeCodex.binDir}${path.delimiter}${process.env.PATH || ''}`,
         VK_TERMINALS_E2E_CLAUDE_CAPTURE: fakeClaude.capturePath,
         VK_TERMINALS_E2E_CODEX_CAPTURE: fakeCodex.capturePath,
+        VK_TERMINALS_E2E_GITHUB_REACHABILITY: 'ok',
       },
     });
     // 起動直後の既定ペインが states に載るまで待ち、以降の「増えていない」の基準にする。

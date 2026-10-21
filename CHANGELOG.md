@@ -1,5 +1,6 @@
 # Changelog
 
+- [ 不具合修正 ] Finder やドックから開くと、ターミナルでは使える claude / gh / codex が見つからずペインで起動できなかった不具合を修正。起動時にログインシェルから PATH を取り込み、本体とペインの両方で使うように（Codex の制限付き実行が探す場所は、起動時の PATH のまま増やさない）（[#454](https://github.com/vektor-inc/vk-terminals/issues/454)）
 - [ 機能追加 ] VK Orchestrator のアプリで、セットアップが済んでいないときに、足りないものの一覧と「セットアップを始める」ボタンを画面に出し、サイドバーにも停止の理由を表示するように（[#456](https://github.com/vektor-inc/vk-terminals/issues/456)）
 
 ## 1.77.0

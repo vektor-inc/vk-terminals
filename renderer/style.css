@@ -3424,7 +3424,8 @@ body.pane-dragging * {
   top: 0;
   right: 0;
   bottom: 0;
-  z-index: 5;
+  /* グリッドのリサイズ帯（.grid-handle, z-index: 6）より上に出す。下だと帯がパネルを横切り、ボタンが押せなくなる。 */
+  z-index: 7;
   flex: none;
   width: min(360px, 100%);
   min-width: 0;
@@ -3444,6 +3445,9 @@ body.pane-dragging * {
 }
 .setup-band-text {
   min-width: 0;
+}
+.setup-band-sentence {
+  display: inline-block;
 }
 
 /* 見出し・本文

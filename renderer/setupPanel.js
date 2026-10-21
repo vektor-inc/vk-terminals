@@ -326,7 +326,13 @@
       } else if (lastGood && lastGood.status.summary.allRequiredOk === false) {
         text = `${T.bandUnavailable}（${T.bandIncomplete(S.buildSetupViewModel(lastGood.status).remaining)}）`;
       }
-      bandText.textContent = text;
+      // 「。」の後ろで折り返せるよう、文ごとに inline-block の span に分ける（文節の途中で割れない）。
+      const parts = text.match(/[^。]+。?/g) || [text];
+      bandText.replaceChildren(...parts.map((part) => {
+        const span = el('span', 'setup-band-sentence');
+        span.textContent = part;
+        return span;
+      }));
     }
 
     function ensureBuilt() {

@@ -339,6 +339,45 @@ test.describe('セットアップ状況の一覧（組み込み用の入口か�
     }
   });
 
+  test('ペインが 2 つあり、幅 820px・600px で一覧を開いても、リサイズ帯に邪魔されず「閉じる」と主ボタンを実際にクリックできる', async () => {
+    const { app, win } = ctx;
+    const setWidth = (width) => app.evaluate(({ BrowserWindow }, w) => {
+      const [window] = BrowserWindow.getAllWindows();
+      window.setSize(w, 800);
+    }, width);
+    try {
+      if ((await win.locator('.pane').count()) < 2) {
+        await win.locator('.pane-header .btn-split').first().click();
+      }
+      await expect(win.locator('.grid-handle').first()).toBeAttached();
+      for (const width of [820, 600]) {
+        await setWidth(width);
+        await expect(win.locator('.setup-band')).toBeVisible();
+        await win.locator('.setup-band').getByRole('button', { name: '一覧を開く' }).click();
+        const panel = win.locator('.setup-panel');
+        await expect(panel).toBeVisible();
+        // パネルの中身の中心点で最前面にあるのが、パネル内の要素であること（リサイズ帯が上に出ていない）。
+        const topmostInPanel = await win.evaluate(() => {
+          const panelEl = document.querySelector('.setup-panel');
+          const fold = panelEl.querySelector('.setup-fold');
+          const rect = fold.getBoundingClientRect();
+          const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+          return panelEl.contains(hit);
+        });
+        expect(topmostInPanel).toBe(true);
+        // 主ボタン（「セットアップを始める」または「セットアップ用のペインを表示」）にクリックが届くか（押さずに確かめる）。
+        await panel.locator('.setup-actions-buttons .setup-btn-primary').first().click({ trial: true });
+        await panel.getByRole('button', { name: '閉じる' }).click();
+        await expect(win.locator('.setup-panel')).toHaveCount(0);
+        await expect(win.locator('.setup-band')).toBeVisible();
+      }
+      // 後続のテストのため、開いた状態に戻す。
+      await win.locator('.setup-band').getByRole('button', { name: '一覧を開く' }).click();
+    } finally {
+      await setWidth(1300);
+    }
+  });
+
   test('「閉じる」で上端の 1 行の帯に畳まれ、「一覧を開く」で戻って見出しにフォーカスが移る', async () => {
     const { win } = ctx;
     await win.locator('.setup-panel').getByRole('button', { name: '閉じる' }).click();

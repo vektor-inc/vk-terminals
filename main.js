@@ -847,8 +847,11 @@ const PUSH_TIMEOUT_MS = 10000;
  * エラーログを出し続け、利用者には「通知が来ない」としか見えない。そのため生成する
  * 前に必ず tryLoadExistingVapidKeys() を試し、既にある鍵を拾えるならそれを使う。
  * （単一プロセス内での二重生成は起きない。生成・setVapidDetails・書き込みがすべて
- * 同期処理のため、この関数の呼び出し中に割り込みは入らない。二重起動そのものを防ぐ
- * 対応（requestSingleInstanceLock）は今回のスコープ外。）
+ * 同期処理のため、この関数の呼び出し中に割り込みは入らない。二重起動そのものは、
+ * アプリにまとめられて動いているとき・組み込み用の入口（embedded.js）から起動したときに
+ * 限り、requestSingleInstanceLock とポート検知で止める（issue #455。上の
+ * GUARD_ALREADY_RUNNING を参照）。electron . での起動では従来どおり二重起動を検知
+ * しないため、複数プロセスが同じ鍵ファイルを触りうる前提は残る。）
  *
  * 【鍵ファイルが壊れている場合は生成しない（司の指摘・W-1）】
  * tryLoadExistingVapidKeys() が false を返す理由は2通りある。(a) 鍵ファイルが

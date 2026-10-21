@@ -3410,6 +3410,26 @@ body.pane-dragging * {
   display: flex;
   flex-direction: column;
 }
+.setup-main-area.is-overlay {
+  position: relative;
+  flex-direction: row;
+}
+.setup-main-area.is-overlay > .grid {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+/* 狭いウィンドウで開いたパネルは、右寄せでグリッドの上に重ねる。幅は残りの領域に収まり、「閉じる」が必ず見える。 */
+.setup-main-area.is-overlay > .setup-panel {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 5;
+  flex: none;
+  width: min(360px, 100%);
+  min-width: 0;
+  box-shadow: -8px 0 16px rgba(1, 4, 9, 0.5);
+}
 .setup-band {
   flex: 0 0 auto;
   display: flex;

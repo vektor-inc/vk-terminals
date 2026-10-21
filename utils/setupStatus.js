@@ -72,7 +72,7 @@ const SETUP_TEXT = Object.freeze({
   unavailableError: '確認用のプログラムを起動できませんでした。',
   unavailableInvalid: '確認結果を読み取れませんでした。',
   copyDetail: '詳細をコピー',
-  bandIncomplete: (n) => `セットアップ未完了（残り ${n} 件）`,
+  bandIncomplete: (n) => `セットアップ未完了（残り ${n} 件）。一覧を開いて進めてください`,
   bandUnavailable: 'セットアップ状況を確認できませんでした',
   bandComplete: 'セットアップが完了しました',
   bandOpen: '一覧を開く',
@@ -83,7 +83,7 @@ const SETUP_TEXT = Object.freeze({
 function sanitizeText(value, max) {
   if (typeof value !== 'string') return null;
   // 制御文字（改行・タブ・ANSI の ESC を含む）は空白 1 つにまとめる。
-  const flat = value.replace(/[\u0000-\u001f\u007f-\u009f​-‏‪-‮⁦-⁩]+/g, ' ').trim();
+  const flat = value.replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069]+/g, ' ').trim();
   if (!flat) return '';
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }
@@ -101,7 +101,7 @@ function sanitizeCommands(rawCommands) {
     const trimmed = command.trim();
     if (!trimmed || trimmed.length > LIMITS.command) continue;
     // 改行・制御文字・見えない文字（ゼロ幅・向き制御）を含むものは、貼る前に目で確かめられないので捨てる。
-    if (/[\u0000-\u001f\u007f-\u009f​-‏‪-‮⁦-⁩]/.test(trimmed)) continue;
+    if (/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069]/.test(trimmed)) continue;
     const os = sanitizeText(entry.os, LIMITS.os);
     commands.push({ command: trimmed, os: os || '' });
   }

@@ -293,13 +293,47 @@ test.describe('セットアップ状況の一覧（組み込み用の入口か�
       const foldedWidth = await paneWidth();
       await win.locator('.setup-band').getByRole('button', { name: '一覧を開く' }).click();
       await expect(win.locator('.setup-panel')).toBeVisible();
-      // 開いたときでも、パネルが縮んでターミナルの幅を確保する（潰れない）。
+      // 開いたときはグリッドの上に重なるため、ターミナルの幅は変わらない（潰れない）。
       const openWidth = await paneWidth();
       expect(openWidth).toBeGreaterThanOrEqual(300);
-      expect(foldedWidth).toBeGreaterThan(openWidth);
+      expect(openWidth).toBe(foldedWidth);
       await setWidth(1300);
       await expect(win.locator('.setup-panel')).toBeVisible();
       await expect(win.locator('.setup-band')).toHaveCount(0);
+    } finally {
+      await setWidth(1300);
+    }
+  });
+
+  test('狭い幅（820px・最小の 600px）でサイドバーを開いたままでも、パネルはグリッドの上に重なり「閉じる」が画面内に見える', async () => {
+    const { app, win } = ctx;
+    const setWidth = (width) => app.evaluate(({ BrowserWindow }, w) => {
+      const [window] = BrowserWindow.getAllWindows();
+      window.setSize(w, 800);
+    }, width);
+    try {
+      for (const width of [820, 600]) {
+        await setWidth(width);
+        if (width === 820) {
+          await expect(win.locator('.setup-band')).toBeVisible();
+          await win.locator('.setup-band').getByRole('button', { name: '一覧を開く' }).click();
+        }
+        const panel = win.locator('.setup-panel');
+        await expect(panel).toBeVisible();
+        await expect(win.locator('#root')).toHaveClass(/sidebar-open/);
+        const inside = await win.evaluate(() => {
+          const vw = document.documentElement.clientWidth;
+          const rects = ['.setup-panel', '.setup-panel .setup-start', '.setup-panel .setup-fold']
+            .map((sel) => document.querySelector(sel))
+            .filter(Boolean)
+            .map((el) => el.getBoundingClientRect());
+          return { vw, rights: rects.map((r) => r.right), lefts: rects.map((r) => r.left) };
+        });
+        expect(inside.rights.length).toBeGreaterThanOrEqual(2);
+        for (const r of inside.rights) expect(r).toBeLessThanOrEqual(inside.vw + 0.5);
+        for (const l of inside.lefts) expect(l).toBeGreaterThanOrEqual(0);
+        await expect(panel.getByRole('button', { name: '閉じる' })).toBeInViewport({ ratio: 1 });
+      }
     } finally {
       await setWidth(1300);
     }
@@ -310,7 +344,7 @@ test.describe('セットアップ状況の一覧（組み込み用の入口か�
     await win.locator('.setup-panel').getByRole('button', { name: '閉じる' }).click();
     const band = win.locator('.setup-band');
     await expect(band).toBeVisible();
-    await expect(band).toContainText('セットアップ未完了（残り 2 件）');
+    await expect(band).toContainText('セットアップ未完了（残り 2 件）。一覧を開いて進めてください');
     await expect(win.locator('.setup-panel')).toHaveCount(0);
     await band.getByRole('button', { name: '一覧を開く' }).click();
     await expect(win.locator('.setup-panel')).toBeVisible();

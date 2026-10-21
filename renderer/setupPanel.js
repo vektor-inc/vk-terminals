@@ -349,8 +349,13 @@
       built = true;
     }
 
+    // 狭いウィンドウで利用者が開いたときは、ターミナルを潰さないようグリッドの上に重ねて出す。
+    function isOverlay() {
+      const m = mode();
+      return (m === 'side' || m === 'main') && root.innerWidth < NARROW_WINDOW_MAX;
+    }
     function layoutKey() {
-      return mode();
+      return mode() + (isOverlay() ? ':overlay' : '');
     }
 
     // ─── 操作 ───────────────────────────────────────────────────────────
@@ -461,7 +466,14 @@
       if (renderedPaneState !== deps.getSetupPaneState()) renderContent();
       panel.dataset.mode = current;
       if (current === 'folded') {
+        mainArea.classList.remove('is-overlay');
         mainArea.replaceChildren(band, gridContent);
+        return [mainArea];
+      }
+      const overlay = isOverlay();
+      mainArea.classList.toggle('is-overlay', overlay);
+      if (overlay) {
+        mainArea.replaceChildren(gridContent, panel);
         return [mainArea];
       }
       return [gridContent, panel];

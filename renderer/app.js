@@ -248,6 +248,16 @@ let commandsConfigured = false;
 // 宣言的ウィジェットの中継ペイロード { widget, legacyNotice, commandsConfigured }。
 let lastWidgetPayload = null;
 let hasSeenFreshWidget = false;
+// セットアップ状況の一覧（issue #456）。組み込みのオプションがあるときだけ initApp が生成する。
+// 無いとき（electron . ・zip 版）は null のままで、IPC も画面の要素も作らない。
+let setupPanel = null;
+// セットアップ用ペインのペイン ID。無い・閉じたあとは null。
+let setupPaneId = null;
+// セットアップ用ペインの種類。'claude' は Claude 付き、'plain' は Claude Code が無いときの素のシェル。
+let setupPaneKind = null;
+let startingSetupPane = false;
+// 最初の render() が済むまでは、パネルの再配置要求で render() を呼ばない（ペインがまだ無いため）。
+let initialRenderDone = false;
 // 宣言的ウィジェットの共有描画コントローラ（renderer/widgetView.js）。初回描画時に生成する。
 let widgetViewController = null;
 // HTTP API（POST /api/agentroom）由来のルーム状態を、この TTL を超えたら「古い」と判断して
@@ -2123,8 +2133,11 @@ function renderWidget(fromUpdate) {
   });
   hasSeenFreshWidget = visibility.hasSeenFresh;
   const stale = !!widget && visibility.stale;
+  // セットアップ未完了と判定されているときは、停止の理由を伝えるためタスク欄を隠さない。
+  // 判定が出るまで（allRequiredOk が null のとき）は今の文言のまま。
+  const setupStopped = !!setupPanel && setupPanel.isIncomplete() && (!widget || stale);
   // legacyNotice のみ（widget 無し）のときも更新が必要な旨を伝えるためセクションを表示する。
-  const shouldShow = visibility.shouldShow || legacyNotice;
+  const shouldShow = visibility.shouldShow || legacyNotice || setupStopped;
 
   section.hidden = !shouldShow;
   section.classList.toggle('is-stale', stale);
@@ -2132,20 +2145,28 @@ function renderWidget(fromUpdate) {
   // 注記は stale 優先。widget が無く legacyNotice のときだけ後方互換の注記を出す。
   // data-kind で配色を分ける（stale=danger / legacy=助言的な warning）。
   if (staleNotice) {
-    if (stale) {
-      staleNotice.dataset.kind = 'stale';
-      staleNotice.textContent = 'Orchestrator 停止中';
+    if (setupStopped) {
+      setStaleNoticeKind(staleNotice, 'setup');
+      staleNotice.hidden = false;
+    } else if (stale) {
+      setStaleNoticeKind(staleNotice, 'stale');
       staleNotice.hidden = !shouldShow;
     } else if (legacyNotice) {
       staleNotice.dataset.kind = 'legacy';
       staleNotice.textContent = WIDGET_LEGACY_NOTICE_TEXT;
       staleNotice.hidden = !shouldShow;
     } else {
+      // セットアップ未完了の案内（リンクつき）が不要になったら、中身ごと外す。
+      if (staleNotice.dataset.kind === 'setup') {
+        delete staleNotice.dataset.kind;
+        staleNotice.replaceChildren();
+      }
       staleNotice.hidden = true;
     }
   }
 
-  if (!shouldShow) {
+  // 宣言がまだ無く、セットアップ未完了の案内だけを出すときは、タスクの一覧は描かない。
+  if (!shouldShow || (setupStopped && !widget)) {
     groupsEl.replaceChildren();
     updateWidgetTitleLink(section, '');
     updateWidgetFilter(section, null);
@@ -2163,6 +2184,25 @@ function renderWidget(fromUpdate) {
   updateWidgetFilter(section, info);
 }
 
+// タスク欄の停止注記の中身を切り替える。'setup' は「セットアップ未完了のため停止中」と、
+// セットアップ状況のパネルを開くリンク。同じ種類のままなら作り直さない（リンクのフォーカスを保つため）。
+function setStaleNoticeKind(notice, kind) {
+  if (notice.dataset.kind === kind && (kind !== 'setup' || notice.querySelector('.task-list-setup-link'))) return;
+  notice.dataset.kind = kind;
+  if (kind !== 'setup') {
+    notice.textContent = 'Orchestrator 停止中';
+    return;
+  }
+  const text = document.createElement('span');
+  text.textContent = VKSetupStatus.SETUP_TEXT.sidebarStopped;
+  const link = document.createElement('button');
+  link.type = 'button';
+  link.className = 'task-list-setup-link';
+  link.textContent = VKSetupStatus.SETUP_TEXT.sidebarLink;
+  link.addEventListener('click', () => { if (setupPanel) setupPanel.reveal(); });
+  notice.replaceChildren(text, link);
+}
+
 // 経過タイマー: orchestrator 停止を即時反映するため staleness を再計算して注記を切り替える。
 // 全描画（groupsEl の作り直し）は行わず、is-stale クラスと注記の表示のみを更新する
 // （操作中のフォーカスを奪わないため）。widget が無い（legacyNotice のみ）ときは stale 概念なし。
@@ -2176,8 +2216,8 @@ function tickWidgetStale() {
   const staleNotice = section.querySelector('.task-list-stale');
   if (!staleNotice) return;
   if (stale) {
-    staleNotice.dataset.kind = 'stale';
-    staleNotice.textContent = 'Orchestrator 停止中';
+    // セットアップ未完了と判定されているときは、その理由の文言のまま（タイマーで戻さない）。
+    setStaleNoticeKind(staleNotice, setupPanel && setupPanel.isIncomplete() ? 'setup' : 'stale');
     staleNotice.hidden = false;
   } else {
     staleNotice.hidden = true;
@@ -3322,7 +3362,9 @@ function render() {
   const root = document.getElementById('root');
   const sidebar = ensureSidebar(root);
   const newContent = renderGrid(tree);
-  root.replaceChildren(sidebar, newContent);
+  // セットアップ状況のパネルがあるときだけ、グリッドの右（または上端の帯の下）に並べる。
+  const mainNodes = setupPanel ? setupPanel.layout(newContent) : [newContent];
+  root.replaceChildren(sidebar, ...mainNodes);
   root.classList.toggle('sidebar-open', sidebarOpen);
 
   // 格納ペインのコンパクト表示を作り直す（nav が root に付いた後に実行する）。
@@ -6303,6 +6345,59 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
   });
 }
 
+// ─── セットアップ状況の一覧（issue #456）──────────────────────────────────────
+// セットアップ用ペインが開いているか（グリッドにも格納にも居るか）。
+function getSetupPaneState() {
+  if (setupPaneId === null || !paneExists(setupPaneId)) return 'none';
+  return setupPaneKind === 'plain' ? 'plain' : 'claude';
+}
+
+// 「セットアップを始める」。作業フォルダとプロンプトは main が持つ検証済みの値を使うため、
+// ここからは setupPane: true とだけ伝える。開いているときは 2 枚目を作らない。
+async function startSetupPane() {
+  // Claude 付きのセットアップ用ペインが開いていれば、2 枚目は開かず、そのペインを表示する。
+  if (getSetupPaneState() === 'claude') {
+    showSetupPane();
+    return;
+  }
+  if (startingSetupPane) return;
+  startingSetupPane = true;
+  try {
+    const created = await addPane(null, { setupPane: true });
+    setupPaneId = created.paneId;
+    setupPaneKind = 'claude';
+    // ペインが並んだので、パネルを「並べる」状態に直す。
+    render();
+  } catch (error) {
+    console.error('failed to start the setup pane', error);
+  } finally {
+    startingSetupPane = false;
+  }
+}
+
+// 開いているセットアップ用ペインへフォーカスを移す（格納中なら戻す）。
+function showSetupPane() {
+  if (getSetupPaneState() === 'none') return;
+  if (Array.isArray(tree.stashOrder) && tree.stashOrder.includes(setupPaneId)) {
+    unstashPane(setupPaneId);
+    return;
+  }
+  focusPane(setupPaneId);
+}
+
+function createSetupPanelController() {
+  return VKSetupPanel.create({
+    invoke: (channel, ...args) => VKIpc.invoke(channel, ...args),
+    writeClipboard: (text) => VKClipboard.writeText(text),
+    getSetupPaneState,
+    restoreFocus: () => { if (focusedPaneId && paneExists(focusedPaneId)) focusPane(focusedPaneId); },
+    startSetup: startSetupPane,
+    showSetupPane,
+    requestLayout: () => { if (initialRenderDone) render(); },
+    onStatusChange: () => renderWidget(),
+  });
+}
+
 // ─── Init ─────────────────────────────────────────────────────────────────────
 async function initApp() {
   // エージェントルーム（issue #58）の有効/無効を main から取得（最初の render より前に確定させる）。
@@ -6320,6 +6415,8 @@ async function initApp() {
     terminalLinkClickModePref = normalizeTerminalLinkClickMode(cfg && cfg.terminalLinkClickMode);
     waitingExcludeCwdPatterns = normalizeWaitingExcludeCwdPatterns(cfg && cfg.waitingExcludeCwdPatterns);
     commandsConfigured = !!(cfg && typeof cfg.commandsFile === 'string' && cfg.commandsFile.trim());
+    // 組み込みのオプションがあるときだけ、セットアップ状況のパネルを用意する（無ければ何も作らない）。
+    if (cfg && cfg.setupPanelEnabled === true && !setupPanel) setupPanel = createSetupPanelController();
     renderWidget();
     // ヘッダー／タブのアプリ名。呼び出し側（例: vk-orchestrator）が env で上書きすると
     // main が app:get-config で伝えてくる。未指定時は index.html の既定 'VK Terminals'。
@@ -6355,13 +6452,43 @@ async function initApp() {
   // 存在しないパスは main 側 terminal:create が HOME へフォールバックする。
   // エンジンが Codex の場合だけ engine / model を渡す。Claude のときは options を空にして従来と同一にする。
   // 以降の追加・分割は withInheritedEngine がこのペインの engine を引き継ぐ（issue #394）。
-  const initialPaneOptions = initialPaneEngine === 'codex'
+  let initialPaneOptions = initialPaneEngine === 'codex'
     ? { engine: 'codex', ...(initialPaneCodexModel ? { model: initialPaneCodexModel } : {}) }
     : {};
-  await createTerminal(paneId, newPaneStartupDir || null, initialPaneOptions);
+  // セットアップ状況の確認結果（最大 5 秒待つ）。このパソコンで初めて未完了と判定されたときだけ、
+  // 起動時に必ず作るこのペインをセットアップ用ペインにする（2 枚目は作らない）。
+  // Claude Code が無いときは Claude 無しのシェルで開き、command not found を見せない。
+  let setupInitial = null;
+  if (setupPanel) {
+    try { setupInitial = await VKIpc.invoke('setup:initial-pane'); } catch (_e) { setupInitial = null; }
+  }
+  const normalPaneOptions = initialPaneOptions;
+  const openAsSetupPane = !!(setupInitial && setupInitial.autoOpen === true);
+  if (openAsSetupPane) {
+    initialPaneOptions = { setupPane: true, ...(setupInitial.claudeOk === true ? {} : { noClaude: true }) };
+  }
+  let openedAsSetupPane = openAsSetupPane;
+  try {
+    await createTerminal(paneId, newPaneStartupDir || null, initialPaneOptions);
+  } catch (error) {
+    if (!openAsSetupPane) throw error;
+    // 記録は書き終えているので、ここで失敗を残す。起動は通常のペインで続ける。
+    console.error('failed to open the setup pane at startup; opening a normal pane instead', error);
+    openedAsSetupPane = false;
+    await createTerminal(paneId, newPaneStartupDir || null, normalPaneOptions);
+  }
   focusedPaneId = paneId;
+  if (openedAsSetupPane) {
+    setupPaneId = paneId;
+    setupPaneKind = setupInitial.claudeOk === true ? 'claude' : 'plain';
+  }
+  // 最初の描画の前に結果を取り込み、パネルが必要なら最初の描画から並べる。
+  if (setupPanel && setupInitial && setupInitial.result) setupPanel.applyResult(setupInitial.result);
 
   render();
+  initialRenderDone = true;
+  // 起動時の確認が間に合わなかったときは、終わるのを待って結果を取り込む（パネルは未完了と分かってから出す）。
+  if (setupPanel && !(setupInitial && setupInitial.result)) setupPanel.recheck({ silent: true });
   requestAnimationFrame(() => {
     fitTerminal(paneId);
     terminals[paneId]?.term.focus();

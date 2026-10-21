@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 機能追加 ] VK Orchestrator のアプリで、セットアップが済んでいないときに、足りないものの一覧と「セットアップを始める」ボタンを画面に出し、サイドバーにも停止の理由を表示するように（[#456](https://github.com/vektor-inc/vk-terminals/issues/456)）
+
 ## 1.77.0
 
 - [ 機能追加 ] 同じアプリや、以前の方法で開いた VK Orchestrator がすでに動いているときに開こうとすると、黙って失敗せず「すでに起動しています。終了してから開いてください。」と案内するように（`electron .` での起動は従来どおり案内しない）（[#455](https://github.com/vektor-inc/vk-terminals/issues/455)）

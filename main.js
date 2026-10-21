@@ -95,9 +95,14 @@ const {
   shouldSelfUpdate,
   shouldGuardAlreadyRunning,
   resolveSettingsDescriptorPath,
+  resolveSetupFeature,
   listUserConfigCandidatePaths,
   pickOwnConfigTargetPath,
 } = require('./utils/runtimeOptions');
+// セットアップ状況の一覧（issue #456）。組み込みのオプションがあるときだけ使う。
+const { createSetupStatusChecker } = require('./utils/setupStatusCheck');
+const { hasAutoOpenRecord, writeAutoOpenRecord, decideSetupInitialPane } = require('./utils/setupAutoOpen');
+const { buildSetupPaneLaunchCommand } = require('./utils/setupPaneLaunch');
 const { isPortInUse, buildAlreadyRunningNotice } = require('./utils/alreadyRunning');
 const {
   describeSettingsValues,
@@ -208,6 +213,15 @@ let nextClosePaneRequestId = 1;
 const DATA_DIR = path.join(os.homedir(), '.vk-terminals');
 // 組み込み用の入口（embedded.js）から起動されたときだけ値が入る。electron . では null。
 const EMBEDDED_OPTIONS = getEmbeddedOptions();
+// セットアップ状況の一覧を出すための部品（issue #456）。組み込みのオプションに無ければ null で、
+// その場合は IPC も画面の要素も作らず、従来と同じ画面のままにする（electron . ・zip 版）。
+const SETUP_FEATURE = resolveSetupFeature({ embedded: EMBEDDED_OPTIONS });
+// 確認は上限 20 秒・同時 1 本。startupSetupCheck は起動時に始めた確認（最初のペインの判断で待つ）。
+const SETUP_INITIAL_WAIT_MS = 5000;
+const setupStatusChecker = SETUP_FEATURE
+  ? createSetupStatusChecker({ getSetupStatus: SETUP_FEATURE.getSetupStatus })
+  : null;
+let startupSetupCheck = null;
 // 画面（renderer）・preload・アイコン・スプライト・設定スキーマ等の読み取り専用の資源の置き場所。
 // 書き込みが必要なファイル（config.json 等）はここへ置かず DATA_DIR 側に置く。
 const RESOURCE_ROOT = resolveResourceRoot({ embedded: EMBEDDED_OPTIONS, defaultRoot: __dirname });
@@ -1470,6 +1484,8 @@ app.whenReady().then(async () => {
     }
     initApiToken();
   }
+  // セットアップ状況の確認は、ウィンドウの用意と並行して先に始めておく（最初のペインの判断で待つため）。
+  if (setupStatusChecker) startupSetupCheck = setupStatusChecker.check();
   createWindow();
   startWidgetWatcher();
   await checkAndUpdate();
@@ -1584,8 +1600,28 @@ ipcMain.handle('app:get-config', () => {
     // tasksFile（旧 tasks-view.json）は dual-write 期間の後方互換注記判定に残す。
     tasksFile,
     commandsFile,
+    // 一覧を出す部品があるときだけキーを足す（無いときは従来と同じ応答のまま）。
+    ...(SETUP_FEATURE ? { setupPanelEnabled: true } : {}),
   };
 });
+
+// ─── セットアップ状況の一覧（issue #456）──────────────────────────────────────
+// 組み込み側が渡した getSetupStatus（doctor の結果を返す関数）の呼び出しを、上限 20 秒・同時 1 本で行い、
+// 結果を renderer へ返す。vk-terminals は doctor を自分で起動しない。
+// この if の外には setup:* のハンドラを作らない（部品が無いときは受け口自体を作らない）。
+if (SETUP_FEATURE) {
+  // 「もう一度確認」。実行中ならその結果を共有する。
+  ipcMain.handle('setup:check', () => setupStatusChecker.check());
+
+  // 起動時に作るペインをセットアップ用ペインにするかの判断。記録がある（2 回目以降）ときは確認を待たずに返し、
+  // 無いときだけ起動時に始めた確認の結果を最大 SETUP_INITIAL_WAIT_MS 待つ（判断の中身は utils/setupAutoOpen.js）。
+  ipcMain.handle('setup:initial-pane', () => decideSetupInitialPane({
+    recorded: hasAutoOpenRecord(DATA_DIR),
+    getResult: () => startupSetupCheck || setupStatusChecker.check(),
+    waitMs: SETUP_INITIAL_WAIT_MS,
+    writeRecord: () => writeAutoOpenRecord(DATA_DIR),
+  }));
+}
 
 // 宣言的ウィジェットのコマンド中継（汎用）。renderer は宣言に載っていたコマンド断片
 // { action, taskId, to, expected } をそのまま渡し、main が検証・id/requestedAt 付与・追記する。
@@ -1984,14 +2020,27 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
   if (ptyShutdownGate.isPaneCreationBlocked()) {
     throw new Error('App is shutting down; new panes cannot be created.');
   }
+  // セットアップ用ペイン（issue #456）。作業フォルダとプロンプトは renderer から受け取らず、
+  // 組み込みのオプションで検証済みの setupPane だけを使う。部品が無いのに要求されたら作らない。
+  const setupLaunch = options.setupPane === true;
+  if (setupLaunch && !SETUP_FEATURE) {
+    throw new Error('Setup pane is not available.');
+  }
   const id = String(nextId++);
   const shell = process.env.SHELL || (process.platform === 'win32' ? (process.env.COMSPEC || 'powershell.exe') : '/bin/zsh');
-  let resolvedCwd = cwd || process.env.HOME || process.env.USERPROFILE || os.tmpdir();
+  let resolvedCwd = setupLaunch
+    ? SETUP_FEATURE.setupPane.cwd
+    : (cwd || process.env.HOME || process.env.USERPROFILE || os.tmpdir());
+  let cwdUsable = false;
   try {
-    if (!fs.existsSync(resolvedCwd) || !fs.statSync(resolvedCwd).isDirectory()) {
-      resolvedCwd = process.env.HOME || process.env.USERPROFILE || os.tmpdir();
-    }
+    cwdUsable = fs.existsSync(resolvedCwd) && fs.statSync(resolvedCwd).isDirectory();
   } catch (_e) {
+    cwdUsable = false;
+  }
+  if (!cwdUsable) {
+    // セットアップ用ペインは、作業フォルダが消えていてもホームへ切り替えず、作成失敗として返す
+    // （別のフォルダで claude を起動して、意図しない場所で作業が始まらないようにするため）。
+    if (setupLaunch) throw new Error('Setup pane directory does not exist.');
     resolvedCwd = process.env.HOME || process.env.USERPROFILE || os.tmpdir();
   }
 
@@ -2003,7 +2052,7 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
   // ここでも isValidEngine が再検証する（model と同じ二重化構造・#310 の前例）。
   // 未指定・不正値では例外を投げず、従来どおりの 'claude' へ倒す（安全側の既定。
   // buildClaudeLaunchCommand のコメントと同じ考え方）。
-  const resolvedEngine = isValidEngine(options.engine) ? options.engine : 'claude';
+  const resolvedEngine = !setupLaunch && isValidEngine(options.engine) ? options.engine : 'claude';
 
   // 起動コマンドは PTY を作る前に確定させる（issue #428）。タスク用ポリシーの専用 CODEX_HOME を
   // 用意できない・起動コマンドを組み立てられないときは、PTY を作らずここで例外にして、
@@ -2014,7 +2063,10 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
   let discardLaunchHome = () => false;
   // タスク用ポリシー（専用 CODEX_HOME）で起動する Codex か。信頼確認の自動応答の判定に使う（issue #448）。
   let taskPolicyLaunch = false;
-  if (!noClaude) {
+  if (!noClaude && setupLaunch) {
+    // claude '<prompt>' を作る経路は、検証済みのプロンプトだけを受け付けるこの 1 本のみ。
+    launchCommand = buildSetupPaneLaunchCommand(SETUP_FEATURE.setupPane.prompt);
+  } else if (!noClaude) {
     const launchResolution = resolveCodexLaunchOptions(resolvedEngine, options, { cwd: resolvedCwd });
     if (!launchResolution.ok) {
       console.error(`${LOG_PREFIX} codex launch refused: ${launchResolution.error}`);
@@ -2057,7 +2109,8 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
   const spawnTime = performance.now();
 
   // initialCommand は最初の 1 ターミナルのみ送信
-  const isFirstTerminal = !firstTerminalCreated;
+  // セットアップ用ペインは「最初のターミナル」に数えない（次の通常のペインに initialCommand を送るため）。
+  const isFirstTerminal = !firstTerminalCreated && !setupLaunch;
   if (isFirstTerminal) firstTerminalCreated = true;
 
   let promptWatcher = null;

@@ -2753,7 +2753,7 @@ button.sidebar-section-header:hover {
 }
 
 /* ─── Pane status indicator (issue #23, refined in #27) ───────────────────
- * ヘッダ最左に常時挿入されるバッジ。data-status で表示を切り替える。
+ * ペインIDバッジの右に常時挿入されるバッジ（ヘッダ最左はペインIDバッジ）。data-status で表示を切り替える。
  *   - idle    : visibility:hidden でレイアウト幅を保ったまま不可視（cwd ジッタ防止）
  *   - running : 緑（PTY 出力中, .pane.drag-over の #3fb950 と同系統に統一）
  *   - waiting : 黄（WAITING_PATTERNS ヒット、点滅アニメで注意喚起）

@@ -1,5 +1,7 @@
 # Changelog
 
+## 1.79.0
+
 - [ 機能追加 ] 各ペインのヘッダーのステータスバッジの左に、ペインの番号を「ペインid : 6」のように表示するように（[#460](https://github.com/vektor-inc/vk-terminals/issues/460)）
 
 ## 1.78.0

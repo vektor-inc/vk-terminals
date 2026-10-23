@@ -73,6 +73,7 @@ const { deriveStatus } = window.VKStatusState;
 const { getStatusPresentation } = window.VKStatusPresentation;
 const { getApiServerStatusPresentation } = window.VKApiServerStatus;
 const { getPrBadgePresentation } = window.VKPrBadge;
+const { getPaneIdBadgeLabel } = window.VKPaneIdBadge;
 const { resolveQueueIssuesListUrl } = window.VKTaskQueueLink;
 const { isPatternValid } = window.VKSettingsValidation;
 const { isFieldVisible, isFieldDisabled } = window.VKSettingsVisibility;
@@ -2598,7 +2599,7 @@ function updatePaneTitle(paneId) {
   el.classList.toggle('has-pr', !!prUrl);
 }
 
-// .pane-status バッジ（ヘッダ最左）と .pane.waiting 枠点滅の両方を更新する。
+// .pane-status バッジ（ペインIDバッジの右）と .pane.waiting 枠点滅の両方を更新する。
 // status は派生フィールドのため、waiting 系フラグ / t.status は呼び出し側で先にセット済みである前提。
 function updatePaneStatus(paneId) {
   const t = terminals[paneId];
@@ -3597,6 +3598,8 @@ function renderLeaf(node) {
   const status = t?.status || 'idle';
   const { label: statusLabel, ariaLabel: statusAriaLabel } = getStatusPresentation(status);
   const focused = node.id === focusedPaneId;
+  // 画面側の node.id（pane-3 形式）ではなく、main.js の nextId で振られた termId（API・タスク管理と同じ番号）を表示する。
+  const paneIdLabel = getPaneIdBadgeLabel(t?.termId);
   // apiTitle（API 由来）優先、無ければ taskTitle（OSC 由来）にフォールバック。
   const taskTitle = getDisplayTitle(t);
   // apiTitle 表示時かつ apiUrl があるときのみリンク化（OSC 由来時は URL を出さない）
@@ -3652,7 +3655,7 @@ function renderLeaf(node) {
 
   const header = document.createElement('div');
   header.className = 'pane-header';
-  // .pane-status はヘッダ最左に常時挿入し、CSS の data-status="idle" を visibility:hidden で扱う。
+  // ヘッダ最左は .pane-id-badge（issue #460。ラベルが空のときは hidden）。.pane-status はその右に常時挿入し、CSS の data-status="idle" を visibility:hidden で扱う。
   // role="status" + aria-live="polite" で SR にステータス変化を通知（aria-label は動的更新）。
   // 共通バッジ basis は .pane-badge（issue #27）、固有スタイルは .pane-status / .auto-input-badge。
   // 旧 .waiting-badge は role を .pane-status に一本化したため削除済（issue #23）。
@@ -3662,7 +3665,9 @@ function renderLeaf(node) {
   //   - status / statusAriaLabel: 内部状態だが将来の外部入力統合を想定し防御的にエスケープ
   //   - cwd: OS ファイルシステム由来。ディレクトリ名に `"` や `<` を含めることは技術的に可能
   //   - statusLabel: getStatusPresentation() からの静的文字列だが、念のためエスケープ
+  //   - paneIdLabel: termId（main.js の nextId 由来の番号）から作る。ステータスバッジの aria-live には含めず、独立した静的バッジにする（issue #460）
   header.innerHTML = `
+    <span class="pane-badge pane-id-badge"${paneIdLabel ? ` title="${escAttr(paneIdLabel)}"` : ' hidden'}>${escText(paneIdLabel)}</span>
     <span class="pane-badge pane-status" data-status="${escAttr(status)}" role="status" aria-live="polite"${statusAriaLabel ? ` aria-label="${escAttr(statusAriaLabel)}"` : ''}>${escText(statusLabel)}</span>
     <span class="pane-cwd" title="${escAttr(cwd)}">${escText(cwd)}</span>
     <div class="pane-actions">

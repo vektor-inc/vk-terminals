@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 機能追加 ] 各ペインのヘッダーのステータスバッジの左に、ペインの番号を「ペインid : 6」のように表示するように（[#460](https://github.com/vektor-inc/vk-terminals/issues/460)）
+
 ## 1.78.0
 
 - [ 機能追加 ] VK Orchestrator のアプリで、セットアップが済んでいないときに、足りないものの一覧と「セットアップを始める」ボタンを画面に出し、サイドバーにも停止の理由を表示するように（[#456](https://github.com/vektor-inc/vk-terminals/issues/456)）

@@ -2745,21 +2745,28 @@ button.sidebar-section-header:hover {
 /* ─── Pane ID badge (issue #460) ─────────────────────────────────────────────
  * ステータスバッジの左に常時表示するグレー系バッジ（idle でも隠さない）。
  * ステータス（緑・黄）と区別するため無彩色にし、文字は #161b22 背景で 4.5:1 以上を確保。
- * 狭いペインではステータスバッジ（.pane-status）を優先して残すため、パス（.pane-cwd）が
- * 0 幅まで縮んでもなお足りないときに限り、このバッジだけが縮んで末尾を「…」で省略する。
- * text-overflow は flex コンテナ直下では効かないため display:block にして行高を固定する
- * （高さ 18px - 上下枠 2px = 16px）。 */
+ * 番号が欠ける中途半端な表示（「ペインid : …」や空の箱）を避けるため、バッジ自体は縮めない
+ * （flex-shrink:0）。代わりにヘッダー幅が足りないときはバッジごと非表示にし、ステータスバッジ
+ * （.pane-status）と操作ボタンを優先して残す。パス（.pane-cwd）は先に 0 幅まで縮む。
+ * 閾値 360px は、バッジ（3 桁の番号で約 80px）+ ステータスバッジ（約 59px）+ 操作ボタン群
+ * （約 147px）+ 余白（計 40px）が、パスを 0 幅にしても収まる最小幅（約 325px）に余裕を持たせた値。 */
+.pane-header {
+  container-type: inline-size;
+  container-name: pane-header;
+}
+
 .pane-id-badge {
-  display: block;
-  flex-shrink: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  line-height: 16px;
+  flex-shrink: 0;
   padding: 0 6px;
   color: #8b949e;
   background-color: rgba(110, 118, 129, 0.15);
   border: 1px solid rgba(110, 118, 129, 0.3);
+}
+
+@container pane-header (max-width: 359px) {
+  .pane-id-badge {
+    display: none;
+  }
 }
 
 /* ─── Pane status indicator (issue #23, refined in #27) ───────────────────

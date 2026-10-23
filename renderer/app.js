@@ -3667,7 +3667,7 @@ function renderLeaf(node) {
   //   - statusLabel: getStatusPresentation() からの静的文字列だが、念のためエスケープ
   //   - paneIdLabel: termId（main.js の nextId 由来の番号）から作る。ステータスバッジの aria-live には含めず、独立した静的バッジにする（issue #460）
   header.innerHTML = `
-    <span class="pane-badge pane-id-badge"${paneIdLabel ? '' : ' hidden'}>${escText(paneIdLabel)}</span>
+    <span class="pane-badge pane-id-badge"${paneIdLabel ? ` title="${escAttr(paneIdLabel)}"` : ' hidden'}>${escText(paneIdLabel)}</span>
     <span class="pane-badge pane-status" data-status="${escAttr(status)}" role="status" aria-live="polite"${statusAriaLabel ? ` aria-label="${escAttr(statusAriaLabel)}"` : ''}>${escText(statusLabel)}</span>
     <span class="pane-cwd" title="${escAttr(cwd)}">${escText(cwd)}</span>
     <div class="pane-actions">

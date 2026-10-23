@@ -2742,6 +2742,16 @@ button.sidebar-section-header:hover {
   display: none;
 }
 
+/* ─── Pane ID badge (issue #460) ─────────────────────────────────────────────
+ * ステータスバッジの左に常時表示するグレー系バッジ（idle でも隠さない）。
+ * ステータス（緑・黄）と区別するため無彩色にし、文字は #161b22 背景で 4.5:1 以上を確保。 */
+.pane-id-badge {
+  padding: 0 6px;
+  color: #8b949e;
+  background-color: rgba(110, 118, 129, 0.15);
+  border: 1px solid rgba(110, 118, 129, 0.3);
+}
+
 /* ─── Pane status indicator (issue #23, refined in #27) ───────────────────
  * ヘッダ最左に常時挿入されるバッジ。data-status で表示を切り替える。
  *   - idle    : visibility:hidden でレイアウト幅を保ったまま不可視（cwd ジッタ防止）

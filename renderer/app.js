@@ -3597,6 +3597,7 @@ function renderLeaf(node) {
   const status = t?.status || 'idle';
   const { label: statusLabel, ariaLabel: statusAriaLabel } = getStatusPresentation(status);
   const focused = node.id === focusedPaneId;
+  const paneIdLabel = VKPaneIdBadge.getPaneIdBadgeLabel(node.id);
   // apiTitle（API 由来）優先、無ければ taskTitle（OSC 由来）にフォールバック。
   const taskTitle = getDisplayTitle(t);
   // apiTitle 表示時かつ apiUrl があるときのみリンク化（OSC 由来時は URL を出さない）
@@ -3662,7 +3663,9 @@ function renderLeaf(node) {
   //   - status / statusAriaLabel: 内部状態だが将来の外部入力統合を想定し防御的にエスケープ
   //   - cwd: OS ファイルシステム由来。ディレクトリ名に `"` や `<` を含めることは技術的に可能
   //   - statusLabel: getStatusPresentation() からの静的文字列だが、念のためエスケープ
+  //   - paneIdLabel: ペインID（node.id）由来。ステータスバッジの aria-live には含めず、独立した静的バッジにする（issue #460）
   header.innerHTML = `
+    <span class="pane-badge pane-id-badge">${escText(paneIdLabel)}</span>
     <span class="pane-badge pane-status" data-status="${escAttr(status)}" role="status" aria-live="polite"${statusAriaLabel ? ` aria-label="${escAttr(statusAriaLabel)}"` : ''}>${escText(statusLabel)}</span>
     <span class="pane-cwd" title="${escAttr(cwd)}">${escText(cwd)}</span>
     <div class="pane-actions">

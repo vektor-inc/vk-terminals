@@ -2744,8 +2744,18 @@ button.sidebar-section-header:hover {
 
 /* ─── Pane ID badge (issue #460) ─────────────────────────────────────────────
  * ステータスバッジの左に常時表示するグレー系バッジ（idle でも隠さない）。
- * ステータス（緑・黄）と区別するため無彩色にし、文字は #161b22 背景で 4.5:1 以上を確保。 */
+ * ステータス（緑・黄）と区別するため無彩色にし、文字は #161b22 背景で 4.5:1 以上を確保。
+ * 狭いペインではステータスバッジ（.pane-status）を優先して残すため、パス（.pane-cwd）が
+ * 0 幅まで縮んでもなお足りないときに限り、このバッジだけが縮んで末尾を「…」で省略する。
+ * text-overflow は flex コンテナ直下では効かないため display:block にして行高を固定する
+ * （高さ 18px - 上下枠 2px = 16px）。 */
 .pane-id-badge {
+  display: block;
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 16px;
   padding: 0 6px;
   color: #8b949e;
   background-color: rgba(110, 118, 129, 0.15);

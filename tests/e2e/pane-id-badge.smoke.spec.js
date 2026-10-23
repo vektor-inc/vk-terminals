@@ -6,7 +6,8 @@ const { closeApp, getFreePort, launchApp } = require('./helpers/electron-app');
 //   2. ペインを追加すると別の番号のバッジが出る
 //   3. バッジがステータスバッジ（.pane-status）より左にある
 //   4. ステータスバッジと高さが同じ
-//   5. ペイン幅を狭めてもバッジの文字が切れず、パス（.pane-cwd）だけが省略される
+//   5. ペイン幅を狭めると、パス（.pane-cwd）→ペインidバッジの順に省略され、
+//      ステータスバッジ（.pane-status）は文字が切れず、ペイン右端も越えない
 
 async function getStates(port) {
   const res = await fetch(`http://127.0.0.1:${port}/api/states`);
@@ -99,7 +100,7 @@ test('ペインIDバッジ: 番号が API の termId と一致し、ステータ
       expect(m.idPadR).toBe(m.stPadR);
     }
 
-    // ─── (5) ペイン幅を狭めても、バッジの文字は切れずパスだけが省略される ───
+    // ─── (5) 狭くしても、ステータスバッジは切れず右端を越えない（ペインidバッジが先に省略される） ───
     // ウィンドウには最小幅があるため、ペインを増やして 1 枚あたりの幅を狭くする。
     await app.evaluate(({ BrowserWindow }) => {
       BrowserWindow.getAllWindows()[0].setSize(600, 700);
@@ -114,18 +115,26 @@ test('ペインIDバッジ: 番号が API の termId と一致し、ステータ
     for (const paneId of Object.keys(narrow)) {
       const m = await win.evaluate((id) => {
         const el = (s) => document.querySelector(`.pane[data-id="${id}"] ${s}`);
-        const badge = el('.pane-id-badge');
         const st = el('.pane-status');
+        const pane = document.querySelector(`.pane[data-id="${id}"]`);
         return {
-          badgeClipped: badge.scrollWidth > badge.clientWidth,
           statusClipped: st.scrollWidth > st.clientWidth,
-          badgeWidth: badge.getBoundingClientRect().width,
+          statusRight: st.getBoundingClientRect().right,
+          statusWidth: st.getBoundingClientRect().width,
+          paneRight: pane.getBoundingClientRect().right,
         };
       }, paneId);
-      expect(m.badgeClipped).toBe(false);
       expect(m.statusClipped).toBe(false);
-      expect(m.badgeWidth).toBeGreaterThan(40);
+      expect(m.statusWidth).toBeGreaterThan(30);
+      expect(m.statusRight).toBeLessThanOrEqual(m.paneRight + 0.5);
     }
+    // ペインidバッジは省略されてもよいが、ステータスバッジの左側に収まっている。
+    const idOverlap = await win.evaluate(() => [...document.querySelectorAll('.pane')].some((p) => {
+      const idb = p.querySelector('.pane-id-badge').getBoundingClientRect();
+      const st = p.querySelector('.pane-status').getBoundingClientRect();
+      return idb.right > st.left + 0.5;
+    }));
+    expect(idOverlap).toBe(false);
     // パス側が省略（scrollWidth > clientWidth）されるペインが少なくとも1つある
     // = 狭さで実際に省略が起きる条件になっている。
     const anyCwdClipped = await win.evaluate(() => [...document.querySelectorAll('.pane .pane-cwd')]

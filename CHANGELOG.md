@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 仕様変更 ] 各ペインのヘッダーに表示しているペインの番号の表記を「ペインid : 6」から「ペイン 6」に変更（[#462](https://github.com/vektor-inc/vk-terminals/issues/462)）
+
 ## 1.79.0
 
 - [ 機能追加 ] 各ペインのヘッダーのステータスバッジの左に、ペインの番号を「ペインid : 6」のように表示するように（[#460](https://github.com/vektor-inc/vk-terminals/issues/460)）

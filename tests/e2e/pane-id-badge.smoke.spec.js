@@ -1,12 +1,12 @@
 const { test, expect } = require('@playwright/test');
 const { closeApp, getFreePort, launchApp } = require('./helpers/electron-app');
 
-// issue #460 / PR #461: ペインヘッダーの「ペインid : N」バッジ（.pane-id-badge）の回帰確認。
-//   1. 各ペインのバッジ文言が「ペインid : N」で、N が GET /api/states の termId と一致する
+// issue #460 / PR #461 / issue #462: ペインヘッダーの「ペイン N」バッジ（.pane-id-badge）の回帰確認。
+//   1. 各ペインのバッジ文言が「ペイン N」で、N が GET /api/states の termId と一致する
 //   2. ペインを追加すると別の番号のバッジが出る
 //   3. バッジがステータスバッジ（.pane-status）より左にある
 //   4. ステータスバッジと高さが同じ
-//   5. ペイン幅を狭めると、ペインidバッジは番号まで読める表示か非表示のどちらかになり（空の箱・「…」にならない）、
+//   5. ペイン幅を狭めると、ペイン番号バッジは番号まで読める表示か非表示のどちらかになり（空の箱・「…」にならない）、
 //      ステータスバッジ（.pane-status）は文字が切れず、ペイン右端も越えない。バッジには title も付く
 
 async function getStates(port) {
@@ -47,11 +47,11 @@ test('ペインIDバッジ: 番号が API の termId と一致し、ステータ
     const first = await waitForPaneCount(port, 1);
     const firstTermId = Object.values(first)[0];
 
-    // ─── (1) 1枚目: 文言が「ペインid : N」で N が API の termId と一致 ───
+    // ─── (1) 1枚目: 文言が「ペイン N」で N が API の termId と一致 ───
     for (const [paneId, termId] of Object.entries(first)) {
       const badge = win.locator(`.pane[data-id="${paneId}"] .pane-id-badge`);
       await expect(badge).toBeVisible();
-      await expect(badge).toHaveText(`ペインid : ${termId}`);
+      await expect(badge).toHaveText(`ペイン ${termId}`);
     }
 
     // ─── (2) ペインを追加すると別の番号が出る ───
@@ -62,7 +62,7 @@ test('ペインIDバッジ: 番号が API の termId と一致し、ステータ
     expect(new Set(termIds).size).toBe(termIds.length);
     expect(termIds).toContain(firstTermId);
     for (const [paneId, termId] of Object.entries(two)) {
-      await expect(win.locator(`.pane[data-id="${paneId}"] .pane-id-badge`)).toHaveText(`ペインid : ${termId}`);
+      await expect(win.locator(`.pane[data-id="${paneId}"] .pane-id-badge`)).toHaveText(`ペイン ${termId}`);
     }
 
     // ステータスを「入力待ち」にして、色付きバッジと並べた状態も測る。
@@ -100,7 +100,7 @@ test('ペインIDバッジ: 番号が API の termId と一致し、ステータ
       expect(m.idPadR).toBe(m.stPadR);
     }
 
-    // ─── (5) 狭くしたとき: ペインidバッジは「番号まで読める」か「非表示」のどちらか。
+    // ─── (5) 狭くしたとき: ペイン番号バッジは「番号まで読める」か「非表示」のどちらか。
     //         ステータスバッジは切れず、ペイン右端も越えない ───
     // ウィンドウには最小幅があるため、ペインを増やして 1 枚あたりの幅を狭くする。
     await app.evaluate(({ BrowserWindow }) => {
@@ -134,16 +134,16 @@ test('ペインIDバッジ: 番号が API の termId と一致し、ステータ
         expect(m.statusClipped).toBe(false);
         expect(m.statusWidth).toBeGreaterThan(30);
         expect(m.statusRight).toBeLessThanOrEqual(m.paneRight + 0.5);
-        // ペインidバッジは見えているなら番号まで読める（空の箱・省略「…」でない）。見えないなら非表示。
+        // ペイン番号バッジは見えているなら番号まで読める（空の箱・省略「…」でない）。見えないなら非表示。
         if (m.idVisible) {
           expect(m.idClipped).toBe(false);
           expect(m.idWidth).toBeGreaterThan(40);
-          expect(m.idText).toMatch(/^ペインid : \d+$/);
+          expect(m.idText).toMatch(/^ペイン \d+$/);
           expect(m.idRight).toBeLessThanOrEqual(m.statusLeft + 0.5);
         }
         // 中間の幅で「欠けた表示」が残らないよう、足りない幅では必ず非表示になっている。
         if (m.headerWidth < 330) expect(m.idVisible).toBe(false);
-        // ホバーで出る説明は「ペインid : N」。
+        // ホバーで出る説明は「ペイン N」。
         expect(m.idTitle).toBe(m.idText);
       }
     };

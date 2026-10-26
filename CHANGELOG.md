@@ -1,5 +1,7 @@
 # Changelog
 
+## 1.79.1
+
 - [ 仕様変更 ] 各ペインのヘッダーに表示しているペインの番号の表記を「ペインid : 6」から「ペイン 6」に変更（[#462](https://github.com/vektor-inc/vk-terminals/issues/462)）
 
 ## 1.79.0

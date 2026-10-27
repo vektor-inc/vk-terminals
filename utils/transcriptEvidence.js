@@ -12,7 +12,7 @@
 // 照合規則は vk-orchestrator の src/engine/transcript-evidence.js に合わせている。
 //
 // 会話記録の中身・ファイルパス・一致した行は呼び出し元へ返さず、ログにも出さない
-// （返すのは「届いた／まだ／判定できない」の区別と理由コードだけ）。
+// （返すのは「届いた／値が崩れている／まだ／判定できない」の区別と理由コードだけ）。
 //
 // 【ファイルの mtime 絞り込みだけでは不十分な理由】
 // セッションローテーションは同じ識別子を次のセッションへ引き継ぐため、古い識別子の行が
@@ -50,7 +50,8 @@ const SINCE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const SINCE_FUTURE_TOLERANCE_MS = 60 * 1000;
 
 // 応答の result 値と reason 値（綴りはここを正とする）。
-const RESULT = Object.freeze({ DELIVERED: 'delivered', PENDING: 'pending', UNKNOWN: 'unknown' });
+const RESULT = Object.freeze({ DELIVERED: 'delivered', MALFORMED: 'malformed', PENDING: 'pending', UNKNOWN: 'unknown' });
+const LINE_RESULT = Object.freeze({ MATCH: 'match', MALFORMED: 'malformed', NONE: 'none' });
 const REASON = Object.freeze({
   ENGINE_CODEX: 'engine-codex',
   CWD_UNKNOWN: 'cwd-unknown',
@@ -127,6 +128,27 @@ function isRealUserPromptLine(parsed) {
   return true;
 }
 
+function textParts(content) {
+  if (typeof content === 'string') return [content];
+  if (!Array.isArray(content)) return [];
+  return content
+    .filter((part) => part && part.type === 'text' && typeof part.text === 'string')
+    .map((part) => part.text);
+}
+
+function transcriptPromptTexts(parsed) {
+  if (isRealUserPromptLine(parsed)) {
+    return textParts(parsed.message && parsed.message.content);
+  }
+  const attachment = parsed && parsed.attachment;
+  if (parsed && parsed.type === 'attachment'
+    && attachment && attachment.type === 'queued_command'
+    && attachment.commandMode !== 'task-notification') {
+    return textParts(attachment.prompt);
+  }
+  return [];
+}
+
 function lineTimestampIsAtOrAfter(parsed, sinceTimeMs) {
   const raw = parsed && parsed.timestamp;
   if (typeof raw !== 'string') return false;
@@ -136,19 +158,34 @@ function lineTimestampIsAtOrAfter(parsed, sinceTimeMs) {
 }
 
 /**
- * jsonl の 1 行が「token を含む実際のユーザー発話で、行自身の timestamp が sinceTimeMs 以降」か。
- * JSON.parse できない行（途中で切れた行など）は無害に false。timestamp が無い行も不一致（安全側）。
+ * jsonl の 1 行にある照合用識別子の値を判定する。
+ * JSON.parse できない行（途中で切れた行など）と timestamp が無い行は該当なし（安全側）。
  */
-function transcriptLineMatchesUserToken(line, token, sinceTimeMs) {
-  if (!line || !line.includes(token)) return false;
+function classifyTranscriptLineToken(line, token, sinceTimeMs) {
+  if (!line || !line.includes(token)) return LINE_RESULT.NONE;
   let parsed;
   try {
     parsed = JSON.parse(line);
   } catch (_e) {
-    return false;
+    return LINE_RESULT.NONE;
   }
-  if (!isRealUserPromptLine(parsed)) return false;
-  return lineTimestampIsAtOrAfter(parsed, sinceTimeMs);
+  if (!lineTimestampIsAtOrAfter(parsed, sinceTimeMs)) return LINE_RESULT.NONE;
+
+  let malformed = false;
+  for (const text of transcriptPromptTexts(parsed)) {
+    for (const word of text.split(/\s+/)) {
+      const match = /^(?:session-rotation-run-id|vk-delivery-token)=(.*)$/.exec(word);
+      if (!match) continue;
+      if (match[1] === token) return LINE_RESULT.MATCH;
+      if (match[1].includes(token)) malformed = true;
+    }
+  }
+  return malformed ? LINE_RESULT.MALFORMED : LINE_RESULT.NONE;
+}
+
+/** 後方互換用の真偽判定。値が完全一致する行だけ true を返す。 */
+function transcriptLineMatchesUserToken(line, token, sinceTimeMs) {
+  return classifyTranscriptLineToken(line, token, sinceTimeMs) === LINE_RESULT.MATCH;
 }
 
 // lstat 後の symlink 差し替え（TOCTOU）対策として open にも O_NOFOLLOW を付ける。
@@ -163,7 +200,7 @@ function createDefaultFsApi() {
 }
 
 // ファイルサイズが maxBytes 以下なら先頭から全部、超えるなら末尾の maxBytes だけをチャンク単位で読み、
-// 一致する行が現れた時点で true。サイズは開いたファイルディスクリプタの fstat（handle.stat）で取る
+// 完全一致する行が現れた時点で match。サイズは開いたファイルディスクリプタの fstat（handle.stat）で取る
 // （lstat とのあいだにファイルが伸びても、読む範囲は open 後のサイズで決まる）。
 // 読み始め位置が 0 でないとき、最初の改行までは「途中から切れた 1 行」なので判定に使わず捨てる。
 // チャンク境界をまたぐ行は断片の配列（pending）にためておき、改行が見つかったときに 1 回だけ連結する。
@@ -182,6 +219,7 @@ async function scanFileForToken(handle, token, { maxBytes, chunkSize, sinceTimeM
   }
   let pending = [];
   let hitEof = false;
+  let result = LINE_RESULT.NONE;
 
   while (position < endPosition) {
     const toRead = Math.min(chunkSize, endPosition - position);
@@ -210,7 +248,9 @@ async function scanFileForToken(handle, token, { maxBytes, chunkSize, sinceTimeM
         const lineText = (pending.length === 1 ? pending[0] : Buffer.concat(pending)).toString('utf8');
         pending = [];
         start = newlineIndex + 1;
-        if (transcriptLineMatchesUserToken(lineText, token, sinceTimeMs)) return true;
+        const lineResult = classifyTranscriptLineToken(lineText, token, sinceTimeMs);
+        if (lineResult === LINE_RESULT.MATCH) return LINE_RESULT.MATCH;
+        if (lineResult === LINE_RESULT.MALFORMED) result = LINE_RESULT.MALFORMED;
       }
     }
 
@@ -225,17 +265,21 @@ async function scanFileForToken(handle, token, { maxBytes, chunkSize, sinceTimeM
 
   // 上限で切れた途中の断片は捨てる。EOF の最終行（改行なし）は判定する。
   // 途中から切れた先頭行を読み飛ばしている最中に EOF に達した場合、pending は空なので判定しない。
-  return hitEof && pending.length > 0
-    && transcriptLineMatchesUserToken(Buffer.concat(pending).toString('utf8'), token, sinceTimeMs);
+  if (hitEof && pending.length > 0) {
+    const lineResult = classifyTranscriptLineToken(Buffer.concat(pending).toString('utf8'), token, sinceTimeMs);
+    if (lineResult === LINE_RESULT.MATCH) return LINE_RESULT.MATCH;
+    if (lineResult === LINE_RESULT.MALFORMED) result = LINE_RESULT.MALFORMED;
+  }
+  return result;
 }
 
-// ディレクトリを 1 回だけ走査する。ENOENT（まだ書かれていない）は false、それ以外の I/O エラーは投げる。
+// ディレクトリを 1 回だけ走査する。ENOENT（まだ書かれていない）は none、それ以外の I/O エラーは投げる。
 async function scanTranscriptDirOnce(dir, token, { sinceTimeMs, maxFiles, maxReadBytes, readChunkBytes, fsApi }) {
   let entries;
   try {
     entries = await fsApi.readdir(dir);
   } catch (err) {
-    if (err && err.code === 'ENOENT') return false;
+    if (err && err.code === 'ENOENT') return LINE_RESULT.NONE;
     throw err;
   }
 
@@ -260,6 +304,7 @@ async function scanTranscriptDirOnce(dir, token, { sinceTimeMs, maxFiles, maxRea
 
   candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
 
+  let result = LINE_RESULT.NONE;
   for (const { filePath } of candidates.slice(0, maxFiles)) {
     let handle;
     try {
@@ -270,14 +315,14 @@ async function scanTranscriptDirOnce(dir, token, { sinceTimeMs, maxFiles, maxRea
       throw err;
     }
     try {
-      if (await scanFileForToken(handle, token, { maxBytes: maxReadBytes, chunkSize: readChunkBytes, sinceTimeMs })) {
-        return true;
-      }
+      const fileResult = await scanFileForToken(handle, token, { maxBytes: maxReadBytes, chunkSize: readChunkBytes, sinceTimeMs });
+      if (fileResult === LINE_RESULT.MATCH) return LINE_RESULT.MATCH;
+      if (fileResult === LINE_RESULT.MALFORMED) result = LINE_RESULT.MALFORMED;
     } finally {
       await handle.close();
     }
   }
-  return false;
+  return result;
 }
 
 /**
@@ -297,7 +342,7 @@ async function scanTranscriptDirOnce(dir, token, { sinceTimeMs, maxFiles, maxRea
  * @param {object} [params.fsApi]       { readdir, lstat, open, realpath } の一部・全部を差し替え可能
  * @param {string} [params.homeDir]
  * @param {NodeJS.ProcessEnv} [params.env]
- * @returns {Promise<{ result: 'delivered'|'pending'|'unknown', reason?: string }>}
+ * @returns {Promise<{ result: 'delivered'|'malformed'|'pending'|'unknown', reason?: string }>}
  */
 async function checkTranscriptEvidence({
   cwd,
@@ -336,14 +381,16 @@ async function checkTranscriptEvidence({
 
   const dir = resolveClaudeProjectTranscriptDir(resolvedCwd, { homeDir, env });
   try {
-    const found = await scanTranscriptDirOnce(dir, token, {
+    const scanResult = await scanTranscriptDirOnce(dir, token, {
       sinceTimeMs: sinceTimeMs - graceMs,
       maxFiles,
       maxReadBytes,
       readChunkBytes,
       fsApi: mergedFsApi,
     });
-    return { result: found ? RESULT.DELIVERED : RESULT.PENDING };
+    if (scanResult === LINE_RESULT.MATCH) return { result: RESULT.DELIVERED };
+    if (scanResult === LINE_RESULT.MALFORMED) return { result: RESULT.MALFORMED };
+    return { result: RESULT.PENDING };
   } catch (_e) {
     // エラーメッセージにはパスが含まれうるため、返さない・ログにも出さない。
     return { result: RESULT.UNKNOWN, reason: REASON.TRANSCRIPT_UNREADABLE };
@@ -417,6 +464,7 @@ module.exports = {
   resolveClaudeProjectsRoot,
   encodeClaudeProjectDirName,
   resolveClaudeProjectTranscriptDir,
+  classifyTranscriptLineToken,
   transcriptLineMatchesUserToken,
   checkTranscriptEvidence,
 };

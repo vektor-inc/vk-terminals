@@ -15,6 +15,7 @@ const {
   parseTranscriptEvidenceQuery,
   resolveClaudeProjectTranscriptDir,
   encodeClaudeProjectDirName,
+  classifyTranscriptLineToken,
 } = require('../utils/transcriptEvidence');
 
 const TOKEN = '3f2b8c1e-5a4d-4e7f-9b6a-0c1d2e3f4a5b';
@@ -35,6 +36,10 @@ function userLine(token, iso, extra = {}) {
 
 function assistantLine(iso, size) {
   return JSON.stringify({ type: 'assistant', timestamp: iso, message: { content: 'x'.repeat(size) } }) + '\n';
+}
+
+function transcriptLine(data) {
+  return JSON.stringify({ timestamp: new Date(AFTER).toISOString(), ...data }) + '\n';
 }
 
 // 実ファイルを置いた fake home を作る。files: { 名前: { text, mtimeMs } }
@@ -120,6 +125,93 @@ test('token が一致しなければ pending', async (t) => {
   const s = setup({ 'a.jsonl': { text: userLine(OTHER_TOKEN, new Date(AFTER).toISOString()), mtimeMs: AFTER } });
   t.after(s.cleanup);
   assert.deepEqual(await s.run(), { result: 'pending' });
+});
+
+test('照合用のキー付き語だけを完全一致または値の崩れとして判定する', () => {
+  const iso = new Date(AFTER).toISOString();
+  assert.equal(classifyTranscriptLineToken(userLine(TOKEN, iso), TOKEN, SINCE), 'match');
+  assert.equal(classifyTranscriptLineToken(userLine(`${TOKEN}broken`, iso), TOKEN, SINCE), 'malformed');
+  assert.equal(classifyTranscriptLineToken(userLine(`x${TOKEN}`, iso), TOKEN, SINCE), 'none');
+  assert.equal(classifyTranscriptLineToken(userLine(OTHER_TOKEN, iso), TOKEN, SINCE), 'none');
+  assert.equal(classifyTranscriptLineToken(transcriptLine({ type: 'user', message: { content: `裸の値 ${TOKEN}` } }), TOKEN, SINCE), 'none');
+  assert.equal(classifyTranscriptLineToken(transcriptLine({ type: 'user', message: { content: `vk-delivery-token=${TOKEN}` } }), TOKEN, SINCE), 'match');
+  assert.equal(classifyTranscriptLineToken(transcriptLine({ type: 'user', message: { content: `vk-delivery-token=${TOKEN}/request.json` } }), TOKEN, SINCE), 'malformed');
+  assert.equal(classifyTranscriptLineToken(transcriptLine({ type: 'user', message: { content: `session-rotation-run-id=${TOKEN}/broken vk-delivery-token=${TOKEN}` } }), TOKEN, SINCE), 'match');
+  assert.equal(classifyTranscriptLineToken(transcriptLine({ type: 'attachment', attachment: { type: 'queued_command', prompt: `session-rotation-run-id=${TOKEN}/broken` } }), TOKEN, SINCE), 'malformed');
+  assert.equal(classifyTranscriptLineToken(transcriptLine({ type: 'attachment', attachment: { type: 'queued_command', prompt: [{ type: 'text', text: `vk-delivery-token=${TOKEN}/broken` }] } }), TOKEN, SINCE), 'malformed');
+});
+
+test('user の文字列・text 配列と queued_command の文字列・text 配列を照合する', async (t) => {
+  const lines = [
+    transcriptLine({ type: 'user', message: { content: [{ type: 'image', source: TOKEN }, { type: 'text', text: `session-rotation-run-id=${TOKEN}` }] } }),
+    transcriptLine({ type: 'attachment', attachment: { type: 'queued_command', prompt: `vk-delivery-token=${TOKEN}` } }),
+    transcriptLine({ type: 'attachment', attachment: { type: 'queued_command', prompt: [{ type: 'image', source: TOKEN }, { type: 'text', text: `session-rotation-run-id=${TOKEN}` }] } }),
+  ];
+  for (const [index, line] of lines.entries()) {
+    const s = setup({ [`${index}.jsonl`]: { text: line, mtimeMs: AFTER } });
+    t.after(s.cleanup);
+    assert.deepEqual(await s.run(), { result: 'delivered' });
+  }
+});
+
+test('task-notification と queue-operation は識別子を含んでも証拠にしない', async (t) => {
+  const text = transcriptLine({
+    type: 'attachment',
+    attachment: { type: 'queued_command', commandMode: 'task-notification', prompt: `session-rotation-run-id=${TOKEN}` },
+  }) + transcriptLine({ type: 'queue-operation', operation: 'enqueue', content: `session-rotation-run-id=${TOKEN}` });
+  const s = setup({ 'a.jsonl': { text, mtimeMs: AFTER } });
+  t.after(s.cleanup);
+  assert.deepEqual(await s.run(), { result: 'pending' });
+});
+
+test('崩れた値だけなら malformed を返す', async (t) => {
+  const malformed = `${TOKEN}8-989c-d808d1560ae9/request.json/vk-kore`;
+  const s = setup({ 'a.jsonl': { text: userLine(malformed, new Date(AFTER).toISOString()), mtimeMs: AFTER } });
+  t.after(s.cleanup);
+  assert.deepEqual(await s.run(), { result: 'malformed' });
+});
+
+test('識別子の前に文字が付いた値は malformed にせず pending を返す', async (t) => {
+  const s = setup({ 'a.jsonl': { text: userLine(`x${TOKEN}`, new Date(AFTER).toISOString()), mtimeMs: AFTER } });
+  t.after(s.cleanup);
+  assert.deepEqual(await s.run(), { result: 'pending' });
+});
+
+test('改行なしの最終行にある崩れた値は malformed を返す', async (t) => {
+  const line = userLine(`${TOKEN}/request.json`, new Date(AFTER).toISOString()).trimEnd();
+  const s = setup({ 'a.jsonl': { text: line, mtimeMs: AFTER } });
+  t.after(s.cleanup);
+  assert.deepEqual(await s.run(), { result: 'malformed' });
+});
+
+test('読み取りチャンクの境界をまたぐ崩れた値は malformed を返す', async (t) => {
+  const iso = new Date(AFTER).toISOString();
+  const text = assistantLine(iso, 300).repeat(5) + userLine(`${TOKEN}/request.json`, iso);
+  const s = setup({ 'a.jsonl': { text, mtimeMs: AFTER } });
+  t.after(s.cleanup);
+  assert.deepEqual(await s.run({ readChunkBytes: 64 }), { result: 'malformed' });
+});
+
+test('since より前の崩れた値は数えず pending を返す', async (t) => {
+  const old = new Date(SINCE - 6000).toISOString();
+  const s = setup({ 'a.jsonl': { text: userLine(`${TOKEN}/request.json`, old), mtimeMs: AFTER } });
+  t.after(s.cleanup);
+  assert.deepEqual(await s.run(), { result: 'pending' });
+});
+
+test('崩れた値と正しい値があれば、同一ファイルでも別ファイルでも delivered を優先する', async (t) => {
+  const iso = new Date(AFTER).toISOString();
+  const malformedLine = userLine(`${TOKEN}/request.json`, iso);
+  const matchingLine = userLine(TOKEN, iso);
+  const same = setup({ 'a.jsonl': { text: malformedLine + matchingLine, mtimeMs: AFTER } });
+  const separate = setup({
+    'new.jsonl': { text: malformedLine, mtimeMs: AFTER + 1000 },
+    'old.jsonl': { text: matchingLine, mtimeMs: AFTER },
+  });
+  t.after(same.cleanup);
+  t.after(separate.cleanup);
+  assert.deepEqual(await same.run(), { result: 'delivered' });
+  assert.deepEqual(await separate.run(), { result: 'delivered' });
 });
 
 test('timestamp が無い行・壊れた行は数えない', async (t) => {
@@ -278,6 +370,16 @@ test('上限を超えるファイルの末尾にある token は delivered に�
   assert.deepEqual(await s.run({ maxReadBytes: 1024, readChunkBytes: 100 }), { result: 'delivered' });
 });
 
+test('上限を超えるファイルの末尾にある崩れた値は malformed を返す', async (t) => {
+  const iso = new Date(AFTER).toISOString();
+  const malformedLine = userLine(`${TOKEN}/request.json`, iso);
+  const text = assistantLine(iso, 500).repeat(4) + malformedLine;
+  const s = setup({ 'a.jsonl': { text, mtimeMs: AFTER } });
+  t.after(s.cleanup);
+  assert.ok(Buffer.byteLength(text) > 1024);
+  assert.deepEqual(await s.run({ maxReadBytes: 1024 }), { result: 'malformed' });
+});
+
 test('上限以下のファイルは今までどおり先頭から全部読む', async (t) => {
   const iso = new Date(AFTER).toISOString();
   const text = userLine(TOKEN, iso) + assistantLine(iso, 100);
@@ -417,6 +519,19 @@ test('応答: 実際の cwd / engine を使って 200 で返し、中身・パ�
   const noState = await buildTranscriptEvidenceResponse({ ...base, searchParams, getPaneState: () => undefined });
   assert.deepEqual(noState, { status: 200, body: { result: 'unknown', reason: 'cwd-unknown' } });
   assert.ok(!JSON.stringify(ok).includes(s.home));
+});
+
+test('応答: malformed は崩れた値・会話記録・パスを含めず result だけを返す', async (t) => {
+  const malformed = `${TOKEN}/secret/request.json`;
+  const s = setup({ 'secret.jsonl': { text: userLine(malformed, new Date(AFTER).toISOString()), mtimeMs: AFTER } });
+  t.after(s.cleanup);
+  const response = await buildTranscriptEvidenceResponse({
+    searchParams: q({ termId: '1', token: TOKEN, since: String(SINCE) }),
+    ...baseDeps({ checkOptions: { homeDir: s.home, env: {}, fsApi: { realpath: async (p) => p } } }),
+  });
+  assert.deepEqual(response, { status: 200, body: { result: 'malformed' } });
+  assert.ok(!JSON.stringify(response).includes('secret'));
+  assert.ok(!JSON.stringify(response).includes(malformed));
 });
 
 test('応答: 照合の途中に同じペインへ来た要求は busy、別ペインは影響を受けない', async () => {

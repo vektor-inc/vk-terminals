@@ -662,7 +662,7 @@ curl -s http://127.0.0.1:13847/api/states \
 
 #### `GET /api/transcript-evidence`（issue #417）
 
-ペインへ送った指示文が、そのペインの Claude Code に届いたかを会話記録（`~/.claude/projects/<作業ディレクトリを変換した名前>/*.jsonl`。`CLAUDE_CONFIG_DIR` 設定時はその配下）から確認します。指示文に埋め込んだ識別子（UUID）が、`since` 以降のユーザー発話として現れたかを **1 回だけ** 調べて即答します（待ち合わせはしないため、再確認の間隔や回数は呼び出し側が決めます）。
+ペインへ送った指示文が、そのペインの Claude Code に届いたかを会話記録（`~/.claude/projects/<作業ディレクトリを変換した名前>/*.jsonl`。`CLAUDE_CONFIG_DIR` 設定時はその配下）から確認します。`since` 以降のユーザー発話と作業中に届いた入力を **1 回だけ** 調べて即答します（バックグラウンドエージェントの完了通知は除外し、待ち合わせはしません）。照合は `session-rotation-run-id=` または `vk-delivery-token=` の値と、指定された識別子（UUID）との完全一致で行います。
 
 ```bash
 curl -s "http://127.0.0.1:13847/api/transcript-evidence?termId=1&token=3f2b8c1e-5a4d-4e7f-9b6a-0c1d2e3f4a5b&since=1790000000000" \
@@ -675,9 +675,10 @@ curl -s "http://127.0.0.1:13847/api/transcript-evidence?termId=1&token=3f2b8c1e-
 | `token` | 指示文に埋め込んだ識別子。**小文字の** UUID 形式のみ受け付ける（大文字は `400`）。アクセストークン（ログイン用の鍵）ではなく、会話記録の照合用の識別子 |
 | `since` | 指示文を送り始めた時刻（エポックミリ秒の整数）。5 秒の猶予を見て、それ以降の行だけを数える。今より 24 時間以上前、または今より 1 分を超えて先の時刻は `400` |
 
-レスポンスは `200` で `{ "result": "delivered" | "pending" | "unknown" }` です。`unknown` のときは理由 `reason` が付きます。存在しないペインも `404` ではなく `200` の `unknown` で返します（`404` は呼び出し側が「この API を持たない古い版」とみなすため）。
+レスポンスは `200` で `{ "result": "delivered" | "malformed" | "pending" | "unknown" }` です。`malformed` はキーに続く値が識別子で始まるものの、識別子の後ろに別の文字が付いて値が崩れている状態で、崩れた値そのものは返しません。古い呼び出し側は未知の値を「判定できない」として扱います。`unknown` のときは理由 `reason` が付きます。存在しないペインも `404` ではなく `200` の `unknown` で返します（`404` は呼び出し側が「この API を持たない古い版」とみなすため）。
 
 - `delivered`: 届いている
+- `malformed`: 識別子の値が崩れている
 - `pending`: まだ届いていない（会話記録ディレクトリがまだ無い場合を含む）
 - `unknown`: 判定できない。`reason` は `engine-codex`（Codex ペインは対象外）/ `cwd-unknown`（ペインの作業ディレクトリが分からない）/ `transcript-unreadable`（会話記録が読めない）/ `pane-not-found`（そのペインが存在しない）/ `busy`（同じペインの確認が進行中。待たずに即答するので、呼び出し側が間隔を空けて再確認する）
 

@@ -31,6 +31,8 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-
 const TERM_ID_RE = /^[1-9][0-9]{0,8}$/;
 // since はエポックミリ秒の整数（桁数の上限は現実的な時刻より十分大きい 16 桁）。
 const SINCE_RE = /^[0-9]{1,16}$/;
+// 照合対象として扱う識別子キー付きの語。
+const TOKEN_WORD_RE = /^(?:session-rotation-run-id|vk-delivery-token)=(.*)$/;
 
 // 1 回の走査で見る最大ファイル数（更新時刻が新しい順）。
 const DEFAULT_MAX_FILES_SCANNED = 20;
@@ -174,16 +176,16 @@ function classifyTranscriptLineToken(line, token, sinceTimeMs) {
   let malformed = false;
   for (const text of transcriptPromptTexts(parsed)) {
     for (const word of text.split(/\s+/)) {
-      const match = /^(?:session-rotation-run-id|vk-delivery-token)=(.*)$/.exec(word);
+      const match = TOKEN_WORD_RE.exec(word);
       if (!match) continue;
       if (match[1] === token) return LINE_RESULT.MATCH;
-      if (match[1].includes(token)) malformed = true;
+      if (match[1].startsWith(token) && match[1].length > token.length) malformed = true;
     }
   }
   return malformed ? LINE_RESULT.MALFORMED : LINE_RESULT.NONE;
 }
 
-/** 後方互換用の真偽判定。値が完全一致する行だけ true を返す。 */
+/** 値が完全一致する行だけ true を返す簡易判定。 */
 function transcriptLineMatchesUserToken(line, token, sinceTimeMs) {
   return classifyTranscriptLineToken(line, token, sinceTimeMs) === LINE_RESULT.MATCH;
 }

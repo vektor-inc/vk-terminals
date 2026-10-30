@@ -420,6 +420,7 @@ test('生成: rules は信頼済みランチャーの実行だけを許可し、
     assert.match(guide, /`gh pr has-label <PR番号> agent-review-passed`（= `issue-has-label`）.*`LABEL_OK`.*`LABEL_NG`/);
     // マーカーはレビューした commit の SHA で投稿し、現在の head と一致しなければ投稿しない。
     assert.match(guide, /レビューした commit の SHA/);
+    assert.match(guide, /gh pr view <PR番号> --json headRefOid/);
     assert.match(guide, /現在の head SHA を取得して一致を確かめる/);
     assert.match(guide, /一致しなければ投稿せず、head が進んだことを報告する/);
     assert.match(guide, /現在の head SHA を代わりに使わない/);

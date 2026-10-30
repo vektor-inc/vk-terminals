@@ -100,6 +100,10 @@ const ORCHESTRATED_TASK_OPERATIONS = Object.freeze([
   'gh pr create',
   'gh pr comment',
   'gh pr checks',
+  'gh label exists',
+  'gh label create',
+  'gh pr add-label',
+  'gh pr has-label',
 ]);
 
 /**
@@ -145,6 +149,11 @@ function renderAgentsGuide(launcherPath, memberIoDir = null) {
     ]),
     '- `gh pr view` / `gh pr checks` は PR 番号が必須。`gh pr create` は `--head <ブランチ名> --title <題> --body <本文>` が必須。`gh pr create` 自体は push しないので、先に `git push` する。',
     '- `gh issue create` は `--title <題> --body <本文>` が必須。任意で `--assignee <GitHub アカウント名>`・`--label <ラベル名>` を複数回指定できる（`@me` は不可）。作成された issue の URL が標準出力に返る。',
+    '- レビュー合格ラベル `agent-review-passed` の操作は次の 4 つだけ（ラベル名はこれ以外を受け付けず、色・説明は入口が固定する。`gh pr edit --add-label`・`gh api` は使えない）。vk-agents の Codex 版 vk-kore 9-3 の `label-exists` / `label-create` / `label-add` / `issue-has-label`（この環境では GH_BIN のスクリプトを使えない）は、この入口の次の操作で行う。',
+    '  - `gh label exists agent-review-passed`（= `label-exists`）: ラベルがあれば `LABEL_EXISTS`、無ければ `LABEL_MISSING` を出力する。',
+    '  - `gh label create agent-review-passed`（= `label-create`）: ラベルが無い場合だけ作る（あれば `LABEL_EXISTS`、作成できたら `LABEL_CREATED`）。',
+    '  - `gh pr add-label <PR番号> agent-review-passed`（= `label-add`）: 対象 PR へラベルを付ける。PR 番号は 1 以上の数字だけ。',
+    '  - `gh pr has-label <PR番号> agent-review-passed`（= `issue-has-label`）: 付与後に必ず読み返す。付いていれば `LABEL_OK`（終了 0）、付いていない・読めないときは `LABEL_NG`（終了 1）。`LABEL_OK` を確認してからマーカーコメントを投稿する。',
     '- Git のフックは入口経由では実行されない。外部コマンドを起動する設定（clean filter・署名プログラムなど）があるリポジトリでは入口は拒否する。',
     '- 入口を通さない git / gh は sandbox の制限内（ネットワーク無し）で動く。',
     '',

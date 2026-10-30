@@ -34,6 +34,12 @@ const DIGITS_PATTERN = /^[0-9]{1,9}$/;
 // issue 作成の担当者は GitHub のアカウント名だけ（@me は通さない。utils/codexTaskPolicy.js の GH_USER_PATTERN と同じ形）。
 const ASSIGNEE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/;
 const MAX_LABEL_LENGTH = 50;
+// レビュー合格ラベル（vk-agents の vk-kore 9-3 が使う完了マーカー）。ラベル操作はこの名前だけを通し、色・説明も入口側で固定する。
+const REVIEW_PASSED_LABEL = 'agent-review-passed';
+const REVIEW_PASSED_LABEL_COLOR = '0e8a16';
+const REVIEW_PASSED_LABEL_DESCRIPTION = 'エージェントのレビュー完了マーカー（最終レビュー・e2e ゲート通過）';
+// PR 番号は 1 以上の数字だけ（0・先頭ゼロは不可）。
+const POSITIVE_NUMBER_PATTERN = /^[1-9][0-9]{0,8}$/;
 
 const NO_VALUE_FLAGS = Object.freeze({
   'git status': ['-s', '--short', '-b', '--branch', '--porcelain', '--porcelain=v1', '--porcelain=v2'],
@@ -314,6 +320,19 @@ function parseGhIssueCreate(tokens) {
   return { ok: true, args };
 }
 
+// ラベル操作は `gh label exists|create agent-review-passed` と `gh pr add-label|has-label <PR番号> agent-review-passed` の形だけ。
+// 他のオプション・ラベル名・PR 番号の形は受けない。実行は gh api の固定エンドポイントで入口が行う（executeReviewLabel）。
+function parseReviewLabelCommand(operation, tokens, { withNumber }) {
+  const expected = withNumber ? 2 : 1;
+  if (tokens.length !== expected) return fail(withNumber ? 'expected <PR number> and the label name' : 'expected the label name only');
+  if (tokens.some((token) => hasUnsafeCharacter(token))) return fail('invalid argument');
+  const label = tokens[expected - 1];
+  if (label !== REVIEW_PASSED_LABEL) return fail(`label not allowed: ${JSON.stringify(label)}`);
+  if (!withNumber) return { ok: true, bin: 'gh', args: [], needsGitHub: true, operation, label };
+  if (!POSITIVE_NUMBER_PATTERN.test(tokens[0])) return fail('invalid PR number');
+  return { ok: true, bin: 'gh', args: [], needsGitHub: true, operation, label, number: tokens[0] };
+}
+
 // push は `git push <ブランチ名>` だけ。フラグ・refspec・複数指定は受けない（送る内容は入口が refs/heads/<b>:refs/heads/<b> に固定する）。
 function parseGitPush(tokens) {
   if (tokens.length !== 1) return fail('git push takes exactly one branch name');
@@ -466,6 +485,17 @@ function parseTaskCommand(argv) {
     if (group === 'pr' && action === 'create') {
       const parsed = parseGhPrCreate(tokens);
       return parsed.ok ? command(['pr', 'create'], parsed.args) : parsed;
+    }
+    const labelOperations = {
+      'label exists': ['label-exists', false],
+      'label create': ['label-create', false],
+      'pr add-label': ['pr-add-label', true],
+      'pr has-label': ['pr-has-label', true],
+    };
+    const labelOperation = labelOperations[`${group} ${action}`];
+    if (labelOperation !== undefined) {
+      const parsed = parseReviewLabelCommand(labelOperation[0], tokens, { withNumber: labelOperation[1] });
+      return parsed.ok ? { ...parsed, ...(targetRepo === undefined ? {} : { targetRepo }) } : parsed;
     }
     return fail(`gh ${[group, action].filter((part) => part !== undefined).map((part) => JSON.stringify(part)).join(' ')} is not allowed`);
   }
@@ -1038,6 +1068,70 @@ function executePush({ parsed, binding, cwd, runGit, spawnSync, networkEnv, reje
   const result = spawnSync(binding.git, args, { cwd, env: networkEnv, encoding: 'utf8', stdio: 'inherit' });
   if (result.error) return reject(`task command failed to start: ${result.error.code || 'error'}`);
   return typeof result.status === 'number' ? result.status : 2;
+}
+
+// ─── レビュー合格ラベルの操作（gh label / gh pr の add-label・has-label） ─────────────
+
+/**
+ * vk-agents の vk-kore 9-3（label-exists / label-create / label-add / issue-has-label）と同じ判定語を返す。
+ * gh の呼び出しは、入口が固定の owner/repo から組み立てた REST エンドポイントだけ（利用者は gh api を指定できない）。
+ * `gh pr edit --add-label` は権限不足でも終了コード 0 のまま付かないことがあるため使わず、付与後は読み返して LABEL_OK / LABEL_NG で判定する。
+ */
+function executeReviewLabel({ parsed, binding, explicitGitHubTarget, spawnSync, env, cwd, reject, write, writeOut }) {
+  const repo = explicitGitHubTarget || binding.repo;
+  const labelsEndpoint = `repos/${repo}/labels`;
+  const callGh = (args) => spawnSync(binding.gh, args, { cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] });
+  const readNames = (endpoint) => {
+    const result = callGh(['api', '--paginate', '--jq', '.[].name', `${endpoint}?per_page=100`]);
+    if (result.error || result.status !== 0) return null;
+    return String(result.stdout || '').split('\n').map((line) => line.replace(/\r$/, ''));
+  };
+  const hasLabel = (names) => names.includes(REVIEW_PASSED_LABEL);
+
+  switch (parsed.operation) {
+    case 'label-exists': {
+      const names = readNames(labelsEndpoint);
+      if (names === null) return reject('task command failed: could not read labels');
+      writeOut(hasLabel(names) ? 'LABEL_EXISTS\n' : 'LABEL_MISSING\n');
+      return 0;
+    }
+    case 'label-create': {
+      const names = readNames(labelsEndpoint);
+      if (names === null) return reject('task command failed: could not read labels');
+      if (hasLabel(names)) {
+        writeOut('LABEL_EXISTS\n');
+        return 0;
+      }
+      const result = callGh([
+        'api', '--method', 'POST', labelsEndpoint,
+        '-f', `name=${REVIEW_PASSED_LABEL}`, '-f', `color=${REVIEW_PASSED_LABEL_COLOR}`, '-f', `description=${REVIEW_PASSED_LABEL_DESCRIPTION}`,
+      ]);
+      if (result.error) return reject(`task command failed to start: ${result.error.code || 'error'}`);
+      if (result.status !== 0) return typeof result.status === 'number' ? result.status : 2;
+      writeOut('LABEL_CREATED\n');
+      return 0;
+    }
+    case 'pr-add-label': {
+      const result = callGh(['api', '--method', 'POST', `repos/${repo}/issues/${parsed.number}/labels`, '-f', `labels[]=${REVIEW_PASSED_LABEL}`]);
+      if (result.error) return reject(`task command failed to start: ${result.error.code || 'error'}`);
+      if (result.status !== 0) return typeof result.status === 'number' ? result.status : 2;
+      // 付いたかどうかは、続けて has-label で読み返して確かめる（この出力だけで成功と見なさない）。
+      writeOut('LABEL_ADDED\n');
+      return 0;
+    }
+    case 'pr-has-label': {
+      const names = readNames(`repos/${repo}/issues/${parsed.number}/labels`);
+      if (names !== null && hasLabel(names)) {
+        writeOut('LABEL_OK\n');
+        return 0;
+      }
+      if (names === null) write('task command failed: could not read PR labels\n');
+      writeOut('LABEL_NG\n');
+      return 1;
+    }
+    default:
+      return reject('task command rejected: unknown label operation');
+  }
 }
 
 /**
@@ -1689,6 +1783,12 @@ function runTaskCommand(argv, deps = {}) {
     const networkEnv = networkEnvironment(binding);
     const context = { parsed, binding, cwd, fsImpl, runGit, spawnSync, networkEnv, plainEnv: env, reject, inspected, write, writeOut, deps };
     return parsed.operation === 'push' ? executePush(context) : executePrepareWorktree(context);
+  }
+
+  if (typeof parsed.operation === 'string' && /^(label-|pr-(add|has)-label$)/.test(parsed.operation)) {
+    // 明示先の gh と同じく、呼び出し元 cwd の Git 設定に依存させない。
+    const labelCwd = explicitGitHubTarget === undefined ? cwd : binding.home;
+    return executeReviewLabel({ parsed, binding, explicitGitHubTarget, spawnSync, env, cwd: labelCwd, reject, write, writeOut });
   }
 
   const bin = parsed.bin === 'gh' ? binding.gh : binding.git;

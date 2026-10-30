@@ -52,6 +52,10 @@ test('許可: gh は番号・本文・head を検証する（対象リポジト�
   assert.deepEqual(parseTaskCommand(argv('gh pr view 429')).args, ['pr', 'view', '429']);
   assert.deepEqual(parseTaskCommand(argv('gh pr checks 429')).args, ['pr', 'checks', '429']);
   assert.deepEqual(parseTaskCommand(['gh', 'pr', 'comment', '429', '-b', 'ok']).args, ['pr', 'comment', '429', '--body', 'ok']);
+  // レビュー合格マーカーは空白なしの 1 トークンなら引用符なしで入口を通る。空白入りで分かれると拒否される。
+  const marker = `agent-review-passed-sha:${'a'.repeat(40)}`;
+  assert.deepEqual(parseTaskCommand(['gh', 'pr', 'comment', '429', '--body', marker]).args, ['pr', 'comment', '429', '--body', marker]);
+  assert.equal(parseTaskCommand(['gh', 'pr', 'comment', '429', '--body', 'agent-review-passed-sha:', 'a'.repeat(40)]).ok, false);
   assert.deepEqual(
     parseTaskCommand(['gh', 'pr', 'create', '--title', '題', '--body', '本文', '--head', 'issue/428-x', '--base', 'main', '--draft']).args,
     ['pr', 'create', '--head', 'issue/428-x', '--title', '題', '--body', '本文', '--base', 'main', '--draft'],

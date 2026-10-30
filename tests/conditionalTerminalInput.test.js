@@ -142,9 +142,17 @@ test('expected を省略した通常入力は互換性を保ち、明示した�
 test('main は PTY 入出力を識別値へ反映し、条件付き Enter を専用ガードへ渡す', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
   const rendererSource = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'app.js'), 'utf8');
+  const sendRouteStart = source.indexOf("if (req.method === 'POST' && url.pathname === '/api/send')");
+  const sendRouteEnd = source.indexOf("if (req.method === 'POST' && url.pathname === '/api/widgets/command')", sendRouteStart);
+  const sendRoute = source.slice(sendRouteStart, sendRouteEnd);
   assert.match(source, /ptyProcess\.write = \(data\) => \{\s*conditionalTerminalInput\.markChanged\(id\)/);
   assert.match(source, /ptyProcess\.onData\(\(data\) => \{[\s\S]*?conditionalTerminalInput\.markChanged\(id\)[\s\S]*?terminal:data/);
   assert.match(source, /validateConditionalEnterRequest\(parsed\)[\s\S]*conditionalTerminalInput\.writeEnter/);
+  assert.ok(
+    sendRoute.indexOf('validateConditionalEnterRequest(parsed)') < sendRoute.indexOf('const p = ptys.get(String(termId))'),
+    '条件付き要求は通常入力用のペイン存在チェックより先に処理する'
+  );
+  assert.match(sendRoute, /result\.reason === 'pane-not-found' \? 404/);
   assert.match(source, /mergeConditionalScreenIdentifiers\([\s\S]*reportedScreenSnapshots/);
   assert.match(rendererSource, /VKIpc\.on\('terminal:data', \(id, data, screenSnapshot\)/);
   assert.match(rendererSource, /lastLines: t\.lastLines,[\s\S]*screenIdentifier: t\.screenIdentifier/);

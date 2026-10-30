@@ -122,6 +122,36 @@ test.describe.serial('POST /api/close-pane によるペイン終了（issue #100
     expect(termIdsOf(states)).toContain('1');
   });
 
+  test('終了後のペインへの条件付き Enter は pane-not-found を返す', async () => {
+    // 実在中のペインについて、条件付き入力に使う画面識別値と起動世代を取得する。
+    const created = await postJson(port, '/api/new-pane', { noClaude: true });
+    expect(created.status).toBe(200);
+    const targetId = String(created.body.termId);
+    await waitForTermId(port, targetId, true);
+
+    const states = await getStates(port);
+    const targetState = Object.values(states).find((state) => String(state?.termId) === targetId);
+    expect(targetState).toBeTruthy();
+    expect(Number.isSafeInteger(targetState.agentGeneration)).toBe(true);
+    expect(targetState.screenIdentifier).toMatch(/^[A-Za-z0-9_-]{43}$/);
+
+    // 取得後にペインが消えても、通常入力用のエラー文ではなく条件付き入力の契約を返す。
+    const closed = await postJson(port, '/api/close-pane', { termId: targetId });
+    expect(closed.status).toBe(200);
+    await waitForTermId(port, targetId, false);
+
+    const sent = await postJson(port, '/api/send', {
+      termId: targetId,
+      input: '\r',
+      expected: {
+        agentGeneration: targetState.agentGeneration,
+        screenIdentifier: targetState.screenIdentifier,
+      },
+    });
+    expect(sent.status).toBe(404);
+    expect(sent.body).toEqual({ error: 'pane-not-found' });
+  });
+
   test('モバイルページ: 終了ボタンと確認ダイアログ（却下でペイン残存 / 承認で終了）', async () => {
     const browser = await chromium.launch();
     try {

@@ -3101,12 +3101,6 @@ function startHttpApi() {
             res.end(JSON.stringify({ error: 'termId and input required' }));
             return;
           }
-          const p = ptys.get(String(termId));
-          if (!p) {
-            res.writeHead(404, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: `terminal ${termId} not found` }));
-            return;
-          }
           const conditionalRequest = validateConditionalEnterRequest(parsed);
           if (conditionalRequest.conditional) {
             if (!conditionalRequest.ok) {
@@ -3132,6 +3126,12 @@ function startHttpApi() {
             }
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ ok: true, termId: String(termId) }));
+            return;
+          }
+          const p = ptys.get(String(termId));
+          if (!p) {
+            res.writeHead(404, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: `terminal ${termId} not found` }));
             return;
           }
           // 認証済みの自動化経路は確認画面より先に入力しうるため、信頼確認の監視を止めない。

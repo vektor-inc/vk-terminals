@@ -3513,3 +3513,117 @@ test('実行: 拒否された gh pr edit は gh を一度も呼ばない（別�
     fixture.cleanup();
   }
 });
+
+// ─── #477 レビュー指摘の補強 ─────────────────────────────────────────────
+
+test('拒否: gh pr create / edit は --title= / --body= のように = 付きで渡された空・空白だけの値を拒否する', () => {
+  for (const tokens of [
+    ['--title=', '--body=b'],
+    ['--title= ', '--body=b'],
+    ['--title=t', '--body='],
+    ['--title=t', '--body=  '],
+    ['--title', 't', '--body', ' '],
+  ]) {
+    const result = parseTaskCommand(['gh', 'pr', 'create', '--head', 'a', ...tokens]);
+    assert.equal(result.ok, false, JSON.stringify(tokens));
+    assert.match(result.error, /^task command rejected/);
+  }
+  assert.equal(parseTaskCommand(['gh', 'pr', 'edit', '5', '--title=']).ok, false);
+  assert.equal(parseTaskCommand(['gh', 'pr', 'edit', '5', '--body=\t']).ok, false);
+  assert.equal(parseTaskCommand(['gh', 'pr', 'create', '--head', 'a', '--title=t', '--body=b']).ok, true);
+});
+
+test('拒否: 名前付きパイプ（FIFO）を --body-file / --title-file / member start に指定しても待たずに拒否する（gh は起動しない）', () => {
+  const fixture = createMemberFixture();
+  try {
+    writeIo(fixture, 'title.txt', 'valid title');
+    childProcess.execFileSync('mkfifo', [path.join(fixture.io, 'body.md')]);
+    const result = fixture.runMember(CREATE_WITH_FILES);
+    assert.equal(result.code, 2);
+    assert.match(result.messages.join(''), /not a plain file/);
+    assert.equal(fixture.readCalls().length, 0);
+    assert.equal(fixture.runMember(['gh', 'pr', 'edit', '5', '--body-file', 'body.md']).code, 2);
+
+    // member start の入力も同じ読み込みを使う。FIFO は拒否され、通常のファイルは従来どおり受理される。
+    childProcess.execFileSync('mkfifo', [path.join(fixture.io, 'prompt-fifo.md')]);
+    const rejected = fixture.runMember(['member', 'start', '--engine', 'codex', '--prompt', 'prompt-fifo.md', '--schema', 'schema.json', '--out', 'out-fifo.json']);
+    assert.equal(rejected.code, 2);
+    assert.match(rejected.messages.join(''), /not a plain file/);
+    assert.equal(fixture.runMember(MEMBER_START).code, 0);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('拒否: サイズ確認のあとにファイルが上限を超えて伸びても、上限を超えた分は読まずに拒否する', () => {
+  const fixture = createMemberFixture();
+  try {
+    writeIo(fixture, 'title.txt', 'a'.repeat(2000));
+    writeIo(fixture, 'body.md', 'ok\n');
+    // fstat は上限内の小さいサイズを返す（確認後に伸びた状況を再現）。
+    const shrinking = { ...fs, fstatSync: (fd) => Object.create(fs.fstatSync(fd), { size: { value: 10 } }) };
+    const result = fixture.runMember(CREATE_WITH_FILES, { fs: shrinking });
+    assert.equal(result.code, 2);
+    assert.match(result.messages.join(''), /empty or too large/);
+    assert.equal(fixture.readCalls().length, 0);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('拒否: タイトル・本文の見えない文字（C1 制御・ゼロ幅・向き制御・行区切り・BOM）を拒否し、先頭 BOM の除去・タイトル前後の空白の除去・絵文字の ZWJ は通す', () => {
+  const fixture = createMemberFixture();
+  try {
+    const forbidden = ['\u0085', '\u009f', '​', '‎', '‏', ' ', ' ', '‪', '‮', '⁦', '⁩', '﻿'];
+    for (const char of forbidden) {
+      for (const [titleText, bodyText] of [[`a${char}b`, 'ok'], ['ok', `a${char}b`]]) {
+        writeIo(fixture, 'title.txt', titleText);
+        writeIo(fixture, 'body.md', bodyText);
+        const result = fixture.runMember(CREATE_WITH_FILES);
+        assert.equal(result.code, 2, JSON.stringify(char));
+      }
+    }
+    // 本文の先頭 BOM だけは除去、ほかの位置は拒否。
+    writeIo(fixture, 'title.txt', 'ok');
+    writeIo(fixture, 'body.md', '﻿body');
+    let before = fixture.readCalls().length;
+    assert.equal(fixture.runMember(CREATE_WITH_FILES).code, 0);
+    assert.equal(fixture.readCalls()[before].args[fixture.readCalls()[before].args.indexOf('--body') + 1], 'body');
+    // タイトルの前後の空白は削って送る。ZWJ を含む絵文字は変えない。
+    writeIo(fixture, 'title.txt', '   題名 👨‍👩‍👧 　\n');
+    writeIo(fixture, 'body.md', 'b 👨‍👩‍👧');
+    before = fixture.readCalls().length;
+    assert.equal(fixture.runMember(CREATE_WITH_FILES).code, 0);
+    const args = fixture.readCalls()[before].args;
+    assert.equal(args[args.indexOf('--title') + 1], '題名 👨‍👩‍👧');
+    assert.equal(args[args.indexOf('--body') + 1], 'b 👨‍👩‍👧');
+
+    // gh pr edit の読み戻しも、削ったタイトルで照合する。
+    writeIo(fixture, 'title.txt', '  trimmed  \n');
+    const { calls, spawnSync } = prEditHarness(fixture);
+    assert.equal(fixture.runMember(['gh', 'pr', 'edit', '7', '--title-file', 'title.txt'], { spawnSync, writeOut: () => {} }).code, 0);
+    assert.deepEqual(calls[0], ['pr', 'edit', '7', '--title', 'trimmed', '--repo', 'vektor-inc/vk-terminals']);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('実行: 本文・タイトルが - や --repo=evil/x で始まっても、--body / --title の直後の値のまま渡り、末尾の --repo は拘束先のまま', () => {
+  const fixture = createMemberFixture();
+  try {
+    for (const text of ['-', '--repo=evil/x', '-R evil/x', '--web']) {
+      writeIo(fixture, 'title.txt', text);
+      writeIo(fixture, 'body.md', text);
+      const before = fixture.readCalls().length;
+      assert.equal(fixture.runMember(CREATE_WITH_FILES).code, 0, text);
+      assert.deepEqual(fixture.readCalls()[before].args, ['pr', 'create', '--title', text, '--body', text, '--head', 'feature/477-x', '--repo', 'vektor-inc/vk-terminals']);
+
+      const { calls, spawnSync } = prEditHarness(fixture);
+      assert.equal(fixture.runMember(['gh', 'pr', 'edit', '7', '--title-file', 'title.txt', '--body-file', 'body.md'], { spawnSync, writeOut: () => {} }).code, 0, text);
+      assert.deepEqual(calls[0], ['pr', 'edit', '7', '--title', text, '--body', text, '--repo', 'vektor-inc/vk-terminals']);
+      assert.deepEqual(calls[1], ['pr', 'view', '7', '--json', 'title,body', '--repo', 'vektor-inc/vk-terminals']);
+    }
+  } finally {
+    fixture.cleanup();
+  }
+});

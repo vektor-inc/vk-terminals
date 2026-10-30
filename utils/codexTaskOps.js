@@ -83,6 +83,10 @@ const MEMBER_SUPERVISE_ENV = 'VK_TASK_MEMBER_SUPERVISE';
 const MEMBER_MAX_PROMPT_BYTES = 1024 * 1024;
 // PR のタイトル・本文のファイル上限。タイトルは GitHub の上限 256 文字（日本語でも 3 バイト × 256 = 768 バイト）に余裕を足した 1 KiB。
 // 本文は GitHub の上限 65536 文字（最大 4 バイト × 65536 = 256 KiB）に合わせた 256 KiB で、バイト数のあとに文字数でも検査する。
+// 禁止する文字: C0/C1 制御文字・DEL、ゼロ幅スペースと向きの印（U+200B・U+200E・U+200F）、行/段落区切り（U+2028/2029）、双方向制御（U+202A-202E・U+2066-2069）、BOM（U+FEFF）。
+// 本文はこれらのうち、タブ・LF・CR だけ許す。
+const PR_TITLE_FORBIDDEN_PATTERN = /[\x00-\x1f\x7f-\x9f\u200b\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069\ufeff]/;
+const PR_BODY_FORBIDDEN_PATTERN = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u200b\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069\ufeff]/;
 const PR_TITLE_MAX_BYTES = 1024;
 const PR_TITLE_MAX_CHARS = 256;
 const PR_BODY_MAX_BYTES = 256 * 1024;
@@ -301,6 +305,8 @@ function parsePrTextFlags(tokens, { head: allowCreateFlags, positional = null })
   }
   if (title !== undefined && titleFile !== undefined) return fail('--title and --title-file cannot be used together');
   if (body !== undefined && bodyFile !== undefined) return fail('--body and --body-file cannot be used together');
+  // `--title=` / `--body= ` のように `=` 付きで渡された空・空白だけの値も、別引数の値と同じく拒否する。
+  if ((title !== undefined && title.trim() === '') || (body !== undefined && body.trim() === '')) return fail('--title and --body must not be blank');
   return { ok: true, head, base, draft, title, body, titleFile, bodyFile, number };
 }
 
@@ -1201,16 +1207,19 @@ function readPrTextFiles(textFiles, { binding, fsImpl, deps }) {
   };
   if (textFiles.title !== undefined) {
     // タイトルは 1 行。末尾の改行 1 つだけ除き、ほかの制御文字（改行を含む）は拒否する。
+    // 見えない文字（C1 制御文字・ゼロ幅/向き制御の文字・行区切り・BOM）も拒否する。ZWNJ/ZWJ（U+200C/D）は絵文字や一部の文字で正当に使うため許す。
+    // 前後の空白は削ってから送る（GitHub 側の正規化で読み戻しが食い違わないようにするため）。
     const title = decode(textFiles.title, PR_TITLE_MAX_BYTES).replace(/\r?\n$/, '');
-    if (/[\x00-\x1f\x7f]/.test(title)) throw new TrustError(`${textFiles.title} must be a single line without control characters`);
+    if (PR_TITLE_FORBIDDEN_PATTERN.test(title)) throw new TrustError(`${textFiles.title} must be a single line without control characters`);
     if (title.trim() === '') throw new TrustError(`${textFiles.title} is blank`);
     if ([...title].length > PR_TITLE_MAX_CHARS) throw new TrustError(`${textFiles.title} is longer than ${PR_TITLE_MAX_CHARS} characters`);
-    result.title = title;
+    result.title = title.trim();
   }
   if (textFiles.body !== undefined) {
     // 本文は改行（\n \r）とタブだけ許す。
-    const body = decode(textFiles.body, PR_BODY_MAX_BYTES);
-    if (/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(body)) throw new TrustError(`${textFiles.body} contains control characters`);
+    // 先頭の BOM（Windows のエディタが付ける）は除去する。ほかの位置の U+FEFF は拒否する。
+    const body = decode(textFiles.body, PR_BODY_MAX_BYTES).replace(/^\ufeff/, '');
+    if (PR_BODY_FORBIDDEN_PATTERN.test(body)) throw new TrustError(`${textFiles.body} contains control characters`);
     if (body.trim() === '') throw new TrustError(`${textFiles.body} is blank`);
     if ([...body].length > PR_BODY_MAX_CHARS) throw new TrustError(`${textFiles.body} is longer than ${PR_BODY_MAX_CHARS} characters`);
     result.body = body;
@@ -1464,7 +1473,8 @@ function readMemberInput(fsImpl, dir, name, maxBytes, uid) {
   const constants = fsImpl.constants || nodeFs.constants;
   let fd;
   try {
-    fd = fsImpl.openSync(path.join(dir, name), constants.O_RDONLY | (constants.O_NOFOLLOW || 0));
+    // O_NONBLOCK: 名前付きパイプ（FIFO）を開いても書き手を待って止まらないようにする（通常ファイルでなければ下の fstat で拒否する）。
+    fd = fsImpl.openSync(path.join(dir, name), constants.O_RDONLY | (constants.O_NOFOLLOW || 0) | (constants.O_NONBLOCK || 0));
   } catch (error) {
     const reason = error && error.code === 'ENOENT' ? 'does not exist' : 'is not a plain file';
     throw new TrustError(`${name} ${reason}`);
@@ -1474,7 +1484,16 @@ function readMemberInput(fsImpl, dir, name, maxBytes, uid) {
     if (!stat.isFile() || stat.nlink !== 1) throw new TrustError(`${name} is not a plain file`);
     if (uid !== undefined && stat.uid !== uid) throw new TrustError(`${name} is not owned by the current user`);
     if (stat.size === 0 || stat.size > maxBytes) throw new TrustError(`${name} is empty or too large`);
-    return fsImpl.readFileSync(fd);
+    // サイズ確認のあとにファイルが伸びても上限を超えて読まないよう、上限 + 1 バイトまでだけ読んで超過を検出する。
+    const buffer = Buffer.alloc(maxBytes + 1);
+    let length = 0;
+    while (length < buffer.length) {
+      const read = fsImpl.readSync(fd, buffer, length, buffer.length - length, null);
+      if (read === 0) break;
+      length += read;
+    }
+    if (length === 0 || length > maxBytes) throw new TrustError(`${name} is empty or too large`);
+    return buffer.subarray(0, length);
   } finally {
     fsImpl.closeSync(fd);
   }

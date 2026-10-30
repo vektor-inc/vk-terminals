@@ -10,7 +10,7 @@
 // 設計の要点:
 //   - rules の prefix_rule は後続の引数を制限できない。そのため rules には「この入口の実行」だけを許可し、
 //     引数の検証はこのファイルで行う。許可する操作・フラグ・位置引数はすべて下の許可リストにあるものだけで、
-//     未知のフラグ・パス・リポジトリ指定（--repo など）・ファイル出力系（--output / --body-file など）は拒否する。
+//     未知のフラグ・パス・リポジトリ指定（--repo など）・ファイル出力系（--output など）は拒否する。PR のタイトル・本文だけは入出力フォルダ直下のファイル名で受ける（下記）。
 //   - git / gh へ渡す argv は検証済みの値だけで組み立て直す（呼び出し側の文字列をそのまま連結しない）。
 //   - 実行環境は信頼済みランチャーが固定する。git / gh / Node は起動時に所有者・権限を検証した絶対パスだけを使い、
 //     子プロセスの環境変数は許可リストで一から組み立てる（PATH・NODE_OPTIONS・LD_PRELOAD・GIT_*・GH_* は引き継がない）。
@@ -22,6 +22,9 @@
 //   - メンバー起動（member start / member status。issue #441）は、子の Codex を親と同じ範囲の sandbox（-s workspace-write か read-only、
 //     -a never）で起動する。囲いを外す指定は受け付けず、子には専用の CODEX_HOME（member 操作を持たない入口）を渡して入れ子の起動を防ぐ。
 //     入出力ファイルは起動ごとの専用フォルダ直下の名前だけで、子の実行は数十分かかりうるためバックグラウンドで行う。
+//   - 空白・改行を含む PR のタイトル・本文は、引用符なしの単独コマンドでは引数として渡せない（引用符を付けるとサンドボックス内の実行とみなされて止まる）。
+//     そのため `gh pr create` / `gh pr edit` は `--title-file <名前>` / `--body-file <名前>` で、同じ入出力フォルダ直下のファイルから読む（issue #477）。
+//     parse 段階はファイル名の形だけを検査し、読み込みと内容の検査（UTF-8・制御文字・サイズ）は実行段階で gh を起動する前に行う。読んだ値はシェルを通さず argv で渡す。
 const nodeFs = require('fs');
 const crypto = require('crypto');
 const path = require('path');
@@ -92,6 +95,16 @@ const MEMBER_MAX_RESULT_BYTES = 16 * 1024 * 1024;
 // ランチャーは環境を空にして入口を起動するため、Codex（親）からこの変数を差し込む経路は無い。
 const MEMBER_SUPERVISE_ENV = 'VK_TASK_MEMBER_SUPERVISE';
 const MEMBER_MAX_PROMPT_BYTES = 1024 * 1024;
+// PR のタイトル・本文のファイル上限。タイトルは GitHub の上限 256 文字（日本語でも 3 バイト × 256 = 768 バイト）に余裕を足した 1 KiB。
+// 本文は GitHub の上限 65536 文字（最大 4 バイト × 65536 = 256 KiB）に合わせた 256 KiB で、バイト数のあとに文字数でも検査する。
+// 禁止する文字: C0/C1 制御文字・DEL、ゼロ幅スペースと向きの印（U+200B・U+200E・U+200F）、行/段落区切り（U+2028/2029）、双方向制御（U+202A-202E・U+2066-2069）、BOM（U+FEFF）。
+// 本文はこれらのうち、タブ・LF・CR だけ許す。
+const PR_TITLE_FORBIDDEN_PATTERN = /[\x00-\x1f\x7f-\x9f\u200b\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069\ufeff]/;
+const PR_BODY_FORBIDDEN_PATTERN = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u200b\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069\ufeff]/;
+const PR_TITLE_MAX_BYTES = 1024;
+const PR_TITLE_MAX_CHARS = 256;
+const PR_BODY_MAX_BYTES = 256 * 1024;
+const PR_BODY_MAX_CHARS = 65536;
 const MEMBER_MAX_SCHEMA_BYTES = 256 * 1024;
 const MEMBER_LOG_TAIL_BYTES = 4096;
 
@@ -246,11 +259,32 @@ function parseGhComment(tokens) {
 
 // PR 作成は head を必ず明示させる（省略すると gh が現在のブランチを push しようとするため）。
 function parseGhPrCreate(tokens) {
+  const parsed = parsePrTextFlags(tokens, { head: true });
+  if (!parsed.ok) return parsed;
+  const { head, base, draft, title, body, titleFile, bodyFile } = parsed;
+  if (head === undefined || !isSafeBranchName(head)) return fail('--head with a plain branch name is required');
+  if (base !== undefined && !isSafeBranchName(base)) return fail('invalid --base');
+  if ((title === undefined && titleFile === undefined) || (body === undefined && bodyFile === undefined)) return fail('--title (or --title-file) and --body (or --body-file) are required');
+  const args = ['--head', head];
+  if (title !== undefined) args.push('--title', title);
+  if (body !== undefined) args.push('--body', body);
+  if (base !== undefined) args.push('--base', base);
+  if (draft) args.push('--draft');
+  return { ok: true, args, textFiles: { title: titleFile, body: bodyFile } };
+}
+
+// gh pr create / gh pr edit 共通の引数解析。--title / --body の直接指定と --title-file / --body-file（入出力フォルダ直下のファイル名）を受ける。
+// 同じ項目で直接指定とファイル指定は併用できない。ファイル名は形だけを検査し、中身は実行段階で読む。
+// head: true なら --head / --base / --draft も受ける（pr create）。false なら受けない（pr edit は他のフラグを許可しない）。
+function parsePrTextFlags(tokens, { head: allowCreateFlags, positional = null }) {
   let head;
   let base;
   let title;
   let body;
+  let titleFile;
+  let bodyFile;
   let draft = false;
+  let number;
   const takeValue = (i) => {
     const value = tokens[i + 1];
     return hasUnsafeCharacter(value) || value.trim() === '' ? undefined : value;
@@ -265,20 +299,42 @@ function parseGhPrCreate(tokens) {
       if (value !== undefined) i += 1;
       return value;
     };
-    if ((name === '--head' || name === '-H') && head === undefined) head = readValue();
-    else if ((name === '--base' || name === '-B') && base === undefined) base = readValue();
+    const readFileName = (option) => {
+      const value = readValue();
+      return isSafeMemberFileName(value) ? value : fail(`${option} must be a plain file name in the member input/output folder`);
+    };
+    if (allowCreateFlags && (name === '--head' || name === '-H') && head === undefined) head = readValue();
+    else if (allowCreateFlags && (name === '--base' || name === '-B') && base === undefined) base = readValue();
     else if ((name === '--title' || name === '-t') && title === undefined) title = readValue();
     else if ((name === '--body' || name === '-b') && body === undefined) body = readValue();
-    else if ((token === '--draft' || token === '-d') && !draft) draft = true;
+    else if (name === '--title-file' && titleFile === undefined) {
+      titleFile = readFileName('--title-file');
+      if (titleFile.ok === false) return titleFile;
+    } else if (name === '--body-file' && bodyFile === undefined) {
+      bodyFile = readFileName('--body-file');
+      if (bodyFile.ok === false) return bodyFile;
+    } else if (allowCreateFlags && (token === '--draft' || token === '-d') && !draft) draft = true;
+    else if (positional === 'number' && !token.startsWith('-') && number === undefined && DIGITS_PATTERN.test(token)) number = token;
     else return fail(`argument not allowed: ${JSON.stringify(token)}`);
   }
-  if (head === undefined || !isSafeBranchName(head)) return fail('--head with a plain branch name is required');
-  if (base !== undefined && !isSafeBranchName(base)) return fail('invalid --base');
-  if (title === undefined || body === undefined || title.trim() === '' || body.trim() === '') return fail('--title and --body are required');
-  const args = ['--head', head, '--title', title, '--body', body];
-  if (base !== undefined) args.push('--base', base);
-  if (draft) args.push('--draft');
-  return { ok: true, args };
+  if (title !== undefined && titleFile !== undefined) return fail('--title and --title-file cannot be used together');
+  if (body !== undefined && bodyFile !== undefined) return fail('--body and --body-file cannot be used together');
+  // `--title=` / `--body= ` のように `=` 付きで渡された空・空白だけの値も、別引数の値と同じく拒否する。
+  if ((title !== undefined && title.trim() === '') || (body !== undefined && body.trim() === '')) return fail('--title and --body must not be blank');
+  return { ok: true, head, base, draft, title, body, titleFile, bodyFile, number };
+}
+
+// 作成済み PR のタイトル・本文の更新は `gh pr edit <番号> [--title <値>|--title-file <名前>] [--body <値>|--body-file <名前>]` の形だけ（少なくとも 1 つ必須）。
+// 他のフラグ（--add-* / --remove-* / --base / --repo など）は許可リストに無いので拒否される。
+// 実行は入口が「ファイル読み込み → 更新 → 読み戻し」の順で行う。
+function parseGhPrEdit(tokens) {
+  const parsed = parsePrTextFlags(tokens, { head: false, positional: 'number' });
+  if (!parsed.ok) return parsed;
+  const { number, title, body, titleFile, bodyFile } = parsed;
+  if (number === undefined) return fail('number required');
+  if (title === undefined && titleFile === undefined && body === undefined && bodyFile === undefined) return fail('--title or --body (or --title-file / --body-file) is required');
+  if ((title !== undefined && title.trim() === '') || (body !== undefined && body.trim() === '')) return fail('--title and --body must not be blank');
+  return { ok: true, bin: 'gh', operation: 'pr-edit', number, title, body, textFiles: { title: titleFile, body: bodyFile }, needsGitHub: true };
 }
 
 // ラベル名は日本語・空白・`:` を含みうるので文字種は絞らず、危険なものだけを拒否する。
@@ -339,6 +395,39 @@ function parseReviewLabelCommand(operation, tokens, { withNumber }) {
   if (!withNumber) return { ok: true, bin: 'gh', args: [], needsGitHub: true, operation, label };
   if (!POSITIVE_NUMBER_PATTERN.test(tokens[0])) return fail('invalid PR number');
   return { ok: true, bin: 'gh', args: [], needsGitHub: true, operation, label, number: tokens[0] };
+}
+
+// 作成済み issue への担当者・既存ラベルの追加は `gh issue edit <番号> --add-assignee <名前> --add-label <ラベル>` の形だけ（どちらも複数可、少なくとも 1 つ必須）。
+// 題名・本文・削除系・--repo などは許可リストに無いので拒否される。実行は入口が「ラベルの存在確認 → 更新 → 読み戻し」の順で行う。
+function parseGhIssueEdit(tokens) {
+  let number;
+  const assignees = [];
+  const labels = [];
+  for (let i = 0; i < tokens.length; i += 1) {
+    const token = tokens[i];
+    if (hasUnsafeCharacter(token)) return fail('invalid argument');
+    const [name, inlineValue] = token.startsWith('--') && token.includes('=') ? [token.slice(0, token.indexOf('=')), token.slice(token.indexOf('=') + 1)] : [token, undefined];
+    const readValue = () => {
+      if (inlineValue !== undefined) return inlineValue;
+      const value = tokens[i + 1];
+      if (typeof value !== 'string') return undefined;
+      i += 1;
+      return value;
+    };
+    if (name === '--add-assignee') {
+      const value = readValue();
+      if (typeof value !== 'string' || !ASSIGNEE_PATTERN.test(value)) return fail('invalid --add-assignee');
+      assignees.push(value);
+    } else if (name === '--add-label') {
+      const value = readValue();
+      if (!isSafeLabelName(value)) return fail('invalid --add-label');
+      labels.push(value);
+    } else if (!token.startsWith('-') && number === undefined && DIGITS_PATTERN.test(token)) number = token;
+    else return fail(`argument not allowed: ${JSON.stringify(token)}`);
+  }
+  if (number === undefined) return fail('number required');
+  if (assignees.length === 0 && labels.length === 0) return fail('--add-assignee or --add-label is required');
+  return { ok: true, bin: 'gh', operation: 'issue-edit', number, assignees, labels, needsGitHub: true };
 }
 
 // push は `git push <ブランチ名>` だけ。フラグ・refspec・複数指定は受けない（送る内容は入口が refs/heads/<b>:refs/heads/<b> に固定する）。
@@ -478,6 +567,11 @@ function parseTaskCommand(argv) {
       const parsed = parseGhIssueCreate(tokens);
       return parsed.ok ? command(['issue', 'create'], parsed.args) : parsed;
     }
+    if (group === 'issue' && action === 'edit') {
+      // 操作対象は起動時に固定したリポジトリだけ。別リポジトリの明示は受けない。
+      if (targetRepo !== undefined) return fail('gh issue edit cannot target another repository');
+      return parseGhIssueEdit(tokens);
+    }
     if (group === 'pr' && action === 'view') {
       const parsed = parseGhView(tokens, { allowedBooleanFlags: ['--comments'], numberRequired: true });
       return parsed.ok ? command(['pr', 'view', parsed.number], parsed.args) : parsed;
@@ -492,7 +586,14 @@ function parseTaskCommand(argv) {
     }
     if (group === 'pr' && action === 'create') {
       const parsed = parseGhPrCreate(tokens);
-      return parsed.ok ? command(['pr', 'create'], parsed.args) : parsed;
+      if (!parsed.ok) return parsed;
+      const hasFiles = parsed.textFiles.title !== undefined || parsed.textFiles.body !== undefined;
+      return { ...command(['pr', 'create'], parsed.args), ...(hasFiles ? { textFiles: parsed.textFiles } : {}) };
+    }
+    if (group === 'pr' && action === 'edit') {
+      // 操作対象は起動時に固定したリポジトリだけ。別リポジトリの明示は受けない。
+      if (targetRepo !== undefined) return fail('gh pr edit cannot target another repository');
+      return parseGhPrEdit(tokens);
     }
     const labelOperation = REVIEW_LABEL_COMMANDS[`${group} ${action}`];
     if (labelOperation !== undefined) {
@@ -1156,6 +1257,134 @@ function executeReviewLabel({ parsed, binding, explicitGitHubTarget, spawnSync, 
 }
 
 /**
+ * `gh issue edit <番号> --add-assignee … --add-label …`。固定したリポジトリの issue にだけ、担当者と既存ラベルを足す。
+ * 1. 指定ラベルが対象リポジトリに完全一致で存在することを確かめる（無い名前で新しいラベルが作られないように、更新の前に止める。一覧はページ送りで全件取る）。
+ * 2. gh issue edit を実行する。
+ * 3. issue を読み戻し、依頼した担当者とラベルがすべて付いていることを確かめる。gh issue edit は権限不足でも終了コード 0 で何もしないことがあるため、成功の判定は 3 だけで行う。
+ * 担当者の照合は GitHub のアカウント名が大文字小文字を区別しないため小文字にそろえ、ラベルは完全一致で見る。
+ */
+function executeIssueEdit({ parsed, binding, cwd, env, spawnSync, reject, writeOut }) {
+  const runGh = (args) => spawnSync(binding.gh, args, { cwd, env, encoding: 'utf8' });
+  const failed = (result) => Boolean(result.error) || result.status !== 0;
+  const detail = (result) => String(result.stderr || '').trim().split('\n')[0] || (result.error && result.error.code) || `exit ${result.status}`;
+
+  if (parsed.labels.length > 0) {
+    const listed = runGh(['api', '--paginate', `repos/${binding.repo}/labels?per_page=100`, '--jq', '.[].name']);
+    if (failed(listed)) return reject(`task command failed: could not list labels: ${detail(listed)}`);
+    const existing = new Set(String(listed.stdout).split('\n'));
+    const missing = parsed.labels.find((label) => !existing.has(label));
+    if (missing !== undefined) return reject(`task command rejected: label does not exist: ${JSON.stringify(missing)}`);
+  }
+
+  const editArgs = ['issue', 'edit', parsed.number];
+  for (const assignee of parsed.assignees) editArgs.push('--add-assignee', assignee);
+  for (const label of parsed.labels) editArgs.push('--add-label', label);
+  const edited = runGh(withBoundRepository(editArgs, binding.repo));
+  if (failed(edited)) return reject(`task command failed: gh issue edit failed: ${detail(edited)}`);
+
+  const viewed = runGh(withBoundRepository(['issue', 'view', parsed.number, '--json', 'assignees,labels'], binding.repo));
+  if (failed(viewed)) return reject(`task command failed: could not verify the update: ${detail(viewed)}`);
+  let issue;
+  try {
+    issue = JSON.parse(String(viewed.stdout));
+  } catch (error) {
+    return reject('task command failed: could not verify the update: unreadable response');
+  }
+  const currentAssignees = new Set((Array.isArray(issue && issue.assignees) ? issue.assignees : []).map((item) => String(item && item.login).toLowerCase()));
+  const currentLabels = new Set((Array.isArray(issue && issue.labels) ? issue.labels : []).map((item) => item && item.name));
+  const missingAssignee = parsed.assignees.find((assignee) => !currentAssignees.has(assignee.toLowerCase()));
+  const missingLabel = parsed.labels.find((label) => !currentLabels.has(label));
+  if (missingAssignee !== undefined || missingLabel !== undefined) {
+    return reject(`task command failed: the update was not applied: ${JSON.stringify(missingAssignee !== undefined ? missingAssignee : missingLabel)} is not on issue #${parsed.number}`);
+  }
+  writeOut(`updated issue #${parsed.number}: assignees=${JSON.stringify(parsed.assignees)} labels=${JSON.stringify(parsed.labels)}\n`);
+  return 0;
+}
+
+// PR のタイトル・本文のファイルを読む（gh を起動する前に呼ぶ）。入出力フォルダの検証と読み込みは member start と同じ（readMemberInput）。
+// 検証を通らなければ TrustError。返すのは { title, body }（指定の無い項目は undefined）。
+function readPrTextFiles(textFiles, { binding, fsImpl, deps }) {
+  const result = {};
+  if (textFiles.title === undefined && textFiles.body === undefined) return result;
+  const member = binding.member;
+  if (member === null) throw new TrustError('--title-file / --body-file need the member input/output folder, which this launcher does not have');
+  const uid = currentUid(deps);
+  // 専用フォルダはランチャーが実パスで固定している。リンクを通る場合は拒否する。
+  if (resolveTrustedPath(fsImpl, member.io, { uid, rejectFinalLink: true }).realPath !== member.io) throw new TrustError(`path is not a real directory: ${member.io}`);
+  const decode = (name, maxBytes) => {
+    const bytes = readMemberInput(fsImpl, member.io, name, maxBytes, uid);
+    try {
+      // 不正な UTF-8 は拒否する。BOM は内容として残す（読んだ値をそのまま gh へ渡す）。
+      return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+    } catch (error) {
+      throw new TrustError(`${name} is not valid UTF-8`);
+    }
+  };
+  if (textFiles.title !== undefined) {
+    // タイトルは 1 行。末尾の改行 1 つだけ除き、ほかの制御文字（改行を含む）は拒否する。
+    // 見えない文字（C1 制御文字・ゼロ幅/向き制御の文字・行区切り・BOM）も拒否する。ZWNJ/ZWJ（U+200C/D）は絵文字や一部の文字で正当に使うため許す。
+    // 前後の空白は削ってから送る（GitHub 側の正規化で読み戻しが食い違わないようにするため）。
+    const title = decode(textFiles.title, PR_TITLE_MAX_BYTES).replace(/\r?\n$/, '');
+    if (PR_TITLE_FORBIDDEN_PATTERN.test(title)) throw new TrustError(`${textFiles.title} must be a single line without control characters`);
+    if (title.trim() === '') throw new TrustError(`${textFiles.title} is blank`);
+    if ([...title].length > PR_TITLE_MAX_CHARS) throw new TrustError(`${textFiles.title} is longer than ${PR_TITLE_MAX_CHARS} characters`);
+    result.title = title.trim();
+  }
+  if (textFiles.body !== undefined) {
+    // 本文は改行（\n \r）とタブだけ許す。
+    // 先頭の BOM（Windows のエディタが付ける）は除去する。ほかの位置の U+FEFF は拒否する。
+    const body = decode(textFiles.body, PR_BODY_MAX_BYTES).replace(/^\ufeff/, '');
+    if (PR_BODY_FORBIDDEN_PATTERN.test(body)) throw new TrustError(`${textFiles.body} contains control characters`);
+    if (body.trim() === '') throw new TrustError(`${textFiles.body} is blank`);
+    if ([...body].length > PR_BODY_MAX_CHARS) throw new TrustError(`${textFiles.body} is longer than ${PR_BODY_MAX_CHARS} characters`);
+    result.body = body;
+  }
+  return result;
+}
+
+// `gh pr edit` は題名・本文の更新だけ。実行の流れ:
+// 1. --title-file / --body-file を読んで検証する（ここまでに失敗したら gh を起動しない）。
+// 2. 拘束した --repo だけを付けて gh pr edit を実行する。
+// 3. gh pr view で題名・本文を読み戻し、指定した値と一致したときだけ成功とする。gh pr edit は権限不足などで終了コード 0 のまま反映されないことがあるため、成功の判定は 3 だけで行う。
+// 本文の照合は、GitHub 側の改行コード（CRLF → LF）と末尾の空白の正規化を許す。題名は完全一致で見る。
+function executePrEdit({ parsed, binding, cwd, env, fsImpl, spawnSync, reject, writeOut, deps }) {
+  let texts;
+  try {
+    texts = readPrTextFiles(parsed.textFiles, { binding, fsImpl, deps });
+  } catch (error) {
+    return reject(`task command rejected: ${error instanceof TrustError ? error.message : 'title/body file could not be verified'}`);
+  }
+  const title = parsed.title !== undefined ? parsed.title : texts.title;
+  const body = parsed.body !== undefined ? parsed.body : texts.body;
+  const runGh = (args) => spawnSync(binding.gh, args, { cwd, env, encoding: 'utf8' });
+  const failed = (result) => Boolean(result.error) || result.status !== 0;
+  const detail = (result) => String(result.stderr || '').trim().split('\n')[0] || (result.error && result.error.code) || `exit ${result.status}`;
+
+  const editArgs = ['pr', 'edit', parsed.number];
+  if (title !== undefined) editArgs.push('--title', title);
+  if (body !== undefined) editArgs.push('--body', body);
+  const edited = runGh(withBoundRepository(editArgs, binding.repo));
+  if (failed(edited)) return reject(`task command failed: gh pr edit failed: ${detail(edited)}`);
+
+  const viewed = runGh(withBoundRepository(['pr', 'view', parsed.number, '--json', 'title,body'], binding.repo));
+  if (failed(viewed)) return reject(`task command failed: could not verify the update: ${detail(viewed)}`);
+  let pr;
+  try {
+    pr = JSON.parse(String(viewed.stdout));
+  } catch (error) {
+    return reject('task command failed: could not verify the update: unreadable response');
+  }
+  const normalize = (value) => String(value).replace(/\r\n/g, '\n').trimEnd();
+  const titleMismatch = title !== undefined && !(typeof (pr && pr.title) === 'string' && pr.title === title);
+  const bodyMismatch = body !== undefined && !(typeof (pr && pr.body) === 'string' && normalize(pr.body) === normalize(body));
+  if (titleMismatch || bodyMismatch) {
+    return reject(`task command failed: the update was not applied: ${titleMismatch ? 'title' : 'body'} of PR #${parsed.number} does not match`);
+  }
+  writeOut(`updated PR #${parsed.number}: ${[title !== undefined ? 'title' : null, body !== undefined ? 'body' : null].filter(Boolean).join(', ')}\n`);
+  return 0;
+}
+
+/**
  * `prepare worktree <base> <issue番号> <ブランチ> <worktree名>`。vk-agents の repo-prepare.sh issue-worktree と同じ処理を、
  * この入口の中で行う（対象が vk-agents 自身でも、Codex が書き換えられるスクリプトを囲いの外で動かさないため）。
  * 作るのは <拘束ルート>/.claude/worktrees/<名前> の worktree だけで、通常のクローンの切り替えや未コミット変更には触れない。
@@ -1359,7 +1588,8 @@ function readMemberInput(fsImpl, dir, name, maxBytes, uid) {
   const constants = fsImpl.constants || nodeFs.constants;
   let fd;
   try {
-    fd = fsImpl.openSync(path.join(dir, name), constants.O_RDONLY | (constants.O_NOFOLLOW || 0));
+    // O_NONBLOCK: 名前付きパイプ（FIFO）を開いても書き手を待って止まらないようにする（通常ファイルでなければ下の fstat で拒否する）。
+    fd = fsImpl.openSync(path.join(dir, name), constants.O_RDONLY | (constants.O_NOFOLLOW || 0) | (constants.O_NONBLOCK || 0));
   } catch (error) {
     const reason = error && error.code === 'ENOENT' ? 'does not exist' : 'is not a plain file';
     throw new TrustError(`${name} ${reason}`);
@@ -1369,7 +1599,16 @@ function readMemberInput(fsImpl, dir, name, maxBytes, uid) {
     if (!stat.isFile() || stat.nlink !== 1) throw new TrustError(`${name} is not a plain file`);
     if (uid !== undefined && stat.uid !== uid) throw new TrustError(`${name} is not owned by the current user`);
     if (stat.size === 0 || stat.size > maxBytes) throw new TrustError(`${name} is empty or too large`);
-    return fsImpl.readFileSync(fd);
+    // サイズ確認のあとにファイルが伸びても上限を超えて読まないよう、上限 + 1 バイトまでだけ読んで超過を検出する。
+    const buffer = Buffer.alloc(maxBytes + 1);
+    let length = 0;
+    while (length < buffer.length) {
+      const read = fsImpl.readSync(fd, buffer, length, buffer.length - length, null);
+      if (read === 0) break;
+      length += read;
+    }
+    if (length === 0 || length > maxBytes) throw new TrustError(`${name} is empty or too large`);
+    return buffer.subarray(0, length);
   } finally {
     fsImpl.closeSync(fd);
   }
@@ -1811,9 +2050,21 @@ function runTaskCommand(argv, deps = {}) {
     const labelCwd = explicitGitHubTarget === undefined ? cwd : binding.home;
     return executeReviewLabel({ parsed, binding, explicitGitHubTarget, spawnSync, env, cwd: labelCwd, reject, write, writeOut });
   }
+  if (parsed.operation === 'issue-edit') return executeIssueEdit({ parsed, binding, cwd, env, spawnSync, reject, writeOut });
+  if (parsed.operation === 'pr-edit') return executePrEdit({ parsed, binding, cwd, env, fsImpl, spawnSync, reject, writeOut, deps });
 
   const bin = parsed.bin === 'gh' ? binding.gh : binding.git;
-  const args = parsed.bin === 'gh' ? withBoundRepository(parsed.args, explicitGitHubTarget || binding.repo) : parsed.args;
+  let ghArgs = parsed.args;
+  if (parsed.textFiles !== undefined) {
+    // gh pr create の --title-file / --body-file。読み込みと検査はここ（gh を起動する前）で行い、読んだ値を --title / --body の argv として渡す。
+    try {
+      const texts = readPrTextFiles(parsed.textFiles, { binding, fsImpl, deps });
+      ghArgs = [...parsed.args.slice(0, 2), ...(texts.title === undefined ? [] : ['--title', texts.title]), ...(texts.body === undefined ? [] : ['--body', texts.body]), ...parsed.args.slice(2)];
+    } catch (error) {
+      return reject(`task command rejected: ${error instanceof TrustError ? error.message : 'title/body file could not be verified'}`);
+    }
+  }
+  const args = parsed.bin === 'gh' ? withBoundRepository(ghArgs, explicitGitHubTarget || binding.repo) : ghArgs;
   // 明示先の gh は呼び出し元 cwd の Git 設定にも依存させず、固定した HOME から実行する。
   const executionCwd = explicitGitHubTarget === undefined ? cwd : binding.home;
   const result = spawnSync(bin, args, { cwd: executionCwd, env, encoding: 'utf8', stdio: 'inherit' });

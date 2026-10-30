@@ -99,6 +99,7 @@ const ORCHESTRATED_TASK_OPERATIONS = Object.freeze([
   'gh issue edit',
   'gh pr view',
   'gh pr create',
+  'gh pr edit',
   'gh pr comment',
   'gh pr checks',
 ]);
@@ -132,7 +133,7 @@ function renderAgentsGuide(launcherPath, memberIoDir = null) {
     '',
     ...operations.map((operation) => `- \`${operation}\``),
     '',
-    '- 入口は許可した操作・オプションだけを通す。許可外（reset・gh api・--repo・--body-file・--output など）は拒否される。',
+    '- 入口は許可した操作・オプションだけを通す。許可外（reset・gh api・--repo・--output など）は拒否される。',
     '- 入口は、引用符・`cd`・パイプ・リダイレクト・`2>&1` を付けず、上記の形で単独のコマンドとして呼ぶ。作業フォルダはシェルの `cd` ではなく、コマンド実行ツールの workdir で指定する。',
     '- サンドボックスの中から呼ぶと、入口は何も実行せずに止まる（終了コード 78）。その場合は、上記「入口:」の形に直して呼び直す。',
     '- Git・push・worktree の操作先は、このタスクの起動時に確定したリポジトリと、その登録済み worktree に限定される。別のリポジトリ・入れ子のリポジトリでは拒否される。',
@@ -140,11 +141,15 @@ function renderAgentsGuide(launcherPath, memberIoDir = null) {
     '- `git commit` は作業ブランチ上でだけ通る。main / master・リモートの既定ブランチ・detached HEAD 上では拒否されるので、先に作業ブランチを作ってから commit する。',
     '- `git push <ブランチ名>` はブランチ名 1 つだけを受け付ける。送り先は入口が固定する（このタスクの GitHub リポジトリ）ので、リモート名・オプション・refspec は渡せない。新規作成と早送りだけが通り、強制上書き・削除・タグは使えない。main / master・リモートの既定ブランチ・detached HEAD・存在しないブランチへの push は拒否される。',
     '- `prepare worktree <base> <issue番号> <ブランチ> <worktree名>` は、最新の origin/<base> から作業ブランチ付きの worktree（`<リポジトリ>/.claude/worktrees/<worktree名>`）を作る。ブランチ名は `<種類>/<issue番号>-...` の形で、同名のブランチ・パスがあると失敗する。通常のクローンの切り替えはしない。リポジトリのルートで実行する。',
-    ...(memberIoDir === null ? [] : [
+    ...(memberIoDir === null ? [
+      '- この入口には入出力フォルダが無いため、`--title-file` / `--body-file` は使えない（拒否される）。`gh pr create` / `gh pr edit` の題・本文は `--title` / `--body` で直接渡す。',
+    ] : [
       `- \`member start --engine codex --prompt <名前> --schema <名前> --out <名前> [--model <名前>] [--readonly]\` は、メンバー（子の Codex）をバックグラウンドで起動し、実行 ID を返す。子の実行は数十分かかることがあるので、完了は待たず、\`member status <実行 ID>\` で状態（running / exited / lost）・終了コード・結果の公開の成否（\`RESULT_STATE=published|failed\`。failed のときは \`EXIT_CODE=0\` でも結果を使わない）・ログの末尾を確かめる。子は親と同じ範囲の sandbox（\`--readonly\` なら読み取り専用）の中で動き、入口の \`member\` 操作は使えない。子の作業フォルダは、どこから呼んでも親を起動した作業フォルダに固定される（親の作業フォルダの配下から呼ぶ。配下の worktree から呼んでも読み替えられる）。どの worktree で作業させるかは、prompt に worktree の絶対パスを書いて子へ伝える。`,
       `- メンバーの入出力ファイルは専用フォルダ \`${memberIoDir}\` の直下にだけ置く。\`--prompt\` / \`--schema\` はそこに作った既存のファイル名、\`--out\` はまだ無いファイル名で、パス・\`..\`・サブフォルダ・リンクは指定できない。結果は \`--out\` のファイルに書かれる。`,
+      `- 空白・改行を含む PR の題・本文は、引用符なしの単独コマンドでは引数として渡せない。専用フォルダ \`${memberIoDir}\` の直下に題・本文のファイルを作り、\`gh pr create --head <ブランチ名> --title-file <名前> --body-file <名前>\` や \`gh pr edit <PR番号> --title-file <名前> --body-file <名前>\` でファイル名を渡す（パス・\`..\`・サブフォルダ・リンクは不可）。題は 1 行（末尾の改行 1 つは除かれる。ほかの改行・制御文字は拒否。1 KiB・256 文字まで）、本文は UTF-8 で、改行・タブ以外の制御文字は拒否（256 KiB・65536 文字まで）。空のファイル・空白だけのファイルも拒否される。同じ項目で \`--title\` と \`--title-file\`（\`--body\` と \`--body-file\`）は併用できない。`,
     ]),
-    '- `gh pr view` / `gh pr checks` は PR 番号が必須。`gh pr create` は `--head <ブランチ名> --title <題> --body <本文>` が必須。`gh pr create` 自体は push しないので、先に `git push` する。',
+    '- `gh pr view` / `gh pr checks` は PR 番号が必須。`gh pr create` は `--head <ブランチ名>` と、題（`--title <題>` か `--title-file <名前>`）・本文（`--body <本文>` か `--body-file <名前>`）が必須。`gh pr create` 自体は push しないので、先に `git push` する。',
+    '- `gh pr edit <PR番号>` は作成済み PR の題・本文を直す操作で、`--title <題>`・`--body <本文>`（またはファイル指定の `--title-file <名前>`・`--body-file <名前>`）のうち少なくとも 1 つが必須。このタスクの GitHub リポジトリの PR だけが対象で、`gh <owner/repo> pr edit ...` は使えない。ラベル・担当者・`--base`・`--repo` など他の引数は拒否される。更新後に題・本文を読み戻して確かめ、指定した値と一致したときだけ成功する（失敗したときは成功として扱わない）。',
     '- `gh issue create` は `--title <題> --body <本文>` が必須。任意で `--assignee <GitHub アカウント名>`・`--label <ラベル名>` を複数回指定できる（`@me` は不可）。作成された issue の URL が標準出力に返る。',
     '- `gh issue edit <issue番号>` は作成済み issue に担当者・既存ラベルを足すだけの操作で、`--add-assignee <GitHub アカウント名>`・`--add-label <ラベル名>` を複数回指定できる（少なくとも 1 つ必須。`@me` は不可）。このタスクの GitHub リポジトリの issue だけが対象で、`gh <owner/repo> issue edit ...` は使えない。題名・本文・`--remove-*`・`--milestone`・`--repo` など他の引数は拒否される。ラベルは対象リポジトリに既にある名前だけ（無い名前は GitHub を変更せず失敗し、新しいラベルは作られない）。更新後に担当者とラベルを読み戻して確かめ、すべて付いているときだけ成功する（既に付いている値の再指定は成功）。失敗したときは成功として扱わない。',
     '- Git のフックは入口経由では実行されない。外部コマンドを起動する設定（clean filter・署名プログラムなど）があるリポジトリでは入口は拒否する。',

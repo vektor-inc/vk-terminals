@@ -792,6 +792,9 @@ async function createTerminal(paneId, cwd, options = {}) {
     waitingOnsetKey: null,
     lastBeepedOnsetKey: null,
     lastLines: '',
+    // main が terminal:data と同時に渡す、現在の lastLines に対応した条件付き入力用の識別値。
+    screenIdentifier: null,
+    screenIdentifierGeneration: null,
     // lastLines / recentLines を組み立てる画面状態（カーソル位置・未完のエスケープ列を保持）。
     //   lastLines / recentLines を空にするときは必ず一緒に reset() する。
     lastScreen: createDisplayScreen(),
@@ -880,7 +883,7 @@ function escAttr(value) {
 }
 
 // ─── IPC: data from pty ───────────────────────────────────────────────────────
-VKIpc.on('terminal:data', (id, data) => {
+VKIpc.on('terminal:data', (id, data, screenSnapshot) => {
   const paneId = Object.keys(terminals).find(k => terminals[k]?.termId === id);
   if (!paneId || !terminals[paneId]) return;
 
@@ -898,6 +901,11 @@ VKIpc.on('terminal:data', (id, data) => {
 
   // Accumulate last lines for waiting detection
   t.lastLines = appendWaitingBuffer(t.lastScreen, data);
+  if (screenSnapshot && typeof screenSnapshot.screenIdentifier === 'string'
+    && Number.isSafeInteger(screenSnapshot.agentGeneration)) {
+    t.screenIdentifier = screenSnapshot.screenIdentifier;
+    t.screenIdentifierGeneration = screenSnapshot.agentGeneration;
+  }
   // 上限評価（出力が流れている最中の判定）用に、前回の評価以降の出力も別に貯める。
   // checkWaiting() が評価のたびにリセットする（issue vektor-inc/vk-orchestrator#212）。
   t.recentLines = appendWaitingBuffer(t.recentScreen, data);
@@ -6541,6 +6549,9 @@ setInterval(() => {
       lastOutputTime: t.lastOutputTime,
       lastInputTime: t.lastInputTime,
       lastLines: t.lastLines,
+      // lastLines と同じ terminal:data で受け取った値を main へ返し、API 応答で再結合する。
+      screenIdentifier: t.screenIdentifier,
+      screenIdentifierGeneration: t.screenIdentifierGeneration,
       // backgroundAgents（issue #340）: バックグラウンドで動く Claude Code サブ
       // エージェント数。整数（0 以上）または不明を表す null。既存フィールドの
       // 意味・値には影響しない追加のみのフィールド。

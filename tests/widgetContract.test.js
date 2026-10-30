@@ -251,6 +251,34 @@ test('sanitizeWidget: specModel の select コントロールを保持する', (
   assert.equal(control.options[1].command.action, 'set-spec-model');
 });
 
+test('sanitizeWidget: mainEngine の select コントロールを保持する（disabled + disabledReason 付きの選択肢を含む）', () => {
+  const w = contract.sanitizeWidget(baseRawWidget({
+    groups: [{ id: 'ready', label: '準備完了', tone: 'info', items: [{
+      id: '473', title: 'main engine task', editable: true,
+      controls: [{
+        type: 'select',
+        field: 'mainEngine',
+        label: 'メイン',
+        ariaLabel: 'エージェントエンジン（メイン）を選択',
+        current: 'inherit',
+        options: [
+          { value: 'inherit', label: '継承' },
+          { value: 'claude', label: 'Claude Code', command: { action: 'set-main-engine', taskId: '473', to: 'claude', expected: 'inherit' } },
+          { value: 'codex', label: 'Codex', disabled: true, disabledReason: 'Codex は現在の構成では使えません。', command: { action: 'set-main-engine', taskId: '473', to: 'codex', expected: 'inherit' } },
+        ],
+      }],
+    }] }],
+  }));
+  const control = w.groups[0].items[0].controls[0];
+  assert.equal(control.field, 'mainEngine');
+  assert.equal(control.type, 'select');
+  assert.equal(control.options[1].command.action, 'set-main-engine');
+  assert.equal(control.options[2].disabled, true);
+  assert.equal(control.options[2].disabledReason, 'Codex は現在の構成では使えません。');
+  // disabled の選択肢には command が付かない契約。
+  assert.equal(control.options[2].command, undefined);
+});
+
 test('sanitizeWidget: control.section は id / label を保持する（issue #389）', () => {
   const w = contract.sanitizeWidget(baseRawWidget({
     groups: [{ id: 'ready', label: '準備完了', tone: 'info', items: [{
@@ -417,6 +445,20 @@ test('sanitizeCommand: set-spec-model の単一コマンドを保持する', () 
   });
 });
 
+test('sanitizeCommand: set-main-engine の単一コマンドを保持する', () => {
+  assert.deepEqual(contract.sanitizeCommand({
+    action: 'set-main-engine',
+    taskId: '473',
+    to: 'codex',
+    expected: 'inherit',
+  }), {
+    action: 'set-main-engine',
+    taskId: '473',
+    to: 'codex',
+    expected: 'inherit',
+  });
+});
+
 test('buildBatchCommandLine: apply-batch 断片に id / requestedAt を付与し ops を保持する', () => {
   const line = contract.buildBatchCommandLine(
     {
@@ -508,6 +550,24 @@ test('sanitizeBatchCommand: apply-batch の ops に set-spec-model を含めら�
     ops: [
       { action: 'set-status', to: 'awaiting-approval', expected: 'ready' },
       { action: 'set-spec-model', to: 'mid', expected: 'inherit' },
+    ],
+  });
+});
+
+test('sanitizeBatchCommand: apply-batch の ops に set-main-engine を含められる', () => {
+  assert.deepEqual(contract.sanitizeBatchCommand({
+    action: 'apply-batch',
+    taskId: '473',
+    ops: [
+      { action: 'set-status', to: 'awaiting-approval', expected: 'ready' },
+      { action: 'set-main-engine', to: 'claude', expected: 'inherit' },
+    ],
+  }), {
+    action: 'apply-batch',
+    taskId: '473',
+    ops: [
+      { action: 'set-status', to: 'awaiting-approval', expected: 'ready' },
+      { action: 'set-main-engine', to: 'claude', expected: 'inherit' },
     ],
   });
 });

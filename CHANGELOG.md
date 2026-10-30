@@ -3,6 +3,7 @@
 - [ 機能追加 ] 自動処理用 Codex の固定入口で、許可済み owner 内の別リポジトリを明示した GitHub 操作に対応（[#467](https://github.com/vektor-inc/vk-terminals/issues/467)）
 - [ 機能追加 ] 画面と AI の起動世代が確認時から変わっていない場合だけ Enter を送る条件付き入力に対応（[#469](https://github.com/vektor-inc/vk-terminals/issues/469)）
 - [ 機能追加 ] 自動処理用 Codex の固定入口で、作成済み issue への担当者・既存ラベルの追加（`gh issue edit`）に対応（[#472](https://github.com/vektor-inc/vk-terminals/issues/472)）
+- [ 機能追加 ] VK Orchestrator のタスク編集画面で、そのタスクを Claude Code と Codex のどちらで処理するか選べるようにする対応を追加（[#473](https://github.com/vektor-inc/vk-terminals/issues/473)）
 
 ## 1.79.2
 

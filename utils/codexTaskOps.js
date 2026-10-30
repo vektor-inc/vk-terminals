@@ -40,6 +40,14 @@ const REVIEW_PASSED_LABEL_COLOR = '0e8a16';
 const REVIEW_PASSED_LABEL_DESCRIPTION = 'エージェントのレビュー完了マーカー（最終レビュー・e2e ゲート通過）';
 // PR 番号は 1 以上の数字だけ（0・先頭ゼロは不可）。
 const POSITIVE_NUMBER_PATTERN = /^[1-9][0-9]{0,8}$/;
+// ラベル操作の対応表（parse 側）と、runTaskCommand の振り分け（REVIEW_LABEL_OPERATIONS）の元を 1 か所にそろえる。値は [操作名, PR 番号を取るか]。
+const REVIEW_LABEL_COMMANDS = Object.freeze({
+  'label exists': ['label-exists', false],
+  'label create': ['label-create', false],
+  'pr add-label': ['pr-add-label', true],
+  'pr has-label': ['pr-has-label', true],
+});
+const REVIEW_LABEL_OPERATIONS = new Set(Object.values(REVIEW_LABEL_COMMANDS).map(([operation]) => operation));
 
 const NO_VALUE_FLAGS = Object.freeze({
   'git status': ['-s', '--short', '-b', '--branch', '--porcelain', '--porcelain=v1', '--porcelain=v2'],
@@ -486,13 +494,7 @@ function parseTaskCommand(argv) {
       const parsed = parseGhPrCreate(tokens);
       return parsed.ok ? command(['pr', 'create'], parsed.args) : parsed;
     }
-    const labelOperations = {
-      'label exists': ['label-exists', false],
-      'label create': ['label-create', false],
-      'pr add-label': ['pr-add-label', true],
-      'pr has-label': ['pr-has-label', true],
-    };
-    const labelOperation = labelOperations[`${group} ${action}`];
+    const labelOperation = REVIEW_LABEL_COMMANDS[`${group} ${action}`];
     if (labelOperation !== undefined) {
       const parsed = parseReviewLabelCommand(labelOperation[0], tokens, { withNumber: labelOperation[1] });
       return parsed.ok ? { ...parsed, ...(targetRepo === undefined ? {} : { targetRepo }) } : parsed;
@@ -1087,6 +1089,11 @@ function executeReviewLabel({ parsed, binding, explicitGitHubTarget, spawnSync, 
     return String(result.stdout || '').split('\n').map((line) => line.replace(/\r$/, ''));
   };
   const hasLabel = (names) => names.includes(REVIEW_PASSED_LABEL);
+  // 番号が PR であることを固定エンドポイント repos/<repo>/pulls/<番号> の取得で確かめる（issue 番号なら 404 になる）。
+  const isPullRequest = () => {
+    const result = callGh(['api', '--jq', '.number', `repos/${repo}/pulls/${parsed.number}`]);
+    return !result.error && result.status === 0;
+  };
 
   switch (parsed.operation) {
     case 'label-exists': {
@@ -1107,11 +1114,20 @@ function executeReviewLabel({ parsed, binding, explicitGitHubTarget, spawnSync, 
         '-f', `name=${REVIEW_PASSED_LABEL}`, '-f', `color=${REVIEW_PASSED_LABEL_COLOR}`, '-f', `description=${REVIEW_PASSED_LABEL_DESCRIPTION}`,
       ]);
       if (result.error) return reject(`task command failed to start: ${result.error.code || 'error'}`);
-      if (result.status !== 0) return typeof result.status === 'number' ? result.status : 2;
+      if (result.status !== 0) {
+        // 同時に別の実行が作った場合などに備え、一覧を読み直す。あれば成功、無ければ失敗のまま返す。
+        const reread = readNames(labelsEndpoint);
+        if (reread !== null && hasLabel(reread)) {
+          writeOut('LABEL_EXISTS\n');
+          return 0;
+        }
+        return typeof result.status === 'number' ? result.status : 2;
+      }
       writeOut('LABEL_CREATED\n');
       return 0;
     }
     case 'pr-add-label': {
+      if (!isPullRequest()) return reject(`task command rejected: ${parsed.number} is not a pull request of ${repo}, or it could not be read`);
       const result = callGh(['api', '--method', 'POST', `repos/${repo}/issues/${parsed.number}/labels`, '-f', `labels[]=${REVIEW_PASSED_LABEL}`]);
       if (result.error) return reject(`task command failed to start: ${result.error.code || 'error'}`);
       if (result.status !== 0) return typeof result.status === 'number' ? result.status : 2;
@@ -1120,6 +1136,11 @@ function executeReviewLabel({ parsed, binding, explicitGitHubTarget, spawnSync, 
       return 0;
     }
     case 'pr-has-label': {
+      if (!isPullRequest()) {
+        write(`task command failed: ${parsed.number} is not a pull request of ${repo}, or it could not be read\n`);
+        writeOut('LABEL_NG\n');
+        return 1;
+      }
       const names = readNames(`repos/${repo}/issues/${parsed.number}/labels`);
       if (names !== null && hasLabel(names)) {
         writeOut('LABEL_OK\n');
@@ -1785,7 +1806,7 @@ function runTaskCommand(argv, deps = {}) {
     return parsed.operation === 'push' ? executePush(context) : executePrepareWorktree(context);
   }
 
-  if (typeof parsed.operation === 'string' && /^(label-|pr-(add|has)-label$)/.test(parsed.operation)) {
+  if (REVIEW_LABEL_OPERATIONS.has(parsed.operation)) {
     // 明示先の gh と同じく、呼び出し元 cwd の Git 設定に依存させない。
     const labelCwd = explicitGitHubTarget === undefined ? cwd : binding.home;
     return executeReviewLabel({ parsed, binding, explicitGitHubTarget, spawnSync, env, cwd: labelCwd, reject, write, writeOut });

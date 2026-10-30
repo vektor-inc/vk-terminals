@@ -3065,7 +3065,13 @@ fs.appendFileSync(${JSON.stringify(record)}, JSON.stringify({ args, cwd: process
 const responses = JSON.parse(fs.readFileSync(${JSON.stringify(responsesPath)}, 'utf8'));
 const endpoint = args.find((arg) => arg.startsWith('repos/')) || '';
 const key = args.includes('--method') ? 'POST ' + endpoint : endpoint;
-const response = responses[key] || {};
+// sequence があれば、同じキーへの n 回目の呼び出しに n 番目の応答を返す（読み直しで結果が変わる場面の再現用）。
+const earlier = fs.readFileSync(${JSON.stringify(record)}, 'utf8').trim().split('\\n').map((line) => JSON.parse(line)).filter((call) => {
+  const callEndpoint = call.args.find((arg) => arg.startsWith('repos/')) || '';
+  return (call.args.includes('--method') ? 'POST ' + callEndpoint : callEndpoint) === key;
+}).length - 1;
+let response = responses[key] || {};
+if (Array.isArray(response.sequence)) response = response.sequence[Math.min(earlier, response.sequence.length - 1)];
 if (response.stdout) process.stdout.write(response.stdout);
 process.exit(response.status || 0);
 `, { mode: 0o755 });
@@ -3167,7 +3173,15 @@ test('実行: gh label create はラベルが無いときだけ、固定の色�
     assert.equal(again.stdout, 'LABEL_EXISTS\n');
     assert.equal(fixture.readCalls().length, 1);
 
-    // 作成 API の失敗は成功として返さない。
+    // 作成 API が失敗しても、読み直してラベルがあれば（別の実行が先に作った場合）LABEL_EXISTS で終了 0。
+    fs.rmSync(path.join(fixture.root, 'gh-calls.jsonl'));
+    installLabelGh(fixture, { [`${endpoint}?per_page=100`]: { sequence: [{ stdout: 'bug\n' }, { stdout: `bug\n${REVIEW_LABEL}\n` }] }, [`POST ${endpoint}`]: { status: 1 } });
+    const raced = runCapture(fixture, ['gh', 'label', 'create', REVIEW_LABEL]);
+    assert.equal(raced.code, 0, raced.messages.join(''));
+    assert.equal(raced.stdout, 'LABEL_EXISTS\n');
+    assert.equal(fixture.readCalls().length, 3);
+
+    // 作成 API の失敗は成功として返さない（読み直してもラベルが無ければ失敗のまま）。
     installLabelGh(fixture, { [`${endpoint}?per_page=100`]: { stdout: 'bug\n' }, [`POST ${endpoint}`]: { status: 1 } });
     const failed = runCapture(fixture, ['gh', 'label', 'create', REVIEW_LABEL]);
     assert.notEqual(failed.code, 0);
@@ -3184,13 +3198,16 @@ test('実行: gh pr add-label は REST で付与し（gh pr edit を使わない
     installLabelGh(fixture, { [`${labels}?per_page=100`]: { stdout: `bug\n${REVIEW_LABEL}\n` } });
     const added = runCapture(fixture, ['gh', 'pr', 'add-label', '471', REVIEW_LABEL]);
     assert.equal(added.code, 0, added.messages.join(''));
-    assert.deepEqual(fixture.readCalls().map((call) => call.args), [['api', '--method', 'POST', labels, '-f', `labels[]=${REVIEW_LABEL}`]]);
+    assert.deepEqual(fixture.readCalls().map((call) => call.args), [
+      ['api', '--jq', '.number', 'repos/vektor-inc/vk-terminals/pulls/471'],
+      ['api', '--method', 'POST', labels, '-f', `labels[]=${REVIEW_LABEL}`],
+    ]);
     assert.equal(fixture.readCalls().some((call) => call.args[0] === 'pr'), false);
 
     const ok = runCapture(fixture, ['gh', 'pr', 'has-label', '471', REVIEW_LABEL]);
     assert.equal(ok.code, 0);
     assert.equal(ok.stdout, 'LABEL_OK\n');
-    assert.deepEqual(fixture.readCalls()[1].args, ['api', '--paginate', '--jq', '.[].name', `${labels}?per_page=100`]);
+    assert.deepEqual(fixture.readCalls()[3].args, ['api', '--paginate', '--jq', '.[].name', `${labels}?per_page=100`]);
 
     // 付与 API が失敗したら非 0（権限不足を成功にしない）。
     installLabelGh(fixture, { [`POST ${labels}`]: { status: 1 } });
@@ -3208,6 +3225,26 @@ test('実行: gh pr add-label は REST で付与し（gh pr edit を使わない
   }
 });
 
+test('実行: pulls が 404 を返す番号（issue 番号など）は、add-label は書き込まずに拒否し、has-label は LABEL_NG にする', () => {
+  const fixture = createFixture();
+  try {
+    const pulls = 'repos/vektor-inc/vk-terminals/pulls/12';
+    const labels = 'repos/vektor-inc/vk-terminals/issues/12/labels';
+    installLabelGh(fixture, { [pulls]: { status: 1 }, [`${labels}?per_page=100`]: { stdout: `${REVIEW_LABEL}\n` } });
+    const added = runCapture(fixture, ['gh', 'pr', 'add-label', '12', REVIEW_LABEL]);
+    assert.equal(added.code, 2);
+    assert.equal(added.stdout, '');
+    assert.deepEqual(fixture.readCalls().map((call) => call.args), [['api', '--jq', '.number', pulls]]);
+    // ラベルが付いて見える番号でも、PR でなければ LABEL_OK にしない。
+    const checked = runCapture(fixture, ['gh', 'pr', 'has-label', '12', REVIEW_LABEL]);
+    assert.equal(checked.code, 1);
+    assert.equal(checked.stdout, 'LABEL_NG\n');
+    assert.equal(fixture.readCalls().some((call) => call.args.includes('--method') || call.args.includes('--paginate')), false);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
 test('実行: ラベル操作は許可 owner の明示先リポジトリのエンドポイントを使い、許可外 owner は gh を呼ばず拒否する', () => {
   const fixture = createFixture();
   try {
@@ -3217,11 +3254,12 @@ test('実行: ラベル操作は許可 owner の明示先リポジトリのエ�
     const ok = runCapture(fixture, ['gh', 'vektor-inc/other-repo', 'pr', 'has-label', '9', REVIEW_LABEL], { cwd: plain });
     assert.equal(ok.stdout, 'LABEL_OK\n');
     assert.equal(fixture.readCalls()[0].cwd, fixture.home);
-    assert.equal(fixture.readCalls()[0].args.at(-1), 'repos/vektor-inc/other-repo/issues/9/labels?per_page=100');
+    assert.equal(fixture.readCalls()[0].args.at(-1), 'repos/vektor-inc/other-repo/pulls/9');
+    assert.equal(fixture.readCalls()[1].args.at(-1), 'repos/vektor-inc/other-repo/issues/9/labels?per_page=100');
 
     const rejected = runCapture(fixture, ['gh', 'evil/other-repo', 'label', 'exists', REVIEW_LABEL], { cwd: plain });
     assert.equal(rejected.code, 2);
-    assert.equal(fixture.readCalls().length, 1);
+    assert.equal(fixture.readCalls().length, 2);
   } finally {
     fixture.cleanup();
   }

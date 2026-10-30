@@ -153,7 +153,7 @@ function renderAgentsGuide(launcherPath, memberIoDir = null) {
     '  - `gh label exists agent-review-passed`（= `label-exists`）: ラベルがあれば `LABEL_EXISTS`、無ければ `LABEL_MISSING` を出力する。',
     '  - `gh label create agent-review-passed`（= `label-create`）: ラベルが無い場合だけ作る（あれば `LABEL_EXISTS`、作成できたら `LABEL_CREATED`。作成が失敗しても、読み直してラベルがあれば `LABEL_EXISTS` で終了 0）。',
     '  - `gh pr add-label <PR番号> agent-review-passed`（= `label-add`）: 対象 PR へラベルを付ける。PR 番号は 1 以上の数字だけで、付与の前に PR であることを確認する（issue 番号なら拒否）。',
-    '  - `gh pr has-label <PR番号> agent-review-passed`（= `issue-has-label`）: 付与後に必ず読み返す。付いていれば `LABEL_OK`（終了 0）、付いていない・読めない・PR でない番号のときは `LABEL_NG`（終了 1）。`LABEL_OK` を確認してからマーカーコメントを投稿する。',
+    '  - `gh pr has-label <PR番号> agent-review-passed`（= `issue-has-label`）: 付与後に必ず読み返す。付いていれば `LABEL_OK`（終了 0）、付いていない・読めない・PR でない番号のときは `LABEL_NG`（終了 1）。`LABEL_OK` を確認してからマーカーコメントを投稿する。マーカーに使う SHA は「レビューした commit の SHA」（レビュー時に残した `reviewed-sha:` の 40 桁の実値）で、投稿の直前に `gh pr view <PR番号>` で PR の現在の head SHA を取得して一致を確かめる。一致しなければ投稿せず、head が進んだことを報告する（現在の head SHA を代わりに使わない）。一致したら `gh pr comment <PR番号> --body ...` で、本文の独立行に `agent-review-passed-sha: <SHA>` を書いて投稿する。',
     '- Git のフックは入口経由では実行されない。外部コマンドを起動する設定（clean filter・署名プログラムなど）があるリポジトリでは入口は拒否する。',
     '- 入口を通さない git / gh は sandbox の制限内（ネットワーク無し）で動く。',
     '',

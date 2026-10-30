@@ -418,6 +418,12 @@ test('生成: rules は信頼済みランチャーの実行だけを許可し、
     assert.match(guide, /`gh label create agent-review-passed`（= `label-create`）/);
     assert.match(guide, /`gh pr add-label <PR番号> agent-review-passed`（= `label-add`）/);
     assert.match(guide, /`gh pr has-label <PR番号> agent-review-passed`（= `issue-has-label`）.*`LABEL_OK`.*`LABEL_NG`/);
+    // マーカーはレビューした commit の SHA で投稿し、現在の head と一致しなければ投稿しない。
+    assert.match(guide, /レビューした commit の SHA/);
+    assert.match(guide, /現在の head SHA を取得して一致を確かめる/);
+    assert.match(guide, /一致しなければ投稿せず、head が進んだことを報告する/);
+    assert.match(guide, /現在の head SHA を代わりに使わない/);
+    assert.match(guide, /独立行に `agent-review-passed-sha: <SHA>`/);
     assert.match(guide, /vk-agents の Codex 版 vk-kore 9-3 の `label-exists` \/ `label-create` \/ `label-add` \/ `issue-has-label`/);
     assert.match(guide, /--assignee/);
     assert.match(guide, /--label/);

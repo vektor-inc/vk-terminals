@@ -278,6 +278,161 @@ test('実行: gh issue create は拘束した --repo が付き、作成された
   }
 });
 
+// ─── gh issue edit（担当者・既存ラベルの追加。issue #472） ─────────────────────
+
+test('許可: gh issue edit は番号と --add-assignee / --add-label だけを受け、検証済みの値で組み立て直す', () => {
+  const ok = (command) => parseTaskCommand(['gh', 'issue', 'edit', ...command]);
+  assert.deepEqual(ok(['5', '--add-assignee', 'kurudrive']), { ok: true, bin: 'gh', operation: 'issue-edit', number: '5', assignees: ['kurudrive'], labels: [], needsGitHub: true });
+  assert.deepEqual(ok(['5', '--add-label', 'task-queue']), { ok: true, bin: 'gh', operation: 'issue-edit', number: '5', assignees: [], labels: ['task-queue'], needsGitHub: true });
+  const both = ok(['--add-label', 'good first issue', '5', '--add-assignee', 'a-b', '--add-label=不具合', '--add-assignee=kurudrive']);
+  assert.equal(both.ok, true);
+  assert.equal(both.number, '5');
+  assert.deepEqual(both.assignees, ['a-b', 'kurudrive']);
+  assert.deepEqual(both.labels, ['good first issue', '不具合']);
+});
+
+test('拒否: gh issue edit は別リポジトリ指定・対象を変える引数・削除系・不正な値・必須欠落をすべて拒否する', () => {
+  const base = ['gh', 'issue', 'edit', '5', '--add-assignee', 'kurudrive'];
+  const rejected = [
+    ['gh', 'vektor-inc/other', 'issue', 'edit', '5', '--add-assignee', 'kurudrive'],
+    ['gh', 'VEKTOR-INC/vk-terminals', 'issue', 'edit', '5', '--add-label', 'bug'],
+    ['gh', 'issue', 'edit'],
+    ['gh', 'issue', 'edit', '5'],
+    ['gh', 'issue', 'edit', '--add-assignee', 'kurudrive'],
+    [...base, '--repo', 'o/r'],
+    [...base, '-R', 'o/r'],
+    [...base, '--repo=o/r'],
+    [...base, '--title', 't'],
+    [...base, '--body', 'b'],
+    [...base, '--body-file', '/etc/passwd'],
+    [...base, '--remove-label', 'bug'],
+    [...base, '--remove-assignee', 'kurudrive'],
+    [...base, '--milestone', 'm'],
+    [...base, '--add-project', 'p'],
+    [...base, '--add-assignee', '@me'],
+    [...base, '--add-assignee', '-evil'],
+    [...base, '--add-assignee', 'a,b'],
+    [...base, '--add-assignee'],
+    [...base, '--add-label', ''],
+    [...base, '--add-label', ' x'],
+    [...base, '--add-label', 'a,b'],
+    [...base, '--add-label', '"bug"'],
+    [...base, '--add-label', '-bug'],
+    [...base, '--add-label', 'a'.repeat(51)],
+    [...base, '--add-label'],
+    [...base, '--add-label', '--remove-label'],
+    [...base, '--unknown'],
+    [...base, 'extra'],
+    [...base, '7'],
+    ['gh', 'issue', 'edit', 'abc', '--add-assignee', 'kurudrive'],
+    ['gh', 'issue', 'edit', '5; rm', '--add-assignee', 'kurudrive'],
+    ['gh', 'issue', 'edit', '1234567890', '--add-assignee', 'kurudrive'],
+    ['gh', 'issue', 'edit', 'https://github.com/o/r/issues/5', '--add-assignee', 'kurudrive'],
+    ['gh', 'issue', 'edit', '-5', '--add-assignee', 'kurudrive'],
+  ];
+  for (const command of rejected) {
+    const result = parseTaskCommand(command);
+    assert.equal(result.ok, false, JSON.stringify(command));
+    assert.match(result.error, /^task command rejected/);
+  }
+});
+
+// gh だけを差し替える spawnSync。呼び出しを記録し、gh 以外（git）は実物に流す。
+function issueEditHarness(fixture, { labels = ['task-queue', 'bug', 'good first issue'], applied, viewStdout, editStatus = 0, listStatus = 0, viewStatus = 0 } = {}) {
+  const calls = [];
+  const spawnSync = (bin, args, options) => {
+    if (bin !== fixture.env.VK_TASK_GH) return childProcess.spawnSync(bin, args, { ...options, stdio: 'pipe' });
+    calls.push(args);
+    if (args[0] === 'api') return { status: listStatus, stdout: labels.join('\n') + '\n', stderr: listStatus === 0 ? '' : 'list failed\n' };
+    if (args[0] === 'issue' && args[1] === 'edit') return { status: editStatus, stdout: '', stderr: editStatus === 0 ? '' : 'edit failed\n' };
+    if (args[0] === 'issue' && args[1] === 'view') return { status: viewStatus, stdout: viewStdout !== undefined ? viewStdout : JSON.stringify(applied), stderr: viewStatus === 0 ? '' : 'view failed\n' };
+    return { status: 1, stdout: '', stderr: 'unexpected\n' };
+  };
+  return { calls, spawnSync };
+}
+
+const issueState = (assignees, labels) => ({ assignees: assignees.map((login) => ({ login })), labels: labels.map((name) => ({ name })) });
+
+test('実行: gh issue edit はラベル確認 → 更新 → 読み戻しの順に、拘束した --repo だけで動き、読み戻しで全値を確認できたときだけ成功する', () => {
+  const fixture = createFixture();
+  try {
+    const stdout = [];
+    const { calls, spawnSync } = issueEditHarness(fixture, { applied: issueState(['Kurudrive', 'other'], ['task-queue', 'bug', 'pre-existing']) });
+    const result = run(fixture, ['gh', 'issue', 'edit', '5', '--add-assignee', 'kurudrive', '--add-label', 'task-queue', '--add-label', 'bug'], { spawnSync, writeOut: (m) => stdout.push(m) });
+    assert.equal(result.code, 0, result.messages.join(''));
+    assert.deepEqual(calls, [
+      ['api', '--paginate', 'repos/vektor-inc/vk-terminals/labels?per_page=100', '--jq', '.[].name'],
+      ['issue', 'edit', '5', '--add-assignee', 'kurudrive', '--add-label', 'task-queue', '--add-label', 'bug', '--repo', 'vektor-inc/vk-terminals'],
+      ['issue', 'view', '5', '--json', 'assignees,labels', '--repo', 'vektor-inc/vk-terminals'],
+    ]);
+    assert.match(stdout.join(''), /updated issue #5/);
+
+    // 担当者だけのときはラベル一覧を取らない。既に付いている値の再指定（冪等）も、読み戻せれば成功する。
+    const second = issueEditHarness(fixture, { applied: issueState(['kurudrive'], ['bug']) });
+    assert.equal(run(fixture, ['gh', 'issue', 'edit', '5', '--add-assignee', 'kurudrive'], { spawnSync: second.spawnSync, writeOut: () => {} }).code, 0);
+    assert.deepEqual(second.calls.map((args) => args.slice(0, 2)), [['issue', 'edit'], ['issue', 'view']]);
+    const third = issueEditHarness(fixture, { applied: issueState([], ['bug']) });
+    assert.equal(run(fixture, ['gh', 'issue', 'edit', '5', '--add-label', 'bug'], { spawnSync: third.spawnSync, writeOut: () => {} }).code, 0);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('実行: gh issue edit はラベルが存在しない・更新や確認に失敗・読み戻しで値が無いとき、成功を返さない（存在しないラベルでは更新もしない）', () => {
+  const fixture = createFixture();
+  try {
+    const command = ['gh', 'issue', 'edit', '5', '--add-assignee', 'kurudrive', '--add-label', 'bug'];
+    const good = issueState(['kurudrive'], ['bug']);
+    const cases = [
+      // 完全一致で存在しない（大文字小文字違い・部分一致は存在とみなさない）。更新は呼ばない。
+      { label: 'ラベル不在', options: { applied: good, labels: ['Bug', 'bugs', 'task-queue'] }, expectedCalls: 1, message: /label does not exist/ },
+      { label: 'ラベル一覧の取得失敗', options: { applied: good, listStatus: 1 }, expectedCalls: 1, message: /could not list labels/ },
+      { label: '更新失敗', options: { applied: good, editStatus: 1 }, expectedCalls: 2, message: /gh issue edit failed/ },
+      { label: '読み戻し失敗', options: { applied: good, viewStatus: 1 }, expectedCalls: 3, message: /could not verify/ },
+      { label: '読み戻しが不正な JSON', options: { viewStdout: 'not json' }, expectedCalls: 3, message: /could not verify/ },
+      // 終了コード 0 でも何も付いていなければ失敗（権限不足で何もしない gh を想定）。
+      { label: '担当者が付いていない', options: { applied: issueState([], ['bug']) }, expectedCalls: 3, message: /"kurudrive" is not on issue #5/ },
+      { label: 'ラベルが付いていない', options: { applied: issueState(['kurudrive'], []) }, expectedCalls: 3, message: /"bug" is not on issue #5/ },
+      { label: 'ラベル名が完全一致しない', options: { applied: issueState(['kurudrive'], ['Bug']) }, expectedCalls: 3, message: /"bug" is not on issue #5/ },
+      { label: '別の担当者だけ', options: { applied: issueState(['someone-else'], ['bug']) }, expectedCalls: 3, message: /"kurudrive" is not on issue #5/ },
+    ];
+    for (const { label, options, expectedCalls, message } of cases) {
+      const { calls, spawnSync } = issueEditHarness(fixture, options);
+      const stdout = [];
+      const result = run(fixture, command, { spawnSync, writeOut: (m) => stdout.push(m) });
+      assert.notEqual(result.code, 0, label);
+      assert.match(result.messages.join(''), message, label);
+      assert.equal(calls.length, expectedCalls, label);
+      assert.equal(stdout.join(''), '', label);
+    }
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('実行: 拒否された gh issue edit は gh を一度も呼ばない（別リポジトリ指定・--repo・削除系・不正値）', () => {
+  const fixture = createFixture();
+  try {
+    const plain = path.join(fixture.root, 'plain');
+    fs.mkdirSync(plain);
+    for (const command of [
+      ['gh', 'vektor-inc/other-repo', 'issue', 'edit', '5', '--add-assignee', 'kurudrive'],
+      ['gh', 'issue', 'edit', '5', '--add-assignee', 'kurudrive', '--repo', 'o/r'],
+      ['gh', 'issue', 'edit', '5', '--remove-label', 'bug'],
+      ['gh', 'issue', 'edit', '5', '--add-assignee', '@me'],
+      ['gh', 'issue', 'edit', 'x', '--add-label', 'bug'],
+    ]) {
+      const { calls, spawnSync } = issueEditHarness(fixture, { applied: issueState(['kurudrive'], ['bug']) });
+      const result = run(fixture, command, { spawnSync, cwd: plain });
+      assert.equal(result.code, 2, JSON.stringify(command));
+      assert.equal(calls.length, 0, JSON.stringify(command));
+    }
+    assert.equal(fixture.readCalls().length, 0);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
 test('PR 作成: 受理された組み立て結果は必ず --head を含み、push や対象指定を変えるフラグを含まない', () => {
   const heads = ['issue/428-x', 'feature_1', 'a.b-c'];
   for (const head of heads) {

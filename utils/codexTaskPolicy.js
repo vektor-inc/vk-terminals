@@ -71,6 +71,7 @@ const LAUNCH_HOME_NAME_PATTERN = /^[0-9a-f]{24}$/;
 const CODEX_POLICY_CONTEXT_VERSION = 1;
 const ENV_COMMAND_PATH = '/usr/bin/env';
 const SAFE_LAUNCHER_PATH_PATTERN = /^[A-Za-z0-9/._-]+$/;
+const GITHUB_OWNER_PATTERN = /^[A-Za-z0-9._-]+$/;
 const SANDBOX_INVOCATION_EXIT_CODE = 78;
 const MAX_IDENTITY_LENGTH = 200;
 const MAX_GH_HOSTS_BYTES = 64 * 1024;
@@ -133,7 +134,8 @@ function renderAgentsGuide(launcherPath, memberIoDir = null) {
     '- 入口は許可した操作・オプションだけを通す。許可外（reset・gh api・--repo・--body-file・--output など）は拒否される。',
     '- 入口は、引用符・`cd`・パイプ・リダイレクト・`2>&1` を付けず、上記の形で単独のコマンドとして呼ぶ。作業フォルダはシェルの `cd` ではなく、コマンド実行ツールの workdir で指定する。',
     '- サンドボックスの中から呼ぶと、入口は何も実行せずに止まる（終了コード 78）。その場合は、上記「入口:」の形に直して呼び直す。',
-    '- 入口はこのタスクのリポジトリ（起動時に確定したフォルダと GitHub のリポジトリ）と、その worktree（`git worktree add` で作った作業フォルダ）にだけ働く。別のリポジトリ・入れ子のリポジトリでは拒否される。gh には対象リポジトリが自動で付く。',
+    '- Git・push・worktree の操作先は、このタスクの起動時に確定したリポジトリと、その登録済み worktree に限定される。別のリポジトリ・入れ子のリポジトリでは拒否される。',
+    '- GitHub 操作は従来の `gh <種類> <操作> ...` では起動時の GitHub リポジトリが対象になる。`gh <owner/repo> <種類> <操作> ...` と明示した場合は、起動時に許可された owner と大文字小文字を区別しない完全一致で照合し、許可済みなら別の cwd からでもそのリポジトリを対象にできる。`--repo` / `-R` は使えない。',
     '- `git commit` は作業ブランチ上でだけ通る。main / master・リモートの既定ブランチ・detached HEAD 上では拒否されるので、先に作業ブランチを作ってから commit する。',
     '- `git push <ブランチ名>` はブランチ名 1 つだけを受け付ける。送り先は入口が固定する（このタスクの GitHub リポジトリ）ので、リモート名・オプション・refspec は渡せない。新規作成と早送りだけが通り、強制上書き・削除・タグは使えない。main / master・リモートの既定ブランチ・detached HEAD・存在しないブランチへの push は拒否される。',
     '- `prepare worktree <base> <issue番号> <ブランチ> <worktree名>` は、最新の origin/<base> から作業ブランチ付きの worktree（`<リポジトリ>/.claude/worktrees/<worktree名>`）を作る。ブランチ名は `<種類>/<issue番号>-...` の形で、同名のブランチ・パスがあると失敗する。通常のクローンの切り替えはしない。リポジトリのルートで実行する。',
@@ -217,6 +219,7 @@ function renderLauncher({ envPath, nodePath, opsScriptPath, launcherPath, member
     'PATH=/usr/bin:/bin',
     `VK_TASK_ROOT=${binding.root}`,
     `VK_TASK_REPO=${binding.repo || ''}`,
+    `VK_TASK_ALLOWED_OWNERS=${binding.allowedOwners.join(',')}`,
     `VK_TASK_GIT=${binding.git}`,
     `VK_TASK_GH=${binding.gh || ''}`,
     `VK_TASK_HOME=${binding.home}`,
@@ -666,6 +669,14 @@ function prepareCodexTaskPolicyHome(params) {
   if (![dataDir, handoffDir, personalCodexHome, cwd, homeDir].every(isSafeAbsolutePath)) {
     return { ok: false, error: 'codex task policy unavailable: unsafe directory path' };
   }
+  if (params.allowedOwners !== undefined && (
+    !Array.isArray(params.allowedOwners)
+    || params.allowedOwners.length === 0
+    || params.allowedOwners.length > 100
+    || params.allowedOwners.some((owner) => typeof owner !== 'string' || !GITHUB_OWNER_PATTERN.test(owner) || ['.', '..'].includes(owner) || owner.startsWith('-'))
+  )) {
+    return { ok: false, error: 'codex task policy unavailable: invalid allowed github owners' };
+  }
   const template = CODEX_TASK_POLICY_PRESETS[preset];
   const uid = currentUid(params);
   let created = null;
@@ -699,6 +710,9 @@ function prepareCodexTaskPolicyHome(params) {
     const repository = inspectRepository({ cwd, run: runGit, homeDir: home.realPath, fsImpl });
     if (!repository.ok) throw new PolicyError(repository.error.replace(/^task command rejected: /, ''));
     if (!isSafeAbsolutePath(repository.root)) throw new PolicyError('unsafe repository path');
+    const allowedOwners = params.allowedOwners === undefined
+      ? (repository.repo === null ? [] : [repository.repo.split('/')[0]])
+      : params.allowedOwners;
     // 信頼しないプロジェクトとして記録する場所。Codex が信頼を引く単位（Git ルート・作業フォルダ）の両方を実パスで固定する。
     const parentWorkingDir = fsImpl.realpathSync(cwd);
     // 固定入口が書き込む Git 管理領域（linked worktree なら元のクローンの共通 .git）。
@@ -807,7 +821,7 @@ function prepareCodexTaskPolicyHome(params) {
       const ghConfigDir = path.join(targetHome, GH_CONFIG_DIR_NAME);
       const memberEnabled = memberIoDir !== null && !child;
       const binding = {
-        root: repository.root, repo: repository.repo, git: gitPath, gh: ghPath, home: home.realPath, gitConfig: path.join(targetHome, GIT_CONFIG_NAME), ghConfig: ghConfigDir, remoteBase,
+        root: repository.root, repo: repository.repo, allowedOwners, git: gitPath, gh: ghPath, home: home.realPath, gitConfig: path.join(targetHome, GIT_CONFIG_NAME), ghConfig: ghConfigDir, remoteBase,
         ...(memberEnabled ? { codex: codexPath, memberHome, memberIo: memberIoDir, memberRuns: memberRunsDir, parentCwd: parentWorkingDir, parentSandbox } : {}),
       };
       return {
@@ -867,7 +881,7 @@ function resolveCodexTaskPolicyLaunchOptions(engine, options, deps) {
   if (!validated.ok) return validated;
   const launchOptions = { approvalPolicy: validated.approvalPolicy, sandboxMode: validated.sandboxMode };
   if (validated.codexPolicy === undefined) return { ok: true, options: launchOptions, discard: NOT_CREATED };
-  const prepared = prepareCodexTaskPolicyHome({ preset: validated.codexPolicy.preset, sandboxMode: validated.sandboxMode, ...prepareDeps });
+  const prepared = prepareCodexTaskPolicyHome({ ...validated.codexPolicy, sandboxMode: validated.sandboxMode, ...prepareDeps });
   if (!prepared.ok) return prepared;
   // dryRun（事前確認）では専用 CODEX_HOME が無い。起動には使えない値なので options へ載せない。
   const policyOptions = { ...launchOptions, codexPolicy: validated.codexPolicy };

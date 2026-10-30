@@ -39,13 +39,13 @@
     return typeof value === 'string' && ALLOWED_CODEX_SANDBOX_MODES.includes(value);
   }
 
-  // タスク用ポリシー（issue #428）。API で選べるのは固定の preset 名だけで、設定キーも
-  // `preset` の 1 つに限る。ポリシーの中身（設定ファイル・許可コマンド）は
-  // utils/codexTaskPolicy.js の固定テンプレートで、API の入力値は一切入らない。
+  // タスク用ポリシー（issue #428）。preset と、Orchestrator が管理する GitHub owner の
+  // 許可リストだけを受ける。許可リストは起動時に検証し、子が変更できないランチャーへ束縛する。
   // 名前は utils/codexTaskPolicy.js の CODEX_TASK_POLICY_PRESETS のキーと一致させること
   // （片方だけ変えると壊れる。tests/codexTaskPolicy.test.js が一致を検証している）。
-  const ALLOWED_CODEX_POLICY_KEYS = Object.freeze(['preset']);
+  const ALLOWED_CODEX_POLICY_KEYS = Object.freeze(['preset', 'allowedOwners']);
   const ALLOWED_CODEX_POLICY_PRESETS = Object.freeze(['orchestrated-task']);
+  const GITHUB_OWNER_PATTERN = /^[A-Za-z0-9._-]+$/;
   // ポリシーの CODEX_HOME はアプリ（main.js）が生成した絶対パスだけを受け付け、
   // シングルクォートと制御文字は拒否する（クォートの脱出を成立させない）。
   const CODEX_POLICY_HOME_PATTERN = /^\/[^'\x00-\x1f\x7f]+$/;
@@ -60,7 +60,25 @@
     if (typeof value.preset !== 'string' || !ALLOWED_CODEX_POLICY_PRESETS.includes(value.preset)) {
       return { ok: false, error: 'invalid codexPolicy preset' };
     }
-    return { ok: true, codexPolicy: { preset: value.preset } };
+    let allowedOwners;
+    if (value.allowedOwners !== undefined) {
+      if (!Array.isArray(value.allowedOwners) || value.allowedOwners.length === 0 || value.allowedOwners.length > 100) {
+        return { ok: false, error: 'invalid codexPolicy allowedOwners' };
+      }
+      allowedOwners = [];
+      const seen = new Set();
+      for (const owner of value.allowedOwners) {
+        if (typeof owner !== 'string' || !GITHUB_OWNER_PATTERN.test(owner) || ['.', '..'].includes(owner) || owner.startsWith('-')) {
+          return { ok: false, error: 'invalid codexPolicy allowedOwners' };
+        }
+        const normalized = owner.toLowerCase();
+        if (!seen.has(normalized)) {
+          seen.add(normalized);
+          allowedOwners.push(owner);
+        }
+      }
+    }
+    return { ok: true, codexPolicy: { preset: value.preset, ...(allowedOwners === undefined ? {} : { allowedOwners }) } };
   }
 
   function validateCodexLaunchOptions(engine, options = {}) {

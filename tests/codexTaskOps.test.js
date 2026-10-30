@@ -56,6 +56,10 @@ test('許可: gh は番号・本文・head を検証する（対象リポジト�
     parseTaskCommand(['gh', 'pr', 'create', '--title', '題', '--body', '本文', '--head', 'issue/428-x', '--base', 'main', '--draft']).args,
     ['pr', 'create', '--head', 'issue/428-x', '--title', '題', '--body', '本文', '--base', 'main', '--draft'],
   );
+  assert.deepEqual(
+    parseTaskCommand(['gh', 'Vektor-Inc/another.repo', 'issue', 'view', '428']),
+    { ok: true, bin: 'gh', args: ['issue', 'view', '428'], needsGitHub: true, targetRepo: 'Vektor-Inc/another.repo' },
+  );
 });
 
 // ─── 拒否する操作（許可操作を経由した副作用を含む） ─────────────────────────
@@ -124,6 +128,11 @@ test('拒否: ファイル出力・外部コマンド・設定変更・履歴改
 test('拒否: gh のリポジトリ指定・ファイル読み込み・ブラウザ/エディタ起動・暗黙の push・範囲の広い操作', () => {
   const rejected = [
     ['gh', 'api', 'repos/x/y'],
+    ['gh', 'owner/repo', 'api', 'repos/owner/repo'],
+    ['gh', 'owner/repo/extra', 'issue', 'view', '1'],
+    ['gh', '-owner/repo', 'issue', 'view', '1'],
+    ['gh', 'owner/-repo', 'issue', 'view', '1'],
+    ['gh', '../repo', 'issue', 'view', '1'],
     ['gh', 'pr', 'merge', '1'],
     ['gh', 'pr', 'close', '1'],
     ['gh', 'pr', 'edit', '1'],
@@ -136,6 +145,7 @@ test('拒否: gh のリポジトリ指定・ファイル読み込み・ブラウ
     ['gh', 'issue', 'view', '1', '-R', 'other/repo'],
     ['gh', 'issue', 'view', 'https://github.com/other/repo/issues/1'],
     ['gh', 'issue', 'view', '1', '--web'],
+    ['gh', 'owner/repo', 'issue', 'view', '1', '--web'],
     ['gh', 'issue', 'view', '1', '--json', 'title;id'],
     ['gh', 'issue', 'view', '1', '--jq', '.'],
     ['gh', 'issue', 'view'],
@@ -317,12 +327,13 @@ function createFixture({ origin = GITHUB_ORIGIN } = {}) {
   const ghConfig = path.join(root, 'gh-config');
   fs.mkdirSync(ghConfig, { mode: 0o700 });
   const ghPath = path.join(binDir, 'gh');
-  fs.writeFileSync(ghPath, `#!${process.execPath}\nrequire('fs').appendFileSync(${JSON.stringify(record)}, JSON.stringify({ args: process.argv.slice(2), env: process.env }) + '\\n');\nif (process.argv[2] === 'issue' && process.argv[3] === 'create') console.log('https://github.com/vektor-inc/vk-terminals/issues/999');\n`, { mode: 0o755 });
+  fs.writeFileSync(ghPath, `#!${process.execPath}\nrequire('fs').appendFileSync(${JSON.stringify(record)}, JSON.stringify({ args: process.argv.slice(2), env: process.env, cwd: process.cwd() }) + '\\n');\nif (process.argv[2] === 'issue' && process.argv[3] === 'create') console.log('https://github.com/vektor-inc/vk-terminals/issues/999');\n`, { mode: 0o755 });
   const gitConfig = path.join(root, 'gitconfig');
   fs.writeFileSync(gitConfig, '[user]\n\tname = "Bound User"\n\temail = "bound@example.com"\n');
   const env = {
     VK_TASK_ROOT: repo,
     VK_TASK_REPO: parseGitHubRepo(origin) || '',
+    VK_TASK_ALLOWED_OWNERS: 'vektor-inc,another-owner',
     VK_TASK_GIT: GIT_PATH,
     VK_TASK_GH: ghPath,
     VK_TASK_HOME: home,
@@ -363,6 +374,29 @@ test('実行: 許可された Git 操作は実際に動き、--output は拒否�
       assert.match(result.messages.join(''), /flag not allowed/);
     }
     assert.equal(fs.existsSync(target), false);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('実行: 明示した許可 owner の GitHub 操作は Git 管理外の cwd から実行し、完全一致しない owner は拒否する', () => {
+  const fixture = createFixture();
+  try {
+    const plain = path.join(fixture.root, 'plain');
+    fs.mkdirSync(plain);
+    const allowed = run(fixture, ['gh', 'VEKTOR-INC/other-repo', 'issue', 'create', '--title', '題', '--body', '本文', '--assignee', 'kurudrive', '--label', 'task-queue'], { cwd: plain });
+    assert.equal(allowed.code, 0, allowed.messages.join(''));
+    assert.deepEqual(fixture.readCalls().map((call) => call.args), [[
+      'issue', 'create', '--title', '題', '--body', '本文', '--assignee', 'kurudrive', '--label', 'task-queue', '--repo', 'VEKTOR-INC/other-repo',
+    ]]);
+    assert.equal(fixture.readCalls()[0].cwd, fixture.home);
+
+    for (const target of ['vektor/other-repo', 'vektor-inc-evil/other-repo', 'other/repo']) {
+      const rejected = run(fixture, ['gh', target, 'issue', 'view', '1'], { cwd: plain });
+      assert.equal(rejected.code, 2, target);
+      assert.match(rejected.messages.join(''), /owner .* is not allowed/);
+    }
+    assert.equal(fixture.readCalls().length, 1);
   } finally {
     fixture.cleanup();
   }
@@ -636,6 +670,8 @@ test('拘束: Git 管理外・ホームそのもの・拘束の設定が無い�
       { ...fixture.env, VK_TASK_GIT: '' },
       { ...fixture.env, VK_TASK_GITCONFIG: "/tmp/a'b" },
       { ...fixture.env, VK_TASK_REPO: 'not a repo' },
+      { ...fixture.env, VK_TASK_ALLOWED_OWNERS: 'good,bad/owner' },
+      { ...fixture.env, VK_TASK_ALLOWED_OWNERS: '-evil' },
       { ...fixture.env, VK_TASK_GH: 'gh' },
       { ...fixture.env, VK_TASK_GHCONFIG: '' },
       { ...fixture.env, VK_TASK_GHCONFIG: 'relative' },
@@ -647,7 +683,7 @@ test('拘束: Git 管理外・ホームそのもの・拘束の設定が無い�
     }
     assert.equal(readBinding({}), null);
     assert.deepEqual(readBinding(fixture.env), {
-      root: fixture.repo, repo: 'vektor-inc/vk-terminals', git: GIT_PATH, gh: fixture.env.VK_TASK_GH, home: fixture.home, gitConfig: fixture.env.VK_TASK_GITCONFIG, ghConfig: fixture.env.VK_TASK_GHCONFIG, remoteBase: 'https://github.com', member: null,
+      root: fixture.repo, repo: 'vektor-inc/vk-terminals', allowedOwners: ['vektor-inc', 'another-owner'], git: GIT_PATH, gh: fixture.env.VK_TASK_GH, home: fixture.home, gitConfig: fixture.env.VK_TASK_GITCONFIG, ghConfig: fixture.env.VK_TASK_GHCONFIG, remoteBase: 'https://github.com', member: null,
     });
   } finally {
     fixture.cleanup();

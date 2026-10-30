@@ -13,15 +13,15 @@ vk-orchestrator などが自動処理用の Codex を起動するとき、次の
 ## 受け付ける指定
 
 ```json
-{ "engine": "codex", "approvalPolicy": "never", "codexPolicy": { "preset": "orchestrated-task" }, "cwd": "/path/to/repo" }
+{ "engine": "codex", "approvalPolicy": "never", "codexPolicy": { "preset": "orchestrated-task", "allowedOwners": ["vektor-inc"] }, "cwd": "/path/to/repo" }
 ```
 
 - `cwd`（作業フォルダ）は必須。承認なしの Git / GitHub 操作を拘束するリポジトリを、ここから決める（新規作成・再起動の両方）。省略すると `400 {"error":"codexPolicy requires cwd"}`。
 
-- 設定キーは `preset` の 1 つだけ。値は固定の名前（現在は `orchestrated-task` のみ）。
+- 設定キーは `preset` と任意の `allowedOwners` だけ。preset は固定の名前（現在は `orchestrated-task` のみ）。`allowedOwners` は Orchestrator の `org.allowed_owners` を渡すための 1〜100 件の owner 名で、大文字小文字を区別せず重複排除してランチャーへ固定する。省略時は拘束リポジトリの owner だけを使い、従来の呼び出しと互換にする。
 - 未知のキー、未知の preset、オブジェクト以外（文字列・配列・`null`）は `400`。ペインは作成されず、再起動では実行中の AI も止めない。
 - `engine` が `codex` 以外のときは `400`（`Codex options require engine "codex"`）。Claude Code と、利用者が手動で開く通常の Codex には適用されない。
-- 任意のコマンドライン引数・追加フォルダ・ネットワーク許可を渡す口は作らない。API の入力値は、preset 名を選ぶ以外に、生成するファイルにも起動コマンドにも入らない。
+- 任意のコマンドライン引数・追加フォルダ・ネットワーク許可を渡す口は作らない。`allowedOwners` は英数字・`.`・`_`・`-` だけを検証して、子が変更できないランチャーの束縛にだけ入れる。
 
 ## 仕組み
 
@@ -62,7 +62,7 @@ vk-orchestrator などが自動処理用の Codex を起動するとき、次の
 
 rules の `prefix_rule` は先頭の単語列しか指定できず、後ろに続く引数や実行時の環境を制限できない。`git diff` を許可すると `--output=<任意のファイル>` で任意の場所へ書き込め、`gh pr create` を許可すると暗黙の push が起きる。`node` を許可すると `NODE_OPTIONS` などの環境変数で検証の前に別のコードを実行できる。そのため `git` / `gh` / `node` 自体は rules で許可せず、**信頼済みランチャー 1 つだけ**を許可する。
 
-- 呼び方: `<専用フォルダ>/vk-task-ops <git|gh|prepare|member> <操作> …`（AGENTS.md に書いてある）。引用符・`cd`・パイプ・リダイレクト・`2>&1` を付けず、単独のコマンドとして呼ぶ。作業フォルダはコマンド実行ツールの workdir で指定する
+- 呼び方: `<専用フォルダ>/vk-task-ops <git|gh|prepare|member> <操作> …`（AGENTS.md に書いてある）。GitHub の明示先は `gh <owner/repo> <種類> <操作> …` の固定位置で渡す。引用符・`cd`・パイプ・リダイレクト・`2>&1` を付けず、単独のコマンドとして呼ぶ。作業フォルダはコマンド実行ツールの workdir で指定する
 - ランチャーの絶対パスは、rules の先頭一致を確実に働かせるため、英数字と `/`・`.`・`_`・`-` だけを許可する。シェルで特別な意味を持ちうる文字を増やす必要が無いため、`+`・`@`・`:`・`,`・`=` なども許可しない。生成前の事前確認と実生成で検証し、満たさなければ `503` の拒否経路へ合流して Codex を起動しない
 - ランチャーは Node を起動する前、かつ `env -i` で環境を空にする前に `CODEX_SANDBOX` を確認する。空でなければ終了コード `78`（入口本体の成功 `0`・操作拒否 `2` と区別でき、呼び出し条件の不備を表す EX_CONFIG 相当）で止まり、実際の入口パスを含む呼び直し案内を標準エラーへ出す。未設定なら、起動時に確定した値（拘束するリポジトリ・git / gh / Node の絶対パス・固定した HOME）だけを `env -i` で渡して、絶対パスの Node で入口を実行する。ランチャーは起動ごとに専用フォルダへ書かれ、Codex からは書き換えられない（0500・所有者のみ）。`CODEX_SANDBOX_NETWORK_DISABLED=1` は sandbox の外にも付くため、内外の判定には使わない
 - 許可する操作: `git status` / `git diff` / `git log` / `git show` / `git add` / `git commit` / `git push <ブランチ名>`、`prepare worktree <base> <issue番号> <ブランチ> <worktree名>`、`member start …` / `member status <実行ID>`、`gh issue view` / `gh issue comment` / `gh pr view` / `gh pr create` / `gh pr comment` / `gh pr checks`
@@ -70,6 +70,7 @@ rules の `prefix_rule` は先頭の単語列しか指定できず、後ろに�
   - オプションは操作ごとの許可リストだけ。未知のオプション（`--output`・`--ext-diff`・`--body-file`・`--repo`・`--web`・`--amend` など）は拒否
   - パスはリポジトリ内の相対パスだけ（絶対パス・`..`・`.git`・pathspec の特殊記法は拒否）。リビジョンは英数字と `._/@^~{}-` のみ
   - `gh pr create` は `--head <ブランチ名>`・`--title`・`--body` が必須（`--head` を省くと gh が現在のブランチを push するため）。`owner:branch` 形式は拒否。`gh pr view` / `gh pr checks` は PR 番号が必須（`--repo` を付けるため現在のブランチから PR を推測できない）
+  - 明示した `owner/repo` は Claude Code 版の入口と同じ文字種と先頭条件（owner / repo とも英数字・`.`・`_`・`-`、`.` / `..` / `-` 始まりは拒否）で検証する。owner は起動時に固定した許可一覧と大文字小文字を区別しない完全一致で照合し、部分一致は拒否する
 - 実行ファイルと環境の固定:
   - `node` / `git` / `gh` は PATH を使わず、起動時に固定の探索先（`/opt/homebrew/bin`・`/usr/local/bin`・`/usr/bin`・`/bin`・`~/.volta/bin`、およびアプリ自身の `PATH` にある絶対パス）から、所有者（自分か root）・他人が書き込めない権限・祖先フォルダの安全性を検証した絶対パスだけを選ぶ。見つからなければ起動しない。入口も実行のたびに git / gh を再検証する
   - git / gh の子プロセスの環境変数は許可リストで一から組み立てる（`PATH`・`HOME`・`XDG_CONFIG_HOME`・`GH_CONFIG_DIR`（いずれも専用の `gh/` を指す）と、Git の設定隔離・非対話の指定のみ）。親の `NODE_OPTIONS`・`LD_PRELOAD`・`GIT_*`・`GH_*` などは引き継がない
@@ -78,7 +79,7 @@ rules の `prefix_rule` は先頭の単語列しか指定できず、後ろに�
 - リポジトリへの拘束:
   - 起動時に、`cwd` から Git の実ルートと `origin` の GitHub の `owner/repo` を確定し、ランチャーに固定する（実行中は変更できない）。確定できないとき（Git 管理下でない・ホームや `/` そのもの・外部コマンドを起動しうる設定がある）は起動を拒否する。`origin` が github.com でない場合は owner/repo を固定せず、gh 系の操作だけを拒否する（git の操作は使える）
   - 実行のたびに、作業フォルダの Git ルートが固定したルートと一致することを確認する。一致しない場合でも、作業フォルダの Git 管理領域（`git rev-parse --git-common-dir`。全 worktree が共有する）の実パスが、固定したルートの Git 管理領域の実パスと同じなら、拘束先の worktree（`git worktree add` で作った作業フォルダ。拘束先の内側でも外側でもよい）として受け入れる。受け入れには、さらに次の両方を求める。(1) 作業フォルダの実 gitdir（`git rev-parse --git-dir`）が、固定したルートの Git 管理領域の `worktrees/` の直下にある（`.git` ファイルが任意の場所を指す偽装を除く）。(2) その gitdir の `gitdir` ファイル（逆参照）が、検査対象のルートの `.git` ファイルを指す（登録済み worktree の `.git` ファイルを別フォルダへ複製した場合、`.git` がリンクの場合を除く）。逆参照ファイルは、通常ファイル・リンクでない・自分か root の所有のときだけ読み、読めなければ拒否する。別のリポジトリ・入れ子のリポジトリ・同じ `origin` を持つだけの別クローンは Git 管理領域が異なるため拒否する。固定したルート側の Git 管理領域は起動時に固定せず、実行のたびに固定したルートから求め直す（ランチャーに渡す値を増やさない）。外部コマンドを起動しうる設定などの検査は、worktree 側の作業フォルダで従来どおり行う
-  - gh を使う操作では `origin` が固定した `owner/repo` と一致することを確認する（worktree でも同じ）
+  - 対象を省略した gh 操作では `origin` が固定した `owner/repo` と一致することを確認する（worktree でも同じ）。`gh <owner/repo> …` と明示した許可済み GitHub 操作はローカル Git を使わないため、拘束リポジトリ外や Git 管理外の cwd から実行できる。`git push` / `prepare worktree` はこの明示形式の対象外で、従来の拘束を維持する
   - `git commit` は、実行前に現在のブランチを調べ、`main` / `master`、およびリモートの既定ブランチ（`refs/remotes/origin/HEAD` が指す先。無ければ判定に使わない。同名のタグがあっても取り違えないよう、`refs/heads/main` のような完全名で比較する）、ブランチに属さない状態（detached HEAD）では拒否する。拘束先・worktree のどちらにも適用する。作業ブランチを作ってから commit する。`git push` の判定は下記
   - 会話整理後の再起動でも拘束は起動時の `cwd`（通常のクローン）から決まるため、worktree で始めた作業は再起動後も同じ worktree で続けられる
   - gh には検証済みの `--repo <owner/repo>` を必ず付ける。利用者・Codex が `--repo` を指定する経路は無い

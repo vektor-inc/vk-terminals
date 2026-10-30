@@ -87,7 +87,7 @@ const sha256 = (filePath) => crypto.createHash('sha256').update(fs.readFileSync(
 
 test('preset の許可リストは、生成側のテンプレートと同じ名前だけを持つ', () => {
   assert.deepEqual([...claudeModel.ALLOWED_CODEX_POLICY_PRESETS].sort(), Object.keys(CODEX_TASK_POLICY_PRESETS).sort());
-  assert.deepEqual([...claudeModel.ALLOWED_CODEX_POLICY_KEYS], ['preset']);
+  assert.deepEqual([...claudeModel.ALLOWED_CODEX_POLICY_KEYS], ['preset', 'allowedOwners']);
 });
 
 test('codexPolicy: 固定の preset だけを受理し、正規化した値を返す', () => {
@@ -96,6 +96,10 @@ test('codexPolicy: 固定の preset だけを受理し、正規化した値を�
     { ok: true, approvalPolicy: undefined, sandboxMode: undefined, codexPolicy: { preset: 'orchestrated-task' } },
   );
   assert.equal(validateCodexLaunchOptions('codex', {}).codexPolicy, undefined);
+  assert.deepEqual(
+    validateCodexLaunchOptions('codex', { codexPolicy: { preset: 'orchestrated-task', allowedOwners: ['Vektor-Inc', 'vektor-inc', 'another.owner'] } }).codexPolicy,
+    { preset: 'orchestrated-task', allowedOwners: ['Vektor-Inc', 'another.owner'] },
+  );
 });
 
 test('codexPolicy: 未知キー・不正値・不正な型を拒否する', () => {
@@ -109,6 +113,11 @@ test('codexPolicy: 未知キー・不正値・不正な型を拒否する', () =
     [{ preset: "orchestrated-task'; rm -rf ~; '" }, 'invalid codexPolicy preset'],
     [{ preset: ['orchestrated-task'] }, 'invalid codexPolicy preset'],
     [{ preset: '' }, 'invalid codexPolicy preset'],
+    [{ preset: 'orchestrated-task', allowedOwners: [] }, 'invalid codexPolicy allowedOwners'],
+    [{ preset: 'orchestrated-task', allowedOwners: 'vektor-inc' }, 'invalid codexPolicy allowedOwners'],
+    [{ preset: 'orchestrated-task', allowedOwners: ['-evil'] }, 'invalid codexPolicy allowedOwners'],
+    [{ preset: 'orchestrated-task', allowedOwners: ['good', 'bad/owner'] }, 'invalid codexPolicy allowedOwners'],
+    [{ preset: 'orchestrated-task', allowedOwners: ['good', "bad'owner"] }, 'invalid codexPolicy allowedOwners'],
     ['orchestrated-task', 'invalid codexPolicy'],
     [null, 'invalid codexPolicy'],
     [['orchestrated-task'], 'invalid codexPolicy'],
@@ -135,10 +144,10 @@ test('restart-agent 検証: codexPolicy を同じ規則で検証し、新規作�
     validateCodexLaunchOptions,
   };
   const ok = validateRestartAgentRequest({
-    termId: '1', expectedGeneration: 2, engine: 'codex', approvalPolicy: 'never', codexPolicy: { preset: 'orchestrated-task' }, cwd: '/tmp',
+    termId: '1', expectedGeneration: 2, engine: 'codex', approvalPolicy: 'never', codexPolicy: { preset: 'orchestrated-task', allowedOwners: ['Vektor-Inc'] }, cwd: '/tmp',
   }, validators);
   assert.equal(ok.ok, true);
-  assert.deepEqual(ok.codexPolicy, { preset: 'orchestrated-task' });
+  assert.deepEqual(ok.codexPolicy, { preset: 'orchestrated-task', allowedOwners: ['Vektor-Inc'] });
   assert.equal(validateRestartAgentRequest({
     termId: '1', expectedGeneration: 2, codexPolicy: { preset: 'orchestrated-task' },
   }, validators).error, 'Codex options require engine "codex"');
@@ -406,6 +415,8 @@ test('生成: rules は信頼済みランチャーの実行だけを許可し、
     assert.match(guide, /`gh issue create` は `--title <題> --body <本文>` が必須/);
     assert.match(guide, /--assignee/);
     assert.match(guide, /--label/);
+    assert.match(guide, /`gh <owner\/repo> <種類> <操作> \.\.\.`/);
+    assert.match(guide, /大文字小文字を区別しない完全一致/);
   } finally {
     sandbox.cleanup();
   }
@@ -421,6 +432,7 @@ test('生成: ランチャーは環境を空にして検証済みの絶対パス
     const assign = (name) => new RegExp(`^  '${name}=(.*)' \\\\$`, 'm').exec(launcher)[1];
     assert.equal(assign('VK_TASK_ROOT'), sandbox.repo);
     assert.equal(assign('VK_TASK_REPO'), 'vektor-inc/vk-terminals');
+    assert.equal(assign('VK_TASK_ALLOWED_OWNERS'), 'vektor-inc');
     assert.equal(assign('VK_TASK_HOME'), sandbox.homeDir);
     assert.equal(assign('VK_TASK_GITCONFIG'), path.join(home, 'gitconfig'));
     assert.equal(assign('VK_TASK_GHCONFIG'), path.join(home, 'gh'));
@@ -435,6 +447,27 @@ test('生成: ランチャーは環境を空にして検証済みの絶対パス
     sandbox.git('remote', 'set-url', 'origin', 'https://example.com/o/r.git');
     const other = prepare(sandbox);
     assert.match(fs.readFileSync(path.join(other.home, 'vk-task-ops'), 'utf8'), /^  'VK_TASK_REPO=' \\$/m);
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('生成: allowedOwners は検証後に親子ランチャーへ固定され、不正値は生成前に拒否する', () => {
+  const sandbox = createSandbox();
+  try {
+    const resolved = resolveCodexTaskPolicyLaunchOptions('codex', {
+      codexPolicy: { preset: 'orchestrated-task', allowedOwners: ['Vektor-Inc', 'another.owner'] },
+    }, sandbox.deps);
+    assert.equal(resolved.ok, true, resolved.error);
+    for (const relative of ['vk-task-ops', path.join('member', 'vk-task-ops')]) {
+      const launcher = fs.readFileSync(path.join(resolved.options.codexPolicyHome, relative), 'utf8');
+      assert.match(launcher, /^  'VK_TASK_ALLOWED_OWNERS=Vektor-Inc,another\.owner' \\$/m);
+    }
+    for (const allowedOwners of [[], ['good', 'bad/owner'], ["bad'owner"]]) {
+      const rejected = prepare(sandbox, { allowedOwners });
+      assert.equal(rejected.ok, false);
+      assert.match(rejected.error, /invalid allowed github owners|allowed github owners required/);
+    }
   } finally {
     sandbox.cleanup();
   }

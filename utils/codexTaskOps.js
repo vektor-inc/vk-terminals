@@ -314,6 +314,39 @@ function parseGhIssueCreate(tokens) {
   return { ok: true, args };
 }
 
+// 作成済み issue への担当者・既存ラベルの追加は `gh issue edit <番号> --add-assignee <名前> --add-label <ラベル>` の形だけ（どちらも複数可、少なくとも 1 つ必須）。
+// 題名・本文・削除系・--repo などは許可リストに無いので拒否される。実行は入口が「ラベルの存在確認 → 更新 → 読み戻し」の順で行う。
+function parseGhIssueEdit(tokens) {
+  let number;
+  const assignees = [];
+  const labels = [];
+  for (let i = 0; i < tokens.length; i += 1) {
+    const token = tokens[i];
+    if (hasUnsafeCharacter(token)) return fail('invalid argument');
+    const [name, inlineValue] = token.startsWith('--') && token.includes('=') ? [token.slice(0, token.indexOf('=')), token.slice(token.indexOf('=') + 1)] : [token, undefined];
+    const readValue = () => {
+      if (inlineValue !== undefined) return inlineValue;
+      const value = tokens[i + 1];
+      if (typeof value !== 'string') return undefined;
+      i += 1;
+      return value;
+    };
+    if (name === '--add-assignee') {
+      const value = readValue();
+      if (typeof value !== 'string' || !ASSIGNEE_PATTERN.test(value)) return fail('invalid --add-assignee');
+      assignees.push(value);
+    } else if (name === '--add-label') {
+      const value = readValue();
+      if (!isSafeLabelName(value)) return fail('invalid --add-label');
+      labels.push(value);
+    } else if (!token.startsWith('-') && number === undefined && DIGITS_PATTERN.test(token)) number = token;
+    else return fail(`argument not allowed: ${JSON.stringify(token)}`);
+  }
+  if (number === undefined) return fail('number required');
+  if (assignees.length === 0 && labels.length === 0) return fail('--add-assignee or --add-label is required');
+  return { ok: true, bin: 'gh', operation: 'issue-edit', number, assignees, labels, needsGitHub: true };
+}
+
 // push は `git push <ブランチ名>` だけ。フラグ・refspec・複数指定は受けない（送る内容は入口が refs/heads/<b>:refs/heads/<b> に固定する）。
 function parseGitPush(tokens) {
   if (tokens.length !== 1) return fail('git push takes exactly one branch name');
@@ -450,6 +483,11 @@ function parseTaskCommand(argv) {
     if (group === 'issue' && action === 'create') {
       const parsed = parseGhIssueCreate(tokens);
       return parsed.ok ? command(['issue', 'create'], parsed.args) : parsed;
+    }
+    if (group === 'issue' && action === 'edit') {
+      // 操作対象は起動時に固定したリポジトリだけ。別リポジトリの明示は受けない。
+      if (targetRepo !== undefined) return fail('gh issue edit cannot target another repository');
+      return parseGhIssueEdit(tokens);
     }
     if (group === 'pr' && action === 'view') {
       const parsed = parseGhView(tokens, { allowedBooleanFlags: ['--comments'], numberRequired: true });
@@ -1038,6 +1076,51 @@ function executePush({ parsed, binding, cwd, runGit, spawnSync, networkEnv, reje
   const result = spawnSync(binding.git, args, { cwd, env: networkEnv, encoding: 'utf8', stdio: 'inherit' });
   if (result.error) return reject(`task command failed to start: ${result.error.code || 'error'}`);
   return typeof result.status === 'number' ? result.status : 2;
+}
+
+/**
+ * `gh issue edit <番号> --add-assignee … --add-label …`。固定したリポジトリの issue にだけ、担当者と既存ラベルを足す。
+ * 1. 指定ラベルが対象リポジトリに完全一致で存在することを確かめる（無い名前で新しいラベルが作られないように、更新の前に止める。一覧はページ送りで全件取る）。
+ * 2. gh issue edit を実行する。
+ * 3. issue を読み戻し、依頼した担当者とラベルがすべて付いていることを確かめる。gh issue edit は権限不足でも終了コード 0 で何もしないことがあるため、成功の判定は 3 だけで行う。
+ * 担当者の照合は GitHub のアカウント名が大文字小文字を区別しないため小文字にそろえ、ラベルは完全一致で見る。
+ */
+function executeIssueEdit({ parsed, binding, cwd, env, spawnSync, reject, writeOut }) {
+  const runGh = (args) => spawnSync(binding.gh, args, { cwd, env, encoding: 'utf8' });
+  const failed = (result) => Boolean(result.error) || result.status !== 0;
+  const detail = (result) => String(result.stderr || '').trim().split('\n')[0] || (result.error && result.error.code) || `exit ${result.status}`;
+
+  if (parsed.labels.length > 0) {
+    const listed = runGh(['api', '--paginate', `repos/${binding.repo}/labels?per_page=100`, '--jq', '.[].name']);
+    if (failed(listed)) return reject(`task command failed: could not list labels: ${detail(listed)}`);
+    const existing = new Set(String(listed.stdout).split('\n'));
+    const missing = parsed.labels.find((label) => !existing.has(label));
+    if (missing !== undefined) return reject(`task command rejected: label does not exist: ${JSON.stringify(missing)}`);
+  }
+
+  const editArgs = ['issue', 'edit', parsed.number];
+  for (const assignee of parsed.assignees) editArgs.push('--add-assignee', assignee);
+  for (const label of parsed.labels) editArgs.push('--add-label', label);
+  const edited = runGh(withBoundRepository(editArgs, binding.repo));
+  if (failed(edited)) return reject(`task command failed: gh issue edit failed: ${detail(edited)}`);
+
+  const viewed = runGh(withBoundRepository(['issue', 'view', parsed.number, '--json', 'assignees,labels'], binding.repo));
+  if (failed(viewed)) return reject(`task command failed: could not verify the update: ${detail(viewed)}`);
+  let issue;
+  try {
+    issue = JSON.parse(String(viewed.stdout));
+  } catch (error) {
+    return reject('task command failed: could not verify the update: unreadable response');
+  }
+  const currentAssignees = new Set((Array.isArray(issue && issue.assignees) ? issue.assignees : []).map((item) => String(item && item.login).toLowerCase()));
+  const currentLabels = new Set((Array.isArray(issue && issue.labels) ? issue.labels : []).map((item) => item && item.name));
+  const missingAssignee = parsed.assignees.find((assignee) => !currentAssignees.has(assignee.toLowerCase()));
+  const missingLabel = parsed.labels.find((label) => !currentLabels.has(label));
+  if (missingAssignee !== undefined || missingLabel !== undefined) {
+    return reject(`task command failed: the update was not applied: ${JSON.stringify(missingAssignee !== undefined ? missingAssignee : missingLabel)} is not on issue #${parsed.number}`);
+  }
+  writeOut(`updated issue #${parsed.number}: assignees=${JSON.stringify(parsed.assignees)} labels=${JSON.stringify(parsed.labels)}\n`);
+  return 0;
 }
 
 /**
@@ -1690,6 +1773,8 @@ function runTaskCommand(argv, deps = {}) {
     const context = { parsed, binding, cwd, fsImpl, runGit, spawnSync, networkEnv, plainEnv: env, reject, inspected, write, writeOut, deps };
     return parsed.operation === 'push' ? executePush(context) : executePrepareWorktree(context);
   }
+
+  if (parsed.operation === 'issue-edit') return executeIssueEdit({ parsed, binding, cwd, env, spawnSync, reject, writeOut });
 
   const bin = parsed.bin === 'gh' ? binding.gh : binding.git;
   const args = parsed.bin === 'gh' ? withBoundRepository(parsed.args, explicitGitHubTarget || binding.repo) : parsed.args;

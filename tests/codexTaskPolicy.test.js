@@ -414,6 +414,11 @@ test('生成: rules は信頼済みランチャーの実行だけを許可し、
     for (const operation of ORCHESTRATED_TASK_OPERATIONS) assert.ok(guide.includes(`\`${operation}\``), operation);
     assert.match(guide, /`gh issue create` は `--title <題> --body <本文>` が必須/);
     assert.match(guide, /--assignee/);
+    assert.match(guide, /`gh issue edit <issue番号>` は作成済み issue に担当者・既存ラベルを足すだけ/);
+    assert.match(guide, /--add-assignee/);
+    assert.match(guide, /--add-label/);
+    assert.match(guide, /`gh <owner\/repo> issue edit \.\.\.` は使えない/);
+    assert.match(guide, /読み戻して確かめ/);
     assert.match(guide, /--label/);
     assert.match(guide, /`gh <owner\/repo> <種類> <操作> \.\.\.`/);
     assert.match(guide, /大文字小文字を区別しない完全一致/);

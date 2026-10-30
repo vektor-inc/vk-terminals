@@ -102,6 +102,10 @@ const ORCHESTRATED_TASK_OPERATIONS = Object.freeze([
   'gh pr edit',
   'gh pr comment',
   'gh pr checks',
+  'gh label exists',
+  'gh label create',
+  'gh pr add-label',
+  'gh pr has-label',
 ]);
 
 /**
@@ -151,6 +155,11 @@ function renderAgentsGuide(launcherPath, memberIoDir = null) {
     '- `gh pr view` / `gh pr checks` は PR 番号が必須。`gh pr create` は `--head <ブランチ名>` と、題（`--title <題>` か `--title-file <名前>`）・本文（`--body <本文>` か `--body-file <名前>`）が必須。`gh pr create` 自体は push しないので、先に `git push` する。',
     '- `gh pr edit <PR番号>` は作成済み PR の題・本文を直す操作で、`--title <題>`・`--body <本文>`（またはファイル指定の `--title-file <名前>`・`--body-file <名前>`）のうち少なくとも 1 つが必須。このタスクの GitHub リポジトリの PR だけが対象で、`gh <owner/repo> pr edit ...` は使えない。ラベル・担当者・`--base`・`--repo` など他の引数は拒否される。更新後に題・本文を読み戻して確かめ、指定した値と一致したときだけ成功する（失敗したときは成功として扱わない）。',
     '- `gh issue create` は `--title <題> --body <本文>` が必須。任意で `--assignee <GitHub アカウント名>`・`--label <ラベル名>` を複数回指定できる（`@me` は不可）。作成された issue の URL が標準出力に返る。',
+    '- レビュー合格ラベル `agent-review-passed` の操作は次の 4 つだけ（ラベル名はこれ以外を受け付けず、色・説明は入口が固定する。`gh pr edit --add-label`・`gh api` は使えない）。vk-agents の Codex 版 vk-kore 9-3 の `label-exists` / `label-create` / `label-add` / `issue-has-label`（この環境では GH_BIN のスクリプトを使えない）は、この入口の次の操作で行う。',
+    '  - `gh label exists agent-review-passed`（= `label-exists`）: ラベルがあれば `LABEL_EXISTS`、無ければ `LABEL_MISSING` を出力する。',
+    '  - `gh label create agent-review-passed`（= `label-create`）: ラベルが無い場合だけ作る（あれば `LABEL_EXISTS`、作成できたら `LABEL_CREATED`。作成が失敗しても、読み直してラベルがあれば `LABEL_EXISTS` で終了 0）。',
+    '  - `gh pr add-label <PR番号> agent-review-passed`（= `label-add`）: 対象 PR へラベルを付ける。PR 番号は 1 以上の数字だけで、付与の前に PR であることを確認する（issue 番号なら拒否）。',
+    '  - `gh pr has-label <PR番号> agent-review-passed`（= `issue-has-label`）: 付与後に必ず読み返す。付いていれば `LABEL_OK`（終了 0）、付いていない・読めない・PR でない番号のときは `LABEL_NG`（終了 1）。`LABEL_OK` を確認してからマーカーコメントを投稿する。マーカーに使う SHA は「レビューした commit の SHA」（レビュー時に残した `reviewed-sha:` の 40 桁の実値）で、投稿の直前に `gh pr view <PR番号> --json headRefOid` で PR の現在の head SHA を取得して一致を確かめる。一致しなければ投稿せず、head が進んだことを報告する（現在の head SHA を代わりに使わない）。一致したら `gh pr comment <PR番号> --body agent-review-passed-sha:<SHA>` で投稿する（`agent-review-passed-sha:` と SHA の間に空白を入れず 1 語にし、引用符も付けない。空白を入れると引数が分かれて入口に拒否される）。',
     '- `gh issue edit <issue番号>` は作成済み issue に担当者・既存ラベルを足すだけの操作で、`--add-assignee <GitHub アカウント名>`・`--add-label <ラベル名>` を複数回指定できる（少なくとも 1 つ必須。`@me` は不可）。このタスクの GitHub リポジトリの issue だけが対象で、`gh <owner/repo> issue edit ...` は使えない。題名・本文・`--remove-*`・`--milestone`・`--repo` など他の引数は拒否される。ラベルは対象リポジトリに既にある名前だけ（無い名前は GitHub を変更せず失敗し、新しいラベルは作られない）。更新後に担当者とラベルを読み戻して確かめ、すべて付いているときだけ成功する（既に付いている値の再指定は成功）。失敗したときは成功として扱わない。',
     '- Git のフックは入口経由では実行されない。外部コマンドを起動する設定（clean filter・署名プログラムなど）があるリポジトリでは入口は拒否する。',
     '- 入口を通さない git / gh は sandbox の制限内（ネットワーク無し）で動く。',

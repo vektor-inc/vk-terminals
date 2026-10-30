@@ -1,5 +1,6 @@
 # Changelog
 
+- [ 機能追加 ] 自動処理用 Codex の固定入口で、レビュー合格ラベル（`agent-review-passed`）の存在確認・作成・PR への付与・付与後の再確認に対応し、レビュー完了後に人のラベル操作待ちで止まらないように（[#471](https://github.com/vektor-inc/vk-terminals/issues/471)）
 - [ 機能追加 ] 自動処理用 Codex の固定入口で、空白・改行を含む PR のタイトル・本文をファイルで受け取って PR を作成できるようにし、作成済み PR のタイトル・本文の更新（`gh pr edit`）に対応（[#477](https://github.com/vektor-inc/vk-terminals/issues/477)）
 - [ 機能追加 ] 自動処理用 Codex の固定入口で、許可済み owner 内の別リポジトリを明示した GitHub 操作に対応（[#467](https://github.com/vektor-inc/vk-terminals/issues/467)）
 - [ 機能追加 ] 画面と AI の起動世代が確認時から変わっていない場合だけ Enter を送る条件付き入力に対応（[#469](https://github.com/vektor-inc/vk-terminals/issues/469)）

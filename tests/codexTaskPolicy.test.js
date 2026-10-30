@@ -413,6 +413,21 @@ test('生成: rules は信頼済みランチャーの実行だけを許可し、
     assert.equal(guide.includes('node '), false);
     for (const operation of ORCHESTRATED_TASK_OPERATIONS) assert.ok(guide.includes(`\`${operation}\``), operation);
     assert.match(guide, /`gh issue create` は `--title <題> --body <本文>` が必須/);
+    // レビュー合格ラベルの 4 操作と、vk-agents の Codex 版 vk-kore 9-3 との対応関係。
+    assert.match(guide, /`gh label exists agent-review-passed`（= `label-exists`）.*`LABEL_EXISTS`.*`LABEL_MISSING`/);
+    assert.match(guide, /`gh label create agent-review-passed`（= `label-create`）/);
+    assert.match(guide, /`gh pr add-label <PR番号> agent-review-passed`（= `label-add`）/);
+    assert.match(guide, /`gh pr has-label <PR番号> agent-review-passed`（= `issue-has-label`）.*`LABEL_OK`.*`LABEL_NG`/);
+    // マーカーはレビューした commit の SHA で投稿し、現在の head と一致しなければ投稿しない。
+    assert.match(guide, /レビューした commit の SHA/);
+    assert.match(guide, /gh pr view <PR番号> --json headRefOid/);
+    assert.match(guide, /現在の head SHA を取得して一致を確かめる/);
+    assert.match(guide, /一致しなければ投稿せず、head が進んだことを報告する/);
+    assert.match(guide, /現在の head SHA を代わりに使わない/);
+    assert.match(guide, /`gh pr comment <PR番号> --body agent-review-passed-sha:<SHA>` で投稿する/);
+    assert.match(guide, /空白を入れず 1 語にし、引用符も付けない/);
+    assert.match(guide, /空白を入れると引数が分かれて入口に拒否される/);
+    assert.match(guide, /vk-agents の Codex 版 vk-kore 9-3 の `label-exists` \/ `label-create` \/ `label-add` \/ `issue-has-label`/);
     assert.match(guide, /--assignee/);
     assert.match(guide, /`gh issue edit <issue番号>` は作成済み issue に担当者・既存ラベルを足すだけ/);
     assert.match(guide, /--add-assignee/);

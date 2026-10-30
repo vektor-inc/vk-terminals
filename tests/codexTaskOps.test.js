@@ -3202,3 +3202,314 @@ test('監督プロセス: 結果ファイルがリンクなら公開せず、子
     fixture.cleanup();
   }
 });
+
+// ─── PR のタイトル・本文のファイル指定（issue #477） ──────────────────────
+
+test('許可: gh pr create / gh pr edit は --title-file / --body-file（入出力フォルダ直下のファイル名）を受け、直接指定も残る', () => {
+  const create = parseTaskCommand(['gh', 'pr', 'create', '--head', 'feature/477-x', '--title-file', 'title.txt', '--body-file=body.md', '--base', 'main']);
+  assert.deepEqual(create, { ok: true, bin: 'gh', args: ['pr', 'create', '--head', 'feature/477-x', '--base', 'main'], needsGitHub: true, textFiles: { title: 'title.txt', body: 'body.md' } });
+  // 一方だけをファイルにしてもよい。直接指定だけなら従来と同じ結果（textFiles を持たない）。
+  const mixed = parseTaskCommand(['gh', 'pr', 'create', '--head', 'a', '--title', 't', '--body-file', 'body.md']);
+  assert.deepEqual(mixed.textFiles, { title: undefined, body: 'body.md' });
+  assert.equal('textFiles' in parseTaskCommand(['gh', 'pr', 'create', '--head', 'a', '--title', 't', '--body', 'b']), false);
+  // 別リポジトリの明示でもファイル指定を受ける。
+  assert.equal(parseTaskCommand(['gh', 'vektor-inc/other', 'pr', 'create', '--head', 'a', '--title-file', 't', '--body-file', 'b']).targetRepo, 'vektor-inc/other');
+
+  const edit = (...tokens) => parseTaskCommand(['gh', 'pr', 'edit', ...tokens]);
+  assert.deepEqual(edit('7', '--title-file', 'title.txt', '--body-file', 'body.md'), { ok: true, bin: 'gh', operation: 'pr-edit', number: '7', title: undefined, body: undefined, textFiles: { title: 'title.txt', body: 'body.md' }, needsGitHub: true });
+  assert.equal(edit('7', '--body-file', 'body.md').ok, true);
+  assert.equal(edit('--title', 'x', '7').title, 'x');
+  assert.equal(edit('7', '--body=本文').body, '本文');
+});
+
+test('拒否: PR のファイル指定は不正な名前・併用・必須欠落・未許可フラグ・別リポジトリの gh pr edit をすべて拒否する', () => {
+  const create = (...tokens) => parseTaskCommand(['gh', 'pr', 'create', '--head', 'a', ...tokens]);
+  const names = ['/etc/passwd', '../x', 'a/b', '.hidden', 'a..b', 'x.', '', '-x', 'a\u0000b', 'あ.txt'];
+  for (const name of names) {
+    assert.equal(create('--title-file', name, '--body', 'b').ok, false, `title-file ${JSON.stringify(name)}`);
+    assert.equal(create('--title', 't', '--body-file', name).ok, false, `body-file ${JSON.stringify(name)}`);
+    assert.equal(parseTaskCommand(['gh', 'pr', 'edit', '5', '--body-file', name]).ok, false, `edit ${JSON.stringify(name)}`);
+  }
+  const rejected = [
+    create('--title', 't', '--title-file', 'a', '--body', 'b'),
+    create('--title', 't', '--body', 'b', '--body-file', 'a'),
+    create('--title-file', 'a'),
+    create('--body-file', 'a'),
+    create('--title-file'),
+    parseTaskCommand(['gh', 'pr', 'edit']),
+    parseTaskCommand(['gh', 'pr', 'edit', '5']),
+    parseTaskCommand(['gh', 'pr', 'edit', 'x', '--title', 't']),
+    parseTaskCommand(['gh', 'pr', 'edit', '5', '--title', 't', '--title-file', 'a']),
+    parseTaskCommand(['gh', 'pr', 'edit', '5', '--body', 'b', '--body-file', 'a']),
+    parseTaskCommand(['gh', 'pr', 'edit', '5', '--body', ' ']),
+    parseTaskCommand(['gh', 'pr', 'edit', '5', '--title', 't', '6']),
+    parseTaskCommand(['gh', 'pr', 'edit', '5', '--add-label', 'bug']),
+    parseTaskCommand(['gh', 'pr', 'edit', '5', '--add-assignee', 'kurudrive']),
+    parseTaskCommand(['gh', 'pr', 'edit', '5', '--remove-label', 'bug']),
+    parseTaskCommand(['gh', 'pr', 'edit', '5', '--base', 'main']),
+    parseTaskCommand(['gh', 'pr', 'edit', '5', '--title', 't', '--repo', 'o/r']),
+    parseTaskCommand(['gh', 'pr', 'edit', '5', '--title', 't', '-R', 'o/r']),
+    parseTaskCommand(['gh', 'pr', 'edit', '5', '--draft']),
+    parseTaskCommand(['gh', 'vektor-inc/other', 'pr', 'edit', '5', '--title', 't']),
+    parseTaskCommand(['gh', 'VEKTOR-INC/vk-terminals', 'pr', 'edit', '5', '--title-file', 'a']),
+  ];
+  for (const result of rejected) {
+    assert.equal(result.ok, false, JSON.stringify(result));
+    assert.match(result.error, /^task command rejected/);
+  }
+});
+
+const PR_TITLE = '[ 機能追加 ] 空白 と 日本語を含む　タイトル';
+const PR_BODY = '## 概要\n\n日本語の本文です。\n\n- 箇条書き\t(タブ)\n- `code` と "引用符" と \'単一引用符\' と $HOME と $(whoami) と ; | & > <\r\n\n最終行';
+
+// 入出力フォルダ直下にファイルを作る。content は文字列か Buffer。
+function writeIo(fixture, name, content) {
+  fs.writeFileSync(path.join(fixture.io, name), content);
+}
+
+const CREATE_WITH_FILES = ['gh', 'pr', 'create', '--head', 'feature/477-x', '--title-file', 'title.txt', '--body-file', 'body.md'];
+
+test('実行: gh pr create は --title-file / --body-file の内容（日本語・空白・複数行・シェル記号）を、そのまま gh の argv の値として渡す', () => {
+  const fixture = createMemberFixture();
+  try {
+    // タイトルは末尾の改行 1 つ（LF でも CRLF でも）だけ除かれる。本文は一切加工しない。
+    for (const ending of ['', '\n', '\r\n']) {
+      writeIo(fixture, 'title.txt', PR_TITLE + ending);
+      writeIo(fixture, 'body.md', PR_BODY);
+      const before = fixture.readCalls().length;
+      const result = fixture.runMember(CREATE_WITH_FILES);
+      assert.equal(result.code, 0, result.messages.join(''));
+      const call = fixture.readCalls()[before];
+      assert.deepEqual(call.args, ['pr', 'create', '--title', PR_TITLE, '--body', PR_BODY, '--head', 'feature/477-x', '--repo', 'vektor-inc/vk-terminals']);
+    }
+
+    // 直接指定とファイル指定の混在、別リポジトリの明示（cwd を問わず入出力フォルダから読める）。
+    const plain = path.join(fixture.root, 'plain');
+    fs.mkdirSync(plain);
+    const before = fixture.readCalls().length;
+    const mixed = fixture.runMember(['gh', 'vektor-inc/other-repo', 'pr', 'create', '--head', 'a', '--title', 'plain-title', '--body-file', 'body.md', '--draft'], { cwd: plain });
+    assert.equal(mixed.code, 0, mixed.messages.join(''));
+    assert.deepEqual(fixture.readCalls()[before].args, ['pr', 'create', '--body', PR_BODY, '--head', 'a', '--title', 'plain-title', '--draft', '--repo', 'vektor-inc/other-repo']);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('拒否: gh pr create のファイル指定は不正な内容・ファイル・入出力フォルダ無しのとき、gh を一度も起動しない', () => {
+  const fixture = createMemberFixture();
+  try {
+    const validBody = 'ok body\n';
+    const big = (bytes) => Buffer.alloc(bytes, 'a');
+    const cases = [
+      { label: 'ファイル無し', setup: () => fs.rmSync(path.join(fixture.io, 'title.txt'), { force: true }), message: /does not exist/ },
+      { label: '空のタイトル', title: '', message: /empty or too large/ },
+      { label: '改行だけのタイトル', title: '\n', message: /blank/ },
+      { label: '空白と改行だけのタイトル', title: '  \t \n', message: /single line/ },
+      { label: '全角空白だけのタイトル', title: '　　', message: /blank/ },
+      { label: 'タイトル中の改行', title: 'a\nb', message: /single line/ },
+      { label: 'タイトル末尾の改行 2 つ', title: 'a\n\n', message: /single line/ },
+      { label: 'タイトル中の CR', title: 'a\rb', message: /single line/ },
+      { label: 'タイトルの制御文字', title: 'a\u0007b', message: /single line/ },
+      { label: 'タイトルの NUL', title: 'a\u0000b', message: /single line/ },
+      { label: 'タイトルの DEL', title: 'a\u007fb', message: /single line/ },
+      { label: 'タイトルのタブ', title: 'a\tb', message: /single line/ },
+      { label: 'タイトルが 1 KiB 超', title: big(1025), message: /empty or too large/ },
+      { label: 'タイトルが 256 文字超', title: 'あ'.repeat(257), message: /longer than 256/ },
+      { label: '不正な UTF-8 のタイトル', title: Buffer.from([0x61, 0xff, 0xfe, 0x62]), message: /not valid UTF-8/ },
+      { label: '空の本文', body: '', message: /empty or too large/ },
+      { label: '空白だけの本文', body: ' \n\t\n', message: /blank/ },
+      { label: '本文の NUL', body: 'a\u0000b', message: /control characters/ },
+      { label: '本文の ESC', body: 'a\u001b[31mb', message: /control characters/ },
+      { label: '本文の DEL', body: 'a\u007fb', message: /control characters/ },
+      { label: '本文の VT/FF', body: 'a\u000bb\u000c', message: /control characters/ },
+      { label: '不正な UTF-8 の本文', body: Buffer.from([0xc3, 0x28]), message: /not valid UTF-8/ },
+      { label: '本文が 256 KiB 超', body: big(256 * 1024 + 1), message: /empty or too large/ },
+      { label: '本文が 65536 文字超', body: 'a'.repeat(65537), message: /longer than 65536/ },
+      { label: 'シンボリックリンクのタイトル', setup: () => { writeIo(fixture, 'real.txt', 'x'); fs.rmSync(path.join(fixture.io, 'title.txt')); fs.symlinkSync(path.join(fixture.io, 'real.txt'), path.join(fixture.io, 'title.txt')); }, message: /not a plain file/ },
+      { label: 'ハードリンクのタイトル', setup: () => { writeIo(fixture, 'real.txt', 'x'); fs.rmSync(path.join(fixture.io, 'title.txt')); fs.linkSync(path.join(fixture.io, 'real.txt'), path.join(fixture.io, 'title.txt')); }, message: /not a plain file/ },
+      { label: 'ディレクトリのタイトル', setup: () => { fs.rmSync(path.join(fixture.io, 'title.txt')); fs.mkdirSync(path.join(fixture.io, 'title.txt')); }, message: /not a plain file/ },
+      { label: '他人所有のタイトル', extra: { fs: { ...fs, fstatSync: (fd) => { const stat = fs.fstatSync(fd); return Object.create(stat, { uid: { value: stat.uid + 1 } }); } } }, message: /not owned by the current user/ },
+    ];
+    for (const { label, title = 'valid title', body = validBody, setup, extra, message } of cases) {
+      for (const name of ['title.txt', 'body.md', 'real.txt']) fs.rmSync(path.join(fixture.io, name), { recursive: true, force: true });
+      writeIo(fixture, 'title.txt', title);
+      writeIo(fixture, 'body.md', body);
+      if (setup) setup();
+      const before = fixture.readCalls().length;
+      const result = fixture.runMember(CREATE_WITH_FILES, extra);
+      assert.equal(result.code, 2, label);
+      assert.match(result.messages.join(''), message, label);
+      assert.equal(fixture.readCalls().length, before, `${label}: gh が起動された`);
+    }
+
+    // 併用・不正な名前は parse 段階で拒否される。
+    writeIo(fixture, 'title.txt', 'valid title');
+    writeIo(fixture, 'body.md', validBody);
+    for (const command of [
+      [...CREATE_WITH_FILES, '--title', 't'],
+      ['gh', 'pr', 'create', '--head', 'a', '--title-file', '../title.txt', '--body-file', 'body.md'],
+      ['gh', 'pr', 'create', '--head', 'a', '--title-file', 'sub/title.txt', '--body-file', 'body.md'],
+    ]) {
+      assert.equal(fixture.runMember(command).code, 2, JSON.stringify(command));
+    }
+    assert.equal(fixture.readCalls().length, 0);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('拒否: 入出力フォルダが無い入口（子用）と、リンクに差し替えられた入出力フォルダでは --title-file / --body-file を使えず、gh を起動しない', () => {
+  const noMember = createMemberFixture({ withMember: false });
+  try {
+    const result = noMember.runMember(CREATE_WITH_FILES);
+    assert.equal(result.code, 2);
+    assert.match(result.messages.join(''), /need the member input\/output folder/);
+    assert.equal(noMember.readCalls().length, 0);
+    const edit = noMember.runMember(['gh', 'pr', 'edit', '5', '--title-file', 'title.txt']);
+    assert.equal(edit.code, 2);
+    assert.match(edit.messages.join(''), /need the member input\/output folder/);
+    assert.equal(noMember.readCalls().length, 0);
+    // 直接指定は従来どおり使える。
+    assert.equal(noMember.runMember(['gh', 'pr', 'create', '--head', 'a', '--title', 't', '--body', 'b']).code, 0);
+    assert.equal(noMember.readCalls().length, 1);
+  } finally {
+    noMember.cleanup();
+  }
+
+  const linked = createMemberFixture();
+  try {
+    const realIo = path.join(linked.root, 'real-io');
+    fs.mkdirSync(realIo, { mode: 0o700 });
+    fs.writeFileSync(path.join(realIo, 'title.txt'), 't');
+    fs.writeFileSync(path.join(realIo, 'body.md'), 'b');
+    fs.rmSync(linked.io, { recursive: true, force: true });
+    fs.symlinkSync(realIo, linked.io);
+    const result = linked.runMember(CREATE_WITH_FILES);
+    assert.equal(result.code, 2);
+    assert.match(result.messages.join(''), /symbolic link/);
+    assert.equal(linked.readCalls().length, 0);
+  } finally {
+    linked.cleanup();
+  }
+});
+
+// gh pr edit / pr view だけを差し替える spawnSync。呼び出しを記録し、gh 以外（git）は実物に流す。
+// applied は更新後に gh pr view が返す内容。省略時は gh pr edit に渡された値をそのまま返す（正しく反映された gh）。
+function prEditHarness(fixture, { applied, editStatus = 0, viewStatus = 0, viewStdout } = {}) {
+  const calls = [];
+  let last = {};
+  const spawnSync = (bin, args, options) => {
+    if (bin !== fixture.env.VK_TASK_GH) return childProcess.spawnSync(bin, args, { ...options, stdio: 'pipe' });
+    calls.push(args);
+    if (args[0] === 'pr' && args[1] === 'edit') {
+      last = { title: args[args.indexOf('--title') + 1], body: args[args.indexOf('--body') + 1] };
+      return { status: editStatus, stdout: '', stderr: editStatus === 0 ? '' : 'edit failed\n' };
+    }
+    if (args[0] === 'pr' && args[1] === 'view') return { status: viewStatus, stdout: viewStdout !== undefined ? viewStdout : JSON.stringify(applied || last), stderr: viewStatus === 0 ? '' : 'view failed\n' };
+    return { status: 1, stdout: '', stderr: 'unexpected\n' };
+  };
+  return { calls, spawnSync };
+}
+
+test('実行: gh pr edit はファイルの内容を argv の値として渡し、拘束した --repo だけで更新して、読み戻しが一致したときだけ成功する', () => {
+  const fixture = createMemberFixture();
+  try {
+    writeIo(fixture, 'title.txt', `${PR_TITLE}\n`);
+    writeIo(fixture, 'body.md', PR_BODY);
+    const stdout = [];
+    const { calls, spawnSync } = prEditHarness(fixture);
+    const result = fixture.runMember(['gh', 'pr', 'edit', '7', '--title-file', 'title.txt', '--body-file', 'body.md'], { spawnSync, writeOut: (m) => stdout.push(m) });
+    assert.equal(result.code, 0, result.messages.join(''));
+    assert.deepEqual(calls, [
+      ['pr', 'edit', '7', '--title', PR_TITLE, '--body', PR_BODY, '--repo', 'vektor-inc/vk-terminals'],
+      ['pr', 'view', '7', '--json', 'title,body', '--repo', 'vektor-inc/vk-terminals'],
+    ]);
+    assert.match(stdout.join(''), /updated PR #7: title, body/);
+
+    // 片方だけの更新（ファイル指定と直接指定のどちらでも）は、指定した項目だけを渡して照合する。
+    const onlyBody = prEditHarness(fixture, { applied: { title: '変更されない旧タイトル', body: `${PR_BODY}\n` } });
+    assert.equal(fixture.runMember(['gh', 'pr', 'edit', '7', '--body-file', 'body.md'], { spawnSync: onlyBody.spawnSync, writeOut: () => {} }).code, 0);
+    assert.deepEqual(onlyBody.calls[0], ['pr', 'edit', '7', '--body', PR_BODY, '--repo', 'vektor-inc/vk-terminals']);
+    const direct = prEditHarness(fixture);
+    assert.equal(fixture.runMember(['gh', 'pr', 'edit', '7', '--title', 'new-title'], { spawnSync: direct.spawnSync, writeOut: () => {} }).code, 0);
+    assert.deepEqual(direct.calls[0], ['pr', 'edit', '7', '--title', 'new-title', '--repo', 'vektor-inc/vk-terminals']);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('実行: gh pr edit は更新・読み戻しの失敗や、読み戻した題・本文が指定と違うとき（権限不足で何も反映されないとき）に成功を返さない', () => {
+  const fixture = createMemberFixture();
+  try {
+    writeIo(fixture, 'title.txt', 'new title\n');
+    writeIo(fixture, 'body.md', 'new body\n');
+    const command = ['gh', 'pr', 'edit', '7', '--title-file', 'title.txt', '--body-file', 'body.md'];
+    const cases = [
+      { label: '更新失敗', options: { editStatus: 1 }, calls: 1, message: /gh pr edit failed/ },
+      { label: '読み戻し失敗', options: { viewStatus: 1 }, calls: 2, message: /could not verify/ },
+      { label: '読み戻しが不正な JSON', options: { viewStdout: 'not json' }, calls: 2, message: /could not verify/ },
+      { label: '何も反映されていない（旧値のまま）', options: { applied: { title: 'old', body: 'old' } }, calls: 2, message: /title of PR #7 does not match/ },
+      { label: 'タイトルだけ違う', options: { applied: { title: 'New title', body: 'new body\n' } }, calls: 2, message: /title of PR #7 does not match/ },
+      { label: '本文だけ違う', options: { applied: { title: 'new title', body: 'other' } }, calls: 2, message: /body of PR #7 does not match/ },
+      { label: '読み戻しに本文が無い', options: { applied: { title: 'new title' } }, calls: 2, message: /body of PR #7 does not match/ },
+      { label: '読み戻しが null', options: { viewStdout: 'null' }, calls: 2, message: /does not match/ },
+    ];
+    for (const { label, options, calls: expectedCalls, message } of cases) {
+      const { calls, spawnSync } = prEditHarness(fixture, options);
+      const stdout = [];
+      const result = fixture.runMember(command, { spawnSync, writeOut: (m) => stdout.push(m) });
+      assert.notEqual(result.code, 0, label);
+      assert.match(result.messages.join(''), message, label);
+      assert.equal(calls.length, expectedCalls, label);
+      assert.equal(stdout.join(''), '', label);
+    }
+    // CRLF → LF と末尾の空白の正規化だけは、本文の一致とみなす。題は完全一致。
+    const normalized = prEditHarness(fixture, { applied: { title: 'new title', body: 'new body\r\n\r\n' } });
+    assert.equal(fixture.runMember(command, { spawnSync: normalized.spawnSync, writeOut: () => {} }).code, 0);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('実行: 拒否された gh pr edit は gh を一度も呼ばない（別リポジトリ指定・未許可フラグ・不正なファイル・併用）', () => {
+  const fixture = createMemberFixture();
+  try {
+    const plain = path.join(fixture.root, 'plain');
+    fs.mkdirSync(plain);
+    writeIo(fixture, 'ok.txt', 'ok\n');
+    writeIo(fixture, 'bad.txt', 'a\nb');
+    writeIo(fixture, 'empty.txt', '');
+    writeIo(fixture, 'binary.txt', Buffer.from([0xff, 0xfe]));
+    writeIo(fixture, 'ctrl.md', 'a\u0000b');
+    fs.symlinkSync(path.join(fixture.io, 'ok.txt'), path.join(fixture.io, 'link.txt'));
+    for (const command of [
+      ['gh', 'vektor-inc/other-repo', 'pr', 'edit', '5', '--title-file', 'ok.txt'],
+      ['gh', 'vektor-inc/vk-terminals', 'pr', 'edit', '5', '--title-file', 'ok.txt'],
+      ['gh', 'pr', 'edit', '5', '--title-file', 'ok.txt', '--repo', 'o/r'],
+      ['gh', 'pr', 'edit', '5', '--title-file', 'ok.txt', '-R', 'o/r'],
+      ['gh', 'pr', 'edit', '5', '--add-label', 'bug'],
+      ['gh', 'pr', 'edit', '5', '--base', 'develop'],
+      ['gh', 'pr', 'edit', '5', '--title-file', '../ok.txt'],
+      ['gh', 'pr', 'edit', '5', '--title', 't', '--title-file', 'ok.txt'],
+      ['gh', 'pr', 'edit', '5', '--title-file', 'bad.txt'],
+      ['gh', 'pr', 'edit', '5', '--title-file', 'empty.txt'],
+      ['gh', 'pr', 'edit', '5', '--title-file', 'binary.txt'],
+      ['gh', 'pr', 'edit', '5', '--body-file', 'ctrl.md'],
+      ['gh', 'pr', 'edit', '5', '--body-file', 'link.txt'],
+      ['gh', 'pr', 'edit', '5', '--body-file', 'missing.md'],
+      ['gh', 'pr', 'edit', '5', '--title-file', 'ok.txt', '--body-file', 'ctrl.md'],
+    ]) {
+      const { calls, spawnSync } = prEditHarness(fixture);
+      const result = fixture.runMember(command, { spawnSync });
+      assert.equal(result.code, 2, JSON.stringify(command));
+      assert.equal(calls.length, 0, JSON.stringify(command));
+    }
+    // 拘束リポジトリの cwd から呼んでも同じ。
+    const { calls, spawnSync } = prEditHarness(fixture);
+    assert.equal(fixture.runMember(['gh', 'pr', 'edit', '5', '--title-file', 'ok.txt', '--body-file', 'ctrl.md'], { spawnSync }).code, 2);
+    assert.equal(calls.length, 0);
+    assert.equal(fixture.readCalls().length, 0);
+  } finally {
+    fixture.cleanup();
+  }
+});

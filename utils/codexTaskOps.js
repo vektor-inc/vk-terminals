@@ -15,8 +15,8 @@
 //   - 実行環境は信頼済みランチャーが固定する。git / gh / Node は起動時に所有者・権限を検証した絶対パスだけを使い、
 //     子プロセスの環境変数は許可リストで一から組み立てる（PATH・NODE_OPTIONS・LD_PRELOAD・GIT_*・GH_* は引き継がない）。
 //   - Git の system / global 設定は使わず、リポジトリ内の設定に外部コマンドを起動しうる項目があれば実行しない。
-//   - 操作の対象は起動時に確定したリポジトリ（実ルートと GitHub の owner/repo）に拘束する。実行のたびに一致を検証し、
-//     gh には検証済みの --repo を必ず付ける。
+//   - Git 操作は起動時に確定したリポジトリへ拘束する。gh は従来の拘束先に加え、明示した owner/repo の owner が
+//     起動時の許可リストと一致するときだけ、ローカル Git に依存せず実行できる。gh には検証済みの --repo を必ず付ける。
 //   - 通信する Git 操作（git push / prepare worktree の fetch）は origin の設定値を使わない。拘束した owner/repo から
 //     入口が組み立てた固定 URL と固定 refspec だけに送り、資格情報は検証済み gh の `auth git-credential` だけを使う（issue #440）。
 //   - メンバー起動（member start / member status。issue #441）は、子の Codex を親と同じ範囲の sandbox（-s workspace-write か read-only、
@@ -390,6 +390,12 @@ function ghCommand(parts, args) {
   return { ok: true, bin: 'gh', args: [...parts, ...args], needsGitHub: true };
 }
 
+function isSafeGitHubRepo(value) {
+  if (typeof value !== 'string' || !GITHUB_REPO_PATTERN.test(value)) return false;
+  const [owner, repo] = value.split('/');
+  return !['.', '..'].includes(owner) && !owner.startsWith('-') && !['.', '..'].includes(repo) && !repo.startsWith('-');
+}
+
 /**
  * 入口に渡された argv（`git status` など）を検証し、実行する git / gh の argv に組み立て直す。
  * 許可リストに無いものはすべて ok: false（理由つき）。
@@ -425,34 +431,41 @@ function parseTaskCommand(argv) {
     }
   }
   if (tool === 'gh') {
-    const [group, action, ...tokens] = rest;
+    let ghTokens = rest;
+    let targetRepo;
+    if (rest[0]?.includes('/')) {
+      if (!isSafeGitHubRepo(rest[0])) return fail(`invalid github repository: ${JSON.stringify(rest[0])}`);
+      [targetRepo, ...ghTokens] = rest;
+    }
+    const [group, action, ...tokens] = ghTokens;
+    const command = (parts, args) => ({ ...ghCommand(parts, args), ...(targetRepo === undefined ? {} : { targetRepo }) });
     if (group === 'issue' && action === 'view') {
       const parsed = parseGhView(tokens, { allowedBooleanFlags: ['--comments'], numberRequired: true });
-      return parsed.ok ? ghCommand(['issue', 'view', parsed.number], parsed.args) : parsed;
+      return parsed.ok ? command(['issue', 'view', parsed.number], parsed.args) : parsed;
     }
     if (group === 'issue' && action === 'comment') {
       const parsed = parseGhComment(tokens);
-      return parsed.ok ? ghCommand(['issue', 'comment', parsed.number], parsed.args) : parsed;
+      return parsed.ok ? command(['issue', 'comment', parsed.number], parsed.args) : parsed;
     }
     if (group === 'issue' && action === 'create') {
       const parsed = parseGhIssueCreate(tokens);
-      return parsed.ok ? ghCommand(['issue', 'create'], parsed.args) : parsed;
+      return parsed.ok ? command(['issue', 'create'], parsed.args) : parsed;
     }
     if (group === 'pr' && action === 'view') {
       const parsed = parseGhView(tokens, { allowedBooleanFlags: ['--comments'], numberRequired: true });
-      return parsed.ok ? ghCommand(['pr', 'view', parsed.number], parsed.args) : parsed;
+      return parsed.ok ? command(['pr', 'view', parsed.number], parsed.args) : parsed;
     }
     if (group === 'pr' && action === 'checks') {
       const parsed = parseGhView(tokens, { allowedBooleanFlags: [], numberRequired: true });
-      return parsed.ok ? ghCommand(['pr', 'checks', parsed.number], parsed.args) : parsed;
+      return parsed.ok ? command(['pr', 'checks', parsed.number], parsed.args) : parsed;
     }
     if (group === 'pr' && action === 'comment') {
       const parsed = parseGhComment(tokens);
-      return parsed.ok ? ghCommand(['pr', 'comment', parsed.number], parsed.args) : parsed;
+      return parsed.ok ? command(['pr', 'comment', parsed.number], parsed.args) : parsed;
     }
     if (group === 'pr' && action === 'create') {
       const parsed = parseGhPrCreate(tokens);
-      return parsed.ok ? ghCommand(['pr', 'create'], parsed.args) : parsed;
+      return parsed.ok ? command(['pr', 'create'], parsed.args) : parsed;
     }
     return fail(`gh ${[group, action].filter((part) => part !== undefined).map((part) => JSON.stringify(part)).join(' ')} is not allowed`);
   }
@@ -867,6 +880,7 @@ function readBinding(env) {
   const gitConfig = env.VK_TASK_GITCONFIG;
   const ghConfig = env.VK_TASK_GHCONFIG || null;
   const repo = env.VK_TASK_REPO || null;
+  const allowedOwnersValue = env.VK_TASK_ALLOWED_OWNERS || (repo === null ? '' : repo.split('/')[0]);
   const remoteBase = env.VK_TASK_REMOTE_BASE || DEFAULT_REMOTE_BASE;
   if (![root, git, home, gitConfig].every(isSafeBindingPath)) return null;
   if (gh !== null && !isSafeBindingPath(gh)) return null;
@@ -874,6 +888,8 @@ function readBinding(env) {
   if (gh !== null && !isSafeBindingPath(ghConfig)) return null;
   if (ghConfig !== null && !isSafeBindingPath(ghConfig)) return null;
   if (repo !== null && !GITHUB_REPO_PATTERN.test(repo)) return null;
+  const allowedOwners = allowedOwnersValue === '' ? [] : allowedOwnersValue.split(',');
+  if (allowedOwners.some((owner) => !isSafeGitHubRepo(`${owner}/repository`))) return null;
   // push 先・fetch 元の基点は GitHub の固定値。例外はテスト用に一時フォルダの絶対パスを渡すときだけで、
   // 値はランチャー（Codex から書き換えられない）が固定する。
   if (remoteBase !== DEFAULT_REMOTE_BASE && (!isSafeBindingPath(remoteBase) || remoteBase.split('/').includes('..'))) return null;
@@ -887,7 +903,7 @@ function readBinding(env) {
     if (!MEMBER_PARENT_SANDBOXES.includes(memberValues[5])) return null;
     member = { codex: memberValues[0], home: memberValues[1], io: memberValues[2], runs: memberValues[3], parentCwd: memberValues[4], parentSandbox: memberValues[5] };
   }
-  return { root, repo, git, gh, home, gitConfig, ghConfig, remoteBase, member };
+  return { root, repo, allowedOwners, git, gh, home, gitConfig, ghConfig, remoteBase, member };
 }
 
 /**
@@ -1640,14 +1656,23 @@ function runTaskCommand(argv, deps = {}) {
   const env = buildChildEnvironment(binding);
   const runGit = (args, runCwd) => spawnSync(binding.git, [...FIXED_GIT_PREFIX, ...args], { cwd: runCwd, env, encoding: 'utf8' });
 
-  // 作業フォルダが、起動時に拘束したリポジトリそのものであることを確認する。
-  const inspected = inspectRepository({ cwd, run: runGit, homeDir: binding.home, fsImpl });
-  if (!inspected.ok) return reject(inspected.error);
-  if (inspected.root !== binding.root && !isBoundWorktree({ cwd, run: runGit, bindingRoot: binding.root, inspectedRoot: inspected.root, fsImpl, uid: currentUid(deps) })) {
-    return reject('task command rejected: working directory is not the bound repository');
-  }
-  if (parsed.needsGitHub) {
-    if (binding.repo === null || inspected.repo !== binding.repo) return reject('task command rejected: origin does not match the bound github.com repository');
+  // 明示先の gh はローカル Git を使わない。owner を起動時の束縛と照合し、それ以外は従来どおりリポジトリを検査する。
+  const explicitGitHubTarget = parsed.bin === 'gh' ? parsed.targetRepo : undefined;
+  let inspected;
+  if (explicitGitHubTarget !== undefined) {
+    const owner = explicitGitHubTarget.split('/')[0].toLowerCase();
+    if (!binding.allowedOwners.some((allowedOwner) => allowedOwner.toLowerCase() === owner)) {
+      return reject(`task command rejected: owner ${JSON.stringify(explicitGitHubTarget.split('/')[0])} is not allowed`);
+    }
+  } else {
+    inspected = inspectRepository({ cwd, run: runGit, homeDir: binding.home, fsImpl });
+    if (!inspected.ok) return reject(inspected.error);
+    if (inspected.root !== binding.root && !isBoundWorktree({ cwd, run: runGit, bindingRoot: binding.root, inspectedRoot: inspected.root, fsImpl, uid: currentUid(deps) })) {
+      return reject('task command rejected: working directory is not the bound repository');
+    }
+    if (parsed.needsGitHub && (binding.repo === null || inspected.repo !== binding.repo)) {
+      return reject('task command rejected: origin does not match the bound github.com repository');
+    }
   }
 
   if (parsed.guardsDefaultBranch) {
@@ -1667,8 +1692,10 @@ function runTaskCommand(argv, deps = {}) {
   }
 
   const bin = parsed.bin === 'gh' ? binding.gh : binding.git;
-  const args = parsed.bin === 'gh' ? withBoundRepository(parsed.args, binding.repo) : parsed.args;
-  const result = spawnSync(bin, args, { cwd, env, encoding: 'utf8', stdio: 'inherit' });
+  const args = parsed.bin === 'gh' ? withBoundRepository(parsed.args, explicitGitHubTarget || binding.repo) : parsed.args;
+  // 明示先の gh は呼び出し元 cwd の Git 設定にも依存させず、固定した HOME から実行する。
+  const executionCwd = explicitGitHubTarget === undefined ? cwd : binding.home;
+  const result = spawnSync(bin, args, { cwd: executionCwd, env, encoding: 'utf8', stdio: 'inherit' });
   if (result.error) return reject(`task command failed to start: ${result.error.code || 'error'}`);
   return typeof result.status === 'number' ? result.status : 2;
 }

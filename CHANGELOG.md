@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 機能追加 ] 自動処理用 Codex の固定入口で、許可済み owner 内の別リポジトリを明示した GitHub 操作に対応（[#467](https://github.com/vektor-inc/vk-terminals/issues/467)）
+
 ## 1.79.2
 
 - [ 不具合修正 ] 会話記録による指示の到達確認で、キー（`session-rotation-run-id=` / `vk-delivery-token=`）がない識別子や後ろに別の文字が付いた壊れた値を到達済みと誤判定する不具合を修正し、作業中に届いた入力も到達済みとして判定（完了通知は除外）（[#465](https://github.com/vektor-inc/vk-terminals/issues/465)）

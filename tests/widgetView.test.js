@@ -1433,6 +1433,73 @@ test('render: specModel の変更は保存時に set-spec-model のコマンド�
   await new Promise((resolve) => setTimeout(resolve, 60));
 });
 
+test('render: mainEngine の宣言は編集パネルに select として描画され、disabled の選択肢は理由付きで無効になる', () => {
+  const widget = sanitized([
+    { id: 'ready', label: '実行待ち', tone: 'info', items: [{
+      id: '10', title: 'T', editable: true,
+      controls: [
+        { type: 'select', field: 'mainEngine', label: 'メイン', ariaLabel: 'エージェントエンジン（メイン）を選択', current: 'inherit',
+          options: [
+            { value: 'inherit', label: '継承' },
+            { value: 'claude', label: 'Claude Code', command: { action: 'set-main-engine', taskId: '10', to: 'claude', expected: 'inherit' } },
+            { value: 'codex', label: 'Codex', disabled: true, disabledReason: 'Codex は使えません' },
+          ] },
+      ],
+    }] },
+  ]);
+  const { groupsEl } = openEditPanel(widget);
+
+  const select = groupsEl.querySelectorAll((el) => el.tagName === 'SELECT').find((el) => el.dataset.field === 'mainEngine');
+  assert.ok(select);
+  assert.equal(select.value, 'inherit');
+  assert.equal(select.options.length, 3);
+  const codex = groupsEl.querySelectorAll((el) => el.tagName === 'OPTION').find((o) => o.value === 'codex');
+  assert.equal(codex.disabled, true);
+  assert.equal(codex.textContent, 'Codex（Codex は使えません）');
+  assert.equal(codex.title, 'Codex は使えません');
+});
+
+test('render: mainEngine の変更は保存時に set-main-engine のコマンドを送る', async () => {
+  const widget = sanitized([
+    { id: 'ready', label: '実行待ち', tone: 'info', items: [{
+      id: '10', title: 'T', editable: true,
+      controls: [
+        { type: 'select', field: 'mainEngine', label: 'メイン', current: 'inherit',
+          options: [
+            { value: 'inherit', label: '継承' },
+            { value: 'claude', label: 'Claude Code', command: { action: 'set-main-engine', taskId: '10', to: 'claude', expected: 'inherit' } },
+          ] },
+      ],
+    }] },
+  ]);
+  const sent = [];
+  const { groupsEl, view } = makeView({
+    sendCommand: async (cmd) => { sent.push(cmd); return { ok: true }; },
+    // 反映待ちタイマー（1段目・2段目とも）がテストプロセスを長く生かさないよう短くする。
+    pendingTimeoutMs: 40,
+    pendingErrorTimeoutMs: 40,
+  });
+  view.render(widget, { now: Date.parse('2026-07-21T00:00:10.000Z') });
+  groupsEl.querySelectorAll((el) => el.classList.contains('task-item-edit'))[0].dispatch('click');
+  view.render(widget, { now: Date.parse('2026-07-21T00:00:10.000Z') });
+
+  const select = groupsEl.querySelectorAll((el) => el.tagName === 'SELECT').find((el) => el.dataset.field === 'mainEngine');
+  select.value = 'claude';
+  select.dispatch('change');
+  groupsEl.querySelectorAll((el) => el.classList.contains('task-edit-save'))[0].dispatch('click');
+  await Promise.resolve();
+
+  assert.equal(sent.length, 1);
+  assert.deepEqual(sent[0], {
+    action: 'apply-batch',
+    taskId: '10',
+    ops: [{ action: 'set-main-engine', to: 'claude', expected: 'inherit' }],
+  });
+
+  // 反映待ちのタイムアウトを発火させてタイマーを片付ける（プロセスを 30 秒生かさない）。
+  await new Promise((resolve) => setTimeout(resolve, 60));
+});
+
 test('render: 同じ section.id でも間に別項目を挟んで再登場した場合は別グループになる', () => {
   const widget = sanitized([
     { id: 'ready', label: '実行待ち', tone: 'info', items: [{

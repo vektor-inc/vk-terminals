@@ -129,6 +129,11 @@ const {
 } = require('./utils/apiAuth');
 const { isAllowedApiHost } = require('./utils/apiHostAllowlist');
 const { containsUserTerminalInput } = require('./utils/terminalUserInput');
+const {
+  createConditionalTerminalInputGuard,
+  mergeConditionalScreenIdentifiers,
+  validateConditionalEnterRequest,
+} = require('./utils/conditionalTerminalInput');
 // mobile.html（HTTP 配信）向け CSP ヘッダーの組み立て（issue #324）。
 const { buildMobileCsp } = require('./utils/csp');
 // clipboard へ書き込んでよい文字列の上限（issue #325）。定義はここ（utils/clipboardLimits.js）
@@ -180,6 +185,10 @@ const ptyShellExecutables = new Map();
 const exitingPtys = new Map();
 const agentGenerations = createAgentGenerationStore();
 const agentLifecycles = createAgentLifecycleStore();
+// renderer が報告した画面と、その後の PTY 入出力が同じ状態かを条件付き Enter で照合する。
+// 秘密値と画面 revision はプロセス外へ出さず、API には HMAC 識別値だけを公開する。
+const conditionalTerminalInput = createConditionalTerminalInputGuard();
+let reportedScreenSnapshots = new Map();
 // 同じペインへの同時再起動は先行処理の完了後に世代を再照合する。
 // これが無いと同じ expectedGeneration の2要求が両方通り、後発が先発の新しい AI を止めうる。
 const restartAgentOperations = new Map();
@@ -2113,6 +2122,15 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
     throw error;
   }
 
+  // PTY への全書き込みを画面変更として先に記録する。選択肢移動から再描画までの
+  // 短い間にも、移動前に取得した識別値で Enter が通らないようにするため。
+  conditionalTerminalInput.initialize(id);
+  const writeToPty = ptyProcess.write.bind(ptyProcess);
+  ptyProcess.write = (data) => {
+    conditionalTerminalInput.markChanged(id);
+    return writeToPty(data);
+  };
+
   // ペイン作成（pty spawn）時刻。信頼確認プロンプトへの自動 Enter 送信を許可する
   // 時間窓（TRUST_WINDOW_MS。issue #371）の起点として utils/trustPromptGate.js へ渡す。
   // Date.now()（システム時刻）ではなく performance.now()（単調増加時計）を使う。
@@ -2319,10 +2337,18 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
   }
 
   ptyProcess.onData((data) => {
-    if (promptWatcher) promptWatcher(data);
     const visibleData = agentLifecycles.filterOutput(id, data);
+    // renderer に実際に渡す画面変更と識別値を同じイベントに載せる。renderer がまだ
+    // 処理していない出力の識別値を、古い lastLines と組み合わせないため。
+    let screenSnapshot = null;
+    if (visibleData) {
+      conditionalTerminalInput.markChanged(id);
+      screenSnapshot = conditionalTerminalInput.capture(id, agentGenerations.get(id));
+    }
+    // promptWatcher が Enter を書いた場合は上の識別値がその場で古くなり、安全側で拒否される。
+    if (promptWatcher) promptWatcher(data);
     if (win && !win.isDestroyed()) {
-      if (visibleData) win.webContents.send('terminal:data', id, visibleData);
+      if (visibleData) win.webContents.send('terminal:data', id, visibleData, screenSnapshot);
     }
   });
 
@@ -2336,6 +2362,8 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
     ptyShellExecutables.delete(id);
     agentGenerations.delete(id);
     agentLifecycles.delete(id);
+    conditionalTerminalInput.delete(id);
+    reportedScreenSnapshots.delete(id);
     restartAgentOperations.delete(id);
     // 再起動後の信頼確認プロンプト自動応答（issue #392）が残っていれば解除する。
     const restartTrustResponder = restartTrustResponders.get(id);
@@ -2407,6 +2435,8 @@ ipcMain.on('terminal:input', (event, id, data) => {
 ipcMain.on('terminal:resize', (event, id, cols, rows) => {
   const p = ptys.get(id);
   if (p) {
+    // 折り返し位置が変わるため、以前の画面識別値では Enter を許可しない。
+    conditionalTerminalInput.markChanged(id);
     try { p.resize(Math.max(2, cols), Math.max(2, rows)); } catch (e) {}
   }
 });
@@ -2416,6 +2446,8 @@ ipcMain.on('terminal:kill', (event, id) => {
   if (p) {
     ptys.delete(id);
     agentGenerations.delete(id);
+    conditionalTerminalInput.delete(id);
+    reportedScreenSnapshots.delete(id);
     restartAgentOperations.delete(id);
     // ptyProcess.onExit 側でも同じ後始末をするが、ここで管理している Map と食い違わない
     // よう、削除する Map を揃えておく（安藤の指摘・LOW-F）。
@@ -2514,13 +2546,30 @@ fs.mkdirSync(DATA_DIR, { recursive: true });
 
 ipcMain.on('terminal:report-states', (event, states) => {
   cachedStates = states;
+  // terminal:data と一緒に renderer へ渡し、lastLines へ反映された識別値だけを保持する。
+  // 以後 PTY に入出力があればガード側の revision が進み、古い識別値は照合で拒否される。
+  const nextScreenSnapshots = new Map();
+  for (const state of Object.values(states || {})) {
+    if (!state || typeof state !== 'object' || state.termId === undefined) continue;
+    const termId = String(state.termId);
+    if (typeof state.screenIdentifier === 'string' && Number.isSafeInteger(state.screenIdentifierGeneration)) {
+      nextScreenSnapshots.set(termId, {
+        screenIdentifier: state.screenIdentifier,
+        agentGeneration: state.screenIdentifierGeneration,
+      });
+    }
+  }
+  reportedScreenSnapshots = nextScreenSnapshots;
   // 状態ファイルに書き出し（非同期、エラーは無視）
-  const statesWithGenerations = mergeAgentLifecycleStates(
-    states,
-    (termId) => agentGenerations.get(termId),
-    (termId, generation) => agentLifecycles.get(termId, generation)
+  const statesWithScreenIdentifiers = mergeConditionalScreenIdentifiers(
+    mergeAgentLifecycleStates(
+      states,
+      (termId) => agentGenerations.get(termId),
+      (termId, generation) => agentLifecycles.get(termId, generation)
+    ),
+    reportedScreenSnapshots
   );
-  const payload = JSON.stringify({ updatedAt: new Date().toISOString(), terminals: statesWithGenerations }, null, 2);
+  const payload = JSON.stringify({ updatedAt: new Date().toISOString(), terminals: statesWithScreenIdentifiers }, null, 2);
   fs.writeFile(STATE_FILE, payload, 'utf8', () => {});
   // Web Push 通知（issue #396）: 入力待ち・マージ待ちへ変わった瞬間を検知して送信する。
   // POST /api/set-status・POST /api/set-title 由来の値も、renderer 側の terminals[paneId] を
@@ -2968,15 +3017,18 @@ function startHttpApi() {
       ]).then(([usage, codexUsage]) => {
         // 世代番号は renderer に持たせず、main が管理する termId の記録を応答時に加える。
         // cachedStates の既存キー・値は変更しないため、既存クライアントには additive。
-        const statesWithGenerations = mergeAgentLifecycleStates(
-          cachedStates,
-          (termId) => agentGenerations.get(termId),
-          (termId, generation) => agentLifecycles.get(termId, generation)
+        const statesWithScreenIdentifiers = mergeConditionalScreenIdentifiers(
+          mergeAgentLifecycleStates(
+            cachedStates,
+            (termId) => agentGenerations.get(termId),
+            (termId, generation) => agentLifecycles.get(termId, generation)
+          ),
+          reportedScreenSnapshots
         );
         res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
         res.end(JSON.stringify({
           updatedAt: new Date().toISOString(),
-          terminals: statesWithGenerations,
+          terminals: statesWithScreenIdentifiers,
           usage,
           codexUsage,
           version: require('./package.json').version,
@@ -3042,7 +3094,8 @@ function startHttpApi() {
       const MAX_BODY = 10 * 1024; // 10KB
       readJsonBody(req, res, MAX_BODY, (body) => {
         try {
-          const { termId, input } = JSON.parse(body);
+          const parsed = JSON.parse(body);
+          const { termId, input } = parsed;
           if (!termId || typeof input !== 'string') {
             res.writeHead(400, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: 'termId and input required' }));
@@ -3052,6 +3105,33 @@ function startHttpApi() {
           if (!p) {
             res.writeHead(404, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: `terminal ${termId} not found` }));
+            return;
+          }
+          const conditionalRequest = validateConditionalEnterRequest(parsed);
+          if (conditionalRequest.conditional) {
+            if (!conditionalRequest.ok) {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: conditionalRequest.error }));
+              return;
+            }
+            const result = conditionalTerminalInput.writeEnter(conditionalRequest.request, {
+              getPty: (id) => ptys.get(id),
+              getGeneration: (id) => agentGenerations.get(id),
+            });
+            if (!result.ok) {
+              const status = result.reason === 'pane-not-found' ? 404 : (result.reason === 'input-failed' ? 500 : 409);
+              res.writeHead(status, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({
+                error: result.reason,
+                ...(result.currentGeneration !== undefined ? { currentGeneration: result.currentGeneration } : {}),
+              }));
+              return;
+            }
+            if (win && !win.isDestroyed()) {
+              win.webContents.send('terminal:auto-input', termId);
+            }
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: true, termId: String(termId) }));
             return;
           }
           // 認証済みの自動化経路は確認画面より先に入力しうるため、信頼確認の監視を止めない。
@@ -3838,6 +3918,9 @@ function startHttpApi() {
                 return agentLifecycles.isCurrent(request.termId, launch.generation, launch.launchToken);
               },
             };
+            // 最初の await より前に旧画面の識別値を無効化し、停止処理中のペインへ
+            // 直前の確認結果を使った Enter が割り込まないようにする。
+            conditionalTerminalInput.markChanged(request.termId);
             const operation = restartAgentInTerminal(ptyProcess, request, launchResolution.options, lifecycleLaunch);
             restartAgentOperations.set(request.termId, operation);
             try {

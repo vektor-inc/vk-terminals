@@ -3918,7 +3918,7 @@ function startHttpApi() {
                 return agentLifecycles.isCurrent(request.termId, launch.generation, launch.launchToken);
               },
             };
-            // 最初の await より前に旧画面の識別値を無効化し、停止処理中のペインへ
+            // 最初の非同期待機より前に旧画面の識別値を無効化し、停止処理中のペインへ
             // 直前の確認結果を使った Enter が割り込まないようにする。
             conditionalTerminalInput.markChanged(request.termId);
             const operation = restartAgentInTerminal(ptyProcess, request, launchResolution.options, lifecycleLaunch);

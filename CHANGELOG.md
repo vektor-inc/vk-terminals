@@ -7,6 +7,7 @@
 - [ 機能追加 ] 画面と AI の起動世代が確認時から変わっていない場合だけ Enter を送る条件付き入力に対応（[#469](https://github.com/vektor-inc/vk-terminals/issues/469)）
 - [ 機能追加 ] 自動処理用 Codex の固定入口で、作成済み issue への担当者・既存ラベルの追加（`gh issue edit`）に対応（[#472](https://github.com/vektor-inc/vk-terminals/issues/472)）
 - [ 機能追加 ] VK Orchestrator のタスク編集画面で、そのタスクを Claude Code と Codex のどちらで処理するか選べるようにする対応を追加（[#473](https://github.com/vektor-inc/vk-terminals/issues/473)）
+- [ 開発環境 ] `restart-agent` の静的テストが、`main.js` のコメント中の「await」という語を処理の待機と誤判定して失敗していたため、コメントの文言を変更
 
 ## 1.79.2
 

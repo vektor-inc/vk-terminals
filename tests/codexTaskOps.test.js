@@ -3861,3 +3861,405 @@ test('実行: 本文・タイトルが - や --repo=evil/x で始まっても、
     fixture.cleanup();
   }
 });
+
+// ─── git fetch / git merge（デフォルトブランチの取り込み。issue #479） ─────────────
+
+// 偽の gh がデフォルトブランチ名（repos/<owner>/<repo> の .default_branch）を返す環境と、リモート側でデフォルトブランチだけを進める道具を用意する。
+function defaultBranchFixture({ defaultBranch = 'main', ghStatus = 0 } = {}) {
+  const fixture = createFixture();
+  const remote = attachRemote(fixture);
+  installLabelGh(fixture, { 'repos/vektor-inc/vk-terminals': { stdout: `${defaultBranch}\n`, status: ghStatus } });
+  const other = path.join(fixture.root, 'other-clone');
+  git(fixture.root, 'clone', '-q', remote.bare, other);
+  git(other, 'config', 'user.email', 'other@example.com');
+  git(other, 'config', 'user.name', 'Other');
+  const advance = (name, content) => {
+    commitFile(other, name, content);
+    git(other, 'push', '-q', 'origin', 'main');
+    return git(other, 'rev-parse', 'HEAD');
+  };
+  return { fixture, remote, advance };
+}
+
+const parents = (cwd, rev = 'HEAD') => git(cwd, 'rev-list', '--parents', '-n', '1', rev).split(' ').slice(1);
+
+test('許可: git fetch / git merge は引数なしの固定形だけで、デフォルトブランチの確認に gh を使う', () => {
+  assert.deepEqual(parseTaskCommand(argv('git fetch')), { ok: true, bin: 'git', operation: 'fetch-default-branch', needsGitHub: true, needsGh: true });
+  assert.deepEqual(parseTaskCommand(argv('git merge')), { ok: true, bin: 'git', operation: 'merge-default-branch', needsGitHub: true, needsGh: true, guardsDefaultBranch: true, branchAction: 'merge' });
+});
+
+test('拒否: git fetch / git merge は URL・refspec・ブランチ名・フラグなど、どんな引数も受け付けない', () => {
+  const extras = [
+    ['origin'], ['origin', 'main'], ['main'], ['https://example.com/o/r.git'], ['https://github.com/vektor-inc/vk-terminals.git'],
+    ['+refs/heads/*:refs/remotes/origin/*'], ['refs/heads/main:refs/heads/work'], ['--all'], ['--tags'], ['--force'], ['-f'], ['--prune'],
+    ['--squash'], ['--ff-only'], ['--no-ff'], ['--strategy=ours'], ['-X', 'theirs'], ['-s', 'ours'], ['--allow-unrelated-histories'],
+    ['--abort'], ['--continue'], ['-m', 'x'], ['origin/main'], ['develop'], ['HEAD'], [''],
+  ];
+  for (const subcommand of ['fetch', 'merge']) {
+    for (const extra of extras) {
+      const result = parseTaskCommand(['git', subcommand, ...extra]);
+      assert.equal(result.ok, false, `git ${subcommand} ${extra.join(' ')}`);
+      assert.match(result.error, /takes no arguments/);
+    }
+  }
+});
+
+test('実行: git fetch は GitHub から読んだデフォルトブランチだけを、固定の URL・refspec・追跡 ref へ取得する', () => {
+  const { fixture, remote, advance } = defaultBranchFixture();
+  try {
+    const latest = advance('latest.txt');
+    // 取得対象以外のブランチがリモートにあっても取得しない。
+    git(remote.bare, 'branch', 'other-branch', 'main');
+    const rootBefore = { head: git(fixture.repo, 'rev-parse', 'HEAD'), branch: git(fixture.repo, 'symbolic-ref', '--short', 'HEAD') };
+
+    const calls = [];
+    const out = [];
+    const result = run(fixture, ['git', 'fetch'], { spawnSync: recordingSpawn(calls), writeOut: (message) => out.push(message) });
+    assert.equal(result.code, 0, result.messages.join(''));
+    assert.equal(git(fixture.repo, 'rev-parse', 'refs/remotes/origin/main'), latest);
+    assert.equal(out.join(''), `DEFAULT_BRANCH=main\nFETCHED_REF=refs/remotes/origin/main\nFETCHED_SHA=${latest}\n`);
+    assert.throws(() => git(fixture.repo, 'rev-parse', '--verify', '-q', 'refs/remotes/origin/other-branch'));
+    assert.equal(fs.existsSync(path.join(fixture.repo, '.git', 'FETCH_HEAD')), false);
+    // 作業ブランチ・作業ツリーは動かさない。
+    assert.deepEqual({ head: git(fixture.repo, 'rev-parse', 'HEAD'), branch: git(fixture.repo, 'symbolic-ref', '--short', 'HEAD') }, rootBefore);
+
+    // デフォルトブランチは GitHub（gh api の固定エンドポイント）から読む。
+    assert.deepEqual(fixture.readCalls().map((call) => call.args), [['api', '--jq', '.default_branch', 'repos/vektor-inc/vk-terminals']]);
+    // 取得は origin の設定値ではなく、固定の URL・固定の refspec・固定の資格情報の指定（prepare worktree と同じ書き込み制限つき）。
+    const fetchCall = calls.find((call) => call.args.includes('fetch'));
+    assert.equal(fetchCall.bin, '/usr/bin/sandbox-exec');
+    const fetchArgs = fetchCall.args.slice(fetchCall.args.indexOf(GIT_PATH) + 1);
+    const fetchIndex = fetchArgs.indexOf('fetch');
+    assert.deepEqual(fetchArgs.slice(fetchIndex), ['fetch', '--no-tags', '--no-recurse-submodules', '--no-write-fetch-head', '--refmap=', remote.url, '+refs/heads/main:refs/remotes/origin/main']);
+    assert.deepEqual(fetchArgs.slice(FIXED_GIT_PREFIX.length, fetchIndex), [
+      '-c', 'credential.helper=',
+      '-c', 'credential.https://github.com.helper=',
+      '-c', `credential.https://github.com.helper=!'${fixture.env.VK_TASK_GH}' auth git-credential`,
+    ]);
+    assert.equal(fetchCall.env.GIT_ALLOW_PROTOCOL, 'file');
+    // 2 回目も通る（追跡 ref の更新）。
+    const next = advance('latest2.txt');
+    assert.equal(run(fixture, ['git', 'fetch']).code, 0);
+    assert.equal(git(fixture.repo, 'rev-parse', 'refs/remotes/origin/main'), next);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('実行: 追跡 ref の親フォルダが無いクローンでも git fetch は取得できる。デフォルトブランチ名が main でなくても追従する', () => {
+  const { fixture, remote } = defaultBranchFixture({ defaultBranch: 'release/stable' });
+  try {
+    git(remote.bare, 'branch', 'release/stable', 'main');
+    fs.rmSync(path.join(fixture.repo, '.git', 'refs', 'remotes'), { recursive: true, force: true });
+    const result = run(fixture, ['git', 'fetch']);
+    assert.equal(result.code, 0, result.messages.join(''));
+    assert.equal(git(fixture.repo, 'rev-parse', 'refs/remotes/origin/release/stable'), git(remote.bare, 'rev-parse', 'release/stable'));
+    assert.throws(() => git(fixture.repo, 'rev-parse', '--verify', '-q', 'refs/remotes/origin/main'));
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('拒否: git fetch はデフォルトブランチを GitHub から読めないとき・不正な名前のとき・通信先を書き換える設定があるとき取得しない', () => {
+  for (const options of [{ ghStatus: 1 }, { defaultBranch: '--upload-pack=x' }, { defaultBranch: 'refs/heads/main' }, { defaultBranch: 'a..b' }, { defaultBranch: 'HEAD' }, { defaultBranch: '' }]) {
+    const { fixture } = defaultBranchFixture(options);
+    try {
+      const calls = [];
+      const result = run(fixture, ['git', 'fetch'], { spawnSync: recordingSpawn(calls) });
+      assert.equal(result.code, 2, JSON.stringify(options));
+      assert.match(result.messages.join(''), /default branch could not be read from GitHub/);
+      assert.equal(calls.some((call) => call.args.includes('fetch')), false);
+    } finally {
+      fixture.cleanup();
+    }
+  }
+
+  const { fixture } = defaultBranchFixture();
+  try {
+    for (const [key, value, pattern] of [
+      ['url.https://evil.example/.insteadOf', 'https://github.com/', /redirect network access/],
+      ['http.proxy', 'http://evil.example', /redirect network access/],
+      ['merge.x.driver', 'touch /tmp/pwned', /can run external commands/],
+    ]) {
+      git(fixture.repo, 'config', key, value);
+      const calls = [];
+      const result = run(fixture, ['git', 'fetch'], { spawnSync: recordingSpawn(calls) });
+      assert.equal(result.code, 2, key);
+      assert.match(result.messages.join(''), pattern);
+      assert.equal(calls.some((call) => call.args.includes('fetch')), false, key);
+      git(fixture.repo, 'config', '--unset', key);
+    }
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('実行: git merge は取得済みのデフォルトブランチを、早送りで済む場合も merge commit で取り込み、そのまま push できる（親にデフォルトブランチ側が残る）', () => {
+  const { fixture, remote, advance } = defaultBranchFixture();
+  try {
+    const mainTip = advance('latest.txt');
+    commitFile(fixture.repo, 'feature.txt');
+    const featureTip = git(fixture.repo, 'rev-parse', 'HEAD');
+    assert.equal(run(fixture, ['git', 'fetch']).code, 0);
+
+    const calls = [];
+    const result = run(fixture, ['git', 'merge'], { spawnSync: recordingSpawn(calls) });
+    assert.equal(result.code, 0, result.messages.join(''));
+    assert.deepEqual(parents(fixture.repo), [featureTip, mainTip]);
+    assert.equal(fs.existsSync(path.join(fixture.repo, 'latest.txt')), true);
+    // 引数は固定。取り込む元は完全名の追跡 ref だけで、squash・早送りのみ・編集画面は使わない。
+    const mergeCall = calls.find((call) => call.args.includes('merge'));
+    assert.deepEqual(mergeCall.args.slice(FIXED_GIT_PREFIX.length), ['merge', '--no-ff', '--no-edit', '--no-squash', '--commit', '--strategy=ort', '--no-verify', '--no-verify-signatures', '--no-autostash', '--no-gpg-sign', '--no-rerere-autoupdate', 'refs/remotes/origin/main']);
+
+    // 早送りで済む場合（作業ブランチに独自のコミットが無い）も merge commit を作る。
+    git(fixture.repo, 'checkout', '-q', '-b', 'work/ff', 'HEAD~1');
+    const behindTip = git(fixture.repo, 'rev-parse', 'HEAD');
+    assert.equal(run(fixture, ['git', 'merge']).code, 0);
+    assert.equal(parents(fixture.repo).length, 2);
+    assert.equal(parents(fixture.repo)[0], behindTip);
+    git(fixture.repo, 'checkout', '-q', 'work/test');
+
+    // 元ブランチへ push すると、リモート側の履歴にデフォルトブランチ側の親が残る。
+    const pushed = run(fixture, ['git', 'push', 'work/test']);
+    assert.equal(pushed.code, 0, pushed.messages.join(''));
+    assert.deepEqual(parents(remote.bare, 'work/test'), [featureTip, mainTip]);
+    // 既に取り込み済みなら何も変わらない。
+    assert.equal(run(fixture, ['git', 'merge']).code, 0);
+    assert.deepEqual(parents(fixture.repo), [featureTip, mainTip]);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('実行: 競合した git merge は状態を戻さず、ファイルを直して git add・git commit -m で merge commit を完成させて push できる', () => {
+  const { fixture, remote, advance } = defaultBranchFixture();
+  try {
+    const mainTip = advance('a.txt', 'main side\n');
+    fs.writeFileSync(path.join(fixture.repo, 'a.txt'), 'work side\n');
+    assert.equal(run(fixture, ['git', 'add', '--', 'a.txt']).code, 0);
+    assert.equal(run(fixture, ['git', 'commit', '-m', 'work edit']).code, 0);
+    const workTip = git(fixture.repo, 'rev-parse', 'HEAD');
+    assert.equal(run(fixture, ['git', 'fetch']).code, 0);
+
+    const conflicted = run(fixture, ['git', 'merge']);
+    assert.equal(conflicted.code, 1);
+    // 状態は戻さず、競合した作業ツリーのまま残る。
+    assert.equal(git(fixture.repo, 'rev-parse', 'MERGE_HEAD'), mainTip);
+    assert.match(fs.readFileSync(path.join(fixture.repo, 'a.txt'), 'utf8'), /^<<<<<<< /);
+    // merge 中の再実行は拒否する。
+    const again = run(fixture, ['git', 'merge']);
+    assert.equal(again.code, 2);
+    assert.match(again.messages.join(''), /merge is already in progress/);
+
+    // 既存の add / commit が merge 中でも拒否されずに通り、親 2 つの merge commit になる。
+    fs.writeFileSync(path.join(fixture.repo, 'a.txt'), 'resolved\n');
+    assert.equal(run(fixture, ['git', 'add', '--', 'a.txt']).code, 0);
+    const committed = run(fixture, ['git', 'commit', '-m', 'Merge main into work']);
+    assert.equal(committed.code, 0, committed.messages.join(''));
+    assert.deepEqual(parents(fixture.repo), [workTip, mainTip]);
+    assert.equal(git(fixture.repo, 'status', '--porcelain'), '');
+
+    const pushed = run(fixture, ['git', 'push', 'work/test']);
+    assert.equal(pushed.code, 0, pushed.messages.join(''));
+    assert.deepEqual(parents(remote.bare, 'work/test'), [workTip, mainTip]);
+    // デフォルトブランチ自体は動かない。
+    assert.equal(git(remote.bare, 'rev-parse', 'main'), mainTip);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('拒否: git merge は main / master・デフォルトブランチ・detached HEAD 上と、未コミット変更・未取得・merge 中・GitHub から読めないときに何もしない', () => {
+  const { fixture, advance } = defaultBranchFixture();
+  try {
+    advance('latest.txt');
+    assert.equal(run(fixture, ['git', 'fetch']).code, 0);
+    const mergeCalls = (calls) => calls.filter((call) => call.args.includes('merge')).length;
+    const attempt = (pattern, label) => {
+      const calls = [];
+      const result = run(fixture, ['git', 'merge'], { spawnSync: recordingSpawn(calls) });
+      assert.equal(result.code, 2, label);
+      assert.match(result.messages.join(''), pattern, label);
+      assert.equal(mergeCalls(calls), 0, label);
+    };
+    const headBefore = git(fixture.repo, 'rev-parse', 'HEAD');
+
+    // main / master / リモートの既定ブランチ（origin/HEAD の指す先）/ detached HEAD。
+    git(fixture.repo, 'checkout', '-q', 'main');
+    attempt(/cannot merge on the default branch "main"/, 'main');
+    git(fixture.repo, 'checkout', '-q', '-b', 'master');
+    attempt(/cannot merge on the default branch "master"/, 'master');
+    git(fixture.repo, 'checkout', '-q', '-b', 'develop');
+    git(fixture.repo, 'update-ref', 'refs/remotes/origin/develop', 'HEAD');
+    git(fixture.repo, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/develop');
+    attempt(/cannot merge on the default branch "develop"/, 'origin/HEAD の指す先');
+    git(fixture.repo, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main');
+    git(fixture.repo, 'checkout', '-q', '--detach', headBefore);
+    attempt(/detached HEAD/, 'detached HEAD');
+    git(fixture.repo, 'checkout', '-q', 'work/test');
+
+    // 追跡ファイルの変更（作業ツリー・ステージ済み）。
+    fs.writeFileSync(path.join(fixture.repo, 'a.txt'), 'dirty\n');
+    attempt(/uncommitted changes exist/, '作業ツリーの変更');
+    git(fixture.repo, 'add', 'a.txt');
+    attempt(/uncommitted changes exist/, 'ステージ済みの変更');
+    git(fixture.repo, 'reset', '-q', '--hard');
+
+    // 取得済みの ref が無い。
+    git(fixture.repo, 'update-ref', '-d', 'refs/remotes/origin/main');
+    attempt(/has not been fetched/, '未取得');
+    assert.equal(run(fixture, ['git', 'fetch']).code, 0);
+
+    // 危険な設定（merge driver）がある。
+    git(fixture.repo, 'config', 'merge.x.driver', 'touch /tmp/pwned %A');
+    attempt(/can run external commands/, 'merge driver');
+    git(fixture.repo, 'config', '--unset', 'merge.x.driver');
+
+    // デフォルトブランチを GitHub から読めない。
+    installLabelGh(fixture, { 'repos/vektor-inc/vk-terminals': { status: 1 } });
+    attempt(/default branch could not be read from GitHub/, 'gh 失敗');
+
+    assert.equal(git(fixture.repo, 'rev-parse', 'HEAD'), headBefore);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('実行: git merge と競合解消の commit では、リポジトリ内のフックが実行されない', () => {
+  const { fixture, advance } = defaultBranchFixture();
+  try {
+    const marker = path.join(fixture.root, 'hook-ran');
+    for (const hook of ['pre-merge-commit', 'post-merge', 'commit-msg', 'pre-commit', 'prepare-commit-msg', 'post-commit']) {
+      const file = path.join(fixture.repo, '.git', 'hooks', hook);
+      fs.writeFileSync(file, `#!/bin/sh\ntouch ${JSON.stringify(marker)}\n`, { mode: 0o755 });
+    }
+    advance('a.txt', 'main side\n');
+    fs.writeFileSync(path.join(fixture.repo, 'a.txt'), 'work side\n');
+    git(fixture.repo, 'add', 'a.txt');
+    assert.equal(run(fixture, ['git', 'commit', '-m', 'work edit']).code, 0);
+    assert.equal(run(fixture, ['git', 'fetch']).code, 0);
+    assert.equal(run(fixture, ['git', 'merge']).code, 1);
+    fs.writeFileSync(path.join(fixture.repo, 'a.txt'), 'resolved\n');
+    assert.equal(run(fixture, ['git', 'add', '--', 'a.txt']).code, 0);
+    assert.equal(run(fixture, ['git', 'commit', '-m', 'resolve']).code, 0);
+    assert.equal(fs.existsSync(marker), false);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('拒否: 強制 push・タグ操作などは git fetch / git merge の追加後も許可されない', () => {
+  for (const command of [
+    ['git', 'push', '--force', 'work/test'], ['git', 'push', '--tags'], ['git', 'push', '--delete', 'work/test'], ['git', 'push', '+work/test'],
+    ['git', 'tag', 'v1'], ['git', 'tag', '-d', 'v1'], ['git', 'rebase', 'main'], ['git', 'reset', '--hard'], ['git', 'pull'],
+  ]) {
+    assert.equal(parseTaskCommand(command).ok, false, command.join(' '));
+  }
+});
+
+test('拒否: GitHub から読んだデフォルトブランチ上では、ローカルに origin/HEAD が無くても git merge を実行しない', () => {
+  const { fixture } = defaultBranchFixture({ defaultBranch: 'develop' });
+  try {
+    git(fixture.repo, 'checkout', '-q', '-b', 'develop');
+    assert.throws(() => git(fixture.repo, 'symbolic-ref', '-q', 'refs/remotes/origin/HEAD'));
+    const calls = [];
+    const result = run(fixture, ['git', 'merge'], { spawnSync: recordingSpawn(calls) });
+    assert.equal(result.code, 2);
+    assert.match(result.messages.join(''), /cannot merge on the default branch "develop"/);
+    assert.equal(calls.some((call) => call.args.includes('merge')), false);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('拒否: merge の戦略・オプション・署名検証を差し替える設定があると git merge は実行せず、他の操作（fetch）には影響しない', () => {
+  const { fixture, advance } = defaultBranchFixture();
+  try {
+    advance('latest.txt');
+    for (const [key, value] of [
+      ['branch.work/test.mergeoptions', '-s ours'],
+      ['pull.twohead', 'ours'],
+      ['pull.octopus', 'ours'],
+      ['merge.verifySignatures', 'true'],
+    ]) {
+      git(fixture.repo, 'config', key, value);
+      // fetch は通る（merge 専用の検査）。
+      assert.equal(run(fixture, ['git', 'fetch']).code, 0, key);
+      const calls = [];
+      const result = run(fixture, ['git', 'merge'], { spawnSync: recordingSpawn(calls) });
+      assert.equal(result.code, 2, key);
+      assert.match(result.messages.join(''), /can change how merge works/, key);
+      assert.equal(calls.some((call) => call.args.includes('merge')), false, key);
+      git(fixture.repo, 'config', '--unset', key);
+    }
+    // 設定を外せば通る。
+    assert.equal(run(fixture, ['git', 'merge']).code, 0);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('実行: .gitattributes に merge=evil だけがあり設定側にドライバ定義が無くても、外部コマンドは走らず組み込みの merge になる', () => {
+  const { fixture, advance } = defaultBranchFixture();
+  try {
+    const marker = path.join(fixture.root, 'driver-ran');
+    // 設定側に定義が無い名前なので、何も起動されない（定義があれば merge.*.driver として入口が拒否する）。
+    fs.writeFileSync(path.join(fixture.repo, '.gitattributes'), '* merge=evil\n');
+    git(fixture.repo, 'add', '.gitattributes');
+    fs.writeFileSync(path.join(fixture.repo, 'a.txt'), 'work side\n');
+    git(fixture.repo, 'add', 'a.txt');
+    assert.equal(run(fixture, ['git', 'commit', '-m', 'work edit']).code, 0);
+    advance('a.txt', 'main side\n');
+    assert.equal(run(fixture, ['git', 'fetch']).code, 0);
+    const result = run(fixture, ['git', 'merge']);
+    assert.equal(result.code, 1);
+    assert.match(fs.readFileSync(path.join(fixture.repo, 'a.txt'), 'utf8'), /^<<<<<<< /);
+    assert.equal(fs.existsSync(marker), false);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('実行: git fetch の書き込み制限は、取得先の追跡 ref とオブジェクトだけを許し、設定・フック・objects/info・他の ref には書かせない', (t) => {
+  if (!fs.existsSync('/usr/bin/sandbox-exec')) {
+    t.skip('sandbox-exec が無い環境');
+    return;
+  }
+  const { fixture } = defaultBranchFixture();
+  try {
+    const gitDir = path.join(fixture.repo, '.git');
+    fs.mkdirSync(path.join(gitDir, 'objects', 'info'), { recursive: true });
+    const targets = {
+      config: path.join(gitDir, 'config'),
+      hooks: path.join(gitDir, 'hooks', 'post-merge'),
+      alternates: path.join(gitDir, 'objects', 'info', 'alternates'),
+      attributes: path.join(gitDir, 'info', 'attributes'),
+      otherRef: path.join(gitDir, 'refs', 'heads', 'planted'),
+      allowedRef: path.join(gitDir, 'refs', 'remotes', 'origin', 'main.lock'),
+      allowedObject: path.join(gitDir, 'objects', 'planted-object'),
+    };
+    const configBefore = fs.readFileSync(targets.config, 'utf8');
+    // 実際の fetch の呼び出しから、書き込み制限の包み（sandbox-exec とそのプロファイル）だけを取り出し、中身を書き込みの試行に差し替える。
+    const attempts = Object.entries(targets).map(([name, file]) => `if ( : > '${file}' ) 2>/dev/null; then echo "${name}=written"; else echo "${name}=denied"; fi`).join('\n');
+    const results = [];
+    const interposed = (bin, args, options) => {
+      if (args.includes('fetch') && bin === '/usr/bin/sandbox-exec') {
+        const wrapped = [...args.slice(0, args.indexOf(GIT_PATH)), '/bin/sh', '-c', attempts];
+        const out = childProcess.spawnSync(bin, wrapped, { ...options, stdio: 'pipe' });
+        results.push(String(out.stdout));
+        return { status: 1, stdout: '', stderr: '' };
+      }
+      return childProcess.spawnSync(bin, args, { ...options, stdio: 'pipe' });
+    };
+    run(fixture, ['git', 'fetch'], { spawnSync: interposed });
+    const outcome = Object.fromEntries(results.join('').trim().split('\n').map((line) => line.split('=')));
+    assert.deepEqual(outcome, {
+      config: 'denied', hooks: 'denied', alternates: 'denied', attributes: 'denied', otherRef: 'denied', allowedRef: 'written', allowedObject: 'written',
+    });
+    assert.equal(fs.readFileSync(targets.config, 'utf8'), configBefore);
+    assert.equal(fs.existsSync(targets.hooks), false);
+    assert.equal(fs.existsSync(targets.alternates), false);
+  } finally {
+    fixture.cleanup();
+  }
+});

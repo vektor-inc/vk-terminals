@@ -413,6 +413,10 @@ test('生成: rules は信頼済みランチャーの実行だけを許可し、
     assert.equal(guide.includes('node '), false);
     for (const operation of ORCHESTRATED_TASK_OPERATIONS) assert.ok(guide.includes(`\`${operation}\``), operation);
     assert.match(guide, /`gh issue create` は `--title <題> --body <本文>` が必須/);
+    // デフォルトブランチの取り込み（引数なしの fetch / merge）と、競合時は既存の add / commit で完成させること。
+    assert.match(guide, /`git fetch` と `git merge` は引数を一切取らない/);
+    assert.match(guide, /merge commit つきで取り込む（squash・早送りだけの取り込みはしない）/);
+    assert.match(guide, /`git add` し、`git commit -m <メッセージ>` で merge commit を完成させてから `git push <ブランチ名>`/);
     // レビュー合格ラベルの 4 操作と、vk-agents の Codex 版 vk-kore 9-3 との対応関係。
     assert.match(guide, /`gh label exists agent-review-passed`（= `label-exists`）.*`LABEL_EXISTS`.*`LABEL_MISSING`/);
     assert.match(guide, /`gh label create agent-review-passed`（= `label-create`）/);

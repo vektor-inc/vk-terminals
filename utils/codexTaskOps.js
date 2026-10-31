@@ -19,6 +19,9 @@
 //     起動時の許可リストと一致するときだけ、ローカル Git に依存せず実行できる。gh には検証済みの --repo を必ず付ける。
 //   - 通信する Git 操作（git push / prepare worktree の fetch）は origin の設定値を使わない。拘束した owner/repo から
 //     入口が組み立てた固定 URL と固定 refspec だけに送り、資格情報は検証済み gh の `auth git-credential` だけを使う（issue #440）。
+//   - デフォルトブランチの取り込みは引数なしの `git fetch` / `git merge` だけ（issue #479）。取得元は拘束した owner/repo の固定 URL、対象は
+//     gh で GitHub から読んだデフォルトブランチ 1 本、保存先は refs/remotes/origin/<デフォルトブランチ> に固定する。merge は必ず merge commit を作り、
+//     競合したときは状態を戻さず、Codex がファイルを直したあと既存の `git add` / `git commit -m` で完成させる。
 //   - メンバー起動（member start / member status。issue #441）は、子の Codex を親と同じ範囲の sandbox（-s workspace-write か read-only、
 //     -a never）で起動する。囲いを外す指定は受け付けず、子には専用の CODEX_HOME（member 操作を持たない入口）を渡して入れ子の起動を防ぐ。
 //     入出力ファイルは起動ごとの専用フォルダ直下の名前だけで、子の実行は数十分かかりうるためバックグラウンドで行う。
@@ -442,6 +445,13 @@ function parseGitPush(tokens) {
   return { ok: true, bin: 'git', operation: 'push', branch, needsGitHub: true, needsGh: true };
 }
 
+// `git fetch` / `git merge` は引数を一切取らない。取得元・取得する ref・merge 元は入口がデフォルトブランチから固定するため、
+// URL・refspec・ブランチ名・フラグはすべて拒否する。
+function parseGitNoArguments(subcommand, tokens, { operation, guardsDefaultBranch = false }) {
+  if (tokens.length !== 0) return fail(`git ${subcommand} takes no arguments`);
+  return { ok: true, bin: 'git', operation, needsGitHub: true, needsGh: true, ...(guardsDefaultBranch ? { guardsDefaultBranch: true } : {}) };
+}
+
 // 作業フォルダ準備は `prepare worktree <base> <issue番号> <ブランチ> <worktree名>` だけ（owner/repo は拘束済みなので引数に取らない）。
 function parsePrepareWorktree(tokens) {
   if (tokens.length !== 4) return fail('usage: prepare worktree <base> <issue number> <branch> <worktree name>');
@@ -543,6 +553,8 @@ function parseTaskCommand(argv) {
       case 'add': return parseGitAdd(tokens);
       case 'commit': return parseGitCommit(tokens);
       case 'push': return parseGitPush(tokens);
+      case 'fetch': return parseGitNoArguments('fetch', tokens, { operation: 'fetch-default-branch' });
+      case 'merge': return parseGitNoArguments('merge', tokens, { operation: 'merge-default-branch', guardsDefaultBranch: true });
       default: return fail(`git ${subcommand === undefined ? '' : JSON.stringify(subcommand)} is not allowed`);
     }
   }
@@ -1101,6 +1113,14 @@ function networkGitConfig(binding) {
   ];
 }
 
+/** 拘束した URL からブランチ 1 本だけを refs/remotes/origin/<ブランチ> へ取得する fetch の引数（prepare worktree と git fetch が共有する）。 */
+function boundFetchArgs(binding, branch) {
+  return [
+    ...FIXED_GIT_PREFIX, ...networkGitConfig(binding),
+    'fetch', '--no-tags', '--no-recurse-submodules', '--no-write-fetch-head', '--refmap=', boundRemoteUrl(binding), `+refs/heads/${branch}:refs/remotes/origin/${branch}`,
+  ];
+}
+
 function networkEnvironment(binding) {
   return buildChildEnvironment(binding, { allowProtocol: binding.remoteBase.startsWith('https://') ? 'https' : 'file' });
 }
@@ -1169,6 +1189,89 @@ function executePush({ parsed, binding, cwd, runGit, spawnSync, networkEnv, reje
     url, `${ref}:${ref}`,
   ];
   const result = spawnSync(binding.git, args, { cwd, env: networkEnv, encoding: 'utf8', stdio: 'inherit' });
+  if (result.error) return reject(`task command failed to start: ${result.error.code || 'error'}`);
+  return typeof result.status === 'number' ? result.status : 2;
+}
+
+// ─── デフォルトブランチの取得と取り込み（git fetch / git merge。issue #479） ─────────────
+
+/**
+ * 拘束した owner/repo のデフォルトブランチ名を GitHub から読む（gh api の固定エンドポイント）。読めない・安全でない名前なら null。
+ * origin/HEAD や呼び出し側の指定は使わない。
+ */
+function readDefaultBranch({ binding, cwd, env, spawnSync }) {
+  const result = spawnSync(binding.gh, ['api', '--jq', '.default_branch', `repos/${binding.repo}`], { cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] });
+  if (result.error || result.status !== 0) return null;
+  const name = String(result.stdout || '').trim();
+  return isSafeBranchName(name) && !name.startsWith('refs/') && name !== 'HEAD' ? name : null;
+}
+
+/**
+ * `git fetch`（引数なし）。GitHub から読んだデフォルトブランチだけを、拘束した URL から refs/remotes/origin/<デフォルトブランチ> へ取得する。
+ * prepare worktree の取得と同じ引数（boundFetchArgs）・同じ書き込み制限（取得したオブジェクト・その 1 本の追跡 ref とログ・gh の設定だけ）で実行する。
+ */
+function executeFetchDefaultBranch({ binding, cwd, fsImpl, runGit, spawnSync, networkEnv, plainEnv, reject, inspected, writeOut, deps }) {
+  if (inspected.networkUnsafeKey) return reject(`task command rejected: repository configuration can redirect network access: ${JSON.stringify(inspected.networkUnsafeKey)}`);
+  const base = readDefaultBranch({ binding, cwd, env: plainEnv, spawnSync });
+  if (base === null) return reject('task command rejected: default branch could not be read from GitHub');
+  const remoteRef = `refs/remotes/origin/${base}`;
+
+  const commonDir = resolveGitCommonDir({ dir: cwd, run: runGit, fsImpl });
+  let ghConfigReal = null;
+  try {
+    resolveTrustedPath(fsImpl, SANDBOX_EXEC_PATH, { uid: deps.uid, finalKind: 'file' });
+    if (commonDir === null) throw new TrustError('git directory could not be resolved');
+    ghConfigReal = resolveTrustedPath(fsImpl, binding.ghConfig, { uid: deps.uid, rejectFinalLink: true }).realPath;
+  } catch (_error) {
+    return reject('task command rejected: write-restricted execution is not available');
+  }
+  const gitPath = (...parts) => path.join(commonDir, ...parts);
+  const controlFiles = [gitPath('hooks'), gitPath('config'), gitPath('config.worktree'), gitPath('info', 'attributes'), gitPath('objects', 'info')];
+  const restricted = (command, allowWrite) => restrictWrites({ ...command, allowWrite, denyWrite: controlFiles });
+  const runRestricted = (command, options) => spawnSync(command.bin, command.args, { cwd, encoding: 'utf8', ...options });
+  const refParts = ['remotes', 'origin', ...base.split('/')];
+  const refFile = gitPath('refs', ...refParts);
+  const logFile = gitPath('logs', 'refs', ...refParts);
+
+  // 追跡 ref の親フォルダ（まだ無いものだけ）を、書き込みをそのフォルダに限った子プロセスで作る。
+  const parentDirs = [];
+  for (let i = 1; i < refParts.length; i += 1) parentDirs.push(gitPath('refs', ...refParts.slice(0, i)), gitPath('logs', 'refs', ...refParts.slice(0, i)));
+  const missing = [gitPath('refs'), gitPath('logs'), gitPath('logs', 'refs'), ...parentDirs].filter((dir) => lstatOrNull(fsImpl, dir) === null);
+  if (missing.length > 0) {
+    const made = runRestricted(restricted({ bin: '/bin/mkdir', args: ['-p', '--', ...missing] }, missing), { env: plainEnv });
+    if (made.error || made.status !== 0) return reject('task command rejected: could not prepare the git directories');
+  }
+
+  const fetched = runRestricted(
+    restricted({ bin: binding.git, args: boundFetchArgs(binding, base) }, [gitPath('objects'), refFile, `${refFile}.lock`, logFile, `${logFile}.lock`, ghConfigReal]),
+    { env: networkEnv, stdio: 'inherit' },
+  );
+  if (fetched.error) return reject(`task command failed to start: ${fetched.error.code || 'error'}`);
+  if (fetched.status !== 0) return typeof fetched.status === 'number' ? fetched.status : 2;
+  const sha = runGit(['rev-parse', '--verify', '-q', remoteRef], cwd);
+  if (sha.status !== 0) return reject(`task command rejected: could not fetch the default branch ${JSON.stringify(base)}`);
+  writeOut(`DEFAULT_BRANCH=${base}\nFETCHED_REF=${remoteRef}\nFETCHED_SHA=${String(sha.stdout).trim()}\n`);
+  return 0;
+}
+
+/**
+ * `git merge`（引数なし）。直前の `git fetch` で取得した refs/remotes/origin/<デフォルトブランチ> だけを、現在の作業ブランチへ merge commit つきで取り込む。
+ * 作業ブランチ上であること（main / master・デフォルトブランチ・detached HEAD は実行前に拒否済み）・追跡ファイルの変更が無いこと・merge 中でないこと・取得済み ref があることを確かめる。
+ * 競合したときは戻さず終了コード 1 で返し、Codex がファイルを直して既存の `git add` / `git commit -m` で完成させる。
+ */
+function executeMergeDefaultBranch({ binding, cwd, runGit, spawnSync, plainEnv, reject }) {
+  const base = readDefaultBranch({ binding, cwd, env: plainEnv, spawnSync });
+  if (base === null) return reject('task command rejected: default branch could not be read from GitHub');
+  const remoteRef = `refs/remotes/origin/${base}`;
+  if (runGit(['rev-parse', '-q', '--verify', 'MERGE_HEAD'], cwd).status === 0) return reject('task command rejected: a merge is already in progress; finish it with git add and git commit first');
+  const status = runGit(['status', '--porcelain', '--untracked-files=no'], cwd);
+  if (status.status !== 0) return reject('task command rejected: working tree status could not be read');
+  if (String(status.stdout).trim() !== '') return reject('task command rejected: uncommitted changes exist; commit them before git merge');
+  if (runGit(['show-ref', '--verify', '--quiet', remoteRef], cwd).status !== 0) return reject(`task command rejected: ${remoteRef} has not been fetched; run git fetch first`);
+
+  // 引数は固定。早送りで済む場合も merge commit を作り（--no-ff）、編集画面・フック・署名・stash は使わない。
+  const args = [...FIXED_GIT_PREFIX, 'merge', '--no-ff', '--no-edit', '--no-squash', '--no-verify', '--no-autostash', '--no-gpg-sign', '--no-rerere-autoupdate', remoteRef];
+  const result = spawnSync(binding.git, args, { cwd, env: plainEnv, encoding: 'utf8', stdio: 'inherit' });
   if (result.error) return reject(`task command failed to start: ${result.error.code || 'error'}`);
   return typeof result.status === 'number' ? result.status : 2;
 }
@@ -1463,10 +1566,7 @@ function executePrepareWorktree({ parsed, binding, cwd, fsImpl, runGit, spawnSyn
   if (!makeDirs([gitPath('refs'), gitPath('logs'), gitPath('logs', 'refs'), ...gitDirs])) return reject('task command rejected: could not prepare the git directories');
 
   // 取得（通信あり）。書き込み先は、取得したオブジェクトと origin の追跡 ref と gh の設定だけ。
-  const fetchArgs = [
-    ...FIXED_GIT_PREFIX, ...networkGitConfig(binding),
-    'fetch', '--no-tags', '--no-recurse-submodules', '--no-write-fetch-head', '--refmap=', boundRemoteUrl(binding), `+refs/heads/${parsed.base}:${remoteRef}`,
-  ];
+  const fetchArgs = boundFetchArgs(binding, parsed.base);
   const fetched = runRestricted(restricted({ bin: binding.git, args: fetchArgs }, [gitPath('objects'), ...writableRef(remoteParts), ghConfigReal]), { env: networkEnv, stdio: 'inherit' });
   if (fetched.error) return reject(`task command failed to start: ${fetched.error.code || 'error'}`);
   if (fetched.status !== 0) return typeof fetched.status === 'number' ? fetched.status : 2;
@@ -2044,6 +2144,12 @@ function runTaskCommand(argv, deps = {}) {
     const context = { parsed, binding, cwd, fsImpl, runGit, spawnSync, networkEnv, plainEnv: env, reject, inspected, write, writeOut, deps };
     return parsed.operation === 'push' ? executePush(context) : executePrepareWorktree(context);
   }
+
+  if (parsed.operation === 'fetch-default-branch') {
+    const networkEnv = networkEnvironment(binding);
+    return executeFetchDefaultBranch({ binding, cwd, fsImpl, runGit, spawnSync, networkEnv, plainEnv: env, reject, inspected, writeOut, deps });
+  }
+  if (parsed.operation === 'merge-default-branch') return executeMergeDefaultBranch({ binding, cwd, runGit, spawnSync, plainEnv: env, reject });
 
   if (REVIEW_LABEL_OPERATIONS.has(parsed.operation)) {
     // 明示先の gh と同じく、呼び出し元 cwd の Git 設定に依存させない。

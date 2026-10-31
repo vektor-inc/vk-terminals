@@ -3885,7 +3885,7 @@ const parents = (cwd, rev = 'HEAD') => git(cwd, 'rev-list', '--parents', '-n', '
 
 test('許可: git fetch / git merge は引数なしの固定形だけで、デフォルトブランチの確認に gh を使う', () => {
   assert.deepEqual(parseTaskCommand(argv('git fetch')), { ok: true, bin: 'git', operation: 'fetch-default-branch', needsGitHub: true, needsGh: true });
-  assert.deepEqual(parseTaskCommand(argv('git merge')), { ok: true, bin: 'git', operation: 'merge-default-branch', needsGitHub: true, needsGh: true, guardsDefaultBranch: true });
+  assert.deepEqual(parseTaskCommand(argv('git merge')), { ok: true, bin: 'git', operation: 'merge-default-branch', needsGitHub: true, needsGh: true, guardsDefaultBranch: true, branchAction: 'merge' });
 });
 
 test('拒否: git fetch / git merge は URL・refspec・ブランチ名・フラグなど、どんな引数も受け付けない', () => {
@@ -4009,7 +4009,7 @@ test('実行: git merge は取得済みのデフォルトブランチを、早�
     assert.equal(fs.existsSync(path.join(fixture.repo, 'latest.txt')), true);
     // 引数は固定。取り込む元は完全名の追跡 ref だけで、squash・早送りのみ・編集画面は使わない。
     const mergeCall = calls.find((call) => call.args.includes('merge'));
-    assert.deepEqual(mergeCall.args.slice(FIXED_GIT_PREFIX.length), ['merge', '--no-ff', '--no-edit', '--no-squash', '--no-verify', '--no-autostash', '--no-gpg-sign', '--no-rerere-autoupdate', 'refs/remotes/origin/main']);
+    assert.deepEqual(mergeCall.args.slice(FIXED_GIT_PREFIX.length), ['merge', '--no-ff', '--no-edit', '--no-squash', '--commit', '--strategy=ort', '--no-verify', '--no-verify-signatures', '--no-autostash', '--no-gpg-sign', '--no-rerere-autoupdate', 'refs/remotes/origin/main']);
 
     // 早送りで済む場合（作業ブランチに独自のコミットが無い）も merge commit を作る。
     git(fixture.repo, 'checkout', '-q', '-b', 'work/ff', 'HEAD~1');
@@ -4086,13 +4086,13 @@ test('拒否: git merge は main / master・デフォルトブランチ・detach
 
     // main / master / リモートの既定ブランチ（origin/HEAD の指す先）/ detached HEAD。
     git(fixture.repo, 'checkout', '-q', 'main');
-    attempt(/cannot commit on the default branch "main"/, 'main');
+    attempt(/cannot merge on the default branch "main"/, 'main');
     git(fixture.repo, 'checkout', '-q', '-b', 'master');
-    attempt(/cannot commit on the default branch "master"/, 'master');
+    attempt(/cannot merge on the default branch "master"/, 'master');
     git(fixture.repo, 'checkout', '-q', '-b', 'develop');
     git(fixture.repo, 'update-ref', 'refs/remotes/origin/develop', 'HEAD');
     git(fixture.repo, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/develop');
-    attempt(/cannot commit on the default branch "develop"/, 'origin/HEAD の指す先');
+    attempt(/cannot merge on the default branch "develop"/, 'origin/HEAD の指す先');
     git(fixture.repo, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main');
     git(fixture.repo, 'checkout', '-q', '--detach', headBefore);
     attempt(/detached HEAD/, 'detached HEAD');
@@ -4154,5 +4154,112 @@ test('拒否: 強制 push・タグ操作などは git fetch / git merge の追�
     ['git', 'tag', 'v1'], ['git', 'tag', '-d', 'v1'], ['git', 'rebase', 'main'], ['git', 'reset', '--hard'], ['git', 'pull'],
   ]) {
     assert.equal(parseTaskCommand(command).ok, false, command.join(' '));
+  }
+});
+
+test('拒否: GitHub から読んだデフォルトブランチ上では、ローカルに origin/HEAD が無くても git merge を実行しない', () => {
+  const { fixture } = defaultBranchFixture({ defaultBranch: 'develop' });
+  try {
+    git(fixture.repo, 'checkout', '-q', '-b', 'develop');
+    assert.throws(() => git(fixture.repo, 'symbolic-ref', '-q', 'refs/remotes/origin/HEAD'));
+    const calls = [];
+    const result = run(fixture, ['git', 'merge'], { spawnSync: recordingSpawn(calls) });
+    assert.equal(result.code, 2);
+    assert.match(result.messages.join(''), /cannot merge on the default branch "develop"/);
+    assert.equal(calls.some((call) => call.args.includes('merge')), false);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('拒否: merge の戦略・オプション・署名検証を差し替える設定があると git merge は実行せず、他の操作（fetch）には影響しない', () => {
+  const { fixture, advance } = defaultBranchFixture();
+  try {
+    advance('latest.txt');
+    for (const [key, value] of [
+      ['branch.work/test.mergeoptions', '-s ours'],
+      ['pull.twohead', 'ours'],
+      ['pull.octopus', 'ours'],
+      ['merge.verifySignatures', 'true'],
+    ]) {
+      git(fixture.repo, 'config', key, value);
+      // fetch は通る（merge 専用の検査）。
+      assert.equal(run(fixture, ['git', 'fetch']).code, 0, key);
+      const calls = [];
+      const result = run(fixture, ['git', 'merge'], { spawnSync: recordingSpawn(calls) });
+      assert.equal(result.code, 2, key);
+      assert.match(result.messages.join(''), /can change how merge works/, key);
+      assert.equal(calls.some((call) => call.args.includes('merge')), false, key);
+      git(fixture.repo, 'config', '--unset', key);
+    }
+    // 設定を外せば通る。
+    assert.equal(run(fixture, ['git', 'merge']).code, 0);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('実行: .gitattributes に merge=evil だけがあり設定側にドライバ定義が無くても、外部コマンドは走らず組み込みの merge になる', () => {
+  const { fixture, advance } = defaultBranchFixture();
+  try {
+    const marker = path.join(fixture.root, 'driver-ran');
+    // 設定側に定義が無い名前なので、何も起動されない（定義があれば merge.*.driver として入口が拒否する）。
+    fs.writeFileSync(path.join(fixture.repo, '.gitattributes'), '* merge=evil\n');
+    git(fixture.repo, 'add', '.gitattributes');
+    fs.writeFileSync(path.join(fixture.repo, 'a.txt'), 'work side\n');
+    git(fixture.repo, 'add', 'a.txt');
+    assert.equal(run(fixture, ['git', 'commit', '-m', 'work edit']).code, 0);
+    advance('a.txt', 'main side\n');
+    assert.equal(run(fixture, ['git', 'fetch']).code, 0);
+    const result = run(fixture, ['git', 'merge']);
+    assert.equal(result.code, 1);
+    assert.match(fs.readFileSync(path.join(fixture.repo, 'a.txt'), 'utf8'), /^<<<<<<< /);
+    assert.equal(fs.existsSync(marker), false);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('実行: git fetch の書き込み制限は、取得先の追跡 ref とオブジェクトだけを許し、設定・フック・objects/info・他の ref には書かせない', (t) => {
+  if (!fs.existsSync('/usr/bin/sandbox-exec')) {
+    t.skip('sandbox-exec が無い環境');
+    return;
+  }
+  const { fixture } = defaultBranchFixture();
+  try {
+    const gitDir = path.join(fixture.repo, '.git');
+    fs.mkdirSync(path.join(gitDir, 'objects', 'info'), { recursive: true });
+    const targets = {
+      config: path.join(gitDir, 'config'),
+      hooks: path.join(gitDir, 'hooks', 'post-merge'),
+      alternates: path.join(gitDir, 'objects', 'info', 'alternates'),
+      attributes: path.join(gitDir, 'info', 'attributes'),
+      otherRef: path.join(gitDir, 'refs', 'heads', 'planted'),
+      allowedRef: path.join(gitDir, 'refs', 'remotes', 'origin', 'main.lock'),
+      allowedObject: path.join(gitDir, 'objects', 'planted-object'),
+    };
+    const configBefore = fs.readFileSync(targets.config, 'utf8');
+    // 実際の fetch の呼び出しから、書き込み制限の包み（sandbox-exec とそのプロファイル）だけを取り出し、中身を書き込みの試行に差し替える。
+    const attempts = Object.entries(targets).map(([name, file]) => `if ( : > '${file}' ) 2>/dev/null; then echo "${name}=written"; else echo "${name}=denied"; fi`).join('\n');
+    const results = [];
+    const interposed = (bin, args, options) => {
+      if (args.includes('fetch') && bin === '/usr/bin/sandbox-exec') {
+        const wrapped = [...args.slice(0, args.indexOf(GIT_PATH)), '/bin/sh', '-c', attempts];
+        const out = childProcess.spawnSync(bin, wrapped, { ...options, stdio: 'pipe' });
+        results.push(String(out.stdout));
+        return { status: 1, stdout: '', stderr: '' };
+      }
+      return childProcess.spawnSync(bin, args, { ...options, stdio: 'pipe' });
+    };
+    run(fixture, ['git', 'fetch'], { spawnSync: interposed });
+    const outcome = Object.fromEntries(results.join('').trim().split('\n').map((line) => line.split('=')));
+    assert.deepEqual(outcome, {
+      config: 'denied', hooks: 'denied', alternates: 'denied', attributes: 'denied', otherRef: 'denied', allowedRef: 'written', allowedObject: 'written',
+    });
+    assert.equal(fs.readFileSync(targets.config, 'utf8'), configBefore);
+    assert.equal(fs.existsSync(targets.hooks), false);
+    assert.equal(fs.existsSync(targets.alternates), false);
+  } finally {
+    fixture.cleanup();
   }
 });

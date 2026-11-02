@@ -466,6 +466,13 @@ function parsePrepareWorktree(tokens) {
   return { ok: true, bin: 'git', operation: 'prepare-worktree', base, issue, branch, name, needsGitHub: true, needsGh: true };
 }
 
+// 起動元が作成済みの worktree を引き受ける操作は `prepare adopt-worktree <base> <issue番号> <ブランチ> <worktree名>`。引数の規則は prepare worktree と同じ。
+function parsePrepareAdoptWorktree(tokens) {
+  if (tokens.length !== 4) return fail('usage: prepare adopt-worktree <base> <issue number> <branch> <worktree name>');
+  const parsed = parsePrepareWorktree(tokens);
+  return parsed.ok ? { ...parsed, operation: 'prepare-adopt-worktree' } : parsed;
+}
+
 function isSafeMemberFileName(value) {
   return !hasUnsafeCharacter(value) && MEMBER_FILE_NAME_PATTERN.test(value) && !value.includes('..') && !value.endsWith('.');
 }
@@ -617,6 +624,7 @@ function parseTaskCommand(argv) {
   if (tool === 'prepare') {
     const [target, ...tokens] = rest;
     if (target === 'worktree') return parsePrepareWorktree(tokens);
+    if (target === 'adopt-worktree') return parsePrepareAdoptWorktree(tokens);
     return fail(`prepare ${target === undefined ? '' : JSON.stringify(target)} is not allowed`);
   }
   if (tool === 'member') return parseMember(rest);
@@ -1134,9 +1142,12 @@ function networkGitConfig(binding) {
 }
 
 /** 拘束した URL からブランチ 1 本だけを refs/remotes/origin/<ブランチ> へ取得する fetch の引数（prepare worktree と git fetch が共有する）。 */
-function boundFetchArgs(binding, branch) {
+function boundFetchArgs(binding, branch, gitDir = null) {
   return [
     ...FIXED_GIT_PREFIX, ...networkGitConfig(binding),
+    // 設定の一覧にも現れる値のため、FIXED_GIT_PREFIX ではなく取得の引数にだけ付ける（設定の検査が自分の指定を拒否しないように）。
+    '-c', 'core.alternateRefsCommand=',
+    ...(gitDir === null ? [] : [`--git-dir=${gitDir}`]),
     'fetch', '--no-tags', '--no-recurse-submodules', '--no-write-fetch-head', '--refmap=', boundRemoteUrl(binding), `+refs/heads/${branch}:refs/remotes/origin/${branch}`,
   ];
 }
@@ -1233,17 +1244,30 @@ function readDefaultBranch({ binding, cwd, env, spawnSync }) {
  * 追跡 ref 1 本分の書き込み許可パス（ref・ログとそれぞれのロック）、親フォルダの計算と作成、base を取得する関数。
  * @param {{binding: object, cwd: string, fsImpl: object, runGit: Function, spawnSync: Function, plainEnv: object, deps: object, base: string, extraControlFiles?: Function}} params
  *   extraControlFiles(gitPath) は追加で書き込みを禁じるパスの配列を返す
+ *   commonDir / gitDir は検査済みの値を呼び出し側が渡す場合の固定先（省略時はここで 1 度だけ求める）。取得は常に gitDir を明示して実行し、
+ *   その gitDir の設定を取得の直前に検査し直す
  */
-function prepareRestrictedFetch({ binding, cwd, fsImpl, runGit, spawnSync, plainEnv, deps, base, extraControlFiles = () => [] }) {
-  const commonDir = resolveGitCommonDir({ dir: cwd, run: runGit, fsImpl });
+function prepareRestrictedFetch({ binding, cwd, fsImpl, runGit, spawnSync, plainEnv, deps, base, extraControlFiles = () => [], commonDir: givenCommonDir = null, gitDir: givenGitDir = null }) {
+  const commonDir = givenCommonDir === null ? resolveGitCommonDir({ dir: cwd, run: runGit, fsImpl }) : givenCommonDir;
+  let gitDir = givenGitDir;
   let ghConfigReal = null;
   try {
     resolveTrustedPath(fsImpl, SANDBOX_EXEC_PATH, { uid: deps.uid, finalKind: 'file' });
     if (commonDir === null) throw new TrustError('git directory could not be resolved');
+    if (gitDir === null) {
+      const resolved = runGit(['rev-parse', '--path-format=absolute', '--git-dir'], cwd);
+      if (resolved.status !== 0) throw new TrustError('git directory could not be resolved');
+      gitDir = fsImpl.realpathSync(path.resolve(cwd, String(resolved.stdout).trim()));
+    }
     ghConfigReal = resolveTrustedPath(fsImpl, binding.ghConfig, { uid: deps.uid, rejectFinalLink: true }).realPath;
   } catch (_error) {
     return { ok: false, error: 'task command rejected: write-restricted execution is not available' };
   }
+  // 固定した gitDir の設定を検査し直す（呼び出し側の検査は、固定前の .git を通した結果のため）。
+  const listing = spawnSync(binding.git, [...FIXED_GIT_PREFIX, `--git-dir=${gitDir}`, 'config', '--list', '--null'], { cwd, env: plainEnv, encoding: 'utf8' });
+  if (listing.error || listing.status !== 0) return { ok: false, error: 'task command rejected: repository configuration could not be read' };
+  const pinnedUnsafe = inspectGitConfigListing(listing.stdout).unsafeKey || findNetworkUnsafeKey(listing.stdout);
+  if (pinnedUnsafe) return { ok: false, error: `task command rejected: repository configuration is not allowed: ${JSON.stringify(pinnedUnsafe)}` };
   // 各段階が書いてよい場所は、その段階が実際に書く場所だけに絞る（Git 管理領域全体は許さない）。
   const gitPath = (...parts) => path.join(commonDir, ...parts);
   const controlFiles = [
@@ -1271,11 +1295,16 @@ function prepareRestrictedFetch({ binding, cwd, fsImpl, runGit, spawnSync, plain
     return !made.error && made.status === 0;
   };
   // 取得（通信あり）。書き込み先は、取得したオブジェクトと base の追跡 ref と gh の設定だけ。
-  const fetchBase = (networkEnv) => runRestricted(
-    restricted({ bin: binding.git, args: boundFetchArgs(binding, base) }, [gitPath('objects'), ...writableRef(remoteParts), ghConfigReal]),
-    { env: networkEnv, stdio: 'inherit' },
-  );
-  return { ok: true, gitPath, restricted, runRestricted, writableRef, parentDirs, makeDirs, remoteParts, fetchBase };
+  const fetchBase = (networkEnv) => {
+    // 固定した gitDir が、リンクや .git ファイルに差し替わっていないフォルダのままであることを実行の直前に確かめる。
+    const gitDirStat = lstatOrNull(fsImpl, gitDir);
+    if (gitDirStat === null || gitDirStat.isSymbolicLink() || !gitDirStat.isDirectory()) return { error: { code: 'EGITDIR' } };
+    return runRestricted(
+      restricted({ bin: binding.git, args: boundFetchArgs(binding, base, gitDir) }, [gitPath('objects'), ...writableRef(remoteParts), ghConfigReal]),
+      { env: networkEnv, stdio: 'inherit' },
+    );
+  };
+  return { ok: true, gitDir, gitPath, restricted, runRestricted, writableRef, parentDirs, makeDirs, remoteParts, fetchBase };
 }
 
 /**
@@ -1649,6 +1678,140 @@ function executePrepareWorktree({ parsed, binding, cwd, fsImpl, runGit, spawnSyn
   if (checkedOut.status !== 0) return typeof checkedOut.status === 'number' ? checkedOut.status : 2;
   const baseSha = runGit(['rev-parse', remoteRef], cwd);
   writeOut(`TARGET_REPO=${worktreePath}\nWORK_BRANCH=${parsed.branch}\nBASE_SHA=${String(baseSha.stdout).trim()}\n`);
+  return 0;
+}
+
+/**
+ * `prepare adopt-worktree <base> <issue番号> <ブランチ> <worktree名>`。vk-agents の repo-prepare.sh issue-worktree-adopt と同じ検査・処理を、
+ * この入口の中で行う。起動元が作った worktree（作業フォルダ）を引き受けて作業ブランチへ切り替えるだけで、worktree は作らない。
+ * 通常のクローンの作業ツリーや別タスクの worktree には書き込まない。拒否しても prepare worktree へは切り替えない。
+ */
+function executePrepareAdoptWorktree({ parsed, binding, cwd, fsImpl, runGit, spawnSync, networkEnv, plainEnv, reject, inspected, writeOut, deps }) {
+  if (inspected.networkUnsafeKey) return reject(`task command rejected: repository configuration can redirect network access: ${JSON.stringify(inspected.networkUnsafeKey)}`);
+  const remoteRef = `refs/remotes/origin/${parsed.base}`;
+  const branchRef = `refs/heads/${parsed.branch}`;
+
+  // 1) 作業フォルダが linked worktree の直下で、クローン側の .claude/worktrees/<worktree名> と実パスで一致する。
+  let root;
+  let commonDir;
+  let adminDir;
+  try {
+    root = fsImpl.realpathSync(cwd);
+    commonDir = resolveGitCommonDir({ dir: cwd, run: runGit, fsImpl });
+    if (inspected.root !== root) return reject('task command rejected: prepare adopt-worktree must run at the root of the prepared worktree');
+    if (commonDir === null || path.basename(commonDir) !== '.git') return reject('task command rejected: the clone git directory could not be determined');
+    const gitDirResult = runGit(['rev-parse', '--path-format=absolute', '--git-dir'], cwd);
+    if (gitDirResult.status !== 0) return reject('task command rejected: the worktree git directory could not be resolved');
+    adminDir = fsImpl.realpathSync(path.resolve(cwd, String(gitDirResult.stdout).trim()));
+    if (path.dirname(adminDir) !== path.join(commonDir, 'worktrees')) return reject('task command rejected: the working directory is not a linked worktree');
+    const cloneRoot = path.dirname(commonDir);
+    for (const dir of [path.join(cloneRoot, '.claude'), path.join(cloneRoot, '.claude', 'worktrees'), root]) {
+      const stat = lstatOrNull(fsImpl, dir);
+      if (stat === null || stat.isSymbolicLink() || !stat.isDirectory()) return reject(`task command rejected: ${path.relative(cloneRoot, dir) || dir} is a symbolic link or not a directory`);
+    }
+    if (root !== path.join(cloneRoot, '.claude', 'worktrees', parsed.name)) {
+      return reject(`task command rejected: the working directory does not match .claude/worktrees/${parsed.name} of the bound clone`);
+    }
+    // 2) 管理ディレクトリ名が worktree 名と一致し、逆参照（gitdir）が現在地直下の .git を指す。
+    if (adminDir !== path.join(commonDir, 'worktrees', parsed.name)) return reject(`task command rejected: the worktree administrative directory is not ${JSON.stringify(parsed.name)} (a .git file pointing to another worktree)`);
+    const dotGit = path.join(root, '.git');
+    const dotGitStat = fsImpl.lstatSync(dotGit);
+    if (dotGitStat.isSymbolicLink() || !dotGitStat.isFile()) return reject('task command rejected: .git of the worktree is not a regular file');
+    const backRef = path.join(adminDir, 'gitdir');
+    const backRefStat = fsImpl.lstatSync(backRef);
+    const uid = currentUid(deps);
+    if (backRefStat.isSymbolicLink() || !backRefStat.isFile() || !(uid === undefined || backRefStat.uid === uid || backRefStat.uid === 0)) return reject('task command rejected: the worktree back reference could not be trusted');
+    const backTarget = String(fsImpl.readFileSync(backRef, 'utf8')).split('\n')[0].trim();
+    // Git 2.48 以降の worktree.useRelativePaths では逆参照が相対パスになり、管理ディレクトリ基準で解決する。
+    const backPath = path.resolve(adminDir, backTarget);
+    if (backTarget === '' || path.basename(backPath) !== '.git' || fsImpl.realpathSync(backPath) !== dotGit) return reject('task command rejected: the worktree back reference does not point at the working directory');
+  } catch (error) {
+    return reject(`task command rejected: the worktree could not be verified${error && error.code ? ` (${error.code})` : ''}`);
+  }
+
+  // 検査後の Git 操作は、検査を通した管理ディレクトリと作業ツリーに固定する（.git ファイルの差し替えは無視する）。
+  const pinnedPrefix = [...FIXED_GIT_PREFIX, '-c', 'core.splitIndex=false', `--git-dir=${adminDir}`, `--work-tree=${root}`];
+  const runPinned = (args) => spawnSync(binding.git, [...pinnedPrefix, ...args], { cwd: root, env: plainEnv, encoding: 'utf8' });
+  const stdoutOf = (result) => String(result.stdout || '').trim();
+
+  // 3) 未追跡を含む未コミット変更が無い（無視ファイルは対象外）。
+  const status = runPinned(['--no-optional-locks', 'status', '--porcelain=v1', '--untracked-files=all']);
+  if (status.error || status.status !== 0) return reject('task command rejected: could not read the worktree status');
+  if (stdoutOf(status) !== '') return reject('task command rejected: the worktree has uncommitted changes');
+
+  // 4) 現在のブランチの状態で、取得より前に拒否できるものを止める。
+  const headRef = runPinned(['symbolic-ref', '-q', 'HEAD']);
+  if (headRef.error || (headRef.status !== 0 && headRef.status !== 1)) return reject('task command rejected: could not read HEAD');
+  const currentRef = headRef.status === 0 ? stdoutOf(headRef) : '';
+  const resuming = currentRef === branchRef;
+  if (currentRef !== '' && !resuming) return reject(`task command rejected: the worktree is on another branch (${currentRef.replace(/^refs\/heads\//, '')}); it cannot be adopted`);
+  if (currentRef === '' && runPinned(['show-ref', '--verify', '--quiet', branchRef]).status === 0) return reject(`task command rejected: working branch already exists: ${JSON.stringify(parsed.branch)}`);
+
+  // 書き込みを伴う実行はすべて、書き込み先を OS が制限した形で行う。この worktree の管理情報の制御ファイルと .git ファイルは、どの段階でも書けない。
+  const prepared = prepareRestrictedFetch({
+    binding, cwd, fsImpl, runGit, spawnSync, plainEnv, deps, base: parsed.base, commonDir, gitDir: adminDir,
+    extraControlFiles: () => ['config.worktree', 'hooks', 'commondir', 'gitdir', 'locked'].map((name) => path.join(adminDir, name)).concat(path.join(root, '.git')),
+  });
+  if (!prepared.ok) return reject(prepared.error);
+  const { gitPath, restricted, runRestricted, writableRef, parentDirs, makeDirs, remoteParts } = prepared;
+  const branchParts = ['heads', ...parsed.branch.split('/')];
+  const gitDirs = [...new Set([...parentDirs(remoteParts), ...parentDirs(branchParts)])];
+  if (!makeDirs([gitPath('refs'), gitPath('logs'), gitPath('logs', 'refs'), ...gitDirs])) return reject('task command rejected: could not prepare the git directories');
+
+  // 5) 最新の origin/<base> を制限付き fetch で取得する。
+  const fetched = prepared.fetchBase(networkEnv);
+  if (fetched.error) return reject(`task command failed to start: ${fetched.error.code || 'error'}`);
+  if (fetched.status !== 0) return typeof fetched.status === 'number' ? fetched.status : 2;
+  const baseResult = runPinned(['rev-parse', '--verify', remoteRef]);
+  if (baseResult.status !== 0) return reject(`task command rejected: could not fetch the base branch ${JSON.stringify(parsed.base)}`);
+  const baseSha = stdoutOf(baseResult);
+
+  // 6) HEAD が取得した origin/<base> の祖先であること。
+  const headResult = runPinned(['rev-parse', '--verify', 'HEAD']);
+  if (headResult.status !== 0) return reject('task command rejected: could not resolve HEAD');
+  const headSha = stdoutOf(headResult);
+  if (runPinned(['merge-base', '--is-ancestor', headSha, remoteRef]).status !== 0) {
+    return reject(`task command rejected: HEAD of the worktree is not an ancestor of origin/${parsed.base} (a different lineage or already committed work)`);
+  }
+
+  // 7) 切り替え。段階ごとに書ける場所を分ける（prepare worktree と同じ形）。
+  //    (a) ブランチの作成 / 早送り、HEAD の切り替え、index の作り直し: 作業ブランチの ref・ログとそのロック、この worktree の管理情報だけ。作業ファイルには触れない。
+  //    (b) 新しい基点で無くなったファイルの削除と、作業ファイルの展開: 作業フォルダだけ。管理領域は許可しない。
+  const runStep = (args, allowWrite) => runRestricted(restricted({ bin: binding.git, args: [...pinnedPrefix, ...args] }, allowWrite), { cwd: root, env: plainEnv, stdio: 'inherit' });
+  const stepFailure = (result) => {
+    if (result.error) return reject(`task command failed to start: ${result.error.code || 'error'}`);
+    if (result.status !== 0) return typeof result.status === 'number' ? result.status : 2;
+    return null;
+  };
+  if (headSha !== baseSha || !resuming) {
+    // 展開の前に、HEAD の木にあって基点の木に無いファイルを控える（展開だけでは消えないため）。
+    let removed = [];
+    if (headSha !== baseSha) {
+      const diff = runPinned(['diff-tree', '-r', '-z', '--name-only', '--diff-filter=D', '--no-renames', headSha, baseSha]);
+      if (diff.error || diff.status !== 0) return reject('task command rejected: could not compare HEAD with the base branch');
+      removed = String(diff.stdout).split('\0').filter((name) => name !== '');
+    }
+    if (resuming) {
+      const updated = stepFailure(runStep(['update-ref', '-m', `adopt-worktree: fast-forward to origin/${parsed.base}`, branchRef, baseSha, headSha], [...writableRef(branchParts), adminDir]));
+      if (updated !== null) return updated;
+    } else {
+      const created = stepFailure(runStep(['branch', '--quiet', '--no-track', parsed.branch, remoteRef], writableRef(branchParts)));
+      if (created !== null) return created;
+      const switched = stepFailure(runStep(['symbolic-ref', '-m', `adopt-worktree: switch to ${parsed.branch}`, 'HEAD', branchRef], [adminDir]));
+      if (switched !== null) return switched;
+    }
+    if (headSha !== baseSha) {
+      const indexed = stepFailure(runStep(['read-tree', '--reset', 'HEAD'], [adminDir]));
+      if (indexed !== null) return indexed;
+      for (let i = 0; i < removed.length; i += 100) {
+        const deleted = stepFailure(runRestricted(restricted({ bin: '/bin/rm', args: ['-f', '--', ...removed.slice(i, i + 100)] }, [root]), { cwd: root, env: plainEnv, stdio: 'inherit' }));
+        if (deleted !== null) return deleted;
+      }
+      const checkedOut = stepFailure(runStep(['checkout-index', '--all', '--force'], [root]));
+      if (checkedOut !== null) return checkedOut;
+    }
+  }
+  writeOut(`TARGET_REPO=${root}\nWORK_BRANCH=${parsed.branch}\nBASE_SHA=${baseSha}\n`);
   return 0;
 }
 
@@ -2159,10 +2322,11 @@ function runTaskCommand(argv, deps = {}) {
     return parsed.operation === 'member-start' ? executeMemberStart(context) : executeMemberStatus(context);
   }
 
-  if (parsed.operation === 'push' || parsed.operation === 'prepare-worktree') {
+  if (parsed.operation === 'push' || parsed.operation === 'prepare-worktree' || parsed.operation === 'prepare-adopt-worktree') {
     const networkEnv = networkEnvironment(binding);
     const context = { parsed, binding, cwd, fsImpl, runGit, spawnSync, networkEnv, plainEnv: env, reject, inspected, write, writeOut, deps };
-    return parsed.operation === 'push' ? executePush(context) : executePrepareWorktree(context);
+    if (parsed.operation === 'push') return executePush(context);
+    return parsed.operation === 'prepare-worktree' ? executePrepareWorktree(context) : executePrepareAdoptWorktree(context);
   }
 
   if (parsed.operation === 'fetch-default-branch') {

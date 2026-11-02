@@ -4263,3 +4263,222 @@ test('実行: git fetch の書き込み制限は、取得先の追跡 ref とオ
     fixture.cleanup();
   }
 });
+
+// ─── prepare adopt-worktree（issue #484） ──────────────────────────────────
+
+const ADOPT_ARGS = ['prepare', 'adopt-worktree', 'main', '484', 'feature/484-adopt', 'codex-484'];
+
+// 起動元が作るのと同じ形（origin/main の detached HEAD）で、クローン側の .claude/worktrees/<名前> に worktree を作る。
+function createLaunchWorktree(fixture, name = 'codex-484') {
+  git(fixture.repo, 'update-ref', 'refs/remotes/origin/main', 'main');
+  const worktree = path.join(fixture.repo, '.claude', 'worktrees', name);
+  git(fixture.repo, 'worktree', 'add', '-q', '--detach', worktree, 'refs/remotes/origin/main');
+  return fs.realpathSync(worktree);
+}
+
+// リモートの main だけを 1 コミット進める。進んだ後の SHA を返す。
+function advanceRemoteMain(fixture, remote, name = 'latest.txt') {
+  const other = path.join(fixture.root, `other-${name}`);
+  git(fixture.root, 'clone', '-q', remote.bare, other);
+  git(other, 'config', 'user.email', 't@example.com');
+  git(other, 'config', 'user.name', 'T');
+  commitFile(other, name);
+  git(other, 'push', '-q', 'origin', 'main');
+  return git(other, 'rev-parse', 'HEAD');
+}
+
+const adoptSnapshot = (dir) => ({
+  head: git(dir, 'rev-parse', 'HEAD'),
+  ref: git(dir, 'rev-parse', '--symbolic-full-name', 'HEAD'),
+  status: git(dir, 'status', '--porcelain', '--untracked-files=all'),
+  branches: git(dir, 'for-each-ref', '--format=%(refname) %(objectname)', 'refs/heads'),
+});
+
+test('許可: prepare adopt-worktree は prepare worktree と同じ 4 つの引数と規則だけを受け付ける', () => {
+  assert.deepEqual(parseTaskCommand(argv('prepare adopt-worktree main 484 feature/484-x codex-484')), {
+    ok: true, bin: 'git', operation: 'prepare-adopt-worktree', base: 'main', issue: '484', branch: 'feature/484-x', name: 'codex-484', needsGitHub: true, needsGh: true,
+  });
+  for (const line of [
+    'prepare adopt-worktree', 'prepare adopt-worktree main 484 feature/484-x', 'prepare adopt-worktree main 484 feature/484-x codex-484 extra',
+    'prepare adopt-worktree main 0 feature/0-x codex-484', 'prepare adopt-worktree main 484 feature/999-x codex-484', 'prepare adopt-worktree main 484 main codex-484',
+    'prepare adopt-worktree main 484 feature/484-x ../escape', 'prepare adopt-worktree ../main 484 feature/484-x codex-484', 'prepare adopt-worktree main 484 refs/heads/feature/484-x codex-484',
+  ]) {
+    assert.equal(parseTaskCommand(argv(line)).ok, false, line);
+  }
+});
+
+test('結合: 起動元が作った detached HEAD の worktree から、固定入口だけで最新の origin/main を基点にした作業ブランチを作れる', () => {
+  const fixture = createFixture();
+  try {
+    const remote = attachRemote(fixture);
+    const worktree = createLaunchWorktree(fixture);
+    const latest = advanceRemoteMain(fixture, remote);
+    const rootHead = git(fixture.repo, 'rev-parse', 'HEAD');
+    const out = [];
+    const calls = [];
+    const result = run(fixture, ADOPT_ARGS, { cwd: worktree, writeOut: (message) => out.push(message), spawnSync: recordingSpawn(calls) });
+    assert.equal(result.code, 0, result.messages.join(''));
+    assert.equal(out.join(''), `TARGET_REPO=${worktree}\nWORK_BRANCH=feature/484-adopt\nBASE_SHA=${latest}\n`);
+    assert.equal(git(worktree, 'symbolic-ref', '--short', 'HEAD'), 'feature/484-adopt');
+    assert.equal(git(worktree, 'rev-parse', 'HEAD'), latest);
+    assert.equal(fs.readFileSync(path.join(worktree, 'latest.txt'), 'utf8'), 'x\n');
+    assert.equal(git(worktree, 'status', '--porcelain'), '');
+    assert.throws(() => git(worktree, 'config', '--get', 'branch.feature/484-adopt.remote'));
+    // 通常のクローンの HEAD・ブランチ・作業ツリーは変わらない。
+    assert.equal(git(fixture.repo, 'rev-parse', 'HEAD'), rootHead);
+    assert.equal(git(fixture.repo, 'symbolic-ref', 'HEAD'), 'refs/heads/work/test');
+    assert.equal(fs.existsSync(path.join(fixture.repo, 'latest.txt')), false);
+    // 取得は固定 URL・固定 refspec で、書き込み制限つきで実行する。
+    const fetchCall = calls.find((call) => call.args.includes('fetch'));
+    assert.equal(fetchCall.bin, '/usr/bin/sandbox-exec');
+    assert.ok(fetchCall.args.includes(remote.url));
+    assert.ok(fetchCall.args.includes('+refs/heads/main:refs/remotes/origin/main'));
+    // 切り替えも書き込み制限つきで、検査済みの管理ディレクトリ・作業ツリーに固定している。
+    const switchCall = calls.find((call) => call.args.includes('switch'));
+    assert.equal(switchCall.bin, '/usr/bin/sandbox-exec');
+    assert.ok(switchCall.args.includes(`--git-dir=${path.join(fs.realpathSync(path.join(fixture.repo, '.git')), 'worktrees', 'codex-484')}`));
+    assert.ok(switchCall.args.includes(`--work-tree=${worktree}`));
+    // そのまま add・commit・push できる。
+    fs.writeFileSync(path.join(worktree, 'feature.txt'), 'feature\n');
+    assert.equal(run(fixture, ['git', 'add', '--', 'feature.txt'], { cwd: worktree }).code, 0);
+    assert.equal(run(fixture, ['git', 'commit', '-m', '[ 機能追加 ] 例'], { cwd: worktree }).code, 0);
+    assert.equal(run(fixture, ['git', 'push', 'feature/484-adopt'], { cwd: worktree }).code, 0);
+    assert.equal(remote.remoteRef('refs/heads/feature/484-adopt'), git(worktree, 'rev-parse', 'HEAD'));
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('回帰: 作成済みの worktree を prepare worktree（新規作成）へ渡すと止まり、内容は変わらない', () => {
+  const fixture = createFixture();
+  try {
+    attachRemote(fixture);
+    const worktree = createLaunchWorktree(fixture);
+    const before = adoptSnapshot(worktree);
+    const result = run(fixture, ['prepare', 'worktree', 'main', '484', 'feature/484-adopt', 'codex-484']);
+    assert.equal(result.code, 2);
+    assert.match(result.messages.join(''), /already exists/);
+    assert.deepEqual(adoptSnapshot(worktree), before);
+    // 作成済み worktree の中から prepare worktree を実行しても、ルート以外として拒否される。
+    assert.equal(run(fixture, ['prepare', 'worktree', 'main', '484', 'feature/484-adopt', 'codex-485'], { cwd: worktree }).code, 2);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('再開: 同じ作業ブランチで作業コミットが無ければ受け入れ、古ければ最新の origin/main へ早送りする', () => {
+  const fixture = createFixture();
+  try {
+    const remote = attachRemote(fixture);
+    const worktree = createLaunchWorktree(fixture);
+    assert.equal(run(fixture, ADOPT_ARGS, { cwd: worktree }).code, 0);
+    const first = git(worktree, 'rev-parse', 'HEAD');
+    // 何も進んでいなければそのまま受け入れる。
+    const out = [];
+    assert.equal(run(fixture, ADOPT_ARGS, { cwd: worktree, writeOut: (message) => out.push(message) }).code, 0);
+    assert.equal(git(worktree, 'rev-parse', 'HEAD'), first);
+    assert.equal(out.join(''), `TARGET_REPO=${worktree}\nWORK_BRANCH=feature/484-adopt\nBASE_SHA=${first}\n`);
+    // origin/main が進んだら早送りする。
+    const latest = advanceRemoteMain(fixture, remote);
+    assert.equal(run(fixture, ADOPT_ARGS, { cwd: worktree }).code, 0);
+    assert.equal(git(worktree, 'rev-parse', 'HEAD'), latest);
+    assert.equal(git(worktree, 'symbolic-ref', '--short', 'HEAD'), 'feature/484-adopt');
+    assert.equal(fs.existsSync(path.join(worktree, 'latest.txt')), true);
+    assert.equal(git(worktree, 'status', '--porcelain'), '');
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('拒否: prepare adopt-worktree は作業コミット・別ブランチ・同名ブランチ・未コミット変更・別系統を、内容を消さずに拒否する', () => {
+  const cases = {
+    作業コミットあり: { pattern: /not an ancestor/, setup: (worktree) => { git(worktree, 'switch', '-q', '-c', 'feature/484-adopt'); commitFile(worktree, 'work.txt'); } },
+    別ブランチにいる: { pattern: /another branch/, setup: (worktree) => { git(worktree, 'switch', '-q', '-c', 'feature/484-other'); } },
+    同名ブランチが別に存在する: { pattern: /already exists/, setup: (worktree, fixture) => { git(fixture.repo, 'branch', 'feature/484-adopt', 'main'); } },
+    未追跡ファイルあり: { pattern: /uncommitted changes/, setup: (worktree) => { fs.writeFileSync(path.join(worktree, 'untracked.txt'), 'u\n'); } },
+    追跡ファイルの変更あり: { pattern: /uncommitted changes/, setup: (worktree) => { fs.writeFileSync(path.join(worktree, 'a.txt'), 'changed\n'); } },
+    別系統のHEAD: {
+      pattern: /not an ancestor/,
+      setup: (worktree) => {
+        git(worktree, 'checkout', '-q', '--orphan', 'tmp-orphan');
+        git(worktree, 'rm', '-rfq', '.');
+        commitFile(worktree, 'orphan.txt');
+        git(worktree, 'checkout', '-q', '--detach');
+        git(worktree, 'branch', '-q', '-D', 'tmp-orphan');
+      },
+    },
+  };
+  for (const [label, { pattern, setup }] of Object.entries(cases)) {
+    const fixture = createFixture();
+    try {
+      attachRemote(fixture);
+      const worktree = createLaunchWorktree(fixture);
+      setup(worktree, fixture);
+      const before = adoptSnapshot(worktree);
+      const files = fs.readdirSync(worktree).sort();
+      const result = run(fixture, ADOPT_ARGS, { cwd: worktree });
+      assert.equal(result.code, 2, label);
+      assert.match(result.messages.join(''), pattern, label);
+      assert.deepEqual(adoptSnapshot(worktree), before, label);
+      assert.deepEqual(fs.readdirSync(worktree).sort(), files, label);
+    } finally {
+      fixture.cleanup();
+    }
+  }
+});
+
+test('拒否: prepare adopt-worktree はパス不一致（別名・シンボリックリンク・クローン本体・サブフォルダ）と gitdir の逆参照不一致を拒否する', () => {
+  const fixture = createFixture();
+  try {
+    attachRemote(fixture);
+    const worktree = createLaunchWorktree(fixture);
+    const worktreeRoot = path.join(fixture.repo, '.claude', 'worktrees');
+    const before = adoptSnapshot(worktree);
+    const adopt = (cwd, name = 'codex-484', extra = {}) => run(fixture, ['prepare', 'adopt-worktree', 'main', '484', 'feature/484-adopt', name], { cwd, ...extra });
+    // 起動元がこの worktree を作業フォルダ（拘束ルート）にして起動した場合は、入口自身の検査で拒否される。
+    const ownRoot = { env: { ...fixture.env, VK_TASK_ROOT: worktree } };
+
+    // 別名: worktree 名と実パスが一致しない。
+    const mismatch = adopt(worktree, 'codex-999');
+    assert.equal(mismatch.code, 2);
+    assert.match(mismatch.messages.join(''), /does not match \.claude\/worktrees\/codex-999/);
+    // シンボリックリンク: 別名のリンク経由で worktree を指しても、実パスが名前と一致しない。
+    fs.symlinkSync(worktree, path.join(worktreeRoot, 'alias'));
+    assert.equal(adopt(path.join(worktreeRoot, 'alias'), 'alias').code, 2);
+    fs.unlinkSync(path.join(worktreeRoot, 'alias'));
+    // .claude/worktrees 自体がリンクなら拒否する。
+    const realRoot = path.join(fixture.root, 'moved-worktrees');
+    fs.renameSync(worktreeRoot, realRoot);
+    fs.symlinkSync(realRoot, worktreeRoot);
+    assert.equal(adopt(path.join(worktreeRoot, 'codex-484')).code, 2);
+    fs.unlinkSync(worktreeRoot);
+    fs.renameSync(realRoot, worktreeRoot);
+    // クローン本体・worktree のサブフォルダでは実行できない。
+    assert.equal(adopt(fixture.repo).code, 2);
+    fs.mkdirSync(path.join(worktree, 'sub'));
+    assert.equal(adopt(path.join(worktree, 'sub')).code, 2);
+    fs.rmdirSync(path.join(worktree, 'sub'));
+    // 別タスクの worktree の管理ディレクトリを指す .git。
+    const second = createLaunchWorktree(fixture, 'codex-485');
+    const dotGit = path.join(worktree, '.git');
+    const original = fs.readFileSync(dotGit, 'utf8');
+    fs.writeFileSync(dotGit, original.replace('codex-484', 'codex-485'));
+    const foreign = adopt(worktree, 'codex-484', ownRoot);
+    assert.equal(foreign.code, 2);
+    assert.match(foreign.messages.join(''), /administrative directory|back reference/);
+    fs.writeFileSync(dotGit, original);
+    // gitdir の逆参照が別の場所を指す。
+    const backRef = path.join(fs.realpathSync(path.join(fixture.repo, '.git')), 'worktrees', 'codex-484', 'gitdir');
+    const backOriginal = fs.readFileSync(backRef, 'utf8');
+    fs.writeFileSync(backRef, `${path.join(second, '.git')}\n`);
+    const back = adopt(worktree, 'codex-484', ownRoot);
+    assert.equal(back.code, 2);
+    assert.match(back.messages.join(''), /back reference/);
+    fs.writeFileSync(backRef, backOriginal);
+    // 何も壊れていない。元に戻せば引き受けられる。
+    assert.deepEqual(adoptSnapshot(worktree), before);
+    assert.equal(adopt(worktree).code, 0);
+  } finally {
+    fixture.cleanup();
+  }
+});

@@ -93,6 +93,7 @@ const ORCHESTRATED_TASK_OPERATIONS = Object.freeze([
   'git fetch',
   'git merge',
   'prepare worktree',
+  'prepare adopt-worktree',
   'member start',
   'member status',
   'gh issue view',
@@ -148,6 +149,7 @@ function renderAgentsGuide(launcherPath, memberIoDir = null) {
     '- `git push <ブランチ名>` はブランチ名 1 つだけを受け付ける。送り先は入口が固定する（このタスクの GitHub リポジトリ）ので、リモート名・オプション・refspec は渡せない。新規作成と早送りだけが通り、強制上書き・削除・タグは使えない。main / master・リモートの既定ブランチ・detached HEAD・存在しないブランチへの push は拒否される。',
     '- `git fetch` と `git merge` は引数を一切取らない（URL・refspec・ブランチ名・オプションは拒否される）。`git fetch` は GitHub から読んだこのリポジトリのデフォルトブランチだけを、入口が固定した取得元から `refs/remotes/origin/<デフォルトブランチ>` へ取得する。`git merge` はその取得済みデフォルトブランチを、現在の作業ブランチへ merge commit つきで取り込む（squash・早送りだけの取り込みはしない）。先に `git fetch` し、追跡ファイルの未コミット変更が無い作業ブランチ上で実行する。main / master・リモートの既定ブランチ・detached HEAD 上、merge 中、取得済みの ref が無いときは拒否される。競合したときは状態は戻らないので、競合したファイルを直して `git add` し、`git commit -m <メッセージ>` で merge commit を完成させてから `git push <ブランチ名>` する。',
     '- `prepare worktree <base> <issue番号> <ブランチ> <worktree名>` は、最新の origin/<base> から作業ブランチ付きの worktree（`<リポジトリ>/.claude/worktrees/<worktree名>`）を作る。ブランチ名は `<種類>/<issue番号>-...` の形で、同名のブランチ・パスがあると失敗する。通常のクローンの切り替えはしない。リポジトリのルートで実行する。',
+    '- `prepare adopt-worktree <base> <issue番号> <ブランチ> <worktree名>` は、起動元が先に作った worktree（`<リポジトリ>/.claude/worktrees/<worktree名>`。detached HEAD）を引き受け、最新の origin/<base> から作業ブランチを作って切り替える。worktree は作らない。引数の規則は `prepare worktree` と同じ。その worktree の直下で実行し、未コミット変更がある・HEAD が origin/<base> の祖先でない・別のブランチにいる・同名のブランチが別に存在する・作業コミットがあるときは拒否される（拒否されても `prepare worktree` に切り替えない）。同じ作業ブランチで作業コミットが無ければ再開として受け入れ、古ければ最新へ早送りする。',
     ...(memberIoDir === null ? [
       '- この入口には入出力フォルダが無いため、`--title-file` / `--body-file` は使えない（拒否される）。`gh pr create` / `gh pr edit` の題・本文は `--title` / `--body` で直接渡す。',
     ] : [

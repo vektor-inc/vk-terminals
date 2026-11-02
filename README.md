@@ -398,6 +398,7 @@ cp config.example.json ~/.vk-terminals/config.json
 ```jsonc
 {
   "title": "○○ 設定",                       // パネル上部の見出し
+  "versionLabel": "○○ v1.2.3",             // 任意。見出し横のバージョン表記
   "note": "保存後に再起動で反映されます",    // 任意の注意書き（省略可）
   "targetPath": "/abs/path/to/config.json",  // 読み書きする対象ファイル（絶対パス）
   "groups": [
@@ -412,6 +413,7 @@ cp config.example.json ~/.vk-terminals/config.json
 }
 ```
 
+- `versionLabel`（任意）：パネル上部の見出し横に表示する文字列。未指定・空文字・空白のみ・文字列以外の場合は `VK Terminals v<アプリのバージョン>` を表示します。HTML としては解釈されません。
 - `key`：ドット区切りで対象 JSON の入れ子キーを指す（例 `github.token`）。
 - `type`：`text` / `password` / `number` / `boolean` / `select` / `json` / `lines` のいずれか。`json` は配列・オブジェクトを textarea で編集します。`lines` は改行区切りの文字列配列を textarea で編集します。`select` は許可された値のみ選べるピッカーで、`options`（`{ value, label }` の配列）を併記します。
 - `default`（任意）：値が未設定のときの既定値。`boolean` で `default: true`（opt-out 項目）を指定すると、未設定のチェックボックスが誤ってオフ保存される問題を避けられます。

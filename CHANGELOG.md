@@ -1,5 +1,7 @@
 # Changelog
 
+## 1.80.1
+
 - [ 不具合修正 ] mise で入れた node が見つからず自動処理用 Codex を起動できない不具合を修正し、見つからないときのエラー文に実行ファイル名と探した場所を表示（[#482](https://github.com/vektor-inc/vk-terminals/issues/482)）
 
 ## 1.80.0

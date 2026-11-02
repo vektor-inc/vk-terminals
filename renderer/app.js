@@ -5130,13 +5130,13 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
   const settingsHeaderHtml = useTabbedSettings
     ? `<div class="settings-header has-tabs">
         <div class="settings-titlebar">
-          <h2 id="${settingsTitleId}">${escText((settingsAvailable && desc.title) || 'VK Terminals')}${settingsVersionHtml}</h2>
+          <h2 id="${settingsTitleId}"><span class="settings-title-text">${escText((settingsAvailable && desc.title) || 'VK Terminals')}</span>${settingsVersionHtml}</h2>
           <button class="settings-close" aria-label="閉じる" title="閉じる">✕</button>
         </div>
         ${settingsTabsHtml}
       </div>`
     : `<div class="settings-header">
-        <h2 id="${settingsTitleId}">${escText((settingsAvailable && desc.title) || 'VK Terminals')}${settingsVersionHtml}</h2>
+        <h2 id="${settingsTitleId}"><span class="settings-title-text">${escText((settingsAvailable && desc.title) || 'VK Terminals')}</span>${settingsVersionHtml}</h2>
         <button class="settings-close" aria-label="閉じる" title="閉じる">✕</button>
       </div>`;
   const overlay = document.createElement('div');

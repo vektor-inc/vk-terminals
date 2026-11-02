@@ -1142,9 +1142,12 @@ function networkGitConfig(binding) {
 }
 
 /** 拘束した URL からブランチ 1 本だけを refs/remotes/origin/<ブランチ> へ取得する fetch の引数（prepare worktree と git fetch が共有する）。 */
-function boundFetchArgs(binding, branch) {
+function boundFetchArgs(binding, branch, gitDir = null) {
   return [
     ...FIXED_GIT_PREFIX, ...networkGitConfig(binding),
+    // 設定の一覧にも現れる値のため、FIXED_GIT_PREFIX ではなく取得の引数にだけ付ける（設定の検査が自分の指定を拒否しないように）。
+    '-c', 'core.alternateRefsCommand=',
+    ...(gitDir === null ? [] : [`--git-dir=${gitDir}`]),
     'fetch', '--no-tags', '--no-recurse-submodules', '--no-write-fetch-head', '--refmap=', boundRemoteUrl(binding), `+refs/heads/${branch}:refs/remotes/origin/${branch}`,
   ];
 }
@@ -1241,17 +1244,30 @@ function readDefaultBranch({ binding, cwd, env, spawnSync }) {
  * 追跡 ref 1 本分の書き込み許可パス（ref・ログとそれぞれのロック）、親フォルダの計算と作成、base を取得する関数。
  * @param {{binding: object, cwd: string, fsImpl: object, runGit: Function, spawnSync: Function, plainEnv: object, deps: object, base: string, extraControlFiles?: Function}} params
  *   extraControlFiles(gitPath) は追加で書き込みを禁じるパスの配列を返す
+ *   commonDir / gitDir は検査済みの値を呼び出し側が渡す場合の固定先（省略時はここで 1 度だけ求める）。取得は常に gitDir を明示して実行し、
+ *   その gitDir の設定を取得の直前に検査し直す
  */
-function prepareRestrictedFetch({ binding, cwd, fsImpl, runGit, spawnSync, plainEnv, deps, base, extraControlFiles = () => [] }) {
-  const commonDir = resolveGitCommonDir({ dir: cwd, run: runGit, fsImpl });
+function prepareRestrictedFetch({ binding, cwd, fsImpl, runGit, spawnSync, plainEnv, deps, base, extraControlFiles = () => [], commonDir: givenCommonDir = null, gitDir: givenGitDir = null }) {
+  const commonDir = givenCommonDir === null ? resolveGitCommonDir({ dir: cwd, run: runGit, fsImpl }) : givenCommonDir;
+  let gitDir = givenGitDir;
   let ghConfigReal = null;
   try {
     resolveTrustedPath(fsImpl, SANDBOX_EXEC_PATH, { uid: deps.uid, finalKind: 'file' });
     if (commonDir === null) throw new TrustError('git directory could not be resolved');
+    if (gitDir === null) {
+      const resolved = runGit(['rev-parse', '--path-format=absolute', '--git-dir'], cwd);
+      if (resolved.status !== 0) throw new TrustError('git directory could not be resolved');
+      gitDir = fsImpl.realpathSync(path.resolve(cwd, String(resolved.stdout).trim()));
+    }
     ghConfigReal = resolveTrustedPath(fsImpl, binding.ghConfig, { uid: deps.uid, rejectFinalLink: true }).realPath;
   } catch (_error) {
     return { ok: false, error: 'task command rejected: write-restricted execution is not available' };
   }
+  // 固定した gitDir の設定を検査し直す（呼び出し側の検査は、固定前の .git を通した結果のため）。
+  const listing = spawnSync(binding.git, [...FIXED_GIT_PREFIX, `--git-dir=${gitDir}`, 'config', '--list', '--null'], { cwd, env: plainEnv, encoding: 'utf8' });
+  if (listing.error || listing.status !== 0) return { ok: false, error: 'task command rejected: repository configuration could not be read' };
+  const pinnedUnsafe = inspectGitConfigListing(listing.stdout).unsafeKey || findNetworkUnsafeKey(listing.stdout);
+  if (pinnedUnsafe) return { ok: false, error: `task command rejected: repository configuration is not allowed: ${JSON.stringify(pinnedUnsafe)}` };
   // 各段階が書いてよい場所は、その段階が実際に書く場所だけに絞る（Git 管理領域全体は許さない）。
   const gitPath = (...parts) => path.join(commonDir, ...parts);
   const controlFiles = [
@@ -1279,11 +1295,16 @@ function prepareRestrictedFetch({ binding, cwd, fsImpl, runGit, spawnSync, plain
     return !made.error && made.status === 0;
   };
   // 取得（通信あり）。書き込み先は、取得したオブジェクトと base の追跡 ref と gh の設定だけ。
-  const fetchBase = (networkEnv) => runRestricted(
-    restricted({ bin: binding.git, args: boundFetchArgs(binding, base) }, [gitPath('objects'), ...writableRef(remoteParts), ghConfigReal]),
-    { env: networkEnv, stdio: 'inherit' },
-  );
-  return { ok: true, gitPath, restricted, runRestricted, writableRef, parentDirs, makeDirs, remoteParts, fetchBase };
+  const fetchBase = (networkEnv) => {
+    // 固定した gitDir が、リンクや .git ファイルに差し替わっていないフォルダのままであることを実行の直前に確かめる。
+    const gitDirStat = lstatOrNull(fsImpl, gitDir);
+    if (gitDirStat === null || gitDirStat.isSymbolicLink() || !gitDirStat.isDirectory()) return { error: { code: 'EGITDIR' } };
+    return runRestricted(
+      restricted({ bin: binding.git, args: boundFetchArgs(binding, base, gitDir) }, [gitPath('objects'), ...writableRef(remoteParts), ghConfigReal]),
+      { env: networkEnv, stdio: 'inherit' },
+    );
+  };
+  return { ok: true, gitDir, gitPath, restricted, runRestricted, writableRef, parentDirs, makeDirs, remoteParts, fetchBase };
 }
 
 /**
@@ -1713,12 +1734,12 @@ function executePrepareAdoptWorktree({ parsed, binding, cwd, fsImpl, runGit, spa
   const runPinned = (args) => spawnSync(binding.git, [...pinnedPrefix, ...args], { cwd: root, env: plainEnv, encoding: 'utf8' });
   const stdoutOf = (result) => String(result.stdout || '').trim();
 
-  // 4) 未追跡を含む未コミット変更が無い。
-  const status = runPinned(['status', '--porcelain=v1', '--untracked-files=all']);
+  // 3) 未追跡を含む未コミット変更が無い（無視ファイルは対象外）。
+  const status = runPinned(['--no-optional-locks', 'status', '--porcelain=v1', '--untracked-files=all']);
   if (status.error || status.status !== 0) return reject('task command rejected: could not read the worktree status');
   if (stdoutOf(status) !== '') return reject('task command rejected: the worktree has uncommitted changes');
 
-  // 7) 現在のブランチの状態で、取得より前に拒否できるものを止める。
+  // 4) 現在のブランチの状態で、取得より前に拒否できるものを止める。
   const headRef = runPinned(['symbolic-ref', '-q', 'HEAD']);
   if (headRef.error || (headRef.status !== 0 && headRef.status !== 1)) return reject('task command rejected: could not read HEAD');
   const currentRef = headRef.status === 0 ? stdoutOf(headRef) : '';
@@ -1728,8 +1749,8 @@ function executePrepareAdoptWorktree({ parsed, binding, cwd, fsImpl, runGit, spa
 
   // 書き込みを伴う実行はすべて、書き込み先を OS が制限した形で行う。この worktree の管理情報の制御ファイルと .git ファイルは、どの段階でも書けない。
   const prepared = prepareRestrictedFetch({
-    binding, cwd, fsImpl, runGit, spawnSync, plainEnv, deps, base: parsed.base,
-    extraControlFiles: () => [path.join(adminDir, 'config.worktree'), path.join(adminDir, 'hooks'), path.join(root, '.git')],
+    binding, cwd, fsImpl, runGit, spawnSync, plainEnv, deps, base: parsed.base, commonDir, gitDir: adminDir,
+    extraControlFiles: () => ['config.worktree', 'hooks', 'commondir', 'gitdir', 'locked'].map((name) => path.join(adminDir, name)).concat(path.join(root, '.git')),
   });
   if (!prepared.ok) return reject(prepared.error);
   const { gitPath, restricted, runRestricted, writableRef, parentDirs, makeDirs, remoteParts } = prepared;
@@ -1737,13 +1758,15 @@ function executePrepareAdoptWorktree({ parsed, binding, cwd, fsImpl, runGit, spa
   const gitDirs = [...new Set([...parentDirs(remoteParts), ...parentDirs(branchParts)])];
   if (!makeDirs([gitPath('refs'), gitPath('logs'), gitPath('logs', 'refs'), ...gitDirs])) return reject('task command rejected: could not prepare the git directories');
 
-  // 5) 最新の origin/<base> を制限付き fetch で取得し、HEAD がその祖先であることを確かめる。
+  // 5) 最新の origin/<base> を制限付き fetch で取得する。
   const fetched = prepared.fetchBase(networkEnv);
   if (fetched.error) return reject(`task command failed to start: ${fetched.error.code || 'error'}`);
   if (fetched.status !== 0) return typeof fetched.status === 'number' ? fetched.status : 2;
   const baseResult = runPinned(['rev-parse', '--verify', remoteRef]);
   if (baseResult.status !== 0) return reject(`task command rejected: could not fetch the base branch ${JSON.stringify(parsed.base)}`);
   const baseSha = stdoutOf(baseResult);
+
+  // 6) HEAD が取得した origin/<base> の祖先であること。
   const headResult = runPinned(['rev-parse', '--verify', 'HEAD']);
   if (headResult.status !== 0) return reject('task command rejected: could not resolve HEAD');
   const headSha = stdoutOf(headResult);
@@ -1751,15 +1774,42 @@ function executePrepareAdoptWorktree({ parsed, binding, cwd, fsImpl, runGit, spa
     return reject(`task command rejected: HEAD of the worktree is not an ancestor of origin/${parsed.base} (a different lineage or already committed work)`);
   }
 
-  // 6)(7) 切り替え。書けるのは作業ブランチの ref・ログとそのロック、この worktree の管理情報、作業フォルダだけ。
-  const switchArgs = resuming
-    ? (headSha === baseSha ? null : ['merge', '--ff-only', '--no-verify', '--no-verify-signatures', '--no-autostash', '--no-gpg-sign', remoteRef])
-    : ['switch', '--quiet', '--no-track', '-c', parsed.branch, remoteRef];
-  if (switchArgs !== null) {
-    const command = restricted({ bin: binding.git, args: [...pinnedPrefix, ...switchArgs] }, [...writableRef(branchParts), adminDir, root]);
-    const switched = runRestricted(command, { cwd: root, env: plainEnv, stdio: 'inherit' });
-    if (switched.error) return reject(`task command failed to start: ${switched.error.code || 'error'}`);
-    if (switched.status !== 0) return typeof switched.status === 'number' ? switched.status : 2;
+  // 7) 切り替え。段階ごとに書ける場所を分ける（prepare worktree と同じ形）。
+  //    (a) ブランチの作成 / 早送り、HEAD の切り替え、index の作り直し: 作業ブランチの ref・ログとそのロック、この worktree の管理情報だけ。作業ファイルには触れない。
+  //    (b) 新しい基点で無くなったファイルの削除と、作業ファイルの展開: 作業フォルダだけ。管理領域は許可しない。
+  const runStep = (args, allowWrite) => runRestricted(restricted({ bin: binding.git, args: [...pinnedPrefix, ...args] }, allowWrite), { cwd: root, env: plainEnv, stdio: 'inherit' });
+  const stepFailure = (result) => {
+    if (result.error) return reject(`task command failed to start: ${result.error.code || 'error'}`);
+    if (result.status !== 0) return typeof result.status === 'number' ? result.status : 2;
+    return null;
+  };
+  if (headSha !== baseSha || !resuming) {
+    // 展開の前に、HEAD の木にあって基点の木に無いファイルを控える（展開だけでは消えないため）。
+    let removed = [];
+    if (headSha !== baseSha) {
+      const diff = runPinned(['diff-tree', '-r', '-z', '--name-only', '--diff-filter=D', '--no-renames', headSha, baseSha]);
+      if (diff.error || diff.status !== 0) return reject('task command rejected: could not compare HEAD with the base branch');
+      removed = String(diff.stdout).split('\0').filter((name) => name !== '');
+    }
+    if (resuming) {
+      const updated = stepFailure(runStep(['update-ref', '-m', `adopt-worktree: fast-forward to origin/${parsed.base}`, branchRef, baseSha, headSha], [...writableRef(branchParts), adminDir]));
+      if (updated !== null) return updated;
+    } else {
+      const created = stepFailure(runStep(['branch', '--quiet', '--no-track', parsed.branch, remoteRef], writableRef(branchParts)));
+      if (created !== null) return created;
+      const switched = stepFailure(runStep(['symbolic-ref', '-m', `adopt-worktree: switch to ${parsed.branch}`, 'HEAD', branchRef], [adminDir]));
+      if (switched !== null) return switched;
+    }
+    if (headSha !== baseSha) {
+      const indexed = stepFailure(runStep(['read-tree', '--reset', 'HEAD'], [adminDir]));
+      if (indexed !== null) return indexed;
+      for (let i = 0; i < removed.length; i += 100) {
+        const deleted = stepFailure(runRestricted(restricted({ bin: '/bin/rm', args: ['-f', '--', ...removed.slice(i, i + 100)] }, [root]), { cwd: root, env: plainEnv, stdio: 'inherit' }));
+        if (deleted !== null) return deleted;
+      }
+      const checkedOut = stepFailure(runStep(['checkout-index', '--all', '--force'], [root]));
+      if (checkedOut !== null) return checkedOut;
+    }
   }
   writeOut(`TARGET_REPO=${root}\nWORK_BRANCH=${parsed.branch}\nBASE_SHA=${baseSha}\n`);
   return 0;

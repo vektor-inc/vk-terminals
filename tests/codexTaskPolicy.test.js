@@ -1090,7 +1090,7 @@ test('拘束: 作業フォルダが無い・Git 管理外・ホームそのも�
 test('信頼済みの実行ファイル: 見つからない・信頼できない場所のものは使わず、検証を通ったものだけをランチャーへ固定する', () => {
   const sandbox = createSandbox();
   try {
-    assert.match(prepare(sandbox, { toolDirs: [] }).error, /trusted executable not found: node \(searched: [^)]*\); git \(searched: [^)]*\)/);
+    assert.match(prepare(sandbox, { toolDirs: [] }).error, /trusted executable not found: node, git \(searched: [^)]*\)$/);
     assert.deepEqual(launchHomes(sandbox), []);
     // 他人が書き込める場所の node は候補から外れる。
     const open = path.join(sandbox.root, 'open');
@@ -1118,6 +1118,7 @@ function createMiseNodeSandbox(sandbox, { withGit = true } = {}) {
   const otherDir = path.join(sandbox.root, 'other-bin');
   fs.mkdirSync(otherDir);
   const realGit = sandbox.toolDirs.map((dir) => path.join(dir, 'git')).find((candidate) => fs.existsSync(candidate));
+  assert.ok(realGit, '試験用に借りる実機の git が toolDirs から見つからない');
   if (withGit) fs.symlinkSync(realGit, path.join(otherDir, 'git'));
   return { globalBin, otherDir };
 }
@@ -1159,13 +1160,24 @@ test('実行ファイルが見つからない: エラー文に名前と探した
     const empty = path.join(sandbox.root, 'empty-bin');
     fs.mkdirSync(empty);
     const nodeMissing = prepare(sandbox, { toolDirs: [empty] }).error;
-    assert.match(nodeMissing, /trusted executable not found: node \(searched: [^)]*empty-bin\)/);
-    assert.match(nodeMissing, /git \(searched: [^)]*empty-bin\)/);
+    assert.match(nodeMissing, /trusted executable not found: node, git \(searched: [^)]*empty-bin\)$/);
+    assert.equal(nodeMissing.split('empty-bin').length, 2);
     // node はあるが git だけ無い場合は git だけを名指しする。
     const { otherDir } = createMiseNodeSandbox(sandbox, { withGit: false });
     const gitMissing = prepare(sandbox, { toolDirs: [otherDir, ...miseDirsOf(sandbox)] }).error;
     assert.match(gitMissing, /trusted executable not found: git \(searched: [^)]*other-bin/);
     assert.equal(/node \(searched/.test(gitMissing), false);
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('実行ファイルが見つからない: PATH 由来の改行を含む項目は JSON 文字列にして、エラー文を 1 行に保つ', () => {
+  const sandbox = createSandbox();
+  try {
+    const error = prepare(sandbox, { toolDirs: ['/nonexistent/a\nfake log line'] }).error;
+    assert.equal(error.includes('\n'), false);
+    assert.ok(error.includes('"/nonexistent/a\\nfake log line"'));
   } finally {
     sandbox.cleanup();
   }

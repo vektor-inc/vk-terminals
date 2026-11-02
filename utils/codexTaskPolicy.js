@@ -559,10 +559,13 @@ function listToolSearchDirs(homeDir, pathEnv) {
  * @returns {string} 見つからなかったものが無ければ空文字
  */
 function describeMissingExecutables(lookups) {
-  return lookups
-    .filter((lookup) => lookup.tool === null)
-    .map((lookup) => `${lookup.name} (searched: ${lookup.searched.join(', ')})`)
-    .join('; ');
+  // 探索先が同じものは 1 回にまとめる。制御文字を含む項目（PATH 由来）は、ログ行を偽装されないよう JSON 文字列にして出す。
+  const groups = new Map();
+  for (const lookup of lookups.filter((entry) => entry.tool === null)) {
+    const searched = lookup.searched.map((dir) => (hasControlCharacter(dir) ? JSON.stringify(dir) : dir)).join(', ');
+    groups.set(searched, [...(groups.get(searched) || []), lookup.name]);
+  }
+  return [...groups].map(([searched, names]) => `${names.join(', ')} (searched: ${searched})`).join('; ');
 }
 
 // Git の author 情報を、信頼済みの git で個人の global 設定から読む（読み取りのみ。実行を伴う設定は引き継がない）。

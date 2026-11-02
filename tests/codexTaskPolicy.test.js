@@ -16,6 +16,7 @@ const {
   prepareCodexTaskPolicyHome,
   verifyPolicyHome,
   resolveCodexTaskPolicyLaunchOptions,
+  listToolSearchDirs,
 } = require('../utils/codexTaskPolicy');
 const { validateRestartAgentRequest } = require('../utils/restartAgent');
 
@@ -1089,7 +1090,7 @@ test('拘束: 作業フォルダが無い・Git 管理外・ホームそのも�
 test('信頼済みの実行ファイル: 見つからない・信頼できない場所のものは使わず、検証を通ったものだけをランチャーへ固定する', () => {
   const sandbox = createSandbox();
   try {
-    assert.match(prepare(sandbox, { toolDirs: [] }).error, /trusted node\/git\/env executable not found/);
+    assert.match(prepare(sandbox, { toolDirs: [] }).error, /trusted executable not found: node \(searched: [^)]*\); git \(searched: [^)]*\)/);
     assert.deepEqual(launchHomes(sandbox), []);
     // 他人が書き込める場所の node は候補から外れる。
     const open = path.join(sandbox.root, 'open');
@@ -1100,6 +1101,71 @@ test('信頼済みの実行ファイル: 見つからない・信頼できない
     const result = prepare(sandbox, { toolDirs: [open, ...realDirs] });
     assert.equal(result.ok, true, result.error);
     assert.equal(fs.readFileSync(path.join(result.home, 'vk-task-ops'), 'utf8').includes(open), false);
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+// mise で入れた node の再現。実バージョンのフォルダに node を置き、global をそこへのリンクにする。
+function createMiseNodeSandbox(sandbox, { withGit = true } = {}) {
+  const miseNode = path.join(sandbox.homeDir, '.local', 'share', 'mise', 'installs', 'node');
+  const versionBin = path.join(miseNode, '24.22.1', 'bin');
+  fs.mkdirSync(versionBin, { recursive: true });
+  fs.writeFileSync(path.join(versionBin, 'node'), '#!/bin/sh\n', { mode: 0o755 });
+  fs.symlinkSync('./24.22.1', path.join(miseNode, 'global'));
+  const globalBin = path.join(miseNode, 'global', 'bin');
+  // node 以外は実機の git を借りる（git だけ無い場合の試験では借りない）。
+  const otherDir = path.join(sandbox.root, 'other-bin');
+  fs.mkdirSync(otherDir);
+  const realGit = sandbox.toolDirs.map((dir) => path.join(dir, 'git')).find((candidate) => fs.existsSync(candidate));
+  if (withGit) fs.symlinkSync(realGit, path.join(otherDir, 'git'));
+  return { globalBin, otherDir };
+}
+const miseDirsOf = (sandbox) => listToolSearchDirs(sandbox.homeDir, '').filter((dir) => dir.startsWith(sandbox.homeDir));
+
+test('mise の node: 探索先に global / latest の bin が入り、リンク先の node を検証して採用する', () => {
+  const sandbox = createSandbox();
+  try {
+    const dirs = listToolSearchDirs(sandbox.homeDir, '');
+    const miseRoot = path.join(sandbox.homeDir, '.local', 'share', 'mise', 'installs', 'node');
+    assert.ok(dirs.includes(path.join(miseRoot, 'global', 'bin')));
+    assert.ok(dirs.includes(path.join(miseRoot, 'latest', 'bin')));
+    assert.equal(dirs.some((dir) => dir.includes(`${path.sep}shims`)), false);
+    const { globalBin, otherDir } = createMiseNodeSandbox(sandbox);
+    const result = prepare(sandbox, { toolDirs: [otherDir, ...miseDirsOf(sandbox)] });
+    assert.equal(result.ok, true, result.error);
+    assert.ok(fs.readFileSync(path.join(result.home, 'vk-task-ops'), 'utf8').includes(path.join(globalBin, 'node')));
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('mise の node: リンク先のフォルダが他人に書き込める場合は採用しない', () => {
+  const sandbox = createSandbox();
+  try {
+    const { otherDir } = createMiseNodeSandbox(sandbox);
+    const versionBin = path.join(sandbox.homeDir, '.local', 'share', 'mise', 'installs', 'node', '24.22.1', 'bin');
+    fs.chmodSync(versionBin, 0o777);
+    const result = prepare(sandbox, { toolDirs: [otherDir, ...miseDirsOf(sandbox)] });
+    assert.match(result.error, /trusted executable not found: node/);
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('実行ファイルが見つからない: エラー文に名前と探した場所を含める', () => {
+  const sandbox = createSandbox();
+  try {
+    const empty = path.join(sandbox.root, 'empty-bin');
+    fs.mkdirSync(empty);
+    const nodeMissing = prepare(sandbox, { toolDirs: [empty] }).error;
+    assert.match(nodeMissing, /trusted executable not found: node \(searched: [^)]*empty-bin\)/);
+    assert.match(nodeMissing, /git \(searched: [^)]*empty-bin\)/);
+    // node はあるが git だけ無い場合は git だけを名指しする。
+    const { otherDir } = createMiseNodeSandbox(sandbox, { withGit: false });
+    const gitMissing = prepare(sandbox, { toolDirs: [otherDir, ...miseDirsOf(sandbox)] }).error;
+    assert.match(gitMissing, /trusted executable not found: git \(searched: [^)]*other-bin/);
+    assert.equal(/node \(searched/.test(gitMissing), false);
   } finally {
     sandbox.cleanup();
   }

@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 不具合修正 ] mise で入れた node が見つからず自動処理用 Codex を起動できない不具合を修正し、見つからないときのエラー文に実行ファイル名と探した場所を表示（[#482](https://github.com/vektor-inc/vk-terminals/issues/482)）
+
 ## 1.80.0
 
 - [ 機能追加 ] 自動処理用 Codex の固定入口で、GitHub のデフォルトブランチだけを取得する `git fetch` と、取得したデフォルトブランチを作業ブランチへ merge commit で取り込む `git merge`（どちらも引数なし）に対応し、競合時は Codex が解消して既存の `git add` / `git commit` で完成できるように（[#479](https://github.com/vektor-inc/vk-terminals/issues/479)）

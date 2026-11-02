@@ -548,7 +548,24 @@ function removeCreatedLaunchHome(fsImpl, home, identity, uid) {
  */
 function listToolSearchDirs(homeDir, pathEnv) {
   const fromPath = String(pathEnv || '').split(path.delimiter).filter((entry) => path.isAbsolute(entry));
-  return [...new Set([...TRUSTED_TOOL_DIRS, path.join(homeDir, '.volta', 'bin'), ...fromPath])];
+  // mise の global / latest は実バージョンのフォルダへのリンク。リンクの向き先も resolveTrustedExecutableDetailed が 1 段ずつ検証する。shims は mise 本体へのリンクのため対象にしない。
+  const miseNodeDirs = ['global', 'latest'].map((alias) => path.join(homeDir, '.local', 'share', 'mise', 'installs', 'node', alias, 'bin'));
+  return [...new Set([...TRUSTED_TOOL_DIRS, path.join(homeDir, '.volta', 'bin'), ...miseNodeDirs, ...fromPath])];
+}
+
+/**
+ * 見つからなかった実行ファイル名と探した場所を、エラー文にする。
+ * @param {Array<{name: string, tool: object|null, searched: string[]}>} lookups 実行ファイルごとの探索結果
+ * @returns {string} 見つからなかったものが無ければ空文字
+ */
+function describeMissingExecutables(lookups) {
+  // 探索先が同じものは 1 回にまとめる。制御文字を含む項目（PATH 由来）は、ログ行を偽装されないよう JSON 文字列にして出す。
+  const groups = new Map();
+  for (const lookup of lookups.filter((entry) => entry.tool === null)) {
+    const searched = lookup.searched.map((dir) => (hasControlCharacter(dir) ? JSON.stringify(dir) : dir)).join(', ');
+    groups.set(searched, [...(groups.get(searched) || []), lookup.name]);
+  }
+  return [...groups].map(([searched, names]) => `${names.join(', ')} (searched: ${searched})`).join('; ');
 }
 
 // Git の author 情報を、信頼済みの git で個人の global 設定から読む（読み取りのみ。実行を伴う設定は引き継がない）。
@@ -713,7 +730,13 @@ function prepareCodexTaskPolicyHome(params) {
     const envTool = resolveTrustedExecutableDetailed(fsImpl, path.basename(ENV_COMMAND_PATH), [path.dirname(ENV_COMMAND_PATH)], { uid });
     // メンバー起動に使う codex も、git / gh と同じ所有者・権限の検証で選ぶ。見つからなければメンバー起動だけを持たない（他の操作は使える）。
     const codexTool = resolveTrustedExecutableDetailed(fsImpl, 'codex', toolDirs, { uid });
-    if (nodeTool === null || gitTool === null || envTool === null) throw new PolicyError('trusted node/git/env executable not found');
+    // 見つからなかった実行ファイルの名前と探した場所を、原因の切り分けに使えるようエラー文へ含める。
+    const missingExecutables = describeMissingExecutables([
+      { name: 'node', tool: nodeTool, searched: toolDirs },
+      { name: 'git', tool: gitTool, searched: toolDirs },
+      { name: path.basename(ENV_COMMAND_PATH), tool: envTool, searched: [path.dirname(ENV_COMMAND_PATH)] },
+    ]);
+    if (missingExecutables !== '') throw new PolicyError(`trusted executable not found: ${missingExecutables}`);
     const tools = [nodeTool, gitTool, envTool, ...(ghTool ? [ghTool] : []), ...(codexTool ? [codexTool] : [])];
     if (!tools.every((tool) => isSafeAbsolutePath(tool.path))) throw new PolicyError('unsafe executable path');
     const nodePath = nodeTool.path;
@@ -948,4 +971,5 @@ module.exports = {
   prepareCodexTaskPolicyHome,
   verifyPolicyHome,
   resolveCodexTaskPolicyLaunchOptions,
+  listToolSearchDirs,
 };

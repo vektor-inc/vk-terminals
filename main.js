@@ -1881,6 +1881,7 @@ ipcMain.handle('settings:describe', () => {
   return {
     available: true,
     title: descriptor.title || '設定',
+    versionLabel: typeof descriptor.versionLabel === 'string' ? descriptor.versionLabel : '',
     note: descriptor.note || '',
     tabs: Array.isArray(descriptor.tabs) ? descriptor.tabs : [],
     targetPath: targetInfo.targetPath,

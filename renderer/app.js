@@ -88,6 +88,7 @@ const {
   groupSettingsGroupsByTab,
   normalizeSettingsTabs,
 } = window.VKSettingsTabs;
+const { getSettingsVersionLabel } = window.VKSettingsVersionLabel;
 
 // モーダル類の Escape は、最後に開いたものだけへ渡す（issue #284）。
 const escapeLayers = createEscapeLayerStack(document);
@@ -5109,7 +5110,13 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
         : settingsGroups.map(g => renderGroupHtml(g)).join(''))
     : '';
 
-  const appVersion = (desc && desc.appVersion) ? desc.appVersion : '';
+  const settingsVersionLabel = getSettingsVersionLabel(
+    desc && desc.versionLabel,
+    desc && desc.appVersion
+  );
+  const settingsVersionHtml = settingsVersionLabel
+    ? `<span class="settings-version">${escText(settingsVersionLabel)}</span>`
+    : '';
   const targetPathLabel = settingsAvailable
     ? (desc.targetPath || (Array.isArray(desc.targetPaths) ? desc.targetPaths[0] : '') || '')
     : '';
@@ -5123,13 +5130,13 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
   const settingsHeaderHtml = useTabbedSettings
     ? `<div class="settings-header has-tabs">
         <div class="settings-titlebar">
-          <h2 id="${settingsTitleId}">${escText((settingsAvailable && desc.title) || 'VK Terminals')}${appVersion ? `<span class="settings-version">VK Terminals v${escText(appVersion)}</span>` : ''}</h2>
+          <h2 id="${settingsTitleId}"><span class="settings-title-text">${escText((settingsAvailable && desc.title) || 'VK Terminals')}</span>${settingsVersionHtml}</h2>
           <button class="settings-close" aria-label="閉じる" title="閉じる">✕</button>
         </div>
         ${settingsTabsHtml}
       </div>`
     : `<div class="settings-header">
-        <h2 id="${settingsTitleId}">${escText((settingsAvailable && desc.title) || 'VK Terminals')}${appVersion ? `<span class="settings-version">VK Terminals v${escText(appVersion)}</span>` : ''}</h2>
+        <h2 id="${settingsTitleId}"><span class="settings-title-text">${escText((settingsAvailable && desc.title) || 'VK Terminals')}</span>${settingsVersionHtml}</h2>
         <button class="settings-close" aria-label="閉じる" title="閉じる">✕</button>
       </div>`;
   const overlay = document.createElement('div');

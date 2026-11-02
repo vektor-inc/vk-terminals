@@ -200,12 +200,11 @@ html, body {
 }
 .settings-version {
   min-width: 0;
-  overflow: hidden;
   font-size: 12px;
   font-weight: 400;
+  line-height: 1.4;
   color: #8b949e;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: break-word;
 }
 .settings-close {
   flex-shrink: 0;

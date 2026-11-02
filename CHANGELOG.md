@@ -1,5 +1,7 @@
 # Changelog
 
+## 1.81.0
+
 - [ 機能追加 ] 自動処理用 Codex の固定入口で、起動前に作成済みのタスク専用 worktree を引き受けて作業ブランチへ切り替える `prepare adopt-worktree` に対応し、作成済み worktree でも Codex が Git 操作を求めて止まらないように（[#484](https://github.com/vektor-inc/vk-terminals/issues/484)）
 
 ## 1.80.1

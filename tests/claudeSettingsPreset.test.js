@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const childProcess = require('child_process');
 
 const {
   isValidClaudeSettingsPreset,
@@ -20,8 +21,8 @@ const PRESET = 'vk-orchestrator-work-pane';
 const mainSource = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
 const rendererSource = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'app.js'), 'utf8');
 
-function createFixture(t) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-claude-preset-'));
+function createFixture(t, prefix = 'vk-terminals-claude-preset-') {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   const dataDir = path.join(root, 'data');
   const toolsDir = path.join(root, 'tools');
   const orchestratorRoot = path.join(root, 'vk-orchestrator');
@@ -66,7 +67,7 @@ test('管理済み settings を生成し、安全に --settings へ渡す', (t) 
   const actual = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
   assert.deepEqual(actual.hooks.Stop[0].hooks[0], {
     type: 'command',
-    command: `'${path.join(fixture.toolsDir, 'node')}' '${path.join(fixture.orchestratorRoot, 'bin', 'vk-orchestrator.js')}' check-turn-end-status-hook`,
+    command: `'${path.join(fixture.toolsDir, 'node')}' '${fs.realpathSync(path.join(fixture.orchestratorRoot, 'bin', 'vk-orchestrator.js'))}' check-turn-end-status-hook`,
   });
   assert.equal(fs.statSync(settingsPath).mode & 0o777, 0o600);
   const options = {
@@ -86,7 +87,7 @@ test('管理済み settings を生成し、安全に --settings へ渡す', (t) 
 
 test('VK Orchestrator と Node の固定パスを検証し、解決できない場合は拒否する', (t) => {
   const fixture = createFixture(t);
-  assert.equal(resolveVkOrchestratorEntry(fixture.orchestratorRoot), path.join(fixture.orchestratorRoot, 'bin', 'vk-orchestrator.js'));
+  assert.equal(resolveVkOrchestratorEntry(fixture.orchestratorRoot), fs.realpathSync(path.join(fixture.orchestratorRoot, 'bin', 'vk-orchestrator.js')));
   assert.match(resolveClaudeSettingsHookCommand({ nodeSearchDirs: [fixture.toolsDir], vkOrchestratorRoot: fixture.orchestratorRoot }), /check-turn-end-status-hook$/);
   assert.throws(() => resolveClaudeSettingsHookCommand({ nodeSearchDirs: [], vkOrchestratorRoot: fixture.orchestratorRoot }), /unavailable/);
   fs.writeFileSync(path.join(fixture.orchestratorRoot, 'package.json'), '{"name":"wrong"}\n');
@@ -95,7 +96,35 @@ test('VK Orchestrator と Node の固定パスを検証し、解決できない�
   fs.unlinkSync(path.join(fixture.orchestratorRoot, 'bin', 'vk-orchestrator.js'));
   fs.symlinkSync(path.join(fixture.toolsDir, 'node'), path.join(fixture.orchestratorRoot, 'bin', 'vk-orchestrator.js'));
   assert.equal(resolveVkOrchestratorEntry(fixture.orchestratorRoot), null);
-  assert.equal(resolveVkOrchestratorEntry(`${fixture.orchestratorRoot} bad`), null);
+  assert.equal(resolveVkOrchestratorEntry("/tmp/vk-orchestrator'bad"), null);
+});
+
+test('VK Orchestrator のルートまたは entry が他人に書き込み可能なら拒否する', (t) => {
+  const fixture = createFixture(t);
+  const entry = path.join(fixture.orchestratorRoot, 'bin', 'vk-orchestrator.js');
+  fs.chmodSync(fixture.orchestratorRoot, 0o722);
+  assert.equal(resolveVkOrchestratorEntry(fixture.orchestratorRoot), null);
+  fs.chmodSync(fixture.orchestratorRoot, 0o700);
+  fs.chmodSync(entry, 0o722);
+  assert.equal(resolveVkOrchestratorEntry(fixture.orchestratorRoot), null);
+});
+
+test('空白を含む VK Orchestrator アプリのパスを3引数のフックコマンドにする', (t) => {
+  const fixture = createFixture(t, 'VK Orchestrator.app ');
+  const toolsRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-tools-'));
+  const nodePath = path.join(toolsRoot, 'node');
+  fs.writeFileSync(nodePath, '#!/bin/sh\n', { mode: 0o700 });
+  t.after(() => fs.rmSync(toolsRoot, { recursive: true, force: true }));
+  const command = resolveClaudeSettingsHookCommand({
+    nodeSearchDirs: [toolsRoot],
+    vkOrchestratorRoot: fixture.orchestratorRoot,
+  });
+  const args = childProcess.execFileSync('/bin/sh', ['-c', `set -- ${command}; printf '<%s>\\n' "$@"`], { encoding: 'utf8' });
+  assert.deepEqual(args.trim().split('\n'), [
+    `<${nodePath}>`,
+    `<${fs.realpathSync(path.join(fixture.orchestratorRoot, 'bin', 'vk-orchestrator.js'))}>`,
+    '<check-turn-end-status-hook>',
+  ]);
 });
 
 test('管理フォルダと既存 settings のシンボリックリンクを安全に扱う', (t) => {
@@ -113,6 +142,20 @@ test('管理フォルダと既存 settings のシンボリックリンクを安�
   fs.rmSync(presetDir, { recursive: true });
   fs.symlinkSync(fixture.toolsDir, presetDir);
   assert.throws(() => prepareClaudeSettingsPreset(fixture.dataDir, PRESET, options), /regular directory/);
+});
+
+test('管理フォルダが他人に書き込み可能または他人所有なら拒否する', (t) => {
+  const fixture = createFixture(t);
+  const presetDir = path.join(fixture.dataDir, 'claude-settings-presets');
+  const options = { nodeSearchDirs: [fixture.toolsDir], vkOrchestratorRoot: fixture.orchestratorRoot };
+  fs.mkdirSync(presetDir, { recursive: true, mode: 0o700 });
+  fs.chmodSync(presetDir, 0o722);
+  assert.throws(() => prepareClaudeSettingsPreset(fixture.dataDir, PRESET, options), /unsafe ownership or permissions/);
+  fs.chmodSync(presetDir, 0o700);
+  assert.throws(
+    () => prepareClaudeSettingsPreset(fixture.dataDir, PRESET, { ...options, uid: process.getuid() + 1 }),
+    /unsafe ownership or permissions/
+  );
 });
 
 test('コマンド組み立て側でもプリセット名と生成パスを再検証する', () => {

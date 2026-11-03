@@ -3,7 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { resolveTrustedExecutableDetailed } = require('./codexTaskOps');
+const { resolveTrustedExecutableDetailed, resolveTrustedPath } = require('./codexTaskOps');
 const { listToolSearchDirs } = require('./codexTaskPolicy');
 
 const PRESET = 'vk-orchestrator-work-pane';
@@ -24,17 +24,15 @@ function validateClaudeSettingsPresetForEngine(engine, noClaude, preset) {
 }
 
 // VK Orchestrator の実体だけを受け付け、作業リポジトリ内の同名コマンドを実行しない。
-function resolveVkOrchestratorEntry(root, fsImpl = fs) {
-  if (typeof root !== 'string' || !path.isAbsolute(root) || !SAFE_LAUNCHER_PATH_PATTERN.test(root)) return null;
+function resolveVkOrchestratorEntry(root, fsImpl = fs, options = {}) {
+  if (typeof root !== 'string' || !SETTINGS_PATH_PATTERN.test(root)) return null;
   try {
-    const rootStat = fsImpl.lstatSync(root);
-    if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) return null;
+    resolveTrustedPath(fsImpl, root, { finalKind: 'directory', rejectFinalLink: true, uid: options.uid });
     const pkg = JSON.parse(fsImpl.readFileSync(path.join(root, 'package.json'), 'utf8'));
     if (pkg.name !== 'vk-orchestrator') return null;
     const entry = path.join(root, 'bin', 'vk-orchestrator.js');
-    const entryStat = fsImpl.lstatSync(entry);
-    if (entryStat.isSymbolicLink() || !entryStat.isFile() || !SAFE_LAUNCHER_PATH_PATTERN.test(entry)) return null;
-    return entry;
+    if (!SETTINGS_PATH_PATTERN.test(entry)) return null;
+    return resolveTrustedPath(fsImpl, entry, { finalKind: 'file', rejectFinalLink: true, uid: options.uid }).realPath;
   } catch (_error) {
     return null;
   }
@@ -49,7 +47,7 @@ function resolveClaudeSettingsHookCommand(options = {}) {
     { uid: options.uid }
   );
   const installedRoot = path.resolve(__dirname, '..', '..', '..');
-  const orchestratorEntry = resolveVkOrchestratorEntry(options.vkOrchestratorRoot || installedRoot, fsImpl);
+  const orchestratorEntry = resolveVkOrchestratorEntry(options.vkOrchestratorRoot || installedRoot, fsImpl, { uid: options.uid });
   if (!node || !SAFE_LAUNCHER_PATH_PATTERN.test(node.path) || !orchestratorEntry) {
     throw new Error('Claude settings preset hook is unavailable');
   }

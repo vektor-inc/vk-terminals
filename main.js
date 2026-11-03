@@ -66,6 +66,11 @@ const {
 // 自動処理用 Codex のタスク用ポリシー（専用 CODEX_HOME の生成。issue #428）。
 const { resolveCodexTaskPolicyLaunchOptions, resolveCodexPolicyContext } = require('./utils/codexTaskPolicy');
 const {
+  validateClaudeSettingsPresetForEngine,
+  prepareClaudeSettingsPreset,
+  buildClaudeSettingsArgument,
+} = require('./utils/claudeSettingsPreset');
+const {
   checkGitHubReachability,
   resolveE2EGitHubReachabilityOverride,
   runGitHubReachabilityGate,
@@ -293,6 +298,18 @@ const CODEX_TASK_POLICY_HANDOFF_DIR = path.join(os.homedir(), '.claude', 'handof
 // 戻り値の discard() は、専用 CODEX_HOME を作ったのに Codex の起動に使わなかったときに呼んで回収する。
 function resolveCodexLaunchOptions(engine, options, { dryRun = false, cwd } = {}) {
   return resolveCodexTaskPolicyLaunchOptions(engine, options, createCodexPolicyDeps({ dryRun, cwd }));
+}
+
+// 検証済みプリセットだけを VK Terminals の管理領域へ書き出し、コマンド組み立て側でも再検証する。
+function resolveClaudeSettingsLaunchOptions(engine, noClaude, options) {
+  const validated = validateClaudeSettingsPresetForEngine(engine, noClaude, options.claudeSettingsPreset);
+  if (!validated.ok) throw new Error(validated.error);
+  if (validated.preset === undefined) return options;
+  return {
+    ...options,
+    claudeSettingsPath: prepareClaudeSettingsPreset(DATA_DIR, validated.preset),
+    buildClaudeSettingsArgument,
+  };
 }
 
 // Codex ポリシーの事前確認と実起動で、同じ依存値を使う。
@@ -2098,7 +2115,11 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
     discardLaunchHome = launchResolution.discard;
     taskPolicyLaunch = isTaskPolicyCodexLaunch(resolvedEngine, launchResolution.options);
     try {
-      const built = buildEngineAwareLaunchCommand(resolvedEngine, options.model, launchResolution.options);
+      const claudeLaunchOptions = resolveClaudeSettingsLaunchOptions(resolvedEngine, noClaude, {
+        ...options,
+        ...launchResolution.options,
+      });
+      const built = buildEngineAwareLaunchCommand(resolvedEngine, options.model, claudeLaunchOptions);
       if (built.modelIgnored) {
         console.warn(`${LOG_PREFIX} model is ignored for engine '${resolvedEngine}'`);
       }
@@ -2665,7 +2686,11 @@ async function restartAgentInTerminal(ptyProcess, request, launchOptions, lifecy
   if (request.cwd !== undefined) {
     ptyProcess.write(`cd -- ${quoteShellArgument(request.cwd)}\r`);
   }
-  const { command, modelIgnored } = buildEngineAwareLaunchCommand(request.engine, request.model, launchOptions);
+  const claudeLaunchOptions = resolveClaudeSettingsLaunchOptions(request.engine, false, {
+    ...request,
+    ...launchOptions,
+  });
+  const { command, modelIgnored } = buildEngineAwareLaunchCommand(request.engine, request.model, claudeLaunchOptions);
   if (modelIgnored) {
     console.warn(`${LOG_PREFIX} model is ignored for engine '${request.engine}'`);
   }
@@ -3535,7 +3560,7 @@ function startHttpApi() {
       return;
     }
 
-    // POST /api/new-pane  { cwd?: "/path/to/dir", noClaude?: boolean, engine?: "claude"|"codex", stashed?: boolean, model?: string } — 新規ペインを作成して termId を返す
+    // POST /api/new-pane  { cwd?: "/path/to/dir", noClaude?: boolean, engine?: "claude"|"codex", stashed?: boolean, model?: string, claudeSettingsPreset?: string } — 新規ペインを作成して termId を返す
     //   cwd を指定すればそのディレクトリで開く。未指定なら HOME で開く。
     //   noClaude: true を指定すると、新規ペインで claude を自動起動せず素のシェルとして開く。
     //   engine: 起動する AI エンジン（issue #367）。許可値は "claude" / "codex" のみ
@@ -3545,6 +3570,7 @@ function startHttpApi() {
     //   model を指定すると、そのモデルで選択エンジンを起動する（--model '<model>'）。
     //     許可するのは英数字・`.`・`_`・`-`・`[`・`]` のみ・64 文字以内で、先頭は英数字。
     //     それ以外は 400 で拒否しペインを作らない。未指定なら各エンジンを素のコマンドで起動する。
+    //   claudeSettingsPreset は許可済みの Claude Code 設定だけを起動ごとに追加する。
     if (req.method === 'POST' && url.pathname === '/api/new-pane') {
       if (isForbiddenOrigin(req)) {
         res.writeHead(403, { 'Content-Type': 'application/json' });
@@ -3576,6 +3602,7 @@ function startHttpApi() {
         let requestedApprovalPolicy;
         let requestedSandboxMode;
         let requestedCodexPolicy;
+        let requestedClaudeSettingsPreset;
         if (body.length > 0) {
           try {
             const parsed = JSON.parse(body);
@@ -3630,6 +3657,17 @@ function startHttpApi() {
             requestedApprovalPolicy = codexOptions.approvalPolicy;
             requestedSandboxMode = codexOptions.sandboxMode;
             requestedCodexPolicy = codexOptions.codexPolicy;
+            const claudePreset = validateClaudeSettingsPresetForEngine(
+              requestedEngine || 'claude',
+              requestedNoClaude === true || (requestedNoClaude === undefined && globalPlainMode),
+              parsed?.claudeSettingsPreset
+            );
+            if (!claudePreset.ok) {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: claudePreset.error }));
+              return;
+            }
+            requestedClaudeSettingsPreset = claudePreset.preset;
           } catch {
             res.writeHead(400, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: 'invalid JSON' }));
@@ -3689,6 +3727,7 @@ function startHttpApi() {
           if (typeof requestedApprovalPolicy === 'string') payload.approvalPolicy = requestedApprovalPolicy;
           if (typeof requestedSandboxMode === 'string') payload.sandboxMode = requestedSandboxMode;
           if (requestedCodexPolicy !== undefined) payload.codexPolicy = requestedCodexPolicy;
+          if (requestedClaudeSettingsPreset !== undefined) payload.claudeSettingsPreset = requestedClaudeSettingsPreset;
           try {
             win.webContents.send('terminal:request-new-pane', payload);
           } catch (_error) {
@@ -3782,6 +3821,7 @@ function startHttpApi() {
             isValidEngine,
             isValidModelForEngine,
             validateCodexLaunchOptions,
+            validateClaudeSettingsPresetForEngine,
           });
           if (!request.ok) {
             res.writeHead(400, { 'Content-Type': 'application/json' });

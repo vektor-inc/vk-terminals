@@ -135,9 +135,16 @@
 
   // ペインへ書き込む claude の起動コマンド（末尾の改行は含めない）を返す。
   // 未指定・不正値では例外を投げず、従来どおりの素の `claude` へ倒す（安全側の既定）。
-  function buildClaudeLaunchCommand(model) {
-    if (!isValidClaudeModel(model)) return 'claude';
-    return `claude --model '${model}'`;
+  function buildClaudeLaunchCommand(model, options = {}) {
+    const parts = ['claude'];
+    if (isValidClaudeModel(model)) parts.push('--model', `'${model}'`);
+    if (options.claudeSettingsPreset !== undefined) {
+      if (typeof options.buildClaudeSettingsArgument !== 'function') {
+        throw new Error('Claude settings preset requires a prepared settings file');
+      }
+      parts.push(options.buildClaudeSettingsArgument(options.claudeSettingsPreset, options.claudeSettingsPath));
+    }
+    return parts.join(' ');
   }
 
   // Codex も固定実行ファイル名と検証済み引数だけで組み立てる。共有 daemon の設定と

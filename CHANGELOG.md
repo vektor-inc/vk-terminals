@@ -1,6 +1,7 @@
 # Changelog
 
 - [ 機能追加 ] 自動処理用 Codex の固定入口で、レビュー完了・CI 通過・マージ可能状態と head を読み戻してから PR を squash でマージする `gh pr merge` に対応（[#490](https://github.com/vektor-inc/vk-terminals/issues/490)）
+- [ 機能追加 ] 新規ペインとエージェント再起動で、VK Orchestrator 作業ペイン用の Claude Code 設定プリセットを指定可能に（[#495](https://github.com/vektor-inc/vk-terminals/issues/495)）
 
 ## 1.82.1
 

@@ -10,6 +10,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const claudeModel = require('../renderer/claudeModel');
+const { validateClaudeSettingsPresetForEngine } = require('../utils/claudeSettingsPreset');
 const {
   CODEX_TASK_POLICY_PRESETS,
   ORCHESTRATED_TASK_OPERATIONS,
@@ -144,6 +145,7 @@ test('restart-agent 検証: codexPolicy を同じ規則で検証し、新規作�
     isValidEngine: claudeModel.isValidEngine,
     isValidModelForEngine: claudeModel.isValidModelForEngine,
     validateCodexLaunchOptions,
+    validateClaudeSettingsPresetForEngine,
   };
   const ok = validateRestartAgentRequest({
     termId: '1', expectedGeneration: 2, engine: 'codex', approvalPolicy: 'never', codexPolicy: { preset: 'orchestrated-task', allowedOwners: ['Vektor-Inc'] }, cwd: '/tmp',

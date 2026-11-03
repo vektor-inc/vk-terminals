@@ -4749,10 +4749,10 @@ function renderSettingsField(f, value, id) {
   const helpToggle = hasHelp
     ? `<button type="button" class="settings-help-toggle" id="${escAttr(id + '-help-toggle')}" aria-expanded="false" aria-controls="${escAttr(id + '-help')}" aria-label="${escAttr(labelText + 'の説明')}">?</button>`
     : '';
-  const isRequired = f.required === true;
+  const isRequired = f.required === true && f.type !== 'boolean';
   const requiredBadge = isRequired ? '<span class="settings-required-badge">必須</span>' : '';
   const requiredAttributes = isRequired ? ' aria-required="true"' : '';
-  const requiredNotice = isRequired && f.type !== 'boolean'
+  const requiredNotice = isRequired
     ? `<span class="settings-required-notice" id="${escAttr(id + '-required')}" role="status">未設定です。必須の項目のため、設定してください。</span>`
     : '';
   const labelHtml = `<label class="settings-label" for="${escAttr(id)}">${label}</label>`;
@@ -4767,14 +4767,14 @@ function renderSettingsField(f, value, id) {
 
   if (f.type === 'boolean') {
     const checkLabel = `<label class="settings-check">
-        <input type="checkbox" id="${id}" ${value ? 'checked' : ''}${requiredAttributes}>
-        <span class="settings-label">${label}</span>${requiredBadge}
+        <input type="checkbox" id="${id}" ${value ? 'checked' : ''}>
+        <span class="settings-label">${label}</span>
       </label>`;
     const checkLabelRow = hasHelp
       ? `<div class="settings-label-row">${checkLabel}${helpToggle}</div>`
       : checkLabel;
     return `<div class="settings-row settings-row-check">
-      ${checkLabelRow}${help}${disabledReason}${requiredNotice}
+      ${checkLabelRow}${help}${disabledReason}
     </div>`;
   }
 
@@ -5558,9 +5558,8 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
     const notice = modal.querySelector('#' + id + '-required');
     if (!input || !notice) return;
     // boolean は true / false のどちらも値が設定済みであり、空値を持たない。
-    const empty = field.type !== 'boolean' && input.value.trim() === '';
+    const empty = field.type !== 'boolean' && !isEntryDisabled(id) && input.value.trim() === '';
     notice.hidden = !empty;
-    syncEntryDescribedBy(id);
   };
 
   let switchToFieldTab = () => {};
@@ -6395,6 +6394,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
         if (reason) reason.hidden = true;
         if (!visible) clearFieldValidity(field, id);
       }
+      syncRequiredNotice(field, id);
       syncEntryDescribedBy(id);
     }
     // 区分（issue #421）: 中の項目がすべて隠れたら、見出し・説明文・区切り線も残さず区分ごと隠す。
@@ -6501,13 +6501,8 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
     };
     input.addEventListener('input', restoreDisabledValue);
     input.addEventListener('change', restoreDisabledValue);
-    const onInputEdited = () => {
-      syncRequiredNotice(field, id);
-      onEntryEdited();
-    };
-    input.addEventListener('input', onInputEdited);
-    input.addEventListener('change', onInputEdited);
-    syncRequiredNotice(field, id);
+    input.addEventListener('input', onEntryEdited);
+    input.addEventListener('change', onEntryEdited);
   }
   applyFieldState();
 

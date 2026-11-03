@@ -3769,10 +3769,7 @@ body.pane-dragging * {
   font-weight: 600;
   line-height: 1.3;
 }
-.setup-item-state {
-  color: #ffa198;
-  font-weight: 600;
-}
+.setup-item-state,
 .setup-item-status-message {
   color: #ffa198;
   font-weight: 600;

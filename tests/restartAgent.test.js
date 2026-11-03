@@ -14,6 +14,7 @@ const {
   quoteShellArgument,
   stopAgentChildren,
 } = require('../utils/restartAgent');
+const { validateClaudeSettingsPresetForEngine } = require('../utils/claudeSettingsPreset');
 
 // cwd の実在確認（fs.promises.stat）は非同期のため、validateRestartAgentRequest の
 // 検証対象ではない（main.js 側で await して別途確認する）。ここでは engine / model の
@@ -35,13 +36,7 @@ const validators = {
     }
     return { ok: true, approvalPolicy: value.approvalPolicy, sandboxMode: value.sandboxMode, codexPolicy: value.codexPolicy };
   },
-  validateClaudeSettingsPresetForEngine: (engine, noClaude, preset) => {
-    if (preset === undefined) return { ok: true, preset: undefined };
-    if (preset !== 'vk-orchestrator-work-pane') return { ok: false, error: 'invalid claudeSettingsPreset' };
-    if (engine !== 'claude') return { ok: false, error: 'claudeSettingsPreset requires engine "claude"' };
-    if (noClaude) return { ok: false, error: 'claudeSettingsPreset cannot be used with noClaude' };
-    return { ok: true, preset };
-  },
+  validateClaudeSettingsPresetForEngine,
 };
 
 test('世代番号: AI 起動ペインは 1、素のシェルは 0 で始まり、成功時だけ増やせる', () => {

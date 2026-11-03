@@ -307,7 +307,11 @@ function resolveClaudeSettingsLaunchOptions(engine, noClaude, options) {
   if (validated.preset === undefined) return options;
   return {
     ...options,
-    claudeSettingsPath: prepareClaudeSettingsPreset(DATA_DIR, validated.preset),
+    claudeSettingsPath: prepareClaudeSettingsPreset(DATA_DIR, validated.preset, {
+      homeDir: os.homedir(),
+      pathEnv: APP_ORIGINAL_PATH,
+      vkOrchestratorRoot: loadUserConfig().claudeSettingsPresets?.vkOrchestratorRoot,
+    }),
     buildClaudeSettingsArgument,
   };
 }
@@ -2116,8 +2120,8 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
     taskPolicyLaunch = isTaskPolicyCodexLaunch(resolvedEngine, launchResolution.options);
     try {
       const claudeLaunchOptions = resolveClaudeSettingsLaunchOptions(resolvedEngine, noClaude, {
-        ...options,
         ...launchResolution.options,
+        claudeSettingsPreset: options.claudeSettingsPreset,
       });
       const built = buildEngineAwareLaunchCommand(resolvedEngine, options.model, claudeLaunchOptions);
       if (built.modelIgnored) {
@@ -2686,11 +2690,7 @@ async function restartAgentInTerminal(ptyProcess, request, launchOptions, lifecy
   if (request.cwd !== undefined) {
     ptyProcess.write(`cd -- ${quoteShellArgument(request.cwd)}\r`);
   }
-  const claudeLaunchOptions = resolveClaudeSettingsLaunchOptions(request.engine, false, {
-    ...request,
-    ...launchOptions,
-  });
-  const { command, modelIgnored } = buildEngineAwareLaunchCommand(request.engine, request.model, claudeLaunchOptions);
+  const { command, modelIgnored } = buildEngineAwareLaunchCommand(request.engine, request.model, launchOptions);
   if (modelIgnored) {
     console.warn(`${LOG_PREFIX} model is ignored for engine '${request.engine}'`);
   }
@@ -3668,6 +3668,11 @@ function startHttpApi() {
               return;
             }
             requestedClaudeSettingsPreset = claudePreset.preset;
+            if (requestedClaudeSettingsPreset !== undefined && requestedUseDefaults === true) {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'claudeSettingsPreset cannot be used with useDefaults' }));
+              return;
+            }
           } catch {
             res.writeHead(400, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: 'invalid JSON' }));
@@ -3936,6 +3941,18 @@ function startHttpApi() {
               res.end(JSON.stringify({ error: launchResolution.error }));
               return;
             }
+            let launchOptions;
+            try {
+              launchOptions = resolveClaudeSettingsLaunchOptions(request.engine, false, {
+                ...launchResolution.options,
+                claudeSettingsPreset: request.claudeSettingsPreset,
+              });
+            } catch (error) {
+              launchResolution.discard();
+              res.writeHead(503, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: error.message }));
+              return;
+            }
             let launchHomeInUse = false;
             let startedGeneration = null;
             let startedLaunchToken = null;
@@ -3962,7 +3979,7 @@ function startHttpApi() {
             // 最初の非同期待機より前に旧画面の識別値を無効化し、停止処理中のペインへ
             // 直前の確認結果を使った Enter が割り込まないようにする。
             conditionalTerminalInput.markChanged(request.termId);
-            const operation = restartAgentInTerminal(ptyProcess, request, launchResolution.options, lifecycleLaunch);
+            const operation = restartAgentInTerminal(ptyProcess, request, launchOptions, lifecycleLaunch);
             restartAgentOperations.set(request.termId, operation);
             try {
               const stopped = await operation;

@@ -58,6 +58,7 @@ const {
   containsIgnoringWhitespace,
   detectBackgroundAgents,
   extractScreenLines,
+  findStructuralWaitingMatch,
   findWaitingMatch,
   isOutputQuiescent,
   isWaitingCwdExcluded,
@@ -69,7 +70,7 @@ const {
   stripVolatileForKey,
   waitingCheckDelayMs,
 } = window.VKWaitingState;
-const { deriveStatus } = window.VKStatusState;
+const { deriveDisplayWaiting, deriveStatus } = window.VKStatusState;
 const { getStatusPresentation } = window.VKStatusPresentation;
 const { getApiServerStatusPresentation } = window.VKApiServerStatus;
 const { getPrBadgePresentation } = window.VKPrBadge;
@@ -340,6 +341,7 @@ function checkWaiting(paneId) {
   // 点灯の根拠を記録するため matchesWaiting ではなくこちらを使う。
   const matchText = findWaitingMatch(buffer);
   const matches = matchText !== null;
+  const structuralMatchText = findStructuralWaitingMatch(buffer);
   // stripVolatileForKey は matchText（文脈込み）から数字（時刻・termId・カウンタ等の
   // 可変部分）だけを潰したもの。ビープの長期抑制の鍵（t.waitingOnsetKey）専用
   // （issue #352 の再レビュー・司と安藤の実測で発覚）。matchText をそのまま鍵にすると
@@ -360,6 +362,7 @@ function checkWaiting(paneId) {
     ? containsIgnoringWhitespace(buffer, t.waitingOnsetMatch)
     : undefined;
   const waiting = nextWaitingState({ prev: t.waiting, matches, excluded, quiescent, onsetStillVisible });
+  const structuralWaiting = waiting && structuralMatchText !== null;
   // 点灯根拠（t.waitingOnsetMatch / t.waitingOnsetKey）の更新ルール自体は
   // nextWaitingOnset（純粋関数）に委ねる。判断基準の詳細・#91 への影響が無い理由は
   // 同関数のコメント参照。ここでは backfill 用の再探索だけを行う。
@@ -392,7 +395,10 @@ function checkWaiting(paneId) {
   });
   t.waitingOnsetMatch = nextOnset.onsetMatch;
   t.waitingOnsetKey = nextOnset.onsetKey;
-  if (waiting !== t.waiting) {
+  const waitingChanged = waiting !== t.waiting;
+  const displayWaitingBefore = isPaneDisplayWaiting(t);
+  t.structuralWaiting = structuralWaiting;
+  if (waitingChanged) {
     t.waiting = waiting;
     if (waiting) {
       // 静止ゲートが効いていることを e2e から検証できるようにするための記録（issue #270）。
@@ -424,7 +430,7 @@ function checkWaiting(paneId) {
     //   （termId 等）が毎回変わるため、数字を潰さない文字列を鍵にすると長期抑制が
     //   一度も適用されない（詳細は stripVolatileForKey / WAITING_BEEP_REPEAT_SUPPRESS_MS
     //   のコメント参照）。
-    if (waiting && shouldBeepForWaiting({
+    if (isPaneDisplayWaiting(t) && !displayWaitingBefore && shouldBeepForWaiting({
       now,
       lastBeepAt: t.lastWaitingBeepAt,
       onsetMatch: t.waitingOnsetKey,
@@ -435,6 +441,7 @@ function checkWaiting(paneId) {
       VKShell.beep();
     }
   }
+  if (!waitingChanged && displayWaitingBefore !== isPaneDisplayWaiting(t)) recomputeStatus(paneId);
   // 不変条件: バーストの最後の評価は必ず静止評価になる。
   //   上限（非静止）で走った評価はここで打ち止めにできない。この直後に出力が止まると
   //   次のタイマーを張る契機（terminal:data）が来ず、静止時点の評価が一度も走らないため、
@@ -535,6 +542,7 @@ function markPaneInput(paneId) {
   t.lastBeepedOnsetKey = null;
   if (t.waiting) {
     t.waiting = false;
+    t.structuralWaiting = false;
     t.lastLines = '';
     t.lastScreen.reset();
     t.recentLines = '';
@@ -560,11 +568,7 @@ function armRunningIdleTimer(paneId) {
     const cur = terminals[paneId];
     if (!cur) return;
     cur.runningTimer = null;
-    // タイマー満了時に waiting に変わっていたらそのまま、そうでなければ idle に戻す。
-    if (!cur.waiting && !cur.externalWaiting && cur.status === 'running') {
-      cur.status = 'idle';
-      updatePaneStatus(paneId);
-    }
+    recomputeStatus(paneId);
   }, RUNNING_IDLE_TIMEOUT_MS);
 }
 
@@ -582,7 +586,17 @@ function recomputeStatus(paneId) {
     runningIdleTimeoutMs: RUNNING_IDLE_TIMEOUT_MS,
     runningInputGuardMs: RUNNING_INPUT_GUARD_MS,
   });
-  if (next === 'running') {
+  const displayWaiting = isPaneDisplayWaiting(t);
+  const nextDisplay = deriveStatus({
+    localWaiting: displayWaiting,
+    externalWaiting: false,
+    now: Date.now(),
+    lastOutputTime: t.lastOutputTime,
+    lastInputTime: t.lastInputTime,
+    runningIdleTimeoutMs: RUNNING_IDLE_TIMEOUT_MS,
+    runningInputGuardMs: RUNNING_INPUT_GUARD_MS,
+  });
+  if (next === 'running' || nextDisplay === 'running') {
     armRunningIdleTimer(paneId);
   } else {
     clearRunningIdleTimer(t);
@@ -591,6 +605,20 @@ function recomputeStatus(paneId) {
     t.status = next;
     updatePaneStatus(paneId);
   }
+  if (nextDisplay !== t.displayStatus) {
+    t.displayStatus = nextDisplay;
+    updatePaneStatus(paneId);
+  }
+}
+
+function isPaneDisplayWaiting(t) {
+  if (!t) return false;
+  return deriveDisplayWaiting({
+    localWaiting: t.waiting,
+    structuralWaiting: t.structuralWaiting,
+    externalWaiting: t.externalWaiting,
+    apiUrl: t.apiUrl,
+  });
 }
 
 // PTY 出力があったときに呼ぶ。waiting でなく、入力直後でなければ 'running' に切り替え、
@@ -598,19 +626,11 @@ function recomputeStatus(paneId) {
 function bumpRunning(paneId) {
   const t = terminals[paneId];
   if (!t) return;
-  // waiting は最優先のため running に上書きしない
-  if (t.waiting || t.externalWaiting) return;
-  // タイマーは出力ごとに張り直す
-  clearRunningIdleTimer(t);
   const now = Date.now();
   const recentInput = now - (t.lastInputTime || 0) <= RUNNING_INPUT_GUARD_MS;
   // 入力直後（タイプ中のエコー）は running と見なさない。idle のまま据え置く。
   if (recentInput) return;
-  if (t.status !== 'running') {
-    t.status = 'running';
-    updatePaneStatus(paneId);
-  }
-  armRunningIdleTimer(paneId);
+  recomputeStatus(paneId);
 }
 
 // ─── Create terminal ──────────────────────────────────────────────────────────
@@ -742,6 +762,7 @@ async function createTerminal(paneId, cwd, options = {}) {
     // ために読み込みを追加するほどの重複ではないと判断し、現状のリテラル維持とした。
     engine: resolvedEngine || 'claude',
     waiting: false,
+    structuralWaiting: false,
     // externalWaiting: オーケストレーター等が POST /api/set-status で明示 push する外部権威の入力待ちフラグ。
     // ローカル PTY 検知(waiting)と OR で status に合流する。markPaneInput / リサイズ / 再描画 /
     // 自動入力では解除されず、明示的な false push でのみ解除される。
@@ -2269,7 +2290,7 @@ window.getPaneEngine = (paneId) => terminals[paneId]?.engine ?? null;
 //   - term-container（xterm。既定は非表示、― で開閉）
 function renderStashItem(id, idx, count) {
   const t = terminals[id];
-  const waiting = !!(t && (t.waiting || t.externalWaiting));
+  const waiting = isPaneDisplayWaiting(t);
   const li = document.createElement('li');
   li.className = 'stash-item'
     + (id === focusedPaneId ? ' focused' : '')
@@ -2278,7 +2299,7 @@ function renderStashItem(id, idx, count) {
   const xtermOpen = !!(t && t.stashXtermOpen);
   if (xtermOpen) li.classList.add('stash-xterm-open');
 
-  const status = t?.status || 'idle';
+  const status = t?.displayStatus || 'idle';
   const { label: statusLabel, ariaLabel: statusAriaLabel } = getStatusPresentation(status);
   const title = getDisplayTitle(t);
   const taskUrl = getDisplayUrl(t);
@@ -2359,10 +2380,10 @@ function updateStashItem(paneId) {
   if (!li) return;
   const t = terminals[paneId];
   if (!t) return;
-  li.classList.toggle('waiting', !!(t.waiting || t.externalWaiting));
+  li.classList.toggle('waiting', isPaneDisplayWaiting(t));
   const badge = li.querySelector('.pane-status');
   if (badge) {
-    const status = t.status || 'idle';
+    const status = t.displayStatus || 'idle';
     badge.dataset.status = status;
     const { label, ariaLabel } = getStatusPresentation(status);
     badge.textContent = label;
@@ -2618,11 +2639,11 @@ function updatePaneStatus(paneId) {
   const paneEl = document.querySelector(`.pane[data-id="${paneId}"]`);
   if (!paneEl) return;
   // 枠の点滅アニメ（周辺視野での気付き用、issue #23 でも残置）は派生 waiting 準拠
-  paneEl.classList.toggle('waiting', !!(t.waiting || t.externalWaiting));
+  paneEl.classList.toggle('waiting', isPaneDisplayWaiting(t));
 
   const badge = paneEl.querySelector('.pane-status');
   if (!badge) return;
-  const status = t.status || 'idle';
+  const status = t.displayStatus || 'idle';
   badge.dataset.status = status;
   // 視覚: ラベルテキスト（ドットは CSS の ::before で描画）。
   // a11y: aria-label でステータスを明示し、aria-live="polite" により変化のみ読み上げ。
@@ -3543,7 +3564,7 @@ function resolveRoomAgents(t) {
     && (now - t.agentRoomUpdatedAt <= AGENTROOM_API_TTL_MS)
     && Object.keys(t.agentRoom).length > 0);
 
-  const status = (t && t.status) || 'idle';
+  const status = (t && t.displayStatus) || 'idle';
   const directorState = status === 'waiting' ? 'consulting'
     : status === 'running' ? 'working'
     : 'idle';
@@ -3600,11 +3621,11 @@ function refreshAgentRoomIfChanged(paneId) {
 function renderLeaf(node) {
   const t = terminals[node.id];
   const cwd = t?.cwd || '~';
-  const waiting = !!(t && (t.waiting || t.externalWaiting));
+  const waiting = isPaneDisplayWaiting(t);
   // 表示用ステータス（issue #23, #27）。idle 時は CSS の visibility:hidden で不可視のまま幅は保持。
   // ドットは CSS の .pane-status::before（currentColor）で描画するため、ラベルはテキストのみ。
   // ラベル / aria-label の対応は getStatusPresentation に集約（updatePaneStatus と共用）。
-  const status = t?.status || 'idle';
+  const status = t?.displayStatus || 'idle';
   const { label: statusLabel, ariaLabel: statusAriaLabel } = getStatusPresentation(status);
   const focused = node.id === focusedPaneId;
   // 画面側の node.id（pane-3 形式）ではなく、main.js の nextId で振られた termId（API・タスク管理と同じ番号）を表示する。
@@ -6550,8 +6571,10 @@ setInterval(() => {
       waiting: t.waiting,
       // externalWaiting は POST /api/set-status 由来の外部権威フラグ。
       externalWaiting: t.externalWaiting || false,
-      // status は issue #23 で追加した表示用ステータス（'idle' | 'running' | 'waiting'）。
-      // 既存フィールドは破壊せず、新規追加のみ。
+      structuralWaiting: t.structuralWaiting || false,
+      displayWaiting: isPaneDisplayWaiting(t),
+      displayStatus: t.displayStatus || 'idle',
+      // status は既存 API の稼働判定用。管理ペインでも従来の waiting を反映し続ける。
       status: t.status || 'idle',
       lastOutputTime: t.lastOutputTime,
       lastInputTime: t.lastInputTime,
@@ -6729,6 +6752,7 @@ VKIpc.on('terminal:title', (termId, title, url, prUrl, prMerged, waitingMerge) =
     terminals[paneId].apiWaitingMerge = waitingMerge;
   }
   updatePaneTitle(paneId);
+  recomputeStatus(paneId);
 });
 
 // ─── Engine change notification from main (HTTP API POST /api/restart-agent) ──

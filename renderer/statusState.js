@@ -28,7 +28,14 @@ function deriveStatus({
   return (recentOutput && !recentInput) ? 'running' : 'idle';
 }
 
+// apiUrl がある管理ペインは、外部権威または TUI 構造で確定できる待ちだけを表示する。
+function deriveDisplayWaiting({ localWaiting, structuralWaiting, externalWaiting, apiUrl }) {
+  const managed = typeof apiUrl === 'string' && apiUrl !== '';
+  return !!externalWaiting || (managed ? !!structuralWaiting : !!localWaiting);
+}
+
 return {
   deriveStatus,
+  deriveDisplayWaiting,
 };
 });

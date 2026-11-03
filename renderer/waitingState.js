@@ -161,6 +161,28 @@ const WAITING_PATTERNS = [
   /[？]\s*$/,
 ];
 
+// vk-orchestrator 管理ペインでは、AI の地の文にも現れる依頼表現を表示・通知へ使わない。
+// TUI 固有の選択記号や定型フッターだけを構造的な待ちとして残す（issue #489）。
+// 従来の WAITING_PATTERNS / findWaitingMatch は GET /api/states の互換性のため変更しない。
+const STRUCTURAL_WAITING_PATTERNS = [
+  /\[y\/N\]/i, /\[Y\/n\]/i, /\(y\/n\)/i,
+  /Press Enter/i,
+  /\? .{1,60}[›>❯]\s*$/m,
+  /Yes,?\s+allow/i,
+  /No,?\s+don['']t allow/i,
+  /Allow\s+(once|always|this)/i,
+  /❯\s*(Yes|No|Allow|Deny)/,
+  /›\s*(Yes|No|Allow|Deny)/,
+  /\[\s*A\s*\]llow/i,
+  /\[\s*D\s*\]eny/i,
+  /approve.*\(y\/n\)/i,
+  /Enter\s+to\s+select/i,
+  /[↑↓]\/[↑↓]\s+to\s+navigate/,
+  /Esc\s+to\s+cancel/i,
+  /❯\s*\d+\.\s/,
+  /›\s*\d+\.\s/,
+];
+
 // 点灯根拠として記録する文字列に含める、一致箇所前後の文脈の文字数（issue #352）。
 //
 // WAITING_PATTERNS の一致範囲（m[0]）だけを記録すると、パターンによっては
@@ -202,6 +224,21 @@ function findWaitingMatchDetail(cleanBuffer) {
     }
   }
   return best;
+}
+
+function findStructuralWaitingMatch(cleanBuffer) {
+  if (typeof cleanBuffer !== 'string' || cleanBuffer === '') return null;
+  let best = null;
+  for (const pattern of STRUCTURAL_WAITING_PATTERNS) {
+    const match = pattern.exec(cleanBuffer);
+    if (match && match[0] !== '' && (best === null || match.index > best.index)) {
+      best = { raw: match[0], index: match.index };
+    }
+  }
+  if (!best) return null;
+  const start = Math.max(0, best.index - WAITING_ONSET_CONTEXT_CHARS);
+  const end = Math.min(cleanBuffer.length, best.index + best.raw.length + WAITING_ONSET_CONTEXT_CHARS);
+  return cleanBuffer.slice(start, end);
 }
 
 // WAITING_PATTERNS のいずれかに一致した箇所を、前後の文脈込みの文字列として返す
@@ -872,11 +909,13 @@ return {
   WAITING_BEEP_REPEAT_SUPPRESS_MS,
   WAITING_MAX_EVAL_INTERVAL_MS,
   WAITING_PATTERNS,
+  STRUCTURAL_WAITING_PATTERNS,
   WAITING_QUIESCENCE_MS,
   containsIgnoringWhitespace,
   detectBackgroundAgents,
   extractScreenLines,
   findWaitingMatch,
+  findStructuralWaitingMatch,
   isOutputQuiescent,
   isWaitingCwdExcluded,
   matchesWaiting,

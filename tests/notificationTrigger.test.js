@@ -71,6 +71,41 @@ test('derivePaneNotificationState: 除外パターンに一致しない cwd は�
   assert.equal(result.waiting, true);
 });
 
+test('derivePaneNotificationState: 管理ペインの地の文による waiting は表示用フラグに従い通知しない', () => {
+  const result = derivePaneNotificationState(
+    pane({ waiting: true, status: 'waiting', displayWaiting: false, displayStatus: 'idle', apiUrl: 'https://example.com/task' }),
+    []
+  );
+  assert.equal(result.waiting, false);
+  assert.equal(result.waitingInternal, false);
+});
+
+test('computeNotificationEvents: 管理ペインの地の文による waiting では通知イベントを出さない', () => {
+  const states = {
+    'pane-1': pane({ waiting: true, status: 'waiting', displayWaiting: false, displayStatus: 'idle', apiUrl: 'https://example.com/task' }),
+  };
+  const { events } = computeNotificationEvents({ prevSnapshot: {}, states, excludePatterns: [] });
+  assert.deepEqual(events, []);
+});
+
+test('derivePaneNotificationState: 管理ペインでも構造的待ちの表示用フラグなら通知対象になる', () => {
+  const result = derivePaneNotificationState(
+    pane({ waiting: true, structuralWaiting: true, displayWaiting: true, displayStatus: 'waiting', apiUrl: 'https://example.com/task' }),
+    []
+  );
+  assert.equal(result.waiting, true);
+  assert.equal(result.waitingInternal, true);
+});
+
+test('derivePaneNotificationState: 管理ペインで外部権威と構造的待ちが同時でも内部由来を保持する', () => {
+  const result = derivePaneNotificationState(
+    pane({ waiting: true, structuralWaiting: true, externalWaiting: true, displayWaiting: true, apiUrl: 'https://example.com/task' }),
+    []
+  );
+  assert.equal(result.waitingInternal, true);
+  assert.equal(result.waitingExternal, true);
+});
+
 test('computeNotificationEvents: 入力待ちでない→入力待ちの遷移だけがイベントになる', () => {
   const states = { 'pane-1': pane({ termId: '1', waiting: true, status: 'waiting' }) };
   const { events } = computeNotificationEvents({ prevSnapshot: {}, states, excludePatterns: [] });

@@ -46,8 +46,9 @@ function derivePaneNotificationState(paneState, excludePatterns) {
     };
   }
   const waitingExternal = !!t.externalWaiting;
+  const managed = typeof t.apiUrl === 'string' && t.apiUrl !== '';
   const waitingInternal = typeof t.waiting === 'boolean'
-    ? t.waiting
+    ? (managed ? !!t.structuralWaiting : t.waiting)
     : (t.status === 'waiting' && !waitingExternal);
   return {
     waiting: waitingInternal || waitingExternal,

@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
+  deriveDisplayWaiting,
   deriveStatus,
 } = require('../renderer/statusState');
 
@@ -49,4 +50,20 @@ test('deriveStatus: 直近入力ありなら idle', () => {
 
 test('deriveStatus: 出力も入力も古ければ idle', () => {
   assert.equal(status({ lastOutputTime: 1000, lastInputTime: 1000 }), 'idle');
+});
+
+test('deriveDisplayWaiting: 管理ペインは構造的待ちまたは外部権威だけを表示する', () => {
+  assert.equal(deriveDisplayWaiting({ localWaiting: true, structuralWaiting: false, externalWaiting: false, apiUrl: 'https://example.com/task' }), false);
+  assert.equal(deriveDisplayWaiting({ localWaiting: true, structuralWaiting: true, externalWaiting: false, apiUrl: 'https://example.com/task' }), true);
+  assert.equal(deriveDisplayWaiting({ localWaiting: true, structuralWaiting: false, externalWaiting: true, apiUrl: 'https://example.com/task' }), true);
+});
+
+test('deriveDisplayWaiting: 非管理ペインと apiUrl クリア後は従来のローカル待ちを表示する', () => {
+  assert.equal(deriveDisplayWaiting({ localWaiting: true, structuralWaiting: false, externalWaiting: false, apiUrl: '' }), true);
+  assert.equal(deriveDisplayWaiting({ localWaiting: true, structuralWaiting: false, externalWaiting: false }), true);
+});
+
+test('API 用 status は管理ペインの地の文でも従来どおり waiting のまま', () => {
+  assert.equal(status({ localWaiting: true, externalWaiting: false }), 'waiting');
+  assert.equal(deriveDisplayWaiting({ localWaiting: true, structuralWaiting: false, externalWaiting: false, apiUrl: 'https://example.com/task' }), false);
 });

@@ -12,6 +12,7 @@ const {
   containsIgnoringWhitespace,
   detectBackgroundAgents,
   extractScreenLines,
+  findStructuralWaitingMatch,
   findWaitingMatch,
   isOutputQuiescent,
   isWaitingCwdExcluded,
@@ -27,6 +28,23 @@ const {
 } = require('../renderer/waitingState');
 const { deriveStatus } = require('../renderer/statusState');
 const { stripAnsiForDisplay } = require('../utils/stripAnsi');
+
+test('構造的待ち: Claude Code の選択肢と定型フッターを検出する', () => {
+  const dialog = ['╭ Permission required ╮', '❯ 1. Yes', '  2. No', 'Esc to cancel'].join('\n');
+  assert.notEqual(findStructuralWaitingMatch(dialog), null);
+});
+
+test('構造的待ち: 地の文の承認待ちや一般的な質問文は検出しない', () => {
+  const proseCases = [
+    '- vk-orchestrator #748: 承認待ちのままです。',
+    '続行しますか',
+    'Proceed?',
+    'このままでよろしいでしょうか？',
+  ];
+  for (const text of proseCases) {
+    assert.equal(findStructuralWaitingMatch(text), null, text);
+  }
+});
 
 // ─── waiting 判定（静止ゲート） ──────────────────────────────────────────────
 // issue vektor-inc/vk-orchestrator#212:

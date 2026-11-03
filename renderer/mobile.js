@@ -1120,7 +1120,7 @@ function render(data) {
     if (!t) return;
     seen[termId] = true;
     var c = ensureCard(termId);
-    var st = t.status || "idle";
+    var st = t.displayStatus || t.status || "idle";
     c.dot.dataset.status = st;
     c.badge.dataset.status = st;
     var statusView = statusPresentation.getStatusPresentation(st);

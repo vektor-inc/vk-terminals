@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 不具合修正 ] VK Orchestrator 管理ペインで AI の説明文を入力待ちと誤判定し、実行中でも入力待ち表示や通知が出る不具合を修正（[#489](https://github.com/vektor-inc/vk-terminals/issues/489)）
+
 ## 1.82.0
 
 - [ 機能追加 ] 設定ディスクリプタで、設定画面の見出し横に表示するバージョン表記を指定できるように（[#486](https://github.com/vektor-inc/vk-terminals/issues/486)）

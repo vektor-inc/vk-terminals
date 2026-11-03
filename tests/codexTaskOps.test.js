@@ -137,7 +137,6 @@ test('拒否: gh のリポジトリ指定・ファイル読み込み・ブラウ
     ['gh', '-owner/repo', 'issue', 'view', '1'],
     ['gh', 'owner/-repo', 'issue', 'view', '1'],
     ['gh', '../repo', 'issue', 'view', '1'],
-    ['gh', 'pr', 'merge', '1'],
     ['gh', 'pr', 'close', '1'],
     ['gh', 'pr', 'edit', '1'],
     ['gh', 'pr', 'checkout', '1'],
@@ -3745,6 +3744,114 @@ test('実行: 拒否された gh pr edit は gh を一度も呼ばない（別�
     assert.equal(fixture.runMember(['gh', 'pr', 'edit', '5', '--title-file', 'ok.txt', '--body-file', 'ctrl.md'], { spawnSync }).code, 2);
     assert.equal(calls.length, 0);
     assert.equal(fixture.readCalls().length, 0);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+// gh pr merge の事前読取・checks・実行・事後読取を差し替え、呼び出し順と拒否理由を確認する。
+function prMergeHarness(fixture, overrides = {}) {
+  const head = overrides.head || 'a'.repeat(40);
+  const pr = {
+    state: 'OPEN', isDraft: false, headRefOid: head,
+    labels: [{ name: 'agent-review-passed' }],
+    comments: [{ authorAssociation: 'MEMBER', createdAt: '2026-01-01T00:00:00Z', body: `agent-review-passed-sha: ${head}` }],
+    mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN',
+    ...(overrides.pr || {}),
+  };
+  const checks = overrides.checks === undefined ? [{ state: 'pass' }, { state: 'skipping' }] : overrides.checks;
+  const calls = [];
+  let viewCount = 0;
+  const spawnSync = (bin, args, options) => {
+    if (bin !== fixture.env.VK_TASK_GH) return childProcess.spawnSync(bin, args, { ...options, stdio: 'pipe' });
+    calls.push(args);
+    if (args[0] === 'pr' && args[1] === 'view') {
+      viewCount += 1;
+      const value = viewCount === 1 ? pr : { state: overrides.afterState || 'MERGED' };
+      return { status: 0, stdout: overrides.invalidPrJson && viewCount === 1 ? '{' : JSON.stringify(value), stderr: '' };
+    }
+    if (args[0] === 'pr' && args[1] === 'checks') {
+      return { status: overrides.checkStatus === undefined ? 0 : overrides.checkStatus, stdout: overrides.invalidChecksJson ? '{' : JSON.stringify(checks), stderr: '' };
+    }
+    if (args[0] === 'pr' && args[1] === 'merge') return { status: overrides.mergeStatus === undefined ? 0 : overrides.mergeStatus, stdout: '', stderr: 'merge failed\n' };
+    return { status: 1, stdout: '', stderr: 'unexpected\n' };
+  };
+  return { calls, head, spawnSync };
+}
+
+test('許可と実行: gh pr merge は番号だけを受け、事前条件を読み戻して確認済み head の squash マージ後に MERGED を再確認する', () => {
+  assert.equal(parseTaskCommand(['gh', 'pr', 'merge', '7']).operation, 'pr-merge');
+  const fixture = createFixture();
+  try {
+    const harness = prMergeHarness(fixture, { checkStatus: 8 });
+    const stdout = [];
+    const result = run(fixture, ['gh', 'pr', 'merge', '7'], { spawnSync: harness.spawnSync, writeOut: (message) => stdout.push(message) });
+    assert.equal(result.code, 0, result.messages.join(''));
+    assert.deepEqual(harness.calls, [
+      ['pr', 'view', '7', '--json', 'state,isDraft,headRefOid,labels,comments,mergeable,mergeStateStatus', '--repo', 'vektor-inc/vk-terminals'],
+      ['pr', 'checks', '7', '--json', 'state', '--repo', 'vektor-inc/vk-terminals'],
+      ['pr', 'merge', '7', '--squash', '--match-head-commit', harness.head, '--repo', 'vektor-inc/vk-terminals'],
+      ['pr', 'view', '7', '--json', 'state', '--repo', 'vektor-inc/vk-terminals'],
+    ]);
+    assert.match(stdout.join(''), /merged PR #7 with squash/);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('拒否: gh pr merge は不正番号・別リポジトリ・追加フラグを gh 実行前に拒否する', () => {
+  for (const command of [
+    ['gh', 'pr', 'merge', '0'], ['gh', 'pr', 'merge', '01'], ['gh', 'pr', 'merge', 'x'], ['gh', 'pr', 'merge'],
+    ['gh', 'pr', 'merge', '7', '--admin'], ['gh', 'pr', 'merge', '7', '--auto'], ['gh', 'pr', 'merge', '7', '--delete-branch'],
+    ['gh', 'pr', 'merge', '7', '-d'], ['gh', 'pr', 'merge', '7', '--rebase'], ['gh', 'pr', 'merge', '7', '--merge'],
+    ['gh', 'pr', 'merge', '7', '--squash'], ['gh', 'pr', 'merge', '7', '-R', 'o/r'], ['gh', 'vektor-inc/other', 'pr', 'merge', '7'],
+  ]) {
+    const parsed = parseTaskCommand(command);
+    assert.equal(parsed.ok, false, command.join(' '));
+    assert.match(parsed.error, /^task command rejected:/);
+  }
+});
+
+test('拒否: gh pr merge はレビュー・CI・マージ可能状態の各条件を満たさない場合、マージを実行しない', () => {
+  const head = 'a'.repeat(40);
+  const cases = [
+    ['closed', { pr: { state: 'CLOSED' } }, /PR state/],
+    ['draft', { pr: { isDraft: true } }, /draft/],
+    ['head不正', { pr: { headRefOid: 'abc' } }, /head SHA/],
+    ['ラベルなし', { pr: { labels: [] } }, /does not have/],
+    ['信頼できるマーカーなし', { pr: { comments: [{ authorAssociation: 'NONE', body: `agent-review-passed-sha: ${head}` }] } }, /marker was not found/],
+    ['head不一致', { pr: { comments: [{ authorAssociation: 'OWNER', body: `agent-review-passed-sha: ${'b'.repeat(40)}` }] } }, /does not match PR head/],
+    ['CI実行中', { checks: [{ state: 'pending' }], checkStatus: 8 }, /check state is "pending"/],
+    ['CI失敗', { checks: [{ state: 'fail' }], checkStatus: 1 }, /check state is "fail"/],
+    ['CI取消', { checks: [{ state: 'cancel' }] }, /check state is "cancel"/],
+    ['CIなし', { checks: [] }, /no checks/],
+    ['CI JSON不正', { invalidChecksJson: true }, /invalid JSON/],
+    ['mergeable不可', { pr: { mergeable: 'CONFLICTING' } }, /mergeable is/],
+    ['UNSTABLE', { pr: { mergeStateStatus: 'UNSTABLE' } }, /mergeStateStatus is "UNSTABLE"/],
+    ['BLOCKED', { pr: { mergeStateStatus: 'BLOCKED' } }, /mergeStateStatus is "BLOCKED"/],
+  ];
+  for (const [label, options, message] of cases) {
+    const fixture = createFixture();
+    try {
+      const harness = prMergeHarness(fixture, options);
+      const result = run(fixture, ['gh', 'pr', 'merge', '7'], { spawnSync: harness.spawnSync });
+      assert.equal(result.code, 2, label);
+      assert.match(result.messages.join(''), message, label);
+      assert.equal(harness.calls.some((args) => args[0] === 'pr' && args[1] === 'merge'), false, label);
+    } finally {
+      fixture.cleanup();
+    }
+  }
+});
+
+test('拒否: gh pr merge の終了コードが 0 でも、事後 state が MERGED でなければ成功にしない', () => {
+  const fixture = createFixture();
+  try {
+    const harness = prMergeHarness(fixture, { afterState: 'OPEN' });
+    const result = run(fixture, ['gh', 'pr', 'merge', '7'], { spawnSync: harness.spawnSync });
+    assert.equal(result.code, 2);
+    assert.match(result.messages.join(''), /expected MERGED/);
+    assert.equal(harness.calls.filter((args) => args[0] === 'pr' && args[1] === 'merge').length, 1);
   } finally {
     fixture.cleanup();
   }

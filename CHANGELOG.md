@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 機能追加 ] 自動処理用 Codex の固定入口で、レビュー完了・CI 通過・マージ可能状態と head を読み戻してから PR を squash でマージする `gh pr merge` に対応（[#490](https://github.com/vektor-inc/vk-terminals/issues/490)）
+
 ## 1.82.0
 
 - [ 機能追加 ] 設定ディスクリプタで、設定画面の見出し横に表示するバージョン表記を指定できるように（[#486](https://github.com/vektor-inc/vk-terminals/issues/486)）

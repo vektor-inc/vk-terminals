@@ -923,6 +923,7 @@ curl -s -X POST http://127.0.0.1:13847/api/new-pane \
 - `approvalPolicy`：`engine: "codex"` のときだけ指定できる承認方針。`"untrusted"` / `"on-failure"` / `"on-request"` / `"never"` の許可値だけを受け付け、Codex の `--ask-for-approval` へ渡します。
 - `sandboxMode`：`engine: "codex"` のときだけ指定できるサンドボックス。`"read-only"` / `"workspace-write"` のみ許可し、Codex の `--sandbox` へ渡します。作業フォルダ外への書き込み制限を外す `"danger-full-access"` は受け付けません。
 - `codexPolicy`：`engine: "codex"` のときだけ指定できる、そのペインの Codex だけに適用するタスク用ポリシー（issue #428）。`{"preset": "orchestrated-task", "allowedOwners": ["vektor-inc"]}` の形で、`preset` と任意の `allowedOwners` だけを受け付けます。`allowedOwners` は Orchestrator の `org.allowed_owners` を渡すための owner 名の配列で、値を検証・重複排除して起動時の固定入口へ束縛します。未知のキー・未知の preset・不正な owner・オブジェクト以外は `400` で拒否され、**ペインは作成されません**。省略時は `cwd` の GitHub owner だけを許可し、従来の挙動を保ちます。任意のコマンドライン引数・追加フォルダ・ネットワーク許可は指定できません。指定すると利用者個人の `~/.codex` の設定を読まない、起動ごとに新規作成する専用の設定で Codex が起動します。Git・`git push`・worktree の操作先は `cwd` のリポジトリと登録済み worktree に限定されます。許可済みの GitHub 操作は、従来の拘束先に加えて `vk-task-ops gh <owner/repo> ...` で `allowedOwners` 内の別リポジトリを明示でき、この明示形式ではローカル Git を必要としません。いずれの場合も起動時のリポジトリを確定するため、**`cwd` が必須**です（省略すると `400 {"error": "codexPolicy requires cwd"}`。`cwd` が Git 管理下でない・ホームそのもの・外部コマンドを起動する Git 設定があるリポジトリの場合は `503` で起動しません）。仕様と安全性の判断は [docs/codex-task-policy.md](docs/codex-task-policy.md) を参照してください。
+- 固定入口の `gh pr merge <PR番号>` は、拘束したリポジトリの PR だけを対象に、レビュー完了マーカーと head の一致、CI 通過、マージ可能状態を読み戻し、確認した head に固定して squash マージします。追加フラグ・別リポジトリ指定は拒否し、実行後に `MERGED` を読み戻せた場合だけ成功とします。
 
 `noClaude` / `engine` / `model` の優先順位（併用した場合にどれが効くか）:
 

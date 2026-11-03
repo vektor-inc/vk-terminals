@@ -3679,6 +3679,19 @@ function startHttpApi() {
             return;
           }
         }
+        // プリセットを指定した場合だけ、renderer へ渡す前に実起動と同じ依存値で設定を用意する。
+        // ここで用意できなければ、ペインを作らずサービス利用不能として返す。
+        if (requestedClaudeSettingsPreset !== undefined) {
+          try {
+            resolveClaudeSettingsLaunchOptions('claude', false, {
+              claudeSettingsPreset: requestedClaudeSettingsPreset,
+            });
+          } catch (error) {
+            res.writeHead(503, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: error.message }));
+            return;
+          }
+        }
         // タスク用ポリシーを固定できないときは、ペインを作らず理由を返して止める
         // （承認方針だけを付けた Codex を個人設定のまま起動しない。issue #428）。
         let policyCheck = null;
@@ -3715,6 +3728,7 @@ function startHttpApi() {
           const resolve = (result) => {
             clearTimeout(timeoutId);
             if (result.error) {
+              // 事前確認後の状態変化で terminal:create 側の再準備が失敗した場合は 500 とする。
               res.writeHead(500, { 'Content-Type': 'application/json' });
               res.end(JSON.stringify({ error: result.error }));
             } else {

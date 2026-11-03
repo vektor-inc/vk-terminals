@@ -953,6 +953,7 @@ curl -s -X POST http://127.0.0.1:13847/api/new-pane \
 - `model` が不正: `400 {"error": "invalid model"}`
 - 不正な JSON: `400 {"error": "invalid JSON"}`
 - ウィンドウが利用できない: `503 {"error": "window not available"}`
+- `claudeSettingsPreset` の設定を用意できない: `503 {"error": "Claude settings preset hook is unavailable"}`。ペインは作成されません。事前確認後の状態変化によりペイン作成側の再準備だけが失敗した場合は `500` で理由を返します。
 - `codexPolicy` を固定できない（専用設定を作れない・検証できない）: `503 {"error": "codex task policy unavailable: <理由>"}`。ペインは作成されず、承認方針だけを付けた Codex も起動しません。事前確認の後でペイン作成側だけが失敗した場合も、PTY を作らずに `500` で理由を返します。
 - GitHub への到達確認に失敗: `503 {"error":"github unreachable","githubReachability":{"ok":false,"reason":"unreachable|auth_invalid|transient","message":"<利用者向けの日本語文>"}}`。ペインは作成されません。
 - タイムアウト（15秒）: `504 {"error": "timeout waiting for new pane"}`

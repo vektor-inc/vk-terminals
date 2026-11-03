@@ -200,3 +200,25 @@ test('new-pane は preset と noClaude・Codex・useDefaults の併用を入口�
   assert.match(handler, /validateClaudeSettingsPresetForEngine/);
   assert.match(handler, /claudeSettingsPreset cannot be used with useDefaults/);
 });
+
+test('new-pane は指定された preset を renderer へ渡す前に用意し、失敗時は 503 でペインを作らない', () => {
+  const start = mainSource.indexOf("url.pathname === '/api/new-pane'");
+  const handler = mainSource.slice(start, mainSource.indexOf("url.pathname === '/api/restart-agent'", start));
+  const presetGuardAt = handler.indexOf('if (requestedClaudeSettingsPreset !== undefined)');
+  const prepareAt = handler.indexOf("resolveClaudeSettingsLaunchOptions('claude', false", presetGuardAt);
+  const unavailableAt = handler.indexOf('writeHead(503', prepareAt);
+  const requestAt = handler.indexOf("win.webContents.send('terminal:request-new-pane'", prepareAt);
+  assert.ok(presetGuardAt >= 0 && prepareAt > presetGuardAt);
+  assert.ok(unavailableAt > prepareAt && requestAt > unavailableAt);
+  assert.match(handler.slice(prepareAt, requestAt), /catch \(error\)[\s\S]*?return;/);
+});
+
+test('new-pane は preset 未指定なら設定の事前準備を行わない', () => {
+  const start = mainSource.indexOf("url.pathname === '/api/new-pane'");
+  const handler = mainSource.slice(start, mainSource.indexOf("url.pathname === '/api/restart-agent'", start));
+  const presetGuardAt = handler.indexOf('if (requestedClaudeSettingsPreset !== undefined)');
+  const prepareAt = handler.indexOf("resolveClaudeSettingsLaunchOptions('claude', false", presetGuardAt);
+  const guardEndAt = handler.indexOf('\n        }', prepareAt);
+  assert.ok(presetGuardAt >= 0 && prepareAt > presetGuardAt && guardEndAt > prepareAt);
+  assert.equal(handler.slice(0, presetGuardAt).includes("resolveClaudeSettingsLaunchOptions('claude', false"), false);
+});

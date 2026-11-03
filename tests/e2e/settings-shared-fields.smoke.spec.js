@@ -615,6 +615,8 @@ test.describe.serial('設定パネル: 基本フィールド系（issue #348 で
                 type: 'combo',
                 placeholder: '例: gpt-5.6-sol',
                 options: [
+                  // 不正候補が混ざっても datalist 描画を止めず、候補一覧から除外する。
+                  null,
                   { value: '', label: '' },
                   { value: 'auto', label: '自動' },
                   { value: 'gpt-5.6-sol', label: 'GPT-5.6 Sol' },
@@ -645,7 +647,7 @@ test.describe.serial('設定パネル: 基本フィールド系（issue #348 で
             initialCommand: '',
             depPattern: '',
             engine: 'codex',
-            model: 'auto',
+            model: '保存済み value',
             preset: 'balanced',
           },
         };
@@ -780,13 +782,13 @@ test.describe.serial('設定パネル: 基本フィールド系（issue #348 で
         input.value = 'gpt-5.6-sol';
         input.dispatchEvent(new Event('input', { bubbles: true }));
       });
-      await expect(model).toHaveValue('自動');
+      await expect(model).toHaveValue('保存済み value');
 
-      // 表示名ではなく保存値 auto が pattern 検証と保存へ渡る。
+      // pattern 違反の保存済み値でも無効状態なら検証対象外。ただし値は保存対象に残す。
       await win.locator('.settings-save').click();
       await expect(win.locator('.settings-msg')).toHaveText('保存しました。次回の起動から反映されます。');
       const payload = await win.evaluate(() => window.__savedPayloads[0]);
-      expect(payload.model).toBe('auto');
+      expect(payload.model).toBe('保存済み value');
     });
 
     test('7: combo は候補を提示しつつ一覧に無い値も直接入力できる', async () => {
@@ -813,18 +815,18 @@ test.describe.serial('設定パネル: 基本フィールド系（issue #348 で
       const model = win.locator(MODEL_ID);
       await win.locator(ENGINE_ID).selectOption('claude');
 
-      // 設定ファイル由来の保存値 auto は、開いた時点から表示名で見える。
-      await expect(model).toHaveValue('自動');
-      await model.fill('自動');
+      // 初期値とは別の候補を表示名で選び、保存値へ変換する。
+      await expect(model).toHaveValue('保存済み value');
+      await model.fill('GPT-5.5');
       await win.locator('.settings-save').click();
       await expect(win.locator('.settings-msg')).toHaveText('保存しました。次回の起動から反映されます。');
-      expect(await win.evaluate(() => window.__savedPayloads[0].model)).toBe('auto');
+      expect(await win.evaluate(() => window.__savedPayloads[0].model)).toBe('gpt-5.5');
 
       // 保存済み descriptor を読み直しても、入力欄は表示名へ変換される。
       await win.locator('.settings-cancel').click();
       await win.evaluate(() => window.openSettingsModal());
       await win.waitForSelector(MODEL_ID, { state: 'visible' });
-      await expect(win.locator(MODEL_ID)).toHaveValue('自動');
+      await expect(win.locator(MODEL_ID)).toHaveValue('GPT-5.5');
     });
 
     test('9: combo は空欄へ戻して空文字を保存できる', async () => {

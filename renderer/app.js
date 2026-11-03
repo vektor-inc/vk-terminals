@@ -82,7 +82,7 @@ const { getPrBadgePresentation } = window.VKPrBadge;
 const { getPaneIdBadgeLabel } = window.VKPaneIdBadge;
 const { resolveQueueIssuesListUrl } = window.VKTaskQueueLink;
 const { isPatternValid } = window.VKSettingsValidation;
-const { comboDisplayValue, comboStoredValue } = window.VKSettingsComboField;
+const { comboOptions, comboDisplayValue, comboStoredValue } = window.VKSettingsComboField;
 const { isFieldVisible, isFieldDisabled } = window.VKSettingsVisibility;
 const { linesFieldDisplayText } = window.VKSettingsLinesField;
 const { createAutoCloseController } = window.VKAutoClose;
@@ -4835,10 +4835,10 @@ function renderSettingsField(f, value, id) {
   const ph = f.placeholder ? ` placeholder="${escAttr(f.placeholder)}"` : '';
   const comboListId = f.type === 'combo' ? `${id}-options` : '';
   const comboListAttr = comboListId ? ` list="${escAttr(comboListId)}"` : '';
-  const comboOptions = comboListId
-    ? `<datalist id="${escAttr(comboListId)}">${(Array.isArray(f.options) ? f.options : []).map((o) => {
-        const optionLabel = escAttr(String(o.label ?? o.value ?? ''));
-        return `<option value="${optionLabel}"></option>`;
+  const comboOptionsHtml = comboListId
+    ? `<datalist id="${escAttr(comboListId)}">${comboOptions(f).map((o) => {
+        const optionDisplayValue = escAttr(comboDisplayValue(f, o.value));
+        return `<option value="${optionDisplayValue}"></option>`;
       }).join('')}</datalist>`
     : '';
   // pattern 検証のエラー行と aria 関連付け。help は開いた間だけイベント側で先頭へ足す。
@@ -4853,7 +4853,7 @@ function renderSettingsField(f, value, id) {
   return `<div class="settings-row">
     ${labelRow}${help}${disabledReason}
     <input type="${inputType}" id="${id}" value="${strVal}"${ph}${comboListAttr} spellcheck="false" aria-describedby="${describedBy}"${requiredAttributes}>
-    ${comboOptions}
+    ${comboOptionsHtml}
     <span class="settings-error" id="${errorId}" role="alert"></span>
     ${requiredNotice}
     ${inlineNoticeHtml}

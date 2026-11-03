@@ -2,6 +2,7 @@
 
 const childProcess = require('child_process');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 
 // Finder やドックから起動した Electron は PATH が最小限で、Homebrew や `npm install -g` で入れた
@@ -171,4 +172,52 @@ async function applyLoginShellPath(options = {}) {
   return true;
 }
 
-module.exports = { fetchLoginShellPath, applyLoginShellPath, extractMarkedPath, sanitizePath, pickShell, defaultRunShell };
+/**
+ * ~/.local/bin が実在し、PATH に無い場合だけ末尾へ追加する（env を直接書き換える）。
+ *
+ * @param {object} [options]
+ * @param {object} [options.env] 対象の環境変数（既定 process.env）
+ * @param {string} [options.homeDir] ホームディレクトリ
+ * @param {Function} [options.dirExists] テスト用のディレクトリ実在判定差し替え
+ * @param {string} [options.platform] テスト用のプラットフォーム差し替え
+ * @returns {boolean} 追加したか
+ */
+function appendUserLocalBin(options = {}) {
+  const env = options.env || process.env;
+  const platform = options.platform || process.platform;
+  // Windows は PATH の区切り・変数名の大文字小文字が異なるため対象外にする。
+  if (platform === 'win32') return false;
+
+  const homeDir = options.homeDir || os.homedir();
+  const dirExists = typeof options.dirExists === 'function' ? options.dirExists : defaultDirExists;
+  const userLocalBin = path.join(homeDir, '.local', 'bin');
+  // 相対 HOME 由来のパスを PATH に混入させない。
+  if (!path.isAbsolute(userLocalBin)) return false;
+
+  const currentPath = typeof env.PATH === 'string' ? env.PATH : '';
+  const entries = currentPath.split(path.delimiter).filter(Boolean);
+  const normalizedUserLocalBin = path.normalize(userLocalBin).replace(/\/+$/, '');
+  const alreadyIncluded = entries.some((entry) => path.normalize(entry).replace(/\/+$/, '') === normalizedUserLocalBin);
+
+  if (alreadyIncluded || !dirExists(userLocalBin)) return false;
+  env.PATH = [...entries, userLocalBin].join(path.delimiter);
+  return true;
+}
+
+function defaultDirExists(dirPath) {
+  try {
+    return fs.statSync(dirPath).isDirectory();
+  } catch (_e) {
+    return false;
+  }
+}
+
+module.exports = {
+  fetchLoginShellPath,
+  applyLoginShellPath,
+  appendUserLocalBin,
+  extractMarkedPath,
+  sanitizePath,
+  pickShell,
+  defaultRunShell,
+};

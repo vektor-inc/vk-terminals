@@ -85,7 +85,7 @@ const {
 const { resolveInitialPaneLaunch } = require('./utils/initialPaneLaunch');
 const { buildPtyEnv } = require('./utils/ptyEnv');
 // ログインシェルの PATH を本体・ペインへ反映する（issue #454）。
-const { applyLoginShellPath } = require('./utils/loginShellPath');
+const { applyLoginShellPath, appendUserLocalBin } = require('./utils/loginShellPath');
 const {
   createAgentGenerationStore,
   validateRestartAgentRequest,
@@ -1527,6 +1527,7 @@ app.whenReady().then(async () => {
   // イベントループは止めず、取得に失敗・タイムアウトしても元の PATH のまま先へ進む。
   // embedded.js 経由でも同じ main.js のこの処理を通る。
   await applyLoginShellPath();
+  appendUserLocalBin();
   // セットアップ状況の確認は、ウィンドウの用意と並行して先に始めておく（最初のペインの判断で待つため）。
   if (setupStatusChecker) startupSetupCheck = setupStatusChecker.check();
   createWindow();

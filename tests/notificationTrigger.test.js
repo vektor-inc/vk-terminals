@@ -142,6 +142,25 @@ test('derivePaneNotificationState: 管理ペインで外部権威と構造的待
   assert.equal(result.waitingExternal, true);
 });
 
+test('computeNotificationEvents: 管理ペインで外部の待ちを初観測しても、地の文だけなら通知しない', () => {
+  const { events } = computeNotificationEvents({
+    prevSnapshot: {},
+    states: { 'pane-1': pane({ apiUrl: 'https://example.com/task', waiting: true, structuralWaiting: false, externalWaiting: true, displayWaiting: true }) },
+    excludePatterns: [],
+  });
+  assert.deepEqual(events, []);
+});
+
+test('computeNotificationEvents: 管理ペインで外部の待ちを初観測しても、構造的待ちがあれば内部由来として通知する', () => {
+  const { events } = computeNotificationEvents({
+    prevSnapshot: {},
+    states: { 'pane-1': pane({ apiUrl: 'https://example.com/task', waiting: true, structuralWaiting: true, externalWaiting: true, displayWaiting: true }) },
+    excludePatterns: [],
+  });
+  assert.equal(events.length, 1);
+  assert.equal(events[0].kind, 'waiting');
+});
+
 test('computeNotificationEvents: 入力待ちでない→入力待ちの遷移だけがイベントになる', () => {
   const states = { 'pane-1': pane({ termId: '1', waiting: true, status: 'waiting' }) };
   const { events } = computeNotificationEvents({ prevSnapshot: {}, states, excludePatterns: [] });

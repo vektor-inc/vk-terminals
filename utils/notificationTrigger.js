@@ -9,6 +9,7 @@
 // 送信のトリガーとして使う。ファイル I/O・実際の送信（web-push）はここでは行わない。
 
 const { isWaitingCwdExcluded } = require('../renderer/waitingState');
+const { isManagedPaneState } = require('../renderer/statusState');
 
 /**
  * renderer から届く states（terminal:report-states の payload）1 件分から、
@@ -47,8 +48,14 @@ function derivePaneNotificationState(paneState, excludePatterns) {
   }
   const waitingExternal = !!t.externalWaiting;
   const hasDisplayWaiting = typeof t.displayWaiting === 'boolean';
-  const waitingInternal = hasDisplayWaiting
-    ? (t.displayWaiting && (typeof t.waiting === 'boolean' ? t.waiting : !waitingExternal))
+  const managed = isManagedPaneState(t);
+  const hasStructuralWaiting = typeof t.structuralWaiting === 'boolean';
+  // 管理ペインの displayWaiting は外部権威だけでも true になるため、内部由来は
+  // structuralWaiting から分離して判定する。古い renderer の値は従来経路へ戻す。
+  const waitingInternal = managed && hasStructuralWaiting
+    ? t.structuralWaiting
+    : hasDisplayWaiting
+      ? (t.displayWaiting && (typeof t.waiting === 'boolean' ? t.waiting : !waitingExternal))
     : typeof t.waiting === 'boolean'
       ? t.waiting
     : (t.status === 'waiting' && !waitingExternal);

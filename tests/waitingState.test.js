@@ -31,14 +31,18 @@ const { deriveStatus } = require('../renderer/statusState');
 const { stripAnsiForDisplay } = require('../utils/stripAnsi');
 
 test('構造的待ち: Claude Code の選択肢と定型フッターを検出する', () => {
-  const dialog = ['╭ Permission required ╮', '❯ 1. Yes', '  2. No', 'Esc to cancel'].join('\n');
-  assert.notEqual(findStructuralWaitingMatch(dialog), null);
+  const dialogs = [
+    ['╭ Permission required ╮', '❯ 1. Yes', '  2. No', 'Esc to cancel'].join('\n'),
+    ['Do you trust the files in this folder?', '❯ 1. Yes, I trust this folder', '  2. No, exit'].join('\n'),
+  ];
+  for (const dialog of dialogs) assert.notEqual(findStructuralWaitingMatch(dialog), null, dialog);
 });
 
 test('構造的待ち: TUI 固有の確認形式を検出する', () => {
   const cases = [
     'Continue? [y/N]',
-    ['› 1. Yes', '  2. No', 'Press Enter to continue'].join('\n'),
+    ['› 1. Yes', '  2. No'].join('\n'),
+    ['› 1. Use the current branch', '  2. Create a new branch', '  3. Cancel', 'enter to submit answer'].join('\n'),
     'Yes, allow this edit',
     'Press Enter to continue',
     ['What should I do?', 'Enter to select', '↑/↓ to navigate', 'Esc to cancel'].join('\n'),
@@ -64,6 +68,7 @@ test('構造的待ち: Codex のユーザー発言に番号付きリストが続
   const userMessage = [
     '› 1. README の表を更新してください',
     '  2. テストも追加してください',
+    'AI の回答を続けます。まず対象ファイルを確認します。',
   ].join('\n');
   assert.equal(findStructuralWaitingMatch(userMessage), null);
 });

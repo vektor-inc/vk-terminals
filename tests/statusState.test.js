@@ -6,8 +6,15 @@ const assert = require('node:assert/strict');
 const {
   deriveDisplayWaiting,
   deriveStatus,
+  isManagedPaneState,
   shouldBeepForPaneWaiting,
 } = require('../renderer/statusState');
+
+test('isManagedPaneState: 空でない文字列の apiUrl だけを管理ペインと判定する', () => {
+  assert.equal(isManagedPaneState({ apiUrl: 'https://example.com/task' }), true);
+  assert.equal(isManagedPaneState({ apiUrl: '' }), false);
+  assert.equal(isManagedPaneState({}), false);
+});
 
 const RUNNING_IDLE_TIMEOUT_MS = 1500;
 const RUNNING_INPUT_GUARD_MS = 200;

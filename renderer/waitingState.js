@@ -142,6 +142,7 @@ const WAITING_PATTERNS = [
   // 「Enter to select / ↑/↓ to navigate / Esc to cancel」のフッターが固定で出る。
   // 既存パターンは ASCII `?` と `❯ Yes|No|Allow|Deny` しか拾えず取りこぼしていた。
   /Enter\s+to\s+select/i,
+  /enter\s+to\s+submit\s+answer/i,
   /[↑↓]\/[↑↓]\s+to\s+navigate/,
   /Esc\s+to\s+cancel/i,
   /❯\s*\d+\.\s/,  // `❯ 1. ラベル` 形式（任意ラベルの数字選択肢）
@@ -238,15 +239,26 @@ function findStructuralWaitingMatch(cleanBuffer) {
       best = { raw: match[0], index: match.index };
     }
   }
-  // Codex の履歴に表示される `› 1. 発言` と後続の番号付きリストを選択肢と誤認しないよう、
-  // 番号付き選択肢単体では Claude Code 固有の `❯` カーソルを必須にする。Codex の本物の
-  // 選択画面は Press Enter 等の定型フッターで別途検出する。
-  const numberedOptions = tailBuffer.match(/^\s*(?:│\s*)?(?:[›❯]\s*)?\d+\.\s+\S.*$/gm) || [];
-  if (numberedOptions.length >= 2) {
-    const selectedOption = /❯\s*\d+\.\s+\S/.exec(tailBuffer);
-    if (selectedOption && (best === null || selectedOption.index > best.index)) {
-      best = { raw: selectedOption[0], index: selectedOption.index };
-    }
+  // 番号付き選択肢は、画面下端に2項目以上が連続する塊だけを検出する。後ろに許すのは
+  // 定型フッターと空行だけにし、Codex のユーザー発言後に AI 出力が続く履歴を除外する。
+  const tailLines = tailBuffer.split('\n');
+  const numberedOptionPattern = /^\s*(?:│\s*)?(?:[›❯]\s*)?\d+\.\s+\S.*$/;
+  const optionFooterPattern = /^\s*(?:│\s*)?(?:enter\s+to\s+(?:select|submit\s+answer|confirm)|press\s+enter\s+to\s+confirm(?:\s+or\s+esc\s+to\s+cancel)?|[↑↓]\/[^\s]+\s+to\s+navigate|esc\s+to\s+cancel)\s*$/i;
+  let optionBlockStart = -1;
+  let optionBlockCount = 0;
+  for (let index = tailLines.length - 1; index >= 0; index -= 1) {
+    const line = tailLines[index];
+    if (line.trim() === '' || optionFooterPattern.test(line)) continue;
+    let firstOption = index;
+    while (firstOption >= 0 && numberedOptionPattern.test(tailLines[firstOption])) firstOption -= 1;
+    optionBlockStart = firstOption + 1;
+    optionBlockCount = index - firstOption;
+    break;
+  }
+  if (optionBlockCount >= 2) {
+    const raw = tailLines[optionBlockStart];
+    const index = tailLines.slice(0, optionBlockStart).join('\n').length + (optionBlockStart > 0 ? 1 : 0);
+    if (best === null || index > best.index) best = { raw, index };
   }
   if (!best) return null;
   const start = Math.max(0, best.index - WAITING_ONSET_CONTEXT_CHARS);

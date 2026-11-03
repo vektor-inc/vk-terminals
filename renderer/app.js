@@ -82,6 +82,7 @@ const { getPrBadgePresentation } = window.VKPrBadge;
 const { getPaneIdBadgeLabel } = window.VKPaneIdBadge;
 const { resolveQueueIssuesListUrl } = window.VKTaskQueueLink;
 const { isPatternValid } = window.VKSettingsValidation;
+const { comboOptions, comboDisplayValue, comboStoredValue } = window.VKSettingsComboField;
 const { isFieldVisible, isFieldDisabled } = window.VKSettingsVisibility;
 const { linesFieldDisplayText } = window.VKSettingsLinesField;
 const { createAutoCloseController } = window.VKAutoClose;
@@ -4778,11 +4779,12 @@ function renderSettingsField(f, value, id) {
     </div>`;
   }
 
+  const displayValue = comboDisplayValue(f, value);
   const strVal = value === null || value === undefined
     ? ''
     : (f.type === 'json'
         ? escAttr(JSON.stringify(value, null, 2))
-        : escAttr(String(value)));
+        : escAttr(displayValue));
 
   if (f.type === 'json') {
     // textarea の中身は要素内容なので escText 側でよいが、値は文字列前提なので escAttr で統一。
@@ -4833,11 +4835,10 @@ function renderSettingsField(f, value, id) {
   const ph = f.placeholder ? ` placeholder="${escAttr(f.placeholder)}"` : '';
   const comboListId = f.type === 'combo' ? `${id}-options` : '';
   const comboListAttr = comboListId ? ` list="${escAttr(comboListId)}"` : '';
-  const comboOptions = comboListId
-    ? `<datalist id="${escAttr(comboListId)}">${(Array.isArray(f.options) ? f.options : []).map((o) => {
-        const optionValue = escAttr(String(o.value ?? ''));
-        const optionLabel = escAttr(String(o.label ?? o.value ?? ''));
-        return `<option value="${optionValue}" label="${optionLabel}"></option>`;
+  const comboOptionsHtml = comboListId
+    ? `<datalist id="${escAttr(comboListId)}">${comboOptions(f).map((o) => {
+        const optionDisplayValue = escAttr(comboDisplayValue(f, o.value));
+        return `<option value="${optionDisplayValue}"></option>`;
       }).join('')}</datalist>`
     : '';
   // pattern 検証のエラー行と aria 関連付け。help は開いた間だけイベント側で先頭へ足す。
@@ -4852,7 +4853,7 @@ function renderSettingsField(f, value, id) {
   return `<div class="settings-row">
     ${labelRow}${help}${disabledReason}
     <input type="${inputType}" id="${id}" value="${strVal}"${ph}${comboListAttr} spellcheck="false" aria-describedby="${describedBy}"${requiredAttributes}>
-    ${comboOptions}
+    ${comboOptionsHtml}
     <span class="settings-error" id="${errorId}" role="alert"></span>
     ${requiredNotice}
     ${inlineNoticeHtml}
@@ -5508,6 +5509,13 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
     return !row || !row.hidden;
   };
   const isEntryDisabled = (id) => getEntryInput(id)?.getAttribute('aria-disabled') === 'true';
+  const getEntryStoredValue = (field, input) => (
+    field.type === 'boolean' ? input.checked : comboStoredValue(field, input.value)
+  );
+  const setEntryStoredValue = (field, input, value) => {
+    if (field.type === 'boolean') input.checked = value;
+    else input.value = comboDisplayValue(field, value);
+  };
   // 読み上げ順が開閉の回数に左右されないよう、存在・表示状態から毎回固定順で組み立てる。
   // disabledReason は既存仕様どおり無効時だけ末尾へ加え、help の開閉とは独立させる。
   const syncEntryDescribedBy = (id) => {
@@ -5548,7 +5556,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
     for (const { field, id } of entries) {
       const input = getEntryInput(id);
       if (!input) continue;
-      values[field.key] = field.type === 'boolean' ? input.checked : input.value;
+      values[field.key] = getEntryStoredValue(field, input);
     }
     return values;
   };
@@ -5558,7 +5566,9 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
     const notice = modal.querySelector('#' + id + '-required');
     if (!input || !notice) return;
     // boolean は true / false のどちらも値が設定済みであり、空値を持たない。
-    const empty = field.type !== 'boolean' && !isEntryDisabled(id) && input.value.trim() === '';
+    const empty = field.type !== 'boolean'
+      && !isEntryDisabled(id)
+      && String(getEntryStoredValue(field, input)).trim() === '';
     notice.hidden = !empty;
   };
 
@@ -6199,16 +6209,16 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
         if (!input) continue;
         const nextValue = resolveApplySetNextValue(entry.field, set.value);
         if (entry.field.type === 'boolean') {
-          input.checked = nextValue;
+          setEntryStoredValue(entry.field, input, nextValue);
         } else {
           const previousValue = input.value;
-          input.value = nextValue;
+          setEntryStoredValue(entry.field, input, nextValue);
           // number / select はブラウザが受理しない値（非数値・未知の選択肢）を書き込むと
           // 黙って空文字・未選択へ落ちる。書き込んだ直後に読み直し、意図どおり入らなかった
           // 場合は値を元へ戻したうえで対象外（skippedCount）へ回す。型に合わない値を
           // 「切り替えました」と誤報告しない・欄の見た目を空のまま残さないための対応
           // （安藤のレビュー指摘）。
-          if (input.value !== nextValue) {
+          if (getEntryStoredValue(entry.field, input) !== nextValue) {
             input.value = previousValue;
             continue;
           }
@@ -6267,7 +6277,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
           const input = getEntryInput(entry.id);
           if (!input) return false;
           const nextValue = resolveApplySetNextValue(entry.field, set.value);
-          const currentValue = entry.field.type === 'boolean' ? input.checked : input.value;
+          const currentValue = getEntryStoredValue(entry.field, input);
           return currentValue !== nextValue;
         });
 
@@ -6347,7 +6357,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
       if (errEl) errEl.textContent = '';
       return true;
     }
-    const valid = isPatternValid(field.pattern, input.value);
+    const valid = isPatternValid(field.pattern, getEntryStoredValue(field, input));
     if (valid) {
       input.removeAttribute('aria-invalid');
       if (errEl) errEl.textContent = '';
@@ -6381,7 +6391,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
       const reason = modal.querySelector('#' + id + '-disabled-reason');
       if (disabled) {
         if (!isEntryDisabled(id)) {
-          disabledFieldValues.set(id, { value: input.value, checked: input.checked });
+          disabledFieldValues.set(id, { value: getEntryStoredValue(field, input) });
         }
         input.setAttribute('aria-disabled', 'true');
         if (reason) {
@@ -6428,7 +6438,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
   const hasInvalidVisibleEntry = () => validatable.some(({ field, id }) => {
     const input = getEntryInput(id);
     if (!input || !isEntryVisible(id) || isEntryDisabled(id)) return false;
-    return !isPatternValid(field.pattern, input.value);
+    return !isPatternValid(field.pattern, getEntryStoredValue(field, input));
   });
 
   // フッターの総括メッセージは「表示が実態と食い違った時点」で消す。
@@ -6494,8 +6504,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
       if (!isEntryDisabled(id)) return;
       const snapshot = disabledFieldValues.get(id);
       if (snapshot) {
-        input.value = snapshot.value;
-        input.checked = snapshot.checked;
+        setEntryStoredValue(field, input, snapshot.value);
       }
       event.stopImmediatePropagation();
     };
@@ -6567,7 +6576,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
     for (const { field, id } of entries) {
       const input = getEntryInput(id);
       if (!input) continue;
-      out[field.key] = field.type === 'boolean' ? input.checked : input.value;
+      out[field.key] = getEntryStoredValue(field, input);
     }
     msg.textContent = '保存中...';
     msg.className = 'settings-msg';

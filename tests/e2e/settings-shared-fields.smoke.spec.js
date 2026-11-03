@@ -615,6 +615,10 @@ test.describe.serial('設定パネル: 基本フィールド系（issue #348 で
                 type: 'combo',
                 placeholder: '例: gpt-5.6-sol',
                 options: [
+                  // 不正候補が混ざっても datalist 描画を止めず、候補一覧から除外する。
+                  null,
+                  { value: '', label: '' },
+                  { value: 'auto', label: '自動' },
                   { value: 'gpt-5.6-sol', label: 'GPT-5.6 Sol' },
                   { value: 'gpt-5.5', label: 'GPT-5.5' },
                 ],
@@ -652,6 +656,7 @@ test.describe.serial('設定パネル: 基本フィールド系（issue #348 で
           if (channel === 'settings:describe') return Promise.resolve(desc);
           if (channel === 'settings:save') {
             window.__savedPayloads.push(payload);
+            Object.assign(desc.values, payload);
             return Promise.resolve({ ok: true });
           }
           return Promise.resolve(null);
@@ -793,17 +798,63 @@ test.describe.serial('設定パネル: 基本フィールド系（issue #348 で
       await expect(model).not.toHaveAttribute('aria-disabled', 'true');
       await expect(win.locator('#set-field-4-disabled-reason')).toBeHidden();
       await expect(model).toHaveAttribute('list', 'set-field-4-options');
-      await expect(win.locator('#set-field-4-options option')).toHaveCount(2);
-      await expect(win.locator('#set-field-4-options option').nth(0)).toHaveAttribute('value', 'gpt-5.6-sol');
+      await expect(win.locator('#set-field-4-options option')).toHaveCount(4);
+      await expect(win.locator('#set-field-4-options option').nth(1)).toHaveAttribute('value', '自動');
 
       // <datalist> の候補一覧は Chromium がネイティブ描画するため、自動テストでは
       // 候補を開く操作・移動・確定を安定して検証できない。ここでは自由入力側のみ検証する。
       // datalist に無い値でも通常の text input と同じくキーボード入力できる。
       await model.fill('custom-model-1');
       await expect(model).toHaveValue('custom-model-1');
+      await win.locator('.settings-save').click();
+      const payload = await win.evaluate(() => window.__savedPayloads[0]);
+      expect(payload.model).toBe('custom-model-1');
     });
 
-    test('8: disabledWhen の select は選択変更キーを押しても値を保持する', async () => {
+    test('8: combo の表示名を保存値へ変換し、再表示でも表示名へ戻す', async () => {
+      const model = win.locator(MODEL_ID);
+      await win.locator(ENGINE_ID).selectOption('claude');
+
+      // 初期値とは別の候補を表示名で選び、保存値へ変換する。
+      await expect(model).toHaveValue('保存済み value');
+      await model.fill('GPT-5.5');
+      await win.locator('.settings-save').click();
+      await expect(win.locator('.settings-msg')).toHaveText('保存しました。次回の起動から反映されます。');
+      expect(await win.evaluate(() => window.__savedPayloads[0].model)).toBe('gpt-5.5');
+
+      // 保存済み descriptor を読み直しても、入力欄は表示名へ変換される。
+      await win.locator('.settings-cancel').click();
+      await win.evaluate(() => window.openSettingsModal());
+      await win.waitForSelector(MODEL_ID, { state: 'visible' });
+      await expect(win.locator(MODEL_ID)).toHaveValue('GPT-5.5');
+    });
+
+    test('9: combo は空欄へ戻して空文字を保存できる', async () => {
+      const model = win.locator(MODEL_ID);
+      await win.locator(ENGINE_ID).selectOption('claude');
+      await model.fill('');
+      await win.locator('.settings-save').click();
+      expect(await win.evaluate(() => window.__savedPayloads[0].model)).toBe('');
+    });
+
+    test('10: combo の pattern 検証には表示名でなく保存値を使う', async () => {
+      const model = win.locator(MODEL_ID);
+      await win.locator(ENGINE_ID).selectOption('claude');
+
+      // 日本語の表示名「自動」は pattern 不一致だが、保存値 auto は一致するため保存できる。
+      await model.fill('自動');
+      await win.locator('.settings-save').click();
+      expect(await win.evaluate(() => window.__savedPayloads.length)).toBe(1);
+      await expect(model).not.toHaveAttribute('aria-invalid', 'true');
+
+      // 候補外の日本語は手入力値そのものを検証し、従来どおり保存を止める。
+      await model.fill('候補外');
+      await win.locator('.settings-save').click();
+      expect(await win.evaluate(() => window.__savedPayloads.length)).toBe(1);
+      await expect(model).toHaveAttribute('aria-invalid', 'true');
+    });
+
+    test('11: disabledWhen の select は選択変更キーを押しても値を保持する', async () => {
       const preset = win.locator(PRESET_ID);
       await expect(preset).toHaveAttribute('aria-disabled', 'true');
       await expect(preset).toHaveValue('balanced');
@@ -818,7 +869,7 @@ test.describe.serial('設定パネル: 基本フィールド系（issue #348 で
       }
     });
 
-    test('9: disabledWhen の select は選択変更キーの keydown 自体を遮断する', async () => {
+    test('12: disabledWhen の select は選択変更キーの keydown 自体を遮断する', async () => {
       const preset = win.locator(PRESET_ID);
       await expect(preset).toHaveAttribute('aria-disabled', 'true');
 

@@ -1901,7 +1901,7 @@ test('設定: 基点の指定は GitHub の固定値か絶対パスだけで、�
   }
 });
 
-test('実行: prepare worktree は最新の base から .claude/worktrees/<名前> に作業ブランチ付きの worktree を作り、通常のクローンは切り替えない', () => {
+test('実行: prepare worktree は最新の base から .codex/worktrees/<名前> に作業ブランチ付きの worktree を作り、通常のクローンは切り替えない', () => {
   const fixture = createFixture();
   try {
     const remote = attachRemote(fixture);
@@ -1917,7 +1917,7 @@ test('実行: prepare worktree は最新の base から .claude/worktrees/<名�
     const calls = [];
     const result = run(fixture, ['prepare', 'worktree', 'main', '440', 'issue/440-flow', 'codex-440'], { writeOut: (message) => out.push(message), spawnSync: recordingSpawn(calls) });
     assert.equal(result.code, 0, result.messages.join(''));
-    const worktree = path.join(fixture.repo, '.claude', 'worktrees', 'codex-440');
+    const worktree = path.join(fixture.repo, '.codex', 'worktrees', 'codex-440');
     assert.equal(out.join(''), `TARGET_REPO=${worktree}\nWORK_BRANCH=issue/440-flow\nBASE_SHA=${latest}\n`);
     assert.equal(git(worktree, 'rev-parse', 'HEAD'), latest);
     assert.equal(git(worktree, 'symbolic-ref', '--short', 'HEAD'), 'issue/440-flow');
@@ -1945,10 +1945,10 @@ test('実行: prepare worktree は最新の base から .claude/worktrees/<名�
     assert.equal(calls.find((call) => call.args.includes('worktree')).env.GIT_ALLOW_PROTOCOL, '');
 
     // info/exclude へ 1 行。別の名前で作ると行が増える。
-    const exclude = () => fs.readFileSync(path.join(fixture.repo, '.git', 'info', 'exclude'), 'utf8').split('\n').filter((line) => line.startsWith('/.claude/worktrees/'));
-    assert.deepEqual(exclude(), ['/.claude/worktrees/codex-440/']);
+    const exclude = () => fs.readFileSync(path.join(fixture.repo, '.git', 'info', 'exclude'), 'utf8').split('\n').filter((line) => line.startsWith('/.codex/worktrees/'));
+    assert.deepEqual(exclude(), ['/.codex/worktrees/codex-440/']);
     assert.equal(run(fixture, ['prepare', 'worktree', 'main', '441', 'issue/441-second', 'codex-441']).code, 0);
-    assert.deepEqual(exclude(), ['/.claude/worktrees/codex-440/', '/.claude/worktrees/codex-441/']);
+    assert.deepEqual(exclude(), ['/.codex/worktrees/codex-440/', '/.codex/worktrees/codex-441/']);
   } finally {
     fixture.cleanup();
   }
@@ -1960,7 +1960,7 @@ test('結合: prepare で作った worktree で、そのまま add・commit・pu
     const remote = attachRemote(fixture);
     git(fixture.repo, 'checkout', '-q', 'main');
     assert.equal(run(fixture, ['prepare', 'worktree', 'main', '440', 'issue/440-flow', 'codex-440']).code, 0);
-    const worktree = fs.realpathSync(path.join(fixture.repo, '.claude', 'worktrees', 'codex-440'));
+    const worktree = fs.realpathSync(path.join(fixture.repo, '.codex', 'worktrees', 'codex-440'));
     fs.writeFileSync(path.join(worktree, 'feature.txt'), 'feature\n');
     assert.equal(run(fixture, ['git', 'add', '--', 'feature.txt'], { cwd: worktree }).code, 0);
     assert.equal(run(fixture, ['git', 'commit', '-m', '[ 機能追加 ] 例'], { cwd: worktree }).code, 0);
@@ -1975,7 +1975,7 @@ test('結合: prepare で作った worktree で、そのまま add・commit・pu
   }
 });
 
-test('拒否: prepare worktree の同名ブランチ・同名パス・.claude のリンク・取得できない base・ルート以外での実行・別クローン', () => {
+test('拒否: prepare worktree の同名ブランチ・同名パス・.codex のリンク・取得できない base・ルート以外での実行・別クローン', () => {
   const fixture = createFixture();
   try {
     attachRemote(fixture);
@@ -1997,34 +1997,34 @@ test('拒否: prepare worktree の同名ブランチ・同名パス・.claude �
     assert.equal(result.code, 2);
     assert.match(result.messages.join(''), /working branch already exists/);
     // 同名のパス。
-    fs.mkdirSync(path.join(fixture.repo, '.claude', 'worktrees', 'wt-b'), { recursive: true });
+    fs.mkdirSync(path.join(fixture.repo, '.codex', 'worktrees', 'wt-b'), { recursive: true });
     result = prepare(['issue/440-b', 'wt-b']);
     assert.equal(result.code, 2);
     assert.match(result.messages.join(''), /worktree path already exists/);
     assert.equal(branchExists('issue/440-b'), false);
 
-    // .claude/worktrees がリンク。
+    // .codex/worktrees がリンク。
     const elsewhere = path.join(fixture.root, 'elsewhere');
     fs.mkdirSync(elsewhere);
-    fs.rmSync(path.join(fixture.repo, '.claude'), { recursive: true });
-    fs.mkdirSync(path.join(fixture.repo, '.claude'));
-    fs.symlinkSync(elsewhere, path.join(fixture.repo, '.claude', 'worktrees'));
+    fs.rmSync(path.join(fixture.repo, '.codex'), { recursive: true });
+    fs.mkdirSync(path.join(fixture.repo, '.codex'));
+    fs.symlinkSync(elsewhere, path.join(fixture.repo, '.codex', 'worktrees'));
     result = prepare(['issue/440-c', 'wt-c']);
     assert.equal(result.code, 2);
     assert.match(result.messages.join(''), /symbolic link/);
-    // .claude がリンク。
-    fs.rmSync(path.join(fixture.repo, '.claude'), { recursive: true });
-    fs.symlinkSync(elsewhere, path.join(fixture.repo, '.claude'));
+    // .codex がリンク。
+    fs.rmSync(path.join(fixture.repo, '.codex'), { recursive: true });
+    fs.symlinkSync(elsewhere, path.join(fixture.repo, '.codex'));
     result = prepare(['issue/440-d', 'wt-d']);
     assert.equal(result.code, 2);
     assert.match(result.messages.join(''), /symbolic link/);
     assert.deepEqual(fs.readdirSync(elsewhere), []);
-    fs.unlinkSync(path.join(fixture.repo, '.claude'));
+    fs.unlinkSync(path.join(fixture.repo, '.codex'));
 
     // リモートに無い base（取得に失敗する）。worktree もブランチも作られない。
     result = run(fixture, ['prepare', 'worktree', 'no-such-base', '440', 'issue/440-e', 'wt-e']);
     assert.notEqual(result.code, 0);
-    assert.equal(fs.existsSync(path.join(fixture.repo, '.claude', 'worktrees', 'wt-e')), false);
+    assert.equal(fs.existsSync(path.join(fixture.repo, '.codex', 'worktrees', 'wt-e')), false);
     assert.equal(branchExists('issue/440-e'), false);
 
     // 拘束先のルート以外（worktree の中・サブフォルダ）からは作らない。
@@ -2044,7 +2044,7 @@ test('拒否: prepare worktree の同名ブランチ・同名パス・.claude �
     for (const cwd of [clone, stranger]) {
       result = prepare(['issue/440-h', 'wt-h'], { cwd });
       assert.equal(result.code, 2, cwd);
-      assert.equal(fs.existsSync(path.join(cwd, '.claude')), false, cwd);
+      assert.equal(fs.existsSync(path.join(cwd, '.codex')), false, cwd);
     }
     // origin が拘束した GitHub のリポジトリと違えば作らない。
     git(fixture.repo, 'remote', 'set-url', 'origin', 'https://github.com/other/repo.git');
@@ -2099,21 +2099,21 @@ function interposeSpawn({ before = () => {}, after = () => {} }) {
 
 const involves = (args, word) => args.includes(word);
 
-test('競合: 取得の最中に .claude が外部フォルダへのリンクへ差し替えられても、拘束ルートの外には何も作られない', () => {
-  for (const variant of ['claude', 'worktrees']) {
+test('競合: 取得の最中に .codex が外部フォルダへのリンクへ差し替えられても、拘束ルートの外には何も作られない', () => {
+  for (const variant of ['codex', 'worktrees']) {
     const fixture = createFixture();
     try {
       attachRemote(fixture);
       const outside = path.join(fixture.root, 'outside-target');
       fs.mkdirSync(outside);
-      fs.mkdirSync(path.join(fixture.repo, '.claude', 'worktrees'), { recursive: true });
+      fs.mkdirSync(path.join(fixture.repo, '.codex', 'worktrees'), { recursive: true });
       const swap = () => {
-        if (variant === 'claude') {
-          fs.rmSync(path.join(fixture.repo, '.claude'), { recursive: true });
-          fs.symlinkSync(outside, path.join(fixture.repo, '.claude'));
+        if (variant === 'codex') {
+          fs.rmSync(path.join(fixture.repo, '.codex'), { recursive: true });
+          fs.symlinkSync(outside, path.join(fixture.repo, '.codex'));
         } else {
-          fs.rmSync(path.join(fixture.repo, '.claude', 'worktrees'), { recursive: true });
-          fs.symlinkSync(outside, path.join(fixture.repo, '.claude', 'worktrees'));
+          fs.rmSync(path.join(fixture.repo, '.codex', 'worktrees'), { recursive: true });
+          fs.symlinkSync(outside, path.join(fixture.repo, '.codex', 'worktrees'));
         }
       };
       let swapped = false;
@@ -2130,8 +2130,8 @@ test('競合: 取得の最中に .claude が外部フォルダへのリンクへ
   }
 });
 
-test('競合: 最後の検査の後（worktree の追加の直前）に .claude 系のフォルダが外部へのリンクへ差し替えられても、拘束ルートの外には何も作られない', () => {
-  for (const variant of ['claude', 'worktrees', 'hooks']) {
+test('競合: 最後の検査の後（worktree の追加の直前）に .codex 系のフォルダが外部へのリンクへ差し替えられても、拘束ルートの外には何も作られない', () => {
+  for (const variant of ['codex', 'worktrees', 'hooks']) {
     const fixture = createFixture();
     try {
       attachRemote(fixture);
@@ -2143,13 +2143,13 @@ test('競合: 最後の検査の後（worktree の追加の直前）に .claude 
       const hooksBefore = fs.readdirSync(path.join(fixture.repo, '.git', 'hooks')).sort();
       let swapped = false;
       const swap = () => {
-        const claude = path.join(fixture.repo, '.claude');
-        if (variant === 'claude') {
-          fs.rmSync(claude, { recursive: true });
-          fs.symlinkSync(target, claude);
+        const codex = path.join(fixture.repo, '.codex');
+        if (variant === 'codex') {
+          fs.rmSync(codex, { recursive: true });
+          fs.symlinkSync(target, codex);
         } else {
-          fs.rmSync(path.join(claude, 'worktrees'), { recursive: true });
-          fs.symlinkSync(target, path.join(claude, 'worktrees'));
+          fs.rmSync(path.join(codex, 'worktrees'), { recursive: true });
+          fs.symlinkSync(target, path.join(codex, 'worktrees'));
         }
       };
       const result = run(fixture, ['prepare', 'worktree', 'main', '440', 'issue/440-race', 'wt-race'], {
@@ -2175,9 +2175,9 @@ test('競合: 親フォルダの作成の直前に差し替えられても、拘
     const result = run(fixture, ['prepare', 'worktree', 'main', '440', 'issue/440-race', 'wt-race'], {
       spawnSync: interposeSpawn({
         before: (_bin, args) => {
-          if (args.includes('/bin/mkdir') && args.includes(path.join(fixture.repo, '.claude', 'worktrees')) && !swapped) {
+          if (args.includes('/bin/mkdir') && args.includes(path.join(fixture.repo, '.codex', 'worktrees')) && !swapped) {
             swapped = true;
-            fs.symlinkSync(outside, path.join(fixture.repo, '.claude'));
+            fs.symlinkSync(outside, path.join(fixture.repo, '.codex'));
           }
         },
       }),
@@ -2245,7 +2245,7 @@ function raceCase({ label, trigger, makeTarget, swap, untouched, mustFail = true
 }
 
 const adminOf = (fixture) => path.join(fixture.repo, '.git', 'worktrees', 'wt-race');
-const worktreeOf = (fixture) => path.join(fixture.repo, '.claude', 'worktrees', 'wt-race');
+const worktreeOf = (fixture) => path.join(fixture.repo, '.codex', 'worktrees', 'wt-race');
 // 現在の管理領域の写し（HEAD・commondir・gitdir を含む）を target に作る。
 function copyAdmin(fixture, target) {
   fs.rmSync(target, { recursive: true, force: true });
@@ -2306,13 +2306,13 @@ test('競合: info/exclude の追記は書き込み制限つきの子プロセ�
   });
 });
 
-test('競合: 作業フォルダの置き場所が Git 管理領域・.claude 内の別フォルダ・外部へのリンクに差し替えられても、どこにも書かれない（追加の直前・index 作成の直前・展開の直前）', () => {
+test('競合: 作業フォルダの置き場所が Git 管理領域・.codex 内の別フォルダ・外部へのリンクに差し替えられても、どこにも書かれない（追加の直前・index 作成の直前・展開の直前）', () => {
   const outsideDirs = (fixture) => [
     path.join(fixture.repo, '.git', 'objects', 'info'),
     path.join(fixture.repo, '.git', 'objects', 'pack'),
     path.join(fixture.repo, '.git', 'refs', 'tags'),
     path.join(fixture.repo, '.git', 'hooks'),
-    path.join(fixture.repo, '.claude', 'other'),
+    path.join(fixture.repo, '.codex', 'other'),
     path.join(fixture.root, 'outside-target'),
   ];
   const places = {
@@ -2320,7 +2320,7 @@ test('競合: 作業フォルダの置き場所が Git 管理領域・.claude �
     'objects/pack': (fixture) => path.join(fixture.repo, '.git', 'objects', 'pack'),
     'refs/tags': (fixture) => path.join(fixture.repo, '.git', 'refs', 'tags'),
     'hooks': (fixture) => path.join(fixture.repo, '.git', 'hooks'),
-    '.claude 内の別フォルダ': (fixture) => path.join(fixture.repo, '.claude', 'other'),
+    '.codex 内の別フォルダ': (fixture) => path.join(fixture.repo, '.codex', 'other'),
     '拘束ルートの外': (fixture) => path.join(fixture.root, 'outside-target'),
   };
   const triggers = [
@@ -2395,7 +2395,7 @@ test('実行: prepare は Git の制御ファイル（hooks・config・objects/i
     assert.equal(fs.readFileSync(path.join(gitDir, 'config'), 'utf8'), config);
     assert.deepEqual(fs.readdirSync(path.join(gitDir, 'hooks')).sort(), hooks);
     assert.deepEqual(fs.readdirSync(path.join(gitDir, 'objects', 'info')).sort(), objectsInfo);
-    const worktree = path.join(fixture.repo, '.claude', 'worktrees', 'codex-440');
+    const worktree = path.join(fixture.repo, '.codex', 'worktrees', 'codex-440');
     assert.equal(git(worktree, 'status', '--porcelain'), '');
     assert.ok(fs.readdirSync(worktree).length > 1);
     const mentions = (call, word) => call.args.some((arg) => arg === word);
@@ -2989,8 +2989,8 @@ test('親の書き込み範囲を超えない: 子の -C と監督プロセス�
       assert.equal(payload.args[payload.args.indexOf('-C') + 1], pinned);
       assert.equal(payload.args.filter((arg) => arg === '-C').length, 1);
     };
-    // 親をルートで起動した場合: ルート・配下の worktree（prepare worktree が作る .claude/worktrees/ の下）のどちらから呼んでも、-C と cwd は親の起動 cwd。
-    const inside = path.join(root.repo, '.claude', 'worktrees', 'inside');
+    // 親をルートで起動した場合: ルート・配下の worktree（prepare worktree が作る .codex/worktrees/ の下）のどちらから呼んでも、-C と cwd は親の起動 cwd。
+    const inside = path.join(root.repo, '.codex', 'worktrees', 'inside');
     git(root.repo, 'worktree', 'add', '-q', '-b', 'work/inside', inside);
     const outside = path.join(root.root, 'outside-worktree');
     git(root.repo, 'worktree', 'add', '-q', '-b', 'work/outside', outside);
@@ -4272,10 +4272,10 @@ test('実行: git fetch の書き込み制限は、取得先の追跡 ref とオ
 
 const ADOPT_ARGS = ['prepare', 'adopt-worktree', 'main', '484', 'feature/484-adopt', 'codex-484'];
 
-// 起動元が作るのと同じ形（origin/main の detached HEAD）で、クローン側の .claude/worktrees/<名前> に worktree を作る。
-function createLaunchWorktree(fixture, name = 'codex-484') {
+// 起動元が作るのと同じ形（origin/main の detached HEAD）で、許可された置き場所に worktree を作る。
+function createLaunchWorktree(fixture, name = 'codex-484', parent = '.codex') {
   git(fixture.repo, 'update-ref', 'refs/remotes/origin/main', 'main');
-  const worktree = path.join(fixture.repo, '.claude', 'worktrees', name);
+  const worktree = path.join(fixture.repo, parent, 'worktrees', name);
   git(fixture.repo, 'worktree', 'add', '-q', '--detach', worktree, 'refs/remotes/origin/main');
   return fs.realpathSync(worktree);
 }
@@ -4373,6 +4373,19 @@ test('結合: 起動元が作った detached HEAD の worktree から、固定�
   }
 });
 
+test('移行: prepare adopt-worktree は旧 .claude/worktrees の worktree も同じ検査で引き受ける', () => {
+  const fixture = createFixture();
+  try {
+    attachRemote(fixture);
+    const worktree = createLaunchWorktree(fixture, 'codex-484', '.claude');
+    const result = run(fixture, ADOPT_ARGS, { cwd: worktree });
+    assert.equal(result.code, 0, result.messages.join(''));
+    assert.equal(git(worktree, 'symbolic-ref', '--short', 'HEAD'), 'feature/484-adopt');
+  } finally {
+    fixture.cleanup();
+  }
+});
+
 test('回帰: 作成済みの worktree を prepare worktree（新規作成）へ渡すと止まり、内容は変わらない', () => {
   const fixture = createFixture();
   try {
@@ -4456,7 +4469,7 @@ test('拒否: prepare adopt-worktree はパス不一致（別名・シンボリ�
   try {
     attachRemote(fixture);
     const worktree = createLaunchWorktree(fixture);
-    const worktreeRoot = path.join(fixture.repo, '.claude', 'worktrees');
+    const worktreeRoot = path.join(fixture.repo, '.codex', 'worktrees');
     const before = adoptSnapshot(worktree);
     // ownRoot: 起動元がこの worktree を作業フォルダ（拘束ルート）にして起動した形。入口自身の検査まで確実に届く。
     const adopt = (cwd, name = 'codex-484', root = null) => {
@@ -4469,16 +4482,16 @@ test('拒否: prepare adopt-worktree はパス不一致（別名・シンボリ�
     };
 
     // 別名: worktree 名と実パスが一致しない。
-    expectRejected(adopt(worktree, 'codex-999', worktree), /does not match \.claude\/worktrees\/codex-999/, 'name');
+    expectRejected(adopt(worktree, 'codex-999', worktree), /does not match \.codex\/worktrees\/codex-999/, 'name');
     // シンボリックリンクの別名: 実パスが名前と一致しない。
     fs.symlinkSync(worktree, path.join(worktreeRoot, 'alias'));
-    expectRejected(adopt(path.join(worktreeRoot, 'alias'), 'alias', worktree), /does not match \.claude\/worktrees\/alias/, 'alias');
+    expectRejected(adopt(path.join(worktreeRoot, 'alias'), 'alias', worktree), /does not match \.codex\/worktrees\/alias/, 'alias');
     fs.unlinkSync(path.join(worktreeRoot, 'alias'));
-    // .claude/worktrees 自体がリンク。
+    // .codex/worktrees 自体がリンク。
     const realRoot = path.join(fixture.root, 'moved-worktrees');
     fs.renameSync(worktreeRoot, realRoot);
     fs.symlinkSync(realRoot, worktreeRoot);
-    expectRejected(adopt(path.join(worktreeRoot, 'codex-484'), 'codex-484', path.join(realRoot, 'codex-484')), /\.claude\/worktrees is a symbolic link or not a directory/, 'linked worktrees dir');
+    expectRejected(adopt(path.join(worktreeRoot, 'codex-484'), 'codex-484', path.join(realRoot, 'codex-484')), /\.codex\/worktrees is a symbolic link or not a directory/, 'linked worktrees dir');
     fs.unlinkSync(worktreeRoot);
     fs.renameSync(realRoot, worktreeRoot);
     // クローン本体で実行（拘束ルートもクローン）。

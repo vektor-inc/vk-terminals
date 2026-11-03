@@ -357,11 +357,15 @@ test('プロジェクト側の .codex: 実際の Codex で、リポジトリ側�
   async () => {
     const sandbox = createSandbox();
     try {
-      fs.mkdirSync(path.join(sandbox.repo, '.codex'));
-      fs.writeFileSync(path.join(sandbox.repo, '.codex', 'config.toml'), WIDENING_PROJECT_CONFIG);
       const subdir = path.join(sandbox.repo, 'sub');
       fs.mkdirSync(subdir);
-      for (const cwd of [sandbox.repo, subdir]) {
+      const worktree = path.join(sandbox.repo, '.codex', 'worktrees', 'policy-test');
+      const committed = childProcess.spawnSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '--allow-empty', '-q', '-m', 'fixture'], { cwd: sandbox.repo, encoding: 'utf8' });
+      assert.equal(committed.status, 0, committed.stderr);
+      const added = childProcess.spawnSync('git', ['worktree', 'add', '-q', '--detach', worktree, 'HEAD'], { cwd: sandbox.repo, encoding: 'utf8' });
+      assert.equal(added.status, 0, added.stderr);
+      fs.writeFileSync(path.join(sandbox.repo, '.codex', 'config.toml'), WIDENING_PROJECT_CONFIG);
+      for (const cwd of [sandbox.repo, subdir, worktree]) {
         const policyOptions = { approvalPolicy: 'never', codexPolicy: { preset: 'orchestrated-task' } };
         const resolved = resolveCodexTaskPolicyLaunchOptions('codex', policyOptions, { ...sandbox.deps, cwd });
         assert.equal(resolved.ok, true, resolved.error);
@@ -371,6 +375,7 @@ test('プロジェクト側の .codex: 実際の Codex で、リポジトリ側�
         assert.equal(effective.sandbox_workspace_write.network_access, false);
         const ioDir = path.join(fs.realpathSync(sandbox.deps.dataDir), 'codex-task-io', path.basename(resolved.options.codexPolicyHome));
         assert.deepEqual(effective.sandbox_workspace_write.writable_roots, [fs.realpathSync(sandbox.deps.handoffDir), ioDir]);
+        assert.equal(effective.sandbox_workspace_write.writable_roots.some((root) => root === path.join(sandbox.repo, '.codex') || root.startsWith(`${path.join(sandbox.repo, '.codex')}${path.sep}`)), false);
         // 子の Codex 用 CODEX_HOME も、書き込み範囲・ネットワーク・sandbox は親と同じ（承認だけ求めない）。
         const child = await readEffectiveCodexConfig(path.join(resolved.options.codexPolicyHome, 'member'), cwd);
         assert.notEqual(child, null, '子用 CODEX_HOME の実効設定を読めなかった');
@@ -384,8 +389,14 @@ test('プロジェクト側の .codex: 実際の Codex で、リポジトリ側�
         const trusted = fs.readFileSync(configPath, 'utf8').replace(/trust_level = "untrusted"/g, 'trust_level = "trusted"');
         fs.writeFileSync(configPath, trusted);
         const widened = await readEffectiveCodexConfig(resolved.options.codexPolicyHome, cwd);
-        assert.equal(widened.sandbox_mode, 'danger-full-access');
-        assert.equal(widened.sandbox_workspace_write.network_access, true);
+        if (cwd === worktree) {
+          // `.codex/worktrees` の worktree を cwd にしても、親クローンの `.codex/config.toml` はプロジェクト設定として探索されない。
+          assert.equal(widened.sandbox_mode, 'workspace-write');
+          assert.equal(widened.sandbox_workspace_write.network_access, false);
+        } else {
+          assert.equal(widened.sandbox_mode, 'danger-full-access');
+          assert.equal(widened.sandbox_workspace_write.network_access, true);
+        }
       }
     } finally {
       sandbox.cleanup();
@@ -1568,7 +1579,7 @@ test('ランチャー: prepare で作った worktree で、そのまま add・co
   try {
     const prepared = env.ops(sandbox.repo, 'prepare', 'worktree', 'main', '440', 'feature/440-flow', 'codex-440');
     assert.equal(prepared.status, 0, prepared.stderr);
-    const worktree = path.join(fs.realpathSync(sandbox.repo), '.claude', 'worktrees', 'codex-440');
+    const worktree = path.join(fs.realpathSync(sandbox.repo), '.codex', 'worktrees', 'codex-440');
     assert.match(prepared.stdout, new RegExp(`^TARGET_REPO=${worktree.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\nWORK_BRANCH=feature/440-flow\\nBASE_SHA=${env.remoteRef('refs/heads/main')}\\n$`));
     // 通常のクローンは main のまま切り替わらない。
     assert.equal(sandbox.git('symbolic-ref', '--short', 'HEAD').trim(), 'main');
@@ -1987,10 +1998,10 @@ test('書き込める範囲: 事前確認と実際の準備で同じ tmpdir と�
     // 事前確認と実際の準備は、同じ関数から同じ一覧を作る。
     assert.deepEqual(dry.context, real.context);
     assert.deepEqual(dry.context.effectiveWritableRoots.map((root) => root.source), ['workspace', 'tmp', 'tmpdir', 'handoff', 'task-ops-repository', 'task-ops-git-dir', 'member-io']);
-    // 固定入口の書き込み先（git add / commit の .git、prepare worktree の <ルート>/.claude/worktrees）も一覧の配下に入る。
+    // 固定入口の書き込み先（git add / commit の .git、prepare worktree の <ルート>/.codex/worktrees）も一覧の配下に入る。
     const repoReal = fs.realpathSync(sandbox.repo);
     assert.deepEqual(dry.context.effectiveWritableRoots.filter((root) => root.source.startsWith('task-ops')).map((root) => root.path), [repoReal, path.join(repoReal, '.git')]);
-    for (const target of [path.join(repoReal, '.git', 'index'), path.join(repoReal, '.git', 'worktrees'), path.join(repoReal, '.claude', 'worktrees')]) {
+    for (const target of [path.join(repoReal, '.git', 'index'), path.join(repoReal, '.git', 'worktrees'), path.join(repoReal, '.codex', 'worktrees')]) {
       assert.ok(isCovered(dry.context, target), target);
     }
     const memberIo = dry.context.effectiveWritableRoots.find((root) => root.source === 'member-io');

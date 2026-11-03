@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 仕様変更 ] Codex のタスク専用 worktree を `.codex/worktrees/` に作成し、引き受け時は移行用の旧 `.claude/worktrees/` も受け付けるように（[#488](https://github.com/vektor-inc/vk-terminals/issues/488)）
+
 ## 1.82.0
 
 - [ 機能追加 ] 設定ディスクリプタで、設定画面の見出し横に表示するバージョン表記を指定できるように（[#486](https://github.com/vektor-inc/vk-terminals/issues/486)）

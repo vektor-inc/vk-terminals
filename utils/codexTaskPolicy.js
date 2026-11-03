@@ -148,8 +148,8 @@ function renderAgentsGuide(launcherPath, memberIoDir = null) {
     '- `git commit` は作業ブランチ上でだけ通る。main / master・リモートの既定ブランチ・detached HEAD 上では拒否されるので、先に作業ブランチを作ってから commit する。',
     '- `git push <ブランチ名>` はブランチ名 1 つだけを受け付ける。送り先は入口が固定する（このタスクの GitHub リポジトリ）ので、リモート名・オプション・refspec は渡せない。新規作成と早送りだけが通り、強制上書き・削除・タグは使えない。main / master・リモートの既定ブランチ・detached HEAD・存在しないブランチへの push は拒否される。',
     '- `git fetch` と `git merge` は引数を一切取らない（URL・refspec・ブランチ名・オプションは拒否される）。`git fetch` は GitHub から読んだこのリポジトリのデフォルトブランチだけを、入口が固定した取得元から `refs/remotes/origin/<デフォルトブランチ>` へ取得する。`git merge` はその取得済みデフォルトブランチを、現在の作業ブランチへ merge commit つきで取り込む（squash・早送りだけの取り込みはしない）。先に `git fetch` し、追跡ファイルの未コミット変更が無い作業ブランチ上で実行する。main / master・リモートの既定ブランチ・detached HEAD 上、merge 中、取得済みの ref が無いときは拒否される。競合したときは状態は戻らないので、競合したファイルを直して `git add` し、`git commit -m <メッセージ>` で merge commit を完成させてから `git push <ブランチ名>` する。',
-    '- `prepare worktree <base> <issue番号> <ブランチ> <worktree名>` は、最新の origin/<base> から作業ブランチ付きの worktree（`<リポジトリ>/.claude/worktrees/<worktree名>`）を作る。ブランチ名は `<種類>/<issue番号>-...` の形で、同名のブランチ・パスがあると失敗する。通常のクローンの切り替えはしない。リポジトリのルートで実行する。',
-    '- `prepare adopt-worktree <base> <issue番号> <ブランチ> <worktree名>` は、起動元が先に作った worktree（`<リポジトリ>/.claude/worktrees/<worktree名>`。detached HEAD）を引き受け、最新の origin/<base> から作業ブランチを作って切り替える。worktree は作らない。引数の規則は `prepare worktree` と同じ。その worktree の直下で実行し、未コミット変更がある・HEAD が origin/<base> の祖先でない・別のブランチにいる・同名のブランチが別に存在する・作業コミットがあるときは拒否される（拒否されても `prepare worktree` に切り替えない）。同じ作業ブランチで作業コミットが無ければ再開として受け入れ、古ければ最新へ早送りする。',
+    '- `prepare worktree <base> <issue番号> <ブランチ> <worktree名>` は、最新の origin/<base> から作業ブランチ付きの worktree（`<リポジトリ>/.codex/worktrees/<worktree名>`）を作る。ブランチ名は `<種類>/<issue番号>-...` の形で、同名のブランチ・パスがあると失敗する。通常のクローンの切り替えはしない。リポジトリのルートで実行する。',
+    '- `prepare adopt-worktree <base> <issue番号> <ブランチ> <worktree名>` は、起動元が先に作った worktree（`<リポジトリ>/.codex/worktrees/<worktree名>`。移行中は旧 `<リポジトリ>/.claude/worktrees/<worktree名>` も可）を引き受け、最新の origin/<base> から作業ブランチを作って切り替える。worktree は作らない。引数の規則は `prepare worktree` と同じ。その worktree の直下で実行し、未コミット変更がある・HEAD が origin/<base> の祖先でない・別のブランチにいる・同名のブランチが別に存在する・作業コミットがあるときは拒否される（拒否されても `prepare worktree` に切り替えない）。同じ作業ブランチで作業コミットが無ければ再開として受け入れ、古ければ最新へ早送りする。',
     ...(memberIoDir === null ? [
       '- この入口には入出力フォルダが無いため、`--title-file` / `--body-file` は使えない（拒否される）。`gh pr create` / `gh pr edit` の題・本文は `--title` / `--body` で直接渡す。',
     ] : [
@@ -633,7 +633,7 @@ function resolveParentTmpdir(candidate, fsImpl) {
  * workspace-write では Codex のシェルが cwd・/tmp・TMPDIR と config.toml の writable_roots（引き継ぎ先・メンバーの入出力フォルダ）へ書き込める。
  * read-only のシェルは config.toml の writable_roots を無視し、cwd・/tmp・TMPDIR を含めどこへも書き込めない（Codex の sandbox で確認済み）。
  * 一方、固定入口（rules の許可で sandbox の外で動くランチャー）は sandbox の種別によらず、拘束したリポジトリの実ルートと Git 管理領域（common-dir）へ書き込む
- * （git add / commit、prepare worktree の <ルート>/.claude/worktrees）。そのため task-ops-repository / task-ops-git-dir は常に含める。
+ * （git add / commit、prepare worktree の <ルート>/.codex/worktrees）。そのため task-ops-repository / task-ops-git-dir は常に含める。
  * common-dir がリポジトリのルートの配下にある通常のクローンでも、形を固定するため 2 行とも出す。
  * Codex 自身の設定フォルダ（専用 CODEX_HOME。VK Terminals が管理する ~/.vk-terminals/ 配下）は含めない。
  * @param {object} params

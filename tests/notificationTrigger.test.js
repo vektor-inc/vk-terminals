@@ -102,6 +102,28 @@ test('computeNotificationEvents: 管理ペインの地の文による waiting �
   assert.deepEqual(events, []);
 });
 
+test('computeNotificationEvents: 初回報告後に管理ペインの地の文が waiting になっても通知しない', () => {
+  const initial = computeNotificationEvents({
+    prevSnapshot: {},
+    states: { 'pane-1': pane({ apiUrl: 'https://example.com/task', displayWaiting: false }) },
+    excludePatterns: [],
+    isFirstReport: true,
+  });
+  const proseWaiting = computeNotificationEvents({
+    prevSnapshot: initial.nextSnapshot,
+    states: {
+      'pane-1': pane({
+        apiUrl: 'https://example.com/task', waiting: true, status: 'waiting',
+        displayWaiting: false, displayStatus: 'idle',
+      }),
+    },
+    excludePatterns: [],
+    isFirstReport: false,
+  });
+  assert.deepEqual(proseWaiting.events, []);
+  assert.equal(proseWaiting.nextSnapshot['1'].waiting, false);
+});
+
 test('derivePaneNotificationState: 管理ペインでも構造的待ちの表示用フラグなら通知対象になる', () => {
   const result = derivePaneNotificationState(
     pane({ waiting: true, structuralWaiting: true, displayWaiting: true, displayStatus: 'waiting', apiUrl: 'https://example.com/task' }),

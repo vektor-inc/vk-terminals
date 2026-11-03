@@ -575,9 +575,16 @@ function armRunningIdleTimer(paneId) {
     const cur = terminals[paneId];
     if (!cur) return;
     cur.runningTimer = null;
-    if (cur.status === 'running') cur.status = 'idle';
-    if (cur.displayStatus === 'running') cur.displayStatus = 'idle';
-    updatePaneStatus(paneId);
+    let changed = false;
+    if (cur.status === 'running') {
+      cur.status = 'idle';
+      changed = true;
+    }
+    if (cur.displayStatus === 'running') {
+      cur.displayStatus = 'idle';
+      changed = true;
+    }
+    if (changed) updatePaneStatus(paneId);
   }, RUNNING_IDLE_TIMEOUT_MS);
 }
 
@@ -2798,10 +2805,10 @@ function closePane(paneId, { force = false, skipConfirm = false } = {}) {
   if (!paneExists(paneId)) return;
   const _t = terminals[paneId];
   if (!force && _t?.lock?.close === false) return;
-  // 誤クローズ防止（issue #184）: 非 force パスでは confirmClose 設定と status に応じて
+  // 誤クローズ防止（issue #184）: 非 force パスでは confirmClose 設定と表示用 status に応じて
   // アプリ内確認ダイアログを挟む。force（HTTP API / PTY exit などの自動系）は従来どおり即閉じ。
   // lock.close === false のガードが確認より優先される（上の early return）。
-  if (!force && !skipConfirm && shouldConfirmClose(confirmClosePref, _t?.status || 'idle')) {
+  if (!force && !skipConfirm && shouldConfirmClose(confirmClosePref, _t?.displayStatus || 'idle')) {
     openCloseConfirmDialog(paneId);
     return;
   }
@@ -2876,7 +2883,7 @@ function openCloseConfirmDialog(paneId) {
   closeConfirmOpen = true;
 
   const t = terminals[paneId];
-  const { label } = getStatusPresentation(t?.status);
+  const { label } = getStatusPresentation(t?.displayStatus);
   // running / waiting はその旨を明示し、それ以外（'always' 設定の idle）は汎用文にする。
   const message = label
     ? `このペインは「${label}」です。閉じるとセッションは失われます。閉じますか？`

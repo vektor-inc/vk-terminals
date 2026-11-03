@@ -670,10 +670,10 @@ function isCloseLocked(terminal) {
 }
 
 function sortTerminalKeysByStatus(keys, terms) {
-  // 新規端末を初めて末尾に足すときだけ、従来のステータス順で安定化する。
+  // 新規端末を初めて末尾に足すときだけ、利用者に見えているステータス順で安定化する。
   return keys.slice().sort(function(a, b) {
-    var ra = statusPresentation.getStatusRank(terms[a].status);
-    var rb = statusPresentation.getStatusRank(terms[b].status);
+    var ra = statusPresentation.getStatusRank(terms[a].displayStatus || terms[a].status);
+    var rb = statusPresentation.getStatusRank(terms[b].displayStatus || terms[b].status);
     if (ra !== rb) return ra - rb;
     return getTermId(a, terms[a]).localeCompare(getTermId(b, terms[b]), undefined, { numeric: true });
   });

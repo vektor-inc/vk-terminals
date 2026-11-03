@@ -38,7 +38,7 @@ test('構造的待ち: Claude Code の選択肢と定型フッターを検出す
 test('構造的待ち: TUI 固有の確認形式を検出する', () => {
   const cases = [
     'Continue? [y/N]',
-    ['› 1. Yes', '  2. No'].join('\n'),
+    ['› 1. Yes', '  2. No', 'Press Enter to continue'].join('\n'),
     'Yes, allow this edit',
     'Press Enter to continue',
     ['What should I do?', 'Enter to select', '↑/↓ to navigate', 'Esc to cancel'].join('\n'),
@@ -58,6 +58,14 @@ test('構造的待ち: 地の文・古い画面上方・単独の Codex 履歴�
     '› 1. まずテスト',
   ];
   for (const text of cases) assert.equal(findStructuralWaitingMatch(text), null, text);
+});
+
+test('構造的待ち: Codex のユーザー発言に番号付きリストが続いても選択肢と誤認しない', () => {
+  const userMessage = [
+    '› 1. README の表を更新してください',
+    '  2. テストも追加してください',
+  ].join('\n');
+  assert.equal(findStructuralWaitingMatch(userMessage), null);
 });
 
 test('構造的待ち: 地の文の承認待ちや一般的な質問文は検出しない', () => {

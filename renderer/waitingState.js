@@ -238,11 +238,12 @@ function findStructuralWaitingMatch(cleanBuffer) {
       best = { raw: match[0], index: match.index };
     }
   }
-  // Codex の履歴に表示される単独の `› 1. 発言` と区別するため、番号付き選択肢は
-  // 下端に2項目以上が並ぶ場合だけ構造的待ちとして扱う。
+  // Codex の履歴に表示される `› 1. 発言` と後続の番号付きリストを選択肢と誤認しないよう、
+  // 番号付き選択肢単体では Claude Code 固有の `❯` カーソルを必須にする。Codex の本物の
+  // 選択画面は Press Enter 等の定型フッターで別途検出する。
   const numberedOptions = tailBuffer.match(/^\s*(?:│\s*)?(?:[›❯]\s*)?\d+\.\s+\S.*$/gm) || [];
   if (numberedOptions.length >= 2) {
-    const selectedOption = /[›❯]\s*\d+\.\s+\S/.exec(tailBuffer);
+    const selectedOption = /❯\s*\d+\.\s+\S/.exec(tailBuffer);
     if (selectedOption && (best === null || selectedOption.index > best.index)) {
       best = { raw: selectedOption[0], index: selectedOption.index };
     }

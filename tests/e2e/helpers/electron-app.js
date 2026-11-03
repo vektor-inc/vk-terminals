@@ -183,7 +183,7 @@ async function getFreePort() {
 // escape-modal-layer-regression.smoke.spec.js 側のコメントを参照。
 // seedHome: 起動前に隔離した HOME へファイルを置くための関数 ({ tmpHome, configDir }) => void。
 //   ~/.vk-terminals/ 配下に「2 回目以降の起動」の記録（setup-auto-open.json 等）を作っておきたい spec が使う。
-async function launchApp({ port, prefix, env = {}, config = {}, launchAi = false, entry = '.', seedHome = null, budget = createBootBudget(BOOT_TOTAL_BUDGET_MS) }) {
+async function launchApp({ port, prefix, env = {}, unsetEnv = [], config = {}, launchAi = false, entry = '.', seedHome = null, budget = createBootBudget(BOOT_TOTAL_BUDGET_MS) }) {
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   let app = null;
   try {
@@ -209,38 +209,28 @@ async function launchApp({ port, prefix, env = {}, config = {}, launchAi = false
     }), 'utf8');
     if (typeof seedHome === 'function') seedHome({ tmpHome, configDir });
 
+    // 実環境の VK_TERMINALS_* は既定で中和する。隔離用のキーは spec が渡す env より
+    // 後に置き、実 HOME の読み書きやポート共有が起きないよう必ず上書きする。
+    const launchEnv = {
+      ...process.env,
+      VK_TERMINALS_APP_TITLE: '',
+      VK_TERMINALS_SETTINGS: '',
+      VK_TERMINALS_INSTANCE_ID: '',
+      ...env,
+    };
+    // 空文字ではなく「未設定」の起動経路を再現する spec のため、指定キーを環境から外す。
+    for (const key of unsetEnv) delete launchEnv[key];
+    launchEnv.HOME = tmpHome;
+    launchEnv.USERPROFILE = tmpHome;
+    launchEnv.VK_TERMINALS_API_PORT = String(port);
+
     app = await runStage(budget, 'electron-launch', (fnTimeoutMs) => _electron.launch({
       // --force-device-scale-factor を付けない理由は launchApp 冒頭のコメントを参照（issue #357）。
       // entry は起動する入口（既定は '.' ＝ main.js）。組み込み用の入口を試す spec だけが別のファイルを渡す。
       args: launchAi ? [entry] : [entry, '--no-claude'],
       cwd: repoRoot,
       timeout: fnTimeoutMs,
-      env: {
-        ...process.env,
-        // 実環境（開発者のシェル、vk-orchestrator 配下での起動）から継承される
-        // VK_TERMINALS_* を既定で中和する。アプリ名が変わったり外部の設定ディスクリプタが
-        // 使われたりすると、テストが見ている前提そのものが静かに変わってしまう。
-        // spec の env より前に置いてあるので、意図して指定する spec は上書きで opt-in できる。
-        //
-        // 変数を delete するのではなく空文字を置くのは、受け取る側の実装で結果が同じになるため。
-        //   - main.js の APP_TITLE 解決: VK_TERMINALS_APP_TITLE が空白のみなら既定
-        //     'VK Terminals' を使う（未設定と同じ）。
-        //   - main.js の settingsDescriptorPath(): VK_TERMINALS_SETTINGS が空白のみなら
-        //     null（指定なし）を返し、組み込みディスクリプタへフォールバックする（未設定と同じ）。
-        //   - utils/instanceId.js の resolveInstanceId(): VK_TERMINALS_INSTANCE_ID が空白のみなら
-        //     null を返し、/api/health に instanceId を含めない（未設定と同じ）。
-        // このため env から変数ごと消す口（unset）は設けていない。
-        VK_TERMINALS_APP_TITLE: '',
-        VK_TERMINALS_SETTINGS: '',
-        VK_TERMINALS_INSTANCE_ID: '',
-        ...env,
-        // 隔離用のキーは spec が渡す env の後に置く。ここが spec に負けると
-        // 実 HOME を読み書きしたり他の spec とポートを共有したりしてしまうため、
-        // ヘルパーの保証として最後に必ず上書きする。
-        HOME: tmpHome,
-        USERPROFILE: tmpHome,
-        VK_TERMINALS_API_PORT: String(port),
-      },
+      env: launchEnv,
     }));
     const win = await runStage(budget, 'first-window', (fnTimeoutMs) => app.firstWindow({ timeout: fnTimeoutMs }));
     // tmpHome は HOME 隔離先そのもの。ペインの cwd や設定ファイルの場所を

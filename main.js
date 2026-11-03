@@ -86,6 +86,7 @@ const { resolveInitialPaneLaunch } = require('./utils/initialPaneLaunch');
 const { buildPtyEnv } = require('./utils/ptyEnv');
 // ログインシェルの PATH を本体・ペインへ反映する（issue #454）。
 const { applyLoginShellPath, appendUserLocalBin } = require('./utils/loginShellPath');
+const { pickTerminalShell } = require('./utils/terminalShell');
 const {
   createAgentGenerationStore,
   validateRestartAgentRequest,
@@ -2072,7 +2073,26 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
     throw new Error('Setup pane is not available.');
   }
   const id = String(nextId++);
-  const shell = process.env.SHELL || (process.platform === 'win32' ? (process.env.COMSPEC || 'powershell.exe') : '/bin/zsh');
+  let userInfo = null;
+  try {
+    userInfo = os.userInfo();
+  } catch (_e) {
+    // ユーザー情報を取得できなくても、Linux の標準シェル候補へフォールバックする。
+  }
+  const shell = pickTerminalShell({
+    platform: process.platform,
+    env: process.env,
+    userInfo,
+    isExecutableShell: (candidate) => {
+      try {
+        if (!fs.statSync(candidate).isFile()) return false;
+        fs.accessSync(candidate, fs.constants.X_OK);
+        return true;
+      } catch (_e) {
+        return false;
+      }
+    },
+  });
   let resolvedCwd = setupLaunch
     ? SETUP_FEATURE.setupPane.cwd
     : (cwd || process.env.HOME || process.env.USERPROFILE || os.tmpdir());

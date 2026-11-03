@@ -136,7 +136,7 @@ function extractLatestReplyText(lines, cols) {
     while (captured.length > 1 && !captured[captured.length - 1].text.trim()) {
       captured.pop();
     }
-    if (captured.length < 2 || !captured.slice(1).some(line => line.text.trim())) return null;
+    if (captured.length < 2) return null;
 
     // 空行の indent 0 に引っ張られず、返信文全体の字下げを取り除く。
     const commonIndent = Math.min(...captured.filter(line => line.text.trim()).map(line => line.indent));

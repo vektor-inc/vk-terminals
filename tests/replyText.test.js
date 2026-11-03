@@ -120,6 +120,20 @@ test('前の行に次の語が収まる本来の複数行は改行を残す', ()
   );
 });
 
+test('空行の次にある長い行は前の段落へ連結しない', () => {
+  const buffer = bufferOf([
+    { text: '  [ユーザー返信用]' },
+    { text: '  a' },
+    { text: '' },
+    { text: '  aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' },
+    { text: '────' },
+  ]);
+  assert.equal(
+    detectReplyText(buffer, 200, 40),
+    '[ユーザー返信用]\na\n\naaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+  );
+});
+
 test('混入した罫線文字だけを除き通常のハイフンは残す', () => {
   assert.equal(extractLatestReplyText([
     '[ユーザー返信用]',

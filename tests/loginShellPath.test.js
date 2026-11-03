@@ -7,6 +7,7 @@ const path = require('path');
 const {
   fetchLoginShellPath,
   applyLoginShellPath,
+  appendUserLocalBin,
   extractMarkedPath,
   sanitizePath,
   pickShell,
@@ -24,6 +25,8 @@ const base = (runShell, extra = {}) => ({
   runShell,
   ...extra,
 });
+const HOME = path.join(path.sep, 'home', 'tester');
+const USER_LOCAL_BIN = path.join(HOME, '.local', 'bin');
 
 test('マーカーの外の出力（.zprofile の echo など）を除去して PATH だけ取り出す', posixOnly, async () => {
   const run = async () => `welcome!\nnvm loaded\n${wrap('/opt/homebrew/bin:/usr/bin')}\nlogout noise`;
@@ -94,6 +97,47 @@ test('applyLoginShellPath: 失敗時は PATH を変えない', posixOnly, async 
   assert.equal(env.PATH, '/usr/bin');
 });
 
+test('appendUserLocalBin: 実在し PATH に無ければ末尾へ追加する', posixOnly, () => {
+  const env = { PATH: '/usr/bin:/bin' };
+  assert.equal(appendUserLocalBin({ env, homeDir: HOME, dirExists: () => true, platform: 'darwin' }), true);
+  assert.equal(env.PATH, `/usr/bin:/bin:${USER_LOCAL_BIN}`);
+});
+
+test('appendUserLocalBin: 実在し PATH に既にあれば並びを変えない', posixOnly, () => {
+  const original = `${USER_LOCAL_BIN}:/usr/bin`;
+  const env = { PATH: original };
+  assert.equal(appendUserLocalBin({ env, homeDir: HOME, dirExists: () => true, platform: 'darwin' }), false);
+  assert.equal(env.PATH, original);
+});
+
+test('appendUserLocalBin: 実在しなければ PATH を変えない', posixOnly, () => {
+  const env = { PATH: '/usr/bin' };
+  assert.equal(appendUserLocalBin({ env, homeDir: HOME, dirExists: () => false, platform: 'darwin' }), false);
+  assert.equal(env.PATH, '/usr/bin');
+});
+
+test('appendUserLocalBin: 実在せず PATH に既にあっても並びを変えない', posixOnly, () => {
+  const original = `/usr/bin:${USER_LOCAL_BIN}`;
+  const env = { PATH: original };
+  assert.equal(appendUserLocalBin({ env, homeDir: HOME, dirExists: () => false, platform: 'darwin' }), false);
+  assert.equal(env.PATH, original);
+});
+
+test('appendUserLocalBin: Windows では実在判定も PATH の変更もしない', () => {
+  let called = false;
+  const env = { PATH: '/usr/bin' };
+  const result = appendUserLocalBin({ env, homeDir: HOME, dirExists: () => { called = true; return true; }, platform: 'win32' });
+  assert.equal(result, false);
+  assert.equal(called, false);
+  assert.equal(env.PATH, '/usr/bin');
+});
+
+test('appendUserLocalBin: PATH が未定義でも空要素を作らない', posixOnly, () => {
+  const env = {};
+  assert.equal(appendUserLocalBin({ env, homeDir: HOME, dirExists: () => true, platform: 'darwin' }), true);
+  assert.equal(env.PATH, USER_LOCAL_BIN);
+});
+
 test('既定の実行: 入力待ちで固まるシェルはタイムアウトで打ち切る', posixOnly, async () => {
   const started = Date.now();
   await assert.rejects(defaultRunShell('/bin/sh', ['-c', 'read x; sleep 30'], { timeoutMs: 300, env: process.env }), /timed out/);
@@ -105,7 +149,11 @@ test('main.js: Codex 側へは起動時の PATH を渡し、PATH の反映は cr
   assert.match(source, /const APP_ORIGINAL_PATH = typeof process\.env\.PATH === 'string' \? process\.env\.PATH : '';/);
   assert.match(source, /pathEnv: APP_ORIGINAL_PATH,/);
   const apply = source.indexOf('await applyLoginShellPath();');
+  const append = source.indexOf('appendUserLocalBin();');
+  const setupCheck = source.indexOf('startupSetupCheck = setupStatusChecker.check();');
   assert.ok(apply !== -1);
+  assert.ok(append > apply);
+  assert.ok(append < setupCheck);
   assert.ok(apply < source.indexOf('  createWindow();\n  startWidgetWatcher();'));
 });
 

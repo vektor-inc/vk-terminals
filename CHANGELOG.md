@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 不具合修正 ] Claude Code を公式インストーラーで導入した Mac で、シェル設定に `~/.local/bin` が無いと VK Orchestrator のセットアップで Claude Code が見つからず先へ進めない不具合を修正（[#498](https://github.com/vektor-inc/vk-terminals/issues/498)）
+
 ## 1.84.0
 
 - [ 機能追加 ] ターミナルに表示された「ユーザー返信用」の文章をボタンでコピーできる機能を追加（[#494](https://github.com/vektor-inc/vk-terminals/issues/494)）

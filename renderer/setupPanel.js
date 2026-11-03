@@ -147,6 +147,7 @@
       if (row.isFirstStep) head.appendChild(el('span', 'setup-item-first', T.firstStep));
       li.appendChild(head);
       if (row.stateText) li.appendChild(el('p', 'setup-item-state', row.stateText));
+      if (row.statusMessage) li.appendChild(el('p', 'setup-item-status-message', row.statusMessage));
       if (row.showNotOnPathNote) li.appendChild(el('p', 'setup-item-note', T.notOnPathNote));
       if (row.hint) {
         li.appendChild(el('p', 'setup-item-hint', row.hint));

@@ -4749,9 +4749,15 @@ function renderSettingsField(f, value, id) {
   const helpToggle = hasHelp
     ? `<button type="button" class="settings-help-toggle" id="${escAttr(id + '-help-toggle')}" aria-expanded="false" aria-controls="${escAttr(id + '-help')}" aria-label="${escAttr(labelText + 'の説明')}">?</button>`
     : '';
+  const isRequired = f.required === true;
+  const requiredBadge = isRequired ? '<span class="settings-required-badge">必須</span>' : '';
+  const requiredAttributes = isRequired ? ' aria-required="true"' : '';
+  const requiredNotice = isRequired && f.type !== 'boolean'
+    ? `<span class="settings-required-notice" id="${escAttr(id + '-required')}" role="status">未設定です。必須の項目のため、設定してください。</span>`
+    : '';
   const labelHtml = `<label class="settings-label" for="${escAttr(id)}">${label}</label>`;
-  const labelRow = hasHelp
-    ? `<div class="settings-label-row">${labelHtml}${helpToggle}</div>`
+  const labelRow = (hasHelp || isRequired)
+    ? `<div class="settings-label-row">${labelHtml}${requiredBadge}${helpToggle}</div>`
     : labelHtml;
   // disabledReason は無効状態でだけ表示するが、状態切替のたびに生成・破棄せず DOM に常駐させる。
   // applyFieldState が hidden と aria-describedby を同期し、入力欄から理由を読み上げられるようにする。
@@ -4761,14 +4767,14 @@ function renderSettingsField(f, value, id) {
 
   if (f.type === 'boolean') {
     const checkLabel = `<label class="settings-check">
-        <input type="checkbox" id="${id}" ${value ? 'checked' : ''}>
-        <span class="settings-label">${label}</span>
+        <input type="checkbox" id="${id}" ${value ? 'checked' : ''}${requiredAttributes}>
+        <span class="settings-label">${label}</span>${requiredBadge}
       </label>`;
     const checkLabelRow = hasHelp
       ? `<div class="settings-label-row">${checkLabel}${helpToggle}</div>`
       : checkLabel;
     return `<div class="settings-row settings-row-check">
-      ${checkLabelRow}${help}${disabledReason}
+      ${checkLabelRow}${help}${disabledReason}${requiredNotice}
     </div>`;
   }
 
@@ -4783,7 +4789,7 @@ function renderSettingsField(f, value, id) {
     const body = value === null || value === undefined ? '' : escText(JSON.stringify(value, null, 2));
     return `<div class="settings-row">
       ${labelRow}${help}${disabledReason}
-      <textarea id="${id}" rows="4" spellcheck="false">${body}</textarea>
+      <textarea id="${id}" rows="4" spellcheck="false"${requiredAttributes}>${body}</textarea>${requiredNotice}
     </div>`;
   }
 
@@ -4792,7 +4798,7 @@ function renderSettingsField(f, value, id) {
     const body = escText(linesFieldDisplayText(value));
     return `<div class="settings-row">
       ${labelRow}${help}${disabledReason}
-      <textarea id="${id}" rows="4" spellcheck="false">${body}</textarea>
+      <textarea id="${id}" rows="4" spellcheck="false"${requiredAttributes}>${body}</textarea>${requiredNotice}
     </div>`;
   }
 
@@ -4800,9 +4806,9 @@ function renderSettingsField(f, value, id) {
     return `<div class="settings-row">
       ${labelRow}${help}${disabledReason}
       <div class="settings-pwd">
-        <input type="password" id="${id}" value="${strVal}" autocomplete="off" spellcheck="false">
+        <input type="password" id="${id}" value="${strVal}" autocomplete="off" spellcheck="false"${requiredAttributes}>
         <button type="button" class="settings-reveal" data-target="${id}" title="表示切替">👁</button>
-      </div>
+      </div>${requiredNotice}
     </div>`;
   }
 
@@ -4819,7 +4825,7 @@ function renderSettingsField(f, value, id) {
       .join('');
     return `<div class="settings-row">
       ${labelRow}${help}${disabledReason}
-      <select id="${id}">${opts}</select>
+      <select id="${id}"${requiredAttributes}>${opts}</select>${requiredNotice}
     </div>`;
   }
 
@@ -4845,9 +4851,10 @@ function renderSettingsField(f, value, id) {
   const describedBy = escAttr(`${id}-error${f.key === 'apiHost' ? ` ${id}-notice` : ''}`);
   return `<div class="settings-row">
     ${labelRow}${help}${disabledReason}
-    <input type="${inputType}" id="${id}" value="${strVal}"${ph}${comboListAttr} spellcheck="false" aria-describedby="${describedBy}">
+    <input type="${inputType}" id="${id}" value="${strVal}"${ph}${comboListAttr} spellcheck="false" aria-describedby="${describedBy}"${requiredAttributes}>
     ${comboOptions}
     <span class="settings-error" id="${errorId}" role="alert"></span>
+    ${requiredNotice}
     ${inlineNoticeHtml}
   </div>`;
 }
@@ -5510,10 +5517,12 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
     const error = modal.querySelector('#' + id + '-error');
     const notice = modal.querySelector('#' + id + '-notice');
     const reason = modal.querySelector('#' + id + '-disabled-reason');
+    const required = modal.querySelector('#' + id + '-required');
     const describedBy = [
       help && !help.hidden ? help.id : '',
       error ? error.id : '',
       notice ? notice.id : '',
+      required && !required.hidden ? required.id : '',
       reason && !reason.hidden ? reason.id : '',
     ].filter(Boolean);
     if (describedBy.length > 0) input.setAttribute('aria-describedby', describedBy.join(' '));
@@ -5542,6 +5551,16 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
       values[field.key] = field.type === 'boolean' ? input.checked : input.value;
     }
     return values;
+  };
+  const syncRequiredNotice = (field, id) => {
+    if (field.required !== true) return;
+    const input = getEntryInput(id);
+    const notice = modal.querySelector('#' + id + '-required');
+    if (!input || !notice) return;
+    // boolean は true / false のどちらも値が設定済みであり、空値を持たない。
+    const empty = field.type !== 'boolean' && input.value.trim() === '';
+    notice.hidden = !empty;
+    syncEntryDescribedBy(id);
   };
 
   let switchToFieldTab = () => {};
@@ -6445,7 +6464,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
   // aria-disabled はフォーカス順を保つ代わりにブラウザ標準では編集を止めないため、
   // 操作イベントを JavaScript で遮断する。万一 input/change が発火しても退避値へ戻し、
   // 条件再評価や dirty 化より前で止める。
-  for (const { id } of entries) {
+  for (const { field, id } of entries) {
     const input = getEntryInput(id);
     if (!input) continue;
     const blockDisabledPointer = (event) => {
@@ -6482,8 +6501,13 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
     };
     input.addEventListener('input', restoreDisabledValue);
     input.addEventListener('change', restoreDisabledValue);
-    input.addEventListener('input', onEntryEdited);
-    input.addEventListener('change', onEntryEdited);
+    const onInputEdited = () => {
+      syncRequiredNotice(field, id);
+      onEntryEdited();
+    };
+    input.addEventListener('input', onInputEdited);
+    input.addEventListener('change', onInputEdited);
+    syncRequiredNotice(field, id);
   }
   applyFieldState();
 

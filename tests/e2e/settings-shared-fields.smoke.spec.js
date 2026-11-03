@@ -151,6 +151,57 @@ test.describe.serial('設定パネル: 基本フィールド系（issue #348 で
     });
   });
 
+  // ─── issue #501: 必須フィールドの表示と入力中の注意文切り替え ──────────────
+  test.describe('設定パネルの必須フィールド表示（issue #501）', () => {
+    test.afterEach(async () => {
+      const closeButton = win.locator('.settings-close');
+      if ((await closeButton.count()) > 0 && await closeButton.isVisible()) {
+        await closeButton.click().catch(() => {});
+      }
+      await restoreInvoke(win).catch(() => {});
+    });
+
+    test('required が真偽値 true の空欄だけに必須バッジと注意文を表示し、入力中に切り替える', async () => {
+      const descriptor = {
+        available: true,
+        title: '必須表示の検証',
+        targetPath: path.join(tmpRoot, 'required-settings.json'),
+        appVersion: '0.0.0-test',
+        groups: [{
+          label: '基本設定',
+          fields: [
+            { key: 'requiredField', label: '担当者フィルタ', type: 'text', required: true },
+            { key: 'legacyField', label: '取り込みラベル名', type: 'text' },
+            { key: 'invalidRequired', label: '不正型の required', type: 'text', required: 'true' },
+          ],
+        }],
+        values: { requiredField: '', legacyField: '', invalidRequired: '' },
+      };
+      await installDescriptorRecordingSaves(win, descriptor);
+      await win.evaluate(() => window.openSettingsModal());
+      await win.waitForSelector('.settings-modal', { state: 'visible' });
+
+      const input = win.getByLabel('担当者フィルタ', { exact: true });
+      const row = input.locator('xpath=ancestor::div[contains(@class,"settings-row")]');
+      const notice = row.locator('.settings-required-notice');
+      await expect(row.locator('.settings-required-badge')).toHaveText('必須');
+      await expect(input).toHaveAttribute('aria-required', 'true');
+      await expect(input).toHaveAttribute('aria-describedby', /set-field-0-required/);
+      await expect(notice).toBeVisible();
+
+      await input.fill('wada');
+      await expect(notice).toBeHidden();
+      await expect(input).not.toHaveAttribute('aria-describedby', /set-field-0-required/);
+      await input.fill('');
+      await expect(notice).toBeVisible();
+      await expect(input).toHaveAttribute('aria-describedby', /set-field-0-required/);
+
+      await expect(win.getByLabel('取り込みラベル名', { exact: true })).not.toHaveAttribute('aria-required', 'true');
+      await expect(win.getByLabel('不正型の required', { exact: true })).not.toHaveAttribute('aria-required', 'true');
+      await expect(win.locator('.settings-required-badge')).toHaveCount(1);
+    });
+  });
+
   // ─── 旧 settings-lines-field-string-value.smoke.spec.js（issue #339） ─────
   test.describe('設定パネルの lines フィールドに文字列値を注入した表示・保存（issue #339）', () => {
     // 3 つの lines フィールドを 1 つのディスクリプタに同居させ、1 つの spec で回帰を

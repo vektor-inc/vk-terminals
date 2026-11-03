@@ -1074,6 +1074,16 @@ h4.settings-content-heading {
 .settings-label-row .settings-label {
   min-width: 0;
 }
+.settings-required-badge {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border: 1px solid #f85149;
+  border-radius: var(--vktm--border-radius--sm);
+  color: #ffa198;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.3;
+}
 .settings-help-toggle {
   flex: 0 0 18px;
   width: 18px;
@@ -1148,6 +1158,13 @@ h4.settings-content-heading {
 }
 /* 空のエラー行は余白を作らないよう非表示にする（flex gap の影響も避ける）。 */
 .settings-error:empty {
+  display: none;
+}
+.settings-required-notice {
+  color: #ffa198;
+  font-size: 12px;
+}
+.settings-required-notice[hidden] {
   display: none;
 }
 /* apiHost 専用: 127.0.0.1 以外・0.0.0.0 を入力した時点で出す即時案内（issue #313）。
@@ -3753,6 +3770,10 @@ body.pane-dragging * {
   line-height: 1.3;
 }
 .setup-item-state {
+  color: #ffa198;
+  font-weight: 600;
+}
+.setup-item-status-message {
   color: #ffa198;
   font-weight: 600;
 }

@@ -44,7 +44,7 @@ VK Orchestrator のアプリ（VK Terminals を部品として組み込んだも
 
 `doctor --json` の出力は `{ requirements, summary }`。
 
-- 各項目: `id` / `group` / `label` / `required` / `ok` / `current` / `hint` / `target`。
+- 各項目: `id` / `group` / `label` / `required` / `ok` / `current` / `hint` / `statusMessage` / `target`。
 - `summary`: `total` / `okCount` / `requiredCount` / `requiredOkCount` / `missingRequired` / `allRequiredOk`。
 
 ### vk-orchestrator#646 で足される欄
@@ -66,6 +66,12 @@ VK Orchestrator のアプリ（VK Terminals を部品として組み込んだも
 - 項目数は 50 件に切り詰める。切り詰めた範囲に未充足の必須項目があるのに `allRequiredOk: true` なら不正。文字数は `id` 64 / `group` 40 / `label` 80 / `current` 200 / `hint` 600 に切り詰める。制御文字・見えない文字（`U+007F-009F`・ゼロ幅・向き制御）は空白 1 つにまとめる。
 - `commands` は 1 項目あたり 3 件まで。**切り詰めると別のコマンドになるため**、400 文字を超えるもの・複数行のもの・制御文字や見えない文字を含むもの・文字列でないものは、切り詰めずにそのコマンドだけ捨てる。
 - `reason` は既知の 3 値だけ残す。`target` は `external` 以外をすべて「セットアップで設定するもの」に寄せる。
+
+### vk-orchestrator#768 で足される欄
+
+- `statusMessage`: 未充足の状態を説明する文字列。あれば項目のラベル直下へ表示し、「詳しく」には畳まない。項目 ID から文言を推測しない。
+- 設定ディスクリプタのフィールドに `required: true` があれば、設定パネルで必須バッジと空欄時の注意文を表示する。真偽値 `true` 以外や欄が無い場合は従来どおり表示しない。
+- `statusMessage` は 600 文字に切り詰め、ほかの表示文字列と同じく制御文字・見えない文字を空白へまとめる。
 
 ### 表示の安全
 

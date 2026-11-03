@@ -1,12 +1,15 @@
 # Changelog
 
 - [ 機能追加 ] ターミナルに表示された「ユーザー返信用」の文章をボタンでコピーできる機能を追加（[#494](https://github.com/vektor-inc/vk-terminals/issues/494)）
+
+## 1.83.0
+
 - [ 機能追加 ] 自動処理用 Codex の固定入口で、レビュー完了・CI 通過・マージ可能状態と head を読み戻してから PR を squash でマージする `gh pr merge` に対応（[#490](https://github.com/vektor-inc/vk-terminals/issues/490)）
+- [ 不具合修正 ] VK Orchestrator 管理ペインで AI の説明文を入力待ちと誤判定し、実行中でも入力待ち表示や通知が出る不具合を修正（[#489](https://github.com/vektor-inc/vk-terminals/issues/489)）
 
 ## 1.82.1
 
 - [ 仕様変更 ] Codex のタスク専用 worktree を編集可能な `.codex/worktrees/` に作成し、引き受け時は移行用の旧 `.claude/worktrees/` も受け付けるように（[#488](https://github.com/vektor-inc/vk-terminals/issues/488)）
-- [ 不具合修正 ] VK Orchestrator 管理ペインで AI の説明文を入力待ちと誤判定し、実行中でも入力待ち表示や通知が出る不具合を修正（[#489](https://github.com/vektor-inc/vk-terminals/issues/489)）
 
 ## 1.82.0
 

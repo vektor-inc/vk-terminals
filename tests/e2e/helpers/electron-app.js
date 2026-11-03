@@ -132,6 +132,8 @@ async function getFreePort() {
 //     VK_TERMINALS_API_PORT は spec から上書きできない（後述のとおり展開順で守る）。
 //     spec が触るのは VK_TERMINALS_APP_TITLE / VK_TERMINALS_SETTINGS のような
 //     アプリの挙動を変える変数だけ。
+//   - unsetEnv: 未設定の環境変数を再現するため、env の展開後に指定キーを削除する。
+//     HOME / USERPROFILE / VK_TERMINALS_API_PORT は隔離のため最後に再設定される。
 //   - config: ~/.vk-terminals/config.json の内容を上書きできる。apiHost も含めて
 //     spec 側が意図的に差し替えられる設計（例: バインドアドレスの挙動を確かめたい場合）。
 //     既定は 127.0.0.1 で、上書きしなければテスト用 API がループバック外へ出ることはない。
@@ -209,8 +211,8 @@ async function launchApp({ port, prefix, env = {}, unsetEnv = [], config = {}, l
     }), 'utf8');
     if (typeof seedHome === 'function') seedHome({ tmpHome, configDir });
 
-    // 実環境の VK_TERMINALS_* は既定で中和する。隔離用のキーは spec が渡す env より
-    // 後に置き、実 HOME の読み書きやポート共有が起きないよう必ず上書きする。
+    // 実環境の VK_TERMINALS_* は既定で中和する。削除ではなく空文字にすることで、
+    // 受け取る側が未指定と同じ既定値へフォールバックしつつ、spec は env で上書きできる。
     const launchEnv = {
       ...process.env,
       VK_TERMINALS_APP_TITLE: '',

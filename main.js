@@ -2072,12 +2072,13 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
   if (setupLaunch && !SETUP_FEATURE) {
     throw new Error('Setup pane is not available.');
   }
-  const id = String(nextId++);
   let userInfo = null;
-  try {
-    userInfo = os.userInfo();
-  } catch (_e) {
-    // ユーザー情報を取得できなくても、Linux の標準シェル候補へフォールバックする。
+  if (process.platform !== 'darwin' && process.platform !== 'win32') {
+    try {
+      userInfo = os.userInfo();
+    } catch (_e) {
+      // ユーザー情報を取得できなくても、Linux の標準シェル候補へフォールバックする。
+    }
   }
   const shell = pickTerminalShell({
     platform: process.platform,
@@ -2093,6 +2094,7 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
       }
     },
   });
+  const id = String(nextId++);
   let resolvedCwd = setupLaunch
     ? SETUP_FEATURE.setupPane.cwd
     : (cwd || process.env.HOME || process.env.USERPROFILE || os.tmpdir());

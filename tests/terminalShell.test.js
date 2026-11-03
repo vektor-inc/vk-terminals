@@ -18,8 +18,21 @@ test('Linux: SHELL が無ければログインシェルを使う', () => {
   assert.equal(pickLinux({}, { shell: '/bin/fish' }, ['/bin/fish']), '/bin/fish');
 });
 
+test('Linux: 実行可能な SHELL はログインシェルより優先する', () => {
+  assert.equal(pickLinux({ SHELL: '/bin/zsh' }, { shell: '/bin/fish' }, ['/bin/zsh', '/bin/fish']), '/bin/zsh');
+});
+
+test('Linux: 制御文字を含む候補は飛ばす', () => {
+  assert.equal(pickLinux({ SHELL: '/bin/zsh\n' }, { shell: '/bin/fish' }, ['/bin/zsh\n', '/bin/fish']), '/bin/fish');
+  assert.equal(pickLinux({}, { shell: '/bin/fish\u007f' }, ['/bin/fish\u007f', '/bin/bash']), '/bin/bash');
+});
+
 test('Linux: SHELL とログインシェルが無ければ /bin/bash を使う', () => {
   assert.equal(pickLinux({}, {}, ['/bin/bash', '/bin/sh']), '/bin/bash');
+});
+
+test('Linux: userInfo が null でも /bin/bash へフォールバックする', () => {
+  assert.equal(pickLinux({}, null, ['/bin/bash', '/bin/sh']), '/bin/bash');
 });
 
 test('Linux: SHELL が相対パスまたは存在しない場合は次の候補を使う', () => {
@@ -49,6 +62,8 @@ test('main.js の terminal:create は選択したシェルを spawn と restart 
   const end = source.indexOf("ipcMain.on('terminal:input'", start);
   const handler = source.slice(start, end);
   assert.match(handler, /const shell = pickTerminalShell\(\{/);
+  assert.ok(handler.indexOf('const shell = pickTerminalShell({') < handler.indexOf('const id = String(nextId++);'));
+  assert.match(handler, /if \(process\.platform !== 'darwin' && process\.platform !== 'win32'\) \{[\s\S]*?userInfo = os\.userInfo\(\);/);
   assert.match(handler, /pty\.spawn\(shell,/);
   assert.match(handler, /ptyShellExecutables\.set\(id, shell\)/);
 });

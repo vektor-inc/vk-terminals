@@ -1,7 +1,9 @@
 const path = require('path');
 
+const CONTROL_CHARACTER = /[\u0000-\u001f\u007f]/;
+
 /**
- * 新規ターミナルで使うシェルを選ぶ。
+ * 新規ターミナルで使うシェルを選ぶ。Linux では相対パスの SHELL は採用しない。
  *
  * @param {object} options 選択に必要な OS 情報と依存関係。
  * @param {string} options.platform Node.js のプラットフォーム名。
@@ -15,10 +17,10 @@ function pickTerminalShell({ platform, env, userInfo, isExecutableShell }) {
   if (platform === 'darwin') return env.SHELL || '/bin/zsh';
   if (platform === 'win32') return env.SHELL || env.COMSPEC || 'powershell.exe';
 
-  // Linux 系では、絶対パスかつ実行可能な候補だけを採用する。
+  // Linux 系では、絶対パスかつ制御文字を含まない実行可能な候補だけを採用する。
   const candidates = [env.SHELL, userInfo?.shell, '/bin/bash', '/bin/sh'];
   for (const candidate of candidates) {
-    if (typeof candidate !== 'string' || !path.isAbsolute(candidate)) continue;
+    if (typeof candidate !== 'string' || !path.isAbsolute(candidate) || CONTROL_CHARACTER.test(candidate)) continue;
     if (isExecutableShell(candidate)) return candidate;
   }
 

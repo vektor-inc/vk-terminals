@@ -142,7 +142,6 @@ const WAITING_PATTERNS = [
   // 「Enter to select / ↑/↓ to navigate / Esc to cancel」のフッターが固定で出る。
   // 既存パターンは ASCII `?` と `❯ Yes|No|Allow|Deny` しか拾えず取りこぼしていた。
   /Enter\s+to\s+select/i,
-  /enter\s+to\s+submit\s+answer/i,
   /[↑↓]\/[↑↓]\s+to\s+navigate/,
   /Esc\s+to\s+cancel/i,
   /❯\s*\d+\.\s/,  // `❯ 1. ラベル` 形式（任意ラベルの数字選択肢）
@@ -178,6 +177,7 @@ const STRUCTURAL_WAITING_PATTERNS = [
   /\[\s*D\s*\]eny/i,
   /approve.*\(y\/n\)/i,
   /Enter\s+to\s+select/i,
+  /enter\s+to\s+submit\s+answer/i,
   /[↑↓]\/[↑↓]\s+to\s+navigate/,
   /Esc\s+to\s+cancel/i,
 ];
@@ -239,16 +239,30 @@ function findStructuralWaitingMatch(cleanBuffer) {
       best = { raw: match[0], index: match.index };
     }
   }
-  // 番号付き選択肢は、画面下端に2項目以上が連続する塊だけを検出する。後ろに許すのは
-  // 定型フッターと空行だけにし、Codex のユーザー発言後に AI 出力が続く履歴を除外する。
+  // Claude Code 固有の `❯` 付き選択肢は、折り返しや枠線が間に入っても検出する。
+  // Codex は `›` のためこの経路には入らず、下端の選択肢の塊で厳密に判定する。
   const tailLines = tailBuffer.split('\n');
-  const numberedOptionPattern = /^\s*(?:│\s*)?(?:[›❯]\s*)?\d+\.\s+\S.*$/;
-  const optionFooterPattern = /^\s*(?:│\s*)?(?:enter\s+to\s+(?:select|submit\s+answer|confirm)|press\s+enter\s+to\s+confirm(?:\s+or\s+esc\s+to\s+cancel)?|[↑↓]\/[^\s]+\s+to\s+navigate|esc\s+to\s+cancel)\s*$/i;
+  const numberedOptionPattern = /^\s*(?:│\s*)?(?:[›❯]\s*)?\d+\.\s+\S.*?(?:\s*│)?\s*$/;
+  const frameLinePattern = /^[\s╭╮╰╯─│]+$/;
+  const footerPartPattern = /^(?:enter\s+to\s+(?:select|confirm|submit\s+answer)|press\s+enter\s+to\s+confirm(?:\s+or\s+esc\s+to\s+cancel)?|esc\s+to\s+(?:cancel|exit|interrupt)|tab\s+to\s+.+|[↑↓](?:\/[↑↓])?\s+to\s+navigate)$/i;
+  const isOptionFooter = (line) => {
+    const content = line.trim().replace(/^│\s*/, '').replace(/\s*│$/, '').trim();
+    return content !== '' && content.split(/\s*·\s*/).every((part) => footerPartPattern.test(part));
+  };
+  const numberedOptions = tailLines.filter((line) => numberedOptionPattern.test(line));
+  const selectedClaudeOption = numberedOptions.length >= 2
+    ? tailBuffer.match(/^\s*(?:│\s*)?❯\s*\d+\.\s+\S.*?(?:\s*│)?\s*$/m)
+    : null;
+  if (selectedClaudeOption && (best === null || selectedClaudeOption.index > best.index)) {
+    best = { raw: selectedClaudeOption[0], index: selectedClaudeOption.index };
+  }
+
+  // 下端の塊は、複合フッター・空行・枠線だけを選択肢の後ろに許可する。
   let optionBlockStart = -1;
   let optionBlockCount = 0;
   for (let index = tailLines.length - 1; index >= 0; index -= 1) {
     const line = tailLines[index];
-    if (line.trim() === '' || optionFooterPattern.test(line)) continue;
+    if (line.trim() === '' || frameLinePattern.test(line) || isOptionFooter(line)) continue;
     let firstOption = index;
     while (firstOption >= 0 && numberedOptionPattern.test(tailLines[firstOption])) firstOption -= 1;
     optionBlockStart = firstOption + 1;

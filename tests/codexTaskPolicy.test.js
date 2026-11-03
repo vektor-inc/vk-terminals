@@ -1491,7 +1491,10 @@ test('terminal:create は PTY を作る前に起動オプションを解決し�
   assert.ok(handler.indexOf('buildEngineAwareLaunchCommand(') < spawnAt);
   // 組み立て・PTY 作成の失敗で、使われない専用フォルダを回収すること。
   const afterSpawn = handler.slice(spawnAt);
-  assert.ok(/catch \(error\) \{\s*discardLaunchHome\(\);\s*throw error;/.test(handler.slice(resolveAt, spawnAt + afterSpawn.indexOf('});'))));
+  const preparationCatch = handler.slice(resolveAt, spawnAt + afterSpawn.indexOf('});'));
+  assert.match(preparationCatch, /catch \(error\) \{\s*discardLaunchHome\(\);/);
+  assert.match(preparationCatch, /throw new Error\('Claude settings preset hook is unavailable'\)/);
+  assert.match(preparationCatch, /throw error;/);
   assert.equal((handler.match(/discardLaunchHome\(\);/g) || []).length, 2);
 });
 

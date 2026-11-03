@@ -2130,6 +2130,10 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
       launchCommand = built.command;
     } catch (error) {
       discardLaunchHome();
+      if (options.claudeSettingsPreset !== undefined) {
+        console.error(`${LOG_PREFIX} Claude settings preset preparation failed:`, error);
+        throw new Error('Claude settings preset hook is unavailable');
+      }
       throw error;
     }
   }
@@ -3687,8 +3691,9 @@ function startHttpApi() {
               claudeSettingsPreset: requestedClaudeSettingsPreset,
             });
           } catch (error) {
+            console.error(`${LOG_PREFIX} Claude settings preset preflight failed:`, error);
             res.writeHead(503, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: error.message }));
+            res.end(JSON.stringify({ error: 'Claude settings preset hook is unavailable' }));
             return;
           }
         }
@@ -3963,8 +3968,9 @@ function startHttpApi() {
               });
             } catch (error) {
               launchResolution.discard();
+              console.error(`${LOG_PREFIX} Claude settings preset restart preparation failed:`, error);
               res.writeHead(503, { 'Content-Type': 'application/json' });
-              res.end(JSON.stringify({ error: error.message }));
+              res.end(JSON.stringify({ error: 'Claude settings preset hook is unavailable' }));
               return;
             }
             let launchHomeInUse = false;

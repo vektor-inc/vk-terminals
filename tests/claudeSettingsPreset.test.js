@@ -193,6 +193,8 @@ test('restart は設定の解決に成功してから AI の停止処理へ渡�
   const restartAt = handler.indexOf('restartAgentInTerminal(ptyProcess');
   assert.ok(resolvedAt >= 0 && restartAt > resolvedAt);
   assert.match(handler.slice(resolvedAt, restartAt), /writeHead\(503/);
+  assert.match(handler.slice(resolvedAt, restartAt), /Claude settings preset hook is unavailable/);
+  assert.doesNotMatch(handler.slice(resolvedAt, restartAt), /JSON\.stringify\(\{ error: error\.message \}\)/);
 });
 
 test('new-pane は preset と noClaude・Codex・useDefaults の併用を入口で拒否する', () => {
@@ -211,6 +213,18 @@ test('new-pane は指定された preset を renderer へ渡す前に用意し�
   assert.ok(presetGuardAt >= 0 && prepareAt > presetGuardAt);
   assert.ok(unavailableAt > prepareAt && requestAt > unavailableAt);
   assert.match(handler.slice(prepareAt, requestAt), /catch \(error\)[\s\S]*?return;/);
+  assert.match(handler.slice(prepareAt, requestAt), /Claude settings preset hook is unavailable/);
+  assert.doesNotMatch(handler.slice(prepareAt, requestAt), /JSON\.stringify\(\{ error: error\.message \}\)/);
+});
+
+test('terminal:create のプリセット再準備失敗は詳細をログだけに残して固定文言を返す', () => {
+  const start = mainSource.indexOf("ipcMain.handle('terminal:create'");
+  const handler = mainSource.slice(start, mainSource.indexOf("ipcMain.handle('terminal:write'", start));
+  const resolvedAt = handler.indexOf('resolveClaudeSettingsLaunchOptions');
+  const catchAt = handler.indexOf('catch (error)', resolvedAt);
+  assert.ok(resolvedAt >= 0 && catchAt > resolvedAt);
+  assert.match(handler.slice(catchAt), /console\.error\([\s\S]*?error\)/);
+  assert.match(handler.slice(catchAt), /throw new Error\('Claude settings preset hook is unavailable'\)/);
 });
 
 test('new-pane は preset 未指定なら設定の事前準備を行わない', () => {

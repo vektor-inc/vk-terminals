@@ -953,7 +953,7 @@ curl -s -X POST http://127.0.0.1:13847/api/new-pane \
 - `model` が不正: `400 {"error": "invalid model"}`
 - 不正な JSON: `400 {"error": "invalid JSON"}`
 - ウィンドウが利用できない: `503 {"error": "window not available"}`
-- `claudeSettingsPreset` の設定を用意できない: `503 {"error": "Claude settings preset hook is unavailable"}`。ペインは作成されません。事前確認後の状態変化によりペイン作成側の再準備だけが失敗した場合は `500` で理由を返します。
+- `claudeSettingsPreset` の設定を用意できない: `503 {"error": "Claude settings preset hook is unavailable"}`。ペインは作成されません。事前確認後の状態変化によりペイン作成側の再準備だけが失敗した場合も、同じ固定文言を `500` で返します。
 - `codexPolicy` を固定できない（専用設定を作れない・検証できない）: `503 {"error": "codex task policy unavailable: <理由>"}`。ペインは作成されず、承認方針だけを付けた Codex も起動しません。事前確認の後でペイン作成側だけが失敗した場合も、PTY を作らずに `500` で理由を返します。
 - GitHub への到達確認に失敗: `503 {"error":"github unreachable","githubReachability":{"ok":false,"reason":"unreachable|auth_invalid|transient","message":"<利用者向けの日本語文>"}}`。ペインは作成されません。
 - タイムアウト（15秒）: `504 {"error": "timeout waiting for new pane"}`
@@ -1058,6 +1058,7 @@ curl -s -X POST http://127.0.0.1:13847/api/restart-agent \
 - 指定ペインが存在しない: `404 {"error":"terminal <id> not found"}`
 - 世代が一致しない: `409 {"error":"generation mismatch","currentGeneration":<現在の世代>}`
 - `codexPolicy` を固定できない: `503 {"error":"codex task policy unavailable: <理由>"}`（実行中の AI は止めません。承認方針だけを付けた Codex も起動しません）
+- `claudeSettingsPreset` の設定を用意できない: `503 {"error":"Claude settings preset hook is unavailable"}`（実行中の AI は止めません）
 - GitHub への到達確認に失敗: `503 {"error":"github unreachable","githubReachability":{"ok":false,"reason":"unreachable|auth_invalid|transient","message":"<利用者向けの日本語文>"}}`（実行中の AI は止めません）
 - 子プロセスの停止を確認できない: `500 {"error":"failed to stop agent"}`（`SIGKILL` まで送った後でも消滅を確認できなかった場合を含みます。この場合「何も起きなかった」わけではなく、対象ペインの AI が停止した状態のまま残っている可能性があるため、呼び出し元は再試行や状態確認を行ってください）
 - 同一ペインへの先行リクエストの完了待ちが 15 秒を超えた: `504 {"error":"timeout waiting for previous restart-agent operation"}`（同じ `termId` への要求は完全に一列に直列化されるため、先行する要求が積み重なっていると待ち時間が伸びます。このリクエスト自身は何も停止・起動しておらず、世代も進んでいません）

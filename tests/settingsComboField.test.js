@@ -48,6 +48,7 @@ test('combo の全候補は表示と保存の往復で元の保存値へ戻る',
       { value: 'a', label: 'X' },
       { value: 'b', label: 'X' },
       { value: 'x', label: '' },
+      { value: 'whitespace', label: '   ' },
       { value: 'same', label: 'same' },
     ],
   };
@@ -58,6 +59,47 @@ test('combo の全候補は表示と保存の往復で元の保存値へ戻る',
       String(option.value)
     );
   }
+});
+
+test('combo の空白だけ異なる保存値も表示と保存の往復で元へ戻る', () => {
+  const fields = [
+    {
+      type: 'combo',
+      options: [
+        { value: 'auto', label: '自動' },
+        { value: ' auto ', label: '手動' },
+      ],
+    },
+    {
+      type: 'combo',
+      options: [
+        { value: 'a' },
+        { value: ' a' },
+      ],
+    },
+  ];
+
+  for (const whitespaceField of fields) {
+    for (const option of whitespaceField.options) {
+      assert.equal(
+        comboStoredValue(
+          whitespaceField,
+          comboDisplayValue(whitespaceField, option.value)
+        ),
+        option.value
+      );
+    }
+  }
+});
+
+test('combo は trim 後に保存値が一候補だけ一致するとき従来どおり変換する', () => {
+  const whitespaceField = {
+    type: 'combo',
+    options: [{ value: 'auto', label: '自動' }],
+  };
+
+  assert.equal(comboDisplayValue(whitespaceField, 'auto '), '自動');
+  assert.equal(comboStoredValue(whitespaceField, ' 自動 '), 'auto');
 });
 
 test('comboStoredValue: 空入力は空の表示名候補より先に空文字として返す', () => {

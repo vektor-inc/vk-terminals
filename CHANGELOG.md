@@ -1,5 +1,6 @@
 # Changelog
 
+- [ 機能追加 ] ターミナルに表示された「ユーザー返信用」の文章をボタンでコピーできる機能を追加（[#494](https://github.com/vektor-inc/vk-terminals/issues/494)）
 - [ 機能追加 ] 新規ペインとエージェント再起動で、VK Orchestrator 作業ペイン用の Claude Code 設定プリセットを指定可能に（[#495](https://github.com/vektor-inc/vk-terminals/issues/495)）
 
 ## 1.83.0

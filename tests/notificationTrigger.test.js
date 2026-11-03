@@ -71,6 +71,96 @@ test('derivePaneNotificationState: 除外パターンに一致しない cwd は�
   assert.equal(result.waiting, true);
 });
 
+test('derivePaneNotificationState: 管理ペインの地の文による waiting は表示用フラグに従い通知しない', () => {
+  const result = derivePaneNotificationState(
+    pane({ waiting: true, status: 'waiting', displayWaiting: false, displayStatus: 'idle', apiUrl: 'https://example.com/task' }),
+    []
+  );
+  assert.equal(result.waiting, false);
+  assert.equal(result.waitingInternal, false);
+});
+
+test('derivePaneNotificationState: displayWaiting があれば apiUrl や構造判定を再実装せず受信値を使う', () => {
+  const result = derivePaneNotificationState(
+    pane({ waiting: false, structuralWaiting: false, externalWaiting: false, displayWaiting: true }),
+    []
+  );
+  assert.equal(result.waiting, true);
+});
+
+test('derivePaneNotificationState: displayWaiting がない古い renderer は waiting へフォールバックする', () => {
+  const result = derivePaneNotificationState(pane({ waiting: true }), []);
+  assert.equal(result.waiting, true);
+  assert.equal(result.waitingInternal, true);
+});
+
+test('computeNotificationEvents: 管理ペインの地の文による waiting では通知イベントを出さない', () => {
+  const states = {
+    'pane-1': pane({ waiting: true, status: 'waiting', displayWaiting: false, displayStatus: 'idle', apiUrl: 'https://example.com/task' }),
+  };
+  const { events } = computeNotificationEvents({ prevSnapshot: {}, states, excludePatterns: [] });
+  assert.deepEqual(events, []);
+});
+
+test('computeNotificationEvents: 初回報告後に管理ペインの地の文が waiting になっても通知しない', () => {
+  const initial = computeNotificationEvents({
+    prevSnapshot: {},
+    states: { 'pane-1': pane({ apiUrl: 'https://example.com/task', displayWaiting: false }) },
+    excludePatterns: [],
+    isFirstReport: true,
+  });
+  const proseWaiting = computeNotificationEvents({
+    prevSnapshot: initial.nextSnapshot,
+    states: {
+      'pane-1': pane({
+        apiUrl: 'https://example.com/task', waiting: true, status: 'waiting',
+        displayWaiting: false, displayStatus: 'idle',
+      }),
+    },
+    excludePatterns: [],
+    isFirstReport: false,
+  });
+  assert.deepEqual(proseWaiting.events, []);
+  assert.equal(proseWaiting.nextSnapshot['1'].waiting, false);
+});
+
+test('derivePaneNotificationState: 管理ペインでも構造的待ちの表示用フラグなら通知対象になる', () => {
+  const result = derivePaneNotificationState(
+    pane({ waiting: true, structuralWaiting: true, displayWaiting: true, displayStatus: 'waiting', apiUrl: 'https://example.com/task' }),
+    []
+  );
+  assert.equal(result.waiting, true);
+  assert.equal(result.waitingInternal, true);
+});
+
+test('derivePaneNotificationState: 管理ペインで外部権威と構造的待ちが同時でも内部由来を保持する', () => {
+  const result = derivePaneNotificationState(
+    pane({ waiting: true, structuralWaiting: true, externalWaiting: true, displayWaiting: true, apiUrl: 'https://example.com/task' }),
+    []
+  );
+  assert.equal(result.waitingInternal, true);
+  assert.equal(result.waitingExternal, true);
+});
+
+test('computeNotificationEvents: 管理ペインで外部の待ちを初観測しても、地の文だけなら通知しない', () => {
+  const { events } = computeNotificationEvents({
+    prevSnapshot: {},
+    states: { 'pane-1': pane({ apiUrl: 'https://example.com/task', waiting: true, structuralWaiting: false, externalWaiting: true, displayWaiting: true }) },
+    excludePatterns: [],
+  });
+  assert.deepEqual(events, []);
+});
+
+test('computeNotificationEvents: 管理ペインで外部の待ちを初観測しても、構造的待ちがあれば内部由来として通知する', () => {
+  const { events } = computeNotificationEvents({
+    prevSnapshot: {},
+    states: { 'pane-1': pane({ apiUrl: 'https://example.com/task', waiting: true, structuralWaiting: true, externalWaiting: true, displayWaiting: true }) },
+    excludePatterns: [],
+  });
+  assert.equal(events.length, 1);
+  assert.equal(events[0].kind, 'waiting');
+});
+
 test('computeNotificationEvents: 入力待ちでない→入力待ちの遷移だけがイベントになる', () => {
   const states = { 'pane-1': pane({ termId: '1', waiting: true, status: 'waiting' }) };
   const { events } = computeNotificationEvents({ prevSnapshot: {}, states, excludePatterns: [] });

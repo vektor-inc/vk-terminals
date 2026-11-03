@@ -8,10 +8,12 @@ const {
   WAITING_BEEP_REPEAT_SUPPRESS_MS,
   WAITING_MAX_EVAL_INTERVAL_MS,
   WAITING_PATTERNS,
+  STRUCTURAL_WAITING_TAIL_LINES,
   WAITING_QUIESCENCE_MS,
   containsIgnoringWhitespace,
   detectBackgroundAgents,
   extractScreenLines,
+  findStructuralWaitingMatch,
   findWaitingMatch,
   isOutputQuiescent,
   isWaitingCwdExcluded,
@@ -27,6 +29,86 @@ const {
 } = require('../renderer/waitingState');
 const { deriveStatus } = require('../renderer/statusState');
 const { stripAnsiForDisplay } = require('../utils/stripAnsi');
+
+test('構造的待ち: Claude Code の選択肢と定型フッターを検出する', () => {
+  const dialogs = [
+    ['╭ Permission required ╮', '❯ 1. Yes', '  2. No', 'Esc to cancel'].join('\n'),
+    ['Do you trust the files in this folder?', '❯ 1. Yes, I trust this folder', '  2. No, exit'].join('\n'),
+    ['Do you trust the files in this folder?', '❯ 1. Yes, I trust this folder', '  2. No, exit', '', 'Enter to confirm · Esc to exit'].join('\n'),
+    ['╭ Permission required ╮', '│ ❯ 1. Yes │', '│   2. No │', '╰────╯'].join('\n'),
+    [
+      'Allow this command?',
+      "❯ 1. Yes, and don't ask again for … in",
+      '     /Users/foo/project',
+      '  2. Yes, allow once',
+      '  3. No',
+    ].join('\n'),
+  ];
+  for (const dialog of dialogs) assert.notEqual(findStructuralWaitingMatch(dialog), null, dialog);
+});
+
+test('構造的待ち: 長い空白を含む番号付き選択肢を短時間で判定する', () => {
+  const pathologicalDialog = `❯ 1. a${' '.repeat(8000)}x\n  2. b`;
+  const startedAt = performance.now();
+  const match = findStructuralWaitingMatch(pathologicalDialog);
+  const elapsedMs = performance.now() - startedAt;
+
+  assert.notEqual(match, null);
+  assert.ok(elapsedMs < 100, `判定に ${elapsedMs.toFixed(1)}ms かかりました`);
+});
+
+test('構造的待ち: TUI 固有の確認形式を検出する', () => {
+  const cases = [
+    'Continue? [y/N]',
+    ['› 1. Yes', '  2. No'].join('\n'),
+    ['› 1. Use the current branch', '  2. Create a new branch', '  3. Cancel', 'enter to submit answer · esc to interrupt'].join('\n'),
+    'Yes, allow this edit',
+    'Press Enter to continue',
+    ['What should I do?', 'Enter to select', '↑/↓ to navigate', 'Esc to cancel'].join('\n'),
+  ];
+  for (const text of cases) assert.notEqual(findStructuralWaitingMatch(text), null, text);
+});
+
+test('構造的待ち: 地の文・古い画面上方・単独の Codex 履歴は検出しない', () => {
+  const oldDialog = [
+    'Press Enter to continue',
+    ...Array.from({ length: STRUCTURAL_WAITING_TAIL_LINES + 1 }, (_, index) => `output ${index}`),
+  ].join('\n');
+  const cases = [
+    '› Now let me check',
+    '❯ Note: done',
+    oldDialog,
+    '› 1. まずテスト',
+  ];
+  for (const text of cases) assert.equal(findStructuralWaitingMatch(text), null, text);
+});
+
+test('構造的待ち: Codex のユーザー発言に番号付きリストが続いても選択肢と誤認しない', () => {
+  const userMessage = [
+    '› 1. README の表を更新してください',
+    '  2. テストも追加してください',
+    '',
+    '› Improve documentation in @filename',
+  ].join('\n');
+  assert.equal(findStructuralWaitingMatch(userMessage), null);
+});
+
+test('管理外ペイン用の API 互換パターンは submit answer フッターを検出しない', () => {
+  assert.equal(matchesWaiting('enter to submit answer'), false);
+  assert.notEqual(findStructuralWaitingMatch('enter to submit answer'), null);
+});
+
+test('構造的待ち: 地の文の承認待ちや一般的な質問文は検出しない', () => {
+  const proseCases = [
+    '- vk-orchestrator #748: 承認待ちのままです。',
+    '続行しますか',
+    'Proceed?',
+    'このままでよろしいでしょうか？',
+  ];
+  for (const text of proseCases) {
+    assert.equal(findStructuralWaitingMatch(text), null, text);
+  }
+});
 
 // ─── waiting 判定（静止ゲート） ──────────────────────────────────────────────
 // issue vektor-inc/vk-orchestrator#212:

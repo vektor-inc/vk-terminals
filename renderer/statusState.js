@@ -28,7 +28,29 @@ function deriveStatus({
   return (recentOutput && !recentInput) ? 'running' : 'idle';
 }
 
+// apiUrl があるペインを管理ペインとして扱う。表示・通知・ビープで同じ基準を使う。
+function isManagedPaneState({ apiUrl } = {}) {
+  return typeof apiUrl === 'string' && apiUrl !== '';
+}
+
+// apiUrl がある管理ペインは、外部権威または TUI 構造で確定できる待ちだけを表示する。
+function deriveDisplayWaiting({ localWaiting, structuralWaiting, externalWaiting, apiUrl }) {
+  const managed = isManagedPaneState({ apiUrl });
+  return !!externalWaiting || (managed ? !!structuralWaiting : !!localWaiting);
+}
+
+// 管理ペインは表示上の待ち、非管理ペインは従来のローカル待ちの立ち上がりで鳴らす。
+function shouldBeepForPaneWaiting({ apiUrl, waitingBefore, waiting, displayWaitingBefore, displayWaiting }) {
+  const managed = isManagedPaneState({ apiUrl });
+  return managed
+    ? !displayWaitingBefore && !!displayWaiting
+    : !waitingBefore && !!waiting;
+}
+
 return {
   deriveStatus,
+  isManagedPaneState,
+  deriveDisplayWaiting,
+  shouldBeepForPaneWaiting,
 };
 });

@@ -161,6 +161,31 @@ const WAITING_PATTERNS = [
   /[？]\s*$/,
 ];
 
+// vk-orchestrator 管理ペインでは、AI の地の文にも現れる依頼表現を表示・通知へ使わない。
+// TUI 固有の選択記号や定型フッターだけを構造的な待ちとして残す（issue #489）。
+// 従来の WAITING_PATTERNS / findWaitingMatch は GET /api/states の互換性のため変更しない。
+const STRUCTURAL_WAITING_PATTERNS = [
+  /\[y\/N\]/i, /\[Y\/n\]/i, /\(y\/n\)/i,
+  /Press Enter/i,
+  /\? .{1,60}[›>❯]\s*$/m,
+  /Yes,?\s+allow/i,
+  /No,?\s+don['']t allow/i,
+  /Allow\s+(once|always|this)/i,
+  /❯\s*(Yes|No|Allow|Deny)\b/,
+  /›\s*(Yes|No|Allow|Deny)\b/,
+  /\[\s*A\s*\]llow/i,
+  /\[\s*D\s*\]eny/i,
+  /approve.*\(y\/n\)/i,
+  /Enter\s+to\s+select/i,
+  /enter\s+to\s+submit\s+answer/i,
+  /[↑↓]\/[↑↓]\s+to\s+navigate/,
+  /Esc\s+to\s+cancel/i,
+];
+
+// ダイアログは画面下端へ描画される。80 行の履歴全体を探すと、すでに流れた選択肢を
+// 現在の待ちと誤認するため、構造的待ちだけは末尾の表示相当範囲へ限定する。
+const STRUCTURAL_WAITING_TAIL_LINES = 15;
+
 // 点灯根拠として記録する文字列に含める、一致箇所前後の文脈の文字数（issue #352）。
 //
 // WAITING_PATTERNS の一致範囲（m[0]）だけを記録すると、パターンによっては
@@ -202,6 +227,57 @@ function findWaitingMatchDetail(cleanBuffer) {
     }
   }
   return best;
+}
+
+function findStructuralWaitingMatch(cleanBuffer) {
+  if (typeof cleanBuffer !== 'string' || cleanBuffer === '') return null;
+  const tailBuffer = cleanBuffer.split('\n').slice(-STRUCTURAL_WAITING_TAIL_LINES).join('\n');
+  let best = null;
+  for (const pattern of STRUCTURAL_WAITING_PATTERNS) {
+    const match = pattern.exec(tailBuffer);
+    if (match && match[0] !== '' && (best === null || match.index > best.index)) {
+      best = { raw: match[0], index: match.index };
+    }
+  }
+  // Claude Code 固有の `❯` 付き選択肢は、折り返しや枠線が間に入っても検出する。
+  // Codex は `›` のためこの経路には入らず、下端の選択肢の塊で厳密に判定する。
+  const tailLines = tailBuffer.split('\n');
+  const numberedOptionPattern = /^\s*(?:│\s*)?(?:[›❯]\s*)?\d+\.\s+\S/;
+  const frameLinePattern = /^[\s╭╮╰╯─│]+$/;
+  const footerPartPattern = /^(?:enter\s+to\s+(?:select|confirm|submit\s+answer)|press\s+enter\s+to\s+confirm(?:\s+or\s+esc\s+to\s+cancel)?|esc\s+to\s+(?:cancel|exit|interrupt)|tab\s+to\s+(?:queue|amend)\b|[↑↓](?:\/[↑↓])?\s+to\s+navigate)$/i;
+  const isOptionFooter = (line) => {
+    const content = line.trim().replace(/^│\s*/, '').replace(/\s*│$/, '').trim();
+    return content !== '' && content.split(/\s*·\s*/).every((part) => footerPartPattern.test(part));
+  };
+  const numberedOptions = tailLines.filter((line) => numberedOptionPattern.test(line));
+  const selectedClaudeOption = numberedOptions.length >= 2
+    ? tailBuffer.match(/^[ \t]*(?:│[ \t]*)?❯[ \t]*\d+\.[ \t]+\S.*$/m)
+    : null;
+  if (selectedClaudeOption && (best === null || selectedClaudeOption.index > best.index)) {
+    best = { raw: selectedClaudeOption[0], index: selectedClaudeOption.index };
+  }
+
+  // 下端の塊は、複合フッター・空行・枠線だけを選択肢の後ろに許可する。
+  let optionBlockStart = -1;
+  let optionBlockCount = 0;
+  for (let index = tailLines.length - 1; index >= 0; index -= 1) {
+    const line = tailLines[index];
+    if (line.trim() === '' || frameLinePattern.test(line) || isOptionFooter(line)) continue;
+    let firstOption = index;
+    while (firstOption >= 0 && numberedOptionPattern.test(tailLines[firstOption])) firstOption -= 1;
+    optionBlockStart = firstOption + 1;
+    optionBlockCount = index - firstOption;
+    break;
+  }
+  if (optionBlockCount >= 2) {
+    const raw = tailLines[optionBlockStart];
+    const index = tailLines.slice(0, optionBlockStart).join('\n').length + (optionBlockStart > 0 ? 1 : 0);
+    if (best === null || index > best.index) best = { raw, index };
+  }
+  if (!best) return null;
+  const start = Math.max(0, best.index - WAITING_ONSET_CONTEXT_CHARS);
+  const end = Math.min(tailBuffer.length, best.index + best.raw.length + WAITING_ONSET_CONTEXT_CHARS);
+  return tailBuffer.slice(start, end);
 }
 
 // WAITING_PATTERNS のいずれかに一致した箇所を、前後の文脈込みの文字列として返す
@@ -872,11 +948,14 @@ return {
   WAITING_BEEP_REPEAT_SUPPRESS_MS,
   WAITING_MAX_EVAL_INTERVAL_MS,
   WAITING_PATTERNS,
+  STRUCTURAL_WAITING_PATTERNS,
+  STRUCTURAL_WAITING_TAIL_LINES,
   WAITING_QUIESCENCE_MS,
   containsIgnoringWhitespace,
   detectBackgroundAgents,
   extractScreenLines,
   findWaitingMatch,
+  findStructuralWaitingMatch,
   isOutputQuiescent,
   isWaitingCwdExcluded,
   matchesWaiting,

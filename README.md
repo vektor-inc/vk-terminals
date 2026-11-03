@@ -649,9 +649,12 @@ curl -s http://127.0.0.1:13847/api/states \
 | `termId` | ターミナル ID（`/api/send` で使用） |
 | `cwd` / `cwdShort` | カレントディレクトリ（フルパス / 短縮表示） |
 | `engine` | そのペインが起動した AI エンジン（`claude` / `codex`）。不明なときは `null`（issue #417） |
-| `waiting` | 入力待ち状態（権限確認プロンプト等）かどうか |
+| `waiting` | API 互換用のローカル入力待ち状態。管理ペインでは地の文の依頼表現でも `true` になりうる |
 | `externalWaiting` | `POST /api/set-status` で設定された外部権威の入力待ち状態 |
-| `status` | 表示用ステータス（`idle` / `running` / `waiting`） |
+| `structuralWaiting` | TUI 固有の選択肢・定型フッターから確定した入力待ち状態 |
+| `displayWaiting` | 画面表示・利用者向け通知に使う入力待ち状態。管理ペインでは `structuralWaiting` または `externalWaiting` を反映 |
+| `displayStatus` | 画面表示・利用者向け判断に使うステータス（`idle` / `running` / `waiting`） |
+| `status` | API 互換用の稼働ステータス（`idle` / `running` / `waiting`）。管理ペインでも `waiting` を従来どおり反映 |
 | `lastOutputTime` | 最後に出力があった時刻（Unix ms） |
 | `lastInputTime` | 最後にユーザーが入力した時刻（Unix ms） |
 | `agentGeneration` | ペイン内で起動した AI の世代番号。AI 起動ペインは `1`、素のシェルは `0` で始まり、`POST /api/restart-agent` 成功ごとに 1 増加 |

@@ -27,12 +27,14 @@ function validateClaudeSettingsPresetForEngine(engine, noClaude, preset) {
 function resolveVkOrchestratorEntry(root, fsImpl = fs, options = {}) {
   if (typeof root !== 'string' || !SETTINGS_PATH_PATTERN.test(root)) return null;
   try {
-    resolveTrustedPath(fsImpl, root, { finalKind: 'directory', rejectFinalLink: true, uid: options.uid });
-    const pkg = JSON.parse(fsImpl.readFileSync(path.join(root, 'package.json'), 'utf8'));
+    const resolvedRoot = resolveTrustedPath(fsImpl, root, { finalKind: 'directory', rejectFinalLink: true, uid: options.uid }).realPath;
+    if (!SETTINGS_PATH_PATTERN.test(resolvedRoot)) return null;
+    const pkg = JSON.parse(fsImpl.readFileSync(path.join(resolvedRoot, 'package.json'), 'utf8'));
     if (pkg.name !== 'vk-orchestrator') return null;
-    const entry = path.join(root, 'bin', 'vk-orchestrator.js');
+    const entry = path.join(resolvedRoot, 'bin', 'vk-orchestrator.js');
     if (!SETTINGS_PATH_PATTERN.test(entry)) return null;
-    return resolveTrustedPath(fsImpl, entry, { finalKind: 'file', rejectFinalLink: true, uid: options.uid }).realPath;
+    const resolvedEntry = resolveTrustedPath(fsImpl, entry, { finalKind: 'file', rejectFinalLink: true, uid: options.uid }).realPath;
+    return SETTINGS_PATH_PATTERN.test(resolvedEntry) ? resolvedEntry : null;
   } catch (_error) {
     return null;
   }

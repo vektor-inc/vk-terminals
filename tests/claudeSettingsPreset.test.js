@@ -127,6 +127,23 @@ test('空白を含む VK Orchestrator アプリのパスを3引数のフック�
   ]);
 });
 
+test('途中のリンク先の実パスに単一引用符があればフックを拒否する', (t) => {
+  const fixture = createFixture(t);
+  const linkedRoot = path.join(fixture.root, 'linked-root');
+  const actualParent = path.join(fixture.root, "actual'root");
+  const actualOrchestratorRoot = path.join(actualParent, 'vk-orchestrator');
+  fs.mkdirSync(actualParent);
+  fs.renameSync(fixture.orchestratorRoot, actualOrchestratorRoot);
+  fs.symlinkSync(actualParent, linkedRoot);
+  const orchestratorRoot = path.join(linkedRoot, 'vk-orchestrator');
+
+  assert.equal(resolveVkOrchestratorEntry(orchestratorRoot), null);
+  assert.throws(
+    () => resolveClaudeSettingsHookCommand({ nodeSearchDirs: [fixture.toolsDir], vkOrchestratorRoot: orchestratorRoot }),
+    /unavailable/
+  );
+});
+
 test('管理フォルダと既存 settings のシンボリックリンクを安全に扱う', (t) => {
   const fixture = createFixture(t);
   const presetDir = path.join(fixture.dataDir, 'claude-settings-presets');

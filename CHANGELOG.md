@@ -1,5 +1,6 @@
 # Changelog
 
+- [ 機能追加 ] ターミナルに表示された「ユーザー返信用」の文章をボタンでコピーできる機能を追加（[#494](https://github.com/vektor-inc/vk-terminals/issues/494)）
 - [ 機能追加 ] 自動処理用 Codex の固定入口で、レビュー完了・CI 通過・マージ可能状態と head を読み戻してから PR を squash でマージする `gh pr merge` に対応（[#490](https://github.com/vektor-inc/vk-terminals/issues/490)）
 
 ## 1.82.1

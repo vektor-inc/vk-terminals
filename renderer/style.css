@@ -2913,6 +2913,58 @@ button.sidebar-section-header:hover {
   height: 100%;
 }
 
+.reply-bar {
+  flex: none;
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px;
+  border-top: 1px solid #21262d;
+  background: #161b22;
+  color: #c9d1d9;
+  font-size: 12px;
+}
+.reply-bar-preview {
+  overflow: hidden;
+  min-width: 0;
+  color: #8b949e;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.reply-bar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.reply-bar button {
+  min-height: 28px;
+  padding: 4px 8px;
+  border: 1px solid var(--vktm--color--border-interactive);
+  border-radius: 6px;
+  background: #21262d;
+  color: #c9d1d9;
+  cursor: pointer;
+  font: inherit;
+  white-space: nowrap;
+}
+.reply-bar button:hover { background: #30363d; }
+.reply-bar-status {
+  flex: 0 0 132px;
+  min-width: 132px;
+  color: #8b949e;
+  white-space: nowrap;
+}
+.reply-bar-close {
+  margin-left: auto;
+  font-size: 18px;
+  line-height: 1;
+}
+@media (max-width: 360px) {
+  .reply-bar-preview { display: none; }
+  .reply-bar-status { flex: 1 1 auto; min-width: 0; }
+}
+
 /* xterm overrides */
 .xterm {
   height: 100%;

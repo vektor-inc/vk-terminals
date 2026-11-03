@@ -14,6 +14,7 @@ const BOX_DRAWING_LINE_PATTERN = /^[\s─-╿]+$/;
 const HORIZONTAL_LINE_PATTERN = /[─━═╌╍┄┅┈┉]+/g;
 const EDGE_BOX_DRAWING_PATTERN = /^[\s│┃┆┇┊┋┌┐└┘├┤┬┴┼╭╮╰╯]+|[\s│┃┆┇┊┋┌┐└┘├┤┬┴┼╭╮╰╯]+$/g;
 const INVISIBLE_CONTROL_PATTERN = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]/g;
+const URL_LINE_PATTERN = /^https?:\/\/\S+$/;
 const INK_RIGHT_MARGIN_CELLS = 3;
 
 function leadingWidth(text) {
@@ -64,7 +65,8 @@ function firstChunk(text) {
 
 function isInkWrapped(previousText, nextText, cols) {
   if (!Number.isFinite(cols) || cols <= 0) return false;
-  if (!String(nextText).trim() || BOX_DRAWING_LINE_PATTERN.test(nextText)) return false;
+  // 空行で段落が分かれている場合は、前後の行を折り返しとして連結しない。
+  if (!String(previousText).trim() || !String(nextText).trim() || BOX_DRAWING_LINE_PATTERN.test(nextText)) return false;
   const chunk = firstChunk(nextText);
   if (!chunk) return false;
   const usableWidth = Math.max(1, cols - INK_RIGHT_MARGIN_CELLS);
@@ -96,8 +98,9 @@ function readRecentBufferLines(buffer, maxLines) {
 }
 
 function isTerminator(text, markerIndent) {
-  if (!text.trim()) return true;
+  if (!text.trim()) return false;
   if (BOX_DRAWING_LINE_PATTERN.test(text)) return true;
+  if (URL_LINE_PATTERN.test(text.trim())) return true;
   return leadingWidth(text) < markerIndent;
 }
 
@@ -127,9 +130,16 @@ function extractLatestReplyText(lines, cols) {
         captured.push({ text, indent: leadingWidth(text), physicalText: text });
       }
     }
-    if (!terminated || captured.length < 2) return null;
+    if (!terminated) return null;
 
-    const commonIndent = Math.min(...captured.map(line => line.indent));
+    // 返信文中の空行は保持し、終端直前に残った空行だけを取り除く。
+    while (captured.length > 1 && !captured[captured.length - 1].text.trim()) {
+      captured.pop();
+    }
+    if (captured.length < 2 || !captured.slice(1).some(line => line.text.trim())) return null;
+
+    // 空行の indent 0 に引っ張られず、返信文全体の字下げを取り除く。
+    const commonIndent = Math.min(...captured.filter(line => line.text.trim()).map(line => line.indent));
     const result = captured
       .map(line => cleanLine(line.text.slice(commonIndent)))
       .join('\n')

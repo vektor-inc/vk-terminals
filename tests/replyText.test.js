@@ -27,7 +27,7 @@ test('字下げ付きの marker と本文を字下げなしで取り出す', () 
   assert.equal(extractLatestReplyText([
     '  [ユーザー返信用]',
     '  #748 を進めてください。',
-    '',
+    '────',
   ]), '[ユーザー返信用]\n#748 を進めてください。');
 });
 
@@ -36,7 +36,7 @@ test('画面幅で折り返した本文は改行なしで連結する', () => {
     { text: '  [ユーザー返信用]' },
     { text: '  vk-terminals と ' },
     { text: 'vk-agents をリリースしました。', wrapped: true },
-    { text: '' },
+    { text: '────' },
   ]);
   assert.equal(detectReplyText(buffer, 200), '[ユーザー返信用]\nvk-terminals と vk-agents をリリースしました。');
 });
@@ -46,7 +46,7 @@ test('Ink が字下げして折り返した長い日本語本文は表示幅か�
     { text: '  [ユーザー返信用]' },
     { text: '  これは画面の右端近くまで続いている長い日本語の返信文で' },
     { text: '    す。続きも正しくコピーします。' },
-    { text: '' },
+    { text: '────' },
   ]);
   assert.equal(
     detectReplyText(buffer, 200, 40),
@@ -59,7 +59,7 @@ test('右端まで埋まった案内文を返信 marker に連結しない', () 
     { text: '以下はユーザーが操作後に送る返信文です。確認してそのまま使えます。' },
     { text: '  [ユーザー返信用]' },
     { text: '  内容を確認しました。' },
-    { text: '' },
+    { text: '────' },
   ]);
   assert.equal(
     detectReplyText(buffer, 200, 40),
@@ -74,7 +74,7 @@ test('3 物理行の段落だけを連結し、短い次段落との改行を残
     { text: '    さらに画面の右端近くまで文章が続いて最後の行へと' },
     { text: '    折り返します。' },
     { text: '  短い二つ目の段落です。' },
-    { text: '' },
+    { text: '────' },
   ]);
   assert.equal(
     detectReplyText(buffer, 200, 40),
@@ -99,7 +99,7 @@ test('Ink が英単語の境界で折り返した本文は空白を補って連�
     { text: '  [ユーザー返信用]' },
     { text: '  Please release the updated vk-terminals' },
     { text: '    package after all checks pass.' },
-    { text: '' },
+    { text: '────' },
   ]);
   assert.equal(
     detectReplyText(buffer, 200, 40),
@@ -112,7 +112,7 @@ test('前の行に次の語が収まる本来の複数行は改行を残す', ()
     { text: '  [ユーザー返信用]' },
     { text: '  Short first line.' },
     { text: '  Second line.' },
-    { text: '' },
+    { text: '────' },
   ]);
   assert.equal(
     detectReplyText(buffer, 200, 40),
@@ -137,7 +137,7 @@ test('罫線が混ざった再描画もきれいな表示も同じ返信文と�
   const clean = bufferOf([
     { text: '[ユーザー返信用]' },
     { text: 'vk-terminals と vk-agents をリリースしました。#748 を進めてください。' },
-    { text: '' },
+    { text: '────' },
   ]);
   assert.equal(detectReplyText(dirty, 200), detectReplyText(clean, 200));
 });
@@ -148,7 +148,7 @@ test('終わりの目印が無い出力途中は未確定にする', () => {
 
 test('最新の返信文が出力途中なら確定済みの古い返信文を返さない', () => {
   assert.equal(extractLatestReplyText([
-    '[ユーザー返信用]', '古い', '',
+    '[ユーザー返信用]', '古い', '────',
     '[ユーザー返信用]', '新しい出力途中',
   ]), null);
 });
@@ -158,7 +158,7 @@ test('本文の tree 罫線と字下げを除き、内容だけを残す', () =>
     '[ユーザー返信用]',
     '├── src',
     '│   └── app.js',
-    '',
+    '────',
   ]), '[ユーザー返信用]\nsrc\napp.js');
 });
 
@@ -168,7 +168,7 @@ test('コピー対象から改行以外の見えない制御文字を除く', ()
     '[ユーザー返信用]\n返信文',
   );
   assert.equal(extractLatestReplyText([
-    '[ユーザー返信用]', '返\u0007信\u200b文', '',
+    '[ユーザー返信用]', '返\u0007信\u200b文', '────',
   ]), '[ユーザー返信用]\n返信文');
 });
 
@@ -195,8 +195,8 @@ test('入力文字または物理キーと修飾キーでコピー操作を判�
 
 test('複数の返信文から最新のものを採る', () => {
   assert.equal(extractLatestReplyText([
-    '[ユーザー返信用]', '古い', '',
-    '[ユーザー返信用]', '新しい', '',
+    '[ユーザー返信用]', '古い', '────',
+    '[ユーザー返信用]', '新しい', '────',
   ]), '[ユーザー返信用]\n新しい');
 });
 
@@ -206,8 +206,48 @@ test('返信文が無いときは null', () => {
 
 test('本来の複数行の改行は残す', () => {
   assert.equal(extractLatestReplyText([
-    '  [ユーザー返信用]', '  1 行目', '  2 行目', '',
+    '  [ユーザー返信用]', '  1 行目', '  2 行目', '────',
   ]), '[ユーザー返信用]\n1 行目\n2 行目');
+});
+
+test('空行で区切った 5 問のテンプレートを全問コピーする', () => {
+  assert.equal(extractLatestReplyText([
+    '  [ユーザー返信用]',
+    '  1. 質問A（…）:',
+    '',
+    '  2. 質問B（…）:',
+    '',
+    '  3. 質問C（…）:',
+    '',
+    '  4. 質問D（…）:',
+    '',
+    '  5. 質問E（…）:',
+    '────────',
+  ]), '[ユーザー返信用]\n1. 質問A（…）:\n\n2. 質問B（…）:\n\n3. 質問C（…）:\n\n4. 質問D（…）:\n\n5. 質問E（…）:');
+});
+
+test('返信文直後の URL 行をコピーに含めない', () => {
+  assert.equal(extractLatestReplyText([
+    '  [ユーザー返信用]', '  本文', '  https://github.com/vektor-inc/vk-terminals/issues/503',
+  ]), '[ユーザー返信用]\n本文');
+});
+
+test('返信文直後の字下げが浅い行をコピーに含めない', () => {
+  assert.equal(extractLatestReplyText([
+    '  [ユーザー返信用]', '  本文', '✻ Cogitated for 3s',
+  ]), '[ユーザー返信用]\n本文');
+});
+
+test('末尾が空行だけで終端行が無い出力途中は未確定にする', () => {
+  assert.equal(extractLatestReplyText([
+    '  [ユーザー返信用]', '  本文', '', '',
+  ]), null);
+});
+
+test('終端直前にある末尾の空行を取り除く', () => {
+  assert.equal(extractLatestReplyText([
+    '  [ユーザー返信用]', '  本文', '', '', '────────',
+  ]), '[ユーザー返信用]\n本文');
 });
 
 test('返信バーは本文・改行・貼り付けで閉じ、自動応答と移動キーでは閉じない', () => {

@@ -110,6 +110,20 @@ test('appendUserLocalBin: 実在し PATH に既にあれば並びを変えない
   assert.equal(env.PATH, original);
 });
 
+test('appendUserLocalBin: 相対 homeDir から生成したパスは追加しない', posixOnly, () => {
+  const original = '/usr/bin';
+  const env = { PATH: original };
+  assert.equal(appendUserLocalBin({ env, homeDir: 'rel', dirExists: () => true, platform: 'darwin' }), false);
+  assert.equal(env.PATH, original);
+});
+
+test('appendUserLocalBin: 末尾スラッシュ付きで PATH に既にあれば重複させない', posixOnly, () => {
+  const original = `${USER_LOCAL_BIN}/:/usr/bin`;
+  const env = { PATH: original };
+  assert.equal(appendUserLocalBin({ env, homeDir: HOME, dirExists: () => true, platform: 'darwin' }), false);
+  assert.equal(env.PATH, original);
+});
+
 test('appendUserLocalBin: 実在しなければ PATH を変えない', posixOnly, () => {
   const env = { PATH: '/usr/bin' };
   assert.equal(appendUserLocalBin({ env, homeDir: HOME, dirExists: () => false, platform: 'darwin' }), false);

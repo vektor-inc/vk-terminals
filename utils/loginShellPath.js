@@ -191,10 +191,15 @@ function appendUserLocalBin(options = {}) {
   const homeDir = options.homeDir || os.homedir();
   const dirExists = typeof options.dirExists === 'function' ? options.dirExists : defaultDirExists;
   const userLocalBin = path.join(homeDir, '.local', 'bin');
+  // 相対 HOME 由来のパスを PATH に混入させない。
+  if (!path.isAbsolute(userLocalBin)) return false;
+
   const currentPath = typeof env.PATH === 'string' ? env.PATH : '';
   const entries = currentPath.split(path.delimiter).filter(Boolean);
+  const normalizedUserLocalBin = path.normalize(userLocalBin).replace(/\/+$/, '');
+  const alreadyIncluded = entries.some((entry) => path.normalize(entry).replace(/\/+$/, '') === normalizedUserLocalBin);
 
-  if (entries.includes(userLocalBin) || !dirExists(userLocalBin)) return false;
+  if (alreadyIncluded || !dirExists(userLocalBin)) return false;
   env.PATH = [...entries, userLocalBin].join(path.delimiter);
   return true;
 }

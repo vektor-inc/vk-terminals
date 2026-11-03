@@ -2920,9 +2920,10 @@ button.sidebar-section-header:hover {
   container-type: inline-size;
   flex: none;
   display: grid;
-  gap: 8px;
+  gap: 3px;
   min-width: 0;
-  padding: 8px;
+  /* 字面の上端までの余白を他の辺と揃え、要素間より狭く見えるのを防ぐ。 */
+  padding: 5px 8px 8px;
   border-top: 1px solid #21262d;
   background: #161b22;
   color: #c9d1d9;
@@ -2993,7 +2994,12 @@ button.sidebar-section-header:hover {
     min-width: 0;
     min-height: 1em;
   }
-  .reply-bar-close { margin-left: 0; }
+  .reply-bar-close {
+    /* 結果表示の段落ち後も、閉じるボタンを操作行の右端に固定する。 */
+    grid-column: 3;
+    grid-row: 1;
+    margin-left: 0;
+  }
 }
 
 /* xterm overrides */

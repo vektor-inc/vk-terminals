@@ -2987,12 +2987,14 @@ button.sidebar-section-header:hover {
   .reply-bar-actions {
     display: grid;
     grid-template-columns: max-content 1fr max-content;
+    row-gap: 5px;
   }
   .reply-bar-status {
     grid-column: 1 / -1;
     grid-row: 2;
     min-width: 0;
     min-height: 1em;
+    line-height: 1;
   }
   .reply-bar-close {
     /* 結果表示の段落ち後も、閉じるボタンを操作行の右端に固定する。 */

@@ -993,7 +993,7 @@ curl -s -X POST http://127.0.0.1:13847/api/codex-policy-context \
   - `source: "tmp"`：`/tmp`
   - `source: "tmpdir"`：`tmpdir` と同じ値
   - `source: "handoff"`：会話整理の引き継ぎ先（`~/.claude/handoff`）
-  - `source: "task-ops-repository"`：固定入口が拘束するリポジトリの実ルート（`prepare worktree` が作る `<ルート>/.claude/worktrees` もこの配下。`prepare adopt-worktree` は起動元が作った `.claude/worktrees/<名前>` の worktree を引き受けて作業ブランチへ切り替える）。`cwd` が linked worktree のときは、その worktree のルート
+  - `source: "task-ops-repository"`：固定入口が拘束するリポジトリの実ルート（`prepare worktree` が作る `<ルート>/.codex/worktrees` もこの配下。`prepare adopt-worktree` は起動元が作った `.codex/worktrees/<名前>`、移行中は旧 `.claude/worktrees/<名前>` の worktree を引き受けて作業ブランチへ切り替える）。`cwd` が linked worktree のときは、その worktree のルート
   - `source: "task-ops-git-dir"`：同リポジトリの Git 管理領域（common-dir）。linked worktree なら元のクローンの共通 `.git` で、`task-ops-repository` の外になります。通常のクローンでは `task-ops-repository` の配下ですが、形を固定するため重複していても 2 行とも出します
   - `source: "member-io"`：メンバー（子の Codex）の入出力フォルダの**親**フォルダ。実際のフォルダは起動ごとに乱数の名前で作られ、起動前には確定しないため、親フォルダを返します。メンバー起動が無効になる配置（`codex` が見つからない、`cwd` が書き込み先の配下にある）では、この行は出ません。
 - `scope`：`"subtree"` は、そのフォルダとその配下のすべてに書き込めることを表します。`"child-created-at-launch"` は、そのフォルダの配下に、起動時に 1 つだけ（乱数の名前で）作られ、そのフォルダだけに書き込めることを表します。受け取る側は、実際の値を含む広めの範囲として扱うと安全側に倒れます。

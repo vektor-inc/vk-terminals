@@ -87,6 +87,9 @@ const DEFAULT_REMOTE_BASE = 'https://github.com';
 // main / master への push・worktree 準備は作業ブランチとして使えない名前。
 const PROTECTED_BRANCH_NAMES = Object.freeze(['main', 'master', 'HEAD']);
 const WORKTREE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9-]{0,99}$/;
+const CODEX_WORKTREE_PARENT = Object.freeze(['.codex', 'worktrees']);
+// 移行中の起動済みタスクを引き受けるため、旧 Claude 配下も候補に残す。外す時期は vektor-inc/vk-orchestrator#748 の決定に合わせる。
+const ADOPT_WORKTREE_PARENTS = Object.freeze([CODEX_WORKTREE_PARENT, Object.freeze(['.claude', 'worktrees'])]);
 // メンバー起動の入出力ファイル名（専用フォルダ直下の名前だけ。パス区切り・先頭 `.` は通らない）、モデル名、実行 ID。
 const MEMBER_FILE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 const MEMBER_MODEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._[\]-]{0,63}$/;
@@ -1672,20 +1675,20 @@ function executePrMerge({ parsed, binding, cwd, env, spawnSync, reject, writeOut
 /**
  * `prepare worktree <base> <issue番号> <ブランチ> <worktree名>`。vk-agents の repo-prepare.sh issue-worktree と同じ処理を、
  * この入口の中で行う（対象が vk-agents 自身でも、Codex が書き換えられるスクリプトを囲いの外で動かさないため）。
- * 作るのは <拘束ルート>/.claude/worktrees/<名前> の worktree だけで、通常のクローンの切り替えや未コミット変更には触れない。
+ * 作るのは <拘束ルート>/.codex/worktrees/<名前> の worktree だけで、通常のクローンの切り替えや未コミット変更には触れない。
  */
 function executePrepareWorktree({ parsed, binding, cwd, fsImpl, runGit, spawnSync, networkEnv, plainEnv, reject, inspected, write, writeOut, deps }) {
   if (inspected.networkUnsafeKey) return reject(`task command rejected: repository configuration can redirect network access: ${JSON.stringify(inspected.networkUnsafeKey)}`);
   if (inspected.root !== binding.root || fsImpl.realpathSync(cwd) !== binding.root) return reject('task command rejected: prepare worktree must run at the bound repository root');
   const root = binding.root;
-  const claudeDir = path.join(root, '.claude');
-  const worktreeRoot = path.join(claudeDir, 'worktrees');
+  const codexDir = path.join(root, CODEX_WORKTREE_PARENT[0]);
+  const worktreeRoot = path.join(root, ...CODEX_WORKTREE_PARENT);
   const worktreePath = path.join(worktreeRoot, parsed.name);
   const remoteRef = `refs/remotes/origin/${parsed.base}`;
   const branchRef = `refs/heads/${parsed.branch}`;
 
   // 事前の検証（取得より前に、作れないと分かるものを止める）。
-  for (const dir of [claudeDir, worktreeRoot]) {
+  for (const dir of [codexDir, worktreeRoot]) {
     const stat = lstatOrNull(fsImpl, dir);
     if (stat !== null && (stat.isSymbolicLink() || !stat.isDirectory())) return reject(`task command rejected: ${path.relative(root, dir)} is a symbolic link or not a directory`);
   }
@@ -1724,7 +1727,7 @@ function executePrepareWorktree({ parsed, binding, cwd, fsImpl, runGit, spawnSyn
 
   // 通常のクローンの status に worktree が未追跡として現れないよう、このクローンだけの除外設定へ作成先を登録する（共有の .gitignore は変えない）。
   // 書き込みは Node ではなく、除外ファイルだけに書き込みを限った子プロセスで行う。
-  const entry = `/.claude/worktrees/${parsed.name}/`;
+  const entry = `/.codex/worktrees/${parsed.name}/`;
   let existing = '';
   try {
     existing = excludeStat === null ? '' : String(fsImpl.readFileSync(excludeFile, 'utf8'));
@@ -1738,11 +1741,11 @@ function executePrepareWorktree({ parsed, binding, cwd, fsImpl, runGit, spawnSyn
     if (appended.error || appended.status !== 0) return reject('task command rejected: could not update the local exclude file');
   }
 
-  // 作成先の親フォルダは、書き込みを .claude 配下の実パスに限った子プロセスで作る。
-  if (!makeDirs([claudeDir, worktreeRoot])) return reject('task command rejected: could not create the worktree parent directory');
+  // 作成先の親フォルダは、書き込みを .codex/worktrees の実パスに限った子プロセスで作る。
+  if (!makeDirs([codexDir, worktreeRoot])) return reject('task command rejected: could not create the worktree parent directory');
   // 作成後の状態を確かめる（拒否の理由を分かりやすくするための検査。安全性は書き込み制限が担う）。
   try {
-    for (const dir of [claudeDir, worktreeRoot]) {
+    for (const dir of [codexDir, worktreeRoot]) {
       const stat = fsImpl.lstatSync(dir);
       if (stat.isSymbolicLink() || !stat.isDirectory() || fsImpl.realpathSync(dir) !== dir) return reject(`task command rejected: ${path.relative(root, dir)} is a symbolic link or not a directory`);
     }
@@ -1792,11 +1795,12 @@ function executePrepareAdoptWorktree({ parsed, binding, cwd, fsImpl, runGit, spa
   const remoteRef = `refs/remotes/origin/${parsed.base}`;
   const branchRef = `refs/heads/${parsed.branch}`;
 
-  // 1) 作業フォルダが linked worktree の直下で、クローン側の .claude/worktrees/<worktree名> と実パスで一致する。
+  // 1) 作業フォルダが linked worktree の直下で、許可した worktree 置き場所の <worktree名> と実パスで一致する。
   let root;
   let commonDir;
   let adminDir;
   try {
+    const cwdPath = path.resolve(cwd);
     root = fsImpl.realpathSync(cwd);
     commonDir = resolveGitCommonDir({ dir: cwd, run: runGit, fsImpl });
     if (inspected.root !== root) return reject('task command rejected: prepare adopt-worktree must run at the root of the prepared worktree');
@@ -1806,13 +1810,20 @@ function executePrepareAdoptWorktree({ parsed, binding, cwd, fsImpl, runGit, spa
     adminDir = fsImpl.realpathSync(path.resolve(cwd, String(gitDirResult.stdout).trim()));
     if (path.dirname(adminDir) !== path.join(commonDir, 'worktrees')) return reject('task command rejected: the working directory is not a linked worktree');
     const cloneRoot = path.dirname(commonDir);
-    for (const dir of [path.join(cloneRoot, '.claude'), path.join(cloneRoot, '.claude', 'worktrees'), root]) {
+    const parent = ADOPT_WORKTREE_PARENTS.find((segments) => cwdPath === path.join(cloneRoot, ...segments, parsed.name));
+    if (parent === undefined) {
+      const candidates = ADOPT_WORKTREE_PARENTS.map((segments) => `${segments.join('/')}/${parsed.name}`).join(' or ');
+      return reject(`task command rejected: the working directory does not match ${candidates} of the bound clone`);
+    }
+    for (const dir of [path.join(cloneRoot, parent[0]), path.join(cloneRoot, ...parent)]) {
       const stat = lstatOrNull(fsImpl, dir);
       if (stat === null || stat.isSymbolicLink() || !stat.isDirectory()) return reject(`task command rejected: ${path.relative(cloneRoot, dir) || dir} is a symbolic link or not a directory`);
     }
-    if (root !== path.join(cloneRoot, '.claude', 'worktrees', parsed.name)) {
-      return reject(`task command rejected: the working directory does not match .claude/worktrees/${parsed.name} of the bound clone`);
+    if (root !== cwdPath) {
+      return reject(`task command rejected: the working directory does not match ${parent.join('/')}/${parsed.name} of the bound clone`);
     }
+    const rootStat = lstatOrNull(fsImpl, root);
+    if (rootStat === null || rootStat.isSymbolicLink() || !rootStat.isDirectory()) return reject(`task command rejected: ${path.relative(cloneRoot, root) || root} is a symbolic link or not a directory`);
     // 2) 管理ディレクトリ名が worktree 名と一致し、逆参照（gitdir）が現在地直下の .git を指す。
     if (adminDir !== path.join(commonDir, 'worktrees', parsed.name)) return reject(`task command rejected: the worktree administrative directory is not ${JSON.stringify(parsed.name)} (a .git file pointing to another worktree)`);
     const dotGit = path.join(root, '.git');
@@ -1920,8 +1931,8 @@ function executePrepareAdoptWorktree({ parsed, binding, cwd, fsImpl, runGit, spa
 
 /**
  * target が base そのもの、または base の配下（どちらも実パス）かを判定する。
- * 親の書き込み範囲は、親を起動した作業フォルダ（Codex の workspace-write はその配下全体）なので、
- * 後から `prepare worktree` で作った worktree（拘束ルート配下の `.claude/worktrees/`）は、親をルートで起動していれば範囲に入る。
+ * 親の書き込み範囲は、親を起動した作業フォルダと専用 config.toml の writable_roots。
+ * クローン本体からの起動では `.codex/worktrees/` を writable_roots に加えるため、後から作った worktree も範囲に入る。
  * 親をサブフォルダで起動した場合や、範囲の外に登録された worktree は入らない。
  * @param {string} target
  * @param {string} base

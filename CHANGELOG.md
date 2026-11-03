@@ -1,6 +1,7 @@
 # Changelog
 
 - [ 機能追加 ] 自動処理用 Codex の固定入口で、レビュー完了・CI 通過・マージ可能状態と head を読み戻してから PR を squash でマージする `gh pr merge` に対応（[#490](https://github.com/vektor-inc/vk-terminals/issues/490)）
+- [ 仕様変更 ] Codex のタスク専用 worktree を編集可能な `.codex/worktrees/` に作成し、引き受け時は移行用の旧 `.claude/worktrees/` も受け付けるように（[#488](https://github.com/vektor-inc/vk-terminals/issues/488)）
 
 ## 1.82.0
 

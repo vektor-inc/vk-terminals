@@ -27,15 +27,48 @@ test('返信文バーから整形済み文字列をコピーし、入力で閉�
       'vk-terminals と vk-agents をリリースしました。#748 を進めてください。',
     );
 
-    await bar.getByRole('button', { name: '返信文をコピー（ペイン 1）' }).click();
+    // 端末から競合の少ない専用キーでバーへ移り、バー内だけを巡回して端末へ戻れる。
+    const screen = win.locator('.pane .xterm-screen').first();
+    await screen.click();
+    await win.keyboard.press('Alt+Shift+C');
+    const copyButton = bar.getByRole('button', { name: '返信文をコピー（ペイン 1）' });
+    const closeButton = bar.getByRole('button', { name: '返信文バーを閉じる（ペイン 1）' });
+    await expect(copyButton).toBeFocused();
+    await win.keyboard.press('Tab');
+    await expect(closeButton).toBeFocused();
+    await win.keyboard.press('Shift+Tab');
+    await expect(copyButton).toBeFocused();
+    await win.keyboard.press('Escape');
+    await expect(win.locator('.pane .xterm-helper-textarea').first()).toBeFocused();
+    await expect(bar).toBeVisible();
+
+    await copyButton.click();
     await expect(bar.getByRole('status')).toHaveText('コピーしました');
     const copied = await app.evaluate(({ clipboard }) => clipboard.readText());
     expect(copied).toBe(
       '[ユーザー返信用]\nvk-terminals と vk-agents をリリースしました。#748 を進めてください。',
     );
 
-    await typeAndEnter(win, 'x');
+    // 240px 程度のペインでも操作を欠けさせず、結果行の高さも確保する。
+    const narrowLayout = await bar.evaluate((element) => {
+      element.style.width = '240px';
+      const close = element.querySelector('.reply-bar-close').getBoundingClientRect();
+      const status = element.querySelector('.reply-bar-status').getBoundingClientRect();
+      const bounds = element.getBoundingClientRect();
+      return {
+        closeFits: close.right <= bounds.right && close.left >= bounds.left,
+        statusHeight: status.height,
+      };
+    });
+    expect(narrowLayout.closeFits).toBe(true);
+    expect(narrowLayout.statusHeight).toBeGreaterThan(0);
+
+    await screen.click();
+    await win.keyboard.type('x');
     await expect(bar).toBeHidden();
+    await win.keyboard.type('echo ok');
+    await win.keyboard.press('Enter');
+    await expect(screen).toContainText('ok');
   } finally {
     await closeApp({ app, tmpRoot });
   }

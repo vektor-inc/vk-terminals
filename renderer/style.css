@@ -2913,7 +2913,9 @@ button.sidebar-section-header:hover {
   height: 100%;
 }
 
+/* ─── Reply bar ───────────────────────────────────────────────────────────── */
 .reply-bar {
+  container-type: inline-size;
   flex: none;
   display: grid;
   gap: 8px;
@@ -2960,9 +2962,18 @@ button.sidebar-section-header:hover {
   font-size: 18px;
   line-height: 1;
 }
-@media (max-width: 360px) {
-  .reply-bar-preview { display: none; }
-  .reply-bar-status { flex: 1 1 auto; min-width: 0; }
+@container (max-width: 360px) {
+  .reply-bar-actions {
+    display: grid;
+    grid-template-columns: max-content 1fr max-content;
+  }
+  .reply-bar-status {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    min-width: 0;
+    min-height: 1em;
+  }
+  .reply-bar-close { margin-left: 0; }
 }
 
 /* xterm overrides */

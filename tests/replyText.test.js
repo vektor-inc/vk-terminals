@@ -6,6 +6,7 @@ const {
   containsReplyDismissInput,
   detectReplyText,
   extractLatestReplyText,
+  stripInvisibleControlCharacters,
 } = require('../renderer/replyText');
 
 function bufferOf(rows) {
@@ -144,6 +145,32 @@ test('終わりの目印が無い出力途中は未確定にする', () => {
   assert.equal(extractLatestReplyText(['[ユーザー返信用]', '本文']), null);
 });
 
+test('最新の返信文が出力途中なら確定済みの古い返信文を返さない', () => {
+  assert.equal(extractLatestReplyText([
+    '[ユーザー返信用]', '古い', '',
+    '[ユーザー返信用]', '新しい出力途中',
+  ]), null);
+});
+
+test('本文の tree 罫線は内容を残し、入力枠の水平線だけを除く', () => {
+  assert.equal(extractLatestReplyText([
+    '[ユーザー返信用]',
+    '├── src',
+    '│   └── app.js',
+    '',
+  ]), '[ユーザー返信用]\nsrc\napp.js');
+});
+
+test('コピー対象から改行以外の見えない制御文字を除く', () => {
+  assert.equal(
+    stripInvisibleControlCharacters('[ユーザー返信用]\n返\u0007信\u200b文\u2066'),
+    '[ユーザー返信用]\n返信文',
+  );
+  assert.equal(extractLatestReplyText([
+    '[ユーザー返信用]', '返\u0007信\u200b文', '',
+  ]), '[ユーザー返信用]\n返信文');
+});
+
 test('複数の返信文から最新のものを採る', () => {
   assert.equal(extractLatestReplyText([
     '[ユーザー返信用]', '古い', '',
@@ -164,6 +191,7 @@ test('本来の複数行の改行は残す', () => {
 test('返信バーは本文・改行・貼り付けで閉じ、自動応答と移動キーでは閉じない', () => {
   assert.equal(containsReplyDismissInput('a'), true);
   assert.equal(containsReplyDismissInput('\r'), true);
+  assert.equal(containsReplyDismissInput('\t'), false);
   assert.equal(containsReplyDismissInput('\x1b[200~text\x1b[201~'), true);
   assert.equal(containsReplyDismissInput('\x1b[I'), false);
   assert.equal(containsReplyDismissInput('\x1b[A'), false);

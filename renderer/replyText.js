@@ -11,6 +11,9 @@
 
 const REPLY_MARKER = '[ユーザー返信用]';
 const BOX_DRAWING_LINE_PATTERN = /^[\s─-╿]+$/;
+const HORIZONTAL_LINE_PATTERN = /[─━═╌╍┄┅┈┉]+/g;
+const EDGE_BOX_DRAWING_PATTERN = /^[\s│┃┆┇┊┋┌┐└┘├┤┬┴┼╭╮╰╯]+|[\s│┃┆┇┊┋┌┐└┘├┤┬┴┼╭╮╰╯]+$/g;
+const INVISIBLE_CONTROL_PATTERN = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f​-‏‪-‮⁦-⁩]/g;
 const INK_RIGHT_MARGIN_CELLS = 3;
 
 function leadingWidth(text) {
@@ -18,7 +21,14 @@ function leadingWidth(text) {
 }
 
 function cleanLine(text) {
-  return String(text).replace(/\s*[─-╿]+\s*/g, ' ').trim();
+  return String(text)
+    .replace(HORIZONTAL_LINE_PATTERN, ' ')
+    .replace(EDGE_BOX_DRAWING_PATTERN, '')
+    .trim();
+}
+
+function stripInvisibleControlCharacters(text) {
+  return String(text).replace(INVISIBLE_CONTROL_PATTERN, '');
 }
 
 // Ink の物理行分割を、端末上のセル幅に合わせて判定する。
@@ -117,14 +127,14 @@ function extractLatestReplyText(lines, cols) {
         captured.push({ text, indent: leadingWidth(text), physicalText: text });
       }
     }
-    if (!terminated || captured.length < 2) continue;
+    if (!terminated || captured.length < 2) return null;
 
     const commonIndent = Math.min(...captured.map(line => line.indent));
     const result = captured
       .map(line => cleanLine(line.text.slice(commonIndent)))
       .join('\n')
       .trimEnd();
-    if (result.includes('\n')) return result;
+    if (result.includes('\n')) return stripInvisibleControlCharacters(result);
   }
   return null;
 }
@@ -138,7 +148,7 @@ function detectReplyText(buffer, maxLines, cols) {
 function containsReplyDismissInput(data) {
   if (typeof data !== 'string' || !data) return false;
   if (data.startsWith('\x1b')) return data.startsWith('\x1b[200~') && data.includes('\x1b[201~');
-  return /[\r\n\t\x20-\x7e\u0080-\uffff]/.test(data);
+  return /[\r\n\x20-\x7e\u0080-\uffff]/.test(data);
 }
 
 return {
@@ -147,5 +157,6 @@ return {
   detectReplyText,
   extractLatestReplyText,
   readRecentBufferLines,
+  stripInvisibleControlCharacters,
 };
 });

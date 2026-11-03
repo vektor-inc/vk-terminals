@@ -508,23 +508,25 @@ function scheduleReplyCheck(paneId) {
     } catch (_e) {
       return;
     }
-    if (!next || next === current.replyText || next === current.dismissedReplyText) return;
+    if (!next) return;
+    const nextIdentity = next.replace(/\s+/g, '');
+    if (nextIdentity === current.replyIdentity || nextIdentity === current.dismissedReplyIdentity) return;
     current.replyText = next;
+    current.replyIdentity = nextIdentity;
     current.replyGeneration += 1;
-    render();
-    requestAnimationFrame(() => fitTerminal(paneId));
+    updatePaneReplyBar(paneId);
   }, REPLY_SCAN_DEBOUNCE_MS);
 }
 
 function dismissReplyBar(paneId, { focus = false } = {}) {
   const t = terminals[paneId];
   if (!t || !t.replyText) return;
-  t.dismissedReplyText = t.replyText;
+  t.dismissedReplyIdentity = t.replyIdentity;
   t.replyText = null;
+  t.replyIdentity = null;
   t.replyGeneration += 1;
-  render();
+  updatePaneReplyBar(paneId);
   requestAnimationFrame(() => {
-    fitTerminal(paneId);
     if (focus) terminals[paneId]?.term.focus();
   });
 }
@@ -767,6 +769,14 @@ async function createTerminal(paneId, cwd, options = {}) {
 
   // Shift+Enter を改行として送信（Claude Code の keybindings.json 対応）
   term.attachCustomKeyEventHandler((ev) => {
+    // Alt+Shift+C は既存操作や端末で頻用する補完・中断キーと衝突せず、返信バーへ移動できる。
+    if (ev.key.toLowerCase() === 'c' && ev.altKey && ev.shiftKey && !ev.ctrlKey && !ev.metaKey) {
+      if (!terminals[paneId]?.replyText) return true;
+      if (ev.type === 'keydown') {
+        document.querySelector(`.pane[data-id="${paneId}"] > .reply-bar button`)?.focus();
+      }
+      return false;
+    }
     if (ev.key === 'Enter' && ev.shiftKey && !ev.ctrlKey && !ev.altKey && !ev.metaKey) {
       if (ev.type === 'keydown') {
         // CSI u エンコーディングで Shift+Enter を送信
@@ -874,7 +884,8 @@ async function createTerminal(paneId, cwd, options = {}) {
     waitingCheckTimer: null,
     replyCheckTimer: null,
     replyText: null,
-    dismissedReplyText: null,
+    replyIdentity: null,
+    dismissedReplyIdentity: null,
     replyGeneration: 0,
     waitingPendingSince: 0,
     lastWaitingBeepAt: 0,
@@ -3403,6 +3414,7 @@ function createReplyBar(paneId, replyText, paneIdLabel) {
   copyButton.type = 'button';
   copyButton.textContent = '返信文をコピー';
   copyButton.setAttribute('aria-label', `返信文をコピー${paneSuffix}`);
+  copyButton.title = '返信文をコピー（端末から Alt+Shift+C で移動、Esc で端末へ戻る）';
   const status = document.createElement('span');
   status.className = 'reply-bar-status';
   status.setAttribute('role', 'status');
@@ -3426,9 +3438,35 @@ function createReplyBar(paneId, replyText, paneIdLabel) {
     }, 2000);
   });
   closeButton.addEventListener('click', () => dismissReplyBar(paneId, { focus: true }));
+  bar.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      terminals[paneId]?.term.focus();
+      return;
+    }
+    if (event.key !== 'Tab') return;
+    event.preventDefault();
+    const buttons = [copyButton, closeButton];
+    const currentIndex = buttons.indexOf(document.activeElement);
+    const offset = event.shiftKey ? -1 : 1;
+    buttons[(currentIndex + offset + buttons.length) % buttons.length].focus();
+  });
   actions.append(copyButton, status, closeButton);
   bar.append(preview, actions);
   return bar;
+}
+
+// 返信バーだけを差し替え、入力中の xterm と IME の DOM・フォーカスを維持する。
+function updatePaneReplyBar(paneId) {
+  const pane = document.querySelector(`.pane[data-id="${paneId}"]`);
+  if (!pane) return;
+  pane.querySelector(':scope > .reply-bar')?.remove();
+  const t = terminals[paneId];
+  if (t?.replyText) {
+    const paneIdLabel = getPaneIdBadgeLabel(t.termId);
+    pane.querySelector(':scope > .term-container')?.after(createReplyBar(paneId, t.replyText, paneIdLabel));
+  }
+  requestAnimationFrame(() => fitTerminal(paneId));
 }
 
 // issue #408: fitAddon.proposeDimensions() が返す cols は「行が折り返し直前まで
@@ -3999,6 +4037,7 @@ function renderLeaf(node) {
     if (t) {
       VKIpc.send('terminal:input', t.termId, text);
       markPaneInput(node.id);
+      if (containsReplyDismissInput(text)) dismissReplyBar(node.id);
     }
 
     // ドロップ完了フラッシュフィードバック

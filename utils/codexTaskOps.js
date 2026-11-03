@@ -343,6 +343,14 @@ function parseGhPrEdit(tokens) {
   return { ok: true, bin: 'gh', operation: 'pr-edit', number, title, body, textFiles: { title: titleFile, body: bodyFile }, needsGitHub: true };
 }
 
+// PR のマージは番号 1 つだけを受ける。方式・head 固定・リポジトリは入口側で組み立てるため、利用者指定のフラグはすべて拒否する。
+function parseGhPrMerge(tokens) {
+  if (tokens.length !== 1 || hasUnsafeCharacter(tokens[0]) || !POSITIVE_NUMBER_PATTERN.test(tokens[0])) {
+    return fail('gh pr merge needs one valid PR number and no flags');
+  }
+  return { ok: true, bin: 'gh', operation: 'pr-merge', number: tokens[0], needsGitHub: true };
+}
+
 // ラベル名は日本語・空白・`:` を含みうるので文字種は絞らず、危険なものだけを拒否する。
 // 制御文字・改行・カンマとダブルクォート（gh の --label は CSV として解析されるため、判定と実際の解釈を一致させる）・先頭 `-`・前後の空白・空文字・過度な長さ（GitHub の上限 50 文字）。
 function isSafeLabelName(value) {
@@ -616,6 +624,11 @@ function parseTaskCommand(argv) {
       // 操作対象は起動時に固定したリポジトリだけ。別リポジトリの明示は受けない。
       if (targetRepo !== undefined) return fail('gh pr edit cannot target another repository');
       return parseGhPrEdit(tokens);
+    }
+    if (group === 'pr' && action === 'merge') {
+      // マージは起動時に固定したリポジトリだけが対象。owner/repo の明示も受けない。
+      if (targetRepo !== undefined) return fail('gh pr merge cannot target another repository');
+      return parseGhPrMerge(tokens);
     }
     const labelOperation = REVIEW_LABEL_COMMANDS[`${group} ${action}`];
     if (labelOperation !== undefined) {
@@ -1571,6 +1584,94 @@ function executePrEdit({ parsed, binding, cwd, env, fsImpl, spawnSync, reject, w
   return 0;
 }
 
+// `gh pr merge <番号>` は、PR・レビュー・CI・マージ可能状態を読み戻してから、確認済み head に固定して squash マージする。
+// gh の終了コードだけでは成功とせず、最後に state が MERGED になったことを読み戻して判定する。
+function executePrMerge({ parsed, binding, cwd, env, spawnSync, reject, writeOut }) {
+  const runGh = (args) => spawnSync(binding.gh, withBoundRepository(args, binding.repo), { cwd, env, encoding: 'utf8' });
+  const detail = (result) => String(result.stderr || '').trim().split('\n')[0] || (result.error && result.error.code) || `exit ${result.status}`;
+  const parseJson = (result, description, { acceptNonzero = false } = {}) => {
+    if (result.error || (!acceptNonzero && result.status !== 0)) return { error: `task command rejected: ${description} could not be read: ${detail(result)}` };
+    try {
+      return { value: JSON.parse(String(result.stdout)) };
+    } catch (_error) {
+      return { error: `task command rejected: ${description} returned invalid JSON` };
+    }
+  };
+
+  // 1. PR の現在状態と、以降の判定・マージに固定する head SHA を読む。
+  const fields = 'state,isDraft,headRefOid,labels,comments,mergeable,mergeStateStatus,statusCheckRollup';
+  const viewed = parseJson(runGh(['pr', 'view', parsed.number, '--json', fields]), 'PR');
+  if (viewed.error) return reject(viewed.error);
+  const pr = viewed.value;
+  if (!pr || pr.state !== 'OPEN') return reject(`task command rejected: PR state is ${JSON.stringify(pr && pr.state)} (expected OPEN)`);
+  if (pr.isDraft !== false) return reject('task command rejected: PR is a draft');
+  const head = pr.headRefOid;
+  if (typeof head !== 'string' || !/^[0-9a-fA-F]{40}$/.test(head)) return reject('task command rejected: PR head SHA is missing or invalid');
+  if (!Array.isArray(pr.statusCheckRollup)) return reject('task command rejected: PR statusCheckRollup is missing or invalid');
+
+  // 2. ラベルと、権限のある投稿者による最新のレビュー完了マーカーが現在の head と一致することを確かめる。
+  const labels = Array.isArray(pr.labels) ? pr.labels.map((label) => label && label.name) : [];
+  if (!labels.includes(REVIEW_PASSED_LABEL)) return reject(`task command rejected: PR does not have the ${REVIEW_PASSED_LABEL} label`);
+  const associations = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
+  const markers = (Array.isArray(pr.comments) ? pr.comments : []).flatMap((comment, index) => {
+    if (!comment || !associations.has(comment.authorAssociation) || typeof comment.body !== 'string') return [];
+    const matches = [...comment.body.matchAll(/^agent-review-passed-sha:[ \t]*([0-9a-fA-F]{40})[ \t]*$/gm)];
+    if (matches.length === 0) return [];
+    const createdAt = Date.parse(comment.createdAt || '');
+    return [{ sha: matches[matches.length - 1][1], createdAt, index }];
+  }).sort((a, b) => a.createdAt - b.createdAt || a.index - b.index);
+  if (markers.length === 0) return reject('task command rejected: trusted review completion marker was not found');
+  if (markers.some((marker) => Number.isNaN(marker.createdAt))) {
+    return reject('task command rejected: review completion marker createdAt is invalid');
+  }
+  const reviewSha = markers[markers.length - 1].sha;
+  if (reviewSha !== head) return reject(`task command rejected: review completion marker SHA ${reviewSha} does not match PR head ${head}`);
+
+  // 3. gh pr checks は未完了・失敗・0 件でも非 0 になり得るため、bucket と rollup の両方で判定する。
+  const checksResult = runGh(['pr', 'checks', parsed.number, '--json', 'bucket']);
+  const noChecksReported = Number.isInteger(checksResult.status) && checksResult.status !== 0
+    && String(checksResult.stdout || '').trim() === ''
+    && String(checksResult.stderr || '').split('\n')[0].startsWith('no checks reported');
+  if (checksResult.error || (checksResult.status !== 0 && !noChecksReported && String(checksResult.stdout || '').trim() === '')) {
+    return reject(`task command rejected: PR checks could not be read: ${detail(checksResult)}`);
+  }
+  let checks;
+  if (noChecksReported) {
+    checks = [];
+  } else {
+    try {
+      checks = JSON.parse(String(checksResult.stdout));
+    } catch (_error) {
+      return reject('task command rejected: PR checks returned invalid JSON');
+    }
+  }
+  if (!Array.isArray(checks)) return reject('task command rejected: PR checks returned invalid JSON');
+  if (checks.length === 0 && pr.statusCheckRollup.length !== 0) {
+    return reject('task command rejected: PR checks reported no checks but statusCheckRollup is not empty');
+  }
+  for (const check of checks) {
+    const bucket = check && check.bucket;
+    if (!['pass', 'skipping'].includes(bucket)) return reject(`task command rejected: PR check bucket is ${JSON.stringify(bucket)}`);
+  }
+
+  // 4. GitHub が返す値は未知値も拒否する許可リスト方式にする。
+  if (pr.mergeable !== 'MERGEABLE') return reject(`task command rejected: mergeable is ${JSON.stringify(pr.mergeable)} (expected MERGEABLE)`);
+  if (!['CLEAN', 'HAS_HOOKS'].includes(pr.mergeStateStatus)) {
+    return reject(`task command rejected: mergeStateStatus is ${JSON.stringify(pr.mergeStateStatus)} (expected CLEAN or HAS_HOOKS)`);
+  }
+
+  // 5. 読み戻した head と squash 方式に固定して実行し、state の再読取だけを成功判定に使う。
+  const merged = runGh(['pr', 'merge', parsed.number, '--squash', '--match-head-commit', head]);
+  if (merged.error || merged.status !== 0) return reject(`task command failed: gh pr merge failed: ${detail(merged)}`);
+  const verified = parseJson(runGh(['pr', 'view', parsed.number, '--json', 'state']), 'merged PR');
+  if (verified.error) return reject(verified.error);
+  if (!verified.value || verified.value.state !== 'MERGED') {
+    return reject(`task command failed: PR #${parsed.number} state is ${JSON.stringify(verified.value && verified.value.state)} after merge (expected MERGED)`);
+  }
+  writeOut(`merged PR #${parsed.number} with squash at ${head}\n`);
+  return 0;
+}
+
 /**
  * `prepare worktree <base> <issue番号> <ブランチ> <worktree名>`。vk-agents の repo-prepare.sh issue-worktree と同じ処理を、
  * この入口の中で行う（対象が vk-agents 自身でも、Codex が書き換えられるスクリプトを囲いの外で動かさないため）。
@@ -2353,6 +2454,7 @@ function runTaskCommand(argv, deps = {}) {
   }
   if (parsed.operation === 'issue-edit') return executeIssueEdit({ parsed, binding, cwd, env, spawnSync, reject, writeOut });
   if (parsed.operation === 'pr-edit') return executePrEdit({ parsed, binding, cwd, env, fsImpl, spawnSync, reject, writeOut, deps });
+  if (parsed.operation === 'pr-merge') return executePrMerge({ parsed, binding, cwd, env, spawnSync, reject, writeOut });
 
   const bin = parsed.bin === 'gh' ? binding.gh : binding.git;
   let ghArgs = parsed.args;

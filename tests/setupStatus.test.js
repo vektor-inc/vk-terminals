@@ -104,6 +104,23 @@ test('normalizeSetupStatus: HTML らしい文字列も、加工せずそのま�
   assert.equal(result.status.requirements[0].label, '<img src=x onerror=alert(1)>');
 });
 
+test('normalizeSetupStatus: statusMessage は文字列だけをサニタイズして受け取る', () => {
+  const result = normalizeSetupStatus(status([
+    row({ id: 'a', ok: false, statusMessage: '未設定\nです' }),
+    row({ id: 'b', label: 'B', required: false, statusMessage: 42 }),
+  ]));
+  assert.equal(result.status.requirements[0].statusMessage, '未設定 です');
+  assert.equal(result.status.requirements[1].statusMessage, '');
+});
+
+test('normalizeSetupStatus: statusMessage は上限で切り詰める', () => {
+  const result = normalizeSetupStatus(status([
+    row({ ok: false, statusMessage: 'あ'.repeat(LIMITS.statusMessage + 10) }),
+  ]));
+  assert.equal(result.status.requirements[0].statusMessage.length, LIMITS.statusMessage);
+  assert.ok(result.status.requirements[0].statusMessage.endsWith('…'));
+});
+
 test('normalizeSetupStatus: commands 欄が無いときは空配列（hint からコマンドを抜き出さない）', () => {
   const result = normalizeSetupStatus(status([row({ ok: false, hint: '`npm install -g @anthropic-ai/claude-code` を実行' })]));
   assert.deepEqual(result.status.requirements[0].commands, []);
@@ -217,6 +234,16 @@ test('buildSetupViewModel: 理由欄が無い行は状態の文言を出さな�
   assert.equal(claude.showNotOnPathNote, true);
   assert.equal(gh.stateText, '');
   assert.equal(gh.showNotOnPathNote, false);
+});
+
+test('buildSetupViewModel: 未充足行の statusMessage を表示用データへ渡し、充足済みでは表示しない', () => {
+  const normalized = normalizeSetupStatus(status([
+    row({ id: 'missing', label: '未設定', ok: false, statusMessage: '設定してください。' }),
+    row({ id: 'done', label: '設定済み', ok: true, statusMessage: '表示しません。' }),
+  ]));
+  const rows = buildSetupViewModel(normalized.status).groups[0].required;
+  assert.equal(rows.pending[0].statusMessage, '設定してください。');
+  assert.equal(rows.satisfied[0].statusMessage, '');
 });
 
 test('buildSetupViewModel: 「セットアップで設定するもの」は hint を既定では出さず「詳しく」に畳む。「自分で入れるもの」は hint をそのまま出す', () => {

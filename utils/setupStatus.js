@@ -28,6 +28,7 @@ const LIMITS = Object.freeze({
   label: 80,
   current: 200,
   hint: 600,
+  statusMessage: 600,
   command: 400,
   os: 24,
 });
@@ -144,6 +145,7 @@ function normalizeSetupStatus(raw) {
       ok: item.ok,
       current: sanitizeText(item.current, LIMITS.current) || '',
       hint: sanitizeText(item.hint, LIMITS.hint) || '',
+      statusMessage: sanitizeText(item.statusMessage, LIMITS.statusMessage) || '',
       // 'external' 以外（A / B / C / manifest など）はすべて「セットアップで設定するもの」に寄せる。
       target: item.target === 'external' ? 'external' : 'setup',
       commands: sanitizeCommands(item.commands),
@@ -190,6 +192,7 @@ function buildRowView(row, { isFirstStep }) {
     commands: row.commands,
     // reason 欄が無いときは状態の文言を出さない（hint から推測しない）。
     stateText: stateTextForReason(row.reason),
+    statusMessage: !row.ok ? row.statusMessage : '',
     showNotOnPathNote: row.reason === 'not-on-path',
     // 「自分で入れるもの」は hint をそのまま出す。「セットアップで設定するもの」は設定ファイルの
     // 書き換え方などが書かれているため、既定では固定の案内にして、元の文は「詳しく」に畳む。

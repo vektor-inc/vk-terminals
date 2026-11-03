@@ -151,6 +151,115 @@ test.describe.serial('設定パネル: 基本フィールド系（issue #348 で
     });
   });
 
+  // ─── issue #501: 必須フィールドの表示と入力中の注意文切り替え ──────────────
+  test.describe('設定パネルの必須フィールド表示（issue #501）', () => {
+    test.afterEach(async () => {
+      const closeButton = win.locator('.settings-close');
+      if ((await closeButton.count()) > 0 && await closeButton.isVisible()) {
+        await closeButton.click().catch(() => {});
+      }
+      await restoreInvoke(win).catch(() => {});
+    });
+
+    test('required が真偽値 true の空欄だけに必須バッジと注意文を表示し、入力中に切り替える', async () => {
+      const descriptor = {
+        available: true,
+        title: '必須表示の検証',
+        targetPath: path.join(tmpRoot, 'required-settings.json'),
+        appVersion: '0.0.0-test',
+        groups: [{
+          label: '基本設定',
+          fields: [
+            { key: 'requiredField', label: '担当者フィルタ', type: 'text', required: true },
+            { key: 'legacyField', label: '取り込みラベル名', type: 'text' },
+            { key: 'invalidRequired', label: '不正型の required', type: 'text', required: 'true' },
+            { key: 'booleanRequired', label: '真偽値の required', type: 'boolean', required: true },
+            {
+              key: 'mode',
+              label: '入力モード',
+              type: 'select',
+              options: [{ value: 'locked', label: '無効' }, { value: 'open', label: '有効' }],
+            },
+            {
+              key: 'disabledRequired',
+              label: '無効化される必須欄',
+              type: 'text',
+              required: true,
+              disabledWhen: { key: 'mode', value: 'locked' },
+            },
+            {
+              key: 'requiredSelect',
+              label: '必須の選択欄',
+              type: 'select',
+              required: true,
+              options: [{ value: '', label: '選択してください' }, { value: 'one', label: '項目1' }],
+            },
+            { key: 'requiredLines', label: '必須の複数行欄', type: 'lines', required: true },
+          ],
+        }],
+        values: {
+          requiredField: '',
+          legacyField: '',
+          invalidRequired: '',
+          booleanRequired: false,
+          mode: 'locked',
+          disabledRequired: '',
+          requiredSelect: '',
+          requiredLines: [],
+        },
+      };
+      await installDescriptorRecordingSaves(win, descriptor);
+      await win.evaluate(() => window.openSettingsModal());
+      await win.waitForSelector('.settings-modal', { state: 'visible' });
+
+      const input = win.getByLabel('担当者フィルタ', { exact: true });
+      const row = input.locator('xpath=ancestor::div[contains(@class,"settings-row")]');
+      const notice = row.locator('.settings-required-notice');
+      await expect(row.locator('.settings-required-badge')).toHaveText('必須');
+      await expect(input).toHaveAttribute('aria-required', 'true');
+      await expect(input).toHaveAttribute('aria-describedby', /set-field-0-required/);
+      await expect(notice).toBeVisible();
+
+      await input.fill('wada');
+      await expect(notice).toBeHidden();
+      await expect(input).not.toHaveAttribute('aria-describedby', /set-field-0-required/);
+      await input.fill('');
+      await expect(notice).toBeVisible();
+      await expect(input).toHaveAttribute('aria-describedby', /set-field-0-required/);
+
+      await expect(win.getByLabel('取り込みラベル名', { exact: true })).not.toHaveAttribute('aria-required', 'true');
+      await expect(win.getByLabel('不正型の required', { exact: true })).not.toHaveAttribute('aria-required', 'true');
+      const booleanInput = win.getByLabel('真偽値の required', { exact: true });
+      await expect(booleanInput).not.toHaveAttribute('aria-required', 'true');
+      await expect(booleanInput.locator('xpath=ancestor::div[contains(@class,"settings-row")]').locator('.settings-required-badge')).toHaveCount(0);
+
+      const disabledInput = win.getByLabel('無効化される必須欄', { exact: true });
+      const disabledRow = disabledInput.locator('xpath=ancestor::div[contains(@class,"settings-row")]');
+      const disabledNotice = disabledRow.locator('.settings-required-notice');
+      await expect(disabledInput).toHaveAttribute('aria-disabled', 'true');
+      await expect(disabledNotice).toBeHidden();
+      await expect(disabledInput).not.toHaveAttribute('aria-describedby', /set-field-5-required/);
+      await win.getByLabel('入力モード', { exact: true }).selectOption('open');
+      await expect(disabledInput).not.toHaveAttribute('aria-disabled', 'true');
+      await expect(disabledNotice).toBeVisible();
+      await expect(disabledInput).toHaveAttribute('aria-describedby', /set-field-5-required/);
+
+      const requiredSelect = win.getByLabel('必須の選択欄', { exact: true });
+      const selectNotice = requiredSelect.locator('xpath=ancestor::div[contains(@class,"settings-row")]').locator('.settings-required-notice');
+      await expect(selectNotice).toBeVisible();
+      await requiredSelect.selectOption('one');
+      await expect(selectNotice).toBeHidden();
+
+      const requiredLines = win.getByLabel('必須の複数行欄', { exact: true });
+      const linesNotice = requiredLines.locator('xpath=ancestor::div[contains(@class,"settings-row")]').locator('.settings-required-notice');
+      await expect(linesNotice).toBeVisible();
+      await requiredLines.fill('/tmp/example');
+      await expect(linesNotice).toBeHidden();
+
+      await expect(win.locator('.settings-required-badge')).toHaveCount(4);
+    });
+  });
+
   // ─── 旧 settings-lines-field-string-value.smoke.spec.js（issue #339） ─────
   test.describe('設定パネルの lines フィールドに文字列値を注入した表示・保存（issue #339）', () => {
     // 3 つの lines フィールドを 1 つのディスクリプタに同居させ、1 つの spec で回帰を

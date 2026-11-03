@@ -88,7 +88,7 @@ const DEFAULT_REMOTE_BASE = 'https://github.com';
 const PROTECTED_BRANCH_NAMES = Object.freeze(['main', 'master', 'HEAD']);
 const WORKTREE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9-]{0,99}$/;
 const CODEX_WORKTREE_PARENT = Object.freeze(['.codex', 'worktrees']);
-// 移行中の起動済みタスクを引き受けるため、旧 Claude 配下も候補に残す。削除時はこの配列から旧候補だけを外す。
+// 移行中の起動済みタスクを引き受けるため、旧 Claude 配下も候補に残す。外す時期は vektor-inc/vk-orchestrator#748 の決定に合わせる。
 const ADOPT_WORKTREE_PARENTS = Object.freeze([CODEX_WORKTREE_PARENT, Object.freeze(['.claude', 'worktrees'])]);
 // メンバー起動の入出力ファイル名（専用フォルダ直下の名前だけ。パス区切り・先頭 `.` は通らない）、モデル名、実行 ID。
 const MEMBER_FILE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
@@ -1830,8 +1830,8 @@ function executePrepareAdoptWorktree({ parsed, binding, cwd, fsImpl, runGit, spa
 
 /**
  * target が base そのもの、または base の配下（どちらも実パス）かを判定する。
- * 親の書き込み範囲は、親を起動した作業フォルダ（Codex の workspace-write はその配下全体）なので、
- * 後から `prepare worktree` で作った worktree（拘束ルート配下の `.codex/worktrees/`）は、親をルートで起動していれば範囲に入る。
+ * 親の書き込み範囲は、親を起動した作業フォルダと専用 config.toml の writable_roots。
+ * クローン本体からの起動では `.codex/worktrees/` を writable_roots に加えるため、後から作った worktree も範囲に入る。
  * 親をサブフォルダで起動した場合や、範囲の外に登録された worktree は入らない。
  * @param {string} target
  * @param {string} base

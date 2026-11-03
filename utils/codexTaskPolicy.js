@@ -148,8 +148,8 @@ function renderAgentsGuide(launcherPath, memberIoDir = null) {
     '- `git commit` は作業ブランチ上でだけ通る。main / master・リモートの既定ブランチ・detached HEAD 上では拒否されるので、先に作業ブランチを作ってから commit する。',
     '- `git push <ブランチ名>` はブランチ名 1 つだけを受け付ける。送り先は入口が固定する（このタスクの GitHub リポジトリ）ので、リモート名・オプション・refspec は渡せない。新規作成と早送りだけが通り、強制上書き・削除・タグは使えない。main / master・リモートの既定ブランチ・detached HEAD・存在しないブランチへの push は拒否される。',
     '- `git fetch` と `git merge` は引数を一切取らない（URL・refspec・ブランチ名・オプションは拒否される）。`git fetch` は GitHub から読んだこのリポジトリのデフォルトブランチだけを、入口が固定した取得元から `refs/remotes/origin/<デフォルトブランチ>` へ取得する。`git merge` はその取得済みデフォルトブランチを、現在の作業ブランチへ merge commit つきで取り込む（squash・早送りだけの取り込みはしない）。先に `git fetch` し、追跡ファイルの未コミット変更が無い作業ブランチ上で実行する。main / master・リモートの既定ブランチ・detached HEAD 上、merge 中、取得済みの ref が無いときは拒否される。競合したときは状態は戻らないので、競合したファイルを直して `git add` し、`git commit -m <メッセージ>` で merge commit を完成させてから `git push <ブランチ名>` する。',
-    '- `prepare worktree <base> <issue番号> <ブランチ> <worktree名>` は、最新の origin/<base> から作業ブランチ付きの worktree（`<リポジトリ>/.codex/worktrees/<worktree名>`）を作る。ブランチ名は `<種類>/<issue番号>-...` の形で、同名のブランチ・パスがあると失敗する。通常のクローンの切り替えはしない。リポジトリのルートで実行する。',
-    '- `prepare adopt-worktree <base> <issue番号> <ブランチ> <worktree名>` は、起動元が先に作った worktree（`<リポジトリ>/.codex/worktrees/<worktree名>`。移行中は旧 `<リポジトリ>/.claude/worktrees/<worktree名>` も可）を引き受け、最新の origin/<base> から作業ブランチを作って切り替える。worktree は作らない。引数の規則は `prepare worktree` と同じ。その worktree の直下で実行し、未コミット変更がある・HEAD が origin/<base> の祖先でない・別のブランチにいる・同名のブランチが別に存在する・作業コミットがあるときは拒否される（拒否されても `prepare worktree` に切り替えない）。同じ作業ブランチで作業コミットが無ければ再開として受け入れ、古ければ最新へ早送りする。',
+    '- `prepare worktree <base> <issue番号> <ブランチ> <worktree名>` は、最新の origin/<base> から作業ブランチ付きの worktree（`<リポジトリ>/.codex/worktrees/<worktree名>`）を作る。クローン本体を作業フォルダにして起動した場合だけ、専用設定が `.codex/worktrees` を追加の書き込み先にする（`.codex` 直下は書けない）。ブランチ名は `<種類>/<issue番号>-...` の形で、同名のブランチ・パスがあると失敗する。通常のクローンの切り替えはしない。リポジトリのルートで実行する。',
+    '- `prepare adopt-worktree <base> <issue番号> <ブランチ> <worktree名>` は、起動元が先に作った worktree（`<リポジトリ>/.codex/worktrees/<worktree名>`。移行中は旧 `<リポジトリ>/.claude/worktrees/<worktree名>` も可。旧置き場所を外す時期は vektor-inc/vk-orchestrator#748 の決定に合わせる）を引き受け、最新の origin/<base> から作業ブランチを作って切り替える。worktree は作らない。引数の規則は `prepare worktree` と同じ。その worktree の直下で実行し、未コミット変更がある・HEAD が origin/<base> の祖先でない・別のブランチにいる・同名のブランチが別に存在する・作業コミットがあるときは拒否される（拒否されても `prepare worktree` に切り替えない）。同じ作業ブランチで作業コミットが無ければ再開として受け入れ、古ければ最新へ早送りする。',
     ...(memberIoDir === null ? [
       '- この入口には入出力フォルダが無いため、`--title-file` / `--body-file` は使えない（拒否される）。`gh pr create` / `gh pr edit` の題・本文は `--title` / `--body` で直接渡す。',
     ] : [
@@ -180,7 +180,7 @@ function renderAgentsGuide(launcherPath, memberIoDir = null) {
  * リポジトリ側から広げられない。記録が無いと起動時に「信頼して続行」が選べ、Enter 1 回で信頼済みになってしまう。
  * @param {string} handoffDir 会話整理の引き継ぎ先（唯一の追加書き込み先）
  * @param {string[]} untrustedProjectPaths 信頼しないプロジェクトとして記録する実パス
- * @param {{extraWritableRoots?: string[], approvalPolicy?: string}} [options] extraWritableRoots はメンバー起動の入出力フォルダ。
+ * @param {{extraWritableRoots?: string[], approvalPolicy?: string}} [options] extraWritableRoots はメンバー起動の入出力フォルダと、必要な場合の `.codex/worktrees`。
  *   approvalPolicy は子の Codex だけ "never"（承認を求める相手がいないため、承認が要る操作は実行せず失敗させる）
  * @returns {string}
  */
@@ -606,6 +606,31 @@ function isParentCwdWritableByParent(parentWorkingDir, writableRoots, tmpRoots, 
 }
 
 /**
+ * クローン本体を cwd にする起動だけ、Codex の worktree 置き場所を追加の書き込み先にする。
+ * `.codex` または `worktrees` が既存のリンク・非ディレクトリなら、リンク先へ権限を広げないため追加しない。
+ * 存在しない場合は、固定入口が後から同じ検査を通して作る字句上のパスを返す。
+ * @param {string} parentWorkingDir 親の起動 cwd の実パス
+ * @param {string} gitCommonDir 共通 Git 管理領域の実パス
+ * @param {object} fsImpl
+ * @returns {string|null}
+ */
+function resolveCodexWorktreesWritableRoot(parentWorkingDir, gitCommonDir, fsImpl) {
+  if (parentWorkingDir !== path.dirname(gitCommonDir)) return null;
+  const candidates = [path.join(parentWorkingDir, '.codex'), path.join(parentWorkingDir, '.codex', 'worktrees')];
+  for (const candidate of candidates) {
+    try {
+      const stat = fsImpl.lstatSync(candidate);
+      if (stat.isSymbolicLink() || !stat.isDirectory()) return null;
+    } catch (error) {
+      if (!error || error.code !== 'ENOENT') throw error;
+    }
+  }
+  const existing = [...candidates].reverse().find((candidate) => fsImpl.existsSync(candidate));
+  if (existing !== undefined && fsImpl.realpathSync(existing) !== existing) return null;
+  return candidates[1];
+}
+
+/**
  * 親 Codex に固定して渡す TMPDIR（実パス）を決める。メンバー起動の判定に使う一時フォルダと、親の起動コマンドへ渡す TMPDIR は、
  * この1つの値から作る（PTY のシェルの設定で別の TMPDIR を受け取って判定をすり抜けないようにするため）。
  * VK Terminals 自身の $TMPDIR が絶対パスで安全な文字だけなら、その実パス。そうでなければ /tmp の実パス。
@@ -762,6 +787,7 @@ function prepareCodexTaskPolicyHome(params) {
     // 固定入口が書き込む Git 管理領域（linked worktree なら元のクローンの共通 .git）。
     const gitCommonDir = resolveGitCommonDir({ dir: cwd, run: runGit, fsImpl });
     if (gitCommonDir === null || !isSafeAbsolutePath(gitCommonDir)) throw new PolicyError('git common directory could not be resolved');
+    const codexWorktreesWritableRoot = resolveCodexWorktreesWritableRoot(parentWorkingDir, gitCommonDir, fsImpl);
     const untrustedProjectPaths = [...new Set([repository.root, parentWorkingDir])];
     // 親の実効 sandbox（起動引数 --sandbox の値。省略時は workspace-write）。メンバー起動の子はこれより広くしない。
     const parentSandbox = params.sandboxMode === undefined ? 'workspace-write' : params.sandboxMode;
@@ -786,7 +812,7 @@ function prepareCodexTaskPolicyHome(params) {
     // 入出力フォルダは実際の準備で必ず新規に作るため、cwd がその中に入ることは無い。書き込み先の候補は引き継ぎ先だけで判定する。
     const isMemberAllowed = () => codexPath !== null && !isParentCwdWritableByParent(
       parentWorkingDir,
-      [handoff.realPath],
+      [handoff.realPath, ...(codexWorktreesWritableRoot === null ? [] : [codexWorktreesWritableRoot])],
       params.tmpRoots === undefined ? ['/tmp', parentTmpdir] : params.tmpRoots,
       fsImpl,
     );
@@ -870,7 +896,7 @@ function prepareCodexTaskPolicyHome(params) {
       };
       return {
         files: {
-          'config.toml': { content: template.renderConfigToml(handoff.realPath, untrustedProjectPaths, { extraWritableRoots: memberIoDir === null ? [] : [memberIoDir], approvalPolicy: child ? 'never' : 'on-request' }), mode: 0o600 },
+          'config.toml': { content: template.renderConfigToml(handoff.realPath, untrustedProjectPaths, { extraWritableRoots: [...(memberIoDir === null ? [] : [memberIoDir]), ...(codexWorktreesWritableRoot === null ? [] : [codexWorktreesWritableRoot])], approvalPolicy: child ? 'never' : 'on-request' }), mode: 0o600 },
           'AGENTS.md': { content: template.renderAgentsGuide(launcherPath, memberEnabled ? memberIoDir : null), mode: 0o600 },
           [GIT_CONFIG_NAME]: { content: template.renderGitConfig(identity), mode: 0o600 },
           [OPS_SCRIPT_NAME]: { content: fsImpl.readFileSync(OPS_SOURCE_PATH, 'utf8'), mode: 0o400 },

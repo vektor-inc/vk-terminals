@@ -4522,6 +4522,54 @@ test('拒否: prepare adopt-worktree はパス不一致（別名・シンボリ�
   }
 });
 
+test('拒否: prepare adopt-worktree は新旧どちらの置き場所でも別名リンク・親フォルダのリンクを拒否する', () => {
+  for (const parent of ['.codex', '.claude']) {
+    const fixture = createFixture();
+    try {
+      attachRemote(fixture);
+      const worktree = createLaunchWorktree(fixture, 'codex-484', parent);
+      const worktreeRoot = path.join(fixture.repo, parent, 'worktrees');
+      const adopt = (cwd, name, root) => run(fixture, ['prepare', 'adopt-worktree', 'main', '484', 'feature/484-adopt', name], {
+        cwd,
+        env: { ...fixture.env, VK_TASK_ROOT: root },
+      });
+
+      fs.symlinkSync(worktree, path.join(worktreeRoot, 'alias'));
+      const alias = adopt(path.join(worktreeRoot, 'alias'), 'alias', worktree);
+      assert.equal(alias.code, 2, parent);
+      assert.match(alias.messages.join(''), new RegExp(`does not match \\${parent}/worktrees/alias`), parent);
+      fs.unlinkSync(path.join(worktreeRoot, 'alias'));
+
+      const movedRoot = path.join(fixture.root, `moved-${parent.slice(1)}-worktrees`);
+      fs.renameSync(worktreeRoot, movedRoot);
+      fs.symlinkSync(movedRoot, worktreeRoot);
+      const linkedRoot = adopt(path.join(worktreeRoot, 'codex-484'), 'codex-484', path.join(movedRoot, 'codex-484'));
+      assert.equal(linkedRoot.code, 2, parent);
+      assert.match(linkedRoot.messages.join(''), /worktrees is a symbolic link or not a directory/, parent);
+    } finally {
+      fixture.cleanup();
+    }
+  }
+});
+
+test('拒否: prepare adopt-worktree は `.codex` 自体がリンクなら引き受けない', () => {
+  const fixture = createFixture();
+  try {
+    attachRemote(fixture);
+    createLaunchWorktree(fixture);
+    const codexDir = path.join(fixture.repo, '.codex');
+    const moved = path.join(fixture.root, 'moved-codex');
+    fs.renameSync(codexDir, moved);
+    fs.symlinkSync(moved, codexDir);
+    const cwd = path.join(codexDir, 'worktrees', 'codex-484');
+    const result = run(fixture, ADOPT_ARGS, { cwd, env: { ...fixture.env, VK_TASK_ROOT: path.join(moved, 'worktrees', 'codex-484') } });
+    assert.equal(result.code, 2);
+    assert.match(result.messages.join(''), /\.codex is a symbolic link or not a directory/);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
 test('許可: prepare adopt-worktree は相対パスの gitdir（管理ディレクトリ基準）の逆参照を受け入れる', () => {
   const fixture = createFixture();
   try {

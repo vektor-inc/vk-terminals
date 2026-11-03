@@ -1,6 +1,6 @@
 # Changelog
 
-- [ 仕様変更 ] Codex のタスク専用 worktree を `.codex/worktrees/` に作成し、引き受け時は移行用の旧 `.claude/worktrees/` も受け付けるように（[#488](https://github.com/vektor-inc/vk-terminals/issues/488)）
+- [ 仕様変更 ] Codex のタスク専用 worktree を編集可能な `.codex/worktrees/` に作成し、引き受け時は移行用の旧 `.claude/worktrees/` も受け付けるように（[#488](https://github.com/vektor-inc/vk-terminals/issues/488)）
 
 ## 1.82.0
 

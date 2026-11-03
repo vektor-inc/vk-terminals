@@ -73,6 +73,7 @@ const {
 const {
   containsReplyDismissInput,
   detectReplyText,
+  isReplyCopyShortcut,
 } = window.VKReplyText;
 const { deriveDisplayWaiting, deriveStatus, shouldBeepForPaneWaiting } = window.VKStatusState;
 const { getStatusPresentation } = window.VKStatusPresentation;
@@ -770,7 +771,7 @@ async function createTerminal(paneId, cwd, options = {}) {
   // Shift+Enter を改行として送信（Claude Code の keybindings.json 対応）
   term.attachCustomKeyEventHandler((ev) => {
     // Alt+Shift+C は既存操作や端末で頻用する補完・中断キーと衝突せず、返信バーへ移動できる。
-    if (ev.key.toLowerCase() === 'c' && ev.altKey && ev.shiftKey && !ev.ctrlKey && !ev.metaKey) {
+    if (isReplyCopyShortcut(ev)) {
       if (!terminals[paneId]?.replyText) return true;
       if (ev.type === 'keydown') {
         document.querySelector(`.pane[data-id="${paneId}"] > .reply-bar button`)?.focus();
@@ -886,6 +887,7 @@ async function createTerminal(paneId, cwd, options = {}) {
     replyText: null,
     replyIdentity: null,
     dismissedReplyIdentity: null,
+    announcedReplyIdentity: null,
     replyGeneration: 0,
     waitingPendingSince: 0,
     lastWaitingBeepAt: 0,
@@ -3407,6 +3409,12 @@ function createReplyBar(paneId, replyText, paneIdLabel) {
   preview.className = 'reply-bar-preview';
   preview.textContent = replyText.split('\n')[1] || '';
   preview.title = replyText;
+  const shortcutLabel = IS_MAC_PLATFORM ? '⌥⇧C でコピーへ・Esc で戻る' : 'Alt+Shift+C でコピーへ・Esc で戻る';
+  const shortcutAnnouncement = IS_MAC_PLATFORM ? 'Option+Shift+C' : 'Alt+Shift+C';
+  const shortcutHint = document.createElement('div');
+  shortcutHint.className = 'reply-bar-shortcut';
+  shortcutHint.setAttribute('aria-hidden', 'true');
+  shortcutHint.textContent = shortcutLabel;
   const actions = document.createElement('div');
   actions.className = 'reply-bar-actions';
   const paneSuffix = paneIdLabel ? `（${paneIdLabel}）` : '';
@@ -3414,11 +3422,24 @@ function createReplyBar(paneId, replyText, paneIdLabel) {
   copyButton.type = 'button';
   copyButton.textContent = '返信文をコピー';
   copyButton.setAttribute('aria-label', `返信文をコピー${paneSuffix}`);
-  copyButton.title = '返信文をコピー（端末から Alt+Shift+C で移動、Esc で端末へ戻る）';
+  copyButton.title = `返信文をコピー（端末から ${shortcutAnnouncement} で移動、Esc で端末へ戻る）`;
   const status = document.createElement('span');
   status.className = 'reply-bar-status';
   status.setAttribute('role', 'status');
   status.setAttribute('aria-live', 'polite');
+  const announcement = document.createElement('span');
+  announcement.className = 'reply-bar-announcement';
+  announcement.setAttribute('role', 'status');
+  announcement.setAttribute('aria-live', 'polite');
+  const terminalState = terminals[paneId];
+  if (terminalState && terminalState.announcedReplyIdentity !== terminalState.replyIdentity) {
+    terminalState.announcedReplyIdentity = terminalState.replyIdentity;
+    requestAnimationFrame(() => {
+      if (announcement.isConnected) {
+        announcement.textContent = `返信文をコピーできます。${shortcutAnnouncement} でコピーボタンへ移動`;
+      }
+    });
+  }
   const closeButton = document.createElement('button');
   closeButton.type = 'button';
   closeButton.className = 'reply-bar-close';
@@ -3452,7 +3473,7 @@ function createReplyBar(paneId, replyText, paneIdLabel) {
     buttons[(currentIndex + offset + buttons.length) % buttons.length].focus();
   });
   actions.append(copyButton, status, closeButton);
-  bar.append(preview, actions);
+  bar.append(preview, shortcutHint, actions, announcement);
   return bar;
 }
 
@@ -3460,11 +3481,15 @@ function createReplyBar(paneId, replyText, paneIdLabel) {
 function updatePaneReplyBar(paneId) {
   const pane = document.querySelector(`.pane[data-id="${paneId}"]`);
   if (!pane) return;
-  pane.querySelector(':scope > .reply-bar')?.remove();
+  const currentBar = pane.querySelector(':scope > .reply-bar');
+  const shouldRestoreBarFocus = currentBar?.contains(document.activeElement) === true;
+  currentBar?.remove();
   const t = terminals[paneId];
   if (t?.replyText) {
     const paneIdLabel = getPaneIdBadgeLabel(t.termId);
-    pane.querySelector(':scope > .term-container')?.after(createReplyBar(paneId, t.replyText, paneIdLabel));
+    const nextBar = createReplyBar(paneId, t.replyText, paneIdLabel);
+    pane.querySelector(':scope > .term-container')?.after(nextBar);
+    if (shouldRestoreBarFocus) nextBar.querySelector('button')?.focus();
   }
   requestAnimationFrame(() => fitTerminal(paneId));
 }

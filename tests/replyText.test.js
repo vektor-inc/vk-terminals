@@ -6,6 +6,7 @@ const {
   containsReplyDismissInput,
   detectReplyText,
   extractLatestReplyText,
+  isReplyCopyShortcut,
   stripInvisibleControlCharacters,
 } = require('../renderer/replyText');
 
@@ -152,7 +153,7 @@ test('最新の返信文が出力途中なら確定済みの古い返信文を�
   ]), null);
 });
 
-test('本文の tree 罫線は内容を残し、入力枠の水平線だけを除く', () => {
+test('本文の tree 罫線と字下げを除き、内容だけを残す', () => {
   assert.equal(extractLatestReplyText([
     '[ユーザー返信用]',
     '├── src',
@@ -163,12 +164,21 @@ test('本文の tree 罫線は内容を残し、入力枠の水平線だけを�
 
 test('コピー対象から改行以外の見えない制御文字を除く', () => {
   assert.equal(
-    stripInvisibleControlCharacters('[ユーザー返信用]\n返\u0007信\u200b文\u2066'),
+    stripInvisibleControlCharacters('[ユーザー返信用]\n返\u0007信\u061c\u200b\u200f\u202a\u202e\u2060\u2066\u2069\ufeff文'),
     '[ユーザー返信用]\n返信文',
   );
   assert.equal(extractLatestReplyText([
     '[ユーザー返信用]', '返\u0007信\u200b文', '',
   ]), '[ユーザー返信用]\n返信文');
+});
+
+test('Option で入力文字が変わっても物理キーと修飾キーでコピー操作を判定する', () => {
+  assert.equal(isReplyCopyShortcut({
+    key: 'Ç', code: 'KeyC', altKey: true, shiftKey: true, ctrlKey: false, metaKey: false,
+  }), true);
+  assert.equal(isReplyCopyShortcut({
+    key: 'Ç', code: 'KeyC', altKey: true, shiftKey: true, ctrlKey: false, metaKey: true,
+  }), false);
 });
 
 test('複数の返信文から最新のものを採る', () => {

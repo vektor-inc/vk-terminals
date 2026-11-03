@@ -13,7 +13,7 @@ const REPLY_MARKER = '[ユーザー返信用]';
 const BOX_DRAWING_LINE_PATTERN = /^[\s─-╿]+$/;
 const HORIZONTAL_LINE_PATTERN = /[─━═╌╍┄┅┈┉]+/g;
 const EDGE_BOX_DRAWING_PATTERN = /^[\s│┃┆┇┊┋┌┐└┘├┤┬┴┼╭╮╰╯]+|[\s│┃┆┇┊┋┌┐└┘├┤┬┴┼╭╮╰╯]+$/g;
-const INVISIBLE_CONTROL_PATTERN = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f​-‏‪-‮⁦-⁩]/g;
+const INVISIBLE_CONTROL_PATTERN = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]/g;
 const INK_RIGHT_MARGIN_CELLS = 3;
 
 function leadingWidth(text) {
@@ -151,11 +151,21 @@ function containsReplyDismissInput(data) {
   return /[\r\n\x20-\x7e\u0080-\uffff]/.test(data);
 }
 
+// 文字配列ではなく物理キーを使い、Option で入力文字が変わる macOS でも判定する。
+function isReplyCopyShortcut(event) {
+  return event?.code === 'KeyC'
+    && event.altKey === true
+    && event.shiftKey === true
+    && event.ctrlKey !== true
+    && event.metaKey !== true;
+}
+
 return {
   REPLY_MARKER,
   containsReplyDismissInput,
   detectReplyText,
   extractLatestReplyText,
+  isReplyCopyShortcut,
   readRecentBufferLines,
   stripInvisibleControlCharacters,
 };

@@ -39,12 +39,65 @@ test('画面幅で折り返した本文は改行なしで連結する', () => {
   assert.equal(detectReplyText(buffer, 200), '[ユーザー返信用]\nvk-terminals と vk-agents をリリースしました。');
 });
 
+test('Ink が字下げして折り返した長い日本語本文は表示幅から判定して連結する', () => {
+  const buffer = bufferOf([
+    { text: '  [ユーザー返信用]' },
+    { text: '  これは画面の右端近くまで続いている長い日本語の返信文で' },
+    { text: '    す。続きも正しくコピーします。' },
+    { text: '' },
+  ]);
+  assert.equal(
+    detectReplyText(buffer, 200, 40),
+    '[ユーザー返信用]\nこれは画面の右端近くまで続いている長い日本語の返信文です。続きも正しくコピーします。',
+  );
+});
+
+test('Ink が英単語の境界で折り返した本文は空白を補って連結する', () => {
+  const buffer = bufferOf([
+    { text: '  [ユーザー返信用]' },
+    { text: '  Please release the updated vk-terminals' },
+    { text: '    package after all checks pass.' },
+    { text: '' },
+  ]);
+  assert.equal(
+    detectReplyText(buffer, 200, 40),
+    '[ユーザー返信用]\nPlease release the updated vk-terminals package after all checks pass.',
+  );
+});
+
+test('前の行に次の語が収まる本来の複数行は改行を残す', () => {
+  const buffer = bufferOf([
+    { text: '  [ユーザー返信用]' },
+    { text: '  Short first line.' },
+    { text: '  Second line.' },
+    { text: '' },
+  ]);
+  assert.equal(
+    detectReplyText(buffer, 200, 40),
+    '[ユーザー返信用]\nShort first line.\nSecond line.',
+  );
+});
+
 test('混入した罫線文字だけを除き通常のハイフンは残す', () => {
   assert.equal(extractLatestReplyText([
     '[ユーザー返信用]',
     '──vk-terminals─と──vk-agents─をリリースしました。#748───────────を進めてください。',
     '────',
-  ]), '[ユーザー返信用]\nvk-terminalsとvk-agentsをリリースしました。#748を進めてください。');
+  ]), '[ユーザー返信用]\nvk-terminals と vk-agents をリリースしました。#748 を進めてください。');
+});
+
+test('罫線が混ざった再描画もきれいな表示も同じ返信文として検出する', () => {
+  const dirty = bufferOf([
+    { text: '[ユーザー返信用]' },
+    { text: '──vk-terminals─と──vk-agents─をリリースしました。#748───────────を進めてください。' },
+    { text: '────' },
+  ]);
+  const clean = bufferOf([
+    { text: '[ユーザー返信用]' },
+    { text: 'vk-terminals と vk-agents をリリースしました。#748 を進めてください。' },
+    { text: '' },
+  ]);
+  assert.equal(detectReplyText(dirty, 200), detectReplyText(clean, 200));
 });
 
 test('終わりの目印が無い出力途中は未確定にする', () => {

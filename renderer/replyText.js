@@ -10,19 +10,65 @@
 })(typeof self !== 'undefined' ? self : this, function () {
 
 const REPLY_MARKER = '[ユーザー返信用]';
-const BOX_DRAWING_PATTERN = /[─-╿]+/g;
 const BOX_DRAWING_LINE_PATTERN = /^[\s─-╿]+$/;
+const INK_RIGHT_MARGIN_CELLS = 3;
 
 function leadingWidth(text) {
   return (String(text).match(/^\s*/) || [''])[0].length;
 }
 
 function cleanLine(text) {
-  return String(text).replace(BOX_DRAWING_PATTERN, '').trimEnd();
+  return String(text).replace(/\s*[─-╿]+\s*/g, ' ').trim();
 }
 
-// xterm の折り返し行だけを改行なしで連結し、物理行の先頭インデントを保持する。
-function readRecentBufferLines(buffer, maxLines) {
+// Ink の物理行分割を、端末上のセル幅に合わせて判定する。
+function isFullWidth(character) {
+  const codePoint = character.codePointAt(0);
+  return codePoint >= 0x1100 && (
+    codePoint <= 0x115f ||
+    codePoint === 0x2329 ||
+    codePoint === 0x232a ||
+    (codePoint >= 0x2e80 && codePoint <= 0xa4cf && codePoint !== 0x303f) ||
+    (codePoint >= 0xac00 && codePoint <= 0xd7a3) ||
+    (codePoint >= 0xf900 && codePoint <= 0xfaff) ||
+    (codePoint >= 0xfe10 && codePoint <= 0xfe19) ||
+    (codePoint >= 0xfe30 && codePoint <= 0xfe6f) ||
+    (codePoint >= 0xff00 && codePoint <= 0xff60) ||
+    (codePoint >= 0xffe0 && codePoint <= 0xffe6) ||
+    (codePoint >= 0x1f300 && codePoint <= 0x1faff) ||
+    (codePoint >= 0x20000 && codePoint <= 0x3fffd)
+  );
+}
+
+function displayWidth(text) {
+  return Array.from(String(text)).reduce((width, character) => width + (isFullWidth(character) ? 2 : 1), 0);
+}
+
+function firstChunk(text) {
+  const content = String(text).trimStart();
+  if (!content) return '';
+  const firstCharacter = Array.from(content)[0];
+  if (isFullWidth(firstCharacter)) return firstCharacter;
+  return (content.match(/^\S+/) || [''])[0];
+}
+
+function isInkWrapped(previousText, nextText, cols) {
+  if (!Number.isFinite(cols) || cols <= 0) return false;
+  if (!String(nextText).trim() || BOX_DRAWING_LINE_PATTERN.test(nextText)) return false;
+  const chunk = firstChunk(nextText);
+  if (!chunk) return false;
+  const usableWidth = Math.max(1, cols - INK_RIGHT_MARGIN_CELLS);
+  return displayWidth(previousText) + displayWidth(chunk) > usableWidth;
+}
+
+function inkJoinSeparator(previousText, nextText) {
+  const previousCharacter = Array.from(previousText.trimEnd()).pop() || '';
+  const nextCharacter = Array.from(nextText.trimStart())[0] || '';
+  return /[A-Za-z0-9-]/.test(previousCharacter) && /[A-Za-z0-9-]/.test(nextCharacter) ? ' ' : '';
+}
+
+// xterm と Ink の折り返し行を改行なしで連結し、物理行の先頭インデントを保持する。
+function readRecentBufferLines(buffer, maxLines, cols) {
   if (!buffer || typeof buffer.length !== 'number' || typeof buffer.getLine !== 'function') return null;
   if (!Number.isFinite(maxLines) || maxLines <= 0 || !Number.isFinite(buffer.length)) return null;
   const lines = [];
@@ -32,6 +78,9 @@ function readRecentBufferLines(buffer, maxLines) {
     const text = line.translateToString(true);
     if (line.isWrapped && lines.length) {
       lines[lines.length - 1].text += text;
+    } else if (lines.length && isInkWrapped(lines[lines.length - 1].text, text, cols)) {
+      const previous = lines[lines.length - 1];
+      previous.text = previous.text.trimEnd() + inkJoinSeparator(previous.text, text) + text.trimStart();
     } else {
       lines.push({ text, indent: leadingWidth(text) });
     }
@@ -76,8 +125,8 @@ function extractLatestReplyText(lines) {
   return null;
 }
 
-function detectReplyText(buffer, maxLines) {
-  const lines = readRecentBufferLines(buffer, maxLines);
+function detectReplyText(buffer, maxLines, cols) {
+  const lines = readRecentBufferLines(buffer, maxLines, cols);
   return lines ? extractLatestReplyText(lines) : null;
 }
 

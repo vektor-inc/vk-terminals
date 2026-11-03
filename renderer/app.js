@@ -504,7 +504,7 @@ function scheduleReplyCheck(paneId) {
     current.replyCheckTimer = null;
     let next = null;
     try {
-      next = detectReplyText(current.term.buffer.active, REPLY_SCAN_LINES);
+      next = detectReplyText(current.term.buffer.active, REPLY_SCAN_LINES, current.term.cols);
     } catch (_e) {
       return;
     }

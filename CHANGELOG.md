@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 不具合修正 ] コンボボックスの候補で表示名と保存値が異なる場合、保存後の入力欄に保存値が表示される不具合を修正（[#504](https://github.com/vektor-inc/vk-terminals/issues/504)）
+
 ## 1.84.1
 
 - [ 不具合修正 ] 担当者フィルタが未設定だとタスクが取り込まれないのに、セットアップ状況パネルと設定パネルでそれが分からない不具合を修正（[#501](https://github.com/vektor-inc/vk-terminals/issues/501)）

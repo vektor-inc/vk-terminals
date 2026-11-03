@@ -515,7 +515,7 @@ function scheduleReplyCheck(paneId) {
     current.replyText = next;
     current.replyIdentity = nextIdentity;
     current.replyGeneration += 1;
-    updatePaneReplyBar(paneId);
+    updatePaneReplyBar(paneId, { announce: true });
   }, REPLY_SCAN_DEBOUNCE_MS);
 }
 
@@ -888,6 +888,7 @@ async function createTerminal(paneId, cwd, options = {}) {
     replyIdentity: null,
     dismissedReplyIdentity: null,
     announcedReplyIdentity: null,
+    replyAnnouncement: '',
     replyGeneration: 0,
     waitingPendingSince: 0,
     lastWaitingBeepAt: 0,
@@ -3427,19 +3428,6 @@ function createReplyBar(paneId, replyText, paneIdLabel) {
   status.className = 'reply-bar-status';
   status.setAttribute('role', 'status');
   status.setAttribute('aria-live', 'polite');
-  const announcement = document.createElement('span');
-  announcement.className = 'reply-bar-announcement';
-  announcement.setAttribute('role', 'status');
-  announcement.setAttribute('aria-live', 'polite');
-  const terminalState = terminals[paneId];
-  if (terminalState && terminalState.announcedReplyIdentity !== terminalState.replyIdentity) {
-    terminalState.announcedReplyIdentity = terminalState.replyIdentity;
-    requestAnimationFrame(() => {
-      if (announcement.isConnected) {
-        announcement.textContent = `返信文をコピーできます。${shortcutAnnouncement} でコピーボタンへ移動`;
-      }
-    });
-  }
   const closeButton = document.createElement('button');
   closeButton.type = 'button';
   closeButton.className = 'reply-bar-close';
@@ -3473,12 +3461,12 @@ function createReplyBar(paneId, replyText, paneIdLabel) {
     buttons[(currentIndex + offset + buttons.length) % buttons.length].focus();
   });
   actions.append(copyButton, status, closeButton);
-  bar.append(preview, shortcutHint, actions, announcement);
+  bar.append(preview, shortcutHint, actions);
   return bar;
 }
 
 // 返信バーだけを差し替え、入力中の xterm と IME の DOM・フォーカスを維持する。
-function updatePaneReplyBar(paneId) {
+function updatePaneReplyBar(paneId, { announce = false } = {}) {
   const pane = document.querySelector(`.pane[data-id="${paneId}"]`);
   if (!pane) return;
   const currentBar = pane.querySelector(':scope > .reply-bar');
@@ -3490,6 +3478,15 @@ function updatePaneReplyBar(paneId) {
     const nextBar = createReplyBar(paneId, t.replyText, paneIdLabel);
     pane.querySelector(':scope > .term-container')?.after(nextBar);
     if (shouldRestoreBarFocus) nextBar.querySelector('button')?.focus();
+  }
+  // 常設の live region はバーの再生成から切り離し、新しい返信を検出したときだけ更新する。
+  if (announce && t?.announcedReplyIdentity !== t?.replyIdentity) {
+    t.announcedReplyIdentity = t.replyIdentity;
+    const shortcutAnnouncement = IS_MAC_PLATFORM ? 'Option+Shift+C' : 'Alt+Shift+C';
+    const announcement = `返信文をコピーできます。${shortcutAnnouncement} でコピーボタンへ移動`;
+    t.replyAnnouncement = announcement;
+    const liveRegion = pane.querySelector(':scope > .reply-bar-announcement');
+    if (liveRegion) liveRegion.textContent = announcement;
   }
   requestAnimationFrame(() => fitTerminal(paneId));
 }
@@ -3892,8 +3889,16 @@ function renderLeaf(node) {
   const termContainer = document.createElement('div');
   termContainer.className = 'term-container';
 
+  // バーの付け外しに左右されないペイン常設の読み上げ領域を用意する。
+  const replyAnnouncement = document.createElement('span');
+  replyAnnouncement.className = 'reply-bar-announcement';
+  replyAnnouncement.setAttribute('role', 'status');
+  replyAnnouncement.setAttribute('aria-live', 'polite');
+  replyAnnouncement.textContent = t?.replyAnnouncement || '';
+
   el.appendChild(header);
   el.appendChild(termContainer);
+  el.appendChild(replyAnnouncement);
   if (t?.replyText) el.appendChild(createReplyBar(node.id, t.replyText, paneIdLabel));
 
   // ─── エージェントルーム（issue #58） ───────────────────────────────────────

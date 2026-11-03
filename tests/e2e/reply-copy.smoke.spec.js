@@ -27,6 +27,8 @@ test('返信文バーから整形済み文字列をコピーし、入力で閉�
       'vk-terminals と vk-agents をリリースしました。#748 を進めてください。',
     );
     await expect(bar.locator('.reply-bar-shortcut')).toContainText('でコピーへ・Esc で戻る');
+    const announcement = win.locator('.pane .reply-bar-announcement').first();
+    await expect(announcement).toHaveText(/返信文をコピーできます/);
 
     // 端末から競合の少ない専用キーでバーへ移り、バー内だけを巡回して端末へ戻れる。
     const screen = win.locator('.pane .xterm-screen').first();
@@ -67,10 +69,11 @@ test('返信文バーから整形済み文字列をコピーし、入力で閉�
     await screen.click();
     await win.keyboard.type('x');
     await expect(bar).toBeHidden();
+    await expect(announcement).toHaveText(/返信文をコピーできます/);
     await win.keyboard.press('Control+C');
-    await win.keyboard.type('echo $((40+2))');
+    await win.keyboard.type('echo $((123400+56))');
     await win.keyboard.press('Enter');
-    await expect(screen).toContainText('42');
+    await expect(screen).toContainText('123456');
   } finally {
     await closeApp({ app, tmpRoot });
   }

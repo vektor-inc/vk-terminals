@@ -172,10 +172,22 @@ test('コピー対象から改行以外の見えない制御文字を除く', ()
   ]), '[ユーザー返信用]\n返信文');
 });
 
-test('Option で入力文字が変わっても物理キーと修飾キーでコピー操作を判定する', () => {
+test('入力文字または物理キーと修飾キーでコピー操作を判定する', () => {
   assert.equal(isReplyCopyShortcut({
     key: 'Ç', code: 'KeyC', altKey: true, shiftKey: true, ctrlKey: false, metaKey: false,
   }), true);
+  assert.equal(isReplyCopyShortcut({
+    key: 'C', code: 'KeyJ', altKey: true, shiftKey: true, ctrlKey: false, metaKey: false,
+  }), true);
+  assert.equal(isReplyCopyShortcut({
+    key: 'v', code: 'KeyV', altKey: true, shiftKey: true, ctrlKey: false, metaKey: false,
+  }), false);
+  assert.equal(isReplyCopyShortcut({
+    key: 'c', code: 'KeyC', altKey: false, shiftKey: true, ctrlKey: false, metaKey: false,
+  }), false);
+  assert.equal(isReplyCopyShortcut({
+    key: 'c', code: 'KeyC', altKey: true, shiftKey: true, ctrlKey: true, metaKey: false,
+  }), false);
   assert.equal(isReplyCopyShortcut({
     key: 'Ç', code: 'KeyC', altKey: true, shiftKey: true, ctrlKey: false, metaKey: true,
   }), false);

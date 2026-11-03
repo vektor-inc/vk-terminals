@@ -151,9 +151,9 @@ function containsReplyDismissInput(data) {
   return /[\r\n\x20-\x7e\u0080-\uffff]/.test(data);
 }
 
-// 文字配列ではなく物理キーを使い、Option で入力文字が変わる macOS でも判定する。
+// 入力文字（event.key）だけでなく物理キー（event.code）でも判定し、配列や Option の差を吸収する。
 function isReplyCopyShortcut(event) {
-  return event?.code === 'KeyC'
+  return (event?.code === 'KeyC' || event?.key?.toLowerCase() === 'c')
     && event.altKey === true
     && event.shiftKey === true
     && event.ctrlKey !== true

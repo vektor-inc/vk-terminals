@@ -211,8 +211,19 @@ async function launchApp({ port, prefix, env = {}, unsetEnv = [], config = {}, l
     }), 'utf8');
     if (typeof seedHome === 'function') seedHome({ tmpHome, configDir });
 
-    // 実環境の VK_TERMINALS_* は既定で中和する。削除ではなく空文字にすることで、
-    // 受け取る側が未指定と同じ既定値へフォールバックしつつ、spec は env で上書きできる。
+    // 実環境（開発者のシェル、vk-orchestrator 配下での起動）から継承される
+    // VK_TERMINALS_* を既定で中和する。アプリ名が変わったり外部の設定ディスクリプタが
+    // 使われたりすると、テストが見ている前提そのものが静かに変わってしまう。
+    // spec の env より前に置いてあるので、意図して指定する spec は上書きで opt-in できる。
+    //
+    // 既定の中和で変数を delete せず空文字を置くのは、受け取る側の実装で結果が同じになるため。
+    //   - main.js の APP_TITLE 解決: VK_TERMINALS_APP_TITLE が空白のみなら既定
+    //     'VK Terminals' を使う（未設定と同じ）。
+    //   - main.js の settingsDescriptorPath(): VK_TERMINALS_SETTINGS が空白のみなら
+    //     null（指定なし）を返し、組み込みディスクリプタへフォールバックする（未設定と同じ）。
+    //   - utils/instanceId.js の resolveInstanceId(): VK_TERMINALS_INSTANCE_ID が空白のみなら
+    //     null を返し、/api/health に instanceId を含めない（未設定と同じ）。
+    // 空文字ではなく「未設定」そのものの起動経路を再現したい spec は unsetEnv で指定する。
     const launchEnv = {
       ...process.env,
       VK_TERMINALS_APP_TITLE: '',
@@ -222,6 +233,9 @@ async function launchApp({ port, prefix, env = {}, unsetEnv = [], config = {}, l
     };
     // 空文字ではなく「未設定」の起動経路を再現する spec のため、指定キーを環境から外す。
     for (const key of unsetEnv) delete launchEnv[key];
+    // 隔離用のキーは spec が渡す env と unsetEnv の後に置く。ここが spec に負けると
+    // 実 HOME を読み書きしたり他の spec とポートを共有したりしてしまうため、
+    // ヘルパーの保証として最後に必ず上書きする。
     launchEnv.HOME = tmpHome;
     launchEnv.USERPROFILE = tmpHome;
     launchEnv.VK_TERMINALS_API_PORT = String(port);

@@ -1612,11 +1612,15 @@ function executePrMerge({ parsed, binding, cwd, env, spawnSync, reject, writeOut
   const associations = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
   const markers = (Array.isArray(pr.comments) ? pr.comments : []).flatMap((comment, index) => {
     if (!comment || !associations.has(comment.authorAssociation) || typeof comment.body !== 'string') return [];
-    const matches = [...comment.body.matchAll(/^agent-review-passed-sha:\s*([0-9a-fA-F]{40})\s*$/gm)];
+    const matches = [...comment.body.matchAll(/^agent-review-passed-sha:[ \t]*([0-9a-fA-F]{40})[ \t]*$/gm)];
     if (matches.length === 0) return [];
-    return [{ sha: matches[matches.length - 1][1], createdAt: Date.parse(comment.createdAt || '') || 0, index }];
+    const createdAt = Date.parse(comment.createdAt || '');
+    return [{ sha: matches[matches.length - 1][1], createdAt, index }];
   }).sort((a, b) => a.createdAt - b.createdAt || a.index - b.index);
   if (markers.length === 0) return reject('task command rejected: trusted review completion marker was not found');
+  if (markers.some((marker) => Number.isNaN(marker.createdAt))) {
+    return reject('task command rejected: review completion marker createdAt is invalid');
+  }
   const reviewSha = markers[markers.length - 1].sha;
   if (reviewSha !== head) return reject(`task command rejected: review completion marker SHA ${reviewSha} does not match PR head ${head}`);
 

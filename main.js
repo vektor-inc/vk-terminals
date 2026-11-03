@@ -66,6 +66,11 @@ const {
 // 自動処理用 Codex のタスク用ポリシー（専用 CODEX_HOME の生成。issue #428）。
 const { resolveCodexTaskPolicyLaunchOptions, resolveCodexPolicyContext } = require('./utils/codexTaskPolicy');
 const {
+  validateClaudeSettingsPresetForEngine,
+  prepareClaudeSettingsPreset,
+  buildClaudeSettingsArgument,
+} = require('./utils/claudeSettingsPreset');
+const {
   checkGitHubReachability,
   resolveE2EGitHubReachabilityOverride,
   runGitHubReachabilityGate,
@@ -293,6 +298,22 @@ const CODEX_TASK_POLICY_HANDOFF_DIR = path.join(os.homedir(), '.claude', 'handof
 // 戻り値の discard() は、専用 CODEX_HOME を作ったのに Codex の起動に使わなかったときに呼んで回収する。
 function resolveCodexLaunchOptions(engine, options, { dryRun = false, cwd } = {}) {
   return resolveCodexTaskPolicyLaunchOptions(engine, options, createCodexPolicyDeps({ dryRun, cwd }));
+}
+
+// 検証済みプリセットだけを VK Terminals の管理領域へ書き出し、コマンド組み立て側でも再検証する。
+function resolveClaudeSettingsLaunchOptions(engine, noClaude, options) {
+  const validated = validateClaudeSettingsPresetForEngine(engine, noClaude, options.claudeSettingsPreset);
+  if (!validated.ok) throw new Error(validated.error);
+  if (validated.preset === undefined) return options;
+  return {
+    ...options,
+    claudeSettingsPath: prepareClaudeSettingsPreset(DATA_DIR, validated.preset, {
+      homeDir: os.homedir(),
+      pathEnv: APP_ORIGINAL_PATH,
+      vkOrchestratorRoot: loadUserConfig().claudeSettingsPresets?.vkOrchestratorRoot,
+    }),
+    buildClaudeSettingsArgument,
+  };
 }
 
 // Codex ポリシーの事前確認と実起動で、同じ依存値を使う。
@@ -2098,13 +2119,21 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
     discardLaunchHome = launchResolution.discard;
     taskPolicyLaunch = isTaskPolicyCodexLaunch(resolvedEngine, launchResolution.options);
     try {
-      const built = buildEngineAwareLaunchCommand(resolvedEngine, options.model, launchResolution.options);
+      const claudeLaunchOptions = resolveClaudeSettingsLaunchOptions(resolvedEngine, noClaude, {
+        ...launchResolution.options,
+        claudeSettingsPreset: options.claudeSettingsPreset,
+      });
+      const built = buildEngineAwareLaunchCommand(resolvedEngine, options.model, claudeLaunchOptions);
       if (built.modelIgnored) {
         console.warn(`${LOG_PREFIX} model is ignored for engine '${resolvedEngine}'`);
       }
       launchCommand = built.command;
     } catch (error) {
       discardLaunchHome();
+      if (options.claudeSettingsPreset !== undefined) {
+        console.error(`${LOG_PREFIX} Claude settings preset preparation failed:`, error);
+        throw new Error('Claude settings preset hook is unavailable');
+      }
       throw error;
     }
   }
@@ -3535,7 +3564,7 @@ function startHttpApi() {
       return;
     }
 
-    // POST /api/new-pane  { cwd?: "/path/to/dir", noClaude?: boolean, engine?: "claude"|"codex", stashed?: boolean, model?: string } — 新規ペインを作成して termId を返す
+    // POST /api/new-pane  { cwd?: "/path/to/dir", noClaude?: boolean, engine?: "claude"|"codex", stashed?: boolean, model?: string, claudeSettingsPreset?: string } — 新規ペインを作成して termId を返す
     //   cwd を指定すればそのディレクトリで開く。未指定なら HOME で開く。
     //   noClaude: true を指定すると、新規ペインで claude を自動起動せず素のシェルとして開く。
     //   engine: 起動する AI エンジン（issue #367）。許可値は "claude" / "codex" のみ
@@ -3545,6 +3574,7 @@ function startHttpApi() {
     //   model を指定すると、そのモデルで選択エンジンを起動する（--model '<model>'）。
     //     許可するのは英数字・`.`・`_`・`-`・`[`・`]` のみ・64 文字以内で、先頭は英数字。
     //     それ以外は 400 で拒否しペインを作らない。未指定なら各エンジンを素のコマンドで起動する。
+    //   claudeSettingsPreset は許可済みの Claude Code 設定だけを起動ごとに追加する。
     if (req.method === 'POST' && url.pathname === '/api/new-pane') {
       if (isForbiddenOrigin(req)) {
         res.writeHead(403, { 'Content-Type': 'application/json' });
@@ -3576,6 +3606,7 @@ function startHttpApi() {
         let requestedApprovalPolicy;
         let requestedSandboxMode;
         let requestedCodexPolicy;
+        let requestedClaudeSettingsPreset;
         if (body.length > 0) {
           try {
             const parsed = JSON.parse(body);
@@ -3630,9 +3661,39 @@ function startHttpApi() {
             requestedApprovalPolicy = codexOptions.approvalPolicy;
             requestedSandboxMode = codexOptions.sandboxMode;
             requestedCodexPolicy = codexOptions.codexPolicy;
+            const claudePreset = validateClaudeSettingsPresetForEngine(
+              requestedEngine || 'claude',
+              requestedNoClaude === true || (requestedNoClaude === undefined && globalPlainMode),
+              parsed?.claudeSettingsPreset
+            );
+            if (!claudePreset.ok) {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: claudePreset.error }));
+              return;
+            }
+            requestedClaudeSettingsPreset = claudePreset.preset;
+            if (requestedClaudeSettingsPreset !== undefined && requestedUseDefaults === true) {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'claudeSettingsPreset cannot be used with useDefaults' }));
+              return;
+            }
           } catch {
             res.writeHead(400, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: 'invalid JSON' }));
+            return;
+          }
+        }
+        // プリセットを指定した場合だけ、renderer へ渡す前に実起動と同じ依存値で設定を用意する。
+        // ここで用意できなければ、ペインを作らずサービス利用不能として返す。
+        if (requestedClaudeSettingsPreset !== undefined) {
+          try {
+            resolveClaudeSettingsLaunchOptions('claude', false, {
+              claudeSettingsPreset: requestedClaudeSettingsPreset,
+            });
+          } catch (error) {
+            console.error(`${LOG_PREFIX} Claude settings preset preflight failed:`, error);
+            res.writeHead(503, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Claude settings preset hook is unavailable' }));
             return;
           }
         }
@@ -3672,6 +3733,7 @@ function startHttpApi() {
           const resolve = (result) => {
             clearTimeout(timeoutId);
             if (result.error) {
+              // 事前確認後の状態変化で terminal:create 側の再準備が失敗した場合は 500 とする。
               res.writeHead(500, { 'Content-Type': 'application/json' });
               res.end(JSON.stringify({ error: result.error }));
             } else {
@@ -3689,6 +3751,7 @@ function startHttpApi() {
           if (typeof requestedApprovalPolicy === 'string') payload.approvalPolicy = requestedApprovalPolicy;
           if (typeof requestedSandboxMode === 'string') payload.sandboxMode = requestedSandboxMode;
           if (requestedCodexPolicy !== undefined) payload.codexPolicy = requestedCodexPolicy;
+          if (requestedClaudeSettingsPreset !== undefined) payload.claudeSettingsPreset = requestedClaudeSettingsPreset;
           try {
             win.webContents.send('terminal:request-new-pane', payload);
           } catch (_error) {
@@ -3782,6 +3845,7 @@ function startHttpApi() {
             isValidEngine,
             isValidModelForEngine,
             validateCodexLaunchOptions,
+            validateClaudeSettingsPresetForEngine,
           });
           if (!request.ok) {
             res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -3896,6 +3960,19 @@ function startHttpApi() {
               res.end(JSON.stringify({ error: launchResolution.error }));
               return;
             }
+            let launchOptions;
+            try {
+              launchOptions = resolveClaudeSettingsLaunchOptions(request.engine, false, {
+                ...launchResolution.options,
+                claudeSettingsPreset: request.claudeSettingsPreset,
+              });
+            } catch (error) {
+              launchResolution.discard();
+              console.error(`${LOG_PREFIX} Claude settings preset restart preparation failed:`, error);
+              res.writeHead(503, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'Claude settings preset hook is unavailable' }));
+              return;
+            }
             let launchHomeInUse = false;
             let startedGeneration = null;
             let startedLaunchToken = null;
@@ -3922,7 +3999,7 @@ function startHttpApi() {
             // 最初の非同期待機より前に旧画面の識別値を無効化し、停止処理中のペインへ
             // 直前の確認結果を使った Enter が割り込まないようにする。
             conditionalTerminalInput.markChanged(request.termId);
-            const operation = restartAgentInTerminal(ptyProcess, request, launchResolution.options, lifecycleLaunch);
+            const operation = restartAgentInTerminal(ptyProcess, request, launchOptions, lifecycleLaunch);
             restartAgentOperations.set(request.termId, operation);
             try {
               const stopped = await operation;

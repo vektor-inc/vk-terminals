@@ -6830,7 +6830,7 @@ VKIpc.on('terminal:agentroom', (termId, agents, replace) => {
 
 // ─── New pane request from HTTP API ──────────────────────────────────────────
 VKIpc.on('terminal:request-new-pane', async (payload = {}) => {
-  const { requestId, cwd, noClaude, engine, stashed, useDefaults, model, approvalPolicy, sandboxMode, codexPolicy } = payload;
+  const { requestId, cwd, noClaude, engine, stashed, useDefaults, model, approvalPolicy, sandboxMode, codexPolicy, claudeSettingsPreset } = payload;
   const reply = (result) => VKIpc.send('terminal:new-pane-created', { requestId, ...result });
   const targetPaneId = findLargestVisiblePaneId() || focusedPaneId || (tree ? getAllLeafIds(tree)[0] : null);
   if (!targetPaneId) {
@@ -6870,6 +6870,7 @@ VKIpc.on('terminal:request-new-pane', async (payload = {}) => {
       splitOptions = withInheritedEngine(splitOptions, targetPaneId);
     }
     if (typeof model === 'string') splitOptions = { ...splitOptions, model };
+    if (typeof claudeSettingsPreset === 'string') splitOptions = { ...splitOptions, claudeSettingsPreset };
     if (typeof approvalPolicy === 'string') splitOptions = { ...splitOptions, approvalPolicy };
     if (typeof sandboxMode === 'string') splitOptions = { ...splitOptions, sandboxMode };
     if (codexPolicy && typeof codexPolicy === 'object') splitOptions = { ...splitOptions, codexPolicy };

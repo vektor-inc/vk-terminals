@@ -911,6 +911,12 @@ curl -s -X POST http://127.0.0.1:13847/api/new-pane \
   -H 'Authorization: Bearer <アクセストークン>' \
   -H 'Content-Type: application/json' \
   -d '{"engine": "codex", "model": "gpt-5.6-sol"}'
+
+# VK Orchestrator 作業ペイン用の Claude Code 設定を追加する
+curl -s -X POST http://127.0.0.1:13847/api/new-pane \
+  -H 'Authorization: Bearer <アクセストークン>' \
+  -H 'Content-Type: application/json' \
+  -d '{"claudeSettingsPreset": "vk-orchestrator-work-pane"}'
 ```
 
 リクエストボディ（任意）:
@@ -923,6 +929,8 @@ curl -s -X POST http://127.0.0.1:13847/api/new-pane \
   - 指定できるのは **英数字・`.`・`_`・`-`・`[`・`]` のみ、64 文字以内、先頭は英数字** の文字列。それ以外の文字（空白・`;`・`&`・`` ` ``・`$`・引用符・改行など）を含む値、長すぎる値、文字列でない値は、どちらの `engine` でも `400` で拒否され、**ペインは作成されません**（値が実在するモデル名かどうかまでは検証していません。文字種・長さのチェックのみです）。
   - 値が選択した `engine` に対応するモデル名かどうかは検証しません。エンジンに合わないモデル名を渡すとペインは作成されますが、AI 側の起動時にエラーになります。呼び出し側で `engine` と `model` の組み合わせを確認してから送信してください。
   - `noClaude: true` と同時に指定した場合は AI を起動しないため、`model` は無視されます。
+- `claudeSettingsPreset`：Claude Code の起動時だけ追加する VK Terminals 管理の設定。許可値は `"vk-orchestrator-work-pane"` のみで、`claude --settings '<管理済みファイル>'` として Stop フックを追加します。任意のパスや JSON は受け付けません。`engine: "codex"`、`noClaude: true`、`useDefaults: true` との併用、空文字・型違い・許可値以外は `400` で拒否します。設定ファイルは `~/.vk-terminals/claude-settings-presets/` に生成し、利用者や対象リポジトリの `.claude/settings.json` は変更しません。VK Orchestrator #755 が `check-turn-end-status-hook` を実装する前提で、Stop フック JSON を標準入力で受け取り、ブロック時は終了コード 2 と標準エラー、または `{"decision":"block","reason":"..."}` を標準出力へ返す必要があります。
+  - VK Orchestrator を VK Terminals の標準配置（VK Terminals の2階層上）以外へ置く場合は、`~/.vk-terminals/config.json` に `{"claudeSettingsPresets":{"vkOrchestratorRoot":"/絶対パス/to/orchestrator"}}` を指定します。値は `package.json` と `bin/vk-orchestrator.js` を含む VK Orchestrator のルートで、単一引用符・制御文字を含まない絶対パスだけを受け付けます。
 - `approvalPolicy`：`engine: "codex"` のときだけ指定できる承認方針。`"untrusted"` / `"on-failure"` / `"on-request"` / `"never"` の許可値だけを受け付け、Codex の `--ask-for-approval` へ渡します。
 - `sandboxMode`：`engine: "codex"` のときだけ指定できるサンドボックス。`"read-only"` / `"workspace-write"` のみ許可し、Codex の `--sandbox` へ渡します。作業フォルダ外への書き込み制限を外す `"danger-full-access"` は受け付けません。
 - `codexPolicy`：`engine: "codex"` のときだけ指定できる、そのペインの Codex だけに適用するタスク用ポリシー（issue #428）。`{"preset": "orchestrated-task", "allowedOwners": ["vektor-inc"]}` の形で、`preset` と任意の `allowedOwners` だけを受け付けます。`allowedOwners` は Orchestrator の `org.allowed_owners` を渡すための owner 名の配列で、値を検証・重複排除して起動時の固定入口へ束縛します。未知のキー・未知の preset・不正な owner・オブジェクト以外は `400` で拒否され、**ペインは作成されません**。省略時は `cwd` の GitHub owner だけを許可し、従来の挙動を保ちます。任意のコマンドライン引数・追加フォルダ・ネットワーク許可は指定できません。指定すると利用者個人の `~/.codex` の設定を読まない、起動ごとに新規作成する専用の設定で Codex が起動します。Git・`git push`・worktree の操作先は `cwd` のリポジトリと登録済み worktree に限定されます。許可済みの GitHub 操作は、従来の拘束先に加えて `vk-task-ops gh <owner/repo> ...` で `allowedOwners` 内の別リポジトリを明示でき、この明示形式ではローカル Git を必要としません。いずれの場合も起動時のリポジトリを確定するため、**`cwd` が必須**です（省略すると `400 {"error": "codexPolicy requires cwd"}`。`cwd` が Git 管理下でない・ホームそのもの・外部コマンドを起動する Git 設定があるリポジトリの場合は `503` で起動しません）。仕様と安全性の判断は [docs/codex-task-policy.md](docs/codex-task-policy.md) を参照してください。
@@ -945,6 +953,7 @@ curl -s -X POST http://127.0.0.1:13847/api/new-pane \
 - `model` が不正: `400 {"error": "invalid model"}`
 - 不正な JSON: `400 {"error": "invalid JSON"}`
 - ウィンドウが利用できない: `503 {"error": "window not available"}`
+- `claudeSettingsPreset` の設定を用意できない: `503 {"error": "Claude settings preset hook is unavailable"}`。ペインは作成されません。事前確認後の状態変化によりペイン作成側の再準備だけが失敗した場合も、同じ固定文言を `500` で返します。
 - `codexPolicy` を固定できない（専用設定を作れない・検証できない）: `503 {"error": "codex task policy unavailable: <理由>"}`。ペインは作成されず、承認方針だけを付けた Codex も起動しません。事前確認の後でペイン作成側だけが失敗した場合も、PTY を作らずに `500` で理由を返します。
 - GitHub への到達確認に失敗: `503 {"error":"github unreachable","githubReachability":{"ok":false,"reason":"unreachable|auth_invalid|transient","message":"<利用者向けの日本語文>"}}`。ペインは作成されません。
 - タイムアウト（15秒）: `504 {"error": "timeout waiting for new pane"}`
@@ -1038,6 +1047,7 @@ curl -s -X POST http://127.0.0.1:13847/api/restart-agent \
 - `cwd`：再起動後の作業ディレクトリ（任意）。省略時は現在のディレクトリを維持します。存在するディレクトリだけを指定できます。
 - `engine`：`"claude"` / `"codex"`（任意、省略時は `"claude"`）。
 - `model`：選択エンジンへ渡すモデル名（任意）。検証規則は `POST /api/new-pane` と同じです。
+- `claudeSettingsPreset`：Claude Code へ追加する管理済み設定（任意）。許可値と組み合わせ制約は `POST /api/new-pane` と同じです。
 - `approvalPolicy` / `sandboxMode` / `codexPolicy`：Codex の承認方針・サンドボックス・タスク用ポリシー（任意）。許可値と制約は `POST /api/new-pane` と同じで、同じ指定なら新規作成と同じ実効ポリシーで起動し直します。`codexPolicy` を付けるときは `cwd` も必須です（省略すると `400 {"error":"codexPolicy requires cwd"}`）。専用設定は、対象ペインの存在と世代を確認した後、AI を止める前に用意します。`codexPolicy` を付けずに再起動すると、前回のポリシーは引き継がれません。再起動前に書き込める範囲を確認するには [`POST /api/codex-policy-context`](#post-apicodex-policy-context) を使います。
 
 レスポンス:
@@ -1048,6 +1058,7 @@ curl -s -X POST http://127.0.0.1:13847/api/restart-agent \
 - 指定ペインが存在しない: `404 {"error":"terminal <id> not found"}`
 - 世代が一致しない: `409 {"error":"generation mismatch","currentGeneration":<現在の世代>}`
 - `codexPolicy` を固定できない: `503 {"error":"codex task policy unavailable: <理由>"}`（実行中の AI は止めません。承認方針だけを付けた Codex も起動しません）
+- `claudeSettingsPreset` の設定を用意できない: `503 {"error":"Claude settings preset hook is unavailable"}`（実行中の AI は止めません）
 - GitHub への到達確認に失敗: `503 {"error":"github unreachable","githubReachability":{"ok":false,"reason":"unreachable|auth_invalid|transient","message":"<利用者向けの日本語文>"}}`（実行中の AI は止めません）
 - 子プロセスの停止を確認できない: `500 {"error":"failed to stop agent"}`（`SIGKILL` まで送った後でも消滅を確認できなかった場合を含みます。この場合「何も起きなかった」わけではなく、対象ペインの AI が停止した状態のまま残っている可能性があるため、呼び出し元は再試行や状態確認を行ってください）
 - 同一ペインへの先行リクエストの完了待ちが 15 秒を超えた: `504 {"error":"timeout waiting for previous restart-agent operation"}`（同じ `termId` への要求は完全に一列に直列化されるため、先行する要求が積み重なっていると待ち時間が伸びます。このリクエスト自身は何も停止・起動しておらず、世代も進んでいません）

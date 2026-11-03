@@ -14,6 +14,7 @@ const {
   quoteShellArgument,
   stopAgentChildren,
 } = require('../utils/restartAgent');
+const { validateClaudeSettingsPresetForEngine } = require('../utils/claudeSettingsPreset');
 
 // cwd の実在確認（fs.promises.stat）は非同期のため、validateRestartAgentRequest の
 // 検証対象ではない（main.js 側で await して別途確認する）。ここでは engine / model の
@@ -35,6 +36,7 @@ const validators = {
     }
     return { ok: true, approvalPolicy: value.approvalPolicy, sandboxMode: value.sandboxMode, codexPolicy: value.codexPolicy };
   },
+  validateClaudeSettingsPresetForEngine,
 };
 
 test('世代番号: AI 起動ペインは 1、素のシェルは 0 で始まり、成功時だけ増やせる', () => {
@@ -69,6 +71,7 @@ test('restart-agent 検証: 必須値を正規化し、engine 省略時は claud
     cwd: undefined,
     engine: 'claude',
     model: undefined,
+    claudeSettingsPreset: undefined,
     approvalPolicy: undefined,
     sandboxMode: undefined,
     codexPolicy: undefined,
@@ -83,6 +86,7 @@ test('restart-agent 検証: 必須値を正規化し、engine 省略時は claud
     cwd: '/valid dir',
     engine: 'codex',
     model: 'gpt-5.6-sol',
+    claudeSettingsPreset: undefined,
     approvalPolicy: 'never',
     sandboxMode: 'workspace-write',
     codexPolicy: undefined,
@@ -101,6 +105,8 @@ test('restart-agent 検証: 不正値をペイン操作前に拒否する', () =
     [{ termId: '1', expectedGeneration: 0, engine: 'codex', approvalPolicy: 'always' }, 'invalid approvalPolicy'],
     [{ termId: '1', expectedGeneration: 0, engine: 'codex', sandboxMode: 'danger-full-access' }, 'invalid sandboxMode'],
     [{ termId: '1', expectedGeneration: 0, model: 'opus; whoami' }, 'invalid model'],
+    [{ termId: '1', expectedGeneration: 0, claudeSettingsPreset: '../x' }, 'invalid claudeSettingsPreset'],
+    [{ termId: '1', expectedGeneration: 0, engine: 'codex', claudeSettingsPreset: 'vk-orchestrator-work-pane' }, 'claudeSettingsPreset requires engine "claude"'],
     [{ termId: '1', expectedGeneration: 0, cwd: '' }, 'invalid cwd'],
     [{ termId: '1', expectedGeneration: 0, cwd: '/tmp/a\rb' }, 'invalid cwd'],
     [{ termId: '1', expectedGeneration: 0, cwd: '/tmp/a\x15b' }, 'invalid cwd'],
@@ -110,6 +116,17 @@ test('restart-agent 検証: 不正値をペイン操作前に拒否する', () =
   for (const [input, error] of cases) {
     assert.deepEqual(validateRestartAgentRequest(input, validators), { ok: false, error });
   }
+});
+
+test('restart-agent 検証: Claude 設定プリセットを再起動要求へ保持する', () => {
+  const result = validateRestartAgentRequest({
+    termId: '1',
+    expectedGeneration: 2,
+    engine: 'claude',
+    claudeSettingsPreset: 'vk-orchestrator-work-pane',
+  }, validators);
+  assert.equal(result.ok, true);
+  assert.equal(result.claudeSettingsPreset, 'vk-orchestrator-work-pane');
 });
 
 // 以下のテストで使う ps 出力は `pid ppid lstart` の3列。lstart は日時としては解釈されず、

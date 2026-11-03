@@ -75,6 +75,12 @@ function validateRestartAgentRequest(value, validators) {
   if (value.model !== undefined && !validators.isValidModelForEngine(engine, value.model)) {
     return { ok: false, error: 'invalid model' };
   }
+  const claudePreset = validators.validateClaudeSettingsPresetForEngine(
+    engine,
+    false,
+    value.claudeSettingsPreset
+  );
+  if (!claudePreset.ok) return claudePreset;
   const codexOptions = validators.validateCodexLaunchOptions(engine, value);
   if (!codexOptions.ok) return codexOptions;
   // タスク用ポリシーは操作を拘束するリポジトリを cwd から決めるため、cwd を必須にする。
@@ -97,6 +103,7 @@ function validateRestartAgentRequest(value, validators) {
     cwd: value.cwd,
     engine,
     model: value.model,
+    claudeSettingsPreset: claudePreset.preset,
     approvalPolicy: codexOptions.approvalPolicy,
     sandboxMode: codexOptions.sandboxMode,
     codexPolicy: codexOptions.codexPolicy,

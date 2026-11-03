@@ -1,6 +1,7 @@
 # Changelog
 
 - [ 不具合修正 ] Claude Code を公式インストーラーで導入した Mac で、シェル設定に `~/.local/bin` が無いと VK Orchestrator のセットアップで Claude Code が見つからず先へ進めない不具合を修正（[#498](https://github.com/vektor-inc/vk-terminals/issues/498)）
+- [ 不具合修正 ] 環境変数 `SHELL` が渡らない状態で zsh の無い Linux（WSLg の Ubuntu など）から起動すると、ペインを開けない不具合を修正（[#464](https://github.com/vektor-inc/vk-terminals/issues/464)）
 
 ## 1.84.0
 

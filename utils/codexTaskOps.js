@@ -1596,7 +1596,7 @@ function executePrMerge({ parsed, binding, cwd, env, spawnSync, reject, writeOut
   };
 
   // 1. PR の現在状態と、以降の判定・マージに固定する head SHA を読む。
-  const fields = 'state,isDraft,headRefOid,labels,comments,mergeable,mergeStateStatus';
+  const fields = 'state,isDraft,headRefOid,labels,comments,mergeable,mergeStateStatus,statusCheckRollup';
   const viewed = parseJson(runGh(['pr', 'view', parsed.number, '--json', fields]), 'PR');
   if (viewed.error) return reject(viewed.error);
   const pr = viewed.value;
@@ -1604,6 +1604,7 @@ function executePrMerge({ parsed, binding, cwd, env, spawnSync, reject, writeOut
   if (pr.isDraft !== false) return reject('task command rejected: PR is a draft');
   const head = pr.headRefOid;
   if (typeof head !== 'string' || !/^[0-9a-fA-F]{40}$/.test(head)) return reject('task command rejected: PR head SHA is missing or invalid');
+  if (!Array.isArray(pr.statusCheckRollup)) return reject('task command rejected: PR statusCheckRollup is missing or invalid');
 
   // 2. ラベルと、権限のある投稿者による最新のレビュー完了マーカーが現在の head と一致することを確かめる。
   const labels = Array.isArray(pr.labels) ? pr.labels.map((label) => label && label.name) : [];
@@ -1619,13 +1620,31 @@ function executePrMerge({ parsed, binding, cwd, env, spawnSync, reject, writeOut
   const reviewSha = markers[markers.length - 1].sha;
   if (reviewSha !== head) return reject(`task command rejected: review completion marker SHA ${reviewSha} does not match PR head ${head}`);
 
-  // 3. gh pr checks は pending / fail があると非 0 になるため、終了コードではなく JSON の state を判定する。
-  const checked = parseJson(runGh(['pr', 'checks', parsed.number, '--json', 'state']), 'PR checks', { acceptNonzero: true });
-  if (checked.error) return reject(checked.error);
-  if (!Array.isArray(checked.value) || checked.value.length === 0) return reject('task command rejected: PR has no checks to verify');
-  for (const check of checked.value) {
-    const state = check && check.state;
-    if (!['pass', 'skipping'].includes(state)) return reject(`task command rejected: PR check state is ${JSON.stringify(state)}`);
+  // 3. gh pr checks は未完了・失敗・0 件でも非 0 になり得るため、bucket と rollup の両方で判定する。
+  const checksResult = runGh(['pr', 'checks', parsed.number, '--json', 'bucket']);
+  const noChecksReported = Number.isInteger(checksResult.status) && checksResult.status !== 0
+    && String(checksResult.stdout || '').trim() === ''
+    && String(checksResult.stderr || '').split('\n')[0].startsWith('no checks reported');
+  if (checksResult.error || (checksResult.status !== 0 && !noChecksReported && String(checksResult.stdout || '').trim() === '')) {
+    return reject(`task command rejected: PR checks could not be read: ${detail(checksResult)}`);
+  }
+  let checks;
+  if (noChecksReported) {
+    checks = [];
+  } else {
+    try {
+      checks = JSON.parse(String(checksResult.stdout));
+    } catch (_error) {
+      return reject('task command rejected: PR checks returned invalid JSON');
+    }
+  }
+  if (!Array.isArray(checks)) return reject('task command rejected: PR checks returned invalid JSON');
+  if (checks.length === 0 && pr.statusCheckRollup.length !== 0) {
+    return reject('task command rejected: PR checks reported no checks but statusCheckRollup is not empty');
+  }
+  for (const check of checks) {
+    const bucket = check && check.bucket;
+    if (!['pass', 'skipping'].includes(bucket)) return reject(`task command rejected: PR check bucket is ${JSON.stringify(bucket)}`);
   }
 
   // 4. GitHub が返す値は未知値も拒否する許可リスト方式にする。

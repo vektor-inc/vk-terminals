@@ -6,6 +6,7 @@ const assert = require('node:assert/strict');
 const {
   deriveDisplayWaiting,
   deriveStatus,
+  shouldBeepForPaneWaiting,
 } = require('../renderer/statusState');
 
 const RUNNING_IDLE_TIMEOUT_MS = 1500;
@@ -66,4 +67,26 @@ test('deriveDisplayWaiting: 非管理ペインと apiUrl クリア後は従来�
 test('API 用 status は管理ペインの地の文でも従来どおり waiting のまま', () => {
   assert.equal(status({ localWaiting: true, externalWaiting: false }), 'waiting');
   assert.equal(deriveDisplayWaiting({ localWaiting: true, structuralWaiting: false, externalWaiting: false, apiUrl: 'https://example.com/task' }), false);
+});
+
+test('shouldBeepForPaneWaiting: 管理ペインは表示上の off→on だけで鳴らす', () => {
+  assert.equal(shouldBeepForPaneWaiting({
+    apiUrl: 'https://example.com/task', waitingBefore: true, waiting: true,
+    displayWaitingBefore: false, displayWaiting: true,
+  }), true);
+  assert.equal(shouldBeepForPaneWaiting({
+    apiUrl: 'https://example.com/task', waitingBefore: false, waiting: true,
+    displayWaitingBefore: true, displayWaiting: true,
+  }), false);
+});
+
+test('shouldBeepForPaneWaiting: 非管理ペインは従来どおり waiting の false→true で鳴らす', () => {
+  assert.equal(shouldBeepForPaneWaiting({
+    apiUrl: '', waitingBefore: false, waiting: true,
+    displayWaitingBefore: true, displayWaiting: true,
+  }), true);
+  assert.equal(shouldBeepForPaneWaiting({
+    waitingBefore: true, waiting: true,
+    displayWaitingBefore: false, displayWaiting: true,
+  }), false);
 });

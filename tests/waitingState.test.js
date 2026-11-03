@@ -8,6 +8,7 @@ const {
   WAITING_BEEP_REPEAT_SUPPRESS_MS,
   WAITING_MAX_EVAL_INTERVAL_MS,
   WAITING_PATTERNS,
+  STRUCTURAL_WAITING_TAIL_LINES,
   WAITING_QUIESCENCE_MS,
   containsIgnoringWhitespace,
   detectBackgroundAgents,
@@ -32,6 +33,31 @@ const { stripAnsiForDisplay } = require('../utils/stripAnsi');
 test('構造的待ち: Claude Code の選択肢と定型フッターを検出する', () => {
   const dialog = ['╭ Permission required ╮', '❯ 1. Yes', '  2. No', 'Esc to cancel'].join('\n');
   assert.notEqual(findStructuralWaitingMatch(dialog), null);
+});
+
+test('構造的待ち: TUI 固有の確認形式を検出する', () => {
+  const cases = [
+    'Continue? [y/N]',
+    ['› 1. Yes', '  2. No'].join('\n'),
+    'Yes, allow this edit',
+    'Press Enter to continue',
+    ['What should I do?', 'Enter to select', '↑/↓ to navigate', 'Esc to cancel'].join('\n'),
+  ];
+  for (const text of cases) assert.notEqual(findStructuralWaitingMatch(text), null, text);
+});
+
+test('構造的待ち: 地の文・古い画面上方・単独の Codex 履歴は検出しない', () => {
+  const oldDialog = [
+    'Press Enter to continue',
+    ...Array.from({ length: STRUCTURAL_WAITING_TAIL_LINES + 1 }, (_, index) => `output ${index}`),
+  ].join('\n');
+  const cases = [
+    '› Now let me check',
+    '❯ Note: done',
+    oldDialog,
+    '› 1. まずテスト',
+  ];
+  for (const text of cases) assert.equal(findStructuralWaitingMatch(text), null, text);
 });
 
 test('構造的待ち: 地の文の承認待ちや一般的な質問文は検出しない', () => {

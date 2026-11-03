@@ -80,6 +80,20 @@ test('derivePaneNotificationState: 管理ペインの地の文による waiting 
   assert.equal(result.waitingInternal, false);
 });
 
+test('derivePaneNotificationState: displayWaiting があれば apiUrl や構造判定を再実装せず受信値を使う', () => {
+  const result = derivePaneNotificationState(
+    pane({ waiting: false, structuralWaiting: false, externalWaiting: false, displayWaiting: true }),
+    []
+  );
+  assert.equal(result.waiting, true);
+});
+
+test('derivePaneNotificationState: displayWaiting がない古い renderer は waiting へフォールバックする', () => {
+  const result = derivePaneNotificationState(pane({ waiting: true }), []);
+  assert.equal(result.waiting, true);
+  assert.equal(result.waitingInternal, true);
+});
+
 test('computeNotificationEvents: 管理ペインの地の文による waiting では通知イベントを出さない', () => {
   const states = {
     'pane-1': pane({ waiting: true, status: 'waiting', displayWaiting: false, displayStatus: 'idle', apiUrl: 'https://example.com/task' }),

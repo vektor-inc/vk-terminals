@@ -171,17 +171,19 @@ const STRUCTURAL_WAITING_PATTERNS = [
   /Yes,?\s+allow/i,
   /No,?\s+don['']t allow/i,
   /Allow\s+(once|always|this)/i,
-  /❯\s*(Yes|No|Allow|Deny)/,
-  /›\s*(Yes|No|Allow|Deny)/,
+  /❯\s*(Yes|No|Allow|Deny)\b/,
+  /›\s*(Yes|No|Allow|Deny)\b/,
   /\[\s*A\s*\]llow/i,
   /\[\s*D\s*\]eny/i,
   /approve.*\(y\/n\)/i,
   /Enter\s+to\s+select/i,
   /[↑↓]\/[↑↓]\s+to\s+navigate/,
   /Esc\s+to\s+cancel/i,
-  /❯\s*\d+\.\s/,
-  /›\s*\d+\.\s/,
 ];
+
+// ダイアログは画面下端へ描画される。80 行の履歴全体を探すと、すでに流れた選択肢を
+// 現在の待ちと誤認するため、構造的待ちだけは末尾の表示相当範囲へ限定する。
+const STRUCTURAL_WAITING_TAIL_LINES = 15;
 
 // 点灯根拠として記録する文字列に含める、一致箇所前後の文脈の文字数（issue #352）。
 //
@@ -228,17 +230,27 @@ function findWaitingMatchDetail(cleanBuffer) {
 
 function findStructuralWaitingMatch(cleanBuffer) {
   if (typeof cleanBuffer !== 'string' || cleanBuffer === '') return null;
+  const tailBuffer = cleanBuffer.split('\n').slice(-STRUCTURAL_WAITING_TAIL_LINES).join('\n');
   let best = null;
   for (const pattern of STRUCTURAL_WAITING_PATTERNS) {
-    const match = pattern.exec(cleanBuffer);
+    const match = pattern.exec(tailBuffer);
     if (match && match[0] !== '' && (best === null || match.index > best.index)) {
       best = { raw: match[0], index: match.index };
     }
   }
+  // Codex の履歴に表示される単独の `› 1. 発言` と区別するため、番号付き選択肢は
+  // 下端に2項目以上が並ぶ場合だけ構造的待ちとして扱う。
+  const numberedOptions = tailBuffer.match(/^\s*(?:│\s*)?(?:[›❯]\s*)?\d+\.\s+\S.*$/gm) || [];
+  if (numberedOptions.length >= 2) {
+    const selectedOption = /[›❯]\s*\d+\.\s+\S/.exec(tailBuffer);
+    if (selectedOption && (best === null || selectedOption.index > best.index)) {
+      best = { raw: selectedOption[0], index: selectedOption.index };
+    }
+  }
   if (!best) return null;
   const start = Math.max(0, best.index - WAITING_ONSET_CONTEXT_CHARS);
-  const end = Math.min(cleanBuffer.length, best.index + best.raw.length + WAITING_ONSET_CONTEXT_CHARS);
-  return cleanBuffer.slice(start, end);
+  const end = Math.min(tailBuffer.length, best.index + best.raw.length + WAITING_ONSET_CONTEXT_CHARS);
+  return tailBuffer.slice(start, end);
 }
 
 // WAITING_PATTERNS のいずれかに一致した箇所を、前後の文脈込みの文字列として返す
@@ -910,6 +922,7 @@ return {
   WAITING_MAX_EVAL_INTERVAL_MS,
   WAITING_PATTERNS,
   STRUCTURAL_WAITING_PATTERNS,
+  STRUCTURAL_WAITING_TAIL_LINES,
   WAITING_QUIESCENCE_MS,
   containsIgnoringWhitespace,
   detectBackgroundAgents,

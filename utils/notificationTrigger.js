@@ -46,12 +46,14 @@ function derivePaneNotificationState(paneState, excludePatterns) {
     };
   }
   const waitingExternal = !!t.externalWaiting;
-  const managed = typeof t.apiUrl === 'string' && t.apiUrl !== '';
-  const waitingInternal = typeof t.waiting === 'boolean'
-    ? (managed ? !!t.structuralWaiting : t.waiting)
+  const hasDisplayWaiting = typeof t.displayWaiting === 'boolean';
+  const waitingInternal = hasDisplayWaiting
+    ? (t.displayWaiting && (typeof t.waiting === 'boolean' ? t.waiting : !waitingExternal))
+    : typeof t.waiting === 'boolean'
+      ? t.waiting
     : (t.status === 'waiting' && !waitingExternal);
   return {
-    waiting: waitingInternal || waitingExternal,
+    waiting: hasDisplayWaiting ? t.displayWaiting : (waitingInternal || waitingExternal),
     waitingInternal,
     waitingExternal,
     waitingMerge: !!t.apiWaitingMerge,

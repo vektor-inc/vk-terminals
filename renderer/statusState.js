@@ -34,8 +34,17 @@ function deriveDisplayWaiting({ localWaiting, structuralWaiting, externalWaiting
   return !!externalWaiting || (managed ? !!structuralWaiting : !!localWaiting);
 }
 
+// 管理ペインは表示上の待ち、非管理ペインは従来のローカル待ちの立ち上がりで鳴らす。
+function shouldBeepForPaneWaiting({ apiUrl, waitingBefore, waiting, displayWaitingBefore, displayWaiting }) {
+  const managed = typeof apiUrl === 'string' && apiUrl !== '';
+  return managed
+    ? !displayWaitingBefore && !!displayWaiting
+    : !waitingBefore && !!waiting;
+}
+
 return {
   deriveStatus,
   deriveDisplayWaiting,
+  shouldBeepForPaneWaiting,
 };
 });

@@ -70,7 +70,7 @@ const {
   stripVolatileForKey,
   waitingCheckDelayMs,
 } = window.VKWaitingState;
-const { deriveDisplayWaiting, deriveStatus } = window.VKStatusState;
+const { deriveDisplayWaiting, deriveStatus, shouldBeepForPaneWaiting } = window.VKStatusState;
 const { getStatusPresentation } = window.VKStatusPresentation;
 const { getApiServerStatusPresentation } = window.VKApiServerStatus;
 const { getPrBadgePresentation } = window.VKPrBadge;
@@ -341,7 +341,6 @@ function checkWaiting(paneId) {
   // 点灯の根拠を記録するため matchesWaiting ではなくこちらを使う。
   const matchText = findWaitingMatch(buffer);
   const matches = matchText !== null;
-  const structuralMatchText = findStructuralWaitingMatch(buffer);
   // stripVolatileForKey は matchText（文脈込み）から数字（時刻・termId・カウンタ等の
   // 可変部分）だけを潰したもの。ビープの長期抑制の鍵（t.waitingOnsetKey）専用
   // （issue #352 の再レビュー・司と安藤の実測で発覚）。matchText をそのまま鍵にすると
@@ -362,7 +361,7 @@ function checkWaiting(paneId) {
     ? containsIgnoringWhitespace(buffer, t.waitingOnsetMatch)
     : undefined;
   const waiting = nextWaitingState({ prev: t.waiting, matches, excluded, quiescent, onsetStillVisible });
-  const structuralWaiting = waiting && structuralMatchText !== null;
+  const structuralWaiting = waiting && findStructuralWaitingMatch(buffer) !== null;
   // 点灯根拠（t.waitingOnsetMatch / t.waitingOnsetKey）の更新ルール自体は
   // nextWaitingOnset（純粋関数）に委ねる。判断基準の詳細・#91 への影響が無い理由は
   // 同関数のコメント参照。ここでは backfill 用の再探索だけを行う。
@@ -395,7 +394,8 @@ function checkWaiting(paneId) {
   });
   t.waitingOnsetMatch = nextOnset.onsetMatch;
   t.waitingOnsetKey = nextOnset.onsetKey;
-  const waitingChanged = waiting !== t.waiting;
+  const waitingBefore = t.waiting;
+  const waitingChanged = waiting !== waitingBefore;
   const displayWaitingBefore = isPaneDisplayWaiting(t);
   t.structuralWaiting = structuralWaiting;
   if (waitingChanged) {
@@ -414,12 +414,20 @@ function checkWaiting(paneId) {
     // だけなので、バッファには入力待ちと判定される文言が残っていない。捨てると直後の
     // 判定材料まで失うだけで、再点灯の抑止にもならないため保持する
     // （ユーザー入力による解除は文脈ごと変わるため、markPaneInput では従来どおり捨てる）。
-    // waiting フラグが変わったら status も再計算する。
     // 出力が流れている最中の解除では recentOutput が真になるので、idle を経由せず
     // そのまま 'running' へ遷移する（deriveStatus 参照）。
-    recomputeStatus(paneId);
-    // 待機状態になったときに通知音を鳴らす。解除と再検知が短時間で往復しても
-    // 鳴り続けないようクールダウンを挟む。
+  }
+  const displayWaiting = isPaneDisplayWaiting(t);
+  if (waitingChanged || displayWaitingBefore !== displayWaiting) recomputeStatus(paneId);
+  // 管理ペインは表示上の待ち、非管理ペインは従来のローカル待ちが立ち上がったときに
+  // 通知音を鳴らす。解除と再検知が短時間で往復してもクールダウンで抑止する。
+  if (shouldBeepForPaneWaiting({
+    apiUrl: t.apiUrl,
+    waitingBefore,
+    waiting,
+    displayWaitingBefore,
+    displayWaiting,
+  })) {
     // onsetMatch / lastBeepedOnsetMatch には t.waitingOnsetKey（stripVolatileForKey で
     // 数字を潰した後の文字列）を渡す。issue #352 の副作用対応（植草のレビュー）:
     // 疎な出力ペインは「点灯→押し出されて解除→同じ文言で再点灯」の点滅を起こし
@@ -430,7 +438,7 @@ function checkWaiting(paneId) {
     //   （termId 等）が毎回変わるため、数字を潰さない文字列を鍵にすると長期抑制が
     //   一度も適用されない（詳細は stripVolatileForKey / WAITING_BEEP_REPEAT_SUPPRESS_MS
     //   のコメント参照）。
-    if (isPaneDisplayWaiting(t) && !displayWaitingBefore && shouldBeepForWaiting({
+    if (shouldBeepForWaiting({
       now,
       lastBeepAt: t.lastWaitingBeepAt,
       onsetMatch: t.waitingOnsetKey,
@@ -441,7 +449,6 @@ function checkWaiting(paneId) {
       VKShell.beep();
     }
   }
-  if (!waitingChanged && displayWaitingBefore !== isPaneDisplayWaiting(t)) recomputeStatus(paneId);
   // 不変条件: バーストの最後の評価は必ず静止評価になる。
   //   上限（非静止）で走った評価はここで打ち止めにできない。この直後に出力が止まると
   //   次のタイマーを張る契機（terminal:data）が来ず、静止時点の評価が一度も走らないため、
@@ -568,7 +575,9 @@ function armRunningIdleTimer(paneId) {
     const cur = terminals[paneId];
     if (!cur) return;
     cur.runningTimer = null;
-    recomputeStatus(paneId);
+    if (cur.status === 'running') cur.status = 'idle';
+    if (cur.displayStatus === 'running') cur.displayStatus = 'idle';
+    updatePaneStatus(paneId);
   }, RUNNING_IDLE_TIMEOUT_MS);
 }
 
@@ -621,8 +630,8 @@ function isPaneDisplayWaiting(t) {
   });
 }
 
-// PTY 出力があったときに呼ぶ。waiting でなく、入力直後でなければ 'running' に切り替え、
-// 1500ms 後に idle へ戻すタイマーを張る。既存タイマーがあれば張り直す（polling 不要）。
+// PTY 出力があったときに呼ぶ。入力直後でなければ API 用・表示用 status を再計算し、
+// running があれば 1500ms 後に idle へ戻すタイマーを張り直す（polling 不要）。
 function bumpRunning(paneId) {
   const t = terminals[paneId];
   if (!t) return;
@@ -934,7 +943,7 @@ VKIpc.on('terminal:data', (id, data, screenSnapshot) => {
   t.lastOutputTime = Date.now();
   // 判定は出力が静止してから行う（即時判定はしない）。
   scheduleWaitingCheck(paneId);
-  // 出力があったので running を bump（waiting / 入力直後はスキップされる）
+  // 出力があったので API 用・表示用の running を再計算する（入力直後はスキップ）。
   bumpRunning(paneId);
 });
 

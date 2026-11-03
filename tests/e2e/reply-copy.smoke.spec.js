@@ -69,7 +69,7 @@ test('返信文バーから整形済み文字列をコピーし、入力で閉�
     await screen.click();
     await win.keyboard.type('x');
     await expect(bar).toBeHidden();
-    await expect(announcement).toHaveText(/返信文をコピーできます/);
+    await expect(announcement).toHaveText('');
     await win.keyboard.press('Control+C');
     await win.keyboard.type('echo $((123400+56))');
     await win.keyboard.press('Enter');

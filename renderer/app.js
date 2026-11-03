@@ -527,6 +527,8 @@ function dismissReplyBar(paneId, { focus = false } = {}) {
   t.replyIdentity = null;
   t.replyGeneration += 1;
   updatePaneReplyBar(paneId);
+  const liveRegion = document.querySelector(`.pane[data-id="${paneId}"] > .reply-bar-announcement`);
+  if (liveRegion) liveRegion.textContent = '';
   requestAnimationFrame(() => {
     if (focus) terminals[paneId]?.term.focus();
   });
@@ -888,7 +890,6 @@ async function createTerminal(paneId, cwd, options = {}) {
     replyIdentity: null,
     dismissedReplyIdentity: null,
     announcedReplyIdentity: null,
-    replyAnnouncement: '',
     replyGeneration: 0,
     waitingPendingSince: 0,
     lastWaitingBeepAt: 0,
@@ -1389,6 +1390,7 @@ function openExternalUrlSafe(url, options = {}) {
 // （安藤レビュー指摘・MEDIUM）。
 const { isMacPlatform, createTerminalLinkHandlers, normalizeTerminalLinkClickMode, isDragDistance } = window.VKTerminalLinkPolicy;
 const IS_MAC_PLATFORM = isMacPlatform();
+const REPLY_COPY_SHORTCUT_LABEL = IS_MAC_PLATFORM ? 'Option+Shift+C' : 'Alt+Shift+C';
 // 'modifier' モード専用のラベル（'click' モードでは使わない。termLinkTooltipMessage 参照）。
 const TERM_LINK_MODIFIER_LABEL = IS_MAC_PLATFORM ? '⌘+クリックで開く' : 'Ctrl+クリックで開く';
 
@@ -3411,7 +3413,6 @@ function createReplyBar(paneId, replyText, paneIdLabel) {
   preview.textContent = replyText.split('\n')[1] || '';
   preview.title = replyText;
   const shortcutLabel = IS_MAC_PLATFORM ? '⌥⇧C でコピーへ・Esc で戻る' : 'Alt+Shift+C でコピーへ・Esc で戻る';
-  const shortcutAnnouncement = IS_MAC_PLATFORM ? 'Option+Shift+C' : 'Alt+Shift+C';
   const shortcutHint = document.createElement('div');
   shortcutHint.className = 'reply-bar-shortcut';
   shortcutHint.setAttribute('aria-hidden', 'true');
@@ -3423,7 +3424,7 @@ function createReplyBar(paneId, replyText, paneIdLabel) {
   copyButton.type = 'button';
   copyButton.textContent = '返信文をコピー';
   copyButton.setAttribute('aria-label', `返信文をコピー${paneSuffix}`);
-  copyButton.title = `返信文をコピー（端末から ${shortcutAnnouncement} で移動、Esc で端末へ戻る）`;
+  copyButton.title = `返信文をコピー（端末から ${REPLY_COPY_SHORTCUT_LABEL} で移動、Esc で端末へ戻る）`;
   const status = document.createElement('span');
   status.className = 'reply-bar-status';
   status.setAttribute('role', 'status');
@@ -3482,11 +3483,18 @@ function updatePaneReplyBar(paneId, { announce = false } = {}) {
   // 常設の live region はバーの再生成から切り離し、新しい返信を検出したときだけ更新する。
   if (announce && t?.announcedReplyIdentity !== t?.replyIdentity) {
     t.announcedReplyIdentity = t.replyIdentity;
-    const shortcutAnnouncement = IS_MAC_PLATFORM ? 'Option+Shift+C' : 'Alt+Shift+C';
-    const announcement = `返信文をコピーできます。${shortcutAnnouncement} でコピーボタンへ移動`;
-    t.replyAnnouncement = announcement;
+    const replyIdentity = t.replyIdentity;
+    const announcement = `返信文をコピーできます。${REPLY_COPY_SHORTCUT_LABEL} でコピーボタンへ移動`;
     const liveRegion = pane.querySelector(':scope > .reply-bar-announcement');
-    if (liveRegion) liveRegion.textContent = announcement;
+    if (liveRegion) {
+      // 同じ文言の通知も読み上げられるよう、一度空にして次のフレームで設定する。
+      liveRegion.textContent = '';
+      requestAnimationFrame(() => {
+        if (liveRegion.isConnected && terminals[paneId]?.replyIdentity === replyIdentity) {
+          liveRegion.textContent = announcement;
+        }
+      });
+    }
   }
   requestAnimationFrame(() => fitTerminal(paneId));
 }
@@ -3894,7 +3902,6 @@ function renderLeaf(node) {
   replyAnnouncement.className = 'reply-bar-announcement';
   replyAnnouncement.setAttribute('role', 'status');
   replyAnnouncement.setAttribute('aria-live', 'polite');
-  replyAnnouncement.textContent = t?.replyAnnouncement || '';
 
   el.appendChild(header);
   el.appendChild(termContainer);

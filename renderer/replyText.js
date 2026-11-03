@@ -67,8 +67,8 @@ function inkJoinSeparator(previousText, nextText) {
   return /[A-Za-z0-9-]/.test(previousCharacter) && /[A-Za-z0-9-]/.test(nextCharacter) ? ' ' : '';
 }
 
-// xterm と Ink の折り返し行を改行なしで連結し、物理行の先頭インデントを保持する。
-function readRecentBufferLines(buffer, maxLines, cols) {
+// xterm の折り返し行だけを改行なしで連結し、物理行の先頭インデントを保持する。
+function readRecentBufferLines(buffer, maxLines) {
   if (!buffer || typeof buffer.length !== 'number' || typeof buffer.getLine !== 'function') return null;
   if (!Number.isFinite(maxLines) || maxLines <= 0 || !Number.isFinite(buffer.length)) return null;
   const lines = [];
@@ -78,9 +78,6 @@ function readRecentBufferLines(buffer, maxLines, cols) {
     const text = line.translateToString(true);
     if (line.isWrapped && lines.length) {
       lines[lines.length - 1].text += text;
-    } else if (lines.length && isInkWrapped(lines[lines.length - 1].text, text, cols)) {
-      const previous = lines[lines.length - 1];
-      previous.text = previous.text.trimEnd() + inkJoinSeparator(previous.text, text) + text.trimStart();
     } else {
       lines.push({ text, indent: leadingWidth(text) });
     }
@@ -95,14 +92,14 @@ function isTerminator(text, markerIndent) {
 }
 
 // 最新の marker から、後続の終端行が確定できる返信文だけを返す。
-function extractLatestReplyText(lines) {
+function extractLatestReplyText(lines, cols) {
   if (!Array.isArray(lines)) return null;
   for (let markerIndex = lines.length - 1; markerIndex >= 0; markerIndex--) {
     const markerText = typeof lines[markerIndex] === 'string' ? lines[markerIndex] : lines[markerIndex]?.text;
     if (typeof markerText !== 'string' || !markerText.includes(REPLY_MARKER)) continue;
 
     const markerIndent = leadingWidth(markerText);
-    const captured = [{ text: markerText, indent: markerIndent }];
+    const captured = [{ text: markerText, indent: markerIndent, physicalText: markerText }];
     let terminated = false;
     for (let i = markerIndex + 1; i < lines.length; i++) {
       const text = typeof lines[i] === 'string' ? lines[i] : lines[i]?.text;
@@ -111,7 +108,14 @@ function extractLatestReplyText(lines) {
         terminated = true;
         break;
       }
-      captured.push({ text, indent: leadingWidth(text) });
+      const previous = captured[captured.length - 1];
+      // marker と終端行を除く本文だけを対象にし、直前の物理行幅で Ink の折り返しを判定する。
+      if (captured.length > 1 && isInkWrapped(previous.physicalText, text, cols)) {
+        previous.text = previous.text.trimEnd() + inkJoinSeparator(previous.text, text) + text.trimStart();
+        previous.physicalText = text;
+      } else {
+        captured.push({ text, indent: leadingWidth(text), physicalText: text });
+      }
     }
     if (!terminated || captured.length < 2) continue;
 
@@ -126,8 +130,8 @@ function extractLatestReplyText(lines) {
 }
 
 function detectReplyText(buffer, maxLines, cols) {
-  const lines = readRecentBufferLines(buffer, maxLines, cols);
-  return lines ? extractLatestReplyText(lines) : null;
+  const lines = readRecentBufferLines(buffer, maxLines);
+  return lines ? extractLatestReplyText(lines, cols) : null;
 }
 
 // 端末が自動で返す ESC 応答と移動キーは除外し、本文・改行・貼り付けを入力とみなす。

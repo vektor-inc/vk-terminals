@@ -47,6 +47,16 @@ test('構造的待ち: Claude Code の選択肢と定型フッターを検出す
   for (const dialog of dialogs) assert.notEqual(findStructuralWaitingMatch(dialog), null, dialog);
 });
 
+test('構造的待ち: 長い空白を含む番号付き選択肢を短時間で判定する', () => {
+  const pathologicalDialog = `❯ 1. a${' '.repeat(8000)}x\n  2. b`;
+  const startedAt = performance.now();
+  const match = findStructuralWaitingMatch(pathologicalDialog);
+  const elapsedMs = performance.now() - startedAt;
+
+  assert.notEqual(match, null);
+  assert.ok(elapsedMs < 100, `判定に ${elapsedMs.toFixed(1)}ms かかりました`);
+});
+
 test('構造的待ち: TUI 固有の確認形式を検出する', () => {
   const cases = [
     'Continue? [y/N]',

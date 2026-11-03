@@ -242,16 +242,16 @@ function findStructuralWaitingMatch(cleanBuffer) {
   // Claude Code 固有の `❯` 付き選択肢は、折り返しや枠線が間に入っても検出する。
   // Codex は `›` のためこの経路には入らず、下端の選択肢の塊で厳密に判定する。
   const tailLines = tailBuffer.split('\n');
-  const numberedOptionPattern = /^\s*(?:│\s*)?(?:[›❯]\s*)?\d+\.\s+\S.*?(?:\s*│)?\s*$/;
+  const numberedOptionPattern = /^\s*(?:│\s*)?(?:[›❯]\s*)?\d+\.\s+\S/;
   const frameLinePattern = /^[\s╭╮╰╯─│]+$/;
-  const footerPartPattern = /^(?:enter\s+to\s+(?:select|confirm|submit\s+answer)|press\s+enter\s+to\s+confirm(?:\s+or\s+esc\s+to\s+cancel)?|esc\s+to\s+(?:cancel|exit|interrupt)|tab\s+to\s+.+|[↑↓](?:\/[↑↓])?\s+to\s+navigate)$/i;
+  const footerPartPattern = /^(?:enter\s+to\s+(?:select|confirm|submit\s+answer)|press\s+enter\s+to\s+confirm(?:\s+or\s+esc\s+to\s+cancel)?|esc\s+to\s+(?:cancel|exit|interrupt)|tab\s+to\s+(?:queue|amend)\b|[↑↓](?:\/[↑↓])?\s+to\s+navigate)$/i;
   const isOptionFooter = (line) => {
     const content = line.trim().replace(/^│\s*/, '').replace(/\s*│$/, '').trim();
     return content !== '' && content.split(/\s*·\s*/).every((part) => footerPartPattern.test(part));
   };
   const numberedOptions = tailLines.filter((line) => numberedOptionPattern.test(line));
   const selectedClaudeOption = numberedOptions.length >= 2
-    ? tailBuffer.match(/^\s*(?:│\s*)?❯\s*\d+\.\s+\S.*?(?:\s*│)?\s*$/m)
+    ? tailBuffer.match(/^[ \t]*(?:│[ \t]*)?❯[ \t]*\d+\.[ \t]+\S.*$/m)
     : null;
   if (selectedClaudeOption && (best === null || selectedClaudeOption.index > best.index)) {
     best = { raw: selectedClaudeOption[0], index: selectedClaudeOption.index };

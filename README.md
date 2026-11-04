@@ -545,6 +545,11 @@ cp config.example.json ~/.vk-terminals/config.json
 - `type: "combo"`：候補を示しつつ自由入力も許可する入力欄。`options` は `[{ "value": "保存値", "label": "表示名" }]` の形式で指定します。
 - `visibleWhen`：条件一致時に表示します。条件へ `hide: true` を付けた場合は一致時に非表示になります。
 - `disabledWhen`：条件一致時に値を保持したまま編集を無効化します。`disabledReason` に理由を書くと、無効時だけ表示され、入力欄の読み上げ対象にもなります。
+- `requiredWhen`：条件一致時だけ、その欄を必須として扱います。書式は `visibleWhen` と同じ `{ "key": "参照先フィールド", "value": "比較値" }`（配列は AND、`anyOf` は OR）です。
+  - 必須扱いになると、必須バッジと `aria-required` が付き、空欄（かつ無効化されていない）のときは未設定の案内と赤枠（`aria-invalid="true"`）も表示されます。条件が外れればそろって消えます。
+  - 非表示の欄と、条件が一致しないときは必須扱いにしません。真偽値（`boolean`）の欄も対象外です。
+  - `requiredWhen` が無い欄は、従来どおり `required: true` に従います。
+  - `required: true` と `requiredWhen` を両方書いた欄は `required: true` が優先され、条件に関係なく常に必須になります。
 - `section`：`{ "label": "区分名", "description": "1 行の説明（任意）" }`。グループ（枠）の中を、小見出し付きの区分に分けて表示します。
   - 区分の範囲：`section` を付けた項目から、次に `section` が付いた項目の手前までが 1 つの区分です。区分名が小見出し（内側の `fieldset` の `legend`）、説明文がその下に出て、`aria-describedby` で区分に関連づきます。
   - 区分外の項目：`section` を持たない項目は従来どおりの表示です。先頭の項目に `section` が無い場合、最初の `section` 付き項目の手前までは区分に入らず、グループ直下に表示します。区分内の項目がすべて `visibleWhen` で隠れたときは、区分ごと隠れます。
@@ -567,7 +572,7 @@ cp config.example.json ~/.vk-terminals/config.json
 }
 ```
 
-参照先キーの欠落は条件不一致として扱います。形式が壊れた条件や 5 段を超える `anyOf` は fail-open とし、設定画面全体を操作不能にしないため、`visibleWhen` では表示、`disabledWhen` では編集可能になります。
+参照先キーの欠落は条件不一致として扱います。形式が壊れた条件や 5 段を超える `anyOf` は fail-open とし、設定画面全体を操作不能にしないため、`visibleWhen` では表示、`disabledWhen` では編集可能になります。`requiredWhen` は、全要素が壊れているときは必須扱いにしません。AND の一部だけが壊れている場合は、壊れた要素を除いた残りの条件で判定します。
 
 ### 組み込み設定スキーマ
 
@@ -658,7 +663,8 @@ curl -s http://127.0.0.1:13847/api/states \
 | `lastOutputTime` | 最後に出力があった時刻（Unix ms） |
 | `lastInputTime` | 最後にユーザーが入力した時刻（Unix ms） |
 | `agentGeneration` | ペイン内で起動した AI の世代番号。AI 起動ペインは `1`、素のシェルは `0` で始まり、`POST /api/restart-agent` 成功ごとに 1 増加 |
-| `screenIdentifier` | `lastLines` と同じ報告時点の画面を表す改ざん検出付き識別値。画面の入出力後は同じ値を条件付き Enter に使えない。画面報告後に AI の世代だけが変わった間は `null` |
+| `screenIdentifier` | `lastLines` と同じ報告時点の画面を表す改ざん検出付き識別値。画面の入出力後は同じ値を条件付き Enter に使えない。画面報告後に AI の世代だけが変わった間は `null`。画面出力を伴わない PTY 書き込み（端末の問い合わせへの自動応答・リサイズ等）の後で識別値が最新でない間も `null`（新しい出力が無いまま 0.8 秒静止すると作り直される） |
+| `screenIdentifierStale` | `true` なら識別値が最新でないため `screenIdentifier` は `null`。キーが無い場合は `false` と読む。呼び出し側は AI の世代変更中と区別でき、少し待って取り直せば条件付き Enter に使える値が得られる |
 | `agentCommandState` | VK Terminals が現在世代で起動したメイン AI コマンドの客観状態。one-shot prompt hook の ready 後、AI コマンド投入直前に取得したプロセス表を基準に、Electron main が PTY ログインシェルと異なる前景グループを OS のプロセス表から監視する。初回は現在の前景グループが shell 子孫かつ baseline 外で、shell までの途中 ancestor に baseline identity がない場合だけ取得し、以後は同一グループの member と既知 identity の子孫だけを追加する。既知の PID + 起動時刻はプロセス表全体で照合するため、前景を外れた停止中プロセスや orphan 化・PGID 変更後のプロセスも追跡を続ける。shell function 内の後継グループは、完了前に直前のグループと既知 identity が全消失した場合だけ同じ世代として取得する。`exited` になるのは、実グループを1つ以上確認し、完了マーカーを受信し、追跡した全 identity の消失と由来不明な baseline 外子孫がないことを同じ process snapshot で確認した場合だけ。投入前から存在したプロセスやその新しい子を連続性なしに取得せず、初回または後継グループを750ms以内に取得できない場合、完了マーカー未受信のまま追跡グループが消失した場合も `null` で確定する。各起動は世代と launch token で識別し、restart 開始時には公開世代を進めず内部 token だけを同期的に無効化するため、停止 snapshot の取得中も旧コマンドを投入しない。元の AI コマンド行は一文字も加工せず単独行で投入し、その前に登録した zsh・bash・fish の世代固有 one-shot prompt hook が ready／completion marker を発行して自己削除する。bash の hook は既存の文字列 `PROMPT_COMMAND` を一文字も変えず改行の後ろへ追加し、配列では既存順序・要素を維持して末尾要素へ追加する。完了・準備失敗・timeout・世代 cancel では既存値を正確に復元して一時定義を削除し、安全に順序・cleanup を保証できない形式では状態を `null` にする。hook を安全に登録できない場合も元コマンドだけは無加工で実行する。marker は画面から除去する delimiter であり、それだけでは `running` / `exited` を証明しない。プロセス表の取得失敗、PID/PGID再利用などの判定不能、Windows は `null` へ安全に倒す。起動行の PTY 書き込み成功、画面出力の静止、`waiting` / `backgroundAgents` からも状態を推測しない |
 | `lastLines` | 最近の出力テキスト（ANSI除去済み、最大15行） |
 | `backgroundAgents` | そのペインでバックグラウンドに動いている Claude Code サブエージェント数（issue #340）。画面末尾のフッター表示（`← N agents` 等）から判定した整数（0 以上）、または判定できないときは `null`（不明）。`0` と `null` は区別されており、`null` は「フッターが読み取れる Claude Code の画面ではない」等の判定不能を表す（バックグラウンドで動くサブエージェントが無いことが確定した状態は `0`）。ペイン幅が狭くフッター表示が `…` で截断され、agents 表示の有無を確認しきれない場合も `0` と断定せず `null` になる。サブエージェントが終了すると `0` に戻る。司令塔（vk-orchestrator）はこの値が `null` のときは、従来どおり `lastOutputTime` だけでペインの稼働を判定する想定 |

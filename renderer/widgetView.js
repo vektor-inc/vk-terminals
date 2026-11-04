@@ -583,8 +583,10 @@
       return span;
     }
 
-    function buildStatusBadge(group) {
-      return buildBadge({ label: group.label, tone: group.tone });
+    // 状態バッジの色は、アイテムの statusTone（検証済み）があればそれ、無ければグループの tone。
+    function buildStatusBadge(group, item) {
+      const tone = item && item.statusTone ? item.statusTone : group.tone;
+      return buildBadge({ label: group.label, tone });
     }
 
     function buildControl(item, control, disabled) {
@@ -754,7 +756,7 @@
       li.appendChild(buildTitle(item));
 
       const head = el('div', 'task-item-head');
-      head.appendChild(buildStatusBadge(group));
+      head.appendChild(buildStatusBadge(group, item));
       for (const badge of (item.badges || [])) head.appendChild(buildBadge(badge));
       if (item.assignee) {
         const assignee = el('span', 'task-item-assignee');

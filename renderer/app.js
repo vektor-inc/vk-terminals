@@ -1721,6 +1721,21 @@ function renderSidebarMenu() {
 // サイドバーのラッパー（.sidebar）を組み立てる（issue #89）。
 // 中身は「固定ヘッダーの使用量カード」「スクロールする nav（メニュー内側 + 格納ペイン
 // セクション）」と「幅リサイズハンドル」。開閉トランジション・可変幅の基準はこのラッパー側に持たせる。
+let restartRequiredState = { restartRequired: false, tabs: [] };
+
+async function refreshRestartRequired() {
+  try {
+    restartRequiredState = await VKIpc.invoke('app:restart-required');
+  } catch (_error) {
+    restartRequiredState = { restartRequired: false, tabs: [] };
+  }
+  const notice = document.getElementById('sidebar-restart-required');
+  if (notice) notice.hidden = !restartRequiredState.restartRequired;
+  document.querySelectorAll('.settings-restart-notice').forEach((element) => {
+    element.hidden = !restartRequiredState.tabs.includes(element.dataset.tabId);
+  });
+}
+
 function createSidebar() {
   const aside = document.createElement('aside');
   aside.id = 'sidebar';
@@ -1741,12 +1756,20 @@ function createSidebar() {
 
   // 設定 / タスクセクション / 格納ペインセクション（renderSidebarMenu の再構築対象外・別管理）
   // 設定は従来どおりユーザー追加メニューの後ろへ置き、その次にタスクを並べる。
+  const restartNotice = document.createElement('div');
+  restartNotice.id = 'sidebar-restart-required';
+  restartNotice.className = 'sidebar-restart-required sidebar-section-card';
+  restartNotice.hidden = true;
+  restartNotice.innerHTML = '<p>設定の反映にアプリの再起動が必要です</p><button type="button">設定を確認</button>';
+  restartNotice.querySelector('button').addEventListener('click', () => openSettingsModal(restartRequiredState.tabs[0]));
+  nav.appendChild(restartNotice);
   nav.appendChild(createSidebarSettingsCard());
   nav.appendChild(createTaskListContainer());
   nav.appendChild(createPaneStashContainer());
 
   aside.appendChild(nav);
   aside.appendChild(createSidebarResizer());
+  setTimeout(refreshRestartRequired, 0);
   return aside;
 }
 
@@ -4702,6 +4725,8 @@ async function refreshUsageAndBadge() {
 function setupUsageBadge() {
   refreshUsageAndBadge();
   setInterval(refreshUsageAndBadge, USAGE_POLL_INTERVAL_MS);
+  refreshRestartRequired();
+  setInterval(refreshRestartRequired, 5000);
   setInterval(() => {
     tickSidebarUsageReset();
     checkUsageResetAndRefetch();
@@ -5179,7 +5204,7 @@ function renderSettingsTabContent(blocks, tabIndexById, runtimeStatus = {}, entr
 // buildSettingsModal の close、生成に失敗した時は protect の例外処理が必ず解放する。
 const settingsModalGuard = createSingleOpenGuard();
 
-async function openSettingsModal() {
+async function openSettingsModal(restartTabId = null) {
   // URL にホバーしたままマウスを動かさず Tab で ⚙ まで来て Enter で確定する経路では
   // xterm 側の leave が発火しない。設定モーダル（z-index 2000）の手前にツールチップ
   // （2300）が浮いたまま残るのを防ぐ（Claude Code レビュー指摘・LOW）。
@@ -5187,16 +5212,18 @@ async function openSettingsModal() {
   // settings:describe の応答待ち中にフォーカスが変わっても、実際に設定を開いた操作元へ
   // 戻せるよう、非同期処理へ入る前の要素をモーダルの寿命と一緒に保持する。
   const restoreFocusElement = document.activeElement;
+  await refreshRestartRequired();
+  if (restartTabId && !restartRequiredState.tabs.includes(restartTabId)) restartTabId = null;
   try {
     await settingsModalGuard.protect(({ release, setFailureCleanup }) => (
-      buildSettingsModal({ release, setFailureCleanup, restoreFocusElement })
+      buildSettingsModal({ release, setFailureCleanup, restoreFocusElement, restartTabId })
     ));
   } catch (e) {
     console.error('設定パネルの生成に失敗しました', e);
   }
 }
 
-async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElement }) {
+async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElement, restartTabId }) {
   // 設定ディスクリプタが無い環境でも空の設定モーダルとして開く（使用量はサイドバー上部）。
   let desc = null;
   try {
@@ -5322,8 +5349,9 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
           const emptyHtml = !contentHtml && !contentAfterHtml && groups.length === 0 && !tabNote
             ? '<p class="settings-empty">このタブに表示できる設定項目はありません。</p>'
             : '';
+          const restartNoticeHtml = `<div class="settings-restart-notice"${restartRequiredState.tabs.includes(tab.id) ? '' : ' hidden'} data-tab-id="${escAttr(tab.id)}" role="status"><p>設定の反映にアプリの再起動が必要です。各ペインでの作業を終えてから再起動してください。</p><button type="button" class="settings-restart-button">アプリを再起動</button></div>`;
           return `<section class="settings-tab-panel" id="${escAttr(panelId)}" role="tabpanel" aria-labelledby="${escAttr(tabId)}" tabindex="0"${tabIndex === 0 ? '' : ' hidden'}>
-            ${targetHtml}${noteHtml}${contentHtml}${tabGroupsHtml[tabIndex]}${contentAfterHtml}${emptyHtml}
+            ${restartNoticeHtml}${targetHtml}${noteHtml}${contentHtml}${tabGroupsHtml[tabIndex]}${contentAfterHtml}${emptyHtml}
           </section>`;
         }).join('')
         : settingsGroups.map(g => renderGroupHtml(g)).join(''))
@@ -5390,6 +5418,9 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
   });
 
   const modal = overlay.querySelector('.settings-modal');
+  modal.querySelectorAll('.settings-restart-button').forEach((button) => {
+    button.addEventListener('click', () => VKIpc.invoke('app:restart'));
+  });
 
   // 説明タブのコピーボタンごとの「フィードバックを消すタイマー」。連打で表示が
   // 重ならないよう押下時に張り替え、モーダルを閉じるときは全部止める（DOM から
@@ -5599,6 +5630,19 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
     const saveButton = modal.querySelector('.settings-save');
     const saveHint = modal.querySelector('.settings-save-hint');
     let activeTabIndex = 0;
+    const restartTabIndex = settingsTabs.findIndex((tab) => tab.id === restartTabId);
+    if (restartTabIndex > 0) {
+      tabButtons[0].classList.remove('is-active');
+      tabButtons[0].setAttribute('aria-selected', 'false');
+      tabButtons[0].setAttribute('tabindex', '-1');
+      tabPanels[0].hidden = true;
+      tabButtons[restartTabIndex].classList.add('is-active');
+      tabButtons[restartTabIndex].setAttribute('aria-selected', 'true');
+      tabButtons[restartTabIndex].setAttribute('tabindex', '0');
+      tabPanels[restartTabIndex].hidden = false;
+      activeTabIndex = restartTabIndex;
+      tabPanels[restartTabIndex].scrollTop = 0;
+    }
     let footerLocked = false;
     // フッターの「保存」は全タブ横断だが、説明だけのタブを見ている間は保存対象が無いので隠す。
     // ただし他タブに未保存の変更が残っている場合は隠さない（隠すと「閉じる」しか押せず、

@@ -228,6 +228,7 @@ let nextClosePaneRequestId = 1;
 
 // ─── Terminal state & HTTP API ───────────────────────────────────────────────
 const DATA_DIR = path.join(os.homedir(), '.vk-terminals');
+const { readRestartRequired } = require('./utils/restartRequired');
 // 組み込み用の入口（embedded.js）から起動されたときだけ値が入る。electron . では null。
 const EMBEDDED_OPTIONS = getEmbeddedOptions();
 // セットアップ状況の一覧を出すための部品（issue #456）。組み込みのオプションに無ければ null で、
@@ -1290,6 +1291,24 @@ async function cleanupPtys() {
   await agentLifecycles.close();
 }
 
+/** 既存の PTY 終了待ちを再起動の両経路で共用する。 */
+async function restartApplication() {
+  // before-quit や二重押下が先行した場合はその終了処理に任せる。
+  if (ptyShutdownGate.state !== 'idle') return false;
+  ptyShutdownGate.markShuttingDown();
+  try {
+    await cleanupPtys();
+  } finally {
+    try {
+      app.relaunch();
+    } catch (e) {
+      console.error(`${LOG_PREFIX} app.relaunch() failed`, e);
+    }
+    app.exit(0);
+  }
+  return true;
+}
+
 /**
  * 起動時に新バージョンがあるか確認し、あれば git pull して再起動を促す
  */
@@ -1343,31 +1362,7 @@ async function checkAndUpdate() {
     });
 
     if (response === 0) {
-      // app.exit(0) は通常の終了フックを通らないため、PTY を明示的にクリーンアップする。
-      // cleanupPtys() は各 pty の終了通知が届くまで待つため、ここで await してから
-      // 再起動する（待たずに app.exit(0) すると issue #409 と同じ SIGABRT を踏みうる）。
-      // この経路は before-quit を通らずゲートが 'idle' のままになるため、待っている間に
-      // 作られたペインが誰にも待たれない（安藤の指摘・LOW-C）。cleanupPtys() の前に
-      // markShuttingDown() でゲートへ「待ち合わせを始めた」ことを伝え、待っている間は
-      // 新しいペイン作成を拒否する（詳細は utils/ptyShutdownGate.js のコメントを参照）。
-      // markShuttingDown() 後は try/finally で app.relaunch() / app.exit(0) まで必ず
-      // 到達させる（安藤の指摘・再レビュー LOW。1回目の LOW-1（before-quit 側）と同じ
-      // 考え方で、途中で例外が出て外側の catch（ログのみ）に落ちると、ゲートが
-      // pending のまま残ってペイン作成拒否と before-quit の 'wait' が続き、
-      // アプリを終了できなくなってしまう）。
-      ptyShutdownGate.markShuttingDown();
-      try {
-        await cleanupPtys();
-      } finally {
-        // app.relaunch() 自体が例外を出しても app.exit(0) に届くよう、ログのみ出して
-        // 握りつぶす（relaunch に失敗しても、再起動なしで終了できる方がまだよい）。
-        try {
-          app.relaunch();
-        } catch (e) {
-          console.error(`${LOG_PREFIX} app.relaunch() failed`, e);
-        }
-        app.exit(0);
-      }
+      await restartApplication();
     }
   } catch (e) {
     // ネットワーク不通などは無視
@@ -1922,6 +1917,28 @@ ipcMain.handle('settings:describe', () => {
 
 // 起動直後、API サーバーがまだ確定していない間だけ renderer が状態を取り直すための
 // 軽量経路。静的な設定ディスクリプタ全体は再構築せず、状態スナップショットだけを返す。
+ipcMain.handle('app:restart-required', () => {
+  const descriptor = loadSettingsDescriptor();
+  const tabIds = Array.isArray(descriptor?.tabs) ? descriptor.tabs.map((tab) => tab.id).filter((id) => typeof id === 'string') : [];
+  return readRestartRequired(path.join(DATA_DIR, 'restart-required.json'), tabIds);
+});
+
+ipcMain.handle('app:restart', async (event) => {
+  if (event.sender !== win?.webContents || ptyShutdownGate.state !== 'idle') return false;
+  const { response } = await dialog.showMessageBox(win, {
+    type: 'warning',
+    title: 'アプリを再起動しますか？',
+    message: 'アプリを再起動しますか？',
+    detail: '再起動すると、作業中のペインはすべて閉じます。各ペインでの作業を終えてから再起動してください。',
+    buttons: ['キャンセル', 'すべて閉じて再起動'],
+    defaultId: 0,
+    cancelId: 0,
+    noLink: true,
+  });
+  if (response !== 1) return false;
+  return restartApplication();
+});
+
 ipcMain.handle('settings:api-server-status', () => describeApiServerRuntimeStatus());
 
 // renderer からの保存。ディスクリプタに載っているキーだけを型変換して書き戻す

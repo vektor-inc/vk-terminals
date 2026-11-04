@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 機能追加 ] 設定の反映に再起動が必要なとき、サイドバーと設定パネルに案内を表示し、安全に再起動できるように（[#512](https://github.com/vektor-inc/vk-terminals/issues/512)）
+
 - [ 不具合修正 ] 設定パネルで説明の直後に入力欄グループが続くと、両者の間に余白がなく接して表示される不具合を修正（[#507](https://github.com/vektor-inc/vk-terminals/issues/507)）
 
 ## 1.84.2

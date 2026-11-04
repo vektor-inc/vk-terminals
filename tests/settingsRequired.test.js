@@ -24,12 +24,6 @@ test('isFieldRequired: requiredWhen は条件が成り立つときだけ必須',
   assert.equal(isFieldRequired(field, {}), false);
 });
 
-test('isFieldRequired: 条件の切り替えで即座に判定が変わる', () => {
-  const field = { key: 'token', requiredWhen: whenGithub };
-  assert.equal(isFieldRequired(field, { 'queue.backend': 'local' }), false);
-  assert.equal(isFieldRequired(field, { 'queue.backend': 'github' }), true);
-});
-
 test('isFieldRequired: requiredWhen は配列(AND)と anyOf(OR)に対応', () => {
   const and = { key: 'a', requiredWhen: [whenGithub, { key: 'mode', value: 'x' }] };
   assert.equal(isFieldRequired(and, { 'queue.backend': 'github', mode: 'x' }), true);

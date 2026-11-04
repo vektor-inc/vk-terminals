@@ -4767,7 +4767,7 @@ function renderSettingsField(f, value, id) {
     ? `<button type="button" class="settings-help-toggle" id="${escAttr(id + '-help-toggle')}" aria-expanded="false" aria-controls="${escAttr(id + '-help')}" aria-label="${escAttr(labelText + 'の説明')}">?</button>`
     : '';
   // requiredWhen 付きの項目は、条件の成否で必須かどうかが切り替わる。部品は常に描画しておき、
-  // 表示・属性の出し分けは applyFieldState（syncRequiredNotice）に任せる。
+  // 表示・属性の出し分けは applyFieldState（syncRequiredState）に任せる。
   const isRequired = f.required === true && f.type !== 'boolean';
   const isConditionallyRequired = !isRequired && f.requiredWhen !== undefined && f.type !== 'boolean';
   const hasRequiredParts = isRequired || isConditionallyRequired;
@@ -5603,7 +5603,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
   // 必須の見た目（バッジ・未設定案内・赤枠・aria-required）を、現在の値から毎回判定し直す。
   // aria-invalid は pattern 検証と共用のため、必須の未入力で付けたときだけ data-required-invalid を残し、
   // 値が入ったときに pattern 検証側のエラーまで消さないようにする。
-  const syncRequiredNotice = (field, id, values) => {
+  const syncRequiredState = (field, id, values) => {
     if (field.required !== true && field.requiredWhen === undefined) return;
     const input = getEntryInput(id);
     const notice = modal.querySelector('#' + id + '-required');
@@ -6411,7 +6411,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
   // - invalid: aria-invalid="true" を付与し、invalidMessage（無ければ汎用文）を表示。
   //   invalidMessage は textContent で流し込むため HTML として解釈されない（XSS 安全）。
   // 必須の未入力で付けた aria-invalid（data-required-invalid）は pattern 検証では外さない。
-  // 外すのは syncRequiredNotice の役目。
+  // 外すのは syncRequiredState の役目。
   const clearInvalidMark = (input) => {
     if (input.dataset.requiredInvalid !== 'true') input.removeAttribute('aria-invalid');
   };
@@ -6471,7 +6471,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
         if (reason) reason.hidden = true;
         if (!visible) clearFieldValidity(field, id);
       }
-      syncRequiredNotice(field, id, values);
+      syncRequiredState(field, id, values);
       syncEntryDescribedBy(id);
     }
     // 区分（issue #421）: 中の項目がすべて隠れたら、見出し・説明文・区切り線も残さず区分ごと隠す。
@@ -6612,8 +6612,11 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
     const input = getEntryInput(id);
     if (!input) continue;
     input.addEventListener('blur', () => { applyFieldValidity(field, id); });
+    // 必須の未入力で付いた aria-invalid では再検証しない（形式エラー文が出ているときだけ再検証する）。
+    // イベントの登録順に依存させないため、DOM の印ではなくエラー文の有無で判定する。
+    const errEl = modal.querySelector('#' + id + '-error');
     input.addEventListener('input', () => {
-      if (input.getAttribute('aria-invalid') === 'true') applyFieldValidity(field, id);
+      if (errEl && errEl.textContent !== '') applyFieldValidity(field, id);
     });
   }
 

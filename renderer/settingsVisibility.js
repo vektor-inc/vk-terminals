@@ -10,7 +10,8 @@
 //   - hide: true は一致時に false。hide 省略/false は一致時に true。
 //   - 配列直下は従来どおり AND、anyOf 配下は OR として評価する。
 //   - requiredWhen は visibleWhen と同じ書式・同じ評価で、成り立つときだけ必須扱いにする。
-//     壊れた条件は必須扱いにしない（fail-open）。
+//     全要素が壊れているときは必須扱いにしない。AND の一部だけ壊れている場合は、
+//     壊れた要素を除いた残りの条件で判定する。hide: true は一致の反転として扱う。
 //   - 壊れた条件は保存不能や全体非表示にしない（fail-open）。表示は true、無効化は false。
 //
 // Node（require）とブラウザ（<script>）の両方から使える UMD 形式（issue #268）。

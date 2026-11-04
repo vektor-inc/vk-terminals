@@ -258,6 +258,93 @@ test.describe.serial('設定パネル: 基本フィールド系（issue #348 で
 
       await expect(win.locator('.settings-required-badge')).toHaveCount(4);
     });
+
+    test('必須の未入力は赤枠用の aria-invalid を付け、形式チェックと共存し、requiredWhen は切り替え直後に反映される（issue #524）', async () => {
+      const descriptor = {
+        available: true,
+        title: '必須の赤枠の検証',
+        targetPath: path.join(tmpRoot, 'required-highlight-settings.json'),
+        appVersion: '0.0.0-test',
+        groups: [{
+          label: '基本設定',
+          fields: [
+            { key: 'plainRequired', label: '必須の通常欄', type: 'text', required: true },
+            {
+              key: 'repoRequired',
+              label: '必須のリポジトリ欄',
+              type: 'text',
+              required: true,
+              pattern: '^[a-z]+/[a-z]+$',
+              invalidMessage: '形式が正しくありません',
+            },
+            {
+              key: 'backend',
+              label: '保存先',
+              type: 'select',
+              options: [{ value: 'local', label: 'ローカル' }, { value: 'github', label: 'GitHub' }],
+            },
+            {
+              key: 'githubToken',
+              label: 'GitHub のトークン',
+              type: 'text',
+              requiredWhen: { key: 'backend', value: 'github' },
+            },
+          ],
+        }],
+        values: { plainRequired: '', repoRequired: '', backend: 'local', githubToken: '' },
+      };
+      await installDescriptorRecordingSaves(win, descriptor);
+      await win.evaluate(() => window.openSettingsModal());
+      await win.waitForSelector('.settings-modal', { state: 'visible' });
+
+      // (a) 必須の空欄は aria-invalid が付き、入力すると外れる
+      const plain = win.getByLabel('必須の通常欄', { exact: true });
+      await expect(plain).toHaveAttribute('aria-invalid', 'true');
+      await plain.fill('wada');
+      await expect(plain).not.toHaveAttribute('aria-invalid', 'true');
+      await plain.fill('');
+      await expect(plain).toHaveAttribute('aria-invalid', 'true');
+
+      // (d) 形式チェック付きの必須欄は、1 文字打っても形式エラーを出さない
+      const repo = win.getByLabel('必須のリポジトリ欄', { exact: true });
+      const repoRow = repo.locator('xpath=ancestor::div[contains(@class,"settings-row")]');
+      await expect(repo).toHaveAttribute('aria-invalid', 'true');
+      await repo.pressSequentially('a');
+      await expect(repo).not.toHaveAttribute('aria-invalid', 'true');
+      await expect(repoRow.locator('.settings-error')).toHaveText('');
+
+      // (b) blur で形式エラーが出ると、必須の印は消えても形式エラーの aria-invalid は残る
+      await repo.blur();
+      await expect(repo).toHaveAttribute('aria-invalid', 'true');
+      await expect(repoRow.locator('.settings-error')).toHaveText('形式が正しくありません');
+      await win.getByLabel('必須の通常欄', { exact: true }).fill('x');
+      await expect(repo).toHaveAttribute('aria-invalid', 'true');
+      await repo.fill('abc/def');
+      await expect(repo).not.toHaveAttribute('aria-invalid', 'true');
+      await expect(repoRow.locator('.settings-error')).toHaveText('');
+      // 空に戻すと、形式エラーではなく必須の印だけが付く
+      await repo.fill('');
+      await expect(repo).toHaveAttribute('aria-invalid', 'true');
+      await expect(repoRow.locator('.settings-required-notice')).toBeVisible();
+
+      // (c) requiredWhen は select を切り替えた直後に必須になる／ならなくなる
+      const token = win.getByLabel('GitHub のトークン', { exact: true });
+      const tokenRow = token.locator('xpath=ancestor::div[contains(@class,"settings-row")]');
+      await expect(tokenRow.locator('.settings-required-badge')).toBeHidden();
+      await expect(tokenRow.locator('.settings-required-notice')).toBeHidden();
+      await expect(token).not.toHaveAttribute('aria-required', 'true');
+      await expect(token).not.toHaveAttribute('aria-invalid', 'true');
+      await win.getByLabel('保存先', { exact: true }).selectOption('github');
+      await expect(tokenRow.locator('.settings-required-badge')).toBeVisible();
+      await expect(tokenRow.locator('.settings-required-notice')).toBeVisible();
+      await expect(token).toHaveAttribute('aria-required', 'true');
+      await expect(token).toHaveAttribute('aria-invalid', 'true');
+      await win.getByLabel('保存先', { exact: true }).selectOption('local');
+      await expect(tokenRow.locator('.settings-required-badge')).toBeHidden();
+      await expect(tokenRow.locator('.settings-required-notice')).toBeHidden();
+      await expect(token).not.toHaveAttribute('aria-required', 'true');
+      await expect(token).not.toHaveAttribute('aria-invalid', 'true');
+    });
   });
 
   // ─── 旧 settings-lines-field-string-value.smoke.spec.js（issue #339） ─────

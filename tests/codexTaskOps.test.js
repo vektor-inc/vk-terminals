@@ -6075,3 +6075,36 @@ test('実行: 拒否された gh issue close / edit（本文・ラベル削除�
     fixture.cleanup();
   }
 });
+
+test('拒否: ラベル名の C1 制御文字（U+0080〜U+009F）は --remove-label / --add-label / issue create --label の通常指定と = 付き指定の両方で拒否し、gh を呼ばない', () => {
+  const fixture = createFixture();
+  try {
+    for (const code of [0x80, 0x85, 0x9b, 0x9f]) {
+      const label = `bug${String.fromCharCode(code)}`;
+      const commands = [
+        ['gh', 'issue', 'edit', '5', '--remove-label', label],
+        ['gh', 'issue', 'edit', '5', '--remove-label', `bug`, '--remove-label', label],
+        ['gh', 'issue', 'edit', '5', `--remove-label=${label}`],
+        ['gh', 'issue', 'edit', '5', '--add-label', label],
+        ['gh', 'issue', 'edit', '5', `--add-label=${label}`],
+        ['gh', 'issue', 'create', '--title', 't', '--body', 'b', '--label', label],
+        ['gh', 'issue', 'create', '--title', 't', '--body', 'b', `--label=${label}`],
+      ];
+      for (const command of commands) {
+        const parsed = parseTaskCommand(command);
+        assert.equal(parsed.ok, false, JSON.stringify(command));
+        assert.match(parsed.error, /^task command rejected/);
+        const { calls, spawnSync } = issueUpdateHarness(fixture);
+        assert.equal(run(fixture, command, { spawnSync }).code, 2, JSON.stringify(command));
+        assert.equal(calls.length, 0, JSON.stringify(command));
+      }
+    }
+    // 日本語など通常の非 ASCII のラベル名は従来どおり通る。
+    assert.equal(parseTaskCommand(['gh', 'issue', 'edit', '5', '--remove-label', '不具合']).ok, true);
+    assert.equal(parseTaskCommand(['gh', 'issue', 'edit', '5', '--add-label=機能追加']).ok, true);
+    assert.equal(parseTaskCommand(['gh', 'issue', 'create', '--title', 't', '--body', 'b', '--label', '機能追加']).ok, true);
+    assert.equal(fixture.readCalls().length, 0);
+  } finally {
+    fixture.cleanup();
+  }
+});

@@ -1,5 +1,6 @@
 # Changelog
 
+- [ 機能追加 ] 自動処理用 Codex の固定入口で、分析とレビューのために PR の差分取得・マージベースの取得・issue 添付画像の保存ができるように（[#521](https://github.com/vektor-inc/vk-terminals/issues/521)）
 - [ 機能追加 ] 自動処理用 Codex の固定入口で、起票前の確認用に issue 一覧の検索とリポジトリの公開範囲・デフォルトブランチの確認ができるように（[#520](https://github.com/vektor-inc/vk-terminals/issues/520)）
 
 ## 1.87.0

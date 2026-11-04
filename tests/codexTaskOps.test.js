@@ -23,6 +23,7 @@ const {
   parseGitHubRepo,
   parseTaskCommand,
   readBinding,
+  requestAttachment,
   resolveTrustedExecutable,
   resolveTrustedExecutableDetailed,
   resolveTrustedPath,
@@ -5220,4 +5221,498 @@ test('固定: git fetch の取得は、検査後に worktree の .git が差し�
   } finally {
     fixture.cleanup();
   }
+});
+
+// ─── issue #521: gh pr diff / git merge-base / gh issue save-image ───────────────────────
+
+test('許可: gh pr diff は PR 番号と、--name-only か --patch のどちらか 1 つだけを受ける（issue #521）', () => {
+  assert.deepEqual(parseTaskCommand(['gh', 'pr', 'diff', '7']), { ok: true, bin: 'gh', args: ['pr', 'diff', '7'], needsGitHub: true });
+  assert.deepEqual(parseTaskCommand(['gh', 'pr', 'diff', '7', '--name-only']).args, ['pr', 'diff', '7', '--name-only']);
+  assert.deepEqual(parseTaskCommand(['gh', 'pr', 'diff', '--patch', '7']).args, ['pr', 'diff', '7', '--patch']);
+  assert.equal(parseTaskCommand(['gh', 'vektor-inc/other-repo', 'pr', 'diff', '7', '--name-only']).targetRepo, 'vektor-inc/other-repo');
+});
+
+test('拒否: gh pr diff の --color・--web・--repo・--exclude・両方の形式・番号の欠落や不正・制御文字（issue #521）', () => {
+  const rejected = [
+    ['gh', 'pr', 'diff'],
+    ['gh', 'pr', 'diff', '0'],
+    ['gh', 'pr', 'diff', '007'],
+    ['gh', 'pr', 'diff', '-1'],
+    ['gh', 'pr', 'diff', '1', '2'],
+    ['gh', 'pr', 'diff', 'feature/x'],
+    ['gh', 'pr', 'diff', 'https://github.com/other/repo/pull/1'],
+    ['gh', 'pr', 'diff', '7', '--color', 'always'],
+    ['gh', 'pr', 'diff', '7', '--color=never'],
+    ['gh', 'pr', 'diff', '7', '--web'],
+    ['gh', 'pr', 'diff', '7', '-w'],
+    ['gh', 'pr', 'diff', '7', '--exclude', '*.js'],
+    ['gh', 'pr', 'diff', '7', '--repo', 'other/repo'],
+    ['gh', 'pr', 'diff', '7', '-R', 'other/repo'],
+    ['gh', 'pr', 'diff', '7', '--json', 'files'],
+    ['gh', 'pr', 'diff', '7', '--name-only', '--patch'],
+    ['gh', 'pr', 'diff', '7', '--name-only', '--name-only'],
+    ['gh', 'pr', 'diff', '7', '--patch=true'],
+    ['gh', 'pr', 'diff', '7\u0000'],
+    ['gh', 'pr', 'diff', '7', '--name-only\u0000'],
+    ['gh', 'other/repo/extra', 'pr', 'diff', '7'],
+  ];
+  for (const command of rejected) {
+    const result = parseTaskCommand(command);
+    assert.equal(result.ok, false, JSON.stringify(command));
+    assert.match(result.error, /^task command rejected/);
+  }
+});
+
+test('許可: git merge-base はリビジョンちょうど 2 つだけを受け、固定の安全設定つきで組み立て直す（issue #521）', () => {
+  assert.deepEqual(parseTaskCommand(['git', 'merge-base', 'origin/main', 'HEAD']), {
+    ok: true, bin: 'git', args: [...GIT_PREFIX, 'merge-base', 'origin/main', 'HEAD'], needsGitHub: false,
+  });
+  assert.equal(parseTaskCommand(['git', 'merge-base', 'main', 'feature/521-x']).ok, true);
+  assert.equal(parseTaskCommand(['git', 'merge-base', 'HEAD~3', '0123abc']).ok, true);
+});
+
+test('拒否: git merge-base のフラグ・オプション注入・--・パス・個数違い・制御文字（issue #521）', () => {
+  const rejected = [
+    ['git', 'merge-base'],
+    ['git', 'merge-base', 'main'],
+    ['git', 'merge-base', 'a', 'b', 'c'],
+    ['git', 'merge-base', '--fork-point', 'main', 'HEAD'],
+    ['git', 'merge-base', '--octopus', 'a', 'b'],
+    ['git', 'merge-base', '--is-ancestor', 'a', 'b'],
+    ['git', 'merge-base', '--all', 'a', 'b'],
+    ['git', 'merge-base', '-a', 'a', 'b'],
+    ['git', 'merge-base', '--independent', 'a', 'b'],
+    ['git', 'merge-base', '--output=/tmp/x', 'a', 'b'],
+    ['git', 'merge-base', '--upload-pack=touch /tmp/x', 'a', 'b'],
+    ['git', 'merge-base', '--end-of-options', 'a', 'b'],
+    ['git', 'merge-base', '--exec=x', 'a', 'b'],
+    ['git', 'merge-base', '-x', 'b'],
+    ['git', 'merge-base', 'a', '--'],
+    ['git', 'merge-base', 'a', 'b', '--'],
+    ['git', 'merge-base', 'a', 'b', '--', 'file'],
+    ['git', 'merge-base', 'a', '--b'],
+    ['git', 'merge-base', '/etc/passwd', 'b'],
+    ['git', 'merge-base', ':/message', 'b'],
+    ['git', 'merge-base', 'a b', 'c'],
+    ['git', 'merge-base', 'a\nb', 'c'],
+    ['git', 'merge-base', 'a\u0000', 'b'],
+    ['git', 'merge-base', '$(whoami)', 'b'],
+    ['git', 'merge-base', 'a;b', 'c'],
+    ['git', 'merge-base', '', 'b'],
+  ];
+  for (const command of rejected) {
+    const result = parseTaskCommand(command);
+    assert.equal(result.ok, false, JSON.stringify(command));
+    assert.match(result.error, /^task command rejected/);
+  }
+});
+
+const ATTACHMENT_UUID = '0f1e2d3c-1234-4abc-9def-0123456789ab';
+const ATTACHMENT_URL = `https://github.com/user-attachments/assets/${ATTACHMENT_UUID}`;
+const PRIVATE_IMAGE_URL = 'https://private-user-images.githubusercontent.com/12345/67890-abcdef.png?jwt=eyJhbGciOi.payload-part_1.sig';
+const PNG_BYTES = Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), Buffer.from('0000000d49484452', 'hex')]);
+const JPEG_BYTES = Buffer.from('ffd8ffe000104a464946', 'hex');
+const GIF_BYTES = Buffer.from('GIF89a\u0001\u0000', 'latin1');
+const WEBP_BYTES = Buffer.concat([Buffer.from('RIFF'), Buffer.from([1, 0, 0, 0]), Buffer.from('WEBPVP8 ')]);
+
+test('許可: gh issue save-image は GitHub の添付画像の URL と、入出力フォルダ直下の画像ファイル名を受ける（issue #521）', () => {
+  const urls = [
+    ATTACHMENT_URL,
+    `https://github.com/user-attachments/assets/${ATTACHMENT_UUID.toUpperCase()}`,
+    'https://user-images.githubusercontent.com/12345/67890-abcdef.png',
+    PRIVATE_IMAGE_URL,
+    'https://private-user-images.githubusercontent.com/12345/67890-abcdef.jpg',
+  ];
+  for (const url of urls) {
+    const result = parseTaskCommand(['gh', 'issue', 'save-image', url, '--out', 'shot-1.png']);
+    assert.deepEqual(result, { ok: true, bin: 'gh', operation: 'issue-image-save', url, out: 'shot-1.png', needsGitHub: true }, url);
+  }
+  for (const name of ['a.png', 'a.jpg', 'a.jpeg', 'a.gif', 'a.webp', 'issue-521_image.1.png']) {
+    assert.equal(parseTaskCommand(['gh', 'issue', 'save-image', ATTACHMENT_URL, `--out=${name}`]).ok, true, name);
+  }
+  assert.equal(parseTaskCommand(['gh', 'issue', 'save-image', '--out', 'a.png', ATTACHMENT_URL]).ok, true);
+  assert.equal(parseTaskCommand(['gh', 'vektor-inc/other-repo', 'issue', 'save-image', ATTACHMENT_URL, '--out', 'a.png']).targetRepo, 'vektor-inc/other-repo');
+});
+
+test('拒否: gh issue save-image の GitHub 以外のホスト・任意 URL・経路や書式の崩れ・保存名の不正・余計なフラグ（issue #521）', () => {
+  const badUrls = [
+    'https://example.com/a.png',
+    `https://github.com.evil.example/user-attachments/assets/${ATTACHMENT_UUID}`,
+    `https://evil.example/github.com/user-attachments/assets/${ATTACHMENT_UUID}`,
+    `https://github.com@evil.example/user-attachments/assets/${ATTACHMENT_UUID}`,
+    `https://user:pass@github.com/user-attachments/assets/${ATTACHMENT_UUID}`,
+    `https://github.com:8443/user-attachments/assets/${ATTACHMENT_UUID}`,
+    `https://github.com./user-attachments/assets/${ATTACHMENT_UUID}`,
+    `https://GITHUB.com/user-attachments/assets/${ATTACHMENT_UUID}`,
+    `http://github.com/user-attachments/assets/${ATTACHMENT_UUID}`,
+    `//github.com/user-attachments/assets/${ATTACHMENT_UUID}`,
+    `file:///user-attachments/assets/${ATTACHMENT_UUID}`,
+    `https:\\\\github.com\\user-attachments\\assets\\${ATTACHMENT_UUID}`,
+    `https://github.com/user-attachments/assets/${ATTACHMENT_UUID}?x=1`,
+    `https://github.com/user-attachments/assets/${ATTACHMENT_UUID}#frag`,
+    `https://github.com/user-attachments/assets/${ATTACHMENT_UUID}/`,
+    `https://github.com/user-attachments/assets/${ATTACHMENT_UUID}/../x`,
+    'https://github.com/user-attachments/assets/not-a-uuid',
+    'https://github.com/user-attachments/files/123/report.pdf',
+    'https://github.com/vektor-inc/vk-terminals/raw/main/a.png',
+    'https://raw.githubusercontent.com/vektor-inc/vk-terminals/main/a.png',
+    'https://objects.githubusercontent.com/github-production-repository-file/a.png',
+    'https://github-production-user-asset-6210df.s3.amazonaws.com/1/a.png',
+    'https://avatars.githubusercontent.com/u/1',
+    'https://user-attachments.githubusercontent.com/a.png',
+    'https://user-images.githubusercontent.com/12345/67890-abcdef.png?x=1',
+    'https://user-images.githubusercontent.com/12345/../67890.png',
+    'https://user-images.githubusercontent.com//12345/a.png',
+    'https://user-images.githubusercontent.com/12345/a%2e%2e.png',
+    'https://private-user-images.githubusercontent.com/1/a.png?jwt=a&x=b',
+    'https://private-user-images.githubusercontent.com/1/a.png?x=b',
+    'https://private-user-images.githubusercontent.com/1/a.png?jwt=a b',
+    `https://127.0.0.1/user-attachments/assets/${ATTACHMENT_UUID}`,
+    'https://[::1]/a.png',
+    'https://169.254.169.254/latest/meta-data',
+    `https://github.com/user-attachments/assets/${ATTACHMENT_UUID}\n`,
+    ` https://github.com/user-attachments/assets/${ATTACHMENT_UUID}`,
+    `https://github.com/user-attachments/assets/${ATTACHMENT_UUID}\u0000`,
+    `https://github.com/user-attachments/assets/${ATTACHMENT_UUID}\u202e`,
+    `https://github.com/user-attachments/assets/${'a'.repeat(3000)}`,
+    '',
+    'not a url',
+  ];
+  for (const url of badUrls) {
+    const result = parseTaskCommand(['gh', 'issue', 'save-image', url, '--out', 'a.png']);
+    assert.equal(result.ok, false, JSON.stringify(url).slice(0, 120));
+    assert.match(result.error, /^task command rejected/);
+  }
+  const badNames = ['../a.png', '/etc/a.png', 'sub/a.png', '.a.png', '..png', 'a..png', 'a.svg', 'a.png.exe', 'a.PNG', 'a', '.png', '', 'a b.png', 'a\n.png', 'a\u0000.png', 'a.png\n', `${'a'.repeat(100)}.png`, '~/a.png', 'a.png/'];
+  for (const name of badNames) {
+    assert.equal(parseTaskCommand(['gh', 'issue', 'save-image', ATTACHMENT_URL, '--out', name]).ok, false, JSON.stringify(name));
+  }
+  const badShapes = [
+    ['gh', 'issue', 'save-image'],
+    ['gh', 'issue', 'save-image', ATTACHMENT_URL],
+    ['gh', 'issue', 'save-image', '--out', 'a.png'],
+    ['gh', 'issue', 'save-image', ATTACHMENT_URL, '--out'],
+    ['gh', 'issue', 'save-image', ATTACHMENT_URL, '--out', 'a.png', '--out', 'b.png'],
+    ['gh', 'issue', 'save-image', ATTACHMENT_URL, ATTACHMENT_URL, '--out', 'a.png'],
+    ['gh', 'issue', 'save-image', ATTACHMENT_URL, '--output', 'a.png'],
+    ['gh', 'issue', 'save-image', ATTACHMENT_URL, '-o', 'a.png'],
+    ['gh', 'issue', 'save-image', ATTACHMENT_URL, '--out', 'a.png', '--repo', 'other/repo'],
+    ['gh', 'issue', 'save-image', ATTACHMENT_URL, '--out', 'a.png', '--header', 'X: y'],
+    ['gh', 'issue', 'save-image', ATTACHMENT_URL, '--out', 'a.png', '--insecure'],
+    ['gh', 'issue', 'save-image', ATTACHMENT_URL, '--out', 'a.png', '--force'],
+  ];
+  for (const command of badShapes) assert.equal(parseTaskCommand(command).ok, false, JSON.stringify(command));
+});
+
+test('実行: gh pr diff は拘束した --repo だけを付け、git merge-base は拘束したリポジトリで実際に動く（issue #521）', () => {
+  const fixture = createFixture();
+  try {
+    assert.equal(run(fixture, ['gh', 'pr', 'diff', '7', '--name-only']).code, 0);
+    assert.equal(run(fixture, ['gh', 'pr', 'diff', '8', '--patch']).code, 0);
+    assert.equal(run(fixture, ['gh', 'pr', 'diff', '9', '--repo', 'other/repo']).code, 2);
+    assert.deepEqual(fixture.readCalls().map((call) => call.args), [
+      ['pr', 'diff', '7', '--name-only', '--repo', 'vektor-inc/vk-terminals'],
+      ['pr', 'diff', '8', '--patch', '--repo', 'vektor-inc/vk-terminals'],
+    ]);
+    const plain = path.join(fixture.root, 'plain');
+    fs.mkdirSync(plain);
+    assert.equal(run(fixture, ['gh', 'VEKTOR-INC/other-repo', 'pr', 'diff', '3'], { cwd: plain }).code, 0);
+    assert.equal(run(fixture, ['gh', 'evil/other-repo', 'pr', 'diff', '3'], { cwd: plain }).code, 2);
+    assert.equal(fixture.readCalls().length, 3);
+
+    // 2 つのブランチの分岐点を、実際の Git が返す。
+    const base = git(fixture.repo, 'rev-parse', 'HEAD');
+    git(fixture.repo, 'checkout', '-q', '-b', 'work/side');
+    fs.writeFileSync(path.join(fixture.repo, 'side.txt'), 'side\n');
+    git(fixture.repo, 'add', 'side.txt');
+    git(fixture.repo, 'commit', '-q', '-m', 'side');
+    const stdout = [];
+    const spawnRecording = (bin, args, options) => {
+      const spawned = childProcess.spawnSync(bin, args, { ...options, stdio: 'pipe' });
+      if (args.includes('merge-base')) stdout.push(String(spawned.stdout));
+      return spawned;
+    };
+    const result = run(fixture, ['git', 'merge-base', 'work/test', 'work/side'], { spawnSync: spawnRecording });
+    assert.equal(result.code, 0, result.messages.join(''));
+    assert.equal(stdout.join('').trim(), base);
+    // 拒否された入力は Git を起動しない（フラグ・--・個数違い）。
+    const before = stdout.length;
+    for (const command of [['git', 'merge-base', '--fork-point', 'a', 'b'], ['git', 'merge-base', 'a'], ['git', 'merge-base', 'a', 'b', '--']]) {
+      assert.equal(run(fixture, command, { spawnSync: spawnRecording }).code, 2, JSON.stringify(command));
+    }
+    assert.equal(stdout.length, before);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+// 画像の保存を試すフィクスチャ。入出力フォルダを持つ起動で、gh の認証トークンは固定値、画像の取得は呼び出しを記録する差し替えにする。
+function createImageFixture(responses) {
+  const fixture = createMemberFixture();
+  fs.writeFileSync(path.join(fixture.root, 'bin', 'gh'), `#!${process.execPath}\nrequire('fs').appendFileSync(${JSON.stringify(path.join(fixture.root, 'gh-calls.jsonl'))}, JSON.stringify({ args: process.argv.slice(2), env: process.env, cwd: process.cwd() }) + '\\n');\nif (process.argv[2] === 'auth' && process.argv[3] === 'token') console.log('ghp_TESTTOKEN_123');\n`, { mode: 0o755 });
+  const requests = [];
+  const requestAttachmentStub = (url, options) => {
+    requests.push({ url: url.href, headers: options.headers });
+    const next = responses.shift();
+    if (next === undefined) throw new Error('unexpected request');
+    return Promise.resolve(next);
+  };
+  const save = async (command, extra = {}) => {
+    const result = fixture.runMember(command, { requestAttachment: requestAttachmentStub, ...extra });
+    return { ...result, code: await result.code };
+  };
+  return { ...fixture, requests, save };
+}
+
+const saveCommand = (name, url = ATTACHMENT_URL) => ['gh', 'issue', 'save-image', url, '--out', name];
+
+test('実行: gh issue save-image は github.com → 署名付き URL のリダイレクトをたどって画像を保存し、トークンは github.com にだけ送る（issue #521）', async () => {
+  const fixture = createImageFixture([
+    { status: 302, location: PRIVATE_IMAGE_URL },
+    { status: 302, location: 'https://objects.githubusercontent.com/github-production-repository-file/x?X-Amz-Signature=abc&X-Amz-Expires=300' },
+    { status: 200, body: PNG_BYTES },
+  ]);
+  try {
+    const result = await fixture.save(saveCommand('shot.png'));
+    assert.equal(result.code, 0, result.messages.join(''));
+    const saved = path.join(fixture.io, 'shot.png');
+    assert.deepEqual(fs.readFileSync(saved), PNG_BYTES);
+    assert.equal(fs.statSync(saved).mode & 0o777, 0o600);
+    assert.equal(fixture.outputs.join(''), `SAVED=${saved}\nTYPE=png\nBYTES=${PNG_BYTES.length}\n`);
+    assert.deepEqual(fixture.requests.map((request) => new URL(request.url).hostname), ['github.com', 'private-user-images.githubusercontent.com', 'objects.githubusercontent.com']);
+    // 認証トークンは github.com への最初の要求だけ。署名付き URL のホストには送らない。
+    assert.equal(fixture.requests[0].headers.Authorization, 'Bearer ghp_TESTTOKEN_123');
+    assert.equal(fixture.requests[1].headers.Authorization, undefined);
+    assert.equal(fixture.requests[2].headers.Authorization, undefined);
+    assert.deepEqual(fixture.readCalls().map((call) => call.args), [['auth', 'token']]);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('実行: gh issue save-image は GitHub の画像ホストへ直接取りに行くときトークンを読まず、4 形式の画像を拡張子と一致させて保存する（issue #521）', async () => {
+  const fixture = createImageFixture([
+    { status: 200, body: JPEG_BYTES },
+    { status: 200, body: JPEG_BYTES },
+    { status: 200, body: GIF_BYTES },
+    { status: 200, body: WEBP_BYTES },
+  ]);
+  try {
+    assert.equal((await fixture.save(saveCommand('a.jpg', PRIVATE_IMAGE_URL))).code, 0);
+    assert.equal((await fixture.save(saveCommand('b.jpeg', 'https://user-images.githubusercontent.com/1/2-3.jpg'))).code, 0);
+    assert.equal((await fixture.save(saveCommand('c.gif', 'https://user-images.githubusercontent.com/1/2-4.gif'))).code, 0);
+    assert.equal((await fixture.save(saveCommand('d.webp', 'https://user-images.githubusercontent.com/1/2-5.webp'))).code, 0);
+    assert.deepEqual(fs.readdirSync(fixture.io).sort(), ['a.jpg', 'b.jpeg', 'c.gif', 'd.webp', 'prompt.md', 'schema.json']);
+    assert.equal(fixture.requests.every((request) => request.headers.Authorization === undefined), true);
+    assert.equal(fixture.readCalls().length, 0);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('拒否: gh issue save-image はリダイレクト先が許可ホスト以外・http・認証情報つき・回数超過のとき、何も保存せず次の要求も送らない（issue #521）', async () => {
+  const bad = [
+    'https://evil.example/a.png',
+    'http://objects.githubusercontent.com/a.png',
+    'https://user:pw@objects.githubusercontent.com/a.png',
+    'https://objects.githubusercontent.com:8443/a.png',
+    'https://objects.githubusercontent.com.evil.example/a.png',
+    'https://github.com.evil.example/a.png',
+    'https://169.254.169.254/latest',
+    'file:///etc/passwd',
+    'ftp://github.com/a.png',
+    '//evil.example/a.png',
+    'https://objects.githubusercontent.com/a.png\r\nX-Injected: 1',
+    'https://objects.githubusercontent.com/a b.png',
+    undefined,
+    '',
+  ];
+  for (const location of bad) {
+    const fixture = createImageFixture([{ status: 302, location }, { status: 200, body: PNG_BYTES }]);
+    try {
+      const result = await fixture.save(saveCommand('x.png'));
+      assert.equal(result.code, 2, String(location));
+      assert.match(result.messages.join(''), /redirect target is not an allowed/);
+      assert.equal(fixture.requests.length, 1, String(location));
+      assert.equal(fs.existsSync(path.join(fixture.io, 'x.png')), false);
+      assert.equal(fixture.outputs.length, 0);
+    } finally {
+      fixture.cleanup();
+    }
+  }
+  const loop = createImageFixture(Array.from({ length: 10 }, () => ({ status: 302, location: ATTACHMENT_URL })));
+  try {
+    const result = await loop.save(saveCommand('x.png'));
+    assert.equal(result.code, 2);
+    assert.match(result.messages.join(''), /too many redirects/);
+    assert.equal(loop.requests.length, 6);
+    assert.equal(fs.existsSync(path.join(loop.io, 'x.png')), false);
+  } finally {
+    loop.cleanup();
+  }
+});
+
+test('拒否: gh issue save-image は画像でない中身・拡張子と形式の不一致・SVG・HTML・空・HTTP エラーを保存しない（issue #521）', async () => {
+  const cases = [
+    [{ status: 200, body: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"></svg>') }, 'a.png', /not a png, jpeg, gif or webp/],
+    [{ status: 200, body: Buffer.from('<!doctype html><html></html>') }, 'a.png', /not a png, jpeg, gif or webp/],
+    [{ status: 200, body: Buffer.alloc(0) }, 'a.png', /not a png, jpeg, gif or webp/],
+    [{ status: 200, body: Buffer.from('RIFF\u0001\u0000\u0000\u0000WAVEfmt ', 'latin1') }, 'a.webp', /not a png, jpeg, gif or webp/],
+    [{ status: 200, body: PNG_BYTES }, 'a.jpg', /does not match the image type \(png\)/],
+    [{ status: 200, body: JPEG_BYTES }, 'a.png', /does not match the image type \(jpeg\)/],
+    [{ status: 200, body: GIF_BYTES }, 'a.webp', /does not match the image type \(gif\)/],
+    [{ status: 200, body: WEBP_BYTES }, 'a.gif', /does not match the image type \(webp\)/],
+    [{ status: 404 }, 'a.png', /HTTP 404/],
+    [{ status: 403 }, 'a.png', /HTTP 403/],
+    [{ status: 500 }, 'a.png', /HTTP 500/],
+  ];
+  for (const [response, name, pattern] of cases) {
+    const fixture = createImageFixture([response]);
+    try {
+      const result = await fixture.save(saveCommand(name));
+      assert.equal(result.code, 2, name);
+      assert.match(result.messages.join(''), pattern);
+      assert.deepEqual(fs.readdirSync(fixture.io).sort(), ['prompt.md', 'schema.json']);
+      assert.equal(fixture.outputs.length, 0);
+    } finally {
+      fixture.cleanup();
+    }
+  }
+});
+
+test('拒否: gh issue save-image は既存ファイル・シンボリックリンク・リンクの入出力フォルダ・入出力フォルダの無い入口に対して、通信せず何も書かない（issue #521）', async () => {
+  const fixture = createImageFixture([{ status: 200, body: PNG_BYTES }]);
+  try {
+    const victim = path.join(fixture.root, 'victim.txt');
+    fs.writeFileSync(victim, 'secret');
+    fs.writeFileSync(path.join(fixture.io, 'exists.png'), 'old');
+    fs.symlinkSync(victim, path.join(fixture.io, 'link.png'));
+    fs.symlinkSync(path.join(fixture.root, 'missing-target'), path.join(fixture.io, 'dangling.png'));
+    for (const name of ['exists.png', 'link.png', 'dangling.png']) {
+      const result = await fixture.save(saveCommand(name));
+      assert.equal(result.code, 2, name);
+      assert.match(result.messages.join(''), /already exists/);
+    }
+    assert.equal(fs.readFileSync(path.join(fixture.io, 'exists.png'), 'utf8'), 'old');
+    assert.equal(fs.readFileSync(victim, 'utf8'), 'secret');
+    assert.equal(fs.existsSync(path.join(fixture.root, 'missing-target')), false);
+    assert.equal(fixture.requests.length, 0);
+  } finally {
+    fixture.cleanup();
+  }
+
+  const linked = createImageFixture([{ status: 200, body: PNG_BYTES }]);
+  try {
+    const realIo = path.join(linked.root, 'real-io');
+    fs.mkdirSync(realIo, { mode: 0o700 });
+    fs.rmSync(linked.io, { recursive: true, force: true });
+    fs.symlinkSync(realIo, linked.io);
+    const result = await linked.save(saveCommand('a.png'));
+    assert.equal(result.code, 2);
+    assert.match(result.messages.join(''), /symbolic link/);
+    assert.deepEqual(fs.readdirSync(realIo), []);
+    assert.equal(linked.requests.length, 0);
+  } finally {
+    linked.cleanup();
+  }
+
+  const noMember = createMemberFixture({ withMember: false });
+  try {
+    const requests = [];
+    const stub = () => { requests.push(1); return Promise.resolve({ status: 200, body: PNG_BYTES }); };
+    const result = noMember.runMember(saveCommand('a.png'), { requestAttachment: stub });
+    assert.equal(await result.code, 2);
+    assert.match(result.messages.join(''), /needs the member input\/output folder/);
+    assert.equal(requests.length, 0);
+  } finally {
+    noMember.cleanup();
+  }
+});
+
+test('拒否: 解析段階で拒否された gh issue save-image は通信も gh の起動もしない。許可 owner の明示先は使える（issue #521）', async () => {
+  const fixture = createImageFixture([{ status: 200, body: PNG_BYTES }]);
+  try {
+    for (const command of [
+      saveCommand('a.png', 'https://example.com/a.png'),
+      saveCommand('../a.png'),
+      saveCommand('a.svg'),
+      ['gh', 'evil/other-repo', 'issue', 'save-image', ATTACHMENT_URL, '--out', 'a.png'],
+    ]) {
+      const result = await fixture.save(command);
+      assert.equal(result.code, 2, JSON.stringify(command));
+    }
+    assert.equal(fixture.requests.length, 0);
+    assert.equal(fixture.readCalls().length, 0);
+    assert.deepEqual(fs.readdirSync(fixture.io).sort(), ['prompt.md', 'schema.json']);
+    // 許可 owner の明示先は、入出力フォルダが対象リポジトリと無関係なので使える。
+    const plain = path.join(fixture.root, 'plain');
+    fs.mkdirSync(plain);
+    const ok = await fixture.save(['gh', 'vektor-inc/other-repo', 'issue', 'save-image', ATTACHMENT_URL, '--out', 'a.png'], { cwd: plain });
+    assert.equal(ok.code, 0, ok.messages.join(''));
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('実行: gh issue save-image のトークンは gh auth token の妥当な値だけを使い、読めなければトークン無しで取得する（issue #521）', async () => {
+  const fixture = createImageFixture([{ status: 200, body: PNG_BYTES }, { status: 200, body: PNG_BYTES }]);
+  try {
+    // gh auth token の呼び出しだけを差し替え、Git の検査などは実物に任せる。
+    const real = (bin, args, options) => childProcess.spawnSync(bin, args, { ...options, stdio: 'pipe' });
+    const badToken = (bin, args, options) => (args[0] === 'auth' ? { status: 0, stdout: 'bad token with spaces\n' } : real(bin, args, options));
+    const first = await fixture.save(saveCommand('a.png'), { spawnSync: badToken });
+    assert.equal(first.code, 0, first.messages.join(''));
+    assert.equal(fixture.requests[0].headers.Authorization, undefined);
+    const errored = await fixture.save(saveCommand('b.png'), { spawnSync: (bin, args, options) => (args[0] === 'auth' ? { status: 1, stdout: '', error: new Error('x') } : real(bin, args, options)) });
+    assert.equal(errored.code, 0, errored.messages.join(''));
+    assert.equal(fixture.requests[1].headers.Authorization, undefined);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+// requestAttachment の本体を、ローカルの HTTP サーバに向けた差し替えの https で確かめる（本物の通信はしない）。
+function withAttachmentServer(handler, body) {
+  const http = require('node:http');
+  const server = http.createServer(handler);
+  return new Promise((resolve, reject) => {
+    server.listen(0, '127.0.0.1', async () => {
+      const httpsStub = { request: (url, options, callback) => http.request({ host: '127.0.0.1', port: server.address().port, path: url.pathname + url.search, method: options.method, headers: options.headers }, callback) };
+      try {
+        await body(httpsStub);
+        resolve();
+      } catch (error) {
+        reject(error);
+      } finally {
+        server.closeAllConnections();
+        server.close();
+      }
+    });
+  });
+}
+
+test('通信: requestAttachment はリダイレクトを自動で追わず、上限超過と時間切れを拒否し、ヘッダをそのまま送る（issue #521）', async () => {
+  const seen = [];
+  await withAttachmentServer((req, res) => {
+    seen.push(req.headers);
+    if (req.url === '/redirect') { res.writeHead(302, { Location: 'https://evil.example/x.png' }); res.end(); return; }
+    if (req.url === '/big-declared') { res.writeHead(200, { 'Content-Length': '2000' }); res.end(Buffer.alloc(2000)); return; }
+    if (req.url === '/big-chunked') { res.writeHead(200); res.write(Buffer.alloc(600)); res.end(Buffer.alloc(600)); return; }
+    if (req.url === '/slow') { res.writeHead(200); res.write('x'); return; }
+    if (req.url === '/missing') { res.writeHead(404); res.end('not found body'); return; }
+    res.writeHead(200, { 'Content-Type': 'image/png' });
+    res.end(PNG_BYTES);
+  }, async (httpsStub) => {
+    const call = (urlPath) => requestAttachment(new URL(`https://github.com${urlPath}`), { headers: { 'User-Agent': 'vk-task-ops', Authorization: 'Bearer t' }, maxBytes: 1000, timeoutMs: 300 }, { https: httpsStub });
+    const ok = await call('/ok.png');
+    assert.equal(ok.status, 200);
+    assert.deepEqual(ok.body, PNG_BYTES);
+    assert.equal(seen[0].authorization, 'Bearer t');
+    const redirect = await call('/redirect');
+    assert.deepEqual({ status: redirect.status, location: redirect.location, body: redirect.body }, { status: 302, location: 'https://evil.example/x.png', body: undefined });
+    assert.equal((await call('/missing')).status, 404);
+    await assert.rejects(call('/big-declared'), /image is too large/);
+    await assert.rejects(call('/big-chunked'), /image is too large/);
+    await assert.rejects(call('/slow'), /timed out/);
+  });
 });

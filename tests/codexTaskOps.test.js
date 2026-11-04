@@ -66,6 +66,91 @@ test('許可: gh は番号・本文・head を検証する（対象リポジト�
   );
 });
 
+test('許可: gh issue list / gh repo view は読み取り用のフラグと許可リストの JSON 項目だけ（issue #520）', () => {
+  assert.deepEqual(parseTaskCommand(argv('gh issue list')), { ok: true, bin: 'gh', args: ['issue', 'list'], needsGitHub: true });
+  assert.deepEqual(
+    parseTaskCommand(['gh', 'issue', 'list', '--state', 'all', '--search', '重複 -label:bug', '--limit', '20', '--label', 'task-queue', '--json', 'number,title,state']).args,
+    ['issue', 'list', '--state', 'all', '--search=重複 -label:bug', '--limit', '20', '--json', 'number,title,state', '--label', 'task-queue'],
+  );
+  assert.deepEqual(parseTaskCommand(['gh', 'issue', 'list', '--state=closed', '--search=-x', '--limit=100', '--json=url']).args, ['issue', 'list', '--state', 'closed', '--search=-x', '--limit', '100', '--json', 'url']);
+  assert.deepEqual(
+    parseTaskCommand(['gh', 'Vektor-Inc/another.repo', 'issue', 'list', '--state', 'open']),
+    { ok: true, bin: 'gh', args: ['issue', 'list', '--state', 'open'], needsGitHub: true, targetRepo: 'Vektor-Inc/another.repo' },
+  );
+  assert.deepEqual(
+    parseTaskCommand(argv('gh repo view --json visibility,isPrivate,defaultBranchRef,nameWithOwner')),
+    { ok: true, bin: 'gh', args: ['repo', 'view', '--json', 'visibility,isPrivate,defaultBranchRef,nameWithOwner'], needsGitHub: true, repoPositional: true },
+  );
+  assert.equal(parseTaskCommand(argv('gh repo view --json=visibility')).ok, true);
+  // 位置引数の owner/repo も、先頭に置く明示形式と同じ targetRepo として扱う。
+  assert.equal(parseTaskCommand(['gh', 'Vektor-Inc/another.repo', 'repo', 'view', '--json', 'visibility']).targetRepo, 'Vektor-Inc/another.repo');
+  assert.equal(parseTaskCommand(['gh', 'repo', 'view', 'Vektor-Inc/another.repo', '--json', 'visibility']).targetRepo, 'Vektor-Inc/another.repo');
+});
+
+test('拒否: gh issue list / gh repo view の --web・--jq・--template・--repo・許可外の項目・範囲外の値・制御文字（issue #520）', () => {
+  const rejected = [
+    ['gh', 'issue', 'list', '--web'],
+    ['gh', 'issue', 'list', '-w'],
+    ['gh', 'issue', 'list', '--jq', '.'],
+    ['gh', 'issue', 'list', '-q', '.'],
+    ['gh', 'issue', 'list', '--json', 'number', '--jq', '.[]'],
+    ['gh', 'issue', 'list', '--template', '{{.}}'],
+    ['gh', 'issue', 'list', '-t', '{{.}}'],
+    ['gh', 'issue', 'list', '--json', 'number,notAField'],
+    ['gh', 'issue', 'list', '--json', 'title;id'],
+    ['gh', 'issue', 'list', '--json', 'number,'],
+    ['gh', 'issue', 'list', '--json'],
+    ['gh', 'issue', 'list', '--json', 'number', '--json', 'title'],
+    ['gh', 'issue', 'list', '--state', 'merged'],
+    ['gh', 'issue', 'list', '--state'],
+    ['gh', 'issue', 'list', '--limit', '0'],
+    ['gh', 'issue', 'list', '--limit', '101'],
+    ['gh', 'issue', 'list', '--limit', '-1'],
+    ['gh', 'issue', 'list', '--limit', 'abc'],
+    ['gh', 'issue', 'list', '--limit', '1', '--limit', '2'],
+    ['gh', 'issue', 'list', '--search', ''],
+    ['gh', 'issue', 'list', '--search', 'a\nb'],
+    ['gh', 'issue', 'list', '--search', 'a\u202eb'],
+    ['gh', 'issue', 'list', '--search', 'a'.repeat(257)],
+    ['gh', 'issue', 'list', '--search', 'x', '--search', 'y'],
+    ['gh', 'issue', 'list', '--label', '-bad'],
+    ['gh', 'issue', 'list', '--label', 'a,b'],
+    ['gh', 'issue', 'list', '--author', 'x'],
+    ['gh', 'issue', 'list', '--assignee', 'x'],
+    ['gh', 'issue', 'list', '--repo', 'other/repo'],
+    ['gh', 'issue', 'list', '-R', 'other/repo'],
+    ['gh', 'issue', 'list', '--repo=other/repo'],
+    ['gh', 'issue', 'list', '5'],
+    ['gh', 'issue', 'list', '-s', 'all'],
+    ['gh', 'issue', 'list', '--state', 'all\u0000'],
+    ['gh', 'repo', 'view'],
+    ['gh', 'repo', 'view', '--web'],
+    ['gh', 'repo', 'view', '-w', '--json', 'visibility'],
+    ['gh', 'repo', 'view', '--json', 'visibility', '--jq', '.'],
+    ['gh', 'repo', 'view', '--json', 'visibility', '--template', '{{.}}'],
+    ['gh', 'repo', 'view', '--json', 'readme'],
+    ['gh', 'repo', 'view', '--json', 'visibility,secrets'],
+    ['gh', 'repo', 'view', '--json', 'visibility', '--json', 'name'],
+    ['gh', 'repo', 'view', '--json', 'vis\nibility'],
+    ['gh', 'repo', 'view', '--json', 'visibility', '--repo', 'other/repo'],
+    ['gh', 'repo', 'view', '--json', 'visibility', '-R', 'other/repo'],
+    ['gh', 'repo', 'view', '--json', 'visibility', '--branch', 'main'],
+    ['gh', 'repo', 'view', '--json', 'visibility', 'notarepo'],
+    ['gh', 'repo', 'view', '--json', 'visibility', '../repo'],
+    ['gh', 'repo', 'view', '--json', 'visibility', 'owner/repo/extra'],
+    ['gh', 'repo', 'view', '--json', 'visibility', 'a/b', 'c/d'],
+    ['gh', 'repo', 'view', '--json', 'visibility', 'https://github.com/o/r'],
+    ['gh', 'a/b', 'repo', 'view', 'c/d', '--json', 'visibility'],
+    ['gh', 'repo', 'clone', 'a/b'],
+    ['gh', 'repo', 'delete', 'a/b'],
+  ];
+  for (const command of rejected) {
+    const result = parseTaskCommand(command);
+    assert.equal(result.ok, false, JSON.stringify(command));
+    assert.match(result.error, /^task command rejected/);
+  }
+});
+
 // ─── 拒否する操作（許可操作を経由した副作用を含む） ─────────────────────────
 
 test('拒否: ファイル出力・外部コマンド・設定変更・履歴改変につながる Git のフラグと操作', () => {
@@ -791,6 +876,31 @@ test('拘束: gh は検証済みの --repo が必ず付き、origin が拘束し
       assert.equal(result.code, 2, url);
       assert.match(result.messages.join(''), /does not match the bound github\.com repository/);
     }
+    assert.equal(fixture.readCalls().length, before);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('拘束: gh issue list は --repo、gh repo view は位置引数として拘束先が付き、許可外 owner は gh を呼ばない（issue #520）', () => {
+  const fixture = createFixture();
+  try {
+    const plain = path.join(fixture.root, 'plain');
+    fs.mkdirSync(plain);
+    assert.equal(run(fixture, ['gh', 'issue', 'list', '--state', 'all', '--limit', '5']).code, 0);
+    assert.equal(run(fixture, ['gh', 'repo', 'view', '--json', 'visibility,defaultBranchRef']).code, 0);
+    assert.equal(run(fixture, ['gh', 'repo', 'view', 'VEKTOR-INC/other-repo', '--json', 'isPrivate'], { cwd: plain }).code, 0);
+    assert.deepEqual(fixture.readCalls().map((call) => call.args), [
+      ['issue', 'list', '--state', 'all', '--limit', '5', '--repo', 'vektor-inc/vk-terminals'],
+      ['repo', 'view', '--json', 'visibility,defaultBranchRef', 'vektor-inc/vk-terminals'],
+      ['repo', 'view', '--json', 'isPrivate', 'VEKTOR-INC/other-repo'],
+    ]);
+    const before = fixture.readCalls().length;
+    for (const target of ['other/repo', 'vektor-inc-evil/other-repo']) {
+      assert.equal(run(fixture, ['gh', 'repo', 'view', target, '--json', 'visibility'], { cwd: plain }).code, 2, target);
+      assert.equal(run(fixture, ['gh', target, 'issue', 'list'], { cwd: plain }).code, 2, target);
+    }
+    assert.equal(run(fixture, ['gh', 'repo', 'view', '--json', 'visibility', '--repo', 'other/repo']).code, 2);
     assert.equal(fixture.readCalls().length, before);
   } finally {
     fixture.cleanup();

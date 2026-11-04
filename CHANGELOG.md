@@ -1,5 +1,6 @@
 # Changelog
 
+- [ 機能追加 ] 自動処理用 Codex の固定入口で、起票前の確認用に issue 一覧の検索とリポジトリの公開範囲・デフォルトブランチの確認ができるように（[#520](https://github.com/vektor-inc/vk-terminals/issues/520)）
 - [ 機能追加 ] 自動処理用 Codex の固定入口で、issue・PR へのコメントと issue 作成の本文を、専用入出力フォルダ内のファイルから渡せるように（[#519](https://github.com/vektor-inc/vk-terminals/issues/519)）
 
 ## 1.86.0

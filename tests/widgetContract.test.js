@@ -683,3 +683,17 @@ test('sanitizeWidget: statusTone は tone 語彙に完全一致するときだ�
     assert.equal(Object.prototype.hasOwnProperty.call(out[i], 'statusTone'), false);
   }
 });
+
+test('sanitizeWidget: statusTone に __proto__・constructor・前後に空白のある値を渡しても捨てられる', () => {
+  const w = contract.sanitizeWidget(baseRawWidget({
+    groups: [{ id: 'g', label: 'G', tone: 'warning', items: [
+      { id: '1', title: 'a', editable: false, statusTone: '__proto__' },
+      { id: '2', title: 'b', editable: false, statusTone: 'constructor' },
+      { id: '3', title: 'c', editable: false, statusTone: ' danger' },
+      { id: '4', title: 'd', editable: false, statusTone: 'danger ' },
+    ] }],
+  }));
+  for (const item of w.groups[0].items) {
+    assert.equal(Object.prototype.hasOwnProperty.call(item, 'statusTone'), false);
+  }
+});

@@ -205,7 +205,6 @@ test('render: ステータスバッジを各カードの先頭へ prepend し、
   assert.equal(badges[2].dataset.tone, 'neutral');
 });
 
-
 test('render: 状態バッジはアイテムの statusTone があればその色、無ければグループの tone。見出しの色は変わらない', () => {
   const widget = sanitized([
     { id: 'ready', label: '実行待ち', tone: 'info', items: [
@@ -224,6 +223,7 @@ test('render: 状態バッジはアイテムの statusTone があればその色
   assert.equal(sections.length, 1);
   assert.equal(sections[0].dataset.tone, 'info');
 });
+
 test('render: 文字列は textContent で描画され、HTML として解釈されない（XSS 防御）', () => {
   const evil = '<img src=x onerror=alert(1)>';
   const widget = sanitized([

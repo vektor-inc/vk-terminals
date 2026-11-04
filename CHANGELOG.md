@@ -1,5 +1,6 @@
 # Changelog
 
+- [ 機能追加 ] 設定画面で、必須なのに未入力の項目を赤枠で示し、条件によって必須になる項目（requiredWhen）にも対応（[#524](https://github.com/vektor-inc/vk-terminals/issues/524)）
 - [ 機能追加 ] 自動処理用 Codex の固定入口で、issue・PR へのコメントと issue 作成の本文を、専用入出力フォルダ内のファイルから渡せるように（[#519](https://github.com/vektor-inc/vk-terminals/issues/519)）
 - [ 機能追加 ] タスク一覧の表示データでカードごとに状態バッジの色を指定できる `statusTone` に対応（[#526](https://github.com/vektor-inc/vk-terminals/issues/526)）
 - [ 不具合修正 ] 自動処理で Codex を起動したとき、「Folder access」画面（Open restricted / Quit の選択）に説明文が増えた新しい表示だと、自動で Enter が送られず止まる不具合を修正（[#517](https://github.com/vektor-inc/vk-terminals/issues/517)）

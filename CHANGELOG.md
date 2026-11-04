@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 機能追加 ] 設定パネルの説明タブに、指定したフォルダを Finder で開くボタンを追加できるように（[#525](https://github.com/vektor-inc/vk-terminals/issues/525)）
+
 ## 1.86.0
 
 - [ 機能追加 ] 新しいペインを開くフォルダやメニュー項目など一部の設定を、保存後にアプリを再起動せず反映し、反映したことと設定ファイルを読み込めなかったことを画面に表示（[#514](https://github.com/vektor-inc/vk-terminals/issues/514)）

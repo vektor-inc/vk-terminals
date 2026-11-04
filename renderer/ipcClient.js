@@ -30,6 +30,7 @@
 
   root.VKShell = {
     openExternal: (url) => bridge.shell.openExternal(url),
+    openPath: (rawPath, create) => bridge.shell.openPath(rawPath, create),
     beep: () => bridge.shell.beep(),
   };
 

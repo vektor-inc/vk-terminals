@@ -35,6 +35,9 @@ const SETTINGS_CONTENT_TABLE_BADGE_TONES = new Set(['info', 'warning', 'error', 
 // 設定ディスクリプタは信頼できない入力（VK_TERMINALS_SETTINGS で外部から差し替え可能）
 // のため、行数を定義側の良識に任せず上限を設ける（安藤のセキュリティレビュー指摘・issue #380）。
 const SETTINGS_CONTENT_TABLE_MAX_ROWS = 200;
+// openFolder の path の長さの上限。utils/openPathPolicy.js の OPEN_PATH_MAX_LENGTH と同じ値にそろえる
+// （renderer はファイルを require できないため値を二重に持つ。片方だけ変えない）。
+const SETTINGS_CONTENT_OPEN_FOLDER_MAX_PATH_LENGTH = 4096;
 // 列数にも rows と対称に上限を設ける（安藤のセキュリティレビュー指摘・issue #380）。
 // 上限を付けないと、各行のセル詰め・切り詰め処理（columns.length ぶんのループ）が
 // 列数に比例して膨らみ、rows の上限だけでは負荷を抑えきれない。
@@ -271,6 +274,21 @@ const SETTINGS_CONTENT_BLOCK_HANDLERS = Object.freeze({
     if (sets.length === 0) return null;
 
     return { type, label, confirmTemplate, sets, danger: block.danger === true };
+  },
+
+  // フォルダを Finder で開くボタン（issue #525）。label と path は必須で、欠けたらブロックごと
+  // 落とす（fail-closed）。path は絶対パス（先頭 / ）かホーム起点（先頭 ~/ ）の形だけ通し、
+  // ~user 形式・NUL を含むもの・極端に長いものは捨てる。開いてよい場所かの本当の判定は
+  // main 側（utils/openPathPolicy.js）が行うので、ここは形の確認だけにする。
+  // create は明示的な true のときだけ有効（既定は作らない）。
+  openFolder(block, type) {
+    const label = nonEmptyString(block.label);
+    const folderPath = typeof block.path === 'string' ? block.path : '';
+    const validShape = (folderPath.startsWith('/') || folderPath.startsWith('~/'))
+      && folderPath.length <= SETTINGS_CONTENT_OPEN_FOLDER_MAX_PATH_LENGTH
+      && !folderPath.includes('\0');
+    if (!label || !validShape) return null;
+    return { type, label, path: folderPath, create: block.create === true };
   },
 
   tabLink(block, type, tabIds, fieldTabs) {

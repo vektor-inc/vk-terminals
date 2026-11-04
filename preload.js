@@ -185,6 +185,12 @@ contextBridge.exposeInMainWorld('vkBridge', {
       if (!isSafeHttpUrl(url)) return Promise.resolve(false);
       return ipcRenderer.invoke('shell:open-external', url);
     },
+    // フォルダを Finder で開く（openFolder ブロック・issue #525）。開いてよい場所の判定は
+    // main 側（ipcMain.handle('shell:open-path')）が行う。ここでは型だけ確認する。
+    openPath(rawPath, create) {
+      if (typeof rawPath !== 'string') return Promise.resolve({ ok: false, reason: 'invalid' });
+      return ipcRenderer.invoke('shell:open-path', rawPath, create === true);
+    },
     beep() {
       ipcRenderer.send('shell:beep');
     },

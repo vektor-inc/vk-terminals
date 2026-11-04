@@ -5114,6 +5114,34 @@ function renderSettingsApplyButtonHtml(block) {
   </div>`;
 }
 
+// openFolder ブロック（issue #525）。ボタンと結果表示だけを出す。パスの文字表示は
+// 直前の code ブロックに任せる。結果表示は最初から DOM に置いた role="status" の
+// 文字だけを書き換える（後から足した領域は読み上げられないことがあるため）。
+function renderSettingsOpenFolderHtml(block) {
+  return `<div class="settings-content-openfolder">
+    <button type="button" class="settings-content-openfolder-btn" data-open-folder-path="${escAttr(block.path)}"${block.create ? ' data-open-folder-create="true"' : ''}>${escText(block.label)}</button>
+    <span class="settings-content-openfolder-status" role="status"></span>
+  </div>`;
+}
+
+// openFolder の結果表示の文言。失敗の理由は main 側の固定値（utils/openPathPolicy.js）。
+const OPEN_FOLDER_MESSAGES = Object.freeze({
+  opened: '開きました',
+  created: 'フォルダが無かったため作成して開きました',
+  'not-found': 'フォルダがまだありません',
+  'not-allowed': 'この場所は開けないため、開きませんでした',
+  'not-directory': 'フォルダではないため開きませんでした',
+  'create-failed': 'フォルダを作成できませんでした。書き込み権限やディスクの空き容量をご確認ください',
+  'open-failed': 'Finder で開けませんでした',
+  invalid: 'この場所は開けないため、開きませんでした',
+});
+
+function openFolderResultMessage(result) {
+  if (result && result.ok) return OPEN_FOLDER_MESSAGES[result.created ? 'created' : 'opened'];
+  const reason = result && typeof result.reason === 'string' ? result.reason : '';
+  return OPEN_FOLDER_MESSAGES[reason] || OPEN_FOLDER_MESSAGES['open-failed'];
+}
+
 // 説明タブ（tabs[].content）の読み取り専用ブロックを HTML 化する。
 // blocks は settingsTabs.js の normalizeSettingsTabContent で正規化済み（未知の type や
 // 非 http(s) の URL は除去済み）である前提。content は外部ディスクリプタ
@@ -5173,6 +5201,9 @@ function renderSettingsTabContent(blocks, tabIndexById, runtimeStatus = {}, entr
     }
     if (block.type === 'applyButton') {
       return renderSettingsApplyButtonHtml(block);
+    }
+    if (block.type === 'openFolder') {
+      return renderSettingsOpenFolderHtml(block);
     }
     if (block.type === 'tabLink') {
       const targetIndex = tabIndexById.get(block.tab);
@@ -5794,6 +5825,26 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
         : null;
       if (entry && revealSettingsEntry(entry)) return;
       activateTab(targetIndex, { focus: true });
+    });
+    // 説明タブ内のフォルダを開くボタン（openFolder ブロック・issue #525）。
+    // aria-busy で処理中の二重押しを防ぐ（disabled にしないのでフォーカスは残る）。
+    modal.addEventListener('click', async (event) => {
+      const button = event.target.closest('.settings-content-openfolder-btn');
+      if (!button || button.getAttribute('aria-busy') === 'true') return;
+      const status = button.parentElement.querySelector('.settings-content-openfolder-status');
+      button.setAttribute('aria-busy', 'true');
+      let result = null;
+      try {
+        result = await VKShell.openPath(button.dataset.openFolderPath, button.dataset.openFolderCreate === 'true');
+      } catch (_e) {
+        result = null;
+      }
+      button.removeAttribute('aria-busy');
+      if (!status) return;
+      status.textContent = openFolderResultMessage(result);
+      // 色だけに依存させないため、成否は文言でも伝える。
+      if (result && result.ok) status.removeAttribute('data-state');
+      else status.setAttribute('data-state', 'error');
     });
     // 説明タブの code ブロックと実行時 status ブロックのコピーボタン。
     // status ブロックは「確認中」から確定表示へ中身が更新されるため、後段でイベント委譲する。

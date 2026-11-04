@@ -554,6 +554,43 @@ h4.settings-content-heading {
 .settings-content-copy-status[data-state="error"] {
   color: #f85149;
 }
+/* フォルダを開くボタン（openFolder ブロック）。二次ボタンなので .settings-content-copy と
+   同じ配色にし、アクセントカラーは使わない。結果表示は .settings-content-copy-status と同じ配色。 */
+.settings-content-openfolder {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 12px;
+}
+.settings-content-openfolder-btn {
+  flex: 0 0 auto;
+  padding: 6px 14px;
+  background: #21262d;
+  border: 1px solid var(--vktm--color--border-interactive);
+  border-radius: 5px;
+  color: #c9d1d9;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.settings-content-openfolder-btn:hover {
+  background: #30363d;
+}
+.settings-content-openfolder-btn:focus-visible {
+  outline: var(--vktm--outline--focus-ring);
+  outline-offset: var(--vktm--outline-offset--focus-ring);
+}
+.settings-content-openfolder-btn[aria-busy="true"] {
+  cursor: progress;
+}
+.settings-content-openfolder-status {
+  font-size: 12px;
+  color: #3fb950;
+}
+.settings-content-openfolder-status[data-state="error"] {
+  color: #f85149;
+}
 .settings-content-links {
   display: flex;
   flex-direction: column;

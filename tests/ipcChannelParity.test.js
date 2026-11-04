@@ -58,15 +58,15 @@ test('前提: ipcMain.handle( の出現回数と抽出できたチャンネル�
   );
 });
 
-// contextBridge の専用ラッパー（shell.openExternal / clipboard.writeText）が
+// contextBridge の専用ラッパー（shell.openExternal / shell.openPath / clipboard.writeText）が
 // INVOKE_CHANNELS を経由せず直接 ipcRenderer.invoke(channel, ...) している分だけは、
-// この 2 件に限定して明示的に除外する（issue #313 レビュー対応・修正-1）。
-const WRAPPER_CHANNELS = new Set(['shell:open-external', 'clipboard:write-text']);
+// この 3 件に限定して明示的に除外する（issue #313 レビュー対応・修正-1）。
+const WRAPPER_CHANNELS = new Set(['shell:open-external', 'shell:open-path', 'clipboard:write-text']);
 
 test('main.js の ipcMain.handle チャンネルは INVOKE_CHANNELS（または専用ラッパー）で必ず呼び出し可能', () => {
   // 「preload.js のどこかに文字列として現れるか」で判定すると、間違った許可リスト
   // （例: SEND_CHANNELS）に紛れ込んだ場合を検出できない（重大-1 と同じ形の事故）。
-  // INVOKE_CHANNELS への内包で判定し、専用ラッパー経由の 2 件だけを名指しで除外する。
+  // INVOKE_CHANNELS への内包で判定し、専用ラッパー経由の 3 件だけを名指しで除外する。
   const handleChannels = extractHandleChannels(mainSource);
   const invokeChannels = extractInvokeChannels(preloadSource) || [];
   const allowed = new Set([...invokeChannels, ...WRAPPER_CHANNELS]);

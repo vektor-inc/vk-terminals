@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 開発環境 ] bash の既存 PROMPT_COMMAND 完了待ちを確かめる自動テストが、負荷の高い環境で固定待ち時間のずれにより不安定になるのを防止（[#516](https://github.com/vektor-inc/vk-terminals/issues/516)）
+
 ## 1.89.0
 
 - [ 機能追加 ] `POST /api/set-title` の `paneNote` で、ペインのラベルに「見守り中」「完了」を表示できるように（ペイン本体・格納カード・スマートフォン版）（[#536](https://github.com/vektor-inc/vk-terminals/issues/536)）

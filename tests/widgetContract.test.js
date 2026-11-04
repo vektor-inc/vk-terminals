@@ -684,6 +684,48 @@ test('sanitizeWidget: statusTone は tone 語彙に完全一致するときだ�
   }
 });
 
+test('sanitizeWidget: statusLabel は前後の空白を除いて上限で切り詰め、非文字列・空は捨てる', () => {
+  const items = [
+    { id: '1', title: 'a', editable: false, statusLabel: '  見守り中  ' },
+    { id: '2', title: 'b', editable: false, statusLabel: 'あ'.repeat(50) },
+    { id: '3', title: 'c', editable: false, statusLabel: '' },
+    { id: '4', title: 'd', editable: false, statusLabel: '   ' },
+    { id: '5', title: 'e', editable: false, statusLabel: 5 },
+    { id: '6', title: 'f', editable: false, statusLabel: null },
+    { id: '7', title: 'g', editable: false },
+  ];
+  const w = contract.sanitizeWidget(baseRawWidget({
+    groups: [{ id: 'g', label: 'G', tone: 'warning', items }],
+  }));
+  const out = w.groups[0].items;
+  assert.equal(out[0].statusLabel, '見守り中');
+  assert.equal(out[1].statusLabel, 'あ'.repeat(20));
+  for (const i of [2, 3, 4, 5, 6]) {
+    assert.equal(Object.prototype.hasOwnProperty.call(out[i], 'statusLabel'), false);
+  }
+});
+
+test('sanitizeWidget: statusLabel から改行・制御文字・双方向制御文字を除き、除去後に空なら捨てる', () => {
+  const items = [
+    { id: '1', title: 'a', editable: false, statusLabel: '見守り\n中' },
+    { id: '2', title: 'b', editable: false, statusLabel: '完了\u202eevil\u2066x\u2069' },
+    { id: '3', title: 'c', editable: false, statusLabel: '\n\t\u0000\u007f\u202e' },
+    { id: '4', title: 'd', editable: false, statusLabel: ' \u202a ' },
+    { id: '5', title: 'e', editable: false, statusLabel: '完了\u061c\u0085\u009f\u200e\u200f済' },
+    { id: '6', title: 'f', editable: false, statusLabel: '\u061c\u0085' },
+  ];
+  const w = contract.sanitizeWidget(baseRawWidget({
+    groups: [{ id: 'g', label: 'G', tone: 'warning', items }],
+  }));
+  const out = w.groups[0].items;
+  assert.equal(out[0].statusLabel, '見守り中');
+  assert.equal(out[1].statusLabel, '完了evilx');
+  assert.equal(Object.prototype.hasOwnProperty.call(out[2], 'statusLabel'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(out[3], 'statusLabel'), false);
+  assert.equal(out[4].statusLabel, '完了済');
+  assert.equal(Object.prototype.hasOwnProperty.call(out[5], 'statusLabel'), false);
+});
+
 test('sanitizeWidget: statusTone に __proto__・constructor・前後に空白のある値を渡しても捨てられる', () => {
   const w = contract.sanitizeWidget(baseRawWidget({
     groups: [{ id: 'g', label: 'G', tone: 'warning', items: [

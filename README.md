@@ -693,7 +693,7 @@ curl -s http://127.0.0.1:13847/api/states \
 | `lastLines` | 最近の出力テキスト（ANSI除去済み、最大15行） |
 | `backgroundAgents` | そのペインでバックグラウンドに動いている Claude Code サブエージェント数（issue #340）。画面末尾のフッター表示（`← N agents` 等）から判定した整数（0 以上）、または判定できないときは `null`（不明）。`0` と `null` は区別されており、`null` は「フッターが読み取れる Claude Code の画面ではない」等の判定不能を表す（バックグラウンドで動くサブエージェントが無いことが確定した状態は `0`）。ペイン幅が狭くフッター表示が `…` で截断され、agents 表示の有無を確認しきれない場合も `0` と断定せず `null` になる。サブエージェントが終了すると `0` に戻る。司令塔（vk-orchestrator）はこの値が `null` のときは、従来どおり `lastOutputTime` だけでペインの稼働を判定する想定 |
 
-各ペインには上記に加え、`POST /api/set-title` 由来の `apiTitle` / `apiUrl` / `apiPrUrl` / `apiPrMerged` / `apiWaitingMerge`、`agentroom: true` のときは `agentRoom` も含まれます（各エンドポイントの節を参照）。
+各ペインには上記に加え、`POST /api/set-title` 由来の `apiTitle` / `apiUrl` / `apiPrUrl` / `apiPrMerged` / `apiWaitingMerge` / `apiPaneNote`（`"watching"` / `"done"` / `null`）、`agentroom: true` のときは `agentRoom` も含まれます（各エンドポイントの節を参照）。
 
 また、レスポンスのトップレベルには `updatedAt` / `terminals` に加えて `usage`（Claude の使用量スナップショット）が含まれます。使用量表示が opt-out（`showUsage: false`）または取得失敗のときは `usage: null` です（後方互換）。モバイルページはこの `usage` を利用します（後述の[Claude 使用量表示](#claude-使用量表示)を参照）。
 
@@ -787,6 +787,12 @@ curl -s -X POST http://127.0.0.1:13847/api/set-title \
   -H 'Content-Type: application/json' \
   -d '{"termId": "1", "title": "issue #44", "prUrl": "https://github.com/vektor-inc/vk-terminals/pull/99", "waitingMerge": true}'
 
+# ペインのラベルを「見守り中」にする（issue #536）。"done" で「完了」、null で消す
+curl -s -X POST http://127.0.0.1:13847/api/set-title \
+  -H 'Authorization: Bearer <アクセストークン>' \
+  -H 'Content-Type: application/json' \
+  -d '{"termId": "1", "title": "issue #44", "paneNote": "watching"}'
+
 # タイトル・URL・PR ボタンをクリア（空文字で消す）
 curl -s -X POST http://127.0.0.1:13847/api/set-title \
   -H 'Authorization: Bearer <アクセストークン>' \
@@ -802,6 +808,7 @@ curl -s -X POST http://127.0.0.1:13847/api/set-title \
 - `prUrl`（任意・issue #44）: タイトル行の右端に独立して表示する `PR ↗` ボタンに紐づける URL。バリデーションは `url` と完全同一（`http(s):` のみ・2048 文字以内・`new URL()` で parse 可）。空文字 `""` を渡すと PR ボタンが消えます。省略すると PR ボタンなしになります。
 - `prMerged`（任意・issue #113）: `PR ↗` ボタンをマージ済み表示（紫背景 + 非色アイコン）にする真偽値。**厳密な `true` のときだけ**マージ済み表示になり、それ以外の値（省略・`false`・文字列など）は通常表示（未マージ）になります。`prUrl` と組み合わせて使います。
 - `waitingMerge`（任意・issue #363）: `PR ↗` ボタンをマージ待ち表示（青背景 + 非色アイコン）にする真偽値。`prMerged` と同じく**厳密な `true` のときだけ**マージ待ち表示になり、それ以外の値（省略・`false`・文字列など）は「PR が出ただけ」表示（灰背景）になります。`prMerged` と同時に `true` を送った場合は `prMerged` が優先されます（マージ済みが最終状態のため）。フィールド名は送信側（vk-orchestrator）の実装に合わせています（`prWaitingMerge` ではありません）。
+- `paneNote`（任意・issue #536）: ペインのラベルに「見守り中」（`"watching"`）または「完了」（`"done"`）を出す注記。`"watching"` / `"done"` / `null` だけを受け付け、それ以外の値（型違いを含む）は無視します。**項目を省略したときは現在の注記を変えません**（`null` を送ると注記を消します）。ただし `title` が直前と変わり、かつ `paneNote` を省略したときは、別のタスクに移ったとみなして注記を消します。ラベルの優先順位は「入力待ち ＞ 完了 ＞ 見守り中 ＞ 実行中」で、見守り中は画面出力が流れても「実行中」に戻りません。`GET /api/states` ではペインごとに `apiPaneNote`（`"watching"` / `"done"` / `null`）として返ります。
 
 | 挙動 |
 |---|
@@ -852,7 +859,7 @@ curl -i -s -X POST http://127.0.0.1:13847/api/set-title \
 # => 400 {"error":"url must be http(s)"}
 ```
 
-設定された値は `GET /api/states` のレスポンス（および `~/.vk-terminals/states.json`）の各ペインオブジェクトに `apiTitle` / `apiUrl` / `apiPrUrl` / `apiPrMerged` / `apiWaitingMerge` フィールドとして含まれます。
+設定された値は `GET /api/states` のレスポンス（および `~/.vk-terminals/states.json`）の各ペインオブジェクトに `apiTitle` / `apiUrl` / `apiPrUrl` / `apiPrMerged` / `apiWaitingMerge` / `apiPaneNote`（`"watching"` / `"done"` / `null`）フィールドとして含まれます。
 
 #### `POST /api/set-status`
 

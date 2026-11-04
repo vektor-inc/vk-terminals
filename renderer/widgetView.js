@@ -584,9 +584,11 @@
     }
 
     // 状態バッジの色は、アイテムの statusTone（検証済み）があればそれ、無ければグループの tone。
+    // 文言も同様に、アイテムの statusLabel（検証済み）があればそれ、無ければグループの見出し。
     function buildStatusBadge(group, item) {
       const tone = item && item.statusTone ? item.statusTone : group.tone;
-      return buildBadge({ label: group.label, tone });
+      const label = item && item.statusLabel ? item.statusLabel : group.label;
+      return buildBadge({ label, tone });
     }
 
     function buildControl(item, control, disabled) {

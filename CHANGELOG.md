@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.89.0
+
+- [ 機能追加 ] `POST /api/set-title` の `paneNote` で、ペインのラベルに「見守り中」「完了」を表示できるように（ペイン本体・格納カード・スマートフォン版）（[#536](https://github.com/vektor-inc/vk-terminals/issues/536)）
+- [ 機能追加 ] タスク一覧の表示データでカードごとに状態バッジの文言を指定できる `statusLabel` に対応（[#536](https://github.com/vektor-inc/vk-terminals/issues/536)）
+
 ## 1.88.1
 
 - [ 開発環境 ] Codex 版の issue 対応手順が使う Git / GitHub 操作と、固定入口の許可操作の食い違いを検出する自動テストを追加（[#523](https://github.com/vektor-inc/vk-terminals/issues/523)）

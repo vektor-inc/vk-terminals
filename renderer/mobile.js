@@ -1121,9 +1121,10 @@ function render(data) {
     seen[termId] = true;
     var c = ensureCard(termId);
     var st = t.displayStatus || t.status || "idle";
-    c.dot.dataset.status = st;
-    c.badge.dataset.status = st;
-    var statusView = statusPresentation.getStatusPresentation(st);
+    // paneNote（issue #536）が効いているときは、文言と色だけを見守り中・完了に差し替える。
+    var statusView = statusPresentation.getStatusPresentation(st, t.apiPaneNote);
+    c.dot.dataset.status = statusView.visualStatus;
+    c.badge.dataset.status = statusView.visualStatus;
     if (c.badge.textContent !== statusView.label) c.badge.textContent = statusView.label;
     if (c.badge.hidden !== !statusView.label) c.badge.hidden = !statusView.label;
     if (statusView.ariaLabel) {

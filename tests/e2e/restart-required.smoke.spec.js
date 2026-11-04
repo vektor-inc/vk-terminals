@@ -16,7 +16,8 @@ test('再起動が必要な設定への案内とキャンセル', async () => {
   });
   try {
     const { app, win } = launched;
-    await expect(win.locator('#sidebar-restart-required')).toBeVisible();
+    // 起動直後の状態取得と定期更新を待ち、初回描画のタイミングに依存させない。
+    await expect(win.locator('#sidebar-restart-required')).toBeVisible({ timeout: 10000 });
     expect(await win.locator('#sidebar-menu').evaluate((nav) => nav.firstElementChild.id)).toBe('sidebar-restart-required');
     await win.locator('#sidebar-restart-required button').click();
     await expect(win.locator('#settings-panel-1')).toBeVisible();
@@ -63,3 +64,34 @@ test('再起動が必要な設定への案内とキャンセル', async () => {
     await closeApp(launched);
   }
 });
+
+for (const originDisappears of [true, false]) {
+  // @title サイドバーを畳んだ後はタイトルバーへフォーカスを戻す
+  // @step サイドバーから設定を開き、起点の表示状態を変えてサイドバーを畳む
+  // @check 起点が消えた場合も残る場合も、閉じた後はタイトルバーの設定ボタンへ戻る
+  test(`サイドバーを畳んだ設定パネルのフォーカス復帰（起点${originDisappears ? '非表示' : '残存'}）`, async () => {
+    const port = await getFreePort();
+    const launched = await launchAppAndWait({
+      port,
+      prefix: 'vk-restart-focus-e2e-',
+      seedHome: ({ configDir }) => fs.writeFileSync(path.join(configDir, 'restart-required.json'), JSON.stringify({ restartRequired: true, tabs: ['mobile'] })),
+    });
+    try {
+      const { win } = launched;
+      await win.locator('#sidebar-restart-required button').click();
+      await expect(win.locator('.settings-modal')).toBeVisible();
+      if (originDisappears) {
+        fs.writeFileSync(path.join(launched.tmpHome, '.vk-terminals', 'restart-required.json'), JSON.stringify({ restartRequired: false, tabs: [] }));
+        await expect(win.locator('#sidebar-restart-required')).toBeHidden({ timeout: 10000 });
+      }
+      // モーダル表示中は背景が inert のため、実際の開閉関数を直接呼ぶ。
+      await win.evaluate(() => setSidebarOpen(false, { focusFirst: false }));
+      await expect(win.locator('#root')).not.toHaveClass(/\bsidebar-open\b/);
+      await win.keyboard.press('Escape');
+      await expect(win.locator('.settings-modal')).toHaveCount(0);
+      await expect(win.locator('#settings-btn')).toBeFocused();
+    } finally {
+      await closeApp(launched);
+    }
+  });
+}

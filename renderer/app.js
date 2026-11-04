@@ -1738,7 +1738,8 @@ async function updateRestartRequired() {
   const notice = document.getElementById('sidebar-restart-required');
   if (notice) {
     if (!restartRequiredState.restartRequired && notice.contains(document.activeElement)) {
-      document.querySelector('#sidebar-settings button')?.focus();
+      [document.querySelector('#sidebar-settings button'), document.getElementById('settings-btn')]
+        .find(canRestoreModalFocus)?.focus();
     }
     notice.hidden = !restartRequiredState.restartRequired;
   }
@@ -2989,6 +2990,8 @@ let closeConfirmOpen = false;
 // 更新で非表示・無効になった起点へ戻すと、フォーカスが失われるため復帰前に確認する。
 function canRestoreModalFocus(element) {
   if (!element?.isConnected || typeof element.focus !== 'function') return false;
+  // 閉じたサイドバーは画面外へ移すだけで、非表示属性や矩形では判別できない。
+  if (!sidebarOpen && element.closest('#sidebar')) return false;
   if (element.closest('[hidden], [inert]') || element.matches(':disabled')) return false;
   if (element.getClientRects().length === 0) return false;
   const visibility = getComputedStyle(element).visibility;
@@ -5514,9 +5517,9 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
     overlay.remove();
     release();
     if (shouldRestore) {
-      (canRestoreModalFocus(restoreFocusElement)
-        ? restoreFocusElement
-        : document.querySelector('#sidebar-settings button'))?.focus();
+      const sidebarSettingsButton = sidebarOpen ? document.querySelector('#sidebar-settings button') : null;
+      [restoreFocusElement, sidebarSettingsButton, document.getElementById('settings-btn')]
+        .find(canRestoreModalFocus)?.focus();
     }
   };
   // ここから後の例外では、close に overlay・キー操作・各タイマーをまとめて片付けさせる。

@@ -17,12 +17,12 @@ const tracking = (pgid, identities, completionReceived = false) => ({
   ...initial(), trackedGroups: new Map([[pgid, new Map(identities)]]), completionReceived,
 });
 
-function waitFor(predicate, timeoutMs = 5000) {
+function waitFor(predicate, timeoutMs = 5000, conditionName = 'condition') {
   const deadline = Date.now() + timeoutMs;
   return new Promise((resolve, reject) => {
     const inspect = () => {
       if (predicate()) return resolve();
-      if (Date.now() >= deadline) return reject(new Error('condition timeout'));
+      if (Date.now() >= deadline) return reject(new Error(`${conditionName} timeout after ${timeoutMs}ms`));
       setTimeout(inspect, 20);
     };
     inspect();
@@ -546,6 +546,7 @@ test('実PTY: Ctrl+Z中はrunningを維持し、fg後の終了でexited', {
 
 test('実PTY: bashの既存PROMPT_COMMAND完了後だけreadyとなり、AI groupだけを取得する', {
   skip: process.platform === 'win32' || spawnSync('/bin/bash', ['--version']).status !== 0,
+  timeout: 150000,
 }, async (t) => {
   const shell = require('node-pty').spawn('/bin/bash', ['--noprofile', '--norc'], {
     env: { ...process.env, TERM: 'xterm-256color', PS1: 'VK_BASH> ' },
@@ -554,19 +555,20 @@ test('実PTY: bashの既存PROMPT_COMMAND完了後だけreadyとなり、AI grou
   const store = createAgentLifecycleStore({ pollIntervalMs: 20 });
   shell.onData((data) => { output += store.filterOutput('bash', data); });
   t.after(() => { store.close(); try { shell.kill(); } catch (_error) {} });
-  await waitFor(() => output.includes('VK_BASH>'));
+  await waitFor(() => output.includes('VK_BASH>'), 15000, 'bash初回プロンプト表示');
 
   const bashMajor = Number(spawnSync('/bin/bash', ['-c', 'printf %s "$BASH_VERSINFO"'], { encoding: 'utf8' }).stdout);
   const cases = [[1, `PROMPT_COMMAND='printf "EXTERNAL_STRING\\n"; sleep 0.12'`, 'EXTERNAL_STRING']];
   if (bashMajor >= 5) cases.push([2, `PROMPT_COMMAND=('printf "EXTERNAL_ARRAY\\n"' 'sleep 0.12')`, 'EXTERNAL_ARRAY']);
   for (const [generation, declaration, externalOutput] of cases) {
     shell.write(`${declaration}\r`);
-    await waitFor(() => output.includes(externalOutput));
-    await waitFor(() => output.lastIndexOf('VK_BASH>') > output.lastIndexOf(externalOutput));
+    await waitFor(() => output.includes(externalOutput), 15000, `${externalOutput}出力`);
+    await waitFor(() => output.lastIndexOf('VK_BASH>') > output.lastIndexOf(externalOutput), 15000, `${externalOutput}後のプロンプト表示`);
     output = '';
     const token = store.initialize('bash', generation);
     const command = `${process.execPath} -e 'setTimeout(()=>{},300)'`;
     const prepared = await store.prepare('bash', generation, token, shell.pid, command, '/bin/bash');
+    assert.equal(prepared.status, 'ready', `世代${generation}のprepare`);
     shell.write(`${prepared.setupCommand}\r`);
     await new Promise((resolve) => setTimeout(resolve, 40));
     assert.equal(store.get('bash', generation), null);
@@ -574,8 +576,8 @@ test('実PTY: bashの既存PROMPT_COMMAND完了後だけreadyとなり、AI grou
     assert.ok(output.includes(externalOutput));
     assert.equal(await store.activate('bash', generation, token), true);
     shell.write(`${prepared.command}\r`);
-    await waitFor(() => store.get('bash', generation) === 'running');
-    await waitFor(() => store.get('bash', generation) === 'exited');
+    await waitFor(() => store.get('bash', generation) === 'running', 15000, `世代${generation}のrunning`);
+    await waitFor(() => store.get('bash', generation) === 'exited', 15000, `世代${generation}のexited`);
   }
 });
 

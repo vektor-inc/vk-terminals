@@ -29,6 +29,9 @@
 //     そのため `gh pr create` / `gh pr edit` は `--title-file <名前>` / `--body-file <名前>` で、同じ入出力フォルダ直下のファイルから読む（issue #477）。
 //     parse 段階はファイル名の形だけを検査し、読み込みと内容の検査（UTF-8・制御文字・サイズ）は実行段階で gh を起動する前に行う。読んだ値はシェルを通さず argv で渡す。
 //     同じ形を `gh issue comment` / `gh pr comment`（--body-file）と `gh issue create`（--title-file / --body-file）にも広げた（issue #519。読み込みと検査は同じ処理）。
+//   - 起票前の確認用に、読み取り専用の `gh issue list`（重複確認）と `gh repo view`（公開範囲・デフォルトブランチの確認）を持つ（issue #520）。
+//     フラグは状態・検索語・件数・ラベル・許可リストの JSON 項目だけで、--web・--jq・--template・--repo は受けない。
+//     `gh repo view` は `--repo` を持たないため、拘束したリポジトリ（または許可 owner の明示先）を位置引数として入口が付ける。
 const nodeFs = require('fs');
 const crypto = require('crypto');
 const path = require('path');
@@ -45,6 +48,18 @@ const MAX_LABEL_LENGTH = 50;
 const REVIEW_PASSED_LABEL = 'agent-review-passed';
 const REVIEW_PASSED_LABEL_COLOR = '0e8a16';
 const REVIEW_PASSED_LABEL_DESCRIPTION = 'エージェントのレビュー完了マーカー（最終レビュー・e2e ゲート通過）';
+// gh issue list / gh repo view（issue #520）で許す --json の項目。任意式の評価（--jq / --template）は受けず、項目名もここにあるものだけ。
+const ISSUE_LIST_JSON_FIELDS = Object.freeze(['number', 'title', 'state', 'stateReason', 'url', 'labels', 'assignees', 'author', 'body', 'createdAt', 'updatedAt', 'closedAt', 'milestone']);
+const REPO_VIEW_JSON_FIELDS = Object.freeze(['name', 'nameWithOwner', 'owner', 'url', 'description', 'visibility', 'isPrivate', 'isArchived', 'isFork', 'defaultBranchRef', 'hasIssuesEnabled', 'viewerPermission']);
+const ISSUE_LIST_STATES = Object.freeze(['open', 'closed', 'all']);
+const ISSUE_LIST_MAX_LIMIT = 100;
+const ISSUE_LIST_MAX_LABELS = 10;
+const ISSUE_LIST_MAX_SEARCH_CHARS = 256;
+// gh は --search と --label を 1 本の検索式に組み立てる。検索先（repo: など）や括弧・論理演算子で拘束先の外へ広げられないよう、許可した文法だけを通す。
+const SEARCH_TERM_PATTERN = /^(?:-?label:)?[\p{L}\p{N}_.-]+$/u;
+const SEARCH_OPERATOR_PATTERN = /^(?:AND|OR|NOT)$/i;
+const LIST_LABEL_PATTERN = /^[\p{L}\p{N}_.:-]+(?: [\p{L}\p{N}_.:-]+)*$/u;
+
 // PR 番号は 1 以上の数字だけ（0・先頭ゼロは不可）。
 const POSITIVE_NUMBER_PATTERN = /^[1-9][0-9]{0,8}$/;
 // ラベル操作の対応表（parse 側）と、runTaskCommand の振り分け（REVIEW_LABEL_OPERATIONS）の元を 1 か所にそろえる。値は [操作名, PR 番号を取るか]。
@@ -243,6 +258,94 @@ function parseGhView(tokens, { allowedBooleanFlags, numberRequired }) {
   }
   if (numberRequired && number === undefined) return fail('number required');
   return { ok: true, number, args };
+}
+
+// `--json a,b` / `--json=a,b` を読み、項目がすべて許可リストにあるときだけ値を返す（無ければ null）。
+function readAllowedJsonFields(value, allowedFields) {
+  if (typeof value !== 'string' || !JSON_FIELDS_PATTERN.test(value)) return null;
+  const fields = value.split(',');
+  return fields.every((field) => allowedFields.includes(field)) ? value : null;
+}
+
+// `--name value` / `--name=value` のどちらでも値を取り出す共通処理（gh の読み取り系で使う）。
+function splitFlag(tokens, index) {
+  const token = tokens[index];
+  if (token.startsWith('--') && token.includes('=')) {
+    return { name: token.slice(0, token.indexOf('=')), value: token.slice(token.indexOf('=') + 1), consumed: 0 };
+  }
+  return { name: token, value: tokens[index + 1], consumed: 1 };
+}
+
+// 検索語は、空白区切りの各語が「文字・数字・_ . -」だけ（`label:` / `-label:` の接頭辞のみ可）のときだけ通す。
+// 括弧・引用符・ほかの修飾子・論理演算子を含む語は拒否する。
+function isSafeSearchQuery(value) {
+  if (value.trim() === '' || [...value].length > ISSUE_LIST_MAX_SEARCH_CHARS) return false;
+  return value.trim().split(/ +/).every((term) => SEARCH_TERM_PATTERN.test(term) && !SEARCH_OPERATOR_PATTERN.test(term));
+}
+
+// `gh issue list` は読み取り専用。--state / --search / --limit / --label / --json だけを受ける（issue #520）。
+// --web（ブラウザを開く）・--jq / --template（任意式の評価）・--repo / -R・短縮形・位置引数は拒否する。
+// 検索語は `--search=<値>` の 1 引数に組み立て直し、先頭が `-` の検索構文でも別フラグとして読まれないようにする。
+function parseGhIssueList(tokens) {
+  const args = [];
+  const seen = new Set();
+  const labels = [];
+  for (let i = 0; i < tokens.length; i += 1) {
+    const token = tokens[i];
+    if (hasUnsafeCharacter(token) || PR_TITLE_FORBIDDEN_PATTERN.test(token)) return fail('invalid argument');
+    const { name, value, consumed } = splitFlag(tokens, i);
+    if (!['--state', '--search', '--limit', '--label', '--json'].includes(name)) return fail(`argument not allowed: ${JSON.stringify(token)}`);
+    if (typeof value !== 'string' || PR_TITLE_FORBIDDEN_PATTERN.test(value)) return fail(`invalid value for ${name}`);
+    if (name === '--label') {
+      if (!isSafeLabelName(value) || !LIST_LABEL_PATTERN.test(value) || labels.length >= ISSUE_LIST_MAX_LABELS) return fail('invalid --label');
+      labels.push(value);
+    } else {
+      if (seen.has(name)) return fail(`${name} specified more than once`);
+      seen.add(name);
+      if (name === '--state') {
+        if (!ISSUE_LIST_STATES.includes(value)) return fail('invalid --state');
+        args.push('--state', value);
+      } else if (name === '--search') {
+        if (!isSafeSearchQuery(value)) return fail('invalid --search');
+        args.push(`--search=${value}`);
+      } else if (name === '--limit') {
+        if (!DIGITS_PATTERN.test(value) || Number(value) < 1 || Number(value) > ISSUE_LIST_MAX_LIMIT) return fail(`--limit must be between 1 and ${ISSUE_LIST_MAX_LIMIT}`);
+        args.push('--limit', String(Number(value)));
+      } else {
+        const fields = readAllowedJsonFields(value, ISSUE_LIST_JSON_FIELDS);
+        if (fields === null) return fail('--json field not allowed');
+        args.push('--json', fields);
+      }
+    }
+    i += consumed;
+  }
+  for (const label of labels) args.push('--label', label);
+  return { ok: true, args };
+}
+
+// `gh repo view` は読み取り専用。`--json <項目,...>` が必須で、位置引数は owner/repo（拘束先の明示）だけ（issue #520）。
+// gh repo view は --repo を持たないため、対象は実行段階で入口が位置引数として付ける。
+function parseGhRepoView(tokens, targetRepo) {
+  let json;
+  let positional;
+  for (let i = 0; i < tokens.length; i += 1) {
+    const token = tokens[i];
+    if (hasUnsafeCharacter(token) || PR_TITLE_FORBIDDEN_PATTERN.test(token)) return fail('invalid argument');
+    if (token === '--json' || token.startsWith('--json=')) {
+      const { value, consumed } = splitFlag(tokens, i);
+      const fields = readAllowedJsonFields(value, REPO_VIEW_JSON_FIELDS);
+      if (json !== undefined || fields === null) return fail('--json field not allowed');
+      json = fields;
+      i += consumed;
+    } else if (!token.startsWith('-') && token.includes('/') && positional === undefined) {
+      if (!isSafeGitHubRepo(token)) return fail(`invalid github repository: ${JSON.stringify(token)}`);
+      positional = token;
+    } else return fail(`argument not allowed: ${JSON.stringify(token)}`);
+  }
+  if (json === undefined) return fail('--json required');
+  if (positional !== undefined && targetRepo !== undefined) return fail('repository specified more than once');
+  const target = targetRepo === undefined ? positional : targetRepo;
+  return { ok: true, bin: 'gh', args: ['repo', 'view', '--json', json], needsGitHub: true, repoPositional: true, ...(target === undefined ? {} : { targetRepo: target }) };
 }
 
 // `gh issue comment` / `gh pr comment <番号>` は `--body <値>` か `--body-file <名前>`（入出力フォルダ直下のファイル名）のどちらか 1 つ（issue #519）。
@@ -622,6 +725,11 @@ function parseTaskCommand(argv) {
       const parsed = parseGhView(tokens, { allowedBooleanFlags: ['--comments'], numberRequired: true });
       return parsed.ok ? command(['issue', 'view', parsed.number], parsed.args) : parsed;
     }
+    if (group === 'issue' && action === 'list') {
+      const parsed = parseGhIssueList(tokens);
+      return parsed.ok ? command(['issue', 'list'], parsed.args) : parsed;
+    }
+    if (group === 'repo' && action === 'view') return parseGhRepoView(tokens, targetRepo);
     if (group === 'issue' && action === 'comment') {
       return withTextFiles(parseGhComment(tokens), (parsed) => command(['issue', 'comment', parsed.number], parsed.args));
     }
@@ -2497,7 +2605,10 @@ function runTaskCommand(argv, deps = {}) {
       return reject(`task command rejected: ${error instanceof TrustError ? error.message : 'title/body file could not be verified'}`);
     }
   }
-  const args = parsed.bin === 'gh' ? withBoundRepository(ghArgs, explicitGitHubTarget || binding.repo) : ghArgs;
+  // gh repo view は --repo を持たないため、対象は位置引数として末尾に付ける（issue #520）。
+  const args = parsed.bin !== 'gh' ? ghArgs
+    : parsed.repoPositional ? [...ghArgs, explicitGitHubTarget || binding.repo]
+      : withBoundRepository(ghArgs, explicitGitHubTarget || binding.repo);
   // 明示先の gh は呼び出し元 cwd の Git 設定にも依存させず、固定した HOME から実行する。
   const executionCwd = explicitGitHubTarget === undefined ? cwd : binding.home;
   const result = spawnSync(bin, args, { cwd: executionCwd, env, encoding: 'utf8', stdio: 'inherit' });

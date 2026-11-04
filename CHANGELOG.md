@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 機能追加 ] 自動処理用 Codex の固定入口で、起票前の確認用に issue 一覧の検索とリポジトリの公開範囲・デフォルトブランチの確認ができるように（[#520](https://github.com/vektor-inc/vk-terminals/issues/520)）
+
 ## 1.87.0
 
 - [ 機能追加 ] 設定画面で、必須なのに未入力の項目を赤枠で示し、条件によって必須になる項目（requiredWhen）にも対応（[#524](https://github.com/vektor-inc/vk-terminals/issues/524)）

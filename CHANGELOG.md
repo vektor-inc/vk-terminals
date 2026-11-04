@@ -1,5 +1,8 @@
 # Changelog
 
+- [ 不具合修正 ] 自動処理で Codex を起動したとき、「Folder access」画面（Open restricted / Quit の選択）に説明文が増えた新しい表示だと、自動で Enter が送られず止まる不具合を修正（[#517](https://github.com/vektor-inc/vk-terminals/issues/517)）
+- [ 不具合修正 ] 端末からの問い合わせへの自動応答など画面出力を伴わない入力があると、`/api/states` が返す画面識別値が古いまま残り、条件付き Enter が受け付けられなくなる状態を、識別値が最新ではないことが分かる形（`screenIdentifierStale`）で返すよう修正（[#517](https://github.com/vektor-inc/vk-terminals/issues/517)）
+
 ## 1.86.0
 
 - [ 機能追加 ] 新しいペインを開くフォルダやメニュー項目など一部の設定を、保存後にアプリを再起動せず反映し、反映したことと設定ファイルを読み込めなかったことを画面に表示（[#514](https://github.com/vektor-inc/vk-terminals/issues/514)）

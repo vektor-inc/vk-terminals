@@ -56,6 +56,16 @@ function createConditionalTerminalInputGuard(options = {}) {
       };
     },
 
+    // 報告済みの識別値が、いまのペインの画面番号と一致する（＝以後 PTY 書き込みが無い）か。
+    // 画面出力を伴わない書き込みでは onData が走らず報告が更新されないため、states 側で
+    // 「最新ではない」と判別できるようにする（issue #517）。
+    isCurrent(termId, snapshot) {
+      const id = String(termId);
+      const revision = revisions.get(id);
+      if (revision === undefined || !snapshot || !Number.isSafeInteger(snapshot.agentGeneration)) return false;
+      return identifiersEqual(identifier(id, snapshot.agentGeneration, revision), snapshot.screenIdentifier);
+    },
+
     writeEnter(request, dependencies) {
       const id = String(request.termId);
       const ptyProcess = dependencies.getPty(id);
@@ -90,9 +100,10 @@ function createConditionalTerminalInputGuard(options = {}) {
  *
  * @param {object} states - agentGeneration 追加済みのペイン状態。
  * @param {Map<string, object>} snapshots - termId ごとの報告時スナップショット。
+ * @param {object} [guard] - 指定時は識別値が最新か照合し、古ければ screenIdentifierStale: true を返す。
  * @returns {object} screenIdentifier を加えた状態。
  */
-function mergeConditionalScreenIdentifiers(states, snapshots) {
+function mergeConditionalScreenIdentifiers(states, snapshots, guard) {
   if (!states || typeof states !== 'object' || Array.isArray(states)) return states;
   return Object.fromEntries(Object.entries(states).map(([paneId, state]) => {
     if (!state || typeof state !== 'object' || Array.isArray(state)) return [paneId, state];
@@ -102,9 +113,14 @@ function mergeConditionalScreenIdentifiers(states, snapshots) {
       ...publicState
     } = state;
     const snapshot = snapshots.get(String(state.termId));
-    const screenIdentifier = snapshot && snapshot.agentGeneration === state.agentGeneration
-      ? snapshot.screenIdentifier
-      : null;
+    const sameGeneration = !!snapshot && snapshot.agentGeneration === state.agentGeneration;
+    // 出力を伴わない書き込み（端末問い合わせへの自動応答・リサイズ等）の後は、報告済みの識別値が
+    // ガード側で消費済みになり、そのまま返すと Enter が永久に screen-changed になる。
+    // 古い値は返さず、最新ではないことを screenIdentifierStale で示す（issue #517）。
+    if (sameGeneration && guard && !guard.isCurrent(state.termId, snapshot)) {
+      return [paneId, { ...publicState, screenIdentifier: null, screenIdentifierStale: true }];
+    }
+    const screenIdentifier = sameGeneration ? snapshot.screenIdentifier : null;
     return [paneId, { ...publicState, screenIdentifier }];
   }));
 }

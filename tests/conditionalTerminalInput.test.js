@@ -157,3 +157,39 @@ test('main は PTY 入出力を識別値へ反映し、条件付き Enter を専
   assert.match(rendererSource, /VKIpc\.on\('terminal:data', \(id, data, screenSnapshot\)/);
   assert.match(rendererSource, /lastLines: t\.lastLines,[\s\S]*screenIdentifier: t\.screenIdentifier/);
 });
+
+test('issue #517: 画面出力の無い PTY 書き込みの後、states の識別値は「最新ではない」と分かる形で返す', () => {
+  const context = setup();
+  const snapshot = context.guard.capture('1', 4);
+  const states = {
+    pane1: { termId: '1', agentGeneration: 4, lastLines: 'screen', screenIdentifier: snapshot.screenIdentifier, screenIdentifierGeneration: 4 },
+  };
+  const snapshots = new Map([['1', snapshot]]);
+  // 最新の間は識別値をそのまま返し、stale 印は付けない。
+  assert.deepEqual(mergeConditionalScreenIdentifiers(states, snapshots, context.guard).pane1, {
+    termId: '1', agentGeneration: 4, lastLines: 'screen', screenIdentifier: snapshot.screenIdentifier,
+  });
+  // 端末問い合わせへの自動応答など、出力を伴わない書き込みで番号だけ進む。
+  context.guard.markChanged('1');
+  const merged = mergeConditionalScreenIdentifiers(states, snapshots, context.guard).pane1;
+  assert.equal(merged.screenIdentifier, null);
+  assert.equal(merged.screenIdentifierStale, true);
+  // 古い識別値での Enter は引き続き拒否される（安全側の意図は維持）。
+  assert.equal(context.guard.writeEnter(request(snapshot), context.dependencies).reason, 'screen-changed');
+  // 新しい出力で再採取されれば、再び識別値が返り、Enter も通る。
+  const fresh = context.guard.capture('1', 4);
+  const refreshed = mergeConditionalScreenIdentifiers(
+    { pane1: { ...states.pane1, screenIdentifier: fresh.screenIdentifier } },
+    new Map([['1', fresh]]),
+    context.guard
+  ).pane1;
+  assert.equal(refreshed.screenIdentifier, fresh.screenIdentifier);
+  assert.equal('screenIdentifierStale' in refreshed, false);
+  assert.equal(context.guard.writeEnter(request(fresh), context.dependencies).ok, true);
+});
+
+test('issue #517: main は /api/states と状態ファイルの識別値をガードの現在番号で照合する', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+  const calls = source.match(/mergeConditionalScreenIdentifiers\([\s\S]*?reportedScreenSnapshots,\s*conditionalTerminalInput\s*\)/g) || [];
+  assert.equal(calls.length, 2);
+});

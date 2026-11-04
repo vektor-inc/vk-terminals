@@ -2706,7 +2706,8 @@ ipcMain.on('terminal:report-states', (event, states) => {
       (termId) => agentGenerations.get(termId),
       (termId, generation) => agentLifecycles.get(termId, generation)
     ),
-    reportedScreenSnapshots
+    reportedScreenSnapshots,
+    conditionalTerminalInput
   );
   const payload = JSON.stringify({ updatedAt: new Date().toISOString(), terminals: statesWithScreenIdentifiers }, null, 2);
   fs.writeFile(STATE_FILE, payload, 'utf8', () => {});
@@ -3162,7 +3163,8 @@ function startHttpApi() {
             (termId) => agentGenerations.get(termId),
             (termId, generation) => agentLifecycles.get(termId, generation)
           ),
-          reportedScreenSnapshots
+          reportedScreenSnapshots,
+          conditionalTerminalInput
         );
         res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
         res.end(JSON.stringify({

@@ -1549,7 +1549,13 @@ app.on('window-all-closed', () => {
 // 状態機械で管理することで、cleanupPtys() 完了後に自分で呼ぶ app.quit() が
 // before-quit を再度発火させても無限ループにならないようにしている。
 const ptyShutdownGate = createPtyShutdownGate();
-const restartApplication = createRestartApplication({ gate: ptyShutdownGate, cleanupPtys, app, log: console });
+const restartApplication = createRestartApplication({
+  gate: ptyShutdownGate,
+  cleanupPtys,
+  app,
+  // 共通処理の失敗ログにも、検索に使うアプリの接頭辞を付ける。
+  log: { error: (message, error) => console.error(`${LOG_PREFIX} ${message}`, error) },
+});
 
 function finalizeBeforeQuit() {
   stopWidgetWatcher();

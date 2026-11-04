@@ -5833,6 +5833,11 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
       if (!button || button.getAttribute('aria-busy') === 'true') return;
       const status = button.parentElement.querySelector('.settings-content-openfolder-status');
       button.setAttribute('aria-busy', 'true');
+      // 再押下時に前回の結果が残らないよう、押した直後に消しておく。
+      if (status) {
+        status.textContent = '';
+        status.removeAttribute('data-state');
+      }
       let result = null;
       try {
         result = await VKShell.openPath(button.dataset.openFolderPath, button.dataset.openFolderCreate === 'true');

@@ -201,6 +201,31 @@ test('同梱ルートがホームの内側にあるときは従来どおり許�
   assert.equal(result.ok, true);
 });
 
+test('~/.vk-agents がホームやホームの親を指すリンクのときは、開くのも作るのも不可', async (t) => {
+  for (const linkTarget of ['home', 'base']) {
+    const sandbox = makeSandbox(t);
+    fs.rmSync(path.join(sandbox.home, '.vk-agents'), { recursive: true });
+    fs.symlinkSync(linkTarget === 'home' ? sandbox.home : sandbox.base, path.join(sandbox.home, '.vk-agents'));
+    const inside = path.join(sandbox.outside, 'child');
+    fs.mkdirSync(inside);
+    assert.deepEqual(await request(sandbox, inside), { ok: false, reason: 'not-allowed' }, linkTarget);
+    assert.deepEqual(await request(sandbox, '~/.vk-agents/Documents/child'), { ok: false, reason: 'not-allowed' }, linkTarget);
+    assert.deepEqual(await request(sandbox, '~/.vk-agents/new', true), { ok: false, reason: 'not-allowed' }, linkTarget);
+    assert.equal(fs.existsSync(path.join(sandbox.home, 'new')), false);
+    // 同梱ルートは引き続き開ける。
+    assert.equal((await request(sandbox, path.join(sandbox.bundled, 'rules'))).ok, true);
+  }
+});
+
+test('追加したパッケージ拡張子のフォルダは開かない', async (t) => {
+  const sandbox = makeSandbox(t);
+  for (const ext of ['.rtfd', '.photoslibrary', '.logicx', '.pages', '.xcodeproj', '.vst3', '.dSYM']) {
+    const dir = path.join(sandbox.home, '.vk-agents', `x${ext}`);
+    fs.mkdirSync(dir);
+    assert.deepEqual(await request(sandbox, dir), { ok: false, reason: 'not-directory' }, ext);
+  }
+});
+
 test('相対パス・~user・NUL・空は invalid', async (t) => {
   const sandbox = makeSandbox(t);
   for (const raw of ['rules', '~root/x', '/a\0b', '', undefined]) {

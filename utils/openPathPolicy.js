@@ -12,9 +12,15 @@ const path = require('path');
 const OPEN_PATH_MAX_LENGTH = 4096;
 
 // macOS がフォルダではなくアプリ・部品として扱う拡張子。shell.openPath に渡すと起動されるため拒否する。
+// この一覧は代表的なものであり、Finder のパッケージ判定をすべては網羅できない。
+// OS の正確な判定にはネイティブ拡張が要るため採らない（許可ルート内に限る前提と合わせて許容する）。
+// .lproj は普通のフォルダとして扱われるので入れない。
 const PACKAGE_EXTENSIONS = new Set([
   '.app', '.bundle', '.framework', '.plugin', '.kext', '.pkg', '.mpkg', '.prefpane',
   '.xpc', '.appex', '.workflow', '.action', '.saver', '.qlgenerator', '.mdimporter',
+  '.rtfd', '.photoslibrary', '.musiclibrary', '.tvlibrary', '.fcpbundle', '.logicx', '.band',
+  '.pages', '.numbers', '.key', '.playground', '.xcodeproj', '.xcworkspace', '.scptd',
+  '.component', '.vst', '.vst3', '.au', '.dsym',
 ]);
 
 // ユーザーが作成を許可される場所（ホームフォルダ直下のこのフォルダの中だけ）。
@@ -74,7 +80,9 @@ function realpathOrNull(target) {
 async function resolveRoots({ homeDir, bundledRoots }) {
   const realHome = (await realpathOrNull(homeDir)) || path.resolve(homeDir);
   const vkAgentsPath = path.join(homeDir, CREATABLE_DIR_NAME);
-  const creatableRoot = (await realpathOrNull(vkAgentsPath)) || path.join(realHome, CREATABLE_DIR_NAME);
+  let creatableRoot = (await realpathOrNull(vkAgentsPath)) || path.join(realHome, CREATABLE_DIR_NAME);
+  // ~/.vk-agents 自体がホームやその祖先を指すリンクのときは、このルートを使わない（開くのも作るのも不可）。
+  if (isInsideOrSame(creatableRoot, realHome)) creatableRoot = null;
   const bundled = [];
   for (const root of bundledRoots) {
     const realRoot = (await realpathOrNull(root)) || root;
@@ -83,7 +91,7 @@ async function resolveRoots({ homeDir, bundledRoots }) {
     if (isInsideOrSame(realRoot, realHome)) continue;
     bundled.push(realRoot);
   }
-  return { creatableRoot, openRoots: [creatableRoot, ...bundled] };
+  return { creatableRoot, openRoots: creatableRoot ? [creatableRoot, ...bundled] : bundled };
 }
 
 function hasPackageExtension(target) {
@@ -123,7 +131,7 @@ async function resolveOpenFolderRequest({ rawPath, create = false, homeDir = os.
   const prospective = await resolveProspectivePath(target);
   if (!prospective || !isOpenable(prospective)) return { ok: false, reason: 'not-allowed' };
   if (create !== true) return { ok: false, reason: 'not-found' };
-  if (!isInsideOrSame(creatableRoot, prospective)) return { ok: false, reason: 'create-failed' };
+  if (!creatableRoot || !isInsideOrSame(creatableRoot, prospective)) return { ok: false, reason: 'create-failed' };
 
   try {
     await fs.promises.mkdir(prospective, { recursive: true });

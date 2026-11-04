@@ -2249,13 +2249,29 @@ function readMemberInput(fsImpl, dir, name, maxBytes, uid) {
 }
 
 // 新規ファイルを、既にある（リンクを含む）なら失敗する形で作って書く。
-function createExclusiveFile(fsImpl, filePath, content, mode = 0o600) {
+// verify を渡すと、作成した直後・書き込み前に verify(fd) を呼ぶ。投げたら中身を書かずに閉じ、作ったファイル自身（fd と同じ dev/ino）だけを消して再投する。
+function createExclusiveFile(fsImpl, filePath, content, mode = 0o600, { verify = null } = {}) {
   const constants = fsImpl.constants || nodeFs.constants;
   const fd = fsImpl.openSync(filePath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW || 0), mode);
+  let closed = false;
   try {
+    if (verify !== null) verify(fd);
     if (content.length > 0) fsImpl.writeFileSync(fd, content);
+  } catch (error) {
+    if (verify !== null) {
+      try {
+        const created = fsImpl.fstatSync(fd);
+        fsImpl.closeSync(fd);
+        closed = true;
+        const current = fsImpl.lstatSync(filePath);
+        if (current.dev === created.dev && current.ino === created.ino) fsImpl.unlinkSync(filePath);
+      } catch (_cleanupError) {
+        // 後始末は最善努力（パスが差し替えられて辿れない場合は消せない）。
+      }
+    }
+    throw error;
   } finally {
-    fsImpl.closeSync(fd);
+    if (!closed) fsImpl.closeSync(fd);
   }
 }
 
@@ -2627,8 +2643,12 @@ function requestAttachment(url, { headers, maxBytes, timeoutMs }, deps = {}) {
     const req = httpsImpl.request(url, { method: 'GET', headers }, (res) => {
       const status = res.statusCode;
       if (status !== 200) {
-        res.resume();
-        finish(resolve, { status, location: res.headers.location });
+        // 本文は使わない。受信が続いてもサイズ・時間の上限が効かなくなるため、状態と Location を取ったら接続ごと閉じる。
+        res.on('error', () => {});
+        const location = res.headers.location;
+        res.destroy();
+        req.destroy();
+        finish(resolve, { status, location });
         return;
       }
       const declared = Number(res.headers['content-length']);
@@ -2713,12 +2733,21 @@ async function executeIssueImageSave({ parsed, binding, env, fsImpl, spawnSync, 
     if (!IMAGE_TYPE_EXTENSIONS[type].includes(extension)) throw new TrustError(`${parsed.out} does not match the image type (${type})`);
     // 取得中に入出力フォルダが差し替えられていないことを書く直前にも確かめる。
     if (resolveTrustedPath(fsImpl, member.io, { uid, rejectFinalLink: true }).realPath !== member.io) throw new TrustError(`path is not a real directory: ${member.io}`);
+    // 検査と作成は別の操作なので、その間に入出力フォルダがリンクや別のフォルダに差し替えられても外へ書かないよう、
+    // 作成の前後でフォルダの dev/ino・実パスと、作ったファイルの fd とパスの dev/ino の一致を確かめる（食い違えば書き込まずに消して失敗）。
+    const ioBefore = fsImpl.lstatSync(member.io);
+    const verify = (fd) => {
+      const created = fsImpl.fstatSync(fd);
+      const entry = fsImpl.lstatSync(target);
+      const ioAfter = fsImpl.lstatSync(member.io);
+      if (!created.isFile() || !entry.isFile() || entry.isSymbolicLink() || created.dev !== entry.dev || created.ino !== entry.ino) throw new TrustError(`${parsed.out} was not created inside the input/output folder`);
+      if (ioAfter.isSymbolicLink() || !ioAfter.isDirectory() || ioAfter.dev !== ioBefore.dev || ioAfter.ino !== ioBefore.ino || fsImpl.realpathSync(member.io) !== member.io) throw new TrustError('the input/output folder was replaced while saving');
+    };
     try {
-      createExclusiveFile(fsImpl, target, buffer);
+      createExclusiveFile(fsImpl, target, buffer, 0o600, { verify });
     } catch (error) {
-      if (error && error.code === 'EEXIST') throw new TrustError(`${parsed.out} already exists`);
-      removeQuietly(fsImpl, target, 'unlinkSync');
-      throw new TrustError(`${parsed.out} could not be written`);
+      if (error instanceof TrustError) throw error;
+      throw new TrustError(error && error.code === 'EEXIST' ? `${parsed.out} already exists` : `${parsed.out} could not be written`);
     }
     writeOut(`SAVED=${target}\nTYPE=${type}\nBYTES=${buffer.length}\n`);
     return 0;

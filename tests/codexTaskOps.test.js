@@ -5716,3 +5716,76 @@ test('通信: requestAttachment はリダイレクトを自動で追わず、上
     await assert.rejects(call('/slow'), /timed out/);
   });
 });
+
+test('通信: requestAttachment は 200 以外の応答で本文が終わらなくても、状態と Location を返して接続を破棄する（issue #521）', async () => {
+  const closed = { redirect: false, missing: false };
+  await withAttachmentServer((req, res) => {
+    const key = req.url === '/hang-redirect' ? 'redirect' : 'missing';
+    res.on('close', () => { closed[key] = true; });
+    if (key === 'redirect') res.writeHead(302, { Location: 'https://objects.githubusercontent.com/x' });
+    else res.writeHead(404);
+    // 本文を終わらせない。
+    res.write('x');
+  }, async (httpsStub) => {
+    const call = (urlPath) => requestAttachment(new URL(`https://github.com${urlPath}`), { headers: {}, maxBytes: 1000, timeoutMs: 2000 }, { https: httpsStub });
+    const redirect = await call('/hang-redirect');
+    assert.deepEqual({ status: redirect.status, location: redirect.location }, { status: 302, location: 'https://objects.githubusercontent.com/x' });
+    assert.equal((await call('/hang-missing')).status, 404);
+    // サーバ側から見て接続が閉じられている（本文を読み捨て続けていない）。
+    for (let i = 0; i < 50 && !(closed.redirect && closed.missing); i += 1) await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.deepEqual(closed, { redirect: true, missing: true });
+  });
+});
+
+// 検査と作成の間に入出力フォルダを差し替える競合を、fs の差し込み口で再現する。method の最初の該当呼び出しの直前に swap を実行する。
+function racingFs(method, matches, swap) {
+  const racing = Object.create(fs);
+  let done = false;
+  racing[method] = (...args) => {
+    if (!done && matches(args)) {
+      done = true;
+      swap();
+    }
+    return fs[method](...args);
+  };
+  return racing;
+}
+
+test('拒否: gh issue save-image は検査と作成の間に入出力フォルダがリンクや別のフォルダへ差し替えられても、外に残さず中身を書かない（issue #521）', async () => {
+  const toLink = (fixture, outside) => () => { fs.renameSync(fixture.io, `${fixture.io}-moved`); fs.symlinkSync(outside, fixture.io); };
+  const toNewDir = (fixture) => () => { fs.renameSync(fixture.io, `${fixture.io}-moved`); fs.mkdirSync(fixture.io, { mode: 0o700 }); };
+  const scenarios = [
+    { label: 'リンクへ差し替え（作成前）', build: (fixture, outside) => racingFs('openSync', (args) => String(args[0]) === path.join(fixture.io, 'race.png'), toLink(fixture, outside)) },
+    { label: '別の実フォルダへ差し替え（作成前）', build: (fixture) => racingFs('openSync', (args) => String(args[0]) === path.join(fixture.io, 'race.png'), toNewDir(fixture)), newIoEmpty: true },
+    { label: 'リンクへ差し替え（作成後・確認前）', build: (fixture, outside) => racingFs('fstatSync', () => true, toLink(fixture, outside)), movedHasFile: true },
+  ];
+  for (const scenario of scenarios) {
+    const fixture = createImageFixture([{ status: 200, body: PNG_BYTES }]);
+    try {
+      const outside = path.join(fixture.root, 'outside');
+      fs.mkdirSync(outside);
+      const result = await fixture.save(saveCommand('race.png'), { fs: scenario.build(fixture, outside) });
+      assert.equal(result.code, 2, scenario.label);
+      assert.equal(fixture.outputs.length, 0, scenario.label);
+      assert.deepEqual(fs.readdirSync(outside), [], scenario.label);
+      if (scenario.newIoEmpty) assert.deepEqual(fs.readdirSync(fixture.io), [], scenario.label);
+      // 差し替え前のフォルダに作られたファイルが残っていても、中身は書かれていない。
+      const moved = path.join(`${fixture.io}-moved`, 'race.png');
+      if (scenario.movedHasFile) assert.equal(fs.existsSync(moved), true, scenario.label);
+      if (fs.existsSync(moved)) assert.equal(fs.statSync(moved).size, 0, scenario.label);
+    } finally {
+      fixture.cleanup();
+    }
+  }
+});
+
+test('実行: gh issue save-image は差し替えが無ければ検証つきの作成でも従来どおり保存できる（issue #521）', async () => {
+  const fixture = createImageFixture([{ status: 200, body: PNG_BYTES }]);
+  try {
+    const result = await fixture.save(saveCommand('race.png'), { fs: Object.create(fs) });
+    assert.equal(result.code, 0, result.messages.join(''));
+    assert.deepEqual(fs.readFileSync(path.join(fixture.io, 'race.png')), PNG_BYTES);
+  } finally {
+    fixture.cleanup();
+  }
+});

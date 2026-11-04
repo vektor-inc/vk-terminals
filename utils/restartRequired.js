@@ -2,11 +2,15 @@
 
 const fs = require('fs');
 
+const unknownState = () => ({ unknown: true });
 const emptyState = () => ({ restartRequired: false, tabs: [] });
 
-// 外部プロセスが差し替える小さな状態ファイル。読めない状態は案内なしに倒す。
+// 書き換え途中の破損を「不要」と誤認しないよう、未確認を区別する。
 function normalizeRestartRequired(raw, tabIds) {
-  if (!raw || raw.restartRequired !== true || !Array.isArray(raw.tabs)) return emptyState();
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)
+    || typeof raw.restartRequired !== 'boolean' || !Array.isArray(raw.tabs)
+    || !raw.tabs.every((tab) => typeof tab === 'string')) return unknownState();
+  if (!raw.restartRequired) return emptyState();
   const allowed = new Set(tabIds);
   const tabs = [...new Set(raw.tabs.filter((tab) => typeof tab === 'string' && allowed.has(tab)))];
   return { restartRequired: tabs.length > 0, tabs };
@@ -15,11 +19,11 @@ function normalizeRestartRequired(raw, tabIds) {
 function readRestartRequired(filePath, tabIds) {
   try {
     const stat = fs.statSync(filePath);
-    if (!stat.isFile() || stat.size > 65536) return emptyState();
+    if (!stat.isFile() || stat.size > 65536) return unknownState();
     const text = fs.readFileSync(filePath, 'utf8');
     return normalizeRestartRequired(JSON.parse(text), tabIds);
-  } catch (_error) {
-    return emptyState();
+  } catch (error) {
+    return error.code === 'ENOENT' ? emptyState() : unknownState();
   }
 }
 

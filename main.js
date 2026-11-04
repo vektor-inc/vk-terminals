@@ -796,7 +796,7 @@ function loadUserConfig() {
   for (const configPath of candidates) {
     if (fs.existsSync(configPath)) {
       try {
-        const raw = readSmallJson(configPath);
+        const raw = readSmallJson(configPath, 1048576);
         normalizeLiveConfig(raw);
         return raw;
       } catch (e) {
@@ -1938,7 +1938,7 @@ function reloadConfigReflection() {
   let eventId = reflectionState.eventId;
   try {
     candidate = userConfigCandidatePaths().find((file) => fs.existsSync(file));
-    config = normalizeLiveConfig(candidate ? readSmallJson(candidate) : {});
+    config = normalizeLiveConfig(candidate ? readSmallJson(candidate, 1048576) : {});
     if (config.menuItems.length > MENU_MAX_SECTIONS || config.menuItems.some((section) => !validateMenuSection(section, { defaultSource: 'config' }).ok)) throw new Error('invalid menuItems');
   } catch (_error) {
     config = null;

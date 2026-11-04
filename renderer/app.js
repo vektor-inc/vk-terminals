@@ -1659,6 +1659,8 @@ let configReflectionToastTimer = null;
 let lastConfigReflectionToastAt = 0;
 let lastConfigReflectionMessage = '';
 let pendingConfigReflection = false;
+let hasConfigReflected = false;
+let configReflectionCorrectionUntil = 0;
 let partialConfigReflection = false;
 let configFailedFiles = [];
 let restartRequiredKnown = false;
@@ -1710,6 +1712,13 @@ function updateConfigReflection(state) {
 }
 
 function flushConfigReflectionNotification() {
+  const now = Date.now();
+  // 訂正期限を延長せず、後日の再起動専用設定による誤通知を防ぐ。
+  if (now > configReflectionCorrectionUntil) lastConfigReflectionMessage = '';
+  if (pendingConfigReflection && restartRequiredKnown && !configFailedFiles.length) {
+    hasConfigReflected = true;
+    configReflectionCorrectionUntil = now + 15000;
+  }
   const decision = window.VKConfigReflectionPolicy.reflectionDecision({
     pending: pendingConfigReflection || (!!lastConfigReflectionMessage && restartRequiredKnown
       && lastConfigReflectionMessage !== (restartRequiredState.restartRequired ? '一部の設定を反映しました' : '設定を反映しました')),
@@ -1718,7 +1727,7 @@ function flushConfigReflectionNotification() {
     lastMessage: lastConfigReflectionMessage, lastAt: lastConfigReflectionToastAt, now: Date.now(),
   });
   pendingConfigReflection = decision.pending;
-  if (decision.partial !== null) partialConfigReflection = decision.partial;
+  if (decision.partial !== null) partialConfigReflection = hasConfigReflected && decision.partial;
   updatePartialConfigReflectionNotices();
   if (decision.message) {
     showGenericToast(decision.message, 'success');
@@ -1754,13 +1763,13 @@ async function updateRestartRequired() {
     const state = await VKIpc.invoke('app:restart-required');
     // 未確認時は直前の案内を保ち、成功と断定する通知を保留する。
     restartRequiredKnown = !!(state && typeof state === 'object' && !Array.isArray(state)
-      && typeof state.restartRequired === 'boolean' && Array.isArray(state.tabs)
+      && state.unknown !== true && typeof state.restartRequired === 'boolean' && Array.isArray(state.tabs)
       && state.tabs.every((tab) => typeof tab === 'string'));
     if (restartRequiredKnown) restartRequiredState = { restartRequired: state.restartRequired, tabs: state.restartRequired ? state.tabs : [] };
   } catch (_error) {
     restartRequiredKnown = false;
   }
-  if (restartRequiredKnown) partialConfigReflection = restartRequiredState.restartRequired;
+  if (restartRequiredKnown) partialConfigReflection = hasConfigReflected && restartRequiredState.restartRequired;
   updatePartialConfigReflectionNotices();
   const notice = document.getElementById('sidebar-restart-required');
   if (notice) {

@@ -32,9 +32,9 @@ function normalizeReflection(raw) {
   return { eventId: raw.eventId, failedFiles: [...new Set(raw.failedFiles)] };
 }
 
-function readSmallJson(filePath) {
+function readSmallJson(filePath, maxBytes = 65536) {
   const stat = fs.statSync(filePath);
-  if (!stat.isFile() || stat.size > 65536) throw new Error('invalid file');
+  if (!stat.isFile() || stat.size > maxBytes) throw new Error('invalid file');
   return JSON.parse(fs.readFileSync(filePath, 'utf8'));
 }
 

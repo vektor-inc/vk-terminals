@@ -132,6 +132,8 @@ async function resolveOpenFolderRequest({ rawPath, create = false, homeDir = os.
   if (!prospective || !isOpenable(prospective)) return { ok: false, reason: 'not-allowed' };
   if (create !== true) return { ok: false, reason: 'not-found' };
   if (!creatableRoot || !isInsideOrSame(creatableRoot, prospective)) return { ok: false, reason: 'create-failed' };
+  // パッケージ拡張子はフォルダとして扱わない。作ってから拒否すると空のフォルダが残るため、作る前に断る。
+  if (hasPackageExtension(target) || hasPackageExtension(prospective)) return { ok: false, reason: 'not-directory' };
 
   try {
     await fs.promises.mkdir(prospective, { recursive: true });

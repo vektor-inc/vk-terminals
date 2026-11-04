@@ -137,6 +137,16 @@ test('ファイルは not-directory、macOS パッケージ拡張子のフォル
   assert.deepEqual(await request(sandbox, app), { ok: false, reason: 'not-directory' });
 });
 
+test('create: true でも macOS パッケージ拡張子の新規パスは not-directory で、フォルダも親も作らない', async (t) => {
+  const sandbox = makeSandbox(t);
+  const app = path.join(sandbox.home, '.vk-agents', 'foo.app');
+  assert.deepEqual(await request(sandbox, app, true), { ok: false, reason: 'not-directory' });
+  assert.equal(fs.existsSync(app), false);
+  const nested = path.join(sandbox.home, '.vk-agents', 'newdir', 'Bar.APP');
+  assert.deepEqual(await request(sandbox, nested, true), { ok: false, reason: 'not-directory' });
+  assert.equal(fs.existsSync(path.join(sandbox.home, '.vk-agents', 'newdir')), false);
+});
+
 test('フォルダが無く create 指定も無ければ not-found（作らない）', async (t) => {
   const sandbox = makeSandbox(t);
   const missing = path.join(sandbox.home, '.vk-agents', 'overrides', 'rules');

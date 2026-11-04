@@ -137,6 +137,7 @@ const {
   createConditionalTerminalInputGuard,
   mergeConditionalScreenIdentifiers,
   validateConditionalEnterRequest,
+  createSilentWriteRefresher,
 } = require('./utils/conditionalTerminalInput');
 // mobile.html（HTTP 配信）向け CSP ヘッダーの組み立て（issue #324）。
 const { buildMobileCsp } = require('./utils/csp');
@@ -192,6 +193,15 @@ const agentLifecycles = createAgentLifecycleStore();
 // renderer が報告した画面と、その後の PTY 入出力が同じ状態かを条件付き Enter で照合する。
 // 秘密値と画面 revision はプロセス外へ出さず、API には HMAC 識別値だけを公開する。
 const conditionalTerminalInput = createConditionalTerminalInputGuard();
+// 出力を伴わない書き込み（端末問い合わせへの自動応答・リサイズ）の後、静止時間が過ぎたら
+// 識別値を採り直して renderer へ送る（issue #517）。renderer が lastLines と一緒に保持し直す。
+const silentWriteRefresher = createSilentWriteRefresher({
+  guard: conditionalTerminalInput,
+  getGeneration: (termId) => agentGenerations.get(termId),
+  send: (termId, snapshot) => {
+    if (win && !win.isDestroyed()) win.webContents.send('terminal:screen-refresh', termId, snapshot);
+  },
+});
 let reportedScreenSnapshots = new Map();
 // 同じペインへの同時再起動は先行処理の完了後に世代を再照合する。
 // これが無いと同じ expectedGeneration の2要求が両方通り、後発が先発の新しい AI を止めうる。
@@ -2267,6 +2277,7 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
   const writeToPty = ptyProcess.write.bind(ptyProcess);
   ptyProcess.write = (data) => {
     conditionalTerminalInput.markChanged(id);
+    silentWriteRefresher.noteWrite(id);
     return writeToPty(data);
   };
 
@@ -2482,7 +2493,9 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
     let screenSnapshot = null;
     if (visibleData) {
       conditionalTerminalInput.markChanged(id);
-      screenSnapshot = conditionalTerminalInput.capture(id, agentGenerations.get(id));
+      // 出力が届いたので、出力の無い書き込みを前提にした採り直しの予約は取り消す。
+      silentWriteRefresher.noteOutput(id);
+      screenSnapshot =conditionalTerminalInput.capture(id, agentGenerations.get(id));
     }
     // promptWatcher が Enter を書いた場合は上の識別値がその場で古くなり、安全側で拒否される。
     if (promptWatcher) promptWatcher(data);
@@ -2502,6 +2515,7 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
     agentGenerations.delete(id);
     agentLifecycles.delete(id);
     conditionalTerminalInput.delete(id);
+    silentWriteRefresher.delete(id);
     reportedScreenSnapshots.delete(id);
     restartAgentOperations.delete(id);
     // 再起動後の信頼確認プロンプト自動応答（issue #392）が残っていれば解除する。
@@ -2576,6 +2590,7 @@ ipcMain.on('terminal:resize', (event, id, cols, rows) => {
   if (p) {
     // 折り返し位置が変わるため、以前の画面識別値では Enter を許可しない。
     conditionalTerminalInput.markChanged(id);
+    silentWriteRefresher.noteWrite(id);
     try { p.resize(Math.max(2, cols), Math.max(2, rows)); } catch (e) {}
   }
 });
@@ -2586,6 +2601,7 @@ ipcMain.on('terminal:kill', (event, id) => {
     ptys.delete(id);
     agentGenerations.delete(id);
     conditionalTerminalInput.delete(id);
+    silentWriteRefresher.delete(id);
     reportedScreenSnapshots.delete(id);
     restartAgentOperations.delete(id);
     // ptyProcess.onExit 側でも同じ後始末をするが、ここで管理している Map と食い違わない

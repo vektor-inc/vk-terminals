@@ -922,6 +922,19 @@ function escAttr(value) {
 }
 
 // ─── IPC: data from pty ───────────────────────────────────────────────────────
+// 出力の無い PTY 書き込みの後に main が静止を確認して採り直した識別値（issue #517）。
+// main は先に送った terminal:data の後にこれを送るため、lastLines は既に最新の出力まで反映済みで、
+// 新しい識別値と画面内容は食い違わない。
+VKIpc.on('terminal:screen-refresh', (id, screenSnapshot) => {
+  const paneId = Object.keys(terminals).find(k => terminals[k]?.termId === id);
+  if (!paneId || !terminals[paneId]) return;
+  if (screenSnapshot && typeof screenSnapshot.screenIdentifier === 'string'
+    && Number.isSafeInteger(screenSnapshot.agentGeneration)) {
+    terminals[paneId].screenIdentifier = screenSnapshot.screenIdentifier;
+    terminals[paneId].screenIdentifierGeneration = screenSnapshot.agentGeneration;
+  }
+});
+
 VKIpc.on('terminal:data', (id, data, screenSnapshot) => {
   const paneId = Object.keys(terminals).find(k => terminals[k]?.termId === id);
   if (!paneId || !terminals[paneId]) return;

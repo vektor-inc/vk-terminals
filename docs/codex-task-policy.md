@@ -157,6 +157,20 @@ issue #441 は「Codex のツール呼び出しのタイムアウトで打ち切
 - 再起動では、直列化の待機・ペインの存在確認（404）・世代確認（409）を通った後、AI を止める前に専用フォルダを作る。これらで終わるリクエストは専用フォルダを作らない。事前確認（`dryRun`）は専用フォルダを作らない。
 - **起動に使った専用フォルダは自動では消さない。** 複数のアプリプロセスをまたいで「使用中でない」ことを確実に判定する方法が無く、古さ（更新時刻）だけで消すと長く動いている Codex のセッションの設定を消してしまうため。削除は利用者の責務で、Codex が動いていないときに `~/.vk-terminals/codex-task-policy/` 以下と `~/.vk-terminals/codex-task-io/` 以下（メンバー起動の入出力フォルダ。子の出力ファイルもここに残る）を消してよい（次の起動で作り直される）。
 
+### 手順の操作一覧との照合（issue #523）
+
+Codex 版の issue 対応手順（vektor-inc/vk-agents の `codex/vk-kore/`）が使う Git / GitHub 操作と、固定入口が許可する操作が食い違っても、実際の自動処理が途中で止まるまで気づけなかった。これを自動テストで検出する。
+
+- テスト: `tests/codexTaskOpsCoverage.test.js`（`npm test` に含まれる）。固定入口の引数検証 `parseTaskCommand` に、手順が要求する操作の引数を渡して受理されるかを確かめる。`gh` / `git` は呼ばない。
+- 一覧の置き場所: `tests/fixtures/codexProcedureOperations.js`。vk-agents の手順から操作を写したもので、各項目に出典（`codex/vk-kore/<ファイル>.md:<行>`）と手順側の操作名（`gh-read.sh pr-view` など）を添える。CI には vk-agents が無いため、テストの本体はこの一覧だけで完結する（vk-agents の実ファイルには依存しない）。
+- 一覧は 3 つに分ける:
+  - `requiredOperations`: 手順が要求し、固定入口が受理するべき操作。受理されなければテストが失敗する。`gh <owner/repo> …` の明示形式を許す操作は `explicitRepo: true` で、明示先が `targetRepo` に載ることも確かめる
+  - `knownGaps`: 手順が要求するのに固定入口が受理しない操作（既知の不足）。除外リストとして理由つきで持ち、現在も拒否されていることを確かめる。固定入口が受理するようになったらテストが失敗するので、`requiredOperations` へ移す。固定入口の許可範囲は、この一覧のために広げない（広げるかは別 issue で判断する）
+  - `notApplicable`: コマンドとして照合する対象ではない手順上の操作名（入出力フォルダの場所を返す `out-dir` など）
+- 補助チェック（vk-agents を clone している環境だけで動き、無い環境ではスキップする）: 手順の `.md` から `gh-read.sh` / `gh-write.sh` / `repo-prepare.sh` の操作名・メンバー起動のエンジン指定・素の `git` サブコマンドを拾い、一覧に載っていない操作があれば失敗する。あわせて、一覧の出典が実在するファイルと行を指していることを確かめる。clone 先は環境変数 `VK_AGENTS_DIR`（未設定なら `~/Documents/git/vk-agents`）。補助チェックを CI 必須にしないのは、CI から vk-agents を取得すると外部リポジトリの状態でこのリポジトリのテストが変わってしまうため。
+- 手順側が変わったときの更新方法: (1) vk-agents の `codex/vk-kore/` を更新したら、vk-agents を clone した環境で `npm test` を実行し、補助チェックの失敗を確認する。(2) 追加・変更された操作を、固定入口の呼び方（`vk-task-ops` の第 2 引数以降）に読み替えて `tests/fixtures/codexProcedureOperations.js` へ書き、出典と `SNAPSHOT_VK_AGENTS_COMMIT` を更新する。(3) 固定入口が受理するなら `requiredOperations`、受理しないなら `knownGaps`（理由つき）へ入れる。(4) `knownGaps` の項目を解消したいときは、`utils/codexTaskOps.js` に操作を追加する別 issue で対応し、解消後に `requiredOperations` へ移す。
+- 手順は `gh-read.sh` などの入口スクリプトの操作名で書かれており、固定入口の操作名とは別物。対応は vk-agents の `docs/codex-prepared-worktree.md`「引き受け後の push・PR 作成・読み戻し」と、上の「承認なしで実行できる固定の入口」の記載に従う。
+
 ## 固定できないときは止める
 
 次のいずれかなら `503 {"error":"codex task policy unavailable: <理由>"}` を返し、Codex を起動しない（承認方針だけを `never` にした起動にもしない）。

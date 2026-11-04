@@ -126,3 +126,35 @@ for (const originDisappears of [true, false]) {
     }
   });
 }
+
+// @title 再起動状態の取得失敗で設定パネルの表示を妨げない
+// @step 不正な応答と IPC 例外を順に返し、設定パネルを開く
+// @check すべて空状態になり、設定パネルを開閉できる
+test('再起動状態の不正な応答と IPC 例外を空状態として扱う', async () => {
+  const launched = await launchAppAndWait({ port: await getFreePort(), prefix: 'vk-restart-invalid-e2e-' });
+  try {
+    const { win } = launched;
+    const cases = [null, 42, 'invalid', [], {}, { restartRequired: 'true', tabs: [] },
+      { restartRequired: true, tabs: null }, { restartRequired: true, tabs: [42] }, 'throw'];
+    for (const response of cases) {
+      // 再起動状態以外の IPC は実装に委譲して設定パネル自体を検証する。
+      await win.evaluate(async (value) => {
+        window.__restartOriginalInvoke ??= VKIpc.invoke;
+        VKIpc.invoke = (channel, ...args) => {
+          if (channel !== 'app:restart-required') return window.__restartOriginalInvoke(channel, ...args);
+          if (value === 'throw') throw new Error('restart state unavailable');
+          return Promise.resolve(value);
+        };
+        await refreshRestartRequired();
+        await window.openSettingsModal();
+      }, response);
+      await expect(win.locator('.settings-modal')).toBeVisible();
+      await expect(win.locator('#sidebar-restart-required')).toBeHidden();
+      expect(await win.locator('.settings-restart-notice:visible').count()).toBe(0);
+      await win.locator('.settings-close').click();
+      await expect(win.locator('.settings-modal')).toHaveCount(0);
+    }
+  } finally {
+    await closeApp(launched);
+  }
+});

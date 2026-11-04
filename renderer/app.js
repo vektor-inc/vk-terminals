@@ -1661,7 +1661,13 @@ function refreshRestartRequired() {
 
 async function updateRestartRequired() {
   try {
-    restartRequiredState = await VKIpc.invoke('app:restart-required');
+    const state = await VKIpc.invoke('app:restart-required');
+    // 不正な IPC 応答でも設定パネルを開けるよう、空状態へ正規化する。
+    restartRequiredState = state && typeof state === 'object' && !Array.isArray(state)
+      && typeof state.restartRequired === 'boolean' && Array.isArray(state.tabs)
+      && state.tabs.every((tab) => typeof tab === 'string')
+      ? { restartRequired: state.restartRequired, tabs: state.restartRequired ? state.tabs : [] }
+      : { restartRequired: false, tabs: [] };
   } catch (_error) {
     restartRequiredState = { restartRequired: false, tabs: [] };
   }
@@ -1710,7 +1716,7 @@ function createSidebar() {
   restartNotice.id = 'sidebar-restart-required';
   restartNotice.className = 'sidebar-restart-required sidebar-section-card';
   restartNotice.hidden = true;
-  restartNotice.innerHTML = '<p>設定の反映にアプリの再起動が必要です</p><button type="button">設定を確認</button>';
+  restartNotice.innerHTML = '<p>設定の反映にアプリの再起動が必要です</p><button type="button" class="settings-secondary-button">設定を確認</button>';
   restartNotice.querySelector('button').addEventListener('click', () => openSettingsModal(restartRequiredState.tabs[0]));
   nav.insertBefore(restartNotice, inner);
   nav.appendChild(createSidebarSettingsCard());
@@ -5207,7 +5213,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
           const emptyHtml = !contentHtml && !contentAfterHtml && groups.length === 0 && !tabNote
             ? '<p class="settings-empty">このタブに表示できる設定項目はありません。</p>'
             : '';
-          const restartNoticeHtml = `<div id="settings-restart-${escAttr(tab.id)}" class="settings-restart-notice"${restartRequiredState.tabs.includes(tab.id) ? '' : ' hidden'} data-tab-id="${escAttr(tab.id)}" role="status"><p>設定の反映にアプリの再起動が必要です。各ペインでの作業を終えてから再起動してください。</p><button type="button" class="settings-restart-button">アプリを再起動</button></div>`;
+          const restartNoticeHtml = `<div id="settings-restart-${escAttr(tab.id)}" class="settings-restart-notice"${restartRequiredState.tabs.includes(tab.id) ? '' : ' hidden'} data-tab-id="${escAttr(tab.id)}" role="status"><p>設定の反映にアプリの再起動が必要です。各ペインでの作業を終えてから再起動してください。</p><button type="button" class="settings-restart-button settings-secondary-button">アプリを再起動</button></div>`;
           return `<section class="settings-tab-panel" id="${escAttr(panelId)}" role="tabpanel" aria-labelledby="${escAttr(tabId)}" tabindex="0"${tabIndex === 0 ? '' : ' hidden'}>
             ${restartNoticeHtml}${targetHtml}${noteHtml}${contentHtml}${tabGroupsHtml[tabIndex]}${contentAfterHtml}${emptyHtml}
           </section>`;

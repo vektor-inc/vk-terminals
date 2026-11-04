@@ -607,7 +607,7 @@ test.describe.serial('設定パネルの説明タブ「モバイルから確認�
     await expect(win.locator('#settings-btn')).toBeFocused();
   });
 
-  test('設定パネルを開いた要素が消えていたら設定ボタンへフォーカスを戻す', async () => {
+  test('設定パネルを開いた要素が消えていたら開いているサイドバーの設定カードへフォーカスを戻す', async () => {
     await win.locator('.settings-close').click();
     await win.waitForSelector('.settings-modal', { state: 'detached' });
 
@@ -626,7 +626,8 @@ test.describe.serial('設定パネルの説明タブ「モバイルから確認�
 
     await win.keyboard.press('Escape');
     await expect(win.locator('.settings-modal')).toHaveCount(0);
-    await expect(win.locator('#settings-btn')).toBeFocused();
+    await expect(win.locator('#root')).toHaveClass(/\bsidebar-open\b/);
+    await expect(win.locator('#sidebar-settings button')).toBeFocused();
   });
 
   test('保存後に別のタブへ移ると自動クローズを取り消す', async () => {

@@ -77,7 +77,7 @@
   });
 
   // statusLabel から除く文字: C0 制御文字・DEL・双方向制御文字（U+200E/200F/202A-202E/2066-2069）。
-  const STATUS_LABEL_STRIP_RE = /[\u0000-\u001f\u007f‎‏‪-‮⁦-⁩]/g;
+  const STATUS_LABEL_STRIP_RE = /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
 
   // ── プリミティブ・URL ヘルパー ────────────────────────────────────────────
   const HTTP_URL_RE = /^https?:\/\//i;

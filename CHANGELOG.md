@@ -1,7 +1,7 @@
 # Changelog
 
 - [ 不具合修正 ] 自動処理で Codex を起動したとき、「Folder access」画面（Open restricted / Quit の選択）に説明文が増えた新しい表示だと、自動で Enter が送られず止まる不具合を修正（[#517](https://github.com/vektor-inc/vk-terminals/issues/517)）
-- [ 不具合修正 ] 端末からの問い合わせへの自動応答など画面出力を伴わない入力があると、`/api/states` が返す画面識別値が古いまま固まり、条件付き Enter が受け付けられなくなる不具合を修正。端末の問い合わせへの自動応答やリサイズのあと一定時間（約 0.8 秒）画面が静止したら識別値を採り直し（利用者のキー入力・API 入力・Enter の後は採り直さない）、条件付き Enter が受け付けられるようにした（採り直しが済むまでは識別値が最新ではないことを `screenIdentifierStale` で返す）（[#517](https://github.com/vektor-inc/vk-terminals/issues/517)）
+- [ 不具合修正 ] 画面出力を伴わない入力（端末の問い合わせへの自動応答など）の後、自動処理から送る条件付き Enter が受け付けられなくなり、作業が止まる不具合を修正（[#517](https://github.com/vektor-inc/vk-terminals/issues/517)）
 
 ## 1.86.0
 

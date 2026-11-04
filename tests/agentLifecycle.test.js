@@ -549,16 +549,17 @@ test('実PTY: bashの既存PROMPT_COMMAND完了後だけreadyとなり、AI grou
   // 各段階の上限15秒 x 最大13段階(初回 + 2世代 x 6段階)に収まる値
   timeout: 240000,
 }, async (t) => {
+  // 既存PROMPT_COMMANDの完了をテスト側から制御する門。存在する間は待たず、無い間は作られるまで待つ。
+  // パスは環境変数で渡し、PROMPT_COMMANDの単一引用符の中へ埋め込まない（空白・記号を含む一時フォルダでも壊れない）
+  const gateRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-agent-bash-gate-'));
+  const gate = path.join(gateRoot, 'gate');
+  const waitGate = 'while [ ! -e "$VK_TEST_GATE" ]; do sleep 0.01; done';
   const shell = require('node-pty').spawn('/bin/bash', ['--noprofile', '--norc'], {
-    env: { ...process.env, TERM: 'xterm-256color', PS1: 'VK_BASH> ' },
+    env: { ...process.env, TERM: 'xterm-256color', PS1: 'VK_BASH> ', VK_TEST_GATE: gate },
   });
   let output = '';
   const store = createAgentLifecycleStore({ pollIntervalMs: 20 });
   shell.onData((data) => { output += store.filterOutput('bash', data); });
-  // 既存PROMPT_COMMANDの完了をテスト側から制御する門。存在する間は待たず、無い間は作られるまで待つ
-  const gateRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-agent-bash-gate-'));
-  const gate = path.join(gateRoot, 'gate');
-  const waitGate = `while [ ! -e ${gate} ]; do sleep 0.01; done`;
   t.after(() => {
     store.close();
     try { shell.kill(); } catch (_error) {}

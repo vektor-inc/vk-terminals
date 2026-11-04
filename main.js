@@ -229,6 +229,7 @@ let nextClosePaneRequestId = 1;
 // ─── Terminal state & HTTP API ───────────────────────────────────────────────
 const DATA_DIR = path.join(os.homedir(), '.vk-terminals');
 const { readRestartRequired } = require('./utils/restartRequired');
+const { normalizeLiveConfig, changedLiveKeys, normalizeReflection, readSmallJson } = require('./utils/configLiveReload');
 const { createRestartApplication } = require('./utils/restartApplication');
 // 組み込み用の入口（embedded.js）から起動されたときだけ値が入る。electron . では null。
 const EMBEDDED_OPTIONS = getEmbeddedOptions();
@@ -572,7 +573,7 @@ function validateMenuSection(raw, options = {}) {
 }
 
 function getConfigMenuSections() {
-  const config = loadUserConfig();
+  const config = liveConfig || loadUserConfig();
   const rawSections = Array.isArray(config.menuItems) ? config.menuItems : [];
   if (!rawSections.length) return [];
   if (rawSections.length > MENU_MAX_SECTIONS) {
@@ -1114,7 +1115,7 @@ function handleNotificationTriggers(states) {
   const { events, nextSnapshot } = computeNotificationEvents({
     prevSnapshot: notificationSnapshot,
     states,
-    excludePatterns: config.waitingExcludeCwdPatterns,
+    excludePatterns: liveConfig ? liveConfig.waitingExcludeCwdPatterns : config.waitingExcludeCwdPatterns,
     isFirstReport,
   });
   notificationSnapshot = nextSnapshot;
@@ -1926,6 +1927,39 @@ function getRestartTabIds() {
 }
 
 let restartDialogOpen = false;
+// 設定と反映結果を同じポーリングで読み、成功した対象キーだけを更新する。
+let liveConfig = null;
+let reflectionEventId = null;
+let reflectionInitialized = false;
+ipcMain.handle('app:config-reflection', () => {
+  const configPath = path.join(DATA_DIR, 'config.json');
+  const reflectionPath = path.join(DATA_DIR, 'config-reflection.json');
+  const failedFiles = [];
+  let changedKeys = [];
+  let eventChanged = false;
+  try {
+    // 本体設定が無い場合は従来の探索順を使う。存在する破損ファイルは保留する。
+    const raw = fs.existsSync(configPath) ? readSmallJson(configPath) : loadUserConfig();
+    const next = normalizeLiveConfig(raw);
+    if (next.menuItems.length > MENU_MAX_SECTIONS || next.menuItems.some((section) => !validateMenuSection(section, { defaultSource: 'config' }).ok)) throw new Error('invalid menuItems');
+    if (liveConfig) changedKeys = changedLiveKeys(liveConfig, next);
+    liveConfig = next;
+    if (changedKeys.includes('menuItems')) pushMenuUpdate();
+  } catch (_error) {
+    failedFiles.push(configPath);
+  }
+  try {
+    const reflection = fs.existsSync(reflectionPath) ? normalizeReflection(readSmallJson(reflectionPath)) : { eventId: null, failedFiles: [] };
+    if (reflectionInitialized && reflection.eventId && reflection.eventId !== reflectionEventId) eventChanged = true;
+    reflectionEventId = reflection.eventId;
+    reflectionInitialized = true;
+    failedFiles.push(...reflection.failedFiles);
+  } catch (_error) {
+    failedFiles.push(reflectionPath);
+  }
+  return { config: liveConfig, changedKeys, eventChanged, failedFiles: [...new Set(failedFiles)] };
+});
+
 ipcMain.handle('app:restart-required', () => {
   const tabIds = getRestartTabIds();
   return readRestartRequired(path.join(DATA_DIR, 'restart-required.json'), tabIds);

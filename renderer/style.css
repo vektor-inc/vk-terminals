@@ -3816,6 +3816,7 @@ body.pane-dragging * {
   background: #21262d;
 }
 .sidebar-restart-required[hidden],
+.config-reflection-partial[hidden],
 .settings-restart-notice[hidden] { display: none; }
 .sidebar-restart-required p,
 .settings-restart-notice p { margin: 0 0 8px; line-height: 1.4; }
@@ -3825,4 +3826,5 @@ body.pane-dragging * {
   font-size: 12px;
 }
 .sidebar-restart-required p { margin-bottom: 4px; line-height: 1.3; }
+.config-read-error-files { margin: 4px 0 0; padding-left: 18px; overflow-wrap: anywhere; }
 .settings-restart-notice { margin-bottom: 20px; }

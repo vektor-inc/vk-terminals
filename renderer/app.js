@@ -1651,6 +1651,74 @@ function renderSidebarMenu() {
 // 再起動案内の最新状態を保持する。
 let restartRequiredState = { restartRequired: false, tabs: [] };
 
+let configReflectionInitialized = false;
+let configReflectionInflight = null;
+let configReflectionToastTimer = null;
+let lastConfigReflectionToastAt = 0;
+let partialConfigReflection = false;
+
+// 5秒ごとに反映結果を確認し、近接する2種類の更新を1件にまとめる。
+function refreshConfigReflection() {
+  if (configReflectionInflight) return configReflectionInflight;
+  configReflectionInflight = updateConfigReflection().finally(() => { configReflectionInflight = null; });
+  return configReflectionInflight;
+}
+
+async function updateConfigReflection() {
+  let state;
+  try { state = await VKIpc.invoke('app:config-reflection'); } catch (_error) { return; }
+  if (!state || typeof state !== 'object') return;
+  const failedFiles = Array.isArray(state.failedFiles) ? state.failedFiles.filter((file) => typeof file === 'string') : [];
+  const notice = document.getElementById('sidebar-config-read-error');
+  if (notice) {
+    notice.hidden = failedFiles.length === 0;
+    notice.querySelector('.config-read-error-files').replaceChildren(...failedFiles.map((file) => {
+      const item = document.createElement('li');
+      item.textContent = file;
+      return item;
+    }));
+  }
+  if (state.config && configReflectionInitialized) {
+    const keys = Array.isArray(state.changedKeys) ? state.changedKeys : [];
+    if (keys.includes('newPaneStartupDir')) newPaneStartupDir = state.config.newPaneStartupDir;
+    if (keys.includes('newPaneAutoLaunchClaude')) newPaneAutoLaunchClaude = state.config.newPaneAutoLaunchClaude;
+    if (keys.includes('confirmClose')) confirmClosePref = state.config.confirmClose;
+    if (keys.includes('terminalLinkClickMode')) terminalLinkClickModePref = state.config.terminalLinkClickMode;
+    if (keys.includes('waitingExcludeCwdPatterns')) waitingExcludeCwdPatterns = state.config.waitingExcludeCwdPatterns;
+  }
+  if (failedFiles.length) {
+    clearTimeout(configReflectionToastTimer);
+    configReflectionToastTimer = null;
+  } else if (configReflectionInitialized && (state.changedKeys?.length || state.eventChanged)) {
+    clearTimeout(configReflectionToastTimer);
+    configReflectionToastTimer = setTimeout(async () => {
+      configReflectionToastTimer = null;
+      await refreshRestartRequired();
+      // 保存を別々のポーリングで見つけても、直近の通知とまとめる。
+      if (Date.now() - lastConfigReflectionToastAt < 6000) return;
+      partialConfigReflection = restartRequiredState.restartRequired;
+      updatePartialConfigReflectionNotices();
+      showGenericToast(partialConfigReflection ? '一部の設定を反映しました' : '設定を反映しました');
+      lastConfigReflectionToastAt = Date.now();
+    }, 1200);
+  }
+  configReflectionInitialized = true;
+}
+
+function updatePartialConfigReflectionNotices() {
+  const text = '残りの設定は再起動後に反映されます';
+  document.querySelectorAll('#sidebar-restart-required, .settings-restart-notice').forEach((element) => {
+    let detail = element.querySelector('.config-reflection-partial');
+    if (!detail) {
+      detail = document.createElement('p');
+      detail.className = 'config-reflection-partial';
+      element.querySelector('p')?.after(detail);
+    }
+    detail.textContent = partialConfigReflection ? text : '';
+    detail.hidden = !partialConfigReflection;
+  });
+}
+
 let restartRequiredInflight = null;
 // 同時の読み直しは進行中の要求を共有する。
 function refreshRestartRequired() {
@@ -1671,6 +1739,8 @@ async function updateRestartRequired() {
   } catch (_error) {
     restartRequiredState = { restartRequired: false, tabs: [] };
   }
+  if (!restartRequiredState.restartRequired) partialConfigReflection = false;
+  updatePartialConfigReflectionNotices();
   const notice = document.getElementById('sidebar-restart-required');
   if (notice) {
     if (!restartRequiredState.restartRequired && notice.contains(document.activeElement)) {
@@ -1719,6 +1789,13 @@ function createSidebar() {
   restartNotice.innerHTML = '<p>設定の反映にアプリの再起動が必要です</p><button type="button" class="settings-secondary-button">設定を確認</button>';
   restartNotice.querySelector('button').addEventListener('click', () => openSettingsModal(restartRequiredState.tabs[0]));
   nav.insertBefore(restartNotice, inner);
+  const configError = document.createElement('div');
+  configError.id = 'sidebar-config-read-error';
+  configError.className = 'sidebar-restart-required sidebar-section-card';
+  configError.setAttribute('role', 'alert');
+  configError.hidden = true;
+  configError.innerHTML = '<p>設定を読み込めませんでした。設定ファイルを修正して保存してください</p><ul class="config-read-error-files"></ul>';
+  nav.insertBefore(configError, restartNotice);
   nav.appendChild(createSidebarSettingsCard());
   nav.appendChild(createTaskListContainer());
   nav.appendChild(createPaneStashContainer());
@@ -4590,7 +4667,8 @@ function setupUsageBadge() {
   refreshUsageAndBadge();
   setInterval(refreshUsageAndBadge, USAGE_POLL_INTERVAL_MS);
   refreshRestartRequired();
-  setInterval(refreshRestartRequired, 5000);
+  refreshConfigReflection();
+  setInterval(() => { refreshRestartRequired(); refreshConfigReflection(); }, 5000);
   setInterval(() => {
     tickSidebarUsageReset();
     checkUsageResetAndRefetch();
@@ -5282,6 +5360,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
   });
 
   const modal = overlay.querySelector('.settings-modal');
+  updatePartialConfigReflectionNotices();
   if (restartTabId) {
     const index = settingsTabs.findIndex((tab) => tab.id === restartTabId);
     if (index >= 0) {
@@ -6493,7 +6572,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
         // 取り直す。取り直さないと、保存後も編集を続けた場合に古い値が残り続ける
         // （安藤のレビュー指摘・issue #380）。
         refreshSettingsContentSavedValues();
-        msg.textContent = '保存しました。次回の起動から反映されます。';
+        msg.textContent = '保存しました。設定の反映を確認しています。';
         msg.classList.add('ok');
         autoClose.arm();
       } else {

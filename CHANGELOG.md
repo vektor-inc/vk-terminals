@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- [ 機能追加 ] 本体設定の一部を保存後に再起動せず反映し、反映結果と読み込み失敗を通知（[#514](https://github.com/vektor-inc/vk-terminals/issues/514)）
+
 ## 1.85.0
 
 - [ 機能追加 ] 設定の反映にアプリの再起動が必要なときの案内と、作業中のペインが閉じることを確認してから再起動するボタンを追加（[#512](https://github.com/vektor-inc/vk-terminals/issues/512)）

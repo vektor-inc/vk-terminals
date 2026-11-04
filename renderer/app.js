@@ -70,11 +70,6 @@ const {
   stripVolatileForKey,
   waitingCheckDelayMs,
 } = window.VKWaitingState;
-const {
-  containsReplyDismissInput,
-  detectReplyText,
-  isReplyCopyShortcut,
-} = window.VKReplyText;
 const { deriveDisplayWaiting, deriveStatus, shouldBeepForPaneWaiting } = window.VKStatusState;
 const { getStatusPresentation } = window.VKStatusPresentation;
 const { getApiServerStatusPresentation } = window.VKApiServerStatus;
@@ -131,8 +126,6 @@ const PANE_DROP_DEADZONE = 0.2;
 //   - runningTimer (number|null): 'running' を 1500ms 後に 'idle' へ戻すための setTimeout id。
 //     recomputeStatus() / bumpRunning() が張り直し、closePane() で必ず clearTimeout する。
 let terminals = {};    // paneId -> { termId, term, fitAddon, element, cwd, cwdFull, waiting, status, runningTimer, lastLines, ... }
-const REPLY_SCAN_LINES = 200;
-const REPLY_SCAN_DEBOUNCE_MS = 300;
 let focusedPaneId = null;
 let dragState = null;
 // ペイン内 URL の最初のクリックがフォーカス移動だけだったかどうかの判定に使う
@@ -489,52 +482,6 @@ function clearWaitingCheckTimer(t) {
   t.waitingCheckTimer = null;
 }
 
-function clearReplyCheckTimer(t) {
-  if (!t?.replyCheckTimer) return;
-  clearTimeout(t.replyCheckTimer);
-  t.replyCheckTimer = null;
-}
-
-// xterm への書き込みが画面バッファに反映された後だけ、直近の限定範囲を読む。
-function scheduleReplyCheck(paneId) {
-  const t = terminals[paneId];
-  if (!t) return;
-  clearReplyCheckTimer(t);
-  t.replyCheckTimer = setTimeout(() => {
-    const current = terminals[paneId];
-    if (!current) return;
-    current.replyCheckTimer = null;
-    let next = null;
-    try {
-      next = detectReplyText(current.term.buffer.active, REPLY_SCAN_LINES, current.term.cols);
-    } catch (_e) {
-      return;
-    }
-    if (!next) return;
-    const nextIdentity = next.replace(/\s+/g, '');
-    if (nextIdentity === current.replyIdentity || nextIdentity === current.dismissedReplyIdentity) return;
-    current.replyText = next;
-    current.replyIdentity = nextIdentity;
-    current.replyGeneration += 1;
-    updatePaneReplyBar(paneId, { announce: true });
-  }, REPLY_SCAN_DEBOUNCE_MS);
-}
-
-function dismissReplyBar(paneId, { focus = false } = {}) {
-  const t = terminals[paneId];
-  if (!t || !t.replyText) return;
-  t.dismissedReplyIdentity = t.replyIdentity;
-  t.replyText = null;
-  t.replyIdentity = null;
-  t.replyGeneration += 1;
-  updatePaneReplyBar(paneId);
-  const liveRegion = document.querySelector(`.pane[data-id="${paneId}"] > .reply-bar-announcement`);
-  if (liveRegion) liveRegion.textContent = '';
-  requestAnimationFrame(() => {
-    if (focus) terminals[paneId]?.term.focus();
-  });
-}
-
 // waiting 判定用バッファへ PTY 出力を積む。
 // issue #32: 直近 N 行のウィンドウが小さすぎると、Claude Code TUI のプロンプト枠や
 // recap メッセージの再描画で本来の確認文が押し出されて検知できなくなる。
@@ -768,19 +715,10 @@ async function createTerminal(paneId, cwd, options = {}) {
   function sendTerminalInput(data) {
     VKIpc.send('terminal:input', termId, data);
     markPaneInput(paneId);
-    if (containsReplyDismissInput(data)) dismissReplyBar(paneId);
   }
 
   // Shift+Enter を改行として送信（Claude Code の keybindings.json 対応）
   term.attachCustomKeyEventHandler((ev) => {
-    // Alt+Shift+C は既存操作や端末で頻用する補完・中断キーと衝突せず、返信バーへ移動できる。
-    if (isReplyCopyShortcut(ev)) {
-      if (!terminals[paneId]?.replyText) return true;
-      if (ev.type === 'keydown') {
-        document.querySelector(`.pane[data-id="${paneId}"] > .reply-bar button`)?.focus();
-      }
-      return false;
-    }
     if (ev.key === 'Enter' && ev.shiftKey && !ev.ctrlKey && !ev.altKey && !ev.metaKey) {
       if (ev.type === 'keydown') {
         // CSI u エンコーディングで Shift+Enter を送信
@@ -886,12 +824,6 @@ async function createTerminal(paneId, cwd, options = {}) {
     //   通常より長い猶予（WAITING_BEEP_REPEAT_SUPPRESS_MS）で抑止する
     //   （shouldBeepForWaiting 参照）。markPaneInput で null に戻す。
     waitingCheckTimer: null,
-    replyCheckTimer: null,
-    replyText: null,
-    replyIdentity: null,
-    dismissedReplyIdentity: null,
-    announcedReplyIdentity: null,
-    replyGeneration: 0,
     waitingPendingSince: 0,
     lastWaitingBeepAt: 0,
     localWaitingOnset: null,
@@ -1019,7 +951,6 @@ VKIpc.on('terminal:data', (id, data, screenSnapshot) => {
   t.lastOutputTime = Date.now();
   // 判定は出力が静止してから行う（即時判定はしない）。
   scheduleWaitingCheck(paneId);
-  scheduleReplyCheck(paneId);
   // 出力があったので API 用・表示用の running を再計算する（入力直後はスキップ）。
   bumpRunning(paneId);
 });
@@ -1391,7 +1322,6 @@ function openExternalUrlSafe(url, options = {}) {
 // （安藤レビュー指摘・MEDIUM）。
 const { isMacPlatform, createTerminalLinkHandlers, normalizeTerminalLinkClickMode, isDragDistance } = window.VKTerminalLinkPolicy;
 const IS_MAC_PLATFORM = isMacPlatform();
-const REPLY_COPY_SHORTCUT_LABEL = IS_MAC_PLATFORM ? 'Option+Shift+C' : 'Alt+Shift+C';
 // 'modifier' モード専用のラベル（'click' モードでは使わない。termLinkTooltipMessage 参照）。
 const TERM_LINK_MODIFIER_LABEL = IS_MAC_PLATFORM ? '⌘+クリックで開く' : 'Ctrl+クリックで開く';
 
@@ -2935,7 +2865,6 @@ function closePane(paneId, { force = false, skipConfirm = false } = {}) {
     clearRunningIdleTimer(t);
     // 静止ゲートの判定タイマーも同様にクロージャで terminals[paneId] を掴み続けるため破棄する。
     clearWaitingCheckTimer(t);
-    clearReplyCheckTimer(t);
     // auto-input バッジの自動非表示タイマーも残っていればクリアする
     // （runningTimer と一貫させた防御的なクリーンアップ／issue #38）
     const paneEl = document.querySelector(`.pane[data-id="${paneId}"]`);
@@ -3461,100 +3390,6 @@ function focusPane(paneId) {
   terminals[paneId]?.term.focus();
 }
 
-function createReplyBar(paneId, replyText, paneIdLabel) {
-  const bar = document.createElement('div');
-  bar.className = 'reply-bar';
-  const preview = document.createElement('div');
-  preview.className = 'reply-bar-preview';
-  preview.textContent = replyText.split('\n')[1] || '';
-  preview.title = replyText;
-  const shortcutLabel = IS_MAC_PLATFORM ? '⌥⇧C でコピーへ・Esc で戻る' : 'Alt+Shift+C でコピーへ・Esc で戻る';
-  const shortcutHint = document.createElement('div');
-  shortcutHint.className = 'reply-bar-shortcut';
-  shortcutHint.setAttribute('aria-hidden', 'true');
-  shortcutHint.textContent = shortcutLabel;
-  const actions = document.createElement('div');
-  actions.className = 'reply-bar-actions';
-  const paneSuffix = paneIdLabel ? `（${paneIdLabel}）` : '';
-  const copyButton = document.createElement('button');
-  copyButton.type = 'button';
-  copyButton.textContent = '返信文をコピー';
-  copyButton.setAttribute('aria-label', `返信文をコピー${paneSuffix}`);
-  copyButton.title = `返信文をコピー（端末から ${REPLY_COPY_SHORTCUT_LABEL} で移動、Esc で端末へ戻る）`;
-  const status = document.createElement('span');
-  status.className = 'reply-bar-status';
-  status.setAttribute('role', 'status');
-  status.setAttribute('aria-live', 'polite');
-  const closeButton = document.createElement('button');
-  closeButton.type = 'button';
-  closeButton.className = 'reply-bar-close';
-  closeButton.textContent = '×';
-  closeButton.setAttribute('aria-label', `返信文バーを閉じる${paneSuffix}`);
-  copyButton.addEventListener('click', async () => {
-    const t = terminals[paneId];
-    if (!t) return;
-    const generation = t.replyGeneration;
-    let ok = false;
-    try { ok = await VKClipboard.writeText(replyText); } catch (_e) {}
-    const current = terminals[paneId];
-    if (!current || current.replyGeneration !== generation || current.replyText !== replyText) return;
-    status.textContent = ok ? 'コピーしました' : 'コピーできませんでした';
-    setTimeout(() => {
-      if (terminals[paneId]?.replyGeneration === generation && status.isConnected) status.textContent = '';
-    }, 2000);
-  });
-  closeButton.addEventListener('click', () => dismissReplyBar(paneId, { focus: true }));
-  bar.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      terminals[paneId]?.term.focus();
-      return;
-    }
-    if (event.key !== 'Tab') return;
-    event.preventDefault();
-    const buttons = [copyButton, closeButton];
-    const currentIndex = buttons.indexOf(document.activeElement);
-    const offset = event.shiftKey ? -1 : 1;
-    buttons[(currentIndex + offset + buttons.length) % buttons.length].focus();
-  });
-  actions.append(copyButton, status, closeButton);
-  bar.append(preview, shortcutHint, actions);
-  return bar;
-}
-
-// 返信バーだけを差し替え、入力中の xterm と IME の DOM・フォーカスを維持する。
-function updatePaneReplyBar(paneId, { announce = false } = {}) {
-  const pane = document.querySelector(`.pane[data-id="${paneId}"]`);
-  if (!pane) return;
-  const currentBar = pane.querySelector(':scope > .reply-bar');
-  const shouldRestoreBarFocus = currentBar?.contains(document.activeElement) === true;
-  currentBar?.remove();
-  const t = terminals[paneId];
-  if (t?.replyText) {
-    const paneIdLabel = getPaneIdBadgeLabel(t.termId);
-    const nextBar = createReplyBar(paneId, t.replyText, paneIdLabel);
-    pane.querySelector(':scope > .term-container')?.after(nextBar);
-    if (shouldRestoreBarFocus) nextBar.querySelector('button')?.focus();
-  }
-  // 常設の live region はバーの再生成から切り離し、新しい返信を検出したときだけ更新する。
-  if (announce && t?.announcedReplyIdentity !== t?.replyIdentity) {
-    t.announcedReplyIdentity = t.replyIdentity;
-    const replyIdentity = t.replyIdentity;
-    const announcement = `返信文をコピーできます。${REPLY_COPY_SHORTCUT_LABEL} でコピーボタンへ移動`;
-    const liveRegion = pane.querySelector(':scope > .reply-bar-announcement');
-    if (liveRegion) {
-      // 同じ文言の通知も読み上げられるよう、一度空にして次のフレームで設定する。
-      liveRegion.textContent = '';
-      requestAnimationFrame(() => {
-        if (liveRegion.isConnected && terminals[paneId]?.replyIdentity === replyIdentity) {
-          liveRegion.textContent = announcement;
-        }
-      });
-    }
-  }
-  requestAnimationFrame(() => fitTerminal(paneId));
-}
-
 // issue #408: fitAddon.proposeDimensions() が返す cols は「行が折り返し直前まで
 // 全角文字で埋まった（余りセルが無い）とき」を想定していない。xterm.js（DOM
 // レンダラー）が letter-spacing で行なう CJK フォールバックフォントの幅補正が
@@ -3953,16 +3788,8 @@ function renderLeaf(node) {
   const termContainer = document.createElement('div');
   termContainer.className = 'term-container';
 
-  // バーの付け外しに左右されないペイン常設の読み上げ領域を用意する。
-  const replyAnnouncement = document.createElement('span');
-  replyAnnouncement.className = 'reply-bar-announcement';
-  replyAnnouncement.setAttribute('role', 'status');
-  replyAnnouncement.setAttribute('aria-live', 'polite');
-
   el.appendChild(header);
   el.appendChild(termContainer);
-  el.appendChild(replyAnnouncement);
-  if (t?.replyText) el.appendChild(createReplyBar(node.id, t.replyText, paneIdLabel));
 
   // ─── エージェントルーム（issue #58） ───────────────────────────────────────
   // config.json の `agentroom: true` のときだけ、ペイン下部に開閉式の
@@ -4130,7 +3957,6 @@ function renderLeaf(node) {
     if (t) {
       VKIpc.send('terminal:input', t.termId, text);
       markPaneInput(node.id);
-      if (containsReplyDismissInput(text)) dismissReplyBar(node.id);
     }
 
     // ドロップ完了フラッシュフィードバック
@@ -6767,7 +6593,6 @@ async function initApp() {
     // 対して判定・status 更新が走る（issue vektor-inc/vk-orchestrator#212）。
     clearRunningIdleTimer(t);
     clearWaitingCheckTimer(t);
-    clearReplyCheckTimer(t);
     try { t.term.dispose(); } catch (e) {}
     VKIpc.send('terminal:kill', t.termId);
   }

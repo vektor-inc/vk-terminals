@@ -2,6 +2,8 @@
 
 - [ 機能追加 ] 設定の反映にアプリの再起動が必要なときの案内と、作業中のペインが閉じることを確認してから再起動するボタンを追加（[#512](https://github.com/vektor-inc/vk-terminals/issues/512)）
 
+- [ 仕様変更 ] 作業ペイン下部の「返信文をコピー」ボタンを廃止（[#509](https://github.com/vektor-inc/vk-terminals/issues/509)）
+
 - [ 不具合修正 ] 設定パネルで説明の直後に入力欄グループが続くと、両者の間に余白がなく接して表示される不具合を修正（[#507](https://github.com/vektor-inc/vk-terminals/issues/507)）
 
 ## 1.84.2

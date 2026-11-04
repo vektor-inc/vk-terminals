@@ -6612,11 +6612,11 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
     const input = getEntryInput(id);
     if (!input) continue;
     input.addEventListener('blur', () => { applyFieldValidity(field, id); });
-    // 必須の未入力で付いた aria-invalid では再検証しない（形式エラー文が出ているときだけ再検証する）。
-    // イベントの登録順に依存させないため、DOM の印ではなくエラー文の有無で判定する。
-    const errEl = modal.querySelector('#' + id + '-error');
+    // 打鍵中は、赤枠が付いている欄だけ再検証する（直したら即座に外れる）。
+    // ただし必須の未入力で付いた赤枠（data-required-invalid）は、1 文字目の打鍵でどちらのリスナーが先に動いても
+    // まだ印が残っているため再検証されず、登録順に依存しない。エラー文の要素は欄の種類によって無いので使わない。
     input.addEventListener('input', () => {
-      if (errEl && errEl.textContent !== '') applyFieldValidity(field, id);
+      if (input.getAttribute('aria-invalid') === 'true' && input.dataset.requiredInvalid !== 'true') applyFieldValidity(field, id);
     });
   }
 

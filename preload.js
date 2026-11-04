@@ -84,6 +84,7 @@ const ON_CHANNELS = new Set([
   'menu:update',
   'widgets:update',
   'terminal:data',
+  'terminal:screen-refresh',
   'terminal:exit',
   'terminal:title',
   'terminal:set-status',

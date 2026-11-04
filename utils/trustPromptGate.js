@@ -68,7 +68,9 @@ const RESTRICTED_OPEN_PATTERNS = [
 
 // ready 猶予を過ぎてから出た「制限付きで開く」画面に応答するときだけ追加で要求する、選択肢の文言（issue #448）。
 // 起動後に Codex の出力へ説明文だけが引用された場合に、遅れて誤発火しないための絞り込み。
-const RESTRICTED_OPEN_SCREEN_PATTERN = /Folder\s*access[\s\S]{0,400}?Config,\s*hooks,\s*and\s*exec\s*policies\s*from\s*untrusted\s*folders\s*stay\s*disabled\.?[\s\S]{0,80}?1\.\s*Open\s*restricted[\s\S]{0,40}?2\.\s*Quit/i;
+// 説明文から「1. Open restricted」までの間隔は、Codex 新版で追加説明（約150文字）が入ったため 300 文字まで許容する
+// （issue #517）。上限は有限のままで、Folder access・説明文・選択肢2つ・承認画面との非同居の条件は緩めない。
+const RESTRICTED_OPEN_SCREEN_PATTERN = /Folder\s*access[\s\S]{0,400}?Config,\s*hooks,\s*and\s*exec\s*policies\s*from\s*untrusted\s*folders\s*stay\s*disabled\.?[\s\S]{0,300}?1\.\s*Open\s*restricted[\s\S]{0,40}?2\.\s*Quit/i;
 
 // コマンド承認画面と同居する出力には Enter を送らない。引用された Folder access 画面の
 // 直後に承認画面が出た場合も、既定選択を誤って承認しないため安全側へ倒す。

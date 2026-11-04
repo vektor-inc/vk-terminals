@@ -26,6 +26,8 @@ test.describe.serial('設定パネル: タブ・保存先表示系（issue #348 
   let app;
   let win;
   let tmpRoot;
+  const PANEL = (index) => `#settings-panel-${index}`;
+  const TAB = (index) => `#settings-tab-${index}`;
 
   test.beforeAll(async () => {
     const port = await getFreePort();
@@ -468,9 +470,6 @@ test.describe.serial('設定パネル: タブ・保存先表示系（issue #348 
       };
     }
 
-    const PANEL = (index) => `#settings-panel-${index}`;
-    const TAB = (index) => `#settings-tab-${index}`;
-
     test.afterEach(async () => {
       const closeButton = win.locator('.settings-close');
       if (await closeButton.count() && await closeButton.isVisible()) {
@@ -878,16 +877,42 @@ test.describe.serial('設定パネル: タブ・保存先表示系（issue #348 
           {
             id: 'orchestrator',
             label: 'Orchestrator',
-            content: [{ type: 'paragraph', text: '入力欄より前の説明' }],
+            content: [{ type: 'callout', tone: 'info', label: '状況', text: '入力欄より前の案内' }],
             contentAfter: [{ type: 'paragraph', text: '入力欄より後ろの説明' }],
           },
           {
             id: 'agents',
             label: 'VK Agents',
+            content: [{ type: 'paragraph', text: '入力欄より前の段落' }],
             contentAfter: [
               { type: 'heading', text: 'ルールの差し替え' },
               { type: 'paragraph', text: 'ルールを上書きできます。' },
             ],
+          },
+          {
+            id: 'heading3',
+            label: 'h3 見出し',
+            content: [{ type: 'heading', text: '入力欄より前の見出し' }],
+          },
+          {
+            id: 'heading4',
+            label: 'h4 見出し',
+            content: [{ type: 'heading', level: 4, text: '入力欄より前の小見出し' }],
+          },
+          {
+            id: 'list',
+            label: 'リスト',
+            content: [{ type: 'list', items: ['入力欄より前の項目'] }],
+          },
+          {
+            id: 'links',
+            label: 'リンク',
+            content: [{ type: 'links', items: [{ label: '入力欄より前のリンク', url: 'https://example.com/' }] }],
+          },
+          {
+            id: 'plain',
+            label: '説明なし',
+            contentAfter: [{ type: 'paragraph', text: '入力欄より後ろだけの説明' }],
           },
         ],
         groups: [
@@ -901,8 +926,36 @@ test.describe.serial('設定パネル: タブ・保存先表示系（issue #348 
             tab: 'agents',
             fields: [{ key: 'model', label: 'モデル', type: 'text' }],
           },
+          {
+            label: 'h3 見出し設定',
+            tab: 'heading3',
+            fields: [{ key: 'heading3Value', label: 'h3 見出しの値', type: 'text' }],
+          },
+          {
+            label: 'h4 見出し設定',
+            tab: 'heading4',
+            fields: [{ key: 'heading4Value', label: 'h4 見出しの値', type: 'text' }],
+          },
+          {
+            label: 'リスト設定',
+            tab: 'list',
+            fields: [{ key: 'listValue', label: 'リストの値', type: 'text' }],
+          },
+          {
+            label: 'リンク設定',
+            tab: 'links',
+            fields: [{ key: 'linksValue', label: 'リンクの値', type: 'text' }],
+          },
+          {
+            label: '説明なし設定',
+            tab: 'plain',
+            fields: [{ key: 'plainValue', label: '説明なしの値', type: 'text' }],
+          },
         ],
-        values: { template: '', model: '' },
+        values: {
+          template: '', model: '', heading3Value: '', heading4Value: '',
+          listValue: '', linksValue: '', plainValue: '',
+        },
       };
     }
 
@@ -929,11 +982,63 @@ test.describe.serial('設定パネル: タブ・保存先表示系（issue #348 
 
       expect(order).toEqual(['settings-content', 'settings-group', 'settings-content']);
 
-      // VK Agents 側は content を持たないので、説明は入力欄グループの後ろだけに出る。
+      // VK Agents 側も入力欄グループを挟んで、前後に説明を描く。
       const agentsOrder = await win.evaluate(() => Array.from(
         document.querySelector('#settings-panel-1').children
       ).map((el) => el.className.split(' ')[0]));
-      expect(agentsOrder).toEqual(['settings-group', 'settings-content']);
+      expect(agentsOrder).toEqual(['settings-content', 'settings-group', 'settings-content']);
+
+      // content を持たないタブでは、入力欄の前に空の説明容器を描かない。
+      await win.locator(TAB(6)).click();
+      const plainOrder = await win.locator(PANEL(6)).evaluate((panel) => Array.from(
+        panel.children
+      ).map((el) => el.className.split(' ')[0]));
+      expect(plainOrder).toEqual(['settings-group', 'settings-content']);
+
+      // 空の説明容器由来の余白がグループ上に付かず、パネル上端と枠線が揃う。
+      const plainTopGap = await win.locator(PANEL(6)).evaluate((panel) => (
+        panel.querySelector('.settings-group').getBoundingClientRect().top
+        - panel.getBoundingClientRect().top
+      ));
+      expect(plainTopGap).toBe(0);
+    });
+
+    test('説明の見える下端と直後のグループ見出し上端を 32px 空ける', async () => {
+      // callout は外形、文字で終わるブロックは計算後の font-size / line-height から求めた
+      // 字面の下端を使う。
+      // hidden のパネルは座標がすべて 0 になるため、先に対象タブへ切り替える。
+      const cases = [
+        { tabIndex: 0, label: 'callout' },
+        { tabIndex: 1, label: '段落' },
+        { tabIndex: 2, label: 'h3' },
+        { tabIndex: 3, label: 'h4' },
+        { tabIndex: 4, label: 'リスト' },
+        { tabIndex: 5, label: 'リンク' },
+      ];
+      const measuredGaps = {};
+
+      for (const { tabIndex, label } of cases) {
+        await win.locator(TAB(tabIndex)).click();
+        const gap = await win.locator(PANEL(tabIndex)).evaluate((panel) => {
+          const contentLastBlock = panel.querySelector('.settings-content > :last-child');
+          const group = panel.querySelector('.settings-group');
+          const blockRect = contentLastBlock.getBoundingClientRect();
+          const style = getComputedStyle(contentLastBlock);
+          const fontSize = Number.parseFloat(style.fontSize);
+          const lineHeight = Number.parseFloat(style.lineHeight);
+          const isTextEnding = contentLastBlock.matches(
+            '.settings-content-text, .settings-content-list, .settings-content-links, .settings-content-heading'
+          );
+          const visibleBottom = blockRect.bottom - (isTextEnding ? (lineHeight - fontSize) / 2 : 0);
+          return group.getBoundingClientRect().top - visibleBottom;
+        });
+
+        // 設定パネル内の h3 と同じ 32px 段で、説明と次の設定セクションを区切る。
+        measuredGaps[label] = gap;
+        expect(gap).toBeGreaterThanOrEqual(31.5);
+        expect(gap).toBeLessThanOrEqual(32.5);
+      }
+      console.log(`説明からグループ見出しまでの実測値: ${JSON.stringify(measuredGaps)}`);
     });
   });
 

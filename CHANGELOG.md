@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 不具合修正 ] 設定パネルで説明の直後に入力欄グループが続くと、両者の間に余白がなく接して表示される不具合を修正（[#507](https://github.com/vektor-inc/vk-terminals/issues/507)）
+
 ## 1.84.2
 
 - [ 不具合修正 ] 回答用テンプレートに空行で区切った質問が複数あると、「返信文をコピー」で 1 問目までしかコピーされない不具合を修正（[#503](https://github.com/vektor-inc/vk-terminals/issues/503)）

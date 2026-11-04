@@ -1,6 +1,6 @@
 # Changelog
 
-- [ 機能追加 ] 設定パネルの説明タブに、指定したフォルダを Finder で開くボタンを追加できるように（[#525](https://github.com/vektor-inc/vk-terminals/issues/525)）
+- [ 機能追加 ] 設定パネルの説明タブに置ける、指定したフォルダを Finder で開くボタンを追加（[#525](https://github.com/vektor-inc/vk-terminals/issues/525)）
 
 ## 1.86.0
 

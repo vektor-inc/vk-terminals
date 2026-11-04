@@ -1664,6 +1664,7 @@ let configReflectionCorrectionUntil = 0;
 let partialConfigReflection = false;
 let configFailedFiles = [];
 let restartRequiredKnown = false;
+let restartRequiredUnknownCount = 0;
 
 function updateConfigReadErrorNotices() {
   document.querySelectorAll('.config-read-error').forEach((notice) => {
@@ -1714,13 +1715,12 @@ function updateConfigReflection(state) {
 function flushConfigReflectionNotification() {
   const now = Date.now();
   // 訂正期限を延長せず、後日の再起動専用設定による誤通知を防ぐ。
-  if (now > configReflectionCorrectionUntil) lastConfigReflectionMessage = '';
   if (pendingConfigReflection && restartRequiredKnown && !configFailedFiles.length) {
     hasConfigReflected = true;
     configReflectionCorrectionUntil = now + 15000;
   }
   const decision = window.VKConfigReflectionPolicy.reflectionDecision({
-    pending: pendingConfigReflection || (!!lastConfigReflectionMessage && restartRequiredKnown
+    pending: pendingConfigReflection || (now <= configReflectionCorrectionUntil && !!lastConfigReflectionMessage && restartRequiredKnown
       && lastConfigReflectionMessage !== (restartRequiredState.restartRequired ? '一部の設定を反映しました' : '設定を反映しました')),
     failed: configFailedFiles.length > 0,
     restartRequired: restartRequiredKnown ? restartRequiredState.restartRequired : null,
@@ -1745,8 +1745,9 @@ function updatePartialConfigReflectionNotices() {
       detail.className = 'config-reflection-partial';
       element.querySelector('p')?.after(detail);
     }
-    detail.textContent = partialConfigReflection ? text : '';
-    detail.hidden = !partialConfigReflection;
+    const nextText = partialConfigReflection ? text : '';
+    if (detail.textContent !== nextText) detail.textContent = nextText;
+    if (detail.hidden !== !partialConfigReflection) detail.hidden = !partialConfigReflection;
   });
 }
 
@@ -1769,6 +1770,9 @@ async function updateRestartRequired() {
   } catch (_error) {
     restartRequiredKnown = false;
   }
+  // 未確認が続く場合も、内部エラーや内容をログへ流さない。
+  if (restartRequiredKnown) restartRequiredUnknownCount = 0;
+  else if (++restartRequiredUnknownCount === 3) console.warn('再起動要否を確認できません: restart-required.json');
   if (restartRequiredKnown) partialConfigReflection = hasConfigReflected && restartRequiredState.restartRequired;
   updatePartialConfigReflectionNotices();
   const notice = document.getElementById('sidebar-restart-required');
@@ -1777,7 +1781,7 @@ async function updateRestartRequired() {
       [document.querySelector('#sidebar-settings button'), document.getElementById('settings-btn')]
         .find(canRestoreModalFocus)?.focus();
     }
-    notice.hidden = !restartRequiredState.restartRequired;
+    if (notice.hidden !== !restartRequiredState.restartRequired) notice.hidden = !restartRequiredState.restartRequired;
   }
   document.querySelectorAll('.settings-restart-notice').forEach((element) => {
     const hidden = !restartRequiredState.tabs.includes(element.dataset.tabId);
@@ -1785,7 +1789,7 @@ async function updateRestartRequired() {
       const panel = element.closest('.settings-tab-panel');
       document.getElementById(panel?.getAttribute('aria-labelledby'))?.focus();
     }
-    element.hidden = hidden;
+    if (element.hidden !== hidden) element.hidden = hidden;
   });
 }
 
@@ -2271,7 +2275,7 @@ function updateWidgetFilter(section, info) {
 
   if (!info || !info.filterEnabled) {
     filter.hidden = true;
-    if (liveCount) liveCount.textContent = '';
+    if (liveCount && liveCount.textContent !== '') liveCount.textContent = '';
     return;
   }
 
@@ -2294,7 +2298,7 @@ function updateWidgetFilter(section, info) {
   }
   filter.value = info.filterMode;
   filter.hidden = false;
-  if (liveCount) liveCount.textContent = `${info.visibleItems}件表示`;
+  if (liveCount && liveCount.textContent !== `${info.visibleItems}件表示`) liveCount.textContent = `${info.visibleItems}件表示`;
 }
 
 // widgets:update で受けた中継ペイロード { widget, legacyNotice, commandsConfigured } を描画する。
@@ -2350,21 +2354,21 @@ function renderWidget(fromUpdate) {
   if (staleNotice) {
     if (setupStopped) {
       setStaleNoticeKind(staleNotice, 'setup');
-      staleNotice.hidden = false;
+      if (staleNotice.hidden !== (false)) staleNotice.hidden = false;
     } else if (stale) {
       setStaleNoticeKind(staleNotice, 'stale');
-      staleNotice.hidden = !shouldShow;
+      if (staleNotice.hidden !== (!shouldShow)) staleNotice.hidden = !shouldShow;
     } else if (legacyNotice) {
       staleNotice.dataset.kind = 'legacy';
-      staleNotice.textContent = WIDGET_LEGACY_NOTICE_TEXT;
-      staleNotice.hidden = !shouldShow;
+      if (staleNotice.textContent !== WIDGET_LEGACY_NOTICE_TEXT) staleNotice.textContent = WIDGET_LEGACY_NOTICE_TEXT;
+      if (staleNotice.hidden !== (!shouldShow)) staleNotice.hidden = !shouldShow;
     } else {
       // セットアップ未完了の案内（リンクつき）が不要になったら、中身ごと外す。
       if (staleNotice.dataset.kind === 'setup') {
         delete staleNotice.dataset.kind;
         staleNotice.replaceChildren();
       }
-      staleNotice.hidden = true;
+      if (staleNotice.hidden !== (true)) staleNotice.hidden = true;
     }
   }
 
@@ -2421,9 +2425,9 @@ function tickWidgetStale() {
   if (stale) {
     // セットアップ未完了と判定されているときは、その理由の文言のまま（タイマーで戻さない）。
     setStaleNoticeKind(staleNotice, setupPanel && setupPanel.isIncomplete() ? 'setup' : 'stale');
-    staleNotice.hidden = false;
+    if (staleNotice.hidden !== (false)) staleNotice.hidden = false;
   } else {
-    staleNotice.hidden = true;
+    if (staleNotice.hidden !== (true)) staleNotice.hidden = true;
   }
 }
 
@@ -2558,9 +2562,9 @@ function updateStashItem(paneId) {
     const status = t.displayStatus || 'idle';
     badge.dataset.status = status;
     const { label, ariaLabel } = getStatusPresentation(status);
-    badge.textContent = label;
-    if (ariaLabel) badge.setAttribute('aria-label', ariaLabel);
-    else badge.removeAttribute('aria-label');
+    if (badge.textContent !== label) badge.textContent = label;
+    if (ariaLabel && badge.getAttribute('aria-label') !== ariaLabel) badge.setAttribute('aria-label', ariaLabel);
+    else if (!ariaLabel && badge.hasAttribute('aria-label')) badge.removeAttribute('aria-label');
   }
   const titleEl = li.querySelector('.stash-item-title-row');
   if (titleEl) {
@@ -2824,11 +2828,11 @@ function updatePaneStatus(paneId) {
   //       idle は visibility:hidden により読み上げ対象外（aria-live 非発火）。
   // ラベル / aria-label のマッピングは getStatusPresentation に集約（renderLeaf と共用）。
   const { label, ariaLabel } = getStatusPresentation(status);
-  badge.textContent = label;
+  if (badge.textContent !== label) badge.textContent = label;
   if (ariaLabel) {
-    badge.setAttribute('aria-label', ariaLabel);
+    if (badge.getAttribute('aria-label') !== ariaLabel) badge.setAttribute('aria-label', ariaLabel);
   } else {
-    badge.removeAttribute('aria-label');
+    if (badge.hasAttribute('aria-label')) badge.removeAttribute('aria-label');
   }
 
   // フォールバック表示（司＝ペイン status 写像）は status に追従するため、ここで更新する。
@@ -4313,8 +4317,8 @@ function formatResetDateTimeJa(ms) {
 }
 
 function setTextWithTitle(el, text) {
-  el.textContent = text;
-  el.title = text;
+  if (el.textContent !== text) el.textContent = text;
+  if (el.title !== text) el.title = text;
 }
 
 // 期限切れ（Codex のみ・issue #399）区分の案内文。値・進捗バー・リセット行を差し替える。
@@ -4447,6 +4451,13 @@ function buildTranscriptUsageSection(u) {
 
 // 使用状況ビュー全体を描画する（読み取り専用）。
 function renderUsageView(container, usage, options = {}) {
+  // 同じ使用状況の再取得で live region 全体を読み直させない。
+  const next = document.createElement('div');
+  populateUsageView(next, usage, options);
+  if (container.innerHTML !== next.innerHTML) container.replaceChildren(...next.childNodes);
+}
+
+function populateUsageView(container, usage, options = {}) {
   container.innerHTML = '';
   if (!usage) {
     const p = document.createElement('p');
@@ -4506,6 +4517,13 @@ function buildCodexTokenUsageSection(tokens) {
 }
 
 function renderCodexUsageView(container, usage, options = {}) {
+  // 同じ使用状況の再取得で live region 全体を読み直させない。
+  const next = document.createElement('div');
+  populateCodexUsageView(next, usage, options);
+  if (container.innerHTML !== next.innerHTML) container.replaceChildren(...next.childNodes);
+}
+
+function populateCodexUsageView(container, usage, options = {}) {
   container.innerHTML = '';
   if (!usage) {
     return;
@@ -4552,7 +4570,7 @@ function renderSidebarUsage(usage) {
 
   if (!usage) {
     section.hidden = true;
-    body.replaceChildren();
+    if (body.childNodes.length) body.replaceChildren();
     return;
   }
 
@@ -4569,7 +4587,7 @@ function renderSidebarCodexUsage(usage) {
 
   if (!usage || usage.empty === true) {
     section.hidden = true;
-    body.replaceChildren();
+    if (body.childNodes.length) body.replaceChildren();
     return;
   }
 
@@ -5970,11 +5988,13 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
         const body = current.querySelector('.settings-content-status-body');
         current.dataset.tone = presentation.tone;
         if (body) {
-          body.innerHTML = renderApiServerStatusBody(presentation, apiHostEntry?.tabIndex);
+          const nextBody = document.createElement('div');
+          nextBody.innerHTML = renderApiServerStatusBody(presentation, apiHostEntry?.tabIndex);
+          if (body.innerHTML.trim() !== nextBody.innerHTML.trim()) body.replaceChildren(...nextBody.childNodes);
           if (status && status.phase === 'pending') {
-            body.setAttribute('aria-busy', 'true');
+            if (body.getAttribute('aria-busy') !== 'true') body.setAttribute('aria-busy', 'true');
           } else {
-            body.removeAttribute('aria-busy');
+            if (body.hasAttribute('aria-busy')) body.removeAttribute('aria-busy');
           }
         }
         if (!status || status.phase !== 'pending') stopApiServerStatusPolling();

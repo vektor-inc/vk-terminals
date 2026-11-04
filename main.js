@@ -227,7 +227,7 @@ let nextClosePaneRequestId = 1;
 // ─── Terminal state & HTTP API ───────────────────────────────────────────────
 const DATA_DIR = path.join(os.homedir(), '.vk-terminals');
 const { readRestartRequired } = require('./utils/restartRequired');
-const { normalizeLiveConfig, changedLiveKeys, normalizeReflection, readSmallJson, advanceReflection } = require('./utils/configLiveReload');
+const { USER_CONFIG_MAX_BYTES, normalizeLiveConfig, changedLiveKeys, normalizeReflection, readSmallJson, advanceReflection } = require('./utils/configLiveReload');
 const { createRestartApplication } = require('./utils/restartApplication');
 // 組み込み用の入口（embedded.js）から起動されたときだけ値が入る。electron . では null。
 const EMBEDDED_OPTIONS = getEmbeddedOptions();
@@ -796,7 +796,7 @@ function loadUserConfig() {
   for (const configPath of candidates) {
     if (fs.existsSync(configPath)) {
       try {
-        const raw = readSmallJson(configPath, 1048576);
+        const raw = readSmallJson(configPath, USER_CONFIG_MAX_BYTES);
         normalizeLiveConfig(raw);
         return raw;
       } catch (e) {
@@ -1938,7 +1938,7 @@ function reloadConfigReflection() {
   let eventId = reflectionState.eventId;
   try {
     candidate = userConfigCandidatePaths().find((file) => fs.existsSync(file));
-    config = normalizeLiveConfig(candidate ? readSmallJson(candidate, 1048576) : {});
+    config = normalizeLiveConfig(candidate ? readSmallJson(candidate, USER_CONFIG_MAX_BYTES) : {});
     if (config.menuItems.length > MENU_MAX_SECTIONS || config.menuItems.some((section) => !validateMenuSection(section, { defaultSource: 'config' }).ok)) throw new Error('invalid menuItems');
   } catch (_error) {
     config = null;

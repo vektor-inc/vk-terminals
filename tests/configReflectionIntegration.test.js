@@ -151,7 +151,7 @@ test('GPU だけの変更では部分反映案内を出さず、期限切れの�
     await app.context.updateRestartRequired();
     app.context.flushConfigReflectionNotification();
     assert.deepEqual(app.messages, ['設定を反映しました']);
-    assert.equal(app.run('lastConfigReflectionMessage'), '');
+    assert.equal(app.run('lastConfigReflectionMessage'), '設定を反映しました');
     fs.rmSync(file);
     await app.context.updateRestartRequired();
     assert.equal(app.run('partialConfigReflection'), false);
@@ -188,7 +188,7 @@ test('起動時と定期読込は64KB超の本体設定を採用し、状態フ�
     const source = fs.readFileSync(path.join(__dirname, '../main.js'), 'utf8');
     const start = source.indexOf('function loadUserConfig()');
     const end = source.indexOf('\n}', start) + 2;
-    const context = vm.createContext({ fs, normalizeLiveConfig: policy.normalizeLiveConfig, LOG_PREFIX: "test", readSmallJson: policy.readSmallJson, userConfigCandidatePaths: () => [file], console });
+    const context = vm.createContext({ fs, USER_CONFIG_MAX_BYTES: policy.USER_CONFIG_MAX_BYTES, normalizeLiveConfig: policy.normalizeLiveConfig, LOG_PREFIX: "test", readSmallJson: policy.readSmallJson, userConfigCandidatePaths: () => [file], console });
     vm.runInContext(source.slice(start, end), context);
     assert.equal(context.loadUserConfig().port, 12345);
     assert.equal(context.loadUserConfig().apiHost, '127.0.0.2');
@@ -197,4 +197,118 @@ test('起動時と定期読込は64KB超の本体設定を採用し、状態フ�
     fs.writeFileSync(file, JSON.stringify(config) + ' '.repeat(1048576));
     assert.throws(() => policy.readSmallJson(file, 1048576));
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+// setter の呼び出し回数で、同値代入まで抑止できていることを確認する。
+test('再起動案内と部分反映案内は状態が同じならDOMを書き換えない', async () => {
+  const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
+  let writes = 0;
+  function tracked(values) {
+    const element = {};
+    for (const [key, initial] of Object.entries(values)) {
+      let value = initial;
+      Object.defineProperty(element, key, { get: () => value, set: (next) => { writes++; value = next; } });
+    }
+    return element;
+  }
+  const details = [tracked({ textContent: '', hidden: true }), tracked({ textContent: '', hidden: true })];
+  const notices = details.map((detail) => Object.assign(tracked({ hidden: true }), {
+    dataset: { tabId: 'general' }, contains: () => false, querySelector: () => detail,
+  }));
+  const context = vm.createContext({
+    VKIpc: { invoke: async () => ({ restartRequired: true, tabs: ['general'] }) },
+    document: { querySelectorAll: (selector) => selector.includes('#sidebar') ? notices : selector === '.settings-restart-notice' ? [notices[1]] : [], getElementById: () => notices[0] },
+    console,
+  });
+  vm.runInContext(source.slice(source.indexOf('let restartRequiredState'), source.indexOf('// サイドバーのラッパー')), context);
+  vm.runInContext('hasConfigReflected = true', context);
+  await context.updateRestartRequired();
+  assert.equal(writes, 6);
+  writes = 0;
+  await context.updateRestartRequired();
+  context.updatePartialConfigReflectionNotices();
+  assert.equal(writes, 0);
+  context.VKIpc.invoke = async () => ({ restartRequired: false, tabs: [] });
+  await context.updateRestartRequired();
+  assert.equal(writes, 6, '表示と文言の変化は反映する');
+});
+
+test('14秒後の訂正と16秒後の反映が同じ文言なら二重通知しない', async () => {
+  const dir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'restart-dedup-'));
+  try {
+    const app = createRestartHarness(dir);
+    await app.context.updateRestartRequired();
+    app.run('pendingConfigReflection = true');
+    app.context.flushConfigReflectionNotification();
+    app.advance(14000);
+    fs.writeFileSync(path.join(dir, 'restart-required.json'), JSON.stringify({ restartRequired: true, tabs: ['general'] }));
+    await app.context.updateRestartRequired();
+    app.context.flushConfigReflectionNotification();
+    app.advance(2000);
+    app.run('pendingConfigReflection = true');
+    app.context.flushConfigReflectionNotification();
+    assert.deepEqual(app.messages, ['設定を反映しました', '一部の設定を反映しました']);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('未確認が3回続いた場合だけ固定警告を出し、復旧後は数え直す', async () => {
+  const dir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'restart-warning-'));
+  try {
+    const app = createRestartHarness(dir);
+    const warnings = [];
+    app.context.console = { warn: (...args) => warnings.push(args) };
+    const file = path.join(dir, 'restart-required.json');
+    fs.writeFileSync(file, '{private invalid contents');
+    for (let i = 0; i < 2; i++) await app.context.updateRestartRequired();
+    assert.equal(warnings.length, 0);
+    for (let i = 0; i < 4; i++) await app.context.updateRestartRequired();
+    assert.deepEqual(warnings, [['再起動要否を確認できません: restart-required.json']]);
+    fs.rmSync(file);
+    await app.context.updateRestartRequired();
+    fs.writeFileSync(file, '{}');
+    for (let i = 0; i < 3; i++) await app.context.updateRestartRequired();
+    assert.equal(warnings.length, 2);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('使用状況のlive regionは表示内容が同じなら子要素を置換しない', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
+  for (const [name, populate] of [['renderUsageView', 'populateUsageView'], ['renderCodexUsageView', 'populateCodexUsageView']]) {
+    let writes = 0;
+    const container = { innerHTML: 'same', replaceChildren(value) { writes++; this.innerHTML = value; } };
+    const context = vm.createContext({
+      document: { createElement: () => ({ innerHTML: '', childNodes: [] }) },
+      [populate]: (next, usage) => { next.innerHTML = usage; next.childNodes = [usage]; },
+    });
+    const start = source.indexOf(`function ${name}(`);
+    vm.runInContext(source.slice(start, source.indexOf(`function ${populate}(`, start)), context);
+    context[name](container, 'same');
+    assert.equal(writes, 0);
+    context[name](container, 'changed');
+    assert.equal(writes, 1);
+    context[name](container, 'changed');
+    assert.equal(writes, 1);
+  }
+});
+
+test('PCとモバイルのタスク件数は同じ件数を繰り返し読み上げない', () => {
+  for (const file of ['app.js', 'mobile.js']) {
+    const source = fs.readFileSync(path.join(__dirname, '../renderer', file), 'utf8');
+    let writes = 0;
+    let text = '';
+    const live = {};
+    Object.defineProperty(live, 'textContent', { get: () => text, set: (value) => { writes++; text = value; } });
+    const filter = { options: [], replaceChildren() {}, appendChild() {} };
+    const context = vm.createContext({ taskListFilter: filter, taskListLive: live, ASSIGNEE_OPTION_FIELD_SEP: '␟', ASSIGNEE_OPTION_ITEM_SEP: '␞' });
+    const start = source.indexOf('function updateWidgetFilter(');
+    vm.runInContext(source.slice(start, source.indexOf('\n}', start) + 2), context);
+    const section = { querySelector: (selector) => selector.includes('assignee') ? filter : live };
+    const update = (info) => file === 'app.js' ? context.updateWidgetFilter(section, info) : context.updateWidgetFilter(info);
+    update({ filterEnabled: true, filterOptions: [], visibleItems: 3 });
+    update({ filterEnabled: true, filterOptions: [], visibleItems: 3 });
+    assert.equal(writes, 1);
+    update(null);
+    update(null);
+    assert.equal(writes, 2);
+  }
 });

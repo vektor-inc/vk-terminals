@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const USER_CONFIG_MAX_BYTES = 1024 * 1024;
 const KEYS = ['newPaneStartupDir', 'newPaneAutoLaunchClaude', 'confirmClose', 'terminalLinkClickMode', 'menuItems', 'waitingExcludeCwdPatterns'];
 
 // 未指定値は起動時と同じ既定値へ寄せ、対象キーを一括検証する。
@@ -55,4 +56,4 @@ function advanceReflection(previous, input) {
   };
 }
 
-module.exports = { normalizeLiveConfig, changedLiveKeys, normalizeReflection, readSmallJson, advanceReflection };
+module.exports = { USER_CONFIG_MAX_BYTES, normalizeLiveConfig, changedLiveKeys, normalizeReflection, readSmallJson, advanceReflection };

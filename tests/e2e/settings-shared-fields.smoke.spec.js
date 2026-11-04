@@ -319,6 +319,12 @@ test.describe.serial('設定パネル: 基本フィールド系（issue #348 で
       await expect(repoRow.locator('.settings-error')).toHaveText('形式が正しくありません');
       await win.getByLabel('必須の通常欄', { exact: true }).fill('x');
       await expect(repo).toHaveAttribute('aria-invalid', 'true');
+      // 形式エラー表示中に全文を消すと、形式エラーの文は消え、必須の案内と印だけになる
+      await repo.fill('');
+      await expect(repoRow.locator('.settings-error')).toHaveText('');
+      await expect(repoRow.locator('.settings-required-notice')).toBeVisible();
+      await expect(repo).toHaveAttribute('aria-required', 'true');
+      await expect(repo).toHaveAttribute('aria-invalid', 'true');
       await repo.fill('abc/def');
       await expect(repo).not.toHaveAttribute('aria-invalid', 'true');
       await expect(repoRow.locator('.settings-error')).toHaveText('');

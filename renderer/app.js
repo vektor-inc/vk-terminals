@@ -6612,11 +6612,16 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
     const input = getEntryInput(id);
     if (!input) continue;
     input.addEventListener('blur', () => { applyFieldValidity(field, id); });
-    // 打鍵中は、赤枠が付いている欄だけ再検証する（直したら即座に外れる）。
-    // ただし必須の未入力で付いた赤枠（data-required-invalid）は、1 文字目の打鍵でどちらのリスナーが先に動いても
-    // まだ印が残っているため再検証されず、登録順に依存しない。エラー文の要素は欄の種類によって無いので使わない。
+    // 打鍵中の再検証は次の 2 条件のどちらかのときだけ行う。
+    // hasErrorText: 形式エラー文が出ている（全文を消して空にしたとき、エラー文を即座に消すため。onEntryEdited が先に
+    //   必須の印を付けても、エラー文の有無で判定するので再検証される）。エラー文の要素は text・number・combo にしか無い。
+    // patternInvalid: 必須の未入力ではない赤枠（pattern の形式エラー）が付いている（エラー文の要素が無い欄種向け）。
+    // 必須の未入力欄への 1 文字目は、エラー文も無く赤枠は必須由来（data-required-invalid）なので、どちらも成り立たず再検証されない。
+    const errEl = modal.querySelector('#' + id + '-error');
     input.addEventListener('input', () => {
-      if (input.getAttribute('aria-invalid') === 'true' && input.dataset.requiredInvalid !== 'true') applyFieldValidity(field, id);
+      const hasErrorText = errEl !== null && errEl.textContent !== '';
+      const patternInvalid = input.getAttribute('aria-invalid') === 'true' && input.dataset.requiredInvalid !== 'true';
+      if (hasErrorText || patternInvalid) applyFieldValidity(field, id);
     });
   }
 

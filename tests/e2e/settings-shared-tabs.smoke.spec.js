@@ -868,6 +868,9 @@ test.describe.serial('設定パネル: タブ・保存先表示系（issue #348 
   // 返すだけで、パネル内のどこに置かれるかは描画側が決める）。ここでは
   // 「content → 入力欄グループ → contentAfter」の並びを実 DOM で見る。
   test.describe('入力欄の後ろに置く説明', () => {
+    const PANEL = (index) => `#settings-panel-${index}`;
+    const TAB = (index) => `#settings-tab-${index}`;
+
     function contentAfterDescriptor() {
       return {
         available: true,
@@ -890,6 +893,11 @@ test.describe.serial('設定パネル: タブ・保存先表示系（issue #348 
               { type: 'paragraph', text: 'ルールを上書きできます。' },
             ],
           },
+          {
+            id: 'plain',
+            label: '説明なし',
+            contentAfter: [{ type: 'paragraph', text: '入力欄より後ろだけの説明' }],
+          },
         ],
         groups: [
           {
@@ -902,8 +910,13 @@ test.describe.serial('設定パネル: タブ・保存先表示系（issue #348 
             tab: 'agents',
             fields: [{ key: 'model', label: 'モデル', type: 'text' }],
           },
+          {
+            label: '説明なし設定',
+            tab: 'plain',
+            fields: [{ key: 'plainValue', label: '説明なしの値', type: 'text' }],
+          },
         ],
-        values: { template: '', model: '' },
+        values: { template: '', model: '', plainValue: '' },
       };
     }
 
@@ -935,17 +948,39 @@ test.describe.serial('設定パネル: タブ・保存先表示系（issue #348 
         document.querySelector('#settings-panel-1').children
       ).map((el) => el.className.split(' ')[0]));
       expect(agentsOrder).toEqual(['settings-content', 'settings-group', 'settings-content']);
+
+      // content を持たないタブでは、入力欄の前に空の説明容器を描かない。
+      await win.locator(TAB(2)).click();
+      const plainOrder = await win.locator(PANEL(2)).evaluate((panel) => Array.from(
+        panel.children
+      ).map((el) => el.className.split(' ')[0]));
+      expect(plainOrder).toEqual(['settings-group', 'settings-content']);
+
+      // 空の説明容器由来の余白がグループ上に付かず、パネル上端と枠線が揃う。
+      const plainTopGap = await win.locator(PANEL(2)).evaluate((panel) => (
+        panel.querySelector('.settings-group').getBoundingClientRect().top
+        - panel.getBoundingClientRect().top
+      ));
+      expect(plainTopGap).toBe(0);
     });
 
-    test('説明ブロックと直後の入力欄グループの間に h3 相当の余白を空ける', async () => {
-      // callout と段落のどちらで説明が終わっても、各タブを表示してから見えている下端と
-      // fieldset の枠線の間を測る。hidden のパネルは座標がすべて 0 になるため先に切り替える。
+    test('説明の見える下端と直後の入力欄グループの枠線を 32px 空ける', async () => {
+      // callout は枠線、段落は計算後の font-size / line-height から求めた字面の下端を使う。
+      // hidden のパネルは座標がすべて 0 になるため、先に対象タブへ切り替える。
       for (const tabIndex of [0, 1]) {
-        await win.locator(`#settings-tab-${tabIndex}`).click();
-        const gap = await win.locator(`#settings-panel-${tabIndex}`).evaluate((panel) => {
+        await win.locator(TAB(tabIndex)).click();
+        const gap = await win.locator(PANEL(tabIndex)).evaluate((panel) => {
           const contentLastBlock = panel.querySelector('.settings-content > :last-child');
           const group = panel.querySelector('.settings-group');
-          return group.getBoundingClientRect().top - contentLastBlock.getBoundingClientRect().bottom;
+          const blockRect = contentLastBlock.getBoundingClientRect();
+          const style = getComputedStyle(contentLastBlock);
+          const fontSize = Number.parseFloat(style.fontSize);
+          const lineHeight = Number.parseFloat(style.lineHeight);
+          const isTextEnding = contentLastBlock.matches(
+            '.settings-content-text, .settings-content-list, .settings-content-links, .settings-content-heading'
+          );
+          const visibleBottom = blockRect.bottom - (isTextEnding ? (lineHeight - fontSize) / 2 : 0);
+          return group.getBoundingClientRect().top - visibleBottom;
         });
 
         // 設定パネル内の h3 と同じ 32px 段で、説明と次の設定セクションを区切る。

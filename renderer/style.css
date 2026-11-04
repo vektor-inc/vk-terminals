@@ -413,8 +413,19 @@ html, body {
 .settings-content > :first-child { margin-top: 0; }
 .settings-content > :last-child { margin-bottom: 0; }
 /* tabs[].content の末尾マージンを消しても直後の入力欄グループと接しないよう、
-   節の変わり目を settings-content の h3 と同じ 32px 段で区切る（issue #507）。 */
+   節の変わり目を settings-content の h3 と同じ 32px 段で区切る（issue #507）。
+   末尾が背景・枠のない文字なら、行ボックス下側のハーフレディングを引き、字面から
+   グループの枠線までを 32px に保つ。箱で終わるブロックは枠線基準なので引かない。 */
 .settings-content + .settings-group { margin-top: 32px; }
+.settings-content:has(> :where(.settings-content-text, .settings-content-list, .settings-content-links):last-child) + .settings-group {
+  margin-top: calc(32px - 4.55px);
+}
+.settings-content:has(> h3.settings-content-heading:last-child) + .settings-group {
+  margin-top: calc(32px - 3.75px);
+}
+.settings-content:has(> h4.settings-content-heading:last-child) + .settings-group {
+  margin-top: calc(32px - 3.25px);
+}
 /* 入力欄グループの後ろに置く説明（tabs[].contentAfter）。上の `> :first-child` で先頭の
    見出しの上マージン（h3 は 32px）が消えるため、そのままだと直前のグループとの間が
    グループの下マージン 18px だけになり、節の変わり目が h4 相当（18px）の弱い区切りに

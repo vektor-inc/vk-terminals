@@ -71,7 +71,7 @@ const {
   waitingCheckDelayMs,
 } = window.VKWaitingState;
 const { deriveDisplayWaiting, deriveStatus, shouldBeepForPaneWaiting } = window.VKStatusState;
-const { getStatusPresentation } = window.VKStatusPresentation;
+const { getStatusPresentation, resolvePaneNote } = window.VKStatusPresentation;
 const { getApiServerStatusPresentation } = window.VKApiServerStatus;
 const { getPrBadgePresentation } = window.VKPrBadge;
 const { getPaneIdBadgeLabel } = window.VKPaneIdBadge;
@@ -866,6 +866,10 @@ async function createTerminal(paneId, cwd, options = {}) {
     // apiPrMerged が true のときはこちらより優先される
     // （マージ済みが最終状態のため。優先順位の実装は getPrBadgePresentation 側）。
     apiWaitingMerge: false,
+    // apiPaneNote（issue #536）: HTTP API（POST /api/set-title）で渡されたペインの注記
+    // 'watching'（見守り中）/ 'done'（完了）/ null。ラベルの文言と色だけを差し替える
+    // （計算上の状態 displayStatus には影響しない）。
+    apiPaneNote: null,
     // agentRoom（issue #58）: POST /api/agentroom で受け取ったルーム状態 { name: state }。
     //   null のままなら API 未通知。API が古い（AGENTROOM_API_TTL_MS 超過）場合は
     //   resolveRoomAgents() が PTY 出力ベースのフォールバック表示に切り替える。
@@ -2488,8 +2492,7 @@ function renderStashItem(id, idx, count) {
   const xtermOpen = !!(t && t.stashXtermOpen);
   if (xtermOpen) li.classList.add('stash-xterm-open');
 
-  const status = t?.displayStatus || 'idle';
-  const { label: statusLabel, ariaLabel: statusAriaLabel } = getStatusPresentation(status);
+  const { label: statusLabel, ariaLabel: statusAriaLabel, visualStatus: status } = getStatusPresentation(t?.displayStatus || 'idle', t?.apiPaneNote);
   const title = getDisplayTitle(t);
   const taskUrl = getDisplayUrl(t);
   const taskPrUrl = isSafeExternalUrl(t?.apiPrUrl) ? t.apiPrUrl : '';
@@ -2572,9 +2575,8 @@ function updateStashItem(paneId) {
   li.classList.toggle('waiting', isPaneDisplayWaiting(t));
   const badge = li.querySelector('.pane-status');
   if (badge) {
-    const status = t.displayStatus || 'idle';
-    badge.dataset.status = status;
-    const { label, ariaLabel } = getStatusPresentation(status);
+    const { label, ariaLabel, visualStatus } = getStatusPresentation(t.displayStatus || 'idle', t.apiPaneNote);
+    badge.dataset.status = visualStatus;
     if (badge.textContent !== label) badge.textContent = label;
     if (ariaLabel && badge.getAttribute('aria-label') !== ariaLabel) badge.setAttribute('aria-label', ariaLabel);
     else if (!ariaLabel && badge.hasAttribute('aria-label')) badge.removeAttribute('aria-label');
@@ -2834,13 +2836,13 @@ function updatePaneStatus(paneId) {
 
   const badge = paneEl.querySelector('.pane-status');
   if (!badge) return;
-  const status = t.displayStatus || 'idle';
-  badge.dataset.status = status;
+  // paneNote（issue #536）が効いているときは、文言と色だけを差し替える（displayStatus は変えない）。
+  const { label, ariaLabel, visualStatus } = getStatusPresentation(t.displayStatus || 'idle', t.apiPaneNote);
+  badge.dataset.status = visualStatus;
   // 視覚: ラベルテキスト（ドットは CSS の ::before で描画）。
   // a11y: aria-label でステータスを明示し、aria-live="polite" により変化のみ読み上げ。
   //       idle は visibility:hidden により読み上げ対象外（aria-live 非発火）。
   // ラベル / aria-label のマッピングは getStatusPresentation に集約（renderLeaf と共用）。
-  const { label, ariaLabel } = getStatusPresentation(status);
   if (badge.textContent !== label) badge.textContent = label;
   if (ariaLabel) {
     if (badge.getAttribute('aria-label') !== ariaLabel) badge.setAttribute('aria-label', ariaLabel);
@@ -3827,8 +3829,7 @@ function renderLeaf(node) {
   // 表示用ステータス（issue #23, #27）。idle 時は CSS の visibility:hidden で不可視のまま幅は保持。
   // ドットは CSS の .pane-status::before（currentColor）で描画するため、ラベルはテキストのみ。
   // ラベル / aria-label の対応は getStatusPresentation に集約（updatePaneStatus と共用）。
-  const status = t?.displayStatus || 'idle';
-  const { label: statusLabel, ariaLabel: statusAriaLabel } = getStatusPresentation(status);
+  const { label: statusLabel, ariaLabel: statusAriaLabel, visualStatus: status } = getStatusPresentation(t?.displayStatus || 'idle', t?.apiPaneNote);
   const focused = node.id === focusedPaneId;
   // 画面側の node.id（pane-3 形式）ではなく、main.js の nextId で振られた termId（API・タスク管理と同じ番号）を表示する。
   const paneIdLabel = getPaneIdBadgeLabel(t?.termId);
@@ -6971,6 +6972,8 @@ setInterval(() => {
       // この states レポートを GET /api/states 経由でそのまま参照するため、
       // ここに追加するだけで PC・モバイル双方に配線が乗る。
       apiWaitingMerge: !!t.apiWaitingMerge,
+      // apiPaneNote（issue #536）: 'watching' / 'done' / null。GET /api/states とモバイル画面が参照する。
+      apiPaneNote: t.apiPaneNote || null,
       displayTitle: getDisplayTitle(t),
       // collapsed: グリッド化で折り畳み機能を撤去したため常に false（後方互換のためキーは維持）。
       collapsed: false,
@@ -7099,9 +7102,18 @@ VKIpc.on('terminal:request-close-pane', (payload = {}) => {
 // 既存値を保持する）。prMerged と同時に true が来た場合の優先順位は getPrBadgePresentation 側で判定する。
 // フィールド名はワイヤ上（POST /api/set-title の waitingMerge）に合わせている。
 // title / url / prUrl / prMerged / waitingMerge はペアで都度送る置換セマンティクス。
-VKIpc.on('terminal:title', (termId, title, url, prUrl, prMerged, waitingMerge) => {
+// 第7引数 paneNoteUpdate（issue #536）: { provided, value }。'watching' / 'done' / null のときだけ
+// provided: true で届く。送られなかった場合は、title が変わったときだけ消し、変わらなければ保つ
+// （解決ロジックは statusPresentation.js の resolvePaneNote。「完了」は別タスクのタイトルが来るまで残る）。
+VKIpc.on('terminal:title', (termId, title, url, prUrl, prMerged, waitingMerge, paneNoteUpdate) => {
   const paneId = Object.keys(terminals).find(k => terminals[k]?.termId === termId);
   if (!paneId) return;
+  terminals[paneId].apiPaneNote = resolvePaneNote(
+    terminals[paneId].apiPaneNote,
+    paneNoteUpdate,
+    terminals[paneId].apiTitle,
+    title
+  );
   terminals[paneId].apiTitle = title || '';
   // url が string で渡ってきた場合のみ書き換える（旧来の 2 引数呼び出しとの後方互換のため）
   if (typeof url === 'string') {
@@ -7120,6 +7132,8 @@ VKIpc.on('terminal:title', (termId, title, url, prUrl, prMerged, waitingMerge) =
     terminals[paneId].apiWaitingMerge = waitingMerge;
   }
   updatePaneTitle(paneId);
+  // paneNote だけが変わったときも、displayStatus 不変で recomputeStatus は再描画しないため明示的に更新する。
+  updatePaneStatus(paneId);
   recomputeStatus(paneId);
 });
 

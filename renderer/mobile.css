@@ -47,6 +47,9 @@ header .meta { font-size: 11px; color: var(--muted); }
 .dot[data-status="running"] { background: var(--running); box-shadow: 0 0 0 3px rgba(63,185,80,0.18); }
 .dot[data-status="waiting"] { background: var(--waiting); box-shadow: 0 0 0 3px rgba(210,153,34,0.22);
   animation: pulse 1.2s ease-in-out infinite; }
+/* 見守り中・完了（issue #536）。点滅させない。 */
+.dot[data-status="watching"] { background: #58a6ff; box-shadow: 0 0 0 3px rgba(88,166,255,0.18); }
+.dot[data-status="done"] { background: var(--idle); }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.45; } }
 /* 無限ループのパルス（待機・注意喚起）は reduced-motion で停止する（前庭系への配慮 / WCAG 2.3.3）。 */
 @media (prefers-reduced-motion: reduce) {
@@ -70,6 +73,8 @@ a.card-title { color: inherit; text-decoration: none; }
 .badge[data-status="idle"] { background: #2a2f37; color: #8b949e; border-color: rgba(139,148,158,0.26); }
 .badge[data-status="running"] { background: rgba(63,185,80,0.15); color: #6fd58a; border-color: rgba(63,185,80,0.3); }
 .badge[data-status="waiting"] { background: rgba(210,153,34,0.15); color: #d29922; border-color: rgba(210,153,34,0.3); }
+.badge[data-status="watching"] { background: rgba(88,166,255,0.15); color: #58a6ff; border-color: rgba(88,166,255,0.3); }
+.badge[data-status="done"] { background: #2a2f37; color: var(--vktm--color--pr-badge-open); border-color: rgba(139,148,158,0.26); }
 /* PR リンク（issue #53 / #363）。PC 版の [ PR ↗ ] バッジと同じ3状態
  * （open=灰 / awaiting-merge=マージ待ち・青 / merged=マージ済み・紫）を、PC と同じ
  * 語彙（apiPrMerged / apiWaitingMerge）で表示する。ヘッダ帯（暗背景 var(--card) #1d2127）

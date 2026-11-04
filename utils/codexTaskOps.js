@@ -565,12 +565,6 @@ function isSafeGitHubRepo(value) {
   return !['.', '..'].includes(owner) && !owner.startsWith('-') && !['.', '..'].includes(repo) && !repo.startsWith('-');
 }
 
-/**
- * 入口に渡された argv（`git status` など）を検証し、実行する git / gh の argv に組み立て直す。
- * 許可リストに無いものはすべて ok: false（理由つき）。
- * @param {ReadonlyArray<string>} argv 先頭が操作名（git / gh）の引数列
- * @returns {{ok: true, bin: 'git'|'gh', args: string[], needsGitHub: boolean} | {ok: false, error: string}}
- */
 // ファイル入力（--title-file / --body-file）を持つ解析結果に、実行段階で読むための textFiles を付ける（pr create / issue create / issue comment / pr comment 共通）。
 function withTextFiles(parsed, build) {
   if (!parsed.ok) return parsed;
@@ -579,6 +573,12 @@ function withTextFiles(parsed, build) {
   return hasFiles ? { ...built, textFiles: parsed.textFiles } : built;
 }
 
+/**
+ * 入口に渡された argv（`git status` など）を検証し、実行する git / gh の argv に組み立て直す。
+ * 許可リストに無いものはすべて ok: false（理由つき）。
+ * @param {ReadonlyArray<string>} argv 先頭が操作名（git / gh）の引数列
+ * @returns {{ok: true, bin: 'git'|'gh', args: string[], needsGitHub: boolean} | {ok: false, error: string}}
+ */
 function parseTaskCommand(argv) {
   if (!Array.isArray(argv) || argv.some((token) => typeof token !== 'string')) return fail('invalid argument list');
   const [tool, ...rest] = argv;

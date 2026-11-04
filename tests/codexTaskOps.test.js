@@ -3715,6 +3715,25 @@ test('実行: gh issue create は --title-file / --body-file の内容を渡し�
   }
 });
 
+// ファイルの中身が '-' で始まっても、gh のフラグとしては解釈されず値として渡り、対象リポジトリの指定は末尾に付く（issue #519）。
+test('実行: ファイルの中身が - で始まる本文・題は、フラグにならず値として gh へ渡る', () => {
+  const fixture = createMemberFixture();
+  try {
+    writeIo(fixture, 'dash.md', '--repo evil/x\n');
+    let before = fixture.readCalls().length;
+    assert.equal(fixture.runMember(['gh', 'issue', 'comment', '519', '--body-file', 'dash.md']).code, 0);
+    assert.deepEqual(fixture.readCalls()[before].args, ['issue', 'comment', '519', '--body', '--repo evil/x\n', '--repo', 'vektor-inc/vk-terminals']);
+
+    writeIo(fixture, 'title.txt', '--');
+    writeIo(fixture, 'body.md', 'ok body\n');
+    before = fixture.readCalls().length;
+    assert.equal(fixture.runMember(['gh', 'issue', 'create', '--title-file', 'title.txt', '--body-file', 'body.md']).code, 0);
+    assert.deepEqual(fixture.readCalls()[before].args, ['issue', 'create', '--title', '--', '--body', 'ok body\n', '--repo', 'vektor-inc/vk-terminals']);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
 test('拒否: コメント・issue 作成のファイル指定は不正な内容・ファイル・リンク・入出力フォルダ無しのとき、gh を一度も起動しない', () => {
   const fixture = createMemberFixture();
   try {

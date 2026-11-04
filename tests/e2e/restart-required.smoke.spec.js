@@ -55,6 +55,10 @@ test('再起動が必要な設定への案内とキャンセル', async () => {
     await expect(win.locator('#sidebar-restart-required')).toBeHidden({ timeout: 10000 });
     await expect(win.locator('#settings-tab-1')).toBeFocused();
     await expect(win.locator('#settings-panel-1 .settings-restart-notice')).toBeHidden();
+    // 開いた起点の案内が消えても、閉じた後は常設の設定ボタンへ戻す。
+    await win.keyboard.press('Escape');
+    await expect(win.locator('.settings-modal')).toHaveCount(0);
+    await expect(win.locator('#sidebar-settings button')).toBeFocused();
   } finally {
     await closeApp(launched);
   }

@@ -2986,6 +2986,15 @@ function closePane(paneId, { force = false, skipConfirm = false } = {}) {
 // フォーカス移動では変化しない）。二重表示は closeConfirmOpen で防ぐ。
 let closeConfirmOpen = false;
 
+// 更新で非表示・無効になった起点へ戻すと、フォーカスが失われるため復帰前に確認する。
+function canRestoreModalFocus(element) {
+  if (!element?.isConnected || typeof element.focus !== 'function') return false;
+  if (element.closest('[hidden], [inert]') || element.matches(':disabled')) return false;
+  if (element.getClientRects().length === 0) return false;
+  const visibility = getComputedStyle(element).visibility;
+  return visibility !== 'hidden' && visibility !== 'collapse';
+}
+
 function openCloseConfirmDialog(paneId) {
   if (closeConfirmOpen) return;
   // URL にホバーしたままマウスを動かさず Tab で「✕」まで来て Enter で確定する経路では
@@ -3051,7 +3060,7 @@ function openCloseConfirmDialog(paneId) {
     const shouldRestore = !active || active === document.body || overlay.contains(active);
     overlay.remove();
     closeConfirmOpen = false;
-    if (shouldRestore && restoreFocusElement?.isConnected) restoreFocusElement.focus();
+    if (shouldRestore && canRestoreModalFocus(restoreFocusElement)) restoreFocusElement.focus();
   };
   unregisterEscapeLayer = escapeLayers.register(cleanup);
 
@@ -3129,7 +3138,7 @@ function openReissueTokenConfirmDialog(onConfirm) {
     const shouldRestore = !active || active === document.body || overlay.contains(active);
     overlay.remove();
     reissueTokenConfirmOpen = false;
-    if (shouldRestore && restoreFocusElement?.isConnected) restoreFocusElement.focus();
+    if (shouldRestore && canRestoreModalFocus(restoreFocusElement)) restoreFocusElement.focus();
   };
   unregisterEscapeLayer = escapeLayers.register(cleanup);
 
@@ -3199,7 +3208,7 @@ function openApplyContentTableConfirmDialog(message, onConfirm) {
     const shouldRestore = !active || active === document.body || overlay.contains(active);
     overlay.remove();
     contentTableApplyConfirmOpen = false;
-    if (shouldRestore && restoreFocusElement?.isConnected) restoreFocusElement.focus();
+    if (shouldRestore && canRestoreModalFocus(restoreFocusElement)) restoreFocusElement.focus();
   };
   unregisterEscapeLayer = escapeLayers.register(cleanup);
 
@@ -5438,7 +5447,9 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
   const modal = overlay.querySelector('.settings-modal');
   if (restartTabId) {
     const index = settingsTabs.findIndex((tab) => tab.id === restartTabId);
-    modal.setAttribute('aria-describedby', `settings-tab-${index} settings-restart-${restartTabId}`);
+    if (index >= 0) {
+      modal.setAttribute('aria-describedby', `settings-tab-${index} settings-restart-${restartTabId}`);
+    }
   }
   modal.querySelectorAll('.settings-restart-button').forEach((button) => {
     button.addEventListener('click', () => VKIpc.invoke('app:restart').catch((error) => console.error('再起動の要求に失敗しました', error)));
@@ -5503,9 +5514,9 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
     overlay.remove();
     release();
     if (shouldRestore) {
-      (restoreFocusElement?.isConnected
+      (canRestoreModalFocus(restoreFocusElement)
         ? restoreFocusElement
-        : document.getElementById('settings-btn'))?.focus();
+        : document.querySelector('#sidebar-settings button'))?.focus();
     }
   };
   // ここから後の例外では、close に overlay・キー操作・各タイマーをまとめて片付けさせる。

@@ -28,6 +28,7 @@
 //   - 空白・改行を含む PR のタイトル・本文は、引用符なしの単独コマンドでは引数として渡せない（引用符を付けるとサンドボックス内の実行とみなされて止まる）。
 //     そのため `gh pr create` / `gh pr edit` は `--title-file <名前>` / `--body-file <名前>` で、同じ入出力フォルダ直下のファイルから読む（issue #477）。
 //     parse 段階はファイル名の形だけを検査し、読み込みと内容の検査（UTF-8・制御文字・サイズ）は実行段階で gh を起動する前に行う。読んだ値はシェルを通さず argv で渡す。
+//     同じ形を `gh issue comment` / `gh pr comment`（--body-file）と `gh issue create`（--title-file / --body-file）にも広げた（issue #519。読み込みと検査は同じ処理）。
 const nodeFs = require('fs');
 const crypto = require('crypto');
 const path = require('path');
@@ -244,9 +245,11 @@ function parseGhView(tokens, { allowedBooleanFlags, numberRequired }) {
   return { ok: true, number, args };
 }
 
+// `gh issue comment` / `gh pr comment <番号>` は `--body <値>` か `--body-file <名前>`（入出力フォルダ直下のファイル名）のどちらか 1 つ（issue #519）。
 function parseGhComment(tokens) {
   let number;
   let body;
+  let bodyFile;
   for (let i = 0; i < tokens.length; i += 1) {
     const token = tokens[i];
     if (hasUnsafeCharacter(token)) return fail('invalid argument');
@@ -256,11 +259,17 @@ function parseGhComment(tokens) {
       i += 1;
     } else if (token.startsWith('--body=') && body === undefined && token.slice('--body='.length).trim() !== '') {
       body = token.slice('--body='.length);
+    } else if ((token === '--body-file' || token.startsWith('--body-file=')) && bodyFile === undefined) {
+      const value = token === '--body-file' ? tokens[i + 1] : token.slice('--body-file='.length);
+      if (token === '--body-file') i += 1;
+      if (!isSafeMemberFileName(value)) return fail('--body-file must be a plain file name in the member input/output folder');
+      bodyFile = value;
     } else if (!token.startsWith('-') && number === undefined && DIGITS_PATTERN.test(token)) number = token;
     else return fail(`argument not allowed: ${JSON.stringify(token)}`);
   }
-  if (number === undefined || body === undefined) return fail('number and body required');
-  return { ok: true, number, args: ['--body', body] };
+  if (body !== undefined && bodyFile !== undefined) return fail('--body and --body-file cannot be used together');
+  if (number === undefined || (body === undefined && bodyFile === undefined)) return fail('number and body (or --body-file) required');
+  return { ok: true, number, args: body === undefined ? [] : ['--body', body], textFiles: { body: bodyFile } };
 }
 
 // PR 作成は head を必ず明示させる（省略すると gh が現在のブランチを push しようとするため）。
@@ -360,10 +369,13 @@ function isSafeLabelName(value) {
 }
 
 // issue 作成は --title / --body を必須にし、--assignee / --label（複数可）だけを任意で受ける。
-// --repo・--body-file・--web・--editor・--template・--project・--milestone などは許可リストに無いので拒否される。
+// --title-file / --body-file は入出力フォルダ直下のファイル名（issue #519）。--title と --title-file、--body と --body-file は併用できない。
+// --repo・--web・--editor・--template・--project・--milestone などは許可リストに無いので拒否される。
 function parseGhIssueCreate(tokens) {
   let title;
   let body;
+  let titleFile;
+  let bodyFile;
   const assignees = [];
   const labels = [];
   for (let i = 0; i < tokens.length; i += 1) {
@@ -377,7 +389,15 @@ function parseGhIssueCreate(tokens) {
       i += 1;
       return value;
     };
-    if ((name === '--title' || name === '-t') && title === undefined) title = readValue();
+    if (name === '--title-file' && titleFile === undefined) {
+      const value = readValue();
+      if (!isSafeMemberFileName(value)) return fail('--title-file must be a plain file name in the member input/output folder');
+      titleFile = value;
+    } else if (name === '--body-file' && bodyFile === undefined) {
+      const value = readValue();
+      if (!isSafeMemberFileName(value)) return fail('--body-file must be a plain file name in the member input/output folder');
+      bodyFile = value;
+    } else if ((name === '--title' || name === '-t') && title === undefined) title = readValue();
     else if ((name === '--body' || name === '-b') && body === undefined) body = readValue();
     else if (name === '--assignee' || name === '-a') {
       const value = readValue();
@@ -391,11 +411,16 @@ function parseGhIssueCreate(tokens) {
     if ((name === '--title' || name === '-t') && hasUnsafeCharacter(title)) return fail('invalid argument');
     if ((name === '--body' || name === '-b') && hasUnsafeCharacter(body)) return fail('invalid argument');
   }
-  if (title === undefined || body === undefined || title.trim() === '' || body.trim() === '') return fail('--title and --body are required');
-  const args = ['--title', title, '--body', body];
+  if (title !== undefined && titleFile !== undefined) return fail('--title and --title-file cannot be used together');
+  if (body !== undefined && bodyFile !== undefined) return fail('--body and --body-file cannot be used together');
+  if ((title === undefined && titleFile === undefined) || (body === undefined && bodyFile === undefined)) return fail('--title (or --title-file) and --body (or --body-file) are required');
+  if ((title !== undefined && title.trim() === '') || (body !== undefined && body.trim() === '')) return fail('--title and --body are required');
+  const args = [];
+  if (title !== undefined) args.push('--title', title);
+  if (body !== undefined) args.push('--body', body);
   for (const assignee of assignees) args.push('--assignee', assignee);
   for (const label of labels) args.push('--label', label);
-  return { ok: true, args };
+  return { ok: true, args, textFiles: { title: titleFile, body: bodyFile } };
 }
 
 // ラベル操作は `gh label exists|create agent-review-passed` と `gh pr add-label|has-label <PR番号> agent-review-passed` の形だけ。
@@ -546,6 +571,14 @@ function isSafeGitHubRepo(value) {
  * @param {ReadonlyArray<string>} argv 先頭が操作名（git / gh）の引数列
  * @returns {{ok: true, bin: 'git'|'gh', args: string[], needsGitHub: boolean} | {ok: false, error: string}}
  */
+// ファイル入力（--title-file / --body-file）を持つ解析結果に、実行段階で読むための textFiles を付ける（pr create / issue create / issue comment / pr comment 共通）。
+function withTextFiles(parsed, build) {
+  if (!parsed.ok) return parsed;
+  const built = build(parsed);
+  const hasFiles = parsed.textFiles.title !== undefined || parsed.textFiles.body !== undefined;
+  return hasFiles ? { ...built, textFiles: parsed.textFiles } : built;
+}
+
 function parseTaskCommand(argv) {
   if (!Array.isArray(argv) || argv.some((token) => typeof token !== 'string')) return fail('invalid argument list');
   const [tool, ...rest] = argv;
@@ -590,12 +623,10 @@ function parseTaskCommand(argv) {
       return parsed.ok ? command(['issue', 'view', parsed.number], parsed.args) : parsed;
     }
     if (group === 'issue' && action === 'comment') {
-      const parsed = parseGhComment(tokens);
-      return parsed.ok ? command(['issue', 'comment', parsed.number], parsed.args) : parsed;
+      return withTextFiles(parseGhComment(tokens), (parsed) => command(['issue', 'comment', parsed.number], parsed.args));
     }
     if (group === 'issue' && action === 'create') {
-      const parsed = parseGhIssueCreate(tokens);
-      return parsed.ok ? command(['issue', 'create'], parsed.args) : parsed;
+      return withTextFiles(parseGhIssueCreate(tokens), (parsed) => command(['issue', 'create'], parsed.args));
     }
     if (group === 'issue' && action === 'edit') {
       // 操作対象は起動時に固定したリポジトリだけ。別リポジトリの明示は受けない。
@@ -611,14 +642,10 @@ function parseTaskCommand(argv) {
       return parsed.ok ? command(['pr', 'checks', parsed.number], parsed.args) : parsed;
     }
     if (group === 'pr' && action === 'comment') {
-      const parsed = parseGhComment(tokens);
-      return parsed.ok ? command(['pr', 'comment', parsed.number], parsed.args) : parsed;
+      return withTextFiles(parseGhComment(tokens), (parsed) => command(['pr', 'comment', parsed.number], parsed.args));
     }
     if (group === 'pr' && action === 'create') {
-      const parsed = parseGhPrCreate(tokens);
-      if (!parsed.ok) return parsed;
-      const hasFiles = parsed.textFiles.title !== undefined || parsed.textFiles.body !== undefined;
-      return { ...command(['pr', 'create'], parsed.args), ...(hasFiles ? { textFiles: parsed.textFiles } : {}) };
+      return withTextFiles(parseGhPrCreate(tokens), (parsed) => command(['pr', 'create'], parsed.args));
     }
     if (group === 'pr' && action === 'edit') {
       // 操作対象は起動時に固定したリポジトリだけ。別リポジトリの明示は受けない。
@@ -2459,10 +2486,13 @@ function runTaskCommand(argv, deps = {}) {
   const bin = parsed.bin === 'gh' ? binding.gh : binding.git;
   let ghArgs = parsed.args;
   if (parsed.textFiles !== undefined) {
-    // gh pr create の --title-file / --body-file。読み込みと検査はここ（gh を起動する前）で行い、読んだ値を --title / --body の argv として渡す。
+    // gh pr create / issue create / issue comment / pr comment の --title-file / --body-file。読み込みと検査はここ（gh を起動する前）で行い、読んだ値を --title / --body の argv として渡す。
     try {
       const texts = readPrTextFiles(parsed.textFiles, { binding, fsImpl, deps });
-      ghArgs = [...parsed.args.slice(0, 2), ...(texts.title === undefined ? [] : ['--title', texts.title]), ...(texts.body === undefined ? [] : ['--body', texts.body]), ...parsed.args.slice(2)];
+      // 読んだ値は、gh のサブコマンド部分（pr create / issue comment 7 など。'-' で始まらない語）の直後に差し込む。
+      const flagStart = parsed.args.findIndex((token) => token.startsWith('-'));
+      const at = flagStart === -1 ? parsed.args.length : flagStart;
+      ghArgs = [...parsed.args.slice(0, at), ...(texts.title === undefined ? [] : ['--title', texts.title]), ...(texts.body === undefined ? [] : ['--body', texts.body]), ...parsed.args.slice(at)];
     } catch (error) {
       return reject(`task command rejected: ${error instanceof TrustError ? error.message : 'title/body file could not be verified'}`);
     }

@@ -165,7 +165,7 @@ test('拒否: gh のリポジトリ指定・ファイル読み込み・ブラウ
     ['gh', 'pr', 'view', 'feature-branch'],
     ['gh', 'pr', 'view', '--web'],
     ['gh', 'pr', 'checks', '--watch'],
-    ['gh', 'pr', 'comment', '1', '--body-file', 'x'],
+    ['gh', 'pr', 'comment', '1', '--body-file', '../x'],
     ['gh', 'pr', 'create', '--title', 't', '--body', 'b'],
     ['gh', 'pr', 'create', '--fill'],
     ['gh', 'pr', 'create', '--title', 't', '--body', 'b', '--head', 'owner:branch'],
@@ -3625,6 +3625,161 @@ test('拒否: 入出力フォルダが無い入口（子用）と、リンクに
     assert.equal(linked.readCalls().length, 0);
   } finally {
     linked.cleanup();
+  }
+});
+
+// issue #519: gh issue comment / gh pr comment の --body-file と gh issue create の --title-file / --body-file。
+test('許可: gh issue comment / gh pr comment は --body-file、gh issue create は --title-file / --body-file を受け、直接指定も残る', () => {
+  for (const group of ['issue', 'pr']) {
+    const file = parseTaskCommand(['gh', group, 'comment', '7', '--body-file', 'body.md']);
+    assert.deepEqual(file, { ok: true, bin: 'gh', args: [group, 'comment', '7'], needsGitHub: true, textFiles: { body: 'body.md' } });
+    assert.equal(parseTaskCommand(['gh', group, 'comment', '7', '--body-file=body.md']).ok, true);
+    // 従来の --body は textFiles を持たない形のまま。
+    assert.deepEqual(parseTaskCommand(['gh', group, 'comment', '7', '--body', 'x']), { ok: true, bin: 'gh', args: [group, 'comment', '7', '--body', 'x'], needsGitHub: true });
+  }
+  const create = parseTaskCommand(['gh', 'issue', 'create', '--title-file', 't.txt', '--body-file', 'b.md', '--assignee', 'kurudrive', '--label', 'bug']);
+  assert.deepEqual(create, { ok: true, bin: 'gh', args: ['issue', 'create', '--assignee', 'kurudrive', '--label', 'bug'], needsGitHub: true, textFiles: { title: 't.txt', body: 'b.md' } });
+  assert.equal(parseTaskCommand(['gh', 'issue', 'create', '--title', 't', '--body-file', 'b.md']).ok, true);
+  assert.equal(parseTaskCommand(['gh', 'issue', 'create', '--title-file=t.txt', '--body', 'b']).ok, true);
+});
+
+test('拒否: コメント・issue 作成のファイル指定の形（併用・どちらも無し・フォルダ外のパス・未許可フラグ）は parse 段階で拒否する', () => {
+  const bad = ['/etc/passwd', '../x', './x', 'a/b', '.hidden', '', '..', '~/x', 'a\u0000b', 'a\nb'];
+  for (const group of ['issue', 'pr']) {
+    for (const name of bad) assert.equal(parseTaskCommand(['gh', group, 'comment', '7', '--body-file', name]).ok, false, `${group} ${JSON.stringify(name)}`);
+    for (const command of [
+      ['gh', group, 'comment', '7', '--body', 'x', '--body-file', 'a'],
+      ['gh', group, 'comment', '7', '--body-file', 'a', '--body', 'x'],
+      ['gh', group, 'comment', '7', '--body-file', 'a', '--body-file', 'b'],
+      ['gh', group, 'comment', '7', '--body-file'],
+      ['gh', group, 'comment', '--body-file', 'a'],
+      ['gh', group, 'comment', '7'],
+      ['gh', group, 'comment', '7', '--body-file', 'a', '--editor'],
+      ['gh', group, 'comment', '7', '--body-file', 'a', '--repo', 'o/r'],
+      ['gh', group, 'comment', '7', '-F', 'a'],
+    ]) assert.equal(parseTaskCommand(command).ok, false, JSON.stringify(command));
+  }
+  for (const name of bad) {
+    assert.equal(parseTaskCommand(['gh', 'issue', 'create', '--title-file', name, '--body', 'b']).ok, false, `title ${JSON.stringify(name)}`);
+    assert.equal(parseTaskCommand(['gh', 'issue', 'create', '--title', 't', '--body-file', name]).ok, false, `body ${JSON.stringify(name)}`);
+  }
+  for (const command of [
+    ['gh', 'issue', 'create', '--title', 't', '--title-file', 'a', '--body', 'b'],
+    ['gh', 'issue', 'create', '--title', 't', '--body', 'b', '--body-file', 'a'],
+    ['gh', 'issue', 'create', '--title-file', 'a'],
+    ['gh', 'issue', 'create', '--body-file', 'a'],
+    ['gh', 'issue', 'create', '--title-file', 'a', '--title-file', 'b', '--body-file', 'c'],
+    ['gh', 'issue', 'create', '--title-file', 'a', '--body-file', 'b', '--web'],
+    ['gh', 'issue', 'create', '--title-file', 'a', '--body-file', 'b', '--repo', 'o/r'],
+    ['gh', 'issue', 'create', '--title-file', 'a', '--body-file', 'b', '--assignee', 'bad name'],
+    ['gh', 'issue', 'create', '--title-file', 'a', '--body-file', 'b', '--label', '-evil'],
+  ]) assert.equal(parseTaskCommand(command).ok, false, JSON.stringify(command));
+});
+
+test('実行: gh issue comment / gh pr comment は --body-file の複数行本文を、そのまま gh の argv の値として渡す', () => {
+  const fixture = createMemberFixture();
+  try {
+    writeIo(fixture, 'body.md', PR_BODY);
+    for (const group of ['issue', 'pr']) {
+      const before = fixture.readCalls().length;
+      const result = fixture.runMember(['gh', group, 'comment', '519', '--body-file', 'body.md']);
+      assert.equal(result.code, 0, result.messages.join(''));
+      assert.deepEqual(fixture.readCalls()[before].args, [group, 'comment', '519', '--body', PR_BODY, '--repo', 'vektor-inc/vk-terminals']);
+    }
+    // 先頭の BOM は除かれ、別リポジトリの明示でも入出力フォルダから読める。
+    writeIo(fixture, 'bom.md', '﻿一行目\n二行目\n');
+    const before = fixture.readCalls().length;
+    assert.equal(fixture.runMember(['gh', 'vektor-inc/other-repo', 'issue', 'comment', '3', '--body-file', 'bom.md']).code, 0);
+    assert.deepEqual(fixture.readCalls()[before].args, ['issue', 'comment', '3', '--body', '一行目\n二行目\n', '--repo', 'vektor-inc/other-repo']);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('実行: gh issue create は --title-file / --body-file の内容を渡し、--assignee と --label は従来どおり付く', () => {
+  const fixture = createMemberFixture();
+  try {
+    writeIo(fixture, 'title.txt', PR_TITLE + '\n');
+    writeIo(fixture, 'body.md', PR_BODY);
+    let before = fixture.readCalls().length;
+    const result = fixture.runMember(['gh', 'issue', 'create', '--title-file', 'title.txt', '--body-file', 'body.md', '--assignee', 'kurudrive', '--label', 'bug', '--label', 'working']);
+    assert.equal(result.code, 0, result.messages.join(''));
+    assert.deepEqual(fixture.readCalls()[before].args, ['issue', 'create', '--title', PR_TITLE, '--body', PR_BODY, '--assignee', 'kurudrive', '--label', 'bug', '--label', 'working', '--repo', 'vektor-inc/vk-terminals']);
+
+    // 直接指定との混在（title は直接、body はファイル）。
+    before = fixture.readCalls().length;
+    assert.equal(fixture.runMember(['gh', 'issue', 'create', '--title', 'plain', '--body-file', 'body.md']).code, 0);
+    assert.deepEqual(fixture.readCalls()[before].args, ['issue', 'create', '--body', PR_BODY, '--title', 'plain', '--repo', 'vektor-inc/vk-terminals']);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('拒否: コメント・issue 作成のファイル指定は不正な内容・ファイル・リンク・入出力フォルダ無しのとき、gh を一度も起動しない', () => {
+  const fixture = createMemberFixture();
+  try {
+    const commands = {
+      'issue comment': (name) => ['gh', 'issue', 'comment', '5', '--body-file', name],
+      'pr comment': (name) => ['gh', 'pr', 'comment', '5', '--body-file', name],
+      'issue create body': (name) => ['gh', 'issue', 'create', '--title', 't', '--body-file', name],
+    };
+    const contents = [
+      { label: 'ファイル無し', missing: true, message: /does not exist/ },
+      { label: '空', content: '', message: /empty or too large/ },
+      { label: '空白だけ', content: ' \n\t\n', message: /blank/ },
+      { label: 'NUL', content: 'a\u0000b', message: /control characters/ },
+      { label: 'ESC', content: 'a\u001b[31mb', message: /control characters/ },
+      { label: '不正な UTF-8', content: Buffer.from([0xc3, 0x28]), message: /not valid UTF-8/ },
+      { label: '256 KiB 超', content: Buffer.alloc(256 * 1024 + 1, 'a'), message: /empty or too large/ },
+      { label: '65536 文字超', content: 'a'.repeat(65537), message: /longer than 65536/ },
+      { label: 'シンボリックリンク', link: true, message: /not a plain file/ },
+    ];
+    for (const [kind, build] of Object.entries(commands)) {
+      for (const { label, content = 'x', missing, link, message } of contents) {
+        for (const n of ['body.md', 'real.txt']) fs.rmSync(path.join(fixture.io, n), { force: true });
+        if (link) {
+          writeIo(fixture, 'real.txt', 'x');
+          fs.symlinkSync(path.join(fixture.io, 'real.txt'), path.join(fixture.io, 'body.md'));
+        } else if (!missing) writeIo(fixture, 'body.md', content);
+        const result = fixture.runMember(build('body.md'));
+        assert.equal(result.code, 2, `${kind}: ${label}`);
+        assert.match(result.messages.join(''), message, `${kind}: ${label}`);
+      }
+    }
+    // issue create のタイトルファイル（複数行・制御文字・長さ）。
+    writeIo(fixture, 'body.md', 'ok\n');
+    for (const [label, title, message] of [['複数行', 'a\nb', /single line/], ['制御文字', 'a\u0007b', /single line/], ['256 文字超', 'あ'.repeat(257), /longer than 256/], ['空', '\n', /blank/]]) {
+      writeIo(fixture, 'title.txt', title);
+      const result = fixture.runMember(['gh', 'issue', 'create', '--title-file', 'title.txt', '--body-file', 'body.md']);
+      assert.equal(result.code, 2, label);
+      assert.match(result.messages.join(''), message, label);
+    }
+    // フォルダ外・絶対パス・`../` は parse 段階で拒否。
+    for (const name of ['/etc/passwd', '../body.md', 'sub/body.md']) {
+      for (const build of Object.values(commands)) assert.equal(fixture.runMember(build(name)).code, 2, name);
+    }
+    assert.equal(fixture.readCalls().length, 0, 'gh が起動された');
+  } finally {
+    fixture.cleanup();
+  }
+
+  const noMember = createMemberFixture({ withMember: false });
+  try {
+    for (const command of [
+      ['gh', 'issue', 'comment', '5', '--body-file', 'body.md'],
+      ['gh', 'pr', 'comment', '5', '--body-file', 'body.md'],
+      ['gh', 'issue', 'create', '--title-file', 'title.txt', '--body-file', 'body.md'],
+    ]) {
+      const result = noMember.runMember(command);
+      assert.equal(result.code, 2, JSON.stringify(command));
+      assert.match(result.messages.join(''), /need the member input\/output folder/);
+    }
+    assert.equal(noMember.readCalls().length, 0);
+    // 直接指定は従来どおり使える。
+    assert.equal(noMember.runMember(['gh', 'issue', 'comment', '5', '--body', 'x']).code, 0);
+    assert.equal(noMember.readCalls().length, 1);
+  } finally {
+    noMember.cleanup();
   }
 });
 

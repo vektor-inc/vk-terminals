@@ -8,6 +8,8 @@ const {
   createConditionalTerminalInputGuard,
   mergeConditionalScreenIdentifiers,
   validateConditionalEnterRequest,
+  createSilentWriteRefresher,
+  SILENT_WRITE_QUIET_MS,
 } = require('../utils/conditionalTerminalInput');
 
 function setup() {
@@ -156,4 +158,144 @@ test('main は PTY 入出力を識別値へ反映し、条件付き Enter を専
   assert.match(source, /mergeConditionalScreenIdentifiers\([\s\S]*reportedScreenSnapshots/);
   assert.match(rendererSource, /VKIpc\.on\('terminal:data', \(id, data, screenSnapshot\)/);
   assert.match(rendererSource, /lastLines: t\.lastLines,[\s\S]*screenIdentifier: t\.screenIdentifier/);
+});
+
+test('issue #517: 画面出力の無い PTY 書き込みの後、states の識別値は「最新ではない」と分かる形で返す', () => {
+  const context = setup();
+  const snapshot = context.guard.capture('1', 4);
+  const states = {
+    pane1: { termId: '1', agentGeneration: 4, lastLines: 'screen', screenIdentifier: snapshot.screenIdentifier, screenIdentifierGeneration: 4 },
+  };
+  const snapshots = new Map([['1', snapshot]]);
+  // 最新の間は識別値をそのまま返し、stale 印は付けない。
+  assert.deepEqual(mergeConditionalScreenIdentifiers(states, snapshots, context.guard).pane1, {
+    termId: '1', agentGeneration: 4, lastLines: 'screen', screenIdentifier: snapshot.screenIdentifier,
+  });
+  // 端末問い合わせへの自動応答など、出力を伴わない書き込みで番号だけ進む。
+  context.guard.markChanged('1');
+  const merged = mergeConditionalScreenIdentifiers(states, snapshots, context.guard).pane1;
+  assert.equal(merged.screenIdentifier, null);
+  assert.equal(merged.screenIdentifierStale, true);
+  // 古い識別値での Enter は引き続き拒否される（安全側の意図は維持）。
+  assert.equal(context.guard.writeEnter(request(snapshot), context.dependencies).reason, 'screen-changed');
+  // 新しい出力で再採取されれば、再び識別値が返り、Enter も通る。
+  const fresh = context.guard.capture('1', 4);
+  const refreshed = mergeConditionalScreenIdentifiers(
+    { pane1: { ...states.pane1, screenIdentifier: fresh.screenIdentifier } },
+    new Map([['1', fresh]]),
+    context.guard
+  ).pane1;
+  assert.equal(refreshed.screenIdentifier, fresh.screenIdentifier);
+  assert.equal('screenIdentifierStale' in refreshed, false);
+  assert.equal(context.guard.writeEnter(request(fresh), context.dependencies).ok, true);
+});
+
+test('issue #517: main は /api/states と状態ファイルの識別値をガードの現在番号で照合する', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+  const calls = source.match(/mergeConditionalScreenIdentifiers\([\s\S]*?reportedScreenSnapshots,\s*conditionalTerminalInput\s*\)/g) || [];
+  assert.equal(calls.length, 2);
+});
+
+// ─── issue #517 差し戻し: 出力の無い書き込みの後、静止時間が過ぎたら識別値を採り直す ──────
+function refresherSetup() {
+  const context = setup();
+  const timers = [];
+  const sent = [];
+  const refresher = createSilentWriteRefresher({
+    guard: context.guard,
+    quietMs: SILENT_WRITE_QUIET_MS,
+    getGeneration: (id) => context.generations.get(id),
+    send: (id, snapshot) => sent.push({ id, snapshot }),
+    setTimer: (fn, ms) => { const t = { fn, ms, cleared: false }; timers.push(t); return t; },
+    clearTimer: (t) => { t.cleared = true; },
+  });
+  const fire = () => timers.filter((t) => !t.cleared).forEach((t) => { t.cleared = true; t.fn(); });
+  return { ...context, refresher, timers, sent, fire };
+}
+
+test('issue #517: 出力の無い書き込みの後、静止時間が過ぎると識別値を採り直して送り、条件付き Enter が通る', () => {
+  const c = refresherSetup();
+  const stale = c.guard.capture('1', 4);
+  c.guard.markChanged('1');
+  c.refresher.noteWrite('1');
+  assert.equal(c.timers[0].ms, SILENT_WRITE_QUIET_MS);
+  // 静止時間の前は何も送らない（従来どおり stale）。
+  assert.equal(c.sent.length, 0);
+  assert.equal(c.guard.writeEnter(request(stale), c.dependencies).reason, 'screen-changed');
+  c.fire();
+  assert.equal(c.sent.length, 1);
+  assert.equal(c.sent[0].id, '1');
+  assert.equal(c.sent[0].snapshot.agentGeneration, 4);
+  assert.notEqual(c.sent[0].snapshot.screenIdentifier, stale.screenIdentifier);
+  assert.equal(c.guard.isCurrent('1', c.sent[0].snapshot), true);
+  assert.equal(c.guard.writeEnter(request(c.sent[0].snapshot), c.dependencies).ok, true);
+});
+
+test('issue #517: 静止時間内に出力が届いた場合は採り直さず、書き込みが続く間は期限を延ばす', () => {
+  const c = refresherSetup();
+  c.guard.markChanged('1');
+  c.refresher.noteWrite('1');
+  const first = c.timers[0];
+  // 出力が届いたら取り消す（画面は onData 側の識別値で更新される）。
+  c.refresher.noteOutput('1');
+  assert.equal(first.cleared, true);
+  c.fire();
+  assert.equal(c.sent.length, 0);
+  // 続けて書き込みがあれば前のタイマーを捨てて静止時間を数え直す。
+  c.refresher.noteWrite('1');
+  c.refresher.noteWrite('1');
+  assert.equal(c.timers[1].cleared, true);
+  c.fire();
+  assert.equal(c.sent.length, 1);
+});
+
+test('issue #517: 採り直した後に再び書き込みや出力があれば、その識別値では Enter が通らない', () => {
+  const c = refresherSetup();
+  c.guard.markChanged('1');
+  c.refresher.noteWrite('1');
+  c.fire();
+  const refreshed = c.sent[0].snapshot;
+  c.guard.markChanged('1');
+  assert.equal(c.guard.writeEnter(request(refreshed), c.dependencies).reason, 'screen-changed');
+});
+
+test('issue #517: ペイン削除後・世代不明のときは何も送らない', () => {
+  const c = refresherSetup();
+  c.refresher.noteWrite('1');
+  c.refresher.delete('1');
+  c.fire();
+  assert.equal(c.sent.length, 0);
+  c.guard.delete('1');
+  c.refresher.noteWrite('1');
+  c.fire();
+  assert.equal(c.sent.length, 0);
+});
+
+test('issue #517: main は書き込み・リサイズで採り直しを予約し、出力で取り消し、renderer へ送る', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+  const rendererSource = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'app.js'), 'utf8');
+  assert.match(source, /ptyProcess\.write = \(data\) => \{\s*conditionalTerminalInput\.markChanged\(id\);[\s\S]*?silentWriteRefresher\.noteOutput\(id\);\s*return writeToPty\(data\)/);
+  assert.match(source, /conditionalTerminalInput\.markChanged\(id\);\s*silentWriteRefresher\.noteWrite\(id\);\s*try \{ p\.resize/);
+  assert.match(source, /silentWriteRefresher\.noteOutput\(id\)/);
+  assert.match(source, /'terminal:screen-refresh'/);
+  assert.match(rendererSource, /VKIpc\.on\('terminal:screen-refresh'/);
+  assert.match(fs.readFileSync(path.join(__dirname, '..', 'preload.js'), 'utf8'), /'terminal:screen-refresh'/);
+});
+
+test('issue #517: ラッパー経由の書き込み（利用者入力・API・Enter）では採り直しを予約せず、端末の制御応答だけの terminal:input で予約し直す', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+  const wrapper = source.match(/ptyProcess\.write = \(data\) => \{[\s\S]*?\n  \};/)[0];
+  assert.doesNotMatch(wrapper, /noteWrite/);
+  const handler = source.match(/ipcMain\.on\('terminal:input'[\s\S]*?\n\}\);/)[0];
+  assert.match(handler, /p\.write\(data\);(?:\s*\/\/[^\n]*)*\s*if \(isTerminalQueryReplyOnly\(data\)\) silentWriteRefresher\.noteWrite\(id\);/);
+});
+
+test('issue #517: 端末の自動応答は利用者入力ではなく、キー入力・Enter・矢印は利用者入力と判定される', () => {
+  const { containsUserTerminalInput } = require('../utils/terminalUserInput');
+  for (const auto of ['\x1b[?1;2c', '\x1b[0n', '\x1b[12;40R', '\x1b[I', '\x1b[O', '\x1b[?2004;2$y']) {
+    assert.equal(containsUserTerminalInput(auto), false, JSON.stringify(auto));
+  }
+  for (const user of ['\r', 'a', '\x1b[B', '\x1b[A']) {
+    assert.equal(containsUserTerminalInput(user), true, JSON.stringify(user));
+  }
 });

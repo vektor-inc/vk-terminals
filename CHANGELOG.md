@@ -1,6 +1,8 @@
 # Changelog
 
 - [ 機能追加 ] 自動処理用 Codex の固定入口で、issue・PR へのコメントと issue 作成の本文を、専用入出力フォルダ内のファイルから渡せるように（[#519](https://github.com/vektor-inc/vk-terminals/issues/519)）
+- [ 不具合修正 ] 自動処理で Codex を起動したとき、「Folder access」画面（Open restricted / Quit の選択）に説明文が増えた新しい表示だと、自動で Enter が送られず止まる不具合を修正（[#517](https://github.com/vektor-inc/vk-terminals/issues/517)）
+- [ 不具合修正 ] 画面出力を伴わない入力（端末の問い合わせへの自動応答など）の後、自動処理から送る条件付き Enter が受け付けられなくなり、作業が止まる不具合を修正（[#517](https://github.com/vektor-inc/vk-terminals/issues/517)）
 
 ## 1.86.0
 

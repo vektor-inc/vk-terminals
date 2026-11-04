@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 開発環境 ] Codex 版の issue 対応手順が使う Git / GitHub 操作と、固定入口の許可操作の食い違いを検出する自動テストを追加（[#523](https://github.com/vektor-inc/vk-terminals/issues/523)）
+
 ## 1.88.0
 
 - [ 機能追加 ] 自動処理用 Codex の固定入口で、issue 本文の更新（`--body-file`）・close・ラベルの削除ができるように（[#522](https://github.com/vektor-inc/vk-terminals/issues/522)）

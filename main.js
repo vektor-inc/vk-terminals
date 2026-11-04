@@ -229,6 +229,7 @@ let nextClosePaneRequestId = 1;
 // ─── Terminal state & HTTP API ───────────────────────────────────────────────
 const DATA_DIR = path.join(os.homedir(), '.vk-terminals');
 const { readRestartRequired } = require('./utils/restartRequired');
+const { createRestartApplication } = require('./utils/restartApplication');
 // 組み込み用の入口（embedded.js）から起動されたときだけ値が入る。electron . では null。
 const EMBEDDED_OPTIONS = getEmbeddedOptions();
 // セットアップ状況の一覧を出すための部品（issue #456）。組み込みのオプションに無ければ null で、
@@ -1291,24 +1292,6 @@ async function cleanupPtys() {
   await agentLifecycles.close();
 }
 
-/** 既存の PTY 終了待ちを再起動の両経路で共用する。 */
-async function restartApplication() {
-  // before-quit や二重押下が先行した場合はその終了処理に任せる。
-  if (ptyShutdownGate.state !== 'idle') return false;
-  ptyShutdownGate.markShuttingDown();
-  try {
-    await cleanupPtys();
-  } finally {
-    try {
-      app.relaunch();
-    } catch (e) {
-      console.error(`${LOG_PREFIX} app.relaunch() failed`, e);
-    }
-    app.exit(0);
-  }
-  return true;
-}
-
 /**
  * 起動時に新バージョンがあるか確認し、あれば git pull して再起動を促す
  */
@@ -1566,6 +1549,7 @@ app.on('window-all-closed', () => {
 // 状態機械で管理することで、cleanupPtys() 完了後に自分で呼ぶ app.quit() が
 // before-quit を再度発火させても無限ループにならないようにしている。
 const ptyShutdownGate = createPtyShutdownGate();
+const restartApplication = createRestartApplication({ gate: ptyShutdownGate, cleanupPtys, app, log: console });
 
 function finalizeBeforeQuit() {
   stopWidgetWatcher();
@@ -1917,29 +1901,50 @@ ipcMain.handle('settings:describe', () => {
 
 // 起動直後、API サーバーがまだ確定していない間だけ renderer が状態を取り直すための
 // 軽量経路。静的な設定ディスクリプタ全体は再構築せず、状態スナップショットだけを返す。
+ipcMain.handle('settings:api-server-status', () => describeApiServerRuntimeStatus());
+
+// タブ一覧はディスクリプタの差し替え時だけ再検証し、不正ファイルの反復ログを防ぐ。
+let restartTabsCache = { key: null, ids: [] };
+function getRestartTabIds() {
+  const descriptorPath = settingsDescriptorPath();
+  let stamp = 'missing';
+  if (descriptorPath) {
+    try { stamp = fs.statSync(descriptorPath).mtimeMs; } catch (_error) { /* 未作成時もキャッシュする。 */ }
+  }
+  const key = descriptorPath ? JSON.stringify([descriptorPath, stamp]) : 'builtin';
+  if (restartTabsCache.key !== key) {
+    const descriptor = loadSettingsDescriptor();
+    restartTabsCache = { key, ids: Array.isArray(descriptor?.tabs) ? descriptor.tabs.map((t) => t?.id).filter((id) => typeof id === 'string') : [] };
+  }
+  return restartTabsCache.ids;
+}
+
+let restartDialogOpen = false;
 ipcMain.handle('app:restart-required', () => {
-  const descriptor = loadSettingsDescriptor();
-  const tabIds = Array.isArray(descriptor?.tabs) ? descriptor.tabs.map((tab) => tab.id).filter((id) => typeof id === 'string') : [];
+  const tabIds = getRestartTabIds();
   return readRestartRequired(path.join(DATA_DIR, 'restart-required.json'), tabIds);
 });
 
 ipcMain.handle('app:restart', async (event) => {
-  if (event.sender !== win?.webContents || ptyShutdownGate.state !== 'idle') return false;
-  const { response } = await dialog.showMessageBox(win, {
-    type: 'warning',
-    title: 'アプリを再起動しますか？',
-    message: 'アプリを再起動しますか？',
-    detail: '再起動すると、作業中のペインはすべて閉じます。各ペインでの作業を終えてから再起動してください。',
-    buttons: ['キャンセル', 'すべて閉じて再起動'],
-    defaultId: 0,
-    cancelId: 0,
-    noLink: true,
-  });
-  if (response !== 1) return false;
-  return restartApplication();
+  if (restartDialogOpen || event.sender !== win?.webContents || ptyShutdownGate.state !== 'idle') return false;
+  restartDialogOpen = true;
+  try {
+    const { response } = await dialog.showMessageBox(win, {
+      type: 'warning',
+      title: 'アプリを再起動しますか？',
+      message: 'アプリを再起動しますか？',
+      detail: '再起動すると、作業中のペインはすべて閉じます。各ペインでの作業を終えてから再起動してください。',
+      buttons: ['キャンセル', 'すべて閉じて再起動'],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+    });
+    if (response !== 1) return false;
+    return await restartApplication();
+  } finally {
+    restartDialogOpen = false;
+  }
 });
-
-ipcMain.handle('settings:api-server-status', () => describeApiServerRuntimeStatus());
 
 // renderer からの保存。ディスクリプタに載っているキーだけを型変換して書き戻す
 // （未知のキーは既存 config から保持する。書き込み先は field/group/descriptor の targetPath）。

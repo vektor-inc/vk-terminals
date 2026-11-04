@@ -3905,7 +3905,7 @@ body.pane-dragging * {
 .sidebar-restart-required[hidden],
 .settings-restart-notice[hidden] { display: none; }
 .sidebar-restart-required p,
-.settings-restart-notice p { margin: 0 0 10px; }
+.settings-restart-notice p { margin: 0 0 8px; line-height: 1.4; }
 .sidebar-restart-required button,
 .settings-restart-button {
   padding: 6px 10px;
@@ -3916,5 +3916,10 @@ body.pane-dragging * {
   cursor: pointer;
 }
 .sidebar-restart-required button:focus-visible,
-.settings-restart-button:focus-visible { outline: 2px solid #58a6ff; outline-offset: 2px; }
+.settings-restart-button:focus-visible {
+  outline: var(--vktm--outline--focus-ring);
+  outline-offset: var(--vktm--outline-offset--focus-ring);
+}
+.sidebar-restart-required button:hover,
+.settings-restart-button:hover { background: #484f58; }
 .settings-restart-notice { margin-bottom: 20px; }

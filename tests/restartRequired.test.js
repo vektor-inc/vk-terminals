@@ -28,11 +28,50 @@ test('状態ファイルが無い・壊れている場合は表示しない', ()
   }
 });
 
-test('更新後の再起動と設定パネルからの再起動は共通関数を呼ぶ', () => {
-  const source = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
-  const update = source.slice(source.indexOf('async function checkAndUpdate()'), source.indexOf('// ─── renderer 起動時'));
-  const ipc = source.slice(source.indexOf("ipcMain.handle('app:restart',"), source.indexOf("ipcMain.handle('settings:api-server-status'"));
-  assert.match(update, /await restartApplication\(\)/);
-  assert.match(ipc, /return restartApplication\(\)/);
-  assert.match(source, /async function restartApplication\(\)[\s\S]*?markShuttingDown\(\)[\s\S]*?await cleanupPtys\(\)[\s\S]*?app\.relaunch\(\)[\s\S]*?app\.exit\(0\)/);
+test('型が不正な状態・配列要素を安全に除外する', () => {
+  for (const raw of [{ restartRequired: 'true', tabs }, { restartRequired: true, tabs: 'general' }]) {
+    assert.deepEqual(normalizeRestartRequired(raw, tabs), { restartRequired: false, tabs: [] });
+  }
+  assert.deepEqual(normalizeRestartRequired({ restartRequired: true, tabs: [null, 1, {}, 'general'] }, tabs), { restartRequired: true, tabs: ['general'] });
+});
+
+test('大きすぎるファイルと通常ファイル以外は読まない', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-restart-limit-'));
+  try {
+    const file = path.join(dir, 'large.json');
+    fs.writeFileSync(file, JSON.stringify({ restartRequired: true, tabs: ['general'] }) + ' '.repeat(65536));
+    for (const target of [file, dir]) assert.deepEqual(readRestartRequired(target, tabs), { restartRequired: false, tabs: [] });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+const { createRestartApplication } = require('../utils/restartApplication');
+for (const state of ['idle', 'pending', 'done']) {
+  test(`再起動ゲート ${state} の分岐と終了順序`, async () => {
+    const calls = [];
+    const restart = createRestartApplication({
+      gate: { state, markShuttingDown: () => calls.push('gate') },
+      cleanupPtys: async () => { calls.push('cleanup'); },
+      app: { relaunch: () => calls.push('relaunch'), exit: (code) => calls.push(`exit:${code}`) },
+      log: { error() {} },
+    });
+    assert.equal(await restart(), state === 'idle');
+    assert.deepEqual(calls, state === 'idle' ? ['gate', 'cleanup', 'relaunch', 'exit:0'] : []);
+  });
+}
+
+test('cleanup と relaunch の例外でも exit に到達する', async () => {
+  for (const failCleanup of [false, true]) {
+    const calls = [];
+    const restart = createRestartApplication({
+      gate: { state: 'idle', markShuttingDown() {} },
+      cleanupPtys: async () => { if (failCleanup) throw new Error('cleanup'); },
+      app: { relaunch: () => { throw new Error('relaunch'); }, exit: (code) => calls.push(code) },
+      log: { error: () => calls.push('logged') },
+    });
+    if (failCleanup) await assert.rejects(restart(), /cleanup/);
+    else assert.equal(await restart(), true);
+    assert.deepEqual(calls, ['logged', 0]);
+  }
 });

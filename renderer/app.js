@@ -1718,24 +1718,43 @@ function renderSidebarMenu() {
   applyUsageBadge();
 }
 
-// サイドバーのラッパー（.sidebar）を組み立てる（issue #89）。
-// 中身は「固定ヘッダーの使用量カード」「スクロールする nav（メニュー内側 + 格納ペイン
-// セクション）」と「幅リサイズハンドル」。開閉トランジション・可変幅の基準はこのラッパー側に持たせる。
+// 再起動案内の最新状態を保持する。
 let restartRequiredState = { restartRequired: false, tabs: [] };
 
-async function refreshRestartRequired() {
+let restartRequiredInflight = null;
+// 同時の読み直しは進行中の要求を共有する。
+function refreshRestartRequired() {
+  if (restartRequiredInflight) return restartRequiredInflight;
+  restartRequiredInflight = updateRestartRequired().finally(() => { restartRequiredInflight = null; });
+  return restartRequiredInflight;
+}
+
+async function updateRestartRequired() {
   try {
     restartRequiredState = await VKIpc.invoke('app:restart-required');
   } catch (_error) {
     restartRequiredState = { restartRequired: false, tabs: [] };
   }
   const notice = document.getElementById('sidebar-restart-required');
-  if (notice) notice.hidden = !restartRequiredState.restartRequired;
+  if (notice) {
+    if (!restartRequiredState.restartRequired && notice.contains(document.activeElement)) {
+      document.querySelector('#sidebar-settings button')?.focus();
+    }
+    notice.hidden = !restartRequiredState.restartRequired;
+  }
   document.querySelectorAll('.settings-restart-notice').forEach((element) => {
-    element.hidden = !restartRequiredState.tabs.includes(element.dataset.tabId);
+    const hidden = !restartRequiredState.tabs.includes(element.dataset.tabId);
+    if (hidden && element.contains(document.activeElement)) {
+      const panel = element.closest('.settings-tab-panel');
+      document.getElementById(panel?.getAttribute('aria-labelledby'))?.focus();
+    }
+    element.hidden = hidden;
   });
 }
 
+// サイドバーのラッパー（.sidebar）を組み立てる（issue #89）。
+// 中身は「固定ヘッダーの使用量カード」「スクロールする nav（メニュー内側 + 格納ペイン
+// セクション）」と「幅リサイズハンドル」。開閉トランジション・可変幅の基準はこのラッパー側に持たせる。
 function createSidebar() {
   const aside = document.createElement('aside');
   aside.id = 'sidebar';
@@ -1762,14 +1781,13 @@ function createSidebar() {
   restartNotice.hidden = true;
   restartNotice.innerHTML = '<p>設定の反映にアプリの再起動が必要です</p><button type="button">設定を確認</button>';
   restartNotice.querySelector('button').addEventListener('click', () => openSettingsModal(restartRequiredState.tabs[0]));
-  nav.appendChild(restartNotice);
+  nav.insertBefore(restartNotice, inner);
   nav.appendChild(createSidebarSettingsCard());
   nav.appendChild(createTaskListContainer());
   nav.appendChild(createPaneStashContainer());
 
   aside.appendChild(nav);
   aside.appendChild(createSidebarResizer());
-  setTimeout(refreshRestartRequired, 0);
   return aside;
 }
 
@@ -5349,7 +5367,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
           const emptyHtml = !contentHtml && !contentAfterHtml && groups.length === 0 && !tabNote
             ? '<p class="settings-empty">このタブに表示できる設定項目はありません。</p>'
             : '';
-          const restartNoticeHtml = `<div class="settings-restart-notice"${restartRequiredState.tabs.includes(tab.id) ? '' : ' hidden'} data-tab-id="${escAttr(tab.id)}" role="status"><p>設定の反映にアプリの再起動が必要です。各ペインでの作業を終えてから再起動してください。</p><button type="button" class="settings-restart-button">アプリを再起動</button></div>`;
+          const restartNoticeHtml = `<div id="settings-restart-${escAttr(tab.id)}" class="settings-restart-notice"${restartRequiredState.tabs.includes(tab.id) ? '' : ' hidden'} data-tab-id="${escAttr(tab.id)}" role="status"><p>設定の反映にアプリの再起動が必要です。各ペインでの作業を終えてから再起動してください。</p><button type="button" class="settings-restart-button">アプリを再起動</button></div>`;
           return `<section class="settings-tab-panel" id="${escAttr(panelId)}" role="tabpanel" aria-labelledby="${escAttr(tabId)}" tabindex="0"${tabIndex === 0 ? '' : ' hidden'}>
             ${restartNoticeHtml}${targetHtml}${noteHtml}${contentHtml}${tabGroupsHtml[tabIndex]}${contentAfterHtml}${emptyHtml}
           </section>`;
@@ -5418,8 +5436,12 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
   });
 
   const modal = overlay.querySelector('.settings-modal');
+  if (restartTabId) {
+    const index = settingsTabs.findIndex((tab) => tab.id === restartTabId);
+    modal.setAttribute('aria-describedby', `settings-tab-${index} settings-restart-${restartTabId}`);
+  }
   modal.querySelectorAll('.settings-restart-button').forEach((button) => {
-    button.addEventListener('click', () => VKIpc.invoke('app:restart'));
+    button.addEventListener('click', () => VKIpc.invoke('app:restart').catch((error) => console.error('再起動の要求に失敗しました', error)));
   });
 
   // 説明タブのコピーボタンごとの「フィードバックを消すタイマー」。連打で表示が
@@ -5631,18 +5653,6 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
     const saveHint = modal.querySelector('.settings-save-hint');
     let activeTabIndex = 0;
     const restartTabIndex = settingsTabs.findIndex((tab) => tab.id === restartTabId);
-    if (restartTabIndex > 0) {
-      tabButtons[0].classList.remove('is-active');
-      tabButtons[0].setAttribute('aria-selected', 'false');
-      tabButtons[0].setAttribute('tabindex', '-1');
-      tabPanels[0].hidden = true;
-      tabButtons[restartTabIndex].classList.add('is-active');
-      tabButtons[restartTabIndex].setAttribute('aria-selected', 'true');
-      tabButtons[restartTabIndex].setAttribute('tabindex', '0');
-      tabPanels[restartTabIndex].hidden = false;
-      activeTabIndex = restartTabIndex;
-      tabPanels[restartTabIndex].scrollTop = 0;
-    }
     let footerLocked = false;
     // フッターの「保存」は全タブ横断だが、説明だけのタブを見ている間は保存対象が無いので隠す。
     // ただし他タブに未保存の変更が残っている場合は隠さない（隠すと「閉じる」しか押せず、
@@ -6367,6 +6377,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
     fetchSavedValues(Array.from(modal.querySelectorAll('[data-savedvalue-key]')));
 
     updateSettingsApplyButtons();
+    if (restartTabIndex > 0) activateTab(restartTabIndex);
     updateSettingsFooter();
   }
 

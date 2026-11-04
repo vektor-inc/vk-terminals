@@ -287,7 +287,7 @@ test('issue #517: ラッパー経由の書き込み（利用者入力・API・En
   const wrapper = source.match(/ptyProcess\.write = \(data\) => \{[\s\S]*?\n  \};/)[0];
   assert.doesNotMatch(wrapper, /noteWrite/);
   const handler = source.match(/ipcMain\.on\('terminal:input'[\s\S]*?\n\}\);/)[0];
-  assert.match(handler, /p\.write\(data\);(?:\s*\/\/[^\n]*)*\s*if \(!containsUserTerminalInput\(data\)\) silentWriteRefresher\.noteWrite\(id\);/);
+  assert.match(handler, /p\.write\(data\);(?:\s*\/\/[^\n]*)*\s*if \(isTerminalQueryReplyOnly\(data\)\) silentWriteRefresher\.noteWrite\(id\);/);
 });
 
 test('issue #517: 端末の自動応答は利用者入力ではなく、キー入力・Enter・矢印は利用者入力と判定される', () => {

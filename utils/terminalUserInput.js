@@ -27,4 +27,27 @@ function containsUserTerminalInput(input) {
   return input.replace(TERMINAL_AUTOMATIC_INPUT_PATTERN, '').length > 0;
 }
 
-module.exports = { containsUserTerminalInput };
+// 端末の問い合わせ（DSR・DA・DECRQM・kitty キーボード・OSC 色）への応答だけ。
+// マウス通知とフォーカス通知は画面の変化を伴いうるため含めない（issue #517）。
+const TERMINAL_QUERY_REPLY_PATTERN = new RegExp([
+  '\\x1b\\[\\??\\d+;\\d+R',
+  '\\x1b\\[\\??\\d+;\\d+\\$y',
+  '\\x1b\\[0n',
+  '\\x1b\\[[?>=][0-9;]*c',
+  '\\x1b\\[\\?[0-9;]*u',
+  '\\x1b\\](?:10|11);[\\s\\S]*?(?:\\x07|\\x1b\\\\)',
+].join('|'), 'g');
+
+/**
+ * 入力が端末の問い合わせへの応答だけで構成されているか判定する。
+ * 画面出力を伴わない書き込みとして、静止後の画面識別値の採り直しを予約してよいかの判定に使う。
+ *
+ * @param {*} input - terminal:input で PTY へ渡す入力。
+ * @returns {boolean} 空でなく、問い合わせ応答以外が1文字も残らない場合のみ true。
+ */
+function isTerminalQueryReplyOnly(input) {
+  if (typeof input !== 'string' || input.length === 0) return false;
+  return input.replace(TERMINAL_QUERY_REPLY_PATTERN, '').length === 0;
+}
+
+module.exports = { containsUserTerminalInput, isTerminalQueryReplyOnly };

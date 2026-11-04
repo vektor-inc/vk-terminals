@@ -132,7 +132,7 @@ const {
   evaluateTokenRegistration,
 } = require('./utils/apiAuth');
 const { isAllowedApiHost } = require('./utils/apiHostAllowlist');
-const { containsUserTerminalInput } = require('./utils/terminalUserInput');
+const { containsUserTerminalInput, isTerminalQueryReplyOnly } = require('./utils/terminalUserInput');
 const {
   createConditionalTerminalInputGuard,
   mergeConditionalScreenIdentifiers,
@@ -2584,8 +2584,8 @@ ipcMain.on('terminal:input', (event, id, data) => {
     // 信頼関連の自動 Enter を止める。
     disarmTrustAutomationForUserInput(id, data);
     p.write(data);
-    // 画面出力を伴わない端末自身の制御応答だけのときに限り、静止後の識別値の採り直しを予約する。
-    if (!containsUserTerminalInput(data)) silentWriteRefresher.noteWrite(id);
+    // 端末の問い合わせへの応答だけのとき（マウス・フォーカス通知は含めない）に限り、静止後の識別値の採り直しを予約する。
+    if (isTerminalQueryReplyOnly(data)) silentWriteRefresher.noteWrite(id);
   }
 });
 

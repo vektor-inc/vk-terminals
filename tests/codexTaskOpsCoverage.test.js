@@ -8,7 +8,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { parseTaskCommand } = require('../utils/codexTaskOps');
+const { parseTaskCommand, FIXED_GIT_PREFIX } = require('../utils/codexTaskOps');
 const { SNAPSHOT_VK_AGENTS_COMMIT, requiredOperations, knownGaps, notApplicable } = require('./fixtures/codexProcedureOperations');
 
 const SOURCE_PATTERN = /^codex\/vk-kore\/[A-Za-z0-9._-]+\.md:[1-9][0-9]*$/;
@@ -60,7 +60,9 @@ test('照合: 手順が要求する操作を、固定入口が受理する（gh 
     }
     if (entry.expected.bin !== undefined && parsed.bin !== entry.expected.bin) failures.push(`bin が違う: ${describeEntry(entry)} → ${parsed.bin}`);
     if (entry.expected.operation !== undefined && parsed.operation !== entry.expected.operation) failures.push(`operation が違う: ${describeEntry(entry)} → ${parsed.operation}`);
-    if (entry.expected.gitSubcommand !== undefined && !(Array.isArray(parsed.args) && parsed.args.includes(entry.expected.gitSubcommand))) {
+    // git の args は先頭に FIXED_GIT_PREFIX が付き、その直後がサブコマンド。ブランチ名や ref 名がサブコマンドと同じ文字列でも取り違えを見逃さないよう位置で比べる。
+    const hasFixedPrefix = Array.isArray(parsed.args) && FIXED_GIT_PREFIX.every((token, index) => parsed.args[index] === token);
+    if (entry.expected.gitSubcommand !== undefined && !(hasFixedPrefix && parsed.args[FIXED_GIT_PREFIX.length] === entry.expected.gitSubcommand)) {
       failures.push(`git のサブコマンドが違う: ${describeEntry(entry)} → ${JSON.stringify(parsed.args)}`);
     }
     if (entry.expected.args !== undefined && JSON.stringify(parsed.args.slice(0, entry.expected.args.length)) !== JSON.stringify(entry.expected.args)) {

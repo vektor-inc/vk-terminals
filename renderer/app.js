@@ -2542,8 +2542,10 @@ function updateStashItem(paneId) {
 
 function focusFirstSidebarItem() {
   const nav = document.getElementById('sidebar-menu');
-  const first = nav?.querySelector('a, button, summary');
-  if (first && typeof first.focus === 'function') first.focus();
+  // 非表示の再起動案内などを飛ばし、操作できる先頭項目へ移す。
+  const first = Array.from(nav?.querySelectorAll('a, button, summary') || [])
+    .find(canRestoreModalFocus);
+  first?.focus();
 }
 
 function setSidebarOpen(open, options = {}) {

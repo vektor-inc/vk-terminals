@@ -65,6 +65,37 @@ test('再起動が必要な設定への案内とキャンセル', async () => {
   }
 });
 
+for (const restartRequired of [false, true]) {
+  // @title サイドバーを開くと表示中の先頭メニューへフォーカスする
+  // @step 再起動案内の有無それぞれで、キーボードからサイドバーを開く
+  // @check 非表示の案内を飛ばし、表示中は「設定を確認」へ移る
+  test(`サイドバーの初期フォーカス（再起動案内${restartRequired ? '表示' : '非表示'}）`, async () => {
+    const port = await getFreePort();
+    const launched = await launchAppAndWait({
+      port,
+      prefix: 'vk-sidebar-first-focus-e2e-',
+      seedHome: ({ configDir }) => fs.writeFileSync(path.join(configDir, 'restart-required.json'), JSON.stringify({ restartRequired, tabs: restartRequired ? ['mobile'] : [] })),
+    });
+    try {
+      const { win } = launched;
+      const notice = win.locator('#sidebar-restart-required');
+      if (restartRequired) await expect(notice).toBeVisible({ timeout: 10000 });
+      else await expect(notice).toBeHidden();
+      // 初期設定に依存せず閉じ、実際の開閉ボタンをキーボードで操作する。
+      await win.evaluate(() => setSidebarOpen(false, { focusFirst: false }));
+      await expect(win.locator('#menu-btn')).toHaveAttribute('aria-expanded', 'false');
+      await win.locator('#menu-btn').focus();
+      await win.keyboard.press('Enter');
+      await expect(win.locator('#menu-btn')).toHaveAttribute('aria-expanded', 'true');
+      const expected = restartRequired ? '#sidebar-restart-required button' : '#sidebar-settings button';
+      await expect(win.locator(expected)).toBeFocused();
+      if (!restartRequired) await expect(notice.locator('button')).not.toBeFocused();
+    } finally {
+      await closeApp(launched);
+    }
+  });
+}
+
 for (const originDisappears of [true, false]) {
   // @title サイドバーを畳んだ後はタイトルバーへフォーカスを戻す
   // @step サイドバーから設定を開き、起点の表示状態を変えてサイドバーを畳む

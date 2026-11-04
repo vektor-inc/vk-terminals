@@ -2915,7 +2915,7 @@ button.sidebar-section-header:hover {
 }
 
 .pane-status[data-status="done"] {
-  color: #8b949e;
+  color: var(--vktm--color--pr-badge-open, #99a1ab);
   background-color: rgba(139, 148, 158, 0.15);
   border: 1px solid rgba(139, 148, 158, 0.3);
 }

@@ -878,12 +878,13 @@ test.describe.serial('設定パネル: タブ・保存先表示系（issue #348 
           {
             id: 'orchestrator',
             label: 'Orchestrator',
-            content: [{ type: 'paragraph', text: '入力欄より前の説明' }],
+            content: [{ type: 'callout', tone: 'info', label: '状況', text: '入力欄より前の案内' }],
             contentAfter: [{ type: 'paragraph', text: '入力欄より後ろの説明' }],
           },
           {
             id: 'agents',
             label: 'VK Agents',
+            content: [{ type: 'paragraph', text: '入力欄より前の段落' }],
             contentAfter: [
               { type: 'heading', text: 'ルールの差し替え' },
               { type: 'paragraph', text: 'ルールを上書きできます。' },
@@ -929,11 +930,28 @@ test.describe.serial('設定パネル: タブ・保存先表示系（issue #348 
 
       expect(order).toEqual(['settings-content', 'settings-group', 'settings-content']);
 
-      // VK Agents 側は content を持たないので、説明は入力欄グループの後ろだけに出る。
+      // VK Agents 側も入力欄グループを挟んで、前後に説明を描く。
       const agentsOrder = await win.evaluate(() => Array.from(
         document.querySelector('#settings-panel-1').children
       ).map((el) => el.className.split(' ')[0]));
-      expect(agentsOrder).toEqual(['settings-group', 'settings-content']);
+      expect(agentsOrder).toEqual(['settings-content', 'settings-group', 'settings-content']);
+    });
+
+    test('説明ブロックと直後の入力欄グループの間に h3 相当の余白を空ける', async () => {
+      // callout と段落のどちらで説明が終わっても、各タブを表示してから見えている下端と
+      // fieldset の枠線の間を測る。hidden のパネルは座標がすべて 0 になるため先に切り替える。
+      for (const tabIndex of [0, 1]) {
+        await win.locator(`#settings-tab-${tabIndex}`).click();
+        const gap = await win.locator(`#settings-panel-${tabIndex}`).evaluate((panel) => {
+          const contentLastBlock = panel.querySelector('.settings-content > :last-child');
+          const group = panel.querySelector('.settings-group');
+          return group.getBoundingClientRect().top - contentLastBlock.getBoundingClientRect().bottom;
+        });
+
+        // 設定パネル内の h3 と同じ 32px 段で、説明と次の設定セクションを区切る。
+        expect(gap).toBeGreaterThanOrEqual(31);
+        expect(gap).toBeLessThanOrEqual(33);
+      }
     });
   });
 

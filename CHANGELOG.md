@@ -1,5 +1,6 @@
 # Changelog
 
+- [ 機能追加 ] 自動処理用 Codex の固定入口で、issue・PR へのコメントと issue 作成の本文を、専用入出力フォルダ内のファイルから渡せるように（[#519](https://github.com/vektor-inc/vk-terminals/issues/519)）
 - [ 機能追加 ] タスク一覧の表示データでカードごとに状態バッジの色を指定できる `statusTone` に対応（[#526](https://github.com/vektor-inc/vk-terminals/issues/526)）
 
 ## 1.86.0

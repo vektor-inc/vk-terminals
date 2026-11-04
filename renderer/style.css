@@ -1095,6 +1095,9 @@ h4.settings-content-heading {
 .settings-label-row .settings-label {
   min-width: 0;
 }
+.settings-required-badge[hidden] {
+  display: none;
+}
 .settings-required-badge {
   flex: 0 0 auto;
   padding: 1px 6px;
@@ -1248,10 +1251,12 @@ h4.settings-content-heading {
   color: #c9d1d9;
   cursor: not-allowed;
 }
-/* pattern 検証エラー時の赤枠。focus 側は type 属性セレクタ（[type="..."]）のぶん
-   詳細度が高く（focus 側 (0,3,1) に対しここは (0,2,1)）、ソース順に関わらず常に
-   focus（青）が勝つ（入力中は青、blur 後の未focusで赤）。 */
-.settings-row input[aria-invalid="true"] {
+/* pattern 検証エラー・必須の未入力時の赤枠。input は focus 側が type 属性セレクタ（[type="..."]）の
+   ぶん詳細度が高く（focus 側 (0,3,1) に対しここは (0,2,1)）、常に focus（青）が勝つ。
+   select / textarea は同じ詳細度のため、下の focus 規則が後勝ちになる（focus 規則をこの上へ移動しないこと）。 */
+.settings-row input[aria-invalid="true"],
+.settings-row select[aria-invalid="true"],
+.settings-row textarea[aria-invalid="true"] {
   border-color: #f85149;
 }
 /* 種類を絞る理由: 基本ルール（`.settings-row input[type="text"]` ほか）と同じく、

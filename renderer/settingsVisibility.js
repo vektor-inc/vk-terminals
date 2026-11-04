@@ -9,6 +9,8 @@
 //   - 参照先 key が存在しない、または現在値が undefined の場合は不一致として扱う。
 //   - hide: true は一致時に false。hide 省略/false は一致時に true。
 //   - 配列直下は従来どおり AND、anyOf 配下は OR として評価する。
+//   - requiredWhen は visibleWhen と同じ書式・同じ評価で、成り立つときだけ必須扱いにする。
+//     壊れた条件は必須扱いにしない（fail-open）。
 //   - 壊れた条件は保存不能や全体非表示にしない（fail-open）。表示は true、無効化は false。
 //
 // Node（require）とブラウザ（<script>）の両方から使える UMD 形式（issue #268）。
@@ -75,8 +77,19 @@ function isFieldDisabled(field, values) {
   return evaluateConditions(field.disabledWhen, values, false);
 }
 
+// 必須扱いにするか。required: true は常に必須、requiredWhen は条件が成り立つときだけ必須。
+// 真偽値の項目と、非表示の項目は必須扱いにしない。
+function isFieldRequired(field, values) {
+  if (!field || typeof field !== 'object' || Array.isArray(field)) return false;
+  if (field.type === 'boolean') return false;
+  if (!isFieldVisible(field, values)) return false;
+  if (field.required === true) return true;
+  return evaluateConditions(field.requiredWhen, values, false);
+}
+
 return {
   isFieldVisible,
   isFieldDisabled,
+  isFieldRequired,
 };
 });

@@ -4766,14 +4766,20 @@ function renderSettingsField(f, value, id) {
   const helpToggle = hasHelp
     ? `<button type="button" class="settings-help-toggle" id="${escAttr(id + '-help-toggle')}" aria-expanded="false" aria-controls="${escAttr(id + '-help')}" aria-label="${escAttr(labelText + 'の説明')}">?</button>`
     : '';
+  // requiredWhen 付きの項目は、条件の成否で必須かどうかが切り替わる。部品は常に描画しておき、
+  // 表示・属性の出し分けは applyFieldState（syncRequiredNotice）に任せる。
   const isRequired = f.required === true && f.type !== 'boolean';
-  const requiredBadge = isRequired ? '<span class="settings-required-badge">必須</span>' : '';
+  const isConditionallyRequired = !isRequired && f.requiredWhen !== undefined && f.type !== 'boolean';
+  const hasRequiredParts = isRequired || isConditionallyRequired;
+  const requiredBadge = hasRequiredParts
+    ? `<span class="settings-required-badge"${isRequired ? '' : ' hidden'}>必須</span>`
+    : '';
   const requiredAttributes = isRequired ? ' aria-required="true"' : '';
-  const requiredNotice = isRequired
-    ? `<span class="settings-required-notice" id="${escAttr(id + '-required')}" role="status">未設定です。必須の項目のため、設定してください。</span>`
+  const requiredNotice = hasRequiredParts
+    ? `<span class="settings-required-notice" id="${escAttr(id + '-required')}" role="status"${isRequired ? '' : ' hidden'}>未設定です。必須の項目のため、設定してください。</span>`
     : '';
   const labelHtml = `<label class="settings-label" for="${escAttr(id)}">${label}</label>`;
-  const labelRow = (hasHelp || isRequired)
+  const labelRow = (hasHelp || hasRequiredParts)
     ? `<div class="settings-label-row">${labelHtml}${requiredBadge}${helpToggle}</div>`
     : labelHtml;
   // disabledReason は無効状態でだけ表示するが、状態切替のたびに生成・破棄せず DOM に常駐させる。
@@ -5594,16 +5600,34 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
     }
     return values;
   };
-  const syncRequiredNotice = (field, id) => {
-    if (field.required !== true) return;
+  // 必須の見た目（バッジ・未設定案内・赤枠・aria-required）を、現在の値から毎回判定し直す。
+  // aria-invalid は pattern 検証と共用のため、必須の未入力で付けたときだけ data-required-invalid を残し、
+  // 値が入ったときに pattern 検証側のエラーまで消さないようにする。
+  const syncRequiredNotice = (field, id, values) => {
+    if (field.required !== true && field.requiredWhen === undefined) return;
     const input = getEntryInput(id);
     const notice = modal.querySelector('#' + id + '-required');
     if (!input || !notice) return;
+    const row = getEntryRow(id);
+    const badge = row ? row.querySelector('.settings-required-badge') : null;
+    const required = VKSettingsVisibility.isFieldRequired(field, values);
     // boolean は true / false のどちらも値が設定済みであり、空値を持たない。
-    const empty = field.type !== 'boolean'
+    const empty = required
+      && field.type !== 'boolean'
       && !isEntryDisabled(id)
       && String(getEntryStoredValue(field, input)).trim() === '';
+    if (badge) badge.hidden = !required;
+    if (required) input.setAttribute('aria-required', 'true');
+    else input.removeAttribute('aria-required');
     notice.hidden = !empty;
+    if (empty) {
+      input.setAttribute('aria-invalid', 'true');
+      input.dataset.requiredInvalid = 'true';
+    } else if (input.dataset.requiredInvalid === 'true') {
+      delete input.dataset.requiredInvalid;
+      const errEl = modal.querySelector('#' + id + '-error');
+      if (!errEl || !errEl.textContent) input.removeAttribute('aria-invalid');
+    }
   };
 
   let switchToFieldTab = () => {};
@@ -6386,18 +6410,23 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
   // - valid: aria-invalid を外し、エラー文をクリア（赤枠も CSS 側で解除される）。
   // - invalid: aria-invalid="true" を付与し、invalidMessage（無ければ汎用文）を表示。
   //   invalidMessage は textContent で流し込むため HTML として解釈されない（XSS 安全）。
+  // 必須の未入力で付けた aria-invalid（data-required-invalid）は pattern 検証では外さない。
+  // 外すのは syncRequiredNotice の役目。
+  const clearInvalidMark = (input) => {
+    if (input.dataset.requiredInvalid !== 'true') input.removeAttribute('aria-invalid');
+  };
   const applyFieldValidity = (field, id) => {
     const input = getEntryInput(id);
     const errEl = modal.querySelector('#' + id + '-error');
     if (!input) return true;
     if (!isEntryVisible(id) || isEntryDisabled(id)) {
-      input.removeAttribute('aria-invalid');
+      clearInvalidMark(input);
       if (errEl) errEl.textContent = '';
       return true;
     }
     const valid = isPatternValid(field.pattern, getEntryStoredValue(field, input));
     if (valid) {
-      input.removeAttribute('aria-invalid');
+      clearInvalidMark(input);
       if (errEl) errEl.textContent = '';
     } else {
       input.setAttribute('aria-invalid', 'true');
@@ -6410,7 +6439,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
   const clearFieldValidity = (field, id) => {
     const input = getEntryInput(id);
     const errEl = modal.querySelector('#' + id + '-error');
-    if (input) input.removeAttribute('aria-invalid');
+    if (input) clearInvalidMark(input);
     if (errEl) errEl.textContent = '';
   };
 
@@ -6442,7 +6471,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
         if (reason) reason.hidden = true;
         if (!visible) clearFieldValidity(field, id);
       }
-      syncRequiredNotice(field, id);
+      syncRequiredNotice(field, id, values);
       syncEntryDescribedBy(id);
     }
     // 区分（issue #421）: 中の項目がすべて隠れたら、見出し・説明文・区切り線も残さず区分ごと隠す。

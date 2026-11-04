@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 機能追加 ] 設定画面で、必須なのに未入力の項目を赤枠で示し、条件によって必須になる項目（requiredWhen）にも対応（[#524](https://github.com/vektor-inc/vk-terminals/issues/524)）
+
 ## 1.86.0
 
 - [ 機能追加 ] 新しいペインを開くフォルダやメニュー項目など一部の設定を、保存後にアプリを再起動せず反映し、反映したことと設定ファイルを読み込めなかったことを画面に表示（[#514](https://github.com/vektor-inc/vk-terminals/issues/514)）

@@ -546,9 +546,10 @@ cp config.example.json ~/.vk-terminals/config.json
 - `visibleWhen`：条件一致時に表示します。条件へ `hide: true` を付けた場合は一致時に非表示になります。
 - `disabledWhen`：条件一致時に値を保持したまま編集を無効化します。`disabledReason` に理由を書くと、無効時だけ表示され、入力欄の読み上げ対象にもなります。
 - `requiredWhen`：条件一致時だけ、その欄を必須として扱います。書式は `visibleWhen` と同じ `{ "key": "参照先フィールド", "value": "比較値" }`（配列は AND、`anyOf` は OR）です。
-  - 必須扱いになると、必須バッジ・未設定の案内・赤枠（`aria-invalid="true"`）・`aria-required` がそろって切り替わります。条件が外れればそろって消えます。
+  - 必須扱いになると、必須バッジと `aria-required` が付き、空欄（かつ無効化されていない）のときは未設定の案内と赤枠（`aria-invalid="true"`）も表示されます。条件が外れればそろって消えます。
   - 非表示の欄と、条件が一致しないときは必須扱いにしません。真偽値（`boolean`）の欄も対象外です。
   - `requiredWhen` が無い欄は、従来どおり `required: true` に従います。
+  - `required: true` と `requiredWhen` を両方書いた欄は `required: true` が優先され、条件に関係なく常に必須になります。
 - `section`：`{ "label": "区分名", "description": "1 行の説明（任意）" }`。グループ（枠）の中を、小見出し付きの区分に分けて表示します。
   - 区分の範囲：`section` を付けた項目から、次に `section` が付いた項目の手前までが 1 つの区分です。区分名が小見出し（内側の `fieldset` の `legend`）、説明文がその下に出て、`aria-describedby` で区分に関連づきます。
   - 区分外の項目：`section` を持たない項目は従来どおりの表示です。先頭の項目に `section` が無い場合、最初の `section` 付き項目の手前までは区分に入らず、グループ直下に表示します。区分内の項目がすべて `visibleWhen` で隠れたときは、区分ごと隠れます。

@@ -205,6 +205,25 @@ test('render: ステータスバッジを各カードの先頭へ prepend し、
   assert.equal(badges[2].dataset.tone, 'neutral');
 });
 
+
+test('render: 状態バッジはアイテムの statusTone があればその色、無ければグループの tone。見出しの色は変わらない', () => {
+  const widget = sanitized([
+    { id: 'ready', label: '実行待ち', tone: 'info', items: [
+      { id: '1', title: 'A', editable: false, statusTone: 'danger' },
+      { id: '2', title: 'B', editable: false, statusTone: 'zzz' },
+      { id: '3', title: 'C', editable: false, statusTone: 7 },
+      { id: '4', title: 'D', editable: false },
+    ] },
+  ]);
+  const { groupsEl, view } = makeView();
+  view.render(widget, { now: Date.parse('2026-07-21T00:00:10.000Z') });
+  const badges = groupsEl.querySelectorAll((el) => el.classList.contains('widget-badge'));
+  assert.deepEqual(badges.map((badge) => badge.textContent), ['実行待ち', '実行待ち', '実行待ち', '実行待ち']);
+  assert.deepEqual(badges.map((badge) => badge.dataset.tone), ['danger', 'info', 'info', 'info']);
+  const sections = groupsEl.querySelectorAll((el) => el.classList.contains('task-list-group'));
+  assert.equal(sections.length, 1);
+  assert.equal(sections[0].dataset.tone, 'info');
+});
 test('render: 文字列は textContent で描画され、HTML として解釈されない（XSS 防御）', () => {
   const evil = '<img src=x onerror=alert(1)>';
   const widget = sanitized([

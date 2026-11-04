@@ -11,6 +11,11 @@
 // セキュリティ契約: 宣言に載る全文字列は描画側が textContent で描画する（innerHTML 禁止）。
 // URL は生成側で ^https?:// 済みだが、ここでも二重防御として http(s) 以外を落とす。
 // 未知の tone/field/action/rel は描画を壊さず既定フォールバックで処理する（前方互換）。
+//
+// アイテムの statusTone（任意）: そのカードの状態バッジだけを描く tone。tone の allowlist
+// （WIDGET_TONES）に完全一致するときだけ item.statusTone に残し、語彙外・文字列以外は捨てる
+// （キーを付けない。neutral へは置き換えない）。無ければ従来どおりグループの tone で描く。
+// グループ見出し（section の data-tone）には影響しない。
 (function (root, factory) {
   const api = factory();
   if (typeof module === 'object' && module.exports) {
@@ -271,6 +276,10 @@
     }
     // emphasis は意味属性（色ではない）。契約上は attention のみ。未知値は無視。
     if (raw.emphasis === EMPHASIS_ATTENTION) item.emphasis = EMPHASIS_ATTENTION;
+    // statusTone は tone の allowlist に完全一致するときだけ残す（語彙外・非文字列は捨てる）。
+    if (typeof raw.statusTone === 'string' && WIDGET_TONE_SET.has(raw.statusTone)) {
+      item.statusTone = raw.statusTone;
+    }
     if (typeof raw.assignee === 'string' && raw.assignee.trim()) {
       item.assignee = clampStr(raw.assignee.trim(), LIMITS.text);
     }

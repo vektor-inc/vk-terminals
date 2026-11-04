@@ -664,3 +664,22 @@ test('sanitizeWidget: rel="pr" の state は既知の3値だけ残し、それ�
   assert.equal('state' in linkOf({ rel: 'pr', url: 'https://example.com/pr/1', label: 'pr', state: 'closed' }), false);
   assert.equal('state' in linkOf({ rel: 'pr', url: 'https://example.com/pr/1', label: 'pr' }), false);
 });
+
+test('sanitizeWidget: statusTone は tone 語彙に完全一致するときだけ残り、語彙外・非文字列は捨てる', () => {
+  const items = [
+    { id: '1', title: 'a', editable: false, statusTone: 'danger' },
+    { id: '2', title: 'b', editable: false, statusTone: 'zzz' },
+    { id: '3', title: 'c', editable: false, statusTone: 'Danger' },
+    { id: '4', title: 'd', editable: false, statusTone: 5 },
+    { id: '5', title: 'e', editable: false, statusTone: null },
+    { id: '6', title: 'f', editable: false },
+  ];
+  const w = contract.sanitizeWidget(baseRawWidget({
+    groups: [{ id: 'g', label: 'G', tone: 'warning', items }],
+  }));
+  const out = w.groups[0].items;
+  assert.equal(out[0].statusTone, 'danger');
+  for (const i of [1, 2, 3, 4, 5]) {
+    assert.equal(Object.prototype.hasOwnProperty.call(out[i], 'statusTone'), false);
+  }
+});

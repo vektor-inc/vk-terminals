@@ -1,5 +1,6 @@
 # Changelog
 
+- [ 仕様変更 ] 作業ペイン下部の「返信文をコピー」ボタンを廃止（[#509](https://github.com/vektor-inc/vk-terminals/issues/509)）
 - [ 不具合修正 ] 設定パネルで説明の直後に入力欄グループが続くと、両者の間に余白がなく接して表示される不具合を修正（[#507](https://github.com/vektor-inc/vk-terminals/issues/507)）
 
 ## 1.84.2

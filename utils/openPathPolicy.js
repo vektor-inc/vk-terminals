@@ -77,7 +77,11 @@ async function resolveRoots({ homeDir, bundledRoots }) {
   const creatableRoot = (await realpathOrNull(vkAgentsPath)) || path.join(realHome, CREATABLE_DIR_NAME);
   const bundled = [];
   for (const root of bundledRoots) {
-    bundled.push((await realpathOrNull(root)) || root);
+    const realRoot = (await realpathOrNull(root)) || root;
+    // ホームフォルダそのもの、またはホームを含む祖先（/ や /Users）は許可しない。
+    // node_modules が ~ 直下にあるときなどに、ホーム全体が開けるようになるのを防ぐ。
+    if (isInsideOrSame(realRoot, realHome)) continue;
+    bundled.push(realRoot);
   }
   return { creatableRoot, openRoots: [creatableRoot, ...bundled] };
 }

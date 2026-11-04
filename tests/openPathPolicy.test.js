@@ -183,6 +183,24 @@ test('作成先の親がファイルだと create-failed', async (t) => {
   assert.deepEqual(await request(sandbox, '~/.vk-agents/file/child', true), { ok: false, reason: 'create-failed' });
 });
 
+test('同梱ルートがホーム自体・ホームの祖先になるときは許可ルートから外す', async (t) => {
+  const sandbox = makeSandbox(t);
+  const probe = path.join(sandbox.outside, 'child');
+  fs.mkdirSync(probe);
+  for (const root of [sandbox.home, sandbox.base, path.parse(sandbox.base).root]) {
+    const result = await resolveOpenFolderRequest({ rawPath: probe, homeDir: sandbox.home, bundledRoots: [root] });
+    assert.deepEqual(result, { ok: false, reason: 'not-allowed' }, `root=${root}`);
+  }
+});
+
+test('同梱ルートがホームの内側にあるときは従来どおり許可する', async (t) => {
+  const sandbox = makeSandbox(t);
+  const inner = path.join(sandbox.outside, 'git', 'vk-terminals');
+  fs.mkdirSync(path.join(inner, 'rules'), { recursive: true });
+  const result = await resolveOpenFolderRequest({ rawPath: path.join(inner, 'rules'), homeDir: sandbox.home, bundledRoots: [inner] });
+  assert.equal(result.ok, true);
+});
+
 test('相対パス・~user・NUL・空は invalid', async (t) => {
   const sandbox = makeSandbox(t);
   for (const raw of ['rules', '~root/x', '/a\0b', '', undefined]) {

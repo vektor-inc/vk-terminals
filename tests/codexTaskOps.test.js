@@ -72,6 +72,8 @@ test('許可: gh issue list / gh repo view は読み取り用のフラグと許�
     parseTaskCommand(['gh', 'issue', 'list', '--state', 'all', '--search', '重複 -label:bug', '--limit', '20', '--label', 'task-queue', '--json', 'number,title,state']).args,
     ['issue', 'list', '--state', 'all', '--search=重複 -label:bug', '--limit', '20', '--json', 'number,title,state', '--label', 'task-queue'],
   );
+  // 日本語の検索語・ラベル除外・空白入りの既存ラベル名は通る。
+  assert.equal(parseTaskCommand(['gh', 'issue', 'list', '--search', '重複 確認 -label:bug label:task-queue v1.2_x', '--label', 'good first issue', '--label', 'type: bug']).ok, true);
   assert.deepEqual(parseTaskCommand(['gh', 'issue', 'list', '--state=closed', '--search=-x', '--limit=100', '--json=url']).args, ['issue', 'list', '--state', 'closed', '--search=-x', '--limit', '100', '--json', 'url']);
   assert.deepEqual(
     parseTaskCommand(['gh', 'Vektor-Inc/another.repo', 'issue', 'list', '--state', 'open']),
@@ -113,6 +115,26 @@ test('拒否: gh issue list / gh repo view の --web・--jq・--template・--rep
     ['gh', 'issue', 'list', '--search', 'a\u202eb'],
     ['gh', 'issue', 'list', '--search', 'a'.repeat(257)],
     ['gh', 'issue', 'list', '--search', 'x', '--search', 'y'],
+    ['gh', 'issue', 'list', '--search', 'x ) OR repo:other/private OR ( x'],
+    ['gh', 'issue', 'list', '--search', '(x)'],
+    ['gh', 'issue', 'list', '--search', '"quoted phrase"'],
+    ['gh', 'issue', 'list', '--search', "it's"],
+    ['gh', 'issue', 'list', '--search', 'repo:other/private'],
+    ['gh', 'issue', 'list', '--search', 'org:other'],
+    ['gh', 'issue', 'list', '--search', 'user:other'],
+    ['gh', 'issue', 'list', '--search', 'is:private'],
+    ['gh', 'issue', 'list', '--search', 'in:body'],
+    ['gh', 'issue', 'list', '--search', '-repo:other/private'],
+    ['gh', 'issue', 'list', '--search', 'label:"a b"'],
+    ['gh', 'issue', 'list', '--search', 'a OR b'],
+    ['gh', 'issue', 'list', '--search', 'a and b'],
+    ['gh', 'issue', 'list', '--search', 'NOT a'],
+    ['gh', 'issue', 'list', '--search', 'a\u3000b'],
+    ['gh', 'issue', 'list', '--label', 'a) OR repo:other/private'],
+    ['gh', 'issue', 'list', '--label', 'a(b'],
+    ['gh', 'issue', 'list', '--label', "it's"],
+    ['gh', 'issue', 'list', '--label', 'a\\b'],
+    ['gh', 'issue', 'list', '--label', 'a  b'],
     ['gh', 'issue', 'list', '--label', '-bad'],
     ['gh', 'issue', 'list', '--label', 'a,b'],
     ['gh', 'issue', 'list', '--author', 'x'],
@@ -901,6 +923,10 @@ test('拘束: gh issue list は --repo、gh repo view は位置引数として�
       assert.equal(run(fixture, ['gh', target, 'issue', 'list'], { cwd: plain }).code, 2, target);
     }
     assert.equal(run(fixture, ['gh', 'repo', 'view', '--json', 'visibility', '--repo', 'other/repo']).code, 2);
+    // 検索構文で拘束先の外へ広げる入力は、gh を起動する前に拒否する。
+    assert.equal(run(fixture, ['gh', 'issue', 'list', '--search', 'x ) OR repo:other/private OR ( x']).code, 2);
+    assert.equal(run(fixture, ['gh', 'issue', 'list', '--search', 'repo:other/private']).code, 2);
+    assert.equal(run(fixture, ['gh', 'issue', 'list', '--label', 'a) OR repo:other/private']).code, 2);
     assert.equal(fixture.readCalls().length, before);
   } finally {
     fixture.cleanup();

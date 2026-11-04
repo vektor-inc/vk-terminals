@@ -48,7 +48,6 @@ const MAX_LABEL_LENGTH = 50;
 const REVIEW_PASSED_LABEL = 'agent-review-passed';
 const REVIEW_PASSED_LABEL_COLOR = '0e8a16';
 const REVIEW_PASSED_LABEL_DESCRIPTION = 'エージェントのレビュー完了マーカー（最終レビュー・e2e ゲート通過）';
-// PR 番号は 1 以上の数字だけ（0・先頭ゼロは不可）。
 // gh issue list / gh repo view（issue #520）で許す --json の項目。任意式の評価（--jq / --template）は受けず、項目名もここにあるものだけ。
 const ISSUE_LIST_JSON_FIELDS = Object.freeze(['number', 'title', 'state', 'stateReason', 'url', 'labels', 'assignees', 'author', 'body', 'createdAt', 'updatedAt', 'closedAt', 'milestone']);
 const REPO_VIEW_JSON_FIELDS = Object.freeze(['name', 'nameWithOwner', 'owner', 'url', 'description', 'visibility', 'isPrivate', 'isArchived', 'isFork', 'defaultBranchRef', 'hasIssuesEnabled', 'viewerPermission']);
@@ -56,7 +55,12 @@ const ISSUE_LIST_STATES = Object.freeze(['open', 'closed', 'all']);
 const ISSUE_LIST_MAX_LIMIT = 100;
 const ISSUE_LIST_MAX_LABELS = 10;
 const ISSUE_LIST_MAX_SEARCH_CHARS = 256;
+// gh は --search と --label を 1 本の検索式に組み立てる。検索先（repo: など）や括弧・論理演算子で拘束先の外へ広げられないよう、許可した文法だけを通す。
+const SEARCH_TERM_PATTERN = /^(?:-?label:)?[\p{L}\p{N}_.-]+$/u;
+const SEARCH_OPERATOR_PATTERN = /^(?:AND|OR|NOT)$/i;
+const LIST_LABEL_PATTERN = /^[\p{L}\p{N}_.:-]+(?: [\p{L}\p{N}_.:-]+)*$/u;
 
+// PR 番号は 1 以上の数字だけ（0・先頭ゼロは不可）。
 const POSITIVE_NUMBER_PATTERN = /^[1-9][0-9]{0,8}$/;
 // ラベル操作の対応表（parse 側）と、runTaskCommand の振り分け（REVIEW_LABEL_OPERATIONS）の元を 1 か所にそろえる。値は [操作名, PR 番号を取るか]。
 const REVIEW_LABEL_COMMANDS = Object.freeze({
@@ -272,6 +276,13 @@ function splitFlag(tokens, index) {
   return { name: token, value: tokens[index + 1], consumed: 1 };
 }
 
+// 検索語は、空白区切りの各語が「文字・数字・_ . -」だけ（`label:` / `-label:` の接頭辞のみ可）のときだけ通す。
+// 括弧・引用符・ほかの修飾子・論理演算子を含む語は拒否する。
+function isSafeSearchQuery(value) {
+  if (value.trim() === '' || [...value].length > ISSUE_LIST_MAX_SEARCH_CHARS) return false;
+  return value.trim().split(/ +/).every((term) => SEARCH_TERM_PATTERN.test(term) && !SEARCH_OPERATOR_PATTERN.test(term));
+}
+
 // `gh issue list` は読み取り専用。--state / --search / --limit / --label / --json だけを受ける（issue #520）。
 // --web（ブラウザを開く）・--jq / --template（任意式の評価）・--repo / -R・短縮形・位置引数は拒否する。
 // 検索語は `--search=<値>` の 1 引数に組み立て直し、先頭が `-` の検索構文でも別フラグとして読まれないようにする。
@@ -286,7 +297,7 @@ function parseGhIssueList(tokens) {
     if (!['--state', '--search', '--limit', '--label', '--json'].includes(name)) return fail(`argument not allowed: ${JSON.stringify(token)}`);
     if (typeof value !== 'string' || PR_TITLE_FORBIDDEN_PATTERN.test(value)) return fail(`invalid value for ${name}`);
     if (name === '--label') {
-      if (!isSafeLabelName(value) || labels.length >= ISSUE_LIST_MAX_LABELS) return fail('invalid --label');
+      if (!isSafeLabelName(value) || !LIST_LABEL_PATTERN.test(value) || labels.length >= ISSUE_LIST_MAX_LABELS) return fail('invalid --label');
       labels.push(value);
     } else {
       if (seen.has(name)) return fail(`${name} specified more than once`);
@@ -295,7 +306,7 @@ function parseGhIssueList(tokens) {
         if (!ISSUE_LIST_STATES.includes(value)) return fail('invalid --state');
         args.push('--state', value);
       } else if (name === '--search') {
-        if (value.trim() === '' || [...value].length > ISSUE_LIST_MAX_SEARCH_CHARS) return fail('invalid --search');
+        if (!isSafeSearchQuery(value)) return fail('invalid --search');
         args.push(`--search=${value}`);
       } else if (name === '--limit') {
         if (!DIGITS_PATTERN.test(value) || Number(value) < 1 || Number(value) > ISSUE_LIST_MAX_LIMIT) return fail(`--limit must be between 1 and ${ISSUE_LIST_MAX_LIMIT}`);

@@ -248,7 +248,7 @@ test('拒否: gh のリポジトリ指定・ファイル読み込み・ブラウ
     ['gh', 'pr', 'close', '1'],
     ['gh', 'pr', 'edit', '1'],
     ['gh', 'pr', 'checkout', '1'],
-    ['gh', 'issue', 'close', '1'],
+    ['gh', 'issue', 'reopen', '1'],
     ['gh', 'repo', 'delete', 'x/y'],
     ['gh', 'auth', 'token'],
     ['gh', 'secret', 'list'],
@@ -5785,6 +5785,292 @@ test('実行: gh issue save-image は差し替えが無ければ検証つきの�
     const result = await fixture.save(saveCommand('race.png'), { fs: Object.create(fs) });
     assert.equal(result.code, 0, result.messages.join(''));
     assert.deepEqual(fs.readFileSync(path.join(fixture.io, 'race.png')), PNG_BYTES);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+// ─── issue の本文更新・close・ラベル削除（issue #522） ─────────────────────
+
+test('許可: gh issue edit は --body-file（本文更新）と --remove-label（ラベル削除）を単独で受け、gh issue close は --reason の許可値だけを受ける', () => {
+  const edit = (...args) => parseTaskCommand(['gh', 'issue', 'edit', ...args]);
+  assert.deepEqual(edit('5', '--body-file', 'body.md'), { ok: true, bin: 'gh', operation: 'issue-edit-body', number: '5', textFiles: { body: 'body.md' }, needsGitHub: true });
+  assert.deepEqual(edit('--body-file=body.md', '5').textFiles, { body: 'body.md' });
+  assert.deepEqual(edit('5', '--remove-label', 'bug'), { ok: true, bin: 'gh', operation: 'issue-remove-label', number: '5', removeLabels: ['bug'], needsGitHub: true });
+  assert.deepEqual(edit('5', '--remove-label', 'good first issue', '--remove-label=不具合').removeLabels, ['good first issue', '不具合']);
+
+  const close = (...args) => parseTaskCommand(['gh', 'issue', 'close', ...args]);
+  assert.deepEqual(close('5'), { ok: true, bin: 'gh', operation: 'issue-close', number: '5', reason: undefined, needsGitHub: true });
+  assert.equal(close('5', '--reason', 'completed').reason, 'completed');
+  assert.equal(close('--reason=completed', '5').reason, 'completed');
+  assert.equal(close('5', '--reason', 'not planned').reason, 'not planned');
+  assert.equal(close('5', '--reason', 'not_planned').reason, 'not planned');
+});
+
+test('拒否: gh issue edit の --body-file / --remove-label と gh issue close は、別リポジトリ指定・許可外のフラグ・値・併用をすべて拒否する', () => {
+  const rejected = [
+    // 別リポジトリ指定
+    ['gh', 'vektor-inc/other', 'issue', 'edit', '5', '--body-file', 'body.md'],
+    ['gh', 'vektor-inc/other', 'issue', 'edit', '5', '--remove-label', 'bug'],
+    ['gh', 'vektor-inc/other', 'issue', 'close', '5'],
+    ['gh', 'VEKTOR-INC/vk-terminals', 'issue', 'close', '5', '--reason', 'completed'],
+    // --body-file のファイル名（パス区切り・..・絶対パス・制御文字・空・欠落・重複・--body との併用）
+    ...['/etc/passwd', '../body.md', 'sub/body.md', '..', 'a..b.md', '.hidden', 'body.', '', 'a\u0000b', 'a\nb.md', 'a\u001bb.md', '-x', 'a b.md'].map((name) => ['gh', 'issue', 'edit', '5', '--body-file', name]),
+    ['gh', 'issue', 'edit', '5', '--body-file'],
+    ['gh', 'issue', 'edit', '5', '--body-file', 'a', '--body-file', 'b'],
+    ['gh', 'issue', 'edit', '5', '--body-file', 'a', '--body', 'x'],
+    ['gh', 'issue', 'edit', '5', '--body-file', 'a', '--title', 'x'],
+    ['gh', 'issue', 'edit', '--body-file', 'a'],
+    ['gh', 'issue', 'edit', '5', '--body-file', 'a', '--repo', 'o/r'],
+    // 3 種類の併用（追加・本文・削除は 1 回の edit に混ぜない）
+    ['gh', 'issue', 'edit', '5', '--body-file', 'a', '--add-label', 'bug'],
+    ['gh', 'issue', 'edit', '5', '--body-file', 'a', '--add-assignee', 'kurudrive'],
+    ['gh', 'issue', 'edit', '5', '--body-file', 'a', '--remove-label', 'bug'],
+    ['gh', 'issue', 'edit', '5', '--remove-label', 'bug', '--add-label', 'bug2'],
+    ['gh', 'issue', 'edit', '5', '--remove-label', 'bug', '--add-assignee', 'kurudrive'],
+    // --remove-label の値
+    ...['', ' x', 'a,b', '"bug"', '-bug', 'a\nb', 'a\u0007b', 'a'.repeat(51)].map((label) => ['gh', 'issue', 'edit', '5', '--remove-label', label]),
+    ['gh', 'issue', 'edit', '5', '--remove-label'],
+    ['gh', 'issue', 'edit', '5', '--remove-label', 'bug', '--remove-assignee', 'kurudrive'],
+    ['gh', 'issue', 'edit', '5', '--remove-label', 'bug', '--repo', 'o/r'],
+    ['gh', 'issue', 'edit', '5', '--remove-label', 'bug', '--milestone', 'm'],
+    // gh issue close
+    ['gh', 'issue', 'close'],
+    ['gh', 'issue', 'close', 'abc'],
+    ['gh', 'issue', 'close', '5', '7'],
+    ['gh', 'issue', 'close', 'https://github.com/o/r/issues/5'],
+    ['gh', 'issue', 'close', '5', '--comment', 'bye'],
+    ['gh', 'issue', 'close', '5', '-c', 'bye'],
+    ['gh', 'issue', 'close', '5', '--duplicate-of', '3'],
+    ['gh', 'issue', 'close', '5', '--reason', 'duplicate'],
+    ['gh', 'issue', 'close', '5', '--reason', 'Completed'],
+    ['gh', 'issue', 'close', '5', '--reason', ''],
+    ['gh', 'issue', 'close', '5', '--reason', '__proto__'],
+    ['gh', 'issue', 'close', '5', '--reason', 'constructor'],
+    ['gh', 'issue', 'close', '5', '--reason', 'completed\n'],
+    ['gh', 'issue', 'close', '5', '--reason'],
+    ['gh', 'issue', 'close', '5', '--reason', 'completed', '--reason', 'completed'],
+    ['gh', 'issue', 'close', '5', '--repo', 'o/r'],
+    ['gh', 'issue', 'close', '5', '-R', 'o/r'],
+    ['gh', 'issue', 'close', '5', '--unknown'],
+  ];
+  for (const command of rejected) {
+    const result = parseTaskCommand(command);
+    assert.equal(result.ok, false, JSON.stringify(command));
+    assert.match(result.error, /^task command rejected/);
+  }
+});
+
+// gh issue edit / close / view だけを差し替える spawnSync。applied は更新後に gh issue view が返す内容（省略時は依頼どおり反映された gh）。
+function issueUpdateHarness(fixture, { applied, editStatus = 0, closeStatus = 0, viewStatus = 0, viewStdout } = {}) {
+  const calls = [];
+  let last = {};
+  const spawnSync = (bin, args, options) => {
+    if (bin !== fixture.env.VK_TASK_GH) return childProcess.spawnSync(bin, args, { ...options, stdio: 'pipe' });
+    calls.push(args);
+    if (args[0] === 'issue' && args[1] === 'edit') {
+      last = { body: args.includes('--body') ? args[args.indexOf('--body') + 1] : undefined, labels: [] };
+      return { status: editStatus, stdout: '', stderr: editStatus === 0 ? '' : 'edit failed\n' };
+    }
+    if (args[0] === 'issue' && args[1] === 'close') {
+      const reason = args.includes('--reason') ? args[args.indexOf('--reason') + 1] : undefined;
+      last = { state: 'CLOSED', stateReason: reason === 'not planned' ? 'NOT_PLANNED' : 'COMPLETED' };
+      return { status: closeStatus, stdout: '', stderr: closeStatus === 0 ? '' : 'close failed\n' };
+    }
+    if (args[0] === 'issue' && args[1] === 'view') return { status: viewStatus, stdout: viewStdout !== undefined ? viewStdout : JSON.stringify(applied || last), stderr: viewStatus === 0 ? '' : 'view failed\n' };
+    return { status: 1, stdout: '', stderr: 'unexpected\n' };
+  };
+  return { calls, spawnSync };
+}
+
+test('実行: gh issue edit --body-file はファイルの内容を argv の値として渡し、拘束した --repo だけで更新して、読み戻しが一致したときだけ成功する', () => {
+  const fixture = createMemberFixture();
+  try {
+    writeIo(fixture, 'body.md', PR_BODY);
+    const stdout = [];
+    const { calls, spawnSync } = issueUpdateHarness(fixture);
+    const result = fixture.runMember(['gh', 'issue', 'edit', '7', '--body-file', 'body.md'], { spawnSync, writeOut: (m) => stdout.push(m) });
+    assert.equal(result.code, 0, result.messages.join(''));
+    assert.deepEqual(calls, [
+      ['issue', 'edit', '7', '--body', PR_BODY, '--repo', 'vektor-inc/vk-terminals'],
+      ['issue', 'view', '7', '--json', 'body', '--repo', 'vektor-inc/vk-terminals'],
+    ]);
+    assert.match(stdout.join(''), /updated issue #7: body/);
+
+    // CRLF → LF と末尾の空白の正規化だけは一致とみなす。
+    writeIo(fixture, 'body.md', 'new body\n');
+    const normalized = issueUpdateHarness(fixture, { applied: { body: 'new body\r\n\r\n' } });
+    assert.equal(fixture.runMember(['gh', 'issue', 'edit', '7', '--body-file', 'body.md'], { spawnSync: normalized.spawnSync, writeOut: () => {} }).code, 0);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('実行: gh issue edit --body-file は更新・読み戻しの失敗や、読み戻した本文が指定と違うとき（権限不足で何も反映されないとき）に成功を返さない', () => {
+  const fixture = createMemberFixture();
+  try {
+    writeIo(fixture, 'body.md', 'new body\n');
+    const command = ['gh', 'issue', 'edit', '7', '--body-file', 'body.md'];
+    const cases = [
+      { label: '更新失敗', options: { editStatus: 1 }, calls: 1, message: /gh issue edit failed/ },
+      { label: '読み戻し失敗', options: { viewStatus: 1 }, calls: 2, message: /could not verify/ },
+      { label: '読み戻しが不正な JSON', options: { viewStdout: 'not json' }, calls: 2, message: /could not verify/ },
+      { label: '何も反映されていない（旧値のまま）', options: { applied: { body: 'old' } }, calls: 2, message: /body of issue #7 does not match/ },
+      { label: '読み戻しに本文が無い', options: { applied: {} }, calls: 2, message: /body of issue #7 does not match/ },
+      { label: '読み戻しが null', options: { viewStdout: 'null' }, calls: 2, message: /does not match/ },
+    ];
+    for (const { label, options, calls: expectedCalls, message } of cases) {
+      const { calls, spawnSync } = issueUpdateHarness(fixture, options);
+      const stdout = [];
+      const result = fixture.runMember(command, { spawnSync, writeOut: (m) => stdout.push(m) });
+      assert.notEqual(result.code, 0, label);
+      assert.match(result.messages.join(''), message, label);
+      assert.equal(calls.length, expectedCalls, label);
+      assert.equal(stdout.join(''), '', label);
+    }
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('拒否: gh issue edit --body-file は不正な内容・ファイル・リンク・入出力フォルダ無しのとき、gh を一度も起動しない', () => {
+  const fixture = createMemberFixture();
+  try {
+    const contents = [
+      { label: 'ファイル無し', missing: true, message: /does not exist/ },
+      { label: '空', content: '', message: /empty or too large/ },
+      { label: '空白だけ', content: ' \n\t\n', message: /blank/ },
+      { label: 'NUL', content: 'a\u0000b', message: /control characters/ },
+      { label: 'ESC', content: 'a\u001b[31mb', message: /control characters/ },
+      { label: '不正な UTF-8', content: Buffer.from([0xc3, 0x28]), message: /not valid UTF-8/ },
+      { label: '256 KiB 超', content: Buffer.alloc(256 * 1024 + 1, 'a'), message: /empty or too large/ },
+      { label: '65536 文字超', content: 'a'.repeat(65537), message: /longer than 65536/ },
+      { label: 'シンボリックリンク', link: true, message: /not a plain file/ },
+      { label: 'ディレクトリ', dir: true, message: /not a plain file/ },
+    ];
+    for (const { label, content = 'x', missing, link, dir, message } of contents) {
+      for (const n of ['body.md', 'real.txt']) fs.rmSync(path.join(fixture.io, n), { recursive: true, force: true });
+      if (link) {
+        writeIo(fixture, 'real.txt', 'x');
+        fs.symlinkSync(path.join(fixture.io, 'real.txt'), path.join(fixture.io, 'body.md'));
+      } else if (dir) fs.mkdirSync(path.join(fixture.io, 'body.md'));
+      else if (!missing) writeIo(fixture, 'body.md', content);
+      const result = fixture.runMember(['gh', 'issue', 'edit', '5', '--body-file', 'body.md']);
+      assert.equal(result.code, 2, label);
+      assert.match(result.messages.join(''), message, label);
+    }
+    for (const name of ['/etc/passwd', '../body.md', 'sub/body.md']) {
+      assert.equal(fixture.runMember(['gh', 'issue', 'edit', '5', '--body-file', name]).code, 2, name);
+    }
+    assert.equal(fixture.readCalls().length, 0, 'gh が起動された');
+  } finally {
+    fixture.cleanup();
+  }
+
+  const noMember = createMemberFixture({ withMember: false });
+  try {
+    const result = noMember.runMember(['gh', 'issue', 'edit', '5', '--body-file', 'body.md']);
+    assert.equal(result.code, 2);
+    assert.match(result.messages.join(''), /need the member input\/output folder/);
+    assert.equal(noMember.readCalls().length, 0);
+  } finally {
+    noMember.cleanup();
+  }
+});
+
+test('実行: gh issue edit --remove-label は拘束した --repo だけで外し、読み戻しで全ラベルが外れたときだけ成功する', () => {
+  const fixture = createFixture();
+  try {
+    const stdout = [];
+    const { calls, spawnSync } = issueUpdateHarness(fixture, { applied: { labels: [{ name: 'keep' }] } });
+    const result = run(fixture, ['gh', 'issue', 'edit', '5', '--remove-label', 'bug', '--remove-label', 'good first issue'], { spawnSync, writeOut: (m) => stdout.push(m) });
+    assert.equal(result.code, 0, result.messages.join(''));
+    assert.deepEqual(calls, [
+      ['issue', 'edit', '5', '--remove-label', 'bug', '--remove-label', 'good first issue', '--repo', 'vektor-inc/vk-terminals'],
+      ['issue', 'view', '5', '--json', 'labels', '--repo', 'vektor-inc/vk-terminals'],
+    ]);
+    assert.match(stdout.join(''), /updated issue #5: removed labels/);
+
+    const cases = [
+      { label: '更新失敗', options: { editStatus: 1 }, calls: 1, message: /gh issue edit failed/ },
+      { label: '読み戻し失敗', options: { viewStatus: 1 }, calls: 2, message: /could not verify/ },
+      { label: '読み戻しが不正な JSON', options: { viewStdout: 'not json' }, calls: 2, message: /could not verify/ },
+      { label: 'labels が無い', options: { viewStdout: '{}' }, calls: 2, message: /could not verify/ },
+      { label: '権限不足で外れていない', options: { applied: { labels: [{ name: 'bug' }, { name: 'keep' }] } }, calls: 2, message: /"bug" is still on issue #5/ },
+      { label: '片方だけ外れた', options: { applied: { labels: [{ name: 'good first issue' }] } }, calls: 2, message: /"good first issue" is still on issue #5/ },
+    ];
+    for (const { label, options, calls: expectedCalls, message } of cases) {
+      const harness = issueUpdateHarness(fixture, options);
+      const out = [];
+      const failedRun = run(fixture, ['gh', 'issue', 'edit', '5', '--remove-label', 'bug', '--remove-label', 'good first issue'], { spawnSync: harness.spawnSync, writeOut: (m) => out.push(m) });
+      assert.notEqual(failedRun.code, 0, label);
+      assert.match(failedRun.messages.join(''), message, label);
+      assert.equal(harness.calls.length, expectedCalls, label);
+      assert.equal(out.join(''), '', label);
+    }
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('実行: gh issue close は拘束した --repo だけで close し、読み戻しで CLOSED（--reason 指定時は理由の一致も）を確認できたときだけ成功する', () => {
+  const fixture = createFixture();
+  try {
+    const stdout = [];
+    const plain = issueUpdateHarness(fixture);
+    assert.equal(run(fixture, ['gh', 'issue', 'close', '5'], { spawnSync: plain.spawnSync, writeOut: (m) => stdout.push(m) }).code, 0);
+    assert.deepEqual(plain.calls, [
+      ['issue', 'close', '5', '--repo', 'vektor-inc/vk-terminals'],
+      ['issue', 'view', '5', '--json', 'state,stateReason', '--repo', 'vektor-inc/vk-terminals'],
+    ]);
+    assert.match(stdout.join(''), /closed issue #5/);
+
+    for (const [given, passed] of [['completed', 'completed'], ['not planned', 'not planned'], ['not_planned', 'not planned']]) {
+      const harness = issueUpdateHarness(fixture);
+      assert.equal(run(fixture, ['gh', 'issue', 'close', '5', '--reason', given], { spawnSync: harness.spawnSync, writeOut: () => {} }).code, 0, given);
+      assert.deepEqual(harness.calls[0], ['issue', 'close', '5', '--reason', passed, '--repo', 'vektor-inc/vk-terminals']);
+    }
+
+    const cases = [
+      { label: 'close 失敗', command: ['5'], options: { closeStatus: 1 }, calls: 1, message: /gh issue close failed/ },
+      { label: '読み戻し失敗', command: ['5'], options: { viewStatus: 1 }, calls: 2, message: /could not verify/ },
+      { label: '読み戻しが不正な JSON', command: ['5'], options: { viewStdout: 'not json' }, calls: 2, message: /could not verify/ },
+      { label: 'まだ OPEN（権限不足で何も起きていない）', command: ['5'], options: { applied: { state: 'OPEN', stateReason: '' } }, calls: 2, message: /issue #5 is not closed/ },
+      { label: '読み戻しが null', command: ['5'], options: { viewStdout: 'null' }, calls: 2, message: /is not closed/ },
+      { label: '理由が食い違う', command: ['5', '--reason', 'completed'], options: { applied: { state: 'CLOSED', stateReason: 'NOT_PLANNED' } }, calls: 2, message: /close reason of issue #5 does not match/ },
+    ];
+    for (const { label, command, options, calls: expectedCalls, message } of cases) {
+      const harness = issueUpdateHarness(fixture, options);
+      const out = [];
+      const failedRun = run(fixture, ['gh', 'issue', 'close', ...command], { spawnSync: harness.spawnSync, writeOut: (m) => out.push(m) });
+      assert.notEqual(failedRun.code, 0, label);
+      assert.match(failedRun.messages.join(''), message, label);
+      assert.equal(harness.calls.length, expectedCalls, label);
+      assert.equal(out.join(''), '', label);
+    }
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('実行: 拒否された gh issue close / edit（本文・ラベル削除）は gh を一度も呼ばない', () => {
+  const fixture = createMemberFixture();
+  try {
+    writeIo(fixture, 'body.md', 'ok\n');
+    for (const command of [
+      ['gh', 'vektor-inc/other-repo', 'issue', 'close', '5'],
+      ['gh', 'issue', 'close', '5', '--comment', 'x'],
+      ['gh', 'issue', 'close', '5', '--reason', 'duplicate'],
+      ['gh', 'vektor-inc/other-repo', 'issue', 'edit', '5', '--body-file', 'body.md'],
+      ['gh', 'vektor-inc/other-repo', 'issue', 'edit', '5', '--remove-label', 'bug'],
+      ['gh', 'issue', 'edit', '5', '--body-file', 'body.md', '--remove-label', 'bug'],
+      ['gh', 'issue', 'edit', '5', '--remove-label', 'a,b'],
+    ]) {
+      const { calls, spawnSync } = issueUpdateHarness(fixture);
+      assert.equal(fixture.runMember(command, { spawnSync }).code, 2, JSON.stringify(command));
+      assert.equal(calls.length, 0, JSON.stringify(command));
+    }
+    assert.equal(fixture.readCalls().length, 0);
   } finally {
     fixture.cleanup();
   }

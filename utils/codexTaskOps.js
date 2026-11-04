@@ -36,6 +36,10 @@
 //     issue の添付画像を入出力フォルダ直下へ保存する `gh issue save-image <URL> --out <名前>` を持つ（issue #521）。
 //     画像の取得は GitHub の添付画像のホスト（完全一致の許可リスト）だけで、リダイレクトは各ホップでホストを再検査し、認証トークンは github.com にしか送らない。
 //     保存名・サイズ・画像形式（中身のマジックバイト）は入口が検査し、既存ファイルは上書きしない。
+//   - issue の本文更新（`gh issue edit <番号> --body-file <名前>`）・close（`gh issue close <番号> [--reason completed|"not planned"]`）・
+//     ラベル削除（`gh issue edit <番号> --remove-label <ラベル>`）を持つ（issue #522）。本文ファイルの読み込みと検査は --body-file の既存処理を再利用する。
+//     担当者・ラベルの追加（--add-*）、本文更新、ラベル削除は 1 回の gh issue edit に併用させず、それぞれ別の操作として実行する（読み戻しの照合を操作ごとに独立させるため）。
+//     成功の判定はどれも読み戻し（本文の一致・state が CLOSED・ラベルが外れたこと）で行い、gh の終了コードだけでは成功としない。
 const nodeFs = require('fs');
 const crypto = require('crypto');
 const path = require('path');
@@ -634,12 +638,17 @@ function parseReviewLabelCommand(operation, tokens, { withNumber }) {
   return { ok: true, bin: 'gh', args: [], needsGitHub: true, operation, label, number: tokens[0] };
 }
 
-// 作成済み issue への担当者・既存ラベルの追加は `gh issue edit <番号> --add-assignee <名前> --add-label <ラベル>` の形だけ（どちらも複数可、少なくとも 1 つ必須）。
-// 題名・本文・削除系・--repo などは許可リストに無いので拒否される。実行は入口が「ラベルの存在確認 → 更新 → 読み戻し」の順で行う。
+// 作成済み issue の更新は次の 3 通りの形だけ（issue #472 / #522）。互いに併用はできず、混ぜると拒否する（読み戻しの照合を操作ごとに独立させるため）。
+//   1. `gh issue edit <番号> --add-assignee <名前> --add-label <ラベル>`（どちらも複数可、少なくとも 1 つ必須）→ operation: issue-edit
+//   2. `gh issue edit <番号> --body-file <名前>`（本文の更新。入出力フォルダ直下のファイル名 1 つ）→ operation: issue-edit-body
+//   3. `gh issue edit <番号> --remove-label <ラベル>`（複数可）→ operation: issue-remove-label
+// 題名・--body・--milestone・--repo などは許可リストに無いので拒否される。実行は入口が「更新 → 読み戻し」の順で行う（1 はラベルの存在確認も先に行う）。
 function parseGhIssueEdit(tokens) {
   let number;
+  let bodyFile;
   const assignees = [];
   const labels = [];
+  const removeLabels = [];
   for (let i = 0; i < tokens.length; i += 1) {
     const token = tokens[i];
     if (hasUnsafeCharacter(token)) return fail('invalid argument');
@@ -659,12 +668,45 @@ function parseGhIssueEdit(tokens) {
       const value = readValue();
       if (!isSafeLabelName(value)) return fail('invalid --add-label');
       labels.push(value);
+    } else if (name === '--remove-label') {
+      const value = readValue();
+      if (!isSafeLabelName(value)) return fail('invalid --remove-label');
+      removeLabels.push(value);
+    } else if (name === '--body-file' && bodyFile === undefined) {
+      const value = readValue();
+      if (!isSafeMemberFileName(value)) return fail('--body-file must be a plain file name in the member input/output folder');
+      bodyFile = value;
     } else if (!token.startsWith('-') && number === undefined && DIGITS_PATTERN.test(token)) number = token;
     else return fail(`argument not allowed: ${JSON.stringify(token)}`);
   }
   if (number === undefined) return fail('number required');
-  if (assignees.length === 0 && labels.length === 0) return fail('--add-assignee or --add-label is required');
+  const kinds = [assignees.length > 0 || labels.length > 0, bodyFile !== undefined, removeLabels.length > 0].filter(Boolean).length;
+  if (kinds === 0) return fail('--add-assignee, --add-label, --body-file or --remove-label is required');
+  if (kinds > 1) return fail('--add-assignee / --add-label, --body-file and --remove-label cannot be combined');
+  if (bodyFile !== undefined) return { ok: true, bin: 'gh', operation: 'issue-edit-body', number, textFiles: { body: bodyFile }, needsGitHub: true };
+  if (removeLabels.length > 0) return { ok: true, bin: 'gh', operation: 'issue-remove-label', number, removeLabels, needsGitHub: true };
   return { ok: true, bin: 'gh', operation: 'issue-edit', number, assignees, labels, needsGitHub: true };
+}
+
+// issue の close は `gh issue close <番号> [--reason completed|"not planned"]` だけ（issue #522）。
+// --comment・--duplicate-of・--reason duplicate・--repo などは受けない。引用符なしの単独コマンドでは空白を含む引数を渡せないため、`not_planned` も `not planned` と同じ意味で受ける。
+const CLOSE_REASONS = Object.freeze({ completed: 'completed', 'not planned': 'not planned', not_planned: 'not planned' });
+function parseGhIssueClose(tokens) {
+  let number;
+  let reason;
+  for (let i = 0; i < tokens.length; i += 1) {
+    const token = tokens[i];
+    if (hasUnsafeCharacter(token)) return fail('invalid argument');
+    if (token === '--reason' || token.startsWith('--reason=')) {
+      const value = token === '--reason' ? tokens[i + 1] : token.slice('--reason='.length);
+      if (token === '--reason') i += 1;
+      if (reason !== undefined || typeof value !== 'string' || !Object.prototype.hasOwnProperty.call(CLOSE_REASONS, value)) return fail('--reason must be one of: completed, "not planned" (or not_planned)');
+      reason = CLOSE_REASONS[value];
+    } else if (!token.startsWith('-') && number === undefined && DIGITS_PATTERN.test(token)) number = token;
+    else return fail(`argument not allowed: ${JSON.stringify(token)}`);
+  }
+  if (number === undefined) return fail('number required');
+  return { ok: true, bin: 'gh', operation: 'issue-close', number, reason, needsGitHub: true };
 }
 
 // push は `git push <ブランチ名>` だけ。フラグ・refspec・複数指定は受けない（送る内容は入口が refs/heads/<b>:refs/heads/<b> に固定する）。
@@ -844,6 +886,11 @@ function parseTaskCommand(argv) {
       // 操作対象は起動時に固定したリポジトリだけ。別リポジトリの明示は受けない。
       if (targetRepo !== undefined) return fail('gh issue edit cannot target another repository');
       return parseGhIssueEdit(tokens);
+    }
+    if (group === 'issue' && action === 'close') {
+      // 操作対象は起動時に固定したリポジトリだけ。別リポジトリの明示は受けない。
+      if (targetRepo !== undefined) return fail('gh issue close cannot target another repository');
+      return parseGhIssueClose(tokens);
     }
     if (group === 'pr' && action === 'view') {
       const parsed = parseGhView(tokens, { allowedBooleanFlags: ['--comments'], numberRequired: true });
@@ -1740,6 +1787,101 @@ function executeIssueEdit({ parsed, binding, cwd, env, spawnSync, reject, writeO
   return 0;
 }
 
+// 本文の照合は、GitHub 側の改行コード（CRLF → LF）と末尾の空白の正規化を許す（gh pr edit の本文照合と同じ）。
+function normalizeBody(value) {
+  return String(value).replace(/\r\n/g, '\n').trimEnd();
+}
+
+/**
+ * `gh issue edit <番号> --body-file <名前>`（issue #522）。固定したリポジトリの issue 本文だけを更新する。
+ * 1. 本文ファイルを読んで検証する（ここまでに失敗したら gh を起動しない）。
+ * 2. 拘束した --repo だけを付けて gh issue edit --body を実行する（読んだ値はシェルを通さず argv で渡す）。
+ * 3. issue を読み戻し、本文が一致したときだけ成功とする（権限不足でも終了コード 0 で反映されないことがあるため、判定は 3 だけで行う）。
+ */
+function executeIssueEditBody({ parsed, binding, cwd, env, fsImpl, spawnSync, reject, writeOut, deps }) {
+  let texts;
+  try {
+    texts = readPrTextFiles(parsed.textFiles, { binding, fsImpl, deps });
+  } catch (error) {
+    return reject(`task command rejected: ${error instanceof TrustError ? error.message : 'body file could not be verified'}`);
+  }
+  const runGh = (args) => spawnSync(binding.gh, args, { cwd, env, encoding: 'utf8' });
+  const failed = (result) => Boolean(result.error) || result.status !== 0;
+  const detail = (result) => String(result.stderr || '').trim().split('\n')[0] || (result.error && result.error.code) || `exit ${result.status}`;
+  const edited = runGh(withBoundRepository(['issue', 'edit', parsed.number, '--body', texts.body], binding.repo));
+  if (failed(edited)) return reject(`task command failed: gh issue edit failed: ${detail(edited)}`);
+  const viewed = runGh(withBoundRepository(['issue', 'view', parsed.number, '--json', 'body'], binding.repo));
+  if (failed(viewed)) return reject(`task command failed: could not verify the update: ${detail(viewed)}`);
+  let issue;
+  try {
+    issue = JSON.parse(String(viewed.stdout));
+  } catch (error) {
+    return reject('task command failed: could not verify the update: unreadable response');
+  }
+  if (!(typeof (issue && issue.body) === 'string' && normalizeBody(issue.body) === normalizeBody(texts.body))) {
+    return reject(`task command failed: the update was not applied: body of issue #${parsed.number} does not match`);
+  }
+  writeOut(`updated issue #${parsed.number}: body\n`);
+  return 0;
+}
+
+/**
+ * `gh issue edit <番号> --remove-label …`（issue #522）。固定したリポジトリの issue からラベルを外す。
+ * gh issue edit は権限不足でも終了コード 0 で何もしないことがあるため、成功の判定は読み戻しで指定ラベルがすべて外れていることを確かめて行う。
+ */
+function executeIssueRemoveLabel({ parsed, binding, cwd, env, spawnSync, reject, writeOut }) {
+  const runGh = (args) => spawnSync(binding.gh, args, { cwd, env, encoding: 'utf8' });
+  const failed = (result) => Boolean(result.error) || result.status !== 0;
+  const detail = (result) => String(result.stderr || '').trim().split('\n')[0] || (result.error && result.error.code) || `exit ${result.status}`;
+  const editArgs = ['issue', 'edit', parsed.number];
+  for (const label of parsed.removeLabels) editArgs.push('--remove-label', label);
+  const edited = runGh(withBoundRepository(editArgs, binding.repo));
+  if (failed(edited)) return reject(`task command failed: gh issue edit failed: ${detail(edited)}`);
+  const viewed = runGh(withBoundRepository(['issue', 'view', parsed.number, '--json', 'labels'], binding.repo));
+  if (failed(viewed)) return reject(`task command failed: could not verify the update: ${detail(viewed)}`);
+  let issue;
+  try {
+    issue = JSON.parse(String(viewed.stdout));
+  } catch (error) {
+    return reject('task command failed: could not verify the update: unreadable response');
+  }
+  if (!Array.isArray(issue && issue.labels)) return reject('task command failed: could not verify the update: unreadable response');
+  const currentLabels = new Set(issue.labels.map((item) => item && item.name));
+  const remaining = parsed.removeLabels.find((label) => currentLabels.has(label));
+  if (remaining !== undefined) return reject(`task command failed: the update was not applied: ${JSON.stringify(remaining)} is still on issue #${parsed.number}`);
+  writeOut(`updated issue #${parsed.number}: removed labels=${JSON.stringify(parsed.removeLabels)}\n`);
+  return 0;
+}
+
+/**
+ * `gh issue close <番号> [--reason …]`（issue #522）。固定したリポジトリの issue を close する。
+ * 成功の判定は読み戻しで state が CLOSED になったことを確かめて行う（--reason を指定したときは stateReason の一致も見る）。
+ */
+function executeIssueClose({ parsed, binding, cwd, env, spawnSync, reject, writeOut }) {
+  const runGh = (args) => spawnSync(binding.gh, args, { cwd, env, encoding: 'utf8' });
+  const failed = (result) => Boolean(result.error) || result.status !== 0;
+  const detail = (result) => String(result.stderr || '').trim().split('\n')[0] || (result.error && result.error.code) || `exit ${result.status}`;
+  const closeArgs = ['issue', 'close', parsed.number];
+  if (parsed.reason !== undefined) closeArgs.push('--reason', parsed.reason);
+  const closed = runGh(withBoundRepository(closeArgs, binding.repo));
+  if (failed(closed)) return reject(`task command failed: gh issue close failed: ${detail(closed)}`);
+  const viewed = runGh(withBoundRepository(['issue', 'view', parsed.number, '--json', 'state,stateReason'], binding.repo));
+  if (failed(viewed)) return reject(`task command failed: could not verify the update: ${detail(viewed)}`);
+  let issue;
+  try {
+    issue = JSON.parse(String(viewed.stdout));
+  } catch (error) {
+    return reject('task command failed: could not verify the update: unreadable response');
+  }
+  if (!(issue && issue.state === 'CLOSED')) return reject(`task command failed: the update was not applied: issue #${parsed.number} is not closed`);
+  const expectedReason = parsed.reason === undefined ? undefined : parsed.reason.toUpperCase().replace(' ', '_');
+  if (expectedReason !== undefined && issue.stateReason !== expectedReason) {
+    return reject(`task command failed: the update was not applied: close reason of issue #${parsed.number} does not match`);
+  }
+  writeOut(`closed issue #${parsed.number}${parsed.reason === undefined ? '' : `: reason=${JSON.stringify(parsed.reason)}`}\n`);
+  return 0;
+}
+
 // PR のタイトル・本文のファイルを読む（gh を起動する前に呼ぶ）。入出力フォルダの検証と読み込みは member start と同じ（readMemberInput）。
 // 検証を通らなければ TrustError。返すのは { title, body }（指定の無い項目は undefined）。
 function readPrTextFiles(textFiles, { binding, fsImpl, deps }) {
@@ -1813,7 +1955,7 @@ function executePrEdit({ parsed, binding, cwd, env, fsImpl, spawnSync, reject, w
   } catch (error) {
     return reject('task command failed: could not verify the update: unreadable response');
   }
-  const normalize = (value) => String(value).replace(/\r\n/g, '\n').trimEnd();
+  const normalize = normalizeBody;
   const titleMismatch = title !== undefined && !(typeof (pr && pr.title) === 'string' && pr.title === title);
   const bodyMismatch = body !== undefined && !(typeof (pr && pr.body) === 'string' && normalize(pr.body) === normalize(body));
   if (titleMismatch || bodyMismatch) {
@@ -2847,6 +2989,9 @@ function runTaskCommand(argv, deps = {}) {
     return executeReviewLabel({ parsed, binding, explicitGitHubTarget, spawnSync, env, cwd: labelCwd, reject, write, writeOut });
   }
   if (parsed.operation === 'issue-edit') return executeIssueEdit({ parsed, binding, cwd, env, spawnSync, reject, writeOut });
+  if (parsed.operation === 'issue-edit-body') return executeIssueEditBody({ parsed, binding, cwd, env, fsImpl, spawnSync, reject, writeOut, deps });
+  if (parsed.operation === 'issue-remove-label') return executeIssueRemoveLabel({ parsed, binding, cwd, env, spawnSync, reject, writeOut });
+  if (parsed.operation === 'issue-close') return executeIssueClose({ parsed, binding, cwd, env, spawnSync, reject, writeOut });
   if (parsed.operation === 'pr-edit') return executePrEdit({ parsed, binding, cwd, env, fsImpl, spawnSync, reject, writeOut, deps });
   if (parsed.operation === 'pr-merge') return executePrMerge({ parsed, binding, cwd, env, spawnSync, reject, writeOut });
   if (parsed.operation === 'issue-image-save') return executeIssueImageSave({ parsed, binding, env, fsImpl, spawnSync, reject, writeOut, deps });

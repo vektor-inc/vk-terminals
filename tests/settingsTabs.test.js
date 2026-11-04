@@ -1476,3 +1476,32 @@ test('deriveSettingsTargetPathsForGroups: tab 内 group の保存先を重複な
     { targetPaths: [null, '', '/tmp/b.json'] },
   ]), ['/tmp/a.json', '/tmp/b.json', '/tmp/c.json']);
 });
+
+test('normalizeSettingsTabContent: openFolder は label と path が有効なものだけ残し、create は明示的な true のときだけ有効', () => {
+  assert.deepEqual(normalizeSettingsTabContent([
+    { type: 'openFolder', label: 'ルールを開く', path: '~/.vk-agents/overrides/rules', create: true },
+    { type: 'openFolder', label: '同梱を開く', path: '/Applications/App/Contents/Resources' },
+    { type: 'openFolder', label: '文字列の true は無効', path: '/a', create: 'true' },
+    { type: 'openFolder', label: '未知のプロパティは持ち込まない', path: '/a', create: true, extra: 'x' },
+  ]), [
+    { type: 'openFolder', label: 'ルールを開く', path: '~/.vk-agents/overrides/rules', create: true },
+    { type: 'openFolder', label: '同梱を開く', path: '/Applications/App/Contents/Resources', create: false },
+    { type: 'openFolder', label: '文字列の true は無効', path: '/a', create: false },
+    { type: 'openFolder', label: '未知のプロパティは持ち込まない', path: '/a', create: true },
+  ]);
+});
+
+test('normalizeSettingsTabContent: openFolder の不正な label / path は黙って捨てる', () => {
+  assert.deepEqual(normalizeSettingsTabContent([
+    { type: 'openFolder', label: '', path: '/a' },
+    { type: 'openFolder', label: '   ', path: '/a' },
+    { type: 'openFolder', path: '/a' },
+    { type: 'openFolder', label: '相対パス', path: 'rules/dir' },
+    { type: 'openFolder', label: '~user 形式', path: '~root/x' },
+    { type: 'openFolder', label: '~ だけ', path: '~' },
+    { type: 'openFolder', label: 'NUL を含む', path: '/a\0b' },
+    { type: 'openFolder', label: '長すぎる', path: `/${'a'.repeat(5000)}` },
+    { type: 'openFolder', label: '文字列でない', path: 123 },
+    { type: 'openFolder', label: 'path なし' },
+  ]), []);
+});

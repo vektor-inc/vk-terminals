@@ -11,6 +11,7 @@ const { execFile } = require('child_process');
 const { promisify } = require('util');
 const { pathToFileURL } = require('url');
 const { stripAnsiForPattern } = require('./utils/stripAnsi');
+const { buildBundledRoots, resolveOpenFolderRequest } = require('./utils/openPathPolicy');
 const {
   createTrustPromptGate,
   isTaskPolicyCodexLaunch,
@@ -2130,6 +2131,32 @@ ipcMain.handle('shell:open-external', async (_event, url) => {
     console.error(`${LOG_PREFIX} openExternal failed:`, e.message);
     return false;
   }
+});
+
+// 設定パネルの openFolder ブロック（issue #525）。開いてよい場所・作成の可否は
+// utils/openPathPolicy.js で判定し、ここでは renderer 由来の値を信用せずに必ず再判定する。
+// shell.openPath のエラー文字列は画面へ返さず、ログにだけ出す。
+ipcMain.handle('shell:open-path', async (_event, rawPath, create) => {
+  const decision = await resolveOpenFolderRequest({
+    rawPath,
+    create: create === true,
+    homeDir: os.homedir(),
+    bundledRoots: buildBundledRoots({
+      isPackaged: app.isPackaged,
+      resourcesPath: process.resourcesPath,
+      resourceRoot: RESOURCE_ROOT,
+    }),
+  });
+  if (!decision.ok) {
+    console.warn(`${LOG_PREFIX} openPath refused: ${decision.reason}`);
+    return { ok: false, reason: decision.reason };
+  }
+  const openError = await electronShell.openPath(decision.path);
+  if (openError) {
+    console.error(`${LOG_PREFIX} openPath failed:`, openError);
+    return { ok: false, reason: 'open-failed' };
+  }
+  return { ok: true, created: decision.created };
 });
 
 // 入力待ち検知時の通知音。引数を取らないので検証対象は無い。

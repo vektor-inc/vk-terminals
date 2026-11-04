@@ -2277,7 +2277,9 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
   const writeToPty = ptyProcess.write.bind(ptyProcess);
   ptyProcess.write = (data) => {
     conditionalTerminalInput.markChanged(id);
-    silentWriteRefresher.noteWrite(id);
+    // 利用者入力・API 入力・Enter の後は再描画が遅れうるため採り直さない（予約も取り消す）。
+    // 端末の制御応答だけの入力は terminal:input 側で予約し直す。
+    silentWriteRefresher.noteOutput(id);
     return writeToPty(data);
   };
 
@@ -2495,7 +2497,7 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
       conditionalTerminalInput.markChanged(id);
       // 出力が届いたので、出力の無い書き込みを前提にした採り直しの予約は取り消す。
       silentWriteRefresher.noteOutput(id);
-      screenSnapshot =conditionalTerminalInput.capture(id, agentGenerations.get(id));
+      screenSnapshot = conditionalTerminalInput.capture(id, agentGenerations.get(id));
     }
     // promptWatcher が Enter を書いた場合は上の識別値がその場で古くなり、安全側で拒否される。
     if (promptWatcher) promptWatcher(data);
@@ -2582,6 +2584,8 @@ ipcMain.on('terminal:input', (event, id, data) => {
     // 信頼関連の自動 Enter を止める。
     disarmTrustAutomationForUserInput(id, data);
     p.write(data);
+    // 画面出力を伴わない端末自身の制御応答だけのときに限り、静止後の識別値の採り直しを予約する。
+    if (!containsUserTerminalInput(data)) silentWriteRefresher.noteWrite(id);
   }
 });
 

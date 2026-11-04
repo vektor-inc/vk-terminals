@@ -274,10 +274,28 @@ test('issue #517: ペイン削除後・世代不明のときは何も送らな�
 test('issue #517: main は書き込み・リサイズで採り直しを予約し、出力で取り消し、renderer へ送る', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
   const rendererSource = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'app.js'), 'utf8');
-  assert.match(source, /ptyProcess\.write = \(data\) => \{\s*conditionalTerminalInput\.markChanged\(id\);\s*silentWriteRefresher\.noteWrite\(id\)/);
+  assert.match(source, /ptyProcess\.write = \(data\) => \{\s*conditionalTerminalInput\.markChanged\(id\);[\s\S]*?silentWriteRefresher\.noteOutput\(id\);\s*return writeToPty\(data\)/);
   assert.match(source, /conditionalTerminalInput\.markChanged\(id\);\s*silentWriteRefresher\.noteWrite\(id\);\s*try \{ p\.resize/);
   assert.match(source, /silentWriteRefresher\.noteOutput\(id\)/);
   assert.match(source, /'terminal:screen-refresh'/);
   assert.match(rendererSource, /VKIpc\.on\('terminal:screen-refresh'/);
   assert.match(fs.readFileSync(path.join(__dirname, '..', 'preload.js'), 'utf8'), /'terminal:screen-refresh'/);
+});
+
+test('issue #517: ラッパー経由の書き込み（利用者入力・API・Enter）では採り直しを予約せず、端末の制御応答だけの terminal:input で予約し直す', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+  const wrapper = source.match(/ptyProcess\.write = \(data\) => \{[\s\S]*?\n  \};/)[0];
+  assert.doesNotMatch(wrapper, /noteWrite/);
+  const handler = source.match(/ipcMain\.on\('terminal:input'[\s\S]*?\n\}\);/)[0];
+  assert.match(handler, /p\.write\(data\);(?:\s*\/\/[^\n]*)*\s*if \(!containsUserTerminalInput\(data\)\) silentWriteRefresher\.noteWrite\(id\);/);
+});
+
+test('issue #517: 端末の自動応答は利用者入力ではなく、キー入力・Enter・矢印は利用者入力と判定される', () => {
+  const { containsUserTerminalInput } = require('../utils/terminalUserInput');
+  for (const auto of ['\x1b[?1;2c', '\x1b[0n', '\x1b[12;40R', '\x1b[I', '\x1b[O', '\x1b[?2004;2$y']) {
+    assert.equal(containsUserTerminalInput(auto), false, JSON.stringify(auto));
+  }
+  for (const user of ['\r', 'a', '\x1b[B', '\x1b[A']) {
+    assert.equal(containsUserTerminalInput(user), true, JSON.stringify(user));
+  }
 });

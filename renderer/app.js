@@ -234,18 +234,18 @@ const RUNNING_INPUT_GUARD_MS = 200;
 // 値は起動時に main プロセス（app:get-config）から取得する。
 let agentRoomEnabled = false;
 // 新規ペイン（＋ / 空グリッド「新規ペインを追加」）の既定挙動（issue #143）。
-// 値は起動時に main（app:get-config）から取得する。設定反映には再起動が必要（設定パネルの note 参照）。
+// 値は起動時に main（app:get-config）から取得する。保存後は main の定期監視で反映する。
 let newPaneStartupDir = '';
 let newPaneAutoLaunchClaude = false;
 // 起動時の最初のペインだけが使う AI エンジン・モデル（issue #419）。既定は従来どおり Claude Code。
 let initialPaneEngine = 'claude';
 let initialPaneCodexModel = '';
 // ペインを閉じる時の確認（issue #184）。'never' | 'busy' | 'always'（既定 'busy'）。
-// 値は起動時に main（app:get-config）から取得する。設定反映には再起動が必要（設定パネルの note 参照）。
+// 値は起動時に main（app:get-config）から取得する。保存後は main の定期監視で反映する。
 let confirmClosePref = 'busy';
 // ペイン内 URL のクリック挙動（issue #385）。'click'（既定・単クリックで開く） |
 // 'modifier'（従来どおり ⌘/Ctrl+クリックが必要）。
-// 値は起動時に main（app:get-config）から取得する。設定反映には再起動が必要（設定パネルの note 参照）。
+// 値は起動時に main（app:get-config）から取得する。保存後は main の定期監視で反映する。
 let terminalLinkClickModePref = 'click';
 let waitingExcludeCwdPatterns = [];
 let commandsConfigured = false;
@@ -1207,6 +1207,7 @@ function setExternalUrlToastInteractive(toast, interactive) {
 function showExternalUrlOpenFailedToast(url) {
   const toast = ensureExternalUrlToast();
   if (!toast) return;
+  toast.classList.remove('vk-toast--success');
   const copyButton = toast.querySelector('.vk-toast-copy');
   if (copyButton) copyButton.hidden = false;
   // コピーボタンを持つため、クリックを透過させない（上の setExternalUrlToastInteractive
@@ -1223,9 +1224,10 @@ function showExternalUrlOpenFailedToast(url) {
 // インフラ（issue #326）を再利用し、URL コピー専用のボタンだけ隠す。「呼び出し箇所ごとに
 // 吹き出しを出さない」という汎用トーストの設計方針（冒頭コメント参照）どおり、新しい
 // トースト実装は増やさない。
-function showGenericToast(message) {
+function showGenericToast(message, variant = 'default') {
   const toast = ensureExternalUrlToast();
   if (!toast) return;
+  toast.classList.toggle('vk-toast--success', variant === 'success');
   const copyButton = toast.querySelector('.vk-toast-copy');
   if (copyButton) copyButton.hidden = true;
   // 操作できる部品が無いため、クリックを下（ターミナル等）へ透過させる（上の
@@ -1651,6 +1653,104 @@ function renderSidebarMenu() {
 // 再起動案内の最新状態を保持する。
 let restartRequiredState = { restartRequired: false, tabs: [] };
 
+let configReflectionInitialized = false;
+let configReflectionRevision = -1;
+let configReflectionToastTimer = null;
+let lastConfigReflectionToastAt = 0;
+let lastConfigReflectionMessage = '';
+let pendingConfigReflection = false;
+let hasConfigReflected = false;
+let configReflectionCorrectionUntil = 0;
+let partialConfigReflection = false;
+let configFailedFiles = [];
+let restartRequiredKnown = false;
+let restartRequiredUnknownCount = 0;
+
+function updateConfigReadErrorNotices() {
+  document.querySelectorAll('.config-read-error').forEach((notice) => {
+    const signature = JSON.stringify(configFailedFiles);
+    if (notice.dataset.files === signature) return;
+    notice.dataset.files = signature;
+    notice.hidden = configFailedFiles.length === 0;
+    notice.querySelector('.config-read-error-files').replaceChildren(...configFailedFiles.map((file) => {
+      const item = document.createElement('li');
+      item.textContent = file;
+      return item;
+    }));
+  });
+}
+
+async function refreshConfigReflection() {
+  try { updateConfigReflection(await VKIpc.invoke('app:config-reflection')); } catch (_error) { /* 次の main 通知で再取得する。 */ }
+}
+
+function updateConfigReflection(state) {
+  if (!state || typeof state !== 'object' || state.revision <= configReflectionRevision) return;
+  configReflectionRevision = state.revision;
+  const failedFiles = [...new Set(state.failedFiles || [])].sort();
+  const firstFailure = configFailedFiles.length === 0 && failedFiles.length > 0;
+  const recovered = configFailedFiles.length > 0 && failedFiles.length === 0;
+  configFailedFiles = failedFiles;
+  updateConfigReadErrorNotices();
+  // 常設カードは live region にせず、状態の変化だけを既存の status トーストで通知する。
+  if (firstFailure) showGenericToast('設定を読み込めませんでした。設定ファイルを修正して保存してください');
+  else if (recovered) showGenericToast('設定ファイルの読み込みが復旧しました', 'success');
+  if (state.config) {
+    newPaneStartupDir = state.config.newPaneStartupDir;
+    newPaneAutoLaunchClaude = state.config.newPaneAutoLaunchClaude;
+    confirmClosePref = state.config.confirmClose;
+    terminalLinkClickModePref = state.config.terminalLinkClickMode;
+    waitingExcludeCwdPatterns = state.config.waitingExcludeCwdPatterns;
+  }
+  clearTimeout(configReflectionToastTimer);
+  if (failedFiles.length) pendingConfigReflection = false;
+  else if (configReflectionInitialized && (state.changedKeys?.length || state.eventChanged)) pendingConfigReflection = true;
+  if (pendingConfigReflection) configReflectionToastTimer = setTimeout(async () => {
+    await refreshRestartRequired();
+    flushConfigReflectionNotification();
+  }, 1200);
+  configReflectionInitialized = true;
+}
+
+function flushConfigReflectionNotification() {
+  const now = Date.now();
+  // 訂正期限を延長せず、後日の再起動専用設定による誤通知を防ぐ。
+  if (pendingConfigReflection && restartRequiredKnown && !configFailedFiles.length) {
+    hasConfigReflected = true;
+    configReflectionCorrectionUntil = now + 15000;
+  }
+  const decision = window.VKConfigReflectionPolicy.reflectionDecision({
+    pending: pendingConfigReflection || (now <= configReflectionCorrectionUntil && !!lastConfigReflectionMessage && restartRequiredKnown
+      && lastConfigReflectionMessage !== (restartRequiredState.restartRequired ? '一部の設定を反映しました' : '設定を反映しました')),
+    failed: configFailedFiles.length > 0,
+    restartRequired: restartRequiredKnown ? restartRequiredState.restartRequired : null,
+    lastMessage: lastConfigReflectionMessage, lastAt: lastConfigReflectionToastAt, now: Date.now(),
+  });
+  pendingConfigReflection = decision.pending;
+  if (decision.partial !== null) partialConfigReflection = hasConfigReflected && decision.partial;
+  updatePartialConfigReflectionNotices();
+  if (decision.message) {
+    showGenericToast(decision.message, 'success');
+    lastConfigReflectionMessage = decision.message;
+    lastConfigReflectionToastAt = Date.now();
+  }
+}
+
+function updatePartialConfigReflectionNotices() {
+  const text = '残りの設定は再起動後に反映されます';
+  document.querySelectorAll('#sidebar-restart-required, .settings-restart-notice').forEach((element) => {
+    let detail = element.querySelector('.config-reflection-partial');
+    if (!detail) {
+      detail = document.createElement('p');
+      detail.className = 'config-reflection-partial';
+      element.querySelector('p')?.after(detail);
+    }
+    const nextText = partialConfigReflection ? text : '';
+    if (detail.textContent !== nextText) detail.textContent = nextText;
+    if (detail.hidden !== !partialConfigReflection) detail.hidden = !partialConfigReflection;
+  });
+}
+
 let restartRequiredInflight = null;
 // 同時の読み直しは進行中の要求を共有する。
 function refreshRestartRequired() {
@@ -1662,22 +1762,26 @@ function refreshRestartRequired() {
 async function updateRestartRequired() {
   try {
     const state = await VKIpc.invoke('app:restart-required');
-    // 不正な IPC 応答でも設定パネルを開けるよう、空状態へ正規化する。
-    restartRequiredState = state && typeof state === 'object' && !Array.isArray(state)
-      && typeof state.restartRequired === 'boolean' && Array.isArray(state.tabs)
-      && state.tabs.every((tab) => typeof tab === 'string')
-      ? { restartRequired: state.restartRequired, tabs: state.restartRequired ? state.tabs : [] }
-      : { restartRequired: false, tabs: [] };
+    // 未確認時は直前の案内を保ち、成功と断定する通知を保留する。
+    restartRequiredKnown = !!(state && typeof state === 'object' && !Array.isArray(state)
+      && state.unknown !== true && typeof state.restartRequired === 'boolean' && Array.isArray(state.tabs)
+      && state.tabs.every((tab) => typeof tab === 'string'));
+    if (restartRequiredKnown) restartRequiredState = { restartRequired: state.restartRequired, tabs: state.restartRequired ? state.tabs : [] };
   } catch (_error) {
-    restartRequiredState = { restartRequired: false, tabs: [] };
+    restartRequiredKnown = false;
   }
+  // 未確認が続く場合も、内部エラーや内容をログへ流さない。
+  if (restartRequiredKnown) restartRequiredUnknownCount = 0;
+  else if (++restartRequiredUnknownCount === 3) console.warn('再起動要否を確認できません: restart-required.json');
+  if (restartRequiredKnown) partialConfigReflection = hasConfigReflected && restartRequiredState.restartRequired;
+  updatePartialConfigReflectionNotices();
   const notice = document.getElementById('sidebar-restart-required');
   if (notice) {
     if (!restartRequiredState.restartRequired && notice.contains(document.activeElement)) {
       [document.querySelector('#sidebar-settings button'), document.getElementById('settings-btn')]
         .find(canRestoreModalFocus)?.focus();
     }
-    notice.hidden = !restartRequiredState.restartRequired;
+    if (notice.hidden !== !restartRequiredState.restartRequired) notice.hidden = !restartRequiredState.restartRequired;
   }
   document.querySelectorAll('.settings-restart-notice').forEach((element) => {
     const hidden = !restartRequiredState.tabs.includes(element.dataset.tabId);
@@ -1685,7 +1789,7 @@ async function updateRestartRequired() {
       const panel = element.closest('.settings-tab-panel');
       document.getElementById(panel?.getAttribute('aria-labelledby'))?.focus();
     }
-    element.hidden = hidden;
+    if (element.hidden !== hidden) element.hidden = hidden;
   });
 }
 
@@ -1719,6 +1823,13 @@ function createSidebar() {
   restartNotice.innerHTML = '<p>設定の反映にアプリの再起動が必要です</p><button type="button" class="settings-secondary-button">設定を確認</button>';
   restartNotice.querySelector('button').addEventListener('click', () => openSettingsModal(restartRequiredState.tabs[0]));
   nav.insertBefore(restartNotice, inner);
+  const configError = document.createElement('div');
+  configError.id = 'sidebar-config-read-error';
+  configError.className = 'sidebar-restart-required sidebar-section-card';
+  configError.classList.add('config-read-error');
+  configError.hidden = true;
+  configError.innerHTML = '<p>設定を読み込めませんでした。設定ファイルを修正して保存してください</p><ul class="config-read-error-files"></ul>';
+  nav.insertBefore(configError, restartNotice);
   nav.appendChild(createSidebarSettingsCard());
   nav.appendChild(createTaskListContainer());
   nav.appendChild(createPaneStashContainer());
@@ -2164,7 +2275,7 @@ function updateWidgetFilter(section, info) {
 
   if (!info || !info.filterEnabled) {
     filter.hidden = true;
-    if (liveCount) liveCount.textContent = '';
+    if (liveCount && liveCount.textContent !== '') liveCount.textContent = '';
     return;
   }
 
@@ -2187,7 +2298,7 @@ function updateWidgetFilter(section, info) {
   }
   filter.value = info.filterMode;
   filter.hidden = false;
-  if (liveCount) liveCount.textContent = `${info.visibleItems}件表示`;
+  if (liveCount && liveCount.textContent !== `${info.visibleItems}件表示`) liveCount.textContent = `${info.visibleItems}件表示`;
 }
 
 // widgets:update で受けた中継ペイロード { widget, legacyNotice, commandsConfigured } を描画する。
@@ -2243,21 +2354,21 @@ function renderWidget(fromUpdate) {
   if (staleNotice) {
     if (setupStopped) {
       setStaleNoticeKind(staleNotice, 'setup');
-      staleNotice.hidden = false;
+      if (staleNotice.hidden !== (false)) staleNotice.hidden = false;
     } else if (stale) {
       setStaleNoticeKind(staleNotice, 'stale');
-      staleNotice.hidden = !shouldShow;
+      if (staleNotice.hidden !== (!shouldShow)) staleNotice.hidden = !shouldShow;
     } else if (legacyNotice) {
       staleNotice.dataset.kind = 'legacy';
-      staleNotice.textContent = WIDGET_LEGACY_NOTICE_TEXT;
-      staleNotice.hidden = !shouldShow;
+      if (staleNotice.textContent !== WIDGET_LEGACY_NOTICE_TEXT) staleNotice.textContent = WIDGET_LEGACY_NOTICE_TEXT;
+      if (staleNotice.hidden !== (!shouldShow)) staleNotice.hidden = !shouldShow;
     } else {
       // セットアップ未完了の案内（リンクつき）が不要になったら、中身ごと外す。
       if (staleNotice.dataset.kind === 'setup') {
         delete staleNotice.dataset.kind;
         staleNotice.replaceChildren();
       }
-      staleNotice.hidden = true;
+      if (staleNotice.hidden !== (true)) staleNotice.hidden = true;
     }
   }
 
@@ -2314,9 +2425,9 @@ function tickWidgetStale() {
   if (stale) {
     // セットアップ未完了と判定されているときは、その理由の文言のまま（タイマーで戻さない）。
     setStaleNoticeKind(staleNotice, setupPanel && setupPanel.isIncomplete() ? 'setup' : 'stale');
-    staleNotice.hidden = false;
+    if (staleNotice.hidden !== (false)) staleNotice.hidden = false;
   } else {
-    staleNotice.hidden = true;
+    if (staleNotice.hidden !== (true)) staleNotice.hidden = true;
   }
 }
 
@@ -2451,9 +2562,9 @@ function updateStashItem(paneId) {
     const status = t.displayStatus || 'idle';
     badge.dataset.status = status;
     const { label, ariaLabel } = getStatusPresentation(status);
-    badge.textContent = label;
-    if (ariaLabel) badge.setAttribute('aria-label', ariaLabel);
-    else badge.removeAttribute('aria-label');
+    if (badge.textContent !== label) badge.textContent = label;
+    if (ariaLabel && badge.getAttribute('aria-label') !== ariaLabel) badge.setAttribute('aria-label', ariaLabel);
+    else if (!ariaLabel && badge.hasAttribute('aria-label')) badge.removeAttribute('aria-label');
   }
   const titleEl = li.querySelector('.stash-item-title-row');
   if (titleEl) {
@@ -2717,11 +2828,11 @@ function updatePaneStatus(paneId) {
   //       idle は visibility:hidden により読み上げ対象外（aria-live 非発火）。
   // ラベル / aria-label のマッピングは getStatusPresentation に集約（renderLeaf と共用）。
   const { label, ariaLabel } = getStatusPresentation(status);
-  badge.textContent = label;
+  if (badge.textContent !== label) badge.textContent = label;
   if (ariaLabel) {
-    badge.setAttribute('aria-label', ariaLabel);
+    if (badge.getAttribute('aria-label') !== ariaLabel) badge.setAttribute('aria-label', ariaLabel);
   } else {
-    badge.removeAttribute('aria-label');
+    if (badge.hasAttribute('aria-label')) badge.removeAttribute('aria-label');
   }
 
   // フォールバック表示（司＝ペイン status 写像）は status に追従するため、ここで更新する。
@@ -4206,8 +4317,8 @@ function formatResetDateTimeJa(ms) {
 }
 
 function setTextWithTitle(el, text) {
-  el.textContent = text;
-  el.title = text;
+  if (el.textContent !== text) el.textContent = text;
+  if (el.title !== text) el.title = text;
 }
 
 // 期限切れ（Codex のみ・issue #399）区分の案内文。値・進捗バー・リセット行を差し替える。
@@ -4340,6 +4451,13 @@ function buildTranscriptUsageSection(u) {
 
 // 使用状況ビュー全体を描画する（読み取り専用）。
 function renderUsageView(container, usage, options = {}) {
+  // 同じ使用状況の再取得で live region 全体を読み直させない。
+  const next = document.createElement('div');
+  populateUsageView(next, usage, options);
+  if (container.innerHTML !== next.innerHTML) container.replaceChildren(...next.childNodes);
+}
+
+function populateUsageView(container, usage, options = {}) {
   container.innerHTML = '';
   if (!usage) {
     const p = document.createElement('p');
@@ -4399,6 +4517,13 @@ function buildCodexTokenUsageSection(tokens) {
 }
 
 function renderCodexUsageView(container, usage, options = {}) {
+  // 同じ使用状況の再取得で live region 全体を読み直させない。
+  const next = document.createElement('div');
+  populateCodexUsageView(next, usage, options);
+  if (container.innerHTML !== next.innerHTML) container.replaceChildren(...next.childNodes);
+}
+
+function populateCodexUsageView(container, usage, options = {}) {
   container.innerHTML = '';
   if (!usage) {
     return;
@@ -4445,7 +4570,7 @@ function renderSidebarUsage(usage) {
 
   if (!usage) {
     section.hidden = true;
-    body.replaceChildren();
+    if (body.childNodes.length) body.replaceChildren();
     return;
   }
 
@@ -4462,7 +4587,7 @@ function renderSidebarCodexUsage(usage) {
 
   if (!usage || usage.empty === true) {
     section.hidden = true;
-    body.replaceChildren();
+    if (body.childNodes.length) body.replaceChildren();
     return;
   }
 
@@ -4590,7 +4715,9 @@ function setupUsageBadge() {
   refreshUsageAndBadge();
   setInterval(refreshUsageAndBadge, USAGE_POLL_INTERVAL_MS);
   refreshRestartRequired();
-  setInterval(refreshRestartRequired, 5000);
+  VKIpc.on('app:config-reflection-updated', updateConfigReflection);
+  refreshConfigReflection();
+  setInterval(async () => { await refreshRestartRequired(); flushConfigReflectionNotification(); }, 5000);
   setInterval(() => {
     tickSidebarUsageReset();
     checkUsageResetAndRefetch();
@@ -5140,7 +5267,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
 
   const groupedTabs = useTabbedSettings ? groupSettingsGroupsByTab(settingsGroups, settingsTabs) : [];
   // 保存対象のフィールドを 1 つも持たないタブ（= 説明だけのタブ）を判別する。
-  // 「保存後、次回の起動から反映されます。」の継承抑止とフッターの出し分けに使う。
+  // 保存後の反映に関する注記の継承抑止とフッターの出し分けに使う。
   const tabHasFields = groupedTabs.map(({ groups }) => groups.some(
     (group) => Array.isArray(group.fields) && group.fields.length > 0
   ));
@@ -5185,7 +5312,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
           const targetHtml = targetPaths.length
             ? `<div class="settings-group-target settings-tab-target">保存先: ${targetPaths.map((targetPath) => `<code>${escText(targetPath)}</code>`).join(' / ')}</div>`
             : '';
-          // desc.note（「保存後、次回の起動から反映されます。」）は保存対象があるタブにだけ
+          // desc.note（保存後の反映に関する注記）は保存対象があるタブにだけ
           // 継承する。説明だけのタブに出すと保存できるかのような誤誘導になるため。
           const tabNote = (tab && tab.note) ? tab.note : (tabHasFields[tabIndex] ? desc.note : '');
           const noteHtml = tabNote ? `<p class="settings-note settings-tab-note">${escText(tabNote)}</p>` : '';
@@ -5259,6 +5386,10 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
   overlay.innerHTML = `
     <div class="settings-modal" role="dialog" aria-modal="true" aria-labelledby="${settingsTitleId}" tabindex="-1">
       ${settingsHeaderHtml}
+      <div class="config-read-error settings-config-read-error" hidden>
+        <p>設定を読み込めませんでした。設定ファイルを修正して保存してください</p>
+        <ul class="config-read-error-files"></ul>
+      </div>
       <div class="settings-view settings-view-config" role="region">
         ${settingsAvailable && desc.note && !useTabbedSettings ? `<p class="settings-note">${escText(desc.note)}</p>` : ''}
         ${settingsTargetHtml}
@@ -5282,6 +5413,8 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
   });
 
   const modal = overlay.querySelector('.settings-modal');
+  updateConfigReadErrorNotices();
+  updatePartialConfigReflectionNotices();
   if (restartTabId) {
     const index = settingsTabs.findIndex((tab) => tab.id === restartTabId);
     if (index >= 0) {
@@ -5325,7 +5458,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
   // 「今開いているモーダル」ではなくこのクロージャの overlay を対象にロックを解放し、
   // 二重オープンの抑止を壊す。寿命の判断は renderer/autoClose.js に集約してあり、
   // ここは「いつ武装し、いつ取り消すか」だけを決める。
-  const autoClose = createAutoCloseController({ onFire: () => close() });
+  const autoClose = createAutoCloseController({ onFire: () => { if (!configFailedFiles.length) close(); } });
   let unregisterEscapeLayer = () => {};
   let releaseFocusTrap = () => {};
   const close = () => {
@@ -5855,11 +5988,13 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
         const body = current.querySelector('.settings-content-status-body');
         current.dataset.tone = presentation.tone;
         if (body) {
-          body.innerHTML = renderApiServerStatusBody(presentation, apiHostEntry?.tabIndex);
+          const nextBody = document.createElement('div');
+          nextBody.innerHTML = renderApiServerStatusBody(presentation, apiHostEntry?.tabIndex);
+          if (body.innerHTML.trim() !== nextBody.innerHTML.trim()) body.replaceChildren(...nextBody.childNodes);
           if (status && status.phase === 'pending') {
-            body.setAttribute('aria-busy', 'true');
+            if (body.getAttribute('aria-busy') !== 'true') body.setAttribute('aria-busy', 'true');
           } else {
-            body.removeAttribute('aria-busy');
+            if (body.hasAttribute('aria-busy')) body.removeAttribute('aria-busy');
           }
         }
         if (!status || status.phase !== 'pending') stopApiServerStatusPolling();
@@ -6493,9 +6628,14 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
         // 取り直す。取り直さないと、保存後も編集を続けた場合に古い値が残り続ける
         // （安藤のレビュー指摘・issue #380）。
         refreshSettingsContentSavedValues();
-        msg.textContent = '保存しました。次回の起動から反映されます。';
+        msg.textContent = '保存しました。反映状況は設定の案内をご確認ください。';
         msg.classList.add('ok');
-        autoClose.arm();
+        await refreshConfigReflection();
+        if (configFailedFiles.length) {
+          msg.textContent = '保存しましたが、設定を読み込めませんでした。対象ファイルを確認してください。';
+          msg.className = 'settings-msg err';
+          autoClose.cancel();
+        } else autoClose.arm();
       } else {
         msg.textContent = 'エラー: ' + (res && res.error ? res.error : '不明なエラー');
         msg.classList.add('err');

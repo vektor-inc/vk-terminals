@@ -251,7 +251,7 @@ test.describe.serial('設定パネル: タブ・保存先表示系（issue #348 
 
       // 保存する。
       await win.locator('.settings-save').click();
-      await expect(win.locator('.settings-msg')).toHaveText('保存しました。次回の起動から反映されます。');
+      await expect(win.locator('.settings-msg')).toHaveText('保存しました。反映状況は設定の案内をご確認ください。');
       // 両タブの値がまとめて保存される。
       const payload = await win.evaluate(() => window.__savedPayloads[window.__savedPayloads.length - 1]);
       expect(payload.host).toBe('ok.example');
@@ -978,25 +978,25 @@ test.describe.serial('設定パネル: タブ・保存先表示系（issue #348 
     test('contentAfter は入力欄グループより後ろに描く', async () => {
       const order = await win.evaluate(() => Array.from(
         document.querySelector('#settings-panel-0').children
-      ).filter((el) => !el.matches('.settings-restart-notice[hidden]'))
+      )
         .map((el) => el.className.split(' ')[0]));
 
-      expect(order).toEqual(['settings-content', 'settings-group', 'settings-content']);
+      expect(order).toEqual(['settings-restart-notice', 'settings-content', 'settings-group', 'settings-content']);
 
       // VK Agents 側も入力欄グループを挟んで、前後に説明を描く。
       const agentsOrder = await win.evaluate(() => Array.from(
         document.querySelector('#settings-panel-1').children
-      ).filter((el) => !el.matches('.settings-restart-notice[hidden]'))
+      )
         .map((el) => el.className.split(' ')[0]));
-      expect(agentsOrder).toEqual(['settings-content', 'settings-group', 'settings-content']);
+      expect(agentsOrder).toEqual(['settings-restart-notice', 'settings-content', 'settings-group', 'settings-content']);
 
       // content を持たないタブでは、入力欄の前に空の説明容器を描かない。
       await win.locator(TAB(6)).click();
       const plainOrder = await win.locator(PANEL(6)).evaluate((panel) => Array.from(
         panel.children
-      ).filter((el) => !el.matches('.settings-restart-notice[hidden]'))
+      )
         .map((el) => el.className.split(' ')[0]));
-      expect(plainOrder).toEqual(['settings-group', 'settings-content']);
+      expect(plainOrder).toEqual(['settings-restart-notice', 'settings-group', 'settings-content']);
 
       // 空の説明容器由来の余白がグループ上に付かず、パネル上端と枠線が揃う。
       const plainTopGap = await win.locator(PANEL(6)).evaluate((panel) => (

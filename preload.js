@@ -47,6 +47,7 @@ function isSafeHttpUrl(url) {
 const INVOKE_CHANNELS = new Set([
   'app:get-config',
   'app:restart-required',
+  'app:config-reflection',
   'app:restart',
   'app:get-xterm-resources',
   'app:get-agent-room-sprites',
@@ -79,6 +80,7 @@ const SEND_CHANNELS = new Set([
 
 // main → renderer
 const ON_CHANNELS = new Set([
+  'app:config-reflection-updated',
   'menu:update',
   'widgets:update',
   'terminal:data',

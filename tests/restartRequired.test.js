@@ -14,13 +14,20 @@ test('再起動状態は既知のタブだけを重複なしで受け取る', ()
   assert.deepEqual(normalizeRestartRequired({ restartRequired: false, tabs: ['general'] }, tabs), { restartRequired: false, tabs: [] });
 });
 
-test('状態ファイルが無い・壊れている場合は表示しない', () => {
+test('再起動不要なら tabs の有無や型を問わず、必要なら配列を必須にする', () => {
+  for (const raw of [{ restartRequired: false }, ...[null, 'general', {}, [1]].map((value) => ({ restartRequired: false, tabs: value }))]) {
+    assert.deepEqual(normalizeRestartRequired(raw, tabs), { restartRequired: false, tabs: [] });
+  }
+  assert.deepEqual(normalizeRestartRequired({ restartRequired: true }, tabs), { unknown: true });
+});
+
+test('状態ファイルが無ければ不要、破損時は未確認とする', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-restart-test-'));
   try {
     const file = path.join(dir, 'status.json');
     assert.deepEqual(readRestartRequired(file, tabs), { restartRequired: false, tabs: [] });
     fs.writeFileSync(file, '{');
-    assert.deepEqual(readRestartRequired(file, tabs), { restartRequired: false, tabs: [] });
+    assert.deepEqual(readRestartRequired(file, tabs), { unknown: true });
     fs.writeFileSync(file, JSON.stringify({ restartRequired: true, tabs: ['general'] }));
     assert.deepEqual(readRestartRequired(file, tabs), { restartRequired: true, tabs: ['general'] });
   } finally {
@@ -30,9 +37,9 @@ test('状態ファイルが無い・壊れている場合は表示しない', ()
 
 test('型が不正な状態・配列要素を安全に除外する', () => {
   for (const raw of [{ restartRequired: 'true', tabs }, { restartRequired: true, tabs: 'general' }]) {
-    assert.deepEqual(normalizeRestartRequired(raw, tabs), { restartRequired: false, tabs: [] });
+    assert.deepEqual(normalizeRestartRequired(raw, tabs), { unknown: true });
   }
-  assert.deepEqual(normalizeRestartRequired({ restartRequired: true, tabs: [null, 1, {}, 'general'] }, tabs), { restartRequired: true, tabs: ['general'] });
+  assert.deepEqual(normalizeRestartRequired({ restartRequired: true, tabs: [null, 1, {}, 'general'] }, tabs), { unknown: true });
 });
 
 test('大きすぎるファイルと通常ファイル以外は読まない', () => {
@@ -40,7 +47,7 @@ test('大きすぎるファイルと通常ファイル以外は読まない', ()
   try {
     const file = path.join(dir, 'large.json');
     fs.writeFileSync(file, JSON.stringify({ restartRequired: true, tabs: ['general'] }) + ' '.repeat(65536));
-    for (const target of [file, dir]) assert.deepEqual(readRestartRequired(target, tabs), { restartRequired: false, tabs: [] });
+    for (const target of [file, dir]) assert.deepEqual(readRestartRequired(target, tabs), { unknown: true });
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

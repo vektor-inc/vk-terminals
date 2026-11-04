@@ -49,8 +49,6 @@ const { createCodexUsageTracker } = require('./codexUsageTracker');
 // 選べる（優先順位は env > config > プラットフォーム既定）。呼び出し側（VK Orchestrator
 // 等）が argv で GPU スイッチを明示している場合は介入しない。詳細は utils/gpu.js を参照。
 const { applyGpuMode } = require('./utils/gpu');
-const { normalizeConfirmClose } = require('./utils/closeConfirm');
-const { normalizeTerminalLinkClickMode } = require('./utils/terminalLinkPolicy');
 // 外部ブラウザで開いてよい URL の判定（renderer と共有）。renderer 側にも同じ判定が
 // あるが、最終防衛線はこのプロセス側（issue #268）。
 const { isSafeHttpUrl } = require('./renderer/urlSafety');
@@ -229,6 +227,7 @@ let nextClosePaneRequestId = 1;
 // ─── Terminal state & HTTP API ───────────────────────────────────────────────
 const DATA_DIR = path.join(os.homedir(), '.vk-terminals');
 const { readRestartRequired } = require('./utils/restartRequired');
+const { USER_CONFIG_MAX_BYTES, normalizeLiveConfig, changedLiveKeys, normalizeReflection, readSmallJson, advanceReflection } = require('./utils/configLiveReload');
 const { createRestartApplication } = require('./utils/restartApplication');
 // 組み込み用の入口（embedded.js）から起動されたときだけ値が入る。electron . では null。
 const EMBEDDED_OPTIONS = getEmbeddedOptions();
@@ -471,7 +470,7 @@ function validateMenuItem(raw, source, depth, seenIds) {
   }
   const itemKey = `${source}:${raw.id}`;
   if (seenIds.has(itemKey)) {
-    return { ok: false, error: `duplicate menu item id "${raw.id}"` };
+    return { ok: false, error: 'duplicate menu item id' };
   }
   seenIds.add(itemKey);
 
@@ -498,7 +497,7 @@ function validateMenuItem(raw, source, depth, seenIds) {
       return { ok: false, error: 'menu item action must be an object' };
     }
     if (!MENU_ACTION_TYPES.has(raw.action.type)) {
-      return { ok: false, error: `unsupported menu action "${raw.action.type}"` };
+      return { ok: false, error: 'unsupported menu action' };
     }
     if (raw.action.type === 'open-settings') {
       item.action = { type: 'open-settings' };
@@ -572,7 +571,7 @@ function validateMenuSection(raw, options = {}) {
 }
 
 function getConfigMenuSections() {
-  const config = loadUserConfig();
+  const config = liveConfig || loadUserConfig();
   const rawSections = Array.isArray(config.menuItems) ? config.menuItems : [];
   if (!rawSections.length) return [];
   if (rawSections.length > MENU_MAX_SECTIONS) {
@@ -797,8 +796,9 @@ function loadUserConfig() {
   for (const configPath of candidates) {
     if (fs.existsSync(configPath)) {
       try {
-        const raw = fs.readFileSync(configPath, 'utf8');
-        return JSON.parse(raw);
+        const raw = readSmallJson(configPath, USER_CONFIG_MAX_BYTES);
+        normalizeLiveConfig(raw);
+        return raw;
       } catch (e) {
         console.error(`${LOG_PREFIX} Failed to parse config: ${configPath}`, e);
       }
@@ -1114,7 +1114,7 @@ function handleNotificationTriggers(states) {
   const { events, nextSnapshot } = computeNotificationEvents({
     prevSnapshot: notificationSnapshot,
     states,
-    excludePatterns: config.waitingExcludeCwdPatterns,
+    excludePatterns: liveConfig ? liveConfig.waitingExcludeCwdPatterns : config.waitingExcludeCwdPatterns,
     isFirstReport,
   });
   notificationSnapshot = nextSnapshot;
@@ -1604,27 +1604,26 @@ app.on('before-quit', (event) => {
 //   `config.agentroom === true` に戻せばよい。
 ipcMain.handle('app:get-config', () => {
   const config = loadUserConfig();
-  // waitingExcludeCwdPatterns は設定 GUI には出さず、config.json 直編集専用にする（#192）。
-  // 読み込み・除外判定の機能は維持し、GUI 項目だけ settings-schema.json から削除した。
-  const waitingExcludeCwdPatterns = Array.isArray(config.waitingExcludeCwdPatterns)
-    ? config.waitingExcludeCwdPatterns.filter((pattern) => typeof pattern === 'string')
-    : [];
+  if (!liveConfig) {
+    liveConfig = normalizeConfigForReflection(config);
+    reflectionState.config = liveConfig;
+  }
+  const waitingExcludeCwdPatterns = liveConfig.waitingExcludeCwdPatterns;
   const widgetFile = normalizeTasksWidgetFile(config);
   const tasksFile = normalizeTasksFile(config);
   const commandsFile = normalizeCommandsFile(config);
   const initialPaneLaunch = resolveInitialPaneLaunch(config);
   return {
+    ...liveConfig,
     agentroom: false,
     appTitle: APP_TITLE,
-    newPaneStartupDir: typeof config.newPaneStartupDir === 'string' ? config.newPaneStartupDir.trim() : '',
-    newPaneAutoLaunchClaude: config.newPaneAutoLaunchClaude === true,
     // 起動時の最初のペインで使う AI エンジン・モデル（issue #419）。不正値・未指定は claude へ正規化済み。
     initialEngine: initialPaneLaunch.engine,
     initialCodexModel: initialPaneLaunch.model,
     // ペインを閉じる時の確認（issue #184）。不正値・未指定は既定 'busy' に正規化して渡す。
-    confirmClose: normalizeConfirmClose(config.confirmClose),
+    confirmClose: liveConfig.confirmClose,
     // ペイン内 URL のクリック挙動（issue #385）。不正値・未指定は既定 'click' に正規化して渡す。
-    terminalLinkClickMode: normalizeTerminalLinkClickMode(config.terminalLinkClickMode),
+    terminalLinkClickMode: liveConfig.terminalLinkClickMode,
     waitingExcludeCwdPatterns,
     widgetFile,
     // tasksFile（旧 tasks-view.json）は dual-write 期間の後方互換注記判定に残す。
@@ -1926,6 +1925,63 @@ function getRestartTabIds() {
 }
 
 let restartDialogOpen = false;
+// main 自身が監視し、renderer の起動・停止に依存せず設定を反映する。
+let liveConfig = null;
+let lastMenuError = null;
+// 個別のメニュー不正で他の設定まで反映を止めないよう、起動時と再読込で共有する。
+function normalizeConfigForReflection(raw) {
+  const config = normalizeLiveConfig(raw);
+  let error = config.menuItems.length > MENU_MAX_SECTIONS ? `too many (max ${MENU_MAX_SECTIONS})` : null;
+  for (const section of error ? [] : config.menuItems) {
+    const result = validateMenuSection(section, { defaultSource: 'config' });
+    if (!result.ok) {
+      error = result.error;
+      break;
+    }
+  }
+  if (error) config.menuItems = [];
+  // 同じ不正設定を監視周期ごとに記録せず、復旧後の再発は記録する。
+  if (error && error !== lastMenuError) console.error(`${LOG_PREFIX} invalid config menuItems: ${error}`);
+  lastMenuError = error;
+  return config;
+}
+let reflectionState = { config: null, initialized: false, eventId: null, pendingKeys: [], failedFiles: [], revision: 0 };
+function reloadConfigReflection() {
+  const configPath = path.join(DATA_DIR, 'config.json');
+  const reflectionPath = path.join(DATA_DIR, 'config-reflection.json');
+  const failedFiles = [];
+  let config = null;
+  let candidate;
+  let eventId = reflectionState.eventId;
+  try {
+    candidate = userConfigCandidatePaths().find((file) => fs.existsSync(file));
+    config = normalizeConfigForReflection(candidate ? readSmallJson(candidate, USER_CONFIG_MAX_BYTES) : {});
+  } catch (_error) {
+    config = null;
+    failedFiles.push(candidate || configPath);
+  }
+  try {
+    const reflection = fs.existsSync(reflectionPath) ? normalizeReflection(readSmallJson(reflectionPath)) : { eventId: null, failedFiles: [] };
+    eventId = reflection.eventId;
+    failedFiles.push(...reflection.failedFiles);
+  } catch (_error) {
+    failedFiles.push(reflectionPath);
+  }
+  const next = advanceReflection(reflectionState, { config, eventId, failedFiles });
+  const menuChanged = config && (!liveConfig || changedLiveKeys(liveConfig, config).includes('menuItems'));
+  liveConfig = next.config;
+  const { revision, ...previous } = reflectionState;
+  const stateChanged = JSON.stringify(next) !== JSON.stringify(previous);
+  reflectionState = { ...next, revision: revision + 1 };
+  if (menuChanged) pushMenuUpdate();
+  if (stateChanged && win && !win.isDestroyed()) win.webContents.send('app:config-reflection-updated', reflectionState);
+}
+// 最初の eventId は既知として記録する。invoke は読み取りだけにする。
+reloadConfigReflection();
+const configReflectionTimer = setInterval(reloadConfigReflection, 5000);
+configReflectionTimer.unref();
+ipcMain.handle('app:config-reflection', () => reflectionState);
+
 ipcMain.handle('app:restart-required', () => {
   const tabIds = getRestartTabIds();
   return readRestartRequired(path.join(DATA_DIR, 'restart-required.json'), tabIds);
@@ -1958,7 +2014,9 @@ ipcMain.handle('settings:save', (event, incoming) => {
   const descriptor = loadSettingsDescriptor();
   if (!descriptor) return { ok: false, error: '設定ディスクリプタが見つかりません' };
 
-  return saveSettingsToTargets(descriptor, incoming);
+  const result = saveSettingsToTargets(descriptor, incoming);
+  if (result.ok) reloadConfigReflection();
+  return result;
 });
 
 // 設定コンテンツテーブルの savedValue セル（issue #380）用。キーの配列を 1 回で受け、
@@ -2794,7 +2852,7 @@ function startHttpApi() {
   const apiHost = normalizeApiHost(apiConfig.apiHost);
   // 「認証を必ず要求する」設定（issue #313）。tailscale serve --bg のように apiHost が
   // 127.0.0.1 のまま外部（tailnet）へ公開されるケースに対応するためのオプトイン。
-  // 他の設定同様「保存後、次回の起動から反映」なので、起動時に一度だけ読めばよい
+  // この認証設定は再起動後に反映するため、起動時に一度だけ読む
   // （毎リクエストで config.json を同期読みするのを避ける）。
   const requireAuthAlways = !!apiConfig.apiRequireAuthAlways;
 

@@ -37,7 +37,7 @@ async function saveBuiltinApiHost(win, value) {
   await expect(win.locator('#settings-tab-0')).toHaveClass(/is-dirty/);
   await win.locator('.settings-save').click();
   await expect(win.locator('.settings-msg'))
-    .toHaveText('保存しました。次回の起動から反映されます。');
+    .toHaveText('保存しました。反映状況は設定の案内をご確認ください。');
   await expect(win.locator('.settings-tab.is-dirty')).toHaveCount(0);
 }
 
@@ -143,7 +143,7 @@ test('安全な外部ディスクリプタは拒否せず、その項目を表�
     await safeInput.fill('保存できました');
     await launched.win.locator('.settings-save').click();
     await expect(launched.win.locator('.settings-msg'))
-      .toHaveText('保存しました。次回の起動から反映されます。');
+      .toHaveText('保存しました。反映状況は設定の案内をご確認ください。');
     await expect.poll(() => JSON.parse(fs.readFileSync(targetPath, 'utf8')).safe.nested)
       .toBe('保存できました');
   } finally {

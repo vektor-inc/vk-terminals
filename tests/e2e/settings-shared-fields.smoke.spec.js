@@ -127,7 +127,7 @@ test.describe.serial('設定パネル: 基本フィールド系（issue #348 で
       await target.fill('guided.example');
       await win.locator('.settings-save').click();
       await expect(win.locator('.settings-msg')).toHaveText(
-        '保存しました。次回の起動から反映されます。'
+        '保存しました。反映状況は設定の案内をご確認ください。'
       );
       const payload = await win.evaluate(
         () => window.__savedPayloads[window.__savedPayloads.length - 1]
@@ -496,7 +496,7 @@ test.describe.serial('設定パネル: 基本フィールド系（issue #348 で
 
       // 保存が通る。
       await win.locator('.settings-save').click();
-      await expect(win.locator('.settings-msg')).toHaveText('保存しました。次回の起動から反映されます。');
+      await expect(win.locator('.settings-msg')).toHaveText('保存しました。反映状況は設定の案内をご確認ください。');
       const payload = await win.evaluate(() => window.__savedPayloads[window.__savedPayloads.length - 1]);
       expect(payload.repo).toBe('vektor-inc/vk-terminals');
     });
@@ -510,7 +510,7 @@ test.describe.serial('設定パネル: 基本フィールド系（issue #348 で
 
       // 保存が通る。
       await win.locator('.settings-save').click();
-      await expect(win.locator('.settings-msg')).toHaveText('保存しました。次回の起動から反映されます。');
+      await expect(win.locator('.settings-msg')).toHaveText('保存しました。反映状況は設定の案内をご確認ください。');
       const payload = await win.evaluate(() => window.__savedPayloads[window.__savedPayloads.length - 1]);
       expect(payload.repo).toBe('');
     });
@@ -525,7 +525,7 @@ test.describe.serial('設定パネル: 基本フィールド系（issue #348 で
 
       // repo は空欄のまま（valid）なので保存が通り、legacy 値もそのまま保存される。
       await win.locator('.settings-save').click();
-      await expect(win.locator('.settings-msg')).toHaveText('保存しました。次回の起動から反映されます。');
+      await expect(win.locator('.settings-msg')).toHaveText('保存しました。反映状況は設定の案内をご確認ください。');
       const payload = await win.evaluate(() => window.__savedPayloads[window.__savedPayloads.length - 1]);
       expect(payload.legacy).toBe('foobar-not-a-repo');
     });
@@ -741,7 +741,7 @@ test.describe.serial('設定パネル: 基本フィールド系（issue #348 で
 
       // この状態で保存 → 非表示項目は検証対象外なので保存が通る。
       await win.locator('.settings-save').click();
-      await expect(win.locator('.settings-msg')).toHaveText('保存しました。次回の起動から反映されます。');
+      await expect(win.locator('.settings-msg')).toHaveText('保存しました。反映状況は設定の案内をご確認ください。');
 
       const saved = await win.evaluate(() => window.__savedPayloads.length);
       expect(saved).toBe(1);
@@ -786,7 +786,7 @@ test.describe.serial('設定パネル: 基本フィールド系（issue #348 で
 
       // pattern 違反の保存済み値でも無効状態なら検証対象外。ただし値は保存対象に残す。
       await win.locator('.settings-save').click();
-      await expect(win.locator('.settings-msg')).toHaveText('保存しました。次回の起動から反映されます。');
+      await expect(win.locator('.settings-msg')).toHaveText('保存しました。反映状況は設定の案内をご確認ください。');
       const payload = await win.evaluate(() => window.__savedPayloads[0]);
       expect(payload.model).toBe('保存済み value');
     });
@@ -819,7 +819,7 @@ test.describe.serial('設定パネル: 基本フィールド系（issue #348 で
       await expect(model).toHaveValue('保存済み value');
       await model.fill('GPT-5.5');
       await win.locator('.settings-save').click();
-      await expect(win.locator('.settings-msg')).toHaveText('保存しました。次回の起動から反映されます。');
+      await expect(win.locator('.settings-msg')).toHaveText('保存しました。反映状況は設定の案内をご確認ください。');
       expect(await win.evaluate(() => window.__savedPayloads[0].model)).toBe('gpt-5.5');
 
       // 保存済み descriptor を読み直しても、入力欄は表示名へ変換される。

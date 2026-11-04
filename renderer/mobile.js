@@ -482,7 +482,7 @@ function updateWidgetFilter(info) {
 
   if (!info || !info.filterEnabled) {
     taskListFilter.hidden = true;
-    if (taskListLive) taskListLive.textContent = "";
+    if (taskListLive && taskListLive.textContent !== "") taskListLive.textContent = "";
     return;
   }
 
@@ -505,7 +505,7 @@ function updateWidgetFilter(info) {
   }
   taskListFilter.value = info.filterMode;
   taskListFilter.hidden = false;
-  if (taskListLive) taskListLive.textContent = info.visibleItems + "件表示";
+  if (taskListLive && taskListLive.textContent !== info.visibleItems + "件表示") taskListLive.textContent = info.visibleItems + "件表示";
 }
 
 if (taskListFilter) {
@@ -1124,12 +1124,12 @@ function render(data) {
     c.dot.dataset.status = st;
     c.badge.dataset.status = st;
     var statusView = statusPresentation.getStatusPresentation(st);
-    c.badge.textContent = statusView.label;
-    c.badge.hidden = !statusView.label;
+    if (c.badge.textContent !== statusView.label) c.badge.textContent = statusView.label;
+    if (c.badge.hidden !== !statusView.label) c.badge.hidden = !statusView.label;
     if (statusView.ariaLabel) {
-      c.badge.setAttribute("aria-label", statusView.ariaLabel);
+      if (c.badge.getAttribute("aria-label") !== statusView.ariaLabel) c.badge.setAttribute("aria-label", statusView.ariaLabel);
     } else {
-      c.badge.removeAttribute("aria-label");
+      if (c.badge.hasAttribute("aria-label")) c.badge.removeAttribute("aria-label");
     }
     // displayTitle = apiTitle || taskTitle（main 側 getDisplayTitle と同じ値）。
     // 旧 t.title は存在しないフィールドで常に空だったため、必ず "Terminal N" に

@@ -32,10 +32,15 @@
 //   - 起票前の確認用に、読み取り専用の `gh issue list`（重複確認）と `gh repo view`（公開範囲・デフォルトブランチの確認）を持つ（issue #520）。
 //     フラグは状態・検索語・件数・ラベル・許可リストの JSON 項目だけで、--web・--jq・--template・--repo は受けない。
 //     `gh repo view` は `--repo` を持たないため、拘束したリポジトリ（または許可 owner の明示先）を位置引数として入口が付ける。
+//   - 分析・レビュー用の読み取りとして、`gh pr diff <番号> [--name-only | --patch]`、`git merge-base <リビジョン> <リビジョン>`、
+//     issue の添付画像を入出力フォルダ直下へ保存する `gh issue save-image <URL> --out <名前>` を持つ（issue #521）。
+//     画像の取得は GitHub の添付画像のホスト（完全一致の許可リスト）だけで、リダイレクトは各ホップでホストを再検査し、認証トークンは github.com にしか送らない。
+//     保存名・サイズ・画像形式（中身のマジックバイト）は入口が検査し、既存ファイルは上書きしない。
 const nodeFs = require('fs');
 const crypto = require('crypto');
 const path = require('path');
 const childProcess = require('child_process');
+const https = require('https');
 
 const REVISION_PATTERN = /^[A-Za-z0-9_][A-Za-z0-9._/@^~{}-]*$/;
 const BRANCH_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
@@ -60,6 +65,25 @@ const SEARCH_TERM_PATTERN = /^(?:-?label:)?[\p{L}\p{N}_.-]+$/u;
 const SEARCH_OPERATOR_PATTERN = /^(?:AND|OR|NOT)$/i;
 const LIST_LABEL_PATTERN = /^[\p{L}\p{N}_.:-]+(?: [\p{L}\p{N}_.:-]+)*$/u;
 
+// issue 添付画像の保存（issue #521）。取得してよいのは GitHub の添付画像のホストだけ（完全一致）。
+// 利用者が渡せる URL のホスト（ATTACHMENT_START_HOSTS）と、リダイレクト先として許すホスト（ATTACHMENT_REDIRECT_HOSTS）は分ける。
+// 認証トークンを送るのは github.com だけ（署名付き URL を持つ他のホストには送らない）。
+const ATTACHMENT_START_HOSTS = Object.freeze(['github.com', 'user-images.githubusercontent.com', 'private-user-images.githubusercontent.com']);
+const ATTACHMENT_REDIRECT_HOSTS = Object.freeze([...ATTACHMENT_START_HOSTS, 'objects.githubusercontent.com', 'github-production-user-asset-6210df.s3.amazonaws.com']);
+const ATTACHMENT_TOKEN_HOSTS = Object.freeze(['github.com']);
+const ATTACHMENT_URL_PRINTABLE_PATTERN = /^[\x21-\x7e]{1,2048}$/;
+const ATTACHMENT_ASSET_PATH_PATTERN = /^\/user-attachments\/assets\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const ATTACHMENT_STATIC_PATH_PATTERN = /^\/[A-Za-z0-9._/-]+$/;
+const ATTACHMENT_JWT_QUERY_PATTERN = /^\?jwt=[A-Za-z0-9._-]+$/;
+const ATTACHMENT_FILE_NAME_PATTERN = /\.(png|jpg|jpeg|gif|webp)$/;
+const ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
+const ATTACHMENT_MAX_REDIRECTS = 5;
+const ATTACHMENT_TIMEOUT_MS = 30000;
+const ATTACHMENT_REDIRECT_STATUSES = Object.freeze([301, 302, 303, 307, 308]);
+const ATTACHMENT_TOKEN_PATTERN = /^[A-Za-z0-9_.-]{1,512}$/;
+// 画像形式（中身のマジックバイトで判定した値）と、許す拡張子の対応。拡張子と中身が食い違うものは保存しない。
+const IMAGE_TYPE_EXTENSIONS = Object.freeze({ png: ['png'], jpeg: ['jpg', 'jpeg'], gif: ['gif'], webp: ['webp'] });
+
 // PR 番号は 1 以上の数字だけ（0・先頭ゼロは不可）。
 const POSITIVE_NUMBER_PATTERN = /^[1-9][0-9]{0,8}$/;
 // ラベル操作の対応表（parse 側）と、runTaskCommand の振り分け（REVIEW_LABEL_OPERATIONS）の元を 1 か所にそろえる。値は [操作名, PR 番号を取るか]。
@@ -78,6 +102,7 @@ const NO_VALUE_FLAGS = Object.freeze({
   'git show': ['--stat', '--name-only', '--name-status', '--no-color', '--oneline', '--no-patch', '-s'],
   'git add': ['-A', '--all', '-u', '--update'],
   'git commit': ['-a', '--all'],
+  'git merge-base': [],
 });
 
 // 外部コマンドを起動しうる設定を、コマンドライン指定（リポジトリ内の設定より優先）で無効にする。
@@ -346,6 +371,76 @@ function parseGhRepoView(tokens, targetRepo) {
   if (positional !== undefined && targetRepo !== undefined) return fail('repository specified more than once');
   const target = targetRepo === undefined ? positional : targetRepo;
   return { ok: true, bin: 'gh', args: ['repo', 'view', '--json', json], needsGitHub: true, repoPositional: true, ...(target === undefined ? {} : { targetRepo: target }) };
+}
+
+// `gh pr diff <番号>` は読み取り専用。表示形式は `--name-only`（ファイル名のみ）か `--patch`（パッチ形式）のどちらか 1 つだけ（issue #521）。
+// `--color` などの値つきフラグ・`--web`・`--exclude`・`--repo` / `-R`・短縮形は受けない。
+function parseGhPrDiff(tokens) {
+  let number;
+  let format;
+  for (const token of tokens) {
+    if (hasUnsafeCharacter(token)) return fail('invalid argument');
+    if (token === '--name-only' || token === '--patch') {
+      if (format !== undefined) return fail('only one of --name-only and --patch can be used once');
+      format = token;
+    } else if (!token.startsWith('-') && number === undefined && POSITIVE_NUMBER_PATTERN.test(token)) number = token;
+    else return fail(`argument not allowed: ${JSON.stringify(token)}`);
+  }
+  if (number === undefined) return fail('number required');
+  return { ok: true, number, args: format === undefined ? [] : [format] };
+}
+
+// `git merge-base <リビジョン> <リビジョン>` は読み取り専用で、リビジョンちょうど 2 つだけを受ける（issue #521）。
+// フラグ（--fork-point / --octopus / --is-ancestor など）・`--`・パスは受けない。リビジョンは他の git 閲覧系と同じ形（先頭が `-` のものは不可）。
+function parseGitMergeBase(tokens) {
+  const parsed = parseGitReadCommand('merge-base', tokens, { allowPaths: false });
+  if (!parsed.ok) return parsed;
+  if (parsed.seenSeparator) return fail('-- is not allowed');
+  if (parsed.revisions.length !== 2) return fail('git merge-base needs exactly two revisions');
+  return buildGit('merge-base', [], parsed.revisions, []);
+}
+
+// 添付画像の URL を検証し、URL オブジェクトを返す（許可外は null）。ホストは完全一致の許可リスト、https のみ、認証情報・ポート・フラグメントは不可。
+// 利用者が渡す URL（redirect: false）は正規形そのものであることと、ホストごとの経路・クエリの形も確かめる。
+// リダイレクト先（redirect: true）は署名付き URL を持つため経路とクエリは緩めるが、ホストは許可リストで再検査する。
+function parseAttachmentUrl(value, { redirect = false } = {}) {
+  if (typeof value !== 'string' || !ATTACHMENT_URL_PRINTABLE_PATTERN.test(value) || !value.startsWith('https://') || value.includes('\\') || value.includes('#')) return null;
+  let url;
+  try {
+    url = new URL(value);
+  } catch (_error) {
+    return null;
+  }
+  if (url.protocol !== 'https:' || url.username !== '' || url.password !== '' || url.port !== '' || url.hash !== '') return null;
+  if (!(redirect ? ATTACHMENT_REDIRECT_HOSTS : ATTACHMENT_START_HOSTS).includes(url.hostname)) return null;
+  if (redirect) return url;
+  if (url.href !== value || url.pathname.split('/').some((segment) => segment === '.' || segment === '..')) return null;
+  if (url.hostname === 'github.com') return ATTACHMENT_ASSET_PATH_PATTERN.test(url.pathname) && url.search === '' && !value.includes('?') ? url : null;
+  if (!ATTACHMENT_STATIC_PATH_PATTERN.test(url.pathname) || url.pathname.includes('//')) return null;
+  if (url.hostname === 'private-user-images.githubusercontent.com') return url.search === '' || ATTACHMENT_JWT_QUERY_PATTERN.test(url.search) ? url : null;
+  return url.search === '' && !value.includes('?') ? url : null;
+}
+
+// `gh issue save-image <URL> --out <名前>`（issue #521）。保存先は入出力フォルダ直下の名前だけ（拡張子は png / jpg / jpeg / gif / webp）。
+// parse 段階は URL と名前の形だけを検査する。取得・形式の確認・保存は実行段階で行う。
+function parseGhIssueSaveImage(tokens) {
+  let urlValue;
+  let name;
+  for (let i = 0; i < tokens.length; i += 1) {
+    const token = tokens[i];
+    if (hasUnsafeCharacter(token)) return fail('invalid argument');
+    const { name: flag, value, consumed } = splitFlag(tokens, i);
+    if (flag === '--out' && name === undefined) {
+      if (typeof value !== 'string') return fail('--out needs a value');
+      name = value;
+      i += consumed;
+    } else if (!token.startsWith('-') && urlValue === undefined) urlValue = token;
+    else return fail(`argument not allowed: ${JSON.stringify(token.slice(0, 64))}`);
+  }
+  if (urlValue === undefined || name === undefined) return fail('usage: gh issue save-image <url> --out <file name>');
+  if (!isSafeMemberFileName(name) || !ATTACHMENT_FILE_NAME_PATTERN.test(name)) return fail('--out must be a plain file name ending in .png, .jpg, .jpeg, .gif or .webp');
+  if (parseAttachmentUrl(urlValue) === null) return fail('url is not a GitHub attachment image url');
+  return { ok: true, bin: 'gh', operation: 'issue-image-save', url: urlValue, out: name, needsGitHub: true };
 }
 
 // `gh issue comment` / `gh pr comment <番号>` は `--body <値>` か `--body-file <名前>`（入出力フォルダ直下のファイル名）のどちらか 1 つ（issue #519）。
@@ -704,6 +799,7 @@ function parseTaskCommand(argv) {
         const parsed = parseGitReadCommand('show', tokens, {});
         return parsed.ok ? buildGit('show', parsed.flags, parsed.revisions, parsed.paths, { safety: true }) : parsed;
       }
+      case 'merge-base': return parseGitMergeBase(tokens);
       case 'add': return parseGitAdd(tokens);
       case 'commit': return parseGitCommit(tokens);
       case 'push': return parseGitPush(tokens);
@@ -730,6 +826,14 @@ function parseTaskCommand(argv) {
       return parsed.ok ? command(['issue', 'list'], parsed.args) : parsed;
     }
     if (group === 'repo' && action === 'view') return parseGhRepoView(tokens, targetRepo);
+    if (group === 'issue' && action === 'save-image') {
+      const parsed = parseGhIssueSaveImage(tokens);
+      return parsed.ok && targetRepo !== undefined ? { ...parsed, targetRepo } : parsed;
+    }
+    if (group === 'pr' && action === 'diff') {
+      const parsed = parseGhPrDiff(tokens);
+      return parsed.ok ? command(['pr', 'diff', parsed.number], parsed.args) : parsed;
+    }
     if (group === 'issue' && action === 'comment') {
       return withTextFiles(parseGhComment(tokens), (parsed) => command(['issue', 'comment', parsed.number], parsed.args));
     }
@@ -2145,13 +2249,29 @@ function readMemberInput(fsImpl, dir, name, maxBytes, uid) {
 }
 
 // 新規ファイルを、既にある（リンクを含む）なら失敗する形で作って書く。
-function createExclusiveFile(fsImpl, filePath, content, mode = 0o600) {
+// verify を渡すと、作成した直後・書き込み前に verify(fd) を呼ぶ。投げたら中身を書かずに閉じ、作ったファイル自身（fd と同じ dev/ino）だけを消して再投する。
+function createExclusiveFile(fsImpl, filePath, content, mode = 0o600, { verify = null } = {}) {
   const constants = fsImpl.constants || nodeFs.constants;
   const fd = fsImpl.openSync(filePath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW || 0), mode);
+  let closed = false;
   try {
+    if (verify !== null) verify(fd);
     if (content.length > 0) fsImpl.writeFileSync(fd, content);
+  } catch (error) {
+    if (verify !== null) {
+      try {
+        const created = fsImpl.fstatSync(fd);
+        fsImpl.closeSync(fd);
+        closed = true;
+        const current = fsImpl.lstatSync(filePath);
+        if (current.dev === created.dev && current.ino === created.ino) fsImpl.unlinkSync(filePath);
+      } catch (_cleanupError) {
+        // 後始末は最善努力（パスが差し替えられて辿れない場合は消せない）。
+      }
+    }
+    throw error;
   } finally {
-    fsImpl.closeSync(fd);
+    if (!closed) fsImpl.closeSync(fd);
   }
 }
 
@@ -2498,13 +2618,152 @@ function executeMemberStatus({ parsed, binding, fsImpl, reject, writeOut, deps }
   return 0;
 }
 
+// 画像の中身（先頭のバイト列）から形式を判定する。png / jpeg / gif / webp 以外（SVG を含む）は null。
+function detectImageType(buffer) {
+  if (buffer.length >= 8 && buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'png';
+  if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return 'jpeg';
+  const gifHead = buffer.subarray(0, 6).toString('latin1');
+  if (gifHead === 'GIF87a' || gifHead === 'GIF89a') return 'gif';
+  if (buffer.length >= 12 && buffer.subarray(0, 4).toString('latin1') === 'RIFF' && buffer.subarray(8, 12).toString('latin1') === 'WEBP') return 'webp';
+  return null;
+}
+
+// 1 回分の取得。リダイレクトは追わず、状態・Location・本文（上限つき）を返す。上限超過・時間切れは TrustError。
+function requestAttachment(url, { headers, maxBytes, timeoutMs }, deps = {}) {
+  const httpsImpl = deps.https || https;
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let timer = null;
+    const finish = (settle, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      settle(value);
+    };
+    const req = httpsImpl.request(url, { method: 'GET', headers }, (res) => {
+      const status = res.statusCode;
+      if (status !== 200) {
+        // 本文は使わない。受信が続いてもサイズ・時間の上限が効かなくなるため、状態と Location を取ったら接続ごと閉じる。
+        res.on('error', () => {});
+        const location = res.headers.location;
+        res.destroy();
+        req.destroy();
+        finish(resolve, { status, location });
+        return;
+      }
+      const declared = Number(res.headers['content-length']);
+      if (Number.isFinite(declared) && declared > maxBytes) {
+        req.destroy();
+        finish(reject, new TrustError('image is too large'));
+        return;
+      }
+      const chunks = [];
+      let total = 0;
+      res.on('data', (chunk) => {
+        total += chunk.length;
+        if (total > maxBytes) {
+          req.destroy();
+          finish(reject, new TrustError('image is too large'));
+        } else chunks.push(chunk);
+      });
+      res.on('end', () => finish(resolve, { status, body: Buffer.concat(chunks) }));
+      res.on('error', (error) => finish(reject, error));
+    });
+    timer = setTimeout(() => {
+      req.destroy();
+      finish(reject, new TrustError('download timed out'));
+    }, timeoutMs);
+    req.on('error', (error) => finish(reject, error));
+    req.end();
+  });
+}
+
+// 添付画像を取得する。リダイレクトは各ホップで URL（https・ホスト許可リスト・認証情報なし）を再検査し、認証トークンは許可したホスト（github.com）への要求にだけ付ける。
+async function downloadAttachment(startUrl, { token, request, maxBytes = ATTACHMENT_MAX_BYTES, timeoutMs = ATTACHMENT_TIMEOUT_MS }) {
+  let current = startUrl;
+  for (let hop = 0; hop <= ATTACHMENT_MAX_REDIRECTS; hop += 1) {
+    const headers = { 'User-Agent': 'vk-task-ops', Accept: 'image/*', 'Accept-Encoding': 'identity' };
+    if (token !== null && ATTACHMENT_TOKEN_HOSTS.includes(current.hostname)) headers.Authorization = `Bearer ${token}`;
+    const response = await request(current, { headers, maxBytes, timeoutMs });
+    if (ATTACHMENT_REDIRECT_STATUSES.includes(response.status)) {
+      let next = null;
+      if (typeof response.location === 'string' && ATTACHMENT_URL_PRINTABLE_PATTERN.test(response.location)) {
+        try {
+          next = parseAttachmentUrl(new URL(response.location, current).href, { redirect: true });
+        } catch (_error) {
+          next = null;
+        }
+      }
+      if (next === null) throw new TrustError('redirect target is not an allowed GitHub attachment host');
+      current = next;
+    } else if (response.status === 200) {
+      return response.body;
+    } else {
+      throw new TrustError(`download failed with HTTP ${response.status}`);
+    }
+  }
+  throw new TrustError('too many redirects');
+}
+
+// `gh issue save-image`: 入出力フォルダ直下へ添付画像を保存する。実行の流れ:
+// 1. 入出力フォルダの実体と保存先（既存ファイルが無いこと）を確かめる。ここまでに失敗したら通信しない。
+// 2. gh の認証トークンを読み（無ければ無しで続ける）、許可ホストだけをたどって取得する。
+// 3. 中身のマジックバイトで形式を判定し、拡張子と一致するときだけ、既存ファイルを開かない形（O_EXCL・O_NOFOLLOW）で保存する。
+async function executeIssueImageSave({ parsed, binding, env, fsImpl, spawnSync, reject, writeOut, deps }) {
+  const member = binding.member;
+  if (member === null) return reject('task command rejected: gh issue save-image needs the member input/output folder, which this launcher does not have');
+  const uid = currentUid(deps);
+  const target = path.join(member.io, parsed.out);
+  try {
+    if (resolveTrustedPath(fsImpl, member.io, { uid, rejectFinalLink: true }).realPath !== member.io) throw new TrustError(`path is not a real directory: ${member.io}`);
+    if (lstatOrNull(fsImpl, target) !== null) throw new TrustError(`${parsed.out} already exists`);
+    const startUrl = parseAttachmentUrl(parsed.url);
+    if (startUrl === null) throw new TrustError('url is not a GitHub attachment image url');
+    let token = null;
+    if (binding.gh !== null && ATTACHMENT_TOKEN_HOSTS.includes(startUrl.hostname)) {
+      const result = spawnSync(binding.gh, ['auth', 'token'], { cwd: binding.home, env, encoding: 'utf8' });
+      const value = result && result.status === 0 && typeof result.stdout === 'string' ? result.stdout.trim() : '';
+      if (ATTACHMENT_TOKEN_PATTERN.test(value)) token = value;
+    }
+    const request = deps.requestAttachment || ((url, options) => requestAttachment(url, options, deps));
+    const buffer = await downloadAttachment(startUrl, { token, request });
+    const type = detectImageType(buffer);
+    if (type === null) throw new TrustError('downloaded file is not a png, jpeg, gif or webp image');
+    const extension = parsed.out.slice(parsed.out.lastIndexOf('.') + 1);
+    if (!IMAGE_TYPE_EXTENSIONS[type].includes(extension)) throw new TrustError(`${parsed.out} does not match the image type (${type})`);
+    // 取得中に入出力フォルダが差し替えられていないことを書く直前にも確かめる。
+    if (resolveTrustedPath(fsImpl, member.io, { uid, rejectFinalLink: true }).realPath !== member.io) throw new TrustError(`path is not a real directory: ${member.io}`);
+    // 検査と作成は別の操作なので、その間に入出力フォルダがリンクや別のフォルダに差し替えられても外へ書かないよう、
+    // 作成の前後でフォルダの dev/ino・実パスと、作ったファイルの fd とパスの dev/ino の一致を確かめる（食い違えば書き込まずに消して失敗）。
+    const ioBefore = fsImpl.lstatSync(member.io);
+    const verify = (fd) => {
+      const created = fsImpl.fstatSync(fd);
+      const entry = fsImpl.lstatSync(target);
+      const ioAfter = fsImpl.lstatSync(member.io);
+      if (!created.isFile() || !entry.isFile() || entry.isSymbolicLink() || created.dev !== entry.dev || created.ino !== entry.ino) throw new TrustError(`${parsed.out} was not created inside the input/output folder`);
+      if (ioAfter.isSymbolicLink() || !ioAfter.isDirectory() || ioAfter.dev !== ioBefore.dev || ioAfter.ino !== ioBefore.ino || fsImpl.realpathSync(member.io) !== member.io) throw new TrustError('the input/output folder was replaced while saving');
+    };
+    try {
+      createExclusiveFile(fsImpl, target, buffer, 0o600, { verify });
+    } catch (error) {
+      if (error instanceof TrustError) throw error;
+      throw new TrustError(error && error.code === 'EEXIST' ? `${parsed.out} already exists` : `${parsed.out} could not be written`);
+    }
+    writeOut(`SAVED=${target}\nTYPE=${type}\nBYTES=${buffer.length}\n`);
+    return 0;
+  } catch (error) {
+    // 取得の失敗理由は種類だけを出す（署名付き URL を含みうるため URL・応答本文は出さない）。
+    return reject(`task command rejected: ${error instanceof TrustError ? error.message : `download failed (${error && error.code ? error.code : 'error'})`}`);
+  }
+}
+
 /**
  * 検証を通った操作だけを実行し、終了コードを返す。
  * 実行環境・git / gh の絶対パス・対象リポジトリはランチャーが固定した VK_TASK_*（deps.env）から読み、
  * 呼び出し元の環境には依存しない。
  * @param {ReadonlyArray<string>} argv 先頭が git / gh の引数列
  * @param {object} [deps] テスト用の差し替え（cwd / env / spawnSync / fs / write / uid）
- * @returns {number} プロセスの終了コード（拒否・検証失敗は 2）
+ * @returns {number|Promise<number>} プロセスの終了コード（拒否・検証失敗は 2）。通信する `gh issue save-image` だけは Promise
  */
 function runTaskCommand(argv, deps = {}) {
   const cwd = deps.cwd || process.cwd();
@@ -2590,6 +2849,7 @@ function runTaskCommand(argv, deps = {}) {
   if (parsed.operation === 'issue-edit') return executeIssueEdit({ parsed, binding, cwd, env, spawnSync, reject, writeOut });
   if (parsed.operation === 'pr-edit') return executePrEdit({ parsed, binding, cwd, env, fsImpl, spawnSync, reject, writeOut, deps });
   if (parsed.operation === 'pr-merge') return executePrMerge({ parsed, binding, cwd, env, spawnSync, reject, writeOut });
+  if (parsed.operation === 'issue-image-save') return executeIssueImageSave({ parsed, binding, env, fsImpl, spawnSync, reject, writeOut, deps });
 
   const bin = parsed.bin === 'gh' ? binding.gh : binding.git;
   let ghArgs = parsed.args;
@@ -2619,6 +2879,7 @@ function runTaskCommand(argv, deps = {}) {
 module.exports = {
   parseTaskCommand,
   runTaskCommand,
+  requestAttachment,
   readBinding,
   buildChildEnvironment,
   withBoundRepository,
@@ -2655,6 +2916,6 @@ if (require.main === module) {
     if (payload === null) process.exitCode = 2;
     else superviseMemberRun(payload).then((code) => { process.exitCode = code; });
   } else {
-    process.exitCode = runTaskCommand(process.argv.slice(2));
+    Promise.resolve(runTaskCommand(process.argv.slice(2))).then((code) => { process.exitCode = code; });
   }
 }

@@ -41,12 +41,16 @@ test('main の監視だけで起動時の読み込み失敗から復旧し、メ
   assert.ok(main.sent.some(([channel]) => channel === 'menu:update'));
 });
 
-test('main のメニュー検証失敗では設定を採用せず、復旧後に差分を通知する', () => {
+test('main は不正なメニューだけを既定値に戻し、他の設定を失敗扱いせず反映する', () => {
   const main = createMainHarness({ menuItems: [{ id: 'old' }] });
-  main.update({ confirmClose: 'always', menuItems: [{}] });
-  assert.equal(main.state().config.menuItems[0].id, 'old');
-  assert.equal(main.state().config.confirmClose, 'busy');
-  assert.equal(main.state().failedFiles.length, 1);
+  for (const menuItems of [[{}], Array(11).fill({ id: 'overflow' })]) {
+    main.update({ newPaneStartupDir: '/updated', confirmClose: 'always', menuItems });
+    assert.equal(main.state().config.menuItems.length, 0);
+    assert.equal(main.state().config.newPaneStartupDir, '/updated');
+    assert.equal(main.state().config.confirmClose, 'always');
+    assert.equal(main.state().failedFiles.length, 0);
+    assert.equal(main.state().pendingKeys.length, 0);
+  }
   main.update({ confirmClose: 'always', menuItems: [{ id: 'new' }] });
   assert.equal(main.state().failedFiles.length, 0);
   assert.ok(main.state().changedKeys.includes('menuItems'));
@@ -125,6 +129,7 @@ test('破損・形式不正・読み取り失敗は IPC で未確認を返し、
       assert.equal(app.run('pendingConfigReflection'), true);
     }
     fs.rmSync(file, { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ restartRequired: false }));
     await app.context.updateRestartRequired();
     app.context.flushConfigReflectionNotification();
     assert.equal(app.notice.hidden, true);

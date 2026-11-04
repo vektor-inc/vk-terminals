@@ -14,6 +14,13 @@ test('再起動状態は既知のタブだけを重複なしで受け取る', ()
   assert.deepEqual(normalizeRestartRequired({ restartRequired: false, tabs: ['general'] }, tabs), { restartRequired: false, tabs: [] });
 });
 
+test('再起動不要なら tabs の有無や型を問わず、必要なら配列を必須にする', () => {
+  for (const raw of [{ restartRequired: false }, ...[null, 'general', {}, [1]].map((value) => ({ restartRequired: false, tabs: value }))]) {
+    assert.deepEqual(normalizeRestartRequired(raw, tabs), { restartRequired: false, tabs: [] });
+  }
+  assert.deepEqual(normalizeRestartRequired({ restartRequired: true }, tabs), { unknown: true });
+});
+
 test('状態ファイルが無ければ不要、破損時は未確認とする', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-restart-test-'));
   try {

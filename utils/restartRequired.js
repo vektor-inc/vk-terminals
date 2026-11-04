@@ -8,9 +8,9 @@ const emptyState = () => ({ restartRequired: false, tabs: [] });
 // 書き換え途中の破損を「不要」と誤認しないよう、未確認を区別する。
 function normalizeRestartRequired(raw, tabIds) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)
-    || typeof raw.restartRequired !== 'boolean' || !Array.isArray(raw.tabs)
-    || !raw.tabs.every((tab) => typeof tab === 'string')) return unknownState();
+    || typeof raw.restartRequired !== 'boolean') return unknownState();
   if (!raw.restartRequired) return emptyState();
+  if (!Array.isArray(raw.tabs) || !raw.tabs.every((tab) => typeof tab === 'string')) return unknownState();
   const allowed = new Set(tabIds);
   const tabs = [...new Set(raw.tabs.filter((tab) => typeof tab === 'string' && allowed.has(tab)))];
   return { restartRequired: tabs.length > 0, tabs };

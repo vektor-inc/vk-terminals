@@ -1605,8 +1605,7 @@ app.on('before-quit', (event) => {
 ipcMain.handle('app:get-config', () => {
   const config = loadUserConfig();
   if (!liveConfig) {
-    liveConfig = normalizeLiveConfig(config);
-    if (liveConfig.menuItems.length > MENU_MAX_SECTIONS || liveConfig.menuItems.some((section) => !validateMenuSection(section, { defaultSource: 'config' }).ok)) liveConfig.menuItems = [];
+    liveConfig = normalizeConfigForReflection(config);
     reflectionState.config = liveConfig;
   }
   const waitingExcludeCwdPatterns = liveConfig.waitingExcludeCwdPatterns;
@@ -1928,6 +1927,12 @@ function getRestartTabIds() {
 let restartDialogOpen = false;
 // main 自身が監視し、renderer の起動・停止に依存せず設定を反映する。
 let liveConfig = null;
+// 個別のメニュー不正で他の設定まで反映を止めないよう、起動時と再読込で共有する。
+function normalizeConfigForReflection(raw) {
+  const config = normalizeLiveConfig(raw);
+  if (config.menuItems.length > MENU_MAX_SECTIONS || config.menuItems.some((section) => !validateMenuSection(section, { defaultSource: 'config' }).ok)) config.menuItems = [];
+  return config;
+}
 let reflectionState = { config: null, initialized: false, eventId: null, pendingKeys: [], failedFiles: [], revision: 0 };
 function reloadConfigReflection() {
   const configPath = path.join(DATA_DIR, 'config.json');
@@ -1938,8 +1943,7 @@ function reloadConfigReflection() {
   let eventId = reflectionState.eventId;
   try {
     candidate = userConfigCandidatePaths().find((file) => fs.existsSync(file));
-    config = normalizeLiveConfig(candidate ? readSmallJson(candidate, USER_CONFIG_MAX_BYTES) : {});
-    if (config.menuItems.length > MENU_MAX_SECTIONS || config.menuItems.some((section) => !validateMenuSection(section, { defaultSource: 'config' }).ok)) throw new Error('invalid menuItems');
+    config = normalizeConfigForReflection(candidate ? readSmallJson(candidate, USER_CONFIG_MAX_BYTES) : {});
   } catch (_error) {
     config = null;
     failedFiles.push(candidate || configPath);

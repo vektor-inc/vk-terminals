@@ -46,6 +46,8 @@ function isSafeHttpUrl(url) {
 // renderer → main（応答あり）
 const INVOKE_CHANNELS = new Set([
   'app:get-config',
+  'app:restart-required',
+  'app:restart',
   'app:get-xterm-resources',
   'app:get-agent-room-sprites',
   'widgets:command',

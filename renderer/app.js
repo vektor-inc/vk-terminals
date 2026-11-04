@@ -1648,6 +1648,47 @@ function renderSidebarMenu() {
   applyUsageBadge();
 }
 
+// 再起動案内の最新状態を保持する。
+let restartRequiredState = { restartRequired: false, tabs: [] };
+
+let restartRequiredInflight = null;
+// 同時の読み直しは進行中の要求を共有する。
+function refreshRestartRequired() {
+  if (restartRequiredInflight) return restartRequiredInflight;
+  restartRequiredInflight = updateRestartRequired().finally(() => { restartRequiredInflight = null; });
+  return restartRequiredInflight;
+}
+
+async function updateRestartRequired() {
+  try {
+    const state = await VKIpc.invoke('app:restart-required');
+    // 不正な IPC 応答でも設定パネルを開けるよう、空状態へ正規化する。
+    restartRequiredState = state && typeof state === 'object' && !Array.isArray(state)
+      && typeof state.restartRequired === 'boolean' && Array.isArray(state.tabs)
+      && state.tabs.every((tab) => typeof tab === 'string')
+      ? { restartRequired: state.restartRequired, tabs: state.restartRequired ? state.tabs : [] }
+      : { restartRequired: false, tabs: [] };
+  } catch (_error) {
+    restartRequiredState = { restartRequired: false, tabs: [] };
+  }
+  const notice = document.getElementById('sidebar-restart-required');
+  if (notice) {
+    if (!restartRequiredState.restartRequired && notice.contains(document.activeElement)) {
+      [document.querySelector('#sidebar-settings button'), document.getElementById('settings-btn')]
+        .find(canRestoreModalFocus)?.focus();
+    }
+    notice.hidden = !restartRequiredState.restartRequired;
+  }
+  document.querySelectorAll('.settings-restart-notice').forEach((element) => {
+    const hidden = !restartRequiredState.tabs.includes(element.dataset.tabId);
+    if (hidden && element.contains(document.activeElement)) {
+      const panel = element.closest('.settings-tab-panel');
+      document.getElementById(panel?.getAttribute('aria-labelledby'))?.focus();
+    }
+    element.hidden = hidden;
+  });
+}
+
 // サイドバーのラッパー（.sidebar）を組み立てる（issue #89）。
 // 中身は「固定ヘッダーの使用量カード」「スクロールする nav（メニュー内側 + 格納ペイン
 // セクション）」と「幅リサイズハンドル」。開閉トランジション・可変幅の基準はこのラッパー側に持たせる。
@@ -1671,6 +1712,13 @@ function createSidebar() {
 
   // 設定 / タスクセクション / 格納ペインセクション（renderSidebarMenu の再構築対象外・別管理）
   // 設定は従来どおりユーザー追加メニューの後ろへ置き、その次にタスクを並べる。
+  const restartNotice = document.createElement('div');
+  restartNotice.id = 'sidebar-restart-required';
+  restartNotice.className = 'sidebar-restart-required sidebar-section-card';
+  restartNotice.hidden = true;
+  restartNotice.innerHTML = '<p>設定の反映にアプリの再起動が必要です</p><button type="button" class="settings-secondary-button">設定を確認</button>';
+  restartNotice.querySelector('button').addEventListener('click', () => openSettingsModal(restartRequiredState.tabs[0]));
+  nav.insertBefore(restartNotice, inner);
   nav.appendChild(createSidebarSettingsCard());
   nav.appendChild(createTaskListContainer());
   nav.appendChild(createPaneStashContainer());
@@ -2430,8 +2478,10 @@ function updateStashItem(paneId) {
 
 function focusFirstSidebarItem() {
   const nav = document.getElementById('sidebar-menu');
-  const first = nav?.querySelector('a, button, summary');
-  if (first && typeof first.focus === 'function') first.focus();
+  // 非表示の再起動案内などを飛ばし、操作できる先頭項目へ移す。
+  const first = Array.from(nav?.querySelectorAll('a, button, summary') || [])
+    .find(canRestoreModalFocus);
+  first?.focus();
 }
 
 function setSidebarOpen(open, options = {}) {
@@ -2874,6 +2924,17 @@ function closePane(paneId, { force = false, skipConfirm = false } = {}) {
 // フォーカス移動では変化しない）。二重表示は closeConfirmOpen で防ぐ。
 let closeConfirmOpen = false;
 
+// 更新で非表示・無効になった起点へ戻すと、フォーカスが失われるため復帰前に確認する。
+function canRestoreModalFocus(element) {
+  if (!element?.isConnected || typeof element.focus !== 'function') return false;
+  // 閉じたサイドバーは画面外へ移すだけで、非表示属性や矩形では判別できない。
+  if (!sidebarOpen && element.closest('#sidebar')) return false;
+  if (element.closest('[hidden], [inert]') || element.matches(':disabled')) return false;
+  if (element.getClientRects().length === 0) return false;
+  const visibility = getComputedStyle(element).visibility;
+  return visibility !== 'hidden' && visibility !== 'collapse';
+}
+
 function openCloseConfirmDialog(paneId) {
   if (closeConfirmOpen) return;
   // URL にホバーしたままマウスを動かさず Tab で「✕」まで来て Enter で確定する経路では
@@ -2939,7 +3000,7 @@ function openCloseConfirmDialog(paneId) {
     const shouldRestore = !active || active === document.body || overlay.contains(active);
     overlay.remove();
     closeConfirmOpen = false;
-    if (shouldRestore && restoreFocusElement?.isConnected) restoreFocusElement.focus();
+    if (shouldRestore && canRestoreModalFocus(restoreFocusElement)) restoreFocusElement.focus();
   };
   unregisterEscapeLayer = escapeLayers.register(cleanup);
 
@@ -3017,7 +3078,7 @@ function openReissueTokenConfirmDialog(onConfirm) {
     const shouldRestore = !active || active === document.body || overlay.contains(active);
     overlay.remove();
     reissueTokenConfirmOpen = false;
-    if (shouldRestore && restoreFocusElement?.isConnected) restoreFocusElement.focus();
+    if (shouldRestore && canRestoreModalFocus(restoreFocusElement)) restoreFocusElement.focus();
   };
   unregisterEscapeLayer = escapeLayers.register(cleanup);
 
@@ -3087,7 +3148,7 @@ function openApplyContentTableConfirmDialog(message, onConfirm) {
     const shouldRestore = !active || active === document.body || overlay.contains(active);
     overlay.remove();
     contentTableApplyConfirmOpen = false;
-    if (shouldRestore && restoreFocusElement?.isConnected) restoreFocusElement.focus();
+    if (shouldRestore && canRestoreModalFocus(restoreFocusElement)) restoreFocusElement.focus();
   };
   unregisterEscapeLayer = escapeLayers.register(cleanup);
 
@@ -4528,6 +4589,8 @@ async function refreshUsageAndBadge() {
 function setupUsageBadge() {
   refreshUsageAndBadge();
   setInterval(refreshUsageAndBadge, USAGE_POLL_INTERVAL_MS);
+  refreshRestartRequired();
+  setInterval(refreshRestartRequired, 5000);
   setInterval(() => {
     tickSidebarUsageReset();
     checkUsageResetAndRefetch();
@@ -5005,7 +5068,7 @@ function renderSettingsTabContent(blocks, tabIndexById, runtimeStatus = {}, entr
 // buildSettingsModal の close、生成に失敗した時は protect の例外処理が必ず解放する。
 const settingsModalGuard = createSingleOpenGuard();
 
-async function openSettingsModal() {
+async function openSettingsModal(restartTabId = null) {
   // URL にホバーしたままマウスを動かさず Tab で ⚙ まで来て Enter で確定する経路では
   // xterm 側の leave が発火しない。設定モーダル（z-index 2000）の手前にツールチップ
   // （2300）が浮いたまま残るのを防ぐ（Claude Code レビュー指摘・LOW）。
@@ -5013,16 +5076,18 @@ async function openSettingsModal() {
   // settings:describe の応答待ち中にフォーカスが変わっても、実際に設定を開いた操作元へ
   // 戻せるよう、非同期処理へ入る前の要素をモーダルの寿命と一緒に保持する。
   const restoreFocusElement = document.activeElement;
+  await refreshRestartRequired();
+  if (restartTabId && !restartRequiredState.tabs.includes(restartTabId)) restartTabId = null;
   try {
     await settingsModalGuard.protect(({ release, setFailureCleanup }) => (
-      buildSettingsModal({ release, setFailureCleanup, restoreFocusElement })
+      buildSettingsModal({ release, setFailureCleanup, restoreFocusElement, restartTabId })
     ));
   } catch (e) {
     console.error('設定パネルの生成に失敗しました', e);
   }
 }
 
-async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElement }) {
+async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElement, restartTabId }) {
   // 設定ディスクリプタが無い環境でも空の設定モーダルとして開く（使用量はサイドバー上部）。
   let desc = null;
   try {
@@ -5148,8 +5213,9 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
           const emptyHtml = !contentHtml && !contentAfterHtml && groups.length === 0 && !tabNote
             ? '<p class="settings-empty">このタブに表示できる設定項目はありません。</p>'
             : '';
+          const restartNoticeHtml = `<div id="settings-restart-${escAttr(tab.id)}" class="settings-restart-notice"${restartRequiredState.tabs.includes(tab.id) ? '' : ' hidden'} data-tab-id="${escAttr(tab.id)}" role="status"><p>設定の反映にアプリの再起動が必要です。各ペインでの作業を終えてから再起動してください。</p><button type="button" class="settings-restart-button settings-secondary-button">アプリを再起動</button></div>`;
           return `<section class="settings-tab-panel" id="${escAttr(panelId)}" role="tabpanel" aria-labelledby="${escAttr(tabId)}" tabindex="0"${tabIndex === 0 ? '' : ' hidden'}>
-            ${targetHtml}${noteHtml}${contentHtml}${tabGroupsHtml[tabIndex]}${contentAfterHtml}${emptyHtml}
+            ${restartNoticeHtml}${targetHtml}${noteHtml}${contentHtml}${tabGroupsHtml[tabIndex]}${contentAfterHtml}${emptyHtml}
           </section>`;
         }).join('')
         : settingsGroups.map(g => renderGroupHtml(g)).join(''))
@@ -5216,6 +5282,15 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
   });
 
   const modal = overlay.querySelector('.settings-modal');
+  if (restartTabId) {
+    const index = settingsTabs.findIndex((tab) => tab.id === restartTabId);
+    if (index >= 0) {
+      modal.setAttribute('aria-describedby', `settings-tab-${index} settings-restart-${restartTabId}`);
+    }
+  }
+  modal.querySelectorAll('.settings-restart-button').forEach((button) => {
+    button.addEventListener('click', () => VKIpc.invoke('app:restart').catch((error) => console.error('再起動の要求に失敗しました', error)));
+  });
 
   // 説明タブのコピーボタンごとの「フィードバックを消すタイマー」。連打で表示が
   // 重ならないよう押下時に張り替え、モーダルを閉じるときは全部止める（DOM から
@@ -5276,9 +5351,9 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
     overlay.remove();
     release();
     if (shouldRestore) {
-      (restoreFocusElement?.isConnected
-        ? restoreFocusElement
-        : document.getElementById('settings-btn'))?.focus();
+      const sidebarSettingsButton = sidebarOpen ? document.querySelector('#sidebar-settings button') : null;
+      [restoreFocusElement, sidebarSettingsButton, document.getElementById('settings-btn')]
+        .find(canRestoreModalFocus)?.focus();
     }
   };
   // ここから後の例外では、close に overlay・キー操作・各タイマーをまとめて片付けさせる。
@@ -5425,6 +5500,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
     const saveButton = modal.querySelector('.settings-save');
     const saveHint = modal.querySelector('.settings-save-hint');
     let activeTabIndex = 0;
+    const restartTabIndex = settingsTabs.findIndex((tab) => tab.id === restartTabId);
     let footerLocked = false;
     // フッターの「保存」は全タブ横断だが、説明だけのタブを見ている間は保存対象が無いので隠す。
     // ただし他タブに未保存の変更が残っている場合は隠さない（隠すと「閉じる」しか押せず、
@@ -6149,6 +6225,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
     fetchSavedValues(Array.from(modal.querySelectorAll('[data-savedvalue-key]')));
 
     updateSettingsApplyButtons();
+    if (restartTabIndex > 0) activateTab(restartTabIndex);
     updateSettingsFooter();
   }
 

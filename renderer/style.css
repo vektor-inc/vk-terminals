@@ -1339,7 +1339,8 @@ h4.settings-content-heading {
 }
 .settings-msg.ok { color: #3fb950; }
 .settings-msg.err { color: #f85149; }
-.settings-footer button {
+.settings-footer button,
+.settings-secondary-button {
   padding: 6px 14px;
   border-radius: 5px;
   font-size: 13px;
@@ -1352,15 +1353,18 @@ h4.settings-content-heading {
 }
 /* 「キャンセル」「閉じる」「保存」共通。リングは面の外側に出るため、緑の保存ボタンでも
    グレーのキャンセルでも同じ見え方になる（バリアントごとの指定は不要）。 */
-.settings-footer button:focus-visible {
+.settings-footer button:focus-visible,
+.settings-secondary-button:focus-visible {
   outline: var(--vktm--outline--focus-ring);
   outline-offset: var(--vktm--outline-offset--focus-ring);
 }
-.settings-cancel {
+.settings-cancel,
+.settings-secondary-button {
   background: #21262d;
   color: #c9d1d9;
 }
-.settings-cancel:hover { background: #30363d; }
+.settings-cancel:hover,
+.settings-secondary-button:hover { background: #30363d; }
 .settings-save {
   background: #238636;
   /* 共通ルールが読む変数を上書きする。border-color を直接書くと共通ルールの
@@ -3800,3 +3804,25 @@ body.pane-dragging * {
   text-decoration: underline;
   cursor: pointer;
 }
+
+/* 再起動が必要な設定の案内
+   ========================================================================== */
+.sidebar-restart-required,
+.settings-restart-notice {
+  padding: 12px;
+  border: 1px solid #d29922;
+  border-radius: var(--vktm--border-radius--md);
+  color: #e6edf3;
+  background: #21262d;
+}
+.sidebar-restart-required[hidden],
+.settings-restart-notice[hidden] { display: none; }
+.sidebar-restart-required p,
+.settings-restart-notice p { margin: 0 0 8px; line-height: 1.4; }
+/* 字面の下の余白を含めても、箱の内側 8px・カード間 10px より狭くする。 */
+.sidebar-restart-required {
+  padding: 8px;
+  font-size: 12px;
+}
+.sidebar-restart-required p { margin-bottom: 4px; line-height: 1.3; }
+.settings-restart-notice { margin-bottom: 20px; }

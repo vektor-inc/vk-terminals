@@ -705,6 +705,23 @@ test('sanitizeWidget: statusLabel は前後の空白を除いて上限で切り�
   }
 });
 
+test('sanitizeWidget: statusLabel から改行・制御文字・双方向制御文字を除き、除去後に空なら捨てる', () => {
+  const items = [
+    { id: '1', title: 'a', editable: false, statusLabel: '見守り\n中' },
+    { id: '2', title: 'b', editable: false, statusLabel: '完了‮evil⁦x⁩' },
+    { id: '3', title: 'c', editable: false, statusLabel: '\n\t\u0000\u007f‮' },
+    { id: '4', title: 'd', editable: false, statusLabel: ' ‪ ' },
+  ];
+  const w = contract.sanitizeWidget(baseRawWidget({
+    groups: [{ id: 'g', label: 'G', tone: 'warning', items }],
+  }));
+  const out = w.groups[0].items;
+  assert.equal(out[0].statusLabel, '見守り中');
+  assert.equal(out[1].statusLabel, '完了evilx');
+  assert.equal(Object.prototype.hasOwnProperty.call(out[2], 'statusLabel'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(out[3], 'statusLabel'), false);
+});
+
 test('sanitizeWidget: statusTone に __proto__・constructor・前後に空白のある値を渡しても捨てられる', () => {
   const w = contract.sanitizeWidget(baseRawWidget({
     groups: [{ id: 'g', label: 'G', tone: 'warning', items: [

@@ -18,7 +18,7 @@
 // グループ見出し（section の data-tone）には影響しない。
 //
 // アイテムの statusLabel（任意・issue #536）: そのカードの状態バッジの文言だけを上書きする文字列。
-// 前後の空白を除いたうえで LIMITS.statusLabel 文字までに切り詰める。文字列以外・空（空白のみを含む）は
+// 制御文字・双方向制御文字を除き、前後の空白を除いたうえで LIMITS.statusLabel 文字までに切り詰める。文字列以外・空（空白のみを含む）は
 // 捨てる（キーを付けない）。無ければ従来どおりグループ見出しの文言で描く。グループ見出し自体には影響しない。
 (function (root, factory) {
   const api = factory();
@@ -75,6 +75,9 @@
     options: 60,
     lang: 16,
   });
+
+  // statusLabel から除く文字: C0 制御文字・DEL・双方向制御文字（U+200E/200F/202A-202E/2066-2069）。
+  const STATUS_LABEL_STRIP_RE = /[\u0000-\u001f\u007f‎‏‪-‮⁦-⁩]/g;
 
   // ── プリミティブ・URL ヘルパー ────────────────────────────────────────────
   const HTTP_URL_RE = /^https?:\/\//i;
@@ -285,9 +288,11 @@
     if (typeof raw.statusTone === 'string' && WIDGET_TONE_SET.has(raw.statusTone)) {
       item.statusTone = raw.statusTone;
     }
-    // statusLabel は前後の空白を除いて上限で切り詰める（文字列以外・空は捨てる）。
+    // statusLabel は制御文字・双方向制御文字を除いてから、前後の空白を除いて上限で切り詰める
+    // （文字列以外・除去後に空は捨てる）。
     if (typeof raw.statusLabel === 'string') {
-      const statusLabel = clampStr(raw.statusLabel.trim(), LIMITS.statusLabel).trim();
+      const cleaned = raw.statusLabel.replace(STATUS_LABEL_STRIP_RE, '');
+      const statusLabel = clampStr(cleaned.trim(), LIMITS.statusLabel).trim();
       if (statusLabel) item.statusLabel = statusLabel;
     }
     if (typeof raw.assignee === 'string' && raw.assignee.trim()) {

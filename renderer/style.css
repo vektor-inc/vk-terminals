@@ -3830,6 +3830,8 @@ body.pane-dragging * {
 }
 .sidebar-restart-required p { margin-bottom: 4px; line-height: 1.3; }
 .config-read-error-files { margin: 4px 0 0; padding-left: 18px; overflow-wrap: anywhere; }
+/* 段落の字面間を箱の内側の余白より狭く保つ。 */
+.settings-restart-notice p { margin-bottom: 4px; }
 .settings-restart-notice { margin-bottom: 20px; }
 
 /* 設定反映の成功と読み込み失敗

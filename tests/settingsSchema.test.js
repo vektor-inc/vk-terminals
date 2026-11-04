@@ -28,7 +28,7 @@ test('settings-schema.json: valid JSON で必須構造を持つ', () => {
 
   assert.equal(validateSettingsSchema(schema), true);
   assert.equal(schema.title, 'VK Terminals 設定');
-  assert.equal(schema.note, '保存後、次回の起動から反映されます。');
+  assert.equal(schema.note, '保存後、すぐに反映される設定と、次回の起動から反映される設定があります。反映の状況は、保存後に表示される案内で確認できます。');
   assert.ok(Array.isArray(schema.groups));
   assert.equal(schema.groups.length, 1);
   assert.equal(schema.groups[0].label, '基本');
@@ -65,7 +65,7 @@ test('buildBuiltinSettingsDescriptor: JSON から targetPath 付きの組み込�
   const descriptor = buildBuiltinSettingsDescriptor({ targetPath });
 
   assert.equal(descriptor.title, 'VK Terminals 設定');
-  assert.equal(descriptor.note, '保存後、次回の起動から反映されます。');
+  assert.equal(descriptor.note, '保存後、すぐに反映される設定と、次回の起動から反映される設定があります。反映の状況は、保存後に表示される案内で確認できます。');
   assert.equal(descriptor.targetPath, targetPath);
   assert.deepEqual(descriptor.groups.map((group) => group.label), ['基本']);
 
@@ -301,7 +301,7 @@ test('loadSettingsSchema: 読み込み失敗時は起動を落とさない fallb
   });
 
   assert.equal(schema.title, 'VK Terminals 設定');
-  assert.equal(schema.note, '保存後、次回の起動から反映されます。');
+  assert.equal(schema.note, '保存後、すぐに反映される設定と、次回の起動から反映される設定があります。反映の状況は、保存後に表示される案内で確認できます。');
   assert.deepEqual(schema.groups, []);
   assert.equal(errors.length, 1);
   assert.match(errors[0].schemaPath, /missing\.json$/);

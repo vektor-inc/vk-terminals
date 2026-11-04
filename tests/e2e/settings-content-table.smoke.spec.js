@@ -277,7 +277,7 @@ test.describe.serial('設定パネル: コンテンツテーブル（issue #380,
 
     // 保存する。
     await win.locator('.settings-save').click();
-    await expect(win.locator('.settings-msg')).toHaveText('保存しました。次回の起動から反映されます。');
+    await expect(win.locator('.settings-msg')).toHaveText('保存しました。反映状況は設定の案内をご確認ください。');
 
     // モーダルを閉じずに、保存済みの値のセルが新しい値へ更新される（issue #380 の回帰対象）。
     await expect(win.locator('.settings-modal')).toBeVisible();
@@ -560,7 +560,7 @@ test.describe.serial('設定パネル: 一括切り替えボタン（issue #380,
     await expect(win.getByLabel('数値対象', { exact: true })).toHaveValue('');
 
     await win.locator('.settings-save').click();
-    await expect(win.locator('.settings-msg')).toHaveText('保存しました。次回の起動から反映されます。');
+    await expect(win.locator('.settings-msg')).toHaveText('保存しました。反映状況は設定の案内をご確認ください。');
 
     const saved = JSON.parse(fs.readFileSync(targetPath, 'utf8'));
     expect(saved.targetA).toBe('excluded-test-a');

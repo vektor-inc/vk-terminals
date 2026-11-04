@@ -5267,7 +5267,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
 
   const groupedTabs = useTabbedSettings ? groupSettingsGroupsByTab(settingsGroups, settingsTabs) : [];
   // 保存対象のフィールドを 1 つも持たないタブ（= 説明だけのタブ）を判別する。
-  // 「保存後、次回の起動から反映されます。」の継承抑止とフッターの出し分けに使う。
+  // 保存後の反映に関する注記の継承抑止とフッターの出し分けに使う。
   const tabHasFields = groupedTabs.map(({ groups }) => groups.some(
     (group) => Array.isArray(group.fields) && group.fields.length > 0
   ));
@@ -5312,7 +5312,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
           const targetHtml = targetPaths.length
             ? `<div class="settings-group-target settings-tab-target">保存先: ${targetPaths.map((targetPath) => `<code>${escText(targetPath)}</code>`).join(' / ')}</div>`
             : '';
-          // desc.note（「保存後、次回の起動から反映されます。」）は保存対象があるタブにだけ
+          // desc.note（保存後の反映に関する注記）は保存対象があるタブにだけ
           // 継承する。説明だけのタブに出すと保存できるかのような誤誘導になるため。
           const tabNote = (tab && tab.note) ? tab.note : (tabHasFields[tabIndex] ? desc.note : '');
           const noteHtml = tabNote ? `<p class="settings-note settings-tab-note">${escText(tabNote)}</p>` : '';

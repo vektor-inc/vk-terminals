@@ -251,7 +251,7 @@ test.describe.serial('設定パネル: タブ・保存先表示系（issue #348 
 
       // 保存する。
       await win.locator('.settings-save').click();
-      await expect(win.locator('.settings-msg')).toHaveText('保存しました。次回の起動から反映されます。');
+      await expect(win.locator('.settings-msg')).toHaveText('保存しました。反映状況は設定の案内をご確認ください。');
       // 両タブの値がまとめて保存される。
       const payload = await win.evaluate(() => window.__savedPayloads[window.__savedPayloads.length - 1]);
       expect(payload.host).toBe('ok.example');

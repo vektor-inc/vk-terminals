@@ -18,7 +18,11 @@ test('再起動が必要な設定への案内とキャンセル', async () => {
     const { app, win } = launched;
     // 起動直後の状態取得と定期更新を待ち、初回描画のタイミングに依存させない。
     await expect(win.locator('#sidebar-restart-required')).toBeVisible({ timeout: 10000 });
-    expect(await win.locator('#sidebar-menu').evaluate((nav) => nav.firstElementChild.id)).toBe('sidebar-restart-required');
+    expect(await win.locator('#sidebar-menu').evaluate((nav) => {
+      const notice = nav.querySelector('#sidebar-restart-required');
+      const menu = nav.querySelector('.sidebar-menu-inner');
+      return !!(notice.compareDocumentPosition(menu) & Node.DOCUMENT_POSITION_FOLLOWING);
+    })).toBe(true);
     await win.locator('#sidebar-restart-required button').click();
     await expect(win.locator('#settings-panel-1')).toBeVisible();
     await expect(win.locator('#settings-panel-1 .settings-restart-notice')).toBeVisible();

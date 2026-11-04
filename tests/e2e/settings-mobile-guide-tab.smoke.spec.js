@@ -271,7 +271,7 @@ test.describe.serial('設定パネルの説明タブ「モバイルから確認�
     await expect(warningCallout.locator('.settings-content-callout-label')).toHaveText('注意');
     await expect(warningCallout).toContainText('0.0.0.0');
 
-    // 保存対象が無いタブなので「保存後、次回の起動から反映されます。」は継承しない。
+    // 保存対象が無いタブなので保存後の反映に関する注記は継承しない。
     await expect(win.locator(`${PANEL_MOBILE} .settings-tab-note`)).toHaveCount(0);
     // パネル自身がフォーカス可能（入力欄が無いのでキーボードで読めるようにする）。
     await expect(win.locator(PANEL_MOBILE)).toHaveAttribute('tabindex', '0');
@@ -644,7 +644,7 @@ test.describe.serial('設定パネルの説明タブ「モバイルから確認�
     await expect(win.locator('.settings-modal')).toBeVisible();
     await expect(win.locator(PANEL_MOBILE)).toBeVisible();
     // 保存できたことは伝わり続ける。
-    await expect(win.locator('.settings-msg')).toHaveText('保存しました。次回の起動から反映されます。');
+    await expect(win.locator('.settings-msg')).toHaveText('保存しました。反映状況は設定の案内をご確認ください。');
   });
 
   test('保存後に同じタブで編集を続けても自動クローズしない', async () => {

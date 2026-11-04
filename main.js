@@ -2852,7 +2852,7 @@ function startHttpApi() {
   const apiHost = normalizeApiHost(apiConfig.apiHost);
   // 「認証を必ず要求する」設定（issue #313）。tailscale serve --bg のように apiHost が
   // 127.0.0.1 のまま外部（tailnet）へ公開されるケースに対応するためのオプトイン。
-  // 他の設定同様「保存後、次回の起動から反映」なので、起動時に一度だけ読めばよい
+  // この認証設定は再起動後に反映するため、起動時に一度だけ読む
   // （毎リクエストで config.json を同期読みするのを避ける）。
   const requireAuthAlways = !!apiConfig.apiRequireAuthAlways;
 

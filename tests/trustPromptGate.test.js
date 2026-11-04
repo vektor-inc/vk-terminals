@@ -503,3 +503,58 @@ test('issue #448: タスク用ポリシー付きは猶予切れだけでは監�
 test('issue #448: 環境変数での時間窓の上限（max）による制限は変わらない', () => {
   assert.equal(resolvePositiveFiniteMs('999999', TRUST_WINDOW_MS, { max: TRUST_WINDOW_MS }), TRUST_WINDOW_MS);
 });
+
+// ─── issue #517: Codex 新版の Folder access 画面（説明文が増えて約150文字になる）──────
+const RESTRICTED_OPEN_PROMPT_517 = [
+  'Folder access /private/tmp/proj',
+  'Config, hooks, and exec policies from untrusted folders stay disabled.',
+  'Trusted project folders can still contribute settings. Skills still load, and',
+  'tools follow your permission settings. Opening will not change saved trust.',
+  '',
+  '› 1. Open restricted',
+  '  2. Quit',
+].join('\n');
+
+test('issue #517: 説明文が増えた新版の Folder access 画面にも、ready 猶予後に1回だけ応答する', () => {
+  const gate = createTrustPromptGate({ spawnTime: 0, taskPolicyLaunch: true });
+  gate.markReadyDetected(500);
+  const late = 500 + READY_GRACE_MS + 3000;
+  assert.equal(isRestrictedOpenPrompt(RESTRICTED_OPEN_PROMPT_517), true);
+  assert.equal(isTrustGrantPrompt(RESTRICTED_OPEN_PROMPT_517), false);
+  assert.equal(gate.canAutoRespondToPrompt(RESTRICTED_OPEN_PROMPT_517, late), true);
+  gate.markTrustHandled();
+  assert.equal(gate.canAutoRespondToPrompt(RESTRICTED_OPEN_PROMPT_517, late), false);
+});
+
+test('issue #517: 新版画面でもコマンド承認画面と同居する出力・通常ペイン・窓外には応答しない', () => {
+  const late = 500 + READY_GRACE_MS + 1;
+  const taskGate = createTrustPromptGate({ spawnTime: 0, taskPolicyLaunch: true });
+  taskGate.markReadyDetected(500);
+  const approval = `${RESTRICTED_OPEN_PROMPT_517}\nAllow command?\n1. Yes, proceed`;
+  assert.equal(taskGate.canAutoRespondToPrompt(approval, late), false);
+  const normalGate = createTrustPromptGate({ spawnTime: 0 });
+  normalGate.markReadyDetected(500);
+  assert.equal(normalGate.canAutoRespondToPrompt(RESTRICTED_OPEN_PROMPT_517, late), false);
+  assert.equal(taskGate.canAutoRespondToPrompt(RESTRICTED_OPEN_PROMPT_517, TRUST_WINDOW_MS + 1), false);
+});
+
+test('issue #517: 上限を広げても、説明文と選択肢が遠く離れた出力（無関係な長文の引用）には応答しない', () => {
+  const gate = createTrustPromptGate({ spawnTime: 0, taskPolicyLaunch: true });
+  gate.markReadyDetected(500);
+  const far = [
+    'Folder access /private/tmp/proj',
+    'Config, hooks, and exec policies from untrusted folders stay disabled.',
+    'x'.repeat(600),
+    '› 1. Open restricted',
+    '  2. Quit',
+  ].join('\n');
+  assert.equal(gate.canAutoRespondToPrompt(far, 500 + READY_GRACE_MS + 1), false);
+});
+
+test('issue #517: 信頼を与える画面に長い説明が付いても、制限付き画面としては扱わない', () => {
+  const grant = `${CODEX_CURRENT_TRUST_PROMPT}\nTrusted project folders can still contribute settings. Skills still load, and tools follow your permission settings.`;
+  assert.equal(isRestrictedOpenPrompt(grant), false);
+  const gate = createTrustPromptGate({ spawnTime: 0, taskPolicyLaunch: true });
+  gate.markReadyDetected(500);
+  assert.equal(gate.canAutoRespondToPrompt(grant, 500 + READY_GRACE_MS + 1), false);
+});

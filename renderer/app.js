@@ -234,18 +234,18 @@ const RUNNING_INPUT_GUARD_MS = 200;
 // 値は起動時に main プロセス（app:get-config）から取得する。
 let agentRoomEnabled = false;
 // 新規ペイン（＋ / 空グリッド「新規ペインを追加」）の既定挙動（issue #143）。
-// 値は起動時に main（app:get-config）から取得する。設定反映には再起動が必要（設定パネルの note 参照）。
+// 値は起動時に main（app:get-config）から取得する。保存後は main の定期監視で反映する。
 let newPaneStartupDir = '';
 let newPaneAutoLaunchClaude = false;
 // 起動時の最初のペインだけが使う AI エンジン・モデル（issue #419）。既定は従来どおり Claude Code。
 let initialPaneEngine = 'claude';
 let initialPaneCodexModel = '';
 // ペインを閉じる時の確認（issue #184）。'never' | 'busy' | 'always'（既定 'busy'）。
-// 値は起動時に main（app:get-config）から取得する。設定反映には再起動が必要（設定パネルの note 参照）。
+// 値は起動時に main（app:get-config）から取得する。保存後は main の定期監視で反映する。
 let confirmClosePref = 'busy';
 // ペイン内 URL のクリック挙動（issue #385）。'click'（既定・単クリックで開く） |
 // 'modifier'（従来どおり ⌘/Ctrl+クリックが必要）。
-// 値は起動時に main（app:get-config）から取得する。設定反映には再起動が必要（設定パネルの note 参照）。
+// 値は起動時に main（app:get-config）から取得する。保存後は main の定期監視で反映する。
 let terminalLinkClickModePref = 'click';
 let waitingExcludeCwdPatterns = [];
 let commandsConfigured = false;
@@ -1207,6 +1207,7 @@ function setExternalUrlToastInteractive(toast, interactive) {
 function showExternalUrlOpenFailedToast(url) {
   const toast = ensureExternalUrlToast();
   if (!toast) return;
+  toast.classList.remove('vk-toast--success');
   const copyButton = toast.querySelector('.vk-toast-copy');
   if (copyButton) copyButton.hidden = false;
   // コピーボタンを持つため、クリックを透過させない（上の setExternalUrlToastInteractive
@@ -1223,9 +1224,10 @@ function showExternalUrlOpenFailedToast(url) {
 // インフラ（issue #326）を再利用し、URL コピー専用のボタンだけ隠す。「呼び出し箇所ごとに
 // 吹き出しを出さない」という汎用トーストの設計方針（冒頭コメント参照）どおり、新しい
 // トースト実装は増やさない。
-function showGenericToast(message) {
+function showGenericToast(message, variant = 'default') {
   const toast = ensureExternalUrlToast();
   if (!toast) return;
+  toast.classList.toggle('vk-toast--success', variant === 'success');
   const copyButton = toast.querySelector('.vk-toast-copy');
   if (copyButton) copyButton.hidden = true;
   // 操作できる部品が無いため、クリックを下（ターミナル等）へ透過させる（上の
@@ -1652,57 +1654,77 @@ function renderSidebarMenu() {
 let restartRequiredState = { restartRequired: false, tabs: [] };
 
 let configReflectionInitialized = false;
-let configReflectionInflight = null;
+let configReflectionRevision = -1;
 let configReflectionToastTimer = null;
 let lastConfigReflectionToastAt = 0;
+let lastConfigReflectionMessage = '';
+let pendingConfigReflection = false;
 let partialConfigReflection = false;
+let configFailedFiles = [];
+let restartRequiredKnown = false;
 
-// 5秒ごとに反映結果を確認し、近接する2種類の更新を1件にまとめる。
-function refreshConfigReflection() {
-  if (configReflectionInflight) return configReflectionInflight;
-  configReflectionInflight = updateConfigReflection().finally(() => { configReflectionInflight = null; });
-  return configReflectionInflight;
-}
-
-async function updateConfigReflection() {
-  let state;
-  try { state = await VKIpc.invoke('app:config-reflection'); } catch (_error) { return; }
-  if (!state || typeof state !== 'object') return;
-  const failedFiles = Array.isArray(state.failedFiles) ? state.failedFiles.filter((file) => typeof file === 'string') : [];
-  const notice = document.getElementById('sidebar-config-read-error');
-  if (notice) {
-    notice.hidden = failedFiles.length === 0;
-    notice.querySelector('.config-read-error-files').replaceChildren(...failedFiles.map((file) => {
+function updateConfigReadErrorNotices() {
+  document.querySelectorAll('.config-read-error').forEach((notice) => {
+    const signature = JSON.stringify(configFailedFiles);
+    if (notice.dataset.files === signature) return;
+    notice.dataset.files = signature;
+    notice.hidden = configFailedFiles.length === 0;
+    notice.querySelector('.config-read-error-files').replaceChildren(...configFailedFiles.map((file) => {
       const item = document.createElement('li');
       item.textContent = file;
       return item;
     }));
+  });
+}
+
+async function refreshConfigReflection() {
+  try { updateConfigReflection(await VKIpc.invoke('app:config-reflection')); } catch (_error) { /* 次の main 通知で再取得する。 */ }
+}
+
+function updateConfigReflection(state) {
+  if (!state || typeof state !== 'object' || state.revision <= configReflectionRevision) return;
+  configReflectionRevision = state.revision;
+  const failedFiles = [...new Set(state.failedFiles || [])].sort();
+  const firstFailure = configFailedFiles.length === 0 && failedFiles.length > 0;
+  const recovered = configFailedFiles.length > 0 && failedFiles.length === 0;
+  configFailedFiles = failedFiles;
+  updateConfigReadErrorNotices();
+  // 常設カードは live region にせず、状態の変化だけを既存の status トーストで通知する。
+  if (firstFailure) showGenericToast('設定を読み込めませんでした。設定ファイルを修正して保存してください');
+  else if (recovered) showGenericToast('設定ファイルの読み込みが復旧しました', 'success');
+  if (state.config) {
+    newPaneStartupDir = state.config.newPaneStartupDir;
+    newPaneAutoLaunchClaude = state.config.newPaneAutoLaunchClaude;
+    confirmClosePref = state.config.confirmClose;
+    terminalLinkClickModePref = state.config.terminalLinkClickMode;
+    waitingExcludeCwdPatterns = state.config.waitingExcludeCwdPatterns;
   }
-  if (state.config && configReflectionInitialized) {
-    const keys = Array.isArray(state.changedKeys) ? state.changedKeys : [];
-    if (keys.includes('newPaneStartupDir')) newPaneStartupDir = state.config.newPaneStartupDir;
-    if (keys.includes('newPaneAutoLaunchClaude')) newPaneAutoLaunchClaude = state.config.newPaneAutoLaunchClaude;
-    if (keys.includes('confirmClose')) confirmClosePref = state.config.confirmClose;
-    if (keys.includes('terminalLinkClickMode')) terminalLinkClickModePref = state.config.terminalLinkClickMode;
-    if (keys.includes('waitingExcludeCwdPatterns')) waitingExcludeCwdPatterns = state.config.waitingExcludeCwdPatterns;
-  }
-  if (failedFiles.length) {
-    clearTimeout(configReflectionToastTimer);
-    configReflectionToastTimer = null;
-  } else if (configReflectionInitialized && (state.changedKeys?.length || state.eventChanged)) {
-    clearTimeout(configReflectionToastTimer);
-    configReflectionToastTimer = setTimeout(async () => {
-      configReflectionToastTimer = null;
-      await refreshRestartRequired();
-      // 保存を別々のポーリングで見つけても、直近の通知とまとめる。
-      if (Date.now() - lastConfigReflectionToastAt < 6000) return;
-      partialConfigReflection = restartRequiredState.restartRequired;
-      updatePartialConfigReflectionNotices();
-      showGenericToast(partialConfigReflection ? '一部の設定を反映しました' : '設定を反映しました');
-      lastConfigReflectionToastAt = Date.now();
-    }, 1200);
-  }
+  clearTimeout(configReflectionToastTimer);
+  if (failedFiles.length) pendingConfigReflection = false;
+  else if (configReflectionInitialized && (state.changedKeys?.length || state.eventChanged)) pendingConfigReflection = true;
+  if (pendingConfigReflection) configReflectionToastTimer = setTimeout(async () => {
+    await refreshRestartRequired();
+    flushConfigReflectionNotification();
+  }, 1200);
   configReflectionInitialized = true;
+}
+
+function flushConfigReflectionNotification() {
+  const decision = window.VKConfigReflectionPolicy.reflectionDecision({
+    pending: pendingConfigReflection || (!!lastConfigReflectionMessage && restartRequiredKnown
+      && lastConfigReflectionMessage !== (restartRequiredState.restartRequired ? '一部の設定を反映しました' : '設定を反映しました')),
+    failed: configFailedFiles.length > 0,
+    restartRequired: restartRequiredKnown ? restartRequiredState.restartRequired : null,
+    lastMessage: lastConfigReflectionMessage, lastAt: lastConfigReflectionToastAt, now: Date.now(),
+  });
+  pendingConfigReflection = decision.pending;
+  if (decision.partial !== null) partialConfigReflection = decision.partial;
+  updatePartialConfigReflectionNotices();
+  if (decision.message) {
+    showGenericToast(decision.message, 'success');
+    lastConfigReflectionMessage = decision.message;
+    lastConfigReflectionToastAt = Date.now();
+  }
 }
 
 function updatePartialConfigReflectionNotices() {
@@ -1730,16 +1752,15 @@ function refreshRestartRequired() {
 async function updateRestartRequired() {
   try {
     const state = await VKIpc.invoke('app:restart-required');
-    // 不正な IPC 応答でも設定パネルを開けるよう、空状態へ正規化する。
-    restartRequiredState = state && typeof state === 'object' && !Array.isArray(state)
+    // 未確認時は直前の案内を保ち、成功と断定する通知を保留する。
+    restartRequiredKnown = !!(state && typeof state === 'object' && !Array.isArray(state)
       && typeof state.restartRequired === 'boolean' && Array.isArray(state.tabs)
-      && state.tabs.every((tab) => typeof tab === 'string')
-      ? { restartRequired: state.restartRequired, tabs: state.restartRequired ? state.tabs : [] }
-      : { restartRequired: false, tabs: [] };
+      && state.tabs.every((tab) => typeof tab === 'string'));
+    if (restartRequiredKnown) restartRequiredState = { restartRequired: state.restartRequired, tabs: state.restartRequired ? state.tabs : [] };
   } catch (_error) {
-    restartRequiredState = { restartRequired: false, tabs: [] };
+    restartRequiredKnown = false;
   }
-  if (!restartRequiredState.restartRequired) partialConfigReflection = false;
+  if (restartRequiredKnown) partialConfigReflection = restartRequiredState.restartRequired;
   updatePartialConfigReflectionNotices();
   const notice = document.getElementById('sidebar-restart-required');
   if (notice) {
@@ -1792,7 +1813,7 @@ function createSidebar() {
   const configError = document.createElement('div');
   configError.id = 'sidebar-config-read-error';
   configError.className = 'sidebar-restart-required sidebar-section-card';
-  configError.setAttribute('role', 'alert');
+  configError.classList.add('config-read-error');
   configError.hidden = true;
   configError.innerHTML = '<p>設定を読み込めませんでした。設定ファイルを修正して保存してください</p><ul class="config-read-error-files"></ul>';
   nav.insertBefore(configError, restartNotice);
@@ -4667,8 +4688,9 @@ function setupUsageBadge() {
   refreshUsageAndBadge();
   setInterval(refreshUsageAndBadge, USAGE_POLL_INTERVAL_MS);
   refreshRestartRequired();
+  VKIpc.on('app:config-reflection-updated', updateConfigReflection);
   refreshConfigReflection();
-  setInterval(() => { refreshRestartRequired(); refreshConfigReflection(); }, 5000);
+  setInterval(async () => { await refreshRestartRequired(); flushConfigReflectionNotification(); }, 5000);
   setInterval(() => {
     tickSidebarUsageReset();
     checkUsageResetAndRefetch();
@@ -5337,6 +5359,10 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
   overlay.innerHTML = `
     <div class="settings-modal" role="dialog" aria-modal="true" aria-labelledby="${settingsTitleId}" tabindex="-1">
       ${settingsHeaderHtml}
+      <div class="config-read-error settings-config-read-error" hidden>
+        <p>設定を読み込めませんでした。設定ファイルを修正して保存してください</p>
+        <ul class="config-read-error-files"></ul>
+      </div>
       <div class="settings-view settings-view-config" role="region">
         ${settingsAvailable && desc.note && !useTabbedSettings ? `<p class="settings-note">${escText(desc.note)}</p>` : ''}
         ${settingsTargetHtml}
@@ -5360,6 +5386,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
   });
 
   const modal = overlay.querySelector('.settings-modal');
+  updateConfigReadErrorNotices();
   updatePartialConfigReflectionNotices();
   if (restartTabId) {
     const index = settingsTabs.findIndex((tab) => tab.id === restartTabId);
@@ -5404,7 +5431,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
   // 「今開いているモーダル」ではなくこのクロージャの overlay を対象にロックを解放し、
   // 二重オープンの抑止を壊す。寿命の判断は renderer/autoClose.js に集約してあり、
   // ここは「いつ武装し、いつ取り消すか」だけを決める。
-  const autoClose = createAutoCloseController({ onFire: () => close() });
+  const autoClose = createAutoCloseController({ onFire: () => { if (!configFailedFiles.length) close(); } });
   let unregisterEscapeLayer = () => {};
   let releaseFocusTrap = () => {};
   const close = () => {
@@ -6572,9 +6599,14 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
         // 取り直す。取り直さないと、保存後も編集を続けた場合に古い値が残り続ける
         // （安藤のレビュー指摘・issue #380）。
         refreshSettingsContentSavedValues();
-        msg.textContent = '保存しました。設定の反映を確認しています。';
+        msg.textContent = '保存しました。反映状況は設定の案内をご確認ください。';
         msg.classList.add('ok');
-        autoClose.arm();
+        await refreshConfigReflection();
+        if (configFailedFiles.length) {
+          msg.textContent = '保存しましたが、設定を読み込めませんでした。対象ファイルを確認してください。';
+          msg.className = 'settings-msg err';
+          autoClose.cancel();
+        } else autoClose.arm();
       } else {
         msg.textContent = 'エラー: ' + (res && res.error ? res.error : '不明なエラー');
         msg.classList.add('err');

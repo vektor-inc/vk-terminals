@@ -80,6 +80,7 @@ const SEND_CHANNELS = new Set([
 
 // main → renderer
 const ON_CHANNELS = new Set([
+  'app:config-reflection-updated',
   'menu:update',
   'widgets:update',
   'terminal:data',

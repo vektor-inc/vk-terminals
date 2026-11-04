@@ -7,19 +7,17 @@ const KEYS = ['newPaneStartupDir', 'newPaneAutoLaunchClaude', 'confirmClose', 't
 // 未指定値は起動時と同じ既定値へ寄せ、対象キーを一括検証する。
 function normalizeLiveConfig(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('invalid config');
-  const defaults = { newPaneStartupDir: '', newPaneAutoLaunchClaude: false, confirmClose: 'busy', terminalLinkClickMode: 'click', menuItems: [], waitingExcludeCwdPatterns: [] };
-  const result = { ...defaults };
-  for (const key of KEYS) {
-    if (raw[key] == null) continue;
-    const value = raw[key];
-    if (key === 'newPaneStartupDir' && typeof value === 'string') result[key] = value.trim();
-    else if (key === 'newPaneAutoLaunchClaude' && typeof value === 'boolean') result[key] = value;
-    else if (key === 'confirmClose' && ['never', 'busy', 'always'].includes(value)) result[key] = value;
-    else if (key === 'terminalLinkClickMode' && ['click', 'modifier'].includes(value)) result[key] = value;
-    else if (key === 'waitingExcludeCwdPatterns' && Array.isArray(value) && value.every((v) => typeof v === 'string')) result[key] = value;
-    else if (key === 'menuItems' && Array.isArray(value)) result[key] = value;
-    else throw new Error(`invalid ${key}`);
-  }
+  const { normalizeConfirmClose } = require('./closeConfirm');
+  const { normalizeWaitingExcludeCwdPatterns } = require('../renderer/waitingState');
+  const { normalizeTerminalLinkClickMode } = require('./terminalLinkPolicy');
+  const result = {
+    newPaneStartupDir: typeof raw.newPaneStartupDir === 'string' ? raw.newPaneStartupDir.trim() : '',
+    newPaneAutoLaunchClaude: raw.newPaneAutoLaunchClaude === true,
+    confirmClose: normalizeConfirmClose(raw.confirmClose),
+    terminalLinkClickMode: normalizeTerminalLinkClickMode(raw.terminalLinkClickMode),
+    menuItems: Array.isArray(raw.menuItems) ? raw.menuItems : [],
+    waitingExcludeCwdPatterns: normalizeWaitingExcludeCwdPatterns(raw.waitingExcludeCwdPatterns),
+  };
   return result;
 }
 
@@ -40,8 +38,21 @@ function readSmallJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, 'utf8'));
 }
 
-function reflectionMessage(restartRequired) {
-  return restartRequired ? '一部の設定を反映しました' : '設定を反映しました';
+// 失敗中の差分は復旧まで保持し、反映イベント自体はその周期で消費する。
+function advanceReflection(previous, input) {
+  const config = input.config || previous.config;
+  const changedKeys = config ? changedLiveKeys(previous.config || normalizeLiveConfig({}), config) : [];
+  const pendingKeys = [...new Set([...(previous.pendingKeys || []), ...changedKeys])];
+  const failed = input.failedFiles.length > 0;
+  return {
+    config,
+    eventId: input.eventId,
+    initialized: true,
+    pendingKeys: failed ? pendingKeys : [],
+    changedKeys: failed ? [] : pendingKeys,
+    eventChanged: !failed && !!previous.initialized && !!input.eventId && input.eventId !== previous.eventId,
+    failedFiles: [...new Set(input.failedFiles)].sort(),
+  };
 }
 
-module.exports = { normalizeLiveConfig, changedLiveKeys, normalizeReflection, readSmallJson, reflectionMessage };
+module.exports = { normalizeLiveConfig, changedLiveKeys, normalizeReflection, readSmallJson, advanceReflection };

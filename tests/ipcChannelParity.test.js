@@ -95,3 +95,11 @@ test('settings:api-token-info と settings:reissue-api-token が preload.js の 
   assert.ok(invokeChannels.includes('settings:api-token-info'));
   assert.ok(invokeChannels.includes('settings:reissue-api-token'));
 });
+
+// 状態の push 通知も preload の購読許可と対応させる。
+test('設定反映の push 通知は renderer が購読できる', () => {
+  const match = preloadSource.match(/const ON_CHANNELS = new Set\(\[([\s\S]*?)\]\)/);
+  assert.ok(match);
+  assert.ok([...match[1].matchAll(/'([^']+)'/g)].some((entry) => entry[1] === 'app:config-reflection-updated'));
+  assert.match(mainSource, /webContents\.send\('app:config-reflection-updated'/);
+});

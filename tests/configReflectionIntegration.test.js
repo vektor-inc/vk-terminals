@@ -11,22 +11,24 @@ function createMainHarness(initial) {
   const source = fs.readFileSync(path.join(__dirname, '../main.js'), 'utf8');
   const handlers = {};
   const sent = [];
+  const errors = [];
   let raw = initial;
   let reads = 0;
   let tick;
   const context = vm.createContext({
     ...policy, path, DATA_DIR: '/config', MENU_MAX_SECTIONS: 10,
+    LOG_PREFIX: '[test]', console: { error: (message) => errors.push(message) },
     fs: { existsSync: (file) => file === '/config/config.json' },
     readSmallJson: () => { reads++; if (raw instanceof Error) throw raw; return raw; },
     userConfigCandidatePaths: () => ['/config/config.json'],
-    validateMenuSection: (section) => ({ ok: !!section.id }),
+    validateMenuSection: (section) => ({ ok: !!section.id, error: 'menu item id required' }),
     win: { isDestroyed: () => false, webContents: { send: (...args) => sent.push(args) } },
     pushMenuUpdate: () => sent.push(['menu:update']),
     ipcMain: { handle: (name, handler) => { handlers[name] = handler; } },
     setInterval: (callback) => { tick = callback; return { unref() {} }; },
   });
   vm.runInContext(source.slice(source.indexOf('let liveConfig = null;'), source.indexOf("ipcMain.handle('app:restart-required'")), context);
-  return { state: () => handlers['app:config-reflection'](), update: (value) => { raw = value; tick(); }, sent, reads: () => reads };
+  return { state: () => handlers['app:config-reflection'](), update: (value) => { raw = value; tick(); }, sent, errors, reads: () => reads };
 }
 
 test('main の監視だけで起動時の読み込み失敗から復旧し、メニューを通知する', () => {
@@ -54,6 +56,44 @@ test('main は不正なメニューだけを既定値に戻し、他の設定を
   main.update({ confirmClose: 'always', menuItems: [{ id: 'new' }] });
   assert.equal(main.state().failedFiles.length, 0);
   assert.ok(main.state().changedKeys.includes('menuItems'));
+});
+
+test('不正メニューの理由は変化時だけ記録し、復旧後の再発も記録する', () => {
+  for (const [menuItems, reason] of [
+    [[{ command: 'SECRET' }], 'menu item id required'],
+    [Array(11).fill({ id: 'SECRET' }), 'too many (max 10)'],
+  ]) {
+    const main = createMainHarness({ menuItems });
+    const message = `[test] invalid config menuItems: ${reason}`;
+    assert.deepEqual(main.errors, [message]);
+    main.update({ menuItems });
+    assert.deepEqual(main.errors, [message]);
+    // 正常な設定への復旧で、同じ理由の次のエラーを再び記録できる。
+    main.update({ menuItems: [] });
+    main.update({ menuItems });
+    assert.deepEqual(main.errors, [message, message]);
+    assert.ok(main.errors.every((entry) => !entry.includes('SECRET')));
+  }
+});
+
+test('不正メニューの理由が変わると、復旧を挟まなくても記録する', () => {
+  const main = createMainHarness({ menuItems: [{}] });
+  main.update({ menuItems: Array(11).fill({ id: 'overflow' }) });
+  assert.deepEqual(main.errors, [
+    '[test] invalid config menuItems: menu item id required',
+    '[test] invalid config menuItems: too many (max 10)',
+  ]);
+});
+
+test('実際のメニュー検証エラーに設定値を含めない', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../main.js'), 'utf8');
+  const context = vm.createContext({ MENU_MAX_TEXT: 200, MENU_ACTION_TYPES: new Set(['open-url']) });
+  vm.runInContext(source.slice(source.indexOf('function validateMenuItem('), source.indexOf('function validateMenuSection(')), context);
+  const secret = 'SECRET-COMMAND';
+  const duplicate = context.validateMenuItem({ id: secret }, 'config', 0, new Set([`config:${secret}`]));
+  const unsupported = context.validateMenuItem({ id: 'item', label: 'item', action: { type: secret } }, 'config', 0, new Set());
+  assert.equal(duplicate.error, 'duplicate menu item id');
+  assert.equal(unsupported.error, 'unsupported menu action');
 });
 
 test('renderer は changedKeys が空でも値を受け取り、同じ失敗集合でDOMと警告を繰り返さない', () => {

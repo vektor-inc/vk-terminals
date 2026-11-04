@@ -470,7 +470,7 @@ function validateMenuItem(raw, source, depth, seenIds) {
   }
   const itemKey = `${source}:${raw.id}`;
   if (seenIds.has(itemKey)) {
-    return { ok: false, error: `duplicate menu item id "${raw.id}"` };
+    return { ok: false, error: 'duplicate menu item id' };
   }
   seenIds.add(itemKey);
 
@@ -497,7 +497,7 @@ function validateMenuItem(raw, source, depth, seenIds) {
       return { ok: false, error: 'menu item action must be an object' };
     }
     if (!MENU_ACTION_TYPES.has(raw.action.type)) {
-      return { ok: false, error: `unsupported menu action "${raw.action.type}"` };
+      return { ok: false, error: 'unsupported menu action' };
     }
     if (raw.action.type === 'open-settings') {
       item.action = { type: 'open-settings' };
@@ -1927,10 +1927,22 @@ function getRestartTabIds() {
 let restartDialogOpen = false;
 // main 自身が監視し、renderer の起動・停止に依存せず設定を反映する。
 let liveConfig = null;
+let lastMenuError = null;
 // 個別のメニュー不正で他の設定まで反映を止めないよう、起動時と再読込で共有する。
 function normalizeConfigForReflection(raw) {
   const config = normalizeLiveConfig(raw);
-  if (config.menuItems.length > MENU_MAX_SECTIONS || config.menuItems.some((section) => !validateMenuSection(section, { defaultSource: 'config' }).ok)) config.menuItems = [];
+  let error = config.menuItems.length > MENU_MAX_SECTIONS ? `too many (max ${MENU_MAX_SECTIONS})` : null;
+  for (const section of error ? [] : config.menuItems) {
+    const result = validateMenuSection(section, { defaultSource: 'config' });
+    if (!result.ok) {
+      error = result.error;
+      break;
+    }
+  }
+  if (error) config.menuItems = [];
+  // 同じ不正設定を監視周期ごとに記録せず、復旧後の再発は記録する。
+  if (error && error !== lastMenuError) console.error(`${LOG_PREFIX} invalid config menuItems: ${error}`);
+  lastMenuError = error;
   return config;
 }
 let reflectionState = { config: null, initialized: false, eventId: null, pendingKeys: [], failedFiles: [], revision: 0 };

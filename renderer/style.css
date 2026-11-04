@@ -2907,6 +2907,19 @@ button.sidebar-section-header:hover {
   animation: badge-pulse 1.5s ease-in-out infinite;
 }
 
+/* 見守り中・完了（issue #536）。入力待ちのような注意喚起ではないため、点滅させない。 */
+.pane-status[data-status="watching"] {
+  color: #58a6ff;
+  background-color: rgba(88, 166, 255, 0.15);
+  border: 1px solid rgba(88, 166, 255, 0.3);
+}
+
+.pane-status[data-status="done"] {
+  color: #8b949e;
+  background-color: rgba(139, 148, 158, 0.15);
+  border: 1px solid rgba(139, 148, 158, 0.3);
+}
+
 @keyframes badge-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.6; }

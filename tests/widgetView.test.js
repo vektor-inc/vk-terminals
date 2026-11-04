@@ -224,6 +224,27 @@ test('render: 状態バッジはアイテムの statusTone があればその色
   assert.equal(sections[0].dataset.tone, 'info');
 });
 
+test('render: 状態バッジの文言はアイテムの statusLabel があればそれ、無ければグループの見出し', () => {
+  // statusLabel の上限（20 文字）に収まる長さの HTML 断片。
+  const evil = '<img src=x onerror>';
+  const widget = sanitized([
+    { id: 'ready', label: '実行待ち', tone: 'info', items: [
+      { id: '1', title: 'A', editable: false, statusLabel: '見守り中' },
+      { id: '2', title: 'B', editable: false, statusLabel: '' },
+      { id: '3', title: 'C', editable: false, statusLabel: 7 },
+      { id: '4', title: 'D', editable: false },
+      { id: '5', title: 'E', editable: false, statusLabel: evil },
+    ] },
+  ]);
+  const { groupsEl, view } = makeView();
+  view.render(widget, { now: Date.parse('2026-07-21T00:00:10.000Z') });
+  const badges = groupsEl.querySelectorAll((el) => el.classList.contains('widget-badge'));
+  assert.deepEqual(badges.map((badge) => badge.textContent), ['見守り中', '実行待ち', '実行待ち', '実行待ち', evil]);
+  // 文字列は textContent で入り、要素化されない。
+  assert.equal(badges[4].children.length, 1);
+  assert.equal(badges[4].children[0].tagName, '#text');
+});
+
 test('render: 文字列は textContent で描画され、HTML として解釈されない（XSS 防御）', () => {
   const evil = '<img src=x onerror=alert(1)>';
   const widget = sanitized([

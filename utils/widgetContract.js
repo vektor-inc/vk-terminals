@@ -16,6 +16,10 @@
 // （WIDGET_TONES）に完全一致するときだけ item.statusTone に残し、語彙外・文字列以外は捨てる
 // （キーを付けない。neutral へは置き換えない）。無ければ従来どおりグループの tone で描く。
 // グループ見出し（section の data-tone）には影響しない。
+//
+// アイテムの statusLabel（任意・issue #536）: そのカードの状態バッジの文言だけを上書きする文字列。
+// 前後の空白を除いたうえで LIMITS.statusLabel 文字までに切り詰める。文字列以外・空（空白のみを含む）は
+// 捨てる（キーを付けない）。無ければ従来どおりグループ見出しの文言で描く。グループ見出し自体には影響しない。
 (function (root, factory) {
   const api = factory();
   if (typeof module === 'object' && module.exports) {
@@ -56,6 +60,7 @@
 
   // ── 文字長・件数の上限（防御的サニタイズ）────────────────────────────────
   const LIMITS = Object.freeze({
+    statusLabel: 20,  // item.statusLabel（状態バッジの文言。バッジに収まる長さ）
     text: 500,        // title / label / ariaLabel / assignee / emptyText / group label 等
     confirmTitle: 500,
     confirmBody: 2000,
@@ -279,6 +284,11 @@
     // statusTone は tone の allowlist に完全一致するときだけ残す（語彙外・非文字列は捨てる）。
     if (typeof raw.statusTone === 'string' && WIDGET_TONE_SET.has(raw.statusTone)) {
       item.statusTone = raw.statusTone;
+    }
+    // statusLabel は前後の空白を除いて上限で切り詰める（文字列以外・空は捨てる）。
+    if (typeof raw.statusLabel === 'string') {
+      const statusLabel = clampStr(raw.statusLabel.trim(), LIMITS.statusLabel).trim();
+      if (statusLabel) item.statusLabel = statusLabel;
     }
     if (typeof raw.assignee === 'string' && raw.assignee.trim()) {
       item.assignee = clampStr(raw.assignee.trim(), LIMITS.text);

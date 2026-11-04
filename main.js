@@ -148,6 +148,8 @@ const { buildMobileCsp } = require('./utils/csp');
 const { MAX_CLIPBOARD_TEXT_LENGTH, CLIPBOARD_MAX_LENGTH_ARG_PREFIX } = require('./utils/clipboardLimits');
 // POST /api/set-title の prMerged / waitingMerge（issue #44 / #363）共通の真偽値パーサ。
 const { parseStrictBoolFlag } = require('./utils/strictBoolFlag');
+// POST /api/set-title の paneNote（issue #536）のパーサ。
+const { parsePaneNoteUpdate } = require('./utils/paneNote');
 const { buildTranscriptEvidenceResponse } = require('./utils/transcriptEvidence');
 // Web Push 通知（issue #396）。VAPID 鍵の生成・通知の暗号化と送信は web-push
 // （npm パッケージ）に任せる。採用理由は PR 本文を参照
@@ -3396,6 +3398,11 @@ function startHttpApi() {
     //   prMerged と waitingMerge が同時に true で来た場合は prMerged を優先する
     //   （マージ済みが最終状態のため）。未指定が false に倒れることで、Orchestrator 経由でない
     //   ペイン・古い Orchestrator からのリクエストは「PR が出ただけ（灰）」表示になる（後方互換）。
+    //   paneNote（issue #536）: ペインのラベルに「見守り中」(watching) / 「完了」(done) を出す。
+    //   'watching' / 'done' / null のみ受理し、それ以外・型違いは無視する。項目を送らなかった場合は
+    //   現在値を変えない（古い Orchestrator からのリクエストでも壊れない）。null で明示的に消す。
+    //   title が変わり、かつ paneNote が送られなかった場合は、別のタスクに移ったとみなして
+    //   renderer 側で消す（解決ロジックは renderer/statusPresentation.js の resolvePaneNote）。
     if (req.method === 'POST' && url.pathname === '/api/set-title') {
       if (isForbiddenOrigin(req)) {
         res.writeHead(403, { 'Content-Type': 'application/json' });
@@ -3478,11 +3485,18 @@ function startHttpApi() {
           // 文字列 "true" や false・未指定はすべて false に倒す（後方互換の担保）。
           const waitingMergeValue = parseStrictBoolFlag(parsed?.waitingMerge);
 
+          // paneNote（issue #536）: 項目が無い・不正値のときは provided: false で現在値を保つ。
+          const paneNoteUpdate = parsePaneNoteUpdate(parsed);
+
           if (win && !win.isDestroyed()) {
-            win.webContents.send('terminal:title', termId, title, urlValue, prUrlValue, prMergedValue, waitingMergeValue);
+            win.webContents.send('terminal:title', termId, title, urlValue, prUrlValue, prMergedValue, waitingMergeValue, paneNoteUpdate);
           }
           res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ ok: true, termId, title, url: urlValue, prUrl: prUrlValue, prMerged: prMergedValue, waitingMerge: waitingMergeValue }));
+          res.end(JSON.stringify({
+            ok: true, termId, title, url: urlValue, prUrl: prUrlValue, prMerged: prMergedValue, waitingMerge: waitingMergeValue,
+            // 受理した場合だけ返す（送られていない・無視した場合は項目を出さない）。
+            ...(paneNoteUpdate.provided ? { paneNote: paneNoteUpdate.value } : {}),
+          }));
         } catch (e) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'invalid JSON' }));

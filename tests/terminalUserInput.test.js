@@ -48,3 +48,14 @@ test('キー操作・通常文字・貼り付けは利用者入力として扱�
 test('端末の自動応答と通常文字が混在した入力は利用者入力として扱う', () => {
   assert.equal(containsUserTerminalInput('\x1b[1;1Rhello\x1b]10;rgb:ffff/ffff/ffff\x07'), true);
 });
+
+test('issue #517: isTerminalQueryReplyOnly は端末の問い合わせへの応答だけを true にし、マウス・フォーカス通知や利用者入力は false にする', () => {
+  const { isTerminalQueryReplyOnly } = require('../utils/terminalUserInput');
+  for (const reply of ['\x1b[?1;2c', '\x1b[>0;276;0c', '\x1b[12;40R', '\x1b[?12;40R', '\x1b[0n', '\x1b[?2004;2$y', '\x1b[?0u', '\x1b]11;rgb:0000/0000/0000\x07', '\x1b[?1;2c\x1b[0n']) {
+    assert.equal(isTerminalQueryReplyOnly(reply), true, JSON.stringify(reply));
+  }
+  for (const other of ['\x1b[<0;10;5M', '\x1b[<0;10;5m', '\x1b[MAAA', '\x1b[I', '\x1b[O', '\r', 'a', '\x1b[B', '', '\x1b[0n\r', '\x1b[O\x1b[?1;2c']) {
+    assert.equal(isTerminalQueryReplyOnly(other), false, JSON.stringify(other));
+  }
+  assert.equal(isTerminalQueryReplyOnly(undefined), false);
+});

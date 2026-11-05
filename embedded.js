@@ -20,6 +20,9 @@
 //                          prompt は /^\/[a-z0-9-]+$/ に一致するスキル名（例 '/vk-orchestrator-setup'）。
 //                          getSetupStatus と必ず対で渡す。どちらも渡さなければ一覧は出ない。
 //
+//   help                   { documentPath, cwd, prompts: { claude, codex } }（docs/specification-help-entry.md）。
+//   getHelpStatus          ガイド用エンジンの利用状況を返す関数。help と必ず対で渡す。
+//
 // 注意: 組み込み時は呼び出し側（VK Orchestrator）と同じプロセスで動くため、起動時にログインシェルの PATH を
 // 取り込む処理（issue #454）による process.env.PATH の書き換えはホスト側にも及ぶ。また Codex の制限付き実行へ
 // 渡す「起動時の PATH」は、この入口を require した時点のホストの PATH になる。

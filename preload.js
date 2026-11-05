@@ -63,6 +63,9 @@ const INVOKE_CHANNELS = new Set([
   'terminal:create',
   // セットアップ状況の一覧（issue #456）。組み込みのオプションがあるときだけ main 側にハンドラが作られる
   // （無いときに呼ぶと reject される）。
+  'help:check',
+  'help:document',
+  'help:open-guide',
   'setup:check',
   'setup:initial-pane',
 ]);

@@ -3903,3 +3903,41 @@ body.pane-dragging * {
   overflow-y: auto;
   flex-shrink: 0;
 }
+
+/* ヘルプの操作と状態表示
+   ========================================================================== */
+.settings-help-entry {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+}
+.settings-help-entry button {
+  min-height: 44px;
+  min-width: 44px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.4;
+}
+.settings-help-entry [role="status"] {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
+.settings-help-entry [role="status"]:empty,
+.settings-help-entry [hidden] {
+  display: none;
+}
+
+.sidebar-help-entry {
+  padding: 0;
+}
+.sidebar-help-entry .sidebar-section-header {
+  min-height: 44px;
+  padding: 10px var(--vktm--sidebar-section-inset);
+}
+.sidebar-help-entry .sidebar-section-label {
+  white-space: normal;
+  overflow: visible;
+  overflow-wrap: anywhere;
+}

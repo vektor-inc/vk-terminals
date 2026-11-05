@@ -13,9 +13,10 @@ test('使い方・ヘルプ: 確認失敗の再確認、未保存キャンセル
   let launched;
   try {
     launched = await launchAppAndWait({ port: await getFreePort(), prefix: 'vk-help-', entry: path.resolve(__dirname, '../fixtures/embeddedHelpLauncher.js'), env: { VK_TEST_HELP_ROOT: root } });
-    const { win } = launched;
+    const { win, app } = launched;
+    await app.evaluate(({ shell }) => { global.helpDocumentUrls = []; shell.openExternal = async (url) => { global.helpDocumentUrls.push(url); }; });
     // 組み込みの入口だけに表示され、タブの無い設定画面にも着地できる。
-    await win.evaluate(() => openSettingsModal(VKHelpEntry.TAB_ID));
+    await win.locator('#sidebar-help button').click();
     await expect(win.getByRole('tab', { name: '使い方・ヘルプ' })).toBeVisible();
     await expect(win.locator('.settings-help-entry')).toContainText('確認できませんでした');
     await expect(win.getByRole('button', { name: 'AI に相談', exact: true })).toBeHidden();
@@ -30,6 +31,8 @@ test('使い方・ヘルプ: 確認失敗の再確認、未保存キャンセル
       await docButton.focus();
       await expect(docButton).toBeFocused();
     }
+    await win.getByRole('button', { name: 'ドキュメント', exact: true }).click();
+    expect(await app.evaluate(() => global.helpDocumentUrls)).toEqual([require('url').pathToFileURL(fs.realpathSync(path.join(root, 'help.html'))).href]);
     // 利用可否が正常でも作業フォルダ消失時は、画面側の代替指定を使わず失敗する。
     fs.writeFileSync(statusFile, JSON.stringify({ engine: 'codex', engines: [
       { engine: 'claude', state: 'unknown' }, { engine: 'codex', state: 'available' },
@@ -42,16 +45,23 @@ test('使い方・ヘルプ: 確認失敗の再確認、未保存キャンセル
     });
     expect(refused).toBe(true);
     await expect(win.locator('.pane')).toHaveCount(countBeforeInvalidCwd);
-    await win.screenshot({ path: '/tmp/vk-542-help.png' });
     await win.locator('.settings-close').click();
     // AI 自体は起動せず、画面のライフサイクルを隔離した通常ペインで確かめる。
     await win.evaluate(() => {
       const original = VKIpc.invoke;
       window.helpCalls = 0;
+      window.helpChecks = 0;
       window.guideResult = null;
       VKIpc.invoke = async (channel, ...args) => {
-        if (channel === 'settings:describe') return { available: true, values: { label: 'old' }, groups: [{ tab: 'general', label: '基本', fields: [{ key: 'label', label: '名前', type: 'text' }] }], tabs: [{ id: 'general', label: '基本' }, { id: 'about', label: 'バージョン情報' }] };
-        if (channel === 'help:check') return { engine: 'codex', engines: [] };
+        if (channel === 'settings:describe') return { available: true, values: { label: 'old' }, groups: [{ tab: 'general', label: '基本', fields: [{ key: 'label', label: '名前', type: 'text', pattern: '^[a-z]+$' }] }], tabs: [{ id: 'general', label: '基本' }, { id: 'about', label: 'バージョン情報' }] };
+        if (channel === 'help:check') { window.helpChecks++; return { engine: 'codex', engines: [] }; }
+        if (channel === 'settings:save') {
+          if (window.saveMode === 'throw') throw new Error('保存できません');
+          if (window.saveMode === 'fail') return { ok: false, error: '保存できません' };
+          return { ok: true };
+        }
+        if (channel === 'app:config-reflection' && window.saveMode === 'readThrow') throw new Error('読み込みできません');
+        if (channel === 'app:config-reflection') return { revision: Date.now(), failedFiles: window.saveMode === 'read' ? ['config.json'] : [] };
         if (channel === 'help:open-guide') {
           window.helpCalls++;
           if (window.helpFail) throw new Error('起動失敗');
@@ -64,11 +74,41 @@ test('使い方・ヘルプ: 確認失敗の再確認、未保存キャンセル
     });
     await win.evaluate(() => openSettingsModal());
     await expect(win.getByRole('tab')).toHaveText(['基本', '使い方・ヘルプ', 'バージョン情報']);
+    expect(await win.evaluate(() => window.helpChecks)).toBe(0);
     await win.getByLabel('名前', { exact: true }).fill('new');
     await win.getByRole('tab', { name: '使い方・ヘルプ' }).click();
+    expect(await win.evaluate(() => window.helpChecks)).toBe(1);
     await win.getByRole('button', { name: 'AI に相談', exact: true }).click();
+    await expect(win.locator('.settings-help-entry [role=status]')).not.toContainText('ガイドを起動しています');
     await win.locator('.settings-help-entry').getByRole('button', { name: 'キャンセル', exact: true }).click();
     expect(await win.evaluate(() => window.helpCalls)).toBe(0);
+    await expect(win.getByRole('button', { name: 'AI に相談', exact: true })).toBeFocused();
+    // 保存失敗・例外・読み込み失敗のすべてで確認待ちを解除する。
+    for (const mode of ['invalid', 'fail', 'throw', 'readThrow', 'read']) {
+      await win.getByRole('tab', { name: '基本' }).click();
+      await win.getByLabel('名前', { exact: true }).fill(mode === 'invalid' ? '123' : `new${'a'.repeat(mode.length)}`);
+      await win.getByRole('tab', { name: '使い方・ヘルプ' }).click();
+      await win.evaluate((value) => { window.saveMode = value; }, mode);
+      await win.getByRole('button', { name: 'AI に相談', exact: true }).click();
+      await win.getByRole('group', { name: '未保存の変更があります。保存してからガイドを開きますか？' }).getByRole('button', { name: '保存して開く' }).click();
+      await expect(win.getByRole('button', { name: 'AI に相談', exact: true, includeHidden: true })).toBeEnabled();
+      await expect(win.getByRole('button', { name: '保存して開く' })).toHaveCount(0);
+      expect(await win.evaluate(() => window.helpCalls)).toBe(0);
+      if (mode === 'read') {
+        // 保存済みでも読み込み失敗なら起動しない。再編集して次の選択へ進む。
+        await win.getByRole('tab', { name: '基本' }).click();
+        await win.getByLabel('名前', { exact: true }).fill('newer');
+        await win.getByRole('tab', { name: '使い方・ヘルプ' }).click();
+      }
+    }
+    await win.evaluate(() => { window.saveMode = null; });
+    // 後の通常保存にも起動予約が残っていない。
+    await win.getByRole('tab', { name: '基本' }).click();
+    await win.getByRole('button', { name: '保存', exact: true }).click();
+    await expect(win.locator('.settings-msg')).toContainText('保存しました');
+    expect(await win.evaluate(() => window.helpCalls)).toBe(0);
+    await win.getByLabel('名前', { exact: true }).fill('next');
+    await win.getByRole('tab', { name: '使い方・ヘルプ' }).click();
     const beforeFailure = await win.locator('.pane').count();
     await win.evaluate(() => { window.helpFail = true; });
     await win.getByRole('button', { name: 'AI に相談', exact: true }).click();
@@ -77,7 +117,7 @@ test('使い方・ヘルプ: 確認失敗の再確認、未保存キャンセル
     await expect(win.locator('.pane')).toHaveCount(beforeFailure);
     await win.evaluate(() => { window.helpFail = false; });
     await win.getByRole('button', { name: 'AI に相談', exact: true }).click();
-    await win.getByRole('button', { name: '破棄して開く' }).click();
+    await win.getByRole('button', { name: '保存して開く' }).click();
     await expect(win.getByRole('button', { name: 'AI に相談', exact: true })).toBeDisabled();
     await expect(win.locator('.settings-help-entry')).toContainText('ガイドを起動しています…');
     await expect(win.locator('.settings-modal')).toHaveCount(0);
@@ -92,6 +132,58 @@ test('使い方・ヘルプ: 確認失敗の再確認、未保存キャンセル
     await expect(win.locator('.settings-modal')).toHaveCount(0);
     await expect(win.locator('.pane')).toHaveCount(count);
     expect(await win.evaluate(() => tree.stashOrder.length)).toBe(0);
+  } finally {
+    if (launched) await closeApp(launched);
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// 実際の IPC → PTY → CLI を通し、シェルへ渡った値を外側から確かめる。
+test('ガイドの実起動: 状態変化、専用経路、Codex の引数と cwd', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-help-launch-'));
+  const guide = path.join(root, 'guide');
+  const bin = path.join(root, 'bin');
+  fs.mkdirSync(guide);
+  fs.mkdirSync(bin);
+  fs.writeFileSync(path.join(root, 'help.html'), '<html>Help</html>');
+  const statusFile = path.join(root, 'status.json');
+  const available = { engine: 'codex', engines: [{ engine: 'claude', state: 'unknown' }, { engine: 'codex', state: 'available' }] };
+  fs.writeFileSync(statusFile, JSON.stringify(available));
+  fs.writeFileSync(path.join(bin, 'codex'), '#!/bin/sh\nprintf "%s\\n" "$PWD" "$@" > "$VK_TEST_HELP_ROOT/arguments"\nwhile :; do sleep 1; done\n', { mode: 0o755 });
+  let launched;
+  try {
+    const port = await getFreePort();
+    launched = await launchAppAndWait({ port, prefix: 'vk-help-real-', entry: path.resolve(__dirname, '../fixtures/embeddedHelpLauncher.js'), env: { VK_TEST_HELP_ROOT: root } });
+    const { app, win } = launched;
+    await app.evaluate((_, binPath) => { process.env.PATH = `${binPath}:/usr/bin:/bin`; process.env.SHELL = '/bin/sh'; }, bin);
+    const response = await fetch(`http://127.0.0.1:${port}/api/new-pane`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ guidePane: true, noClaude: true, cwd: root }) });
+    expect(response.status).toBe(200);
+    expect(fs.existsSync(path.join(root, 'arguments'))).toBe(false);
+    await win.locator('#sidebar-help button').click();
+    const ai = win.getByRole('button', { name: 'AI に相談', exact: true });
+    await expect(ai).toBeEnabled();
+    // 表示後に未導入へ変わった場合は、PTY の一般エラーにせず準備手順へ戻す。
+    fs.writeFileSync(statusFile, JSON.stringify({ engine: null, engines: ['claude', 'codex'].map((engine) => ({ engine, state: 'unavailable', reason: '未導入です', preparation: '導入してログインしてください' })) }));
+    await ai.click();
+    await expect(ai).toBeHidden();
+    await expect(win.locator('.settings-help-entry')).toContainText('導入してログインしてください');
+    fs.writeFileSync(statusFile, JSON.stringify(available));
+    await win.getByRole('button', { name: '再確認', exact: true }).click();
+    await expect(ai).toBeVisible();
+    // 汎用 IPC のガイド指定は実行時にも拒否される。
+    expect(await win.evaluate(async () => {
+      try { await VKIpc.invoke('terminal:create', null, { guidePane: true }); return false; }
+      catch (_) { return true; }
+    })).toBe(true);
+    await ai.click();
+    await expect.poll(() => fs.existsSync(path.join(root, 'arguments'))).toBe(true);
+    const args = fs.readFileSync(path.join(root, 'arguments'), 'utf8').trimEnd().split('\n');
+    expect(fs.realpathSync(args[0])).toBe(fs.realpathSync(guide));
+    expect(args.slice(1)).toEqual(['--no-daemon', '$helper']);
+    await expect(win.locator('.settings-modal')).toHaveCount(0);
+    await win.locator('#sidebar-help button').click();
+    await ai.click();
+    await expect(win.locator('.settings-modal')).toHaveCount(0);
   } finally {
     if (launched) await closeApp(launched);
     fs.rmSync(root, { recursive: true, force: true });

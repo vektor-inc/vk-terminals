@@ -28,9 +28,10 @@
       busy = true;
       ai.disabled = true;
       retry.disabled = true;
-      status.textContent = 'ガイドを起動しています…';
+      status.textContent = '未保存の変更がある場合は、保存するか選んでください。';
       try {
-        const opened = await openGuide();
+        const opened = await openGuide(() => { status.textContent = 'ガイドを起動しています…'; });
+        if (opened && opened.helpStatus) renderStatus(opened.helpStatus);
         if (opened === false) status.textContent = '';
       } catch (_) {
         status.textContent = 'ガイドを起動できませんでした。「AI に相談」を押して再試行してください。';
@@ -38,6 +39,7 @@
         busy = false;
         ai.disabled = false;
         retry.disabled = false;
+        if (!ai.hidden) ai.focus();
       }
     });
     let busy = false;
@@ -48,6 +50,13 @@
       catch (_) { status.textContent = 'ドキュメントを開けませんでした。もう一度押してください。'; }
     });
     container.append(documentButton, ai, status, retry);
+    // 初回表示と再確認で同じ結果表示を使う。起動直前の状態変化もここへ返す。
+    function renderStatus(result) {
+      ai.hidden = !result.engine;
+      retry.hidden = !!result.engine;
+      status.textContent = result.engine ? '' : result.engines.map((item) =>
+        `${item.engine === 'claude' ? 'Claude Code' : 'Codex'}: ${item.state === 'unknown' ? '確認できませんでした。' : ''}${item.reason}\n${item.preparation}`).join('\n\n');
+    }
     async function check() {
       if (busy) return;
       busy = true;
@@ -56,10 +65,7 @@
       status.textContent = '利用状況を確認しています…';
       try {
         const result = await invoke('help:check');
-        ai.hidden = !result.engine;
-        retry.hidden = !!result.engine;
-        status.textContent = result.engine ? '' : result.engines.map((item) =>
-          `${item.engine === 'claude' ? 'Claude Code' : 'Codex'}: ${item.state === 'unknown' ? '確認できませんでした。' : ''}${item.reason}\n${item.preparation}`).join('\n\n');
+        renderStatus(result);
       } catch (_) {
         ai.hidden = true;
         retry.hidden = false;
@@ -70,7 +76,9 @@
         retry.disabled = false;
       }
     }
-    check();
+    // 非表示のタブを組み立てただけではホストへ問い合わせない。
+    let shown = false;
+    return { show() { if (!shown) { shown = true; check(); } } };
   }
   return { TAB_ID, insertTab, mount };
 });

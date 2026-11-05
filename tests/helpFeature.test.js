@@ -70,7 +70,7 @@ test('連打・格納相当の生存中は同一ペイン、終了後は操作�
   await assert.rejects(open()); assert.equal(creates, 1);
   fail = false; assert.equal((await open()).id, '2');
   await assert.rejects(createGuideOpener({ enabled: false })());
-  await assert.rejects(createGuideOpener({ enabled: true, check: async () => status(null) })());
+  assert.deepEqual((await createGuideOpener({ enabled: true, check: async () => status(null) })()).helpStatus, status(null));
 });
 
 test('ヘルプはディスクリプタのバージョン情報の直前、タブ無しでも有効', () => {

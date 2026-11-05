@@ -252,10 +252,10 @@ let commandsConfigured = false;
 // 宣言的ウィジェットの中継ペイロード { widget, legacyNotice, commandsConfigured }。
 let lastWidgetPayload = null;
 let hasSeenFreshWidget = false;
-// セットアップ状況の一覧（issue #456）。組み込みのオプションがあるときだけ initApp が生成する。
-// 無いとき（electron . ・zip 版）は null のままで、IPC も画面の要素も作らない。
 let helpEntryEnabled = false;
 let helpGuideOpening = null;
+// セットアップ状況の一覧（issue #456）。組み込みのオプションがあるときだけ initApp が生成する。
+// 無いとき（electron . ・zip 版）は null のままで、IPC も画面の要素も作らない。
 let setupPanel = null;
 // セットアップ用ペインのペイン ID。無い・閉じたあとは null。
 let setupPaneId = null;
@@ -1699,8 +1699,12 @@ function updateConfigReadErrorNotices() {
   });
 }
 
-async function refreshConfigReflection() {
-  try { updateConfigReflection(await VKIpc.invoke('app:config-reflection')); } catch (_error) { /* 次の main 通知で再取得する。 */ }
+async function refreshConfigReflection({ throwOnError = false } = {}) {
+  try { updateConfigReflection(await VKIpc.invoke('app:config-reflection')); }
+  catch (error) {
+    // 保存直後の確認に失敗した場合は、ガイド起動を成功扱いにしない。
+    if (throwOnError) throw error;
+  }
 }
 
 function updateConfigReflection(state) {
@@ -1851,14 +1855,8 @@ function createSidebar() {
   nav.insertBefore(configError, restartNotice);
   nav.appendChild(createSidebarSettingsCard());
   if (helpEntryEnabled) {
-    const card = createSidebarSettingsCard();
-    card.id = 'sidebar-help';
+    const card = createSidebarSettingsCard({ id: 'sidebar-help', labelText: '使い方・ヘルプ', onClick: () => openSettingsModal(VKHelpEntry.TAB_ID) });
     card.classList.add('sidebar-help-entry');
-    const oldButton = card.querySelector('button');
-    const button = oldButton.cloneNode(true);
-    button.querySelector('.sidebar-section-label').textContent = '使い方・ヘルプ';
-    button.addEventListener('click', () => openSettingsModal(VKHelpEntry.TAB_ID));
-    oldButton.replaceWith(button);
     nav.appendChild(card);
   }
   nav.appendChild(createTaskListContainer());
@@ -1869,11 +1867,11 @@ function createSidebar() {
   return aside;
 }
 
-function createSidebarSettingsCard() {
+function createSidebarSettingsCard({ id = 'sidebar-settings', labelText = '設定', onClick = () => openSettingsModal() } = {}) {
   // 中身がボタン1つだけでランドマークとして移動する先がなく、section に aria-label を
   // 付けると「設定」が領域名とボタン名で二重に読み上げられるため、意図的に div とする。
   const card = document.createElement('div');
-  card.id = 'sidebar-settings';
+  card.id = id;
   card.className = 'sidebar-section-card';
 
   const header = document.createElement('button');
@@ -1883,9 +1881,9 @@ function createSidebarSettingsCard() {
 
   const label = document.createElement('span');
   label.className = 'sidebar-section-label';
-  label.textContent = '設定';
+  label.textContent = labelText;
   header.appendChild(label);
-  header.addEventListener('click', () => openSettingsModal());
+  header.addEventListener('click', onClick);
 
   card.appendChild(header);
   return card;
@@ -2957,17 +2955,11 @@ function withInheritedEngine(options, paneId) {
   return inheritedEngine ? { ...options, engine: inheritedEngine } : options;
 }
 
-// ─── Pane actions ─────────────────────────────────────────────────────────────
-// グリッド化により「分割」は入れ子を作らず、新ペインをグリッド末尾に追加する操作になった。
-// direction は後方互換のため引数として残すが、配置には影響しない（自動折返しグリッド）。
-// 新規ペインをグリッド末尾に追加する（基準ペイン不要）。
-// splitPane（＋ボタン）と空グリッドのプレースホルダ「新規ペインを追加」で共有する生成経路（issue #89）。
-//   - overrideCwd が指定されていればそれを使い、未指定ならホームディレクトリ（main 側でフォールバック）で開く。
-//   - options.noClaude が指定されていればそのまま main に渡す。未指定なら main 側のグローバル設定に従う。
 async function openHelpGuide() {
   if (helpGuideOpening) return helpGuideOpening;
   helpGuideOpening = (async () => {
     const result = await VKIpc.invoke('help:open-guide');
+    if (result.helpStatus) return result;
     let paneId = Object.keys(terminals).find((id) => terminals[id]?.termId === result.id);
     if (!paneId) {
       paneId = newId();
@@ -2994,6 +2986,13 @@ async function openHelpGuide() {
   return helpGuideOpening;
 }
 
+// ─── Pane actions ─────────────────────────────────────────────────────────────
+// グリッド化により「分割」は入れ子を作らず、新ペインをグリッド末尾に追加する操作になった。
+// direction は後方互換のため引数として残すが、配置には影響しない（自動折返しグリッド）。
+// 新規ペインをグリッド末尾に追加する（基準ペイン不要）。
+// splitPane（＋ボタン）と空グリッドのプレースホルダ「新規ペインを追加」で共有する生成経路（issue #89）。
+//   - overrideCwd が指定されていればそれを使い、未指定ならホームディレクトリ（main 側でフォールバック）で開く。
+//   - options.noClaude が指定されていればそのまま main に渡す。未指定なら main 側のグローバル設定に従う。
 async function addPane(overrideCwd = null, options = {}) {
   const newPaneId = newId();
   await createTerminal(newPaneId, overrideCwd || null, options);
@@ -5615,34 +5614,42 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
   // 設定項目が無い環境ではフォーム関連の配線は不要（閉じるだけ）。
   if (!settingsAvailable) return;
 
-  let afterHelpSave = null;
-  const launchHelpGuide = async () => {
+  const launchHelpGuide = async (onLaunching) => {
+    onLaunching();
     const result = await openHelpGuide();
+    if (result && result.helpStatus) return result;
     close();
     fitAll();
     focusPane(result);
   };
   const helpContainer = modal.querySelector('.settings-help-entry');
-  if (helpContainer) VKHelpEntry.mount(helpContainer, {
+  const helpView = helpContainer ? VKHelpEntry.mount(helpContainer, {
     invoke: (channel) => VKIpc.invoke(channel),
-    openGuide: async () => {
+    openGuide: async (onLaunching) => {
       const dirty = modal.querySelector('.settings-tab.is-dirty');
-      if (!dirty) return launchHelpGuide();
+      if (!dirty) return launchHelpGuide(onLaunching);
       // 保存・破棄・キャンセルは明示的に選び、保存失敗時は起動しない。
       return new Promise((resolve, reject) => {
         const choices = document.createElement('div');
         choices.className = 'settings-help-entry';
         const text = document.createElement('p');
+        text.id = 'help-unsaved-label';
+        choices.setAttribute('role', 'group');
+        choices.setAttribute('aria-labelledby', text.id);
         text.textContent = '未保存の変更があります。保存してからガイドを開きますか？';
         choices.appendChild(text);
         const finish = async () => {
           choices.remove();
-          try { await launchHelpGuide(); resolve(true); } catch (error) { reject(error); }
+          try { resolve(await launchHelpGuide(onLaunching)); } catch (error) { reject(error); }
         };
         for (const [label, action] of [
-          ['保存して開く', () => { afterHelpSave = finish; modal.querySelector('.settings-save').click(); }],
+          ['保存して開く', async () => {
+            choices.querySelectorAll('button').forEach((button) => { button.disabled = true; });
+            if (await saveSettings({ keepOpen: true })) await finish();
+            else { choices.remove(); resolve(false); }
+          }],
           ['破棄して開く', finish],
-          ['キャンセル', () => { choices.remove(); afterHelpSave = null; resolve(false); }],
+          ['キャンセル', () => { choices.remove(); resolve(false); }],
         ]) {
           const button = document.createElement('button');
           button.type = 'button';
@@ -5655,7 +5662,10 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
         choices.querySelector('button').focus();
       });
     },
-  });
+  }) : null;
+  const showHelp = () => {
+    if (helpContainer && !helpContainer.closest('[role=tabpanel]').hidden) helpView.show();
+  };
   const msg = modal.querySelector('.settings-msg');
   const cancelButton = modal.querySelector('.settings-cancel');
   cancelButton.addEventListener('click', close);
@@ -5854,6 +5864,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
         panel.hidden = index !== nextIndex;
       });
       activeTabIndex = nextIndex;
+      showHelp();
       if (tabChanged) {
         // 保存直後のフッター固定は、タブを移った時点で解除する（B-5: 説明タブに
         // 「保存」が出たまま残らないようにする）。
@@ -6784,7 +6795,8 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
     });
   }
 
-  modal.querySelector('.settings-save').addEventListener('click', async () => {
+  showHelp();
+  async function saveSettings({ keepOpen = false } = {}) {
     // 保存前の検証ゲート: 全エラー表示を一旦クリアしてから対象を一括再判定する。
     for (const { field, id } of validatable) clearFieldValidity(field, id);
     let firstInvalid = null;
@@ -6803,7 +6815,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
         firstInvalid.scrollIntoView({ block: 'center' });
       }
       firstInvalid.focus({ preventScroll: true });
-      return;
+      return false;
     }
 
     const out = {};
@@ -6826,16 +6838,14 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
         refreshSettingsContentSavedValues();
         msg.textContent = '保存しました。反映状況は設定の案内をご確認ください。';
         msg.classList.add('ok');
-        await refreshConfigReflection();
+        await refreshConfigReflection({ throwOnError: true });
         if (configFailedFiles.length) {
           msg.textContent = '保存しましたが、設定を読み込めませんでした。対象ファイルを確認してください。';
           msg.className = 'settings-msg err';
           autoClose.cancel();
-        } else if (afterHelpSave) {
-          const launch = afterHelpSave;
-          afterHelpSave = null;
-          await launch();
-        } else autoClose.arm();
+          return false;
+        } else if (!keepOpen) autoClose.arm();
+        return true;
       } else {
         msg.textContent = 'エラー: ' + (res && res.error ? res.error : '不明なエラー');
         msg.classList.add('err');
@@ -6844,7 +6854,9 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
       msg.textContent = 'エラー: ' + e.message;
       msg.classList.add('err');
     }
-  });
+    return false;
+  }
+  modal.querySelector('.settings-save').addEventListener('click', () => saveSettings());
 }
 
 // ─── セットアップ状況の一覧（issue #456）──────────────────────────────────────

@@ -244,13 +244,13 @@ const { USER_CONFIG_MAX_BYTES, normalizeLiveConfig, changedLiveKeys, normalizeRe
 const { createRestartApplication } = require('./utils/restartApplication');
 // 組み込み用の入口（embedded.js）から起動されたときだけ値が入る。electron . では null。
 const EMBEDDED_OPTIONS = getEmbeddedOptions();
-// セットアップ状況の一覧を出すための部品（issue #456）。組み込みのオプションに無ければ null で、
-// その場合は IPC も画面の要素も作らず、従来と同じ画面のままにする（electron . ・zip 版）。
 const { isHelpDocument, buildHelpLaunchCommand, createHelpStatusChecker, createGuideOpener } = require('./utils/helpFeature');
 const HELP_FEATURE = EMBEDDED_OPTIONS && EMBEDDED_OPTIONS.help;
 const checkHelpStatus = HELP_FEATURE ? createHelpStatusChecker(EMBEDDED_OPTIONS.getHelpStatus) : null;
 const GUIDE_LAUNCH = Symbol('guide launch');
 
+// セットアップ状況の一覧を出すための部品（issue #456）。組み込みのオプションに無ければ null で、
+// その場合は IPC も画面の要素も作らず、従来と同じ画面のままにする（electron . ・zip 版）。
 const SETUP_FEATURE = resolveSetupFeature({ embedded: EMBEDDED_OPTIONS });
 // 確認は上限 20 秒・同時 1 本。startupSetupCheck は起動時に始めた確認（最初のペインの判断で待つ）。
 const SETUP_INITIAL_WAIT_MS = 5000;
@@ -2189,9 +2189,9 @@ ipcMain.handle('clipboard:write-text', async (_event, text) => {
   }
 });
 
-ipcMain.handle('terminal:create', (event, cwd, options = {}) => createTerminalPane(event, cwd, options));
+ipcMain.handle('terminal:create', (_event, cwd, options = {}) => createTerminalPane(cwd, options));
 
-function createTerminalPane(event, cwd, options = {}, guide = null) {
+function createTerminalPane(cwd, options = {}, guide = null) {
   if (options.guidePane !== undefined) throw new Error('Guide launch requires dedicated IPC.');
   const guideLaunch = guide && guide.token === GUIDE_LAUNCH;
   // アプリ終了処理（before-quit）が pty の終了を待っている最中・待ち終えたあとは、
@@ -2240,9 +2240,9 @@ function createTerminalPane(event, cwd, options = {}, guide = null) {
     cwdUsable = false;
   }
   if (!cwdUsable) {
-    // セットアップ用ペインは、作業フォルダが消えていてもホームへ切り替えず、作成失敗として返す
-    // （別のフォルダで claude を起動して、意図しない場所で作業が始まらないようにするため）。
-    if (setupLaunch || guideLaunch) throw new Error('Setup pane directory does not exist.');
+    // セットアップ・ガイド用ペインは、作業フォルダが消えていてもホームへ切り替えず失敗として返す
+    // （別のフォルダで AI を起動して、意図しない場所で作業が始まらないようにするため）。
+    if (setupLaunch || guideLaunch) throw new Error('Pane directory does not exist.');
     resolvedCwd = process.env.HOME || process.env.USERPROFILE || os.tmpdir();
   }
 
@@ -2268,7 +2268,7 @@ function createTerminalPane(event, cwd, options = {}, guide = null) {
   if (guideLaunch) {
     launchCommand = buildHelpLaunchCommand(guide.engine, HELP_FEATURE.prompts[guide.engine]);
   } else if (!noClaude && setupLaunch) {
-    // claude '<prompt>' を作る経路は、検証済みのプロンプトだけを受け付けるこの 1 本のみ。
+    // セットアップ専用の検証済みプロンプトから起動コマンドを作る。
     launchCommand = buildSetupPaneLaunchCommand(SETUP_FEATURE.setupPane.prompt);
   } else if (!noClaude) {
     const launchResolution = resolveCodexLaunchOptions(resolvedEngine, options, { cwd: resolvedCwd });
@@ -2587,10 +2587,11 @@ function createTerminalPane(event, cwd, options = {}, guide = null) {
   // Codex でも専用の許可リストで再検証し、正常値だけを --model として渡す。
   let guideLaunchReady = null;
   let guideLaunchSucceeded = () => {};
+  let discardFailedLaunch = discardLaunchHome;
   if (guideLaunch) {
     guideLaunchReady = new Promise((resolve, reject) => {
       guideLaunchSucceeded = resolve;
-      discardLaunchHome = () => {
+      discardFailedLaunch = () => {
         try { ptyProcess.kill(); } catch (_) {}
         reject(new Error('Guide launch failed.'));
       };
@@ -2606,7 +2607,7 @@ function createTerminalPane(event, cwd, options = {}, guide = null) {
       prepareCommand: (command) => agentLifecycles.prepare(id, 1, initialLaunchToken, ptyProcess.pid, command, shell),
       activateCommand: () => agentLifecycles.activate(id, 1, initialLaunchToken),
       isLaunchCurrent: () => agentLifecycles.isCurrent(id, 1, initialLaunchToken),
-      discard: discardLaunchHome,
+      discard: discardFailedLaunch,
       delayMs: 200,
       onWriteSuccess: guideLaunchSucceeded,
       log: (message) => console.error(`${LOG_PREFIX} ${message}`),
@@ -2629,13 +2630,13 @@ ipcMain.handle('help:check', () => {
 });
 ipcMain.handle('help:document', async () => {
   if (!HELP_FEATURE || !isHelpDocument(HELP_FEATURE.documentPath)) throw new Error('Help document is unavailable.');
-  await shell.openExternal(require('url').pathToFileURL(HELP_FEATURE.documentPath).href);
+  await electronShell.openExternal(pathToFileURL(HELP_FEATURE.documentPath).href);
   return true;
 });
 const openGuideTerminal = createGuideOpener({
   enabled: !!HELP_FEATURE,
   check: checkHelpStatus,
-  create: (engine) => createTerminalPane(null, null, {}, { token: GUIDE_LAUNCH, engine }),
+  create: (engine) => createTerminalPane(null, {}, { token: GUIDE_LAUNCH, engine }),
   isAlive: (id) => ptys.has(id),
 });
 ipcMain.handle('help:open-guide', () => openGuideTerminal());

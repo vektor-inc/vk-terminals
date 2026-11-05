@@ -3,7 +3,13 @@
 const fs = require('fs');
 const path = require('path');
 const { buildEngineAwareLaunchCommand } = require('../renderer/claudeModel');
-const PATTERNS = { claude: /^\/[a-z0-9-]+$/, codex: /^\$[a-z0-9-]+$/ };
+const HELP_PROMPT_PATTERNS = { claude: /^\/[a-z0-9-]+$/, codex: /^\$[a-z0-9-]+$/ };
+
+// 設定時と起動時で同じ形式を検証する。
+function isHelpPrompt(engine, prompt) {
+  return typeof engine === 'string' && Object.hasOwn(HELP_PROMPT_PATTERNS, engine)
+    && typeof prompt === 'string' && HELP_PROMPT_PATTERNS[engine].test(prompt);
+}
 
 function isHelpDocument(file) {
   try {
@@ -24,20 +30,21 @@ function normalizeHelpFeature(help, checker) {
   }
   const prompts = {};
   for (const engine of ['claude', 'codex']) {
-    if (!help.prompts || typeof help.prompts[engine] !== 'string' || (!PATTERNS[engine].test(help.prompts[engine]) || /[\r\n]/.test(help.prompts[engine]))) {
+    if (!help.prompts || !isHelpPrompt(engine, help.prompts[engine])) {
       throw new TypeError(`help.prompts.${engine} is invalid`);
     }
     prompts[engine] = help.prompts[engine];
   }
-  if (Object.keys(help.prompts).some((engine) => !Object.hasOwn(PATTERNS, engine))) throw new TypeError('invalid help engine');
+  if (Object.keys(help.prompts).some((engine) => !Object.hasOwn(HELP_PROMPT_PATTERNS, engine))) throw new TypeError('invalid help engine');
   return Object.freeze({ documentPath: fs.realpathSync(help.documentPath), cwd: help.cwd, prompts: Object.freeze(prompts) });
 }
 
+// ホストの応答を検証し、表示に使う文字列だけを取り出す。
 function normalizeHelpStatus(value) {
   if (!value || !Array.isArray(value.engines) || value.engines.length !== 2) throw new TypeError('invalid help status');
   const seen = new Set();
   const engines = value.engines.map((item) => {
-    if (!item || typeof item.engine !== 'string' || !Object.hasOwn(PATTERNS, item.engine) || seen.has(item.engine)
+    if (!item || typeof item.engine !== 'string' || !Object.hasOwn(HELP_PROMPT_PATTERNS, item.engine) || seen.has(item.engine)
       || !['available', 'unavailable', 'unknown'].includes(item.state)) throw new TypeError('invalid help engine status');
     seen.add(item.engine);
     const text = (key) => {
@@ -51,7 +58,7 @@ function normalizeHelpStatus(value) {
     return { engine: item.engine, state: item.state, reason, preparation };
   });
   const engine = value.engine;
-  if (engine !== null && (typeof engine !== 'string' || !Object.hasOwn(PATTERNS, engine) || !engines.some((item) => item.engine === engine && item.state === 'available'))) {
+  if (engine !== null && (typeof engine !== 'string' || !Object.hasOwn(HELP_PROMPT_PATTERNS, engine) || !engines.some((item) => item.engine === engine && item.state === 'available'))) {
     throw new TypeError('invalid selected help engine');
   }
   if (engine === null && engines.some((item) => item.state === 'available')) throw new TypeError('missing selected help engine');
@@ -59,7 +66,7 @@ function normalizeHelpStatus(value) {
 }
 
 function buildHelpLaunchCommand(engine, prompt) {
-  if (typeof engine !== 'string' || !Object.hasOwn(PATTERNS, engine) || typeof prompt !== 'string' || (!PATTERNS[engine].test(prompt) || /[\r\n]/.test(prompt))) throw new TypeError('invalid help launch');
+  if (!isHelpPrompt(engine, prompt)) throw new TypeError('invalid help launch');
   // 単一引用符で Codex の $ をシェルの変数展開から守る。
   return `${buildEngineAwareLaunchCommand(engine).command} '${prompt}'`;
 }
@@ -95,7 +102,8 @@ function createGuideOpener({ enabled, check, create, isAlive }) {
     if (opening) return opening;
     opening = (async () => {
       const status = await check();
-      if (!status.engine) throw new Error('Guide engine is unavailable.');
+      // 利用状況の変化を起動失敗と区別して画面へ返す。
+      if (!status.engine) return { helpStatus: status };
       terminal = await create(status.engine);
       return terminal;
     })().finally(() => { opening = null; });

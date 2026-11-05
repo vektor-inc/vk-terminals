@@ -242,9 +242,11 @@ Codex 版の issue 対応手順（vektor-inc/vk-agents の `codex/vk-kore/`）�
 
 ### メンバーの作業状態とブランチ復帰（issue #544）
 
-`member start` の呼び出し位置（cwd）の worktree を、ロックを作らない `--no-optional-locks` で記録する。専用 worktree の直下で検証した管理ディレクトリと実パスを、保護された実行の記録フォルダに保存し、その値に固定して読み取る。子の実際の起動 cwd は従来どおり親の起動位置。管理外・読取失敗は `WORKTREE_BEFORE_STATE=unavailable` とし、メンバー起動は継続する。
+`member start` の呼び出し位置（cwd）の実パスが子の起動 cwd（親の起動位置）と一致するときだけ、その worktree を、ロックを作らない `--no-optional-locks` で記録する。専用 worktree の直下で検証した管理ディレクトリと実パスを、保護された実行の記録フォルダに保存し、その値に固定して読み取る。不一致の場合は記録・照合・自動復帰を行わず、状態は `unavailable`、復帰理由は `automatic-restore-failed: working-directory-mismatch` とする。管理外・読取失敗は `WORKTREE_BEFORE_STATE=unavailable` とし、メンバー起動は継続する。
 
-監督プロセスが子の終了後、結果を公開してから、`exit` を書く前に一度だけ復帰を試す。Git の各実行は1.5秒、自動復帰全体は10秒を上限とし、時間切れは理由として記録する。監督には親が固定した binding・呼び出し位置・起動前記録を payload で渡し、子の環境変数・設定を実行先の指定に使わない。復帰先は起動前のブランチのみとし、手動の reattach と同じ検査・OS 制限を使う。起動前から detached、read-only メンバー、read-only の親では復帰しない。条件不成立なら変更を加えず、自動復帰の失敗理由を記録する。status 自体は復帰を実行しない。
+監督プロセスが子の終了後、結果を公開してから、`exit` を書く前に一度だけ復帰を試す。Git の各実行は1.5秒、自動復帰全体は10秒を上限とし、時間切れは理由として記録する。起動前の記録は Git 1回1.5秒・全体5秒を上限とし、変更ファイルの多い作業ツリーなどで時間切れになると `unavailable` となり自動復帰しない。
+
+監督には親が固定した binding・子の起動 cwd・起動前記録を payload で渡し、子の環境変数・設定を実行先の指定に使わない。復帰先は起動前のブランチのみとし、手動の reattach と同じ検査・OS 制限を使う。起動前から detached、read-only メンバー、read-only の親では復帰しない。条件不成立なら変更を加えず、自動復帰の失敗理由を記録する。status 自体は復帰を実行しない。
 
 `member status` は既存キーの後に `WORKTREE_BEFORE_*`、`WORKTREE_AFTER_CHILD_*`（復帰前）、`WORKTREE_AFTER_*`（復帰後）を追加する。各組の `STATE=recorded|unavailable`、`BRANCH`（detached の場合は `detached`）、`HEAD`、`DIRTY`、`CHANGES`（状態・内容の SHA-256。内容の読み取りは合計16 MiBまでとし、`complete:` / `limited:` で記録の精度を示す）と、`WORKTREE_CHANGED=true|false|unknown`、`BRANCH_RESTORE=restored|not-restored`、`BRANCH_RESTORE_REASON` を返す。変更のファイル名・内容は公開しない。復帰結果の記録失敗は `automatic-restore-record-failed` となり、自動処理の失敗として扱う。
 

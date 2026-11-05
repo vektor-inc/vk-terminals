@@ -2526,7 +2526,7 @@ function finishMemberWorktree(recovery, deps = {}) {
   let restore = 'not-restored';
   const restorationReason = () => {
     if (readonly) return 'read-only';
-    if (before.state !== 'recorded') return 'record-unavailable';
+    if (before.state !== 'recorded') return before.reason || 'record-unavailable';
     if (before.branch === '') return 'initially-detached';
     if (afterChild.state !== 'recorded') return 'worktree-unreadable';
     if (afterChild.branch !== '') return 'head-not-detached';
@@ -2891,14 +2891,16 @@ function executeMemberStart({ parsed, binding, cwd, fsImpl, inspected, reject, w
     createExclusiveFile(fsImpl, paths.prompt, promptBody);
     createExclusiveFile(fsImpl, paths.schema, schemaBody);
     // 状態確認が起動直後から読めるよう、記録は監督プロセスの起動より先に書く。pid は起動後にしか分からないので、起動前は null（status では STATE=starting）。
-    const identity = recordMemberIdentity({ binding, spawnSync, cwd, fsImpl, inspected, deps });
-    const before = captureMemberWorktree(binding, cwd, spawnSync, identity);
+    // 子の作業フォルダと一致するときだけ、状態記録と自動復帰を有効にする。
+    const sameWorkingDirectory = fsImpl.realpathSync(cwd) === memberRoot;
+    const identity = sameWorkingDirectory ? recordMemberIdentity({ binding, spawnSync, cwd, fsImpl, inspected, deps }) : null;
+    const before = sameWorkingDirectory ? captureMemberWorktree(binding, memberRoot, spawnSync, identity) : { state: 'unavailable', reason: 'working-directory-mismatch' };
     const meta = { pid: null, startedAt: new Date().toISOString(), readonly, out: outPath, worktreeBefore: before };
     createExclusiveFile(fsImpl, paths.meta, Buffer.from(`${JSON.stringify(meta)}\n`));
 
     // 子の結果（-o）は、子から書き換えられない実行の記録フォルダ内に書かせる。入出力フォルダへの公開は監督プロセスが行う。
     const codexArgs = buildMemberCodexArgs({ root: memberRoot, schemaPath: paths.schema, outPath: paths.result, model: parsed.model, readonly });
-    const payload = { codex: member.codex, args: codexArgs, cwd: memberRoot, env: buildMemberEnvironment(binding), runDir, recovery: { binding, cwd, before, readonly, identity } };
+    const payload = { codex: member.codex, args: codexArgs, cwd: memberRoot, env: buildMemberEnvironment(binding), runDir, recovery: { binding, cwd: memberRoot, before, readonly, identity } };
     const spawnDetached = deps.spawn || childProcess.spawn;
     let supervisor;
     try {

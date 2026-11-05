@@ -6196,7 +6196,8 @@ test('member: 起動位置の前後を記録し元のブランチへ一度だけ
     try {
       const dir = createReattachWorktree(fixture);
       if (mode !== 'initial-detached') git(dir, 'symbolic-ref', 'HEAD', 'refs/heads/feature/544-reattach');
-      // 子は親の cwd で動くが、記録と復帰の対象は呼び出し位置の worktree。
+      // 親・子・記録と復帰の作業フォルダをそろえる。
+      fixture.env.VK_TASK_PARENT_CWD = fs.realpathSync(dir);
       const actions = [
         "process.env.GIT_DIR='/nonexistent-child-git';process.env.GIT_WORK_TREE='/nonexistent-child-worktree';",
         "const fs=require('fs'), cp=require('child_process');",
@@ -6523,4 +6524,35 @@ test('完了: 記録の時間切れでも対象外の復帰理由を保持する
       assert.equal(worktree.reason, reason);
     } finally { fixture.cleanup(); }
   }
+});
+
+
+test('完了: 作業フォルダの一致を確認できない場合は状態記録と自動復帰を省略する', async () => {
+  const fixture = createMemberFixture();
+  try {
+    const dir = createReattachWorktree(fixture);
+    git(dir, 'symbolic-ref', 'HEAD', 'refs/heads/feature/544-reattach');
+    const started = fixture.runMember(MEMBER_START, { cwd: dir });
+    assert.equal(started.code, 0, started.messages.join(''));
+    const payload = JSON.parse(fixture.calls[0].options.env.VK_TASK_MEMBER_SUPERVISE);
+    assert.equal(payload.cwd, fixture.repo);
+    assert.equal(payload.recovery.identity, null);
+    assert.equal(payload.recovery.before.state, 'unavailable');
+    // 終了処理を通しても Git による記録・復帰は行わない。
+    git(dir, 'checkout', '-q', '--detach');
+    fs.writeFileSync(path.join(payload.runDir, 'result.txt'), '{}');
+    const calls = [];
+    const code = await superviseMemberRun({ ...payload, codex: process.execPath, args: ['-e', 'process.exit(0)'], env: {} }, {
+      outFd: fs.openSync(path.join(fixture.io, 'out.json'), 'w'),
+      spawnSync: (...args) => { calls.push(args); throw new Error('unexpected Git call'); },
+    });
+    assert.equal(code, 0);
+    assert.equal(calls.length, 0);
+    assert.equal(git(dir, 'rev-parse', '--abbrev-ref', 'HEAD').trim(), 'HEAD');
+    const output = [];
+    assert.equal(fixture.runMember(['member', 'status', path.basename(payload.runDir)], { writeOut: (text) => output.push(text) }).code, 0);
+    for (const stage of ['BEFORE', 'AFTER_CHILD', 'AFTER']) assert.match(output.join(''), new RegExp(`^WORKTREE_${stage}_STATE=unavailable$`, 'm'));
+    assert.match(output.join(''), /^BRANCH_RESTORE=not-restored$/m);
+    assert.match(output.join(''), /^BRANCH_RESTORE_REASON=automatic-restore-failed: working-directory-mismatch$/m);
+  } finally { fixture.cleanup(); }
 });

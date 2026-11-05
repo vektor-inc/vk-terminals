@@ -244,6 +244,11 @@ const { USER_CONFIG_MAX_BYTES, normalizeLiveConfig, changedLiveKeys, normalizeRe
 const { createRestartApplication } = require('./utils/restartApplication');
 // 組み込み用の入口（embedded.js）から起動されたときだけ値が入る。electron . では null。
 const EMBEDDED_OPTIONS = getEmbeddedOptions();
+const { isHelpDocument, buildHelpLaunchCommand, createHelpStatusChecker, createGuideOpener } = require('./utils/helpFeature');
+const HELP_FEATURE = EMBEDDED_OPTIONS && EMBEDDED_OPTIONS.help;
+const checkHelpStatus = HELP_FEATURE ? createHelpStatusChecker(EMBEDDED_OPTIONS.getHelpStatus) : null;
+const GUIDE_LAUNCH = Symbol('guide launch');
+
 // セットアップ状況の一覧を出すための部品（issue #456）。組み込みのオプションに無ければ null で、
 // その場合は IPC も画面の要素も作らず、従来と同じ画面のままにする（electron . ・zip 版）。
 const SETUP_FEATURE = resolveSetupFeature({ embedded: EMBEDDED_OPTIONS });
@@ -1643,6 +1648,7 @@ ipcMain.handle('app:get-config', () => {
     tasksFile,
     commandsFile,
     // 一覧を出す部品があるときだけキーを足す（無いときは従来と同じ応答のまま）。
+    ...(HELP_FEATURE ? { helpEntryEnabled: true } : {}),
     ...(SETUP_FEATURE ? { setupPanelEnabled: true } : {}),
   };
 });
@@ -2183,7 +2189,11 @@ ipcMain.handle('clipboard:write-text', async (_event, text) => {
   }
 });
 
-ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
+ipcMain.handle('terminal:create', (_event, cwd, options = {}) => createTerminalPane(cwd, options));
+
+function createTerminalPane(cwd, options = {}, guide = null) {
+  if (options.guidePane !== undefined) throw new Error('Guide launch requires dedicated IPC.');
+  const guideLaunch = guide && guide.token === GUIDE_LAUNCH;
   // アプリ終了処理（before-quit）が pty の終了を待っている最中・待ち終えたあとは、
   // 新しいペインを作らせない（issue #409 レビュー対応・MEDIUM-2）。ここで作った pty は
   // cleanupPtys() の待ち対象に含まれないまま終了処理に巻き込まれ、#409 と同じ競合に
@@ -2220,7 +2230,7 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
     },
   });
   const id = String(nextId++);
-  let resolvedCwd = setupLaunch
+  let resolvedCwd = guideLaunch ? HELP_FEATURE.cwd : setupLaunch
     ? SETUP_FEATURE.setupPane.cwd
     : (cwd || process.env.HOME || process.env.USERPROFILE || os.tmpdir());
   let cwdUsable = false;
@@ -2230,21 +2240,21 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
     cwdUsable = false;
   }
   if (!cwdUsable) {
-    // セットアップ用ペインは、作業フォルダが消えていてもホームへ切り替えず、作成失敗として返す
-    // （別のフォルダで claude を起動して、意図しない場所で作業が始まらないようにするため）。
-    if (setupLaunch) throw new Error('Setup pane directory does not exist.');
+    // セットアップ・ガイド用ペインは、作業フォルダが消えていてもホームへ切り替えず失敗として返す
+    // （別のフォルダで AI を起動して、意図しない場所で作業が始まらないようにするため）。
+    if (setupLaunch || guideLaunch) throw new Error('Pane directory does not exist.');
     resolvedCwd = process.env.HOME || process.env.USERPROFILE || os.tmpdir();
   }
 
   // `options.noClaude` が明示指定されていればそれを優先、未指定なら CLI フラグの値を継承。
   // `noClaude` が true の場合、claude を自動起動せず素のシェルとして開く。
-  const noClaude = typeof options.noClaude === 'boolean' ? options.noClaude : globalPlainMode;
+  const noClaude = guideLaunch ? false : typeof options.noClaude === 'boolean' ? options.noClaude : globalPlainMode;
 
   // `options.engine` の再検証（issue #367）。HTTP 受け口（/api/new-pane）でも検証済みだが、
   // ここでも isValidEngine が再検証する（model と同じ二重化構造・#310 の前例）。
   // 未指定・不正値では例外を投げず、従来どおりの 'claude' へ倒す（安全側の既定。
   // buildClaudeLaunchCommand のコメントと同じ考え方）。
-  const resolvedEngine = !setupLaunch && isValidEngine(options.engine) ? options.engine : 'claude';
+  const resolvedEngine = guideLaunch ? guide.engine : !setupLaunch && isValidEngine(options.engine) ? options.engine : 'claude';
 
   // 起動コマンドは PTY を作る前に確定させる（issue #428）。タスク用ポリシーの専用 CODEX_HOME を
   // 用意できない・起動コマンドを組み立てられないときは、PTY を作らずここで例外にして、
@@ -2255,8 +2265,10 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
   let discardLaunchHome = () => false;
   // タスク用ポリシー（専用 CODEX_HOME）で起動する Codex か。信頼確認の自動応答の判定に使う（issue #448）。
   let taskPolicyLaunch = false;
-  if (!noClaude && setupLaunch) {
-    // claude '<prompt>' を作る経路は、検証済みのプロンプトだけを受け付けるこの 1 本のみ。
+  if (guideLaunch) {
+    launchCommand = buildHelpLaunchCommand(guide.engine, HELP_FEATURE.prompts[guide.engine]);
+  } else if (!noClaude && setupLaunch) {
+    // セットアップ専用の検証済みプロンプトから起動コマンドを作る。
     launchCommand = buildSetupPaneLaunchCommand(SETUP_FEATURE.setupPane.prompt);
   } else if (!noClaude) {
     const launchResolution = resolveCodexLaunchOptions(resolvedEngine, options, { cwd: resolvedCwd });
@@ -2322,7 +2334,7 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
 
   // initialCommand は最初の 1 ターミナルのみ送信
   // セットアップ用ペインは「最初のターミナル」に数えない（次の通常のペインに initialCommand を送るため）。
-  const isFirstTerminal = !firstTerminalCreated && !setupLaunch;
+  const isFirstTerminal = !firstTerminalCreated && !setupLaunch && !guideLaunch;
   if (isFirstTerminal) firstTerminalCreated = true;
 
   let promptWatcher = null;
@@ -2573,6 +2585,18 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
   // 書き込む＝既存の呼び出し元は非影響（issue #367）。
   //
   // Codex でも専用の許可リストで再検証し、正常値だけを --model として渡す。
+  let guideLaunchReady = null;
+  let guideLaunchSucceeded = () => {};
+  let discardFailedLaunch = discardLaunchHome;
+  if (guideLaunch) {
+    guideLaunchReady = new Promise((resolve, reject) => {
+      guideLaunchSucceeded = resolve;
+      discardFailedLaunch = () => {
+        try { ptyProcess.kill(); } catch (_) {}
+        reject(new Error('Guide launch failed.'));
+      };
+    });
+  }
   if (launchCommand !== null) {
     // 待っている間に PTY が消えた・書き込みが例外になった場合は、使われない専用 CODEX_HOME を回収する。
     scheduleLaunchCommand({
@@ -2583,8 +2607,9 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
       prepareCommand: (command) => agentLifecycles.prepare(id, 1, initialLaunchToken, ptyProcess.pid, command, shell),
       activateCommand: () => agentLifecycles.activate(id, 1, initialLaunchToken),
       isLaunchCurrent: () => agentLifecycles.isCurrent(id, 1, initialLaunchToken),
-      discard: discardLaunchHome,
+      discard: discardFailedLaunch,
       delayMs: 200,
+      onWriteSuccess: guideLaunchSucceeded,
       log: (message) => console.error(`${LOG_PREFIX} ${message}`),
     });
   }
@@ -2594,8 +2619,27 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
   // 新ペインへ引き継ぐための唯一の情報源にする。noClaude が true でも値は返す
   // （AI を起動しなかったペインでも「この engine 指定で作られた」という事実は残るため。
   // 素のシェルのまま分割された場合に inherit すべき値が無くなるのを避ける）。
-  return { id, cwd: resolvedCwd, engine: resolvedEngine };
+  const result = { id, cwd: resolvedCwd, engine: resolvedEngine };
+  return guideLaunchReady ? guideLaunchReady.then(() => result) : result;
+}
+
+// 専用経路は引数を受け取らず、登録済みの値だけを使う。
+ipcMain.handle('help:check', () => {
+  if (!HELP_FEATURE) throw new Error('Help is unavailable.');
+  return checkHelpStatus();
 });
+ipcMain.handle('help:document', async () => {
+  if (!HELP_FEATURE || !isHelpDocument(HELP_FEATURE.documentPath)) throw new Error('Help document is unavailable.');
+  await electronShell.openExternal(pathToFileURL(HELP_FEATURE.documentPath).href);
+  return true;
+});
+const openGuideTerminal = createGuideOpener({
+  enabled: !!HELP_FEATURE,
+  check: checkHelpStatus,
+  create: (engine) => createTerminalPane(null, {}, { token: GUIDE_LAUNCH, engine }),
+  isAlive: (id) => ptys.has(id),
+});
+ipcMain.handle('help:open-guide', () => openGuideTerminal());
 
 // renderer から届く端末自身の制御応答では監視を維持し、実際の利用者入力で止める。
 function disarmTrustAutomationForUserInput(id, data) {

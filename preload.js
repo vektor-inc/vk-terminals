@@ -61,6 +61,9 @@ const INVOKE_CHANNELS = new Set([
   'settings:api-token-info',
   'settings:reissue-api-token',
   'terminal:create',
+  'help:check',
+  'help:document',
+  'help:open-guide',
   // セットアップ状況の一覧（issue #456）。組み込みのオプションがあるときだけ main 側にハンドラが作られる
   // （無いときに呼ぶと reject される）。
   'setup:check',

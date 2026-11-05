@@ -41,8 +41,8 @@ function nonEmptyString(value) {
 /**
  * 組み込み用の入口に渡されたオプションを検証して正規化する。
  * 不明なキーは捨てる。型が違うものは黙って無視せず例外にする（呼び出し側の設定ミスを早く知らせるため）。
- * @param {object} [raw] { appTitle, resourceRoot, selfUpdate, settingsDescriptorPath, singleInstance, getSetupStatus, setupPane }
- * @returns {{ appTitle: string|null, resourceRoot: string|null, selfUpdate: boolean|null, settingsDescriptorPath: string|null, singleInstance: boolean, getSetupStatus: Function|null, setupPane: { cwd: string, prompt: string }|null }}
+ * @param {object} [raw] { appTitle, resourceRoot, selfUpdate, settingsDescriptorPath, singleInstance, getSetupStatus, setupPane, help, getHelpStatus }
+ * @returns {{ appTitle: string|null, resourceRoot: string|null, selfUpdate: boolean|null, settingsDescriptorPath: string|null, singleInstance: boolean, help: object|null, getHelpStatus: Function|null, getSetupStatus: Function|null, setupPane: { cwd: string, prompt: string }|null }}
  */
 function normalizeEmbeddedOptions(raw) {
   const options = raw == null ? {} : raw;
@@ -94,7 +94,11 @@ function normalizeEmbeddedOptions(raw) {
     throw new TypeError('embedded options: getSetupStatus and setupPane must be given together');
   }
 
+  const { normalizeHelpFeature } = require('./helpFeature');
+  const help = normalizeHelpFeature(options.help, options.getHelpStatus);
   return {
+    help,
+    getHelpStatus: help ? options.getHelpStatus : null,
     appTitle: nonEmptyString(options.appTitle),
     resourceRoot: nonEmptyString(options.resourceRoot),
     // null は「未指定」。未指定のときの既定は shouldSelfUpdate() が決める。

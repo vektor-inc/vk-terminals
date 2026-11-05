@@ -28,7 +28,7 @@ function containsUserTerminalInput(input) {
 }
 
 // 端末の問い合わせ（DSR・DA・DECRQM・kitty キーボード・OSC 色）への応答だけ。
-// マウス通知とフォーカス通知は画面の変化を伴いうるため含めない（issue #517）。
+// フォーカス通知は別判定で採り直し対象にする。マウス通知は対象外。
 const TERMINAL_QUERY_REPLY_PATTERN = new RegExp([
   '\\x1b\\[\\??\\d+;\\d+R',
   '\\x1b\\[\\??\\d+;\\d+\\$y',
@@ -50,4 +50,16 @@ function isTerminalQueryReplyOnly(input) {
   return input.replace(TERMINAL_QUERY_REPLY_PATTERN, '').length === 0;
 }
 
-module.exports = { containsUserTerminalInput, isTerminalQueryReplyOnly };
+/**
+ * フォーカス通知だけの入力か判定する。通常入力後の出力待ち中は採り直しを予約できない。
+ * 予約後に可視出力が届いた場合は取り消す。
+ *
+ * @param {*} input - terminal:input で PTY へ渡す入力。
+ * @returns {boolean} フォーカス通知だけで構成される場合のみ true。
+ */
+function isTerminalFocusNotificationOnly(input) {
+  return typeof input === 'string' && input.length > 0
+    && /^(?:\x1b\[[IO])+$/.test(input);
+}
+
+module.exports = { containsUserTerminalInput, isTerminalQueryReplyOnly, isTerminalFocusNotificationOnly };

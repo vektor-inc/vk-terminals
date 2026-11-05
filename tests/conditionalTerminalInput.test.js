@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const vm = require('node:vm');
 const {
   createConditionalTerminalInputGuard,
   mergeConditionalScreenIdentifiers,
@@ -213,6 +214,118 @@ function refresherSetup() {
   return { ...context, refresher, timers, sent, fire };
 }
 
+function terminalInputHarness() {
+  const context = refresherSetup();
+  const handlers = new Map();
+  const writes = [];
+  const source = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+  const wrapper = source.match(/ptyProcess\.write = \(data\) => \{[\s\S]*?\n  \};/)[0];
+  const handler = source.match(/ipcMain\.on\('terminal:input'[\s\S]*?\n\}\);/)[0];
+  const { isTerminalQueryReplyOnly, isTerminalFocusNotificationOnly } = require('../utils/terminalUserInput');
+  const ptyProcess = {};
+  // 実際の全書き込みラッパーも評価し、API・自動 Enter と同じ入口を使う。
+  vm.runInNewContext(wrapper, {
+    ptyProcess,
+    id: '1',
+    conditionalTerminalInput: context.guard,
+    silentWriteRefresher: context.refresher,
+    isTerminalQueryReplyOnly,
+    isTerminalFocusNotificationOnly,
+    writeToPty: (data) => writes.push(data),
+  });
+  vm.runInNewContext(handler, {
+    ipcMain: { on: (name, callback) => handlers.set(name, callback) },
+    ptys: new Map([['1', ptyProcess]]),
+    disarmTrustAutomationForUserInput: () => {},
+    silentWriteRefresher: context.refresher,
+    isTerminalQueryReplyOnly,
+    isTerminalFocusNotificationOnly,
+  });
+  return { ...context, writes, ptyProcess, input: (data) => handlers.get('terminal:input')(null, '1', data) };
+}
+
+test('issue #540: 実際の terminal:input 経路でフォーカス通知後は静止時に採り直し、出力時は取り消す', () => {
+  const quiet = terminalInputHarness();
+  const before = quiet.guard.capture('1', 4);
+  quiet.input('\x1b[I');
+  assert.deepEqual(quiet.writes, ['\x1b[I']);
+  assert.equal(mergeConditionalScreenIdentifiers({ pane1: { termId: '1', agentGeneration: 4 } }, new Map([['1', before]]), quiet.guard).pane1.screenIdentifierStale, true);
+  assert.equal(quiet.timers[0].ms, SILENT_WRITE_QUIET_MS);
+  assert.equal(quiet.sent.length, 0);
+  quiet.fire();
+  assert.equal(quiet.sent.length, 1);
+  assert.equal(quiet.guard.isCurrent('1', quiet.sent[0].snapshot), true);
+  assert.equal(quiet.guard.writeEnter(request(quiet.sent[0].snapshot), quiet.dependencies).ok, true);
+
+  const output = terminalInputHarness();
+  output.input('\x1b[O');
+  output.guard.markChanged('1');
+  output.refresher.noteOutput('1');
+  output.fire();
+  assert.equal(output.sent.length, 0);
+
+  const mouse = terminalInputHarness();
+  mouse.input('\x1b[<0;10;5M');
+  mouse.fire();
+  assert.equal(mouse.sent.length, 0);
+});
+
+for (const input of ['\r', '\x1b[A', 'a']) {
+  test(`issue #540: 通常入力 ${JSON.stringify(input)} 後は通知でも採り直さず、可視出力後に再開する`, () => {
+    const c = terminalInputHarness();
+    const stale = c.guard.capture('1', 4);
+    c.input(input);
+    // フォーカス・問い合わせ応答・リサイズも、出力待ちを解除できない。
+    c.input('\x1b[I');
+    c.input('\x1b[O');
+    c.input('\x1b[0n');
+    c.refresher.noteWrite('1');
+    c.fire();
+    assert.equal(c.sent.length, 0);
+    assert.equal(c.guard.isCurrent('1', stale), false);
+    assert.equal(c.guard.writeEnter(request(stale), c.dependencies).reason, 'screen-changed');
+
+    c.guard.markChanged('1');
+    c.refresher.noteOutput('1');
+    c.input('\x1b[I');
+    assert.equal(c.timers.at(-1).ms, 800);
+    c.fire();
+    assert.equal(c.sent.length, 1);
+    assert.equal(c.guard.writeEnter(request(c.sent[0].snapshot), c.dependencies).ok, true);
+  });
+
+  test(`issue #540: フォーカス通知後の通常入力 ${JSON.stringify(input)} は予約を取り消す`, () => {
+    const c = terminalInputHarness();
+    c.input('\x1b[O');
+    c.input(input);
+    assert.equal(c.timers[0].cleared, true);
+    c.fire();
+    assert.equal(c.sent.length, 0);
+  });
+}
+
+test('issue #540: API・自動 Enter のラッパー経由入力後もフォーカス通知で採り直せない', () => {
+  const c = terminalInputHarness();
+  c.ptyProcess.write('\r');
+  c.input('\x1b[I');
+  c.fire();
+  assert.equal(c.sent.length, 0);
+});
+
+test('issue #540: 抑止はペインごとに管理し、ペイン削除時に破棄する', () => {
+  const c = refresherSetup();
+  c.guard.initialize('2');
+  c.generations.set('2', 4);
+  c.refresher.noteInput('1');
+  c.refresher.noteWrite('2');
+  c.fire();
+  assert.equal(c.sent[0].id, '2');
+  c.refresher.delete('1');
+  c.refresher.noteWrite('1');
+  c.fire();
+  assert.equal(c.sent[1].id, '1');
+});
+
 test('issue #517: 出力の無い書き込みの後、静止時間が過ぎると識別値を採り直して送り、条件付き Enter が通る', () => {
   const c = refresherSetup();
   const stale = c.guard.capture('1', 4);
@@ -274,7 +387,7 @@ test('issue #517: ペイン削除後・世代不明のときは何も送らな�
 test('issue #517: main は書き込み・リサイズで採り直しを予約し、出力で取り消し、renderer へ送る', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
   const rendererSource = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'app.js'), 'utf8');
-  assert.match(source, /ptyProcess\.write = \(data\) => \{\s*conditionalTerminalInput\.markChanged\(id\);[\s\S]*?silentWriteRefresher\.noteOutput\(id\);\s*return writeToPty\(data\)/);
+  assert.match(source, /ptyProcess\.write = \(data\) => \{\s*conditionalTerminalInput\.markChanged\(id\);[\s\S]*?silentWriteRefresher\.noteInput\(id,[^\n]+\);\s*return writeToPty\(data\)/);
   assert.match(source, /conditionalTerminalInput\.markChanged\(id\);\s*silentWriteRefresher\.noteWrite\(id\);\s*try \{ p\.resize/);
   assert.match(source, /silentWriteRefresher\.noteOutput\(id\)/);
   assert.match(source, /'terminal:screen-refresh'/);
@@ -282,12 +395,12 @@ test('issue #517: main は書き込み・リサイズで採り直しを予約し
   assert.match(fs.readFileSync(path.join(__dirname, '..', 'preload.js'), 'utf8'), /'terminal:screen-refresh'/);
 });
 
-test('issue #517: ラッパー経由の書き込み（利用者入力・API・Enter）では採り直しを予約せず、端末の制御応答だけの terminal:input で予約し直す', () => {
+test('ラッパー経由の書き込みでは採り直しを予約せず、制御応答・フォーカス通知の terminal:input で予約し直す', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
   const wrapper = source.match(/ptyProcess\.write = \(data\) => \{[\s\S]*?\n  \};/)[0];
   assert.doesNotMatch(wrapper, /noteWrite/);
   const handler = source.match(/ipcMain\.on\('terminal:input'[\s\S]*?\n\}\);/)[0];
-  assert.match(handler, /p\.write\(data\);(?:\s*\/\/[^\n]*)*\s*if \(isTerminalQueryReplyOnly\(data\)\) silentWriteRefresher\.noteWrite\(id\);/);
+  assert.match(handler, /p\.write\(data\);[\s\S]*?if \(isTerminalQueryReplyOnly\(data\) \|\| isTerminalFocusNotificationOnly\(data\)\) silentWriteRefresher\.noteWrite\(id\);/);
 });
 
 test('issue #517: 端末の自動応答は利用者入力ではなく、キー入力・Enter・矢印は利用者入力と判定される', () => {

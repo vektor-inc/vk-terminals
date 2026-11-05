@@ -81,7 +81,7 @@ test.describe.serial('renderer の隔離（issue #268）', () => {
     // 解除は on() の戻り値の unsubscribe だけ。off(channel, listener) は contextBridge 越しに
     // 関数の同一性が保てず成立しないので公開しない（preload.js の addListener を参照）。
     expect(shape.ipcKeys).toEqual(['invoke', 'on', 'send']);
-    expect(shape.shellKeys).toEqual(['beep', 'openExternal']);
+    expect(shape.shellKeys).toEqual(['beep', 'openExternal', 'openPath']);
     expect(shape.clipboardKeys).toEqual(['writeText']);
     expect(shape.fileKeys).toEqual(['getPath']);
     expect(shape.hasSendSync).toBe('undefined');

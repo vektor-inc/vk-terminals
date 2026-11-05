@@ -244,6 +244,6 @@ test('回収そのものが例外になっても、タイマーの外へ出さ�
 
 test('main.js の遅延起動は scheduleLaunchCommand を通り、直接の setTimeout 書き込みを持たない', () => {
   const source = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'main.js'), 'utf8');
-  assert.match(source, /scheduleLaunchCommand\(\{[\s\S]*?discard: discardLaunchHome/);
+  assert.match(source, /scheduleLaunchCommand\(\{[\s\S]*?discard: discardFailedLaunch/);
   assert.equal(/ptyProcess\.write\(`\$\{launchCommand\}/.test(source), false);
 });

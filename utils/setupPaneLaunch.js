@@ -1,7 +1,7 @@
 'use strict';
 
 // セットアップ用ペインで実行する起動コマンド（issue #456）。
-// claude '<prompt>' を作る経路はここ 1 本だけで、検証を通ったプロンプト（/^\/[a-z0-9-]+$/）以外は
+// セットアップ用の検証を通ったプロンプト（/^\/[a-z0-9-]+$/）以外は
 // 例外にする。renderer からはプロンプトも作業フォルダも受け取らない（main が保持する setupPane を使う）。
 
 const { isSetupPrompt } = require('./runtimeOptions');

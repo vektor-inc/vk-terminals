@@ -252,6 +252,8 @@ let commandsConfigured = false;
 // 宣言的ウィジェットの中継ペイロード { widget, legacyNotice, commandsConfigured }。
 let lastWidgetPayload = null;
 let hasSeenFreshWidget = false;
+let helpEntryEnabled = false;
+let helpGuideOpening = null;
 // セットアップ状況の一覧（issue #456）。組み込みのオプションがあるときだけ initApp が生成する。
 // 無いとき（electron . ・zip 版）は null のままで、IPC も画面の要素も作らない。
 let setupPanel = null;
@@ -655,8 +657,8 @@ function bumpRunning(paneId) {
 // 未指定の場合は main 側のグローバル設定（CLI フラグ）にフォールバックする。
 // options.engine が指定されていれば main 側でそのエンジンを起動する（未指定なら claude。issue #367）。
 // options.model が指定されていれば main 側で選択エンジンをそのモデルで起動する。
-async function createTerminal(paneId, cwd, options = {}) {
-  const result = await VKIpc.invoke('terminal:create', cwd || null, options);
+async function createTerminal(paneId, cwd, options = {}, createdResult = null) {
+  const result = createdResult || await VKIpc.invoke('terminal:create', cwd || null, options);
   const { id: termId, cwd: initialCwd, engine: resolvedEngine } = result;
 
   const term = new Terminal({
@@ -1697,8 +1699,12 @@ function updateConfigReadErrorNotices() {
   });
 }
 
-async function refreshConfigReflection() {
-  try { updateConfigReflection(await VKIpc.invoke('app:config-reflection')); } catch (_error) { /* 次の main 通知で再取得する。 */ }
+async function refreshConfigReflection({ throwOnError = false } = {}) {
+  try { updateConfigReflection(await VKIpc.invoke('app:config-reflection')); }
+  catch (error) {
+    // 保存直後の確認に失敗した場合は、ガイド起動を成功扱いにしない。
+    if (throwOnError) throw error;
+  }
 }
 
 function updateConfigReflection(state) {
@@ -1848,6 +1854,11 @@ function createSidebar() {
   configError.innerHTML = '<p>設定を読み込めませんでした。設定ファイルを修正して保存してください</p><ul class="config-read-error-files"></ul>';
   nav.insertBefore(configError, restartNotice);
   nav.appendChild(createSidebarSettingsCard());
+  if (helpEntryEnabled) {
+    const card = createSidebarSettingsCard({ id: 'sidebar-help', labelText: '使い方・ヘルプ', onClick: () => openSettingsModal(VKHelpEntry.TAB_ID) });
+    card.classList.add('sidebar-help-entry');
+    nav.appendChild(card);
+  }
   nav.appendChild(createTaskListContainer());
   nav.appendChild(createPaneStashContainer());
 
@@ -1856,12 +1867,12 @@ function createSidebar() {
   return aside;
 }
 
-function createSidebarSettingsCard() {
+function createSidebarSettingsCard({ id = 'sidebar-settings', labelText = '設定', onClick = () => openSettingsModal() } = {}) {
   // 中身がボタン1つだけでランドマークとして移動する先がなく、section に aria-label を
   // 付けると「設定」が領域名とボタン名で二重に読み上げられるため、意図的に div とする。
   const card = document.createElement('div');
-  card.id = 'sidebar-settings';
-  card.className = 'sidebar-section-card';
+  card.id = id;
+  card.className = 'sidebar-section-card sidebar-settings-entry';
 
   const header = document.createElement('button');
   header.type = 'button';
@@ -1870,9 +1881,9 @@ function createSidebarSettingsCard() {
 
   const label = document.createElement('span');
   label.className = 'sidebar-section-label';
-  label.textContent = '設定';
+  label.textContent = labelText;
   header.appendChild(label);
-  header.addEventListener('click', () => openSettingsModal());
+  header.addEventListener('click', onClick);
 
   card.appendChild(header);
   return card;
@@ -2942,6 +2953,37 @@ function findLargestVisiblePaneId() {
 function withInheritedEngine(options, paneId) {
   const inheritedEngine = terminals[paneId]?.engine;
   return inheritedEngine ? { ...options, engine: inheritedEngine } : options;
+}
+
+async function openHelpGuide() {
+  if (helpGuideOpening) return helpGuideOpening;
+  helpGuideOpening = (async () => {
+    const result = await VKIpc.invoke('help:open-guide');
+    if (result.helpStatus) return result;
+    let paneId = Object.keys(terminals).find((id) => terminals[id]?.termId === result.id);
+    if (!paneId) {
+      paneId = newId();
+      try {
+        await createTerminal(paneId, null, {}, result);
+        terminals[paneId].apiTitle = '使い方ガイド';
+        if (!Array.isArray(tree.order)) tree.order = [];
+        tree.order.push(paneId);
+        resetGridSizing();
+        render();
+      } catch (error) {
+        if (paneExists(paneId)) closePane(paneId, { force: true });
+        else {
+          terminals[paneId]?.term.dispose();
+          delete terminals[paneId];
+          VKIpc.send('terminal:kill', result.id);
+        }
+        throw error;
+      }
+    }
+    if (Array.isArray(tree.stashOrder) && tree.stashOrder.includes(paneId)) unstashPane(paneId);
+    return paneId;
+  })().finally(() => { helpGuideOpening = null; });
+  return helpGuideOpening;
 }
 
 // ─── Pane actions ─────────────────────────────────────────────────────────────
@@ -5255,7 +5297,7 @@ async function openSettingsModal(restartTabId = null) {
   // 戻せるよう、非同期処理へ入る前の要素をモーダルの寿命と一緒に保持する。
   const restoreFocusElement = document.activeElement;
   await refreshRestartRequired();
-  if (restartTabId && !restartRequiredState.tabs.includes(restartTabId)) restartTabId = null;
+  if (restartTabId && restartTabId !== VKHelpEntry.TAB_ID && !restartRequiredState.tabs.includes(restartTabId)) restartTabId = null;
   try {
     await settingsModalGuard.protect(({ release, setFailureCleanup }) => (
       buildSettingsModal({ release, setFailureCleanup, restoreFocusElement, restartTabId })
@@ -5273,11 +5315,16 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
   } catch (_e) {
     desc = null;
   }
+  if (helpEntryEnabled && !(desc && desc.available)) desc = { available: true, groups: [], values: {}, tabs: [] };
   const settingsAvailable = !!(desc && desc.available);
 
   // 描画順に採番したユニーク id と field を対応付ける（保存時もこの対応で走査する）。
   const entries = [];
-  const settingsTabs = settingsAvailable ? normalizeSettingsTabs(desc) : [];
+  let settingsTabs = settingsAvailable ? normalizeSettingsTabs(desc) : [];
+  if (helpEntryEnabled) {
+    if (!settingsTabs.length && desc.groups && desc.groups.length) settingsTabs = [{ id: '__settings', label: '設定' }];
+    settingsTabs = VKHelpEntry.insertTab(settingsTabs);
+  }
   const settingsGroups = settingsAvailable
     ? dedupeSettingsFieldsByKey(desc.groups, settingsTabs)
     : [];
@@ -5388,7 +5435,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
           // legend を省かないのは上の omitLegend のとおり）。
           // ※ この条件は settingsTabs.js の「移動先が空の tabLink を落とす」判定と対。片方だけ
           //   変えると行き止まりが残るか、内容があるのに移動ボタンが出なくなる（issue #275）。
-          const emptyHtml = !contentHtml && !contentAfterHtml && groups.length === 0 && !tabNote
+          const emptyHtml = tab.id === VKHelpEntry.TAB_ID ? '<div class="settings-help-entry"></div>' : !contentHtml && !contentAfterHtml && groups.length === 0 && !tabNote
             ? '<p class="settings-empty">このタブに表示できる設定項目はありません。</p>'
             : '';
           const restartNoticeHtml = `<div id="settings-restart-${escAttr(tab.id)}" class="settings-restart-notice"${restartRequiredState.tabs.includes(tab.id) ? '' : ' hidden'} data-tab-id="${escAttr(tab.id)}" role="status"><p>設定の反映にアプリの再起動が必要です。各ペインでの作業を終えてから再起動してください。</p><button type="button" class="settings-restart-button settings-secondary-button">アプリを再起動</button></div>`;
@@ -5466,7 +5513,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
   const modal = overlay.querySelector('.settings-modal');
   updateConfigReadErrorNotices();
   updatePartialConfigReflectionNotices();
-  if (restartTabId) {
+  if (restartTabId && restartTabId !== VKHelpEntry.TAB_ID) {
     const index = settingsTabs.findIndex((tab) => tab.id === restartTabId);
     if (index >= 0) {
       modal.setAttribute('aria-describedby', `settings-tab-${index} settings-restart-${restartTabId}`);
@@ -5567,6 +5614,58 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
   // 設定項目が無い環境ではフォーム関連の配線は不要（閉じるだけ）。
   if (!settingsAvailable) return;
 
+  const launchHelpGuide = async (onLaunching) => {
+    onLaunching();
+    const result = await openHelpGuide();
+    if (result && result.helpStatus) return result;
+    close();
+    fitAll();
+    focusPane(result);
+  };
+  const helpContainer = modal.querySelector('.settings-help-entry');
+  const helpView = helpContainer ? VKHelpEntry.mount(helpContainer, {
+    invoke: (channel) => VKIpc.invoke(channel),
+    openGuide: async (onLaunching) => {
+      const dirty = modal.querySelector('.settings-tab.is-dirty');
+      if (!dirty) return launchHelpGuide(onLaunching);
+      // 保存・破棄・キャンセルは明示的に選び、保存失敗時は起動しない。
+      return new Promise((resolve, reject) => {
+        const choices = document.createElement('div');
+        choices.className = 'settings-help-entry';
+        const text = document.createElement('p');
+        text.id = 'help-unsaved-label';
+        choices.setAttribute('role', 'group');
+        choices.setAttribute('aria-labelledby', text.id);
+        text.textContent = '未保存の変更があります。保存してからガイドを開きますか？';
+        choices.appendChild(text);
+        const finish = async () => {
+          choices.remove();
+          try { resolve(await launchHelpGuide(onLaunching)); } catch (error) { reject(error); }
+        };
+        for (const [label, action] of [
+          ['保存して開く', async () => {
+            choices.querySelectorAll('button').forEach((button) => { button.disabled = true; });
+            if (await saveSettings({ keepOpen: true })) await finish();
+            else { choices.remove(); resolve(false); }
+          }],
+          ['破棄して開く', finish],
+          ['キャンセル', () => { choices.remove(); resolve(false); }],
+        ]) {
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.className = 'settings-secondary-button';
+          button.textContent = label;
+          button.addEventListener('click', action);
+          choices.appendChild(button);
+        }
+        helpContainer.appendChild(choices);
+        choices.querySelector('button').focus();
+      });
+    },
+  }) : null;
+  const showHelp = () => {
+    if (helpContainer && !helpContainer.closest('[role=tabpanel]').hidden) helpView.show();
+  };
   const msg = modal.querySelector('.settings-msg');
   const cancelButton = modal.querySelector('.settings-cancel');
   cancelButton.addEventListener('click', close);
@@ -5765,6 +5864,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
         panel.hidden = index !== nextIndex;
       });
       activeTabIndex = nextIndex;
+      showHelp();
       if (tabChanged) {
         // 保存直後のフッター固定は、タブを移った時点で解除する（B-5: 説明タブに
         // 「保存」が出たまま残らないようにする）。
@@ -6695,7 +6795,8 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
     });
   }
 
-  modal.querySelector('.settings-save').addEventListener('click', async () => {
+  showHelp();
+  async function saveSettings({ keepOpen = false } = {}) {
     // 保存前の検証ゲート: 全エラー表示を一旦クリアしてから対象を一括再判定する。
     for (const { field, id } of validatable) clearFieldValidity(field, id);
     let firstInvalid = null;
@@ -6714,7 +6815,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
         firstInvalid.scrollIntoView({ block: 'center' });
       }
       firstInvalid.focus({ preventScroll: true });
-      return;
+      return false;
     }
 
     const out = {};
@@ -6737,12 +6838,14 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
         refreshSettingsContentSavedValues();
         msg.textContent = '保存しました。反映状況は設定の案内をご確認ください。';
         msg.classList.add('ok');
-        await refreshConfigReflection();
+        await refreshConfigReflection({ throwOnError: keepOpen });
         if (configFailedFiles.length) {
           msg.textContent = '保存しましたが、設定を読み込めませんでした。対象ファイルを確認してください。';
           msg.className = 'settings-msg err';
           autoClose.cancel();
-        } else autoClose.arm();
+          return false;
+        } else if (!keepOpen) autoClose.arm();
+        return true;
       } else {
         msg.textContent = 'エラー: ' + (res && res.error ? res.error : '不明なエラー');
         msg.classList.add('err');
@@ -6751,7 +6854,9 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
       msg.textContent = 'エラー: ' + e.message;
       msg.classList.add('err');
     }
-  });
+    return false;
+  }
+  modal.querySelector('.settings-save').addEventListener('click', () => saveSettings());
 }
 
 // ─── セットアップ状況の一覧（issue #456）──────────────────────────────────────
@@ -6826,6 +6931,7 @@ async function initApp() {
     commandsConfigured = !!(cfg && typeof cfg.commandsFile === 'string' && cfg.commandsFile.trim());
     // 組み込みのオプションがあるときだけ、セットアップ状況のパネルを用意する（無ければ何も作らない）。
     if (cfg && cfg.setupPanelEnabled === true && !setupPanel) setupPanel = createSetupPanelController();
+    helpEntryEnabled = !!(cfg && cfg.helpEntryEnabled === true);
     renderWidget();
     // ヘッダー／タブのアプリ名。呼び出し側（例: vk-orchestrator）が env で上書きすると
     // main が app:get-config で伝えてくる。未指定時は index.html の既定 'VK Terminals'。

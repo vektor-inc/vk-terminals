@@ -2403,8 +2403,31 @@ function readWorktreePointer(root, fsImpl = nodeFs) {
   } finally { fsImpl.closeSync(fd); }
 }
 
+// 読み取り専用で、許可した Git だけを実行する形に包む。
+function restrictWorktreeStatus(binding, spawnSync, env, deps = {}) {
+  const fsImpl = deps.fs || nodeFs;
+  if ((deps.platform || process.platform) !== 'darwin') throw new Error('restricted status unavailable');
+  resolveTrustedPath(fsImpl, SANDBOX_EXEC_PATH, { finalKind: 'file' });
+  const git = resolveTrustedPath(fsImpl, binding.git, { finalKind: 'file' }).realPath;
+  const executables = [git];
+  // システムの Git は、選択済みの開発ツールの実体も許可する。
+  if (git === '/usr/bin/git') {
+    const xcrun = resolveTrustedPath(fsImpl, '/usr/bin/xcrun', { finalKind: 'file' }).realPath;
+    const selected = spawnSync(xcrun, ['--find', 'git'], { env, encoding: 'utf8', timeout: WORKTREE_GIT_TIMEOUT_MS, killSignal: 'SIGKILL', maxBuffer: WORKTREE_MAX_CAPTURE_BYTES });
+    if (selected.error || selected.status !== 0) throw new Error('selected git unavailable');
+    executables.push(resolveTrustedPath(fsImpl, String(selected.stdout).trim(), { finalKind: 'file' }).realPath);
+  }
+  const params = executables.flatMap((target, index) => ['-D', `GIT${index}=${target}`]);
+  const profile = [
+    '(version 1)', '(allow default)', '(deny file-write*)',
+    '(allow file-write* (literal "/dev/null"))', '(deny process-exec*)',
+    `(allow process-exec ${executables.map((_, index) => `(literal (param "GIT${index}"))`).join(' ')})`,
+  ].join('\n');
+  return (args, options) => spawnSync(SANDBOX_EXEC_PATH, [...params, '-p', profile, git, ...args], options);
+}
+
 // 検証済みの管理情報に固定し、変更内容を公開しない比較用の指紋を作る。
-function captureMemberWorktree(binding, cwd, spawnSync = childProcess.spawnSync, identity = null, deadline = Date.now() + 5000) {
+function captureMemberWorktree(binding, cwd, spawnSync = childProcess.spawnSync, identity = null, deadline = Date.now() + 5000, deps = {}) {
   const unavailable = { state: 'unavailable' };
   const env = buildChildEnvironment(binding);
   try {
@@ -2413,12 +2436,13 @@ function captureMemberWorktree(binding, cwd, spawnSync = childProcess.spawnSync,
     const stat = nodeFs.lstatSync(dotGit);
     if (!stat.isFile() || stat.isSymbolicLink()) return unavailable;
     if (readWorktreePointer(identity.root) !== identity.adminDir) return unavailable;
-    const run = (args) => spawnSync(binding.git, [...FIXED_GIT_PREFIX, '--no-optional-locks', `--git-dir=${identity.adminDir}`, `--work-tree=${identity.root}`, ...args], { cwd: identity.root, env, encoding: 'utf8', timeout: WORKTREE_GIT_TIMEOUT_MS, killSignal: 'SIGKILL', maxBuffer: WORKTREE_MAX_CAPTURE_BYTES });
+    const runStatus = restrictWorktreeStatus(binding, spawnSync, env, deps);
+    const run = (args, execute = spawnSync) => execute(binding.git, [...FIXED_GIT_PREFIX, '--no-optional-locks', `--git-dir=${identity.adminDir}`, `--work-tree=${identity.root}`, ...args], { cwd: identity.root, env, encoding: 'utf8', timeout: WORKTREE_GIT_TIMEOUT_MS, killSignal: 'SIGKILL', maxBuffer: WORKTREE_MAX_CAPTURE_BYTES });
     const config = run(['config', '--list', '--null']);
     if (config.error || config.status !== 0 || inspectGitConfigListing(config.stdout).unsafeKey) return unavailable;
     const head = run(['rev-parse', '--verify', 'HEAD']);
     const branch = run(['symbolic-ref', '-q', 'HEAD']);
-    const status = run(['status', '--porcelain=v2', '-z', '--untracked-files=all', '--ignore-submodules=all']);
+    const status = run(['status', '--porcelain=v2', '-z', '--untracked-files=all', '--ignore-submodules=all'], (_bin, args, options) => runStatus(args, options));
     if ([head, status].some((r) => r.error || r.status !== 0) || branch.error || ![0, 1].includes(branch.status)) return unavailable;
     const hash = crypto.createHash('sha256').update(status.stdout);
     let remaining = WORKTREE_MAX_CAPTURE_BYTES;
@@ -2530,7 +2554,8 @@ function finishMemberWorktree(recovery, deps = {}) {
   if (restore !== 'restored' && !['read-only', 'initially-detached', 'head-not-detached'].includes(reason) && !reason.startsWith('automatic-restore-failed:')) reason = `automatic-restore-failed: ${reason}`;
   const after = captureMemberWorktree(binding, cwd, boundedSpawn, identity, deadline);
   if (Date.now() >= deadline) timedOut = true;
-  return { before, afterChild, after, restore, reason: timedOut && restore !== 'restored' ? 'automatic-restore-failed: timeout' : reason };
+  const keepsReason = restore === 'restored' || ['read-only', 'initially-detached', 'head-not-detached'].includes(reason);
+  return { before, afterChild, after, restore, reason: timedOut && !keepsReason ? 'automatic-restore-failed: timeout' : reason };
 }
 
 // ─── メンバー起動（member start / member status） ──────────────────────────

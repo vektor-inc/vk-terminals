@@ -6363,6 +6363,7 @@ test('完了: 記録の時間切れでも結果と終了状態を公開する', 
   const fixture = createMemberFixture();
   try {
     const dir = createReattachWorktree(fixture);
+    git(dir, 'symbolic-ref', 'HEAD', 'refs/heads/feature/544-reattach');
     const { binding, identity } = recordedFixture(fixture, dir);
     const before = captureMemberWorktree(binding, dir, childProcess.spawnSync, identity);
     const id = 'cccccccccccccccccccccccc';
@@ -6444,4 +6445,82 @@ test('完了: 復帰後の記録が時間切れでも復帰理由を保持する
     assert.match(output.join(''), /^BRANCH_RESTORE=restored$/m);
     assert.match(output.join(''), /^BRANCH_RESTORE_REASON=original-branch$/m);
   } finally { fixture.cleanup(); }
+});
+
+test('記録: status は読み取り専用の実行制限を通す', () => {
+  const fixture = createFixture();
+  try {
+    const dir = createReattachWorktree(fixture);
+    const { binding, identity } = recordedFixture(fixture, dir);
+    for (const gitPath of [GIT_PATH, '/usr/bin/git']) {
+      const calls = [];
+      const result = captureMemberWorktree({ ...binding, git: gitPath }, dir, (bin, args, options) => {
+        calls.push({ bin, args });
+        return childProcess.spawnSync(bin, args, options);
+      }, identity);
+      assert.equal(result.state, 'recorded', gitPath);
+      const status = calls.find((call) => call.args.includes('status'));
+      assert.equal(status.bin, '/usr/bin/sandbox-exec');
+      const profile = status.args[status.args.indexOf('-p') + 1];
+      assert.match(profile, /\(deny file-write\*\)/);
+      assert.match(profile, /\(deny process-exec\*\)/);
+      assert.match(profile, /\(literal \(param "GIT0"\)\)/);
+      assert.ok(status.args.includes(`GIT0=${fs.realpathSync(gitPath)}`));
+      if (gitPath === '/usr/bin/git') {
+        const selected = childProcess.execFileSync('/usr/bin/xcrun', ['--find', 'git'], { encoding: 'utf8' }).trim();
+        assert.ok(status.args.includes(`GIT1=${fs.realpathSync(selected)}`));
+      }
+    }
+  } finally { fixture.cleanup(); }
+});
+
+test('記録: 実行制限が利用できない場合は Git を実行しない', () => {
+  const fixture = createFixture();
+  try {
+    const dir = createReattachWorktree(fixture);
+    const { binding, identity } = recordedFixture(fixture, dir);
+    const missingSandbox = Object.create(fs);
+    missingSandbox.lstatSync = (target, ...args) => {
+      if (target === '/usr/bin/sandbox-exec') throw new Error('unavailable');
+      return fs.lstatSync(target, ...args);
+    };
+    for (const deps of [{ platform: 'linux' }, { fs: missingSandbox }]) {
+      const calls = [];
+      const result = captureMemberWorktree(binding, dir, (...args) => { calls.push(args); }, identity, Date.now() + 5000, deps);
+      assert.deepEqual(result, { state: 'unavailable' });
+      assert.equal(calls.length, 0);
+    }
+  } finally { fixture.cleanup(); }
+});
+
+test('完了: 記録の時間切れでも対象外の復帰理由を保持する', async () => {
+  for (const reason of ['read-only', 'initially-detached', 'head-not-detached']) {
+    const fixture = createMemberFixture();
+    try {
+      const dir = createReattachWorktree(fixture);
+      if (reason !== 'initially-detached') git(dir, 'symbolic-ref', 'HEAD', 'refs/heads/feature/544-reattach');
+      const { binding, identity } = recordedFixture(fixture, dir);
+      const before = captureMemberWorktree(binding, dir, childProcess.spawnSync, identity);
+      assert.equal(before.state, 'recorded');
+      assert.equal(before.branch === '', reason === 'initially-detached');
+      const runDir = path.join(fixture.runs, 'eeeeeeeeeeeeeeeeeeeeeeee');
+      fs.mkdirSync(runDir);
+      fs.writeFileSync(path.join(runDir, 'prompt.txt'), 'test');
+      fs.writeFileSync(path.join(runDir, 'result.txt'), '{}');
+      const out = path.join(fixture.io, 'reason.json');
+      let statuses = 0;
+      const code = await superviseMemberRun({ codex: process.execPath, args: ['-e', 'process.exit(0)'], cwd: dir, env: {}, runDir,
+        recovery: { binding, cwd: dir, identity, before, readonly: reason === 'read-only' } }, {
+        outFd: fs.openSync(out, 'w'),
+        spawnSync: (bin, args, options) => {
+          if (args.includes('status') && ++statuses === 2) return { status: null, error: { code: 'ETIMEDOUT' } };
+          return childProcess.spawnSync(bin, args, options);
+        },
+      });
+      assert.equal(code, 0);
+      assert.equal(statuses, 2);
+      const worktree = JSON.parse(fs.readFileSync(path.join(runDir, 'worktree-state.json'), 'utf8'));
+      assert.equal(worktree.reason, reason);
+    } finally { fixture.cleanup(); }
+  }
 });

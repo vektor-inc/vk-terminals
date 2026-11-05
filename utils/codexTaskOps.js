@@ -142,6 +142,8 @@ const MEMBER_RUN_ID_PATTERN = /^[0-9a-f]{24}$/;
 const MEMBER_SUPPORTED_ENGINES = Object.freeze(['codex']);
 const MEMBER_PARENT_SANDBOXES = Object.freeze(['read-only', 'workspace-write']);
 const MEMBER_MAX_RESULT_BYTES = 16 * 1024 * 1024;
+const WORKTREE_GIT_TIMEOUT_MS = 1500;
+const WORKTREE_MAX_CAPTURE_BYTES = 16 * 1024 * 1024;
 // 実行の監督プロセス（member start が起動する、子の Codex の終了を見届ける常駐プロセス）へ設定を渡す環境変数。
 // ランチャーは環境を空にして入口を起動するため、Codex（親）からこの変数を差し込む経路は無い。
 const MEMBER_SUPERVISE_ENV = 'VK_TASK_MEMBER_SUPERVISE';
@@ -2341,7 +2343,7 @@ function executePrepareReattachBranch(context) {
   if (!verified.ok) return reject(verified.error);
   const { root, adminDir, commonDir } = verified;
   const prefix = [...FIXED_GIT_PREFIX, '--no-optional-locks', `--git-dir=${adminDir}`, `--work-tree=${root}`];
-  const runPinned = (args) => spawnSync(binding.git, [...prefix, ...args], { cwd: root, env: plainEnv, encoding: 'utf8', timeout: 1500, killSignal: 'SIGKILL', maxBuffer: 16 * 1024 * 1024 });
+  const runPinned = (args) => spawnSync(binding.git, [...prefix, ...args], { cwd: root, env: plainEnv, encoding: 'utf8', timeout: WORKTREE_GIT_TIMEOUT_MS, killSignal: 'SIGKILL', maxBuffer: WORKTREE_MAX_CAPTURE_BYTES });
   const failed = (result) => result.error || result.status !== 0;
   const text = (result) => String(result.stdout || '').trim();
   const config = runPinned(['config', '--list', '--null']);
@@ -2380,7 +2382,7 @@ function executePrepareReattachBranch(context) {
   }
   const command = restrictWrites({ bin: binding.git, args: [...prefix, 'symbolic-ref', 'HEAD', branchRef], allowWrite: [adminDir],
     denyWrite: ['config.worktree', 'hooks', 'commondir', 'gitdir', 'locked', 'index', 'index.lock'].map((name) => path.join(adminDir, name)) });
-  const result = spawnSync(command.bin, command.args, { cwd: root, env: plainEnv, encoding: 'utf8', timeout: 1500, killSignal: 'SIGKILL', maxBuffer: 16 * 1024 * 1024 });
+  const result = spawnSync(command.bin, command.args, { cwd: root, env: plainEnv, encoding: 'utf8', timeout: WORKTREE_GIT_TIMEOUT_MS, killSignal: 'SIGKILL', maxBuffer: WORKTREE_MAX_CAPTURE_BYTES });
   if (failed(result)) return reject('task command failed: could not reattach HEAD');
   writeOut(`TARGET_REPO=${root}\nWORK_BRANCH=${parsed.branch}\nHEAD_SHA=${text(head)}\n`);
   return 0;
@@ -2411,13 +2413,15 @@ function captureMemberWorktree(binding, cwd, spawnSync = childProcess.spawnSync,
     const stat = nodeFs.lstatSync(dotGit);
     if (!stat.isFile() || stat.isSymbolicLink()) return unavailable;
     if (readWorktreePointer(identity.root) !== identity.adminDir) return unavailable;
-    const run = (args) => spawnSync(binding.git, [...FIXED_GIT_PREFIX, '--no-optional-locks', `--git-dir=${identity.adminDir}`, `--work-tree=${identity.root}`, ...args], { cwd: identity.root, env, encoding: 'utf8', timeout: 1500, killSignal: 'SIGKILL', maxBuffer: 16 * 1024 * 1024 });
+    const run = (args) => spawnSync(binding.git, [...FIXED_GIT_PREFIX, '--no-optional-locks', `--git-dir=${identity.adminDir}`, `--work-tree=${identity.root}`, ...args], { cwd: identity.root, env, encoding: 'utf8', timeout: WORKTREE_GIT_TIMEOUT_MS, killSignal: 'SIGKILL', maxBuffer: WORKTREE_MAX_CAPTURE_BYTES });
+    const config = run(['config', '--list', '--null']);
+    if (config.error || config.status !== 0 || inspectGitConfigListing(config.stdout).unsafeKey) return unavailable;
     const head = run(['rev-parse', '--verify', 'HEAD']);
     const branch = run(['symbolic-ref', '-q', 'HEAD']);
     const status = run(['status', '--porcelain=v2', '-z', '--untracked-files=all', '--ignore-submodules=all']);
     if ([head, status].some((r) => r.error || r.status !== 0) || branch.error || ![0, 1].includes(branch.status)) return unavailable;
     const hash = crypto.createHash('sha256').update(status.stdout);
-    let remaining = 16 * 1024 * 1024;
+    let remaining = WORKTREE_MAX_CAPTURE_BYTES;
     let precision = 'complete';
     const entries = String(status.stdout).split('\0');
     // 記録されたパスだけを対象に、通常ファイルの内容を逐次集計する。
@@ -2439,6 +2443,7 @@ function captureMemberWorktree(binding, cwd, spawnSync = childProcess.spawnSync,
         if (!isWithinDirectory(nodeFs.realpathSync(path.dirname(file)), identity.root)) return unavailable;
         const info = nodeFs.lstatSync(file);
         hash.update(`${name}:${info.mode}:${info.size}:`);
+        if (info.isSymbolicLink()) hash.update(nodeFs.readlinkSync(file));
         if (!info.isFile()) continue;
         fd = nodeFs.openSync(file, nodeFs.constants.O_RDONLY | nodeFs.constants.O_NOFOLLOW | nodeFs.constants.O_NONBLOCK);
         if (!nodeFs.fstatSync(fd).isFile()) continue;
@@ -2470,7 +2475,7 @@ function recordMemberIdentity(context) {
     const adminDir = readWorktreePointer(root, fsImpl);
     if (!adminDir) return null;
     const runGit = (args) => spawnSync(binding.git, [...FIXED_GIT_PREFIX, '--no-optional-locks', `--git-dir=${adminDir}`, `--work-tree=${root}`, ...args], {
-      cwd: root, env: buildChildEnvironment(binding), encoding: 'utf8', timeout: 1500, killSignal: 'SIGKILL', maxBuffer: 16 * 1024 * 1024,
+      cwd: root, env: buildChildEnvironment(binding), encoding: 'utf8', timeout: WORKTREE_GIT_TIMEOUT_MS, killSignal: 'SIGKILL', maxBuffer: WORKTREE_MAX_CAPTURE_BYTES,
     });
     const verified = verifyPreparedWorktree({ ...context, runGit, parsed: { name: path.basename(cwd) } }, 'member-start');
     return verified.ok ? { root: verified.root, adminDir: verified.adminDir, commonDir: verified.commonDir } : null;
@@ -2485,15 +2490,14 @@ function finishMemberWorktree(recovery, deps = {}) {
   const originalSpawn = deps.spawnSync || childProcess.spawnSync;
   let timedOut = false;
   const boundedSpawn = (bin, args, options) => {
-    const timeout = Math.min(1500, deadline - Date.now());
+    const timeout = Math.min(WORKTREE_GIT_TIMEOUT_MS, deadline - Date.now());
     if (timeout <= 0) { timedOut = true; return { status: null, error: { code: 'ETIMEDOUT' } }; }
-    const result = originalSpawn(bin, args, { ...options, timeout, killSignal: 'SIGKILL', maxBuffer: 16 * 1024 * 1024 });
+    const result = originalSpawn(bin, args, { ...options, timeout, killSignal: 'SIGKILL', maxBuffer: WORKTREE_MAX_CAPTURE_BYTES });
     if (result.error && result.error.code === 'ETIMEDOUT') timedOut = true;
     return result;
   };
   const fsImpl = deps.fs || nodeFs;
-  const spawnSync = boundedSpawn;
-  const afterChild = captureMemberWorktree(binding, cwd, spawnSync, identity, deadline);
+  const afterChild = captureMemberWorktree(binding, cwd, boundedSpawn, identity, deadline);
   if (Date.now() >= deadline) timedOut = true;
   let restore = 'not-restored';
   const restorationReason = () => {
@@ -2513,20 +2517,20 @@ function finishMemberWorktree(recovery, deps = {}) {
       try {
         resolveTrustedPath(fsImpl, binding.git, { uid: deps.uid, finalKind: 'file' });
         const plainEnv = buildChildEnvironment(binding);
-        const runGit = (args, dir) => spawnSync(binding.git, [...FIXED_GIT_PREFIX, '--no-optional-locks', `--git-dir=${identity.adminDir}`, `--work-tree=${identity.root}`, ...args], { cwd: identity.root, env: plainEnv, encoding: 'utf8' });
+        const runGit = (args, dir) => boundedSpawn(binding.git, [...FIXED_GIT_PREFIX, '--no-optional-locks', `--git-dir=${identity.adminDir}`, `--work-tree=${identity.root}`, ...args], { cwd: identity.root, env: plainEnv, encoding: 'utf8' });
         const inspected = inspectRepository({ cwd, run: runGit, homeDir: binding.home, fsImpl });
         if (!inspected.ok || (inspected.root !== binding.root && !isBoundWorktree({ cwd, run: runGit, bindingRoot: binding.root, inspectedRoot: inspected.root, fsImpl, uid: currentUid(deps) }))) reason = 'repository-verification-failed';
         else {
-          const code = executePrepareReattachBranch({ parsed, binding, cwd, fsImpl, runGit, spawnSync, plainEnv, inspected, deps, writeOut: () => {}, reject: (message) => { reason = message.replace(/^task command (?:rejected|failed): /, ''); return 2; } });
+          const code = executePrepareReattachBranch({ parsed, binding, cwd, fsImpl, runGit, spawnSync: boundedSpawn, plainEnv, inspected, deps, writeOut: () => {}, reject: (message) => { reason = message.replace(/^task command (?:rejected|failed): /, ''); return 2; } });
           if (code === 0) { restore = 'restored'; reason = 'original-branch'; }
         }
       } catch (_error) { reason = 'restore-failed'; }
     }
   }
   if (restore !== 'restored' && !['read-only', 'initially-detached', 'head-not-detached'].includes(reason) && !reason.startsWith('automatic-restore-failed:')) reason = `automatic-restore-failed: ${reason}`;
-  const after = captureMemberWorktree(binding, cwd, spawnSync, identity, deadline);
+  const after = captureMemberWorktree(binding, cwd, boundedSpawn, identity, deadline);
   if (Date.now() >= deadline) timedOut = true;
-  return { before, afterChild, after, restore, reason: timedOut ? 'automatic-restore-failed: timeout' : reason };
+  return { before, afterChild, after, restore, reason: timedOut && restore !== 'restored' ? 'automatic-restore-failed: timeout' : reason };
 }
 
 // ─── メンバー起動（member start / member status） ──────────────────────────
@@ -2864,7 +2868,7 @@ function executeMemberStart({ parsed, binding, cwd, fsImpl, inspected, reject, w
     // 状態確認が起動直後から読めるよう、記録は監督プロセスの起動より先に書く。pid は起動後にしか分からないので、起動前は null（status では STATE=starting）。
     const identity = recordMemberIdentity({ binding, spawnSync, cwd, fsImpl, inspected, deps });
     const before = captureMemberWorktree(binding, cwd, spawnSync, identity);
-    const meta = { pid: null, startedAt: new Date().toISOString(), readonly, out: outPath, worktreeBefore: before, worktreeIdentity: identity };
+    const meta = { pid: null, startedAt: new Date().toISOString(), readonly, out: outPath, worktreeBefore: before };
     createExclusiveFile(fsImpl, paths.meta, Buffer.from(`${JSON.stringify(meta)}\n`));
 
     // 子の結果（-o）は、子から書き換えられない実行の記録フォルダ内に書かせる。入出力フォルダへの公開は監督プロセスが行う。

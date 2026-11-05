@@ -6321,6 +6321,9 @@ test('記録: 状態取得の引数と管理情報を固定し、内容とファ
     assert.equal(types.state, 'recorded');
     fs.writeFileSync(target, 'second value');
     assert.equal(capture().changes, types.changes);
+    fs.unlinkSync(path.join(dir, 'link'));
+    fs.symlinkSync(target.replace('outside.txt', 'another.txt'), path.join(dir, 'link'));
+    assert.notEqual(capture().changes, types.changes);
     fs.writeFileSync(path.join(dir, '.git'), `gitdir: ${path.join(fixture.repo, '.git')}\n`);
     const count = calls.length;
     assert.equal(capture().state, 'unavailable');
@@ -6385,5 +6388,60 @@ test('完了: 記録の時間切れでも結果と終了状態を公開する', 
     assert.match(output.join(''), /^STATE=exited$/m);
     assert.match(output.join(''), /^RESULT_STATE=published$/m);
     assert.match(output.join(''), /^BRANCH_RESTORE_REASON=automatic-restore-failed: timeout$/m);
+  } finally { fixture.cleanup(); }
+});
+
+
+test('記録: 共有設定の検査結果に従い状態取得を終了する', () => {
+  const fixture = createFixture();
+  try {
+    const dir = createReattachWorktree(fixture);
+    const { binding, identity } = recordedFixture(fixture, dir);
+    git(fixture.repo, 'config', 'core.editor', 'false');
+    const calls = [];
+    const result = captureMemberWorktree(binding, dir, (bin, args, options) => {
+      calls.push(args);
+      return childProcess.spawnSync(bin, args, options);
+    }, identity);
+    assert.deepEqual(result, { state: 'unavailable' });
+    assert.equal(calls.length, 1);
+    assert.ok(calls[0].includes(`--git-dir=${identity.adminDir}`));
+    assert.ok(calls[0].includes('config'));
+    assert.equal(calls.some((args) => args.includes('status')), false);
+  } finally { fixture.cleanup(); }
+});
+
+test('完了: 復帰後の記録が時間切れでも復帰理由を保持する', async () => {
+  const fixture = createMemberFixture();
+  try {
+    const dir = createReattachWorktree(fixture);
+    git(dir, 'symbolic-ref', 'HEAD', 'refs/heads/feature/544-reattach');
+    const { binding, identity } = recordedFixture(fixture, dir);
+    const before = captureMemberWorktree(binding, dir, childProcess.spawnSync, identity);
+    git(dir, 'checkout', '--detach', '-q');
+    const id = 'dddddddddddddddddddddddd';
+    const runDir = path.join(fixture.runs, id);
+    fs.mkdirSync(runDir);
+    fs.writeFileSync(path.join(runDir, 'prompt.txt'), 'test');
+    fs.writeFileSync(path.join(runDir, 'result.txt'), '{}');
+    const out = path.join(fixture.io, 'restored.json');
+    fs.writeFileSync(path.join(runDir, 'meta.json'), JSON.stringify({ pid: process.pid, out, readonly: false }));
+    let restored = false;
+    const code = await superviseMemberRun({ codex: process.execPath, args: ['-e', 'process.exit(0)'], cwd: dir, env: {}, runDir,
+      recovery: { binding, cwd: dir, identity, before, readonly: false } }, {
+      outFd: fs.openSync(out, 'w'),
+      spawnSync: (bin, args, options) => {
+        if (restored) return { status: null, error: { code: 'ETIMEDOUT' } };
+        const result = childProcess.spawnSync(bin, args, options);
+        if (args.includes('symbolic-ref') && args.includes('refs/heads/feature/544-reattach') && result.status === 0) restored = true;
+        return result;
+      },
+    });
+    assert.equal(code, 0);
+    assert.equal(restored, true);
+    const output = [];
+    assert.equal(run(fixture, ['member', 'status', id], { writeOut: (text) => output.push(text) }).code, 0);
+    assert.match(output.join(''), /^BRANCH_RESTORE=restored$/m);
+    assert.match(output.join(''), /^BRANCH_RESTORE_REASON=original-branch$/m);
   } finally { fixture.cleanup(); }
 });

@@ -3919,6 +3919,12 @@ body.pane-dragging * {
   overflow-wrap: anywhere;
   line-height: 1.4;
 }
+.settings-help-entry > [role="group"] {
+  margin-top: 12px;
+}
+.settings-help-entry > [role="group"] > p {
+  margin: 0;
+}
 .settings-help-entry [role="status"] {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -3929,13 +3935,6 @@ body.pane-dragging * {
   display: none;
 }
 
-.sidebar-help-entry {
-  padding: 0;
-}
-.sidebar-help-entry .sidebar-section-header {
-  min-height: 44px;
-  padding: 10px var(--vktm--sidebar-section-inset);
-}
 .sidebar-help-entry .sidebar-section-label {
   white-space: normal;
   overflow: visible;

@@ -28,7 +28,7 @@
       busy = true;
       ai.disabled = true;
       retry.disabled = true;
-      status.textContent = '未保存の変更がある場合は、保存するか選んでください。';
+      status.textContent = '';
       try {
         const opened = await openGuide(() => { status.textContent = 'ガイドを起動しています…'; });
         if (opened && opened.helpStatus) renderStatus(opened.helpStatus);

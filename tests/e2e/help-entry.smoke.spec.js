@@ -16,6 +16,9 @@ test('使い方・ヘルプ: 確認失敗の再確認、未保存キャンセル
     const { win, app } = launched;
     await app.evaluate(({ shell }) => { global.helpDocumentUrls = []; shell.openExternal = async (url) => { global.helpDocumentUrls.push(url); }; });
     // 組み込みの入口だけに表示され、タブの無い設定画面にも着地できる。
+    const settingsCard = await win.locator('#sidebar-settings').boundingBox();
+    const helpCard = await win.locator('#sidebar-help').boundingBox();
+    expect(helpCard.height).toBe(settingsCard.height);
     await win.locator('#sidebar-help button').click();
     await expect(win.getByRole('tab', { name: '使い方・ヘルプ' })).toBeVisible();
     await expect(win.locator('.settings-help-entry')).toContainText('確認できませんでした');
@@ -79,7 +82,24 @@ test('使い方・ヘルプ: 確認失敗の再確認、未保存キャンセル
     await win.getByRole('tab', { name: '使い方・ヘルプ' }).click();
     expect(await win.evaluate(() => window.helpChecks)).toBe(1);
     await win.getByRole('button', { name: 'AI に相談', exact: true }).click();
-    await expect(win.locator('.settings-help-entry [role=status]')).not.toContainText('ガイドを起動しています');
+    await expect(win.locator('.settings-help-entry [role=status]')).toBeEmpty();
+    const unsavedGroup = win.getByRole('group', { name: '未保存の変更があります。保存してからガイドを開きますか？' });
+    await expect(unsavedGroup).toBeVisible();
+    await expect(unsavedGroup.getByRole('button', { name: '保存して開く' })).toBeFocused();
+    // 文字の見える端まで測り、確認グループの外側がボタン間より広いことを確かめる。
+    const spacing = await unsavedGroup.evaluate((group) => {
+      const heading = group.querySelector('p');
+      const range = document.createRange();
+      range.selectNodeContents(heading);
+      const textTop = range.getBoundingClientRect().top;
+      const buttons = group.querySelectorAll('button');
+      const ai = group.parentElement.querySelectorAll('button')[1];
+      return {
+        outer: textTop - ai.getBoundingClientRect().bottom,
+        inner: buttons[1].getBoundingClientRect().top - buttons[0].getBoundingClientRect().bottom,
+      };
+    });
+    expect(spacing.outer).toBeGreaterThan(spacing.inner);
     await win.locator('.settings-help-entry').getByRole('button', { name: 'キャンセル', exact: true }).click();
     expect(await win.evaluate(() => window.helpCalls)).toBe(0);
     await expect(win.getByRole('button', { name: 'AI に相談', exact: true })).toBeFocused();

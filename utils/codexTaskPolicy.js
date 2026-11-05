@@ -95,6 +95,7 @@ const ORCHESTRATED_TASK_OPERATIONS = Object.freeze([
   'git merge',
   'prepare worktree',
   'prepare adopt-worktree',
+  'prepare reattach-branch',
   'member start',
   'member status',
   'gh issue view',
@@ -154,9 +155,11 @@ function renderAgentsGuide(launcherPath, memberIoDir = null) {
     '- `git fetch` と `git merge` は引数を一切取らない（URL・refspec・ブランチ名・オプションは拒否される）。`git fetch` は GitHub から読んだこのリポジトリのデフォルトブランチだけを、入口が固定した取得元から `refs/remotes/origin/<デフォルトブランチ>` へ取得する。`git merge` はその取得済みデフォルトブランチを、現在の作業ブランチへ merge commit つきで取り込む（squash・早送りだけの取り込みはしない）。先に `git fetch` し、追跡ファイルの未コミット変更が無い作業ブランチ上で実行する。main / master・リモートの既定ブランチ・detached HEAD 上、merge 中、取得済みの ref が無いときは拒否される。競合したときは状態は戻らないので、競合したファイルを直して `git add` し、`git commit -m <メッセージ>` で merge commit を完成させてから `git push <ブランチ名>` する。',
     '- `prepare worktree <base> <issue番号> <ブランチ> <worktree名>` は、最新の origin/<base> から作業ブランチ付きの worktree（`<リポジトリ>/.codex/worktrees/<worktree名>`）を作る。クローン本体を作業フォルダにして起動した場合だけ、専用設定が `.codex/worktrees` を追加の書き込み先にする（`.codex` 直下は書けない）。ブランチ名は `<種類>/<issue番号>-...` の形で、同名のブランチ・パスがあると失敗する。通常のクローンの切り替えはしない。リポジトリのルートで実行する。',
     '- `prepare adopt-worktree <base> <issue番号> <ブランチ> <worktree名>` は、起動元が先に作った worktree（`<リポジトリ>/.codex/worktrees/<worktree名>`。移行中は旧 `<リポジトリ>/.claude/worktrees/<worktree名>` も可。旧置き場所を外す時期は vektor-inc/vk-orchestrator#748 の決定に合わせる）を引き受け、最新の origin/<base> から作業ブランチを作って切り替える。worktree は作らない。引数の規則は `prepare worktree` と同じ。その worktree の直下で実行し、未コミット変更がある・HEAD が origin/<base> の祖先でない・別のブランチにいる・同名のブランチが別に存在する・作業コミットがあるときは拒否される（拒否されても `prepare worktree` に切り替えない）。同じ作業ブランチで作業コミットが無ければ再開として受け入れ、古ければ最新へ早送りする。',
+    '- `prepare reattach-branch <issue番号> <ブランチ> <worktree名>` は、専用 worktree の detached HEAD を同じコミットの既存作業ブランチへ戻す。未コミット変更を保持し、通信しない。別 worktree で使用中のブランチや merge・rebase などの途中状態は拒否する。',
     ...(memberIoDir === null ? [
       '- この入口には入出力フォルダが無いため、`--title-file` / `--body-file` は使えない（拒否される）。`gh pr create` / `gh pr edit` の題・本文は `--title` / `--body` で直接渡す。',
     ] : [
+    '- `member status` の WORKTREE_BEFORE / WORKTREE_AFTER_CHILD / WORKTREE_AFTER は起動位置のブランチ・HEAD・変更の指紋、BRANCH_RESTORE は終了時の自動復帰結果を示す。書き込み可能なメンバーは起動前の作業ブランチへの復帰を一度試み、失敗理由も記録する。',
       `- \`member start --engine codex --prompt <名前> --schema <名前> --out <名前> [--model <名前>] [--readonly]\` は、メンバー（子の Codex）をバックグラウンドで起動し、実行 ID を返す。子の実行は数十分かかることがあるので、完了は待たず、\`member status <実行 ID>\` で状態（running / exited / lost）・終了コード・結果の公開の成否（\`RESULT_STATE=published|failed\`。failed のときは \`EXIT_CODE=0\` でも結果を使わない）・ログの末尾を確かめる。子は親と同じ範囲の sandbox（\`--readonly\` なら読み取り専用）の中で動き、入口の \`member\` 操作は使えない。子の作業フォルダは、どこから呼んでも親を起動した作業フォルダに固定される（親の作業フォルダの配下から呼ぶ。配下の worktree から呼んでも読み替えられる）。どの worktree で作業させるかは、prompt に worktree の絶対パスを書いて子へ伝える。`,
       `- メンバーの入出力ファイルは専用フォルダ \`${memberIoDir}\` の直下にだけ置く。\`--prompt\` / \`--schema\` はそこに作った既存のファイル名、\`--out\` はまだ無いファイル名で、パス・\`..\`・サブフォルダ・リンクは指定できない。結果は \`--out\` のファイルに書かれる。`,
       `- 空白・改行を含む PR の題・本文は、引用符なしの単独コマンドでは引数として渡せない。専用フォルダ \`${memberIoDir}\` の直下に題・本文のファイルを作り、\`gh pr create --head <ブランチ名> --title-file <名前> --body-file <名前>\` や \`gh pr edit <PR番号> --title-file <名前> --body-file <名前>\` でファイル名を渡す（パス・\`..\`・サブフォルダ・リンクは不可）。題は 1 行（末尾の改行 1 つは除かれる。ほかの改行・制御文字は拒否。1 KiB・256 文字まで）、本文は UTF-8 で、改行・タブ以外の制御文字は拒否（256 KiB・65536 文字まで）。空のファイル・空白だけのファイルも拒否される。同じ項目で \`--title\` と \`--title-file\`（\`--body\` と \`--body-file\`）は併用できない。`,

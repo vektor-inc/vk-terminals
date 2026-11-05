@@ -1258,3 +1258,5 @@ curl -s -X POST http://127.0.0.1:13847/api/push-unsubscribe \
 - [Electron](https://www.electronjs.org/)
 - [xterm.js](https://xtermjs.org/) (`@xterm/xterm`)
 - [node-pty](https://github.com/microsoft/node-pty)
+
+Codex の固定入口では `prepare reattach-branch <issue番号> <ブランチ> <worktree名>` で、未コミット変更を保持して専用 worktree の detached HEAD を同一コミットの作業ブランチへ戻せます。書き込み可能なメンバーの終了時にも同じ検査で起動前のブランチへの復帰を試み、`member status` で前後の状態・復帰結果と理由を確認できます。詳細は [Codex タスク操作ポリシー](docs/codex-task-policy.md) を参照してください。

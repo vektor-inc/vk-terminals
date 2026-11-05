@@ -9,7 +9,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { parseTaskCommand, FIXED_GIT_PREFIX } = require('../utils/codexTaskOps');
-const { SNAPSHOT_VK_AGENTS_COMMIT, requiredOperations, knownGaps, notApplicable } = require('./fixtures/codexProcedureOperations');
+const { SNAPSHOT_VK_AGENTS_COMMIT, requiredOperations, launcherOnlyOperations, knownGaps, notApplicable } = require('./fixtures/codexProcedureOperations');
 
 const SOURCE_PATTERN = /^codex\/vk-kore\/[A-Za-z0-9._-]+\.md:[1-9][0-9]*$/;
 const OWNER_REPO = 'vektor-inc/vk-terminals';
@@ -35,6 +35,14 @@ test('一覧: すべての項目に出典と引数があり、出典は codex/vk
   }
 });
 
+test('一覧: 手順に未採用の操作は出典を作らず、理由を記録する', () => {
+  for (const entry of launcherOnlyOperations) {
+    assert.equal(entry.source, null);
+    assert.ok(entry.note);
+    assert.ok(!requiredOperations.some((required) => JSON.stringify(required.argv) === JSON.stringify(entry.argv)));
+  }
+});
+
 test('一覧: 同じ出典・同じ操作名・同じ引数の重複項目が無い', () => {
   const keys = [...requiredOperations, ...knownGaps].map((entry) => `${entry.procedureOperation}\n${entry.source}\n${JSON.stringify(entry.argv)}`);
   assert.equal(new Set(keys).size, keys.length);
@@ -52,7 +60,7 @@ test('一覧: 必要な操作と既知の不足の両方に同じ引数が入っ
 test('照合: 手順が要求する操作を、固定入口が受理する（gh / git は呼ばない）', () => {
   assert.ok(requiredOperations.length > 0);
   const failures = [];
-  for (const entry of requiredOperations) {
+  for (const entry of [...requiredOperations, ...launcherOnlyOperations]) {
     const parsed = parseTaskCommand(entry.argv);
     if (!parsed.ok) {
       failures.push(`固定入口が拒否: ${describeEntry(entry)} → ${parsed.error}`);

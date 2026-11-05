@@ -749,6 +749,15 @@ function parsePrepareAdoptWorktree(tokens) {
   return parsed.ok ? { ...parsed, operation: 'prepare-adopt-worktree' } : parsed;
 }
 
+// 引数の規則は adopt と共有するが、基点・通信は復帰には不要。
+function parsePrepareReattachBranch(tokens) {
+  if (tokens.length !== 3) return fail('usage: prepare reattach-branch <issue number> <branch> <worktree name>');
+  const parsed = parsePrepareWorktree(['main', ...tokens]);
+  if (!parsed.ok) return parsed;
+  const { base, needsGh, needsGitHub, ...rest } = parsed;
+  return { ...rest, operation: 'prepare-reattach-branch' };
+}
+
 function isSafeMemberFileName(value) {
   return !hasUnsafeCharacter(value) && MEMBER_FILE_NAME_PATTERN.test(value) && !value.includes('..') && !value.endsWith('.');
 }
@@ -926,6 +935,7 @@ function parseTaskCommand(argv) {
   if (tool === 'prepare') {
     const [target, ...tokens] = rest;
     if (target === 'worktree') return parsePrepareWorktree(tokens);
+    if (target === 'reattach-branch') return parsePrepareReattachBranch(tokens);
     if (target === 'adopt-worktree') return parsePrepareAdoptWorktree(tokens);
     return fail(`prepare ${target === undefined ? '' : JSON.stringify(target)} is not allowed`);
   }
@@ -2166,6 +2176,58 @@ function executePrepareWorktree({ parsed, binding, cwd, fsImpl, runGit, spawnSyn
   return 0;
 }
 
+// adopt と復帰の両方で、作業フォルダと管理情報の結び付きを確かめる。
+function verifyPreparedWorktree({ parsed, cwd, fsImpl, runGit, inspected, deps }, operation) {
+  const failVerification = (error) => ({ ok: false, error });
+  // 1) 作業フォルダが linked worktree の直下で、許可した worktree 置き場所の <worktree名> と実パスで一致する。
+  let root;
+  let commonDir;
+  let adminDir;
+  try {
+    const cwdPath = path.resolve(cwd);
+    root = fsImpl.realpathSync(cwd);
+    commonDir = resolveGitCommonDir({ dir: cwd, run: runGit, fsImpl });
+    if (inspected.root !== root) return failVerification(`task command rejected: prepare ${operation} must run at the root of the prepared worktree`);
+    if (commonDir === null || path.basename(commonDir) !== '.git') return failVerification('task command rejected: the clone git directory could not be determined');
+    const gitDirResult = runGit(['rev-parse', '--path-format=absolute', '--git-dir'], cwd);
+    if (gitDirResult.status !== 0) return failVerification('task command rejected: the worktree git directory could not be resolved');
+    adminDir = fsImpl.realpathSync(path.resolve(cwd, String(gitDirResult.stdout).trim()));
+    if (path.dirname(adminDir) !== path.join(commonDir, 'worktrees')) return failVerification('task command rejected: the working directory is not a linked worktree');
+    const cloneRoot = path.dirname(commonDir);
+    const parent = ADOPT_WORKTREE_PARENTS.find((segments) => cwdPath === path.join(cloneRoot, ...segments, parsed.name));
+    if (parent === undefined) {
+      const candidates = ADOPT_WORKTREE_PARENTS.map((segments) => `${segments.join('/')}/${parsed.name}`).join(' or ');
+      return failVerification(`task command rejected: the working directory does not match ${candidates} of the bound clone`);
+    }
+    for (const dir of [path.join(cloneRoot, parent[0]), path.join(cloneRoot, ...parent)]) {
+      const stat = lstatOrNull(fsImpl, dir);
+      if (stat === null || stat.isSymbolicLink() || !stat.isDirectory()) return failVerification(`task command rejected: ${path.relative(cloneRoot, dir) || dir} is a symbolic link or not a directory`);
+    }
+    if (root !== cwdPath) {
+      return failVerification(`task command rejected: the working directory does not match ${parent.join('/')}/${parsed.name} of the bound clone`);
+    }
+    const rootStat = lstatOrNull(fsImpl, root);
+    if (rootStat === null || rootStat.isSymbolicLink() || !rootStat.isDirectory()) return failVerification(`task command rejected: ${path.relative(cloneRoot, root) || root} is a symbolic link or not a directory`);
+    // 2) 管理ディレクトリ名が worktree 名と一致し、逆参照（gitdir）が現在地直下の .git を指す。
+    if (adminDir !== path.join(commonDir, 'worktrees', parsed.name)) return failVerification(`task command rejected: the worktree administrative directory is not ${JSON.stringify(parsed.name)} (a .git file pointing to another worktree)`);
+    const dotGit = path.join(root, '.git');
+    const dotGitStat = fsImpl.lstatSync(dotGit);
+    if (dotGitStat.isSymbolicLink() || !dotGitStat.isFile()) return failVerification('task command rejected: .git of the worktree is not a regular file');
+    const backRef = path.join(adminDir, 'gitdir');
+    const backRefStat = fsImpl.lstatSync(backRef);
+    const uid = currentUid(deps);
+    if (backRefStat.isSymbolicLink() || !backRefStat.isFile() || !(uid === undefined || backRefStat.uid === uid || backRefStat.uid === 0)) return failVerification('task command rejected: the worktree back reference could not be trusted');
+    const backTarget = String(fsImpl.readFileSync(backRef, 'utf8')).split('\n')[0].trim();
+    // Git 2.48 以降の worktree.useRelativePaths では逆参照が相対パスになり、管理ディレクトリ基準で解決する。
+    const backPath = path.resolve(adminDir, backTarget);
+    if (backTarget === '' || path.basename(backPath) !== '.git' || fsImpl.realpathSync(backPath) !== dotGit) return failVerification('task command rejected: the worktree back reference does not point at the working directory');
+  } catch (error) {
+    return failVerification(`task command rejected: the worktree could not be verified${error && error.code ? ` (${error.code})` : ''}`);
+  }
+
+  return { ok: true, root, commonDir, adminDir };
+}
+
 /**
  * `prepare adopt-worktree <base> <issue番号> <ブランチ> <worktree名>`。vk-agents の repo-prepare.sh issue-worktree-adopt と同じ検査・処理を、
  * この入口の中で行う。起動元が作った worktree（作業フォルダ）を引き受けて作業ブランチへ切り替えるだけで、worktree は作らない。
@@ -2176,51 +2238,9 @@ function executePrepareAdoptWorktree({ parsed, binding, cwd, fsImpl, runGit, spa
   const remoteRef = `refs/remotes/origin/${parsed.base}`;
   const branchRef = `refs/heads/${parsed.branch}`;
 
-  // 1) 作業フォルダが linked worktree の直下で、許可した worktree 置き場所の <worktree名> と実パスで一致する。
-  let root;
-  let commonDir;
-  let adminDir;
-  try {
-    const cwdPath = path.resolve(cwd);
-    root = fsImpl.realpathSync(cwd);
-    commonDir = resolveGitCommonDir({ dir: cwd, run: runGit, fsImpl });
-    if (inspected.root !== root) return reject('task command rejected: prepare adopt-worktree must run at the root of the prepared worktree');
-    if (commonDir === null || path.basename(commonDir) !== '.git') return reject('task command rejected: the clone git directory could not be determined');
-    const gitDirResult = runGit(['rev-parse', '--path-format=absolute', '--git-dir'], cwd);
-    if (gitDirResult.status !== 0) return reject('task command rejected: the worktree git directory could not be resolved');
-    adminDir = fsImpl.realpathSync(path.resolve(cwd, String(gitDirResult.stdout).trim()));
-    if (path.dirname(adminDir) !== path.join(commonDir, 'worktrees')) return reject('task command rejected: the working directory is not a linked worktree');
-    const cloneRoot = path.dirname(commonDir);
-    const parent = ADOPT_WORKTREE_PARENTS.find((segments) => cwdPath === path.join(cloneRoot, ...segments, parsed.name));
-    if (parent === undefined) {
-      const candidates = ADOPT_WORKTREE_PARENTS.map((segments) => `${segments.join('/')}/${parsed.name}`).join(' or ');
-      return reject(`task command rejected: the working directory does not match ${candidates} of the bound clone`);
-    }
-    for (const dir of [path.join(cloneRoot, parent[0]), path.join(cloneRoot, ...parent)]) {
-      const stat = lstatOrNull(fsImpl, dir);
-      if (stat === null || stat.isSymbolicLink() || !stat.isDirectory()) return reject(`task command rejected: ${path.relative(cloneRoot, dir) || dir} is a symbolic link or not a directory`);
-    }
-    if (root !== cwdPath) {
-      return reject(`task command rejected: the working directory does not match ${parent.join('/')}/${parsed.name} of the bound clone`);
-    }
-    const rootStat = lstatOrNull(fsImpl, root);
-    if (rootStat === null || rootStat.isSymbolicLink() || !rootStat.isDirectory()) return reject(`task command rejected: ${path.relative(cloneRoot, root) || root} is a symbolic link or not a directory`);
-    // 2) 管理ディレクトリ名が worktree 名と一致し、逆参照（gitdir）が現在地直下の .git を指す。
-    if (adminDir !== path.join(commonDir, 'worktrees', parsed.name)) return reject(`task command rejected: the worktree administrative directory is not ${JSON.stringify(parsed.name)} (a .git file pointing to another worktree)`);
-    const dotGit = path.join(root, '.git');
-    const dotGitStat = fsImpl.lstatSync(dotGit);
-    if (dotGitStat.isSymbolicLink() || !dotGitStat.isFile()) return reject('task command rejected: .git of the worktree is not a regular file');
-    const backRef = path.join(adminDir, 'gitdir');
-    const backRefStat = fsImpl.lstatSync(backRef);
-    const uid = currentUid(deps);
-    if (backRefStat.isSymbolicLink() || !backRefStat.isFile() || !(uid === undefined || backRefStat.uid === uid || backRefStat.uid === 0)) return reject('task command rejected: the worktree back reference could not be trusted');
-    const backTarget = String(fsImpl.readFileSync(backRef, 'utf8')).split('\n')[0].trim();
-    // Git 2.48 以降の worktree.useRelativePaths では逆参照が相対パスになり、管理ディレクトリ基準で解決する。
-    const backPath = path.resolve(adminDir, backTarget);
-    if (backTarget === '' || path.basename(backPath) !== '.git' || fsImpl.realpathSync(backPath) !== dotGit) return reject('task command rejected: the worktree back reference does not point at the working directory');
-  } catch (error) {
-    return reject(`task command rejected: the worktree could not be verified${error && error.code ? ` (${error.code})` : ''}`);
-  }
+  const verified = verifyPreparedWorktree({ parsed, cwd, fsImpl, runGit, inspected, deps }, 'adopt-worktree');
+  if (!verified.ok) return reject(verified.error);
+  const { root, commonDir, adminDir } = verified;
 
   // 検査後の Git 操作は、検査を通した管理ディレクトリと作業ツリーに固定する（.git ファイルの差し替えは無視する）。
   const pinnedPrefix = [...FIXED_GIT_PREFIX, '-c', 'core.splitIndex=false', `--git-dir=${adminDir}`, `--work-tree=${root}`];
@@ -2306,6 +2326,97 @@ function executePrepareAdoptWorktree({ parsed, binding, cwd, fsImpl, runGit, spa
   }
   writeOut(`TARGET_REPO=${root}\nWORK_BRANCH=${parsed.branch}\nBASE_SHA=${baseSha}\n`);
   return 0;
+}
+
+// ファイルと index は触らず、検査済みの管理領域の HEAD だけを接続する。
+function executePrepareReattachBranch(context) {
+  const { parsed, binding, fsImpl, spawnSync, plainEnv, reject, writeOut, deps } = context;
+  const verified = verifyPreparedWorktree(context, 'reattach-branch');
+  if (!verified.ok) return reject(verified.error);
+  const { root, adminDir } = verified;
+  const prefix = [...FIXED_GIT_PREFIX, '--no-optional-locks', `--git-dir=${adminDir}`, `--work-tree=${root}`];
+  const runPinned = (args) => spawnSync(binding.git, [...prefix, ...args], { cwd: root, env: plainEnv, encoding: 'utf8' });
+  const failed = (result) => result.error || result.status !== 0;
+  const text = (result) => String(result.stdout || '').trim();
+  const config = runPinned(['config', '--list', '--null']);
+  if (failed(config)) return reject('task command rejected: repository configuration could not be read');
+  if (inspectGitConfigListing(config.stdout).unsafeKey) return reject('task command rejected: repository configuration is not allowed');
+  const headRef = runPinned(['symbolic-ref', '-q', 'HEAD']);
+  if (headRef.error || ![0, 1].includes(headRef.status)) return reject('task command rejected: could not read HEAD');
+  if (headRef.status === 0) return reject('task command rejected: HEAD is not detached');
+  const branchRef = `refs/heads/${parsed.branch}`;
+  const branch = runPinned(['rev-parse', '--verify', branchRef]);
+  if (failed(branch)) return reject('task command rejected: working branch does not exist or could not be read');
+  const head = runPinned(['rev-parse', '--verify', 'HEAD']);
+  if (failed(head)) return reject('task command rejected: could not resolve HEAD');
+  if (text(head) !== text(branch)) return reject('task command rejected: working branch commit does not match HEAD');
+  const worktrees = runPinned(['worktree', 'list', '--porcelain', '-z']);
+  if (failed(worktrees) || !String(worktrees.stdout).startsWith('worktree ') || !String(worktrees.stdout).endsWith('\0\0')) return reject('task command rejected: worktree branch usage could not be read');
+  if (String(worktrees.stdout).split('\0').includes(`branch ${branchRef}`)) return reject('task command rejected: working branch is already used by another worktree');
+  try {
+    for (const name of ['MERGE_HEAD', 'rebase-merge', 'rebase-apply', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'BISECT_LOG', 'sequencer']) {
+      if (lstatOrNull(fsImpl, path.join(adminDir, name)) !== null) return reject(`task command rejected: worktree has an operation in progress: ${name}`);
+    }
+    resolveTrustedPath(fsImpl, SANDBOX_EXEC_PATH, { uid: deps.uid, finalKind: 'file' });
+  } catch (_error) {
+    return reject('task command rejected: worktree operation state or write-restricted execution could not be verified');
+  }
+  const command = restrictWrites({ bin: binding.git, args: [...prefix, 'symbolic-ref', 'HEAD', branchRef], allowWrite: [adminDir],
+    denyWrite: ['config.worktree', 'hooks', 'commondir', 'gitdir', 'locked', 'index', 'index.lock'].map((name) => path.join(adminDir, name)) });
+  const result = spawnSync(command.bin, command.args, { cwd: root, env: plainEnv, encoding: 'utf8' });
+  if (failed(result)) return reject('task command failed: could not reattach HEAD');
+  writeOut(`TARGET_REPO=${root}\nWORK_BRANCH=${parsed.branch}\nHEAD_SHA=${text(head)}\n`);
+  return 0;
+}
+
+// Git のロック・外部 diff・遅延取得を避けて、変更内容を公開しない比較用の指紋を作る。
+function captureMemberWorktree(binding, cwd, spawnSync = childProcess.spawnSync) {
+  const env = buildChildEnvironment(binding);
+  const run = (args) => spawnSync(binding.git, [...FIXED_GIT_PREFIX, '--no-optional-locks', ...args], { cwd, env, encoding: 'utf8' });
+  try {
+    const config = run(['config', '--list', '--null']);
+    if (config.error || config.status !== 0 || inspectGitConfigListing(config.stdout).unsafeKey) return { state: 'unavailable' };
+    const root = run(['rev-parse', '--show-toplevel']);
+    const head = run(['rev-parse', '--verify', 'HEAD']);
+    const branch = run(['symbolic-ref', '-q', 'HEAD']);
+    const status = run(['status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignore-submodules=all']);
+    const unstaged = run(['diff', '--no-ext-diff', '--no-textconv', '--binary']);
+    const staged = run(['diff', '--cached', '--no-ext-diff', '--no-textconv', '--binary']);
+    if ([root, head, status, unstaged, staged].some((r) => r.error || r.status !== 0) || branch.error || ![0, 1].includes(branch.status)) return { state: 'unavailable' };
+    return { state: 'recorded', root: String(root.stdout).trim(), branch: branch.status === 0 ? String(branch.stdout).trim().replace(/^refs\/heads\//, '') : '',
+      head: String(head.stdout).trim(), dirty: status.stdout !== '', changes: crypto.createHash('sha256').update(JSON.stringify([status.stdout, unstaged.stdout, staged.stdout])).digest('hex') };
+  } catch (_error) { return { state: 'unavailable' }; }
+}
+
+// 監督プロセスだけが終了前に一度実行する。起動前の保護された記録からだけ復帰先を決める。
+function finishMemberWorktree(recovery, deps = {}) {
+  if (!recovery) return { before: { state: 'unavailable' }, after: { state: 'unavailable' }, restore: 'not-restored', reason: 'record-unavailable' };
+  const { binding, cwd, before, readonly } = recovery;
+  const fsImpl = deps.fs || nodeFs;
+  const spawnSync = deps.spawnSync || childProcess.spawnSync;
+  const afterChild = captureMemberWorktree(binding, cwd, spawnSync);
+  let restore = 'not-restored';
+  let reason = readonly ? 'read-only' : before.state !== 'recorded' ? 'record-unavailable' : before.branch === '' ? 'initially-detached' : afterChild.state !== 'recorded' ? 'worktree-unreadable' : afterChild.branch !== '' ? 'head-not-detached' : '';
+  if (reason === '') {
+    const match = before.branch.match(/\/([0-9]{1,9})-/);
+    const parsed = match ? parsePrepareReattachBranch([match[1], before.branch, path.basename(cwd)]) : { ok: false };
+    if (!parsed.ok) reason = 'automatic-restore-failed: invalid-original-task-branch';
+    else {
+      try {
+        resolveTrustedPath(fsImpl, binding.git, { uid: deps.uid, finalKind: 'file' });
+        const plainEnv = buildChildEnvironment(binding);
+        const runGit = (args, dir) => spawnSync(binding.git, [...FIXED_GIT_PREFIX, '--no-optional-locks', ...args], { cwd: dir, env: plainEnv, encoding: 'utf8' });
+        const inspected = inspectRepository({ cwd, run: runGit, homeDir: binding.home, fsImpl });
+        if (!inspected.ok || (inspected.root !== binding.root && !isBoundWorktree({ cwd, run: runGit, bindingRoot: binding.root, inspectedRoot: inspected.root, fsImpl, uid: currentUid(deps) }))) reason = 'repository-verification-failed';
+        else {
+          const code = executePrepareReattachBranch({ parsed, binding, cwd, fsImpl, runGit, spawnSync, plainEnv, inspected, deps, writeOut: () => {}, reject: (message) => { reason = message.replace(/^task command (?:rejected|failed): /, ''); return 2; } });
+          if (code === 0) { restore = 'restored'; reason = 'original-branch'; }
+        }
+      } catch (_error) { reason = 'restore-failed'; }
+    }
+  }
+  if (restore !== 'restored' && !['read-only', 'initially-detached', 'head-not-detached'].includes(reason) && !reason.startsWith('automatic-restore-failed:')) reason = `automatic-restore-failed: ${reason}`;
+  return { before, afterChild, after: captureMemberWorktree(binding, cwd, spawnSync), restore, reason };
 }
 
 // ─── メンバー起動（member start / member status） ──────────────────────────
@@ -2418,7 +2529,7 @@ function createExclusiveFile(fsImpl, filePath, content, mode = 0o600, { verify =
 }
 
 // 実行の記録フォルダに、member start 自身または監督プロセスが作りうるファイル名（失敗した起動の後始末で消す）。
-const MEMBER_RUN_FILES = ['prompt.txt', 'schema.json', 'meta.json', 'meta.tmp', 'log.txt', 'result.txt', 'result-state.tmp', 'result-state', 'exit.tmp', 'exit'];
+const MEMBER_RUN_FILES = ['prompt.txt', 'schema.json', 'meta.json', 'meta.tmp', 'log.txt', 'result.txt', 'result-state.tmp', 'result-state', 'exit.tmp', 'exit', 'worktree-state.json'];
 const MEMBER_STOP_POLL_MS = 100;
 const MEMBER_STOP_POLLS = 30;
 
@@ -2547,6 +2658,11 @@ function superviseMemberRun(payload, deps = {}) {
       finished = true;
       closeQuietly(promptFd);
       closeQuietly(logFd);
+      // exit の存在が、復帰と結果の記録も完了したことを意味する。
+      try {
+        const worktree = finishMemberWorktree(payload.recovery, deps);
+        createExclusiveFile(fsImpl, inRunDir('worktree-state.json'), Buffer.from(`${JSON.stringify(worktree)}\n`));
+      } catch (_error) { /* status は記録失敗を表示する */ }
       const published = publishResult();
       closeQuietly(outFd);
       // 結果の公開の成否は、終了コードより先に保護された実行の記録フォルダへ書く（exit が在る = 成否の記録も済んでいる）。
@@ -2585,7 +2701,7 @@ function superviseMemberRun(payload, deps = {}) {
  *   - 作業フォルダ: 常に親を起動した作業フォルダ（VK_TASK_PARENT_CWD の実パス）。呼び出し位置がその配下のときだけ起動し、配下の worktree・サブフォルダから呼んでも読み替える。
  * 入出力は専用フォルダ直下の名前だけを受ける。
  */
-function executeMemberStart({ parsed, binding, cwd, fsImpl, inspected, reject, writeOut, deps }) {
+function executeMemberStart({ parsed, binding, cwd, fsImpl, inspected, reject, writeOut, deps, spawnSync }) {
   const member = binding.member;
   if (member === null) return reject('task command rejected: member is not available from this launcher');
   // 子の作業フォルダ（-C）と監督プロセスの cwd は、呼び出し位置にかかわらず、親の起動 cwd（ランチャーが実パスで固定した値）そのものにする。
@@ -2636,12 +2752,13 @@ function executeMemberStart({ parsed, binding, cwd, fsImpl, inspected, reject, w
     createExclusiveFile(fsImpl, paths.prompt, promptBody);
     createExclusiveFile(fsImpl, paths.schema, schemaBody);
     // 状態確認が起動直後から読めるよう、記録は監督プロセスの起動より先に書く。pid は起動後にしか分からないので、起動前は null（status では STATE=starting）。
-    const meta = { pid: null, startedAt: new Date().toISOString(), readonly, out: outPath };
+    const before = captureMemberWorktree(binding, cwd, spawnSync);
+    const meta = { pid: null, startedAt: new Date().toISOString(), readonly, out: outPath, worktreeBefore: before };
     createExclusiveFile(fsImpl, paths.meta, Buffer.from(`${JSON.stringify(meta)}\n`));
 
     // 子の結果（-o）は、子から書き換えられない実行の記録フォルダ内に書かせる。入出力フォルダへの公開は監督プロセスが行う。
     const codexArgs = buildMemberCodexArgs({ root: memberRoot, schemaPath: paths.schema, outPath: paths.result, model: parsed.model, readonly });
-    const payload = { codex: member.codex, args: codexArgs, cwd: memberRoot, env: buildMemberEnvironment(binding), runDir };
+    const payload = { codex: member.codex, args: codexArgs, cwd: memberRoot, env: buildMemberEnvironment(binding), runDir, recovery: { binding, cwd, before, readonly } };
     const spawnDetached = deps.spawn || childProcess.spawn;
     let supervisor;
     try {
@@ -2747,6 +2864,13 @@ function executeMemberStatus({ parsed, binding, fsImpl, reject, writeOut, deps }
   // pid が null の間は、member start が監督プロセスを起動している途中（記録は起動の前に書かれる）。
   const state = exitCode !== null ? 'exited' : alive ? 'running' : meta.pid === null ? 'starting' : 'lost';
   const tail = readFileTail(fsImpl, path.join(runDir, 'log.txt'));
+  let worktree = null;
+  if (exitCode !== null) {
+    try { worktree = JSON.parse(String(readMemberInput(fsImpl, runDir, 'worktree-state.json', 64 * 1024, uid))); } catch (_error) { /* 記録失敗を表示する */ }
+  }
+  const snapshotLines = (prefix, snapshot) => snapshot && snapshot.state === 'recorded'
+    ? [`${prefix}_STATE=recorded`, `${prefix}_BRANCH=${snapshot.branch || 'detached'}`, `${prefix}_HEAD=${snapshot.head}`, `${prefix}_DIRTY=${snapshot.dirty}`, `${prefix}_CHANGES=${snapshot.changes}`]
+    : [`${prefix}_STATE=unavailable`];
   writeOut([
     `MEMBER_ID=${parsed.id}`,
     `STATE=${state}`,
@@ -2754,6 +2878,14 @@ function executeMemberStatus({ parsed, binding, fsImpl, reject, writeOut, deps }
     ...(resultState === null ? [] : resultState === 'published' ? ['RESULT_STATE=published'] : ['RESULT_STATE=failed', `RESULT_FAILURE=${resultState.slice('failed '.length)}`]),
     `OUT=${String(meta.out)}`,
     `LOG=${path.join(runDir, 'log.txt')}`,
+    ...snapshotLines('WORKTREE_BEFORE', meta.worktreeBefore),
+    ...(exitCode === null ? [] : [
+      ...snapshotLines('WORKTREE_AFTER_CHILD', worktree && worktree.afterChild),
+      ...snapshotLines('WORKTREE_AFTER', worktree && worktree.after),
+      `WORKTREE_CHANGED=${worktree && worktree.before.state === 'recorded' && worktree.after.state === 'recorded' ? JSON.stringify(worktree.before) !== JSON.stringify(worktree.after) : 'unknown'}`,
+      `BRANCH_RESTORE=${worktree ? worktree.restore : 'not-restored'}`,
+      `BRANCH_RESTORE_REASON=${worktree ? worktree.reason : 'automatic-restore-record-failed'}`,
+    ]),
     ...(tail === null || tail === '' ? [] : ['--- log tail ---', tail.replace(/\n$/, '')]),
     '',
   ].join('\n'));
@@ -2966,9 +3098,11 @@ function runTaskCommand(argv, deps = {}) {
   }
 
   if (parsed.operation === 'member-start' || parsed.operation === 'member-status') {
-    const context = { parsed, binding, cwd, fsImpl, inspected, reject, writeOut, deps };
+    const context = { parsed, binding, cwd, fsImpl, inspected, reject, writeOut, deps, spawnSync };
     return parsed.operation === 'member-start' ? executeMemberStart(context) : executeMemberStatus(context);
   }
+
+  if (parsed.operation === 'prepare-reattach-branch') return executePrepareReattachBranch({ parsed, binding, cwd, fsImpl, runGit, spawnSync, plainEnv: env, reject, inspected, writeOut, deps });
 
   if (parsed.operation === 'push' || parsed.operation === 'prepare-worktree' || parsed.operation === 'prepare-adopt-worktree') {
     const networkEnv = networkEnvironment(binding);

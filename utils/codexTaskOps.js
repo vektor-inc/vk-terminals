@@ -2413,7 +2413,7 @@ function restrictWorktreeStatus(binding, spawnSync, env, deps = {}) {
   // システムの Git は、選択済みの開発ツールの実体も許可する。
   if (git === '/usr/bin/git') {
     const xcrun = resolveTrustedPath(fsImpl, '/usr/bin/xcrun', { finalKind: 'file' }).realPath;
-    const selected = spawnSync(xcrun, ['--find', 'git'], { env, encoding: 'utf8', timeout: WORKTREE_GIT_TIMEOUT_MS, killSignal: 'SIGKILL', maxBuffer: WORKTREE_MAX_CAPTURE_BYTES });
+    const selected = spawnSync(xcrun, ['--no-cache', '--find', 'git'], { env, encoding: 'utf8', timeout: WORKTREE_GIT_TIMEOUT_MS, killSignal: 'SIGKILL', maxBuffer: WORKTREE_MAX_CAPTURE_BYTES });
     if (selected.error || selected.status !== 0) throw new Error('selected git unavailable');
     executables.push(resolveTrustedPath(fsImpl, String(selected.stdout).trim(), { finalKind: 'file' }).realPath);
   }

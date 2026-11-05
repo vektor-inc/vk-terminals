@@ -6467,7 +6467,7 @@ test('記録: status は読み取り専用の実行制限を通す', () => {
       assert.match(profile, /\(literal \(param "GIT0"\)\)/);
       assert.ok(status.args.includes(`GIT0=${fs.realpathSync(gitPath)}`));
       if (gitPath === '/usr/bin/git') {
-        const selected = childProcess.execFileSync('/usr/bin/xcrun', ['--find', 'git'], { encoding: 'utf8' }).trim();
+        const selected = childProcess.execFileSync('/usr/bin/xcrun', ['--no-cache', '--find', 'git'], { encoding: 'utf8' }).trim();
         assert.ok(status.args.includes(`GIT1=${fs.realpathSync(selected)}`));
       }
     }

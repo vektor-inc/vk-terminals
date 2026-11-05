@@ -59,3 +59,13 @@ test('issue #517: isTerminalQueryReplyOnly は端末の問い合わせへの応�
   }
   assert.equal(isTerminalQueryReplyOnly(undefined), false);
 });
+
+test('issue #540: フォーカス通知だけを静止後の採り直し対象とし、マウスやキー入力は除外する', () => {
+  const { isTerminalFocusNotificationOnly } = require('../utils/terminalUserInput');
+  for (const focus of ['\x1b[I', '\x1b[O', '\x1b[I\x1b[O']) {
+    assert.equal(isTerminalFocusNotificationOnly(focus), true, JSON.stringify(focus));
+  }
+  for (const other of ['\x1b[<0;10;5M', '\x1b[MAAA', '\x1b[I\r', '\x1b[0n', '', null]) {
+    assert.equal(isTerminalFocusNotificationOnly(other), false, JSON.stringify(other));
+  }
+});

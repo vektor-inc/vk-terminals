@@ -133,7 +133,7 @@ const {
   evaluateTokenRegistration,
 } = require('./utils/apiAuth');
 const { isAllowedApiHost } = require('./utils/apiHostAllowlist');
-const { containsUserTerminalInput, isTerminalQueryReplyOnly } = require('./utils/terminalUserInput');
+const { containsUserTerminalInput, isTerminalQueryReplyOnly, isTerminalFocusNotificationOnly } = require('./utils/terminalUserInput');
 const {
   createConditionalTerminalInputGuard,
   mergeConditionalScreenIdentifiers,
@@ -196,7 +196,7 @@ const agentLifecycles = createAgentLifecycleStore();
 // renderer が報告した画面と、その後の PTY 入出力が同じ状態かを条件付き Enter で照合する。
 // 秘密値と画面 revision はプロセス外へ出さず、API には HMAC 識別値だけを公開する。
 const conditionalTerminalInput = createConditionalTerminalInputGuard();
-// 出力を伴わない書き込み（端末問い合わせへの自動応答・リサイズ）の後、静止時間が過ぎたら
+// 出力を伴わない書き込み（端末問い合わせへの自動応答・フォーカス通知・リサイズ）の後、静止時間が過ぎたら
 // 識別値を採り直して renderer へ送る（issue #517）。renderer が lastLines と一緒に保持し直す。
 const silentWriteRefresher = createSilentWriteRefresher({
   guard: conditionalTerminalInput,
@@ -2613,8 +2613,9 @@ ipcMain.on('terminal:input', (event, id, data) => {
     // 信頼関連の自動 Enter を止める。
     disarmTrustAutomationForUserInput(id, data);
     p.write(data);
-    // 端末の問い合わせへの応答だけのとき（マウス・フォーカス通知は含めない）に限り、静止後の識別値の採り直しを予約する。
-    if (isTerminalQueryReplyOnly(data)) silentWriteRefresher.noteWrite(id);
+    // フォーカス通知だけでも画面出力が無ければ識別値が stale のままになる。
+    // 出力が届けば予約を取り消す。マウス通知や通常の入力は予約しない。
+    if (isTerminalQueryReplyOnly(data) || isTerminalFocusNotificationOnly(data)) silentWriteRefresher.noteWrite(id);
   }
 });
 

@@ -103,7 +103,7 @@ function createConditionalTerminalInputGuard(options = {}) {
 const SILENT_WRITE_QUIET_MS = 800;
 
 /**
- * 出力を伴わない PTY 書き込み（自動応答・リサイズ）の後、静止時間が過ぎたら識別値を採り直して
+ * 出力を伴わない PTY 書き込み（自動応答・フォーカス通知・リサイズ）の後、静止時間が過ぎたら識別値を採り直して
  * renderer へ送る（issue #517）。
  *
  * 競合の防ぎ方: 採り直すのは「最後の書き込み以降に PTY 出力が一度も無く、静止時間が過ぎた」ときだけ

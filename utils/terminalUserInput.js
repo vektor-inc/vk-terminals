@@ -50,4 +50,15 @@ function isTerminalQueryReplyOnly(input) {
   return input.replace(TERMINAL_QUERY_REPLY_PATTERN, '').length === 0;
 }
 
-module.exports = { containsUserTerminalInput, isTerminalQueryReplyOnly };
+/**
+ * フォーカス通知だけの入力か判定する。通知で画面が変わっても、後続の出力が予約を取り消す。
+ *
+ * @param {*} input - terminal:input で PTY へ渡す入力。
+ * @returns {boolean} フォーカス通知だけで構成される場合のみ true。
+ */
+function isTerminalFocusNotificationOnly(input) {
+  return typeof input === 'string' && input.length > 0
+    && /^(?:\x1b\[[IO])+$/.test(input);
+}
+
+module.exports = { containsUserTerminalInput, isTerminalQueryReplyOnly, isTerminalFocusNotificationOnly };

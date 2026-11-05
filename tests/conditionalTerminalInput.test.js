@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const vm = require('node:vm');
 const {
   createConditionalTerminalInputGuard,
   mergeConditionalScreenIdentifiers,
@@ -213,6 +214,57 @@ function refresherSetup() {
   return { ...context, refresher, timers, sent, fire };
 }
 
+function terminalInputHarness() {
+  const context = refresherSetup();
+  const handlers = new Map();
+  const writes = [];
+  const ptyProcess = {
+    write(data) {
+      context.guard.markChanged('1');
+      context.refresher.noteOutput('1');
+      writes.push(data);
+    },
+  };
+  const source = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+  const handler = source.match(/ipcMain\.on\('terminal:input'[\s\S]*?\n\}\);/)[0];
+  const { isTerminalQueryReplyOnly, isTerminalFocusNotificationOnly } = require('../utils/terminalUserInput');
+  vm.runInNewContext(handler, {
+    ipcMain: { on: (name, callback) => handlers.set(name, callback) },
+    ptys: new Map([['1', ptyProcess]]),
+    disarmTrustAutomationForUserInput: () => {},
+    silentWriteRefresher: context.refresher,
+    isTerminalQueryReplyOnly,
+    isTerminalFocusNotificationOnly,
+  });
+  return { ...context, writes, input: (data) => handlers.get('terminal:input')(null, '1', data) };
+}
+
+test('issue #540: 実際の terminal:input 経路でフォーカス通知後は静止時に採り直し、出力時は取り消す', () => {
+  const quiet = terminalInputHarness();
+  const before = quiet.guard.capture('1', 4);
+  quiet.input('\x1b[I');
+  assert.deepEqual(quiet.writes, ['\x1b[I']);
+  assert.equal(mergeConditionalScreenIdentifiers({ pane1: { termId: '1', agentGeneration: 4 } }, new Map([['1', before]]), quiet.guard).pane1.screenIdentifierStale, true);
+  assert.equal(quiet.timers[0].ms, SILENT_WRITE_QUIET_MS);
+  assert.equal(quiet.sent.length, 0);
+  quiet.fire();
+  assert.equal(quiet.sent.length, 1);
+  assert.equal(quiet.guard.isCurrent('1', quiet.sent[0].snapshot), true);
+  assert.equal(quiet.guard.writeEnter(request(quiet.sent[0].snapshot), quiet.dependencies).ok, true);
+
+  const output = terminalInputHarness();
+  output.input('\x1b[O');
+  output.guard.markChanged('1');
+  output.refresher.noteOutput('1');
+  output.fire();
+  assert.equal(output.sent.length, 0);
+
+  const mouse = terminalInputHarness();
+  mouse.input('\x1b[<0;10;5M');
+  mouse.fire();
+  assert.equal(mouse.sent.length, 0);
+});
+
 test('issue #517: 出力の無い書き込みの後、静止時間が過ぎると識別値を採り直して送り、条件付き Enter が通る', () => {
   const c = refresherSetup();
   const stale = c.guard.capture('1', 4);
@@ -282,12 +334,12 @@ test('issue #517: main は書き込み・リサイズで採り直しを予約し
   assert.match(fs.readFileSync(path.join(__dirname, '..', 'preload.js'), 'utf8'), /'terminal:screen-refresh'/);
 });
 
-test('issue #517: ラッパー経由の書き込み（利用者入力・API・Enter）では採り直しを予約せず、端末の制御応答だけの terminal:input で予約し直す', () => {
+test('ラッパー経由の書き込みでは採り直しを予約せず、制御応答・フォーカス通知の terminal:input で予約し直す', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
   const wrapper = source.match(/ptyProcess\.write = \(data\) => \{[\s\S]*?\n  \};/)[0];
   assert.doesNotMatch(wrapper, /noteWrite/);
   const handler = source.match(/ipcMain\.on\('terminal:input'[\s\S]*?\n\}\);/)[0];
-  assert.match(handler, /p\.write\(data\);(?:\s*\/\/[^\n]*)*\s*if \(isTerminalQueryReplyOnly\(data\)\) silentWriteRefresher\.noteWrite\(id\);/);
+  assert.match(handler, /p\.write\(data\);[\s\S]*?if \(isTerminalQueryReplyOnly\(data\) \|\| isTerminalFocusNotificationOnly\(data\)\) silentWriteRefresher\.noteWrite\(id\);/);
 });
 
 test('issue #517: 端末の自動応答は利用者入力ではなく、キー入力・Enter・矢印は利用者入力と判定される', () => {

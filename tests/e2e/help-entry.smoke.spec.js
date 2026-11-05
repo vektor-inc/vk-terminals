@@ -3,6 +3,42 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { closeApp, getFreePort, launchAppAndWait } = require('./helpers/electron-app');
+const { focusByKeyboard, readOutline } = require('./helpers/focus-ring');
+
+// 文字行の外にある上下の余白も、実際のマウス操作で設定画面へつながる。
+async function checkCardEdges(win, selector, panelSelector) {
+  const card = win.locator(selector);
+  const initialBox = await card.boundingBox();
+  expect(initialBox.height).toBe(40);
+  for (const y of [2, initialBox.height - 2]) {
+    await win.mouse.click(initialBox.x + initialBox.width / 2, initialBox.y + y);
+    await expect(win.locator('.settings-modal')).toBeVisible();
+    await expect(win.locator(panelSelector)).toBeVisible();
+    await win.locator('.settings-close').click();
+    await expect(win.locator('.settings-modal')).toHaveCount(0);
+  }
+  // 透明な領域を足してもボタンのリングとカードの寸法を維持する。
+  await focusByKeyboard(win, `${selector} button`);
+  const ring = await readOutline(win, `${selector} button`);
+  expect(ring.style).toBe('solid');
+  expect(parseFloat(ring.width)).toBeGreaterThan(0);
+  expect(ring.color).not.toBe('rgba(0, 0, 0, 0)');
+  expect(await card.boundingBox()).toEqual(initialBox);
+  await win.keyboard.press('Enter');
+  await expect(win.locator(panelSelector)).toBeVisible();
+  await win.locator('.settings-close').click();
+}
+
+test('単体起動: 設定カードの上下端とキーボードで設定を開く', async () => {
+  let launched;
+  try {
+    launched = await launchAppAndWait({ port: await getFreePort(), prefix: 'vk-settings-card-' });
+    await expect(launched.win.locator('#sidebar-help')).toHaveCount(0);
+    await checkCardEdges(launched.win, '#sidebar-settings', '#settings-panel-0');
+  } finally {
+    if (launched) await closeApp(launched);
+  }
+});
 
 test('使い方・ヘルプ: 確認失敗の再確認、未保存キャンセル、連打と格納復帰', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-help-e2e-'));
@@ -19,6 +55,8 @@ test('使い方・ヘルプ: 確認失敗の再確認、未保存キャンセル
     const settingsCard = await win.locator('#sidebar-settings').boundingBox();
     const helpCard = await win.locator('#sidebar-help').boundingBox();
     expect(helpCard.height).toBe(settingsCard.height);
+    await checkCardEdges(win, '#sidebar-settings', '#settings-panel-0');
+    await checkCardEdges(win, '#sidebar-help', '.settings-help-entry');
     await win.locator('#sidebar-help button').click();
     await expect(win.getByRole('tab', { name: '使い方・ヘルプ' })).toBeVisible();
     await expect(win.locator('.settings-help-entry')).toContainText('確認できませんでした');

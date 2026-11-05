@@ -1872,7 +1872,7 @@ function createSidebarSettingsCard({ id = 'sidebar-settings', labelText = '設�
   // 付けると「設定」が領域名とボタン名で二重に読み上げられるため、意図的に div とする。
   const card = document.createElement('div');
   card.id = id;
-  card.className = 'sidebar-section-card';
+  card.className = 'sidebar-section-card sidebar-settings-entry';
 
   const header = document.createElement('button');
   header.type = 'button';

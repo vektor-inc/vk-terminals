@@ -3935,6 +3935,19 @@ body.pane-dragging * {
   display: none;
 }
 
+/* 設定・ヘルプカードのクリック領域
+   ========================================================================== */
+.sidebar-settings-entry {
+  position: relative;
+}
+.sidebar-settings-entry > button::after {
+  /* ボタン1つだけのカードに限定し、他セクションの操作要素を覆わない。 */
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+}
+
 .sidebar-help-entry .sidebar-section-label {
   white-space: normal;
   overflow: visible;

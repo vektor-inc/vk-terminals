@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 機能追加 ] Codex の固定入口で未コミット変更を保持した作業ブランチへの復帰と、メンバー終了時の自動復帰・前後の状態確認に対応（[#544](https://github.com/vektor-inc/vk-terminals/issues/544)）
+
 ## 1.90.0
 
 - [ 機能追加 ] 組み込みアプリからドキュメントと AI ガイドを開く「使い方・ヘルプ」を追加（[#542](https://github.com/vektor-inc/vk-terminals/issues/542)）

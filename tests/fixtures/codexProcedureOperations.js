@@ -11,6 +11,7 @@
 //   argv: 固定入口へ渡す引数（vk-task-ops の第 2 引数以降。手順の書き方を固定入口の呼び方へ読み替えた形）
 //   procedureNames: （任意）手順が同じ操作を別の名前（素の `gh pr view` など）で書くときの名前。補助チェックの照合に使う
 //   sourceNeedle: （任意）出典の行に含まれるべき語。省略時は操作名から導く
+// 手順にまだ出典が無い入口の追加操作は launcherOnlyOperations に分け、source は捏造しない。
 // requiredOperations だけの欄:
 //   expected: parseTaskCommand の結果に含まれるべき値（bin と、gh なら先頭の args、git なら gitSubcommand が args に入ること、そのほかは operation）
 //   note: （任意）手順の書式をそのまま写せず読み替えた旨と理由
@@ -204,9 +205,15 @@ const notApplicable = [
   },
 ];
 
+// 後続の手順更新に先立って実装した操作。手順が採用した時点で出典付きの requiredOperations へ移す。
+const launcherOnlyOperations = [
+  { procedureOperation: 'prepare reattach-branch', source: null, argv: ['prepare', 'reattach-branch', '544', 'feature/544-reattach-branch', 'codex-544'], expected: { operation: 'prepare-reattach-branch' }, explicitRepo: false, note: 'issue #544。vk-agents の手順では未使用のため出典の行は無い。' },
+];
+
 module.exports = {
   SNAPSHOT_VK_AGENTS_COMMIT,
   requiredOperations,
+  launcherOnlyOperations,
   knownGaps,
   notApplicable,
 };

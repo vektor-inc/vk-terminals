@@ -1,5 +1,7 @@
 # Changelog
 
+## 1.90.0
+
 - [ 機能追加 ] 組み込みアプリからドキュメントと AI ガイドを開く「使い方・ヘルプ」を追加（[#542](https://github.com/vektor-inc/vk-terminals/issues/542)）
 - [ 不具合修正 ] Codex の Folder access 画面でフォーカス通知後に画面が更新されず、自動確定が止まる不具合を修正（[#540](https://github.com/vektor-inc/vk-terminals/issues/540)）
 - [ 開発環境 ] bash の既存 PROMPT_COMMAND 完了待ちを確かめる自動テストが、負荷の高い環境で固定待ち時間のずれにより不安定になるのを防止（[#516](https://github.com/vektor-inc/vk-terminals/issues/516)）

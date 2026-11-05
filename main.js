@@ -197,7 +197,7 @@ const agentLifecycles = createAgentLifecycleStore();
 // 秘密値と画面 revision はプロセス外へ出さず、API には HMAC 識別値だけを公開する。
 const conditionalTerminalInput = createConditionalTerminalInputGuard();
 // 出力を伴わない書き込み（端末問い合わせへの自動応答・フォーカス通知・リサイズ）の後、静止時間が過ぎたら
-// 識別値を採り直して renderer へ送る（issue #517）。renderer が lastLines と一緒に保持し直す。
+// 識別値を採り直す。通常入力後は可視出力まで抑止し、古い lastLines での Enter を防ぐ。
 const silentWriteRefresher = createSilentWriteRefresher({
   guard: conditionalTerminalInput,
   getGeneration: (termId) => agentGenerations.get(termId),
@@ -2306,9 +2306,9 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
   const writeToPty = ptyProcess.write.bind(ptyProcess);
   ptyProcess.write = (data) => {
     conditionalTerminalInput.markChanged(id);
-    // 利用者入力・API 入力・Enter の後は再描画が遅れうるため採り直さない（予約も取り消す）。
-    // 端末の制御応答だけの入力は terminal:input 側で予約し直す。
-    silentWriteRefresher.noteOutput(id);
+    // 通常入力・API 入力・自動 Enter 後は可視出力まで採り直しを抑止する。
+    // 自動応答・フォーカス通知は予約を取り消すだけで、既存の抑止状態を維持する。
+    silentWriteRefresher.noteInput(id, isTerminalQueryReplyOnly(data) || isTerminalFocusNotificationOnly(data));
     return writeToPty(data);
   };
 
@@ -2524,7 +2524,7 @@ ipcMain.handle('terminal:create', (event, cwd, options = {}) => {
     let screenSnapshot = null;
     if (visibleData) {
       conditionalTerminalInput.markChanged(id);
-      // 出力が届いたので、出力の無い書き込みを前提にした採り直しの予約は取り消す。
+      // 可視出力で採り直しの予約を取り消し、通常入力後の抑止を解除する。
       silentWriteRefresher.noteOutput(id);
       screenSnapshot = conditionalTerminalInput.capture(id, agentGenerations.get(id));
     }
@@ -2614,7 +2614,7 @@ ipcMain.on('terminal:input', (event, id, data) => {
     disarmTrustAutomationForUserInput(id, data);
     p.write(data);
     // フォーカス通知だけでも画面出力が無ければ識別値が stale のままになる。
-    // 出力が届けば予約を取り消す。マウス通知や通常の入力は予約しない。
+    // 通常入力後の出力待ち中は予約できない。マウス通知や通常の入力は予約しない。
     if (isTerminalQueryReplyOnly(data) || isTerminalFocusNotificationOnly(data)) silentWriteRefresher.noteWrite(id);
   }
 });

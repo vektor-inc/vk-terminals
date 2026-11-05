@@ -9,6 +9,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const {
+  captureMemberWorktree,
   FIXED_GIT_PREFIX,
   assertChainUnchanged,
   buildChildEnvironment,
@@ -6160,8 +6161,6 @@ test('回帰: reattach-branch はステージ済み・未ステージ・未追�
 test('拒否: reattach-branch は条件不成立でも HEAD・ref・index・作業ファイルを変更しない', () => {
   const cases = [
     ['different-commit', /commit does not match/, (f, d) => { commitFile(f.repo, 'other.txt'); git(d, 'branch', '-f', 'feature/544-reattach', git(f.repo, 'rev-parse', 'HEAD')); }],
-  ];
-  cases.push(
     ['used', /already used/, (f, d) => git(f.repo, 'worktree', 'add', '-q', path.join(f.root, 'other-worktree'), 'feature/544-reattach')],
     ['missing', /does not exist/, (f, d) => git(d, 'branch', '-D', 'feature/544-reattach')],
     ['another-branch', /HEAD is not detached/, (f, d) => git(d, 'symbolic-ref', 'HEAD', 'refs/heads/work/test')],
@@ -6174,7 +6173,7 @@ test('拒否: reattach-branch は条件不成立でも HEAD・ref・index・作�
     ['subfolder', /must run at the root/, (f, d) => { fs.mkdirSync(path.join(d, 'sub')); return path.join(d, 'sub'); }],
     ['symlink', /does not match/, (f, d) => { const alias = path.join(f.repo, '.codex', 'worktrees', 'alias'); fs.symlinkSync(d, alias); return alias; }],
     ['clone', /not a linked worktree/, (f) => f.repo],
-  );
+  ];
   for (const [name, message, setup] of cases) {
     const fixture = createFixture();
     try {
@@ -6192,7 +6191,7 @@ test('拒否: reattach-branch は条件不成立でも HEAD・ref・index・作�
 
 // 実際の監督プロセスを起動し、exit 公開の時点で復帰も完了していることを確認する。
 test('member: 起動位置の前後を記録し元のブランチへ一度だけ自動復帰、失敗・readonly・detached は復帰しない', async () => {
-  for (const mode of ['restore', 'readonly', 'parent-readonly', 'initial-detached', 'mismatch', 'merge', 'missing', 'used', 'attached', 'unreadable']) {
+  for (const mode of ['restore', 'large', 'contents', 'readonly', 'parent-readonly', 'initial-detached', 'mismatch', 'merge', 'missing', 'used', 'attached', 'unreadable']) {
     const fixture = createMemberFixture({ parentSandbox: mode === 'parent-readonly' ? 'read-only' : 'workspace-write' });
     try {
       const dir = createReattachWorktree(fixture);
@@ -6205,6 +6204,8 @@ test('member: 起動位置の前後を記録し元のブランチへ一度だけ
         "const run=(...args)=>cp.execFileSync(git,['-C',dir,...args],{env:{PATH:process.env.PATH}});",
         "run('checkout','--detach','-q');",
       ];
+      if (mode === 'large') actions.push("fs.writeFileSync(dir+'/a.txt',Buffer.alloc(2*1024*1024,97));");
+      if (mode === 'contents') actions.push("fs.writeFileSync(dir+'/untracked.txt','different\\n');");
       if (mode === 'mismatch') actions.push("run('update-ref','refs/heads/feature/544-reattach',run('commit-tree','HEAD^{tree}','-p','HEAD','-m','different').toString().trim());");
       if (mode === 'merge') actions.push("fs.writeFileSync(run('rev-parse','--absolute-git-dir').toString().trim()+'/MERGE_HEAD',run('rev-parse','HEAD'));");
       if (mode === 'missing') actions.push("run('branch','-D','feature/544-reattach');");
@@ -6226,8 +6227,11 @@ test('member: 起動位置の前後を記録し元のブランチへ一度だけ
       assert.match(status, /^WORKTREE_BEFORE_STATE=recorded$/m);
       assert.match(status, /^WORKTREE_BEFORE_DIRTY=true$/m);
       assert.equal(status.includes('untracked.txt'), false);
-      assert.match(status, new RegExp(`^BRANCH_RESTORE=${mode === 'restore' ? 'restored' : 'not-restored'}$`, 'm'), mode);
-      if (mode === 'restore') {
+      assert.match(status, new RegExp(`^BRANCH_RESTORE=${['restore', 'large', 'contents'].includes(mode) ? 'restored' : 'not-restored'}$`, 'm'), mode);
+      if (['large', 'contents'].includes(mode)) {
+        assert.match(status, /^WORKTREE_CHANGED=true$/m);
+        assert.equal(git(dir, 'symbolic-ref', 'HEAD'), 'refs/heads/feature/544-reattach');
+      } else if (mode === 'restore') {
         assert.deepEqual(reattachSnapshot(dir), before);
         assert.match(status, /^WORKTREE_CHANGED=false$/m);
         assert.match(status, /^WORKTREE_AFTER_CHILD_BRANCH=detached$/m);
@@ -6277,5 +6281,109 @@ test('拒否: reattach-branch は worktree 使用情報を読めないときも�
     assert.equal(result.code, 2);
     assert.match(result.messages.join(''), /worktree branch usage could not be read/);
     assert.deepEqual(reattachSnapshot(dir), before);
+  } finally { fixture.cleanup(); }
+});
+
+
+function recordedFixture(fixture, dir) {
+  return { binding: readBinding(fixture.env), identity: { root: fs.realpathSync(dir), adminDir: git(dir, 'rev-parse', '--absolute-git-dir'), commonDir: git(dir, 'rev-parse', '--path-format=absolute', '--git-common-dir') } };
+}
+
+test('記録: 状態取得の引数と管理情報を固定し、内容とファイル種別を集計する', () => {
+  const fixture = createFixture();
+  try {
+    const dir = createReattachWorktree(fixture);
+    const { binding, identity } = recordedFixture(fixture, dir);
+    const calls = [];
+    const spawn = (bin, args, options) => {
+      calls.push(args);
+      assert.ok(options.timeout > 0);
+      return childProcess.spawnSync(bin, args, options);
+    };
+    const capture = () => captureMemberWorktree(binding, dir, spawn, identity);
+    const before = capture();
+    assert.equal(before.state, 'recorded');
+    assert.equal(calls.some((args) => args.includes('diff')), false);
+    const status = calls.find((args) => args.includes('status'));
+    for (const value of ['--porcelain=v2', '-z', '--untracked-files=all', '--ignore-submodules=all', '--no-optional-locks', `--git-dir=${identity.adminDir}`, `--work-tree=${identity.root}`]) assert.ok(status.includes(value));
+    fs.writeFileSync(path.join(dir, 'untracked.txt'), 'different\n');
+    assert.notEqual(capture().changes, before.changes);
+    fs.writeFileSync(path.join(dir, 'large.txt'), Buffer.alloc(2 * 1024 * 1024, 97));
+    assert.equal(capture().state, 'recorded');
+    fs.writeFileSync(path.join(dir, 'large.txt'), Buffer.alloc(17 * 1024 * 1024, 97));
+    assert.match(capture().changes, /^limited:/);
+    fs.unlinkSync(path.join(dir, 'large.txt'));
+    const target = path.join(fixture.root, 'outside.txt');
+    fs.writeFileSync(target, 'first');
+    fs.symlinkSync(target, path.join(dir, 'link'));
+    childProcess.execFileSync('/usr/bin/mkfifo', [path.join(dir, 'pipe')]);
+    const types = capture();
+    assert.equal(types.state, 'recorded');
+    fs.writeFileSync(target, 'second value');
+    assert.equal(capture().changes, types.changes);
+    fs.writeFileSync(path.join(dir, '.git'), `gitdir: ${path.join(fixture.repo, '.git')}\n`);
+    const count = calls.length;
+    assert.equal(capture().state, 'unavailable');
+    assert.equal(calls.length, count);
+  } finally { fixture.cleanup(); }
+});
+
+test('復帰: 別 worktree の進行中ブランチを確認する', () => {
+  for (const mode of ['rebase', 'bisect']) {
+    const fixture = createFixture();
+    try {
+      const dir = createReattachWorktree(fixture);
+      const other = path.join(fixture.root, 'other');
+      git(fixture.repo, 'worktree', 'add', '-q', other, 'feature/544-reattach');
+      if (mode === 'rebase') {
+        git(other, 'checkout', '-q', '-b', 'side');
+        commitFile(other, 'side.txt');
+        git(other, 'checkout', '-q', 'feature/544-reattach');
+        commitFile(other, 'branch.txt');
+        assert.throws(() => git(other, '-c', 'sequence.editor=true', 'rebase', '-i', '--exec', 'false', 'side'));
+      } else {
+        commitFile(other, 'next.txt');
+        git(other, 'bisect', 'start');
+        git(other, 'bisect', 'bad');
+        git(other, 'bisect', 'good', 'HEAD~1');
+      }
+      git(dir, 'reset', '--soft', 'feature/544-reattach');
+      const result = run(fixture, REATTACH_ARGS, { cwd: dir });
+      assert.equal(result.code, 2, mode);
+      assert.match(result.messages.join(''), /already used/, mode);
+    } finally { fixture.cleanup(); }
+  }
+});
+
+
+test('完了: 記録の時間切れでも結果と終了状態を公開する', async () => {
+  const fixture = createMemberFixture();
+  try {
+    const dir = createReattachWorktree(fixture);
+    const { binding, identity } = recordedFixture(fixture, dir);
+    const before = captureMemberWorktree(binding, dir, childProcess.spawnSync, identity);
+    const id = 'cccccccccccccccccccccccc';
+    const runDir = path.join(fixture.runs, id);
+    fs.mkdirSync(runDir);
+    fs.writeFileSync(path.join(runDir, 'prompt.txt'), 'test');
+    fs.writeFileSync(path.join(runDir, 'result.txt'), '{}');
+    const out = path.join(fixture.io, 'timeout.json');
+    fs.writeFileSync(path.join(runDir, 'meta.json'), JSON.stringify({ pid: process.pid, out, readonly: false }));
+    const code = await superviseMemberRun({ codex: process.execPath, args: ['-e', 'process.exit(0)'], cwd: dir, env: {}, runDir,
+      recovery: { binding, cwd: dir, identity, before, readonly: false } }, {
+      outFd: fs.openSync(out, 'w'),
+      spawnSync: (bin, args, options) => {
+        assert.ok(options.timeout > 0 && options.timeout <= 1500);
+        assert.ok(options.maxBuffer >= 1024 * 1024);
+        assert.equal(fs.readFileSync(out, 'utf8'), '{}');
+        return { status: null, error: { code: 'ETIMEDOUT' } };
+      },
+    });
+    assert.equal(code, 0);
+    const output = [];
+    assert.equal(run(fixture, ['member', 'status', id], { writeOut: (text) => output.push(text) }).code, 0);
+    assert.match(output.join(''), /^STATE=exited$/m);
+    assert.match(output.join(''), /^RESULT_STATE=published$/m);
+    assert.match(output.join(''), /^BRANCH_RESTORE_REASON=automatic-restore-failed: timeout$/m);
   } finally { fixture.cleanup(); }
 });

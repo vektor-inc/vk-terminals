@@ -729,17 +729,24 @@ function parseGitNoArguments(subcommand, tokens, { operation, branchAction = nul
 }
 
 // 作業フォルダ準備は `prepare worktree <base> <issue番号> <ブランチ> <worktree名>` だけ（owner/repo は拘束済みなので引数に取らない）。
+function validatePreparedTask(issue, branch, name) {
+  if ([issue, branch, name].some(hasUnsafeCharacter)) return fail('invalid argument');
+  if (!DIGITS_PATTERN.test(issue) || Number(issue) === 0) return fail('invalid issue number');
+  if (!isSafeBranchName(branch) || branch.startsWith('refs/')) return fail(`unsafe branch name: ${JSON.stringify(branch)}`);
+  if (PROTECTED_BRANCH_NAMES.includes(branch)) return fail('working branch cannot be the base or a protected name');
+  if (!branch.includes(`/${issue}-`)) return fail(`branch must look like <kind>/${issue}-...`);
+  if (!WORKTREE_NAME_PATTERN.test(name)) return fail('worktree name must be letters, digits and hyphens only');
+  return { ok: true, bin: 'git', issue, branch, name };
+}
+
 function parsePrepareWorktree(tokens) {
   if (tokens.length !== 4) return fail('usage: prepare worktree <base> <issue number> <branch> <worktree name>');
   const [base, issue, branch, name] = tokens;
-  if (tokens.some(hasUnsafeCharacter)) return fail('invalid argument');
-  if (!isSafeBranchName(base) || base.startsWith('refs/')) return fail(`unsafe base: ${JSON.stringify(base)}`);
-  if (!DIGITS_PATTERN.test(issue) || Number(issue) === 0) return fail('invalid issue number');
-  if (!isSafeBranchName(branch) || branch.startsWith('refs/')) return fail(`unsafe branch name: ${JSON.stringify(branch)}`);
-  if (branch === base || PROTECTED_BRANCH_NAMES.includes(branch)) return fail('working branch cannot be the base or a protected name');
-  if (!branch.includes(`/${issue}-`)) return fail(`branch must look like <kind>/${issue}-...`);
-  if (!WORKTREE_NAME_PATTERN.test(name)) return fail('worktree name must be letters, digits and hyphens only');
-  return { ok: true, bin: 'git', operation: 'prepare-worktree', base, issue, branch, name, needsGitHub: true, needsGh: true };
+  if (hasUnsafeCharacter(base) || !isSafeBranchName(base) || base.startsWith('refs/')) return fail(`unsafe base: ${JSON.stringify(base)}`);
+  const parsed = validatePreparedTask(issue, branch, name);
+  if (!parsed.ok) return parsed;
+  if (branch === base) return fail('working branch cannot be the base or a protected name');
+  return { ...parsed, operation: 'prepare-worktree', base, needsGitHub: true, needsGh: true };
 }
 
 // 起動元が作成済みの worktree を引き受ける操作は `prepare adopt-worktree <base> <issue番号> <ブランチ> <worktree名>`。引数の規則は prepare worktree と同じ。
@@ -752,10 +759,9 @@ function parsePrepareAdoptWorktree(tokens) {
 // 引数の規則は adopt と共有するが、基点・通信は復帰には不要。
 function parsePrepareReattachBranch(tokens) {
   if (tokens.length !== 3) return fail('usage: prepare reattach-branch <issue number> <branch> <worktree name>');
-  const parsed = parsePrepareWorktree(['main', ...tokens]);
+  const parsed = validatePreparedTask(...tokens);
   if (!parsed.ok) return parsed;
-  const { base, needsGh, needsGitHub, ...rest } = parsed;
-  return { ...rest, operation: 'prepare-reattach-branch' };
+  return { ...parsed, operation: 'prepare-reattach-branch' };
 }
 
 function isSafeMemberFileName(value) {
@@ -2333,9 +2339,9 @@ function executePrepareReattachBranch(context) {
   const { parsed, binding, fsImpl, spawnSync, plainEnv, reject, writeOut, deps } = context;
   const verified = verifyPreparedWorktree(context, 'reattach-branch');
   if (!verified.ok) return reject(verified.error);
-  const { root, adminDir } = verified;
+  const { root, adminDir, commonDir } = verified;
   const prefix = [...FIXED_GIT_PREFIX, '--no-optional-locks', `--git-dir=${adminDir}`, `--work-tree=${root}`];
-  const runPinned = (args) => spawnSync(binding.git, [...prefix, ...args], { cwd: root, env: plainEnv, encoding: 'utf8' });
+  const runPinned = (args) => spawnSync(binding.git, [...prefix, ...args], { cwd: root, env: plainEnv, encoding: 'utf8', timeout: 1500, killSignal: 'SIGKILL', maxBuffer: 16 * 1024 * 1024 });
   const failed = (result) => result.error || result.status !== 0;
   const text = (result) => String(result.stdout || '').trim();
   const config = runPinned(['config', '--list', '--null']);
@@ -2357,46 +2363,148 @@ function executePrepareReattachBranch(context) {
     for (const name of ['MERGE_HEAD', 'rebase-merge', 'rebase-apply', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'BISECT_LOG', 'sequencer']) {
       if (lstatOrNull(fsImpl, path.join(adminDir, name)) !== null) return reject(`task command rejected: worktree has an operation in progress: ${name}`);
     }
+    const directories = [commonDir, ...fsImpl.readdirSync(path.join(commonDir, 'worktrees')).map((name) => path.join(commonDir, 'worktrees', name))];
+    for (const directory of directories) {
+      for (const file of ['rebase-merge/head-name', 'rebase-apply/head-name', 'BISECT_START']) {
+        const location = path.join(directory, file);
+        const marker = file.includes('/') ? path.dirname(location) : location;
+        if (lstatOrNull(fsImpl, marker) !== null) {
+          const value = fsImpl.readFileSync(location, 'utf8').trim();
+          if (value === branchRef || value === parsed.branch) return reject('task command rejected: working branch is already used by another worktree');
+        }
+      }
+    }
     resolveTrustedPath(fsImpl, SANDBOX_EXEC_PATH, { uid: deps.uid, finalKind: 'file' });
   } catch (_error) {
     return reject('task command rejected: worktree operation state or write-restricted execution could not be verified');
   }
   const command = restrictWrites({ bin: binding.git, args: [...prefix, 'symbolic-ref', 'HEAD', branchRef], allowWrite: [adminDir],
     denyWrite: ['config.worktree', 'hooks', 'commondir', 'gitdir', 'locked', 'index', 'index.lock'].map((name) => path.join(adminDir, name)) });
-  const result = spawnSync(command.bin, command.args, { cwd: root, env: plainEnv, encoding: 'utf8' });
+  const result = spawnSync(command.bin, command.args, { cwd: root, env: plainEnv, encoding: 'utf8', timeout: 1500, killSignal: 'SIGKILL', maxBuffer: 16 * 1024 * 1024 });
   if (failed(result)) return reject('task command failed: could not reattach HEAD');
   writeOut(`TARGET_REPO=${root}\nWORK_BRANCH=${parsed.branch}\nHEAD_SHA=${text(head)}\n`);
   return 0;
 }
 
-// Git のロック・外部 diff・遅延取得を避けて、変更内容を公開しない比較用の指紋を作る。
-function captureMemberWorktree(binding, cwd, spawnSync = childProcess.spawnSync) {
-  const env = buildChildEnvironment(binding);
-  const run = (args) => spawnSync(binding.git, [...FIXED_GIT_PREFIX, '--no-optional-locks', ...args], { cwd, env, encoding: 'utf8' });
+// 管理情報の参照先は、通常ファイルから上限付きで読み取る。
+function readWorktreePointer(root, fsImpl = nodeFs) {
+  const constants = fsImpl.constants || nodeFs.constants;
+  const fd = fsImpl.openSync(path.join(root, '.git'), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
-    const config = run(['config', '--list', '--null']);
-    if (config.error || config.status !== 0 || inspectGitConfigListing(config.stdout).unsafeKey) return { state: 'unavailable' };
-    const root = run(['rev-parse', '--show-toplevel']);
+    const stat = fsImpl.fstatSync(fd);
+    if (!stat.isFile() || stat.size > 4096) return null;
+    const buffer = Buffer.alloc(4097);
+    const length = fsImpl.readSync(fd, buffer, 0, buffer.length, 0);
+    if (length > 4096) return null;
+    const target = buffer.subarray(0, length).toString('utf8').trim().match(/^gitdir: (.+)$/);
+    return target ? fsImpl.realpathSync(path.resolve(root, target[1])) : null;
+  } finally { fsImpl.closeSync(fd); }
+}
+
+// 検証済みの管理情報に固定し、変更内容を公開しない比較用の指紋を作る。
+function captureMemberWorktree(binding, cwd, spawnSync = childProcess.spawnSync, identity = null, deadline = Date.now() + 5000) {
+  const unavailable = { state: 'unavailable' };
+  const env = buildChildEnvironment(binding);
+  try {
+    if (!identity || nodeFs.realpathSync(cwd) !== identity.root) return unavailable;
+    const dotGit = path.join(identity.root, '.git');
+    const stat = nodeFs.lstatSync(dotGit);
+    if (!stat.isFile() || stat.isSymbolicLink()) return unavailable;
+    if (readWorktreePointer(identity.root) !== identity.adminDir) return unavailable;
+    const run = (args) => spawnSync(binding.git, [...FIXED_GIT_PREFIX, '--no-optional-locks', `--git-dir=${identity.adminDir}`, `--work-tree=${identity.root}`, ...args], { cwd: identity.root, env, encoding: 'utf8', timeout: 1500, killSignal: 'SIGKILL', maxBuffer: 16 * 1024 * 1024 });
     const head = run(['rev-parse', '--verify', 'HEAD']);
     const branch = run(['symbolic-ref', '-q', 'HEAD']);
-    const status = run(['status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignore-submodules=all']);
-    const unstaged = run(['diff', '--no-ext-diff', '--no-textconv', '--binary']);
-    const staged = run(['diff', '--cached', '--no-ext-diff', '--no-textconv', '--binary']);
-    if ([root, head, status, unstaged, staged].some((r) => r.error || r.status !== 0) || branch.error || ![0, 1].includes(branch.status)) return { state: 'unavailable' };
-    return { state: 'recorded', root: String(root.stdout).trim(), branch: branch.status === 0 ? String(branch.stdout).trim().replace(/^refs\/heads\//, '') : '',
-      head: String(head.stdout).trim(), dirty: status.stdout !== '', changes: crypto.createHash('sha256').update(JSON.stringify([status.stdout, unstaged.stdout, staged.stdout])).digest('hex') };
-  } catch (_error) { return { state: 'unavailable' }; }
+    const status = run(['status', '--porcelain=v2', '-z', '--untracked-files=all', '--ignore-submodules=all']);
+    if ([head, status].some((r) => r.error || r.status !== 0) || branch.error || ![0, 1].includes(branch.status)) return unavailable;
+    const hash = crypto.createHash('sha256').update(status.stdout);
+    let remaining = 16 * 1024 * 1024;
+    let precision = 'complete';
+    const entries = String(status.stdout).split('\0');
+    // 記録されたパスだけを対象に、通常ファイルの内容を逐次集計する。
+    for (let i = 0; i < entries.length; i++) {
+      if (Date.now() >= deadline) return unavailable;
+      const entry = entries[i];
+      if (!entry) continue;
+      const kind = entry[0];
+      const count = kind === '1' ? 8 : kind === '2' ? 9 : kind === 'u' ? 10 : 1;
+      let offset = 0;
+      for (let j = 0; j < count; j++) offset = entry.indexOf(' ', offset) + 1;
+      const name = entry.slice(offset);
+      if (kind === '2') i++;
+      const file = path.resolve(identity.root, name);
+      if (!isWithinDirectory(file, identity.root) || file === identity.root) return unavailable;
+      // 親ディレクトリも実パスで照合する。
+      let fd;
+      try {
+        if (!isWithinDirectory(nodeFs.realpathSync(path.dirname(file)), identity.root)) return unavailable;
+        const info = nodeFs.lstatSync(file);
+        hash.update(`${name}:${info.mode}:${info.size}:`);
+        if (!info.isFile()) continue;
+        fd = nodeFs.openSync(file, nodeFs.constants.O_RDONLY | nodeFs.constants.O_NOFOLLOW | nodeFs.constants.O_NONBLOCK);
+        if (!nodeFs.fstatSync(fd).isFile()) continue;
+        const buffer = Buffer.alloc(65536);
+        while (remaining > 0) {
+          if (Date.now() >= deadline) return unavailable;
+          const n = nodeFs.readSync(fd, buffer, 0, Math.min(buffer.length, remaining), null);
+          if (!n) break;
+          hash.update(buffer.subarray(0, n));
+          remaining -= n;
+        }
+        if (remaining === 0) precision = 'limited';
+      } catch (error) {
+        if (error.code !== 'ENOENT') return unavailable;
+        hash.update('missing');
+      } finally { if (fd !== undefined) nodeFs.closeSync(fd); }
+    }
+    return { state: 'recorded', root: identity.root, branch: branch.status === 0 ? String(branch.stdout).trim().replace(/^refs\/heads\//, '') : '', head: String(head.stdout).trim(), dirty: status.stdout !== '', precision, changes: `${precision}:${hash.digest('hex')}` };
+  } catch (_error) { return unavailable; }
+}
+
+function recordMemberIdentity(context) {
+  try {
+    const { cwd, fsImpl, binding, spawnSync } = context;
+    const root = fsImpl.realpathSync(cwd);
+    const dotGit = path.join(root, '.git');
+    const info = fsImpl.lstatSync(dotGit);
+    if (!info.isFile() || info.isSymbolicLink()) return null;
+    const adminDir = readWorktreePointer(root, fsImpl);
+    if (!adminDir) return null;
+    const runGit = (args) => spawnSync(binding.git, [...FIXED_GIT_PREFIX, '--no-optional-locks', `--git-dir=${adminDir}`, `--work-tree=${root}`, ...args], {
+      cwd: root, env: buildChildEnvironment(binding), encoding: 'utf8', timeout: 1500, killSignal: 'SIGKILL', maxBuffer: 16 * 1024 * 1024,
+    });
+    const verified = verifyPreparedWorktree({ ...context, runGit, parsed: { name: path.basename(cwd) } }, 'member-start');
+    return verified.ok ? { root: verified.root, adminDir: verified.adminDir, commonDir: verified.commonDir } : null;
+  } catch (_error) { return null; }
 }
 
 // 監督プロセスだけが終了前に一度実行する。起動前の保護された記録からだけ復帰先を決める。
 function finishMemberWorktree(recovery, deps = {}) {
   if (!recovery) return { before: { state: 'unavailable' }, after: { state: 'unavailable' }, restore: 'not-restored', reason: 'record-unavailable' };
-  const { binding, cwd, before, readonly } = recovery;
+  const { binding, cwd, before, readonly, identity } = recovery;
+  const deadline = Date.now() + 10000;
+  const originalSpawn = deps.spawnSync || childProcess.spawnSync;
+  let timedOut = false;
+  const boundedSpawn = (bin, args, options) => {
+    const timeout = Math.min(1500, deadline - Date.now());
+    if (timeout <= 0) { timedOut = true; return { status: null, error: { code: 'ETIMEDOUT' } }; }
+    const result = originalSpawn(bin, args, { ...options, timeout, killSignal: 'SIGKILL', maxBuffer: 16 * 1024 * 1024 });
+    if (result.error && result.error.code === 'ETIMEDOUT') timedOut = true;
+    return result;
+  };
   const fsImpl = deps.fs || nodeFs;
-  const spawnSync = deps.spawnSync || childProcess.spawnSync;
-  const afterChild = captureMemberWorktree(binding, cwd, spawnSync);
+  const spawnSync = boundedSpawn;
+  const afterChild = captureMemberWorktree(binding, cwd, spawnSync, identity, deadline);
+  if (Date.now() >= deadline) timedOut = true;
   let restore = 'not-restored';
-  let reason = readonly ? 'read-only' : before.state !== 'recorded' ? 'record-unavailable' : before.branch === '' ? 'initially-detached' : afterChild.state !== 'recorded' ? 'worktree-unreadable' : afterChild.branch !== '' ? 'head-not-detached' : '';
+  const restorationReason = () => {
+    if (readonly) return 'read-only';
+    if (before.state !== 'recorded') return 'record-unavailable';
+    if (before.branch === '') return 'initially-detached';
+    if (afterChild.state !== 'recorded') return 'worktree-unreadable';
+    if (afterChild.branch !== '') return 'head-not-detached';
+    return '';
+  };
+  let reason = restorationReason();
   if (reason === '') {
     const match = before.branch.match(/\/([0-9]{1,9})-/);
     const parsed = match ? parsePrepareReattachBranch([match[1], before.branch, path.basename(cwd)]) : { ok: false };
@@ -2405,7 +2513,7 @@ function finishMemberWorktree(recovery, deps = {}) {
       try {
         resolveTrustedPath(fsImpl, binding.git, { uid: deps.uid, finalKind: 'file' });
         const plainEnv = buildChildEnvironment(binding);
-        const runGit = (args, dir) => spawnSync(binding.git, [...FIXED_GIT_PREFIX, '--no-optional-locks', ...args], { cwd: dir, env: plainEnv, encoding: 'utf8' });
+        const runGit = (args, dir) => spawnSync(binding.git, [...FIXED_GIT_PREFIX, '--no-optional-locks', `--git-dir=${identity.adminDir}`, `--work-tree=${identity.root}`, ...args], { cwd: identity.root, env: plainEnv, encoding: 'utf8' });
         const inspected = inspectRepository({ cwd, run: runGit, homeDir: binding.home, fsImpl });
         if (!inspected.ok || (inspected.root !== binding.root && !isBoundWorktree({ cwd, run: runGit, bindingRoot: binding.root, inspectedRoot: inspected.root, fsImpl, uid: currentUid(deps) }))) reason = 'repository-verification-failed';
         else {
@@ -2416,7 +2524,9 @@ function finishMemberWorktree(recovery, deps = {}) {
     }
   }
   if (restore !== 'restored' && !['read-only', 'initially-detached', 'head-not-detached'].includes(reason) && !reason.startsWith('automatic-restore-failed:')) reason = `automatic-restore-failed: ${reason}`;
-  return { before, afterChild, after: captureMemberWorktree(binding, cwd, spawnSync), restore, reason };
+  const after = captureMemberWorktree(binding, cwd, spawnSync, identity, deadline);
+  if (Date.now() >= deadline) timedOut = true;
+  return { before, afterChild, after, restore, reason: timedOut ? 'automatic-restore-failed: timeout' : reason };
 }
 
 // ─── メンバー起動（member start / member status） ──────────────────────────
@@ -2658,12 +2768,12 @@ function superviseMemberRun(payload, deps = {}) {
       finished = true;
       closeQuietly(promptFd);
       closeQuietly(logFd);
+      const published = publishResult();
       // exit の存在が、復帰と結果の記録も完了したことを意味する。
       try {
         const worktree = finishMemberWorktree(payload.recovery, deps);
         createExclusiveFile(fsImpl, inRunDir('worktree-state.json'), Buffer.from(`${JSON.stringify(worktree)}\n`));
       } catch (_error) { /* status は記録失敗を表示する */ }
-      const published = publishResult();
       closeQuietly(outFd);
       // 結果の公開の成否は、終了コードより先に保護された実行の記録フォルダへ書く（exit が在る = 成否の記録も済んでいる）。
       try {
@@ -2752,13 +2862,14 @@ function executeMemberStart({ parsed, binding, cwd, fsImpl, inspected, reject, w
     createExclusiveFile(fsImpl, paths.prompt, promptBody);
     createExclusiveFile(fsImpl, paths.schema, schemaBody);
     // 状態確認が起動直後から読めるよう、記録は監督プロセスの起動より先に書く。pid は起動後にしか分からないので、起動前は null（status では STATE=starting）。
-    const before = captureMemberWorktree(binding, cwd, spawnSync);
-    const meta = { pid: null, startedAt: new Date().toISOString(), readonly, out: outPath, worktreeBefore: before };
+    const identity = recordMemberIdentity({ binding, spawnSync, cwd, fsImpl, inspected, deps });
+    const before = captureMemberWorktree(binding, cwd, spawnSync, identity);
+    const meta = { pid: null, startedAt: new Date().toISOString(), readonly, out: outPath, worktreeBefore: before, worktreeIdentity: identity };
     createExclusiveFile(fsImpl, paths.meta, Buffer.from(`${JSON.stringify(meta)}\n`));
 
     // 子の結果（-o）は、子から書き換えられない実行の記録フォルダ内に書かせる。入出力フォルダへの公開は監督プロセスが行う。
     const codexArgs = buildMemberCodexArgs({ root: memberRoot, schemaPath: paths.schema, outPath: paths.result, model: parsed.model, readonly });
-    const payload = { codex: member.codex, args: codexArgs, cwd: memberRoot, env: buildMemberEnvironment(binding), runDir, recovery: { binding, cwd, before, readonly } };
+    const payload = { codex: member.codex, args: codexArgs, cwd: memberRoot, env: buildMemberEnvironment(binding), runDir, recovery: { binding, cwd, before, readonly, identity } };
     const spawnDetached = deps.spawn || childProcess.spawn;
     let supervisor;
     try {
@@ -3156,6 +3267,8 @@ function runTaskCommand(argv, deps = {}) {
 }
 
 module.exports = {
+  captureMemberWorktree,
+  recordMemberIdentity,
   parseTaskCommand,
   runTaskCommand,
   requestAttachment,

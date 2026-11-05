@@ -1,6 +1,7 @@
 # Changelog
 
 - [ 開発環境 ] bash の既存 PROMPT_COMMAND 完了待ちを確かめる自動テストが、負荷の高い環境で固定待ち時間のずれにより不安定になるのを防止（[#516](https://github.com/vektor-inc/vk-terminals/issues/516)）
+- [ 開発環境 ] Codex 版手順の操作一覧の出典行番号を vk-agents の最新の手順書に合わせて更新し、vk-agents がある環境で補助チェックが失敗するのを解消
 
 ## 1.89.0
 

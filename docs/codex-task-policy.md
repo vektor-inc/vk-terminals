@@ -242,7 +242,7 @@ Codex 版の issue 対応手順（vektor-inc/vk-agents の `codex/vk-kore/`）�
 
 ### メンバーの作業状態とブランチ復帰（issue #544）
 
-`member start` の呼び出し位置（cwd）の実パスが子の起動 cwd（親の起動位置）と一致するときだけ、その worktree を、ロックを作らない `--no-optional-locks` で記録する。専用 worktree の直下で検証した管理ディレクトリと実パスを、保護された実行の記録フォルダに保存し、その値に固定して読み取る。不一致の場合は記録・照合・自動復帰を行わず、状態は `unavailable`、復帰理由は `automatic-restore-failed: working-directory-mismatch` とする。管理外・読取失敗は `WORKTREE_BEFORE_STATE=unavailable` とし、メンバー起動は継続する。
+`member start` の呼び出し位置（cwd）の実パスが子の起動 cwd（親の起動位置）と一致するときだけ、その worktree を、ロックを作らない `--no-optional-locks` で記録する。専用 worktree の直下で検証した管理ディレクトリと実パスを、保護された実行の記録フォルダに保存し、その値に固定して読み取る。不一致の場合は記録・照合・自動復帰を行わず、状態は `unavailable`、復帰理由は、read-only メンバーの場合を除き `automatic-restore-failed: working-directory-mismatch` とする。管理外・読取失敗は `WORKTREE_BEFORE_STATE=unavailable` とし、メンバー起動は継続する。
 
 監督プロセスが子の終了後、結果を公開してから、`exit` を書く前に一度だけ復帰を試す。Git の各実行は1.5秒、自動復帰全体は10秒を上限とし、時間切れは理由として記録する。起動前の記録は Git 1回1.5秒・全体5秒を上限とし、変更ファイルの多い作業ツリーなどで時間切れになると `unavailable` となり自動復帰しない。
 

@@ -5,9 +5,13 @@ const path = require('path');
 const { buildEngineAwareLaunchCommand } = require('../renderer/claudeModel');
 const HELP_PROMPT_PATTERNS = { claude: /^\/[a-z0-9-]+$/, codex: /^\$[a-z0-9-]+$/ };
 
+function isHelpEngine(value) {
+  return value === 'claude' || value === 'codex';
+}
+
 // 設定時と起動時で同じ形式を検証する。
 function isHelpPrompt(engine, prompt) {
-  return typeof engine === 'string' && Object.hasOwn(HELP_PROMPT_PATTERNS, engine)
+  return isHelpEngine(engine)
     && typeof prompt === 'string' && HELP_PROMPT_PATTERNS[engine].test(prompt);
 }
 
@@ -35,7 +39,7 @@ function normalizeHelpFeature(help, checker) {
     }
     prompts[engine] = help.prompts[engine];
   }
-  if (Object.keys(help.prompts).some((engine) => !Object.hasOwn(HELP_PROMPT_PATTERNS, engine))) throw new TypeError('invalid help engine');
+  if (Object.keys(help.prompts).some((engine) => !isHelpEngine(engine))) throw new TypeError('invalid help engine');
   return Object.freeze({ documentPath: fs.realpathSync(help.documentPath), cwd: help.cwd, prompts: Object.freeze(prompts) });
 }
 
@@ -44,7 +48,7 @@ function normalizeHelpStatus(value) {
   if (!value || !Array.isArray(value.engines) || value.engines.length !== 2) throw new TypeError('invalid help status');
   const seen = new Set();
   const engines = value.engines.map((item) => {
-    if (!item || typeof item.engine !== 'string' || !Object.hasOwn(HELP_PROMPT_PATTERNS, item.engine) || seen.has(item.engine)
+    if (!item || !isHelpEngine(item.engine) || seen.has(item.engine)
       || !['available', 'unavailable', 'unknown'].includes(item.state)) throw new TypeError('invalid help engine status');
     seen.add(item.engine);
     const text = (key) => {
@@ -58,7 +62,7 @@ function normalizeHelpStatus(value) {
     return { engine: item.engine, state: item.state, reason, preparation };
   });
   const engine = value.engine;
-  if (engine !== null && (typeof engine !== 'string' || !Object.hasOwn(HELP_PROMPT_PATTERNS, engine) || !engines.some((item) => item.engine === engine && item.state === 'available'))) {
+  if (engine !== null && (!isHelpEngine(engine) || !engines.some((item) => item.engine === engine && item.state === 'available'))) {
     throw new TypeError('invalid selected help engine');
   }
   if (engine === null && engines.some((item) => item.state === 'available')) throw new TypeError('missing selected help engine');
@@ -111,4 +115,4 @@ function createGuideOpener({ enabled, check, create, isAlive }) {
   };
 }
 
-module.exports = { createGuideOpener, isHelpDocument, normalizeHelpFeature, normalizeHelpStatus, buildHelpLaunchCommand, createHelpStatusChecker };
+module.exports = { isHelpEngine, createGuideOpener, isHelpDocument, normalizeHelpFeature, normalizeHelpStatus, buildHelpLaunchCommand, createHelpStatusChecker };

@@ -39,7 +39,8 @@
         busy = false;
         ai.disabled = false;
         retry.disabled = false;
-        if (!ai.hidden) ai.focus();
+        // 非表示になる操作から、次に使える操作へフォーカスを引き継ぐ。
+        (ai.hidden ? retry : ai).focus();
       }
     });
     let busy = false;
@@ -59,6 +60,7 @@
     }
     async function check() {
       if (busy) return;
+      const restoreFocus = document.activeElement === retry || document.activeElement === ai;
       busy = true;
       ai.disabled = true;
       retry.disabled = true;
@@ -74,6 +76,7 @@
         busy = false;
         ai.disabled = false;
         retry.disabled = false;
+        if (restoreFocus) (ai.hidden ? retry : ai).focus();
       }
     }
     // 非表示のタブを組み立てただけではホストへ問い合わせない。

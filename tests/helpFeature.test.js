@@ -6,7 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { normalizeEmbeddedOptions } = require('../utils/runtimeOptions');
-const { normalizeHelpStatus, buildHelpLaunchCommand, createHelpStatusChecker, createGuideOpener } = require('../utils/helpFeature');
+const { isHelpEngine, normalizeHelpStatus, buildHelpLaunchCommand, createHelpStatusChecker, createGuideOpener } = require('../utils/helpFeature');
 const { insertTab, TAB_ID } = require('../renderer/helpEntry');
 const status = (engine = 'codex') => ({ engine, engines: ['claude', 'codex'].map((name) => ({ engine: name, state: name === engine ? 'available' : 'unavailable', reason: '認証が必要です', preparation: 'ログインしてください' })) });
 
@@ -95,4 +95,50 @@ test('専用 IPC は任意引数を使わず、単体利用を拒否し、汎用
   assert.match(source, /if \(options.guidePane !== undefined\) throw/);
   const api = source.slice(source.indexOf("url.pathname === '/api/new-pane'"), source.indexOf("url.pathname === '/api/launch-preview'"));
   assert.doesNotMatch(api, /payload\.guidePane|payload\.help|guide:\s*body/);
+});
+
+
+test('ヘルプのエンジン判定は名前だけを厳密に検証する', () => {
+  for (const engine of ['claude', 'codex']) assert.equal(isHelpEngine(engine), true);
+  for (const value of ['shell', 'toString', '__proto__', '', null, undefined, {}, ['codex']]) {
+    assert.equal(isHelpEngine(value), false);
+  }
+});
+
+test('単体の通常保存では反映確認の例外後も成功表示で自動クローズする', async () => {
+  const vm = require('node:vm');
+  const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
+  const refresh = source.slice(source.indexOf('async function refreshConfigReflection('), source.indexOf('function updateConfigReflection('));
+  const save = source.slice(source.indexOf('async function saveSettings('), source.indexOf("  modal.querySelector('.settings-save').addEventListener"));
+  let fireClose;
+  let closed = false;
+  const { createAutoCloseController } = require('../renderer/autoClose');
+  const autoClose = createAutoCloseController({
+    setTimeout(callback) { fireClose = callback; return 1; },
+    clearTimeout() {},
+    onFire() { closed = true; },
+  });
+  let saved = false;
+  const msg = { textContent: '', className: '', classList: { add() {} } };
+  const context = {
+    validatable: [], entries: [], msg, configFailedFiles: [],
+    lockSettingsFooter() {}, clearDirtyTabs() {}, refreshSettingsContentSavedValues() {},
+    autoClose,
+    VKIpc: { async invoke(channel) {
+      if (channel === 'settings:save') { saved = true; return { ok: true }; }
+      throw new Error('反映確認に失敗');
+    } },
+  };
+  // 実際の保存処理と例外処理を組み合わせ、通常保存とガイド起動用保存を比較する。
+  vm.createContext(context);
+  vm.runInContext(refresh + save, context);
+  assert.equal(await context.saveSettings(), true);
+  assert.equal(saved, true);
+  assert.match(msg.textContent, /^保存しました/);
+  assert.equal(autoClose.isArmed, true);
+  fireClose();
+  assert.equal(closed, true);
+  assert.equal(await context.saveSettings({ keepOpen: true }), false);
+  assert.match(msg.textContent, /^エラー:/);
+  assert.equal(autoClose.isArmed, false);
 });

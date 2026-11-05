@@ -6838,7 +6838,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
         refreshSettingsContentSavedValues();
         msg.textContent = '保存しました。反映状況は設定の案内をご確認ください。';
         msg.classList.add('ok');
-        await refreshConfigReflection({ throwOnError: true });
+        await refreshConfigReflection({ throwOnError: keepOpen });
         if (configFailedFiles.length) {
           msg.textContent = '保存しましたが、設定を読み込めませんでした。対象ファイルを確認してください。';
           msg.className = 'settings-msg err';

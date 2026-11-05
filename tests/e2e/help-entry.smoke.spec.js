@@ -162,14 +162,25 @@ test('ガイドの実起動: 状態変化、専用経路、Codex の引数と cw
     await win.locator('#sidebar-help button').click();
     const ai = win.getByRole('button', { name: 'AI に相談', exact: true });
     await expect(ai).toBeEnabled();
-    // 表示後に未導入へ変わった場合は、PTY の一般エラーにせず準備手順へ戻す。
-    fs.writeFileSync(statusFile, JSON.stringify({ engine: null, engines: ['claude', 'codex'].map((engine) => ({ engine, state: 'unavailable', reason: '未導入です', preparation: '導入してログインしてください' })) }));
-    await ai.click();
-    await expect(ai).toBeHidden();
-    await expect(win.locator('.settings-help-entry')).toContainText('導入してログインしてください');
-    fs.writeFileSync(statusFile, JSON.stringify(available));
-    await win.getByRole('button', { name: '再確認', exact: true }).click();
-    await expect(ai).toBeVisible();
+    // 起動直前の状態変化でも、キーボードの操作位置を次のボタンへ引き継ぐ。
+    const retry = win.getByRole('button', { name: '再確認', exact: true });
+    for (const state of ['unavailable', 'unknown']) {
+      fs.writeFileSync(statusFile, JSON.stringify({ engine: null, engines: ['claude', 'codex'].map((engine) => ({ engine, state, reason: '利用できません', preparation: '導入してログインしてください' })) }));
+      await ai.focus();
+      await win.keyboard.press('Enter');
+      await expect(ai).toBeHidden();
+      await expect(retry).toBeEnabled();
+      await expect(retry).toBeFocused();
+      await expect(win.locator('.settings-help-entry')).toContainText('導入してログインしてください');
+      // 確認に再度失敗した場合も、再確認へ戻って操作を続けられる。
+      await win.keyboard.press('Enter');
+      await expect(retry).toBeEnabled();
+      await expect(retry).toBeFocused();
+      fs.writeFileSync(statusFile, JSON.stringify(available));
+      await win.keyboard.press('Enter');
+      await expect(ai).toBeVisible();
+      await expect(ai).toBeFocused();
+    }
     // 汎用 IPC のガイド指定は実行時にも拒否される。
     expect(await win.evaluate(async () => {
       try { await VKIpc.invoke('terminal:create', null, { guidePane: true }); return false; }

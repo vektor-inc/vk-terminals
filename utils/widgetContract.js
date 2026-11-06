@@ -20,6 +20,9 @@
 // アイテムの statusLabel（任意・issue #536）: そのカードの状態バッジの文言だけを上書きする文字列。
 // 制御文字・双方向制御文字を除き、前後の空白を除いたうえで LIMITS.statusLabel 文字までに切り詰める。文字列以外・空（空白のみを含む）は
 // 捨てる（キーを付けない）。無ければ従来どおりグループ見出しの文言で描く。グループ見出し自体には影響しない。
+//
+// アイテムの parentId（任意）: 親カードの id を指す。id と同じ規則で受け取り、数値は文字列として扱う。
+// 空（空白のみを含む）・LIMITS.id を超える値・自分自身の id を指す値は捨て、親なし扱いにする。
 (function (root, factory) {
   const api = factory();
   if (typeof module === 'object' && module.exports) {
@@ -265,6 +268,11 @@
       editable: raw.editable === true,
       controls: [],
     };
+    // 親 ID はカード ID と同じ長さを上限とし、不正値は関係なしとして扱う。
+    const parentId = coerceCommandValue(raw.parentId);
+    if (parentId !== null && parentId.trim() && parentId.length <= LIMITS.id && parentId !== item.id) {
+      item.parentId = parentId;
+    }
     const linksRaw = Array.isArray(raw.links) ? raw.links.slice(0, LIMITS.links) : [];
     for (const l of linksRaw) {
       const link = sanitizeLink(l);

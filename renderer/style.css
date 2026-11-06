@@ -2062,6 +2062,7 @@ button.sidebar-section-header:hover {
 .task-item:has(+ .task-item[data-depth]) { margin-bottom: 3px; }
 .task-item[data-depth="1"],
 .task-item[data-depth="2"] {
+  position: relative;
   max-width: 100%;
   box-sizing: border-box;
 }

@@ -1,5 +1,7 @@
 # Changelog
 
+## 1.95.0
+
 - [ 機能追加 ] 制限付き Codex の固定入口から、空の入力欄を確認して別ペインへ依頼する操作を追加（[#510](https://github.com/vektor-inc/vk-terminals/issues/510)）
 - [ 不具合修正 ] PowerShell のペインで Claude Code の起動に失敗することがある問題を修正
 

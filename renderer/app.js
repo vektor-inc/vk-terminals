@@ -1336,6 +1336,7 @@ function openExternalUrlSafe(url, options = {}) {
 // （安藤レビュー指摘・MEDIUM）。
 const { isMacPlatform, createTerminalLinkHandlers, normalizeTerminalLinkClickMode, isDragDistance } = window.VKTerminalLinkPolicy;
 const IS_MAC_PLATFORM = isMacPlatform();
+const FILE_DROP_PLATFORM = (typeof navigator !== 'undefined' && navigator.platform) || '';
 // 'modifier' モード専用のラベル（'click' モードでは使わない。termLinkTooltipMessage 参照）。
 const TERM_LINK_MODIFIER_LABEL = IS_MAC_PLATFORM ? '⌘+クリックで開く' : 'Ctrl+クリックで開く';
 
@@ -4110,11 +4111,11 @@ function renderLeaf(node) {
     const files = Array.from(e.dataTransfer.files);
     if (files.length === 0) return;
 
-    // シェルの違いによらず単一の引数として渡す。
+    // OS の既定シェルに合わせ、ファイルパスを単一引数として渡す。
     const paths = files
       .map(f => VKFiles.getPath(f))
       .filter(Boolean)
-      .map(p => `'${String(p).replace(/[\\']/g, (char) => `'\\${char}'`)}'`);
+      .map(p => window.VKFileDropArgument.quoteFileDropArgument(p, FILE_DROP_PLATFORM));
 
     const text = paths.join(' ');
     focusPane(node.id);

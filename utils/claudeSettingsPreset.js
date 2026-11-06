@@ -115,6 +115,9 @@ async function cleanupBackgroundWorkSettings(dataDir, listProcesses = require('.
   }
 }
 
+// 自プロセスの起動時刻は変わらないため、最初に取得した値を保持する。
+let processStartTime;
+
 // 起動ごとに分離した設定へフックを足し、Stop など既存のイベントを保つ。
 function prepareBackgroundWorkSettings(dataDir, config, settingsPath, options = {}) {
   const node = resolveTrustedExecutableDetailed(fs, 'node', options.nodeSearchDirs || listToolSearchDirs(options.homeDir, options.pathEnv));
@@ -123,8 +126,8 @@ function prepareBackgroundWorkSettings(dataDir, config, settingsPath, options = 
   fs.chmodSync(directory, 0o700);
   const quote = value => `'${String(value).replaceAll("'", "'\\''")}'`;
   try {
-    const lstart = require('node:child_process').execFileSync('ps', ['-p', String(process.pid), '-o', 'lstart='], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C' } }).trim();
-    fs.writeFileSync(path.join(directory, 'owner.json'), JSON.stringify({ pid: process.pid, lstart }), { mode: 0o600, flag: 'wx' });
+    processStartTime ??= require('node:child_process').execFileSync('ps', ['-p', String(process.pid), '-o', 'lstart='], { encoding: 'utf8', timeout: 2000, env: { ...process.env, LC_ALL: 'C' } }).trim();
+    fs.writeFileSync(path.join(directory, 'owner.json'), JSON.stringify({ pid: process.pid, lstart: processStartTime }), { mode: 0o600, flag: 'wx' });
     const configPath = path.join(directory, 'connection.json');
     fs.writeFileSync(configPath, JSON.stringify(config), { mode: 0o600, flag: 'wx' });
     const settings = settingsPath ? JSON.parse(fs.readFileSync(settingsPath, 'utf8')) : {};

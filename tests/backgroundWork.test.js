@@ -112,8 +112,18 @@ test('起動設定は Stop を保持し、接続情報を非公開にして起�
   const original = path.join(dir, 'preset.json');
   const stop = [{ hooks: [{ type: 'command', command: 'existing-stop' }] }];
   fs.writeFileSync(original, JSON.stringify({ hooks: { Stop: stop } }));
+  // 複数ペインの準備でも ps は一度だけ実行し、待ち時間に上限を付ける。
+  const childProcess = require('node:child_process');
+  const psCalls = [];
+  t.mock.method(childProcess, 'execFileSync', (...args) => { psCalls.push(args); return start; });
   const a = prepareBackgroundWorkSettings(dir, { token: 'synthetic', termId: 'a' }, original, { nodeSearchDirs: [tools] });
   const b = prepareBackgroundWorkSettings(dir, { token: 'synthetic', termId: 'b' }, null, { nodeSearchDirs: [tools] });
+  assert.equal(psCalls.length, 1);
+  assert.equal(psCalls[0][0], 'ps');
+  assert.equal(psCalls[0][2].timeout, 2000);
+  for (const prepared of [a, b]) {
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(path.dirname(prepared.filename), 'owner.json'), 'utf8')), { pid: process.pid, lstart: start });
+  }
   const settings = JSON.parse(fs.readFileSync(a.filename, 'utf8'));
   assert.deepEqual(settings.hooks.Stop, stop);
   assert.equal(settings.hooks.SubagentStart.length, 1); assert.equal(settings.hooks.SubagentStop.length, 1);
@@ -191,6 +201,28 @@ test('ps 失敗でもサブエージェントを維持し、SessionStart で旧�
   assert.equal(f.recordHookEvent({ hook_event_name: 'SessionStart', agent_id: undefined, session_id: 'cleared', transcript_path: '/home/test/.claude/projects/-tmp/cleared.jsonl' }), true);
   assert.equal(f.store.isRunning('pane'), false);
   assert.equal(f.recordHookEvent(), false);
+});
+
+test('SessionStart で A → B → A と再開でき、切り替え前の記録を残さない', () => {
+  const f = fixture();
+  const sessionB = { session_id: 'sessionB', transcript_path: '/home/test/.claude/projects/-tmp/sessionB.jsonl' };
+  const startSession = { hook_event_name: 'SessionStart', agent_id: undefined };
+  // A から B へ移り、A の遅延通知を拒否する。
+  assert.equal(f.recordHookEvent(startSession), true);
+  assert.equal(f.recordHookEvent(), true);
+  assert.equal(f.recordHookEvent({ ...sessionB, ...startSession }), true);
+  assert.equal(f.store.isRunning('pane'), false);
+  assert.equal(f.recordHookEvent(), false);
+  assert.equal(f.recordHookEvent({ ...sessionB, agent_id: 'agentB' }), true);
+  assert.equal(f.store.isRunning('pane'), true);
+  // 正規の再開で A を復帰させ、B の記録と遅延通知を除く。
+  assert.equal(f.recordHookEvent(startSession), true);
+  assert.equal(f.store.isRunning('pane'), false);
+  assert.equal(f.recordHookEvent({ ...sessionB, agent_id: 'lateB' }), false);
+  assert.equal(f.recordHookEvent(), true);
+  assert.equal(f.store.isRunning('pane'), true);
+  assert.equal(f.recordHookEvent({ hook_event_name: 'SubagentStop' }), true);
+  assert.equal(f.store.isRunning('pane'), false);
 });
 
 test('監視する running 世代がなければ ps を呼ばない', async () => {

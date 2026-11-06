@@ -15,12 +15,13 @@
  * @param {() => boolean} [params.isLaunchCurrent] 起動世代と token の最終照合
  * @param {() => unknown} params.discard 書き込めなかったときに専用 CODEX_HOME を回収する関数
  * @param {number} params.delayMs 書き込むまでの待ち時間
+ * @param {Promise<void>|null} [params.shellReady] シェルの初期化待ち
  * @param {() => void} [params.onWriteSuccess] 書き込み成功時の通知先
  * @param {(message: string) => void} [params.log] 失敗の記録先
  * @param {Function} [params.setTimer] テスト用の setTimeout 差し替え
  * @returns {unknown} タイマーのハンドル
  */
-function scheduleLaunchCommand({ ptys, id, ptyProcess, command, prepareCommand = (value) => ({ status: 'passthrough', command: value }), activateCommand = () => true, isLaunchCurrent = () => true, discard, delayMs, onWriteSuccess = () => {}, log = () => {}, setTimer = setTimeout }) {
+function scheduleLaunchCommand({ ptys, id, ptyProcess, command, prepareCommand = (value) => ({ status: 'passthrough', command: value }), activateCommand = () => true, isLaunchCurrent = () => true, discard, delayMs, shellReady = null, onWriteSuccess = () => {}, log = () => {}, setTimer = setTimeout }) {
   const discardSafely = () => {
     try {
       discard();
@@ -35,6 +36,7 @@ function scheduleLaunchCommand({ ptys, id, ptyProcess, command, prepareCommand =
       return;
     }
     const writePreparedCommand = async (result) => {
+      if (shellReady) await shellReady;
       let setupWritten = false;
       const cleanupPromptHook = () => {
         if (!setupWritten || !result?.cleanupCommand || ptys.get(id) !== ptyProcess) return;

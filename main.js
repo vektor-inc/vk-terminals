@@ -79,6 +79,8 @@ const {
   runGitHubReachabilityGate,
 } = require('./utils/githubReachability');
 const { scheduleLaunchCommand } = require('./utils/delayedLaunch');
+const { observePowerShellReady } = require('./utils/powerShellReady');
+const shellStartupReadiness = new WeakMap();
 const {
   createAgentLifecycleStore,
   mergeAgentLifecycleStates,
@@ -2375,6 +2377,10 @@ function createTerminalPane(cwd, options = {}, guide = null) {
     throw error;
   }
 
+  const shellStartup = observePowerShellReady(ptyProcess, shell);
+  const shellReady = shellStartup?.ready;
+  if (shellReady) shellStartupReadiness.set(ptyProcess, shellReady);
+
   // PTY への全書き込みを画面変更として先に記録する。選択肢移動から再描画までの
   // 短い間にも、移動前に取得した識別値で Enter が通らないようにするため。
   conditionalTerminalInput.initialize(id);
@@ -2384,7 +2390,9 @@ function createTerminalPane(cwd, options = {}, guide = null) {
     // 通常入力・API 入力・自動 Enter 後は可視出力まで採り直しを抑止する。
     // 自動応答・フォーカス通知は予約を取り消すだけで、既存の抑止状態を維持する。
     silentWriteRefresher.noteInput(id, isTerminalQueryReplyOnly(data) || isTerminalFocusNotificationOnly(data));
-    return writeToPty(data);
+    const result = writeToPty(data);
+    shellStartup?.onInput(data);
+    return result;
   };
 
   // ペイン作成（pty spawn）時刻。信頼確認プロンプトへの自動 Enter 送信を許可する
@@ -2674,6 +2682,7 @@ function createTerminalPane(cwd, options = {}, guide = null) {
       isLaunchCurrent: () => agentLifecycles.isCurrent(id, 1, initialLaunchToken),
       discard: discardFailedLaunch,
       delayMs: 200,
+      shellReady,
       onWriteSuccess: guideLaunchSucceeded,
       log: (message) => console.error(`${LOG_PREFIX} ${message}`),
     });
@@ -2916,6 +2925,11 @@ async function restartAgentInTerminal(ptyProcess, request, launchOptions, lifecy
   // stop 用 snapshot の取得中にも、作成時の遅延 launch は進み得る。公開 generation は
   // 停止成功まで進めず、内部 token だけを最初の await より前に同期更新して旧 write を止める。
   lifecycleLaunch.cancelPending();
+  const shellReady = shellStartupReadiness.get(ptyProcess);
+  if (shellReady) {
+    await shellReady;
+    if (ptys.get(request.termId) !== ptyProcess) return false;
+  }
   const stopped = await stopAgentChildren(ptyProcess.pid, {
     platform: process.platform,
     listProcesses: listProcessesForRestart,

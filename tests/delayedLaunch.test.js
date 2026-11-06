@@ -247,3 +247,23 @@ test('main.js の遅延起動は scheduleLaunchCommand を通り、直接の set
   assert.match(source, /scheduleLaunchCommand\(\{[\s\S]*?discard: discardFailedLaunch/);
   assert.equal(/ptyProcess\.write\(`\$\{launchCommand\}/.test(source), false);
 });
+
+for (const cancellation of ['none', 'closed', 'replaced', 'restarted']) {
+  test(`PowerShell の準備待ちの後に PTY と世代を照合する: ${cancellation}`, async () => {
+    let resolveReady;
+    let current = true;
+    const shellReady = new Promise((resolve) => { resolveReady = resolve; });
+    const { ptyProcess, written } = createPane();
+    const ptys = new Map([['1', ptyProcess]]);
+    const { timers, discarded } = schedule({ ptyProcess, ptys, shellReady, isLaunchCurrent: () => current });
+    timers.fire();
+    assert.deepEqual(written, []);
+    if (cancellation === 'closed') ptys.delete('1');
+    if (cancellation === 'replaced') ptys.set('1', createPane().ptyProcess);
+    if (cancellation === 'restarted') current = false;
+    resolveReady();
+    await new Promise(setImmediate);
+    assert.deepEqual(written, cancellation === 'none' ? ['codex --no-daemon\r'] : []);
+    assert.equal(discarded.length, cancellation === 'none' ? 0 : 1);
+  });
+}

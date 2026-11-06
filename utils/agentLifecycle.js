@@ -168,6 +168,8 @@ function inspectLifecycle(snapshot, processes) {
 }
 
 
+const PROMPT_HOOK_SHELLS = Object.freeze({ bash: 'bash', zsh: 'zsh', fish: 'fish' });
+
 function buildPromptHookCommand(marker, shellPath) {
   const name = `vk_agent_prompt_${marker}`;
   const armed = `vk_agent_armed_${marker}`;
@@ -175,10 +177,10 @@ function buildPromptHookCommand(marker, shellPath) {
   const ready = quoteForSingleShellArgument(`\\033]1337;VKAgentLifecycleReady=${marker}:ok\\007`);
   const failed = quoteForSingleShellArgument(`\\033]1337;VKAgentLifecycleReady=${marker}:fail\\007`);
   const shell = pathBasename(shellPath);
-  if (shell === 'zsh') {
+  if (shell === PROMPT_HOOK_SHELLS.zsh) {
     return `function ${name} { if (( \${+${armed}} == 0 )); then typeset -g ${armed}=1; printf %b ${ready}; return; fi; precmd_functions=(\${precmd_functions:#${name}}); unfunction ${name}; unset ${armed}; printf %b ${completion}; }; precmd_functions+=( ${name} )`;
   }
-  if (shell === 'bash') {
+  if (shell === PROMPT_HOOK_SHELLS.bash) {
     const mode = `vk_agent_mode_${marker}`;
     const index = `vk_agent_index_${marker}`;
     const saved = `vk_agent_saved_prompt_${marker}`;
@@ -186,10 +188,10 @@ function buildPromptHookCommand(marker, shellPath) {
     const cleanup = `vk_agent_cleanup_${marker}`;
     return `case \"$(declare -p PROMPT_COMMAND 2>/dev/null)\" in \"declare -a\"*) if [ \"\${BASH_VERSINFO[0]}\" -ge 5 ]; then ${mode}=array; else ${mode}=; printf %b ${failed}; fi;; \"\"|\"declare --\"*) ${mode}=string;; *) ${mode}=; printf %b ${failed};; esac; if [ -n \"\$${mode}\" ]; then ${armed}=0; ${wasSet}=0; ${saved}=; if [ \"\$${mode}\" = string ]; then if declare -p PROMPT_COMMAND >/dev/null 2>&1; then ${wasSet}=1; fi; ${saved}=\${PROMPT_COMMAND-}; fi; ${cleanup}() { if [ \"\$${mode}\" = array ]; then for ${index} in \"\${!PROMPT_COMMAND[@]}\"; do [ \"\${PROMPT_COMMAND[\$${index}]}\" = ${name} ] && unset \"PROMPT_COMMAND[\$${index}]\"; done; elif [ \"\$${wasSet}\" = 1 ]; then PROMPT_COMMAND=\$${saved}; else unset PROMPT_COMMAND; fi; unset ${mode} ${index} ${armed} ${saved} ${wasSet}; unset -f ${name} ${cleanup}; }; ${name}() { if [ \"\$${armed}\" = 0 ]; then ${armed}=1; printf %b ${ready}; return; fi; ${cleanup}; printf %b ${completion}; }; if [ \"\$${mode}\" = array ]; then PROMPT_COMMAND+=( ${name} ); else PROMPT_COMMAND=\"\${PROMPT_COMMAND-}\"$'\\n'${name}; fi; fi`;
   }
-  if (shell === 'fish') {
+  if (shell === PROMPT_HOOK_SHELLS.fish) {
     return `set -g ${armed} 0; function ${name} --on-event fish_prompt; if test \$${armed} -eq 0; set -g ${armed} 1; printf %b ${ready}; else; functions -e ${name}; set -e ${armed}; printf %b ${completion}; end; end`;
   }
-  return `printf %b ${failed}`;
+  throw new Error('Unsupported prompt hook shell');
 }
 
 function pathBasename(filePath) {
@@ -261,7 +263,7 @@ function createAgentLifecycleStore(options = {}) {
       if (!isCurrent()) return { status: 'cancelled' };
       Object.assign(entry, { shellPid, shellLstart: null, trackedGroups: new Map(), baselinePgids: new Set(), baselineIdentities: new Map(), marker: null, markerBuffer: '', completionReceived: false, acquisitionOpen: false, acquisitionTimer: null, readyResolve: null, readyTimer: null, activated: false });
       // プロンプトフックに未対応のシェルでは、そのまま起動コマンドを送る。
-      if (!['bash', 'zsh', 'fish'].includes(pathBasename(shellPath)) || platform === 'win32' || !Number.isSafeInteger(shellPid) || shellPid <= 0) return { status: 'passthrough', command };
+      if (!Object.hasOwn(PROMPT_HOOK_SHELLS, pathBasename(shellPath)) || platform === 'win32' || !Number.isSafeInteger(shellPid) || shellPid <= 0) return { status: 'passthrough', command };
       let processes;
       try { processes = await listProcesses(); } catch (_error) {
         return isCurrent() ? { status: 'passthrough', command } : { status: 'cancelled' };

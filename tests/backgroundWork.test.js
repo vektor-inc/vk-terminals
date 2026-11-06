@@ -274,6 +274,50 @@ test('停止失敗時は準備した設定だけ捨て、旧監視と接続を�
   assert.equal(handler.includes('clearPaneBackgroundWork(request.termId)'), false);
 });
 
+test('ペインの PowerShell で設定パスを組み立て、再起動の準備失敗は旧監視を保つ', () => {
+  const vm = require('node:vm');
+  const { prepareClaudeSettingsForShell } = require('../utils/claudeSettingsPreset');
+  const { buildClaudeLaunchCommand } = require('../renderer/claudeModel');
+  const source = fs.readFileSync(path.join(__dirname, '../main.js'), 'utf8');
+  const stage = source.slice(source.indexOf('function stagePaneBackgroundWork('), source.indexOf('function preparePaneBackgroundWork('));
+  const filename = "/tmp/a'‘’‚‛.json";
+  let discarded = 0, launchDiscarded = 0, clears = 0, status, body;
+  const old = { marker: 'old' };
+  const settings = new Map([['pane', old]]);
+  const f = fixture(); f.recordHookEvent();
+  const context = { prepareClaudeSettingsForShell, crypto: require('node:crypto'), apiServerRuntimeStatus: {},
+    API_PORT: 1, API_TOKEN: 'synthetic', DATA_DIR: '/tmp', os, APP_ORIGINAL_PATH: '', LOG_PREFIX: '',
+    console: { warn() {}, error() {} },
+    prepareBackgroundWorkSettings: () => ({ filename, discard() { discarded++; } }),
+    clearPaneBackgroundWork() { clears++; settings.delete('pane'); f.store.delete('pane'); },
+    backgroundWork: f.store, backgroundSettings: settings,
+    request: { termId: 'pane', engine: 'claude' }, currentGeneration: 1,
+    ptyShellExecutables: new Map([['pane', 'pwsh']]),
+    launchResolution: { discard() { launchDiscarded++; } },
+    res: { writeHead(code) { status = code; }, end(value) { body = JSON.parse(value); } },
+  };
+  vm.createContext(context); vm.runInContext(stage, context);
+  const staged = context.stagePaneBackgroundWork('pane', 2, 'claude', {}, 'pwsh');
+  assert.equal(buildClaudeLaunchCommand(undefined, staged.options), "claude --settings '/tmp/a''‘‘’’‚‚‛‛.json'");
+  staged.discard();
+  assert.equal(discarded, 1);
+
+  // 実際の再起動の準備ブロックで、引用できない必須設定を渡す。
+  context.launchOptions = { claudeSettingsPreset: 'vk-orchestrator-work-pane', claudeSettingsPath: filename };
+  context.ptyShellExecutables.set('pane', 'unknown');
+  const restart = source.slice(source.indexOf('let stagedBackgroundWork;'), source.indexOf('let launchHomeInUse = false;', source.indexOf('let stagedBackgroundWork;')));
+  vm.runInContext('function restart() { ' + restart + ' }', context);
+  context.restart();
+  assert.equal(discarded, 2);
+  assert.equal(launchDiscarded, 1);
+  assert.equal(status, 503);
+  assert.deepEqual(body, { error: 'Claude settings preset hook is unavailable' });
+  assert.equal(clears, 0);
+  assert.equal(settings.get('pane'), old);
+  assert.equal(f.store.isRunning('pane'), true);
+  assert.equal(f.recordHookEvent({ agent_id: 'still-old' }), true);
+});
+
 test('クラッシュした所有者の設定だけ回収し、生存中・所有者不明を残す', async t => {
   const { cleanupBackgroundWorkSettings } = require('../utils/claudeSettingsPreset');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vk561-cleanup-'));

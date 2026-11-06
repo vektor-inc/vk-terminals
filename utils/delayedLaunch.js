@@ -40,6 +40,7 @@ function scheduleLaunchCommand({ ptys, id, ptyProcess, command, prepareCommand =
         const readiness = await shellReady;
         // 時間切れまでに利用者が別プログラムを起動した場合は盲打ちしない。
         if (readiness?.status === 'timeout' && readiness.userInput) {
+          log(`launch cancelled for terminal ${id}: shell readiness timed out after user input`);
           discardSafely();
           return;
         }

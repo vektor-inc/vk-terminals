@@ -147,18 +147,98 @@ for (const userInput of [false, true]) {
     const shellReady = new Promise((resolve) => { release = resolve; });
     const timers = [];
     const ptyProcess = {};
-    let stopped = false;
-    require('node:vm').runInNewContext(source.slice(start, end), {
+    const watcher = () => {};
+    const context = { promptWatcher: watcher, promptWatcherTimeoutId: null };
+    const sandbox = {
       shellReady, ptys: new Map([['1', ptyProcess]]), id: '1', ptyProcess,
       isFirstTerminal: true, config: { initialCommand: 'hello' }, resolvedEngine: 'claude',
       WATCH_TIMEOUT_MS: 10000, setTimeout: (callback, delay) => timers.push({ callback, delay }),
-      stopWatchingIfDone: () => { stopped = true; },
-    });
+      ...context,
+      stopWatchingIfDone() {},
+    };
+    require('node:vm').runInNewContext(source.slice(start, end), sandbox);
     assert.equal(timers.length, 0);
     release({ status: 'timeout', userInput });
     await Promise.resolve();
     assert.equal(timers.length, userInput ? 0 : 1);
-    assert.equal(stopped, userInput);
+    assert.equal(sandbox.promptWatcher, userInput ? null : watcher);
     if (!userInput) assert.equal(timers[0].delay, 10000);
+  });
+}
+
+// PTY の登録より先に監視を設定する、terminal:create の実際の順序を再現する。
+function createInitialCommandWatcher({ shellReady = null, engine = 'claude' } = {}) {
+  const source = require('node:fs').readFileSync(require.resolve('../main.js'), 'utf8');
+  const start = source.indexOf('    const config = isFirstTerminal ? loadUserConfig() : {};');
+  const end = source.indexOf('\n    // restartAgentInTerminal が同じ pty', start);
+  const timers = new Map();
+  const writes = [];
+  const warnings = [];
+  let nextTimer = 0;
+  const context = {
+    shellReady, ptys: new Map(), id: '1', ptyProcess: { write: (data) => writes.push(data) },
+    isFirstTerminal: true, loadUserConfig: () => ({ initialCommand: 'hello' }), resolvedEngine: engine,
+    promptWatcher: null, promptWatcherTimeoutId: null, spawnTime: 0, taskPolicyLaunch: false,
+    RESOLVED_TRUST_WINDOW_MS: 30000, RESOLVED_READY_GRACE_MS: 1000, WATCH_TIMEOUT_MS: 10000,
+    LOG_PREFIX: 'test', performance: { now: () => 0 }, stripAnsiForPattern: (data) => data,
+    READY_PATTERN: /READY/, console: { log() {}, warn: (message) => warnings.push(message) },
+    createTrustPromptGate: () => ({
+      shouldStopWatching: () => false, canAutoRespondToPrompt: (buffer) => buffer.includes('TRUST'),
+      markTrustHandled() {}, markReadyDetected() {}, disableDelayedRestrictedResponse() {},
+    }),
+    setTimeout: (callback, delay) => { timers.set(++nextTimer, { callback, delay }); return nextTimer; },
+    clearTimeout: (id) => timers.delete(id),
+  };
+  require('node:vm').runInNewContext(source.slice(start, end), context);
+  return { context, timers, writes, warnings, register: () => context.ptys.set('1', context.ptyProcess),
+    output: (data) => { if (context.promptWatcher) context.promptWatcher(data); } };
+}
+
+for (const engine of ['claude', 'codex']) {
+  test(`shellReady なしでは PTY 登録前にタイマーを1本設定する: ${engine}`, () => {
+    const watcher = createInitialCommandWatcher({ engine });
+    assert.equal(watcher.context.ptys.size, 0);
+    assert.equal(watcher.timers.size, 1);
+    assert.equal([...watcher.timers.values()][0].delay, 10000);
+    watcher.register();
+    [...watcher.timers.values()][0].callback();
+    assert.deepEqual(watcher.writes, engine === 'claude' ? ['hello\r'] : []);
+    assert.equal(watcher.warnings.length, 1);
+    // Codex は時間切れ後でも ready を検知すれば送信できる。
+    if (engine === 'codex') {
+      watcher.output('READY');
+      assert.deepEqual(watcher.writes, ['hello\r']);
+    }
+  });
+}
+
+for (const closed of [false, true]) {
+  test(`準備待ち中の PTY 登録・閉鎖後にタイマーを照合する: ${closed}`, async () => {
+    let release;
+    const watcher = createInitialCommandWatcher({ shellReady: new Promise((resolve) => { release = resolve; }) });
+    assert.equal(watcher.timers.size, 0);
+    watcher.register();
+    if (closed) watcher.context.ptys.delete('1');
+    release({ status: 'ready', userInput: false });
+    await Promise.resolve();
+    assert.equal(watcher.timers.size, closed ? 0 : 1);
+  });
+}
+
+for (const trustBeforeCancel of [false, true]) {
+  test(`中止後の ready 出力では送信せず、既存タイマーも解放する: ${trustBeforeCancel}`, async () => {
+    let release;
+    const watcher = createInitialCommandWatcher({ shellReady: new Promise((resolve) => { release = resolve; }) });
+    watcher.register();
+    if (trustBeforeCancel) watcher.output('TRUST');
+    assert.equal(watcher.timers.size, trustBeforeCancel ? 1 : 0);
+    watcher.writes.length = 0;
+    release({ status: 'timeout', userInput: true });
+    await Promise.resolve();
+    assert.equal(watcher.context.promptWatcher, null);
+    assert.equal(watcher.context.promptWatcherTimeoutId, null);
+    assert.equal(watcher.timers.size, 0);
+    watcher.output('READY');
+    assert.deepEqual(watcher.writes, []);
   });
 }

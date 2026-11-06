@@ -2494,10 +2494,13 @@ function createTerminalPane(cwd, options = {}, guide = null) {
     // 従来（claude 専用実装）は必ず warn が残っていたのと同じ可観測性を保つため、
     // 「送信はしない・警告だけ出す」タイマーを engine 問わず設定する。
     const startInitialCommandTimer = (readiness) => {
-      if (ptys.get(id) !== ptyProcess) return;
       if (readiness?.status === 'timeout' && readiness.userInput) {
-        initialCommandGaveUp = true;
-        stopWatchingIfDone();
+        // 中止後の ready 誤検知と、信頼確認で先に設定されたタイマーからの送信を防ぐ。
+        if (promptWatcherTimeoutId) {
+          clearTimeout(promptWatcherTimeoutId);
+          promptWatcherTimeoutId = null;
+        }
+        promptWatcher = null;
         return;
       }
       if (isFirstTerminal && config.initialCommand) {
@@ -2522,8 +2525,14 @@ function createTerminalPane(cwd, options = {}, guide = null) {
       }
     };
     // シェルの準備待ちと Claude の起動待ちは別々に数える。
-    if (shellReady) shellReady.then(startInitialCommandTimer);
-    else startInitialCommandTimer();
+    if (shellReady) {
+      shellReady.then((readiness) => {
+        if (ptys.get(id) === ptyProcess) startInitialCommandTimer(readiness);
+      });
+    } else {
+      // 同期経路では、この後に PTY が登録される。
+      startInitialCommandTimer();
+    }
 
     promptWatcher = (data) => {
       const stripped = stripAnsiForPattern(data);

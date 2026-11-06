@@ -84,6 +84,7 @@ const GH_TOKEN_PATTERN = /^[A-Za-z0-9_.-]{1,255}$/;
 // 承認なしで実行できる操作の一覧。実際の判定は utils/codexTaskOps.js（許可リスト）が行い、
 // ここは AGENTS.md への案内文を作るための表示用。追加・削除は codexTaskOps.js の parseTaskCommand と必ずそろえる。
 const ORCHESTRATED_TASK_OPERATIONS = Object.freeze([
+  'pane send',
   'protected-sync .agents/skills/vk-orchestrator-helper/SKILL.md',
   'git status',
   'git diff',
@@ -150,6 +151,7 @@ function renderAgentsGuide(launcherPath, memberIoDir = null) {
     '',
     ...operations.map((operation) => `- \`${operation}\``),
     '',
+    '- `pane send <ペイン番号> <本文ファイル>` は別のペインに依頼する専用操作。本文ファイルは起動時の作業フォルダ内の相対パス（英数字・_・-・. の名前）で指定する。UTF-8、8KiB・4000文字以内。フラグは付けない。結果が unconfirmed なら送り直さず相手の画面を確認する。送信元の番号は固定され、指定できない。',
     '- 入口は許可した操作・オプションだけを通す。許可外（reset・gh api・--repo・--output など）は拒否される。',
     '- 入口は、引用符・`cd`・パイプ・リダイレクト・`2>&1` を付けず、上記の形で単独のコマンドとして呼ぶ。作業フォルダはシェルの `cd` ではなく、コマンド実行ツールの workdir で指定する。',
     '- サンドボックスの中から呼ぶと、入口は何も実行せずに止まる（終了コード 78）。その場合は、上記「入口:」の形に直して呼び直す。',
@@ -257,6 +259,9 @@ function renderLauncher({ envPath, nodePath, opsScriptPath, launcherPath, member
   const assignments = [
     'PATH=/usr/bin:/bin',
     `VK_TASK_ROOT=${binding.root}`,
+    `VK_TASK_PANE_SOURCE=${binding.paneSend?.termId || ''}`,
+    `VK_TASK_PANE_PORT=${binding.paneSend?.port || ''}`,
+    `VK_TASK_PANE_TOKEN=${binding.paneSend?.token || ''}`,
     `VK_TASK_REPO=${binding.repo || ''}`,
     `VK_TASK_ALLOWED_OWNERS=${binding.allowedOwners.join(',')}`,
     `VK_TASK_GIT=${binding.git}`,
@@ -897,7 +902,7 @@ function prepareCodexTaskPolicyHome(params) {
       const ghConfigDir = path.join(targetHome, GH_CONFIG_DIR_NAME);
       const memberEnabled = memberIoDir !== null && !child;
       const binding = {
-        root: repository.root, repo: repository.repo, allowedOwners, git: gitPath, gh: ghPath, home: home.realPath, gitConfig: path.join(targetHome, GIT_CONFIG_NAME), ghConfig: ghConfigDir, remoteBase,
+        root: repository.root, repo: repository.repo, allowedOwners, paneSend: child ? null : params.paneSend, git: gitPath, gh: ghPath, home: home.realPath, gitConfig: path.join(targetHome, GIT_CONFIG_NAME), ghConfig: ghConfigDir, remoteBase,
         ...(memberEnabled ? { codex: codexPath, memberHome, memberIo: memberIoDir, memberRuns: memberRunsDir, parentCwd: parentWorkingDir, parentSandbox } : {}),
       };
       return {

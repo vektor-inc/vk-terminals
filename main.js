@@ -376,8 +376,15 @@ const CODEX_TASK_POLICY_HANDOFF_DIR = path.join(os.homedir(), '.claude', 'handof
 // dryRun: true は専用 CODEX_HOME を作らず、固定できる状態かの事前確認だけを行う（HTTP 受け口用）。
 // cwd はタスクの作業フォルダで、タスク用ポリシーが操作を拘束するリポジトリを決める（ポリシー付きでは必須）。
 // 戻り値の discard() は、専用 CODEX_HOME を作ったのに Codex の起動に使わなかったときに呼んで回収する。
-function resolveCodexLaunchOptions(engine, options, { dryRun = false, cwd } = {}) {
-  return resolveCodexTaskPolicyLaunchOptions(engine, options, createCodexPolicyDeps({ dryRun, cwd }));
+function resolveCodexLaunchOptions(engine, options, { dryRun = false, cwd, termId, generation } = {}) {
+  let paneSend;
+  if (!dryRun && engine === 'codex' && options.codexPolicy !== undefined && termId) {
+    try {
+      const state = Object.values(cachedStates).find(value => String(value.termId) === termId);
+      paneSend = paneSendBroker.bind({ termId, generation, cwd: fs.realpathSync(cwd), name: state?.displayTitle || state?.apiTitle || state?.taskTitle || `ペイン ${termId}` });
+    } catch (_) { return { ok: false, error: 'pane send binding unavailable' }; }
+  }
+  return resolveCodexTaskPolicyLaunchOptions(engine, options, createCodexPolicyDeps({ dryRun, cwd, paneSend }));
 }
 
 // 検証済みプリセットだけを VK Terminals の管理領域へ書き出し、コマンド組み立て側でも再検証する。
@@ -478,6 +485,27 @@ const INSTANCE_ID = resolveInstanceId(process.env);
 // 本文を先に流して TUI の再描画が落ち着いてから Enter を送ることで確実に確定させる。
 const SEND_ENTER_SPLIT_DELAY_MS = 150;
 let cachedStates = {};  // renderer から受け取った状態キャッシュ
+// 通常 API の認証とは分離し、ペイン送信だけに使える資格情報を起動ごとに束縛する。
+const { createPaneSender, createPaneSendBroker } = require('./utils/paneSend');
+const paneSendBroker = createPaneSendBroker(createPaneSender({
+  getPty: id => ptys.get(id),
+  getGeneration: id => agentGenerations.get(id),
+  guard: conditionalTerminalInput,
+  getWriteVersion: id => conditionalTerminalInput.getWriteVersion(id),
+  getState: id => {
+    const generation = agentGenerations.get(id);
+    if (agentLifecycles.get(id, generation) !== 'running') return undefined;
+    return Object.values(cachedStates).find(state => String(state.termId) === id);
+  },
+  evidence: async (id, token, since) => {
+    const response = await buildTranscriptEvidenceResponse({
+      searchParams: new URLSearchParams({ termId: id, token, since: String(since) }),
+      paneExists: termId => ptys.has(termId),
+      getPaneState: termId => Object.values(cachedStates).find(state => String(state.termId) === termId),
+    });
+    return response.body.result === 'delivered';
+  },
+}));
 let httpServer = null;
 let apiServerRuntimeStatus = {
   phase: 'pending',
@@ -2334,7 +2362,7 @@ function createTerminalPane(cwd, options = {}, guide = null) {
     // セットアップ専用の検証済みプロンプトから起動コマンドを作る。
     launchCommand = buildSetupPaneLaunchCommand(SETUP_FEATURE.setupPane.prompt);
   } else if (!noClaude) {
-    const launchResolution = resolveCodexLaunchOptions(resolvedEngine, options, { cwd: resolvedCwd });
+    const launchResolution = resolveCodexLaunchOptions(resolvedEngine, options, { cwd: resolvedCwd, termId: id, generation: 1 });
     if (!launchResolution.ok) {
       console.error(`${LOG_PREFIX} codex launch refused: ${launchResolution.error}`);
       throw new Error(launchResolution.error);
@@ -2386,7 +2414,7 @@ function createTerminalPane(cwd, options = {}, guide = null) {
   conditionalTerminalInput.initialize(id);
   const writeToPty = ptyProcess.write.bind(ptyProcess);
   ptyProcess.write = (data) => {
-    conditionalTerminalInput.markChanged(id);
+    conditionalTerminalInput.markChanged(id, true);
     // 通常入力・API 入力・自動 Enter 後は可視出力まで採り直しを抑止する。
     // 自動応答・フォーカス通知は予約を取り消すだけで、既存の抑止状態を維持する。
     silentWriteRefresher.noteInput(id, isTerminalQueryReplyOnly(data) || isTerminalFocusNotificationOnly(data));
@@ -4319,7 +4347,7 @@ function startHttpApi() {
             // 専用 CODEX_HOME は、直列化の待機・存在確認・世代確認を通った後、AI を止める前に用意する。
             // 同期処理だけで operation の登録まで進むので、待機ループとの間に隙間は生じない。
             // 停止に失敗する・PTY が消える・起動コマンドを書けない場合は、使われなかった専用フォルダを回収する。
-            const launchResolution = resolveCodexLaunchOptions(request.engine, request, { cwd: request.cwd });
+            const launchResolution = resolveCodexLaunchOptions(request.engine, request, { cwd: request.cwd, termId: request.termId, generation: currentGeneration + 1 });
             if (!launchResolution.ok) {
               res.writeHead(503, { 'Content-Type': 'application/json' });
               res.end(JSON.stringify({ error: launchResolution.error }));

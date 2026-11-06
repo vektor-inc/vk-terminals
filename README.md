@@ -993,6 +993,8 @@ curl -s -X POST http://127.0.0.1:13847/api/new-pane \
 - 固定入口の `gh pr merge <PR番号>` は、拘束したリポジトリの PR だけを対象に、レビュー完了マーカーと head の一致、CI 通過（チェック 0 件は `gh pr checks` と statusCheckRollup の両方で確認）、マージ可能状態を読み戻し、確認した head に固定して squash マージします。追加フラグ・別リポジトリ指定は拒否し、実行後に `MERGED` を読み戻せた場合だけ成功とします。
 - 固定入口と Codex 版 issue 対応手順の照合テスト（issue #523）：vk-agents の Codex 版手順（`codex/vk-kore/`）が使う Git / GitHub 操作を、固定入口の呼び方に読み替えた一覧 `tests/fixtures/codexProcedureOperations.js`（各項目に出典のファイル・行を添える）として持ち、`tests/codexTaskOpsCoverage.test.js` が `parseTaskCommand` で受理されるかを `gh` / `git` を呼ばずに確かめます（`npm test` に含まれ、vk-agents が無い環境（CI を含む）でも動きます）。手順が要求するのに固定入口が受理しない操作は、理由つきの既知の不足（`knownGaps`）として一覧に置き、受理されるようになるとテストが失敗して一覧の移動を促します。vk-agents を clone した環境では、手順側に一覧に無い操作が増えていないかの補助チェックも動くため、手元の vk-agents の状態によって `npm test` の結果が変わりえます。補助チェックは操作名単位の照合で、既存の操作へのフラグ・引数の追加は検出できず、その場合は一覧を手で直します。また、`notApplicable` の操作名はファイルを問わず照合されるため、手順側が別の箇所でその操作を実際に使い始めても補助チェックは失敗しません。手順側が変わったときの更新方法は [docs/codex-task-policy.md](docs/codex-task-policy.md) を参照してください。
 
+Codex の固定入口では `pane send <ペイン番号> <本文ファイル>` で別の Claude Code / Codex ペインへ依頼できます。本文は起動時の作業フォルダ内の UTF-8 ファイル（8KiB・4000文字以内）で渡し、送信先の入力欄が空と確認できる場合だけ送ります。結果が `unconfirmed` の場合は送り直さず相手の画面を確認してください。送信元を固定した専用の送信経路・判定の限界は [ペイン送信の仕様](docs/specification-pane-send.md) を参照してください。
+
 Codex の固定入口では `prepare reattach-branch <issue番号> <ブランチ> <worktree名>` で、未コミット変更を保持して専用 worktree の detached HEAD を同一コミットの作業ブランチへ戻せます。書き込み可能なメンバーの終了時にも同じ検査で起動前のブランチへの復帰を試み、`member status` で前後の状態・復帰結果と理由を確認できます。詳細は [Codex タスク操作ポリシー](docs/codex-task-policy.md) を参照してください。
 
 `noClaude` / `engine` / `model` の優先順位（併用した場合にどれが効くか）:

@@ -1516,7 +1516,7 @@ test('terminal:create は PTY を作る前に起動オプションを解決し�
   const handlerStart = mainSource.indexOf("ipcMain.handle('terminal:create'");
   const handlerEnd = mainSource.indexOf("ipcMain.on('terminal:input'");
   const handler = mainSource.slice(handlerStart, handlerEnd);
-  const resolveAt = handler.indexOf('resolveCodexLaunchOptions(resolvedEngine, options, { cwd: resolvedCwd })');
+  const resolveAt = handler.indexOf('resolveCodexLaunchOptions(resolvedEngine, options, { cwd: resolvedCwd, termId: id, generation: 1 })');
   const throwAt = handler.indexOf('throw new Error(launchResolution.error)');
   const spawnAt = handler.indexOf('pty.spawn(');
   assert.ok(resolveAt > 0 && throwAt > resolveAt && spawnAt > throwAt, 'resolve → throw → pty.spawn の順であること');
@@ -1548,7 +1548,7 @@ test('restart-agent: 到達確認前と待機後に存在・世代を確認し�
   const waitAt = at('restartAgentOperations.get(request.termId)))');
   const notFoundAt = handler.indexOf('if (!ptyProcess)', waitAt);
   const mismatchAt = handler.indexOf('generation mismatch', waitAt);
-  const prepareAt = at('resolveCodexLaunchOptions(request.engine, request, { cwd: request.cwd })');
+  const prepareAt = at('resolveCodexLaunchOptions(request.engine, request, { cwd: request.cwd, termId: request.termId, generation: currentGeneration + 1 })');
   const operationAt = at('restartAgentInTerminal(ptyProcess');
   assert.ok(earlyNotFoundAt < earlyMismatchAt && earlyMismatchAt < dryRunAt);
   assert.ok(dryRunAt < waitAt && waitAt < notFoundAt && notFoundAt < mismatchAt && mismatchAt < prepareAt && prepareAt < operationAt);

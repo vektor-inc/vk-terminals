@@ -1602,8 +1602,8 @@ const capabilityCode = [
 let capabilityPromise;
 function getProtectedSyncCapabilitiesAsync(deps = {}) {
   if (capabilityPromise) return capabilityPromise;
+  const unavailable = { available: false, reason: 'write-restricted execution is not available', targets: PROTECTED_SYNC_TARGETS };
   const pending = Promise.resolve().then(() => new Promise((resolve) => {
-    const unavailable = { available: false, reason: 'write-restricted execution is not available', targets: PROTECTED_SYNC_TARGETS };
     const fsImpl = deps.fs || nodeFs;
     // ランチャーと同じ候補を所有者・権限で検証する。
     const toolDirs = listToolSearchDirs(require('node:os').homedir(), process.env.PATH);
@@ -1615,7 +1615,8 @@ function getProtectedSyncCapabilitiesAsync(deps = {}) {
         catch (_) { resolve(unavailable); }
       });
   }));
-  capabilityPromise = pending.finally(() => { capabilityPromise = undefined; });
+  // 探索や起動の同期例外も利用不可へ変換し、拒否を呼び出し元へ渡さない。
+  capabilityPromise = pending.catch(() => unavailable).finally(() => { capabilityPromise = undefined; });
   return capabilityPromise;
 }
 

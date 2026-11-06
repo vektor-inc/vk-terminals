@@ -213,12 +213,19 @@ test('能力 API は非同期で照会し既存の認証規則を使う', async 
   const end = source.indexOf('    // GET /api/health', start);
   const gate = source.indexOf('    if (!isAuthExemptPath(req.method, url.pathname) && authRequired)', source.indexOf('function startHttpApi()'));
   assert.ok(gate !== -1 && start > gate);
-  const route = new Function('req', 'url', 'res', 'getProtectedSyncCapabilitiesAsync', source.slice(start, end));
+  const route = new Function('req', 'url', 'res', 'getProtectedSyncCapabilitiesAsync', 'PROTECTED_SYNC_TARGETS', source.slice(start, end));
   let body;
   route({ method: 'GET' }, { pathname: '/api/codex-task-capabilities' }, { writeHead: (code) => assert.equal(code, 200), end: (text) => { body = JSON.parse(text); } }, async () => ({ available: false }));
   assert.equal(body, undefined);
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(body.capabilities.protectedSync.available, false);
+  // 想定外の拒否でも接続を完了し、例外内のパスを公開しない。
+  body = undefined;
+  route({ method: 'GET' }, { pathname: '/api/codex-task-capabilities' }, { writeHead: (code) => assert.equal(code, 200), end: (text) => { body = JSON.parse(text); } }, async () => { throw new Error('/private/secret'); }, PROTECTED_SYNC_TARGETS);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(body.capabilities.protectedSync, {
+    available: false, reason: 'write-restricted execution is not available', targets: PROTECTED_SYNC_TARGETS,
+  });
   assert.equal(require('../utils/apiAuth').isAuthExemptPath('GET', '/api/codex-task-capabilities'), false);
 });
 
@@ -502,6 +509,23 @@ test('非同期照会はメモリ上のコードを使い、失敗後に再試�
   await getProtectedSyncCapabilitiesAsync({ execFile });
   assert.equal(codeCalls.length, 3);
   assert.deepEqual(listToolSearchDirs('/home/example', '/custom/bin'), require('../utils/codexTaskPolicy').listToolSearchDirs('/home/example', '/custom/bin'));
+});
+
+test('非同期照会は同期例外でも拒否せず、同時照会を共有して完了後に再試行できる', async () => {
+  for (const deps of [
+    { execFile: () => { throw new Error('/private/probe failed'); } },
+    { fs: new Proxy(fs, { get() { throw new Error('/private/fs failed'); } }) },
+  ]) {
+    // 同期例外でも利用不可へ変換し、共有した照会を完了後に残さない。
+    const pending = getProtectedSyncCapabilitiesAsync(deps);
+    assert.equal(getProtectedSyncCapabilitiesAsync(deps), pending);
+    assert.deepEqual(await pending, {
+      available: false, reason: 'write-restricted execution is not available', targets: PROTECTED_SYNC_TARGETS,
+    });
+    const retry = getProtectedSyncCapabilitiesAsync(deps);
+    assert.notEqual(retry, pending);
+    assert.equal((await retry).available, false);
+  }
 });
 
 test('実行時の能力照会は拘束された Git を使う', (t) => {

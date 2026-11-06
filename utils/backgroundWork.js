@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
-const { isDescendant, listProcessTable } = require('./agentLifecycle');
+const { isSameProcessStart, isDescendant, listProcessTable } = require('./agentLifecycle');
 const SUBAGENT_TTL_MS = 10 * 60 * 1000;
 const SAFE_ID = /^[a-zA-Z0-9_-]{1,160}$/;
 
@@ -13,11 +13,11 @@ function inspectBackgroundProcesses(snapshot, processes, previous = new Set()) {
   if (!snapshot || !processes || snapshot.state !== 'running') return { alive: false, candidates: new Set(), running: false };
   const identities = [...(snapshot.trackedGroups || new Map()).values()].flatMap(group => [...group]);
   const roots = identities.map(([pid, start]) => processes.get(pid)).filter(p =>
-    p && !/^[ZX]/.test(p.stat) && p.ppid === snapshot.shellPid && identities.some(([pid, start]) => pid === p.pid && start === p.lstart));
+    p && !/^[ZX]/.test(p.stat) && p.ppid === snapshot.shellPid && identities.some(([pid, start]) => pid === p.pid && isSameProcessStart(start, p.lstart)));
   const candidates = new Set();
   for (const p of processes.values()) {
     if (/^[ZX]/.test(p.stat)) continue;
-    if (roots.some(root => p.pgid !== root.pgid && p.tpgid === -1 && isDescendant(processes, p.pid, root.pid, root.lstart))) {
+    if (roots.some(root => p.pgid !== root.pgid && p.tpgid <= 0 && isDescendant(processes, p.pid, root.pid, root.lstart))) {
       candidates.add(`${p.pid}:${p.lstart}`);
     }
   }
@@ -46,14 +46,22 @@ function readAgentEvidence(paths, fsImpl = fs) {
   const safe = filename => fsImpl.realpathSync(filename) === filename && fsImpl.realpathSync(paths.base) === paths.base;
   let modifiedAt;
   let finished = false;
-  try { if (safe(paths.jsonl)) modifiedAt = fsImpl.statSync(paths.jsonl).mtimeMs; } catch (_) {}
   try {
-    if (safe(paths.meta) && fsImpl.statSync(paths.meta).size <= 65536) finished = JSON.parse(fsImpl.readFileSync(paths.meta, 'utf8')).finished === true;
+    if (safe(paths.jsonl)) {
+      const stat = fsImpl.statSync(paths.jsonl);
+      if (stat.isFile()) modifiedAt = stat.mtimeMs;
+    }
+  } catch (_) {}
+  try {
+    if (safe(paths.meta)) {
+      const stat = fsImpl.statSync(paths.meta);
+      if (stat.isFile() && stat.size <= 65536) finished = JSON.parse(fsImpl.readFileSync(paths.meta, 'utf8')).finished === true;
+    }
   } catch (_) {}
   return { modifiedAt, finished };
 }
 
-function createBackgroundWorkStore({ getSnapshot, onChange = () => {}, now = Date.now, homeDir, readEvidence = readAgentEvidence, listProcesses = listProcessTable } = {}) {
+function createBackgroundWorkStore({ getEntry, onChange = () => {}, now = Date.now, homeDir, readEvidence = readAgentEvidence, listProcesses = listProcessTable } = {}) {
   const entries = new Map();
   let polling = false;
   function publish(id, entry, running) {
@@ -72,27 +80,31 @@ function createBackgroundWorkStore({ getSnapshot, onChange = () => {}, now = Dat
     }
   }
   return {
-    begin(id, generation) {
+    begin(id, generation, epoch = crypto.randomBytes(24).toString('hex')) {
       id = String(id);
-      const entry = { generation, epoch: crypto.randomBytes(24).toString('hex'), agents: new Map(), stopped: new Set(), candidates: new Set(), running: false, commandRunning: false, session: null, retiredSessions: new Set() };
+      const entry = { generation, epoch, agents: new Map(), stopped: new Set(), candidates: new Set(), running: false, commandRunning: false, session: null, retiredSessions: new Set() };
       entries.set(id, entry);
       onChange(id, false);
       return entry.epoch;
     },
-    event({ termId, epoch, input }) {
+    recordHookEvent({ termId, epoch, input }) {
       const id = String(termId), entry = entries.get(id);
-      if (!entry || epoch !== entry.epoch || !input || !['SubagentStart', 'SubagentStop'].includes(input.hook_event_name)) return false;
-      if (getSnapshot(id, entry.generation)?.state !== 'running') return false;
-      const paths = agentTranscriptPaths(input, homeDir);
+      if (!entry || epoch !== entry.epoch || !input || !['SessionStart', 'SubagentStart', 'SubagentStop'].includes(input.hook_event_name)) return false;
+      if (getEntry(id, entry.generation)?.state !== 'running') return false;
+      const paths = agentTranscriptPaths(input.hook_event_name === 'SessionStart' ? { ...input, agent_id: 'session-start' } : input, homeDir);
       if (!paths || entry.retiredSessions.has(input.session_id)) return false;
       // /clear などでセッションが変わった後に、旧セッションの遅延通知を混ぜない。
       if (entry.session && entry.session !== input.session_id) {
-        if (input.hook_event_name !== 'SubagentStart') return false;
+        if (!['SessionStart', 'SubagentStart'].includes(input.hook_event_name)) return false;
         entry.retiredSessions.add(entry.session);
         entry.agents.clear();
         entry.stopped.clear();
       }
       entry.session = input.session_id;
+      if (input.hook_event_name === 'SessionStart') {
+        publish(id, entry, entry.commandRunning || entry.agents.size > 0);
+        return true;
+      }
       if (input.hook_event_name === 'SubagentStop') {
         entry.stopped.add(input.agent_id);
         entry.agents.delete(input.agent_id);
@@ -108,19 +120,19 @@ function createBackgroundWorkStore({ getSnapshot, onChange = () => {}, now = Dat
       polling = true;
       try {
         let table;
-        try { table = await listProcesses(); } catch (_) { table = null; }
+        try { if ([...entries].some(([id, entry]) => getEntry(id, entry.generation)?.state === 'running')) table = await listProcesses(); } catch (_) { table = null; }
         for (const [id, entry] of entries) {
-          const result = inspectBackgroundProcesses(getSnapshot(id, entry.generation), table, entry.candidates);
+          const result = inspectBackgroundProcesses(getEntry(id, entry.generation), table, entry.candidates);
           entry.candidates = result.candidates;
           entry.commandRunning = result.running;
           if (table && !result.alive) entry.agents.clear();
           refreshAgents(entry);
-          publish(id, entry, result.alive && (result.running || entry.agents.size > 0));
+          publish(id, entry, (table ? result.alive : getEntry(id, entry.generation)?.state === 'running') && (result.running || entry.agents.size > 0));
         }
       } finally { polling = false; }
     },
     has(id) { return entries.has(String(id)); },
-    get(id) { return entries.get(String(id))?.running === true; },
+    isRunning(id) { return entries.get(String(id))?.running === true; },
     delete(id) { entries.delete(String(id)); onChange(String(id), false); },
   };
 }

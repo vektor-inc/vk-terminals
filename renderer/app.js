@@ -71,7 +71,7 @@ const {
   waitingCheckDelayMs,
 } = window.VKWaitingState;
 const { deriveDisplayWaiting, deriveStatus, deriveDisplayStatus, shouldBeepForPaneWaiting } = window.VKStatusState;
-const { getStatusPresentation, resolvePaneNote } = window.VKStatusPresentation;
+const { getStatusPresentation, resolvePaneNote, BACKGROUND_WORK_REASON, getCloseConfirmation } = window.VKStatusPresentation;
 const { getApiServerStatusPresentation } = window.VKApiServerStatus;
 const { getPrBadgePresentation } = window.VKPrBadge;
 const { getPaneIdBadgeLabel } = window.VKPaneIdBadge;
@@ -2520,7 +2520,7 @@ function renderStashItem(id, idx, count) {
   head.className = 'stash-item-head';
   // セキュリティ: cwd（OS 由来）・status 等は escAttr / escText でエスケープする（renderLeaf と同流儀）。
   head.innerHTML = `
-    <span class="pane-badge pane-status" title="${t?.backgroundWorkRunning ? '裏で作業が動いています' : ''}" data-status="${escAttr(status)}" role="status" aria-live="polite"${statusAriaLabel ? ` aria-label="${escAttr(statusAriaLabel)}"` : ''}>${escText(statusLabel)}</span>
+    <span class="pane-badge pane-status" title="${t?.backgroundWorkRunning ? BACKGROUND_WORK_REASON : ''}" data-status="${escAttr(status)}" role="status" aria-live="polite"${statusAriaLabel ? ` aria-label="${escAttr(statusAriaLabel)}"` : ''}>${escText(statusLabel)}</span>
     <div class="stash-item-actions">
       <button class="btn btn-stash-up" title="上へ移動" aria-label="上へ移動">↑</button>
       <button class="btn btn-stash-down" title="下へ移動" aria-label="下へ移動">↓</button>
@@ -2581,7 +2581,7 @@ function updateStashItem(paneId) {
   if (badge) {
     const { label, ariaLabel, visualStatus } = getStatusPresentation(t.displayStatus || 'idle', t.apiPaneNote);
     badge.dataset.status = visualStatus;
-    badge.title = t.backgroundWorkRunning ? '裏で作業が動いています' : '';
+    badge.title = t.backgroundWorkRunning ? BACKGROUND_WORK_REASON : '';
     if (badge.textContent !== label) badge.textContent = label;
     if (ariaLabel && badge.getAttribute('aria-label') !== ariaLabel) badge.setAttribute('aria-label', ariaLabel);
     else if (!ariaLabel && badge.hasAttribute('aria-label')) badge.removeAttribute('aria-label');
@@ -2844,7 +2844,7 @@ function updatePaneStatus(paneId) {
   // paneNote（issue #536）が効いているときは、文言と色だけを差し替える（displayStatus は変えない）。
   const { label, ariaLabel, visualStatus } = getStatusPresentation(t.displayStatus || 'idle', t.apiPaneNote);
   badge.dataset.status = visualStatus;
-  badge.title = t.backgroundWorkRunning ? '裏で作業が動いています' : '';
+  badge.title = t.backgroundWorkRunning ? BACKGROUND_WORK_REASON : '';
   // 視覚: ラベルテキスト（ドットは CSS の ::before で描画）。
   // a11y: aria-label でステータスを明示し、aria-live="polite" により変化のみ読み上げ。
   //       idle は visibility:hidden により読み上げ対象外（aria-live 非発火）。
@@ -3108,11 +3108,8 @@ function openCloseConfirmDialog(paneId) {
   closeConfirmOpen = true;
 
   const t = terminals[paneId];
-  const { label } = getStatusPresentation(t?.displayStatus);
-  // running / waiting はその旨を明示し、それ以外（'always' 設定の idle）は汎用文にする。
-  const message = label
-    ? `このペインは「${label}」です${t?.backgroundWorkRunning ? "（裏で作業が動いています）" : ""}。閉じるとセッションは失われます。閉じますか？`
-    : 'このペインを閉じますか？';
+  const { label } = getStatusPresentation(t?.displayStatus, t?.apiPaneNote);
+  const message = getCloseConfirmation(label, t?.backgroundWorkRunning);
 
   const overlay = document.createElement('div');
   overlay.className = 'confirm-overlay';
@@ -3938,7 +3935,7 @@ function renderLeaf(node) {
   //   - paneIdLabel: termId（main.js の nextId 由来の番号）から作る。ステータスバッジの aria-live には含めず、独立した静的バッジにする（issue #460）
   header.innerHTML = `
     <span class="pane-badge pane-id-badge"${paneIdLabel ? ` title="${escAttr(paneIdLabel)}"` : ' hidden'}>${escText(paneIdLabel)}</span>
-    <span class="pane-badge pane-status" title="${t?.backgroundWorkRunning ? '裏で作業が動いています' : ''}" data-status="${escAttr(status)}" role="status" aria-live="polite"${statusAriaLabel ? ` aria-label="${escAttr(statusAriaLabel)}"` : ''}>${escText(statusLabel)}</span>
+    <span class="pane-badge pane-status" title="${t?.backgroundWorkRunning ? BACKGROUND_WORK_REASON : ''}" data-status="${escAttr(status)}" role="status" aria-live="polite"${statusAriaLabel ? ` aria-label="${escAttr(statusAriaLabel)}"` : ''}>${escText(statusLabel)}</span>
     <span class="pane-cwd" title="${escAttr(cwd)}">${escText(cwd)}</span>
     <div class="pane-actions">
       <span class="pane-badge auto-input-badge" hidden></span>

@@ -68,6 +68,7 @@ const {
   validateClaudeSettingsPresetForEngine,
   prepareClaudeSettingsPreset,
   prepareBackgroundWorkSettings,
+  cleanupBackgroundWorkSettings,
   buildClaudeSettingsArgument,
 } = require('./utils/claudeSettingsPreset');
 const {
@@ -197,7 +198,7 @@ const agentLifecycles = createAgentLifecycleStore();
 const { createBackgroundWorkStore } = require('./utils/backgroundWork');
 const backgroundSettings = new Map();
 const backgroundWork = createBackgroundWorkStore({
-  getSnapshot: (id, generation) => agentLifecycles.getSnapshot(id, generation),
+  getEntry: (id, generation) => agentLifecycles.getEntry(id, generation),
   onChange: (id, running) => {
     if (win && !win.isDestroyed()) win.webContents.send('terminal:background-work', id, running);
   },
@@ -211,24 +212,37 @@ function clearPaneBackgroundWork(id) {
   backgroundSettings.delete(id);
 }
 
-function preparePaneBackgroundWork(id, generation, engine, options) {
-  clearPaneBackgroundWork(id);
-  if (engine !== 'claude') return options;
-  const epoch = backgroundWork.begin(id, generation);
-  try {
-    const actualHost = apiServerRuntimeStatus.actualHost || '127.0.0.1';
-    const host = actualHost === '0.0.0.0' ? '127.0.0.1' : actualHost === '::' ? '[::1]' : actualHost.includes(':') ? `[${actualHost}]` : actualHost;
-    const prepared = prepareBackgroundWorkSettings(DATA_DIR, {
-      termId: id, epoch, token: API_TOKEN,
-      url: `http://${host}:${API_PORT}/api/background-work`,
-    }, options.claudeSettingsPath, { homeDir: os.homedir(), pathEnv: APP_ORIGINAL_PATH });
-    backgroundSettings.set(id, prepared);
-    return { ...options, backgroundWorkSettingsPath: prepared.filename };
-  } catch (_) {
-    // フックを配布できない環境でも、子プロセスの監視は継続する。
-    console.warn('Background work hooks unavailable; monitoring commands only');
-    return options;
+// 新設定の準備中は、停止に失敗しても旧監視を保つ。
+function stagePaneBackgroundWork(id, generation, engine, options) {
+  const epoch = crypto.randomBytes(24).toString('hex');
+  let prepared;
+  if (engine === 'claude') {
+    try {
+      const actualHost = apiServerRuntimeStatus.actualHost || '127.0.0.1';
+      const host = actualHost === '0.0.0.0' ? '127.0.0.1' : actualHost === '::' ? '[::1]' : actualHost.includes(':') ? `[${actualHost}]` : actualHost;
+      prepared = prepareBackgroundWorkSettings(DATA_DIR, {
+        termId: id, epoch, token: API_TOKEN,
+        url: `http://${host}:${API_PORT}/api/background-work`,
+      }, options.claudeSettingsPath, { homeDir: os.homedir(), pathEnv: APP_ORIGINAL_PATH });
+    } catch (_) {
+      console.warn(`${LOG_PREFIX} Background work hooks unavailable; monitoring commands only`);
+    }
   }
+  return {
+    options: prepared ? { ...options, backgroundWorkSettingsPath: prepared.filename } : options,
+    commit() {
+      clearPaneBackgroundWork(id);
+      if (engine === 'claude') backgroundWork.begin(id, generation, epoch);
+      if (prepared) backgroundSettings.set(id, prepared);
+    },
+    discard() { prepared?.discard(); },
+  };
+}
+
+function preparePaneBackgroundWork(id, generation, engine, options) {
+  const staged = stagePaneBackgroundWork(id, generation, engine, options);
+  staged.commit();
+  return staged.options;
 }
 
 // renderer が報告した画面と、その後の PTY 入出力が同じ状態かを条件付き Enter で照合する。
@@ -1616,6 +1630,8 @@ const restartApplication = createRestartApplication({
 
 function finalizeBeforeQuit() {
   stopWidgetWatcher();
+  clearInterval(backgroundWorkTimer);
+  for (const id of backgroundSettings.keys()) clearPaneBackgroundWork(id);
   try { fs.unlinkSync(STATE_FILE); } catch (e) {}
   if (httpServer) httpServer.close();
   agentLifecycles.close().catch((e) => {
@@ -2819,6 +2835,7 @@ ipcMain.on('terminal:renderer-ready', async () => {
 // ─── State reporting from renderer ───────────────────────────────────────────
 // データディレクトリを確保
 fs.mkdirSync(DATA_DIR, { recursive: true });
+cleanupBackgroundWorkSettings(DATA_DIR).catch(error => console.warn(`${LOG_PREFIX} Background work cleanup failed`, error.message));
 
 ipcMain.on('terminal:report-states', (event, states) => {
   cachedStates = states;
@@ -3118,13 +3135,18 @@ function startHttpApi() {
       }
     }
 
-    // 共通の認証ゲートを通ったフックだけを、起動ごとの epoch で照合する。
+    // 非 loopback は共通認証ゲート、全接続は Origin と起動ごとの epoch で照合する。
     if (req.method === 'POST' && url.pathname === '/api/background-work') {
+      if (isForbiddenOrigin(req)) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'forbidden origin' }));
+        return;
+      }
       let body = '';
       req.on('data', chunk => { body += chunk; if (body.length > 65536) req.destroy(); });
       req.on('end', () => {
         let accepted = false;
-        try { accepted = backgroundWork.event(JSON.parse(body)); } catch (_) {}
+        try { accepted = backgroundWork.recordHookEvent(JSON.parse(body)); } catch (_) {}
         res.writeHead(accepted ? 200 : 400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: accepted }));
       });
@@ -4246,7 +4268,8 @@ function startHttpApi() {
               res.end(JSON.stringify({ error: 'Claude settings preset hook is unavailable' }));
               return;
             }
-            launchOptions = preparePaneBackgroundWork(request.termId, currentGeneration + 1, request.engine, launchOptions);
+            const stagedBackgroundWork = stagePaneBackgroundWork(request.termId, currentGeneration + 1, request.engine, launchOptions);
+            launchOptions = stagedBackgroundWork.options;
             let launchHomeInUse = false;
             let startedGeneration = null;
             let startedLaunchToken = null;
@@ -4284,6 +4307,7 @@ function startHttpApi() {
                 return;
               }
               launchHomeInUse = true;
+              stagedBackgroundWork.commit();
               // renderer 側の terminals[paneId].engine を実体に追従させる（issue #394 の
               // 安藤レビュー指摘・MEDIUM）。restart-agent は同じペインで engine を入れ替えられる
               // 唯一の main→renderer 経路（安藤の確認結果）のため、成功時にだけ通知する。
@@ -4309,7 +4333,7 @@ function startHttpApi() {
             } finally {
               if (!launchHomeInUse) {
                 launchResolution.discard();
-                clearPaneBackgroundWork(request.termId);
+                stagedBackgroundWork.discard();
               }
               if (restartAgentOperations.get(request.termId) === operation) {
                 restartAgentOperations.delete(request.termId);

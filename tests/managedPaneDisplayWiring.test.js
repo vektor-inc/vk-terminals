@@ -10,7 +10,7 @@ const mobileSource = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'mob
 
 test('管理ペインの閉じる判断・文言とモバイル初回並びは displayStatus を参照する', () => {
   assert.match(appSource, /shouldConfirmClose\(confirmClosePref, _t\?\.displayStatus \|\| 'idle'\)/);
-  assert.match(appSource, /getStatusPresentation\(t\?\.displayStatus\)/);
+  assert.match(appSource, /getStatusPresentation\(t\?\.displayStatus, t\?\.apiPaneNote\)/);
   assert.match(mobileSource, /getStatusRank\(terms\[a\]\.displayStatus \|\| terms\[a\]\.status\)/);
   assert.match(mobileSource, /getStatusRank\(terms\[b\]\.displayStatus \|\| terms\[b\]\.status\)/);
 });
@@ -44,4 +44,22 @@ test('running のタイマーは裏の作業を保持し、API status と終了�
   context.recomputeStatus('pane');
   assert.equal(pane.displayStatus, 'idle');
   assert.ok(redraws > before);
+});
+
+
+test('モバイルの閉じる確認はペイン名とバッジの解決済みラベルを保つ', async () => {
+  const vm = require('node:vm');
+  const statusPresentation = require('../renderer/statusPresentation');
+  const start = mobileSource.indexOf('async function closeTerm(');
+  const end = mobileSource.indexOf('\n}\n', start) + 2;
+  let message;
+  const context = { cards: {}, statusPresentation, window: { confirm: value => { message = value; return false; } } };
+  vm.createContext(context);
+  vm.runInContext(mobileSource.slice(start, end), context);
+  // キャンセルしてAPIへ進まず、実際の確認文だけを検証する。
+  for (const label of ['完了', '見守り中', '入力待ち', '実行中']) {
+    context.cards.pane = { statusLabel: label, backgroundWorkRunning: true };
+    await context.closeTerm('pane', '作業ペイン');
+    assert.equal(message, '「作業ペイン」\n' + statusPresentation.getCloseConfirmation(label, true));
+  }
 });

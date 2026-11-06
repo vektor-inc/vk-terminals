@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const http = require('node:http');
 let body = '';
 process.stdin.setEncoding('utf8');
-process.stdin.on('data', chunk => { body += chunk; if (body.length > 65536) process.exit(0); });
+process.stdin.on('data', chunk => { body += chunk; if (Buffer.byteLength(body) > 8 * 1024 * 1024) process.exit(0); });
 process.stdin.on('end', () => {
   try {
     const config = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));

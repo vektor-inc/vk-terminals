@@ -90,6 +90,31 @@ function buildClaudeSettingsArgument(preset, settingsPath) {
   return `--settings '${settingsPath}'`;
 }
 
+// PID と開始時刻が一致する別インスタンスの設定には触れない。
+async function cleanupBackgroundWorkSettings(dataDir, listProcesses = require('./agentLifecycle').listProcessTable) {
+  const { isSameProcessStart } = require('./agentLifecycle');
+  let processes;
+  try { processes = await listProcesses(); } catch (_) { return; }
+  for (const name of fs.readdirSync(dataDir)) {
+    if (!/^background-work-[A-Za-z0-9]+$/.test(name)) continue;
+    const directory = path.join(dataDir, name);
+    try {
+      const stat = fs.lstatSync(directory);
+      if (!stat.isDirectory() || stat.isSymbolicLink() || (process.getuid && stat.uid !== process.getuid())) continue;
+      const ownerPath = path.join(directory, 'owner.json');
+      const ownerStat = fs.lstatSync(ownerPath);
+      if (!ownerStat.isFile() || ownerStat.isSymbolicLink() || ownerStat.size > 4096) continue;
+      const owner = JSON.parse(fs.readFileSync(ownerPath, 'utf8'));
+      if (!Number.isSafeInteger(owner.pid) || owner.pid <= 0 || !Number.isFinite(Date.parse(owner.lstart))) continue;
+      const live = processes.get(owner.pid);
+      if (live && isSameProcessStart(live.lstart, owner.lstart)) continue;
+      // ps 採取後に起動されたプロセスも保護する。再利用 PID は保守的に残す。
+      try { process.kill(owner.pid, 0); continue; } catch (error) { if (error.code !== 'ESRCH') continue; }
+      fs.rmSync(directory, { recursive: true, force: true });
+    } catch (_) {}
+  }
+}
+
 // 起動ごとに分離した設定へフックを足し、Stop など既存のイベントを保つ。
 function prepareBackgroundWorkSettings(dataDir, config, settingsPath, options = {}) {
   const node = resolveTrustedExecutableDetailed(fs, 'node', options.nodeSearchDirs || listToolSearchDirs(options.homeDir, options.pathEnv));
@@ -98,12 +123,14 @@ function prepareBackgroundWorkSettings(dataDir, config, settingsPath, options = 
   fs.chmodSync(directory, 0o700);
   const quote = value => `'${String(value).replaceAll("'", "'\\''")}'`;
   try {
+    const lstart = require('node:child_process').execFileSync('ps', ['-p', String(process.pid), '-o', 'lstart='], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C' } }).trim();
+    fs.writeFileSync(path.join(directory, 'owner.json'), JSON.stringify({ pid: process.pid, lstart }), { mode: 0o600, flag: 'wx' });
     const configPath = path.join(directory, 'connection.json');
     fs.writeFileSync(configPath, JSON.stringify(config), { mode: 0o600, flag: 'wx' });
     const settings = settingsPath ? JSON.parse(fs.readFileSync(settingsPath, 'utf8')) : {};
     settings.hooks = settings.hooks || {};
     const command = `${quote(node.path)} ${quote(path.join(__dirname, 'backgroundWorkHook.js'))} ${quote(configPath)}`;
-    for (const event of ['SubagentStart', 'SubagentStop']) {
+    for (const event of ['SessionStart', 'SubagentStart', 'SubagentStop']) {
       settings.hooks[event] = [...(settings.hooks[event] || []), { hooks: [{ type: 'command', command, timeout: 3 }] }];
     }
     const filename = path.join(directory, 'settings.json');
@@ -116,6 +143,7 @@ function prepareBackgroundWorkSettings(dataDir, config, settingsPath, options = 
 }
 
 module.exports = {
+  cleanupBackgroundWorkSettings,
   prepareBackgroundWorkSettings,
   ALLOWED_CLAUDE_SETTINGS_PRESETS,
   SAFE_LAUNCHER_PATH_PATTERN,

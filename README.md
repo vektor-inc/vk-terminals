@@ -641,13 +641,13 @@ curl -s http://127.0.0.1:13847/api/health
 
 #### 裏の作業と「実行中」の表示
 
-Claude Code ペインでは、バックグラウンドコマンド（Codex を含む）とサブエージェントの作業中も「実行中」を表示します。入力待ち・完了・見守り中のラベルが優先されます。バッジにカーソルを重ねると「裏で作業が動いています」と表示し、ペインを閉じる確認にも添えます。
+Claude Code ペインでは、バックグラウンドコマンド（Codex を含む）とサブエージェントの作業中も「実行中」を表示します。入力待ち・完了・見守り中のラベルが優先されます。バッジにカーソルを重ねると「裏で作業が動いています」と表示し、ペインを閉じる確認にも添えます。モバイルでは閉じる確認で理由を伝えます。
 
 通常の Claude Code 起動と API からの再起動に、開始・終了フックを自動で追加します。既存の Stop フックは保持します。フックを渡していないペインではコマンドの監視だけを行います。サブエージェントの記録は、最後の動作確認から10分で解除します。詳細は[裏の作業の判定仕様](docs/specification-background-work.md)を参照してください。
 
 #### `POST /api/background-work`
 
-アプリが配布する Claude Code フック専用の通知先です。共通の API 認証に加え、起動ごとの非公開 `epoch` と `termId` を照合します。本文の `input` は `SubagentStart` / `SubagentStop` のイベント名・`agent_id`・`session_id`・transcript のパスです。会話本文は送りません。成功は `200 {"ok":true}`、不正なイベントや古い起動の通知は `400 {"ok":false}`。手動操作では利用しません。
+アプリが配布する Claude Code フック専用の通知先です。非 loopback では共通の API 認証を通し、loopback 既定では Bearer 照合を省略します。全接続で Origin を確認し、起動ごとの非公開 `epoch` と `termId` を照合します。本文の `input` は `SessionStart` / `SubagentStart` / `SubagentStop` のイベント名・`agent_id`・`session_id`・transcript のパスです。会話本文は送りません。成功は `200 {"ok":true}`、不正なイベントや古い起動の通知は `400 {"ok":false}`。手動操作では利用しません。
 
 #### `GET /api/states`
 

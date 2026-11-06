@@ -354,7 +354,7 @@ function createAgentLifecycleStore(options = {}) {
       }
       return visible;
     },
-    getSnapshot(termId, generation) { const entry = states.get(String(termId)); return entry?.generation === generation ? entry : null; },
+    getEntry(termId, generation) { const entry = states.get(String(termId)); return entry?.generation === generation ? entry : null; },
     get(termId, generation) { const entry = states.get(String(termId)); return entry && entry.generation === generation ? entry.state : null; },
     delete(termId) { const id = String(termId); const entry = states.get(id); if (entry) stop(entry); states.delete(id); },
     async close() { closed = true; for (const entry of states.values()) stop(entry); states.clear(); },
@@ -370,4 +370,4 @@ function mergeAgentLifecycleStates(states, getGeneration, getLifecycleState) {
   }));
 }
 
-module.exports = { PS_ARGS, DEFAULT_ACQUISITION_TIMEOUT_MS, MARKER_PREFIX, READY_MARKER_PREFIX, MARKER_SUFFIX, parseProcessTable, listProcessTable, isDescendant, inspectLifecycle, buildPromptHookCommand, createAgentLifecycleStore, mergeAgentLifecycleStates };
+module.exports = { isSameProcessStart, PS_ARGS, DEFAULT_ACQUISITION_TIMEOUT_MS, MARKER_PREFIX, READY_MARKER_PREFIX, MARKER_SUFFIX, parseProcessTable, listProcessTable, isDescendant, inspectLifecycle, buildPromptHookCommand, createAgentLifecycleStore, mergeAgentLifecycleStates };

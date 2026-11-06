@@ -3503,7 +3503,7 @@ function runTaskCommand(argv, deps = {}) {
   const parsed = parseTaskCommand(argv);
   if (!parsed.ok) {
     if (Array.isArray(argv) && argv[0] === 'pane' && argv[1] === 'send') {
-      writeOut(JSON.stringify({ result: 'not-sent', reason: 'message-invalid', message: '送信しませんでした。ペイン番号または本文ファイルの指定が不正です。フラグを付けず、番号と作業フォルダ内の相対パスを指定してください。' }) + '\n');
+      writeOut(JSON.stringify({ result: 'not-sent', reason: 'message-invalid', message: '送信しませんでした。ペイン番号を指定してください。本文ファイルは作業フォルダ内の相対パスで、名前は英数字・_・-・. だけを使い、先頭は英数字か _ にしてください。' }) + '\n');
       return 2;
     }
     return reject(parsed.error);
@@ -3667,10 +3667,11 @@ function executePaneSend(parsed, deps, writeOut) {
   const token = env.VK_TASK_PANE_TOKEN;
   const port = Number(env.VK_TASK_PANE_PORT);
   const source = env.VK_TASK_PANE_SOURCE;
-  const failure = (uncertain = true) => { writeOut(JSON.stringify({ result: uncertain ? 'unconfirmed' : 'not-sent', reason: 'send-failed', message: uncertain ? '到達を確認できませんでした。送り直さず、送信先の入力欄と会話を確かめてください。' : '送信しませんでした。専用の送信経路がありません。ポリシー付きの Codex ペインで呼び出してください。' }) + '\n'); return 2; };
+  const failure = (uncertain = true) => { writeOut(JSON.stringify({ result: uncertain ? 'unconfirmed' : 'not-sent', reason: uncertain ? 'send-failed' : 'sender-unavailable', message: uncertain ? '到達を確認できませんでした。送り直さず、送信先の入力欄と会話を確かめてください。' : '送信しませんでした。この Codex ペインには依頼の送信機能が設定されていません。VK Terminals から起動した Codex ペインで実行してください。' }) + '\n'); return 2; };
   if (!/^[0-9a-f]{64}$/.test(token || '') || !/^[1-9][0-9]{0,8}$/.test(source || '') || !Number.isInteger(port) || port < 1 || port > 65535) return failure(false);
   return new Promise(resolve => {
     let finished = false;
+    let connected = false;
     const finish = value => { if (!finished) { finished = true; resolve(value); } };
     const request = (deps.http || http).request({ hostname: '127.0.0.1', port, method: 'POST', path: '/pane-send', agent: false,
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, timeout: 12000 }, response => {
@@ -3686,8 +3687,12 @@ function executePaneSend(parsed, deps, writeOut) {
       });
       response.on('error', () => { if (!finished) finish(failure()); });
     });
+    request.on('socket', socket => {
+      if (!socket.connecting) connected = true;
+      socket.once('connect', () => { connected = true; });
+    });
     request.on('timeout', () => request.destroy());
-    request.on('error', () => { if (!finished) finish(failure()); });
+    request.on('error', () => { if (!finished) finish(failure(connected)); });
     request.end(JSON.stringify({ target: parsed.target, file: parsed.file }));
   });
 }

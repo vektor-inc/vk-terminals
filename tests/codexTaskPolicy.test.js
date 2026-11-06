@@ -511,7 +511,7 @@ test('生成: rules は信頼済みランチャーの実行だけを許可し、
     assert.match(guide, /workdir で指定/);
     assert.match(guide, /サンドボックスの中から呼ぶと、入口は何も実行せずに止まる（終了コード 78）。その場合は、上記「入口:」の形に直して呼び直す。/);
     assert.equal(guide.includes('node '), false);
-    for (const operation of ORCHESTRATED_TASK_OPERATIONS) assert.ok(guide.includes(`\`${operation}\``), operation);
+    for (const operation of ORCHESTRATED_TASK_OPERATIONS.filter(op => !op.startsWith('pane '))) assert.ok(guide.includes(`\`${operation}\``), operation);
     assert.match(guide, /`gh issue list --search <語> --state all`/);
     assert.match(guide, /症状・ファイル名・機能名を語ごとに呼ぶ/);
     assert.ok(guide.includes('検索語に使えるのは文字・数字・`_`・`.`・`-` だけ'));

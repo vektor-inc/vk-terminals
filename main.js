@@ -380,11 +380,13 @@ function resolveCodexLaunchOptions(engine, options, { dryRun = false, cwd, termI
   let paneSend;
   if (!dryRun && engine === 'codex' && options.codexPolicy !== undefined && termId) {
     try {
-      const state = Object.values(cachedStates).find(value => String(value.termId) === termId);
-      paneSend = paneSendBroker.bind({ termId, generation, cwd: fs.realpathSync(cwd), name: state?.displayTitle || state?.apiTitle || state?.taskTitle || `ペイン ${termId}` });
-    } catch (_) { return { ok: false, error: 'pane send binding unavailable' }; }
+      paneSend = paneSendBroker.bind({ termId, generation, cwd: fs.realpathSync(cwd) }, { staged: true });
+    } catch (_) { console.warn(`${LOG_PREFIX} pane-send unavailable; launching Codex without it`); }
   }
-  return resolveCodexTaskPolicyLaunchOptions(engine, options, createCodexPolicyDeps({ dryRun, cwd, paneSend }));
+  const resolved = resolveCodexTaskPolicyLaunchOptions(engine, options, createCodexPolicyDeps({ dryRun, cwd, paneSend }));
+  if (!resolved.ok) { paneSend?.discard(); return resolved; }
+  const discard = resolved.discard;
+  return { ...resolved, activatePaneSend: () => paneSend?.activate(), discard: () => { paneSend?.discard(); return discard(); } };
 }
 
 // 検証済みプリセットだけを VK Terminals の管理領域へ書き出し、コマンド組み立て側でも再検証する。
@@ -487,8 +489,36 @@ const SEND_ENTER_SPLIT_DELAY_MS = 150;
 let cachedStates = {};  // renderer から受け取った状態キャッシュ
 // 通常 API の認証とは分離し、ペイン送信だけに使える資格情報を起動ごとに束縛する。
 const { createPaneSender, createPaneSendBroker } = require('./utils/paneSend');
+// 個々の問い合わせは期限内だけ有効。別ウィンドウからの応答は受け付けない。
+const paneScreenRequests = new Map();
+ipcMain.on('terminal:pane-screen-response', (event, requestId, state) => {
+  const pending = paneScreenRequests.get(requestId);
+  if (pending && event.sender === pending.sender) pending.finish(state);
+});
+function requestPaneScreen(id) {
+  if (!win || win.isDestroyed()) return Promise.resolve(null);
+  const generation = agentGenerations.get(id);
+  if (agentLifecycles.get(id, generation) !== 'running') return Promise.resolve(null);
+  const snapshot = conditionalTerminalInput.capture(id, generation);
+  if (!snapshot) return Promise.resolve(null);
+  return new Promise(resolve => {
+    const requestId = require('node:crypto').randomUUID();
+    const sender = win.webContents;
+    const finish = state => {
+      clearTimeout(timer); paneScreenRequests.delete(requestId);
+      resolve(agentLifecycles.get(id, generation) === 'running' ? state : null);
+    };
+    const timer = setTimeout(() => finish(null), 700);
+    paneScreenRequests.set(requestId, { sender, finish });
+    try { sender.send('terminal:pane-screen-request', requestId, id, snapshot); }
+    catch (_) { finish(null); }
+  });
+}
 const paneSendBroker = createPaneSendBroker(createPaneSender({
   getPty: id => ptys.get(id),
+  requestScreen: requestPaneScreen,
+  getSourceName: id => Object.values(cachedStates).find(state => String(state.termId) === id)?.apiTitle,
+  audit: record => console.log(`${LOG_PREFIX} pane-send ${JSON.stringify(record)}`),
   getGeneration: id => agentGenerations.get(id),
   guard: conditionalTerminalInput,
   getWriteVersion: id => conditionalTerminalInput.getWriteVersion(id),
@@ -2354,6 +2384,7 @@ function createTerminalPane(cwd, options = {}, guide = null) {
   // 専用 CODEX_HOME を作った後で組み立て・PTY 作成が失敗したら、使われないフォルダを回収する。
   let launchCommand = null;
   let discardLaunchHome = () => false;
+  let activatePaneSend = () => {};
   // タスク用ポリシー（専用 CODEX_HOME）で起動する Codex か。信頼確認の自動応答の判定に使う（issue #448）。
   let taskPolicyLaunch = false;
   if (guideLaunch) {
@@ -2368,6 +2399,7 @@ function createTerminalPane(cwd, options = {}, guide = null) {
       throw new Error(launchResolution.error);
     }
     discardLaunchHome = launchResolution.discard;
+    activatePaneSend = launchResolution.activatePaneSend;
     taskPolicyLaunch = isTaskPolicyCodexLaunch(resolvedEngine, launchResolution.options);
     try {
       const claudeLaunchOptions = resolveClaudeSettingsLaunchOptions(resolvedEngine, noClaude, {
@@ -2405,6 +2437,7 @@ function createTerminalPane(cwd, options = {}, guide = null) {
     throw error;
   }
 
+  activatePaneSend();
   const shellStartup = observePowerShellReady(ptyProcess, shell);
   const shellReady = shellStartup?.ready;
   if (shellReady) shellStartupReadiness.set(ptyProcess, shellReady);
@@ -2414,7 +2447,7 @@ function createTerminalPane(cwd, options = {}, guide = null) {
   conditionalTerminalInput.initialize(id);
   const writeToPty = ptyProcess.write.bind(ptyProcess);
   ptyProcess.write = (data) => {
-    conditionalTerminalInput.markChanged(id, true);
+    conditionalTerminalInput.markChanged(id, !(isTerminalQueryReplyOnly(data) || isTerminalFocusNotificationOnly(data)));
     // 通常入力・API 入力・自動 Enter 後は可視出力まで採り直しを抑止する。
     // 自動応答・フォーカス通知は予約を取り消すだけで、既存の抑止状態を維持する。
     silentWriteRefresher.noteInput(id, isTerminalQueryReplyOnly(data) || isTerminalFocusNotificationOnly(data));
@@ -4414,6 +4447,7 @@ function startHttpApi() {
                 return;
               }
               launchHomeInUse = true;
+              launchResolution.activatePaneSend();
               stagedBackgroundWork.commit();
               // renderer 側の terminals[paneId].engine を実体に追従させる（issue #394 の
               // 安藤レビュー指摘・MEDIUM）。restart-agent は同じペインで engine を入れ替えられる

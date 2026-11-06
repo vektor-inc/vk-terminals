@@ -9,6 +9,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const {
+  ACCEPTED_GH_OPERATIONS,
   captureMemberWorktree,
   FIXED_GIT_PREFIX,
   assertChainUnchanged,
@@ -106,6 +107,20 @@ test('検索語の文法: 記号と修飾子・論理演算子の拒否理由を
   }
   for (const term of ['and', 'AND', 'And', 'or', 'OR', 'oR', 'not', 'NOT', 'nOt', '[id].tsx', 'foo@bar', 'C++', 'author:foo', 'utils/file.js']) {
     assert.deepEqual(parseTaskCommand(['gh', 'issue', 'list', '--search', term]), { ok: false, error: 'task command rejected: invalid --search' }, term);
+  }
+});
+
+test('拒否: 受理集合にない gh 操作は引数にかかわらず操作名で拒否する', () => {
+  const groups = ['issue', 'pr', 'repo', 'label', 'release', 'run', 'workflow', 'secret', 'variable', 'gist', 'api', 'auth', 'project', 'search', 'ruleset', 'cache', 'org', 'config', 'extension'];
+  const actions = ['view', 'list', 'create', 'edit', 'close', 'reopen', 'delete', 'comment', 'merge', 'diff', 'checks', 'lock', 'unlock', 'pin', 'unpin', 'transfer', 'develop', 'status', 'review', 'ready', 'checkout', 'sync', 'clone', 'fork', 'rename', 'archive', 'exists', 'add-label', 'has-label', 'save-image', 'set', 'get', 'clear'];
+  // 対応表の外に追加された分岐も、引数の検証エラーと区別して検出する。
+  for (const group of groups) {
+    for (const action of actions) {
+      if (ACCEPTED_GH_OPERATIONS.includes(`gh ${group} ${action}`)) continue;
+      const result = parseTaskCommand(['gh', group, action, '5']);
+      assert.equal(result.ok, false, `${group} ${action}`);
+      assert.match(result.error, /is not allowed$/, `${group} ${action}`);
+    }
   }
 });
 

@@ -34,7 +34,6 @@
 //     削除は利用者の責務で、Codex が動いていないときに codex-task-policy フォルダを消してよい（docs/codex-task-policy.md）。
 //
 // fs / パス / 所有者 / ランダム名 / プロセス実行は引数で注入できるので、テストでは一時ディレクトリだけで検証できる。
-const { ISSUE_LIST_JSON_FIELDS, REPO_VIEW_JSON_FIELDS } = require('./codexTaskOps');
 const nodeFs = require('fs');
 const childProcess = require('child_process');
 const crypto = require('crypto');
@@ -42,6 +41,8 @@ const path = require('path');
 const { resolveGitHubReachability } = require('./githubReachability');
 const {
   FIXED_GIT_PREFIX,
+  ISSUE_LIST_JSON_FIELDS,
+  REPO_VIEW_JSON_FIELDS,
   TrustError,
   assertChainUnchanged,
   DEFAULT_REMOTE_BASE,

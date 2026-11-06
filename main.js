@@ -89,10 +89,10 @@ const { buildPtyEnv } = require('./utils/ptyEnv');
 // ログインシェルの PATH を本体・ペインへ反映する（issue #454）。
 const { applyLoginShellPath, appendUserLocalBin } = require('./utils/loginShellPath');
 const { pickTerminalShell } = require('./utils/terminalShell');
+const { buildChangeDirectoryCommand, buildFileDropText } = require('./utils/shellQuoting');
 const {
   createAgentGenerationStore,
   validateRestartAgentRequest,
-  quoteShellArgument,
   stopAgentChildren,
 } = require('./utils/restartAgent');
 const { resolveInstanceId, buildHealthResponse } = require('./utils/instanceId');
@@ -2723,6 +2723,11 @@ ipcMain.on('terminal:input', (event, id, data) => {
   }
 });
 
+// 画面側はシェルの種類を持たず、この PTY を起動したシェルの情報で引用を決める。
+ipcMain.handle('terminal:format-dropped-paths', (_event, id, paths) => (
+  buildFileDropText(paths, ptyShellExecutables.get(id))
+));
+
 ipcMain.on('terminal:resize', (event, id, cols, rows) => {
   const p = ptys.get(id);
   if (p) {
@@ -2902,7 +2907,7 @@ async function listProcessesForRestart() {
   return stdout;
 }
 
-async function restartAgentInTerminal(ptyProcess, request, launchOptions, lifecycleLaunch) {
+async function restartAgentInTerminal(ptyProcess, request, launchOptions, lifecycleLaunch, changeDirectoryCommand) {
   // stop 用 snapshot の取得中にも、作成時の遅延 launch は進み得る。公開 generation は
   // 停止成功まで進めず、内部 token だけを最初の await より前に同期更新して旧 write を止める。
   lifecycleLaunch.cancelPending();
@@ -2955,9 +2960,9 @@ async function restartAgentInTerminal(ptyProcess, request, launchOptions, lifecy
   restartTrustResponders.set(request.termId, trustResponder);
 
   // cwd は制御文字を拒否して存在確認済みでも、この write までに名前が変わる可能性がある。
-  // 残る通常文字は `cd --` と単一引数クォートで一つの引数として扱う。
-  if (request.cwd !== undefined) {
-    ptyProcess.write(`cd -- ${quoteShellArgument(request.cwd)}\r`);
+  // 残る通常文字は、ペインのシェルに合わせた移動コマンドで一つの引数として扱う。
+  if (changeDirectoryCommand !== null) {
+    ptyProcess.write(`${changeDirectoryCommand}\r`);
   }
   const { command, modelIgnored } = buildEngineAwareLaunchCommand(request.engine, request.model, launchOptions);
   if (modelIgnored) {
@@ -4262,6 +4267,16 @@ function startHttpApi() {
               return;
             }
 
+            // ペインのシェルで表せない cwd は、AI を止める前に断る。
+            const changeDirectoryCommand = request.cwd === undefined
+              ? null
+              : buildChangeDirectoryCommand(request.cwd, ptyShellExecutables.get(request.termId));
+            if (request.cwd !== undefined && changeDirectoryCommand === null) {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'invalid cwd' }));
+              return;
+            }
+
             // 専用 CODEX_HOME は、直列化の待機・存在確認・世代確認を通った後、AI を止める前に用意する。
             // 同期処理だけで operation の登録まで進むので、待機ループとの間に隙間は生じない。
             // 停止に失敗する・PTY が消える・起動コマンドを書けない場合は、使われなかった専用フォルダを回収する。
@@ -4312,7 +4327,7 @@ function startHttpApi() {
             // 最初の非同期待機より前に旧画面の識別値を無効化し、停止処理中のペインへ
             // 直前の確認結果を使った Enter が割り込まないようにする。
             conditionalTerminalInput.markChanged(request.termId);
-            const operation = restartAgentInTerminal(ptyProcess, request, launchOptions, lifecycleLaunch);
+            const operation = restartAgentInTerminal(ptyProcess, request, launchOptions, lifecycleLaunch, changeDirectoryCommand);
             restartAgentOperations.set(request.termId, operation);
             try {
               const stopped = await operation;

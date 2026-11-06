@@ -61,6 +61,7 @@ const INVOKE_CHANNELS = new Set([
   'settings:api-token-info',
   'settings:reissue-api-token',
   'terminal:create',
+  'terminal:format-dropped-paths',
   'help:check',
   'help:document',
   'help:open-guide',

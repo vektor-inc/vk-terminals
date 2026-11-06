@@ -1,6 +1,8 @@
 # Changelog
 
 - [ 不具合修正 ] Claude Code の裏でコマンドやサブエージェントが動いていても「実行中」が消える不具合を修正（[#561](https://github.com/vektor-inc/vk-terminals/issues/561)）
+- [ セキュリティ修正 ] ペインへドロップしたファイルのパスを、シェルの種類に合わせて入力するように変更（[#564](https://github.com/vektor-inc/vk-terminals/issues/564)）
+- [ セキュリティ修正 ] `POST /api/restart-agent` の `cwd` を、シェルの種類に合わせて移動するように変更
 
 ## 1.93.0
 

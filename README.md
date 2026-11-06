@@ -1113,6 +1113,7 @@ curl -s -X POST http://127.0.0.1:13847/api/restart-agent \
 
 - 成功時: `200 {"ok":true,"termId":"<ID>","stopped":true,"generation":<次の世代>}`
 - JSON・必須値・`engine`・`model`・`cwd` が不正: `400 {"error":"<理由>"}`
+- `cwd` をペインのシェルで指定できない: `400 {"error":"invalid cwd"}`（実行中の AI は止めません）
 - Origin が不正: `403 {"error":"forbidden origin"}`
 - 指定ペインが存在しない: `404 {"error":"terminal <id> not found"}`
 - 世代が一致しない: `409 {"error":"generation mismatch","currentGeneration":<現在の世代>}`

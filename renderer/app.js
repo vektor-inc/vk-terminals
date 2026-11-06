@@ -1357,6 +1357,25 @@ function showTerminalLinkOpenedToast(url) {
   showGenericToast(host ? `${host} を開きました` : '外部リンクを開きました');
 }
 
+// ドロップされたパスは main でペインのシェルに合わせて変換してから入力欄へ送る。
+// 待っている間にペインが閉じた・作り直された場合は、別の端末へ送らない。
+async function insertDroppedPaths(paneId, termId, paths) {
+  let result;
+  try {
+    result = await VKIpc.invoke('terminal:format-dropped-paths', termId, paths);
+  } catch (_e) {
+    showGenericToast('ファイルのパスを入力できませんでした');
+    return;
+  }
+  if (result.text && terminals[paneId]?.termId === termId) {
+    VKIpc.send('terminal:input', termId, result.text);
+    markPaneInput(paneId);
+  }
+  if (result.rejectedCount > 0) {
+    showGenericToast(`${result.rejectedCount} 件のファイルは、このペインへ入力できませんでした`);
+  }
+}
+
 // ホバー中のツールチップ本体。全ペイン共通で 1 つだけ用意し、都度使い回す
 // （externalUrlToast と同じ考え方。document.body 直下に置き、#root の render() による
 // 差し替えの影響を受けないようにする）。
@@ -4110,19 +4129,13 @@ function renderLeaf(node) {
     const files = Array.from(e.dataTransfer.files);
     if (files.length === 0) return;
 
-    // Always wrap in single quotes for shell safety (handles spaces, quotes, and all metacharacters)
     const paths = files
       .map(f => VKFiles.getPath(f))
-      .filter(Boolean)
-      .map(p => `'${p.replace(/'/g, "'\\''")}'`);
+      .filter(Boolean);
 
-    const text = paths.join(' ');
     focusPane(node.id);
     const t = terminals[node.id];
-    if (t) {
-      VKIpc.send('terminal:input', t.termId, text);
-      markPaneInput(node.id);
-    }
+    if (t) insertDroppedPaths(node.id, t.termId, paths);
 
     // ドロップ完了フラッシュフィードバック
     el.classList.add('drop-flash');

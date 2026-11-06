@@ -36,9 +36,11 @@ mutations.push(
   ['source child root', removeLine("throw new Error('source root changed')")],
   ['source child nofollow', (s) => s.replaceAll('fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW', 'fs.constants.O_RDONLY')],
   ['source child directory', (s) => s.replace('fs.constants.O_NOFOLLOW | fs.constants.O_DIRECTORY);', 'fs.constants.O_NOFOLLOW);')],
+  ['source child name', removeLine("throw new Error('source name changed')")],
   ['source child nlink', (s) => s.replace('!stat.isFile() || stat.nlink !== 1 || stat.size > limit', '!stat.isFile() || stat.size > limit')],
 );
 if (process.platform === 'linux') mutations.push(
+  ['source name', removeLine("throw new TrustError('source name changed')")],
   ['source fstat', removeLine("throw new TrustError('source changed after verification')")],
   ['parent descriptor', (s) => s.replace('directoryFds: linux ? [parentFd] : []', 'directoryFds: []')],
   ['snapshot transfer', (s) => s.replace('allowWrite: [parent], snapshot, directoryFds', 'allowWrite: [parent], directoryFds')],

@@ -655,6 +655,14 @@ function sourceChildModel(change = '') {
       if (level < 2 && change === `kind-${level}`) return stat(actual.ino, false);
       return actual;
     },
+    lstatSync: (name) => {
+      assert.equal(name, target.source.split('/').at(-1));
+      if (change === 'name-missing') throw new Error('missing source');
+      if (change === 'name-replaced') return stat(999, false);
+      if (change === 'name-kind') return stat(4);
+      if (change === 'name-dev') return { ...stat(4, false), dev: 2 };
+      return { ...stat(4, false), nlink: change === 'name-nlink' ? 2 : 1 };
+    },
     readSync: (_fd, buffer, offset) => { if (offset) return 0; buffer.write('data'); return 4; },
     closeSync: (fd) => closed.push(fd),
   };
@@ -669,7 +677,7 @@ test('生成元の固定子は各段の flags と記述子を検証してバイ�
   assert.equal(result.status, 0);
   assert.deepEqual(result.output, Buffer.from('data'));
 });
-for (const stage of ['cwd-0', 'cwd-1', 'cwd-2', 'open-0', 'open-1', 'open-2', 'kind-0', 'kind-1', 'nlink']) {
+for (const stage of ['cwd-0', 'cwd-1', 'cwd-2', 'open-0', 'open-1', 'open-2', 'kind-0', 'kind-1', 'nlink', 'name-missing', 'name-replaced', 'name-kind', 'name-dev', 'name-nlink']) {
   test(`生成元の固定子は段階変更を拒否する: ${stage}`, () => {
     const result = sourceChildModel(stage);
     assert.equal(result.status, 2);
@@ -823,3 +831,60 @@ test('Git 検証後も worktree トップの実体を保持して照合する', 
   assert.match(result.error, /worktree root changed|source could not be verified/);
   assert.equal(fs.readFileSync(f.destination, 'utf8'), 'original\n');
 });
+
+for (const change of ['missing', 'replaced', 'kind', 'dev', 'nlink']) {
+  test(`Linux は読み取り前の生成元の名前を照合する: ${change}`, { skip: process.platform !== 'linux' || !realCapability.available }, (t) => {
+    const f = fixture(t);
+    const ino = fs.statSync(f.source).ino;
+    let reads = 0;
+    let checked = false;
+    let sourceRead = false;
+    const fakeFs = new Proxy(fs, { get(object, key) {
+      if (key === 'fstatSync') return (fd) => {
+        const actual = fs.fstatSync(fd);
+        if (actual.ino === ino && ++reads === 2) {
+          if (change === 'missing') fs.unlinkSync(f.source);
+          if (change === 'replaced') { fs.renameSync(f.source, f.source + '-previous'); fs.writeFileSync(f.source, 'replacement'); }
+          checked = true;
+        }
+        return actual;
+      };
+      if (key === 'lstatSync') return (file, ...args) => {
+        const actual = fs.lstatSync(file, ...args);
+        if (!checked || !String(file).startsWith('/proc/self/fd/') || path.basename(file) !== path.basename(f.source)) return actual;
+        return new Proxy(actual, { get(obj, name) {
+          if (change === 'kind' && name === 'isFile') return () => false;
+          if (change === 'dev' && name === 'dev') return obj.dev + 1;
+          if (change === 'nlink' && name === 'nlink') return 2;
+          return typeof obj[name] === 'function' ? obj[name].bind(obj) : obj[name];
+        } });
+      };
+      if (key === 'readSync') return (fd, ...args) => { if (fs.fstatSync(fd).ino === ino) sourceRead = true; return fs.readSync(fd, ...args); };
+      return object[key];
+    } });
+    const result = f.invoke(undefined, { fs: fakeFs });
+    assert.equal(checked, true);
+    assert.equal(result.status, 2);
+    assert.equal(sourceRead, false);
+    assert.equal(fs.readFileSync(f.destination, 'utf8'), 'original\n');
+  });
+}
+
+for (const change of ['missing', 'replaced']) {
+  test(`macOS 固定子は読み取り前の名前の変更を拒否する: ${change}`, { skip: process.platform !== 'darwin' }, (t) => {
+    const f = fixture(t);
+    const root = fs.statSync(f.worktree);
+    const input = JSON.stringify({ rootIdentity: { dev: root.dev, ino: root.ino }, segments: target.source.split('/'), limit: 256 });
+    const script = `const fs = require('node:fs');
+      const original = fs.fstatSync;
+      fs.fstatSync = (fd) => { const stat = original(fd); if (stat.isFile()) {
+        if (${JSON.stringify(change)} === 'missing') fs.unlinkSync(${JSON.stringify(f.source)});
+        else { fs.renameSync(${JSON.stringify(f.source)}, ${JSON.stringify(f.source + '-previous')}); fs.writeFileSync(${JSON.stringify(f.source)}, 'replacement'); }
+      } return stat; };
+      (${protectedSourceChild.toString()})();`;
+    const result = cp.spawnSync(process.execPath, ['-e', script], { cwd: f.worktree, input });
+    assert.equal(result.status, 2);
+    assert.equal(result.stdout.length, 0);
+    assert.equal(fs.readFileSync(f.destination, 'utf8'), 'original\n');
+  });
+}

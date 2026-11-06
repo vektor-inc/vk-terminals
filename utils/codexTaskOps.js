@@ -1640,6 +1640,9 @@ function protectedSourceChild() {
     held.push(fd);
     const stat = fs.fstatSync(fd);
     if (!stat.isFile() || stat.nlink !== 1 || stat.size > limit) throw new Error('invalid source file');
+    // 読み取り前に親からの相対名と記述子を照合する。
+    const current = fs.lstatSync(segments[segments.length - 1]);
+    if (!current.isFile() || current.dev !== stat.dev || current.ino !== stat.ino || current.nlink !== 1) throw new Error('source name changed');
     // 読み取り量を上限 + 1 バイトに固定する。
     const buffer = Buffer.alloc(limit + 1);
     let size = 0;
@@ -1716,6 +1719,7 @@ function executeProtectedSync({ parsed, binding, cwd, fsImpl, runGit, spawnSync,
     const linux = (deps.platform || process.platform) === 'linux';
     const snapshot = [];
     let sourceFd;
+    let sourceParentFd;
     let parentFd;
     let targetStat;
     // Linux は worktree の記述子から各要素を一段ずつ開く。
@@ -1747,7 +1751,7 @@ function executeProtectedSync({ parsed, binding, cwd, fsImpl, runGit, spawnSync,
         }
         if (stat.isSymbolicLink() || (file ? !stat.isFile() || stat.nlink !== 1 : !stat.isDirectory())) throw new TrustError('source or target is a link or not a regular path');
         snapshot.push({ path: current, dev: stat.dev, ino: stat.ino, file });
-        if (file && relative === entry.source) sourceFd = opened;
+        if (file && relative === entry.source) { sourceFd = opened; sourceParentFd = parent; }
         if (file && relative === entry.target) { parentFd = parent; targetStat = stat; }
         parent = opened;
       }
@@ -1766,6 +1770,9 @@ function executeProtectedSync({ parsed, binding, cwd, fsImpl, runGit, spawnSync,
       const expected = snapshot.find((entry) => entry.path === source);
       if (!stat.isFile() || stat.nlink !== 1 || stat.dev !== expected.dev || stat.ino !== expected.ino) throw new TrustError('source changed after verification');
       if (stat.size > PROTECTED_SYNC_MAX_SOURCE_BYTES) throw new TrustError('protected-sync source exceeds 256 KiB');
+      // 読み取り前に親の記述子からの相対名を照合する。
+      const current = fsImpl.lstatSync(`/proc/self/fd/${sourceParentFd}/${path.basename(entry.source)}`);
+      if (!current.isFile() || current.dev !== stat.dev || current.ino !== stat.ino || current.nlink !== 1) throw new TrustError('source name changed');
       // 上限 + 1 バイトまでに制限し、並行した追記でも無制限に読み込まない。
       const buffer = Buffer.alloc(PROTECTED_SYNC_MAX_SOURCE_BYTES + 1);
       let size = 0;

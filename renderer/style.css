@@ -2015,6 +2015,7 @@ button.sidebar-section-header:hover {
   padding: 0;
   overflow: hidden;
   clip: rect(0 0 0 0);
+  clip-path: inset(50%);
   white-space: nowrap;
   border: 0;
 }
@@ -2055,6 +2056,29 @@ button.sidebar-section-header:hover {
   border-radius: var(--vktm--border-radius--md);
   background: #0d1117;
   overflow: hidden;
+}
+/* 親子カード
+   ========================================================================== */
+.task-item:has(+ .task-item[data-depth]) { margin-bottom: 3px; }
+.task-item[data-depth="1"],
+.task-item[data-depth="2"] {
+  position: relative;
+  max-width: 100%;
+  box-sizing: border-box;
+  border-left: 2px solid var(--vktm--color--border-interactive);
+}
+.task-item[data-depth="1"] { margin-left: 12px; }
+.task-item[data-depth="2"] { margin-left: 24px; }
+.task-item-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 .task-item-title {
   display: block;

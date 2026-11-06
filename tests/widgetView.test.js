@@ -1777,3 +1777,147 @@ test('render: PR 以外の rel（queue / target）は state が付いても PR �
   assert.equal(title.title, 't\nhttps://example.com/issues/1');
   assert.equal(groupsEl.querySelectorAll((el) => /is-pr-/.test(el.className)).length, 0);
 });
+
+test('render: フィルタ後に親直下へ移し、状態・親バッジ・兄弟順・孫の深さを保つ', () => {
+  const widget = sanitized([
+    { id: 'ready', label: '実行待ち', tone: 'info', items: [
+      { id: 'c2', parentId: 'p', title: '子2', assignee: 'me', links: [{ rel: 'queue', url: 'https://github.com/org/repo/issues/2' }], badges: [{ label: '親 #1' }] },
+      { id: 'p', title: '#1 親', assignee: 'me', links: [{ rel: 'queue', url: 'https://github.com/org/repo/issues/1' }] },
+      { id: 'other', title: '別', assignee: 'me' },
+    ] },
+    { id: 'run', label: '実行中', tone: 'progress', items: [
+      { id: 'c1', parentId: 'p', title: '子1', assignee: 'me', links: [{ rel: 'queue', url: 'https://github.com/org/repo/issues/3' }], statusLabel: '見守り中', badges: [{ label: '親 #1' }] },
+      { id: 'grand', parentId: 'c1', title: '孫', assignee: 'me' },
+      { id: 'great', parentId: 'grand', title: '曾孫', assignee: 'me' },
+    ] },
+  ]);
+  const { groupsEl, view } = makeView();
+  view.render(widget);
+  const cards = groupsEl.querySelectorAll((el) => el.classList.contains('task-item'));
+  assert.deepEqual(cards.map((card) => card.dataset.id), ['p', 'c2', 'c1', 'grand', 'great', 'other']);
+  assert.deepEqual(cards.map((card) => card.dataset.depth || '0'), ['0', '1', '1', '2', '2', '0']);
+  assert.deepEqual(cards[2].querySelectorAll((el) => el.classList.contains('widget-badge')).map((el) => [el.textContent, el.dataset.tone]), [['見守り中', 'progress']]);
+  assert.equal(cards[1].textContent.includes('親 #1'), false);
+  assert.match(cards[2].textContent, /「#1 親」のサブタスク。状態: 見守り中/);
+  assert.equal(cards[3].children[0].textContent, '「子1」のサブタスク。状態: 実行中');
+  assert.equal(cards[3].children[1].tagName, 'DIV');
+});
+
+test('render: 親不在・不一致・循環・フィルタで消えた親は元のグループに通常表示する', () => {
+  const widget = sanitized([
+    { id: 'ready', label: '実行待ち', items: [
+      { id: 'missing', parentId: 'none', badges: [{ label: '親 #99' }], assignee: 'me', links: [{ rel: 'queue', url: 'https://example.com/issues/1', label: '開く' }] },
+      { id: 'a', parentId: 'b', badges: [{ label: '親 #2' }], assignee: 'me' },
+      { id: 'b', parentId: 'a', badges: [{ label: '親 #1' }], assignee: 'me' },
+      { id: 'hidden-parent', assignee: 'other' },
+      { id: 'child', parentId: 'hidden-parent', badges: [{ label: '親 #3' }], assignee: 'me' },
+    ] },
+  ]);
+  const { groupsEl, view } = makeView({ getFilterMode: () => 'self' });
+  view.render(widget);
+  const cards = groupsEl.querySelectorAll((el) => el.classList.contains('task-item'));
+  assert.deepEqual(cards.map((card) => card.dataset.id), ['missing', 'a', 'b', 'child']);
+  for (const card of cards) {
+    assert.equal(card.dataset.depth, undefined);
+    assert.match(card.textContent, /親 #/);
+  }
+});
+
+test('render: parentId が無い宣言のカード順と DOM 構造は従来どおり', () => {
+  const { groupsEl, view } = makeView();
+  view.render(sanitized([{ id: 'g', label: '待機', items: [{ id: '1' }, { id: '2' }] }]));
+  const list = groupsEl.children[0].children[0];
+  assert.equal(list.tagName, 'UL');
+  assert.deepEqual(list.children.map((card) => card.dataset.id), ['1', '2']);
+  assert.equal(list.children[0].children[0].classList.contains('task-item-title'), true);
+});
+
+
+test('render: 5000件の一直線の親子を全件描画し、集計を保つ', () => {
+  // 宣言の一グループ1000件の制限を守って深い連鎖を作る。
+  const groups = Array.from({ length: 5 }, (_, g) => ({ id: String(g), label: '待機',
+    items: Array.from({ length: 1000 }, (_, i) => {
+      const id = g * 1000 + i;
+      return { id, parentId: id ? id - 1 : undefined, title: String(id) };
+    }),
+  }));
+  const { groupsEl, view } = makeView();
+  const result = view.render(sanitized(groups));
+  const cards = groupsEl.querySelectorAll((el) => el.classList.contains('task-item'));
+  assert.equal(cards.length, 5000);
+  assert.equal(cards[4999].dataset.id, '4999');
+  assert.equal(cards[4999].dataset.depth, '2');
+  assert.equal(result.visibleItems, 5000);
+  assert.equal(result.totalItems, 5000);
+});
+
+test('render: 循環へ到達する枝も元の位置に通常表示する', () => {
+  const { groupsEl, view } = makeView();
+  view.render(sanitized([{ id: 'g', label: '待機', items: [
+    { id: 'branch', parentId: 'a' }, { id: 'a', parentId: 'b' }, { id: 'b', parentId: 'a' },
+  ] }]));
+  const cards = groupsEl.children[0].children[0].children;
+  assert.deepEqual(cards.map((card) => card.dataset.id), ['branch', 'a', 'b']);
+  assert.ok(cards.every((card) => card.dataset.depth === undefined));
+});
+
+test('render: 親タイトルが空なら親名の括弧を含めずサブタスクと状態を説明する', () => {
+  for (const title of ['', '  \t\n　', '\u202e\n']) {
+    const { groupsEl, view } = makeView();
+    view.render(sanitized([{ id: 'g', label: '待機', items: [
+      { id: 'parent', title },
+      { id: 'child', parentId: 'parent', title: '子', statusLabel: '見守り中' },
+    ] }]));
+    const child = groupsEl.children[0].children[0].children[1];
+    assert.equal(child.children[0].textContent, 'サブタスク。状態: 見守り中');
+  }
+});
+
+test('render: 子の各操作に安全な親タイトルと状態を関連付け、編集フォーカスと集計を保つ', () => {
+  const widget = sanitized([{ id: 'g', label: '待機', items: [
+    { id: 12, title: '親\u202e\nタイトル', assignee: 'me' },
+    { id: 13, parentId: 12, title: '子', assignee: 'me', editable: true,
+      links: [{ rel: 'queue', url: 'https://github.com/org/repo/issues/13' }, { rel: 'pr', url: 'https://example.com' }],
+      controls: [{ type: 'select', field: 'status', current: 'ready', options: [{ value: 'ready', label: '待機' }] }] },
+    { id: 'hidden', assignee: 'other' },
+  ] }]);
+  const { groupsEl, view, doc } = makeView({ getFilterMode: () => 'self' });
+  const first = view.render(widget);
+  const child = () => groupsEl.children[0].children[0].children[1];
+  const description = child().children[0];
+  assert.equal(description.textContent, '「親タイトル」のサブタスク。状態: 待機');
+  const operations = child().querySelectorAll((el) => ['A', 'BUTTON'].includes(el.tagName));
+  assert.ok(operations.length >= 3);
+  for (const operation of operations) assert.equal(operation.getAttribute('aria-describedby'), description.id);
+  const edit = operations.find((el) => el.classList.contains('task-item-edit'));
+  edit.focus();
+  const second = view.render(widget);
+  const restored = child().querySelectorAll((el) => el.classList.contains('task-item-edit'))[0];
+  assert.notEqual(restored, edit);
+  assert.equal(doc.activeElement, restored);
+  assert.notEqual(child().children[0].id, description.id);
+  assert.equal(first.visibleItems, 2);
+  assert.equal(first.totalItems, 3);
+  assert.equal(second.visibleItems, first.visibleItems);
+  assert.equal(second.totalItems, first.totalItems);
+  // 別ウィジェットにも説明IDを使い回さない。
+  const other = makeView();
+  other.view.render(widget);
+  assert.notEqual(other.groupsEl.children[0].children[0].children[1].children[0].id, child().children[0].id);
+});
+
+test('render: 対象issue番号と一致する親バッジだけ除き、照合不能・別番号・別リポジトリを残す', () => {
+  const { groupsEl, view } = makeView();
+  view.render(sanitized([{ id: 'g', label: '待機', items: [
+    { id: 'p', title: '#1 親', links: [{ rel: 'queue', url: 'https://github.com/org/repo/issues/1' }] },
+    { id: 'c', parentId: 'p', links: [{ rel: 'queue', url: 'https://github.com/org/repo/issues/2' }], badges: [{ label: '親 #1' }, { label: '親 #99' }] },
+    { id: 'other', parentId: 'p', links: [{ rel: 'queue', url: 'https://github.com/org/other/issues/2' }], badges: [{ label: '親 other#1' }] },
+    { id: 'unknown-parent', title: '番号不明' },
+    { id: 'unknown', parentId: 'unknown-parent', badges: [{ label: '親 #1' }] },
+  ] }]));
+  const cards = groupsEl.children[0].children[0].children;
+  assert.equal(cards[1].textContent.includes('親 #1'), false);
+  assert.ok(cards[1].textContent.includes('親 #99'));
+  assert.ok(cards[2].textContent.includes('親 other#1'));
+  assert.ok(cards[4].textContent.includes('親 #1'));
+});

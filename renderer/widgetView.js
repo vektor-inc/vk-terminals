@@ -47,6 +47,9 @@
     'merged': { merged: true, options: {}, cls: 'is-pr-merged' },
   });
 
+  let relationshipSequence = 0;
+  const SPOKEN_TEXT_STRIP_RE = /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
+
   const DEFAULT_STRINGS = Object.freeze({
     pending: '反映待ち',
     sendError: '送信に失敗しました（再試行してください）',
@@ -750,16 +753,33 @@
       return panel;
     }
 
-    function buildItem(item, group) {
+    function buildItem(item, group, depth, parent) {
       const li = el('li', 'task-item');
       li.dataset.id = item.id;
+      let relationshipId = null;
+      if (depth) {
+        li.dataset.depth = String(Math.min(depth, 2));
+        const relationship = el('span', 'task-item-sr-only');
+        relationshipId = `task-relationship-${++relationshipSequence}`;
+        relationship.id = relationshipId;
+        const parentTitle = parent.title.replace(SPOKEN_TEXT_STRIP_RE, '').trim();
+        const status = (item.statusLabel || group.label).replace(SPOKEN_TEXT_STRIP_RE, '');
+        // 親タイトルが空なら、空の括弧を読み上げ文へ含めない。
+        relationship.textContent = parentTitle
+          ? `「${parentTitle}」のサブタスク。状態: ${status}`
+          : `サブタスク。状態: ${status}`;
+        li.appendChild(relationship);
+      }
       if (item.emphasis) li.dataset.emphasis = item.emphasis;
 
       li.appendChild(buildTitle(item));
 
       const head = el('div', 'task-item-head');
       head.appendChild(buildStatusBadge(group, item));
-      for (const badge of (item.badges || [])) head.appendChild(buildBadge(badge));
+      for (const badge of (item.badges || [])) {
+        if (parent && badge.label === parentBadgeLabel(parent)) continue;
+        head.appendChild(buildBadge(badge));
+      }
       if (item.assignee) {
         const assignee = el('span', 'task-item-assignee');
         assignee.textContent = `${strings.assigneePrefix}${item.assignee}`;
@@ -843,7 +863,25 @@
         }
         li.appendChild(feedback);
       }
+      // Tab 移動先にも親子関係と状態を説明する。リンクなしでは span を読み順に残す。
+      if (relationshipId) {
+        const stack = [...li.children];
+        while (stack.length) {
+          const node = stack.pop();
+          if (['A', 'BUTTON', 'SELECT', 'INPUT', 'TEXTAREA'].includes(node.tagName)) {
+            const existing = node.getAttribute('aria-describedby');
+            node.setAttribute('aria-describedby', existing ? `${existing} ${relationshipId}` : relationshipId);
+          }
+          stack.push(...node.children);
+        }
+      }
       return li;
+    }
+
+    // 宣言のタイトル先頭は対象 issue 番号。カードID・queueリンクは別の番号なので使わない。
+    function parentBadgeLabel(parent) {
+      const targetNumber = /^#(\d+) /.exec(parent.title);
+      return targetNumber ? `親 #${targetNumber[1]}` : null;
     }
 
     function buildGroup(group, items) {
@@ -852,7 +890,7 @@
       section.dataset.tone = contract.toneOrDefault(group.tone);
 
       const list = el('ul', 'task-list-items');
-      for (const item of items) list.appendChild(buildItem(item, group));
+      for (const entry of items) list.appendChild(buildItem(entry.item, entry.group, entry.depth, entry.parent));
       section.appendChild(list);
       return section;
     }
@@ -900,10 +938,58 @@
         return { stale, viewer, githubMode, filterEnabled, filterOptions, filterMode: mode, totalItems, visibleItems, emptyReason, emptyText: '' };
       }
 
+      // フィルタ後のカードだけで親子関係を解決する。元のグループは状態バッジに保持する。
+      const visibleGroups = groups.map((group) => ({
+        group,
+        items: filterEnabled ? contract.applyAssigneeFilter(group.items, mode, viewer) : (group.items || []),
+      }));
+      const entries = visibleGroups.flatMap(({ group, items }) => items.map((item) => ({ item, group, depth: 0 })));
+      const byId = new Map(entries.map((entry) => [entry.item.id, entry]));
+      // 各経路の到達先を共有し、循環へ入る枝も通常表示へ戻す。
+      const reachesRoot = new Map();
+      function resolveReach(start) {
+        const path = [];
+        const onPath = new Set();
+        let cursor = start;
+        let result = true;
+        for (;;) {
+          if (reachesRoot.has(cursor)) { result = reachesRoot.get(cursor); break; }
+          if (onPath.has(cursor)) { result = false; break; }
+          onPath.add(cursor);
+          path.push(cursor);
+          const next = byId.get(cursor.item.parentId);
+          if (!next) break;
+          cursor = next;
+        }
+        for (const node of path) reachesRoot.set(node, result);
+        return result;
+      }
+      const parentOf = new Map();
+      for (const entry of entries) {
+        const parent = byId.get(entry.item.parentId);
+        if (parent && resolveReach(entry)) parentOf.set(entry, parent);
+      }
+      const children = new Map();
+      for (const [child, parent] of parentOf) {
+        if (!children.has(parent)) children.set(parent, []);
+        children.get(parent).push(child);
+      }
+      const ordered = new Map(groups.map((group) => [group, []]));
+      // 深い連鎖でも呼び出しスタックを消費しない。逆順で積み、兄弟の宣言順を保つ。
+      for (const entry of entries) {
+        if (parentOf.has(entry)) continue;
+        const target = ordered.get(entry.group);
+        const stack = [{ entry, depth: 0 }];
+        while (stack.length) {
+          const { entry: node, depth } = stack.pop();
+          target.push({ item: node.item, group: node.group, depth, parent: parentOf.get(node)?.item });
+          const family = children.get(node) || [];
+          for (let i = family.length - 1; i >= 0; i--) stack.push({ entry: family[i], depth: depth + 1 });
+        }
+      }
+
       for (const group of groups) {
-        const filtered = filterEnabled
-          ? contract.applyAssigneeFilter(group.items, mode, viewer)
-          : (group.items || []);
+        const filtered = ordered.get(group);
         if (!filtered.length) continue;
         visibleItems += filtered.length;
         groupsEl.appendChild(buildGroup(group, filtered));

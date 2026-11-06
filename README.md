@@ -995,11 +995,11 @@ curl -s -X POST http://127.0.0.1:13847/api/new-pane \
 
 Codex の固定入口では `pane send <ペイン番号> <本文ファイル>` で別の Claude Code / Codex ペインへ依頼できます。本文は起動時の作業フォルダ内の UTF-8 ファイル（8KiB・4000文字以内）で渡し、送信先の入力欄が空と確認できる場合だけ送ります。結果が `unconfirmed` の場合は送り直さず相手の画面を確認してください。送信元を固定した専用の送信経路・判定の限界は [ペイン送信の仕様](docs/specification-pane-send.md) を参照してください。
 
-送信結果は `~/.vk-terminals/pane-send-log.jsonl` に記録します。本文やファイルパスは保存せず、1MiB を超える前に `.1` へ退避し、1世代だけ保持します。
-
 - `delivered`: 入力欄への表示と Enter の確定を確認。相手が対応したかは分かりません。
 - `not-sent`: 何も送られていません。message を利用者にそのまま伝え、指示があるまで再試行しません。
 - `unconfirmed`: Enter を送る前に止まった場合も含みます。送り直さず、message を利用者に伝えて送信先の画面を確認してもらいます。
+
+送信結果は `~/.vk-terminals/pane-send-log.jsonl` に1送信1行で記録します。記録するのは、時刻・依頼 ID・送信元と送信先のペイン番号（不正な送信先は `invalid`）・送信先のエンジン（不明な場合は `unknown`）・結果（`delivered` / `not-sent` / `unconfirmed`）・理由コードです。本文・ファイルパス・資格情報は記録しません。次の記録で 1MiB を超える前に、それまでの記録は `pane-send-log.jsonl.1` に移り、さらに古い分は消えます。残るのは直近の約2MiB分までです。事後に確認するための記録で、送信を止める機能ではありません。
 
 Codex の固定入口では `prepare reattach-branch <issue番号> <ブランチ> <worktree名>` で、未コミット変更を保持して専用 worktree の detached HEAD を同一コミットの作業ブランチへ戻せます。書き込み可能なメンバーの終了時にも同じ検査で起動前のブランチへの復帰を試み、`member status` で前後の状態・復帰結果と理由を確認できます。詳細は [Codex タスク操作ポリシー](docs/codex-task-policy.md) を参照してください。
 

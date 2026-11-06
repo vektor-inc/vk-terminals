@@ -6,11 +6,19 @@ const root = path.resolve(__dirname, '..');
 const temporary = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'pane-send-mutations-'));
 // 中断時にも一時コピーを削除する。
 const cleanup = () => fs.rmSync(temporary, { recursive: true, force: true });
+process.on('SIGINT', () => { cleanup(); process.exit(130); });
 process.on('SIGTERM', () => { cleanup(); process.exit(143); });
 for (const name of ['utils', 'tests', 'renderer']) fs.cpSync(path.join(root, name), path.join(temporary, name), { recursive: true });
 fs.copyFileSync(path.join(root, 'main.js'), path.join(temporary, 'main.js'));
 // 一度に一つだけ安全条件を壊し、一時コピーだけを書き換える。
 const mutations = [
+  ["log regular file", "utils/paneSendLog.js", "!stat.isFile()", "false"],
+  ["log single link", "utils/paneSendLog.js", "stat.nlink !== 1", "false"],
+  ["log permissions", "utils/paneSendLog.js", "fsImpl.fchmodSync(fd, 0o600);", ""],
+  ["log final close", "utils/paneSendLog.js", "finally { if (fd !== undefined) fsImpl.closeSync(fd); }", "finally {}"],
+  ["audit target validation", "utils/paneSend.js", "ID.test(target) ? target : 'invalid'", "target"],
+  ["audit engine priority", "utils/paneSend.js", "request.engine || getState(target)?.engine || 'unknown'", "getState(target)?.engine || request.engine || 'unknown'"],
+  ["audit captured engine", "utils/paneSend.js", "request.engine || getState(target)?.engine || 'unknown'", "getState(target)?.engine || 'unknown'"],
   ['log field allowlist', 'utils/paneSendLog.js', 'JSON.stringify({ time, id, source, target, engine, result, reason })', 'JSON.stringify(record)'],
   ['renderer identifier', 'renderer/app.js', 't.screenIdentifier !== expected.screenIdentifier', 'false'],
   ['renderer generation', 'renderer/app.js', 't.screenIdentifierGeneration !== expected.agentGeneration', 'false'],

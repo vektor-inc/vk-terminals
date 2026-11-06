@@ -13,7 +13,7 @@ function createPaneSendLog(dataDir, { maxBytes = 1024 * 1024, fsImpl = fs } = {}
     const openRegular = () => {
       fd = fsImpl.openSync(file, flags, 0o600);
       const stat = fsImpl.fstatSync(fd);
-      if (!stat.isFile()) throw new Error('pane-send log is not a regular file');
+      if (!stat.isFile() || stat.nlink !== 1) throw new Error('pane-send log is not a regular file');
       fsImpl.fchmodSync(fd, 0o600);
       return stat;
     };

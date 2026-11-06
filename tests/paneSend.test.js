@@ -19,7 +19,7 @@ function state(engine = 'claude', text = '') {
 }
 
 // 実際の条件付き Enter ガードで、本文・エコー・確定を順に再現する。
-function fixture({ engine = 'claude', change, folded = false, accept = true, message = '/issue を作って\n!文字も本文', echoAfter = 1, evidence, query, audit = () => {} } = {}) {
+function fixture({ engine = 'claude', change, folded = false, accept = true, message = '/issue を作って\n!文字も本文', echoAfter = 1, evidence, query, audit = () => {}, getState = id => id === '1' ? { engine: 'codex' } : undefined } = {}) {
   const guard = createConditionalTerminalInputGuard();
   guard.initialize('2');
   const target = state(engine);
@@ -30,7 +30,7 @@ function fixture({ engine = 'claude', change, folded = false, accept = true, mes
   const pty = { write(text) { writeVersion += 1; guard.markChanged('2'); writes.push(text); } };
   const ptys = new Map([['1', {}], ['2', pty]]);
   const send = createPaneSender({ getPty: id => ptys.get(id), getGeneration: id => generations.get(id), guard,
-    getState: id => id === '1' ? { engine: 'codex' } : undefined, requestScreen: async () => query ? query(target) : ({ ...target }), evidence, audit, getSourceName: () => '実装', getWriteVersion: () => writeVersion, readFile: () => Buffer.from(message), now: () => 5000,
+    getState, requestScreen: async () => query ? query(target) : ({ ...target }), evidence, audit, getSourceName: () => '実装', getWriteVersion: () => writeVersion, readFile: () => Buffer.from(message), now: () => 5000,
     sleep: async () => {
       sleeps += 1;
       if (sleeps === echoAfter) {
@@ -559,7 +559,7 @@ test('ログ書き込み失敗でも送信を完了する', async t => {
 });
 
 // 危険なログの実体を別プロセスで検査し、停止もタイムアウトで検出する。
-for (const kind of ['symlink', 'fifo']) test(`ログの${kind}を拒否して停止しない`, { skip: process.platform === 'win32' }, t => {
+for (const kind of ['symlink', 'hardlink', 'fifo']) test(`ログの${kind}を拒否して停止しない`, { skip: process.platform === 'win32' }, t => {
   const { spawnSync } = require('node:child_process');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pane-log-special-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
@@ -567,6 +567,7 @@ for (const kind of ['symlink', 'fifo']) test(`ログの${kind}を拒否して停
   const destination = path.join(dir, 'destination');
   fs.writeFileSync(destination, 'unchanged', { mode: 0o644 });
   if (kind === 'symlink') fs.symlinkSync(destination, file);
+  else if (kind === 'hardlink') fs.linkSync(destination, file);
   else assert.equal(spawnSync('mkfifo', [file]).status, 0);
   const run = spawnSync(process.execPath, ['-e', `require(${JSON.stringify(require.resolve('../utils/paneSendLog'))}).createPaneSendLog(${JSON.stringify(dir)})({result:'not-sent'})`], { timeout: 3000, encoding: 'utf8' });
   assert.equal(run.error, undefined);
@@ -582,4 +583,59 @@ test('ログは許可した項目だけを保存する', t => {
   const record = { time: 'now', id: 'id', source: '1', target: '2', engine: 'codex', result: 'delivered', reason: 'delivered' };
   require('../utils/paneSendLog').createPaneSendLog(dir)({ ...record, body: 'private', file: '/private', token: 'secret', unexpected: 'extra' });
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, 'pane-send-log.jsonl'), 'utf8')), record);
+});
+
+// 読み手がいる FIFO は open が成功するため、実体検査そのものを確かめる。
+test('読み手ありの FIFO にログを書き込まない', { skip: process.platform === 'win32' }, t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pane-log-reader-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'pane-send-log.jsonl');
+  assert.equal(require('node:child_process').spawnSync('mkfifo', [file]).status, 0);
+  const reader = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
+  t.after(() => fs.closeSync(reader));
+  const warnings = [];
+  t.mock.method(console, 'warn', (...args) => warnings.push(args));
+  require('../utils/paneSendLog').createPaneSendLog(dir)({ result: 'not-sent' });
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0][1], /not a regular file/);
+  assert.equal(fs.readSync(reader, Buffer.alloc(1024), 0, 1024, null), 0);
+});
+
+test('既存の0644ログも0600へ制限する', t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pane-log-mode-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'pane-send-log.jsonl');
+  fs.writeFileSync(file, '');
+  fs.chmodSync(file, 0o644);
+  require('../utils/paneSendLog').createPaneSendLog(dir)({ result: 'not-sent' });
+  assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+});
+
+for (const failure of [false, true]) test(`ログの${failure ? '失敗' : '成功'}時も開いたfdを閉じる`, t => {
+  const calls = [];
+  t.mock.method(console, 'warn', () => {});
+  const fsImpl = {
+    mkdirSync() {}, openSync() { calls.push('open'); return 42; },
+    fstatSync() { return { isFile: () => true, nlink: 1, size: 0 }; },
+    fchmodSync() {},
+    writeSync(fd) { calls.push(['write', fd]); if (failure) throw new Error('write failed'); },
+    closeSync(fd) { calls.push(['close', fd]); },
+  };
+  require('../utils/paneSendLog').createPaneSendLog('/unused', { fsImpl })({ result: 'not-sent' });
+  assert.deepEqual(calls, ['open', ['write', 42], ['close', 42]]);
+});
+
+test('監査ログの送信先は有効な番号だけを保存する', async () => {
+  const rows = [];
+  const f = fixture({ audit: row => rows.push(row) });
+  for (const target of ['2', '../private', '0']) await f.send(f.source, target, 'msg');
+  assert.deepEqual(rows.map(row => row.target), ['2', 'invalid', 'invalid']);
+});
+
+for (const currentEngine of ['codex', undefined]) test(`監査は採取したエンジンを現在値${currentEngine}より優先する`, async () => {
+  const rows = [];
+  const f = fixture({ engine: 'claude', audit: row => rows.push(row),
+    getState: id => ({ engine: id === '1' ? 'codex' : currentEngine }) });
+  assert.equal((await f.send(f.source, '2', 'msg')).result, 'delivered');
+  assert.equal(rows[0].engine, 'claude');
 });

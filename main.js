@@ -1531,10 +1531,10 @@ app.whenReady().then(async () => {
   startWidgetWatcher();
   // issue #546: 更新確認の通信中も起動直後から HTTP API を受け付ける。
   startHttpApi();
-  await checkAndUpdate();
   // 使用量スナップショットを起動時に温めておく（初回ポーリングで null が返るのを避ける）。
   if (usageEnabled()) usageTracker.warmup().catch(() => {});
   if (codexUsageEnabled()) Promise.all([codexUsage.get(), codexUsageTracker.warmup()]).catch(() => {});
+  await checkAndUpdate();
 });
 
 // window-all-closed と before-quit で終了待ちを二重に行わない（LOW-2）。実際に pty の

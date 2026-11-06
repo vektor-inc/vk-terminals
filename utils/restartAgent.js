@@ -203,7 +203,7 @@ function stopSignalForElapsed(elapsedMs, termGraceMs = DEFAULT_TERM_GRACE_MS) {
  * 呼び出し側の入力検証にある。
  */
 function quoteShellArgument(value) {
-  return `'${String(value).replace(/'/g, `'\\''`)}'`;
+  return `'${String(value).replace(/[\\']/g, (char) => `'\\${char}'`)}'`;
 }
 
 function delay(ms) {

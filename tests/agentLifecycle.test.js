@@ -425,7 +425,7 @@ test('zsh/bash/fishは元コマンドと分離した世代固有prompt hookを�
   assert.match(bash, /PROMPT_COMMAND=\$vk_agent_saved_prompt_/);
   assert.match(bash, /unset "PROMPT_COMMAND\[\$vk_agent_index_/);
   assert.match(fish, /--on-event fish_prompt/);
-  assert.ok(zsh.includes('\\033]1337;VKAgentLifecycle='));
+  assert.ok(zsh.includes('033]1337;VKAgentLifecycle='));
   for (const setup of [zsh, bash, fish]) assert.doesNotMatch(setup, /claude --model sonnet/);
 });
 

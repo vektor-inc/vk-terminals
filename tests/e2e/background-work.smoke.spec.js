@@ -23,9 +23,11 @@ const rl = require('node:readline').createInterface({ input: process.stdin, term
 rl.on('line', line => {
   const [command, event] = line.trim().split(/\\s+/);
   if (command === 'bg') {
-    const child = cp.spawn('/bin/sleep', ['8'], { detached: true, stdio: 'ignore' });
+    const child = cp.spawn('/bin/cat', [], { detached: true, stdio: ['pipe', 'ignore', 'ignore'] });
     children.add(child);
     child.on('exit', () => children.delete(child));
+  } else if (command === 'bgstop') {
+    for (const child of children) child.kill();
   } else if (command === 'hook') {
     const hook = settings.hooks[event][0].hooks[0].command;
     const child = cp.spawn('/bin/sh', ['-c', hook], { stdio: ['pipe', 'ignore', 'ignore'] });
@@ -74,12 +76,13 @@ rl.on('close', () => { for (const child of children) child.kill(); process.exit(
 
     // AI 本体が生きているだけでは実行中にならない。
     await idle();
-    // 別プロセスグループの sleep を検知し、自然終了後にラベルを解除する。
+    // 別プロセスグループの子を検知し、終了指示後にラベルを解除する。
     await send('bg');
     await running();
     await pane.locator('.btn-close').click();
     await expect(win.locator('.confirm-message')).toHaveText('このペインは「実行中」です（裏で作業が動いています）。閉じるとセッションは失われます。閉じますか？');
     await win.locator('.confirm-overlay').getByRole('button', { name: 'キャンセル' }).click();
+    await send('bgstop');
     await idle();
 
     // HTTP を直接偽装せず、起動設定へ配布されたフックに実形式の JSON を渡す。

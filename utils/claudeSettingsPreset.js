@@ -1,5 +1,7 @@
 'use strict';
 
+const { quoteShellArgument } = require('./restartAgent');
+
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -8,13 +10,9 @@ const { listToolSearchDirs } = require('./codexTaskPolicy');
 
 const PRESET = 'vk-orchestrator-work-pane';
 const ALLOWED_CLAUDE_SETTINGS_PRESETS = Object.freeze([PRESET]);
-const SETTINGS_PATH_PATTERN = /^\/[^'\x00-\x1f\x7f]+$/;
+const SETTINGS_PATH_PATTERN = /^\/[^\x00-\x1f\x7f]+$/;
 const SAFE_LAUNCHER_PATH_PATTERN = /^[A-Za-z0-9/._-]+$/;
 
-// シングルクォートを一度閉じてエスケープし、シェルの展開を防ぐ。
-function quoteShellArgument(value) {
-  return `'${String(value).replaceAll("'", "'\\''")}'`;
-}
 
 function isValidClaudeSettingsPreset(value) {
   return value === PRESET;
@@ -58,7 +56,7 @@ function resolveClaudeSettingsHookCommand(options = {}) {
   if (!node || !SAFE_LAUNCHER_PATH_PATTERN.test(node.path) || !orchestratorEntry) {
     throw new Error('Claude settings preset hook is unavailable');
   }
-  return `'${node.path}' '${orchestratorEntry}' check-turn-end-status-hook`;
+  return `${quoteShellArgument(node.path)} ${quoteShellArgument(orchestratorEntry)} check-turn-end-status-hook`;
 }
 
 function buildPreset(command) {
@@ -89,7 +87,7 @@ function prepareClaudeSettingsPreset(dataDir, preset, options = {}) {
 }
 
 function buildClaudeSettingsArgument(preset, settingsPath) {
-  if (!isValidClaudeSettingsPreset(preset) || typeof settingsPath !== 'string' || !/^\/[^\x00-\x1f\x7f]+$/.test(settingsPath)) {
+  if (!isValidClaudeSettingsPreset(preset) || typeof settingsPath !== 'string' || !SETTINGS_PATH_PATTERN.test(settingsPath)) {
     throw new Error('invalid prepared Claude settings preset');
   }
   return `--settings ${quoteShellArgument(settingsPath)}`;

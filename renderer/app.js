@@ -4110,11 +4110,11 @@ function renderLeaf(node) {
     const files = Array.from(e.dataTransfer.files);
     if (files.length === 0) return;
 
-    // Always wrap in single quotes for shell safety (handles spaces, quotes, and all metacharacters)
+    // シェルの違いによらず単一の引数として渡す。
     const paths = files
       .map(f => VKFiles.getPath(f))
       .filter(Boolean)
-      .map(p => `'${p.replace(/'/g, "'\\''")}'`);
+      .map(p => `'${String(p).replace(/[\\']/g, (char) => `'\\${char}'`)}'`);
 
     const text = paths.join(' ');
     focusPane(node.id);

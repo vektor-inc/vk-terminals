@@ -90,11 +90,12 @@ function createBackgroundWorkStore({ getEntry, onChange = () => {}, now = Date.n
     recordHookEvent({ termId, epoch, input }) {
       const id = String(termId), entry = entries.get(id);
       if (!entry || epoch !== entry.epoch || !input || !['SessionStart', 'SubagentStart', 'SubagentStop'].includes(input.hook_event_name)) return false;
+      if (input.source !== undefined && typeof input.source !== 'string') return false;
       if (getEntry(id, entry.generation)?.state !== 'running') return false;
       const paths = agentTranscriptPaths(input.hook_event_name === 'SessionStart' ? { ...input, agent_id: 'session-start' } : input, homeDir);
       if (!paths) return false;
       // 正規の再開通知では退役を解除し、元のセッションへ戻れるようにする。
-      if (input.hook_event_name === 'SessionStart') entry.retiredSessions.delete(input.session_id);
+      if (input.hook_event_name === 'SessionStart' && (input.source === undefined || input.source === 'resume')) entry.retiredSessions.delete(input.session_id);
       if (entry.retiredSessions.has(input.session_id)) return false;
       // /clear などでセッションが変わった後に、旧セッションの遅延通知を混ぜない。
       if (entry.session && entry.session !== input.session_id) {

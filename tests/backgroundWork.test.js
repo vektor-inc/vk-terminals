@@ -155,10 +155,11 @@ test('フックの実行ファイルは Bearer 認証とペイン識別を送り
   fs.writeFileSync(config, JSON.stringify({ token: 'synthetic', termId: 'pane', epoch: 'epoch', url: `http://127.0.0.1:${server.address().port}/api/background-work` }));
   const child = spawn(process.execPath, [path.join(__dirname, '../utils/backgroundWorkHook.js'), config], { stdio: ['pipe', 'ignore', 'ignore'] });
   const exit = new Promise(resolve => child.on('exit', resolve));
-  child.stdin.end(JSON.stringify({ ...input, last_assistant_message: 'private conversation'.repeat(10000) }));
+  child.stdin.end(JSON.stringify({ ...input, source: 'resume', last_assistant_message: 'private conversation'.repeat(10000) }));
   assert.equal(await exit, 0);
   const request = await received;
   assert.equal(request.authorization, 'Bearer synthetic'); assert.equal(request.body.termId, 'pane');
+  assert.equal(request.body.input.source, 'resume');
   assert.equal(request.body.epoch, 'epoch'); assert.equal(request.body.input.last_assistant_message, undefined);
 });
 
@@ -303,4 +304,15 @@ test('フック通知は異なる Origin を拒否し、同一 Origin の通知�
     assert.equal(status, forbidden ? 403 : 200);
     assert.equal(recorded, forbidden ? 0 : 1);
   }
+});
+
+test('退役済みセッションは再開だけ受け付け、source の型を検証する', () => {
+  const f = fixture();
+  assert.equal(f.recordHookEvent({ hook_event_name: 'SessionStart', source: 'startup' }), true);
+  assert.equal(f.recordHookEvent({ hook_event_name: 'SessionStart', source: 'clear', session_id: 'sessionB', transcript_path: '/home/test/.claude/projects/-tmp/sessionB.jsonl' }), true);
+  for (const source of ['startup', 'clear', 'compact', 'fork', 'unknown', null, 1, {}, ['resume']]) {
+    assert.equal(f.recordHookEvent({ hook_event_name: 'SessionStart', source }), false);
+  }
+  assert.equal(f.recordHookEvent({ hook_event_name: 'SessionStart', source: 'resume' }), true);
+  assert.equal(f.recordHookEvent({ source: {} }), false);
 });

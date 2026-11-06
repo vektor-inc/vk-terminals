@@ -11,7 +11,7 @@ process.stdin.on('end', () => {
     const config = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
     const input = JSON.parse(body);
     const payload = JSON.stringify({ termId: config.termId, epoch: config.epoch, input: {
-      hook_event_name: input.hook_event_name, agent_id: input.agent_id,
+      hook_event_name: input.hook_event_name, source: input.source, agent_id: input.agent_id,
       session_id: input.session_id, transcript_path: input.transcript_path,
       agent_transcript_path: input.agent_transcript_path,
     } });

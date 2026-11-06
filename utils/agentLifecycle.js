@@ -1,5 +1,7 @@
 'use strict';
 
+const { quoteShellArgument: quoteForSingleShellArgument } = require('./restartAgent');
+
 const { execFile } = require('node:child_process');
 const crypto = require('node:crypto');
 const { promisify } = require('node:util');
@@ -165,9 +167,6 @@ function inspectLifecycle(snapshot, processes) {
   return { state: 'exited', trackedGroups, hasAliveGroup: false, terminal: true };
 }
 
-function quoteForSingleShellArgument(value) {
-  return `'${String(value).replaceAll("'", "'\\''")}'`;
-}
 
 function buildPromptHookCommand(marker, shellPath) {
   const name = `vk_agent_prompt_${marker}`;

@@ -15,13 +15,21 @@ const path = require('path');
 //   - env: 元の環境変数
 //   - options.homeDir: ホームディレクトリ（既定は os.homedir()）
 //   - options.dirExists: ディレクトリの実在判定（既定は fs.statSync による判定）
+//   - options.platform: OS（既定は process.platform）
 function buildPtyEnv(env, options = {}) {
   const homeDir = options.homeDir || os.homedir();
   const dirExists = typeof options.dirExists === 'function' ? options.dirExists : defaultDirExists;
+  const platform = options.platform || process.platform;
   const result = { ...env, TERM_PROGRAM: 'VKTerminals' };
 
+  // macOS で Finder 等から起動すると文字コードの指定がなく、pbcopy が日本語を空にするのを防ぐ。
+  // LANG は表示言語まで変わるため補わず、文字コードに関わる LC_CTYPE だけを補う。
+  if (platform === 'darwin' && !env.LANG && !env.LC_ALL && !env.LC_CTYPE) {
+    result.LC_CTYPE = 'en_US.UTF-8';
+  }
+
   // Windows は PATH の区切り・変数名の大文字小文字が異なるため対象外にする。
-  if (process.platform === 'win32') return result;
+  if (platform === 'win32') return result;
 
   const voltaHome = typeof env.VOLTA_HOME === 'string' && env.VOLTA_HOME ? env.VOLTA_HOME : path.join(homeDir, '.volta');
   const voltaBin = path.join(voltaHome, 'bin');

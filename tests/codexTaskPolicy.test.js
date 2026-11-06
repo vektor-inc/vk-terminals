@@ -485,7 +485,7 @@ test('生成: rules は信頼済みランチャーの実行だけを許可し、
     // 入口は検証ロジック本体の複製で、案内（AGENTS.md）は入口と許可する操作だけを示す。
     assert.equal(fs.readFileSync(path.join(home, 'vk-task-ops.js'), 'utf8'), OPS_SOURCE);
     const guide = fs.readFileSync(path.join(home, 'AGENTS.md'), 'utf8');
-    assert.ok(guide.includes(`${path.join(home, 'vk-task-ops')} <git|gh|prepare|member>`));
+    assert.ok(guide.includes(`${path.join(home, 'vk-task-ops')} <git|gh|prepare|protected-sync|member>`));
     assert.equal(guide.includes(`'${path.join(home, 'vk-task-ops')}'`), false);
     assert.match(guide, /引用符・`cd`・パイプ・リダイレクト・`2>&1` を付けず/);
     assert.match(guide, /workdir で指定/);
@@ -624,7 +624,7 @@ test('ランチャー: sandbox の中から呼ぶと固有の終了コードと�
     });
     assert.equal(blocked.status, 78);
     assert.match(blocked.stderr, /サンドボックスの中から呼ばれたため、何も実行せずに止めました/);
-    assert.ok(blocked.stderr.includes(`${launcher} <git|gh|prepare|member> <操作> ...`));
+    assert.ok(blocked.stderr.includes(`${launcher} <git|gh|prepare|protected-sync|member> <操作> ...`));
     assert.match(blocked.stderr, /引用符・cd・パイプ・リダイレクト・2>&1 を付けず単独のコマンドとして、同じ内容を呼び直してください/);
     assert.equal(blocked.stderr.includes("'"), false);
 
@@ -1755,10 +1755,10 @@ test('生成: 子用 CODEX_HOME とランチャーが親と一緒に作られ、
     assert.ok(parentGuide.includes(`\`${ioDir}\``));
     assert.equal(childGuide.includes('member start'), false);
     assert.equal(childGuide.includes('member status'), false);
-    assert.ok(childGuide.includes(`${path.join(childHome, 'vk-task-ops')} <git|gh|prepare>`));
+    assert.ok(childGuide.includes(`${path.join(childHome, 'vk-task-ops')} <git|gh|prepare|protected-sync>`));
     const childLauncher = fs.readFileSync(path.join(childHome, 'vk-task-ops'), 'utf8');
-    assert.ok(childLauncher.includes(`${path.join(childHome, 'vk-task-ops')} <git|gh|prepare> <操作> ...`));
-    assert.equal(childLauncher.includes('<git|gh|prepare|member>'), false);
+    assert.ok(childLauncher.includes(`${path.join(childHome, 'vk-task-ops')} <git|gh|prepare|protected-sync> <操作> ...`));
+    assert.equal(childLauncher.includes('<git|gh|prepare|protected-sync|member>'), false);
 
     // 使われなければ、入出力フォルダも一緒に回収される。
     assert.equal(result.discard(), true);

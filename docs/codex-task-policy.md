@@ -251,3 +251,35 @@ Codex 版の issue 対応手順（vektor-inc/vk-agents の `codex/vk-kore/`）�
 `member status` は既存キーの後に `WORKTREE_BEFORE_*`、`WORKTREE_AFTER_CHILD_*`（復帰前）、`WORKTREE_AFTER_*`（復帰後）を追加する。各組の `STATE=recorded|unavailable`、`BRANCH`（detached の場合は `detached`）、`HEAD`、`DIRTY`、`CHANGES`（状態・内容の SHA-256。内容の読み取りは合計16 MiBまでとし、`complete:` / `limited:` で記録の精度を示す）と、`WORKTREE_CHANGED=true|false|unknown`、`BRANCH_RESTORE=restored|not-restored`、`BRANCH_RESTORE_REASON` を返す。変更のファイル名・内容は公開しない。復帰結果の記録失敗は `automatic-restore-record-failed` となり、自動処理の失敗として扱う。
 
 操作一覧のうち、手順にまだ採用されていない追加操作は `launcherOnlyOperations` に記録する。`source: null` と未採用の理由を明記し、出典行を捏造しない。引数検証は照合テストで確認し、手順採用後に実在する出典付きで `requiredOperations` へ移す。
+
+
+## 保護されたスキル配布先の同期（issue #557）
+
+固定入口の `protected-sync .agents/skills/vk-orchestrator-helper/SKILL.md` は、
+`vektor-inc/vk-orchestrator` の `src/help/helper-skill.md` のバイト列をそのまま配布先にコピーする。
+対応表は VK Terminals の配布コードに固定され、設定・環境変数・作業ブランチから変更できない。
+`.git/`・`.codex/` や他の配布先は指定できない。リポジトリ内のスクリプトや `npm run sync:helper` は実行しない。
+
+親と実装担当メンバーの固定入口で利用できる。読み取り専用メンバーは `--ignore-rules` で入口を持たない。
+実行場所は拘束先の登録済み worktree のトップに限る。通常の clone 本体も登録済み worktree として扱い、
+linked worktree は既存の common-dir と逆参照検査も通す。
+生成元・配布先のリンク、通常ファイルでないもの、ハードリンク、途中のフォルダのリンク、
+未解決の index エントリ、未追跡の配布先、256 KiB を超える生成元は書き込み前に拒否する。
+内容はメモリに固定し、同じ親フォルダ内の一時ファイルへ書いて rename し、読み戻してバイト一致を確認する。
+一時ファイルは失敗時も削除する。
+
+Node の書き込み自体も OS 制限内で実行する。macOS は既存の `sandbox-exec` を使う。
+Linux は信頼検証した絶対パス `/usr/bin/bwrap`（root 所有・他者書き込み不可）だけを使い、
+ファイルシステム全体を読み取り専用、配布先の親フォルダの実パスだけを書き込み可能にする。
+ネットワークは分離し、子は bind 後のフォルダの dev/ino と実パスを照合してからディレクトリ記述子に固定する。
+これにより検査後のリンクへの差し替えでも別のフォルダに書き込まない。
+OS 未対応、ツールの欠落・信頼検証失敗・名前空間の起動失敗では
+`task command rejected: write-restricted execution is not available` として止める。制限なしの代替実行はしない。
+既存の `prepare worktree` などの Linux 対応は含まない。
+同期後の `git add <配布先>`・`git commit -m <本文>`・`git push <作業ブランチ>` は既存の固定入口を使う。
+
+`GET /api/codex-task-capabilities` は既存の API 認証規則に従う読み取り専用の能力照会。
+`capabilities.protectedSync` に `available`、`reason`（利用可能なら null）、
+`targets`（`repo`・`source`・`target` の一覧）を返す。
+実行と同じ判定関数で OS 制限の実際の起動を確認し、専用 CODEX_HOME などは作成しない。
+呼び出し側は 404 または項目が無い場合を未対応として扱う。

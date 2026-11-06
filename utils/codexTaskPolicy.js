@@ -83,6 +83,7 @@ const TRUSTED_TOOL_DIRS = Object.freeze(['/opt/homebrew/bin', '/usr/local/bin', 
 // 承認なしで実行できる操作の一覧。実際の判定は utils/codexTaskOps.js（許可リスト）が行い、
 // ここは AGENTS.md への案内文を作るための表示用。追加・削除は codexTaskOps.js の parseTaskCommand と必ずそろえる。
 const ORCHESTRATED_TASK_OPERATIONS = Object.freeze([
+  'protected-sync .agents/skills/vk-orchestrator-helper/SKILL.md',
   'git status',
   'git diff',
   'git log',
@@ -141,7 +142,7 @@ function renderAgentsGuide(launcherPath, memberIoDir = null) {
     '# VK Terminals 自動処理用の操作入口',
     '',
     'Git / GitHub の次の操作は、承認なしで動く固定の入口 1 つだけを通して実行する。',
-    `入口: \`${launcherPath} <git|gh|prepare${memberIoDir === null ? '' : '|member'}> <操作> ...\``,
+    `入口: \`${launcherPath} <git|gh|prepare|protected-sync${memberIoDir === null ? '' : '|member'}> <操作> ...\``,
     '',
     ...operations.map((operation) => `- \`${operation}\``),
     '',
@@ -246,7 +247,7 @@ function renderGitConfig(identity) {
  * @returns {string}
  */
 function renderLauncher({ envPath, nodePath, opsScriptPath, launcherPath, memberEnabled, binding }) {
-  const commandKinds = `<git|gh|prepare${memberEnabled ? '|member' : ''}>`;
+  const commandKinds = `<git|gh|prepare|protected-sync${memberEnabled ? '|member' : ''}>`;
   const assignments = [
     'PATH=/usr/bin:/bin',
     `VK_TASK_ROOT=${binding.root}`,

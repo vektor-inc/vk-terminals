@@ -63,6 +63,7 @@ const {
   validateCodexLaunchOptions,
 } = require('./renderer/claudeModel');
 // 自動処理用 Codex のタスク用ポリシー（専用 CODEX_HOME の生成。issue #428）。
+const { getProtectedSyncCapabilities } = require('./utils/codexTaskOps');
 const { resolveCodexTaskPolicyLaunchOptions, resolveCodexPolicyContext } = require('./utils/codexTaskPolicy');
 const {
   validateClaudeSettingsPresetForEngine,
@@ -3074,6 +3075,13 @@ function startHttpApi() {
       if (source === 'cookie') {
         res.setHeader('Set-Cookie', buildAuthCookieHeader(API_TOKEN));
       }
+    }
+
+    // 認証済みの能力照会。専用 CODEX_HOME などは作成しない。
+    if (req.method === 'GET' && url.pathname === '/api/codex-task-capabilities') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ capabilities: { protectedSync: getProtectedSyncCapabilities() } }));
+      return;
     }
 
     // GET /api/health

@@ -146,13 +146,16 @@
       if (typeof options.buildClaudeSettingsArgument !== 'function') {
         throw new Error('Claude settings preset requires a prepared settings file');
       }
-      parts.push(options.buildClaudeSettingsArgument(options.claudeSettingsPreset, options.claudeSettingsPath));
+      parts.push(options.buildClaudeSettingsArgument(options.claudeSettingsPreset, options.claudeSettingsPath, options.shellExecutable));
     }
     if (options.backgroundWorkSettingsPath) {
       const filename = options.backgroundWorkSettingsPath;
       if (typeof filename !== 'string' || !/^\/[^\x00-\x1f\x7f]+$/.test(filename)) throw new Error('Invalid background work settings');
-      // シェルの違いによらず単一の引数として渡す。
-      parts.push(`--settings ${quoteShellArgument(filename)}`);
+      // メインプロセスからペイン用の引用関数を受け取る。
+      if (typeof options.quoteClaudeSettingsPath !== 'function') throw new Error('Invalid background work settings');
+      const argument = options.quoteClaudeSettingsPath(filename);
+      if (argument === null) throw new Error('Invalid background work settings');
+      parts.push(`--settings ${argument}`);
     }
     return parts.join(' ');
   }

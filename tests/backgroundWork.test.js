@@ -1,4 +1,6 @@
 'use strict';
+
+const { quoteShellPath } = require('../utils/shellQuoting');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -132,7 +134,7 @@ test('起動設定は Stop を保持し、接続情報を非公開にして起�
   assert.equal(fs.statSync(path.dirname(a.filename)).mode & 0o777, 0o700);
   assert.equal(fs.statSync(path.join(path.dirname(a.filename), 'connection.json')).mode & 0o777, 0o600);
   assert.equal(JSON.stringify(settings).includes('synthetic'), false);
-  const command = buildClaudeLaunchCommand(null, { claudeSettingsPreset: 'vk-orchestrator-work-pane', backgroundWorkSettingsPath: a.filename });
+  const command = buildClaudeLaunchCommand(null, { claudeSettingsPreset: 'vk-orchestrator-work-pane', backgroundWorkSettingsPath: a.filename, quoteClaudeSettingsPath: (value) => quoteShellPath(value, 'posix') });
   assert.equal((command.match(/--settings/g) || []).length, 1);
   a.discard(); b.discard(); assert.equal(fs.existsSync(a.filename), false);
 });
@@ -257,7 +259,7 @@ test('停止失敗時は準備した設定だけ捨て、旧監視と接続を�
   const old = { marker: 'old' };
   const settings = new Map([['pane', old]]);
   const f = fixture(); f.recordHookEvent();
-  const context = { crypto: require('node:crypto'), apiServerRuntimeStatus: {}, API_PORT: 1, API_TOKEN: 'synthetic', DATA_DIR: '/tmp', os, APP_ORIGINAL_PATH: '', LOG_PREFIX: '', console,
+  const context = { prepareClaudeSettingsForShell: require('../utils/claudeSettingsPreset').prepareClaudeSettingsForShell, crypto: require('node:crypto'), apiServerRuntimeStatus: {}, API_PORT: 1, API_TOKEN: 'synthetic', DATA_DIR: '/tmp', os, APP_ORIGINAL_PATH: '', LOG_PREFIX: '', console,
     prepareBackgroundWorkSettings: () => ({ filename: '/tmp/new.json', discard: () => { discarded++; } }),
     clearPaneBackgroundWork: () => { clears++; settings.delete('pane'); f.store.delete('pane'); }, backgroundWork: f.store, backgroundSettings: settings };
   vm.createContext(context); vm.runInContext(stage, context);
@@ -266,10 +268,68 @@ test('停止失敗時は準備した設定だけ捨て、旧監視と接続を�
   assert.equal(discarded, 1); assert.equal(clears, 0);
   assert.equal(settings.get('pane'), old); assert.equal(f.store.isRunning('pane'), true);
   assert.equal(f.recordHookEvent({ agent_id: 'still-old' }), true);
-  const handler = source.slice(source.indexOf('const stagedBackgroundWork ='), source.indexOf("if (req.method === 'POST' && url.pathname === '/api/close-pane')"));
+  const handler = source.slice(source.indexOf('let stagedBackgroundWork;'), source.indexOf("if (req.method === 'POST' && url.pathname === '/api/close-pane')"));
   assert.ok(handler.indexOf('stagedBackgroundWork.commit()') > handler.indexOf("error: 'failed to stop agent'"));
   assert.match(handler, /if \(!launchHomeInUse\) \{\s*launchResolution.discard\(\);\s*stagedBackgroundWork.discard\(\);/);
   assert.equal(handler.includes('clearPaneBackgroundWork(request.termId)'), false);
+});
+
+test('ペインの PowerShell で設定パスを組み立て、再起動の準備失敗は旧監視を保つ', () => {
+  const vm = require('node:vm');
+  const { prepareClaudeSettingsForShell } = require('../utils/claudeSettingsPreset');
+  const { buildClaudeLaunchCommand } = require('../renderer/claudeModel');
+  const source = fs.readFileSync(path.join(__dirname, '../main.js'), 'utf8');
+  const stage = source.slice(source.indexOf('function stagePaneBackgroundWork('), source.indexOf('// renderer が報告した画面'));
+  const filename = "/tmp/a'‘’‚‛.json";
+  let discarded = 0, launchDiscarded = 0, clears = 0, status, body;
+  const old = { marker: 'old' };
+  const settings = new Map([['pane', old]]);
+  const f = fixture(); f.recordHookEvent();
+  const context = { prepareClaudeSettingsForShell, crypto: require('node:crypto'), apiServerRuntimeStatus: {},
+    API_PORT: 1, API_TOKEN: 'synthetic', DATA_DIR: '/tmp', os, APP_ORIGINAL_PATH: '', LOG_PREFIX: '',
+    console: { warn() {}, error() {} },
+    prepareBackgroundWorkSettings: () => ({ filename, discard() { discarded++; } }),
+    clearPaneBackgroundWork() { clears++; settings.delete('pane'); f.store.delete('pane'); },
+    backgroundWork: f.store, backgroundSettings: settings,
+    request: { termId: 'pane', engine: 'claude' }, currentGeneration: 1,
+    ptyShellExecutables: new Map([['pane', 'pwsh']]),
+    launchResolution: { discard() { launchDiscarded++; } },
+    res: { writeHead(code) { status = code; }, end(value) { body = JSON.parse(value); } },
+  };
+  vm.createContext(context); vm.runInContext(stage, context);
+  const staged = context.stagePaneBackgroundWork('pane', 2, 'claude', {}, 'pwsh');
+  assert.equal(buildClaudeLaunchCommand(undefined, staged.options), "claude --settings '/tmp/a''‘‘’’‚‚‛‛.json'");
+  staged.discard();
+  assert.equal(discarded, 1);
+
+  // 実際の再起動の準備ブロックで、PowerShell 用の起動コマンドを確認する。
+  context.launchOptions = { claudeSettingsPreset: 'vk-orchestrator-work-pane', claudeSettingsPath: filename };
+  const restart = source.slice(source.indexOf('let stagedBackgroundWork;'), source.indexOf('let launchHomeInUse = false;', source.indexOf('let stagedBackgroundWork;')));
+  vm.runInContext('function restart() { ' + restart + ' return stagedBackgroundWork; }', context);
+  context.ptyShellExecutables.set('pane', 'pwsh');
+  const restarted = context.restart();
+  assert.equal(buildClaudeLaunchCommand(undefined, context.launchOptions), "claude --settings '/tmp/a''‘‘’’‚‚‛‛.json'");
+  restarted.discard();
+  assert.equal(discarded, 2);
+
+  // 引用できない必須設定では旧監視を保つ。
+  context.ptyShellExecutables.set('pane', 'unknown');
+  context.restart();
+  assert.equal(discarded, 3);
+  assert.equal(launchDiscarded, 1);
+  assert.equal(status, 503);
+  assert.deepEqual(body, { error: 'Claude settings preset hook is unavailable' });
+  assert.equal(clears, 0);
+  assert.equal(settings.get('pane'), old);
+  assert.equal(f.store.isRunning('pane'), true);
+  assert.equal(f.recordHookEvent({ agent_id: 'still-old' }), true);
+
+  // 新規ペイン用の準備関数でもシェルを転送し、設定を確定する。
+  const options = context.preparePaneBackgroundWork('pane', 3, 'claude', {}, 'pwsh');
+  assert.equal(buildClaudeLaunchCommand(undefined, options), "claude --settings '/tmp/a''‘‘’’‚‚‛‛.json'");
+  assert.equal(clears, 1);
+  settings.get('pane').discard();
+  assert.equal(discarded, 4);
 });
 
 test('クラッシュした所有者の設定だけ回収し、生存中・所有者不明を残す', async t => {

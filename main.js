@@ -71,6 +71,7 @@ const {
   prepareBackgroundWorkSettings,
   cleanupBackgroundWorkSettings,
   buildClaudeSettingsArgument,
+  prepareClaudeSettingsForShell,
 } = require('./utils/claudeSettingsPreset');
 const {
   checkGitHubReachability,
@@ -78,6 +79,8 @@ const {
   runGitHubReachabilityGate,
 } = require('./utils/githubReachability');
 const { scheduleLaunchCommand } = require('./utils/delayedLaunch');
+const { observePowerShellReady } = require('./utils/powerShellReady');
+const shellStartupReadiness = new WeakMap();
 const {
   createAgentLifecycleStore,
   mergeAgentLifecycleStates,
@@ -214,7 +217,7 @@ function clearPaneBackgroundWork(id) {
 }
 
 // 新設定の準備中は、停止に失敗しても旧監視を保つ。
-function stagePaneBackgroundWork(id, generation, engine, options) {
+function stagePaneBackgroundWork(id, generation, engine, options, shellExecutable) {
   const epoch = crypto.randomBytes(24).toString('hex');
   let prepared;
   if (engine === 'claude') {
@@ -229,8 +232,12 @@ function stagePaneBackgroundWork(id, generation, engine, options) {
       console.warn(`${LOG_PREFIX} Background work hooks unavailable; monitoring commands only`);
     }
   }
+  const settings = engine === 'claude'
+    ? prepareClaudeSettingsForShell(options, shellExecutable, prepared)
+    : { options, prepared };
+  prepared = settings.prepared;
   return {
-    options: prepared ? { ...options, backgroundWorkSettingsPath: prepared.filename } : options,
+    options: settings.options,
     commit() {
       clearPaneBackgroundWork(id);
       if (engine === 'claude') backgroundWork.begin(id, generation, epoch);
@@ -240,8 +247,8 @@ function stagePaneBackgroundWork(id, generation, engine, options) {
   };
 }
 
-function preparePaneBackgroundWork(id, generation, engine, options) {
-  const staged = stagePaneBackgroundWork(id, generation, engine, options);
+function preparePaneBackgroundWork(id, generation, engine, options, shellExecutable) {
+  const staged = stagePaneBackgroundWork(id, generation, engine, options, shellExecutable);
   staged.commit();
   return staged.options;
 }
@@ -2339,7 +2346,7 @@ function createTerminalPane(cwd, options = {}, guide = null) {
         ...launchResolution.options,
         claudeSettingsPreset: options.claudeSettingsPreset,
       });
-      const built = buildEngineAwareLaunchCommand(resolvedEngine, options.model, preparePaneBackgroundWork(id, 1, resolvedEngine, claudeLaunchOptions));
+      const built = buildEngineAwareLaunchCommand(resolvedEngine, options.model, preparePaneBackgroundWork(id, 1, resolvedEngine, claudeLaunchOptions, shell));
       if (built.modelIgnored) {
         console.warn(`${LOG_PREFIX} model is ignored for engine '${resolvedEngine}'`);
       }
@@ -2370,6 +2377,10 @@ function createTerminalPane(cwd, options = {}, guide = null) {
     throw error;
   }
 
+  const shellStartup = observePowerShellReady(ptyProcess, shell);
+  const shellReady = shellStartup?.ready;
+  if (shellReady) shellStartupReadiness.set(ptyProcess, shellReady);
+
   // PTY への全書き込みを画面変更として先に記録する。選択肢移動から再描画までの
   // 短い間にも、移動前に取得した識別値で Enter が通らないようにするため。
   conditionalTerminalInput.initialize(id);
@@ -2379,7 +2390,9 @@ function createTerminalPane(cwd, options = {}, guide = null) {
     // 通常入力・API 入力・自動 Enter 後は可視出力まで採り直しを抑止する。
     // 自動応答・フォーカス通知は予約を取り消すだけで、既存の抑止状態を維持する。
     silentWriteRefresher.noteInput(id, isTerminalQueryReplyOnly(data) || isTerminalFocusNotificationOnly(data));
-    return writeToPty(data);
+    const result = writeToPty(data);
+    shellStartup?.onInput(data);
+    return result;
   };
 
   // ペイン作成（pty spawn）時刻。信頼確認プロンプトへの自動 Enter 送信を許可する
@@ -2480,25 +2493,45 @@ function createTerminalPane(cwd, options = {}, guide = null) {
     // 送られないケースで警告ログも一切出ないと、司や利用者が切り分けにくくなる。
     // 従来（claude 専用実装）は必ず warn が残っていたのと同じ可観測性を保つため、
     // 「送信はしない・警告だけ出す」タイマーを engine 問わず設定する。
-    if (isFirstTerminal && config.initialCommand) {
-      if (resolvedEngine === 'claude') {
-        promptWatcherTimeoutId = setTimeout(() => {
-          if (!sent) {
-            console.warn(`${LOG_PREFIX} Claude ready prompt not detected within ${WATCH_TIMEOUT_MS}ms, sending initialCommand as fallback`);
-            sendInitialCommand('timeout fallback');
-          }
-          stopWatchingIfDone();
-        }, WATCH_TIMEOUT_MS);
-      } else {
-        promptWatcherTimeoutId = setTimeout(() => {
-          if (!sent) {
-            console.warn(`${LOG_PREFIX} ready prompt not detected within ${WATCH_TIMEOUT_MS}ms for engine '${resolvedEngine}'; initialCommand was not sent (blind fallback is disabled for non-claude engines)`);
-            // 盲打ちを諦めた（＝以後 initialCommand が送られる見込みが無い）ことを記録する。
-            initialCommandGaveUp = true;
-          }
-          stopWatchingIfDone();
-        }, WATCH_TIMEOUT_MS);
+    const startInitialCommandTimer = (readiness) => {
+      if (readiness?.status === 'timeout' && readiness.userInput) {
+        // 中止後の ready 誤検知と、信頼確認で先に設定されたタイマーからの送信を防ぐ。
+        if (promptWatcherTimeoutId) {
+          clearTimeout(promptWatcherTimeoutId);
+          promptWatcherTimeoutId = null;
+        }
+        promptWatcher = null;
+        return;
       }
+      if (isFirstTerminal && config.initialCommand) {
+        if (resolvedEngine === 'claude') {
+          promptWatcherTimeoutId = setTimeout(() => {
+            if (!sent) {
+              console.warn(`${LOG_PREFIX} Claude ready prompt not detected within ${WATCH_TIMEOUT_MS}ms, sending initialCommand as fallback`);
+              sendInitialCommand('timeout fallback');
+            }
+            stopWatchingIfDone();
+          }, WATCH_TIMEOUT_MS);
+        } else {
+          promptWatcherTimeoutId = setTimeout(() => {
+            if (!sent) {
+              console.warn(`${LOG_PREFIX} ready prompt not detected within ${WATCH_TIMEOUT_MS}ms for engine '${resolvedEngine}'; initialCommand was not sent (blind fallback is disabled for non-claude engines)`);
+              // 盲打ちを諦めた（＝以後 initialCommand が送られる見込みが無い）ことを記録する。
+              initialCommandGaveUp = true;
+            }
+            stopWatchingIfDone();
+          }, WATCH_TIMEOUT_MS);
+        }
+      }
+    };
+    // シェルの準備待ちと Claude の起動待ちは別々に数える。
+    if (shellReady) {
+      shellReady.then((readiness) => {
+        if (ptys.get(id) === ptyProcess) startInitialCommandTimer(readiness);
+      });
+    } else {
+      // 同期経路では、この後に PTY が登録される。
+      startInitialCommandTimer();
     }
 
     promptWatcher = (data) => {
@@ -2669,6 +2702,7 @@ function createTerminalPane(cwd, options = {}, guide = null) {
       isLaunchCurrent: () => agentLifecycles.isCurrent(id, 1, initialLaunchToken),
       discard: discardFailedLaunch,
       delayMs: 200,
+      shellReady,
       onWriteSuccess: guideLaunchSucceeded,
       log: (message) => console.error(`${LOG_PREFIX} ${message}`),
     });
@@ -2911,6 +2945,11 @@ async function restartAgentInTerminal(ptyProcess, request, launchOptions, lifecy
   // stop 用 snapshot の取得中にも、作成時の遅延 launch は進み得る。公開 generation は
   // 停止成功まで進めず、内部 token だけを最初の await より前に同期更新して旧 write を止める。
   lifecycleLaunch.cancelPending();
+  const shellReady = shellStartupReadiness.get(ptyProcess);
+  if (shellReady) {
+    await shellReady;
+    if (ptys.get(request.termId) !== ptyProcess) return false;
+  }
   const stopped = await stopAgentChildren(ptyProcess.pid, {
     platform: process.platform,
     listProcesses: listProcessesForRestart,
@@ -4299,7 +4338,16 @@ function startHttpApi() {
               res.end(JSON.stringify({ error: 'Claude settings preset hook is unavailable' }));
               return;
             }
-            const stagedBackgroundWork = stagePaneBackgroundWork(request.termId, currentGeneration + 1, request.engine, launchOptions);
+            let stagedBackgroundWork;
+            try {
+              stagedBackgroundWork = stagePaneBackgroundWork(request.termId, currentGeneration + 1, request.engine, launchOptions, ptyShellExecutables.get(request.termId));
+            } catch (error) {
+              launchResolution.discard();
+              console.error(`${LOG_PREFIX} Claude settings preset restart preparation failed:`, error);
+              res.writeHead(503, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'Claude settings preset hook is unavailable' }));
+              return;
+            }
             launchOptions = stagedBackgroundWork.options;
             let launchHomeInUse = false;
             let startedGeneration = null;

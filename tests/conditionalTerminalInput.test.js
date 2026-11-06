@@ -218,6 +218,7 @@ function terminalInputHarness() {
   const context = refresherSetup();
   const handlers = new Map();
   const writes = [];
+  const startupInputs = [];
   const source = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
   const wrapper = source.match(/ptyProcess\.write = \(data\) => \{[\s\S]*?\n  \};/)[0];
   const handler = source.match(/ipcMain\.on\('terminal:input'[\s\S]*?\n\}\);/)[0];
@@ -226,6 +227,10 @@ function terminalInputHarness() {
   // 実際の全書き込みラッパーも評価し、API・自動 Enter と同じ入口を使う。
   vm.runInNewContext(wrapper, {
     ptyProcess,
+    shellStartup: { onInput: (data) => {
+      assert.equal(writes.at(-1), data);
+      startupInputs.push(data);
+    } },
     id: '1',
     conditionalTerminalInput: context.guard,
     silentWriteRefresher: context.refresher,
@@ -241,7 +246,7 @@ function terminalInputHarness() {
     isTerminalQueryReplyOnly,
     isTerminalFocusNotificationOnly,
   });
-  return { ...context, writes, ptyProcess, input: (data) => handlers.get('terminal:input')(null, '1', data) };
+  return { ...context, writes, startupInputs, ptyProcess, input: (data) => handlers.get('terminal:input')(null, '1', data) };
 }
 
 test('issue #540: 実際の terminal:input 経路でフォーカス通知後は静止時に採り直し、出力時は取り消す', () => {
@@ -387,7 +392,7 @@ test('issue #517: ペイン削除後・世代不明のときは何も送らな�
 test('issue #517: main は書き込み・リサイズで採り直しを予約し、出力で取り消し、renderer へ送る', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
   const rendererSource = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'app.js'), 'utf8');
-  assert.match(source, /ptyProcess\.write = \(data\) => \{\s*conditionalTerminalInput\.markChanged\(id\);[\s\S]*?silentWriteRefresher\.noteInput\(id,[^\n]+\);\s*return writeToPty\(data\)/);
+  assert.match(source, /ptyProcess\.write = \(data\) => \{\s*conditionalTerminalInput\.markChanged\(id\);[\s\S]*?silentWriteRefresher\.noteInput\(id,[^\n]+\);\s*const result = writeToPty\(data\);\s*shellStartup\?\.onInput\(data\);\s*return result;/);
   assert.match(source, /conditionalTerminalInput\.markChanged\(id\);\s*silentWriteRefresher\.noteWrite\(id\);\s*try \{ p\.resize/);
   assert.match(source, /silentWriteRefresher\.noteOutput\(id\)/);
   assert.match(source, /'terminal:screen-refresh'/);
@@ -411,4 +416,10 @@ test('issue #517: 端末の自動応答は利用者入力ではなく、キー�
   for (const user of ['\r', 'a', '\x1b[B', '\x1b[A']) {
     assert.equal(containsUserTerminalInput(user), true, JSON.stringify(user));
   }
+});
+
+test('PowerShell の準備監視には端末応答を書き込んだ後で通知する', () => {
+  const context = terminalInputHarness();
+  context.input('\x1b[3;40R');
+  assert.deepEqual(context.startupInputs, ['\x1b[3;40R']);
 });

@@ -1,5 +1,7 @@
 'use strict';
 
+const { quoteShellPath } = require('../utils/shellQuoting');
+
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { spawnSync } = require('node:child_process');
@@ -12,8 +14,8 @@ test('起動経路の引用結果をそろえる', () => {
   for (const value of values) {
     const filename = '/tmp/' + value;
     assert.equal(renderer.quoteShellArgument(value), quoteShellArgument(value));
-    assert.equal(buildClaudeSettingsArgument('vk-orchestrator-work-pane', filename), '--settings ' + quoteShellArgument(filename));
-    assert.equal(renderer.buildClaudeLaunchCommand(undefined, { backgroundWorkSettingsPath: filename }), 'claude --settings ' + quoteShellArgument(filename));
+    assert.equal(buildClaudeSettingsArgument('vk-orchestrator-work-pane', filename, '/bin/sh'), '--settings ' + quoteShellPath(filename, 'posix'));
+    assert.equal(renderer.buildClaudeLaunchCommand(undefined, { backgroundWorkSettingsPath: filename, quoteClaudeSettingsPath: (value) => quoteShellPath(value, 'posix') }), 'claude --settings ' + quoteShellPath(filename, 'posix'));
   }
 });
 

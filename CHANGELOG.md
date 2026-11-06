@@ -1,5 +1,7 @@
 # Changelog
 
+## 1.92.0
+
 - [ 機能追加 ] タスク欄のサブ issue を親の直下にインデント表示し、子自身の状態を確認できるように（[#549](https://github.com/vektor-inc/vk-terminals/issues/549)）
 - [ 不具合修正 ] 詳細URL が狭いペインで改行されるとリンクの前半だけが開かれる不具合を修正（[#550](https://github.com/vektor-inc/vk-terminals/issues/550)）
 - [ デザイン不具合修正 ] タスク欄の子カードにだけ左の線が付き、目立つ印のように見える問題を修正（[#553](https://github.com/vektor-inc/vk-terminals/issues/553)）

@@ -2493,26 +2493,37 @@ function createTerminalPane(cwd, options = {}, guide = null) {
     // 送られないケースで警告ログも一切出ないと、司や利用者が切り分けにくくなる。
     // 従来（claude 専用実装）は必ず warn が残っていたのと同じ可観測性を保つため、
     // 「送信はしない・警告だけ出す」タイマーを engine 問わず設定する。
-    if (isFirstTerminal && config.initialCommand) {
-      if (resolvedEngine === 'claude') {
-        promptWatcherTimeoutId = setTimeout(() => {
-          if (!sent) {
-            console.warn(`${LOG_PREFIX} Claude ready prompt not detected within ${WATCH_TIMEOUT_MS}ms, sending initialCommand as fallback`);
-            sendInitialCommand('timeout fallback');
-          }
-          stopWatchingIfDone();
-        }, WATCH_TIMEOUT_MS);
-      } else {
-        promptWatcherTimeoutId = setTimeout(() => {
-          if (!sent) {
-            console.warn(`${LOG_PREFIX} ready prompt not detected within ${WATCH_TIMEOUT_MS}ms for engine '${resolvedEngine}'; initialCommand was not sent (blind fallback is disabled for non-claude engines)`);
-            // 盲打ちを諦めた（＝以後 initialCommand が送られる見込みが無い）ことを記録する。
-            initialCommandGaveUp = true;
-          }
-          stopWatchingIfDone();
-        }, WATCH_TIMEOUT_MS);
+    const startInitialCommandTimer = (readiness) => {
+      if (ptys.get(id) !== ptyProcess) return;
+      if (readiness?.status === 'timeout' && readiness.userInput) {
+        initialCommandGaveUp = true;
+        stopWatchingIfDone();
+        return;
       }
-    }
+      if (isFirstTerminal && config.initialCommand) {
+        if (resolvedEngine === 'claude') {
+          promptWatcherTimeoutId = setTimeout(() => {
+            if (!sent) {
+              console.warn(`${LOG_PREFIX} Claude ready prompt not detected within ${WATCH_TIMEOUT_MS}ms, sending initialCommand as fallback`);
+              sendInitialCommand('timeout fallback');
+            }
+            stopWatchingIfDone();
+          }, WATCH_TIMEOUT_MS);
+        } else {
+          promptWatcherTimeoutId = setTimeout(() => {
+            if (!sent) {
+              console.warn(`${LOG_PREFIX} ready prompt not detected within ${WATCH_TIMEOUT_MS}ms for engine '${resolvedEngine}'; initialCommand was not sent (blind fallback is disabled for non-claude engines)`);
+              // 盲打ちを諦めた（＝以後 initialCommand が送られる見込みが無い）ことを記録する。
+              initialCommandGaveUp = true;
+            }
+            stopWatchingIfDone();
+          }, WATCH_TIMEOUT_MS);
+        }
+      }
+    };
+    // シェルの準備待ちと Claude の起動待ちは別々に数える。
+    if (shellReady) shellReady.then(startInitialCommandTimer);
+    else startInitialCommandTimer();
 
     promptWatcher = (data) => {
       const stripped = stripAnsiForPattern(data);

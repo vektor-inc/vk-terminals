@@ -79,3 +79,86 @@ for (const closed of [false, true]) {
     assert.deepEqual(events, closed ? ['cancel'] : ['cancel', 'stop']);
   });
 }
+
+for (const suffix of ['\x1b=', '\x1b(B', '\x1b]133;B\x1b\\']) {
+  test(`短い制御シーケンスと複数 OSC を除いてプロンプトを検知する: ${JSON.stringify(suffix)}`, { timeout: 1000 }, async () => {
+    const observer = createObserver();
+    observer.listeners.get('data')(`\x1b]0;title\x1b\\PS /tmp> ${suffix}`);
+    observer.input('\x1b[1;1R');
+    assert.equal((await observer.ready).status, 'ready');
+  });
+}
+
+test('プロンプトの後に別の出力が来たら位置応答を受け付けない', async () => {
+  const observer = createObserver();
+  let resolved = false;
+  observer.ready.then(() => { resolved = true; });
+  observer.listeners.get('data')('PS sample> ');
+  observer.listeners.get('data')('loading...\r\n');
+  observer.input('\x1b[1;1R');
+  await Promise.resolve();
+  assert.equal(resolved, false);
+  observer.expire();
+  assert.equal((await observer.ready).status, 'timeout');
+  observer.input('\x1b[1;1R');
+  assert.equal(observer.listeners.size, 0);
+});
+
+test('時間切れの解決値に通常入力の有無を残す（位置応答は除外）', async () => {
+  for (const input of ['ssh host\r', '\x1b[1;1R']) {
+    const observer = createObserver();
+    observer.input(input);
+    observer.expire();
+    assert.deepEqual(await observer.ready, { status: 'timeout', userInput: input.startsWith('ssh') });
+  }
+});
+
+// 配線は実際の main.js の文を実行し、生成・登録・引き渡しをまとめて検証する。
+test('main の監視生成と WeakMap 登録、遅延起動への引き渡し', () => {
+  const source = require('node:fs').readFileSync(require.resolve('../main.js'), 'utf8');
+  const vm = require('node:vm');
+  const context = {
+    ptyProcess: {}, shell: '/tmp/pwsh', shellStartupReadiness: new WeakMap(),
+    observePowerShellReady: (pty, shell) => {
+      assert.equal(pty, context.ptyProcess);
+      assert.equal(shell, context.shell);
+      return { ready: Promise.resolve() };
+    },
+    ptys: new Map(), id: '1', launchCommand: 'claude', initialLaunchToken: {},
+    agentLifecycles: {}, discardFailedLaunch() {}, guideLaunchSucceeded() {},
+    scheduleLaunchCommand: (options) => {
+      assert.ok(options.shellReady instanceof Promise);
+      assert.equal(options.shellReady, context.shellStartupReadiness.get(context.ptyProcess));
+    },
+  };
+  const start = source.indexOf('  const shellStartup = observePowerShellReady(');
+  const end = source.indexOf('\n\n', start);
+  const launch = source.indexOf('    scheduleLaunchCommand({', end);
+  const launchEnd = source.indexOf('\n    });', launch) + '\n    });'.length;
+  vm.runInNewContext(source.slice(start, end) + '\n' + source.slice(launch, launchEnd), context);
+});
+
+for (const userInput of [false, true]) {
+  test(`main の initialCommand は準備完了後に待ち始め、時間切れと入力が重なったら中止: ${userInput}`, async () => {
+    const source = require('node:fs').readFileSync(require.resolve('../main.js'), 'utf8');
+    const start = source.indexOf('    const startInitialCommandTimer =');
+    const end = source.indexOf('\n\n    promptWatcher =', start);
+    let release;
+    const shellReady = new Promise((resolve) => { release = resolve; });
+    const timers = [];
+    const ptyProcess = {};
+    let stopped = false;
+    require('node:vm').runInNewContext(source.slice(start, end), {
+      shellReady, ptys: new Map([['1', ptyProcess]]), id: '1', ptyProcess,
+      isFirstTerminal: true, config: { initialCommand: 'hello' }, resolvedEngine: 'claude',
+      WATCH_TIMEOUT_MS: 10000, setTimeout: (callback, delay) => timers.push({ callback, delay }),
+      stopWatchingIfDone: () => { stopped = true; },
+    });
+    assert.equal(timers.length, 0);
+    release({ status: 'timeout', userInput });
+    await Promise.resolve();
+    assert.equal(timers.length, userInput ? 0 : 1);
+    assert.equal(stopped, userInput);
+    if (!userInput) assert.equal(timers[0].delay, 10000);
+  });
+}

@@ -267,3 +267,14 @@ for (const cancellation of ['none', 'closed', 'replaced', 'restarted']) {
     assert.equal(discarded.length, cancellation === 'none' ? 0 : 1);
   });
 }
+
+test('シェルが時間切れになり通常入力があったら起動せず回収する', async () => {
+  for (const userInput of [true, false]) {
+    const { ptyProcess, written } = createPane();
+    const { timers, discarded } = schedule({ ptyProcess, ptys: new Map([['1', ptyProcess]]), shellReady: Promise.resolve({ status: 'timeout', userInput }) });
+    timers.fire();
+    await Promise.resolve();
+    assert.deepEqual(written, userInput ? [] : ['codex --no-daemon\r']);
+    assert.deepEqual(discarded, userInput ? ['discard'] : []);
+  }
+});

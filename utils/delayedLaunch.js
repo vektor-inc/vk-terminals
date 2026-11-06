@@ -15,7 +15,7 @@
  * @param {() => boolean} [params.isLaunchCurrent] 起動世代と token の最終照合
  * @param {() => unknown} params.discard 書き込めなかったときに専用 CODEX_HOME を回収する関数
  * @param {number} params.delayMs 書き込むまでの待ち時間
- * @param {Promise<void>|null} [params.shellReady] シェルの初期化待ち
+ * @param {Promise<{status: string, userInput: boolean}>|null} [params.shellReady] シェルの初期化待ち
  * @param {() => void} [params.onWriteSuccess] 書き込み成功時の通知先
  * @param {(message: string) => void} [params.log] 失敗の記録先
  * @param {Function} [params.setTimer] テスト用の setTimeout 差し替え
@@ -36,7 +36,14 @@ function scheduleLaunchCommand({ ptys, id, ptyProcess, command, prepareCommand =
       return;
     }
     const writePreparedCommand = async (result) => {
-      if (shellReady) await shellReady;
+      if (shellReady) {
+        const readiness = await shellReady;
+        // 時間切れまでに利用者が別プログラムを起動した場合は盲打ちしない。
+        if (readiness?.status === 'timeout' && readiness.userInput) {
+          discardSafely();
+          return;
+        }
+      }
       let setupWritten = false;
       const cleanupPromptHook = () => {
         if (!setupWritten || !result?.cleanupCommand || ptys.get(id) !== ptyProcess) return;

@@ -629,3 +629,54 @@ test('詳細 URL: 幅変更後も残る字下げ行と複数 URL を扱う', () 
     assert.deepEqual(links[0].range.start, { x: 3, y: 4 });
   }
 });
+
+test('詳細 URL: 実改行でホスト名をすり替えない', () => {
+  for (const [first, continuation] of [
+    ['https://github.com', '  .evil.example/x'],
+    ['https://example.com', '  evil.example/x'],
+  ]) {
+    for (const lineNumber of [2, 3]) {
+      const links = detailLinks(['■ 詳細URL', first, continuation], 50, lineNumber);
+      assert.ok((links || []).every((link) => link.text === first));
+    }
+  }
+  // ホスト確定後のパスは両方の断片から復元できる。
+  for (const lineNumber of [2, 3]) {
+    const links = detailLinks(['■ 詳細URL', 'https://example.com/pa', '  th'], 50, lineNumber);
+    assert.equal(links[0].text, 'https://example.com/path');
+  }
+});
+
+test('詳細 URL: 4 本目の復元は後続 URL の有無で変わらない', () => {
+  const lines = ['■ 詳細URL'];
+  for (let i = 1; i <= 4; i += 1) lines.push(`https://example.com/${i}/`, '  tail');
+  for (const suffix of [[], ['https://example.com/5/', '  finish']]) {
+    for (const lineNumber of [8, 9]) {
+      const links = detailLinks([...lines, ...suffix], 50, lineNumber);
+      assert.equal(links[0].text, 'https://example.com/4/tail');
+    }
+  }
+});
+
+test('詳細 URL: 見出しは空白と任意の先頭記号 1 個だけを許容する', () => {
+  const url = 'https://example.com/part';
+  for (const heading of ['■ 詳細URL', '  ■ 詳細URL  ', '⏺ ■ 詳細URL', ' • ■ 詳細URL', '● ■ 詳細URL']) {
+    assert.equal(detailLinks([heading, url, '  tail'], 50, 2)[0].text, url + 'tail');
+  }
+  for (const heading of ['echo foo ■ 詳細URL', 'foo■ 詳細URL', '⏺ • ■ 詳細URL', '■ 詳細URL extra']) {
+    assert.equal(detailLinks([heading, url, '  tail'], 50, 2)[0].text, url);
+  }
+});
+
+test('詳細 URL: 句読点だけの続き行へリンク終点を伸ばさない', () => {
+  const url = 'https://example.com/path';
+  for (const punctuation of ['.', ',', ';']) {
+    for (const lineNumber of [2, 3]) {
+      const links = detailLinks(['■ 詳細URL', url, '  ' + punctuation], 50, lineNumber);
+      assert.equal(links[0].text, url);
+      assert.deepEqual(links[0].range, {
+        start: { x: 1, y: 2 }, end: { x: url.length, y: 2 },
+      });
+    }
+  }
+});

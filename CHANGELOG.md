@@ -1,6 +1,6 @@
 # Changelog
 
-- [ 不具合修正 ] 詳細URL が狭いペインで改行されるとリンクの前半だけが開かれる不具合を修正 ([#550](https://github.com/vektor-inc/vk-terminals/issues/550))
+- [ 不具合修正 ] 詳細URL が狭いペインで改行されるとリンクの前半だけが開かれる不具合を修正（[#550](https://github.com/vektor-inc/vk-terminals/issues/550)）
 
 ## 1.91.0
 

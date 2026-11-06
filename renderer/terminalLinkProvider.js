@@ -214,17 +214,20 @@
   }
 
   // 詳細 URL は Claude Code が実改行と字下げを入れるため、通常の折り返し窓とは別に扱う。
-  // 探索を最大 8 行・2048 文字に制限し、ホバーごとの走査を抑える。文字数は
+  // 見出し探索は直前 64 行、1 URL は最大 8 行・2048 文字に制限する。文字数は
   // isSafeHttpUrl と MAX_WINDOW_CHARS の上限に合わせ、超過時は専用連結をしない。
+  // 既知の限界: 短い完結 URL の後の字下げ（#550 等）も連結する。
+  // Claude Code は端末幅によらず改行するため、行長による制限は設けない。
+  const MAX_DETAIL_HEADING_DISTANCE = 64;
   const MAX_DETAIL_URL_ROWS = 8;
   const MAX_DETAIL_URL_CHARS = MAX_WINDOW_CHARS;
   const DETAIL_URL_CHARS = /^[A-Za-z0-9\-._~:/?#[\]@!$&*+,;=%()]+$/;
 
   function getDetailUrlRows(buffer, lineIndex0) {
-    const first = Math.max(0, lineIndex0 - MAX_DETAIL_URL_ROWS);
+    const first = Math.max(0, lineIndex0 - MAX_DETAIL_HEADING_DISTANCE);
     for (let headingIndex = lineIndex0 - 1; headingIndex >= first; headingIndex -= 1) {
       const heading = buffer.getLine(headingIndex);
-      if (!heading || !/■\s*詳細URL\s*$/.test(heading.translateToString(false))) continue;
+      if (!heading || !/^\s*(?:[⏺•●]\s*)?■\s*詳細URL\s*$/.test(heading.translateToString(false))) continue;
 
       // 見出しから順に URL を探す。別の文章行があればブロックを終了する。
       let rows = [];
@@ -233,7 +236,6 @@
       for (let index = headingIndex + 1; index <= lineIndex0 + MAX_DETAIL_URL_ROWS; index += 1) {
         const line = buffer.getLine(index);
         if (!line) break;
-        if (index - headingIndex > MAX_DETAIL_URL_ROWS) return null;
         const raw = line.translateToString(false).trimEnd();
         const start = /^\s*(https?:\/\/\S+)$/i.exec(raw);
         const continuation = /^( +)(\S+)$/.exec(raw);
@@ -245,7 +247,7 @@
           const prefixLength = line.isWrapped ? 0 : continuation[1].length;
           const text = raw.slice(prefixLength);
           if (!DETAIL_URL_CHARS.test(text)) break;
-          rows.push({ index, text, prefixLength });
+          rows.push({ index, text, prefixLength, forcedMerge: !line.isWrapped });
           length += text.length;
         } else {
           break;
@@ -288,9 +290,11 @@
 
   // rowOffsets（各行の連結後文字列内での開始オフセット。先頭からの昇順）から、
   // offset が属する行を探し、バッファ上の (行, 列) を返す。
-  function mergedOffsetToBufferPosition(buffer, rowOffsets, offset) {
+  function mergedOffsetToBufferPosition(buffer, rowOffsets, offset, isEnd = false) {
     for (let i = rowOffsets.length - 1; i >= 0; i -= 1) {
       const row = rowOffsets[i];
+      // 終点が字下げ行の先頭なら、字下げを含めず前行末へ戻す。
+      if (isEnd && i > 0 && row.prefixLength && offset === row.startOffset) continue;
       if (offset >= row.startOffset) {
         const line = buffer.getLine(row.rowIndex);
         if (!line) return null;
@@ -320,7 +324,7 @@
     let merged = '';
     const rowOffsets = [];
     // hardWrapBoundaries: rows 内で「案D の強制連結（isForcedMergeSource）によって
-    // 連結された境界」の merged 内オフセットを集める。getWrappedLineWindow が付ける
+    // 連結された境界」の merged 内オフセットを集める。各連結処理が付ける
     // row.forcedMerge をそのまま使う。
     const hardWrapBoundaries = [];
     for (const row of rows) {
@@ -338,7 +342,7 @@
     const links = [];
     for (const m of matches) {
       const startPos = mergedOffsetToBufferPosition(buffer, rowOffsets, m.start);
-      const endPos = mergedOffsetToBufferPosition(buffer, rowOffsets, m.end);
+      const endPos = mergedOffsetToBufferPosition(buffer, rowOffsets, m.end, true);
       if (!startPos || !endPos) continue;
 
       // IBufferRange は 1-based・右側含む規約（@xterm/addon-web-links の WebLinkProvider

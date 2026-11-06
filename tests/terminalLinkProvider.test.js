@@ -561,3 +561,71 @@ test('getWrappedLineWindow: 罫線テーブルのデータ行を起点にして�
   const rows = getWrappedLineWindow(terminal.buffer.active, 0);
   assert.deepEqual(rows.map((r) => r.index), [0, 1]);
 });
+
+// 詳細 URL の実改行は xterm の isWrapped が false でも復元する。
+function detailLinks(lines, cols, lineNumber) {
+  const terminal = makeFakeTerminal(lines.map((text) => ({
+    cells: asciiCells(typeof text === 'string' ? text : text.text),
+    isWrapped: typeof text === 'string' ? false : text.isWrapped,
+  })), cols);
+  const provider = createTerminalLinkProvider(terminal, { activate: () => {} });
+  let links;
+  provider.provideLinks(lineNumber, (value) => { links = value; });
+  return links;
+}
+
+test('詳細 URL: どちらの断片からも完全な URL と実文字位置の範囲を返す', () => {
+  const first = 'https://github.com/vektor-inc/vk-orchestrator/issues/831#issueco';
+  const second = '  mment-6650882021';
+  const lines = ['  ⏺ ■ 詳細URL', first, second];
+  const cols = first.length + 5;
+  for (const lineNumber of [2, 3]) {
+    const links = detailLinks(lines, cols, lineNumber);
+    assert.equal(links.length, 1);
+    assert.equal(links[0].text, first + second.trimStart());
+    assert.deepEqual(links[0].range, {
+      start: { x: 1, y: 2 }, end: { x: second.length, y: 3 },
+    });
+  }
+});
+
+test('詳細 URL: 見出しが無い場合と見出しから離れた場合は連結しない', () => {
+  const url = 'https://example.com/part';
+  for (const lines of [[url, '  rest'], ['■ 詳細URL', '文章', url, '  rest']]) {
+    const links = detailLinks(lines, 40, lines.length - 1);
+    assert.equal(links[0].text, url);
+  }
+});
+
+test('詳細 URL: 空白や日本語を含む続き行は連結しない', () => {
+  for (const continuation of ['  rest of-url', '  続き']) {
+    const links = detailLinks(['■ 詳細URL', 'https://example.com/part', continuation], 40, 2);
+    assert.equal(links[0].text, 'https://example.com/part');
+  }
+});
+
+test('詳細 URL: 3 行以上の実改行と isWrapped の混在を復元する', () => {
+  const lines = ['■ 詳細URL', 'https://example.com/pa', '  th/to', { text: 'end', isWrapped: true }];
+  for (const lineNumber of [2, 3, 4]) {
+    const links = detailLinks(lines, 40, lineNumber);
+    assert.equal(links[0].text, 'https://example.com/path/toend');
+    assert.equal(links[0].range.end.y, 4);
+  }
+});
+
+test('詳細 URL: 行数・文字数の上限を超える場合は専用連結しない', () => {
+  const many = ['■ 詳細URL', 'https://example.com/a', ...Array(8).fill('  b')];
+  assert.equal(detailLinks(many, 40, 2)[0].text, 'https://example.com/a');
+  const long = ['■ 詳細URL', 'https://example.com/' + 'a'.repeat(2020), '  ' + 'b'.repeat(30)];
+  assert.equal(detailLinks(long, 2050, 2)[0].text, long[1]);
+});
+
+test('詳細 URL: 幅変更後も残る字下げ行と複数 URL を扱う', () => {
+  const lines = ['⏺ ■ 詳細URL', '  https://example.com/one', '  tail', '  https://example.com/two', '  finish'];
+  for (const cols of [40, 60]) {
+    assert.equal(detailLinks(lines, cols, 2)[0].text, 'https://example.com/onetail');
+    const links = detailLinks(lines, cols, 5);
+    assert.equal(links[0].text, 'https://example.com/twofinish');
+    assert.deepEqual(links[0].range.start, { x: 3, y: 4 });
+  }
+});

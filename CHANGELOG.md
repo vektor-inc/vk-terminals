@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 不具合修正 ] 詳細URL が狭いペインで改行されるとリンクの前半だけが開かれる不具合を修正 ([#550](https://github.com/vektor-inc/vk-terminals/issues/550))
+
 ## 1.91.0
 
 - [ 機能追加 ] Codex の固定入口で未コミット変更を保持した作業ブランチへの復帰と、メンバー終了時の自動復帰・前後の状態確認に対応（[#544](https://github.com/vektor-inc/vk-terminals/issues/544)）

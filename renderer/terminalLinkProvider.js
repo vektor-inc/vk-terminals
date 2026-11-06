@@ -213,6 +213,52 @@
     return rows;
   }
 
+  // 詳細 URL は Claude Code が実改行と字下げを入れるため、通常の折り返し窓とは別に扱う。
+  // 探索を最大 8 行・2048 文字に制限し、ホバーごとの走査を抑える。文字数は
+  // isSafeHttpUrl と MAX_WINDOW_CHARS の上限に合わせ、超過時は専用連結をしない。
+  const MAX_DETAIL_URL_ROWS = 8;
+  const MAX_DETAIL_URL_CHARS = MAX_WINDOW_CHARS;
+  const DETAIL_URL_CHARS = /^[A-Za-z0-9\-._~:/?#[\]@!$&*+,;=%()]+$/;
+
+  function getDetailUrlRows(buffer, lineIndex0) {
+    const first = Math.max(0, lineIndex0 - MAX_DETAIL_URL_ROWS);
+    for (let headingIndex = lineIndex0 - 1; headingIndex >= first; headingIndex -= 1) {
+      const heading = buffer.getLine(headingIndex);
+      if (!heading || !/■\s*詳細URL\s*$/.test(heading.translateToString(false))) continue;
+
+      // 見出しから順に URL を探す。別の文章行があればブロックを終了する。
+      let rows = [];
+      let length = 0;
+      let containsTarget = false;
+      for (let index = headingIndex + 1; index <= lineIndex0 + MAX_DETAIL_URL_ROWS; index += 1) {
+        const line = buffer.getLine(index);
+        if (!line) break;
+        if (index - headingIndex > MAX_DETAIL_URL_ROWS) return null;
+        const raw = line.translateToString(false).trimEnd();
+        const start = /^\s*(https?:\/\/\S+)$/i.exec(raw);
+        const continuation = /^( +)(\S+)$/.exec(raw);
+        if (start && !line.isWrapped) {
+          if (containsTarget) return rows.length > 1 ? rows : null;
+          rows = [{ index, text: start[1], prefixLength: raw.indexOf(start[1]) }];
+          length = start[1].length;
+        } else if (rows.length && (line.isWrapped || continuation)) {
+          const prefixLength = line.isWrapped ? 0 : continuation[1].length;
+          const text = raw.slice(prefixLength);
+          if (!DETAIL_URL_CHARS.test(text)) break;
+          rows.push({ index, text, prefixLength });
+          length += text.length;
+        } else {
+          break;
+        }
+        if (length > MAX_DETAIL_URL_CHARS || rows.length > MAX_DETAIL_URL_ROWS) return null;
+        if (index === lineIndex0) containsTarget = true;
+      }
+      if (containsTarget && rows.length > 1) return rows;
+      break;
+    }
+    return null;
+  }
+
   // 1 バッファ行の中で、その行の translateToString(false) が返す文字列上のインデックス
   // （strIndex 文字目の手前まで）に対応するバッファ列（0-based）を返す。
   //
@@ -248,7 +294,7 @@
       if (offset >= row.startOffset) {
         const line = buffer.getLine(row.rowIndex);
         if (!line) return null;
-        const col = stringIndexToColumn(line, offset - row.startOffset);
+        const col = stringIndexToColumn(line, offset - row.startOffset + (row.prefixLength || 0));
         return { rowIndex: row.rowIndex, col };
       }
     }
@@ -267,7 +313,8 @@
   function computeLinksForLine(terminal, bufferLineNumber, handlers) {
     const buffer = terminal.buffer.active;
     const lineIndex0 = bufferLineNumber - 1;
-    const rows = getWrappedLineWindow(buffer, lineIndex0);
+    const detailRows = getDetailUrlRows(buffer, lineIndex0);
+    const rows = detailRows || getWrappedLineWindow(buffer, lineIndex0);
     if (!rows || rows.length === 0) return [];
 
     let merged = '';
@@ -281,7 +328,7 @@
       if (startOffset > 0 && row.forcedMerge) {
         hardWrapBoundaries.push(startOffset);
       }
-      rowOffsets.push({ rowIndex: row.index, startOffset });
+      rowOffsets.push({ rowIndex: row.index, startOffset, prefixLength: row.prefixLength || 0 });
       merged += row.text;
     }
 
@@ -307,6 +354,8 @@
       // (y-1, x=cols) は同じ線形インデックスになるため結果的に正しい範囲として扱われる
       // （xterm.js 本体の実装詳細に依存した挙動であり、xterm 側でこの比較方法が変わると
       // 崩れうる。ただし現状は正しく動作しており、修正の必要は無い）。
+      // IBufferRange は連続範囲なので、途中行の字下げセルは範囲に含まれる。
+      // URL 文字列には含めず、始点・終点は実際の文字位置へ合わせる。
       links.push({
         range: {
           start: { x: startPos.col + 1, y: startPos.rowIndex + 1 },

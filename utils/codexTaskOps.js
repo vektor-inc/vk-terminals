@@ -3667,7 +3667,7 @@ function executePaneSend(parsed, deps, writeOut) {
   const token = env.VK_TASK_PANE_TOKEN;
   const port = Number(env.VK_TASK_PANE_PORT);
   const source = env.VK_TASK_PANE_SOURCE;
-  const failure = (uncertain = true) => { writeOut(JSON.stringify({ result: uncertain ? 'unconfirmed' : 'not-sent', reason: uncertain ? 'send-failed' : 'sender-unavailable', message: uncertain ? '到達を確認できませんでした。送り直さず、送信先の入力欄と会話を確かめてください。' : '送信しませんでした。この Codex ペインには依頼の送信機能が設定されていません。VK Terminals から起動した Codex ペインで実行してください。' }) + '\n'); return 2; };
+  const failure = (uncertain = true, unavailable = false) => { writeOut(JSON.stringify({ result: uncertain ? 'unconfirmed' : 'not-sent', reason: uncertain ? 'send-failed' : 'sender-unavailable', message: uncertain ? '到達を確認できませんでした。送り直さず、送信先の入力欄と会話を確かめてください。' : unavailable ? '送信しませんでした。VK Terminals に接続できません。VK Terminals が動いているか確かめてから、もう一度送ってください。' : '送信しませんでした。この Codex ペインには依頼の送信機能が設定されていません。VK Terminals から起動した Codex ペインで実行してください。' }) + '\n'); return 2; };
   if (!/^[0-9a-f]{64}$/.test(token || '') || !/^[1-9][0-9]{0,8}$/.test(source || '') || !Number.isInteger(port) || port < 1 || port > 65535) return failure(false);
   return new Promise(resolve => {
     let finished = false;
@@ -3692,7 +3692,7 @@ function executePaneSend(parsed, deps, writeOut) {
       socket.once('connect', () => { connected = true; });
     });
     request.on('timeout', () => request.destroy());
-    request.on('error', () => { if (!finished) finish(failure(connected)); });
+    request.on('error', () => { if (!finished) finish(failure(connected, true)); });
     request.end(JSON.stringify({ target: parsed.target, file: parsed.file }));
   });
 }

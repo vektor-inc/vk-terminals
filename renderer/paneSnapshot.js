@@ -9,10 +9,10 @@
       cursorY: buffer.cursorY,
       lines: Array.from({ length: term.rows }, (_, y) => {
         const line = buffer.getLine(buffer.baseY + y);
-        return { text: line.translateToString(true), wrapped: line.isWrapped,
+        return { text: line.translateToString(true),
           cells: Array.from({ length: term.cols }, (_, x) => {
             const cell = line.getCell(x);
-            return { chars: cell.getChars(), dim: !!cell.isDim(), fg: cell.getFgColor(), fgMode: cell.getFgColorMode() };
+            return { chars: cell.getChars(), dim: !!cell.isDim() };
           }) };
       }),
     };

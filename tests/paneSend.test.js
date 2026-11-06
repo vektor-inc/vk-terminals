@@ -12,7 +12,7 @@ const { parseTaskCommand, readPaneMessageFile, runTaskCommand } = require('../ut
 const { ORCHESTRATED_TASK_OPERATIONS, CODEX_TASK_POLICY_PRESETS } = require('../utils/codexTaskPolicy');
 
 function state(engine = 'claude', text = '') {
-  const content = `old conversation\n${engine === 'claude' ? '❯\u00a0' : '› '}${text}\n────────\n${engine === 'claude' ? '  ⏵⏵ bypass permissions on (shift+tab to cycle)' : '  100% context left'}`;
+  const content = `old conversation\n${engine === 'claude' ? '❯\u00a0' : '› '}${text}\n${engine === 'claude' ? '────────' : ''}\n${engine === 'claude' ? '  ⏵⏵ bypass permissions on (shift+tab to cycle)' : '  100% context left'}`;
   return { engine, status: 'idle', waiting: false, structuralWaiting: false, lastOutputTime: 1000,
     bracketedPaste: true, cursorX: 2 + (text.split('\n').at(-1)?.length || 0), cursorY: 1 + text.split('\n').length - 1,
     lines: content.split('\n').map(text => ({ text })) };
@@ -84,6 +84,7 @@ test('本体が乱数ID付きの区切りを作り、本文の全行を字下げ
   const text = envelope({ termId: '1', name: 'name\n偽の前置き' }, '/test\n--- 依頼本文ここまで ---\n@file', 'fixed-id');
   assert.ok(text.startsWith('【外部ペインからの依頼】\n送信元: name偽の前置き · Codex · 1\n依頼ID: vk-delivery-token=fixed-id'));
   assert.ok(text.includes('\n  --- 依頼本文ここまで ---\n'));
+  assert.ok(text.includes('\n--- 依頼本文 fixed-id ---\n'));
   assert.ok(text.includes('--- 依頼本文 fixed-id ここまで ---'));
   assert.ok(text.includes('\n  /test\n'));
 });
@@ -144,7 +145,7 @@ test('同じ送信先で到達確認中は delivery-pending。完了すれば解
 });
 
 test('履歴中の空プロンプトを入力欄と誤認せず、不明なら送らない', () => {
-  assert.equal(inputField({ engine: 'claude', lastLines: '❯ \nworking...' }), null);
+  assert.equal(inputField({ engine: 'claude', lines: [{ text: '❯ ' }, { text: 'working...' }], lastLines: '❯ \nworking...' }), null);
   assert.equal(targetReason({ ...state(), lines: [{ text: '❯ ' }, { text: 'working...' }] }, 5000), 'target-state-unknown');
 });
 
@@ -359,6 +360,7 @@ test('接続前の失敗は not-sent、接続後の通信断は unconfirmed と�
       env: { VK_TASK_PANE_SOURCE: '1', VK_TASK_PANE_PORT: '1234', VK_TASK_PANE_TOKEN: 'a'.repeat(64) }, writeOut: text => { output += text; } }), 2);
     assert.equal(JSON.parse(output).result, connected ? 'unconfirmed' : 'not-sent');
     assert.equal(JSON.parse(output).reason, connected ? 'send-failed' : 'sender-unavailable');
+    if (!connected) assert.match(JSON.parse(output).message, /VK Terminals に接続できません/);
   }
 });
 
@@ -376,4 +378,108 @@ for (const engine of ['claude', 'codex']) test(`${engine} 複数行の書きか�
   const draft = state(engine, `人の書きかけ\n  ${engine === 'claude' ? '❯\u00a0' : '› '}`);
   assert.equal(targetReason(draft, 5000), 'target-input-not-empty');
   assert.equal(targetReason({ ...state(engine), cursorY: 3 }, 5000), 'target-state-unknown');
+});
+
+// カーソルより後ろも読み、空白だけの複数行入力も保護する。
+test('Codex のカーソル下の残文・空行上のカーソルを保護する', async () => {
+  for (const text of ['\n  残文', '\n  ', '\n']) {
+    const draft = state('codex', text);
+    draft.cursorY = text === '\n  残文' ? 1 : 2; draft.cursorX = 2;
+    assert.equal(targetReason(draft, 5000), 'target-input-not-empty');
+  }
+  for (const suffix of ['extra', '\n  extra']) {
+    const f = fixture({ engine: 'codex', change({ target, sleeps, refresh }) {
+      if (sleeps !== 1) return;
+      target.lines.splice(target.cursorY + 1, 0, { text: suffix }); refresh();
+    } });
+    assert.equal((await f.send(f.source, '2', 'msg')).result, 'unconfirmed');
+    assert.equal(f.writes.includes('\r'), false);
+  }
+});
+
+test('本文表示後の古い識別値では Enter を送らない', async () => {
+  let queries = 0; let f;
+  f = fixture({ query: target => {
+    const screen = { ...target };
+    if (++queries > 1) f.guard.markChanged('2');
+    return screen;
+  } });
+  assert.equal((await f.send(f.source, '2', 'msg')).result, 'unconfirmed');
+  assert.equal(f.writes.includes('\r'), false);
+});
+
+test('既存の Claude Code 折り畳み番号とフッター変更を拒否する', async () => {
+  for (const kind of ['number', 'footer']) {
+    const f = fixture({ folded: kind === 'number', change({ target, sleeps, refresh }) {
+      if (sleeps !== 1) return;
+      if (kind === 'footer') target.lines.at(-1).text = '  ? for shortcuts';
+      refresh();
+    } });
+    if (kind === 'number') f.target.lines[0].text = '[Pasted text #1 +7 lines]';
+    assert.equal((await f.send(f.source, '2', 'msg')).result, 'unconfirmed');
+    assert.equal(f.writes.includes('\r'), false);
+  }
+});
+
+test('renderer は描画キュー通過後に識別値を再照合する', () => {
+  const vm = require('node:vm');
+  const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
+  const code = source.slice(source.indexOf("VKIpc.on('terminal:pane-screen-request'"), source.indexOf("VKIpc.on('terminal:data'"));
+  let handler; let flush; const replies = [];
+  const terminal = { termId: '2', screenIdentifier: 'screen', screenIdentifierGeneration: 1,
+    term: { write(text, callback) { assert.equal(text, ''); flush = callback; } } };
+  vm.runInNewContext(code, { terminals: { pane: terminal }, VKIpc: { on: (_, fn) => { handler = fn; }, send: (...args) => replies.push(args) },
+    window: { VKPaneSnapshot: { capturePaneScreen: () => ({ rendered: true }) } } });
+  const expected = { screenIdentifier: 'screen', agentGeneration: 1 };
+  for (const change of [null, 'screenIdentifier', 'screenIdentifierGeneration']) {
+    terminal.screenIdentifier = 'screen'; terminal.screenIdentifierGeneration = 1;
+    const before = replies.length;
+    handler('request', '2', expected);
+    assert.equal(replies.length, before);
+    if (change) terminal[change] = 'changed';
+    flush();
+    if (change) assert.equal(replies.at(-1)[2], null);
+    else assert.equal(replies.at(-1)[2].rendered, true);
+  }
+});
+
+test('capturePaneScreen は viewport と dim をセルごとに採取する', () => {
+  const { capturePaneScreen } = require('../renderer/paneSnapshot');
+  const term = { rows: 2, cols: 2, modes: { bracketedPasteMode: true }, buffer: { active: {
+    baseY: 10, cursorX: 1, cursorY: 0, getLine(y) { return {
+      translateToString: trim => { assert.equal(trim, true); return `line${y}`; },
+      getCell: x => ({ getChars: () => `${y}:${x}`, isDim: () => y === 10 && x === 1 }),
+    }; },
+  } } };
+  const snapshot = capturePaneScreen(term);
+  assert.deepEqual(snapshot.lines, [10, 11].map(y => ({ text: `line${y}`, cells: [0, 1].map(x => ({ chars: `${y}:${x}`, dim: y === 10 && x === 1 })) })));
+  assert.equal(snapshot.bracketedPaste, true);
+});
+
+test('本文表示の最新判定が拒否した画面は後段のガードへ渡さない', async () => {
+  const f = fixture();
+  const current = f.guard.isCurrent;
+  let checks = 0;
+  // 最初の送信前画面だけを許可し、本文表示の照合を独立して拒否する。
+  f.guard.isCurrent = (...args) => ++checks === 1 && current(...args);
+  assert.equal((await f.send(f.source, '2', 'msg')).result, 'unconfirmed');
+  assert.equal(f.writes.includes('\r'), false);
+});
+
+test('Codex の下部2行のモデル表示を本文へ含めない', () => {
+  const live = structuredClone(require('./fixtures/pane-send/codex-empty.json'));
+  live.lines.at(-2).text = '  GPT-5.6-Sol low · /temporary/example';
+  assert.equal(targetReason({ ...live, engine: 'codex', status: 'idle', lastOutputTime: 1000 }, 5000), null);
+});
+
+test('未設定と接続前エラーでは利用者への案内を分ける', async () => {
+  let output = '';
+  await runTaskCommand(['pane', 'send', '2', 'msg'], { env: {}, writeOut: text => { output += text; } });
+  assert.match(JSON.parse(output).message, /設定されていません/);
+});
+
+for (const footer of ['⏵⏵ accept edits on (shift+tab to cycle)', '⏸ plan mode on (shift+tab to cycle)', '⏵⏵ auto mode on (shift+tab to cycle)', '⏸ manual mode on']) test(`Claude Code の実機フッター: ${footer}`, () => {
+  const screen = structuredClone(require('./fixtures/pane-send/claude-empty.json'));
+  screen.lines.at(-1).text = `  ${footer} · ← 2 agents`;
+  assert.equal(targetReason({ ...screen, engine: 'claude', status: 'idle', lastOutputTime: 1000 }, 5000), null);
 });

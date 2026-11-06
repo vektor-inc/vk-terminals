@@ -1,6 +1,7 @@
 'use strict';
 
 const { quoteShellArgument } = require('./restartAgent');
+const { classifyShell, quoteShellPath } = require('./shellQuoting');
 
 const fs = require('fs');
 const path = require('path');
@@ -86,11 +87,46 @@ function prepareClaudeSettingsPreset(dataDir, preset, options = {}) {
   return settingsPath;
 }
 
-function buildClaudeSettingsArgument(preset, settingsPath) {
+// 設定ファイルのパスをペインのシェルに合わせて引用する。
+function quoteClaudeSettingsPath(filename, shellExecutable) {
+  const kind = classifyShell(shellExecutable);
+  if (kind === 'unknown' && typeof filename === 'string' && /^[A-Za-z0-9/._-]+$/.test(filename)) return quoteShellPath(filename, 'posix');
+  return quoteShellPath(filename, kind);
+}
+
+// 使えない一時設定は回収し、必須プリセットは起動前に検証する。
+function prepareClaudeSettingsForShell(options, shellExecutable, prepared) {
+  const quote = (filename) => quoteClaudeSettingsPath(filename, shellExecutable);
+  try {
+    if (options.claudeSettingsPreset !== undefined) {
+      buildClaudeSettingsArgument(options.claudeSettingsPreset, options.claudeSettingsPath, shellExecutable);
+    }
+  } catch (error) {
+    prepared?.discard();
+    throw error;
+  }
+  if (prepared && quote(prepared.filename) === null) {
+    prepared.discard();
+    prepared = undefined;
+  }
+  return {
+    options: {
+      ...options,
+      shellExecutable,
+      quoteClaudeSettingsPath: quote,
+      ...(prepared ? { backgroundWorkSettingsPath: prepared.filename } : {}),
+    },
+    prepared,
+  };
+}
+
+function buildClaudeSettingsArgument(preset, settingsPath, shellExecutable) {
   if (!isValidClaudeSettingsPreset(preset) || typeof settingsPath !== 'string' || !SETTINGS_PATH_PATTERN.test(settingsPath)) {
     throw new Error('invalid prepared Claude settings preset');
   }
-  return `--settings ${quoteShellArgument(settingsPath)}`;
+  const argument = quoteClaudeSettingsPath(settingsPath, shellExecutable);
+  if (argument === null) throw new Error('invalid prepared Claude settings preset');
+  return `--settings ${argument}`;
 }
 
 // PID と開始時刻が一致する別インスタンスの設定には触れない。
@@ -148,6 +184,8 @@ function prepareBackgroundWorkSettings(dataDir, config, settingsPath, options = 
 }
 
 module.exports = {
+  quoteClaudeSettingsPath,
+  prepareClaudeSettingsForShell,
   cleanupBackgroundWorkSettings,
   prepareBackgroundWorkSettings,
   ALLOWED_CLAUDE_SETTINGS_PRESETS,

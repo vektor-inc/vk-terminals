@@ -1,4 +1,6 @@
 'use strict';
+
+const { quoteShellPath } = require('../utils/shellQuoting');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { execFileSync } = require('node:child_process');
@@ -23,6 +25,6 @@ test('引用符とシェルの特殊文字を含むホームの設定パスを�
   const filename = "/tmp/home' space $(false) `false` $HOME ; &/.vk-terminals/background-work-A/settings.json";
   // 本物のシェルを通し、展開されず元のパスが返ることを確認する。
   const capture = command => execFileSync('/bin/sh', ['-c', `claude() { printf '%s\\n' "$@"; }; ${command}`], { encoding: 'utf8' }).trim().split('\n');
-  assert.deepEqual(capture(buildClaudeLaunchCommand('sonnet', { backgroundWorkSettingsPath: filename })), ['--model', 'sonnet', '--settings', filename]);
-  assert.deepEqual(capture(`claude ${buildClaudeSettingsArgument('vk-orchestrator-work-pane', filename)}`), ['--settings', filename]);
+  assert.deepEqual(capture(buildClaudeLaunchCommand('sonnet', { backgroundWorkSettingsPath: filename, quoteClaudeSettingsPath: (value) => quoteShellPath(value, 'posix') })), ['--model', 'sonnet', '--settings', filename]);
+  assert.deepEqual(capture(`claude ${buildClaudeSettingsArgument('vk-orchestrator-work-pane', filename, '/bin/sh')}`), ['--settings', filename]);
 });

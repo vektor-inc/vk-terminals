@@ -260,7 +260,8 @@ function createAgentLifecycleStore(options = {}) {
       const isCurrent = () => states.get(id) === entry && entry?.generation === generation && entry?.launchToken === launchToken && !closed;
       if (!isCurrent()) return { status: 'cancelled' };
       Object.assign(entry, { shellPid, shellLstart: null, trackedGroups: new Map(), baselinePgids: new Set(), baselineIdentities: new Map(), marker: null, markerBuffer: '', completionReceived: false, acquisitionOpen: false, acquisitionTimer: null, readyResolve: null, readyTimer: null, activated: false });
-      if (platform === 'win32' || !Number.isSafeInteger(shellPid) || shellPid <= 0) return { status: 'passthrough', command };
+      // プロンプトフックに未対応のシェルでは、そのまま起動コマンドを送る。
+      if (!['bash', 'zsh', 'fish'].includes(pathBasename(shellPath)) || platform === 'win32' || !Number.isSafeInteger(shellPid) || shellPid <= 0) return { status: 'passthrough', command };
       let processes;
       try { processes = await listProcesses(); } catch (_error) {
         return isCurrent() ? { status: 'passthrough', command } : { status: 'cancelled' };

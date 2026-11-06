@@ -1,4 +1,6 @@
 'use strict';
+
+const { quoteShellPath } = require('../utils/shellQuoting');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -132,7 +134,7 @@ test('起動設定は Stop を保持し、接続情報を非公開にして起�
   assert.equal(fs.statSync(path.dirname(a.filename)).mode & 0o777, 0o700);
   assert.equal(fs.statSync(path.join(path.dirname(a.filename), 'connection.json')).mode & 0o777, 0o600);
   assert.equal(JSON.stringify(settings).includes('synthetic'), false);
-  const command = buildClaudeLaunchCommand(null, { claudeSettingsPreset: 'vk-orchestrator-work-pane', backgroundWorkSettingsPath: a.filename });
+  const command = buildClaudeLaunchCommand(null, { claudeSettingsPreset: 'vk-orchestrator-work-pane', backgroundWorkSettingsPath: a.filename, quoteClaudeSettingsPath: (value) => quoteShellPath(value, 'posix') });
   assert.equal((command.match(/--settings/g) || []).length, 1);
   a.discard(); b.discard(); assert.equal(fs.existsSync(a.filename), false);
 });
@@ -257,7 +259,7 @@ test('停止失敗時は準備した設定だけ捨て、旧監視と接続を�
   const old = { marker: 'old' };
   const settings = new Map([['pane', old]]);
   const f = fixture(); f.recordHookEvent();
-  const context = { crypto: require('node:crypto'), apiServerRuntimeStatus: {}, API_PORT: 1, API_TOKEN: 'synthetic', DATA_DIR: '/tmp', os, APP_ORIGINAL_PATH: '', LOG_PREFIX: '', console,
+  const context = { prepareClaudeSettingsForShell: require('../utils/claudeSettingsPreset').prepareClaudeSettingsForShell, crypto: require('node:crypto'), apiServerRuntimeStatus: {}, API_PORT: 1, API_TOKEN: 'synthetic', DATA_DIR: '/tmp', os, APP_ORIGINAL_PATH: '', LOG_PREFIX: '', console,
     prepareBackgroundWorkSettings: () => ({ filename: '/tmp/new.json', discard: () => { discarded++; } }),
     clearPaneBackgroundWork: () => { clears++; settings.delete('pane'); f.store.delete('pane'); }, backgroundWork: f.store, backgroundSettings: settings };
   vm.createContext(context); vm.runInContext(stage, context);
@@ -266,7 +268,7 @@ test('停止失敗時は準備した設定だけ捨て、旧監視と接続を�
   assert.equal(discarded, 1); assert.equal(clears, 0);
   assert.equal(settings.get('pane'), old); assert.equal(f.store.isRunning('pane'), true);
   assert.equal(f.recordHookEvent({ agent_id: 'still-old' }), true);
-  const handler = source.slice(source.indexOf('const stagedBackgroundWork ='), source.indexOf("if (req.method === 'POST' && url.pathname === '/api/close-pane')"));
+  const handler = source.slice(source.indexOf('let stagedBackgroundWork;'), source.indexOf("if (req.method === 'POST' && url.pathname === '/api/close-pane')"));
   assert.ok(handler.indexOf('stagedBackgroundWork.commit()') > handler.indexOf("error: 'failed to stop agent'"));
   assert.match(handler, /if \(!launchHomeInUse\) \{\s*launchResolution.discard\(\);\s*stagedBackgroundWork.discard\(\);/);
   assert.equal(handler.includes('clearPaneBackgroundWork(request.termId)'), false);

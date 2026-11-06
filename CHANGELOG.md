@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 不具合修正 ] PowerShell のペインで Claude Code の起動に失敗することがある問題を修正
+
 ## 1.94.0
 
 - [ 不具合修正 ] Claude Code の裏でコマンドやサブエージェントが動いていても「実行中」が消える不具合を修正（[#561](https://github.com/vektor-inc/vk-terminals/issues/561)）

@@ -71,6 +71,7 @@ const {
   prepareBackgroundWorkSettings,
   cleanupBackgroundWorkSettings,
   buildClaudeSettingsArgument,
+  prepareClaudeSettingsForShell,
 } = require('./utils/claudeSettingsPreset');
 const {
   checkGitHubReachability,
@@ -214,7 +215,7 @@ function clearPaneBackgroundWork(id) {
 }
 
 // 新設定の準備中は、停止に失敗しても旧監視を保つ。
-function stagePaneBackgroundWork(id, generation, engine, options) {
+function stagePaneBackgroundWork(id, generation, engine, options, shellExecutable) {
   const epoch = crypto.randomBytes(24).toString('hex');
   let prepared;
   if (engine === 'claude') {
@@ -229,8 +230,12 @@ function stagePaneBackgroundWork(id, generation, engine, options) {
       console.warn(`${LOG_PREFIX} Background work hooks unavailable; monitoring commands only`);
     }
   }
+  const settings = engine === 'claude'
+    ? prepareClaudeSettingsForShell(options, shellExecutable, prepared)
+    : { options, prepared };
+  prepared = settings.prepared;
   return {
-    options: prepared ? { ...options, backgroundWorkSettingsPath: prepared.filename } : options,
+    options: settings.options,
     commit() {
       clearPaneBackgroundWork(id);
       if (engine === 'claude') backgroundWork.begin(id, generation, epoch);
@@ -240,8 +245,8 @@ function stagePaneBackgroundWork(id, generation, engine, options) {
   };
 }
 
-function preparePaneBackgroundWork(id, generation, engine, options) {
-  const staged = stagePaneBackgroundWork(id, generation, engine, options);
+function preparePaneBackgroundWork(id, generation, engine, options, shellExecutable) {
+  const staged = stagePaneBackgroundWork(id, generation, engine, options, shellExecutable);
   staged.commit();
   return staged.options;
 }
@@ -2339,7 +2344,7 @@ function createTerminalPane(cwd, options = {}, guide = null) {
         ...launchResolution.options,
         claudeSettingsPreset: options.claudeSettingsPreset,
       });
-      const built = buildEngineAwareLaunchCommand(resolvedEngine, options.model, preparePaneBackgroundWork(id, 1, resolvedEngine, claudeLaunchOptions));
+      const built = buildEngineAwareLaunchCommand(resolvedEngine, options.model, preparePaneBackgroundWork(id, 1, resolvedEngine, claudeLaunchOptions, shell));
       if (built.modelIgnored) {
         console.warn(`${LOG_PREFIX} model is ignored for engine '${resolvedEngine}'`);
       }
@@ -4299,7 +4304,16 @@ function startHttpApi() {
               res.end(JSON.stringify({ error: 'Claude settings preset hook is unavailable' }));
               return;
             }
-            const stagedBackgroundWork = stagePaneBackgroundWork(request.termId, currentGeneration + 1, request.engine, launchOptions);
+            let stagedBackgroundWork;
+            try {
+              stagedBackgroundWork = stagePaneBackgroundWork(request.termId, currentGeneration + 1, request.engine, launchOptions, ptyShellExecutables.get(request.termId));
+            } catch (error) {
+              launchResolution.discard();
+              console.error(`${LOG_PREFIX} Claude settings preset restart preparation failed:`, error);
+              res.writeHead(503, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'Claude settings preset hook is unavailable' }));
+              return;
+            }
             launchOptions = stagedBackgroundWork.options;
             let launchHomeInUse = false;
             let startedGeneration = null;

@@ -100,6 +100,21 @@ test('許可: 症状・ファイル名・機能名を --state all で個別検�
   assert.equal(parseTaskCommand(['gh', 'issue', 'list', '--search', 'utils/codexTaskOps.js', '--state', 'all']).ok, false);
 });
 
+test('検索語の文法: 記号と修飾子・論理演算子の拒否理由を固定する', () => {
+  for (const term of ['日本語123', 'file_name.tsx', 'v1.2-3', 'label:bug', '-label:bug']) {
+    assert.equal(parseTaskCommand(['gh', 'issue', 'list', '--search', term]).ok, true, term);
+  }
+  for (const term of ['and', 'AND', 'And', 'or', 'OR', 'oR', 'not', 'NOT', 'nOt', '[id].tsx', 'foo@bar', 'C++', 'author:foo', 'utils/file.js']) {
+    assert.deepEqual(parseTaskCommand(['gh', 'issue', 'list', '--search', term]), { ok: false, error: 'task command rejected: invalid --search' }, term);
+  }
+});
+
+test('拒否: 対応表にない gh 操作と prototype 名は受理しない', () => {
+  for (const [group, action] of [['issue', 'reopen'], ['__proto__', 'view'], ['issue', '__proto__'], ['constructor', 'prototype'], ['pr', 'toString']]) {
+    assert.equal(parseTaskCommand(['gh', group, action, '5']).ok, false, `${group} ${action}`);
+  }
+});
+
 test('拒否: gh issue list / gh repo view の --web・--jq・--template・--repo・許可外の項目・範囲外の値・制御文字（issue #520）', () => {
   const rejected = [
     ['gh', 'issue', 'list', '--web'],

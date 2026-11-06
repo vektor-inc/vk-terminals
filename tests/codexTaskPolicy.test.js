@@ -19,7 +19,7 @@ const {
   resolveCodexTaskPolicyLaunchOptions,
   listToolSearchDirs,
 } = require('../utils/codexTaskPolicy');
-const { ACCEPTED_GH_OPERATIONS, parseTaskCommand } = require('../utils/codexTaskOps');
+const { ACCEPTED_GH_OPERATIONS, ISSUE_LIST_JSON_FIELDS, REPO_VIEW_JSON_FIELDS, parseTaskCommand } = require('../utils/codexTaskOps');
 const { validateRestartAgentRequest } = require('../utils/restartAgent');
 
 const { validateCodexLaunchOptions, buildCodexLaunchCommand, buildEngineAwareLaunchCommand } = claudeModel;
@@ -487,6 +487,7 @@ test('操作一覧の gh 操作は入口の受理集合と一致する', () => {
     'gh label exists': ['agent-review-passed'], 'gh label create': ['agent-review-passed'],
     'gh pr add-label': ['5', 'agent-review-passed'], 'gh pr has-label': ['5', 'agent-review-passed'],
   };
+  assert.deepEqual(new Set(Object.keys(samples)), new Set(ACCEPTED_GH_OPERATIONS));
   for (const operation of listed) assert.equal(parseTaskCommand([...operation.split(' '), ...samples[operation]]).ok, true, operation);
 });
 
@@ -513,6 +514,12 @@ test('生成: rules は信頼済みランチャーの実行だけを許可し、
     for (const operation of ORCHESTRATED_TASK_OPERATIONS) assert.ok(guide.includes(`\`${operation}\``), operation);
     assert.match(guide, /`gh issue list --search <語> --state all`/);
     assert.match(guide, /症状・ファイル名・機能名を語ごとに呼ぶ/);
+    assert.ok(guide.includes('検索語に使えるのは文字・数字・`_`・`.`・`-` だけ'));
+    assert.ok(guide.includes('`and` / `or` / `not` は大文字小文字を問わず使えない'));
+    assert.ok(guide.includes('入口が `invalid --search` と拒否したときは、語を変えて呼び直す。それ以外で終了コード'));
+    assert.ok(guide.includes('`--label <ラベル名>`（10 個まで）'));
+    assert.ok(guide.includes('`' + ISSUE_LIST_JSON_FIELDS.join(',') + '`'));
+    assert.ok(guide.includes('`' + REPO_VIEW_JSON_FIELDS.join(',') + '`'));
     assert.match(guide, /終了コードが 0 でないときは重複なしとして続行せず/);
     assert.match(guide, /`gh repo view --json visibility,isPrivate,defaultBranchRef`/);
     assert.match(guide, /`gh issue create` は `--title <題> --body <本文>` が必須/);

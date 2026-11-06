@@ -477,7 +477,6 @@ button.k.kill.is-locked:active { background: #6b3f3f; border-color: #7c4a4a; }
   position: relative;
   max-width: 100%;
   box-sizing: border-box;
-  border-left: 2px solid var(--muted);
 }
 .task-item[data-depth="1"] { margin-left: 12px; }
 .task-item[data-depth="2"] { margin-left: 24px; }

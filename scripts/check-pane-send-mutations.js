@@ -4,10 +4,14 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const root = path.resolve(__dirname, '..');
 const temporary = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'pane-send-mutations-'));
+// 中断時にも一時コピーを削除する。
+const cleanup = () => fs.rmSync(temporary, { recursive: true, force: true });
+process.on('SIGTERM', () => { cleanup(); process.exit(143); });
 for (const name of ['utils', 'tests', 'renderer']) fs.cpSync(path.join(root, name), path.join(temporary, name), { recursive: true });
 fs.copyFileSync(path.join(root, 'main.js'), path.join(temporary, 'main.js'));
 // 一度に一つだけ安全条件を壊し、一時コピーだけを書き換える。
 const mutations = [
+  ['log field allowlist', 'utils/paneSendLog.js', 'JSON.stringify({ time, id, source, target, engine, result, reason })', 'JSON.stringify(record)'],
   ['renderer identifier', 'renderer/app.js', 't.screenIdentifier !== expected.screenIdentifier', 'false'],
   ['renderer generation', 'renderer/app.js', 't.screenIdentifierGeneration !== expected.agentGeneration', 'false'],
   ['renderer write queue', 'renderer/app.js', "t.term.write('', () => {", "((_, callback) => callback())('', () => {"],
@@ -27,24 +31,29 @@ const mutations = [
   ["accepted current", "utils/paneSend.js", "guard.isCurrent(target, currentScreen)", "true"],
   ["fold format", "utils/paneSend.js", "/^\\[Pasted text #\\d+(?: \\+\\d+ lines)?\\]$/.test(field.text.trim())", "true"],
 ];
-try {
-  const baseline = spawnSync(process.execPath, ['--test', 'tests/paneSend.test.js'], { cwd: temporary, encoding: 'utf8' });
-  if (baseline.status !== 0) throw new Error('baseline tests failed');
-  console.log('BASELINE PASS');
-  let survived = false;
-  for (const [name, file, before, after] of mutations) {
-    const target = path.join(temporary, file);
-    const original = fs.readFileSync(target, 'utf8');
-    if (!original.includes(before)) throw new Error(`mutation missing: ${name}`);
-    try {
-      fs.writeFileSync(target, original.replace(before, after));
-      const syntax = spawnSync(process.execPath, ['--check', target], { encoding: 'utf8' });
-      if (syntax.status !== 0) throw new Error(`invalid mutation syntax: ${name}`);
-      const run = spawnSync(process.execPath, ['--test', 'tests/paneSend.test.js'], { cwd: temporary, encoding: 'utf8' });
-      const detected = run.status !== null && run.status !== 0 && /(?:ℹ fail [1-9]|# fail [1-9])/.test(run.stdout);
-      console.log(`${detected ? 'DETECTED' : 'SURVIVED'} ${name}`);
-      if (!detected) survived = true;
-    } finally { fs.writeFileSync(target, original); }
-  }
-  process.exitCode = survived ? 1 : 0;
-} finally { fs.rmSync(temporary, { recursive: true, force: true }); }
+async function main() {
+  try {
+    await new Promise(resolve => setImmediate(resolve));
+    const baseline = spawnSync(process.execPath, ['--test', 'tests/paneSend.test.js'], { cwd: temporary, encoding: 'utf8' });
+    if (baseline.status !== 0) throw new Error('baseline tests failed');
+    console.log('BASELINE PASS');
+    let survived = false;
+    for (const [name, file, before, after] of mutations) {
+      await new Promise(resolve => setImmediate(resolve));
+      const target = path.join(temporary, file);
+      const original = fs.readFileSync(target, 'utf8');
+      if (!original.includes(before)) throw new Error(`mutation missing: ${name}`);
+      try {
+        fs.writeFileSync(target, original.replace(before, after));
+        const syntax = spawnSync(process.execPath, ['--check', target], { encoding: 'utf8' });
+        if (syntax.status !== 0) throw new Error(`invalid mutation syntax: ${name}`);
+        const run = spawnSync(process.execPath, ['--test', 'tests/paneSend.test.js'], { cwd: temporary, encoding: 'utf8' });
+        const detected = run.status !== null && run.status !== 0 && /(?:ℹ fail [1-9]|# fail [1-9])/.test(run.stdout);
+        console.log(`${detected ? 'DETECTED' : 'SURVIVED'} ${name}`);
+        if (!detected) survived = true;
+      } finally { fs.writeFileSync(target, original); }
+    }
+    process.exitCode = survived ? 1 : 0;
+  } finally { cleanup(); }
+}
+main().catch(error => { console.error(error); process.exitCode = 1; });

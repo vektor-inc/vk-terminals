@@ -557,3 +557,29 @@ test('ログ書き込み失敗でも送信を完了する', async t => {
   assert.equal((await f.send(f.source, '2', 'msg')).result, 'delivered');
   assert.equal(warnings.length, 1);
 });
+
+// 危険なログの実体を別プロセスで検査し、停止もタイムアウトで検出する。
+for (const kind of ['symlink', 'fifo']) test(`ログの${kind}を拒否して停止しない`, { skip: process.platform === 'win32' }, t => {
+  const { spawnSync } = require('node:child_process');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pane-log-special-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'pane-send-log.jsonl');
+  const destination = path.join(dir, 'destination');
+  fs.writeFileSync(destination, 'unchanged', { mode: 0o644 });
+  if (kind === 'symlink') fs.symlinkSync(destination, file);
+  else assert.equal(spawnSync('mkfifo', [file]).status, 0);
+  const run = spawnSync(process.execPath, ['-e', `require(${JSON.stringify(require.resolve('../utils/paneSendLog'))}).createPaneSendLog(${JSON.stringify(dir)})({result:'not-sent'})`], { timeout: 3000, encoding: 'utf8' });
+  assert.equal(run.error, undefined);
+  assert.equal(run.status, 0);
+  assert.match(run.stderr, /pane-send log failed/);
+  assert.equal(fs.readFileSync(destination, 'utf8'), 'unchanged');
+  assert.equal(fs.statSync(destination).mode & 0o777, 0o644);
+});
+
+test('ログは許可した項目だけを保存する', t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pane-log-fields-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const record = { time: 'now', id: 'id', source: '1', target: '2', engine: 'codex', result: 'delivered', reason: 'delivered' };
+  require('../utils/paneSendLog').createPaneSendLog(dir)({ ...record, body: 'private', file: '/private', token: 'secret', unexpected: 'extra' });
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, 'pane-send-log.jsonl'), 'utf8')), record);
+});

@@ -48,8 +48,7 @@ function inputField(state) {
   for (let i = lines.length - 1; i >= 0; i -= 1) {
     const prompt = lines[i].match(new RegExp(`^${marker}[ \u00a0]?`));
     if (!prompt) continue;
-    const end = lines.findIndex((line, at) => at > i && /^\s*[─━╌-]{4,}\s*$/.test(line));
-    const footer = end;
+    const footer = lines.findIndex((line, at) => at > i && /^\s*[─━╌-]{4,}\s*$/.test(line));
     let bodyEnd = footer;
     if (state.engine === 'claude') {
       const footerLines = lines.slice(footer + 1).filter(line => line.trim());
@@ -187,7 +186,7 @@ function createPaneSender({ getPty, getState, requestScreen, getSourceName = () 
   return async (source, target, file) => {
     const request = {};
     const answer = await execute(source, target, file, request);
-    try { audit({ time: new Date(now()).toISOString(), id: request.id || crypto.randomUUID(), source: source.termId, target, engine: getState(target)?.engine || request.engine || 'unknown', result: answer.result, reason: answer.reason || 'delivered' }); }
+    try { audit({ time: new Date(now()).toISOString(), id: request.id || crypto.randomUUID(), source: source.termId, target: ID.test(target) ? target : 'invalid', engine: request.engine || getState(target)?.engine || 'unknown', result: answer.result, reason: answer.reason || 'delivered' }); }
     catch (error) { console.warn('pane-send log failed:', error.message); }
     return answer;
   };

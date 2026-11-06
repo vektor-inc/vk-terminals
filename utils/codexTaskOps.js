@@ -1491,18 +1491,16 @@ const SANDBOX_EXEC_PATH = '/usr/bin/sandbox-exec';
  * macOS は書き込み時にリンクを解決した実パスを判定する。Linux は検査済みディレクトリを記述子で bind する。
  * 許可した場所の外には書けない。denyWrite は allowWrite の内側で、書き込みを禁じる場所（フックや設定ファイルなど）。
  * macOS のパスは -D の値として渡す。Linux は O_NOFOLLOW で開いた実体を --bind-fd で固定し、denyWrite を必要とする既存操作は拒否する。
- * @param {{bin: string, args: string[], allowWrite: string[], denyWrite?: string[]}} params 許可・禁止のパスは実パス（絶対パス）
+ * @param {{bin: string, args: string[], allowWrite: string[], denyWrite?: string[], snapshot?: Array<{path: string, dev: number, ino: number}>}} params 許可・禁止のパスは実パス（絶対パス）
  * @param {{platform?: string, fs?: object, spawnSync?: Function}} deps OS・ファイルシステムのテスト用差し替え
  * @returns {{bin: string, args: string[], stdio?: Array, close?: Function}} Linux は起動後に close で親の記述子を閉じる
  */
-function restrictWrites({ bin, args, allowWrite, denyWrite = [] }, deps = {}) {
+function restrictWrites({ bin, args, allowWrite, denyWrite = [], snapshot = [] }, deps = {}) {
   const platform = deps.platform || process.platform;
   if (platform === 'linux') {
     if (denyWrite.length) throw new TrustError('write-restricted execution is not available');
     const fsImpl = deps.fs || nodeFs;
     const executable = resolveTrustedPath(fsImpl, '/usr/bin/bwrap', { uid: 0, finalKind: 'file' }).realPath;
-    const stat = fsImpl.statSync(executable);
-    if (stat.uid !== 0 || (stat.mode & 0o022)) throw new TrustError('write-restricted execution is not available');
     const spawnSync = deps.spawnSync || childProcess.spawnSync;
     const help = spawnSync(executable, ['--help'], { env: {}, encoding: 'utf8', timeout: 10000 });
     if (help.status !== 0 || !String(help.stdout).includes('--bind-fd')) throw new TrustError('write-restricted execution is not available');
@@ -1510,11 +1508,11 @@ function restrictWrites({ bin, args, allowWrite, denyWrite = [] }, deps = {}) {
     try {
       const binds = allowWrite.flatMap((dir) => {
         const real = fsImpl.realpathSync(dir);
-        const expected = fsImpl.lstatSync(real);
+        const expected = snapshot.find((entry) => entry.path === dir) || fsImpl.lstatSync(dir);
         const fd = fsImpl.openSync(real, nodeFs.constants.O_RDONLY | nodeFs.constants.O_DIRECTORY | nodeFs.constants.O_NOFOLLOW);
         fds.push(fd);
         const actual = fsImpl.fstatSync(fd);
-        if (!actual.isDirectory() || actual.dev !== expected.dev || actual.ino !== expected.ino) throw new TrustError('write directory changed');
+        if (real !== dir || !actual.isDirectory() || actual.dev !== expected.dev || actual.ino !== expected.ino) throw new TrustError('write directory changed');
         return ['--bind-fd', String(2 + fds.length), real];
       });
       return { bin: executable, args: ['--ro-bind', '/', '/', '--dev', '/dev', '--new-session', '--die-with-parent', '--unshare-net',
@@ -1553,19 +1551,19 @@ function getProtectedSyncCapabilities(deps = {}) {
   const fsImpl = deps.fs || nodeFs;
   const spawnSync = deps.spawnSync || childProcess.spawnSync;
   let probe;
-  let temporary;
   try {
     const platform = deps.platform || process.platform;
     if (platform === 'darwin') resolveTrustedPath(fsImpl, SANDBOX_EXEC_PATH, { finalKind: 'file' });
-    const git = deps.git || resolveTrustedExecutable(fsImpl, 'git', ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin'], { uid: deps.uid });
+    const git = deps.git || resolveTrustedExecutable(fsImpl, 'git', deps.toolDirs || listToolSearchDirs(require('node:os').homedir(), process.env.PATH), { uid: deps.uid });
     resolveTrustedPath(fsImpl, git, { finalKind: 'file', uid: deps.uid });
     const version = spawnSync(git, ['version'], { env: {}, encoding: 'utf8', timeout: 10000 });
     if (version.status !== 0 || !isSupportedGitVersion(version.stdout)) throw new Error('unsupported Git');
     const node = resolveTrustedPath(fsImpl, process.execPath, { finalKind: 'file', uid: deps.uid }).realPath;
-    // 実際に記述子経由で書き込み、読み戻す。照会用の一時領域は必ず削除する。
-    temporary = fsImpl.mkdtempSync(path.join(fsImpl.realpathSync(require('node:os').tmpdir()), 'protected-sync-probe-'));
-    const code = `const fs=require('fs'); const d=${JSON.stringify(temporary)}; const fd=fs.openSync(d,fs.constants.O_RDONLY|fs.constants.O_DIRECTORY|fs.constants.O_NOFOLLOW); const p=(process.platform==='linux'?'/proc/self/fd/'+fd:d)+'/probe'; fs.writeFileSync(p,'ok'); if(fs.readFileSync(p,'utf8')!=='ok')process.exit(2); fs.closeSync(fd);`;
-    probe = restrictWrites({ bin: node, args: ['-e', code], allowWrite: [temporary] }, deps);
+    // root 所有の固定フォルダで起動だけを確かめ、照会では書き込まない。
+    const fixed = resolveTrustedPath(fsImpl, '/usr', { uid: 0, finalKind: 'directory' }).realPath;
+    const stat = fsImpl.lstatSync(fixed);
+    probe = restrictWrites({ bin: node, args: ['-e', 'process.exit(0)'], allowWrite: [fixed],
+      snapshot: [{ path: fixed, dev: stat.dev, ino: stat.ino }] }, deps);
     const result = spawnSync(probe.bin, probe.args, { env: {}, encoding: 'utf8', timeout: 10000, stdio: probe.stdio });
     if (result.error || result.status !== 0) throw new Error('probe failed');
     return { available: true, reason: null, targets: PROTECTED_SYNC_TARGETS };
@@ -1573,27 +1571,48 @@ function getProtectedSyncCapabilities(deps = {}) {
     return { available: false, reason: 'write-restricted execution is not available', targets: PROTECTED_SYNC_TARGETS };
   } finally {
     if (probe && probe.close) probe.close();
-    if (temporary) fsImpl.rmSync(temporary, { recursive: true, force: true });
   }
 }
 
-// main プロセスを止めず、同時照会も一つの子プロセスへまとめる。
+/**
+ * 実行ファイルの探索先を決める。固定の場所を先に、次にアプリ自身の PATH の絶対パス（Volta など利用者がインストールした場所）。
+ * ここで挙げるのは候補だけで、採用するかは resolveTrustedExecutableDetailed が所有者・権限で検証する。
+ * Codex 実行時の PATH は使わない（決めた絶対パスをランチャーへ固定する）。
+ */
+function listToolSearchDirs(homeDir, pathEnv) {
+  const fromPath = String(pathEnv || '').split(path.delimiter).filter((entry) => path.isAbsolute(entry));
+  // mise の global / latest は実バージョンのフォルダへのリンク。リンクの向き先も resolveTrustedExecutableDetailed が 1 段ずつ検証する。shims は mise 本体へのリンクのため対象にしない。
+  const miseNodeDirs = ['global', 'latest'].map((alias) => path.join(homeDir, '.local', 'share', 'mise', 'installs', 'node', alias, 'bin'));
+  return [...new Set(['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin', path.join(homeDir, '.volta', 'bin'), ...miseNodeDirs, ...fromPath])];
+}
+
+// 起動時の関数だけを子へ渡し、照会時にリポジトリのコードを読み直さない。
+const capabilityCode = [
+  "const nodeFs=require('node:fs'),path=require('node:path'),childProcess=require('node:child_process');",
+  `const TRUSTED_GROUP_IDS=${JSON.stringify(TRUSTED_GROUP_IDS)},MAX_LINK_HOPS=${MAX_LINK_HOPS},TOOL_NAME_PATTERN=${TOOL_NAME_PATTERN},MIN_GIT_VERSION=${JSON.stringify(MIN_GIT_VERSION)},SANDBOX_EXEC_PATH=${JSON.stringify(SANDBOX_EXEC_PATH)},PROTECTED_SYNC_TARGETS=${JSON.stringify(PROTECTED_SYNC_TARGETS)};`,
+  TrustError, currentUid, isTrustedOwner, hasUntrustedWrite, resolveTrustedPath,
+  resolveTrustedExecutableDetailed, resolveTrustedExecutable, isSupportedGitVersion,
+  listToolSearchDirs, restrictWrites, getProtectedSyncCapabilities,
+].map(String).join('\n');
+
+// main プロセスを止めず、同時照会だけをまとめる。失敗は保持しない。
 let capabilityPromise;
-function getProtectedSyncCapabilitiesAsync() {
-  if (!capabilityPromise) capabilityPromise = new Promise((resolve) => {
-    // Electron 自体を起動すると GUI に戻るため、ランチャーと同じ固定候補から Node を選ぶ。
-    const node = resolveTrustedExecutable(nodeFs, 'node', ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin', path.dirname(process.execPath)]);
-    if (node === null) {
-      resolve({ available: false, reason: 'write-restricted execution is not available', targets: PROTECTED_SYNC_TARGETS });
-      return;
-    }
-    childProcess.execFile(node, ['-e', `process.stdout.write(JSON.stringify(require(${JSON.stringify(__filename)}).getProtectedSyncCapabilities()))`],
+function getProtectedSyncCapabilitiesAsync(deps = {}) {
+  if (capabilityPromise) return capabilityPromise;
+  const pending = Promise.resolve().then(() => new Promise((resolve) => {
+    const unavailable = { available: false, reason: 'write-restricted execution is not available', targets: PROTECTED_SYNC_TARGETS };
+    const fsImpl = deps.fs || nodeFs;
+    // ランチャーと同じ候補を所有者・権限で検証する。
+    const toolDirs = listToolSearchDirs(require('node:os').homedir(), process.env.PATH);
+    const node = resolveTrustedExecutable(fsImpl, 'node', toolDirs);
+    if (node === null) { resolve(unavailable); return; }
+    (deps.execFile || childProcess.execFile)(node, ['-e', capabilityCode + `\nprocess.stdout.write(JSON.stringify(getProtectedSyncCapabilities({toolDirs:${JSON.stringify(toolDirs)}})))`],
       { env: {}, timeout: 40000 }, (error, stdout) => {
-        try { resolve(error ? { available: false, reason: 'write-restricted execution is not available', targets: PROTECTED_SYNC_TARGETS } : JSON.parse(stdout)); }
-        catch (_) { resolve({ available: false, reason: 'write-restricted execution is not available', targets: PROTECTED_SYNC_TARGETS }); }
-        capabilityPromise = undefined;
+        try { resolve(error ? unavailable : JSON.parse(stdout)); }
+        catch (_) { resolve(unavailable); }
       });
-  });
+  }));
+  capabilityPromise = pending.finally(() => { capabilityPromise = undefined; });
   return capabilityPromise;
 }
 
@@ -1689,7 +1708,7 @@ function executeProtectedSync({ parsed, binding, cwd, fsImpl, runGit, spawnSync,
     const node = resolveTrustedPath(fsImpl, process.execPath, { finalKind: 'file', uid: deps.uid }).realPath;
     const destination = path.join(root, entry.target);
     const parent = path.dirname(destination);
-    const command = restrictWrites({ bin: node, args: ['-e', `(${protectedSyncChild.toString()})()`], allowWrite: [parent] }, deps);
+    const command = restrictWrites({ bin: node, args: ['-e', `(${protectedSyncChild.toString()})()`], allowWrite: [parent], snapshot }, deps);
     let result;
     try { result = spawnSync(command.bin, command.args, { cwd: root, env, encoding: 'utf8', timeout: 30000, stdio: command.stdio,
       input: JSON.stringify({ parent, snapshot, target: destination, bytes: content.toString('base64'), mode: fsImpl.lstatSync(destination).mode }) });
@@ -3496,6 +3515,7 @@ function runTaskCommand(argv, deps = {}) {
 }
 
 module.exports = {
+  listToolSearchDirs,
   getProtectedSyncCapabilities,
   getProtectedSyncCapabilitiesAsync,
   protectedSyncChild,

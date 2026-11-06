@@ -10,7 +10,7 @@ const removeLine = (fragment) => (text) => text.split('\n').filter((line) => !li
 const lstat = (text) => text.replace(/      if \(stat\.isSymbolicLink\(\) \|\| stat\.dev !== entry\.dev[\s\S]*?throw new Error\('path changed after verification'\);/, '');
 const parent = removeLine("throw new Error('parent changed after verification')");
 const mutations = [
-  ['OS wrapper', (s) => s.replace("const command = restrictWrites({ bin: node, args: ['-e', `(${protectedSyncChild.toString()})()`], allowWrite: [parent] }, deps);", "const command = { bin: node, args: ['-e', `(${protectedSyncChild.toString()})()`] }; ")],
+  ['OS wrapper', (s) => s.replace("const command = restrictWrites({ bin: node, args: ['-e', `(${protectedSyncChild.toString()})()`], allowWrite: [parent], snapshot }, deps);", "const command = { bin: node, args: ['-e', `(${protectedSyncChild.toString()})()`] }; ")],
   ['repository table', removeLine("protected-sync repository is not registered")],
   ['worktree list', removeLine("throw new TrustError('worktree is not registered')")],
   ['child lstat', lstat],
@@ -20,9 +20,14 @@ const mutations = [
   ['readback', removeLine("throw new Error('copied bytes do not match')")],
   ['atomic rename', (s) => s.replace(/    temporary = path\.join\(directory, `\.protected-sync-\$\{crypto\.randomBytes\(16\)\.toString\('hex'\)\}`\);[\s\S]*?    temporary = undefined;/, '    fs.writeFileSync(destination, content);')],
   ['non-darwin fetch', removeLine("if ((deps.platform || process.platform) !== 'darwin') return { ok: false")],
+  ['async failure', (s) => s.replace('resolve(error ? unavailable : JSON.parse(stdout))', 'resolve(error ? { ...unavailable, available: true } : JSON.parse(stdout))')],
+  ['fd identity', removeLine("throw new TrustError('write directory changed')")],
+  ['bound Git', (s) => s.replace('getProtectedSyncCapabilities({ ...deps, git: binding.git })', 'getProtectedSyncCapabilities(deps)')],
+  ['network isolation', (s) => s.replace("'--die-with-parent', '--unshare-net',", "'--die-with-parent',")],
+  ['Git version', removeLine("throw new Error('unsupported Git')")],
   ['capability probe', (s) => s.replace("    if (!capability.available) throw new TrustError(capability.reason);", '')],
 ];
-if (process.platform === 'linux') mutations.push(['Linux descriptor pin', (s) => s.replace("const directory = process.platform === 'linux' ? `/proc/self/fd/${directoryFd}` : parent;", 'const directory = parent;')]);
+if (process.platform === 'linux') mutations.push(['parent fd close', (s) => s.replace('finally { if (command.close) command.close(); }', 'finally {}')], ['Linux descriptor pin', (s) => s.replace("const directory = process.platform === 'linux' ? `/proc/self/fd/${directoryFd}` : parent;", 'const directory = parent;')]);
 let failures = 0;
 try {
   for (const directory of ['utils', 'tests']) fs.cpSync(path.join(root, directory), path.join(temporary, directory), { recursive: true });

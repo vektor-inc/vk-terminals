@@ -283,15 +283,19 @@ OS 未対応、ツールの欠落・信頼検証失敗・名前空間の起動�
 `GET /api/codex-task-capabilities` は既存の API 認証規則に従う読み取り専用の能力照会。
 `capabilities.protectedSync` に `available`、`reason`（利用可能なら null）、
 `targets`（`repo`・`source`・`target` の一覧）を返す。
-実行と同じ判定関数で Git 2.46 以上・Git と Node の信頼検証、および OS 制限下での bind・
-ディレクトリ記述子経由の書き込みと読み戻しを確認する。照会時の Git は固定の信頼済み探索先から選び、
-実行時はランチャーが拘束した Git を使う。検証用の一時フォルダは終了時に削除する。
-API は別プロセスで検証し、同時照会をまとめる。ループバック接続は既存の認証規則により認証不要。
+実行と同じ判定関数で Git 2.46 以上・Git と Node の信頼検証、および root 所有の固定フォルダで OS 制限下の起動を確認する。照会は書き込みや一時フォルダの作成を行わない。
+照会時の Git と Node はランチャーと共通の候補（Volta・mise・アプリの PATH を含む）から信頼検証して選び、実行時はランチャーが拘束した Git を使う。
+API は起動時のメモリ上のコードを別プロセスで実行し、同時照会だけをまとめる。失敗の結果は保持しない。ループバック接続は既存の認証規則により認証不要。
 親が read-only の入口からの同期は拒否する。
 
-Linux の検証は `npm run test:protected-sync:linux` で Docker 内に 0.8.0 と 0.12.0 をビルドして実行する。
-0.8.0 は未対応として拒否されることを検証し、0.12.0 は OS 制限を通る正常系も検証する。
+Linux の検証は `npm run test:protected-sync:linux` で Docker 内に公式 0.8.0・Debian 0.8.0 backport・0.12.0 をビルドして実行する。
+公式 0.8.0 は未対応として拒否されることを検証し、Debian backport と 0.12.0 は OS 制限を通る正常系も検証する。
+コンテナは一般ユーザーで実行し、bubblewrap の起動に必要な security-opt を個別に指定する。
 ホストの node_modules はマウントしない。ワークフローは PR の `run-ci` ラベル付与と手動実行だけで起動する。
 `node scripts/protected-sync-mutations.js` は隔離コピーで各防御を取り除き、テストが失敗することを確認する。
 Linux の記述子固定のミューテーションは Linux 上で実行する。
 呼び出し側は 404 または項目が無い場合を未対応として扱う。
+
+### protected-sync の Linux 要件
+
+Linux は bubblewrap の `--bind-fd` が必須です。公式 0.8.0 は未対応で、同機能を backport した Debian 0.8 系または対応する新しい版が必要です。Git は 2.46 以上が必要なため、Ubuntu 24.04 の標準 Git 2.43 では利用できません。能力照会は root 所有の固定フォルダで起動だけを確認し、ファイルを書き込みません。

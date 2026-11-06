@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const cp = require('node:child_process');
-const { runTaskCommand, parseTaskCommand, restrictWrites, getProtectedSyncCapabilities, PROTECTED_SYNC_TARGETS, buildMemberCodexArgs, readBinding, protectedSyncChild, prepareRestrictedFetch } = require('../utils/codexTaskOps');
+const { runTaskCommand, parseTaskCommand, restrictWrites, getProtectedSyncCapabilities, getProtectedSyncCapabilitiesAsync, listToolSearchDirs, PROTECTED_SYNC_TARGETS, buildMemberCodexArgs, readBinding, protectedSyncChild, prepareRestrictedFetch } = require('../utils/codexTaskOps');
 const { CODEX_TASK_POLICY_PRESETS, prepareCodexTaskPolicyHome } = require('../utils/codexTaskPolicy');
 const [target] = PROTECTED_SYNC_TARGETS;
 const gitPath = fs.realpathSync(cp.execFileSync('/usr/bin/which', ['git'], { encoding: 'utf8' }).trim());
@@ -68,8 +68,9 @@ test('能力照会は Git の版・Node の信頼性・書き込み bind を検�
   const available = getProtectedSyncCapabilities({ platform: 'darwin', spawnSync, fs: probeFs });
   assert.equal(available.available, true);
   assert.ok(calls.some(({ bin, args }) => bin === '/usr/bin/sandbox-exec' && args.includes(process.execPath)));
-  assert.ok(calls.some(({ args }) => args.some((arg) => arg.includes('/proc/self/fd/'))));
-  assert.equal(getProtectedSyncCapabilities({ spawnSync: () => ({ status: 0, stdout: 'git version 2.39.0' }) }).available, false);
+  assert.ok(calls.some(({ args }) => args.includes('process.exit(0)') && args.includes('ALLOW0=/usr')));
+  assert.ok(calls.every(({ args }) => !args.some((arg) => arg.includes('protected-sync-probe-'))));
+  assert.equal(getProtectedSyncCapabilities({ platform: 'darwin', fs: probeFs, spawnSync: (_bin, args) => ({ status: 0, stdout: args[0] === 'version' ? 'git version 2.39.0' : '' }) }).available, false);
   const untrustedNode = new Proxy(fs, { get(object, key) {
     if (key === 'lstatSync') return (file) => { if (file === process.execPath) throw new Error('untrusted node'); return fs.lstatSync(file); };
     return object[key];
@@ -78,7 +79,7 @@ test('能力照会は Git の版・Node の信頼性・書き込み bind を検�
 });
 
 test('Linux は検査したディレクトリ記述子を stdio 3 に渡し bind-fd で固定する', (t) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bind-fd-'));
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'bind-fd-')));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const stat = { uid: 0, gid: 0, mode: 0o755, dev: 1, ino: 1, isDirectory: () => true, isFile: () => true, isSymbolicLink: () => false };
   const fakeFs = new Proxy(fs, { get(object, key) {
@@ -89,10 +90,14 @@ test('Linux は検査したディレクトリ記述子を stdio 3 に渡し bind
   try {
     assert.equal(command.bin, '/usr/bin/bwrap');
     assert.ok(command.args.includes('--bind-fd'));
+    assert.ok(command.args.includes('--unshare-net'));
     const index = command.args.indexOf('--bind-fd');
     assert.deepEqual(command.args.slice(index, index + 3), ['--bind-fd', '3', fs.realpathSync(dir)]);
     assert.equal(fs.fstatSync(command.stdio[3]).ino, fs.statSync(dir).ino);
   } finally { command.close(); }
+  assert.throws(() => fs.fstatSync(command.stdio[3]), /EBADF/);
+  const expected = fs.statSync(dir);
+  assert.throws(() => restrictWrites({ bin: '/node', args: [], allowWrite: [dir], snapshot: [{ path: dir, dev: expected.dev, ino: expected.ino + 1 }] }, { platform: 'linux', fs: fakeFs, spawnSync: () => ({ status: 0, stdout: '--bind-fd' }) }), /write directory changed/);
   assert.throws(() => restrictWrites({ bin: '/node', args: [], allowWrite: [dir] }, { platform: 'linux', fs: fakeFs, spawnSync: () => ({ status: 0, stdout: 'old help' }) }), /not available/);
 });
 
@@ -400,19 +405,25 @@ test('非 macOS の fetch 準備は副作用より前に拒否する', () => {
 test('同期の spawn は OS 制限で包まれ、Linux は bind-fd を継承する', (t) => {
   const f = fixture(t);
   let launched = false;
+  let parentFd;
   const result = f.invoke(undefined, { spawnSync: (bin, args, options) => {
     if (options.input) {
       launched = true;
       assert.equal(bin, process.platform === 'darwin' ? '/usr/bin/sandbox-exec' : '/usr/bin/bwrap');
-      if (process.platform === 'linux') { assert.ok(args.includes('--bind-fd')); assert.ok(options.stdio[3] >= 0); }
+      if (process.platform === 'linux') { assert.ok(args.includes('--bind-fd')); assert.ok(args.includes('--unshare-net')); parentFd = options.stdio[3]; assert.ok(parentFd >= 0); }
       return { status: 0 };
     }
     if (args[0] === '--help') return { status: 0, stdout: '--bind-fd' };
-    if (bin.endsWith('sandbox-exec') || bin.endsWith('bwrap')) return { status: 0 };
+    if (bin.endsWith('sandbox-exec') || bin.endsWith('bwrap')) {
+      if (process.platform === 'darwin') assert.ok(args.includes('ALLOW0=/usr'));
+      else { const index = args.indexOf('--bind-fd'); assert.equal(args[index + 2], '/usr'); }
+      return { status: 0 };
+    }
     return cp.spawnSync(bin, args, { ...options, stdio: options.stdio || 'pipe' });
   } });
   assert.equal(result.status, 0, result.error);
   assert.equal(launched, true);
+  if (parentFd !== undefined) assert.throws(() => fs.fstatSync(parentFd), /EBADF/);
 });
 
 test('能力検証の起動に失敗したら本体を起動しない', (t) => {
@@ -434,13 +445,86 @@ test('Linux OS 実機: bind 前のリンク差し替えでも外へ書き込ま�
   const outside = path.join(f.root, 'outside');
   fs.mkdirSync(outside);
   fs.writeFileSync(path.join(outside, 'SKILL.md'), 'outside');
-  const command = restrictWrites({ bin: process.execPath, args: ['-e', `require('fs').writeFileSync(${JSON.stringify(f.destination)},'changed')`], allowWrite: [parent] });
-  try {
-    fs.renameSync(parent, parent + '-old');
-    fs.symlinkSync(path.relative(path.dirname(parent), outside), parent);
-    const result = cp.spawnSync(command.bin, command.args, { env: {}, encoding: 'utf8', stdio: command.stdio });
-    assert.notEqual(result.status, 0);
-    assert.equal(fs.readFileSync(path.join(outside, 'SKILL.md'), 'utf8'), 'outside');
-    assert.equal(fs.readFileSync(path.join(parent + '-old', 'SKILL.md'), 'utf8'), 'original\n');
-  } finally { command.close(); }
+  const expected = fs.statSync(parent);
+  fs.renameSync(parent, parent + '-old');
+  fs.symlinkSync(path.relative(path.dirname(parent), outside), parent);
+  assert.throws(() => restrictWrites({ bin: process.execPath, args: ['-e', 'process.exit(0)'],
+    allowWrite: [parent], snapshot: [{ path: parent, dev: expected.dev, ino: expected.ino }] }), /write directory changed/);
+  assert.equal(fs.readFileSync(path.join(outside, 'SKILL.md'), 'utf8'), 'outside');
+  assert.equal(fs.readFileSync(path.join(parent + '-old', 'SKILL.md'), 'utf8'), 'original\n');
+});
+
+// 照会は一時領域を作らず、API と入口が同じ無書き込みの確認を使う。
+test('能力確認はファイルを生成・変更・削除しない', () => {
+  const guarded = new Proxy(fs, { get(object, key) {
+    if (/^(mkdtemp|mkdir|write|rm|unlink|rename)/.test(key)) return () => { throw new Error('unexpected mutation'); };
+    if (key === 'lstatSync') return (file) => file === '/usr/bin/sandbox-exec' ? fs.lstatSync('/usr/bin/true') : fs.lstatSync(file);
+    return object[key];
+  } });
+  assert.equal(getProtectedSyncCapabilities({ platform: 'darwin', fs: guarded,
+    spawnSync: (_bin, args) => ({ status: 0, stdout: args[0] === 'version' ? 'git version 2.46.0' : '' }) }).available, true);
+});
+
+test('非同期照会はメモリ上のコードを使い、失敗後に再試行できる', async () => {
+  const codeCalls = [];
+  const execFile = (_bin, args, _options, done) => { codeCalls.push(args[1]); done(new Error('unavailable'), ''); };
+  assert.equal((await getProtectedSyncCapabilitiesAsync({ execFile })).available, false);
+  assert.equal((await getProtectedSyncCapabilitiesAsync({ execFile })).available, false);
+  assert.equal(codeCalls.length, 2);
+  assert.ok(codeCalls.every((code) => !code.includes('require(' + JSON.stringify(require.resolve('../utils/codexTaskOps')))));
+  assert.ok(codeCalls.every((code) => !code.includes('mkdtempSync') && !code.includes('rmSync')));
+  let output = '';
+  let probeArgs;
+  const fsApi = new Proxy(fs, { get(object, key) {
+    if (key === 'lstatSync') return (file) => file === '/usr/bin/sandbox-exec' ? fs.lstatSync('/usr/bin/true') : fs.lstatSync(file);
+    if (/^(mkdtemp|mkdir|write|rm|unlink|rename)/.test(key)) throw new Error('unexpected mutation');
+    return object[key];
+  } });
+  require('node:vm').runInNewContext(codeCalls[0], {
+    require: (name) => name === 'node:fs' ? fsApi : name === 'node:child_process' ? {
+      spawnSync: (_bin, args) => { if (args[0] === 'version') return { status: 0, stdout: 'git version 2.46.0' }; probeArgs = args; return { status: 0 }; },
+    } : require(name),
+    process: { platform: 'darwin', execPath: process.execPath, getuid: () => process.getuid(), env: {}, stdout: { write: (text) => { output += text; } } },
+  });
+  assert.equal(JSON.parse(output).available, true);
+  assert.ok(probeArgs.includes('ALLOW0=/usr'));
+
+  const absent = new Proxy(fs, { get(object, key) { if (key === 'lstatSync') return () => { throw new Error('missing'); }; return object[key]; } });
+  assert.equal((await getProtectedSyncCapabilitiesAsync({ fs: absent })).available, false);
+  await getProtectedSyncCapabilitiesAsync({ execFile });
+  assert.equal(codeCalls.length, 3);
+  assert.deepEqual(listToolSearchDirs('/home/example', '/custom/bin'), require('../utils/codexTaskPolicy').listToolSearchDirs('/home/example', '/custom/bin'));
+});
+
+test('実行時の能力照会は拘束された Git を使う', (t) => {
+  const f = fixture(t);
+  const fixedGit = path.join(f.root, 'fixed-git');
+  fs.copyFileSync(gitPath, fixedGit);
+  fs.chmodSync(fixedGit, 0o755);
+  let versionBin;
+  const result = f.invoke(undefined, { env: { ...f.env, VK_TASK_GIT: fixedGit }, spawnSync: (bin, args, options) => {
+    if (args[0] === 'version') { versionBin = bin; return { status: 0, stdout: 'git version 2.46.0' }; }
+    if (args[0] === '--help') return { status: 0, stdout: '--bind-fd' };
+    if (bin.endsWith('sandbox-exec') || bin.endsWith('bwrap')) return { status: 0 };
+    return cp.spawnSync(gitPath, args, { ...options, stdio: options.stdio || 'pipe' });
+  } });
+  assert.equal(result.status, 0, result.error);
+  assert.equal(versionBin, fixedGit);
+});
+
+test('Linux 実機: 能力照会を反復しても既存ファイルを保持する', { skip: process.platform !== 'linux' || !realCapability.available }, async (t) => {
+  const f = fixture(t);
+  const outside = path.join(f.root, 'preserved');
+  fs.mkdirSync(outside);
+  for (let index = 0; index < 400; index++) fs.writeFileSync(path.join(outside, String(index)), 'original');
+  const guarded = new Proxy(fs, { get(object, key) {
+    if (/^(mkdtemp|mkdir|write|rm|unlink|rename)/.test(key)) return () => { throw new Error('unexpected mutation'); };
+    return object[key];
+  } });
+  for (let index = 0; index < 5; index++) {
+    assert.equal(getProtectedSyncCapabilities({ fs: guarded }).available, true);
+    assert.equal((await getProtectedSyncCapabilitiesAsync()).available, true);
+  }
+  assert.equal(fs.readdirSync(outside).length, 400);
+  for (const file of fs.readdirSync(outside)) assert.equal(fs.readFileSync(path.join(outside, file), 'utf8'), 'original');
 });

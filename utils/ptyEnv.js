@@ -22,7 +22,7 @@ function buildPtyEnv(env, options = {}) {
   const platform = options.platform || process.platform;
   const result = { ...env, TERM_PROGRAM: 'VKTerminals' };
 
-  // Finder 等から起動した macOS で日本語のコピーが空になるのを防ぐ。
+  // macOS で Finder 等から起動すると文字コードの指定がなく、pbcopy が日本語を空にするのを防ぐ。
   // LANG は表示言語まで変わるため補わず、文字コードに関わる LC_CTYPE だけを補う。
   if (platform === 'darwin' && !env.LANG && !env.LC_ALL && !env.LC_CTYPE) {
     result.LC_CTYPE = 'en_US.UTF-8';

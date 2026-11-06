@@ -121,6 +121,7 @@ test('起動設定は Stop を保持し、接続情報を非公開にして起�
   assert.equal(psCalls.length, 1);
   assert.equal(psCalls[0][0], 'ps');
   assert.equal(psCalls[0][2].timeout, 2000);
+  assert.equal(psCalls[0][2].killSignal, 'SIGKILL');
   for (const prepared of [a, b]) {
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(path.dirname(prepared.filename), 'owner.json'), 'utf8')), { pid: process.pid, lstart: start });
   }

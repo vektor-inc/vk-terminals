@@ -11,6 +11,11 @@ const ALLOWED_CLAUDE_SETTINGS_PRESETS = Object.freeze([PRESET]);
 const SETTINGS_PATH_PATTERN = /^\/[^'\x00-\x1f\x7f]+$/;
 const SAFE_LAUNCHER_PATH_PATTERN = /^[A-Za-z0-9/._-]+$/;
 
+// シングルクォートを一度閉じてエスケープし、シェルの展開を防ぐ。
+function quoteShellArgument(value) {
+  return `'${String(value).replaceAll("'", "'\\''")}'`;
+}
+
 function isValidClaudeSettingsPreset(value) {
   return value === PRESET;
 }
@@ -84,10 +89,10 @@ function prepareClaudeSettingsPreset(dataDir, preset, options = {}) {
 }
 
 function buildClaudeSettingsArgument(preset, settingsPath) {
-  if (!isValidClaudeSettingsPreset(preset) || typeof settingsPath !== 'string' || !SETTINGS_PATH_PATTERN.test(settingsPath)) {
+  if (!isValidClaudeSettingsPreset(preset) || typeof settingsPath !== 'string' || !/^\/[^\x00-\x1f\x7f]+$/.test(settingsPath)) {
     throw new Error('invalid prepared Claude settings preset');
   }
-  return `--settings '${settingsPath}'`;
+  return `--settings ${quoteShellArgument(settingsPath)}`;
 }
 
 // PID と開始時刻が一致する別インスタンスの設定には触れない。
@@ -124,15 +129,14 @@ function prepareBackgroundWorkSettings(dataDir, config, settingsPath, options = 
   if (!node || !SAFE_LAUNCHER_PATH_PATTERN.test(node.path)) throw new Error('Background work hook runtime unavailable');
   const directory = fs.mkdtempSync(path.join(dataDir, 'background-work-'));
   fs.chmodSync(directory, 0o700);
-  const quote = value => `'${String(value).replaceAll("'", "'\\''")}'`;
   try {
-    processStartTime ??= require('node:child_process').execFileSync('ps', ['-p', String(process.pid), '-o', 'lstart='], { encoding: 'utf8', timeout: 2000, env: { ...process.env, LC_ALL: 'C' } }).trim();
+    processStartTime ??= require('node:child_process').execFileSync('ps', ['-p', String(process.pid), '-o', 'lstart='], { encoding: 'utf8', timeout: 2000, killSignal: 'SIGKILL', env: { ...process.env, LC_ALL: 'C' } }).trim();
     fs.writeFileSync(path.join(directory, 'owner.json'), JSON.stringify({ pid: process.pid, lstart: processStartTime }), { mode: 0o600, flag: 'wx' });
     const configPath = path.join(directory, 'connection.json');
     fs.writeFileSync(configPath, JSON.stringify(config), { mode: 0o600, flag: 'wx' });
     const settings = settingsPath ? JSON.parse(fs.readFileSync(settingsPath, 'utf8')) : {};
     settings.hooks = settings.hooks || {};
-    const command = `${quote(node.path)} ${quote(path.join(__dirname, 'backgroundWorkHook.js'))} ${quote(configPath)}`;
+    const command = `${quoteShellArgument(node.path)} ${quoteShellArgument(path.join(__dirname, 'backgroundWorkHook.js'))} ${quoteShellArgument(configPath)}`;
     for (const event of ['SessionStart', 'SubagentStart', 'SubagentStop']) {
       settings.hooks[event] = [...(settings.hooks[event] || []), { hooks: [{ type: 'command', command, timeout: 3 }] }];
     }

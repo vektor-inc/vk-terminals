@@ -1,3 +1,4 @@
+const { withoutBackgroundWorkSettings } = require('./helpers/claude-arguments');
 const { test, expect } = require('@playwright/test');
 const fs = require('fs');
 const os = require('os');
@@ -96,7 +97,7 @@ async function runWithConfig(config, verify) {
 test('initialEngine / initialCodexModel が未設定なら最初のペインは従来どおり claude を起動する', async () => {
   await runWithConfig({}, async ({ port, fixture }) => {
     const calls = await waitForCallCount(fixture.fakeClaude.capturePath, 1);
-    expect(calls[0]).toEqual([]);
+    expect(withoutBackgroundWorkSettings(calls[0])).toEqual([]);
     await waitForFirstPaneEngine(port, 'claude');
     expect(readCalls(fixture.fakeCodex.capturePath)).toEqual([]);
   });
@@ -128,7 +129,7 @@ test('initialCodexModel を指定すると codex --no-daemon --model で起動�
 test('initialEngine が不正値なら claude へ倒れ、initialCodexModel も無視される', async () => {
   await runWithConfig({ initialEngine: 'gemini', initialCodexModel: 'gpt-5.5' }, async ({ port, fixture }) => {
     const calls = await waitForCallCount(fixture.fakeClaude.capturePath, 1);
-    expect(calls[0]).toEqual([]);
+    expect(withoutBackgroundWorkSettings(calls[0])).toEqual([]);
     await waitForFirstPaneEngine(port, 'claude');
     expect(readCalls(fixture.fakeCodex.capturePath)).toEqual([]);
   });
@@ -137,6 +138,6 @@ test('initialEngine が不正値なら claude へ倒れ、initialCodexModel も�
 test('initialEngine が claude のときは initialCodexModel を指定しても claude に --model を渡さない', async () => {
   await runWithConfig({ initialEngine: 'claude', initialCodexModel: 'gpt-5.5' }, async ({ fixture }) => {
     const calls = await waitForCallCount(fixture.fakeClaude.capturePath, 1);
-    expect(calls[0]).toEqual([]);
+    expect(withoutBackgroundWorkSettings(calls[0])).toEqual([]);
   });
 });

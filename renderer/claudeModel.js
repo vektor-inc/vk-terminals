@@ -146,8 +146,9 @@
     }
     if (options.backgroundWorkSettingsPath) {
       const filename = options.backgroundWorkSettingsPath;
-      if (typeof filename !== 'string' || !/^\/[^'\x00-\x1f\x7f]+$/.test(filename)) throw new Error('Invalid background work settings');
-      parts.push(`--settings '${filename}'`);
+      if (typeof filename !== 'string' || !/^\/[^\x00-\x1f\x7f]+$/.test(filename)) throw new Error('Invalid background work settings');
+      // HOME に引用符があってもシェルへ単一の引数として渡す。
+      parts.push(`--settings '${filename.replaceAll("'", "'\\''")}'`);
     }
     return parts.join(' ');
   }

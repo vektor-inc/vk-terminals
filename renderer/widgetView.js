@@ -750,16 +750,25 @@
       return panel;
     }
 
-    function buildItem(item, group) {
+    function buildItem(item, group, depth = 0) {
       const li = el('li', 'task-item');
       li.dataset.id = item.id;
+      if (depth) {
+        li.dataset.depth = String(Math.min(depth, 2));
+        const relationship = el('span', 'task-item-sr-only');
+        relationship.textContent = `#${item.parentId} のサブタスク。状態: ${item.statusLabel || group.label}`;
+        li.appendChild(relationship);
+      }
       if (item.emphasis) li.dataset.emphasis = item.emphasis;
 
       li.appendChild(buildTitle(item));
 
       const head = el('div', 'task-item-head');
       head.appendChild(buildStatusBadge(group, item));
-      for (const badge of (item.badges || [])) head.appendChild(buildBadge(badge));
+      for (const badge of (item.badges || [])) {
+        if (depth && /^親 #\d+$/.test(badge.label)) continue;
+        head.appendChild(buildBadge(badge));
+      }
       if (item.assignee) {
         const assignee = el('span', 'task-item-assignee');
         assignee.textContent = `${strings.assigneePrefix}${item.assignee}`;
@@ -852,7 +861,7 @@
       section.dataset.tone = contract.toneOrDefault(group.tone);
 
       const list = el('ul', 'task-list-items');
-      for (const item of items) list.appendChild(buildItem(item, group));
+      for (const entry of items) list.appendChild(buildItem(entry.item || entry, entry.group || group, entry.depth || 0));
       section.appendChild(list);
       return section;
     }
@@ -900,10 +909,42 @@
         return { stale, viewer, githubMode, filterEnabled, filterOptions, filterMode: mode, totalItems, visibleItems, emptyReason, emptyText: '' };
       }
 
+      // フィルタ後のカードだけで親子関係を解決する。元のグループは状態バッジに保持する。
+      const visibleGroups = groups.map((group) => ({
+        group,
+        items: filterEnabled ? contract.applyAssigneeFilter(group.items, mode, viewer) : (group.items || []),
+      }));
+      const entries = visibleGroups.flatMap(({ group, items }) => items.map((item) => ({ item, group, depth: 0 })));
+      const byId = new Map(entries.map((entry) => [entry.item.id, entry]));
+      const parentOf = new Map();
+      for (const entry of entries) {
+        const parent = byId.get(entry.item.parentId);
+        if (!parent || parent === entry) continue;
+        // 循環へ到達する経路はすべて通常カードへ戻す。
+        const seen = new Set([entry.item.id]);
+        let cursor = parent;
+        while (cursor && !seen.has(cursor.item.id)) {
+          seen.add(cursor.item.id);
+          cursor = byId.get(cursor.item.parentId);
+        }
+        if (!cursor) parentOf.set(entry, parent);
+      }
+      const children = new Map();
+      for (const [child, parent] of parentOf) {
+        if (!children.has(parent)) children.set(parent, []);
+        children.get(parent).push(child);
+      }
+      const ordered = new Map(groups.map((group) => [group, []]));
+      function appendFamily(entry, target, depth) {
+        target.push({ item: entry.item, group: entry.group, depth });
+        for (const child of children.get(entry) || []) appendFamily(child, target, depth + 1);
+      }
+      for (const entry of entries) {
+        if (!parentOf.has(entry)) appendFamily(entry, ordered.get(entry.group), 0);
+      }
+
       for (const group of groups) {
-        const filtered = filterEnabled
-          ? contract.applyAssigneeFilter(group.items, mode, viewer)
-          : (group.items || []);
+        const filtered = ordered.get(group);
         if (!filtered.length) continue;
         visibleItems += filtered.length;
         groupsEl.appendChild(buildGroup(group, filtered));

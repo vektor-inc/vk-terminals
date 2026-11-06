@@ -1777,3 +1777,55 @@ test('render: PR 以外の rel（queue / target）は state が付いても PR �
   assert.equal(title.title, 't\nhttps://example.com/issues/1');
   assert.equal(groupsEl.querySelectorAll((el) => /is-pr-/.test(el.className)).length, 0);
 });
+
+test('render: フィルタ後に親直下へ移し、状態・親バッジ・兄弟順・孫の深さを保つ', () => {
+  const widget = sanitized([
+    { id: 'ready', label: '実行待ち', tone: 'info', items: [
+      { id: 'c2', parentId: 'p', title: '子2', assignee: 'me', badges: [{ label: '親 #1' }] },
+      { id: 'p', title: '親', assignee: 'me' },
+      { id: 'other', title: '別', assignee: 'me' },
+    ] },
+    { id: 'run', label: '実行中', tone: 'progress', items: [
+      { id: 'c1', parentId: 'p', title: '子1', assignee: 'me', statusLabel: '見守り中', badges: [{ label: '親 #1' }] },
+      { id: 'grand', parentId: 'c1', title: '孫', assignee: 'me' },
+      { id: 'great', parentId: 'grand', title: '曾孫', assignee: 'me' },
+    ] },
+  ]);
+  const { groupsEl, view } = makeView();
+  view.render(widget);
+  const cards = groupsEl.querySelectorAll((el) => el.classList.contains('task-item'));
+  assert.deepEqual(cards.map((card) => card.dataset.id), ['p', 'c2', 'c1', 'grand', 'great', 'other']);
+  assert.deepEqual(cards.map((card) => card.dataset.depth || '0'), ['0', '1', '1', '2', '2', '0']);
+  assert.deepEqual(cards[2].querySelectorAll((el) => el.classList.contains('widget-badge')).map((el) => [el.textContent, el.dataset.tone]), [['見守り中', 'progress']]);
+  assert.equal(cards[1].textContent.includes('親 #1'), false);
+  assert.match(cards[2].textContent, /#p のサブタスク。状態: 見守り中/);
+});
+
+test('render: 親不在・不一致・循環・フィルタで消えた親は元のグループに通常表示する', () => {
+  const widget = sanitized([
+    { id: 'ready', label: '実行待ち', items: [
+      { id: 'missing', parentId: 'none', badges: [{ label: '親 #99' }], assignee: 'me', links: [{ rel: 'queue', url: 'https://example.com/issues/1', label: '開く' }] },
+      { id: 'a', parentId: 'b', badges: [{ label: '親 #2' }], assignee: 'me' },
+      { id: 'b', parentId: 'a', badges: [{ label: '親 #1' }], assignee: 'me' },
+      { id: 'hidden-parent', assignee: 'other' },
+      { id: 'child', parentId: 'hidden-parent', badges: [{ label: '親 #3' }], assignee: 'me' },
+    ] },
+  ]);
+  const { groupsEl, view } = makeView({ getFilterMode: () => 'self' });
+  view.render(widget);
+  const cards = groupsEl.querySelectorAll((el) => el.classList.contains('task-item'));
+  assert.deepEqual(cards.map((card) => card.dataset.id), ['missing', 'a', 'b', 'child']);
+  for (const card of cards) {
+    assert.equal(card.dataset.depth, undefined);
+    assert.match(card.textContent, /親 #/);
+  }
+});
+
+test('render: parentId が無い宣言のカード順と DOM 構造は従来どおり', () => {
+  const { groupsEl, view } = makeView();
+  view.render(sanitized([{ id: 'g', label: '待機', items: [{ id: '1' }, { id: '2' }] }]));
+  const list = groupsEl.children[0].children[0];
+  assert.equal(list.tagName, 'UL');
+  assert.deepEqual(list.children.map((card) => card.dataset.id), ['1', '2']);
+  assert.equal(list.children[0].children[0].classList.contains('task-item-title'), true);
+});

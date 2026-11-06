@@ -739,3 +739,11 @@ test('sanitizeWidget: statusTone に __proto__・constructor・前後に空白�
     assert.equal(Object.prototype.hasOwnProperty.call(item, 'statusTone'), false);
   }
 });
+
+test('sanitizeWidget: parentId は有効な別カード ID の文字列だけ保持する', () => {
+  const values = ['123', 12, '', ' ', 'x'.repeat(201), 'self'];
+  const items = values.map((parentId, index) => ({ id: index === 5 ? 'self' : String(index), parentId }));
+  const widget = contract.sanitizeWidget(baseRawWidget({ groups: [{ id: 'g', items }] }));
+  assert.equal(widget.groups[0].items[0].parentId, '123');
+  for (const item of widget.groups[0].items.slice(1)) assert.equal(Object.hasOwn(item, 'parentId'), false);
+});

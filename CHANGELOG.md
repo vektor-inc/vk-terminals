@@ -3,6 +3,7 @@
 - [ 不具合修正 ] 起動直後、更新の確認が終わるまで HTTP API に接続できなかった不具合を修正（[#546](https://github.com/vektor-inc/vk-terminals/issues/546)）
 - [ 不具合修正 ] Codex の操作案内に issue 検索とリポジトリ確認がなく、重複確認で停止する不具合を修正（[#556](https://github.com/vektor-inc/vk-terminals/issues/556)）
 - [ 不具合修正 ] Mac で Finder や Dock から起動したとき、ペインの日本語をコピーしても貼り付けられない不具合を修正（[#559](https://github.com/vektor-inc/vk-terminals/issues/559)）
+- [ 不具合修正 ] Claude Code の裏でコマンドやサブエージェントが動いていても「実行中」が消える不具合を修正（[#561](https://github.com/vektor-inc/vk-terminals/issues/561)）
 
 ## 1.92.0
 

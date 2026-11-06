@@ -639,6 +639,16 @@ curl -s http://127.0.0.1:13847/api/health
 # => {"ok":true}
 ```
 
+#### 裏の作業と「実行中」の表示
+
+Claude Code ペインでは、バックグラウンドコマンド（Codex を含む）とサブエージェントの作業中も「実行中」を表示します。入力待ち・完了・見守り中のラベルが優先されます。バッジにカーソルを重ねると「裏で作業が動いています」と表示し、ペインを閉じる確認にも添えます。
+
+通常の Claude Code 起動と API からの再起動に、開始・終了フックを自動で追加します。既存の Stop フックは保持します。フックを渡していないペインではコマンドの監視だけを行います。サブエージェントの記録は、最後の動作確認から10分で解除します。詳細は[裏の作業の判定仕様](docs/specification-background-work.md)を参照してください。
+
+#### `POST /api/background-work`
+
+アプリが配布する Claude Code フック専用の通知先です。共通の API 認証に加え、起動ごとの非公開 `epoch` と `termId` を照合します。本文の `input` は `SubagentStart` / `SubagentStop` のイベント名・`agent_id`・`session_id`・transcript のパスです。会話本文は送りません。成功は `200 {"ok":true}`、不正なイベントや古い起動の通知は `400 {"ok":false}`。手動操作では利用しません。
+
 #### `GET /api/states`
 
 全ターミナルの状態を取得。
@@ -683,6 +693,7 @@ curl -s http://127.0.0.1:13847/api/states \
 | `structuralWaiting` | TUI 固有の選択肢・定型フッターから確定した入力待ち状態 |
 | `displayWaiting` | 画面表示・利用者向け通知に使う入力待ち状態。管理ペインでは `structuralWaiting` または `externalWaiting` を反映 |
 | `displayStatus` | 画面表示・利用者向け判断に使うステータス（`idle` / `running` / `waiting`） |
+| `backgroundWorkRunning` | 裏で動くコマンドまたはサブエージェントを確認できた場合に `true`。表示用の追加情報。`status` の意味は変わらない（[判定仕様](docs/specification-background-work.md)） |
 | `status` | API 互換用の稼働ステータス（`idle` / `running` / `waiting`）。管理ペインでも `waiting` を従来どおり反映 |
 | `lastOutputTime` | 最後に出力があった時刻（Unix ms） |
 | `lastInputTime` | 最後にユーザーが入力した時刻（Unix ms） |

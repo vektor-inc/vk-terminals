@@ -70,7 +70,7 @@ const {
   stripVolatileForKey,
   waitingCheckDelayMs,
 } = window.VKWaitingState;
-const { deriveDisplayWaiting, deriveStatus, shouldBeepForPaneWaiting } = window.VKStatusState;
+const { deriveDisplayWaiting, deriveStatus, deriveDisplayStatus, shouldBeepForPaneWaiting } = window.VKStatusState;
 const { getStatusPresentation, resolvePaneNote } = window.VKStatusPresentation;
 const { getApiServerStatusPresentation } = window.VKApiServerStatus;
 const { getPrBadgePresentation } = window.VKPrBadge;
@@ -578,17 +578,9 @@ function armRunningIdleTimer(paneId) {
     const cur = terminals[paneId];
     if (!cur) return;
     cur.runningTimer = null;
-    let changed = false;
-    if (cur.status === 'running') {
-      cur.status = 'idle';
-      changed = true;
-    }
-    if (cur.displayStatus === 'running') {
-      cur.displayStatus = 'idle';
-      changed = true;
-    }
-    if (changed) updatePaneStatus(paneId);
-  }, RUNNING_IDLE_TIMEOUT_MS);
+    // 出力が止まっても裏の作業があれば表示を保ち、API 用 status は再計算する。
+    recomputeStatus(paneId);
+  }, Math.max(1, RUNNING_IDLE_TIMEOUT_MS - (Date.now() - (t.lastOutputTime || 0)) + 1));
 }
 
 // status を waiting フラグ・外部権威フラグ・最終出力時刻・最終入力時刻から再計算してセットする。
@@ -606,7 +598,8 @@ function recomputeStatus(paneId) {
     runningInputGuardMs: RUNNING_INPUT_GUARD_MS,
   });
   const displayWaiting = isPaneDisplayWaiting(t);
-  const nextDisplay = deriveStatus({
+  const nextDisplay = deriveDisplayStatus({
+    backgroundWorkRunning: t.backgroundWorkRunning,
     localWaiting: displayWaiting,
     externalWaiting: false,
     now: Date.now(),
@@ -615,7 +608,7 @@ function recomputeStatus(paneId) {
     runningIdleTimeoutMs: RUNNING_IDLE_TIMEOUT_MS,
     runningInputGuardMs: RUNNING_INPUT_GUARD_MS,
   });
-  if (next === 'running' || nextDisplay === 'running') {
+  if (next === 'running' || (nextDisplay === 'running' && !t.backgroundWorkRunning)) {
     armRunningIdleTimer(paneId);
   } else {
     clearRunningIdleTimer(t);
@@ -2527,7 +2520,7 @@ function renderStashItem(id, idx, count) {
   head.className = 'stash-item-head';
   // セキュリティ: cwd（OS 由来）・status 等は escAttr / escText でエスケープする（renderLeaf と同流儀）。
   head.innerHTML = `
-    <span class="pane-badge pane-status" data-status="${escAttr(status)}" role="status" aria-live="polite"${statusAriaLabel ? ` aria-label="${escAttr(statusAriaLabel)}"` : ''}>${escText(statusLabel)}</span>
+    <span class="pane-badge pane-status" title="${t?.backgroundWorkRunning ? '裏で作業が動いています' : ''}" data-status="${escAttr(status)}" role="status" aria-live="polite"${statusAriaLabel ? ` aria-label="${escAttr(statusAriaLabel)}"` : ''}>${escText(statusLabel)}</span>
     <div class="stash-item-actions">
       <button class="btn btn-stash-up" title="上へ移動" aria-label="上へ移動">↑</button>
       <button class="btn btn-stash-down" title="下へ移動" aria-label="下へ移動">↓</button>
@@ -2588,6 +2581,7 @@ function updateStashItem(paneId) {
   if (badge) {
     const { label, ariaLabel, visualStatus } = getStatusPresentation(t.displayStatus || 'idle', t.apiPaneNote);
     badge.dataset.status = visualStatus;
+    badge.title = t.backgroundWorkRunning ? '裏で作業が動いています' : '';
     if (badge.textContent !== label) badge.textContent = label;
     if (ariaLabel && badge.getAttribute('aria-label') !== ariaLabel) badge.setAttribute('aria-label', ariaLabel);
     else if (!ariaLabel && badge.hasAttribute('aria-label')) badge.removeAttribute('aria-label');
@@ -2850,6 +2844,7 @@ function updatePaneStatus(paneId) {
   // paneNote（issue #536）が効いているときは、文言と色だけを差し替える（displayStatus は変えない）。
   const { label, ariaLabel, visualStatus } = getStatusPresentation(t.displayStatus || 'idle', t.apiPaneNote);
   badge.dataset.status = visualStatus;
+  badge.title = t.backgroundWorkRunning ? '裏で作業が動いています' : '';
   // 視覚: ラベルテキスト（ドットは CSS の ::before で描画）。
   // a11y: aria-label でステータスを明示し、aria-live="polite" により変化のみ読み上げ。
   //       idle は visibility:hidden により読み上げ対象外（aria-live 非発火）。
@@ -3116,7 +3111,7 @@ function openCloseConfirmDialog(paneId) {
   const { label } = getStatusPresentation(t?.displayStatus);
   // running / waiting はその旨を明示し、それ以外（'always' 設定の idle）は汎用文にする。
   const message = label
-    ? `このペインは「${label}」です。閉じるとセッションは失われます。閉じますか？`
+    ? `このペインは「${label}」です${t?.backgroundWorkRunning ? "（裏で作業が動いています）" : ""}。閉じるとセッションは失われます。閉じますか？`
     : 'このペインを閉じますか？';
 
   const overlay = document.createElement('div');
@@ -3943,7 +3938,7 @@ function renderLeaf(node) {
   //   - paneIdLabel: termId（main.js の nextId 由来の番号）から作る。ステータスバッジの aria-live には含めず、独立した静的バッジにする（issue #460）
   header.innerHTML = `
     <span class="pane-badge pane-id-badge"${paneIdLabel ? ` title="${escAttr(paneIdLabel)}"` : ' hidden'}>${escText(paneIdLabel)}</span>
-    <span class="pane-badge pane-status" data-status="${escAttr(status)}" role="status" aria-live="polite"${statusAriaLabel ? ` aria-label="${escAttr(statusAriaLabel)}"` : ''}>${escText(statusLabel)}</span>
+    <span class="pane-badge pane-status" title="${t?.backgroundWorkRunning ? '裏で作業が動いています' : ''}" data-status="${escAttr(status)}" role="status" aria-live="polite"${statusAriaLabel ? ` aria-label="${escAttr(statusAriaLabel)}"` : ''}>${escText(statusLabel)}</span>
     <span class="pane-cwd" title="${escAttr(cwd)}">${escText(cwd)}</span>
     <div class="pane-actions">
       <span class="pane-badge auto-input-badge" hidden></span>
@@ -7048,6 +7043,7 @@ setInterval(() => {
       structuralWaiting: t.structuralWaiting || false,
       displayWaiting: isPaneDisplayWaiting(t),
       displayStatus: t.displayStatus || 'idle',
+      backgroundWorkRunning: t.backgroundWorkRunning === true,
       // status は既存 API の稼働判定用。管理ペインでも従来の waiting を反映し続ける。
       status: t.status || 'idle',
       lastOutputTime: t.lastOutputTime,
@@ -7211,6 +7207,14 @@ VKIpc.on('terminal:request-close-pane', (payload = {}) => {
 // 第7引数 paneNoteUpdate（issue #536）: { provided, value }。'watching' / 'done' / null のときだけ
 // provided: true で届く。送られなかった場合は、title が変わったときだけ消し、変わらなければ保つ
 // （解決ロジックは statusPresentation.js の resolvePaneNote。「完了」は別タスクのタイトルが来るまで残る）。
+VKIpc.on('terminal:background-work', (termId, running) => {
+  const paneId = Object.keys(terminals).find(id => String(terminals[id]?.termId) === String(termId));
+  if (!paneId) return;
+  terminals[paneId].backgroundWorkRunning = running === true;
+  recomputeStatus(paneId);
+  updatePaneStatus(paneId);
+});
+
 VKIpc.on('terminal:title', (termId, title, url, prUrl, prMerged, waitingMerge, paneNoteUpdate) => {
   const paneId = Object.keys(terminals).find(k => terminals[k]?.termId === termId);
   if (!paneId) return;

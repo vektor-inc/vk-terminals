@@ -67,6 +67,7 @@ const { resolveCodexTaskPolicyLaunchOptions, resolveCodexPolicyContext } = requi
 const {
   validateClaudeSettingsPresetForEngine,
   prepareClaudeSettingsPreset,
+  prepareBackgroundWorkSettings,
   buildClaudeSettingsArgument,
 } = require('./utils/claudeSettingsPreset');
 const {
@@ -193,6 +194,43 @@ const ptyShellExecutables = new Map();
 const exitingPtys = new Map();
 const agentGenerations = createAgentGenerationStore();
 const agentLifecycles = createAgentLifecycleStore();
+const { createBackgroundWorkStore } = require('./utils/backgroundWork');
+const backgroundSettings = new Map();
+const backgroundWork = createBackgroundWorkStore({
+  getSnapshot: (id, generation) => agentLifecycles.getSnapshot(id, generation),
+  onChange: (id, running) => {
+    if (win && !win.isDestroyed()) win.webContents.send('terminal:background-work', id, running);
+  },
+});
+const backgroundWorkTimer = setInterval(() => { backgroundWork.poll().catch(() => {}); }, 1000);
+backgroundWorkTimer.unref();
+
+function clearPaneBackgroundWork(id) {
+  backgroundWork.delete(id);
+  backgroundSettings.get(id)?.discard();
+  backgroundSettings.delete(id);
+}
+
+function preparePaneBackgroundWork(id, generation, engine, options) {
+  clearPaneBackgroundWork(id);
+  if (engine !== 'claude') return options;
+  const epoch = backgroundWork.begin(id, generation);
+  try {
+    const actualHost = apiServerRuntimeStatus.actualHost || '127.0.0.1';
+    const host = actualHost === '0.0.0.0' ? '127.0.0.1' : actualHost === '::' ? '[::1]' : actualHost.includes(':') ? `[${actualHost}]` : actualHost;
+    const prepared = prepareBackgroundWorkSettings(DATA_DIR, {
+      termId: id, epoch, token: API_TOKEN,
+      url: `http://${host}:${API_PORT}/api/background-work`,
+    }, options.claudeSettingsPath, { homeDir: os.homedir(), pathEnv: APP_ORIGINAL_PATH });
+    backgroundSettings.set(id, prepared);
+    return { ...options, backgroundWorkSettingsPath: prepared.filename };
+  } catch (_) {
+    // フックを配布できない環境でも、子プロセスの監視は継続する。
+    console.warn('Background work hooks unavailable; monitoring commands only');
+    return options;
+  }
+}
+
 // renderer が報告した画面と、その後の PTY 入出力が同じ状態かを条件付き Enter で照合する。
 // 秘密値と画面 revision はプロセス外へ出さず、API には HMAC 識別値だけを公開する。
 const conditionalTerminalInput = createConditionalTerminalInputGuard();
@@ -2284,13 +2322,14 @@ function createTerminalPane(cwd, options = {}, guide = null) {
         ...launchResolution.options,
         claudeSettingsPreset: options.claudeSettingsPreset,
       });
-      const built = buildEngineAwareLaunchCommand(resolvedEngine, options.model, claudeLaunchOptions);
+      const built = buildEngineAwareLaunchCommand(resolvedEngine, options.model, preparePaneBackgroundWork(id, 1, resolvedEngine, claudeLaunchOptions));
       if (built.modelIgnored) {
         console.warn(`${LOG_PREFIX} model is ignored for engine '${resolvedEngine}'`);
       }
       launchCommand = built.command;
     } catch (error) {
       discardLaunchHome();
+      clearPaneBackgroundWork(id);
       if (options.claudeSettingsPreset !== undefined) {
         console.error(`${LOG_PREFIX} Claude settings preset preparation failed:`, error);
         throw new Error('Claude settings preset hook is unavailable');
@@ -2310,6 +2349,7 @@ function createTerminalPane(cwd, options = {}, guide = null) {
     });
   } catch (error) {
     discardLaunchHome();
+    clearPaneBackgroundWork(id);
     throw error;
   }
 
@@ -2558,6 +2598,7 @@ function createTerminalPane(cwd, options = {}, guide = null) {
     ptyShellExecutables.delete(id);
     agentGenerations.delete(id);
     agentLifecycles.delete(id);
+    clearPaneBackgroundWork(id);
     conditionalTerminalInput.delete(id);
     silentWriteRefresher.delete(id);
     reportedScreenSnapshots.delete(id);
@@ -2576,6 +2617,7 @@ function createTerminalPane(cwd, options = {}, guide = null) {
   ptyShellExecutables.set(id, shell);
   agentGenerations.initialize(id, !noClaude);
   const initialLaunchToken = agentLifecycles.initialize(id, !noClaude ? 1 : 0);
+  if (!noClaude && resolvedEngine === 'claude' && !backgroundWork.has(id)) backgroundWork.begin(id, 1);
 
   // 起動後に自動で AI エンジンを実行（素のターミナルモード時はスキップ）。
   // 起動コマンドは PTY を作る前に組み立て済み（launchCommand。issue #428）。
@@ -3074,6 +3116,19 @@ function startHttpApi() {
       if (source === 'cookie') {
         res.setHeader('Set-Cookie', buildAuthCookieHeader(API_TOKEN));
       }
+    }
+
+    // 共通の認証ゲートを通ったフックだけを、起動ごとの epoch で照合する。
+    if (req.method === 'POST' && url.pathname === '/api/background-work') {
+      let body = '';
+      req.on('data', chunk => { body += chunk; if (body.length > 65536) req.destroy(); });
+      req.on('end', () => {
+        let accepted = false;
+        try { accepted = backgroundWork.event(JSON.parse(body)); } catch (_) {}
+        res.writeHead(accepted ? 200 : 400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: accepted }));
+      });
+      return;
     }
 
     // GET /api/health
@@ -4191,6 +4246,7 @@ function startHttpApi() {
               res.end(JSON.stringify({ error: 'Claude settings preset hook is unavailable' }));
               return;
             }
+            launchOptions = preparePaneBackgroundWork(request.termId, currentGeneration + 1, request.engine, launchOptions);
             let launchHomeInUse = false;
             let startedGeneration = null;
             let startedLaunchToken = null;
@@ -4251,7 +4307,10 @@ function startHttpApi() {
               res.writeHead(500, { 'Content-Type': 'application/json' });
               res.end(JSON.stringify({ error: 'failed to stop agent' }));
             } finally {
-              if (!launchHomeInUse) launchResolution.discard();
+              if (!launchHomeInUse) {
+                launchResolution.discard();
+                clearPaneBackgroundWork(request.termId);
+              }
               if (restartAgentOperations.get(request.termId) === operation) {
                 restartAgentOperations.delete(request.termId);
               }

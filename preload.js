@@ -99,6 +99,7 @@ const ON_CHANNELS = new Set([
   // issue #394（安藤レビュー指摘・MEDIUM）: POST /api/restart-agent で engine が
   // 入れ替わったことを renderer の terminals[paneId].engine へ反映するための通知。
   'terminal:engine-changed',
+  'terminal:background-work',
 ]);
 
 // clipboard へ渡してよい文字列の上限（issue #325）。定義は utils/clipboardLimits.js の

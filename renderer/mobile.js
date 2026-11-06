@@ -613,7 +613,11 @@ async function send(termId, input) {
 
 async function closeTerm(termId, label) {
   var nm = (label && label.trim()) ? label : ("Terminal " + termId);
-  if (!window.confirm("「" + nm + "」を終了しますか？\n実行中のプロセス（claude 等）が停止し、元に戻せません。")) return;
+  var background = cards[termId] && cards[termId].backgroundWorkRunning;
+  var message = background
+    ? 'このペインは「実行中」です（裏で作業が動いています）。閉じるとセッションは失われます。閉じますか？'
+    : "「" + nm + "」を終了しますか？\n実行中のプロセス（claude 等）が停止し、元に戻せません。";
+  if (!window.confirm(message)) return;
   try {
     var res = await fetch("/api/close-pane", {
       method: "POST",
@@ -1125,6 +1129,8 @@ function render(data) {
     var statusView = statusPresentation.getStatusPresentation(st, t.apiPaneNote);
     c.dot.dataset.status = statusView.visualStatus;
     c.badge.dataset.status = statusView.visualStatus;
+    c.backgroundWorkRunning = t.backgroundWorkRunning === true;
+    c.badge.title = t.backgroundWorkRunning ? "裏で作業が動いています" : "";
     if (c.badge.textContent !== statusView.label) c.badge.textContent = statusView.label;
     if (c.badge.hidden !== !statusView.label) c.badge.hidden = !statusView.label;
     if (statusView.ariaLabel) {

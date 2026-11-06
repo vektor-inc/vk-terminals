@@ -138,11 +138,16 @@
   function buildClaudeLaunchCommand(model, options = {}) {
     const parts = ['claude'];
     if (isValidClaudeModel(model)) parts.push('--model', `'${model}'`);
-    if (options.claudeSettingsPreset !== undefined) {
+    if (options.claudeSettingsPreset !== undefined && !options.backgroundWorkSettingsPath) {
       if (typeof options.buildClaudeSettingsArgument !== 'function') {
         throw new Error('Claude settings preset requires a prepared settings file');
       }
       parts.push(options.buildClaudeSettingsArgument(options.claudeSettingsPreset, options.claudeSettingsPath));
+    }
+    if (options.backgroundWorkSettingsPath) {
+      const filename = options.backgroundWorkSettingsPath;
+      if (typeof filename !== 'string' || !/^\/[^'\x00-\x1f\x7f]+$/.test(filename)) throw new Error('Invalid background work settings');
+      parts.push(`--settings '${filename}'`);
     }
     return parts.join(' ');
   }

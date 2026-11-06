@@ -90,7 +90,33 @@ function buildClaudeSettingsArgument(preset, settingsPath) {
   return `--settings '${settingsPath}'`;
 }
 
+// 起動ごとに分離した設定へフックを足し、Stop など既存のイベントを保つ。
+function prepareBackgroundWorkSettings(dataDir, config, settingsPath, options = {}) {
+  const node = resolveTrustedExecutableDetailed(fs, 'node', options.nodeSearchDirs || listToolSearchDirs(options.homeDir, options.pathEnv));
+  if (!node || !SAFE_LAUNCHER_PATH_PATTERN.test(node.path)) throw new Error('Background work hook runtime unavailable');
+  const directory = fs.mkdtempSync(path.join(dataDir, 'background-work-'));
+  fs.chmodSync(directory, 0o700);
+  const quote = value => `'${String(value).replaceAll("'", "'\\''")}'`;
+  try {
+    const configPath = path.join(directory, 'connection.json');
+    fs.writeFileSync(configPath, JSON.stringify(config), { mode: 0o600, flag: 'wx' });
+    const settings = settingsPath ? JSON.parse(fs.readFileSync(settingsPath, 'utf8')) : {};
+    settings.hooks = settings.hooks || {};
+    const command = `${quote(node.path)} ${quote(path.join(__dirname, 'backgroundWorkHook.js'))} ${quote(configPath)}`;
+    for (const event of ['SubagentStart', 'SubagentStop']) {
+      settings.hooks[event] = [...(settings.hooks[event] || []), { hooks: [{ type: 'command', command, timeout: 3 }] }];
+    }
+    const filename = path.join(directory, 'settings.json');
+    fs.writeFileSync(filename, JSON.stringify(settings), { mode: 0o600, flag: 'wx' });
+    return { filename, discard: () => fs.rmSync(directory, { recursive: true, force: true }) };
+  } catch (error) {
+    fs.rmSync(directory, { recursive: true, force: true });
+    throw error;
+  }
+}
+
 module.exports = {
+  prepareBackgroundWorkSettings,
   ALLOWED_CLAUDE_SETTINGS_PRESETS,
   SAFE_LAUNCHER_PATH_PATTERN,
   isValidClaudeSettingsPreset,

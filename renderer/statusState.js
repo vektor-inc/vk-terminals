@@ -28,6 +28,12 @@ function deriveStatus({
   return (recentOutput && !recentInput) ? 'running' : 'idle';
 }
 
+// 裏の作業は表示だけに加え、打鍵直後のガードで消さない。
+function deriveDisplayStatus(options) {
+  const status = deriveStatus(options);
+  return status === 'waiting' ? status : options.backgroundWorkRunning === true ? 'running' : status;
+}
+
 // apiUrl があるペインを管理ペインとして扱う。表示・通知・ビープで同じ基準を使う。
 function isManagedPaneState({ apiUrl } = {}) {
   return typeof apiUrl === 'string' && apiUrl !== '';
@@ -49,6 +55,7 @@ function shouldBeepForPaneWaiting({ apiUrl, waitingBefore, waiting, displayWaiti
 
 return {
   deriveStatus,
+  deriveDisplayStatus,
   isManagedPaneState,
   deriveDisplayWaiting,
   shouldBeepForPaneWaiting,

@@ -1,5 +1,7 @@
 # Changelog
 
+## 1.93.0
+
 - [ 機能追加 ] Codex の固定入口で保護されたスキル配布先の安全な同期と、利用可否を確認する API に対応（[#557](https://github.com/vektor-inc/vk-terminals/issues/557)）
 - [ 不具合修正 ] 起動直後、更新の確認が終わるまで HTTP API に接続できなかった不具合を修正（[#546](https://github.com/vektor-inc/vk-terminals/issues/546)）
 - [ 不具合修正 ] Codex の操作案内に issue 検索とリポジトリ確認がなく、重複確認で停止する不具合を修正（[#556](https://github.com/vektor-inc/vk-terminals/issues/556)）

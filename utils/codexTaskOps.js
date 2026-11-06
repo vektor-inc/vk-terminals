@@ -99,6 +99,59 @@ const REVIEW_LABEL_COMMANDS = Object.freeze({
 });
 const REVIEW_LABEL_OPERATIONS = new Set(Object.values(REVIEW_LABEL_COMMANDS).map(([operation]) => operation));
 
+// 操作の受理集合と実際の振り分けを同じ対応表から決める。
+const GH_OPERATION_HANDLERS = Object.freeze({
+  'gh issue view': (tokens, targetRepo, command) => {
+    const parsed = parseGhView(tokens, { allowedBooleanFlags: ['--comments'], numberRequired: true });
+    return parsed.ok ? command(['issue', 'view', parsed.number], parsed.args) : parsed;
+  },
+  'gh issue list': (tokens, targetRepo, command) => {
+    const parsed = parseGhIssueList(tokens);
+    return parsed.ok ? command(['issue', 'list'], parsed.args) : parsed;
+  },
+  'gh repo view': parseGhRepoView,
+  'gh issue save-image': (tokens, targetRepo) => {
+    const parsed = parseGhIssueSaveImage(tokens);
+    return parsed.ok && targetRepo !== undefined ? { ...parsed, targetRepo } : parsed;
+  },
+  'gh pr diff': (tokens, targetRepo, command) => {
+    const parsed = parseGhPrDiff(tokens);
+    return parsed.ok ? command(['pr', 'diff', parsed.number], parsed.args) : parsed;
+  },
+  'gh issue comment': (tokens, targetRepo, command) => {
+    return withTextFiles(parseGhComment(tokens), (parsed) => command(['issue', 'comment', parsed.number], parsed.args));
+  },
+  'gh issue create': (tokens, targetRepo, command) => {
+    return withTextFiles(parseGhIssueCreate(tokens), (parsed) => command(['issue', 'create'], parsed.args));
+  },
+  'gh issue edit': parseGhIssueEdit,
+  'gh issue close': parseGhIssueClose,
+  'gh pr view': (tokens, targetRepo, command) => {
+    const parsed = parseGhView(tokens, { allowedBooleanFlags: ['--comments'], numberRequired: true });
+    return parsed.ok ? command(['pr', 'view', parsed.number], parsed.args) : parsed;
+  },
+  'gh pr checks': (tokens, targetRepo, command) => {
+    const parsed = parseGhView(tokens, { allowedBooleanFlags: [], numberRequired: true });
+    return parsed.ok ? command(['pr', 'checks', parsed.number], parsed.args) : parsed;
+  },
+  'gh pr comment': (tokens, targetRepo, command) => {
+    return withTextFiles(parseGhComment(tokens), (parsed) => command(['pr', 'comment', parsed.number], parsed.args));
+  },
+  'gh pr create': (tokens, targetRepo, command) => {
+    return withTextFiles(parseGhPrCreate(tokens), (parsed) => command(['pr', 'create'], parsed.args));
+  },
+  'gh pr edit': parseGhPrEdit,
+  'gh pr merge': parseGhPrMerge,
+  ...Object.fromEntries(Object.entries(REVIEW_LABEL_COMMANDS).map(([name, [operation, withNumber]]) => [
+    `gh ${name}`,
+    (tokens, targetRepo) => {
+      const parsed = parseReviewLabelCommand(operation, tokens, { withNumber });
+      return parsed.ok ? { ...parsed, ...(targetRepo === undefined ? {} : { targetRepo }) } : parsed;
+    },
+  ])),
+});
+const ACCEPTED_GH_OPERATIONS = Object.freeze(Object.keys(GH_OPERATION_HANDLERS));
+
 const NO_VALUE_FLAGS = Object.freeze({
   'git status': ['-s', '--short', '-b', '--branch', '--porcelain', '--porcelain=v1', '--porcelain=v2'],
   'git diff': ['--stat', '--cached', '--staged', '--name-only', '--name-status', '--numstat', '--shortstat', '--check', '--no-color', '--no-renames'],
@@ -546,7 +599,9 @@ function parsePrTextFlags(tokens, { head: allowCreateFlags, positional = null })
 // 作成済み PR のタイトル・本文の更新は `gh pr edit <番号> [--title <値>|--title-file <名前>] [--body <値>|--body-file <名前>]` の形だけ（少なくとも 1 つ必須）。
 // 他のフラグ（--add-* / --remove-* / --base / --repo など）は許可リストに無いので拒否される。
 // 実行は入口が「ファイル読み込み → 更新 → 読み戻し」の順で行う。
-function parseGhPrEdit(tokens) {
+function parseGhPrEdit(tokens, targetRepo) {
+  // 更新操作は起動時に固定したリポジトリだけを対象にする。
+  if (targetRepo !== undefined) return fail('gh pr edit cannot target another repository');
   const parsed = parsePrTextFlags(tokens, { head: false, positional: 'number' });
   if (!parsed.ok) return parsed;
   const { number, title, body, titleFile, bodyFile } = parsed;
@@ -557,7 +612,9 @@ function parseGhPrEdit(tokens) {
 }
 
 // PR のマージは番号 1 つだけを受ける。方式・head 固定・リポジトリは入口側で組み立てるため、利用者指定のフラグはすべて拒否する。
-function parseGhPrMerge(tokens) {
+function parseGhPrMerge(tokens, targetRepo) {
+  // 更新操作は起動時に固定したリポジトリだけを対象にする。
+  if (targetRepo !== undefined) return fail('gh pr merge cannot target another repository');
   if (tokens.length !== 1 || hasUnsafeCharacter(tokens[0]) || !POSITIVE_NUMBER_PATTERN.test(tokens[0])) {
     return fail('gh pr merge needs one valid PR number and no flags');
   }
@@ -645,7 +702,9 @@ function parseReviewLabelCommand(operation, tokens, { withNumber }) {
 //   2. `gh issue edit <番号> --body-file <名前>`（本文の更新。入出力フォルダ直下のファイル名 1 つ）→ operation: issue-edit-body
 //   3. `gh issue edit <番号> --remove-label <ラベル>`（複数可）→ operation: issue-remove-label
 // 題名・--body・--milestone・--repo などは許可リストに無いので拒否される。実行は入口が「更新 → 読み戻し」の順で行う（1 はラベルの存在確認も先に行う）。
-function parseGhIssueEdit(tokens) {
+function parseGhIssueEdit(tokens, targetRepo) {
+  // 更新操作は起動時に固定したリポジトリだけを対象にする。
+  if (targetRepo !== undefined) return fail('gh issue edit cannot target another repository');
   let number;
   let bodyFile;
   const assignees = [];
@@ -693,7 +752,9 @@ function parseGhIssueEdit(tokens) {
 // issue の close は `gh issue close <番号> [--reason completed|"not planned"]` だけ（issue #522）。
 // --comment・--duplicate-of・--reason duplicate・--repo などは受けない。引用符なしの単独コマンドでは空白を含む引数を渡せないため、`not_planned` も `not planned` と同じ意味で受ける。
 const CLOSE_REASONS = Object.freeze({ completed: 'completed', 'not planned': 'not planned', not_planned: 'not planned' });
-function parseGhIssueClose(tokens) {
+function parseGhIssueClose(tokens, targetRepo) {
+  // 更新操作は起動時に固定したリポジトリだけを対象にする。
+  if (targetRepo !== undefined) return fail('gh issue close cannot target another repository');
   let number;
   let reason;
   for (let i = 0; i < tokens.length; i += 1) {
@@ -875,68 +936,10 @@ function parseTaskCommand(argv) {
       [targetRepo, ...ghTokens] = rest;
     }
     const [group, action, ...tokens] = ghTokens;
+    const operationName = `gh ${group} ${action}`;
     const command = (parts, args) => ({ ...ghCommand(parts, args), ...(targetRepo === undefined ? {} : { targetRepo }) });
-    if (group === 'issue' && action === 'view') {
-      const parsed = parseGhView(tokens, { allowedBooleanFlags: ['--comments'], numberRequired: true });
-      return parsed.ok ? command(['issue', 'view', parsed.number], parsed.args) : parsed;
-    }
-    if (group === 'issue' && action === 'list') {
-      const parsed = parseGhIssueList(tokens);
-      return parsed.ok ? command(['issue', 'list'], parsed.args) : parsed;
-    }
-    if (group === 'repo' && action === 'view') return parseGhRepoView(tokens, targetRepo);
-    if (group === 'issue' && action === 'save-image') {
-      const parsed = parseGhIssueSaveImage(tokens);
-      return parsed.ok && targetRepo !== undefined ? { ...parsed, targetRepo } : parsed;
-    }
-    if (group === 'pr' && action === 'diff') {
-      const parsed = parseGhPrDiff(tokens);
-      return parsed.ok ? command(['pr', 'diff', parsed.number], parsed.args) : parsed;
-    }
-    if (group === 'issue' && action === 'comment') {
-      return withTextFiles(parseGhComment(tokens), (parsed) => command(['issue', 'comment', parsed.number], parsed.args));
-    }
-    if (group === 'issue' && action === 'create') {
-      return withTextFiles(parseGhIssueCreate(tokens), (parsed) => command(['issue', 'create'], parsed.args));
-    }
-    if (group === 'issue' && action === 'edit') {
-      // 操作対象は起動時に固定したリポジトリだけ。別リポジトリの明示は受けない。
-      if (targetRepo !== undefined) return fail('gh issue edit cannot target another repository');
-      return parseGhIssueEdit(tokens);
-    }
-    if (group === 'issue' && action === 'close') {
-      // 操作対象は起動時に固定したリポジトリだけ。別リポジトリの明示は受けない。
-      if (targetRepo !== undefined) return fail('gh issue close cannot target another repository');
-      return parseGhIssueClose(tokens);
-    }
-    if (group === 'pr' && action === 'view') {
-      const parsed = parseGhView(tokens, { allowedBooleanFlags: ['--comments'], numberRequired: true });
-      return parsed.ok ? command(['pr', 'view', parsed.number], parsed.args) : parsed;
-    }
-    if (group === 'pr' && action === 'checks') {
-      const parsed = parseGhView(tokens, { allowedBooleanFlags: [], numberRequired: true });
-      return parsed.ok ? command(['pr', 'checks', parsed.number], parsed.args) : parsed;
-    }
-    if (group === 'pr' && action === 'comment') {
-      return withTextFiles(parseGhComment(tokens), (parsed) => command(['pr', 'comment', parsed.number], parsed.args));
-    }
-    if (group === 'pr' && action === 'create') {
-      return withTextFiles(parseGhPrCreate(tokens), (parsed) => command(['pr', 'create'], parsed.args));
-    }
-    if (group === 'pr' && action === 'edit') {
-      // 操作対象は起動時に固定したリポジトリだけ。別リポジトリの明示は受けない。
-      if (targetRepo !== undefined) return fail('gh pr edit cannot target another repository');
-      return parseGhPrEdit(tokens);
-    }
-    if (group === 'pr' && action === 'merge') {
-      // マージは起動時に固定したリポジトリだけが対象。owner/repo の明示も受けない。
-      if (targetRepo !== undefined) return fail('gh pr merge cannot target another repository');
-      return parseGhPrMerge(tokens);
-    }
-    const labelOperation = REVIEW_LABEL_COMMANDS[`${group} ${action}`];
-    if (labelOperation !== undefined) {
-      const parsed = parseReviewLabelCommand(labelOperation[0], tokens, { withNumber: labelOperation[1] });
-      return parsed.ok ? { ...parsed, ...(targetRepo === undefined ? {} : { targetRepo }) } : parsed;
+    if (Object.hasOwn(GH_OPERATION_HANDLERS, operationName)) {
+      return GH_OPERATION_HANDLERS[operationName](tokens, targetRepo, command);
     }
     return fail(`gh ${[group, action].filter((part) => part !== undefined).map((part) => JSON.stringify(part)).join(' ')} is not allowed`);
   }
@@ -3301,6 +3304,9 @@ module.exports = {
   captureMemberWorktree,
   recordMemberIdentity,
   parseTaskCommand,
+  ACCEPTED_GH_OPERATIONS,
+  ISSUE_LIST_JSON_FIELDS,
+  REPO_VIEW_JSON_FIELDS,
   runTaskCommand,
   requestAttachment,
   readBinding,

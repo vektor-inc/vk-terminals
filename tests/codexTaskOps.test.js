@@ -9,6 +9,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const {
+  ACCEPTED_GH_OPERATIONS,
   captureMemberWorktree,
   FIXED_GIT_PREFIX,
   assertChainUnchanged,
@@ -89,6 +90,44 @@ test('許可: gh issue list / gh repo view は読み取り用のフラグと許�
   // 位置引数の owner/repo も、先頭に置く明示形式と同じ targetRepo として扱う。
   assert.equal(parseTaskCommand(['gh', 'Vektor-Inc/another.repo', 'repo', 'view', '--json', 'visibility']).targetRepo, 'Vektor-Inc/another.repo');
   assert.equal(parseTaskCommand(['gh', 'repo', 'view', 'Vektor-Inc/another.repo', '--json', 'visibility']).targetRepo, 'Vektor-Inc/another.repo');
+});
+
+test('許可: 症状・ファイル名・機能名を --state all で個別検索できる', () => {
+  for (const term of ['画面停止', 'codexTaskOps.js', '重複確認']) {
+    const result = parseTaskCommand(['gh', 'issue', 'list', '--search', term, '--state', 'all']);
+    assert.equal(result.ok, true, term);
+    assert.deepEqual(result.args, ['issue', 'list', `--search=${term}`, '--state', 'all']);
+  }
+  assert.equal(parseTaskCommand(['gh', 'issue', 'list', '--search', 'utils/codexTaskOps.js', '--state', 'all']).ok, false);
+});
+
+test('検索語の文法: 記号と修飾子・論理演算子の拒否理由を固定する', () => {
+  for (const term of ['日本語123', 'file_name.tsx', 'v1.2-3', 'label:bug', '-label:bug']) {
+    assert.equal(parseTaskCommand(['gh', 'issue', 'list', '--search', term]).ok, true, term);
+  }
+  for (const term of ['and', 'AND', 'And', 'or', 'OR', 'oR', 'not', 'NOT', 'nOt', '[id].tsx', 'foo@bar', 'C++', 'author:foo', 'utils/file.js']) {
+    assert.deepEqual(parseTaskCommand(['gh', 'issue', 'list', '--search', term]), { ok: false, error: 'task command rejected: invalid --search' }, term);
+  }
+});
+
+test('拒否: 受理集合にない gh 操作は引数にかかわらず操作名で拒否する', () => {
+  const groups = ['issue', 'pr', 'repo', 'label', 'release', 'run', 'workflow', 'secret', 'variable', 'gist', 'api', 'auth', 'project', 'search', 'ruleset', 'cache', 'org', 'config', 'extension'];
+  const actions = ['view', 'list', 'create', 'edit', 'close', 'reopen', 'delete', 'comment', 'merge', 'diff', 'checks', 'lock', 'unlock', 'pin', 'unpin', 'transfer', 'develop', 'status', 'review', 'ready', 'checkout', 'sync', 'clone', 'fork', 'rename', 'archive', 'exists', 'add-label', 'has-label', 'save-image', 'set', 'get', 'clear'];
+  // 対応表の外に追加された分岐も、引数の検証エラーと区別して検出する。
+  for (const group of groups) {
+    for (const action of actions) {
+      if (ACCEPTED_GH_OPERATIONS.includes(`gh ${group} ${action}`)) continue;
+      const result = parseTaskCommand(['gh', group, action, '5']);
+      assert.equal(result.ok, false, `${group} ${action}`);
+      assert.match(result.error, /is not allowed$/, `${group} ${action}`);
+    }
+  }
+});
+
+test('拒否: 対応表にない gh 操作と prototype 名は受理しない', () => {
+  for (const [group, action] of [['issue', 'reopen'], ['__proto__', 'view'], ['issue', '__proto__'], ['constructor', 'prototype'], ['pr', 'toString']]) {
+    assert.equal(parseTaskCommand(['gh', group, action, '5']).ok, false, `${group} ${action}`);
+  }
 });
 
 test('拒否: gh issue list / gh repo view の --web・--jq・--template・--repo・許可外の項目・範囲外の値・制御文字（issue #520）', () => {
@@ -930,6 +969,16 @@ test('拘束: gh issue list は --repo、gh repo view は位置引数として�
     assert.equal(run(fixture, ['gh', 'issue', 'list', '--search', 'repo:other/private']).code, 2);
     assert.equal(run(fixture, ['gh', 'issue', 'list', '--label', 'a) OR repo:other/private']).code, 2);
     assert.equal(fixture.readCalls().length, before);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('実行: issue 検索の gh 失敗は 0 以外を返す', () => {
+  const fixture = createFixture();
+  try {
+    fs.writeFileSync(fixture.env.VK_TASK_GH, `#!${process.execPath}\nprocess.exit(1);\n`, { mode: 0o755 });
+    assert.notEqual(run(fixture, ['gh', 'issue', 'list', '--search', '重複確認', '--state', 'all']).code, 0);
   } finally {
     fixture.cleanup();
   }

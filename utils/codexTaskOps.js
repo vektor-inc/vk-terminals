@@ -1619,6 +1619,45 @@ function getProtectedSyncCapabilitiesAsync(deps = {}) {
   return capabilityPromise;
 }
 
+// 生成元の読み取りは短命の子だけで作業フォルダを移動して行う。
+function protectedSourceChild() {
+  const fs = require('node:fs');
+  const held = [];
+  try {
+    const { rootIdentity, segments, limit } = JSON.parse(fs.readFileSync(0, 'utf8'));
+    const root = fs.statSync('.');
+    if (!root.isDirectory() || root.dev !== rootIdentity.dev || root.ino !== rootIdentity.ino) throw new Error('source root changed');
+    for (const name of segments.slice(0, -1)) {
+      const fd = fs.openSync(name, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_DIRECTORY);
+      held.push(fd);
+      const opened = fs.fstatSync(fd);
+      if (!opened.isDirectory()) throw new Error('source directory required');
+      process.chdir(name);
+      const current = fs.statSync('.');
+      if (current.dev !== opened.dev || current.ino !== opened.ino) throw new Error('source directory changed');
+    }
+    const fd = fs.openSync(segments[segments.length - 1], fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+    held.push(fd);
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile() || stat.nlink !== 1 || stat.size > limit) throw new Error('invalid source file');
+    // 読み取り量を上限 + 1 バイトに固定する。
+    const buffer = Buffer.alloc(limit + 1);
+    let size = 0;
+    while (size < buffer.length) {
+      const count = fs.readSync(fd, buffer, size, buffer.length - size, size);
+      if (!count) break;
+      size += count;
+    }
+    if (size > limit) throw new Error('source exceeds limit');
+    process.stdout.write(buffer.subarray(0, size));
+  } catch (error) {
+    process.stderr.write(`protected-sync source rejected: ${error.message}\n`);
+    process.exitCode = 2;
+  } finally {
+    for (const fd of held.reverse()) fs.closeSync(fd);
+  }
+}
+
 // 子へ送る固定コード。標準モジュールだけを使い、作業リポジトリのコードを実行しない。
 function protectedSyncChild() {
   const fs = require('node:fs');
@@ -1663,6 +1702,7 @@ function executeProtectedSync({ parsed, binding, cwd, fsImpl, runGit, spawnSync,
   const heldFds = [];
   try {
     const root = fsImpl.realpathSync(cwd);
+    const rootIdentity = inspected.rootIdentity;
     if (root !== path.resolve(cwd) || root !== inspected.root) throw new TrustError('protected-sync must run at the registered worktree root');
     const listed = runGit(['worktree', 'list', '--porcelain', '-z'], binding.root);
     if (listed.status !== 0 || !String(listed.stdout).split('\0').includes(`worktree ${root}`)) throw new TrustError('worktree is not registered');
@@ -1681,13 +1721,13 @@ function executeProtectedSync({ parsed, binding, cwd, fsImpl, runGit, spawnSync,
     // Linux は worktree の記述子から各要素を一段ずつ開く。
     let rootFd;
     if (linux) {
-      const expected = fsImpl.lstatSync(root);
+      const expected = rootIdentity;
       rootFd = fsImpl.openSync(root, nodeFs.constants.O_RDONLY | nodeFs.constants.O_DIRECTORY | nodeFs.constants.O_NOFOLLOW);
       heldFds.push(rootFd);
       const actual = fsImpl.fstatSync(rootFd);
       if (!actual.isDirectory() || actual.dev !== expected.dev || actual.ino !== expected.ino) throw new TrustError('worktree root changed');
     }
-    const sourceIdentity = linux ? null : fsImpl.lstatSync(path.join(root, entry.source));
+
     for (const relative of paths) {
       let current = root;
       let parent = rootFd;
@@ -1713,11 +1753,17 @@ function executeProtectedSync({ parsed, binding, cwd, fsImpl, runGit, spawnSync,
       }
     }
     const source = path.join(root, entry.source);
-    const fd = linux ? sourceFd : fsImpl.openSync(source, nodeFs.constants.O_RDONLY | nodeFs.constants.O_NOFOLLOW | nodeFs.constants.O_NONBLOCK);
+    const node = resolveTrustedPath(fsImpl, process.execPath, { finalKind: 'file', uid: deps.uid }).realPath;
     let content;
-    try {
+    if (!linux) {
+      const read = spawnSync(node, ['-e', `(${protectedSourceChild.toString()})()`], { cwd: root, env, timeout: 10000, maxBuffer: PROTECTED_SYNC_MAX_SOURCE_BYTES + 1024,
+        input: JSON.stringify({ rootIdentity, segments: entry.source.split('/'), limit: PROTECTED_SYNC_MAX_SOURCE_BYTES }) });
+      if (read.error || read.status !== 0 || !Buffer.isBuffer(read.stdout) || read.stdout.length > PROTECTED_SYNC_MAX_SOURCE_BYTES) throw new TrustError('protected-sync source could not be verified');
+      content = Buffer.from(read.stdout);
+    } else {
+      const fd = sourceFd;
       const stat = fsImpl.fstatSync(fd);
-      const expected = sourceIdentity || snapshot.find((entry) => entry.path === source);
+      const expected = snapshot.find((entry) => entry.path === source);
       if (!stat.isFile() || stat.nlink !== 1 || stat.dev !== expected.dev || stat.ino !== expected.ino) throw new TrustError('source changed after verification');
       if (stat.size > PROTECTED_SYNC_MAX_SOURCE_BYTES) throw new TrustError('protected-sync source exceeds 256 KiB');
       // 上限 + 1 バイトまでに制限し、並行した追記でも無制限に読み込まない。
@@ -1730,8 +1776,7 @@ function executeProtectedSync({ parsed, binding, cwd, fsImpl, runGit, spawnSync,
       }
       if (size > PROTECTED_SYNC_MAX_SOURCE_BYTES) throw new TrustError('protected-sync source exceeds 256 KiB');
       content = buffer.subarray(0, size);
-    } finally { if (!linux) fsImpl.closeSync(fd); }
-    const node = resolveTrustedPath(fsImpl, process.execPath, { finalKind: 'file', uid: deps.uid }).realPath;
+    }
     const destination = path.join(root, entry.target);
     const parent = path.dirname(destination);
     const command = restrictWrites({ bin: node, args: ['-e', `(${protectedSyncChild.toString()})()`], allowWrite: [parent], snapshot, directoryFds: linux ? [parentFd] : [] }, deps);
@@ -3469,7 +3514,19 @@ function runTaskCommand(argv, deps = {}) {
       return reject(`task command rejected: owner ${JSON.stringify(explicitGitHubTarget.split('/')[0])} is not allowed`);
     }
   } else {
+    let rootIdentity;
+    if (parsed.operation === 'protected-sync') {
+      try { rootIdentity = fsImpl.lstatSync(cwd); }
+      catch (_) { return reject('task command rejected: worktree root could not be verified'); }
+    }
     inspected = inspectRepository({ cwd, run: runGit, homeDir: binding.home, fsImpl });
+    if (rootIdentity) {
+      try {
+        const after = fsImpl.lstatSync(cwd);
+        if (!rootIdentity.isDirectory() || rootIdentity.isSymbolicLink() || after.dev !== rootIdentity.dev || after.ino !== rootIdentity.ino) return reject('task command rejected: worktree root changed');
+        inspected.rootIdentity = { dev: rootIdentity.dev, ino: rootIdentity.ino };
+      } catch (_) { return reject('task command rejected: worktree root could not be verified'); }
+    }
     if (!inspected.ok) return reject(inspected.error);
     if (inspected.root !== binding.root && !isBoundWorktree({ cwd, run: runGit, bindingRoot: binding.root, inspectedRoot: inspected.root, fsImpl, uid: currentUid(deps) })) {
       return reject('task command rejected: working directory is not the bound repository');
@@ -3549,6 +3606,7 @@ module.exports = {
   getProtectedSyncCapabilities,
   getProtectedSyncCapabilitiesAsync,
   protectedSyncChild,
+  protectedSourceChild,
   prepareRestrictedFetch,
   PROTECTED_SYNC_TARGETS,
   captureMemberWorktree,

@@ -13,7 +13,6 @@ const mutations = [
   ['repository table', removeLine("protected-sync repository is not registered")],
   ['worktree list', removeLine("throw new TrustError('worktree is not registered')")],
   ['child parent', parent],
-  ['source fstat', removeLine("throw new TrustError('source changed after verification')")],
   ['readback', removeLine("throw new Error('copied bytes do not match')")],
   ['atomic rename', (s) => s.replace(/    temporary = path\.join\(directory, `\.protected-sync-\$\{crypto\.randomBytes\(16\)\.toString\('hex'\)\}`\);[\s\S]*?    temporary = undefined;/, '    fs.writeFileSync(destination, content);')],
   ['non-darwin fetch', removeLine("if ((deps.platform || process.platform) !== 'darwin') return { ok: false")],
@@ -27,7 +26,27 @@ const mutations = [
   ['Git version', removeLine("throw new Error('unsupported Git')")],
   ['capability probe', (s) => s.replace("    if (!capability.available) throw new TrustError(capability.reason);", '')],
 ];
+mutations.push(
+  ['read-only root', (s) => s.replace("args: ['--ro-bind', '/', '/',", "args: ['--bind', '/', '/',")],
+  ['new session', (s) => s.replace("'--new-session', ", '')],
+  ['run tmpfs', (s) => s.replace("'--tmpfs', '/run', ", '')],
+  ['JSON failure', (s) => s.replace('catch (_) { resolve(unavailable); }', 'catch (_) { resolve({ ...unavailable, available: true }); }')],
+  ['fixed root owner', (s) => s.replace("resolveTrustedPath(fsImpl, '/usr', { uid: 0, finalKind: 'directory' }).realPath", "'/usr'")],
+  ['source child identity', removeLine("throw new Error('source directory changed')")],
+  ['source child root', removeLine("throw new Error('source root changed')")],
+  ['source child nofollow', (s) => s.replaceAll('fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW', 'fs.constants.O_RDONLY')],
+  ['source child directory', (s) => s.replace('fs.constants.O_NOFOLLOW | fs.constants.O_DIRECTORY);', 'fs.constants.O_NOFOLLOW);')],
+  ['source child nlink', (s) => s.replace('!stat.isFile() || stat.nlink !== 1 || stat.size > limit', '!stat.isFile() || stat.size > limit')],
+);
 if (process.platform === 'linux') mutations.push(
+  ['source fstat', removeLine("throw new TrustError('source changed after verification')")],
+  ['parent descriptor', (s) => s.replace('directoryFds: linux ? [parentFd] : []', 'directoryFds: []')],
+  ['snapshot transfer', (s) => s.replace('allowWrite: [parent], snapshot, directoryFds', 'allowWrite: [parent], directoryFds')],
+  ['root identity', removeLine("throw new TrustError('worktree root changed')")],
+  ['root nofollow', (s) => s.replace('rootFd = fsImpl.openSync(root, nodeFs.constants.O_RDONLY | nodeFs.constants.O_DIRECTORY | nodeFs.constants.O_NOFOLLOW)', 'rootFd = fsImpl.openSync(root, nodeFs.constants.O_RDONLY | nodeFs.constants.O_DIRECTORY)')],
+  ['chain directory', (s) => s.replace('(file ? 0 : nodeFs.constants.O_DIRECTORY)', '0')],
+  ['source nlink', (s) => s.replace('!stat.isFile() || stat.nlink !== 1 || stat.dev !== expected.dev', '!stat.isFile() || stat.dev !== expected.dev')],
+  ['held descriptors', (s) => s.replace('for (const fd of heldFds.reverse()) fsImpl.closeSync(fd);', '')],
   ['fd traversal', (s) => s.replace('fsImpl.openSync(`/proc/self/fd/${parent}/${segment}`,', 'fsImpl.openSync(current,')],
   ['chain nofollow', (s) => s.replace('nodeFs.constants.O_NOFOLLOW | nodeFs.constants.O_NONBLOCK | (file', 'nodeFs.constants.O_NONBLOCK | (file')],
   ['sandbox target', (s) => s.replace("String(2 + fds.length), `/run/vk-protected-sync/target${index}`", 'String(2 + fds.length), dir')],
@@ -42,7 +61,10 @@ try {
   const baseline = cp.spawnSync(process.execPath, ['--test', 'tests/protectedSync.test.js'], { cwd: temporary, encoding: 'utf8', timeout: 120000 });
   if (baseline.status !== 0) throw new Error(`baseline failed: ${baseline.stdout}\n${baseline.stderr}`);
   console.log('BASELINE: PASS');
+  const selected = process.argv.slice(2);
+  if (selected.some((name) => !mutations.some(([known]) => known === name))) throw new Error('unknown mutation');
   for (const [name, mutate] of mutations) {
+    if (selected.length && !selected.includes(name)) continue;
     const changed = mutate(source);
     if (changed === source) throw new Error(`mutation did not apply: ${name}`);
     new (require('node:vm').Script)(changed);

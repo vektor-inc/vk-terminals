@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const cp = require('node:child_process');
-const { runTaskCommand, parseTaskCommand, restrictWrites, getProtectedSyncCapabilities, getProtectedSyncCapabilitiesAsync, listToolSearchDirs, PROTECTED_SYNC_TARGETS, buildMemberCodexArgs, readBinding, protectedSyncChild, prepareRestrictedFetch } = require('../utils/codexTaskOps');
+const { runTaskCommand, parseTaskCommand, restrictWrites, getProtectedSyncCapabilities, getProtectedSyncCapabilitiesAsync, listToolSearchDirs, PROTECTED_SYNC_TARGETS, buildMemberCodexArgs, readBinding, protectedSyncChild, protectedSourceChild, prepareRestrictedFetch } = require('../utils/codexTaskOps');
 const { CODEX_TASK_POLICY_PRESETS, prepareCodexTaskPolicyHome } = require('../utils/codexTaskPolicy');
 const [target] = PROTECTED_SYNC_TARGETS;
 const gitPath = fs.realpathSync(cp.execFileSync('/usr/bin/which', ['git'], { encoding: 'utf8' }).trim());
@@ -91,6 +91,10 @@ test('Linux は検査したディレクトリ記述子を stdio 3 に渡し bind
     assert.equal(command.bin, '/usr/bin/bwrap');
     assert.ok(command.args.includes('--bind-fd'));
     assert.ok(command.args.includes('--unshare-net'));
+    assert.deepEqual(command.args.slice(0, 3), ['--ro-bind', '/', '/']);
+    assert.ok(command.args.includes('--new-session'));
+    const tmpfs = command.args.indexOf('--tmpfs');
+    assert.equal(command.args[tmpfs + 1], '/run');
     const index = command.args.indexOf('--bind-fd');
     assert.deepEqual(command.args.slice(index, index + 3), ['--bind-fd', '3', '/run/vk-protected-sync/target0']);
     assert.equal(fs.fstatSync(command.stdio[3]).ino, fs.statSync(dir).ino);
@@ -194,8 +198,11 @@ test('OS 実機: 許可した親以外への Node の書き込みを OS が拒�
   const f = fixture(t);
   const outside = path.join(f.root, 'outside');
   const command = restrictWrites({ bin: process.execPath, args: ['-e', `require('fs').writeFileSync(${JSON.stringify(outside)}, 'bad')`], allowWrite: [path.dirname(f.destination)] });
-  const result = cp.spawnSync(command.bin, command.args, { env: {}, encoding: 'utf8' });
+  let result;
+  try { result = cp.spawnSync(command.bin, command.args, { env: {}, encoding: 'utf8', stdio: command.stdio }); }
+  finally { if (command.close) command.close(); }
   assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /EACCES|EPERM|EROFS/);
   assert.equal(fs.existsSync(outside), false);
 });
 
@@ -360,7 +367,7 @@ test('対応表の照合は binding と origin が両方別でも拒否する', 
   assert.match(result.error, /repository is not registered/);
 });
 
-test('生成元の記述子の同一性を検証する', { skip: !realCapability.available }, (t) => {
+test('生成元の記述子の同一性を検証する', { skip: !realCapability.available || process.platform !== 'linux' }, (t) => {
   const f = fixture(t);
   let reads = 0;
   const fakeFs = new Proxy(fs, { get(object, key) {
@@ -407,6 +414,7 @@ test('同期の spawn は OS 制限で包まれ、Linux は bind-fd を継承す
   let launched = false;
   let parentFd;
   const result = f.invoke(undefined, { spawnSync: (bin, args, options) => {
+    if (bin === process.execPath && options.input) return cp.spawnSync(bin, args, options);
     if (options.input) {
       launched = true;
       assert.equal(bin, process.platform === 'darwin' ? '/usr/bin/sandbox-exec' : '/usr/bin/bwrap');
@@ -506,7 +514,7 @@ test('実行時の能力照会は拘束された Git を使う', (t) => {
     if (args[0] === 'version') { versionBin = bin; return { status: 0, stdout: 'git version 2.46.0' }; }
     if (args[0] === '--help') return { status: 0, stdout: '--bind-fd' };
     if (bin.endsWith('sandbox-exec') || bin.endsWith('bwrap')) return { status: 0 };
-    return cp.spawnSync(gitPath, args, { ...options, stdio: options.stdio || 'pipe' });
+    return cp.spawnSync(bin === process.execPath ? bin : gitPath, args, { ...options, stdio: options.stdio || 'pipe' });
   } });
   assert.equal(result.status, 0, result.error);
   assert.equal(versionBin, fixedGit);
@@ -598,11 +606,14 @@ test('OS 実機: 途中のフォルダの連続交換中も外部ファイルを
   const worker = cp.spawn(executable, [directory, alternate], { stdio: ['ignore', 'pipe', 'inherit'] });
   let attempts = 0;
   let outsideWrites = 0;
+  const outcomes = {};
   const closed = new Promise((resolve) => worker.once('close', (code, signal) => resolve({ code, signal })));
   try {
     await new Promise((resolve, reject) => { worker.stdout.once('data', resolve); worker.once('error', reject); worker.once('exit', () => reject(new Error('exchange worker stopped'))); });
     for (; attempts < Number(process.env.VK_PROTECTED_SYNC_RACE_ATTEMPTS); attempts++) {
-      f.invoke();
+      const result = f.invoke();
+      const outcome = result.status === 0 ? 'success' : result.error.trim();
+      outcomes[outcome] = (outcomes[outcome] || 0) + 1;
       if (fs.readFileSync(outsideFile, 'utf8') !== 'outside' || fs.readdirSync(path.dirname(outsideFile)).length !== 1) outsideWrites++;
     }
   } finally {
@@ -610,6 +621,205 @@ test('OS 実機: 途中のフォルダの連続交換中も外部ファイルを
     const exit = await closed;
     assert.equal(exit.signal, 'SIGKILL', JSON.stringify(exit));
   }
-  t.diagnostic(JSON.stringify({ platform: process.platform, attempts, outsideWrites }));
+  t.diagnostic(JSON.stringify({ platform: process.platform, attempts, outsideWrites, outcomes }));
   assert.equal(outsideWrites, 0);
+});
+
+// 読み取り子の作業フォルダをモデル化し、各検査の間の実体変更を注入する。
+function sourceChildModel(change = '') {
+  let level = 0;
+  let output;
+  let nextFd = 10;
+  const opened = new Map();
+  const closed = [];
+  const stat = (ino, directory = true) => ({ dev: 1, ino, size: 4, nlink: 1, isDirectory: () => directory, isFile: () => !directory });
+  const fakeFs = {
+    constants: fs.constants,
+    readFileSync: () => JSON.stringify({ rootIdentity: { dev: 1, ino: 1 }, segments: target.source.split('/'), limit: 256 }),
+    statSync: (name) => {
+      assert.equal(name, '.');
+      return stat(change === `cwd-${level}` ? 999 : level + 1);
+    },
+    openSync: (name, flags) => {
+      assert.equal(name, target.source.split('/')[level]);
+      assert.ok(flags & fs.constants.O_NOFOLLOW);
+      if (level < 2) assert.ok(flags & fs.constants.O_DIRECTORY);
+      if (change === `open-${level}`) throw new Error('changed path');
+      const fd = nextFd++;
+      opened.set(fd, stat(level + 2, level < 2));
+      return fd;
+    },
+    fstatSync: (fd) => {
+      const actual = opened.get(fd);
+      if (level === 2 && change === 'nlink') return { ...actual, nlink: 2 };
+      if (level < 2 && change === `kind-${level}`) return stat(actual.ino, false);
+      return actual;
+    },
+    readSync: (_fd, buffer, offset) => { if (offset) return 0; buffer.write('data'); return 4; },
+    closeSync: (fd) => closed.push(fd),
+  };
+  const proc = { chdir: () => { level++; }, stdout: { write: (bytes) => { output = Buffer.from(bytes); } }, stderr: { write: () => {} }, exitCode: 0 };
+  require('node:vm').runInNewContext(`(${protectedSourceChild.toString()})()`, { require: () => fakeFs, process: proc, Buffer });
+  assert.deepEqual(closed, [...opened.keys()].reverse());
+  return { output, status: proc.exitCode };
+}
+
+test('生成元の固定子は各段の flags と記述子を検証してバイト列を返す', () => {
+  const result = sourceChildModel();
+  assert.equal(result.status, 0);
+  assert.deepEqual(result.output, Buffer.from('data'));
+});
+for (const stage of ['cwd-0', 'cwd-1', 'cwd-2', 'open-0', 'open-1', 'open-2', 'kind-0', 'kind-1', 'nlink']) {
+  test(`生成元の固定子は段階変更を拒否する: ${stage}`, () => {
+    const result = sourceChildModel(stage);
+    assert.equal(result.status, 2);
+    assert.equal(result.output, undefined);
+  });
+}
+
+test('非同期能力照会は JSON の破損を利用不可にする', async () => {
+  const result = await getProtectedSyncCapabilitiesAsync({ execFile: (_bin, _args, _opts, callback) => callback(null, '{') });
+  assert.equal(result.available, false);
+});
+
+test('能力照会は固定フォルダの所有者を検証する', () => {
+  const owner = process.getuid() || 123456;
+  let nodeVerified = false;
+  const fakeFs = new Proxy(fs, { get(object, key) {
+    if (key === 'lstatSync') return (file) => {
+      const actual = fs.lstatSync(file);
+      if (file === process.execPath) nodeVerified = true;
+      if (file === '/usr' && nodeVerified) {
+        nodeVerified = false;
+        return new Proxy(actual, { get: (obj, name) => name === 'uid' ? owner : typeof obj[name] === 'function' ? obj[name].bind(obj) : obj[name] });
+      }
+      return actual;
+    };
+    return object[key];
+  } });
+  assert.equal(getProtectedSyncCapabilities({ uid: owner, fs: fakeFs, spawnSync: (_bin, args) => ({ status: 0, stdout: args[0] === 'version' ? 'git version 2.46.0' : '--bind-fd' }) }).available, false);
+});
+
+test('Linux のトップ・連鎖・親の記述子の flags と終了時の close', { skip: process.platform !== 'linux' || !realCapability.available }, (t) => {
+  const f = fixture(t);
+  const held = [];
+  let duplicates = 0;
+  const fakeFs = new Proxy(fs, { get(object, key) {
+    if (key === 'openSync') return (file, flags, ...args) => {
+      if (file === f.worktree || file.startsWith('/proc/self/fd/')) {
+        if (file === f.worktree) assert.ok(flags & fs.constants.O_NOFOLLOW);
+        const duplicate = /^\/proc\/self\/fd\/\d+$/.test(file);
+        if (duplicate) duplicates++;
+        else {
+          assert.ok(flags & fs.constants.O_NOFOLLOW);
+          if (![path.basename(target.source), path.basename(target.target)].includes(path.basename(file))) assert.ok(flags & fs.constants.O_DIRECTORY);
+        }
+        const fd = fs.openSync(file, flags, ...args);
+        held.push(fd);
+        return fd;
+      }
+      return fs.openSync(file, flags, ...args);
+    };
+    return object[key];
+  } });
+  const result = f.invoke(undefined, { fs: fakeFs });
+  assert.equal(result.status, 0, result.error);
+  assert.equal(duplicates, 1);
+  assert.ok(held.length >= 9);
+  for (const fd of held) assert.throws(() => fs.fstatSync(fd), /EBADF/);
+});
+
+test('Linux は親の複製時にも snapshot を照合する', { skip: process.platform !== 'linux' || !realCapability.available }, (t) => {
+  const f = fixture(t);
+  let duplicateFd;
+  const fakeFs = new Proxy(fs, { get(object, key) {
+    if (key === 'openSync') return (file, ...args) => {
+      const fd = fs.openSync(file, ...args);
+      if (/^\/proc\/self\/fd\/\d+$/.test(file)) duplicateFd = fd;
+      return fd;
+    };
+    if (key === 'fstatSync') return (fd) => {
+      const actual = fs.fstatSync(fd);
+      return fd === duplicateFd ? new Proxy(actual, { get: (obj, name) => name === 'ino' ? obj.ino + 1 : typeof obj[name] === 'function' ? obj[name].bind(obj) : obj[name] }) : actual;
+    };
+    return object[key];
+  } });
+  const result = f.invoke(undefined, { fs: fakeFs });
+  assert.equal(result.status, 2);
+  assert.match(result.error, /write directory changed/);
+});
+
+test('Linux は Git 検証時の worktree とトップ記述子を照合する', { skip: process.platform !== 'linux' || !realCapability.available }, (t) => {
+  const f = fixture(t);
+  let rootFd;
+  const fakeFs = new Proxy(fs, { get(object, key) {
+    if (key === 'openSync') return (file, ...args) => { const fd = fs.openSync(file, ...args); if (file === f.worktree) rootFd = fd; return fd; };
+    if (key === 'fstatSync') return (fd) => {
+      const actual = fs.fstatSync(fd);
+      return fd === rootFd ? new Proxy(actual, { get: (obj, name) => name === 'ino' ? obj.ino + 1 : typeof obj[name] === 'function' ? obj[name].bind(obj) : obj[name] }) : actual;
+    };
+    return object[key];
+  } });
+  const result = f.invoke(undefined, { fs: fakeFs });
+  assert.equal(result.status, 2);
+  assert.match(result.error, /worktree root changed/);
+});
+
+test('Linux は読み取り直前の生成元のリンク数も検証する', { skip: process.platform !== 'linux' || !realCapability.available }, (t) => {
+  const f = fixture(t);
+  const ino = fs.statSync(f.source).ino;
+  let reads = 0;
+  const fakeFs = new Proxy(fs, { get(object, key) {
+    if (key === 'fstatSync') return (fd) => {
+      const actual = fs.fstatSync(fd);
+      if (actual.ino === ino && ++reads === 2) return new Proxy(actual, { get: (obj, name) => name === 'nlink' ? 2 : typeof obj[name] === 'function' ? obj[name].bind(obj) : obj[name] });
+      return actual;
+    };
+    return object[key];
+  } });
+  const result = f.invoke(undefined, { fs: fakeFs });
+  assert.equal(result.status, 2);
+  assert.match(result.error, /source changed/);
+});
+
+for (const depth of [0, 1]) {
+  test(`macOS 実機: 生成元の段階 ${depth} の open と移動の間の変更を拒否する`, { skip: process.platform !== 'darwin' }, (t) => {
+    const f = fixture(t);
+    const rootIdentity = fs.statSync(f.worktree);
+    const directory = path.join(f.worktree, ...target.source.split('/').slice(0, depth + 1));
+    const alternate = path.join(f.root, 'alternate');
+    fs.mkdirSync(alternate);
+    const input = JSON.stringify({ rootIdentity: { dev: rootIdentity.dev, ino: rootIdentity.ino }, segments: target.source.split('/'), limit: 256 });
+    const code = `const fs=require('node:fs');
+      const original=fs.fstatSync; let directories=0;
+      fs.fstatSync=(fd)=>{ const stat=original(fd); if(stat.isDirectory() && directories++===${depth}) {
+        fs.renameSync(${JSON.stringify(directory)}, ${JSON.stringify(directory + '-held')});
+        fs.symlinkSync(${JSON.stringify(alternate)}, ${JSON.stringify(directory)});
+      } return stat; };
+      (${protectedSourceChild.toString()})()`;
+    const result = cp.spawnSync(process.execPath, ['-e', code], { cwd: f.worktree, input });
+    assert.equal(result.status, 2);
+    assert.equal(result.stdout.length, 0);
+    assert.match(result.stderr.toString(), /source directory changed/);
+  });
+}
+
+test('Git 検証後も worktree トップの実体を保持して照合する', { skip: !realCapability.available }, (t) => {
+  const f = fixture(t);
+  const replacement = path.join(f.root, 'replacement');
+  fs.cpSync(f.worktree, replacement, { recursive: true });
+  let swapped = false;
+  const result = f.invoke(undefined, { spawnSync: (bin, args, options) => {
+    const result = cp.spawnSync(bin, args, { ...options, stdio: options.stdio || 'pipe' });
+    if (args.includes('ls-files') && args.includes('--error-unmatch')) {
+      fs.renameSync(f.worktree, f.worktree + '-verified');
+      fs.renameSync(replacement, f.worktree);
+      swapped = true;
+    }
+    return result;
+  } });
+  assert.equal(swapped, true);
+  assert.equal(result.status, 2);
+  assert.match(result.error, /worktree root changed|source could not be verified/);
+  assert.equal(fs.readFileSync(f.destination, 'utf8'), 'original\n');
 });

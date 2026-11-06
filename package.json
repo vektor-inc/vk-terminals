@@ -10,7 +10,8 @@
     "start": "electron .",
     "test": "node --test \"tests/*.test.js\"",
     "test:e2e": "playwright test",
-    "postinstall": "node scripts/postinstall.js"
+    "postinstall": "node scripts/postinstall.js",
+    "test:protected-sync:linux": "sh scripts/test-protected-sync-linux.sh"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.11.0",

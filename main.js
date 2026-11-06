@@ -63,7 +63,7 @@ const {
   validateCodexLaunchOptions,
 } = require('./renderer/claudeModel');
 // 自動処理用 Codex のタスク用ポリシー（専用 CODEX_HOME の生成。issue #428）。
-const { getProtectedSyncCapabilities } = require('./utils/codexTaskOps');
+const { getProtectedSyncCapabilitiesAsync } = require('./utils/codexTaskOps');
 const { resolveCodexTaskPolicyLaunchOptions, resolveCodexPolicyContext } = require('./utils/codexTaskPolicy');
 const {
   validateClaudeSettingsPresetForEngine,
@@ -3077,10 +3077,12 @@ function startHttpApi() {
       }
     }
 
-    // 認証済みの能力照会。専用 CODEX_HOME などは作成しない。
+    // 既存の認証規則に従う能力照会（ループバックは認証不要）。子プロセスで検証する。
     if (req.method === 'GET' && url.pathname === '/api/codex-task-capabilities') {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ capabilities: { protectedSync: getProtectedSyncCapabilities() } }));
+      getProtectedSyncCapabilitiesAsync().then((protectedSync) => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ capabilities: { protectedSync } }));
+      });
       return;
     }
 

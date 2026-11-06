@@ -157,6 +157,7 @@ const PR_TITLE_FORBIDDEN_PATTERN = /[\x00-\x1f\x7f-\x9f\u200b\u200e\u200f\u2028\
 const PR_BODY_FORBIDDEN_PATTERN = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u200b\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069\ufeff]/;
 const PR_TITLE_MAX_BYTES = 1024;
 const PR_TITLE_MAX_CHARS = 256;
+const PROTECTED_SYNC_MAX_SOURCE_BYTES = 256 * 1024;
 const PR_BODY_MAX_BYTES = 256 * 1024;
 const PR_BODY_MAX_CHARS = 65536;
 const MEMBER_MAX_SCHEMA_BYTES = 256 * 1024;
@@ -835,14 +836,14 @@ function withTextFiles(parsed, build) {
  * 入口に渡された argv（`git status` など）を検証し、実行する git / gh の argv に組み立て直す。
  * 許可リストに無いものはすべて ok: false（理由つき）。
  * @param {ReadonlyArray<string>} argv 先頭が操作名（git / gh）の引数列
- * @returns {{ok: true, bin: 'git'|'gh', args: string[], needsGitHub: boolean} | {ok: false, error: string}}
+ * @returns {{ok: true, operation?: string, bin?: string, args?: string[], requiresBoundRepository?: boolean, needsGitHub?: boolean} | {ok: false, error: string}}
  */
 function parseTaskCommand(argv) {
   if (!Array.isArray(argv) || argv.some((token) => typeof token !== 'string')) return fail('invalid argument list');
   const [tool, ...rest] = argv;
   if (tool === 'protected-sync') {
     if (rest.length !== 1 || !PROTECTED_SYNC_TARGETS.some((entry) => entry.target === rest[0])) return fail('protected-sync target is not registered');
-    return { ok: true, operation: 'protected-sync', target: rest[0], needsGitHub: true };
+    return { ok: true, operation: 'protected-sync', target: rest[0], requiresBoundRepository: true };
   }
   if (tool === 'git') {
     const [subcommand, ...tokens] = rest;
@@ -1487,12 +1488,12 @@ const SANDBOX_EXEC_PATH = '/usr/bin/sandbox-exec';
 
 /**
  * コマンドを、書き込み先を allowWrite 配下に限る OS 制限（macOS の sandbox-exec / Linux の bubblewrap）で包む。
- * 制限は書き込みの時点で、リンクを解決した後の実パスに対して判定される。
+ * macOS は書き込み時にリンクを解決した実パスを判定する。Linux は検査済みディレクトリを記述子で bind する。
  * 許可した場所の外には書けない。denyWrite は allowWrite の内側で、書き込みを禁じる場所（フックや設定ファイルなど）。
- * macOS のパスは -D の値として渡す。Linux は実パスを bind し、denyWrite を必要とする既存操作は拒否する。
+ * macOS のパスは -D の値として渡す。Linux は O_NOFOLLOW で開いた実体を --bind-fd で固定し、denyWrite を必要とする既存操作は拒否する。
  * @param {{bin: string, args: string[], allowWrite: string[], denyWrite?: string[]}} params 許可・禁止のパスは実パス（絶対パス）
- * @param {{platform?: string, fs?: object}} deps OS・ファイルシステムのテスト用差し替え
- * @returns {{bin: string, args: string[]}}
+ * @param {{platform?: string, fs?: object, spawnSync?: Function}} deps OS・ファイルシステムのテスト用差し替え
+ * @returns {{bin: string, args: string[], stdio?: Array, close?: Function}} Linux は起動後に close で親の記述子を閉じる
  */
 function restrictWrites({ bin, args, allowWrite, denyWrite = [] }, deps = {}) {
   const platform = deps.platform || process.platform;
@@ -1502,8 +1503,27 @@ function restrictWrites({ bin, args, allowWrite, denyWrite = [] }, deps = {}) {
     const executable = resolveTrustedPath(fsImpl, '/usr/bin/bwrap', { uid: 0, finalKind: 'file' }).realPath;
     const stat = fsImpl.statSync(executable);
     if (stat.uid !== 0 || (stat.mode & 0o022)) throw new TrustError('write-restricted execution is not available');
-    return { bin: executable, args: ['--ro-bind', '/', '/', '--dev', '/dev', '--new-session', '--die-with-parent', '--unshare-net',
-      ...allowWrite.flatMap((dir) => { const real = fsImpl.realpathSync(dir); return ['--bind', real, real]; }), '--', bin, ...args] };
+    const spawnSync = deps.spawnSync || childProcess.spawnSync;
+    const help = spawnSync(executable, ['--help'], { env: {}, encoding: 'utf8', timeout: 10000 });
+    if (help.status !== 0 || !String(help.stdout).includes('--bind-fd')) throw new TrustError('write-restricted execution is not available');
+    const fds = [];
+    try {
+      const binds = allowWrite.flatMap((dir) => {
+        const real = fsImpl.realpathSync(dir);
+        const expected = fsImpl.lstatSync(real);
+        const fd = fsImpl.openSync(real, nodeFs.constants.O_RDONLY | nodeFs.constants.O_DIRECTORY | nodeFs.constants.O_NOFOLLOW);
+        fds.push(fd);
+        const actual = fsImpl.fstatSync(fd);
+        if (!actual.isDirectory() || actual.dev !== expected.dev || actual.ino !== expected.ino) throw new TrustError('write directory changed');
+        return ['--bind-fd', String(2 + fds.length), real];
+      });
+      return { bin: executable, args: ['--ro-bind', '/', '/', '--dev', '/dev', '--new-session', '--die-with-parent', '--unshare-net',
+        ...binds, '--', bin, ...args], stdio: ['pipe', 'pipe', 'pipe', ...fds],
+        close: () => fds.forEach((fd) => fsImpl.closeSync(fd)) };
+    } catch (error) {
+      fds.forEach((fd) => fsImpl.closeSync(fd));
+      throw error;
+    }
   }
   if (platform !== 'darwin') throw new TrustError('write-restricted execution is not available');
   const params = [];
@@ -1528,20 +1548,53 @@ const PROTECTED_SYNC_TARGETS = Object.freeze([Object.freeze({
   repo: 'vektor-inc/vk-orchestrator', source: 'src/help/helper-skill.md', target: '.agents/skills/vk-orchestrator-helper/SKILL.md',
 })]);
 
-// 能力照会と実行で同じ起動テストを使い、名前空間が無効な Linux でも閉じて失敗する。
+// 能力照会と実行で Git・Node の信頼性と、書き込み先 bind を通る同じ起動テストを使う。
 function getProtectedSyncCapabilities(deps = {}) {
   const fsImpl = deps.fs || nodeFs;
   const spawnSync = deps.spawnSync || childProcess.spawnSync;
+  let probe;
+  let temporary;
   try {
     const platform = deps.platform || process.platform;
     if (platform === 'darwin') resolveTrustedPath(fsImpl, SANDBOX_EXEC_PATH, { finalKind: 'file' });
-    const probe = restrictWrites({ bin: '/usr/bin/true', args: [], allowWrite: [] }, deps);
-    const result = spawnSync(probe.bin, probe.args, { env: {}, encoding: 'utf8', timeout: 10000 });
+    const git = deps.git || resolveTrustedExecutable(fsImpl, 'git', ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin'], { uid: deps.uid });
+    resolveTrustedPath(fsImpl, git, { finalKind: 'file', uid: deps.uid });
+    const version = spawnSync(git, ['version'], { env: {}, encoding: 'utf8', timeout: 10000 });
+    if (version.status !== 0 || !isSupportedGitVersion(version.stdout)) throw new Error('unsupported Git');
+    const node = resolveTrustedPath(fsImpl, process.execPath, { finalKind: 'file', uid: deps.uid }).realPath;
+    // 実際に記述子経由で書き込み、読み戻す。照会用の一時領域は必ず削除する。
+    temporary = fsImpl.mkdtempSync(path.join(fsImpl.realpathSync(require('node:os').tmpdir()), 'protected-sync-probe-'));
+    const code = `const fs=require('fs'); const d=${JSON.stringify(temporary)}; const fd=fs.openSync(d,fs.constants.O_RDONLY|fs.constants.O_DIRECTORY|fs.constants.O_NOFOLLOW); const p=(process.platform==='linux'?'/proc/self/fd/'+fd:d)+'/probe'; fs.writeFileSync(p,'ok'); if(fs.readFileSync(p,'utf8')!=='ok')process.exit(2); fs.closeSync(fd);`;
+    probe = restrictWrites({ bin: node, args: ['-e', code], allowWrite: [temporary] }, deps);
+    const result = spawnSync(probe.bin, probe.args, { env: {}, encoding: 'utf8', timeout: 10000, stdio: probe.stdio });
     if (result.error || result.status !== 0) throw new Error('probe failed');
     return { available: true, reason: null, targets: PROTECTED_SYNC_TARGETS };
   } catch (_error) {
     return { available: false, reason: 'write-restricted execution is not available', targets: PROTECTED_SYNC_TARGETS };
+  } finally {
+    if (probe && probe.close) probe.close();
+    if (temporary) fsImpl.rmSync(temporary, { recursive: true, force: true });
   }
+}
+
+// main プロセスを止めず、同時照会も一つの子プロセスへまとめる。
+let capabilityPromise;
+function getProtectedSyncCapabilitiesAsync() {
+  if (!capabilityPromise) capabilityPromise = new Promise((resolve) => {
+    // Electron 自体を起動すると GUI に戻るため、ランチャーと同じ固定候補から Node を選ぶ。
+    const node = resolveTrustedExecutable(nodeFs, 'node', ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin', path.dirname(process.execPath)]);
+    if (node === null) {
+      resolve({ available: false, reason: 'write-restricted execution is not available', targets: PROTECTED_SYNC_TARGETS });
+      return;
+    }
+    childProcess.execFile(node, ['-e', `process.stdout.write(JSON.stringify(require(${JSON.stringify(__filename)}).getProtectedSyncCapabilities()))`],
+      { env: {}, timeout: 40000 }, (error, stdout) => {
+        try { resolve(error ? { available: false, reason: 'write-restricted execution is not available', targets: PROTECTED_SYNC_TARGETS } : JSON.parse(stdout)); }
+        catch (_) { resolve({ available: false, reason: 'write-restricted execution is not available', targets: PROTECTED_SYNC_TARGETS }); }
+        capabilityPromise = undefined;
+      });
+  });
+  return capabilityPromise;
 }
 
 // 子へ送る固定コード。標準モジュールだけを使い、作業リポジトリのコードを実行しない。
@@ -1587,19 +1640,18 @@ function protectedSyncChild() {
 }
 
 function executeProtectedSync({ parsed, binding, cwd, fsImpl, runGit, spawnSync, env, reject, inspected, deps }) {
-  const target = PROTECTED_SYNC_TARGETS.find((entry) => entry.target === parsed.target);
-  if (binding.repo !== target.repo || inspected.repo !== target.repo) return reject('task command rejected: protected-sync repository is not registered');
+  const entry = PROTECTED_SYNC_TARGETS.find((entry) => entry.target === parsed.target);
+  if (binding.repo !== entry.repo || inspected.repo !== entry.repo) return reject('task command rejected: protected-sync repository is not registered');
+  if (binding.member && binding.member.parentSandbox === 'read-only') return reject('task command rejected: protected-sync requires write access');
   try {
     const root = fsImpl.realpathSync(cwd);
     if (root !== path.resolve(cwd) || root !== inspected.root) throw new TrustError('protected-sync must run at the registered worktree root');
-    // 通常の clone 本体も登録済み worktree として扱う。linked worktree は既存の逆参照検証も必須。
-    if (root !== binding.root && !isBoundWorktree({ cwd, run: runGit, bindingRoot: binding.root, inspectedRoot: root, fsImpl, uid: currentUid(deps) })) throw new TrustError('worktree is not bound');
     const listed = runGit(['worktree', 'list', '--porcelain', '-z'], binding.root);
     if (listed.status !== 0 || !String(listed.stdout).split('\0').includes(`worktree ${root}`)) throw new TrustError('worktree is not registered');
-    const paths = [target.source, target.target];
+    const paths = [entry.source, entry.target];
     const conflict = runGit(['ls-files', '--unmerged', '--', ...paths], cwd);
     if (conflict.status !== 0 || String(conflict.stdout) !== '') throw new TrustError('source or target has unresolved index entries');
-    const tracked = runGit(['ls-files', '--error-unmatch', '--', target.target], cwd);
+    const tracked = runGit(['ls-files', '--error-unmatch', '--', entry.target], cwd);
     if (tracked.status !== 0) throw new TrustError('protected-sync target is not tracked');
     // 全階層をリンク無しで検査する。ファイルのハードリンクだけを拒否（ディレクトリの nlink は通常 2 以上）。
     const snapshot = [];
@@ -1613,33 +1665,35 @@ function executeProtectedSync({ parsed, binding, cwd, fsImpl, runGit, spawnSync,
         snapshot.push({ path: current, dev: stat.dev, ino: stat.ino, file });
       }
     }
-    const source = path.join(root, target.source);
+    const source = path.join(root, entry.source);
     const fd = fsImpl.openSync(source, nodeFs.constants.O_RDONLY | nodeFs.constants.O_NOFOLLOW | nodeFs.constants.O_NONBLOCK);
     let content;
     try {
       const stat = fsImpl.fstatSync(fd);
       const expected = snapshot.find((entry) => entry.path === source);
       if (!stat.isFile() || stat.nlink !== 1 || stat.dev !== expected.dev || stat.ino !== expected.ino) throw new TrustError('source changed after verification');
-      if (stat.size > PR_BODY_MAX_BYTES) throw new TrustError('protected-sync source exceeds 256 KiB');
+      if (stat.size > PROTECTED_SYNC_MAX_SOURCE_BYTES) throw new TrustError('protected-sync source exceeds 256 KiB');
       // 上限 + 1 バイトまでに制限し、並行した追記でも無制限に読み込まない。
-      const buffer = Buffer.alloc(PR_BODY_MAX_BYTES + 1);
+      const buffer = Buffer.alloc(PROTECTED_SYNC_MAX_SOURCE_BYTES + 1);
       let size = 0;
       while (size < buffer.length) {
         const count = fsImpl.readSync(fd, buffer, size, buffer.length - size, size);
         if (count === 0) break;
         size += count;
       }
-      if (size > PR_BODY_MAX_BYTES) throw new TrustError('protected-sync source exceeds 256 KiB');
+      if (size > PROTECTED_SYNC_MAX_SOURCE_BYTES) throw new TrustError('protected-sync source exceeds 256 KiB');
       content = buffer.subarray(0, size);
     } finally { fsImpl.closeSync(fd); }
-    const capability = getProtectedSyncCapabilities(deps);
+    const capability = getProtectedSyncCapabilities({ ...deps, git: binding.git });
     if (!capability.available) throw new TrustError(capability.reason);
     const node = resolveTrustedPath(fsImpl, process.execPath, { finalKind: 'file', uid: deps.uid }).realPath;
-    const destination = path.join(root, target.target);
+    const destination = path.join(root, entry.target);
     const parent = path.dirname(destination);
     const command = restrictWrites({ bin: node, args: ['-e', `(${protectedSyncChild.toString()})()`], allowWrite: [parent] }, deps);
-    const result = spawnSync(command.bin, command.args, { cwd: root, env, encoding: 'utf8', timeout: 30000,
+    let result;
+    try { result = spawnSync(command.bin, command.args, { cwd: root, env, encoding: 'utf8', timeout: 30000, stdio: command.stdio,
       input: JSON.stringify({ parent, snapshot, target: destination, bytes: content.toString('base64'), mode: fsImpl.lstatSync(destination).mode }) });
+    } finally { if (command.close) command.close(); }
     if (result.error || result.status !== 0) return reject(`task command rejected: write-restricted execution is not available or protected-sync failed${result.stderr ? `: ${String(result.stderr).trim()}` : ''}`);
     return 0;
   } catch (error) {
@@ -3371,7 +3425,7 @@ function runTaskCommand(argv, deps = {}) {
     if (inspected.root !== binding.root && !isBoundWorktree({ cwd, run: runGit, bindingRoot: binding.root, inspectedRoot: inspected.root, fsImpl, uid: currentUid(deps) })) {
       return reject('task command rejected: working directory is not the bound repository');
     }
-    if (parsed.needsGitHub && (binding.repo === null || inspected.repo !== binding.repo)) {
+    if ((parsed.needsGitHub || parsed.requiresBoundRepository) && (binding.repo === null || inspected.repo !== binding.repo)) {
       return reject('task command rejected: origin does not match the bound github.com repository');
     }
   }
@@ -3443,6 +3497,9 @@ function runTaskCommand(argv, deps = {}) {
 
 module.exports = {
   getProtectedSyncCapabilities,
+  getProtectedSyncCapabilitiesAsync,
+  protectedSyncChild,
+  prepareRestrictedFetch,
   PROTECTED_SYNC_TARGETS,
   captureMemberWorktree,
   recordMemberIdentity,

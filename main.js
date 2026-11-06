@@ -1529,8 +1529,9 @@ app.whenReady().then(async () => {
   if (setupStatusChecker) startupSetupCheck = setupStatusChecker.check();
   createWindow();
   startWidgetWatcher();
-  await checkAndUpdate();
+  // issue #546: 更新確認の通信中も起動直後から HTTP API を受け付ける。
   startHttpApi();
+  await checkAndUpdate();
   // 使用量スナップショットを起動時に温めておく（初回ポーリングで null が返るのを避ける）。
   if (usageEnabled()) usageTracker.warmup().catch(() => {});
   if (codexUsageEnabled()) Promise.all([codexUsage.get(), codexUsageTracker.warmup()]).catch(() => {});

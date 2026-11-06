@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 不具合修正 ] 起動直後、更新の確認が終わるまで HTTP API に接続できなかった不具合を修正（[#546](https://github.com/vektor-inc/vk-terminals/issues/546)）
+
 ## 1.92.0
 
 - [ 機能追加 ] タスク欄のサブ issue を親の直下にインデント表示し、子自身の状態を確認できるように（[#549](https://github.com/vektor-inc/vk-terminals/issues/549)）

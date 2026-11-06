@@ -60,6 +60,8 @@ const REVIEW_PASSED_LABEL_DESCRIPTION = 'エージェントのレビュー完了
 // gh issue list / gh repo view（issue #520）で許す --json の項目。任意式の評価（--jq / --template）は受けず、項目名もここにあるものだけ。
 const ISSUE_LIST_JSON_FIELDS = Object.freeze(['number', 'title', 'state', 'stateReason', 'url', 'labels', 'assignees', 'author', 'body', 'createdAt', 'updatedAt', 'closedAt', 'milestone']);
 const REPO_VIEW_JSON_FIELDS = Object.freeze(['name', 'nameWithOwner', 'owner', 'url', 'description', 'visibility', 'isPrivate', 'isArchived', 'isFork', 'defaultBranchRef', 'hasIssuesEnabled', 'viewerPermission']);
+// parseTaskCommand の gh 分岐が使う操作名。AGENTS.md の一覧との照合にも使う。
+const ACCEPTED_GH_OPERATIONS = Object.freeze(['gh issue view', 'gh issue list', 'gh repo view', 'gh issue save-image', 'gh issue comment', 'gh issue create', 'gh issue edit', 'gh issue close', 'gh pr view', 'gh pr checks', 'gh pr comment', 'gh pr create', 'gh pr edit', 'gh pr merge', 'gh pr diff', 'gh label exists', 'gh label create', 'gh pr add-label', 'gh pr has-label']);
 const ISSUE_LIST_STATES = Object.freeze(['open', 'closed', 'all']);
 const ISSUE_LIST_MAX_LIMIT = 100;
 const ISSUE_LIST_MAX_LABELS = 10;
@@ -875,66 +877,67 @@ function parseTaskCommand(argv) {
       [targetRepo, ...ghTokens] = rest;
     }
     const [group, action, ...tokens] = ghTokens;
+    const operationName = `gh ${group} ${action}`;
     const command = (parts, args) => ({ ...ghCommand(parts, args), ...(targetRepo === undefined ? {} : { targetRepo }) });
-    if (group === 'issue' && action === 'view') {
+    if (operationName === ACCEPTED_GH_OPERATIONS.find((name) => name === 'gh issue view')) {
       const parsed = parseGhView(tokens, { allowedBooleanFlags: ['--comments'], numberRequired: true });
       return parsed.ok ? command(['issue', 'view', parsed.number], parsed.args) : parsed;
     }
-    if (group === 'issue' && action === 'list') {
+    if (operationName === ACCEPTED_GH_OPERATIONS.find((name) => name === 'gh issue list')) {
       const parsed = parseGhIssueList(tokens);
       return parsed.ok ? command(['issue', 'list'], parsed.args) : parsed;
     }
-    if (group === 'repo' && action === 'view') return parseGhRepoView(tokens, targetRepo);
-    if (group === 'issue' && action === 'save-image') {
+    if (operationName === ACCEPTED_GH_OPERATIONS.find((name) => name === 'gh repo view')) return parseGhRepoView(tokens, targetRepo);
+    if (operationName === ACCEPTED_GH_OPERATIONS.find((name) => name === 'gh issue save-image')) {
       const parsed = parseGhIssueSaveImage(tokens);
       return parsed.ok && targetRepo !== undefined ? { ...parsed, targetRepo } : parsed;
     }
-    if (group === 'pr' && action === 'diff') {
+    if (operationName === ACCEPTED_GH_OPERATIONS.find((name) => name === 'gh pr diff')) {
       const parsed = parseGhPrDiff(tokens);
       return parsed.ok ? command(['pr', 'diff', parsed.number], parsed.args) : parsed;
     }
-    if (group === 'issue' && action === 'comment') {
+    if (operationName === ACCEPTED_GH_OPERATIONS.find((name) => name === 'gh issue comment')) {
       return withTextFiles(parseGhComment(tokens), (parsed) => command(['issue', 'comment', parsed.number], parsed.args));
     }
-    if (group === 'issue' && action === 'create') {
+    if (operationName === ACCEPTED_GH_OPERATIONS.find((name) => name === 'gh issue create')) {
       return withTextFiles(parseGhIssueCreate(tokens), (parsed) => command(['issue', 'create'], parsed.args));
     }
-    if (group === 'issue' && action === 'edit') {
+    if (operationName === ACCEPTED_GH_OPERATIONS.find((name) => name === 'gh issue edit')) {
       // 操作対象は起動時に固定したリポジトリだけ。別リポジトリの明示は受けない。
       if (targetRepo !== undefined) return fail('gh issue edit cannot target another repository');
       return parseGhIssueEdit(tokens);
     }
-    if (group === 'issue' && action === 'close') {
+    if (operationName === ACCEPTED_GH_OPERATIONS.find((name) => name === 'gh issue close')) {
       // 操作対象は起動時に固定したリポジトリだけ。別リポジトリの明示は受けない。
       if (targetRepo !== undefined) return fail('gh issue close cannot target another repository');
       return parseGhIssueClose(tokens);
     }
-    if (group === 'pr' && action === 'view') {
+    if (operationName === ACCEPTED_GH_OPERATIONS.find((name) => name === 'gh pr view')) {
       const parsed = parseGhView(tokens, { allowedBooleanFlags: ['--comments'], numberRequired: true });
       return parsed.ok ? command(['pr', 'view', parsed.number], parsed.args) : parsed;
     }
-    if (group === 'pr' && action === 'checks') {
+    if (operationName === ACCEPTED_GH_OPERATIONS.find((name) => name === 'gh pr checks')) {
       const parsed = parseGhView(tokens, { allowedBooleanFlags: [], numberRequired: true });
       return parsed.ok ? command(['pr', 'checks', parsed.number], parsed.args) : parsed;
     }
-    if (group === 'pr' && action === 'comment') {
+    if (operationName === ACCEPTED_GH_OPERATIONS.find((name) => name === 'gh pr comment')) {
       return withTextFiles(parseGhComment(tokens), (parsed) => command(['pr', 'comment', parsed.number], parsed.args));
     }
-    if (group === 'pr' && action === 'create') {
+    if (operationName === ACCEPTED_GH_OPERATIONS.find((name) => name === 'gh pr create')) {
       return withTextFiles(parseGhPrCreate(tokens), (parsed) => command(['pr', 'create'], parsed.args));
     }
-    if (group === 'pr' && action === 'edit') {
+    if (operationName === ACCEPTED_GH_OPERATIONS.find((name) => name === 'gh pr edit')) {
       // 操作対象は起動時に固定したリポジトリだけ。別リポジトリの明示は受けない。
       if (targetRepo !== undefined) return fail('gh pr edit cannot target another repository');
       return parseGhPrEdit(tokens);
     }
-    if (group === 'pr' && action === 'merge') {
+    if (operationName === ACCEPTED_GH_OPERATIONS.find((name) => name === 'gh pr merge')) {
       // マージは起動時に固定したリポジトリだけが対象。owner/repo の明示も受けない。
       if (targetRepo !== undefined) return fail('gh pr merge cannot target another repository');
       return parseGhPrMerge(tokens);
     }
     const labelOperation = REVIEW_LABEL_COMMANDS[`${group} ${action}`];
-    if (labelOperation !== undefined) {
+    if (labelOperation !== undefined && ACCEPTED_GH_OPERATIONS.includes(operationName)) {
       const parsed = parseReviewLabelCommand(labelOperation[0], tokens, { withNumber: labelOperation[1] });
       return parsed.ok ? { ...parsed, ...(targetRepo === undefined ? {} : { targetRepo }) } : parsed;
     }
@@ -3301,6 +3304,7 @@ module.exports = {
   captureMemberWorktree,
   recordMemberIdentity,
   parseTaskCommand,
+  ACCEPTED_GH_OPERATIONS,
   runTaskCommand,
   requestAttachment,
   readBinding,

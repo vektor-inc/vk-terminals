@@ -19,6 +19,7 @@ const {
   resolveCodexTaskPolicyLaunchOptions,
   listToolSearchDirs,
 } = require('../utils/codexTaskPolicy');
+const { ACCEPTED_GH_OPERATIONS, parseTaskCommand } = require('../utils/codexTaskOps');
 const { validateRestartAgentRequest } = require('../utils/restartAgent');
 
 const { validateCodexLaunchOptions, buildCodexLaunchCommand, buildEngineAwareLaunchCommand } = claudeModel;
@@ -471,6 +472,24 @@ test('プロジェクト側の .codex: 実際の Codex で、リポジトリ側�
     }
   });
 
+test('操作一覧の gh 操作は入口の受理集合と一致する', () => {
+  const listed = ORCHESTRATED_TASK_OPERATIONS.filter((operation) => operation.startsWith('gh '));
+  assert.deepEqual(new Set(listed), new Set(ACCEPTED_GH_OPERATIONS));
+  assert.equal(listed.length, ACCEPTED_GH_OPERATIONS.length);
+  const samples = {
+    'gh issue view': ['5'], 'gh issue list': [], 'gh repo view': ['--json', 'visibility'],
+    'gh issue save-image': ['https://github.com/user-attachments/assets/12345678-1234-1234-1234-123456789abc', '--out', 'a.png'],
+    'gh issue comment': ['5', '--body', 'ok'], 'gh issue create': ['--title', 't', '--body', 'b'],
+    'gh issue edit': ['5', '--add-label', 'bug'], 'gh issue close': ['5'],
+    'gh pr view': ['5'], 'gh pr checks': ['5'], 'gh pr comment': ['5', '--body', 'ok'],
+    'gh pr create': ['--head', 'issue/556-x', '--title', 't', '--body', 'b'],
+    'gh pr edit': ['5', '--title', 't'], 'gh pr merge': ['5'], 'gh pr diff': ['5'],
+    'gh label exists': ['agent-review-passed'], 'gh label create': ['agent-review-passed'],
+    'gh pr add-label': ['5', 'agent-review-passed'], 'gh pr has-label': ['5', 'agent-review-passed'],
+  };
+  for (const operation of listed) assert.equal(parseTaskCommand([...operation.split(' '), ...samples[operation]]).ok, true, operation);
+});
+
 test('生成: rules は信頼済みランチャーの実行だけを許可し、Git / GitHub / node の先頭一致は持たない', () => {
   const sandbox = createSandbox();
   try {
@@ -492,6 +511,10 @@ test('生成: rules は信頼済みランチャーの実行だけを許可し、
     assert.match(guide, /サンドボックスの中から呼ぶと、入口は何も実行せずに止まる（終了コード 78）。その場合は、上記「入口:」の形に直して呼び直す。/);
     assert.equal(guide.includes('node '), false);
     for (const operation of ORCHESTRATED_TASK_OPERATIONS) assert.ok(guide.includes(`\`${operation}\``), operation);
+    assert.match(guide, /`gh issue list --search <語> --state all`/);
+    assert.match(guide, /症状・ファイル名・機能名を語ごとに呼ぶ/);
+    assert.match(guide, /終了コードが 0 でないときは重複なしとして続行せず/);
+    assert.match(guide, /`gh repo view --json visibility,isPrivate,defaultBranchRef`/);
     assert.match(guide, /`gh issue create` は `--title <題> --body <本文>` が必須/);
     // デフォルトブランチの取り込み（引数なしの fetch / merge）と、競合時は既存の add / commit で完成させること。
     assert.match(guide, /`git fetch` と `git merge` は引数を一切取らない/);

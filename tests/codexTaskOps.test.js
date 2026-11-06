@@ -91,6 +91,15 @@ test('許可: gh issue list / gh repo view は読み取り用のフラグと許�
   assert.equal(parseTaskCommand(['gh', 'repo', 'view', 'Vektor-Inc/another.repo', '--json', 'visibility']).targetRepo, 'Vektor-Inc/another.repo');
 });
 
+test('許可: 症状・ファイル名・機能名を --state all で個別検索できる', () => {
+  for (const term of ['画面停止', 'codexTaskOps.js', '重複確認']) {
+    const result = parseTaskCommand(['gh', 'issue', 'list', '--search', term, '--state', 'all']);
+    assert.equal(result.ok, true, term);
+    assert.deepEqual(result.args, ['issue', 'list', `--search=${term}`, '--state', 'all']);
+  }
+  assert.equal(parseTaskCommand(['gh', 'issue', 'list', '--search', 'utils/codexTaskOps.js', '--state', 'all']).ok, false);
+});
+
 test('拒否: gh issue list / gh repo view の --web・--jq・--template・--repo・許可外の項目・範囲外の値・制御文字（issue #520）', () => {
   const rejected = [
     ['gh', 'issue', 'list', '--web'],
@@ -930,6 +939,16 @@ test('拘束: gh issue list は --repo、gh repo view は位置引数として�
     assert.equal(run(fixture, ['gh', 'issue', 'list', '--search', 'repo:other/private']).code, 2);
     assert.equal(run(fixture, ['gh', 'issue', 'list', '--label', 'a) OR repo:other/private']).code, 2);
     assert.equal(fixture.readCalls().length, before);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('実行: issue 検索の gh 失敗は 0 以外を返す', () => {
+  const fixture = createFixture();
+  try {
+    fs.writeFileSync(fixture.env.VK_TASK_GH, `#!${process.execPath}\nprocess.exit(1);\n`, { mode: 0o755 });
+    assert.notEqual(run(fixture, ['gh', 'issue', 'list', '--search', '重複確認', '--state', 'all']).code, 0);
   } finally {
     fixture.cleanup();
   }

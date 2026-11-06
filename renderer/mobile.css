@@ -253,6 +253,7 @@ button.k.kill.is-locked:active { background: #6b3f3f; border-color: #7c4a4a; }
   padding: 0;
   overflow: hidden;
   clip: rect(0 0 0 0);
+  clip-path: inset(50%);
   white-space: nowrap;
 }
 /* 通知の登録・停止に関する失敗文言（issue #396 植草の UX レビュー・U-3・U-4）。
@@ -451,6 +452,7 @@ button.k.kill.is-locked:active { background: #6b3f3f; border-color: #7c4a4a; }
   padding: 0;
   overflow: hidden;
   clip: rect(0 0 0 0);
+  clip-path: inset(50%);
   white-space: nowrap;
 }
 .task-list-items {
@@ -469,6 +471,7 @@ button.k.kill.is-locked:active { background: #6b3f3f; border-color: #7c4a4a; }
 }
 /* 親子カード
    ========================================================================== */
+.task-item[data-depth] { margin-top: -4px; }
 .task-item[data-depth="1"],
 .task-item[data-depth="2"] {
   position: relative;
@@ -486,6 +489,7 @@ button.k.kill.is-locked:active { background: #6b3f3f; border-color: #7c4a4a; }
   margin: -1px;
   overflow: hidden;
   clip: rect(0 0 0 0);
+  clip-path: inset(50%);
   white-space: nowrap;
 }
 .task-item-title {

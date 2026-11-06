@@ -266,8 +266,9 @@
       controls: [],
     };
     // 親 ID はカード ID と同じ長さを上限とし、不正値は関係なしとして扱う。
-    if (typeof raw.parentId === 'string' && raw.parentId.trim() && raw.parentId.length <= LIMITS.id && raw.parentId !== item.id) {
-      item.parentId = raw.parentId;
+    const parentId = coerceCommandValue(raw.parentId);
+    if (parentId !== null && parentId.trim() && parentId.length <= LIMITS.id && parentId !== item.id) {
+      item.parentId = parentId;
     }
     const linksRaw = Array.isArray(raw.links) ? raw.links.slice(0, LIMITS.links) : [];
     for (const l of linksRaw) {

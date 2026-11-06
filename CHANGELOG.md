@@ -1,6 +1,6 @@
 # Changelog
 
-- [ 機能追加 ] タスク欄のサブ issue を親の直下にインデント表示し、子自身の状態を確認できるように（[#549](https://github.com/vektor-inc/vk-terminals/issues/549))
+- [ 機能追加 ] タスク欄のサブ issue を親の直下にインデント表示し、子自身の状態を確認できるように（[#549](https://github.com/vektor-inc/vk-terminals/issues/549)）
 
 ## 1.91.0
 

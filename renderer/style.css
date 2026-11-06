@@ -2015,6 +2015,7 @@ button.sidebar-section-header:hover {
   padding: 0;
   overflow: hidden;
   clip: rect(0 0 0 0);
+  clip-path: inset(50%);
   white-space: nowrap;
   border: 0;
 }
@@ -2058,6 +2059,7 @@ button.sidebar-section-header:hover {
 }
 /* 親子カード
    ========================================================================== */
+.task-item:has(+ .task-item[data-depth]) { margin-bottom: 3px; }
 .task-item[data-depth="1"],
 .task-item[data-depth="2"] {
   position: relative;
@@ -2075,6 +2077,7 @@ button.sidebar-section-header:hover {
   margin: -1px;
   overflow: hidden;
   clip: rect(0 0 0 0);
+  clip-path: inset(50%);
   white-space: nowrap;
 }
 .task-item-title {

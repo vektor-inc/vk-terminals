@@ -279,7 +279,7 @@ test('ペインの PowerShell で設定パスを組み立て、再起動の準�
   const { prepareClaudeSettingsForShell } = require('../utils/claudeSettingsPreset');
   const { buildClaudeLaunchCommand } = require('../renderer/claudeModel');
   const source = fs.readFileSync(path.join(__dirname, '../main.js'), 'utf8');
-  const stage = source.slice(source.indexOf('function stagePaneBackgroundWork('), source.indexOf('function preparePaneBackgroundWork('));
+  const stage = source.slice(source.indexOf('function stagePaneBackgroundWork('), source.indexOf('// renderer が報告した画面'));
   const filename = "/tmp/a'‘’‚‛.json";
   let discarded = 0, launchDiscarded = 0, clears = 0, status, body;
   const old = { marker: 'old' };
@@ -302,13 +302,20 @@ test('ペインの PowerShell で設定パスを組み立て、再起動の準�
   staged.discard();
   assert.equal(discarded, 1);
 
-  // 実際の再起動の準備ブロックで、引用できない必須設定を渡す。
+  // 実際の再起動の準備ブロックで、PowerShell 用の起動コマンドを確認する。
   context.launchOptions = { claudeSettingsPreset: 'vk-orchestrator-work-pane', claudeSettingsPath: filename };
-  context.ptyShellExecutables.set('pane', 'unknown');
   const restart = source.slice(source.indexOf('let stagedBackgroundWork;'), source.indexOf('let launchHomeInUse = false;', source.indexOf('let stagedBackgroundWork;')));
-  vm.runInContext('function restart() { ' + restart + ' }', context);
-  context.restart();
+  vm.runInContext('function restart() { ' + restart + ' return stagedBackgroundWork; }', context);
+  context.ptyShellExecutables.set('pane', 'pwsh');
+  const restarted = context.restart();
+  assert.equal(buildClaudeLaunchCommand(undefined, context.launchOptions), "claude --settings '/tmp/a''‘‘’’‚‚‛‛.json'");
+  restarted.discard();
   assert.equal(discarded, 2);
+
+  // 引用できない必須設定では旧監視を保つ。
+  context.ptyShellExecutables.set('pane', 'unknown');
+  context.restart();
+  assert.equal(discarded, 3);
   assert.equal(launchDiscarded, 1);
   assert.equal(status, 503);
   assert.deepEqual(body, { error: 'Claude settings preset hook is unavailable' });
@@ -316,6 +323,13 @@ test('ペインの PowerShell で設定パスを組み立て、再起動の準�
   assert.equal(settings.get('pane'), old);
   assert.equal(f.store.isRunning('pane'), true);
   assert.equal(f.recordHookEvent({ agent_id: 'still-old' }), true);
+
+  // 新規ペイン用の準備関数でもシェルを転送し、設定を確定する。
+  const options = context.preparePaneBackgroundWork('pane', 3, 'claude', {}, 'pwsh');
+  assert.equal(buildClaudeLaunchCommand(undefined, options), "claude --settings '/tmp/a''‘‘’’‚‚‛‛.json'");
+  assert.equal(clears, 1);
+  settings.get('pane').discard();
+  assert.equal(discarded, 4);
 });
 
 test('クラッシュした所有者の設定だけ回収し、生存中・所有者不明を残す', async t => {

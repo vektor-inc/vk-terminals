@@ -19,6 +19,10 @@ function findShell(name) {
 test('PowerShell 用プリセットの引用結果を固定する', () => {
   assert.equal(buildClaudeSettingsArgument(preset, "/tmp/a'‘’‚‛.json", 'pwsh'), "--settings '/tmp/a''‘‘’’‚‚‛‛.json'");
 });
+test('新規ペインはペインのシェルを設定準備へ渡す', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../main.js'), 'utf8');
+  assert.match(source, /preparePaneBackgroundWork\(id, 1, resolvedEngine, claudeLaunchOptions, shell\)/);
+});
 // シェル別の引用と、両方の設定ファイルの組み立てを確認する。
 for (const [shell, kind] of [['bash', 'posix'], ['zsh', 'posix'], ['fish', 'fish'], ['pwsh', 'powershell'], ['cmd.exe', 'cmd']]) {
   test(`${shell} 用の設定パスを組み立てる`, () => {

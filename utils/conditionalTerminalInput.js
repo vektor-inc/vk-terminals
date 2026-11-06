@@ -12,6 +12,7 @@ const crypto = require('crypto');
 function createConditionalTerminalInputGuard(options = {}) {
   const secret = options.secret || crypto.randomBytes(32);
   const revisions = new Map();
+  const writeVersions = new Map();
 
   // 外部から revision を推測・改ざんできない識別値へ変換する。
   function identifier(termId, generation, revision) {
@@ -32,18 +33,26 @@ function createConditionalTerminalInputGuard(options = {}) {
   return {
     initialize(termId) {
       revisions.set(String(termId), 0);
+      writeVersions.set(String(termId), 0);
     },
 
     delete(termId) {
       revisions.delete(String(termId));
+      writeVersions.delete(String(termId));
     },
 
-    markChanged(termId) {
+    // 本文のエコーと、人や別の API による追加入力を区別する。
+    markChanged(termId, isInput = false) {
       const id = String(termId);
       const revision = revisions.get(id);
       if (revision === undefined) return false;
       revisions.set(id, revision + 1);
+      if (isInput) writeVersions.set(id, (writeVersions.get(id) || 0) + 1);
       return true;
+    },
+
+    getWriteVersion(termId) {
+      return writeVersions.get(String(termId));
     },
 
     capture(termId, generation) {

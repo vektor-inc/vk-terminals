@@ -80,6 +80,7 @@ const SEND_CHANNELS = new Set([
   'terminal:close-pane-done',
   'terminal:renderer-ready',
   'terminal:report-states',
+  'terminal:pane-screen-response',
 ]);
 
 // main → renderer
@@ -89,6 +90,7 @@ const ON_CHANNELS = new Set([
   'widgets:update',
   'terminal:data',
   'terminal:screen-refresh',
+  'terminal:pane-screen-request',
   'terminal:exit',
   'terminal:title',
   'terminal:set-status',

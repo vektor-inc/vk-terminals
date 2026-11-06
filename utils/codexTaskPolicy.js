@@ -84,6 +84,7 @@ const GH_TOKEN_PATTERN = /^[A-Za-z0-9_.-]{1,255}$/;
 // 承認なしで実行できる操作の一覧。実際の判定は utils/codexTaskOps.js（許可リスト）が行い、
 // ここは AGENTS.md への案内文を作るための表示用。追加・削除は codexTaskOps.js の parseTaskCommand と必ずそろえる。
 const ORCHESTRATED_TASK_OPERATIONS = Object.freeze([
+  'pane send',
   'protected-sync .agents/skills/vk-orchestrator-helper/SKILL.md',
   'git status',
   'git diff',
@@ -140,16 +141,20 @@ function renderRules(launcherPath) {
  * @param {string|null} memberIoDir メンバー起動の入出力フォルダ。null（メンバー起動を持たない入口）なら member の案内を書かない
  * @returns {string}
  */
-function renderAgentsGuide(launcherPath, memberIoDir = null) {
-  const operations = ORCHESTRATED_TASK_OPERATIONS.filter((operation) => memberIoDir !== null || !operation.startsWith('member '));
+function renderAgentsGuide(launcherPath, memberIoDir = null, paneEnabled = false) {
+  const operations = ORCHESTRATED_TASK_OPERATIONS.filter((operation) => (memberIoDir !== null || !operation.startsWith('member ')) && (paneEnabled || !operation.startsWith('pane ')));
   return [
     '# VK Terminals 自動処理用の操作入口',
     '',
     'Git / GitHub の次の操作は、承認なしで動く固定の入口 1 つだけを通して実行する。',
-    `入口: \`${launcherPath} <git|gh|prepare|protected-sync${memberIoDir === null ? '' : '|member'}> <操作> ...\``,
+    `入口: \`${launcherPath} <git|gh|prepare|protected-sync${paneEnabled ? '|pane' : ''}${memberIoDir === null ? '' : '|member'}> <操作> ...\``,
     '',
     ...operations.map((operation) => `- \`${operation}\``),
     '',
+    ...(paneEnabled ? ['- `pane send <ペイン番号> <本文ファイル>` は別のペインに依頼する専用操作。本文ファイルは起動時の作業フォルダ内の相対パス（英数字・_・-・. の名前）で指定する。UTF-8、8KiB・4000文字以内。フラグは付けない。結果が unconfirmed なら送り直さず相手の画面を確認する。送信元の番号は固定され、指定できない。',
+      '- delivered: 届きました。相手が対応したかは分かりません。',
+      '- not-sent: 何も送られていません。message を利用者にそのまま伝え、利用者の指示があるまで再試行しない。',
+      '- unconfirmed: 送り直さず、message を利用者に伝えて相手の画面を確認してもらう。'] : []),
     '- 入口は許可した操作・オプションだけを通す。許可外（reset・gh api・--repo・--output など）は拒否される。',
     '- 入口は、引用符・`cd`・パイプ・リダイレクト・`2>&1` を付けず、上記の形で単独のコマンドとして呼ぶ。作業フォルダはシェルの `cd` ではなく、コマンド実行ツールの workdir で指定する。',
     '- サンドボックスの中から呼ぶと、入口は何も実行せずに止まる（終了コード 78）。その場合は、上記「入口:」の形に直して呼び直す。',
@@ -253,10 +258,13 @@ function renderGitConfig(identity) {
  * @returns {string}
  */
 function renderLauncher({ envPath, nodePath, opsScriptPath, launcherPath, memberEnabled, binding }) {
-  const commandKinds = `<git|gh|prepare|protected-sync${memberEnabled ? '|member' : ''}>`;
+  const commandKinds = `<git|gh|prepare|protected-sync${binding.paneSend ? '|pane' : ''}${memberEnabled ? '|member' : ''}>`;
   const assignments = [
     'PATH=/usr/bin:/bin',
     `VK_TASK_ROOT=${binding.root}`,
+    `VK_TASK_PANE_SOURCE=${binding.paneSend?.termId || ''}`,
+    `VK_TASK_PANE_PORT=${binding.paneSend?.port || ''}`,
+    `VK_TASK_PANE_TOKEN=${binding.paneSend?.token || ''}`,
     `VK_TASK_REPO=${binding.repo || ''}`,
     `VK_TASK_ALLOWED_OWNERS=${binding.allowedOwners.join(',')}`,
     `VK_TASK_GIT=${binding.git}`,
@@ -897,13 +905,13 @@ function prepareCodexTaskPolicyHome(params) {
       const ghConfigDir = path.join(targetHome, GH_CONFIG_DIR_NAME);
       const memberEnabled = memberIoDir !== null && !child;
       const binding = {
-        root: repository.root, repo: repository.repo, allowedOwners, git: gitPath, gh: ghPath, home: home.realPath, gitConfig: path.join(targetHome, GIT_CONFIG_NAME), ghConfig: ghConfigDir, remoteBase,
+        root: repository.root, repo: repository.repo, allowedOwners, paneSend: child ? null : params.paneSend, git: gitPath, gh: ghPath, home: home.realPath, gitConfig: path.join(targetHome, GIT_CONFIG_NAME), ghConfig: ghConfigDir, remoteBase,
         ...(memberEnabled ? { codex: codexPath, memberHome, memberIo: memberIoDir, memberRuns: memberRunsDir, parentCwd: parentWorkingDir, parentSandbox } : {}),
       };
       return {
         files: {
           'config.toml': { content: template.renderConfigToml(handoff.realPath, untrustedProjectPaths, { extraWritableRoots: [...(memberIoDir === null ? [] : [memberIoDir]), ...(codexWorktreesWritableRoot === null ? [] : [codexWorktreesWritableRoot])], approvalPolicy: child ? 'never' : 'on-request' }), mode: 0o600 },
-          'AGENTS.md': { content: template.renderAgentsGuide(launcherPath, memberEnabled ? memberIoDir : null), mode: 0o600 },
+          'AGENTS.md': { content: template.renderAgentsGuide(launcherPath, memberEnabled ? memberIoDir : null, !!binding.paneSend), mode: 0o600 },
           [GIT_CONFIG_NAME]: { content: template.renderGitConfig(identity), mode: 0o600 },
           [OPS_SCRIPT_NAME]: { content: fsImpl.readFileSync(OPS_SOURCE_PATH, 'utf8'), mode: 0o400 },
           [LAUNCHER_NAME]: { content: template.renderLauncher({ envPath, nodePath, opsScriptPath, launcherPath, memberEnabled, binding }), mode: 0o500 },

@@ -511,7 +511,7 @@ test('生成: rules は信頼済みランチャーの実行だけを許可し、
     assert.match(guide, /workdir で指定/);
     assert.match(guide, /サンドボックスの中から呼ぶと、入口は何も実行せずに止まる（終了コード 78）。その場合は、上記「入口:」の形に直して呼び直す。/);
     assert.equal(guide.includes('node '), false);
-    for (const operation of ORCHESTRATED_TASK_OPERATIONS) assert.ok(guide.includes(`\`${operation}\``), operation);
+    for (const operation of ORCHESTRATED_TASK_OPERATIONS.filter(op => !op.startsWith('pane '))) assert.ok(guide.includes(`\`${operation}\``), operation);
     assert.match(guide, /`gh issue list --search <語> --state all`/);
     assert.match(guide, /症状・ファイル名・機能名を語ごとに呼ぶ/);
     assert.ok(guide.includes('検索語に使えるのは文字・数字・`_`・`.`・`-` だけ'));
@@ -1516,7 +1516,7 @@ test('terminal:create は PTY を作る前に起動オプションを解決し�
   const handlerStart = mainSource.indexOf("ipcMain.handle('terminal:create'");
   const handlerEnd = mainSource.indexOf("ipcMain.on('terminal:input'");
   const handler = mainSource.slice(handlerStart, handlerEnd);
-  const resolveAt = handler.indexOf('resolveCodexLaunchOptions(resolvedEngine, options, { cwd: resolvedCwd })');
+  const resolveAt = handler.indexOf('resolveCodexLaunchOptions(resolvedEngine, options, { cwd: resolvedCwd, termId: id, generation: 1 })');
   const throwAt = handler.indexOf('throw new Error(launchResolution.error)');
   const spawnAt = handler.indexOf('pty.spawn(');
   assert.ok(resolveAt > 0 && throwAt > resolveAt && spawnAt > throwAt, 'resolve → throw → pty.spawn の順であること');
@@ -1548,7 +1548,7 @@ test('restart-agent: 到達確認前と待機後に存在・世代を確認し�
   const waitAt = at('restartAgentOperations.get(request.termId)))');
   const notFoundAt = handler.indexOf('if (!ptyProcess)', waitAt);
   const mismatchAt = handler.indexOf('generation mismatch', waitAt);
-  const prepareAt = at('resolveCodexLaunchOptions(request.engine, request, { cwd: request.cwd })');
+  const prepareAt = at('resolveCodexLaunchOptions(request.engine, request, { cwd: request.cwd, termId: request.termId, generation: currentGeneration + 1 })');
   const operationAt = at('restartAgentInTerminal(ptyProcess');
   assert.ok(earlyNotFoundAt < earlyMismatchAt && earlyMismatchAt < dryRunAt);
   assert.ok(dryRunAt < waitAt && waitAt < notFoundAt && notFoundAt < mismatchAt && mismatchAt < prepareAt && prepareAt < operationAt);

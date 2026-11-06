@@ -934,6 +934,24 @@ VKIpc.on('terminal:screen-refresh', (id, screenSnapshot) => {
   }
 });
 
+// xterm の非同期描画キューを通過してから、識別値と現在画面を一緒に返す。
+VKIpc.on('terminal:pane-screen-request', (requestId, id, expected) => {
+  const t = Object.values(terminals).find(value => value?.termId === id);
+  if (!t) { VKIpc.send('terminal:pane-screen-response', requestId, null); return; }
+  t.term.write('', () => {
+    if (t.screenIdentifier !== expected.screenIdentifier || t.screenIdentifierGeneration !== expected.agentGeneration) {
+      VKIpc.send('terminal:pane-screen-response', requestId, null); return;
+    }
+    VKIpc.send('terminal:pane-screen-response', requestId, {
+      ...window.VKPaneSnapshot.capturePaneScreen(t.term),
+      engine: t.engine, status: t.status || 'idle', displayStatus: t.displayStatus || 'idle',
+      waiting: t.waiting, structuralWaiting: t.structuralWaiting, externalWaiting: t.externalWaiting,
+      backgroundWorkRunning: t.backgroundWorkRunning, lastOutputTime: t.lastOutputTime,
+      screenIdentifier: expected.screenIdentifier, screenIdentifierGeneration: expected.agentGeneration,
+    });
+  });
+});
+
 VKIpc.on('terminal:data', (id, data, screenSnapshot) => {
   const paneId = Object.keys(terminals).find(k => terminals[k]?.termId === id);
   if (!paneId || !terminals[paneId]) return;

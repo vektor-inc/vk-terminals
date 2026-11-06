@@ -46,6 +46,7 @@ const crypto = require('crypto');
 const path = require('path');
 const childProcess = require('child_process');
 const https = require('https');
+const http = require('http');
 
 const REVISION_PATTERN = /^[A-Za-z0-9_][A-Za-z0-9._/@^~{}-]*$/;
 const BRANCH_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
@@ -902,6 +903,11 @@ function withTextFiles(parsed, build) {
 function parseTaskCommand(argv) {
   if (!Array.isArray(argv) || argv.some((token) => typeof token !== 'string')) return fail('invalid argument list');
   const [tool, ...rest] = argv;
+  if (tool === 'pane') {
+    if (rest.length !== 3 || rest[0] !== 'send' || !/^[1-9][0-9]{0,8}$/.test(rest[1])
+      || !isPaneMessagePath(rest[2])) return fail('pane send requires a pane number and a relative message file, without flags');
+    return { ok: true, operation: 'pane-send', target: rest[1], file: rest[2] };
+  }
   if (tool === 'protected-sync') {
     if (rest.length !== 1 || !PROTECTED_SYNC_TARGETS.some((entry) => entry.target === rest[0])) return fail('protected-sync target is not registered');
     return { ok: true, operation: 'protected-sync', target: rest[0], requiresBoundRepository: true };
@@ -2911,7 +2917,7 @@ function buildMemberEnvironment(binding) {
 }
 
 // 起動のたびの専用フォルダ直下にある入力ファイルを、リンクをたどらず・通常ファイル・自分の所有・サイズ上限内で読む。
-function readMemberInput(fsImpl, dir, name, maxBytes, uid) {
+function readMemberInput(fsImpl, dir, name, maxBytes, uid, expectedIdentity = null) {
   const constants = fsImpl.constants || nodeFs.constants;
   let fd;
   try {
@@ -2924,6 +2930,7 @@ function readMemberInput(fsImpl, dir, name, maxBytes, uid) {
   try {
     const stat = fsImpl.fstatSync(fd);
     if (!stat.isFile() || stat.nlink !== 1) throw new TrustError(`${name} is not a plain file`);
+    if (expectedIdentity && (stat.dev !== expectedIdentity.dev || stat.ino !== expectedIdentity.ino)) throw new TrustError('message file changed before reading');
     if (uid !== undefined && stat.uid !== uid) throw new TrustError(`${name} is not owned by the current user`);
     if (stat.size === 0 || stat.size > maxBytes) throw new TrustError(`${name} is empty or too large`);
     // サイズ確認のあとにファイルが伸びても上限を超えて読まないよう、上限 + 1 バイトまでだけ読んで超過を検出する。
@@ -3494,7 +3501,16 @@ function runTaskCommand(argv, deps = {}) {
   };
 
   const parsed = parseTaskCommand(argv);
-  if (!parsed.ok) return reject(parsed.error);
+  if (!parsed.ok) {
+    if (Array.isArray(argv) && argv[0] === 'pane' && argv[1] === 'send') {
+      writeOut(JSON.stringify({ result: 'not-sent', reason: 'message-invalid', message: '送信しませんでした。ペイン番号を指定してください。本文ファイルは作業フォルダ内の相対パスで、名前は英数字・_・-・. だけを使い、先頭は英数字か _ にしてください。' }) + '\n');
+      return 2;
+    }
+    return reject(parsed.error);
+  }
+
+  // pane send は専用の通信経路だけを使い、Git / GitHub の資格情報を必要としない。
+  if (parsed.operation === 'pane-send') return executePaneSend(parsed, deps, writeOut);
 
   const binding = readBinding(deps.env || process.env);
   if (binding === null) return reject('task command rejected: launcher binding is missing or invalid');
@@ -3612,7 +3628,77 @@ function runTaskCommand(argv, deps = {}) {
   return typeof result.status === 'number' ? result.status : 2;
 }
 
+// 本文は送信元の固定 cwd からの相対パス。シェル構文・絶対パス・上位参照は通さない。
+function isPaneMessagePath(value) {
+  return typeof value === 'string' && value.length <= 1024
+    && value.split('/').every(part => /^[A-Za-z0-9_][A-Za-z0-9_.-]*$/.test(part) && part !== '..');
+}
+
+// 既存の通常ファイル読み取りを再利用し、途中のディレクトリの差し替えも照合する。
+function readPaneMessageFile(root, relative, fsImpl = nodeFs) {
+  if (!isPaneMessagePath(relative) || !path.isAbsolute(root)) throw new TrustError('invalid message path');
+  const directories = [root];
+  const parts = relative.split('/');
+  for (const part of parts.slice(0, -1)) directories.push(path.join(directories.at(-1), part));
+  const identities = directories.map(dir => {
+    const stat = fsImpl.lstatSync(dir);
+    if (!stat.isDirectory() || stat.isSymbolicLink() || fsImpl.realpathSync(dir) !== dir) throw new TrustError('message directory is not real');
+    return stat;
+  });
+  const dir = directories.at(-1);
+  const name = parts.at(-1);
+  const entry = fsImpl.lstatSync(path.join(dir, name));
+  if (!entry.isFile() || entry.isSymbolicLink()) throw new TrustError('message is not a plain file');
+  if (entry.size > 8192) { const error = new TrustError('message is too large'); error.code = 'message-too-large'; throw error; }
+  const bytes = readMemberInput(fsImpl, dir, name, 8193, typeof process.getuid === 'function' ? process.getuid() : undefined, entry);
+  directories.forEach((directory, at) => {
+    const after = fsImpl.lstatSync(directory);
+    if (!after.isDirectory() || after.isSymbolicLink() || after.dev !== identities[at].dev || after.ino !== identities[at].ino
+      || fsImpl.realpathSync(directory) !== directory) throw new TrustError('message directory changed');
+  });
+  const after = fsImpl.lstatSync(path.join(dir, name));
+  if (entry.dev !== after.dev || entry.ino !== after.ino || after.isSymbolicLink()) throw new TrustError('message file changed');
+  return bytes;
+}
+
+// ランチャー固定値だけで専用待受へ接続する。通常 API のトークンは読み取らない。
+function executePaneSend(parsed, deps, writeOut) {
+  const env = deps.env || process.env;
+  const token = env.VK_TASK_PANE_TOKEN;
+  const port = Number(env.VK_TASK_PANE_PORT);
+  const source = env.VK_TASK_PANE_SOURCE;
+  const failure = (uncertain = true, unavailable = false) => { writeOut(JSON.stringify({ result: uncertain ? 'unconfirmed' : 'not-sent', reason: uncertain ? 'send-failed' : 'sender-unavailable', message: uncertain ? '到達を確認できませんでした。送り直さず、送信先の入力欄と会話を確かめてください。' : unavailable ? '送信しませんでした。VK Terminals に接続できません。VK Terminals が動いているか確かめてから、もう一度送ってください。' : '送信しませんでした。この Codex ペインには依頼の送信機能が設定されていません。VK Terminals から起動した Codex ペインで実行してください。' }) + '\n'); return 2; };
+  if (!/^[0-9a-f]{64}$/.test(token || '') || !/^[1-9][0-9]{0,8}$/.test(source || '') || !Number.isInteger(port) || port < 1 || port > 65535) return failure(false);
+  return new Promise(resolve => {
+    let finished = false;
+    let connected = false;
+    const finish = value => { if (!finished) { finished = true; resolve(value); } };
+    const request = (deps.http || http).request({ hostname: '127.0.0.1', port, method: 'POST', path: '/pane-send', agent: false,
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, timeout: 12000 }, response => {
+      let body = ''; let size = 0;
+      response.on('data', chunk => { size += chunk.length; if (size > 16384) request.destroy(); else body += chunk; });
+      response.on('end', () => {
+        try {
+          const value = JSON.parse(body);
+          if (!['delivered', 'unconfirmed', 'not-sent'].includes(value.result)) throw new Error('invalid response');
+          writeOut(JSON.stringify(value) + '\n');
+          finish(value.result === 'delivered' ? 0 : 2);
+        } catch (_) { if (!finished) finish(failure()); }
+      });
+      response.on('error', () => { if (!finished) finish(failure()); });
+    });
+    request.on('socket', socket => {
+      if (!socket.connecting) connected = true;
+      socket.once('connect', () => { connected = true; });
+    });
+    request.on('timeout', () => request.destroy());
+    request.on('error', () => { if (!finished) finish(failure(connected, true)); });
+    request.end(JSON.stringify({ target: parsed.target, file: parsed.file }));
+  });
+}
+
 module.exports = {
+  readPaneMessageFile,
   listToolSearchDirs,
   getProtectedSyncCapabilities,
   getProtectedSyncCapabilitiesAsync,

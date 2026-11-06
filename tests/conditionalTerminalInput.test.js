@@ -148,7 +148,7 @@ test('main は PTY 入出力を識別値へ反映し、条件付き Enter を専
   const sendRouteStart = source.indexOf("if (req.method === 'POST' && url.pathname === '/api/send')");
   const sendRouteEnd = source.indexOf("if (req.method === 'POST' && url.pathname === '/api/widgets/command')", sendRouteStart);
   const sendRoute = source.slice(sendRouteStart, sendRouteEnd);
-  assert.match(source, /ptyProcess\.write = \(data\) => \{\s*conditionalTerminalInput\.markChanged\(id\)/);
+  assert.match(source, /ptyProcess\.write = \(data\) => \{\s*conditionalTerminalInput\.markChanged\(id, !\(isTerminalQueryReplyOnly\(data\) \|\| isTerminalFocusNotificationOnly\(data\)\)\)/);
   assert.match(source, /ptyProcess\.onData\(\(data\) => \{[\s\S]*?conditionalTerminalInput\.markChanged\(id\)[\s\S]*?terminal:data/);
   assert.match(source, /validateConditionalEnterRequest\(parsed\)[\s\S]*conditionalTerminalInput\.writeEnter/);
   assert.ok(
@@ -392,7 +392,7 @@ test('issue #517: ペイン削除後・世代不明のときは何も送らな�
 test('issue #517: main は書き込み・リサイズで採り直しを予約し、出力で取り消し、renderer へ送る', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
   const rendererSource = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'app.js'), 'utf8');
-  assert.match(source, /ptyProcess\.write = \(data\) => \{\s*conditionalTerminalInput\.markChanged\(id\);[\s\S]*?silentWriteRefresher\.noteInput\(id,[^\n]+\);\s*const result = writeToPty\(data\);\s*shellStartup\?\.onInput\(data\);\s*return result;/);
+  assert.match(source, /ptyProcess\.write = \(data\) => \{\s*conditionalTerminalInput\.markChanged\(id, !\(isTerminalQueryReplyOnly\(data\) \|\| isTerminalFocusNotificationOnly\(data\)\)\);[\s\S]*?silentWriteRefresher\.noteInput\(id,[^\n]+\);\s*const result = writeToPty\(data\);\s*shellStartup\?\.onInput\(data\);\s*return result;/);
   assert.match(source, /conditionalTerminalInput\.markChanged\(id\);\s*silentWriteRefresher\.noteWrite\(id\);\s*try \{ p\.resize/);
   assert.match(source, /silentWriteRefresher\.noteOutput\(id\)/);
   assert.match(source, /'terminal:screen-refresh'/);
@@ -422,4 +422,33 @@ test('PowerShell の準備監視には端末応答を書き込んだ後で通知
   const context = terminalInputHarness();
   context.input('\x1b[3;40R');
   assert.deepEqual(context.startupInputs, ['\x1b[3;40R']);
+});
+
+
+test('pane send: 出力の画面世代と、本文後の追加入力の世代を別々に管理する', () => {
+  const guard = createConditionalTerminalInputGuard();
+  guard.initialize('6');
+  const before = guard.capture('6', 1);
+  guard.markChanged('6');
+  assert.notEqual(guard.capture('6', 1).screenIdentifier, before.screenIdentifier);
+  assert.equal(guard.getWriteVersion('6'), 0);
+  guard.markChanged('6', true);
+  assert.equal(guard.getWriteVersion('6'), 1);
+  guard.delete('6'); assert.equal(guard.getWriteVersion('6'), undefined);
+});
+
+test('pane send: 実際の PTY 書き込みラッパーは自動応答とフォーカスで入力世代を進めない', () => {
+  const vm = require('node:vm');
+  const source = fs.readFileSync(path.join(__dirname, '../main.js'), 'utf8');
+  const start = source.indexOf('  const writeToPty = ptyProcess.write.bind(ptyProcess);');
+  const end = source.indexOf('\n  };', start) + '\n  };'.length;
+  const guard = createConditionalTerminalInputGuard(); guard.initialize('1');
+  const { isTerminalQueryReplyOnly, isTerminalFocusNotificationOnly } = require('../utils/terminalUserInput');
+  const ptyProcess = { write() {} };
+  vm.runInNewContext(source.slice(start, end), { ptyProcess, conditionalTerminalInput: guard, id: '1',
+    isTerminalQueryReplyOnly, isTerminalFocusNotificationOnly, silentWriteRefresher: { noteInput() {} }, shellStartup: null });
+  for (const data of ['\x1b[1;1R', '\x1b[I', '\x1b[O']) ptyProcess.write(data);
+  assert.equal(guard.getWriteVersion('1'), 0);
+  ptyProcess.write('human');
+  assert.equal(guard.getWriteVersion('1'), 1);
 });

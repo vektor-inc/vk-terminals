@@ -259,7 +259,7 @@ test('本文表示・Enter 後、会話記録 evidence によって delivered �
   assert.equal(answer.result, 'delivered');
   assert.equal(observed.id, answer.id);
   assert.equal(observed.target, '2');
-  assert.deepEqual(Object.keys(logs[0]).sort(), ['id', 'reason', 'result', 'source', 'target']);
+  assert.deepEqual(Object.keys(logs[0]).sort(), ['engine', 'id', 'reason', 'result', 'source', 'target', 'time']);
   assert.equal(JSON.stringify(logs).includes('issue'), false);
 });
 
@@ -482,4 +482,78 @@ for (const footer of ['⏵⏵ accept edits on (shift+tab to cycle)', '⏸ plan m
   const screen = structuredClone(require('./fixtures/pane-send/claude-empty.json'));
   screen.lines.at(-1).text = `  ${footer} · ← 2 agents`;
   assert.equal(targetReason({ ...screen, engine: 'claude', status: 'idle', lastOutputTime: 1000 }, 5000), null);
+});
+
+for (const phrase of ['for shortcuts', 'context left']) test(`Codex 本文の ${phrase} を終端にしない`, async () => {
+  const draft = state('codex', `\n  ${phrase}`); draft.cursorY = 1; draft.cursorX = 2;
+  assert.equal(targetReason(draft, 5000), 'target-input-not-empty');
+  const f = fixture({ engine: 'codex', message: phrase });
+  assert.equal((await f.send(f.source, '2', 'msg')).result, 'delivered');
+});
+
+// 各安全条件を単独で外したときに、別の条件へ隠れない反例を作る。
+for (const kind of ['plain-footer', 'fold-footer', 'fold-format', 'extra-footer', 'no-arrow', 'no-end', 'wrong-top', 'tail-only']) test(`本文照合の反例: ${kind}`, async () => {
+  const codex = ['no-arrow', 'no-end', 'wrong-top', 'tail-only'].includes(kind);
+  let f;
+  f = fixture({ engine: codex ? 'codex' : 'claude', change({ target, sleeps, refresh }) {
+    if (sleeps !== 1) return;
+    const body = f.writes[0].slice(6, -6);
+    let text = body;
+    if (kind === 'fold-footer' || kind === 'extra-footer') text = '[Pasted text #1 +12 lines]';
+    if (kind === 'fold-format') text = '[Pasted text #1 +12 lines]junk';
+    if (codex) {
+      text = body.split('\n').slice(-3).join('\n');
+      if (kind !== 'no-arrow') text = text.replace('\n', ' ↑\n');
+      if (kind === 'no-end') text = ' ↑\n';
+      if (kind === 'wrong-top') text = 'WRONG' + text;
+      if (kind === 'tail-only') text += 'extra';
+    }
+    Object.assign(target, state(codex ? 'codex' : 'claude', text));
+    if (!codex) target.lines.at(-1).text = kind === 'fold-footer' ? '? for shortcuts' : kind === 'extra-footer' ? 'paste again to expand\n? for shortcuts' : 'paste again to expand';
+    // フッターを実際の別行へ分割する。
+    target.lines = target.lines.flatMap(line => line.text.split('\n').map(text => ({ text })));
+    refresh();
+  } });
+  assert.equal((await f.send(f.source, '2', 'msg')).result, 'unconfirmed');
+  assert.equal(f.writes.includes('\r'), false);
+});
+
+for (const kind of ['body-remains', 'stale-empty']) test(`Enter 後の到達確認: ${kind}`, async () => {
+  let f;
+  f = fixture({ accept: false, change({ target, guard, refresh }) {
+    if (!f.writes.includes('\r')) return;
+    if (kind === 'stale-empty') { Object.assign(target, state()); refresh(); guard.markChanged('2'); }
+    else { refresh(); }
+  } });
+  assert.equal((await f.send(f.source, '2', 'msg')).result, 'unconfirmed');
+  assert.equal(f.writes.includes('\r'), true);
+});
+
+test('送信結果3分類を本文なしで0600保存し、1世代でローテーションする', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pane-log-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const { createPaneSendLog } = require('../utils/paneSendLog');
+  const audit = createPaneSendLog(dir);
+  for (const kind of ['delivered', 'not-sent', 'unconfirmed']) {
+    const f = fixture({ audit, accept: kind !== 'unconfirmed' });
+    if (kind === 'not-sent') f.target.status = 'running';
+    assert.equal((await f.send(f.source, '2', 'msg')).result, kind);
+  }
+  const file = path.join(dir, 'pane-send-log.jsonl');
+  const rows = fs.readFileSync(file, 'utf8').trim().split('\n').map(JSON.parse);
+  assert.deepEqual(rows.map(row => row.result), ['delivered', 'not-sent', 'unconfirmed']);
+  assert.equal(JSON.stringify(rows).includes('issue'), false);
+  assert.ok(rows.every(row => row.time && row.id && row.engine));
+  assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+  createPaneSendLog(dir, { maxBytes: 1 })(rows[0]);
+  assert.equal(fs.existsSync(file + '.1'), true);
+  assert.equal(fs.statSync(file + '.1').mode & 0o777, 0o600);
+});
+
+test('ログ書き込み失敗でも送信を完了する', async t => {
+  const warnings = []; t.mock.method(console, 'warn', (...args) => warnings.push(args));
+  const { createPaneSendLog } = require('../utils/paneSendLog');
+  const f = fixture({ audit: createPaneSendLog('/unused', { fsImpl: { mkdirSync() { throw new Error('disk failure'); } } }) });
+  assert.equal((await f.send(f.source, '2', 'msg')).result, 'delivered');
+  assert.equal(warnings.length, 1);
 });

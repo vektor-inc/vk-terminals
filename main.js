@@ -518,7 +518,7 @@ const paneSendBroker = createPaneSendBroker(createPaneSender({
   getPty: id => ptys.get(id),
   requestScreen: requestPaneScreen,
   getSourceName: id => Object.values(cachedStates).find(state => String(state.termId) === id)?.apiTitle,
-  audit: record => console.log(`${LOG_PREFIX} pane-send ${JSON.stringify(record)}`),
+  audit: require('./utils/paneSendLog').createPaneSendLog(DATA_DIR),
   getGeneration: id => agentGenerations.get(id),
   guard: conditionalTerminalInput,
   getWriteVersion: id => conditionalTerminalInput.getWriteVersion(id),

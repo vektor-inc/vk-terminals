@@ -253,3 +253,66 @@ Codex 版の issue 対応手順（vektor-inc/vk-agents の `codex/vk-kore/`）�
 `member status` は既存キーの後に `WORKTREE_BEFORE_*`、`WORKTREE_AFTER_CHILD_*`（復帰前）、`WORKTREE_AFTER_*`（復帰後）を追加する。各組の `STATE=recorded|unavailable`、`BRANCH`（detached の場合は `detached`）、`HEAD`、`DIRTY`、`CHANGES`（状態・内容の SHA-256。内容の読み取りは合計16 MiBまでとし、`complete:` / `limited:` で記録の精度を示す）と、`WORKTREE_CHANGED=true|false|unknown`、`BRANCH_RESTORE=restored|not-restored`、`BRANCH_RESTORE_REASON` を返す。変更のファイル名・内容は公開しない。復帰結果の記録失敗は `automatic-restore-record-failed` となり、自動処理の失敗として扱う。
 
 操作一覧のうち、手順にまだ採用されていない追加操作は `launcherOnlyOperations` に記録する。`source: null` と未採用の理由を明記し、出典行を捏造しない。引数検証は照合テストで確認し、手順採用後に実在する出典付きで `requiredOperations` へ移す。
+
+
+## 保護されたスキル配布先の同期（issue #557）
+
+固定入口の `protected-sync .agents/skills/vk-orchestrator-helper/SKILL.md` は、
+`vektor-inc/vk-orchestrator` の `src/help/helper-skill.md` のバイト列をそのまま配布先にコピーする。
+対応表は VK Terminals の配布コードに固定され、設定・環境変数・作業ブランチから変更できない。
+`.git/`・`.codex/` や他の配布先は指定できない。リポジトリ内のスクリプトや `npm run sync:helper` は実行しない。
+
+親と実装担当メンバーの固定入口で利用できる。読み取り専用メンバーは `--ignore-rules` で入口を持たない。
+実行場所は拘束先の登録済み worktree のトップに限る。通常の clone 本体も登録済み worktree として扱い、
+linked worktree は既存の common-dir と逆参照検査も通す。
+生成元・配布先のリンク、通常ファイルでないもの、ハードリンク、途中のフォルダのリンク、
+未解決の index エントリ、未追跡の配布先、256 KiB を超える生成元は書き込み前に拒否する。
+内容はメモリに固定し、同じ親フォルダ内の一時ファイルへ書いて rename し、読み戻してバイト一致を確認する。
+一時ファイルは失敗時も削除する。
+
+Node の書き込み自体も OS 制限内で実行する。macOS は既存の `sandbox-exec` を使い、
+検証済み worktree のトップと対応表の固定相対パスから作った親フォルダだけを許可する。
+許可先の作成に `realpath` は使わず、OS が書き込み時の実パスを判定する。
+macOS の生成元は固定コードだけを動かす短命の子で読み取る。
+子の開始時に、Git 検証前後で保持した worktree トップの dev/ino を照合する。
+固定相対パスの各フォルダを `O_NOFOLLOW | O_DIRECTORY` で開き、`fstat` で確認してから移動する。
+移動後の `stat('.')` と開いた記述子の dev/ino が一致した場合だけ次の段へ進む。
+最後の相対名を `O_NOFOLLOW` で開き、通常ファイル・リンク数 1・サイズ上限を確認して読む。
+入口のプロセスは作業フォルダを変えず、子が返したバイト列をメモリに固定する。
+Linux は信頼検証した絶対パス `/usr/bin/bwrap`（root 所有・他者書き込み不可）だけを使う。
+検証済み worktree のトップを開き、生成元・配布先の各要素を
+`/proc/self/fd/<親fd>/<名前>` と `O_NOFOLLOW` で一段ずつ開く。
+フォルダには `O_DIRECTORY` も指定し、通常ファイル・ハードリンクの判定も `fstat` で行う。
+配布先の親の記述子を stdio 3 に固定し、sandbox の tmpfs 上に用意した
+`/run/vk-protected-sync/target0` へ `--bind-fd` で割り当てる。
+子はこの固定パスから親の記述子を開き、dev/ino を照合して書き込む。
+リポジトリのパスを再解決して書き込み先を決めることはない。記述子は終了時に閉じる。
+`--bind-fd` のないバージョン（公式 0.8.0 を含む）は利用不可として実行しない。
+ファイルシステム全体は読み取り専用にし、ネットワークも分離する。
+OS 未対応、ツールの欠落・信頼検証失敗・名前空間の起動失敗では
+`task command rejected: write-restricted execution is not available` として止める。制限なしの代替実行はしない。
+既存の `prepare worktree` などの Linux 対応は含まない。
+同期後の `git add <配布先>`・`git commit -m <本文>`・`git push <作業ブランチ>` は既存の固定入口を使う。
+
+`GET /api/codex-task-capabilities` は既存の API 認証規則に従う読み取り専用の能力照会。
+`capabilities.protectedSync` に `available`、`reason`（利用可能なら null）、
+`targets`（`repo`・`source`・`target` の一覧）を返す。
+実行と同じ判定関数で Git 2.46 以上・Git と Node の信頼検証、および root 所有の固定フォルダで OS 制限下の起動を確認する。照会は書き込みや一時フォルダの作成を行わない。
+照会時の Git と Node はランチャーと共通の候補（Volta・mise・アプリの PATH を含む）から信頼検証して選び、実行時はランチャーが拘束した Git を使う。
+API は起動時のメモリ上のコードを別プロセスで実行し、同時照会だけをまとめる。失敗の結果は保持しない。ループバック接続は既存の認証規則により認証不要。
+親が read-only の入口からの同期は拒否する。
+
+Linux の検証は `npm run test:protected-sync:linux` で Docker 内に公式 0.8.0・Debian 0.8.0 backport・0.12.0 をビルドして実行する。
+公式 0.8.0 は未対応として拒否されることを検証し、Debian backport と 0.12.0 は OS 制限を通る正常系も検証する。
+コンテナは一般ユーザーで実行し、bubblewrap の起動に必要な security-opt を個別に指定する。
+ホストの node_modules はマウントしない。ワークフローは PR の `run-ci` ラベル付与と手動実行だけで起動する。
+`node scripts/protected-sync-mutations.js` は隔離コピーで各防御を取り除き、テストが失敗することを確認する。
+Linux の記述子固定のミューテーションは Linux 上で実行する。
+階層の検査・open・fstat の区切りを固定したテストも実行する。
+連続交換の実機テストは `VK_PROTECTED_SYNC_RACE_ATTEMPTS=150 node --test tests/protectedSync.test.js` で実行できる（C コンパイラが必要）。
+Linux スクリプトではこの実機テストも実行し、通常の `npm test` では省略する。
+呼び出し側は 404 または項目が無い場合を未対応として扱う。
+
+### protected-sync の Linux 要件
+
+Linux は bubblewrap の `--bind-fd` が必須です。公式 0.8.0 は未対応で、同機能を backport した Debian 0.8 系または対応する新しい版が必要です。Git は 2.46 以上が必要なため、Ubuntu 24.04 の標準 Git 2.43 では利用できません。能力照会は root 所有の固定フォルダで起動だけを確認し、ファイルを書き込みません。

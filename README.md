@@ -649,6 +649,10 @@ Claude Code ペインでは、バックグラウンドコマンド（Codex を�
 
 アプリが配布する Claude Code フック専用の通知先です。非 loopback では共通の API 認証を通し、loopback 既定では Bearer 照合を省略します。全接続で Origin を確認し、起動ごとの非公開 `epoch` と `termId` を照合します。本文の `input` は `SessionStart` / `SubagentStart` / `SubagentStop` のイベント名・`agent_id`・`session_id`・transcript のパスです。会話本文は送りません。成功は `200 {"ok":true}`、不正なイベントや古い起動の通知は `400 {"ok":false}`。手動操作では利用しません。
 
+#### `GET /api/codex-task-capabilities`
+
+Codex 固定入口の能力を取得します。`capabilities.protectedSync` に `available`、`reason`（利用可能なら `null`）、`targets`（`repo`・`source`・`target`）を返します。OS の書き込み制限を、root 所有の固定フォルダを使って起動確認します。能力照会ではファイルや専用フォルダを作成しません。実行時は配布先の親フォルダ内に一時ファイルを作成して置き換えます。404 または項目なしは未対応として扱ってください。
+
 #### `GET /api/states`
 
 全ターミナルの状態を取得。

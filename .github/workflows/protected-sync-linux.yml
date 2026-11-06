@@ -1,0 +1,16 @@
+name: Protected sync Linux
+on:
+  pull_request:
+    types: [labeled]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  protected-sync:
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'run-ci'
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test bubblewrap 0.8 and 0.12
+        run: sh scripts/test-protected-sync-linux.sh

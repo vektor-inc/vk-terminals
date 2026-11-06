@@ -199,6 +199,7 @@ const notApplicable = [
 
 // 後続の手順更新に先立って実装した操作。手順が採用した時点で出典付きの requiredOperations へ移す。
 const launcherOnlyOperations = [
+  { procedureOperation: 'protected-sync', source: null, argv: ['protected-sync', '.agents/skills/vk-orchestrator-helper/SKILL.md'], expected: { operation: 'protected-sync' }, note: 'issue #557 で追加。vk-orchestrator 側の利用手順更新に先行するため、手順の出典は未登録。' },
 ];
 
 module.exports = {

@@ -639,6 +639,10 @@ curl -s http://127.0.0.1:13847/api/health
 # => {"ok":true}
 ```
 
+#### `GET /api/codex-task-capabilities`
+
+Codex 固定入口の能力を取得します。`capabilities.protectedSync` に `available`、`reason`（利用可能なら `null`）、`targets`（`repo`・`source`・`target`）を返します。OS の書き込み制限を、root 所有の固定フォルダを使って起動確認します。能力照会ではファイルや専用フォルダを作成しません。実行時は配布先の親フォルダ内に一時ファイルを作成して置き換えます。404 または項目なしは未対応として扱ってください。
+
 #### `GET /api/states`
 
 全ターミナルの状態を取得。

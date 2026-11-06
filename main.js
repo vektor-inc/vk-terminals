@@ -64,6 +64,7 @@ const {
 } = require('./renderer/claudeModel');
 // 自動処理用 Codex のタスク用ポリシー（専用 CODEX_HOME の生成。issue #428）。
 const { resolveCodexTaskPolicyLaunchOptions, resolveCodexPolicyContext } = require('./utils/codexTaskPolicy');
+const { getProtectedSyncCapabilitiesAsync, PROTECTED_SYNC_TARGETS } = require('./utils/codexTaskOps');
 const {
   validateClaudeSettingsPresetForEngine,
   prepareClaudeSettingsPreset,
@@ -3074,6 +3075,21 @@ function startHttpApi() {
       if (source === 'cookie') {
         res.setHeader('Set-Cookie', buildAuthCookieHeader(API_TOKEN));
       }
+    }
+
+    // 既存の認証規則に従う能力照会（ループバックは認証不要）。子プロセスで検証する。
+    if (req.method === 'GET' && url.pathname === '/api/codex-task-capabilities') {
+      getProtectedSyncCapabilitiesAsync().then((protectedSync) => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ capabilities: { protectedSync } }));
+      }).catch(() => {
+        // 例外メッセージにはパスが含まれうるため、固定の理由だけを返す。
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ capabilities: { protectedSync: {
+          available: false, reason: 'write-restricted execution is not available', targets: PROTECTED_SYNC_TARGETS,
+        } } }));
+      });
+      return;
     }
 
     // GET /api/health

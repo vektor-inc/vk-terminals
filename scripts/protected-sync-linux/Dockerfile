@@ -18,8 +18,8 @@ WORKDIR /test
 ENV BWRAP_VERSION=${BWRAP_VERSION}
 USER node
 COPY --chown=node:node main.js ./main.js
-COPY --chown=node:node scripts/protected-sync-mutations.js ./scripts/protected-sync-mutations.js
+COPY --chown=node:node scripts ./scripts
 COPY --chown=node:node utils ./utils
 COPY --chown=node:node tests ./tests
 # 実機テストが skip で成功したように見えることを防ぐ。
-CMD ["sh", "-ec", "bwrap --version; git version; node -e \"const expected=process.env.BWRAP_VERSION!=='0.8.0'; if(require('./utils/codexTaskOps').getProtectedSyncCapabilities().available!==expected)process.exit(1)\"; node --test tests/protectedSync.test.js"]
+CMD ["sh", "-ec", "bwrap --version; git version; node -e \"const expected=process.env.BWRAP_VERSION!=='0.8.0'; if(require('./utils/codexTaskOps').getProtectedSyncCapabilities().available!==expected)process.exit(1)\"; VK_PROTECTED_SYNC_RACE_ATTEMPTS=150 node --test tests/protectedSync.test.js"]

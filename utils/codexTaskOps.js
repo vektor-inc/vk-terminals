@@ -1491,11 +1491,11 @@ const SANDBOX_EXEC_PATH = '/usr/bin/sandbox-exec';
  * macOS は書き込み時にリンクを解決した実パスを判定する。Linux は検査済みディレクトリを記述子で bind する。
  * 許可した場所の外には書けない。denyWrite は allowWrite の内側で、書き込みを禁じる場所（フックや設定ファイルなど）。
  * macOS のパスは -D の値として渡す。Linux は O_NOFOLLOW で開いた実体を --bind-fd で固定し、denyWrite を必要とする既存操作は拒否する。
- * @param {{bin: string, args: string[], allowWrite: string[], denyWrite?: string[], snapshot?: Array<{path: string, dev: number, ino: number}>}} params 許可・禁止のパスは実パス（絶対パス）
+ * @param {{bin: string, args: string[], allowWrite: string[], denyWrite?: string[], snapshot?: Array<{path: string, dev: number, ino: number}>, directoryFds?: number[]}} params 許可・禁止のパスは固定の絶対パス
  * @param {{platform?: string, fs?: object, spawnSync?: Function}} deps OS・ファイルシステムのテスト用差し替え
  * @returns {{bin: string, args: string[], stdio?: Array, close?: Function}} Linux は起動後に close で親の記述子を閉じる
  */
-function restrictWrites({ bin, args, allowWrite, denyWrite = [], snapshot = [] }, deps = {}) {
+function restrictWrites({ bin, args, allowWrite, denyWrite = [], snapshot = [], directoryFds = [] }, deps = {}) {
   const platform = deps.platform || process.platform;
   if (platform === 'linux') {
     if (denyWrite.length) throw new TrustError('write-restricted execution is not available');
@@ -1506,16 +1506,19 @@ function restrictWrites({ bin, args, allowWrite, denyWrite = [], snapshot = [] }
     if (help.status !== 0 || !String(help.stdout).includes('--bind-fd')) throw new TrustError('write-restricted execution is not available');
     const fds = [];
     try {
-      const binds = allowWrite.flatMap((dir) => {
-        const real = fsImpl.realpathSync(dir);
-        const expected = snapshot.find((entry) => entry.path === dir) || fsImpl.lstatSync(dir);
-        const fd = fsImpl.openSync(real, nodeFs.constants.O_RDONLY | nodeFs.constants.O_DIRECTORY | nodeFs.constants.O_NOFOLLOW);
+      const binds = allowWrite.flatMap((dir, index) => {
+        // 呼び出し元の記述子を複製し、ラッパーが所有する分だけ閉じる。
+        const fd = directoryFds[index] === undefined
+          ? fsImpl.openSync(dir, nodeFs.constants.O_RDONLY | nodeFs.constants.O_DIRECTORY | nodeFs.constants.O_NOFOLLOW)
+          : fsImpl.openSync(`/proc/self/fd/${directoryFds[index]}`, nodeFs.constants.O_RDONLY | nodeFs.constants.O_DIRECTORY);
         fds.push(fd);
         const actual = fsImpl.fstatSync(fd);
-        if (real !== dir || !actual.isDirectory() || actual.dev !== expected.dev || actual.ino !== expected.ino) throw new TrustError('write directory changed');
-        return ['--bind-fd', String(2 + fds.length), real];
+        const expected = snapshot.find((entry) => entry.path === dir);
+        if (!actual.isDirectory() || (expected && (actual.dev !== expected.dev || actual.ino !== expected.ino))) throw new TrustError('write directory changed');
+        return ['--dir', `/run/vk-protected-sync/target${index}`, '--bind-fd', String(2 + fds.length), `/run/vk-protected-sync/target${index}`];
       });
       return { bin: executable, args: ['--ro-bind', '/', '/', '--dev', '/dev', '--new-session', '--die-with-parent', '--unshare-net',
+        '--dir', '/run', '--tmpfs', '/run', '--dir', '/run/vk-protected-sync',
         ...binds, '--', bin, ...args], stdio: ['pipe', 'pipe', 'pipe', ...fds],
         close: () => fds.forEach((fd) => fsImpl.closeSync(fd)) };
     } catch (error) {
@@ -1626,16 +1629,11 @@ function protectedSyncChild() {
   try {
     const input = JSON.parse(fs.readFileSync(0, 'utf8'));
     const { parent, snapshot, target, bytes, mode } = input;
-    // bind 後の実体も検査時と一致することを確認する。Linux は記述子に固定して rename する。
-    for (const entry of snapshot) {
-      const stat = fs.lstatSync(entry.path);
-      if (stat.isSymbolicLink() || stat.dev !== entry.dev || stat.ino !== entry.ino ||
-          (entry.file ? !stat.isFile() || stat.nlink !== 1 : !stat.isDirectory())) throw new Error('path changed after verification');
-    }
+    // 子は sandbox 内の親を開き、以後はその記述子を使う。
     directoryFd = fs.openSync(parent, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_DIRECTORY);
     const stat = fs.fstatSync(directoryFd);
     const expected = snapshot.find((entry) => entry.path === parent);
-    if (!expected || stat.dev !== expected.dev || stat.ino !== expected.ino || fs.realpathSync(parent) !== parent) throw new Error('parent changed after verification');
+    if (!expected || !stat.isDirectory() || stat.dev !== expected.dev || stat.ino !== expected.ino) throw new Error('parent changed after verification');
     const directory = process.platform === 'linux' ? `/proc/self/fd/${directoryFd}` : parent;
     const destination = path.join(directory, path.basename(target));
     const content = Buffer.from(bytes, 'base64');
@@ -1662,6 +1660,7 @@ function executeProtectedSync({ parsed, binding, cwd, fsImpl, runGit, spawnSync,
   const entry = PROTECTED_SYNC_TARGETS.find((entry) => entry.target === parsed.target);
   if (binding.repo !== entry.repo || inspected.repo !== entry.repo) return reject('task command rejected: protected-sync repository is not registered');
   if (binding.member && binding.member.parentSandbox === 'read-only') return reject('task command rejected: protected-sync requires write access');
+  const heldFds = [];
   try {
     const root = fsImpl.realpathSync(cwd);
     if (root !== path.resolve(cwd) || root !== inspected.root) throw new TrustError('protected-sync must run at the registered worktree root');
@@ -1672,24 +1671,53 @@ function executeProtectedSync({ parsed, binding, cwd, fsImpl, runGit, spawnSync,
     if (conflict.status !== 0 || String(conflict.stdout) !== '') throw new TrustError('source or target has unresolved index entries');
     const tracked = runGit(['ls-files', '--error-unmatch', '--', entry.target], cwd);
     if (tracked.status !== 0) throw new TrustError('protected-sync target is not tracked');
-    // 全階層をリンク無しで検査する。ファイルのハードリンクだけを拒否（ディレクトリの nlink は通常 2 以上）。
+    const capability = getProtectedSyncCapabilities({ ...deps, git: binding.git });
+    if (!capability.available) throw new TrustError(capability.reason);
+    const linux = (deps.platform || process.platform) === 'linux';
     const snapshot = [];
+    let sourceFd;
+    let parentFd;
+    let targetStat;
+    // Linux は worktree の記述子から各要素を一段ずつ開く。
+    let rootFd;
+    if (linux) {
+      const expected = fsImpl.lstatSync(root);
+      rootFd = fsImpl.openSync(root, nodeFs.constants.O_RDONLY | nodeFs.constants.O_DIRECTORY | nodeFs.constants.O_NOFOLLOW);
+      heldFds.push(rootFd);
+      const actual = fsImpl.fstatSync(rootFd);
+      if (!actual.isDirectory() || actual.dev !== expected.dev || actual.ino !== expected.ino) throw new TrustError('worktree root changed');
+    }
+    const sourceIdentity = linux ? null : fsImpl.lstatSync(path.join(root, entry.source));
     for (const relative of paths) {
       let current = root;
-      for (const segment of ['', ...relative.split('/')]) {
+      let parent = rootFd;
+      const segments = relative.split('/');
+      for (let index = 0; index < segments.length; index++) {
+        const segment = segments[index];
+        const file = index === segments.length - 1;
         current = path.join(current, segment);
-        const stat = fsImpl.lstatSync(current);
-        const file = current === path.join(root, relative);
+        let stat;
+        let opened;
+        if (linux) {
+          opened = fsImpl.openSync(`/proc/self/fd/${parent}/${segment}`, nodeFs.constants.O_RDONLY | nodeFs.constants.O_NOFOLLOW | nodeFs.constants.O_NONBLOCK | (file ? 0 : nodeFs.constants.O_DIRECTORY));
+          heldFds.push(opened);
+          stat = fsImpl.fstatSync(opened);
+        } else {
+          stat = fsImpl.lstatSync(current);
+        }
         if (stat.isSymbolicLink() || (file ? !stat.isFile() || stat.nlink !== 1 : !stat.isDirectory())) throw new TrustError('source or target is a link or not a regular path');
         snapshot.push({ path: current, dev: stat.dev, ino: stat.ino, file });
+        if (file && relative === entry.source) sourceFd = opened;
+        if (file && relative === entry.target) { parentFd = parent; targetStat = stat; }
+        parent = opened;
       }
     }
     const source = path.join(root, entry.source);
-    const fd = fsImpl.openSync(source, nodeFs.constants.O_RDONLY | nodeFs.constants.O_NOFOLLOW | nodeFs.constants.O_NONBLOCK);
+    const fd = linux ? sourceFd : fsImpl.openSync(source, nodeFs.constants.O_RDONLY | nodeFs.constants.O_NOFOLLOW | nodeFs.constants.O_NONBLOCK);
     let content;
     try {
       const stat = fsImpl.fstatSync(fd);
-      const expected = snapshot.find((entry) => entry.path === source);
+      const expected = sourceIdentity || snapshot.find((entry) => entry.path === source);
       if (!stat.isFile() || stat.nlink !== 1 || stat.dev !== expected.dev || stat.ino !== expected.ino) throw new TrustError('source changed after verification');
       if (stat.size > PROTECTED_SYNC_MAX_SOURCE_BYTES) throw new TrustError('protected-sync source exceeds 256 KiB');
       // 上限 + 1 バイトまでに制限し、並行した追記でも無制限に読み込まない。
@@ -1702,21 +1730,23 @@ function executeProtectedSync({ parsed, binding, cwd, fsImpl, runGit, spawnSync,
       }
       if (size > PROTECTED_SYNC_MAX_SOURCE_BYTES) throw new TrustError('protected-sync source exceeds 256 KiB');
       content = buffer.subarray(0, size);
-    } finally { fsImpl.closeSync(fd); }
-    const capability = getProtectedSyncCapabilities({ ...deps, git: binding.git });
-    if (!capability.available) throw new TrustError(capability.reason);
+    } finally { if (!linux) fsImpl.closeSync(fd); }
     const node = resolveTrustedPath(fsImpl, process.execPath, { finalKind: 'file', uid: deps.uid }).realPath;
     const destination = path.join(root, entry.target);
     const parent = path.dirname(destination);
-    const command = restrictWrites({ bin: node, args: ['-e', `(${protectedSyncChild.toString()})()`], allowWrite: [parent], snapshot }, deps);
+    const command = restrictWrites({ bin: node, args: ['-e', `(${protectedSyncChild.toString()})()`], allowWrite: [parent], snapshot, directoryFds: linux ? [parentFd] : [] }, deps);
     let result;
     try { result = spawnSync(command.bin, command.args, { cwd: root, env, encoding: 'utf8', timeout: 30000, stdio: command.stdio,
-      input: JSON.stringify({ parent, snapshot, target: destination, bytes: content.toString('base64'), mode: fsImpl.lstatSync(destination).mode }) });
+      input: JSON.stringify({ parent: linux ? '/run/vk-protected-sync/target0' : parent,
+        snapshot: [{ ...snapshot.find((item) => item.path === parent), path: linux ? '/run/vk-protected-sync/target0' : parent }],
+        target: destination, bytes: content.toString('base64'), mode: targetStat.mode }) });
     } finally { if (command.close) command.close(); }
     if (result.error || result.status !== 0) return reject(`task command rejected: write-restricted execution is not available or protected-sync failed${result.stderr ? `: ${String(result.stderr).trim()}` : ''}`);
     return 0;
   } catch (error) {
     return reject(`task command rejected: ${error instanceof TrustError ? error.message : 'protected-sync paths could not be verified'}`);
+  } finally {
+    for (const fd of heldFds.reverse()) fsImpl.closeSync(fd);
   }
 }
 

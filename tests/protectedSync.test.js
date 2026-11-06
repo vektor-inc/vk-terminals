@@ -92,7 +92,7 @@ test('Linux は検査したディレクトリ記述子を stdio 3 に渡し bind
     assert.ok(command.args.includes('--bind-fd'));
     assert.ok(command.args.includes('--unshare-net'));
     const index = command.args.indexOf('--bind-fd');
-    assert.deepEqual(command.args.slice(index, index + 3), ['--bind-fd', '3', fs.realpathSync(dir)]);
+    assert.deepEqual(command.args.slice(index, index + 3), ['--bind-fd', '3', '/run/vk-protected-sync/target0']);
     assert.equal(fs.fstatSync(command.stdio[3]).ino, fs.statSync(dir).ino);
   } finally { command.close(); }
   assert.throws(() => fs.fstatSync(command.stdio[3]), /EBADF/);
@@ -223,7 +223,7 @@ test('OS 実機: clone 本体も登録済み worktree として同期できる',
   assert.equal(fs.readFileSync(path.join(f.repo, target.target), 'utf8'), 'clone update');
 });
 
-test('OS 実機: bind 起動前に親がリンクに差し替わると書き込まない', { skip: !realCapability.available && realCapability.reason }, (t) => {
+test('OS 実機: bind 起動前に親がリンクに差し替わっても外へ書き込まない', { skip: !realCapability.available && realCapability.reason }, (t) => {
   const f = fixture(t);
   fs.writeFileSync(f.source, 'changed');
   const parent = path.dirname(f.destination);
@@ -241,9 +241,9 @@ test('OS 実機: bind 起動前に親がリンクに差し替わると書き込�
     return cp.spawnSync(bin, args, { ...options, stdio: options.stdio || 'pipe' });
   } });
   assert.equal(swapped, true);
-  assert.equal(result.status, 2);
+  assert.equal(result.status, process.platform === 'linux' ? 0 : 2);
   assert.equal(fs.readFileSync(outsideFile, 'utf8'), 'outside');
-  assert.equal(fs.readFileSync(path.join(parent + '-original', 'SKILL.md'), 'utf8'), 'original\n');
+  assert.equal(fs.readFileSync(path.join(parent + '-original', 'SKILL.md'), 'utf8'), process.platform === 'linux' ? 'changed' : 'original\n');
 });
 
 
@@ -313,15 +313,11 @@ function childFixture(t, hooks = {}, platform = process.platform) {
   return { ...f, parent, snapshot, proc, execute };
 }
 
-for (const check of ['lstat', 'parent', 'both', 'readback', 'atomic']) {
+for (const check of ['parent', 'readback', 'atomic']) {
   test(`子の独立検査: ${check}`, (t) => {
     let f;
     const hooks = {};
-    if (check === 'lstat' || check === 'both') hooks.lstatSync = (file) => {
-      const stat = fs.lstatSync(file);
-      return file === f.destination ? new Proxy(stat, { get: (obj, key) => key === 'ino' ? obj.ino + 1 : typeof obj[key] === 'function' ? obj[key].bind(obj) : obj[key] }) : stat;
-    };
-    if (check === 'parent' || check === 'both') hooks.fstatSync = (fd) => {
+    if (check === 'parent') hooks.fstatSync = (fd) => {
       const stat = fs.fstatSync(fd);
       return stat.isDirectory() ? new Proxy(stat, { get: (obj, key) => key === 'ino' ? obj.ino + 1 : typeof obj[key] === 'function' ? obj[key].bind(obj) : obj[key] }) : stat;
     };
@@ -364,12 +360,16 @@ test('対応表の照合は binding と origin が両方別でも拒否する', 
   assert.match(result.error, /repository is not registered/);
 });
 
-test('生成元を open した時点の inode の差し替えを拒否する', (t) => {
+test('生成元の記述子の同一性を検証する', { skip: !realCapability.available }, (t) => {
   const f = fixture(t);
+  let reads = 0;
   const fakeFs = new Proxy(fs, { get(object, key) {
-    if (key === 'openSync') return (file, ...args) => {
-      if (file === f.source) { fs.renameSync(file, file + '-old'); fs.writeFileSync(file, 'raced'); }
-      return fs.openSync(file, ...args);
+    if (key === 'fstatSync') return (fd) => {
+      const stat = fs.fstatSync(fd);
+      if (stat.ino === fs.statSync(f.source).ino && ++reads === (process.platform === 'linux' ? 2 : 1)) {
+        return new Proxy(stat, { get: (obj, name) => name === 'ino' ? obj.ino + 1 : typeof obj[name] === 'function' ? obj[name].bind(obj) : obj[name] });
+      }
+      return stat;
     };
     return object[key];
   } });
@@ -416,7 +416,7 @@ test('同期の spawn は OS 制限で包まれ、Linux は bind-fd を継承す
     if (args[0] === '--help') return { status: 0, stdout: '--bind-fd' };
     if (bin.endsWith('sandbox-exec') || bin.endsWith('bwrap')) {
       if (process.platform === 'darwin') assert.ok(args.includes('ALLOW0=/usr'));
-      else { const index = args.indexOf('--bind-fd'); assert.equal(args[index + 2], '/usr'); }
+      else { const index = args.indexOf('--bind-fd'); assert.equal(args[index + 2], '/run/vk-protected-sync/target0'); }
       return { status: 0 };
     }
     return cp.spawnSync(bin, args, { ...options, stdio: options.stdio || 'pipe' });
@@ -449,7 +449,7 @@ test('Linux OS 実機: bind 前のリンク差し替えでも外へ書き込ま�
   fs.renameSync(parent, parent + '-old');
   fs.symlinkSync(path.relative(path.dirname(parent), outside), parent);
   assert.throws(() => restrictWrites({ bin: process.execPath, args: ['-e', 'process.exit(0)'],
-    allowWrite: [parent], snapshot: [{ path: parent, dev: expected.dev, ino: expected.ino }] }), /write directory changed/);
+    allowWrite: [parent], snapshot: [{ path: parent, dev: expected.dev, ino: expected.ino }] }), /ELOOP|ENOTDIR|write directory changed/);
   assert.equal(fs.readFileSync(path.join(outside, 'SKILL.md'), 'utf8'), 'outside');
   assert.equal(fs.readFileSync(path.join(parent + '-old', 'SKILL.md'), 'utf8'), 'original\n');
 });
@@ -527,4 +527,89 @@ test('Linux 実機: 能力照会を反復しても既存ファイルを保持す
   }
   assert.equal(fs.readdirSync(outside).length, 400);
   for (const file of fs.readdirSync(outside)) assert.equal(fs.readFileSync(path.join(outside, file), 'utf8'), 'original');
+});
+
+// 段階を固定してフォルダを交換し、OS の外側にあるファイルが保持されることを確認する。
+for (const side of ['source', 'target']) {
+  for (const stage of ['before-open', 'after-open', 'after-stat']) {
+    test(`OS 実機: ${side} の ${stage} で途中のフォルダを交換する`, { skip: !realCapability.available }, (t) => {
+      const f = fixture(t);
+      fs.writeFileSync(f.source, 'new bytes');
+      const relative = side === 'source' ? 'src/help' : '.agents/skills';
+      const directory = path.join(f.worktree, relative);
+      const outside = path.join(f.root, 'outside');
+      fs.mkdirSync(outside);
+      const suffix = side === 'source' ? 'helper-skill.md' : 'vk-orchestrator-helper/SKILL.md';
+      const outsideFile = path.join(outside, suffix);
+      fs.mkdirSync(path.dirname(outsideFile), { recursive: true });
+      fs.writeFileSync(outsideFile, 'outside');
+      let swapped = false;
+      let watchedFd;
+      const swap = () => {
+        if (swapped) return;
+        fs.renameSync(directory, directory + '-saved');
+        fs.symlinkSync(outside, directory);
+        swapped = true;
+      };
+      const fakeFs = new Proxy(fs, { get(object, key) {
+        if (key === 'openSync') return (file, ...args) => {
+          const watched = file === directory || (process.platform === 'linux' && String(file).startsWith('/proc/self/fd/') && path.basename(file) === path.basename(directory));
+          if (watched && stage === 'before-open') swap();
+          const fd = fs.openSync(file, ...args);
+          if (watched) { watchedFd = fd; if (stage === 'after-open') swap(); }
+          return fd;
+        };
+        if (key === 'fstatSync') return (fd) => { const stat = fs.fstatSync(fd); if (fd === watchedFd && stage === 'after-stat') swap(); return stat; };
+        if (key === 'lstatSync') return (file) => {
+          const stat = fs.lstatSync(file);
+          if (process.platform === 'darwin' && file === directory && stage === 'after-stat') swap();
+          return stat;
+        };
+        return object[key];
+      } });
+      // macOS の階層検査は lstat の直後に交換する。他の段階は子の起動直前に固定する。
+      const result = f.invoke(undefined, { fs: fakeFs, spawnSync: (bin, args, options) => {
+        if (process.platform === 'darwin' && options.input && !swapped) swap();
+        return cp.spawnSync(bin, args, { ...options, stdio: options.stdio || 'pipe' });
+      } });
+      assert.equal(swapped, true);
+      assert.equal(fs.readFileSync(outsideFile, 'utf8'), 'outside');
+      assert.deepEqual(fs.readdirSync(path.dirname(outsideFile)), [path.basename(outsideFile)]);
+      if (result.status === 0) {
+        const actual = side === 'target' ? path.join(directory + '-saved', suffix) : f.destination;
+        assert.equal(fs.readFileSync(actual, 'utf8'), 'new bytes');
+      } else assert.equal(result.status, 2, result.error);
+    });
+  }
+}
+
+test('OS 実機: 途中のフォルダの連続交換中も外部ファイルを保持する', { skip: !process.env.VK_PROTECTED_SYNC_RACE_ATTEMPTS || !realCapability.available }, async (t) => {
+  const f = fixture(t);
+  const executable = path.join(f.root, 'swap');
+  cp.execFileSync('cc', [path.join(__dirname, '../scripts/protected-sync-linux/swap.c'), '-O2', '-o', executable]);
+  fs.writeFileSync(f.source, 'new bytes');
+  const outside = path.join(f.root, 'outside');
+  const outsideFile = path.join(outside, 'vk-orchestrator-helper/SKILL.md');
+  fs.mkdirSync(path.dirname(outsideFile), { recursive: true });
+  fs.writeFileSync(outsideFile, 'outside');
+  const directory = path.join(f.worktree, '.agents/skills');
+  const alternate = directory + '-alternate';
+  fs.symlinkSync(outside, alternate);
+  const worker = cp.spawn(executable, [directory, alternate], { stdio: ['ignore', 'pipe', 'inherit'] });
+  let attempts = 0;
+  let outsideWrites = 0;
+  const closed = new Promise((resolve) => worker.once('close', (code, signal) => resolve({ code, signal })));
+  try {
+    await new Promise((resolve, reject) => { worker.stdout.once('data', resolve); worker.once('error', reject); worker.once('exit', () => reject(new Error('exchange worker stopped'))); });
+    for (; attempts < Number(process.env.VK_PROTECTED_SYNC_RACE_ATTEMPTS); attempts++) {
+      f.invoke();
+      if (fs.readFileSync(outsideFile, 'utf8') !== 'outside' || fs.readdirSync(path.dirname(outsideFile)).length !== 1) outsideWrites++;
+    }
+  } finally {
+    worker.kill('SIGKILL');
+    const exit = await closed;
+    assert.equal(exit.signal, 'SIGKILL', JSON.stringify(exit));
+  }
+  t.diagnostic(JSON.stringify({ platform: process.platform, attempts, outsideWrites }));
+  assert.equal(outsideWrites, 0);
 });

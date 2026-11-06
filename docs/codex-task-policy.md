@@ -268,13 +268,20 @@ linked worktree は既存の common-dir と逆参照検査も通す。
 内容はメモリに固定し、同じ親フォルダ内の一時ファイルへ書いて rename し、読み戻してバイト一致を確認する。
 一時ファイルは失敗時も削除する。
 
-Node の書き込み自体も OS 制限内で実行する。macOS は既存の `sandbox-exec` を使う。
-Linux は信頼検証した絶対パス `/usr/bin/bwrap`（root 所有・他者書き込み不可）だけを使い、
-ファイルシステム全体を読み取り専用にし、親で `O_DIRECTORY|O_NOFOLLOW` により開いた配布先の親フォルダを
-stdio 3 で渡し、`--bind-fd 3 <実パス>` で書き込み可能に固定する。
+Node の書き込み自体も OS 制限内で実行する。macOS は既存の `sandbox-exec` を使い、
+検証済み worktree のトップと対応表の固定相対パスから作った親フォルダだけを許可する。
+許可先の作成に `realpath` は使わず、OS が書き込み時の実パスを判定する。
+生成元は開いた記述子の dev/ino を照合し、読み取り済みのバイト列をメモリに固定する。
+Linux は信頼検証した絶対パス `/usr/bin/bwrap`（root 所有・他者書き込み不可）だけを使う。
+検証済み worktree のトップを開き、生成元・配布先の各要素を
+`/proc/self/fd/<親fd>/<名前>` と `O_NOFOLLOW` で一段ずつ開く。
+フォルダには `O_DIRECTORY` も指定し、通常ファイル・ハードリンクの判定も `fstat` で行う。
+配布先の親の記述子を stdio 3 に固定し、sandbox の tmpfs 上に用意した
+`/run/vk-protected-sync/target0` へ `--bind-fd` で割り当てる。
+子はこの固定パスから親の記述子を開き、dev/ino を照合して書き込む。
+リポジトリのパスを再解決して書き込み先を決めることはない。記述子は終了時に閉じる。
 `--bind-fd` のないバージョン（公式 0.8.0 を含む）は利用不可として実行しない。
-ネットワークは分離し、子は bind 後のフォルダの dev/ino と実パスを照合してからディレクトリ記述子に固定する。
-これにより検査後のリンクへの差し替えでも別のフォルダに書き込まない。
+ファイルシステム全体は読み取り専用にし、ネットワークも分離する。
 OS 未対応、ツールの欠落・信頼検証失敗・名前空間の起動失敗では
 `task command rejected: write-restricted execution is not available` として止める。制限なしの代替実行はしない。
 既存の `prepare worktree` などの Linux 対応は含まない。
@@ -294,6 +301,9 @@ Linux の検証は `npm run test:protected-sync:linux` で Docker 内に公式 0
 ホストの node_modules はマウントしない。ワークフローは PR の `run-ci` ラベル付与と手動実行だけで起動する。
 `node scripts/protected-sync-mutations.js` は隔離コピーで各防御を取り除き、テストが失敗することを確認する。
 Linux の記述子固定のミューテーションは Linux 上で実行する。
+階層の検査・open・fstat の区切りを固定したテストも実行する。
+連続交換の実機テストは `VK_PROTECTED_SYNC_RACE_ATTEMPTS=150 node --test tests/protectedSync.test.js` で実行できる（C コンパイラが必要）。
+Linux スクリプトではこの実機テストも実行し、通常の `npm test` では省略する。
 呼び出し側は 404 または項目が無い場合を未対応として扱う。
 
 ### protected-sync の Linux 要件

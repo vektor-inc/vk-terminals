@@ -1,5 +1,7 @@
 'use strict';
 
+const { quoteShellArgument: quoteForSingleShellArgument } = require('./restartAgent');
+
 const { execFile } = require('node:child_process');
 const crypto = require('node:crypto');
 const { promisify } = require('node:util');
@@ -165,9 +167,6 @@ function inspectLifecycle(snapshot, processes) {
   return { state: 'exited', trackedGroups, hasAliveGroup: false, terminal: true };
 }
 
-function quoteForSingleShellArgument(value) {
-  return `'${String(value).replaceAll("'", "'\\''")}'`;
-}
 
 function buildPromptHookCommand(marker, shellPath) {
   const name = `vk_agent_prompt_${marker}`;
@@ -354,6 +353,7 @@ function createAgentLifecycleStore(options = {}) {
       }
       return visible;
     },
+    getEntry(termId, generation) { const entry = states.get(String(termId)); return entry?.generation === generation ? entry : null; },
     get(termId, generation) { const entry = states.get(String(termId)); return entry && entry.generation === generation ? entry.state : null; },
     delete(termId) { const id = String(termId); const entry = states.get(id); if (entry) stop(entry); states.delete(id); },
     async close() { closed = true; for (const entry of states.values()) stop(entry); states.clear(); },
@@ -369,4 +369,4 @@ function mergeAgentLifecycleStates(states, getGeneration, getLifecycleState) {
   }));
 }
 
-module.exports = { PS_ARGS, DEFAULT_ACQUISITION_TIMEOUT_MS, MARKER_PREFIX, READY_MARKER_PREFIX, MARKER_SUFFIX, parseProcessTable, listProcessTable, isDescendant, inspectLifecycle, buildPromptHookCommand, createAgentLifecycleStore, mergeAgentLifecycleStates };
+module.exports = { isSameProcessStart, PS_ARGS, DEFAULT_ACQUISITION_TIMEOUT_MS, MARKER_PREFIX, READY_MARKER_PREFIX, MARKER_SUFFIX, parseProcessTable, listProcessTable, isDescendant, inspectLifecycle, buildPromptHookCommand, createAgentLifecycleStore, mergeAgentLifecycleStates };

@@ -1,3 +1,4 @@
+const { withoutBackgroundWorkSettings } = require('./helpers/claude-arguments');
 const { test, expect } = require('@playwright/test');
 const childProcess = require('child_process');
 const fs = require('fs');
@@ -185,7 +186,7 @@ test('POST /api/new-pane は engine を許可リストで検証し、codex を�
     expect(defaultEngine.status).toBe(200);
     await waitForPaneCount(port, 4);
     const claudeCalls = await waitForCalls(fakeClaude.capturePath, 1);
-    expect(claudeCalls[0]).toEqual([]);
+    expect(withoutBackgroundWorkSettings(claudeCalls[0])).toEqual([]);
 
     // engine: "claude" を明示した場合も model が有効（従来の #310 仕様と両立）。
     const explicitClaudeWithModel = await postNewPane(port, {
@@ -196,7 +197,7 @@ test('POST /api/new-pane は engine を許可リストで検証し、codex を�
     expect(explicitClaudeWithModel.status).toBe(200);
     await waitForPaneCount(port, 5);
     const claudeCallsWithModel = await waitForCalls(fakeClaude.capturePath, 2);
-    expect(claudeCallsWithModel[1]).toEqual(['--model', 'opus']);
+    expect(withoutBackgroundWorkSettings(claudeCallsWithModel[1])).toEqual(['--model', 'opus']);
 
     // タスク用ポリシー（issue #428）: 未知キー・不正値・Claude 指定は 400 でペインを増やさない。
     for (const [payload, error] of [

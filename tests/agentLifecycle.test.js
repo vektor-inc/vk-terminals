@@ -29,12 +29,13 @@ function waitFor(predicate, timeoutMs = 5000, conditionName = 'condition') {
   });
 }
 
+// 対話シェルがSIGHUPを無視してテスト終了後もPTYを保持するのを防ぐ。
 function createRealPty(t, env = process.env) {
   const pty = require('node-pty');
   const shell = pty.spawn('/bin/zsh', ['-f'], { env: { ...env, TERM: 'xterm-256color', PS1: 'VK_PROMPT> ' } });
   let output = '';
   shell.onData((data) => { output += data; });
-  t.after(() => { try { shell.kill(); } catch (_error) {} });
+  t.after(() => { try { shell.kill('SIGKILL'); } catch (_error) {} });
   return { shell, output: () => output, clear: () => { output = ''; } };
 }
 
@@ -424,7 +425,7 @@ test('zsh/bash/fishは元コマンドと分離した世代固有prompt hookを�
   assert.match(bash, /PROMPT_COMMAND=\$vk_agent_saved_prompt_/);
   assert.match(bash, /unset "PROMPT_COMMAND\[\$vk_agent_index_/);
   assert.match(fish, /--on-event fish_prompt/);
-  assert.ok(zsh.includes('\\033]1337;VKAgentLifecycle='));
+  assert.ok(zsh.includes('033]1337;VKAgentLifecycle='));
   for (const setup of [zsh, bash, fish]) assert.doesNotMatch(setup, /claude --model sonnet/);
 });
 
@@ -507,7 +508,7 @@ test('実PTY: zsh functionとaliasを従来どおり解決する', {
   fs.writeFileSync(path.join(root, '.zshrc'), `PS1='VK_PROMPT> '\nautoload -Uz add-zsh-hook\nvk_capture_preexec() { print -r -- \"$1\" >> ${preexecLog}; }\nadd-zsh-hook preexec vk_capture_preexec\nvk_agent_function() { cd ${root}; export VK_AGENT_FROM_FUNCTION=yes; printf alias-ok >> ${marker}; ${process.execPath} -e 'setTimeout(()=>{},1000)'; }\nalias claude='vk_agent_function # alias comment'\n`);
   const ptyModule = require('node-pty');
   const shell = ptyModule.spawn('/bin/zsh', [], { env: { ...process.env, ZDOTDIR: root, TERM: 'xterm-256color', PS1: 'VK_PROMPT> ' } });
-  t.after(() => { try { shell.kill(); } catch (_error) {} });
+  t.after(() => { try { shell.kill('SIGKILL'); } catch (_error) {} });
   let output = '';
   shell.onData((data) => { output += data; });
   const store = createAgentLifecycleStore({ pollIntervalMs: 20 });
@@ -562,7 +563,7 @@ test('実PTY: bashの既存PROMPT_COMMAND完了後だけreadyとなり、AI grou
   shell.onData((data) => { output += store.filterOutput('bash', data); });
   t.after(() => {
     store.close();
-    try { shell.kill(); } catch (_error) {}
+    try { shell.kill('SIGKILL'); } catch (_error) {}
     fs.rmSync(gateRoot, { recursive: true, force: true });
   });
   await waitFor(() => output.includes('VK_BASH>'), 15000, 'bash初回プロンプト表示');
@@ -605,7 +606,7 @@ test('実PTY: bash文字列の末尾構文を壊さず、完了後にPROMPT_COMM
   let output = '';
   const store = createAgentLifecycleStore({ pollIntervalMs: 20 });
   shell.onData((data) => { output += store.filterOutput('bash-edge', data); });
-  t.after(() => { store.close(); try { shell.kill(); } catch (_error) {} });
+  t.after(() => { store.close(); try { shell.kill('SIGKILL'); } catch (_error) {} });
   await waitFor(() => output.includes('VK_BASH>'));
   const cases = [
     ['semicolon', `PROMPT_COMMAND='printf "PC_SEMI\\n";'`, 'PC_SEMI'],
@@ -649,7 +650,7 @@ test('実PTY: bash hookのsetup待機中cancelは既存値を復元して一時�
   let output = '';
   const store = createAgentLifecycleStore();
   shell.onData((data) => { output += store.filterOutput('bash-cancel', data); });
-  t.after(() => { store.close(); try { shell.kill(); } catch (_error) {} });
+  t.after(() => { store.close(); try { shell.kill('SIGKILL'); } catch (_error) {} });
   await waitFor(() => output.includes('VK_BASH>'));
   shell.write(`PROMPT_COMMAND='printf "PC_CANCEL\\n" # trailing comment'\r`);
   await waitFor(() => output.includes('PC_CANCEL'));

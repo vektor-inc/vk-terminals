@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 不具合修正 ] Claude Code の裏でコマンドやサブエージェントが動いていても「実行中」が消える不具合を修正（[#561](https://github.com/vektor-inc/vk-terminals/issues/561)）
+
 ## 1.93.0
 
 - [ 機能追加 ] Codex の固定入口で保護されたスキル配布先の安全な同期と、利用可否を確認する API に対応（[#557](https://github.com/vektor-inc/vk-terminals/issues/557)）

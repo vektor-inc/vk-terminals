@@ -96,7 +96,7 @@ test('VK Orchestrator と Node の固定パスを検証し、解決できない�
   fs.unlinkSync(path.join(fixture.orchestratorRoot, 'bin', 'vk-orchestrator.js'));
   fs.symlinkSync(path.join(fixture.toolsDir, 'node'), path.join(fixture.orchestratorRoot, 'bin', 'vk-orchestrator.js'));
   assert.equal(resolveVkOrchestratorEntry(fixture.orchestratorRoot), null);
-  assert.equal(resolveVkOrchestratorEntry("/tmp/vk-orchestrator'bad"), null);
+  assert.equal(resolveVkOrchestratorEntry("relative/path"), null);
 });
 
 test('VK Orchestrator のルートまたは entry が他人に書き込み可能なら拒否する', (t) => {
@@ -110,7 +110,7 @@ test('VK Orchestrator のルートまたは entry が他人に書き込み可能
 });
 
 test('空白を含む VK Orchestrator アプリのパスを3引数のフックコマンドにする', (t) => {
-  const fixture = createFixture(t, 'VK Orchestrator.app ');
+  const fixture = createFixture(t, "VK Orchestrator.app '\\ ");
   const toolsRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-tools-'));
   const nodePath = path.join(toolsRoot, 'node');
   fs.writeFileSync(nodePath, '#!/bin/sh\n', { mode: 0o700 });
@@ -127,7 +127,7 @@ test('空白を含む VK Orchestrator アプリのパスを3引数のフック�
   ]);
 });
 
-test('途中のリンク先の実パスに単一引用符があればフックを拒否する', (t) => {
+test('途中のリンク先の実パスに単一引用符があってもフックを引用する', (t) => {
   const fixture = createFixture(t);
   const linkedRoot = path.join(fixture.root, 'linked-root');
   const actualParent = path.join(fixture.root, "actual'root");
@@ -137,11 +137,10 @@ test('途中のリンク先の実パスに単一引用符があればフック�
   fs.symlinkSync(actualParent, linkedRoot);
   const orchestratorRoot = path.join(linkedRoot, 'vk-orchestrator');
 
-  assert.equal(resolveVkOrchestratorEntry(orchestratorRoot), null);
-  assert.throws(
-    () => resolveClaudeSettingsHookCommand({ nodeSearchDirs: [fixture.toolsDir], vkOrchestratorRoot: orchestratorRoot }),
-    /unavailable/
-  );
+  assert.equal(resolveVkOrchestratorEntry(orchestratorRoot), fs.realpathSync(actualOrchestratorRoot + '/bin/vk-orchestrator.js'));
+  const command = resolveClaudeSettingsHookCommand({ nodeSearchDirs: [fixture.toolsDir], vkOrchestratorRoot: orchestratorRoot });
+  const args = childProcess.execFileSync('/bin/sh', ['-c', `set -- ${command}; printf '%s\n' "$2"`], { encoding: 'utf8' });
+  assert.equal(args.trim(), fs.realpathSync(actualOrchestratorRoot + '/bin/vk-orchestrator.js'));
 });
 
 test('管理フォルダと既存 settings のシンボリックリンクを安全に扱う', (t) => {
@@ -177,7 +176,7 @@ test('管理フォルダが他人に書き込み可能または他人所有な�
 
 test('コマンド組み立て側でもプリセット名と生成パスを再検証する', () => {
   assert.throws(() => buildClaudeSettingsArgument('../x', '/tmp/settings.json'));
-  assert.throws(() => buildClaudeSettingsArgument(PRESET, "'/tmp/settings.json"));
+  assert.throws(() => buildClaudeSettingsArgument(PRESET, "/tmp/settings\n.json"));
   assert.throws(() => buildClaudeLaunchCommand(undefined, { claudeSettingsPreset: PRESET }));
 });
 

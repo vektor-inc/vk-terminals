@@ -1555,7 +1555,7 @@ test('restart-agent: 到達確認前と待機後に存在・世代を確認し�
   // 本番の準備から operation の登録までに await を挟まない（直列化の隙間を作らない）。
   assert.equal(/await/.test(handler.slice(prepareAt, at('restartAgentOperations.set('))), false);
   // 停止失敗・PTY 消滅・例外のどれでも、起動に使われなかった専用フォルダを回収する。
-  assert.ok(/finally \{\s*if \(!launchHomeInUse\) launchResolution\.discard\(\);/.test(handler));
+  assert.ok(/finally \{\s*if \(!launchHomeInUse\) \{?\s*launchResolution\.discard\(\);/.test(handler));
   assert.ok(handler.indexOf('launchHomeInUse = true;') > handler.indexOf("error: 'failed to stop agent'"));
 });
 

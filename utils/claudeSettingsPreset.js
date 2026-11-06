@@ -1,5 +1,7 @@
 'use strict';
 
+const { quoteShellArgument } = require('./restartAgent');
+
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -8,8 +10,9 @@ const { listToolSearchDirs } = require('./codexTaskPolicy');
 
 const PRESET = 'vk-orchestrator-work-pane';
 const ALLOWED_CLAUDE_SETTINGS_PRESETS = Object.freeze([PRESET]);
-const SETTINGS_PATH_PATTERN = /^\/[^'\x00-\x1f\x7f]+$/;
+const SETTINGS_PATH_PATTERN = /^\/[^\x00-\x1f\x7f]+$/;
 const SAFE_LAUNCHER_PATH_PATTERN = /^[A-Za-z0-9/._-]+$/;
+
 
 function isValidClaudeSettingsPreset(value) {
   return value === PRESET;
@@ -53,7 +56,7 @@ function resolveClaudeSettingsHookCommand(options = {}) {
   if (!node || !SAFE_LAUNCHER_PATH_PATTERN.test(node.path) || !orchestratorEntry) {
     throw new Error('Claude settings preset hook is unavailable');
   }
-  return `'${node.path}' '${orchestratorEntry}' check-turn-end-status-hook`;
+  return `${quoteShellArgument(node.path)} ${quoteShellArgument(orchestratorEntry)} check-turn-end-status-hook`;
 }
 
 function buildPreset(command) {
@@ -87,10 +90,66 @@ function buildClaudeSettingsArgument(preset, settingsPath) {
   if (!isValidClaudeSettingsPreset(preset) || typeof settingsPath !== 'string' || !SETTINGS_PATH_PATTERN.test(settingsPath)) {
     throw new Error('invalid prepared Claude settings preset');
   }
-  return `--settings '${settingsPath}'`;
+  return `--settings ${quoteShellArgument(settingsPath)}`;
+}
+
+// PID と開始時刻が一致する別インスタンスの設定には触れない。
+async function cleanupBackgroundWorkSettings(dataDir, listProcesses = require('./agentLifecycle').listProcessTable) {
+  const { isSameProcessStart } = require('./agentLifecycle');
+  let processes;
+  try { processes = await listProcesses(); } catch (_) { return; }
+  for (const name of fs.readdirSync(dataDir)) {
+    if (!/^background-work-[A-Za-z0-9]+$/.test(name)) continue;
+    const directory = path.join(dataDir, name);
+    try {
+      const stat = fs.lstatSync(directory);
+      if (!stat.isDirectory() || stat.isSymbolicLink() || (process.getuid && stat.uid !== process.getuid())) continue;
+      const ownerPath = path.join(directory, 'owner.json');
+      const ownerStat = fs.lstatSync(ownerPath);
+      if (!ownerStat.isFile() || ownerStat.isSymbolicLink() || ownerStat.size > 4096) continue;
+      const owner = JSON.parse(fs.readFileSync(ownerPath, 'utf8'));
+      if (!Number.isSafeInteger(owner.pid) || owner.pid <= 0 || !Number.isFinite(Date.parse(owner.lstart))) continue;
+      const live = processes.get(owner.pid);
+      if (live && isSameProcessStart(live.lstart, owner.lstart)) continue;
+      // ps 採取後に起動されたプロセスも保護する。再利用 PID は保守的に残す。
+      try { process.kill(owner.pid, 0); continue; } catch (error) { if (error.code !== 'ESRCH') continue; }
+      fs.rmSync(directory, { recursive: true, force: true });
+    } catch (_) {}
+  }
+}
+
+// 自プロセスの起動時刻は変わらないため、最初に取得した値を保持する。
+let processStartTime;
+
+// 起動ごとに分離した設定へフックを足し、Stop など既存のイベントを保つ。
+function prepareBackgroundWorkSettings(dataDir, config, settingsPath, options = {}) {
+  const node = resolveTrustedExecutableDetailed(fs, 'node', options.nodeSearchDirs || listToolSearchDirs(options.homeDir, options.pathEnv));
+  if (!node || !SAFE_LAUNCHER_PATH_PATTERN.test(node.path)) throw new Error('Background work hook runtime unavailable');
+  const directory = fs.mkdtempSync(path.join(dataDir, 'background-work-'));
+  fs.chmodSync(directory, 0o700);
+  try {
+    processStartTime ??= require('node:child_process').execFileSync('ps', ['-p', String(process.pid), '-o', 'lstart='], { encoding: 'utf8', timeout: 2000, killSignal: 'SIGKILL', env: { ...process.env, LC_ALL: 'C' } }).trim();
+    fs.writeFileSync(path.join(directory, 'owner.json'), JSON.stringify({ pid: process.pid, lstart: processStartTime }), { mode: 0o600, flag: 'wx' });
+    const configPath = path.join(directory, 'connection.json');
+    fs.writeFileSync(configPath, JSON.stringify(config), { mode: 0o600, flag: 'wx' });
+    const settings = settingsPath ? JSON.parse(fs.readFileSync(settingsPath, 'utf8')) : {};
+    settings.hooks = settings.hooks || {};
+    const command = `${quoteShellArgument(node.path)} ${quoteShellArgument(path.join(__dirname, 'backgroundWorkHook.js'))} ${quoteShellArgument(configPath)}`;
+    for (const event of ['SessionStart', 'SubagentStart', 'SubagentStop']) {
+      settings.hooks[event] = [...(settings.hooks[event] || []), { hooks: [{ type: 'command', command, timeout: 3 }] }];
+    }
+    const filename = path.join(directory, 'settings.json');
+    fs.writeFileSync(filename, JSON.stringify(settings), { mode: 0o600, flag: 'wx' });
+    return { filename, discard: () => fs.rmSync(directory, { recursive: true, force: true }) };
+  } catch (error) {
+    fs.rmSync(directory, { recursive: true, force: true });
+    throw error;
+  }
 }
 
 module.exports = {
+  cleanupBackgroundWorkSettings,
+  prepareBackgroundWorkSettings,
   ALLOWED_CLAUDE_SETTINGS_PRESETS,
   SAFE_LAUNCHER_PATH_PATTERN,
   isValidClaudeSettingsPreset,

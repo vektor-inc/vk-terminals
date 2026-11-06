@@ -11,6 +11,18 @@
 })(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
 
+  const BACKGROUND_WORK_REASON = '裏で作業が動いています';
+
+  // バッジの解決済みラベルを使い、各画面の閉じる確認をそろえる。
+  function getCloseConfirmation(label, backgroundWorkRunning) {
+    if (!label) return 'このペインを閉じますか？';
+    const state = `このペインは「${label}」`;
+    const detail = backgroundWorkRunning
+      ? (label === '完了' || label === '見守り中' ? `ですが、${BACKGROUND_WORK_REASON}。` : `です（${BACKGROUND_WORK_REASON}）。`)
+      : 'です。';
+    return `${state}${detail}閉じるとセッションは失われます。閉じますか？`;
+  }
+
   const STATUS_ORDER = Object.freeze(['waiting', 'running', 'idle']);
   const STATUS_RANK = Object.freeze({
     waiting: 0,
@@ -64,6 +76,8 @@
   }
 
   return {
+    BACKGROUND_WORK_REASON,
+    getCloseConfirmation,
     STATUS_ORDER,
     STATUS_RANK,
     compareStatus,

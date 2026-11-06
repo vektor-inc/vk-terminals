@@ -133,16 +133,26 @@
     return typeof validate === 'function' ? validate(value) : false;
   }
 
+  function quoteShellArgument(value) {
+    return `'${String(value).replace(/[\\']/g, (char) => `'\\${char}'`)}'`;
+  }
+
   // ペインへ書き込む claude の起動コマンド（末尾の改行は含めない）を返す。
   // 未指定・不正値では例外を投げず、従来どおりの素の `claude` へ倒す（安全側の既定）。
   function buildClaudeLaunchCommand(model, options = {}) {
     const parts = ['claude'];
     if (isValidClaudeModel(model)) parts.push('--model', `'${model}'`);
-    if (options.claudeSettingsPreset !== undefined) {
+    if (options.claudeSettingsPreset !== undefined && !options.backgroundWorkSettingsPath) {
       if (typeof options.buildClaudeSettingsArgument !== 'function') {
         throw new Error('Claude settings preset requires a prepared settings file');
       }
       parts.push(options.buildClaudeSettingsArgument(options.claudeSettingsPreset, options.claudeSettingsPath));
+    }
+    if (options.backgroundWorkSettingsPath) {
+      const filename = options.backgroundWorkSettingsPath;
+      if (typeof filename !== 'string' || !/^\/[^\x00-\x1f\x7f]+$/.test(filename)) throw new Error('Invalid background work settings');
+      // シェルの違いによらず単一の引数として渡す。
+      parts.push(`--settings ${quoteShellArgument(filename)}`);
     }
     return parts.join(' ');
   }
@@ -287,6 +297,7 @@
   }
 
   return {
+    quoteShellArgument,
     MAX_CLAUDE_MODEL_LENGTH,
     CLAUDE_MODEL_PATTERN,
     isValidClaudeModel,

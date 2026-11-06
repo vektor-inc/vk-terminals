@@ -1,3 +1,4 @@
+const { withoutBackgroundWorkSettings } = require('./helpers/claude-arguments');
 const { test, expect } = require('@playwright/test');
 const fs = require('fs');
 const os = require('os');
@@ -127,14 +128,14 @@ test('POST /api/new-pane は model を安全に検証し、正常値と省略時
     expect(modeledLaunch.status).toBe(200);
     await waitForPaneCount(port, 4);
     let calls = await waitForClaudeCalls(capturePath, 1);
-    expect(calls[0]).toEqual(['--model', 'sonnet']);
+    expect(withoutBackgroundWorkSettings(calls[0])).toEqual(['--model', 'sonnet']);
 
-    // model 省略時は素の `claude` が書かれるため、偽 claude が引数なしで呼ばれる。
+    // model 省略時は、検証済みのフック設定を除く起動引数が空になる。
     const defaultLaunch = await postNewPane(port, { noClaude: false });
     expect(defaultLaunch.status).toBe(200);
     await waitForPaneCount(port, 5);
     calls = await waitForClaudeCalls(capturePath, 2);
-    expect(calls[1]).toEqual([]);
+    expect(withoutBackgroundWorkSettings(calls[1])).toEqual([]);
     expect(fs.existsSync(pwnedPath)).toBe(false);
   } finally {
     if (launched) await closeApp(launched);

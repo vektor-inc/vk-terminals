@@ -762,9 +762,12 @@
         const relationship = el('span', 'task-item-sr-only');
         relationshipId = `task-relationship-${++relationshipSequence}`;
         relationship.id = relationshipId;
-        const parentTitle = parent.title.replace(SPOKEN_TEXT_STRIP_RE, '');
+        const parentTitle = parent.title.replace(SPOKEN_TEXT_STRIP_RE, '').trim();
         const status = (item.statusLabel || group.label).replace(SPOKEN_TEXT_STRIP_RE, '');
-        relationship.textContent = `「${parentTitle}」のサブタスク。状態: ${status}`;
+        // 親タイトルが空なら、空の括弧を読み上げ文へ含めない。
+        relationship.textContent = parentTitle
+          ? `「${parentTitle}」のサブタスク。状態: ${status}`
+          : `サブタスク。状態: ${status}`;
         li.appendChild(relationship);
       }
       if (item.emphasis) li.dataset.emphasis = item.emphasis;

@@ -1861,6 +1861,18 @@ test('render: 循環へ到達する枝も元の位置に通常表示する', () 
   assert.ok(cards.every((card) => card.dataset.depth === undefined));
 });
 
+test('render: 親タイトルが空なら親名の括弧を含めずサブタスクと状態を説明する', () => {
+  for (const title of ['', '  \t\n　', '\u202e\n']) {
+    const { groupsEl, view } = makeView();
+    view.render(sanitized([{ id: 'g', label: '待機', items: [
+      { id: 'parent', title },
+      { id: 'child', parentId: 'parent', title: '子', statusLabel: '見守り中' },
+    ] }]));
+    const child = groupsEl.children[0].children[0].children[1];
+    assert.equal(child.children[0].textContent, 'サブタスク。状態: 見守り中');
+  }
+});
+
 test('render: 子の各操作に安全な親タイトルと状態を関連付け、編集フォーカスと集計を保つ', () => {
   const widget = sanitized([{ id: 'g', label: '待機', items: [
     { id: 12, title: '親\u202e\nタイトル', assignee: 'me' },

@@ -230,7 +230,7 @@ function stagePaneBackgroundWork(id, generation, engine, options, shellExecutabl
       prepared = prepareBackgroundWorkSettings(DATA_DIR, {
         termId: id, epoch, token: API_TOKEN,
         url: `http://${host}:${API_PORT}/api/background-work`,
-      }, options.claudeSettingsPath, { homeDir: os.homedir(), pathEnv: APP_ORIGINAL_PATH });
+      }, options.claudeSettingsPath, { homeDir: os.homedir(), pathEnv: APP_ORIGINAL_PATH, ...resolveEmbeddedHookRuntimeOptions() });
     } catch (_) {
       console.warn(`${LOG_PREFIX} Background work hooks unavailable; monitoring commands only`);
     }
@@ -392,7 +392,14 @@ function resolveCodexLaunchOptions(engine, options, { dryRun = false, cwd, termI
   return { ...resolved, activatePaneSend: () => paneSend?.activate(), discard: () => { paneSend?.discard(); return discard(); } };
 }
 
-// 検証済みプリセットだけを VK Terminals の管理領域へ書き出し、コマンド組み立て側でも再検証する。
+// HTTP のリクエスト値を参照せず、ホストの実行状態だけでフック起動元を決める。
+function resolveEmbeddedHookRuntimeOptions() {
+  return EMBEDDED_OPTIONS !== null && app.isPackaged === true
+    ? { electronHookExecPath: process.execPath }
+    : {};
+}
+
+// 検証済みプリセットだけを管理領域へ書き出し、コマンド組み立て側でも再検証する。
 function resolveClaudeSettingsLaunchOptions(engine, noClaude, options) {
   const validated = validateClaudeSettingsPresetForEngine(engine, noClaude, options.claudeSettingsPreset);
   if (!validated.ok) throw new Error(validated.error);
@@ -402,6 +409,7 @@ function resolveClaudeSettingsLaunchOptions(engine, noClaude, options) {
     claudeSettingsPath: prepareClaudeSettingsPreset(DATA_DIR, validated.preset, {
       homeDir: os.homedir(),
       pathEnv: APP_ORIGINAL_PATH,
+      ...resolveEmbeddedHookRuntimeOptions(),
       vkOrchestratorRoot: loadUserConfig().claudeSettingsPresets?.vkOrchestratorRoot,
     }),
     buildClaudeSettingsArgument,

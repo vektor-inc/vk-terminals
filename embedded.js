@@ -4,6 +4,10 @@
 //   require('<vk-terminals>/embedded').start({ appTitle: 'VK Orchestrator', resourceRoot, ... })
 // と呼んで起動する。electron . で起動するときは従来どおり main.js が入口になる。
 //
+// パッケージ済みの組み込み起動では、信頼検証した process.execPath をフックの起動元に使う。
+// /usr/bin/env ELECTRON_RUN_AS_NODE=1 経由で起動し、ペインの環境変数には追加しない。
+// 通常起動・開発起動では信頼できる node を探索する。HTTP API から起動元は指定できない。
+//
 // options:
 //   appTitle               ウィンドウタイトル・ヘッダーの表示名（ドックの表示名は呼び出し側のアプリの Info.plist で決まる）
 //   resourceRoot           renderer / preload.js / settings-schema.json / アイコン等の置き場所（絶対パス）

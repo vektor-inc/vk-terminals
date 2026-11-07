@@ -27,6 +27,8 @@ function createFixture(t, prefix = 'vk-terminals-claude-preset-') {
   const toolsDir = path.join(root, 'tools');
   const orchestratorRoot = path.join(root, 'vk-orchestrator');
   fs.mkdirSync(toolsDir);
+  fs.mkdirSync(path.join(orchestratorRoot, 'src', 'engine'), { recursive: true });
+  fs.writeFileSync(path.join(orchestratorRoot, 'src', 'engine', 'sensitive-output-hook.js'), '// fixture\n');
   fs.mkdirSync(path.join(orchestratorRoot, 'bin'), { recursive: true });
   fs.writeFileSync(path.join(toolsDir, 'node'), '#!/bin/sh\n', { mode: 0o700 });
   fs.writeFileSync(path.join(orchestratorRoot, 'package.json'), '{"name":"vk-orchestrator"}\n');
@@ -69,6 +71,10 @@ test('管理済み settings を生成し、安全に --settings へ渡す', (t) 
     type: 'command',
     command: `'${path.join(fixture.toolsDir, 'node')}' '${fs.realpathSync(path.join(fixture.orchestratorRoot, 'bin', 'vk-orchestrator.js'))}' check-turn-end-status-hook`,
   });
+  assert.deepEqual(actual.hooks.PreToolUse, [{
+    matcher: 'Bash|Read|Grep',
+    hooks: [{ type: 'command', timeout: 5, command: actual.hooks.Stop[0].hooks[0].command.replace(/check-turn-end-status-hook$/, 'check-sensitive-output-hook') }],
+  }]);
   assert.equal(fs.statSync(settingsPath).mode & 0o777, 0o600);
   const options = {
     claudeSettingsPreset: PRESET,
@@ -83,6 +89,47 @@ test('管理済み settings を生成し、安全に --settings へ渡す', (t) 
     buildClaudeLaunchCommand('sonnet', options),
     `claude --model 'sonnet' --settings '${settingsPath}'`
   );
+});
+
+// 未対応版と信頼できないモジュールでは、設定を書き出さない。
+for (const condition of ['missing', 'symlink', 'group-writable', 'world-writable', 'parent-writable']) {
+  test(`秘密出力フックが ${condition} ならプリセットを拒否する`, (t) => {
+    const fixture = createFixture(t);
+    const modulePath = path.join(fixture.orchestratorRoot, 'src', 'engine', 'sensitive-output-hook.js');
+    if (condition === 'missing' || condition === 'symlink') fs.unlinkSync(modulePath);
+    if (condition === 'symlink') fs.symlinkSync(path.join(fixture.orchestratorRoot, 'bin', 'vk-orchestrator.js'), modulePath);
+    if (condition === 'group-writable') fs.chmodSync(modulePath, 0o664);
+    if (condition === 'world-writable') fs.chmodSync(modulePath, 0o646);
+    if (condition === 'parent-writable') fs.chmodSync(path.dirname(modulePath), 0o777);
+    // entry の単独解決は旧版でも利用できる。
+    assert.ok(resolveVkOrchestratorEntry(fixture.orchestratorRoot));
+    const options = { nodeSearchDirs: [fixture.toolsDir], vkOrchestratorRoot: fixture.orchestratorRoot };
+    assert.throws(() => resolveClaudeSettingsHookCommand(options), /Claude settings preset hook is unavailable/);
+    assert.throws(() => prepareClaudeSettingsPreset(fixture.dataDir, PRESET, options), /Claude settings preset hook is unavailable/);
+    assert.equal(fs.existsSync(path.join(fixture.dataDir, 'claude-settings-presets', `${PRESET}.json`)), false);
+  });
+}
+
+test('生成した PreToolUse command をシェルで実行し deny JSON を受け取る', (t) => {
+  const fixture = createFixture(t, "vk-preset ' spaces-");
+  const nodePath = path.join(fixture.toolsDir, 'node');
+  // 安全な固定パスのランチャーから実際の Node.js を呼び出す。
+  fs.writeFileSync(nodePath, `#!/bin/sh\nexec '${process.execPath.replace(/'/g, "'\\''")}' "$@"\n`, { mode: 0o700 });
+  fs.writeFileSync(path.join(fixture.orchestratorRoot, 'bin', 'vk-orchestrator.js'), `
+    if (process.argv[2] !== 'check-sensitive-output-hook') process.exit(1);
+    console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny' } }));
+  `);
+  // Node の検証では安全な文字だけのパスが必要なため別の配置を使う。
+  const toolsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-preset-node-'));
+  t.after(() => fs.rmSync(toolsDir, { recursive: true, force: true }));
+  fs.copyFileSync(nodePath, path.join(toolsDir, 'node'));
+  const settingsPath = prepareClaudeSettingsPreset(fixture.dataDir, PRESET, {
+    nodeSearchDirs: [toolsDir], vkOrchestratorRoot: fixture.orchestratorRoot,
+  });
+  const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+  const result = childProcess.spawnSync('/bin/sh', ['-c', settings.hooks.PreToolUse[0].hooks[0].command], { encoding: 'utf8', input: '{}' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).hookSpecificOutput.permissionDecision, 'deny');
 });
 
 test('VK Orchestrator と Node の固定パスを検証し、解決できない場合は拒否する', (t) => {

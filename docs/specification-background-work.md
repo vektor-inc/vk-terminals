@@ -28,7 +28,9 @@ Claude Code の裏でコマンド（Codex の起動を含む）またはサブ�
 
 ## サブエージェントの検知
 
-Claude Code の起動設定へ `SessionStart` / `SubagentStart` / `SubagentStop` コマンドフックを追加する。既存の `utils/claudeSettingsPreset.js` の配布経路で起動ごとの設定ファイルを作り、既存の Stop フックを保持する。通常起動と API の再起動が対象。ガイド・セットアップなどフック設定を渡さない起動、配布に必要な信頼できる Node.js が見つからない環境ではコマンドだけを監視する。
+Claude Code の起動設定へ `SessionStart` / `SubagentStart` / `SubagentStop` コマンドフックを追加する。既存の `utils/claudeSettingsPreset.js` の配布経路で起動ごとの設定ファイルを作り、既存の Stop / PreToolUse フックを保持する。通常起動と API の再起動が対象。ガイド・セットアップなどフック設定を渡さない起動、配布に必要な信頼できる Node.js が見つからない環境ではコマンドだけを監視する。
+
+`vk-orchestrator-work-pane` プリセットでは Stop に加えて `PreToolUse`（matcher: `Bash|Read|Grep`、timeout: 5秒）から VK Orchestrator の `check-sensitive-output-hook` を呼び出す。両イベントは同じ検証済み Node.js / entry の絶対パスを使う。`src/engine/sensitive-output-hook.js` が存在しない、または信頼できない場合はプリセットを生成せず `Claude settings preset hook is unavailable` とする。
 
 フックは非 loopback 接続時に既存 HTTP API の認証ゲートを通る（loopback 既定では Bearer 照合を省略し、全接続で Origin と epoch を検証する） `POST /api/background-work` へ通知する。Bearer トークン・ペイン ID・起動ごとの乱数 epoch を接続ファイルへ保存する。ファイルは0600、親ディレクトリは0700。認証情報をコマンド行へ含めない。会話本文は転送しない。再起動は設定と epoch を別に準備し、停止と起動の成功時に接続ファイルと記録を切り替える。停止失敗時は新しい設定だけを捨てる。ペイン終了で接続ファイルと記録を解除し、古い epoch の通知を拒否する。同じプロセス内でセッションが切り替わった場合も、旧セッションの記録と遅延通知を除く。
 

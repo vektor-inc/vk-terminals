@@ -1,6 +1,6 @@
 # Changelog
 
-- [ セキュリティ修正 ] API キーを含む設定ファイルのアクセス権限を適正化
+- [ セキュリティ修正 ] アクセストークンを含む設定ファイルのアクセス権限を適正化（[#569](https://github.com/vektor-inc/vk-terminals/issues/569)）
 
 ## 1.95.0
 

@@ -937,7 +937,7 @@ function loadUserConfig() {
         normalizeLiveConfig(raw);
         return raw;
       } catch (e) {
-        console.error(`${LOG_PREFIX} Failed to parse config: ${configPath}`, e);
+        console.error(`${LOG_PREFIX} Failed to parse config: ${configPath}`, e.name);
       }
     }
   }
@@ -1879,7 +1879,7 @@ function persistApiToken(token) {
     fs.chmodSync(targetPath, 0o600); // rename 後の最終ファイルにも念のため明示適用
     return true;
   } catch (e) {
-    console.error(`${LOG_PREFIX} Failed to persist API token: ${targetPath}`, e);
+    console.error(`${LOG_PREFIX} Failed to persist API token: ${targetPath}`, e.name);
     try {
       if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
     } catch (_cleanupError) {
@@ -1906,7 +1906,7 @@ function ensureApiToken() {
       existing = config.apiToken.trim();
     }
   } catch (e) {
-    console.error(`${LOG_PREFIX} Failed to read existing API token: ${targetPath}`, e);
+    console.error(`${LOG_PREFIX} Failed to read existing API token: ${targetPath}`, e.name);
   }
   if (existing) {
     if (isValidApiTokenFormat(existing)) {
@@ -1918,11 +1918,15 @@ function ensureApiToken() {
     // 有効なままにしないため）。
     const replacement = generateApiToken();
     const persisted = persistApiToken(replacement);
+    // 保存できない既存ファイルも権限の修復を試みる。
+    if (!persisted && fs.existsSync(targetPath)) repairTokenConfigPermissions(targetPath);
     return { token: replacement, persisted };
   }
 
   const token = generateApiToken();
   const persisted = persistApiToken(token);
+  // 読み取り失敗などで保存できない場合も起動は継続する。
+  if (!persisted && fs.existsSync(targetPath)) repairTokenConfigPermissions(targetPath);
   return { token, persisted };
 }
 
@@ -2017,7 +2021,7 @@ ipcMain.handle('settings:describe', () => {
 
   const values = describeSettingsValues(descriptor, {
     onReadError: (targetPath, e) => {
-      console.error(`${LOG_PREFIX} Failed to read target config: ${targetPath}`, e);
+      console.error(`${LOG_PREFIX} Failed to read target config: ${targetPath}`, e.name);
     },
   });
   const targetInfo = describeTargetPaths(descriptor);

@@ -313,7 +313,7 @@ function atomicWriteJsonFile(targetPath, config) {
   // トークンを持つ設定では、外部処理が緩めた権限を引き継がない。
   if (Object.prototype.hasOwnProperty.call(config, 'apiToken')) mode = 0o600;
   try {
-    fs.writeFileSync(tmpPath, JSON.stringify(config, null, 2) + '\n', { mode });
+    fs.writeFileSync(tmpPath, JSON.stringify(config, null, 2) + '\n', { mode, flag: 'wx' });
     fs.chmodSync(tmpPath, mode);
     fs.renameSync(tmpPath, targetPath);
   } catch (error) {

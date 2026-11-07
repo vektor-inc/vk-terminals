@@ -1,5 +1,6 @@
 'use strict';
 
+const { describeConfigError } = require('./utils/errorKind');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -178,7 +179,7 @@ function resolveSavedFieldValues(descriptor, keys) {
     try {
       cached = { ok: true, data: readJsonObject(targetPath) };
     } catch (error) {
-      cached = { ok: false, error: `読み込みに失敗しました: ${error.message}` };
+      cached = { ok: false, error: `読み込みに失敗しました: ${describeConfigError(error)}` };
     }
     // 成功・失敗のどちらでも、try/catch の外（このスコープ内）で無条件に set する。
     jsonCache.set(targetPath, cached);
@@ -310,8 +311,10 @@ function atomicWriteJsonFile(targetPath, config) {
   } catch (_error) {
     mode = 0o600;
   }
+  // トークンを持つ設定では、外部処理が緩めた権限を引き継がない。
+  if (Object.prototype.hasOwnProperty.call(config, 'apiToken')) mode = 0o600;
   try {
-    fs.writeFileSync(tmpPath, JSON.stringify(config, null, 2) + '\n', { mode });
+    fs.writeFileSync(tmpPath, JSON.stringify(config, null, 2) + '\n', { mode, flag: 'wx' });
     fs.chmodSync(tmpPath, mode);
     fs.renameSync(tmpPath, targetPath);
   } catch (error) {
@@ -351,7 +354,7 @@ function saveSettingsToTargets(descriptor, incoming) {
   if (failedPaths.length > 0) {
     return {
       ok: false,
-      error: `保存に失敗: ${firstError ? firstError.message : '不明なエラー'}`,
+      error: `保存に失敗: ${firstError ? describeConfigError(firstError) : '不明なエラー'}`,
       targetPath,
       writtenPaths,
       failedPaths,

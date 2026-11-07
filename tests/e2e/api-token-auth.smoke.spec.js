@@ -16,6 +16,26 @@ const { closeApp, getFreePort, launchAppAndWait } = require('./helpers/electron-
 // この設定により待ち受けアドレスに関わらず認証が必須になる（shouldRequireAuth の
 // requireAlways 分岐）。
 
+// 起動前に権限を緩め、有効な既存トークンの再利用経路で修復されることを確認する。
+test('既存 API トークンの設定権限を起動時に修復する', async () => {
+  test.skip(process.platform === 'win32', 'POSIX 権限のみ対象');
+  let launched;
+  try {
+    launched = await launchAppAndWait({
+      port: await getFreePort(),
+      prefix: 'vk-terminals-e2e-token-permissions-',
+      config: { apiToken: 'a'.repeat(64) },
+      seedHome: ({ configDir }) => fs.chmodSync(path.join(configDir, 'config.json'), 0o644),
+    });
+    const configPath = path.join(launched.tmpHome, '.vk-terminals', 'config.json');
+    expect(fs.statSync(configPath).mode & 0o777).toBe(0o600);
+    // 再発行で偶然 600 になったケースを区別する。値は失敗ログにも出さない。
+    expect(JSON.parse(fs.readFileSync(configPath, 'utf8')).apiToken === 'a'.repeat(64)).toBe(true);
+  } finally {
+    if (launched) await closeApp(launched);
+  }
+});
+
 test.describe.serial('HTTP API のアクセストークン認証（issue #313）', () => {
   let app;
   let win;

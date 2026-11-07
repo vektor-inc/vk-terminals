@@ -769,3 +769,19 @@ test('resolveSavedFieldValues: 重複キーは先勝ち（renderer の dedupeSet
 
   assert.deepEqual(resolveSavedFieldValues(descriptor, ['engine']).engine, { ok: true, value: 'from-first' });
 });
+
+// 壊れた設定ファイルの断片を、保存・保存値照会の画面に返さない。
+test('設定 JSON の構文エラーは固定文、その他の失敗は元の文言を返す', (t) => {
+  const dir = makeTempDir();
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const targetPath = path.join(dir, 'config.json');
+  const descriptor = { targetPath, groups: [{ fields: [{ key: 'port', type: 'number' }] }] };
+  const fixed = '設定ファイルの形式が正しくありません。JSON の書き方を確認してください';
+  fs.writeFileSync(targetPath, '{"apiToken":"dummy",invalid}');
+  assert.equal(saveSettingsToTargets(descriptor, { port: 4000 }).error, `保存に失敗: ${fixed}`);
+  assert.equal(resolveSavedFieldValues(descriptor, ['port']).port.error, `読み込みに失敗しました: ${fixed}`);
+  // FS 例外のメッセージは従来のまま保持する。
+  t.mock.method(fs, 'readFileSync', () => { throw new Error('read unavailable'); });
+  assert.equal(saveSettingsToTargets(descriptor, { port: 4000 }).error, '保存に失敗: read unavailable');
+  assert.equal(resolveSavedFieldValues(descriptor, ['port']).port.error, '読み込みに失敗しました: read unavailable');
+});

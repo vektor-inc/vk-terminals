@@ -6,7 +6,7 @@ const os = require('os');
 const path = require('path');
 const { saveSettingsToTargets } = require('../settingsTargets');
 const { describeErrorKind } = require('../utils/errorKind');
-const { repairTokenConfigPermissions } = require('../utils/configFilePermissions');
+const { repairTokenConfigPermissions, repairOtherTokenConfigPermissions } = require('../utils/configFilePermissions');
 
 function fixture(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-permissions-'));
@@ -103,10 +103,17 @@ for (const scenario of ['valid', 'invalid', 'missing', 'unreadable']) {
       test(`起動配線: ${scenario} / 保存成功=${saveSucceeds} / ファイル有り=${fileExists}`, () => {
         const errors = [];
         let repaired = 0;
+        let candidatesChecked = 0;
         let persisted = 0;
         const configPath = '/temporary/custom-config.json';
         const context = {
           resolveTokenConfigPath: () => configPath,
+          userConfigCandidatePaths: () => [configPath, '/temporary/lower.json'],
+          repairOtherTokenConfigPermissions: (candidates, selected) => {
+            candidatesChecked++;
+            assert.deepEqual(Array.from(candidates), [configPath, '/temporary/lower.json']);
+            assert.equal(selected, configPath);
+          },
           fs: { existsSync: (target) => { assert.equal(target, configPath); return fileExists; } },
           readJsonObject: () => {
             if (scenario === 'unreadable') throw Object.assign(new Error('private input fragment'), { code: 'EACCES' });
@@ -121,6 +128,7 @@ for (const scenario of ['valid', 'invalid', 'missing', 'unreadable']) {
         };
         const result = vm.runInNewContext(`${ensureSource}\nensureApiToken()`, context);
         if (scenario === 'unreadable') assert.deepEqual(errors, [[`[test] Failed to read existing API token: ${configPath}`, 'EACCES']]);
+        assert.equal(candidatesChecked, 1);
         assert.equal(result.persisted, scenario === 'valid' || saveSucceeds);
         assert.equal(repaired, scenario === 'valid' || (!saveSucceeds && fileExists) ? 1 : 0);
         assert.equal(persisted, scenario === 'valid' ? 0 : 1);
@@ -199,6 +207,7 @@ for (const [start, end, invoke] of [
         console: { error: (...args) => errors.push(args) },
       });
       assert.equal(errors.length, 1);
+      assert.equal(errors[0].join(' ').includes('private input fragment'), false);
       assert.equal(errors[0][1], describeErrorKind(error));
       assert.equal(errors[0].length, 2);
     });
@@ -218,4 +227,49 @@ test('ログ分類: settings:describe の読み込み失敗', () => {
     });
     assert.deepEqual(errors, [['[test] Failed to read target config: /temporary/config.json', describeErrorKind(error)]]);
   }
+});
+
+// 全候補を一時ディレクトリに用意し、下位候補だけの修復を確認する。
+test('下位候補: 最上位の文字列 apiToken のみ修復し、壊れた候補の後も続行する', posix, (t) => {
+  const selected = fixture(t);
+  const dir = path.dirname(selected);
+  const entries = [
+    ['broken.json', '{'],
+    ['without.json', JSON.stringify({ port: 3000 })],
+    ['nested.json', JSON.stringify({ nested: { apiToken: 'dummy' } })],
+    ['number.json', JSON.stringify({ apiToken: 123 })],
+    ['null.json', 'null'],
+    ['app.json', JSON.stringify({ apiToken: 'dummy' })],
+    ['legacy.json', JSON.stringify({ apiToken: '' })],
+  ];
+  const candidates = entries.map(([name, content]) => {
+    const file = path.join(dir, name);
+    fs.writeFileSync(file, content);
+    fs.chmodSync(file, 0o644);
+    return file;
+  });
+  const before = candidates.map(file => fs.readFileSync(file, 'utf8'));
+  assert.doesNotThrow(() => repairOtherTokenConfigPermissions([selected, path.join(dir, 'missing.json'), ...candidates], selected));
+  assert.equal(fs.statSync(selected).mode & 0o777, 0o644);
+  candidates.forEach((file, index) => {
+    assert.equal(fs.statSync(file).mode & 0o777, index >= 5 ? 0o600 : 0o644);
+    assert.equal(fs.readFileSync(file, 'utf8') === before[index], true);
+  });
+});
+
+test('下位候補: 読み取り失敗を握り、次の候補を修復する', () => {
+  const repaired = [];
+  assert.doesNotThrow(() => repairOtherTokenConfigPermissions(['unreadable', 'next'], 'selected', {
+    platform: 'darwin', fsImpl: {
+      existsSync: () => true,
+      readFileSync: (file) => {
+        if (file === 'unreadable') throw new Error('private input fragment');
+        return JSON.stringify({ apiToken: 'dummy' });
+      },
+      openSync: (file) => { repaired.push(file); return 5; },
+      fstatSync: () => ({ mode: 0o644, isFile: () => true }),
+      fchmodSync: () => {}, closeSync: () => {},
+    },
+  }));
+  assert.deepEqual(repaired, ['next']);
 });

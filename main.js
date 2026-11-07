@@ -6,7 +6,7 @@ const path = require('path');
 const os = require('os');
 const { describeErrorKind } = require('./utils/errorKind');
 const fs = require('fs');
-const { repairTokenConfigPermissions } = require('./utils/configFilePermissions');
+const { repairTokenConfigPermissions, repairOtherTokenConfigPermissions } = require('./utils/configFilePermissions');
 const http = require('http');
 const crypto = require('crypto');
 const { execFile } = require('child_process');
@@ -1900,6 +1900,7 @@ function persistApiToken(token) {
 //   保存に成功しているか」（既存トークンの読み込みは常に persisted:true 扱い）
 function ensureApiToken() {
   const targetPath = resolveTokenConfigPath();
+  repairOtherTokenConfigPermissions(userConfigCandidatePaths(), targetPath);
   let existing = '';
   try {
     const config = readJsonObject(targetPath);

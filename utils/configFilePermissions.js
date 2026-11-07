@@ -22,4 +22,22 @@ function repairTokenConfigPermissions(targetPath, { fsImpl = fs, platform = proc
   }
 }
 
-module.exports = { repairTokenConfigPermissions };
+/** 選択されなかった候補も、トークンを保持している場合だけ修復する。 */
+function repairOtherTokenConfigPermissions(candidatePaths, selectedPath, { fsImpl = fs, platform = process.platform, warn = console.warn } = {}) {
+  if (platform === 'win32') return;
+  // 壊れた候補があっても、残りの候補の確認と起動を続ける。
+  for (const candidatePath of candidatePaths) {
+    if (candidatePath === selectedPath) continue;
+    try {
+      if (!fsImpl.existsSync(candidatePath)) continue;
+      const config = JSON.parse(fsImpl.readFileSync(candidatePath, 'utf8'));
+      if (config && Object.hasOwn(config, 'apiToken') && typeof config.apiToken === 'string') {
+        repairTokenConfigPermissions(candidatePath, { fsImpl, platform, warn });
+      }
+    } catch (_error) {
+      // 読み取り失敗の詳細には秘密情報が含まれうるため出力しない。
+    }
+  }
+}
+
+module.exports = { repairTokenConfigPermissions, repairOtherTokenConfigPermissions };

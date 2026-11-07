@@ -68,6 +68,7 @@ const {
 const { resolveCodexTaskPolicyLaunchOptions, resolveCodexPolicyContext } = require('./utils/codexTaskPolicy');
 const { getProtectedSyncCapabilitiesAsync, PROTECTED_SYNC_TARGETS } = require('./utils/codexTaskOps');
 const {
+  HOOK_UNAVAILABLE,
   validateClaudeSettingsPresetForEngine,
   prepareClaudeSettingsPreset,
   prepareBackgroundWorkSettings,
@@ -2422,7 +2423,7 @@ function createTerminalPane(cwd, options = {}, guide = null) {
       clearPaneBackgroundWork(id);
       if (options.claudeSettingsPreset !== undefined) {
         console.error(`${LOG_PREFIX} Claude settings preset preparation failed:`, error);
-        throw new Error('Claude settings preset hook is unavailable');
+        throw new Error(HOOK_UNAVAILABLE);
       }
       throw error;
     }
@@ -4115,7 +4116,7 @@ function startHttpApi() {
           } catch (error) {
             console.error(`${LOG_PREFIX} Claude settings preset preflight failed:`, error);
             res.writeHead(503, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: 'Claude settings preset hook is unavailable' }));
+            res.end(JSON.stringify({ error: HOOK_UNAVAILABLE }));
             return;
           }
         }
@@ -4155,9 +4156,10 @@ function startHttpApi() {
           const resolve = (result) => {
             clearTimeout(timeoutId);
             if (result.error) {
-              // 事前確認後の状態変化で terminal:create 側の再準備が失敗した場合は 500 とする。
+              // IPC が付けた例外の接頭辞を除き、呼び出し元が再試行を判定できる文言に戻す。
+              const error = String(result.error).includes(HOOK_UNAVAILABLE) ? HOOK_UNAVAILABLE : result.error;
               res.writeHead(500, { 'Content-Type': 'application/json' });
-              res.end(JSON.stringify({ error: result.error }));
+              res.end(JSON.stringify({ error }));
             } else {
               res.writeHead(200, { 'Content-Type': 'application/json' });
               res.end(JSON.stringify({ ok: true, termId: result.termId }));
@@ -4402,7 +4404,7 @@ function startHttpApi() {
               launchResolution.discard();
               console.error(`${LOG_PREFIX} Claude settings preset restart preparation failed:`, error);
               res.writeHead(503, { 'Content-Type': 'application/json' });
-              res.end(JSON.stringify({ error: 'Claude settings preset hook is unavailable' }));
+              res.end(JSON.stringify({ error: HOOK_UNAVAILABLE }));
               return;
             }
             let stagedBackgroundWork;
@@ -4412,7 +4414,7 @@ function startHttpApi() {
               launchResolution.discard();
               console.error(`${LOG_PREFIX} Claude settings preset restart preparation failed:`, error);
               res.writeHead(503, { 'Content-Type': 'application/json' });
-              res.end(JSON.stringify({ error: 'Claude settings preset hook is unavailable' }));
+              res.end(JSON.stringify({ error: HOOK_UNAVAILABLE }));
               return;
             }
             launchOptions = stagedBackgroundWork.options;

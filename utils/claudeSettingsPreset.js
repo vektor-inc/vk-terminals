@@ -9,6 +9,7 @@ const crypto = require('crypto');
 const { resolveTrustedExecutableDetailed, resolveTrustedPath } = require('./codexTaskOps');
 const { listToolSearchDirs } = require('./codexTaskPolicy');
 
+const HOOK_UNAVAILABLE = 'Claude settings preset hook is unavailable';
 const PRESET = 'vk-orchestrator-work-pane';
 const ALLOWED_CLAUDE_SETTINGS_PRESETS = Object.freeze([PRESET]);
 const SETTINGS_PATH_PATTERN = /^\/[^\x00-\x1f\x7f]+$/;
@@ -55,25 +56,21 @@ function resolveClaudeSettingsHookCommands(options = {}) {
   const installedRoot = path.resolve(__dirname, '..', '..', '..');
   const orchestratorEntry = resolveVkOrchestratorEntry(options.vkOrchestratorRoot || installedRoot, fsImpl, { uid: options.uid });
   if (!node || !SAFE_LAUNCHER_PATH_PATTERN.test(node.path) || !orchestratorEntry) {
-    throw new Error('Claude settings preset hook is unavailable');
+    throw new Error(HOOK_UNAVAILABLE);
   }
   // 未対応の旧版で未知のサブコマンドが通常起動へ進むのを防ぐ。
   try {
-    resolveTrustedPath(fsImpl, path.join(options.vkOrchestratorRoot || installedRoot, 'src', 'engine', 'sensitive-output-hook.js'), {
+    resolveTrustedPath(fsImpl, path.join(path.dirname(path.dirname(orchestratorEntry)), 'src', 'engine', 'sensitive-output-hook.js'), {
       finalKind: 'file', rejectFinalLink: true, uid: options.uid,
     });
   } catch (_error) {
-    throw new Error('Claude settings preset hook is unavailable');
+    throw new Error(HOOK_UNAVAILABLE);
   }
   const launcher = `${quoteShellArgument(node.path)} ${quoteShellArgument(orchestratorEntry)}`;
   return {
     stop: `${launcher} check-turn-end-status-hook`,
     preToolUse: `${launcher} check-sensitive-output-hook`,
   };
-}
-
-function resolveClaudeSettingsHookCommand(options = {}) {
-  return resolveClaudeSettingsHookCommands(options).stop;
 }
 
 function buildPreset(commands) {
@@ -212,7 +209,8 @@ module.exports = {
   isValidClaudeSettingsPreset,
   validateClaudeSettingsPresetForEngine,
   resolveVkOrchestratorEntry,
-  resolveClaudeSettingsHookCommand,
+  resolveClaudeSettingsHookCommands,
+  HOOK_UNAVAILABLE,
   prepareClaudeSettingsPreset,
   buildClaudeSettingsArgument,
 };

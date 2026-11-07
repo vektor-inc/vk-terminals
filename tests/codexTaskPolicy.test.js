@@ -1528,7 +1528,7 @@ test('terminal:create は PTY を作る前に起動オプションを解決し�
   const afterSpawn = handler.slice(spawnAt);
   const preparationCatch = handler.slice(resolveAt, spawnAt + afterSpawn.indexOf('});'));
   assert.match(preparationCatch, /catch \(error\) \{\s*discardLaunchHome\(\);/);
-  assert.match(preparationCatch, /throw new Error\('Claude settings preset hook is unavailable'\)/);
+  assert.match(preparationCatch, /throw new Error\(HOOK_UNAVAILABLE\)/);
   assert.match(preparationCatch, /throw error;/);
   assert.equal((handler.match(/discardLaunchHome\(\);/g) || []).length, 2);
 });

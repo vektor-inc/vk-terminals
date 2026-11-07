@@ -22,7 +22,7 @@
 //   alternative: 代替になりうる固定入口の操作（無ければ null）
 
 // 写した時点の vk-agents のコミット（git -C <vk-agents> rev-parse --short HEAD）。
-const SNAPSHOT_VK_AGENTS_COMMIT = '3ec0f798';
+const SNAPSHOT_VK_AGENTS_COMMIT = '20309b60';
 
 const SHA_A = 'abc1234def5678abc1234def5678abc1234def56';
 const SHA_B = '0123456789abcdef0123456789abcdef01234567';
@@ -41,20 +41,20 @@ const requiredOperations = [
   { procedureOperation: 'gh-read.sh issue-assets', source: 'codex/vk-kore/step-1-2.md:39', argv: ['gh', 'issue', 'save-image', ATTACHMENT_URL, '--out', 'asset-1.png'], expected: { bin: 'gh', operation: 'issue-image-save' }, explicitRepo: false },
   { procedureOperation: 'repo-prepare.sh issue-worktree', source: 'codex/vk-kore/step-1-2.md:26', argv: ['prepare', 'worktree', 'main', '523', WORK_BRANCH, 'codex-1'], expected: { operation: 'prepare-worktree' }, explicitRepo: false },
   { procedureOperation: 'repo-prepare.sh issue-worktree-adopt', source: 'codex/vk-kore/step-1-2.md:25', argv: ['prepare', 'adopt-worktree', 'main', '523', WORK_BRANCH, 'codex-1'], expected: { operation: 'prepare-adopt-worktree' }, explicitRepo: false },
-  { procedureOperation: 'git status', source: 'codex/vk-kore/step-3-7-implementation-and-pr.md:27', argv: ['git', 'status', '--porcelain'], expected: { bin: 'git', gitSubcommand: 'status' }, explicitRepo: false },
+  { procedureOperation: 'git status', source: 'codex/vk-kore/step-3-7-implementation-and-pr.md:29', argv: ['git', 'status', '--porcelain'], expected: { bin: 'git', gitSubcommand: 'status' }, explicitRepo: false },
 
   // ── 実装・PR 作成 ──
-  { procedureOperation: 'gh-write.sh push', source: 'codex/vk-kore/step-3-7-implementation-and-pr.md:30', argv: ['git', 'push', WORK_BRANCH], expected: { operation: 'push' }, explicitRepo: false },
-  { procedureOperation: 'gh-write.sh pr-create', source: 'codex/vk-kore/step-3-7-implementation-and-pr.md:67', argv: ['gh', 'pr', 'create', '--head', WORK_BRANCH, '--title-file', 'pr-title.txt', '--body-file', 'pr-body.md'], expected: { bin: 'gh', args: ['pr', 'create', '--head', WORK_BRANCH] }, explicitRepo: true },
-  { procedureOperation: 'gh-read.sh pr-view', procedureNames: ['gh pr view'], source: 'codex/vk-kore/step-3-7-implementation-and-pr.md:81', argv: ['gh', 'pr', 'view', '529', '--json', 'title,body'], expected: { bin: 'gh', args: ['pr', 'view', '529', '--json', 'title,body'] }, explicitRepo: true },
-  { procedureOperation: 'gh-write.sh pr-edit', source: 'codex/vk-kore/step-3-7-implementation-and-pr.md:83', argv: ['gh', 'pr', 'edit', '529', '--title-file', 'pr-title.txt', '--body-file', 'pr-body.md'], expected: { operation: 'pr-edit' }, explicitRepo: false },
+  { procedureOperation: 'gh-write.sh push', source: 'codex/vk-kore/step-3-7-implementation-and-pr.md:32', argv: ['git', 'push', WORK_BRANCH], expected: { operation: 'push' }, explicitRepo: false },
+  { procedureOperation: 'gh-write.sh pr-create', source: 'codex/vk-kore/step-3-7-implementation-and-pr.md:69', argv: ['gh', 'pr', 'create', '--head', WORK_BRANCH, '--title-file', 'pr-title.txt', '--body-file', 'pr-body.md'], expected: { bin: 'gh', args: ['pr', 'create', '--head', WORK_BRANCH] }, explicitRepo: true },
+  { procedureOperation: 'gh-read.sh pr-view', procedureNames: ['gh pr view'], source: 'codex/vk-kore/step-3-7-implementation-and-pr.md:83', argv: ['gh', 'pr', 'view', '529', '--json', 'title,body'], expected: { bin: 'gh', args: ['pr', 'view', '529', '--json', 'title,body'] }, explicitRepo: true },
+  { procedureOperation: 'gh-write.sh pr-edit', source: 'codex/vk-kore/step-3-7-implementation-and-pr.md:85', argv: ['gh', 'pr', 'edit', '529', '--title-file', 'pr-title.txt', '--body-file', 'pr-body.md'], expected: { operation: 'pr-edit' }, explicitRepo: false },
   { procedureOperation: 'gh-write.sh issue-comment', source: 'codex/vk-kore/step-1-2.md:16', argv: ['gh', 'issue', 'comment', '523', '--body-file', 'comment.md'], expected: { bin: 'gh', args: ['issue', 'comment', '523'] }, explicitRepo: true },
 
   // ── レビュー ──
   { procedureOperation: 'gh-read.sh pr-view', source: 'codex/vk-kore/step-8-2b-split-review.md:21', argv: ['gh', 'pr', 'view', '529', '--json', 'baseRefName'], expected: { bin: 'gh', args: ['pr', 'view', '529', '--json', 'baseRefName'] }, explicitRepo: true },
-  { procedureOperation: 'gh-read.sh pr-view', source: 'codex/vk-kore/step-8-review-gate.md:105', argv: ['gh', 'pr', 'view', '529', '--json', 'headRefOid'], expected: { bin: 'gh', args: ['pr', 'view', '529', '--json', 'headRefOid'] }, explicitRepo: true },
+  { procedureOperation: 'gh-read.sh pr-view', source: 'codex/vk-kore/step-8-review-gate.md:107', argv: ['gh', 'pr', 'view', '529', '--json', 'headRefOid'], expected: { bin: 'gh', args: ['pr', 'view', '529', '--json', 'headRefOid'] }, explicitRepo: true },
   { procedureOperation: 'gh-read.sh pr-diff', procedureNames: ['gh pr diff'], source: 'codex/vk-kore/step-8-review-gate.md:71', argv: ['gh', 'pr', 'diff', '529', '--name-only'], expected: { bin: 'gh', args: ['pr', 'diff', '529', '--name-only'] }, explicitRepo: true },
-  { procedureOperation: 'gh-read.sh pr-diff', source: 'codex/vk-kore/step-8-review-gate.md:105', argv: ['gh', 'pr', 'diff', '529', '--patch'], expected: { bin: 'gh', args: ['pr', 'diff', '529', '--patch'] }, explicitRepo: true },
+  { procedureOperation: 'gh-read.sh pr-diff', source: 'codex/vk-kore/step-8-review-gate.md:107', argv: ['gh', 'pr', 'diff', '529', '--patch'], expected: { bin: 'gh', args: ['pr', 'diff', '529', '--patch'] }, explicitRepo: true },
   { procedureOperation: 'gh-read.sh compare-merge-base', source: 'codex/vk-kore/step-8-2b-split-review.md:35', argv: ['git', 'merge-base', 'origin/main', SHA_A], expected: { bin: 'git', gitSubcommand: 'merge-base' }, explicitRepo: false, note: '手順は GitHub のコンペア API でマージベースを取る。固定入口には無いため、ローカルの git merge-base に読み替えた（先に git fetch が要る）。' },
   { procedureOperation: 'git fetch', source: 'codex/vk-kore/step-8-2b-split-review.md:60', argv: ['git', 'fetch'], expected: { operation: 'fetch-default-branch' }, explicitRepo: false, note: '手順は git fetch origin <ベースブランチ名> と引数つき。固定入口の git fetch は引数なしで既定ブランチだけを取るため読み替えた。ベースが既定ブランチ以外の PR では同じ働きにならない。' },
   { procedureOperation: 'git diff', source: 'codex/vk-kore/step-8-2b-split-review.md:70', argv: ['git', 'diff', '--no-renames', '--name-only', SHA_B, SHA_A], expected: { bin: 'git', gitSubcommand: 'diff' }, explicitRepo: false, note: '手順は git -C <dir> -c core.quotePath=false diff … > <ファイル> と書く。-C は作業フォルダの指定、リダイレクトは入口が受けないため外して読み替えた。-c core.quotePath=false を外した件は knownGaps に別項目で登録している。' },
@@ -65,11 +65,11 @@ const requiredOperations = [
 
   // ── レビュー完了マーカー・CI ──
   { procedureOperation: 'gh-read.sh pr-checks', source: 'codex/vk-kore/step-9-markers.md:86', argv: ['gh', 'pr', 'checks', '529', '--json', 'name,bucket'], expected: { bin: 'gh', args: ['pr', 'checks', '529', '--json', 'name,bucket'] }, explicitRepo: true },
-  { procedureOperation: 'gh-read.sh label-exists', source: 'codex/vk-kore/step-9-markers.md:111', argv: ['gh', 'label', 'exists', REVIEW_LABEL], expected: { operation: 'label-exists' }, explicitRepo: true },
-  { procedureOperation: 'gh-write.sh label-create', source: 'codex/vk-kore/step-9-markers.md:117', argv: ['gh', 'label', 'create', REVIEW_LABEL], expected: { operation: 'label-create' }, explicitRepo: true },
-  { procedureOperation: 'gh-write.sh label-add', source: 'codex/vk-kore/step-9-markers.md:123', argv: ['gh', 'pr', 'add-label', '529', REVIEW_LABEL], expected: { operation: 'pr-add-label' }, explicitRepo: true },
-  { procedureOperation: 'gh-read.sh issue-has-label', source: 'codex/vk-kore/step-9-markers.md:129', argv: ['gh', 'pr', 'has-label', '529', REVIEW_LABEL], expected: { operation: 'pr-has-label' }, explicitRepo: true },
-  { procedureOperation: 'gh-write.sh pr-comment', source: 'codex/vk-kore/step-9-markers.md:151', argv: ['gh', 'pr', 'comment', '529', '--body-file', 'marker.md'], expected: { bin: 'gh', args: ['pr', 'comment', '529'] }, explicitRepo: true },
+  { procedureOperation: 'gh-read.sh label-exists', source: 'codex/vk-kore/step-9-markers.md:113', argv: ['gh', 'label', 'exists', REVIEW_LABEL], expected: { operation: 'label-exists' }, explicitRepo: true },
+  { procedureOperation: 'gh-write.sh label-create', source: 'codex/vk-kore/step-9-markers.md:119', argv: ['gh', 'label', 'create', REVIEW_LABEL], expected: { operation: 'label-create' }, explicitRepo: true },
+  { procedureOperation: 'gh-write.sh label-add', source: 'codex/vk-kore/step-9-markers.md:125', argv: ['gh', 'pr', 'add-label', '529', REVIEW_LABEL], expected: { operation: 'pr-add-label' }, explicitRepo: true },
+  { procedureOperation: 'gh-read.sh issue-has-label', source: 'codex/vk-kore/step-9-markers.md:131', argv: ['gh', 'pr', 'has-label', '529', REVIEW_LABEL], expected: { operation: 'pr-has-label' }, explicitRepo: true },
+  { procedureOperation: 'gh-write.sh pr-comment', source: 'codex/vk-kore/step-9-markers.md:153', argv: ['gh', 'pr', 'comment', '529', '--body-file', 'marker.md'], expected: { bin: 'gh', args: ['pr', 'comment', '529'] }, explicitRepo: true },
 
   // ── マージ・完了処理 ──
   { procedureOperation: 'gh-read.sh pr-view', sourceNeedle: 'headRefName', source: 'codex/vk-kore/step-10-1-merge-on-instruction.md:7', argv: ['gh', 'pr', 'view', '529', '--json', 'headRefName'], expected: { bin: 'gh', args: ['pr', 'view', '529', '--json', 'headRefName'] }, explicitRepo: true },
@@ -77,7 +77,7 @@ const requiredOperations = [
   { procedureOperation: 'gh-read.sh pr-view', source: 'codex/vk-kore/step-10-1-merge-on-instruction.md:11', argv: ['gh', 'pr', 'view', '529', '--json', 'state'], expected: { bin: 'gh', args: ['pr', 'view', '529', '--json', 'state'] }, explicitRepo: true },
   { procedureOperation: 'gh-write.sh label-remove', source: 'codex/vk-kore/step-10-1-merge-on-instruction.md:12', argv: ['gh', 'issue', 'edit', '523', '--remove-label', 'working'], expected: { operation: 'issue-remove-label' }, explicitRepo: false },
   { procedureOperation: 'gh issue close', source: 'codex/vk-kore/step-10-1-merge-on-instruction.md:12', argv: ['gh', 'issue', 'close', '523'], expected: { operation: 'issue-close' }, explicitRepo: false },
-  { procedureOperation: 'prepare reattach-branch', source: 'codex/vk-kore/step-8-7-e2e.md:39', sourceNeedle: '作業ブランチへの復帰', argv: ['prepare', 'reattach-branch', '544', 'feature/544-reattach-branch', 'codex-544'], expected: { operation: 'prepare-reattach-branch' }, explicitRepo: false, note: '手順は vk-agents の docs/codex-prepared-worktree.md「作業ブランチへの復帰（正本）」を指し、正本が起動元の案内にある prepare reattach-branch を使うと定めている（vk-agents#732）。' },
+  { procedureOperation: 'prepare reattach-branch', source: 'codex/vk-kore/step-8-7-e2e.md:41', sourceNeedle: '作業ブランチへの復帰', argv: ['prepare', 'reattach-branch', '544', 'feature/544-reattach-branch', 'codex-544'], expected: { operation: 'prepare-reattach-branch' }, explicitRepo: false, note: '手順は vk-agents の docs/codex-prepared-worktree.md「作業ブランチへの復帰（正本）」を指し、正本が起動元の案内にある prepare reattach-branch を使うと定めている（vk-agents#732）。' },
 ];
 
 // 手順が要求するのに、固定入口が受理しない操作（既知の不足）。除外リストとして扱い、受理されるようになったらテストが失敗して
@@ -150,7 +150,7 @@ const knownGaps = [
   },
   {
     procedureOperation: 'run-member-agent.sh --engine claude',
-    source: 'codex/vk-kore/step-8-review-execution.md:62',
+    source: 'codex/vk-kore/step-8-review-execution.md:68',
     argv: ['member', 'start', '--engine', 'claude', '--prompt', 'review-prompt.txt', '--schema', 'review-schema.json', '--out', 'review-result.json'],
     expectedError: /engine not supported: "claude"/,
     reason: 'レビュアーを Claude Code で起動する経路。固定入口の `member start` は `--engine codex` だけに対応している（Claude Code は別対応）。',
@@ -173,7 +173,7 @@ const notApplicable = [
   {
     procedureOperation: 'gh pr edit',
     source: 'codex/vk-kore/step-1-2.md:18',
-    reason: '生の `gh pr edit` は例外なく毎回承認と禁止されている文脈（step-9-markers.md:120 の `gh pr edit --add-label` も「使わない」）。PR の編集は gh-write.sh pr-edit の項目で照合する。',
+    reason: '生の `gh pr edit` は例外なく毎回承認と禁止されている文脈（step-9-markers.md:122 の `gh pr edit --add-label` も「使わない」）。PR の編集は gh-write.sh pr-edit の項目で照合する。',
   },
   {
     procedureOperation: 'gh pr checkout',

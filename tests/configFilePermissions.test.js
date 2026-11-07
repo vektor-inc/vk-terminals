@@ -5,6 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { saveSettingsToTargets } = require('../settingsTargets');
+const { USER_CONFIG_MAX_BYTES } = require('../utils/configLiveReload');
 const { describeErrorKind } = require('../utils/errorKind');
 const { repairTokenConfigPermissions, repairOtherTokenConfigPermissions } = require('../utils/configFilePermissions');
 
@@ -230,7 +231,7 @@ test('ログ分類: settings:describe の読み込み失敗', () => {
 });
 
 // 全候補を一時ディレクトリに用意し、下位候補だけの修復を確認する。
-test('下位候補: 最上位の文字列 apiToken のみ修復し、壊れた候補の後も続行する', posix, (t) => {
+test('下位候補: 最上位の文字列 apiToken と壊れた候補を修復し、走査を続行する', posix, (t) => {
   const selected = fixture(t);
   const dir = path.dirname(selected);
   const entries = [
@@ -252,24 +253,93 @@ test('下位候補: 最上位の文字列 apiToken のみ修復し、壊れた�
   assert.doesNotThrow(() => repairOtherTokenConfigPermissions([selected, path.join(dir, 'missing.json'), ...candidates], selected));
   assert.equal(fs.statSync(selected).mode & 0o777, 0o644);
   candidates.forEach((file, index) => {
-    assert.equal(fs.statSync(file).mode & 0o777, index >= 5 ? 0o600 : 0o644);
+    assert.equal(fs.statSync(file).mode & 0o777, index === 0 || index >= 5 ? 0o600 : 0o644);
     assert.equal(fs.readFileSync(file, 'utf8') === before[index], true);
   });
 });
 
-test('下位候補: 読み取り失敗を握り、次の候補を修復する', () => {
-  const repaired = [];
-  assert.doesNotThrow(() => repairOtherTokenConfigPermissions(['unreadable', 'next'], 'selected', {
-    platform: 'darwin', fsImpl: {
-      existsSync: () => true,
-      readFileSync: (file) => {
-        if (file === 'unreadable') throw new Error('private input fragment');
-        return JSON.stringify({ apiToken: 'dummy' });
+// 読み取りと解析の例外を捕捉し、秘密情報をログへ渡さない。
+for (const failure of ['read', 'parse']) {
+  test(`下位候補: ${failure} 失敗でも修復を試み、警告は固定文1件のみ`, () => {
+    const repaired = [];
+    const warnings = [];
+    repairOtherTokenConfigPermissions(['unreadable', 'next'], 'selected', {
+      platform: 'darwin', warn: (...args) => warnings.push(args), fsImpl: {
+        statSync: () => ({ size: 100, isFile: () => true }),
+        readFileSync: (file) => {
+          if (file === 'unreadable') {
+            if (failure === 'read') throw new Error('private input fragment');
+            return '{private input fragment';
+          }
+          return JSON.stringify({ apiToken: 'dummy' });
+        },
+        openSync: (file) => {
+          repaired.push(file);
+          if (file === 'unreadable') throw new Error('private input fragment');
+          return 5;
+        },
+        fstatSync: () => ({ mode: 0o644, isFile: () => true }),
+        fchmodSync: () => {}, closeSync: () => {},
       },
+    });
+    assert.deepEqual(repaired, ['unreadable', 'next']);
+    assert.deepEqual(warnings, [['[vk-terminals] API token config permissions could not be secured.']]);
+    assert.equal(warnings.flat().some(value => String(value).includes('private input fragment')), false);
+  });
+}
+
+test('下位候補: stat 失敗の例外を出力せず、次の候補を修復する', () => {
+  const repaired = [];
+  const warnings = [];
+  repairOtherTokenConfigPermissions(['missing', 'next'], 'selected', {
+    platform: 'darwin', warn: (...args) => warnings.push(args), fsImpl: {
+      statSync: (file) => {
+        if (file === 'missing') throw new Error('private input fragment');
+        return { size: 100, isFile: () => true };
+      },
+      readFileSync: () => JSON.stringify({ apiToken: 'dummy' }),
       openSync: (file) => { repaired.push(file); return 5; },
       fstatSync: () => ({ mode: 0o644, isFile: () => true }),
       fchmodSync: () => {}, closeSync: () => {},
     },
-  }));
+  });
   assert.deepEqual(repaired, ['next']);
+  assert.deepEqual(warnings, []);
 });
+
+test('下位候補: 非通常ファイルを読まず、修復もしない', () => {
+  const warnings = [];
+  let reads = 0;
+  let opens = 0;
+  repairOtherTokenConfigPermissions(['fifo'], 'selected', {
+    platform: 'darwin', warn: (...args) => warnings.push(args), fsImpl: {
+      statSync: () => ({ size: 0, isFile: () => false }),
+      readFileSync: () => { reads++; return '{}'; },
+      openSync: () => { opens++; return 5; },
+    },
+  });
+  assert.equal(reads, 0);
+  assert.equal(opens, 0);
+  assert.deepEqual(warnings, []);
+});
+
+// 共有上限ちょうどまでは判定し、上限超過は読み取らず権限だけを修復する。
+for (const size of [USER_CONFIG_MAX_BYTES, USER_CONFIG_MAX_BYTES + 1]) {
+  test(`下位候補: サイズ ${size} の読み取りと修復`, () => {
+    let reads = 0;
+    let repairs = 0;
+    const warnings = [];
+    repairOtherTokenConfigPermissions(['large'], 'selected', {
+      platform: 'darwin', warn: (...args) => warnings.push(args), fsImpl: {
+        statSync: () => ({ size, isFile: () => true }),
+        readFileSync: () => { reads++; return '{}'; },
+        openSync: () => 5,
+        fstatSync: () => ({ mode: 0o644, isFile: () => true }),
+        fchmodSync: () => { repairs++; }, closeSync: () => {},
+      },
+    });
+    assert.equal(reads, size <= USER_CONFIG_MAX_BYTES ? 1 : 0);
+    assert.equal(repairs, size > USER_CONFIG_MAX_BYTES ? 1 : 0);
+    assert.deepEqual(warnings, []);
+  });
+}

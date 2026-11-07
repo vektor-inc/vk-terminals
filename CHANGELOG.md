@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 不具合修正 ] Node.js 未導入の Mac で、組み込みアプリ版の作業ペインに Claude Code のフックを設定できない不具合を修正（[#573](https://github.com/vektor-inc/vk-terminals/issues/573)）
+
 ## 1.95.1
 
 - [ セキュリティ修正 ] アクセストークンを含む設定ファイルのアクセス権限とエラー表示を適正化（[#569](https://github.com/vektor-inc/vk-terminals/issues/569)）

@@ -344,3 +344,70 @@ test('new-pane は IPC の例外を固定文言に正規化し、他のエラー
     assert.deepEqual(body, { error: String(error).includes(HOOK_UNAVAILABLE) ? HOOK_UNAVAILABLE : error });
   }
 });
+
+// Node.js 未導入のアプリ版でも、引用した実行ファイルに引数をそのまま渡す。
+test('組み込みアプリのフックは空白入り実行ファイルを env 経由で起動する', (t) => {
+  const fixture = createFixture(t);
+  const execPath = path.join(fixture.root, "VK Orchestrator's App");
+  fs.writeFileSync(execPath, '#!/bin/sh\nprintf "%s\\n" "$ELECTRON_RUN_AS_NODE" "$@"\n', { mode: 0o700 });
+  const options = { nodeSearchDirs: [], vkOrchestratorRoot: fixture.orchestratorRoot, electronHookExecPath: execPath };
+  const commands = resolveClaudeSettingsHookCommands(options);
+  const processCommands = resolveClaudeSettingsHookCommands({ ...options, electronHookExecPath: process.execPath });
+  assert.ok(processCommands.stop.startsWith(`/usr/bin/env ELECTRON_RUN_AS_NODE=1 ${require('../utils/restartAgent').quoteShellArgument(process.execPath)} `));
+  for (const [event, argument] of [['stop', 'check-turn-end-status-hook'], ['preToolUse', 'check-sensitive-output-hook']]) {
+    assert.match(commands[event], /^\/usr\/bin\/env ELECTRON_RUN_AS_NODE=1 /);
+    assert.deepEqual(childProcess.execFileSync('/bin/sh', ['-c', commands[event]], { encoding: 'utf8' }).trim().split('\n'),
+      ['1', fs.realpathSync(path.join(fixture.orchestratorRoot, 'bin', 'vk-orchestrator.js')), argument]);
+  }
+  assert.throws(() => resolveClaudeSettingsHookCommands({ ...options, electronHookExecPath: undefined }), /unavailable/);
+});
+
+// 不正な起動元が指定された場合は node にフォールバックしない。
+test('両フック設定は信頼できない Electron 起動元を拒否する', (t) => {
+  const fixture = createFixture(t);
+  const execPath = path.join(fixture.toolsDir, 'Electron App');
+  fs.writeFileSync(execPath, '#!/bin/sh\n', { mode: 0o700 });
+  const { prepareBackgroundWorkSettings } = require('../utils/claudeSettingsPreset');
+  fs.mkdirSync(fixture.dataDir);
+  const cases = [
+    { electronHookExecPath: 'relative/app' },
+    { electronHookExecPath: execPath + '\n' },
+    { electronHookExecPath: execPath + '\x7f' },
+    { electronHookExecPath: fixture.toolsDir },
+    { electronHookExecPath: execPath + '-missing' },
+    ...[{ uid: 123456789 }, { mode: 0o100720 }, { mode: 0o100600 }].map((override) => ({
+      electronHookExecPath: execPath,
+      fs: { ...fs, lstatSync(filename) {
+        const stat = fs.lstatSync(filename);
+        return filename === fs.realpathSync(execPath) ? Object.assign(stat, override) : stat;
+      }, statSync(filename) {
+        const stat = fs.statSync(filename);
+        return filename === fs.realpathSync(execPath) ? Object.assign(stat, override) : stat;
+      } },
+    })),
+  ];
+  for (const invalid of cases) {
+    const options = { nodeSearchDirs: [fixture.toolsDir], vkOrchestratorRoot: fixture.orchestratorRoot, ...invalid };
+    assert.throws(() => resolveClaudeSettingsHookCommands(options), new RegExp(HOOK_UNAVAILABLE));
+    assert.throws(() => prepareBackgroundWorkSettings(fixture.dataDir, {}, null, options), /Background work hook runtime unavailable/);
+  }
+});
+
+test('main は組み込み済み配布版だけにプロセス由来の起動元を渡す', () => {
+  const from = mainSource.indexOf('function resolveEmbeddedHookRuntimeOptions');
+  const until = mainSource.indexOf('function resolveClaudeSettingsLaunchOptions', from);
+  const resolve = new Function('EMBEDDED_OPTIONS', 'app', 'process', mainSource.slice(from, until) + '; return resolveEmbeddedHookRuntimeOptions();');
+  for (const embedded of [null, {}]) {
+    for (const isPackaged of [false, true]) {
+      assert.deepEqual(resolve(embedded, { isPackaged }, { execPath: '/Applications/Host App' }),
+        embedded !== null && isPackaged ? { electronHookExecPath: '/Applications/Host App' } : {});
+    }
+  }
+  for (const name of ['stagePaneBackgroundWork', 'resolveClaudeSettingsLaunchOptions']) {
+    const body = mainSource.slice(mainSource.indexOf('function ' + name));
+    const section = body.slice(0, body.indexOf('\n}'));
+    assert.match(section, /\.\.\.resolveEmbeddedHookRuntimeOptions\(\)/);
+    assert.doesNotMatch(section, /options\.electronHookExecPath/);
+  }
+  assert.doesNotMatch(mainSource, /ELECTRON_RUN_AS_NODE/);
+});

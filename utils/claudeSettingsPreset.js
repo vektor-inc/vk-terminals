@@ -45,17 +45,31 @@ function resolveVkOrchestratorEntry(root, fsImpl = fs, options = {}) {
   }
 }
 
+// Electron はフックの子プロセスだけ Node.js モードにし、ペインへ環境変数を渡さない。
+function resolveHookLauncher(options = {}) {
+  const fsImpl = options.fs || fs;
+  if (options.electronHookExecPath !== undefined) {
+    const execPath = options.electronHookExecPath;
+    if (typeof execPath !== 'string' || !SETTINGS_PATH_PATTERN.test(execPath)) return null;
+    try {
+      const { realPath } = resolveTrustedPath(fsImpl, execPath, { finalKind: 'file', uid: options.uid });
+      if (!SETTINGS_PATH_PATTERN.test(realPath) || (fsImpl.statSync(realPath).mode & 0o111) === 0) return null;
+      return `/usr/bin/env ELECTRON_RUN_AS_NODE=1 ${quoteShellArgument(execPath)}`;
+    } catch (_) {
+      return null;
+    }
+  }
+  const node = resolveTrustedExecutableDetailed(fsImpl, 'node',
+    options.nodeSearchDirs || listToolSearchDirs(options.homeDir, options.pathEnv), { uid: options.uid });
+  return node && SAFE_LAUNCHER_PATH_PATTERN.test(node.path) ? quoteShellArgument(node.path) : null;
+}
+
 function resolveClaudeSettingsHookCommands(options = {}) {
   const fsImpl = options.fs || fs;
-  const node = resolveTrustedExecutableDetailed(
-    fsImpl,
-    'node',
-    options.nodeSearchDirs || listToolSearchDirs(options.homeDir, options.pathEnv),
-    { uid: options.uid }
-  );
+  const runtimeLauncher = resolveHookLauncher(options);
   const installedRoot = path.resolve(__dirname, '..', '..', '..');
   const orchestratorEntry = resolveVkOrchestratorEntry(options.vkOrchestratorRoot || installedRoot, fsImpl, { uid: options.uid });
-  if (!node || !SAFE_LAUNCHER_PATH_PATTERN.test(node.path) || !orchestratorEntry) {
+  if (!runtimeLauncher || !orchestratorEntry) {
     throw new Error(HOOK_UNAVAILABLE);
   }
   // 未対応の旧版で未知のサブコマンドが通常起動へ進むのを防ぐ。
@@ -66,7 +80,7 @@ function resolveClaudeSettingsHookCommands(options = {}) {
   } catch (_error) {
     throw new Error(HOOK_UNAVAILABLE);
   }
-  const launcher = `${quoteShellArgument(node.path)} ${quoteShellArgument(orchestratorEntry)}`;
+  const launcher = `${runtimeLauncher} ${quoteShellArgument(orchestratorEntry)}`;
   return {
     stop: `${launcher} check-turn-end-status-hook`,
     preToolUse: `${launcher} check-sensitive-output-hook`,
@@ -175,8 +189,8 @@ let processStartTime;
 
 // 起動ごとに分離した設定へフックを足し、Stop など既存のイベントを保つ。
 function prepareBackgroundWorkSettings(dataDir, config, settingsPath, options = {}) {
-  const node = resolveTrustedExecutableDetailed(fs, 'node', options.nodeSearchDirs || listToolSearchDirs(options.homeDir, options.pathEnv));
-  if (!node || !SAFE_LAUNCHER_PATH_PATTERN.test(node.path)) throw new Error('Background work hook runtime unavailable');
+  const runtimeLauncher = resolveHookLauncher(options);
+  if (!runtimeLauncher) throw new Error('Background work hook runtime unavailable');
   const directory = fs.mkdtempSync(path.join(dataDir, 'background-work-'));
   fs.chmodSync(directory, 0o700);
   try {
@@ -186,7 +200,7 @@ function prepareBackgroundWorkSettings(dataDir, config, settingsPath, options = 
     fs.writeFileSync(configPath, JSON.stringify(config), { mode: 0o600, flag: 'wx' });
     const settings = settingsPath ? JSON.parse(fs.readFileSync(settingsPath, 'utf8')) : {};
     settings.hooks = settings.hooks || {};
-    const command = `${quoteShellArgument(node.path)} ${quoteShellArgument(path.join(__dirname, 'backgroundWorkHook.js'))} ${quoteShellArgument(configPath)}`;
+    const command = `${runtimeLauncher} ${quoteShellArgument(path.join(__dirname, 'backgroundWorkHook.js'))} ${quoteShellArgument(configPath)}`;
     for (const event of ['SessionStart', 'SubagentStart', 'SubagentStop']) {
       settings.hooks[event] = [...(settings.hooks[event] || []), { hooks: [{ type: 'command', command, timeout: 3 }] }];
     }

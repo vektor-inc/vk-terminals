@@ -265,6 +265,7 @@ test('停止失敗時は準備した設定だけ捨て、旧監視と接続を�
     prepareBackgroundWorkSettings: () => ({ filename: '/tmp/new.json', discard: () => { discarded++; } }),
     clearPaneBackgroundWork: () => { clears++; settings.delete('pane'); f.store.delete('pane'); }, backgroundWork: f.store, backgroundSettings: settings };
   context.HOOK_UNAVAILABLE = require('../utils/claudeSettingsPreset').HOOK_UNAVAILABLE;
+  context.resolveEmbeddedHookRuntimeOptions = () => ({});
   vm.createContext(context); vm.runInContext(stage, context);
   const staged = context.stagePaneBackgroundWork('pane', 2, 'claude', {});
   staged.discard();
@@ -300,6 +301,7 @@ test('ペインの PowerShell で設定パスを組み立て、再起動の準�
     res: { writeHead(code) { status = code; }, end(value) { body = JSON.parse(value); } },
   };
   context.HOOK_UNAVAILABLE = require('../utils/claudeSettingsPreset').HOOK_UNAVAILABLE;
+  context.resolveEmbeddedHookRuntimeOptions = () => ({});
   vm.createContext(context); vm.runInContext(stage, context);
   const staged = context.stagePaneBackgroundWork('pane', 2, 'claude', {}, 'pwsh');
   assert.equal(buildClaudeLaunchCommand(undefined, staged.options), "claude --settings '/tmp/a''‘‘’’‚‚‛‛.json'");
@@ -379,4 +381,28 @@ test('退役済みセッションは再開だけ受け付け、source の型を�
   }
   assert.equal(f.recordHookEvent({ hook_event_name: 'SessionStart', source: 'resume' }), true);
   assert.equal(f.recordHookEvent({ source: {} }), false);
+});
+
+// フックを sh で実行し、空白や引用符を含むパスと環境変数のスコープを確かめる。
+test('アプリ版の background work は node 無しで引用済みの起動元を使う', (t) => {
+  const fs = require('fs');
+  const path = require('path');
+  const { execFileSync } = require('child_process');
+  const { prepareBackgroundWorkSettings } = require('../utils/claudeSettingsPreset');
+  const dir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'vk-background-app-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const execPath = path.join(dir, "Host's App");
+  fs.writeFileSync(execPath, '#!/bin/sh\nprintf "%s\\n" "$ELECTRON_RUN_AS_NODE" "$@"\n', { mode: 0o700 });
+  const before = process.env.ELECTRON_RUN_AS_NODE;
+  const prepared = prepareBackgroundWorkSettings(dir, {}, null, { nodeSearchDirs: [], electronHookExecPath: execPath });
+  const settings = JSON.parse(fs.readFileSync(prepared.filename, 'utf8'));
+  for (const event of ['SessionStart', 'SubagentStart', 'SubagentStop']) {
+    const command = settings.hooks[event][0].hooks[0].command;
+    assert.match(command, /^\/usr\/bin\/env ELECTRON_RUN_AS_NODE=1 /);
+    assert.deepEqual(execFileSync('/bin/sh', ['-c', command], { encoding: 'utf8' }).trim().split('\n'),
+      ['1', path.resolve(__dirname, '../utils/backgroundWorkHook.js'), path.join(path.dirname(prepared.filename), 'connection.json')]);
+  }
+  assert.equal(process.env.ELECTRON_RUN_AS_NODE, before);
+  prepared.discard();
+  assert.throws(() => prepareBackgroundWorkSettings(dir, {}, null, { nodeSearchDirs: [] }), /Background work hook runtime unavailable/);
 });

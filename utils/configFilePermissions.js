@@ -1,0 +1,25 @@
+'use strict';
+const fs = require('fs');
+
+/** 読み込み済みの有効なトークンを再利用するとき、保存を通らない分の権限を修復する。 */
+function repairTokenConfigPermissions(targetPath, { fsImpl = fs, platform = process.platform, warn = console.warn } = {}) {
+  if (platform === 'win32') return;
+  let fd;
+  try {
+    // 読み込みと同じくリンク先を対象にし、確認と変更には同じ実体の FD を使う。
+    fd = fsImpl.openSync(targetPath, 'r');
+    const stat = fsImpl.fstatSync(fd);
+    if (stat.isFile() && (stat.mode & 0o077) !== 0) fsImpl.fchmodSync(fd, 0o600);
+  } catch (_error) {
+    // 例外の詳細には秘密情報が混ざる可能性があるため出さない。
+    warn('[VK Terminals] API token config permissions could not be secured.');
+  } finally {
+    if (fd !== undefined) {
+      try { fsImpl.closeSync(fd); } catch (_error) {
+        warn('[VK Terminals] API token config file could not be closed.');
+      }
+    }
+  }
+}
+
+module.exports = { repairTokenConfigPermissions };

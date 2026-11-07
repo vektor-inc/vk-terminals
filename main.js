@@ -5,6 +5,7 @@ const pty = require('node-pty');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
+const { repairTokenConfigPermissions } = require('./utils/configFilePermissions');
 const http = require('http');
 const crypto = require('crypto');
 const { execFile } = require('child_process');
@@ -1860,12 +1861,8 @@ function resolveTokenConfigPath() {
 }
 
 // アクセストークン（issue #313）を config.json の apiToken へ書き込む。
-// 既存の atomicWriteJsonFile（settingsTargets.js）は「既存ファイルの権限を引き継ぐ」
-// 実装のため、既に緩い権限（例: 0644）で config.json が存在する環境だとトークンが
-// そのまま緩い権限で保存されてしまう。トークンはパスワード相当の秘密情報のため、
-// この書き込み経路だけは既存権限を無視し、明示的に 0600（所有者のみ読み書き可）を
-// 強制する。一時ファイルは flag: 'wx'（既存なら失敗）で作成し、失敗時は
-// atomicWriteJsonFile（settingsTargets.js）と同様に unlink して残骸を残さない。
+// トークンはパスワード相当のため、既存権限にかかわらず 0600 を強制する。
+// 一時ファイルは flag: 'wx'（既存なら失敗）で作成し、失敗時は残骸を削除する。
 // @param {string} token 書き込むアクセストークン
 // @returns {boolean} 書き込みに成功したか
 function persistApiToken(token) {
@@ -1912,7 +1909,10 @@ function ensureApiToken() {
     console.error(`${LOG_PREFIX} Failed to read existing API token: ${targetPath}`, e);
   }
   if (existing) {
-    if (isValidApiTokenFormat(existing)) return { token: existing, persisted: true };
+    if (isValidApiTokenFormat(existing)) {
+      repairTokenConfigPermissions(targetPath);
+      return { token: existing, persisted: true };
+    }
     console.warn(`${LOG_PREFIX} apiToken in ${targetPath} does not match the generated format (16進64文字); it was likely edited by hand into a weak value. Re-issuing a new token.`);
     // 形式不正の再発行はここで即座に持続化する（既存の弱いトークンを一瞬でも
     // 有効なままにしないため）。
@@ -1927,8 +1927,8 @@ function ensureApiToken() {
 }
 
 // ─── Web Push（issue #396）: VAPID 鍵・購読情報の保存に使う汎用の秘匿書き込み ───────
-// 汎用の atomicWriteJsonFile（settingsTargets.js）は「既存ファイルの権限を引き継ぐ」
-// 実装のため、persistApiToken と同じ理由でここでも専用の書き込みにし、秘密情報を
+// 汎用の atomicWriteJsonFile（settingsTargets.js）は apiToken が無ければ既存権限を
+// 引き継ぐため、ここでは専用の書き込みにし、秘密情報を
 // 常に 0600（所有者のみ読み書き可）で保存する。VAPID 鍵の確保自体（生成・検証・
 // setVapidDetails）は ensurePushReady() / tryLoadExistingVapidKeys()（上の「Web Push」節）
 // に集約している。

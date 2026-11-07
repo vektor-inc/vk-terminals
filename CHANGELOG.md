@@ -1,6 +1,6 @@
 # Changelog
 
-- [ セキュリティ修正 ] アクセストークンを含む設定ファイルのアクセス権限を適正化（[#569](https://github.com/vektor-inc/vk-terminals/issues/569)）
+- [ セキュリティ修正 ] アクセストークンを含む設定ファイルのアクセス権限とエラー表示を適正化（[#569](https://github.com/vektor-inc/vk-terminals/issues/569)）
 
 ## 1.95.0
 

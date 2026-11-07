@@ -5,6 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { saveSettingsToTargets } = require('../settingsTargets');
+const { describeErrorKind } = require('../utils/errorKind');
 const { repairTokenConfigPermissions } = require('../utils/configFilePermissions');
 
 function fixture(t) {
@@ -100,6 +101,7 @@ for (const scenario of ['valid', 'invalid', 'missing', 'unreadable']) {
   for (const saveSucceeds of [true, false]) {
     for (const fileExists of [true, false]) {
       test(`起動配線: ${scenario} / 保存成功=${saveSucceeds} / ファイル有り=${fileExists}`, () => {
+        const errors = [];
         let repaired = 0;
         let persisted = 0;
         const configPath = '/temporary/custom-config.json';
@@ -107,16 +109,18 @@ for (const scenario of ['valid', 'invalid', 'missing', 'unreadable']) {
           resolveTokenConfigPath: () => configPath,
           fs: { existsSync: (target) => { assert.equal(target, configPath); return fileExists; } },
           readJsonObject: () => {
-            if (scenario === 'unreadable') throw new Error('read failed');
+            if (scenario === 'unreadable') throw Object.assign(new Error('private input fragment'), { code: 'EACCES' });
             return scenario === 'missing' ? {} : { apiToken: scenario };
           },
           isValidApiTokenFormat: (value) => value === 'valid',
           generateApiToken: () => 'replacement',
           persistApiToken: () => { persisted++; return saveSucceeds; },
           repairTokenConfigPermissions: (target) => { assert.equal(target, configPath); repaired++; },
-          console: { warn() {}, error() {} }, LOG_PREFIX: '[test]',
+          describeErrorKind,
+          console: { warn() {}, error: (...args) => errors.push(args) }, LOG_PREFIX: '[test]',
         };
         const result = vm.runInNewContext(`${ensureSource}\nensureApiToken()`, context);
+        if (scenario === 'unreadable') assert.deepEqual(errors, [[`[test] Failed to read existing API token: ${configPath}`, 'EACCES']]);
         assert.equal(result.persisted, scenario === 'valid' || saveSucceeds);
         assert.equal(repaired, scenario === 'valid' || (!saveSucceeds && fileExists) ? 1 : 0);
         assert.equal(persisted, scenario === 'valid' ? 0 : 1);
@@ -159,4 +163,59 @@ test('設定保存: 一時ファイルを作成時から 600・排他作成で�
   assert.equal(writes.length, 1);
   assert.equal(writes[0]?.mode, 0o600);
   assert.equal(writes[0]?.flag, 'wx');
+});
+
+// FS の原因と JSON の分類を、例外本文を含めずに保持する。
+test('エラー分類は code、name、既定値の順に選ぶ', () => {
+  assert.equal(describeErrorKind({ code: 'EACCES' }), 'EACCES');
+  assert.equal(describeErrorKind(new SyntaxError('private input fragment')), 'SyntaxError');
+  assert.equal(describeErrorKind(null), 'UnknownError');
+});
+
+for (const mode of [0o604, 0o620]) {
+  test(`起動時: ${mode.toString(8)} の権限を修復する`, posix, (t) => {
+    const file = fixture(t);
+    fs.chmodSync(file, mode);
+    repairTokenConfigPermissions(file);
+    assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+  });
+}
+
+// 本体の各 catch を実行し、ログを例外そのものに戻す変更も検出する。
+for (const [start, end, invoke] of [
+  ['function persistApiToken(token) {', '// 起動時にアクセストークンを確保する', 'persistApiToken("dummy")'],
+  ['function loadUserConfig() {', '// app が ready になる前に', 'loadUserConfig()'],
+]) {
+  for (const error of [Object.assign(new Error('private input fragment'), { code: 'EACCES' }), new SyntaxError('private input fragment')]) {
+    test(`ログ分類: ${invoke.split('(')[0]} / ${describeErrorKind(error)}`, () => {
+      const errors = [];
+      const source = mainSource.slice(mainSource.indexOf(start), mainSource.indexOf(end, mainSource.indexOf(start)));
+      vm.runInNewContext(`${source}\n${invoke}`, {
+        describeErrorKind, path, process, LOG_PREFIX: '[test]',
+        resolveTokenConfigPath: () => '/temporary/config.json',
+        userConfigCandidatePaths: () => ['/temporary/config.json'], USER_CONFIG_MAX_BYTES: 1024,
+        fs: { existsSync: () => true, unlinkSync() {} },
+        readJsonObject: () => { throw error; }, readSmallJson: () => { throw error; },
+        console: { error: (...args) => errors.push(args) },
+      });
+      assert.equal(errors.length, 1);
+      assert.equal(errors[0][1], describeErrorKind(error));
+      assert.equal(errors[0].length, 2);
+    });
+  }
+}
+
+test('ログ分類: settings:describe の読み込み失敗', () => {
+  const start = mainSource.indexOf("ipcMain.handle('settings:describe',");
+  const end = mainSource.indexOf('  const targetInfo', start);
+  for (const error of [Object.assign(new Error('private input fragment'), { code: 'EACCES' }), new SyntaxError('private input fragment')]) {
+    const errors = [];
+    vm.runInNewContext(`${mainSource.slice(start, end)}\n});`, {
+      ipcMain: { handle: (_name, callback) => callback() },
+      loadSettingsDescriptor: () => ({}),
+      describeSettingsValues: (_descriptor, options) => options.onReadError('/temporary/config.json', error),
+      describeErrorKind, LOG_PREFIX: '[test]', console: { error: (...args) => errors.push(args) },
+    });
+    assert.deepEqual(errors, [['[test] Failed to read target config: /temporary/config.json', describeErrorKind(error)]]);
+  }
 });

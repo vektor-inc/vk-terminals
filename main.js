@@ -4,6 +4,7 @@ const { app, BrowserWindow, ipcMain, screen, dialog, shell: electronShell, clipb
 const pty = require('node-pty');
 const path = require('path');
 const os = require('os');
+const { describeErrorKind } = require('./utils/errorKind');
 const fs = require('fs');
 const { repairTokenConfigPermissions } = require('./utils/configFilePermissions');
 const http = require('http');
@@ -937,7 +938,7 @@ function loadUserConfig() {
         normalizeLiveConfig(raw);
         return raw;
       } catch (e) {
-        console.error(`${LOG_PREFIX} Failed to parse config: ${configPath}`, e.name);
+        console.error(`${LOG_PREFIX} Failed to parse config: ${configPath}`, describeErrorKind(e));
       }
     }
   }
@@ -1879,7 +1880,7 @@ function persistApiToken(token) {
     fs.chmodSync(targetPath, 0o600); // rename 後の最終ファイルにも念のため明示適用
     return true;
   } catch (e) {
-    console.error(`${LOG_PREFIX} Failed to persist API token: ${targetPath}`, e.name);
+    console.error(`${LOG_PREFIX} Failed to persist API token: ${targetPath}`, describeErrorKind(e));
     try {
       if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
     } catch (_cleanupError) {
@@ -1906,7 +1907,7 @@ function ensureApiToken() {
       existing = config.apiToken.trim();
     }
   } catch (e) {
-    console.error(`${LOG_PREFIX} Failed to read existing API token: ${targetPath}`, e.name);
+    console.error(`${LOG_PREFIX} Failed to read existing API token: ${targetPath}`, describeErrorKind(e));
   }
   if (existing) {
     if (isValidApiTokenFormat(existing)) {
@@ -2021,7 +2022,7 @@ ipcMain.handle('settings:describe', () => {
 
   const values = describeSettingsValues(descriptor, {
     onReadError: (targetPath, e) => {
-      console.error(`${LOG_PREFIX} Failed to read target config: ${targetPath}`, e.name);
+      console.error(`${LOG_PREFIX} Failed to read target config: ${targetPath}`, describeErrorKind(e));
     },
   });
   const targetInfo = describeTargetPaths(descriptor);

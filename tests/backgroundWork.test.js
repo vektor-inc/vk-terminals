@@ -113,7 +113,8 @@ test('起動設定は Stop を保持し、接続情報を非公開にして起�
   fs.writeFileSync(path.join(tools, 'node'), '#!/bin/sh\n', { mode: 0o700 });
   const original = path.join(dir, 'preset.json');
   const stop = [{ hooks: [{ type: 'command', command: 'existing-stop' }] }];
-  fs.writeFileSync(original, JSON.stringify({ hooks: { Stop: stop } }));
+  const preToolUse = [{ matcher: 'Bash|Read|Grep', hooks: [{ type: 'command', command: 'existing-pre-tool-use', timeout: 5 }] }];
+  fs.writeFileSync(original, JSON.stringify({ hooks: { Stop: stop, PreToolUse: preToolUse } }));
   // 複数ペインの準備でも ps は一度だけ実行し、待ち時間に上限を付ける。
   const childProcess = require('node:child_process');
   const psCalls = [];
@@ -129,6 +130,7 @@ test('起動設定は Stop を保持し、接続情報を非公開にして起�
   }
   const settings = JSON.parse(fs.readFileSync(a.filename, 'utf8'));
   assert.deepEqual(settings.hooks.Stop, stop);
+  assert.deepEqual(settings.hooks.PreToolUse, preToolUse);
   assert.equal(settings.hooks.SubagentStart.length, 1); assert.equal(settings.hooks.SubagentStop.length, 1);
   assert.notEqual(a.filename, b.filename);
   assert.equal(fs.statSync(path.dirname(a.filename)).mode & 0o777, 0o700);
@@ -262,6 +264,7 @@ test('停止失敗時は準備した設定だけ捨て、旧監視と接続を�
   const context = { prepareClaudeSettingsForShell: require('../utils/claudeSettingsPreset').prepareClaudeSettingsForShell, crypto: require('node:crypto'), apiServerRuntimeStatus: {}, API_PORT: 1, API_TOKEN: 'synthetic', DATA_DIR: '/tmp', os, APP_ORIGINAL_PATH: '', LOG_PREFIX: '', console,
     prepareBackgroundWorkSettings: () => ({ filename: '/tmp/new.json', discard: () => { discarded++; } }),
     clearPaneBackgroundWork: () => { clears++; settings.delete('pane'); f.store.delete('pane'); }, backgroundWork: f.store, backgroundSettings: settings };
+  context.HOOK_UNAVAILABLE = require('../utils/claudeSettingsPreset').HOOK_UNAVAILABLE;
   vm.createContext(context); vm.runInContext(stage, context);
   const staged = context.stagePaneBackgroundWork('pane', 2, 'claude', {});
   staged.discard();
@@ -296,6 +299,7 @@ test('ペインの PowerShell で設定パスを組み立て、再起動の準�
     launchResolution: { discard() { launchDiscarded++; } },
     res: { writeHead(code) { status = code; }, end(value) { body = JSON.parse(value); } },
   };
+  context.HOOK_UNAVAILABLE = require('../utils/claudeSettingsPreset').HOOK_UNAVAILABLE;
   vm.createContext(context); vm.runInContext(stage, context);
   const staged = context.stagePaneBackgroundWork('pane', 2, 'claude', {}, 'pwsh');
   assert.equal(buildClaudeLaunchCommand(undefined, staged.options), "claude --settings '/tmp/a''‘‘’’‚‚‛‛.json'");

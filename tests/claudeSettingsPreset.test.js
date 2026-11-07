@@ -8,10 +8,11 @@ const path = require('path');
 const childProcess = require('child_process');
 
 const {
+  HOOK_UNAVAILABLE,
   isValidClaudeSettingsPreset,
   validateClaudeSettingsPresetForEngine,
   resolveVkOrchestratorEntry,
-  resolveClaudeSettingsHookCommand,
+  resolveClaudeSettingsHookCommands,
   prepareClaudeSettingsPreset,
   buildClaudeSettingsArgument,
 } = require('../utils/claudeSettingsPreset');
@@ -27,6 +28,8 @@ function createFixture(t, prefix = 'vk-terminals-claude-preset-') {
   const toolsDir = path.join(root, 'tools');
   const orchestratorRoot = path.join(root, 'vk-orchestrator');
   fs.mkdirSync(toolsDir);
+  fs.mkdirSync(path.join(orchestratorRoot, 'src', 'engine'), { recursive: true });
+  fs.writeFileSync(path.join(orchestratorRoot, 'src', 'engine', 'sensitive-output-hook.js'), '// fixture\n');
   fs.mkdirSync(path.join(orchestratorRoot, 'bin'), { recursive: true });
   fs.writeFileSync(path.join(toolsDir, 'node'), '#!/bin/sh\n', { mode: 0o700 });
   fs.writeFileSync(path.join(orchestratorRoot, 'package.json'), '{"name":"vk-orchestrator"}\n');
@@ -69,6 +72,10 @@ test('管理済み settings を生成し、安全に --settings へ渡す', (t) 
     type: 'command',
     command: `'${path.join(fixture.toolsDir, 'node')}' '${fs.realpathSync(path.join(fixture.orchestratorRoot, 'bin', 'vk-orchestrator.js'))}' check-turn-end-status-hook`,
   });
+  assert.deepEqual(actual.hooks.PreToolUse, [{
+    matcher: 'Bash|Read|Grep',
+    hooks: [{ type: 'command', timeout: 5, command: actual.hooks.Stop[0].hooks[0].command.replace(/check-turn-end-status-hook$/, 'check-sensitive-output-hook') }],
+  }]);
   assert.equal(fs.statSync(settingsPath).mode & 0o777, 0o600);
   const options = {
     claudeSettingsPreset: PRESET,
@@ -85,11 +92,61 @@ test('管理済み settings を生成し、安全に --settings へ渡す', (t) 
   );
 });
 
+// 未対応版と信頼できないモジュールでは、設定を書き出さない。
+for (const condition of ['missing', 'symlink', 'group-writable', 'world-writable', 'parent-writable', 'directory', 'owner-mismatch']) {
+  test(`秘密出力フックが ${condition} ならプリセットを拒否する`, (t) => {
+    const fixture = createFixture(t);
+    const modulePath = path.join(fixture.orchestratorRoot, 'src', 'engine', 'sensitive-output-hook.js');
+    if (condition === 'missing' || condition === 'symlink' || condition === 'directory') fs.unlinkSync(modulePath);
+    if (condition === 'directory') fs.mkdirSync(modulePath);
+    if (condition === 'symlink') fs.symlinkSync(path.join(fixture.orchestratorRoot, 'bin', 'vk-orchestrator.js'), modulePath);
+    if (condition === 'group-writable') fs.chmodSync(modulePath, 0o664);
+    if (condition === 'world-writable') fs.chmodSync(modulePath, 0o646);
+    if (condition === 'parent-writable') fs.chmodSync(path.dirname(modulePath), 0o777);
+    // entry の単独解決は旧版でも利用できる。
+    assert.ok(resolveVkOrchestratorEntry(fixture.orchestratorRoot));
+    const options = { nodeSearchDirs: [fixture.toolsDir], vkOrchestratorRoot: fixture.orchestratorRoot };
+    if (condition === 'owner-mismatch') {
+      options.fs = Object.create(fs);
+      options.fs.lstatSync = (filename, ...args) => {
+        const stat = fs.lstatSync(filename, ...args);
+        if (filename === fs.realpathSync(modulePath)) stat.uid = process.getuid() + 1;
+        return stat;
+      };
+    }
+    assert.throws(() => resolveClaudeSettingsHookCommands(options), /Claude settings preset hook is unavailable/);
+    assert.throws(() => prepareClaudeSettingsPreset(fixture.dataDir, PRESET, options), /Claude settings preset hook is unavailable/);
+    assert.equal(fs.existsSync(path.join(fixture.dataDir, 'claude-settings-presets', `${PRESET}.json`)), false);
+  });
+}
+
+test('生成した PreToolUse command をシェルで実行し deny JSON を受け取る', (t) => {
+  const fixture = createFixture(t, "vk-preset ' spaces-");
+  const nodePath = path.join(fixture.toolsDir, 'node');
+  // 安全な固定パスのランチャーから実際の Node.js を呼び出す。
+  fs.writeFileSync(nodePath, `#!/bin/sh\nexec '${process.execPath.replace(/'/g, "'\\''")}' "$@"\n`, { mode: 0o700 });
+  fs.writeFileSync(path.join(fixture.orchestratorRoot, 'bin', 'vk-orchestrator.js'), `
+    if (process.argv[2] !== 'check-sensitive-output-hook') process.exit(1);
+    console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny' } }));
+  `);
+  // Node の検証では安全な文字だけのパスが必要なため別の配置を使う。
+  const toolsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-preset-node-'));
+  t.after(() => fs.rmSync(toolsDir, { recursive: true, force: true }));
+  fs.copyFileSync(nodePath, path.join(toolsDir, 'node'));
+  const settingsPath = prepareClaudeSettingsPreset(fixture.dataDir, PRESET, {
+    nodeSearchDirs: [toolsDir], vkOrchestratorRoot: fixture.orchestratorRoot,
+  });
+  const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+  const result = childProcess.spawnSync('/bin/sh', ['-c', settings.hooks.PreToolUse[0].hooks[0].command], { encoding: 'utf8', input: '{}' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).hookSpecificOutput.permissionDecision, 'deny');
+});
+
 test('VK Orchestrator と Node の固定パスを検証し、解決できない場合は拒否する', (t) => {
   const fixture = createFixture(t);
   assert.equal(resolveVkOrchestratorEntry(fixture.orchestratorRoot), fs.realpathSync(path.join(fixture.orchestratorRoot, 'bin', 'vk-orchestrator.js')));
-  assert.match(resolveClaudeSettingsHookCommand({ nodeSearchDirs: [fixture.toolsDir], vkOrchestratorRoot: fixture.orchestratorRoot }), /check-turn-end-status-hook$/);
-  assert.throws(() => resolveClaudeSettingsHookCommand({ nodeSearchDirs: [], vkOrchestratorRoot: fixture.orchestratorRoot }), /unavailable/);
+  assert.match(resolveClaudeSettingsHookCommands({ nodeSearchDirs: [fixture.toolsDir], vkOrchestratorRoot: fixture.orchestratorRoot }).stop, /check-turn-end-status-hook$/);
+  assert.throws(() => resolveClaudeSettingsHookCommands({ nodeSearchDirs: [], vkOrchestratorRoot: fixture.orchestratorRoot }), /unavailable/);
   fs.writeFileSync(path.join(fixture.orchestratorRoot, 'package.json'), '{"name":"wrong"}\n');
   assert.equal(resolveVkOrchestratorEntry(fixture.orchestratorRoot), null);
   fs.writeFileSync(path.join(fixture.orchestratorRoot, 'package.json'), '{"name":"vk-orchestrator"}\n');
@@ -115,16 +172,18 @@ test('空白を含む VK Orchestrator アプリのパスを3引数のフック�
   const nodePath = path.join(toolsRoot, 'node');
   fs.writeFileSync(nodePath, '#!/bin/sh\n', { mode: 0o700 });
   t.after(() => fs.rmSync(toolsRoot, { recursive: true, force: true }));
-  const command = resolveClaudeSettingsHookCommand({
+  const commands = resolveClaudeSettingsHookCommands({
     nodeSearchDirs: [toolsRoot],
     vkOrchestratorRoot: fixture.orchestratorRoot,
   });
-  const args = childProcess.execFileSync('/bin/sh', ['-c', `set -- ${command}; printf '<%s>\\n' "$@"`], { encoding: 'utf8' });
-  assert.deepEqual(args.trim().split('\n'), [
-    `<${nodePath}>`,
-    `<${fs.realpathSync(path.join(fixture.orchestratorRoot, 'bin', 'vk-orchestrator.js'))}>`,
-    '<check-turn-end-status-hook>',
-  ]);
+  for (const [kind, command] of Object.entries(commands)) {
+    const args = childProcess.execFileSync('/bin/sh', ['-c', `set -- ${command}; printf '<%s>\\n' "$@"`], { encoding: 'utf8' });
+    assert.deepEqual(args.trim().split('\n'), [
+      `<${nodePath}>`,
+      `<${fs.realpathSync(path.join(fixture.orchestratorRoot, 'bin', 'vk-orchestrator.js'))}>`,
+      kind === 'stop' ? '<check-turn-end-status-hook>' : '<check-sensitive-output-hook>',
+    ]);
+  }
 });
 
 test('途中のリンク先の実パスに単一引用符があってもフックを引用する', (t) => {
@@ -138,9 +197,11 @@ test('途中のリンク先の実パスに単一引用符があってもフッ�
   const orchestratorRoot = path.join(linkedRoot, 'vk-orchestrator');
 
   assert.equal(resolveVkOrchestratorEntry(orchestratorRoot), fs.realpathSync(actualOrchestratorRoot + '/bin/vk-orchestrator.js'));
-  const command = resolveClaudeSettingsHookCommand({ nodeSearchDirs: [fixture.toolsDir], vkOrchestratorRoot: orchestratorRoot });
-  const args = childProcess.execFileSync('/bin/sh', ['-c', `set -- ${command}; printf '%s\n' "$2"`], { encoding: 'utf8' });
-  assert.equal(args.trim(), fs.realpathSync(actualOrchestratorRoot + '/bin/vk-orchestrator.js'));
+  const commands = resolveClaudeSettingsHookCommands({ nodeSearchDirs: [fixture.toolsDir], vkOrchestratorRoot: orchestratorRoot });
+  for (const command of Object.values(commands)) {
+    const args = childProcess.execFileSync('/bin/sh', ['-c', `set -- ${command}; printf '%s\n' "$2"`], { encoding: 'utf8' });
+    assert.equal(args.trim(), fs.realpathSync(actualOrchestratorRoot + '/bin/vk-orchestrator.js'));
+  }
 });
 
 test('管理フォルダと既存 settings のシンボリックリンクを安全に扱う', (t) => {
@@ -192,7 +253,7 @@ test('restart は設定の解決に成功してから AI の停止処理へ渡�
   const restartAt = handler.indexOf('restartAgentInTerminal(ptyProcess');
   assert.ok(resolvedAt >= 0 && restartAt > resolvedAt);
   assert.match(handler.slice(resolvedAt, restartAt), /writeHead\(503/);
-  assert.match(handler.slice(resolvedAt, restartAt), /Claude settings preset hook is unavailable/);
+  assert.match(handler.slice(resolvedAt, restartAt), /HOOK_UNAVAILABLE/);
   assert.doesNotMatch(handler.slice(resolvedAt, restartAt), /JSON\.stringify\(\{ error: error\.message \}\)/);
 });
 
@@ -212,7 +273,7 @@ test('new-pane は指定された preset を renderer へ渡す前に用意し�
   assert.ok(presetGuardAt >= 0 && prepareAt > presetGuardAt);
   assert.ok(unavailableAt > prepareAt && requestAt > unavailableAt);
   assert.match(handler.slice(prepareAt, requestAt), /catch \(error\)[\s\S]*?return;/);
-  assert.match(handler.slice(prepareAt, requestAt), /Claude settings preset hook is unavailable/);
+  assert.match(handler.slice(prepareAt, requestAt), /HOOK_UNAVAILABLE/);
   assert.doesNotMatch(handler.slice(prepareAt, requestAt), /JSON\.stringify\(\{ error: error\.message \}\)/);
 });
 
@@ -223,7 +284,7 @@ test('terminal:create のプリセット再準備失敗は詳細をログだけ�
   const catchAt = handler.indexOf('catch (error)', resolvedAt);
   assert.ok(resolvedAt >= 0 && catchAt > resolvedAt);
   assert.match(handler.slice(catchAt), /console\.error\([\s\S]*?error\)/);
-  assert.match(handler.slice(catchAt), /throw new Error\('Claude settings preset hook is unavailable'\)/);
+  assert.match(handler.slice(catchAt), /throw new Error\(HOOK_UNAVAILABLE\)/);
 });
 
 test('new-pane は preset 未指定なら設定の事前準備を行わない', () => {
@@ -234,4 +295,52 @@ test('new-pane は preset 未指定なら設定の事前準備を行わない', 
   const guardEndAt = handler.indexOf('\n        }', prepareAt);
   assert.ok(presetGuardAt >= 0 && prepareAt > presetGuardAt && guardEndAt > prepareAt);
   assert.equal(handler.slice(0, presetGuardAt).includes("resolveClaudeSettingsLaunchOptions('claude', false"), false);
+});
+
+// 入力の root と実際に実行する entry の配置が異なる場合を確認する。
+for (const layout of ['link-parent', 'linked-bin']) {
+  for (const supported of [false, true]) {
+    test(`実体起点のモジュール確認: ${layout}, supported=${supported}`, (t) => {
+      const fixture = createFixture(t);
+      const actual = createFixture(t);
+      const modulePath = path.join(actual.orchestratorRoot, 'src', 'engine', 'sensitive-output-hook.js');
+      if (!supported) fs.unlinkSync(modulePath);
+      let root;
+      if (layout === 'link-parent') {
+        // path.join による .. の字句的な除去と OS のリンク解決を食い違わせる。
+        fs.mkdirSync(path.join(actual.root, 'nested'));
+        fs.symlinkSync(path.join(actual.root, 'nested'), path.join(fixture.root, 'link'));
+        root = `${fixture.root}/link/../vk-orchestrator`;
+        if (supported) fs.unlinkSync(path.join(fixture.orchestratorRoot, 'src', 'engine', 'sensitive-output-hook.js'));
+      } else {
+        fs.rmSync(path.join(fixture.orchestratorRoot, 'bin'), { recursive: true });
+        fs.symlinkSync(path.join(actual.orchestratorRoot, 'bin'), path.join(fixture.orchestratorRoot, 'bin'));
+        root = fixture.orchestratorRoot;
+        if (supported) fs.unlinkSync(path.join(fixture.orchestratorRoot, 'src', 'engine', 'sensitive-output-hook.js'));
+      }
+      assert.equal(resolveVkOrchestratorEntry(root), fs.realpathSync(path.join(actual.orchestratorRoot, 'bin', 'vk-orchestrator.js')));
+      const options = { nodeSearchDirs: [fixture.toolsDir], vkOrchestratorRoot: root };
+      if (supported) assert.match(resolveClaudeSettingsHookCommands(options).preToolUse, /check-sensitive-output-hook$/);
+      else assert.throws(() => resolveClaudeSettingsHookCommands(options), { message: HOOK_UNAVAILABLE });
+    });
+  }
+}
+
+test('new-pane は IPC の例外を固定文言に正規化し、他のエラーを保持する', () => {
+  const vm = require('node:vm');
+  const start = mainSource.indexOf("url.pathname === '/api/new-pane'");
+  const from = mainSource.indexOf('const resolve = (result) => {', start);
+  const to = mainSource.indexOf('pendingNewPaneCallbacks.set', from);
+  const handler = mainSource.slice(from, to);
+  assert.ok(from > start && to > from);
+  for (const error of [HOOK_UNAVAILABLE, `Error invoking remote method 'terminal:create': Error: ${HOOK_UNAVAILABLE}`, 'other error', { reason: 'other' }]) {
+    let status;
+    let body;
+    const context = { HOOK_UNAVAILABLE, clearTimeout() {}, timeoutId: 1, res: {
+      writeHead(value) { status = value; }, end(value) { body = JSON.parse(value); },
+    } };
+    vm.runInNewContext(`${handler} resolve(result);`, { ...context, result: { error } });
+    assert.equal(status, 500);
+    assert.deepEqual(body, { error: String(error).includes(HOOK_UNAVAILABLE) ? HOOK_UNAVAILABLE : error });
+  }
 });

@@ -9,6 +9,7 @@ const crypto = require('crypto');
 const { resolveTrustedExecutableDetailed, resolveTrustedPath } = require('./codexTaskOps');
 const { listToolSearchDirs } = require('./codexTaskPolicy');
 
+const HOOK_UNAVAILABLE = 'Claude settings preset hook is unavailable';
 const PRESET = 'vk-orchestrator-work-pane';
 const ALLOWED_CLAUDE_SETTINGS_PRESETS = Object.freeze([PRESET]);
 const SETTINGS_PATH_PATTERN = /^\/[^\x00-\x1f\x7f]+$/;
@@ -44,7 +45,7 @@ function resolveVkOrchestratorEntry(root, fsImpl = fs, options = {}) {
   }
 }
 
-function resolveClaudeSettingsHookCommand(options = {}) {
+function resolveClaudeSettingsHookCommands(options = {}) {
   const fsImpl = options.fs || fs;
   const node = resolveTrustedExecutableDetailed(
     fsImpl,
@@ -55,13 +56,28 @@ function resolveClaudeSettingsHookCommand(options = {}) {
   const installedRoot = path.resolve(__dirname, '..', '..', '..');
   const orchestratorEntry = resolveVkOrchestratorEntry(options.vkOrchestratorRoot || installedRoot, fsImpl, { uid: options.uid });
   if (!node || !SAFE_LAUNCHER_PATH_PATTERN.test(node.path) || !orchestratorEntry) {
-    throw new Error('Claude settings preset hook is unavailable');
+    throw new Error(HOOK_UNAVAILABLE);
   }
-  return `${quoteShellArgument(node.path)} ${quoteShellArgument(orchestratorEntry)} check-turn-end-status-hook`;
+  // 未対応の旧版で未知のサブコマンドが通常起動へ進むのを防ぐ。
+  try {
+    resolveTrustedPath(fsImpl, path.join(path.dirname(path.dirname(orchestratorEntry)), 'src', 'engine', 'sensitive-output-hook.js'), {
+      finalKind: 'file', rejectFinalLink: true, uid: options.uid,
+    });
+  } catch (_error) {
+    throw new Error(HOOK_UNAVAILABLE);
+  }
+  const launcher = `${quoteShellArgument(node.path)} ${quoteShellArgument(orchestratorEntry)}`;
+  return {
+    stop: `${launcher} check-turn-end-status-hook`,
+    preToolUse: `${launcher} check-sensitive-output-hook`,
+  };
 }
 
-function buildPreset(command) {
-  return { hooks: { Stop: [{ hooks: [{ type: 'command', command }] }] } };
+function buildPreset(commands) {
+  return { hooks: {
+    Stop: [{ hooks: [{ type: 'command', command: commands.stop }] }],
+    PreToolUse: [{ matcher: 'Bash|Read|Grep', hooks: [{ type: 'command', timeout: 5, command: commands.preToolUse }] }],
+  } };
 }
 
 function prepareClaudeSettingsPreset(dataDir, preset, options = {}) {
@@ -75,11 +91,11 @@ function prepareClaudeSettingsPreset(dataDir, preset, options = {}) {
   if ((uid !== undefined && directoryStat.uid !== uid) || (directoryStat.mode & 0o022) !== 0) {
     throw new Error('Claude settings preset directory has unsafe ownership or permissions');
   }
-  const command = resolveClaudeSettingsHookCommand({ ...options, uid });
+  const commands = resolveClaudeSettingsHookCommands({ ...options, uid });
   // 一時ファイルから rename し、既存のシンボリックリンクを辿らず置き換える。
   const temporaryPath = path.join(presetDir, `.${preset}.${process.pid}.${crypto.randomBytes(8).toString('hex')}.tmp`);
   try {
-    fs.writeFileSync(temporaryPath, `${JSON.stringify(buildPreset(command), null, 2)}\n`, { mode: 0o600, flag: 'wx' });
+    fs.writeFileSync(temporaryPath, `${JSON.stringify(buildPreset(commands), null, 2)}\n`, { mode: 0o600, flag: 'wx' });
     fs.renameSync(temporaryPath, settingsPath);
   } finally {
     try { fs.unlinkSync(temporaryPath); } catch (_error) {}
@@ -193,7 +209,8 @@ module.exports = {
   isValidClaudeSettingsPreset,
   validateClaudeSettingsPresetForEngine,
   resolveVkOrchestratorEntry,
-  resolveClaudeSettingsHookCommand,
+  resolveClaudeSettingsHookCommands,
+  HOOK_UNAVAILABLE,
   prepareClaudeSettingsPreset,
   buildClaudeSettingsArgument,
 };

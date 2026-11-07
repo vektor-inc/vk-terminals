@@ -1,6 +1,7 @@
 # Changelog
 
 - [ セキュリティ修正 ] アクセストークンを含む設定ファイルのアクセス権限とエラー表示を適正化（[#569](https://github.com/vektor-inc/vk-terminals/issues/569)）
+- [ セキュリティ修正 ] 作業ペインの Claude Code が設定ファイル全体や GitHub トークンを表示する操作を実行前に止めるように変更（[#568](https://github.com/vektor-inc/vk-terminals/issues/568)）
 
 ## 1.95.0
 

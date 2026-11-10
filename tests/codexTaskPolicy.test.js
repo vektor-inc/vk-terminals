@@ -2310,7 +2310,8 @@ test('ランチャー: sandbox 内で特殊文字を含む引数を渡される�
       assert.match(blocked.stderr, /シェルの特殊文字（# \[ \] 空白 引用符 バックスラッシュ \$ など）が含まれていたため/, message);
       assert.match(blocked.stderr, /同じコマンドをそのまま再試行しても同じ結果になります/, message);
       assert.match(blocked.stderr, /git commit --message-file <ファイル名>/, message);
-      assert.match(blocked.stderr, /--title-file \/ --body-file/, message);
+      assert.match(blocked.stderr, /AGENTS.md に書かれた専用入出力フォルダ/, message);
+      assert.match(blocked.stderr, /gh issue comment \/ gh pr comment の --body-file/, message);
       // 引数の値は表示も評価もしない。
       assert.equal(blocked.stderr.includes(message), false, message);
     }
@@ -2350,7 +2351,7 @@ test('ランチャー: 入出力フォルダの無い子用ランチャーは、
     });
     assert.equal(blocked.status, 78);
     assert.match(blocked.stderr, /特殊文字/);
-    assert.match(blocked.stderr, /入出力フォルダが無いため、git commit -m には英数字と/);
+    assert.match(blocked.stderr, /入出力フォルダが無いため、ファイル形式は使えません。git commit -m や題・本文・コメントには、英数字と/);
     assert.equal(blocked.stderr.includes('--message-file'), false);
   } finally {
     sandbox.cleanup();
@@ -2368,11 +2369,16 @@ test('AGENTS.md: 引数に使える文字の範囲（78 で止まる条件）と
     assert.match(guide, /同じコマンドをそのまま再試行せず/);
     assert.match(guide, /`git commit --message-file <名前>`/);
     assert.match(guide, /`-m` との併用は拒否される/);
+    assert.match(guide, /入出力フォルダがある入口ではファイル形式/);
+    assert.match(guide, /`gh issue comment` \/ `gh pr comment` \/ `gh issue edit` の `--body-file`/);
+    assert.match(guide, /`@`・`%`。確認済みなのはこの一覧/);
+    assert.equal(guide.includes('入出力フォルダの無い起動は拒否）。`-m`'), false);
     assert.equal(guide.includes('git commit --message-file` は使えない'), false);
 
     const childGuide = fs.readFileSync(path.join(home, 'member', 'AGENTS.md'), 'utf8');
     assert.match(childGuide, /`git commit --message-file` は使えない（拒否される）/);
     assert.match(childGuide, /`git commit -m <メッセージ>` に、英数字・/);
+    assert.match(childGuide, /自然文の題・本文は書けない/);
     assert.match(childGuide, /空白・`#`・`\[` `\]` は入れない/);
     assert.equal(childGuide.includes('`git commit --message-file <名前>`'), false);
   } finally {

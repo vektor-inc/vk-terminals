@@ -2143,9 +2143,9 @@ function normalizeBody(value) {
 function executeIssueEditBody({ parsed, binding, cwd, env, fsImpl, spawnSync, reject, writeOut, deps }) {
   let texts;
   try {
-    texts = readPrTextFiles(parsed.textFiles, { binding, fsImpl, deps });
+    texts = readTaskTextFiles(parsed.textFiles, { binding, fsImpl, deps });
   } catch (error) {
-    return reject(`task command rejected: ${error instanceof TrustError ? error.message : 'body file could not be verified'}`);
+    return reject(`task command rejected: ${error instanceof TrustError ? error.message : 'input file could not be verified'}`);
   }
   const runGh = (args) => spawnSync(binding.gh, args, { cwd, env, encoding: 'utf8' });
   const failed = (result) => Boolean(result.error) || result.status !== 0;
@@ -2224,18 +2224,31 @@ function executeIssueClose({ parsed, binding, cwd, env, spawnSync, reject, write
   return 0;
 }
 
-// PR のタイトル・本文のファイルを読む（gh を起動する前に呼ぶ）。入出力フォルダの検証と読み込みは member start と同じ（readMemberInput）。
-// 検証を通らなければ TrustError。返すのは { title, body }（指定の無い項目は undefined）。
-function readPrTextFiles(textFiles, { binding, fsImpl, deps }) {
+// 入出力フォルダ直下のテキストファイル（PR・issue の題・本文・コメント、コミットメッセージ）を読む（gh / git を起動する前に呼ぶ）。入出力フォルダの検証と読み込みは member start と同じ（readMemberInput）。
+// 検証を通らなければ TrustError。返すのは { title, body, message }（指定の無い項目は undefined）。
+function readTaskTextFiles(textFiles, { binding, fsImpl, deps }) {
   const result = {};
   if (textFiles.title === undefined && textFiles.body === undefined && textFiles.message === undefined) return result;
   const member = binding.member;
   if (member === null) throw new TrustError('--title-file / --body-file / --message-file need the member input/output folder, which this launcher does not have');
   const uid = currentUid(deps);
   // 専用フォルダはランチャーが実パスで固定している。リンクを通る場合は拒否する。
-  if (resolveTrustedPath(fsImpl, member.io, { uid, rejectFinalLink: true }).realPath !== member.io) throw new TrustError(`path is not a real directory: ${member.io}`);
+  const trusted = resolveTrustedPath(fsImpl, member.io, { uid, rejectFinalLink: true });
+  if (trusted.realPath !== member.io) throw new TrustError(`path is not a real directory: ${member.io}`);
   const decode = (name, maxBytes) => {
-    const bytes = readMemberInput(fsImpl, member.io, name, maxBytes, uid);
+    // 検証から open までの間にフォルダがリンクへ差し替えられても（O_NOFOLLOW は末端のファイルにしか効かない）、別フォルダの内容を使わないよう、
+    // 読む前後でフォルダの階層を再検証し、ファイル自身の dev/ino も open 前後で照合する。変わっていたら内容を使う前に拒否する。
+    assertChainUnchanged(fsImpl, trusted.chain);
+    let before;
+    try {
+      before = fsImpl.lstatSync(path.join(member.io, name));
+    } catch (error) {
+      throw new TrustError(`${name} ${error && error.code === 'ENOENT' ? 'does not exist' : 'is not a plain file'}`);
+    }
+    const bytes = readMemberInput(fsImpl, member.io, name, maxBytes, uid, before);
+    assertChainUnchanged(fsImpl, trusted.chain);
+    const after = fsImpl.lstatSync(path.join(member.io, name));
+    if (after.dev !== before.dev || after.ino !== before.ino || after.isSymbolicLink()) throw new TrustError(`${name} changed while it was read`);
     try {
       // 不正な UTF-8 は拒否する。BOM は内容として残す（読んだ値をそのまま gh へ渡す）。
       return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
@@ -2281,9 +2294,9 @@ function readPrTextFiles(textFiles, { binding, fsImpl, deps }) {
 function executePrEdit({ parsed, binding, cwd, env, fsImpl, spawnSync, reject, writeOut, deps }) {
   let texts;
   try {
-    texts = readPrTextFiles(parsed.textFiles, { binding, fsImpl, deps });
+    texts = readTaskTextFiles(parsed.textFiles, { binding, fsImpl, deps });
   } catch (error) {
-    return reject(`task command rejected: ${error instanceof TrustError ? error.message : 'title/body file could not be verified'}`);
+    return reject(`task command rejected: ${error instanceof TrustError ? error.message : 'input file could not be verified'}`);
   }
   const title = parsed.title !== undefined ? parsed.title : texts.title;
   const body = parsed.body !== undefined ? parsed.body : texts.body;
@@ -2955,7 +2968,7 @@ function readMemberInput(fsImpl, dir, name, maxBytes, uid, expectedIdentity = nu
   try {
     const stat = fsImpl.fstatSync(fd);
     if (!stat.isFile() || stat.nlink !== 1) throw new TrustError(`${name} is not a plain file`);
-    if (expectedIdentity && (stat.dev !== expectedIdentity.dev || stat.ino !== expectedIdentity.ino)) throw new TrustError('message file changed before reading');
+    if (expectedIdentity && (stat.dev !== expectedIdentity.dev || stat.ino !== expectedIdentity.ino)) throw new TrustError('file changed before reading');
     if (uid !== undefined && stat.uid !== uid) throw new TrustError(`${name} is not owned by the current user`);
     if (stat.size === 0 || stat.size > maxBytes) throw new TrustError(`${name} is empty or too large`);
     // サイズ確認のあとにファイルが伸びても上限を超えて読まないよう、上限 + 1 バイトまでだけ読んで超過を検出する。
@@ -3629,28 +3642,28 @@ function runTaskCommand(argv, deps = {}) {
   if (parsed.operation === 'issue-image-save') return executeIssueImageSave({ parsed, binding, env, fsImpl, spawnSync, reject, writeOut, deps });
 
   const bin = parsed.bin === 'gh' ? binding.gh : binding.git;
-  let ghArgs = parsed.args;
+  let commandArgs = parsed.args;
   if (parsed.textFiles !== undefined) {
     // gh pr create / issue create / issue comment / pr comment の --title-file / --body-file。読み込みと検査はここ（gh を起動する前）で行い、読んだ値を --title / --body の argv として渡す。
     try {
-      const texts = readPrTextFiles(parsed.textFiles, { binding, fsImpl, deps });
+      const texts = readTaskTextFiles(parsed.textFiles, { binding, fsImpl, deps });
       if (texts.message !== undefined) {
         // git commit --message-file: 読んだメッセージを -m の値として末尾に渡す。
-        ghArgs = [...parsed.args, '-m', texts.message];
+        commandArgs = [...parsed.args, '-m', texts.message];
       } else {
         // 読んだ値は、gh のサブコマンド部分（pr create / issue comment 7 など。'-' で始まらない語）の直後に差し込む。
         const flagStart = parsed.args.findIndex((token) => token.startsWith('-'));
         const at = flagStart === -1 ? parsed.args.length : flagStart;
-        ghArgs = [...parsed.args.slice(0, at), ...(texts.title === undefined ? [] : ['--title', texts.title]), ...(texts.body === undefined ? [] : ['--body', texts.body]), ...parsed.args.slice(at)];
+        commandArgs = [...parsed.args.slice(0, at), ...(texts.title === undefined ? [] : ['--title', texts.title]), ...(texts.body === undefined ? [] : ['--body', texts.body]), ...parsed.args.slice(at)];
       }
     } catch (error) {
-      return reject(`task command rejected: ${error instanceof TrustError ? error.message : 'title/body file could not be verified'}`);
+      return reject(`task command rejected: ${error instanceof TrustError ? error.message : 'input file could not be verified'}`);
     }
   }
   // gh repo view は --repo を持たないため、対象は位置引数として末尾に付ける（issue #520）。
-  const args = parsed.bin !== 'gh' ? ghArgs
-    : parsed.repoPositional ? [...ghArgs, explicitGitHubTarget || binding.repo]
-      : withBoundRepository(ghArgs, explicitGitHubTarget || binding.repo);
+  const args = parsed.bin !== 'gh' ? commandArgs
+    : parsed.repoPositional ? [...commandArgs, explicitGitHubTarget || binding.repo]
+      : withBoundRepository(commandArgs, explicitGitHubTarget || binding.repo);
   // 明示先の gh は呼び出し元 cwd の Git 設定にも依存させず、固定した HOME から実行する。
   const executionCwd = explicitGitHubTarget === undefined ? cwd : binding.home;
   const result = spawnSync(bin, args, { cwd: executionCwd, env, encoding: 'utf8', stdio: 'inherit' });

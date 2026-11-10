@@ -6832,3 +6832,37 @@ test('拒否: git commit --message-file でも既定ブランチ上のコミッ�
     fixture.cleanup();
   }
 });
+
+// 安藤指摘: 検証から open までの間に入出力フォルダがリンクへ差し替わっても、別フォルダの内容を使わずに拒否する（O_NOFOLLOW は末端のファイルにしか効かない）。
+test('拒否: 入出力フォルダの検証後・open の直前にフォルダがリンクへ差し替えられたら、内容を使わず拒否する（commit / gh pr create 共通）', () => {
+  for (const command of [['git', 'commit', '--message-file', 'msg.txt'], ['gh', 'pr', 'create', '--head', 'a', '--title', 't', '--body-file', 'msg.txt']]) {
+    const fixture = createMemberFixture();
+    try {
+      fs.writeFileSync(path.join(fixture.repo, 'a.txt'), '1\n');
+      assert.equal(fixture.runMember(['git', 'add', '--', 'a.txt']).code, 0);
+      const head = git(fixture.repo, 'rev-parse', 'HEAD');
+      writeIo(fixture, 'msg.txt', 'legit message');
+      const evil = path.join(fixture.root, 'evil-io');
+      fs.mkdirSync(evil, { mode: 0o700 });
+      fs.writeFileSync(path.join(evil, 'msg.txt'), 'EVIL message');
+      let swapped = false;
+      const swappingFs = Object.create(fs);
+      swappingFs.openSync = (target, ...rest) => {
+        if (!swapped && String(target) === path.join(fixture.io, 'msg.txt')) {
+          swapped = true;
+          fs.renameSync(fixture.io, `${fixture.io}-moved`);
+          fs.symlinkSync(evil, fixture.io);
+        }
+        return fs.openSync(target, ...rest);
+      };
+      const result = fixture.runMember(command, { fs: swappingFs });
+      assert.equal(swapped, true);
+      assert.equal(result.code, 2, result.messages.join(''));
+      assert.match(result.messages.join(''), /changed (before reading|after it was verified|while it was read)/);
+      assert.equal(git(fixture.repo, 'rev-parse', 'HEAD'), head);
+      assert.equal(fixture.readCalls().length, 0);
+    } finally {
+      fixture.cleanup();
+    }
+  }
+});

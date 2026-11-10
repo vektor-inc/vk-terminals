@@ -1,5 +1,7 @@
 # Changelog
 
+## 1.96.0
+
 - [ 機能追加 ] Codex の固定入口から、許可された別リポジトリの issue に既存ラベルを追加できるように（[#575](https://github.com/vektor-inc/vk-terminals/issues/575)）
 
 ## 1.95.2

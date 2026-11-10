@@ -706,8 +706,6 @@ function parseReviewLabelCommand(operation, tokens, { withNumber }) {
 //   3. `gh issue edit <番号> --remove-label <ラベル>`（複数可）→ operation: issue-remove-label
 // 題名・--body・--milestone・--repo などは許可リストに無いので拒否される。実行は入口が「更新 → 読み戻し」の順で行う（1 はラベルの存在確認も先に行う）。
 function parseGhIssueEdit(tokens, targetRepo) {
-  // 更新操作は起動時に固定したリポジトリだけを対象にする。
-  if (targetRepo !== undefined) return fail('gh issue edit cannot target another repository');
   let number;
   let bodyFile;
   const assignees = [];
@@ -747,9 +745,11 @@ function parseGhIssueEdit(tokens, targetRepo) {
   const kinds = [assignees.length > 0 || labels.length > 0, bodyFile !== undefined, removeLabels.length > 0].filter(Boolean).length;
   if (kinds === 0) return fail('--add-assignee, --add-label, --body-file or --remove-label is required');
   if (kinds > 1) return fail('--add-assignee / --add-label, --body-file and --remove-label cannot be combined');
+  // 明示先への更新はラベル追加だけに絞り、ほかの更新権限を広げない。
+  if (targetRepo !== undefined && (assignees.length > 0 || bodyFile !== undefined || removeLabels.length > 0)) return fail('explicit repository only supports --add-label');
   if (bodyFile !== undefined) return { ok: true, bin: 'gh', operation: 'issue-edit-body', number, textFiles: { body: bodyFile }, needsGitHub: true };
   if (removeLabels.length > 0) return { ok: true, bin: 'gh', operation: 'issue-remove-label', number, removeLabels, needsGitHub: true };
-  return { ok: true, bin: 'gh', operation: 'issue-edit', number, assignees, labels, needsGitHub: true };
+  return { ok: true, bin: 'gh', operation: 'issue-edit', number, assignees, labels, needsGitHub: true, ...(targetRepo === undefined ? {} : { targetRepo }) };
 }
 
 // issue の close は `gh issue close <番号> [--reason completed|"not planned"]` だけ（issue #522）。
@@ -2068,19 +2068,21 @@ function executeReviewLabel({ parsed, binding, explicitGitHubTarget, spawnSync, 
 }
 
 /**
- * `gh issue edit <番号> --add-assignee … --add-label …`。固定したリポジトリの issue にだけ、担当者と既存ラベルを足す。
+ * `gh issue edit <番号> --add-assignee … --add-label …`。起動時のリポジトリには担当者と既存ラベルを、許可 owner の明示先には既存ラベルだけを足す。
  * 1. 指定ラベルが対象リポジトリに完全一致で存在することを確かめる（無い名前で新しいラベルが作られないように、更新の前に止める。一覧はページ送りで全件取る）。
  * 2. gh issue edit を実行する。
  * 3. issue を読み戻し、依頼した担当者とラベルがすべて付いていることを確かめる。gh issue edit は権限不足でも終了コード 0 で何もしないことがあるため、成功の判定は 3 だけで行う。
  * 担当者の照合は GitHub のアカウント名が大文字小文字を区別しないため小文字にそろえ、ラベルは完全一致で見る。
  */
 function executeIssueEdit({ parsed, binding, cwd, env, spawnSync, reject, writeOut }) {
-  const runGh = (args) => spawnSync(binding.gh, args, { cwd, env, encoding: 'utf8' });
+  const repo = parsed.targetRepo || binding.repo;
+  const executionCwd = parsed.targetRepo === undefined ? cwd : binding.home;
+  const runGh = (args) => spawnSync(binding.gh, args, { cwd: executionCwd, env, encoding: 'utf8' });
   const failed = (result) => Boolean(result.error) || result.status !== 0;
   const detail = (result) => String(result.stderr || '').trim().split('\n')[0] || (result.error && result.error.code) || `exit ${result.status}`;
 
   if (parsed.labels.length > 0) {
-    const listed = runGh(['api', '--paginate', `repos/${binding.repo}/labels?per_page=100`, '--jq', '.[].name']);
+    const listed = runGh(['api', '--paginate', `repos/${repo}/labels?per_page=100`, '--jq', '.[].name']);
     if (failed(listed)) return reject(`task command failed: could not list labels: ${detail(listed)}`);
     const existing = new Set(String(listed.stdout).split('\n'));
     const missing = parsed.labels.find((label) => !existing.has(label));
@@ -2090,10 +2092,10 @@ function executeIssueEdit({ parsed, binding, cwd, env, spawnSync, reject, writeO
   const editArgs = ['issue', 'edit', parsed.number];
   for (const assignee of parsed.assignees) editArgs.push('--add-assignee', assignee);
   for (const label of parsed.labels) editArgs.push('--add-label', label);
-  const edited = runGh(withBoundRepository(editArgs, binding.repo));
+  const edited = runGh(withBoundRepository(editArgs, repo));
   if (failed(edited)) return reject(`task command failed: gh issue edit failed: ${detail(edited)}`);
 
-  const viewed = runGh(withBoundRepository(['issue', 'view', parsed.number, '--json', 'assignees,labels'], binding.repo));
+  const viewed = runGh(withBoundRepository(['issue', 'view', parsed.number, '--json', 'assignees,labels'], repo));
   if (failed(viewed)) return reject(`task command failed: could not verify the update: ${detail(viewed)}`);
   let issue;
   try {

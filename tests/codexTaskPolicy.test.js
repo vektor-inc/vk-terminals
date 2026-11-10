@@ -547,9 +547,11 @@ test('生成: rules は信頼済みランチャーの実行だけを許可し、
     assert.match(guide, /--assignee/);
     assert.match(guide, /`gh issue edit <issue番号>` は作成済み issue に担当者・既存ラベルを足すだけ/);
     assert.match(guide, /--add-assignee/);
+    assert.match(guide, /`gh <owner\/repo> issue edit <issue番号> --add-label <ラベル名>`/);
+    assert.match(guide, /明示先ではラベル追加だけを許可/);
     assert.match(guide, /--add-label/);
-    assert.match(guide, /`gh <owner\/repo> issue edit \.\.\.` は使えない/);
-    assert.match(guide, /`gh issue edit <issue番号> --body-file <ファイル名>` は issue 本文の更新/);
+    assert.match(guide, /`gh <owner\/repo> issue edit <issue番号> --remove-label <ラベル名>` は使えない/);
+    assert.match(guide, /`gh issue edit <issue番号> --body-file <ファイル名>` は起動時のリポジトリの issue 本文の更新/);
     assert.match(guide, /`gh issue edit <issue番号> --remove-label <ラベル名>`/);
     assert.match(guide, /`gh issue close <issue番号> \[--reason <理由>\]`/);
     assert.match(guide, /`completed` と `not planned` だけ/);

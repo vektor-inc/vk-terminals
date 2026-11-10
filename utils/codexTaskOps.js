@@ -308,9 +308,14 @@ function parseGitAdd(tokens) {
   return buildGit('add', flags, [], paths);
 }
 
+// コミットメッセージは `-m <メッセージ>` か `--message-file <名前>`（入出力フォルダ直下のファイル名。issue #578）のどちらか。
+// `#`・`[ ]`・空白・引用符などシェルの特殊文字を含むメッセージは、引数で渡すと sandbox 内実行と判定され 78 で止まるため、ファイル形式を用意する。
+// 併用は拒否する。ファイル名は形だけを検査し、中身は実行段階で読む（gh の --body-file と同じ処理）。
 function parseGitCommit(tokens) {
   const flags = [];
   const messages = [];
+  let messageFile;
+  const readFileName = (value) => (isSafeMemberFileName(value) ? value : fail('--message-file must be a plain file name in the member input/output folder'));
   for (let i = 0; i < tokens.length; i += 1) {
     const token = tokens[i];
     if (hasUnsafeCharacter(token)) return fail('invalid argument');
@@ -322,9 +327,19 @@ function parseGitCommit(tokens) {
       i += 1;
     } else if (token.startsWith('--message=') && token.slice('--message='.length).trim() !== '') {
       messages.push(token.slice('--message='.length));
+    } else if ((token === '--message-file' || token.startsWith('--message-file=')) && messageFile === undefined) {
+      const value = token === '--message-file' ? tokens[i + 1] : token.slice('--message-file='.length);
+      if (token === '--message-file') i += 1;
+      const checked = readFileName(value);
+      if (checked !== value) return checked;
+      messageFile = value;
     } else return fail(`flag not allowed: ${JSON.stringify(token)}`);
   }
-  if (messages.length === 0) return fail('commit message required');
+  if (messageFile !== undefined) {
+    if (messages.length > 0) return fail('--message-file cannot be used together with -m / --message');
+    return { ok: true, bin: 'git', args: [...FIXED_GIT_PREFIX, 'commit', ...flags], needsGitHub: false, guardsDefaultBranch: true, textFiles: { message: messageFile } };
+  }
+  if (messages.length === 0) return fail('commit message required (-m <message> or --message-file <name>)');
   return { ok: true, bin: 'git', args: [...FIXED_GIT_PREFIX, 'commit', ...flags, ...messages.flatMap((message) => ['-m', message])], needsGitHub: false, guardsDefaultBranch: true };
 }
 
@@ -2213,9 +2228,9 @@ function executeIssueClose({ parsed, binding, cwd, env, spawnSync, reject, write
 // 検証を通らなければ TrustError。返すのは { title, body }（指定の無い項目は undefined）。
 function readPrTextFiles(textFiles, { binding, fsImpl, deps }) {
   const result = {};
-  if (textFiles.title === undefined && textFiles.body === undefined) return result;
+  if (textFiles.title === undefined && textFiles.body === undefined && textFiles.message === undefined) return result;
   const member = binding.member;
-  if (member === null) throw new TrustError('--title-file / --body-file need the member input/output folder, which this launcher does not have');
+  if (member === null) throw new TrustError('--title-file / --body-file / --message-file need the member input/output folder, which this launcher does not have');
   const uid = currentUid(deps);
   // 専用フォルダはランチャーが実パスで固定している。リンクを通る場合は拒否する。
   if (resolveTrustedPath(fsImpl, member.io, { uid, rejectFinalLink: true }).realPath !== member.io) throw new TrustError(`path is not a real directory: ${member.io}`);
@@ -2246,6 +2261,14 @@ function readPrTextFiles(textFiles, { binding, fsImpl, deps }) {
     if (body.trim() === '') throw new TrustError(`${textFiles.body} is blank`);
     if ([...body].length > PR_BODY_MAX_CHARS) throw new TrustError(`${textFiles.body} is longer than ${PR_BODY_MAX_CHARS} characters`);
     result.body = body;
+  }
+  if (textFiles.message !== undefined) {
+    // コミットメッセージは本文と同じ検査（改行・タブだけ許す制御文字、空・サイズ超過は拒否）。
+    const message = decode(textFiles.message, PR_BODY_MAX_BYTES).replace(/^\ufeff/, '');
+    if (PR_BODY_FORBIDDEN_PATTERN.test(message)) throw new TrustError(`${textFiles.message} contains control characters`);
+    if (message.trim() === '') throw new TrustError(`${textFiles.message} is blank`);
+    if ([...message].length > PR_BODY_MAX_CHARS) throw new TrustError(`${textFiles.message} is longer than ${PR_BODY_MAX_CHARS} characters`);
+    result.message = message;
   }
   return result;
 }
@@ -3611,10 +3634,15 @@ function runTaskCommand(argv, deps = {}) {
     // gh pr create / issue create / issue comment / pr comment の --title-file / --body-file。読み込みと検査はここ（gh を起動する前）で行い、読んだ値を --title / --body の argv として渡す。
     try {
       const texts = readPrTextFiles(parsed.textFiles, { binding, fsImpl, deps });
-      // 読んだ値は、gh のサブコマンド部分（pr create / issue comment 7 など。'-' で始まらない語）の直後に差し込む。
-      const flagStart = parsed.args.findIndex((token) => token.startsWith('-'));
-      const at = flagStart === -1 ? parsed.args.length : flagStart;
-      ghArgs = [...parsed.args.slice(0, at), ...(texts.title === undefined ? [] : ['--title', texts.title]), ...(texts.body === undefined ? [] : ['--body', texts.body]), ...parsed.args.slice(at)];
+      if (texts.message !== undefined) {
+        // git commit --message-file: 読んだメッセージを -m の値として末尾に渡す。
+        ghArgs = [...parsed.args, '-m', texts.message];
+      } else {
+        // 読んだ値は、gh のサブコマンド部分（pr create / issue comment 7 など。'-' で始まらない語）の直後に差し込む。
+        const flagStart = parsed.args.findIndex((token) => token.startsWith('-'));
+        const at = flagStart === -1 ? parsed.args.length : flagStart;
+        ghArgs = [...parsed.args.slice(0, at), ...(texts.title === undefined ? [] : ['--title', texts.title]), ...(texts.body === undefined ? [] : ['--body', texts.body]), ...parsed.args.slice(at)];
+      }
     } catch (error) {
       return reject(`task command rejected: ${error instanceof TrustError ? error.message : 'title/body file could not be verified'}`);
     }

@@ -2292,3 +2292,90 @@ test('main.js: new-pane と restart-agent は同じ GitHub 到達確認ゲート
   assert.equal(mainSource.slice(newPaneStart, contextStart).split(gateCall).length - 1, 1);
   assert.equal(mainSource.slice(restartStart, closePaneStart).split(gateCall).length - 1, 1);
 });
+
+// issue #578: 引数にシェル特殊文字を含むと Codex は許可ルールに一致しないと扱い、ランチャーが sandbox 内で呼ばれて 78 で止まる。再開後に同じ 78 を繰り返さないよう案内する。
+test('ランチャー: sandbox 内で特殊文字を含む引数を渡されると、何も実行せず 78 で止まり、ファイル形式への切り替えを案内する', () => {
+  const sandbox = createSandbox();
+  try {
+    const { home } = prepare(sandbox);
+    const launcher = path.join(home, 'vk-task-ops');
+    const call = (args, extraEnv = {}, command = launcher) => childProcess.spawnSync(command, args, {
+      cwd: sandbox.repo, env: { ...process.env, CODEX_SANDBOX: 'seatbelt', ...extraEnv }, encoding: 'utf8',
+    });
+    for (const message of ['fix:#855-trust-GitHub-replies', '[ 開発環境 ] x', '[仕様変更]x', 'two words', 'a"b', "it's", 'a\\b', '$HOME', 'a;b', '日本語']) {
+      const blocked = call(['git', 'commit', '-m', message]);
+      assert.equal(blocked.status, 78, message);
+      assert.equal(blocked.stdout, '', message);
+      assert.match(blocked.stderr, /サンドボックスの中から呼ばれたため、何も実行せずに止めました/, message);
+      assert.match(blocked.stderr, /シェルの特殊文字（# \[ \] 空白 引用符 バックスラッシュ \$ など）が含まれていたため/, message);
+      assert.match(blocked.stderr, /同じコマンドをそのまま再試行しても同じ結果になります/, message);
+      assert.match(blocked.stderr, /git commit --message-file <ファイル名>/, message);
+      assert.match(blocked.stderr, /--title-file \/ --body-file/, message);
+      // 引数の値は表示も評価もしない。
+      assert.equal(blocked.stderr.includes(message), false, message);
+    }
+    // $(...) や `...` を含む引数も評価されない。
+    const marker = path.join(sandbox.root, 'evaluated');
+    const injected = call(['git', 'commit', '-m', `$(touch ${marker})`, '`touch ' + marker + '`']);
+    assert.equal(injected.status, 78);
+    assert.equal(fs.existsSync(marker), false);
+    // 何も実行しない（コミットは作られない）。
+    sandbox.git('config', 'user.name', 'T');
+    sandbox.git('config', 'user.email', 't@example.com');
+    fs.writeFileSync(path.join(sandbox.repo, 'f.txt'), 'x\n');
+    sandbox.git('add', 'f.txt');
+    assert.equal(call(['git', 'commit', '-m', 'a#b']).status, 78);
+    assert.throws(() => sandbox.git('rev-parse', '--verify', '-q', 'HEAD'));
+
+    // 安全な文字だけの引数なら従来の案内だけ（特殊文字の案内は出さない）。
+    const plain = call(['git', 'commit', '-m', 'fix:578-safe_message.v1']);
+    assert.equal(plain.status, 78);
+    assert.match(plain.stderr, /サンドボックスの中から呼ばれたため/);
+    assert.equal(plain.stderr.includes('特殊文字'), false);
+    // 判定条件は緩めていない: CODEX_SANDBOX が空なら動く（外から呼ばれた扱い）。
+    const outside = childProcess.spawnSync(launcher, ['git', 'status', '--short'], { cwd: sandbox.repo, env: launcherEnv(), encoding: 'utf8' });
+    assert.notEqual(outside.status, 78);
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('ランチャー: 入出力フォルダの無い子用ランチャーは、特殊文字の案内で -m の安全な文字だけを案内する', () => {
+  const sandbox = createSandbox();
+  try {
+    const { home } = prepare(sandbox);
+    const childLauncher = path.join(home, 'member', 'vk-task-ops');
+    const blocked = childProcess.spawnSync(childLauncher, ['git', 'commit', '-m', 'a#b'], {
+      cwd: sandbox.repo, env: { ...process.env, CODEX_SANDBOX: 'seatbelt' }, encoding: 'utf8',
+    });
+    assert.equal(blocked.status, 78);
+    assert.match(blocked.stderr, /特殊文字/);
+    assert.match(blocked.stderr, /入出力フォルダが無いため、git commit -m には英数字と/);
+    assert.equal(blocked.stderr.includes('--message-file'), false);
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('AGENTS.md: 引数に使える文字の範囲（78 で止まる条件）と、コミットメッセージのファイル形式・入出力フォルダ無しの -m の案内を含む', () => {
+  const sandbox = createSandbox();
+  try {
+    const { home } = prepare(sandbox);
+    const guide = fs.readFileSync(path.join(home, 'AGENTS.md'), 'utf8');
+    assert.match(guide, /シェルの特殊文字（`#`・`\[` `\]`・`\$`/);
+    assert.match(guide, /空白を含めてはいけない/);
+    assert.match(guide, /サンドボックス内で実行し、入口は何も実行せず終了コード 78 で止まる/);
+    assert.match(guide, /同じコマンドをそのまま再試行せず/);
+    assert.match(guide, /`git commit --message-file <名前>`/);
+    assert.match(guide, /`-m` との併用は拒否される/);
+    assert.equal(guide.includes('git commit --message-file` は使えない'), false);
+
+    const childGuide = fs.readFileSync(path.join(home, 'member', 'AGENTS.md'), 'utf8');
+    assert.match(childGuide, /`git commit --message-file` は使えない（拒否される）/);
+    assert.match(childGuide, /`git commit -m <メッセージ>` に、英数字・/);
+    assert.match(childGuide, /空白・`#`・`\[` `\]` は入れない/);
+    assert.equal(childGuide.includes('`git commit --message-file <名前>`'), false);
+  } finally {
+    sandbox.cleanup();
+  }
+});

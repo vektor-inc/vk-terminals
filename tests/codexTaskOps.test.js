@@ -6663,3 +6663,206 @@ test('完了: 作業フォルダの一致を確認できない場合は状態記
     assert.match(output.join(''), /^BRANCH_RESTORE_REASON=automatic-restore-failed: working-directory-mismatch$/m);
   } finally { fixture.cleanup(); }
 });
+
+// issue #578: git commit --message-file。`#`・`[ ]`・空白・引用符を含むメッセージは引数で渡すと sandbox 内実行と判定され 78 で止まるため、入出力フォルダ直下のファイルで渡す。
+test('許可: git commit は --message-file <名前> を受け、-m の形も残る', () => {
+  const file = parseTaskCommand(['git', 'commit', '--message-file', 'msg.txt']);
+  assert.deepEqual(file, { ok: true, bin: 'git', args: [...FIXED_GIT_PREFIX, 'commit'], needsGitHub: false, guardsDefaultBranch: true, textFiles: { message: 'msg.txt' } });
+  assert.deepEqual(parseTaskCommand(['git', 'commit', '-a', '--message-file=msg.txt']).textFiles, { message: 'msg.txt' });
+  assert.deepEqual(parseTaskCommand(['git', 'commit', '-m', 'plain-message']).args, [...FIXED_GIT_PREFIX, 'commit', '-m', 'plain-message']);
+  assert.equal(parseTaskCommand(['git', 'commit', '-m', 'plain-message']).textFiles, undefined);
+});
+
+test('拒否: git commit --message-file は不正なファイル名・-m との併用・値なし・重複を拒否する', () => {
+  const rejected = [
+    ['git', 'commit', '--message-file', '/etc/passwd'],
+    ['git', 'commit', '--message-file', '../x'],
+    ['git', 'commit', '--message-file', 'sub/x'],
+    ['git', 'commit', '--message-file', '..'],
+    ['git', 'commit', '--message-file', '-x'],
+    ['git', 'commit', '--message-file='],
+    ['git', 'commit', '--message-file'],
+    ['git', 'commit', '--message-file', 'a', '-m', 'b'],
+    ['git', 'commit', '-m', 'b', '--message-file', 'a'],
+    ['git', 'commit', '--message-file', 'a', '--message=b'],
+    ['git', 'commit', '--message-file', 'a', '--message-file', 'b'],
+    ['git', 'commit', '--message-file', 'a', '--amend'],
+    ['git', 'commit', '-F', 'a'],
+    ['git', 'commit', '--file', 'a'],
+  ];
+  for (const command of rejected) {
+    const result = parseTaskCommand(command);
+    assert.equal(result.ok, false, JSON.stringify(command));
+    assert.match(result.error, /^task command rejected/);
+  }
+});
+
+const COMMIT_MESSAGE = '[ 開発環境 ] fix:#578 コミットメッセージ [仕様変更] を "引用符" と $HOME 付きで\n\n本文の 2 行目 `code` ; | & > <\n最終行';
+
+test('実行: prepare worktree → add → commit --message-file → push が通り、特殊文字・改行入りのメッセージがそのまま履歴に残る', () => {
+  const fixture = createMemberFixture();
+  try {
+    const remote = attachRemote(fixture);
+    const prepared = fixture.runMember(['prepare', 'worktree', 'main', '578', 'fix/578-message-file', 'codex-578']);
+    assert.equal(prepared.code, 0, prepared.messages.join(''));
+    const worktree = path.join(fixture.repo, '.codex', 'worktrees', 'codex-578');
+    fs.writeFileSync(path.join(worktree, 'feature.txt'), 'x\n');
+    assert.equal(fixture.runMember(['git', 'add', '--', 'feature.txt'], { cwd: worktree }).code, 0);
+
+    writeIo(fixture, 'msg.txt', COMMIT_MESSAGE);
+    const committed = fixture.runMember(['git', 'commit', '--message-file', 'msg.txt'], { cwd: worktree });
+    assert.equal(committed.code, 0, committed.messages.join(''));
+    assert.equal(git(worktree, 'log', '-1', '--format=%B').trimEnd(), COMMIT_MESSAGE);
+
+    const pushed = fixture.runMember(['git', 'push', 'fix/578-message-file'], { cwd: worktree });
+    assert.equal(pushed.code, 0, pushed.messages.join(''));
+    assert.equal(remote.remoteRef('refs/heads/fix/578-message-file'), git(worktree, 'rev-parse', 'HEAD'));
+    assert.equal(git(remote.bare, 'log', '-1', '--format=%B', 'fix/578-message-file').trimEnd(), COMMIT_MESSAGE);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('実行: git commit --message-file は BOM・CRLF を含む日本語メッセージも受け、-m の形も従来どおり動く', () => {
+  const fixture = createMemberFixture();
+  try {
+    writeIo(fixture, 'msg.txt', '﻿件名 [ テスト ]\r\n\r\n本文\r\n');
+    fs.writeFileSync(path.join(fixture.repo, 'a.txt'), '1\n');
+    assert.equal(fixture.runMember(['git', 'add', '--', 'a.txt']).code, 0);
+    assert.equal(fixture.runMember(['git', 'commit', '--message-file=msg.txt']).code, 0);
+    assert.equal(git(fixture.repo, 'log', '-1', '--format=%s'), '件名 [ テスト ]');
+    fs.writeFileSync(path.join(fixture.repo, 'b.txt'), '2\n');
+    assert.equal(fixture.runMember(['git', 'add', '--', 'b.txt']).code, 0);
+    assert.equal(fixture.runMember(['git', 'commit', '-m', 'fix:578-safe-message']).code, 0);
+    assert.equal(git(fixture.repo, 'log', '-1', '--format=%s'), 'fix:578-safe-message');
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('拒否: git commit --message-file はパス・リンク・不正な中身・空・サイズ超過・入出力フォルダ無しを、コミットを作らずに拒否する', () => {
+  const fixture = createMemberFixture();
+  try {
+    fs.writeFileSync(path.join(fixture.repo, 'a.txt'), '1\n');
+    assert.equal(fixture.runMember(['git', 'add', '--', 'a.txt']).code, 0);
+    const head = git(fixture.repo, 'rev-parse', 'HEAD');
+    const outside = path.join(fixture.root, 'outside.txt');
+    fs.writeFileSync(outside, 'secret\n');
+    fs.symlinkSync(outside, path.join(fixture.io, 'link.txt'));
+    writeIo(fixture, 'blank.txt', ' \n\t\n');
+    writeIo(fixture, 'empty.txt', '');
+    writeIo(fixture, 'bad-utf8.txt', Buffer.from([0xff, 0xfe, 0x41]));
+    writeIo(fixture, 'control.txt', 'a\u0000b');
+    writeIo(fixture, 'escape.txt', 'a\u001b[31mb');
+    writeIo(fixture, 'huge.txt', 'a'.repeat(256 * 1024 + 1));
+    fs.mkdirSync(path.join(fixture.io, 'dir.txt'));
+    const cases = [
+      ['/etc/passwd', /plain file name/],
+      ['../outside.txt', /plain file name/],
+      ['sub/msg.txt', /plain file name/],
+      ['missing.txt', /./],
+      ['link.txt', /./],
+      ['dir.txt', /./],
+      ['blank.txt', /blank/],
+      ['empty.txt', /./],
+      ['bad-utf8.txt', /UTF-8/],
+      ['control.txt', /control characters/],
+      ['escape.txt', /control characters/],
+      ['huge.txt', /./],
+    ];
+    for (const [name, pattern] of cases) {
+      const result = fixture.runMember(['git', 'commit', '--message-file', name]);
+      assert.equal(result.code, 2, name);
+      assert.match(result.messages.join(''), pattern, name);
+      assert.equal(git(fixture.repo, 'rev-parse', 'HEAD'), head, `${name} created a commit`);
+    }
+    // -m との併用は拒否。
+    writeIo(fixture, 'ok.txt', 'ok message');
+    assert.equal(fixture.runMember(['git', 'commit', '--message-file', 'ok.txt', '-m', 'x']).code, 2);
+    assert.equal(git(fixture.repo, 'rev-parse', 'HEAD'), head);
+  } finally {
+    fixture.cleanup();
+  }
+
+  // 入出力フォルダの無い入口、リンクに差し替えられた入出力フォルダ。
+  const noMember = createMemberFixture({ withMember: false });
+  try {
+    fs.writeFileSync(path.join(noMember.repo, 'a.txt'), '1\n');
+    assert.equal(noMember.runMember(['git', 'add', '--', 'a.txt']).code, 0);
+    const head = git(noMember.repo, 'rev-parse', 'HEAD');
+    const result = noMember.runMember(['git', 'commit', '--message-file', 'msg.txt']);
+    assert.equal(result.code, 2);
+    assert.match(result.messages.join(''), /need the member input\/output folder/);
+    assert.equal(git(noMember.repo, 'rev-parse', 'HEAD'), head);
+    assert.equal(noMember.runMember(['git', 'commit', '-m', 'safe-message']).code, 0);
+  } finally {
+    noMember.cleanup();
+  }
+  const linked = createMemberFixture();
+  try {
+    const realIo = path.join(linked.root, 'real-io');
+    fs.mkdirSync(realIo, { mode: 0o700 });
+    fs.writeFileSync(path.join(realIo, 'msg.txt'), 'm');
+    fs.rmSync(linked.io, { recursive: true, force: true });
+    fs.symlinkSync(realIo, linked.io);
+    fs.writeFileSync(path.join(linked.repo, 'a.txt'), '1\n');
+    assert.equal(linked.runMember(['git', 'add', '--', 'a.txt']).code, 0);
+    const result = linked.runMember(['git', 'commit', '--message-file', 'msg.txt']);
+    assert.equal(result.code, 2);
+    assert.match(result.messages.join(''), /symbolic link/);
+  } finally {
+    linked.cleanup();
+  }
+});
+
+test('拒否: git commit --message-file でも既定ブランチ上のコミットは拒否する', () => {
+  const fixture = createMemberFixture();
+  try {
+    const before = git(fixture.repo, 'rev-parse', 'work/test');
+    git(fixture.repo, 'checkout', '-q', 'main');
+    const mainHead = git(fixture.repo, 'rev-parse', 'HEAD');
+    fs.writeFileSync(path.join(fixture.repo, 'a.txt'), '1\n');
+    assert.equal(fixture.runMember(['git', 'add', '--', 'a.txt']).code, 0);
+    writeIo(fixture, 'msg.txt', 'on main');
+    const result = fixture.runMember(['git', 'commit', '--message-file', 'msg.txt']);
+    assert.equal(result.code, 2);
+    assert.equal(git(fixture.repo, 'rev-parse', 'HEAD'), mainHead);
+    assert.equal(git(fixture.repo, 'rev-parse', 'work/test'), before);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+// 安藤指摘: 検証から open までの間に入出力フォルダがリンクへ差し替わっても、別フォルダの内容を使わずに拒否する（O_NOFOLLOW は末端のファイルにしか効かない）。
+test('拒否: 入出力フォルダの検証後・open の直前にフォルダがリンクへ差し替えられたら、内容を使わず拒否する（commit / gh pr create 共通）', () => {
+  for (const command of [['git', 'commit', '--message-file', 'msg.txt'], ['gh', 'pr', 'create', '--head', 'a', '--title', 't', '--body-file', 'msg.txt']]) {
+    const fixture = createMemberFixture();
+    try {
+      fs.writeFileSync(path.join(fixture.repo, 'a.txt'), '1\n');
+      assert.equal(fixture.runMember(['git', 'add', '--', 'a.txt']).code, 0);
+      const head = git(fixture.repo, 'rev-parse', 'HEAD');
+      writeIo(fixture, 'msg.txt', 'legit message');
+      const evil = path.join(fixture.root, 'evil-io');
+      fs.mkdirSync(evil, { mode: 0o700 });
+      fs.writeFileSync(path.join(evil, 'msg.txt'), 'EVIL message');
+      let swapped = false;
+      const swappingFs = Object.create(fs);
+      swappingFs.openSync = (target, ...rest) => {
+        if (!swapped && String(target) === path.join(fixture.io, 'msg.txt')) {
+          swapped = true;
+          fs.renameSync(fixture.io, `${fixture.io}-moved`);
+          fs.symlinkSync(evil, fixture.io);
+        }
+        return fs.openSync(target, ...rest);
+      };
+      const result = fixture.runMember(command, { fs: swappingFs });
+      assert.equal(swapped, true);
+      assert.equal(result.code, 2, result.messages.join(''));
+      assert.match(result.messages.join(''), /changed (before reading|after it was verified|while it was read)/);
+      assert.equal(git(fixture.repo, 'rev-parse', 'HEAD'), head);
+      assert.equal(fixture.readCalls().length, 0);
+    } finally {
+      fixture.cleanup();
+    }
+  }
+});

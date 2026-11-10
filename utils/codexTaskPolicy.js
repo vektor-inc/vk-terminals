@@ -160,6 +160,12 @@ function renderAgentsGuide(launcherPath, memberIoDir = null, paneEnabled = false
     '- サンドボックスの中から呼ぶと、入口は何も実行せずに止まる（終了コード 78）。その場合は、上記「入口:」の形に直して呼び直す。',
     '- Git・push・worktree の操作先は、このタスクの起動時に確定したリポジトリと、その登録済み worktree に限定される。別のリポジトリ・入れ子のリポジトリでは拒否される。',
     '- GitHub 操作は従来の `gh <種類> <操作> ...` では起動時の GitHub リポジトリが対象になる。`gh <owner/repo> <種類> <操作> ...` と明示した場合は、起動時に許可された owner と大文字小文字を区別しない完全一致で照合し、許可済みなら別の cwd からでもそのリポジトリを対象にできる。`--repo` / `-R` は使えない。',
+    '- 入口に渡す引数（ブランチ名・メッセージ・題・本文など）に、シェルの特殊文字（`#`・`[` `]`・`$`・`\\`・`;`・`|`・`&`・`<` `>`・`*`・`?`・引用符）や空白を含めてはいけない。含めると Codex が許可ルールに一致しないと判断してサンドボックス内で実行し、入口は何も実行せず終了コード 78 で止まる。78 が出たら同じコマンドをそのまま再試行せず、引数を安全な文字（英数字・`-`・`_`・`.`・`:`・`/`・`,`・`=`・`+`・`@`・`%`。確認済みなのはこの一覧）だけにするか、入出力フォルダがある入口ではファイル形式（`git commit --message-file`、`gh pr create` / `gh pr edit` / `gh issue create` の `--title-file` / `--body-file`、`gh issue comment` / `gh pr comment` / `gh issue edit` の `--body-file`）へ切り替える。',
+    ...(memberIoDir === null ? [
+      '- この入口には入出力フォルダが無いため、`git commit --message-file` は使えない（拒否される）。コミットメッセージは `git commit -m <メッセージ>` に、英数字・`-`・`_`・`.`・`:`・`/`・`,`・`=`・`+`・`@`・`%`（確認済みなのはこの一覧）だけを使い、空白・`#`・`[` `]` は入れない（語はハイフンでつなぐ。例: `git commit -m fix-issue-578-commit-message`）。題・本文・コメントも同じく安全な文字だけで、空白は入れられない（この入口では自然文の題・本文は書けない）。',
+    ] : [
+      `- コミットメッセージは、専用フォルダ \`${memberIoDir}\` の直下にメッセージのファイルを作り、\`git commit --message-file <名前>\` でファイル名を渡す（\`#\`・\`[\` \`]\`・空白・改行を含むメッセージはこの形だけで渡せる。\`-m\` に特殊文字を入れると 78 で止まる）。読み込みと検査は \`gh pr edit --body-file\` と同じ（パス・\`..\`・サブフォルダ・リンク・不正な UTF-8・禁止する制御文字・空・256 KiB 超は拒否）。\`-m\` との併用は拒否される。\`-m\` は上に書いた安全な文字の一覧だけのメッセージなら引き続き使える。PR・issue の題・本文・コメントも同じ理由で、\`gh pr create\` / \`gh pr edit\` / \`gh issue create\` の \`--title-file\` / \`--body-file\`、\`gh issue comment\` / \`gh pr comment\` / \`gh issue edit\` の \`--body-file\` で渡す。`,
+    ]),
     '- `git commit` は作業ブランチ上でだけ通る。main / master・リモートの既定ブランチ・detached HEAD 上では拒否されるので、先に作業ブランチを作ってから commit する。',
     '- `git push <ブランチ名>` はブランチ名 1 つだけを受け付ける。送り先は入口が固定する（このタスクの GitHub リポジトリ）ので、リモート名・オプション・refspec は渡せない。新規作成と早送りだけが通り、強制上書き・削除・タグは使えない。main / master・リモートの既定ブランチ・detached HEAD・存在しないブランチへの push は拒否される。',
     '- `git fetch` と `git merge` は引数を一切取らない（URL・refspec・ブランチ名・オプションは拒否される）。`git fetch` は GitHub から読んだこのリポジトリのデフォルトブランチだけを、入口が固定した取得元から `refs/remotes/origin/<デフォルトブランチ>` へ取得する。`git merge` はその取得済みデフォルトブランチを、現在の作業ブランチへ merge commit つきで取り込む（squash・早送りだけの取り込みはしない）。先に `git fetch` し、追跡ファイルの未コミット変更が無い作業ブランチ上で実行する。main / master・リモートの既定ブランチ・detached HEAD 上、merge 中、取得済みの ref が無いときは拒否される。競合したときは状態は戻らないので、競合したファイルを直して `git add` し、`git commit -m <メッセージ>` で merge commit を完成させてから `git push <ブランチ名>` する。',
@@ -252,6 +258,23 @@ function renderGitConfig(identity) {
 }
 
 /**
+ * ランチャーが 78 で止まるとき、引数にシェル特殊文字を含む語があった場合に出す案内（単一引用符を含まない文面。sh の echo '...' にそのまま入れる）。
+ * Codex は引数に特殊文字（# [ ] 空白 引用符 バックスラッシュ $ など）があるコマンドを許可ルールに一致しないと扱い、sandbox 内で実行するため 78 になる。
+ * @param {boolean} memberEnabled 入出力フォルダ（ファイル形式の引数）が使える入口か
+ * @returns {string[]}
+ */
+function specialCharacterHint(memberEnabled) {
+  return [
+    '引数にシェルの特殊文字（# [ ] 空白 引用符 バックスラッシュ $ など）が含まれていたため、Codex が許可ルールに一致しないと判断してサンドボックス内で実行した可能性があります。同じコマンドをそのまま再試行しても同じ結果になります。',
+    ...(memberEnabled ? [
+      'コミットメッセージは、AGENTS.md に書かれた専用入出力フォルダ直下にメッセージのファイルを作り git commit --message-file <ファイル名> で渡してください。PR・issue の題・本文は gh pr create / gh pr edit / gh issue create の --title-file / --body-file、コメントは gh issue comment / gh pr comment の --body-file、issue 本文の更新は gh issue edit の --body-file で渡してください。',
+    ] : [
+      'この入口には入出力フォルダが無いため、ファイル形式は使えません。git commit -m や題・本文・コメントには、英数字と - _ . : / , = + @ % だけを渡してください（空白や # [ ] を含めない。この入口では自然文の題・本文は書けません）。',
+    ]),
+  ];
+}
+
+/**
  * 信頼済みランチャー（sh スクリプト）の本文を組み立てる。
  * sandbox 内からの誤起動を止めてから `env -i` で環境を空にし、検証済みの絶対パスの Node と拘束の設定だけを渡す。
  * @param {{envPath: string, nodePath: string, opsScriptPath: string, launcherPath: string, memberEnabled: boolean, binding: object}} params
@@ -288,6 +311,16 @@ function renderLauncher({ envPath, nodePath, opsScriptPath, launcherPath, member
     '# VK Terminals が生成。起動のたびに作り直される。環境を空にして、検証済みの Node で固定の入口を実行する。',
     'if [ -n "${CODEX_SANDBOX:-}" ]; then',
     `  echo 'サンドボックスの中から呼ばれたため、何も実行せずに止めました。${launcherPath} ${commandKinds} <操作> ... の形で、引用符・cd・パイプ・リダイレクト・2>&1 を付けず単独のコマンドとして、同じ内容を呼び直してください。' >&2`,
+    // 引数にシェルの特殊文字・空白・非 ASCII を含む語があれば、それが原因の可能性を案内する（issue #578）。引数は評価も表示もしない（case の照合だけ）。
+    '  special=0',
+    '  for arg in "$@"; do',
+    '    case "$arg" in',
+    "      *[!A-Za-z0-9_./,:=+@%-]*) special=1 ;;",
+    '    esac',
+    '  done',
+    '  if [ "$special" = 1 ]; then',
+    ...specialCharacterHint(memberEnabled).map((line) => `    echo '${line}' >&2`),
+    '  fi',
     `  exit ${SANDBOX_INVOCATION_EXIT_CODE}`,
     'fi',
     `exec '${envPath}' -i \\`,

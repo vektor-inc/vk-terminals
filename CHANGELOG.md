@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 不具合修正 ] Codex の固定入口で、`#` や `[ ]` を含むコミットメッセージが終了コード 78 で止まる不具合を、`git commit --message-file` の追加と 78 の案内の具体化で解消（[#578](https://github.com/vektor-inc/vk-terminals/issues/578)）
+
 ## 1.96.0
 
 - [ 機能追加 ] Codex の固定入口から、許可された別リポジトリの issue に既存ラベルを追加できるように（[#575](https://github.com/vektor-inc/vk-terminals/issues/575)）

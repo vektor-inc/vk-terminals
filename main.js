@@ -2473,6 +2473,8 @@ ipcMain.handle('terminal:restore', async () => {
     }
   } catch (error) {
     console.warn(`${LOG_PREFIX} holder restore failed:`, error);
+    // 保持役の生成失敗を初期ペイン作成時に繰り返して起動を止めない。
+    if (!tmuxHolder) tmuxUnavailable = true;
     const socket = tmuxHolder?.socket || path.join(process.env.VK_TERMINALS_HOLDER_RUN_DIR || path.join(os.homedir(), '.vk-terminals', 'run'), 'tmux.sock');
     const missing = hasRecentHolderMetadata(socket) ? -1 : 0;
     return { panes: [], order: [], stashOrder: [], missing };
@@ -2535,7 +2537,6 @@ ipcMain.on('terminal:restore-abandon', (_event, ids) => {
   const abandonedIds = new Set(Array.isArray(ids) ? ids.map(String) : []);
   for (const [id, pane] of ptys) {
     if (!pane.isTmuxPane || !pane.pendingReplay || (Array.isArray(ids) && !abandonedIds.has(id))) continue;
-    clearTimeout(pane.replay?.timer);
     pane.replay = null;
     pane.pendingReplay = null;
     ptys.delete(id); ptyShellExecutables.delete(id); agentGenerations.delete(id);

@@ -190,13 +190,12 @@ class PaneAdapter {
     else this.events.emit('data', data);
   }
   beginReplay() {
+    // 画面の準備前に履歴を流すと出力が失われるため、準備完了か描画放棄まで待つ。
     this.replay = { phase: 'capturing', outputs: [], inputs: [] };
-    this.replay.timer = setTimeout(() => this.finishReplay(this.pendingReplay?.history || '', this.pendingReplay?.modes || ''), 8000);
   }
   endCapture() { if (this.replay) this.replay.phase = 'buffering'; }
   finishReplay(history, modes) {
     if (!this.replay) return;
-    clearTimeout(this.replay.timer);
     // 代替画面では先に切り替えないと、復元した画面が切替時に消える。
     const alternate = '\x1b[?1049h';
     if (modes.includes(alternate)) {

@@ -67,6 +67,68 @@ test('保持役の初期化失敗後は次のペインで再試行せず、接�
   assert.equal(attempts.length, 2);
 });
 
+test('復元で保持役を生成できない場合だけ、次の生成を止める', async () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+  const start = source.indexOf("ipcMain.handle('terminal:restore', async () => {");
+  const end = source.indexOf('  const live = new Map(', start);
+  assert.ok(start !== -1 && end > start);
+  for (const failure of ['constructor', 'metadata']) {
+    let handler;
+    const context = {
+      ipcMain: { handle: (_name, callback) => { handler = callback; } },
+      restoreAttempted: false, PANE_HOLDER: 'tmux', tmuxUnavailable: false,
+      tmuxHolder: null, RESOURCE_ROOT: '/tmp', path, os, process: { env: {} },
+      TmuxHolder: class {
+        constructor() {
+          if (failure === 'constructor') throw new Error('tmux unavailable');
+          this.socket = '/tmp/holder.sock';
+        }
+        listPanes() { throw new Error('metadata unavailable'); }
+      },
+      readPaneMetadata: () => { throw new Error('metadata unavailable'); },
+      fallbackHolderMetadata: () => ({ panes: [] }),
+      hasRecentHolderMetadata: () => false,
+      LOG_PREFIX: 'test', console: { warn: () => {} },
+    };
+    vm.runInNewContext(source.slice(start, end) + '\n});', context);
+    await handler();
+    assert.equal(context.tmuxUnavailable, failure === 'constructor', failure);
+  }
+});
+
+test('画面の準備前は時間が経っても履歴と出力を流さず、入力も保留する', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'utils', 'paneHolder.js'), 'utf8');
+  const start = source.indexOf('class PaneAdapter {');
+  const end = source.indexOf('class TmuxHolder {', start);
+  const timers = [];
+  const context = {
+    EventEmitter: require('node:events').EventEmitter, TextDecoder, encodeKeys,
+    isTerminalQueryReplyOnly: () => false,
+    setTimeout: callback => { timers.push(callback); return timers.length; },
+    clearTimeout: () => {},
+  };
+  const PaneAdapter = vm.runInNewContext(source.slice(start, end) + '\nPaneAdapter', context);
+  const keys = [];
+  const pane = new PaneAdapter({ queueKeys: args => keys.push(args) }, '%1', 1, '@1');
+  const output = [];
+  pane.onData(data => output.push(data));
+  pane.beginReplay();
+  pane.output(Buffer.from('capture'));
+  pane.endCapture();
+  pane.output(Buffer.from('live'));
+  pane.write('input');
+  for (const callback of timers) callback();
+  assert.deepEqual(output, []);
+  assert.deepEqual(keys, []);
+  assert.equal(pane.replay.outputs.join(''), 'live');
+  for (let index = 0; index < 10001; index++) pane.output(Buffer.from('x'));
+  assert.equal(pane.replay.outputs.length, 10000);
+  assert.equal(pane.replay.outputs[0], 'x');
+  pane.finishReplay('history', '');
+  assert.equal(output.join(''), `history${'x'.repeat(10000)}`);
+  assert.equal(keys.length, 1);
+});
+
 test('control output の 8 進復号と入力の 16 進符号化', () => {
   assert.deepEqual(decodeOutput('A\\033\\303\\251'), Buffer.from('A\x1bé'));
   assert.deepEqual(encodeKeys('é\r'), ['c3', 'a9', '0d']);

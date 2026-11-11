@@ -195,9 +195,7 @@ class TmuxHolder {
     // 制御クライアントの異常終了時は main を待たせず専用サーバーを停止する。
     try {
       if (!socketExists(this.socket)) return;
-      execFile(this.tmux, ['-S', this.socket, '-f', this.config, 'kill-server'], { env: this.env, timeout: 5000 }, () => {
-        try { if (socketExists(this.socket)) fs.unlinkSync(this.socket); } catch (_) {}
-      });
+      execFile(this.tmux, ['-S', this.socket, '-f', this.config, 'kill-server'], { env: this.env, timeout: 5000 }, () => {});
     } catch (_) {}
   }
   sendControl(args) {

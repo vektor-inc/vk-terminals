@@ -2083,9 +2083,9 @@ button.sidebar-section-header:hover {
   display: block;
   padding: 8px 8px 6px;
   color: #c9d1d9;
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 1.35;
+  font-size: 11px;
+  font-weight: normal;
+  line-height: 1.5;
   overflow-wrap: anywhere;
 }
 .task-item-title-link {

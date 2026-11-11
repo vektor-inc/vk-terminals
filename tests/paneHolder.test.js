@@ -120,7 +120,12 @@ test('tmux 実物: 初期サーバーの秘密変数を後続ペインへ渡さ�
     const special = holder.createPane({ shell: '/bin/sh', cwd: specialDir, env: { HOME: dir, PATH: env.PATH, SPECIAL: specialValue, LARGE: 'z'.repeat(20000) } });
     assert.equal(holder.command(['display-message', '-p', '-t', special.paneId, '#{pane_current_path}']).trim(), specialDir);
     assert.equal(Number(holder.command(['display-message', '-p', '-t', special.paneId, '#{pane_pid}']).trim()), special.pid);
-    assert.deepEqual(fs.readdirSync(dir).filter(name => name.startsWith('pane-')), []);
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('pane environment script was not removed')), 3000);
+      const poll = setInterval(() => {
+        if (!fs.readdirSync(dir).some(name => name.startsWith('pane-'))) { clearTimeout(timeout); clearInterval(poll); resolve(); }
+      }, 20);
+    });
     const valueFile = path.join(dir, 'special-value');
     special.write(`printf '%s' "$SPECIAL" > '${valueFile}'\r`);
     await new Promise((resolve, reject) => {

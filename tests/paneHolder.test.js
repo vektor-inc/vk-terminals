@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { serverEnvironment, isSafeSocketPresent, paneArguments, encodeKeys, decodeOutput, TmuxHolder } = require('../utils/paneHolder');
+const { serverEnvironment, isSafeSocketPresent, createPaneEnvironmentScript, encodeKeys, decodeOutput, TmuxHolder } = require('../utils/paneHolder');
 const { getReadyPatternForEngine } = require('../utils/trustPromptWatcher');
 
 test('control output の 8 進復号と入力の 16 進符号化', () => {
@@ -23,13 +23,19 @@ test('ready プロンプト検知は直接出力と control output 復号後で�
   }
 });
 
-test('保持役の環境と env -i の argv は指定値だけを渡す', () => {
+test('保持役の環境と一時スクリプトを隔離して検査する', () => {
   assert.deepEqual(serverEnvironment({ HOME: '/tmp', PATH: '/bin', VK915_DUMMY_SECRET: 'secret' }), { HOME: '/tmp', PATH: '/bin' });
-  const malicious = 'a\n"; touch /tmp/never-run #';
-  const args = paneArguments({ HOME: '/tmp', TRICK: malicious }, '/bin/sh');
-  assert.deepEqual(args, ['env', '-i', 'HOME=/tmp', `TRICK=${malicious}`, 'TERM=xterm-256color', '/bin/sh']);
-  assert.throws(() => paneArguments({ 'BAD=NAME': 'x' }, '/bin/sh'));
-  assert.throws(() => paneArguments({ BAD: 'a\0b' }, '/bin/sh'));
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'vk-holder-script-')));
+  try {
+    const script = createPaneEnvironmentScript(dir, { HOME: dir, UID: '123', 'BASH_FUNC_x%%': 'ignored', TRICK: 'a\n"; touch /tmp/never-run #' }, '/bin/sh');
+    const body = fs.readFileSync(script, 'utf8');
+    assert.match(body.split('\n')[1], /^rm -f -- /);
+    assert.match(body, /export UID='123'/);
+    assert.doesNotMatch(body, /BASH_FUNC/);
+    assert.match(body, /unset SHLVL/);
+    assert.equal(fs.statSync(script).mode & 0o777, 0o600);
+    assert.throws(() => createPaneEnvironmentScript(dir, { BAD: 'a\0b' }, '/bin/sh'));
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('ソケットの権限・リンク・型・所有者・長さを検査する', async () => {
@@ -50,8 +56,13 @@ test('ソケットの権限・リンク・型・所有者・長さを検査す�
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('tmux が見つからなければ ENOENT とし、呼び出し元が node-pty へ戻せる', () => {
-  assert.throws(() => new TmuxHolder({ tmux: '/nonexistent/vk-terminals-tmux' }), { code: 'ENOENT' });
+test('tmux が見つからなくても実行ディレクトリを作らない', () => {
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'vk-holder-missing-')));
+  try {
+    const run = path.join(dir, 'run');
+    assert.throws(() => new TmuxHolder({ tmux: '/nonexistent/vk-terminals-tmux', env: { HOME: dir, VK_TERMINALS_HOLDER_RUN_DIR: run }, home: dir }), { code: 'TMUX_NOT_FOUND' });
+    assert.equal(fs.existsSync(run), false);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('tmux 実物: 初期サーバーの秘密変数を後続ペインへ渡さず、入力を返す', async t => {
@@ -71,6 +82,9 @@ test('tmux 実物: 初期サーバーの秘密変数を後続ペインへ渡さ�
     assert.match(holder.command(['display-message', '-p', '-t', pane.paneId, '#{window_width}x#{window_height}']), /101x37/);
     let output = '';
     pane.onData(data => { output += data; });
+    holder.accept(`%output ${pane.paneId} SPL`);
+    holder.accept('IT\n');
+    assert.match(output, /SPLIT/);
     pane.write('printf "INPUT_OK\\n"; if [ -z "$VK915_DUMMY_SECRET" ]; then echo SECRET_ABSENT; fi; printf "%s" "$TRICK"\r');
     await new Promise((resolve, reject) => {
       const timeout = setTimeout(() => reject(new Error(`tmux output timeout: ${output}`)), 5000);
@@ -102,6 +116,30 @@ test('tmux 実物: 初期サーバーの秘密変数を後続ペインへ渡さ�
       }, 20);
     });
     assert.equal(fs.readFileSync(rawFile, 'utf8'), rawInput);
+    const other = holder.createPane({ shell: '/bin/sh', cwd: dir, env: { HOME: dir, PATH: env.PATH } });
+    let otherOutput = '';
+    other.onData(data => { otherOutput += data; });
+    const bulk = 'y'.repeat(100 * 1024);
+    const bulkStart = performance.now();
+    pane.write(bulk);
+    other.write('echo OTHER_PANE_READY\r');
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('other pane was blocked by bulk input')), 5000);
+      const poll = setInterval(() => {
+        if (otherOutput.includes('OTHER_PANE_READY')) { clearInterval(poll); clearTimeout(timeout); resolve(); }
+      }, 10);
+    });
+    const otherLatency = Math.round(performance.now() - bulkStart);
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('100KB input timeout')), 10000);
+      const poll = setInterval(() => {
+        if (fs.statSync(rawFile).size >= Buffer.byteLength(rawInput) + bulk.length) { clearInterval(poll); clearTimeout(timeout); resolve(); }
+      }, 10);
+    });
+    const bulkDuration = Math.round(performance.now() - bulkStart);
+    console.log(`100KB input: ${bulkDuration}ms; other pane: ${otherLatency}ms`);
+    assert.ok(otherLatency < bulkDuration, 'other pane responds before bulk input completes');
+    other.kill();
     pane.write('\x03');
     await new Promise(resolve => setTimeout(resolve, 100));
     pane.write('stty sane\r');
@@ -112,7 +150,11 @@ test('tmux 実物: 初期サーバーの秘密変数を後続ペインへ渡さ�
     pane.write('exit\r');
     await exited;
     holder.close();
+    fs.writeFileSync(path.join(dir, 'tmux.lock'), '99999999', { mode: 0o600 });
+    fs.writeFileSync(path.join(dir, 'pane-123-0123456789abcdef.sh'), 'stale', { mode: 0o600 });
     holder = new TmuxHolder({ env, home: dir, tmux });
+    assert.equal(fs.existsSync(path.join(dir, 'tmux.lock')), false);
+    assert.equal(fs.existsSync(path.join(dir, 'pane-123-0123456789abcdef.sh')), false);
     assert.ok(holder.active);
     const specialDir = path.join(dir, 'with#;');
     fs.mkdirSync(specialDir);

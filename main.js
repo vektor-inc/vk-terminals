@@ -1442,6 +1442,7 @@ function compareSemver(a, b) {
 async function cleanupPtys() {
   await terminateAllPtysAndWaitIncludingExiting(ptys.values(), exitingPtys.values());
   try { if (tmuxHolder) tmuxHolder.close(); }
+  catch (error) { console.warn(`${LOG_PREFIX} tmux holder cleanup failed:`, error); }
   finally { tmuxHolder = null; await agentLifecycles.close(); }
 }
 
@@ -2449,7 +2450,7 @@ function createTerminalPane(cwd, options = {}, guide = null) {
     if (PANE_HOLDER === 'tmux' && !tmuxHolder && !tmuxUnavailable) {
       try { tmuxHolder = new TmuxHolder({ config: path.join(RESOURCE_ROOT, 'tmux-holder.conf') }); }
       catch (error) {
-        if (error.code === 'ENOENT') tmuxUnavailable = true;
+        if (error.code === 'TMUX_NOT_FOUND') tmuxUnavailable = true;
         console.warn(`${LOG_PREFIX} tmux holder failed (${error.message}; socket: ${path.join(process.env.VK_TERMINALS_HOLDER_RUN_DIR || path.join(os.homedir(), '.vk-terminals', 'run'), 'tmux.sock')}); using node-pty`);
       }
     }
@@ -2457,8 +2458,7 @@ function createTerminalPane(cwd, options = {}, guide = null) {
       try { ptyProcess = tmuxHolder.createPane({ shell, cwd: resolvedCwd, env: buildPtyEnv(process.env) }); }
       catch (error) {
         console.warn(`${LOG_PREFIX} tmux pane failed (${error.message}; socket: ${tmuxHolder.socket}); using node-pty`);
-        try { tmuxHolder.close(); } catch (_) {}
-        tmuxHolder = null;
+        if (!tmuxHolder.active) tmuxHolder = null;
       }
     }
     if (!ptyProcess) ptyProcess = pty.spawn(shell, [], {

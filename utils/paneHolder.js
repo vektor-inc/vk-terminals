@@ -124,7 +124,7 @@ function writePaneMetadata(socket, data) {
   readPaneMetadata(socket);
   const temporary = `${file}.${process.pid}.${require('node:crypto').randomBytes(8).toString('hex')}`;
   try {
-    fs.writeFileSync(temporary, JSON.stringify({ version: 1, panes: data.panes }), { flag: 'wx', mode: 0o600 });
+    fs.writeFileSync(temporary, JSON.stringify({ version: 1, panes: data.panes, order: data.order || [], stashOrder: data.stashOrder || [] }), { flag: 'wx', mode: 0o600 });
     fs.renameSync(temporary, file);
   } finally { try { fs.unlinkSync(temporary); } catch (_) {} }
 }

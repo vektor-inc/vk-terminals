@@ -706,6 +706,7 @@ async function createTerminal(paneId, cwd, options = {}, createdResult = null) {
     if (!t) return;
     t.taskTitle = title || '';
     updatePaneTitle(paneId);
+    schedulePaneLayoutSave();
   });
 
   // 共通の入力送信ヘルパー（waiting バッジのクリアを含む）
@@ -994,6 +995,7 @@ VKIpc.on('terminal:exit', (id) => {
 
 // ─── DOM updates (without full re-render) ────────────────────────────────────
 function updatePaneCwd(paneId, cwd) {
+  schedulePaneLayoutSave();
   const el = document.querySelector(`.pane[data-id="${paneId}"] .pane-cwd`);
   if (el) el.textContent = cwd;
   // 格納中のコンパクト表示の cwd も同期する（issue #89）。
@@ -2831,6 +2833,7 @@ function renderTaskTitleContent(el, title, url, prUrl, prMerged = false, waiting
 }
 
 function updatePaneTitle(paneId) {
+  schedulePaneLayoutSave();
   const t = terminals[paneId];
   if (!t) return;
   // 格納中ならコンパクト表示のタスク名を更新する（.pane が無いため下の処理は素通りする）。
@@ -3689,8 +3692,30 @@ function fitAll() {
   getAllLeafIds(tree).forEach(fitTerminal);
 }
 
+// 画面の並びと表示情報は、保持役の専用メタデータへまとめて保存する。
+let paneLayoutSaveTimer = null;
+function savePaneLayout() {
+  if (!tree || !Array.isArray(tree.order)) return;
+  const panes = Object.entries(terminals).map(([paneId, t]) => ({
+    paneId, termId: t.termId, cwd: t.cwdFull, engine: t.engine,
+    taskTitle: t.taskTitle, apiTitle: t.apiTitle, apiUrl: t.apiUrl,
+    apiPrUrl: t.apiPrUrl, apiPrMerged: t.apiPrMerged,
+    apiWaitingMerge: t.apiWaitingMerge, apiPaneNote: t.apiPaneNote,
+  }));
+  VKIpc.send('terminal:save-layout', { order: tree.order, stashOrder: tree.stashOrder || [], panes });
+}
+function schedulePaneLayoutSave() {
+  if (paneLayoutSaveTimer) clearTimeout(paneLayoutSaveTimer);
+  paneLayoutSaveTimer = setTimeout(() => { paneLayoutSaveTimer = null; savePaneLayout(); }, 100);
+}
+window.addEventListener('beforeunload', () => {
+  if (paneLayoutSaveTimer) clearTimeout(paneLayoutSaveTimer);
+  savePaneLayout();
+});
+
 // ─── Rendering ────────────────────────────────────────────────────────────────
 function render() {
+  schedulePaneLayoutSave();
   // #root を丸ごと作り直す（root.replaceChildren）ため、ホバー中に呼ばれると
   // xterm 側の要素が入れ替わり leave が発火せず、position: fixed のツールチップが
   // 残り続ける。closePane() / initApp() / window の blur と同じ対策（安藤・Claude Code

@@ -92,7 +92,7 @@ const {
 // ペインのシェルへ渡す環境変数（Volta の bin を PATH へ補う）の組み立て。
 const { resolveInitialPaneLaunch } = require('./utils/initialPaneLaunch');
 const { buildPtyEnv } = require('./utils/ptyEnv');
-const { TmuxHolder } = require('./utils/paneHolder');
+const { TmuxHolder, readPaneMetadata, writePaneMetadata } = require('./utils/paneHolder');
 // ログインシェルの PATH を本体・ペインへ反映する（issue #454）。
 const { applyLoginShellPath, appendUserLocalBin } = require('./utils/loginShellPath');
 const { pickTerminalShell } = require('./utils/terminalShell');
@@ -1440,6 +1440,7 @@ function compareSemver(a, b) {
  * @returns {Promise<void>}
  */
 async function cleanupPtys() {
+  try { if (lastPaneLayout) saveHolderLayout(lastPaneLayout); } catch (error) { console.warn(`${LOG_PREFIX} holder metadata save failed:`, error); }
   await terminateAllPtysAndWaitIncludingExiting([...ptys.values()].filter(pane => !pane.isTmuxPane), exitingPtys.values());
   try { if (tmuxHolder) tmuxHolder.disconnect(); }
   catch (error) { console.warn(`${LOG_PREFIX} tmux holder cleanup failed:`, error); }
@@ -2332,6 +2333,29 @@ ipcMain.handle('clipboard:write-text', async (_event, text) => {
   }
 });
 
+// 保持役に属する実在のペインだけを保存する。renderer 由来の表示情報は長さと型を絞る。
+let lastPaneLayout = null;
+function saveHolderLayout(layout) {
+  if (PANE_HOLDER !== 'tmux' || !tmuxHolder?.active || !layout || !Array.isArray(layout.panes)) return;
+  const identities = new Map(tmuxHolder.listPanes().map(pane => [pane.termId, pane]));
+  const safeText = value => typeof value === 'string' ? value.slice(0, 4096) : '';
+  const panes = layout.panes.filter(pane => pane && identities.has(String(pane.termId)) && ptys.get(String(pane.termId))?.isTmuxPane).map(pane => ({
+    paneId: safeText(pane.paneId).slice(0, 64), termId: String(pane.termId),
+    tmuxPaneId: identities.get(String(pane.termId)).paneId,
+    cwd: safeText(pane.cwd), engine: pane.engine === 'codex' ? 'codex' : 'claude',
+    taskTitle: safeText(pane.taskTitle), apiTitle: safeText(pane.apiTitle),
+    apiUrl: safeText(pane.apiUrl), apiPrUrl: safeText(pane.apiPrUrl),
+    apiPrMerged: pane.apiPrMerged === true, apiWaitingMerge: pane.apiWaitingMerge === true,
+    apiPaneNote: safeText(pane.apiPaneNote),
+  }));
+  const ids = new Set(panes.map(pane => pane.paneId));
+  const selectOrder = values => Array.isArray(values) ? values.filter(id => ids.has(id)) : [];
+  writePaneMetadata(tmuxHolder.socket, { panes, order: selectOrder(layout.order), stashOrder: selectOrder(layout.stashOrder) });
+}
+ipcMain.on('terminal:save-layout', (_event, layout) => {
+  lastPaneLayout = layout;
+  try { saveHolderLayout(layout); } catch (error) { console.warn(`${LOG_PREFIX} holder metadata save failed:`, error); }
+});
 ipcMain.handle('terminal:create', (_event, cwd, options = {}) => createTerminalPane(cwd, options));
 
 function createTerminalPane(cwd, options = {}, guide = null) {

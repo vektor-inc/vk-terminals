@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { serverEnvironment, validateSocketPath, paneArguments, encodeKeys, decodeOutput, TmuxHolder } = require('../utils/paneHolder');
+const { serverEnvironment, isSafeSocketPresent, paneArguments, encodeKeys, decodeOutput, TmuxHolder } = require('../utils/paneHolder');
 const { getReadyPatternForEngine } = require('../utils/trustPromptWatcher');
 
 test('control output の 8 進復号と入力の 16 進符号化', () => {
@@ -36,17 +36,17 @@ test('ソケットの権限・リンク・型・所有者・長さを検査す�
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'vk-holder-unit-')));
   const socket = path.join(dir, 'tmux.sock');
   try {
-    assert.equal(validateSocketPath(socket), false);
+    assert.equal(isSafeSocketPresent(socket), false);
     fs.chmodSync(dir, 0o755);
-    assert.throws(() => validateSocketPath(socket));
+    assert.throws(() => isSafeSocketPresent(socket));
     fs.chmodSync(dir, 0o700);
     fs.writeFileSync(socket, 'x');
-    assert.throws(() => validateSocketPath(socket));
+    assert.throws(() => isSafeSocketPresent(socket));
     fs.unlinkSync(socket);
     fs.symlinkSync('/tmp/other', socket);
-    assert.throws(() => validateSocketPath(socket));
-    assert.throws(() => validateSocketPath(socket, fs, process.getuid() + 1));
-    assert.throws(() => validateSocketPath(path.join(dir, 'x'.repeat(105))));
+    assert.throws(() => isSafeSocketPresent(socket));
+    assert.throws(() => isSafeSocketPresent(socket, fs, process.getuid() + 1));
+    assert.throws(() => isSafeSocketPresent(path.join(dir, 'x'.repeat(105))));
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -62,7 +62,7 @@ test('tmux 実物: 初期サーバーの秘密変数を後続ペインへ渡さ�
   let holder;
   try {
     holder = new TmuxHolder({ env, home: dir, tmux });
-    assert.throws(() => validateSocketPath(holder.socket, fs, process.getuid() + 1));
+    assert.throws(() => isSafeSocketPresent(holder.socket, fs, process.getuid() + 1));
     const injectedFile = path.join(dir, 'injected');
     const dangerousValue = `a\n"; touch ${injectedFile}; #`;
     const pane = holder.createPane({ shell: '/bin/sh', cwd: dir, env: { HOME: dir, PATH: env.PATH, TERM: 'xterm-256color', TRICK: dangerousValue } });

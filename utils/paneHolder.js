@@ -13,7 +13,7 @@ function serverEnvironment(env) {
   return Object.fromEntries(SERVER_ENV_KEYS.filter(key => typeof env[key] === 'string' && env[key].length).map(key => [key, env[key]]));
 }
 
-function validateSocketPath(socket, fsApi = fs, uid = process.getuid?.()) {
+function isSafeSocketPresent(socket, fsApi = fs, uid = process.getuid?.()) {
   if (Buffer.byteLength(socket) >= 104) throw new Error('tmux socket path exceeds 103 bytes');
   const parent = fsApi.lstatSync(path.dirname(socket));
   if (!parent.isDirectory() || parent.isSymbolicLink() || parent.uid !== uid || (parent.mode & 0o777) !== 0o700) {
@@ -31,7 +31,7 @@ function validateSocketPath(socket, fsApi = fs, uid = process.getuid?.()) {
   }
 }
 
-function socketExists(socket) { return validateSocketPath(socket); }
+function socketExists(socket) { return isSafeSocketPresent(socket); }
 
 function createHolderSocketDirectory(env = process.env, home = os.homedir()) {
   const runDir = env.VK_TERMINALS_HOLDER_RUN_DIR || path.join(home, '.vk-terminals', 'run');
@@ -49,7 +49,7 @@ function createHolderSocketDirectory(env = process.env, home = os.homedir()) {
     }
   }
   const socket = path.join(runDir, 'tmux.sock');
-  validateSocketPath(socket);
+  isSafeSocketPresent(socket);
   return socket;
 }
 
@@ -150,7 +150,7 @@ class TmuxHolder {
     let created = false;
     try {
       lockFd = fs.openSync(lock, 'wx', 0o600);
-      if (validateSocketPath(this.socket)) {
+      if (isSafeSocketPresent(this.socket)) {
         let sessions;
         try { sessions = this.command(['list-sessions', '-F', '#{session_name}']); } catch (_) { sessions = null; }
         if (sessions === null) fs.unlinkSync(this.socket);
@@ -160,18 +160,18 @@ class TmuxHolder {
             throw new Error('tmux holder socket is in use');
           }
           this.command(['kill-server']);
-          validateSocketPath(this.socket);
+          isSafeSocketPresent(this.socket);
           fs.unlinkSync(this.socket);
         }
       }
       // 排他中にサーバーと制御クライアントを作る。
       this.command(['new-session', '-d', '-s', this.session, '-n', 'holder', 'sleep', '2147483647']);
       created = true;
-      validateSocketPath(this.socket);
+      isSafeSocketPresent(this.socket);
       this.control = spawn(tmux, ['-S', this.socket, '-f', config, '-C', 'attach-session', '-t', this.session], { env: this.env, stdio: ['pipe', 'pipe', 'pipe'] });
     } catch (error) {
       if (this.control) this.control.kill();
-      if (created && validateSocketPath(this.socket)) {
+      if (created && isSafeSocketPresent(this.socket)) {
         try { this.command(['kill-server']); fs.unlinkSync(this.socket); } catch (_) {}
       }
       throw error;
@@ -217,7 +217,7 @@ class TmuxHolder {
     }, 5);
   }
   command(args) {
-    validateSocketPath(this.socket);
+    isSafeSocketPresent(this.socket);
     return execFileSync(this.tmux, ['-S', this.socket, '-f', this.config, ...args.map(escapeTmuxArgument)], { env: this.env, encoding: 'utf8', timeout: 5000 });
   }
   createPane({ shell, cwd, env, cols = 80, rows = 24 }) {
@@ -256,13 +256,13 @@ class TmuxHolder {
     this.keyTimer = null;
     this.keyQueue.length = 0;
     for (const pane of [...this.panes.values()]) pane.exit();
-    try { if (validateSocketPath(this.socket)) this.command(['kill-server']); }
+    try { if (isSafeSocketPresent(this.socket)) this.command(['kill-server']); }
     finally {
       this.active = false;
       this.control.kill();
-      if (validateSocketPath(this.socket)) fs.unlinkSync(this.socket);
+      if (isSafeSocketPresent(this.socket)) fs.unlinkSync(this.socket);
     }
   }
 }
 
-module.exports = { SERVER_ENV_KEYS, serverEnvironment, validateSocketPath, createHolderSocketDirectory, paneArguments, encodeKeys, decodeOutput, TmuxHolder };
+module.exports = { SERVER_ENV_KEYS, serverEnvironment, isSafeSocketPresent, createHolderSocketDirectory, paneArguments, encodeKeys, decodeOutput, TmuxHolder };

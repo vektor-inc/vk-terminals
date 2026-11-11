@@ -92,6 +92,7 @@ const {
 // ペインのシェルへ渡す環境変数（Volta の bin を PATH へ補う）の組み立て。
 const { resolveInitialPaneLaunch } = require('./utils/initialPaneLaunch');
 const { buildPtyEnv } = require('./utils/ptyEnv');
+const { TmuxHolder } = require('./utils/paneHolder');
 // ログインシェルの PATH を本体・ペインへ反映する（issue #454）。
 const { applyLoginShellPath, appendUserLocalBin } = require('./utils/loginShellPath');
 const { pickTerminalShell } = require('./utils/terminalShell');
@@ -105,6 +106,7 @@ const { resolveInstanceId, buildHealthResponse } = require('./utils/instanceId')
 // 組み込み用の入口（embedded.js）から渡される起動オプションと、その解決（issue #455）。
 const {
   getEmbeddedOptions,
+  resolvePaneHolder,
   resolveAppTitle,
   resolveResourceRoot,
   isBundledRun,
@@ -307,6 +309,9 @@ const { USER_CONFIG_MAX_BYTES, normalizeLiveConfig, changedLiveKeys, normalizeRe
 const { createRestartApplication } = require('./utils/restartApplication');
 // 組み込み用の入口（embedded.js）から起動されたときだけ値が入る。electron . では null。
 const EMBEDDED_OPTIONS = getEmbeddedOptions();
+const PANE_HOLDER = resolvePaneHolder({ argv: process.argv, embedded: EMBEDDED_OPTIONS, warn: message => console.warn(`[vk-terminals] ${message}`) });
+let tmuxHolder = null;
+let tmuxUnavailable = false;
 const { isHelpDocument, buildHelpLaunchCommand, createHelpStatusChecker, createGuideOpener } = require('./utils/helpFeature');
 const HELP_FEATURE = EMBEDDED_OPTIONS && EMBEDDED_OPTIONS.help;
 const checkHelpStatus = HELP_FEATURE ? createHelpStatusChecker(EMBEDDED_OPTIONS.getHelpStatus) : null;
@@ -1436,7 +1441,9 @@ function compareSemver(a, b) {
  */
 async function cleanupPtys() {
   await terminateAllPtysAndWaitIncludingExiting(ptys.values(), exitingPtys.values());
-  await agentLifecycles.close();
+  try { if (tmuxHolder) tmuxHolder.close(); }
+  catch (error) { console.warn(`${LOG_PREFIX} tmux holder cleanup failed:`, error); }
+  finally { tmuxHolder = null; await agentLifecycles.close(); }
 }
 
 /**
@@ -2439,7 +2446,23 @@ function createTerminalPane(cwd, options = {}, guide = null) {
 
   let ptyProcess;
   try {
-    ptyProcess = pty.spawn(shell, [], {
+    if (tmuxHolder && !tmuxHolder.active) tmuxHolder = null;
+    if (PANE_HOLDER === 'tmux' && !tmuxHolder && !tmuxUnavailable) {
+      try { tmuxHolder = new TmuxHolder({ config: path.join(RESOURCE_ROOT, 'tmux-holder.conf') }); }
+      catch (error) {
+        // 初期化失敗は起動中に繰り返さない。接続後の停止は上の active 判定で再生成する。
+        tmuxUnavailable = true;
+        console.warn(`${LOG_PREFIX} tmux holder failed (${error.message}; socket: ${path.join(process.env.VK_TERMINALS_HOLDER_RUN_DIR || path.join(os.homedir(), '.vk-terminals', 'run'), 'tmux.sock')}); using node-pty`);
+      }
+    }
+    if (tmuxHolder) {
+      try { ptyProcess = tmuxHolder.createPane({ shell, cwd: resolvedCwd, env: buildPtyEnv(process.env) }); }
+      catch (error) {
+        console.warn(`${LOG_PREFIX} tmux pane failed (${error.message}; socket: ${tmuxHolder.socket}); using node-pty`);
+        if (!tmuxHolder.active) tmuxHolder = null;
+      }
+    }
+    if (!ptyProcess) ptyProcess = pty.spawn(shell, [], {
       name: 'xterm-256color',
       cols: 80,
       rows: 24,
@@ -2767,6 +2790,9 @@ function createTerminalPane(cwd, options = {}, guide = null) {
     });
   }
   if (launchCommand !== null) {
+    if (ptyProcess.isTmuxPane && (resolvedEngine === 'claude' || resolvedEngine === 'codex')) {
+      launchCommand = `env -u TMUX -u TMUX_PANE ${launchCommand}`;
+    }
     // 待っている間に PTY が消えた・書き込みが例外になった場合は、使われない専用 CODEX_HOME を回収する。
     scheduleLaunchCommand({
       ptys,
@@ -3079,7 +3105,8 @@ async function restartAgentInTerminal(ptyProcess, request, launchOptions, lifecy
   if (changeDirectoryCommand !== null) {
     ptyProcess.write(`${changeDirectoryCommand}\r`);
   }
-  const { command, modelIgnored } = buildEngineAwareLaunchCommand(request.engine, request.model, launchOptions);
+  const { command: builtCommand, modelIgnored } = buildEngineAwareLaunchCommand(request.engine, request.model, launchOptions);
+  const command = ptyProcess.isTmuxPane ? `env -u TMUX -u TMUX_PANE ${builtCommand}` : builtCommand;
   if (modelIgnored) {
     console.warn(`${LOG_PREFIX} model is ignored for engine '${request.engine}'`);
   }

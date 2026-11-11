@@ -7082,10 +7082,13 @@ async function initApp() {
         tree.order = tree.order.filter(id => terminals[id]);
         tree.stashOrder = tree.stashOrder.filter(id => terminals[id]);
         focusedPaneId = tree.order[0] || tree.stashOrder[0] || null;
-        if (focusedPaneId) { render(); initialRenderDone = true; showRestoreWarning(-1); }
+        if (focusedPaneId) { render(); initialRenderDone = true; showGenericToast('前回のペインの一部を戻せませんでした'); }
         else restored.missing = -1;
       } finally {
-        if (!readyScheduled) VKIpc.send('terminal:restore-ready', validPanes.filter(p => terminals[p.paneId]).map(p => p.id));
+        if (!readyScheduled) {
+          if (Object.keys(terminals).length) VKIpc.send('terminal:restore-ready', validPanes.filter(p => terminals[p.paneId]).map(p => p.id));
+          else VKIpc.send('terminal:restore-abandon');
+        }
       }
       if (Object.keys(terminals).length) return;
     }

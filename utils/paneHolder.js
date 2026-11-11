@@ -134,6 +134,17 @@ function writePaneMetadata(socket, data) {
   } finally { try { fs.unlinkSync(temporary); } catch (_) {} }
 }
 
+function touchPaneMetadata(socket) {
+  isSafeSocketPresent(socket);
+  const fd = fs.openSync(metadataPath(socket), fs.constants.O_RDWR | fs.constants.O_NOFOLLOW);
+  try {
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile() || stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o600 || stat.nlink !== 1) throw new Error('unsafe pane metadata');
+    const now = new Date();
+    fs.futimesSync(fd, now, now);
+  } finally { fs.closeSync(fd); }
+}
+
 function stopHolder(socket, tmux = 'tmux', env = process.env) {
   const runDir = env.VK_TERMINALS_HOLDER_RUN_DIR || path.join(env.HOME || os.homedir(), '.vk-terminals', 'run');
   if (!socket || !path.isAbsolute(socket) || socket !== path.join(runDir, 'tmux.sock')) return false;
@@ -455,4 +466,4 @@ class TmuxHolder {
   }
 }
 
-module.exports = { metadataPath, readPaneMetadata, writePaneMetadata, stopHolder, SERVER_ENV_KEYS, serverEnvironment, supportsHolderCommands, isSafeSocketPresent, createHolderSocketPath, createPaneEnvironmentScript, encodeKeys, decodeOutput, TmuxHolder };
+module.exports = { metadataPath, readPaneMetadata, writePaneMetadata, touchPaneMetadata, stopHolder, SERVER_ENV_KEYS, serverEnvironment, supportsHolderCommands, isSafeSocketPresent, createHolderSocketPath, createPaneEnvironmentScript, encodeKeys, decodeOutput, TmuxHolder };

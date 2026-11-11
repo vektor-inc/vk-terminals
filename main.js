@@ -92,7 +92,8 @@ const {
 // ペインのシェルへ渡す環境変数（Volta の bin を PATH へ補う）の組み立て。
 const { resolveInitialPaneLaunch } = require('./utils/initialPaneLaunch');
 const { buildPtyEnv } = require('./utils/ptyEnv');
-const { TmuxHolder, readPaneMetadata, writePaneMetadata } = require('./utils/paneHolder');
+const { TmuxHolder, metadataPath, readPaneMetadata, writePaneMetadata, touchPaneMetadata } = require('./utils/paneHolder');
+const { missingSavedPaneCount, chooseUntrackedPaneIdentity } = require('./utils/paneHolderRestorePlan');
 const { MODE_FORMAT, buildInputModeSequence } = require('./utils/paneHolderRestore');
 // ログインシェルの PATH を本体・ペインへ反映する（issue #454）。
 const { applyLoginShellPath, appendUserLocalBin } = require('./utils/loginShellPath');
@@ -1441,7 +1442,12 @@ function compareSemver(a, b) {
  * @returns {Promise<void>}
  */
 async function cleanupPtys() {
-  try { if (lastPaneLayout) saveHolderLayout(lastPaneLayout); } catch (error) { console.warn(`${LOG_PREFIX} holder metadata save failed:`, error); }
+  try {
+    if (lastPaneLayout) {
+      saveHolderLayout(lastPaneLayout);
+      if (PANE_HOLDER === 'tmux' && tmuxHolder?.active) touchPaneMetadata(tmuxHolder.socket);
+    }
+  } catch (error) { console.warn(`${LOG_PREFIX} holder metadata save failed:`, error); }
   // 正常終了を先に制御クライアントへ伝え、PTY の終了待ち中の異常切断扱いを防ぐ。
   try { if (tmuxHolder) tmuxHolder.disconnect(); }
   catch (error) { console.warn(`${LOG_PREFIX} tmux holder cleanup failed:`, error); }
@@ -2430,6 +2436,10 @@ ipcMain.on('terminal:save-layout', (_event, layout) => {
   lastPaneLayout = layout;
   try { saveHolderLayout(layout); } catch (error) { console.warn(`${LOG_PREFIX} holder metadata save failed:`, error); }
 });
+function hasRecentHolderMetadata(socket) {
+  try { return Date.now() - fs.statSync(metadataPath(socket)).mtimeMs < 24 * 60 * 60 * 1000; }
+  catch (_) { return false; }
+}
 // 起動時だけ既存シェルを登録する。新規ペイン作成時の起動コマンドは通さない。
 let restoreAttempted = false;
 let restoredPaneCount = 0;
@@ -2458,16 +2468,13 @@ ipcMain.handle('terminal:restore', async () => {
     }
     if (!tmuxHolder.reattached) {
       // サーバーが無い場合は件数を伏せ、古い記録だけなら通知しない。
-      const metadataFile = path.join(path.dirname(tmuxHolder.socket), 'panes.json');
-      let recent = false;
-      try { recent = Date.now() - fs.statSync(metadataFile).mtimeMs < 24 * 60 * 60 * 1000; } catch (_) {}
+      const recent = hasRecentHolderMetadata(tmuxHolder.socket);
       return { panes: [], order: [], stashOrder: [], missing: recent && metadata.panes.length ? -1 : 0 };
     }
   } catch (error) {
     console.warn(`${LOG_PREFIX} holder restore failed:`, error);
-    const metadataFile = path.join(process.env.VK_TERMINALS_HOLDER_RUN_DIR || path.join(os.homedir(), '.vk-terminals', 'run'), 'panes.json');
-    let missing = 0;
-    try { if (Date.now() - fs.statSync(metadataFile).mtimeMs < 24 * 60 * 60 * 1000) missing = -1; } catch (_) {}
+    const socket = tmuxHolder?.socket || path.join(process.env.VK_TERMINALS_HOLDER_RUN_DIR || path.join(os.homedir(), '.vk-terminals', 'run'), 'tmux.sock');
+    const missing = hasRecentHolderMetadata(socket) ? -1 : 0;
     return { panes: [], order: [], stashOrder: [], missing };
   }
   const live = new Map(tmuxHolder.listPanes().map(pane => [pane.paneId, pane]));
@@ -2484,17 +2491,21 @@ ipcMain.handle('terminal:restore', async () => {
     const normalized = normalizeHolderPane(saved, identity.paneId);
     panes.push({ ...normalized, id, cwd: normalized.cwd || os.homedir() });
   }
+  const matchedSavedCount = panes.length;
   const restoredIds = new Set(panes.map(pane => pane.tmuxPaneId));
+  const usedPaneIds = new Set(panes.map(pane => pane.paneId));
   // 保存後に増えた生存ペインも作業を失わないよう既定名で末尾へ戻す。
   for (const identity of live.values()) {
     if (restoredIds.has(identity.paneId) || !/^\d+$/.test(String(identity.termId))) continue;
-    let id = String(identity.termId);
-    if (ptys.has(id)) id = String(nextId++);
+    const chosen = chooseUntrackedPaneIdentity(identity.termId, new Set(ptys.keys()), usedPaneIds, nextId);
+    const { id, paneId } = chosen;
+    nextId = chosen.nextId;
+    if (chosen.renumbered) tmuxHolder.command(['set-option', '-w', '-t', identity.windowId, '@vk_term_id', id]);
     const pane = tmuxHolder.attachPane(identity);
     pane.beginReplay();
     registerTerminalProcess(id, pane, process.env.SHELL || '/bin/sh', { hasAgent: false });
-    nextId = Math.max(nextId, Number(id) + 1);
-    const normalized = normalizeHolderPane({ termId: id, paneId: `pane-${id}`, cwd: os.homedir(), hasAgent: false, generation: 0 }, identity.paneId);
+    usedPaneIds.add(paneId);
+    const normalized = normalizeHolderPane({ termId: id, paneId, cwd: os.homedir(), hasAgent: false, generation: 0 }, identity.paneId);
     panes.push({ ...normalized, id });
   }
   // capture-pane の %end より前の出力は履歴に含まれるので捨て、後続分だけ再生する。
@@ -2514,7 +2525,20 @@ ipcMain.handle('terminal:restore', async () => {
   restoredPaneCount = panes.length;
   if (panes.length) firstTerminalCreated = true;
   const ids = new Set(panes.map(pane => pane.paneId));
-  return { panes, order: (Array.isArray(metadata.order) ? metadata.order : []).filter(id => ids.has(id)), stashOrder: (Array.isArray(metadata.stashOrder) ? metadata.stashOrder : []).filter(id => ids.has(id)), focusedPaneId: ids.has(metadata.focusedPaneId) ? metadata.focusedPaneId : null, missing: metadataRejected && !panes.length ? -1 : Math.max(0, metadata.panes.length - panes.length), metadataLost: metadataRejected };
+  return { panes, order: (Array.isArray(metadata.order) ? metadata.order : []).filter(id => ids.has(id)), stashOrder: (Array.isArray(metadata.stashOrder) ? metadata.stashOrder : []).filter(id => ids.has(id)), focusedPaneId: ids.has(metadata.focusedPaneId) ? metadata.focusedPaneId : null, missing: metadataRejected && !panes.length ? -1 : missingSavedPaneCount(metadata.panes.length, matchedSavedCount), metadataLost: metadataRejected };
+});
+ipcMain.on('terminal:restore-abandon', () => {
+  // 描画できなかったペインを管理対象から外す。保持役のシェルは次回起動まで残す。
+  for (const [id, pane] of ptys) {
+    if (!pane.isTmuxPane || !pane.pendingReplay) continue;
+    ptys.delete(id); ptyShellExecutables.delete(id); agentGenerations.delete(id);
+    agentLifecycles.delete(id); clearPaneBackgroundWork(id);
+    conditionalTerminalInput.delete(id); silentWriteRefresher.delete(id);
+    reportedScreenSnapshots.delete(id); restartAgentOperations.delete(id);
+    tmuxHolder?.panes.delete(pane.paneId);
+  }
+  restoredPaneCount = 0;
+  firstTerminalCreated = false;
 });
 ipcMain.handle('terminal:create', (_event, cwd, options = {}) => createTerminalPane(cwd, options));
 

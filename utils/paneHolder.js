@@ -278,6 +278,9 @@ class TmuxHolder {
     this.active = false;
     this.keyQueues.clear();
     this.keyScheduled = false;
+    for (const request of this.captureRequests) request.reject(new Error('tmux control client stopped'));
+    this.captureRequests = [];
+    this.controlBlock = null;
     for (const pane of [...this.panes.values()]) pane.exit();
   }
   sendControl(args) {

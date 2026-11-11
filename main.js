@@ -3051,7 +3051,7 @@ let additionalPanesCreated = false;
 ipcMain.on('terminal:renderer-ready', async () => {
   pushMenuUpdate();
   pushWidgetUpdate();
-  if (restoredPaneCount) return;
+  if (restoredPaneCount) { additionalPanesCreated = true; return; }
   if (additionalPanesCreated) return; // closePane で最後のペインを閉じて再 initApp された場合は再生成しない
   additionalPanesCreated = true;
   const config = loadUserConfig();

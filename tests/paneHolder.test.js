@@ -233,8 +233,9 @@ test('メタデータを 0600 で原子的に保存し、危険なファイル�
     fs.chmodSync(dir, 0o700);
     const socket = path.join(dir, 'tmux.sock');
     assert.deepEqual(readPaneMetadata(socket), { version: 1, panes: [] });
-    writePaneMetadata(socket, { panes: [{ termId: '5', paneId: '%1' }] });
+    writePaneMetadata(socket, { panes: [{ termId: '5', paneId: '%1' }], order: ['pane-5'], stashOrder: [] });
     assert.equal(readPaneMetadata(socket).panes[0].termId, '5');
+    assert.deepEqual(readPaneMetadata(socket).order, ['pane-5']);
     const file = path.join(dir, 'panes.json');
     assert.equal(fs.statSync(file).mode & 0o777, 0o600);
     fs.chmodSync(file, 0o644);
@@ -256,7 +257,7 @@ test('停止関数は検証済みの専用ソケットのみ -S で指定する'
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('tmux 実物: 切断後に同じペインと番号へ再接続する', t => {
+test('tmux 実物: 切断後に同じペインと番号へ再接続する', async t => {
   const tmux = (process.env.PATH || '').split(path.delimiter).map(dir => path.join(dir, 'tmux')).find(file => { try { fs.accessSync(file, fs.constants.X_OK); return true; } catch (_) { return false; } });
   if (!tmux) { t.skip('tmux is unavailable'); return; }
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'vk-holder-reattach-')));
@@ -269,6 +270,24 @@ test('tmux 実物: 切断後に同じペインと番号へ再接続する', t =>
     holder = new TmuxHolder({ env, home: dir, tmux });
     assert.equal(holder.reattached, true);
     assert.equal(holder.listPanes().find(item => item.paneId === pane.paneId)?.termId, '7');
+    const attached = holder.attachPane(holder.listPanes().find(item => item.paneId === pane.paneId));
+    attached.beginReplay();
+    let replayed = '';
+    attached.onData(data => { replayed += data; });
+    attached.write('echo AFTER_REPLAY\r');
+    const history = await Promise.race([
+      holder.capturePane(pane.paneId),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('capture response timeout')), 5000)),
+    ]);
+    assert.equal(replayed, '');
+    attached.finishReplay(history, '');
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('replayed input timeout')), 5000);
+      const poll = setInterval(() => {
+        if (replayed.includes('AFTER_REPLAY')) { clearTimeout(timeout); clearInterval(poll); resolve(); }
+      }, 20);
+    });
+
   } finally {
     try { if (holder) stopHolder(holder.socket, tmux, env); } catch (_) {}
     try { holder?.disconnect(); } catch (_) {}

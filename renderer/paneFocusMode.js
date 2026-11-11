@@ -5,8 +5,8 @@
   else root.VKPaneFocusMode = api;
 })(typeof window !== 'undefined' ? window : globalThis, function () {
   // 操作開始時にグリッドにいた他のペインだけを記録する。
-  function panesToStash(order, selectedId) {
-    return order.filter(id => id !== selectedId);
+  function panesToStash(order, selectedId, terminals) {
+    return order.filter(id => id !== selectedId && terminals[id]?.lock?.close !== false);
   }
 
   // 手動復元・削除済みのペインと、API で閉鎖が保護された管理ペインは戻さない。

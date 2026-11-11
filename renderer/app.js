@@ -3096,7 +3096,6 @@ function closePane(paneId, { force = false, skipConfirm = false } = {}) {
   // グリッド・格納のどちらに居ても取り除く（issue #89）。
   if (paneFocusMode) {
     paneFocusMode.stashedIds = paneFocusMode.stashedIds.filter(id => id !== paneId);
-    if (paneFocusMode.selectedId === paneId) paneFocusMode = null;
   }
   tree.order = tree.order.filter(id => id !== paneId);
   tree.stashOrder = (Array.isArray(tree.stashOrder) ? tree.stashOrder : []).filter(id => id !== paneId);
@@ -3396,6 +3395,7 @@ function movePane(paneId, dir) {
 // 切替開始時の対象だけを記録し、既存の格納ペインには触れない。
 function togglePaneFocusMode(paneId) {
   if (paneFocusMode) {
+    // 開始時に格納したペインだけを戻し、単独表示の状態を解除する。
     const restoreIds = panesToRestore(paneFocusMode.stashedIds, tree.stashOrder || [], terminals);
     paneFocusMode = null;
     for (const id of restoreIds) unstashPane(id, { renderNow: false });
@@ -3404,7 +3404,8 @@ function togglePaneFocusMode(paneId) {
     return;
   }
   if (!tree?.order?.includes(paneId)) return;
-  const stashedIds = panesToStash(tree.order, paneId);
+  // 閉鎖保護ペインを除く他の可視ペインを記録して格納する。
+  const stashedIds = panesToStash(tree.order, paneId, terminals);
   paneFocusMode = { selectedId: paneId, stashedIds };
   for (const id of stashedIds) stashPane(id, { renderNow: false });
   render();
@@ -3944,6 +3945,7 @@ function renderLeaf(node) {
   const taskWaitingMerge = !!t?.apiWaitingMerge;
   const closeLocked = isCloseLocked(t);
   const closeLabel = closeButtonLabel(closeLocked);
+  const focusModeLabel = paneFocusMode ? '格納したペインを戻す' : 'このペインを広く表示';
 
   const el = document.createElement('div');
   el.className = 'pane'
@@ -4006,7 +4008,7 @@ function renderLeaf(node) {
     <span class="pane-cwd" title="${escAttr(cwd)}">${escText(cwd)}</span>
     <div class="pane-actions">
       <span class="pane-badge auto-input-badge" hidden></span>
-      <button class="btn btn-focus-mode" title="${paneFocusMode ? '全ペインを戻す' : 'このペインを広く表示'}" aria-label="${paneFocusMode ? '全ペインを戻す' : 'このペインを広く表示'}" aria-pressed="${paneFocusMode ? 'true' : 'false'}">${paneFocusMode ? '▣' : '⛶'}</button>
+      <button class="btn btn-focus-mode" title="${focusModeLabel}" aria-label="${focusModeLabel}" aria-pressed="${paneFocusMode ? 'true' : 'false'}">${paneFocusMode ? '▣' : '⛶'}</button>
       <button class="btn btn-stash" title="サイドバーに格納" aria-label="サイドバーに格納">←</button>
       <span class="pane-actions-sep" aria-hidden="true"></span>
       <button class="btn btn-move btn-move-left" title="左へ移動" aria-label="左へ移動">◀</button>

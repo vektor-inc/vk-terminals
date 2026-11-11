@@ -2356,6 +2356,52 @@ ipcMain.on('terminal:save-layout', (_event, layout) => {
   lastPaneLayout = layout;
   try { saveHolderLayout(layout); } catch (error) { console.warn(`${LOG_PREFIX} holder metadata save failed:`, error); }
 });
+// 起動時だけ既存シェルを登録する。新規ペイン作成時の起動コマンドは通さない。
+let restoredPaneCount = 0;
+ipcMain.handle('terminal:restore', () => {
+  if (PANE_HOLDER !== 'tmux' || restoredPaneCount || tmuxUnavailable) return { panes: [], order: [], stashOrder: [], missing: 0 };
+  let metadata;
+  try {
+    if (!tmuxHolder) tmuxHolder = new TmuxHolder({ config: path.join(RESOURCE_ROOT, 'tmux-holder.conf') });
+    if (!tmuxHolder.reattached) return { panes: [], order: [], stashOrder: [], missing: 0 };
+    metadata = readPaneMetadata(tmuxHolder.socket);
+  } catch (error) {
+    console.warn(`${LOG_PREFIX} holder restore failed:`, error);
+    return { panes: [], order: [], stashOrder: [], missing: 0 };
+  }
+  const live = new Map(tmuxHolder.listPanes().map(pane => [pane.paneId, pane]));
+  const panes = [];
+  for (const saved of metadata.panes) {
+    if (!saved || !/^\d+$/.test(String(saved.termId)) || !/^pane-\d+$/.test(saved.paneId) || !/^%\d+$/.test(saved.tmuxPaneId)) continue;
+    const identity = live.get(saved.tmuxPaneId);
+    if (!identity || identity.termId !== saved.termId || ptys.has(saved.termId)) continue;
+    const pane = tmuxHolder.attachPane(identity);
+    const id = String(saved.termId);
+    ptys.set(id, pane);
+    ptyShellExecutables.set(id, process.env.SHELL || '/bin/sh');
+    conditionalTerminalInput.initialize(id);
+    agentGenerations.initialize(id, saved.engine === 'claude' || saved.engine === 'codex');
+    agentLifecycles.initialize(id, 0);
+    pane.onData(data => {
+      conditionalTerminalInput.markChanged(id);
+      const screenSnapshot = conditionalTerminalInput.capture(id, agentGenerations.get(id));
+      if (win && !win.isDestroyed()) win.webContents.send('terminal:data', id, data, screenSnapshot);
+    });
+    pane.onExit(() => {
+      ptys.delete(id); ptyShellExecutables.delete(id); agentGenerations.delete(id);
+      agentLifecycles.delete(id); clearPaneBackgroundWork(id);
+      conditionalTerminalInput.delete(id); silentWriteRefresher.delete(id);
+      reportedScreenSnapshots.delete(id);
+      if (win && !win.isDestroyed()) win.webContents.send('terminal:exit', id);
+    });
+    nextId = Math.max(nextId, Number(id) + 1);
+    panes.push({ ...saved, id, cwd: saved.cwd || os.homedir(), engine: saved.engine === 'codex' ? 'codex' : 'claude' });
+  }
+  restoredPaneCount = panes.length;
+  if (panes.length) firstTerminalCreated = true;
+  const ids = new Set(panes.map(pane => pane.paneId));
+  return { panes, order: (metadata.order || []).filter(id => ids.has(id)), stashOrder: (metadata.stashOrder || []).filter(id => ids.has(id)), missing: Math.max(0, metadata.panes.length - panes.length) };
+});
 ipcMain.handle('terminal:create', (_event, cwd, options = {}) => createTerminalPane(cwd, options));
 
 function createTerminalPane(cwd, options = {}, guide = null) {
@@ -2983,6 +3029,7 @@ let additionalPanesCreated = false;
 ipcMain.on('terminal:renderer-ready', async () => {
   pushMenuUpdate();
   pushWidgetUpdate();
+  if (restoredPaneCount) return;
   if (additionalPanesCreated) return; // closePane で最後のペインを閉じて再 initApp された場合は再生成しない
   additionalPanesCreated = true;
   const config = loadUserConfig();

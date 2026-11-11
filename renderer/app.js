@@ -75,7 +75,7 @@ const { getStatusPresentation, resolvePaneNote, BACKGROUND_WORK_REASON, getClose
 const { getApiServerStatusPresentation } = window.VKApiServerStatus;
 const { getPrBadgePresentation } = window.VKPrBadge;
 const { getPaneIdBadgeLabel } = window.VKPaneIdBadge;
-const { panesToStash, panesToRestore } = window.VKPaneFocusMode;
+const { panesToStash, panesToRestore, shouldOpenSidebarForPane } = window.VKPaneFocusMode;
 const { resolveQueueIssuesListUrl } = window.VKTaskQueueLink;
 const { isPatternValid } = window.VKSettingsValidation;
 const { comboOptions, comboDisplayValue, comboStoredValue } = window.VKSettingsComboField;
@@ -3409,7 +3409,7 @@ function togglePaneFocusMode(paneId) {
   paneFocusMode = { selectedId: paneId, stashedIds };
   for (const id of stashedIds) stashPane(id, { renderNow: false });
   render();
-  setSidebarOpen(true, { focusFirst: false });
+  setSidebarOpen(shouldOpenSidebarForPane(window.innerWidth, getSidebarWidth()), { focusFirst: false });
   requestAnimationFrame(() => { fitAll(); focusPane(paneId); });
 }
 
@@ -3433,8 +3433,8 @@ function stashPane(paneId, { renderNow = true } = {}) {
   }
   if (!renderNow) return;
   render();
-  // 格納先を知らせるためサイドバーを開く（フォーカスはグリッドに残す）。
-  setSidebarOpen(true, { focusFirst: false });
+  // 残るペインがない場合は格納先を見せ、ある場合は狭幅でも操作できる幅を確保する。
+  setSidebarOpen(tree.order.length === 0 || shouldOpenSidebarForPane(window.innerWidth, getSidebarWidth()), { focusFirst: false });
   requestAnimationFrame(() => {
     fitAll();
     if (tree.order.length > 0) focusPane(focusedPaneId);

@@ -4,6 +4,13 @@
   if (typeof module === 'object' && module.exports) module.exports = api;
   else root.VKPaneFocusMode = api;
 })(typeof window !== 'undefined' ? window : globalThis, function () {
+  // ペインヘッダーの 385px コンテナ判定より広い領域を確保する。
+  const MIN_FOCUSED_PANE_WIDTH = 386;
+
+  function shouldOpenSidebarForPane(viewportWidth, sidebarWidth) {
+    return viewportWidth - sidebarWidth >= MIN_FOCUSED_PANE_WIDTH;
+  }
+
   // 操作開始時にグリッドにいた他のペインだけを記録する。
   function panesToStash(order, selectedId, terminals) {
     return order.filter(id => id !== selectedId && terminals[id]?.lock?.close !== false);
@@ -14,5 +21,5 @@
     return stashedIds.filter(id => stashOrder.includes(id) && terminals[id] && terminals[id].lock?.close !== false);
   }
 
-  return { panesToStash, panesToRestore };
+  return { panesToStash, panesToRestore, shouldOpenSidebarForPane };
 });

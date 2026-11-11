@@ -1,6 +1,14 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { panesToStash, panesToRestore } = require('../renderer/paneFocusMode');
+const { panesToStash, panesToRestore, shouldOpenSidebarForPane } = require('../renderer/paneFocusMode');
+
+test('ペイン幅を確保できるときだけサイドバーを開く', () => {
+  assert.equal(shouldOpenSidebarForPane(390, 240), false);
+  assert.equal(shouldOpenSidebarForPane(600, 270), false);
+  assert.equal(shouldOpenSidebarForPane(1400, 330), true);
+  assert.equal(shouldOpenSidebarForPane(626, 240), true);
+  assert.equal(shouldOpenSidebarForPane(625, 240), false);
+});
 
 test('選択ペインと閉鎖保護ペインは格納候補にしない', () => {
   const terminals = { a: {}, b: {}, c: { lock: { close: false } }, d: { lock: { close: true } } };

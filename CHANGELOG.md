@@ -1,6 +1,6 @@
 # Changelog
 
-- [ 機能追加 ] `--pane-holder=tmux` で専用の tmux 保持役を使ってペインを開く機能を追加（[#585](https://github.com/vektor-inc/vk-terminals/issues/585)）
+- [ 機能追加 ] 起動オプション `--pane-holder=tmux` を付けたときだけ、ペインのシェルを専用の tmux の下で動かす機能を追加（tmux が無い場合は従来どおり動作）（[#585](https://github.com/vektor-inc/vk-terminals/issues/585)）
 - [ 仕様変更 ] デスクトップ版のタスク一覧カードのタイトルの太さを、標準から少し太い 500 に変更
 
 ## 1.97.0

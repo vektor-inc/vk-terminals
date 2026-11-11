@@ -311,6 +311,7 @@ const { createRestartApplication } = require('./utils/restartApplication');
 const EMBEDDED_OPTIONS = getEmbeddedOptions();
 const PANE_HOLDER = resolvePaneHolder({ argv: process.argv, embedded: EMBEDDED_OPTIONS, warn: message => console.warn(`[vk-terminals] ${message}`) });
 let tmuxHolder = null;
+let tmuxUnavailable = false;
 const { isHelpDocument, buildHelpLaunchCommand, createHelpStatusChecker, createGuideOpener } = require('./utils/helpFeature');
 const HELP_FEATURE = EMBEDDED_OPTIONS && EMBEDDED_OPTIONS.help;
 const checkHelpStatus = HELP_FEATURE ? createHelpStatusChecker(EMBEDDED_OPTIONS.getHelpStatus) : null;
@@ -1440,11 +1441,8 @@ function compareSemver(a, b) {
  */
 async function cleanupPtys() {
   await terminateAllPtysAndWaitIncludingExiting(ptys.values(), exitingPtys.values());
-  if (tmuxHolder) {
-    tmuxHolder.close();
-    tmuxHolder = null;
-  }
-  await agentLifecycles.close();
+  try { if (tmuxHolder) tmuxHolder.close(); }
+  finally { tmuxHolder = null; await agentLifecycles.close(); }
 }
 
 /**
@@ -2447,14 +2445,23 @@ function createTerminalPane(cwd, options = {}, guide = null) {
 
   let ptyProcess;
   try {
-    if (PANE_HOLDER === 'tmux' && !tmuxHolder) {
-      try { tmuxHolder = new TmuxHolder(); }
+    if (tmuxHolder && !tmuxHolder.active) tmuxHolder = null;
+    if (PANE_HOLDER === 'tmux' && !tmuxHolder && !tmuxUnavailable) {
+      try { tmuxHolder = new TmuxHolder({ config: path.join(RESOURCE_ROOT, 'tmux-holder.conf') }); }
       catch (error) {
-        if (error.code !== 'ENOENT') throw error;
-        console.warn(`${LOG_PREFIX} tmux unavailable; using node-pty`);
+        if (error.code === 'ENOENT') tmuxUnavailable = true;
+        console.warn(`${LOG_PREFIX} tmux holder failed (${error.message}; socket: ${path.join(process.env.VK_TERMINALS_HOLDER_RUN_DIR || path.join(os.homedir(), '.vk-terminals', 'run'), 'tmux.sock')}); using node-pty`);
       }
     }
-    ptyProcess = tmuxHolder ? tmuxHolder.createPane({ shell, cwd: resolvedCwd, env: buildPtyEnv(process.env) }) : pty.spawn(shell, [], {
+    if (tmuxHolder) {
+      try { ptyProcess = tmuxHolder.createPane({ shell, cwd: resolvedCwd, env: buildPtyEnv(process.env) }); }
+      catch (error) {
+        console.warn(`${LOG_PREFIX} tmux pane failed (${error.message}; socket: ${tmuxHolder.socket}); using node-pty`);
+        try { tmuxHolder.close(); } catch (_) {}
+        tmuxHolder = null;
+      }
+    }
+    if (!ptyProcess) ptyProcess = pty.spawn(shell, [], {
       name: 'xterm-256color',
       cols: 80,
       rows: 24,
@@ -2782,7 +2789,7 @@ function createTerminalPane(cwd, options = {}, guide = null) {
     });
   }
   if (launchCommand !== null) {
-    if (tmuxHolder && (resolvedEngine === 'claude' || resolvedEngine === 'codex')) {
+    if (ptyProcess.isTmuxPane && (resolvedEngine === 'claude' || resolvedEngine === 'codex')) {
       launchCommand = `env -u TMUX -u TMUX_PANE ${launchCommand}`;
     }
     // 待っている間に PTY が消えた・書き込みが例外になった場合は、使われない専用 CODEX_HOME を回収する。
@@ -3098,7 +3105,7 @@ async function restartAgentInTerminal(ptyProcess, request, launchOptions, lifecy
     ptyProcess.write(`${changeDirectoryCommand}\r`);
   }
   const { command: builtCommand, modelIgnored } = buildEngineAwareLaunchCommand(request.engine, request.model, launchOptions);
-  const command = tmuxHolder ? `env -u TMUX -u TMUX_PANE ${builtCommand}` : builtCommand;
+  const command = ptyProcess.isTmuxPane ? `env -u TMUX -u TMUX_PANE ${builtCommand}` : builtCommand;
   if (modelIgnored) {
     console.warn(`${LOG_PREFIX} model is ignored for engine '${request.engine}'`);
   }

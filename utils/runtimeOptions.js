@@ -117,6 +117,7 @@ function normalizeEmbeddedOptions(raw) {
 
 function resolvePaneHolder({ argv = [], embedded = null, warn = () => {} } = {}) {
   const arg = argv.find(value => value.startsWith('--pane-holder='));
+  if (argv.includes('--pane-holder')) warn('Invalid pane holder: --pane-holder requires =tmux');
   if (arg && arg !== '--pane-holder=tmux') warn(`Invalid pane holder: ${arg}`);
   return (embedded?.paneHolder === 'tmux' || arg === '--pane-holder=tmux') ? 'tmux' : null;
 }

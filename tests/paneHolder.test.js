@@ -55,8 +55,8 @@ test('tmux が見つからなければ ENOENT とし、呼び出し元が node-p
 });
 
 test('tmux 実物: 初期サーバーの秘密変数を後続ペインへ渡さず、入力を返す', async t => {
-  const tmux = '/opt/homebrew/bin/tmux';
-  if (!fs.existsSync(tmux)) { t.skip('tmux is unavailable'); return; }
+  const tmux = (process.env.PATH || '').split(path.delimiter).map(dir => path.join(dir, 'tmux')).find(file => { try { fs.accessSync(file, fs.constants.X_OK); return true; } catch (_) { return false; } });
+  if (!tmux) { t.skip('tmux is unavailable'); return; }
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'vk-holder-integration-')));
   const env = { HOME: dir, PATH: process.env.PATH || '/usr/bin:/bin', VK_TERMINALS_HOLDER_RUN_DIR: dir, VK915_DUMMY_SECRET: 'secret' };
   let holder;
@@ -66,6 +66,9 @@ test('tmux 実物: 初期サーバーの秘密変数を後続ペインへ渡さ�
     const injectedFile = path.join(dir, 'injected');
     const dangerousValue = `a\n"; touch ${injectedFile}; #`;
     const pane = holder.createPane({ shell: '/bin/sh', cwd: dir, env: { HOME: dir, PATH: env.PATH, TERM: 'xterm-256color', TRICK: dangerousValue } });
+    pane.resize(101, 37);
+    await new Promise(resolve => setTimeout(resolve, 100));
+    assert.match(holder.command(['display-message', '-p', '-t', pane.paneId, '#{window_width}x#{window_height}']), /101x37/);
     let output = '';
     pane.onData(data => { output += data; });
     pane.write('printf "INPUT_OK\\n"; if [ -z "$VK915_DUMMY_SECRET" ]; then echo SECRET_ABSENT; fi; printf "%s" "$TRICK"\r');
@@ -79,12 +82,45 @@ test('tmux 実物: 初期サーバーの秘密変数を後続ペインへ渡さ�
     assert.match(output, /SECRET_ABSENT/);
     assert.equal(fs.existsSync(injectedFile), false);
     assert.ok(output.replace(/\r\n/g, '\n').includes(dangerousValue));
+    const longInput = 'x'.repeat(2000);
+    pane.write(`printf '%s' '${longInput}' | wc -c\r`);
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error(`long input timeout: ${output.slice(-300)}`)), 10000);
+      const poll = setInterval(() => {
+        if (/\r?\n\s*2000\r?\n/.test(output)) { clearInterval(poll); clearTimeout(timeout); resolve(); }
+      }, 20);
+    });
+    const rawFile = path.join(dir, 'raw-input');
+    pane.write(`stty -icanon -echo; cat > '${rawFile}'\r`);
+    await new Promise(resolve => setTimeout(resolve, 100));
+    const rawInput = 'éx'.repeat(12000);
+    pane.write(rawInput);
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error(`raw input timeout: ${fs.existsSync(rawFile) ? fs.statSync(rawFile).size : 'missing'}`)), 10000);
+      const poll = setInterval(() => {
+        if (fs.existsSync(rawFile) && fs.statSync(rawFile).size >= Buffer.byteLength(rawInput)) { clearInterval(poll); clearTimeout(timeout); resolve(); }
+      }, 20);
+    });
+    assert.equal(fs.readFileSync(rawFile, 'utf8'), rawInput);
+    pane.write('\x03');
+    await new Promise(resolve => setTimeout(resolve, 100));
+    pane.write('stty sane\r');
     const exited = new Promise((resolve, reject) => {
       pane.onExit(resolve);
       setTimeout(() => reject(new Error('tmux pane exit notification missing')), 3000).unref();
     });
     pane.write('exit\r');
     await exited;
+    holder.close();
+    holder = new TmuxHolder({ env, home: dir, tmux });
+    assert.ok(holder.active);
+    const specialDir = path.join(dir, 'with#;');
+    fs.mkdirSync(specialDir);
+    const special = holder.createPane({ shell: '/bin/sh', cwd: specialDir, env: { HOME: dir, PATH: env.PATH, SPECIAL: 'a\n\'"$`;#', LARGE: 'z'.repeat(20000) } });
+    assert.equal(holder.command(['display-message', '-p', '-t', special.paneId, '#{pane_current_path}']).trim(), specialDir);
+    assert.equal(Number(holder.command(['display-message', '-p', '-t', special.paneId, '#{pane_pid}']).trim()), special.pid);
+    assert.deepEqual(fs.readdirSync(dir).filter(name => name.startsWith('pane-')), []);
+    special.kill();
   } finally {
     if (holder) holder.close();
     fs.rmSync(dir, { recursive: true, force: true });

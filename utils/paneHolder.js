@@ -14,7 +14,7 @@ function serverEnvironment(env) {
 }
 
 function validateSocketPath(socket, fsApi = fs, uid = process.getuid?.()) {
-  if (Buffer.byteLength(socket) > 104) throw new Error('tmux socket path exceeds 104 bytes');
+  if (Buffer.byteLength(socket) >= 104) throw new Error('tmux socket path exceeds 103 bytes');
   const parent = fsApi.lstatSync(path.dirname(socket));
   if (!parent.isDirectory() || parent.isSymbolicLink() || parent.uid !== uid || (parent.mode & 0o777) !== 0o700) {
     throw new Error('tmux socket directory is unsafe');
@@ -31,7 +31,7 @@ function validateSocketPath(socket, fsApi = fs, uid = process.getuid?.()) {
   }
 }
 
-function holderSocket(env = process.env, home = os.homedir()) {
+function createHolderSocketDirectory(env = process.env, home = os.homedir()) {
   const runDir = env.VK_TERMINALS_HOLDER_RUN_DIR || path.join(home, '.vk-terminals', 'run');
   if (!path.isAbsolute(runDir)) throw new Error('tmux run directory must be absolute');
   // mkdir の前に各既存要素を lstat し、リンク経由の作成を拒む。
@@ -59,6 +59,26 @@ function paneArguments(ptyEnv, shell) {
     }
   }
   return ['env', '-i', ...entries.map(([key, value]) => `${key}=${value}`), shell];
+}
+
+function quoteShell(value) {
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+function createPaneEnvironmentScript(runDir, ptyEnv, shell) {
+  const entries = Object.entries({ ...ptyEnv, TERM: 'xterm-256color' });
+  for (const [key, value] of entries) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || typeof value !== 'string' || value.includes('\0')) throw new Error('invalid pane environment');
+  }
+  const script = path.join(runDir, `pane-${process.pid}-${require('node:crypto').randomBytes(8).toString('hex')}.sh`);
+  const body = '#!/bin/sh\n' + entries.map(([key, value]) => `export ${key}=${quoteShell(value)}\n`).join('') +
+    `rm -f -- ${quoteShell(script)}\nexec ${quoteShell(shell)}\n`;
+  fs.writeFileSync(script, body, { flag: 'wx', mode: 0o600 });
+  return script;
+}
+
+function escapeTmuxArgument(value) {
+  return value.endsWith(';') ? `${value.slice(0, -1)}\\;` : value;
 }
 
 function encodeKeys(data) {
@@ -90,15 +110,15 @@ class PaneAdapter {
     this.exited = false;
   }
   write(data) {
-    if (isTerminalQueryReplyOnly(data)) return;
+    if (this.exited || isTerminalQueryReplyOnly(data)) return;
     const keys = encodeKeys(data);
-    // OS の argv 上限を超えない単位で送る。送信順は同期コマンドで保証する。
-    for (let i = 0; i < keys.length; i += 4096) this.holder.command(['send-keys', '-t', this.paneId, '-H', ...keys.slice(i, i + 4096)]);
+    // 制御クライアントへの入力は順序を保ち、長い入力も main を止めずに送る。
+    for (let i = 0; i < keys.length; i += 64) this.holder.queueKeys(['send-keys', '-t', this.paneId, '-H', ...keys.slice(i, i + 64)]);
   }
-  resize(cols, rows) { this.holder.command(['resize-pane', '-t', this.paneId, '-x', String(cols), '-y', String(rows)]); }
+  resize(cols, rows) { if (!this.exited) this.holder.sendControl(['resize-window', '-t', this.windowId, '-x', String(cols), '-y', String(rows)]); }
   kill() {
     if (this.exited) return;
-    this.holder.command(['kill-pane', '-t', this.paneId]);
+    this.holder.sendControl(['kill-pane', '-t', this.paneId]);
     this.exit();
   }
   onData(callback) { this.events.on('data', callback); return { dispose: () => this.events.off('data', callback) }; }
@@ -115,32 +135,91 @@ class PaneAdapter {
 class TmuxHolder {
   constructor({ env = process.env, home = os.homedir(), tmux = 'tmux', config = path.join(__dirname, '..', 'tmux-holder.conf') } = {}) {
     this.env = serverEnvironment(env);
-    execFileSync(tmux, ['-V'], { env: this.env, stdio: 'ignore' });
-    this.socket = holderSocket(env, home);
+    this.socket = createHolderSocketDirectory(env, home);
     this.tmux = tmux;
     this.config = config;
     this.panes = new Map();
     this.buffer = '';
+    this.keyQueue = [];
+    this.keyTimer = null;
     this.session = `vk-terminals-${process.pid}`;
-    if (validateSocketPath(this.socket)) throw new Error('tmux holder socket already exists');
-    // 制限環境のサーバーを作成し、制御モードの唯一の常駐クライアントを接続する。
-    this.command(['new-session', '-d', '-s', this.session, '-n', 'holder', 'sleep', '2147483647'], true);
-    validateSocketPath(this.socket);
-    this.control = spawn(tmux, ['-S', this.socket, '-f', config, '-C', 'attach-session', '-t', this.session], { env: this.env, stdio: ['pipe', 'pipe', 'pipe'] });
+    const lock = path.join(path.dirname(this.socket), 'tmux.lock');
+    let lockFd;
+    let created = false;
+    try {
+      lockFd = fs.openSync(lock, 'wx', 0o600);
+      if (validateSocketPath(this.socket)) {
+        let sessions;
+        try { sessions = this.command(['list-sessions', '-F', '#{session_name}']); } catch (_) { sessions = null; }
+        if (sessions === null) fs.unlinkSync(this.socket);
+        else {
+          const owners = sessions.split('\n').map(line => /^vk-terminals-(\d+)$/.exec(line)).filter(Boolean);
+          if (!owners.length || owners.some(match => { try { process.kill(Number(match[1]), 0); return true; } catch (_) { return false; } })) {
+            throw new Error('tmux holder socket is in use');
+          }
+          this.command(['kill-server']);
+          validateSocketPath(this.socket);
+          fs.unlinkSync(this.socket);
+        }
+      }
+      // 排他中にサーバーと制御クライアントを作る。
+      this.command(['new-session', '-d', '-s', this.session, '-n', 'holder', 'sleep', '2147483647']);
+      created = true;
+      validateSocketPath(this.socket);
+      this.control = spawn(tmux, ['-S', this.socket, '-f', config, '-C', 'attach-session', '-t', this.session], { env: this.env, stdio: ['pipe', 'pipe', 'pipe'] });
+    } catch (error) {
+      if (this.control) this.control.kill();
+      if (created && validateSocketPath(this.socket)) {
+        try { this.command(['kill-server']); fs.unlinkSync(this.socket); } catch (_) {}
+      }
+      throw error;
+    } finally {
+      if (lockFd !== undefined) { fs.closeSync(lockFd); fs.unlinkSync(lock); }
+    }
     this.active = true;
     this.control.stdout.setEncoding('latin1');
     this.control.stdout.on('data', data => this.accept(data));
     this.control.stderr.resume();
-    this.control.on('error', () => { this.active = false; for (const pane of this.panes.values()) pane.exit(); });
-    this.control.on('exit', () => { this.active = false; for (const pane of this.panes.values()) pane.exit(); });
+    this.control.on('error', () => this.controlStopped());
+    this.control.on('exit', () => this.controlStopped());
   }
-  command(args, first = false) {
-    if (!first) validateSocketPath(this.socket);
-    return execFileSync(this.tmux, ['-S', this.socket, '-f', this.config, ...args], { env: this.env, encoding: 'utf8' });
+  controlStopped() {
+    if (!this.active) return;
+    this.active = false;
+    clearTimeout(this.keyTimer);
+    this.keyTimer = null;
+    this.keyQueue.length = 0;
+    for (const pane of [...this.panes.values()]) pane.exit();
+    try { this.command(['kill-server']); } catch (_) {}
+    try { if (validateSocketPath(this.socket)) fs.unlinkSync(this.socket); } catch (_) {}
+  }
+  sendControl(args) {
+    if (!this.active || this.control.stdin.destroyed) return;
+    this.control.stdin.write(`${args.map(escapeTmuxArgument).join(' ')}\n`);
+  }
+  queueKeys(args) {
+    this.keyQueue.push(args);
+    if (!this.keyTimer) this.drainKeys();
+  }
+  drainKeys() {
+    const args = this.keyQueue.shift();
+    if (args) this.sendControl(args);
+    this.keyTimer = setTimeout(() => {
+      this.keyTimer = null;
+      if (this.keyQueue.length) this.drainKeys();
+    }, 5);
+  }
+  command(args) {
+    validateSocketPath(this.socket);
+    return execFileSync(this.tmux, ['-S', this.socket, '-f', this.config, ...args.map(escapeTmuxArgument)], { env: this.env, encoding: 'utf8', timeout: 5000 });
   }
   createPane({ shell, cwd, env, cols = 80, rows = 24 }) {
     if (!this.active) throw new Error('tmux control client stopped');
-    const output = this.command(['new-window', '-d', '-P', '-F', '#{pane_id} #{pane_pid} #{window_id}', '-t', this.session, '-c', cwd, ...paneArguments(env, shell)]).trim();
+    const script = createPaneEnvironmentScript(path.dirname(this.socket), env, shell);
+    let output;
+    try {
+      output = this.command(['new-window', '-d', '-P', '-F', '#{pane_id} #{pane_pid} #{window_id}', '-t', this.session, '-c', cwd.replace(/#/g, '##'), 'env', '-i', '/bin/sh', script]).trim();
+    } catch (error) { try { fs.unlinkSync(script); } catch (_) {} throw error; }
     const [id, pid, windowId] = output.split(' ');
     if (!/^%\d+$/.test(id) || !/^\d+$/.test(pid) || !/^@\d+$/.test(windowId)) throw new Error('tmux returned invalid pane identity');
     const pane = new PaneAdapter(this, id, pid, windowId);
@@ -163,10 +242,17 @@ class TmuxHolder {
     }
   }
   close() {
+    clearTimeout(this.keyTimer);
+    this.keyTimer = null;
+    this.keyQueue.length = 0;
     for (const pane of [...this.panes.values()]) pane.exit();
-    this.command(['kill-server']);
-    this.control.kill();
+    try { if (validateSocketPath(this.socket)) this.command(['kill-server']); }
+    finally {
+      this.active = false;
+      this.control.kill();
+      if (validateSocketPath(this.socket)) fs.unlinkSync(this.socket);
+    }
   }
 }
 
-module.exports = { SERVER_ENV_KEYS, serverEnvironment, validateSocketPath, holderSocket, paneArguments, encodeKeys, decodeOutput, TmuxHolder };
+module.exports = { SERVER_ENV_KEYS, serverEnvironment, validateSocketPath, createHolderSocketDirectory, paneArguments, encodeKeys, decodeOutput, TmuxHolder };

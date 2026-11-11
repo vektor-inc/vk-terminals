@@ -2456,7 +2456,7 @@ function createTerminalPane(cwd, options = {}, guide = null) {
       }
     }
     if (tmuxHolder) {
-      try { ptyProcess = tmuxHolder.createPane({ shell, cwd: resolvedCwd, env: buildPtyEnv(process.env) }); }
+      try { ptyProcess = tmuxHolder.createPane({ shell, cwd: resolvedCwd, env: buildPtyEnv(process.env), termId: id }); }
       catch (error) {
         console.warn(`${LOG_PREFIX} tmux pane failed (${error.message}; socket: ${tmuxHolder.socket}); using node-pty`);
         if (!tmuxHolder.active) tmuxHolder = null;

@@ -255,3 +255,23 @@ test('停止関数は検証済みの専用ソケットのみ -S で指定する'
     assert.equal(stopHolder(path.join(dir, 'tmux.sock')), false);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('tmux 実物: 切断後に同じペインと番号へ再接続する', t => {
+  const tmux = (process.env.PATH || '').split(path.delimiter).map(dir => path.join(dir, 'tmux')).find(file => { try { fs.accessSync(file, fs.constants.X_OK); return true; } catch (_) { return false; } });
+  if (!tmux) { t.skip('tmux is unavailable'); return; }
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'vk-holder-reattach-')));
+  const env = { HOME: dir, PATH: process.env.PATH || '/usr/bin:/bin', VK_TERMINALS_HOLDER_RUN_DIR: dir };
+  let holder;
+  try {
+    holder = new TmuxHolder({ env, home: dir, tmux });
+    const pane = holder.createPane({ shell: '/bin/sh', cwd: dir, env, termId: '7' });
+    holder.disconnect();
+    holder = new TmuxHolder({ env, home: dir, tmux });
+    assert.equal(holder.reattached, true);
+    assert.equal(holder.listPanes().find(item => item.paneId === pane.paneId)?.termId, '7');
+  } finally {
+    try { if (holder) stopHolder(holder.socket, tmux, env); } catch (_) {}
+    try { holder?.disconnect(); } catch (_) {}
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

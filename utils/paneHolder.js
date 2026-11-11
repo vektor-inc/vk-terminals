@@ -210,13 +210,10 @@ class TmuxHolder {
         }
         if (sessions === null) fs.unlinkSync(this.socket);
         else {
-          const owners = sessions.split('\n').map(line => /^vk-terminals-(\d+)$/.exec(line)).filter(Boolean);
-          if (!owners.length || owners.some(match => { try { process.kill(Number(match[1]), 0); return true; } catch (_) { return false; } })) {
-            throw new Error('tmux holder socket is in use');
-          }
-          this.command(['kill-server']);
-          isSafeSocketPresent(this.socket);
-          fs.unlinkSync(this.socket);
+          const holderSession = sessions.split('\n').find(name => /^vk-terminals-\d+$/.test(name));
+          if (!holderSession) throw new Error('tmux holder socket is in use');
+          this.session = holderSession;
+          this.reattached = true;
         }
       }
       // 残留した 0600 スクリプトを次回起動時に掃除する。
@@ -228,8 +225,10 @@ class TmuxHolder {
         }
       }
       // 排他中にサーバーと制御クライアントを作る。
-      this.command(['new-session', '-d', '-s', this.session, '-n', 'holder', 'sleep', '2147483647']);
-      created = true;
+      if (!this.reattached) {
+        this.command(['new-session', '-d', '-s', this.session, '-n', 'holder', 'sleep', '2147483647']);
+        created = true;
+      }
       isSafeSocketPresent(this.socket);
       this.control = spawn(tmux, ['-S', this.socket, '-f', config, '-C', 'attach-session', '-t', this.session], { env: this.env, stdio: ['pipe', 'pipe', 'pipe'] });
     } catch (error) {
@@ -288,7 +287,7 @@ class TmuxHolder {
     isSafeSocketPresent(this.socket);
     return execFileSync(this.tmux, ['-S', this.socket, '-f', this.config, ...args.map(escapeTmuxArgument)], { env: this.env, encoding: 'utf8', timeout: 5000 });
   }
-  createPane({ shell, cwd, env, cols = 80, rows = 24 }) {
+  createPane({ shell, cwd, env, termId, cols = 80, rows = 24 }) {
     if (!this.active) throw new Error('tmux control client stopped');
     if (!Number.isInteger(cols) || !Number.isInteger(rows) || cols < 1 || rows < 1) throw new Error('invalid pane size');
     const script = createPaneEnvironmentScript(path.dirname(this.socket), env, shell);
@@ -301,9 +300,20 @@ class TmuxHolder {
       try { fs.unlinkSync(script); } catch (_) {}
       throw new Error('tmux returned invalid pane identity');
     }
+    if (termId) this.command(['set-option', '-w', '-t', windowId, '@vk_term_id', String(termId)]);
     const pane = new PaneAdapter(this, id, pid, windowId);
     this.panes.set(id, pane);
     pane.resize(cols, rows);
+    return pane;
+  }
+  listPanes() {
+    if (!isSafeSocketPresent(this.socket)) return [];
+    const output = this.command(['list-panes', '-a', '-F', '#{pane_id} #{pane_pid} #{window_id} #{@vk_term_id}']);
+    return output.split('\n').map(line => /^(%\d+) (\d+) (@\d+) (\d+)$/.exec(line)).filter(Boolean).map(([, paneId, pid, windowId, termId]) => ({ paneId, pid: Number(pid), windowId, termId }));
+  }
+  attachPane(identity) {
+    const pane = new PaneAdapter(this, identity.paneId, identity.pid, identity.windowId);
+    this.panes.set(identity.paneId, pane);
     return pane;
   }
   accept(chunk) {

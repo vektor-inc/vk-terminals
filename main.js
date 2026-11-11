@@ -2353,6 +2353,14 @@ function saveHolderLayout(layout) {
   const selectOrder = values => Array.isArray(values) ? values.filter(id => ids.has(id)) : [];
   writePaneMetadata(tmuxHolder.socket, { panes, order: selectOrder(layout.order), stashOrder: selectOrder(layout.stashOrder) });
 }
+ipcMain.on('terminal:restore-ready', (_event, ids) => {
+  for (const id of Array.isArray(ids) ? ids : []) {
+    const pane = ptys.get(String(id));
+    if (!pane?.pendingReplay) continue;
+    pane.finishReplay(pane.pendingReplay.history, pane.pendingReplay.modes);
+    pane.pendingReplay = null;
+  }
+});
 ipcMain.on('terminal:save-layout', (_event, layout) => {
   lastPaneLayout = layout;
   try { saveHolderLayout(layout); } catch (error) { console.warn(`${LOG_PREFIX} holder metadata save failed:`, error); }
@@ -2405,10 +2413,10 @@ ipcMain.handle('terminal:restore', async () => {
     try {
       const history = await tmuxHolder.capturePane(pane.paneId);
       const modeOutput = tmuxHolder.command(['display-message', '-p', '-t', pane.paneId, MODE_FORMAT]);
-      pane.finishReplay(history, buildInputModeSequence(modeOutput));
+      pane.pendingReplay = { history, modes: buildInputModeSequence(modeOutput) };
     } catch (error) {
       console.warn(`${LOG_PREFIX} holder pane replay failed:`, error);
-      pane.finishReplay('', '');
+      pane.pendingReplay = { history: '', modes: '' };
     }
   }));
   restoredPaneCount = panes.length;

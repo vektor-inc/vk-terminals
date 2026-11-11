@@ -7027,6 +7027,42 @@ async function initApp() {
     }
   } catch (_e) { /* 取得失敗時は無効のまま */ }
 
+  // 保持役の既存ペインを先に問い合わせ、新規シェルを作らず同じ番号と並びへ戻す。
+  if (Object.keys(terminals).length === 0) {
+    let restored = null;
+    try { restored = await VKIpc.invoke('terminal:restore'); } catch (error) { console.warn('pane restore failed', error); }
+    if (restored?.panes?.length) {
+      terminals = {};
+      paneFocusMode = null;
+      focusedPaneId = null;
+      paneFocusBeforeMousedown.clear();
+      const validPanes = restored.panes.filter(p => /^pane-\d+$/.test(p.paneId) && /^\d+$/.test(String(p.id)));
+      const ids = new Set(validPanes.map(p => p.paneId));
+      tree = {
+        type: 'grid', order: (restored.order || []).filter(id => ids.has(id)),
+        colFr: null, rowFr: null, stashOrder: (restored.stashOrder || []).filter(id => ids.has(id)),
+        sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
+      };
+      for (const saved of validPanes) {
+        if (!tree.order.includes(saved.paneId) && !tree.stashOrder.includes(saved.paneId)) tree.order.push(saved.paneId);
+        await createTerminal(saved.paneId, saved.cwd, {}, { id: saved.id, cwd: saved.cwd, engine: saved.engine });
+        const t = terminals[saved.paneId];
+        for (const key of ['taskTitle', 'apiTitle', 'apiUrl', 'apiPrUrl', 'apiPrMerged', 'apiWaitingMerge', 'apiPaneNote']) {
+          if (Object.hasOwn(saved, key)) t[key] = saved[key];
+        }
+        _idCounter = Math.max(_idCounter, Number(saved.paneId.slice(5)));
+      }
+      focusedPaneId = tree.order[0] || tree.stashOrder[0];
+      render();
+      initialRenderDone = true;
+      VKIpc.send('terminal:restore-ready', validPanes.map(p => p.id));
+      if (restored.missing > 0) showGenericToast(`前回のペイン ${restored.missing} 件は戻せませんでした`);
+      requestAnimationFrame(() => { for (const id of tree.order) fitTerminal(id); });
+      return;
+    }
+    if (restored?.missing > 0) showGenericToast(`前回のペイン ${restored.missing} 件は戻せませんでした`);
+  }
+
   // Dispose any existing terminals
   // ホバー中に一括破棄されるとリンクの leave が発火しないため、closePane() と同様に
   // ここでもツールチップを明示的に隠す（安藤レビュー指摘・LOW）。

@@ -2376,7 +2376,7 @@ ipcMain.handle('terminal:restore', async () => {
     metadata = readPaneMetadata(tmuxHolder.socket);
   } catch (error) {
     console.warn(`${LOG_PREFIX} holder restore failed:`, error);
-    return { panes: [], order: [], stashOrder: [], missing: 0 };
+    return { panes: [], order: [], stashOrder: [], missing: tmuxHolder?.reattached ? 1 : 0 };
   }
   const live = new Map(tmuxHolder.listPanes().map(pane => [pane.paneId, pane]));
   const panes = [];

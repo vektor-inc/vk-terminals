@@ -173,7 +173,13 @@ class PaneAdapter {
   endCapture() { if (this.replay) this.replay.phase = 'buffering'; }
   finishReplay(history, modes) {
     if (!this.replay) return;
-    this.events.emit('data', history + modes);
+    // 代替画面では先に切り替えないと、復元した画面が切替時に消える。
+    const alternate = '\x1b[?1049h';
+    if (modes.includes(alternate)) {
+      this.events.emit('data', alternate + history + modes.replace(alternate, ''));
+    } else {
+      this.events.emit('data', history + modes);
+    }
     for (const data of this.replay.outputs) this.events.emit('data', data);
     const inputs = this.replay.inputs;
     this.replay = null;

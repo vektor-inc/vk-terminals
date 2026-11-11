@@ -10,8 +10,8 @@ const { serverEnvironment, supportsHolderCommands, isSafeSocketPresent, createPa
 const { getReadyPatternForEngine } = require('../utils/trustPromptWatcher');
 
 test('保持役が必要とする tmux バージョンを判定する', () => {
-  for (const version of ['tmux 3.0', 'tmux 3.3a', 'tmux next-3.4', 'tmux 4.0']) assert.equal(supportsHolderCommands(version), true, version);
-  for (const version of ['tmux 2.8', 'tmux 2.9', 'tmux master', 'unknown', 'tmux 3']) assert.equal(supportsHolderCommands(version), false, version);
+  for (const version of ['tmux 3.0', 'tmux 3.3a', 'tmux next-3.4', 'tmux 3.4-rc', 'tmux 3.6-rc2', 'tmux 4.0']) assert.equal(supportsHolderCommands(version), true, version);
+  for (const version of ['tmux 2.8', 'tmux 2.9', 'tmux 2.9-rc', 'tmux openbsd-7.6', 'tmux master', 'unknown', 'tmux 3']) assert.equal(supportsHolderCommands(version), false, version);
 });
 
 test('古い tmux は保持役の実行ディレクトリを作らずに拒否する', () => {

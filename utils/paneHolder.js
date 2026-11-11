@@ -10,9 +10,9 @@ const { isTerminalQueryReplyOnly } = require('./terminalUserInput');
 const SERVER_ENV_KEYS = Object.freeze(['HOME', 'USER', 'LOGNAME', 'SHELL', 'PATH', 'TMPDIR', 'LANG', 'LC_ALL', 'LC_CTYPE', 'LC_MESSAGES', 'TERMINFO', 'TERMINFO_DIRS']);
 
 function supportsHolderCommands(versionOutput) {
-  const match = /^tmux (?:next-)?(\d+)\.(\d+)[a-z]?(?:\s|$)/i.exec(versionOutput.trim());
-  // send-keys -H は 3.0、resize-window は 2.9 から。読めない表記は機能を保証できないため使わない。
-  return Boolean(match && (Number(match[1]) > 3 || (Number(match[1]) === 3 && Number(match[2]) >= 0)));
+  const match = /^tmux (?:next-)?(\d+)\.(\d+)(?:[a-z]|-rc\d*)?(?:\s|$)/i.exec(versionOutput.trim());
+  // send-keys -H は 3.0 から。openbsd-* は OS の版で tmux の機能を保証できないため使わない。
+  return Boolean(match && Number(match[1]) >= 3);
 }
 
 function serverEnvironment(env) {

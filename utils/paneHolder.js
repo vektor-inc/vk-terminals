@@ -3,7 +3,7 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { spawn, execFileSync } = require('node:child_process');
+const { spawn, execFile, execFileSync } = require('node:child_process');
 const { EventEmitter } = require('node:events');
 const { isTerminalQueryReplyOnly } = require('./terminalUserInput');
 
@@ -30,6 +30,8 @@ function validateSocketPath(socket, fsApi = fs, uid = process.getuid?.()) {
     throw error;
   }
 }
+
+function socketExists(socket) { return validateSocketPath(socket); }
 
 function createHolderSocketDirectory(env = process.env, home = os.homedir()) {
   const runDir = env.VK_TERMINALS_HOLDER_RUN_DIR || path.join(home, '.vk-terminals', 'run');
@@ -190,8 +192,13 @@ class TmuxHolder {
     this.keyTimer = null;
     this.keyQueue.length = 0;
     for (const pane of [...this.panes.values()]) pane.exit();
-    try { this.command(['kill-server']); } catch (_) {}
-    try { if (validateSocketPath(this.socket)) fs.unlinkSync(this.socket); } catch (_) {}
+    // 制御クライアントの異常終了時は main を待たせず専用サーバーを停止する。
+    try {
+      if (!socketExists(this.socket)) return;
+      execFile(this.tmux, ['-S', this.socket, '-f', this.config, 'kill-server'], { env: this.env, timeout: 5000 }, () => {
+        try { if (socketExists(this.socket)) fs.unlinkSync(this.socket); } catch (_) {}
+      });
+    } catch (_) {}
   }
   sendControl(args) {
     if (!this.active || this.control.stdin.destroyed) return;
@@ -221,7 +228,10 @@ class TmuxHolder {
       output = this.command(['new-window', '-d', '-P', '-F', '#{pane_id} #{pane_pid} #{window_id}', '-t', this.session, '-c', cwd.replace(/#/g, '##'), 'env', '-i', '/bin/sh', script]).trim();
     } catch (error) { try { fs.unlinkSync(script); } catch (_) {} throw error; }
     const [id, pid, windowId] = output.split(' ');
-    if (!/^%\d+$/.test(id) || !/^\d+$/.test(pid) || !/^@\d+$/.test(windowId)) throw new Error('tmux returned invalid pane identity');
+    if (!/^%\d+$/.test(id) || !/^\d+$/.test(pid) || !/^@\d+$/.test(windowId)) {
+      try { fs.unlinkSync(script); } catch (_) {}
+      throw new Error('tmux returned invalid pane identity');
+    }
     const pane = new PaneAdapter(this, id, pid, windowId);
     this.panes.set(id, pane);
     pane.resize(cols, rows);

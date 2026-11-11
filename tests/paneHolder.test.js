@@ -116,10 +116,20 @@ test('tmux 実物: 初期サーバーの秘密変数を後続ペインへ渡さ�
     assert.ok(holder.active);
     const specialDir = path.join(dir, 'with#;');
     fs.mkdirSync(specialDir);
-    const special = holder.createPane({ shell: '/bin/sh', cwd: specialDir, env: { HOME: dir, PATH: env.PATH, SPECIAL: 'a\n\'"$`;#', LARGE: 'z'.repeat(20000) } });
+    const specialValue = 'line1\nline2\'"$`\\;#';
+    const special = holder.createPane({ shell: '/bin/sh', cwd: specialDir, env: { HOME: dir, PATH: env.PATH, SPECIAL: specialValue, LARGE: 'z'.repeat(20000) } });
     assert.equal(holder.command(['display-message', '-p', '-t', special.paneId, '#{pane_current_path}']).trim(), specialDir);
     assert.equal(Number(holder.command(['display-message', '-p', '-t', special.paneId, '#{pane_pid}']).trim()), special.pid);
     assert.deepEqual(fs.readdirSync(dir).filter(name => name.startsWith('pane-')), []);
+    const valueFile = path.join(dir, 'special-value');
+    special.write(`printf '%s' "$SPECIAL" > '${valueFile}'\r`);
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('special environment value timeout')), 3000);
+      const poll = setInterval(() => {
+        if (fs.existsSync(valueFile)) { clearTimeout(timeout); clearInterval(poll); resolve(); }
+      }, 20);
+    });
+    assert.equal(fs.readFileSync(valueFile, 'utf8'), specialValue);
     special.kill();
   } finally {
     if (holder) holder.close();

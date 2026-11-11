@@ -65,5 +65,6 @@ test('main.js の terminal:create は選択したシェルを spawn と restart 
   assert.ok(handler.indexOf('const shell = pickTerminalShell({') < handler.indexOf('const id = String(nextId++);'));
   assert.match(handler, /if \(process\.platform !== 'darwin' && process\.platform !== 'win32'\) \{[\s\S]*?userInfo = os\.userInfo\(\);/);
   assert.match(handler, /pty\.spawn\(shell,/);
-  assert.match(handler, /ptyShellExecutables\.set\(id, shell\)/);
+  assert.match(source, /function registerTerminalProcess[\s\S]*?ptyShellExecutables\.set\(id, shell\)/);
+  assert.match(handler, /registerTerminalProcess\(id, ptyProcess, shell,/);
 });

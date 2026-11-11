@@ -240,10 +240,20 @@ test('メタデータを 0600 で原子的に保存し、危険なファイル�
     assert.equal(fs.statSync(file).mode & 0o777, 0o600);
     fs.chmodSync(file, 0o644);
     assert.throws(() => readPaneMetadata(socket), /unsafe/);
-    assert.throws(() => writePaneMetadata(socket, { panes: [] }), /unsafe/);
+    writePaneMetadata(socket, { panes: [] });
+    assert.deepEqual(readPaneMetadata(socket).panes, []);
     fs.unlinkSync(file);
     fs.symlinkSync(path.join(dir, 'target'), file);
     assert.throws(() => readPaneMetadata(socket), /unsafe/);
+    fs.unlinkSync(file);
+    fs.writeFileSync(file, '{}', { mode: 0o600 });
+    fs.linkSync(file, path.join(dir, 'hardlink'));
+    assert.throws(() => readPaneMetadata(socket), /unsafe/);
+    fs.unlinkSync(path.join(dir, 'hardlink'));
+    fs.writeFileSync(file, 'x'.repeat(1024 * 1024 + 1));
+    assert.throws(() => readPaneMetadata(socket), /unsafe/);
+    fs.chmodSync(dir, 0o755);
+    assert.throws(() => readPaneMetadata(socket));
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -255,6 +265,44 @@ test('停止関数は検証済みの専用ソケットのみ -S で指定する'
     fs.chmodSync(dir, 0o700);
     assert.equal(stopHolder(path.join(dir, 'tmux.sock')), false);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('接続中のクライアントがいる保持役には再接続しない', t => {
+  const tmux = (process.env.PATH || '').split(path.delimiter).map(dir => path.join(dir, 'tmux')).find(file => { try { fs.accessSync(file, fs.constants.X_OK); return true; } catch (_) { return false; } });
+  if (!tmux) { t.skip('tmux is unavailable'); return; }
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'vk-holder-client-')));
+  const env = { HOME: dir, PATH: process.env.PATH || '/usr/bin:/bin', VK_TERMINALS_HOLDER_RUN_DIR: dir };
+  let holder;
+  try {
+    holder = new TmuxHolder({ env, home: dir, tmux });
+    assert.throws(() => new TmuxHolder({ env, home: dir, tmux }), /tmux holder socket is in use/);
+  } finally {
+    try { if (holder) stopHolder(holder.socket, tmux, env); } catch (_) {}
+    holder?.disconnect();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('保持役停止後も別ソケットの tmux サーバーは動く', t => {
+  const tmux = (process.env.PATH || '').split(path.delimiter).map(dir => path.join(dir, 'tmux')).find(file => { try { fs.accessSync(file, fs.constants.X_OK); return true; } catch (_) { return false; } });
+  if (!tmux) { t.skip('tmux is unavailable'); return; }
+  const { execFileSync } = require('node:child_process');
+  const first = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'vk-holder-stop-a-')));
+  const second = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'vk-holder-stop-b-')));
+  const env = { HOME: first, PATH: process.env.PATH || '/usr/bin:/bin', VK_TERMINALS_HOLDER_RUN_DIR: first };
+  let holder;
+  const otherSocket = path.join(second, 'other.sock');
+  try {
+    holder = new TmuxHolder({ env, home: first, tmux });
+    execFileSync(tmux, ['-S', otherSocket, 'new-session', '-d', '-s', 'other'], { env });
+    assert.equal(stopHolder(holder.socket, tmux, env), true);
+    assert.match(execFileSync(tmux, ['-S', otherSocket, 'list-sessions'], { env, encoding: 'utf8' }), /other/);
+  } finally {
+    try { execFileSync(tmux, ['-S', otherSocket, 'kill-server'], { env }); } catch (_) {}
+    try { holder?.disconnect(); } catch (_) {}
+    fs.rmSync(first, { recursive: true, force: true });
+    fs.rmSync(second, { recursive: true, force: true });
+  }
 });
 
 test('tmux 実物: 切断後に同じペインと番号へ再接続する', async t => {
@@ -270,7 +318,23 @@ test('tmux 実物: 切断後に同じペインと番号へ再接続する', asyn
     holder = new TmuxHolder({ env, home: dir, tmux });
     assert.equal(holder.reattached, true);
     assert.equal(holder.listPanes().find(item => item.paneId === pane.paneId)?.termId, '7');
+    const second = holder.createPane({ shell: '/bin/sh', cwd: dir, env, termId: '8' });
+    const firstLine = '日本語の履歴';
     const attached = holder.attachPane(holder.listPanes().find(item => item.paneId === pane.paneId));
+    const octal = [...Buffer.from(firstLine)].map(byte => `\\${byte.toString(8).padStart(3, '0')}`).join('');
+    attached.write(`printf '${octal}\\n'; printf '%s\\n' '%prefix' '%end 1 2 3'\r`);
+    second.write(`printf '%s\\n' 'SECOND_ONLY'\r`);
+    await new Promise(resolve => setTimeout(resolve, 100));
+    holder.attachPane(holder.listPanes().find(item => item.paneId === second.paneId));
+    const { MODE_FORMAT, buildInputModeSequence } = require('../utils/paneHolderRestore');
+    const { history: firstHistory, modeOutput } = await holder.capturePaneWithMode(pane.paneId, MODE_FORMAT);
+    assert.doesNotThrow(() => buildInputModeSequence(modeOutput));
+    const secondHistory = await holder.capturePane(second.paneId);
+    assert.match(firstHistory, /日本語の履歴/);
+    assert.match(firstHistory, /%prefix/);
+    assert.match(firstHistory, /%end 1 2 3/);
+    assert.doesNotMatch(firstHistory, /SECOND_ONLY/);
+    assert.match(secondHistory, /SECOND_ONLY/);
     attached.beginReplay();
     let replayed = '';
     attached.onData(data => { replayed += data; });
@@ -287,6 +351,9 @@ test('tmux 実物: 切断後に同じペインと番号へ再接続する', asyn
         if (replayed.includes('AFTER_REPLAY')) { clearTimeout(timeout); clearInterval(poll); resolve(); }
       }, 20);
     });
+    const pendingCapture = holder.capturePane(pane.paneId);
+    holder.disconnect();
+    await assert.rejects(pendingCapture, /disconnected/);
 
   } finally {
     try { if (holder) stopHolder(holder.socket, tmux, env); } catch (_) {}

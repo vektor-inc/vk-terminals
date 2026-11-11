@@ -3418,7 +3418,7 @@ function togglePaneFocusMode(paneId) {
 
 // グリッドのペインをサイドバーへ格納する。
 function stashPane(paneId, { renderNow = true } = {}) {
-  if (!tree || !Array.isArray(tree.order)) return;
+  if (!paneHolderEnabled || !tree || !Array.isArray(tree.order)) return;
   const i = tree.order.indexOf(paneId);
   if (i < 0) return;
   if (paneFocusMode?.selectedId === paneId) togglePaneFocusMode(paneId);
@@ -3694,15 +3694,17 @@ function fitAll() {
 
 // 画面の並びと表示情報は、保持役の専用メタデータへまとめて保存する。
 let paneLayoutSaveTimer = null;
+let paneHolderEnabled = false;
+let initialRestorePending = true;
 function savePaneLayout() {
-  if (!tree || !Array.isArray(tree.order)) return;
+  if (!paneHolderEnabled || !tree || !Array.isArray(tree.order)) return;
   const panes = Object.entries(terminals).map(([paneId, t]) => ({
     paneId, termId: t.termId, cwd: t.cwdFull, engine: t.engine,
     taskTitle: t.taskTitle, apiTitle: t.apiTitle, apiUrl: t.apiUrl,
     apiPrUrl: t.apiPrUrl, apiPrMerged: t.apiPrMerged,
     apiWaitingMerge: t.apiWaitingMerge, apiPaneNote: t.apiPaneNote,
   }));
-  VKIpc.send('terminal:save-layout', { order: tree.order, stashOrder: tree.stashOrder || [], panes });
+  VKIpc.send('terminal:save-layout', { order: tree.order, stashOrder: tree.stashOrder || [], focusedPaneId, panes });
 }
 function schedulePaneLayoutSave() {
   if (paneLayoutSaveTimer) clearTimeout(paneLayoutSaveTimer);
@@ -6998,11 +7000,17 @@ function createSetupPanelController() {
 }
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
+function showRestoreWarning(missing) {
+  if (missing > 0) showGenericToast(`前回のペイン ${missing} 件は戻せませんでした`);
+  else if (missing === -1) showGenericToast('前回のペインを戻せませんでした');
+}
+
 async function initApp() {
   // エージェントルーム（issue #58）の有効/無効を main から取得（最初の render より前に確定させる）。
   try {
     const cfg = await VKIpc.invoke('app:get-config');
     agentRoomEnabled = !!(cfg && cfg.agentroom);
+    paneHolderEnabled = !!(cfg && cfg.paneHolderEnabled);
     newPaneStartupDir = (cfg && typeof cfg.newPaneStartupDir === 'string') ? cfg.newPaneStartupDir : '';
     newPaneAutoLaunchClaude = !!(cfg && cfg.newPaneAutoLaunchClaude);
     // main 側で検証済みの値。取得失敗・欠落時は従来どおり Claude Code のまま。
@@ -7028,7 +7036,8 @@ async function initApp() {
   } catch (_e) { /* 取得失敗時は無効のまま */ }
 
   // 保持役の既存ペインを先に問い合わせ、新規シェルを作らず同じ番号と並びへ戻す。
-  if (Object.keys(terminals).length === 0) {
+  if (initialRestorePending && Object.keys(terminals).length === 0) {
+    initialRestorePending = false;
     let restored = null;
     try { restored = await VKIpc.invoke('terminal:restore'); } catch (error) { console.warn('pane restore failed', error); }
     if (restored?.panes?.length) {
@@ -7043,6 +7052,8 @@ async function initApp() {
         colFr: null, rowFr: null, stashOrder: (restored.stashOrder || []).filter(id => ids.has(id)),
         sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
       };
+      let readyScheduled = false;
+      try {
       for (const saved of validPanes) {
         if (!tree.order.includes(saved.paneId) && !tree.stashOrder.includes(saved.paneId)) tree.order.push(saved.paneId);
         await createTerminal(saved.paneId, saved.cwd, {}, { id: saved.id, cwd: saved.cwd, engine: saved.engine });
@@ -7054,15 +7065,26 @@ async function initApp() {
         if (!isSafeExternalUrl(t.apiPrUrl)) t.apiPrUrl = '';
         _idCounter = Math.max(_idCounter, Number(saved.paneId.slice(5)));
       }
-      focusedPaneId = tree.order[0] || tree.stashOrder[0];
+      focusedPaneId = ids.has(restored.focusedPaneId) ? restored.focusedPaneId : (tree.order[0] || tree.stashOrder[0]);
       render();
+      terminals[focusedPaneId]?.term.focus();
       initialRenderDone = true;
-      VKIpc.send('terminal:restore-ready', validPanes.map(p => p.id));
-      if (restored.missing > 0) showGenericToast(`前回のペイン ${restored.missing} 件は戻せませんでした`);
-      requestAnimationFrame(() => { for (const id of tree.order) fitTerminal(id); });
+      requestAnimationFrame(() => {
+        for (const id of tree.order) fitTerminal(id);
+        VKIpc.send('terminal:restore-ready', validPanes.map(p => p.id));
+      });
+      readyScheduled = true;
+      showRestoreWarning(restored.missing);
+      } catch (error) {
+        console.warn('pane restore rendering failed', error);
+        showRestoreWarning(-1);
+        return;
+      } finally {
+        if (!readyScheduled) VKIpc.send('terminal:restore-ready', validPanes.map(p => p.id));
+      }
       return;
     }
-    if (restored?.missing > 0) showGenericToast(`前回のペイン ${restored.missing} 件は戻せませんでした`);
+    showRestoreWarning(restored?.missing);
   }
 
   // Dispose any existing terminals

@@ -126,18 +126,18 @@ function readPaneMetadata(socket) {
 function writePaneMetadata(socket, data) {
   isSafeSocketPresent(socket);
   const file = metadataPath(socket);
-  // 既存ファイルのリンク・権限を検証してから同一ディレクトリで原子的に置換する。
-  readPaneMetadata(socket);
+  // 本人専用ディレクトリ内の一時ファイルを原子的に置換する。
   const temporary = `${file}.${process.pid}.${require('node:crypto').randomBytes(8).toString('hex')}`;
   try {
-    fs.writeFileSync(temporary, JSON.stringify({ version: 1, panes: data.panes, order: data.order || [], stashOrder: data.stashOrder || [] }), { flag: 'wx', mode: 0o600 });
+    fs.writeFileSync(temporary, JSON.stringify({ version: 1, panes: data.panes, order: data.order || [], stashOrder: data.stashOrder || [], focusedPaneId: data.focusedPaneId || null }), { flag: 'wx', mode: 0o600 });
     fs.renameSync(temporary, file);
   } finally { try { fs.unlinkSync(temporary); } catch (_) {} }
 }
 
 function stopHolder(socket, tmux = 'tmux', env = process.env) {
   const runDir = env.VK_TERMINALS_HOLDER_RUN_DIR || path.join(env.HOME || os.homedir(), '.vk-terminals', 'run');
-  if (!socket || !path.isAbsolute(socket) || socket !== path.join(runDir, 'tmux.sock') || !isSafeSocketPresent(socket)) return false;
+  if (!socket || !path.isAbsolute(socket) || socket !== path.join(runDir, 'tmux.sock')) return false;
+  try { if (!isSafeSocketPresent(socket)) return false; } catch (_) { return false; }
   execFileSync(tmux, ['-S', socket, 'kill-server'], { env: serverEnvironment(env), timeout: 5000 });
   return true;
 }
@@ -172,13 +172,20 @@ class PaneAdapter {
   output(bytes) {
     if (this.replay?.phase === 'capturing') return;
     const data = this.decoder.decode(bytes, { stream: true });
-    if (this.replay) this.replay.outputs.push(data);
+    if (this.replay) {
+      this.replay.outputs.push(data);
+      if (this.replay.outputs.length > 10000) this.replay.outputs.shift();
+    }
     else this.events.emit('data', data);
   }
-  beginReplay() { this.replay = { phase: 'capturing', outputs: [], inputs: [] }; }
+  beginReplay() {
+    this.replay = { phase: 'capturing', outputs: [], inputs: [] };
+    this.replay.timer = setTimeout(() => this.finishReplay('', ''), 8000);
+  }
   endCapture() { if (this.replay) this.replay.phase = 'buffering'; }
   finishReplay(history, modes) {
     if (!this.replay) return;
+    clearTimeout(this.replay.timer);
     // 代替画面では先に切り替えないと、復元した画面が切替時に消える。
     const alternate = '\x1b[?1049h';
     if (modes.includes(alternate)) {
@@ -215,8 +222,9 @@ class TmuxHolder {
     this.buffer = '';
     this.keyQueues = new Map();
     this.keyScheduled = false;
-    this.captureRequests = [];
+    this.controlRequests = [];
     this.controlBlock = null;
+    this.initialControlBlock = true;
     this.session = `vk-terminals-${process.pid}`;
     const lock = path.join(path.dirname(this.socket), 'tmux.lock');
     let lockFd;
@@ -245,6 +253,7 @@ class TmuxHolder {
           const holderSession = sessions.split('\n').find(name => /^vk-terminals-\d+$/.test(name));
           if (!holderSession) throw new Error('tmux holder socket is in use');
           this.session = holderSession;
+          if (this.command(['list-clients', '-t', holderSession, '-F', '#{client_pid}']).trim()) throw new Error('tmux holder socket is in use');
           this.reattached = true;
         }
       }
@@ -284,13 +293,18 @@ class TmuxHolder {
     this.active = false;
     this.keyQueues.clear();
     this.keyScheduled = false;
-    for (const request of this.captureRequests) request.reject(new Error('tmux control client stopped'));
-    this.captureRequests = [];
+    for (const request of this.controlRequests) { clearTimeout(request.timer); request.reject?.(new Error('tmux control client stopped')); }
+    this.controlRequests = [];
     this.controlBlock = null;
-    for (const pane of [...this.panes.values()]) pane.exit();
+    for (const pane of [...this.panes.values()]) {
+      try { if (isSafeSocketPresent(this.socket)) this.command(['kill-window', '-t', pane.windowId]); }
+      catch (_) {}
+      pane.exit();
+    }
   }
   sendControl(args) {
     if (!this.active || this.control.stdin.destroyed) return;
+    this.controlRequests.push({});
     this.control.stdin.write(`${args.map(escapeTmuxArgument).join(' ')}\n`);
   }
   queueKeys(args) {
@@ -310,6 +324,7 @@ class TmuxHolder {
       for (const [id, queue] of this.keyQueues) {
         const args = queue.shift();
         if (!queue.length) this.keyQueues.delete(id);
+        if (args) this.controlRequests.push({});
         if (args && !this.control.stdin.write(`${args.map(escapeTmuxArgument).join(' ')}\n`)) {
           this.control.stdin.once('drain', () => this.drainKeys());
           return;
@@ -356,9 +371,26 @@ class TmuxHolder {
     if (!this.panes.has(paneId)) return Promise.reject(new Error('pane missing'));
     return new Promise((resolve, reject) => {
       const request = { paneId, resolve, reject, lines: [] };
-      this.captureRequests.push(request);
-      if (this.captureRequests.length === 1) this.sendControl(['capture-pane', '-p', '-e', '-S', '-', '-t', paneId]);
+      request.timer = setTimeout(() => {
+        request.reject(new Error('tmux capture timed out'));
+        request.reject = null;
+      }, 5000);
+      this.sendControl(['capture-pane', '-p', '-e', '-S', '-', '-t', paneId]);
+      Object.assign(this.controlRequests[this.controlRequests.length - 1], request);
     });
+  }
+  capturePaneWithMode(paneId, modeFormat) {
+    const history = this.capturePane(paneId);
+    if (!this.active || !/^%\d+$/.test(paneId) || typeof modeFormat !== 'string' || !/^#\{[\w]+\}(?:[ #{}\w|])*$/u.test(modeFormat)) {
+      return history.then(value => ({ history: value, modeOutput: '' }));
+    }
+    const mode = new Promise((resolve, reject) => {
+      const request = { resolve, reject };
+      request.timer = setTimeout(() => { request.reject(new Error('tmux mode timed out')); request.reject = null; }, 5000);
+      this.controlRequests.push(request);
+      this.control.stdin.write(`display-message -p -t ${paneId} "${modeFormat}"\n`);
+    });
+    return Promise.all([history, mode.catch(() => '')]).then(([value, modeOutput]) => ({ history: value, modeOutput }));
   }
   accept(chunk) {
     this.buffer += chunk;
@@ -366,22 +398,32 @@ class TmuxHolder {
     while ((end = this.buffer.indexOf('\n')) !== -1) {
       const line = this.buffer.slice(0, end).replace(/\r$/, '');
       this.buffer = this.buffer.slice(end + 1);
-      if (/^%begin /.test(line) && this.captureRequests.length && !this.controlBlock) {
-        this.controlBlock = this.captureRequests[0];
+      const begin = /^%begin (\d+ \d+ \d+)$/.exec(line);
+      if (begin && !this.controlBlock) {
+        this.controlBlock = { marker: begin[1], request: this.initialControlBlock ? null : this.controlRequests[0], lines: [] };
+        this.initialControlBlock = false;
         continue;
       }
       if (this.controlBlock) {
-        if (/^%(?:end|error) /.test(line)) {
-          const request = this.controlBlock;
+        const ending = /^%(end|error) (\d+ \d+ \d+)$/.exec(line);
+        if (ending && ending[2] === this.controlBlock.marker) {
+          const block = this.controlBlock;
           this.controlBlock = null;
-          this.captureRequests.shift();
-          this.panes.get(request.paneId)?.endCapture();
-          if (line.startsWith('%error ')) request.reject(new Error('tmux capture failed'));
-          else request.resolve(request.lines.join('\r\n'));
-          if (this.captureRequests.length) this.sendControl(['capture-pane', '-p', '-e', '-S', '-', '-t', this.captureRequests[0].paneId]);
+          const request = block.request;
+          if (request) this.controlRequests.shift();
+          if (request) clearTimeout(request.timer);
+          if (request?.paneId) {
+            this.panes.get(request.paneId)?.endCapture();
+            if (ending[1] === 'error') request.reject?.(new Error('tmux capture failed'));
+            else request.resolve(Buffer.from(block.lines.join('\r\n'), 'latin1').toString('utf8'));
+          } else if (request?.resolve) {
+            if (ending[1] === 'error') request.reject?.(new Error('tmux control command failed'));
+            else request.resolve(Buffer.from(block.lines.join('\r\n'), 'latin1').toString('utf8'));
+          }
           continue;
         }
-        if (!line.startsWith('%')) { this.controlBlock.lines.push(line); continue; }
+        this.controlBlock.lines.push(line);
+        continue;
       }
       const match = /^%output (%\d+) (.*)$/.exec(line);
       if (match) this.panes.get(match[1])?.output(decodeOutput(match[2]));
@@ -392,6 +434,8 @@ class TmuxHolder {
     }
   }
   disconnect() {
+    for (const request of this.controlRequests) { clearTimeout(request.timer); request.reject?.(new Error('tmux control client disconnected')); }
+    this.controlRequests = [];
     this.active = false;
     this.keyQueues.clear();
     this.keyScheduled = false;

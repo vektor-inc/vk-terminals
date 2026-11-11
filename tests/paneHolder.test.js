@@ -30,7 +30,7 @@ test('保持役の環境と一時スクリプトを隔離して検査する', ()
     const script = createPaneEnvironmentScript(dir, { HOME: dir, UID: '123', 'BASH_FUNC_x%%': 'ignored', TRICK: 'a\n"; touch /tmp/never-run #' }, '/bin/sh');
     const body = fs.readFileSync(script, 'utf8');
     assert.match(body.split('\n')[1], /^rm -f -- /);
-    assert.match(body, /export UID='123'/);
+    assert.doesNotMatch(body, /export UID=/);
     assert.doesNotMatch(body, /BASH_FUNC/);
     assert.match(body, /unset SHLVL/);
     assert.equal(fs.statSync(script).mode & 0o777, 0o600);
@@ -76,7 +76,7 @@ test('tmux 実物: 初期サーバーの秘密変数を後続ペインへ渡さ�
     assert.throws(() => isSafeSocketPresent(holder.socket, fs, process.getuid() + 1));
     const injectedFile = path.join(dir, 'injected');
     const dangerousValue = `a\n"; touch ${injectedFile}; #`;
-    const pane = holder.createPane({ shell: '/bin/sh', cwd: dir, env: { HOME: dir, PATH: env.PATH, TERM: 'xterm-256color', TRICK: dangerousValue } });
+    const pane = holder.createPane({ shell: '/bin/sh', cwd: dir, env: { HOME: dir, PATH: env.PATH, TERM: 'xterm-256color', TRICK: dangerousValue, UID: '12345' } });
     pane.resize(101, 37);
     await new Promise(resolve => setTimeout(resolve, 100));
     assert.match(holder.command(['display-message', '-p', '-t', pane.paneId, '#{window_width}x#{window_height}']), /101x37/);

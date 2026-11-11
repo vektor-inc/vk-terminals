@@ -31,7 +31,7 @@ function isSafeSocketPresent(socket, fsApi = fs, uid = process.getuid?.()) {
   }
 }
 
-function createHolderSocketDirectory(env = process.env, home = os.homedir()) {
+function createHolderSocketPath(env = process.env, home = os.homedir()) {
   const runDir = env.VK_TERMINALS_HOLDER_RUN_DIR || path.join(home, '.vk-terminals', 'run');
   if (!path.isAbsolute(runDir)) throw new Error('tmux run directory must be absolute');
   // 既存の親要素も順に検査し、リンク経由の作成を拒む。
@@ -59,8 +59,8 @@ function createPaneEnvironmentScript(runDir, ptyEnv, shell) {
   const entries = Object.entries({ ...ptyEnv, TERM: 'xterm-256color' });
   const valid = entries.filter(([key, value]) => {
     if (typeof value !== 'string' || value.includes('\0')) throw new Error('invalid pane environment value');
-    if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) return true;
-    console.warn(`tmux pane: skipped invalid environment name ${JSON.stringify(key)}`);
+    if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) && !['UID', 'EUID', 'PPID', 'SHELLOPTS', 'BASHOPTS', 'BASHPID'].includes(key)) return true;
+    console.warn(`tmux pane: skipped unsupported environment name ${JSON.stringify(key)}`);
     return false;
   });
   const script = path.join(runDir, `pane-${process.pid}-${require('node:crypto').randomBytes(8).toString('hex')}.sh`);
@@ -134,7 +134,7 @@ class TmuxHolder {
     // 実行ディレクトリを作る前に tmux 不在を確定する。
     try { execFileSync(tmux, ['-V'], { env: serverEnvironment(env), stdio: 'ignore', timeout: 5000 }); }
     catch (error) { if (error.code === 'ENOENT') { error.code = 'TMUX_NOT_FOUND'; } throw error; }
-    this.socket = createHolderSocketDirectory(env, home);
+    this.socket = createHolderSocketPath(env, home);
     this.tmux = tmux;
     this.config = config;
     this.panes = new Map();
@@ -291,4 +291,4 @@ class TmuxHolder {
   }
 }
 
-module.exports = { SERVER_ENV_KEYS, serverEnvironment, isSafeSocketPresent, createHolderSocketDirectory, createPaneEnvironmentScript, encodeKeys, decodeOutput, TmuxHolder };
+module.exports = { SERVER_ENV_KEYS, serverEnvironment, isSafeSocketPresent, createHolderSocketPath, createPaneEnvironmentScript, encodeKeys, decodeOutput, TmuxHolder };

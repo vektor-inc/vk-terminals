@@ -92,6 +92,7 @@ const {
 // ペインのシェルへ渡す環境変数（Volta の bin を PATH へ補う）の組み立て。
 const { resolveInitialPaneLaunch } = require('./utils/initialPaneLaunch');
 const { buildPtyEnv } = require('./utils/ptyEnv');
+const { TmuxHolder } = require('./utils/paneHolder');
 // ログインシェルの PATH を本体・ペインへ反映する（issue #454）。
 const { applyLoginShellPath, appendUserLocalBin } = require('./utils/loginShellPath');
 const { pickTerminalShell } = require('./utils/terminalShell');
@@ -105,6 +106,7 @@ const { resolveInstanceId, buildHealthResponse } = require('./utils/instanceId')
 // 組み込み用の入口（embedded.js）から渡される起動オプションと、その解決（issue #455）。
 const {
   getEmbeddedOptions,
+  resolvePaneHolder,
   resolveAppTitle,
   resolveResourceRoot,
   isBundledRun,
@@ -307,6 +309,8 @@ const { USER_CONFIG_MAX_BYTES, normalizeLiveConfig, changedLiveKeys, normalizeRe
 const { createRestartApplication } = require('./utils/restartApplication');
 // 組み込み用の入口（embedded.js）から起動されたときだけ値が入る。electron . では null。
 const EMBEDDED_OPTIONS = getEmbeddedOptions();
+const PANE_HOLDER = resolvePaneHolder({ argv: process.argv, embedded: EMBEDDED_OPTIONS, warn: message => console.warn(`[vk-terminals] ${message}`) });
+let tmuxHolder = null;
 const { isHelpDocument, buildHelpLaunchCommand, createHelpStatusChecker, createGuideOpener } = require('./utils/helpFeature');
 const HELP_FEATURE = EMBEDDED_OPTIONS && EMBEDDED_OPTIONS.help;
 const checkHelpStatus = HELP_FEATURE ? createHelpStatusChecker(EMBEDDED_OPTIONS.getHelpStatus) : null;
@@ -1436,6 +1440,10 @@ function compareSemver(a, b) {
  */
 async function cleanupPtys() {
   await terminateAllPtysAndWaitIncludingExiting(ptys.values(), exitingPtys.values());
+  if (tmuxHolder) {
+    tmuxHolder.close();
+    tmuxHolder = null;
+  }
   await agentLifecycles.close();
 }
 
@@ -2439,7 +2447,14 @@ function createTerminalPane(cwd, options = {}, guide = null) {
 
   let ptyProcess;
   try {
-    ptyProcess = pty.spawn(shell, [], {
+    if (PANE_HOLDER === 'tmux' && !tmuxHolder) {
+      try { tmuxHolder = new TmuxHolder(); }
+      catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+        console.warn(`${LOG_PREFIX} tmux unavailable; using node-pty`);
+      }
+    }
+    ptyProcess = tmuxHolder ? tmuxHolder.createPane({ shell, cwd: resolvedCwd, env: buildPtyEnv(process.env) }) : pty.spawn(shell, [], {
       name: 'xterm-256color',
       cols: 80,
       rows: 24,
@@ -2767,6 +2782,9 @@ function createTerminalPane(cwd, options = {}, guide = null) {
     });
   }
   if (launchCommand !== null) {
+    if (tmuxHolder && (resolvedEngine === 'claude' || resolvedEngine === 'codex')) {
+      launchCommand = `env -u TMUX -u TMUX_PANE ${launchCommand}`;
+    }
     // 待っている間に PTY が消えた・書き込みが例外になった場合は、使われない専用 CODEX_HOME を回収する。
     scheduleLaunchCommand({
       ptys,
@@ -3079,7 +3097,8 @@ async function restartAgentInTerminal(ptyProcess, request, launchOptions, lifecy
   if (changeDirectoryCommand !== null) {
     ptyProcess.write(`${changeDirectoryCommand}\r`);
   }
-  const { command, modelIgnored } = buildEngineAwareLaunchCommand(request.engine, request.model, launchOptions);
+  const { command: builtCommand, modelIgnored } = buildEngineAwareLaunchCommand(request.engine, request.model, launchOptions);
+  const command = tmuxHolder ? `env -u TMUX -u TMUX_PANE ${builtCommand}` : builtCommand;
   if (modelIgnored) {
     console.warn(`${LOG_PREFIX} model is ignored for engine '${request.engine}'`);
   }

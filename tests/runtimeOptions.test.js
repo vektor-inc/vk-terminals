@@ -14,6 +14,7 @@ const path = require('node:path');
 
 const {
   normalizeEmbeddedOptions,
+  resolvePaneHolder,
   setEmbeddedOptions,
   getEmbeddedOptions,
   resetEmbeddedOptions,
@@ -39,6 +40,7 @@ test('normalizeEmbeddedOptions: 未指定は既定値（自己更新は未指定
     getHelpStatus: null,
     getSetupStatus: null,
     setupPane: null,
+    paneHolder: null,
   });
 });
 
@@ -64,6 +66,16 @@ test('normalizeEmbeddedOptions: 型違い・相対パスは例外にする', () 
   assert.throws(() => normalizeEmbeddedOptions({ settingsDescriptorPath: 'a.json' }), TypeError);
   assert.throws(() => normalizeEmbeddedOptions({ selfUpdate: 'no' }), TypeError);
   assert.throws(() => normalizeEmbeddedOptions({ singleInstance: 1 }), TypeError);
+  assert.throws(() => normalizeEmbeddedOptions({ paneHolder: 'screen' }), TypeError);
+});
+
+test('pane holder: CLI と組み込み指定は tmux だけ有効', () => {
+  assert.equal(resolvePaneHolder(), null);
+  assert.equal(resolvePaneHolder({ argv: ['--pane-holder=tmux'] }), 'tmux');
+  assert.equal(resolvePaneHolder({ embedded: normalizeEmbeddedOptions({ paneHolder: 'tmux' }) }), 'tmux');
+  const warnings = [];
+  assert.equal(resolvePaneHolder({ argv: ['--pane-holder=bad'], warn: warning => warnings.push(warning) }), null);
+  assert.equal(warnings.length, 1);
 });
 
 test('setEmbeddedOptions / getEmbeddedOptions: 設定前は null（electron . と同じ）', () => {

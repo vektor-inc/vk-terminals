@@ -70,6 +70,9 @@ function normalizeEmbeddedOptions(raw) {
       throw new TypeError(`embedded options: ${key} must be a boolean`);
     }
   }
+  if (options.paneHolder != null && options.paneHolder !== 'tmux') {
+    throw new TypeError('embedded options: paneHolder must be tmux');
+  }
 
   // セットアップ状況の一覧（issue #456）。確認する関数とセットアップ用ペインの指定は必ず対で渡す
   // （片方だけだと「一覧は出るが始められない」「始められるが状況が見えない」状態になるため）。
@@ -108,7 +111,14 @@ function normalizeEmbeddedOptions(raw) {
     singleInstance: options.singleInstance !== false,
     getSetupStatus: options.getSetupStatus != null ? options.getSetupStatus : null,
     setupPane,
+    paneHolder: options.paneHolder || null,
   };
+}
+
+function resolvePaneHolder({ argv = [], embedded = null, warn = () => {} } = {}) {
+  const arg = argv.find(value => value.startsWith('--pane-holder='));
+  if (arg && arg !== '--pane-holder=tmux') warn(`Invalid pane holder: ${arg}`);
+  return (embedded?.paneHolder === 'tmux' || arg === '--pane-holder=tmux') ? 'tmux' : null;
 }
 
 function setEmbeddedOptions(raw) {
@@ -211,6 +221,7 @@ module.exports = {
   APP_TITLE_ENV_KEY,
   SETTINGS_DESCRIPTOR_ENV_KEY,
   normalizeEmbeddedOptions,
+  resolvePaneHolder,
   setEmbeddedOptions,
   getEmbeddedOptions,
   resetEmbeddedOptions,

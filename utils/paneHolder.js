@@ -146,9 +146,11 @@ class PaneAdapter {
     this.events = new EventEmitter();
     this.decoder = new TextDecoder();
     this.exited = false;
+    this.replay = null;
   }
   write(data) {
     if (this.exited || isTerminalQueryReplyOnly(data)) return;
+    if (this.replay) { this.replay.inputs.push(data); return; }
     const keys = encodeKeys(data);
     // 制御クライアントへの入力は順序を保ち、長い入力も main を止めずに送る。
     for (let i = 0; i < keys.length; i += 128) this.holder.queueKeys(['send-keys', '-t', this.paneId, '-H', ...keys.slice(i, i + 128)]);
@@ -161,7 +163,22 @@ class PaneAdapter {
   }
   onData(callback) { this.events.on('data', callback); return { dispose: () => this.events.off('data', callback) }; }
   onExit(callback) { this.events.on('exit', callback); return { dispose: () => this.events.off('exit', callback) }; }
-  output(bytes) { this.events.emit('data', this.decoder.decode(bytes, { stream: true })); }
+  output(bytes) {
+    if (this.replay?.phase === 'capturing') return;
+    const data = this.decoder.decode(bytes, { stream: true });
+    if (this.replay) this.replay.outputs.push(data);
+    else this.events.emit('data', data);
+  }
+  beginReplay() { this.replay = { phase: 'capturing', outputs: [], inputs: [] }; }
+  endCapture() { if (this.replay) this.replay.phase = 'buffering'; }
+  finishReplay(history, modes) {
+    if (!this.replay) return;
+    this.events.emit('data', history + modes);
+    for (const data of this.replay.outputs) this.events.emit('data', data);
+    const inputs = this.replay.inputs;
+    this.replay = null;
+    for (const data of inputs) this.write(data);
+  }
   exit() {
     if (this.exited) return;
     this.exited = true;
@@ -186,6 +203,8 @@ class TmuxHolder {
     this.buffer = '';
     this.keyQueues = new Map();
     this.keyScheduled = false;
+    this.captureRequests = [];
+    this.controlBlock = null;
     this.session = `vk-terminals-${process.pid}`;
     const lock = path.join(path.dirname(this.socket), 'tmux.lock');
     let lockFd;
@@ -317,12 +336,37 @@ class TmuxHolder {
     this.panes.set(identity.paneId, pane);
     return pane;
   }
+  capturePane(paneId) {
+    if (!this.panes.has(paneId)) return Promise.reject(new Error('pane missing'));
+    return new Promise((resolve, reject) => {
+      const request = { paneId, resolve, reject, lines: [] };
+      this.captureRequests.push(request);
+      if (this.captureRequests.length === 1) this.sendControl(['capture-pane', '-p', '-e', '-S', '-', '-t', paneId]);
+    });
+  }
   accept(chunk) {
     this.buffer += chunk;
     let end;
     while ((end = this.buffer.indexOf('\n')) !== -1) {
       const line = this.buffer.slice(0, end).replace(/\r$/, '');
       this.buffer = this.buffer.slice(end + 1);
+      if (/^%begin /.test(line) && this.captureRequests.length && !this.controlBlock) {
+        this.controlBlock = this.captureRequests[0];
+        continue;
+      }
+      if (this.controlBlock) {
+        if (/^%(?:end|error) /.test(line)) {
+          const request = this.controlBlock;
+          this.controlBlock = null;
+          this.captureRequests.shift();
+          this.panes.get(request.paneId)?.endCapture();
+          if (line.startsWith('%error ')) request.reject(new Error('tmux capture failed'));
+          else request.resolve(request.lines.join('\r\n'));
+          if (this.captureRequests.length) this.sendControl(['capture-pane', '-p', '-e', '-S', '-', '-t', this.captureRequests[0].paneId]);
+          continue;
+        }
+        if (!line.startsWith('%')) { this.controlBlock.lines.push(line); continue; }
+      }
       const match = /^%output (%\d+) (.*)$/.exec(line);
       if (match) this.panes.get(match[1])?.output(decodeOutput(match[2]));
       const closed = /^%(?:unlinked-)?window-close (@\d+)/.exec(line);

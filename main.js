@@ -93,6 +93,7 @@ const {
 const { resolveInitialPaneLaunch } = require('./utils/initialPaneLaunch');
 const { buildPtyEnv } = require('./utils/ptyEnv');
 const { TmuxHolder, readPaneMetadata, writePaneMetadata } = require('./utils/paneHolder');
+const { MODE_FORMAT, buildInputModeSequence } = require('./utils/paneHolderRestore');
 // ログインシェルの PATH を本体・ペインへ反映する（issue #454）。
 const { applyLoginShellPath, appendUserLocalBin } = require('./utils/loginShellPath');
 const { pickTerminalShell } = require('./utils/terminalShell');
@@ -2358,7 +2359,7 @@ ipcMain.on('terminal:save-layout', (_event, layout) => {
 });
 // 起動時だけ既存シェルを登録する。新規ペイン作成時の起動コマンドは通さない。
 let restoredPaneCount = 0;
-ipcMain.handle('terminal:restore', () => {
+ipcMain.handle('terminal:restore', async () => {
   if (PANE_HOLDER !== 'tmux' || restoredPaneCount || tmuxUnavailable) return { panes: [], order: [], stashOrder: [], missing: 0 };
   let metadata;
   try {
@@ -2376,6 +2377,7 @@ ipcMain.handle('terminal:restore', () => {
     const identity = live.get(saved.tmuxPaneId);
     if (!identity || identity.termId !== saved.termId || ptys.has(saved.termId)) continue;
     const pane = tmuxHolder.attachPane(identity);
+    pane.beginReplay();
     const id = String(saved.termId);
     ptys.set(id, pane);
     ptyShellExecutables.set(id, process.env.SHELL || '/bin/sh');
@@ -2397,6 +2399,18 @@ ipcMain.handle('terminal:restore', () => {
     nextId = Math.max(nextId, Number(id) + 1);
     panes.push({ ...saved, id, cwd: saved.cwd || os.homedir(), engine: saved.engine === 'codex' ? 'codex' : 'claude' });
   }
+  // capture-pane の %end より前の出力は履歴に含まれるので捨て、後続分だけ再生する。
+  await Promise.all(panes.map(async saved => {
+    const pane = ptys.get(saved.id);
+    try {
+      const history = await tmuxHolder.capturePane(pane.paneId);
+      const modeOutput = tmuxHolder.command(['display-message', '-p', '-t', pane.paneId, MODE_FORMAT]);
+      pane.finishReplay(history, buildInputModeSequence(modeOutput));
+    } catch (error) {
+      console.warn(`${LOG_PREFIX} holder pane replay failed:`, error);
+      pane.finishReplay('', '');
+    }
+  }));
   restoredPaneCount = panes.length;
   if (panes.length) firstTerminalCreated = true;
   const ids = new Set(panes.map(pane => pane.paneId));

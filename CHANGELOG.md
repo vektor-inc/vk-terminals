@@ -1,5 +1,6 @@
 # Changelog
 
+- [ 機能追加 ] 起動オプション `--pane-holder=tmux` を付けたとき、アプリを終了してもペインが動き続け、次の起動で同じ並び・名前・番号のペインへ戻れるように（[#586](https://github.com/vektor-inc/vk-terminals/issues/586)）
 - [ 機能追加 ] 起動オプション `--pane-holder=tmux` を付けたときだけ、ペインのシェルを専用の tmux の下で動かす機能を追加（tmux が無い、または 3.0 未満の場合は従来どおり動作）（[#585](https://github.com/vektor-inc/vk-terminals/issues/585)）
 - [ 仕様変更 ] デスクトップ版のタスク一覧カードのタイトルの太さを、標準から少し太い 500 に変更
 

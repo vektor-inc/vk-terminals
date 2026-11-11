@@ -130,7 +130,8 @@ function writePaneMetadata(socket, data) {
 }
 
 function stopHolder(socket, tmux = 'tmux', env = process.env) {
-  if (!socket || !path.isAbsolute(socket) || path.basename(socket) !== 'tmux.sock' || !isSafeSocketPresent(socket)) return false;
+  const runDir = env.VK_TERMINALS_HOLDER_RUN_DIR || path.join(env.HOME || os.homedir(), '.vk-terminals', 'run');
+  if (!socket || !path.isAbsolute(socket) || socket !== path.join(runDir, 'tmux.sock') || !isSafeSocketPresent(socket)) return false;
   execFileSync(tmux, ['-S', socket, 'kill-server'], { env: serverEnvironment(env), timeout: 5000 });
   return true;
 }

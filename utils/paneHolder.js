@@ -9,6 +9,12 @@ const { isTerminalQueryReplyOnly } = require('./terminalUserInput');
 
 const SERVER_ENV_KEYS = Object.freeze(['HOME', 'USER', 'LOGNAME', 'SHELL', 'PATH', 'TMPDIR', 'LANG', 'LC_ALL', 'LC_CTYPE', 'LC_MESSAGES', 'TERMINFO', 'TERMINFO_DIRS']);
 
+function supportsHolderCommands(versionOutput) {
+  const match = /^tmux (?:next-)?(\d+)\.(\d+)[a-z]?(?:\s|$)/i.exec(versionOutput.trim());
+  // send-keys -H は 3.0、resize-window は 2.9 から。読めない表記は機能を保証できないため使わない。
+  return Boolean(match && (Number(match[1]) > 3 || (Number(match[1]) === 3 && Number(match[2]) >= 0)));
+}
+
 function serverEnvironment(env) {
   return Object.fromEntries(SERVER_ENV_KEYS.filter(key => typeof env[key] === 'string' && env[key].length).map(key => [key, env[key]]));
 }
@@ -132,7 +138,10 @@ class TmuxHolder {
   constructor({ env = process.env, home = os.homedir(), tmux = 'tmux', config = path.join(__dirname, '..', 'tmux-holder.conf') } = {}) {
     this.env = serverEnvironment(env);
     // 実行ディレクトリを作る前に tmux 不在を確定する。
-    try { execFileSync(tmux, ['-V'], { env: serverEnvironment(env), stdio: 'ignore', timeout: 5000 }); }
+    try {
+      const version = execFileSync(tmux, ['-V'], { env: serverEnvironment(env), encoding: 'utf8', timeout: 5000 });
+      if (!supportsHolderCommands(version)) throw new Error(`tmux 3.0 or newer is required (found ${version.trim() || 'unrecognized version'})`);
+    }
     catch (error) { if (error.code === 'ENOENT') { error.code = 'TMUX_NOT_FOUND'; } throw error; }
     this.socket = createHolderSocketPath(env, home);
     this.tmux = tmux;
@@ -291,4 +300,4 @@ class TmuxHolder {
   }
 }
 
-module.exports = { SERVER_ENV_KEYS, serverEnvironment, isSafeSocketPresent, createHolderSocketPath, createPaneEnvironmentScript, encodeKeys, decodeOutput, TmuxHolder };
+module.exports = { SERVER_ENV_KEYS, serverEnvironment, supportsHolderCommands, isSafeSocketPresent, createHolderSocketPath, createPaneEnvironmentScript, encodeKeys, decodeOutput, TmuxHolder };

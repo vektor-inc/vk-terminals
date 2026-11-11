@@ -2450,7 +2450,8 @@ function createTerminalPane(cwd, options = {}, guide = null) {
     if (PANE_HOLDER === 'tmux' && !tmuxHolder && !tmuxUnavailable) {
       try { tmuxHolder = new TmuxHolder({ config: path.join(RESOURCE_ROOT, 'tmux-holder.conf') }); }
       catch (error) {
-        if (error.code === 'TMUX_NOT_FOUND') tmuxUnavailable = true;
+        // 初期化失敗は起動中に繰り返さない。接続後の停止は上の active 判定で再生成する。
+        tmuxUnavailable = true;
         console.warn(`${LOG_PREFIX} tmux holder failed (${error.message}; socket: ${path.join(process.env.VK_TERMINALS_HOLDER_RUN_DIR || path.join(os.homedir(), '.vk-terminals', 'run'), 'tmux.sock')}); using node-pty`);
       }
     }

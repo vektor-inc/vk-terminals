@@ -5,8 +5,50 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { serverEnvironment, isSafeSocketPresent, createPaneEnvironmentScript, encodeKeys, decodeOutput, TmuxHolder } = require('../utils/paneHolder');
+const vm = require('node:vm');
+const { serverEnvironment, supportsHolderCommands, isSafeSocketPresent, createPaneEnvironmentScript, encodeKeys, decodeOutput, TmuxHolder } = require('../utils/paneHolder');
 const { getReadyPatternForEngine } = require('../utils/trustPromptWatcher');
+
+test('保持役が必要とする tmux バージョンを判定する', () => {
+  for (const version of ['tmux 3.0', 'tmux 3.3a', 'tmux next-3.4', 'tmux 4.0']) assert.equal(supportsHolderCommands(version), true, version);
+  for (const version of ['tmux 2.8', 'tmux 2.9', 'tmux master', 'unknown', 'tmux 3']) assert.equal(supportsHolderCommands(version), false, version);
+});
+
+test('古い tmux は保持役の実行ディレクトリを作らずに拒否する', () => {
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'vk-holder-version-')));
+  try {
+    const fakeTmux = path.join(dir, 'tmux');
+    const run = path.join(dir, 'run');
+    fs.writeFileSync(fakeTmux, '#!/bin/sh\nprintf "tmux 2.9\\n"\n', { mode: 0o700 });
+    assert.throws(() => new TmuxHolder({ tmux: fakeTmux, env: { HOME: dir, VK_TERMINALS_HOLDER_RUN_DIR: run }, home: dir }), /tmux 3\.0 or newer is required/);
+    assert.equal(fs.existsSync(run), false);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('保持役の初期化失敗後は次のペインで再試行せず、接続停止後は再生成する', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+  const start = source.indexOf("    if (tmuxHolder && !tmuxHolder.active) tmuxHolder = null;", source.indexOf('function createTerminalPane('));
+  const end = source.indexOf('    if (tmuxHolder) {', start);
+  assert.ok(start !== -1 && end > start);
+  const attempts = [];
+  const warnings = [];
+  const context = {
+    tmuxHolder: null, tmuxUnavailable: false, PANE_HOLDER: 'tmux',
+    TmuxHolder: class { constructor() { attempts.push(1); throw new Error('socket is in use'); } },
+    path, RESOURCE_ROOT: '/tmp', process: { env: { VK_TERMINALS_HOLDER_RUN_DIR: '/tmp/holder' } },
+    os, LOG_PREFIX: 'test', console: { warn: message => warnings.push(message) },
+  };
+  const initialize = () => vm.runInNewContext(source.slice(start, end), context);
+  initialize();
+  initialize();
+  assert.equal(attempts.length, 1);
+  assert.equal(warnings.length, 1);
+  assert.equal(context.tmuxUnavailable, true);
+  context.tmuxUnavailable = false;
+  context.tmuxHolder = { active: false };
+  initialize();
+  assert.equal(attempts.length, 2);
+});
 
 test('control output の 8 進復号と入力の 16 進符号化', () => {
   assert.deepEqual(decodeOutput('A\\033\\303\\251'), Buffer.from('A\x1bé'));

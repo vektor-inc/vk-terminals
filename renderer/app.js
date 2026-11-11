@@ -7050,6 +7050,8 @@ async function initApp() {
         for (const key of ['taskTitle', 'apiTitle', 'apiUrl', 'apiPrUrl', 'apiPrMerged', 'apiWaitingMerge', 'apiPaneNote']) {
           if (Object.hasOwn(saved, key)) t[key] = saved[key];
         }
+        if (!isSafeExternalUrl(t.apiUrl)) t.apiUrl = '';
+        if (!isSafeExternalUrl(t.apiPrUrl)) t.apiPrUrl = '';
         _idCounter = Math.max(_idCounter, Number(saved.paneId.slice(5)));
       }
       focusedPaneId = tree.order[0] || tree.stashOrder[0];

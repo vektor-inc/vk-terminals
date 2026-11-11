@@ -2372,11 +2372,12 @@ ipcMain.handle('terminal:restore', async () => {
   let metadata;
   try {
     if (!tmuxHolder) tmuxHolder = new TmuxHolder({ config: path.join(RESOURCE_ROOT, 'tmux-holder.conf') });
-    if (!tmuxHolder.reattached) return { panes: [], order: [], stashOrder: [], missing: 0 };
     metadata = readPaneMetadata(tmuxHolder.socket);
+    if (!tmuxHolder.reattached) return { panes: [], order: [], stashOrder: [], missing: metadata.panes.length };
   } catch (error) {
     console.warn(`${LOG_PREFIX} holder restore failed:`, error);
-    return { panes: [], order: [], stashOrder: [], missing: tmuxHolder?.reattached ? 1 : 0 };
+    const metadataFile = tmuxHolder?.socket && path.join(path.dirname(tmuxHolder.socket), 'panes.json');
+    return { panes: [], order: [], stashOrder: [], missing: metadataFile && fs.existsSync(metadataFile) ? 1 : 0 };
   }
   const live = new Map(tmuxHolder.listPanes().map(pane => [pane.paneId, pane]));
   const panes = [];
@@ -2422,7 +2423,7 @@ ipcMain.handle('terminal:restore', async () => {
   restoredPaneCount = panes.length;
   if (panes.length) firstTerminalCreated = true;
   const ids = new Set(panes.map(pane => pane.paneId));
-  return { panes, order: (metadata.order || []).filter(id => ids.has(id)), stashOrder: (metadata.stashOrder || []).filter(id => ids.has(id)), missing: Math.max(0, metadata.panes.length - panes.length) };
+  return { panes, order: (Array.isArray(metadata.order) ? metadata.order : []).filter(id => ids.has(id)), stashOrder: (Array.isArray(metadata.stashOrder) ? metadata.stashOrder : []).filter(id => ids.has(id)), missing: Math.max(0, metadata.panes.length - panes.length) };
 });
 ipcMain.handle('terminal:create', (_event, cwd, options = {}) => createTerminalPane(cwd, options));
 

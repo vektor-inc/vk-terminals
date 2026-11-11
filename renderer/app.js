@@ -7078,7 +7078,7 @@ async function initApp() {
       initialRenderDone = true;
       requestAnimationFrame(() => {
         for (const id of tree.order) fitTerminal(id);
-        VKIpc.send('terminal:restore-ready', validPanes.map(p => p.id));
+        VKIpc.send('terminal:restore-ready', validPanes.map(p => ({ id: p.id, cols: terminals[p.paneId].term.cols, rows: terminals[p.paneId].term.rows })));
       });
       readyScheduled = true;
       showRestoreWarning(restored.missing, restored.metadataLost);
@@ -7096,7 +7096,7 @@ async function initApp() {
       } finally {
         if (!readyScheduled) {
           const result = classifyRenderedRestorePanes(validPanes, terminals);
-          if (result.ready.length) VKIpc.send('terminal:restore-ready', result.ready);
+          if (result.ready.length) VKIpc.send('terminal:restore-ready', result.ready.map(id => { const terminal = Object.values(terminals).find(t => t.termId === id); return { id, cols: terminal.term.cols, rows: terminal.term.rows }; }));
           if (result.needsInitialPane) VKIpc.send('terminal:restore-abandon');
           else if (result.abandoned.length) VKIpc.send('terminal:restore-abandon', result.abandoned);
         }

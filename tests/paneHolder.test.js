@@ -440,3 +440,35 @@ test('tmux 実物: 切断後に同じペインと番号へ再接続する', asyn
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('tmux 実物: 画面サイズへ合わせた後の履歴とカーソルを復元する', async t => {
+  const tmux = (process.env.PATH || '').split(path.delimiter).map(dir => path.join(dir, 'tmux')).find(file => { try { fs.accessSync(file, fs.constants.X_OK); return true; } catch (_) { return false; } });
+  if (!tmux) { t.skip('tmux is unavailable'); return; }
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'vk-holder-restore-size-')));
+  const env = { HOME: dir, PATH: process.env.PATH || '/usr/bin:/bin', VK_TERMINALS_HOLDER_RUN_DIR: dir };
+  let holder;
+  try {
+    holder = new TmuxHolder({ env, home: dir, tmux });
+    const pane = holder.createPane({ shell: '/bin/sh', cwd: dir, env, termId: '7', cols: 60, rows: 37 });
+    pane.write("i=1; while [ $i -le 45 ]; do printf 'line-%s\\n' $i; i=$((i+1)); done; printf 'あいうえお\\n'\r");
+    await new Promise(resolve => setTimeout(resolve, 100));
+    const { MODE_FORMAT } = require('../utils/paneHolderRestore');
+    const source = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+    const ready = source.slice(source.indexOf("ipcMain.on('terminal:restore-ready'"), source.indexOf("ipcMain.on('terminal:save-layout'"));
+    assert.ok(ready.indexOf("tmuxHolder.command(['resize-window'") < ready.indexOf('capturePaneWithMode('));
+    for (const rows of [43, 20]) {
+      holder.command(['resize-window', '-t', pane.windowId, '-x', '60', '-y', String(rows)]);
+      assert.equal(holder.command(['display-message', '-p', '-t', pane.paneId, '#{pane_height}']).trim(), String(rows));
+      const restored = await holder.capturePaneWithMode(pane.paneId, MODE_FORMAT);
+      const actual = holder.command(['display-message', '-p', '-t', pane.paneId, '#{cursor_x} #{cursor_y}']).trim();
+      const values = restored.modeOutput.match(/ (\d+) (\d+) \|/);
+      assert.ok(values);
+      assert.equal(`${values[1]} ${values[2]}`, actual);
+      assert.match(restored.history, /あいうえお/);
+    }
+  } finally {
+    try { holder?.disconnect(); } catch (_) {}
+    try { if (holder) stopHolder(holder.socket, tmux, env); } catch (_) {}
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

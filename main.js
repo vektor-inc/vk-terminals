@@ -2422,12 +2422,26 @@ function saveHolderLayout(layout) {
   writePaneMetadata(tmuxHolder.socket, next);
   lastSavedHolderLayout = serialized;
 }
-ipcMain.on('terminal:restore-ready', (_event, ids) => {
-  for (const id of Array.isArray(ids) ? ids : []) {
+ipcMain.on('terminal:restore-ready', async (_event, readyPanes) => {
+  for (const ready of Array.isArray(readyPanes) ? readyPanes : []) {
+    const id = typeof ready === 'object' && ready !== null ? ready.id : ready;
     const pane = ptys.get(String(id));
     if (!pane?.pendingReplay) continue;
-    pane.finishReplay(pane.pendingReplay.history, pane.pendingReplay.modes);
-    pane.pendingReplay = null;
+    try {
+      if (Number.isInteger(ready.cols) && Number.isInteger(ready.rows) && ready.cols >= 2 && ready.rows >= 2) {
+        // 履歴とカーソルは画面側と同じ行列数になってから採取する。
+        tmuxHolder.command(['resize-window', '-t', pane.windowId, '-x', String(ready.cols), '-y', String(ready.rows)]);
+      }
+      const { history, modeOutput } = await tmuxHolder.capturePaneWithMode(pane.paneId, MODE_FORMAT);
+      let modes = '';
+      try { modes = buildInputModeSequence(modeOutput); }
+      catch (error) { console.warn(`${LOG_PREFIX} holder mode restore failed:`, error); }
+      pane.finishReplay(history, modes);
+    } catch (error) {
+      console.warn(`${LOG_PREFIX} holder pane replay failed:`, error);
+      pane.endCapture();
+      pane.finishReplay('', '');
+    } finally { pane.pendingReplay = null; }
   }
   try { if (lastPaneLayout) saveHolderLayout(lastPaneLayout); }
   catch (error) { console.warn(`${LOG_PREFIX} holder metadata save failed:`, error); }
@@ -2513,20 +2527,8 @@ ipcMain.handle('terminal:restore', async () => {
     const normalized = normalizeHolderPane({ termId: id, paneId, cwd: os.homedir(), hasAgent: false, generation: 0 }, identity.paneId);
     panes.push({ ...normalized, id });
   }
-  // capture-pane の %end より前の出力は履歴に含まれるので捨て、後続分だけ再生する。
-  await Promise.all(panes.map(async saved => {
-    const pane = ptys.get(saved.id);
-    try {
-      const { history, modeOutput } = await tmuxHolder.capturePaneWithMode(pane.paneId, MODE_FORMAT);
-      let modes = '';
-      try { modes = buildInputModeSequence(modeOutput); }
-      catch (error) { console.warn(`${LOG_PREFIX} holder mode restore failed:`, error); }
-      pane.pendingReplay = { history, modes };
-    } catch (error) {
-      console.warn(`${LOG_PREFIX} holder pane replay failed:`, error);
-      pane.pendingReplay = { history: '', modes: '' };
-    }
-  }));
+  // 画面側の行列数が決まるまで採取を待つ。採取前のライブ出力は履歴に含める。
+  for (const saved of panes) ptys.get(saved.id).pendingReplay = true;
   restoredPaneCount = panes.length;
   if (panes.length) firstTerminalCreated = true;
   const ids = new Set(panes.map(pane => pane.paneId));

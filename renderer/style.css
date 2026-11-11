@@ -83,6 +83,15 @@ html, body {
   color: #e6edf3;
 }
 
+.titlebar-icon {
+  display: block;
+  width: 20px;
+  height: 20px;
+  margin: auto;
+  fill: none;
+  stroke: currentColor;
+}
+
 .titlebar-menu-btn {
   grid-column: 1;
   justify-self: start;
@@ -108,9 +117,15 @@ html, body {
   outline-offset: var(--vktm--outline-offset--focus-ring);
 }
 
+.titlebar-btn,
+.titlebar-menu-btn {
+  display: grid;
+  place-items: center;
+}
+
 /* 使用率の警告ドットバッジ。公式の使用率（セッション・週間のいずれか）が 80% を
    超えたときだけ app.js が .usage-alert-warn（80〜90%: アンバー）/ .usage-alert-crit
-   （90%〜: 赤）を ☰ メニューボタンに付与する。 */
+   （90%〜: 赤）をメニューボタンに付与する。 */
 .titlebar-menu-btn.usage-alert-warn,
 .titlebar-menu-btn.usage-alert-crit {
   position: relative;

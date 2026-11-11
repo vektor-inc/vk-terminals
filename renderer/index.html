@@ -28,12 +28,16 @@
 </head>
 <body>
   <div class="titlebar">
-    <button id="menu-btn" class="titlebar-menu-btn" type="button" aria-label="メニュー" aria-expanded="true" aria-controls="sidebar-menu" title="メニュー">☰</button>
+    <button id="menu-btn" class="titlebar-menu-btn" type="button" aria-label="メニュー" aria-expanded="true" aria-controls="sidebar-menu" title="メニュー">
+      <svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#menu"></use></svg>
+    </button>
     <span class="app-title">VK Terminals</span>
     <!-- 歯車は常時表示。設定モーダル（設定項目のみ）を開く。Claude の使用量は
          サイドバー最上部のカードへ統合した。使用率 80% 超過時の警告ドットは
-         app.js が ☰ メニューボタンに .usage-alert-warn / .usage-alert-crit を付与して表示する。 -->
-    <button id="settings-btn" class="titlebar-btn" title="設定">⚙</button>
+         app.js がメニューボタンに .usage-alert-warn / .usage-alert-crit を付与して表示する。 -->
+    <button id="settings-btn" class="titlebar-btn" type="button" aria-label="設定" title="設定">
+      <svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#settings"></use></svg>
+    </button>
   </div>
   <div id="root"></div>
 

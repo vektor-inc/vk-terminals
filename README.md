@@ -3,6 +3,8 @@
 複数のターミナルを並べて表示できる Electron 製デスクトップアプリです。
 起動すると自動的に `claude` コマンドが実行されます。
 
+操作アイコンには [Lucide](https://lucide.dev/)（ISC License）を使用しています。ライセンス全文は [`renderer/icons/LICENSE-lucide`](renderer/icons/LICENSE-lucide) を参照してください。
+
 ## スクリーンショット
 
 ペインを自動折返しグリッドに並べて複数の Claude セッションを同時に操作できます。

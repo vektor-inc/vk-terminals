@@ -4732,7 +4732,7 @@ const USAGE_ALERT_LABELS = {
 // 直近の使用率警告レベル（'' / 'warn' / 'crit'）。
 let usageAlertLevel = '';
 
-// 使用率の警告ドットを ☰ メニューボタン（常時表示）に反映する。
+// 使用率の警告ドットをメニューボタン（常時表示）に反映する。
 // サイドバー閉時でも警告に気付けるようにし、開いているときは使用量カードのバー色で示す。
 function applyUsageBadge() {
   const level = usageAlertLevel;

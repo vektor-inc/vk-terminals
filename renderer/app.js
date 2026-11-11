@@ -3418,7 +3418,7 @@ function togglePaneFocusMode(paneId) {
 
 // グリッドのペインをサイドバーへ格納する。
 function stashPane(paneId, { renderNow = true } = {}) {
-  if (!paneHolderEnabled || !tree || !Array.isArray(tree.order)) return;
+  if (!tree || !Array.isArray(tree.order)) return;
   const i = tree.order.indexOf(paneId);
   if (i < 0) return;
   if (paneFocusMode?.selectedId === paneId) togglePaneFocusMode(paneId);
@@ -7000,8 +7000,9 @@ function createSetupPanelController() {
 }
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
-function showRestoreWarning(missing) {
-  if (missing > 0) showGenericToast(`前回のペイン ${missing} 件は戻せませんでした`);
+function showRestoreWarning(missing, metadataLost = false) {
+  if (metadataLost) showGenericToast('前回のペインの名前と順番を戻せませんでした');
+  else if (missing > 0) showGenericToast(`前回のペイン ${missing} 件は戻せませんでした`);
   else if (missing === -1) showGenericToast('前回のペインを戻せませんでした');
 }
 
@@ -7074,15 +7075,19 @@ async function initApp() {
         VKIpc.send('terminal:restore-ready', validPanes.map(p => p.id));
       });
       readyScheduled = true;
-      showRestoreWarning(restored.missing);
+      showRestoreWarning(restored.missing, restored.metadataLost);
       } catch (error) {
         console.warn('pane restore rendering failed', error);
-        showRestoreWarning(-1);
-        return;
+        // 作成済みの端末は残し、まだ作れなかった端末だけを並びから外す。
+        tree.order = tree.order.filter(id => terminals[id]);
+        tree.stashOrder = tree.stashOrder.filter(id => terminals[id]);
+        focusedPaneId = tree.order[0] || tree.stashOrder[0] || null;
+        if (focusedPaneId) { render(); initialRenderDone = true; showRestoreWarning(-1); }
+        else restored.missing = -1;
       } finally {
-        if (!readyScheduled) VKIpc.send('terminal:restore-ready', validPanes.map(p => p.id));
+        if (!readyScheduled) VKIpc.send('terminal:restore-ready', validPanes.filter(p => terminals[p.paneId]).map(p => p.id));
       }
-      return;
+      if (Object.keys(terminals).length) return;
     }
     showRestoreWarning(restored?.missing);
   }

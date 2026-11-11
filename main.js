@@ -1442,10 +1442,12 @@ function compareSemver(a, b) {
  */
 async function cleanupPtys() {
   try { if (lastPaneLayout) saveHolderLayout(lastPaneLayout); } catch (error) { console.warn(`${LOG_PREFIX} holder metadata save failed:`, error); }
-  await terminateAllPtysAndWaitIncludingExiting([...ptys.values()].filter(pane => !pane.isTmuxPane), exitingPtys.values());
+  // 正常終了を先に制御クライアントへ伝え、PTY の終了待ち中の異常切断扱いを防ぐ。
   try { if (tmuxHolder) tmuxHolder.disconnect(); }
   catch (error) { console.warn(`${LOG_PREFIX} tmux holder cleanup failed:`, error); }
-  finally { tmuxHolder = null; await agentLifecycles.close(); }
+  finally { tmuxHolder = null; }
+  await terminateAllPtysAndWaitIncludingExiting([...ptys.values()].filter(pane => !pane.isTmuxPane), exitingPtys.values());
+  await agentLifecycles.close();
 }
 
 /**
@@ -2336,9 +2338,10 @@ ipcMain.handle('clipboard:write-text', async (_event, text) => {
 });
 
 // 新規作成と再接続で、入力・出力・終了時の管理を同じ経路へ登録する。
-function registerTerminalProcess(id, ptyProcess, shell, hasAgent, generation = 1, getPromptWatcher = () => null, stopPromptWatcher = () => {}, shellStartup = null) {
+function registerTerminalProcess(id, ptyProcess, shell, { hasAgent, generation = 1, getPromptWatcher = () => null, stopPromptWatcher = () => {}, shellStartup = null } = {}) {
   conditionalTerminalInput.initialize(id);
   const writeToPty = ptyProcess.write.bind(ptyProcess);
+  // 入力による画面変更を先に記録し、直後の応答に古い識別値を付けない。
   ptyProcess.write = (data) => {
     conditionalTerminalInput.markChanged(id, !(isTerminalQueryReplyOnly(data) || isTerminalFocusNotificationOnly(data)));
     silentWriteRefresher.noteInput(id, isTerminalQueryReplyOnly(data) || isTerminalFocusNotificationOnly(data));
@@ -2355,6 +2358,7 @@ function registerTerminalProcess(id, ptyProcess, shell, hasAgent, generation = 1
       screenSnapshot = conditionalTerminalInput.capture(id, agentGenerations.get(id));
     }
     getPromptWatcher()?.(data);
+    // 出力とその時点の画面識別値を同じイベントで届け、renderer での取り違えを防ぐ。
     if (visibleData && win && !win.isDestroyed()) win.webContents.send('terminal:data', id, visibleData, screenSnapshot);
   });
   ptyProcess.onExit(() => {
@@ -2373,23 +2377,6 @@ function registerTerminalProcess(id, ptyProcess, shell, hasAgent, generation = 1
   agentGenerations.initialize(id, hasAgent);
   for (let index = 1; index < generation; index++) agentGenerations.increment(id);
   return agentLifecycles.initialize(id, hasAgent ? generation : 0);
-}
-
-function clearPreviousPaneMetadata() {
-  const runDir = process.env.VK_TERMINALS_HOLDER_RUN_DIR || path.join(os.homedir(), '.vk-terminals', 'run');
-  if (!path.isAbsolute(runDir)) return;
-  try {
-    let current = path.parse(runDir).root;
-    for (const part of path.relative(current, runDir).split(path.sep).filter(Boolean)) {
-      current = path.join(current, part);
-      const entry = fs.lstatSync(current);
-      if (!entry.isDirectory() || entry.isSymbolicLink()) return;
-    }
-    const stat = fs.lstatSync(runDir);
-    if (stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o700) return;
-    fs.unlinkSync(path.join(runDir, 'panes.json'));
-    lastSavedHolderLayout = null;
-  } catch (error) { if (error.code !== 'ENOENT') console.warn(`${LOG_PREFIX} holder metadata cleanup failed:`, error); }
 }
 
 function normalizeHolderPane(pane, tmuxPaneId) {
@@ -2436,7 +2423,6 @@ ipcMain.on('terminal:restore-ready', (_event, ids) => {
     pane.finishReplay(pane.pendingReplay.history, pane.pendingReplay.modes);
     pane.pendingReplay = null;
   }
-  clearPreviousPaneMetadata();
   try { if (lastPaneLayout) saveHolderLayout(lastPaneLayout); }
   catch (error) { console.warn(`${LOG_PREFIX} holder metadata save failed:`, error); }
 });
@@ -2451,7 +2437,6 @@ ipcMain.handle('terminal:restore', async () => {
   if (restoreAttempted) return { panes: [], order: [], stashOrder: [], missing: 0 };
   restoreAttempted = true;
   if (PANE_HOLDER !== 'tmux' || tmuxUnavailable) {
-    if (PANE_HOLDER !== 'tmux') clearPreviousPaneMetadata();
     return { panes: [], order: [], stashOrder: [], missing: 0 };
   }
   let metadata;
@@ -2472,15 +2457,17 @@ ipcMain.handle('terminal:restore', async () => {
       }
     }
     if (!tmuxHolder.reattached) {
-      const missing = metadata.panes.length;
-      clearPreviousPaneMetadata();
-      return { panes: [], order: [], stashOrder: [], missing };
+      // サーバーが無い場合は件数を伏せ、古い記録だけなら通知しない。
+      const metadataFile = path.join(path.dirname(tmuxHolder.socket), 'panes.json');
+      let recent = false;
+      try { recent = Date.now() - fs.statSync(metadataFile).mtimeMs < 24 * 60 * 60 * 1000; } catch (_) {}
+      return { panes: [], order: [], stashOrder: [], missing: recent && metadata.panes.length ? -1 : 0 };
     }
   } catch (error) {
     console.warn(`${LOG_PREFIX} holder restore failed:`, error);
     const metadataFile = path.join(process.env.VK_TERMINALS_HOLDER_RUN_DIR || path.join(os.homedir(), '.vk-terminals', 'run'), 'panes.json');
-    const missing = fs.existsSync(metadataFile) ? -1 : 0;
-    clearPreviousPaneMetadata();
+    let missing = 0;
+    try { if (Date.now() - fs.statSync(metadataFile).mtimeMs < 24 * 60 * 60 * 1000) missing = -1; } catch (_) {}
     return { panes: [], order: [], stashOrder: [], missing };
   }
   const live = new Map(tmuxHolder.listPanes().map(pane => [pane.paneId, pane]));
@@ -2492,17 +2479,23 @@ ipcMain.handle('terminal:restore', async () => {
     const pane = tmuxHolder.attachPane(identity);
     pane.beginReplay();
     const id = String(saved.termId);
-    registerTerminalProcess(id, pane, process.env.SHELL || '/bin/sh', saved.hasAgent === true, Number.isSafeInteger(saved.generation) && saved.generation > 0 ? saved.generation : 1);
+    registerTerminalProcess(id, pane, process.env.SHELL || '/bin/sh', { hasAgent: saved.hasAgent === true, generation: Number.isSafeInteger(saved.generation) && saved.generation > 0 ? saved.generation : 1 });
     nextId = Math.max(nextId, Number(id) + 1);
     const normalized = normalizeHolderPane(saved, identity.paneId);
     panes.push({ ...normalized, id, cwd: normalized.cwd || os.homedir() });
   }
   const restoredIds = new Set(panes.map(pane => pane.tmuxPaneId));
+  // 保存後に増えた生存ペインも作業を失わないよう既定名で末尾へ戻す。
   for (const identity of live.values()) {
-    if (!restoredIds.has(identity.paneId)) {
-      try { tmuxHolder.command(['kill-window', '-t', identity.windowId]); }
-      catch (error) { console.warn(`${LOG_PREFIX} holder orphan cleanup failed:`, error); }
-    }
+    if (restoredIds.has(identity.paneId) || !/^\d+$/.test(String(identity.termId))) continue;
+    let id = String(identity.termId);
+    if (ptys.has(id)) id = String(nextId++);
+    const pane = tmuxHolder.attachPane(identity);
+    pane.beginReplay();
+    registerTerminalProcess(id, pane, process.env.SHELL || '/bin/sh', { hasAgent: false });
+    nextId = Math.max(nextId, Number(id) + 1);
+    const normalized = normalizeHolderPane({ termId: id, paneId: `pane-${id}`, cwd: os.homedir(), hasAgent: false, generation: 0 }, identity.paneId);
+    panes.push({ ...normalized, id });
   }
   // capture-pane の %end より前の出力は履歴に含まれるので捨て、後続分だけ再生する。
   await Promise.all(panes.map(async saved => {
@@ -2521,7 +2514,7 @@ ipcMain.handle('terminal:restore', async () => {
   restoredPaneCount = panes.length;
   if (panes.length) firstTerminalCreated = true;
   const ids = new Set(panes.map(pane => pane.paneId));
-  return { panes, order: (Array.isArray(metadata.order) ? metadata.order : []).filter(id => ids.has(id)), stashOrder: (Array.isArray(metadata.stashOrder) ? metadata.stashOrder : []).filter(id => ids.has(id)), focusedPaneId: ids.has(metadata.focusedPaneId) ? metadata.focusedPaneId : null, missing: metadataRejected ? -1 : Math.max(0, metadata.panes.length - panes.length) };
+  return { panes, order: (Array.isArray(metadata.order) ? metadata.order : []).filter(id => ids.has(id)), stashOrder: (Array.isArray(metadata.stashOrder) ? metadata.stashOrder : []).filter(id => ids.has(id)), focusedPaneId: ids.has(metadata.focusedPaneId) ? metadata.focusedPaneId : null, missing: metadataRejected && !panes.length ? -1 : Math.max(0, metadata.panes.length - panes.length), metadataLost: metadataRejected };
 });
 ipcMain.handle('terminal:create', (_event, cwd, options = {}) => createTerminalPane(cwd, options));
 
@@ -2896,10 +2889,10 @@ function createTerminalPane(cwd, options = {}, guide = null) {
     paneCreationTrustWatchers.set(id, () => { trustGate.markTrustHandled(); });
   }
 
-  const initialLaunchToken = registerTerminalProcess(id, ptyProcess, shell, !noClaude, 1, () => promptWatcher, () => {
+  const initialLaunchToken = registerTerminalProcess(id, ptyProcess, shell, { hasAgent: !noClaude, generation: 1, getPromptWatcher: () => promptWatcher, stopPromptWatcher: () => {
     if (promptWatcherTimeoutId) clearTimeout(promptWatcherTimeoutId);
     promptWatcherTimeoutId = null;
-  }, shellStartup);
+  }, shellStartup });
   if (!noClaude && resolvedEngine === 'claude' && !backgroundWork.has(id)) backgroundWork.begin(id, 1);
 
   // 起動後に自動で AI エンジンを実行（素のターミナルモード時はスキップ）。

@@ -180,7 +180,7 @@ class PaneAdapter {
   }
   beginReplay() {
     this.replay = { phase: 'capturing', outputs: [], inputs: [] };
-    this.replay.timer = setTimeout(() => this.finishReplay('', ''), 8000);
+    this.replay.timer = setTimeout(() => this.finishReplay(this.pendingReplay?.history || '', this.pendingReplay?.modes || ''), 8000);
   }
   endCapture() { if (this.replay) this.replay.phase = 'buffering'; }
   finishReplay(history, modes) {

@@ -1440,8 +1440,8 @@ function compareSemver(a, b) {
  * @returns {Promise<void>}
  */
 async function cleanupPtys() {
-  await terminateAllPtysAndWaitIncludingExiting(ptys.values(), exitingPtys.values());
-  try { if (tmuxHolder) tmuxHolder.close(); }
+  await terminateAllPtysAndWaitIncludingExiting([...ptys.values()].filter(pane => !pane.isTmuxPane), exitingPtys.values());
+  try { if (tmuxHolder) tmuxHolder.disconnect(); }
   catch (error) { console.warn(`${LOG_PREFIX} tmux holder cleanup failed:`, error); }
   finally { tmuxHolder = null; await agentLifecycles.close(); }
 }

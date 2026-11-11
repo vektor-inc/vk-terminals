@@ -100,6 +100,41 @@ function decodeOutput(text) {
   return Buffer.from(bytes);
 }
 
+function metadataPath(socket) { return path.join(path.dirname(socket), 'panes.json'); }
+
+function readPaneMetadata(socket) {
+  isSafeSocketPresent(socket);
+  const file = metadataPath(socket);
+  try {
+    const stat = fs.lstatSync(file);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o600 || stat.nlink !== 1) throw new Error('unsafe pane metadata');
+    const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (!data || data.version !== 1 || !Array.isArray(data.panes)) throw new Error('invalid pane metadata');
+    return data;
+  } catch (error) {
+    if (error.code === 'ENOENT') return { version: 1, panes: [] };
+    throw error;
+  }
+}
+
+function writePaneMetadata(socket, data) {
+  isSafeSocketPresent(socket);
+  const file = metadataPath(socket);
+  // 既存ファイルのリンク・権限を検証してから同一ディレクトリで原子的に置換する。
+  readPaneMetadata(socket);
+  const temporary = `${file}.${process.pid}.${require('node:crypto').randomBytes(8).toString('hex')}`;
+  try {
+    fs.writeFileSync(temporary, JSON.stringify({ version: 1, panes: data.panes }), { flag: 'wx', mode: 0o600 });
+    fs.renameSync(temporary, file);
+  } finally { try { fs.unlinkSync(temporary); } catch (_) {} }
+}
+
+function stopHolder(socket, tmux = 'tmux', env = process.env) {
+  if (!socket || !path.isAbsolute(socket) || path.basename(socket) !== 'tmux.sock' || !isSafeSocketPresent(socket)) return false;
+  execFileSync(tmux, ['-S', socket, 'kill-server'], { env: serverEnvironment(env), timeout: 5000 });
+  return true;
+}
+
 class PaneAdapter {
   constructor(holder, paneId, pid, windowId) {
     this.holder = holder;
@@ -219,8 +254,6 @@ class TmuxHolder {
     this.keyQueues.clear();
     this.keyScheduled = false;
     for (const pane of [...this.panes.values()]) pane.exit();
-    // 停止は同期的に完了させ、新しい保持役との競合を防ぐ。
-    try { if (isSafeSocketPresent(this.socket)) this.command(['kill-server']); } catch (_) {}
   }
   sendControl(args) {
     if (!this.active || this.control.stdin.destroyed) return;
@@ -287,6 +320,13 @@ class TmuxHolder {
       }
     }
   }
+  disconnect() {
+    this.active = false;
+    this.keyQueues.clear();
+    this.keyScheduled = false;
+    this.control.kill();
+    this.panes.clear();
+  }
   close() {
     this.keyQueues.clear();
     this.keyScheduled = false;
@@ -300,4 +340,4 @@ class TmuxHolder {
   }
 }
 
-module.exports = { SERVER_ENV_KEYS, serverEnvironment, supportsHolderCommands, isSafeSocketPresent, createHolderSocketPath, createPaneEnvironmentScript, encodeKeys, decodeOutput, TmuxHolder };
+module.exports = { metadataPath, readPaneMetadata, writePaneMetadata, stopHolder, SERVER_ENV_KEYS, serverEnvironment, supportsHolderCommands, isSafeSocketPresent, createHolderSocketPath, createPaneEnvironmentScript, encodeKeys, decodeOutput, TmuxHolder };

@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const vm = require('node:vm');
-const { serverEnvironment, supportsHolderCommands, isSafeSocketPresent, createPaneEnvironmentScript, encodeKeys, decodeOutput, TmuxHolder } = require('../utils/paneHolder');
+const { serverEnvironment, supportsHolderCommands, isSafeSocketPresent, createPaneEnvironmentScript, encodeKeys, decodeOutput, TmuxHolder, readPaneMetadata, writePaneMetadata, stopHolder } = require('../utils/paneHolder');
 const { getReadyPatternForEngine } = require('../utils/trustPromptWatcher');
 
 test('保持役が必要とする tmux バージョンを判定する', () => {
@@ -224,4 +224,34 @@ test('tmux 実物: 初期サーバーの秘密変数を後続ペインへ渡さ�
     if (holder) holder.close();
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+
+test('メタデータを 0600 で原子的に保存し、危険なファイルを拒否する', () => {
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'vk-holder-meta-')));
+  try {
+    fs.chmodSync(dir, 0o700);
+    const socket = path.join(dir, 'tmux.sock');
+    assert.deepEqual(readPaneMetadata(socket), { version: 1, panes: [] });
+    writePaneMetadata(socket, { panes: [{ termId: '5', paneId: '%1' }] });
+    assert.equal(readPaneMetadata(socket).panes[0].termId, '5');
+    const file = path.join(dir, 'panes.json');
+    assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+    fs.chmodSync(file, 0o644);
+    assert.throws(() => readPaneMetadata(socket), /unsafe/);
+    assert.throws(() => writePaneMetadata(socket, { panes: [] }), /unsafe/);
+    fs.unlinkSync(file);
+    fs.symlinkSync(path.join(dir, 'target'), file);
+    assert.throws(() => readPaneMetadata(socket), /unsafe/);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('停止関数は検証済みの専用ソケットのみ -S で指定する', () => {
+  assert.equal(stopHolder(''), false);
+  assert.equal(stopHolder('/tmp/other.sock'), false);
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'vk-holder-stop-')));
+  try {
+    fs.chmodSync(dir, 0o700);
+    assert.equal(stopHolder(path.join(dir, 'tmux.sock')), false);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

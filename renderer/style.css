@@ -2879,8 +2879,8 @@ button.sidebar-section-header:hover {
  * 番号が欠ける中途半端な表示（「ペイン …」や空の箱）を避けるため、バッジ自体は縮めない
  * （flex-shrink:0）。代わりにヘッダー幅が足りないときはバッジごと非表示にし、ステータスバッジ
  * （.pane-status）と操作ボタンを優先して残す。パス（.pane-cwd）は先に 0 幅まで縮む。
- * 閾値 360px は、バッジ（3 桁の番号で約 80px）+ ステータスバッジ（約 59px）+ 操作ボタン群
- * （約 147px）+ 余白（計 40px）が、パスを 0 幅にしても収まる最小幅（約 325px）に余裕を持たせた値。 */
+ * 閾値 386px は、バッジ（3 桁の番号で約 80px）+ ステータスバッジ（約 59px）+ 操作ボタン群
+ * （約 173px）+ 余白（計 40px）が、パスを 0 幅にしても収まる最小幅（約 351px）に余裕を持たせた値。 */
 .pane-header {
   container-type: inline-size;
   container-name: pane-header;
@@ -2894,7 +2894,7 @@ button.sidebar-section-header:hover {
   border: 1px solid rgba(110, 118, 129, 0.3);
 }
 
-@container pane-header (max-width: 359px) {
+@container pane-header (max-width: 385px) {
   .pane-id-badge {
     display: none;
   }

@@ -75,6 +75,7 @@ const { getStatusPresentation, resolvePaneNote, BACKGROUND_WORK_REASON, getClose
 const { getApiServerStatusPresentation } = window.VKApiServerStatus;
 const { getPrBadgePresentation } = window.VKPrBadge;
 const { getPaneIdBadgeLabel } = window.VKPaneIdBadge;
+const { panesToStash, panesToRestore } = window.VKPaneFocusMode;
 const { resolveQueueIssuesListUrl } = window.VKTaskQueueLink;
 const { isPatternValid } = window.VKSettingsValidation;
 const { comboOptions, comboDisplayValue, comboStoredValue } = window.VKSettingsComboField;
@@ -104,6 +105,7 @@ const focusTraps = createFocusTrapStack(document);
 
 // ─── State ────────────────────────────────────────────────────────────────────
 let tree = null;       // Layout tree root
+let paneFocusMode = null; // { selectedId, stashedIds }
 // ペイン D&D 中の状態（issue #40）。リサイズ用の dragState とは別変数で衝突回避。
 //   - srcId: ドラッグ中のペイン id
 //   - lastTargetId / lastDir: 直前フレームで描画したオーバーレイの対象と方向（再描画スキップ判定用）
@@ -3064,6 +3066,7 @@ function closePane(paneId, { force = false, skipConfirm = false } = {}) {
     return;
   }
 
+  if (paneFocusMode?.selectedId === paneId) togglePaneFocusMode(paneId);
   const t = terminals[paneId];
   if (t) {
     // status の自動 idle 復帰タイマーが残っているとクロージャ経由で terminals[paneId] を
@@ -3091,6 +3094,10 @@ function closePane(paneId, { force = false, skipConfirm = false } = {}) {
   }
 
   // グリッド・格納のどちらに居ても取り除く（issue #89）。
+  if (paneFocusMode) {
+    paneFocusMode.stashedIds = paneFocusMode.stashedIds.filter(id => id !== paneId);
+    if (paneFocusMode.selectedId === paneId) paneFocusMode = null;
+  }
   tree.order = tree.order.filter(id => id !== paneId);
   tree.stashOrder = (Array.isArray(tree.stashOrder) ? tree.stashOrder : []).filter(id => id !== paneId);
   if (tree.order.length === 0 && tree.stashOrder.length === 0) {
@@ -3386,12 +3393,32 @@ function movePane(paneId, dir) {
 // グリッド order とは別配列 stashOrder で管理する。xterm 要素（t.element）は破棄せず、
 // render() の appendChild 付け替えで格納コンテナ／グリッドコンテナ間を移動させる。
 
+// 切替開始時の対象だけを記録し、既存の格納ペインには触れない。
+function togglePaneFocusMode(paneId) {
+  if (paneFocusMode) {
+    const restoreIds = panesToRestore(paneFocusMode.stashedIds, tree.stashOrder || [], terminals);
+    paneFocusMode = null;
+    for (const id of restoreIds) unstashPane(id, { renderNow: false });
+    render();
+    requestAnimationFrame(() => { fitAll(); if (paneExists(paneId)) focusPane(paneId); });
+    return;
+  }
+  if (!tree?.order?.includes(paneId)) return;
+  const stashedIds = panesToStash(tree.order, paneId);
+  paneFocusMode = { selectedId: paneId, stashedIds };
+  for (const id of stashedIds) stashPane(id, { renderNow: false });
+  render();
+  setSidebarOpen(true, { focusFirst: false });
+  requestAnimationFrame(() => { fitAll(); focusPane(paneId); });
+}
+
 // グリッドのペインをサイドバーへ格納する。
-function stashPane(paneId) {
+function stashPane(paneId, { renderNow = true } = {}) {
   if (!tree || !Array.isArray(tree.order)) return;
   const i = tree.order.indexOf(paneId);
   if (i < 0) return;
-  tree.order.splice(i, 1);
+  if (paneFocusMode?.selectedId === paneId) togglePaneFocusMode(paneId);
+  tree.order.splice(tree.order.indexOf(paneId), 1);
   tree.stashOrder = Array.isArray(tree.stashOrder) ? tree.stashOrder : [];
   tree.stashOrder.push(paneId);
   // 格納直後は xterm を折り畳んだコンパクト表示にする。
@@ -3403,6 +3430,7 @@ function stashPane(paneId) {
   if (focusedPaneId === paneId) {
     focusedPaneId = tree.order.length > 0 ? tree.order[tree.order.length - 1] : paneId;
   }
+  if (!renderNow) return;
   render();
   // 格納先を知らせるためサイドバーを開く（フォーカスはグリッドに残す）。
   setSidebarOpen(true, { focusFirst: false });
@@ -3413,15 +3441,17 @@ function stashPane(paneId) {
 }
 
 // 格納中のペインをグリッドへ戻す。
-function unstashPane(paneId) {
+function unstashPane(paneId, { renderNow = true } = {}) {
   if (!tree) return;
   tree.stashOrder = Array.isArray(tree.stashOrder) ? tree.stashOrder : [];
   const i = tree.stashOrder.indexOf(paneId);
   if (i < 0) return;
   tree.stashOrder.splice(i, 1);
+  if (paneFocusMode) paneFocusMode.stashedIds = paneFocusMode.stashedIds.filter(id => id !== paneId);
   if (!Array.isArray(tree.order)) tree.order = [];
   tree.order.push(paneId);
   resetGridSizing();
+  if (!renderNow) return;
   render();
   requestAnimationFrame(() => {
     fitAll();
@@ -3976,6 +4006,7 @@ function renderLeaf(node) {
     <span class="pane-cwd" title="${escAttr(cwd)}">${escText(cwd)}</span>
     <div class="pane-actions">
       <span class="pane-badge auto-input-badge" hidden></span>
+      <button class="btn btn-focus-mode" title="${paneFocusMode ? '全ペインを戻す' : 'このペインを広く表示'}" aria-label="${paneFocusMode ? '全ペインを戻す' : 'このペインを広く表示'}" aria-pressed="${paneFocusMode ? 'true' : 'false'}">${paneFocusMode ? '▣' : '⛶'}</button>
       <button class="btn btn-stash" title="サイドバーに格納" aria-label="サイドバーに格納">←</button>
       <span class="pane-actions-sep" aria-hidden="true"></span>
       <button class="btn btn-move btn-move-left" title="左へ移動" aria-label="左へ移動">◀</button>
@@ -4021,6 +4052,10 @@ function renderLeaf(node) {
     el.appendChild(room);
   }
 
+  header.querySelector('.btn-focus-mode').addEventListener('click', e => {
+    e.stopPropagation();
+    togglePaneFocusMode(node.id);
+  });
   header.querySelector('.btn-stash').addEventListener('click', e => {
     e.stopPropagation();
     stashPane(node.id);
@@ -6979,6 +7014,7 @@ async function initApp() {
     VKIpc.send('terminal:kill', t.termId);
   }
   terminals = {};
+  paneFocusMode = null;
   focusedPaneId = null;
   // 破棄済みペイン分のフォーカスガード記録も一掃する（issue #385。terminals と同じ扱い）。
   paneFocusBeforeMousedown.clear();

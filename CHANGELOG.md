@@ -1,5 +1,7 @@
 # Changelog
 
+## 1.97.0
+
 - [ 機能追加 ] ペインを一時的に広く表示し、格納したペインだけを戻す切替ボタンを追加（[#577](https://github.com/vektor-inc/vk-terminals/issues/577)）
 - [ 仕様変更 ] タイトルバーのメニュー・設定ボタンを、OS やフォントに左右されない Lucide アイコンへ変更（[#582](https://github.com/vektor-inc/vk-terminals/issues/582)）
 - [ 仕様変更 ] デスクトップ版のタスク一覧カードのタイトルを、文字サイズ 11px・太さ標準・行間 1.5 に変更（[#580](https://github.com/vektor-inc/vk-terminals/issues/580)）

@@ -106,13 +106,19 @@ function readPaneMetadata(socket) {
   isSafeSocketPresent(socket);
   const file = metadataPath(socket);
   try {
-    const stat = fs.lstatSync(file);
-    if (!stat.isFile() || stat.isSymbolicLink() || stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o600 || stat.nlink !== 1) throw new Error('unsafe pane metadata');
-    const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+    // NOFOLLOW で開いた同じ fd を検査して読む。検査と読み込みの間の差し替えを防ぐ。
+    const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+    let data;
+    try {
+      const stat = fs.fstatSync(fd);
+      if (!stat.isFile() || stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o600 || stat.nlink !== 1 || stat.size > 1024 * 1024) throw new Error('unsafe pane metadata');
+      data = JSON.parse(fs.readFileSync(fd, 'utf8'));
+    } finally { fs.closeSync(fd); }
     if (!data || data.version !== 1 || !Array.isArray(data.panes)) throw new Error('invalid pane metadata');
     return data;
   } catch (error) {
     if (error.code === 'ENOENT') return { version: 1, panes: [] };
+    if (error.code === 'ELOOP') throw new Error('unsafe pane metadata');
     throw error;
   }
 }
@@ -346,6 +352,7 @@ class TmuxHolder {
     return pane;
   }
   capturePane(paneId) {
+    if (!this.active) return Promise.reject(new Error('tmux control client stopped'));
     if (!this.panes.has(paneId)) return Promise.reject(new Error('pane missing'));
     return new Promise((resolve, reject) => {
       const request = { paneId, resolve, reject, lines: [] };

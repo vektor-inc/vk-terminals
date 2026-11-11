@@ -83,6 +83,7 @@ const SEND_CHANNELS = new Set([
   'terminal:report-states',
   'terminal:save-layout',
   'terminal:restore-ready',
+  'terminal:restore-abandon',
   'terminal:pane-screen-response',
 ]);
 

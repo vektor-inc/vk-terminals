@@ -2500,7 +2500,10 @@ ipcMain.handle('terminal:restore', async () => {
     const chosen = chooseUntrackedPaneIdentity(identity.termId, new Set(ptys.keys()), usedPaneIds, nextId);
     const { id, paneId } = chosen;
     nextId = chosen.nextId;
-    if (chosen.renumbered) tmuxHolder.command(['set-option', '-w', '-t', identity.windowId, '@vk_term_id', id]);
+    if (chosen.renumbered) {
+      try { tmuxHolder.command(['set-option', '-w', '-t', identity.windowId, '@vk_term_id', id]); }
+      catch (error) { console.warn(`${LOG_PREFIX} holder pane renumber failed:`, error); }
+    }
     const pane = tmuxHolder.attachPane(identity);
     pane.beginReplay();
     registerTerminalProcess(id, pane, process.env.SHELL || '/bin/sh', { hasAgent: false });
@@ -2527,18 +2530,22 @@ ipcMain.handle('terminal:restore', async () => {
   const ids = new Set(panes.map(pane => pane.paneId));
   return { panes, order: (Array.isArray(metadata.order) ? metadata.order : []).filter(id => ids.has(id)), stashOrder: (Array.isArray(metadata.stashOrder) ? metadata.stashOrder : []).filter(id => ids.has(id)), focusedPaneId: ids.has(metadata.focusedPaneId) ? metadata.focusedPaneId : null, missing: metadataRejected && !panes.length ? -1 : missingSavedPaneCount(metadata.panes.length, matchedSavedCount), metadataLost: metadataRejected };
 });
-ipcMain.on('terminal:restore-abandon', () => {
+ipcMain.on('terminal:restore-abandon', (_event, ids) => {
   // 描画できなかったペインを管理対象から外す。保持役のシェルは次回起動まで残す。
+  const abandonedIds = new Set(Array.isArray(ids) ? ids.map(String) : []);
   for (const [id, pane] of ptys) {
-    if (!pane.isTmuxPane || !pane.pendingReplay) continue;
+    if (!pane.isTmuxPane || !pane.pendingReplay || (Array.isArray(ids) && !abandonedIds.has(id))) continue;
+    clearTimeout(pane.replay?.timer);
+    pane.replay = null;
+    pane.pendingReplay = null;
     ptys.delete(id); ptyShellExecutables.delete(id); agentGenerations.delete(id);
     agentLifecycles.delete(id); clearPaneBackgroundWork(id);
     conditionalTerminalInput.delete(id); silentWriteRefresher.delete(id);
     reportedScreenSnapshots.delete(id); restartAgentOperations.delete(id);
     tmuxHolder?.panes.delete(pane.paneId);
   }
-  restoredPaneCount = 0;
-  firstTerminalCreated = false;
+  restoredPaneCount = [...ptys.values()].filter(pane => pane.isTmuxPane).length;
+  if (!restoredPaneCount) firstTerminalCreated = false;
 });
 ipcMain.handle('terminal:create', (_event, cwd, options = {}) => createTerminalPane(cwd, options));
 

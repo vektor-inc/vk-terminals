@@ -21,6 +21,18 @@ const path = require('path');
 
 const mainSource = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
 const preloadSource = fs.readFileSync(path.join(__dirname, '..', 'preload.js'), 'utf8');
+const rendererSource = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'app.js'), 'utf8');
+
+test('renderer/app.js の send / invoke は対応する preload 許可リストに含まれる', () => {
+  for (const [method, list] of [['send', 'SEND_CHANNELS'], ['invoke', 'INVOKE_CHANNELS']]) {
+    const match = preloadSource.match(new RegExp(`const ${list} = new Set\\(\\[([\\s\\S]*?)\\]\\)`));
+    assert.ok(match, `${list} を抽出できない`);
+    const allowed = new Set([...match[1].matchAll(/'([^']+)'/g)].map(entry => entry[1]));
+    const calls = [...rendererSource.matchAll(new RegExp(`VKIpc\\.${method}\\(\\s*['\"]([^'\"]+)['\"]`, 'g'))].map(entry => entry[1]);
+    assert.ok(calls.length > 0, `${method} の呼び出しを抽出できない`);
+    assert.deepEqual(calls.filter(channel => !allowed.has(channel)), [], `${method} の許可漏れ`);
+  }
+});
 
 // main.js が ipcMain.handle(...) で登録している全チャンネル名。
 // クォートはシングル/ダブル/バッククォートのいずれでも拾う（このリポジトリには

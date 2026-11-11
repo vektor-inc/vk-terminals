@@ -7006,6 +7006,12 @@ function showRestoreWarning(missing, metadataLost = false) {
   else if (missing === -1) showGenericToast('前回のペインを戻せませんでした');
 }
 
+function classifyRenderedRestorePanes(panes, rendered) {
+  const ready = panes.filter(pane => rendered[pane.paneId]).map(pane => pane.id);
+  const abandoned = panes.filter(pane => !rendered[pane.paneId]).map(pane => pane.id);
+  return { ready, abandoned, needsInitialPane: ready.length === 0, warningCount: abandoned.length ? 1 : 0 };
+}
+
 async function initApp() {
   // エージェントルーム（issue #58）の有効/無効を main から取得（最初の render より前に確定させる）。
   try {
@@ -7082,12 +7088,17 @@ async function initApp() {
         tree.order = tree.order.filter(id => terminals[id]);
         tree.stashOrder = tree.stashOrder.filter(id => terminals[id]);
         focusedPaneId = tree.order[0] || tree.stashOrder[0] || null;
-        if (focusedPaneId) { render(); initialRenderDone = true; showGenericToast('前回のペインの一部を戻せませんでした'); }
+        if (focusedPaneId) {
+          render(); initialRenderDone = true;
+          if (classifyRenderedRestorePanes(validPanes, terminals).warningCount) showGenericToast('前回のペインの一部を戻せませんでした');
+        }
         else restored.missing = -1;
       } finally {
         if (!readyScheduled) {
-          if (Object.keys(terminals).length) VKIpc.send('terminal:restore-ready', validPanes.filter(p => terminals[p.paneId]).map(p => p.id));
-          else VKIpc.send('terminal:restore-abandon');
+          const result = classifyRenderedRestorePanes(validPanes, terminals);
+          if (result.ready.length) VKIpc.send('terminal:restore-ready', result.ready);
+          if (result.needsInitialPane) VKIpc.send('terminal:restore-abandon');
+          else if (result.abandoned.length) VKIpc.send('terminal:restore-abandon', result.abandoned);
         }
       }
       if (Object.keys(terminals).length) return;

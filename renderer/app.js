@@ -152,12 +152,26 @@ function syncInternalBrowserLayout() {
 
 function setInternalBrowserOpen(value) {
   internalBrowserOpen = value;
+  if (!value && internalBrowserSidebar.contains(document.activeElement)) document.getElementById('internal-browser-toggle')?.focus();
   if (value && !internalBrowserHasPage) {
     const notice = internalBrowserSidebar.querySelector('.internal-browser-notice');
     notice.textContent = 'ペイン内の URL・issue タイトル・PR ボタンをクリックして「アプリ内で開く」を選ぶと、ここに表示されます。';
     notice.hidden = false;
   }
   syncInternalBrowserLayout();
+}
+
+function focusInternalBrowserToolbar() {
+  const url = internalBrowserSidebar.querySelector('.internal-browser-url');
+  const reload = internalBrowserSidebar.querySelector('.internal-browser-toolbar [data-action="reload"]');
+  const focusable = element => element && !element.disabled && !element.hidden && !element.closest?.('[hidden]') && (!element.getClientRects || element.getClientRects().length > 0);
+  if (focusable(url)) url.focus();
+  else if (focusable(reload)) reload.focus();
+}
+
+function hideInternalBrowserContent(element) {
+  if (element.contains(document.activeElement)) focusInternalBrowserToolbar();
+  element.hidden = true;
 }
 
 function closeInternalBrowserChoice(focusTerminal = false) {
@@ -194,8 +208,8 @@ function showInternalBrowserChoice(url, event, origin) {
       closeInternalBrowserChoice();
       if (target === 'internal') {
         internalBrowserHasPage = true;
-        internalBrowserSidebar.querySelector('.internal-browser-notice').hidden = true;
-        internalBrowserSidebar.querySelector('.internal-browser-error').hidden = true;
+        hideInternalBrowserContent(internalBrowserSidebar.querySelector('.internal-browser-notice'));
+        hideInternalBrowserContent(internalBrowserSidebar.querySelector('.internal-browser-error'));
         setInternalBrowserOpen(true);
         VKIpc.invoke('internal-browser:open', url).catch(() => {});
       } else openExternalUrlSafe(url, { onSuccess: () => showTerminalLinkOpenedToast(url) });
@@ -281,8 +295,12 @@ window.addEventListener('resize', syncInternalBrowserLayout);
 VKIpc.on('internal-browser:state', state => {
   internalBrowserUrl = state.url || '';
   internalBrowserFailedUrl = state.failedUrl || '';
+  // 消える案内から移る前に、次の URL と再読み込みの可用性を反映する。
+  internalBrowserSidebar.querySelector('.internal-browser-url').disabled = !internalBrowserUrl;
+  internalBrowserSidebar.querySelector('.internal-browser-toolbar [data-action="reload"]').disabled = !internalBrowserHasPage;
   const errorView = internalBrowserSidebar.querySelector('.internal-browser-error');
-  errorView.hidden = !internalBrowserFailedUrl;
+  if (internalBrowserFailedUrl) errorView.hidden = false;
+  else hideInternalBrowserContent(errorView);
   let failedHost = '';
   if (internalBrowserFailedUrl) {
     try { failedHost = new URL(internalBrowserFailedUrl).hostname; } catch {}
@@ -295,6 +313,7 @@ VKIpc.on('internal-browser:state', state => {
   const notice = internalBrowserSidebar.querySelector('.internal-browser-notice');
   const github404Url = state.github404Url || '';
   if (notice.dataset.url !== github404Url) {
+    if (notice.contains(document.activeElement)) focusInternalBrowserToolbar();
     notice.dataset.url = github404Url;
     notice.dataset.dismissed = '';
     notice.replaceChildren();
@@ -304,14 +323,14 @@ VKIpc.on('internal-browser:state', state => {
       login.addEventListener('click', () => { VKIpc.invoke('internal-browser:open', 'https://github.com/login'); internalBrowserSidebar.querySelector('.internal-browser-url').focus(); });
       const close = document.createElement('button'); close.textContent = '案内を閉じる'; close.addEventListener('click', () => {
         notice.dataset.dismissed = 'true';
-        notice.hidden = true;
+        hideInternalBrowserContent(notice);
         // 案内を閉じるとページの上端が動くため、main 側の表示位置も更新する。
         syncInternalBrowserLayout();
       });
       notice.append(login, close);
     }
   }
-  if (!github404Url) notice.hidden = true;
+  if (!github404Url) hideInternalBrowserContent(notice);
   else if (notice.dataset.url === github404Url && !notice.dataset.dismissed) notice.hidden = false;
   const display = internalBrowserSidebar.querySelector('.internal-browser-url');
   display.replaceChildren();
@@ -334,7 +353,6 @@ VKIpc.on('internal-browser:state', state => {
   display.title = internalBrowserUrl || 'URL をコピー';
   display.setAttribute('aria-label', internalBrowserUrl ? `表示中の URL をコピー: ${internalBrowserUrl}` : '表示中の URL をコピー');
   display.disabled = !internalBrowserUrl;
-  internalBrowserSidebar.querySelector('[data-action="reload"]').disabled = !internalBrowserHasPage;
   internalBrowserSidebar.querySelector('[data-action="external"]').disabled = !internalBrowserUrl;
   internalBrowserSidebar.querySelector('[data-action="back"]').disabled = !state.canGoBack;
   internalBrowserSidebar.querySelector('[data-action="forward"]').disabled = !state.canGoForward;

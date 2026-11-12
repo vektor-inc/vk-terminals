@@ -4055,6 +4055,7 @@ body.pane-dragging * {
 body:has(#root.internal-browser-open):not(:has(.settings-overlay, .confirm-overlay)) .vk-toast-layer {
   right: calc(var(--vktm-internal-browser-width, 480px) + 16px);
   width: max-content;
+  /* 32px は utils/internalBrowserLayout.js の shouldWrapToastPhrase と揃える。 */
   max-width: min(320px, calc(100vw - var(--vktm-internal-browser-width, 480px) - 32px));
 }
 body:has(#root.internal-browser-open):not(:has(.settings-overlay, .confirm-overlay)) .vk-toast { max-width: min(320px, 100%); }

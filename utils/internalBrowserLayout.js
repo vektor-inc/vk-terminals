@@ -10,7 +10,7 @@
     const available = Math.max(0, Math.floor(availableWidth));
     // ペイン領域が足りないときはブラウザの操作可能な下限を優先する。
     const paneLimit = Math.min(available, Math.max(360, available - Math.max(320, Math.max(1, columns) * MIN_PANE_COLUMN_WIDTH)));
-    // 利用者の判断でトーストを左サイドバーにも重ね、画面左側に 96px を残す。
+    // トーストの置き場所として画面左側に 96px を残す。
     return Math.min(paneLimit, Math.max(0, Math.floor(windowWidth) - 96));
   }
   function clampBrowserWidth(width, availableWidth, columns = 1, windowWidth = availableWidth) {
@@ -20,6 +20,7 @@
     return Math.min(max, Math.max(360, Number.isFinite(width) ? Math.round(width) : preferred));
   }
   function shouldWrapToastPhrase(windowWidth, browserWidth) {
+    // 32 は renderer/style.css の .vk-toast-layer の max-width（左右の余白 16px × 2）と揃える。
     return windowWidth - browserWidth - 32 < 200;
   }
   return { clampBrowserWidth, browserWidthMax, shouldWrapToastPhrase, MIN_PANE_COLUMN_WIDTH };

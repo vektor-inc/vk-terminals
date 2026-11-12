@@ -18,7 +18,7 @@
 //   tmuxPath               保持役に使う tmux 実行ファイルの絶対パス
 //   verifyPaneHolder       既存サーバー接続直前と各ペイン復元直前に同期で呼ぶ確認関数
 //   paneHolderWarning      確認失敗時に表示する通知文
-//   paneHolderFallback     'node-pty'（既定）または 'error'
+//   paneHolderFallback     'node-pty'（既定）または 'error'。確認失敗時はどちらも新規ペインを作らない
 //   onPaneHolderError      保持役失敗時の通知関数 ({ reason, socket })
 //   tmuxEnv                tmux サーバーへ渡す TERMINFO / TERMINFO_DIRS
 //   getSetupStatus         セットアップ状況の一覧を出すための非同期関数。VK Orchestrator の doctor の結果

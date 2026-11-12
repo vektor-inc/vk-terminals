@@ -73,6 +73,9 @@ function normalizeEmbeddedOptions(raw) {
   if (options.paneHolder != null && options.paneHolder !== 'tmux') {
     throw new TypeError('embedded options: paneHolder must be tmux');
   }
+  for (const name of ['tmuxPath', 'verifyPaneHolder', 'paneHolderWarning', 'paneHolderFallback', 'onPaneHolderError', 'tmuxEnv']) {
+    if (options[name] != null && options.paneHolder !== 'tmux') throw new TypeError(`embedded options: ${name} requires paneHolder tmux`);
+  }
   if (options.tmuxPath != null) {
     if (options.paneHolder !== 'tmux') throw new TypeError('embedded options: tmuxPath requires paneHolder tmux');
     if (typeof options.tmuxPath !== 'string' || !path.isAbsolute(options.tmuxPath)) throw new TypeError('embedded options: tmuxPath must be an absolute path');
@@ -132,7 +135,7 @@ function normalizeEmbeddedOptions(raw) {
     paneHolder: options.paneHolder || null,
     tmuxPath: options.tmuxPath || null,
     verifyPaneHolder: options.verifyPaneHolder || null,
-    paneHolderWarning: options.paneHolderWarning || '前回のペインを確認できず、接続しませんでした',
+    paneHolderWarning: options.paneHolderWarning || '前回のペインを確認できなかったため、表示していません。ペインは裏で動いたままです。',
     paneHolderFallback: options.paneHolderFallback || 'node-pty',
     onPaneHolderError: options.onPaneHolderError || null,
     tmuxEnv: { ...tmuxEnv },

@@ -406,15 +406,22 @@ function verifyHolder(info) {
   catch (error) { console.warn(`${LOG_PREFIX} holder verification failed:`, error); return false; }
 }
 function holderFailure(error, socket) {
+  if (error.code === 'HOLDER_VERIFICATION_FAILED') {
+    blockHolderPaneCreation(error);
+    throw error;
+  }
   if (EMBEDDED_OPTIONS?.paneHolderFallback !== 'error') return;
-  holderVerificationBlocked = true;
+  blockHolderPaneCreation(error);
   const info = { reason: String(error.message || error), socket };
   try { EMBEDDED_OPTIONS.onPaneHolderError?.(info); } catch (callbackError) { console.warn(`${LOG_PREFIX} holder error callback failed:`, callbackError); }
   throw error;
 }
 let tmuxHolder = null;
 let tmuxUnavailable = false;
-let holderVerificationBlocked = false;
+let holderPaneCreationBlocked = null;
+function blockHolderPaneCreation(error) {
+  holderPaneCreationBlocked = error;
+}
 const { isHelpDocument, buildHelpLaunchCommand, createHelpStatusChecker, createGuideOpener } = require('./utils/helpFeature');
 const HELP_FEATURE = EMBEDDED_OPTIONS && EMBEDDED_OPTIONS.help;
 const checkHelpStatus = HELP_FEATURE ? createHelpStatusChecker(EMBEDDED_OPTIONS.getHelpStatus) : null;
@@ -1902,6 +1909,7 @@ ipcMain.handle('app:get-config', () => {
     tasksFile,
     commandsFile,
     paneHolderEnabled: PANE_HOLDER === 'tmux',
+    paneHolderWarning: EMBEDDED_OPTIONS?.paneHolderWarning || null,
     // 一覧を出す部品があるときだけキーを足す（無いときは従来と同じ応答のまま）。
     ...(HELP_FEATURE ? { helpEntryEnabled: true } : {}),
     ...(SETUP_FEATURE ? { setupPanelEnabled: true } : {}),
@@ -2594,7 +2602,7 @@ ipcMain.handle('terminal:restore', async () => {
     console.warn(`${LOG_PREFIX} holder restore failed:`, error);
     // 保持役の生成失敗を初期ペイン作成時に繰り返して起動を止めない。
     if (!tmuxHolder) tmuxUnavailable = true;
-    if (error.code === 'HOLDER_VERIFICATION_FAILED') holderVerificationBlocked = true;
+    if (error.code === 'HOLDER_VERIFICATION_FAILED') blockHolderPaneCreation(error);
     const socket = tmuxHolder?.socket || path.join(process.env.VK_TERMINALS_HOLDER_RUN_DIR || path.join(os.homedir(), '.vk-terminals', 'run'), 'tmux.sock');
     if (error.code !== 'HOLDER_VERIFICATION_FAILED') holderFailure(error, socket);
     const missing = hasRecentHolderMetadata(socket) ? -1 : 0;
@@ -2609,7 +2617,7 @@ ipcMain.handle('terminal:restore', async () => {
     if (!saved || !/^\d+$/.test(String(saved.termId)) || !/^pane-\d+$/.test(saved.paneId) || !/^%\d+$/.test(saved.tmuxPaneId)) continue;
     const identity = live.get(saved.tmuxPaneId);
     if (!identity || identity.termId !== saved.termId || ptys.has(saved.termId)) continue;
-    if (!verifyHolder({ stage: 'restore', tmuxPath: HOLDER_TMUX, socket: tmuxHolder.socket, paneId: identity.paneId })) { holderWarning = true; rejectedPaneIds.add(identity.paneId); holderVerificationBlocked = true; continue; }
+    if (!verifyHolder({ stage: 'restore', tmuxPath: HOLDER_TMUX, socket: tmuxHolder.socket, paneId: identity.paneId })) { holderWarning = true; rejectedPaneIds.add(identity.paneId); blockHolderPaneCreation(Object.assign(new Error('tmux holder verification failed'), { code: 'HOLDER_VERIFICATION_FAILED' })); continue; }
     const pane = tmuxHolder.attachPane(identity);
     pane.beginReplay();
     const id = String(saved.termId);
@@ -2627,6 +2635,7 @@ ipcMain.handle('terminal:restore', async () => {
   // 保存後に増えた生存ペインも作業を失わないよう既定名で末尾へ戻す。
   for (const identity of live.values()) {
     if (restoredIds.has(identity.paneId) || rejectedPaneIds.has(identity.paneId) || !/^\d+$/.test(String(identity.termId))) continue;
+    if (!verifyHolder({ stage: 'restore', tmuxPath: HOLDER_TMUX, socket: tmuxHolder.socket, paneId: identity.paneId })) { holderWarning = true; rejectedPaneIds.add(identity.paneId); blockHolderPaneCreation(Object.assign(new Error('tmux holder verification failed'), { code: 'HOLDER_VERIFICATION_FAILED' })); continue; }
     const chosen = chooseUntrackedPaneIdentity(identity.termId, new Set(ptys.keys()), usedPaneIds, nextId);
     const { id, paneId } = chosen;
     nextId = chosen.nextId;
@@ -2634,7 +2643,6 @@ ipcMain.handle('terminal:restore', async () => {
       try { tmuxHolder.command(['set-option', '-w', '-t', identity.windowId, '@vk_term_id', id]); }
       catch (error) { console.warn(`${LOG_PREFIX} holder pane renumber failed:`, error); }
     }
-    if (!verifyHolder({ stage: 'restore', tmuxPath: HOLDER_TMUX, socket: tmuxHolder.socket, paneId: identity.paneId })) { holderWarning = true; continue; }
     const pane = tmuxHolder.attachPane(identity);
     pane.beginReplay();
     const agent = resolveHolderPaneAgent(identity);
@@ -2785,7 +2793,7 @@ function createTerminalPane(cwd, options = {}, guide = null) {
 
   let ptyProcess;
   try {
-    if (holderVerificationBlocked) throw new Error('tmux holder verification failed');
+    if (holderPaneCreationBlocked) throw holderPaneCreationBlocked;
     if (tmuxHolder && !tmuxHolder.active) tmuxHolder = null;
     if (PANE_HOLDER === 'tmux' && !tmuxHolder && !tmuxUnavailable) {
       try { tmuxHolder = new TmuxHolder(holderOptions()); }

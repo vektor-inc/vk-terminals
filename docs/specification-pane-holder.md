@@ -2,11 +2,11 @@
 
 ## 起動
 
-組み込み起動では `paneHolder: 'tmux'` とともに `tmuxPath` に実行可能な通常ファイルの絶対パスを指定できる。シンボリックリンクは不可。指定すると版確認、制御接続、コマンド、停止処理に同じファイルを使い、PATH で探し直さない。`tmuxEnv` は `TERMINFO` と `TERMINFO_DIRS` の文字列だけを tmux サーバー環境に追加できる。NUL・改行を含む値は不可。
+組み込み起動では `paneHolder: 'tmux'` とともに `tmuxPath` に実行可能な通常ファイルの絶対パスを指定できる。シンボリックリンクは不可。指定すると版確認、制御接続、コマンド、停止処理に同じファイルを使い、PATH で探し直さない。`tmuxEnv` は `TERMINFO` と `TERMINFO_DIRS` の文字列だけを tmux サーバー環境に追加できる。`tmuxPath`・`verifyPaneHolder`・`paneHolderWarning`・`paneHolderFallback`・`onPaneHolderError`・`tmuxEnv` は `paneHolder: 'tmux'` とともに指定する。NUL・改行を含む値は不可。
 
-`verifyPaneHolder(info)` は同期関数で、既存保持役へ制御接続する直前に `{ stage: 'attach', tmuxPath, socket, paneId: null }`、各ペインを復元する直前に `{ stage: 'restore', tmuxPath, socket, paneId }` を渡す。`true` 以外の戻り値と例外は失敗とし、対象ペインは接続しない。確認失敗は `paneHolderWarning`（既定は「前回のペインを確認できず、接続しませんでした」）で操作を止めない通知を出す。attach 段階の失敗では既存ペインを一つも復元せず、新規ペインの作成も止める。
+`verifyPaneHolder(info)` は同期関数で、既存保持役へ制御接続する直前に `{ stage: 'attach', tmuxPath, socket, paneId: null }`、各ペインを復元する直前に `{ stage: 'restore', tmuxPath, socket, paneId }` を渡す。`true` 以外の戻り値と例外は失敗とし、対象ペインは接続しない。確認失敗は `paneHolderWarning`（既定は「前回のペインを確認できなかったため、表示していません。ペインは裏で動いたままです。」）で操作を止めない通知を出す。attach 段階・restore 段階のどちらで失敗しても、その起動中は新しいペインを tmux にも node-pty にも作らない。全ペインが拒否された場合も空の画面に警告と終了案内を表示する。警告は閉じるまで表示する。
 
-保持役の初期化またはペイン作成に失敗したときの `paneHolderFallback` は `'node-pty'`（既定）または `'error'`。`'error'` では切り替えず、`onPaneHolderError({ reason, socket })` を呼んでペイン作成を失敗として扱う。確認関数と失敗通知関数は既存の同期処理に合わせて同期で呼ぶ。
+保持役の初期化またはペイン作成に失敗したときの `paneHolderFallback` は `'node-pty'`（既定）または `'error'`。`'error'` では切り替えず、`onPaneHolderError({ reason, socket })` を呼んでペイン作成を失敗として扱う。`'error'` の失敗では元の理由を保持し、アプリを再起動するまで新しいペインの作成を止める。確認失敗では `paneHolderFallback` の値にかかわらず作成を止める。確認関数と失敗通知関数は既存の同期処理に合わせて同期で呼ぶ。
 
 `--pane-holder=tmux` または `embedded.start({ paneHolder: 'tmux' })` で有効になる。未指定・不正な CLI 値は node-pty を使う。組み込みオプションの不正値は例外にする。設定画面の項目には加えない。tmux 3.0 未満、バージョン不明、その他の保持役の初期化失敗時は、原因とソケットのパスを一度だけ警告し、そのアプリの起動中は再試行せず node-pty を使う。制御モードの接続が後から落ちた場合は、次のペイン作成時に保持役を作り直す。
 
@@ -14,7 +14,7 @@
 
 アプリごとに tmux 制御モードのクライアントを 1 本持つ。`%output` の 8 進エスケープをバイト列へ戻し、既存の `onData` 処理へ渡す。入力は制御クライアントの標準入力へ分割した `send-keys -H`、サイズ変更は `resize-window`。制御応答は送信した命令ごとに FIFO で対応付け、接続直後の応答は命令の応答に数えない。各ペインの `#{pane_pid}` をシェル PID として使う。画面の端末問い合わせへの応答は tmux に重複送信しない。Claude Code / Codex の起動コマンドからだけ `TMUX` と `TMUX_PANE` を外す。
 
-制御モードの初期セッションには保持役用の `sleep` ペインを置く。アプリ終了時は制御クライアントだけを切断し、tmux のシェルは動かし続ける。個別のペインを閉じると、そのシェルを止める。保持役ごと止める `stopHolder` は本人専用ソケットを検査し、`-S` を指定して `kill-server` を実行する。ソケットが無い場合や検査に失敗した場合は何もしない。
+制御モードの初期セッションには保持役用の `sleep` ペインを置く。アプリ終了時は制御クライアントだけを切断し、tmux のシェルは動かし続ける。個別のペインを閉じると、そのシェルを止める。保持役ごと止める `stopHolder` は本人専用ソケットを検査し、`-S` を指定して `kill-server` を実行する。ソケットが無い場合や検査に失敗した場合は何もしない。組み込み側は `stopHolder` に `tmuxPath` と環境を必ず渡す。
 
 ## 環境とソケット
 

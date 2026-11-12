@@ -18,18 +18,24 @@ test('指定した tmux だけを版確認・コマンド・停止に使う', t 
   const log = path.join(dir, 'calls');
   const wrapper = path.join(dir, 'selected-tmux');
   fs.writeFileSync(wrapper, `#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\nexec '${realTmux}' "$@"\n`, { mode: 0o700 });
-  fs.writeFileSync(path.join(fakeDir, 'tmux'), '#!/bin/sh\nexit 99\n', { mode: 0o700 });
+  const wrongTmuxMarker = path.join(dir, 'wrong-tmux');
+  fs.writeFileSync(path.join(fakeDir, 'tmux'), `#!/bin/sh\ntouch '${wrongTmuxMarker}'\nexit 99\n`, { mode: 0o700 });
   const env = { HOME: dir, PATH: fakeDir + path.delimiter + (process.env.PATH || ''), VK_TERMINALS_HOLDER_RUN_DIR: dir };
   let holder;
   try {
     holder = new TmuxHolder({ env, home: dir, tmux: wrapper });
     holder.command(['list-sessions']);
     holder.disconnect();
+    holder = new TmuxHolder({ env, home: dir, tmux: wrapper });
+    holder.disconnect();
     assert.equal(stopHolder(holder.socket, wrapper, env), true);
     const calls = fs.readFileSync(log, 'utf8');
     assert.match(calls, /-V/);
     assert.match(calls, /list-sessions/);
     assert.match(calls, /kill-server/);
+    assert.match(calls, /new-session/);
+    assert.match(calls, /-C attach-session/);
+    assert.equal(fs.existsSync(wrongTmuxMarker), false);
   } finally {
     try { holder?.disconnect(); } catch (_) {}
     fs.rmSync(dir, { recursive: true, force: true });
@@ -520,4 +526,62 @@ test('tmux 実物: 画面サイズへ合わせた後の履歴とカーソルを�
     try { if (holder) stopHolder(holder.socket, tmux, env); } catch (_) {}
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+
+test('確認失敗は fallback に関係なく作成を止め、error は元の理由を通知して保持する', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+  const start = source.indexOf('function holderFailure(');
+  const end = source.indexOf('const { isHelpDocument', start);
+  const block = source.slice(start, end);
+  for (const fallback of ['node-pty', 'error']) {
+    const notices = [];
+    const context = { EMBEDDED_OPTIONS: { paneHolderFallback: fallback, onPaneHolderError: info => notices.push(info) }, console, LOG_PREFIX: 'test' };
+    vm.runInNewContext(block, context);
+    const verification = Object.assign(new Error('untrusted tmux'), { code: 'HOLDER_VERIFICATION_FAILED' });
+    assert.throws(() => vm.runInNewContext('holderFailure(verification, "/tmp/socket")', { ...context, verification }), /untrusted tmux/);
+    assert.equal(vm.runInNewContext('holderPaneCreationBlocked.message', context), 'untrusted tmux');
+    assert.equal(notices.length, 0);
+  }
+  const notices = [];
+  const context = { EMBEDDED_OPTIONS: { paneHolderFallback: 'error', onPaneHolderError: info => notices.push(info) }, console, LOG_PREFIX: 'test' };
+  vm.runInNewContext(block, context);
+  const failure = new Error('create failed');
+  assert.throws(() => vm.runInNewContext('holderFailure(failure, "/tmp/socket")', { ...context, failure }), /create failed/);
+  assert.equal(vm.runInNewContext('holderPaneCreationBlocked.message', context), 'create failed');
+  assert.equal(notices[0].reason, 'create failed');
+  assert.equal(notices[0].socket, '/tmp/socket');
+});
+
+test('復元確認は未追跡ペインの採番や書換えより前で、拒否後の作成も止める', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+  const loop = source.slice(source.indexOf('  for (const identity of live.values())'), source.indexOf('  // 全生存ペインの登録を終えてから復元する。'));
+  assert.ok(loop.indexOf('verifyHolder(') < loop.indexOf('chooseUntrackedPaneIdentity('));
+  assert.ok(loop.indexOf('verifyHolder(') < loop.indexOf("tmuxHolder.command(['set-option'"));
+  assert.match(loop, /rejectedPaneIds\.add\(identity\.paneId\); blockHolderPaneCreation/);
+  const creation = source.slice(source.indexOf('function createTerminalPane('), source.indexOf('function createTerminalPane(') + 10000);
+  assert.ok(creation.indexOf('if (holderPaneCreationBlocked) throw holderPaneCreationBlocked;') < creation.indexOf('new TmuxHolder(holderOptions())'));
+  assert.ok(creation.indexOf('if (holderPaneCreationBlocked) throw holderPaneCreationBlocked;') < creation.indexOf('pty.spawn(shell'));
+});
+
+
+test('ペイン単位の復元確認失敗は接続せず、警告を返す', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+  const restore = source.slice(source.indexOf("ipcMain.handle('terminal:restore'"), source.indexOf("ipcMain.on('terminal:restore-abandon'"));
+  const saved = restore.slice(restore.indexOf('  for (const saved of metadata.panes)'), restore.indexOf('  const matchedSavedCount'));
+  const untracked = restore.slice(restore.indexOf('  for (const identity of live.values())'), restore.indexOf('  // 全生存ペインの登録を終えてから復元する。'));
+  for (const loop of [saved, untracked]) {
+    assert.ok(loop.indexOf('verifyHolder(') < loop.indexOf('tmuxHolder.attachPane(identity)'));
+    assert.match(loop, /holderWarning = true; rejectedPaneIds.add\(identity.paneId\); blockHolderPaneCreation/);
+  }
+  assert.match(restore, /holderWarning: holderWarning \? EMBEDDED_OPTIONS\?\.paneHolderWarning : null/);
+});
+
+test('接続停止後の再生成で確認失敗したら node-pty に進まない', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+  const create = source.slice(source.indexOf('function createTerminalPane('), source.indexOf("ipcMain.handle('terminal:split'"));
+  assert.ok(create.indexOf('if (tmuxHolder && !tmuxHolder.active) tmuxHolder = null;') < create.indexOf('new TmuxHolder(holderOptions())'));
+  assert.ok(create.indexOf('holderFailure(error, path.join(') < create.indexOf('if (!ptyProcess) ptyProcess = pty.spawn('));
+  const failure = source.slice(source.indexOf('function holderFailure('), source.indexOf('let tmuxHolder ='));
+  assert.ok(failure.indexOf("error.code === 'HOLDER_VERIFICATION_FAILED'") < failure.indexOf("paneHolderFallback !== 'error'"));
 });

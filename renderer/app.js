@@ -1098,6 +1098,7 @@ function externalUrlToastShouldHoldOpen() {
 // 更新したあと必ずこれを呼ぶ。
 function reconsiderExternalUrlToastTimer() {
   clearExternalUrlToastTimer();
+  if (externalUrlToastEl?.dataset.persistent === 'true') return;
   if (externalUrlToastShouldHoldOpen()) return;
   externalUrlToastDismissTimer = setTimeout(() => {
     hideExternalUrlToast();
@@ -1106,7 +1107,7 @@ function reconsiderExternalUrlToastTimer() {
 
 function hideExternalUrlToast() {
   clearExternalUrlToastTimer();
-  if (externalUrlToastEl) externalUrlToastEl.hidden = true;
+  if (externalUrlToastEl) { externalUrlToastEl.hidden = true; delete externalUrlToastEl.dataset.persistent; }
   externalUrlToastCopyUrl = '';
   // 非表示にする瞬間、ポインタがまだ乗っている／フォーカスが中にある状態でも
   // mouseleave / focusout が必ず飛んでくるとは限らない（display:none 化や、成功時に
@@ -1184,6 +1185,13 @@ function ensureExternalUrlToast() {
     setExternalUrlToastMessage(ok ? 'URLをコピーしました' : 'コピーできませんでした');
   });
   toast.appendChild(copyButton);
+  const closeButton = document.createElement('button');
+  closeButton.type = 'button';
+  closeButton.className = 'vk-toast-copy vk-toast-close';
+  closeButton.textContent = '閉じる';
+  closeButton.hidden = true;
+  closeButton.addEventListener('click', hideExternalUrlToast);
+  toast.appendChild(closeButton);
 
   toast.addEventListener('mouseenter', () => {
     externalUrlToastHovered = true;
@@ -1244,6 +1252,9 @@ function showExternalUrlOpenFailedToast(url) {
   toast.classList.remove('vk-toast--success');
   const copyButton = toast.querySelector('.vk-toast-copy');
   if (copyButton) copyButton.hidden = false;
+  const closeButton = toast.querySelector('.vk-toast-close');
+  if (closeButton) closeButton.hidden = true;
+  delete toast.dataset.persistent;
   // コピーボタンを持つため、クリックを透過させない（上の setExternalUrlToastInteractive
   // のコメント参照）。
   setExternalUrlToastInteractive(toast, true);
@@ -1258,15 +1269,19 @@ function showExternalUrlOpenFailedToast(url) {
 // インフラ（issue #326）を再利用し、URL コピー専用のボタンだけ隠す。「呼び出し箇所ごとに
 // 吹き出しを出さない」という汎用トーストの設計方針（冒頭コメント参照）どおり、新しい
 // トースト実装は増やさない。
-function showGenericToast(message, variant = 'default') {
+function showGenericToast(message, variant = 'default', { persistent = false } = {}) {
   const toast = ensureExternalUrlToast();
   if (!toast) return;
   toast.classList.toggle('vk-toast--success', variant === 'success');
   const copyButton = toast.querySelector('.vk-toast-copy');
   if (copyButton) copyButton.hidden = true;
+  const closeButton = toast.querySelector('.vk-toast-close');
+  if (closeButton) closeButton.hidden = !persistent;
+  if (persistent) toast.dataset.persistent = 'true';
+  else delete toast.dataset.persistent;
   // 操作できる部品が無いため、クリックを下（ターミナル等）へ透過させる（上の
   // setExternalUrlToastInteractive のコメント参照。issue #385 レビュー指摘）。
-  setExternalUrlToastInteractive(toast, false);
+  setExternalUrlToastInteractive(toast, persistent);
   externalUrlToastCopyUrl = '';
   setExternalUrlToastMessage(message);
   toast.hidden = false;
@@ -3032,7 +3047,11 @@ async function openHelpGuide() {
 //   - options.noClaude が指定されていればそのまま main に渡す。未指定なら main 側のグローバル設定に従う。
 async function addPane(overrideCwd = null, options = {}) {
   const newPaneId = newId();
-  await createTerminal(newPaneId, overrideCwd || null, options);
+  try { await createTerminal(newPaneId, overrideCwd || null, options); }
+  catch (error) {
+    showGenericToast(configuredPaneHolderWarning || '新しいペインを作れません。' + (error.message || ''), 'default', { persistent: true });
+    return null;
+  }
 
   if (!Array.isArray(tree.order)) tree.order = [];
   tree.order.push(newPaneId);
@@ -3775,11 +3794,11 @@ function renderEmptyGrid() {
 
   const title = document.createElement('div');
   title.className = 'grid-empty-title';
-  title.textContent = 'すべてのペインを格納中です';
+  title.textContent = holderPaneCreationWarning ? '新しいペインを作れません' : 'すべてのペインを格納中です';
 
   const desc = document.createElement('div');
   desc.className = 'grid-empty-desc';
-  desc.textContent = 'グリッドに表示するペインがありません。新規ペインを追加するか、サイドバーから格納したペインを戻してください。';
+  desc.textContent = holderPaneCreationWarning ? `${holderPaneCreationWarning} アプリを終了してください。` : 'グリッドに表示するペインがありません。新規ペインを追加するか、サイドバーから格納したペインを戻してください。';
 
   const actions = document.createElement('div');
   actions.className = 'grid-empty-actions';
@@ -3817,8 +3836,8 @@ function renderEmptyGrid() {
   openBtn.setAttribute('aria-label', 'サイドバーを開いて格納したペインを戻す');
   openBtn.addEventListener('click', () => setSidebarOpen(true, { focusFirst: true }));
 
-  actions.appendChild(addBtn);
-  actions.appendChild(openBtn);
+  if (!holderPaneCreationWarning) actions.appendChild(addBtn);
+  if (!holderPaneCreationWarning) actions.appendChild(openBtn);
   box.appendChild(title);
   box.appendChild(desc);
   box.appendChild(actions);
@@ -7006,6 +7025,9 @@ function showRestoreWarning(missing, metadataLost = false) {
   else if (missing === -1) showGenericToast('前回のペインを戻せませんでした');
 }
 
+let holderPaneCreationWarning = '';
+let configuredPaneHolderWarning = '';
+
 function classifyRenderedRestorePanes(panes, rendered) {
   const ready = panes.filter(pane => rendered[pane.paneId]).map(pane => pane.id);
   const abandoned = panes.filter(pane => !rendered[pane.paneId]).map(pane => pane.id);
@@ -7018,6 +7040,7 @@ async function initApp() {
     const cfg = await VKIpc.invoke('app:get-config');
     agentRoomEnabled = !!(cfg && cfg.agentroom);
     paneHolderEnabled = !!(cfg && cfg.paneHolderEnabled);
+    configuredPaneHolderWarning = cfg?.paneHolderWarning || '';
     newPaneStartupDir = (cfg && typeof cfg.newPaneStartupDir === 'string') ? cfg.newPaneStartupDir : '';
     newPaneAutoLaunchClaude = !!(cfg && cfg.newPaneAutoLaunchClaude);
     // main 側で検証済みの値。取得失敗・欠落時は従来どおり Claude Code のまま。
@@ -7081,7 +7104,7 @@ async function initApp() {
         VKIpc.send('terminal:restore-ready', validPanes.map(p => ({ id: p.id, cols: terminals[p.paneId].term.cols, rows: terminals[p.paneId].term.rows })));
       });
       readyScheduled = true;
-      if (restored.holderWarning) showGenericToast(restored.holderWarning);
+      if (restored.holderWarning) showGenericToast(restored.holderWarning, 'default', { persistent: true });
       else showRestoreWarning(restored.missing, restored.metadataLost);
       } catch (error) {
         console.warn('pane restore rendering failed', error);
@@ -7104,7 +7127,10 @@ async function initApp() {
       }
       if (Object.keys(terminals).length) return;
     }
-    if (restored?.holderWarning) showGenericToast(restored.holderWarning);
+    if (restored?.holderWarning) {
+      holderPaneCreationWarning = restored.holderWarning;
+      showGenericToast(restored.holderWarning, 'default', { persistent: true });
+    }
     else showRestoreWarning(restored?.missing);
   }
 
@@ -7153,11 +7179,24 @@ async function initApp() {
   try {
     await createTerminal(paneId, newPaneStartupDir || null, initialPaneOptions);
   } catch (error) {
-    if (!openAsSetupPane) throw error;
+    if (!openAsSetupPane || holderPaneCreationWarning) {
+      holderPaneCreationWarning ||= configuredPaneHolderWarning || '保持役を確認できないため、新しいペインを作れません。';
+      tree.order = [];
+      render();
+      initialRenderDone = true;
+      return;
+    }
     // 記録は書き終えているので、ここで失敗を残す。起動は通常のペインで続ける。
     console.error('failed to open the setup pane at startup; opening a normal pane instead', error);
     openedAsSetupPane = false;
-    await createTerminal(paneId, newPaneStartupDir || null, normalPaneOptions);
+    try { await createTerminal(paneId, newPaneStartupDir || null, normalPaneOptions); }
+    catch (retryError) {
+      holderPaneCreationWarning ||= '新しいペインを作れません。';
+      tree.order = [];
+      render();
+      initialRenderDone = true;
+      return;
+    }
   }
   focusedPaneId = paneId;
   if (openedAsSetupPane) {

@@ -44,7 +44,7 @@ test('normalizeEmbeddedOptions: 未指定は既定値（自己更新は未指定
     paneHolder: null,
     tmuxPath: null,
     verifyPaneHolder: null,
-    paneHolderWarning: '前回のペインを確認できず、接続しませんでした',
+    paneHolderWarning: '前回のペインを確認できなかったため、表示していません。ペインは裏で動いたままです。',
     paneHolderFallback: 'node-pty',
     onPaneHolderError: null,
     tmuxEnv: {},
@@ -65,7 +65,9 @@ test('組み込み保持役の実行ファイル、環境、確認関数を検�
     assert.equal(options.paneHolderFallback, 'error');
     assert.deepEqual(options.tmuxEnv, { TERMINFO_DIRS: '/tmp/terminfo' });
     for (const bad of [link, dir, '/missing/tmux', 'relative/tmux']) assert.throws(() => normalizeEmbeddedOptions({ paneHolder: 'tmux', tmuxPath: bad }), TypeError);
-    assert.throws(() => normalizeEmbeddedOptions({ tmuxPath: tmux }), TypeError);
+    for (const [key, value] of Object.entries({ tmuxPath: tmux, verifyPaneHolder: verify, paneHolderWarning: 'warning', paneHolderFallback: 'error', onPaneHolderError: () => {}, tmuxEnv: {} })) {
+      assert.throws(() => normalizeEmbeddedOptions({ [key]: value }), TypeError, key);
+    }
     assert.throws(() => normalizeEmbeddedOptions({ paneHolder: 'tmux', tmuxEnv: { SECRET: 'x' } }), TypeError);
     assert.throws(() => normalizeEmbeddedOptions({ paneHolder: 'tmux', tmuxEnv: { TERMINFO: 'a\nb' } }), TypeError);
     assert.throws(() => normalizeEmbeddedOptions({ paneHolder: 'tmux', verifyPaneHolder: true }), TypeError);

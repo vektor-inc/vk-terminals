@@ -1,6 +1,6 @@
 # Changelog
 
-- [ 機能追加 ] 組み込み起動で tmux の実行ファイルを指定し、既存ペインの確認と保持役失敗時の切り替えを制御できる機能を追加（[#594](https://github.com/vektor-inc/vk-terminals/issues/594)）
+- [ 機能追加 ] 組み込み起動で tmux の実行ファイルを指定し、既存ペインの確認と保持役失敗時の切り替えを制御し、確認失敗時は新規作成を止めて案内する機能を追加（[#594](https://github.com/vektor-inc/vk-terminals/issues/594)）
 
 ## 1.98.0
 

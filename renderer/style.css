@@ -1548,6 +1548,8 @@ body:has(.confirm-overlay) .vk-toast-layer {
  * （.term-link-tooltip と同じ判断）。 */
 .vk-toast-message {
   margin: 0;
+  /* 日本語を語の途中で割らず、長い URL は箱の内側で折り返す。 */
+  word-break: auto-phrase;
   overflow-wrap: anywhere;
 }
 .vk-toast-button {
@@ -2514,12 +2516,16 @@ button.sidebar-section-header:hover {
   margin-bottom: 8px;
   font-size: 15px;
   font-weight: 600;
+  /* 日本語を文節の切れ目で折り返し、語の途中で割れないようにする。 */
+  word-break: auto-phrase;
 }
 .grid-empty-desc {
   margin-bottom: 20px;
-  color: #8b949e;
+  color: #9da5b0;
   font-size: 13px;
   line-height: 1.6;
+  /* 日本語を文節の切れ目で折り返し、語の途中で割れないようにする。 */
+  word-break: auto-phrase;
 }
 .grid-empty-actions {
   display: flex;

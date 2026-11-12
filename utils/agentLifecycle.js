@@ -307,6 +307,52 @@ function createAgentLifecycleStore(options = {}) {
       schedule(id, entry);
       return true;
     },
+    // アプリの再起動後に、保持役のペインのシェル（#{pane_pid}）から AI 本体の生死の記録を作り直す。
+    // 保存した PID と起動時刻が残っていればそれだけを、無ければシェルの前面のプロセスグループを採る。
+    // 前回のプロンプトフックの合図は分からないため、完了の合図は受け取り済みとして扱い、
+    // 追跡中のプロセスが消えたら次の確認で終了と判断する（後継のグループは取り込まない）。
+    restore(termId, generation, shellPid, processes, savedIdentities = []) {
+      const id = String(termId);
+      const entry = states.get(id);
+      if (!entry || entry.generation !== generation || closed || !processes || !Number.isSafeInteger(shellPid)) return false;
+      const shell = processes.get(shellPid);
+      if (!shell) return false;
+      const alive = (process) => process && !/^[ZX]/.test(process.stat) && process.pid !== shell.pid &&
+        process.pgid !== shell.pgid && isDescendant(processes, process.pid, shell.pid, shell.lstart);
+      let members;
+      if (savedIdentities.length > 0) {
+        members = savedIdentities.map(([pid, lstart]) => processes.get(pid)).filter((process, index) =>
+          alive(process) && isSameProcessStart(process.lstart, savedIdentities[index][1]));
+      } else {
+        const candidate = shell.tpgid;
+        members = Number.isSafeInteger(candidate) && candidate > 0 && candidate !== shell.pgid
+          ? [...processes.values()].filter((process) => process.pgid === candidate && alive(process))
+          : [];
+        if (!members.some((process) => process.ppid === shell.pid)) members = [];
+      }
+      if (members.length === 0) return false;
+      const trackedGroups = new Map();
+      for (const process of members) {
+        if (!trackedGroups.has(process.pgid)) trackedGroups.set(process.pgid, new Map());
+        trackedGroups.get(process.pgid).set(process.pid, process.lstart);
+      }
+      const baselineIdentities = new Map();
+      const baselinePgids = new Set();
+      for (const process of processes.values()) {
+        if (trackedGroups.has(process.pgid)) continue;
+        baselinePgids.add(process.pgid);
+        baselineIdentities.set(process.pid, process.lstart);
+      }
+      Object.assign(entry, { shellPid, shellLstart: shell.lstart, trackedGroups, baselinePgids, baselineIdentities, marker: null, markerBuffer: '', completionReceived: true, acquisitionOpen: false, acquisitionTimer: null, readyResolve: null, readyTimer: null, activated: true, state: 'running' });
+      schedule(id, entry);
+      return true;
+    },
+    // 次の起動で記録を作り直せるよう、追跡中の AI 本体の PID と起動時刻を返す。
+    trackedIdentities(termId, generation) {
+      const entry = states.get(String(termId));
+      if (!entry || entry.generation !== generation || entry.state !== 'running' || !entry.trackedGroups) return [];
+      return [...entry.trackedGroups.values()].flatMap((identities) => [...identities]);
+    },
     cancelPending(termId, generation) {
       return this.initialize(termId, generation);
     },

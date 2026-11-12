@@ -21,8 +21,8 @@
 //   reason: 固定入口が受理しない理由と、現時点で除外している判断
 //   alternative: 代替になりうる固定入口の操作（無ければ null）
 
-// 写した時点の vk-agents のコミット（git -C <vk-agents> rev-parse --short HEAD）。
-const SNAPSHOT_VK_AGENTS_COMMIT = '20309b60';
+// 写した時点の vk-agents のコミット（手元の clone の HEAD）。
+const SNAPSHOT_VK_AGENTS_COMMIT = '0d2c032bbd3e60dc0f1ebc157cb922ac8c70cf23';
 
 const SHA_A = 'abc1234def5678abc1234def5678abc1234def56';
 const SHA_B = '0123456789abcdef0123456789abcdef01234567';
@@ -33,15 +33,18 @@ const MEMBER_RUN_ID = 'a'.repeat(24);
 
 const requiredOperations = [
   // ── 事前準備・issue の分析 ──
-  { procedureOperation: 'gh-read.sh issue-view', source: 'codex/vk-kore/step-1-2.md:38', argv: ['gh', 'issue', 'view', '523', '--json', 'title,body,labels,assignees,comments'], expected: { bin: 'gh', args: ['issue', 'view', '523', '--json', 'title,body,labels,assignees,comments'] }, explicitRepo: true },
+  { procedureOperation: 'gh-read.sh issue-view', source: 'codex/vk-kore/step-1-2.md:40', argv: ['gh', 'issue', 'view', '523', '--json', 'title,body,labels,assignees,comments'], expected: { bin: 'gh', args: ['issue', 'view', '523', '--json', 'title,body,labels,assignees,comments'] }, explicitRepo: true },
   { procedureOperation: 'gh-read.sh issue-view', source: 'codex/vk-kore/step-2-1-split-into-sub-issues.md:27', argv: ['gh', 'issue', 'view', '518', '--json', 'assignees'], expected: { bin: 'gh', args: ['issue', 'view', '518', '--json', 'assignees'] }, explicitRepo: true },
   { procedureOperation: 'gh-read.sh issue-comments', source: 'codex/vk-kore/step-1-2.md:13', argv: ['gh', 'issue', 'view', '523', '--comments'], expected: { bin: 'gh', args: ['issue', 'view', '523', '--comments'] }, explicitRepo: true },
   { procedureOperation: 'gh-read.sh pr-comments', source: 'codex/vk-kore/step-1-2.md:13', argv: ['gh', 'pr', 'view', '529', '--comments'], expected: { bin: 'gh', args: ['pr', 'view', '529', '--comments'] }, explicitRepo: true },
   { procedureOperation: 'gh-read.sh issue-labels', source: 'codex/vk-kore/step-1-2.md:13', argv: ['gh', 'issue', 'view', '523', '--json', 'labels'], expected: { bin: 'gh', args: ['issue', 'view', '523', '--json', 'labels'] }, explicitRepo: true },
-  { procedureOperation: 'gh-read.sh issue-assets', source: 'codex/vk-kore/step-1-2.md:39', argv: ['gh', 'issue', 'save-image', ATTACHMENT_URL, '--out', 'asset-1.png'], expected: { bin: 'gh', operation: 'issue-image-save' }, explicitRepo: false },
+  { procedureOperation: 'gh-read.sh issue-assets', source: 'codex/vk-kore/step-1-2.md:41', argv: ['gh', 'issue', 'save-image', ATTACHMENT_URL, '--out', 'asset-1.png'], expected: { bin: 'gh', operation: 'issue-image-save' }, explicitRepo: false },
   { procedureOperation: 'repo-prepare.sh issue-worktree', source: 'codex/vk-kore/step-1-2.md:26', argv: ['prepare', 'worktree', 'main', '523', WORK_BRANCH, 'codex-1'], expected: { operation: 'prepare-worktree' }, explicitRepo: false },
   { procedureOperation: 'repo-prepare.sh issue-worktree-adopt', source: 'codex/vk-kore/step-1-2.md:25', argv: ['prepare', 'adopt-worktree', 'main', '523', WORK_BRANCH, 'codex-1'], expected: { operation: 'prepare-adopt-worktree' }, explicitRepo: false },
   { procedureOperation: 'git status', source: 'codex/vk-kore/step-3-7-implementation-and-pr.md:29', argv: ['git', 'status', '--porcelain'], expected: { bin: 'git', gitSubcommand: 'status' }, explicitRepo: false },
+
+  // ── 既存 PR の再開 ──
+  { procedureOperation: 'git add', source: 'codex/vk-kore/guide-resume-pr.md:35', argv: ['git', 'add', '--', 'src/example.js'], expected: { bin: 'git', gitSubcommand: 'add' }, explicitRepo: false },
 
   // ── 実装・PR 作成 ──
   { procedureOperation: 'gh-write.sh push', source: 'codex/vk-kore/step-3-7-implementation-and-pr.md:32', argv: ['git', 'push', WORK_BRANCH], expected: { operation: 'push' }, explicitRepo: false },
@@ -83,6 +86,46 @@ const requiredOperations = [
 // 手順が要求するのに、固定入口が受理しない操作（既知の不足）。除外リストとして扱い、受理されるようになったらテストが失敗して
 // requiredOperations への移動を促す。固定入口の許可範囲は、この一覧のために勝手に広げない（広げるかどうかは別 issue で判断する）。
 const knownGaps = [
+  {
+    procedureOperation: 'git branch',
+    source: 'codex/vk-kore/guide-resume-pr.md:22',
+    argv: ['git', 'branch', '--show-current'],
+    expectedError: /git "branch" is not allowed/,
+    reason: '再開対象が PR の head ブランチにいるか調べるが、固定入口に git branch は無い。',
+    alternative: 'git status --short --branch（ブランチ情報を含むが、出力形式の読み替えが要る）',
+  },
+  {
+    procedureOperation: 'git restore',
+    source: 'codex/vk-kore/guide-resume-pr.md:33',
+    argv: ['git', 'restore', '--source=HEAD', '--staged', '--worktree', '--', 'src/example.js'],
+    expectedError: /git "restore" is not allowed/,
+    reason: '追跡ファイルの採用しない変更を破棄する操作。固定入口に git restore は無く、作業内容とステージ状態を安全に同時復元する入口も無い。',
+    alternative: null,
+  },
+  {
+    procedureOperation: 'git clean',
+    source: 'codex/vk-kore/guide-resume-pr.md:33',
+    argv: ['git', 'clean'],
+    expectedError: /git "clean" is not allowed/,
+    reason: '手順は git clean の一括実行を明示的に避け、不要な未追跡ファイルを対象パスだけ削除する。固定入口に git clean は無い。',
+    alternative: '確認済みの未追跡パスだけを、作業フォルダ内のファイル操作で削除する',
+  },
+  {
+    procedureOperation: 'git commit',
+    source: 'codex/vk-kore/guide-resume-pr.md:35',
+    argv: ['git', 'commit', '--only', '--', 'src/example.js'],
+    expectedError: /flag not allowed: "--only"/,
+    reason: '再開時に既存のステージ内容を混ぜず、採用パスだけコミットする --only を固定入口は受けない。既存のステージに除外対象がある場合、通常の git commit は代替にならない。',
+    alternative: null,
+  },
+  {
+    procedureOperation: 'git show',
+    source: 'codex/vk-kore/guide-resume-pr.md:35',
+    argv: ['git', 'show', '--name-only', '--format=', 'HEAD'],
+    expectedError: /flag not allowed: "--format="/,
+    reason: '採用パスだけがコミットされたか一覧を読む --format= を固定入口は受けない。',
+    alternative: 'git show --name-only --oneline HEAD（見出し行を除いてパスを比較する）',
+  },
   {
     procedureOperation: 'gh-read.sh auth-status',
     source: 'codex/vk-kore/step-1-2.md:5',

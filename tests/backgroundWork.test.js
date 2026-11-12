@@ -156,7 +156,7 @@ test('フックの実行ファイルは Bearer 認証とペイン識別を送り
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => server.close());
   const config = path.join(dir, 'config.json');
-  fs.writeFileSync(config, JSON.stringify({ token: 'synthetic', termId: 'pane', epoch: 'epoch', url: `http://127.0.0.1:${server.address().port}/api/background-work` }));
+  fs.writeFileSync(config, JSON.stringify({ token: 'synthetic', termId: 'pane', epoch: 'epoch', url: `http://127.0.0.1:${server.address().port}/api/background-work` }), { mode: 0o600 });
   const child = spawn(process.execPath, [path.join(__dirname, '../utils/backgroundWorkHook.js'), config], { stdio: ['pipe', 'ignore', 'ignore'] });
   const exit = new Promise(resolve => child.on('exit', resolve));
   child.stdin.end(JSON.stringify({ ...input, source: 'resume', last_assistant_message: 'private conversation'.repeat(10000) }));
@@ -167,6 +167,31 @@ test('フックの実行ファイルは Bearer 認証とペイン識別を送り
   assert.equal(request.body.epoch, 'epoch'); assert.equal(request.body.input.last_assistant_message, undefined);
 });
 
+
+test('フックは検査に通らない接続ファイル（権限が緩い・シンボリックリンク・フォルダが 0700 でない）では送らない', { timeout: 15000 }, async t => {
+  const http = require('node:http');
+  const { spawn } = require('node:child_process');
+  let requests = 0;
+  const server = http.createServer((req, res) => { requests++; req.resume(); res.end('{}'); });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const body = JSON.stringify({ token: 'synthetic', termId: 'pane', epoch: 'epoch', url: `http://127.0.0.1:${server.address().port}/api/background-work` });
+  const setups = [
+    ['権限が 0644', dir => { const file = path.join(dir, 'connection.json'); fs.writeFileSync(file, body, { mode: 0o600 }); fs.chmodSync(file, 0o644); return file; }],
+    ['シンボリックリンク', dir => { const real = path.join(dir, 'real.json'); fs.writeFileSync(real, body, { mode: 0o600 }); const file = path.join(dir, 'connection.json'); fs.symlinkSync(real, file); return file; }],
+    ['フォルダが 0755', dir => { fs.chmodSync(dir, 0o755); const file = path.join(dir, 'connection.json'); fs.writeFileSync(file, body, { mode: 0o600 }); return file; }],
+  ];
+  for (const [label, setup] of setups) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vk587-hook-'));
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const child = spawn(process.execPath, [path.join(__dirname, '../utils/backgroundWorkHook.js'), setup(dir)], { stdio: ['pipe', 'ignore', 'ignore'] });
+    const exit = new Promise(resolve => child.on('exit', resolve));
+    child.stdin.end(JSON.stringify(input));
+    assert.equal(await exit, 0, label);
+  }
+  await new Promise(resolve => setTimeout(resolve, 200));
+  assert.equal(requests, 0);
+});
 
 test('同じプロセスのセッション変更でも旧記録を混ぜない', () => {
   const f = fixture(); f.recordHookEvent();

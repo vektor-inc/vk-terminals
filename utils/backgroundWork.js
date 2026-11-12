@@ -61,7 +61,36 @@ function readAgentEvidence(paths, fsImpl = fs) {
   return { modifiedAt, finished };
 }
 
-function createBackgroundWorkStore({ getEntry, onChange = () => {}, now = Date.now, homeDir, readEvidence = readAgentEvidence, listProcesses = listProcessTable } = {}) {
+// 記録ファイルの置き場所から、そのセッションのプロジェクト名を取り出す。
+function transcriptProject(paths) {
+  if (!paths) return null;
+  const [project] = path.relative(paths.base, paths.jsonl).split(path.sep);
+  return project && project !== '..' && /^[a-zA-Z0-9_.-]+$/.test(project) ? project : null;
+}
+
+// アプリが閉じていた間の開始・終了は通知で取り戻せないため、セッションの記録ファイルを数え直す。
+function listSessionSubagents(project, session, homeDir = os.homedir(), fsImpl = fs) {
+  if (typeof project !== 'string' || typeof session !== 'string' || !SAFE_ID.test(session) ||
+      project === '..' || !/^[a-zA-Z0-9_.-]{1,160}$/.test(project)) return [];
+  const base = path.join(homeDir, '.claude', 'projects');
+  const directory = path.join(base, project, session, 'subagents');
+  let names;
+  try {
+    if (fsImpl.realpathSync(directory) !== directory) return [];
+    names = fsImpl.readdirSync(directory);
+  } catch (_) { return []; }
+  const agents = [];
+  for (const name of names) {
+    const match = /^agent-([a-zA-Z0-9_-]{1,160})\.jsonl$/.exec(name);
+    if (!match) continue;
+    const jsonl = path.join(directory, name);
+    agents.push({ agentId: match[1], paths: { base, jsonl, meta: jsonl.replace(/\.jsonl$/, '.meta.json') } });
+    if (agents.length >= 256) break;
+  }
+  return agents;
+}
+
+function createBackgroundWorkStore({ getEntry, onChange = () => {}, onSession = () => {}, now = Date.now, homeDir, readEvidence = readAgentEvidence, listProcesses = listProcessTable, listSubagents = listSessionSubagents } = {}) {
   const entries = new Map();
   let polling = false;
   function publish(id, entry, running) {
@@ -82,9 +111,24 @@ function createBackgroundWorkStore({ getEntry, onChange = () => {}, now = Date.n
   return {
     begin(id, generation, epoch = crypto.randomBytes(24).toString('hex')) {
       id = String(id);
-      const entry = { generation, epoch, agents: new Map(), stopped: new Set(), candidates: new Set(), running: false, commandRunning: false, session: null, retiredSessions: new Set() };
+      const entry = { generation, epoch, agents: new Map(), stopped: new Set(), candidates: new Set(), running: false, commandRunning: false, session: null, project: null, retiredSessions: new Set() };
       entries.set(id, entry);
       onChange(id, false);
+      return entry.epoch;
+    },
+    // 再起動後に保存した合言葉で受け口を作り直し、記録ファイルの更新時刻でサブエージェントを見直す。
+    restore(id, generation, epoch, { session, project } = {}) {
+      this.begin(id, generation, epoch);
+      const entry = entries.get(String(id));
+      if (typeof session !== 'string' || !SAFE_ID.test(session) || typeof project !== 'string') return entry.epoch;
+      entry.session = session;
+      entry.project = project;
+      for (const { agentId, paths } of listSubagents(project, session, homeDir)) {
+        const evidence = readEvidence(paths);
+        if (evidence.finished || !Number.isFinite(evidence.modifiedAt)) continue;
+        const lastActivity = Math.min(now(), evidence.modifiedAt);
+        if (now() - lastActivity < SUBAGENT_TTL_MS) entry.agents.set(agentId, { paths, lastActivity });
+      }
       return entry.epoch;
     },
     recordHookEvent({ termId, epoch, input }) {
@@ -104,7 +148,11 @@ function createBackgroundWorkStore({ getEntry, onChange = () => {}, now = Date.n
         entry.agents.clear();
         entry.stopped.clear();
       }
-      entry.session = input.session_id;
+      if (entry.session !== input.session_id) {
+        entry.session = input.session_id;
+        entry.project = transcriptProject(paths);
+        onSession(id, entry.generation, { session: entry.session, project: entry.project });
+      }
       if (input.hook_event_name === 'SessionStart') {
         publish(id, entry, entry.commandRunning || entry.agents.size > 0);
         return true;
@@ -141,4 +189,4 @@ function createBackgroundWorkStore({ getEntry, onChange = () => {}, now = Date.n
   };
 }
 
-module.exports = { SUBAGENT_TTL_MS, inspectBackgroundProcesses, agentTranscriptPaths, readAgentEvidence, createBackgroundWorkStore };
+module.exports = { SUBAGENT_TTL_MS, inspectBackgroundProcesses, agentTranscriptPaths, readAgentEvidence, listSessionSubagents, createBackgroundWorkStore };

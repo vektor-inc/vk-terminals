@@ -87,14 +87,17 @@ const shellStartupReadiness = new WeakMap();
 const {
   createAgentLifecycleStore,
   mergeAgentLifecycleStates,
+  listProcessTable,
 } = require('./utils/agentLifecycle');
 // 最初のペインで起動する AI エンジン・モデルの設定解決（issue #419）と、
 // ペインのシェルへ渡す環境変数（Volta の bin を PATH へ補う）の組み立て。
 const { resolveInitialPaneLaunch } = require('./utils/initialPaneLaunch');
 const { buildPtyEnv } = require('./utils/ptyEnv');
 const { TmuxHolder, metadataPath, readPaneMetadata, writePaneMetadata, touchPaneMetadata } = require('./utils/paneHolder');
-const { missingSavedPaneCount, chooseUntrackedPaneIdentity } = require('./utils/paneHolderRestorePlan');
+const { missingSavedPaneCount, chooseUntrackedPaneIdentity, resolveHolderPaneAgent } = require('./utils/paneHolderRestorePlan');
 const { MODE_FORMAT, buildInputModeSequence } = require('./utils/paneHolderRestore');
+const { bindToHolderPane, processStartTime, restoreHolderConnection, revokeDirectory, revokeStaleHolderDirectories } = require('./utils/holderBackgroundWork');
+const { writePrivateJson } = require('./utils/privateFile');
 // ログインシェルの PATH を本体・ペインへ反映する（issue #454）。
 const { applyLoginShellPath, appendUserLocalBin } = require('./utils/loginShellPath');
 const { pickTerminalShell } = require('./utils/terminalShell');
@@ -213,13 +216,15 @@ const backgroundWork = createBackgroundWorkStore({
   onChange: (id, running) => {
     if (win && !win.isDestroyed()) win.webContents.send('terminal:background-work', id, running);
   },
+  onSession: (id, generation, session) => saveHolderBackgroundWorkOwner(id, generation, session),
 });
 const backgroundWorkTimer = setInterval(() => { backgroundWork.poll().catch(() => {}); }, 1000);
 backgroundWorkTimer.unref();
 
-function clearPaneBackgroundWork(id) {
+// keepFiles は保持役のペインを画面から外すだけの場合に使い、次の起動で戻せるよう接続情報を残す。
+function clearPaneBackgroundWork(id, { keepFiles = false } = {}) {
   backgroundWork.delete(id);
-  backgroundSettings.get(id)?.discard();
+  if (!keepFiles) backgroundSettings.get(id)?.discard();
   backgroundSettings.delete(id);
 }
 
@@ -258,6 +263,87 @@ function preparePaneBackgroundWork(id, generation, engine, options, shellExecuta
   const staged = stagePaneBackgroundWork(id, generation, engine, options, shellExecutable);
   staged.commit();
   return staged.options;
+}
+
+// ─── 保持役のペインに持たせる接続情報（issue #587）──────────────────────────
+// 保持役のペインでは、接続情報の持ち主をアプリからペインへ付け替え、終了処理では消さない。
+function bindHolderBackgroundWork(id, pane, generation) {
+  if (!pane?.isTmuxPane || !tmuxHolder?.active) return;
+  const prepared = backgroundSettings.get(id);
+  try {
+    if (prepared?.directory) {
+      prepared.holderOwner = bindToHolderPane(prepared.directory, {
+        termId: id, generation, tmuxPaneId: pane.paneId, panePid: pane.pid, paneLstart: processStartTime(pane.pid),
+      });
+      prepared.holderBound = true;
+    }
+    tmuxHolder.setBackgroundWorkValues(pane.windowId, {
+      backgroundWorkDir: prepared?.holderBound ? path.basename(prepared.directory) : null,
+      agentGeneration: generation,
+    });
+  } catch (error) {
+    console.warn(`${LOG_PREFIX} holder background work binding failed:`, error.message);
+    // 結び付けに失敗したフォルダを再起動時の復元対象に残さない。
+    try {
+      tmuxHolder.setBackgroundWorkValues(pane.windowId, { backgroundWorkDir: null, agentGeneration: generation });
+    } catch (clearError) {
+      console.warn(`${LOG_PREFIX} holder background work values clear failed:`, clearError.message);
+    }
+  }
+}
+
+// 持ち主の記録（秘密でない値）に、セッションと追跡中の AI 本体を書き足す。
+function saveHolderBackgroundWorkOwner(id, generation, { session, project, agents } = {}) {
+  const prepared = backgroundSettings.get(String(id));
+  if (!prepared?.holderBound || prepared.holderOwner?.generation !== generation) return;
+  const next = { ...prepared.holderOwner };
+  if (session !== undefined) Object.assign(next, { session, project });
+  if (agents !== undefined) next.agents = agents;
+  try {
+    writePrivateJson(prepared.directory, 'owner.json', next);
+    prepared.holderOwner = next;
+  } catch (error) {
+    console.warn(`${LOG_PREFIX} holder background work owner save failed:`, error.message);
+  }
+}
+
+function saveHolderBackgroundWorkOwners() {
+  for (const [id, prepared] of backgroundSettings) {
+    if (!prepared.holderBound) continue;
+    const generation = prepared.holderOwner.generation;
+    saveHolderBackgroundWorkOwner(id, generation, { agents: agentLifecycles.trackedIdentities(id, generation) });
+  }
+}
+
+function backgroundWorkHookUrl() {
+  const actualHost = apiServerRuntimeStatus.actualHost || '127.0.0.1';
+  const host = actualHost === '0.0.0.0' ? '127.0.0.1' : actualHost === '::' ? '[::1]' : actualHost.includes(':') ? `[${actualHost}]` : actualHost;
+  return `http://${host}:${API_PORT}/api/background-work`;
+}
+
+// 再起動後、保存した合言葉で受け口を作り直し、ペインのシェルから生死の記録を作り直す。
+async function restoreHolderBackgroundWork(targets, livePanes) {
+  let processes = null;
+  try { processes = await listProcessTable(); } catch (_) {}
+  // 復元の成否にかかわらず、生存ペインが指す接続情報は回収しない。
+  const protectedNames = new Set(livePanes.map(({ identity }) => identity.backgroundWorkDir).filter(Boolean));
+  for (const { id, identity, generation } of targets) {
+    const result = restoreHolderConnection({
+      dataDir: DATA_DIR, name: identity.backgroundWorkDir, identity, termId: id, generation,
+      config: { token: API_TOKEN, url: backgroundWorkHookUrl() }, processes,
+    });
+    if (result.directory) {
+      protectedNames.add(path.basename(result.directory));
+      const directory = result.directory;
+      backgroundSettings.set(id, { filename: path.join(directory, 'settings.json'), directory, holderBound: true, holderOwner: result.owner, discard: () => revokeDirectory(directory) });
+    }
+    if (!result.restored) console.warn(`${LOG_PREFIX} holder background work for pane ${id} was not restored; a new epoch was issued`);
+    backgroundWork.restore(id, generation, result.epoch, result.restored ? result.owner : {});
+    if (processes) agentLifecycles.restore(id, generation, identity.pid, processes, result.restored ? result.owner.agents : []);
+  }
+  const panesByPid = new Map(livePanes.map(({ identity, generation }) => [identity.pid, { paneId: identity.paneId, generation }]));
+  try { revokeStaleHolderDirectories(DATA_DIR, protectedNames, panesByPid); }
+  catch (error) { console.warn(`${LOG_PREFIX} holder background work cleanup failed:`, error.message); }
 }
 
 // renderer が報告した画面と、その後の PTY 入出力が同じ状態かを条件付き Enter で照合する。
@@ -1442,6 +1528,9 @@ function compareSemver(a, b) {
  * @returns {Promise<void>}
  */
 async function cleanupPtys() {
+  // 生死の記録を閉じる前に、次の起動で作り直すための AI 本体の PID と起動時刻を残す。
+  try { saveHolderBackgroundWorkOwners(); }
+  catch (error) { console.warn(`${LOG_PREFIX} holder background work save failed:`, error); }
   try {
     if (lastPaneLayout) {
       saveHolderLayout(lastPaneLayout);
@@ -1725,7 +1814,8 @@ const restartApplication = createRestartApplication({
 function finalizeBeforeQuit() {
   stopWidgetWatcher();
   clearInterval(backgroundWorkTimer);
-  for (const id of backgroundSettings.keys()) clearPaneBackgroundWork(id);
+  // 保持役のペインの接続情報は、アプリを閉じてもペインが動き続けるため残す。
+  for (const [id, prepared] of backgroundSettings) if (!prepared.holderBound) clearPaneBackgroundWork(id);
   try { fs.unlinkSync(STATE_FILE); } catch (e) {}
   if (httpServer) httpServer.close();
   agentLifecycles.close().catch((e) => {
@@ -2495,6 +2585,7 @@ ipcMain.handle('terminal:restore', async () => {
   }
   const live = new Map(tmuxHolder.listPanes().map(pane => [pane.paneId, pane]));
   const panes = [];
+  const backgroundWorkTargets = [];
   for (const saved of metadata.panes) {
     if (!saved || !/^\d+$/.test(String(saved.termId)) || !/^pane-\d+$/.test(saved.paneId) || !/^%\d+$/.test(saved.tmuxPaneId)) continue;
     const identity = live.get(saved.tmuxPaneId);
@@ -2502,10 +2593,13 @@ ipcMain.handle('terminal:restore', async () => {
     const pane = tmuxHolder.attachPane(identity);
     pane.beginReplay();
     const id = String(saved.termId);
-    registerTerminalProcess(id, pane, process.env.SHELL || '/bin/sh', { hasAgent: saved.hasAgent === true, generation: Number.isSafeInteger(saved.generation) && saved.generation > 0 ? saved.generation : 1 });
+    // ペインに置いた世代番号とフォルダ名は、画面の記録より後の再起動やエンジン切り替えも反映しているため優先する。
+    const agent = resolveHolderPaneAgent(identity, saved);
+    registerTerminalProcess(id, pane, process.env.SHELL || '/bin/sh', { hasAgent: agent.hasAgent, generation: agent.generation });
     nextId = Math.max(nextId, Number(id) + 1);
-    const normalized = normalizeHolderPane(saved, identity.paneId);
+    const normalized = normalizeHolderPane({ ...saved, hasAgent: agent.hasAgent, engine: agent.engine, generation: agent.generation }, identity.paneId);
     panes.push({ ...normalized, id, cwd: normalized.cwd || os.homedir() });
+    if (agent.restoreBackgroundWork) backgroundWorkTargets.push({ id, identity, generation: agent.generation });
   }
   const matchedSavedCount = panes.length;
   const restoredIds = new Set(panes.map(pane => pane.tmuxPaneId));
@@ -2522,11 +2616,17 @@ ipcMain.handle('terminal:restore', async () => {
     }
     const pane = tmuxHolder.attachPane(identity);
     pane.beginReplay();
-    registerTerminalProcess(id, pane, process.env.SHELL || '/bin/sh', { hasAgent: false });
+    const agent = resolveHolderPaneAgent(identity);
+    registerTerminalProcess(id, pane, process.env.SHELL || '/bin/sh', { hasAgent: agent.hasAgent, generation: agent.hasAgent ? agent.generation : 1 });
     usedPaneIds.add(paneId);
-    const normalized = normalizeHolderPane({ termId: id, paneId, cwd: os.homedir(), hasAgent: false, generation: 0 }, identity.paneId);
+    const normalized = normalizeHolderPane({ termId: id, paneId, cwd: os.homedir(), hasAgent: agent.hasAgent, engine: agent.engine, generation: agent.generation }, identity.paneId);
     panes.push({ ...normalized, id });
+    if (agent.restoreBackgroundWork) backgroundWorkTargets.push({ id, identity, generation: agent.generation });
   }
+  // 全生存ペインの登録を終えてから復元する。ペインが指す接続情報は守り、旧世代だけを回収する。
+  await restoreHolderBackgroundWork(backgroundWorkTargets, [...live.values()].map(identity => ({
+    identity, generation: panes.find(pane => pane.tmuxPaneId === identity.paneId)?.generation ?? null,
+  })));
   // 画面側の行列数が決まるまで採取を待つ。採取前のライブ出力は履歴に含める。
   for (const saved of panes) ptys.get(saved.id).pendingReplay = true;
   restoredPaneCount = panes.length;
@@ -2542,7 +2642,7 @@ ipcMain.on('terminal:restore-abandon', (_event, ids) => {
     pane.replay = null;
     pane.pendingReplay = null;
     ptys.delete(id); ptyShellExecutables.delete(id); agentGenerations.delete(id);
-    agentLifecycles.delete(id); clearPaneBackgroundWork(id);
+    agentLifecycles.delete(id); clearPaneBackgroundWork(id, { keepFiles: true });
     conditionalTerminalInput.delete(id); silentWriteRefresher.delete(id);
     reportedScreenSnapshots.delete(id); restartAgentOperations.delete(id);
     tmuxHolder?.panes.delete(pane.paneId);
@@ -2928,6 +3028,7 @@ function createTerminalPane(cwd, options = {}, guide = null) {
     promptWatcherTimeoutId = null;
   }, shellStartup });
   if (!noClaude && resolvedEngine === 'claude' && !backgroundWork.has(id)) backgroundWork.begin(id, 1);
+  bindHolderBackgroundWork(id, ptyProcess, agentGenerations.get(id));
 
   // 起動後に自動で AI エンジンを実行（素のターミナルモード時はスキップ）。
   // 起動コマンドは PTY を作る前に組み立て済み（launchCommand。issue #428）。
@@ -4654,6 +4755,7 @@ function startHttpApi() {
               launchHomeInUse = true;
               launchResolution.activatePaneSend();
               stagedBackgroundWork.commit();
+              bindHolderBackgroundWork(request.termId, ptyProcess, startedGeneration);
               // renderer 側の terminals[paneId].engine を実体に追従させる（issue #394 の
               // 安藤レビュー指摘・MEDIUM）。restart-agent は同じペインで engine を入れ替えられる
               // 唯一の main→renderer 経路（安藤の確認結果）のため、成功時にだけ通知する。

@@ -174,11 +174,15 @@ async function cleanupBackgroundWorkSettings(dataDir, listProcesses = require('.
       const ownerStat = fs.lstatSync(ownerPath);
       if (!ownerStat.isFile() || ownerStat.isSymbolicLink() || ownerStat.size > 4096) continue;
       const owner = JSON.parse(fs.readFileSync(ownerPath, 'utf8'));
-      if (!Number.isSafeInteger(owner.pid) || owner.pid <= 0 || !Number.isFinite(Date.parse(owner.lstart))) continue;
-      const live = processes.get(owner.pid);
-      if (live && isSameProcessStart(live.lstart, owner.lstart)) continue;
+      // 保持役のペインが持ち主の場合は、アプリではなくペインのシェルの生存で判断する（issue #587）。
+      const holder = owner && owner.holder === 'tmux';
+      const pid = holder ? owner.panePid : owner.pid;
+      const lstart = holder ? owner.paneLstart : owner.lstart;
+      if (!Number.isSafeInteger(pid) || pid <= 0 || !Number.isFinite(Date.parse(lstart))) continue;
+      const live = processes.get(pid);
+      if (live && isSameProcessStart(live.lstart, lstart)) continue;
       // ps 採取後に起動されたプロセスも保護する。再利用 PID は保守的に残す。
-      try { process.kill(owner.pid, 0); continue; } catch (error) { if (error.code !== 'ESRCH') continue; }
+      try { process.kill(pid, 0); continue; } catch (error) { if (error.code !== 'ESRCH') continue; }
       fs.rmSync(directory, { recursive: true, force: true });
     } catch (_) {}
   }
@@ -206,7 +210,7 @@ function prepareBackgroundWorkSettings(dataDir, config, settingsPath, options = 
     }
     const filename = path.join(directory, 'settings.json');
     fs.writeFileSync(filename, JSON.stringify(settings), { mode: 0o600, flag: 'wx' });
-    return { filename, discard: () => fs.rmSync(directory, { recursive: true, force: true }) };
+    return { filename, directory, discard: () => fs.rmSync(directory, { recursive: true, force: true }) };
   } catch (error) {
     fs.rmSync(directory, { recursive: true, force: true });
     throw error;

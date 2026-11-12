@@ -368,8 +368,21 @@ class TmuxHolder {
   }
   listPanes() {
     if (!isSafeSocketPresent(this.socket)) return [];
-    const output = this.command(['list-panes', '-a', '-F', '#{pane_id} #{pane_pid} #{window_id} #{@vk_term_id}']);
-    return output.split('\n').map(line => /^(%\d+) (\d+) (@\d+) (\d+)$/.exec(line)).filter(Boolean).map(([, paneId, pid, windowId, termId]) => ({ paneId, pid: Number(pid), windowId, termId }));
+    const output = this.command(['list-panes', '-a', '-F', '#{pane_id} #{pane_pid} #{window_id} #{@vk_term_id} #{@vk_bg_dir} #{@vk_agent_generation}']);
+    return output.split('\n').map(line => /^(%\d+) (\d+) (@\d+) (\d+)(?: (background-work-[A-Za-z0-9]+)?(?: (\d{1,15})?)?)?$/.exec(line)).filter(Boolean).map(([, paneId, pid, windowId, termId, backgroundWorkDir, generation]) => ({
+      paneId, pid: Number(pid), windowId, termId,
+      backgroundWorkDir: backgroundWorkDir || null,
+      agentGeneration: generation ? Number(generation) : null,
+    }));
+  }
+  // 秘密でない値（接続情報のフォルダ名と世代番号）だけをペインのウィンドウに置く（issue #587）。
+  setBackgroundWorkValues(windowId, { backgroundWorkDir, agentGeneration }) {
+    if (!/^@\d+$/.test(windowId)) throw new Error('invalid tmux window');
+    if (backgroundWorkDir === null) this.command(['set-option', '-w', '-u', '-t', windowId, '@vk_bg_dir']);
+    else if (/^background-work-[A-Za-z0-9]+$/.test(backgroundWorkDir)) this.command(['set-option', '-w', '-t', windowId, '@vk_bg_dir', backgroundWorkDir]);
+    else throw new Error('invalid background work directory name');
+    if (!Number.isSafeInteger(agentGeneration) || agentGeneration < 0) throw new Error('invalid agent generation');
+    this.command(['set-option', '-w', '-t', windowId, '@vk_agent_generation', String(agentGeneration)]);
   }
   attachPane(identity) {
     const pane = new PaneAdapter(this, identity.paneId, identity.pid, identity.windowId);

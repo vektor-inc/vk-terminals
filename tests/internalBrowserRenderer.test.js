@@ -45,9 +45,16 @@ test('失敗表示は失敗 URL、操作列は確定 URL を安全な外部オ�
   assert.equal(messageWrites, 1);
   assert.equal(message.textContent, 'ページを表示できませんでした（example.com）');
   assert.equal(errorView.hidden, false);
+  state('', '', false);
+  assert.equal(message.textContent, '');
+  assert.equal(errorView.hidden, true);
+  assert.equal(messageWrites, 2);
+  state('https://example.com/failed', '', false);
+  assert.equal(message.textContent, 'ページを表示できませんでした（example.com）');
+  assert.equal(messageWrites, 3);
   state('invalid-url', '', false);
   assert.equal(message.textContent, 'ページを表示できませんでした');
-  assert.equal(messageWrites, 2);
+  assert.equal(messageWrites, 4);
   state('https://example.com/failed', '', false);
   const click = inError => handlers.click({ target: {
     closest: selector => selector === '[data-action]' ? { dataset: { action: 'external' } } : selector === '.internal-browser-error' && inError ? errorView : null,

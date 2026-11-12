@@ -288,7 +288,8 @@ VKIpc.on('internal-browser:state', state => {
     try { failedHost = new URL(internalBrowserFailedUrl).hostname; } catch {}
   }
   const errorMessage = errorView.querySelector('.internal-browser-error-message');
-  const errorText = failedHost
+  // 失敗解除時に文も消し、同じホストで再び失敗した際の読み上げを促す。
+  const errorText = !internalBrowserFailedUrl ? '' : failedHost
     ? `ページを表示できませんでした（${failedHost}）` : 'ページを表示できませんでした';
   if (errorMessage.textContent !== errorText) errorMessage.textContent = errorText;
   const notice = internalBrowserSidebar.querySelector('.internal-browser-notice');

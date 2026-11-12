@@ -17,10 +17,15 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
   let modalCount = 0;
   let currentUrl = '';
   let pendingUrl = '';
+  let downloadUrl = '';
   let failedUrl = '';
   let github404Url = '';
   const cancelDownload = (event) => {
     event.preventDefault();
+    // アプリから開いた読み込みだけを外部ブラウザへ渡す。ページ内リンクは表示中の URL を使う。
+    downloadUrl = isBrowserUrl(pendingUrl) ? pendingUrl : '';
+    pendingUrl = '';
+    publish();
     if (!win.isDestroyed()) win.webContents.send('internal-browser:download-blocked');
   };
   browserSession.on('will-download', cancelDownload);
@@ -29,6 +34,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
     if (!win.isDestroyed()) win.webContents.send('internal-browser:state', {
       url: currentUrl,
       pendingUrl,
+      downloadUrl,
       failedUrl,
       github404Url,
       loading: !!view && view.webContents.isLoading(),
@@ -41,7 +47,12 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
     if (!view) return;
     // 0 サイズでも描画が残るため、非表示時は親ビューから外す。
     if (!visible || modalCount > 0 || !bounds) {
-      if (attached) { win.contentView.removeChildView(view); attached = false; }
+      if (attached) {
+        const restoreFocus = view.webContents.isFocused();
+        win.contentView.removeChildView(view);
+        attached = false;
+        if (restoreFocus) win.webContents.focus();
+      }
       return;
     }
     view.setBounds(bounds);
@@ -68,11 +79,12 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
         if (isNavigationUrl(destination)) navigate(destination, true);
         return { action: 'deny' };
       });
-      contents.on('did-start-loading', publish);
+      contents.on('did-start-loading', () => { downloadUrl = ''; publish(); });
       contents.on('did-start-navigation', (_event, url, isInPlace, isMainFrame) => {
         if (!isMainFrame || isInPlace) return;
         failedUrl = '';
         github404Url = '';
+        downloadUrl = '';
         publish();
       });
       contents.on('did-stop-loading', publish);
@@ -102,6 +114,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
     }
     failedUrl = '';
     github404Url = '';
+    downloadUrl = '';
     pendingUrl = fromPage ? '' : url;
     view.webContents.loadURL(url).catch(() => {});
     syncBounds();

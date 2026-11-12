@@ -3,6 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { PARTITION, clampBrowserWidth, validateBrowserBounds, isBrowserUrl, isNavigationUrl } = require('../utils/internalBrowserPolicy');
 const { createInternalBrowser } = require('../utils/internalBrowser');
+const { browserWidthMax } = require('../utils/internalBrowserLayout');
 
 test('専用 persist パーティションと HTTP(S) URL の制限', () => {
   assert.equal(PARTITION, 'persist:vk-terminals-internal-browser');
@@ -23,6 +24,13 @@ test('幅は既定値とペイン残幅でクランプする', () => {
   assert.equal(clampBrowserWidth(NaN, 1400), 630);
   assert.equal(clampBrowserWidth(100, 1400), 360);
   assert.equal(clampBrowserWidth(1500, 800), 480);
+});
+
+test('ペインの列数に応じて見出しの操作幅を確保する', () => {
+  assert.equal(browserWidthMax(1400, 2), 856);
+  assert.equal(clampBrowserWidth(750, 1100, 2), 556);
+  assert.equal(clampBrowserWidth(750, 1100, 3), 360);
+  assert.equal(clampBrowserWidth(750, 800, 3), 360);
 });
 
 test('WebContentsView の座標は有限なウィンドウ内の矩形だけを受け入れる', () => {
@@ -147,6 +155,12 @@ test('専用ビューの遷移と権限、ダウンロード、確定 URL を制
   browserSession.emit('will-download', { preventDefault() { canceled = true; } }, { cancel() { throw new Error('item.cancel should not be called'); } });
   assert.equal(canceled, true);
   assert.equal(sent.at(-1)[0], 'internal-browser:download-blocked');
+  assert.equal(sent.at(-2)[1].downloadUrl, '');
+  browser.navigate('https://example.com/download');
+  browserSession.emit('will-download', { preventDefault() {} }, {});
+  assert.equal(sent.at(-2)[1].downloadUrl, 'https://example.com/download');
+  browser.navigate('https://example.com/next');
+  assert.equal(sent.at(-1)[1].downloadUrl, '');
 });
 
 test('ブラウザ IPC はメインウィンドウのメインフレームだけを受け付ける', () => {
@@ -177,18 +191,20 @@ test('非表示とモーダル中はビューを外し、再表示では同じ�
   browserSession.setPermissionRequestHandler = () => {};
   browserSession.setPermissionCheckHandler = () => {};
   const calls = [];
+  let focused = true;
   class FakeView {
     constructor() {
       this.webContents = new EventEmitter();
       this.webContents.loadURL = () => Promise.resolve();
       this.webContents.isLoading = () => false;
+      this.webContents.isFocused = () => focused;
       this.webContents.navigationHistory = { canGoBack: () => false, canGoForward: () => false };
       this.webContents.setWindowOpenHandler = () => {};
       this.webContents.close = () => {};
     }
     setBounds(rect) { calls.push(['bounds', rect]); }
   }
-  const win = { isDestroyed: () => false, webContents: { send() {} }, getContentBounds: () => ({ width: 1000, height: 800 }), contentView: {
+  const win = { isDestroyed: () => false, webContents: { send() {}, focus() { calls.push(['focus']); } }, getContentBounds: () => ({ width: 1000, height: 800 }), contentView: {
     addChildView(view) { calls.push(['add', view]); }, removeChildView(view) { calls.push(['remove', view]); },
   } };
   const browser = createInternalBrowser(win, { WebContentsView: FakeView, session: { fromPartition: () => browserSession } });
@@ -197,7 +213,8 @@ test('非表示とモーダル中はビューを外し、再表示では同じ�
   browser.navigate('https://example.com');
   const view = calls.find(call => call[0] === 'add')[1];
   browser.setVisible(false);
-  assert.deepEqual(calls.at(-1), ['remove', view]);
+  assert.deepEqual(calls.slice(-2), [['remove', view], ['focus']]);
+  focused = false;
   browser.setVisible(true);
   assert.deepEqual(calls.at(-1), ['add', view]);
   browser.setModalCount(1);

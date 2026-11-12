@@ -89,11 +89,12 @@ test('失敗表示は失敗 URL、操作列は確定 URL を安全な外部オ�
   const notice = { hidden: true, dataset: {}, contains: element => buttons.includes(element), replaceChildren() {}, append() {} };
   const display = { replaceChildren() {}, setAttribute() {}, append() {}, closest: () => null, focus() { focus(this); } };
   const controls = { disabled: false };
+  const external = { disabled: false };
   const reload = { disabled: false, closest: () => null, focus() { focus(this); } };
   const progress = { hidden: true };
   const sidebar = {
     addEventListener: (_type, handler) => { handlers.click = handler; },
-    querySelector: selector => ({ '.internal-browser-error': errorView, '.internal-browser-notice': notice, '.internal-browser-url': display, '.internal-browser-toolbar [data-action="reload"]': reload, '.internal-browser-progress': progress }[selector] || controls),
+    querySelector: selector => ({ '.internal-browser-error': errorView, '.internal-browser-notice': notice, '.internal-browser-url': display, '.internal-browser-toolbar [data-action="reload"]': reload, '.internal-browser-progress': progress, '[data-action="external"]': external }[selector] || controls),
   };
   const context = {
     internalBrowserSidebar: sidebar,
@@ -107,7 +108,7 @@ test('失敗表示は失敗 URL、操作列は確定 URL を安全な外部オ�
       return button;
     } },
   };
-  vm.runInNewContext(`let internalBrowserUrl = 'https://example.com/confirmed'; let internalBrowserFailedUrl = ''; let internalBrowserHasPage = true; ${focusHelpers} ${clickHandler} ${stateHandler}`, context);
+  vm.runInNewContext(`let internalBrowserUrl = 'https://example.com/confirmed'; let internalBrowserFailedUrl = ''; let internalBrowserDownloadUrl = ''; let internalBrowserHasPage = true; ${focusHelpers} ${clickHandler} ${stateHandler}`, context);
   const state = (failedUrl, github404Url = '', loading = false, url = 'https://example.com/confirmed') => handlers['internal-browser:state']({ url, failedUrl, github404Url, loading });
   state('https://example.com/failed', '', false);
   assert.equal(messageWrites, 1);
@@ -135,7 +136,11 @@ test('失敗表示は失敗 URL、操作列は確定 URL を安全な外部オ�
   } });
   click(true);
   click(false);
-  assert.deepEqual(opened, ['https://example.com/failed', 'https://example.com/confirmed']);
+  state('', '', false, '');
+  handlers['internal-browser:state']({ url: '', downloadUrl: 'https://example.com/download' });
+  assert.equal(external.disabled, false);
+  click(false);
+  assert.deepEqual(opened, ['https://example.com/failed', 'https://example.com/confirmed', 'https://example.com/download']);
   activeElement = controls;
   state('');
   assert.equal(activeElement, controls);

@@ -112,6 +112,7 @@ internalBrowserSidebar.innerHTML = `<div class="internal-browser-resizer" role="
 let internalBrowserOpen = false;
 let internalBrowserUrl = '';
 let internalBrowserFailedUrl = '';
+let internalBrowserDownloadUrl = '';
 let preferredInternalBrowserWidth = Number(localStorage.getItem('vk-terminals.internalBrowserWidth'));
 let displayedInternalBrowserWidth = 0;
 let previousInternalBrowserLayout = null;
@@ -124,14 +125,17 @@ for (const button of internalBrowserSidebar.querySelectorAll('.internal-browser-
 function syncInternalBrowserLayout() {
   const root = document.getElementById('root');
   if (!root) return;
-  const { clampBrowserWidth } = window.VKInternalBrowserLayout;
+  const { clampBrowserWidth, browserWidthMax } = window.VKInternalBrowserLayout;
+  const columns = gridDims().cols;
   const leftSidebar = root.classList.contains('sidebar-open') ? document.getElementById('sidebar')?.getBoundingClientRect().width || 0 : 0;
-  displayedInternalBrowserWidth = clampBrowserWidth(preferredInternalBrowserWidth || NaN, root.clientWidth - leftSidebar);
+  const availableWidth = root.clientWidth - leftSidebar;
+  const maxWidth = browserWidthMax(availableWidth, columns);
+  displayedInternalBrowserWidth = clampBrowserWidth(preferredInternalBrowserWidth || NaN, availableWidth, columns);
   internalBrowserSidebar.style.width = `${displayedInternalBrowserWidth}px`;
   document.body.style.setProperty('--vktm-internal-browser-width', `${displayedInternalBrowserWidth}px`);
   const resizer = internalBrowserSidebar.querySelector('.internal-browser-resizer');
-  resizer.setAttribute('aria-valuemin', String(Math.min(360, Math.max(0, root.clientWidth - leftSidebar - 320))));
-  resizer.setAttribute('aria-valuemax', String(Math.max(0, root.clientWidth - leftSidebar - 320)));
+  resizer.setAttribute('aria-valuemin', String(Math.min(360, maxWidth)));
+  resizer.setAttribute('aria-valuemax', String(maxWidth));
   resizer.setAttribute('aria-valuenow', String(displayedInternalBrowserWidth));
   internalBrowserSidebar.hidden = !internalBrowserOpen;
   root.classList.toggle('internal-browser-open', internalBrowserOpen);
@@ -143,7 +147,7 @@ function syncInternalBrowserLayout() {
     VKIpc.send('internal-browser:bounds', { x: rect.x * zoom, y: rect.y * zoom, width: rect.width * zoom, height: rect.height * zoom });
   }
   VKIpc.send('internal-browser:visible', internalBrowserOpen && !document.body.classList.contains('resizing-internal-browser'));
-  const layout = `${internalBrowserOpen}:${displayedInternalBrowserWidth}`;
+  const layout = `${internalBrowserOpen}:${displayedInternalBrowserWidth}:${columns}`;
   if (layout !== previousInternalBrowserLayout) {
     previousInternalBrowserLayout = layout;
     if (document.body.classList.contains('resizing-internal-browser') || document.body.classList.contains('resizing-sidebar')) debouncedFitAll();
@@ -254,7 +258,7 @@ internalBrowserSidebar.addEventListener('click', event => {
   const action = event.target.closest('[data-action]')?.dataset.action;
   if (action === 'close') { setInternalBrowserOpen(false); document.getElementById('internal-browser-toggle')?.focus(); }
   else if (action === 'external') {
-    const url = event.target.closest('.internal-browser-error') ? internalBrowserFailedUrl : internalBrowserUrl;
+    const url = event.target.closest('.internal-browser-error') ? internalBrowserFailedUrl : (internalBrowserDownloadUrl || internalBrowserUrl);
     if (url) openExternalUrlSafe(url);
   }
   else if (action) VKIpc.invoke('internal-browser:action', action).catch(() => {});
@@ -297,6 +301,7 @@ window.addEventListener('resize', syncInternalBrowserLayout);
 VKIpc.on('internal-browser:state', state => {
   internalBrowserUrl = state.url || '';
   internalBrowserFailedUrl = state.failedUrl || '';
+  internalBrowserDownloadUrl = state.downloadUrl || '';
   // 消える案内から移る前に、次の URL と再読み込みの可用性を反映する。
   internalBrowserSidebar.querySelector('.internal-browser-url').disabled = !internalBrowserUrl;
   internalBrowserSidebar.querySelector('.internal-browser-toolbar [data-action="reload"]').disabled = !internalBrowserHasPage;
@@ -363,7 +368,7 @@ VKIpc.on('internal-browser:state', state => {
   display.title = internalBrowserUrl || 'URL をコピー';
   display.setAttribute('aria-label', internalBrowserUrl ? `表示中の URL をコピー: ${internalBrowserUrl}` : '表示中の URL をコピー');
   display.disabled = !internalBrowserUrl;
-  internalBrowserSidebar.querySelector('[data-action="external"]').disabled = !internalBrowserUrl;
+  internalBrowserSidebar.querySelector('[data-action="external"]').disabled = !(internalBrowserDownloadUrl || internalBrowserUrl);
   internalBrowserSidebar.querySelector('[data-action="back"]').disabled = !state.canGoBack;
   internalBrowserSidebar.querySelector('[data-action="forward"]').disabled = !state.canGoForward;
   internalBrowserSidebar.querySelector('.internal-browser-progress').hidden = !state.loading;

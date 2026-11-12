@@ -650,7 +650,15 @@ test('持続通知は通常の通知と URL 失敗通知で上書きされない
   const toast = { dataset: { persistent: 'true' }, hidden: false, classList: { toggle() { throw new Error('overwritten'); } } };
   const context = { ensureExternalUrlToast: () => toast };
   vm.runInNewContext(generic, context);
-  vm.runInNewContext("showGenericToast('ordinary')", context);
+  assert.equal(vm.runInNewContext("showGenericToast('ordinary')", context), false);
+  assert.equal(toast.dataset.persistent, 'true');
+  assert.equal(toast.hidden, false);
+  const downloadBlocked = renderer.slice(renderer.indexOf("VKIpc.on('internal-browser:download-blocked'"), renderer.indexOf('// ─── State', renderer.indexOf("VKIpc.on('internal-browser:download-blocked'")));
+  let downloadHandler;
+  context.VKIpc = { on(_channel, handler) { downloadHandler = handler; } };
+  context.externalUrlToastEl = { querySelector() { throw new Error('persistent message overwritten'); } };
+  vm.runInNewContext(downloadBlocked, context);
+  downloadHandler();
   assert.equal(toast.dataset.persistent, 'true');
   assert.equal(toast.hidden, false);
   const failed = renderer.slice(renderer.indexOf('function showExternalUrlOpenFailedToast('), renderer.indexOf('function showGenericToast('));

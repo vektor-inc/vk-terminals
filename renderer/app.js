@@ -381,7 +381,8 @@ VKIpc.on('internal-browser:state', state => {
 });
 VKIpc.on('internal-browser:download-blocked', () => {
   const toastMessage = 'ダウンロードはできません。操作列の「外部ブラウザで開く」から行ってください。';
-  showGenericToast(toastMessage);
+  // 持続通知が表示中なら、その本文をダウンロード案内で上書きしない。
+  if (!showGenericToast(toastMessage)) return;
   const message = externalUrlToastEl?.querySelector('.vk-toast-message');
   if (message) {
     const [beforeAction, afterAction] = toastMessage.split('外部ブラウザで開く');
@@ -1506,7 +1507,7 @@ function showExternalUrlOpenFailedToast(url) {
 // トースト実装は増やさない。
 function showGenericToast(message, variant = 'default', { persistent = false } = {}) {
   const toast = ensureExternalUrlToast();
-  if (!toast || (!persistent && toast.dataset.persistent === 'true' && !toast.hidden)) return;
+  if (!toast || (!persistent && toast.dataset.persistent === 'true' && !toast.hidden)) return false;
   toast.classList.toggle('vk-toast--success', variant === 'success');
   const copyButton = toast.querySelector('.vk-toast-copy');
   if (copyButton) copyButton.hidden = true;
@@ -1521,6 +1522,7 @@ function showGenericToast(message, variant = 'default', { persistent = false } =
   setExternalUrlToastMessage(message);
   toast.hidden = false;
   reconsiderExternalUrlToastTimer();
+  return true;
 }
 
 // 外部ブラウザで開く処理を共通化したヘルパー。

@@ -7081,7 +7081,8 @@ async function initApp() {
         VKIpc.send('terminal:restore-ready', validPanes.map(p => ({ id: p.id, cols: terminals[p.paneId].term.cols, rows: terminals[p.paneId].term.rows })));
       });
       readyScheduled = true;
-      showRestoreWarning(restored.missing, restored.metadataLost);
+      if (restored.holderWarning) showGenericToast(restored.holderWarning);
+      else showRestoreWarning(restored.missing, restored.metadataLost);
       } catch (error) {
         console.warn('pane restore rendering failed', error);
         // 作成済みの端末は残し、まだ作れなかった端末だけを並びから外す。
@@ -7103,7 +7104,8 @@ async function initApp() {
       }
       if (Object.keys(terminals).length) return;
     }
-    showRestoreWarning(restored?.missing);
+    if (restored?.holderWarning) showGenericToast(restored.holderWarning);
+    else showRestoreWarning(restored?.missing);
   }
 
   // Dispose any existing terminals

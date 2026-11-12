@@ -2,6 +2,12 @@
 
 ## 起動
 
+組み込み起動では `paneHolder: 'tmux'` とともに `tmuxPath` に実行可能な通常ファイルの絶対パスを指定できる。シンボリックリンクは不可。指定すると版確認、制御接続、コマンド、停止処理に同じファイルを使い、PATH で探し直さない。`tmuxEnv` は `TERMINFO` と `TERMINFO_DIRS` の文字列だけを tmux サーバー環境に追加できる。NUL・改行を含む値は不可。
+
+`verifyPaneHolder(info)` は同期関数で、既存保持役へ制御接続する直前に `{ stage: 'attach', tmuxPath, socket, paneId: null }`、各ペインを復元する直前に `{ stage: 'restore', tmuxPath, socket, paneId }` を渡す。`true` 以外の戻り値と例外は失敗とし、対象ペインは接続しない。確認失敗は `paneHolderWarning`（既定は「前回のペインを確認できず、接続しませんでした」）で操作を止めない通知を出す。attach 段階の失敗では既存ペインを一つも復元せず、新規ペインの作成も止める。
+
+保持役の初期化またはペイン作成に失敗したときの `paneHolderFallback` は `'node-pty'`（既定）または `'error'`。`'error'` では切り替えず、`onPaneHolderError({ reason, socket })` を呼んでペイン作成を失敗として扱う。確認関数と失敗通知関数は既存の同期処理に合わせて同期で呼ぶ。
+
 `--pane-holder=tmux` または `embedded.start({ paneHolder: 'tmux' })` で有効になる。未指定・不正な CLI 値は node-pty を使う。組み込みオプションの不正値は例外にする。設定画面の項目には加えない。tmux 3.0 未満、バージョン不明、その他の保持役の初期化失敗時は、原因とソケットのパスを一度だけ警告し、そのアプリの起動中は再試行せず node-pty を使う。制御モードの接続が後から落ちた場合は、次のペイン作成時に保持役を作り直す。
 
 ## 構成

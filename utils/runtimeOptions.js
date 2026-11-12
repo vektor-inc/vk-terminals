@@ -73,6 +73,24 @@ function normalizeEmbeddedOptions(raw) {
   if (options.paneHolder != null && options.paneHolder !== 'tmux') {
     throw new TypeError('embedded options: paneHolder must be tmux');
   }
+  if (options.tmuxPath != null) {
+    if (options.paneHolder !== 'tmux') throw new TypeError('embedded options: tmuxPath requires paneHolder tmux');
+    if (typeof options.tmuxPath !== 'string' || !path.isAbsolute(options.tmuxPath)) throw new TypeError('embedded options: tmuxPath must be an absolute path');
+    try {
+      const stat = fs.lstatSync(options.tmuxPath);
+      if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('not a regular file');
+      fs.accessSync(options.tmuxPath, fs.constants.X_OK);
+    } catch (_) { throw new TypeError('embedded options: tmuxPath must be an executable regular file'); }
+  }
+  if (options.verifyPaneHolder != null && typeof options.verifyPaneHolder !== 'function') throw new TypeError('embedded options: verifyPaneHolder must be a function');
+  if (options.paneHolderWarning != null && (typeof options.paneHolderWarning !== 'string' || !options.paneHolderWarning.trim())) throw new TypeError('embedded options: paneHolderWarning must be a non-empty string');
+  if (options.paneHolderFallback != null && !['node-pty', 'error'].includes(options.paneHolderFallback)) throw new TypeError('embedded options: paneHolderFallback must be node-pty or error');
+  if (options.onPaneHolderError != null && typeof options.onPaneHolderError !== 'function') throw new TypeError('embedded options: onPaneHolderError must be a function');
+  const tmuxEnv = options.tmuxEnv || {};
+  if (typeof tmuxEnv !== 'object' || Array.isArray(tmuxEnv)) throw new TypeError('embedded options: tmuxEnv must be an object');
+  for (const [key, value] of Object.entries(tmuxEnv)) {
+    if (!['TERMINFO', 'TERMINFO_DIRS'].includes(key) || typeof value !== 'string' || /[\0\r\n]/.test(value)) throw new TypeError('embedded options: invalid tmuxEnv');
+  }
 
   // セットアップ状況の一覧（issue #456）。確認する関数とセットアップ用ペインの指定は必ず対で渡す
   // （片方だけだと「一覧は出るが始められない」「始められるが状況が見えない」状態になるため）。
@@ -112,6 +130,12 @@ function normalizeEmbeddedOptions(raw) {
     getSetupStatus: options.getSetupStatus != null ? options.getSetupStatus : null,
     setupPane,
     paneHolder: options.paneHolder || null,
+    tmuxPath: options.tmuxPath || null,
+    verifyPaneHolder: options.verifyPaneHolder || null,
+    paneHolderWarning: options.paneHolderWarning || '前回のペインを確認できず、接続しませんでした',
+    paneHolderFallback: options.paneHolderFallback || 'node-pty',
+    onPaneHolderError: options.onPaneHolderError || null,
+    tmuxEnv: { ...tmuxEnv },
   };
 }
 

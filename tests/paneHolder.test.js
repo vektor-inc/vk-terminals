@@ -9,6 +9,53 @@ const vm = require('node:vm');
 const { serverEnvironment, supportsHolderCommands, isSafeSocketPresent, createPaneEnvironmentScript, encodeKeys, decodeOutput, TmuxHolder, readPaneMetadata, writePaneMetadata, stopHolder } = require('../utils/paneHolder');
 const { getReadyPatternForEngine } = require('../utils/trustPromptWatcher');
 
+test('指定した tmux だけを版確認・コマンド・停止に使う', t => {
+  const realTmux = (process.env.PATH || '').split(path.delimiter).map(dir => path.join(dir, 'tmux')).find(file => { try { fs.accessSync(file, fs.constants.X_OK); return true; } catch (_) { return false; } });
+  if (!realTmux) { t.skip('tmux is unavailable'); return; }
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'vk-holder-path-')));
+  const fakeDir = path.join(dir, 'fake');
+  fs.mkdirSync(fakeDir);
+  const log = path.join(dir, 'calls');
+  const wrapper = path.join(dir, 'selected-tmux');
+  fs.writeFileSync(wrapper, `#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\nexec '${realTmux}' "$@"\n`, { mode: 0o700 });
+  fs.writeFileSync(path.join(fakeDir, 'tmux'), '#!/bin/sh\nexit 99\n', { mode: 0o700 });
+  const env = { HOME: dir, PATH: fakeDir + path.delimiter + (process.env.PATH || ''), VK_TERMINALS_HOLDER_RUN_DIR: dir };
+  let holder;
+  try {
+    holder = new TmuxHolder({ env, home: dir, tmux: wrapper });
+    holder.command(['list-sessions']);
+    holder.disconnect();
+    assert.equal(stopHolder(holder.socket, wrapper, env), true);
+    const calls = fs.readFileSync(log, 'utf8');
+    assert.match(calls, /-V/);
+    assert.match(calls, /list-sessions/);
+    assert.match(calls, /kill-server/);
+  } finally {
+    try { holder?.disconnect(); } catch (_) {}
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('既存保持役への接続確認が false のときは制御接続しない', t => {
+  const tmux = (process.env.PATH || '').split(path.delimiter).map(dir => path.join(dir, 'tmux')).find(file => { try { fs.accessSync(file, fs.constants.X_OK); return true; } catch (_) { return false; } });
+  if (!tmux) { t.skip('tmux is unavailable'); return; }
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'vk-holder-verify-')));
+  const env = { HOME: dir, PATH: process.env.PATH || '/usr/bin:/bin', VK_TERMINALS_HOLDER_RUN_DIR: dir };
+  let holder;
+  try {
+    holder = new TmuxHolder({ env, home: dir, tmux });
+    holder.disconnect();
+    const calls = [];
+    assert.throws(() => new TmuxHolder({ env, home: dir, tmux, verifyAttach: info => { calls.push(info); return false; } }), { code: 'HOLDER_VERIFICATION_FAILED' });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].stage, 'attach');
+    assert.equal(calls[0].socket, holder.socket);
+  } finally {
+    try { if (holder) stopHolder(holder.socket, tmux, env); } catch (_) {}
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('オプション無しの格納を維持し、メタデータへ触れない', () => {
   const renderer = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'app.js'), 'utf8');
   const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
@@ -54,6 +101,7 @@ test('保持役の初期化失敗後は次のペインで再試行せず、接�
     TmuxHolder: class { constructor() { attempts.push(1); throw new Error('socket is in use'); } },
     path, RESOURCE_ROOT: '/tmp', process: { env: { VK_TERMINALS_HOLDER_RUN_DIR: '/tmp/holder' } },
     os, LOG_PREFIX: 'test', console: { warn: message => warnings.push(message) },
+    holderOptions: () => ({}), holderFailure: () => {},
   };
   const initialize = () => vm.runInNewContext(source.slice(start, end), context);
   initialize();
@@ -89,6 +137,7 @@ test('復元で保持役を生成できない場合だけ、次の生成を止�
       fallbackHolderMetadata: () => ({ panes: [] }),
       hasRecentHolderMetadata: () => false,
       LOG_PREFIX: 'test', console: { warn: () => {} },
+      holderOptions: () => ({}), holderFailure: () => {}, EMBEDDED_OPTIONS: null,
     };
     vm.runInNewContext(source.slice(start, end) + '\n});', context);
     await handler();

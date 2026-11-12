@@ -11,6 +11,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const net = require('node:net');
 const path = require('node:path');
+const os = require('node:os');
 
 const {
   normalizeEmbeddedOptions,
@@ -41,7 +42,34 @@ test('normalizeEmbeddedOptions: 未指定は既定値（自己更新は未指定
     getSetupStatus: null,
     setupPane: null,
     paneHolder: null,
+    tmuxPath: null,
+    verifyPaneHolder: null,
+    paneHolderWarning: '前回のペインを確認できず、接続しませんでした',
+    paneHolderFallback: 'node-pty',
+    onPaneHolderError: null,
+    tmuxEnv: {},
   });
+});
+
+test('組み込み保持役の実行ファイル、環境、確認関数を検証する', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-tmux-options-'));
+  const tmux = path.join(dir, 'tmux');
+  const link = path.join(dir, 'link');
+  try {
+    fs.writeFileSync(tmux, '#!/bin/sh\n', { mode: 0o700 });
+    fs.symlinkSync(tmux, link);
+    const verify = () => true;
+    const options = normalizeEmbeddedOptions({ paneHolder: 'tmux', tmuxPath: tmux, tmuxEnv: { TERMINFO_DIRS: '/tmp/terminfo' }, verifyPaneHolder: verify, paneHolderFallback: 'error' });
+    assert.equal(options.tmuxPath, tmux);
+    assert.equal(options.verifyPaneHolder, verify);
+    assert.equal(options.paneHolderFallback, 'error');
+    assert.deepEqual(options.tmuxEnv, { TERMINFO_DIRS: '/tmp/terminfo' });
+    for (const bad of [link, dir, '/missing/tmux', 'relative/tmux']) assert.throws(() => normalizeEmbeddedOptions({ paneHolder: 'tmux', tmuxPath: bad }), TypeError);
+    assert.throws(() => normalizeEmbeddedOptions({ tmuxPath: tmux }), TypeError);
+    assert.throws(() => normalizeEmbeddedOptions({ paneHolder: 'tmux', tmuxEnv: { SECRET: 'x' } }), TypeError);
+    assert.throws(() => normalizeEmbeddedOptions({ paneHolder: 'tmux', tmuxEnv: { TERMINFO: 'a\nb' } }), TypeError);
+    assert.throws(() => normalizeEmbeddedOptions({ paneHolder: 'tmux', verifyPaneHolder: true }), TypeError);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('normalizeEmbeddedOptions: 指定値を正規化し、不明なキーは捨てる', () => {

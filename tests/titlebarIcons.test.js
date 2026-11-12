@@ -16,10 +16,10 @@ test('タイトルバーの操作ボタンは Lucide スプライトを読み上
   assert.match(indexHtml, /id="settings-btn"[^>]*aria-label="設定"[^>]*>[\s\S]*?<svg class="titlebar-icon" aria-hidden="true"><use href="icons\/ui\.svg#settings"><\/use><\/svg>/);
 });
 
-test('Lucide スプライトは menu と settings のみを currentColor で収録する', () => {
+test('Lucide スプライトはタイトルバーとアプリ内ブラウザのアイコンを currentColor で収録する', () => {
   const symbolIds = [...iconSprite.matchAll(/<symbol id="([^"]+)"/g)].map((match) => match[1]);
-  assert.deepEqual(symbolIds, ['menu', 'settings']);
-  assert.equal((iconSprite.match(/stroke="currentColor"/g) || []).length, 2);
+  assert.deepEqual(symbolIds, ['menu', 'settings', 'panel-right', 'arrow-left', 'arrow-right', 'rotate-cw', 'external-link', 'x']);
+  assert.equal((iconSprite.match(/stroke="currentColor"/g) || []).length, symbolIds.length);
 });
 
 test('メニューの使用率警告ドットはアイコン化後もボタン上に表示する', () => {

@@ -101,7 +101,325 @@ const escapeLayers = createEscapeLayerStack(document);
 // ただし openSettingsModal() は settings:describe の応答を待つため、⚙ を押してから
 // パネルが生成されるまでの数 ms はまだ何も inert ではない。この隙間にペインの ✕ を
 // 押せれば逆転しうる（手動では踏めず、二重オープンも各ガードで防がれているため未対応）。
-const focusTraps = createFocusTrapStack(document);
+const focusTraps = createFocusTrapStack(document, count => VKIpc.send('internal-browser:modal-count', count));
+
+// ページ本体は main の WebContentsView。こちらは枠と操作列だけを描く。
+const internalBrowserSidebar = document.createElement('aside');
+internalBrowserSidebar.id = 'internal-browser-sidebar';
+internalBrowserSidebar.className = 'internal-browser-sidebar';
+internalBrowserSidebar.setAttribute('aria-label', 'アプリ内ブラウザ');
+internalBrowserSidebar.innerHTML = `<div class="internal-browser-resizer" role="separator" tabindex="0" aria-label="アプリ内ブラウザの幅を変更" aria-orientation="vertical" aria-valuemin="360" aria-valuemax="720" aria-valuenow="480"></div><div class="internal-browser-toolbar"><button type="button" data-action="back" title="戻る" aria-label="戻る"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#arrow-left"></use></svg></button><button type="button" data-action="forward" title="進む" aria-label="進む"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#arrow-right"></use></svg></button><button type="button" data-action="reload" title="再読み込み" aria-label="再読み込み"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#rotate-cw"></use></svg></button><button type="button" class="internal-browser-url" title="URL をコピー" aria-label="表示中の URL をコピー"></button><button type="button" data-action="external" title="外部ブラウザで開く" aria-label="外部ブラウザで開く"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#external-link"></use></svg></button><button type="button" data-action="close" title="閉じる" aria-label="閉じる"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#x"></use></svg></button></div><div class="internal-browser-progress" hidden></div><div class="internal-browser-notice" role="status" hidden></div><div class="internal-browser-error" role="status" hidden><p class="internal-browser-error-message">ページを表示できませんでした</p><button type="button" data-action="reload">再読み込み</button><button type="button" data-action="external">外部ブラウザで開く</button></div><div class="internal-browser-page"></div>`;
+let internalBrowserOpen = false;
+let internalBrowserUrl = '';
+let internalBrowserFailedUrl = '';
+let internalBrowserDownloadUrl = '';
+let preferredInternalBrowserWidth = Number(localStorage.getItem('vk-terminals.internalBrowserWidth'));
+let displayedInternalBrowserWidth = 0;
+let previousInternalBrowserLayout = null;
+let internalBrowserHasPage = false;
+let internalBrowserChoice = null;
+let unregisterInternalBrowserEscape = null;
+// ページ未表示でも操作列から閉じられるよう、閉じるボタンは無効化しない。
+for (const button of internalBrowserSidebar.querySelectorAll('.internal-browser-toolbar button:not([data-action="close"])')) button.disabled = true;
+
+function syncInternalBrowserLayout() {
+  const root = document.getElementById('root');
+  if (!root) return;
+  const { browserAvailableWidth, shouldFoldSetupPanel, clampBrowserWidth, browserWidthMax, shouldWrapToastPhrase } = window.VKInternalBrowserLayout;
+  const columns = gridDims().cols;
+  const windowWidth = root.clientWidth;
+  const leftSidebar = root.classList.contains('sidebar-open') ? document.getElementById('sidebar')?.getBoundingClientRect().width || 0 : 0;
+  root.style.setProperty('--vktm-left-sidebar-width', `${leftSidebar}px`);
+  const grid = root.querySelector('.grid');
+  const gridStyle = grid ? getComputedStyle(grid) : null;
+  const gridMinimumWidth = gridStyle ? Math.max(
+    parseFloat(gridStyle.minWidth) || 0,
+    (parseFloat(gridStyle.paddingLeft) || 0) + (parseFloat(gridStyle.paddingRight) || 0)
+      + (parseFloat(gridStyle.borderLeftWidth) || 0) + (parseFloat(gridStyle.borderRightWidth) || 0),
+  ) : 0;
+  const setupPanelElement = root.querySelector('.setup-panel');
+  const setupPanelMinimumWidth = setupPanel?.hasPanel()
+    ? parseFloat(getComputedStyle(root).getPropertyValue('--vktm-setup-panel-min-width')) || 0 : 0;
+  // 横並びの成立条件は必要な最小幅だけで決め、ブラウザの保存幅には左右されない。
+  const sideBySideGridMinimumWidth = setupPanelMinimumWidth ? Math.max(320, gridMinimumWidth) : gridMinimumWidth;
+  const panelMustFold = !!setupPanelMinimumWidth && shouldFoldSetupPanel(
+    windowWidth, leftSidebar, sideBySideGridMinimumWidth, setupPanelMinimumWidth, columns, internalBrowserOpen,
+  );
+  if (setupPanel) setupPanel.setAvailableWidth(internalBrowserOpen
+    ? (panelMustFold ? 0 : Math.max(1000, windowWidth)) : windowWidth);
+  // 配置変更を要求した直後でも、切替後のグリッド最小幅でブラウザ幅を決める。
+  const effectiveGridMinimumWidth = panelMustFold ? 12 : sideBySideGridMinimumWidth;
+  // 帯と利用者が開いた重ね表示はグリッドと横並びにならない。
+  const otherWidths = [...root.children]
+    .filter(element => element !== internalBrowserSidebar && element.id !== 'sidebar' && !element.contains(grid))
+    .filter(element => { const style = getComputedStyle(element); return style.display !== 'none' && style.position !== 'absolute'; })
+    .map(element => element === setupPanelElement ? setupPanelMinimumWidth : element.getBoundingClientRect().width);
+  const availableWidth = browserAvailableWidth(windowWidth, leftSidebar, otherWidths);
+  const maxWidth = browserWidthMax(availableWidth, columns, windowWidth, effectiveGridMinimumWidth);
+  displayedInternalBrowserWidth = clampBrowserWidth(preferredInternalBrowserWidth || NaN, availableWidth, columns, windowWidth, effectiveGridMinimumWidth);
+  root.classList.toggle('toast-phrase-wrap', shouldWrapToastPhrase(windowWidth, displayedInternalBrowserWidth));
+  internalBrowserSidebar.style.width = `${displayedInternalBrowserWidth}px`;
+  document.body.style.setProperty('--vktm-internal-browser-width', `${displayedInternalBrowserWidth}px`);
+  const resizer = internalBrowserSidebar.querySelector('.internal-browser-resizer');
+  resizer.setAttribute('aria-valuemin', String(Math.min(360, maxWidth)));
+  resizer.setAttribute('aria-valuemax', String(maxWidth));
+  resizer.setAttribute('aria-valuenow', String(displayedInternalBrowserWidth));
+  internalBrowserSidebar.hidden = !internalBrowserOpen;
+  root.classList.toggle('internal-browser-open', internalBrowserOpen);
+  document.getElementById('internal-browser-toggle')?.setAttribute('aria-pressed', String(internalBrowserOpen));
+  const page = internalBrowserSidebar.querySelector('.internal-browser-page');
+  if (page) {
+    const rect = page.getBoundingClientRect();
+    const zoom = window.VKWebFrame?.getZoomFactor?.() || 1;
+    VKIpc.send('internal-browser:bounds', { x: rect.x * zoom, y: rect.y * zoom, width: rect.width * zoom, height: rect.height * zoom });
+  }
+  VKIpc.send('internal-browser:visible', internalBrowserOpen && !document.body.classList.contains('resizing-internal-browser'));
+  const layout = `${internalBrowserOpen}:${displayedInternalBrowserWidth}:${columns}`;
+  if (layout !== previousInternalBrowserLayout) {
+    previousInternalBrowserLayout = layout;
+    if (document.body.classList.contains('resizing-internal-browser') || document.body.classList.contains('resizing-sidebar')) debouncedFitAll();
+    else requestAnimationFrame(fitAll);
+  }
+}
+
+function setInternalBrowserOpen(value) {
+  internalBrowserOpen = value;
+  if (!value && internalBrowserSidebar.contains(document.activeElement)) document.getElementById('internal-browser-toggle')?.focus();
+  if (value && !internalBrowserHasPage) {
+    const notice = internalBrowserSidebar.querySelector('.internal-browser-notice');
+    notice.textContent = 'ペイン内の URL・issue タイトル・PR ボタンをクリックして「アプリ内で開く」を選ぶと、ここに表示されます。';
+    notice.hidden = false;
+  }
+  syncInternalBrowserLayout();
+}
+
+function focusInternalBrowserToolbar() {
+  const url = internalBrowserSidebar.querySelector('.internal-browser-url');
+  const reload = internalBrowserSidebar.querySelector('.internal-browser-toolbar [data-action="reload"]');
+  const focusable = element => element && !element.disabled && !element.hidden && !element.closest?.('[hidden]') && (!element.getClientRects || element.getClientRects().length > 0);
+  if (focusable(url)) url.focus();
+  else if (focusable(reload)) reload.focus();
+}
+
+function hideInternalBrowserContent(element) {
+  if (element.contains(document.activeElement)) focusInternalBrowserToolbar();
+  element.hidden = true;
+}
+
+function closeInternalBrowserChoice(focusTerminal = false) {
+  if (!internalBrowserChoice) return;
+  const { menu, origin } = internalBrowserChoice;
+  unregisterInternalBrowserEscape?.();
+  unregisterInternalBrowserEscape = null;
+  menu.remove();
+  internalBrowserChoice = null;
+  if (!focusTerminal && origin?.isConnected) origin.focus();
+  else terminals[focusedPaneId]?.term?.focus();
+}
+
+function showInternalBrowserChoice(url, event, origin) {
+  if (!isSafeHttpUrl(url) || !window.VKInternalBrowserChoicePolicy.shouldShowBrowserChoice(event, lastClickWasDrag)) return;
+  closeInternalBrowserChoice();
+  hideTermLinkTooltip();
+  const menu = document.createElement('div');
+  menu.className = 'internal-browser-choice';
+  menu.setAttribute('role', 'menu');
+  const host = new URL(url).host;
+  menu.setAttribute('aria-label', `${host} の開き先`);
+  const heading = document.createElement('div');
+  heading.className = 'internal-browser-choice-heading';
+  heading.setAttribute('aria-hidden', 'true');
+  heading.textContent = `${host} の開き先`;
+  menu.appendChild(heading);
+  for (const [target, label] of [['internal', 'アプリ内で開く'], ['external', '外部ブラウザで開く ↗']]) {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.setAttribute('role', 'menuitem');
+    item.textContent = label;
+    item.addEventListener('click', clickEvent => {
+      if (clickEvent.detail > 1) return;
+      closeInternalBrowserChoice();
+      if (target === 'internal') {
+        internalBrowserHasPage = true;
+        hideInternalBrowserContent(internalBrowserSidebar.querySelector('.internal-browser-notice'));
+        hideInternalBrowserContent(internalBrowserSidebar.querySelector('.internal-browser-error'));
+        setInternalBrowserOpen(true);
+        VKIpc.invoke('internal-browser:open', url).catch(() => {});
+      } else openExternalUrlSafe(url, { onSuccess: () => showTerminalLinkOpenedToast(url) });
+    });
+    menu.appendChild(item);
+  }
+  document.body.appendChild(menu);
+  const boundary = internalBrowserOpen ? internalBrowserSidebar.getBoundingClientRect().left : window.innerWidth;
+  const anchor = origin?.getBoundingClientRect();
+  const x = anchor ? anchor.left : event?.clientX || 0;
+  const y = anchor ? anchor.bottom : event?.clientY || 0;
+  menu.style.left = `${Math.max(4, x + menu.offsetWidth + 6 <= boundary ? x + 6 : x - menu.offsetWidth - 6)}px`;
+  menu.style.top = `${Math.max(38, y + menu.offsetHeight + 6 <= window.innerHeight ? y + 6 : y - menu.offsetHeight - 6)}px`;
+  internalBrowserChoice = { menu, origin };
+  unregisterInternalBrowserEscape = escapeLayers.register(() => closeInternalBrowserChoice());
+  menu.querySelector('[role="menuitem"]').focus();
+}
+
+document.addEventListener('keydown', event => {
+  if (!internalBrowserChoice) return;
+  if (event.isComposing || ['Shift', 'Alt', 'Meta', 'Control'].includes(event.key)) return;
+  const items = [...internalBrowserChoice.menu.querySelectorAll('[role="menuitem"]')];
+  if (event.key === 'Tab') { event.preventDefault(); closeInternalBrowserChoice(); return; }
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    event.preventDefault();
+    const next = (items.indexOf(document.activeElement) + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+    items[next].focus();
+  } else if (event.key === 'Home' || event.key === 'End') {
+    event.preventDefault();
+    items[event.key === 'Home' ? 0 : items.length - 1].focus();
+  } else if (!['Enter', ' ', 'Home', 'End', 'Escape'].includes(event.key)) {
+    event.preventDefault();
+    closeInternalBrowserChoice(true);
+  }
+}, true);
+document.addEventListener('pointerdown', event => { if (internalBrowserChoice && !internalBrowserChoice.menu.contains(event.target)) closeInternalBrowserChoice(); }, true);
+document.addEventListener('wheel', event => { if (internalBrowserChoice && event.target.closest('.pane, .stash-item')) closeInternalBrowserChoice(); }, true);
+
+internalBrowserSidebar.addEventListener('click', event => {
+  const action = event.target.closest('[data-action]')?.dataset.action;
+  if (action === 'close') { setInternalBrowserOpen(false); document.getElementById('internal-browser-toggle')?.focus(); }
+  else if (action === 'external') {
+    const url = event.target.closest('.internal-browser-error') ? internalBrowserFailedUrl : (internalBrowserDownloadUrl || internalBrowserUrl);
+    if (url) openExternalUrlSafe(url);
+  }
+  else if (action) VKIpc.invoke('internal-browser:action', action).catch(() => {});
+  else if (event.target.closest('.internal-browser-url') && internalBrowserUrl) VKClipboard.writeText(internalBrowserUrl).then(ok => { if (ok) showGenericToast('URL をコピーしました'); });
+});
+document.getElementById('internal-browser-toggle').addEventListener('click', () => setInternalBrowserOpen(!internalBrowserOpen));
+const internalBrowserResizer = internalBrowserSidebar.querySelector('.internal-browser-resizer');
+internalBrowserResizer.addEventListener('pointerdown', event => {
+  event.preventDefault();
+  internalBrowserResizer.setPointerCapture(event.pointerId);
+  document.body.classList.add('resizing-internal-browser');
+  VKIpc.send('internal-browser:visible', false);
+});
+internalBrowserResizer.addEventListener('pointermove', event => {
+  if (!internalBrowserResizer.hasPointerCapture(event.pointerId)) return;
+  preferredInternalBrowserWidth = window.innerWidth - event.clientX;
+  syncInternalBrowserLayout();
+  preferredInternalBrowserWidth = displayedInternalBrowserWidth;
+  VKIpc.send('internal-browser:visible', false);
+});
+function finishInternalBrowserResize(event) {
+  if (internalBrowserResizer.hasPointerCapture(event.pointerId)) internalBrowserResizer.releasePointerCapture(event.pointerId);
+  if (!document.body.classList.contains('resizing-internal-browser')) return;
+  document.body.classList.remove('resizing-internal-browser');
+  localStorage.setItem('vk-terminals.internalBrowserWidth', String(preferredInternalBrowserWidth));
+  syncInternalBrowserLayout();
+}
+internalBrowserResizer.addEventListener('pointerup', finishInternalBrowserResize);
+internalBrowserResizer.addEventListener('pointercancel', finishInternalBrowserResize);
+internalBrowserResizer.addEventListener('lostpointercapture', finishInternalBrowserResize);
+internalBrowserResizer.addEventListener('keydown', event => {
+  if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+  event.preventDefault();
+  preferredInternalBrowserWidth = displayedInternalBrowserWidth + (event.key === 'ArrowLeft' ? 16 : -16);
+  syncInternalBrowserLayout();
+  preferredInternalBrowserWidth = displayedInternalBrowserWidth;
+  localStorage.setItem('vk-terminals.internalBrowserWidth', String(preferredInternalBrowserWidth));
+});
+window.addEventListener('resize', syncInternalBrowserLayout);
+VKIpc.on('internal-browser:state', state => {
+  internalBrowserUrl = state.url || '';
+  internalBrowserFailedUrl = state.failedUrl || '';
+  internalBrowserDownloadUrl = state.downloadUrl || '';
+  // 消える案内から移る前に、次の URL と再読み込みの可用性を反映する。
+  internalBrowserSidebar.querySelector('.internal-browser-url').disabled = !internalBrowserUrl;
+  internalBrowserSidebar.querySelector('.internal-browser-toolbar [data-action="reload"]').disabled = !internalBrowserHasPage;
+  const errorView = internalBrowserSidebar.querySelector('.internal-browser-error');
+  if (internalBrowserFailedUrl) {
+    errorView.hidden = false;
+    for (const button of errorView.querySelectorAll('button')) button.disabled = false;
+  }
+  else hideInternalBrowserContent(errorView);
+  let failedHost = '';
+  if (internalBrowserFailedUrl) {
+    try { failedHost = new URL(internalBrowserFailedUrl).hostname; } catch {}
+  }
+  const errorMessage = errorView.querySelector('.internal-browser-error-message');
+  // 失敗解除時に文も消し、同じホストで再び失敗した際の読み上げを促す。
+  const errorText = !internalBrowserFailedUrl ? '' : failedHost
+    ? `ページを表示できませんでした（${failedHost}）` : 'ページを表示できませんでした';
+  if (errorMessage.textContent !== errorText) errorMessage.textContent = errorText;
+  const notice = internalBrowserSidebar.querySelector('.internal-browser-notice');
+  const github404Url = state.github404Url || '';
+  if (notice.dataset.url !== github404Url) {
+    if (notice.contains(document.activeElement)) focusInternalBrowserToolbar();
+    notice.dataset.url = github404Url;
+    notice.dataset.dismissed = '';
+    notice.replaceChildren();
+    if (github404Url) {
+      const description = document.createElement('p');
+      description.textContent = 'プライベートリポジトリのページは、アプリ内ブラウザで GitHub にログインすると表示できます。';
+      notice.append(description);
+      const actions = document.createElement('div');
+      actions.className = 'internal-browser-notice-actions';
+      const login = document.createElement('button'); login.textContent = 'GitHub にログイン';
+      login.addEventListener('click', () => { VKIpc.invoke('internal-browser:open', 'https://github.com/login'); internalBrowserSidebar.querySelector('.internal-browser-url').focus(); });
+      const close = document.createElement('button'); close.textContent = '案内を閉じる'; close.addEventListener('click', () => {
+        notice.dataset.dismissed = 'true';
+        hideInternalBrowserContent(notice);
+        // 案内を閉じるとページの上端が動くため、main 側の表示位置も更新する。
+        syncInternalBrowserLayout();
+      });
+      actions.append(login, close);
+      notice.append(actions);
+    }
+  }
+  if (!github404Url) hideInternalBrowserContent(notice);
+  else if (notice.dataset.url === github404Url && !notice.dataset.dismissed) notice.hidden = false;
+  const display = internalBrowserSidebar.querySelector('.internal-browser-url');
+  display.replaceChildren();
+  if (internalBrowserUrl) {
+    const parsed = new URL(internalBrowserUrl);
+    if (parsed.protocol === 'http:') {
+      const warning = document.createElement('span');
+      warning.className = 'internal-browser-http';
+      warning.textContent = 'http://';
+      display.append(warning);
+    }
+    const host = document.createElement('span');
+    host.className = 'internal-browser-host';
+    host.textContent = parsed.host;
+    const path = document.createElement('span');
+    path.className = 'internal-browser-path';
+    path.textContent = parsed.pathname + parsed.search + parsed.hash;
+    display.append(host, path);
+  }
+  display.title = internalBrowserUrl || 'URL をコピー';
+  display.setAttribute('aria-label', internalBrowserUrl ? `表示中の URL をコピー: ${internalBrowserUrl}` : '表示中の URL をコピー');
+  display.disabled = !internalBrowserUrl;
+  const externalButton = internalBrowserSidebar.querySelector('.internal-browser-toolbar [data-action="external"]');
+  const externalLabel = internalBrowserDownloadUrl
+    ? `外部ブラウザで開く: ${internalBrowserDownloadUrl}` : '外部ブラウザで開く';
+  externalButton.title = externalLabel;
+  externalButton.setAttribute('aria-label', externalLabel);
+  externalButton.disabled = !(internalBrowserDownloadUrl || internalBrowserUrl);
+  internalBrowserSidebar.querySelector('[data-action="back"]').disabled = !state.canGoBack;
+  internalBrowserSidebar.querySelector('[data-action="forward"]').disabled = !state.canGoForward;
+  internalBrowserSidebar.querySelector('.internal-browser-progress').hidden = !state.loading;
+  syncInternalBrowserLayout();
+});
+VKIpc.on('internal-browser:download-blocked', () => {
+  const toastMessage = 'ダウンロードはできません。操作列の「外部ブラウザで開く」から行ってください。';
+  // 持続通知が表示中なら、その本文をダウンロード案内で上書きしない。
+  if (!showGenericToast(toastMessage)) return;
+  const message = externalUrlToastEl?.querySelector('.vk-toast-message');
+  if (message) {
+    const [beforeAction, afterAction] = toastMessage.split('「外部ブラウザで開く」');
+    message.replaceChildren(beforeAction);
+    const action = document.createElement('span');
+    action.className = 'vk-toast-phrase';
+    action.textContent = '「外部ブラウザで開く」';
+    message.append(action, afterAction);
+  }
+});
 
 // ─── State ────────────────────────────────────────────────────────────────────
 let tree = null;       // Layout tree root
@@ -130,41 +448,6 @@ const PANE_DROP_DEADZONE = 0.2;
 let terminals = {};    // paneId -> { termId, term, fitAddon, element, cwd, cwdFull, waiting, status, runningTimer, lastLines, ... }
 let focusedPaneId = null;
 let dragState = null;
-// ペイン内 URL の最初のクリックがフォーカス移動だけだったかどうかの判定に使う
-// （issue #385）。paneId -> 「今回の mousedown でフォーカスが切り替わる直前、その
-// ペインが既にフォーカス済みだったか」の boolean。.pane / .stash-item 要素の mousedown
-// ハンドラ（focusPane() を呼ぶ直前、recordPaneFocusBeforeMousedown() 経由）で記録し、
-// その後の mouseup で発火する xterm.js の activate（createTerminalLinkHandlers の
-// wasPaneFocused 依存関数）から参照する。記録タイミングの理由は
-// utils/terminalLinkPolicy.js の createTerminalLinkHandlers 冒頭コメント参照。
-// closePane() で該当エントリを削除する。
-const paneFocusBeforeMousedown = new Map();
-
-// ウィンドウが blur から復帰した直後の最初の mousedown かどうか（issue #385 レビュー
-// 指摘・MEDIUM-5）。別アプリから VK Terminals をクリックして前面に出すとき、その
-// クリックがたまたまフォーカス済みペインの URL 上に落ちるとブラウザが開いてしまう
-// （修飾キー必須のときは起きなかった事故）。window の blur で pendingWindowRefocusClick
-// を立て、次の mousedown（document の capture フェーズ。xterm.js 側の内部リスナーより
-// 必ず先に発火する。理由は下の document.addEventListener 呼び出しのコメント参照）で
-// isPostWindowBlurMousedown へ確定させてからフラグを消費する。
-// recordPaneFocusBeforeMousedown() はこの値が true のときフォーカス状態を強制的に
-// false 扱いにする（＝フォーカス移動だけの操作とみなし、リンクは開かせない）。
-//
-// 【設計メモ・崩さないこと】この仕組みは「blur で印を立て、次の mousedown で消費する」
-// 形でなければ成立しない。「focus イベントで印を消す」形に直すと、クリックでウィンドウを
-// 前面化する場合は OS ネイティブの focus イベントの方が mousedown より先に飛ぶため
-// （フォーカス移動が先に確定してからアプリ側に mousedown が届く）、印を立てる暇なく
-// 消えてしまい、ガードが丸ごと効かなくなる（レビュー指摘・MEDIUM-5 の補足）。
-//
-// 【レビュー指摘・LOW-B】既定値を false にしていると、アプリがバックグラウンド起動
-// （最初からウィンドウが前面に無い状態）した場合は blur が一度も飛ばないため、
-// 前面に出すための最初のクリックが通常のクリック扱いになってしまう。それが起動時に
-// 自動フォーカスされる最初のペイン（initApp() 参照）の URL 上に落ちると開く。
-// 起動時点で document がフォーカスを持っていなければ、最初から「復帰クリック待ち」
-// 状態で始める。
-let pendingWindowRefocusClick = !document.hasFocus();
-let isPostWindowBlurMousedown = false;
-
 // URL のドラッグ選択判定用の状態（issue #385 レビュー指摘・HIGH-2）。xterm.js の
 // Linkifier は mousedown 時点のリンクと mouseup 時点のリンクが一致するだけで activate
 // を呼び、ポインタの移動量や選択の有無は一切見ない。これは「別々のリンクをまたぐ
@@ -195,12 +478,9 @@ let lastClickWasDrag = false;
 // （ターミナルの描画要素＝ document の子孫へ登録される）より必ず先に発火させるため。
 // capture フェーズは document → 子孫の順（上から下）へ完全に進み終えてから bubble
 // フェーズが始まるため、document の capture リスナーは子孫側の登録順・登録タイミングに
-// かかわらず常に先に走る（paneFocusBeforeMousedown の記録に使っている .pane /
-// .stash-item の mousedown ハンドラと同じ考え方）。
+// かかわらず常に先に走る。
 document.addEventListener('mousedown', (event) => {
   lastMousedownClientPos = { x: event.clientX, y: event.clientY };
-  isPostWindowBlurMousedown = pendingWindowRefocusClick;
-  pendingWindowRefocusClick = false;
 }, true);
 document.addEventListener('mouseup', (event) => {
   lastClickWasDrag = isDragDistance(
@@ -209,16 +489,6 @@ document.addEventListener('mouseup', (event) => {
     TERM_LINK_DRAG_THRESHOLD_PX
   );
 }, true);
-
-// .pane（グリッド）・.stash-item（格納・サイドバー）のどちらの mousedown からも
-// 必ずこのヘルパー経由で記録する（issue #385 レビュー指摘・MEDIUM-1）。格納ペインの
-// xterm 要素は render() の再アタッチで .stash-item .term-container へ移されて生きた
-// まま操作でき、リンクプロバイダも登録済みのままなので、.pane 側でしか記録しないと
-// 格納ペインでガードが機能しない（またはその逆）。
-function recordPaneFocusBeforeMousedown(paneId) {
-  const wasFocused = isPostWindowBlurMousedown ? false : (focusedPaneId === paneId);
-  paneFocusBeforeMousedown.set(paneId, wasFocused);
-}
 
 // status 判定で使う閾値（ms）。
 //   - RUNNING_IDLE_TIMEOUT_MS: 最後の PTY 出力から何 ms 経ったら idle に戻すか
@@ -245,8 +515,7 @@ let initialPaneCodexModel = '';
 // ペインを閉じる時の確認（issue #184）。'never' | 'busy' | 'always'（既定 'busy'）。
 // 値は起動時に main（app:get-config）から取得する。保存後は main の定期監視で反映する。
 let confirmClosePref = 'busy';
-// ペイン内 URL のクリック挙動（issue #385）。'click'（既定・単クリックで開く） |
-// 'modifier'（従来どおり ⌘/Ctrl+クリックが必要）。
+// ペイン内 URL のメニュー表示条件。'click'（既定）か 'modifier'。
 // 値は起動時に main（app:get-config）から取得する。保存後は main の定期監視で反映する。
 let terminalLinkClickModePref = 'click';
 let waitingExcludeCwdPatterns = [];
@@ -678,22 +947,16 @@ async function createTerminal(paneId, cwd, options = {}, createdResult = null) {
   // ツールチップの文言（TERM_LINK_MODIFIER_LABEL）はキャッシュ済みの IS_MAC_PLATFORM を
   // 使っており、「実際に見ている修飾キー」と「表示している修飾キー」の判定元が
   // 2 箇所に分かれてしまう。値は実行中変わらないため実害は無いが、出所を 1 本化する。
-  // openUrl は openExternalUrlSafe を直接ではなく openTerminalLinkUrl 経由で渡す
-  // （開いた直後の「開きました」トーストを橋渡しするラッパー。開く経路自体は増やしていない）。
+  // リンクは直接開かず openTerminalLinkUrl の選択メニューへ渡す。
   // getClickMode は実行時に terminalLinkClickModePref（生きたグローバル変数）を読む関数で
   // 渡す。ツールチップ文言（termLinkTooltipMessage）も同じ変数を実行時に読んでおり、
-  // 参照経路を1本化するため、生成時点の固定値スナップショットは渡さない
-  // （レビュー指摘・LOW-2）。wasPaneFocused / wasDragged はこの paneId に閉じたクロージャで、
-  // それぞれ paneFocusBeforeMousedown（.pane / .stash-item の mousedown ハンドラが記録）・
-  // lastClickWasDrag（document の mousedown/mouseup capture リスナーが記録）を参照する
-  // （issue #385）。
+  // 参照経路を1本化するため、生成時点の固定値スナップショットは渡さない。
   term.registerLinkProvider(createTerminalLinkProvider(term, createTerminalLinkHandlers({
     openUrl: openTerminalLinkUrl,
     showTooltip: showTermLinkTooltip,
     hideTooltip: hideTermLinkTooltip,
     isMac: IS_MAC_PLATFORM,
     getClickMode: () => terminalLinkClickModePref,
-    wasPaneFocused: () => paneFocusBeforeMousedown.get(paneId) === true,
     wasDragged: () => lastClickWasDrag,
   })));
 
@@ -1271,7 +1534,7 @@ function showExternalUrlOpenFailedToast(url) {
 // トースト実装は増やさない。
 function showGenericToast(message, variant = 'default', { persistent = false } = {}) {
   const toast = ensureExternalUrlToast();
-  if (!toast || (!persistent && toast.dataset.persistent === 'true' && !toast.hidden)) return;
+  if (!toast || (!persistent && toast.dataset.persistent === 'true' && !toast.hidden)) return false;
   toast.classList.toggle('vk-toast--success', variant === 'success');
   const copyButton = toast.querySelector('.vk-toast-copy');
   if (copyButton) copyButton.hidden = true;
@@ -1286,6 +1549,7 @@ function showGenericToast(message, variant = 'default', { persistent = false } =
   setExternalUrlToastMessage(message);
   toast.hidden = false;
   reconsiderExternalUrlToastTimer();
+  return true;
 }
 
 // 外部ブラウザで開く処理を共通化したヘルパー。
@@ -1374,15 +1638,11 @@ function openExternalUrlSafe(url, options = {}) {
 const { isMacPlatform, createTerminalLinkHandlers, normalizeTerminalLinkClickMode, isDragDistance } = window.VKTerminalLinkPolicy;
 const IS_MAC_PLATFORM = isMacPlatform();
 // 'modifier' モード専用のラベル（'click' モードでは使わない。termLinkTooltipMessage 参照）。
-const TERM_LINK_MODIFIER_LABEL = IS_MAC_PLATFORM ? '⌘+クリックで開く' : 'Ctrl+クリックで開く';
+const TERM_LINK_MODIFIER_LABEL = IS_MAC_PLATFORM ? '⌘+クリックでメニューを出す' : 'Ctrl+クリックでメニューを出す';
 
-// openExternalUrlSafe(url) のラッパー。ペイン内 URL クリックで開いたときだけ、
-// 開いた直後に短いトーストで知らせる（issue #385）。サイドバーメニューなど他の
-// openExternalUrlSafe 呼び出し元の挙動は変えないため、ここでだけ onSuccess を渡す。
-function openTerminalLinkUrl(url) {
-  openExternalUrlSafe(url, {
-    onSuccess: () => showTerminalLinkOpenedToast(url),
-  });
+// ペイン内 URL は開き先メニューへ渡す。直接のページ遷移はここで行わない。
+function openTerminalLinkUrl(url, event) {
+  showInternalBrowserChoice(url, event);
 }
 
 // 開いたことを知らせるトースト文言を出す。既存のトースト基盤（showGenericToast /
@@ -1450,9 +1710,9 @@ function ensureTermLinkTooltip() {
 function termLinkTooltipMessage(url) {
   const host = getUrlHost(url);
   if (terminalLinkClickModePref === 'modifier') {
-    return host ? `${host} を ${TERM_LINK_MODIFIER_LABEL}` : TERM_LINK_MODIFIER_LABEL;
+    return host ? `${host}: ${TERM_LINK_MODIFIER_LABEL}` : TERM_LINK_MODIFIER_LABEL;
   }
-  return host ? `${host} を開きます` : '開きます';
+  return host ? `${host} の開き先を選ぶ` : '開き先を選ぶ';
 }
 
 // カーソル位置の近くにツールチップを表示する。pointer-events: none にしてあるため
@@ -1460,11 +1720,13 @@ function termLinkTooltipMessage(url) {
 // 追跡）を奪うことはない。textContent で入れる（innerHTML は使わない。url はターミナル
 // 出力由来で攻撃者が内容を制御しうるため）。
 function showTermLinkTooltip(event, url) {
+  // 開き先メニューの表示中に別リンクのツールチップが見出しへ重なるのを防ぐ。
+  if (internalBrowserChoice) return;
   const el = ensureTermLinkTooltip();
   el.textContent = termLinkTooltipMessage(url);
   const OFFSET = 12;
   el.hidden = false;
-  const maxLeft = Math.max(0, window.innerWidth - el.offsetWidth - 4);
+  const maxLeft = Math.max(0, (internalBrowserOpen ? document.getElementById('internal-browser-sidebar').getBoundingClientRect().left : window.innerWidth) - el.offsetWidth - 4);
   const maxTop = Math.max(0, window.innerHeight - el.offsetHeight - 4);
   el.style.left = `${Math.min(event.clientX + OFFSET, maxLeft)}px`;
   el.style.top = `${Math.min(event.clientY + OFFSET, maxTop)}px`;
@@ -2136,6 +2398,7 @@ function setSidebarWidth(w) {
     handle.setAttribute('aria-valuemax', String(sidebarMaxWidth()));
     handle.setAttribute('aria-valuenow', String(width));
   }
+  syncInternalBrowserLayout();
 }
 
 function startSidebarResize(e) {
@@ -2614,11 +2877,6 @@ function renderStashItem(id, idx, count) {
     closePane(id);
   });
   li.addEventListener('mousedown', () => {
-    // .pane 側と同じフォーカスガード記録が必要（issue #385 レビュー指摘・MEDIUM-1）。
-    // 格納ペインの xterm 要素は render() の再アタッチで .stash-item .term-container へ
-    // 移されて生きたまま操作でき、リンクプロバイダも登録済みのままのため、ここで記録を
-    // 省くと格納中のペインだけガードが機能しない（もしくは逆に常に開かなくなる）。
-    recordPaneFocusBeforeMousedown(id);
     focusPane(id);
   });
 
@@ -2682,9 +2940,11 @@ function setSidebarOpen(open, options = {}) {
   }
   sidebarOpen = !!open;
   root?.classList.toggle('sidebar-open', sidebarOpen);
+  syncInternalBrowserLayout();
   btn?.setAttribute('aria-expanded', sidebarOpen ? 'true' : 'false');
 
   const afterLayout = () => {
+    syncInternalBrowserLayout();
     fitAll();
     if (sidebarOpen && options.focusFirst !== false) {
       focusFirstSidebarItem();
@@ -2778,7 +3038,7 @@ function renderTaskTitleContent(el, title, url, prUrl, prMerged = false, waiting
     link.className = 'pane-task-title-link';
     link.href = '#'; // 実 URL は入れない（Electron の target="_blank" 経由の新 BrowserWindow 防止）
     link.setAttribute('role', 'link');
-    link.setAttribute('aria-label', `${title}（外部ブラウザで開く）`);
+    link.setAttribute('aria-label', `${title}（開き先を選ぶ）`);
     // ペイン D&D 起点は親 .pane-task-title 側。リンクの URL drag（href のドラッグ）が割り込まないよう抑止（issue #40）。
     link.draggable = false;
     // ホバー時のツールチップにはタイトル本文と URL の両方を改行区切りで含める。
@@ -2802,7 +3062,7 @@ function renderTaskTitleContent(el, title, url, prUrl, prMerged = false, waiting
     link.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
-      openExternalUrlSafe(url);
+      showInternalBrowserChoice(url, e, link);
     });
     // mousedown は止めない（ペインのフォーカス移譲は通常通り）
     // ただしリンク自体のテキスト選択は意図しないドラッグを起こしやすいので、
@@ -2820,7 +3080,7 @@ function renderTaskTitleContent(el, title, url, prUrl, prMerged = false, waiting
     prLink.className = prPresentation.className;
     prLink.href = '#'; // 実 URL は入れない（タイトルリンクと同じ理由）
     prLink.setAttribute('role', 'link');
-    prLink.setAttribute('aria-label', prPresentation.ariaLabel);
+    prLink.setAttribute('aria-label', prPresentation.ariaLabel.replace('（外部ブラウザ）', '（開き先を選ぶ）'));
     // ホバー時のツールチップはタイトルリンク側（title\nurl 形式）に揃え、
     // 状態ラベル（PR / マージ待ちのPR / マージ済みのPR）+ 改行 + prUrl にする（issue #363）。
     prLink.title = `${prPresentation.titleLabel}\n${prUrl}`;
@@ -2840,7 +3100,7 @@ function renderTaskTitleContent(el, title, url, prUrl, prMerged = false, waiting
     prLink.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
-      openExternalUrlSafe(prUrl);
+      showInternalBrowserChoice(prUrl, e, prLink);
     });
 
     el.appendChild(prLink);
@@ -3126,9 +3386,6 @@ function closePane(paneId, { force = false, skipConfirm = false } = {}) {
     t.term.dispose();
     VKIpc.send('terminal:kill', t.termId);
     delete terminals[paneId];
-    // ペイン内 URL クリックのフォーカスガード用に記録した値も、消えたペインの分は
-    // 掃除しておく（issue #385。他の per-pane 状態と同じ扱い）。
-    paneFocusBeforeMousedown.delete(paneId);
   }
 
   // グリッド・格納のどちらに居ても取り除く（issue #89）。
@@ -3763,8 +4020,9 @@ function render() {
   const newContent = renderGrid(tree);
   // セットアップ状況のパネルがあるときだけ、グリッドの右（または上端の帯の下）に並べる。
   const mainNodes = setupPanel ? setupPanel.layout(newContent) : [newContent];
-  root.replaceChildren(sidebar, ...mainNodes);
+  root.replaceChildren(sidebar, ...mainNodes, internalBrowserSidebar);
   root.classList.toggle('sidebar-open', sidebarOpen);
+  syncInternalBrowserLayout();
 
   // 格納ペインのコンパクト表示を作り直す（nav が root に付いた後に実行する）。
   renderPaneStash();
@@ -4146,14 +4404,6 @@ function renderLeaf(node) {
     closePane(node.id);
   });
   el.addEventListener('mousedown', () => {
-    // ペイン内 URL クリックのフォーカスガード（issue #385）: このペインが「切り替わる直前」
-    // 既にフォーカス済みだったかを、focusPane() で書き換える前に記録しておく。xterm.js の
-    // Linkifier は mousedown ではなく後続の mouseup で activate を呼ぶため、記録を怠ると
-    // activate 発火時点では既にこの focusPane() でフォーカスが切り替わった後の値しか
-    // 読めなくなる（詳細は utils/terminalLinkPolicy.js の createTerminalLinkHandlers
-    // 冒頭コメント参照）。格納ペイン（.stash-item）側にも同じ記録が必要なため、直書きせず
-    // 共通ヘルパー recordPaneFocusBeforeMousedown() 経由にする（レビュー指摘・MEDIUM-1）。
-    recordPaneFocusBeforeMousedown(node.id);
     focusPane(node.id);
   });
 
@@ -4437,10 +4687,6 @@ window.addEventListener('resize', () => setSidebarWidth(getSidebarWidth()));
 // position: fixed のツールチップが画面に残り続けるのを防ぐ（安藤レビュー指摘・LOW）。
 window.addEventListener('blur', () => {
   hideTermLinkTooltip();
-  // 次の mousedown は「ウィンドウを前面に出すためのクリック」かもしれないため、
-  // recordPaneFocusBeforeMousedown() がフォーカス状態を強制的に false 扱いにできる
-  // よう印を付ける（issue #385 レビュー指摘・MEDIUM-5）。
-  pendingWindowRefocusClick = true;
 });
 
 // ─── 設定パネル（汎用）────────────────────────────────────────────────────────
@@ -7091,7 +7337,6 @@ async function initApp() {
       terminals = {};
       paneFocusMode = null;
       focusedPaneId = null;
-      paneFocusBeforeMousedown.clear();
       const validPanes = restored.panes.filter(p => /^pane-\d+$/.test(p.paneId) && /^\d+$/.test(String(p.id)));
       const ids = new Set(validPanes.map(p => p.paneId));
       tree = {
@@ -7167,8 +7412,6 @@ async function initApp() {
   terminals = {};
   paneFocusMode = null;
   focusedPaneId = null;
-  // 破棄済みペイン分のフォーカスガード記録も一掃する（issue #385。terminals と同じ扱い）。
-  paneFocusBeforeMousedown.clear();
 
   const paneId = newId();
   // stashOrder: サイドバー格納ペインの並び（issue #89）。sidebarWidth: セッション内の可変幅。

@@ -35,6 +35,7 @@
     <!-- 歯車は常時表示。設定モーダル（設定項目のみ）を開く。Claude の使用量は
          サイドバー最上部のカードへ統合した。使用率 80% 超過時の警告ドットは
          app.js がメニューボタンに .usage-alert-warn / .usage-alert-crit を付与して表示する。 -->
+    <button id="internal-browser-toggle" class="titlebar-btn internal-browser-toggle" type="button" aria-label="アプリ内ブラウザ" title="アプリ内ブラウザ" aria-pressed="false"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#panel-right"></use></svg></button>
     <button id="settings-btn" class="titlebar-btn" type="button" aria-label="設定" title="設定">
       <svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#settings"></use></svg>
     </button>
@@ -63,6 +64,7 @@
   <script src="../utils/closeConfirm.js"></script>
   <script src="../utils/loopbackHost.js"></script>
   <script src="../utils/terminalLinkPolicy.js"></script>
+  <script src="../utils/internalBrowserLayout.js"></script>
   <script src="../utils/sidebarSectionState.js"></script>
   <script src="../utils/taskSectionVisibility.js"></script>
   <script src="../utils/widgetContract.js"></script>
@@ -87,6 +89,7 @@
   <script src="autoClose.js"></script>
   <script src="settingsModalGuard.js"></script>
   <script src="escapeLayer.js"></script>
+  <script src="internalBrowserChoicePolicy.js"></script>
   <script src="focusTrap.js"></script>
   <script src="settingsTabs.js"></script>
   <script src="helpEntry.js"></script>

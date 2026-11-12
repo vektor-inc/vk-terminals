@@ -14,9 +14,8 @@
   const MAX_SAFE_HTTP_URL_LENGTH = 2048;
 
   // href / shell.openExternal に渡せる URL を http(s) のみに制限する。
-  function isSafeHttpUrl(url) {
+  function isHttpUrl(url) {
     if (typeof url !== 'string' || !url) return false;
-    if (url.length > MAX_SAFE_HTTP_URL_LENGTH) return false;
     try {
       const parsed = new URL(url);
       return parsed.protocol === 'http:' || parsed.protocol === 'https:';
@@ -25,8 +24,13 @@
     }
   }
 
+  function isSafeHttpUrl(url) {
+    return typeof url === 'string' && url.length <= MAX_SAFE_HTTP_URL_LENGTH && isHttpUrl(url);
+  }
+
   return {
     MAX_SAFE_HTTP_URL_LENGTH,
+    isHttpUrl,
     isSafeHttpUrl,
   };
 });

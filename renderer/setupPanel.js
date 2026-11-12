@@ -50,7 +50,9 @@
     // ウィンドウが狭いとき（ターミナルが潰れるため）は自動で畳む。利用者が開いたときだけ広げる。
     const NARROW_WINDOW_MAX = 1000;
     let forceOpenWhenNarrow = false;
-    let narrowNow = root.innerWidth < NARROW_WINDOW_MAX;
+    let availableWidth = root.innerWidth;
+    let layoutRequested = false;
+    let narrowNow = availableWidth < NARROW_WINDOW_MAX;
 
     let panel = null;
     let content = null;
@@ -75,7 +77,7 @@
 
     function mode() {
       if (!built || dismissed) return 'hidden';
-      if (folded || (root.innerWidth < NARROW_WINDOW_MAX && !forceOpenWhenNarrow)) return 'folded';
+      if (folded || (availableWidth < NARROW_WINDOW_MAX && !forceOpenWhenNarrow)) return 'folded';
       return deps.getSetupPaneState() !== 'none' ? 'side' : 'main';
     }
 
@@ -359,7 +361,7 @@
     // 狭いウィンドウで利用者が開いたときは、ターミナルを潰さないようグリッドの上に重ねて出す。
     function isOverlay() {
       const m = mode();
-      return (m === 'side' || m === 'main') && root.innerWidth < NARROW_WINDOW_MAX;
+      return (m === 'side' || m === 'main') && availableWidth < NARROW_WINDOW_MAX;
     }
     function layoutKey() {
       return mode() + (isOverlay() ? ':overlay' : '');
@@ -486,13 +488,24 @@
       return [gridContent, panel];
     }
 
-    // 幅が 1000px を境に変わったら、畳む・広げるを切り替えるため再配置を頼む。
-    root.addEventListener('resize', () => {
-      const narrow = root.innerWidth < NARROW_WINDOW_MAX;
+    function setAvailableWidth(width) {
+      availableWidth = width;
+      const narrow = availableWidth < NARROW_WINDOW_MAX;
       if (narrow === narrowNow) return;
       narrowNow = narrow;
       if (!narrow) forceOpenWhenNarrow = false;
-      if (built && !dismissed) deps.requestLayout();
+      if (built && !dismissed && !layoutRequested) {
+        layoutRequested = true;
+        queueMicrotask(() => {
+          layoutRequested = false;
+          deps.requestLayout();
+        });
+      }
+    }
+
+    // 幅が 1000px を境に変わったら、畳む・広げるを切り替えるため再配置を頼む。
+    root.addEventListener('resize', () => {
+      setAvailableWidth(root.innerWidth);
     });
 
     // 初回の判定結果・「もう一度確認」の結果は applyResult / recheck から入る。
@@ -501,6 +514,8 @@
       recheck,
       reveal,
       layout,
+      setAvailableWidth,
+      hasPanel: () => built && !dismissed,
       focusHeading,
       getAllRequiredOk,
       isIncomplete,

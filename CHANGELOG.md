@@ -1,5 +1,8 @@
 # Changelog
 
+- [ 機能追加 ] ペイン内の URL・issue タイトル・PR ボタンから、右側のアプリ内ブラウザか外部ブラウザを選んで開ける機能を追加（[#590](https://github.com/vektor-inc/vk-terminals/issues/590)）
+- [ 仕様変更 ] ペイン内の URL・issue タイトル・PR ボタンをクリックしたときの動作を、すぐに開くのではなく開き先の選択メニューを出す形に変更（[#590](https://github.com/vektor-inc/vk-terminals/issues/590)）
+
 ## 1.99.0
 
 - [ 機能追加 ] 組み込み起動で tmux の実行ファイルを指定し、既存ペインの確認と保持役失敗時の切り替えを制御し、確認失敗時は新規作成を止めて案内する機能を追加（[#594](https://github.com/vektor-inc/vk-terminals/issues/594)）

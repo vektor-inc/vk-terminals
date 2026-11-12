@@ -82,3 +82,18 @@ test('cleanup と relaunch の例外でも exit に到達する', async () => {
     assert.deepEqual(calls, ['logged', 0]);
   }
 });
+
+test('ブラウザ cleanup の成功・失敗にかかわらず再起動を続ける', async () => {
+  for (const failBrowserCleanup of [false, true]) {
+    const calls = [];
+    const restart = createRestartApplication({
+      gate: { state: 'idle', markShuttingDown: () => calls.push('gate') },
+      cleanupBrowser: () => { calls.push('browser'); if (failBrowserCleanup) throw new Error('browser cleanup'); },
+      cleanupPtys: async () => { calls.push('ptys'); },
+      app: { relaunch: () => calls.push('relaunch'), exit: code => calls.push(`exit:${code}`) },
+      log: { error: (message, error) => { assert.match(message, /browser cleanup/); assert.match(error.message, /browser cleanup/); calls.push('logged'); } },
+    });
+    assert.equal(await restart(), true);
+    assert.deepEqual(calls, ['gate', 'browser', ...(failBrowserCleanup ? ['logged'] : []), 'ptys', 'relaunch', 'exit:0']);
+  }
+});

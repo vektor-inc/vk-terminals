@@ -1,7 +1,7 @@
 # Changelog
 
-- [ 機能追加 ] ペイン内の URL・issue タイトル・PR から、右側のアプリ内ブラウザか外部ブラウザを選んで開けるように（[#590](https://github.com/vektor-inc/vk-terminals/issues/590)）
-- [ 仕様変更 ] ペイン内の URL をクリックすると、直接開く代わりに開き先の選択メニューを表示するように変更（[#590](https://github.com/vektor-inc/vk-terminals/issues/590)）
+- [ 機能追加 ] ペイン内の URL・issue タイトル・PR ボタンから、右側のアプリ内ブラウザか外部ブラウザを選んで開ける機能を追加（[#590](https://github.com/vektor-inc/vk-terminals/issues/590)）
+- [ 仕様変更 ] ペイン内の URL・issue タイトル・PR ボタンをクリックしたときの動作を、すぐに開くのではなく開き先の選択メニューを出す形に変更（[#590](https://github.com/vektor-inc/vk-terminals/issues/590)）
 
 ## 1.98.0
 

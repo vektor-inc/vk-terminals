@@ -1551,6 +1551,7 @@ body:has(.confirm-overlay) .vk-toast-layer {
   margin: 0;
   overflow-wrap: anywhere;
 }
+.vk-toast-phrase { white-space: nowrap; }
 .vk-toast-copy {
   margin-top: 8px;
   padding: 4px 10px;
@@ -4036,6 +4037,10 @@ body.pane-dragging * {
 .internal-browser-notice, .internal-browser-error { padding: 12px; font-size: 12px; line-height: 1.5; background: #161b22; }
 .internal-browser-notice[hidden], .internal-browser-error[hidden], .internal-browser-progress[hidden] { display: none; }
 .internal-browser-notice button, .internal-browser-error button { margin: 6px 6px 0 0; padding: 4px 8px; border: 1px solid var(--vktm--color--border-interactive); border-radius: 4px; background: #21262d; color: #e6edf3; cursor: pointer; }
+/* 案内文と操作を分け、狭い幅でもボタンを一組で揃える。 */
+.internal-browser-notice p { margin: 0; }
+.internal-browser-notice-actions { display: flex; flex-wrap: nowrap; gap: 6px; margin-top: 10px; }
+.internal-browser-notice-actions button { margin: 0; white-space: nowrap; }
 .internal-browser-choice { position: fixed; z-index: 2100; min-width: 210px; padding: 5px; border: 1px solid var(--vktm--color--border-interactive); border-radius: 6px; background: #161b22; color: #e6edf3; box-shadow: 0 8px 24px #0008; }
 .internal-browser-choice-heading { padding: 5px 8px; color: #8b949e; font-size: 11px; }
 .internal-browser-choice [role="menuitem"] { display: block; width: 100%; padding: 7px 8px; text-align: left; border: 0; border-radius: 4px; background: transparent; color: inherit; cursor: pointer; }

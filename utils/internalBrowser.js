@@ -11,6 +11,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
     callback({ cancel: details.resourceType === 'mainFrame' && !isNavigationUrl(details.url) });
   });
   let view = null;
+  let attached = false;
   let bounds = null;
   let visible = false;
   let modalCount = 0;
@@ -38,7 +39,13 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
 
   function syncBounds() {
     if (!view) return;
-    view.setBounds(visible && modalCount === 0 && bounds ? bounds : { x: 0, y: 0, width: 0, height: 0 });
+    // 0 サイズでも描画が残るため、非表示時は親ビューから外す。
+    if (!visible || modalCount > 0 || !bounds) {
+      if (attached) { win.contentView.removeChildView(view); attached = false; }
+      return;
+    }
+    view.setBounds(bounds);
+    if (!attached) { win.contentView.addChildView(view); attached = true; }
   }
 
   function navigate(url, fromPage = false) {
@@ -48,7 +55,6 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
         partition: PARTITION, sandbox: true, nodeIntegration: false, contextIsolation: true,
         webSecurity: true, allowRunningInsecureContent: false,
       } });
-      win.contentView.addChildView(view);
       const contents = view.webContents;
       contents.on('will-navigate', event => { if (!isNavigationUrl(event.url)) event.preventDefault(); });
       contents.on('will-frame-navigate', event => { if (!isNavigationUrl(event.url)) event.preventDefault(); });
@@ -121,7 +127,8 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
   function destroy() {
     browserSession.removeListener('will-download', cancelDownload);
     if (!view) return;
-    win.contentView.removeChildView(view);
+    if (attached) win.contentView.removeChildView(view);
+    attached = false;
     view.webContents.close({ waitForBeforeUnload: false });
     view = null;
   }

@@ -5,6 +5,26 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
+test('幅キーは表示中の幅を起点にし、開き先メニューはツールチップを隠す', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
+  const keyHandler = source.match(/internalBrowserResizer\.addEventListener\('keydown', event => \{[\s\S]*?\n\}\);/)?.[0];
+  assert.ok(keyHandler);
+  const handlers = {};
+  const saved = [];
+  const context = { internalBrowserResizer: { addEventListener: (_event, handler) => { handlers.keydown = handler; } },
+    preferredInternalBrowserWidth: 0, displayedInternalBrowserWidth: 482,
+    syncInternalBrowserLayout() { context.displayedInternalBrowserWidth = context.preferredInternalBrowserWidth; },
+    localStorage: { setItem: (_key, value) => saved.push(value) } };
+  vm.runInNewContext(keyHandler, context);
+  handlers.keydown({ key: 'ArrowLeft', preventDefault() {} });
+  assert.equal(context.preferredInternalBrowserWidth, 498);
+  handlers.keydown({ key: 'ArrowRight', preventDefault() {} });
+  assert.equal(context.preferredInternalBrowserWidth, 482);
+  assert.deepEqual(saved, ['498', '482']);
+  const choice = source.match(/function showInternalBrowserChoice\([\s\S]*?\n\}/)?.[0];
+  assert.match(choice, /closeInternalBrowserChoice\(\);\s*hideTermLinkTooltip\(\);/);
+});
+
 test('失敗表示は失敗 URL、操作列は確定 URL を安全な外部オープン経路へ渡す', () => {
   const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
   const clickHandler = source.match(/internalBrowserSidebar\.addEventListener\('click', event => \{[\s\S]*?\n\}\);/)?.[0];
@@ -26,7 +46,8 @@ test('失敗表示は失敗 URL、操作列は確定 URL を安全な外部オ�
   let activeElement = null;
   const focus = element => { activeElement = element; };
   const errorReload = {};
-  const errorView = { hidden: true, contains: element => element === errorReload, querySelector: () => message };
+  const errorButtons = [{ disabled: true }, { disabled: true }];
+  const errorView = { hidden: true, contains: element => element === errorReload, querySelector: () => message, querySelectorAll: () => errorButtons };
   const notice = { hidden: true, dataset: {}, contains: element => buttons.includes(element), replaceChildren() {}, append() {} };
   const display = { replaceChildren() {}, setAttribute() {}, append() {}, closest: () => null, focus() { focus(this); } };
   const controls = { disabled: false };
@@ -43,7 +64,7 @@ test('失敗表示は失敗 URL、操作列は確定 URL を安全な外部オ�
     syncInternalBrowserLayout() { layoutSyncs++; },
     URL,
     document: { get activeElement() { return activeElement; }, createElement: () => {
-      const button = { textContent: '', addEventListener(_type, handler) { this.click = handler; } };
+      const button = { textContent: '', append() {}, addEventListener(_type, handler) { this.click = handler; } };
       buttons.push(button);
       return button;
     } },
@@ -57,6 +78,7 @@ test('失敗表示は失敗 URL、操作列は確定 URL を安全な外部オ�
   assert.equal(messageWrites, 1);
   assert.equal(message.textContent, 'ページを表示できませんでした（example.com）');
   assert.equal(errorView.hidden, false);
+  assert.equal(errorButtons.every(button => !button.disabled), true);
   activeElement = errorReload;
   state('', '', false);
   assert.equal(activeElement, display);

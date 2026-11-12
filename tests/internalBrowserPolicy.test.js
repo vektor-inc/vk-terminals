@@ -169,3 +169,40 @@ test('開き先メニューは単一の通常クリックだけを受け付け�
   }
   assert.equal(shouldShowBrowserChoice({ button: 0, detail: 1 }, true), false);
 });
+
+test('非表示とモーダル中はビューを外し、再表示では同じビューを戻す', () => {
+  const { EventEmitter } = require('node:events');
+  const browserSession = new EventEmitter();
+  browserSession.webRequest = { onBeforeRequest() {}, onCompleted() {} };
+  browserSession.setPermissionRequestHandler = () => {};
+  browserSession.setPermissionCheckHandler = () => {};
+  const calls = [];
+  class FakeView {
+    constructor() {
+      this.webContents = new EventEmitter();
+      this.webContents.loadURL = () => Promise.resolve();
+      this.webContents.isLoading = () => false;
+      this.webContents.navigationHistory = { canGoBack: () => false, canGoForward: () => false };
+      this.webContents.setWindowOpenHandler = () => {};
+      this.webContents.close = () => {};
+    }
+    setBounds(rect) { calls.push(['bounds', rect]); }
+  }
+  const win = { isDestroyed: () => false, webContents: { send() {} }, getContentBounds: () => ({ width: 1000, height: 800 }), contentView: {
+    addChildView(view) { calls.push(['add', view]); }, removeChildView(view) { calls.push(['remove', view]); },
+  } };
+  const browser = createInternalBrowser(win, { WebContentsView: FakeView, session: { fromPartition: () => browserSession } });
+  browser.setBounds({ x: 500, y: 40, width: 480, height: 700 });
+  browser.setVisible(true);
+  browser.navigate('https://example.com');
+  const view = calls.find(call => call[0] === 'add')[1];
+  browser.setVisible(false);
+  assert.deepEqual(calls.at(-1), ['remove', view]);
+  browser.setVisible(true);
+  assert.deepEqual(calls.at(-1), ['add', view]);
+  browser.setModalCount(1);
+  assert.deepEqual(calls.at(-1), ['remove', view]);
+  browser.setModalCount(0);
+  assert.deepEqual(calls.at(-1), ['add', view]);
+  assert.deepEqual(calls.at(-2), ['bounds', { x: 500, y: 40, width: 480, height: 700 }]);
+});

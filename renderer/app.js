@@ -118,7 +118,7 @@ let previousInternalBrowserLayout = null;
 let internalBrowserHasPage = false;
 let internalBrowserChoice = null;
 let unregisterInternalBrowserEscape = null;
-for (const button of internalBrowserSidebar.querySelectorAll('[data-action="back"], [data-action="forward"], [data-action="reload"], [data-action="external"], .internal-browser-url')) button.disabled = true;
+for (const button of internalBrowserSidebar.querySelectorAll('.internal-browser-toolbar button')) button.disabled = true;
 
 function syncInternalBrowserLayout() {
   const root = document.getElementById('root');
@@ -188,6 +188,7 @@ function closeInternalBrowserChoice(focusTerminal = false) {
 function showInternalBrowserChoice(url, event, origin) {
   if (!isSafeHttpUrl(url) || !window.VKInternalBrowserChoicePolicy.shouldShowBrowserChoice(event, lastClickWasDrag)) return;
   closeInternalBrowserChoice();
+  hideTermLinkTooltip();
   const menu = document.createElement('div');
   menu.className = 'internal-browser-choice';
   menu.setAttribute('role', 'menu');
@@ -286,7 +287,7 @@ internalBrowserResizer.addEventListener('lostpointercapture', finishInternalBrow
 internalBrowserResizer.addEventListener('keydown', event => {
   if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
   event.preventDefault();
-  preferredInternalBrowserWidth += event.key === 'ArrowLeft' ? 16 : -16;
+  preferredInternalBrowserWidth = displayedInternalBrowserWidth + (event.key === 'ArrowLeft' ? 16 : -16);
   syncInternalBrowserLayout();
   preferredInternalBrowserWidth = displayedInternalBrowserWidth;
   localStorage.setItem('vk-terminals.internalBrowserWidth', String(preferredInternalBrowserWidth));
@@ -299,7 +300,10 @@ VKIpc.on('internal-browser:state', state => {
   internalBrowserSidebar.querySelector('.internal-browser-url').disabled = !internalBrowserUrl;
   internalBrowserSidebar.querySelector('.internal-browser-toolbar [data-action="reload"]').disabled = !internalBrowserHasPage;
   const errorView = internalBrowserSidebar.querySelector('.internal-browser-error');
-  if (internalBrowserFailedUrl) errorView.hidden = false;
+  if (internalBrowserFailedUrl) {
+    errorView.hidden = false;
+    for (const button of errorView.querySelectorAll('button')) button.disabled = false;
+  }
   else hideInternalBrowserContent(errorView);
   let failedHost = '';
   if (internalBrowserFailedUrl) {
@@ -318,7 +322,11 @@ VKIpc.on('internal-browser:state', state => {
     notice.dataset.dismissed = '';
     notice.replaceChildren();
     if (github404Url) {
-      notice.append('プライベートリポジトリのページは、アプリ内ブラウザで GitHub にログインすると表示できます。');
+      const description = document.createElement('p');
+      description.textContent = 'プライベートリポジトリのページは、アプリ内ブラウザで GitHub にログインすると表示できます。';
+      notice.append(description);
+      const actions = document.createElement('div');
+      actions.className = 'internal-browser-notice-actions';
       const login = document.createElement('button'); login.textContent = 'GitHub にログイン';
       login.addEventListener('click', () => { VKIpc.invoke('internal-browser:open', 'https://github.com/login'); internalBrowserSidebar.querySelector('.internal-browser-url').focus(); });
       const close = document.createElement('button'); close.textContent = '案内を閉じる'; close.addEventListener('click', () => {
@@ -327,7 +335,8 @@ VKIpc.on('internal-browser:state', state => {
         // 案内を閉じるとページの上端が動くため、main 側の表示位置も更新する。
         syncInternalBrowserLayout();
       });
-      notice.append(login, close);
+      actions.append(login, close);
+      notice.append(actions);
     }
   }
   if (!github404Url) hideInternalBrowserContent(notice);
@@ -359,7 +368,17 @@ VKIpc.on('internal-browser:state', state => {
   internalBrowserSidebar.querySelector('.internal-browser-progress').hidden = !state.loading;
   syncInternalBrowserLayout();
 });
-VKIpc.on('internal-browser:download-blocked', () => showGenericToast('ダウンロードはできません。操作列の「外部ブラウザで開く」から行ってください。'));
+VKIpc.on('internal-browser:download-blocked', () => {
+  showGenericToast('ダウンロードはできません。操作列の「外部ブラウザで開く」から行ってください。');
+  const message = externalUrlToastEl?.querySelector('.vk-toast-message');
+  if (message) {
+    message.replaceChildren('ダウンロードはできません。操作列の「');
+    const action = document.createElement('span');
+    action.className = 'vk-toast-phrase';
+    action.textContent = '外部ブラウザで開く';
+    message.append(action, '」から行ってください。');
+  }
+});
 
 // ─── State ────────────────────────────────────────────────────────────────────
 let tree = null;       // Layout tree root

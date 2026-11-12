@@ -5,6 +5,20 @@ const assert = require('node:assert');
 
 const { createFocusTrapStack } = require('../renderer/focusTrap');
 
+test('モーダルの重なり件数を開閉ごとに通知する', () => {
+  const doc = createDocument();
+  const first = doc.createElement({ name: 'first' });
+  const second = doc.createElement({ name: 'second' });
+  doc.body.append(first, second);
+  const counts = [];
+  const traps = createFocusTrapStack(doc, count => counts.push(count));
+  const releaseFirst = traps.activate(first);
+  const releaseSecond = traps.activate(second);
+  releaseSecond();
+  releaseFirst();
+  assert.deepEqual(counts, [1, 2, 1, 0]);
+});
+
 // focusTrap.js が実際に触れる範囲の DOM（body の子要素・inert・activeElement・focus()・
 // contains・querySelectorAll・getClientRects）だけを再現する最小のスタブ。
 // querySelectorAll はセレクタを解釈せず「停止位置の候補として作った子孫」を返す。

@@ -95,7 +95,7 @@ function collectTabbable(container) {
   return Array.from(container.querySelectorAll(FOCUSABLE_SELECTOR)).filter(isTabbable);
 }
 
-function createFocusTrapStack(documentRef) {
+function createFocusTrapStack(documentRef, onCountChange = () => {}) {
   if (!documentRef
     || typeof documentRef.addEventListener !== 'function'
     || typeof documentRef.removeEventListener !== 'function') {
@@ -192,6 +192,7 @@ function createFocusTrapStack(documentRef) {
 
       const trap = { container };
       traps.push(trap);
+      onCountChange(traps.length);
       if (!listening) {
         documentRef.addEventListener('keydown', onKeyDown, true);
         listening = true;
@@ -204,6 +205,7 @@ function createFocusTrapStack(documentRef) {
 
         const index = traps.indexOf(trap);
         if (index !== -1) traps.splice(index, 1);
+        onCountChange(traps.length);
         // 残ったトラップ（重なっていた下のモーダル）へ引き直す。無ければ全解除。
         applyInert();
         if (traps.length === 0 && listening) {

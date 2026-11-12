@@ -1,6 +1,18 @@
 // electron の shell は electronShell として受ける。terminal:create の中でログインシェルの
 // パスを持つローカル変数 shell と名前がぶつかるため、紛らわしさを避けて別名にしている。
 const { app, BrowserWindow, ipcMain, screen, dialog, shell: electronShell, clipboard } = require('electron');
+const { createInternalBrowser } = require('./utils/internalBrowser');
+let internalBrowser = null;
+
+function isInternalBrowserSender(event) {
+  return !!win && !win.isDestroyed() && event.sender === win.webContents && event.senderFrame === win.webContents.mainFrame;
+}
+
+ipcMain.handle('internal-browser:open', (event, url) => isInternalBrowserSender(event) && !!internalBrowser?.navigate(url));
+ipcMain.handle('internal-browser:action', (event, action) => isInternalBrowserSender(event) && !!internalBrowser?.action(action));
+ipcMain.on('internal-browser:bounds', (event, rect) => { if (isInternalBrowserSender(event)) internalBrowser?.setBounds(rect); });
+ipcMain.on('internal-browser:visible', (event, visible) => { if (isInternalBrowserSender(event)) internalBrowser?.setVisible(visible); });
+ipcMain.on('internal-browser:modal-count', (event, count) => { if (isInternalBrowserSender(event)) internalBrowser?.setModalCount(count); });
 const pty = require('node-pty');
 const path = require('path');
 const os = require('os');
@@ -1720,6 +1732,9 @@ function createWindow() {
     backgroundColor: '#0d1117',
     title: APP_TITLE,
   });
+  internalBrowser = createInternalBrowser(win);
+  win.on('close', () => internalBrowser?.destroy());
+  win.on('closed', () => { internalBrowser = null; });
 
   // ─── ナビゲーション封鎖（issue #268） ──────────────────────────────────────
   // preload は BrowserWindow ではなく webContents の属性なので、この webContents が
@@ -1806,12 +1821,14 @@ const ptyShutdownGate = createPtyShutdownGate();
 const restartApplication = createRestartApplication({
   gate: ptyShutdownGate,
   cleanupPtys,
+  cleanupBrowser: () => internalBrowser?.destroy(),
   app,
   // 共通処理の失敗ログにも、検索に使うアプリの接頭辞を付ける。
   log: { error: (message, error) => console.error(`${LOG_PREFIX} ${message}`, error) },
 });
 
 function finalizeBeforeQuit() {
+  if (typeof internalBrowser !== 'undefined') internalBrowser?.destroy();
   stopWidgetWatcher();
   clearInterval(backgroundWorkTimer);
   // 保持役のペインの接続情報は、アプリを閉じてもペインが動き続けるため残す。
@@ -2121,6 +2138,18 @@ function loadSettingsDescriptor() {
     try {
       const d = JSON.parse(fs.readFileSync(p, 'utf8'));
       if (isValidSettingsDescriptor(d)) {
+        // 同梱側の古い項目定義にも、既存キーの新しい意味を反映する。
+        for (const group of d.groups) {
+          for (const field of group.fields || []) {
+            if (field.key !== 'terminalLinkClickMode') continue;
+            field.label = 'ペイン内の URL をクリックしたときの動作';
+            field.help = 'ペイン内の URL をクリックしたときの動作を選びます。どちらを選んでも、ページを開く前に開き先（アプリ内ブラウザ / 外部ブラウザ）を選ぶメニューが出ます。';
+            field.options = [
+              { value: 'click', label: 'クリックで開き先のメニューを出す（既定）' },
+              { value: 'modifier', label: '⌘ / Ctrl+クリックでだけメニューを出す' },
+            ];
+          }
+        }
         return d;
       }
       console.error(`${LOG_PREFIX} Invalid settings descriptor (unresolved targetPath / duplicate or unsafe key): ${p}`);

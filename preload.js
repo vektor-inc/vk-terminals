@@ -70,6 +70,8 @@ const INVOKE_CHANNELS = new Set([
   // （無いときに呼ぶと reject される）。
   'setup:check',
   'setup:initial-pane',
+  'internal-browser:open',
+  'internal-browser:action',
 ]);
 
 // renderer → main（応答なし）
@@ -84,6 +86,9 @@ const SEND_CHANNELS = new Set([
   'terminal:save-layout',
   'terminal:restore-ready',
   'terminal:restore-abandon',
+  'internal-browser:bounds',
+  'internal-browser:visible',
+  'internal-browser:modal-count',
   'terminal:pane-screen-response',
 ]);
 
@@ -107,6 +112,9 @@ const ON_CHANNELS = new Set([
   // 入れ替わったことを renderer の terminals[paneId].engine へ反映するための通知。
   'terminal:engine-changed',
   'terminal:background-work',
+  'internal-browser:state',
+  'internal-browser:error',
+  'internal-browser:github-404',
 ]);
 
 // clipboard へ渡してよい文字列の上限（issue #325）。定義は utils/clipboardLimits.js の

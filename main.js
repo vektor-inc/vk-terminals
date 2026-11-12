@@ -2793,7 +2793,7 @@ function createTerminalPane(cwd, options = {}, guide = null) {
 
   let ptyProcess;
   try {
-    if (holderPaneCreationBlocked) throw holderPaneCreationBlocked;
+    if (holderPaneCreationBlocked) throw new Error(`VK_HOLDER_PANE_CREATION_BLOCKED: ${holderPaneCreationBlocked.message}`);
     if (tmuxHolder && !tmuxHolder.active) tmuxHolder = null;
     if (PANE_HOLDER === 'tmux' && !tmuxHolder && !tmuxUnavailable) {
       try { tmuxHolder = new TmuxHolder(holderOptions()); }

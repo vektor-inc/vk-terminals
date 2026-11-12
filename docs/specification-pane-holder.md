@@ -4,7 +4,7 @@
 
 組み込み起動では `paneHolder: 'tmux'` とともに `tmuxPath` に実行可能な通常ファイルの絶対パスを指定できる。シンボリックリンクは不可。指定すると版確認、制御接続、コマンド、停止処理に同じファイルを使い、PATH で探し直さない。`tmuxEnv` は `TERMINFO` と `TERMINFO_DIRS` の文字列だけを tmux サーバー環境に追加できる。`tmuxPath`・`verifyPaneHolder`・`paneHolderWarning`・`paneHolderFallback`・`onPaneHolderError`・`tmuxEnv` は `paneHolder: 'tmux'` とともに指定する。NUL・改行を含む値は不可。
 
-`verifyPaneHolder(info)` は同期関数で、既存保持役へ制御接続する直前に `{ stage: 'attach', tmuxPath, socket, paneId: null }`、各ペインを復元する直前に `{ stage: 'restore', tmuxPath, socket, paneId }` を渡す。`true` 以外の戻り値と例外は失敗とし、対象ペインは接続しない。確認失敗は `paneHolderWarning`（既定は「前回のペインを確認できなかったため、表示していません。ペインは裏で動いたままです。」）で操作を止めない通知を出す。attach 段階・restore 段階のどちらで失敗しても、その起動中は新しいペインを tmux にも node-pty にも作らない。全ペインが拒否された場合も空の画面に警告と終了案内を表示する。警告は閉じるまで表示する。
+`verifyPaneHolder(info)` は同期関数で、既存保持役へ制御接続する直前に `{ stage: 'attach', tmuxPath, socket, paneId: null }`、各ペインを復元する直前に `{ stage: 'restore', tmuxPath, socket, paneId }` を渡す。`true` 以外の戻り値と例外は失敗とし、対象ペインは接続しない。確認失敗は `paneHolderWarning`（既定は「前回のペインを確認できなかったため、表示していません。ペインは裏で動いたままです。」）で操作を止めない通知を出す。attach 段階・restore 段階のどちらで失敗しても、その起動中は新しいペインを tmux にも node-pty にも作らない。確認失敗または `paneHolderFallback: 'error'` によって新規作成を止めたとき、作成エラーに目印を付けて画面へ伝える。全ペインが拒否された場合も空の画面に警告と終了案内を表示する。警告は閉じるまで表示し、通常の通知で上書きしない。目印のない作成失敗は通常のエラー処理に戻す。
 
 保持役の初期化またはペイン作成に失敗したときの `paneHolderFallback` は `'node-pty'`（既定）または `'error'`。`'error'` では切り替えず、`onPaneHolderError({ reason, socket })` を呼んでペイン作成を失敗として扱う。`'error'` の失敗では元の理由を保持し、アプリを再起動するまで新しいペインの作成を止める。確認失敗では `paneHolderFallback` の値にかかわらず作成を止める。確認関数と失敗通知関数は既存の同期処理に合わせて同期で呼ぶ。
 

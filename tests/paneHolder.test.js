@@ -560,8 +560,8 @@ test('復元確認は未追跡ペインの採番や書換えより前で、拒�
   assert.ok(loop.indexOf('verifyHolder(') < loop.indexOf("tmuxHolder.command(['set-option'"));
   assert.match(loop, /rejectedPaneIds\.add\(identity\.paneId\); blockHolderPaneCreation/);
   const creation = source.slice(source.indexOf('function createTerminalPane('), source.indexOf('function createTerminalPane(') + 10000);
-  assert.ok(creation.indexOf('if (holderPaneCreationBlocked) throw holderPaneCreationBlocked;') < creation.indexOf('new TmuxHolder(holderOptions())'));
-  assert.ok(creation.indexOf('if (holderPaneCreationBlocked) throw holderPaneCreationBlocked;') < creation.indexOf('pty.spawn(shell'));
+  assert.ok(creation.indexOf('if (holderPaneCreationBlocked) throw new Error(`VK_HOLDER_PANE_CREATION_BLOCKED:') < creation.indexOf('new TmuxHolder(holderOptions())'));
+  assert.ok(creation.indexOf('if (holderPaneCreationBlocked) throw new Error(`VK_HOLDER_PANE_CREATION_BLOCKED:') < creation.indexOf('pty.spawn(shell'));
 });
 
 
@@ -584,4 +584,36 @@ test('接続停止後の再生成で確認失敗したら node-pty に進まな�
   assert.ok(create.indexOf('holderFailure(error, path.join(') < create.indexOf('if (!ptyProcess) ptyProcess = pty.spawn('));
   const failure = source.slice(source.indexOf('function holderFailure('), source.indexOf('let tmuxHolder ='));
   assert.ok(failure.indexOf("error.code === 'HOLDER_VERIFICATION_FAILED'") < failure.indexOf("paneHolderFallback !== 'error'"));
+});
+
+
+test('作成停止の目印だけを案内へ分類し、通常の失敗は例外のまま扱う', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+  const renderer = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'app.js'), 'utf8');
+  const classify = renderer.slice(renderer.indexOf('function isHolderPaneCreationBlocked('), renderer.indexOf('async function addPane('));
+  const context = {};
+  vm.runInNewContext(classify, context);
+  assert.equal(vm.runInNewContext("isHolderPaneCreationBlocked(new Error('Error invoking remote method: VK_HOLDER_PANE_CREATION_BLOCKED: failed'))", context), true);
+  assert.equal(vm.runInNewContext("isHolderPaneCreationBlocked(new Error('ordinary failure'))", context), false);
+  assert.match(main, /if \(holderPaneCreationBlocked\) throw new Error\(`VK_HOLDER_PANE_CREATION_BLOCKED:/);
+  const add = renderer.slice(renderer.indexOf('async function addPane('), renderer.indexOf('async function startSetupPane(', renderer.indexOf('async function addPane(')));
+  assert.match(add, /if \(!isHolderPaneCreationBlocked\(error\)\) throw error;/);
+  const initial = renderer.slice(renderer.indexOf('const openAsSetupPane ='), renderer.indexOf('focusedPaneId = paneId;', renderer.indexOf('const openAsSetupPane =')));
+  assert.match(initial, /if \(!openAsSetupPane\) throw error;/);
+  assert.match(initial, /if \(!isHolderPaneCreationBlocked\(retryError\)\) throw retryError;/);
+});
+
+test('持続通知は通常の通知と URL 失敗通知で上書きされない', () => {
+  const renderer = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'app.js'), 'utf8');
+  const generic = renderer.slice(renderer.indexOf('function showGenericToast('), renderer.indexOf('function openExternalUrlSafe('));
+  const toast = { dataset: { persistent: 'true' }, hidden: false, classList: { toggle() { throw new Error('overwritten'); } } };
+  const context = { ensureExternalUrlToast: () => toast };
+  vm.runInNewContext(generic, context);
+  vm.runInNewContext("showGenericToast('ordinary')", context);
+  assert.equal(toast.dataset.persistent, 'true');
+  assert.equal(toast.hidden, false);
+  const failed = renderer.slice(renderer.indexOf('function showExternalUrlOpenFailedToast('), renderer.indexOf('function showGenericToast('));
+  vm.runInNewContext(failed, context);
+  vm.runInNewContext("showExternalUrlOpenFailedToast('https://example.com')", context);
+  assert.equal(toast.dataset.persistent, 'true');
 });

@@ -1550,7 +1550,7 @@ body:has(.confirm-overlay) .vk-toast-layer {
   margin: 0;
   overflow-wrap: anywhere;
 }
-.vk-toast-copy {
+.vk-toast-button {
   margin-top: 8px;
   padding: 4px 10px;
   border-radius: 5px;
@@ -1560,8 +1560,8 @@ body:has(.confirm-overlay) .vk-toast-layer {
   font-size: 12px;
   cursor: pointer;
 }
-.vk-toast-copy:hover { background: #30363d; }
-.vk-toast-copy:focus-visible {
+.vk-toast-button:hover { background: #30363d; }
+.vk-toast-button:focus-visible {
   outline: var(--vktm--outline--focus-ring);
   outline-offset: var(--vktm--outline-offset--focus-ring);
 }

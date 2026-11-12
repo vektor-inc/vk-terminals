@@ -16,8 +16,8 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
   let modalCount = 0;
   let currentUrl = '';
   let pendingUrl = '';
-  const cancelDownload = (_event, item) => {
-    item.cancel();
+  const cancelDownload = (event) => {
+    event.preventDefault();
     if (!win.isDestroyed()) win.webContents.send('internal-browser:download-blocked');
   };
   browserSession.on('will-download', cancelDownload);
@@ -50,7 +50,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
       contents.on('will-frame-navigate', event => { if (!isNavigationUrl(event.url)) event.preventDefault(); });
       contents.on('will-redirect', event => { if (!isNavigationUrl(event.url)) event.preventDefault(); });
       contents.on('will-prevent-unload', event => {
-        const choice = dialog.showMessageBoxSync(win, { type: 'warning', title: 'このページを離れますか？', message: '入力中の内容は保存されない可能性があります。', buttons: ['移動する', 'このページにとどまる'], defaultId: 1, cancelId: 1 });
+        const choice = dialog.showMessageBoxSync(win, { type: 'warning', title: 'このページを離れますか？', message: 'このページを離れますか？', detail: '入力中の内容は保存されない可能性があります。', buttons: ['移動する', 'このページにとどまる'], defaultId: 1, cancelId: 1 });
         if (choice === 0) event.preventDefault();
         else { pendingUrl = ''; publish(); }
       });

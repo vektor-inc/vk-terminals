@@ -69,7 +69,7 @@ test('専用ビューの遷移と権限、ダウンロード、確定 URL を制
   const browser = createInternalBrowser(win, {
     WebContentsView: FakeView,
     session: { fromPartition: () => browserSession },
-    dialog: { showMessageBoxSync(parent, options) { assert.equal(parent, win); assert.equal(options.defaultId, 1); return dialogChoice; } },
+    dialog: { showMessageBoxSync(parent, options) { assert.equal(parent, win); assert.equal(options.defaultId, 1); assert.equal(options.cancelId, 1); assert.equal(options.message, 'このページを離れますか？'); assert.equal(options.detail, '入力中の内容は保存されない可能性があります。'); return dialogChoice; } },
   });
   browserSession.permissionRequest(null, 'camera', allowed => assert.equal(allowed, false));
   assert.equal(browserSession.permissionCheck(), false);
@@ -99,7 +99,7 @@ test('専用ビューの遷移と権限、ダウンロード、確定 URL を制
   contents.emit('will-prevent-unload', { preventDefault() { allowed = true; } });
   assert.equal(allowed, true);
   let canceled = false;
-  browserSession.emit('will-download', {}, { cancel() { canceled = true; } });
+  browserSession.emit('will-download', { preventDefault() { canceled = true; } }, { cancel() { throw new Error('item.cancel should not be called'); } });
   assert.equal(canceled, true);
   assert.equal(sent.at(-1)[0], 'internal-browser:download-blocked');
 });

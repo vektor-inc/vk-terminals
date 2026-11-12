@@ -111,6 +111,7 @@ internalBrowserSidebar.setAttribute('aria-label', 'アプリ内ブラウザ');
 internalBrowserSidebar.innerHTML = `<div class="internal-browser-resizer" role="separator" tabindex="0" aria-label="アプリ内ブラウザの幅を変更" aria-orientation="vertical" aria-valuemin="360" aria-valuemax="720" aria-valuenow="480"></div><div class="internal-browser-toolbar"><button type="button" data-action="back" title="戻る" aria-label="戻る"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#arrow-left"></use></svg></button><button type="button" data-action="forward" title="進む" aria-label="進む"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#arrow-right"></use></svg></button><button type="button" data-action="reload" title="再読み込み" aria-label="再読み込み"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#rotate-cw"></use></svg></button><button type="button" class="internal-browser-url" title="URL をコピー" aria-label="表示中の URL をコピー"></button><button type="button" data-action="external" title="外部ブラウザで開く" aria-label="外部ブラウザで開く"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#external-link"></use></svg></button><button type="button" data-action="close" title="閉じる" aria-label="閉じる"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#x"></use></svg></button></div><div class="internal-browser-progress" hidden></div><div class="internal-browser-notice" role="status" hidden></div><div class="internal-browser-error" role="status" hidden><p>ページを表示できませんでした</p><button type="button" data-action="reload">再読み込み</button><button type="button" data-action="external">外部ブラウザで開く</button></div><div class="internal-browser-page"></div>`;
 let internalBrowserOpen = false;
 let internalBrowserUrl = '';
+let internalBrowserFailedUrl = '';
 let preferredInternalBrowserWidth = Number(localStorage.getItem('vk-terminals.internalBrowserWidth'));
 let displayedInternalBrowserWidth = 0;
 let previousInternalBrowserLayout = null;
@@ -209,12 +210,13 @@ function showInternalBrowserChoice(url, event, origin) {
   menu.style.left = `${Math.max(4, x + menu.offsetWidth + 6 <= boundary ? x + 6 : x - menu.offsetWidth - 6)}px`;
   menu.style.top = `${Math.max(38, y + menu.offsetHeight + 6 <= window.innerHeight ? y + 6 : y - menu.offsetHeight - 6)}px`;
   internalBrowserChoice = { menu, origin };
-  unregisterInternalBrowserEscape = escapeLayers.register(closeInternalBrowserChoice);
+  unregisterInternalBrowserEscape = escapeLayers.register(() => closeInternalBrowserChoice());
   menu.querySelector('[role="menuitem"]').focus();
 }
 
 document.addEventListener('keydown', event => {
   if (!internalBrowserChoice) return;
+  if (event.isComposing || ['Shift', 'Alt', 'Meta', 'Control'].includes(event.key)) return;
   const items = [...internalBrowserChoice.menu.querySelectorAll('[role="menuitem"]')];
   if (event.key === 'Tab') { event.preventDefault(); closeInternalBrowserChoice(); return; }
   if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
@@ -235,7 +237,10 @@ document.addEventListener('wheel', event => { if (internalBrowserChoice && event
 internalBrowserSidebar.addEventListener('click', event => {
   const action = event.target.closest('[data-action]')?.dataset.action;
   if (action === 'close') { setInternalBrowserOpen(false); document.getElementById('internal-browser-toggle')?.focus(); }
-  else if (action === 'external' && internalBrowserUrl) openExternalUrlSafe(internalBrowserUrl);
+  else if (action === 'external') {
+    const url = event.target.closest('.internal-browser-error') ? internalBrowserFailedUrl : internalBrowserUrl;
+    if (url) openExternalUrlSafe(url);
+  }
   else if (action) VKIpc.invoke('internal-browser:action', action).catch(() => {});
   else if (event.target.closest('.internal-browser-url') && internalBrowserUrl) VKClipboard.writeText(internalBrowserUrl).then(ok => { if (ok) showGenericToast('URL をコピーしました'); });
 });
@@ -276,6 +281,7 @@ window.addEventListener('resize', syncInternalBrowserLayout);
 VKIpc.on('internal-browser:state', state => {
   internalBrowserUrl = state.url || '';
   if (state.loading) {
+    internalBrowserFailedUrl = '';
     internalBrowserSidebar.querySelector('.internal-browser-error').hidden = true;
     const notice = internalBrowserSidebar.querySelector('.internal-browser-notice');
     if (notice.querySelector('button')) notice.hidden = true;
@@ -308,7 +314,11 @@ VKIpc.on('internal-browser:state', state => {
   internalBrowserSidebar.querySelector('.internal-browser-progress').hidden = !state.loading;
   syncInternalBrowserLayout();
 });
-VKIpc.on('internal-browser:error', () => { internalBrowserSidebar.querySelector('.internal-browser-error').hidden = false; syncInternalBrowserLayout(); });
+VKIpc.on('internal-browser:error', ({ url }) => {
+  internalBrowserFailedUrl = url;
+  internalBrowserSidebar.querySelector('.internal-browser-error').hidden = false;
+  syncInternalBrowserLayout();
+});
 VKIpc.on('internal-browser:github-404', () => {
   const notice = internalBrowserSidebar.querySelector('.internal-browser-notice');
   notice.replaceChildren();
@@ -319,7 +329,7 @@ VKIpc.on('internal-browser:github-404', () => {
   notice.append(login, close); notice.hidden = false; syncInternalBrowserLayout();
 });
 
-VKIpc.on('internal-browser:download-blocked', () => showGenericToast('ダウンロードは外部ブラウザで行ってください'));
+VKIpc.on('internal-browser:download-blocked', () => showGenericToast('ダウンロードはできません。操作列の「外部ブラウザで開く」から行ってください。'));
 
 // ─── State ────────────────────────────────────────────────────────────────────
 let tree = null;       // Layout tree root

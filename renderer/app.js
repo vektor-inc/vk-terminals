@@ -368,7 +368,12 @@ VKIpc.on('internal-browser:state', state => {
   display.title = internalBrowserUrl || 'URL をコピー';
   display.setAttribute('aria-label', internalBrowserUrl ? `表示中の URL をコピー: ${internalBrowserUrl}` : '表示中の URL をコピー');
   display.disabled = !internalBrowserUrl;
-  internalBrowserSidebar.querySelector('[data-action="external"]').disabled = !(internalBrowserDownloadUrl || internalBrowserUrl);
+  const externalButton = internalBrowserSidebar.querySelector('.internal-browser-toolbar [data-action="external"]');
+  const externalLabel = internalBrowserDownloadUrl
+    ? `外部ブラウザで開く: ${internalBrowserDownloadUrl}` : '外部ブラウザで開く';
+  externalButton.title = externalLabel;
+  externalButton.setAttribute('aria-label', externalLabel);
+  externalButton.disabled = !(internalBrowserDownloadUrl || internalBrowserUrl);
   internalBrowserSidebar.querySelector('[data-action="back"]').disabled = !state.canGoBack;
   internalBrowserSidebar.querySelector('[data-action="forward"]').disabled = !state.canGoForward;
   internalBrowserSidebar.querySelector('.internal-browser-progress').hidden = !state.loading;

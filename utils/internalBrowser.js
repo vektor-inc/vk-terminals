@@ -20,10 +20,15 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
   let downloadUrl = '';
   let failedUrl = '';
   let github404Url = '';
-  const cancelDownload = (event) => {
+  const cancelDownload = (event, item) => {
     event.preventDefault();
-    // アプリから開いた読み込みだけを外部ブラウザへ渡す。ページ内リンクは表示中の URL を使う。
-    downloadUrl = isBrowserUrl(pendingUrl) ? pendingUrl : '';
+    // 保留中の遷移と異なるダウンロードへ古い URL を渡さない。
+    let matchesPendingUrl = false;
+    try {
+      const originalUrl = item.getURLChain?.()[0] || item.getURL?.();
+      matchesPendingUrl = isBrowserUrl(pendingUrl) && new URL(originalUrl).href === new URL(pendingUrl).href;
+    } catch {}
+    downloadUrl = matchesPendingUrl ? pendingUrl : '';
     pendingUrl = '';
     publish();
     if (!win.isDestroyed()) win.webContents.send('internal-browser:download-blocked');
@@ -51,7 +56,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
         const restoreFocus = view.webContents.isFocused();
         win.contentView.removeChildView(view);
         attached = false;
-        if (restoreFocus) win.webContents.focus();
+        if (restoreFocus && win.isFocused()) win.webContents.focus();
       }
       return;
     }
@@ -79,7 +84,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
         if (isNavigationUrl(destination)) navigate(destination, true);
         return { action: 'deny' };
       });
-      contents.on('did-start-loading', () => { downloadUrl = ''; publish(); });
+      contents.on('did-start-loading', publish);
       contents.on('did-start-navigation', (_event, url, isInPlace, isMainFrame) => {
         if (!isMainFrame || isInPlace) return;
         failedUrl = '';

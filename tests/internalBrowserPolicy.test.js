@@ -74,7 +74,7 @@ test('専用ビューの遷移と権限、ダウンロード、確定 URL を制
   };
   browserSession.setPermissionRequestHandler = handler => { browserSession.permissionRequest = handler; };
   browserSession.setPermissionCheckHandler = handler => { browserSession.permissionCheck = handler; };
-  const history = { canGoBack: () => false, canGoForward: () => false };
+  const history = { canGoBack: () => false, canGoForward: () => false, goBack() { contents.emit('did-start-navigation', {}, 'https://example.com/back', false, true); }, goForward() { contents.emit('did-start-navigation', {}, 'https://example.com/forward', false, true); } };
   let contents;
   class FakeView {
     constructor(options) {
@@ -157,8 +157,35 @@ test('専用ビューの遷移と権限、ダウンロード、確定 URL を制
   assert.equal(sent.at(-1)[0], 'internal-browser:download-blocked');
   assert.equal(sent.at(-2)[1].downloadUrl, '');
   browser.navigate('https://example.com/download');
-  browserSession.emit('will-download', { preventDefault() {} }, {});
+  browserSession.emit('will-download', { preventDefault() {} }, { getURLChain: () => ['https://example.com/download'] });
   assert.equal(sent.at(-2)[1].downloadUrl, 'https://example.com/download');
+  contents.emit('did-start-loading');
+  assert.equal(sent.at(-1)[1].downloadUrl, 'https://example.com/download');
+  contents.emit('did-start-navigation', {}, 'https://example.com/frame', false, false);
+  assert.equal(sent.at(-1)[1].downloadUrl, 'https://example.com/download');
+  contents.emit('did-start-navigation', {}, 'https://example.com/next', false, true);
+  assert.equal(sent.at(-1)[1].downloadUrl, '');
+  browser.navigate('https://example.com/stale');
+  browserSession.emit('will-download', { preventDefault() {} }, { getURLChain: () => ['https://example.com/other'] });
+  assert.equal(sent.at(-2)[1].downloadUrl, '');
+  browser.navigate('https://example.com/normalized');
+  browserSession.emit('will-download', { preventDefault() {} }, { getURLChain: () => ['HTTPS://EXAMPLE.COM/normalized'] });
+  assert.equal(sent.at(-2)[1].downloadUrl, 'https://example.com/normalized');
+  browser.navigate('https://example.com/bad');
+  browserSession.emit('will-download', { preventDefault() {} }, { getURLChain: () => ['invalid'] });
+  assert.equal(sent.at(-2)[1].downloadUrl, '');
+  browser.navigate('https://example.com/reload');
+  browserSession.emit('will-download', { preventDefault() {} }, { getURLChain: () => ['https://example.com/reload'] });
+  contents.reload = () => contents.emit('did-start-navigation', {}, 'https://example.com/reload', false, true);
+  browser.action('reload');
+  assert.equal(sent.at(-1)[1].downloadUrl, '');
+  for (const action of ['back', 'forward']) {
+    browser.navigate(`https://example.com/${action}`);
+    browserSession.emit('will-download', { preventDefault() {} }, { getURLChain: () => [`https://example.com/${action}`] });
+    history[`canGo${action[0].toUpperCase()}${action.slice(1)}`] = () => true;
+    browser.action(action);
+    assert.equal(sent.at(-1)[1].downloadUrl, '');
+  }
   browser.navigate('https://example.com/next');
   assert.equal(sent.at(-1)[1].downloadUrl, '');
 });
@@ -192,6 +219,7 @@ test('非表示とモーダル中はビューを外し、再表示では同じ�
   browserSession.setPermissionCheckHandler = () => {};
   const calls = [];
   let focused = true;
+  let windowFocused = true;
   class FakeView {
     constructor() {
       this.webContents = new EventEmitter();
@@ -204,7 +232,7 @@ test('非表示とモーダル中はビューを外し、再表示では同じ�
     }
     setBounds(rect) { calls.push(['bounds', rect]); }
   }
-  const win = { isDestroyed: () => false, webContents: { send() {}, focus() { calls.push(['focus']); } }, getContentBounds: () => ({ width: 1000, height: 800 }), contentView: {
+  const win = { isDestroyed: () => false, isFocused: () => windowFocused, webContents: { send() {}, focus() { calls.push(['focus']); } }, getContentBounds: () => ({ width: 1000, height: 800 }), contentView: {
     addChildView(view) { calls.push(['add', view]); }, removeChildView(view) { calls.push(['remove', view]); },
   } };
   const browser = createInternalBrowser(win, { WebContentsView: FakeView, session: { fromPartition: () => browserSession } });
@@ -214,6 +242,11 @@ test('非表示とモーダル中はビューを外し、再表示では同じ�
   const view = calls.find(call => call[0] === 'add')[1];
   browser.setVisible(false);
   assert.deepEqual(calls.slice(-2), [['remove', view], ['focus']]);
+  focused = true;
+  windowFocused = false;
+  browser.setVisible(true);
+  browser.setVisible(false);
+  assert.deepEqual(calls.at(-1), ['remove', view]);
   focused = false;
   browser.setVisible(true);
   assert.deepEqual(calls.at(-1), ['add', view]);

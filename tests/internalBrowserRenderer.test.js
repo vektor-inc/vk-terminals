@@ -89,12 +89,12 @@ test('失敗表示は失敗 URL、操作列は確定 URL を安全な外部オ�
   const notice = { hidden: true, dataset: {}, contains: element => buttons.includes(element), replaceChildren() {}, append() {} };
   const display = { replaceChildren() {}, setAttribute() {}, append() {}, closest: () => null, focus() { focus(this); } };
   const controls = { disabled: false };
-  const external = { disabled: false };
+  const external = { disabled: false, setAttribute(name, value) { this[name] = value; } };
   const reload = { disabled: false, closest: () => null, focus() { focus(this); } };
   const progress = { hidden: true };
   const sidebar = {
     addEventListener: (_type, handler) => { handlers.click = handler; },
-    querySelector: selector => ({ '.internal-browser-error': errorView, '.internal-browser-notice': notice, '.internal-browser-url': display, '.internal-browser-toolbar [data-action="reload"]': reload, '.internal-browser-progress': progress, '[data-action="external"]': external }[selector] || controls),
+    querySelector: selector => ({ '.internal-browser-error': errorView, '.internal-browser-notice': notice, '.internal-browser-url': display, '.internal-browser-toolbar [data-action="reload"]': reload, '.internal-browser-progress': progress, '.internal-browser-toolbar [data-action="external"]': external }[selector] || controls),
   };
   const context = {
     internalBrowserSidebar: sidebar,
@@ -139,7 +139,12 @@ test('失敗表示は失敗 URL、操作列は確定 URL を安全な外部オ�
   state('', '', false, '');
   handlers['internal-browser:state']({ url: '', downloadUrl: 'https://example.com/download' });
   assert.equal(external.disabled, false);
+  assert.equal(external.title, '外部ブラウザで開く: https://example.com/download');
+  assert.equal(external['aria-label'], external.title);
   click(false);
+  state('');
+  assert.equal(external.title, '外部ブラウザで開く');
+  assert.equal(external['aria-label'], external.title);
   assert.deepEqual(opened, ['https://example.com/failed', 'https://example.com/confirmed', 'https://example.com/download']);
   activeElement = controls;
   state('');

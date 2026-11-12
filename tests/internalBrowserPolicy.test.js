@@ -50,6 +50,18 @@ test('トーストを置ける幅が 200px 未満のときだけ語句を折り�
   assert.equal(shouldWrapToastPhrase(1400, clampBrowserWidth(750, 1400)), false);
 });
 
+test('グリッド左右の余白 12px を残してブラウザ枠をウィンドウ内に収める', () => {
+  for (const [available, columns, windowWidth, expected] of [
+    [330, 1, 600, 318], [330, 2, 600, 318],
+    [230, 1, 500, 218], [230, 2, 500, 218],
+    [600, 1, 600, 360], [600, 2, 600, 360],
+  ]) {
+    assert.equal(browserWidthMax(available, columns, windowWidth), expected);
+    assert.equal(clampBrowserWidth(750, available, columns, windowWidth), expected);
+    assert.ok(windowWidth - available + 12 + expected <= windowWidth);
+  }
+});
+
 test('WebContentsView の座標は有限なウィンドウ内の矩形だけを受け入れる', () => {
   const windowBounds = { width: 800, height: 600 };
   assert.deepEqual(validateBrowserBounds({ x: 400, y: 40, width: 400, height: 560 }, windowBounds), { x: 400, y: 40, width: 400, height: 560 });

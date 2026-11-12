@@ -108,7 +108,7 @@ const internalBrowserSidebar = document.createElement('aside');
 internalBrowserSidebar.id = 'internal-browser-sidebar';
 internalBrowserSidebar.className = 'internal-browser-sidebar';
 internalBrowserSidebar.setAttribute('aria-label', 'アプリ内ブラウザ');
-internalBrowserSidebar.innerHTML = `<div class="internal-browser-resizer" role="separator" tabindex="0" aria-label="アプリ内ブラウザの幅を変更" aria-orientation="vertical" aria-valuemin="360" aria-valuemax="720" aria-valuenow="480"></div><div class="internal-browser-toolbar"><button type="button" data-action="back" title="戻る" aria-label="戻る"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#arrow-left"></use></svg></button><button type="button" data-action="forward" title="進む" aria-label="進む"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#arrow-right"></use></svg></button><button type="button" data-action="reload" title="再読み込み" aria-label="再読み込み"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#rotate-cw"></use></svg></button><button type="button" class="internal-browser-url" title="URL をコピー" aria-label="表示中の URL をコピー"></button><button type="button" data-action="external" title="外部ブラウザで開く" aria-label="外部ブラウザで開く"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#external-link"></use></svg></button><button type="button" data-action="close" title="閉じる" aria-label="閉じる"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#x"></use></svg></button></div><div class="internal-browser-progress" hidden></div><div class="internal-browser-notice" role="status" hidden></div><div class="internal-browser-error" role="status" hidden><p>ページを表示できませんでした</p><button type="button" data-action="reload">再読み込み</button><button type="button" data-action="external">外部ブラウザで開く</button></div><div class="internal-browser-page"></div>`;
+internalBrowserSidebar.innerHTML = `<div class="internal-browser-resizer" role="separator" tabindex="0" aria-label="アプリ内ブラウザの幅を変更" aria-orientation="vertical" aria-valuemin="360" aria-valuemax="720" aria-valuenow="480"></div><div class="internal-browser-toolbar"><button type="button" data-action="back" title="戻る" aria-label="戻る"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#arrow-left"></use></svg></button><button type="button" data-action="forward" title="進む" aria-label="進む"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#arrow-right"></use></svg></button><button type="button" data-action="reload" title="再読み込み" aria-label="再読み込み"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#rotate-cw"></use></svg></button><button type="button" class="internal-browser-url" title="URL をコピー" aria-label="表示中の URL をコピー"></button><button type="button" data-action="external" title="外部ブラウザで開く" aria-label="外部ブラウザで開く"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#external-link"></use></svg></button><button type="button" data-action="close" title="閉じる" aria-label="閉じる"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#x"></use></svg></button></div><div class="internal-browser-progress" hidden></div><div class="internal-browser-notice" role="status" hidden></div><div class="internal-browser-error" role="status" hidden><p class="internal-browser-error-message">ページを表示できませんでした</p><button type="button" data-action="reload">再読み込み</button><button type="button" data-action="external">外部ブラウザで開く</button></div><div class="internal-browser-page"></div>`;
 let internalBrowserOpen = false;
 let internalBrowserUrl = '';
 let internalBrowserFailedUrl = '';
@@ -280,12 +280,31 @@ internalBrowserResizer.addEventListener('keydown', event => {
 window.addEventListener('resize', syncInternalBrowserLayout);
 VKIpc.on('internal-browser:state', state => {
   internalBrowserUrl = state.url || '';
-  if (state.loading) {
-    internalBrowserFailedUrl = '';
-    internalBrowserSidebar.querySelector('.internal-browser-error').hidden = true;
-    const notice = internalBrowserSidebar.querySelector('.internal-browser-notice');
-    if (notice.querySelector('button')) notice.hidden = true;
+  internalBrowserFailedUrl = state.failedUrl || '';
+  const errorView = internalBrowserSidebar.querySelector('.internal-browser-error');
+  errorView.hidden = !internalBrowserFailedUrl;
+  let failedHost = '';
+  if (internalBrowserFailedUrl) {
+    try { failedHost = new URL(internalBrowserFailedUrl).hostname; } catch {}
   }
+  errorView.querySelector('.internal-browser-error-message').textContent = failedHost
+    ? `ページを表示できませんでした（${failedHost}）` : 'ページを表示できませんでした';
+  const notice = internalBrowserSidebar.querySelector('.internal-browser-notice');
+  const github404Url = state.github404Url || '';
+  if (notice.dataset.url !== github404Url) {
+    notice.dataset.url = github404Url;
+    notice.dataset.dismissed = '';
+    notice.replaceChildren();
+    if (github404Url) {
+      notice.append('プライベートリポジトリのページは、アプリ内ブラウザで GitHub にログインすると表示できます。');
+      const login = document.createElement('button'); login.textContent = 'GitHub にログイン';
+      login.addEventListener('click', () => { VKIpc.invoke('internal-browser:open', 'https://github.com/login'); internalBrowserSidebar.querySelector('.internal-browser-url').focus(); });
+      const close = document.createElement('button'); close.textContent = '案内を閉じる'; close.addEventListener('click', () => { notice.dataset.dismissed = 'true'; notice.hidden = true; });
+      notice.append(login, close);
+    }
+  }
+  if (!github404Url) notice.hidden = true;
+  else if (notice.dataset.url === github404Url && !notice.dataset.dismissed) notice.hidden = false;
   const display = internalBrowserSidebar.querySelector('.internal-browser-url');
   display.replaceChildren();
   if (internalBrowserUrl) {
@@ -314,21 +333,6 @@ VKIpc.on('internal-browser:state', state => {
   internalBrowserSidebar.querySelector('.internal-browser-progress').hidden = !state.loading;
   syncInternalBrowserLayout();
 });
-VKIpc.on('internal-browser:error', ({ url }) => {
-  internalBrowserFailedUrl = url;
-  internalBrowserSidebar.querySelector('.internal-browser-error').hidden = false;
-  syncInternalBrowserLayout();
-});
-VKIpc.on('internal-browser:github-404', () => {
-  const notice = internalBrowserSidebar.querySelector('.internal-browser-notice');
-  notice.replaceChildren();
-  notice.append('プライベートリポジトリのページは、アプリ内ブラウザで GitHub にログインすると表示できます。');
-  const login = document.createElement('button'); login.textContent = 'GitHub にログイン';
-  login.addEventListener('click', () => { VKIpc.invoke('internal-browser:open', 'https://github.com/login'); internalBrowserSidebar.querySelector('.internal-browser-url').focus(); });
-  const close = document.createElement('button'); close.textContent = '案内を閉じる'; close.addEventListener('click', () => { notice.hidden = true; });
-  notice.append(login, close); notice.hidden = false; syncInternalBrowserLayout();
-});
-
 VKIpc.on('internal-browser:download-blocked', () => showGenericToast('ダウンロードはできません。操作列の「外部ブラウザで開く」から行ってください。'));
 
 // ─── State ────────────────────────────────────────────────────────────────────

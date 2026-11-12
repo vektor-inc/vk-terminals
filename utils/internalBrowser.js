@@ -16,6 +16,8 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
   let modalCount = 0;
   let currentUrl = '';
   let pendingUrl = '';
+  let failedUrl = '';
+  let github404Url = '';
   const cancelDownload = (event) => {
     event.preventDefault();
     if (!win.isDestroyed()) win.webContents.send('internal-browser:download-blocked');
@@ -26,6 +28,8 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
     if (!win.isDestroyed()) win.webContents.send('internal-browser:state', {
       url: currentUrl,
       pendingUrl,
+      failedUrl,
+      github404Url,
       loading: !!view && view.webContents.isLoading(),
       canGoBack: !!view && view.webContents.navigationHistory.canGoBack(),
       canGoForward: !!view && view.webContents.navigationHistory.canGoForward(),
@@ -59,13 +63,28 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
         return { action: 'deny' };
       });
       contents.on('did-start-loading', publish);
+      // 読み込み失敗後のエラーページ遷移では失敗表示を消さない。
+      contents.on('did-start-navigation', (_event, url, isInPlace, isMainFrame) => {
+        if (!isMainFrame || isInPlace || (failedUrl && url === failedUrl && !pendingUrl)) return;
+        failedUrl = '';
+        github404Url = '';
+        publish();
+      });
       contents.on('did-stop-loading', publish);
-      contents.on('did-navigate', (_event, url) => { currentUrl = url; pendingUrl = ''; publish(); });
+      // 失敗先と同じ URL の遷移通知は確定 URL として扱わない。
+      contents.on('did-navigate', (_event, url) => {
+        if (failedUrl && url === failedUrl) { publish(); return; }
+        currentUrl = url;
+        pendingUrl = '';
+        if (url !== failedUrl) failedUrl = '';
+        if (url !== github404Url) github404Url = '';
+        publish();
+      });
       contents.on('did-navigate-in-page', (_event, url, isMainFrame) => { if (isMainFrame) { currentUrl = url; publish(); } });
       contents.on('did-fail-load', (_event, code, _description, destination, isMainFrame) => {
         if (isMainFrame && code !== -3) {
           pendingUrl = '';
-          if (!win.isDestroyed()) win.webContents.send('internal-browser:error', { url: destination });
+          failedUrl = destination;
           publish();
         }
       });
@@ -73,10 +92,13 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
         if ((details.webContentsId === contents.id || details.webContents?.id === contents.id) && details.resourceType === 'mainFrame'
           && details.statusCode === 404 && isNavigationUrl(details.url)
           && new URL(details.url).hostname === 'github.com') {
-          if (!win.isDestroyed()) win.webContents.send('internal-browser:github-404');
+          github404Url = details.url;
+          publish();
         }
       });
     }
+    failedUrl = '';
+    github404Url = '';
     pendingUrl = fromPage ? '' : url;
     view.webContents.loadURL(url).catch(() => {});
     syncBounds();
@@ -89,7 +111,12 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
     const history = view.webContents.navigationHistory;
     if (name === 'back' && history.canGoBack()) history.goBack();
     else if (name === 'forward' && history.canGoForward()) history.goForward();
-    else if (name === 'reload') view.webContents.reload();
+    else if (name === 'reload') {
+      if (failedUrl) return navigate(failedUrl, true);
+      github404Url = '';
+      view.webContents.reload();
+      publish();
+    }
     else return false;
     return true;
   }

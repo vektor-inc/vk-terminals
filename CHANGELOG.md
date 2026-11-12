@@ -1,5 +1,8 @@
 # Changelog
 
+- [ 機能追加 ] 組み込み起動で tmux の実行ファイルを指定し、既存ペインの確認と保持役失敗時の切り替えを制御し、確認失敗時は新規作成を止めて案内する機能を追加（[#594](https://github.com/vektor-inc/vk-terminals/issues/594)）
+- [ 仕様変更 ] トーストと空画面の日本語が語の途中で改行されないようにし、空画面の説明文の文字色を読みやすい明るさに変更（[#594](https://github.com/vektor-inc/vk-terminals/issues/594)）
+
 ## 1.98.0
 
 - [ 機能追加 ] 起動オプション `--pane-holder=tmux` を付けたときだけ、ペインのシェルを専用の tmux の下で動かす機能を追加（tmux が無い、または 3.0 未満の場合は従来どおり動作）（[#585](https://github.com/vektor-inc/vk-terminals/issues/585)）

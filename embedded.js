@@ -15,6 +15,12 @@
 //   settingsDescriptorPath 追加の設定画面ディスクリプタのパス（絶対パス）
 //   singleInstance         二重起動を検知して知らせるか（既定 true）
 //   paneHolder             'tmux' の場合だけ保持役を使う
+//   tmuxPath               保持役に使う tmux 実行ファイルの絶対パス
+//   verifyPaneHolder       既存サーバー接続直前と各ペイン復元直前に同期で呼ぶ確認関数
+//   paneHolderWarning      確認失敗時に表示する通知文
+//   paneHolderFallback     'node-pty'（既定）または 'error'。確認失敗時はどちらも新規ペインを作らない
+//   onPaneHolderError      保持役失敗時の通知関数 ({ reason, socket })
+//   tmuxEnv                tmux サーバーへ渡す TERMINFO / TERMINFO_DIRS
 //   getSetupStatus         セットアップ状況の一覧を出すための非同期関数。VK Orchestrator の doctor の結果
 //                          { requirements, summary } を返す（引数に { signal } を渡す。20 秒で abort するので、signal を受けて処理を止めること。
 //                          止まらない間は、新しい確認は始まらず時間切れとして返る）。

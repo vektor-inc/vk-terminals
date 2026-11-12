@@ -217,7 +217,7 @@ class PaneAdapter {
 }
 
 class TmuxHolder {
-  constructor({ env = process.env, home = os.homedir(), tmux = 'tmux', config = path.join(__dirname, '..', 'tmux-holder.conf') } = {}) {
+  constructor({ env = process.env, home = os.homedir(), tmux = 'tmux', config = path.join(__dirname, '..', 'tmux-holder.conf'), verifyAttach = null } = {}) {
     this.env = serverEnvironment(env);
     // 実行ディレクトリを作る前に tmux 不在を確定する。
     try {
@@ -262,6 +262,11 @@ class TmuxHolder {
         else {
           const holderSession = sessions.split('\n').find(name => /^vk-terminals-\d+$/.test(name));
           if (!holderSession) throw new Error('tmux holder socket is in use');
+          if (verifyAttach && verifyAttach({ stage: 'attach', tmuxPath: tmux, socket: this.socket, paneId: null }) !== true) {
+            const error = new Error('tmux holder verification failed');
+            error.code = 'HOLDER_VERIFICATION_FAILED';
+            throw error;
+          }
           this.session = holderSession;
           if (this.command(['list-clients', '-t', holderSession, '-F', '#{client_pid}']).trim()) throw new Error('tmux holder socket is in use');
           this.reattached = true;

@@ -666,3 +666,26 @@ test('持続通知は通常の通知と URL 失敗通知で上書きされない
   vm.runInNewContext("showExternalUrlOpenFailedToast('https://example.com')", context);
   assert.equal(toast.dataset.persistent, 'true');
 });
+
+test('ダウンロード案内の括弧と操作名を同じ改行禁止要素に入れる', () => {
+  const renderer = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'app.js'), 'utf8');
+  const downloadBlocked = renderer.slice(renderer.indexOf("VKIpc.on('internal-browser:download-blocked'"), renderer.indexOf('// ─── State', renderer.indexOf("VKIpc.on('internal-browser:download-blocked'")));
+  let downloadHandler;
+  const children = [];
+  const message = {
+    replaceChildren(...nodes) { children.splice(0, children.length, ...nodes); },
+    append(...nodes) { children.push(...nodes); },
+  };
+  const context = {
+    VKIpc: { on(_channel, handler) { downloadHandler = handler; } },
+    showGenericToast() { return true; },
+    externalUrlToastEl: { querySelector() { return message; } },
+    document: { createElement() { return {}; } },
+  };
+  vm.runInNewContext(downloadBlocked, context);
+  downloadHandler();
+  assert.equal(children[0], 'ダウンロードはできません。操作列の');
+  assert.equal(children[1].className, 'vk-toast-phrase');
+  assert.equal(children[1].textContent, '「外部ブラウザで開く」');
+  assert.equal(children[2], 'から行ってください。');
+});

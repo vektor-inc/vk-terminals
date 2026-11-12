@@ -133,6 +133,7 @@ function syncInternalBrowserLayout() {
   displayedInternalBrowserWidth = clampBrowserWidth(preferredInternalBrowserWidth || NaN, availableWidth, columns);
   internalBrowserSidebar.style.width = `${displayedInternalBrowserWidth}px`;
   document.body.style.setProperty('--vktm-internal-browser-width', `${displayedInternalBrowserWidth}px`);
+  document.body.style.setProperty('--vktm-toast-sidebar-width', `${leftSidebar}px`);
   const resizer = internalBrowserSidebar.querySelector('.internal-browser-resizer');
   resizer.setAttribute('aria-valuemin', String(Math.min(360, maxWidth)));
   resizer.setAttribute('aria-valuemax', String(maxWidth));
@@ -385,11 +386,11 @@ VKIpc.on('internal-browser:download-blocked', () => {
   if (!showGenericToast(toastMessage)) return;
   const message = externalUrlToastEl?.querySelector('.vk-toast-message');
   if (message) {
-    const [beforeAction, afterAction] = toastMessage.split('外部ブラウザで開く');
+    const [beforeAction, afterAction] = toastMessage.split('「外部ブラウザで開く」');
     message.replaceChildren(beforeAction);
     const action = document.createElement('span');
     action.className = 'vk-toast-phrase';
-    action.textContent = '外部ブラウザで開く';
+    action.textContent = '「外部ブラウザで開く」';
     message.append(action, afterAction);
   }
 });

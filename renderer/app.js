@@ -287,8 +287,10 @@ VKIpc.on('internal-browser:state', state => {
   if (internalBrowserFailedUrl) {
     try { failedHost = new URL(internalBrowserFailedUrl).hostname; } catch {}
   }
-  errorView.querySelector('.internal-browser-error-message').textContent = failedHost
+  const errorMessage = errorView.querySelector('.internal-browser-error-message');
+  const errorText = failedHost
     ? `ページを表示できませんでした（${failedHost}）` : 'ページを表示できませんでした';
+  if (errorMessage.textContent !== errorText) errorMessage.textContent = errorText;
   const notice = internalBrowserSidebar.querySelector('.internal-browser-notice');
   const github404Url = state.github404Url || '';
   if (notice.dataset.url !== github404Url) {

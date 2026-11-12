@@ -113,8 +113,6 @@ const ON_CHANNELS = new Set([
   'terminal:engine-changed',
   'terminal:background-work',
   'internal-browser:state',
-  'internal-browser:error',
-  'internal-browser:github-404',
   'internal-browser:download-blocked',
 ]);
 

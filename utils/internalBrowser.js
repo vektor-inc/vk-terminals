@@ -63,20 +63,17 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
         return { action: 'deny' };
       });
       contents.on('did-start-loading', publish);
-      // 読み込み失敗後のエラーページ遷移では失敗表示を消さない。
       contents.on('did-start-navigation', (_event, url, isInPlace, isMainFrame) => {
-        if (!isMainFrame || isInPlace || (failedUrl && url === failedUrl && !pendingUrl)) return;
+        if (!isMainFrame || isInPlace) return;
         failedUrl = '';
         github404Url = '';
         publish();
       });
       contents.on('did-stop-loading', publish);
-      // 失敗先と同じ URL の遷移通知は確定 URL として扱わない。
       contents.on('did-navigate', (_event, url) => {
-        if (failedUrl && url === failedUrl) { publish(); return; }
         currentUrl = url;
         pendingUrl = '';
-        if (url !== failedUrl) failedUrl = '';
+        failedUrl = '';
         if (url !== github404Url) github404Url = '';
         publish();
       });

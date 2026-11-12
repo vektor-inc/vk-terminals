@@ -13,7 +13,12 @@ test('失敗表示は失敗 URL、操作列は確定 URL を安全な外部オ�
   assert.ok(stateHandler);
   const handlers = {};
   const opened = [];
-  const message = { textContent: '' };
+  let messageWrites = 0;
+  let messageText = '';
+  const message = {
+    get textContent() { return messageText; },
+    set textContent(value) { messageWrites++; messageText = value; },
+  };
   const errorView = { hidden: true, querySelector: () => message };
   const notice = { hidden: true, dataset: {}, replaceChildren() {}, append() {} };
   const display = { replaceChildren() {}, setAttribute() {}, append() {} };
@@ -34,12 +39,15 @@ test('失敗表示は失敗 URL、操作列は確定 URL を安全な外部オ�
   vm.runInNewContext(`let internalBrowserUrl = 'https://example.com/confirmed'; let internalBrowserFailedUrl = ''; let internalBrowserHasPage = false; ${clickHandler} ${stateHandler}`, context);
   const state = (failedUrl, github404Url = '', loading = false) => handlers['internal-browser:state']({ url: 'https://example.com/confirmed', failedUrl, github404Url, loading });
   state('https://example.com/failed', '', false);
+  assert.equal(messageWrites, 1);
   state('https://example.com/failed', '', true);
   state('https://example.com/failed', '', false);
+  assert.equal(messageWrites, 1);
   assert.equal(message.textContent, 'ページを表示できませんでした（example.com）');
   assert.equal(errorView.hidden, false);
   state('invalid-url', '', false);
   assert.equal(message.textContent, 'ページを表示できませんでした');
+  assert.equal(messageWrites, 2);
   state('https://example.com/failed', '', false);
   const click = inError => handlers.click({ target: {
     closest: selector => selector === '[data-action]' ? { dataset: { action: 'external' } } : selector === '.internal-browser-error' && inError ? errorView : null,

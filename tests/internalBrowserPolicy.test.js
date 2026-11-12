@@ -100,10 +100,12 @@ test('専用ビューの遷移と権限、ダウンロード、確定 URL を制
   contents.emit('did-start-loading');
   assert.equal(sent.at(-1)[1].failedUrl, 'https://example.com/failed');
   contents.emit('did-start-navigation', {}, 'https://example.com/failed', false, true);
+  assert.equal(sent.at(-1)[1].failedUrl, '');
   contents.emit('did-navigate', {}, 'https://example.com/failed');
-  assert.equal(sent.at(-1)[1].failedUrl, 'https://example.com/failed');
+  assert.equal(sent.at(-1)[1].url, 'https://example.com/failed');
+  assert.equal(sent.at(-1)[1].failedUrl, '');
   contents.emit('did-fail-load', {}, -3, 'aborted', 'https://example.com/failed', true);
-  assert.equal(sent.at(-1)[1].failedUrl, 'https://example.com/failed');
+  assert.equal(sent.at(-1)[1].failedUrl, '');
   contents.emit('did-start-navigation', {}, 'https://example.com/next', false, true);
   assert.equal(sent.at(-1)[1].failedUrl, '');
   browserSession.completed({ webContentsId: 42, resourceType: 'mainFrame', statusCode: 404, url: 'https://github.com/missing' });

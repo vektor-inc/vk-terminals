@@ -94,9 +94,10 @@ const {
 const { resolveInitialPaneLaunch } = require('./utils/initialPaneLaunch');
 const { buildPtyEnv } = require('./utils/ptyEnv');
 const { TmuxHolder, metadataPath, readPaneMetadata, writePaneMetadata, touchPaneMetadata } = require('./utils/paneHolder');
-const { missingSavedPaneCount, chooseUntrackedPaneIdentity } = require('./utils/paneHolderRestorePlan');
+const { missingSavedPaneCount, chooseUntrackedPaneIdentity, resolveHolderPaneAgent } = require('./utils/paneHolderRestorePlan');
 const { MODE_FORMAT, buildInputModeSequence } = require('./utils/paneHolderRestore');
-const { bindToHolderPane, writePrivateJson, processStartTime, restoreHolderConnection, revokeDirectory, revokeStaleHolderDirectories } = require('./utils/holderBackgroundWork');
+const { bindToHolderPane, processStartTime, restoreHolderConnection, revokeDirectory, revokeStaleHolderDirectories } = require('./utils/holderBackgroundWork');
+const { writePrivateJson } = require('./utils/privateFile');
 // ログインシェルの PATH を本体・ペインへ反映する（issue #454）。
 const { applyLoginShellPath, appendUserLocalBin } = require('./utils/loginShellPath');
 const { pickTerminalShell } = require('./utils/terminalShell');
@@ -315,17 +316,18 @@ function backgroundWorkHookUrl() {
 }
 
 // 再起動後、保存した合言葉で受け口を作り直し、ペインのシェルから生死の記録を作り直す。
-async function restoreHolderBackgroundWork(targets, livePanePids) {
+async function restoreHolderBackgroundWork(targets, livePanes) {
   let processes = null;
   try { processes = await listProcessTable(); } catch (_) {}
-  const keepNames = new Set();
+  // 復元の成否にかかわらず、生存ペインが指す接続情報は回収しない。
+  const protectedNames = new Set(livePanes.map(({ identity }) => identity.backgroundWorkDir).filter(Boolean));
   for (const { id, identity, generation } of targets) {
     const result = restoreHolderConnection({
       dataDir: DATA_DIR, name: identity.backgroundWorkDir, identity, termId: id, generation,
       config: { token: API_TOKEN, url: backgroundWorkHookUrl() }, processes,
     });
     if (result.directory) {
-      keepNames.add(path.basename(result.directory));
+      protectedNames.add(path.basename(result.directory));
       const directory = result.directory;
       backgroundSettings.set(id, { filename: path.join(directory, 'settings.json'), directory, holderBound: true, holderOwner: result.owner, discard: () => revokeDirectory(directory) });
     }
@@ -333,7 +335,8 @@ async function restoreHolderBackgroundWork(targets, livePanePids) {
     backgroundWork.restore(id, generation, result.epoch, result.restored ? result.owner : {});
     if (processes) agentLifecycles.restore(id, generation, identity.pid, processes, result.restored ? result.owner.agents : []);
   }
-  try { revokeStaleHolderDirectories(DATA_DIR, keepNames, livePanePids); }
+  const panesByPid = new Map(livePanes.map(({ identity, generation }) => [identity.pid, { paneId: identity.paneId, generation }]));
+  try { revokeStaleHolderDirectories(DATA_DIR, protectedNames, panesByPid); }
   catch (error) { console.warn(`${LOG_PREFIX} holder background work cleanup failed:`, error.message); }
 }
 
@@ -2584,16 +2587,14 @@ ipcMain.handle('terminal:restore', async () => {
     const pane = tmuxHolder.attachPane(identity);
     pane.beginReplay();
     const id = String(saved.termId);
-    // ペインに置いた世代番号は、画面の記録より後の再起動も反映しているため優先する。
-    const generation = identity.agentGeneration > 0 ? identity.agentGeneration
-      : Number.isSafeInteger(saved.generation) && saved.generation > 0 ? saved.generation : 1;
-    registerTerminalProcess(id, pane, process.env.SHELL || '/bin/sh', { hasAgent: saved.hasAgent === true, generation });
+    // ペインに置いた世代番号とフォルダ名は、画面の記録より後の再起動やエンジン切り替えも反映しているため優先する。
+    const agent = resolveHolderPaneAgent(identity, saved);
+    registerTerminalProcess(id, pane, process.env.SHELL || '/bin/sh', { hasAgent: agent.hasAgent, generation: agent.generation });
     nextId = Math.max(nextId, Number(id) + 1);
-    const normalized = normalizeHolderPane({ ...saved, generation }, identity.paneId);
+    const normalized = normalizeHolderPane({ ...saved, hasAgent: agent.hasAgent, engine: agent.engine, generation: agent.generation }, identity.paneId);
     panes.push({ ...normalized, id, cwd: normalized.cwd || os.homedir() });
-    if (saved.hasAgent === true && normalized.engine === 'claude') backgroundWorkTargets.push({ id, identity, generation });
+    if (agent.restoreBackgroundWork) backgroundWorkTargets.push({ id, identity, generation: agent.generation });
   }
-  await restoreHolderBackgroundWork(backgroundWorkTargets, new Set([...live.values()].map(identity => identity.pid)));
   const matchedSavedCount = panes.length;
   const restoredIds = new Set(panes.map(pane => pane.tmuxPaneId));
   const usedPaneIds = new Set(panes.map(pane => pane.paneId));
@@ -2609,11 +2610,17 @@ ipcMain.handle('terminal:restore', async () => {
     }
     const pane = tmuxHolder.attachPane(identity);
     pane.beginReplay();
-    registerTerminalProcess(id, pane, process.env.SHELL || '/bin/sh', { hasAgent: false });
+    const agent = resolveHolderPaneAgent(identity);
+    registerTerminalProcess(id, pane, process.env.SHELL || '/bin/sh', { hasAgent: agent.hasAgent, generation: agent.hasAgent ? agent.generation : 1 });
     usedPaneIds.add(paneId);
-    const normalized = normalizeHolderPane({ termId: id, paneId, cwd: os.homedir(), hasAgent: false, generation: 0 }, identity.paneId);
+    const normalized = normalizeHolderPane({ termId: id, paneId, cwd: os.homedir(), hasAgent: agent.hasAgent, engine: agent.engine, generation: agent.generation }, identity.paneId);
     panes.push({ ...normalized, id });
+    if (agent.restoreBackgroundWork) backgroundWorkTargets.push({ id, identity, generation: agent.generation });
   }
+  // 全生存ペインの登録を終えてから復元する。ペインが指す接続情報は守り、旧世代だけを回収する。
+  await restoreHolderBackgroundWork(backgroundWorkTargets, [...live.values()].map(identity => ({
+    identity, generation: panes.find(pane => pane.tmuxPaneId === identity.paneId)?.generation ?? null,
+  })));
   // 画面側の行列数が決まるまで採取を待つ。採取前のライブ出力は履歴に含める。
   for (const saved of panes) ptys.get(saved.id).pendingReplay = true;
   restoredPaneCount = panes.length;

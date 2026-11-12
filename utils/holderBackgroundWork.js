@@ -9,71 +9,22 @@ const crypto = require('node:crypto');
 const { execFileSync } = require('node:child_process');
 const { isSameProcessStart } = require('./agentLifecycle');
 
+const {
+  resolveUid, isPrivateDirectory, isPrivateFile, readPrivateJson, createPrivateJson, writePrivateJson,
+} = require('./privateFile');
+
 const DIRECTORY_NAME = /^background-work-[A-Za-z0-9]+$/;
 const EPOCH = /^[0-9a-f]{48}$/;
-const MAX_FILE_BYTES = 65536;
 const MAX_AGENT_IDENTITIES = 64;
 const SAFE_SEGMENT = /^[a-zA-Z0-9_.-]{1,160}$/;
 const SAFE_ID = /^[a-zA-Z0-9_-]{1,160}$/;
-
-function resolveUid(uid) {
-  return uid === undefined && typeof process.getuid === 'function' ? process.getuid() : uid;
-}
 
 function createEpoch() {
   return crypto.randomBytes(24).toString('hex');
 }
 
-// フォルダが本人所有・実フォルダ・ちょうど 0700 であるかを lstat で確かめる。
-function isPrivateDirectory(directory, uid = resolveUid()) {
-  try {
-    const stat = fs.lstatSync(directory);
-    return !stat.isSymbolicLink() && stat.isDirectory() && (uid === undefined || stat.uid === uid) && (stat.mode & 0o777) === 0o700;
-  } catch (_) { return false; }
-}
-
-// ファイルが本人所有・通常ファイル・ちょうど 0600・他の名前から参照されていないかを lstat で確かめる。
-function isPrivateFile(filename, uid = resolveUid()) {
-  try {
-    const stat = fs.lstatSync(filename);
-    return !stat.isSymbolicLink() && stat.isFile() && (uid === undefined || stat.uid === uid) &&
-      (stat.mode & 0o777) === 0o600 && stat.nlink === 1 && stat.size <= MAX_FILE_BYTES;
-  } catch (_) { return false; }
-}
-
 function inspectPrivateEntry(directory, names, uid = resolveUid()) {
   return isPrivateDirectory(directory, uid) && names.every(name => isPrivateFile(path.join(directory, name), uid));
-}
-
-// 検査した実体と開いた実体が同じかを確かめてから読む（検査と読み取りの間の差し替えを防ぐ）。
-function readPrivateJson(directory, name, uid = resolveUid()) {
-  const filename = path.join(directory, name);
-  if (!isPrivateDirectory(directory, uid) || !isPrivateFile(filename, uid)) throw new Error('unsafe background work file');
-  const before = fs.lstatSync(filename);
-  const fd = fs.openSync(filename, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
-  try {
-    const stat = fs.fstatSync(fd);
-    if (stat.ino !== before.ino || stat.dev !== before.dev || !stat.isFile() || (stat.mode & 0o777) !== 0o600 || stat.size > MAX_FILE_BYTES) {
-      throw new Error('background work file changed while reading');
-    }
-    return JSON.parse(fs.readFileSync(fd, 'utf8'));
-  } finally { fs.closeSync(fd); }
-}
-
-// 書く前にフォルダと既存のファイルを検査し、作成時から 0600 の一時ファイルを置き換える。
-function writePrivateJson(directory, name, data, uid = resolveUid()) {
-  if (!isPrivateDirectory(directory, uid)) throw new Error('unsafe background work directory');
-  const target = path.join(directory, name);
-  let exists = true;
-  try { fs.lstatSync(target); } catch (error) { if (error.code !== 'ENOENT') throw error; exists = false; }
-  if (exists && !isPrivateFile(target, uid)) throw new Error('unsafe background work file');
-  const temporary = path.join(directory, `.${name}.${crypto.randomBytes(8).toString('hex')}.tmp`);
-  try {
-    fs.writeFileSync(temporary, JSON.stringify(data), { mode: 0o600, flag: 'wx' });
-    fs.renameSync(temporary, target);
-  } finally {
-    try { fs.unlinkSync(temporary); } catch (_) {}
-  }
 }
 
 // 合言葉を失効させる。シンボリックリンクはリンク先をたどらずリンクだけを消す。
@@ -134,9 +85,9 @@ function recreateConnection(directory, owner, config, uid) {
   revokeDirectory(directory);
   fs.mkdirSync(directory, { mode: 0o700 });
   try {
-    if (!isPrivateDirectory(directory, uid)) throw new Error('unsafe background work directory');
-    fs.writeFileSync(path.join(directory, 'owner.json'), JSON.stringify(owner), { mode: 0o600, flag: 'wx' });
-    fs.writeFileSync(path.join(directory, 'connection.json'), JSON.stringify({ ...config, epoch }), { mode: 0o600, flag: 'wx' });
+    // 作ったフォルダと各ファイルの fd を検査しながら書く（作成直後の差し替えも検出する）。
+    createPrivateJson(directory, 'owner.json', owner, uid);
+    createPrivateJson(directory, 'connection.json', { ...config, epoch }, uid);
     if (!inspectPrivateEntry(directory, ['owner.json', 'connection.json'], uid)) throw new Error('unsafe background work file');
   } catch (error) {
     revokeDirectory(directory);
@@ -162,8 +113,10 @@ function restoreHolderConnection({ dataDir, name, identity, termId, generation, 
   if (typeof name !== 'string' || !DIRECTORY_NAME.test(name) || !isOwnedParent(dataDir, uid)) {
     return { epoch: createEpoch(), restored: false, directory: null, owner: null };
   }
+  // ps の表が取れないときはシェルの生死を判断できないため、使用中かもしれない接続情報に触れない。
+  if (!processes) return { epoch: createEpoch(), restored: false, directory: null, owner: null };
   const directory = path.join(dataDir, name);
-  const shell = processes?.get(identity.pid);
+  const shell = processes.get(identity.pid);
   const nextConfig = { termId: String(termId), token: config.token, url: config.url };
   // 検査を通ったものだけを読み、ペイン・世代・シェルの起動時刻まで一致する場合だけ復元する。
   let owner = null;
@@ -211,32 +164,30 @@ function isOwnedParent(directory, uid = resolveUid()) {
 }
 
 /**
- * 復元に使わなかった、生存ペインの古い接続情報を失効させる。
+ * 生存ペインの、世代番号が今より古い接続情報だけを失効させる。
+ * ペインの @vk_bg_dir が指すフォルダは、復元の成否にかかわらず残す。
  * @param {string} dataDir 接続情報フォルダの親。
- * @param {Set<string>} keepNames 復元に使ったフォルダ名。
- * @param {Set<number>} panePids 今回扱った生存ペインのシェルの PID。
+ * @param {Set<string>} protectedNames 生存ペインの @vk_bg_dir と、復元に使ったフォルダ名。
+ * @param {Map<number, {paneId: string, generation: number}>} livePanes シェルの PID ごとの生存ペインと今の世代番号。
  */
-function revokeStaleHolderDirectories(dataDir, keepNames, panePids, uid = resolveUid()) {
+function revokeStaleHolderDirectories(dataDir, protectedNames, livePanes, uid = resolveUid()) {
   let names;
   try { names = fs.readdirSync(dataDir); } catch (_) { return; }
   for (const name of names) {
-    if (!DIRECTORY_NAME.test(name) || keepNames.has(name)) continue;
+    if (!DIRECTORY_NAME.test(name) || protectedNames.has(name)) continue;
     const directory = path.join(dataDir, name);
     try {
       if (!inspectPrivateEntry(directory, ['owner.json'], uid)) continue;
       const owner = parseHolderOwner(readPrivateJson(directory, 'owner.json', uid));
-      if (owner && panePids.has(owner.panePid)) revokeDirectory(directory);
+      const pane = owner && livePanes.get(owner.panePid);
+      if (pane && pane.paneId === owner.tmuxPaneId && Number.isSafeInteger(pane.generation) && owner.generation < pane.generation) revokeDirectory(directory);
     } catch (_) {}
   }
 }
 
 module.exports = {
   DIRECTORY_NAME,
-  isPrivateDirectory,
-  isPrivateFile,
   inspectPrivateEntry,
-  readPrivateJson,
-  writePrivateJson,
   revokeDirectory,
   processStartTime,
   parseHolderOwner,

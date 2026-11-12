@@ -9,8 +9,10 @@ const path = require('node:path');
 const vm = require('node:vm');
 const { execFileSync } = require('node:child_process');
 const {
-  isPrivateFile, writePrivateJson, bindToHolderPane, restoreHolderConnection, revokeStaleHolderDirectories, parseHolderOwner,
+  bindToHolderPane, restoreHolderConnection, revokeStaleHolderDirectories, parseHolderOwner,
 } = require('../utils/holderBackgroundWork');
+const { isPrivateFile, writePrivateJson, readPrivateJson, createPrivateJson } = require('../utils/privateFile');
+const { resolveHolderPaneAgent } = require('../utils/paneHolderRestorePlan');
 const { createBackgroundWorkStore, SUBAGENT_TTL_MS } = require('../utils/backgroundWork');
 const { createAgentLifecycleStore } = require('../utils/agentLifecycle');
 const { cleanupBackgroundWorkSettings } = require('../utils/claudeSettingsPreset');
@@ -157,18 +159,59 @@ test('起動時の掃除は、持ち主の保持役のペインが残ってい�
   assert.equal(fs.existsSync(dead), false);
 });
 
-test('復元に使わなかった生存ペインの古い接続情報は失効させ、他のペインのものは残す', t => {
+test('回収するのは生存ペインの旧世代の接続情報だけで、ペインが指すもの・同じ世代のもの・他のペインのものは残す', t => {
   const saved = savedPane(t);
-  const stale = path.join(saved.dataDir, 'background-work-stale1');
-  fs.mkdirSync(stale, { mode: 0o700 });
-  bindToHolderPane(stale, { termId: '5', generation: 1, tmuxPaneId: '%3', panePid: 100, paneLstart: START });
-  const other = path.join(saved.dataDir, 'background-work-other1');
-  fs.mkdirSync(other, { mode: 0o700 });
-  bindToHolderPane(other, { termId: '7', generation: 1, tmuxPaneId: '%7', panePid: 700, paneLstart: START });
-  revokeStaleHolderDirectories(saved.dataDir, new Set([saved.name]), new Set([100]));
+  const make = (name, owner) => {
+    const directory = path.join(saved.dataDir, name);
+    fs.mkdirSync(directory, { mode: 0o700 });
+    bindToHolderPane(directory, { termId: '5', generation: 2, tmuxPaneId: '%3', panePid: 100, paneLstart: START, ...owner });
+    return directory;
+  };
+  const stale = make('background-work-stale1', { generation: 1 });
+  const sameGeneration = make('background-work-same1', {});
+  const referenced = make('background-work-ref1', { generation: 1 });
+  const other = make('background-work-other1', { termId: '7', generation: 1, tmuxPaneId: '%7', panePid: 700 });
+  const unknown = make('background-work-unknown1', { termId: '8', generation: 1, tmuxPaneId: '%8', panePid: 800 });
+  const livePanes = new Map([[100, { paneId: '%3', generation: 2 }], [800, { paneId: '%8', generation: null }]]);
+  revokeStaleHolderDirectories(saved.dataDir, new Set([saved.name, 'background-work-ref1']), livePanes);
   assert.equal(fs.existsSync(saved.directory), true);
   assert.equal(fs.existsSync(stale), false);
+  assert.equal(fs.existsSync(sameGeneration), true);
+  assert.equal(fs.existsSync(referenced), true);
   assert.equal(fs.existsSync(other), true);
+  assert.equal(fs.existsSync(unknown), true, '世代番号が分からないペインのものは消さない');
+});
+
+test('ps の表が取れないときは、使用中かもしれない接続情報に触れない', t => {
+  const saved = savedPane(t);
+  const result = restore(saved, { processes: null });
+  assert.equal(result.restored, false);
+  assert.equal(readConnection(saved.directory).epoch, EPOCH);
+});
+
+test('復元対象は tmux の値で決める: 保存記録が無いペイン・メタデータを拒否したペイン・保存後に Codex から Claude へ切り替えたペイン', () => {
+  const withWork = { backgroundWorkDir: 'background-work-abc123', agentGeneration: 3 };
+  // 異常終了で保存記録に入らなかったペイン。
+  assert.deepEqual(resolveHolderPaneAgent(withWork), { hasAgent: true, engine: 'claude', generation: 3, restoreBackgroundWork: true });
+  // メタデータを拒否したときの既定の記録（hasAgent: false, generation: 0）。
+  assert.deepEqual(resolveHolderPaneAgent(withWork, { termId: '5', engine: 'claude', hasAgent: false, generation: 0 }), { hasAgent: true, engine: 'claude', generation: 3, restoreBackgroundWork: true });
+  // 保存後に Codex から Claude Code へ切り替えたペイン。
+  assert.deepEqual(resolveHolderPaneAgent(withWork, { engine: 'codex', hasAgent: true, generation: 2 }), { hasAgent: true, engine: 'claude', generation: 3, restoreBackgroundWork: true });
+  // Claude Code から Codex へ切り替えたペインはフォルダ名が消えているため復元しない。
+  assert.deepEqual(resolveHolderPaneAgent({ backgroundWorkDir: null, agentGeneration: 4 }, { engine: 'claude', hasAgent: true, generation: 3 }), { hasAgent: true, engine: 'claude', generation: 4, restoreBackgroundWork: false });
+  assert.deepEqual(resolveHolderPaneAgent({ backgroundWorkDir: null, agentGeneration: null }, { engine: 'codex', hasAgent: true, generation: 2 }), { hasAgent: true, engine: 'codex', generation: 2, restoreBackgroundWork: false });
+  // tmux の値も保存記録も無いペインは素のシェルとして扱う（従来どおり）。
+  assert.deepEqual(resolveHolderPaneAgent({ backgroundWorkDir: null, agentGeneration: null }), { hasAgent: false, engine: 'claude', generation: 0, restoreBackgroundWork: false });
+});
+
+test('復元は全生存ペインの登録を終えてから行い、保存記録の無いペインも対象に入れる', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../main.js'), 'utf8');
+  const handler = source.slice(source.indexOf("ipcMain.handle('terminal:restore'"), source.indexOf("ipcMain.on('terminal:restore-abandon'"));
+  const untrackedLoop = handler.indexOf('for (const identity of live.values())');
+  const restoreCall = handler.indexOf('await restoreHolderBackgroundWork(');
+  assert.ok(untrackedLoop > 0 && restoreCall > untrackedLoop);
+  assert.equal(handler.match(/backgroundWorkTargets\.push\(/g).length, 2);
+  assert.equal(handler.includes('saved.hasAgent === true && normalized.engine'), false);
 });
 
 test('持ち主の記録は秘密でない値だけを受け付け、不正な値を捨てる', () => {
@@ -245,6 +288,103 @@ test('保存した記録が無い場合は、シェルの前面のプロセス�
   assert.equal(store.restore('5', 2, 100, table(row(1, 0, 1, 0), row(100, 1, 100, 100))), false);
   // 世代が違う記録は作り直さない。
   assert.equal(store.restore('5', 3, 100, shellOnly()), false);
+});
+
+// fs の関数を一時的に差し替え、検査と読み書きの間の差し替えを再現する。
+function patch(t, name, wrapper) {
+  const original = fs[name];
+  fs[name] = wrapper(original);
+  t.after(() => { fs[name] = original; });
+  return () => { fs[name] = original; };
+}
+
+test('読む途中でハードリンクが足された・権限が緩められた・所有者が違う場合は読まない', t => {
+  const cases = [
+    ['nlink が 2', (file, saved) => fs.linkSync(file, path.join(saved.dataDir, 'hardlink'))],
+    ['権限が 0644', file => fs.chmodSync(file, 0o644)],
+  ];
+  for (const [label, mutate] of cases) {
+    const saved = savedPane(t);
+    const file = path.join(saved.directory, 'connection.json');
+    const restoreOpen = patch(t, 'openSync', original => (target, ...args) => { if (target === file) mutate(file, saved); return original(target, ...args); });
+    assert.throws(() => readPrivateJson(saved.directory, 'connection.json'), /changed while reading/, label);
+    restoreOpen();
+  }
+  const saved = savedPane(t);
+  const restoreFstat = patch(t, 'fstatSync', original => fd => { const stat = original(fd); stat.uid += 1; return stat; });
+  assert.throws(() => readPrivateJson(saved.directory, 'connection.json'), /changed while reading/, '所有者が違う');
+  restoreFstat();
+});
+
+test('読む途中でフォルダが差し替えられた場合は読まない', t => {
+  const saved = savedPane(t);
+  const file = path.join(saved.directory, 'connection.json');
+  const moved = path.join(saved.dataDir, 'moved');
+  const restoreFstat = patch(t, 'fstatSync', original => fd => {
+    const stat = original(fd);
+    if (!fs.existsSync(moved)) { fs.renameSync(saved.directory, moved); fs.mkdirSync(saved.directory, { mode: 0o700 }); }
+    return stat;
+  });
+  assert.throws(() => readPrivateJson(saved.directory, 'connection.json'), /private directory changed/);
+  restoreFstat();
+  assert.equal(fs.existsSync(file), false);
+});
+
+test('書く途中でフォルダが差し替えられた・一時ファイルの権限が変えられた場合は書かない', t => {
+  const saved = savedPane(t);
+  const moved = path.join(saved.dataDir, 'moved');
+  // rename の直後にフォルダを入れ替えると、置き換え後の確認で検出する。
+  const restoreRename = patch(t, 'renameSync', original => (from, to) => {
+    const result = original(from, to);
+    if (from.includes('.owner.json.')) { original(saved.directory, moved); fs.mkdirSync(saved.directory, { mode: 0o700 }); }
+    return result;
+  });
+  assert.throws(() => writePrivateJson(saved.directory, 'owner.json', { replaced: true }), /private directory changed/);
+  restoreRename();
+  assert.deepEqual(fs.readdirSync(saved.directory), []);
+  // rename の直前にフォルダを入れ替えると、置き換え前の確認で検出し、入れ替え後のフォルダには書かない。
+  const before = savedPane(t);
+  const movedBefore = path.join(before.dataDir, 'moved');
+  const restoreLstat = patch(t, 'lstatSync', original => (target, ...args) => {
+    if (String(target).includes('.owner.json.') && !fs.existsSync(movedBefore)) { fs.renameSync(before.directory, movedBefore); fs.mkdirSync(before.directory, { mode: 0o700 }); }
+    return original(target, ...args);
+  });
+  assert.throws(() => writePrivateJson(before.directory, 'owner.json', { replaced: true }), /private directory changed|changed while writing|ENOENT/);
+  restoreLstat();
+  assert.deepEqual(fs.readdirSync(before.directory), []);
+
+  const other = savedPane(t);
+  const restoreOpen = patch(t, 'openSync', original => (target, ...args) => {
+    const fd = original(target, ...args);
+    if (String(target).includes('.owner.json.')) fs.chmodSync(target, 0o644);
+    return fd;
+  });
+  assert.throws(() => writePrivateJson(other.directory, 'owner.json', { replaced: true }), /changed while writing/);
+  restoreOpen();
+  assert.equal(JSON.parse(fs.readFileSync(path.join(other.directory, 'owner.json'), 'utf8')).holder, 'tmux');
+  assert.deepEqual(fs.readdirSync(other.directory).filter(name => name.endsWith('.tmp')), []);
+});
+
+test('作り直しの途中で作ったファイルの権限が変えられた場合は、作り直しをやめて失効だけ行う', t => {
+  const saved = savedPane(t);
+  fs.chmodSync(path.join(saved.directory, 'connection.json'), 0o644);
+  const restoreOpen = patch(t, 'openSync', original => (target, ...args) => {
+    const fd = original(target, ...args);
+    if (target === path.join(saved.directory, 'connection.json') && args[0] === 'wx') fs.chmodSync(target, 0o644);
+    return fd;
+  });
+  const result = restore(saved);
+  restoreOpen();
+  assert.equal(result.restored, false);
+  assert.equal(result.directory, null);
+  assert.equal(fs.existsSync(saved.directory), false);
+});
+
+test('作成時から 0600 のファイルだけを新しく作り、既にあるファイルは上書きしない', t => {
+  const saved = savedPane(t);
+  createPrivateJson(saved.directory, 'extra.json', { a: 1 });
+  assert.equal(isPrivateFile(path.join(saved.directory, 'extra.json')), true);
+  assert.throws(() => createPrivateJson(saved.directory, 'extra.json', { a: 2 }), /EEXIST/);
 });
 
 // main.js の終了処理だけを取り出して、保持役の有無による違いを確かめる。

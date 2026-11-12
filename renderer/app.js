@@ -140,24 +140,23 @@ function syncInternalBrowserLayout() {
   const setupPanelElement = root.querySelector('.setup-panel');
   const setupPanelMinimumWidth = setupPanel?.hasPanel()
     ? parseFloat(getComputedStyle(root).getPropertyValue('--vktm-setup-panel-min-width')) || 0 : 0;
-  const paneMinimumWidth = setupPanelMinimumWidth ? Math.max(320, gridMinimumWidth) : gridMinimumWidth;
-  // パネルは現在の実幅ではなく最小幅で判定し、開く直前の配置への依存をなくす。
-  const candidateAvailableWidth = browserAvailableWidth(windowWidth, leftSidebar, [setupPanelMinimumWidth]);
-  const candidateBrowserWidth = clampBrowserWidth(preferredInternalBrowserWidth || NaN,
-    candidateAvailableWidth, columns, windowWidth, paneMinimumWidth);
+  // 横並びの成立条件は必要な最小幅だけで決め、ブラウザの保存幅には左右されない。
+  const sideBySideGridMinimumWidth = setupPanelMinimumWidth ? Math.max(320, gridMinimumWidth) : gridMinimumWidth;
   const panelMustFold = !!setupPanelMinimumWidth && shouldFoldSetupPanel(
-    windowWidth, leftSidebar, paneMinimumWidth, setupPanelMinimumWidth, columns, internalBrowserOpen, candidateBrowserWidth,
+    windowWidth, leftSidebar, sideBySideGridMinimumWidth, setupPanelMinimumWidth, columns, internalBrowserOpen,
   );
   if (setupPanel) setupPanel.setAvailableWidth(internalBrowserOpen
-    ? (panelMustFold ? 0 : windowWidth - leftSidebar - candidateBrowserWidth) : windowWidth);
+    ? (panelMustFold ? 0 : Math.max(1000, windowWidth)) : windowWidth);
+  // 配置変更を要求した直後でも、切替後のグリッド最小幅でブラウザ幅を決める。
+  const effectiveGridMinimumWidth = panelMustFold ? 12 : sideBySideGridMinimumWidth;
   // 帯と利用者が開いた重ね表示はグリッドと横並びにならない。
   const otherWidths = [...root.children]
     .filter(element => element !== internalBrowserSidebar && element.id !== 'sidebar' && !element.contains(grid))
     .filter(element => { const style = getComputedStyle(element); return style.display !== 'none' && style.position !== 'absolute'; })
     .map(element => element === setupPanelElement ? setupPanelMinimumWidth : element.getBoundingClientRect().width);
   const availableWidth = browserAvailableWidth(windowWidth, leftSidebar, otherWidths);
-  const maxWidth = browserWidthMax(availableWidth, columns, windowWidth, paneMinimumWidth);
-  displayedInternalBrowserWidth = clampBrowserWidth(preferredInternalBrowserWidth || NaN, availableWidth, columns, windowWidth, paneMinimumWidth);
+  const maxWidth = browserWidthMax(availableWidth, columns, windowWidth, effectiveGridMinimumWidth);
+  displayedInternalBrowserWidth = clampBrowserWidth(preferredInternalBrowserWidth || NaN, availableWidth, columns, windowWidth, effectiveGridMinimumWidth);
   root.classList.toggle('toast-phrase-wrap', shouldWrapToastPhrase(windowWidth, displayedInternalBrowserWidth));
   internalBrowserSidebar.style.width = `${displayedInternalBrowserWidth}px`;
   document.body.style.setProperty('--vktm-internal-browser-width', `${displayedInternalBrowserWidth}px`);

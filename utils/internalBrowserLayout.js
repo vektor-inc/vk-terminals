@@ -12,10 +12,9 @@
   function paneReservedWidth(gridMinimumWidth, columns = 1) {
     return Math.max(gridMinimumWidth, 320, Math.max(1, columns) * MIN_PANE_COLUMN_WIDTH);
   }
-  function shouldFoldSetupPanel(rootWidth, sidebarWidth, gridMinimumWidth, panelMinimumWidth, columns = 1, browserOpen = true, browserWidth = 0) {
+  function shouldFoldSetupPanel(rootWidth, sidebarWidth, gridMinimumWidth, panelMinimumWidth, columns = 1, browserOpen = true) {
     if (!browserOpen) return rootWidth < 1000;
-    return rootWidth - sidebarWidth - browserWidth < 1000
-      || rootWidth - sidebarWidth - paneReservedWidth(gridMinimumWidth, columns) - panelMinimumWidth < 360;
+    return rootWidth - sidebarWidth < 360 + paneReservedWidth(gridMinimumWidth, columns) + panelMinimumWidth;
   }
   function browserWidthMax(availableWidth, columns = 1, windowWidth = availableWidth, gridMinimumWidth = 0) {
     const available = Math.max(0, Math.floor(availableWidth));

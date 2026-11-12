@@ -57,11 +57,32 @@ test('パネルの最小幅とペイン幅を一度だけ確保する', () => {
   assert.equal(clampBrowserWidth(NaN, 1400, 1, 1400, 320), 630);
   assert.equal(browserAvailableWidth(1000, 330, [240]), 430);
   assert.equal(shouldFoldSetupPanel(1000, 330, 320, 240), true);
-  assert.equal(shouldFoldSetupPanel(1400, 0, 320, 240, 1, true, 522), true);
-  assert.equal(shouldFoldSetupPanel(1920, 0, 320, 240, 1, true, 720), false);
+  assert.equal(shouldFoldSetupPanel(1400, 0, 320, 240, 1, true), false);
+  assert.equal(shouldFoldSetupPanel(1920, 330, 320, 240, 1, true), false);
+  assert.equal(shouldFoldSetupPanel(600, 0, 320, 240, 1, true), true);
+  assert.equal(shouldFoldSetupPanel(1920, 0, 320, 240, 1, true), false);
   assert.equal(shouldFoldSetupPanel(999, 0, 320, 240, 1, false), true);
   assert.equal(shouldFoldSetupPanel(1000, 0, 320, 240, 1, false), false);
-  assert.equal(clampBrowserWidth(NaN, browserAvailableWidth(1000, 330), 1, 1000, 320), 350);
+  assert.equal(clampBrowserWidth(NaN, browserAvailableWidth(1000, 330), 1, 1000, 12), 360);
+  assert.equal(clampBrowserWidth(NaN, browserAvailableWidth(600, 0), 1, 600, 12), 360);
+  assert.equal(clampBrowserWidth(NaN, browserAvailableWidth(600, 330), 1, 600, 12), 258);
+  assert.equal(clampBrowserWidth(NaN, browserAvailableWidth(1400, 0), 1, 1400, 12), 630);
+  assert.equal(browserWidthMax(browserAvailableWidth(1400, 0), 1, 1400, 12), 1080);
+});
+
+test('ブラウザの開閉順と帯への切替後も同じ配置・幅に収束する', () => {
+  const layout = (rootWidth, sidebarWidth, browserOpen, hasPanel, columns = 1) => {
+    const fold = hasPanel && shouldFoldSetupPanel(rootWidth, sidebarWidth, 320, 240, columns, browserOpen);
+    const available = browserAvailableWidth(rootWidth, sidebarWidth, fold || !hasPanel ? [] : [240]);
+    return { fold, width: clampBrowserWidth(NaN, available, columns, rootWidth, fold ? 12 : 320) };
+  };
+  assert.deepEqual(layout(1000, 330, true, true), { fold: true, width: 360 });
+  assert.deepEqual(layout(1000, 330, true, true), layout(1000, 330, true, true));
+  assert.deepEqual(layout(600, 330, true, true), { fold: true, width: 258 });
+  assert.deepEqual(layout(1400, 0, true, true), { fold: false, width: 522 });
+  assert.equal(layout(1400, 0, false, true).fold, false);
+  assert.equal(layout(999, 0, false, true).fold, true);
+  assert.deepEqual(layout(1400, 0, true, false), { fold: false, width: 630 });
 });
 
 test('WebContentsView の座標は有限なウィンドウ内の矩形だけを受け入れる', () => {

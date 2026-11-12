@@ -4004,8 +4004,12 @@ body.pane-dragging * {
    アプリ内ブラウザ
    ========================================================================== */
 .internal-browser-toggle { right: 44px; font-size: 18px; }
+/* 左サイドバーがブラウザ幅より広くても、ページを画面右端からはみ出させない。 */
+#root.internal-browser-open { padding-right: var(--vktm-internal-browser-width, 480px); }
 .internal-browser-sidebar {
-  position: relative;
+  position: absolute;
+  top: 0;
+  right: 0;
   flex: 0 0 auto;
   height: 100%;
   min-width: 0;
@@ -4055,8 +4059,8 @@ body.pane-dragging * {
 body:has(#root.internal-browser-open):not(:has(.settings-overlay, .confirm-overlay)) .vk-toast-layer {
   right: calc(var(--vktm-internal-browser-width, 480px) + 16px);
   width: max-content;
-  max-width: min(320px, calc(100vw - var(--vktm-internal-browser-width, 480px) - var(--vktm-toast-sidebar-width, 0px) - 32px));
+  max-width: min(320px, calc(100vw - var(--vktm-internal-browser-width, 480px) - 32px));
 }
 body:has(#root.internal-browser-open):not(:has(.settings-overlay, .confirm-overlay)) .vk-toast { max-width: min(320px, 100%); }
-/* ペインが 200px 未満のときは案内の語句を折り返し、読める幅を確保する。 */
+/* トーストを置ける幅が 200px 未満のときは案内の語句を折り返す。 */
 body:has(#root.internal-browser-open.toast-phrase-wrap):not(:has(.settings-overlay, .confirm-overlay)) .vk-toast-phrase { white-space: normal; }

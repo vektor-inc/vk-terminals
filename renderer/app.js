@@ -125,18 +125,14 @@ for (const button of internalBrowserSidebar.querySelectorAll('.internal-browser-
 function syncInternalBrowserLayout() {
   const root = document.getElementById('root');
   if (!root) return;
-  const { clampBrowserWidth, browserWidthMax } = window.VKInternalBrowserLayout;
+  const { clampBrowserWidth, browserWidthMax, shouldWrapToastPhrase } = window.VKInternalBrowserLayout;
   const columns = gridDims().cols;
-  const leftSidebar = root.classList.contains('sidebar-open') ? document.getElementById('sidebar')?.getBoundingClientRect().width || 0 : 0;
-  const availableWidth = root.clientWidth - leftSidebar;
-  // 狭い画面でもトーストの左右 16px と本文の領域を残す。
-  const browserAvailableWidth = internalBrowserOpen ? Math.max(0, availableWidth - 96) : availableWidth;
-  const maxWidth = Math.min(browserWidthMax(availableWidth, columns), browserAvailableWidth);
-  displayedInternalBrowserWidth = Math.min(clampBrowserWidth(preferredInternalBrowserWidth || NaN, availableWidth, columns), browserAvailableWidth);
-  root.classList.toggle('toast-phrase-wrap', availableWidth - displayedInternalBrowserWidth - 32 < 200);
+  const windowWidth = root.clientWidth;
+  const maxWidth = browserWidthMax(windowWidth);
+  displayedInternalBrowserWidth = clampBrowserWidth(preferredInternalBrowserWidth || NaN, windowWidth);
+  root.classList.toggle('toast-phrase-wrap', shouldWrapToastPhrase(windowWidth, displayedInternalBrowserWidth));
   internalBrowserSidebar.style.width = `${displayedInternalBrowserWidth}px`;
   document.body.style.setProperty('--vktm-internal-browser-width', `${displayedInternalBrowserWidth}px`);
-  document.body.style.setProperty('--vktm-toast-sidebar-width', `${leftSidebar}px`);
   const resizer = internalBrowserSidebar.querySelector('.internal-browser-resizer');
   resizer.setAttribute('aria-valuemin', String(Math.min(360, maxWidth)));
   resizer.setAttribute('aria-valuemax', String(maxWidth));

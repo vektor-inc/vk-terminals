@@ -3,7 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { PARTITION, clampBrowserWidth, validateBrowserBounds, isBrowserUrl, isNavigationUrl } = require('../utils/internalBrowserPolicy');
 const { createInternalBrowser } = require('../utils/internalBrowser');
-const { browserWidthMax } = require('../utils/internalBrowserLayout');
+const { browserWidthMax, shouldWrapToastPhrase } = require('../utils/internalBrowserLayout');
 
 test('専用 persist パーティションと HTTP(S) URL の制限', () => {
   assert.equal(PARTITION, 'persist:vk-terminals-internal-browser');
@@ -20,17 +20,26 @@ test('アプリから開く URL だけ長さを制限する', () => {
   assert.equal(isNavigationUrl('file:///tmp/test'), false);
 });
 
-test('幅は既定値とペイン残幅でクランプする', () => {
+test('幅は既定値とウィンドウ全体から 96px を残してクランプする', () => {
   assert.equal(clampBrowserWidth(NaN, 1400), 630);
   assert.equal(clampBrowserWidth(100, 1400), 360);
-  assert.equal(clampBrowserWidth(1500, 800), 480);
+  assert.equal(clampBrowserWidth(1500, 800), 704);
 });
 
-test('ペインの列数に応じて見出しの操作幅を確保する', () => {
-  assert.equal(browserWidthMax(1400, 2), 856);
-  assert.equal(clampBrowserWidth(750, 1100, 2), 556);
-  assert.equal(clampBrowserWidth(750, 1100, 3), 360);
-  assert.equal(clampBrowserWidth(750, 800, 3), 360);
+test('左サイドバーの開閉に依存せず、456px 未満でのみ 360px を下回る', () => {
+  assert.equal(browserWidthMax(600), 504);
+  assert.equal(clampBrowserWidth(750, 600), 504);
+  assert.equal(browserWidthMax(456), 360);
+  assert.equal(clampBrowserWidth(100, 456), 360);
+  assert.equal(browserWidthMax(455), 359);
+  assert.equal(clampBrowserWidth(750, 455), 359);
+});
+
+test('トーストを置ける幅が 200px 未満のときだけ語句を折り返す', () => {
+  assert.equal(shouldWrapToastPhrase(600, 368), false);
+  assert.equal(shouldWrapToastPhrase(600, 369), true);
+  assert.equal(shouldWrapToastPhrase(600, clampBrowserWidth(750, 600)), true);
+  assert.equal(shouldWrapToastPhrase(1400, clampBrowserWidth(750, 1400)), false);
 });
 
 test('WebContentsView の座標は有限なウィンドウ内の矩形だけを受け入れる', () => {

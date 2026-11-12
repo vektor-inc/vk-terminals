@@ -397,6 +397,53 @@ function loadMainFunctions() {
   ].join('\n');
 }
 
+// main.js の結び付け処理を取り出し、失敗後の tmux の値を確かめる。
+function runHolderBinding({ prepared, active = true, startError = null, bindError = null, clearError = null }) {
+  const source = fs.readFileSync(path.join(__dirname, '../main.js'), 'utf8');
+  const start = source.indexOf('function bindHolderBackgroundWork(');
+  const end = source.indexOf('// 持ち主の記録', start);
+  const values = [];
+  const warnings = [];
+  const context = {
+    backgroundSettings: new Map(prepared ? [['5', prepared]] : []),
+    tmuxHolder: { active, setBackgroundWorkValues(windowId, value) {
+      if (clearError && value.backgroundWorkDir === null) throw clearError;
+      values.push({ windowId, ...value });
+    } },
+    processStartTime() { if (startError) throw startError; return START; },
+    bindToHolderPane() { if (bindError) throw bindError; return { generation: 4 }; },
+    path, LOG_PREFIX: '', console: { warn: (...args) => warnings.push(args) },
+  };
+  vm.createContext(context);
+  vm.runInContext(source.slice(start, end), context);
+  context.bindHolderBackgroundWork('5', { isTmuxPane: true, windowId: '@3', paneId: '%3', pid: 100 }, 4);
+  return { values, warnings };
+}
+
+test('保持役の結び付け途中で失敗した場合は古いフォルダ名を消して現在の世代を記録する', () => {
+  for (const error of [{ startError: new Error('ps failed') }, { bindError: new Error('bind failed') }]) {
+    const prepared = { directory: '/tmp/background-work-new' };
+    const { values, warnings } = runHolderBinding({ prepared, ...error });
+    assert.deepEqual(values, [{ windowId: '@3', backgroundWorkDir: null, agentGeneration: 4 }]);
+    assert.equal(prepared.holderBound, undefined);
+    assert.equal(warnings.length, 1);
+  }
+});
+
+test('保持役の値の消去も失敗した場合は警告して処理を続ける', () => {
+  const { values, warnings } = runHolderBinding({ prepared: { directory: '/tmp/background-work-new' }, startError: new Error('ps failed'), clearError: new Error('tmux failed') });
+  assert.deepEqual(values, []);
+  assert.equal(warnings.length, 2);
+});
+
+test('保持役の結び付け成功時と設定が無い場合の値を維持する', () => {
+  const prepared = { directory: '/tmp/background-work-new' };
+  assert.deepEqual(runHolderBinding({ prepared }).values, [{ windowId: '@3', backgroundWorkDir: 'background-work-new', agentGeneration: 4 }]);
+  assert.equal(prepared.holderBound, true);
+  assert.deepEqual(runHolderBinding({ prepared: null }).values, [{ windowId: '@3', backgroundWorkDir: null, agentGeneration: 4 }]);
+  assert.deepEqual(runHolderBinding({ prepared, active: false }).values, []);
+});
+
 function runFinalize(settings) {
   const discarded = [];
   const context = { backgroundSettings: settings, backgroundWork: { delete() {} }, stopWidgetWatcher() {}, clearInterval() {}, backgroundWorkTimer: null, fs: { unlinkSync() {} }, STATE_FILE: '', httpServer: null, agentLifecycles: { close: async () => {} }, console, LOG_PREFIX: '' };

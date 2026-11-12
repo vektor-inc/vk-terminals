@@ -283,6 +283,12 @@ function bindHolderBackgroundWork(id, pane, generation) {
     });
   } catch (error) {
     console.warn(`${LOG_PREFIX} holder background work binding failed:`, error.message);
+    // 結び付けに失敗したフォルダを再起動時の復元対象に残さない。
+    try {
+      tmuxHolder.setBackgroundWorkValues(pane.windowId, { backgroundWorkDir: null, agentGeneration: generation });
+    } catch (clearError) {
+      console.warn(`${LOG_PREFIX} holder background work values clear failed:`, clearError.message);
+    }
   }
 }
 

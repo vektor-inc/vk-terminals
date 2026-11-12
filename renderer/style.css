@@ -4004,7 +4004,7 @@ body.pane-dragging * {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  border-left: 1px solid #6e7681;
+  border-left: 1px solid #21262d;
   background: #0d1117;
   color: #e6edf3;
   z-index: 901;
@@ -4019,6 +4019,7 @@ body.pane-dragging * {
   cursor: col-resize;
   z-index: 2;
 }
+.internal-browser-resizer:hover { background: rgba(88, 166, 255, 0.35); }
 .internal-browser-toolbar { display: flex; align-items: center; gap: 2px; height: 40px; padding: 4px 7px; border-bottom: 1px solid #30363d; }
 .internal-browser-toolbar button { flex: 0 0 28px; width: 28px; height: 28px; border: 1px solid transparent; border-radius: 5px; background: transparent; color: #e6edf3; cursor: pointer; }
 .internal-browser-toolbar button:hover { background: #21262d; }
@@ -4028,7 +4029,9 @@ body.pane-dragging * {
 .internal-browser-host { flex: 0 0 auto; }
 .internal-browser-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .internal-browser-http { color: #f85149; }
-.internal-browser-progress { height: 2px; width: 50%; background: #58a6ff; }
+.internal-browser-progress { height: 2px; width: 50%; background: #58a6ff; animation: internal-browser-loading 1.4s ease-in-out infinite alternate; }
+@keyframes internal-browser-loading { from { transform: translateX(0); } to { transform: translateX(100%); } }
+@media (prefers-reduced-motion: reduce) { .internal-browser-progress { animation: none; } }
 .internal-browser-page { flex: 1 1 auto; min-height: 0; }
 .internal-browser-notice, .internal-browser-error { padding: 12px; font-size: 12px; line-height: 1.5; background: #161b22; }
 .internal-browser-notice[hidden], .internal-browser-error[hidden], .internal-browser-progress[hidden] { display: none; }
@@ -4037,4 +4040,4 @@ body.pane-dragging * {
 .internal-browser-choice-heading { padding: 5px 8px; color: #8b949e; font-size: 11px; }
 .internal-browser-choice [role="menuitem"] { display: block; width: 100%; padding: 7px 8px; text-align: left; border: 0; border-radius: 4px; background: transparent; color: inherit; cursor: pointer; }
 .internal-browser-choice [role="menuitem"]:hover, .internal-browser-choice [role="menuitem"]:focus-visible { background: #30363d; }
-body:has(#root.internal-browser-open) .vk-toast-layer { right: calc(var(--vktm-internal-browser-width, 480px) + 16px); }
+body:has(#root.internal-browser-open):not(:has(.settings-overlay, .confirm-overlay)) .vk-toast-layer { right: calc(var(--vktm-internal-browser-width, 480px) + 16px); }

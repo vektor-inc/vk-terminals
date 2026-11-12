@@ -125,12 +125,11 @@ for (const button of internalBrowserSidebar.querySelectorAll('.internal-browser-
 function syncInternalBrowserLayout() {
   const root = document.getElementById('root');
   if (!root) return;
-  const { browserAvailableWidth, shouldOverlaySetupPanel, clampBrowserWidth, browserWidthMax, shouldWrapToastPhrase } = window.VKInternalBrowserLayout;
+  const { browserAvailableWidth, shouldFoldSetupPanel, clampBrowserWidth, browserWidthMax, shouldWrapToastPhrase } = window.VKInternalBrowserLayout;
   const columns = gridDims().cols;
   const windowWidth = root.clientWidth;
   const leftSidebar = root.classList.contains('sidebar-open') ? document.getElementById('sidebar')?.getBoundingClientRect().width || 0 : 0;
   root.style.setProperty('--vktm-left-sidebar-width', `${leftSidebar}px`);
-  root.classList.remove('setup-panel-browser-overlay');
   const grid = root.querySelector('.grid');
   const gridStyle = grid ? getComputedStyle(grid) : null;
   const gridMinimumWidth = gridStyle ? Math.max(
@@ -138,19 +137,27 @@ function syncInternalBrowserLayout() {
     (parseFloat(gridStyle.paddingLeft) || 0) + (parseFloat(gridStyle.paddingRight) || 0)
       + (parseFloat(gridStyle.borderLeftWidth) || 0) + (parseFloat(gridStyle.borderRightWidth) || 0),
   ) : 0;
-  const setupPanelElement = root.querySelector(':scope > .setup-panel');
-  const setupPanelMinimumWidth = setupPanelElement ? parseFloat(getComputedStyle(setupPanelElement).minWidth) || 0 : 0;
-  // サイドバー・グリッド・パネルの最小幅だけで画面を超える場合は、パネルをグリッドに重ねる。
-  root.classList.toggle('setup-panel-browser-overlay', internalBrowserOpen && !!setupPanelElement
-    && shouldOverlaySetupPanel(windowWidth, leftSidebar, gridMinimumWidth, setupPanelMinimumWidth));
-  // #root の直下でグリッドと横並びになる要素を確保する。重ね表示や畳んだ帯は除く。
+  const setupPanelElement = root.querySelector('.setup-panel');
+  const setupPanelMinimumWidth = setupPanel?.hasPanel()
+    ? parseFloat(getComputedStyle(root).getPropertyValue('--vktm-setup-panel-min-width')) || 0 : 0;
+  const paneMinimumWidth = setupPanelMinimumWidth ? Math.max(320, gridMinimumWidth) : gridMinimumWidth;
+  // パネルは現在の実幅ではなく最小幅で判定し、開く直前の配置への依存をなくす。
+  const candidateAvailableWidth = browserAvailableWidth(windowWidth, leftSidebar, [setupPanelMinimumWidth]);
+  const candidateBrowserWidth = clampBrowserWidth(preferredInternalBrowserWidth || NaN,
+    candidateAvailableWidth, columns, windowWidth, paneMinimumWidth);
+  const panelMustFold = !!setupPanelMinimumWidth && shouldFoldSetupPanel(
+    windowWidth, leftSidebar, paneMinimumWidth, setupPanelMinimumWidth, columns, internalBrowserOpen, candidateBrowserWidth,
+  );
+  if (setupPanel) setupPanel.setAvailableWidth(internalBrowserOpen
+    ? (panelMustFold ? 0 : windowWidth - leftSidebar - candidateBrowserWidth) : windowWidth);
+  // 帯と利用者が開いた重ね表示はグリッドと横並びにならない。
   const otherWidths = [...root.children]
     .filter(element => element !== internalBrowserSidebar && element.id !== 'sidebar' && !element.contains(grid))
     .filter(element => { const style = getComputedStyle(element); return style.display !== 'none' && style.position !== 'absolute'; })
-    .map(element => element.getBoundingClientRect().width);
-  const availableWidth = browserAvailableWidth(windowWidth, leftSidebar, gridMinimumWidth, otherWidths);
-  const maxWidth = browserWidthMax(availableWidth, columns, windowWidth);
-  displayedInternalBrowserWidth = clampBrowserWidth(preferredInternalBrowserWidth || NaN, availableWidth, columns, windowWidth);
+    .map(element => element === setupPanelElement ? setupPanelMinimumWidth : element.getBoundingClientRect().width);
+  const availableWidth = browserAvailableWidth(windowWidth, leftSidebar, otherWidths);
+  const maxWidth = browserWidthMax(availableWidth, columns, windowWidth, paneMinimumWidth);
+  displayedInternalBrowserWidth = clampBrowserWidth(preferredInternalBrowserWidth || NaN, availableWidth, columns, windowWidth, paneMinimumWidth);
   root.classList.toggle('toast-phrase-wrap', shouldWrapToastPhrase(windowWidth, displayedInternalBrowserWidth));
   internalBrowserSidebar.style.width = `${displayedInternalBrowserWidth}px`;
   document.body.style.setProperty('--vktm-internal-browser-width', `${displayedInternalBrowserWidth}px`);

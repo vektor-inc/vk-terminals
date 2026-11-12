@@ -1436,6 +1436,7 @@ h4.settings-content-heading {
 
 /* ─── Root layout ──────────────────────────────────────────────────────────── */
 #root {
+  --vktm-setup-panel-min-width: 240px;
   position: fixed;
   top: 38px;
   left: 0;
@@ -3551,7 +3552,7 @@ body.pane-dragging * {
   container-name: setup-panel;
   /* 幅が足りないときはパネルが縮み、ターミナル側の最小幅を確保する（1000px 未満では畳む）。 */
   flex: 0 1 360px;
-  min-width: 240px;
+  min-width: var(--vktm-setup-panel-min-width);
   height: 100%;
   display: flex;
   flex-direction: column;
@@ -3573,16 +3574,6 @@ body.pane-dragging * {
 /* パネルを並べているあいだ、ペイン側にも最小幅を確保する（ここより狭くなる前にパネルが縮む）。 */
 .grid:has(+ .setup-panel) {
   min-width: 320px;
-}
-/* 最小幅の合計だけで画面を超えるときは、ブラウザのページを押し出さないようパネルを重ねる。 */
-.setup-panel-browser-overlay > .setup-panel {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  right: var(--vktm-internal-browser-width);
-  z-index: 7;
-  width: min(360px, calc(100% - var(--vktm-left-sidebar-width) - var(--vktm-internal-browser-width)));
-  min-width: 0;
 }
 .setup-content {
   display: flex;

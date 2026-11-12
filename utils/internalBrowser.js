@@ -1,28 +1,31 @@
 'use strict';
 
-const { WebContentsView, session } = require('electron');
-const { PARTITION, validateBrowserBounds, isBrowserUrl } = require('./internalBrowserPolicy');
+const electron = require('electron');
+const { PARTITION, validateBrowserBounds, isBrowserUrl, isNavigationUrl } = require('./internalBrowserPolicy');
 
-function navigationUrl(detail) {
-  return typeof detail === 'string' ? detail : detail?.url;
-}
-
-function createInternalBrowser(win) {
+function createInternalBrowser(win, { WebContentsView, session, dialog } = electron) {
   const browserSession = session.fromPartition(PARTITION);
   browserSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
   browserSession.setPermissionCheckHandler(() => false);
   browserSession.webRequest.onBeforeRequest((details, callback) => {
-    callback({ cancel: details.resourceType === 'mainFrame' && !isBrowserUrl(details.url) });
+    callback({ cancel: details.resourceType === 'mainFrame' && !isNavigationUrl(details.url) });
   });
   let view = null;
   let bounds = null;
   let visible = false;
   let modalCount = 0;
   let currentUrl = '';
+  let pendingUrl = '';
+  const cancelDownload = (_event, item) => {
+    item.cancel();
+    if (!win.isDestroyed()) win.webContents.send('internal-browser:download-blocked');
+  };
+  browserSession.on('will-download', cancelDownload);
 
   function publish() {
     if (!win.isDestroyed()) win.webContents.send('internal-browser:state', {
       url: currentUrl,
+      pendingUrl,
       loading: !!view && view.webContents.isLoading(),
       canGoBack: !!view && view.webContents.navigationHistory.canGoBack(),
       canGoForward: !!view && view.webContents.navigationHistory.canGoForward(),
@@ -34,8 +37,8 @@ function createInternalBrowser(win) {
     view.setBounds(visible && modalCount === 0 && bounds ? bounds : { x: 0, y: 0, width: 0, height: 0 });
   }
 
-  function navigate(url) {
-    if (!isBrowserUrl(url)) return false;
+  function navigate(url, fromPage = false) {
+    if (!(fromPage ? isNavigationUrl(url) : isBrowserUrl(url))) return false;
     if (!view) {
       view = new WebContentsView({ webPreferences: {
         partition: PARTITION, sandbox: true, nodeIntegration: false, contextIsolation: true,
@@ -43,29 +46,38 @@ function createInternalBrowser(win) {
       } });
       win.contentView.addChildView(view);
       const contents = view.webContents;
-      contents.on('will-navigate', (event, detail) => { if (!isBrowserUrl(navigationUrl(detail || event))) event.preventDefault(); });
-      contents.on('will-frame-navigate', event => { if (!isBrowserUrl(navigationUrl(event))) event.preventDefault(); });
-      contents.on('will-redirect', (event, detail) => { if (!isBrowserUrl(navigationUrl(detail || event))) event.preventDefault(); });
+      contents.on('will-navigate', event => { if (!isNavigationUrl(event.url)) event.preventDefault(); });
+      contents.on('will-frame-navigate', event => { if (!isNavigationUrl(event.url)) event.preventDefault(); });
+      contents.on('will-redirect', event => { if (!isNavigationUrl(event.url)) event.preventDefault(); });
+      contents.on('will-prevent-unload', event => {
+        const choice = dialog.showMessageBoxSync(win, { type: 'warning', title: 'このページを離れますか？', message: '入力中の内容は保存されない可能性があります。', buttons: ['移動する', 'このページにとどまる'], defaultId: 1, cancelId: 1 });
+        if (choice === 0) event.preventDefault();
+        else { pendingUrl = ''; publish(); }
+      });
       contents.setWindowOpenHandler(({ url: destination }) => {
-        if (isBrowserUrl(destination)) navigate(destination);
+        if (isNavigationUrl(destination)) navigate(destination, true);
         return { action: 'deny' };
       });
       contents.on('did-start-loading', publish);
       contents.on('did-stop-loading', publish);
-      contents.on('did-navigate', (_event, detail) => { currentUrl = navigationUrl(detail) || currentUrl; publish(); });
-      contents.on('did-navigate-in-page', (_event, detail) => { currentUrl = navigationUrl(detail) || currentUrl; publish(); });
+      contents.on('did-navigate', (_event, url) => { currentUrl = url; pendingUrl = ''; publish(); });
+      contents.on('did-navigate-in-page', (_event, url, isMainFrame) => { if (isMainFrame) { currentUrl = url; publish(); } });
       contents.on('did-fail-load', (_event, code, _description, destination, isMainFrame) => {
-        if (isMainFrame && code !== -3) win.webContents.send('internal-browser:error', { url: destination });
+        if (isMainFrame && code !== -3) {
+          pendingUrl = '';
+          if (!win.isDestroyed()) win.webContents.send('internal-browser:error', { url: destination });
+          publish();
+        }
       });
       browserSession.webRequest.onCompleted((details) => {
         if ((details.webContentsId === contents.id || details.webContents?.id === contents.id) && details.resourceType === 'mainFrame'
-          && details.statusCode === 404 && isBrowserUrl(details.url)
+          && details.statusCode === 404 && isNavigationUrl(details.url)
           && new URL(details.url).hostname === 'github.com') {
-          win.webContents.send('internal-browser:github-404');
+          if (!win.isDestroyed()) win.webContents.send('internal-browser:github-404');
         }
       });
     }
-    currentUrl = url;
+    pendingUrl = fromPage ? '' : url;
     view.webContents.loadURL(url).catch(() => {});
     syncBounds();
     publish();
@@ -83,6 +95,7 @@ function createInternalBrowser(win) {
   }
 
   function destroy() {
+    browserSession.removeListener('will-download', cancelDownload);
     if (!view) return;
     win.contentView.removeChildView(view);
     view.webContents.close({ waitForBeforeUnload: false });
@@ -98,4 +111,4 @@ function createInternalBrowser(win) {
   };
 }
 
-module.exports = { createInternalBrowser, navigationUrl };
+module.exports = { createInternalBrowser };

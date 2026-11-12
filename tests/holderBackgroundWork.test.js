@@ -446,7 +446,7 @@ test('保持役の結び付け成功時と設定が無い場合の値を維持�
 
 function runFinalize(settings) {
   const discarded = [];
-  const context = { backgroundSettings: settings, backgroundWork: { delete() {} }, stopWidgetWatcher() {}, clearInterval() {}, backgroundWorkTimer: null, fs: { unlinkSync() {} }, STATE_FILE: '', httpServer: null, agentLifecycles: { close: async () => {} }, console, LOG_PREFIX: '' };
+  const context = { backgroundSettings: settings, backgroundWork: { delete() {} }, stopWidgetWatcher() {}, clearInterval() {}, backgroundWorkTimer: null, fs: { unlinkSync() {} }, STATE_FILE: '', httpServer: null, agentLifecycles: { close: async () => {} }, internalBrowser: null, console, LOG_PREFIX: '' };
   for (const [id, prepared] of settings) prepared.discard = () => discarded.push(id);
   vm.createContext(context);
   vm.runInContext(loadMainFunctions(), context);

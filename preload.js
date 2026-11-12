@@ -22,7 +22,7 @@
 //   webPreferences.additionalArguments 経由で main.js から受け取っている
 //  （詳細は下の定義箇所のコメントを参照）。
 
-const { contextBridge, ipcRenderer, webUtils } = require('electron');
+const { contextBridge, ipcRenderer, webUtils, webFrame } = require('electron');
 
 // renderer/urlSafety.js の isSafeHttpUrl / MAX_SAFE_HTTP_URL_LENGTH と完全に同じ実装。
 // sandbox 下の preload からはローカルファイルの require ができないため複製している
@@ -115,6 +115,7 @@ const ON_CHANNELS = new Set([
   'internal-browser:state',
   'internal-browser:error',
   'internal-browser:github-404',
+  'internal-browser:download-blocked',
 ]);
 
 // clipboard へ渡してよい文字列の上限（issue #325）。定義は utils/clipboardLimits.js の
@@ -184,6 +185,7 @@ function addListener(channel, listener) {
 }
 
 // ─── contextBridge へ公開する API ─────────────────────────────────────────────
+contextBridge.exposeInMainWorld('VKWebFrame', { getZoomFactor: () => webFrame.getZoomFactor() });
 contextBridge.exposeInMainWorld('vkBridge', {
   ipc: {
     invoke(channel, ...args) {

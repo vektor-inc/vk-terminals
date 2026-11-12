@@ -4,9 +4,8 @@ const { app, BrowserWindow, ipcMain, screen, dialog, shell: electronShell, clipb
 const { createInternalBrowser } = require('./utils/internalBrowser');
 let internalBrowser = null;
 
-function isInternalBrowserSender(event) {
-  return !!win && !win.isDestroyed() && event.sender === win.webContents && event.senderFrame === win.webContents.mainFrame;
-}
+const { isInternalBrowserSender: isAllowedBrowserSender } = require('./utils/internalBrowserSender');
+const isInternalBrowserSender = event => isAllowedBrowserSender(event, win);
 
 ipcMain.handle('internal-browser:open', (event, url) => isInternalBrowserSender(event) && !!internalBrowser?.navigate(url));
 ipcMain.handle('internal-browser:action', (event, action) => isInternalBrowserSender(event) && !!internalBrowser?.action(action));
@@ -1828,7 +1827,7 @@ const restartApplication = createRestartApplication({
 });
 
 function finalizeBeforeQuit() {
-  if (typeof internalBrowser !== 'undefined') internalBrowser?.destroy();
+  internalBrowser?.destroy();
   stopWidgetWatcher();
   clearInterval(backgroundWorkTimer);
   // 保持役のペインの接続情報は、アプリを閉じてもペインが動き続けるため残す。
@@ -2138,16 +2137,10 @@ function loadSettingsDescriptor() {
     try {
       const d = JSON.parse(fs.readFileSync(p, 'utf8'));
       if (isValidSettingsDescriptor(d)) {
-        // 同梱側の古い項目定義にも、既存キーの新しい意味を反映する。
-        for (const group of d.groups) {
-          for (const field of group.fields || []) {
-            if (field.key !== 'terminalLinkClickMode') continue;
-            field.label = 'ペイン内の URL をクリックしたときの動作';
-            field.help = 'ペイン内の URL をクリックしたときの動作を選びます。どちらを選んでも、ページを開く前に開き先（アプリ内ブラウザ / 外部ブラウザ）を選ぶメニューが出ます。';
-            field.options = [
-              { value: 'click', label: 'クリックで開き先のメニューを出す（既定）' },
-              { value: 'modifier', label: '⌘ / Ctrl+クリックでだけメニューを出す' },
-            ];
+        const builtInField = builtinSettingsDescriptor()?.groups.flatMap(group => group.fields || []).find(field => field.key === 'terminalLinkClickMode');
+        if (builtInField) {
+          for (const field of d.groups.flatMap(group => group.fields || [])) {
+            if (field.key === 'terminalLinkClickMode') Object.assign(field, { label: builtInField.label, help: builtInField.help, options: builtInField.options });
           }
         }
         return d;

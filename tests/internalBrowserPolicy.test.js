@@ -1,8 +1,8 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { PARTITION, clampBrowserWidth, validateBrowserBounds, isBrowserUrl } = require('../utils/internalBrowserPolicy');
-const { navigationUrl } = require('../utils/internalBrowser');
+const { PARTITION, clampBrowserWidth, validateBrowserBounds, isBrowserUrl, isNavigationUrl } = require('../utils/internalBrowserPolicy');
+const { createInternalBrowser } = require('../utils/internalBrowser');
 
 test('専用 persist パーティションと HTTP(S) URL の制限', () => {
   assert.equal(PARTITION, 'persist:vk-terminals-internal-browser');
@@ -12,10 +12,11 @@ test('専用 persist パーティションと HTTP(S) URL の制限', () => {
   assert.equal(isBrowserUrl('javascript:alert(1)'), false);
 });
 
-test('Electron の新旧ナビゲーションイベントから URL を取り出す', () => {
-  assert.equal(navigationUrl('https://github.com'), 'https://github.com');
-  assert.equal(navigationUrl({ url: 'https://github.com/login' }), 'https://github.com/login');
-  assert.equal(navigationUrl({}), undefined);
+test('アプリから開く URL だけ長さを制限する', () => {
+  const longUrl = `https://example.com/${'a'.repeat(2048)}`;
+  assert.equal(isBrowserUrl(longUrl), false);
+  assert.equal(isNavigationUrl(longUrl), true);
+  assert.equal(isNavigationUrl('file:///tmp/test'), false);
 });
 
 test('幅は既定値とペイン残幅でクランプする', () => {
@@ -30,4 +31,96 @@ test('WebContentsView の座標は有限なウィンドウ内の矩形だけを�
   assert.equal(validateBrowserBounds({ x: 400, y: 40, width: 401, height: 560 }, windowBounds), null);
   assert.equal(validateBrowserBounds({ x: NaN, y: 40, width: 400, height: 560 }, windowBounds), null);
   assert.equal(validateBrowserBounds({ x: -1, y: 40, width: 400, height: 560 }, windowBounds), null);
+});
+
+test('専用ビューの遷移と権限、ダウンロード、確定 URL を制御する', () => {
+  const { EventEmitter } = require('node:events');
+  const sent = [];
+  const browserSession = new EventEmitter();
+  browserSession.webRequest = {
+    onBeforeRequest(handler) { browserSession.request = handler; },
+    onCompleted(handler) { browserSession.completed = handler; },
+  };
+  browserSession.setPermissionRequestHandler = handler => { browserSession.permissionRequest = handler; };
+  browserSession.setPermissionCheckHandler = handler => { browserSession.permissionCheck = handler; };
+  const history = { canGoBack: () => false, canGoForward: () => false };
+  let contents;
+  class FakeView {
+    constructor(options) {
+      assert.equal(options.webPreferences.sandbox, true);
+      contents = new EventEmitter();
+      contents.id = 42;
+      contents.navigationHistory = history;
+      contents.isLoading = () => false;
+      contents.loadURL = url => { contents.requestedUrl = url; return Promise.resolve(); };
+      contents.setWindowOpenHandler = handler => { contents.openHandler = handler; };
+      contents.close = () => {};
+      this.webContents = contents;
+    }
+    setBounds() {}
+  }
+  const win = {
+    isDestroyed: () => false,
+    webContents: { send: (...args) => sent.push(args) },
+    contentView: { addChildView() {}, removeChildView() {} },
+    getContentBounds: () => ({ width: 1000, height: 800 }),
+  };
+  let dialogChoice = 1;
+  const browser = createInternalBrowser(win, {
+    WebContentsView: FakeView,
+    session: { fromPartition: () => browserSession },
+    dialog: { showMessageBoxSync(parent, options) { assert.equal(parent, win); assert.equal(options.defaultId, 1); return dialogChoice; } },
+  });
+  browserSession.permissionRequest(null, 'camera', allowed => assert.equal(allowed, false));
+  assert.equal(browserSession.permissionCheck(), false);
+  browserSession.request({ resourceType: 'mainFrame', url: 'file:///tmp/a' }, result => assert.deepEqual(result, { cancel: true }));
+  browserSession.request({ resourceType: 'mainFrame', url: 'https://example.com' }, result => assert.deepEqual(result, { cancel: false }));
+  assert.equal(browser.navigate('https://example.com/first'), true);
+  assert.equal(sent.at(-1)[1].url, '');
+  contents.emit('did-navigate', {}, 'https://example.com/first');
+  assert.equal(sent.at(-1)[1].url, 'https://example.com/first');
+  contents.emit('did-navigate-in-page', {}, 'https://evil.example/', false);
+  assert.equal(sent.at(-1)[1].url, 'https://example.com/first');
+  contents.emit('did-navigate-in-page', {}, 'https://example.com/first#part', true);
+  assert.equal(sent.at(-1)[1].url, 'https://example.com/first#part');
+  const blocked = { url: 'file:///tmp/a', preventDefault() { this.blocked = true; } };
+  contents.emit('will-navigate', blocked);
+  assert.equal(blocked.blocked, true);
+  contents.emit('will-redirect', blocked);
+  assert.equal(blocked.blocked, true);
+  assert.deepEqual(contents.openHandler({ url: 'file:///tmp/a' }), { action: 'deny' });
+  assert.deepEqual(contents.openHandler({ url: 'https://example.com/second' }), { action: 'deny' });
+  assert.equal(contents.requestedUrl, 'https://example.com/second');
+  assert.equal(sent.at(-1)[1].url, 'https://example.com/first#part');
+  let allowed = false;
+  contents.emit('will-prevent-unload', { preventDefault() { allowed = true; } });
+  assert.equal(allowed, false);
+  dialogChoice = 0;
+  contents.emit('will-prevent-unload', { preventDefault() { allowed = true; } });
+  assert.equal(allowed, true);
+  let canceled = false;
+  browserSession.emit('will-download', {}, { cancel() { canceled = true; } });
+  assert.equal(canceled, true);
+  assert.equal(sent.at(-1)[0], 'internal-browser:download-blocked');
+});
+
+test('ブラウザ IPC はメインウィンドウのメインフレームだけを受け付ける', () => {
+  const { isInternalBrowserSender } = require('../utils/internalBrowserSender');
+  const frame = {};
+  const contents = { mainFrame: frame };
+  const win = { isDestroyed: () => false, webContents: contents };
+  assert.equal(isInternalBrowserSender({ sender: contents, senderFrame: frame }, win), true);
+  assert.equal(isInternalBrowserSender({ sender: contents, senderFrame: {} }, win), false);
+  assert.equal(isInternalBrowserSender({ sender: {}, senderFrame: frame }, win), false);
+  assert.equal(isInternalBrowserSender({ sender: contents, senderFrame: frame }, null), false);
+  assert.equal(isInternalBrowserSender({ sender: contents, senderFrame: frame }, { ...win, isDestroyed: () => true }), false);
+});
+
+test('開き先メニューは単一の通常クリックだけを受け付ける', () => {
+  const { shouldShowBrowserChoice } = require('../renderer/internalBrowserChoicePolicy');
+  assert.equal(shouldShowBrowserChoice({ button: 0, detail: 1 }, false), true);
+  for (const event of [{ button: 1, detail: 1 }, { button: 2, detail: 1 }, { button: 0, detail: 2 }]) {
+    assert.equal(shouldShowBrowserChoice(event, false), false);
+  }
+  assert.equal(shouldShowBrowserChoice({ button: 0, detail: 1 }, true), false);
 });

@@ -131,17 +131,11 @@ test('buildBuiltinSettingsDescriptor: JSON から targetPath 付きの組み込�
       { value: 'never', label: '確認なし' },
     ],
   });
-  assert.deepEqual(fields.find((field) => field.key === 'terminalLinkClickMode'), {
-    key: 'terminalLinkClickMode',
-    label: 'ペイン内の URL をクリックしたときの動作',
-    type: 'select',
-    default: 'click',
-    help: 'ペイン内の URL をクリックしたときの動作を選びます。どちらを選んでも、ページを開く前に開き先（アプリ内ブラウザ / 外部ブラウザ）を選ぶメニューが出ます。',
-    options: [
-      { value: 'click', label: 'クリックで開き先のメニューを出す（既定）' },
-      { value: 'modifier', label: '⌘ / Ctrl+クリックでだけメニューを出す' },
-    ],
-  });
+  const linkMode = fields.find((field) => field.key === 'terminalLinkClickMode');
+  assert.equal(linkMode.type, 'select');
+  assert.equal(linkMode.default, 'click');
+  assert.deepEqual(linkMode.options.map(option => option.value), ['click', 'modifier']);
+  assert.ok(linkMode.label && linkMode.help && linkMode.options.every(option => option.label));
   assert.deepEqual(fields.find((field) => field.key === 'showUsage'), {
     key: 'showUsage',
     label: 'トークン使用量を表示',

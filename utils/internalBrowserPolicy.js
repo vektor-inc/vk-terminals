@@ -1,6 +1,6 @@
 'use strict';
 
-const { isSafeHttpUrl } = require('../renderer/urlSafety');
+const { isSafeHttpUrl, isHttpUrl } = require('../renderer/urlSafety');
 const { clampBrowserWidth } = require('./internalBrowserLayout');
 
 const PARTITION = 'persist:vk-terminals-internal-browser';
@@ -14,8 +14,7 @@ function validateBrowserBounds(rect, windowBounds) {
   return { x, y, width, height };
 }
 
-function isBrowserUrl(url) {
-  return isSafeHttpUrl(url);
-}
+function isBrowserUrl(url) { return isSafeHttpUrl(url); }
+function isNavigationUrl(url) { return isHttpUrl(url); }
 
-module.exports = { PARTITION, clampBrowserWidth, validateBrowserBounds, isBrowserUrl };
+module.exports = { PARTITION, clampBrowserWidth, validateBrowserBounds, isBrowserUrl, isNavigationUrl };

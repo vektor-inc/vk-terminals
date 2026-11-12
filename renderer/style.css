@@ -4039,7 +4039,7 @@ body.pane-dragging * {
 .internal-browser-notice button, .internal-browser-error button { margin: 6px 6px 0 0; padding: 4px 8px; border: 1px solid var(--vktm--color--border-interactive); border-radius: 4px; background: #21262d; color: #e6edf3; cursor: pointer; }
 /* 案内文と操作を分け、狭い幅でもボタンを一組で揃える。 */
 .internal-browser-notice p { margin: 0; }
-.internal-browser-notice-actions { display: flex; flex-wrap: nowrap; gap: 6px; margin-top: 10px; }
+.internal-browser-notice-actions { display: flex; flex-wrap: nowrap; gap: 6px; margin-top: 6px; }
 .internal-browser-notice-actions button { margin: 0; white-space: nowrap; }
 .internal-browser-choice { position: fixed; z-index: 2100; min-width: 210px; padding: 5px; border: 1px solid var(--vktm--color--border-interactive); border-radius: 6px; background: #161b22; color: #e6edf3; box-shadow: 0 8px 24px #0008; }
 .internal-browser-choice-heading { padding: 5px 8px; color: #8b949e; font-size: 11px; }

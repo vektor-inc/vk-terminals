@@ -118,7 +118,8 @@ let previousInternalBrowserLayout = null;
 let internalBrowserHasPage = false;
 let internalBrowserChoice = null;
 let unregisterInternalBrowserEscape = null;
-for (const button of internalBrowserSidebar.querySelectorAll('.internal-browser-toolbar button')) button.disabled = true;
+// ページ未表示でも操作列から閉じられるよう、閉じるボタンは無効化しない。
+for (const button of internalBrowserSidebar.querySelectorAll('.internal-browser-toolbar button:not([data-action="close"])')) button.disabled = true;
 
 function syncInternalBrowserLayout() {
   const root = document.getElementById('root');
@@ -369,14 +370,16 @@ VKIpc.on('internal-browser:state', state => {
   syncInternalBrowserLayout();
 });
 VKIpc.on('internal-browser:download-blocked', () => {
-  showGenericToast('ダウンロードはできません。操作列の「外部ブラウザで開く」から行ってください。');
+  const toastMessage = 'ダウンロードはできません。操作列の「外部ブラウザで開く」から行ってください。';
+  showGenericToast(toastMessage);
   const message = externalUrlToastEl?.querySelector('.vk-toast-message');
   if (message) {
-    message.replaceChildren('ダウンロードはできません。操作列の「');
+    const [beforeAction, afterAction] = toastMessage.split('外部ブラウザで開く');
+    message.replaceChildren(beforeAction);
     const action = document.createElement('span');
     action.className = 'vk-toast-phrase';
     action.textContent = '外部ブラウザで開く';
-    message.append(action, '」から行ってください。');
+    message.append(action, afterAction);
   }
 });
 
@@ -1663,6 +1666,8 @@ function termLinkTooltipMessage(url) {
 // 追跡）を奪うことはない。textContent で入れる（innerHTML は使わない。url はターミナル
 // 出力由来で攻撃者が内容を制御しうるため）。
 function showTermLinkTooltip(event, url) {
+  // 開き先メニューの表示中に別リンクのツールチップが見出しへ重なるのを防ぐ。
+  if (internalBrowserChoice) return;
   const el = ensureTermLinkTooltip();
   el.textContent = termLinkTooltipMessage(url);
   const OFFSET = 12;

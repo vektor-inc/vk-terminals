@@ -5,6 +5,44 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
+test('初期化時は操作列の閉じるだけを無効化せず、失敗表示にも触れない', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
+  const initialization = source.match(/for \(const button of internalBrowserSidebar\.querySelectorAll\('[^']+'\)\) button\.disabled = true;/)?.[0];
+  assert.ok(initialization);
+  const toolbarButtons = ['back', 'forward', 'reload', 'url', 'external', 'close']
+    .map(action => ({ action, disabled: false }));
+  const errorButtons = [{ disabled: false }, { disabled: false }];
+  const sidebar = {
+    querySelectorAll(selector) {
+      assert.equal(selector, '.internal-browser-toolbar button:not([data-action="close"])');
+      return toolbarButtons.filter(button => button.action !== 'close');
+    },
+  };
+  vm.runInNewContext(initialization, { internalBrowserSidebar: sidebar });
+  assert.deepEqual(toolbarButtons.map(button => button.disabled), [true, true, true, true, true, false]);
+  assert.deepEqual(errorButtons.map(button => button.disabled), [false, false]);
+});
+
+test('開き先メニュー表示中は別リンクのツールチップを出さない', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
+  const tooltip = source.match(/function showTermLinkTooltip\(event, url\) \{[\s\S]*?\n\}/)?.[0];
+  assert.ok(tooltip);
+  let created = 0;
+  const element = { hidden: true, style: {}, offsetWidth: 40, offsetHeight: 20 };
+  const context = {
+    internalBrowserChoice: {}, internalBrowserOpen: false,
+    ensureTermLinkTooltip() { created++; return element; },
+    termLinkTooltipMessage: () => 'リンク',
+    window: { innerWidth: 800, innerHeight: 600 },
+  };
+  vm.runInNewContext(`${tooltip}\nshowTermLinkTooltip({ clientX: 10, clientY: 10 }, 'https://example.com')`, context);
+  assert.equal(created, 0);
+  context.internalBrowserChoice = null;
+  vm.runInNewContext('showTermLinkTooltip({ clientX: 10, clientY: 10 }, "https://example.com")', context);
+  assert.equal(created, 1);
+  assert.equal(element.hidden, false);
+});
+
 test('幅キーは表示中の幅を起点にし、開き先メニューはツールチップを隠す', () => {
   const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
   const keyHandler = source.match(/internalBrowserResizer\.addEventListener\('keydown', event => \{[\s\S]*?\n\}\);/)?.[0];

@@ -3,7 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { PARTITION, clampBrowserWidth, validateBrowserBounds, isBrowserUrl, isNavigationUrl } = require('../utils/internalBrowserPolicy');
 const { createInternalBrowser } = require('../utils/internalBrowser');
-const { browserWidthMax, shouldWrapToastPhrase } = require('../utils/internalBrowserLayout');
+const { browserAvailableWidth, shouldOverlaySetupPanel, browserWidthMax, shouldWrapToastPhrase } = require('../utils/internalBrowserLayout');
 
 test('専用 persist パーティションと HTTP(S) URL の制限', () => {
   assert.equal(PARTITION, 'persist:vk-terminals-internal-browser');
@@ -50,16 +50,18 @@ test('トーストを置ける幅が 200px 未満のときだけ語句を折り�
   assert.equal(shouldWrapToastPhrase(1400, clampBrowserWidth(750, 1400)), false);
 });
 
-test('グリッド左右の余白 12px を残してブラウザ枠をウィンドウ内に収める', () => {
-  for (const [available, columns, windowWidth, expected] of [
-    [330, 1, 600, 318], [330, 2, 600, 318],
-    [230, 1, 500, 218], [230, 2, 500, 218],
-    [600, 1, 600, 360], [600, 2, 600, 360],
-  ]) {
-    assert.equal(browserWidthMax(available, columns, windowWidth), expected);
-    assert.equal(clampBrowserWidth(750, available, columns, windowWidth), expected);
-    assert.ok(windowWidth - available + 12 + expected <= windowWidth);
-  }
+test('グリッドの最小幅と横並び要素を差し引いてブラウザ幅を決める', () => {
+  const available = browserAvailableWidth(1000, 0, 320, [240]);
+  assert.equal(available, 440);
+  assert.equal(browserWidthMax(available, 1, 1000), 360);
+  assert.equal(clampBrowserWidth(750, available, 1, 1000), 360);
+  assert.ok(320 + 240 + 360 <= 1000);
+  assert.equal(browserAvailableWidth(600, 240, 12), 348);
+  assert.equal(browserWidthMax(348, 1, 600), 348);
+  assert.equal(browserAvailableWidth(500, 270, 12), 218);
+  assert.equal(browserWidthMax(218, 2, 500), 218);
+  assert.equal(shouldOverlaySetupPanel(1000, 450, 320, 240), true);
+  assert.equal(shouldOverlaySetupPanel(1100, 450, 320, 240), false);
 });
 
 test('WebContentsView の座標は有限なウィンドウ内の矩形だけを受け入れる', () => {

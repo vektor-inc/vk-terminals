@@ -125,11 +125,30 @@ for (const button of internalBrowserSidebar.querySelectorAll('.internal-browser-
 function syncInternalBrowserLayout() {
   const root = document.getElementById('root');
   if (!root) return;
-  const { clampBrowserWidth, browserWidthMax, shouldWrapToastPhrase } = window.VKInternalBrowserLayout;
+  const { browserAvailableWidth, shouldOverlaySetupPanel, clampBrowserWidth, browserWidthMax, shouldWrapToastPhrase } = window.VKInternalBrowserLayout;
   const columns = gridDims().cols;
   const windowWidth = root.clientWidth;
   const leftSidebar = root.classList.contains('sidebar-open') ? document.getElementById('sidebar')?.getBoundingClientRect().width || 0 : 0;
-  const availableWidth = windowWidth - leftSidebar;
+  root.style.setProperty('--vktm-left-sidebar-width', `${leftSidebar}px`);
+  root.classList.remove('setup-panel-browser-overlay');
+  const grid = root.querySelector('.grid');
+  const gridStyle = grid ? getComputedStyle(grid) : null;
+  const gridMinimumWidth = gridStyle ? Math.max(
+    parseFloat(gridStyle.minWidth) || 0,
+    (parseFloat(gridStyle.paddingLeft) || 0) + (parseFloat(gridStyle.paddingRight) || 0)
+      + (parseFloat(gridStyle.borderLeftWidth) || 0) + (parseFloat(gridStyle.borderRightWidth) || 0),
+  ) : 0;
+  const setupPanelElement = root.querySelector(':scope > .setup-panel');
+  const setupPanelMinimumWidth = setupPanelElement ? parseFloat(getComputedStyle(setupPanelElement).minWidth) || 0 : 0;
+  // サイドバー・グリッド・パネルの最小幅だけで画面を超える場合は、パネルをグリッドに重ねる。
+  root.classList.toggle('setup-panel-browser-overlay', internalBrowserOpen && !!setupPanelElement
+    && shouldOverlaySetupPanel(windowWidth, leftSidebar, gridMinimumWidth, setupPanelMinimumWidth));
+  // #root の直下でグリッドと横並びになる要素を確保する。重ね表示や畳んだ帯は除く。
+  const otherWidths = [...root.children]
+    .filter(element => element !== internalBrowserSidebar && element.id !== 'sidebar' && !element.contains(grid))
+    .filter(element => { const style = getComputedStyle(element); return style.display !== 'none' && style.position !== 'absolute'; })
+    .map(element => element.getBoundingClientRect().width);
+  const availableWidth = browserAvailableWidth(windowWidth, leftSidebar, gridMinimumWidth, otherWidths);
   const maxWidth = browserWidthMax(availableWidth, columns, windowWidth);
   displayedInternalBrowserWidth = clampBrowserWidth(preferredInternalBrowserWidth || NaN, availableWidth, columns, windowWidth);
   root.classList.toggle('toast-phrase-wrap', shouldWrapToastPhrase(windowWidth, displayedInternalBrowserWidth));
@@ -3996,8 +4015,8 @@ function render() {
   // セットアップ状況のパネルがあるときだけ、グリッドの右（または上端の帯の下）に並べる。
   const mainNodes = setupPanel ? setupPanel.layout(newContent) : [newContent];
   root.replaceChildren(sidebar, ...mainNodes, internalBrowserSidebar);
-  syncInternalBrowserLayout();
   root.classList.toggle('sidebar-open', sidebarOpen);
+  syncInternalBrowserLayout();
 
   // 格納ペインのコンパクト表示を作り直す（nav が root に付いた後に実行する）。
   renderPaneStash();

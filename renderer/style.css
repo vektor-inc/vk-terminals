@@ -3574,6 +3574,16 @@ body.pane-dragging * {
 .grid:has(+ .setup-panel) {
   min-width: 320px;
 }
+/* 最小幅の合計だけで画面を超えるときは、ブラウザのページを押し出さないようパネルを重ねる。 */
+.setup-panel-browser-overlay > .setup-panel {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: var(--vktm-internal-browser-width);
+  z-index: 7;
+  width: min(360px, calc(100% - var(--vktm-left-sidebar-width) - var(--vktm-internal-browser-width)));
+  min-width: 0;
+}
 .setup-content {
   display: flex;
   flex-direction: column;

@@ -11,9 +11,7 @@ const {
   createTerminalLinkHandlers,
 } = require('../utils/terminalLinkPolicy');
 
-// createTerminalLinkHandlers() は必須級の deps（wasPaneFocused / wasDragged）が
-// 欠けていると console.warn を出す（レビュー指摘・LOW-C）。多くのテストが意図的に
-// これらを省略するため、各テストで console.warn を退避・復元して出力を汚さない。
+// wasDragged を省略するテストでは警告を抑え、判定の結果だけを確認する。
 function withSilencedWarn(fn) {
   const original = console.warn;
   console.warn = () => {};
@@ -209,7 +207,7 @@ test('createTerminalLinkHandlers: event.detail 未指定（テストの makeEven
   assert.deepEqual(calls, ['https://example.com']);
 });
 
-// ─── フォーカスガード（issue #385） ──────────────────────────────────────────────
+// ─── フォーカス状態に依存しないメニュー表示 ──────────────────────────────
 test('createTerminalLinkHandlers: click モード（既定）・フォーカス済みペインなら修飾キー無しでも openUrl を呼ぶ（issue #385）', () => {
   const calls = [];
   const handlers = createTerminalLinkHandlers({
@@ -225,7 +223,7 @@ test('createTerminalLinkHandlers: click モード（既定）・フォーカス�
   assert.equal(event.prevented, true);
 });
 
-test('createTerminalLinkHandlers: click モードでも、フォーカスされていないペインへの最初のクリックでは openUrl を呼ばない（issue #385・最重要のフォーカスガード）', () => {
+test('createTerminalLinkHandlers: 未フォーカスのペインでも最初のクリックでメニューを出す', () => {
   const calls = [];
   const handlers = createTerminalLinkHandlers({
     isMac: true,
@@ -236,15 +234,12 @@ test('createTerminalLinkHandlers: click モードでも、フォーカスされ�
   });
   const event = makeEvent();
   handlers.activate(event, 'https://example.com');
-  assert.deepEqual(calls, []);
-  // フォーカス移動だけに使うクリックのため、xterm 本来の挙動（フォーカス移譲・カーソル配置）を
-  // 妨げないよう preventDefault は呼ばない（指示仕様）。
-  assert.equal(event.prevented, undefined);
+  assert.deepEqual(calls, ['https://example.com']);
+  assert.equal(event.prevented, true);
 });
 
-test('createTerminalLinkHandlers: wasPaneFocused 未指定時は fail-closed（false 相当）として扱う（レビュー指摘・MEDIUM-2）', () => {
-  // wasPaneFocused はこの issue #385 で新設した依存で、世の中に「渡し忘れたら true 扱い」の
-  // 旧挙動は存在しない。渡し忘れ・接続ミスは安全側（開かない）へ倒れることを確認する。
+test('createTerminalLinkHandlers: フォーカス依存がなくてもメニューを出す', () => {
+  // 旧フォーカスガードの引数を省いても、メニュー表示は変わらない。
   const calls = [];
   const handlers = withSilencedWarn(() => createTerminalLinkHandlers({
     isMac: true,
@@ -253,7 +248,7 @@ test('createTerminalLinkHandlers: wasPaneFocused 未指定時は fail-closed（f
     openUrl: (url) => calls.push(url),
   }));
   handlers.activate(makeEvent(), 'https://example.com');
-  assert.deepEqual(calls, []);
+  assert.deepEqual(calls, ['https://example.com']);
 });
 
 test('createTerminalLinkHandlers: modifier モードでは従来どおり修飾キー無しのクリックでは openUrl を呼ばない（最重要のセキュリティ分岐）', () => {
@@ -301,7 +296,7 @@ test('createTerminalLinkHandlers: modifier モードでは Windows/Linux では 
   assert.deepEqual(calls, ['https://example.com']);
 });
 
-test('createTerminalLinkHandlers: modifier モードでも、フォーカスされていないペインへの最初のクリックは修飾キー付きでも openUrl を呼ばない（フォーカスガードは両モード共通）', () => {
+test('createTerminalLinkHandlers: modifier モードも未フォーカスの最初の修飾キー付きクリックでメニューを出す', () => {
   const calls = [];
   const handlers = createTerminalLinkHandlers({
     isMac: true,
@@ -312,8 +307,8 @@ test('createTerminalLinkHandlers: modifier モードでも、フォーカスさ�
   });
   const event = makeEvent({ metaKey: true });
   handlers.activate(event, 'https://example.com');
-  assert.deepEqual(calls, []);
-  assert.equal(event.prevented, undefined);
+  assert.deepEqual(calls, ['https://example.com']);
+  assert.equal(event.prevented, true);
 });
 
 test('createTerminalLinkHandlers: 未知の getClickMode() 戻り値は click として扱う（正規化のフォールバック）', () => {
@@ -366,7 +361,7 @@ test('createTerminalLinkHandlers: deps 未指定でも例外を投げない（no
 });
 
 // ─── LOW-C: 必須級 deps の渡し忘れを console.warn で知らせる ───────────────────────────
-test('createTerminalLinkHandlers: wasPaneFocused / wasDragged が無いと console.warn を出す（レビュー指摘・LOW-C）', () => {
+test('createTerminalLinkHandlers: wasDragged が無いと console.warn を出す', () => {
   const warnings = [];
   const original = console.warn;
   console.warn = (msg) => warnings.push(msg);
@@ -375,12 +370,11 @@ test('createTerminalLinkHandlers: wasPaneFocused / wasDragged が無いと conso
   } finally {
     console.warn = original;
   }
-  assert.equal(warnings.length, 2);
-  assert.ok(warnings.some((m) => /wasPaneFocused/.test(m)));
+  assert.equal(warnings.length, 1);
   assert.ok(warnings.some((m) => /wasDragged/.test(m)));
 });
 
-test('createTerminalLinkHandlers: wasPaneFocused / wasDragged を両方渡していれば console.warn を出さない', () => {
+test('createTerminalLinkHandlers: wasDragged を渡していれば console.warn を出さない', () => {
   const warnings = [];
   const original = console.warn;
   console.warn = (msg) => warnings.push(msg);

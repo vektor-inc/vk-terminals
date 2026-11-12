@@ -133,13 +133,13 @@ test('buildBuiltinSettingsDescriptor: JSON から targetPath 付きの組み込�
   });
   assert.deepEqual(fields.find((field) => field.key === 'terminalLinkClickMode'), {
     key: 'terminalLinkClickMode',
-    label: 'ペイン内 URL クリック挙動（既定: 単クリックで開く）',
+    label: 'ペイン内の URL をクリックしたときの動作',
     type: 'select',
     default: 'click',
-    help: 'ペイン内の URL リンクをクリックしたときに外部ブラウザで開く条件。フォーカスされていないペインへの最初のクリックは、どちらの場合もフォーカス移動に使われます。元の挙動に戻したい場合は「⌘ / Ctrl+クリックが必要（従来の挙動）」を選んでください。',
+    help: 'ペイン内の URL をクリックしたときの動作を選びます。どちらを選んでも、ページを開く前に開き先（アプリ内ブラウザ / 外部ブラウザ）を選ぶメニューが出ます。',
     options: [
-      { value: 'click', label: '単クリックで開く（既定）' },
-      { value: 'modifier', label: '⌘ / Ctrl+クリックが必要（従来の挙動）' },
+      { value: 'click', label: 'クリックで開き先のメニューを出す（既定）' },
+      { value: 'modifier', label: '⌘ / Ctrl+クリックでだけメニューを出す' },
     ],
   });
   assert.deepEqual(fields.find((field) => field.key === 'showUsage'), {

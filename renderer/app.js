@@ -706,6 +706,7 @@ async function createTerminal(paneId, cwd, options = {}, createdResult = null) {
     if (!t) return;
     t.taskTitle = title || '';
     updatePaneTitle(paneId);
+    schedulePaneLayoutSave();
   });
 
   // 共通の入力送信ヘルパー（waiting バッジのクリアを含む）
@@ -994,6 +995,7 @@ VKIpc.on('terminal:exit', (id) => {
 
 // ─── DOM updates (without full re-render) ────────────────────────────────────
 function updatePaneCwd(paneId, cwd) {
+  schedulePaneLayoutSave();
   const el = document.querySelector(`.pane[data-id="${paneId}"] .pane-cwd`);
   if (el) el.textContent = cwd;
   // 格納中のコンパクト表示の cwd も同期する（issue #89）。
@@ -2831,6 +2833,7 @@ function renderTaskTitleContent(el, title, url, prUrl, prMerged = false, waiting
 }
 
 function updatePaneTitle(paneId) {
+  schedulePaneLayoutSave();
   const t = terminals[paneId];
   if (!t) return;
   // 格納中ならコンパクト表示のタスク名を更新する（.pane が無いため下の処理は素通りする）。
@@ -3689,8 +3692,32 @@ function fitAll() {
   getAllLeafIds(tree).forEach(fitTerminal);
 }
 
+// 画面の並びと表示情報は、保持役の専用メタデータへまとめて保存する。
+let paneLayoutSaveTimer = null;
+let paneHolderEnabled = false;
+let initialRestorePending = true;
+function savePaneLayout() {
+  if (!paneHolderEnabled || !tree || !Array.isArray(tree.order)) return;
+  const panes = Object.entries(terminals).map(([paneId, t]) => ({
+    paneId, termId: t.termId, cwd: t.cwdFull, engine: t.engine,
+    taskTitle: t.taskTitle, apiTitle: t.apiTitle, apiUrl: t.apiUrl,
+    apiPrUrl: t.apiPrUrl, apiPrMerged: t.apiPrMerged,
+    apiWaitingMerge: t.apiWaitingMerge, apiPaneNote: t.apiPaneNote,
+  }));
+  VKIpc.send('terminal:save-layout', { order: tree.order, stashOrder: tree.stashOrder || [], focusedPaneId, panes });
+}
+function schedulePaneLayoutSave() {
+  if (paneLayoutSaveTimer) clearTimeout(paneLayoutSaveTimer);
+  paneLayoutSaveTimer = setTimeout(() => { paneLayoutSaveTimer = null; savePaneLayout(); }, 100);
+}
+window.addEventListener('beforeunload', () => {
+  if (paneLayoutSaveTimer) clearTimeout(paneLayoutSaveTimer);
+  savePaneLayout();
+});
+
 // ─── Rendering ────────────────────────────────────────────────────────────────
 function render() {
+  schedulePaneLayoutSave();
   // #root を丸ごと作り直す（root.replaceChildren）ため、ホバー中に呼ばれると
   // xterm 側の要素が入れ替わり leave が発火せず、position: fixed のツールチップが
   // 残り続ける。closePane() / initApp() / window の blur と同じ対策（安藤・Claude Code
@@ -6973,11 +7000,24 @@ function createSetupPanelController() {
 }
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
+function showRestoreWarning(missing, metadataLost = false) {
+  if (metadataLost) showGenericToast('前回のペインの名前と順番を戻せませんでした');
+  else if (missing > 0) showGenericToast(`前回のペイン ${missing} 件は戻せませんでした`);
+  else if (missing === -1) showGenericToast('前回のペインを戻せませんでした');
+}
+
+function classifyRenderedRestorePanes(panes, rendered) {
+  const ready = panes.filter(pane => rendered[pane.paneId]).map(pane => pane.id);
+  const abandoned = panes.filter(pane => !rendered[pane.paneId]).map(pane => pane.id);
+  return { ready, abandoned, needsInitialPane: ready.length === 0, warningCount: abandoned.length ? 1 : 0 };
+}
+
 async function initApp() {
   // エージェントルーム（issue #58）の有効/無効を main から取得（最初の render より前に確定させる）。
   try {
     const cfg = await VKIpc.invoke('app:get-config');
     agentRoomEnabled = !!(cfg && cfg.agentroom);
+    paneHolderEnabled = !!(cfg && cfg.paneHolderEnabled);
     newPaneStartupDir = (cfg && typeof cfg.newPaneStartupDir === 'string') ? cfg.newPaneStartupDir : '';
     newPaneAutoLaunchClaude = !!(cfg && cfg.newPaneAutoLaunchClaude);
     // main 側で検証済みの値。取得失敗・欠落時は従来どおり Claude Code のまま。
@@ -7001,6 +7041,70 @@ async function initApp() {
       document.title = cfg.appTitle.trim();
     }
   } catch (_e) { /* 取得失敗時は無効のまま */ }
+
+  // 保持役の既存ペインを先に問い合わせ、新規シェルを作らず同じ番号と並びへ戻す。
+  if (initialRestorePending && Object.keys(terminals).length === 0) {
+    initialRestorePending = false;
+    let restored = null;
+    try { restored = await VKIpc.invoke('terminal:restore'); } catch (error) { console.warn('pane restore failed', error); }
+    if (restored?.panes?.length) {
+      terminals = {};
+      paneFocusMode = null;
+      focusedPaneId = null;
+      paneFocusBeforeMousedown.clear();
+      const validPanes = restored.panes.filter(p => /^pane-\d+$/.test(p.paneId) && /^\d+$/.test(String(p.id)));
+      const ids = new Set(validPanes.map(p => p.paneId));
+      tree = {
+        type: 'grid', order: (restored.order || []).filter(id => ids.has(id)),
+        colFr: null, rowFr: null, stashOrder: (restored.stashOrder || []).filter(id => ids.has(id)),
+        sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
+      };
+      let readyScheduled = false;
+      try {
+      for (const saved of validPanes) {
+        if (!tree.order.includes(saved.paneId) && !tree.stashOrder.includes(saved.paneId)) tree.order.push(saved.paneId);
+        await createTerminal(saved.paneId, saved.cwd, {}, { id: saved.id, cwd: saved.cwd, engine: saved.engine });
+        const t = terminals[saved.paneId];
+        for (const key of ['taskTitle', 'apiTitle', 'apiUrl', 'apiPrUrl', 'apiPrMerged', 'apiWaitingMerge', 'apiPaneNote']) {
+          if (Object.hasOwn(saved, key)) t[key] = saved[key];
+        }
+        if (!isSafeExternalUrl(t.apiUrl)) t.apiUrl = '';
+        if (!isSafeExternalUrl(t.apiPrUrl)) t.apiPrUrl = '';
+        _idCounter = Math.max(_idCounter, Number(saved.paneId.slice(5)));
+      }
+      focusedPaneId = ids.has(restored.focusedPaneId) ? restored.focusedPaneId : (tree.order[0] || tree.stashOrder[0]);
+      render();
+      terminals[focusedPaneId]?.term.focus();
+      initialRenderDone = true;
+      requestAnimationFrame(() => {
+        for (const id of tree.order) fitTerminal(id);
+        VKIpc.send('terminal:restore-ready', validPanes.map(p => ({ id: p.id, cols: terminals[p.paneId].term.cols, rows: terminals[p.paneId].term.rows })));
+      });
+      readyScheduled = true;
+      showRestoreWarning(restored.missing, restored.metadataLost);
+      } catch (error) {
+        console.warn('pane restore rendering failed', error);
+        // 作成済みの端末は残し、まだ作れなかった端末だけを並びから外す。
+        tree.order = tree.order.filter(id => terminals[id]);
+        tree.stashOrder = tree.stashOrder.filter(id => terminals[id]);
+        focusedPaneId = tree.order[0] || tree.stashOrder[0] || null;
+        if (focusedPaneId) {
+          render(); initialRenderDone = true;
+          if (classifyRenderedRestorePanes(validPanes, terminals).warningCount) showGenericToast('前回のペインの一部を戻せませんでした');
+        }
+        else restored.missing = -1;
+      } finally {
+        if (!readyScheduled) {
+          const result = classifyRenderedRestorePanes(validPanes, terminals);
+          if (result.ready.length) VKIpc.send('terminal:restore-ready', result.ready.map(id => { const terminal = Object.values(terminals).find(t => t.termId === id); return { id, cols: terminal.term.cols, rows: terminal.term.rows }; }));
+          if (result.needsInitialPane) VKIpc.send('terminal:restore-abandon');
+          else if (result.abandoned.length) VKIpc.send('terminal:restore-abandon', result.abandoned);
+        }
+      }
+      if (Object.keys(terminals).length) return;
+    }
+    showRestoreWarning(restored?.missing);
+  }
 
   // Dispose any existing terminals
   // ホバー中に一括破棄されるとリンクの leave が発火しないため、closePane() と同様に

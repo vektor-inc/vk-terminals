@@ -61,6 +61,7 @@ const INVOKE_CHANNELS = new Set([
   'settings:api-token-info',
   'settings:reissue-api-token',
   'terminal:create',
+  'terminal:restore',
   'terminal:format-dropped-paths',
   'help:check',
   'help:document',
@@ -80,6 +81,9 @@ const SEND_CHANNELS = new Set([
   'terminal:close-pane-done',
   'terminal:renderer-ready',
   'terminal:report-states',
+  'terminal:save-layout',
+  'terminal:restore-ready',
+  'terminal:restore-abandon',
   'terminal:pane-screen-response',
 ]);
 

@@ -100,6 +100,59 @@ function decodeOutput(text) {
   return Buffer.from(bytes);
 }
 
+function metadataPath(socket) { return path.join(path.dirname(socket), 'panes.json'); }
+
+function readPaneMetadata(socket) {
+  isSafeSocketPresent(socket);
+  const file = metadataPath(socket);
+  try {
+    // NOFOLLOW で開いた同じ fd を検査して読む。検査と読み込みの間の差し替えを防ぐ。
+    const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+    let data;
+    try {
+      const stat = fs.fstatSync(fd);
+      if (!stat.isFile() || stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o600 || stat.nlink !== 1 || stat.size > 1024 * 1024) throw new Error('unsafe pane metadata');
+      data = JSON.parse(fs.readFileSync(fd, 'utf8'));
+    } finally { fs.closeSync(fd); }
+    if (!data || data.version !== 1 || !Array.isArray(data.panes)) throw new Error('invalid pane metadata');
+    return data;
+  } catch (error) {
+    if (error.code === 'ENOENT') return { version: 1, panes: [] };
+    if (error.code === 'ELOOP') throw new Error('unsafe pane metadata');
+    throw error;
+  }
+}
+
+function writePaneMetadata(socket, data) {
+  isSafeSocketPresent(socket);
+  const file = metadataPath(socket);
+  // 本人専用ディレクトリ内の一時ファイルを原子的に置換する。
+  const temporary = `${file}.${process.pid}.${require('node:crypto').randomBytes(8).toString('hex')}`;
+  try {
+    fs.writeFileSync(temporary, JSON.stringify({ version: 1, panes: data.panes, order: data.order || [], stashOrder: data.stashOrder || [], focusedPaneId: data.focusedPaneId || null }), { flag: 'wx', mode: 0o600 });
+    fs.renameSync(temporary, file);
+  } finally { try { fs.unlinkSync(temporary); } catch (_) {} }
+}
+
+function touchPaneMetadata(socket) {
+  isSafeSocketPresent(socket);
+  const fd = fs.openSync(metadataPath(socket), fs.constants.O_RDWR | fs.constants.O_NOFOLLOW);
+  try {
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile() || stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o600 || stat.nlink !== 1) throw new Error('unsafe pane metadata');
+    const now = new Date();
+    fs.futimesSync(fd, now, now);
+  } finally { fs.closeSync(fd); }
+}
+
+function stopHolder(socket, tmux = 'tmux', env = process.env) {
+  const runDir = env.VK_TERMINALS_HOLDER_RUN_DIR || path.join(env.HOME || os.homedir(), '.vk-terminals', 'run');
+  if (!socket || !path.isAbsolute(socket) || socket !== path.join(runDir, 'tmux.sock')) return false;
+  try { if (!isSafeSocketPresent(socket)) return false; } catch (_) { return false; }
+  execFileSync(tmux, ['-S', socket, 'kill-server'], { env: serverEnvironment(env), timeout: 5000 });
+  return true;
+}
+
 class PaneAdapter {
   constructor(holder, paneId, pid, windowId) {
     this.holder = holder;
@@ -110,9 +163,11 @@ class PaneAdapter {
     this.events = new EventEmitter();
     this.decoder = new TextDecoder();
     this.exited = false;
+    this.replay = null;
   }
   write(data) {
     if (this.exited || isTerminalQueryReplyOnly(data)) return;
+    if (this.replay) { this.replay.inputs.push(data); return; }
     const keys = encodeKeys(data);
     // 制御クライアントへの入力は順序を保ち、長い入力も main を止めずに送る。
     for (let i = 0; i < keys.length; i += 128) this.holder.queueKeys(['send-keys', '-t', this.paneId, '-H', ...keys.slice(i, i + 128)]);
@@ -125,7 +180,34 @@ class PaneAdapter {
   }
   onData(callback) { this.events.on('data', callback); return { dispose: () => this.events.off('data', callback) }; }
   onExit(callback) { this.events.on('exit', callback); return { dispose: () => this.events.off('exit', callback) }; }
-  output(bytes) { this.events.emit('data', this.decoder.decode(bytes, { stream: true })); }
+  output(bytes) {
+    if (this.replay?.phase === 'capturing') return;
+    const data = this.decoder.decode(bytes, { stream: true });
+    if (this.replay) {
+      this.replay.outputs.push(data);
+      if (this.replay.outputs.length > 10000) this.replay.outputs.shift();
+    }
+    else this.events.emit('data', data);
+  }
+  beginReplay() {
+    // 画面の準備前に履歴を流すと出力が失われるため、準備完了か描画放棄まで待つ。
+    this.replay = { phase: 'capturing', outputs: [], inputs: [] };
+  }
+  endCapture() { if (this.replay) this.replay.phase = 'buffering'; }
+  finishReplay(history, modes) {
+    if (!this.replay) return;
+    // 代替画面では先に切り替えないと、復元した画面が切替時に消える。
+    const alternate = '\x1b[?1049h';
+    if (modes.includes(alternate)) {
+      this.events.emit('data', alternate + history + modes.replace(alternate, ''));
+    } else {
+      this.events.emit('data', history + modes);
+    }
+    for (const data of this.replay.outputs) this.events.emit('data', data);
+    const inputs = this.replay.inputs;
+    this.replay = null;
+    for (const data of inputs) this.write(data);
+  }
   exit() {
     if (this.exited) return;
     this.exited = true;
@@ -150,6 +232,9 @@ class TmuxHolder {
     this.buffer = '';
     this.keyQueues = new Map();
     this.keyScheduled = false;
+    this.controlRequests = [];
+    this.controlBlock = null;
+    this.initialControlBlock = true;
     this.session = `vk-terminals-${process.pid}`;
     const lock = path.join(path.dirname(this.socket), 'tmux.lock');
     let lockFd;
@@ -175,13 +260,11 @@ class TmuxHolder {
         }
         if (sessions === null) fs.unlinkSync(this.socket);
         else {
-          const owners = sessions.split('\n').map(line => /^vk-terminals-(\d+)$/.exec(line)).filter(Boolean);
-          if (!owners.length || owners.some(match => { try { process.kill(Number(match[1]), 0); return true; } catch (_) { return false; } })) {
-            throw new Error('tmux holder socket is in use');
-          }
-          this.command(['kill-server']);
-          isSafeSocketPresent(this.socket);
-          fs.unlinkSync(this.socket);
+          const holderSession = sessions.split('\n').find(name => /^vk-terminals-\d+$/.test(name));
+          if (!holderSession) throw new Error('tmux holder socket is in use');
+          this.session = holderSession;
+          if (this.command(['list-clients', '-t', holderSession, '-F', '#{client_pid}']).trim()) throw new Error('tmux holder socket is in use');
+          this.reattached = true;
         }
       }
       // 残留した 0600 スクリプトを次回起動時に掃除する。
@@ -193,8 +276,10 @@ class TmuxHolder {
         }
       }
       // 排他中にサーバーと制御クライアントを作る。
-      this.command(['new-session', '-d', '-s', this.session, '-n', 'holder', 'sleep', '2147483647']);
-      created = true;
+      if (!this.reattached) {
+        this.command(['new-session', '-d', '-s', this.session, '-n', 'holder', 'sleep', '2147483647']);
+        created = true;
+      }
       isSafeSocketPresent(this.socket);
       this.control = spawn(tmux, ['-S', this.socket, '-f', config, '-C', 'attach-session', '-t', this.session], { env: this.env, stdio: ['pipe', 'pipe', 'pipe'] });
     } catch (error) {
@@ -218,12 +303,18 @@ class TmuxHolder {
     this.active = false;
     this.keyQueues.clear();
     this.keyScheduled = false;
-    for (const pane of [...this.panes.values()]) pane.exit();
-    // 停止は同期的に完了させ、新しい保持役との競合を防ぐ。
-    try { if (isSafeSocketPresent(this.socket)) this.command(['kill-server']); } catch (_) {}
+    for (const request of this.controlRequests) { clearTimeout(request.timer); request.reject?.(new Error('tmux control client stopped')); }
+    this.controlRequests = [];
+    this.controlBlock = null;
+    for (const pane of [...this.panes.values()]) {
+      try { if (isSafeSocketPresent(this.socket)) this.command(['kill-window', '-t', pane.windowId]); }
+      catch (_) {}
+      pane.exit();
+    }
   }
   sendControl(args) {
     if (!this.active || this.control.stdin.destroyed) return;
+    this.controlRequests.push({});
     this.control.stdin.write(`${args.map(escapeTmuxArgument).join(' ')}\n`);
   }
   queueKeys(args) {
@@ -243,6 +334,7 @@ class TmuxHolder {
       for (const [id, queue] of this.keyQueues) {
         const args = queue.shift();
         if (!queue.length) this.keyQueues.delete(id);
+        if (args) this.controlRequests.push({});
         if (args && !this.control.stdin.write(`${args.map(escapeTmuxArgument).join(' ')}\n`)) {
           this.control.stdin.once('drain', () => this.drainKeys());
           return;
@@ -255,7 +347,7 @@ class TmuxHolder {
     isSafeSocketPresent(this.socket);
     return execFileSync(this.tmux, ['-S', this.socket, '-f', this.config, ...args.map(escapeTmuxArgument)], { env: this.env, encoding: 'utf8', timeout: 5000 });
   }
-  createPane({ shell, cwd, env, cols = 80, rows = 24 }) {
+  createPane({ shell, cwd, env, termId, cols = 80, rows = 24 }) {
     if (!this.active) throw new Error('tmux control client stopped');
     if (!Number.isInteger(cols) || !Number.isInteger(rows) || cols < 1 || rows < 1) throw new Error('invalid pane size');
     const script = createPaneEnvironmentScript(path.dirname(this.socket), env, shell);
@@ -268,10 +360,47 @@ class TmuxHolder {
       try { fs.unlinkSync(script); } catch (_) {}
       throw new Error('tmux returned invalid pane identity');
     }
+    if (termId) this.command(['set-option', '-w', '-t', windowId, '@vk_term_id', String(termId)]);
     const pane = new PaneAdapter(this, id, pid, windowId);
     this.panes.set(id, pane);
     pane.resize(cols, rows);
     return pane;
+  }
+  listPanes() {
+    if (!isSafeSocketPresent(this.socket)) return [];
+    const output = this.command(['list-panes', '-a', '-F', '#{pane_id} #{pane_pid} #{window_id} #{@vk_term_id}']);
+    return output.split('\n').map(line => /^(%\d+) (\d+) (@\d+) (\d+)$/.exec(line)).filter(Boolean).map(([, paneId, pid, windowId, termId]) => ({ paneId, pid: Number(pid), windowId, termId }));
+  }
+  attachPane(identity) {
+    const pane = new PaneAdapter(this, identity.paneId, identity.pid, identity.windowId);
+    this.panes.set(identity.paneId, pane);
+    return pane;
+  }
+  capturePane(paneId) {
+    if (!this.active) return Promise.reject(new Error('tmux control client stopped'));
+    if (!this.panes.has(paneId)) return Promise.reject(new Error('pane missing'));
+    return new Promise((resolve, reject) => {
+      const request = { paneId, resolve, reject, lines: [] };
+      request.timer = setTimeout(() => {
+        request.reject(new Error('tmux capture timed out'));
+        request.reject = null;
+      }, 5000);
+      this.sendControl(['capture-pane', '-p', '-e', '-S', '-', '-t', paneId]);
+      Object.assign(this.controlRequests[this.controlRequests.length - 1], request);
+    });
+  }
+  capturePaneWithMode(paneId, modeFormat) {
+    const history = this.capturePane(paneId);
+    if (!this.active || !/^%\d+$/.test(paneId) || typeof modeFormat !== 'string' || !/^#\{[\w]+\}(?:[ #{}\w|])*$/u.test(modeFormat)) {
+      return history.then(value => ({ history: value, modeOutput: '' }));
+    }
+    const mode = new Promise((resolve, reject) => {
+      const request = { resolve, reject };
+      request.timer = setTimeout(() => { request.reject(new Error('tmux mode timed out')); request.reject = null; }, 5000);
+      this.controlRequests.push(request);
+      this.control.stdin.write(`display-message -p -t ${paneId} "${modeFormat}"\n`);
+    });
+    return Promise.all([history, mode.catch(() => '')]).then(([value, modeOutput]) => ({ history: value, modeOutput }));
   }
   accept(chunk) {
     this.buffer += chunk;
@@ -279,6 +408,33 @@ class TmuxHolder {
     while ((end = this.buffer.indexOf('\n')) !== -1) {
       const line = this.buffer.slice(0, end).replace(/\r$/, '');
       this.buffer = this.buffer.slice(end + 1);
+      const begin = /^%begin (\d+ \d+ \d+)$/.exec(line);
+      if (begin && !this.controlBlock) {
+        this.controlBlock = { marker: begin[1], request: this.initialControlBlock ? null : this.controlRequests[0], lines: [] };
+        this.initialControlBlock = false;
+        continue;
+      }
+      if (this.controlBlock) {
+        const ending = /^%(end|error) (\d+ \d+ \d+)$/.exec(line);
+        if (ending && ending[2] === this.controlBlock.marker) {
+          const block = this.controlBlock;
+          this.controlBlock = null;
+          const request = block.request;
+          if (request) this.controlRequests.shift();
+          if (request) clearTimeout(request.timer);
+          if (request?.paneId) {
+            this.panes.get(request.paneId)?.endCapture();
+            if (ending[1] === 'error') request.reject?.(new Error('tmux capture failed'));
+            else request.resolve(Buffer.from(block.lines.join('\r\n'), 'latin1').toString('utf8'));
+          } else if (request?.resolve) {
+            if (ending[1] === 'error') request.reject?.(new Error('tmux control command failed'));
+            else request.resolve(Buffer.from(block.lines.join('\r\n'), 'latin1').toString('utf8'));
+          }
+          continue;
+        }
+        this.controlBlock.lines.push(line);
+        continue;
+      }
       const match = /^%output (%\d+) (.*)$/.exec(line);
       if (match) this.panes.get(match[1])?.output(decodeOutput(match[2]));
       const closed = /^%(?:unlinked-)?window-close (@\d+)/.exec(line);
@@ -286,6 +442,15 @@ class TmuxHolder {
         for (const pane of this.panes.values()) if (pane.windowId === closed[1]) pane.exit();
       }
     }
+  }
+  disconnect() {
+    for (const request of this.controlRequests) { clearTimeout(request.timer); request.reject?.(new Error('tmux control client disconnected')); }
+    this.controlRequests = [];
+    this.active = false;
+    this.keyQueues.clear();
+    this.keyScheduled = false;
+    this.control.kill();
+    this.panes.clear();
   }
   close() {
     this.keyQueues.clear();
@@ -300,4 +465,4 @@ class TmuxHolder {
   }
 }
 
-module.exports = { SERVER_ENV_KEYS, serverEnvironment, supportsHolderCommands, isSafeSocketPresent, createHolderSocketPath, createPaneEnvironmentScript, encodeKeys, decodeOutput, TmuxHolder };
+module.exports = { metadataPath, readPaneMetadata, writePaneMetadata, touchPaneMetadata, stopHolder, SERVER_ENV_KEYS, serverEnvironment, supportsHolderCommands, isSafeSocketPresent, createHolderSocketPath, createPaneEnvironmentScript, encodeKeys, decodeOutput, TmuxHolder };

@@ -1,8 +1,10 @@
 # Changelog
 
+## 1.98.0
+
+- [ 機能追加 ] 起動オプション `--pane-holder=tmux` を付けたときだけ、ペインのシェルを専用の tmux の下で動かす機能を追加（tmux が無い、または 3.0 未満の場合は従来どおり動作）（[#585](https://github.com/vektor-inc/vk-terminals/issues/585)）
 - [ 機能追加 ] 起動オプション `--pane-holder=tmux` を付けたとき、アプリを終了してもペインを動かし続け、次の起動で同じ順番・名前・番号のペインへ戻れる機能を追加（[#586](https://github.com/vektor-inc/vk-terminals/issues/586)）
 - [ 機能追加 ] 起動オプション `--pane-holder=tmux` を付けたとき、アプリを起動し直したあとも作業ペインの Claude Code のサブエージェントの開始・終了の通知を受け付け、裏の作業の「実行中」表示を引き継ぐ機能を追加（[#587](https://github.com/vektor-inc/vk-terminals/issues/587)）
-- [ 機能追加 ] 起動オプション `--pane-holder=tmux` を付けたときだけ、ペインのシェルを専用の tmux の下で動かす機能を追加（tmux が無い、または 3.0 未満の場合は従来どおり動作）（[#585](https://github.com/vektor-inc/vk-terminals/issues/585)）
 - [ 仕様変更 ] デスクトップ版のタスク一覧カードのタイトルの太さを、標準から少し太い 500 に変更
 
 ## 1.97.0

@@ -2521,7 +2521,7 @@ button.sidebar-section-header:hover {
 }
 .grid-empty-desc {
   margin-bottom: 20px;
-  color: #9da5b0;
+  color: #9da7b3;
   font-size: 13px;
   line-height: 1.6;
   /* 日本語を文節の切れ目で折り返し、語の途中で割れないようにする。 */

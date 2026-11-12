@@ -1549,10 +1549,12 @@ body:has(.confirm-overlay) .vk-toast-layer {
  * （.term-link-tooltip と同じ判断）。 */
 .vk-toast-message {
   margin: 0;
+  /* 日本語を語の途中で割らず、長い URL は箱の内側で折り返す。 */
+  word-break: auto-phrase;
   overflow-wrap: anywhere;
 }
 .vk-toast-phrase { white-space: nowrap; }
-.vk-toast-copy {
+.vk-toast-button {
   margin-top: 8px;
   padding: 4px 10px;
   border-radius: 5px;
@@ -1562,8 +1564,8 @@ body:has(.confirm-overlay) .vk-toast-layer {
   font-size: 12px;
   cursor: pointer;
 }
-.vk-toast-copy:hover { background: #30363d; }
-.vk-toast-copy:focus-visible {
+.vk-toast-button:hover { background: #30363d; }
+.vk-toast-button:focus-visible {
   outline: var(--vktm--outline--focus-ring);
   outline-offset: var(--vktm--outline-offset--focus-ring);
 }
@@ -2516,12 +2518,16 @@ button.sidebar-section-header:hover {
   margin-bottom: 8px;
   font-size: 15px;
   font-weight: 600;
+  /* 日本語を文節の切れ目で折り返し、語の途中で割れないようにする。 */
+  word-break: auto-phrase;
 }
 .grid-empty-desc {
   margin-bottom: 20px;
-  color: #8b949e;
+  color: #9da7b3;
   font-size: 13px;
   line-height: 1.6;
+  /* 日本語を文節の切れ目で折り返し、語の途中で割れないようにする。 */
+  word-break: auto-phrase;
 }
 .grid-empty-actions {
   display: flex;

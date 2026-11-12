@@ -420,7 +420,12 @@ let tmuxHolder = null;
 let tmuxUnavailable = false;
 let holderPaneCreationBlocked = null;
 function blockHolderPaneCreation(error) {
+  if (holderPaneCreationBlocked?.code === 'HOLDER_VERIFICATION_FAILED' && error.code !== 'HOLDER_VERIFICATION_FAILED') return;
   holderPaneCreationBlocked = error;
+}
+function holderPaneCreationBlockedError() {
+  const reason = holderPaneCreationBlocked.code === 'HOLDER_VERIFICATION_FAILED' ? 'verification' : 'error';
+  return new Error(`VK_HOLDER_PANE_CREATION_BLOCKED:${reason}: ${holderPaneCreationBlocked.message}`);
 }
 const { isHelpDocument, buildHelpLaunchCommand, createHelpStatusChecker, createGuideOpener } = require('./utils/helpFeature');
 const HELP_FEATURE = EMBEDDED_OPTIONS && EMBEDDED_OPTIONS.help;
@@ -2793,7 +2798,7 @@ function createTerminalPane(cwd, options = {}, guide = null) {
 
   let ptyProcess;
   try {
-    if (holderPaneCreationBlocked) throw new Error(`VK_HOLDER_PANE_CREATION_BLOCKED: ${holderPaneCreationBlocked.message}`);
+    if (holderPaneCreationBlocked) throw holderPaneCreationBlockedError();
     if (tmuxHolder && !tmuxHolder.active) tmuxHolder = null;
     if (PANE_HOLDER === 'tmux' && !tmuxHolder && !tmuxUnavailable) {
       try { tmuxHolder = new TmuxHolder(holderOptions()); }
@@ -2822,7 +2827,7 @@ function createTerminalPane(cwd, options = {}, guide = null) {
   } catch (error) {
     discardLaunchHome();
     clearPaneBackgroundWork(id);
-    throw error;
+    throw holderPaneCreationBlocked ? holderPaneCreationBlockedError() : error;
   }
 
   activatePaneSend();

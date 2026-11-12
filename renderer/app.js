@@ -3045,17 +3045,27 @@ async function openHelpGuide() {
 // splitPane（＋ボタン）と空グリッドのプレースホルダ「新規ペインを追加」で共有する生成経路（issue #89）。
 //   - overrideCwd が指定されていればそれを使い、未指定ならホームディレクトリ（main 側でフォールバック）で開く。
 //   - options.noClaude が指定されていればそのまま main に渡す。未指定なら main 側のグローバル設定に従う。
-function isHolderPaneCreationBlocked(error) {
-  return typeof error?.message === 'string' && error.message.includes('VK_HOLDER_PANE_CREATION_BLOCKED:');
+function holderPaneCreationBlockedReason(error) {
+  if (typeof error?.message !== 'string') return null;
+  if (error.message.includes('VK_HOLDER_PANE_CREATION_BLOCKED:verification:')) return 'verification';
+  if (error.message.includes('VK_HOLDER_PANE_CREATION_BLOCKED:error:')) return 'error';
+  return null;
+}
+
+function holderPaneCreationMessage(reason) {
+  return reason === 'verification'
+    ? configuredPaneHolderWarning || 'ペインの状態を確認できませんでした。'
+    : 'ターミナルを保持する仕組みを起動できませんでした。';
 }
 
 async function addPane(overrideCwd = null, options = {}) {
   const newPaneId = newId();
   try { await createTerminal(newPaneId, overrideCwd || null, options); }
   catch (error) {
-    if (!isHolderPaneCreationBlocked(error)) throw error;
+    const blockedReason = holderPaneCreationBlockedReason(error);
+    if (!blockedReason) throw error;
     console.error('pane creation blocked after holder failure', error);
-    showGenericToast(`新しいペインを作れません。${configuredPaneHolderWarning || 'ペインの状態を確認できませんでした。'}`, 'default', { persistent: true });
+    showGenericToast(`新しいペインを作れません。${holderPaneCreationMessage(blockedReason)}`, 'default', { persistent: true });
     return null;
   }
 
@@ -3804,7 +3814,7 @@ function renderEmptyGrid() {
 
   const desc = document.createElement('div');
   desc.className = 'grid-empty-desc';
-  desc.textContent = holderPaneCreationWarning ? `${holderPaneCreationWarning} アプリを終了してください。` : 'グリッドに表示するペインがありません。新規ペインを追加するか、サイドバーから格納したペインを戻してください。';
+  desc.textContent = holderPaneCreationWarning ? `${holderPaneCreationWarning}アプリを終了してください。` : 'グリッドに表示するペインがありません。新規ペインを追加するか、サイドバーから格納したペインを戻してください。';
 
   const actions = document.createElement('div');
   actions.className = 'grid-empty-actions';
@@ -7186,9 +7196,9 @@ async function initApp() {
   try {
     await createTerminal(paneId, newPaneStartupDir || null, initialPaneOptions);
   } catch (error) {
-    if (isHolderPaneCreationBlocked(error)) {
+    if (holderPaneCreationBlockedReason(error)) {
       console.error('initial pane creation blocked after holder failure', error);
-      holderPaneCreationWarning = configuredPaneHolderWarning || 'ペインの状態を確認できませんでした。';
+      holderPaneCreationWarning = holderPaneCreationMessage(holderPaneCreationBlockedReason(error));
       tree.order = [];
       render();
       initialRenderDone = true;
@@ -7200,9 +7210,9 @@ async function initApp() {
     openedAsSetupPane = false;
     try { await createTerminal(paneId, newPaneStartupDir || null, normalPaneOptions); }
     catch (retryError) {
-      if (!isHolderPaneCreationBlocked(retryError)) throw retryError;
+      if (!holderPaneCreationBlockedReason(retryError)) throw retryError;
       console.error('initial pane retry blocked after holder failure', retryError);
-      holderPaneCreationWarning = configuredPaneHolderWarning || 'ペインの状態を確認できませんでした。';
+      holderPaneCreationWarning = holderPaneCreationMessage(holderPaneCreationBlockedReason(retryError));
       tree.order = [];
       render();
       initialRenderDone = true;

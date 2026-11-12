@@ -553,6 +553,44 @@ test('確認失敗は fallback に関係なく作成を止め、error は元の�
   assert.equal(notices[0].socket, '/tmp/socket');
 });
 
+test('作成停止の初回例外と後続例外に原因付きの目印を付ける', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+  const block = source.slice(source.indexOf('function holderFailure('), source.indexOf('const { isHelpDocument'));
+  for (const [fallback, code, expected] of [
+    ['error', undefined, 'error'],
+    ['node-pty', 'HOLDER_VERIFICATION_FAILED', 'verification'],
+    ['error', 'HOLDER_VERIFICATION_FAILED', 'verification'],
+  ]) {
+    const context = { EMBEDDED_OPTIONS: { paneHolderFallback: fallback }, console, LOG_PREFIX: 'test' };
+    vm.runInNewContext(block, context);
+    const failure = Object.assign(new Error('failed'), code ? { code } : {});
+    assert.throws(() => vm.runInNewContext('holderFailure(failure, "/tmp/socket")', { ...context, failure }), /failed/);
+    const first = vm.runInNewContext('holderPaneCreationBlockedError().message', context);
+    assert.match(first, new RegExp(`VK_HOLDER_PANE_CREATION_BLOCKED:${expected}:`));
+    const later = vm.runInNewContext('holderPaneCreationBlockedError().message', context);
+    assert.equal(later, first);
+  }
+  // 初回失敗でも外側の catch が後片付けを済ませてから目印を付ける。
+  const catchBody = source.slice(source.indexOf('  } catch (error) {\n    discardLaunchHome();\n    clearPaneBackgroundWork(id);\n    throw holderPaneCreationBlocked'), source.indexOf('\n  activatePaneSend();'));
+  const cleanup = [];
+  const context = {
+    holderPaneCreationBlocked: new Error('first failure'),
+    holderPaneCreationBlockedError: () => new Error('VK_HOLDER_PANE_CREATION_BLOCKED:error: first failure'),
+    discardLaunchHome: () => cleanup.push('launch'),
+    clearPaneBackgroundWork: () => cleanup.push('background'),
+    id: 'pane',
+  };
+  assert.throws(() => vm.runInNewContext(`try { throw new Error('first failure'); } ${catchBody.slice(catchBody.indexOf('catch (error)'))}`, context), /VK_HOLDER_PANE_CREATION_BLOCKED:error:/);
+  assert.deepEqual(cleanup, ['launch', 'background']);
+  const priority = { EMBEDDED_OPTIONS: { paneHolderFallback: 'error' }, console, LOG_PREFIX: 'test' };
+  vm.runInNewContext(block, priority);
+  const verification = Object.assign(new Error('verification failed'), { code: 'HOLDER_VERIFICATION_FAILED' });
+  assert.throws(() => vm.runInNewContext('holderFailure(verification, "/tmp/socket")', { ...priority, verification }));
+  const ordinary = new Error('ordinary failed');
+  assert.throws(() => vm.runInNewContext('holderFailure(ordinary, "/tmp/socket")', { ...priority, ordinary }));
+  assert.match(vm.runInNewContext('holderPaneCreationBlockedError().message', priority), /:verification: verification failed/);
+});
+
 test('復元確認は未追跡ペインの採番や書換えより前で、拒否後の作成も止める', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
   const loop = source.slice(source.indexOf('  for (const identity of live.values())'), source.indexOf('  // 全生存ペインの登録を終えてから復元する。'));
@@ -560,8 +598,8 @@ test('復元確認は未追跡ペインの採番や書換えより前で、拒�
   assert.ok(loop.indexOf('verifyHolder(') < loop.indexOf("tmuxHolder.command(['set-option'"));
   assert.match(loop, /rejectedPaneIds\.add\(identity\.paneId\); blockHolderPaneCreation/);
   const creation = source.slice(source.indexOf('function createTerminalPane('), source.indexOf('function createTerminalPane(') + 10000);
-  assert.ok(creation.indexOf('if (holderPaneCreationBlocked) throw new Error(`VK_HOLDER_PANE_CREATION_BLOCKED:') < creation.indexOf('new TmuxHolder(holderOptions())'));
-  assert.ok(creation.indexOf('if (holderPaneCreationBlocked) throw new Error(`VK_HOLDER_PANE_CREATION_BLOCKED:') < creation.indexOf('pty.spawn(shell'));
+  assert.ok(creation.indexOf('if (holderPaneCreationBlocked) throw holderPaneCreationBlockedError()') < creation.indexOf('new TmuxHolder(holderOptions())'));
+  assert.ok(creation.indexOf('if (holderPaneCreationBlocked) throw holderPaneCreationBlockedError()') < creation.indexOf('pty.spawn(shell'));
 });
 
 
@@ -590,17 +628,20 @@ test('接続停止後の再生成で確認失敗したら node-pty に進まな�
 test('作成停止の目印だけを案内へ分類し、通常の失敗は例外のまま扱う', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
   const renderer = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'app.js'), 'utf8');
-  const classify = renderer.slice(renderer.indexOf('function isHolderPaneCreationBlocked('), renderer.indexOf('async function addPane('));
-  const context = {};
+  const classify = renderer.slice(renderer.indexOf('function holderPaneCreationBlockedReason('), renderer.indexOf('async function addPane('));
+  const context = { configuredPaneHolderWarning: '確認警告。' };
   vm.runInNewContext(classify, context);
-  assert.equal(vm.runInNewContext("isHolderPaneCreationBlocked(new Error('Error invoking remote method: VK_HOLDER_PANE_CREATION_BLOCKED: failed'))", context), true);
-  assert.equal(vm.runInNewContext("isHolderPaneCreationBlocked(new Error('ordinary failure'))", context), false);
-  assert.match(main, /if \(holderPaneCreationBlocked\) throw new Error\(`VK_HOLDER_PANE_CREATION_BLOCKED:/);
+  assert.equal(vm.runInNewContext("holderPaneCreationBlockedReason(new Error('Error invoking remote method: VK_HOLDER_PANE_CREATION_BLOCKED:verification: failed'))", context), 'verification');
+  assert.equal(vm.runInNewContext("holderPaneCreationBlockedReason(new Error('VK_HOLDER_PANE_CREATION_BLOCKED:error: failed'))", context), 'error');
+  assert.equal(vm.runInNewContext("holderPaneCreationBlockedReason(new Error('ordinary failure'))", context), null);
+  assert.equal(vm.runInNewContext("holderPaneCreationMessage('verification')", context), '確認警告。');
+  assert.equal(vm.runInNewContext("holderPaneCreationMessage('error')", context), 'ターミナルを保持する仕組みを起動できませんでした。');
+  assert.match(main, /if \(holderPaneCreationBlocked\) throw holderPaneCreationBlockedError\(\)/);
   const add = renderer.slice(renderer.indexOf('async function addPane('), renderer.indexOf('async function startSetupPane(', renderer.indexOf('async function addPane(')));
-  assert.match(add, /if \(!isHolderPaneCreationBlocked\(error\)\) throw error;/);
+  assert.match(add, /if \(!blockedReason\) throw error;/);
   const initial = renderer.slice(renderer.indexOf('const openAsSetupPane ='), renderer.indexOf('focusedPaneId = paneId;', renderer.indexOf('const openAsSetupPane =')));
   assert.match(initial, /if \(!openAsSetupPane\) throw error;/);
-  assert.match(initial, /if \(!isHolderPaneCreationBlocked\(retryError\)\) throw retryError;/);
+  assert.match(initial, /if \(!holderPaneCreationBlockedReason\(retryError\)\) throw retryError;/);
 });
 
 test('持続通知は通常の通知と URL 失敗通知で上書きされない', () => {

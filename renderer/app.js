@@ -302,7 +302,12 @@ VKIpc.on('internal-browser:state', state => {
       notice.append('プライベートリポジトリのページは、アプリ内ブラウザで GitHub にログインすると表示できます。');
       const login = document.createElement('button'); login.textContent = 'GitHub にログイン';
       login.addEventListener('click', () => { VKIpc.invoke('internal-browser:open', 'https://github.com/login'); internalBrowserSidebar.querySelector('.internal-browser-url').focus(); });
-      const close = document.createElement('button'); close.textContent = '案内を閉じる'; close.addEventListener('click', () => { notice.dataset.dismissed = 'true'; notice.hidden = true; });
+      const close = document.createElement('button'); close.textContent = '案内を閉じる'; close.addEventListener('click', () => {
+        notice.dataset.dismissed = 'true';
+        notice.hidden = true;
+        // 案内を閉じるとページの上端が動くため、main 側の表示位置も更新する。
+        syncInternalBrowserLayout();
+      });
       notice.append(login, close);
     }
   }

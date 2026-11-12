@@ -12,6 +12,8 @@ test('失敗表示は失敗 URL、操作列は確定 URL を安全な外部オ�
   assert.ok(clickHandler);
   assert.ok(stateHandler);
   const handlers = {};
+  const buttons = [];
+  let layoutSyncs = 0;
   const opened = [];
   let messageWrites = 0;
   let messageText = '';
@@ -32,9 +34,13 @@ test('失敗表示は失敗 URL、操作列は確定 URL を安全な外部オ�
     internalBrowserSidebar: sidebar,
     VKIpc: { on: (name, handler) => { handlers[name] = handler; } },
     openExternalUrlSafe: url => opened.push(url),
-    syncInternalBrowserLayout() {},
+    syncInternalBrowserLayout() { layoutSyncs++; },
     URL,
-    document: { createElement: () => ({ textContent: '', addEventListener() {} }) },
+    document: { createElement: () => {
+      const button = { textContent: '', addEventListener(_type, handler) { this.click = handler; } };
+      buttons.push(button);
+      return button;
+    } },
   };
   vm.runInNewContext(`let internalBrowserUrl = 'https://example.com/confirmed'; let internalBrowserFailedUrl = ''; let internalBrowserHasPage = false; ${clickHandler} ${stateHandler}`, context);
   const state = (failedUrl, github404Url = '', loading = false) => handlers['internal-browser:state']({ url: 'https://example.com/confirmed', failedUrl, github404Url, loading });
@@ -67,6 +73,12 @@ test('失敗表示は失敗 URL、操作列は確定 URL を安全な外部オ�
   assert.equal(notice.hidden, false);
   state('', 'https://github.com/missing', false);
   assert.equal(notice.hidden, false);
+  const beforeDismiss = layoutSyncs;
+  buttons.find(button => button.textContent === '案内を閉じる').click();
+  assert.equal(notice.hidden, true);
+  assert.equal(layoutSyncs, beforeDismiss + 1);
+  state('', 'https://github.com/missing', false);
+  assert.equal(notice.hidden, true);
   state('', '', false);
   assert.equal(notice.hidden, true);
 });

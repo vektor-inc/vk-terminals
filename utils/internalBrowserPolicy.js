@@ -9,9 +9,12 @@ function validateBrowserBounds(rect, windowBounds) {
   if (!rect || !windowBounds) return null;
   const values = [rect.x, rect.y, rect.width, rect.height];
   if (!values.every(Number.isFinite)) return null;
+  if (![windowBounds.width, windowBounds.height].every(Number.isFinite)) return null;
+  if (rect.x < 0 || rect.y < 0 || rect.width < 0 || rect.height < 0 ||
+      rect.x + rect.width > windowBounds.width || rect.y + rect.height > windowBounds.height) return null;
   const [x, y, width, height] = values.map(Math.round);
-  if (x < 0 || y < 0 || width < 0 || height < 0 || x + width > windowBounds.width || y + height > windowBounds.height) return null;
-  return { x, y, width, height };
+  // 座標と大きさを別々に丸めた際の 1px のはみ出しだけを収める。
+  return { x, y, width: Math.max(0, Math.min(width, windowBounds.width - x)), height: Math.max(0, Math.min(height, windowBounds.height - y)) };
 }
 
 function isBrowserUrl(url) { return isSafeHttpUrl(url); }

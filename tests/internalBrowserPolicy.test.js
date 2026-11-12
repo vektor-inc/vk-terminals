@@ -31,6 +31,21 @@ test('WebContentsView の座標は有限なウィンドウ内の矩形だけを�
   assert.equal(validateBrowserBounds({ x: 400, y: 40, width: 401, height: 560 }, windowBounds), null);
   assert.equal(validateBrowserBounds({ x: NaN, y: 40, width: 400, height: 560 }, windowBounds), null);
   assert.equal(validateBrowserBounds({ x: -1, y: 40, width: 400, height: 560 }, windowBounds), null);
+  assert.equal(validateBrowserBounds({ x: 799, y: 599, width: 2, height: 1 }, windowBounds), null);
+  assert.equal(validateBrowserBounds({ x: 1, y: 1, width: -1, height: 1 }, windowBounds), null);
+  assert.equal(validateBrowserBounds({ x: 1, y: 1, width: Infinity, height: 1 }, windowBounds), null);
+  assert.equal(validateBrowserBounds({ x: 1, y: 1, width: 1, height: 1 }, { width: NaN, height: 600 }), null);
+});
+
+test('拡大表示で右端と下端に接する小数の矩形をウィンドウ内へ収める', () => {
+  const windowBounds = { width: 800, height: 600 };
+  const zoom = 1.1;
+  const rect = {
+    x: 455 * zoom, y: 455 * zoom,
+    width: (windowBounds.width / zoom - 455) * zoom,
+    height: (windowBounds.height / zoom - 455) * zoom,
+  };
+  assert.deepEqual(validateBrowserBounds(rect, windowBounds), { x: 501, y: 501, width: 299, height: 99 });
 });
 
 test('専用ビューの遷移と権限、ダウンロード、確定 URL を制御する', () => {

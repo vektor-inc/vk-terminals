@@ -55,6 +55,27 @@ test('一覧: 必要な操作と既知の不足の両方に同じ引数が入っ
   }
 });
 
+test('一覧: resume-pr の 6 操作は実際の出典と受理可否を記録する', () => {
+  // 手順の追加を CI でも検出できるよう、再開手順の操作と行を固定する。
+  const resumeEntries = [...requiredOperations, ...knownGaps].filter((entry) => entry.source.startsWith('codex/vk-kore/guide-resume-pr.md:'));
+  const byName = new Map(resumeEntries.map((entry) => [entry.procedureOperation, entry]));
+  assert.equal(byName.size, resumeEntries.length);
+  assert.deepEqual([...byName.keys()].sort(), ['git add', 'git branch', 'git clean', 'git commit', 'git restore', 'git show']);
+  assert.deepEqual(Object.fromEntries([...byName].map(([name, entry]) => [name, entry.source.split(':')[1]])), {
+    'git branch': '22',
+    'git restore': '33',
+    'git clean': '33',
+    'git add': '35',
+    'git commit': '35',
+    'git show': '35',
+  });
+  assert.equal(requiredOperations.includes(byName.get('git add')), true);
+  for (const name of ['git branch', 'git restore', 'git clean', 'git commit', 'git show']) {
+    assert.equal(knownGaps.includes(byName.get(name)), true, `${name} は未対応として理由と代替手段を記録する`);
+    assert.ok(Object.hasOwn(byName.get(name), 'alternative'));
+  }
+});
+
 // ─── 手順が要求する操作を、固定入口が許可リストどおりの形で受理する ─────────
 
 test('照合: 手順が要求する操作を、固定入口が受理する（gh / git は呼ばない）', () => {

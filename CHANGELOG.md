@@ -1,5 +1,8 @@
 # Changelog
 
+- [ 機能追加 ] ペイン内の URL・issue タイトル・PR から、右側のアプリ内ブラウザか外部ブラウザを選んで開けるように（[#590](https://github.com/vektor-inc/vk-terminals/issues/590)）
+- [ 仕様変更 ] ペイン内の URL をクリックすると、直接開く代わりに開き先の選択メニューを表示するように変更（[#590](https://github.com/vektor-inc/vk-terminals/issues/590)）
+
 ## 1.98.0
 
 - [ 機能追加 ] 起動オプション `--pane-holder=tmux` を付けたときだけ、ペインのシェルを専用の tmux の下で動かす機能を追加（tmux が無い、または 3.0 未満の場合は従来どおり動作）（[#585](https://github.com/vektor-inc/vk-terminals/issues/585)）

@@ -20,25 +20,33 @@ test('アプリから開く URL だけ長さを制限する', () => {
   assert.equal(isNavigationUrl('file:///tmp/test'), false);
 });
 
-test('幅は既定値とウィンドウ全体から 96px を残してクランプする', () => {
+test('幅は既定値とペイン残幅でクランプする', () => {
   assert.equal(clampBrowserWidth(NaN, 1400), 630);
   assert.equal(clampBrowserWidth(100, 1400), 360);
-  assert.equal(clampBrowserWidth(1500, 800), 704);
+  assert.equal(clampBrowserWidth(1500, 800), 480);
 });
 
-test('左サイドバーの開閉に依存せず、456px 未満でのみ 360px を下回る', () => {
-  assert.equal(browserWidthMax(600), 504);
-  assert.equal(clampBrowserWidth(750, 600), 504);
-  assert.equal(browserWidthMax(456), 360);
-  assert.equal(clampBrowserWidth(100, 456), 360);
-  assert.equal(browserWidthMax(455), 359);
-  assert.equal(clampBrowserWidth(750, 455), 359);
+test('ペインの列数に応じて見出しの操作幅を確保する', () => {
+  assert.equal(browserWidthMax(1400, 2), 856);
+  assert.equal(clampBrowserWidth(750, 1100, 2), 556);
+  assert.equal(clampBrowserWidth(750, 1100, 3), 360);
+  assert.equal(clampBrowserWidth(750, 800, 3), 360);
+});
+
+test('ウィンドウ全体からトースト用の 96px を残す', () => {
+  assert.equal(browserWidthMax(1400, 2, 1400), 856);
+  assert.equal(browserWidthMax(600, 1, 600), 360);
+  assert.equal(browserWidthMax(570, 1, 600), 360);
+  assert.equal(browserWidthMax(370, 1, 450), 354);
+  assert.equal(clampBrowserWidth(750, 370, 1, 450), 354);
+  assert.equal(browserWidthMax(455, 1, 455), 359);
+  assert.equal(browserWidthMax(456, 1, 456), 360);
 });
 
 test('トーストを置ける幅が 200px 未満のときだけ語句を折り返す', () => {
   assert.equal(shouldWrapToastPhrase(600, 368), false);
   assert.equal(shouldWrapToastPhrase(600, 369), true);
-  assert.equal(shouldWrapToastPhrase(600, clampBrowserWidth(750, 600)), true);
+  assert.equal(shouldWrapToastPhrase(450, clampBrowserWidth(750, 370, 1, 450)), true);
   assert.equal(shouldWrapToastPhrase(1400, clampBrowserWidth(750, 1400)), false);
 });
 

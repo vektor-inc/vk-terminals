@@ -4004,12 +4004,8 @@ body.pane-dragging * {
    アプリ内ブラウザ
    ========================================================================== */
 .internal-browser-toggle { right: 44px; font-size: 18px; }
-/* 左サイドバーがブラウザ幅より広くても、ページを画面右端からはみ出させない。 */
-#root.internal-browser-open { padding-right: var(--vktm-internal-browser-width, 480px); }
 .internal-browser-sidebar {
-  position: absolute;
-  top: 0;
-  right: 0;
+  position: relative;
   flex: 0 0 auto;
   height: 100%;
   min-width: 0;

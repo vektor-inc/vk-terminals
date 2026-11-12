@@ -11,9 +11,9 @@ function validateBrowserBounds(rect, windowBounds) {
   if (!values.every(Number.isFinite)) return null;
   if (![windowBounds.width, windowBounds.height].every(Number.isFinite)) return null;
   if (rect.x < 0 || rect.y < 0 || rect.width < 0 || rect.height < 0 ||
-      rect.x + rect.width > windowBounds.width || rect.y + rect.height > windowBounds.height) return null;
+      rect.x + rect.width > windowBounds.width + 1 || rect.y + rect.height > windowBounds.height + 1) return null;
   const [x, y, width, height] = values.map(Math.round);
-  // 座標と大きさを別々に丸めた際の 1px のはみ出しだけを収める。
+  // 拡大表示時の小数の計算誤差と、座標と大きさを別々に丸めた際の 1px のはみ出しを収める。
   return { x, y, width: Math.max(0, Math.min(width, windowBounds.width - x)), height: Math.max(0, Math.min(height, windowBounds.height - y)) };
 }
 

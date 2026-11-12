@@ -28,13 +28,21 @@ test('幅は既定値とペイン残幅でクランプする', () => {
 test('WebContentsView の座標は有限なウィンドウ内の矩形だけを受け入れる', () => {
   const windowBounds = { width: 800, height: 600 };
   assert.deepEqual(validateBrowserBounds({ x: 400, y: 40, width: 400, height: 560 }, windowBounds), { x: 400, y: 40, width: 400, height: 560 });
-  assert.equal(validateBrowserBounds({ x: 400, y: 40, width: 401, height: 560 }, windowBounds), null);
+  assert.equal(validateBrowserBounds({ x: 400, y: 40, width: 402, height: 560 }, windowBounds), null);
   assert.equal(validateBrowserBounds({ x: NaN, y: 40, width: 400, height: 560 }, windowBounds), null);
   assert.equal(validateBrowserBounds({ x: -1, y: 40, width: 400, height: 560 }, windowBounds), null);
-  assert.equal(validateBrowserBounds({ x: 799, y: 599, width: 2, height: 1 }, windowBounds), null);
+  assert.equal(validateBrowserBounds({ x: 799, y: 599, width: 3, height: 1 }, windowBounds), null);
   assert.equal(validateBrowserBounds({ x: 1, y: 1, width: -1, height: 1 }, windowBounds), null);
   assert.equal(validateBrowserBounds({ x: 1, y: 1, width: Infinity, height: 1 }, windowBounds), null);
   assert.equal(validateBrowserBounds({ x: 1, y: 1, width: 1, height: 1 }, { width: NaN, height: 600 }), null);
+});
+
+test('右端と下端の 1px 以下のはみ出しだけをウィンドウ内へ収める', () => {
+  const windowBounds = { width: 1200, height: 800 };
+  assert.deepEqual(validateBrowserBounds({ x: 840.6, y: 440.6, width: 359.6, height: 359.6 }, windowBounds),
+    { x: 841, y: 441, width: 359, height: 359 });
+  assert.equal(validateBrowserBounds({ x: 840.6, y: 440.6, width: 360.9, height: 359.6 }, windowBounds), null);
+  assert.equal(validateBrowserBounds({ x: 840.6, y: 440.6, width: 359.6, height: 360.9 }, windowBounds), null);
 });
 
 test('拡大表示で右端と下端に接する小数の矩形をウィンドウ内へ収める', () => {

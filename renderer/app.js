@@ -129,8 +129,11 @@ function syncInternalBrowserLayout() {
   const columns = gridDims().cols;
   const leftSidebar = root.classList.contains('sidebar-open') ? document.getElementById('sidebar')?.getBoundingClientRect().width || 0 : 0;
   const availableWidth = root.clientWidth - leftSidebar;
-  const maxWidth = browserWidthMax(availableWidth, columns);
-  displayedInternalBrowserWidth = clampBrowserWidth(preferredInternalBrowserWidth || NaN, availableWidth, columns);
+  // 狭い画面でもトーストの左右 16px と本文の領域を残す。
+  const browserAvailableWidth = internalBrowserOpen ? Math.max(0, availableWidth - 96) : availableWidth;
+  const maxWidth = Math.min(browserWidthMax(availableWidth, columns), browserAvailableWidth);
+  displayedInternalBrowserWidth = Math.min(clampBrowserWidth(preferredInternalBrowserWidth || NaN, availableWidth, columns), browserAvailableWidth);
+  root.classList.toggle('toast-phrase-wrap', availableWidth - displayedInternalBrowserWidth - 32 < 200);
   internalBrowserSidebar.style.width = `${displayedInternalBrowserWidth}px`;
   document.body.style.setProperty('--vktm-internal-browser-width', `${displayedInternalBrowserWidth}px`);
   document.body.style.setProperty('--vktm-toast-sidebar-width', `${leftSidebar}px`);
@@ -2918,6 +2921,7 @@ function setSidebarOpen(open, options = {}) {
   btn?.setAttribute('aria-expanded', sidebarOpen ? 'true' : 'false');
 
   const afterLayout = () => {
+    syncInternalBrowserLayout();
     fitAll();
     if (sidebarOpen && options.focusFirst !== false) {
       focusFirstSidebarItem();

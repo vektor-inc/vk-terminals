@@ -4051,10 +4051,12 @@ body.pane-dragging * {
 .internal-browser-choice-heading { padding: 5px 8px; color: #8b949e; font-size: 11px; }
 .internal-browser-choice [role="menuitem"] { display: block; width: 100%; padding: 7px 8px; text-align: left; border: 0; border-radius: 4px; background: transparent; color: inherit; cursor: pointer; }
 .internal-browser-choice [role="menuitem"]:hover, .internal-browser-choice [role="menuitem"]:focus-visible { background: #30363d; }
-/* ペインが狭いときはトーストを折り返し、最低幅も取れなければブラウザ上に重ねて画面内へ収める。 */
+/* WebContentsView は HTML より前面に描かれるため、トーストをブラウザ領域へ重ねない。 */
 body:has(#root.internal-browser-open):not(:has(.settings-overlay, .confirm-overlay)) .vk-toast-layer {
-  right: min(calc(var(--vktm-internal-browser-width, 480px) + 16px), calc(100vw - 216px));
+  right: calc(var(--vktm-internal-browser-width, 480px) + 16px);
   width: max-content;
-  max-width: max(200px, calc(100vw - var(--vktm-internal-browser-width, 480px) - var(--vktm-toast-sidebar-width, 0px) - 32px));
+  max-width: min(320px, calc(100vw - var(--vktm-internal-browser-width, 480px) - var(--vktm-toast-sidebar-width, 0px) - 32px));
 }
-body:has(#root.internal-browser-open):not(:has(.settings-overlay, .confirm-overlay)) .vk-toast { max-width: 100%; }
+body:has(#root.internal-browser-open):not(:has(.settings-overlay, .confirm-overlay)) .vk-toast { max-width: min(320px, 100%); }
+/* ペインが 200px 未満のときは案内の語句を折り返し、読める幅を確保する。 */
+body:has(#root.internal-browser-open.toast-phrase-wrap):not(:has(.settings-overlay, .confirm-overlay)) .vk-toast-phrase { white-space: normal; }

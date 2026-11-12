@@ -5,6 +5,37 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
+test('左サイドバーの開閉完了後にブラウザとトーストの配置を再同期する', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
+  const setter = source.match(/function setSidebarOpen\(open, options = \{\}\) \{[\s\S]*?\n\}/)?.[0];
+  assert.ok(setter);
+  const calls = [];
+  const classes = new Set();
+  let transitionEnd;
+  const aside = {
+    addEventListener(_type, handler) { transitionEnd = handler; },
+    removeEventListener() {},
+  };
+  const root = { classList: { toggle(name, value) { if (value) classes.add(name); else classes.delete(name); } } };
+  const context = {
+    document: { getElementById(id) { return id === 'root' ? root : { setAttribute() {} }; } },
+    ensureSidebar() { return aside; },
+    syncInternalBrowserLayout() { calls.push('sync'); },
+    fitAll() { calls.push('fit'); },
+    isReducedMotion() { return false; },
+    setTimeout() { return 1; }, clearTimeout() {},
+    focusFirstSidebarItem() {}, sidebarOpen: false, sidebarTransitionCleanup: null,
+  };
+  vm.runInNewContext(`${setter}\nsetSidebarOpen(true, { focusFirst: false })`, context);
+  assert.deepEqual(calls, ['sync']);
+  transitionEnd({ target: aside, propertyName: 'transform' });
+  assert.deepEqual(calls, ['sync', 'sync', 'fit']);
+  vm.runInNewContext('setSidebarOpen(false)', context);
+  transitionEnd({ target: aside, propertyName: 'transform' });
+  assert.deepEqual(calls.slice(-3), ['sync', 'sync', 'fit']);
+  assert.equal(classes.has('sidebar-open'), false);
+});
+
 test('初期化時は操作列の閉じるだけを無効化せず、失敗表示にも触れない', () => {
   const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
   const initialization = source.match(/for \(const button of internalBrowserSidebar\.querySelectorAll\('[^']+'\)\) button\.disabled = true;/)?.[0];

@@ -589,12 +589,48 @@ test('詳細 URL: どちらの断片からも完全な URL と実文字位置の
   }
 });
 
-test('詳細 URL: 見出しが無い場合と見出しから離れた場合は連結しない', () => {
+test('詳細 URL: 見出しが無い場合と見出しから離れた場合も連結する', () => {
   const url = 'https://example.com/part';
   for (const lines of [[url, '  rest'], ['■ 詳細URL', '文章', url, '  rest']]) {
     const links = detailLinks(lines, 40, lines.length - 1);
-    assert.equal(links[0].text, url);
+    assert.equal(links[0].text, url + 'rest');
   }
+});
+
+test('字下げ URL: 番号付きリストの 2・3 行をどの行からも復元する', () => {
+  for (const tail of [[], ['   /SKILL.md']]) {
+    const lines = ['1. 原稿作成: https://github.com/vektor-inc/vk-agents', '   -private/blob/main', ...tail];
+    const expected = 'https://github.com/vektor-inc/vk-agents-private/blob/main' + (tail.length ? '/SKILL.md' : '');
+    for (let lineNumber = 1; lineNumber <= lines.length; lineNumber += 1) {
+      const links = detailLinks(lines, 90, lineNumber);
+      assert.equal(links[0].text, expected);
+      assert.deepEqual(links[0].range, {
+        start: { x: lines[0].indexOf('https://') + 1, y: 1 },
+        end: { x: lines.at(-1).length, y: lines.length },
+      });
+    }
+  }
+});
+
+test('字下げ URL: 箇条書きと地の文を復元する', () => {
+  for (const prefix of ['- ', '* ', '• ', '⏺ ', '詳細は ']) {
+    const lines = [prefix + 'https://example.com/pa', '  th'];
+    for (const lineNumber of [1, 2]) {
+      assert.equal(detailLinks(lines, 50, lineNumber)[0].text, 'https://example.com/path');
+    }
+  }
+});
+
+test('字下げ URL: 説明文・URL 後の文字・上限超過・表は連結しない', () => {
+  const url = 'https://example.com/part';
+  for (const continuation of ['  rest of-url', '  続き']) {
+    assert.equal(detailLinks(['- ' + url, continuation], 60, 1)[0].text, url);
+  }
+  assert.equal(detailLinks(['- ' + url + ' 説明', '  tail'], 60, 1)[0].text, url);
+  assert.equal(detailLinks(['- ' + url, ...Array(8).fill('  a')], 60, 1)[0].text, url);
+  const long = url + 'a'.repeat(2020);
+  assert.equal(detailLinks([long, '  ' + 'b'.repeat(30)], 2100, 1)[0].text, long);
+  assert.equal(detailLinks(['│- ' + url + '│done│', '  tail'], 60, 1), undefined);
 });
 
 test('詳細 URL: 空白や日本語を含む続き行は連結しない', () => {
@@ -664,7 +700,7 @@ test('詳細 URL: 見出しは空白と任意の先頭記号 1 個だけを許�
     assert.equal(detailLinks([heading, url, '  tail'], 50, 2)[0].text, url + 'tail');
   }
   for (const heading of ['echo foo ■ 詳細URL', 'foo■ 詳細URL', '⏺ • ■ 詳細URL', '■ 詳細URL extra']) {
-    assert.equal(detailLinks([heading, url, '  tail'], 50, 2)[0].text, url);
+    assert.equal(detailLinks([heading, url, '  tail'], 50, 2)[0].text, url + 'tail');
   }
 });
 

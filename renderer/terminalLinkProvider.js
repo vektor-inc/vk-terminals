@@ -223,6 +223,43 @@
   const MAX_DETAIL_URL_CHARS = MAX_WINDOW_CHARS;
   const DETAIL_URL_CHARS = /^[A-Za-z0-9\-._~:/?#[\]@!$&*+,;=%()]+$/;
 
+  // 実改行された URL は、行末の URL と字下げされた URL 文字だけの行をつなぐ。
+  // 英数字 1 語だけの説明行は続きと区別できず、連結される既知の限界がある。
+  function getIndentedUrlRows(buffer, lineIndex0) {
+    const first = Math.max(0, lineIndex0 - MAX_DETAIL_URL_ROWS + 1);
+    for (let startIndex = first; startIndex <= lineIndex0; startIndex += 1) {
+      const startLine = buffer.getLine(startIndex);
+      if (!startLine || startLine.isWrapped) continue;
+      const raw = startLine.translateToString(false).trimEnd();
+      if (scanTableBorders(raw).count >= 2) continue;
+      const startMatch = extractUrlMatches(raw).find((match) => match.end === raw.length);
+      if (!startMatch) continue;
+
+      const rows = [{ index: startIndex, text: startMatch.url, prefixLength: startMatch.start }];
+      let length = startMatch.url.length;
+      let exceeded = false;
+      for (let index = startIndex + 1; index < startIndex + MAX_DETAIL_URL_ROWS; index += 1) {
+        const line = buffer.getLine(index);
+        if (!line) break;
+        const text = line.translateToString(false).trimEnd();
+        if (scanTableBorders(text).count >= 2) break;
+        const continuation = /^( +)(\S+)$/.exec(text);
+        if (!continuation || !DETAIL_URL_CHARS.test(continuation[2])) break;
+        length += continuation[2].length;
+        if (length > MAX_DETAIL_URL_CHARS) { exceeded = true; break; }
+        rows.push({ index, text: continuation[2], prefixLength: continuation[1].length, forcedMerge: true });
+      }
+      if (exceeded || rows.length < 2) continue;
+      // 9 行目が同じ URL の続きなら、8 行だけの不完全な URL を返さない。
+      const nextLine = buffer.getLine(startIndex + MAX_DETAIL_URL_ROWS);
+      if (rows.length === MAX_DETAIL_URL_ROWS && nextLine &&
+          /^( +)(\S+)$/.test(nextLine.translateToString(false).trimEnd()) &&
+          DETAIL_URL_CHARS.test(nextLine.translateToString(false).trimEnd().trimStart())) continue;
+      if (rows.some((row) => row.index === lineIndex0)) return rows;
+    }
+    return null;
+  }
+
   function getDetailUrlRows(buffer, lineIndex0) {
     const first = Math.max(0, lineIndex0 - MAX_DETAIL_HEADING_DISTANCE);
     for (let headingIndex = lineIndex0 - 1; headingIndex >= first; headingIndex -= 1) {
@@ -318,7 +355,7 @@
     const buffer = terminal.buffer.active;
     const lineIndex0 = bufferLineNumber - 1;
     const detailRows = getDetailUrlRows(buffer, lineIndex0);
-    const rows = detailRows || getWrappedLineWindow(buffer, lineIndex0);
+    const rows = detailRows || getIndentedUrlRows(buffer, lineIndex0) || getWrappedLineWindow(buffer, lineIndex0);
     if (!rows || rows.length === 0) return [];
 
     let merged = '';

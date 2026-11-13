@@ -683,9 +683,14 @@ test('ダウンロード案内の括弧と操作名を同じ改行禁止要素�
     document: { createElement() { return {}; } },
   };
   vm.runInNewContext(downloadBlocked, context);
-  downloadHandler();
+  downloadHandler({ canOpenFromToolbar: true });
   assert.equal(children[0], 'ダウンロードはできません。操作列の');
   assert.equal(children[1].className, 'vk-toast-phrase');
   assert.equal(children[1].textContent, '「外部ブラウザで開く」');
   assert.equal(children[2], 'から行ってください。');
+  const unrelatedMessages = [];
+  context.showGenericToast = text => { unrelatedMessages.push(text); return true; };
+  downloadHandler({ canOpenFromToolbar: false });
+  assert.equal(unrelatedMessages[0], 'ダウンロードはできません。外部ブラウザでダウンロードしてください。');
+  assert.equal(children[0], 'ダウンロードはできません。操作列の');
 });

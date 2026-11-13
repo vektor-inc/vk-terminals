@@ -214,10 +214,14 @@ test('専用ビューの遷移と権限、ダウンロード、確定 URL を制
   browserSession.emit('will-download', { preventDefault() { canceled = true; } }, { cancel() { throw new Error('item.cancel should not be called'); } });
   assert.equal(canceled, true);
   assert.equal(sent.at(-1)[0], 'internal-browser:download-blocked');
+  assert.deepEqual(sent.at(-1)[1], { canOpenFromToolbar: false });
   assert.equal(sent.at(-2)[1].downloadUrl, '');
   assert.equal(sent.at(-2)[1].navigationResult, 'cancelled');
   browser.navigate('https://example.com/download');
   browserSession.emit('will-download', { preventDefault() {} }, { getURLChain: () => ['https://example.com/download'] });
+  assert.equal(sent.at(-1)[0], 'internal-browser:download-blocked');
+  assert.deepEqual(sent.at(-1)[1], { canOpenFromToolbar: true });
+  assert.equal(sent.at(-2)[0], 'internal-browser:state');
   assert.equal(sent.at(-2)[1].downloadUrl, 'https://example.com/download');
   contents.emit('did-start-loading');
   assert.equal(sent.at(-1)[1].downloadUrl, 'https://example.com/download');
@@ -230,6 +234,7 @@ test('専用ビューの遷移と権限、ダウンロード、確定 URL を制
   browserSession.emit('will-download', { preventDefault() {} }, { getURLChain: () => ['https://example.com/other'] });
   assert.equal(sent.length, beforeUnrelatedDownload + 1);
   assert.equal(sent.at(-1)[0], 'internal-browser:download-blocked');
+  assert.deepEqual(sent.at(-1)[1], { canOpenFromToolbar: false });
   assert.equal(sent.at(-2)[1].pendingUrl, 'https://example.com/stale');
   assert.equal(sent.at(-2)[1].navigationResult, null);
   browser.navigate('https://example.com/normalized');

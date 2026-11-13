@@ -36,7 +36,8 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
       navigationResult = 'download-blocked';
       publish();
     }
-    if (!win.isDestroyed()) win.webContents.send('internal-browser:download-blocked');
+    // 一致時だけ状態を先に公開し、操作列の対象が設定された後に案内する。
+    if (!win.isDestroyed()) win.webContents.send('internal-browser:download-blocked', { canOpenFromToolbar: matchesPendingUrl && !!downloadUrl });
   };
   browserSession.on('will-download', cancelDownload);
 

@@ -360,8 +360,10 @@ test('main の遷移結果を順に受け、失敗・成功・中止・ダウン
   const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
   const addressHandlers = source.match(/const internalBrowserAddress = internalBrowserSidebar\.querySelector\('\.internal-browser-url'\);[\s\S]*?(?=document\.getElementById\('internal-browser-toggle'\))/)?.[0];
   const stateHandler = source.match(/VKIpc\.on\('internal-browser:state', state => \{[\s\S]*?\n\}\);/)?.[0];
+  const downloadHandler = source.match(/VKIpc\.on\('internal-browser:download-blocked',[\s\S]*?\n\}\);/)?.[0];
   assert.ok(addressHandlers);
   assert.ok(stateHandler);
+  assert.ok(downloadHandler);
   assert.match(source, /class="internal-browser-error" role="status"/);
   assert.match(source, /class="internal-browser-navigation-status" role="status"/);
 
@@ -372,6 +374,7 @@ test('main の遷移結果を順に受け、失敗・成功・中止・ダウン
     const handlers = {};
     const messages = [];
     const channels = [];
+    const downloadEvents = [];
     const addressError = { id: 'internal-browser-address-error', hidden: true, textContent: '' };
     const address = { value: '', addEventListener(type, handler) { handlers[type] = handler; },
       setAttribute() {}, removeAttribute() {} };
@@ -383,6 +386,8 @@ test('main の遷移結果を順に受け、失敗・成功・中止・ダウン
     const notice = { hidden: true, dataset: {}, replaceChildren() {}, contains: () => false };
     const external = { setAttribute() {} };
     const target = { hidden: true, textContent: '' };
+    const toastMessages = [];
+    const toastBody = { replaceChildren() {}, append() {} };
     let navigationWrites = 0;
     const navigationStatus = { value: '', get textContent() { return this.value; },
       set textContent(value) { this.value = value; navigationWrites++; } };
@@ -407,11 +412,13 @@ test('main の遷移結果を順に受け、失敗・成功・中止・ダウン
         on: (channel, handler) => { handlers[channel] = handler; },
         invoke: (_channel, url) => { browser.navigate(url); return Promise.resolve(); },
       },
+      showGenericToast(message) { toastMessages.push(message); return true; },
+      externalUrlToastEl: { querySelector: () => toastBody },
       hideInternalBrowserContent: element => { element.hidden = true; },
       syncInternalBrowserLayout() {},
-      document: { activeElement: null }, URL,
+      document: { activeElement: null, createElement: () => ({}) }, URL,
     });
-    vm.runInContext(`let internalBrowserUrl = ''; let internalBrowserPendingUrl = ''; let internalBrowserFailedUrl = ''; let internalBrowserDownloadUrl = ''; let internalBrowserAddressHasDraft = false; let internalBrowserHasPage = false; ${addressHandlers} ${stateHandler}`, context);
+    vm.runInContext(`let internalBrowserUrl = ''; let internalBrowserPendingUrl = ''; let internalBrowserFailedUrl = ''; let internalBrowserDownloadUrl = ''; let internalBrowserAddressHasDraft = false; let internalBrowserHasPage = false; ${addressHandlers} ${stateHandler} ${downloadHandler}`, context);
 
     // main の publish をそのまま renderer に渡し、実際の pendingUrl 消去順を確認する。
     const browserSession = new EventEmitter();
@@ -433,6 +440,11 @@ test('main の遷移結果を順に受け、失敗・成功・中止・ダウン
       isDestroyed: () => false,
       webContents: { send(channel, state) {
         channels.push(channel);
+        if (channel === 'internal-browser:download-blocked') {
+          downloadEvents.push(state);
+          handlers[channel](state);
+          return;
+        }
         if (channel !== 'internal-browser:state') return;
         messages.push({ ...state });
         handlers[channel](state);
@@ -521,6 +533,9 @@ test('main の遷移結果を順に受け、失敗・成功・中止・ダウン
     // 無関係なダウンロードは pending URL と読み込み中の案内を残す。
     browserSession.emit('will-download', { preventDefault() {} },
       { getURLChain: () => ['https://example.org/other'] });
+    assert.deepEqual(downloadEvents.at(-1), { canOpenFromToolbar: false });
+    assert.equal(toastMessages.at(-1), 'ダウンロードはできません。外部ブラウザでダウンロードしてください。');
+    assert.equal(target.textContent.includes('ダウンロード先'), false);
     assert.equal(messages.at(-1).pendingUrl, 'https://example.org/download');
     assert.equal(messages.at(-1).navigationResult, null);
     assert.equal(navigationStatus.textContent, 'ページを読み込み中');
@@ -529,10 +544,18 @@ test('main の遷移結果を順に受け、失敗・成功・中止・ダウン
       { getURLChain: () => ['https://example.org/download'] });
     assert.equal(blockedToast, 1);
     assert.equal(channels.at(-1), 'internal-browser:download-blocked');
+    assert.equal(channels.at(-2), 'internal-browser:state');
+    assert.deepEqual(downloadEvents.at(-1), { canOpenFromToolbar: true });
+    assert.equal(toastMessages.at(-1), 'ダウンロードはできません。操作列の「外部ブラウザで開く」から行ってください。');
+    assert.equal(toastMessages.length, 2);
+    assert.equal(target.textContent, '外部で開く: ダウンロード先 example.org/download');
     assert.equal(messages.at(-1).navigationResult, 'download-blocked');
     assert.equal(messages.at(-1).pendingUrl, '');
-    assert.equal(navigationStatus.textContent, 'ダウンロードは外部ブラウザで行ってください');
+    assert.equal(navigationStatus.textContent, '');
     assert.equal(navigationWrites, 8);
+    browser.publish();
+    assert.equal(navigationWrites, 8);
+    assert.equal(toastMessages.length, 2);
     contents.emit('did-stop-loading');
     assert.equal(navigationWrites, 8);
 

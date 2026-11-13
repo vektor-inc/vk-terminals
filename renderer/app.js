@@ -479,7 +479,8 @@ VKIpc.on('internal-browser:state', state => {
     // 失敗は既存の error role=status が具体的な対象とともに通知する。
     failed: '',
     cancelled: 'ページの移動を中止しました',
-    'download-blocked': 'ダウンロードは外部ブラウザで行ってください',
+    // ダウンロード阻止は既存のトーストだけで結果と操作を通知する。
+    'download-blocked': '',
   };
   if (internalBrowserNavigationActive && Object.hasOwn(navigationMessages, state.navigationResult)) {
     internalBrowserNavigationActive = false;
@@ -487,12 +488,14 @@ VKIpc.on('internal-browser:state', state => {
   }
   syncInternalBrowserLayout();
 });
-VKIpc.on('internal-browser:download-blocked', () => {
-  const toastMessage = 'ダウンロードはできません。操作列の「外部ブラウザで開く」から行ってください。';
+VKIpc.on('internal-browser:download-blocked', ({ canOpenFromToolbar } = {}) => {
+  const toastMessage = canOpenFromToolbar
+    ? 'ダウンロードはできません。操作列の「外部ブラウザで開く」から行ってください。'
+    : 'ダウンロードはできません。外部ブラウザでダウンロードしてください。';
   // 持続通知が表示中なら、その本文をダウンロード案内で上書きしない。
   if (!showGenericToast(toastMessage)) return;
   const message = externalUrlToastEl?.querySelector('.vk-toast-message');
-  if (message) {
+  if (message && canOpenFromToolbar) {
     const [beforeAction, afterAction] = toastMessage.split('「外部ブラウザで開く」');
     message.replaceChildren(beforeAction);
     const action = document.createElement('span');

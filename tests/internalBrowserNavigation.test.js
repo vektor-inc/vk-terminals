@@ -904,6 +904,51 @@ test('案内基底の進むは隣接する案内内hash履歴を飛ばさない'
   assert.equal(moved, true);
 });
 
+test('案内内hashへの履歴復帰イベントが基底URLでも元の戻り先を上書きしない', async () => {
+  const { HELP_URL } = require('../utils/internalBrowserPolicy');
+  const { browser, contents, states } = setup();
+  const previous = 'https://example.com/previous';
+  const external = 'https://example.com/from-guide';
+  await contents.complete(previous);
+  useLoadURLForHelpReturn(contents);
+  const guide = browser.openHelp();
+  contents.setDocumentUrl(HELP_URL);
+  contents.emit('did-finish-load');
+  await guide;
+
+  browser.navigate(external, true);
+  await flushBrowserLoads();
+  await contents.complete(external);
+  const section = `${HELP_URL}#section`;
+  contents.navigationHistory.canGoBack = () => true;
+  contents.navigationHistory.getAllEntries = () => [{ url: section }, { url: external }];
+  contents.navigationHistory.getActiveIndex = () => 1;
+  contents.navigationHistory.goBack = () => {
+    contents.emit('will-navigate', {
+      url: HELP_URL,
+      preventDefault() { assert.fail('guide history navigation must stay native'); },
+    });
+    contents.setDocumentUrl(section);
+    contents.emit('did-stop-loading');
+  };
+  assert.equal(browser.action('back'), true);
+  assert.equal(states.at(-1).url, section);
+
+  contents.navigationHistory.getAllEntries = () => [{ url: HELP_URL }, { url: section }];
+  contents.navigationHistory.goBack = () => {
+    contents.emit('will-navigate', { url: HELP_URL, preventDefault() {} });
+    contents.setDocumentUrl(HELP_URL);
+    contents.emit('did-stop-loading');
+  };
+  assert.equal(browser.action('back'), true);
+  assert.equal(states.at(-1).url, HELP_URL);
+
+  contents.navigationHistory.canGoBack = () => false;
+  assert.equal(browser.action('back'), true);
+  await flushBrowserLoads();
+  assert.equal(states.at(-1).url, previous);
+});
+
 test('案内前の文書がElectron履歴に無い場合も戻る・進むで復元する', async () => {
   const { HELP_URL } = require('../utils/internalBrowserPolicy');
   const { browser, contents, states } = setup();

@@ -1600,6 +1600,11 @@ body:has(.confirm-overlay) .vk-toast-layer {
   transform: translateX(0);
   border-right: 1px solid #21262d;
 }
+/* 狭幅でブラウザを開くときは左サイドバーを即座に畳み、トランジション中も
+ * ターミナル領域が最小幅未満へ一時的に潰れないようにする。 */
+#root.internal-browser-open .sidebar {
+  transition: none;
+}
 /* リサイズ中は追従を即時にするためトランジションを切る。 */
 body.resizing-sidebar .sidebar {
   transition: none;

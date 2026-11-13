@@ -90,6 +90,7 @@ test('左サイドバーの開閉完了後にブラウザとトーストの配�
 
 test('狭幅の同期は左を閉じてから再計算し、手動で左を開くとブラウザを閉じる', () => {
   const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
+  const css = fs.readFileSync(path.join(__dirname, '../renderer/style.css'), 'utf8');
   const sync = source.match(/function syncInternalBrowserLayout\([\s\S]*?\n\}/)[0];
   const setter = source.match(/function setSidebarOpen\([\s\S]*?\n\}/)[0];
   const classes = new Set(['sidebar-open']);
@@ -123,6 +124,7 @@ test('狭幅の同期は左を閉じてから再計算し、手動で左を開�
   assert.equal(context.preferredInternalBrowserWidth, 520);
   assert.equal(address.placeholder, 'URL / 検索');
   assert.equal(attributes['aria-expanded'], 'false');
+  assert.match(css, /#root\.internal-browser-open \.sidebar\s*\{[^}]*transition: none;/);
   vm.runInContext('setSidebarOpen(true)', context);
   assert.deepEqual(calls, [false]);
   assert.equal(context.sidebarOpen, true);

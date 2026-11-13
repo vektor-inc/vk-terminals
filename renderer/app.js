@@ -74,6 +74,8 @@ const { deriveDisplayWaiting, deriveStatus, deriveDisplayStatus, shouldBeepForPa
 const { getStatusPresentation, resolvePaneNote, BACKGROUND_WORK_REASON, getCloseConfirmation } = window.VKStatusPresentation;
 const { getApiServerStatusPresentation } = window.VKApiServerStatus;
 const { getPrBadgePresentation } = window.VKPrBadge;
+// タイトル行を前回と同じ値で作り直さないための判定（issue #614）。前回値は要素ごとに持つ。
+const taskTitleRenderTracker = window.VKTaskTitleRenderState.createTaskTitleRenderTracker();
 const { getPaneIdBadgeLabel } = window.VKPaneIdBadge;
 const { panesToStash, panesToRestore, shouldOpenSidebarForPane } = window.VKPaneFocusMode;
 const { resolveQueueIssuesListUrl } = window.VKTaskQueueLink;
@@ -3177,6 +3179,11 @@ function setupSidebarMenu() {
 // フィールド名はワイヤ上（POST /api/set-title の waitingMerge）に合わせている。getPrBadgePresentation
 // の options キー（prWaitingMerge）は内部限定の名前のため合わせていない（外部 API 名だけ一致していれば十分）。
 function renderTaskTitleContent(el, title, url, prUrl, prMerged = false, waitingMerge = false) {
+  // 描画に使う値が前回と同じで描画済みなら作り直さない（issue #614）。OSC タイトルの更新
+  // （Codex のスピナー）や格納カードのステータス更新のたびに作り直すと、押した要素と離した
+  // 要素が入れ替わって click が成立せず、ツールチップも出ない。
+  if (!taskTitleRenderTracker.shouldRender(el, { title, url, prUrl, prMerged, waitingMerge })) return;
+
   // 既存の子要素を全消去（innerHTML は使わずに DOM API で組み立てる）
   while (el.firstChild) el.removeChild(el.firstChild);
 

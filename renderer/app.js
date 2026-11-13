@@ -6001,7 +6001,8 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
     fitAll();
     focusPane(result);
   };
-  const launchHelpDocument = async () => {
+  const launchHelpDocument = async (onLaunching) => {
+    onLaunching();
     const opened = await VKIpc.invoke('help:document');
     if (!opened) throw new Error('Help document is unavailable.');
     internalBrowserHasPage = true;
@@ -6011,9 +6012,10 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
     return true;
   };
   const helpContainer = modal.querySelector('.settings-help-entry');
-  const confirmUnsavedHelp = (launch, onLaunching, target) => {
+  const confirmUnsavedHelp = (launch, onLaunching, onConfirming, target) => {
     const dirty = modal.querySelector('.settings-tab.is-dirty');
     if (!dirty) return launch(onLaunching);
+    onConfirming?.();
     // 保存・破棄・キャンセルは同じ確認画面で選ぶ。
     return new Promise((resolve, reject) => {
       const choices = document.createElement('div');
@@ -6054,13 +6056,8 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
   };
   const helpView = helpContainer ? VKHelpEntry.mount(helpContainer, {
     invoke: (channel) => VKIpc.invoke(channel),
-    openGuide: (onLaunching) => confirmUnsavedHelp(launchHelpGuide, onLaunching, 'ガイド'),
-    openDocument: (onLaunching) => {
-      if (modal.querySelector('.settings-tab.is-dirty')) {
-        helpContainer.querySelector('[role="status"]').textContent = '未保存の変更を保存するか選んでください。';
-      }
-      return confirmUnsavedHelp(launchHelpDocument, onLaunching, 'ドキュメント');
-    },
+    openGuide: (onLaunching) => confirmUnsavedHelp(launchHelpGuide, onLaunching, null, 'ガイド'),
+    openDocument: (onLaunching, onConfirming) => confirmUnsavedHelp(launchHelpDocument, onLaunching, onConfirming, 'ドキュメント'),
   }) : null;
   const showHelp = () => {
     if (helpContainer && !helpContainer.closest('[role=tabpanel]').hidden) helpView.show();

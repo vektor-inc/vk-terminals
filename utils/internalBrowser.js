@@ -22,7 +22,6 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
   let downloadUrl = '';
   let failedUrl = '';
   let github404Url = '';
-  let helpReturnUrl = '';
   const cancelDownload = (event, item) => {
     event.preventDefault();
     // 保留中の遷移と異なるダウンロードへ古い URL を渡さない。
@@ -46,7 +45,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
       failedUrl,
       github404Url,
       loading: !!view && view.webContents.isLoading(),
-      canGoBack: !!view && (view.webContents.navigationHistory.canGoBack() || (!!helpReturnUrl && !isHelpUrl(currentUrl))),
+      canGoBack: !!view && view.webContents.navigationHistory.canGoBack(),
       canGoForward: !!view && view.webContents.navigationHistory.canGoForward(),
     });
   }
@@ -101,8 +100,6 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
       });
       contents.on('did-stop-loading', publish);
       contents.on('did-navigate', (_event, url) => {
-        if (isHelpUrl(currentUrl) && !isHelpUrl(url)) helpReturnUrl = currentUrl;
-        if (isHelpUrl(url)) helpReturnUrl = '';
         currentUrl = url;
         pendingUrl = '';
         failedUrl = '';
@@ -140,11 +137,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
   function action(name) {
     if (!view) return false;
     const history = view.webContents.navigationHistory;
-    if (name === 'back' && helpReturnUrl && !isHelpUrl(currentUrl)) {
-      // 専用スキームは履歴上の案内が次の戻り先とは限らないため、確定した復帰先を開く。
-      return loadPage(helpReturnUrl, { fromPage: true });
-    }
-    else if (name === 'back' && history.canGoBack()) history.goBack();
+    if (name === 'back' && history.canGoBack()) history.goBack();
     else if (name === 'forward' && history.canGoForward()) history.goForward();
     else if (name === 'reload') {
       if (failedUrl) return loadPage(failedUrl, { fromPage: true });

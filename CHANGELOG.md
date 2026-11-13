@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 不具合修正 ] ヘルプの案内から進んだ際の戻る・進むの履歴と、ドキュメント読み込み中の通知を修正（[#609](https://github.com/vektor-inc/vk-terminals/issues/609)）
+
 - [ 仕様変更 ] 「ドキュメント」を右側のアプリ内ブラウザで開き、外部ブラウザへの切り替えにも対応（[#609](https://github.com/vektor-inc/vk-terminals/issues/609)）
 
 - [ 不具合修正 ] Codex のペイン内 URL が開き先メニューを通らず、アプリ内ブラウザを選べない問題を修正（[#602](https://github.com/vektor-inc/vk-terminals/issues/602)）

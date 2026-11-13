@@ -223,6 +223,8 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
         // ここで置き換えると custom scheme から戻る際の did-stop 補完が失われる。
         if (activeLoad?.native && !activeLoad.done && activeLoad.historyTarget
           && activeLoad.acceptsHistoryUrl(event.url)) return;
+        if (activeLoad?.syntheticHelpBack && !activeLoad.done && activeLoad.url === event.url) return;
+        helpForwardUrl = '';
         if (isHelpUrl(event.url)) {
           event.preventDefault();
           loadHelp(event.url).catch(() => {});
@@ -316,14 +318,14 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
     }
   }
 
-  function navigate(url, fromPage = false, requestId) {
+  function navigate(url, fromPage = false, requestId, { syntheticHelpBack = false } = {}) {
     if (!(fromPage ? isNavigationUrl(url) : isBrowserUrl(url))) return false;
     if (requestId !== undefined && (!Number.isSafeInteger(requestId) || requestId <= 0)) return false;
     if (isHelpUrl(url)) { loadHelp(url).catch(() => {}); return true; }
-    helpForwardUrl = '';
+    if (!syntheticHelpBack) helpForwardUrl = '';
     ensureView();
     initializeNavigation();
-    const load = beginLoad(url, fromPage, requestId);
+    const load = beginLoad(url, fromPage, requestId, { syntheticHelpBack });
     const contents = view.webContents;
     navigationReady.then(async () => {
       if (activeLoad !== load || load.done) return;
@@ -427,6 +429,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
     if (contents.isDestroyed?.()) return;
     const load = activeLoad;
     const url = contents.getURL();
+    if (helpForwardUrl && url !== currentUrl && !load?.syntheticHelpBack) helpForwardUrl = '';
     if (load?.help) {
       if (isHelpUrl(url) && load.done) { currentUrl = url; publish(); }
       return;
@@ -445,7 +448,9 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
     }
   }
 
-  function beginLoad(url, fromPage, requestId, { native = false, stopPrevious = !native, help = false, historyTarget = '' } = {}) {
+  function beginLoad(url, fromPage, requestId, {
+    native = false, stopPrevious = !native, help = false, historyTarget = '', syntheticHelpBack = false,
+  } = {}) {
     const previous = supersedeNavigation(url);
     // アプリが次の遷移を開始する場合だけ、旧ロードを事前に止める。
     if (stopPrevious && previous?.started && !previous.done) view.webContents.stop?.();
@@ -455,7 +460,8 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
     navigationOperationId++;
     const contents = view.webContents;
     const load = {
-      url, sourceUrl: currentUrl, downloadSourceUrl: url, native, help, historyTarget, done: false, started: native,
+      url, sourceUrl: currentUrl, downloadSourceUrl: url, native, help, historyTarget, syntheticHelpBack,
+      done: false, started: native,
       downloadResponsePending: !native && !help,
       downloadAmbiguous: !!previous && normalizeDownloadUrl(previous.downloadSourceUrl) === normalizeDownloadUrl(url)
         && previous.started && !previous.noticeReceived
@@ -556,7 +562,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
     if (name === 'back') {
       if (history.canGoBack()) {
         const target = getHistoryTarget(history, -1);
-        if (target !== null) {
+        if (target !== null && !(target === undefined && canUseHelpReturn())) {
           const historyTarget = target?.url || '';
           beginLoad(historyTarget || currentUrl, true, undefined, { native: true, stopPrevious: true, historyTarget });
           moveHistory(history, 'goBack', target);
@@ -565,21 +571,23 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
       }
       if (!canUseHelpReturn()) return false;
       const forwardUrl = currentUrl;
-      const started = navigate(helpReturnUrl, true);
+      const started = navigate(helpReturnUrl, true, undefined, { syntheticHelpBack: true });
       if (started) helpForwardUrl = forwardUrl;
       return started;
     } else if (name === 'forward') {
-      if (canUseHelpForward()) {
-        const url = helpForwardUrl;
-        loadHelp(url).catch(() => {});
-        return true;
+      if (history.canGoForward()) {
+        const target = getHistoryTarget(history, 1);
+        if (target !== null) {
+          const historyTarget = target?.url || '';
+          beginLoad(historyTarget || currentUrl, true, undefined, { native: true, stopPrevious: true, historyTarget });
+          moveHistory(history, 'goForward', target);
+          return true;
+        }
       }
-      if (!history.canGoForward()) return false;
-      const target = getHistoryTarget(history, 1);
-      if (target === null) return false;
-      const historyTarget = target?.url || '';
-      beginLoad(historyTarget || currentUrl, true, undefined, { native: true, stopPrevious: true, historyTarget });
-      moveHistory(history, 'goForward', target);
+      if (!canUseHelpForward()) return false;
+      const url = helpForwardUrl;
+      loadHelp(url).catch(() => {});
+      return true;
     } else if (name === 'reload') {
       // 初期化待ちの要求を native reload で置換すると Page.navigate が失われる。
       // HTTP(S) 文書がまだない間は元の URL と Enter の requestId を保持して拒否する。
@@ -614,6 +622,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
       const documentUrl = view?.webContents.getURL?.();
       const referenceUrl = isNavigationUrl(documentUrl) ? documentUrl : activeUrl;
       let index = activeIndex + offset;
+      if (!entries[index]) return undefined;
       while (entries[index]?.url === referenceUrl) index += offset;
       const url = entries[index]?.url;
       return isNavigationUrl(url) ? { url, index, adjacentIndex: activeIndex + offset } : null;

@@ -483,8 +483,7 @@ VKIpc.on('internal-browser:state', state => {
   const fullFailedExternalText = internalBrowserFailedUrl ? `失敗したページを外部で開く: ${internalBrowserFailedUrl}` : '';
   if (failedExternalButton.textContent !== visibleFailedExternalText) failedExternalButton.textContent = visibleFailedExternalText;
   if (failedExternalButton.title !== fullFailedExternalText) failedExternalButton.title = fullFailedExternalText;
-  const failedExternalLabel = fullFailedExternalText
-    ? `${visibleFailedExternalText}（${internalBrowserFailedUrl}）` : visibleFailedExternalText;
+  const failedExternalLabel = visibleFailedExternalText;
   if (failedExternalButton.getAttribute('aria-label') !== failedExternalLabel) failedExternalButton.setAttribute('aria-label', failedExternalLabel);
   // 失敗解除時に文も消し、同じホストで再び失敗した際の読み上げを促す。
   const errorText = !internalBrowserFailedUrl ? '' : failedHost

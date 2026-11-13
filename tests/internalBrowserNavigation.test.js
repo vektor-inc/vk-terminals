@@ -870,6 +870,53 @@ test('案内前の文書がElectron履歴に無い場合も戻る・進むで復
   assert.equal(states.at(-1).url, HELP_URL);
 });
 
+test('案内のsynthetic forwardはページ起点の通常遷移で消える', async () => {
+  const { HELP_URL } = require('../utils/internalBrowserPolicy');
+  const { browser, contents } = setup();
+  const previous = 'https://example.com/previous';
+  await contents.complete(previous);
+  contents.loadURL = () => Promise.resolve();
+  const guide = browser.openHelp();
+  contents.setDocumentUrl(HELP_URL);
+  contents.emit('did-finish-load');
+  await guide;
+  contents.navigationHistory.canGoBack = () => false;
+  contents.navigationHistory.canGoForward = () => false;
+  assert.equal(browser.action('back'), true);
+  await flushBrowserLoads();
+  await contents.complete(previous);
+  contents.emit('will-navigate', { url: 'https://example.com/page-link', preventDefault() {} });
+  contents.setDocumentUrl('https://example.com/page-link');
+  contents.emit('did-navigate-in-page', {}, contents.getURL(), true);
+  assert.equal(browser.action('forward'), false);
+});
+
+test('通常のforward履歴がsynthetic guideより優先される', async () => {
+  const { HELP_URL } = require('../utils/internalBrowserPolicy');
+  const { browser, contents } = setup();
+  const previous = 'https://example.com/previous';
+  await contents.complete(previous);
+  contents.loadURL = () => Promise.resolve();
+  const guide = browser.openHelp();
+  contents.setDocumentUrl(HELP_URL);
+  contents.emit('did-finish-load');
+  await guide;
+  contents.navigationHistory.canGoBack = () => false;
+  contents.navigationHistory.canGoForward = () => false;
+  assert.equal(browser.action('back'), true);
+  await flushBrowserLoads();
+  await contents.complete(previous);
+
+  const next = 'https://example.com/next';
+  contents.navigationHistory.canGoForward = () => true;
+  contents.navigationHistory.getAllEntries = () => [{ url: previous }, { url: next }];
+  contents.navigationHistory.getActiveIndex = () => 0;
+  let moved = false;
+  contents.navigationHistory.goForward = () => { moved = true; };
+  assert.equal(browser.action('forward'), true);
+  assert.equal(moved, true);
+});
+
 for (const event of ['did-stop-loading', 'did-navigate']) {
   test(`GitHub 404から案内へ戻る${event}補完は前文書の404状態を消す`, async () => {
     const { HELP_URL } = require('../utils/internalBrowserPolicy');

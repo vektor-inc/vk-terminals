@@ -358,7 +358,7 @@ test('失敗表示は失敗 URL、操作列は確定 URL を安全な外部オ�
   assert.equal(target.hidden, false);
   assert.equal(failedExternal.textContent, '失敗したページを外部で開く: https://example.com/failed');
   assert.equal(failedExternal.title, '失敗したページを外部で開く: https://example.com/failed');
-  assert.equal(failedExternal['aria-label'], `${failedExternal.textContent}（https://example.com/failed）`);
+  assert.equal(failedExternal['aria-label'], failedExternal.textContent);
   handlers['internal-browser:state']({ url: 'https://example.com/confirmed', pendingUrl: 'https://pending.example/loading', failedUrl: '' });
   assert.equal(display.value, 'https://pending.example/loading');
   assert.equal(target.textContent, '外部で開く: 表示中のページ https://example.com/confirmed');

@@ -1,9 +1,61 @@
 'use strict';
+const { installBrowserLoad, flushBrowserLoads } = require('./helpers/browserLoad');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const { EventEmitter } = require('node:events');
+const { createInternalBrowser } = require('../utils/internalBrowser');
+
+test('タイトルバーから空状態を開くと表示後にURL欄へ移り、再表示とリンク起点は操作元を保つ', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
+  const setter = source.match(/function setInternalBrowserOpen\([\s\S]*?\n\}/)?.[0];
+  const focusHelper = source.match(/function focusInternalBrowserToolbar\([\s\S]*?\n\}/)?.[0];
+  const toggleHandler = source.match(/document\.getElementById\('internal-browser-toggle'\)\.addEventListener\('click',.*\);/)?.[0];
+  assert.ok(setter && focusHelper && toggleHandler);
+  const calls = [];
+  const document = { activeElement: null, getElementById: () => toggle };
+  const toggle = { focus() { document.activeElement = this; }, addEventListener(_type, handler) { this.click = handler; } };
+  const address = { value: '入力途中', selectionStart: 2, selectionEnd: 2,
+    focus() { assert.equal(sidebar.hidden, false); calls.push('address'); document.activeElement = this; },
+    closest() { return sidebar.hidden ? sidebar : null; } };
+  const notice = { hidden: true, textContent: '' };
+  const sidebar = { hidden: true, contains: element => element === address,
+    querySelector: selector => selector === '.internal-browser-url' ? address : notice };
+  const context = vm.createContext({ document, internalBrowserSidebar: sidebar,
+    internalBrowserOpen: false, internalBrowserHasPage: false,
+    syncInternalBrowserLayout() { sidebar.hidden = !context.internalBrowserOpen; calls.push('layout'); } });
+  vm.runInContext(`${setter}\n${focusHelper}\n${toggleHandler}`, context);
+  toggle.focus();
+  toggle.click();
+  assert.deepEqual(calls, ['layout', 'address']);
+  assert.equal(document.activeElement, address);
+  assert.equal(notice.hidden, false);
+  assert.equal(address.value, '入力途中');
+  assert.equal(address.selectionStart, 2);
+  assert.equal(address.selectionEnd, 2);
+  // 空状態の入力を残したまま閉じ、再び開いてもすぐ入力できる。
+  toggle.click();
+  assert.equal(document.activeElement, toggle);
+  toggle.click();
+  assert.equal(document.activeElement, address);
+  assert.equal(address.value, '入力途中');
+  // 表示済みページの再表示ではタイトルバーボタンを維持する。
+  toggle.click();
+  context.internalBrowserHasPage = true;
+  const focusCount = calls.filter(call => call === 'address').length;
+  toggle.click();
+  assert.equal(document.activeElement, toggle);
+  assert.equal(calls.filter(call => call === 'address').length, focusCount);
+  // terminal/stash のリンク起点は、選択メニューから復帰した操作元を維持する。
+  const origin = {};
+  document.activeElement = origin;
+  vm.runInContext("setInternalBrowserOpen(true, { focus: 'preserve' })", context);
+  assert.equal(document.activeElement, origin);
+  const choice = source.match(/function showInternalBrowserChoice\([\s\S]*?\n\}/)?.[0];
+  assert.match(choice, /closeInternalBrowserChoice\(\);[\s\S]*setInternalBrowserOpen\(true, \{ focus: 'preserve' \}\)/);
+});
 
 test('左サイドバーの開閉完了後にブラウザとトーストの配置を再同期する', () => {
   const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
@@ -24,7 +76,7 @@ test('左サイドバーの開閉完了後にブラウザとトーストの配�
     fitAll() { calls.push('fit'); },
     isReducedMotion() { return false; },
     setTimeout() { return 1; }, clearTimeout() {},
-    focusFirstSidebarItem() {}, sidebarOpen: false, sidebarTransitionCleanup: null,
+    focusFirstSidebarItem() {}, sidebarOpen: false, sidebarTransitionCleanup: null, internalBrowserOpen: false,
   };
   vm.runInNewContext(`${setter}\nsetSidebarOpen(true, { focusFirst: false })`, context);
   assert.deepEqual(calls, ['sync']);
@@ -36,11 +88,117 @@ test('左サイドバーの開閉完了後にブラウザとトーストの配�
   assert.equal(classes.has('sidebar-open'), false);
 });
 
+test('狭幅の同期は左を閉じてから再計算し、手動で左を開くとブラウザを閉じる', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
+  const css = fs.readFileSync(path.join(__dirname, '../renderer/style.css'), 'utf8');
+  const sync = source.match(/function syncInternalBrowserLayout\([\s\S]*?\n\}/)[0];
+  const setter = source.match(/function setSidebarOpen\([\s\S]*?\n\}/)[0];
+  const classes = new Set(['sidebar-open']);
+  const root = { clientWidth: 600, children: [], style: { setProperty() {} },
+    classList: { contains: key => classes.has(key), toggle(key, enabled) { if (enabled) classes.add(key); else classes.delete(key); } },
+    querySelector: () => null };
+  const attributes = {};
+  const toggle = { setAttribute(key, value) { attributes[key] = value; } };
+  const resizer = { setAttribute() {} };
+  let focused = '';
+  const address = { focus() { focused = 'address'; }, getClientRects: () => [{}] };
+  const browser = { style: {}, querySelector: selector => selector === '.internal-browser-url' ? address : selector === '.internal-browser-resizer' ? resizer : null };
+  browser.contains = element => element === address;
+  const body = { style: { setProperty() {} }, classList: { contains: () => false } };
+  const documentState = { activeElement: null, body };
+  let terminalInert = false;
+  const terminal = { isConnected: true, contains: () => true, closest: () => null, focus() { focused = 'terminal'; } };
+  Object.defineProperty(terminal, 'inert', {
+    get: () => terminalInert,
+    set(value) {
+      terminalInert = value;
+      // Chromium はフォーカス中の祖先を inert にすると activeElement を body へ落とす。
+      if (value && documentState.activeElement === terminal) documentState.activeElement = body;
+    },
+  });
+  documentState.activeElement = terminal;
+  root.children = [terminal, browser];
+  const frames = [];
+  const calls = [];
+  const context = vm.createContext({
+    document: Object.assign(documentState, {
+      getElementById: id => id === 'root' ? root : id === 'sidebar' ? { getBoundingClientRect: () => ({ width: 300 }) } : toggle,
+    }),
+    window: { VKInternalBrowserLayout: require('../utils/internalBrowserLayout') },
+    internalBrowserOpen: true, sidebarOpen: true, internalBrowserSidebar: browser,
+    preferredInternalBrowserWidth: 520, displayedInternalBrowserWidth: 0, previousInternalBrowserLayout: null,
+    internalBrowserOverlayFocusOrigin: null,
+    setupPanel: null, sidebarTransitionCleanup: null,
+    gridDims: () => ({ cols: 1 }), getSidebarWidth: () => 300,
+    ensureSidebar: () => null, isReducedMotion: () => true, fitAll() {},
+    focusFirstSidebarItem() {}, requestAnimationFrame: callback => frames.push(callback),
+    focusInternalBrowserToolbar() { address.focus(); },
+    internalBrowserToastReserve: () => 0,
+    VKIpc: { send() {} },
+    setInternalBrowserOpen(open) { calls.push(open); context.internalBrowserOpen = open; },
+  });
+  vm.runInContext(`${sync}\n${setter}\nsyncInternalBrowserLayout()`, context);
+  assert.equal(context.sidebarOpen, false);
+  assert.equal(context.internalBrowserOpen, true);
+  assert.equal(context.displayedInternalBrowserWidth, 280);
+  assert.equal(context.preferredInternalBrowserWidth, 520);
+  assert.equal(address.placeholder, 'URL / 検索');
+  assert.equal(attributes['aria-expanded'], 'false');
+  assert.match(css, /#root\.internal-browser-open \.sidebar\s*\{[^}]*transition: none;/);
+  assert.match(css, /#root\.internal-browser-overlay \.internal-browser-sidebar\s*\{[^}]*position: absolute;/);
+  vm.runInContext('setSidebarOpen(true)', context);
+  assert.deepEqual(calls, [false]);
+  assert.equal(context.sidebarOpen, true);
+  root.clientWidth = 390;
+  context.sidebarOpen = false;
+  context.internalBrowserOpen = true;
+  vm.runInContext('syncInternalBrowserLayout()', context);
+  assert.equal(context.displayedInternalBrowserWidth, 390);
+  assert.equal(classes.has('internal-browser-overlay'), true);
+  // 全面表示中のトーストは画面全体の幅を使えるため、語句の折り返し保護を外さない。
+  assert.equal(classes.has('toast-phrase-wrap'), false);
+  assert.equal(terminal.inert, true);
+  frames.splice(0).forEach(callback => callback());
+  assert.equal(focused, 'address');
+  // 幅を戻すだけでは、保存幅を上書きしたりブラウザを再び開いたりしない。
+  root.clientWidth = 1280;
+  context.sidebarOpen = true;
+  context.internalBrowserOpen = true;
+  vm.runInContext('syncInternalBrowserLayout()', context);
+  assert.equal(context.sidebarOpen, true);
+  assert.equal(context.displayedInternalBrowserWidth, 520);
+  assert.equal(context.preferredInternalBrowserWidth, 520);
+  assert.equal(address.placeholder, 'URL または検索語');
+  assert.equal(classes.has('internal-browser-overlay'), false);
+  assert.equal(terminal.inert, false);
+  frames.splice(0).forEach(callback => callback());
+  assert.equal(focused, 'terminal');
+});
+
+test('全面表示中だけ、表示中のトーストに重なる高さをページ領域から詰める', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
+  const reserve = source.match(/function internalBrowserToastReserve\([\s\S]*?\n\}/)[0];
+  const toast = { hidden: false, getBoundingClientRect: () => ({ top: 700.4 }) };
+  const context = vm.createContext({
+    internalBrowserSidebar: { getBoundingClientRect: () => ({ bottom: 762 }) },
+    externalUrlToastEl: toast,
+  });
+  vm.runInContext(reserve, context);
+  // トースト上端からブラウザ下端までの 61.6px を切り上げ、16px の間隔を足す。
+  assert.equal(vm.runInContext('internalBrowserToastReserve(true)', context), 78);
+  // 横並びではトーストをブラウザの左へ逃がすため、ページ領域は詰めない。
+  assert.equal(vm.runInContext('internalBrowserToastReserve(false)', context), 0);
+  toast.hidden = true;
+  assert.equal(vm.runInContext('internalBrowserToastReserve(true)', context), 0);
+  context.externalUrlToastEl = null;
+  assert.equal(vm.runInContext('internalBrowserToastReserve(true)', context), 0);
+});
+
 test('初期化時は操作列の閉じるだけを無効化せず、失敗表示にも触れない', () => {
   const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
   const initialization = source.match(/for \(const button of internalBrowserSidebar\.querySelectorAll\('[^']+'\)\) button\.disabled = true;/)?.[0];
   assert.ok(initialization);
-  const toolbarButtons = ['back', 'forward', 'reload', 'url', 'external', 'close']
+  const toolbarButtons = ['back', 'forward', 'reload', 'external', 'close']
     .map(action => ({ action, disabled: false }));
   const errorButtons = [{ disabled: false }, { disabled: false }];
   const sidebar = {
@@ -50,8 +208,217 @@ test('初期化時は操作列の閉じるだけを無効化せず、失敗表�
     },
   };
   vm.runInNewContext(initialization, { internalBrowserSidebar: sidebar });
-  assert.deepEqual(toolbarButtons.map(button => button.disabled), [true, true, true, true, true, false]);
+  assert.deepEqual(toolbarButtons.map(button => button.disabled), [true, true, true, true, false]);
   assert.deepEqual(errorButtons.map(button => button.disabled), [false, false]);
+});
+
+test('外部ボタンの可視URLは同一ホストのパスと検索条件まで区別し、狭幅で横スクロールできる', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
+  const css = fs.readFileSync(path.join(__dirname, '../renderer/style.css'), 'utf8');
+  const helper = source.match(/function formatInternalBrowserDestination\(url\) \{[\s\S]*?\n\}/)?.[0];
+  assert.ok(helper);
+  const format = vm.runInNewContext(`${helper}\nformatInternalBrowserDestination`, { URL });
+  assert.equal(format('https://example.com/confirmed?q=1#top'), 'https://example.com/confirmed?q=1#top');
+  assert.equal(format('http://example.com/failed?q=2#bottom'), '⚠ HTTP: http://example.com/failed?q=2#bottom');
+  assert.equal(format('https://example.com/' + 'a'.repeat(400)), 'https://example.com/' + 'a'.repeat(400));
+  assert.equal(format('invalid-url'), '');
+  assert.match(css, /\.internal-browser-external-target\s*\{[^}]*overflow-wrap: anywhere/);
+  assert.match(css, /\.internal-browser-external-target,\s*\.internal-browser-error \[data-action="external"\]\s*\{[^}]*display: block;[^}]*white-space: nowrap;[^}]*overflow-x: auto;[^}]*overflow-y: hidden;/);
+  assert.doesNotMatch(css, /-webkit-line-clamp/);
+  const targetTag = source.match(/<p class="internal-browser-external-target"[^>]*>/)[0];
+  assert.doesNotMatch(targetTag, /role=|aria-live=/);
+  assert.match(source, /internal-browser-navigation-status" role="status" aria-live="polite"/);
+});
+
+test('アドレス欄は編集中の通知を保持し、Enter のみで正規化した先へ移動する', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
+  const addressHandlers = source.match(/const internalBrowserAddress = internalBrowserSidebar\.querySelector\('\.internal-browser-url'\);[\s\S]*?(?=document\.getElementById\('internal-browser-toggle'\))/)?.[0];
+  assert.ok(addressHandlers);
+  assert.match(source, /<input type="text" class="internal-browser-url" aria-label="URL または検索語を入力"/);
+  assert.match(source, /id="internal-browser-address-error"[^>]*role="alert"/);
+  assert.match(source, /<\/button><\/div><p id="internal-browser-address-error"[^>]*><\/p><p class="internal-browser-external-target"[^>]*><\/p>/);
+  assert.doesNotMatch(source, /表示中の URL をコピー/);
+  const handlers = {};
+  const opened = [];
+  const error = { id: 'internal-browser-address-error', hidden: true, textContent: '' };
+  const external = { setAttribute() {} };
+  const target = { hidden: true, textContent: '' };
+  const navigationStatus = { textContent: '' };
+  const address = { value: '', attributes: {}, addEventListener: (type, handler) => { handlers[type] = handler; },
+    setAttribute(name, value) { this.attributes[name] = value; }, removeAttribute(name) { delete this.attributes[name]; } };
+  const context = vm.createContext({
+    internalBrowserSidebar: { querySelector: selector => ({ '.internal-browser-url': address, '.internal-browser-address-error': error,
+      '.internal-browser-toolbar [data-action="external"]': external, '.internal-browser-external-target': target, '.internal-browser-navigation-status': navigationStatus })[selector] },
+    resolveBrowserAddress: require('../renderer/urlSafety').resolveBrowserAddress,
+    VKIpc: { invoke: (_channel, url) => { opened.push(url); return Promise.resolve(); } },
+    syncInternalBrowserLayout() {},
+    URL,
+  });
+  vm.runInContext(`let internalBrowserUrl = 'https://old.example'; let internalBrowserDownloadUrl = ''; let internalBrowserPendingUrl = ''; let internalBrowserAddressHasDraft = false; let internalBrowserHasPage = false; ${addressHandlers}`, context);
+  address.value = 'github.com/vektor-inc';
+  handlers.input();
+  assert.equal(target.textContent, '外部で開く: 表示中のページ https://old.example/');
+  assert.equal(navigationStatus.textContent, '');
+  assert.equal(vm.runInContext('internalBrowserAddressHasDraft', context), true);
+  handlers.keydown({ key: 'ArrowRight' });
+  assert.deepEqual(opened, []);
+  handlers.keydown({ key: 'Enter', isComposing: true });
+  assert.deepEqual(opened, []);
+  handlers.keydown({ key: 'Enter', preventDefault() {} });
+  assert.deepEqual(opened, ['https://github.com/vektor-inc']);
+  assert.equal(address.value, opened[0]);
+  assert.equal(target.hidden, false);
+  assert.equal(vm.runInContext('internalBrowserAddressHasDraft', context), false);
+  assert.equal(vm.runInContext('internalBrowserHasPage', context), true);
+  assert.equal(vm.runInContext('internalBrowserPendingUrl', context), opened[0]);
+  assert.equal(navigationStatus.textContent, 'ページを読み込み中');
+  address.value = 'javascript:alert(1)';
+  handlers.keydown({ key: 'Enter', preventDefault() {} });
+  assert.equal(opened[1], 'https://www.google.com/search?q=javascript%3Aalert(1)');
+  address.value = '  ';
+  handlers.input();
+  handlers.keydown({ key: 'Enter', preventDefault() {} });
+  assert.equal(address.value, '  ');
+  assert.equal(error.textContent, 'URL または検索語を入力してください。');
+  assert.equal(address.attributes['aria-invalid'], 'true');
+  assert.equal(address.attributes['aria-describedby'], error.id);
+  address.value = 'https://example.com:99999/path';
+  handlers.input();
+  assert.equal(error.hidden, true);
+  assert.equal(address.attributes['aria-invalid'], undefined);
+  handlers.keydown({ key: 'Enter', preventDefault() {} });
+  assert.match(error.textContent, /URL の形式/);
+  address.value = `https://example.com:99999/${'あ'.repeat(300)}`;
+  handlers.input();
+  handlers.keydown({ key: 'Enter', preventDefault() {} });
+  assert.match(error.textContent, /URL の形式/);
+  address.value = 'あ'.repeat(700);
+  handlers.input();
+  handlers.keydown({ key: 'Enter', preventDefault() {} });
+  assert.match(error.textContent, /長すぎます/);
+  assert.equal(opened.length, 2);
+  address.value = '例え.テスト';
+  handlers.input();
+  handlers.keydown({ key: 'Enter', preventDefault() {} });
+  assert.equal(address.value, 'https://例え.テスト');
+  assert.equal(error.hidden, true);
+  assert.equal(address.attributes['aria-describedby'], undefined);
+});
+
+test('main が Enter の送信を受け付けないときは読み込み中を解除し、入力を残して案内する', async () => {
+  const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
+  const addressHandlers = source.match(/const internalBrowserAddress = internalBrowserSidebar\.querySelector\('\.internal-browser-url'\);[\s\S]*?(?=document\.getElementById\('internal-browser-toggle'\))/)?.[0];
+  assert.ok(addressHandlers);
+  // アドレス欄まわりの要素と、送信ごとに結果を差し替えられる VKIpc.invoke を用意する。
+  const handlers = {};
+  const replies = [];
+  const error = { id: 'internal-browser-address-error', hidden: true, textContent: '' };
+  const external = { setAttribute() {} };
+  const target = { hidden: true, textContent: '' };
+  const navigationStatus = { textContent: '' };
+  const address = { value: '', attributes: {}, addEventListener: (type, handler) => { handlers[type] = handler; },
+    setAttribute(name, value) { this.attributes[name] = value; }, removeAttribute(name) { delete this.attributes[name]; } };
+  const context = vm.createContext({
+    internalBrowserSidebar: { querySelector: selector => ({ '.internal-browser-url': address, '.internal-browser-address-error': error,
+      '.internal-browser-toolbar [data-action="external"]': external, '.internal-browser-external-target': target, '.internal-browser-navigation-status': navigationStatus })[selector] },
+    resolveBrowserAddress: require('../renderer/urlSafety').resolveBrowserAddress,
+    VKIpc: { invoke: () => replies.shift() },
+    syncInternalBrowserLayout() {},
+    URL,
+  });
+  vm.runInContext(`let internalBrowserUrl = ''; let internalBrowserFailedUrl = ''; let internalBrowserDownloadUrl = ''; let internalBrowserPendingUrl = ''; let internalBrowserAddressHasDraft = false; let internalBrowserHasPage = false; ${addressHandlers}`, context);
+  const settle = () => new Promise(resolve => setImmediate(resolve));
+  const enter = value => {
+    address.value = value;
+    handlers.input();
+    handlers.keydown({ key: 'Enter', preventDefault() {} });
+  };
+
+  // main が false を返すと、Enter で立てた読み込み中の状態を解除し、入力した文字列とエラーを表示する。
+  replies.push(Promise.resolve(false));
+  enter('github.com/vektor-inc');
+  assert.equal(navigationStatus.textContent, 'ページを読み込み中');
+  await settle();
+  assert.equal(vm.runInContext('internalBrowserNavigationActive', context), false);
+  assert.equal(vm.runInContext('internalBrowserActiveRequestId', context), null);
+  assert.equal(vm.runInContext('internalBrowserPendingUrl', context), '');
+  assert.equal(vm.runInContext('internalBrowserHasPage', context), false);
+  assert.equal(vm.runInContext('internalBrowserAddressHasDraft', context), true);
+  assert.equal(navigationStatus.textContent, '');
+  assert.equal(address.value, 'github.com/vektor-inc');
+  assert.equal(error.hidden, false);
+  assert.equal(error.textContent, 'ページを開けませんでした。もう一度 Enter を押してください。続けて開けない場合は、アプリを再起動してください。');
+  assert.equal(address.attributes['aria-invalid'], 'true');
+  assert.equal(address.attributes['aria-describedby'], error.id);
+
+  // IPC の例外も同じく扱う。
+  replies.push(Promise.reject(new Error('ipc failed')));
+  enter('example.com');
+  await settle();
+  assert.equal(vm.runInContext('internalBrowserNavigationActive', context), false);
+  assert.equal(address.value, 'example.com');
+  assert.equal(error.textContent, 'ページを開けませんでした。もう一度 Enter を押してください。続けて開けない場合は、アプリを再起動してください。');
+
+  // 古い送信の拒否が後から届いても、後続の送信の読み込み中表示を巻き戻さない。
+  let rejectFirst;
+  replies.push(new Promise(resolve => { rejectFirst = resolve; }), Promise.resolve(true));
+  enter('first.example');
+  enter('second.example');
+  await settle();
+  rejectFirst(false);
+  await settle();
+  assert.equal(vm.runInContext('internalBrowserNavigationActive', context), true);
+  assert.equal(vm.runInContext('internalBrowserPendingUrl', context), 'https://second.example');
+  assert.equal(address.value, 'https://second.example');
+  assert.equal(navigationStatus.textContent, 'ページを読み込み中');
+  assert.equal(error.hidden, true);
+});
+
+test('main の拒否を待つ間にアドレス欄を編集したときは、拒否が届いても編集した文字列を残す', async () => {
+  const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
+  const addressHandlers = source.match(/const internalBrowserAddress = internalBrowserSidebar\.querySelector\('\.internal-browser-url'\);[\s\S]*?(?=document\.getElementById\('internal-browser-toggle'\))/)?.[0];
+  assert.ok(addressHandlers);
+  const handlers = {};
+  const error = { id: 'internal-browser-address-error', hidden: true, textContent: '' };
+  const navigationStatus = { textContent: '' };
+  const address = { value: '', attributes: {}, addEventListener: (type, handler) => { handlers[type] = handler; },
+    setAttribute(name, value) { this.attributes[name] = value; }, removeAttribute(name) { delete this.attributes[name]; } };
+  let reply;
+  const context = vm.createContext({
+    internalBrowserSidebar: { querySelector: selector => ({ '.internal-browser-url': address, '.internal-browser-address-error': error,
+      '.internal-browser-toolbar [data-action="external"]': { setAttribute() {} }, '.internal-browser-external-target': { hidden: true, textContent: '' },
+      '.internal-browser-navigation-status': navigationStatus })[selector] },
+    resolveBrowserAddress: require('../renderer/urlSafety').resolveBrowserAddress,
+    VKIpc: { invoke: () => reply },
+    syncInternalBrowserLayout() {},
+    URL,
+  });
+  vm.runInContext(`let internalBrowserUrl = ''; let internalBrowserFailedUrl = ''; let internalBrowserDownloadUrl = ''; let internalBrowserPendingUrl = ''; let internalBrowserAddressHasDraft = false; let internalBrowserHasPage = false; ${addressHandlers}`, context);
+  const settle = () => new Promise(resolve => setImmediate(resolve));
+  const type = value => {
+    address.value = value;
+    handlers.input();
+  };
+
+  // false の応答と例外のどちらでも、応答前に打ち直した文字列を送信時の入力へ戻さない。
+  for (const [label, settleReply] of [['false', resolve => resolve(false)], ['例外', (_resolve, reject) => reject(new Error('ipc failed'))]]) {
+    let resolveReply;
+    let rejectReply;
+    reply = new Promise((resolve, reject) => { resolveReply = resolve; rejectReply = reject; });
+    type('first.example');
+    handlers.keydown({ key: 'Enter', preventDefault() {} });
+    assert.equal(address.value, 'https://first.example', label);
+    type('second.example/edit');
+    settleReply(resolveReply, rejectReply);
+    await settle();
+    // 読み込み中の状態は解除し、エラーで案内する。
+    assert.equal(vm.runInContext('internalBrowserNavigationActive', context), false, label);
+    assert.equal(navigationStatus.textContent, '', label);
+    assert.equal(vm.runInContext('internalBrowserAddressHasDraft', context), true, label);
+    assert.equal(address.value, 'second.example/edit', label);
+    assert.equal(error.hidden, false, label);
+    assert.equal(error.textContent, 'ページを開けませんでした。もう一度 Enter を押してください。続けて開けない場合は、アプリを再起動してください。', label);
+  }
 });
 
 test('開き先メニュー表示中は別リンクのツールチップを出さない', () => {
@@ -96,6 +463,9 @@ test('幅キーは表示中の幅を起点にし、開き先メニューはツ�
 
 test('失敗表示は失敗 URL、操作列は確定 URL を安全な外部オープン経路へ渡す', () => {
   const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
+  const style = fs.readFileSync(path.join(__dirname, '../renderer/style.css'), 'utf8');
+  assert.match(source, /class="internal-browser-error"[^>]*>[\s\S]*?<button type="button" data-action="external">/);
+  assert.match(style, /\.internal-browser-error \[data-action="external"\][^}]*max-width:[^;]+;[^}]*text-align: left;/);
   const clickHandler = source.match(/internalBrowserSidebar\.addEventListener\('click', event => \{[\s\S]*?\n\}\);/)?.[0];
   const stateHandler = source.match(/VKIpc\.on\('internal-browser:state', state => \{[\s\S]*?\n\}\);/)?.[0];
   const focusHelpers = source.match(/function focusInternalBrowserToolbar\(\) \{[\s\S]*?\n\}\n\nfunction hideInternalBrowserContent\(element\) \{[\s\S]*?\n\}/)?.[0];
@@ -106,6 +476,7 @@ test('失敗表示は失敗 URL、操作列は確定 URL を安全な外部オ�
   const buttons = [];
   let layoutSyncs = 0;
   const opened = [];
+  const helpOpened = [];
   let messageWrites = 0;
   let messageText = '';
   const message = {
@@ -115,21 +486,30 @@ test('失敗表示は失敗 URL、操作列は確定 URL を安全な外部オ�
   let activeElement = null;
   const focus = element => { activeElement = element; };
   const errorReload = {};
-  const errorButtons = [{ disabled: true }, { disabled: true }];
-  const errorView = { hidden: true, contains: element => element === errorReload, querySelector: () => message, querySelectorAll: () => errorButtons };
+  const errorButtons = [{ disabled: true }, { disabled: true, textContent: '外部ブラウザで開く',
+    getAttribute(name) { return this[name]; }, setAttribute(name, value) { this[name] = value; } }];
+  const failedExternal = errorButtons[1];
+  const errorView = { hidden: true, contains: element => element === errorReload,
+    querySelector: selector => selector === '[data-action="external"]' ? failedExternal : message,
+    querySelectorAll: () => errorButtons };
   const notice = { hidden: true, dataset: {}, contains: element => buttons.includes(element), replaceChildren() {}, append() {} };
-  const display = { replaceChildren() {}, setAttribute() {}, append() {}, closest: () => null, focus() { focus(this); } };
+  const display = { value: '', closest: () => null, focus() { focus(this); } };
   const controls = { disabled: false };
   const external = { disabled: false, setAttribute(name, value) { this[name] = value; } };
+  const target = { hidden: true, textContent: '' };
+  const navigationStatus = { textContent: '' };
   const reload = { disabled: false, closest: () => null, focus() { focus(this); } };
   const progress = { hidden: true };
   const sidebar = {
     addEventListener: (_type, handler) => { handlers.click = handler; },
-    querySelector: selector => ({ '.internal-browser-error': errorView, '.internal-browser-notice': notice, '.internal-browser-url': display, '.internal-browser-toolbar [data-action="reload"]': reload, '.internal-browser-progress': progress, '.internal-browser-toolbar [data-action="external"]': external }[selector] || controls),
+    querySelector: selector => ({ '.internal-browser-error': errorView, '.internal-browser-notice': notice, '.internal-browser-url': display, '.internal-browser-toolbar [data-action="reload"]': reload, '.internal-browser-progress': progress, '.internal-browser-toolbar [data-action="external"]': external, '.internal-browser-external-target': target, '.internal-browser-navigation-status': navigationStatus }[selector] || controls),
   };
   const context = {
     internalBrowserSidebar: sidebar,
-    VKIpc: { on: (name, handler) => { handlers[name] = handler; } },
+    internalBrowserAddress: display,
+    internalBrowserPendingUrl: '',
+    internalBrowserAddressHasDraft: false,
+    VKIpc: { on: (name, handler) => { handlers[name] = handler; }, invoke: (channel, source) => { helpOpened.push([channel, source]); return Promise.resolve(true); } },
     openExternalUrlSafe: url => opened.push(url),
     syncInternalBrowserLayout() { layoutSyncs++; },
     URL,
@@ -139,13 +519,44 @@ test('失敗表示は失敗 URL、操作列は確定 URL を安全な外部オ�
       return button;
     } },
   };
-  vm.runInNewContext(`let internalBrowserUrl = 'https://example.com/confirmed'; let internalBrowserFailedUrl = ''; let internalBrowserDownloadUrl = ''; let internalBrowserHasPage = true; ${focusHelpers} ${clickHandler} ${stateHandler}`, context);
+  const formattingHelper = source.match(/function formatInternalBrowserDestination\(url\) \{[\s\S]*?\n\}/)?.[0];
+  assert.ok(formattingHelper);
+  const targetHelpers = source.match(/function getInternalBrowserExternalTarget\(\) \{[\s\S]*?(?=function clearInternalBrowserAddressError\()/)?.[0];
+  assert.ok(targetHelpers);
+  vm.runInNewContext(`let internalBrowserUrl = 'https://example.com/confirmed'; let internalBrowserFailedUrl = ''; let internalBrowserDownloadUrl = ''; let internalBrowserHasPage = true; let internalBrowserNavigationActive = false; ${formattingHelper} ${focusHelpers} ${targetHelpers} ${clickHandler} ${stateHandler}`, context);
   const state = (failedUrl, github404Url = '', loading = false, url = 'https://example.com/confirmed') => handlers['internal-browser:state']({ url, failedUrl, github404Url, loading });
   state('https://example.com/failed', '', false);
-  assert.equal(messageWrites, 1);
+  assert.equal(display.value, 'https://example.com/failed');
+  assert.equal(external.title, '確定済みの URL を外部ブラウザで開く: https://example.com/confirmed');
+  assert.equal(target.textContent, '外部で開く: 表示中のページ https://example.com/confirmed');
+  assert.equal(target.hidden, false);
+  assert.equal(failedExternal.textContent, '失敗したページを外部で開く: https://example.com/failed');
+  assert.equal(failedExternal.title, '失敗したページを外部で開く: https://example.com/failed');
+  assert.equal(failedExternal['aria-label'], failedExternal.textContent);
+  handlers['internal-browser:state']({ url: 'https://example.com/confirmed', pendingUrl: 'https://pending.example/loading', failedUrl: '' });
+  assert.equal(display.value, 'https://pending.example/loading');
+  assert.equal(target.textContent, '外部で開く: 表示中のページ https://example.com/confirmed');
+  assert.equal(external.title, '確定済みの URL を外部ブラウザで開く: https://example.com/confirmed');
+  context.internalBrowserAddressHasDraft = true;
+  display.value = '編集中の検索語';
+  state('https://example.com/failed', '', false, 'https://example.com/next');
+  assert.equal(display.value, '編集中の検索語');
+  assert.equal(external['aria-label'], '確定済みの URL を外部ブラウザで開く: https://example.com/next');
+  assert.equal(target.textContent, '外部で開く: 表示中のページ https://example.com/next');
+  context.internalBrowserAddressHasDraft = false;
+  state('', '', false, 'http://example.com/insecure');
+  assert.equal(target.hidden, false);
+  assert.equal(target.textContent, '外部で開く: 表示中のページ ⚠ HTTP: http://example.com/insecure');
+  state('', '', false, 'https://example.com/next');
+  assert.equal(target.hidden, true);
+  state('https://example.com/failed', '', false, 'https://example.com/next');
+  assert.equal(display.value, 'https://example.com/failed');
+  assert.equal(messageWrites, 5);
   state('https://example.com/failed', '', true);
+  assert.equal(progress.hidden, false);
   state('https://example.com/failed', '', false);
-  assert.equal(messageWrites, 1);
+  assert.equal(progress.hidden, true);
+  assert.equal(messageWrites, 5);
   assert.equal(message.textContent, 'ページを表示できませんでした（example.com）');
   assert.equal(errorView.hidden, false);
   assert.equal(errorButtons.every(button => !button.disabled), true);
@@ -154,29 +565,40 @@ test('失敗表示は失敗 URL、操作列は確定 URL を安全な外部オ�
   assert.equal(activeElement, display);
   assert.equal(message.textContent, '');
   assert.equal(errorView.hidden, true);
-  assert.equal(messageWrites, 2);
-  state('https://example.com/failed', '', false);
-  assert.equal(message.textContent, 'ページを表示できませんでした（example.com）');
-  assert.equal(messageWrites, 3);
+  assert.equal(failedExternal.textContent, '外部ブラウザで開く');
+  assert.equal(failedExternal.title, '');
+  assert.equal(failedExternal['aria-label'], '外部ブラウザで開く');
+  assert.equal(messageWrites, 6);
+  state('https://failed.example/failed', '', false);
+  assert.equal(target.textContent, '外部で開く: 表示中のページ https://example.com/confirmed');
+  assert.equal(failedExternal.textContent, '失敗したページを外部で開く: https://failed.example/failed');
+  assert.equal(failedExternal.title, '失敗したページを外部で開く: https://failed.example/failed');
+  assert.equal(message.textContent, 'ページを表示できませんでした（failed.example）');
+  assert.equal(messageWrites, 7);
   state('invalid-url', '', false);
   assert.equal(message.textContent, 'ページを表示できませんでした');
-  assert.equal(messageWrites, 4);
-  state('https://example.com/failed', '', false);
+  assert.equal(messageWrites, 8);
+  state('https://failed.example/failed', '', false);
   const click = inError => handlers.click({ target: {
     closest: selector => selector === '[data-action]' ? { dataset: { action: 'external' } } : selector === '.internal-browser-error' && inError ? errorView : null,
   } });
   click(true);
   click(false);
   state('', '', false, '');
-  handlers['internal-browser:state']({ url: '', downloadUrl: 'https://example.com/download' });
+  handlers['internal-browser:state']({ url: '', downloadUrl: 'https://download.example/file' });
   assert.equal(external.disabled, false);
-  assert.equal(external.title, '外部ブラウザで開く: https://example.com/download');
+  assert.equal(external.title, 'ダウンロード先を外部ブラウザで開く: https://download.example/file');
   assert.equal(external['aria-label'], external.title);
+  assert.equal(target.textContent, '外部で開く: ダウンロード先 https://download.example/file');
   click(false);
   state('');
-  assert.equal(external.title, '外部ブラウザで開く');
+  assert.equal(external.title, '確定済みの URL を外部ブラウザで開く: https://example.com/confirmed');
   assert.equal(external['aria-label'], external.title);
-  assert.deepEqual(opened, ['https://example.com/failed', 'https://example.com/confirmed', 'https://example.com/download']);
+  state('', '', false, '');
+  assert.equal(external.disabled, true);
+  assert.equal(external.title, '外部ブラウザで開く（確定済みの URL なし）');
+  assert.equal(target.hidden, true);
+  assert.deepEqual(opened, ['https://failed.example/failed', 'https://example.com/confirmed', 'https://download.example/file']);
   activeElement = controls;
   state('');
   assert.equal(activeElement, controls);
@@ -200,5 +622,531 @@ test('失敗表示は失敗 URL、操作列は確定 URL を安全な外部オ�
   activeElement = buttons.find(button => button.textContent === '案内を閉じる' && button !== closeNotice);
   state('', 'https://github.com/another', false, '');
   activeElement.click();
-  assert.equal(activeElement, reload);
+  assert.equal(activeElement, display);
+  // 同じホストでも両ボタンの実際の開き先をパスと検索条件で区別する。
+  const confirmed = 'https://example.com/confirmed?version=1#top';
+  const failed = 'https://example.com/failed?version=2#bottom';
+  state(failed, '', false, confirmed);
+  assert.equal(target.textContent, '外部で開く: 表示中のページ https://example.com/confirmed?version=1#top');
+  assert.equal(failedExternal.textContent, '失敗したページを外部で開く: https://example.com/failed?version=2#bottom');
+  assert.ok(failedExternal['aria-label'].startsWith(failedExternal.textContent));
+  assert.equal(failedExternal.title, `失敗したページを外部で開く: ${failed}`);
+  click(true);
+  click(false);
+  assert.deepEqual(opened.slice(-2), [failed, confirmed]);
+  // CSS で可視文を2行に制限しても、長い失敗先・download 先の全情報と操作対象は残す。
+  const longUrl = 'https://example.com/' + 'path'.repeat(350) + '?q=' + 'query'.repeat(100) + '#fragment';
+  assert.ok(longUrl.length < 2048);
+  state(longUrl, '', false, confirmed);
+  assert.ok(failedExternal.title.endsWith(longUrl));
+  assert.ok(failedExternal['aria-label'].includes(longUrl));
+  assert.equal(failedExternal.disabled, false);
+  click(true);
+  assert.equal(opened.at(-1), longUrl);
+  handlers['internal-browser:state']({ url: confirmed, failedUrl: '', downloadUrl: longUrl });
+  assert.equal(target.hidden, false);
+  assert.ok(target.title.endsWith(longUrl));
+  assert.equal(target.ariaLabel, target.title);
+  assert.ok(external['aria-label'].endsWith(longUrl));
+  assert.equal(external.disabled, false);
+  click(false);
+  assert.equal(opened.at(-1), longUrl);
+  handlers['internal-browser:state']({ url: '', failedUrl: '', downloadUrl: '' });
+  assert.equal(target.title, '');
+  assert.equal(target.ariaLabel, '');
+  handlers['internal-browser:state']({ url: 'vk-terminals-help://guide/#current', failedUrl: 'vk-terminals-help://guide/#failed', downloadUrl: '' });
+  click(false);
+  click(true);
+  assert.deepEqual(helpOpened, [['internal-browser:external', 'current'], ['internal-browser:external', 'failed']]);
+  assert.equal(opened.at(-1), longUrl);
+});
+
+test('main の遷移結果を順に受け、失敗・成功・中止・置換・ダウンロード阻止を通知する', async () => {
+  const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
+  const addressHandlers = source.match(/const internalBrowserAddress = internalBrowserSidebar\.querySelector\('\.internal-browser-url'\);[\s\S]*?(?=document\.getElementById\('internal-browser-toggle'\))/)?.[0];
+  const stateHandler = source.match(/VKIpc\.on\('internal-browser:state', state => \{[\s\S]*?\n\}\);/)?.[0];
+  const downloadHandler = source.match(/VKIpc\.on\('internal-browser:download-blocked',[\s\S]*?\n\}\);/)?.[0];
+  assert.ok(addressHandlers);
+  assert.ok(stateHandler);
+  assert.ok(downloadHandler);
+  assert.match(source, /class="internal-browser-error" role="status"/);
+  assert.match(source, /class="internal-browser-navigation-status" role="status"/);
+
+  for (const [confirmedUrl, failureCode] of [
+    ['', -105], ['https://example.com/confirmed', -105],
+    ['', -102], ['https://example.com/confirmed', -102],
+  ]) {
+    const handlers = {};
+    const messages = [];
+    const channels = [];
+    const downloadEvents = [];
+    const addressError = { id: 'internal-browser-address-error', hidden: true, textContent: '' };
+    const address = { value: '', addEventListener(type, handler) { handlers[type] = handler; },
+      setAttribute() {}, removeAttribute() {} };
+    let errorWrites = 0;
+    const message = { value: '', get textContent() { return this.value; },
+      set textContent(value) { this.value = value; errorWrites++; } };
+    const failedExternal = { getAttribute() {}, setAttribute() {} };
+    const errorView = { hidden: true, querySelector: selector => selector === '[data-action="external"]' ? failedExternal : message, querySelectorAll: () => [] };
+    const notice = { hidden: true, dataset: {}, replaceChildren() {}, contains: () => false };
+    const external = { setAttribute() {} };
+    const target = { hidden: true, textContent: '' };
+    const toastMessages = [];
+    const toastBody = { replaceChildren() {}, append() {} };
+    let navigationWrites = 0;
+    const navigationStatus = { value: '', get textContent() { return this.value; },
+      set textContent(value) { this.value = value; navigationWrites++; } };
+    const elements = {
+      '.internal-browser-url': address,
+      '.internal-browser-address-error': addressError,
+      '.internal-browser-error': errorView,
+      '.internal-browser-notice': notice,
+      '.internal-browser-toolbar [data-action="external"]': external,
+      '.internal-browser-external-target': target,
+      '.internal-browser-navigation-status': navigationStatus,
+      '.internal-browser-toolbar [data-action="reload"]': {},
+      '[data-action="back"]': {}, '[data-action="forward"]': {},
+      '.internal-browser-progress': {},
+    };
+    const sidebar = { querySelector: selector => elements[selector] };
+    let browser;
+    let deferNextOpen = false;
+    let deferredOpen = null;
+    const context = vm.createContext({
+      internalBrowserSidebar: sidebar,
+      resolveBrowserAddress: require('../renderer/urlSafety').resolveBrowserAddress,
+      VKIpc: {
+        on: (channel, handler) => { handlers[channel] = handler; },
+        invoke: (_channel, url, requestId) => {
+          if (deferNextOpen) { deferredOpen = () => browser.navigate(url, false, requestId); deferNextOpen = false; }
+          else browser.navigate(url, false, requestId);
+          return Promise.resolve();
+        },
+      },
+      showGenericToast(message) { toastMessages.push(message); return true; },
+      externalUrlToastEl: { querySelector: () => toastBody },
+      hideInternalBrowserContent: element => { element.hidden = true; },
+      syncInternalBrowserLayout() {},
+      document: { activeElement: null, createElement: () => ({}) }, URL,
+    });
+    vm.runInContext(`let internalBrowserUrl = ''; let internalBrowserPendingUrl = ''; let internalBrowserFailedUrl = ''; let internalBrowserDownloadUrl = ''; let internalBrowserAddressHasDraft = false; let internalBrowserHasPage = false; ${addressHandlers} ${stateHandler} ${downloadHandler}`, context);
+
+    // main の publish をそのまま renderer に渡し、実際の pendingUrl 消去順を確認する。
+    const browserSession = new EventEmitter();
+    browserSession.setPermissionRequestHandler = () => {};
+    browserSession.setPermissionCheckHandler = () => {};
+    browserSession.webRequest = { onBeforeRequest() {}, onCompleted() {} };
+    let contents;
+    class FakeView {
+      constructor() {
+        contents = new EventEmitter();
+        contents.navigationHistory = { canGoBack: () => false, canGoForward: () => false };
+        contents.isLoading = () => false;
+        installBrowserLoad(contents);
+        contents.setWindowOpenHandler = handler => { contents.openHandler = handler; };
+        this.webContents = contents;
+      }
+    }
+    browser = createInternalBrowser({
+      isDestroyed: () => false,
+      webContents: { send(channel, state) {
+        channels.push(channel);
+        if (channel === 'internal-browser:download-blocked') {
+          downloadEvents.push(state);
+          handlers[channel](state);
+          return;
+        }
+        if (channel !== 'internal-browser:state') return;
+        messages.push({ ...state });
+        handlers[channel](state);
+      } },
+    }, { WebContentsView: FakeView, session: { fromPartition: () => browserSession },
+      dialog: { showMessageBoxSync: () => 1 } });
+
+    if (confirmedUrl) {
+      browser.navigate(confirmedUrl);
+      await contents.complete(confirmedUrl);
+      assert.equal(address.value, confirmedUrl);
+      assert.equal(elements['.internal-browser-toolbar [data-action="reload"]'].disabled, false);
+    }
+    navigationWrites = 0;
+    const failedUrl = 'https://unreachable.example/path';
+    address.value = failedUrl;
+    handlers.input();
+    handlers.keydown({ key: 'Enter', preventDefault() {} });
+    assert.equal(navigationStatus.textContent, 'ページを読み込み中');
+    assert.equal(navigationWrites, 1);
+    assert.equal(messages.at(-1).pendingUrl, failedUrl);
+    assert.equal(messages.at(-1).navigationResult, null);
+    assert.equal(messages.at(-1).navigationRequestId, 1);
+    // 送信済みでも初回の HTTP(S) 文書確定前は main が reload を受け付けない。
+    const reload = elements['.internal-browser-toolbar [data-action="reload"]'];
+    assert.equal(reload.disabled, !confirmedUrl);
+    if (!confirmedUrl) {
+      assert.equal(vm.runInContext('internalBrowserHasPage', context), true);
+      assert.equal(browser.action('reload'), false);
+      await flushBrowserLoads();
+      browser.publish();
+      assert.equal(reload.disabled, true);
+      assert.equal(messages.at(-1).navigationRequestId, 1);
+      assert.equal(messages.at(-1).pendingUrl, failedUrl);
+    }
+    await contents.fail(failureCode, failedUrl);
+    assert.equal(messages.at(-1).navigationResult, 'failed');
+    assert.equal(messages.at(-1).navigationRequestId, 1);
+    assert.equal(navigationStatus.textContent, '');
+    assert.equal(navigationWrites, 2);
+    assert.equal(errorView.hidden, false);
+    assert.equal(message.textContent, 'ページを表示できませんでした（unreachable.example）');
+    assert.equal(errorWrites, 1);
+    browser.publish();
+    assert.equal(navigationWrites, 2);
+    assert.equal(errorWrites, 1);
+    contents.emit('did-stop-loading');
+    assert.equal(navigationWrites, 2);
+    assert.equal(errorWrites, 1);
+    assert.equal(messages.at(-1).pendingUrl, '');
+    assert.equal(messages.at(-1).failedUrl, failedUrl);
+    // 初回失敗でも失敗 URL を再試行できる。
+    assert.equal(reload.disabled, false);
+    assert.equal(messages.at(-1).url, confirmedUrl);
+    assert.equal(address.value, failedUrl);
+    assert.equal(handlers.blur, undefined);
+    handlers.blur?.();
+    assert.equal(address.value, failedUrl);
+
+    address.value = '  ';
+    handlers.input();
+    handlers.keydown({ key: 'Enter', preventDefault() {} });
+    assert.equal(address.value, '  ');
+    assert.equal(addressError.hidden, false);
+    contents.emit('did-stop-loading');
+    assert.equal(address.value, '  ');
+
+    address.value = 'example.org/retry';
+    handlers.input();
+    handlers.blur?.();
+    contents.emit('did-stop-loading');
+    assert.equal(address.value, 'example.org/retry');
+    deferNextOpen = true;
+    handlers.keydown({ key: 'Enter', preventDefault() {} });
+    assert.equal(navigationStatus.textContent, 'ページを読み込み中');
+    assert.equal(navigationWrites, 3);
+    // 新しい invoke が main に届く前の古い失敗 state は今回の追跡を終えない。
+    browser.publish();
+    assert.equal(navigationStatus.textContent, 'ページを読み込み中');
+    assert.equal(navigationWrites, 3);
+    assert.equal(vm.runInContext('internalBrowserActiveRequestId', context), 2);
+    deferredOpen();
+    assert.equal(messages.at(-1).pendingUrl, 'https://example.org/retry');
+    assert.equal(messages.at(-1).navigationRequestId, 2);
+    assert.equal(address.value, 'https://example.org/retry');
+    assert.equal(reload.disabled, !confirmedUrl);
+    if (!confirmedUrl) assert.equal(browser.action('reload'), false);
+    await contents.complete('https://example.org/retry');
+    assert.equal(messages.at(-1).navigationResult, 'completed');
+    assert.equal(messages.at(-1).navigationRequestId, 2);
+    assert.equal(address.value, 'https://example.org/retry');
+    assert.equal(reload.disabled, false);
+    assert.equal(navigationStatus.textContent, 'ページの読み込みが完了しました');
+    assert.equal(navigationWrites, 4);
+    contents.emit('did-stop-loading');
+    assert.equal(navigationWrites, 4);
+
+    // 完了後の旧イベントはアドレス表示と通知を巻き戻さない。
+    contents.emit('did-fail-load', {}, -105, 'old failure', failedUrl, true);
+    contents.emit('did-navigate', {}, failedUrl);
+    contents.emit('did-navigate-in-page', {}, `${failedUrl}#old`, true);
+    browser.publish();
+    assert.equal(address.value, 'https://example.org/retry');
+    assert.equal(navigationStatus.textContent, 'ページの読み込みが完了しました');
+    assert.equal(navigationWrites, 4);
+
+    // beforeunload でとどまる場合は pendingUrl が消えても完了にはしない。
+    address.value = 'https://example.org/cancelled';
+    handlers.input();
+    handlers.keydown({ key: 'Enter', preventDefault() {} });
+    assert.equal(messages.at(-1).navigationResult, null);
+    await flushBrowserLoads();
+    contents.emit('will-prevent-unload', { preventDefault() { throw new Error('unexpected leave'); } });
+    assert.equal(messages.at(-1).navigationResult, 'cancelled');
+    assert.equal(messages.at(-1).navigationRequestId, 3);
+    assert.equal(messages.at(-1).pendingUrl, '');
+    assert.equal(navigationStatus.textContent, 'ページの移動を中止しました');
+    assert.equal(navigationWrites, 6);
+    contents.emit('did-stop-loading');
+    assert.equal(navigationWrites, 6);
+
+    contents.emit('did-fail-load', {}, -105, 'old failure', failedUrl, true);
+    contents.emit('did-navigate', {}, failedUrl);
+    contents.emit('did-navigate-in-page', {}, `${failedUrl}#old`, true);
+    assert.equal(messages.at(-1).navigationResult, 'cancelled');
+    assert.equal(navigationWrites, 6);
+
+    // ダウンロード阻止も専用結果で終え、既存トースト用 IPC は維持する。
+    address.value = 'https://example.org/download';
+    handlers.input();
+    handlers.keydown({ key: 'Enter', preventDefault() {} });
+    assert.equal(messages.at(-1).navigationResult, null);
+    // 無関係なダウンロードは pending URL と読み込み中の案内を残す。
+    await flushBrowserLoads();
+    browserSession.emit('will-download', { preventDefault() {} },
+      { getURLChain: () => ['https://example.org/other'] });
+    assert.deepEqual(downloadEvents.at(-1), { canOpenFromToolbar: false });
+    assert.equal(toastMessages.at(-1), 'ダウンロードはできません。外部ブラウザでダウンロードしてください。');
+    assert.equal(target.textContent.includes('ダウンロード先'), false);
+    assert.equal(messages.at(-1).pendingUrl, 'https://example.org/download');
+    assert.equal(messages.at(-1).navigationResult, null);
+    assert.equal(navigationStatus.textContent, 'ページを読み込み中');
+    let blockedToast = 0;
+    await flushBrowserLoads();
+    browserSession.emit('will-download', { preventDefault() { blockedToast++; } },
+      { getURLChain: () => ['https://example.org/download'] });
+    await contents.download();
+    assert.equal(blockedToast, 1);
+    assert.equal(channels.at(-2), 'internal-browser:state');
+    assert.equal(channels.at(-1), 'internal-browser:download-blocked');
+    assert.deepEqual(downloadEvents.at(-1), { canOpenFromToolbar: true });
+    assert.equal(toastMessages.at(-1), 'ダウンロードはできません。操作列の「外部ブラウザで開く」から行ってください。');
+    assert.equal(toastMessages.length, 2);
+    assert.equal(target.textContent, '外部で開く: ダウンロード先 https://example.org/download');
+    assert.equal(messages.at(-1).navigationResult, 'download-blocked');
+    assert.equal(messages.at(-1).navigationRequestId, 4);
+    assert.equal(messages.at(-1).pendingUrl, '');
+    assert.equal(navigationStatus.textContent, '');
+    assert.equal(navigationWrites, 8);
+    browser.publish();
+    assert.equal(navigationWrites, 8);
+    assert.equal(toastMessages.length, 2);
+    contents.emit('did-stop-loading');
+    assert.equal(navigationWrites, 8);
+
+    contents.emit('did-fail-load', {}, -105, 'old failure', failedUrl, true);
+    contents.emit('did-navigate', {}, failedUrl);
+    contents.emit('did-navigate-in-page', {}, `${failedUrl}#old`, true);
+    assert.equal(messages.at(-1).navigationResult, 'download-blocked');
+    assert.equal(target.textContent, '外部で開く: ダウンロード先 https://example.org/download');
+    assert.equal(navigationWrites, 8);
+
+    // 再読み込みも独立した世代で開始と完了を通知する。
+    contents.reload = () => contents.startNative('https://example.org/retry', 'reload-initial');
+    assert.equal(reload.disabled, false);
+    assert.equal(browser.action('reload'), true);
+    assert.equal(navigationStatus.textContent, 'ページを読み込み中');
+    contents.commitDocument('https://example.org/retry', 'reload-initial');
+    contents.loadDocument('reload-initial');
+    assert.equal(messages.at(-1).navigationRequestId, null);
+    assert.equal(navigationStatus.textContent, 'ページの読み込みが完了しました');
+    assert.equal(navigationWrites, 10);
+    // 相関のない旧失敗を現在の文書へ流用しない。
+    contents.emit('did-fail-load', {}, -105, 'reload failed', 'https://example.org/retry', true);
+    assert.equal(errorView.hidden, true);
+    // Enter で始めたページ内遷移も、pending を残さず完了する。
+    address.value = 'https://example.org/retry#next';
+    handlers.input();
+    handlers.keydown({ key: 'Enter', preventDefault() {} });
+    assert.equal(messages.at(-1).pendingUrl, 'https://example.org/retry#next');
+    await contents.complete('https://example.org/retry#next');
+    assert.equal(messages.at(-1).pendingUrl, '');
+    assert.equal(messages.at(-1).navigationResult, 'completed');
+    assert.equal(messages.at(-1).navigationRequestId, 5);
+    assert.equal(navigationStatus.textContent, 'ページの読み込みが完了しました');
+    assert.equal(navigationWrites, 12);
+    // 完了 state の再送も、次の Enter の結果としては消費しない。
+    address.value = 'https://example.org/last';
+    handlers.input();
+    deferNextOpen = true;
+    handlers.keydown({ key: 'Enter', preventDefault() {} });
+    const latestRequestId = vm.runInContext('internalBrowserActiveRequestId', context);
+    browser.publish();
+    assert.equal(navigationStatus.textContent, 'ページを読み込み中');
+    assert.equal(vm.runInContext('internalBrowserActiveRequestId', context), latestRequestId);
+    deferredOpen();
+    assert.equal(messages.at(-1).navigationRequestId, latestRequestId);
+    await contents.complete('https://example.org/last');
+    assert.equal(navigationStatus.textContent, 'ページの読み込みが完了しました');
+    assert.equal(vm.runInContext('internalBrowserActiveRequestId', context), null);
+    // 連続 Enter では後の要求だけを追跡する。
+    address.value = 'https://example.org/first-again';
+    handlers.input();
+    handlers.keydown({ key: 'Enter', preventDefault() {} });
+    const firstRequestId = vm.runInContext('internalBrowserActiveRequestId', context);
+    const writesBeforeSecondEnter = navigationWrites;
+    address.value = 'https://example.org/second-again';
+    handlers.input();
+    handlers.keydown({ key: 'Enter', preventDefault() {} });
+    assert.equal(vm.runInContext('internalBrowserActiveRequestId', context), firstRequestId + 1);
+    assert.ok(messages.some(state => state.navigationRequestId === firstRequestId && state.navigationResult === 'superseded'));
+    assert.equal(navigationStatus.textContent, 'ページを読み込み中');
+    assert.equal(navigationWrites, writesBeforeSecondEnter);
+    assert.equal(messages.at(-1).navigationRequestId, firstRequestId + 1);
+    // 旧要求の置換結果が遅れて再送されても、後続要求の読み込み通知を保持する。
+    const supersededState = messages.find(state => state.navigationRequestId === firstRequestId && state.navigationResult === 'superseded');
+    handlers['internal-browser:state'](supersededState);
+    assert.equal(navigationStatus.textContent, 'ページを読み込み中');
+    assert.equal(navigationWrites, writesBeforeSecondEnter);
+    assert.equal(vm.runInContext('internalBrowserActiveRequestId', context), firstRequestId + 1);
+    await contents.complete('https://example.org/second-again');
+    assert.equal(navigationStatus.textContent, 'ページの読み込みが完了しました');
+
+    // 各操作は旧要求を終了し、新しい世代の開始と結果を単一 live 経路へ送る。
+    const startPending = suffix => {
+      address.value = `https://example.org/${suffix}`;
+      handlers.input();
+      handlers.keydown({ key: 'Enter', preventDefault() {} });
+      assert.equal(navigationStatus.textContent, 'ページを読み込み中');
+      return vm.runInContext('internalBrowserActiveRequestId', context);
+    };
+    const assertSuperseded = requestId => {
+      assert.ok(messages.some(state => state.navigationRequestId === requestId && state.navigationResult === 'superseded'));
+      assert.equal(navigationStatus.textContent, 'ページを読み込み中');
+      assert.equal(vm.runInContext('internalBrowserActiveRequestId', context), null);
+      const writesAfterSupersede = navigationWrites;
+      browser.publish();
+      assert.equal(navigationStatus.textContent, 'ページを読み込み中');
+      assert.equal(navigationWrites, writesAfterSupersede);
+    };
+    for (const action of ['back', 'forward', 'reload']) {
+      const requestId = startPending(`pending-${action}`);
+      contents.navigationHistory[`canGo${action[0].toUpperCase()}${action.slice(1)}`] = () => true;
+      contents.navigationHistory[action === 'back' ? 'goBack' : 'goForward'] = () => {};
+      if (action === 'reload') contents.reload = () => {};
+      browser.action(action);
+      assertSuperseded(requestId);
+    }
+    let requestId = startPending('pending-page-link');
+    let blockedPageNavigation = false;
+    contents.emit('will-navigate', { url: 'file:///tmp/blocked', preventDefault() { blockedPageNavigation = true; } });
+    assert.equal(blockedPageNavigation, true);
+    assert.equal(navigationStatus.textContent, 'ページを読み込み中');
+    contents.emit('will-navigate', { url: 'https://example.org/page-link', preventDefault() { throw new Error('unexpected block'); } });
+    assertSuperseded(requestId);
+    contents.emit('did-start-navigation', {}, 'https://example.org/page-link', false, true);
+    assert.equal(messages.at(-1).navigationRequestId, null);
+    assert.equal(navigationStatus.textContent, 'ページを読み込み中');
+
+    requestId = startPending('pending-window-open');
+    contents.openHandler({ url: 'https://example.org/from-page' });
+    assertSuperseded(requestId);
+    assert.equal(messages.at(-1).navigationRequestId, null);
+    await contents.complete('https://example.org/from-page');
+    assert.equal(navigationStatus.textContent, 'ページの読み込みが完了しました');
+
+    requestId = startPending('pending-url-only');
+    browser.navigate('https://example.org/url-only');
+    assertSuperseded(requestId);
+    assert.equal(messages.at(-1).navigationRequestId, null);
+    await contents.complete('https://example.org/url-only');
+    assert.equal(navigationStatus.textContent, 'ページの読み込みが完了しました');
+
+    // 戻る・進む・再読み込み・ページ起点・URL-onlyの開始と全終了結果を renderer まで検証する。
+    for (const action of ['back', 'forward', 'reload', 'page', 'url-only']) {
+      for (const result of ['completed', 'cancelled', 'failed']) {
+        const requestId = startPending(`matrix-${action}-${result}`);
+        await flushBrowserLoads();
+        const writesBeforeReplacement = navigationWrites;
+        const previousState = { ...messages.at(-1) };
+        const targetUrl = `https://matrix.example/${action}/${result}`;
+        if (action === 'url-only') browser.navigate(targetUrl);
+        else if (action === 'page') contents.emit('will-navigate', { url: targetUrl });
+        else browser.action(action);
+        assert.ok(messages.some(state => state.navigationRequestId === requestId && state.navigationResult === 'superseded'));
+        assert.equal(navigationStatus.textContent, 'ページを読み込み中');
+        assert.equal(navigationWrites, writesBeforeReplacement + 2);
+        const operation = messages.at(-1).navigationOperationId;
+        assert.equal(messages.at(-1).navigationRequestId, null);
+        if (action === 'url-only') {
+          if (result === 'completed') await contents.complete(targetUrl);
+          else await contents.fail(result === 'cancelled' ? -3 : -105, targetUrl);
+        } else {
+          contents.startNative(targetUrl, `matrix-${action}-${result}`);
+          if (result === 'completed') {
+            contents.commitDocument(targetUrl, `matrix-${action}-${result}`);
+            contents.loadDocument(`matrix-${action}-${result}`);
+          } else contents.debugger.emit('message', {}, 'Network.loadingFailed', {
+            requestId: `request-matrix-${action}-${result}`, type: 'Document', canceled: result === 'cancelled', errorText: 'net::ERR_NAME_NOT_RESOLVED',
+          });
+        }
+        assert.equal(messages.at(-1).navigationOperationId, operation);
+        assert.equal(messages.at(-1).navigationResult, result);
+        const expectedMessage = result === 'completed' ? 'ページの読み込みが完了しました'
+          : result === 'cancelled' ? 'ページの移動を中止しました' : '';
+        assert.equal(navigationStatus.textContent, expectedMessage);
+        assert.equal(navigationWrites, writesBeforeReplacement + 3);
+        if (result === 'failed') {
+          assert.equal(errorView.hidden, false);
+          assert.equal(message.textContent, 'ページを表示できませんでした（matrix.example）');
+        }
+        // 完了後の旧世代通知と同じ世代の再送は読み上げを増やさない。
+        const writesAfterResult = navigationWrites;
+        const errorWritesAfterResult = errorWrites;
+        const finalAddress = address.value;
+        handlers['internal-browser:state']({ ...previousState, navigationResult: 'failed', failedUrl: 'https://stale.example/failed' });
+        browser.publish();
+        assert.equal(navigationWrites, writesAfterResult);
+        assert.equal(errorWrites, errorWritesAfterResult);
+        assert.equal(address.value, finalAddress);
+        assert.equal(navigationStatus.textContent, expectedMessage);
+      }
+    }
+
+    // redirect の開始イベントだけでは同一 Enter 要求を置き換えない。
+    requestId = startPending('redirect-source');
+    contents.emit('did-start-navigation', {}, 'https://example.org/redirect-source', false, true);
+    contents.emit('will-redirect', { url: 'https://example.org/redirect-target', preventDefault() { throw new Error('unexpected block'); } });
+    contents.emit('did-start-navigation', {}, 'https://example.org/redirect-target', false, true);
+    assert.equal(messages.at(-1).navigationRequestId, requestId);
+    assert.equal(navigationStatus.textContent, 'ページを読み込み中');
+    await contents.complete('https://example.org/redirect-target');
+    assert.equal(navigationStatus.textContent, 'ページの読み込みが完了しました');
+
+    // 失敗 URL の再読み込みは request ID なしで始まる。
+    contents.emit('will-navigate', { url: 'https://example.org/failed-reload' });
+    contents.emit('did-fail-load', {}, -105, 'failed', 'https://example.org/failed-reload', true);
+    browser.action('reload');
+    assert.equal(messages.at(-1).navigationRequestId, null);
+    assert.equal(messages.at(-1).navigationResult, null);
+
+    // main 受理前に古い結果や保留状態が再送されても、B の送信値を保持して再 Enter する。
+    for (const [name, staleState] of [
+      ['failed', { failedUrl: 'https://old.example/failed', navigationResult: 'failed' }],
+      ['completed', { url: 'https://old.example/done', navigationResult: 'completed' }],
+      ['superseded', { url: 'https://old.example/replaced', navigationResult: 'superseded' }],
+      ['pending', { pendingUrl: 'https://old.example/pending', navigationResult: null }],
+    ]) {
+      const nextUrl = `https://new.example/${name}`;
+      address.value = nextUrl;
+      handlers.input();
+      deferNextOpen = true;
+      handlers.keydown({ key: 'Enter', preventDefault() {} });
+      const firstId = vm.runInContext('internalBrowserActiveRequestId', context);
+      handlers['internal-browser:state']({ url: 'https://old.example/', pendingUrl: '', failedUrl: '',
+        downloadUrl: '', navigationRequestId: firstId - 1, loading: false, canGoBack: false, canGoForward: false,
+        ...staleState });
+      assert.equal(address.value, nextUrl);
+      assert.equal(navigationStatus.textContent, 'ページを読み込み中');
+      assert.equal(vm.runInContext('internalBrowserActiveRequestId', context), firstId);
+      handlers.keydown({ key: 'Enter', preventDefault() {} });
+      assert.equal(messages.at(-1).pendingUrl, nextUrl);
+      assert.equal(messages.at(-1).navigationRequestId, firstId + 1);
+      await contents.complete(nextUrl);
+      assert.equal(navigationStatus.textContent, 'ページの読み込みが完了しました');
+    }
+    // 持続トーストを守り、代替 live 通知は一配送につき一度だけ更新する。
+    context.showGenericToast = () => false;
+    for (const canOpenFromToolbar of [true, false]) {
+      const writesBeforeFallback = navigationWrites;
+      const toastsBeforeFallback = toastMessages.length;
+      handlers['internal-browser:download-blocked']({ canOpenFromToolbar });
+      assert.equal(navigationWrites, writesBeforeFallback + 1);
+      assert.equal(toastMessages.length, toastsBeforeFallback);
+      assert.equal(navigationStatus.textContent, canOpenFromToolbar
+        ? 'ダウンロードはできません。操作列の「外部ブラウザで開く」から行ってください。'
+        : 'ダウンロードはできません。外部ブラウザでダウンロードしてください。');
+      startPending('after-fallback');
+      assert.equal(navigationStatus.textContent, 'ページを読み込み中');
+      await contents.complete('https://example.org/after-fallback');
+      assert.equal(navigationStatus.textContent, 'ページの読み込みが完了しました');
+    }
+  }
 });

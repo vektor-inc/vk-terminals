@@ -120,8 +120,9 @@ test('広いウィンドウでもサイドパネルでグリッドが狭まれ�
   const launched = await start();
   try {
     // サイドバーとアプリ内ブラウザを開き、ウィンドウ幅を保ったままグリッドだけを狭める。
-    await launched.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1000, 640));
-    await expect.poll(() => launched.win.evaluate(() => window.innerWidth)).toBeGreaterThanOrEqual(1000);
+    // 1010pxでは既定330pxの左サイドバーと360pxのブラウザを併存でき、中央320pxを残せる。
+    await launched.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1010, 640));
+    await expect.poll(() => launched.win.evaluate(() => window.innerWidth)).toBeGreaterThanOrEqual(1010);
     await launched.win.locator('#internal-browser-toggle').click();
     await expect(launched.win.locator('#root')).toHaveClass(/\binternal-browser-open\b/);
     await expect.poll(() => launched.win.locator('.grid').evaluate(grid => grid.getBoundingClientRect().width)).toBeLessThanOrEqual(350);

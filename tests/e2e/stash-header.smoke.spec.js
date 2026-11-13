@@ -217,7 +217,7 @@ test.describe.serial('格納カードのヘッダー構成（PR #117 / issue #11
     // renderStashItem() が apiPrMerged を渡し忘れると、ここで緑の通常 PR バッジに戻る。
     const prBadge = stashItem.locator('.stash-item-title-row .pane-task-title-pr');
     await expect(prBadge).toHaveClass(/\bmerged\b/);
-    await expect(prBadge).toHaveAttribute('aria-label', 'マージ済みのプルリクエストを開く（外部ブラウザ）');
+    await expect(prBadge).toHaveAttribute('aria-label', 'マージ済みのプルリクエストを開く（開き先を選ぶ）');
     await expect(prBadge.locator('.pane-task-title-pr-icon')).toHaveText('✓');
 
     // #348 で確立した「各テストは終了時点でグリッド構成を元に戻す（最初のペインだけが

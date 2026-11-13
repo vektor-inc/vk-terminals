@@ -144,6 +144,13 @@ async function modifierClickAtOffset(win, pos, colOffset, mac) {
   await new Promise((resolve) => setTimeout(resolve, 250));
 }
 
+async function chooseExternalBrowser(win, app) {
+  const external = win.getByRole('menuitem', { name: '外部ブラウザで開く ↗', exact: true });
+  await expect(external).toBeVisible();
+  expect(await getOpenExternalCalls(app)).toEqual([]);
+  await external.click();
+}
+
 // shell.openExternal を main プロセス側で差し替える（external-url-toast.smoke.spec.js と
 // 同じ手口）。実際に OS のブラウザは開かせず、呼び出しだけを記録する。
 async function stubShellOpenExternal(app) {
@@ -218,6 +225,7 @@ test.describe.serial('罫線テーブルのセル境界での URL リンク化�
 
     // 修飾キー付きクリックをしても openExternal は一切呼ばれない。
     await modifierClickAtOffset(win, pos, 10, mac);
+    await expect(win.locator('.internal-browser-choice')).toHaveCount(0);
     expect(await getOpenExternalCalls(app)).toEqual([]);
   });
 
@@ -237,6 +245,7 @@ test.describe.serial('罫線テーブルのセル境界での URL リンク化�
     expect(tooltip.text).toContain('github.com');
 
     await modifierClickAtOffset(win, pos, 10, mac);
+    await chooseExternalBrowser(win, app);
     // 閉じ括弧は対応が取れていない（開き括弧は URL 候補の外）ため trim され、
     // openExternal に渡るのは括弧を含まない URL。
     expect(await getOpenExternalCalls(app)).toEqual([url]);
@@ -260,6 +269,7 @@ test.describe.serial('罫線テーブルのセル境界での URL リンク化�
     expect(tooltip.hidden).toBe(false);
 
     await modifierClickAtOffset(win, pos, 10, mac);
+    await chooseExternalBrowser(win, app);
     expect(await getOpenExternalCalls(app)).toEqual([url]);
   });
 
@@ -278,6 +288,7 @@ test.describe.serial('罫線テーブルのセル境界での URL リンク化�
     expect(tooltip.hidden).toBe(false);
 
     await modifierClickAtOffset(win, pos, 10, mac);
+    await chooseExternalBrowser(win, app);
     expect(await getOpenExternalCalls(app)).toEqual([url]);
   });
 
@@ -303,6 +314,7 @@ test.describe.serial('罫線テーブルのセル境界での URL リンク化�
     expect(tooltip.text).toContain('github.com');
 
     await modifierClickAtOffset(win, pos, 10, mac);
+    await chooseExternalBrowser(win, app);
     expect(await getOpenExternalCalls(app)).toEqual([url]);
   });
 });

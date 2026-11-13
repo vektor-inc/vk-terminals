@@ -131,7 +131,7 @@ test.describe.serial('PR バッジのマージ待ち表示（issue #363）', () 
     await expect(prBadge).toBeVisible();
     await expect(prBadge).toHaveClass(/\bawaiting-merge\b/);
     await expect(prBadge).not.toHaveClass(/\bmerged\b/);
-    await expect(prBadge).toHaveAttribute('aria-label', 'マージ待ちのプルリクエストを開く（外部ブラウザ）');
+    await expect(prBadge).toHaveAttribute('aria-label', 'マージ待ちのプルリクエストを開く（開き先を選ぶ）');
     await expect(prIcon).toHaveText('…');
 
     // ─── B: waitingMerge 省略 → 「PR が出ただけ」表示（.awaiting-merge / .merged 無し・↗） ───
@@ -145,7 +145,7 @@ test.describe.serial('PR バッジのマージ待ち表示（issue #363）', () 
 
     await expect(prBadge).not.toHaveClass(/\bawaiting-merge\b/);
     await expect(prBadge).not.toHaveClass(/\bmerged\b/);
-    await expect(prBadge).toHaveAttribute('aria-label', 'プルリクエストを開く（外部ブラウザ）');
+    await expect(prBadge).toHaveAttribute('aria-label', 'プルリクエストを開く（開き先を選ぶ）');
     await expect(prIcon).toHaveText('↗');
 
     // ─── C: waitingMerge が boolean 以外（文字列 "true"）→ 厳密な === true 判定で灰のまま ───
@@ -163,7 +163,7 @@ test.describe.serial('PR バッジのマージ待ち表示（issue #363）', () 
     expect(nonBooleanResult.body && nonBooleanResult.body.waitingMerge).toBe(false);
 
     await expect(prBadge).not.toHaveClass(/\bawaiting-merge\b/);
-    await expect(prBadge).toHaveAttribute('aria-label', 'プルリクエストを開く（外部ブラウザ）');
+    await expect(prBadge).toHaveAttribute('aria-label', 'プルリクエストを開く（開き先を選ぶ）');
     await expect(prIcon).toHaveText('↗');
 
     // ─── D: prMerged と waitingMerge が同時に true → prMerged を優先（マージ済みが最終状態） ───
@@ -180,7 +180,7 @@ test.describe.serial('PR バッジのマージ待ち表示（issue #363）', () 
 
     await expect(prBadge).toHaveClass(/\bmerged\b/);
     await expect(prBadge).not.toHaveClass(/\bawaiting-merge\b/);
-    await expect(prBadge).toHaveAttribute('aria-label', 'マージ済みのプルリクエストを開く（外部ブラウザ）');
+    await expect(prBadge).toHaveAttribute('aria-label', 'マージ済みのプルリクエストを開く（開き先を選ぶ）');
     await expect(prIcon).toHaveText('✓');
   });
 
@@ -230,7 +230,7 @@ test.describe.serial('PR バッジのマージ待ち表示（issue #363）', () 
     // updateStashItem() が waitingMerge を渡し忘れていると、ここで灰（awaiting-merge 無し）に
     // 戻ってしまう。渡し漏れが直っていれば青のまま維持されるはず。
     await expect(stashPrBadge).toHaveClass(/\bawaiting-merge\b/);
-    await expect(stashPrBadge).toHaveAttribute('aria-label', 'マージ待ちのプルリクエストを開く（外部ブラウザ）');
+    await expect(stashPrBadge).toHaveAttribute('aria-label', 'マージ待ちのプルリクエストを開く（開き先を選ぶ）');
     await expect(stashPrBadge.locator('.pane-task-title-pr-icon')).toHaveText('…');
 
     // 念のため waiting: false に戻すステータス更新も挟み、複数回の更新でも崩れないことを見る。

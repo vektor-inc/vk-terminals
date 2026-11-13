@@ -128,7 +128,9 @@ async function hoverAtOffset(win, pos, colOffset) {
   const cellH = pos.rect.height / pos.rows;
   const x = pos.rect.x + (pos.col + colOffset) * cellW;
   const y = pos.rect.y + (pos.row + 0.5) * cellH;
-  await win.mouse.move(x, y);
+  // xterm.js の Linkifier は最後に解決したセルをキャッシュする。実マウスと同じく
+  // 中間セルを通って移動し、要素外から同一セルへ瞬間移動するテスト固有の欠落を避ける。
+  await win.mouse.move(x, y, { steps: 30 });
   // xterm.js 側のホバー判定（Linkifier._handleMouseMove）が走るのを待つ。
   await new Promise((resolve) => setTimeout(resolve, 250));
 }
@@ -148,25 +150,6 @@ async function getTooltip(win) {
 
 async function isMacPlatform(win) {
   return win.evaluate(() => window.VKTerminalLinkPolicy.isMacPlatform());
-}
-
-// issue #385 レビュー指摘・MEDIUM-D: main.js の e2e 起動は show: false（ウィンドウを
-// 表示しない）ため、起動直後は document.hasFocus() が false になりうる。renderer/app.js
-// はその場合 pendingWindowRefocusClick を true で初期化する（LOW-B）ため、各アプリ
-// インスタンスの「最初の mousedown」が本題と無関係に「復帰クリック」として消費され、
-// フォーカス済みペインの最初のクリックでも開かない、という誤った結果を生みうる
-// （Playwright/Chromium 側のフォーカスエミュレーションが効いて document.hasFocus() が
-// true を返す環境では発生しないため、再現するかどうか自体が環境依存で不確か。この
-// 不確かさ自体が問題）。
-//
-// 各 describe の beforeAll の最後でこれを呼び、実際の要素に触れない合成 mousedown で
-// 印だけを無害に消費しておく。renderer/app.js の document 上の mousedown リスナーは
-// capture: true で登録されているが、target が document 自身のイベントは capture/bubble
-// の区別なく「AT_TARGET」フェーズとして document 上の全リスナーに配送されるため
-// （DOM イベント仕様）、bubbles の有無によらずこの合成イベントは確実に拾われる
-// （bubbles: true は実際のクリックに近い形にするための保険で必須ではない）。
-async function consumePendingWindowRefocusClick(win) {
-  await win.evaluate(() => document.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })));
 }
 
 // pos の col + colOffset のセルへ、実行環境の修飾キー（mac なら Cmd、それ以外は Ctrl）を
@@ -201,6 +184,13 @@ async function plainClickAtOffset(win, pos, colOffset) {
   await new Promise((resolve) => setTimeout(resolve, 250));
 }
 
+async function chooseExternalBrowser(win, app) {
+  const external = win.getByRole('menuitem', { name: '外部ブラウザで開く ↗', exact: true });
+  await expect(external).toBeVisible();
+  expect(await getOpenExternalCalls(app)).toEqual([]);
+  await external.click();
+}
+
 // 右クリック（button: 2）で pos.col + colOffset のセルをクリックする（issue #385
 // レビュー指摘・MEDIUM-B・HIGH-1 の計測側回帰）。
 async function rightClickAtOffset(win, pos, colOffset) {
@@ -212,6 +202,18 @@ async function rightClickAtOffset(win, pos, colOffset) {
   await new Promise((resolve) => setTimeout(resolve, 150));
   await win.mouse.down({ button: 'right' });
   await win.mouse.up({ button: 'right' });
+  await new Promise((resolve) => setTimeout(resolve, 250));
+}
+
+async function blockedClickAtOffset(win, pos, colOffset, options) {
+  const cellW = pos.rect.width / pos.cols;
+  const cellH = pos.rect.height / pos.rows;
+  const x = pos.rect.x + (pos.col + colOffset) * cellW;
+  const y = pos.rect.y + (pos.row + 0.5) * cellH;
+  await win.mouse.move(x, y);
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  await win.mouse.down(options);
+  await win.mouse.up(options);
   await new Promise((resolve) => setTimeout(resolve, 250));
 }
 
@@ -274,9 +276,6 @@ test.describe.serial('ペイン内 URL の Cmd/Ctrl+クリック（issue #349 / 
     await waitForPtyRegistration(port);
     await stubShellOpenExternal(app);
     mac = await isMacPlatform(win);
-    // MEDIUM-D: 起動直後の「復帰クリック」の印を無害に消費する（詳細は
-    // consumePendingWindowRefocusClick() の説明コメント参照）。
-    await consumePendingWindowRefocusClick(win);
   });
 
   test.afterAll(async () => {
@@ -287,10 +286,13 @@ test.describe.serial('ペイン内 URL の Cmd/Ctrl+クリック（issue #349 / 
   test.beforeEach(async () => {
     await clearOpenExternalCalls(app);
     await moveMouseAway(win);
+    // 直前のドラッグ選択を残すと xterm.js がリンクのホバー解決を抑止するため、
+    // 各ケースを独立させる。製品側では選択内容を維持する既存挙動を変えない。
+    await win.evaluate(() => Object.values(terminals).forEach(({ term }) => term.clearSelection()));
   });
 
   // issue #385: terminalLinkClickMode の既定は 'click'（単クリックで開く）に変更された。
-  // ツールチップは予告文（「◯◯ を開きます」）になり、修飾キー案内は 'modifier' モード
+  // ツールチップは開き先メニューの予告文になり、修飾キー案内は 'modifier' モード
   // 専用になった（'modifier' モードの回帰は本ファイル末尾の別 describe ブロック参照）。
   test('URL にホバーすると、解決後のホスト名と単クリックで開く予告をツールチップに出す（issue #385）', async () => {
     const url = 'https://example.com/vk-terminals-e2e-hover';
@@ -307,7 +309,7 @@ test.describe.serial('ペイン内 URL の Cmd/Ctrl+クリック（issue #349 / 
     // ホストは new URL(url).host（VKUrlLinkify.getUrlHost）による解決後の値。
     // なりすまし対策としてのホスト表示は 'click' モードでも維持される（安藤指摘）。
     expect(tooltip.text).toContain('example.com');
-    expect(tooltip.text).toContain('を開きます');
+    expect(tooltip.text).toContain('開き先を選ぶ');
   });
 
   // issue #385: 既定モードでは、フォーカス済みペインへの修飾キー無しクリックで開く
@@ -322,6 +324,7 @@ test.describe.serial('ペイン内 URL の Cmd/Ctrl+クリック（issue #349 / 
     const pos = await findTextPosition(win, url);
     expect(pos).not.toBeNull();
     await plainClickAtOffset(win, pos, 3);
+    await chooseExternalBrowser(win, app);
 
     expect(await getOpenExternalCalls(app)).toEqual([url]);
 
@@ -351,6 +354,7 @@ test.describe.serial('ペイン内 URL の Cmd/Ctrl+クリック（issue #349 / 
     const pos = await findTextPosition(win, url);
     expect(pos).not.toBeNull();
     await modifierClickAtOffset(win, pos, 3, mac);
+    await chooseExternalBrowser(win, app);
 
     expect(await getOpenExternalCalls(app)).toEqual([url]);
   });
@@ -366,6 +370,7 @@ test.describe.serial('ペイン内 URL の Cmd/Ctrl+クリック（issue #349 / 
     const pos = await findTextPosition(win, url);
     expect(pos).not.toBeNull();
     await modifierClickAtOffset(win, pos, 3, mac);
+    await chooseExternalBrowser(win, app);
 
     // 「。」を含まない、trimTrailingPunctuation() 適用後の URL だけが渡る。
     expect(await getOpenExternalCalls(app)).toEqual([url]);
@@ -380,6 +385,7 @@ test.describe.serial('ペイン内 URL の Cmd/Ctrl+クリック（issue #349 / 
     const localPos = await findTextPosition(win, localUrl);
     expect(localPos).not.toBeNull();
     await modifierClickAtOffset(win, localPos, 3, mac);
+    await chooseExternalBrowser(win, app);
     expect(await getOpenExternalCalls(app)).toEqual([localUrl]);
 
     await moveMouseAway(win);
@@ -388,6 +394,7 @@ test.describe.serial('ペイン内 URL の Cmd/Ctrl+クリック（issue #349 / 
     const loopbackPos = await findTextPosition(win, loopbackUrl);
     expect(loopbackPos).not.toBeNull();
     await modifierClickAtOffset(win, loopbackPos, 3, mac);
+    await chooseExternalBrowser(win, app);
     expect(await getOpenExternalCalls(app)).toEqual([loopbackUrl]);
   });
 
@@ -405,6 +412,7 @@ test.describe.serial('ペイン内 URL の Cmd/Ctrl+クリック（issue #349 / 
 
     // 修飾キー付きクリックをしても openExternal は一切呼ばれない。
     await modifierClickAtOffset(win, pos, 3, mac);
+    await expect(win.locator('.internal-browser-choice')).toHaveCount(0);
     expect(await getOpenExternalCalls(app)).toEqual([]);
   });
 
@@ -442,6 +450,7 @@ test.describe.serial('ペイン内 URL の Cmd/Ctrl+クリック（issue #349 / 
     const selection = await win.evaluate(() => terminals['pane-1'].term.getSelection());
     expect(selection).toContain('example.com/vk-terminals-e2e-drag-select');
     // wasDragged() のガード（HIGH-2）により、同一リンク内のドラッグでも開かない。
+    await expect(win.locator('.internal-browser-choice')).toHaveCount(0);
     expect(await getOpenExternalCalls(app)).toEqual([]);
   });
 
@@ -477,7 +486,8 @@ test.describe.serial('ペイン内 URL の Cmd/Ctrl+クリック（issue #349 / 
           const line = buf.getLine(buf.viewportY + i);
           lines.push(line ? { isWrapped: line.isWrapped, text: line.translateToString(true) } : null);
         }
-        for (let i = 0; i < lines.length; i += 1) {
+        // echo の入力行と出力行に同じ URL が現れるため、下から探して出力行を優先する。
+        for (let i = lines.length - 1; i >= 0; i -= 1) {
           if (!lines[i] || !lines[i].isWrapped) continue;
           // この行だけ、または前の折り返し継続行（あれば）と連結した文字列に
           // 末尾断片が含まれていれば、この行を「末尾を含む折り返し継続行」とみなす。
@@ -513,6 +523,7 @@ test.describe.serial('ペイン内 URL の Cmd/Ctrl+クリック（issue #349 / 
       expect(tooltip.text).toContain('github.com');
 
       await modifierClickAtOffset(win, pos, 1, mac);
+      await chooseExternalBrowser(win, app);
       // 分断されていない完全な URL が渡る。
       expect(await getOpenExternalCalls(app)).toEqual([url]);
     } finally {
@@ -647,9 +658,6 @@ test.describe.serial('ペイン内 URL クリック: terminalLinkClickMode が m
     await waitForPtyRegistration(port);
     await stubShellOpenExternal(app);
     mac = await isMacPlatform(win);
-    // MEDIUM-D: 起動直後の「復帰クリック」の印を無害に消費する（詳細は
-    // consumePendingWindowRefocusClick() の説明コメント参照）。
-    await consumePendingWindowRefocusClick(win);
   });
 
   test.afterAll(async () => {
@@ -687,6 +695,7 @@ test.describe.serial('ペイン内 URL クリック: terminalLinkClickMode が m
     expect(pos).not.toBeNull();
     await plainClickAtOffset(win, pos, 3);
 
+    await expect(win.locator('.internal-browser-choice')).toHaveCount(0);
     expect(await getOpenExternalCalls(app)).toEqual([]);
   });
 
@@ -698,17 +707,14 @@ test.describe.serial('ペイン内 URL クリック: terminalLinkClickMode が m
     const pos = await findTextPosition(win, url);
     expect(pos).not.toBeNull();
     await modifierClickAtOffset(win, pos, 3, mac);
+    await chooseExternalBrowser(win, app);
 
     expect(await getOpenExternalCalls(app)).toEqual([url]);
   });
 });
 
-// ─── フォーカスガード: グリッド・格納どちらでも機能する（issue #385 レビュー指摘・MEDIUM-4） ──
-// 安藤（セキュリティ）・植草（UX）の両方から、フォーカスガードの e2e が無いという指摘を
-// 受けて追加。既定モード（'click'）専用の独立したアプリインスタンスで検証する（上の共有
-// describe.serial の pane-1 消費順・後続テストへの影響を避けるため、あえて別インスタンスに
-// 分けている）。
-test.describe.serial('ペイン内 URL クリック: フォーカスされていないペインでは開かず、フォーカス済みなら開く（issue #385 レビュー指摘・MEDIUM-4）', () => {
+// ─── 未フォーカスのペインでも最初のクリックで選択メニューを出す ──────────────────
+test.describe.serial('ペイン内 URL クリック: 未フォーカスのグリッド・格納ペインでも最初に開き先を選べる', () => {
   let app;
   let win;
   let tmpRoot;
@@ -718,13 +724,10 @@ test.describe.serial('ペイン内 URL クリック: フォーカスされてい
     port = await getFreePort();
     ({ app, win, tmpRoot } = await launchApp({
       port,
-      prefix: 'vk-terminals-e2e-terminal-link-focus-guard-',
+      prefix: 'vk-terminals-e2e-terminal-link-unfocused-',
     }));
     await waitForPtyRegistration(port);
     await stubShellOpenExternal(app);
-    // MEDIUM-D: 起動直後の「復帰クリック」の印を無害に消費する（詳細は
-    // consumePendingWindowRefocusClick() の説明コメント参照）。
-    await consumePendingWindowRefocusClick(win);
   });
 
   test.afterAll(async () => {
@@ -737,163 +740,52 @@ test.describe.serial('ペイン内 URL クリック: フォーカスされてい
     await moveMouseAway(win);
   });
 
-  // ⚠ このファイルは describe.serial 内で 1 つのアプリインスタンスを両テストで共有して
-  // おり、実行順に依存する（1つ目のテストが作った「pane-1 が非フォーカスの2ペイン構成」
-  // を2つ目のテストがそのまま引き継いで使う）。順序を入れ替えないこと。
-  test('グリッド: フォーカスされていないペインの URL は最初のクリックでは開かず、次のクリックで開く', async () => {
-    // pane-1 を分割してもう1枚作る。addPane()（renderer/app.js）は新ペインを自動で
-    // フォーカスするため、この時点で pane-1 は非フォーカスになる。
+  // 2つ目のテストは、1つ目で作成した pane-2 をフォーカス移動先として使う。
+  test('グリッド: 未フォーカスのペインでも最初のクリックで選択メニューを表示する', async () => {
     await win.locator('.pane-header .btn-split').first().click();
     await expect(win.locator('.pane')).toHaveCount(2);
     await expect(win.locator('.pane[data-id="pane-1"]')).not.toHaveClass(/\bfocused\b/);
 
-    const url = 'https://example.com/vk-terminals-e2e-grid-unfocused-guard';
+    const url = 'https://example.com/vk-terminals-e2e-grid-unfocused';
     await postSend(port, `echo "${url}"\r`);
     await waitForBufferText(win, url, 'pane-1');
 
     const pos = await findTextPosition(win, url, 'pane-1');
     expect(pos).not.toBeNull();
-
-    // 1回目のクリック: フォーカス移動だけに使われ、リンクは開かない
-    // （修正前の MEDIUM-1/HIGH-2 とは別の穴・issue #385 本来のガード）。
     await plainClickAtOffset(win, pos, 3);
+
+    await expect(win.locator('.internal-browser-choice')).toBeVisible();
     expect(await getOpenExternalCalls(app)).toEqual([]);
-    await expect(win.locator('.pane[data-id="pane-1"]')).toHaveClass(/\bfocused\b/);
-
-    // MEDIUM-A: 同じ座標への連続クリックは、間隔が短いとブラウザ側でダブルクリック
-    // （event.detail > 1）と判定され、そのガード（issue #385 レビュー指摘・MEDIUM-A）に
-    // 引っかかって2回目のクリックまで「開かない」側になってしまう。ダブルクリック判定は
-    // 最終的なクリック位置とクリック間隔で決まり、途中でポインタを動かしても位置が
-    // 同じなら解除されないため、moveMouseAway() に加えて既定のダブルクリック間隔
-    // （OS・ブラウザ既定でおおむね 500ms 前後）を確実に超える待ちを明示的に挟む。
-    //
-    // moveMouseAway() を残すかどうかは判断が割れた点なので経緯を残す。実は Playwright/
-    // CDP 経由の合成クリックでは、同一セルへ約400msの通常間隔で連続クリックしても
-    // event.detail は 2 にならない（実測・司への報告済み）。つまり moveMouseAway() が
-    // このテストの安定性に本当に必要かは未確定のまま（Chromium/CDP のクリック合成が
-    // 実ハードウェアのダブルクリック計数と同じ挙動をするとは限らないため）。実 macOS
-    // ハードウェアでの検証はしていないので、安全側に倒してここでは残している
-    // （司・安藤合意。「本当に必要かの検証」は今回のスコープ外として記録に留める）。
-    //
-    // 【xterm.js 6.0.0 の既知の挙動・重要】moveMouseAway() を残す以上、2回目のクリックを
-    // 1回目と「同じセル」（同じ colOffset）へ戻してはいけない。これは #385 実装の
-    // バグではなく、xterm.js 本体 Linkifier._handleMouseMove のキャッシュに起因する
-    // ライブラリ側の挙動で、npm から実際に取得した @xterm/xterm 6.0.0 の
-    // src/browser/Linkifier.ts で再現・特定済み（司への調査報告参照）。
-    //   - moveMouseAway()（要素外への瞬間移動）で本物の mouseleave が起きると、
-    //     Linkifier は _currentLink をクリアするが _lastBufferCell はクリアしない。
-    //   - その状態で「中間セルを一切経由せず」元のセルへ瞬間移動すると、
-    //     _handleMouseMove が「同じセルへの再訪問」と誤認してホバー解決処理
-    //     （_handleHover）を丸ごとスキップし、_currentLink が二度と復元されない。
-    //     結果、後続の mousedown/mouseup で activate() まで到達しなくなる。
-    //   - 本物の物理マウス・トラックパッドは、離れた2点間を移動する際に必ず中間セルを
-    //     経由する連続的な mousemove を発生させるため、この「中間点ゼロの瞬間移動」は
-    //     起こり得ず、実利用でこの問題が発生することはない（Playwright の mouse.move()
-    //     が既定で中間点を生成しないテスト自動化特有の現象であることを、
-    //     { steps: 30 } で経路移動させると再現しなくなることまで確認して切り分け済み）。
-    //   - このため製品コード側の対処（合成 mousemove でのキャッシュ洗浄。動作確認は
-    //     できている）は行わず、テスト側で「2回目のクリック位置を1セルずらす」ことで
-    //     この罠を避ける方針にした（司・安藤合意）。次にここで同じ落ち方を見た人が
-    //     「実装のバグだ」と誤診しないよう、必ずこのコメントを先に読むこと。
-    await moveMouseAway(win);
-    await new Promise((resolve) => setTimeout(resolve, 700));
-
-    // 2回目のクリック: 既にフォーカス済みのため開く。colOffset を 1回目（3）から
-    // 4 へ意図的にずらしている（上のコメント参照。同じセルに戻すと xterm.js の
-    // キャッシュに引っかかって開かなくなる）。
-    await plainClickAtOffset(win, pos, 4);
+    await chooseExternalBrowser(win, app);
     expect(await getOpenExternalCalls(app)).toEqual([url]);
   });
 
-  test('格納（サイドバー）: フォーカス済みのまま格納したペインでも、最初のクリックでは開かず、次のクリックで開く（レビュー指摘・MEDIUM-1 の回帰）', async () => {
-    // 直前のテストの末尾で pane-1 はフォーカス済み。ここで .btn-stash をクリックする
-    // （click の直前に mousedown が .pane へバブリングし、フォーカス済みの状態のまま
-    // paneFocusBeforeMousedown へ記録される → その直後に stashPane() でフォーカスが
-    // 他ペインへ移る、という MEDIUM-1 の再現条件そのもの）。
-    await expect(win.locator('.pane[data-id="pane-1"]')).toHaveClass(/\bfocused\b/);
+  test('格納: 未フォーカスのペインでも最初のクリックで選択メニューを表示する', async () => {
     await win.locator('.pane[data-id="pane-1"] .btn-stash').click();
-
-    await expect(win.locator('.pane[data-id="pane-1"]')).toHaveCount(0);
     const stashItem = win.locator('.stash-item[data-id="pane-1"]');
     await expect(stashItem).toBeVisible({ timeout: 10_000 });
-
-    // 格納直後は xterm が折り畳まれているため、まずカード内で開く。
-    //
-    // 【原因B・麗美の切り分け】.btn-stash-toggle は renderer/app.js の
-    // toggleStashXterm()（この PR の差分ではない既存コード）の副作用で、カードを開くと
-    // 同時にそのペインへ focusPane() も呼ぶ（stashXtermOpen 時に
-    // requestAnimationFrame(() => { fitTerminal(paneId); focusPane(paneId); }) している
-    // ため）。つまりこの時点で格納カード（pane-1）の方こそがフォーカス済みになっており、
-    // このテストが検証したい「非フォーカスな格納ペインへの最初のクリック」の前提には
-    // まだ到達できていない。実際に麗美が手で確認済み: トグル直後にすぐ URL をクリック
-    // すると1回目で開いてしまう（副作用でフォーカス済みのため、これ自体は正しい挙動）。
-    // 次にこのカードのテストを書く人が同じ前提のズレで詰まらないよう、必ずこの後
-    // 「別のグリッドペインをクリックしてフォーカスを移す」手順を入れること。
     await stashItem.locator('.btn-stash-toggle').click();
     await expect(stashItem.locator('.term-container')).toBeVisible();
 
-    // pane-2（上の「グリッド」テストの分割で作られ、以後空のまま残っているグリッド
-    // ペイン）をクリックしてフォーカスを移し、格納カードを本当に非フォーカスの状態に
-    // する。これでようやく MEDIUM-1 が検証したい前提（非フォーカスな格納ペインへの
-    // 最初のクリック）に到達する。
     await win.locator('.pane[data-id="pane-2"] .pane-header').click();
     await expect(stashItem).not.toHaveClass(/\bfocused\b/);
 
-    // 【原因A・麗美の切り分け】格納カードを開いた .term-container は幅が大きく縮む
-    // （実測: グリッドの pane-1 は cols=131 だが、この格納カードは cols=34 程度まで
-    // 狭くなる）。waitForBufferText() / findTextPosition()（このファイル冒頭のヘルパー）
-    // はバッファを1行ずつ needle.includes()/indexOf() で見ているだけで、xterm 側の
-    // 折り返し（isWrapped）を一切考慮していない。狭い幅で長い URL を echo すると
-    // 入力エコー行・出力行のどちらも折り返されて2行にまたがり、needle がどの1行にも
-    // 単独で現れなくなって見つからない（waitForBufferText は15秒でタイムアウトする。
-    // URL 自体はバッファに正しく描画されていることは麗美がダンプで確認済みで、実装の
-    // バグではない）。グリッド側（cols=131）で表面化しなかっただけで、ヘルパー自体が
-    // 元々持っていた穴。
-    //
-    // 対処はヘルパーを折り返し対応にする（案 i）のではなく、この URL をこの幅でも
-    // 折り返さない短さにする（案 ii）を採用した。ヘルパーの折り返し対応は
-    // 「折り返した文字列のどの座標を返すか」という別の設計判断を含み、既存テストへの
-    // 影響範囲も広がるため（司・麗美合意）。次に細い幅（cols が数十程度）のペインで
-    // 長い URL を使うテストを書く人は、同じ穴を踏むのでこのコメントを参照すること。
-    const url = 'https://example.com/385s';
+    const url = 'https://example.com/600s';
     await postSend(port, `echo "${url}"\r`);
     await waitForBufferText(win, url, 'pane-1');
 
     const pos = await findTextPosition(win, url, 'pane-1', '.stash-item[data-id="pane-1"]');
     expect(pos).not.toBeNull();
-
-    // 1回目のクリック: 格納カードはこの時点で非フォーカスのため、フォーカス移動だけに
-    // 使われ開かない。MEDIUM-1 の修正前は、.stash-item の mousedown が
-    // recordPaneFocusBeforeMousedown() を呼んでおらず、格納前の「フォーカス済み」の
-    // 記録が残ったままだったためここで誤って開いてしまっていた。
     await plainClickAtOffset(win, pos, 3);
+
+    await expect(win.locator('.internal-browser-choice')).toBeVisible();
     expect(await getOpenExternalCalls(app)).toEqual([]);
-    await expect(stashItem).toHaveClass(/\bfocused\b/);
-
-    // MEDIUM-A: 上のグリッドのテストと同じ理由で、連続クリックがダブルクリック
-    // 扱いにならないよう moveMouseAway() ＋明示的な待ちを挟む（moveMouseAway() を
-    // 残す理由・xterm.js のキャッシュの罠で2回目を同じセルへ戻してはいけない理由は、
-    // 上のグリッドのテストのコメントを参照。ここでは重複を避けて要点だけ記す）。
-    await moveMouseAway(win);
-    await new Promise((resolve) => setTimeout(resolve, 700));
-
-    // 2回目のクリック: 既にフォーカス済みのため開く。colOffset を 1回目（3）から
-    // 4 へずらす（同じセルに戻すと xterm.js のキャッシュに引っかかって開かなくなるため。
-    // 詳細は上のグリッドのテストのコメント参照）。url を短くした（原因A対処）ため、
-    // colOffset 4 でも url の文字範囲（24文字）に収まる。
-    await plainClickAtOffset(win, pos, 4);
+    await chooseExternalBrowser(win, app);
     expect(await getOpenExternalCalls(app)).toEqual([url]);
   });
 });
-
-// ─── 計測側（renderer/app.js）の回帰テスト（issue #385 レビュー指摘・MEDIUM-B） ─────────
-// utils/terminalLinkPolicy.js 側のユニットテストは wasDragged() / wasPaneFocused() を
-// スタブで渡しており、実際に判定値を作っている renderer/app.js 側（document の capture
-// リスナー・距離計算・pendingWindowRefocusClick → isPostWindowBlurMousedown の受け渡し）
-// は一切検証されていなかった（安藤レビュー指摘。MEDIUM-1 が最初に見落とされた構図と
-// 同じ：ガードは書いたが、そのガードに値を渡す側が試されていない）。専用の新規アプリ
-// インスタンスで、実際のマウス操作・window blur を使って検証する。
-test.describe.serial('ペイン内 URL クリック: 計測側（右クリック・ドラッグ・ウィンドウ復帰）の回帰（issue #385 レビュー指摘・MEDIUM-B）', () => {
+// ─── メニューを表示しないマウス操作の実 UI 回帰 ───────────────────────────────
+test.describe.serial('ペイン内 URL クリック: 右・中・ダブルクリックとドラッグではメニューを出さない', () => {
   let app;
   let win;
   let tmpRoot;
@@ -907,9 +799,6 @@ test.describe.serial('ペイン内 URL クリック: 計測側（右クリック
     }));
     await waitForPtyRegistration(port);
     await stubShellOpenExternal(app);
-    // MEDIUM-D: 起動直後の「復帰クリック」の印を無害に消費する（詳細は
-    // consumePendingWindowRefocusClick() の説明コメント参照）。
-    await consumePendingWindowRefocusClick(win);
   });
 
   test.afterAll(async () => {
@@ -931,6 +820,33 @@ test.describe.serial('ペイン内 URL クリック: 計測側（右クリック
     expect(pos).not.toBeNull();
     await rightClickAtOffset(win, pos, 3);
 
+    await expect(win.locator('.internal-browser-choice')).toHaveCount(0);
+    expect(await getOpenExternalCalls(app)).toEqual([]);
+  });
+
+  test('中クリックでは選択メニューを表示せず openExternal も呼ばない', async () => {
+    const url = 'https://example.com/vk-terminals-e2e-measurement-middle-click';
+    await postSend(port, `echo "${url}"\r`);
+    await waitForBufferText(win, url);
+
+    const pos = await findTextPosition(win, url);
+    expect(pos).not.toBeNull();
+    await blockedClickAtOffset(win, pos, 3, { button: 'middle' });
+
+    await expect(win.locator('.internal-browser-choice')).toHaveCount(0);
+    expect(await getOpenExternalCalls(app)).toEqual([]);
+  });
+
+  test('ダブルクリックの2回目では選択メニューを表示せず openExternal も呼ばない', async () => {
+    const url = 'https://example.com/vk-terminals-e2e-measurement-double-click';
+    await postSend(port, `echo "${url}"\r`);
+    await waitForBufferText(win, url);
+
+    const pos = await findTextPosition(win, url);
+    expect(pos).not.toBeNull();
+    await blockedClickAtOffset(win, pos, 3, { clickCount: 2 });
+
+    await expect(win.locator('.internal-browser-choice')).toHaveCount(0);
     expect(await getOpenExternalCalls(app)).toEqual([]);
   });
 
@@ -954,39 +870,8 @@ test.describe.serial('ペイン内 URL クリック: 計測側（右クリック
     expect(selection.length).toBeGreaterThan(0);
     expect(url).toContain(selection);
 
+    await expect(win.locator('.internal-browser-choice')).toHaveCount(0);
     expect(await getOpenExternalCalls(app)).toEqual([]);
   });
 
-  test('ウィンドウ blur の直後の最初のクリックでは開かず、次のクリックで開く（MEDIUM-5 の計測側回帰。植草からも優先度「中」）', async () => {
-    const url = 'https://example.com/vk-terminals-e2e-measurement-blur';
-    await postSend(port, `echo "${url}"\r`);
-    await waitForBufferText(win, url);
-
-    const pos = await findTextPosition(win, url);
-    expect(pos).not.toBeNull();
-
-    // renderer/app.js の window blur ハンドラ（hideTermLinkTooltip 起点のテストと同じ
-    // 手口・issue #385 の pendingWindowRefocusClick）を発火させる。実際の OS フォーカス
-    // 喪失を伴わない合成イベントだが、同じ 'blur' リスナーが動くため等価に検証できる。
-    await win.evaluate(() => window.dispatchEvent(new Event('blur')));
-
-    // 1回目のクリック: 「ウィンドウを前面に出すためのクリック」扱いになり、
-    // フォーカス移動だけに使われて開かない。
-    await plainClickAtOffset(win, pos, 3);
-    expect(await getOpenExternalCalls(app)).toEqual([]);
-
-    // MEDIUM-A: 連続クリックがダブルクリック扱いにならないよう間隔を空ける
-    // （上の「グリッド」テスト（terminal-link-open-url.smoke.spec.js 内、フォーカス
-    // ガードの describe ブロック）と同じ理由。moveMouseAway() を残す理由・2回目を
-    // 同じセルへ戻してはいけない xterm.js のキャッシュの罠については、そちらの
-    // コメントを参照。ここでは重複を避けて要点だけ記す）。
-    await moveMouseAway(win);
-    await new Promise((resolve) => setTimeout(resolve, 700));
-
-    // 2回目のクリック: 復帰クリックの印は1回目で消費済みのため、通常どおり開く。
-    // colOffset を 1回目（3）から 4 へずらす（同じセルに戻すと xterm.js のキャッシュに
-    // 引っかかって開かなくなるため。詳細は上記「グリッド」テストのコメント参照）。
-    await plainClickAtOffset(win, pos, 4);
-    expect(await getOpenExternalCalls(app)).toEqual([url]);
-  });
 });

@@ -71,12 +71,12 @@ test('前ページの画像読み込み中でも案内を開いて設定を閉�
     await win.locator('#internal-browser-toggle').click();
     await win.evaluate((url) => VKIpc.invoke('internal-browser:open', url), `http://127.0.0.1:${previousPage.address().port}/previous`);
     await imageRequested;
-    await expect(win.locator('.internal-browser-url')).toContainText('/previous');
+    await expect(win.locator('.internal-browser-url')).toHaveValue(/\/previous/);
     await expect(win.locator('.internal-browser-progress')).toBeVisible();
     await win.locator('#sidebar-help button').click();
     await win.getByRole('button', { name: 'ドキュメント', exact: true }).click();
     await expect(win.locator('.settings-modal')).toHaveCount(0);
-    await expect(win.locator('.internal-browser-url')).toHaveAttribute('title', 'vk-terminals-help://guide/');
+    await expect(win.locator('.internal-browser-url')).toHaveValue('vk-terminals-help://guide/');
     await expect(win.locator('body')).not.toContainText('ドキュメントを開けませんでした');
   } finally {
     if (imageResponse && !imageResponse.destroyed) imageResponse.end();
@@ -129,7 +129,9 @@ test('使い方・ヘルプ: 確認失敗の再確認、未保存キャンセル
     }
     // 案内より前のページをローカルで読み込み、完了後に通常の履歴へ残す。
     await win.evaluate((url) => VKIpc.invoke('internal-browser:open', url), previousUrl);
-    await expect(win.locator('.internal-browser-url')).toContainText('/previous');
+    await expect.poll(() => app.evaluate(({ webContents }, expectedUrl) =>
+      webContents.getAllWebContents().some((contents) => contents.getURL() === expectedUrl), previousUrl)).toBe(true);
+    await expect(win.locator('.internal-browser-url')).toHaveValue(/\/previous/);
     await expect(win.locator('.internal-browser-progress')).toBeHidden();
     await expect(win.locator('.internal-browser-error')).toBeHidden();
     // IPC を保留し、未保存変更が無い場合の読み込み中表示を観察する。
@@ -143,7 +145,7 @@ test('使い方・ヘルプ: 確認失敗の再確認、未保存キャンセル
     await win.getByRole('button', { name: 'ドキュメント', exact: true }).click();
     await expect(win.locator('.settings-help-entry [role=status]')).toHaveText('ドキュメントを読み込んでいます…');
     await win.evaluate(() => window.releaseDocument());
-    await expect(win.locator('.internal-browser-url')).toContainText('guide');
+    await expect(win.locator('.internal-browser-url')).toHaveValue(/guide/);
     await expect(win.locator('.settings-modal')).toHaveCount(0);
     await expect(win.locator('#internal-browser-sidebar')).toBeVisible();
     // 読み込み済みの操作列へフォーカスし、無関係な初期案内を残さない。
@@ -162,34 +164,37 @@ test('使い方・ヘルプ: 確認失敗の再確認、未保存キャンセル
       const guide = webContents.getAllWebContents().find((contents) => contents.getURL().startsWith('vk-terminals-help://guide/'));
       await guide.executeJavaScript("document.querySelector('a[href=\"#section\"]').click()", true);
     });
-    await expect(win.locator('.internal-browser-url')).toContainText('#section');
+    await expect(win.locator('.internal-browser-url')).toHaveValue(/\#section/);
     // 案内内の外部リンクをクリックし、履歴の「戻る」で案内へ復帰する。
     await app.evaluate(async ({ webContents }) => {
       const guide = webContents.getAllWebContents().find((contents) => contents.getURL().startsWith('vk-terminals-help://guide/'));
       await guide.executeJavaScript("document.querySelector('a[href^=\"http:\"]').click()", true);
     });
-    await expect(win.locator('.internal-browser-url')).toContainText('127.0.0.1');
+    await expect(win.locator('.internal-browser-url')).toHaveValue(/127\.0\.0\.1/);
     await win.locator('.internal-browser-toolbar [data-action="back"]').click();
-    await expect(win.locator('.internal-browser-url')).toContainText('#section');
+    await expect(win.locator('.internal-browser-url')).toHaveValue(/\#section/);
     await win.locator('.internal-browser-toolbar [data-action="forward"]').click();
-    await expect(win.locator('.internal-browser-url')).toContainText('127.0.0.1');
+    await expect(win.locator('.internal-browser-url')).toHaveValue(/127\.0\.0\.1/);
     // B からは A を経由し、案内とその前のローカルページまで順に戻る。
     await app.evaluate(async ({ webContents }) => {
       const page = webContents.getAllWebContents().find((contents) => contents.getURL().startsWith('http://127.0.0.1:'));
       await page.executeJavaScript("document.querySelector('a').click()", true);
     });
-    await expect(win.locator('.internal-browser-url')).toContainText('/next');
+    await expect(win.locator('.internal-browser-url')).toHaveValue(/\/next/);
     await win.locator('.internal-browser-toolbar [data-action="back"]').click();
-    await expect(win.locator('.internal-browser-url')).toHaveText(linkedUrl);
+    await expect(win.locator('.internal-browser-url')).toHaveValue(linkedUrl);
     await win.locator('.internal-browser-toolbar [data-action="back"]').click();
-    await expect(win.locator('.internal-browser-url')).toContainText('#section');
+    await expect(win.locator('.internal-browser-url')).toHaveValue(/\#section/);
     await win.locator('.internal-browser-toolbar [data-action="back"]').click();
-    await expect(win.locator('.internal-browser-url')).toContainText('guide');
+    // #section も /guide/ に一致するため、基底URLへの履歴移動完了を完全一致で待つ。
+    await expect(win.locator('.internal-browser-url')).toHaveValue('vk-terminals-help://guide/');
     await win.locator('.internal-browser-toolbar [data-action="back"]').click();
-    await expect(win.locator('.internal-browser-url')).toContainText('/previous');
+    await expect(win.locator('.internal-browser-url')).toHaveValue(previousUrl);
     await win.locator('.internal-browser-toolbar [data-action="forward"]').click();
-    await expect(win.locator('.internal-browser-url')).toContainText('guide');
-    await win.getByRole('button', { name: '外部ブラウザで開く', exact: true }).first().click();
+    await expect(win.locator('.internal-browser-url')).toHaveValue(/guide/);
+    await expect.poll(() => app.evaluate(({ webContents }) =>
+      webContents.getAllWebContents().some((contents) => contents.getURL() === 'vk-terminals-help://guide/'))).toBe(true);
+    await win.locator('.internal-browser-toolbar [data-action="external"]').click();
     await expect.poll(() => app.evaluate(() => global.helpDocumentUrls)).toEqual([require('url').pathToFileURL(fs.realpathSync(path.join(root, 'help.html'))).href]);
     // 同梱 HTML が消えた場合は設定を閉じず、再試行の案内を残す。
     fs.unlinkSync(path.join(root, 'help.html'));

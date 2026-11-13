@@ -1600,6 +1600,11 @@ body:has(.confirm-overlay) .vk-toast-layer {
   transform: translateX(0);
   border-right: 1px solid #21262d;
 }
+/* 狭幅でブラウザを開くときは左サイドバーを即座に畳み、トランジション中も
+ * ターミナル領域が最小幅未満へ一時的に潰れないようにする。 */
+#root.internal-browser-open .sidebar {
+  transition: none;
+}
 /* リサイズ中は追従を即時にするためトランジションを切る。 */
 body.resizing-sidebar .sidebar {
   transition: none;
@@ -4039,6 +4044,13 @@ body.pane-dragging * {
   z-index: 901;
 }
 .internal-browser-sidebar[hidden] { display: none; }
+#root.internal-browser-overlay .internal-browser-sidebar {
+  position: absolute;
+  inset: 0;
+  width: 100% !important;
+  border-left: 0;
+}
+#root.internal-browser-overlay .internal-browser-resizer { display: none; }
 .internal-browser-resizer {
   position: absolute;
   left: -5px;
@@ -4053,18 +4065,32 @@ body.pane-dragging * {
 .internal-browser-toolbar button { flex: 0 0 28px; width: 28px; height: 28px; border: 1px solid transparent; border-radius: 5px; background: transparent; color: #e6edf3; cursor: pointer; }
 .internal-browser-toolbar button:hover { background: #21262d; }
 .internal-browser-toolbar button:disabled { color: #6e7681; cursor: default; }
-.internal-browser-toolbar .internal-browser-url { flex: 1 1 auto; width: 0; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 12px; }
-.internal-browser-toolbar .internal-browser-url { display: flex; align-items: center; }
-.internal-browser-host { flex: 0 0 auto; }
-.internal-browser-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.internal-browser-http { color: #f85149; }
+.internal-browser-toolbar .internal-browser-url { flex: 1 1 auto; min-width: 0; height: 28px; box-sizing: border-box; padding: 0 7px; border: 1px solid var(--vktm--color--border-interactive); border-radius: 5px; background: #161b22; color: #e6edf3; font: inherit; font-size: 12px; }
+.internal-browser-toolbar .internal-browser-url::placeholder { color: #8b949e; }
+.internal-browser-toolbar .internal-browser-url[aria-invalid="true"] { border-color: #f85149; }
+.internal-browser-external-target { margin: 6px 8px 4px; color: #c9d1d9; font-size: 12px; line-height: 1.6; line-break: strict; overflow-wrap: anywhere; }
+.internal-browser-external-target[hidden] { display: none; }
+.internal-browser-address-error { margin: 5px 8px 8px; color: #f85149; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.internal-browser-address-error[hidden] { display: none; }
 .internal-browser-progress { height: 2px; width: 50%; background: #58a6ff; animation: internal-browser-loading 1.4s ease-in-out infinite alternate; }
+.internal-browser-navigation-status { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 @keyframes internal-browser-loading { from { transform: translateX(0); } to { transform: translateX(100%); } }
 @media (prefers-reduced-motion: reduce) { .internal-browser-progress { animation: none; } }
 .internal-browser-page { flex: 1 1 auto; min-height: 0; }
 .internal-browser-notice, .internal-browser-error { padding: 12px; font-size: 12px; line-height: 1.5; background: #161b22; }
 .internal-browser-notice[hidden], .internal-browser-error[hidden], .internal-browser-progress[hidden] { display: none; }
 .internal-browser-notice button, .internal-browser-error button { margin: 6px 6px 0 0; padding: 4px 8px; border: 1px solid var(--vktm--color--border-interactive); border-radius: 4px; background: #21262d; color: #e6edf3; cursor: pointer; }
+.internal-browser-error [data-action="external"] { max-width: calc(100% - 6px); text-align: left; }
+/* 完全な遷移先を確認でき、長い URL でも回復操作とページの領域を保つ。 */
+.internal-browser-external-target,
+.internal-browser-error [data-action="external"] {
+  display: block;
+  white-space: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.internal-browser-external-target { flex-shrink: 0; }
+.internal-browser-error [data-action="external"] { line-height: 1.5; }
 /* 案内文と操作を分け、狭い幅でもボタンを一組で揃える。 */
 .internal-browser-notice p { margin: 0; }
 .internal-browser-notice-actions { display: flex; flex-wrap: nowrap; gap: 6px; margin-top: 6px; }
@@ -4073,13 +4099,17 @@ body.pane-dragging * {
 .internal-browser-choice-heading { padding: 5px 8px; color: #8b949e; font-size: 11px; }
 .internal-browser-choice [role="menuitem"] { display: block; width: 100%; padding: 7px 8px; text-align: left; border: 0; border-radius: 4px; background: transparent; color: inherit; cursor: pointer; }
 .internal-browser-choice [role="menuitem"]:hover, .internal-browser-choice [role="menuitem"]:focus-visible { background: #30363d; }
-/* WebContentsView は HTML より前面に描かれるため、トーストをブラウザ領域へ重ねない。 */
-body:has(#root.internal-browser-open):not(:has(.settings-overlay, .confirm-overlay)) .vk-toast-layer {
+/* WebContentsView は HTML より前面に描かれるため、トーストをブラウザ領域へ重ねない。
+ * 全面表示ではブラウザの左側に置き場所が無いので、この左寄せは横並びのときだけ使う。 */
+body:has(#root.internal-browser-open:where(:not(.internal-browser-overlay))):not(:has(.settings-overlay, .confirm-overlay)) .vk-toast-layer {
   right: calc(var(--vktm-internal-browser-width, 480px) + 16px);
   width: max-content;
   /* 32px は utils/internalBrowserLayout.js の shouldWrapToastPhrase と揃える。 */
   max-width: min(320px, calc(100vw - var(--vktm-internal-browser-width, 480px) - 32px));
 }
-body:has(#root.internal-browser-open):not(:has(.settings-overlay, .confirm-overlay)) .vk-toast { max-width: min(320px, 100%); }
+body:has(#root.internal-browser-open:where(:not(.internal-browser-overlay))):not(:has(.settings-overlay, .confirm-overlay)) .vk-toast { max-width: min(320px, 100%); }
 /* トーストを置ける幅が 200px 未満のときは案内の語句を折り返す。 */
 body:has(#root.internal-browser-open.toast-phrase-wrap):not(:has(.settings-overlay, .confirm-overlay)) .vk-toast-phrase { white-space: normal; }
+/* 全面表示ではトーストを通常の右下に置く。重なる分のページ領域は renderer/app.js の
+ * internalBrowserToastReserve が詰める。32px は左右の余白 16px × 2。 */
+body:has(#root.internal-browser-overlay) .vk-toast { max-width: min(320px, calc(100vw - 32px)); }

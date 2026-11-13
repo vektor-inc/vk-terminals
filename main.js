@@ -9,7 +9,11 @@ let internalBrowser = null;
 const { isInternalBrowserSender: isAllowedBrowserSender } = require('./utils/internalBrowserSender');
 const isInternalBrowserSender = event => isAllowedBrowserSender(event, win);
 
-ipcMain.handle('internal-browser:open', (event, url) => isInternalBrowserSender(event) && !!internalBrowser?.navigate(url));
+ipcMain.handle('internal-browser:open', (event, url, requestId) => {
+  if (!isInternalBrowserSender(event)) return false;
+  if (requestId !== undefined && (!Number.isSafeInteger(requestId) || requestId <= 0)) return false;
+  return !!internalBrowser?.navigate(url, false, requestId);
+});
 ipcMain.handle('internal-browser:external', async (event, source) => {
   if (!isInternalBrowserSender(event)) return false;
   const url = internalBrowser?.externalUrl(source);

@@ -87,7 +87,7 @@ test('POST /api/set-title の prMerged が renderer の PR バッジへ反映さ
 
     await expect(prBadge).toBeVisible();
     await expect(prBadge).toHaveClass(/\bmerged\b/);
-    await expect(prBadge).toHaveAttribute('aria-label', 'マージ済みのプルリクエストを開く（外部ブラウザ）');
+    await expect(prBadge).toHaveAttribute('aria-label', 'マージ済みのプルリクエストを開く（開き先を選ぶ）');
     await expect(prIcon).toHaveText('✓');
 
     // ─── B: prMerged 省略 → 従来どおり緑（.merged 無し・↗・従来 aria-label） ───
@@ -100,7 +100,7 @@ test('POST /api/set-title の prMerged が renderer の PR バッジへ反映さ
     expect(omittedResult.body && omittedResult.body.prMerged).toBe(false);
 
     await expect(prBadge).not.toHaveClass(/\bmerged\b/);
-    await expect(prBadge).toHaveAttribute('aria-label', 'プルリクエストを開く（外部ブラウザ）');
+    await expect(prBadge).toHaveAttribute('aria-label', 'プルリクエストを開く（開き先を選ぶ）');
     await expect(prIcon).toHaveText('↗');
 
     // ─── C: prMerged が boolean 以外（文字列 "true"）→ 厳密な === true 判定で緑のまま ───
@@ -119,7 +119,7 @@ test('POST /api/set-title の prMerged が renderer の PR バッジへ反映さ
     expect(nonBooleanResult.body && nonBooleanResult.body.prMerged).toBe(false);
 
     await expect(prBadge).not.toHaveClass(/\bmerged\b/);
-    await expect(prBadge).toHaveAttribute('aria-label', 'プルリクエストを開く（外部ブラウザ）');
+    await expect(prBadge).toHaveAttribute('aria-label', 'プルリクエストを開く（開き先を選ぶ）');
     await expect(prIcon).toHaveText('↗');
 
     // ─── D: 多層防御 — renderer 側 `typeof prMerged === 'boolean'` ガード自体の確認 ───

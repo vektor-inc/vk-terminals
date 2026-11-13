@@ -37,7 +37,18 @@
     let url;
     if (/^https?:\/\//i.test(value)) url = value;
     else if (/^(?:localhost|127\.0\.0\.1)(?::\d{1,5})?(?:[/?#][^\s]*)?$/i.test(value)) url = `http://${value}`;
-    else if (/^(?:[a-z\d-]+\.)+[a-z][a-z\d-]+(?::\d{1,5})?(?:[/?#][^\s]*)?$/i.test(value)) url = `https://${value}`;
+    else if (!/\s/.test(value) && /^[^:/?#@]+(?::\d{1,5})?(?:[/?#].*)?$/.test(value)) {
+      // URL パーサーの IDN 正規化後にホストを判定し、検索語をドメインと誤認しない。
+      const authority = value.split(/[/?#]/, 1)[0];
+      const host = /^([^:/?#@]+)(?::\d{1,5})?$/.exec(authority)?.[1];
+      try {
+        const hostname = new URL(`https://${host}`).hostname;
+        url = /^(?:[a-z\d-]+\.)+[a-z][a-z\d-]+$/i.test(hostname)
+          ? `https://${value}` : `https://www.google.com/search?q=${encodeURIComponent(value)}`;
+      } catch (_e) {
+        url = `https://www.google.com/search?q=${encodeURIComponent(value)}`;
+      }
+    }
     else url = `https://www.google.com/search?q=${encodeURIComponent(value)}`;
 
     return isSafeHttpUrl(url) ? url : null;

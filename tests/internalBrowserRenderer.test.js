@@ -4,6 +4,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const { EventEmitter } = require('node:events');
+const { createInternalBrowser } = require('../utils/internalBrowser');
 
 test('左サイドバーの開閉完了後にブラウザとトーストの配置を再同期する', () => {
   const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
@@ -180,8 +182,8 @@ test('失敗表示は失敗 URL、操作列は確定 URL を安全な外部オ�
   vm.runInNewContext(`let internalBrowserUrl = 'https://example.com/confirmed'; let internalBrowserFailedUrl = ''; let internalBrowserDownloadUrl = ''; let internalBrowserHasPage = true; ${focusHelpers} ${clickHandler} ${stateHandler}`, context);
   const state = (failedUrl, github404Url = '', loading = false, url = 'https://example.com/confirmed') => handlers['internal-browser:state']({ url, failedUrl, github404Url, loading });
   state('https://example.com/failed', '', false);
-  assert.equal(display.value, 'https://example.com/confirmed');
-  handlers['internal-browser:state']({ url: 'https://example.com/confirmed', pendingUrl: 'https://example.com/loading', failedUrl: 'https://example.com/failed' });
+  assert.equal(display.value, 'https://example.com/failed');
+  handlers['internal-browser:state']({ url: 'https://example.com/confirmed', pendingUrl: 'https://example.com/loading', failedUrl: '' });
   assert.equal(display.value, 'https://example.com/loading');
   context.internalBrowserUrlEditing = true;
   display.value = '編集中の検索語';
@@ -189,11 +191,11 @@ test('失敗表示は失敗 URL、操作列は確定 URL を安全な外部オ�
   assert.equal(display.value, '編集中の検索語');
   context.internalBrowserUrlEditing = false;
   state('https://example.com/failed', '', false, 'https://example.com/next');
-  assert.equal(display.value, 'https://example.com/next');
-  assert.equal(messageWrites, 1);
+  assert.equal(display.value, 'https://example.com/failed');
+  assert.equal(messageWrites, 3);
   state('https://example.com/failed', '', true);
   state('https://example.com/failed', '', false);
-  assert.equal(messageWrites, 1);
+  assert.equal(messageWrites, 3);
   assert.equal(message.textContent, 'ページを表示できませんでした（example.com）');
   assert.equal(errorView.hidden, false);
   assert.equal(errorButtons.every(button => !button.disabled), true);
@@ -202,13 +204,13 @@ test('失敗表示は失敗 URL、操作列は確定 URL を安全な外部オ�
   assert.equal(activeElement, display);
   assert.equal(message.textContent, '');
   assert.equal(errorView.hidden, true);
-  assert.equal(messageWrites, 2);
+  assert.equal(messageWrites, 4);
   state('https://example.com/failed', '', false);
   assert.equal(message.textContent, 'ページを表示できませんでした（example.com）');
-  assert.equal(messageWrites, 3);
+  assert.equal(messageWrites, 5);
   state('invalid-url', '', false);
   assert.equal(message.textContent, 'ページを表示できませんでした');
-  assert.equal(messageWrites, 4);
+  assert.equal(messageWrites, 6);
   state('https://example.com/failed', '', false);
   const click = inError => handlers.click({ target: {
     closest: selector => selector === '[data-action]' ? { dataset: { action: 'external' } } : selector === '.internal-browser-error' && inError ? errorView : null,
@@ -249,4 +251,101 @@ test('失敗表示は失敗 URL、操作列は確定 URL を安全な外部オ�
   state('', 'https://github.com/another', false, '');
   activeElement.click();
   assert.equal(activeElement, display);
+});
+
+test('main の送信から失敗までの状態順でアドレスを保持し、修正して再入力できる', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
+  const addressHandlers = source.match(/const internalBrowserAddress = internalBrowserSidebar\.querySelector\('\.internal-browser-url'\);[\s\S]*?(?=document\.getElementById\('internal-browser-toggle'\))/)?.[0];
+  const stateHandler = source.match(/VKIpc\.on\('internal-browser:state', state => \{[\s\S]*?\n\}\);/)?.[0];
+  assert.ok(addressHandlers);
+  assert.ok(stateHandler);
+
+  for (const [confirmedUrl, failureCode] of [
+    ['', -105], ['https://example.com/confirmed', -105],
+    ['', -102], ['https://example.com/confirmed', -102],
+  ]) {
+    const handlers = {};
+    const messages = [];
+    const address = { value: '', addEventListener(type, handler) { handlers[type] = handler; } };
+    const message = { textContent: '' };
+    const errorView = { hidden: true, querySelector: () => message, querySelectorAll: () => [] };
+    const notice = { hidden: true, dataset: {}, replaceChildren() {}, contains: () => false };
+    const external = { setAttribute() {} };
+    const elements = {
+      '.internal-browser-url': address,
+      '.internal-browser-error': errorView,
+      '.internal-browser-notice': notice,
+      '.internal-browser-toolbar [data-action="external"]': external,
+      '.internal-browser-toolbar [data-action="reload"]': {},
+      '[data-action="back"]': {}, '[data-action="forward"]': {},
+      '.internal-browser-progress': {},
+    };
+    const sidebar = { querySelector: selector => elements[selector] };
+    let browser;
+    const context = vm.createContext({
+      internalBrowserSidebar: sidebar,
+      normalizeBrowserAddress: require('../renderer/urlSafety').normalizeBrowserAddress,
+      VKIpc: {
+        on: (channel, handler) => { handlers[channel] = handler; },
+        invoke: (_channel, url) => { browser.navigate(url); return Promise.resolve(); },
+      },
+      hideInternalBrowserContent: element => { element.hidden = true; },
+      syncInternalBrowserLayout() {},
+      document: { activeElement: null }, URL,
+    });
+    vm.runInContext(`let internalBrowserUrl = ''; let internalBrowserPendingUrl = ''; let internalBrowserFailedUrl = ''; let internalBrowserDownloadUrl = ''; let internalBrowserUrlEditing = false; let internalBrowserHasPage = false; ${addressHandlers} ${stateHandler}`, context);
+
+    // main の publish をそのまま renderer に渡し、実際の pendingUrl 消去順を確認する。
+    const browserSession = new EventEmitter();
+    browserSession.setPermissionRequestHandler = () => {};
+    browserSession.setPermissionCheckHandler = () => {};
+    browserSession.webRequest = { onBeforeRequest() {}, onCompleted() {} };
+    let contents;
+    class FakeView {
+      constructor() {
+        contents = new EventEmitter();
+        contents.navigationHistory = { canGoBack: () => false, canGoForward: () => false };
+        contents.isLoading = () => false;
+        contents.loadURL = () => Promise.resolve();
+        contents.setWindowOpenHandler = () => {};
+        this.webContents = contents;
+      }
+    }
+    browser = createInternalBrowser({
+      isDestroyed: () => false,
+      webContents: { send(channel, state) {
+        if (channel !== 'internal-browser:state') return;
+        messages.push({ ...state });
+        handlers[channel](state);
+      } },
+    }, { WebContentsView: FakeView, session: { fromPartition: () => browserSession } });
+
+    if (confirmedUrl) {
+      browser.navigate(confirmedUrl);
+      contents.emit('did-navigate', {}, confirmedUrl);
+      assert.equal(address.value, confirmedUrl);
+    }
+    const failedUrl = 'https://unreachable.example/path';
+    address.value = failedUrl;
+    handlers.input();
+    handlers.keydown({ key: 'Enter', preventDefault() {} });
+    assert.equal(messages.at(-1).pendingUrl, failedUrl);
+    contents.emit('did-fail-load', {}, failureCode, 'load failed', failedUrl, true);
+    assert.equal(messages.at(-1).pendingUrl, '');
+    assert.equal(messages.at(-1).failedUrl, failedUrl);
+    assert.equal(messages.at(-1).url, confirmedUrl);
+    assert.equal(address.value, failedUrl);
+    handlers.blur();
+    assert.equal(address.value, failedUrl);
+
+    address.value = 'example.org/retry';
+    handlers.input();
+    contents.emit('did-stop-loading');
+    assert.equal(address.value, 'example.org/retry');
+    handlers.keydown({ key: 'Enter', preventDefault() {} });
+    assert.equal(messages.at(-1).pendingUrl, 'https://example.org/retry');
+    assert.equal(address.value, 'https://example.org/retry');
+    contents.emit('did-navigate', {}, 'https://example.org/retry');
+    assert.equal(address.value, 'https://example.org/retry');
+  }
 });

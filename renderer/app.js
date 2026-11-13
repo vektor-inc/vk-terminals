@@ -297,7 +297,7 @@ const internalBrowserAddress = internalBrowserSidebar.querySelector('.internal-b
 internalBrowserAddress.addEventListener('input', () => { internalBrowserUrlEditing = true; });
 internalBrowserAddress.addEventListener('blur', () => {
   internalBrowserUrlEditing = false;
-  internalBrowserAddress.value = internalBrowserPendingUrl || internalBrowserUrl;
+  internalBrowserAddress.value = internalBrowserPendingUrl || internalBrowserFailedUrl || internalBrowserUrl;
 });
 internalBrowserAddress.addEventListener('keydown', event => {
   if (event.key !== 'Enter' || event.isComposing) return;
@@ -393,8 +393,8 @@ VKIpc.on('internal-browser:state', state => {
   }
   if (!github404Url) hideInternalBrowserContent(notice);
   else if (notice.dataset.url === github404Url && !notice.dataset.dismissed) notice.hidden = false;
-  // 遷移中は送信した先を保ち、完了後は実際に表示された URL へ同期する。
-  if (!internalBrowserUrlEditing) internalBrowserAddress.value = internalBrowserPendingUrl || internalBrowserUrl;
+  // 失敗時は確定 URL に戻さず、送信した URL をアドレス欄に残して修正できるようにする。
+  if (!internalBrowserUrlEditing) internalBrowserAddress.value = internalBrowserPendingUrl || internalBrowserFailedUrl || internalBrowserUrl;
   const externalButton = internalBrowserSidebar.querySelector('.internal-browser-toolbar [data-action="external"]');
   const externalLabel = internalBrowserDownloadUrl
     ? `外部ブラウザで開く: ${internalBrowserDownloadUrl}` : '外部ブラウザで開く';

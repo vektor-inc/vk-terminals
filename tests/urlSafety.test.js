@@ -33,9 +33,15 @@ test('アドレス欄は URL、ローカルホスト、検索語を安全な URL
   assert.equal(normalizeBrowserAddress('http://example.com'), 'http://example.com');
   assert.equal(normalizeBrowserAddress('github.com/vektor-inc'), 'https://github.com/vektor-inc');
   assert.equal(normalizeBrowserAddress('example.com:8080/path'), 'https://example.com:8080/path');
+  assert.equal(normalizeBrowserAddress('bücher.de'), 'https://bücher.de');
+  assert.equal(normalizeBrowserAddress('bücher.de/path'), 'https://bücher.de/path');
+  assert.equal(normalizeBrowserAddress('例え.テスト'), 'https://例え.テスト');
+  assert.equal(normalizeBrowserAddress('例え.テスト:443/道'), 'https://例え.テスト:443/道');
   assert.equal(normalizeBrowserAddress('localhost:8888/path'), 'http://localhost:8888/path');
   assert.equal(normalizeBrowserAddress('127.0.0.1:8888'), 'http://127.0.0.1:8888');
   assert.equal(normalizeBrowserAddress('WordPress 検索'), 'https://www.google.com/search?q=WordPress%20%E6%A4%9C%E7%B4%A2');
+  assert.equal(normalizeBrowserAddress('例え テスト'), 'https://www.google.com/search?q=%E4%BE%8B%E3%81%88%20%E3%83%86%E3%82%B9%E3%83%88');
+  assert.equal(normalizeBrowserAddress('example'), 'https://www.google.com/search?q=example');
 });
 
 test('アドレス欄は危険なスキームを検索し、空欄と不正な URL は開かない', () => {
@@ -43,5 +49,6 @@ test('アドレス欄は危険なスキームを検索し、空欄と不正な U
     assert.equal(normalizeBrowserAddress(value), `https://www.google.com/search?q=${encodeURIComponent(value)}`);
   }
   for (const value of ['https://', ' ', null]) assert.equal(normalizeBrowserAddress(value), null);
+  assert.equal(normalizeBrowserAddress('example.com:99999/path'), null);
   assert.equal(normalizeBrowserAddress('a'.repeat(MAX_SAFE_HTTP_URL_LENGTH)), null);
 });

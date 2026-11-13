@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const { createInternalBrowser } = require('../utils/internalBrowser');
 const { installBrowserLoad, flushBrowserLoads } = require('./helpers/browserLoad');
-const { navigateFromLoadingPage } = require('./helpers/pageNavigation');
+const { prepareLoadingPageNavigation, navigateFromLoadingPage } = require('./helpers/pageNavigation');
 
 function setup({ failCommand, failAttach = false, bootstrap, createBrowser = createInternalBrowser } = {}) {
   const states = [];
@@ -352,71 +352,93 @@ for (const trigger of ['link', 'location.replace']) {
     test(`${trigger} による保留ロードの置換を完了する: 旧応答先行=${oldResponseFirst}`, async () => {
       const { browser, contents, states } = setup();
       await contents.complete('https://example.com/a');
-      browser.navigate('https://example.com/slow', false, 2);
-      await flushBrowserLoads();
+      let loading = false;
+      let navigationCount = 0;
       let stopped = 0;
-      contents.stop = () => { stopped++; };
-      const old = contents.loads.at(-1);
-      // Electron と同じく、executeJavaScript はロード停止まで旧文書を操作しない。
-      let loading = true;
-      let navigationStarted = false;
-      const rendererTimers = [];
+      let focused = false;
+      const handlers = new Set();
+      const inputs = [];
+      const steps = [];
       contents.isLoading = () => loading;
-      const execute = expression => require('node:vm').runInNewContext(expression, {
-        setTimeout(callback, delay) {
-          assert.equal(delay, 0);
-          rendererTimers.push(callback);
-          return 1;
-        },
-        document: { getElementById(id) {
-          assert.equal(id, 'link');
-          return { click: () => startNavigation('/destination') };
-        } },
-        location: { replace: startNavigation },
-      });
-      const startNavigation = relative => {
-        navigationStarted = true;
+      const startNavigation = (relative, actualTrigger) => {
+        assert.equal(loading, true, '発火は保留ロード中だけ');
+        assert.equal(actualTrigger, trigger);
+        navigationCount++;
         assert.equal(relative, '/destination');
         const url = new URL(relative, contents.getURL()).href;
         contents.emit('will-navigate', { url });
         contents.startNative(url, 'native-page');
       };
-      contents.executeJavaScript = expression => new Promise(resolve => {
-        contents.once('did-stop-loading', () => resolve(execute(expression)));
-      });
-      // 無害な旧API呼出しも応答待ちになることを確認してから、共有のE2E操作を使う。
-      let oldApiResolved = false;
-      const deferredScript = contents.executeJavaScript('undefined').then(() => { oldApiResolved = true; });
+      const renderer = {
+        window: {
+          addEventListener(type, handler, capture) {
+            assert.equal(type, 'keydown');
+            assert.equal(capture, true);
+            handlers.add(handler);
+          },
+          removeEventListener(type, handler, capture) {
+            assert.equal(type, 'keydown');
+            assert.equal(capture, true);
+            assert.equal(handlers.delete(handler), true);
+          },
+        },
+        document: { getElementById(id) {
+          assert.equal(id, 'link');
+          return { click: () => startNavigation('/destination', 'link') };
+        } },
+        location: { replace: relative => startNavigation(relative, 'location.replace') },
+      };
+      contents.executeJavaScript = async expression => {
+        assert.equal(loading, false, 'ロード中の executeJavaScript を禁止');
+        steps.push('prepare');
+        return require('node:vm').runInNewContext(expression, renderer);
+      };
+      const dispatch = code => {
+        for (const handler of [...handlers]) handler({ code, preventDefault() {} });
+      };
+      await prepareLoadingPageNavigation(contents, trigger);
+      assert.equal(handlers.size, 1);
+      dispatch('F7');
+      assert.equal(handlers.size, 1, '別キーでは一回限りの操作を消費しない');
+      assert.equal(navigationCount, 0);
+      browser.navigate('https://example.com/slow', false, 2);
       await flushBrowserLoads();
-      assert.equal(oldApiResolved, false);
+      loading = true;
+      steps.push('loading');
+      contents.stop = () => { stopped++; };
+      const old = contents.loads.at(-1);
+      contents.focus = () => {
+        assert.equal(loading, true);
+        focused = true;
+        steps.push('focus');
+      };
       const sendCommand = contents.debugger.sendCommand;
       contents.debugger.sendCommand = (method, params) => {
-        if (method !== 'Runtime.evaluate') return sendCommand(method, params);
+        assert.notEqual(method, 'Runtime.evaluate', 'ロード中の Runtime 評価を禁止');
+        if (method !== 'Input.dispatchKeyEvent') return sendCommand(method, params);
         assert.equal(loading, true);
-        execute(params.expression);
-        // 実 Electron の停止条件を再現する。同期遷移中の評価応答は
-        // did-stop-loading まで返らず、即時応答モックでは回帰を見逃す。
-        if (navigationStarted) return new Promise(resolve => {
-          contents.once('did-stop-loading', () => resolve({ result: { type: 'undefined' } }));
+        assert.equal(focused, true);
+        assert.deepEqual(params, {
+          type: inputs.length === 0 ? 'keyDown' : 'keyUp',
+          key: 'F8', code: 'F8', windowsVirtualKeyCode: 119,
         });
-        return Promise.resolve({ result: { type: 'undefined' } });
+        inputs.push(params.type);
+        steps.push(params.type);
+        if (params.type === 'keyDown') dispatch(params.code);
+        return Promise.resolve({});
       };
       const abortOld = async () => {
         old.resolve({ frameId: 'main', loaderId: old.loaderId, errorText: 'net::ERR_ABORTED' });
         await flushBrowserLoads();
       };
-      let evaluationResolved = false;
-      const evaluation = navigateFromLoadingPage(contents, trigger).then(() => { evaluationResolved = true; });
-      await flushBrowserLoads();
-      assert.equal(evaluationResolved, true, 'CDP 評価はロード停止を待たず完了する');
-      await evaluation;
-      assert.equal(navigationStarted, false, '評価完了までは旧文書から遷移しない');
-      assert.equal(rendererTimers.length, 1);
       assert.equal(states.at(-1).navigationRequestId, 2);
       assert.equal(states.at(-1).navigationResult, null);
-      // renderer の次のタスクで、実際の式が指定した操作を発火する。
-      rendererTimers.shift()();
-      assert.equal(navigationStarted, true);
+      await navigateFromLoadingPage(contents);
+      assert.deepEqual(steps, ['prepare', 'loading', 'focus', 'keyDown', 'keyUp']);
+      assert.equal(navigationCount, 1);
+      assert.equal(handlers.size, 0, '遷移開始前にハンドラーを解除する');
+      dispatch('F8');
+      assert.equal(navigationCount, 1, '繰り返し入力でも発火は一回だけ');
       const operation = states.at(-1).navigationOperationId;
       assert.equal(stopped, 0);
       assert.equal(states.at(-1).navigationRequestId, null);
@@ -429,7 +451,6 @@ for (const trigger of ['link', 'location.replace']) {
       contents.loadDocument('native-page');
       loading = false;
       contents.emit('did-stop-loading');
-      await deferredScript;
       if (!oldResponseFirst) await abortOld();
       assert.equal(states.at(-1).navigationResult, 'completed');
       assert.equal(states.at(-1).url, 'https://example.com/destination');

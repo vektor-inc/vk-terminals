@@ -69,7 +69,8 @@ const test = base.extend({
           const browser = require(${JSON.stringify(implementation)}).createInternalBrowser(window, { ...require('electron'), WebContentsView: TracedView });
           globalThis.browserTest = {
             browser, states, trace, contents: () => contents,
-            navigateFromPage: trigger => require(${JSON.stringify(pageNavigation)}).navigateFromLoadingPage(contents, trigger),
+            preparePageNavigation: trigger => require(${JSON.stringify(pageNavigation)}).prepareLoadingPageNavigation(contents, trigger),
+            navigateFromPage: () => require(${JSON.stringify(pageNavigation)}).navigateFromLoadingPage(contents),
           };
         });
       `);
@@ -101,11 +102,12 @@ for (const trigger of ['link', 'location.replace']) {
     await expect.poll(() => electronApp.evaluate(() => globalThis.browserTest.states.at(-1).navigationResult)).toBe('completed');
     expect(await electronApp.evaluate(() => globalThis.browserTest.contents().getURL())).toBe(`${origin}/source`);
     expect(await electronApp.evaluate(() => globalThis.browserTest.contents().executeJavaScript('document.getElementById("link").textContent'))).toBe('移動する');
+    await electronApp.evaluate((_electron, trigger) => globalThis.browserTest.preparePageNavigation(trigger), trigger);
     await electronApp.evaluate((_electron, url) => globalThis.browserTest.browser.navigate(url, false, 1), `${origin}/slow`);
     // Page.navigate が送信され、実際に応答待ちになってから旧文書を操作する。
     await expect.poll(() => electronApp.evaluate(() => globalThis.browserTest.contents().isLoading())).toBe(true);
     // 旧文書からのリンク/location置換で新遷移が始まった後、stopが呼ばれる不具合を再現する。
-    await electronApp.evaluate((_electron, trigger) => globalThis.browserTest.navigateFromPage(trigger), trigger);
+    await electronApp.evaluate(() => globalThis.browserTest.navigateFromPage());
     await expect.poll(() => electronApp.evaluate(() => {
       const state = globalThis.browserTest.states.at(-1);
       return { url: state.url, result: state.navigationResult };

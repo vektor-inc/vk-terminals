@@ -241,6 +241,10 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
           currentUrl = url;
           failedUrl = '';
           publish();
+        } else if (activeLoad?.native && !activeLoad.done && isNavigationUrl(url) && contents.getURL() === url) {
+          // 履歴復帰では CDP の lifecycleEvent が届かないことがあるため、Electron が
+          // メイン文書の commit を通知した時点で操作とアドレスを確定する。
+          activeLoad.finish(null, url);
         }
       });
       contents.on('did-navigate-in-page', (_event, _url, isMainFrame) => {

@@ -659,6 +659,21 @@ test('同一文書の戻る操作とBFCache復元も操作世代を終了する'
   assert.equal(states.at(-1).url, document.url);
 });
 
+test('履歴復帰でCDPのloadイベントが欠けてもdid-navigateで操作を完了する', async () => {
+  const { browser, contents, states } = setup();
+  await contents.complete('https://example.com/a');
+  contents.navigationHistory.canGoBack = () => true;
+  contents.navigationHistory.goBack = () => {
+    contents.setDocumentUrl('https://example.com/previous');
+    contents.emit('did-navigate', {}, contents.getURL());
+  };
+
+  assert.equal(browser.action('back'), true);
+  assert.equal(states.at(-1).navigationResult, 'completed');
+  assert.equal(states.at(-1).url, 'https://example.com/previous');
+  assert.equal(states.at(-1).pendingUrl, '');
+});
+
 for (const failCommand of ['Page.enable', 'Page.setLifecycleEventsEnabled', 'Network.enable', 'Page.getFrameTree']) {
   test(`${failCommand} の初期化失敗も操作を失敗として終了する`, async () => {
     const { browser, contents, states } = setup({ failCommand });

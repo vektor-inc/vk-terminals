@@ -258,7 +258,7 @@ function showInternalBrowserChoice(url, event, origin) {
         // リンクの開き先選択を閉じた際に復帰した操作元を維持する。
         setInternalBrowserOpen(true, { focus: 'preserve' });
         VKIpc.invoke('internal-browser:open', url).catch(() => {});
-      } else openExternalUrlSafe(url, { onSuccess: () => showTerminalLinkOpenedToast(url) });
+      } else openExternalUrlSafe(url, origin ? undefined : { onSuccess: () => showTerminalLinkOpenedToast(url) });
     });
     menu.appendChild(item);
   }
@@ -1786,8 +1786,8 @@ function openExternalUrlSafe(url, options = {}) {
 //
 // クリック判定（isMacPlatform / isLinkOpenModifierPressed / normalizeTerminalLinkClickMode /
 // createTerminalLinkHandlers）は utils/terminalLinkPolicy.js の UMD へ切り出してある。
-// この機能で最もセキュリティに効く分岐（フォーカス未取得ペインへの最初のクリックや、
-// 'modifier' モードでの修飾キー無しクリック、右クリック・中クリック、ドラッグ選択では
+// この機能で最もセキュリティに効く分岐（'modifier' モードでの修飾キー無しクリック、
+// 右クリック・中クリック、ダブルクリック、ドラッグ選択では
 // 絶対に外部 URL を開かせない）を renderer/app.js の非エクスポート関数のままにせず、
 // tests/terminalLinkPolicy.test.js から直接ユニットテストできるようにするため
 // （安藤レビュー指摘・MEDIUM）。

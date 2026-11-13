@@ -97,7 +97,7 @@ test('共通メニューの選択肢がアプリ内ブラウザと OS のブラ�
     lastClickWasDrag: false, escapeLayers: { register: () => () => {} },
     hideInternalBrowserContent() {}, setInternalBrowserOpen: value => calls.push(['sidebar', value]),
     VKIpc: { invoke: (...args) => { calls.push(args); return Promise.resolve(); } },
-    openExternalUrlSafe: (url, options) => { calls.push(['external', url]); options.onSuccess(); },
+    openExternalUrlSafe: (url, options) => { calls.push(['external', url]); options?.onSuccess?.(); },
     showTerminalLinkOpenedToast: url => calls.push(['toast', url]),
   };
   vm.runInNewContext(showChoice, context);
@@ -109,4 +109,10 @@ test('共通メニューの選択肢がアプリ内ブラウザと OS のブラ�
   vm.runInNewContext(`showInternalBrowserChoice('${url}', { clientX: 20, clientY: 20 })`, context);
   buttons.filter(button => button.textContent === '外部ブラウザで開く ↗').at(-1).click({ detail: 1 });
   assert.deepEqual(calls, [['external', url], ['toast', url]]);
+
+  calls.length = 0;
+  context.origin = { getBoundingClientRect: () => ({ left: 10, bottom: 20 }) };
+  vm.runInNewContext(`showInternalBrowserChoice('${url}', { clientX: 20, clientY: 20 }, origin)`, context);
+  buttons.filter(button => button.textContent === '外部ブラウザで開く ↗').at(-1).click({ detail: 1 });
+  assert.deepEqual(calls, [['external', url]]);
 });

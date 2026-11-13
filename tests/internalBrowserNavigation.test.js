@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const { createInternalBrowser } = require('../utils/internalBrowser');
 const { installBrowserLoad, flushBrowserLoads } = require('./helpers/browserLoad');
+const { navigateFromLoadingPage } = require('./helpers/pageNavigation');
 
 function setup({ failCommand, failAttach = false, bootstrap, createBrowser = createInternalBrowser } = {}) {
   const states = [];
@@ -347,30 +348,72 @@ test('同一 URL の旧 download は現在のコマンドが download を返す�
 });
 
 for (const trigger of ['link', 'location.replace']) {
-  test(`${trigger} による置換で新しい実遷移を stop せず完了する`, async () => {
-    const { browser, contents, states } = setup();
-    await flushBrowserLoads();
-    let stopped = 0;
-    contents.stop = () => { stopped++; };
-    const old = contents.loads[0];
-    contents.emit('will-navigate', { url: 'https://example.com/page' });
-    const operation = states.at(-1).navigationOperationId;
-    assert.equal(stopped, 0);
-    assert.equal(states.at(-1).navigationRequestId, null);
-    assert.ok(states.some(state => state.navigationRequestId === 1 && state.navigationResult === 'superseded'));
-    contents.startNative('https://example.com/page', 'native-page');
-    emitLoaderEvents(contents, old.loaderId, old.url);
-    contents.respond(old.loaderId, 'https://github.com/old', 404);
-    assert.equal(states.at(-1).navigationResult, null);
-    contents.commitDocument('https://example.com/page', 'native-page');
-    contents.loadDocument('native-page');
-    assert.equal(states.at(-1).navigationResult, 'completed');
-    assert.equal(states.at(-1).url, 'https://example.com/page');
-    assert.equal(states.at(-1).github404Url, '');
-    assert.equal(states.at(-1).navigationOperationId, operation);
-    browser.publish();
-    assert.equal(stopped, 0);
-  });
+  for (const oldResponseFirst of [false, true]) {
+    test(`${trigger} による保留ロードの置換を完了する: 旧応答先行=${oldResponseFirst}`, async () => {
+      const { browser, contents, states } = setup();
+      await contents.complete('https://example.com/a');
+      browser.navigate('https://example.com/slow', false, 2);
+      await flushBrowserLoads();
+      let stopped = 0;
+      contents.stop = () => { stopped++; };
+      const old = contents.loads.at(-1);
+      // Electron と同じく、executeJavaScript はロード停止まで旧文書を操作しない。
+      let loading = true;
+      contents.isLoading = () => loading;
+      const execute = expression => require('node:vm').runInNewContext(expression, {
+        document: { getElementById(id) {
+          assert.equal(id, 'link');
+          return { click: () => startNavigation('/destination') };
+        } },
+        location: { replace: startNavigation },
+      });
+      const startNavigation = relative => {
+        const url = new URL(relative, contents.getURL()).href;
+        contents.emit('will-navigate', { url });
+        contents.startNative(url, 'native-page');
+      };
+      contents.executeJavaScript = expression => new Promise(resolve => {
+        contents.once('did-stop-loading', () => resolve(execute(expression)));
+      });
+      // 無害な旧API呼出しも応答待ちになることを確認してから、共有のE2E操作を使う。
+      let oldApiResolved = false;
+      const deferredScript = contents.executeJavaScript('undefined').then(() => { oldApiResolved = true; });
+      await flushBrowserLoads();
+      assert.equal(oldApiResolved, false);
+      const sendCommand = contents.debugger.sendCommand;
+      contents.debugger.sendCommand = (method, params) => {
+        if (method !== 'Runtime.evaluate') return sendCommand(method, params);
+        assert.equal(loading, true);
+        execute(params.expression);
+        return Promise.resolve({ result: { type: 'undefined' } });
+      };
+      const abortOld = async () => {
+        old.resolve({ frameId: 'main', loaderId: old.loaderId, errorText: 'net::ERR_ABORTED' });
+        await flushBrowserLoads();
+      };
+      await navigateFromLoadingPage(contents, trigger);
+      const operation = states.at(-1).navigationOperationId;
+      assert.equal(stopped, 0);
+      assert.equal(states.at(-1).navigationRequestId, null);
+      assert.ok(states.some(state => state.navigationRequestId === 2 && state.navigationResult === 'superseded'));
+      if (oldResponseFirst) await abortOld();
+      emitLoaderEvents(contents, old.loaderId, old.url);
+      contents.respond(old.loaderId, 'https://github.com/old', 404);
+      assert.equal(states.at(-1).navigationResult, null);
+      contents.commitDocument('https://example.com/destination', 'native-page');
+      contents.loadDocument('native-page');
+      loading = false;
+      contents.emit('did-stop-loading');
+      await deferredScript;
+      if (!oldResponseFirst) await abortOld();
+      assert.equal(states.at(-1).navigationResult, 'completed');
+      assert.equal(states.at(-1).url, 'https://example.com/destination');
+      assert.equal(states.at(-1).github404Url, '');
+      assert.equal(states.at(-1).navigationOperationId, operation);
+      browser.publish();
+      assert.equal(stopped, 0);
+    });
+  }
 }
 
 for (const canonical of ['https://example.com/canonical', 'https://example.com/a#hash']) {

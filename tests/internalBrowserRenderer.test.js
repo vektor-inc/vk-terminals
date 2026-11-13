@@ -537,6 +537,7 @@ test('main の遷移結果を順に受け、失敗・成功・中止・置換・
       browser.navigate(confirmedUrl);
       await contents.complete(confirmedUrl);
       assert.equal(address.value, confirmedUrl);
+      assert.equal(elements['.internal-browser-toolbar [data-action="reload"]'].disabled, false);
     }
     navigationWrites = 0;
     const failedUrl = 'https://unreachable.example/path';
@@ -548,6 +549,18 @@ test('main の遷移結果を順に受け、失敗・成功・中止・置換・
     assert.equal(messages.at(-1).pendingUrl, failedUrl);
     assert.equal(messages.at(-1).navigationResult, null);
     assert.equal(messages.at(-1).navigationRequestId, 1);
+    // 送信済みでも初回の HTTP(S) 文書確定前は main が reload を受け付けない。
+    const reload = elements['.internal-browser-toolbar [data-action="reload"]'];
+    assert.equal(reload.disabled, !confirmedUrl);
+    if (!confirmedUrl) {
+      assert.equal(vm.runInContext('internalBrowserHasPage', context), true);
+      assert.equal(browser.action('reload'), false);
+      await flushBrowserLoads();
+      browser.publish();
+      assert.equal(reload.disabled, true);
+      assert.equal(messages.at(-1).navigationRequestId, 1);
+      assert.equal(messages.at(-1).pendingUrl, failedUrl);
+    }
     await contents.fail(failureCode, failedUrl);
     assert.equal(messages.at(-1).navigationResult, 'failed');
     assert.equal(messages.at(-1).navigationRequestId, 1);
@@ -564,6 +577,8 @@ test('main の遷移結果を順に受け、失敗・成功・中止・置換・
     assert.equal(errorWrites, 1);
     assert.equal(messages.at(-1).pendingUrl, '');
     assert.equal(messages.at(-1).failedUrl, failedUrl);
+    // 初回失敗でも失敗 URL を再試行できる。
+    assert.equal(reload.disabled, false);
     assert.equal(messages.at(-1).url, confirmedUrl);
     assert.equal(address.value, failedUrl);
     assert.equal(handlers.blur, undefined);
@@ -596,10 +611,13 @@ test('main の遷移結果を順に受け、失敗・成功・中止・置換・
     assert.equal(messages.at(-1).pendingUrl, 'https://example.org/retry');
     assert.equal(messages.at(-1).navigationRequestId, 2);
     assert.equal(address.value, 'https://example.org/retry');
+    assert.equal(reload.disabled, !confirmedUrl);
+    if (!confirmedUrl) assert.equal(browser.action('reload'), false);
     await contents.complete('https://example.org/retry');
     assert.equal(messages.at(-1).navigationResult, 'completed');
     assert.equal(messages.at(-1).navigationRequestId, 2);
     assert.equal(address.value, 'https://example.org/retry');
+    assert.equal(reload.disabled, false);
     assert.equal(navigationStatus.textContent, 'ページの読み込みが完了しました');
     assert.equal(navigationWrites, 4);
     contents.emit('did-stop-loading');
@@ -682,7 +700,8 @@ test('main の遷移結果を順に受け、失敗・成功・中止・置換・
 
     // 再読み込みも独立した世代で開始と完了を通知する。
     contents.reload = () => contents.startNative('https://example.org/retry', 'reload-initial');
-    browser.action('reload');
+    assert.equal(reload.disabled, false);
+    assert.equal(browser.action('reload'), true);
     assert.equal(navigationStatus.textContent, 'ページを読み込み中');
     contents.commitDocument('https://example.org/retry', 'reload-initial');
     contents.loadDocument('reload-initial');

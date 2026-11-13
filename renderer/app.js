@@ -447,7 +447,8 @@ VKIpc.on('internal-browser:state', state => {
   internalBrowserFailedUrl = state.failedUrl || '';
   internalBrowserDownloadUrl = state.downloadUrl || '';
   // 消える案内から移る前に、次の URL と再読み込みの可用性を反映する。
-  internalBrowserSidebar.querySelector('.internal-browser-toolbar [data-action="reload"]').disabled = !internalBrowserHasPage;
+  // main の action('reload') と同じく、確定 URL または再試行する失敗 URL が必要。
+  internalBrowserSidebar.querySelector('.internal-browser-toolbar [data-action="reload"]').disabled = !(internalBrowserUrl || internalBrowserFailedUrl);
   const errorView = internalBrowserSidebar.querySelector('.internal-browser-error');
   if (internalBrowserFailedUrl) {
     errorView.hidden = false;

@@ -33,6 +33,7 @@ const test = base.extend({
       const entry = path.join(temporary, 'main.cjs');
       fs.mkdirSync(path.join(temporary, 'profile'));
       const implementation = path.resolve(__dirname, '../../utils/internalBrowser.js');
+      const pageNavigation = path.resolve(__dirname, '../helpers/pageNavigation.js');
       fs.writeFileSync(entry, `
         const { app, BrowserWindow, WebContentsView } = require('electron');
         app.setPath('userData', ${JSON.stringify(path.join(temporary, 'profile'))});
@@ -66,7 +67,10 @@ const test = base.extend({
           }
           window.webContents.send = (channel, state) => { if (channel === 'internal-browser:state') states.push(state); };
           const browser = require(${JSON.stringify(implementation)}).createInternalBrowser(window, { ...require('electron'), WebContentsView: TracedView });
-          globalThis.browserTest = { browser, states, trace, contents: () => contents };
+          globalThis.browserTest = {
+            browser, states, trace, contents: () => contents,
+            navigateFromPage: trigger => require(${JSON.stringify(pageNavigation)}).navigateFromLoadingPage(contents, trigger),
+          };
         });
       `);
       electronApp = await _electron.launch({ args: [entry] });
@@ -98,10 +102,10 @@ for (const trigger of ['link', 'location.replace']) {
     expect(await electronApp.evaluate(() => globalThis.browserTest.contents().getURL())).toBe(`${origin}/source`);
     expect(await electronApp.evaluate(() => globalThis.browserTest.contents().executeJavaScript('document.getElementById("link").textContent'))).toBe('移動する');
     await electronApp.evaluate((_electron, url) => globalThis.browserTest.browser.navigate(url, false, 1), `${origin}/slow`);
+    // Page.navigate が送信され、実際に応答待ちになってから旧文書を操作する。
+    await expect.poll(() => electronApp.evaluate(() => globalThis.browserTest.contents().isLoading())).toBe(true);
     // 旧文書からのリンク/location置換で新遷移が始まった後、stopが呼ばれる不具合を再現する。
-    await electronApp.evaluate((_electron, trigger) => globalThis.browserTest.contents().executeJavaScript(
-      trigger === 'link' ? 'document.getElementById("link").click()' : 'location.replace("/destination")'
-    ), trigger);
+    await electronApp.evaluate((_electron, trigger) => globalThis.browserTest.navigateFromPage(trigger), trigger);
     await expect.poll(() => electronApp.evaluate(() => {
       const state = globalThis.browserTest.states.at(-1);
       return { url: state.url, result: state.navigationResult };

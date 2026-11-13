@@ -61,6 +61,8 @@ async function expectEmptyButtonsFit(win) {
       whiteSpace: style.whiteSpace,
       left: buttonRect.left - gridRect.left,
       right: gridRect.right - buttonRect.right,
+      scrollWidth: button.scrollWidth,
+      clientWidth: button.clientWidth,
     };
   }));
   expect(measurements.length).toBeGreaterThan(0);
@@ -69,6 +71,7 @@ async function expectEmptyButtonsFit(win) {
     expect(button.height).toBeLessThanOrEqual(button.fontSize * 1.6 + button.verticalSpace + 1);
     expect(button.left).toBeGreaterThanOrEqual(0);
     expect(button.right).toBeGreaterThanOrEqual(0);
+    expect(button.scrollWidth).toBeLessThanOrEqual(button.clientWidth);
   }
 }
 
@@ -79,9 +82,10 @@ test('狭いペイン領域でも空画面のボタンは折り返さず収ま�
     await launched.app.evaluate(({ BrowserWindow }) => {
       const window = BrowserWindow.getAllWindows()[0];
       window.setMinimumSize(0, 0);
-      window.setSize(520, 640);
+      window.setSize(420, 640);
     });
-    await expect.poll(() => launched.win.locator('.grid').evaluate(grid => grid.getBoundingClientRect().width)).toBeLessThanOrEqual(200);
+    await expect.poll(() => launched.win.locator('#sidebar').evaluate(el => el.getBoundingClientRect().width)).toBe(240);
+    expect(await launched.win.locator('.grid').evaluate(grid => grid.getBoundingClientRect().width)).toBeLessThanOrEqual(200);
     await expect(launched.win.locator('.grid-empty-btn')).toBeVisible();
     await expectEmptyButtonsFit(launched.win);
 
@@ -95,17 +99,43 @@ test('狭いペイン領域でも空画面のボタンは折り返さず収ま�
       return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom };
     }));
     expect(narrowRects).toHaveLength(2);
+    await expect.poll(() => launched.win.locator('.grid-empty-btn').first().evaluate(button => {
+      const style = getComputedStyle(button);
+      return { fontSize: style.fontSize, paddingLeft: style.paddingLeft, paddingRight: style.paddingRight };
+    })).toEqual({ fontSize: '12px', paddingLeft: '8px', paddingRight: '8px' });
     expect(narrowRects[1].top).toBeGreaterThanOrEqual(narrowRects[0].bottom);
     expect(Math.abs(narrowRects[0].left - narrowRects[1].left)).toBeLessThanOrEqual(1);
     expect(Math.abs(narrowRects[0].right - narrowRects[1].right)).toBeLessThanOrEqual(1);
 
     // 広い画面では主操作の文字サイズと左右余白を維持する。
     await launched.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1280, 640));
-    const wideStyles = await launched.win.locator('.grid-empty-btn').first().evaluate(button => {
+    await expect.poll(() => launched.win.locator('.grid-empty-btn').first().evaluate(button => {
       const style = getComputedStyle(button);
       return { fontSize: style.fontSize, paddingLeft: style.paddingLeft, paddingRight: style.paddingRight };
-    });
-    expect(wideStyles).toEqual({ fontSize: '13px', paddingLeft: '16px', paddingRight: '16px' });
+    })).toEqual({ fontSize: '13px', paddingLeft: '16px', paddingRight: '16px' });
+  } finally { await closeApp(launched); }
+});
+
+test('広いウィンドウでもサイドパネルでグリッドが狭まればボタンを縦に揃える', async () => {
+  const launched = await start();
+  try {
+    // サイドバーとアプリ内ブラウザを開き、ウィンドウ幅を保ったままグリッドだけを狭める。
+    await launched.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1000, 640));
+    await expect.poll(() => launched.win.evaluate(() => window.innerWidth)).toBeGreaterThanOrEqual(1000);
+    await launched.win.locator('#internal-browser-toggle').click();
+    await expect(launched.win.locator('#root')).toHaveClass(/\binternal-browser-open\b/);
+    await expect.poll(() => launched.win.locator('.grid').evaluate(grid => grid.getBoundingClientRect().width)).toBeLessThanOrEqual(350);
+
+    const created = await post(launched.port, '/api/new-pane', { noClaude: true, stashed: true });
+    expect(created.status).toBe(200);
+    await expect(launched.win.locator('.grid-empty-btn-secondary')).toBeVisible();
+    await expect.poll(() => launched.win.locator('.grid-empty-btn').evaluateAll(buttons => {
+      if (buttons.length !== 2) return false;
+      const [first, second] = buttons.map(button => button.getBoundingClientRect());
+      return second.top >= first.bottom && Math.abs(first.left - second.left) <= 1
+        && Math.abs(first.right - second.right) <= 1;
+    })).toBe(true);
+    await expectEmptyButtonsFit(launched.win);
   } finally { await closeApp(launched); }
 });
 

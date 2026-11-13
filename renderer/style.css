@@ -2508,6 +2508,8 @@ button.sidebar-section-header:hover {
   display: flex;
   align-items: center;
   justify-content: center;
+  container-type: inline-size;
+  container-name: empty-grid;
 }
 .grid-empty-box {
   box-sizing: border-box;
@@ -2571,8 +2573,8 @@ button.sidebar-section-header:hover {
   border-color: #8b949e;
 }
 
-/* 狭いペインではボタンを揃えて縦に積み、操作名のはみ出しを防ぐ。 */
-@media (max-width: 680px) {
+/* グリッド幅が横並びの必要幅（約 324px）に近づく前に縦に積む。 */
+@container empty-grid (max-width: 350px) {
   .grid-empty-actions {
     flex-direction: column;
   }

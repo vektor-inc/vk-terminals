@@ -754,6 +754,58 @@ for (const action of ['back', 'forward']) {
   }
 }
 
+for (const action of ['back', 'forward']) {
+  test(`${action} は現在URLと同じ隣接履歴を飛ばして実際の移動先へ進む`, async () => {
+    const { browser, contents, states } = setup();
+    await contents.complete('https://example.com/current');
+    const current = { url: 'https://example.com/current' };
+    const target = { url: `https://example.com/${action}-actual` };
+    const isBack = action === 'back';
+    contents.navigationHistory.getAllEntries = () => isBack
+      ? [target, current, current] : [current, current, target];
+    contents.navigationHistory.getActiveIndex = () => isBack ? 2 : 0;
+    contents.navigationHistory[`canGo${isBack ? 'Back' : 'Forward'}`] = () => true;
+    contents.navigationHistory[`go${isBack ? 'Back' : 'Forward'}`] = () => assert.fail('duplicate must be skipped');
+    contents.navigationHistory.goToIndex = index => {
+      assert.equal(index, isBack ? 0 : 2);
+      contents.setDocumentUrl(target.url);
+      contents.emit('did-stop-loading');
+    };
+
+    assert.equal(browser.action(action), true);
+    assert.equal(states.at(-1).navigationResult, 'completed');
+    assert.equal(states.at(-1).url, target.url);
+  });
+}
+
+for (const event of ['did-stop-loading', 'did-navigate']) {
+  test(`GitHub 404から案内へ戻る${event}補完は前文書の404状態を消す`, async () => {
+    const { HELP_URL } = require('../utils/internalBrowserPolicy');
+    const { browser, contents, states } = setup();
+    await flushBrowserLoads();
+    const initial = contents.loads[0];
+    contents.respond(initial.loaderId, 'https://github.com/missing', 404);
+    await contents.complete('https://github.com/missing');
+    assert.equal(states.at(-1).github404Url, 'https://github.com/missing');
+    contents.navigationHistory.canGoBack = () => true;
+    contents.navigationHistory.getActiveIndex = () => 1;
+    contents.navigationHistory.getAllEntries = () => [
+      { url: HELP_URL },
+      { url: 'https://github.com/missing' },
+    ];
+    contents.navigationHistory.goBack = () => {
+      contents.setDocumentUrl(HELP_URL);
+      if (event === 'did-navigate') contents.emit(event, {}, HELP_URL);
+      else contents.emit(event);
+    };
+
+    assert.equal(browser.action('back'), true);
+    assert.equal(states.at(-1).navigationResult, 'completed');
+    assert.equal(states.at(-1).url, HELP_URL);
+    assert.equal(states.at(-1).github404Url, '');
+  });
+}
+
 for (const failCommand of ['Page.enable', 'Page.setLifecycleEventsEnabled', 'Network.enable', 'Page.getFrameTree']) {
   test(`${failCommand} の初期化失敗も操作を失敗として終了する`, async () => {
     const { browser, contents, states } = setup({ failCommand });

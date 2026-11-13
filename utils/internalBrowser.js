@@ -41,6 +41,17 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
   const normalizeDownloadUrl = url => {
     try { return new URL(url).href; } catch { return ''; }
   };
+  const isSameDocumentUrl = (left, right) => {
+    try {
+      const a = new URL(left);
+      const b = new URL(right);
+      a.hash = '';
+      b.hash = '';
+      return a.href === b.href;
+    } catch (_error) {
+      return false;
+    }
+  };
   const cancelDownload = (event, item, contents) => {
     event.preventDefault();
     // 同じ DownloadItem の再配送で live 通知を重ねない。
@@ -434,7 +445,8 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
     navigationOperationId++;
     const contents = view.webContents;
     const load = {
-      url, downloadSourceUrl: url, native, help, historyTarget, done: false, started: native, downloadResponsePending: !native && !help,
+      url, sourceUrl: currentUrl, downloadSourceUrl: url, native, help, historyTarget, done: false, started: native,
+      downloadResponsePending: !native && !help,
       downloadAmbiguous: !!previous && normalizeDownloadUrl(previous.downloadSourceUrl) === normalizeDownloadUrl(url)
         && previous.started && !previous.noticeReceived
         && (previous.downloadResponsePending || previous.downloadConfirmed),
@@ -475,7 +487,11 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
         }
       } else {
         currentUrl = committedUrl;
-        if (load.help) { documentLoaderId = null; document404Url = ''; }
+        if (load.help || (load.historyTarget && !load.loaderId
+          && !isSameDocumentUrl(load.sourceUrl, committedUrl))) {
+          documentLoaderId = null;
+          document404Url = '';
+        }
         if (!load.loaderId || load.sameDocument) github404Url = document404Url;
         failedUrl = '';
         navigationResult = 'completed';
@@ -528,13 +544,15 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
     if (!view || view.webContents.isDestroyed?.()) return false;
     const history = view.webContents.navigationHistory;
     if (name === 'back' && history.canGoBack()) {
-      const historyTarget = getHistoryTarget(history, -1);
+      const target = getHistoryTarget(history, -1);
+      const historyTarget = target?.url || '';
       beginLoad(historyTarget || currentUrl, true, undefined, { native: true, stopPrevious: true, historyTarget });
-      history.goBack();
+      moveHistory(history, 'goBack', target);
     } else if (name === 'forward' && history.canGoForward()) {
-      const historyTarget = getHistoryTarget(history, 1);
+      const target = getHistoryTarget(history, 1);
+      const historyTarget = target?.url || '';
       beginLoad(historyTarget || currentUrl, true, undefined, { native: true, stopPrevious: true, historyTarget });
-      history.goForward();
+      moveHistory(history, 'goForward', target);
     } else if (name === 'reload') {
       // 初期化待ちの要求を native reload で置換すると Page.navigate が失われる。
       // HTTP(S) 文書がまだない間は元の URL と Enter の requestId を保持して拒否する。
@@ -554,11 +572,22 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
   function getHistoryTarget(history, offset) {
     try {
       const entries = history.getAllEntries?.();
-      const index = history.getActiveIndex?.();
-      const target = Number.isInteger(index) && Array.isArray(entries) ? entries[index + offset]?.url : '';
-      return isNavigationUrl(target) ? target : '';
+      const activeIndex = history.getActiveIndex?.();
+      if (!Number.isInteger(activeIndex) || !Array.isArray(entries)) return null;
+      let index = activeIndex + offset;
+      while (entries[index]?.url === currentUrl) index += offset;
+      const url = entries[index]?.url;
+      return isNavigationUrl(url) ? { url, index, adjacentIndex: activeIndex + offset } : null;
     } catch (_error) {
-      return '';
+      return null;
+    }
+  }
+
+  function moveHistory(history, method, target) {
+    if (target && target.index !== target.adjacentIndex && typeof history.goToIndex === 'function') {
+      history.goToIndex(target.index);
+    } else {
+      history[method]();
     }
   }
 

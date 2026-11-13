@@ -12,7 +12,7 @@ const { closeApp, getFreePort, launchAppAndWait } = require('./helpers/electron-
 // 最小構成（apiHost / initialCommand / agentroom / additionalPanes）はヘルパーの既定値と
 // 同じ内容なので、ここでは個別テストで必要なキーだけ渡す。
 async function launchNewPaneApp(port, config = {}) {
-  return await launchAppAndWait({ port, prefix: 'vk-terminals-e2e-newpane-', config });
+  return await launchAppAndWait({ port, prefix: 'vk-terminals-e2e-newpane-', config: { openInitialPane: true, ...config } });
 }
 
 test.describe('新規ペイン起動設定（issue #143 / PR #144）', () => {

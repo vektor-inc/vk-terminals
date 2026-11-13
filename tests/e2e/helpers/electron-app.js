@@ -205,6 +205,7 @@ async function launchApp({ port, prefix, env = {}, unsetEnv = [], config = {}, l
     fs.writeFileSync(configPath, JSON.stringify({
       apiHost: '127.0.0.1',
       initialCommand: '',
+      openInitialPane: true,
       agentroom: false,
       additionalPanes: [],
       ...resolvedConfig,

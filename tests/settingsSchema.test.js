@@ -89,6 +89,7 @@ test('buildBuiltinSettingsDescriptor: JSON から targetPath 付きの組み込�
     'menuItems',
     'additionalPanes',
     'apiRequireAuthAlways',
+    'openInitialPane',
     'initialEngine',
     'initialCodexModel',
   ]);
@@ -100,12 +101,16 @@ test('buildBuiltinSettingsDescriptor: JSON から targetPath 付きの組み込�
 
   // initialEngine は「自動起動がオンの場合だけ追加・分割ペインが同じ AI」「additionalPanes は対象外」「再起動後に反映」を示す。
   const engineField = fields.find((field) => field.key === 'initialEngine');
+  assert.equal(engineField.label, '最初のペインの AI エンジン');
+  assert.match(engineField.help, /ペインが 0 枚のときに「新規ペインを追加」ボタンから作るペイン/);
   assert.match(engineField.help, /再起動後に反映/);
   assert.match(engineField.help, /自動的に起動する」がオンの場合だけ/);
   assert.match(engineField.help, /additionalPanes.*対象外/);
 
   // initialCodexModel は再起動後反映を示し、許可文字の pattern 検証を持つ（renderer/claudeModel.js と同じ規則）。
   const codexModelField = fields.find((field) => field.key === 'initialCodexModel');
+  assert.equal(codexModelField.label, '最初のペインの Codex モデル');
+  assert.match(codexModelField.help, /ペインが 0 枚のときに「新規ペインを追加」ボタンから作るペイン/);
   assert.match(codexModelField.help, /再起動後に反映/);
   assert.equal(typeof codexModelField.invalidMessage, 'string');
   const codexModelRe = new RegExp(codexModelField.pattern);

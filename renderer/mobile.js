@@ -1276,7 +1276,8 @@ var addPaneBtn = document.getElementById("add-pane-btn");
 var addPaneIcon = addPaneBtn ? addPaneBtn.querySelector(".add-pane-icon") : null;
 var addPaneLabel = addPaneBtn ? addPaneBtn.querySelector(".add-pane-label") : null;
 var addPaneInFlight = false;
-var ADD_PANE_TIMEOUT_MS = 8000;
+// main の追加要求は 15 秒で応答するため、それを受け取るまで「追加中…」を維持する。
+var ADD_PANE_TIMEOUT_MS = 20000;
 
 function setAddPaneBusy(busy) {
   if (!addPaneBtn) return;

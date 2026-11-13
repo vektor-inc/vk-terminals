@@ -66,7 +66,7 @@ const ALL_OK = buildStatus([
   requirement({ id: 'claude', label: 'Claude Code', ok: true, current: '2.0.14' }),
 ]);
 
-async function launchEmbedded({ initialStatus, prefix, seedHome }) {
+async function launchEmbedded({ initialStatus, prefix, seedHome, openInitialPane = true }) {
   const port = await getFreePort();
   const statusDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-setup-status-'));
   const statusFile = path.join(statusDir, 'status.json');
@@ -77,6 +77,7 @@ async function launchEmbedded({ initialStatus, prefix, seedHome }) {
     port,
     prefix,
     seedHome,
+    config: { openInitialPane },
     entry: launcherPath,
     env: { VK_TEST_SETUP_STATUS_FILE: statusFile, VK_TEST_SETUP_CWD: setupCwd },
   });
@@ -482,7 +483,7 @@ test('セットアップ済みなら一覧は組み立てず、今と同じ画�
 
 test('組み込みのオプションが無い起動（electron .）では、受け口も画面の要素も作らず今と同じ画面のまま', async () => {
   const port = await getFreePort();
-  const { app, win, tmpRoot } = await launchAppAndWait({ port, prefix: 'vk-terminals-e2e-setup-absent-' });
+  const { app, win, tmpRoot } = await launchAppAndWait({ port, prefix: 'vk-terminals-e2e-setup-absent-', config: { openInitialPane: true } });
   try {
     await expect(win.locator('.pane')).toHaveCount(1);
     const state = await win.evaluate(async () => {
@@ -507,13 +508,21 @@ test('組み込みのオプションが無い起動（electron .）では、受�
     expect(state.initialRejected).toBe(true);
     expect(state.setupPaneRejected).toBe(true);
     expect(state.panelElements).toBe(0);
-    // #root の直下は、サイドバーとグリッドだけ（従来と同じ）。
-    expect(state.rootChildren).toHaveLength(2);
-    expect(state.rootChildren[0]).toBe('sidebar');
+    // セットアップ用の要素は増えず、通常のサイドバー・グリッド・ブラウザだけ。
+    expect(state.rootChildren).toEqual(['sidebar', 'grid', 'internal-browser-sidebar']);
     // 「Orchestrator 停止中」の文言は従来のまま（セットアップ未完了の文言にならない）。
     const noticeText = await win.evaluate(() => document.querySelector('#task-list .task-list-stale')?.textContent || '');
     expect(noticeText).not.toContain('セットアップ');
   } finally {
     await closeApp({ app, tmpRoot });
   }
+});
+
+
+test('初回セットアップ用ペインは openInitialPane がオフでも開く', async () => {
+  const ctx = await launchEmbedded({ initialStatus: CLAUDE_MISSING, prefix: 'vk-terminals-e2e-setup-empty-', openInitialPane: false });
+  try {
+    await expect(ctx.win.locator('.pane')).toHaveCount(1);
+    await expect(ctx.win.locator('.setup-panel')).toBeVisible();
+  } finally { await ctx.cleanup(); }
 });

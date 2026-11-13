@@ -2508,10 +2508,14 @@ button.sidebar-section-header:hover {
   display: flex;
   align-items: center;
   justify-content: center;
+  container-type: inline-size;
+  container-name: empty-grid;
 }
 .grid-empty-box {
+  box-sizing: border-box;
+  width: 100%;
   max-width: 420px;
-  padding: 24px;
+  padding: 24px 8px;
   text-align: center;
   color: #c9d1d9;
 }
@@ -2545,6 +2549,8 @@ button.sidebar-section-header:hover {
   font: inherit;
   font-size: 13px;
   font-weight: 600;
+  /* 狭いペインでも操作名の途中で折り返さない。 */
+  white-space: nowrap;
   cursor: pointer;
   transition: background 0.12s, border-color 0.12s;
 }
@@ -2565,6 +2571,19 @@ button.sidebar-section-header:hover {
 .grid-empty-btn-secondary:hover {
   background: #30363d;
   border-color: #8b949e;
+}
+
+/* グリッド幅が横並びの必要幅（約 324px）に近づく前に縦に積む。 */
+@container empty-grid (max-width: 350px) {
+  .grid-empty-actions {
+    flex-direction: column;
+  }
+  .grid-empty-btn {
+    box-sizing: border-box;
+    width: 100%;
+    padding: 8px;
+    font-size: 12px;
+  }
 }
 
 /* ─── Grid resize handles ──────────────────────────────────────────────────── */

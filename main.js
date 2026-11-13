@@ -109,6 +109,7 @@ const { scheduleLaunchCommand } = require('./utils/delayedLaunch');
 const { createSetupShellInput } = require('./utils/setupShellInput');
 const { resolvePaneNoClaude } = require('./utils/setupShellPane');
 const { observePowerShellReady } = require('./utils/powerShellReady');
+const { isInitialCommandTarget } = require('./utils/initialPaneCommand');
 const shellStartupReadiness = new WeakMap();
 const {
   createAgentLifecycleStore,
@@ -1938,6 +1939,7 @@ ipcMain.handle('app:get-config', () => {
     agentroom: false,
     appTitle: APP_TITLE,
     // 起動時の最初のペインで使う AI エンジン・モデル（issue #419）。不正値・未指定は claude へ正規化済み。
+    openInitialPane: config.openInitialPane === true,
     initialEngine: initialPaneLaunch.engine,
     initialCodexModel: initialPaneLaunch.model,
     // ペインを閉じる時の確認（issue #184）。不正値・未指定は既定 'busy' に正規化して渡す。
@@ -2891,9 +2893,9 @@ function createTerminalPane(cwd, options = {}, guide = null) {
   // 事故があるため（安藤の指摘・MEDIUM）。
   const spawnTime = performance.now();
 
-  // initialCommand は最初の 1 ターミナルのみ送信
-  // セットアップ用ペインは「最初のターミナル」に数えない（次の通常のペインに initialCommand を送るため）。
-  const isFirstTerminal = !firstTerminalCreated && !setupLaunch && !setupShellLaunch && !guideLaunch;
+  // 起動時に通常の初期ペインを作った場合だけ initialCommand を送信する。
+  // セットアップ用ペインとセットアップ専用シェルは対象外で、通常ペインでの再試行だけが初期ペインになる。
+  const isFirstTerminal = isInitialCommandTarget({ initialPane: options.initialPane, firstTerminalCreated, setupLaunch, setupShellLaunch, guideLaunch });
   if (isFirstTerminal) firstTerminalCreated = true;
 
   let promptWatcher = null;
@@ -3317,7 +3319,7 @@ ipcMain.on('terminal:renderer-ready', async () => {
   pushWidgetUpdate();
   if (SETUP_SHELL) return;
   if (restoredPaneCount) { additionalPanesCreated = true; return; }
-  if (additionalPanesCreated) return; // closePane で最後のペインを閉じて再 initApp された場合は再生成しない
+  if (additionalPanesCreated) return; // renderer の ready 通知は起動時だけの追加ペイン生成に使う
   additionalPanesCreated = true;
   const config = loadUserConfig();
   const panes = Array.isArray(config.additionalPanes) ? config.additionalPanes : [];

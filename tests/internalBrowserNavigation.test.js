@@ -782,6 +782,23 @@ for (const action of ['back', 'forward']) {
     assert.equal(states.at(-1).navigationResult, 'completed');
     assert.equal(states.at(-1).url, target.url);
   });
+
+  test(`${action} は現在URLと同じ履歴しか残らない場合に無効になる`, async () => {
+    const { browser, contents, states } = setup();
+    await contents.complete('https://example.com/current');
+    const current = { url: 'https://example.com/current' };
+    const isBack = action === 'back';
+    contents.navigationHistory.getAllEntries = () => [current, current];
+    contents.navigationHistory.getActiveIndex = () => isBack ? 1 : 0;
+    contents.navigationHistory[`canGo${isBack ? 'Back' : 'Forward'}`] = () => true;
+    contents.navigationHistory[`go${isBack ? 'Back' : 'Forward'}`] = () => assert.fail('空振りの履歴移動は実行しない');
+
+    browser.publish();
+    assert.equal(states.at(-1)[isBack ? 'canGoBack' : 'canGoForward'], false);
+    assert.equal(browser.action(action), false);
+    assert.equal(states.at(-1).navigationResult, 'completed');
+    assert.equal(states.at(-1).url, current.url);
+  });
 }
 
 for (const event of ['did-stop-loading', 'did-navigate']) {

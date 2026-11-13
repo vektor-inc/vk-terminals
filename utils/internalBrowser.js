@@ -93,6 +93,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
   function publish() {
     const contents = view?.webContents;
     const available = contents && !contents.isDestroyed?.();
+    const history = available ? contents.navigationHistory : null;
     if (!win.isDestroyed()) win.webContents.send('internal-browser:state', {
       url: currentUrl,
       pendingUrl,
@@ -103,8 +104,8 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
       navigationRequestId,
       navigationOperationId,
       loading: !!available && contents.isLoading(),
-      canGoBack: !!available && contents.navigationHistory.canGoBack(),
-      canGoForward: !!available && contents.navigationHistory.canGoForward(),
+      canGoBack: !!available && canMoveHistory(history, -1, 'canGoBack'),
+      canGoForward: !!available && canMoveHistory(history, 1, 'canGoForward'),
     });
   }
 
@@ -549,11 +550,13 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
     const history = view.webContents.navigationHistory;
     if (name === 'back' && history.canGoBack()) {
       const target = getHistoryTarget(history, -1);
+      if (target === null) return false;
       const historyTarget = target?.url || '';
       beginLoad(historyTarget || currentUrl, true, undefined, { native: true, stopPrevious: true, historyTarget });
       moveHistory(history, 'goBack', target);
     } else if (name === 'forward' && history.canGoForward()) {
       const target = getHistoryTarget(history, 1);
+      if (target === null) return false;
       const historyTarget = target?.url || '';
       beginLoad(historyTarget || currentUrl, true, undefined, { native: true, stopPrevious: true, historyTarget });
       moveHistory(history, 'goForward', target);
@@ -577,14 +580,19 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
     try {
       const entries = history.getAllEntries?.();
       const activeIndex = history.getActiveIndex?.();
-      if (!Number.isInteger(activeIndex) || !Array.isArray(entries)) return null;
+      if (!Number.isInteger(activeIndex) || !Array.isArray(entries)) return undefined;
       let index = activeIndex + offset;
       while (entries[index]?.url === currentUrl) index += offset;
       const url = entries[index]?.url;
       return isNavigationUrl(url) ? { url, index, adjacentIndex: activeIndex + offset } : null;
     } catch (_error) {
-      return null;
+      return undefined;
     }
+  }
+
+  function canMoveHistory(history, offset, fallbackMethod) {
+    const target = getHistoryTarget(history, offset);
+    return target === undefined ? history[fallbackMethod]() : !!target;
   }
 
   function moveHistory(history, method, target) {

@@ -49,7 +49,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
     // 世代を特定できないため Page.navigate 応答のある操作だけを候補にする。
     // 終了済み候補は保持せず、現在の結果待ち／確定済み download だけを見る。
     const candidates = [...downloadCandidates, ...(activeLoad?.done && activeLoad.downloadConfirmed ? [activeLoad] : [])]
-      .filter(load => urls.includes(normalizeDownloadUrl(load.url)));
+      .filter(load => urls.includes(normalizeDownloadUrl(load.downloadSourceUrl)));
     const load = candidates.length === 1 ? candidates[0] : null;
     if ((contents && contents !== view?.webContents) || !load || load !== activeLoad
       || load.noticeReceived || load.downloadAmbiguous) {
@@ -67,7 +67,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
     }
     load.noticeReceived = true;
     downloadCandidates.delete(load);
-    if (load.downloadConfirmed) sendDownloadNotice(true);
+    if (load.downloadConfirmed) sendDownloadNotice(load.canOpenDownloadFromToolbar);
     else load.pendingDownloadNotice = true;
   };
   browserSession.on('will-download', cancelDownload);
@@ -178,12 +178,14 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
             load.frameId = params.frameId;
             load.url = params.request.url;
           }
-          load.requests.set(params.requestId, { loaderId: params.loaderId, frameId: params.frameId });
+          // redirectResponse の URL は直前の送信元。再利用される requestId を
+          // request.url で更新し、コマンド応答より先に届く最終遷移先も保持する。
+          load.requests.set(params.requestId, {
+            loaderId: params.loaderId, frameId: params.frameId, url: params.request.url,
+          });
         } else if (method === 'Network.loadingFailed') {
           const request = load.requests.get(params.requestId);
-          if (load.native && request && load.loaderId && request.loaderId === load.loaderId && request.frameId === load.frameId) {
-            load.finish(new Error(params.canceled ? 'ERR_ABORTED' : params.errorText));
-          }
+          if (request) request.error = new Error(params.canceled ? 'ERR_ABORTED' : params.errorText);
         } else if (method === 'Network.responseReceived' && params.type === 'Document') {
           // WebRequest の request id は CDP の requestId と互換ではない。
           if (!load.responses.has(params.loaderId)) load.responses.set(params.loaderId, new Map());
@@ -260,6 +262,8 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
         if (result.loaderId) retiredLoaders.add(result.loaderId);
         return;
       }
+      load.loaderId = result.loaderId;
+      load.frameId = result.frameId;
       if (result.isDownload) { load.finishDownload(); return; }
       if (result.errorText) { load.finish(new Error(result.errorText)); return; }
       // 同一文書内の遷移は loaderId を返さず、コマンド応答時に反映済みとなる。
@@ -268,8 +272,6 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
         load.finish(isNavigationUrl(committedUrl) ? null : new Error('Navigation URL unavailable'), committedUrl);
         return;
       }
-      load.loaderId = result.loaderId;
-      load.frameId = result.frameId;
       load.completeIfLoaded();
     }).catch(error => { downloadCandidates.delete(load); load.finish(error); });
     syncBounds();
@@ -302,13 +304,14 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
     navigationOperationId++;
     const contents = view.webContents;
     const load = {
-      url, native, done: false, started: native, downloadResponsePending: !native,
-      downloadAmbiguous: !!previous && normalizeDownloadUrl(previous.url) === normalizeDownloadUrl(url)
+      url, downloadSourceUrl: url, native, done: false, started: native, downloadResponsePending: !native,
+      downloadAmbiguous: !!previous && normalizeDownloadUrl(previous.downloadSourceUrl) === normalizeDownloadUrl(url)
         && previous.started && !previous.noticeReceived
         && (previous.downloadResponsePending || previous.downloadConfirmed),
       commits: new Map(), loaded: new Map(),
       requests: new Map(), responses: new Map(),
     };
+    load.canOpenDownloadFromToolbar = !fromPage && requestId !== undefined && !load.downloadAmbiguous;
     activeLoad = load;
     load.flushDownloadNotice = canOpenFromToolbar => {
       if (!load.pendingDownloadNotice) return;
@@ -334,7 +337,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
       pendingUrl = '';
       if (error) {
         navigationResult = error.message.includes('ERR_ABORTED') ? 'cancelled' : 'failed';
-        if (navigationResult === 'failed') failedUrl = load.url;
+        if (navigationResult === 'failed') failedUrl = load.documentRequest()?.url || load.url;
       } else {
         currentUrl = committedUrl;
         if (!load.loaderId || load.sameDocument) github404Url = document404Url;
@@ -348,14 +351,26 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
       if (activeLoad !== load || load.done) return;
       load.done = true;
       downloadCandidates.delete(load);
-      downloadUrl = load.url;
+      downloadUrl = load.canOpenDownloadFromToolbar ? load.downloadSourceUrl : '';
       pendingUrl = '';
       navigationResult = 'download-blocked';
       publish();
-      load.flushDownloadNotice(true);
+      load.flushDownloadNotice(load.canOpenDownloadFromToolbar);
+    };
+    // loader とメインフレームの両方が確定するまで、先着イベントを採用しない。
+    // download 候補照合・完了 URL にはこの暫定文書 URL を使わない。
+    load.documentRequest = () => {
+      if (!load.loaderId || load.frameId !== mainFrameId) return null;
+      return [...load.requests.values()].reverse().find(request => request.loaderId === load.loaderId
+        && request.frameId === load.frameId && isNavigationUrl(request.url));
     };
     load.completeIfLoaded = () => {
       if (activeLoad !== load || !load.loaderId) return;
+      const request = load.documentRequest();
+      // Page.navigate の応答前の ERR_ABORTED は download の可能性もある。
+      if (request?.error && (load.native || !load.downloadResponsePending)) {
+        load.finish(request.error); return;
+      }
       const commit = load.commits.get(load.loaderId);
       if (!commit || commit.frameId !== load.frameId) return;
       mainFrameId = load.frameId;

@@ -251,7 +251,7 @@ test('専用ビューの遷移と権限、ダウンロード、確定 URL を制
   assert.deepEqual(sent.at(-1)[1], { canOpenFromToolbar: false });
   assert.equal(sent.at(-2)[1].pendingUrl, 'https://example.com/stale');
   assert.equal(sent.at(-2)[1].navigationResult, null);
-  browser.navigate('https://example.com/normalized');
+  browser.navigate('https://example.com/normalized', false, 8);
   await flushBrowserLoads();
   browserSession.emit('will-download', { preventDefault() {} }, { getURLChain: () => ['HTTPS://EXAMPLE.COM/normalized'] });
   await contents.download();

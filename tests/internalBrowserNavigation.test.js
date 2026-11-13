@@ -277,7 +277,8 @@ for (const canonical of ['https://example.com/canonical', 'https://example.com/a
 for (const via of ['window.open', 'target=_blank']) {
   for (const noticeFirst of [true, false]) {
     test(`${via} download は isDownload と通知の到着順によらず終了: 通知先行=${noticeFirst}`, async () => {
-      const { contents, session, states } = setup();
+      const { contents, session, states, messages } = setup();
+      await contents.complete('https://example.com/a');
       await flushBrowserLoads();
       contents.openHandler({ url: 'https://example.com/download' });
       const operation = states.at(-1).navigationOperationId;
@@ -288,7 +289,9 @@ for (const via of ['window.open', 'target=_blank']) {
       await contents.download();
       if (!noticeFirst) notice();
       assert.equal(states.at(-1).navigationResult, 'download-blocked');
-      assert.equal(states.at(-1).downloadUrl, 'https://example.com/download');
+      assert.equal(states.at(-1).downloadUrl, '');
+      assert.equal(states.at(-1).url, 'https://example.com/a');
+      assert.deepEqual(notices(messages).map(message => message.state), [{ canOpenFromToolbar: false }]);
       assert.equal(states.at(-1).navigationOperationId, operation);
       assert.equal(states.at(-1).navigationRequestId, null);
     });
@@ -663,4 +666,103 @@ test('通知欠落でも終了・置換した操作をSetに保持しない', as
   assert.equal(retainedOperations().length, 0);
   browser.destroy();
   assert.equal(retainedOperations().length, 0);
+});
+
+// redirectResponse.url は A、request.url は失敗した最終遷移先 B。
+for (const order of ['network-first', 'page-first', 'failure-before-response', 'error-response-first']) {
+  for (const native of [false, true]) {
+    test(`リダイレクト失敗は現在loaderの最終URLを使う: ${order}, native=${native}`, async () => {
+      const { browser, contents, states } = setup();
+      await contents.complete('https://example.com/a');
+      const old = contents.loads[0];
+      const source = 'https://source.example/start';
+      const target = 'https://failed.example/final';
+      if (native) contents.emit('will-navigate', { url: source });
+      else browser.navigate(source, false, 2);
+      await flushBrowserLoads();
+      const command = contents.loads.at(-1);
+      const loaderId = native ? 'native-redirect' : command.loaderId;
+      const documentRequestId = native ? 'redirect-request' : command.requestId;
+      const message = (method, params) => contents.debugger.emit('message', {}, method, params);
+      const request = (url, loader = loaderId, frameId = 'main', requestId = documentRequestId) => message('Network.requestWillBeSent', {
+        type: 'Document', loaderId: loader, frameId, requestId, request: { url },
+        redirectResponse: { url: source, status: 302 },
+      });
+      const page = () => {
+        if (native) message('Page.frameStartedNavigating', { frameId: 'main', loaderId, url: source, navigationType: 'differentDocument' });
+        else command.resolve({ frameId: 'main', loaderId });
+      };
+      if (order === 'page-first') { page(); await flushBrowserLoads(); }
+      request(source);
+      request(target);
+      // 同じloaderのsubframeと旧世代の最終URLは採用しない。
+      request('https://subframe.example/', loaderId, 'subframe', 'subframe-request');
+      request('https://stale.example/', old.loaderId, 'main', old.requestId);
+      if (order === 'network-first') { page(); await flushBrowserLoads(); }
+      if (order === 'error-response-first' && !native) {
+        command.resolve({ frameId: 'main', loaderId, errorText: 'net::ERR_NAME_NOT_RESOLVED' });
+        await flushBrowserLoads();
+      }
+      message('Network.loadingFailed', { requestId: documentRequestId, errorText: 'net::ERR_NAME_NOT_RESOLVED' });
+      if (order === 'failure-before-response') {
+        if (native) page();
+        else command.resolve({ frameId: 'main', loaderId, errorText: 'net::ERR_NAME_NOT_RESOLVED' });
+        await flushBrowserLoads();
+      }
+      assert.equal(states.at(-1).navigationResult, 'failed');
+      assert.equal(states.at(-1).failedUrl, target);
+      assert.equal(states.at(-1).url, old.url);
+      browser.action('reload');
+      await flushBrowserLoads();
+      assert.equal(contents.loads.at(-1).url, target);
+    });
+  }
+}
+
+for (const fromPage of [false, true]) {
+  for (const noticeFirst of [false, true]) {
+    test(`requestIdなしdownloadは確定URLと一般案内を維持: fromPage=${fromPage}, 通知先行=${noticeFirst}`, async () => {
+      const { browser, contents, session, states, messages } = setup();
+      await contents.complete('https://example.com/a');
+      const url = 'https://example.com/file';
+      browser.navigate(url, fromPage);
+      await flushBrowserLoads();
+      if (noticeFirst) downloadNotice(session, url, contents);
+      await contents.download();
+      if (!noticeFirst) downloadNotice(session, url, contents);
+      assert.equal(states.at(-1).downloadUrl, '');
+      assert.equal(states.at(-1).url, 'https://example.com/a');
+      assert.equal(states.at(-1).navigationResult, 'download-blocked');
+      assert.deepEqual(notices(messages).map(message => message.state), [{ canOpenFromToolbar: false }]);
+    });
+  }
+}
+
+test('リダイレクト先追跡はdownloadの送信元照合を変更しない', async () => {
+  const { contents, session, states, messages } = setup();
+  await flushBrowserLoads();
+  const load = contents.loads[0];
+  contents.debugger.emit('message', {}, 'Network.requestWillBeSent', {
+    type: 'Document', frameId: 'main', loaderId: load.loaderId, requestId: load.requestId,
+    request: { url: 'https://cdn.example/file' }, redirectResponse: { url: load.url, status: 302 },
+  });
+  session.emit('will-download', { preventDefault() {} }, { getURLChain: () => [load.url, 'https://cdn.example/file'] }, contents);
+  await contents.download();
+  assert.equal(states.at(-1).downloadUrl, load.url);
+  assert.deepEqual(notices(messages).map(message => message.state), [{ canOpenFromToolbar: true }]);
+});
+
+test('download応答前のNetwork中止を失敗として確定しない', async () => {
+  const { contents, session, states, messages } = setup();
+  await flushBrowserLoads();
+  const load = contents.loads[0];
+  contents.debugger.emit('message', {}, 'Network.loadingFailed', {
+    requestId: load.requestId, canceled: true, errorText: 'net::ERR_ABORTED',
+  });
+  assert.equal(states.at(-1).navigationResult, null);
+  downloadNotice(session, load.url, contents);
+  await contents.download();
+  assert.equal(states.at(-1).navigationResult, 'download-blocked');
+  assert.equal(states.at(-1).downloadUrl, load.url);
+  assert.deepEqual(notices(messages).map(message => message.state), [{ canOpenFromToolbar: true }]);
 });

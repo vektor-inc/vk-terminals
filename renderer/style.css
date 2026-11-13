@@ -4051,6 +4051,11 @@ body.pane-dragging * {
   border-left: 0;
 }
 #root.internal-browser-overlay .internal-browser-resizer { display: none; }
+
+/* 広く表示（issue #613）
+   ========================================================================== */
+.internal-browser-wide .internal-browser-resizer { display: none; }
+.internal-browser-wide .internal-browser-wide-toggle { background: #21262d; }
 .internal-browser-resizer {
   position: absolute;
   left: -5px;

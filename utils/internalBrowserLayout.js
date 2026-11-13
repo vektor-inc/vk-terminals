@@ -38,9 +38,16 @@
     const preferred = Math.min(720, Math.max(480, Math.round(availableWidth * 0.45)));
     return Math.min(max, Math.max(360, Number.isFinite(width) ? Math.round(width) : preferred));
   }
+  // 広く表示ではペイン用の幅を残さない。左サイドバーを閉じているときだけ、
+  // トーストの置き場所として画面左側に 96px を残す（browserWidthMax と揃える）。
+  function wideBrowserWidth(availableWidth, windowWidth, leftSidebarWidth = 0) {
+    const available = Math.max(0, Math.floor(availableWidth));
+    if (leftSidebarWidth > 0) return available;
+    return Math.min(available, Math.max(0, Math.floor(windowWidth) - 96));
+  }
   function shouldWrapToastPhrase(windowWidth, browserWidth) {
     // 32 は renderer/style.css の .vk-toast-layer の max-width（左右の余白 16px × 2）と揃える。
     return windowWidth - browserWidth - 32 < 200;
   }
-  return { browserAvailableWidth, shouldFoldSetupPanel, paneReservedWidth, clampBrowserWidth, browserWidthMax, shouldWrapToastPhrase, shouldSeparateSidebars, shouldOverlayBrowser, MIN_TERMINAL_WIDTH, MIN_PANE_COLUMN_WIDTH };
+  return { browserAvailableWidth, shouldFoldSetupPanel, paneReservedWidth, clampBrowserWidth, browserWidthMax, wideBrowserWidth, shouldWrapToastPhrase, shouldSeparateSidebars, shouldOverlayBrowser, MIN_TERMINAL_WIDTH, MIN_PANE_COLUMN_WIDTH };
 });

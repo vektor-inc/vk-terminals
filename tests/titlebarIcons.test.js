@@ -18,7 +18,7 @@ test('タイトルバーの操作ボタンは Lucide スプライトを読み上
 
 test('Lucide スプライトはタイトルバーとアプリ内ブラウザのアイコンを currentColor で収録する', () => {
   const symbolIds = [...iconSprite.matchAll(/<symbol id="([^"]+)"/g)].map((match) => match[1]);
-  assert.deepEqual(symbolIds, ['menu', 'settings', 'panel-right', 'arrow-left', 'arrow-right', 'rotate-cw', 'external-link', 'x']);
+  assert.deepEqual(symbolIds, ['menu', 'settings', 'panel-right', 'arrow-left', 'arrow-right', 'rotate-cw', 'maximize', 'minimize', 'external-link', 'x']);
   assert.equal((iconSprite.match(/stroke="currentColor"/g) || []).length, symbolIds.length);
 });
 

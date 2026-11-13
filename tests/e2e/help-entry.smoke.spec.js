@@ -50,6 +50,7 @@ test('使い方・ヘルプ: 確認失敗の再確認、未保存キャンセル
   });
   await new Promise((resolve) => linkedPage.listen(0, '127.0.0.1', resolve));
   const linkedUrl = `http://127.0.0.1:${linkedPage.address().port}/`;
+  const previousUrl = `${linkedUrl}previous`;
   fs.writeFileSync(path.join(root, 'help.html'), `<html><body>Help<a href="#section">Section</a><h2 id="section">Section</h2><a href="${linkedUrl}">External</a></body></html>`);
   const statusFile = path.join(root, 'status.json');
   fs.writeFileSync(statusFile, '{}');
@@ -80,9 +81,11 @@ test('使い方・ヘルプ: 確認失敗の再確認、未保存キャンセル
       await docButton.focus();
       await expect(docButton).toBeFocused();
     }
-    // 案内より前の HTTPS ページも通常の履歴に残す。
-    await win.evaluate((url) => VKIpc.invoke('internal-browser:open', url), 'https://example.com/');
-    await expect(win.locator('.internal-browser-url')).toContainText('example.com');
+    // 案内より前のページをローカルで読み込み、完了後に通常の履歴へ残す。
+    await win.evaluate((url) => VKIpc.invoke('internal-browser:open', url), previousUrl);
+    await expect(win.locator('.internal-browser-url')).toContainText('/previous');
+    await expect(win.locator('.internal-browser-progress')).toBeHidden();
+    await expect(win.locator('.internal-browser-error')).toBeHidden();
     // IPC を保留し、未保存変更が無い場合の読み込み中表示を観察する。
     await win.evaluate(() => {
       const original = VKIpc.invoke;
@@ -124,7 +127,7 @@ test('使い方・ヘルプ: 確認失敗の再確認、未保存キャンセル
     await expect(win.locator('.internal-browser-url')).toContainText('#section');
     await win.locator('.internal-browser-toolbar [data-action="forward"]').click();
     await expect(win.locator('.internal-browser-url')).toContainText('127.0.0.1');
-    // B からは A を経由し、案内とその前の HTTPS ページまで順に戻る。
+    // B からは A を経由し、案内とその前のローカルページまで順に戻る。
     await app.evaluate(async ({ webContents }) => {
       const page = webContents.getAllWebContents().find((contents) => contents.getURL().startsWith('http://127.0.0.1:'));
       await page.executeJavaScript("document.querySelector('a').click()", true);
@@ -138,7 +141,7 @@ test('使い方・ヘルプ: 確認失敗の再確認、未保存キャンセル
     await win.locator('.internal-browser-toolbar [data-action="back"]').click();
     await expect(win.locator('.internal-browser-url')).toContainText('guide');
     await win.locator('.internal-browser-toolbar [data-action="back"]').click();
-    await expect(win.locator('.internal-browser-url')).toContainText('example.com');
+    await expect(win.locator('.internal-browser-url')).toContainText('/previous');
     await win.locator('.internal-browser-toolbar [data-action="forward"]').click();
     await expect(win.locator('.internal-browser-url')).toContainText('guide');
     await win.getByRole('button', { name: '外部ブラウザで開く', exact: true }).first().click();

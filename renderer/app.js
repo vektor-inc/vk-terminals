@@ -108,7 +108,7 @@ const internalBrowserSidebar = document.createElement('aside');
 internalBrowserSidebar.id = 'internal-browser-sidebar';
 internalBrowserSidebar.className = 'internal-browser-sidebar';
 internalBrowserSidebar.setAttribute('aria-label', 'アプリ内ブラウザ');
-internalBrowserSidebar.innerHTML = `<div class="internal-browser-resizer" role="separator" tabindex="0" aria-label="アプリ内ブラウザの幅を変更" aria-orientation="vertical" aria-valuemin="360" aria-valuemax="720" aria-valuenow="480"></div><div class="internal-browser-toolbar"><button type="button" data-action="back" title="戻る" aria-label="戻る"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#arrow-left"></use></svg></button><button type="button" data-action="forward" title="進む" aria-label="進む"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#arrow-right"></use></svg></button><button type="button" data-action="reload" title="再読み込み" aria-label="再読み込み"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#rotate-cw"></use></svg></button><input type="text" class="internal-browser-url" aria-label="URL または検索語を入力" placeholder="URL または検索語" autocomplete="off" spellcheck="false"><button type="button" data-action="external" title="外部ブラウザで開く" aria-label="外部ブラウザで開く"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#external-link"></use></svg></button><button type="button" data-action="close" title="閉じる" aria-label="閉じる"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#x"></use></svg></button></div><p class="internal-browser-external-target" role="status" hidden></p><p id="internal-browser-address-error" class="internal-browser-address-error" role="alert" hidden></p><div class="internal-browser-progress" hidden></div><div class="internal-browser-notice" role="status" hidden></div><div class="internal-browser-error" role="status" hidden><p class="internal-browser-error-message">ページを表示できませんでした</p><button type="button" data-action="reload">再読み込み</button><button type="button" data-action="external">外部ブラウザで開く</button></div><div class="internal-browser-page"></div>`;
+internalBrowserSidebar.innerHTML = `<div class="internal-browser-resizer" role="separator" tabindex="0" aria-label="アプリ内ブラウザの幅を変更" aria-orientation="vertical" aria-valuemin="360" aria-valuemax="720" aria-valuenow="480"></div><div class="internal-browser-toolbar"><button type="button" data-action="back" title="戻る" aria-label="戻る"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#arrow-left"></use></svg></button><button type="button" data-action="forward" title="進む" aria-label="進む"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#arrow-right"></use></svg></button><button type="button" data-action="reload" title="再読み込み" aria-label="再読み込み"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#rotate-cw"></use></svg></button><input type="text" class="internal-browser-url" aria-label="URL または検索語を入力" placeholder="URL または検索語" autocomplete="off" spellcheck="false"><button type="button" data-action="external" title="外部ブラウザで開く" aria-label="外部ブラウザで開く"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#external-link"></use></svg></button><button type="button" data-action="close" title="閉じる" aria-label="閉じる"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#x"></use></svg></button></div><p class="internal-browser-external-target" role="status" hidden></p><p id="internal-browser-address-error" class="internal-browser-address-error" role="alert" hidden></p><div class="internal-browser-progress" hidden></div><p class="internal-browser-navigation-status" role="status" aria-live="polite"></p><div class="internal-browser-notice" role="status" hidden></div><div class="internal-browser-error" role="status" hidden><p class="internal-browser-error-message">ページを表示できませんでした</p><button type="button" data-action="reload">再読み込み</button><button type="button" data-action="external">外部ブラウザで開く</button></div><div class="internal-browser-page"></div>`;
 let internalBrowserOpen = false;
 let internalBrowserUrl = '';
 let internalBrowserPendingUrl = '';
@@ -295,6 +295,17 @@ internalBrowserSidebar.addEventListener('click', event => {
 // 未送信の文字列はページの状態通知で上書きしない。
 const internalBrowserAddress = internalBrowserSidebar.querySelector('.internal-browser-url');
 const internalBrowserAddressError = internalBrowserSidebar.querySelector('.internal-browser-address-error');
+let internalBrowserNavigationActive = false;
+function setInternalBrowserNavigationStatus(message) {
+  const status = internalBrowserSidebar.querySelector('.internal-browser-navigation-status');
+  if (status.textContent !== message) status.textContent = message;
+}
+function formatInternalBrowserDestination(url) {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.host}${parsed.pathname}${parsed.search}${parsed.hash}`;
+  } catch { return ''; }
+}
 function getInternalBrowserExternalTarget() {
   return internalBrowserDownloadUrl
     ? { url: internalBrowserDownloadUrl, kind: 'ダウンロード先' }
@@ -312,8 +323,8 @@ function syncInternalBrowserExternalTarget() {
   button.disabled = !url;
   // 入力欄と開き先が異なるときだけ、実際の操作対象を画面にも示す。
   const showTarget = Boolean(url) && (kind === 'ダウンロード先' || internalBrowserAddress.value !== url);
-  const host = showTarget ? new URL(url).host : '';
-  const text = showTarget ? `外部で開く: ${kind} ${host}` : '';
+  const destination = showTarget ? formatInternalBrowserDestination(url) : '';
+  const text = showTarget ? `外部で開く: ${kind} ${destination}` : '';
   if (status.textContent !== text) status.textContent = text;
   if (status.hidden !== !showTarget) {
     status.hidden = !showTarget;
@@ -356,6 +367,8 @@ internalBrowserAddress.addEventListener('keydown', event => {
   internalBrowserAddressHasDraft = false;
   internalBrowserPendingUrl = url;
   internalBrowserAddress.value = url;
+  internalBrowserNavigationActive = true;
+  setInternalBrowserNavigationStatus('ページを読み込み中');
   syncInternalBrowserExternalTarget();
   VKIpc.invoke('internal-browser:open', url).catch(() => {});
 });
@@ -413,13 +426,15 @@ VKIpc.on('internal-browser:state', state => {
   const errorMessage = errorView.querySelector('.internal-browser-error-message');
   const failedExternalButton = errorView.querySelector('[data-action="external"]');
   // 失敗画面のボタンは操作列とは別の URL を開くため、実際の開き先をボタン上に示す。
-  const failedExternalText = failedHost
-    ? `失敗したページを外部で開く: ${failedHost}` : '失敗したページを外部で開く';
+  const failedDestination = internalBrowserFailedUrl ? formatInternalBrowserDestination(internalBrowserFailedUrl) : '';
+  const failedExternalText = failedDestination
+    ? `失敗したページを外部で開く: ${failedDestination}` : '失敗したページを外部で開く';
   const visibleFailedExternalText = internalBrowserFailedUrl ? failedExternalText : '外部ブラウザで開く';
   const fullFailedExternalText = internalBrowserFailedUrl ? `失敗したページを外部で開く: ${internalBrowserFailedUrl}` : '';
   if (failedExternalButton.textContent !== visibleFailedExternalText) failedExternalButton.textContent = visibleFailedExternalText;
   if (failedExternalButton.title !== fullFailedExternalText) failedExternalButton.title = fullFailedExternalText;
-  const failedExternalLabel = fullFailedExternalText || visibleFailedExternalText;
+  const failedExternalLabel = fullFailedExternalText
+    ? `${visibleFailedExternalText}（${internalBrowserFailedUrl}）` : visibleFailedExternalText;
   if (failedExternalButton.getAttribute('aria-label') !== failedExternalLabel) failedExternalButton.setAttribute('aria-label', failedExternalLabel);
   // 失敗解除時に文も消し、同じホストで再び失敗した際の読み上げを促す。
   const errorText = !internalBrowserFailedUrl ? '' : failedHost
@@ -458,6 +473,14 @@ VKIpc.on('internal-browser:state', state => {
   internalBrowserSidebar.querySelector('[data-action="back"]').disabled = !state.canGoBack;
   internalBrowserSidebar.querySelector('[data-action="forward"]').disabled = !state.canGoForward;
   internalBrowserSidebar.querySelector('.internal-browser-progress').hidden = !state.loading;
+  // Enter で始めた遷移だけを通知し、同じ状態の再通知では読み上げを増やさない。
+  if (internalBrowserNavigationActive && internalBrowserFailedUrl) {
+    internalBrowserNavigationActive = false;
+    setInternalBrowserNavigationStatus('ページの読み込みに失敗しました');
+  } else if (internalBrowserNavigationActive && !state.loading && !internalBrowserPendingUrl) {
+    internalBrowserNavigationActive = false;
+    setInternalBrowserNavigationStatus('ページの読み込みが完了しました');
+  }
   syncInternalBrowserLayout();
 });
 VKIpc.on('internal-browser:download-blocked', () => {

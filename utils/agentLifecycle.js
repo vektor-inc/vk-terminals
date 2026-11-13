@@ -74,7 +74,8 @@ function hasBaselineAncestor(processes, process, shell, baselineIdentities) {
 function inspectLifecycle(snapshot, processes) {
   const shell = processes.get(snapshot.shellPid);
   if (!shell || !isSameProcessStart(shell.lstart, snapshot.shellLstart)) return { state: null, terminal: true };
-  const trackedGroups = new Map(snapshot.trackedGroups || []);
+  const trackedGroups = new Map([...snapshot.trackedGroups || []].map(([pgid, identities]) => [pgid, new Map(identities)]));
+  const descendantGroupPgids = new Set(snapshot.descendantGroupPgids || []);
   const shellDescendants = [...processes.values()].filter((process) => {
     if (process.pid === shell.pid || !isDescendant(processes, process.pid, shell.pid, shell.lstart)) return false;
     const baselineStart = snapshot.baselineIdentities?.get(process.pid);
@@ -87,7 +88,11 @@ function inspectLifecycle(snapshot, processes) {
   const aliveKnown = new Map();
   for (const [pid, lstart] of knownIdentities) {
     const process = processes.get(pid);
-    if (!process) continue;
+    if (!process) {
+      // 終了した子の PID を追跡し続けると、再利用時に生存中の AI 本体まで失う。
+      for (const identities of trackedGroups.values()) identities.delete(pid);
+      continue;
+    }
     if (!isSameProcessStart(process.lstart, lstart)) return { state: null, terminal: true };
     aliveKnown.set(pid, process);
   }
@@ -98,12 +103,16 @@ function inspectLifecycle(snapshot, processes) {
     if (!Number.isSafeInteger(process.pgid) || process.pgid <= 0 || process.pgid === shell.pgid) {
       return { state: null, trackedGroups, hasAliveGroup: false, terminal: true };
     }
+    const belongedToPrimaryGroup = [...trackedGroups].some(([pgid, identities]) =>
+      !descendantGroupPgids.has(pgid) && identities.has(process.pid));
     for (const identities of trackedGroups.values()) identities.delete(process.pid);
     let identities = trackedGroups.get(process.pgid);
     if (!identities) {
       identities = new Map();
       trackedGroups.set(process.pgid, identities);
+      if (!belongedToPrimaryGroup) descendantGroupPgids.add(process.pgid);
     }
+    if (belongedToPrimaryGroup) descendantGroupPgids.delete(process.pgid);
     identities.set(process.pid, process.lstart);
   }
 
@@ -120,9 +129,18 @@ function inspectLifecycle(snapshot, processes) {
     if (!identities) {
       identities = new Map();
       trackedGroups.set(process.pgid, identities);
+      descendantGroupPgids.add(process.pgid);
     }
     identities.set(process.pid, process.lstart);
     aliveKnown.set(process.pid, process);
+  }
+
+  // 既知が全終了した子孫 group は追跡から外す。残った孤児で生存中の AI 本体の記録を打ち切らず、後継の取得も妨げない。
+  for (const pgid of descendantGroupPgids) {
+    if (trackedGroups.get(pgid)?.size === 0) {
+      trackedGroups.delete(pgid);
+      descendantGroupPgids.delete(pgid);
+    }
   }
 
   const candidate = shell.tpgid;
@@ -159,12 +177,12 @@ function inspectLifecycle(snapshot, processes) {
     if (!members.some((process) => aliveKnown.has(process.pid))) return { state: null, terminal: true };
   }
 
-  if (trackedGroups.size === 0) return { state: null, trackedGroups, hasAliveGroup: false, terminal: Boolean(snapshot.completionReceived) };
-  if (aliveKnown.size > 0) return { state: 'running', trackedGroups, hasAliveGroup: true };
-  if (!snapshot.completionReceived) return { state: 'running', trackedGroups, hasAliveGroup: false };
+  if (trackedGroups.size === 0) return { state: null, trackedGroups, descendantGroupPgids, hasAliveGroup: false, terminal: Boolean(snapshot.completionReceived) };
+  if (aliveKnown.size > 0) return { state: 'running', trackedGroups, descendantGroupPgids, hasAliveGroup: true };
+  if (!snapshot.completionReceived) return { state: 'running', trackedGroups, descendantGroupPgids, hasAliveGroup: false };
   // completion 後に由来不明の baseline 外子孫が残る場合は終了も実行中も断定しない。
-  if (shellDescendants.length > 0) return { state: null, trackedGroups, hasAliveGroup: false, terminal: true };
-  return { state: 'exited', trackedGroups, hasAliveGroup: false, terminal: true };
+  if (shellDescendants.length > 0) return { state: null, trackedGroups, descendantGroupPgids, hasAliveGroup: false, terminal: true };
+  return { state: 'exited', trackedGroups, descendantGroupPgids, hasAliveGroup: false, terminal: true };
 }
 
 
@@ -235,6 +253,7 @@ function createAgentLifecycleStore(options = {}) {
     const result = inspectLifecycle(entry, processes);
     entry.state = result.state;
     if (result.trackedGroups) entry.trackedGroups = result.trackedGroups;
+    if (result.descendantGroupPgids) entry.descendantGroupPgids = result.descendantGroupPgids;
     if (result.hasAliveGroup && entry.acquisitionTimer) {
       clearTimer(entry.acquisitionTimer);
       entry.acquisitionTimer = null;
@@ -261,7 +280,7 @@ function createAgentLifecycleStore(options = {}) {
       const entry = states.get(id);
       const isCurrent = () => states.get(id) === entry && entry?.generation === generation && entry?.launchToken === launchToken && !closed;
       if (!isCurrent()) return { status: 'cancelled' };
-      Object.assign(entry, { shellPid, shellLstart: null, trackedGroups: new Map(), baselinePgids: new Set(), baselineIdentities: new Map(), marker: null, markerBuffer: '', completionReceived: false, acquisitionOpen: false, acquisitionTimer: null, readyResolve: null, readyTimer: null, activated: false });
+      Object.assign(entry, { shellPid, shellLstart: null, trackedGroups: new Map(), descendantGroupPgids: new Set(), baselinePgids: new Set(), baselineIdentities: new Map(), marker: null, markerBuffer: '', completionReceived: false, acquisitionOpen: false, acquisitionTimer: null, readyResolve: null, readyTimer: null, activated: false });
       // プロンプトフックに未対応のシェルでは、そのまま起動コマンドを送る。
       if (!Object.hasOwn(PROMPT_HOOK_SHELLS, pathBasename(shellPath)) || platform === 'win32' || !Number.isSafeInteger(shellPid) || shellPid <= 0) return { status: 'passthrough', command };
       let processes;
@@ -336,6 +355,10 @@ function createAgentLifecycleStore(options = {}) {
         if (!trackedGroups.has(process.pgid)) trackedGroups.set(process.pgid, new Map());
         trackedGroups.get(process.pgid).set(process.pid, process.lstart);
       }
+      // シェル直下の AI 本体が確認できるときだけ、他のグループを子孫由来として復元する。
+      const primaryPgids = new Set(members.filter((process) => process.ppid === shell.pid).map((process) => process.pgid));
+      const descendantGroupPgids = primaryPgids.size > 0
+        ? new Set([...trackedGroups.keys()].filter((pgid) => !primaryPgids.has(pgid))) : new Set();
       const baselineIdentities = new Map();
       const baselinePgids = new Set();
       for (const process of processes.values()) {
@@ -343,7 +366,7 @@ function createAgentLifecycleStore(options = {}) {
         baselinePgids.add(process.pgid);
         baselineIdentities.set(process.pid, process.lstart);
       }
-      Object.assign(entry, { shellPid, shellLstart: shell.lstart, trackedGroups, baselinePgids, baselineIdentities, marker: null, markerBuffer: '', completionReceived: true, acquisitionOpen: false, acquisitionTimer: null, readyResolve: null, readyTimer: null, activated: true, state: 'running' });
+      Object.assign(entry, { shellPid, shellLstart: shell.lstart, trackedGroups, descendantGroupPgids, baselinePgids, baselineIdentities, marker: null, markerBuffer: '', completionReceived: true, acquisitionOpen: false, acquisitionTimer: null, readyResolve: null, readyTimer: null, activated: true, state: 'running' });
       schedule(id, entry);
       return true;
     },

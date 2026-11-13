@@ -645,6 +645,8 @@ let newPaneAutoLaunchClaude = false;
 // 起動時の最初のペインだけが使う AI エンジン・モデル（issue #419）。既定は従来どおり Claude Code。
 let initialPaneEngine = 'claude';
 let initialPaneCodexModel = '';
+let setupShellStartup = false;
+let setupShellInputUsed = false;
 // ペインを閉じる時の確認（issue #184）。'never' | 'busy' | 'always'（既定 'busy'）。
 // 値は起動時に main（app:get-config）から取得する。保存後は main の定期監視で反映する。
 let confirmClosePref = 'busy';
@@ -7447,6 +7449,7 @@ async function initApp() {
     // main 側で検証済みの値。取得失敗・欠落時は従来どおり Claude Code のまま。
     initialPaneEngine = (cfg && cfg.initialEngine === 'codex') ? 'codex' : 'claude';
     initialPaneCodexModel = (cfg && typeof cfg.initialCodexModel === 'string') ? cfg.initialCodexModel : '';
+    setupShellStartup = cfg?.setupShellStartup === true;
     // main 側でも正規化済みだが、取得失敗・欠落に備えてここでも既定 'busy' に落とす。
     confirmClosePref = normalizeConfirmClose(cfg && cfg.confirmClose);
     // main 側でも正規化済みだが、取得失敗・欠落に備えてここでも既定 'click' に落とす（issue #385）。
@@ -7467,7 +7470,7 @@ async function initApp() {
   } catch (_e) { /* 取得失敗時は無効のまま */ }
 
   // 保持役の既存ペインを先に問い合わせ、新規シェルを作らず同じ番号と並びへ戻す。
-  if (initialRestorePending && Object.keys(terminals).length === 0) {
+  if (!setupShellStartup && initialRestorePending && Object.keys(terminals).length === 0) {
     initialRestorePending = false;
     let restored = null;
     try { restored = await VKIpc.invoke('terminal:restore'); } catch (error) { console.warn('pane restore failed', error); }
@@ -7561,11 +7564,15 @@ async function initApp() {
   let initialPaneOptions = initialPaneEngine === 'codex'
     ? { engine: 'codex', ...(initialPaneCodexModel ? { model: initialPaneCodexModel } : {}) }
     : {};
+  if (setupShellStartup) {
+    initialPaneOptions = setupShellInputUsed ? { noClaude: true } : { setupShell: true };
+    setupShellInputUsed = true;
+  }
   // セットアップ状況の確認結果（最大 5 秒待つ）。このパソコンで初めて未完了と判定されたときだけ、
   // 起動時に必ず作るこのペインをセットアップ用ペインにする（2 枚目は作らない）。
   // Claude Code が無いときは Claude 無しのシェルで開き、command not found を見せない。
   let setupInitial = null;
-  if (setupPanel) {
+  if (setupPanel && !setupShellStartup) {
     try { setupInitial = await VKIpc.invoke('setup:initial-pane'); } catch (_e) { setupInitial = null; }
   }
   const normalPaneOptions = initialPaneOptions;
@@ -7611,7 +7618,7 @@ async function initApp() {
   render();
   initialRenderDone = true;
   // 起動時の確認が間に合わなかったときは、終わるのを待って結果を取り込む（パネルは未完了と分かってから出す）。
-  if (setupPanel && !(setupInitial && setupInitial.result)) setupPanel.recheck({ silent: true });
+  if (setupPanel && !setupShellStartup && !(setupInitial && setupInitial.result)) setupPanel.recheck({ silent: true });
   requestAnimationFrame(() => {
     fitTerminal(paneId);
     terminals[paneId]?.term.focus();

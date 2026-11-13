@@ -2,8 +2,10 @@
 
 - [ 機能追加 ] アプリ内ブラウザのアドレス欄から URL 入力と Google 検索でページを開けるように（[#600](https://github.com/vektor-inc/vk-terminals/issues/600)）
 - [ 仕様変更 ] アプリ内ブラウザの URL 表示ボタンによるコピー操作を廃止（[#600](https://github.com/vektor-inc/vk-terminals/issues/600)）
+- [ 機能追加 ] 組み込み起動で、コマンドを入力済みのシェルペインだけを開くセットアップ専用オプションを追加（[#607](https://github.com/vektor-inc/vk-terminals/issues/607)）
 - [ 不具合修正 ] Codex のペイン内 URL が開き先メニューを通らず、アプリ内ブラウザを選べない問題を修正（[#602](https://github.com/vektor-inc/vk-terminals/issues/602)）
 - [ 不具合修正 ] 狭いペインで箇条書きや文章中の URL が改行されると、リンクの前半だけが開かれる問題を修正（[#592](https://github.com/vektor-inc/vk-terminals/issues/592)）
+- [ 不具合修正 ] Claude Code が起動した子プロセスの終了後、裏の作業が「実行中」と表示されなくなる問題を修正（[#597](https://github.com/vektor-inc/vk-terminals/issues/597)）
 
 ## 1.100.0
 

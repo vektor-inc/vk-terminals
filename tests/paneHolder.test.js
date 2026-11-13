@@ -130,7 +130,7 @@ test('復元で保持役を生成できない場合だけ、次の生成を止�
     let handler;
     const context = {
       ipcMain: { handle: (_name, callback) => { handler = callback; } },
-      restoreAttempted: false, PANE_HOLDER: 'tmux', tmuxUnavailable: false,
+      restoreAttempted: false, PANE_HOLDER: 'tmux', SETUP_SHELL: null, tmuxUnavailable: false,
       tmuxHolder: null, RESOURCE_ROOT: '/tmp', path, os, process: { env: {} },
       TmuxHolder: class {
         constructor() {

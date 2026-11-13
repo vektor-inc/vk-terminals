@@ -358,6 +358,28 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
     return true;
   }
 
+  function navigateFromHelp(url) {
+    if (!isNavigationUrl(url) || isHelpUrl(url)) return false;
+    ensureView();
+    initializeNavigation();
+    const contents = view.webContents;
+    const load = beginLoad(url, true, undefined, {
+      native: true, stopPrevious: true, historyTarget: url, syntheticHelpBack: true,
+    });
+    load.started = true;
+    try {
+      Promise.resolve(contents.loadURL(url)).then(() => {
+        if (activeLoad !== load || load.done) return;
+        const committedUrl = contents.getURL();
+        load.finish(isNavigationUrl(committedUrl) ? null : new Error('Navigation URL unavailable'), committedUrl);
+      }).catch(error => load.finish(error));
+    } catch (error) {
+      load.finish(error);
+    }
+    syncBounds();
+    return true;
+  }
+
   function openHelp() { return loadHelp(HELP_URL); }
 
   function loadHelp(url) {
@@ -570,8 +592,9 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
       // At the guide base, use the page captured when the guide was opened.
       if (canUseHelpReturn()) {
         const forwardUrl = currentUrl;
-        const started = navigate(helpReturnUrl, true, undefined, { syntheticHelpBack: true });
-        if (started) helpForwardUrl = forwardUrl;
+        helpForwardUrl = forwardUrl;
+        const started = navigateFromHelp(helpReturnUrl);
+        if (!started) helpForwardUrl = '';
         return started;
       }
       if (history.canGoBack()) {

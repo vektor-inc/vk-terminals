@@ -54,6 +54,14 @@ function emitOldEvents(contents, url) {
   contents.emit('did-navigate-in-page', {}, `${url}#old`, true, 12, 34);
 }
 
+function useLoadURLForHelpReturn(contents) {
+  contents.loadURL = async url => {
+    if (url.startsWith('vk-terminals-help://')) return;
+    contents.setDocumentUrl(url);
+    contents.emit('did-navigate', {}, contents.getURL());
+  };
+}
+
 test('空のWebContentsを初期化してから監視を有効化し、ローカルHTTPも実文書のloadで完了する', async () => {
   let release;
   const { browser, contents, states } = setup({ bootstrap: (loadURL, url) => new Promise(resolve => {
@@ -845,7 +853,7 @@ test('案内基底の戻るは遅れたactive indexに依存せず案内を開�
   const { browser, contents, states } = setup();
   const previous = 'https://example.com/previous';
   await contents.complete(previous);
-  contents.loadURL = () => Promise.resolve();
+  useLoadURLForHelpReturn(contents);
   const guide = browser.openHelp();
   contents.setDocumentUrl(HELP_URL);
   contents.emit('did-finish-load');
@@ -865,8 +873,8 @@ test('案内基底の戻るは遅れたactive indexに依存せず案内を開�
   assert.equal(states.at(-1).canGoBack, true);
   assert.equal(browser.action('back'), true);
   await flushBrowserLoads();
-  await contents.complete(previous);
   assert.equal(states.at(-1).url, previous);
+  assert.equal(contents.commands.filter(command => command === 'Page.navigate').length, 1);
 });
 
 test('案内基底の進むは隣接する案内内hash履歴を飛ばさない', async () => {
@@ -901,7 +909,7 @@ test('案内前の文書がElectron履歴に無い場合も戻る・進むで復
   const { browser, contents, states } = setup();
   const previous = 'https://example.com/previous';
   await contents.complete(previous);
-  contents.loadURL = () => Promise.resolve();
+  useLoadURLForHelpReturn(contents);
   const guide = browser.openHelp();
   contents.setDocumentUrl(HELP_URL);
   contents.emit('did-finish-load');
@@ -916,7 +924,6 @@ test('案内前の文書がElectron履歴に無い場合も戻る・進むで復
   assert.equal(states.at(-1).canGoBack, true);
   assert.equal(browser.action('back'), true);
   await flushBrowserLoads();
-  await contents.complete(previous);
   assert.equal(states.at(-1).url, previous);
   assert.equal(states.at(-1).canGoForward, true);
 
@@ -931,7 +938,7 @@ test('案内のsynthetic forwardはページ起点の通常遷移で消える', 
   const { browser, contents } = setup();
   const previous = 'https://example.com/previous';
   await contents.complete(previous);
-  contents.loadURL = () => Promise.resolve();
+  useLoadURLForHelpReturn(contents);
   const guide = browser.openHelp();
   contents.setDocumentUrl(HELP_URL);
   contents.emit('did-finish-load');
@@ -940,7 +947,6 @@ test('案内のsynthetic forwardはページ起点の通常遷移で消える', 
   contents.navigationHistory.canGoForward = () => false;
   assert.equal(browser.action('back'), true);
   await flushBrowserLoads();
-  await contents.complete(previous);
   contents.emit('will-navigate', { url: 'https://example.com/page-link', preventDefault() {} });
   contents.setDocumentUrl('https://example.com/page-link');
   contents.emit('did-navigate-in-page', {}, contents.getURL(), true);
@@ -952,7 +958,7 @@ test('案内のsynthetic forwardはBack完了後の同一URL履歴更新でも�
   const { browser, contents, states } = setup();
   const previous = 'https://example.com/previous';
   await contents.complete(previous);
-  contents.loadURL = () => Promise.resolve();
+  useLoadURLForHelpReturn(contents);
   const guide = browser.openHelp();
   contents.setDocumentUrl(HELP_URL);
   contents.emit('did-finish-load');
@@ -961,7 +967,6 @@ test('案内のsynthetic forwardはBack完了後の同一URL履歴更新でも�
   contents.navigationHistory.canGoForward = () => false;
   assert.equal(browser.action('back'), true);
   await flushBrowserLoads();
-  await contents.complete(previous);
 
   const stateCount = states.length;
   contents.emit('did-navigate-in-page', {}, previous, true);
@@ -975,7 +980,7 @@ test('通常のforward履歴がsynthetic guideより優先される', async () =
   const { browser, contents } = setup();
   const previous = 'https://example.com/previous';
   await contents.complete(previous);
-  contents.loadURL = () => Promise.resolve();
+  useLoadURLForHelpReturn(contents);
   const guide = browser.openHelp();
   contents.setDocumentUrl(HELP_URL);
   contents.emit('did-finish-load');
@@ -984,7 +989,6 @@ test('通常のforward履歴がsynthetic guideより優先される', async () =
   contents.navigationHistory.canGoForward = () => false;
   assert.equal(browser.action('back'), true);
   await flushBrowserLoads();
-  await contents.complete(previous);
 
   const next = 'https://example.com/next';
   contents.navigationHistory.canGoForward = () => true;

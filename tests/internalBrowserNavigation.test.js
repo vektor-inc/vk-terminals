@@ -840,7 +840,7 @@ test('カスタム文書復帰直後は遅れているactive indexより実文�
   assert.equal(moved, true);
 });
 
-test('案内基底へ戻った後は遅れたactive indexの案内内履歴を飛ばして前文書へ戻る', async () => {
+test('案内基底の戻るは遅れたactive indexに依存せず案内を開いた前文書へ戻る', async () => {
   const { HELP_URL } = require('../utils/internalBrowserPolicy');
   const { browser, contents, states } = setup();
   const previous = 'https://example.com/previous';
@@ -858,17 +858,42 @@ test('案内基底へ戻った後は遅れたactive indexの案内内履歴を�
   ];
   contents.navigationHistory.getActiveIndex = () => 3;
   contents.navigationHistory.canGoBack = () => true;
-  contents.navigationHistory.goBack = () => assert.fail('stale adjacent guide entry must be skipped');
-  contents.navigationHistory.goToIndex = index => {
-    assert.equal(index, 0);
-    contents.setDocumentUrl(previous);
-    contents.emit('did-stop-loading');
-  };
+  contents.navigationHistory.goBack = () => assert.fail('guide base uses the captured return page');
+  contents.navigationHistory.goToIndex = () => assert.fail('guide base uses the captured return page');
 
   browser.publish();
   assert.equal(states.at(-1).canGoBack, true);
   assert.equal(browser.action('back'), true);
+  await flushBrowserLoads();
+  await contents.complete(previous);
   assert.equal(states.at(-1).url, previous);
+});
+
+test('案内基底の進むは隣接する案内内hash履歴を飛ばさない', async () => {
+  const { HELP_URL } = require('../utils/internalBrowserPolicy');
+  const { browser, contents } = setup();
+  const previous = 'https://example.com/previous';
+  await contents.complete(previous);
+  contents.loadURL = () => Promise.resolve();
+  const guide = browser.openHelp();
+  contents.setDocumentUrl(HELP_URL);
+  contents.emit('did-finish-load');
+  await guide;
+  const section = `${HELP_URL}#section`;
+  contents.navigationHistory.getAllEntries = () => [
+    { url: previous },
+    { url: HELP_URL },
+    { url: section },
+    { url: 'https://example.com/from-guide' },
+  ];
+  contents.navigationHistory.getActiveIndex = () => 1;
+  contents.navigationHistory.canGoForward = () => true;
+  let moved = false;
+  contents.navigationHistory.goForward = () => { moved = true; };
+  contents.navigationHistory.goToIndex = () => assert.fail('adjacent guide hash must not be skipped');
+
+  assert.equal(browser.action('forward'), true);
+  assert.equal(moved, true);
 });
 
 test('案内前の文書がElectron履歴に無い場合も戻る・進むで復元する', async () => {

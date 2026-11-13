@@ -565,20 +565,25 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
     if (!view || view.webContents.isDestroyed?.()) return false;
     const history = view.webContents.navigationHistory;
     if (name === 'back') {
+      // The guide is loaded through loadURL, so Electron's active history index
+      // can lag after several same-document and cross-document Back operations.
+      // At the guide base, use the page captured when the guide was opened.
+      if (canUseHelpReturn()) {
+        const forwardUrl = currentUrl;
+        const started = navigate(helpReturnUrl, true, undefined, { syntheticHelpBack: true });
+        if (started) helpForwardUrl = forwardUrl;
+        return started;
+      }
       if (history.canGoBack()) {
         const target = getHistoryTarget(history, -1);
-        if (target !== null && !(target === undefined && canUseHelpReturn())) {
+        if (target !== null) {
           const historyTarget = target?.url || '';
           beginLoad(historyTarget || currentUrl, true, undefined, { native: true, stopPrevious: true, historyTarget });
           moveHistory(history, 'goBack', target);
           return true;
         }
       }
-      if (!canUseHelpReturn()) return false;
-      const forwardUrl = currentUrl;
-      const started = navigate(helpReturnUrl, true, undefined, { syntheticHelpBack: true });
-      if (started) helpForwardUrl = forwardUrl;
-      return started;
+      return false;
     } else if (name === 'forward') {
       if (history.canGoForward()) {
         const target = getHistoryTarget(history, 1);
@@ -628,12 +633,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
       const referenceUrl = isNavigationUrl(documentUrl) ? documentUrl : activeUrl;
       let index = activeIndex + offset;
       if (!entries[index]) return undefined;
-      // Electron may leave the active index several same-document guide entries
-      // ahead of the document after repeated back operations. At the guide base,
-      // skip those stale hash entries so Back reaches the page that opened it.
-      const skipGuideEntries = referenceUrl === HELP_URL && canUseHelpReturn();
-      while (entries[index] && (entries[index].url === referenceUrl
-        || (skipGuideEntries && isHelpUrl(entries[index].url)))) index += offset;
+      while (entries[index]?.url === referenceUrl) index += offset;
       const url = entries[index]?.url;
       return isNavigationUrl(url) ? { url, index, adjacentIndex: activeIndex + offset } : undefined;
     } catch (_error) {

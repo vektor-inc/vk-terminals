@@ -168,6 +168,8 @@ test('専用ビューの遷移と権限、ダウンロード、確定 URL を制
   assert.equal(browserSession.permissionCheck(), false);
   browserSession.request({ resourceType: 'mainFrame', url: 'file:///tmp/a' }, result => assert.deepEqual(result, { cancel: true }));
   browserSession.request({ resourceType: 'mainFrame', url: 'https://example.com' }, result => assert.deepEqual(result, { cancel: false }));
+  assert.equal(browser.externalUrl('other'), null);
+  assert.equal(browser.externalUrl('current'), null);
   assert.equal(browser.navigate('https://example.com/first'), true);
   assert.equal(sent.at(-1)[1].url, '');
   contents.emit('did-navigate', {}, 'https://example.com/first');

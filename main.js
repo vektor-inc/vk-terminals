@@ -2,8 +2,8 @@
 // パスを持つローカル変数 shell と名前がぶつかるため、紛らわしさを避けて別名にしている。
 const { app, BrowserWindow, WebContentsView, ipcMain, screen, dialog, shell: electronShell, clipboard, protocol, session } = require('electron');
 const { createInternalBrowser } = require('./utils/internalBrowser');
+const { handleHelpRequest } = require('./utils/helpFeature');
 const { PARTITION, isHelpUrl } = require('./utils/internalBrowserPolicy');
-protocol.registerSchemesAsPrivileged([{ scheme: 'vk-terminals-help', privileges: { standard: true, secure: true } }]);
 let internalBrowser = null;
 
 const { isInternalBrowserSender: isAllowedBrowserSender } = require('./utils/internalBrowserSender');
@@ -1813,13 +1813,7 @@ app.whenReady().then(async () => {
   // セットアップ状況の確認は、ウィンドウの用意と並行して先に始めておく（最初のペインの判断で待つため）。
   if (setupStatusChecker) startupSetupCheck = setupStatusChecker.check();
   if (HELP_FEATURE) {
-    session.fromPartition(PARTITION).protocol.handle('vk-terminals-help', async (request) => {
-      try {
-        if (!isHelpUrl(request.url) || !isHelpDocument(HELP_FEATURE.documentPath)
-          || fs.lstatSync(HELP_FEATURE.documentPath).isSymbolicLink()) throw new Error('Invalid help document');
-        return new Response(await fs.promises.readFile(HELP_FEATURE.documentPath), { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
-      } catch { return new Response('Not found', { status: 404 }); }
-    });
+    session.fromPartition(PARTITION).protocol.handle('vk-terminals-help', (request) => handleHelpRequest(request, HELP_FEATURE.documentPath));
   }
   createWindow();
   startWidgetWatcher();

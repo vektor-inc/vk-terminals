@@ -1,9 +1,8 @@
 'use strict';
 
 const electron = require('electron');
-const fs = require('node:fs');
 const { pathToFileURL } = require('node:url');
-const { isHelpDocument } = require('./helpFeature');
+const { isSafeHelpDocument } = require('./helpFeature');
 const { PARTITION, HELP_URL, isHelpUrl, validateBrowserBounds, isBrowserUrl, isNavigationUrl } = require('./internalBrowserPolicy');
 
 function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocumentPath = null } = electron) {
@@ -23,6 +22,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
   let downloadUrl = '';
   let failedUrl = '';
   let github404Url = '';
+  let helpReturnUrl = '';
   const cancelDownload = (event, item) => {
     event.preventDefault();
     // 保留中の遷移と異なるダウンロードへ古い URL を渡さない。
@@ -46,7 +46,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
       failedUrl,
       github404Url,
       loading: !!view && view.webContents.isLoading(),
-      canGoBack: !!view && view.webContents.navigationHistory.canGoBack(),
+      canGoBack: !!view && (view.webContents.navigationHistory.canGoBack() || (!!helpReturnUrl && !isHelpUrl(currentUrl))),
       canGoForward: !!view && view.webContents.navigationHistory.canGoForward(),
     });
   }
@@ -67,10 +67,11 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
     if (!attached) { win.contentView.addChildView(view); attached = true; }
   }
 
-  function openHelp() { return navigate(HELP_URL, true, true); }
+  function openHelp() { return isHelpUrl(HELP_URL) ? loadPage(HELP_URL, { waitForLoad: true }) : false; }
 
-  function navigate(url, fromPage = false, waitForLoad = false) {
-    if (!(fromPage ? isNavigationUrl(url) : isBrowserUrl(url))) return false;
+  function navigate(url) { return isBrowserUrl(url) ? loadPage(url) : false; }
+
+  function loadPage(url, { fromPage = false, waitForLoad = false } = {}) {
     if (!view) {
       view = new WebContentsView({ webPreferences: {
         partition: PARTITION, sandbox: true, nodeIntegration: false, contextIsolation: true,
@@ -86,7 +87,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
         else { pendingUrl = ''; publish(); }
       });
       contents.setWindowOpenHandler(({ url: destination }) => {
-        if (isNavigationUrl(destination)) navigate(destination, true);
+        if (isNavigationUrl(destination)) loadPage(destination, { fromPage: true });
         return { action: 'deny' };
       });
       contents.on('did-start-loading', publish);
@@ -99,6 +100,8 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
       });
       contents.on('did-stop-loading', publish);
       contents.on('did-navigate', (_event, url) => {
+        if (isHelpUrl(currentUrl) && !isHelpUrl(url)) helpReturnUrl = currentUrl;
+        if (isHelpUrl(url)) helpReturnUrl = '';
         currentUrl = url;
         pendingUrl = '';
         failedUrl = '';
@@ -137,9 +140,10 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
     if (!view) return false;
     const history = view.webContents.navigationHistory;
     if (name === 'back' && history.canGoBack()) history.goBack();
+    else if (name === 'back' && helpReturnUrl && !isHelpUrl(currentUrl)) loadPage(helpReturnUrl, { fromPage: true });
     else if (name === 'forward' && history.canGoForward()) history.goForward();
     else if (name === 'reload') {
-      if (failedUrl) return navigate(failedUrl, true);
+      if (failedUrl) return loadPage(failedUrl, { fromPage: true });
       github404Url = '';
       view.webContents.reload();
       publish();
@@ -163,8 +167,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
       if (source !== 'current' && source !== 'failed') return null;
       const url = source === 'failed' ? failedUrl : (downloadUrl || currentUrl);
       if (!isHelpUrl(url)) return null;
-      if (!helpDocumentPath || !isHelpDocument(helpDocumentPath)) return null;
-      try { if (fs.lstatSync(helpDocumentPath).isSymbolicLink()) return null; } catch { return null; }
+      if (!isSafeHelpDocument(helpDocumentPath)) return null;
       return pathToFileURL(helpDocumentPath).href + new URL(url).hash;
     },
     setBounds(rect) { bounds = validateBrowserBounds(rect, win.getContentBounds()); syncBounds(); return !!bounds; },

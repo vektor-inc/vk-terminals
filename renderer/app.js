@@ -287,7 +287,9 @@ internalBrowserSidebar.addEventListener('click', event => {
   else if (action === 'external') {
     const url = event.target.closest('.internal-browser-error') ? internalBrowserFailedUrl : (internalBrowserDownloadUrl || internalBrowserUrl);
     if (url) {
-      if (url.startsWith('vk-terminals-help://')) VKIpc.invoke('internal-browser:external', event.target.closest('.internal-browser-error') ? 'failed' : 'current').catch(() => {});
+      if (url.startsWith('vk-terminals-help://')) VKIpc.invoke('internal-browser:external', event.target.closest('.internal-browser-error') ? 'failed' : 'current')
+        .then((opened) => { if (!opened) showGenericToast('外部ブラウザで開けませんでした。もう一度お試しください。'); })
+        .catch(() => showGenericToast('外部ブラウザで開けませんでした。もう一度お試しください。'));
       else openExternalUrlSafe(url);
     }
   }
@@ -330,6 +332,7 @@ internalBrowserResizer.addEventListener('keydown', event => {
 window.addEventListener('resize', syncInternalBrowserLayout);
 VKIpc.on('internal-browser:state', state => {
   internalBrowserUrl = state.url || '';
+  if (internalBrowserUrl || state.failedUrl) internalBrowserHasPage = true;
   internalBrowserFailedUrl = state.failedUrl || '';
   internalBrowserDownloadUrl = state.downloadUrl || '';
   // 消える案内から移る前に、次の URL と再読み込みの可用性を反映する。
@@ -6001,8 +6004,10 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
   const launchHelpDocument = async () => {
     const opened = await VKIpc.invoke('help:document');
     if (!opened) throw new Error('Help document is unavailable.');
+    internalBrowserHasPage = true;
     close();
     setInternalBrowserOpen(true);
+    focusInternalBrowserToolbar();
     return true;
   };
   const helpContainer = modal.querySelector('.settings-help-entry');
@@ -6027,7 +6032,11 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
         ['保存して開く', async () => {
           choices.querySelectorAll('button').forEach((button) => { button.disabled = true; });
           if (await saveSettings({ keepOpen: true })) await finish();
-          else { choices.remove(); resolve(false); }
+          else {
+            const reason = modal.querySelector('.settings-msg')?.textContent || '設定を保存できませんでした。';
+            choices.remove();
+            reject(new Error(`${reason} 内容を確認して再試行してください。`));
+          }
         }],
         ['破棄して開く', finish],
         ['キャンセル', () => { choices.remove(); resolve(false); }],

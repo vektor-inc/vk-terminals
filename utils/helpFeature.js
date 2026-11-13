@@ -22,6 +22,27 @@ function isHelpDocument(file) {
   } catch (_) { return false; }
 }
 
+// 登録済みの実体パスだけを読み、途中のディレクトリがリンクに変わった場合も拒否する。
+function isSafeHelpDocument(file) {
+  try { return isHelpDocument(file) && fs.realpathSync(file) === file; } catch (_) { return false; }
+}
+
+async function handleHelpRequest(request, documentPath, fsApi = fs) {
+  const { isHelpUrl } = require('./internalBrowserPolicy');
+  if (!isHelpUrl(request.url) || !isSafeHelpDocument(documentPath)) return Response.error();
+  let fd;
+  try {
+    fd = await fsApi.promises.open(documentPath, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+    const body = await fd.readFile();
+    return new Response(body, { headers: {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Content-Security-Policy': "frame-ancestors 'none'",
+      'X-Content-Type-Options': 'nosniff',
+    } });
+  } catch (_) { return Response.error(); }
+  finally { if (fd) await fd.close(); }
+}
+
 // 組み込み側の設定だけを取り込み、起動後のオブジェクト変更も切り離す。
 function normalizeHelpFeature(help, checker) {
   if (help == null && checker == null) return null;
@@ -115,4 +136,4 @@ function createGuideOpener({ enabled, check, create, isAlive }) {
   };
 }
 
-module.exports = { isHelpEngine, createGuideOpener, isHelpDocument, normalizeHelpFeature, normalizeHelpStatus, buildHelpLaunchCommand, createHelpStatusChecker };
+module.exports = { isSafeHelpDocument, handleHelpRequest, isHelpEngine, createGuideOpener, isHelpDocument, normalizeHelpFeature, normalizeHelpStatus, buildHelpLaunchCommand, createHelpStatusChecker };

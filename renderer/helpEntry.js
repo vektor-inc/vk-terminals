@@ -28,6 +28,7 @@
       busy = true;
       ai.disabled = true;
       retry.disabled = true;
+      documentButton.disabled = true;
       status.textContent = '';
       try {
         const opened = await openGuide(() => { status.textContent = 'ガイドを起動しています…'; });
@@ -39,8 +40,9 @@
         busy = false;
         ai.disabled = false;
         retry.disabled = false;
+        documentButton.disabled = false;
         // 非表示になる操作から、次に使える操作へフォーカスを引き継ぐ。
-        (ai.hidden ? retry : ai).focus();
+        if (container.isConnected) (ai.hidden ? retry : ai).focus();
       }
     });
     let busy = false;
@@ -50,12 +52,17 @@
       if (busy) return;
       busy = true;
       documentButton.disabled = true;
+      ai.disabled = true;
+      retry.disabled = true;
       try {
-        status.textContent = '';
+        status.textContent = 'ドキュメントを読み込んでいます…';
         const opened = await openDocument();
         if (opened === false) status.textContent = 'ドキュメントを開く操作をキャンセルしました。';
-      } catch (_) { status.textContent = 'ドキュメントを開けませんでした。もう一度押してください。'; }
-      finally { busy = false; documentButton.disabled = false; documentButton.focus(); }
+      } catch (error) { status.textContent = `${error?.message?.includes('再試行してください') ? error.message : 'ドキュメントを開けませんでした。'} もう一度押してください。`;  }
+      finally {
+        busy = false; documentButton.disabled = false; ai.disabled = false; retry.disabled = false;
+        if (container.isConnected) documentButton.focus();
+      }
     });
     container.append(documentButton, ai, status, retry);
     // 初回表示と再確認で同じ結果表示を使う。起動直前の状態変化もここへ返す。
@@ -71,6 +78,7 @@
       busy = true;
       ai.disabled = true;
       retry.disabled = true;
+      documentButton.disabled = true;
       status.textContent = '利用状況を確認しています…';
       try {
         const result = await invoke('help:check');
@@ -83,6 +91,7 @@
         busy = false;
         ai.disabled = false;
         retry.disabled = false;
+        documentButton.disabled = false;
         if (restoreFocus) (ai.hidden ? retry : ai).focus();
       }
     }

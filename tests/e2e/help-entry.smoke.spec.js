@@ -2,6 +2,7 @@ const { test, expect } = require('@playwright/test');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const http = require('http');
 const { closeApp, getFreePort, launchAppAndWait } = require('./helpers/electron-app');
 const { focusByKeyboard, readOutline } = require('./helpers/focus-ring');
 
@@ -43,7 +44,10 @@ test('単体起動: 設定カードの上下端とキーボードで設定を開
 test('使い方・ヘルプ: 確認失敗の再確認、未保存キャンセル、連打と格納復帰', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-help-e2e-'));
   fs.mkdirSync(path.join(root, 'guide'));
-  fs.writeFileSync(path.join(root, 'help.html'), '<html><body>Help<a href="#section">Section</a><h2 id="section">Section</h2><a href="https://example.com/">External</a></body></html>');
+  const linkedPage = http.createServer((_request, response) => { response.writeHead(200, { 'Content-Type': 'text/html' }); response.end('<html><body>Linked page</body></html>'); });
+  await new Promise((resolve) => linkedPage.listen(0, '127.0.0.1', resolve));
+  const linkedUrl = `http://127.0.0.1:${linkedPage.address().port}/`;
+  fs.writeFileSync(path.join(root, 'help.html'), `<html><body>Help<a href="#section">Section</a><h2 id="section">Section</h2><a href="${linkedUrl}">External</a></body></html>`);
   const statusFile = path.join(root, 'status.json');
   fs.writeFileSync(statusFile, '{}');
   let launched;
@@ -76,11 +80,30 @@ test('使い方・ヘルプ: 確認失敗の再確認、未保存キャンセル
     await expect(win.locator('.settings-modal')).toHaveCount(0);
     await expect(win.locator('#internal-browser-sidebar')).toBeVisible();
     await expect(win.locator('.internal-browser-url')).toContainText('guide');
+    // 読み込み済みの操作列へフォーカスし、無関係な初期案内を残さない。
+    await expect(win.locator('.internal-browser-url')).toBeFocused();
+    await expect(win.locator('.internal-browser-toolbar [data-action="reload"]')).toBeEnabled();
+    await expect(win.locator('.internal-browser-notice')).toBeHidden();
+    expect(await win.evaluate(() => internalBrowserHasPage)).toBe(true);
+    // 専用スキームの別パスと file: はナビゲーション入口で拒否する。
+    const refusedNavigation = await win.evaluate(async () => ({
+      path: await VKIpc.invoke('internal-browser:open', 'vk-terminals-help://guide/other'),
+      file: await VKIpc.invoke('internal-browser:open', 'file:///tmp/help.html'),
+    }));
+    expect(refusedNavigation).toEqual({ path: false, file: false });
     // 同じ案内内の見出しリンクは URL のハッシュだけを更新する。
     await app.evaluate(async ({ webContents }) => {
       const guide = webContents.getAllWebContents().find((contents) => contents.getURL().startsWith('vk-terminals-help://guide/'));
       await guide.executeJavaScript("document.querySelector('a[href=\"#section\"]').click()");
     });
+    await expect(win.locator('.internal-browser-url')).toContainText('#section');
+    // 案内内の外部リンクをクリックし、履歴の「戻る」で案内へ復帰する。
+    await app.evaluate(async ({ webContents }) => {
+      const guide = webContents.getAllWebContents().find((contents) => contents.getURL().startsWith('vk-terminals-help://guide/'));
+      await guide.executeJavaScript("document.querySelector('a[href^=\"http:\"]').click()");
+    });
+    await expect(win.locator('.internal-browser-url')).toContainText('127.0.0.1');
+    await win.locator('.internal-browser-toolbar [data-action="back"]').click();
     await expect(win.locator('.internal-browser-url')).toContainText('#section');
     await win.getByRole('button', { name: '外部ブラウザで開く', exact: true }).first().click();
     await expect.poll(() => app.evaluate(() => global.helpDocumentUrls)).toEqual([require('url').pathToFileURL(fs.realpathSync(path.join(root, 'help.html'))).href + '#section']);
@@ -216,6 +239,7 @@ test('使い方・ヘルプ: 確認失敗の再確認、未保存キャンセル
   } finally {
     if (launched) await closeApp(launched);
     fs.rmSync(root, { recursive: true, force: true });
+    await new Promise((resolve) => linkedPage.close(resolve));
   }
 });
 

@@ -1,8 +1,11 @@
 # Changelog
 
 - [ 機能追加 ] 起動時に最初のペインを開く設定を追加（[#605](https://github.com/vektor-inc/vk-terminals/issues/605)）
+- [ 機能追加 ] 組み込み起動で、コマンドを入力済みのシェルペインだけを開くセットアップ専用オプションを追加（[#607](https://github.com/vektor-inc/vk-terminals/issues/607)）
 - [ 仕様変更 ] 前回のペインが復元されない場合、既定では空の画面で起動し、起動時に最初のペインを開かなかった場合は後から作るペインへ initialCommand を送らないように変更（[#605](https://github.com/vektor-inc/vk-terminals/issues/605)）
 - [ 不具合修正 ] Codex のペイン内 URL が開き先メニューを通らず、アプリ内ブラウザを選べない問題を修正（[#602](https://github.com/vektor-inc/vk-terminals/issues/602)）
+- [ 不具合修正 ] 狭いペインで箇条書きや文章中の URL が改行されると、リンクの前半だけが開かれる問題を修正（[#592](https://github.com/vektor-inc/vk-terminals/issues/592)）
+- [ 不具合修正 ] Claude Code が起動した子プロセスの終了後、裏の作業が「実行中」と表示されなくなる問題を修正（[#597](https://github.com/vektor-inc/vk-terminals/issues/597)）
 
 ## 1.100.0
 

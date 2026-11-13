@@ -4034,6 +4034,9 @@ body.pane-dragging * {
 .internal-browser-toolbar button:disabled { color: #6e7681; cursor: default; }
 .internal-browser-toolbar .internal-browser-url { flex: 1 1 auto; min-width: 0; height: 28px; box-sizing: border-box; padding: 0 7px; border: 1px solid var(--vktm--color--border-interactive); border-radius: 5px; background: #161b22; color: #e6edf3; font: inherit; font-size: 12px; }
 .internal-browser-toolbar .internal-browser-url::placeholder { color: #8b949e; }
+.internal-browser-toolbar .internal-browser-url[aria-invalid="true"] { border-color: #f85149; }
+.internal-browser-address-error { margin: 5px 8px 8px; color: #f85149; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.internal-browser-address-error[hidden] { display: none; }
 .internal-browser-progress { height: 2px; width: 50%; background: #58a6ff; animation: internal-browser-loading 1.4s ease-in-out infinite alternate; }
 @keyframes internal-browser-loading { from { transform: translateX(0); } to { transform: translateX(100%); } }
 @media (prefers-reduced-motion: reduce) { .internal-browser-progress { animation: none; } }

@@ -169,7 +169,7 @@ test('desktop: ペイン単位の「＋」（分割）ボタンは操作元ペ�
       port,
       prefix: 'vk-terminals-e2e-pane-engine-inherit-',
       env,
-      config: { newPaneAutoLaunchClaude: true },
+      config: { openInitialPane: true, newPaneAutoLaunchClaude: true },
     });
     const { win } = launched;
 
@@ -241,7 +241,7 @@ test('desktop: 空グリッドの「新規ペインを追加」は直前まで�
       port,
       prefix: 'vk-terminals-e2e-pane-engine-inherit-empty-',
       env,
-      config: { newPaneAutoLaunchClaude: true },
+      config: { openInitialPane: true, newPaneAutoLaunchClaude: true },
     });
     const { win } = launched;
 
@@ -302,7 +302,7 @@ test('desktop: AI を自動起動しない設定（noClaude）は engine 引き�
       port,
       prefix: 'vk-terminals-e2e-pane-engine-inherit-noclaude-',
       env,
-      config: { newPaneAutoLaunchClaude: false },
+      config: { openInitialPane: true, newPaneAutoLaunchClaude: false },
     });
     const { win } = launched;
 
@@ -351,7 +351,7 @@ test('HTTP API: useDefaults:true（モバイルの「ペインを追加」ボタ
       port,
       prefix: 'vk-terminals-e2e-pane-engine-inherit-mobile-',
       env,
-      config: { newPaneAutoLaunchClaude: true },
+      config: { openInitialPane: true, newPaneAutoLaunchClaude: true },
     });
 
     await waitForTermId(port, '1', true);
@@ -411,7 +411,7 @@ test('restart-agent: engine を切り替えると terminals[paneId].engine が�
       port,
       prefix: 'vk-terminals-e2e-pane-engine-inherit-restart-',
       env,
-      config: { newPaneAutoLaunchClaude: true },
+      config: { openInitialPane: true, newPaneAutoLaunchClaude: true },
     });
     const { win } = launched;
 
@@ -469,7 +469,7 @@ test('desktop: ✕ で最後の可視ペインを閉じてグリッドが空に�
       // confirmClose: 'never' にして、✕ クリックが誤って確認ダイアログを開き
       // closePane が早期 return する（＝この観点と無関係な理由でテストが不安定になる）
       // 事故を避ける（close-pane-confirm.smoke.spec.js が別途 confirmClose 自体は検証済み）。
-      config: { newPaneAutoLaunchClaude: true, confirmClose: 'never' },
+      config: { openInitialPane: true, newPaneAutoLaunchClaude: true, confirmClose: 'never' },
     });
     const { win } = launched;
 

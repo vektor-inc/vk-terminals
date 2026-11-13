@@ -339,7 +339,7 @@
           "key": "additionalPanes",
           "label": "追加ペイン (JSON 配列)",
           "type": "json",
-          "help": "アプリ起動時に、最初のペインに加えて自動で開くペインを JSON 形式で登録できます。各要素の cwd（絶対パス）を作業ディレクトリとしてペインが作成され、そのディレクトリで Claude Code が起動します。\"noClaude\": true を指定したペインは Claude Code を起動せず素のターミナルで開きます。\n例: [{\"cwd\":\"/path\"}, {\"cwd\":\"/path2\", \"noClaude\": true}]"
+          "help": "アプリ起動時に追加で開くペインを JSON 形式で登録できます。「起動時に最初のペインを開く」がオフでも開きます。各要素の cwd（絶対パス）を作業ディレクトリとしてペインが作成され、そのディレクトリで Claude Code が起動します。\"noClaude\": true を指定したペインは Claude Code を起動せず素のターミナルで開きます。\n例: [{\"cwd\":\"/path\"}, {\"cwd\":\"/path2\", \"noClaude\": true}]"
         },
         {
           "key": "apiRequireAuthAlways",
@@ -349,11 +349,18 @@
           "help": "有効にすると、API ホストが 127.0.0.1 のままでも常にアクセストークン認証を必須にします。「モバイルから確認」タブの「別の方法: tailscale serve で公開する」を使う場合、待ち受けアドレスだけでは公開状態を判別できないため、この設定を有効にしないと認証なしで操作できてしまいます。tailscale serve を使う場合は必ず有効にしてください。"
         },
         {
+          "key": "openInitialPane",
+          "label": "起動時に最初のペインを開く",
+          "type": "boolean",
+          "default": false,
+          "help": "アプリ起動時に新しいペインを1枚開きたい場合はオンにして保存し、アプリを再起動してください。前回のペインを復元できた場合は追加しません。"
+        },
+        {
           "key": "initialEngine",
-          "label": "起動時の最初のペインの AI エンジン",
+          "label": "最初のペインの AI エンジン",
           "type": "select",
           "default": "claude",
-          "help": "起動時の最初のペインで使う AI を選びます。変更は再起動後に反映されます。そのペインから追加・分割したペインは、「AI（Claude Code / Codex）を自動的に起動する」がオンの場合だけ同じ AI で起動します。起動時に追加で開くペイン（additionalPanes）は対象外です。",
+          "help": "起動時の最初のペインと、ペインが 0 枚のときに「新規ペインを追加」ボタンから作るペインで使う AI を選びます。変更は再起動後に反映されます。そのペインから追加・分割したペインは、「AI（Claude Code / Codex）を自動的に起動する」がオンの場合だけ同じ AI で起動します。起動時に追加で開くペイン（additionalPanes）は対象外です。",
           "options": [
             { "value": "claude", "label": "Claude Code（既定）" },
             { "value": "codex", "label": "Codex" }
@@ -361,12 +368,12 @@
         },
         {
           "key": "initialCodexModel",
-          "label": "起動時の最初のペインの Codex モデル",
+          "label": "最初のペインの Codex モデル",
           "type": "text",
           "placeholder": "gpt-5.5",
           "pattern": "^[A-Za-z0-9][A-Za-z0-9._\\-\\[\\]]{0,63}$",
           "invalidMessage": "モデル名に使えない文字が含まれています。英数字と . _ - [ ] で入力してください。",
-          "help": "Codex を選んだ場合に使うモデル名を入力します。空欄の場合は Codex の既定モデルで起動します。変更は再起動後に反映されます。",
+          "help": "起動時の最初のペインと、ペインが 0 枚のときに「新規ペインを追加」ボタンから作るペインで Codex を選んだ場合のモデル名を入力します。空欄の場合は Codex の既定モデルで起動します。変更は再起動後に反映されます。",
           "visibleWhen": { "key": "initialEngine", "value": "codex" }
         }
       ]

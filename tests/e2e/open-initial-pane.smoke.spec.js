@@ -75,7 +75,13 @@ async function expectEmptyButtonsFit(win) {
 test('狭いペイン領域でも空画面のボタンは折り返さず収まる', async () => {
   const launched = await start();
   try {
-    await launched.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(512, 640));
+    // アプリの最小幅をテスト中だけ解除し、実際に狭いペイン領域を作る。
+    await launched.app.evaluate(({ BrowserWindow }) => {
+      const window = BrowserWindow.getAllWindows()[0];
+      window.setMinimumSize(0, 0);
+      window.setSize(520, 640);
+    });
+    await expect.poll(() => launched.win.locator('.grid').evaluate(grid => grid.getBoundingClientRect().width)).toBeLessThanOrEqual(200);
     await expect(launched.win.locator('.grid-empty-btn')).toBeVisible();
     await expectEmptyButtonsFit(launched.win);
 
@@ -83,6 +89,23 @@ test('狭いペイン領域でも空画面のボタンは折り返さず収ま�
     expect(created.status).toBe(200);
     await expect(launched.win.locator('.grid-empty-btn-secondary')).toBeVisible();
     await expectEmptyButtonsFit(launched.win);
+    // 縦に積んだボタンの左右端が揃うことを確認する。
+    const narrowRects = await launched.win.locator('.grid-empty-btn').evaluateAll(buttons => buttons.map(button => {
+      const rect = button.getBoundingClientRect();
+      return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom };
+    }));
+    expect(narrowRects).toHaveLength(2);
+    expect(narrowRects[1].top).toBeGreaterThanOrEqual(narrowRects[0].bottom);
+    expect(Math.abs(narrowRects[0].left - narrowRects[1].left)).toBeLessThanOrEqual(1);
+    expect(Math.abs(narrowRects[0].right - narrowRects[1].right)).toBeLessThanOrEqual(1);
+
+    // 広い画面では主操作の文字サイズと左右余白を維持する。
+    await launched.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1280, 640));
+    const wideStyles = await launched.win.locator('.grid-empty-btn').first().evaluate(button => {
+      const style = getComputedStyle(button);
+      return { fontSize: style.fontSize, paddingLeft: style.paddingLeft, paddingRight: style.paddingRight };
+    });
+    expect(wideStyles).toEqual({ fontSize: '13px', paddingLeft: '16px', paddingRight: '16px' });
   } finally { await closeApp(launched); }
 });
 

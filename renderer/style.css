@@ -2539,13 +2539,13 @@ button.sidebar-section-header:hover {
   flex-wrap: wrap;
 }
 .grid-empty-btn {
-  padding: 8px;
+  padding: 8px 16px;
   border: 1px solid #2ea043;
   border-radius: 6px;
   background: #238636;
   color: #ffffff;
   font: inherit;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
   /* 狭いペインでも操作名の途中で折り返さない。 */
   white-space: nowrap;
@@ -2569,6 +2569,19 @@ button.sidebar-section-header:hover {
 .grid-empty-btn-secondary:hover {
   background: #30363d;
   border-color: #8b949e;
+}
+
+/* 狭いペインではボタンを揃えて縦に積み、操作名のはみ出しを防ぐ。 */
+@media (max-width: 680px) {
+  .grid-empty-actions {
+    flex-direction: column;
+  }
+  .grid-empty-btn {
+    box-sizing: border-box;
+    width: 100%;
+    padding: 8px;
+    font-size: 12px;
+  }
 }
 
 /* ─── Grid resize handles ──────────────────────────────────────────────────── */

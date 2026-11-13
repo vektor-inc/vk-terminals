@@ -6,7 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { normalizeEmbeddedOptions } = require('../utils/runtimeOptions');
-const { isHelpEngine, normalizeHelpStatus, buildHelpLaunchCommand, createHelpStatusChecker, createGuideOpener } = require('../utils/helpFeature');
+const { isHelpEngine, normalizeHelpStatus, buildHelpLaunchCommand, createHelpStatusChecker, createGuideOpener, handleHelpRequest, isSafeHelpDocument } = require('../utils/helpFeature');
 const { insertTab, TAB_ID } = require('../renderer/helpEntry');
 const status = (engine = 'codex') => ({ engine, engines: ['claude', 'codex'].map((name) => ({ engine: name, state: name === engine ? 'available' : 'unavailable', reason: '認証が必要です', preparation: 'ログインしてください' })) });
 
@@ -141,4 +141,25 @@ test('単体の通常保存では反映確認の例外後も成功表示で自�
   assert.equal(await context.saveSettings({ keepOpen: true }), false);
   assert.match(msg.textContent, /^エラー:/);
   assert.equal(autoClose.isArmed, false);
+});
+
+
+test('案内プロトコルは固定アドレスだけを返し、リンクと読み込み失敗を拒否する', async (t) => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'vk-help-handler-')));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const file = path.join(root, 'help.html');
+  fs.writeFileSync(file, '<h1>Help</h1>');
+  for (const url of ['vk-terminals-help://guide/other', 'vk-terminals-help://guide/?x=1', 'vk-terminals-help://other/']) {
+    assert.equal((await handleHelpRequest({ url }, file)).status, 0);
+  }
+  const response = await handleHelpRequest({ url: 'vk-terminals-help://guide/#section' }, file);
+  assert.equal(await response.text(), '<h1>Help</h1>');
+  assert.equal(response.headers.get('Content-Security-Policy'), "frame-ancestors 'none'");
+  assert.equal(response.headers.get('X-Content-Type-Options'), 'nosniff');
+  const linked = path.join(root, 'linked.html');
+  fs.symlinkSync(file, linked);
+  assert.equal(isSafeHelpDocument(linked), false);
+  assert.equal((await handleHelpRequest({ url: 'vk-terminals-help://guide/' }, linked)).status, 0);
+  fs.unlinkSync(file);
+  assert.equal((await handleHelpRequest({ url: 'vk-terminals-help://guide/' }, file)).status, 0);
 });

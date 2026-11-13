@@ -1,7 +1,9 @@
 // electron の shell は electronShell として受ける。terminal:create の中でログインシェルの
 // パスを持つローカル変数 shell と名前がぶつかるため、紛らわしさを避けて別名にしている。
-const { app, BrowserWindow, ipcMain, screen, dialog, shell: electronShell, clipboard } = require('electron');
+const { app, BrowserWindow, WebContentsView, ipcMain, screen, dialog, shell: electronShell, clipboard, session } = require('electron');
 const { createInternalBrowser } = require('./utils/internalBrowser');
+const { handleHelpRequest } = require('./utils/helpFeature');
+const { PARTITION } = require('./utils/internalBrowserPolicy');
 let internalBrowser = null;
 
 const { isInternalBrowserSender: isAllowedBrowserSender } = require('./utils/internalBrowserSender');
@@ -11,6 +13,13 @@ ipcMain.handle('internal-browser:open', (event, url, requestId) => {
   if (!isInternalBrowserSender(event)) return false;
   if (requestId !== undefined && (!Number.isSafeInteger(requestId) || requestId <= 0)) return false;
   return !!internalBrowser?.navigate(url, false, requestId);
+});
+ipcMain.handle('internal-browser:external', async (event, source) => {
+  if (!isInternalBrowserSender(event)) return false;
+  const url = internalBrowser?.externalUrl(source);
+  if (!url) return false;
+  await electronShell.openExternal(url);
+  return true;
 });
 ipcMain.handle('internal-browser:action', (event, action) => isInternalBrowserSender(event) && !!internalBrowser?.action(action));
 ipcMain.on('internal-browser:bounds', (event, rect) => { if (isInternalBrowserSender(event)) internalBrowser?.setBounds(rect); });
@@ -1766,7 +1775,7 @@ function createWindow() {
     backgroundColor: '#0d1117',
     title: APP_TITLE,
   });
-  internalBrowser = createInternalBrowser(win);
+  internalBrowser = createInternalBrowser(win, { WebContentsView, session, dialog, helpDocumentPath: HELP_FEATURE?.documentPath });
   win.on('close', () => internalBrowser?.destroy());
   win.on('closed', () => { internalBrowser = null; });
 
@@ -1811,6 +1820,9 @@ app.whenReady().then(async () => {
   appendUserLocalBin();
   // セットアップ状況の確認は、ウィンドウの用意と並行して先に始めておく（最初のペインの判断で待つため）。
   if (setupStatusChecker) startupSetupCheck = setupStatusChecker.check();
+  if (HELP_FEATURE) {
+    session.fromPartition(PARTITION).protocol.handle('vk-terminals-help', (request) => handleHelpRequest(request, HELP_FEATURE.documentPath));
+  }
   createWindow();
   startWidgetWatcher();
   // issue #546: 更新確認の通信中も起動直後から HTTP API を受け付ける。
@@ -3170,7 +3182,7 @@ ipcMain.handle('help:check', () => {
 });
 ipcMain.handle('help:document', async () => {
   if (!HELP_FEATURE || !isHelpDocument(HELP_FEATURE.documentPath)) throw new Error('Help document is unavailable.');
-  await electronShell.openExternal(pathToFileURL(HELP_FEATURE.documentPath).href);
+  if (!await internalBrowser?.openHelp()) throw new Error('Help document is unavailable.');
   return true;
 });
 const openGuideTerminal = createGuideOpener({

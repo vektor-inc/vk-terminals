@@ -3974,6 +3974,8 @@ body.pane-dragging * {
 }
 .settings-help-entry [role="status"] {
   white-space: pre-wrap;
+  /* 保存失敗の案内が狭い幅で語の途中から折り返されるのを防ぐ。 */
+  word-break: auto-phrase;
   overflow-wrap: anywhere;
   line-height: 1.5;
 }

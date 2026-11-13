@@ -1,9 +1,11 @@
 'use strict';
 
 const electron = require('electron');
-const { PARTITION, validateBrowserBounds, isBrowserUrl, isNavigationUrl } = require('./internalBrowserPolicy');
+const { pathToFileURL } = require('node:url');
+const { isSafeHelpDocument } = require('./helpFeature');
+const { PARTITION, HELP_URL, isHelpUrl, validateBrowserBounds, isBrowserUrl, isNavigationUrl } = require('./internalBrowserPolicy');
 
-function createInternalBrowser(win, { WebContentsView, session, dialog } = electron) {
+function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocumentPath = null } = electron) {
   const browserSession = session.fromPartition(PARTITION);
   browserSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
   browserSession.setPermissionCheckHandler(() => false);
@@ -32,6 +34,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
   // CDP Page.navigate が返す loaderId と Page.lifecycleEvent を相関する。
   let activeLoad = null;
   let navigationReady = null;
+  let navigationInitialized = false;
   // 応答待ちの現在操作だけを保持し、終了・置換時に解放する。
   const downloadCandidates = new Set();
   const seenDownloadItems = new WeakSet();
@@ -94,7 +97,8 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
     });
   }
 
-  function supersedeNavigation() {
+  function supersedeNavigation(nextUrl) {
+    activeLoad?.cancelHelp?.(nextUrl);
     // 旧操作の終了だけを通知し、既に始まったページ起点の新遷移は止めない。
     if (activeLoad && !activeLoad.done && navigationResult === null) {
       navigationResult = 'superseded';
@@ -129,9 +133,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
     if (!attached) { win.contentView.addChildView(view); attached = true; }
   }
 
-  function navigate(url, fromPage = false, requestId) {
-    if (!(fromPage ? isNavigationUrl(url) : isBrowserUrl(url))) return false;
-    if (requestId !== undefined && (!Number.isSafeInteger(requestId) || requestId <= 0)) return false;
+  function ensureView() {
     if (!view) {
       view = new WebContentsView({ webPreferences: {
         partition: PARTITION, sandbox: true, nodeIntegration: false, contextIsolation: true,
@@ -139,32 +141,9 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
       } });
       const contents = view.webContents;
       // この専用ビューの CDP 接続は遷移追跡だけに使う。
-      const initializeCommand = (method, params) => {
-        if (!debuggerAvailable || contents.isDestroyed?.()) return Promise.reject(new Error('Navigation debugger unavailable'));
-        return contents.debugger.sendCommand(method, params);
-      };
-      try {
-        // 新規 WebContentsView にはまだ renderer がない。先にローカルの空文書を
-        // 作らないと renderer 側の CDP 初期化応答を待ったまま Page.navigate に進めない。
-        // 対象 URL は全ドメインの監視準備後にだけ開き、Network の先着イベントも拾う。
-        navigationReady = contents.loadURL('about:blank').then(() => {
-          if (!debuggerAvailable || contents.isDestroyed?.()) throw new Error('Navigation debugger unavailable');
-          contents.debugger.attach('1.3');
-          return initializeCommand('Page.enable');
-        })
-          .then(() => initializeCommand('Page.setLifecycleEventsEnabled', { enabled: true }))
-          .then(() => initializeCommand('Network.enable'))
-          .then(() => initializeCommand('Page.getFrameTree'))
-          .then(({ frameTree }) => { if (frameTree) mainFrameId = frameTree.frame.id; });
-        // 初期化中に閉じても未処理の rejection を残さない。
-        navigationReady.catch(() => { debuggerAvailable = false; });
-      } catch (error) {
-        debuggerAvailable = false;
-        navigationReady = Promise.reject(error);
-        navigationReady.catch(() => {});
-      }
-      contents.debugger.on('message', (_event, method, params) => {
+      contents.debugger?.on('message', (_event, method, params) => {
         const load = activeLoad;
+        if (load?.help) return;
         if (method === 'Page.navigatedWithinDocument') {
           if (params.frameId === mainFrameId) syncCurrentDocumentUrl(contents);
           return;
@@ -219,16 +198,23 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
         } else return;
         load.completeIfLoaded();
       });
-      contents.debugger.on('detach', () => {
+      contents.debugger?.on('detach', () => {
         debuggerAvailable = false;
-        activeLoad?.finish?.(new Error('Navigation debugger detached'));
+        if (!activeLoad?.help) activeLoad?.finish?.(new Error('Navigation debugger detached'));
       });
-      contents.on('destroyed', () => {
-        debuggerAvailable = false;
-        activeLoad?.finish?.(new Error('Navigation contents destroyed'));
-      });
+
       contents.on('will-navigate', event => {
         if (!isNavigationUrl(event.url)) { event.preventDefault(); return; }
+        if (isHelpUrl(event.url)) {
+          event.preventDefault();
+          loadHelp(event.url).catch(() => {});
+          return;
+        }
+        if (!navigationReady) {
+          event.preventDefault();
+          navigate(event.url, true);
+          return;
+        }
         // ページ起点の新遷移は既に始まっているので stop しない。
         beginLoad(event.url, true, undefined, { native: true });
       });
@@ -240,6 +226,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
         const choice = dialog.showMessageBoxSync(win, { type: 'warning', title: 'このページを離れますか？', message: 'このページを離れますか？', detail: '入力中の内容は保存されない可能性があります。', buttons: ['移動する', 'このページにとどまる'], defaultId: 1, cancelId: 1 });
         if (choice === 0) event.preventDefault();
         else if (!activeLoad?.done && (activeLoad || navigationRequestId === null)) {
+          activeLoad?.cancelHelp?.();
           activeLoad?.finish(new Error('ERR_ABORTED'));
         }
       });
@@ -249,10 +236,61 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
       });
       contents.on('did-start-loading', publish);
       contents.on('did-stop-loading', publish);
+      contents.on('did-navigate', (_event, url) => {
+        if (activeLoad?.help && isHelpUrl(url) && contents.getURL() === url) {
+          currentUrl = url;
+          failedUrl = '';
+          publish();
+        }
+      });
       contents.on('did-navigate-in-page', (_event, _url, isMainFrame) => {
         if (isMainFrame) syncCurrentDocumentUrl(contents);
       });
     }
+  }
+
+  function initializeNavigation() {
+    if (navigationReady) return;
+    const contents = view.webContents;
+    contents.on('destroyed', () => {
+      debuggerAvailable = false;
+      activeLoad?.finish?.(new Error('Navigation contents destroyed'));
+    });
+    const initializeCommand = (method, params) => {
+      if (!debuggerAvailable || contents.isDestroyed?.()) return Promise.reject(new Error('Navigation debugger unavailable'));
+      return contents.debugger.sendCommand(method, params);
+    };
+    try {
+      // 新規 WebContentsView にはまだ renderer がない。先にローカルの空文書を
+      // 作らないと renderer 側の CDP 初期化応答を待ったまま Page.navigate に進めない。
+      // 対象 URL は全ドメインの監視準備後にだけ開き、Network の先着イベントも拾う。
+      navigationReady = (contents.getURL() ? Promise.resolve() : contents.loadURL('about:blank')).then(() => {
+        if (!debuggerAvailable || contents.isDestroyed?.()) throw new Error('Navigation debugger unavailable');
+        contents.debugger.attach('1.3');
+        return initializeCommand('Page.enable');
+      })
+        .then(() => initializeCommand('Page.setLifecycleEventsEnabled', { enabled: true }))
+        .then(() => initializeCommand('Network.enable'))
+        .then(() => initializeCommand('Page.getFrameTree'))
+        .then(({ frameTree }) => {
+          if (frameTree) mainFrameId = frameTree.frame.id;
+          navigationInitialized = true;
+        });
+      // 初期化中に閉じても未処理の rejection を残さない。
+      navigationReady.catch(() => { debuggerAvailable = false; });
+    } catch (error) {
+      debuggerAvailable = false;
+      navigationReady = Promise.reject(error);
+      navigationReady.catch(() => {});
+    }
+  }
+
+  function navigate(url, fromPage = false, requestId) {
+    if (!(fromPage ? isNavigationUrl(url) : isBrowserUrl(url))) return false;
+    if (requestId !== undefined && (!Number.isSafeInteger(requestId) || requestId <= 0)) return false;
+    if (isHelpUrl(url)) { loadHelp(url).catch(() => {}); return true; }
+    ensureView();
+    initializeNavigation();
     const load = beginLoad(url, fromPage, requestId);
     const contents = view.webContents;
     navigationReady.then(async () => {
@@ -286,11 +324,80 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
     return true;
   }
 
+  function openHelp() { return loadHelp(HELP_URL); }
+
+  function loadHelp(url) {
+    if (!isHelpUrl(url)) return false;
+    ensureView();
+    const load = beginLoad(url, false, undefined, { help: true });
+    const contents = view.webContents;
+    const completed = new Promise((resolve, reject) => {
+      const cleanup = () => {
+        contents.removeListener('did-finish-load', finish);
+        contents.removeListener('did-fail-load', fail);
+        contents.removeListener('did-stop-loading', stop);
+        contents.removeListener('destroyed', destroyed);
+        load.cancelHelp = null;
+        load.rejectHelp = null;
+      };
+      const finish = () => {
+        if (activeLoad !== load || !isHelpUrl(contents.getURL())) return;
+        cleanup();
+        load.finish(null, contents.getURL());
+        resolve(true);
+      };
+      const rejectLoad = error => {
+        cleanup();
+        load.finish(error);
+        reject(error);
+      };
+      load.rejectHelp = rejectLoad;
+      const fail = (_event, code, description, destination, isMainFrame) => {
+        if (!isMainFrame || code === -3 || !isHelpUrl(destination) || activeLoad !== load) return;
+        rejectLoad(new Error(`Help document load failed (${code}): ${description}`));
+      };
+      const stop = () => {
+        if (activeLoad !== load) return;
+        if (isHelpUrl(contents.getURL())) finish();
+        else rejectLoad(new Error('Help document load interrupted'));
+      };
+      const destroyed = () => rejectLoad(new Error('Help document webContents destroyed'));
+      load.cancelHelp = nextUrl => {
+        cleanup();
+        // Reopening a committed guide preserves the original wait contract.
+        if (isHelpUrl(nextUrl) && isHelpUrl(contents.getURL())) resolve(true);
+        else reject(new Error('Help document load interrupted'));
+      };
+      contents.on('did-finish-load', finish);
+      contents.on('did-fail-load', fail);
+      contents.on('did-stop-loading', stop);
+      contents.on('destroyed', destroyed);
+    });
+    // Electron may reject the previous loadURL promise on a reload. The guide's
+    // main-frame events above decide this operation's result.
+    const start = () => {
+      if (activeLoad !== load || load.done) return;
+      load.started = true;
+      try { contents.loadURL(url).catch(() => {}); }
+      catch (error) { load.rejectHelp(error); }
+    };
+    // Do not abort the initial about:blank/CDP handshake with the guide load.
+    if (navigationReady && !navigationInitialized) navigationReady.catch(() => {}).then(start);
+    else start();
+    syncBounds();
+    publish();
+    return completed;
+  }
+
   function syncCurrentDocumentUrl(contents) {
-    if (!debuggerAvailable || contents.isDestroyed?.()) return;
+    if (contents.isDestroyed?.()) return;
     const load = activeLoad;
     const url = contents.getURL();
-    if (!load || !isNavigationUrl(url)) return;
+    if (load?.help) {
+      if (isHelpUrl(url) && load.done) { currentUrl = url; publish(); }
+      return;
+    }
+    if (!debuggerAvailable || !load || !isNavigationUrl(url)) return;
     if (load.native && !load.done && (!load.loaderId || load.sameDocument)) {
       load.finish(null, url);
     } else if (load.done && url !== currentUrl) {
@@ -301,17 +408,17 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
     }
   }
 
-  function beginLoad(url, fromPage, requestId, { native = false, stopPrevious = !native } = {}) {
-    const previous = supersedeNavigation();
+  function beginLoad(url, fromPage, requestId, { native = false, stopPrevious = !native, help = false } = {}) {
+    const previous = supersedeNavigation(url);
     // アプリが次の遷移を開始する場合だけ、旧ロードを事前に止める。
-    if (stopPrevious && previous?.started && !previous.done) view.webContents.stop();
+    if (stopPrevious && previous?.started && !previous.done) view.webContents.stop?.();
     failedUrl = ''; github404Url = ''; downloadUrl = '';
     pendingUrl = fromPage ? '' : url;
     navigationRequestId = fromPage ? null : requestId ?? null;
     navigationOperationId++;
     const contents = view.webContents;
     const load = {
-      url, downloadSourceUrl: url, native, done: false, started: native, downloadResponsePending: !native,
+      url, downloadSourceUrl: url, native, help, done: false, started: native, downloadResponsePending: !native && !help,
       downloadAmbiguous: !!previous && normalizeDownloadUrl(previous.downloadSourceUrl) === normalizeDownloadUrl(url)
         && previous.started && !previous.noticeReceived
         && (previous.downloadResponsePending || previous.downloadConfirmed),
@@ -345,9 +452,13 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
       pendingUrl = '';
       if (error) {
         navigationResult = error.message.includes('ERR_ABORTED') ? 'cancelled' : 'failed';
-        if (navigationResult === 'failed') failedUrl = load.documentRequest()?.url || load.url;
+        if (navigationResult === 'failed') {
+          const destination = load.documentRequest()?.url || load.url;
+          failedUrl = isNavigationUrl(destination) ? destination : '';
+        }
       } else {
         currentUrl = committedUrl;
+        if (load.help) { documentLoaderId = null; document404Url = ''; }
         if (!load.loaderId || load.sameDocument) github404Url = document404Url;
         failedUrl = '';
         navigationResult = 'completed';
@@ -392,7 +503,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
       }
     };
     publish();
-    if (!debuggerAvailable) load.finish(new Error('Navigation debugger unavailable'));
+    if (!help && !debuggerAvailable) load.finish(new Error('Navigation debugger unavailable'));
     return load;
   }
 
@@ -408,7 +519,12 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
     } else if (name === 'reload') {
       // 初期化待ちの要求を native reload で置換すると Page.navigate が失われる。
       // HTTP(S) 文書がまだない間は元の URL と Enter の requestId を保持して拒否する。
-      if (failedUrl) return navigate(failedUrl, true);
+      if (failedUrl) {
+        if (!isNavigationUrl(failedUrl)) return false;
+        if (isHelpUrl(failedUrl)) { loadHelp(failedUrl).catch(() => {}); return true; }
+        return navigate(failedUrl, true);
+      }
+      if (isHelpUrl(currentUrl)) { loadHelp(currentUrl).catch(() => {}); return true; }
       if (!isNavigationUrl(currentUrl)) return false;
       beginLoad(currentUrl, true, undefined, { native: true, stopPrevious: true });
       view.webContents.reload();
@@ -417,6 +533,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
   }
 
   function destroy() {
+    activeLoad?.cancelHelp?.();
     activeLoad?.flushDownloadNotice(false);
     downloadCandidates.clear();
     activeLoad = null;
@@ -430,7 +547,14 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
   }
 
   return {
-    navigate, action, destroy,
+    navigate, openHelp, action, destroy,
+    externalUrl(source) {
+      if (source !== 'current' && source !== 'failed') return null;
+      const url = source === 'failed' ? failedUrl : (downloadUrl || currentUrl);
+      if (!isHelpUrl(url)) return null;
+      if (!isSafeHelpDocument(helpDocumentPath)) return null;
+      return pathToFileURL(helpDocumentPath).href + new URL(url).hash;
+    },
     setBounds(rect) { bounds = validateBrowserBounds(rect, win.getContentBounds()); syncBounds(); return !!bounds; },
     setVisible(value) { visible = value === true; syncBounds(); },
     setModalCount(value) { if (!Number.isInteger(value) || value < 0) return; modalCount = value; syncBounds(); },

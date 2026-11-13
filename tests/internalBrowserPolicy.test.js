@@ -2,9 +2,175 @@
 const { installBrowserLoad, flushBrowserLoads } = require('./helpers/browserLoad');
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { PARTITION, clampBrowserWidth, validateBrowserBounds, isBrowserUrl, isNavigationUrl } = require('../utils/internalBrowserPolicy');
+const { PARTITION, HELP_URL, isHelpUrl, clampBrowserWidth, validateBrowserBounds, isBrowserUrl, isNavigationUrl } = require('../utils/internalBrowserPolicy');
 const { createInternalBrowser } = require('../utils/internalBrowser');
 const { browserAvailableWidth, shouldFoldSetupPanel, browserWidthMax, shouldWrapToastPhrase } = require('../utils/internalBrowserLayout');
+
+test('案内のハッシュを外部 URL に引き継ぎ、読み込み失敗は拒否する', async () => {
+  const { EventEmitter } = require('node:events');
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-help-browser-'));
+  fs.writeFileSync(path.join(root, 'help.html'), '<html></html>');
+  const documentPath = fs.realpathSync(path.join(root, 'help.html'));
+  const browserSession = new EventEmitter();
+  browserSession.webRequest = { onBeforeRequest() {}, onCompleted() {} };
+  browserSession.setPermissionRequestHandler = () => {};
+  browserSession.setPermissionCheckHandler = () => {};
+  let contents;
+  class FakeView {
+    constructor() {
+      contents = new EventEmitter();
+      contents.navigationHistory = { canGoBack: () => false, canGoForward: () => false };
+      contents.isLoading = () => false;
+      contents.setWindowOpenHandler = () => {};
+      contents.getURL = () => contents.currentUrl || '';
+      contents.loadURL = () => Promise.reject(new Error('previous load aborted'));
+      contents.close = () => {};
+      this.webContents = contents;
+    }
+    setBounds() {}
+  }
+  const win = { isDestroyed: () => false, webContents: { send() {} }, contentView: { addChildView() {}, removeChildView() {} } };
+  const browser = createInternalBrowser(win, { WebContentsView: FakeView, session: { fromPartition: () => browserSession }, helpDocumentPath: documentPath });
+  try {
+    const failedHelp = browser.openHelp();
+    contents.emit('did-fail-load', {}, -3, 'aborted', 'https://example.com/previous', true);
+    contents.emit('did-fail-load', {}, -105, 'failed', HELP_URL, true);
+    await assert.rejects(failedHelp, /Help document load failed/);
+    assert.equal(browser.externalUrl('failed'), require('node:url').pathToFileURL(documentPath).href);
+    contents.currentUrl = `${HELP_URL}#section`;
+    contents.emit('did-navigate', {}, `${HELP_URL}#section`);
+    assert.equal(browser.externalUrl('current'), require('node:url').pathToFileURL(documentPath).href + '#section');
+    assert.equal(browser.externalUrl('failed'), null);
+  } finally {
+    browser.destroy();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('案内の待機は前ページの中断を無視し、案内完了または破棄で解除する', async () => {
+  const { EventEmitter } = require('node:events');
+  const browserSession = new EventEmitter();
+  browserSession.webRequest = { onBeforeRequest() {}, onCompleted() {} };
+  browserSession.setPermissionRequestHandler = () => {};
+  browserSession.setPermissionCheckHandler = () => {};
+  let contents;
+  class FakeView {
+    constructor() {
+      contents = new EventEmitter();
+      contents.navigationHistory = { canGoBack: () => false, canGoForward: () => false };
+      contents.isLoading = () => false;
+      contents.setWindowOpenHandler = () => {};
+      contents.getURL = () => contents.currentUrl || '';
+      contents.loadURL = () => Promise.reject(new Error('previous load aborted'));
+      contents.close = () => {};
+      this.webContents = contents;
+    }
+    setBounds() {}
+  }
+  const win = { isDestroyed: () => false, webContents: { send() {} }, contentView: { addChildView() {}, removeChildView() {} } };
+  const browser = createInternalBrowser(win, { WebContentsView: FakeView, session: { fromPartition: () => browserSession } });
+  try {
+    // 別 URL の中断と案内以外の完了は、案内の成否を決めない。
+    const succeeded = browser.openHelp();
+    contents.emit('did-fail-load', {}, -3, 'aborted', 'https://example.com/previous', true);
+    contents.currentUrl = 'https://example.com/previous';
+    contents.emit('did-finish-load');
+    assert.equal(contents.listenerCount('did-finish-load'), 1);
+    contents.currentUrl = `${HELP_URL}#section`;
+    contents.emit('did-finish-load');
+    assert.equal(await succeeded, true);
+    assert.equal(contents.listenerCount('did-finish-load'), 0);
+    assert.equal(contents.listenerCount('destroyed'), 0);
+    const destroyed = browser.openHelp();
+    contents.emit('destroyed');
+    await assert.rejects(destroyed, /destroyed/);
+    assert.equal(contents.listenerCount('did-fail-load'), 0);
+    assert.equal(contents.listenerCount('destroyed'), 0);
+  } finally {
+    browser.destroy();
+  }
+});
+
+test('未確定の案内へ別ナビゲーションが割り込むと待機を解除する', async () => {
+  const { EventEmitter } = require('node:events');
+  const browserSession = new EventEmitter();
+  browserSession.webRequest = { onBeforeRequest() {}, onCompleted() {} };
+  browserSession.setPermissionRequestHandler = () => {};
+  browserSession.setPermissionCheckHandler = () => {};
+  let contents;
+  class FakeView {
+    constructor() {
+      contents = new EventEmitter();
+      contents.navigationHistory = { canGoBack: () => false, canGoForward: () => false };
+      contents.isLoading = () => false;
+      contents.getURL = () => contents.currentUrl || '';
+      contents.setWindowOpenHandler = () => {};
+      contents.loadURL = () => Promise.resolve();
+      contents.close = () => {};
+      this.webContents = contents;
+    }
+    setBounds() {}
+  }
+  const win = { isDestroyed: () => false, webContents: { send() {} }, contentView: { addChildView() {}, removeChildView() {} } };
+  const browser = createInternalBrowser(win, { WebContentsView: FakeView, session: { fromPartition: () => browserSession } });
+  try {
+    const pending = browser.openHelp();
+    browser.navigate('https://example.com/other');
+    contents.currentUrl = 'https://example.com/other';
+    contents.emit('did-stop-loading');
+    await assert.rejects(Promise.race([pending, new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 100))]), /Help document/);
+    assert.equal(contents.listenerCount('did-finish-load'), 0);
+    assert.equal(contents.listenerCount('did-fail-load'), 0);
+    assert.equal(contents.listenerCount('did-stop-loading'), 1);
+    // HTTP navigation installs a persistent CDP destruction watcher.
+    assert.equal(contents.listenerCount('destroyed'), 1);
+  } finally {
+    browser.destroy();
+  }
+});
+
+test('読み込み中の案内を開き直しても中断を失敗としない', async () => {
+  const { EventEmitter } = require('node:events');
+  const browserSession = new EventEmitter();
+  browserSession.webRequest = { onBeforeRequest() {}, onCompleted() {} };
+  browserSession.setPermissionRequestHandler = () => {};
+  browserSession.setPermissionCheckHandler = () => {};
+  let contents;
+  class FakeView {
+    constructor() {
+      contents = new EventEmitter();
+      contents.navigationHistory = { canGoBack: () => false, canGoForward: () => false };
+      contents.isLoading = () => false;
+      contents.getURL = () => contents.currentUrl || '';
+      contents.setWindowOpenHandler = () => {};
+      contents.loadURL = () => Promise.resolve();
+      contents.close = () => {};
+      this.webContents = contents;
+    }
+    setBounds() {}
+  }
+  const win = { isDestroyed: () => false, webContents: { send() {} }, contentView: { addChildView() {}, removeChildView() {} } };
+  const browser = createInternalBrowser(win, { WebContentsView: FakeView, session: { fromPartition: () => browserSession } });
+  try {
+    const first = browser.openHelp();
+    contents.currentUrl = HELP_URL;
+    contents.emit('did-navigate', {}, HELP_URL);
+    const second = browser.openHelp();
+    contents.emit('did-fail-load', {}, -3, 'aborted', HELP_URL, true);
+    contents.emit('did-stop-loading');
+    assert.equal(await first, true);
+    assert.equal(await second, true);
+    assert.equal(contents.listenerCount('did-finish-load'), 0);
+    assert.equal(contents.listenerCount('did-fail-load'), 0);
+    assert.equal(contents.listenerCount('did-stop-loading'), 1);
+    assert.equal(contents.listenerCount('destroyed'), 0);
+  } finally {
+    browser.destroy();
+  }
+});
 
 test('専用 persist パーティションと HTTP(S) URL の制限', () => {
   assert.equal(PARTITION, 'persist:vk-terminals-internal-browser');
@@ -12,6 +178,16 @@ test('専用 persist パーティションと HTTP(S) URL の制限', () => {
   assert.equal(isBrowserUrl('http://example.com'), true);
   assert.equal(isBrowserUrl('file:///etc/passwd'), false);
   assert.equal(isBrowserUrl('javascript:alert(1)'), false);
+});
+
+test('固定案内 URL のみページ遷移で受け付ける', () => {
+  assert.equal(isBrowserUrl(HELP_URL), false);
+  assert.equal(isNavigationUrl(HELP_URL), true);
+  assert.equal(isHelpUrl(HELP_URL + '#section'), true);
+  for (const url of [HELP_URL + '?x=1', HELP_URL + 'other', 'vk-terminals-help://other/', 'vk-terminals-help://guide/../', 'file:///tmp/help.html']) {
+    assert.equal(isHelpUrl(url), false);
+    assert.equal(isNavigationUrl(url), false);
+  }
 });
 
 test('アプリから開く URL だけ長さを制限する', () => {
@@ -159,6 +335,11 @@ test('専用ビューの遷移と権限、ダウンロード、確定 URL を制
   assert.equal(browserSession.permissionCheck(), false);
   browserSession.request({ resourceType: 'mainFrame', url: 'file:///tmp/a' }, result => assert.deepEqual(result, { cancel: true }));
   browserSession.request({ resourceType: 'mainFrame', url: 'https://example.com' }, result => assert.deepEqual(result, { cancel: false }));
+  assert.equal(browser.externalUrl('other'), null);
+  assert.equal(browser.externalUrl('current'), null);
+  assert.equal(browser.action('reload'), false);
+  assert.equal(browser.navigate('file:///tmp/unsafe', true), false);
+  assert.equal(browser.action('reload'), false);
   assert.equal(browser.navigate('https://example.com/first'), true);
   assert.equal(sent.at(-1)[1].navigationRequestId, null);
   assert.equal(sent.at(-1)[1].url, '');
@@ -185,6 +366,9 @@ test('専用ビューの遷移と権限、ダウンロード、確定 URL を制
   await contents.fail(-105, 'https://example.com/failed');
   assert.equal(sent.at(-1)[1].failedUrl, 'https://example.com/failed');
   assert.equal(sent.at(-1)[1].navigationResult, 'failed');
+  // An uncorrelated unsafe failure cannot replace the failed HTTP operation.
+  contents.emit('did-fail-load', {}, -105, 'failed', 'file:///tmp/unsafe', true);
+  assert.equal(sent.at(-1)[1].failedUrl, 'https://example.com/failed');
   assert.equal(browser.action('reload'), true);
   assert.equal(contents.requestedUrl, 'https://example.com/failed');
   await contents.fail(-105, 'https://example.com/failed');
@@ -433,4 +617,25 @@ test('非表示とモーダル中はビューを外し、再表示では同じ�
   browser.setModalCount(0);
   assert.deepEqual(calls.at(-1), ['add', view]);
   assert.deepEqual(calls.at(-2), ['bounds', { x: 500, y: 40, width: 480, height: 700 }]);
+});
+
+test('案内の外部IPCはsenderを検証し、mainで解決したURLだけを開く', async () => {
+  const source = require('node:fs').readFileSync(require('node:path').join(__dirname, '../main.js'), 'utf8');
+  const handlerSource = source.match(/ipcMain\.handle\('internal-browser:external',[\s\S]*?\n\}\);/)?.[0];
+  assert.ok(handlerSource);
+  let handler;
+  const opened = [];
+  const requested = [];
+  require('node:vm').runInNewContext(handlerSource, {
+    ipcMain: { handle(_channel, callback) { handler = callback; } },
+    isInternalBrowserSender: event => event.allowed === true,
+    internalBrowser: { externalUrl(source) { requested.push(source); return source === 'current' ? 'file:///safe/help.html#section' : null; } },
+    electronShell: { async openExternal(url) { opened.push(url); } },
+  });
+  assert.equal(await handler({ allowed: false }, 'current'), false);
+  assert.deepEqual(requested, []);
+  assert.equal(await handler({ allowed: true }, 'file:///unsafe'), false);
+  assert.equal(await handler({ allowed: true }, 'failed'), false);
+  assert.equal(await handler({ allowed: true }, 'current'), true);
+  assert.deepEqual(opened, ['file:///safe/help.html#section']);
 });

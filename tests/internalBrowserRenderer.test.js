@@ -255,6 +255,7 @@ test('失敗表示は失敗 URL、操作列は確定 URL を安全な外部オ�
   const buttons = [];
   let layoutSyncs = 0;
   const opened = [];
+  const helpOpened = [];
   let messageWrites = 0;
   let messageText = '';
   const message = {
@@ -287,7 +288,7 @@ test('失敗表示は失敗 URL、操作列は確定 URL を安全な外部オ�
     internalBrowserAddress: display,
     internalBrowserPendingUrl: '',
     internalBrowserAddressHasDraft: false,
-    VKIpc: { on: (name, handler) => { handlers[name] = handler; } },
+    VKIpc: { on: (name, handler) => { handlers[name] = handler; }, invoke: (channel, source) => { helpOpened.push([channel, source]); return Promise.resolve(true); } },
     openExternalUrlSafe: url => opened.push(url),
     syncInternalBrowserLayout() { layoutSyncs++; },
     URL,
@@ -429,6 +430,11 @@ test('失敗表示は失敗 URL、操作列は確定 URL を安全な外部オ�
   handlers['internal-browser:state']({ url: '', failedUrl: '', downloadUrl: '' });
   assert.equal(target.title, '');
   assert.equal(target.ariaLabel, '');
+  handlers['internal-browser:state']({ url: 'vk-terminals-help://guide/#current', failedUrl: 'vk-terminals-help://guide/#failed', downloadUrl: '' });
+  click(false);
+  click(true);
+  assert.deepEqual(helpOpened, [['internal-browser:external', 'current'], ['internal-browser:external', 'failed']]);
+  assert.equal(opened.at(-1), longUrl);
 });
 
 test('main の遷移結果を順に受け、失敗・成功・中止・置換・ダウンロード阻止を通知する', async () => {

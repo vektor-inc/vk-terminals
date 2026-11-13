@@ -896,7 +896,7 @@ test('通知欠落でも終了・置換した操作をSetに保持しない', as
   const module = { exports: {} };
   vm.runInNewContext(fs.readFileSync(require.resolve('../utils/internalBrowser'), 'utf8'), {
     module, Set: ObservedSet, URL,
-    require: name => name === './internalBrowserPolicy' ? require('../utils/internalBrowserPolicy') : require(name),
+    require: name => name.startsWith('./') ? require(`../utils/${name.slice(2)}`) : require(name),
   });
   const { browser, contents } = setup({ createBrowser: module.exports.createInternalBrowser });
   await flushBrowserLoads();
@@ -1021,4 +1021,98 @@ test('download応答前のNetwork中止を失敗として確定しない', async
   assert.equal(states.at(-1).navigationResult, 'download-blocked');
   assert.equal(states.at(-1).downloadUrl, load.url);
   assert.deepEqual(notices(messages).map(message => message.state), [{ canOpenFromToolbar: true }]);
+});
+
+test('HTTP操作から案内へ切り替え、失敗・再読込・HTTP復帰を別操作として追跡する', async () => {
+  const { HELP_URL } = require('../utils/internalBrowserPolicy');
+  const { browser, contents, states } = setup();
+  await flushBrowserLoads();
+  const old = contents.loads[0];
+  const guideLoads = [];
+  contents.loadURL = url => {
+    assert.ok(url.startsWith(HELP_URL));
+    guideLoads.push(url);
+    return Promise.resolve();
+  };
+  const guide = browser.openHelp();
+  assert.equal(states.at(-1).navigationRequestId, null);
+  assert.equal(states.at(-1).pendingUrl, HELP_URL);
+  old.resolve({ frameId: old.frameId, loaderId: old.loaderId });
+  emitLoaderEvents(contents, old.loaderId, old.url);
+  contents.emit('did-fail-load', {}, -105, 'old HTTP failure', old.url, true);
+  await flushBrowserLoads();
+  assert.equal(states.at(-1).navigationResult, null);
+  assert.equal(states.at(-1).failedUrl, '');
+  contents.setDocumentUrl(`${HELP_URL}#section`);
+  contents.emit('did-navigate', {}, contents.getURL());
+  contents.emit('did-finish-load');
+  assert.equal(await guide, true);
+  assert.equal(states.at(-1).url, `${HELP_URL}#section`);
+  assert.equal(states.at(-1).navigationResult, 'completed');
+  assert.equal(states.at(-1).pendingUrl, '');
+  const commands = contents.commands.length;
+  assert.equal(browser.action('reload'), true);
+  contents.emit('did-fail-load', {}, -105, 'guide failure', HELP_URL, true);
+  await flushBrowserLoads();
+  assert.equal(states.at(-1).navigationResult, 'failed');
+  assert.equal(states.at(-1).failedUrl, `${HELP_URL}#section`);
+  assert.equal(browser.action('reload'), true);
+  contents.emit('did-finish-load');
+  await flushBrowserLoads();
+  assert.equal(states.at(-1).failedUrl, '');
+  assert.equal(states.at(-1).navigationResult, 'completed');
+  assert.deepEqual(guideLoads, [HELP_URL, `${HELP_URL}#section`, `${HELP_URL}#section`]);
+  assert.equal(contents.commands.length, commands);
+  assert.equal(browser.navigate('https://example.org/return', false, 2), true);
+  await contents.complete('https://example.org/return');
+  assert.equal(states.at(-1).navigationRequestId, 2);
+  assert.equal(states.at(-1).url, 'https://example.org/return');
+  assert.equal(states.at(-1).navigationResult, 'completed');
+  assert.equal(contents.commands.at(-1), 'Page.navigate');
+  browser.destroy();
+});
+
+test('初期about:blankの準備中に案内を開いてもCDP初期化を中断しない', async () => {
+  const { HELP_URL } = require('../utils/internalBrowserPolicy');
+  let release;
+  const { browser, contents, states } = setup({ bootstrap: (loadURL, url) => new Promise(resolve => {
+    release = () => resolve(loadURL(url));
+  }) });
+  const guideLoads = [];
+  contents.loadURL = url => { guideLoads.push(url); return Promise.resolve(); };
+  const guide = browser.openHelp();
+  assert.deepEqual(guideLoads, []);
+  release();
+  await flushBrowserLoads();
+  assert.deepEqual(guideLoads, [HELP_URL]);
+  assert.equal(contents.loads.length, 0);
+  contents.setDocumentUrl(HELP_URL);
+  contents.emit('did-finish-load');
+  assert.equal(await guide, true);
+  browser.navigate('https://example.org/return', false, 2);
+  await contents.complete('https://example.org/return');
+  assert.equal(states.at(-1).navigationResult, 'completed');
+  assert.equal(states.at(-1).navigationRequestId, 2);
+  browser.destroy();
+});
+
+test('案内を確定した後に前のGitHub文書の404案内を復元しない', async () => {
+  const { HELP_URL } = require('../utils/internalBrowserPolicy');
+  const { browser, contents, states } = setup();
+  await flushBrowserLoads();
+  const load = contents.loads[0];
+  contents.respond(load.loaderId, 'https://github.com/missing', 404);
+  await contents.complete('https://github.com/missing');
+  assert.equal(states.at(-1).github404Url, 'https://github.com/missing');
+  contents.loadURL = () => Promise.resolve();
+  const guide = browser.openHelp();
+  contents.setDocumentUrl(HELP_URL);
+  contents.emit('did-finish-load');
+  await guide;
+  assert.equal(states.at(-1).url, HELP_URL);
+  assert.equal(states.at(-1).github404Url, '');
+  assert.equal(browser.action('reload'), true);
+  contents.emit('did-finish-load');
+  assert.equal(states.at(-1).github404Url, '');
+  browser.destroy();
 });

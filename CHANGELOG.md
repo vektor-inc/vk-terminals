@@ -3,6 +3,10 @@
 - [ 機能追加 ] アプリ内ブラウザのアドレス欄から URL 入力と Google 検索でページを開けるように（[#600](https://github.com/vektor-inc/vk-terminals/issues/600)）
 - [ 仕様変更 ] アプリ内ブラウザの URL 表示ボタンによるコピー操作を廃止（[#600](https://github.com/vektor-inc/vk-terminals/issues/600)）
 
+## 1.101.1
+
+- [ 仕様変更 ] 「ドキュメント」を右側のアプリ内ブラウザで開き、外部ブラウザへの切り替えにも対応（[#609](https://github.com/vektor-inc/vk-terminals/issues/609)）
+
 ## 1.101.0
 
 - [ 機能追加 ] 組み込み起動で、コマンドを入力済みのシェルペインだけを開くセットアップ専用オプションを追加（[#607](https://github.com/vektor-inc/vk-terminals/issues/607)）

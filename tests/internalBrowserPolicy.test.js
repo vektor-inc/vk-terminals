@@ -159,6 +159,7 @@ test('専用ビューの遷移と権限、ダウンロード、確定 URL を制
   browserSession.request({ resourceType: 'mainFrame', url: 'file:///tmp/a' }, result => assert.deepEqual(result, { cancel: true }));
   browserSession.request({ resourceType: 'mainFrame', url: 'https://example.com' }, result => assert.deepEqual(result, { cancel: false }));
   assert.equal(browser.navigate('https://example.com/first'), true);
+  assert.equal(sent.at(-1)[1].navigationRequestId, null);
   assert.equal(sent.at(-1)[1].url, '');
   assert.equal(sent.at(-1)[1].navigationResult, null);
   contents.emit('did-navigate', {}, 'https://example.com/first');
@@ -217,18 +218,21 @@ test('専用ビューの遷移と権限、ダウンロード、確定 URL を制
   assert.deepEqual(sent.at(-1)[1], { canOpenFromToolbar: false });
   assert.equal(sent.at(-2)[1].downloadUrl, '');
   assert.equal(sent.at(-2)[1].navigationResult, 'cancelled');
-  browser.navigate('https://example.com/download');
+  browser.navigate('https://example.com/download', false, 7);
+  assert.equal(sent.at(-1)[1].navigationRequestId, 7);
   browserSession.emit('will-download', { preventDefault() {} }, { getURLChain: () => ['https://example.com/download'] });
   assert.equal(sent.at(-1)[0], 'internal-browser:download-blocked');
   assert.deepEqual(sent.at(-1)[1], { canOpenFromToolbar: true });
   assert.equal(sent.at(-2)[0], 'internal-browser:state');
   assert.equal(sent.at(-2)[1].downloadUrl, 'https://example.com/download');
+  assert.equal(sent.at(-2)[1].navigationRequestId, 7);
   contents.emit('did-start-loading');
   assert.equal(sent.at(-1)[1].downloadUrl, 'https://example.com/download');
   contents.emit('did-start-navigation', {}, 'https://example.com/frame', false, false);
   assert.equal(sent.at(-1)[1].downloadUrl, 'https://example.com/download');
   contents.emit('did-start-navigation', {}, 'https://example.com/next', false, true);
   assert.equal(sent.at(-1)[1].downloadUrl, '');
+  assert.equal(sent.at(-1)[1].navigationRequestId, null);
   browser.navigate('https://example.com/stale');
   const beforeUnrelatedDownload = sent.length;
   browserSession.emit('will-download', { preventDefault() {} }, { getURLChain: () => ['https://example.com/other'] });
@@ -258,6 +262,19 @@ test('専用ビューの遷移と権限、ダウンロード、確定 URL を制
   }
   browser.navigate('https://example.com/next');
   assert.equal(sent.at(-1)[1].downloadUrl, '');
+  const beforeInvalidOpen = sent.length;
+  assert.equal(browser.navigate('file:///tmp/blocked', false, 9), false);
+  assert.equal(browser.navigate('https://example.com/blocked', false, 0), false);
+  assert.equal(sent.length, beforeInvalidOpen);
+  browser.navigate('https://example.com/redirect', false, 8);
+  contents.emit('did-start-navigation', {}, 'https://example.com/redirect', false, true);
+  contents.emit('did-start-navigation', {}, 'https://example.com/redirected', false, true);
+  assert.equal(sent.at(-1)[1].navigationRequestId, 8);
+  contents.emit('did-navigate', {}, 'https://example.com/redirected');
+  assert.equal(sent.at(-1)[1].navigationRequestId, 8);
+  assert.equal(sent.at(-1)[1].navigationResult, 'completed');
+  contents.emit('did-start-navigation', {}, 'https://example.com/page-link', false, true);
+  assert.equal(sent.at(-1)[1].navigationRequestId, null);
 });
 
 test('ブラウザ IPC はメインウィンドウのメインフレームだけを受け付ける', () => {
@@ -270,6 +287,33 @@ test('ブラウザ IPC はメインウィンドウのメインフレームだけ
   assert.equal(isInternalBrowserSender({ sender: {}, senderFrame: frame }, win), false);
   assert.equal(isInternalBrowserSender({ sender: contents, senderFrame: frame }, null), false);
   assert.equal(isInternalBrowserSender({ sender: contents, senderFrame: frame }, { ...win, isDestroyed: () => true }), false);
+});
+
+test('open IPC は sender と正の安全な request ID を検証し、URL-only を許可する', () => {
+  const source = require('node:fs').readFileSync(require('node:path').join(__dirname, '../main.js'), 'utf8');
+  const handlerSource = source.match(/ipcMain\.handle\('internal-browser:open',[\s\S]*?\n\}\);/)?.[0];
+  assert.ok(handlerSource);
+  let handler;
+  const calls = [];
+  require('node:vm').runInNewContext(handlerSource, {
+    ipcMain: { handle(_channel, callback) { handler = callback; } },
+    isInternalBrowserSender: event => event.allowed === true,
+    internalBrowser: { navigate(...args) { calls.push(args); return true; } },
+    Number,
+  });
+  assert.equal(handler({ allowed: false }, 'https://example.com', 1), false);
+  for (const id of [null, 0, -1, 1.5, '1', Number.MAX_SAFE_INTEGER + 1, NaN, Infinity]) {
+    assert.equal(handler({ allowed: true }, 'https://example.com', id), false);
+  }
+  assert.equal(calls.length, 0);
+  assert.equal(handler({ allowed: true }, 'https://example.com'), true);
+  assert.equal(handler({ allowed: true }, 'https://example.com', 1), true);
+  assert.equal(handler({ allowed: true }, 'https://example.com', Number.MAX_SAFE_INTEGER), true);
+  assert.deepEqual(calls, [
+    ['https://example.com', false, undefined],
+    ['https://example.com', false, 1],
+    ['https://example.com', false, Number.MAX_SAFE_INTEGER],
+  ]);
 });
 
 test('開き先メニューは単一の通常クリックだけを受け付ける', () => {

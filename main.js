@@ -7,7 +7,11 @@ let internalBrowser = null;
 const { isInternalBrowserSender: isAllowedBrowserSender } = require('./utils/internalBrowserSender');
 const isInternalBrowserSender = event => isAllowedBrowserSender(event, win);
 
-ipcMain.handle('internal-browser:open', (event, url) => isInternalBrowserSender(event) && !!internalBrowser?.navigate(url));
+ipcMain.handle('internal-browser:open', (event, url, requestId) => {
+  if (!isInternalBrowserSender(event)) return false;
+  if (requestId !== undefined && (!Number.isSafeInteger(requestId) || requestId <= 0)) return false;
+  return !!internalBrowser?.navigate(url, false, requestId);
+});
 ipcMain.handle('internal-browser:action', (event, action) => isInternalBrowserSender(event) && !!internalBrowser?.action(action));
 ipcMain.on('internal-browser:bounds', (event, rect) => { if (isInternalBrowserSender(event)) internalBrowser?.setBounds(rect); });
 ipcMain.on('internal-browser:visible', (event, visible) => { if (isInternalBrowserSender(event)) internalBrowser?.setVisible(visible); });

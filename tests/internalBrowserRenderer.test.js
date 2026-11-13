@@ -405,12 +405,18 @@ test('main の遷移結果を順に受け、失敗・成功・中止・ダウン
     };
     const sidebar = { querySelector: selector => elements[selector] };
     let browser;
+    let deferNextOpen = false;
+    let deferredOpen = null;
     const context = vm.createContext({
       internalBrowserSidebar: sidebar,
       resolveBrowserAddress: require('../renderer/urlSafety').resolveBrowserAddress,
       VKIpc: {
         on: (channel, handler) => { handlers[channel] = handler; },
-        invoke: (_channel, url) => { browser.navigate(url); return Promise.resolve(); },
+        invoke: (_channel, url, requestId) => {
+          if (deferNextOpen) { deferredOpen = () => browser.navigate(url, false, requestId); deferNextOpen = false; }
+          else browser.navigate(url, false, requestId);
+          return Promise.resolve();
+        },
       },
       showGenericToast(message) { toastMessages.push(message); return true; },
       externalUrlToastEl: { querySelector: () => toastBody },
@@ -465,8 +471,10 @@ test('main の遷移結果を順に受け、失敗・成功・中止・ダウン
     assert.equal(navigationWrites, 1);
     assert.equal(messages.at(-1).pendingUrl, failedUrl);
     assert.equal(messages.at(-1).navigationResult, null);
+    assert.equal(messages.at(-1).navigationRequestId, 1);
     contents.emit('did-fail-load', {}, failureCode, 'load failed', failedUrl, true);
     assert.equal(messages.at(-1).navigationResult, 'failed');
+    assert.equal(messages.at(-1).navigationRequestId, 1);
     assert.equal(navigationStatus.textContent, '');
     assert.equal(navigationWrites, 2);
     assert.equal(errorView.hidden, false);
@@ -499,13 +507,22 @@ test('main の遷移結果を順に受け、失敗・成功・中止・ダウン
     handlers.blur?.();
     contents.emit('did-stop-loading');
     assert.equal(address.value, 'example.org/retry');
+    deferNextOpen = true;
     handlers.keydown({ key: 'Enter', preventDefault() {} });
     assert.equal(navigationStatus.textContent, 'ページを読み込み中');
     assert.equal(navigationWrites, 3);
+    // 新しい invoke が main に届く前の古い失敗 state は今回の追跡を終えない。
+    browser.publish();
+    assert.equal(navigationStatus.textContent, 'ページを読み込み中');
+    assert.equal(navigationWrites, 3);
+    assert.equal(vm.runInContext('internalBrowserActiveRequestId', context), 2);
+    deferredOpen();
     assert.equal(messages.at(-1).pendingUrl, 'https://example.org/retry');
+    assert.equal(messages.at(-1).navigationRequestId, 2);
     assert.equal(address.value, 'https://example.org/retry');
     contents.emit('did-navigate', {}, 'https://example.org/retry');
     assert.equal(messages.at(-1).navigationResult, 'completed');
+    assert.equal(messages.at(-1).navigationRequestId, 2);
     assert.equal(address.value, 'https://example.org/retry');
     assert.equal(navigationStatus.textContent, 'ページの読み込みが完了しました');
     assert.equal(navigationWrites, 4);
@@ -519,6 +536,7 @@ test('main の遷移結果を順に受け、失敗・成功・中止・ダウン
     assert.equal(messages.at(-1).navigationResult, null);
     contents.emit('will-prevent-unload', { preventDefault() { throw new Error('unexpected leave'); } });
     assert.equal(messages.at(-1).navigationResult, 'cancelled');
+    assert.equal(messages.at(-1).navigationRequestId, 3);
     assert.equal(messages.at(-1).pendingUrl, '');
     assert.equal(navigationStatus.textContent, 'ページの移動を中止しました');
     assert.equal(navigationWrites, 6);
@@ -550,6 +568,7 @@ test('main の遷移結果を順に受け、失敗・成功・中止・ダウン
     assert.equal(toastMessages.length, 2);
     assert.equal(target.textContent, '外部で開く: ダウンロード先 example.org/download');
     assert.equal(messages.at(-1).navigationResult, 'download-blocked');
+    assert.equal(messages.at(-1).navigationRequestId, 4);
     assert.equal(messages.at(-1).pendingUrl, '');
     assert.equal(navigationStatus.textContent, '');
     assert.equal(navigationWrites, 8);
@@ -565,6 +584,7 @@ test('main の遷移結果を順に受け、失敗・成功・中止・ダウン
     assert.equal(messages.at(-1).navigationResult, null);
     contents.emit('did-navigate-in-page', {}, 'https://example.org/retry#part', true);
     assert.equal(messages.at(-1).navigationResult, 'completed');
+    assert.equal(messages.at(-1).navigationRequestId, null);
     assert.equal(navigationWrites, 8);
     contents.emit('did-fail-load', {}, -105, 'reload failed', 'https://example.org/retry#part', true);
     assert.equal(errorView.hidden, false);
@@ -578,7 +598,34 @@ test('main の遷移結果を順に受け、失敗・成功・中止・ダウン
     contents.emit('did-navigate-in-page', {}, 'https://example.org/retry#next', true);
     assert.equal(messages.at(-1).pendingUrl, '');
     assert.equal(messages.at(-1).navigationResult, 'completed');
+    assert.equal(messages.at(-1).navigationRequestId, 5);
     assert.equal(navigationStatus.textContent, 'ページの読み込みが完了しました');
     assert.equal(navigationWrites, 10);
+    // 完了 state の再送も、次の Enter の結果としては消費しない。
+    address.value = 'https://example.org/last';
+    handlers.input();
+    deferNextOpen = true;
+    handlers.keydown({ key: 'Enter', preventDefault() {} });
+    const latestRequestId = vm.runInContext('internalBrowserActiveRequestId', context);
+    browser.publish();
+    assert.equal(navigationStatus.textContent, 'ページを読み込み中');
+    assert.equal(vm.runInContext('internalBrowserActiveRequestId', context), latestRequestId);
+    deferredOpen();
+    assert.equal(messages.at(-1).navigationRequestId, latestRequestId);
+    contents.emit('did-navigate', {}, 'https://example.org/last');
+    assert.equal(navigationStatus.textContent, 'ページの読み込みが完了しました');
+    assert.equal(vm.runInContext('internalBrowserActiveRequestId', context), null);
+    // 連続 Enter では後の要求だけを追跡する。
+    address.value = 'https://example.org/first-again';
+    handlers.input();
+    handlers.keydown({ key: 'Enter', preventDefault() {} });
+    const firstRequestId = vm.runInContext('internalBrowserActiveRequestId', context);
+    address.value = 'https://example.org/second-again';
+    handlers.input();
+    handlers.keydown({ key: 'Enter', preventDefault() {} });
+    assert.equal(vm.runInContext('internalBrowserActiveRequestId', context), firstRequestId + 1);
+    assert.equal(messages.at(-1).navigationRequestId, firstRequestId + 1);
+    contents.emit('did-navigate', {}, 'https://example.org/second-again');
+    assert.equal(navigationStatus.textContent, 'ページの読み込みが完了しました');
   }
 });

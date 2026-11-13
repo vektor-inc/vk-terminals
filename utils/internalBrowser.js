@@ -21,6 +21,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
   let failedUrl = '';
   let github404Url = '';
   let navigationResult = null;
+  let navigationRequestId = null;
   const cancelDownload = (event, item) => {
     event.preventDefault();
     // 保留中の遷移と異なるダウンロードへ古い URL を渡さない。
@@ -49,6 +50,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
       failedUrl,
       github404Url,
       navigationResult,
+      navigationRequestId,
       loading: !!view && view.webContents.isLoading(),
       canGoBack: !!view && view.webContents.navigationHistory.canGoBack(),
       canGoForward: !!view && view.webContents.navigationHistory.canGoForward(),
@@ -71,8 +73,9 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
     if (!attached) { win.contentView.addChildView(view); attached = true; }
   }
 
-  function navigate(url, fromPage = false) {
+  function navigate(url, fromPage = false, requestId) {
     if (!(fromPage ? isNavigationUrl(url) : isBrowserUrl(url))) return false;
+    if (requestId !== undefined && (!Number.isSafeInteger(requestId) || requestId <= 0)) return false;
     if (!view) {
       view = new WebContentsView({ webPreferences: {
         partition: PARTITION, sandbox: true, nodeIntegration: false, contextIsolation: true,
@@ -94,6 +97,8 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
       contents.on('did-start-loading', publish);
       contents.on('did-start-navigation', (_event, url, isInPlace, isMainFrame) => {
         if (!isMainFrame) return;
+        // Enter の保留中だけ ID を引き継ぎ、ページ起点の新しい遷移では切り離す。
+        if (!pendingUrl) navigationRequestId = null;
         navigationResult = null;
         if (isInPlace) { publish(); return; }
         failedUrl = '';
@@ -134,6 +139,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
     github404Url = '';
     downloadUrl = '';
     pendingUrl = fromPage ? '' : url;
+    navigationRequestId = fromPage ? null : requestId ?? null;
     navigationResult = null;
     view.webContents.loadURL(url).catch(() => {});
     syncBounds();
@@ -144,11 +150,12 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
   function action(name) {
     if (!view) return false;
     const history = view.webContents.navigationHistory;
-    if (name === 'back' && history.canGoBack()) { navigationResult = null; history.goBack(); }
-    else if (name === 'forward' && history.canGoForward()) { navigationResult = null; history.goForward(); }
+    if (name === 'back' && history.canGoBack()) { navigationRequestId = null; navigationResult = null; history.goBack(); }
+    else if (name === 'forward' && history.canGoForward()) { navigationRequestId = null; navigationResult = null; history.goForward(); }
     else if (name === 'reload') {
       if (failedUrl) return navigate(failedUrl, true);
       github404Url = '';
+      navigationRequestId = null;
       navigationResult = null;
       view.webContents.reload();
       publish();

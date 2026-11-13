@@ -296,6 +296,8 @@ internalBrowserSidebar.addEventListener('click', event => {
 const internalBrowserAddress = internalBrowserSidebar.querySelector('.internal-browser-url');
 const internalBrowserAddressError = internalBrowserSidebar.querySelector('.internal-browser-address-error');
 let internalBrowserNavigationActive = false;
+let internalBrowserNextRequestId = 0;
+let internalBrowserActiveRequestId = null;
 function setInternalBrowserNavigationStatus(message) {
   const status = internalBrowserSidebar.querySelector('.internal-browser-navigation-status');
   if (status.textContent !== message) status.textContent = message;
@@ -362,15 +364,23 @@ internalBrowserAddress.addEventListener('keydown', event => {
     syncInternalBrowserLayout();
     return;
   }
+  if (internalBrowserNextRequestId >= Number.MAX_SAFE_INTEGER) {
+    internalBrowserAddressError.textContent = 'これ以上ページを開けません。アプリを再起動してください。';
+    internalBrowserAddressError.hidden = false;
+    internalBrowserAddress.setAttribute('aria-invalid', 'true');
+    internalBrowserAddress.setAttribute('aria-describedby', internalBrowserAddressError.id);
+    return;
+  }
   clearInternalBrowserAddressError();
   internalBrowserHasPage = true;
   internalBrowserAddressHasDraft = false;
   internalBrowserPendingUrl = url;
   internalBrowserAddress.value = url;
+  internalBrowserActiveRequestId = ++internalBrowserNextRequestId;
   internalBrowserNavigationActive = true;
   setInternalBrowserNavigationStatus('ページを読み込み中');
   syncInternalBrowserExternalTarget();
-  VKIpc.invoke('internal-browser:open', url).catch(() => {});
+  VKIpc.invoke('internal-browser:open', url, internalBrowserActiveRequestId).catch(() => {});
 });
 document.getElementById('internal-browser-toggle').addEventListener('click', () => setInternalBrowserOpen(!internalBrowserOpen));
 const internalBrowserResizer = internalBrowserSidebar.querySelector('.internal-browser-resizer');
@@ -482,8 +492,10 @@ VKIpc.on('internal-browser:state', state => {
     // ダウンロード阻止は既存のトーストだけで結果と操作を通知する。
     'download-blocked': '',
   };
-  if (internalBrowserNavigationActive && Object.hasOwn(navigationMessages, state.navigationResult)) {
+  if (internalBrowserNavigationActive && state.navigationRequestId === internalBrowserActiveRequestId
+    && Object.hasOwn(navigationMessages, state.navigationResult)) {
     internalBrowserNavigationActive = false;
+    internalBrowserActiveRequestId = null;
     setInternalBrowserNavigationStatus(navigationMessages[state.navigationResult]);
   }
   syncInternalBrowserLayout();

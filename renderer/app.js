@@ -183,6 +183,9 @@ function syncInternalBrowserLayout() {
   for (const child of root.children) {
     if (child !== internalBrowserSidebar) child.inert = browserMustOverlay;
   }
+  // WebContentsView は通常の HTML より前面に描かれる。全面表示中だけトーストを
+  // ブラウザ内へ移し、ページの前に置いて通知用の高さを確保する。
+  syncExternalUrlToastPlacement(browserMustOverlay);
   if (browserMustOverlay && !browserWasOverlay) {
     requestAnimationFrame(() => {
       if (root.classList.contains('internal-browser-overlay')) focusInternalBrowserToolbar();
@@ -1530,6 +1533,19 @@ const EXTERNAL_URL_TOAST_COPY_LABEL = 'URLをコピー';
 // settingsCopyButtonLabel() と同じ考え方。
 const EXTERNAL_URL_TOAST_COPY_ARIA_LABEL = '開けなかったURLをコピー';
 
+function syncExternalUrlToastPlacement(browserMustOverlay) {
+  if (!externalUrlToastLayerEl) return;
+  const body = document.body;
+  if (browserMustOverlay) {
+    const page = internalBrowserSidebar.querySelector('.internal-browser-page');
+    if (externalUrlToastLayerEl.parentElement !== internalBrowserSidebar) {
+      internalBrowserSidebar.insertBefore(externalUrlToastLayerEl, page);
+    }
+  } else if (body && externalUrlToastLayerEl.parentElement !== body) {
+    body.insertBefore(externalUrlToastLayerEl, body.firstChild);
+  }
+}
+
 function clearExternalUrlToastTimer() {
   if (externalUrlToastDismissTimer) {
     clearTimeout(externalUrlToastDismissTimer);
@@ -1666,6 +1682,7 @@ function ensureExternalUrlToast() {
 
   externalUrlToastLayerEl = layer;
   externalUrlToastEl = toast;
+  syncExternalUrlToastPlacement(document.getElementById('root')?.classList.contains('internal-browser-overlay'));
   return toast;
 }
 

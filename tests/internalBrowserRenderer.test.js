@@ -133,6 +133,7 @@ test('狭幅の同期は左を閉じてから再計算し、手動で左を開�
     ensureSidebar: () => null, isReducedMotion: () => true, fitAll() {},
     focusFirstSidebarItem() {}, requestAnimationFrame: callback => frames.push(callback),
     focusInternalBrowserToolbar() { address.focus(); },
+    syncExternalUrlToastPlacement() {},
     VKIpc: { send() {} },
     setInternalBrowserOpen(open) { calls.push(open); context.internalBrowserOpen = open; },
   });
@@ -170,6 +171,35 @@ test('狭幅の同期は左を閉じてから再計算し、手動で左を開�
   assert.equal(terminal.inert, false);
   frames.splice(0).forEach(callback => callback());
   assert.equal(focused, 'terminal');
+});
+
+test('全面表示中のトーストはWebContentsViewの前へ移し、解除時はbodyへ戻す', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
+  const css = fs.readFileSync(path.join(__dirname, '../renderer/style.css'), 'utf8');
+  const placement = source.match(/function syncExternalUrlToastPlacement\([\s\S]*?\n\}/)[0];
+  const page = {};
+  const layer = { parentElement: null };
+  const body = {
+    firstChild: {},
+    insertBefore(child) { child.parentElement = body; },
+  };
+  const sidebar = {
+    querySelector: selector => selector === '.internal-browser-page' ? page : null,
+    insertBefore(child, before) {
+      assert.equal(before, page);
+      child.parentElement = sidebar;
+    },
+  };
+  const context = vm.createContext({
+    document: { body },
+    internalBrowserSidebar: sidebar,
+    externalUrlToastLayerEl: layer,
+  });
+  vm.runInContext(`${placement}\nsyncExternalUrlToastPlacement(true)`, context);
+  assert.equal(layer.parentElement, sidebar);
+  vm.runInContext('syncExternalUrlToastPlacement(false)', context);
+  assert.equal(layer.parentElement, body);
+  assert.match(css, /#root\.internal-browser-overlay \.internal-browser-sidebar > \.vk-toast-layer\s*\{[^}]*position: static;/);
 });
 
 test('初期化時は操作列の閉じるだけを無効化せず、失敗表示にも触れない', () => {

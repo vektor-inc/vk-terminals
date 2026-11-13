@@ -4109,3 +4109,12 @@ body:has(#root.internal-browser-open):not(:has(.settings-overlay, .confirm-overl
 body:has(#root.internal-browser-open):not(:has(.settings-overlay, .confirm-overlay)) .vk-toast { max-width: min(320px, 100%); }
 /* トーストを置ける幅が 200px 未満のときは案内の語句を折り返す。 */
 body:has(#root.internal-browser-open.toast-phrase-wrap):not(:has(.settings-overlay, .confirm-overlay)) .vk-toast-phrase { white-space: normal; }
+/* 全面表示では WebContentsView の外側へ逃がせないため、操作列とページの間へ置く。 */
+#root.internal-browser-overlay .internal-browser-sidebar > .vk-toast-layer {
+  position: static;
+  flex: 0 0 auto;
+  width: auto;
+  max-width: none;
+  margin: 8px;
+}
+#root.internal-browser-overlay .internal-browser-sidebar > .vk-toast-layer .vk-toast { max-width: 100%; }

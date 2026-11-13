@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 不具合修正 ] Codex のペイン内 URL が開き先メニューを通らず、アプリ内ブラウザを選べない問題を修正（[#602](https://github.com/vektor-inc/vk-terminals/issues/602)）
+
 ## 1.100.0
 
 - [ 機能追加 ] ペイン内の URL・issue タイトル・PR ボタンから、右側のアプリ内ブラウザか外部ブラウザを選んで開ける機能を追加（[#590](https://github.com/vektor-inc/vk-terminals/issues/590)）

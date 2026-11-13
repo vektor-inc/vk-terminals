@@ -84,7 +84,7 @@ async function runWithConfig(config, verify) {
       port,
       prefix: 'vk-terminals-e2e-initial-engine-app-',
       env: fixture.env,
-      config,
+      config: { openInitialPane: true, ...config },
       launchAi: true,
     });
     await verify({ port, fixture, win: launched.win });

@@ -1,5 +1,8 @@
 # Changelog
 
+- [ 機能追加 ] 起動時に最初のペインを開く設定を追加（[#605](https://github.com/vektor-inc/vk-terminals/issues/605)）
+- [ 仕様変更 ] 前回のペインが復元されない場合、既定では空の画面で起動するように変更（[#605](https://github.com/vektor-inc/vk-terminals/issues/605)）
+
 - [ 不具合修正 ] Codex のペイン内 URL が開き先メニューを通らず、アプリ内ブラウザを選べない問題を修正（[#602](https://github.com/vektor-inc/vk-terminals/issues/602)）
 
 ## 1.100.0

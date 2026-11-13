@@ -1918,6 +1918,7 @@ ipcMain.handle('app:get-config', () => {
     agentroom: false,
     appTitle: APP_TITLE,
     // 起動時の最初のペインで使う AI エンジン・モデル（issue #419）。不正値・未指定は claude へ正規化済み。
+    openInitialPane: config.openInitialPane === true,
     initialEngine: initialPaneLaunch.engine,
     initialCodexModel: initialPaneLaunch.model,
     // ペインを閉じる時の確認（issue #184）。不正値・未指定は既定 'busy' に正規化して渡す。
@@ -3281,7 +3282,7 @@ ipcMain.on('terminal:renderer-ready', async () => {
   pushMenuUpdate();
   pushWidgetUpdate();
   if (restoredPaneCount) { additionalPanesCreated = true; return; }
-  if (additionalPanesCreated) return; // closePane で最後のペインを閉じて再 initApp された場合は再生成しない
+  if (additionalPanesCreated) return; // renderer の ready 通知は起動時だけの追加ペイン生成に使う
   additionalPanesCreated = true;
   const config = loadUserConfig();
   const panes = Array.isArray(config.additionalPanes) ? config.additionalPanes : [];

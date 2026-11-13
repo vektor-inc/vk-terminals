@@ -512,6 +512,7 @@ let newPaneAutoLaunchClaude = false;
 // 起動時の最初のペインだけが使う AI エンジン・モデル（issue #419）。既定は従来どおり Claude Code。
 let initialPaneEngine = 'claude';
 let initialPaneCodexModel = '';
+let openInitialPane = false;
 // ペインを閉じる時の確認（issue #184）。'never' | 'busy' | 'always'（既定 'busy'）。
 // 値は起動時に main（app:get-config）から取得する。保存後は main の定期監視で反映する。
 let confirmClosePref = 'busy';
@@ -3260,16 +3261,14 @@ function findLargestVisiblePaneId() {
 // （グリッドレイアウト化により折り畳み機能は撤去。行の高さは同一行の全ペインで共有されるため、
 //   単一ペインだけを縦に畳む操作がグリッドでは成立しないため。）
 
-// 指定した paneId が実際に使っている engine を options.engine へ引き継ぐ共通ヘルパー
-// （issue #394。addBtn（空グリッドの「新規ペインを追加」）／.btn-split（ペイン単位の
-// ＋ボタン）／terminal:request-new-pane（HTTP API の useDefaults 経路）の3箇所で同じ
-// 3行を重複させないための切り出し。安藤レビュー指摘・LOW）。
-// 対象ペインが存在しない・engine が未設定（terminals[paneId] が無い等）の場合は options を
-// そのまま返す＝engine を渡さない＝main 側の既定（claude）に委ねる、という各呼び出し元の
-// 「未指定時のフォールバック」を崩さない。options は変更せず、新しいオブジェクトを返す。
+// 引き継ぎ元があればそのエンジンを使い、0 枚なら初期設定を使う。
+// Codex のモデルは最初のペインを作る場合だけ初期設定から渡す。
 function withInheritedEngine(options, paneId) {
   const inheritedEngine = terminals[paneId]?.engine;
-  return inheritedEngine ? { ...options, engine: inheritedEngine } : options;
+  if (inheritedEngine) return { ...options, engine: inheritedEngine };
+  return initialPaneEngine === 'codex'
+    ? { ...options, engine: 'codex', ...(initialPaneCodexModel ? { model: initialPaneCodexModel } : {}) }
+    : options;
 }
 
 async function openHelpGuide() {
@@ -3400,11 +3399,11 @@ function closePane(paneId, { force = false, skipConfirm = false } = {}) {
   tree.order = tree.order.filter(id => id !== paneId);
   tree.stashOrder = (Array.isArray(tree.stashOrder) ? tree.stashOrder : []).filter(id => id !== paneId);
   if (tree.order.length === 0 && tree.stashOrder.length === 0) {
-    // Last pane closed → start fresh
-    // 格納ペインが 1 枚でも生き残っている場合は巻き込んで作り直さない（issue #89）。
-    initApp().then(() => {
-      VKIpc.send('terminal:renderer-ready');
-    });
+    // 最後のペインを閉じたら空画面を描画し、次の操作先へフォーカスする。
+    focusedPaneId = null;
+    resetGridSizing();
+    render();
+    document.querySelector('.grid-empty-btn')?.focus();
     return;
   }
   // ペイン数が変わりグリッド寸法が変化するため、手動リサイズ比率は均等にリセットする。
@@ -4070,10 +4069,12 @@ function renderEmptyGrid() {
 
   const box = document.createElement('div');
   box.className = 'grid-empty-box';
+  box.setAttribute('role', 'status');
 
   const title = document.createElement('div');
   title.className = 'grid-empty-title';
-  title.textContent = holderPaneCreationWarning ? '新しいペインを作れません' : 'すべてのペインを格納中です';
+  const hasStashedPanes = Array.isArray(tree?.stashOrder) && tree.stashOrder.length > 0;
+  title.textContent = holderPaneCreationWarning ? '新しいペインを作れません' : hasStashedPanes ? 'すべてのペインを格納中です' : '開いているペインはありません';
 
   const desc = document.createElement('div');
   desc.className = 'grid-empty-desc';
@@ -4088,20 +4089,7 @@ function renderEmptyGrid() {
   addBtn.textContent = '新規ペインを追加';
   addBtn.setAttribute('aria-label', '新規ペインを追加');
   addBtn.addEventListener('click', () => {
-    // 現在選択中（フォーカス中）のペインの engine を新ペインへ引き継ぐ（issue #394）。
-    // 全ペインが格納中でグリッドが空でも、focusedPaneId は直前に格納したペインを
-    // 指し続ける（stashPane 参照）ため、そのペインの engine を「現在選択中のペイン」
-    // として扱える。
-    //
-    // ただし ✕（closePane）で最後の可視ペインを閉じてグリッドが空になった場合は
-    // focusedPaneId が null になる（stashPane 経由で空にした場合との違い。安藤レビュー
-    // 指摘・LOW）。renderEmptyGrid はグリッドが空＝全ペインが格納中のときにしか出ない
-    // （このプレースホルダの見出し「すべてのペインを格納中です」のとおり。paneExists は
-    // tree.order か tree.stashOrder のどちらかに居ることを前提にしている）ため、
-    // focusedPaneId が無くても tree.stashOrder の末尾（最後に格納された＝直近まで
-    // 触っていた可能性が高いペイン）を「現在選択中のペイン」の代わりとして使う。
-    // どちらも無ければ（アプリ起動直後で1ペインも作られていない等）withInheritedEngine が
-    // options をそのまま返し、従来どおり main 側の既定（claude）に委ねる。
+    // 格納中のペインがあれば直近のものから引き継ぐ。0 枚なら初期設定を使う。
     const stashOrder = (tree && Array.isArray(tree.stashOrder)) ? tree.stashOrder : [];
     const fallbackPaneId = focusedPaneId || (stashOrder.length > 0 ? stashOrder[stashOrder.length - 1] : null);
     const options = withInheritedEngine({ noClaude: !newPaneAutoLaunchClaude }, fallbackPaneId);
@@ -4116,9 +4104,9 @@ function renderEmptyGrid() {
   openBtn.addEventListener('click', () => setSidebarOpen(true, { focusFirst: true }));
 
   if (!holderPaneCreationWarning) actions.appendChild(addBtn);
-  if (!holderPaneCreationWarning) actions.appendChild(openBtn);
+  if (!holderPaneCreationWarning && hasStashedPanes) actions.appendChild(openBtn);
   box.appendChild(title);
-  box.appendChild(desc);
+  if (holderPaneCreationWarning || hasStashedPanes) box.appendChild(desc);
   box.appendChild(actions);
   wrap.appendChild(box);
   return wrap;
@@ -7314,6 +7302,7 @@ async function initApp() {
     // main 側で検証済みの値。取得失敗・欠落時は従来どおり Claude Code のまま。
     initialPaneEngine = (cfg && cfg.initialEngine === 'codex') ? 'codex' : 'claude';
     initialPaneCodexModel = (cfg && typeof cfg.initialCodexModel === 'string') ? cfg.initialCodexModel : '';
+    openInitialPane = cfg?.openInitialPane === true;
     // main 側でも正規化済みだが、取得失敗・欠落に備えてここでも既定 'busy' に落とす。
     confirmClosePref = normalizeConfirmClose(cfg && cfg.confirmClose);
     // main 側でも正規化済みだが、取得失敗・欠落に備えてここでも既定 'click' に落とす（issue #385）。
@@ -7418,10 +7407,9 @@ async function initApp() {
   paneFocusMode = null;
   focusedPaneId = null;
 
-  const paneId = newId();
   // stashOrder: サイドバー格納ペインの並び（issue #89）。sidebarWidth: セッション内の可変幅。
-  tree = { type: 'grid', order: [paneId], colFr: null, rowFr: null, stashOrder: [], sidebarWidth: DEFAULT_SIDEBAR_WIDTH };
-  // 起動時の初回ペインも手動の新規ペイン（＋ボタン・分割）と同じく newPaneStartupDir に従う。
+  tree = { type: 'grid', order: [], colFr: null, rowFr: null, stashOrder: [], sidebarWidth: DEFAULT_SIDEBAR_WIDTH };
+  // 開く場合の初期ペインも手動の新規ペインと同じく newPaneStartupDir に従う。
   // 存在しないパスは main 側 terminal:create が HOME へフォールバックする。
   // エンジンが Codex の場合だけ engine / model を渡す。Claude のときは options を空にして従来と同一にする。
   // 以降の追加・分割は withInheritedEngine がこのペインの engine を引き継ぐ（issue #394）。
@@ -7440,6 +7428,16 @@ async function initApp() {
   if (openAsSetupPane) {
     initialPaneOptions = { setupPane: true, ...(setupInitial.claudeOk === true ? {} : { noClaude: true }) };
   }
+  // 通常の初期ペインが不要なら、セットアップ結果を反映して空画面を表示する。
+  if (!openAsSetupPane && !openInitialPane) {
+    if (setupPanel && setupInitial?.result) setupPanel.applyResult(setupInitial.result);
+    render();
+    initialRenderDone = true;
+    if (setupPanel && !setupInitial?.result) setupPanel.recheck({ silent: true });
+    return;
+  }
+  const paneId = newId();
+  tree.order.push(paneId);
   let openedAsSetupPane = openAsSetupPane;
   try {
     await createTerminal(paneId, newPaneStartupDir || null, initialPaneOptions);
@@ -7594,10 +7592,6 @@ VKIpc.on('terminal:request-new-pane', async (payload = {}) => {
   const { requestId, cwd, noClaude, engine, stashed, useDefaults, model, approvalPolicy, sandboxMode, codexPolicy, claudeSettingsPreset } = payload;
   const reply = (result) => VKIpc.send('terminal:new-pane-created', { requestId, ...result });
   const targetPaneId = findLargestVisiblePaneId() || focusedPaneId || (tree ? getAllLeafIds(tree)[0] : null);
-  if (!targetPaneId) {
-    reply({ error: 'no pane available' });
-    return;
-  }
   try {
     // 表示面積が最大のペインを長辺方向に分割し、全体の空きが大きい場所へ追加する
     const rect = getPaneRect(targetPaneId);
@@ -7635,7 +7629,10 @@ VKIpc.on('terminal:request-new-pane', async (payload = {}) => {
     if (typeof approvalPolicy === 'string') splitOptions = { ...splitOptions, approvalPolicy };
     if (typeof sandboxMode === 'string') splitOptions = { ...splitOptions, sandboxMode };
     if (codexPolicy && typeof codexPolicy === 'object') splitOptions = { ...splitOptions, codexPolicy };
-    const result = await splitPane(targetPaneId, direction, effectiveCwd, splitOptions);
+    if (!targetPaneId && typeof engine !== 'string') splitOptions = withInheritedEngine(splitOptions, null);
+    const result = targetPaneId
+      ? await splitPane(targetPaneId, direction, effectiveCwd, splitOptions)
+      : await addPane(effectiveCwd, splitOptions);
     if (!result || !result.termId) {
       reply({ error: 'split failed or termId unavailable' });
       return;

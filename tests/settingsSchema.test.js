@@ -89,6 +89,7 @@ test('buildBuiltinSettingsDescriptor: JSON から targetPath 付きの組み込�
     'menuItems',
     'additionalPanes',
     'apiRequireAuthAlways',
+    'openInitialPane',
     'initialEngine',
     'initialCodexModel',
   ]);

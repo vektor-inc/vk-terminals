@@ -58,7 +58,7 @@ async function postJson(port, pathname, payload) {
 // 一時 HOME を用意して Electron を素のシェル（--no-claude）で起動する。
 // 実ユーザーの ~/.vk-terminals/config.json に依存しないよう、HOME の一時化はヘルパーが行う。
 async function launchClosePaneApp(port) {
-  return await launchApp({ port, prefix: 'vk-terminals-e2e-close-' });
+  return await launchApp({ port, prefix: 'vk-terminals-e2e-close-', config: { openInitialPane: true } });
 }
 
 // issue #348: 3 テストとも env/config の指定なしで launchApp を呼んでいるため、

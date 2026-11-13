@@ -5,6 +5,19 @@ const assert = require('node:assert/strict');
 const { PARTITION, HELP_URL, isHelpUrl, clampBrowserWidth, validateBrowserBounds, isBrowserUrl, isNavigationUrl } = require('../utils/internalBrowserPolicy');
 const { createInternalBrowser } = require('../utils/internalBrowser');
 const { browserAvailableWidth, shouldFoldSetupPanel, browserWidthMax, shouldWrapToastPhrase } = require('../utils/internalBrowserLayout');
+const { shouldSeparateSidebars, MIN_TERMINAL_WIDTH } = require('../utils/internalBrowserLayout');
+
+test('狭幅では左右を分離し、ブラウザの保存幅によらず中央320pxを残す', () => {
+  assert.equal(shouldSeparateSidebars(600, 300), true);
+  assert.equal(shouldSeparateSidebars(979, 300), true);
+  assert.equal(shouldSeparateSidebars(980, 300), false);
+  assert.equal(shouldSeparateSidebars(1280, 330), false);
+  for (const preferred of [NaN, 360, 720]) {
+    const browser = clampBrowserWidth(preferred, 600, 1, 600, MIN_TERMINAL_WIDTH);
+    assert.equal(browser, 280);
+    assert.equal(600 - browser, 320);
+  }
+});
 
 test('案内のハッシュを外部 URL に引き継ぎ、読み込み失敗は拒否する', async () => {
   const { EventEmitter } = require('node:events');

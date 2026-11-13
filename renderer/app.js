@@ -127,9 +127,15 @@ for (const button of internalBrowserSidebar.querySelectorAll('.internal-browser-
 function syncInternalBrowserLayout() {
   const root = document.getElementById('root');
   if (!root) return;
-  const { browserAvailableWidth, shouldFoldSetupPanel, clampBrowserWidth, browserWidthMax, shouldWrapToastPhrase } = window.VKInternalBrowserLayout;
+  const { browserAvailableWidth, shouldFoldSetupPanel, clampBrowserWidth, browserWidthMax, shouldWrapToastPhrase, shouldSeparateSidebars, MIN_TERMINAL_WIDTH } = window.VKInternalBrowserLayout;
   const columns = gridDims().cols;
   const windowWidth = root.clientWidth;
+  // 開き途中の実幅ではなく設定幅で判定し、左右の開閉が往復しないようにする。
+  if (internalBrowserOpen && sidebarOpen && shouldSeparateSidebars(windowWidth, getSidebarWidth())) {
+    const focusToggle = !!document.activeElement?.closest('#sidebar');
+    setSidebarOpen(false, { focusFirst: false, focusToggle });
+    return;
+  }
   const leftSidebar = root.classList.contains('sidebar-open') ? document.getElementById('sidebar')?.getBoundingClientRect().width || 0 : 0;
   root.style.setProperty('--vktm-left-sidebar-width', `${leftSidebar}px`);
   const grid = root.querySelector('.grid');
@@ -150,7 +156,7 @@ function syncInternalBrowserLayout() {
   if (setupPanel) setupPanel.setAvailableWidth(internalBrowserOpen
     ? (panelMustFold ? 0 : Math.max(1000, windowWidth)) : windowWidth);
   // 配置変更を要求した直後でも、切替後のグリッド最小幅でブラウザ幅を決める。
-  const effectiveGridMinimumWidth = panelMustFold ? 12 : sideBySideGridMinimumWidth;
+  const effectiveGridMinimumWidth = Math.max(MIN_TERMINAL_WIDTH, panelMustFold ? 12 : sideBySideGridMinimumWidth);
   // 帯と利用者が開いた重ね表示はグリッドと横並びにならない。
   const otherWidths = [...root.children]
     .filter(element => element !== internalBrowserSidebar && element.id !== 'sidebar' && !element.contains(grid))
@@ -161,6 +167,7 @@ function syncInternalBrowserLayout() {
   displayedInternalBrowserWidth = clampBrowserWidth(preferredInternalBrowserWidth || NaN, availableWidth, columns, windowWidth, effectiveGridMinimumWidth);
   root.classList.toggle('toast-phrase-wrap', shouldWrapToastPhrase(windowWidth, displayedInternalBrowserWidth));
   internalBrowserSidebar.style.width = `${displayedInternalBrowserWidth}px`;
+  internalBrowserSidebar.querySelector('.internal-browser-url').placeholder = displayedInternalBrowserWidth < 360 ? 'URL / 検索' : 'URL または検索語';
   document.body.style.setProperty('--vktm-internal-browser-width', `${displayedInternalBrowserWidth}px`);
   const resizer = internalBrowserSidebar.querySelector('.internal-browser-resizer');
   resizer.setAttribute('aria-valuemin', String(Math.min(360, maxWidth)));
@@ -176,7 +183,7 @@ function syncInternalBrowserLayout() {
     VKIpc.send('internal-browser:bounds', { x: rect.x * zoom, y: rect.y * zoom, width: rect.width * zoom, height: rect.height * zoom });
   }
   VKIpc.send('internal-browser:visible', internalBrowserOpen && !document.body.classList.contains('resizing-internal-browser'));
-  const layout = `${internalBrowserOpen}:${displayedInternalBrowserWidth}:${columns}`;
+  const layout = `${internalBrowserOpen}:${displayedInternalBrowserWidth}:${columns}:${leftSidebar}`;
   if (layout !== previousInternalBrowserLayout) {
     previousInternalBrowserLayout = layout;
     if (document.body.classList.contains('resizing-internal-browser') || document.body.classList.contains('resizing-sidebar')) debouncedFitAll();
@@ -3081,6 +3088,10 @@ function focusFirstSidebarItem() {
 function setSidebarOpen(open, options = {}) {
   const root = document.getElementById('root');
   const btn = document.getElementById('menu-btn');
+  // 狭幅で左側を手動で開いた場合は、その操作を優先する。
+  if (open && internalBrowserOpen && root && window.VKInternalBrowserLayout.shouldSeparateSidebars(root.clientWidth, getSidebarWidth())) {
+    setInternalBrowserOpen(false);
+  }
   // 開閉トランジション（transform）はラッパー .sidebar 側に付いている（issue #89）。
   const aside = root ? ensureSidebar(root) : null;
   if (sidebarTransitionCleanup) {

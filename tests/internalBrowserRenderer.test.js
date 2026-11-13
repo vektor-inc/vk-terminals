@@ -76,7 +76,7 @@ test('左サイドバーの開閉完了後にブラウザとトーストの配�
     fitAll() { calls.push('fit'); },
     isReducedMotion() { return false; },
     setTimeout() { return 1; }, clearTimeout() {},
-    focusFirstSidebarItem() {}, sidebarOpen: false, sidebarTransitionCleanup: null,
+    focusFirstSidebarItem() {}, sidebarOpen: false, sidebarTransitionCleanup: null, internalBrowserOpen: false,
   };
   vm.runInNewContext(`${setter}\nsetSidebarOpen(true, { focusFirst: false })`, context);
   assert.deepEqual(calls, ['sync']);
@@ -86,6 +86,54 @@ test('左サイドバーの開閉完了後にブラウザとトーストの配�
   transitionEnd({ target: aside, propertyName: 'transform' });
   assert.deepEqual(calls.slice(-3), ['sync', 'sync', 'fit']);
   assert.equal(classes.has('sidebar-open'), false);
+});
+
+test('狭幅の同期は左を閉じてから再計算し、手動で左を開くとブラウザを閉じる', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
+  const sync = source.match(/function syncInternalBrowserLayout\([\s\S]*?\n\}/)[0];
+  const setter = source.match(/function setSidebarOpen\([\s\S]*?\n\}/)[0];
+  const classes = new Set(['sidebar-open']);
+  const root = { clientWidth: 600, children: [], style: { setProperty() {} },
+    classList: { contains: key => classes.has(key), toggle(key, enabled) { if (enabled) classes.add(key); else classes.delete(key); } },
+    querySelector: () => null };
+  const attributes = {};
+  const toggle = { setAttribute(key, value) { attributes[key] = value; } };
+  const resizer = { setAttribute() {} };
+  const address = {};
+  const browser = { style: {}, querySelector: selector => selector === '.internal-browser-url' ? address : selector === '.internal-browser-resizer' ? resizer : null };
+  const frames = [];
+  const calls = [];
+  const context = vm.createContext({
+    document: { activeElement: { closest: () => ({}) }, getElementById: id => id === 'root' ? root : id === 'sidebar' ? { getBoundingClientRect: () => ({ width: 300 }) } : toggle,
+      body: { style: { setProperty() {} }, classList: { contains: () => false } } },
+    window: { VKInternalBrowserLayout: require('../utils/internalBrowserLayout') },
+    internalBrowserOpen: true, sidebarOpen: true, internalBrowserSidebar: browser,
+    preferredInternalBrowserWidth: 520, displayedInternalBrowserWidth: 0, previousInternalBrowserLayout: null,
+    setupPanel: null, sidebarTransitionCleanup: null,
+    gridDims: () => ({ cols: 1 }), getSidebarWidth: () => 300,
+    ensureSidebar: () => null, isReducedMotion: () => true, fitAll() {},
+    focusFirstSidebarItem() {}, requestAnimationFrame: callback => frames.push(callback),
+    VKIpc: { send() {} },
+    setInternalBrowserOpen(open) { calls.push(open); context.internalBrowserOpen = open; },
+  });
+  vm.runInContext(`${sync}\n${setter}\nsyncInternalBrowserLayout()`, context);
+  assert.equal(context.sidebarOpen, false);
+  assert.equal(context.internalBrowserOpen, true);
+  assert.equal(context.displayedInternalBrowserWidth, 280);
+  assert.equal(context.preferredInternalBrowserWidth, 520);
+  assert.equal(address.placeholder, 'URL / 検索');
+  assert.equal(attributes['aria-expanded'], 'false');
+  vm.runInContext('setSidebarOpen(true)', context);
+  assert.deepEqual(calls, [false]);
+  assert.equal(context.sidebarOpen, true);
+  // 幅を戻すだけでは、保存幅を上書きしたりブラウザを再び開いたりしない。
+  root.clientWidth = 1280;
+  context.internalBrowserOpen = true;
+  vm.runInContext('syncInternalBrowserLayout()', context);
+  assert.equal(context.sidebarOpen, true);
+  assert.equal(context.displayedInternalBrowserWidth, 520);
+  assert.equal(context.preferredInternalBrowserWidth, 520);
+  assert.equal(address.placeholder, 'URL または検索語');
 });
 
 test('初期化時は操作列の閉じるだけを無効化せず、失敗表示にも触れない', () => {

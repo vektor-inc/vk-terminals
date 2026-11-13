@@ -347,6 +347,41 @@ test('同一 URL の旧 download は現在のコマンドが download を返す�
   assert.equal(states.at(-1).navigationRequestId, 2);
 });
 
+test('旧CDP中止応答がwill-navigateより先なら旧要求をcancelledで一度だけ終了する', async () => {
+  const { browser, contents, states } = setup();
+  await contents.complete('https://example.com/a');
+  browser.navigate('https://example.com/slow', false, 2);
+  await flushBrowserLoads();
+  const old = contents.loads.at(-1);
+  const pending = states.at(-1);
+  assert.equal(pending.navigationRequestId, 2);
+  assert.equal(pending.pendingUrl, old.url);
+  assert.equal(pending.navigationResult, null);
+  // 実CDPはページ起点の置換をwill-navigateより先にERR_ABORTEDで返せる。
+  // 応答を保留しないテストでは、この順序をsupersededと同一視しない。
+  old.resolve({ frameId: 'main', errorText: 'net::ERR_ABORTED' });
+  await flushBrowserLoads();
+  assert.equal(states.at(-1).navigationResult, 'cancelled');
+  assert.equal(states.at(-1).navigationRequestId, 2);
+  contents.stop = () => assert.fail('ページ起点の新遷移を止めない');
+  const url = 'https://example.com/destination';
+  contents.emit('will-navigate', { url });
+  contents.startNative(url, 'native-after-abort');
+  contents.emit('did-start-loading');
+  assert.equal(states.at(-1).navigationOperationId, pending.navigationOperationId + 1);
+  assert.equal(states.at(-1).navigationRequestId, null);
+  assert.equal(states.at(-1).navigationResult, null);
+  emitLoaderEvents(contents, old.loaderId, old.url);
+  assert.equal(states.at(-1).navigationResult, null);
+  contents.commitDocument(url, 'native-after-abort');
+  contents.loadDocument('native-after-abort');
+  assert.equal(states.at(-1).navigationResult, 'completed');
+  assert.equal(states.at(-1).url, url);
+  assert.equal(states.at(-1).navigationRequestId, null);
+  assert.deepEqual(states.filter(state => state.navigationOperationId === pending.navigationOperationId
+    && state.navigationResult !== null).map(state => state.navigationResult), ['cancelled']);
+});
+
 for (const trigger of ['link', 'location.replace']) {
   for (const oldResponseFirst of [false, true]) {
     test(`${trigger} による保留ロードの置換を完了する: 旧応答先行=${oldResponseFirst}`, async () => {
@@ -433,6 +468,7 @@ for (const trigger of ['link', 'location.replace']) {
       };
       assert.equal(states.at(-1).navigationRequestId, 2);
       assert.equal(states.at(-1).navigationResult, null);
+      const pendingOperation = states.at(-1).navigationOperationId;
       await navigateFromLoadingPage(contents);
       assert.deepEqual(steps, ['prepare', 'loading', 'focus', 'keyDown', 'keyUp']);
       assert.equal(navigationCount, 1);
@@ -442,7 +478,14 @@ for (const trigger of ['link', 'location.replace']) {
       const operation = states.at(-1).navigationOperationId;
       assert.equal(stopped, 0);
       assert.equal(states.at(-1).navigationRequestId, null);
-      assert.ok(states.some(state => state.navigationRequestId === 2 && state.navigationResult === 'superseded'));
+      assert.equal(operation, pendingOperation + 1);
+      assert.deepEqual(states.filter(state => state.navigationOperationId === pendingOperation
+        && state.navigationResult !== null).map(state => ({
+        requestId: state.navigationRequestId, pendingUrl: state.pendingUrl,
+        url: state.url, result: state.navigationResult,
+      })), [{
+        requestId: 2, pendingUrl: old.url, url: 'https://example.com/a', result: 'superseded',
+      }]);
       if (oldResponseFirst) await abortOld();
       emitLoaderEvents(contents, old.loaderId, old.url);
       contents.respond(old.loaderId, 'https://github.com/old', 404);

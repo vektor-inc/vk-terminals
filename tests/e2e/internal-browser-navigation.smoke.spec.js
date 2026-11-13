@@ -42,6 +42,7 @@ const test = base.extend({
           const states = [];
           const trace = [];
           let contents;
+          let heldResponse;
           class TracedView extends WebContentsView {
             constructor(options) {
               super(options);
@@ -51,26 +52,59 @@ const test = base.extend({
                 const original = target[method].bind(target);
                 target[method] = (...args) => {
                   trace.push({ method, args });
-                  return original(...args).then(result => {
+                  const response = original(...args).then(result => {
                     trace.push({ method, result: result ?? null });
                     return result;
                   }, error => {
                     trace.push({ method, error: error.message });
                     throw error;
                   });
+                  if (method === 'sendCommand' && args[0] === 'Page.navigate' && args[1].url === heldResponse?.url) {
+                    const held = heldResponse;
+                    // Chromium の実応答は記録し、アプリへの配送だけを遅らせる。
+                    // ERR_ABORTED が will-navigate より先でも「旧応答待ち」の条件を保つ。
+                    held.delivery = response.then(async result => {
+                      held.result = result;
+                      await held.gate;
+                      return result;
+                    }, async error => {
+                      held.error = error.message;
+                      await held.gate;
+                      throw error;
+                    });
+                    return held.delivery;
+                  }
+                  return response;
                 };
               }
               contents.debugger.on('message', (_event, method, params) => {
                 if (method.startsWith('Page.') || method.startsWith('Network.')) trace.push({ event: method, params });
               });
+              contents.on('will-navigate', event => trace.push({ event: 'will-navigate', url: event.url }));
             }
           }
-          window.webContents.send = (channel, state) => { if (channel === 'internal-browser:state') states.push(state); };
+          window.webContents.send = (channel, state) => {
+            if (channel === 'internal-browser:state') { states.push(state); trace.push({ state }); }
+          };
           const browser = require(${JSON.stringify(implementation)}).createInternalBrowser(window, { ...require('electron'), WebContentsView: TracedView });
           globalThis.browserTest = {
             browser, states, trace, contents: () => contents,
             preparePageNavigation: trigger => require(${JSON.stringify(pageNavigation)}).prepareLoadingPageNavigation(contents, trigger),
             navigateFromPage: () => require(${JSON.stringify(pageNavigation)}).navigateFromLoadingPage(contents),
+            holdNavigationResponse: url => {
+              let release;
+              const gate = new Promise(resolve => { release = resolve; });
+              heldResponse = { url, gate, release };
+            },
+            releaseNavigationResponse: async () => {
+              if (!heldResponse?.delivery) throw new Error('Held navigation was not sent');
+              heldResponse.release();
+              await heldResponse.delivery.catch(() => {});
+              // 本番の Page.navigate 継続処理と catch の配送まで終える。
+              await new Promise(resolve => setImmediate(resolve));
+              browser.publish();
+              return { result: heldResponse.result, error: heldResponse.error };
+            },
           };
         });
       `);
@@ -78,7 +112,8 @@ const test = base.extend({
       await expect.poll(() => electronApp.evaluate(() => !!globalThis.browserTest)).toBe(true);
       await use({ electronApp, origin, releaseImage: () => { imageReleased = true; releaseImage?.(); } });
     } finally {
-      if (electronApp && testInfo.status !== testInfo.expectedStatus) {
+      // 成功時も、実CDP応答・Electronイベント・公開状態の前後関係を残す。
+      if (electronApp) {
         try {
           const diagnostics = await electronApp.evaluate(() => ({
             states: globalThis.browserTest?.states,
@@ -103,9 +138,19 @@ for (const trigger of ['link', 'location.replace']) {
     expect(await electronApp.evaluate(() => globalThis.browserTest.contents().getURL())).toBe(`${origin}/source`);
     expect(await electronApp.evaluate(() => globalThis.browserTest.contents().executeJavaScript('document.getElementById("link").textContent'))).toBe('移動する');
     await electronApp.evaluate((_electron, trigger) => globalThis.browserTest.preparePageNavigation(trigger), trigger);
-    await electronApp.evaluate((_electron, url) => globalThis.browserTest.browser.navigate(url, false, 1), `${origin}/slow`);
+    const pending = await electronApp.evaluate((_electron, url) => {
+      const harness = globalThis.browserTest;
+      harness.holdNavigationResponse(url);
+      harness.browser.navigate(url, false, 1);
+      return harness.states.at(-1);
+    }, `${origin}/slow`);
+    expect(pending).toMatchObject({
+      url: `${origin}/source`, pendingUrl: `${origin}/slow`, navigationRequestId: 1, navigationResult: null,
+    });
     // Page.navigate が送信され、実際に応答待ちになってから旧文書を操作する。
     await expect.poll(() => electronApp.evaluate(() => globalThis.browserTest.contents().isLoading())).toBe(true);
+    await expect.poll(() => electronApp.evaluate((_electron, url) => globalThis.browserTest.trace.some(entry =>
+      entry.method === 'sendCommand' && entry.args?.[0] === 'Page.navigate' && entry.args[1].url === url), `${origin}/slow`)).toBe(true);
     // 旧文書からのリンク/location置換で新遷移が始まった後、stopが呼ばれる不具合を再現する。
     await electronApp.evaluate(() => globalThis.browserTest.navigateFromPage());
     await expect.poll(() => electronApp.evaluate(() => {
@@ -113,7 +158,24 @@ for (const trigger of ['link', 'location.replace']) {
       return { url: state.url, result: state.navigationResult };
     })).toEqual({ url: `${origin}/destination`, result: 'completed' });
     expect(await electronApp.evaluate(() => globalThis.browserTest.contents().getURL())).toBe(`${origin}/destination`);
-    expect(await electronApp.evaluate(() => globalThis.browserTest.states.some(state => state.navigationRequestId === 1 && state.navigationResult === 'superseded'))).toBe(true);
+    const beforeRelease = await electronApp.evaluate(() => globalThis.browserTest.states.slice());
+    const oldStates = beforeRelease.filter(state => state.navigationOperationId === pending.navigationOperationId);
+    // 他の要求や別世代の superseded を成功として拾わない。
+    expect(oldStates.filter(state => state.navigationResult !== null)).toEqual([{
+      ...oldStates.at(-1), navigationRequestId: 1, navigationResult: 'superseded',
+      pendingUrl: `${origin}/slow`, url: `${origin}/source`,
+    }]);
+    const completed = beforeRelease.at(-1);
+    expect(completed).toMatchObject({
+      navigationOperationId: pending.navigationOperationId + 1,
+      navigationRequestId: null, navigationResult: 'completed', pendingUrl: '',
+      url: `${origin}/destination`, failedUrl: '', downloadUrl: '',
+    });
+    // 実 Chromium が返した旧応答を新文書の完了後に配送し、状態を全項目比較する。
+    const oldResponse = await electronApp.evaluate(() => globalThis.browserTest.releaseNavigationResponse());
+    expect(oldResponse).toEqual({ result: expect.objectContaining({ errorText: 'net::ERR_ABORTED' }), error: undefined });
+    const afterRelease = await electronApp.evaluate(() => globalThis.browserTest.states.slice());
+    expect(afterRelease.slice(beforeRelease.length)).toEqual([completed]);
   });
 }
 

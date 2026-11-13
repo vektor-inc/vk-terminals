@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const { createTerminalLinkHandlers } = require('../utils/terminalLinkPolicy');
+const { createTaskTitleRenderTracker } = require('../renderer/taskTitleRenderState');
 
 const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
 
@@ -62,6 +63,7 @@ test('issue タイトルと PR ボタンもペイン内 URL と同じ開き先�
     document: { createElement: makeElement },
     getPrBadgePresentation: () => ({ className: 'pane-task-title-pr', ariaLabel: 'PR（外部ブラウザ）', titleLabel: 'PR', icon: '↗' }),
     showInternalBrowserChoice: (url, event, origin) => calls.push({ url, event, origin }),
+    taskTitleRenderTracker: createTaskTitleRenderTracker(),
   };
   vm.runInNewContext(`${titleRenderer}\nrenderTaskTitleContent(root, 'Issue', 'https://example.com/issue', 'https://example.com/pr')`, { ...context, root });
   const [issueLink, prLink] = root.children;

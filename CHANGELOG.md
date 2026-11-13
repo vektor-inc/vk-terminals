@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 不具合修正 ] Codex の作業中に、ペインのタイトルや PR ラベルをクリックしても開き先メニューが出ず、ツールチップも表示されず、PR ラベルが点滅する問題を修正（[#614](https://github.com/vektor-inc/vk-terminals/issues/614)）
+
 ## 1.102.0
 
 - [ 機能追加 ] 起動時に最初のペインを開く設定を追加（[#605](https://github.com/vektor-inc/vk-terminals/issues/605)）

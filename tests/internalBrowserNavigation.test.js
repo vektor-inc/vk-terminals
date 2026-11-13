@@ -921,24 +921,24 @@ test('案内内hashへの履歴復帰イベントが基底URLでも元の戻り�
   await contents.complete(external);
   const section = `${HELP_URL}#section`;
   contents.navigationHistory.canGoBack = () => true;
-  contents.navigationHistory.getAllEntries = () => [{ url: section }, { url: external }];
-  contents.navigationHistory.getActiveIndex = () => 1;
+  // Electronが履歴一覧を返せない場合も、開始済みのnative Backとして扱う。
+  contents.navigationHistory.getAllEntries = () => undefined;
+  contents.navigationHistory.getActiveIndex = () => undefined;
   contents.navigationHistory.goBack = () => {
     contents.emit('will-navigate', {
       url: HELP_URL,
       preventDefault() { assert.fail('guide history navigation must stay native'); },
     });
     contents.setDocumentUrl(section);
-    contents.emit('did-stop-loading');
+    contents.emit('did-navigate-in-page', {}, section, true);
   };
   assert.equal(browser.action('back'), true);
   assert.equal(states.at(-1).url, section);
 
-  contents.navigationHistory.getAllEntries = () => [{ url: HELP_URL }, { url: section }];
   contents.navigationHistory.goBack = () => {
     contents.emit('will-navigate', { url: HELP_URL, preventDefault() {} });
     contents.setDocumentUrl(HELP_URL);
-    contents.emit('did-stop-loading');
+    contents.emit('did-navigate-in-page', {}, HELP_URL, true);
   };
   assert.equal(browser.action('back'), true);
   assert.equal(states.at(-1).url, HELP_URL);

@@ -1,9 +1,11 @@
 'use strict';
 
 const electron = require('electron');
-const { PARTITION, validateBrowserBounds, isBrowserUrl, isNavigationUrl } = require('./internalBrowserPolicy');
+const { pathToFileURL } = require('node:url');
+const { isSafeHelpDocument } = require('./helpFeature');
+const { PARTITION, HELP_URL, isHelpUrl, validateBrowserBounds, isBrowserUrl, isNavigationUrl } = require('./internalBrowserPolicy');
 
-function createInternalBrowser(win, { WebContentsView, session, dialog } = electron) {
+function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocumentPath = null } = electron) {
   const browserSession = session.fromPartition(PARTITION);
   browserSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
   browserSession.setPermissionCheckHandler(() => false);
@@ -64,8 +66,12 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
     if (!attached) { win.contentView.addChildView(view); attached = true; }
   }
 
-  function navigate(url, fromPage = false) {
-    if (!(fromPage ? isNavigationUrl(url) : isBrowserUrl(url))) return false;
+  function openHelp() { return isHelpUrl(HELP_URL) ? loadPage(HELP_URL, { waitForLoad: true }) : false; }
+
+  function navigate(url) { return isBrowserUrl(url) ? loadPage(url) : false; }
+
+  function loadPage(url, { fromPage = false, waitForLoad = false } = {}) {
+    if (fromPage && !isNavigationUrl(url)) return false;
     if (!view) {
       view = new WebContentsView({ webPreferences: {
         partition: PARTITION, sandbox: true, nodeIntegration: false, contextIsolation: true,
@@ -81,7 +87,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
         else { pendingUrl = ''; publish(); }
       });
       contents.setWindowOpenHandler(({ url: destination }) => {
-        if (isNavigationUrl(destination)) navigate(destination, true);
+        if (isNavigationUrl(destination)) loadPage(destination, { fromPage: true });
         return { action: 'deny' };
       });
       contents.on('did-start-loading', publish);
@@ -121,10 +127,50 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
     github404Url = '';
     downloadUrl = '';
     pendingUrl = fromPage ? '' : url;
-    view.webContents.loadURL(url).catch(() => {});
+    const contents = view.webContents;
+    let completed;
+    if (waitForLoad) {
+      // 前ページの中断で loadURL が拒否されても、案内自身の結果だけを待つ。
+      completed = new Promise((resolve, reject) => {
+        const cleanup = () => {
+          contents.removeListener('did-finish-load', finish);
+          contents.removeListener('did-fail-load', fail);
+          contents.removeListener('did-stop-loading', stop);
+          contents.removeListener('destroyed', destroyed);
+        };
+        const finish = () => {
+          if (!isHelpUrl(contents.getURL())) return;
+          cleanup();
+          resolve(true);
+        };
+        const fail = (_event, code, description, destination, isMainFrame) => {
+          // 再読み込みによる中断は新しい案内の失敗ではない。
+          if (!isMainFrame || code === -3 || !isHelpUrl(destination)) return;
+          cleanup();
+          reject(new Error(`Help document load failed (${code}): ${description}`));
+        };
+        const stop = () => {
+          // 確定前の割り込みでは失敗イベントが来ないため、停止時の URL で待機を終える。
+          if (isHelpUrl(contents.getURL())) finish();
+          else {
+            cleanup();
+            reject(new Error('Help document load interrupted'));
+          }
+        };
+        const destroyed = () => {
+          cleanup();
+          reject(new Error('Help document webContents destroyed'));
+        };
+        contents.on('did-finish-load', finish);
+        contents.on('did-fail-load', fail);
+        contents.on('did-stop-loading', stop);
+        contents.on('destroyed', destroyed);
+      });
+    }
+    contents.loadURL(url).catch(() => {});
     syncBounds();
     publish();
-    return true;
+    return completed || true;
   }
 
   function action(name) {
@@ -133,7 +179,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
     if (name === 'back' && history.canGoBack()) history.goBack();
     else if (name === 'forward' && history.canGoForward()) history.goForward();
     else if (name === 'reload') {
-      if (failedUrl) return navigate(failedUrl, true);
+      if (failedUrl) return loadPage(failedUrl, { fromPage: true });
       github404Url = '';
       view.webContents.reload();
       publish();
@@ -152,7 +198,14 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
   }
 
   return {
-    navigate, action, destroy,
+    navigate, openHelp, action, destroy,
+    externalUrl(source) {
+      if (source !== 'current' && source !== 'failed') return null;
+      const url = source === 'failed' ? failedUrl : (downloadUrl || currentUrl);
+      if (!isHelpUrl(url)) return null;
+      if (!isSafeHelpDocument(helpDocumentPath)) return null;
+      return pathToFileURL(helpDocumentPath).href + new URL(url).hash;
+    },
     setBounds(rect) { bounds = validateBrowserBounds(rect, win.getContentBounds()); syncBounds(); return !!bounds; },
     setVisible(value) { visible = value === true; syncBounds(); },
     setModalCount(value) { if (!Number.isInteger(value) || value < 0) return; modalCount = value; syncBounds(); },

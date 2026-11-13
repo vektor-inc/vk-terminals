@@ -3,6 +3,11 @@
 const { isSafeHttpUrl, isHttpUrl } = require('../renderer/urlSafety');
 const { clampBrowserWidth } = require('./internalBrowserLayout');
 
+const HELP_URL = 'vk-terminals-help://guide/';
+function isHelpUrl(url) {
+  return typeof url === 'string' && /^vk-terminals-help:\/\/guide\/(?:#.*)?$/i.test(url);
+}
+
 const PARTITION = 'persist:vk-terminals-internal-browser';
 
 function validateBrowserBounds(rect, windowBounds) {
@@ -18,6 +23,6 @@ function validateBrowserBounds(rect, windowBounds) {
 }
 
 function isBrowserUrl(url) { return isSafeHttpUrl(url); }
-function isNavigationUrl(url) { return isHttpUrl(url); }
+function isNavigationUrl(url) { return isHttpUrl(url) || isHelpUrl(url); }
 
-module.exports = { PARTITION, clampBrowserWidth, validateBrowserBounds, isBrowserUrl, isNavigationUrl };
+module.exports = { HELP_URL, isHelpUrl, PARTITION, clampBrowserWidth, validateBrowserBounds, isBrowserUrl, isNavigationUrl };

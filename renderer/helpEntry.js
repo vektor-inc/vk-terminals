@@ -11,7 +11,7 @@
     result.splice(about < 0 ? result.length : about, 0, { id: TAB_ID, label: '使い方・ヘルプ' });
     return result;
   }
-  function mount(container, { invoke, openGuide }) {
+  function mount(container, { invoke, openGuide, openDocument }) {
     const button = (label, action) => {
       const element = document.createElement('button');
       element.type = 'button';
@@ -28,27 +28,49 @@
       busy = true;
       ai.disabled = true;
       retry.disabled = true;
+      documentButton.disabled = true;
       status.textContent = '';
       try {
         const opened = await openGuide(() => { status.textContent = 'ガイドを起動しています…'; });
         if (opened && opened.helpStatus) renderStatus(opened.helpStatus);
         if (opened === false) status.textContent = '';
-      } catch (_) {
-        status.textContent = 'ガイドを起動できませんでした。「AI に相談」を押して再試行してください。';
+      } catch (error) {
+        // 保存失敗の理由は起動失敗の案内で隠さない。
+        status.textContent = error?.message?.includes('再試行してください')
+          ? error.message
+          : 'ガイドを起動できませんでした。「AI に相談」を押して再試行してください。';
       } finally {
         busy = false;
         ai.disabled = false;
         retry.disabled = false;
+        documentButton.disabled = false;
         // 非表示になる操作から、次に使える操作へフォーカスを引き継ぐ。
-        (ai.hidden ? retry : ai).focus();
+        if (container.isConnected) (ai.hidden ? retry : ai).focus();
       }
     });
     let busy = false;
     const retry = button('再確認', check);
     retry.hidden = true;
     const documentButton = button('ドキュメント', async () => {
-      try { await invoke('help:document'); }
-      catch (_) { status.textContent = 'ドキュメントを開けませんでした。もう一度押してください。'; }
+      if (busy) return;
+      busy = true;
+      documentButton.disabled = true;
+      ai.disabled = true;
+      retry.disabled = true;
+      try {
+        const opened = await openDocument(
+          () => { status.textContent = 'ドキュメントを読み込んでいます…'; },
+          () => { status.textContent = '未保存の変更を保存するか選んでください。'; },
+        );
+        if (opened === false) status.textContent = 'ドキュメントを開く操作をキャンセルしました。';
+      } catch (error) {
+        status.textContent = error?.message?.includes('再試行してください')
+          ? error.message
+          : 'ドキュメントを開けませんでした。もう一度押してください。';
+      } finally {
+        busy = false; documentButton.disabled = false; ai.disabled = false; retry.disabled = false;
+        if (container.isConnected) documentButton.focus();
+      }
     });
     container.append(documentButton, ai, status, retry);
     // 初回表示と再確認で同じ結果表示を使う。起動直前の状態変化もここへ返す。
@@ -64,6 +86,7 @@
       busy = true;
       ai.disabled = true;
       retry.disabled = true;
+      documentButton.disabled = true;
       status.textContent = '利用状況を確認しています…';
       try {
         const result = await invoke('help:check');
@@ -76,6 +99,7 @@
         busy = false;
         ai.disabled = false;
         retry.disabled = false;
+        documentButton.disabled = false;
         if (restoreFocus) (ai.hidden ? retry : ai).focus();
       }
     }

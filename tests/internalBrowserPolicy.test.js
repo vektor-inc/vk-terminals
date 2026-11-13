@@ -230,11 +230,11 @@ test('専用ビューの遷移と権限、ダウンロード、確定 URL を制
   await flushBrowserLoads();
   browserSession.emit('will-download', { preventDefault() {} }, { getURLChain: () => ['https://example.com/download'] });
   await contents.download();
-  assert.equal(sent.at(-2)[0], 'internal-browser:download-blocked');
-  assert.deepEqual(sent.at(-2)[1], { canOpenFromToolbar: false });
-  assert.equal(sent.at(-1)[0], 'internal-browser:state');
-  assert.equal(sent.at(-1)[1].downloadUrl, 'https://example.com/download');
-  assert.equal(sent.at(-1)[1].navigationRequestId, 7);
+  assert.equal(sent.at(-2)[0], 'internal-browser:state');
+  assert.equal(sent.at(-2)[1].downloadUrl, 'https://example.com/download');
+  assert.equal(sent.at(-2)[1].navigationRequestId, 7);
+  assert.equal(sent.at(-1)[0], 'internal-browser:download-blocked');
+  assert.deepEqual(sent.at(-1)[1], { canOpenFromToolbar: true });
   contents.emit('did-start-loading');
   assert.equal(sent.at(-1)[1].downloadUrl, 'https://example.com/download');
   contents.emit('did-start-navigation', {}, 'https://example.com/frame', false, false);
@@ -255,7 +255,8 @@ test('専用ビューの遷移と権限、ダウンロード、確定 URL を制
   await flushBrowserLoads();
   browserSession.emit('will-download', { preventDefault() {} }, { getURLChain: () => ['HTTPS://EXAMPLE.COM/normalized'] });
   await contents.download();
-  assert.equal(sent.at(-1)[1].downloadUrl, 'https://example.com/normalized');
+  assert.equal(sent.at(-2)[1].downloadUrl, 'https://example.com/normalized');
+  assert.deepEqual(sent.at(-1)[1], { canOpenFromToolbar: true });
   browser.navigate('https://example.com/bad');
   await flushBrowserLoads();
   browserSession.emit('will-download', { preventDefault() {} }, { getURLChain: () => ['invalid'] });

@@ -32,11 +32,37 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
   // CDP Page.navigate が返す loaderId と Page.lifecycleEvent を相関する。
   let activeLoad = null;
   let navigationReady = null;
-  const cancelDownload = (event) => {
+  // 応答待ちと未配送の download を操作オブジェクトで追跡する。
+  const downloadCandidates = new Set();
+  const seenDownloadItems = new WeakSet();
+  const normalizeDownloadUrl = url => {
+    try { return new URL(url).href; } catch { return ''; }
+  };
+  const cancelDownload = (event, item, contents) => {
     event.preventDefault();
-    // DownloadItem に loaderId はない。URL が同じ旧 download を現在の操作へ帰属させない。
-    // 操作の終了は Page.navigate の isDownload、トーストはこのイベントだけが担う。
-    sendDownloadNotice(false);
+    // 同じ DownloadItem の再配送で live 通知を重ねない。
+    if (item && seenDownloadItems.has(item)) return;
+    if (item) seenDownloadItems.add(item);
+    const chain = item?.getURLChain?.() || [];
+    const urls = chain.map(normalizeDownloadUrl).filter(Boolean);
+    // native の Page.downloadWillBegin は frameId/guid だけで loaderId がなく、
+    // 世代を特定できないため Page.navigate 応答のある操作だけを候補にする。
+    const candidates = [...downloadCandidates].filter(load => urls.includes(normalizeDownloadUrl(load.url)));
+    const load = candidates.length === 1 ? candidates[0] : null;
+    // DownloadItem に loaderId はない。URL は候補の絞り込みだけに使い、
+    // 同一 URL の旧コマンドが残る場合は現在操作へ帰属させない。
+    if ((contents && contents !== view?.webContents) || !load || load !== activeLoad
+      || load.noticeReceived || (load.done && !load.downloadConfirmed)) {
+      if (load && (!contents || contents === view?.webContents)) {
+        load.noticeReceived = true;
+        if (load.downloadConfirmed) downloadCandidates.delete(load);
+      }
+      sendDownloadNotice(false);
+      return;
+    }
+    load.noticeReceived = true;
+    if (load.downloadConfirmed) { downloadCandidates.delete(load); sendDownloadNotice(true); }
+    else load.pendingDownloadNotice = true;
   };
   browserSession.on('will-download', cancelDownload);
 
@@ -72,6 +98,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
     navigationResult = null;
     pendingUrl = '';
     const previous = activeLoad;
+    previous?.flushDownloadNotice(false);
     if (previous?.loaderId) retiredLoaders.add(previous.loaderId);
     for (const loaderId of previous?.commits.keys() || []) retiredLoaders.add(loaderId);
     for (const request of previous?.requests.values() || []) retiredLoaders.add(request.loaderId);
@@ -228,8 +255,12 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
       if (activeLoad !== load || load.done) return;
       if (!debuggerAvailable) throw new Error('Navigation debugger unavailable');
       load.started = true;
+      downloadCandidates.add(load);
       const result = await contents.debugger.sendCommand('Page.navigate', { url });
+      load.downloadConfirmed = result.isDownload === true;
+      if (!load.downloadConfirmed) downloadCandidates.delete(load);
       if (activeLoad !== load || load.done) {
+        if (load.noticeReceived) downloadCandidates.delete(load);
         if (result.loaderId) retiredLoaders.add(result.loaderId);
         return;
       }
@@ -244,7 +275,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
       load.loaderId = result.loaderId;
       load.frameId = result.frameId;
       load.completeIfLoaded();
-    }).catch(error => load.finish(error));
+    }).catch(error => { downloadCandidates.delete(load); load.finish(error); });
     syncBounds();
     publish();
     return true;
@@ -264,6 +295,11 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
       requests: new Map(), responses: new Map(),
     };
     activeLoad = load;
+    load.flushDownloadNotice = canOpenFromToolbar => {
+      if (!load.pendingDownloadNotice) return;
+      load.pendingDownloadNotice = false;
+      sendDownloadNotice(canOpenFromToolbar);
+    };
     load.updateGithub404 = () => {
       if (activeLoad !== load || !documentLoaderId) return;
       const isCurrentDocument = load.loaderId === documentLoaderId && load.frameId === mainFrameId;
@@ -290,6 +326,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
         navigationResult = 'completed';
       }
       publish();
+      load.flushDownloadNotice(false);
     };
     load.finishDownload = () => {
       if (activeLoad !== load || load.done) return;
@@ -298,6 +335,8 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
       pendingUrl = '';
       navigationResult = 'download-blocked';
       publish();
+      load.flushDownloadNotice(true);
+      if (load.noticeReceived) downloadCandidates.delete(load);
     };
     load.completeIfLoaded = () => {
       if (activeLoad !== load || !load.loaderId) return;
@@ -336,6 +375,8 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
   }
 
   function destroy() {
+    activeLoad?.flushDownloadNotice(false);
+    downloadCandidates.clear();
     activeLoad = null;
     browserSession.removeListener('will-download', cancelDownload);
     if (!view) return;

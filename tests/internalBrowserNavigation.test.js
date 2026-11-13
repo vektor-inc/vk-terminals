@@ -7,6 +7,7 @@ const { installBrowserLoad, flushBrowserLoads } = require('./helpers/browserLoad
 
 function setup({ failCommand, failAttach = false } = {}) {
   const states = [];
+  const messages = [];
   const session = new EventEmitter();
   session.setPermissionRequestHandler = () => {};
   session.setPermissionCheckHandler = () => {};
@@ -29,10 +30,10 @@ function setup({ failCommand, failAttach = false } = {}) {
   }
   const browser = createInternalBrowser({
     isDestroyed: () => false,
-    webContents: { send(channel, state) { if (channel === 'internal-browser:state') states.push(state); } },
+    webContents: { send(channel, state) { messages.push({ channel, state }); if (channel === 'internal-browser:state') states.push(state); } },
   }, { WebContentsView: View, session: { fromPartition: () => session }, dialog: { showMessageBoxSync: () => 1 } });
   browser.navigate('https://example.com/a', false, 1);
-  return { browser, contents, session, states };
+  return { browser, contents, session, states, messages };
 }
 
 function emitLoaderEvents(contents, loaderId, url, frameId = 'main') {
@@ -452,4 +453,120 @@ test('WebContents破棄時は破棄済みAPIを呼ばず失敗結果を公開す
   assert.equal(states.at(-1).navigationResult, 'failed');
   assert.equal(states.at(-1).loading, false);
   assert.equal(browser.action('reload'), false);
+});
+
+// 通知は実際の DownloadItem に相当する同じオブジェクトで配送する。
+function downloadNotice(session, url, contents) {
+  const item = { getURLChain: () => [url] };
+  const emit = () => session.emit('will-download', { preventDefault() {} }, item, contents);
+  emit();
+  return emit;
+}
+const notices = messages => messages.filter(message => message.channel === 'internal-browser:download-blocked');
+
+for (const noticeFirst of [true, false]) {
+  test(`現在操作の通知はstate公開後にtrueを一度だけ送る: 通知先行=${noticeFirst}`, async () => {
+    const { browser, contents, session, states, messages } = setup();
+    await flushBrowserLoads();
+    let repeat;
+    if (noticeFirst) {
+      repeat = downloadNotice(session, 'HTTPS://EXAMPLE.COM:443/a', contents);
+      assert.equal(notices(messages).length, 0);
+      assert.equal(states.at(-1).navigationResult, null);
+    }
+    await contents.download();
+    if (!noticeFirst) repeat = downloadNotice(session, 'https://example.com/a', contents);
+    assert.deepEqual(notices(messages).map(message => message.state), [{ canOpenFromToolbar: true }]);
+    const toastIndex = messages.findIndex(message => message.channel === 'internal-browser:download-blocked');
+    assert.equal(messages[toastIndex - 1].state.navigationResult, 'download-blocked');
+    assert.equal(messages[toastIndex - 1].state.downloadUrl, 'https://example.com/a');
+    repeat();
+    browser.publish();
+    assert.equal(notices(messages).length, 1);
+  });
+}
+
+for (const result of ['superseded', 'completed', 'failed', 'cancelled', 'detached', 'destroyed']) {
+  test(`未確定の保留通知を${result}でfalseとして一度だけ解放する`, async () => {
+    const { browser, contents, session, messages } = setup();
+    await flushBrowserLoads();
+    const repeat = downloadNotice(session, 'https://example.com/a', contents);
+    assert.equal(notices(messages).length, 0);
+    if (result === 'superseded') browser.navigate('https://example.com/b', false, 2);
+    else if (result === 'completed') await contents.complete('https://example.com/a');
+    else if (result === 'failed') await contents.fail(-105, 'https://example.com/a');
+    else if (result === 'cancelled') await contents.fail(-3, 'https://example.com/a');
+    else if (result === 'detached') contents.debugger.emit('detach');
+    else browser.destroy();
+    repeat();
+    assert.deepEqual(notices(messages).map(message => message.state), [{ canOpenFromToolbar: false }]);
+  });
+}
+
+for (const oldResponseFirst of [true, false]) {
+  test(`同一URLの旧downloadは新世代に帰属しない: 旧応答先行=${oldResponseFirst}`, async () => {
+    const { browser, contents, session, states, messages } = setup();
+    await flushBrowserLoads();
+    const old = contents.loads[0];
+    contents.stop = () => {};
+    browser.navigate(old.url, false, 2);
+    await flushBrowserLoads();
+    if (oldResponseFirst) {
+      old.resolve({ frameId: 'main', isDownload: true });
+      await flushBrowserLoads();
+    }
+    downloadNotice(session, old.url, contents);
+    if (!oldResponseFirst) {
+      old.resolve({ frameId: 'main', isDownload: true });
+      await flushBrowserLoads();
+    }
+    assert.equal(states.at(-1).downloadUrl, '');
+    assert.equal(states.at(-1).navigationResult, null);
+    assert.deepEqual(notices(messages).map(message => message.state), [{ canOpenFromToolbar: false }]);
+    await contents.complete(old.url);
+    assert.equal(states.at(-1).navigationResult, 'completed');
+    assert.equal(notices(messages).length, 1);
+  });
+}
+
+test('無関係・別contents・完了後のdownloadはfalseで操作を変更しない', async () => {
+  const { contents, session, states, messages } = setup();
+  await flushBrowserLoads();
+  downloadNotice(session, 'https://example.com/other', contents);
+  downloadNotice(session, 'https://example.com/a', {});
+  assert.equal(states.at(-1).downloadUrl, '');
+  assert.equal(states.at(-1).navigationResult, null);
+  await contents.complete('https://example.com/a');
+  downloadNotice(session, 'https://example.com/a', contents);
+  assert.deepEqual(notices(messages).map(message => message.state), Array(3).fill({ canOpenFromToolbar: false }));
+});
+
+test('nativeのdownloadWillBeginだけではloader世代を確定せず一般案内を送る', async () => {
+  const { contents, session, states, messages } = setup();
+  await contents.complete('https://example.com/a');
+  contents.emit('will-navigate', { url: 'https://example.com/native' });
+  contents.startNative('https://example.com/native', 'native-download');
+  contents.debugger.emit('message', {}, 'Page.downloadWillBegin', {
+    frameId: 'main', guid: 'download-guid', url: 'https://example.com/native', suggestedFilename: 'file.zip',
+  });
+  downloadNotice(session, 'https://example.com/native', contents);
+  assert.equal(states.at(-1).navigationResult, null);
+  assert.equal(states.at(-1).downloadUrl, '');
+  contents.debugger.emit('message', {}, 'Network.loadingFailed', {
+    requestId: 'request-native-download', canceled: true, errorText: 'net::ERR_ABORTED',
+  });
+  assert.equal(states.at(-1).navigationResult, 'cancelled');
+  assert.deepEqual(notices(messages).map(message => message.state), [{ canOpenFromToolbar: false }]);
+});
+
+test('配送済みdownloadの後に同一URLを再要求しても新しい通知を相関できる', async () => {
+  const { browser, contents, session, messages } = setup();
+  await flushBrowserLoads();
+  downloadNotice(session, 'https://example.com/a', contents);
+  await contents.download();
+  browser.navigate('https://example.com/a', false, 2);
+  await flushBrowserLoads();
+  await contents.download();
+  downloadNotice(session, 'https://example.com/a', contents);
+  assert.deepEqual(notices(messages).map(message => message.state), Array(2).fill({ canOpenFromToolbar: true }));
 });

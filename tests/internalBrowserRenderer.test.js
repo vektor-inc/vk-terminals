@@ -582,10 +582,10 @@ test('main の遷移結果を順に受け、失敗・成功・中止・置換・
       { getURLChain: () => ['https://example.org/download'] });
     await contents.download();
     assert.equal(blockedToast, 1);
-    assert.equal(channels.at(-1), 'internal-browser:state');
-    assert.equal(channels.at(-2), 'internal-browser:download-blocked');
-    assert.deepEqual(downloadEvents.at(-1), { canOpenFromToolbar: false });
-    assert.equal(toastMessages.at(-1), 'ダウンロードはできません。外部ブラウザでダウンロードしてください。');
+    assert.equal(channels.at(-2), 'internal-browser:state');
+    assert.equal(channels.at(-1), 'internal-browser:download-blocked');
+    assert.deepEqual(downloadEvents.at(-1), { canOpenFromToolbar: true });
+    assert.equal(toastMessages.at(-1), 'ダウンロードはできません。操作列の「外部ブラウザで開く」から行ってください。');
     assert.equal(toastMessages.length, 2);
     assert.equal(target.textContent, '外部で開く: ダウンロード先 example.org/download');
     assert.equal(messages.at(-1).navigationResult, 'download-blocked');

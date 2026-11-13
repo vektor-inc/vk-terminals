@@ -343,7 +343,8 @@ function syncInternalBrowserExternalTarget() {
   button.setAttribute('aria-label', label);
   button.disabled = !url;
   // 入力欄と開き先が異なるときだけ、実際の操作対象を画面にも示す。
-  const showTarget = Boolean(url) && (kind === 'ダウンロード先' || internalBrowserAddress.value !== url);
+  const showTarget = Boolean(url) && (kind === 'ダウンロード先' || internalBrowserAddress.value !== url
+    || /^http:\/\//i.test(url));
   const destination = showTarget ? formatInternalBrowserDestination(url) : '';
   const text = showTarget ? `外部で開く: ${kind} ${destination}` : '';
   if (status.textContent !== text) status.textContent = text;

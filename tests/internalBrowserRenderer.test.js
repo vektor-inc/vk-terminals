@@ -370,6 +370,9 @@ test('失敗表示は失敗 URL、操作列は確定 URL を安全な外部オ�
   assert.equal(external['aria-label'], '確定済みの URL を外部ブラウザで開く: https://example.com/next');
   assert.equal(target.textContent, '外部で開く: 表示中のページ https://example.com/next');
   context.internalBrowserAddressHasDraft = false;
+  state('', '', false, 'http://example.com/insecure');
+  assert.equal(target.hidden, false);
+  assert.equal(target.textContent, '外部で開く: 表示中のページ ⚠ HTTP: http://example.com/insecure');
   state('', '', false, 'https://example.com/next');
   assert.equal(target.hidden, true);
   state('https://example.com/failed', '', false, 'https://example.com/next');

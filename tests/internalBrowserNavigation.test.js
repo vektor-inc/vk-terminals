@@ -840,6 +840,36 @@ test('カスタム文書復帰直後は遅れているactive indexより実文�
   assert.equal(moved, true);
 });
 
+test('案内前の文書がElectron履歴に無い場合も戻る・進むで復元する', async () => {
+  const { HELP_URL } = require('../utils/internalBrowserPolicy');
+  const { browser, contents, states } = setup();
+  const previous = 'https://example.com/previous';
+  await contents.complete(previous);
+  contents.loadURL = () => Promise.resolve();
+  const guide = browser.openHelp();
+  contents.setDocumentUrl(HELP_URL);
+  contents.emit('did-finish-load');
+  assert.equal(await guide, true);
+  contents.navigationHistory.canGoBack = () => true;
+  contents.navigationHistory.canGoForward = () => false;
+  contents.navigationHistory.getAllEntries = () => [{ url: HELP_URL }];
+  contents.navigationHistory.getActiveIndex = () => 0;
+  contents.navigationHistory.goBack = () => assert.fail('不足したElectron履歴は使わない');
+
+  browser.publish();
+  assert.equal(states.at(-1).canGoBack, true);
+  assert.equal(browser.action('back'), true);
+  await flushBrowserLoads();
+  await contents.complete(previous);
+  assert.equal(states.at(-1).url, previous);
+  assert.equal(states.at(-1).canGoForward, true);
+
+  assert.equal(browser.action('forward'), true);
+  contents.setDocumentUrl(HELP_URL);
+  contents.emit('did-finish-load');
+  assert.equal(states.at(-1).url, HELP_URL);
+});
+
 for (const event of ['did-stop-loading', 'did-navigate']) {
   test(`GitHub 404から案内へ戻る${event}補完は前文書の404状態を消す`, async () => {
     const { HELP_URL } = require('../utils/internalBrowserPolicy');

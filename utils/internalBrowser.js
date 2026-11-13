@@ -28,6 +28,8 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
   let mainFrameId = null;
   let documentLoaderId = null;
   let document404Url = '';
+  let helpReturnUrl = '';
+  let helpForwardUrl = '';
   const retiredLoaders = new Set();
   let debuggerAvailable = true;
   // Electron 44.3 の loadURL Promise も ID のないイベントを監視するため、
@@ -104,8 +106,8 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
       navigationRequestId,
       navigationOperationId,
       loading: !!available && contents.isLoading(),
-      canGoBack: !!available && canMoveHistory(history, -1, 'canGoBack'),
-      canGoForward: !!available && canMoveHistory(history, 1, 'canGoForward'),
+      canGoBack: !!available && (canUseHelpReturn() || canMoveHistory(history, -1, 'canGoBack')),
+      canGoForward: !!available && (canUseHelpForward() || canMoveHistory(history, 1, 'canGoForward')),
     });
   }
 
@@ -318,6 +320,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
     if (!(fromPage ? isNavigationUrl(url) : isBrowserUrl(url))) return false;
     if (requestId !== undefined && (!Number.isSafeInteger(requestId) || requestId <= 0)) return false;
     if (isHelpUrl(url)) { loadHelp(url).catch(() => {}); return true; }
+    helpForwardUrl = '';
     ensureView();
     initializeNavigation();
     const load = beginLoad(url, fromPage, requestId);
@@ -357,6 +360,8 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
 
   function loadHelp(url) {
     if (!isHelpUrl(url)) return false;
+    if (isNavigationUrl(currentUrl) && !isHelpUrl(currentUrl)) helpReturnUrl = currentUrl;
+    helpForwardUrl = '';
     ensureView();
     const load = beginLoad(url, false, undefined, { help: true });
     const contents = view.webContents;
@@ -548,13 +553,28 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
   function action(name) {
     if (!view || view.webContents.isDestroyed?.()) return false;
     const history = view.webContents.navigationHistory;
-    if (name === 'back' && history.canGoBack()) {
-      const target = getHistoryTarget(history, -1);
-      if (target === null) return false;
-      const historyTarget = target?.url || '';
-      beginLoad(historyTarget || currentUrl, true, undefined, { native: true, stopPrevious: true, historyTarget });
-      moveHistory(history, 'goBack', target);
-    } else if (name === 'forward' && history.canGoForward()) {
+    if (name === 'back') {
+      if (history.canGoBack()) {
+        const target = getHistoryTarget(history, -1);
+        if (target !== null) {
+          const historyTarget = target?.url || '';
+          beginLoad(historyTarget || currentUrl, true, undefined, { native: true, stopPrevious: true, historyTarget });
+          moveHistory(history, 'goBack', target);
+          return true;
+        }
+      }
+      if (!canUseHelpReturn()) return false;
+      const forwardUrl = currentUrl;
+      const started = navigate(helpReturnUrl, true);
+      if (started) helpForwardUrl = forwardUrl;
+      return started;
+    } else if (name === 'forward') {
+      if (canUseHelpForward()) {
+        const url = helpForwardUrl;
+        loadHelp(url).catch(() => {});
+        return true;
+      }
+      if (!history.canGoForward()) return false;
       const target = getHistoryTarget(history, 1);
       if (target === null) return false;
       const historyTarget = target?.url || '';
@@ -574,6 +594,14 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
       view.webContents.reload();
     } else return false;
     return true;
+  }
+
+  function canUseHelpReturn() {
+    return currentUrl === HELP_URL && isNavigationUrl(helpReturnUrl) && !isHelpUrl(helpReturnUrl);
+  }
+
+  function canUseHelpForward() {
+    return isHelpUrl(helpForwardUrl) && currentUrl === helpReturnUrl;
   }
 
   function getHistoryTarget(history, offset) {

@@ -438,7 +438,7 @@ test('main の遷移結果を順に受け、失敗・成功・中止・ダウン
         contents.navigationHistory = { canGoBack: () => false, canGoForward: () => false };
         contents.isLoading = () => false;
         contents.loadURL = () => Promise.resolve();
-        contents.setWindowOpenHandler = () => {};
+        contents.setWindowOpenHandler = handler => { contents.openHandler = handler; };
         this.webContents = contents;
       }
     }
@@ -624,8 +624,70 @@ test('main の遷移結果を順に受け、失敗・成功・中止・ダウン
     handlers.input();
     handlers.keydown({ key: 'Enter', preventDefault() {} });
     assert.equal(vm.runInContext('internalBrowserActiveRequestId', context), firstRequestId + 1);
+    assert.ok(messages.some(state => state.navigationRequestId === firstRequestId && state.navigationResult === 'superseded'));
+    assert.equal(navigationStatus.textContent, 'ページを読み込み中');
     assert.equal(messages.at(-1).navigationRequestId, firstRequestId + 1);
     contents.emit('did-navigate', {}, 'https://example.org/second-again');
     assert.equal(navigationStatus.textContent, 'ページの読み込みが完了しました');
+
+    // 各操作は旧要求の ID で終了を通知し、専用 live status を空にする。
+    const startPending = suffix => {
+      address.value = `https://example.org/${suffix}`;
+      handlers.input();
+      handlers.keydown({ key: 'Enter', preventDefault() {} });
+      assert.equal(navigationStatus.textContent, 'ページを読み込み中');
+      return vm.runInContext('internalBrowserActiveRequestId', context);
+    };
+    const assertSuperseded = requestId => {
+      assert.ok(messages.some(state => state.navigationRequestId === requestId && state.navigationResult === 'superseded'));
+      assert.equal(navigationStatus.textContent, '');
+      assert.equal(vm.runInContext('internalBrowserActiveRequestId', context), null);
+      const writesAfterSupersede = navigationWrites;
+      browser.publish();
+      assert.equal(navigationStatus.textContent, '');
+      assert.equal(navigationWrites, writesAfterSupersede);
+    };
+    for (const action of ['back', 'forward', 'reload']) {
+      const requestId = startPending(`pending-${action}`);
+      contents.navigationHistory[`canGo${action[0].toUpperCase()}${action.slice(1)}`] = () => true;
+      contents.navigationHistory[action === 'back' ? 'goBack' : 'goForward'] = () => {};
+      if (action === 'reload') contents.reload = () => {};
+      browser.action(action);
+      assertSuperseded(requestId);
+    }
+    let requestId = startPending('pending-page-link');
+    let blockedPageNavigation = false;
+    contents.emit('will-navigate', { url: 'file:///tmp/blocked', preventDefault() { blockedPageNavigation = true; } });
+    assert.equal(blockedPageNavigation, true);
+    assert.equal(navigationStatus.textContent, 'ページを読み込み中');
+    contents.emit('will-navigate', { url: 'https://example.org/page-link', preventDefault() { throw new Error('unexpected block'); } });
+    assertSuperseded(requestId);
+    contents.emit('did-start-navigation', {}, 'https://example.org/page-link', false, true);
+    assert.equal(messages.at(-1).navigationRequestId, null);
+
+    requestId = startPending('pending-window-open');
+    contents.openHandler({ url: 'https://example.org/from-page' });
+    assertSuperseded(requestId);
+    assert.equal(messages.at(-1).navigationRequestId, null);
+
+    requestId = startPending('pending-url-only');
+    browser.navigate('https://example.org/url-only');
+    assertSuperseded(requestId);
+    assert.equal(messages.at(-1).navigationRequestId, null);
+
+    // redirect の開始イベントだけでは同一 Enter 要求を置き換えない。
+    requestId = startPending('redirect-source');
+    contents.emit('will-redirect', { url: 'https://example.org/redirect-target', preventDefault() { throw new Error('unexpected block'); } });
+    contents.emit('did-start-navigation', {}, 'https://example.org/redirect-target', false, true);
+    assert.equal(messages.at(-1).navigationRequestId, requestId);
+    assert.equal(navigationStatus.textContent, 'ページを読み込み中');
+    contents.emit('did-navigate', {}, 'https://example.org/redirect-target');
+    assert.equal(navigationStatus.textContent, 'ページの読み込みが完了しました');
+
+    // 失敗 URL の再読み込みは request ID なしで始まる。
+    contents.emit('did-fail-load', {}, -105, 'failed', 'https://example.org/failed-reload', true);
+    browser.action('reload');
+    assert.equal(messages.at(-1).navigationRequestId, null);
+    assert.equal(messages.at(-1).navigationResult, null);
   }
 });

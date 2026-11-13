@@ -491,6 +491,8 @@ VKIpc.on('internal-browser:state', state => {
     cancelled: 'ページの移動を中止しました',
     // ダウンロード阻止は既存のトーストだけで結果と操作を通知する。
     'download-blocked': '',
+    // 別の遷移に置き換わった要求は、読み込み案内だけを終了する。
+    superseded: '',
   };
   if (internalBrowserNavigationActive && state.navigationRequestId === internalBrowserActiveRequestId
     && Object.hasOwn(navigationMessages, state.navigationResult)) {

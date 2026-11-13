@@ -57,6 +57,17 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
     });
   }
 
+  function supersedeNavigation() {
+    // 別の操作へ切り替える前に、旧 Enter 要求の終了を元の ID で通知する。
+    if (navigationRequestId !== null && pendingUrl && navigationResult === null) {
+      navigationResult = 'superseded';
+      publish();
+    }
+    navigationRequestId = null;
+    navigationResult = null;
+    pendingUrl = '';
+  }
+
   function syncBounds() {
     if (!view) return;
     // 0 サイズでも描画が残るため、非表示時は親ビューから外す。
@@ -82,7 +93,12 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
         webSecurity: true, allowRunningInsecureContent: false,
       } });
       const contents = view.webContents;
-      contents.on('will-navigate', event => { if (!isNavigationUrl(event.url)) event.preventDefault(); });
+      contents.on('will-navigate', event => {
+        if (!isNavigationUrl(event.url)) { event.preventDefault(); return; }
+        // will-navigate はページ起点の遷移。redirect は will-redirect として届く。
+        supersedeNavigation();
+        publish();
+      });
       contents.on('will-frame-navigate', event => { if (!isNavigationUrl(event.url)) event.preventDefault(); });
       contents.on('will-redirect', event => { if (!isNavigationUrl(event.url)) event.preventDefault(); });
       contents.on('will-prevent-unload', event => {
@@ -135,6 +151,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
         }
       });
     }
+    supersedeNavigation();
     failedUrl = '';
     github404Url = '';
     downloadUrl = '';
@@ -150,13 +167,12 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
   function action(name) {
     if (!view) return false;
     const history = view.webContents.navigationHistory;
-    if (name === 'back' && history.canGoBack()) { navigationRequestId = null; navigationResult = null; history.goBack(); }
-    else if (name === 'forward' && history.canGoForward()) { navigationRequestId = null; navigationResult = null; history.goForward(); }
+    if (name === 'back' && history.canGoBack()) { supersedeNavigation(); history.goBack(); publish(); }
+    else if (name === 'forward' && history.canGoForward()) { supersedeNavigation(); history.goForward(); publish(); }
     else if (name === 'reload') {
       if (failedUrl) return navigate(failedUrl, true);
       github404Url = '';
-      navigationRequestId = null;
-      navigationResult = null;
+      supersedeNavigation();
       view.webContents.reload();
       publish();
     }

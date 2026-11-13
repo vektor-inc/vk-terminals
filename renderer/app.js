@@ -194,7 +194,8 @@ function syncInternalBrowserLayout() {
       if (focusOrigin?.isConnected) focusOrigin.focus();
     });
   }
-  root.classList.toggle('toast-phrase-wrap', shouldWrapToastPhrase(windowWidth, displayedInternalBrowserWidth));
+  // 全面表示ではトーストをブラウザの左ではなく画面全体の幅で出すため、ブラウザ幅を差し引かない。
+  root.classList.toggle('toast-phrase-wrap', shouldWrapToastPhrase(windowWidth, browserMustOverlay ? 0 : displayedInternalBrowserWidth));
   internalBrowserSidebar.style.width = `${displayedInternalBrowserWidth}px`;
   internalBrowserSidebar.querySelector('.internal-browser-url').placeholder = displayedInternalBrowserWidth < 360 ? 'URL / 検索' : 'URL または検索語';
   document.body.style.setProperty('--vktm-internal-browser-width', `${displayedInternalBrowserWidth}px`);
@@ -1535,12 +1536,12 @@ const EXTERNAL_URL_TOAST_COPY_ARIA_LABEL = '開けなかったURLをコピー';
 // 全面表示のアプリ内ブラウザでは、ページ（WebContentsView）が HTML より前面に描かれ、
 // トーストを逃がせる余白も画面に残らない。トーストは body 直下から動かさず（理由は
 // 上のコメント参照）、表示中だけページ領域の下端を詰めて置き場所を空ける。
-// 返すのは詰める高さ（px）。トーストの上に 8px の間隔を残す。
+// 返すのは詰める高さ（px）。トーストの上に、右・下と同じ 16px の間隔を残す。
 function internalBrowserToastReserve(browserMustOverlay) {
   if (!browserMustOverlay || !externalUrlToastEl || externalUrlToastEl.hidden) return 0;
   const toastTop = externalUrlToastEl.getBoundingClientRect().top;
   const sidebarBottom = internalBrowserSidebar.getBoundingClientRect().bottom;
-  return Math.max(0, Math.ceil(sidebarBottom - toastTop) + 8);
+  return Math.max(0, Math.ceil(sidebarBottom - toastTop) + 16);
 }
 
 function clearExternalUrlToastTimer() {

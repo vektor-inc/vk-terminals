@@ -123,6 +123,8 @@ test('500pxの全面表示ではトーストを読める幅で出し、表示中
   await page.setViewportSize({ width: 500, height: 800 });
   await page.evaluate(() => setInternalBrowserOpen(true));
   await expect(page.locator('#root')).toHaveClass(/internal-browser-overlay/);
+  // トーストは画面全体の幅を使えるため、語句の折り返し保護（nowrap）を外さない。
+  await expect(page.locator('#root')).not.toHaveClass(/toast-phrase-wrap/);
   const pageArea = page.locator('.internal-browser-page');
   const fullHeight = (await pageArea.boundingBox()).height;
 
@@ -140,7 +142,7 @@ test('500pxの全面表示ではトーストを読める幅で出し、表示中
   await expect.poll(async () => {
     const box = await pageArea.boundingBox();
     return box.y + box.height;
-  }).toBeLessThanOrEqual(toastBox.y - 8);
+  }).toBeLessThanOrEqual(toastBox.y - 16);
   await expect.poll(() => sentBoundsMatchPage(page)).toBe(true);
 
   // 本文の差し替えで高さが変わっても追従する。
@@ -149,7 +151,7 @@ test('500pxの全面表示ではトーストを読める幅で出し、表示中
   await expect.poll(async () => {
     const [box, grown] = [await pageArea.boundingBox(), await toast.boundingBox()];
     return grown.y - (box.y + box.height);
-  }).toBeGreaterThanOrEqual(8);
+  }).toBeGreaterThanOrEqual(16);
   await expect.poll(() => sentBoundsMatchPage(page)).toBe(true);
 
   // 自動消去のあとは余白を残さず、ページ領域を元の高さへ戻す。

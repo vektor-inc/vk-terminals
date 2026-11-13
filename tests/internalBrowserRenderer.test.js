@@ -155,6 +155,8 @@ test('狭幅の同期は左を閉じてから再計算し、手動で左を開�
   vm.runInContext('syncInternalBrowserLayout()', context);
   assert.equal(context.displayedInternalBrowserWidth, 390);
   assert.equal(classes.has('internal-browser-overlay'), true);
+  // 全面表示中のトーストは画面全体の幅を使えるため、語句の折り返し保護を外さない。
+  assert.equal(classes.has('toast-phrase-wrap'), false);
   assert.equal(terminal.inert, true);
   frames.splice(0).forEach(callback => callback());
   assert.equal(focused, 'address');
@@ -182,8 +184,8 @@ test('全面表示中だけ、表示中のトーストに重なる高さをペ�
     externalUrlToastEl: toast,
   });
   vm.runInContext(reserve, context);
-  // トースト上端からブラウザ下端までの 61.6px を切り上げ、8px の間隔を足す。
-  assert.equal(vm.runInContext('internalBrowserToastReserve(true)', context), 70);
+  // トースト上端からブラウザ下端までの 61.6px を切り上げ、16px の間隔を足す。
+  assert.equal(vm.runInContext('internalBrowserToastReserve(true)', context), 78);
   // 横並びではトーストをブラウザの左へ逃がすため、ページ領域は詰めない。
   assert.equal(vm.runInContext('internalBrowserToastReserve(false)', context), 0);
   toast.hidden = true;

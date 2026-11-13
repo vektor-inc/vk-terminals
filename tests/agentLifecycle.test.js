@@ -6,7 +6,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
-const { PS_ARGS, MARKER_PREFIX, READY_MARKER_PREFIX, parseProcessTable, inspectLifecycle, buildPromptHookCommand, createAgentLifecycleStore, mergeAgentLifecycleStates } = require('../utils/agentLifecycle');
+const { PS_ARGS, DEFAULT_ACQUISITION_TIMEOUT_MS, MARKER_PREFIX, READY_MARKER_PREFIX, parseProcessTable, inspectLifecycle, buildPromptHookCommand, createAgentLifecycleStore, mergeAgentLifecycleStates } = require('../utils/agentLifecycle');
+const { createBackgroundWorkStore } = require('../utils/backgroundWork');
 
 const START = 'Fri Oct 16 10:00:00 2026';
 const LATER = 'Fri Oct 16 10:01:00 2026';
@@ -241,6 +242,56 @@ test('同じPID/PGIDでもlstartが変われば再利用としてnull', () => {
   const result = inspectLifecycle(snapshot, table(row(10, 1, 10, 10), row(20, 1, 20, 10, 'S', LATER)));
   assert.equal(result.state, null);
   assert.equal(result.terminal, true);
+});
+
+test('終了を観測した子のPID再利用でも生存中のAI本体を追跡する', () => {
+  const snapshot = tracking(20, [[20, START], [21, START]]);
+  const afterExit = inspectLifecycle(snapshot, table(row(10, 1, 10, 20), row(20, 10, 20, 20)));
+  assert.equal(afterExit.state, 'running');
+  const reused = inspectLifecycle({ ...snapshot, trackedGroups: afterExit.trackedGroups }, table(
+    row(10, 1, 10, 20), row(20, 10, 20, 20), row(21, 1, 21, 0, 'S', LATER),
+  ));
+  assert.equal(reused.state, 'running');
+});
+
+test('遅いreadyと前景group切替でも両世代の裏作業を検知し終了時に解除する', async () => {
+  assert.ok(DEFAULT_ACQUISITION_TIMEOUT_MS > 750);
+  for (const generation of [1, 2]) {
+    let processes = table(row(10, 1, 10, 10));
+    const timers = [];
+    const setTimer = (callback, delay) => {
+      const timer = { callback, delay, cleared: false };
+      timers.push(timer);
+      return timer;
+    };
+    const store = createAgentLifecycleStore({ listProcesses: async () => processes, setTimer, clearTimer: timer => { timer.cleared = true; } });
+    const background = createBackgroundWorkStore({ getEntry: () => store.getEntry('pane', generation), listProcesses: async () => processes });
+    background.begin('pane', generation);
+    const token = store.initialize('pane', generation);
+    const prepared = await store.prepare('pane', generation, token, 10, 'claude', '/bin/zsh');
+    assert.equal(prepared.status, 'ready');
+    assert.ok(timers[0].delay > 750, 'ready の 750ms 打ち切りを再現');
+    const marker = prepared.setupCommand.match(/VKAgentLifecycle=([a-f0-9]+)/)[1];
+    store.filterOutput('pane', `${READY_MARKER_PREFIX}${marker}:ok\x07`);
+    assert.equal(await prepared.ready, true);
+    assert.equal(await store.activate('pane', generation, token), true);
+    assert.ok(timers[1].delay > 750, '前景切替の 750ms 打ち切りを再現');
+    processes = table(row(10, 1, 10, 20), row(20, 10, 20, 20), row(30, 20, 30, 0));
+    await timers[2].callback();
+    assert.equal(store.get('pane', generation), 'running');
+    await background.poll();
+    await background.poll();
+    assert.equal(background.isRunning('pane'), true);
+    processes = table(row(10, 1, 10, 20), row(20, 10, 20, 20));
+    await background.poll();
+    assert.equal(background.isRunning('pane'), false);
+    processes = table(row(10, 1, 10, 10));
+    store.filterOutput('pane', `${MARKER_PREFIX}${marker}\x07`);
+    const pending = timers.find(timer => !timer.cleared && timer.delay === 100);
+    await pending.callback();
+    assert.equal(store.get('pane', generation), 'exited');
+    await store.close();
+  }
 });
 
 test('baseline取得失敗と世代変更によるcancelを区別し、旧prepareは新世代を変更しない', async () => {

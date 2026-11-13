@@ -1,6 +1,7 @@
 # Changelog
 
 - [ 不具合修正 ] Codex のペイン内 URL が開き先メニューを通らず、アプリ内ブラウザを選べない問題を修正（[#602](https://github.com/vektor-inc/vk-terminals/issues/602)）
+- [ 不具合修正 ] Claude Code の起動待ちや PID 再利用で裏の作業が「実行中」と表示されなくなる問題を修正（[#597](https://github.com/vektor-inc/vk-terminals/issues/597)）
 
 ## 1.100.0
 

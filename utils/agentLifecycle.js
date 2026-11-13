@@ -9,7 +9,7 @@ const { promisify } = require('node:util');
 const execFileAsync = promisify(execFile);
 const PS_ARGS = ['-A', '-o', 'pid=,ppid=,pgid=,tpgid=,stat=,lstart='];
 const LSTART_TOLERANCE_MS = 2000;
-const DEFAULT_ACQUISITION_TIMEOUT_MS = 750;
+const DEFAULT_ACQUISITION_TIMEOUT_MS = 10000;
 const MARKER_PREFIX = '\x1b]1337;VKAgentLifecycle=';
 const READY_MARKER_PREFIX = '\x1b]1337;VKAgentLifecycleReady=';
 const MARKER_SUFFIX = '\x07';
@@ -74,7 +74,7 @@ function hasBaselineAncestor(processes, process, shell, baselineIdentities) {
 function inspectLifecycle(snapshot, processes) {
   const shell = processes.get(snapshot.shellPid);
   if (!shell || !isSameProcessStart(shell.lstart, snapshot.shellLstart)) return { state: null, terminal: true };
-  const trackedGroups = new Map(snapshot.trackedGroups || []);
+  const trackedGroups = new Map([...snapshot.trackedGroups || []].map(([pgid, identities]) => [pgid, new Map(identities)]));
   const shellDescendants = [...processes.values()].filter((process) => {
     if (process.pid === shell.pid || !isDescendant(processes, process.pid, shell.pid, shell.lstart)) return false;
     const baselineStart = snapshot.baselineIdentities?.get(process.pid);
@@ -87,7 +87,11 @@ function inspectLifecycle(snapshot, processes) {
   const aliveKnown = new Map();
   for (const [pid, lstart] of knownIdentities) {
     const process = processes.get(pid);
-    if (!process) continue;
+    if (!process) {
+      // 終了した子の PID を追跡し続けると、再利用時に生存中の AI 本体まで失う。
+      for (const identities of trackedGroups.values()) identities.delete(pid);
+      continue;
+    }
     if (!isSameProcessStart(process.lstart, lstart)) return { state: null, terminal: true };
     aliveKnown.set(pid, process);
   }

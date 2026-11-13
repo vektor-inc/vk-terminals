@@ -55,8 +55,7 @@
       ai.disabled = true;
       retry.disabled = true;
       try {
-        status.textContent = 'ドキュメントを読み込んでいます…';
-        const opened = await openDocument();
+        const opened = await openDocument(() => { status.textContent = 'ドキュメントを読み込んでいます…'; });
         if (opened === false) status.textContent = 'ドキュメントを開く操作をキャンセルしました。';
       } catch (error) { status.textContent = `${error?.message?.includes('再試行してください') ? error.message : 'ドキュメントを開けませんでした。'} もう一度押してください。`;  }
       finally {

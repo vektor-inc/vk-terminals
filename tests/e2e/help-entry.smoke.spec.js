@@ -76,6 +76,9 @@ test('使い方・ヘルプ: 確認失敗の再確認、未保存キャンセル
       await docButton.focus();
       await expect(docButton).toBeFocused();
     }
+    // 案内より前の HTTPS 履歴が残っていても、戻り先は案内にする。
+    await win.evaluate((url) => VKIpc.invoke('internal-browser:open', url), `${linkedUrl}previous`);
+    await expect(win.locator('.internal-browser-url')).toContainText('127.0.0.1');
     await win.getByRole('button', { name: 'ドキュメント', exact: true }).click();
     await expect(win.locator('.settings-modal')).toHaveCount(0);
     await expect(win.locator('#internal-browser-sidebar')).toBeVisible();
@@ -162,7 +165,9 @@ test('使い方・ヘルプ: 確認失敗の再確認、未保存キャンセル
     await win.getByRole('button', { name: 'ドキュメント', exact: true }).click();
     const documentChoices = win.getByRole('group', { name: '未保存の変更があります。保存してからドキュメントを開きますか？' });
     await expect(documentChoices).toBeVisible();
+    await expect(win.locator('.settings-help-entry [role=status]')).toHaveText('未保存の変更を保存するか選んでください。');
     await documentChoices.getByRole('button', { name: 'キャンセル' }).click();
+    await expect(win.locator('.settings-help-entry [role=status]')).toHaveText('ドキュメントを開く操作をキャンセルしました。');
     await expect(win.locator('.settings-modal')).toBeVisible();
     await expect(win.getByRole('button', { name: 'ドキュメント', exact: true })).toBeFocused();
     await win.getByRole('button', { name: 'AI に相談', exact: true }).click();

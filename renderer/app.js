@@ -6055,7 +6055,12 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
   const helpView = helpContainer ? VKHelpEntry.mount(helpContainer, {
     invoke: (channel) => VKIpc.invoke(channel),
     openGuide: (onLaunching) => confirmUnsavedHelp(launchHelpGuide, onLaunching, 'ガイド'),
-    openDocument: () => confirmUnsavedHelp(launchHelpDocument, () => {}, 'ドキュメント'),
+    openDocument: (onLaunching) => {
+      if (modal.querySelector('.settings-tab.is-dirty')) {
+        helpContainer.querySelector('[role="status"]').textContent = '未保存の変更を保存するか選んでください。';
+      }
+      return confirmUnsavedHelp(launchHelpDocument, onLaunching, 'ドキュメント');
+    },
   }) : null;
   const showHelp = () => {
     if (helpContainer && !helpContainer.closest('[role=tabpanel]').hidden) helpView.show();

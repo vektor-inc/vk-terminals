@@ -5,6 +5,44 @@ const { PARTITION, HELP_URL, isHelpUrl, clampBrowserWidth, validateBrowserBounds
 const { createInternalBrowser } = require('../utils/internalBrowser');
 const { browserAvailableWidth, shouldFoldSetupPanel, browserWidthMax, shouldWrapToastPhrase } = require('../utils/internalBrowserLayout');
 
+test('案内のハッシュを外部 URL に引き継ぎ、読み込み失敗は拒否する', async () => {
+  const { EventEmitter } = require('node:events');
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-help-browser-'));
+  fs.writeFileSync(path.join(root, 'help.html'), '<html></html>');
+  const documentPath = fs.realpathSync(path.join(root, 'help.html'));
+  const browserSession = new EventEmitter();
+  browserSession.webRequest = { onBeforeRequest() {}, onCompleted() {} };
+  browserSession.setPermissionRequestHandler = () => {};
+  browserSession.setPermissionCheckHandler = () => {};
+  let contents;
+  class FakeView {
+    constructor() {
+      contents = new EventEmitter();
+      contents.navigationHistory = { canGoBack: () => false, canGoForward: () => false };
+      contents.isLoading = () => false;
+      contents.setWindowOpenHandler = () => {};
+      contents.loadURL = () => Promise.reject(new Error('load failed'));
+      contents.close = () => {};
+      this.webContents = contents;
+    }
+    setBounds() {}
+  }
+  const win = { isDestroyed: () => false, webContents: { send() {} }, contentView: { addChildView() {}, removeChildView() {} } };
+  const browser = createInternalBrowser(win, { WebContentsView: FakeView, session: { fromPartition: () => browserSession }, helpDocumentPath: documentPath });
+  try {
+    await assert.rejects(browser.openHelp(), /load failed/);
+    contents.emit('did-navigate', {}, `${HELP_URL}#section`);
+    assert.equal(browser.externalUrl('current'), require('node:url').pathToFileURL(documentPath).href + '#section');
+    assert.equal(browser.externalUrl('failed'), null);
+  } finally {
+    browser.destroy();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('専用 persist パーティションと HTTP(S) URL の制限', () => {
   assert.equal(PARTITION, 'persist:vk-terminals-internal-browser');
   assert.equal(isBrowserUrl('https://github.com/login'), true);
@@ -189,6 +227,10 @@ test('専用ビューの遷移と権限、ダウンロード、確定 URL を制
   assert.equal(sent.at(-1)[1].url, 'https://example.com/first#part');
   contents.emit('did-fail-load', {}, -105, 'failed', 'https://example.com/failed', true);
   assert.equal(sent.at(-1)[1].failedUrl, 'https://example.com/failed');
+  contents.emit('did-fail-load', {}, -105, 'failed', 'file:///tmp/unsafe', true);
+  assert.equal(browser.action('reload'), false);
+  assert.equal(contents.requestedUrl, 'https://example.com/second');
+  contents.emit('did-fail-load', {}, -105, 'failed', 'https://example.com/failed', true);
   assert.equal(browser.action('reload'), true);
   assert.equal(contents.requestedUrl, 'https://example.com/failed');
   contents.emit('did-fail-load', {}, -105, 'failed', 'https://example.com/failed', true);

@@ -72,6 +72,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
   function navigate(url) { return isBrowserUrl(url) ? loadPage(url) : false; }
 
   function loadPage(url, { fromPage = false, waitForLoad = false } = {}) {
+    if (fromPage && !isNavigationUrl(url)) return false;
     if (!view) {
       view = new WebContentsView({ webPreferences: {
         partition: PARTITION, sandbox: true, nodeIntegration: false, contextIsolation: true,
@@ -139,8 +140,11 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
   function action(name) {
     if (!view) return false;
     const history = view.webContents.navigationHistory;
-    if (name === 'back' && history.canGoBack()) history.goBack();
-    else if (name === 'back' && helpReturnUrl && !isHelpUrl(currentUrl)) loadPage(helpReturnUrl, { fromPage: true });
+    if (name === 'back' && helpReturnUrl && !isHelpUrl(currentUrl)) {
+      // 専用スキームは履歴上の案内が次の戻り先とは限らないため、確定した復帰先を開く。
+      return loadPage(helpReturnUrl, { fromPage: true });
+    }
+    else if (name === 'back' && history.canGoBack()) history.goBack();
     else if (name === 'forward' && history.canGoForward()) history.goForward();
     else if (name === 'reload') {
       if (failedUrl) return loadPage(failedUrl, { fromPage: true });

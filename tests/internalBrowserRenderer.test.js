@@ -160,9 +160,9 @@ test('外部ボタンの可視URLは同一ホストのパスと検索条件ま�
   const helper = source.match(/function formatInternalBrowserDestination\(url\) \{[\s\S]*?\n\}/)?.[0];
   assert.ok(helper);
   const format = vm.runInNewContext(`${helper}\nformatInternalBrowserDestination`, { URL });
-  assert.equal(format('https://example.com/confirmed?q=1#top'), 'example.com/confirmed?q=1#top');
-  assert.equal(format('https://example.com/failed?q=2#bottom'), 'example.com/failed?q=2#bottom');
-  assert.equal(format('https://example.com/' + 'a'.repeat(400)), 'example.com/' + 'a'.repeat(400));
+  assert.equal(format('https://example.com/confirmed?q=1#top'), 'https://example.com/confirmed?q=1#top');
+  assert.equal(format('http://example.com/failed?q=2#bottom'), '⚠ HTTP: http://example.com/failed?q=2#bottom');
+  assert.equal(format('https://example.com/' + 'a'.repeat(400)), 'https://example.com/' + 'a'.repeat(400));
   assert.equal(format('invalid-url'), '');
   assert.match(css, /\.internal-browser-external-target\s*\{[^}]*overflow-wrap: anywhere/);
   assert.match(css, /\.internal-browser-error \[data-action="external"\]\s*\{[^}]*overflow-wrap: anywhere/);
@@ -201,7 +201,7 @@ test('アドレス欄は編集中の通知を保持し、Enter のみで正規�
   vm.runInContext(`let internalBrowserUrl = 'https://old.example'; let internalBrowserDownloadUrl = ''; let internalBrowserPendingUrl = ''; let internalBrowserAddressHasDraft = false; let internalBrowserHasPage = false; ${addressHandlers}`, context);
   address.value = 'github.com/vektor-inc';
   handlers.input();
-  assert.equal(target.textContent, '外部で開く: 表示中のページ old.example/');
+  assert.equal(target.textContent, '外部で開く: 表示中のページ https://old.example/');
   assert.equal(navigationStatus.textContent, '');
   assert.equal(vm.runInContext('internalBrowserAddressHasDraft', context), true);
   handlers.keydown({ key: 'ArrowRight' });
@@ -356,21 +356,21 @@ test('失敗表示は失敗 URL、操作列は確定 URL を安全な外部オ�
   state('https://example.com/failed', '', false);
   assert.equal(display.value, 'https://example.com/failed');
   assert.equal(external.title, '確定済みの URL を外部ブラウザで開く: https://example.com/confirmed');
-  assert.equal(target.textContent, '外部で開く: 表示中のページ example.com/confirmed');
+  assert.equal(target.textContent, '外部で開く: 表示中のページ https://example.com/confirmed');
   assert.equal(target.hidden, false);
-  assert.equal(failedExternal.textContent, '失敗したページを外部で開く: example.com/failed');
+  assert.equal(failedExternal.textContent, '失敗したページを外部で開く: https://example.com/failed');
   assert.equal(failedExternal.title, '失敗したページを外部で開く: https://example.com/failed');
   assert.equal(failedExternal['aria-label'], `${failedExternal.textContent}（https://example.com/failed）`);
   handlers['internal-browser:state']({ url: 'https://example.com/confirmed', pendingUrl: 'https://pending.example/loading', failedUrl: '' });
   assert.equal(display.value, 'https://pending.example/loading');
-  assert.equal(target.textContent, '外部で開く: 表示中のページ example.com/confirmed');
+  assert.equal(target.textContent, '外部で開く: 表示中のページ https://example.com/confirmed');
   assert.equal(external.title, '確定済みの URL を外部ブラウザで開く: https://example.com/confirmed');
   context.internalBrowserAddressHasDraft = true;
   display.value = '編集中の検索語';
   state('https://example.com/failed', '', false, 'https://example.com/next');
   assert.equal(display.value, '編集中の検索語');
   assert.equal(external['aria-label'], '確定済みの URL を外部ブラウザで開く: https://example.com/next');
-  assert.equal(target.textContent, '外部で開く: 表示中のページ example.com/next');
+  assert.equal(target.textContent, '外部で開く: 表示中のページ https://example.com/next');
   context.internalBrowserAddressHasDraft = false;
   state('', '', false, 'https://example.com/next');
   assert.equal(target.hidden, true);
@@ -395,8 +395,8 @@ test('失敗表示は失敗 URL、操作列は確定 URL を安全な外部オ�
   assert.equal(failedExternal['aria-label'], '外部ブラウザで開く');
   assert.equal(messageWrites, 6);
   state('https://failed.example/failed', '', false);
-  assert.equal(target.textContent, '外部で開く: 表示中のページ example.com/confirmed');
-  assert.equal(failedExternal.textContent, '失敗したページを外部で開く: failed.example/failed');
+  assert.equal(target.textContent, '外部で開く: 表示中のページ https://example.com/confirmed');
+  assert.equal(failedExternal.textContent, '失敗したページを外部で開く: https://failed.example/failed');
   assert.equal(failedExternal.title, '失敗したページを外部で開く: https://failed.example/failed');
   assert.equal(message.textContent, 'ページを表示できませんでした（failed.example）');
   assert.equal(messageWrites, 7);
@@ -414,7 +414,7 @@ test('失敗表示は失敗 URL、操作列は確定 URL を安全な外部オ�
   assert.equal(external.disabled, false);
   assert.equal(external.title, 'ダウンロード先を外部ブラウザで開く: https://download.example/file');
   assert.equal(external['aria-label'], external.title);
-  assert.equal(target.textContent, '外部で開く: ダウンロード先 download.example/file');
+  assert.equal(target.textContent, '外部で開く: ダウンロード先 https://download.example/file');
   click(false);
   state('');
   assert.equal(external.title, '確定済みの URL を外部ブラウザで開く: https://example.com/confirmed');
@@ -452,8 +452,8 @@ test('失敗表示は失敗 URL、操作列は確定 URL を安全な外部オ�
   const confirmed = 'https://example.com/confirmed?version=1#top';
   const failed = 'https://example.com/failed?version=2#bottom';
   state(failed, '', false, confirmed);
-  assert.equal(target.textContent, '外部で開く: 表示中のページ example.com/confirmed?version=1#top');
-  assert.equal(failedExternal.textContent, '失敗したページを外部で開く: example.com/failed?version=2#bottom');
+  assert.equal(target.textContent, '外部で開く: 表示中のページ https://example.com/confirmed?version=1#top');
+  assert.equal(failedExternal.textContent, '失敗したページを外部で開く: https://example.com/failed?version=2#bottom');
   assert.ok(failedExternal['aria-label'].startsWith(failedExternal.textContent));
   assert.equal(failedExternal.title, `失敗したページを外部で開く: ${failed}`);
   click(true);
@@ -734,7 +734,7 @@ test('main の遷移結果を順に受け、失敗・成功・中止・置換・
     assert.deepEqual(downloadEvents.at(-1), { canOpenFromToolbar: true });
     assert.equal(toastMessages.at(-1), 'ダウンロードはできません。操作列の「外部ブラウザで開く」から行ってください。');
     assert.equal(toastMessages.length, 2);
-    assert.equal(target.textContent, '外部で開く: ダウンロード先 example.org/download');
+    assert.equal(target.textContent, '外部で開く: ダウンロード先 https://example.org/download');
     assert.equal(messages.at(-1).navigationResult, 'download-blocked');
     assert.equal(messages.at(-1).navigationRequestId, 4);
     assert.equal(messages.at(-1).pendingUrl, '');
@@ -750,7 +750,7 @@ test('main の遷移結果を順に受け、失敗・成功・中止・置換・
     contents.emit('did-navigate', {}, failedUrl);
     contents.emit('did-navigate-in-page', {}, `${failedUrl}#old`, true);
     assert.equal(messages.at(-1).navigationResult, 'download-blocked');
-    assert.equal(target.textContent, '外部で開く: ダウンロード先 example.org/download');
+    assert.equal(target.textContent, '外部で開く: ダウンロード先 https://example.org/download');
     assert.equal(navigationWrites, 8);
 
     // 再読み込みも独立した世代で開始と完了を通知する。

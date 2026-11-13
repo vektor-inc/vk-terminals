@@ -799,6 +799,24 @@ for (const action of ['back', 'forward']) {
     assert.equal(states.at(-1).navigationResult, 'completed');
     assert.equal(states.at(-1).url, current.url);
   });
+
+  test(`${action} は次文書の読み込み中も履歴のactive URLを基準に移動先を選ぶ`, async () => {
+    const { browser, contents, states } = setup();
+    await contents.complete('https://example.com/previous');
+    const previous = { url: 'https://example.com/previous' };
+    const active = { url: 'https://example.com/loading' };
+    const isBack = action === 'back';
+    contents.navigationHistory.getAllEntries = () => isBack ? [previous, active] : [active, previous];
+    contents.navigationHistory.getActiveIndex = () => isBack ? 1 : 0;
+    contents.navigationHistory[`canGo${isBack ? 'Back' : 'Forward'}`] = () => true;
+    let moved = false;
+    contents.navigationHistory[`go${isBack ? 'Back' : 'Forward'}`] = () => { moved = true; };
+
+    browser.publish();
+    assert.equal(states.at(-1)[isBack ? 'canGoBack' : 'canGoForward'], true);
+    assert.equal(browser.action(action), true);
+    assert.equal(moved, true);
+  });
 }
 
 for (const event of ['did-stop-loading', 'did-navigate']) {

@@ -324,7 +324,7 @@ function setInternalBrowserNavigationStatus(message) {
 function formatInternalBrowserDestination(url) {
   try {
     const parsed = new URL(url);
-    return `${parsed.host}${parsed.pathname}${parsed.search}${parsed.hash}`;
+    return parsed.protocol === 'http:' ? `⚠ HTTP: ${parsed.href}` : parsed.href;
   } catch { return ''; }
 }
 function getInternalBrowserExternalTarget() {

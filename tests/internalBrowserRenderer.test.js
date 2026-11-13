@@ -40,7 +40,7 @@ test('初期化時は操作列の閉じるだけを無効化せず、失敗表�
   const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
   const initialization = source.match(/for \(const button of internalBrowserSidebar\.querySelectorAll\('[^']+'\)\) button\.disabled = true;/)?.[0];
   assert.ok(initialization);
-  const toolbarButtons = ['back', 'forward', 'reload', 'url', 'external', 'close']
+  const toolbarButtons = ['back', 'forward', 'reload', 'external', 'close']
     .map(action => ({ action, disabled: false }));
   const errorButtons = [{ disabled: false }, { disabled: false }];
   const sidebar = {
@@ -50,8 +50,43 @@ test('初期化時は操作列の閉じるだけを無効化せず、失敗表�
     },
   };
   vm.runInNewContext(initialization, { internalBrowserSidebar: sidebar });
-  assert.deepEqual(toolbarButtons.map(button => button.disabled), [true, true, true, true, true, false]);
+  assert.deepEqual(toolbarButtons.map(button => button.disabled), [true, true, true, true, false]);
   assert.deepEqual(errorButtons.map(button => button.disabled), [false, false]);
+});
+
+test('アドレス欄は編集中の通知を保持し、Enter のみで正規化した先へ移動する', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
+  const addressHandlers = source.match(/const internalBrowserAddress = internalBrowserSidebar\.querySelector\('\.internal-browser-url'\);[\s\S]*?(?=document\.getElementById\('internal-browser-toggle'\))/)?.[0];
+  assert.ok(addressHandlers);
+  assert.match(source, /<input type="text" class="internal-browser-url" aria-label="URL または検索語を入力"/);
+  assert.doesNotMatch(source, /表示中の URL をコピー/);
+  const handlers = {};
+  const opened = [];
+  const address = { value: '', addEventListener: (type, handler) => { handlers[type] = handler; } };
+  const context = vm.createContext({
+    internalBrowserSidebar: { querySelector: () => address },
+    normalizeBrowserAddress: require('../renderer/urlSafety').normalizeBrowserAddress,
+    VKIpc: { invoke: (_channel, url) => { opened.push(url); return Promise.resolve(); } },
+  });
+  vm.runInContext(`let internalBrowserUrl = 'https://old.example'; let internalBrowserPendingUrl = ''; let internalBrowserUrlEditing = false; let internalBrowserHasPage = false; ${addressHandlers}`, context);
+  address.value = 'github.com/vektor-inc';
+  handlers.input();
+  assert.equal(vm.runInContext('internalBrowserUrlEditing', context), true);
+  handlers.keydown({ key: 'ArrowRight' });
+  assert.deepEqual(opened, []);
+  handlers.keydown({ key: 'Enter', isComposing: true });
+  assert.deepEqual(opened, []);
+  handlers.keydown({ key: 'Enter', preventDefault() {} });
+  assert.deepEqual(opened, ['https://github.com/vektor-inc']);
+  assert.equal(address.value, opened[0]);
+  assert.equal(vm.runInContext('internalBrowserUrlEditing', context), false);
+  assert.equal(vm.runInContext('internalBrowserHasPage', context), true);
+  assert.equal(vm.runInContext('internalBrowserPendingUrl', context), opened[0]);
+  address.value = 'javascript:alert(1)';
+  handlers.keydown({ key: 'Enter', preventDefault() {} });
+  assert.equal(opened[1], 'https://www.google.com/search?q=javascript%3Aalert(1)');
+  handlers.blur();
+  assert.equal(address.value, opened[1]);
 });
 
 test('開き先メニュー表示中は別リンクのツールチップを出さない', () => {
@@ -118,7 +153,7 @@ test('失敗表示は失敗 URL、操作列は確定 URL を安全な外部オ�
   const errorButtons = [{ disabled: true }, { disabled: true }];
   const errorView = { hidden: true, contains: element => element === errorReload, querySelector: () => message, querySelectorAll: () => errorButtons };
   const notice = { hidden: true, dataset: {}, contains: element => buttons.includes(element), replaceChildren() {}, append() {} };
-  const display = { replaceChildren() {}, setAttribute() {}, append() {}, closest: () => null, focus() { focus(this); } };
+  const display = { value: '', closest: () => null, focus() { focus(this); } };
   const controls = { disabled: false };
   const external = { disabled: false, setAttribute(name, value) { this[name] = value; } };
   const reload = { disabled: false, closest: () => null, focus() { focus(this); } };
@@ -129,6 +164,9 @@ test('失敗表示は失敗 URL、操作列は確定 URL を安全な外部オ�
   };
   const context = {
     internalBrowserSidebar: sidebar,
+    internalBrowserAddress: display,
+    internalBrowserPendingUrl: '',
+    internalBrowserUrlEditing: false,
     VKIpc: { on: (name, handler) => { handlers[name] = handler; } },
     openExternalUrlSafe: url => opened.push(url),
     syncInternalBrowserLayout() { layoutSyncs++; },
@@ -142,6 +180,16 @@ test('失敗表示は失敗 URL、操作列は確定 URL を安全な外部オ�
   vm.runInNewContext(`let internalBrowserUrl = 'https://example.com/confirmed'; let internalBrowserFailedUrl = ''; let internalBrowserDownloadUrl = ''; let internalBrowserHasPage = true; ${focusHelpers} ${clickHandler} ${stateHandler}`, context);
   const state = (failedUrl, github404Url = '', loading = false, url = 'https://example.com/confirmed') => handlers['internal-browser:state']({ url, failedUrl, github404Url, loading });
   state('https://example.com/failed', '', false);
+  assert.equal(display.value, 'https://example.com/confirmed');
+  handlers['internal-browser:state']({ url: 'https://example.com/confirmed', pendingUrl: 'https://example.com/loading', failedUrl: 'https://example.com/failed' });
+  assert.equal(display.value, 'https://example.com/loading');
+  context.internalBrowserUrlEditing = true;
+  display.value = '編集中の検索語';
+  state('https://example.com/failed', '', false, 'https://example.com/next');
+  assert.equal(display.value, '編集中の検索語');
+  context.internalBrowserUrlEditing = false;
+  state('https://example.com/failed', '', false, 'https://example.com/next');
+  assert.equal(display.value, 'https://example.com/next');
   assert.equal(messageWrites, 1);
   state('https://example.com/failed', '', true);
   state('https://example.com/failed', '', false);
@@ -200,5 +248,5 @@ test('失敗表示は失敗 URL、操作列は確定 URL を安全な外部オ�
   activeElement = buttons.find(button => button.textContent === '案内を閉じる' && button !== closeNotice);
   state('', 'https://github.com/another', false, '');
   activeElement.click();
-  assert.equal(activeElement, reload);
+  assert.equal(activeElement, display);
 });

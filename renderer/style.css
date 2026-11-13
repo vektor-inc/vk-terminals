@@ -4032,11 +4032,8 @@ body.pane-dragging * {
 .internal-browser-toolbar button { flex: 0 0 28px; width: 28px; height: 28px; border: 1px solid transparent; border-radius: 5px; background: transparent; color: #e6edf3; cursor: pointer; }
 .internal-browser-toolbar button:hover { background: #21262d; }
 .internal-browser-toolbar button:disabled { color: #6e7681; cursor: default; }
-.internal-browser-toolbar .internal-browser-url { flex: 1 1 auto; width: 0; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 12px; }
-.internal-browser-toolbar .internal-browser-url { display: flex; align-items: center; }
-.internal-browser-host { flex: 0 0 auto; }
-.internal-browser-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.internal-browser-http { color: #f85149; }
+.internal-browser-toolbar .internal-browser-url { flex: 1 1 auto; min-width: 0; height: 28px; box-sizing: border-box; padding: 0 7px; border: 1px solid var(--vktm--color--border-interactive); border-radius: 5px; background: #161b22; color: #e6edf3; font: inherit; font-size: 12px; }
+.internal-browser-toolbar .internal-browser-url::placeholder { color: #8b949e; }
 .internal-browser-progress { height: 2px; width: 50%; background: #58a6ff; animation: internal-browser-loading 1.4s ease-in-out infinite alternate; }
 @keyframes internal-browser-loading { from { transform: translateX(0); } to { transform: translateX(100%); } }
 @media (prefers-reduced-motion: reduce) { .internal-browser-progress { animation: none; } }

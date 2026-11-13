@@ -4068,17 +4068,17 @@ body.pane-dragging * {
 .internal-browser-notice, .internal-browser-error { padding: 12px; font-size: 12px; line-height: 1.5; background: #161b22; }
 .internal-browser-notice[hidden], .internal-browser-error[hidden], .internal-browser-progress[hidden] { display: none; }
 .internal-browser-notice button, .internal-browser-error button { margin: 6px 6px 0 0; padding: 4px 8px; border: 1px solid var(--vktm--color--border-interactive); border-radius: 4px; background: #21262d; color: #e6edf3; cursor: pointer; }
-.internal-browser-error [data-action="external"] { max-width: calc(100% - 6px); white-space: normal; overflow-wrap: anywhere; text-align: left; }
-/* 長い URL でも回復操作とページの領域を保ち、短い URL は従来どおり折り返す。 */
+.internal-browser-error [data-action="external"] { max-width: calc(100% - 6px); text-align: left; }
+/* 完全な遷移先を確認でき、長い URL でも回復操作とページの領域を保つ。 */
 .internal-browser-external-target,
 .internal-browser-error [data-action="external"] {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  overflow: hidden;
+  display: block;
+  white-space: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
 }
-.internal-browser-external-target { flex-shrink: 0; max-height: 3.2em; }
-.internal-browser-error [data-action="external"] { line-height: 1.5; max-height: calc(3em + 10px); }
+.internal-browser-external-target { flex-shrink: 0; }
+.internal-browser-error [data-action="external"] { line-height: 1.5; }
 /* 案内文と操作を分け、狭い幅でもボタンを一組で揃える。 */
 .internal-browser-notice p { margin: 0; }
 .internal-browser-notice-actions { display: flex; flex-wrap: nowrap; gap: 6px; margin-top: 6px; }

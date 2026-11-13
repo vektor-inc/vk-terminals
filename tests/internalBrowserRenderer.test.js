@@ -154,7 +154,7 @@ test('初期化時は操作列の閉じるだけを無効化せず、失敗表�
   assert.deepEqual(errorButtons.map(button => button.disabled), [false, false]);
 });
 
-test('外部ボタンの可視URLは同一ホストのパスと検索条件まで区別し、狭幅で折り返す', () => {
+test('外部ボタンの可視URLは同一ホストのパスと検索条件まで区別し、狭幅で横スクロールできる', () => {
   const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
   const css = fs.readFileSync(path.join(__dirname, '../renderer/style.css'), 'utf8');
   const helper = source.match(/function formatInternalBrowserDestination\(url\) \{[\s\S]*?\n\}/)?.[0];
@@ -165,10 +165,8 @@ test('外部ボタンの可視URLは同一ホストのパスと検索条件ま�
   assert.equal(format('https://example.com/' + 'a'.repeat(400)), 'https://example.com/' + 'a'.repeat(400));
   assert.equal(format('invalid-url'), '');
   assert.match(css, /\.internal-browser-external-target\s*\{[^}]*overflow-wrap: anywhere/);
-  assert.match(css, /\.internal-browser-error \[data-action="external"\]\s*\{[^}]*overflow-wrap: anywhere/);
-  assert.match(css, /\.internal-browser-external-target,\s*\.internal-browser-error \[data-action="external"\]\s*\{[^}]*display: -webkit-box;[^}]*-webkit-box-orient: vertical;[^}]*-webkit-line-clamp: 2;[^}]*overflow: hidden;/);
-  assert.match(css, /\.internal-browser-external-target\s*\{[^}]*max-height: 3\.2em/);
-  assert.match(css, /\.internal-browser-error \[data-action="external"\]\s*\{[^}]*max-height: calc\(3em \+ 10px\)/);
+  assert.match(css, /\.internal-browser-external-target,\s*\.internal-browser-error \[data-action="external"\]\s*\{[^}]*display: block;[^}]*white-space: nowrap;[^}]*overflow-x: auto;[^}]*overflow-y: hidden;/);
+  assert.doesNotMatch(css, /-webkit-line-clamp/);
   const targetTag = source.match(/<p class="internal-browser-external-target"[^>]*>/)[0];
   assert.doesNotMatch(targetTag, /role=|aria-live=/);
   assert.match(source, /internal-browser-navigation-status" role="status" aria-live="polite"/);
@@ -293,7 +291,7 @@ test('失敗表示は失敗 URL、操作列は確定 URL を安全な外部オ�
   const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
   const style = fs.readFileSync(path.join(__dirname, '../renderer/style.css'), 'utf8');
   assert.match(source, /class="internal-browser-error"[^>]*>[\s\S]*?<button type="button" data-action="external">/);
-  assert.match(style, /\.internal-browser-error \[data-action="external"\][^}]*max-width:[^;]+;[^}]*white-space: normal;[^}]*overflow-wrap: anywhere;/);
+  assert.match(style, /\.internal-browser-error \[data-action="external"\][^}]*max-width:[^;]+;[^}]*text-align: left;/);
   const clickHandler = source.match(/internalBrowserSidebar\.addEventListener\('click', event => \{[\s\S]*?\n\}\);/)?.[0];
   const stateHandler = source.match(/VKIpc\.on\('internal-browser:state', state => \{[\s\S]*?\n\}\);/)?.[0];
   const focusHelpers = source.match(/function focusInternalBrowserToolbar\(\) \{[\s\S]*?\n\}\n\nfunction hideInternalBrowserContent\(element\) \{[\s\S]*?\n\}/)?.[0];

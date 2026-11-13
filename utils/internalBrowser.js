@@ -583,8 +583,10 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
       if (!Number.isInteger(activeIndex) || !Array.isArray(entries)) return undefined;
       const activeUrl = entries[activeIndex]?.url;
       if (typeof activeUrl !== 'string') return undefined;
+      const documentUrl = view?.webContents.getURL?.();
+      const referenceUrl = isNavigationUrl(documentUrl) ? documentUrl : activeUrl;
       let index = activeIndex + offset;
-      while (entries[index]?.url === activeUrl) index += offset;
+      while (entries[index]?.url === referenceUrl) index += offset;
       const url = entries[index]?.url;
       return isNavigationUrl(url) ? { url, index, adjacentIndex: activeIndex + offset } : null;
     } catch (_error) {

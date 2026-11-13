@@ -808,6 +808,7 @@ for (const action of ['back', 'forward']) {
     const isBack = action === 'back';
     contents.navigationHistory.getAllEntries = () => isBack ? [previous, active] : [active, previous];
     contents.navigationHistory.getActiveIndex = () => isBack ? 1 : 0;
+    contents.setDocumentUrl(active.url);
     contents.navigationHistory[`canGo${isBack ? 'Back' : 'Forward'}`] = () => true;
     let moved = false;
     contents.navigationHistory[`go${isBack ? 'Back' : 'Forward'}`] = () => { moved = true; };
@@ -818,6 +819,26 @@ for (const action of ['back', 'forward']) {
     assert.equal(moved, true);
   });
 }
+
+test('カスタム文書復帰直後は遅れているactive indexより実文書URLを優先する', async () => {
+  const { browser, contents, states } = setup();
+  await contents.complete('https://example.com/previous');
+  contents.setDocumentUrl('vk-terminals-help://guide/');
+  contents.navigationHistory.getAllEntries = () => [
+    { url: 'https://example.com/previous' },
+    { url: 'https://example.com/previous' },
+    { url: 'vk-terminals-help://guide/' },
+  ];
+  contents.navigationHistory.getActiveIndex = () => 1;
+  contents.navigationHistory.canGoBack = () => true;
+  let moved = false;
+  contents.navigationHistory.goBack = () => { moved = true; };
+
+  browser.publish();
+  assert.equal(states.at(-1).canGoBack, true);
+  assert.equal(browser.action('back'), true);
+  assert.equal(moved, true);
+});
 
 for (const event of ['did-stop-loading', 'did-navigate']) {
   test(`GitHub 404から案内へ戻る${event}補完は前文書の404状態を消す`, async () => {

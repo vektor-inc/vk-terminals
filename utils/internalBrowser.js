@@ -135,6 +135,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
         const cleanup = () => {
           contents.removeListener('did-finish-load', finish);
           contents.removeListener('did-fail-load', fail);
+          contents.removeListener('did-stop-loading', stop);
           contents.removeListener('destroyed', destroyed);
         };
         const finish = () => {
@@ -143,9 +144,18 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
           resolve(true);
         };
         const fail = (_event, code, description, destination, isMainFrame) => {
-          if (!isMainFrame || !isHelpUrl(destination)) return;
+          // 再読み込みによる中断は新しい案内の失敗ではない。
+          if (!isMainFrame || code === -3 || !isHelpUrl(destination)) return;
           cleanup();
           reject(new Error(`Help document load failed (${code}): ${description}`));
+        };
+        const stop = () => {
+          // 確定前の割り込みでは失敗イベントが来ないため、停止時の URL で待機を終える。
+          if (isHelpUrl(contents.getURL())) finish();
+          else {
+            cleanup();
+            reject(new Error('Help document load interrupted'));
+          }
         };
         const destroyed = () => {
           cleanup();
@@ -153,6 +163,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
         };
         contents.on('did-finish-load', finish);
         contents.on('did-fail-load', fail);
+        contents.on('did-stop-loading', stop);
         contents.on('destroyed', destroyed);
       });
     }

@@ -4099,22 +4099,17 @@ body.pane-dragging * {
 .internal-browser-choice-heading { padding: 5px 8px; color: #8b949e; font-size: 11px; }
 .internal-browser-choice [role="menuitem"] { display: block; width: 100%; padding: 7px 8px; text-align: left; border: 0; border-radius: 4px; background: transparent; color: inherit; cursor: pointer; }
 .internal-browser-choice [role="menuitem"]:hover, .internal-browser-choice [role="menuitem"]:focus-visible { background: #30363d; }
-/* WebContentsView は HTML より前面に描かれるため、トーストをブラウザ領域へ重ねない。 */
-body:has(#root.internal-browser-open):not(:has(.settings-overlay, .confirm-overlay)) .vk-toast-layer {
+/* WebContentsView は HTML より前面に描かれるため、トーストをブラウザ領域へ重ねない。
+ * 全面表示ではブラウザの左側に置き場所が無いので、この左寄せは横並びのときだけ使う。 */
+body:has(#root.internal-browser-open:where(:not(.internal-browser-overlay))):not(:has(.settings-overlay, .confirm-overlay)) .vk-toast-layer {
   right: calc(var(--vktm-internal-browser-width, 480px) + 16px);
   width: max-content;
   /* 32px は utils/internalBrowserLayout.js の shouldWrapToastPhrase と揃える。 */
   max-width: min(320px, calc(100vw - var(--vktm-internal-browser-width, 480px) - 32px));
 }
-body:has(#root.internal-browser-open):not(:has(.settings-overlay, .confirm-overlay)) .vk-toast { max-width: min(320px, 100%); }
+body:has(#root.internal-browser-open:where(:not(.internal-browser-overlay))):not(:has(.settings-overlay, .confirm-overlay)) .vk-toast { max-width: min(320px, 100%); }
 /* トーストを置ける幅が 200px 未満のときは案内の語句を折り返す。 */
 body:has(#root.internal-browser-open.toast-phrase-wrap):not(:has(.settings-overlay, .confirm-overlay)) .vk-toast-phrase { white-space: normal; }
-/* 全面表示では WebContentsView の外側へ逃がせないため、操作列とページの間へ置く。 */
-#root.internal-browser-overlay .internal-browser-sidebar > .vk-toast-layer {
-  position: static;
-  flex: 0 0 auto;
-  width: auto;
-  max-width: none;
-  margin: 8px;
-}
-#root.internal-browser-overlay .internal-browser-sidebar > .vk-toast-layer .vk-toast { max-width: 100%; }
+/* 全面表示ではトーストを通常の右下に置く。重なる分のページ領域は renderer/app.js の
+ * internalBrowserToastReserve が詰める。32px は左右の余白 16px × 2。 */
+body:has(#root.internal-browser-overlay) .vk-toast { max-width: min(320px, calc(100vw - 32px)); }

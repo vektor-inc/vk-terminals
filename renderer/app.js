@@ -183,9 +183,6 @@ function syncInternalBrowserLayout() {
   for (const child of root.children) {
     if (child !== internalBrowserSidebar) child.inert = browserMustOverlay;
   }
-  // WebContentsView は通常の HTML より前面に描かれる。全面表示中だけトーストを
-  // ブラウザ内へ移し、ページの前に置いて通知用の高さを確保する。
-  syncExternalUrlToastPlacement(browserMustOverlay);
   if (browserMustOverlay && !browserWasOverlay) {
     requestAnimationFrame(() => {
       if (root.classList.contains('internal-browser-overlay')) focusInternalBrowserToolbar();
@@ -208,6 +205,8 @@ function syncInternalBrowserLayout() {
   internalBrowserSidebar.hidden = !internalBrowserOpen;
   root.classList.toggle('internal-browser-open', internalBrowserOpen);
   document.getElementById('internal-browser-toggle')?.setAttribute('aria-pressed', String(internalBrowserOpen));
+  // トーストの位置は上のクラス・幅の反映後に決まるため、ページ領域を測る直前に空ける。
+  internalBrowserSidebar.style.paddingBottom = `${internalBrowserToastReserve(browserMustOverlay)}px`;
   const page = internalBrowserSidebar.querySelector('.internal-browser-page');
   if (page) {
     const rect = page.getBoundingClientRect();
@@ -1533,17 +1532,15 @@ const EXTERNAL_URL_TOAST_COPY_LABEL = 'URLをコピー';
 // settingsCopyButtonLabel() と同じ考え方。
 const EXTERNAL_URL_TOAST_COPY_ARIA_LABEL = '開けなかったURLをコピー';
 
-function syncExternalUrlToastPlacement(browserMustOverlay) {
-  if (!externalUrlToastLayerEl) return;
-  const body = document.body;
-  if (browserMustOverlay) {
-    const page = internalBrowserSidebar.querySelector('.internal-browser-page');
-    if (externalUrlToastLayerEl.parentElement !== internalBrowserSidebar) {
-      internalBrowserSidebar.insertBefore(externalUrlToastLayerEl, page);
-    }
-  } else if (body && externalUrlToastLayerEl.parentElement !== body) {
-    body.insertBefore(externalUrlToastLayerEl, body.firstChild);
-  }
+// 全面表示のアプリ内ブラウザでは、ページ（WebContentsView）が HTML より前面に描かれ、
+// トーストを逃がせる余白も画面に残らない。トーストは body 直下から動かさず（理由は
+// 上のコメント参照）、表示中だけページ領域の下端を詰めて置き場所を空ける。
+// 返すのは詰める高さ（px）。トーストの上に 8px の間隔を残す。
+function internalBrowserToastReserve(browserMustOverlay) {
+  if (!browserMustOverlay || !externalUrlToastEl || externalUrlToastEl.hidden) return 0;
+  const toastTop = externalUrlToastEl.getBoundingClientRect().top;
+  const sidebarBottom = internalBrowserSidebar.getBoundingClientRect().bottom;
+  return Math.max(0, Math.ceil(sidebarBottom - toastTop) + 8);
 }
 
 function clearExternalUrlToastTimer() {
@@ -1682,7 +1679,11 @@ function ensureExternalUrlToast() {
 
   externalUrlToastLayerEl = layer;
   externalUrlToastEl = toast;
-  syncExternalUrlToastPlacement(document.getElementById('root')?.classList.contains('internal-browser-overlay'));
+  // 表示・本文の差し替え・消去のどれでも箱の大きさが変わる。全面表示ではその都度
+  // ページ領域を詰め直す必要があるため、経路ごとに呼ばず大きさの変化で同期する。
+  new ResizeObserver(() => {
+    if (document.getElementById('root')?.classList.contains('internal-browser-overlay')) syncInternalBrowserLayout();
+  }).observe(toast);
   return toast;
 }
 

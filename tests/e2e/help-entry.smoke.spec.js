@@ -195,9 +195,25 @@ test('使い方・ヘルプ: 確認失敗の再確認、未保存キャンセル
       };
     });
     const returnAction = await win.evaluate(() => VKIpc.invoke('internal-browser:action', 'back'));
-    await expect.poll(() => win.locator('.internal-browser-url').inputValue(), {
-      message: `案内を開いた前ページへ戻る: action=${returnAction} history=${JSON.stringify(historyBeforeReturn)}`,
-    }).toBe(previousUrl);
+    try {
+      await expect.poll(() => win.locator('.internal-browser-url').inputValue(), {
+        message: `案内を開いた前ページへ戻る: action=${returnAction} history=${JSON.stringify(historyBeforeReturn)}`,
+      }).toBe(previousUrl);
+    } finally {
+      const historyAfterReturn = await app.evaluate(({ webContents }) => {
+        const page = webContents.getAllWebContents().find((contents) => contents.getURL().startsWith('vk-terminals-help://guide/')
+          || contents.getURL().includes('/previous'));
+        return {
+          documentUrl: page?.getURL(),
+          activeIndex: page?.navigationHistory.getActiveIndex(),
+          entries: page?.navigationHistory.getAllEntries().map((entry) => entry.url),
+        };
+      });
+      fs.writeFileSync(path.join(os.tmpdir(), 'vk600-history-debug.json'), JSON.stringify({
+        previousUrl, returnAction, historyBeforeReturn, historyAfterReturn,
+        address: await win.locator('.internal-browser-url').inputValue(),
+      }, null, 2));
+    }
     await win.locator('.internal-browser-toolbar [data-action="forward"]').click();
     await expect(win.locator('.internal-browser-url')).toHaveValue(/guide/);
     await win.locator('.internal-browser-toolbar [data-action="external"]').click();

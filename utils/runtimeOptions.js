@@ -121,7 +121,7 @@ function normalizeEmbeddedOptions(raw) {
   if (options.setupShell !== undefined) {
     const shell = options.setupShell;
     if (!shell || typeof shell !== 'object' || Array.isArray(shell)) throw new TypeError('embedded options: setupShell must be an object');
-    if (typeof shell.command !== 'string' || !shell.command.trim() || shell.command.length > 1000 || /[\x00-\x08\x0a-\x1f\x7f]/.test(shell.command)) {
+    if (typeof shell.command !== 'string' || !shell.command.trim() || shell.command.length > 1000 || /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(shell.command)) {
       throw new TypeError('embedded options: setupShell.command must be a non-empty single-line command of at most 1000 characters');
     }
     if (shell.cwd !== undefined && !isExistingAbsoluteDirectory(shell.cwd)) throw new TypeError('embedded options: setupShell.cwd must be an existing absolute directory');

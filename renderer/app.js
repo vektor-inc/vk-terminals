@@ -513,6 +513,7 @@ let newPaneAutoLaunchClaude = false;
 let initialPaneEngine = 'claude';
 let initialPaneCodexModel = '';
 let setupShellStartup = false;
+let setupShellInputUsed = false;
 // ペインを閉じる時の確認（issue #184）。'never' | 'busy' | 'always'（既定 'busy'）。
 // 値は起動時に main（app:get-config）から取得する。保存後は main の定期監視で反映する。
 let confirmClosePref = 'busy';
@@ -7430,7 +7431,10 @@ async function initApp() {
   let initialPaneOptions = initialPaneEngine === 'codex'
     ? { engine: 'codex', ...(initialPaneCodexModel ? { model: initialPaneCodexModel } : {}) }
     : {};
-  if (setupShellStartup) initialPaneOptions = { setupShell: true };
+  if (setupShellStartup) {
+    initialPaneOptions = setupShellInputUsed ? { noClaude: true } : { setupShell: true };
+    setupShellInputUsed = true;
+  }
   // セットアップ状況の確認結果（最大 5 秒待つ）。このパソコンで初めて未完了と判定されたときだけ、
   // 起動時に必ず作るこのペインをセットアップ用ペインにする（2 枚目は作らない）。
   // Claude Code が無いときは Claude 無しのシェルで開き、command not found を見せない。

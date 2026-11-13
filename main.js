@@ -389,6 +389,7 @@ const paneCreationTrustWatchers = new Map();
 const RESTART_AGENT_QUEUE_TIMEOUT_MS = 15000;
 let nextId = 1;
 let firstTerminalCreated = false;
+let setupShellInputUsed = false;
 
 // CLI フラグ: `--no-claude`（または `--plain`）が指定された場合、
 // 新規ペインで claude を自動起動せず素のシェルとして開く。
@@ -410,7 +411,7 @@ const { createRestartApplication } = require('./utils/restartApplication');
 // 組み込み用の入口（embedded.js）から起動されたときだけ値が入る。electron . では null。
 const EMBEDDED_OPTIONS = getEmbeddedOptions();
 const SETUP_SHELL = EMBEDDED_OPTIONS?.setupShell || null;
-const PANE_HOLDER = resolvePaneHolder({ argv: process.argv, embedded: EMBEDDED_OPTIONS, warn: message => console.warn(`[vk-terminals] ${message}`) });
+const PANE_HOLDER = SETUP_SHELL ? null : resolvePaneHolder({ argv: process.argv, embedded: EMBEDDED_OPTIONS, warn: message => console.warn(`[vk-terminals] ${message}`) });
 const HOLDER_TMUX = EMBEDDED_OPTIONS?.tmuxPath || 'tmux';
 const HOLDER_ENV = { ...process.env, ...EMBEDDED_OPTIONS?.tmuxEnv };
 function holderOptions() { return { tmux: HOLDER_TMUX, env: HOLDER_ENV, verifyAttach: info => verifyHolder(info), config: path.join(RESOURCE_ROOT, 'tmux-holder.conf') }; }
@@ -1804,7 +1805,7 @@ app.whenReady().then(async () => {
   await applyLoginShellPath();
   appendUserLocalBin();
   // セットアップ状況の確認は、ウィンドウの用意と並行して先に始めておく（最初のペインの判断で待つため）。
-  if (setupStatusChecker && !SETUP_SHELL) startupSetupCheck = setupStatusChecker.check();
+  if (setupStatusChecker) startupSetupCheck = setupStatusChecker.check();
   createWindow();
   startWidgetWatcher();
   // issue #546: 更新確認の通信中も起動直後から HTTP API を受け付ける。
@@ -2601,7 +2602,7 @@ function hasRecentHolderMetadata(socket) {
 let restoreAttempted = false;
 let restoredPaneCount = 0;
 ipcMain.handle('terminal:restore', async () => {
-  if (EMBEDDED_OPTIONS?.setupShell) return { panes: [], order: [], stashOrder: [], missing: 0 };
+  if (SETUP_SHELL) return { panes: [], order: [], stashOrder: [], missing: 0 };
   if (restoreAttempted) return { panes: [], order: [], stashOrder: [], missing: 0 };
   restoreAttempted = true;
   if (PANE_HOLDER !== 'tmux' || tmuxUnavailable) {
@@ -2728,7 +2729,7 @@ function createTerminalPane(cwd, options = {}, guide = null) {
   if (setupLaunch && !SETUP_FEATURE) {
     throw new Error('Setup pane is not available.');
   }
-  const setupShellLaunch = SETUP_SHELL && options.setupShell === true;
+  const setupShellLaunch = SETUP_SHELL && options.setupShell === true && ptys.size === 0 && !setupShellInputUsed;
   if (options.setupShell !== undefined && !setupShellLaunch) throw new Error('Setup shell is not available.');
   let userInfo = null;
   if (process.platform !== 'darwin' && process.platform !== 'win32') {
@@ -2753,7 +2754,7 @@ function createTerminalPane(cwd, options = {}, guide = null) {
     },
   });
   const id = String(nextId++);
-  let resolvedCwd = setupShellLaunch ? (SETUP_SHELL.cwd || process.env.HOME || os.tmpdir()) : guideLaunch ? HELP_FEATURE.cwd : setupLaunch
+  let resolvedCwd = setupShellLaunch ? (SETUP_SHELL.cwd || process.env.HOME || process.env.USERPROFILE || os.tmpdir()) : guideLaunch ? HELP_FEATURE.cwd : setupLaunch
     ? SETUP_FEATURE.setupPane.cwd
     : (cwd || process.env.HOME || process.env.USERPROFILE || os.tmpdir());
   let cwdUsable = false;
@@ -2771,7 +2772,7 @@ function createTerminalPane(cwd, options = {}, guide = null) {
 
   // `options.noClaude` が明示指定されていればそれを優先、未指定なら CLI フラグの値を継承。
   // `noClaude` が true の場合、claude を自動起動せず素のシェルとして開く。
-  const noClaude = setupShellLaunch ? true : guideLaunch ? false : typeof options.noClaude === 'boolean' ? options.noClaude : globalPlainMode;
+  const noClaude = SETUP_SHELL ? true : guideLaunch ? false : typeof options.noClaude === 'boolean' ? options.noClaude : globalPlainMode;
 
   // `options.engine` の再検証（issue #367）。HTTP 受け口（/api/new-pane）でも検証済みだが、
   // ここでも isValidEngine が再検証する（model と同じ二重化構造・#310 の前例）。
@@ -2826,7 +2827,6 @@ function createTerminalPane(cwd, options = {}, guide = null) {
 
   let ptyProcess;
   try {
-    if (!setupShellLaunch) {
     if (holderPaneCreationBlocked) throw holderPaneCreationBlockedError();
     if (tmuxHolder && !tmuxHolder.active) tmuxHolder = null;
     if (PANE_HOLDER === 'tmux' && !tmuxHolder && !tmuxUnavailable) {
@@ -2845,7 +2845,6 @@ function createTerminalPane(cwd, options = {}, guide = null) {
         console.warn(`${LOG_PREFIX} tmux pane failed (${error.message}; socket: ${tmuxHolder.socket}); using node-pty`);
         if (!tmuxHolder.active) tmuxHolder = null;
       }
-    }
     }
     if (!ptyProcess) ptyProcess = pty.spawn(shell, setupShellLaunch && process.platform !== 'win32' ? ['-l'] : [], {
       name: 'xterm-256color',
@@ -3096,6 +3095,7 @@ function createTerminalPane(cwd, options = {}, guide = null) {
     promptWatcherTimeoutId = null;
   }, shellStartup: { onInput(data) { shellStartup?.onInput(data); setupInput?.onInput(data); } } });
   if (setupShellLaunch) {
+    setupShellInputUsed = true;
     setupInput = createSetupShellInput(SETUP_SHELL.command, (data) => {
       if (ptys.get(id) === ptyProcess) ptyProcess.write(data);
     });

@@ -15,7 +15,7 @@ test('setupShell はコマンドと任意の作業フォルダを受け付ける
 });
 
 test('setupShell は不正な入力を拒否する', () => {
-  for (const value of [null, 1, [], {}, { command: '' }, { command: ' ' }, { command: 1 }, { command: 'x'.repeat(1001) }, { command: 'a\nb' }, { command: 'a\rb' }, { command: 'a\x1bb' }, { command: 'a\x7fb' }, { command: 'a\x00b' }, { command: 'x', cwd: '.' }, { command: 'x', cwd: '/missing-607' }]) {
+  for (const value of [null, 1, [], {}, { command: '' }, { command: ' ' }, { command: 1 }, { command: 'x'.repeat(1001) }, { command: 'a\nb' }, { command: 'a\rb' }, { command: 'a\x1bb' }, { command: 'a\x7fb' }, { command: 'a\x00b' }, { command: 'a\tb' }, { command: 'a\u0085b' }, { command: 'a\u2028b' }, { command: 'a\u2029b' }, { command: 'a\u202eb' }, { command: 'a\u200bb' }, { command: 'x', cwd: '.' }, { command: 'x', cwd: '/missing-607' }]) {
     assert.throws(() => normalizeEmbeddedOptions({ setupShell: value }), TypeError);
   }
 });
@@ -34,16 +34,49 @@ test('プロンプトが出るまで書かず、Enter なしで一度だけ貼�
   assert.equal(writes[0].includes('\n'), false);
 });
 
-test('ブラケット貼り付けが無い場合も Enter を付けず、タブは quote-next で入力する', () => {
+test('ブラケット貼り付けが無い場合は素の文字列を入力する', () => {
   const writes = [];
   let callback;
-  const scheduler = { setTimer: fn => { callback = fn; return 1; }, clearTimer: () => {} };
-  createSetupShellInput('echo hello', value => writes.push(value), scheduler).onData('$ ');
+  createSetupShellInput('echo hello', value => writes.push(value), { setTimer: fn => { callback = fn; return 1; }, clearTimer: () => {} }).onData('$ ');
   callback();
   assert.deepEqual(writes, ['echo hello']);
-  createSetupShellInput('echo\thello', value => writes.push(value), scheduler).onData('$ ');
-  callback();
-  assert.deepEqual(writes, ['echo hello', 'echo\x16\thello']);
+});
+
+test('貼り付けモードの分割・解除と右側プロンプトを扱う', () => {
+  const writes = [];
+  let callbacks = [];
+  const timer = { setTimer: fn => { callbacks.push(fn); return callbacks.length; }, clearTimer: () => {} };
+  const input = createSetupShellInput('echo hello', value => writes.push(value), timer);
+  input.onData('\x1b[?20');
+  input.onData('04h➜  ~ ');
+  callbacks.at(-1)();
+  assert.deepEqual(writes, ['\x1b[200~echo hello\x1b[201~']);
+  const disabled = createSetupShellInput('echo hello', value => writes.push(value), timer);
+  disabled.onData('\x1b[?2004h\x1b[?2004l➜  ~ ');
+  callbacks.at(-1)();
+  assert.equal(writes.length, 1);
+  const fallback = createSetupShellInput('echo hello', value => writes.push(value), timer);
+  fallback.onData('➜  ~ \x1b[10G');
+  callbacks.at(-1)();
+  assert.equal(writes.at(-1), 'echo hello');
+});
+
+test('dispose と30秒の期限後は入力しない', () => {
+  for (const expire of [false, true]) {
+    const writes = [];
+    const timers = new Map();
+    let next = 0;
+    const input = createSetupShellInput('echo', value => writes.push(value), {
+      setTimer: (fn, delay) => { timers.set(++next, { fn, delay }); return next; },
+      clearTimer: id => timers.delete(id),
+    });
+    input.onData('$ ');
+    const quiet = [...timers.values()].find(item => item.delay === 150).fn;
+    if (expire) timers.get(1).fn(); else input.dispose();
+    quiet();
+    input.onData('$ ');
+    assert.deepEqual(writes, []);
+  }
 });
 
 test('先に利用者が入力した場合は自動挿入しない', () => {
@@ -56,14 +89,11 @@ test('先に利用者が入力した場合は自動挿入しない', () => {
   assert.deepEqual(writes, []);
 });
 
-test('専用起動だけが復元・追加ペイン・セットアップ自動確認を止める', () => {
+test('専用セッションの起動条件と追加ペインの安全側の既定値', () => {
   const main = fs.readFileSync(path.join(__dirname, '../main.js'), 'utf8');
   const renderer = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
-  assert.match(main, /const SETUP_SHELL = EMBEDDED_OPTIONS\?\.setupShell \|\| null/);
-  assert.match(main, /const noClaude = setupShellLaunch \? true/);
-  assert.match(main, /if \(EMBEDDED_OPTIONS\?\.setupShell\) return \{ panes: \[\]/);
-  assert.match(main, /if \(SETUP_SHELL\) return;\n  if \(restoredPaneCount\)/);
-  assert.match(renderer, /if \(!setupShellStartup && initialRestorePending/);
-  assert.match(renderer, /if \(setupShellStartup\) initialPaneOptions = \{ setupShell: true \}/);
-  assert.match(renderer, /if \(setupPanel && !setupShellStartup\)/);
+  assert.match(main, /SETUP_SHELL \? null : resolvePaneHolder/);
+  assert.match(main, /options\.setupShell === true && ptys\.size === 0 && !setupShellInputUsed/);
+  assert.match(main, /const noClaude = SETUP_SHELL \? true/);
+  assert.match(renderer, /setupShellInputUsed \? \{ noClaude: true \} : \{ setupShell: true \}/);
 });

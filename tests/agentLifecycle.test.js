@@ -344,9 +344,12 @@ test('readyと前景group切替後に両世代の裏作業を検知し終了時�
     await background.poll();
     await background.poll();
     assert.equal(background.isRunning('pane'), true);
+    // 子孫group 30を追跡してから、シェルの終了による孤児化を再現する。
+    await timers.find(timer => !timer.cleared && timer.delay === 100).callback();
     processes = table(row(10, 1, 10, 20), row(20, 10, 20, 20), row(31, 1, 30, 0), row(32, 20, 32, 0));
     const orphanPoll = timers.find(timer => !timer.cleared && timer.delay === 100);
     await orphanPoll.callback();
+    assert.equal(store.get('pane', generation), 'running');
     await background.poll();
     await background.poll();
     assert.equal(background.isRunning('pane'), true);

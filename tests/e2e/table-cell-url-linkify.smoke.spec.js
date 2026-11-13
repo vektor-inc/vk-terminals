@@ -142,6 +142,8 @@ async function modifierClickAtOffset(win, pos, colOffset, mac) {
   await win.mouse.up();
   await win.keyboard.up(key);
   await new Promise((resolve) => setTimeout(resolve, 250));
+  const external = win.getByRole('menuitem', { name: '外部ブラウザで開く ↗', exact: true });
+  if (await external.count()) await external.click();
 }
 
 // shell.openExternal を main プロセス側で差し替える（external-url-toast.smoke.spec.js と

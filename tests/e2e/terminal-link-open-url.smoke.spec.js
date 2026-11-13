@@ -186,6 +186,8 @@ async function modifierClickAtOffset(win, pos, colOffset, mac) {
   await win.mouse.up();
   await win.keyboard.up(key);
   await new Promise((resolve) => setTimeout(resolve, 250));
+  const external = win.getByRole('menuitem', { name: '外部ブラウザで開く ↗', exact: true });
+  if (await external.count()) await external.click();
 }
 
 // 修飾キー無しでそのままクリックする（pos.col + colOffset のセル）。
@@ -199,6 +201,8 @@ async function plainClickAtOffset(win, pos, colOffset) {
   await win.mouse.down();
   await win.mouse.up();
   await new Promise((resolve) => setTimeout(resolve, 250));
+  const external = win.getByRole('menuitem', { name: '外部ブラウザで開く ↗', exact: true });
+  if (await external.count()) await external.click();
 }
 
 // 右クリック（button: 2）で pos.col + colOffset のセルをクリックする（issue #385
@@ -290,7 +294,7 @@ test.describe.serial('ペイン内 URL の Cmd/Ctrl+クリック（issue #349 / 
   });
 
   // issue #385: terminalLinkClickMode の既定は 'click'（単クリックで開く）に変更された。
-  // ツールチップは予告文（「◯◯ を開きます」）になり、修飾キー案内は 'modifier' モード
+  // ツールチップは開き先メニューの予告文になり、修飾キー案内は 'modifier' モード
   // 専用になった（'modifier' モードの回帰は本ファイル末尾の別 describe ブロック参照）。
   test('URL にホバーすると、解決後のホスト名と単クリックで開く予告をツールチップに出す（issue #385）', async () => {
     const url = 'https://example.com/vk-terminals-e2e-hover';
@@ -307,7 +311,7 @@ test.describe.serial('ペイン内 URL の Cmd/Ctrl+クリック（issue #349 / 
     // ホストは new URL(url).host（VKUrlLinkify.getUrlHost）による解決後の値。
     // なりすまし対策としてのホスト表示は 'click' モードでも維持される（安藤指摘）。
     expect(tooltip.text).toContain('example.com');
-    expect(tooltip.text).toContain('を開きます');
+    expect(tooltip.text).toContain('開き先を選ぶ');
   });
 
   // issue #385: 既定モードでは、フォーカス済みペインへの修飾キー無しクリックで開く

@@ -188,6 +188,11 @@ function prBadgeLocator(win, url) {
     .and(win.locator('.pane-task-title-pr'));
 }
 
+async function openPrBadgeExternally(win, prBadge) {
+  await prBadge.click();
+  await win.getByRole('menuitem', { name: '外部ブラウザで開く ↗', exact: true }).click();
+}
+
 test.describe.serial('外部ブラウザを開けなかったときのトースト（issue #326）', () => {
   let app;
   let win;
@@ -217,7 +222,7 @@ test.describe.serial('外部ブラウザを開けなかったときのトース�
       await postSetTitle(port, { termId: '1', title: 'issue #326 成功時', prUrl });
       const prBadge = win.locator('.pane .pane-task-title-pr').first();
       await expect(prBadge).toBeVisible();
-      await prBadge.click();
+      await openPrBadgeExternally(win, prBadge);
 
       // main まで実際に届いたことを確認したうえで、成功時は画面に何も出ないことを見る。
       // toBeHidden() は「存在しない」「存在するが非表示」のどちらも合格にする
@@ -238,7 +243,7 @@ test.describe.serial('外部ブラウザを開けなかったときのトース�
       await postSetTitle(port, { termId: '1', title: 'issue #326 失敗時', prUrl });
       const prBadge = win.locator('.pane .pane-task-title-pr').first();
       await expect(prBadge).toBeVisible();
-      await prBadge.click();
+      await openPrBadgeExternally(win, prBadge);
 
       const toast = win.locator('.vk-toast');
       await expect(toast).toBeVisible();
@@ -268,11 +273,11 @@ test.describe.serial('外部ブラウザを開けなかったときのトース�
 
       // 連続でクリックして 2 回失敗させる。積み上げる実装なら .vk-toast が複数生えるが、
       // 「#root 直下に 1 つだけ常設し、前の内容を上書きする」実装なら常に 1 個のまま。
-      await prBadge.click();
+      await openPrBadgeExternally(win, prBadge);
       await expect(win.locator('.vk-toast')).toBeVisible();
       await expect(win.locator('.vk-toast')).toHaveCount(1);
 
-      await prBadge.click();
+      await openPrBadgeExternally(win, prBadge);
       await expect(win.locator('.vk-toast')).toHaveCount(1);
       await expect(win.locator('.vk-toast .vk-toast-message')).toHaveText('ブラウザを開けませんでした');
     } finally {
@@ -286,7 +291,7 @@ test.describe.serial('外部ブラウザを開けなかったときのトース�
     try {
       const prBadge = win.locator('.pane .pane-task-title-pr').first();
       await postSetTitle(port, { termId: '1', title: 'issue #326 コピー成功', prUrl });
-      await prBadge.click();
+      await openPrBadgeExternally(win, prBadge);
 
       const toast = win.locator('.vk-toast');
       await expect(toast.locator('.vk-toast-message')).toHaveText('ブラウザを開けませんでした');
@@ -309,7 +314,7 @@ test.describe.serial('外部ブラウザを開けなかったときのトース�
     try {
       const prBadge = win.locator('.pane .pane-task-title-pr').first();
       await postSetTitle(port, { termId: '1', title: 'issue #326 コピー失敗', prUrl });
-      await prBadge.click();
+      await openPrBadgeExternally(win, prBadge);
 
       const toast = win.locator('.vk-toast');
       await expect(toast.locator('.vk-toast-message')).toHaveText('ブラウザを開けませんでした');
@@ -333,7 +338,7 @@ test.describe.serial('外部ブラウザを開けなかったときのトース�
       await postSetTitle(port, { termId: '1', title: 'issue #326 中: 失敗A', prUrl });
       const prBadgeA = prBadgeLocator(win, prUrl);
       await expect(prBadgeA).toBeVisible();
-      await prBadgeA.click();
+      await openPrBadgeExternally(win, prBadgeA);
       await expect(win.locator('.vk-toast')).toBeVisible();
       await expect(win.locator('.vk-toast .vk-toast-message')).toHaveText('ブラウザを開けませんでした');
 
@@ -345,7 +350,7 @@ test.describe.serial('外部ブラウザを開けなかったときのトース�
       await postSetTitle(port, { termId: '1', title: 'issue #326 中: 成功B', prUrl: succeedingUrl });
       const prBadgeB = prBadgeLocator(win, succeedingUrl);
       await expect(prBadgeB).toBeVisible();
-      await prBadgeB.click();
+      await openPrBadgeExternally(win, prBadgeB);
 
       // main まで実際に succeedingUrl が届いたことを確認したうえで、トーストが
       // 消えていること（「ブラウザを開けませんでした」が A のまま残ってコピー対象が
@@ -380,7 +385,7 @@ test.describe.serial('外部ブラウザを開けなかったときのトース�
       const prBadge = prBadgeLocator(win, prUrl);
       await postSetTitle(port, { termId: '1', title: 'issue #326 ペイン追加前', prUrl });
       await expect(prBadge).toBeVisible();
-      await prBadge.click();
+      await openPrBadgeExternally(win, prBadge);
       await expect(win.locator('.vk-toast')).toBeVisible();
 
       // ペインを追加する（render() が #root の子を丸ごと差し替える経路を踏む）。
@@ -390,7 +395,7 @@ test.describe.serial('外部ブラウザを開けなかったときのトース�
       // 同じリンクをもう一度失敗させる。#root の外（document.body 直下）にあれば、
       // ペイン追加の影響を受けずに再表示できるはず。
       await postSetTitle(port, { termId: '1', title: 'issue #326 ペイン追加後', prUrl });
-      await prBadge.click();
+      await openPrBadgeExternally(win, prBadge);
       await expect(win.locator('.vk-toast')).toBeVisible();
       await expect(win.locator('.vk-toast .vk-toast-message')).toHaveText('ブラウザを開けませんでした');
     } finally {
@@ -416,7 +421,7 @@ test.describe.serial('外部ブラウザを開けなかったときのトース�
     try {
       const prBadge = prBadgeLocator(win, prUrl);
       await postSetTitle(port, { termId: '1', title: 'issue #326 モーダル前の失敗', prUrl });
-      await prBadge.click();
+      await openPrBadgeExternally(win, prBadge);
       await expect(win.locator('.vk-toast')).toBeVisible();
 
       // 設定モーダルを開く（ここで focusTrap.js の applyInert が body 直下の子を
@@ -509,7 +514,7 @@ test.describe.serial('外部ブラウザを開けなかったときのトース�
         const prBadge = prBadgeLocator(win, prUrl);
         await postSetTitle(port, { termId: '1', title: 'issue #326 中: 確認ダイアログ前', prUrl });
         await expect(prBadge).toBeVisible();
-        await prBadge.click();
+        await openPrBadgeExternally(win, prBadge);
         await expect(win.locator('.vk-toast')).toBeVisible();
 
         // ペインを閉じる確認ダイアログを開く。status（running/waiting）に依存する

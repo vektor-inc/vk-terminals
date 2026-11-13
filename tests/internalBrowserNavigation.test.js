@@ -359,8 +359,15 @@ for (const trigger of ['link', 'location.replace']) {
       const old = contents.loads.at(-1);
       // Electron と同じく、executeJavaScript はロード停止まで旧文書を操作しない。
       let loading = true;
+      let navigationStarted = false;
+      const rendererTimers = [];
       contents.isLoading = () => loading;
       const execute = expression => require('node:vm').runInNewContext(expression, {
+        setTimeout(callback, delay) {
+          assert.equal(delay, 0);
+          rendererTimers.push(callback);
+          return 1;
+        },
         document: { getElementById(id) {
           assert.equal(id, 'link');
           return { click: () => startNavigation('/destination') };
@@ -368,6 +375,8 @@ for (const trigger of ['link', 'location.replace']) {
         location: { replace: startNavigation },
       });
       const startNavigation = relative => {
+        navigationStarted = true;
+        assert.equal(relative, '/destination');
         const url = new URL(relative, contents.getURL()).href;
         contents.emit('will-navigate', { url });
         contents.startNative(url, 'native-page');
@@ -385,13 +394,29 @@ for (const trigger of ['link', 'location.replace']) {
         if (method !== 'Runtime.evaluate') return sendCommand(method, params);
         assert.equal(loading, true);
         execute(params.expression);
+        // 実 Electron の停止条件を再現する。同期遷移中の評価応答は
+        // did-stop-loading まで返らず、即時応答モックでは回帰を見逃す。
+        if (navigationStarted) return new Promise(resolve => {
+          contents.once('did-stop-loading', () => resolve({ result: { type: 'undefined' } }));
+        });
         return Promise.resolve({ result: { type: 'undefined' } });
       };
       const abortOld = async () => {
         old.resolve({ frameId: 'main', loaderId: old.loaderId, errorText: 'net::ERR_ABORTED' });
         await flushBrowserLoads();
       };
-      await navigateFromLoadingPage(contents, trigger);
+      let evaluationResolved = false;
+      const evaluation = navigateFromLoadingPage(contents, trigger).then(() => { evaluationResolved = true; });
+      await flushBrowserLoads();
+      assert.equal(evaluationResolved, true, 'CDP 評価はロード停止を待たず完了する');
+      await evaluation;
+      assert.equal(navigationStarted, false, '評価完了までは旧文書から遷移しない');
+      assert.equal(rendererTimers.length, 1);
+      assert.equal(states.at(-1).navigationRequestId, 2);
+      assert.equal(states.at(-1).navigationResult, null);
+      // renderer の次のタスクで、実際の式が指定した操作を発火する。
+      rendererTimers.shift()();
+      assert.equal(navigationStarted, true);
       const operation = states.at(-1).navigationOperationId;
       assert.equal(stopped, 0);
       assert.equal(states.at(-1).navigationRequestId, null);

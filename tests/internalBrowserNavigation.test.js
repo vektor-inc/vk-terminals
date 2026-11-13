@@ -1081,11 +1081,19 @@ test('初期about:blankの準備中に案内を開いてもCDP初期化を中断
   const guideLoads = [];
   contents.loadURL = url => { guideLoads.push(url); return Promise.resolve(); };
   const guide = browser.openHelp();
+  let settled = false;
+  guide.then(() => { settled = true; }, () => { settled = true; });
   assert.deepEqual(guideLoads, []);
   release();
+  assert.equal(contents.getURL(), 'about:blank');
+  contents.emit('did-finish-load');
+  contents.emit('did-stop-loading');
   await flushBrowserLoads();
   assert.deepEqual(guideLoads, [HELP_URL]);
   assert.equal(contents.loads.length, 0);
+  assert.equal(settled, false);
+  assert.equal(states.at(-1).navigationResult, null);
+  assert.equal(states.at(-1).pendingUrl, HELP_URL);
   contents.setDocumentUrl(HELP_URL);
   contents.emit('did-finish-load');
   assert.equal(await guide, true);
@@ -1095,6 +1103,37 @@ test('初期about:blankの準備中に案内を開いてもCDP初期化を中断
   assert.equal(states.at(-1).navigationRequestId, 2);
   browser.destroy();
 });
+
+for (const event of ['did-finish-load', 'did-fail-load', 'did-stop-loading']) {
+  test(`案内開始前の${event}は案内URLでも完了・失敗にしない`, async () => {
+    const { HELP_URL } = require('../utils/internalBrowserPolicy');
+    let release;
+    const { browser, contents, states } = setup({ bootstrap: (loadURL, url) => new Promise(resolve => {
+      release = () => resolve(loadURL(url));
+    }) });
+    const guideLoads = [];
+    contents.loadURL = url => { guideLoads.push(url); return Promise.resolve(); };
+    const guide = browser.openHelp();
+    let settled = false;
+    guide.then(() => { settled = true; }, () => { settled = true; });
+    contents.setDocumentUrl(HELP_URL);
+    contents.emit(event, {}, -105, 'previous load failure', HELP_URL, true);
+    await flushBrowserLoads();
+    assert.equal(settled, false);
+    assert.equal(states.at(-1).navigationResult, null);
+    assert.equal(states.at(-1).pendingUrl, HELP_URL);
+    assert.deepEqual(guideLoads, []);
+    release();
+    await flushBrowserLoads();
+    assert.deepEqual(guideLoads, [HELP_URL]);
+    assert.equal(settled, false);
+    contents.setDocumentUrl(HELP_URL);
+    contents.emit('did-finish-load');
+    assert.equal(await guide, true);
+    assert.equal(states.at(-1).navigationResult, 'completed');
+    browser.destroy();
+  });
+}
 
 test('案内を確定した後に前のGitHub文書の404案内を復元しない', async () => {
   const { HELP_URL } = require('../utils/internalBrowserPolicy');

@@ -341,7 +341,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
         load.rejectHelp = null;
       };
       const finish = () => {
-        if (activeLoad !== load || !isHelpUrl(contents.getURL())) return;
+        if (!load.started || activeLoad !== load || !isHelpUrl(contents.getURL())) return;
         cleanup();
         load.finish(null, contents.getURL());
         resolve(true);
@@ -353,11 +353,11 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
       };
       load.rejectHelp = rejectLoad;
       const fail = (_event, code, description, destination, isMainFrame) => {
-        if (!isMainFrame || code === -3 || !isHelpUrl(destination) || activeLoad !== load) return;
+        if (!load.started || !isMainFrame || code === -3 || !isHelpUrl(destination) || activeLoad !== load) return;
         rejectLoad(new Error(`Help document load failed (${code}): ${description}`));
       };
       const stop = () => {
-        if (activeLoad !== load) return;
+        if (!load.started || activeLoad !== load) return;
         if (isHelpUrl(contents.getURL())) finish();
         else rejectLoad(new Error('Help document load interrupted'));
       };

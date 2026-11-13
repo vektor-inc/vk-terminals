@@ -575,7 +575,7 @@ function detailLinks(lines, cols, lineNumber) {
 }
 
 test('詳細 URL: どちらの断片からも完全な URL と実文字位置の範囲を返す', () => {
-  const first = 'https://github.com/vektor-inc/vk-orchestrator/issues/831#issueco';
+  const first = 'https://github.com/vektor-inc/vk-orchestrator/issues/831#issueco.';
   const second = '  mment-6650882021';
   const lines = ['  ⏺ ■ 詳細URL', first, second];
   const cols = first.length + 5;
@@ -589,12 +589,80 @@ test('詳細 URL: どちらの断片からも完全な URL と実文字位置の
   }
 });
 
-test('詳細 URL: 見出しが無い場合と見出しから離れた場合は連結しない', () => {
+test('詳細 URL: 見出しが無い場合と見出しから離れた場合も連結する', () => {
   const url = 'https://example.com/part';
   for (const lines of [[url, '  rest'], ['■ 詳細URL', '文章', url, '  rest']]) {
     const links = detailLinks(lines, 40, lines.length - 1);
-    assert.equal(links[0].text, url);
+    assert.equal(links[0].text, url + 'rest');
   }
+});
+
+test('字下げ URL: 番号付きリストの 2・3 行をどの行からも復元する', () => {
+  for (const tail of [[], ['   /SKILL.md']]) {
+    const lines = ['1. 原稿作成: https://github.com/vektor-inc/vk-agents', '   -private/blob/main', ...tail];
+    const expected = 'https://github.com/vektor-inc/vk-agents-private/blob/main' + (tail.length ? '/SKILL.md' : '');
+    for (let lineNumber = 1; lineNumber <= lines.length; lineNumber += 1) {
+      const links = detailLinks(lines, 90, lineNumber);
+      assert.equal(links[0].text, expected);
+      assert.deepEqual(links[0].range, {
+        start: { x: lines[0].indexOf('https://') + 1, y: 1 },
+        end: { x: lines.at(-1).length, y: lines.length },
+      });
+    }
+  }
+});
+
+test('字下げ URL: 箇条書きと地の文を復元する', () => {
+  for (const prefix of ['- ', '* ', '• ', '⏺ ', '詳細は ']) {
+    const lines = [prefix + 'https://example.com/pa', '  th'];
+    for (const lineNumber of [1, 2]) {
+      assert.equal(detailLinks(lines, 50, lineNumber)[0].text, 'https://example.com/path');
+    }
+  }
+});
+
+test('字下げ URL: 独立した URL 行はそれぞれ別のリンクになる', () => {
+  const urls = [
+    'https://github.com/vektor-inc/vk-terminals/pull/600',
+    'https://github.com/vektor-inc/vk-terminals/pull/601',
+  ];
+  const lines = ['⏺ PR を作成しました。', ...urls.map((url) => '  ' + url)];
+  for (const lineNumber of [2, 3]) {
+    const links = detailLinks(lines, 70, lineNumber);
+    assert.deepEqual(links.map((link) => link.text), [urls[lineNumber - 2]]);
+  }
+});
+
+test('字下げ URL: 自動折り返しのコマンド引数は URL に連結しない', () => {
+  const url = 'https://example.com/path';
+  const first = 'curl ' + url;
+  const links = detailLinks([first, { text: ' -v', isWrapped: true }], first.length, 1);
+  assert.equal(links[0].text, url);
+});
+
+test('字下げ URL: 無効な連結候補でも元のホストへのリンクを残す', () => {
+  const url = 'https://github.com';
+  const links = detailLinks(['- ' + url, '  foo'], 40, 1);
+  assert.deepEqual(links.map((link) => link.text), [url]);
+});
+
+test('字下げ URL: ちょうど 8 行の URL は連結する', () => {
+  const lines = ['- https://example.com/a', ...Array(7).fill('  b')];
+  for (const lineNumber of [1, 8]) {
+    assert.equal(detailLinks(lines, 40, lineNumber)[0].text, 'https://example.com/a' + 'b'.repeat(7));
+  }
+});
+
+test('字下げ URL: 説明文・URL 後の文字・上限超過・表は連結しない', () => {
+  const url = 'https://example.com/part';
+  for (const continuation of ['  rest of-url', '  続き']) {
+    assert.equal(detailLinks(['- ' + url, continuation], 60, 1)[0].text, url);
+  }
+  assert.equal(detailLinks(['- ' + url + ' 説明', '  tail'], 60, 1)[0].text, url);
+  assert.equal(detailLinks(['- ' + url, ...Array(8).fill('  a')], 60, 1)[0].text, url);
+  const long = url + 'a'.repeat(2020);
+  assert.equal(detailLinks([long, '  ' + 'b'.repeat(30)], 2100, 1)[0].text, long);
+  assert.equal(detailLinks(['│- ' + url + '│done│', '  tail'], 60, 1), undefined);
 });
 
 test('詳細 URL: 空白や日本語を含む続き行は連結しない', () => {
@@ -605,10 +673,10 @@ test('詳細 URL: 空白や日本語を含む続き行は連結しない', () =>
 });
 
 test('詳細 URL: 3 行以上の実改行と isWrapped の混在を復元する', () => {
-  const lines = ['■ 詳細URL', 'https://example.com/pa', '  th/to', { text: 'end', isWrapped: true }];
+  const lines = ['■ 詳細URL', 'https://example.com/pa.', '  th/to', { text: 'end', isWrapped: true }];
   for (const lineNumber of [2, 3, 4]) {
     const links = detailLinks(lines, 40, lineNumber);
-    assert.equal(links[0].text, 'https://example.com/path/toend');
+    assert.equal(links[0].text, 'https://example.com/pa.th/toend');
     assert.equal(links[0].range.end.y, 4);
   }
 });
@@ -621,11 +689,11 @@ test('詳細 URL: 行数・文字数の上限を超える場合は専用連結�
 });
 
 test('詳細 URL: 幅変更後も残る字下げ行と複数 URL を扱う', () => {
-  const lines = ['⏺ ■ 詳細URL', '  https://example.com/one', '  tail', '  https://example.com/two', '  finish'];
+  const lines = ['⏺ ■ 詳細URL', '  https://example.com/one.', '  tail', '  https://example.com/two.', '  finish'];
   for (const cols of [40, 60]) {
-    assert.equal(detailLinks(lines, cols, 2)[0].text, 'https://example.com/onetail');
+    assert.equal(detailLinks(lines, cols, 2)[0].text, 'https://example.com/one.tail');
     const links = detailLinks(lines, cols, 5);
-    assert.equal(links[0].text, 'https://example.com/twofinish');
+    assert.equal(links[0].text, 'https://example.com/two.finish');
     assert.deepEqual(links[0].range.start, { x: 3, y: 4 });
   }
 });
@@ -642,29 +710,30 @@ test('詳細 URL: 実改行でホスト名をすり替えない', () => {
   }
   // ホスト確定後のパスは両方の断片から復元できる。
   for (const lineNumber of [2, 3]) {
-    const links = detailLinks(['■ 詳細URL', 'https://example.com/pa', '  th'], 50, lineNumber);
-    assert.equal(links[0].text, 'https://example.com/path');
+    const links = detailLinks(['■ 詳細URL', 'https://example.com/pa.', '  th'], 50, lineNumber);
+    assert.equal(links[0].text, 'https://example.com/pa.th');
   }
 });
 
 test('詳細 URL: 4 本目の復元は後続 URL の有無で変わらない', () => {
   const lines = ['■ 詳細URL'];
-  for (let i = 1; i <= 4; i += 1) lines.push(`https://example.com/${i}/`, '  tail');
-  for (const suffix of [[], ['https://example.com/5/', '  finish']]) {
+  for (let i = 1; i <= 4; i += 1) lines.push(`https://example.com/${i}/.`, '  tail');
+  for (const suffix of [[], ['https://example.com/5/.', '  finish']]) {
     for (const lineNumber of [8, 9]) {
       const links = detailLinks([...lines, ...suffix], 50, lineNumber);
-      assert.equal(links[0].text, 'https://example.com/4/tail');
+      assert.equal(links[0].text, 'https://example.com/4/.tail');
     }
   }
 });
 
 test('詳細 URL: 見出しは空白と任意の先頭記号 1 個だけを許容する', () => {
-  const url = 'https://example.com/part';
+  // 句点で終わる URL は字下げ URL 処理の起点にならず、詳細 URL 処理だけが続き行をつなげる。
+  const url = 'https://example.com/part.';
   for (const heading of ['■ 詳細URL', '  ■ 詳細URL  ', '⏺ ■ 詳細URL', ' • ■ 詳細URL', '● ■ 詳細URL']) {
     assert.equal(detailLinks([heading, url, '  tail'], 50, 2)[0].text, url + 'tail');
   }
   for (const heading of ['echo foo ■ 詳細URL', 'foo■ 詳細URL', '⏺ • ■ 詳細URL', '■ 詳細URL extra']) {
-    assert.equal(detailLinks([heading, url, '  tail'], 50, 2)[0].text, url);
+    assert.equal(detailLinks([heading, url, '  tail'], 50, 2)[0].text, url.slice(0, -1));
   }
 });
 

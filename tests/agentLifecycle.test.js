@@ -164,6 +164,43 @@ test('既知identity消失後に同PGIDの未観測memberが残ればnull', () =
   assert.equal(result.terminal, true);
 });
 
+test('AI本体が別groupへ移動後も未観測memberだけならnull', () => {
+  const snapshot = tracking(20, [[20, START]]);
+  const moved = inspectLifecycle(snapshot, table(row(10, 1, 10, 21), row(20, 10, 21, 21)));
+  assert.equal(moved.state, 'running');
+  const reused = inspectLifecycle({ ...snapshot, ...moved }, table(row(10, 1, 10, 21), row(22, 1, 21, 21)));
+  assert.equal(reused.state, null);
+  assert.equal(reused.terminal, true);
+});
+
+test('AI本体が生存中は子孫groupの既知プロセス終了後に孤児だけが残ってもrunning', () => {
+  const snapshot = tracking(20, [[20, START]]);
+  const withCommand = inspectLifecycle(snapshot, table(
+    row(10, 1, 10, 20), row(20, 10, 20, 20), row(30, 20, 30, 20),
+  ));
+  assert.equal(withCommand.state, 'running');
+  assert.equal(withCommand.trackedGroups.has(30), true);
+  const orphaned = inspectLifecycle({ ...snapshot, ...withCommand }, table(
+    row(10, 1, 10, 20), row(20, 10, 20, 20), row(31, 1, 30, 20),
+  ));
+  assert.equal(orphaned.state, 'running');
+  assert.equal(orphaned.terminal, undefined);
+  assert.equal(orphaned.trackedGroups.has(30), false);
+});
+
+test('子孫groupに孤児が残ってもAI本体の終了後に後継groupを取得する', () => {
+  const snapshot = tracking(20, [[20, START]]);
+  const withCommand = inspectLifecycle(snapshot, table(
+    row(10, 1, 10, 20), row(20, 10, 20, 20), row(30, 20, 30, 20),
+  ));
+  const successor = inspectLifecycle({ ...snapshot, ...withCommand }, table(
+    row(10, 1, 10, 40), row(31, 1, 30, 40), row(40, 10, 40, 40),
+  ));
+  assert.equal(successor.state, 'running');
+  assert.equal(successor.trackedGroups.has(30), false);
+  assert.equal(successor.trackedGroups.get(40).get(40), START);
+});
+
 test('baselineに存在したgroupとidentityは取得しない', () => {
   const snapshot = { ...initial(), baselinePgids: new Set([20]), baselineIdentities: new Map([[20, START]]) };
   assert.equal(inspectLifecycle(snapshot, table(row(10, 1, 10, 20), row(20, 10, 20, 20))).state, null);
@@ -254,8 +291,8 @@ test('終了を観測した子のPID再利用でも生存中のAI本体を追跡
   assert.equal(reused.state, 'running');
 });
 
-test('遅いreadyと前景group切替でも両世代の裏作業を検知し終了時に解除する', async () => {
-  assert.ok(DEFAULT_ACQUISITION_TIMEOUT_MS > 750);
+test('readyと前景group切替後に両世代の裏作業を検知し終了時に解除する', async () => {
+  assert.equal(DEFAULT_ACQUISITION_TIMEOUT_MS, 750);
   for (const generation of [1, 2]) {
     let processes = table(row(10, 1, 10, 10));
     const timers = [];
@@ -270,12 +307,12 @@ test('遅いreadyと前景group切替でも両世代の裏作業を検知し終�
     const token = store.initialize('pane', generation);
     const prepared = await store.prepare('pane', generation, token, 10, 'claude', '/bin/zsh');
     assert.equal(prepared.status, 'ready');
-    assert.ok(timers[0].delay > 750, 'ready の 750ms 打ち切りを再現');
+    assert.equal(timers[0].delay, 750);
     const marker = prepared.setupCommand.match(/VKAgentLifecycle=([a-f0-9]+)/)[1];
     store.filterOutput('pane', `${READY_MARKER_PREFIX}${marker}:ok\x07`);
     assert.equal(await prepared.ready, true);
     assert.equal(await store.activate('pane', generation, token), true);
-    assert.ok(timers[1].delay > 750, '前景切替の 750ms 打ち切りを再現');
+    assert.equal(timers[1].delay, 750);
     processes = table(row(10, 1, 10, 20), row(20, 10, 20, 20), row(30, 20, 30, 0));
     await timers[2].callback();
     assert.equal(store.get('pane', generation), 'running');

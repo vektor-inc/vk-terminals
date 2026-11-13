@@ -1,9 +1,9 @@
 // electron の shell は electronShell として受ける。terminal:create の中でログインシェルの
 // パスを持つローカル変数 shell と名前がぶつかるため、紛らわしさを避けて別名にしている。
-const { app, BrowserWindow, WebContentsView, ipcMain, screen, dialog, shell: electronShell, clipboard, protocol, session } = require('electron');
+const { app, BrowserWindow, WebContentsView, ipcMain, screen, dialog, shell: electronShell, clipboard, session } = require('electron');
 const { createInternalBrowser } = require('./utils/internalBrowser');
 const { handleHelpRequest } = require('./utils/helpFeature');
-const { PARTITION, isHelpUrl } = require('./utils/internalBrowserPolicy');
+const { PARTITION } = require('./utils/internalBrowserPolicy');
 let internalBrowser = null;
 
 const { isInternalBrowserSender: isAllowedBrowserSender } = require('./utils/internalBrowserSender');

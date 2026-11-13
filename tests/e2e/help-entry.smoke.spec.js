@@ -248,6 +248,8 @@ test('使い方・ヘルプ: 確認失敗の再確認、未保存キャンセル
       await expect(win.getByRole('button', { name: 'AI に相談', exact: true, includeHidden: true })).toBeEnabled();
       await expect(win.getByRole('button', { name: '保存して開く' })).toHaveCount(0);
       expect(await win.evaluate(() => window.helpCalls)).toBe(0);
+      await expect(win.locator('.settings-help-entry [role=status]')).toContainText('内容を確認して再試行してください。');
+      await expect(win.locator('.settings-help-entry [role=status]')).not.toContainText('ガイドを起動できませんでした');
       if (mode === 'read') {
         // 保存済みでも読み込み失敗なら起動しない。再編集して次の選択へ進む。
         await win.getByRole('tab', { name: '基本' }).click();

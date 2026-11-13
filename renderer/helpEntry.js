@@ -34,8 +34,11 @@
         const opened = await openGuide(() => { status.textContent = 'ガイドを起動しています…'; });
         if (opened && opened.helpStatus) renderStatus(opened.helpStatus);
         if (opened === false) status.textContent = '';
-      } catch (_) {
-        status.textContent = 'ガイドを起動できませんでした。「AI に相談」を押して再試行してください。';
+      } catch (error) {
+        // 保存失敗の理由は起動失敗の案内で隠さない。
+        status.textContent = error?.message?.includes('再試行してください')
+          ? error.message
+          : 'ガイドを起動できませんでした。「AI に相談」を押して再試行してください。';
       } finally {
         busy = false;
         ai.disabled = false;

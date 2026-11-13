@@ -1,4 +1,5 @@
 'use strict';
+const { installBrowserLoad, flushBrowserLoads } = require('./helpers/browserLoad');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { PARTITION, clampBrowserWidth, validateBrowserBounds, isBrowserUrl, isNavigationUrl } = require('../utils/internalBrowserPolicy');
@@ -116,7 +117,7 @@ test('拡大表示で右端と下端に接する小数の矩形をウィンド�
   assert.deepEqual(validateBrowserBounds(rect, windowBounds), { x: 501, y: 501, width: 299, height: 99 });
 });
 
-test('専用ビューの遷移と権限、ダウンロード、確定 URL を制御する', () => {
+test('専用ビューの遷移と権限、ダウンロード、確定 URL を制御する', async () => {
   const { EventEmitter } = require('node:events');
   const sent = [];
   const browserSession = new EventEmitter();
@@ -135,7 +136,7 @@ test('専用ビューの遷移と権限、ダウンロード、確定 URL を制
       contents.id = 42;
       contents.navigationHistory = history;
       contents.isLoading = () => false;
-      contents.loadURL = url => { contents.requestedUrl = url; return Promise.resolve(); };
+      installBrowserLoad(contents);
       contents.setWindowOpenHandler = handler => { contents.openHandler = handler; };
       contents.close = () => {};
       this.webContents = contents;
@@ -162,7 +163,7 @@ test('専用ビューの遷移と権限、ダウンロード、確定 URL を制
   assert.equal(sent.at(-1)[1].navigationRequestId, null);
   assert.equal(sent.at(-1)[1].url, '');
   assert.equal(sent.at(-1)[1].navigationResult, null);
-  contents.emit('did-navigate', {}, 'https://example.com/first');
+  await contents.complete('https://example.com/first');
   assert.equal(sent.at(-1)[1].url, 'https://example.com/first');
   assert.equal(sent.at(-1)[1].navigationResult, 'completed');
   contents.emit('did-navigate-in-page', {}, 'https://evil.example/', false);
@@ -177,15 +178,16 @@ test('専用ビューの遷移と権限、ダウンロード、確定 URL を制
   contents.emit('will-redirect', blocked);
   assert.equal(blocked.blocked, true);
   assert.deepEqual(contents.openHandler({ url: 'file:///tmp/a' }), { action: 'deny' });
-  assert.deepEqual(contents.openHandler({ url: 'https://example.com/second' }), { action: 'deny' });
-  assert.equal(contents.requestedUrl, 'https://example.com/second');
+  assert.deepEqual(contents.openHandler({ url: 'https://example.com/failed' }), { action: 'deny' });
+  await flushBrowserLoads();
+  assert.equal(contents.requestedUrl, 'https://example.com/failed');
   assert.equal(sent.at(-1)[1].url, 'https://example.com/first#part');
-  contents.emit('did-fail-load', {}, -105, 'failed', 'https://example.com/failed', true);
+  await contents.fail(-105, 'https://example.com/failed');
   assert.equal(sent.at(-1)[1].failedUrl, 'https://example.com/failed');
   assert.equal(sent.at(-1)[1].navigationResult, 'failed');
   assert.equal(browser.action('reload'), true);
   assert.equal(contents.requestedUrl, 'https://example.com/failed');
-  contents.emit('did-fail-load', {}, -105, 'failed', 'https://example.com/failed', true);
+  await contents.fail(-105, 'https://example.com/failed');
   contents.emit('did-start-loading');
   assert.equal(sent.at(-1)[1].failedUrl, 'https://example.com/failed');
   contents.emit('did-start-navigation', {}, 'https://example.com/failed', false, true);
@@ -212,6 +214,7 @@ test('専用ビューの遷移と権限、ダウンロード、確定 URL を制
   contents.emit('will-prevent-unload', { preventDefault() { allowed = true; } });
   assert.equal(allowed, true);
   let canceled = false;
+  await flushBrowserLoads();
   browserSession.emit('will-download', { preventDefault() { canceled = true; } }, { cancel() { throw new Error('item.cancel should not be called'); } });
   assert.equal(canceled, true);
   assert.equal(sent.at(-1)[0], 'internal-browser:download-blocked');
@@ -220,7 +223,9 @@ test('専用ビューの遷移と権限、ダウンロード、確定 URL を制
   assert.equal(sent.at(-2)[1].navigationResult, 'cancelled');
   browser.navigate('https://example.com/download', false, 7);
   assert.equal(sent.at(-1)[1].navigationRequestId, 7);
+  await flushBrowserLoads();
   browserSession.emit('will-download', { preventDefault() {} }, { getURLChain: () => ['https://example.com/download'] });
+  await contents.download();
   assert.equal(sent.at(-1)[0], 'internal-browser:download-blocked');
   assert.deepEqual(sent.at(-1)[1], { canOpenFromToolbar: true });
   assert.equal(sent.at(-2)[0], 'internal-browser:state');
@@ -231,10 +236,11 @@ test('専用ビューの遷移と権限、ダウンロード、確定 URL を制
   contents.emit('did-start-navigation', {}, 'https://example.com/frame', false, false);
   assert.equal(sent.at(-1)[1].downloadUrl, 'https://example.com/download');
   contents.emit('did-start-navigation', {}, 'https://example.com/next', false, true);
-  assert.equal(sent.at(-1)[1].downloadUrl, '');
-  assert.equal(sent.at(-1)[1].navigationRequestId, null);
+  assert.equal(sent.at(-1)[1].downloadUrl, 'https://example.com/download');
+  assert.equal(sent.at(-1)[1].navigationRequestId, 7);
   browser.navigate('https://example.com/stale');
   const beforeUnrelatedDownload = sent.length;
+  await flushBrowserLoads();
   browserSession.emit('will-download', { preventDefault() {} }, { getURLChain: () => ['https://example.com/other'] });
   assert.equal(sent.length, beforeUnrelatedDownload + 1);
   assert.equal(sent.at(-1)[0], 'internal-browser:download-blocked');
@@ -242,20 +248,27 @@ test('専用ビューの遷移と権限、ダウンロード、確定 URL を制
   assert.equal(sent.at(-2)[1].pendingUrl, 'https://example.com/stale');
   assert.equal(sent.at(-2)[1].navigationResult, null);
   browser.navigate('https://example.com/normalized');
+  await flushBrowserLoads();
   browserSession.emit('will-download', { preventDefault() {} }, { getURLChain: () => ['HTTPS://EXAMPLE.COM/normalized'] });
+  await contents.download();
   assert.equal(sent.at(-2)[1].downloadUrl, 'https://example.com/normalized');
   browser.navigate('https://example.com/bad');
+  await flushBrowserLoads();
   browserSession.emit('will-download', { preventDefault() {} }, { getURLChain: () => ['invalid'] });
   assert.equal(sent.at(-2)[1].pendingUrl, 'https://example.com/bad');
   assert.equal(sent.at(-2)[1].navigationResult, null);
   browser.navigate('https://example.com/reload');
+  await flushBrowserLoads();
   browserSession.emit('will-download', { preventDefault() {} }, { getURLChain: () => ['https://example.com/reload'] });
+  await contents.download();
   contents.reload = () => contents.emit('did-start-navigation', {}, 'https://example.com/reload', false, true);
   browser.action('reload');
   assert.equal(sent.at(-1)[1].downloadUrl, '');
   for (const action of ['back', 'forward']) {
     browser.navigate(`https://example.com/${action}`);
+    await flushBrowserLoads();
     browserSession.emit('will-download', { preventDefault() {} }, { getURLChain: () => [`https://example.com/${action}`] });
+    await contents.download();
     history[`canGo${action[0].toUpperCase()}${action.slice(1)}`] = () => true;
     browser.action(action);
     assert.equal(sent.at(-1)[1].downloadUrl, '');
@@ -271,9 +284,10 @@ test('専用ビューの遷移と権限、ダウンロード、確定 URL を制
   contents.emit('will-redirect', { url: 'https://example.com/redirected', preventDefault() { throw new Error('unexpected block'); } });
   contents.emit('did-start-navigation', {}, 'https://example.com/redirected', false, true);
   assert.equal(sent.at(-1)[1].navigationRequestId, 8);
-  contents.emit('did-navigate', {}, 'https://example.com/redirected');
+  await contents.complete('https://example.com/redirected');
   assert.equal(sent.at(-1)[1].navigationRequestId, 8);
   assert.equal(sent.at(-1)[1].navigationResult, 'completed');
+  contents.emit('will-navigate', { url: 'https://example.com/page-link' });
   contents.emit('did-start-navigation', {}, 'https://example.com/page-link', false, true);
   assert.equal(sent.at(-1)[1].navigationRequestId, null);
 
@@ -282,7 +296,7 @@ test('専用ビューの遷移と権限、ダウンロード、確定 URL を制
   browser.navigate('https://bücher.example:443/next?q=1#part', false, 10);
   const pendingB = sent.at(-1)[1].pendingUrl;
   contents.emit('did-navigate-in-page', {}, 'https://old.example/page#changed', true);
-  assert.equal(sent.at(-1)[1].url, 'https://old.example/page#changed');
+  assert.equal(sent.at(-1)[1].url, 'https://old.example/page');
   assert.equal(sent.at(-1)[1].pendingUrl, pendingB);
   assert.equal(sent.at(-1)[1].navigationRequestId, 10);
   assert.equal(sent.at(-1)[1].navigationResult, null);
@@ -295,7 +309,7 @@ test('専用ビューの遷移と権限、ダウンロード、確定 URL を制
   contents.emit('did-fail-load', {}, -105, 'bad url', 'invalid', true);
   assert.equal(sent.at(-1)[1].pendingUrl, pendingB);
   contents.emit('did-start-navigation', {}, 'https://xn--bcher-kva.example/next?q=1#part', false, true);
-  contents.emit('did-navigate-in-page', {}, 'https://xn--bcher-kva.example/next?q=1#part', true);
+  await contents.complete('https://xn--bcher-kva.example/next?q=1#part');
   assert.equal(sent.at(-1)[1].navigationResult, 'completed');
   assert.equal(sent.at(-1)[1].navigationRequestId, 10);
 
@@ -311,13 +325,13 @@ test('専用ビューの遷移と権限、ダウンロード、確定 URL を制
   contents.emit('will-redirect', { url: 'https://example.com/target?x=1', preventDefault() { throw new Error('unexpected block'); } });
   contents.emit('did-fail-load', {}, -105, 'old failure', 'https://old.example/page', true);
   assert.equal(sent.at(-1)[1].navigationResult, null);
-  contents.emit('did-navigate', {}, 'https://example.com/target?x=1');
+  await contents.complete('https://example.com/target?x=1');
   assert.equal(sent.at(-1)[1].navigationResult, 'completed');
   assert.equal(sent.at(-1)[1].navigationRequestId, 11);
   browser.navigate('https://example.com/failing?q=2', false, 12);
   contents.emit('did-fail-load', {}, -105, 'old failure', 'https://old.example/page', true);
   assert.equal(sent.at(-1)[1].navigationResult, null);
-  contents.emit('did-fail-load', {}, -105, 'current failure', 'HTTPS://EXAMPLE.COM:443/failing?q=2', true);
+  await contents.fail(-105, 'HTTPS://EXAMPLE.COM:443/failing?q=2');
   assert.equal(sent.at(-1)[1].navigationResult, 'failed');
   assert.equal(sent.at(-1)[1].navigationRequestId, 12);
 });
@@ -382,7 +396,7 @@ test('非表示とモーダル中はビューを外し、再表示では同じ�
   class FakeView {
     constructor() {
       this.webContents = new EventEmitter();
-      this.webContents.loadURL = () => Promise.resolve();
+      installBrowserLoad(this.webContents);
       this.webContents.isLoading = () => false;
       this.webContents.isFocused = () => focused;
       this.webContents.navigationHistory = { canGoBack: () => false, canGoForward: () => false };

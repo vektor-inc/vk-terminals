@@ -22,18 +22,10 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
   let github404Url = '';
   let navigationResult = null;
   let navigationRequestId = null;
-  let requestUrls = new Set();
-  let requestNavigationStarted = false;
-  function canonicalUrl(url) {
-    try {
-      const parsed = new URL(url);
-      return isNavigationUrl(parsed.href) ? parsed.href : null;
-    } catch { return null; }
-  }
-  function matchesRequest(url) {
-    const canonical = canonicalUrl(url);
-    return canonical !== null && requestUrls.has(canonical);
-  }
+  // Electron 44.3 の loadURL Promise も ID のないイベントを監視するため、
+  // CDP Page.navigate が返す loaderId と Page.lifecycleEvent を相関する。
+  let activeLoad = null;
+  let navigationReady = null;
   const cancelDownload = (event, item) => {
     event.preventDefault();
     // 保留中の遷移と異なるダウンロードへ古い URL を渡さない。
@@ -42,17 +34,27 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
       const originalUrl = item.getURLChain?.()[0] || item.getURL?.();
       matchesPendingUrl = isBrowserUrl(pendingUrl) && new URL(originalUrl).href === new URL(pendingUrl).href;
     } catch {}
-    // 別のダウンロードは進行中の Enter 遷移を終わらせない。
+    matchesPendingUrl = matchesPendingUrl && activeLoad?.started === true && !activeLoad.done;
+    // 同じ URL の旧ダウンロードでも、今回の CDP 応答が download でなければ終了しない。
     if (matchesPendingUrl) {
-      downloadUrl = pendingUrl;
-      pendingUrl = '';
-      navigationResult = 'download-blocked';
-      publish();
-    }
-    // 一致時だけ状態を先に公開し、操作列の対象が設定された後に案内する。
-    if (!win.isDestroyed()) win.webContents.send('internal-browser:download-blocked', { canOpenFromToolbar: matchesPendingUrl && !!downloadUrl });
+      activeLoad.downloadNotices++;
+      activeLoad.finishDownload();
+    } else sendDownloadNotice(false);
   };
   browserSession.on('will-download', cancelDownload);
+
+  function sendDownloadNotice(canOpenFromToolbar) {
+    if (!win.isDestroyed()) win.webContents.send('internal-browser:download-blocked', { canOpenFromToolbar });
+  }
+
+  function flushDownloadNotices(load, canOpenFromToolbar = false) {
+    while (load?.downloadNotices > 0) {
+      sendDownloadNotice(canOpenFromToolbar);
+      canOpenFromToolbar = false;
+      load.downloadNotices--;
+    }
+  }
+
 
   function publish() {
     if (!win.isDestroyed()) win.webContents.send('internal-browser:state', {
@@ -78,8 +80,10 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
     navigationRequestId = null;
     navigationResult = null;
     pendingUrl = '';
-    requestUrls = new Set();
-    requestNavigationStarted = false;
+    const previous = activeLoad;
+    flushDownloadNotices(previous);
+    activeLoad = null;
+    if (previous?.started && !previous.done) view.webContents.stop();
   }
 
   function syncBounds() {
@@ -107,6 +111,28 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
         webSecurity: true, allowRunningInsecureContent: false,
       } });
       const contents = view.webContents;
+      // この専用ビューの CDP 接続は遷移追跡だけに使う。
+      try {
+        contents.debugger.attach('1.3');
+        navigationReady = contents.debugger.sendCommand('Page.enable')
+          .then(() => contents.debugger.sendCommand('Page.setLifecycleEventsEnabled', { enabled: true }));
+      } catch (error) { navigationReady = Promise.reject(error); }
+      contents.debugger.on('message', (_event, method, params) => {
+        const load = activeLoad;
+        if (!load || load.done) return;
+        // コマンド応答より先に届くイベントも loader ごとに保持する。
+        if (method === 'Page.frameNavigated' && !params.frame.parentId) {
+          if (load.loaderId && load.loaderId !== params.frame.loaderId) return;
+          load.commits.set(params.frame.loaderId, params.frame.url + (params.frame.urlFragment || ''));
+        } else if (method === 'Page.lifecycleEvent' && params.name === 'load') {
+          if (load.loaderId && load.loaderId !== params.loaderId) return;
+          load.loaded.set(params.loaderId, params.frameId);
+        } else return;
+        load.completeIfLoaded?.();
+      });
+      contents.debugger.on('detach', () => {
+        activeLoad?.finish?.(new Error('Navigation debugger detached'));
+      });
       contents.on('will-navigate', event => {
         if (!isNavigationUrl(event.url)) { event.preventDefault(); return; }
         // will-navigate はページ起点の遷移。redirect は will-redirect として届く。
@@ -115,17 +141,16 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
       });
       contents.on('will-frame-navigate', event => { if (!isNavigationUrl(event.url)) event.preventDefault(); });
       contents.on('will-redirect', event => {
-        if (!isNavigationUrl(event.url)) { event.preventDefault(); return; }
-        // 対応する開始イベントを確認した要求の redirect だけを同じ ID に結び付ける。
-        if (event.isMainFrame !== false && navigationRequestId !== null && pendingUrl && requestNavigationStarted) {
-          const redirectedUrl = canonicalUrl(event.url);
-          if (redirectedUrl) requestUrls.add(redirectedUrl);
-        }
+        if (!isNavigationUrl(event.url)) event.preventDefault();
       });
       contents.on('will-prevent-unload', event => {
         const choice = dialog.showMessageBoxSync(win, { type: 'warning', title: 'このページを離れますか？', message: 'このページを離れますか？', detail: '入力中の内容は保存されない可能性があります。', buttons: ['移動する', 'このページにとどまる'], defaultId: 1, cancelId: 1 });
         if (choice === 0) event.preventDefault();
-        else { pendingUrl = ''; navigationResult = 'cancelled'; publish(); }
+        else if (!activeLoad?.done && (activeLoad || navigationRequestId === null)) {
+          if (activeLoad) activeLoad.done = true;
+          pendingUrl = ''; navigationResult = 'cancelled'; publish();
+          flushDownloadNotices(activeLoad);
+        }
       });
       contents.setWindowOpenHandler(({ url: destination }) => {
         if (isNavigationUrl(destination)) navigate(destination, true);
@@ -134,13 +159,8 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
       contents.on('did-start-loading', publish);
       contents.on('did-start-navigation', (_event, url, isInPlace, isMainFrame) => {
         if (!isMainFrame) return;
-        // 古いページの遅延イベントは、現在の Enter 要求を変更しない。
-        if (navigationRequestId !== null && pendingUrl) {
-          if (!matchesRequest(url)) return;
-          requestNavigationStarted = true;
-        }
-        // Enter の保留中だけ ID を引き継ぎ、ページ起点の新しい遷移では切り離す。
-        if (!pendingUrl) navigationRequestId = null;
+        // WebContents イベントには遷移 ID がない。アプリ要求は CDP の結果だけで終了する。
+        if (activeLoad || navigationRequestId !== null) return;
         navigationResult = null;
         if (isInPlace) { publish(); return; }
         failedUrl = '';
@@ -150,8 +170,8 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
       });
       contents.on('did-stop-loading', publish);
       contents.on('did-navigate', (_event, url) => {
+        if (activeLoad || navigationRequestId !== null) return;
         currentUrl = url;
-        if (navigationRequestId !== null && pendingUrl && !matchesRequest(url)) { publish(); return; }
         pendingUrl = '';
         failedUrl = '';
         navigationResult = 'completed';
@@ -160,14 +180,24 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
       });
       contents.on('did-navigate-in-page', (_event, url, isMainFrame) => {
         if (isMainFrame) {
+          if (activeLoad || navigationRequestId !== null) {
+            // 完了後の pushState/hash 変更は、イベントの URL ではなく現在の文書から読む。
+            if (activeLoad?.done && navigationResult === 'completed') {
+              const committedUrl = contents.getURL();
+              if (isNavigationUrl(committedUrl) && committedUrl !== currentUrl) {
+                currentUrl = committedUrl;
+                publish();
+              }
+            }
+            return;
+          }
           currentUrl = url;
-          if (navigationRequestId !== null && pendingUrl && !matchesRequest(url)) { publish(); return; }
           pendingUrl = ''; navigationResult = 'completed'; publish();
         }
       });
       contents.on('did-fail-load', (_event, code, _description, destination, isMainFrame) => {
         if (isMainFrame && code !== -3) {
-          if (navigationRequestId !== null && pendingUrl && !matchesRequest(destination)) return;
+          if (activeLoad || navigationRequestId !== null) return;
           pendingUrl = '';
           failedUrl = destination;
           navigationResult = 'failed';
@@ -190,9 +220,54 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
     pendingUrl = fromPage ? '' : url;
     navigationRequestId = fromPage ? null : requestId ?? null;
     navigationResult = null;
-    requestUrls = navigationRequestId === null ? new Set() : new Set([canonicalUrl(url)].filter(Boolean));
-    requestNavigationStarted = false;
-    view.webContents.loadURL(url).catch(() => {});
+    const load = { url, done: false, started: false, downloadNotices: 0, commits: new Map(), loaded: new Map() };
+    activeLoad = load;
+    const contents = view.webContents;
+    load.finish = (error, committedUrl) => {
+      if (activeLoad !== load || load.done) return;
+      load.done = true;
+      pendingUrl = '';
+      if (error) {
+        navigationResult = error.message.includes('ERR_ABORTED') ? 'cancelled' : 'failed';
+        if (navigationResult === 'failed') failedUrl = load.url;
+      } else {
+        currentUrl = committedUrl;
+        failedUrl = '';
+        navigationResult = 'completed';
+        if (currentUrl !== github404Url) github404Url = '';
+      }
+      if (navigationRequestId === null) activeLoad = null;
+      publish();
+      flushDownloadNotices(load);
+    };
+    load.finishDownload = () => {
+      if (activeLoad !== load || load.done || !load.isDownload || !load.downloadNotices) return;
+      load.done = true;
+      downloadUrl = load.url;
+      pendingUrl = '';
+      navigationResult = 'download-blocked';
+      // 操作列へ対象 URL を渡した後に、ダウンロードごとに一度だけ通知する。
+      publish();
+      flushDownloadNotices(load, true);
+    };
+    load.completeIfLoaded = () => {
+      if (load.loaderId && load.loaded.get(load.loaderId) === load.frameId && load.commits.has(load.loaderId)) {
+        load.finish(null, load.commits.get(load.loaderId));
+      }
+    };
+    navigationReady.then(async () => {
+      if (activeLoad !== load || load.done) return;
+      load.started = true;
+      const result = await contents.debugger.sendCommand('Page.navigate', { url });
+      if (activeLoad !== load || load.done) return;
+      if (result.isDownload) { load.isDownload = true; load.finishDownload(); return; }
+      if (result.errorText) { load.finish(new Error(result.errorText)); return; }
+      // 同一文書内の遷移は loaderId を返さず、コマンド応答時に反映済みとなる。
+      if (!result.loaderId) { load.finish(null, contents.getURL()); return; }
+      load.loaderId = result.loaderId;
+      load.frameId = result.frameId;
+      load.completeIfLoaded();
+    }).catch(error => load.finish(error));
     syncBounds();
     publish();
     return true;
@@ -215,6 +290,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
   }
 
   function destroy() {
+    activeLoad = null;
     browserSession.removeListener('will-download', cancelDownload);
     if (!view) return;
     if (attached) win.contentView.removeChildView(view);

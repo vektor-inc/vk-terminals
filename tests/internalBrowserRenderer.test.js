@@ -132,6 +132,7 @@ test('アドレス欄は編集中の通知を保持し、Enter のみで正規�
   assert.ok(addressHandlers);
   assert.match(source, /<input type="text" class="internal-browser-url" aria-label="URL または検索語を入力"/);
   assert.match(source, /id="internal-browser-address-error"[^>]*role="alert"/);
+  assert.match(source, /<\/button><\/div><p id="internal-browser-address-error"[^>]*><\/p><p class="internal-browser-external-target"[^>]*><\/p>/);
   assert.doesNotMatch(source, /表示中の URL をコピー/);
   const handlers = {};
   const opened = [];

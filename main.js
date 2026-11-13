@@ -2866,9 +2866,9 @@ function createTerminalPane(cwd, options = {}, guide = null) {
   // 事故があるため（安藤の指摘・MEDIUM）。
   const spawnTime = performance.now();
 
-  // initialCommand は最初の 1 ターミナルのみ送信
-  // セットアップ用ペインは「最初のターミナル」に数えない（次の通常のペインに initialCommand を送るため）。
-  const isFirstTerminal = !firstTerminalCreated && !setupLaunch && !guideLaunch;
+  // 起動時に通常の初期ペインを作った場合だけ initialCommand を送信する。
+  // セットアップ用ペインは対象外で、通常ペインでの再試行だけが初期ペインになる。
+  const isFirstTerminal = options.initialPane === true && !firstTerminalCreated && !setupLaunch && !guideLaunch;
   if (isFirstTerminal) firstTerminalCreated = true;
 
   let promptWatcher = null;

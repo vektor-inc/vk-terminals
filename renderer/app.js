@@ -7390,7 +7390,7 @@ async function initApp() {
     else showRestoreWarning(restored?.missing);
   }
 
-  // Dispose any existing terminals
+  // 起動時に既存端末が残っていた場合の防御として破棄する。
   // ホバー中に一括破棄されるとリンクの leave が発火しないため、closePane() と同様に
   // ここでもツールチップを明示的に隠す（安藤レビュー指摘・LOW）。
   hideTermLinkTooltip();
@@ -7423,7 +7423,7 @@ async function initApp() {
   if (setupPanel) {
     try { setupInitial = await VKIpc.invoke('setup:initial-pane'); } catch (_e) { setupInitial = null; }
   }
-  const normalPaneOptions = initialPaneOptions;
+  const normalPaneOptions = { ...initialPaneOptions, initialPane: true };
   const openAsSetupPane = !!(setupInitial && setupInitial.autoOpen === true);
   if (openAsSetupPane) {
     initialPaneOptions = { setupPane: true, ...(setupInitial.claudeOk === true ? {} : { noClaude: true }) };
@@ -7440,7 +7440,7 @@ async function initApp() {
   tree.order.push(paneId);
   let openedAsSetupPane = openAsSetupPane;
   try {
-    await createTerminal(paneId, newPaneStartupDir || null, initialPaneOptions);
+    await createTerminal(paneId, newPaneStartupDir || null, openAsSetupPane ? initialPaneOptions : normalPaneOptions);
   } catch (error) {
     if (holderPaneCreationBlockedReason(error)) {
       console.error('initial pane creation blocked after holder failure', error);
@@ -7629,7 +7629,6 @@ VKIpc.on('terminal:request-new-pane', async (payload = {}) => {
     if (typeof approvalPolicy === 'string') splitOptions = { ...splitOptions, approvalPolicy };
     if (typeof sandboxMode === 'string') splitOptions = { ...splitOptions, sandboxMode };
     if (codexPolicy && typeof codexPolicy === 'object') splitOptions = { ...splitOptions, codexPolicy };
-    if (!targetPaneId && typeof engine !== 'string') splitOptions = withInheritedEngine(splitOptions, null);
     const result = targetPaneId
       ? await splitPane(targetPaneId, direction, effectiveCwd, splitOptions)
       : await addPane(effectiveCwd, splitOptions);

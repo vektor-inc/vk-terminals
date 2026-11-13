@@ -141,3 +141,36 @@ test('initialEngine が claude のときは initialCodexModel を指定しても
     expect(withoutBackgroundWorkSettings(calls[0])).toEqual([]);
   });
 });
+
+// 0 枚からの手動追加と、起動時の additionalPanes は別の設定経路を使う。
+test('空画面のボタンは initialEngine と initialCodexModel を使う', async () => {
+  const port = await getFreePort();
+  const fixture = setupFakeEngines();
+  let launched = null;
+  try {
+    launched = await launchAppAndWait({ port, prefix: 'vk-terminals-e2e-empty-engine-', env: fixture.env,
+      config: { openInitialPane: false, initialEngine: 'codex', initialCodexModel: 'gpt-5.5', newPaneAutoLaunchClaude: true }, launchAi: true });
+    await launched.win.locator('.grid-empty-btn').click();
+    const calls = await waitForCallCount(fixture.fakeCodex.capturePath, 1);
+    expect(calls[0]).toEqual(['--no-daemon', '--model', 'gpt-5.5']);
+    expect(readCalls(fixture.fakeClaude.capturePath)).toEqual([]);
+  } finally {
+    if (launched) await closeApp(launched);
+    fs.rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('additionalPanes の最初のペインは initialEngine の影響を受けない', async () => {
+  const port = await getFreePort();
+  const fixture = setupFakeEngines();
+  let launched = null;
+  try {
+    launched = await launchAppAndWait({ port, prefix: 'vk-terminals-e2e-additional-engine-', env: fixture.env,
+      config: { openInitialPane: false, initialEngine: 'codex', initialCodexModel: 'gpt-5.5', additionalPanes: [{ cwd: process.cwd() }] }, launchAi: true });
+    await waitForCallCount(fixture.fakeClaude.capturePath, 1);
+    expect(readCalls(fixture.fakeCodex.capturePath)).toEqual([]);
+  } finally {
+    if (launched) await closeApp(launched);
+    fs.rmSync(fixture.root, { recursive: true, force: true });
+  }
+});

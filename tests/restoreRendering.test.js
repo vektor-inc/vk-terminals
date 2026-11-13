@@ -27,3 +27,10 @@ test('一部描画できたら失敗した番号のみ除外する', () => {
   assert.equal(result.needsInitialPane, false);
   assert.equal(result.warningCount, 1);
 });
+
+// 復元ペインが残る場合は、設定に関係なく initApp の初期ペイン作成へ進まない。
+test('復元に成功した場合は初期ペインを追加しない', () => {
+  const initApp = source.slice(end, source.indexOf("VKIpc.on('terminal:request-new-pane'", end));
+  assert.match(initApp, /if \(Object\.keys\(terminals\)\.length\) return;/);
+  assert.ok(initApp.indexOf('if (Object.keys(terminals).length) return;') < initApp.indexOf('if (!openAsSetupPane && !openInitialPane)'));
+});

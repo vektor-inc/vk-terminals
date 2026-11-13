@@ -69,6 +69,8 @@ test('外部ボタンの可視URLは同一ホストのパスと検索条件ま�
   assert.equal(format('invalid-url'), '');
   assert.match(css, /\.internal-browser-external-target\s*\{[^}]*overflow-wrap: anywhere/);
   assert.match(css, /\.internal-browser-error \[data-action="external"\]\s*\{[^}]*overflow-wrap: anywhere/);
+  const targetTag = source.match(/<p class="internal-browser-external-target"[^>]*>/)[0];
+  assert.doesNotMatch(targetTag, /role=|aria-live=/);
   assert.match(source, /internal-browser-navigation-status" role="status" aria-live="polite"/);
 });
 
@@ -807,6 +809,22 @@ test('main の遷移結果を順に受け、失敗・成功・中止・置換・
       assert.equal(messages.at(-1).pendingUrl, nextUrl);
       assert.equal(messages.at(-1).navigationRequestId, firstId + 1);
       await contents.complete(nextUrl);
+      assert.equal(navigationStatus.textContent, 'ページの読み込みが完了しました');
+    }
+    // 持続トーストを守り、代替 live 通知は一配送につき一度だけ更新する。
+    context.showGenericToast = () => false;
+    for (const canOpenFromToolbar of [true, false]) {
+      const writesBeforeFallback = navigationWrites;
+      const toastsBeforeFallback = toastMessages.length;
+      handlers['internal-browser:download-blocked']({ canOpenFromToolbar });
+      assert.equal(navigationWrites, writesBeforeFallback + 1);
+      assert.equal(toastMessages.length, toastsBeforeFallback);
+      assert.equal(navigationStatus.textContent, canOpenFromToolbar
+        ? 'ダウンロードはできません。操作列の「外部ブラウザで開く」から行ってください。'
+        : 'ダウンロードはできません。外部ブラウザでダウンロードしてください。');
+      startPending('after-fallback');
+      assert.equal(navigationStatus.textContent, 'ページを読み込み中');
+      await contents.complete('https://example.org/after-fallback');
       assert.equal(navigationStatus.textContent, 'ページの読み込みが完了しました');
     }
   }

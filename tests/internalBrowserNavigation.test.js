@@ -5,7 +5,7 @@ const { EventEmitter } = require('node:events');
 const { createInternalBrowser } = require('../utils/internalBrowser');
 const { installBrowserLoad, flushBrowserLoads } = require('./helpers/browserLoad');
 
-function setup({ failCommand, failAttach = false } = {}) {
+function setup({ failCommand, failAttach = false, createBrowser = createInternalBrowser } = {}) {
   const states = [];
   const messages = [];
   const session = new EventEmitter();
@@ -28,7 +28,7 @@ function setup({ failCommand, failAttach = false } = {}) {
       this.webContents = contents;
     }
   }
-  const browser = createInternalBrowser({
+  const browser = createBrowser({
     isDestroyed: () => false,
     webContents: { send(channel, state) { messages.push({ channel, state }); if (channel === 'internal-browser:state') states.push(state); } },
   }, { WebContentsView: View, session: { fromPartition: () => session }, dialog: { showMessageBoxSync: () => 1 } });
@@ -569,4 +569,98 @@ test('配送済みdownloadの後に同一URLを再要求しても新しい通知
   await contents.download();
   downloadNotice(session, 'https://example.com/a', contents);
   assert.deepEqual(notices(messages).map(message => message.state), Array(2).fill({ canOpenFromToolbar: true }));
+});
+
+// 終了した要求と現在文書を分離し、二つのイベント順序も両方確認する。
+for (const result of ['completed', 'cancelled', 'failed', 'download-blocked', 'superseded']) {
+  for (const electronFirst of [false, true]) {
+    test(`${result}後の現在文書のhash/history更新を一世代だけ反映: Electron先行=${electronFirst}`, async () => {
+      const { browser, contents, states } = setup();
+      await contents.complete('https://example.com/a');
+      if (result !== 'completed') {
+        browser.navigate('https://example.com/b', false, 2);
+        await flushBrowserLoads();
+        if (result === 'download-blocked') await contents.download();
+        else if (result === 'superseded') {
+          browser.navigate('https://example.com/c', false, 3);
+          await flushBrowserLoads();
+          assert.ok(states.some(state => state.navigationResult === 'superseded'));
+          await contents.fail(-3, 'https://example.com/c');
+        } else await contents.fail(result === 'cancelled' ? -3 : -105, 'https://example.com/b');
+      }
+      for (const url of ['https://example.com/a#changed', 'https://example.com/history?push=1', 'https://example.com/a#changed']) {
+        const operationId = states.at(-1).navigationOperationId;
+        contents.setDocumentUrl(url);
+        const cdp = () => contents.debugger.emit('message', {}, 'Page.navigatedWithinDocument', { frameId: 'main', url: 'https://stale.example/' });
+        const electron = () => contents.emit('did-navigate-in-page', {}, 'https://stale.example/', true);
+        if (electronFirst) { electron(); cdp(); } else { cdp(); electron(); }
+        assert.equal(states.at(-1).url, url);
+        assert.equal(states.at(-1).navigationOperationId, operationId + 1);
+        assert.equal(states.at(-1).navigationResult, 'completed');
+        assert.equal(states.at(-1).navigationRequestId, null);
+        assert.equal(states.at(-1).downloadUrl, '');
+        assert.equal(states.at(-1).failedUrl, '');
+      }
+    });
+  }
+}
+
+for (const oldResponseFirst of [false, true]) {
+  test(`複数同一URL候補の別itemを消費し三回目を汚染しない: 旧応答先行=${oldResponseFirst}`, async () => {
+    const { browser, contents, session, states, messages } = setup();
+    await flushBrowserLoads();
+    const old = contents.loads[0];
+    contents.stop = () => {};
+    if (oldResponseFirst) await contents.download();
+    browser.navigate(old.url, false, 2);
+    await flushBrowserLoads();
+    await contents.download();
+    if (!oldResponseFirst) { old.resolve({ isDownload: true }); await flushBrowserLoads(); }
+    const operationId = states.at(-1).navigationOperationId;
+    downloadNotice(session, old.url, contents);
+    downloadNotice(session, old.url, contents);
+    assert.deepEqual(notices(messages).map(message => message.state), Array(2).fill({ canOpenFromToolbar: false }));
+    assert.equal(states.at(-1).navigationOperationId, operationId);
+    browser.navigate(old.url, false, 3);
+    await flushBrowserLoads();
+    downloadNotice(session, old.url, contents);
+    await contents.download();
+    assert.equal(notices(messages).at(-1).state.canOpenFromToolbar, true);
+  });
+}
+
+test('通知欠落でも終了・置換した操作をSetに保持しない', async () => {
+  const fs = require('node:fs');
+  const vm = require('node:vm');
+  const sets = [];
+  class ObservedSet extends Set { constructor(...args) { super(...args); sets.push(this); } }
+  const module = { exports: {} };
+  vm.runInNewContext(fs.readFileSync(require.resolve('../utils/internalBrowser'), 'utf8'), {
+    module, Set: ObservedSet, URL,
+    require: name => name === './internalBrowserPolicy' ? require('../utils/internalBrowserPolicy') : require(name),
+  });
+  const { browser, contents } = setup({ createBrowser: module.exports.createInternalBrowser });
+  await flushBrowserLoads();
+  const retainedOperations = () => sets.flatMap(set => [...set]).filter(entry => entry && typeof entry === 'object' && 'commits' in entry);
+  assert.equal(retainedOperations().length, 1);
+  await contents.download();
+  assert.equal(retainedOperations().length, 0);
+  for (let id = 2; id < 10; id++) {
+    browser.navigate('https://example.com/a', false, id);
+    await flushBrowserLoads();
+    assert.equal(retainedOperations().length, 1);
+    await contents.download();
+    assert.equal(retainedOperations().length, 0);
+  }
+  browser.navigate('https://example.com/b', false, 10);
+  await flushBrowserLoads();
+  contents.stop = () => {};
+  browser.navigate('https://example.com/c', false, 11);
+  assert.equal(retainedOperations().length, 0);
+  await flushBrowserLoads();
+  assert.equal(retainedOperations().length, 1);
+  await contents.fail(-105, 'https://example.com/c');
+  assert.equal(retainedOperations().length, 0);
+  browser.destroy();
+  assert.equal(retainedOperations().length, 0);
 });

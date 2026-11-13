@@ -656,9 +656,16 @@ test('持続通知は通常の通知と URL 失敗通知で上書きされない
   const downloadBlocked = renderer.slice(renderer.indexOf("VKIpc.on('internal-browser:download-blocked'"), renderer.indexOf('// ─── State', renderer.indexOf("VKIpc.on('internal-browser:download-blocked'")));
   let downloadHandler;
   context.VKIpc = { on(_channel, handler) { downloadHandler = handler; } };
+  const fallbackMessages = [];
+  context.setInternalBrowserNavigationStatus = text => fallbackMessages.push(text);
   context.externalUrlToastEl = { querySelector() { throw new Error('persistent message overwritten'); } };
   vm.runInNewContext(downloadBlocked, context);
-  downloadHandler();
+  downloadHandler({ canOpenFromToolbar: true });
+  downloadHandler({ canOpenFromToolbar: false });
+  assert.deepEqual(fallbackMessages, [
+    'ダウンロードはできません。操作列の「外部ブラウザで開く」から行ってください。',
+    'ダウンロードはできません。外部ブラウザでダウンロードしてください。',
+  ]);
   assert.equal(toast.dataset.persistent, 'true');
   assert.equal(toast.hidden, false);
   const failed = renderer.slice(renderer.indexOf('function showExternalUrlOpenFailedToast('), renderer.indexOf('function showGenericToast('));

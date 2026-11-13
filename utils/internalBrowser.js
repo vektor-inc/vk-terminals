@@ -32,7 +32,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
   // CDP Page.navigate が返す loaderId と Page.lifecycleEvent を相関する。
   let activeLoad = null;
   let navigationReady = null;
-  // 応答待ちと未配送の download を操作オブジェクトで追跡する。
+  // 応答待ちの現在操作だけを保持し、終了・置換時に解放する。
   const downloadCandidates = new Set();
   const seenDownloadItems = new WeakSet();
   const normalizeDownloadUrl = url => {
@@ -47,21 +47,27 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
     const urls = chain.map(normalizeDownloadUrl).filter(Boolean);
     // native の Page.downloadWillBegin は frameId/guid だけで loaderId がなく、
     // 世代を特定できないため Page.navigate 応答のある操作だけを候補にする。
-    const candidates = [...downloadCandidates].filter(load => urls.includes(normalizeDownloadUrl(load.url)));
+    // 終了済み候補は保持せず、現在の結果待ち／確定済み download だけを見る。
+    const candidates = [...downloadCandidates, ...(activeLoad?.done && activeLoad.downloadConfirmed ? [activeLoad] : [])]
+      .filter(load => urls.includes(normalizeDownloadUrl(load.url)));
     const load = candidates.length === 1 ? candidates[0] : null;
-    // DownloadItem に loaderId はない。URL は候補の絞り込みだけに使い、
-    // 同一 URL の旧コマンドが残る場合は現在操作へ帰属させない。
     if ((contents && contents !== view?.webContents) || !load || load !== activeLoad
-      || load.noticeReceived || (load.done && !load.downloadConfirmed)) {
-      if (load && (!contents || contents === view?.webContents)) {
-        load.noticeReceived = true;
-        if (load.downloadConfirmed) downloadCandidates.delete(load);
+      || load.noticeReceived || load.downloadAmbiguous) {
+      // 同一 URL の旧通知と区別できない配送は一般案内として消費する。
+      // 現在候補も消費し、次の要求へ曖昧さを持ち越さない。
+      if (!contents || contents === view?.webContents) {
+        for (const candidate of candidates) {
+          candidate.noticeReceived = true;
+          candidate.flushDownloadNotice(false);
+          downloadCandidates.delete(candidate);
+        }
       }
       sendDownloadNotice(false);
       return;
     }
     load.noticeReceived = true;
-    if (load.downloadConfirmed) { downloadCandidates.delete(load); sendDownloadNotice(true); }
+    downloadCandidates.delete(load);
+    if (load.downloadConfirmed) sendDownloadNotice(true);
     else load.pendingDownloadNotice = true;
   };
   browserSession.on('will-download', cancelDownload);
@@ -99,6 +105,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
     pendingUrl = '';
     const previous = activeLoad;
     previous?.flushDownloadNotice(false);
+    downloadCandidates.delete(previous);
     if (previous?.loaderId) retiredLoaders.add(previous.loaderId);
     for (const loaderId of previous?.commits.keys() || []) retiredLoaders.add(loaderId);
     for (const request of previous?.requests.values() || []) retiredLoaders.add(request.loaderId);
@@ -152,6 +159,10 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
       }
       contents.debugger.on('message', (_event, method, params) => {
         const load = activeLoad;
+        if (method === 'Page.navigatedWithinDocument') {
+          if (params.frameId === mainFrameId) syncCurrentDocumentUrl(contents);
+          return;
+        }
         if (!load || (load.done && navigationResult !== 'completed')) return;
         if (method === 'Page.frameStartedNavigating' && load.native && !load.done
           && params.frameId === mainFrameId) {
@@ -192,17 +203,6 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
           if (load.native && params.type === 'BackForwardCacheRestore') {
             load.loaded.set(params.frame.loaderId, params.frame.id);
           }
-        } else if (method === 'Page.navigatedWithinDocument') {
-          if (params.frameId !== mainFrameId) return;
-          // URL のない Electron イベントではなく、現在文書の URL を読み直す。
-          const url = contents.getURL();
-          if (!isNavigationUrl(url)) return;
-          if (load.native && !load.done && (!load.loaderId || load.sameDocument)) {
-            load.finish(null, url);
-          } else if (load.done && navigationResult === 'completed' && url !== currentUrl) {
-            beginLoad(url, true, undefined, { native: true });
-            activeLoad.finish(null, url);
-          }
         } else if (method === 'Page.lifecycleEvent' && params.name === 'load') {
           if (retiredLoaders.has(params.loaderId)) return;
           if (load.loaderId && load.loaderId !== params.loaderId) return;
@@ -241,12 +241,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
       contents.on('did-start-loading', publish);
       contents.on('did-stop-loading', publish);
       contents.on('did-navigate-in-page', (_event, _url, isMainFrame) => {
-        if (!isMainFrame || !activeLoad || navigationResult !== 'completed') return;
-        const url = contents.getURL();
-        if (isNavigationUrl(url) && url !== currentUrl) {
-          beginLoad(url, true, undefined, { native: true });
-          activeLoad.finish(null, url);
-        }
+        if (isMainFrame) syncCurrentDocumentUrl(contents);
       });
     }
     const load = beginLoad(url, fromPage, requestId);
@@ -257,10 +252,11 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
       load.started = true;
       downloadCandidates.add(load);
       const result = await contents.debugger.sendCommand('Page.navigate', { url });
+      load.downloadResponsePending = false;
       load.downloadConfirmed = result.isDownload === true;
       if (!load.downloadConfirmed) downloadCandidates.delete(load);
       if (activeLoad !== load || load.done) {
-        if (load.noticeReceived) downloadCandidates.delete(load);
+        downloadCandidates.delete(load);
         if (result.loaderId) retiredLoaders.add(result.loaderId);
         return;
       }
@@ -281,6 +277,21 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
     return true;
   }
 
+  function syncCurrentDocumentUrl(contents) {
+    if (!debuggerAvailable || contents.isDestroyed?.()) return;
+    const load = activeLoad;
+    const url = contents.getURL();
+    if (!load || !isNavigationUrl(url)) return;
+    if (load.native && !load.done && (!load.loaderId || load.sameDocument)) {
+      load.finish(null, url);
+    } else if (load.done && url !== currentUrl) {
+      // 終了結果とは独立して、残った現在文書の変更を新しい操作として公開する。
+      // 両イベントの二重配送は、確定済み URL との比較で抑止する。
+      beginLoad(url, true, undefined, { native: true });
+      activeLoad.finish(null, url);
+    }
+  }
+
   function beginLoad(url, fromPage, requestId, { native = false, stopPrevious = !native } = {}) {
     const previous = supersedeNavigation();
     // アプリが次の遷移を開始する場合だけ、旧ロードを事前に止める。
@@ -291,7 +302,11 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
     navigationOperationId++;
     const contents = view.webContents;
     const load = {
-      url, native, done: false, started: native, commits: new Map(), loaded: new Map(),
+      url, native, done: false, started: native, downloadResponsePending: !native,
+      downloadAmbiguous: !!previous && normalizeDownloadUrl(previous.url) === normalizeDownloadUrl(url)
+        && previous.started && !previous.noticeReceived
+        && (previous.downloadResponsePending || previous.downloadConfirmed),
+      commits: new Map(), loaded: new Map(),
       requests: new Map(), responses: new Map(),
     };
     activeLoad = load;
@@ -315,6 +330,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
     load.finish = (error, committedUrl) => {
       if (activeLoad !== load || load.done) return;
       load.done = true;
+      downloadCandidates.delete(load);
       pendingUrl = '';
       if (error) {
         navigationResult = error.message.includes('ERR_ABORTED') ? 'cancelled' : 'failed';
@@ -331,12 +347,12 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
     load.finishDownload = () => {
       if (activeLoad !== load || load.done) return;
       load.done = true;
+      downloadCandidates.delete(load);
       downloadUrl = load.url;
       pendingUrl = '';
       navigationResult = 'download-blocked';
       publish();
       load.flushDownloadNotice(true);
-      if (load.noticeReceived) downloadCandidates.delete(load);
     };
     load.completeIfLoaded = () => {
       if (activeLoad !== load || !load.loaderId) return;

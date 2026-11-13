@@ -1,5 +1,7 @@
 # Changelog
 
+## 1.102.0
+
 - [ 機能追加 ] 起動時に最初のペインを開く設定を追加（[#605](https://github.com/vektor-inc/vk-terminals/issues/605)）
 - [ 仕様変更 ] 前回のペインが復元されない場合、既定では空の画面で起動し、起動時に最初のペインを開かなかった場合は後から作るペインへ initialCommand を送らないように変更（[#605](https://github.com/vektor-inc/vk-terminals/issues/605)）
 

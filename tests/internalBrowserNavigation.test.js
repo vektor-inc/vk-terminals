@@ -867,7 +867,11 @@ test('案内基底の戻るは遅れたactive indexに依存せず案内を開�
   contents.navigationHistory.getActiveIndex = () => 3;
   contents.navigationHistory.canGoBack = () => true;
   contents.navigationHistory.goBack = () => assert.fail('guide base uses the captured return page');
-  contents.navigationHistory.goToIndex = () => assert.fail('guide base uses the captured return page');
+  contents.navigationHistory.goToIndex = index => {
+    assert.equal(index, 0);
+    contents.setDocumentUrl(previous);
+    contents.emit('did-navigate', {}, previous);
+  };
 
   browser.publish();
   assert.equal(states.at(-1).canGoBack, true);

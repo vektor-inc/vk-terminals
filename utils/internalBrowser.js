@@ -596,7 +596,17 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
       if (canUseHelpReturn()) {
         const forwardUrl = currentUrl;
         helpForwardUrl = forwardUrl;
-        const started = navigateFromHelp(helpReturnUrl);
+        const returnIndex = findHistoryIndex(history, helpReturnUrl);
+        let started;
+        if (returnIndex >= 0 && typeof history.goToIndex === 'function') {
+          beginLoad(helpReturnUrl, true, undefined, {
+            native: true, stopPrevious: true, historyTarget: helpReturnUrl, syntheticHelpBack: true,
+          });
+          history.goToIndex(returnIndex);
+          started = true;
+        } else {
+          started = navigateFromHelp(helpReturnUrl);
+        }
         if (!started) helpForwardUrl = '';
         return started;
       }
@@ -665,6 +675,19 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
     } catch (_error) {
       return undefined;
     }
+  }
+
+  function findHistoryIndex(history, url) {
+    try {
+      const entries = history.getAllEntries?.();
+      if (!Array.isArray(entries)) return -1;
+      // active index は custom scheme の復帰後に遅れることがあるため使わず、
+      // 明示的に保存した戻り先と一致する最新の履歴を選ぶ。
+      for (let index = entries.length - 1; index >= 0; index--) {
+        if (entries[index]?.url === url) return index;
+      }
+    } catch (_error) {}
+    return -1;
   }
 
   function canMoveHistory(history, offset, fallbackMethod) {

@@ -235,7 +235,14 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
         return { action: 'deny' };
       });
       contents.on('did-start-loading', publish);
-      contents.on('did-stop-loading', publish);
+      contents.on('did-stop-loading', () => {
+        publish();
+        const load = activeLoad;
+        const url = contents.getURL();
+        // カスタムスキームを含む履歴復帰では did-navigate と CDP lifecycleEvent の
+        // どちらも欠ける場合がある。停止時の実文書 URL を最後の確定経路にする。
+        if (load?.native && !load.done && isNavigationUrl(url)) load.finish(null, url);
+      });
       contents.on('did-navigate', (_event, url) => {
         if (activeLoad?.help && isHelpUrl(url) && contents.getURL() === url) {
           currentUrl = url;

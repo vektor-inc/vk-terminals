@@ -284,6 +284,9 @@ test.describe.serial('ペイン内 URL の Cmd/Ctrl+クリック（issue #349 / 
   test.beforeEach(async () => {
     await clearOpenExternalCalls(app);
     await moveMouseAway(win);
+    // 直前のドラッグ選択を残すと xterm.js がリンクのホバー解決を抑止するため、
+    // 各ケースを独立させる。製品側では選択内容を維持する既存挙動を変えない。
+    await win.evaluate(() => Object.values(terminals).forEach(({ term }) => term.clearSelection()));
   });
 
   // issue #385: terminalLinkClickMode の既定は 'click'（単クリックで開く）に変更された。
@@ -481,7 +484,8 @@ test.describe.serial('ペイン内 URL の Cmd/Ctrl+クリック（issue #349 / 
           const line = buf.getLine(buf.viewportY + i);
           lines.push(line ? { isWrapped: line.isWrapped, text: line.translateToString(true) } : null);
         }
-        for (let i = 0; i < lines.length; i += 1) {
+        // echo の入力行と出力行に同じ URL が現れるため、下から探して出力行を優先する。
+        for (let i = lines.length - 1; i >= 0; i -= 1) {
           if (!lines[i] || !lines[i].isWrapped) continue;
           // この行だけ、または前の折り返し継続行（あれば）と連結した文字列に
           // 末尾断片が含まれていれば、この行を「末尾を含む折り返し継続行」とみなす。

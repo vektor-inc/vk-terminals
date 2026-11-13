@@ -674,6 +674,20 @@ test('履歴復帰でCDPのloadイベントが欠けてもdid-navigateで操作�
   assert.equal(states.at(-1).pendingUrl, '');
 });
 
+test('案内からの履歴復帰でdid-navigateも欠けた場合はdid-stop-loadingで完了する', async () => {
+  const { browser, contents, states } = setup();
+  await contents.complete('https://example.com/a');
+  contents.navigationHistory.canGoBack = () => true;
+  contents.navigationHistory.goBack = () => {
+    contents.setDocumentUrl('https://example.com/previous');
+    contents.emit('did-stop-loading');
+  };
+
+  assert.equal(browser.action('back'), true);
+  assert.equal(states.at(-1).navigationResult, 'completed');
+  assert.equal(states.at(-1).url, 'https://example.com/previous');
+});
+
 for (const failCommand of ['Page.enable', 'Page.setLifecycleEventsEnabled', 'Network.enable', 'Page.getFrameTree']) {
   test(`${failCommand} の初期化失敗も操作を失敗として終了する`, async () => {
     const { browser, contents, states } = setup({ failCommand });

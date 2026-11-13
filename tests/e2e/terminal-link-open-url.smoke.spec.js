@@ -455,6 +455,7 @@ test.describe.serial('ペイン内 URL の Cmd/Ctrl+クリック（issue #349 / 
     const selection = await win.evaluate(() => terminals['pane-1'].term.getSelection());
     expect(selection).toContain('example.com/vk-terminals-e2e-drag-select');
     // wasDragged() のガード（HIGH-2）により、同一リンク内のドラッグでも開かない。
+    await expect(win.locator('.internal-browser-choice')).toHaveCount(0);
     expect(await getOpenExternalCalls(app)).toEqual([]);
   });
 
@@ -951,6 +952,7 @@ test.describe.serial('ペイン内 URL クリック: 計測側（右クリック
     expect(pos).not.toBeNull();
     await rightClickAtOffset(win, pos, 3);
 
+    await expect(win.locator('.internal-browser-choice')).toHaveCount(0);
     expect(await getOpenExternalCalls(app)).toEqual([]);
   });
 
@@ -974,6 +976,7 @@ test.describe.serial('ペイン内 URL クリック: 計測側（右クリック
     expect(selection.length).toBeGreaterThan(0);
     expect(url).toContain(selection);
 
+    await expect(win.locator('.internal-browser-choice')).toHaveCount(0);
     expect(await getOpenExternalCalls(app)).toEqual([]);
   });
 

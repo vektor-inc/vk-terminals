@@ -41,6 +41,52 @@ test('単体起動: 設定カードの上下端とキーボードで設定を開
   }
 });
 
+test('前ページの画像読み込み中でも案内を開いて設定を閉じる', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-help-pending-e2e-'));
+  fs.mkdirSync(path.join(root, 'guide'));
+  fs.writeFileSync(path.join(root, 'help.html'), '<html><body>Help guide</body></html>');
+  fs.writeFileSync(path.join(root, 'status.json'), '{}');
+  let pendingImage;
+  const imageRequested = new Promise((resolve) => { pendingImage = resolve; });
+  let imageResponse;
+  let pageResponse;
+  const previousPage = http.createServer((request, response) => {
+    if (request.url === '/pending.png') {
+      imageResponse = response;
+      response.writeHead(200, { 'Content-Type': 'image/png', 'Content-Length': '100000' });
+      response.write(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+      pendingImage();
+      return;
+    }
+    response.writeHead(200, { 'Content-Type': 'text/html' });
+    pageResponse = response;
+    response.write('<html><body>Previous<img src="/pending.png">');
+  });
+  await new Promise((resolve) => previousPage.listen(0, '127.0.0.1', resolve));
+  let launched;
+  try {
+    launched = await launchAppAndWait({ port: await getFreePort(), prefix: 'vk-help-pending-', entry: path.resolve(__dirname, '../fixtures/embeddedHelpLauncher.js'), env: { VK_TEST_HELP_ROOT: root } });
+    const { win } = launched;
+    // 前ページの本文表示後も画像応答を保留し、読み込み中に案内へ切り替える。
+    await win.locator('#internal-browser-toggle').click();
+    await win.evaluate((url) => VKIpc.invoke('internal-browser:open', url), `http://127.0.0.1:${previousPage.address().port}/previous`);
+    await imageRequested;
+    await expect(win.locator('.internal-browser-url')).toContainText('/previous');
+    await expect(win.locator('.internal-browser-progress')).toBeVisible();
+    await win.locator('#sidebar-help button').click();
+    await win.getByRole('button', { name: 'ドキュメント', exact: true }).click();
+    await expect(win.locator('.settings-modal')).toHaveCount(0);
+    await expect(win.locator('.internal-browser-url')).toHaveAttribute('title', 'vk-terminals-help://guide/');
+    await expect(win.locator('body')).not.toContainText('ドキュメントを開けませんでした');
+  } finally {
+    if (imageResponse && !imageResponse.destroyed) imageResponse.end();
+    if (pageResponse && !pageResponse.destroyed) pageResponse.end('</body></html>');
+    if (launched) await closeApp(launched);
+    await new Promise((resolve) => previousPage.close(resolve));
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('使い方・ヘルプ: 確認失敗の再確認、未保存キャンセル、連打と格納復帰', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-help-e2e-'));
   fs.mkdirSync(path.join(root, 'guide'));
@@ -134,8 +180,7 @@ test('使い方・ヘルプ: 確認失敗の再確認、未保存キャンセル
     });
     await expect(win.locator('.internal-browser-url')).toContainText('/next');
     await win.locator('.internal-browser-toolbar [data-action="back"]').click();
-    await expect(win.locator('.internal-browser-url')).toContainText('127.0.0.1');
-    await expect(win.locator('.internal-browser-url')).not.toContainText('/next');
+    await expect(win.locator('.internal-browser-url')).toHaveText(linkedUrl);
     await win.locator('.internal-browser-toolbar [data-action="back"]').click();
     await expect(win.locator('.internal-browser-url')).toContainText('#section');
     await win.locator('.internal-browser-toolbar [data-action="back"]').click();

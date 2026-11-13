@@ -127,11 +127,39 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
     github404Url = '';
     downloadUrl = '';
     pendingUrl = fromPage ? '' : url;
-    const loading = view.webContents.loadURL(url);
-    if (!waitForLoad) loading.catch(() => {});
+    const contents = view.webContents;
+    let completed;
+    if (waitForLoad) {
+      // 前ページの中断で loadURL が拒否されても、案内自身の結果だけを待つ。
+      completed = new Promise((resolve, reject) => {
+        const cleanup = () => {
+          contents.removeListener('did-finish-load', finish);
+          contents.removeListener('did-fail-load', fail);
+          contents.removeListener('destroyed', destroyed);
+        };
+        const finish = () => {
+          if (!isHelpUrl(contents.getURL())) return;
+          cleanup();
+          resolve(true);
+        };
+        const fail = (_event, code, description, destination, isMainFrame) => {
+          if (!isMainFrame || !isHelpUrl(destination)) return;
+          cleanup();
+          reject(new Error(`Help document load failed (${code}): ${description}`));
+        };
+        const destroyed = () => {
+          cleanup();
+          reject(new Error('Help document webContents destroyed'));
+        };
+        contents.on('did-finish-load', finish);
+        contents.on('did-fail-load', fail);
+        contents.on('destroyed', destroyed);
+      });
+    }
+    contents.loadURL(url).catch(() => {});
     syncBounds();
     publish();
-    return waitForLoad ? loading.then(() => true) : true;
+    return completed || true;
   }
 
   function action(name) {

@@ -24,7 +24,8 @@ test('案内のハッシュを外部 URL に引き継ぎ、読み込み失敗は
       contents.navigationHistory = { canGoBack: () => false, canGoForward: () => false };
       contents.isLoading = () => false;
       contents.setWindowOpenHandler = () => {};
-      contents.loadURL = () => Promise.reject(new Error('load failed'));
+      contents.getURL = () => contents.currentUrl || '';
+      contents.loadURL = () => Promise.reject(new Error('previous load aborted'));
       contents.close = () => {};
       this.webContents = contents;
     }
@@ -33,13 +34,60 @@ test('案内のハッシュを外部 URL に引き継ぎ、読み込み失敗は
   const win = { isDestroyed: () => false, webContents: { send() {} }, contentView: { addChildView() {}, removeChildView() {} } };
   const browser = createInternalBrowser(win, { WebContentsView: FakeView, session: { fromPartition: () => browserSession }, helpDocumentPath: documentPath });
   try {
-    await assert.rejects(browser.openHelp(), /load failed/);
+    const failedHelp = browser.openHelp();
+    contents.emit('did-fail-load', {}, -3, 'aborted', 'https://example.com/previous', true);
+    contents.emit('did-fail-load', {}, -105, 'failed', HELP_URL, true);
+    await assert.rejects(failedHelp, /Help document load failed/);
     contents.emit('did-navigate', {}, `${HELP_URL}#section`);
     assert.equal(browser.externalUrl('current'), require('node:url').pathToFileURL(documentPath).href + '#section');
     assert.equal(browser.externalUrl('failed'), null);
   } finally {
     browser.destroy();
     fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('案内の待機は前ページの中断を無視し、案内完了または破棄で解除する', async () => {
+  const { EventEmitter } = require('node:events');
+  const browserSession = new EventEmitter();
+  browserSession.webRequest = { onBeforeRequest() {}, onCompleted() {} };
+  browserSession.setPermissionRequestHandler = () => {};
+  browserSession.setPermissionCheckHandler = () => {};
+  let contents;
+  class FakeView {
+    constructor() {
+      contents = new EventEmitter();
+      contents.navigationHistory = { canGoBack: () => false, canGoForward: () => false };
+      contents.isLoading = () => false;
+      contents.setWindowOpenHandler = () => {};
+      contents.getURL = () => contents.currentUrl || '';
+      contents.loadURL = () => Promise.reject(new Error('previous load aborted'));
+      contents.close = () => {};
+      this.webContents = contents;
+    }
+    setBounds() {}
+  }
+  const win = { isDestroyed: () => false, webContents: { send() {} }, contentView: { addChildView() {}, removeChildView() {} } };
+  const browser = createInternalBrowser(win, { WebContentsView: FakeView, session: { fromPartition: () => browserSession } });
+  try {
+    // 別 URL の中断と案内以外の完了は、案内の成否を決めない。
+    const succeeded = browser.openHelp();
+    contents.emit('did-fail-load', {}, -3, 'aborted', 'https://example.com/previous', true);
+    contents.currentUrl = 'https://example.com/previous';
+    contents.emit('did-finish-load');
+    assert.equal(contents.listenerCount('did-finish-load'), 1);
+    contents.currentUrl = `${HELP_URL}#section`;
+    contents.emit('did-finish-load');
+    assert.equal(await succeeded, true);
+    assert.equal(contents.listenerCount('did-finish-load'), 0);
+    assert.equal(contents.listenerCount('destroyed'), 0);
+    const destroyed = browser.openHelp();
+    contents.emit('destroyed');
+    await assert.rejects(destroyed, /destroyed/);
+    assert.equal(contents.listenerCount('did-fail-load'), 1);
+    assert.equal(contents.listenerCount('destroyed'), 0);
+  } finally {
+    browser.destroy();
   }
 });
 

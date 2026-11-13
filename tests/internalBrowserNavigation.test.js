@@ -663,6 +663,11 @@ test('履歴復帰でCDPのloadイベントが欠けてもdid-navigateで操作�
   const { browser, contents, states } = setup();
   await contents.complete('https://example.com/a');
   contents.navigationHistory.canGoBack = () => true;
+  contents.navigationHistory.getActiveIndex = () => 1;
+  contents.navigationHistory.getAllEntries = () => [
+    { url: 'https://example.com/previous' },
+    { url: 'https://example.com/a' },
+  ];
   contents.navigationHistory.goBack = () => {
     contents.setDocumentUrl('https://example.com/previous');
     contents.emit('did-navigate', {}, contents.getURL());
@@ -695,6 +700,23 @@ test('案内からの履歴復帰でdid-navigateも欠けた場合はdid-stop-lo
   assert.equal(staleStopResult, null);
   assert.equal(states.at(-1).navigationResult, 'completed');
   assert.equal(states.at(-1).url, 'https://example.com/previous');
+});
+
+test('ページ起点のB開始後に旧Aの停止が届いてもBをAとして完了しない', async () => {
+  const { contents, states } = setup();
+  await contents.complete('https://example.com/a');
+  const destination = 'https://example.com/b';
+
+  contents.emit('will-navigate', { url: destination, preventDefault() {} });
+  contents.emit('did-stop-loading');
+  assert.equal(states.at(-1).navigationResult, null);
+  assert.equal(states.at(-1).url, 'https://example.com/a');
+
+  contents.startNative(destination, 'loader-b');
+  contents.commitDocument(destination, 'loader-b');
+  contents.loadDocument('loader-b');
+  assert.equal(states.at(-1).navigationResult, 'completed');
+  assert.equal(states.at(-1).url, destination);
 });
 
 for (const failCommand of ['Page.enable', 'Page.setLifecycleEventsEnabled', 'Network.enable', 'Page.getFrameTree']) {

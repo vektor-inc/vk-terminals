@@ -241,14 +241,15 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
         const url = contents.getURL();
         // カスタムスキームを含む履歴復帰では did-navigate と CDP lifecycleEvent の
         // どちらも欠ける場合がある。停止時の実文書 URL を最後の確定経路にする。
-        if (load?.native && !load.done && load.acceptsHistoryUrl(url) && isNavigationUrl(url)) load.finish(null, url);
+        if (load?.native && load.historyTarget && !load.done
+          && load.acceptsHistoryUrl(url) && isNavigationUrl(url)) load.finish(null, url);
       });
       contents.on('did-navigate', (_event, url) => {
         if (activeLoad?.help && isHelpUrl(url) && contents.getURL() === url) {
           currentUrl = url;
           failedUrl = '';
           publish();
-        } else if (activeLoad?.native && !activeLoad.done && activeLoad.acceptsHistoryUrl(url)
+        } else if (activeLoad?.native && activeLoad.historyTarget && !activeLoad.done && activeLoad.acceptsHistoryUrl(url)
           && isNavigationUrl(url) && contents.getURL() === url) {
           // 履歴復帰では CDP の lifecycleEvent が届かないことがあるため、Electron が
           // メイン文書の commit を通知した時点で操作とアドレスを確定する。

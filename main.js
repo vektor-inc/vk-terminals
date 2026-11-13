@@ -94,6 +94,7 @@ const {
 } = require('./utils/githubReachability');
 const { scheduleLaunchCommand } = require('./utils/delayedLaunch');
 const { observePowerShellReady } = require('./utils/powerShellReady');
+const { isInitialCommandTarget } = require('./utils/initialPaneCommand');
 const shellStartupReadiness = new WeakMap();
 const {
   createAgentLifecycleStore,
@@ -2868,7 +2869,7 @@ function createTerminalPane(cwd, options = {}, guide = null) {
 
   // 起動時に通常の初期ペインを作った場合だけ initialCommand を送信する。
   // セットアップ用ペインは対象外で、通常ペインでの再試行だけが初期ペインになる。
-  const isFirstTerminal = options.initialPane === true && !firstTerminalCreated && !setupLaunch && !guideLaunch;
+  const isFirstTerminal = isInitialCommandTarget({ initialPane: options.initialPane, firstTerminalCreated, setupLaunch, guideLaunch });
   if (isFirstTerminal) firstTerminalCreated = true;
 
   let promptWatcher = null;

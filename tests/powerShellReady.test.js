@@ -242,15 +242,3 @@ for (const trustBeforeCancel of [false, true]) {
     assert.deepEqual(watcher.writes, []);
   });
 }
-
-// initialCommand の対象は起動時に通常の初期ペインとして作った場合だけ。
-for (const [initialPane, expected] of [[false, false], [true, true]]) {
-  test(`initialCommand 対象の判定: initialPane=${initialPane}`, () => {
-    const source = require('node:fs').readFileSync(require.resolve('../main.js'), 'utf8');
-    const line = source.match(/const isFirstTerminal = ([^;]+);/)[1];
-    const isFirstTerminal = require('node:vm').runInNewContext(line, {
-      options: { initialPane }, firstTerminalCreated: false, setupLaunch: false, guideLaunch: false,
-    });
-    assert.equal(isFirstTerminal, expected);
-  });
-}

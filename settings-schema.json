@@ -357,10 +357,10 @@
         },
         {
           "key": "initialEngine",
-          "label": "起動時の最初のペインの AI エンジン",
+          "label": "最初のペインの AI エンジン",
           "type": "select",
           "default": "claude",
-          "help": "起動時の最初のペインと、ペインが 0 枚のときに追加するペインで使う AI を選びます。変更は再起動後に反映されます。そのペインから追加・分割したペインは、「AI（Claude Code / Codex）を自動的に起動する」がオンの場合だけ同じ AI で起動します。起動時に追加で開くペイン（additionalPanes）は対象外です。",
+          "help": "起動時の最初のペインと、ペインが 0 枚のときに「新規ペインを追加」ボタンから作るペインで使う AI を選びます。変更は再起動後に反映されます。そのペインから追加・分割したペインは、「AI（Claude Code / Codex）を自動的に起動する」がオンの場合だけ同じ AI で起動します。起動時に追加で開くペイン（additionalPanes）は対象外です。",
           "options": [
             { "value": "claude", "label": "Claude Code（既定）" },
             { "value": "codex", "label": "Codex" }
@@ -368,12 +368,12 @@
         },
         {
           "key": "initialCodexModel",
-          "label": "起動時の最初のペインの Codex モデル",
+          "label": "最初のペインの Codex モデル",
           "type": "text",
           "placeholder": "gpt-5.5",
           "pattern": "^[A-Za-z0-9][A-Za-z0-9._\\-\\[\\]]{0,63}$",
           "invalidMessage": "モデル名に使えない文字が含まれています。英数字と . _ - [ ] で入力してください。",
-          "help": "起動時の最初のペインと、ペインが 0 枚のときに追加するペインで Codex を選んだ場合のモデル名を入力します。空欄の場合は Codex の既定モデルで起動します。変更は再起動後に反映されます。",
+          "help": "起動時の最初のペインと、ペインが 0 枚のときに「新規ペインを追加」ボタンから作るペインで Codex を選んだ場合のモデル名を入力します。空欄の場合は Codex の既定モデルで起動します。変更は再起動後に反映されます。",
           "visibleWhen": { "key": "initialEngine", "value": "codex" }
         }
       ]

@@ -7496,8 +7496,16 @@ async function initApp() {
 // サイドバーは root の flex 子として常駐させるため、初回 render 前に配線する。
 setupSidebarMenu();
 
-initApp().then(() => {
+const initAppSettled = initApp().then(() => {
   // 起動完了を main プロセスに通知（main 側で additionalPanes を順次作成する）
+  VKIpc.send('terminal:renderer-ready');
+}).catch((error) => {
+  console.error('initApp failed', error);
+  // 初期化例外後も空画面へ移り、後続のペイン要求を受けられるようにする。
+  if (!tree) tree = { type: 'grid', order: [], colFr: null, rowFr: null, stashOrder: [], sidebarWidth: DEFAULT_SIDEBAR_WIDTH };
+  tree.order = [];
+  render();
+  initialRenderDone = true;
   VKIpc.send('terminal:renderer-ready');
 });
 
@@ -7601,8 +7609,10 @@ VKIpc.on('terminal:agentroom', (termId, agents, replace) => {
 VKIpc.on('terminal:request-new-pane', async (payload = {}) => {
   const { requestId, cwd, noClaude, engine, stashed, useDefaults, model, approvalPolicy, sandboxMode, codexPolicy, claudeSettingsPreset } = payload;
   const reply = (result) => VKIpc.send('terminal:new-pane-created', { requestId, ...result });
+  // 初期化中に受けた要求は、レイアウトが確定するまで端末を作らず待つ。
+  if (!initialRenderDone) await initAppSettled;
   if (!initialRenderDone) {
-    reply({ error: 'renderer not initialized' });
+    reply({ error: '起動中のため追加できませんでした。少し待ってからもう一度お試しください' });
     return;
   }
   const targetPaneId = findLargestVisiblePaneId() || focusedPaneId || (tree ? getAllLeafIds(tree)[0] : null);

@@ -171,6 +171,12 @@ function syncInternalBrowserLayout() {
   const maxWidth = browserMustOverlay ? windowWidth : browserWidthMax(availableWidth, columns, windowWidth, effectiveGridMinimumWidth);
   displayedInternalBrowserWidth = browserMustOverlay ? windowWidth
     : clampBrowserWidth(preferredInternalBrowserWidth || NaN, availableWidth, columns, windowWidth, effectiveGridMinimumWidth);
+  // inert を付けるとブラウザが背後の activeElement を body へ移すため、
+  // 全面表示へ入る前の復帰先は inert の適用より先に保存する。
+  if (browserMustOverlay && !browserWasOverlay) {
+    const active = document.activeElement;
+    internalBrowserOverlayFocusOrigin = active && !internalBrowserSidebar.contains(active) ? active : null;
+  }
   root.classList.toggle('internal-browser-overlay', browserMustOverlay);
   // 全面表示で覆われたペインをキーボード操作からも除外する。render() が root の
   // 子を作り直した場合も、毎回現在の子へ inert を反映する。
@@ -178,8 +184,6 @@ function syncInternalBrowserLayout() {
     if (child !== internalBrowserSidebar) child.inert = browserMustOverlay;
   }
   if (browserMustOverlay && !browserWasOverlay) {
-    const active = document.activeElement;
-    internalBrowserOverlayFocusOrigin = active && !internalBrowserSidebar.contains(active) ? active : null;
     requestAnimationFrame(() => {
       if (root.classList.contains('internal-browser-overlay')) focusInternalBrowserToolbar();
     });

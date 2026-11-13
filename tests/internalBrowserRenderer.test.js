@@ -104,13 +104,26 @@ test('狭幅の同期は左を閉じてから再計算し、手動で左を開�
   const address = { focus() { focused = 'address'; }, getClientRects: () => [{}] };
   const browser = { style: {}, querySelector: selector => selector === '.internal-browser-url' ? address : selector === '.internal-browser-resizer' ? resizer : null };
   browser.contains = element => element === address;
-  const terminal = { inert: false, isConnected: true, contains: () => true, closest: () => null, focus() { focused = 'terminal'; } };
+  const body = { style: { setProperty() {} }, classList: { contains: () => false } };
+  const documentState = { activeElement: null, body };
+  let terminalInert = false;
+  const terminal = { isConnected: true, contains: () => true, closest: () => null, focus() { focused = 'terminal'; } };
+  Object.defineProperty(terminal, 'inert', {
+    get: () => terminalInert,
+    set(value) {
+      terminalInert = value;
+      // Chromium はフォーカス中の祖先を inert にすると activeElement を body へ落とす。
+      if (value && documentState.activeElement === terminal) documentState.activeElement = body;
+    },
+  });
+  documentState.activeElement = terminal;
   root.children = [terminal, browser];
   const frames = [];
   const calls = [];
   const context = vm.createContext({
-    document: { activeElement: terminal, getElementById: id => id === 'root' ? root : id === 'sidebar' ? { getBoundingClientRect: () => ({ width: 300 }) } : toggle,
-      body: { style: { setProperty() {} }, classList: { contains: () => false } } },
+    document: Object.assign(documentState, {
+      getElementById: id => id === 'root' ? root : id === 'sidebar' ? { getBoundingClientRect: () => ({ width: 300 }) } : toggle,
+    }),
     window: { VKInternalBrowserLayout: require('../utils/internalBrowserLayout') },
     internalBrowserOpen: true, sidebarOpen: true, internalBrowserSidebar: browser,
     preferredInternalBrowserWidth: 520, displayedInternalBrowserWidth: 0, previousInternalBrowserLayout: null,

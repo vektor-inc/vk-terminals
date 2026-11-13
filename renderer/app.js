@@ -184,7 +184,7 @@ function syncInternalBrowserLayout() {
   }
 }
 
-function setInternalBrowserOpen(value) {
+function setInternalBrowserOpen(value, { focus = internalBrowserHasPage ? 'preserve' : 'address' } = {}) {
   internalBrowserOpen = value;
   if (!value && internalBrowserSidebar.contains(document.activeElement)) document.getElementById('internal-browser-toggle')?.focus();
   if (value && !internalBrowserHasPage) {
@@ -193,6 +193,9 @@ function setInternalBrowserOpen(value) {
     notice.hidden = false;
   }
   syncInternalBrowserLayout();
+  // 空状態はレイアウト反映後に入力可能にする。再表示は操作元にフォーカスを残す。
+  // 値や選択範囲には触れず、閉じている間の入力も保持する。
+  if (value && focus === 'address') focusInternalBrowserToolbar();
 }
 
 function focusInternalBrowserToolbar() {
@@ -245,7 +248,8 @@ function showInternalBrowserChoice(url, event, origin) {
         internalBrowserHasPage = true;
         hideInternalBrowserContent(internalBrowserSidebar.querySelector('.internal-browser-notice'));
         hideInternalBrowserContent(internalBrowserSidebar.querySelector('.internal-browser-error'));
-        setInternalBrowserOpen(true);
+        // リンクの開き先選択を閉じた際に復帰した操作元を維持する。
+        setInternalBrowserOpen(true, { focus: 'preserve' });
         VKIpc.invoke('internal-browser:open', url).catch(() => {});
       } else openExternalUrlSafe(url, { onSuccess: () => showTerminalLinkOpenedToast(url) });
     });

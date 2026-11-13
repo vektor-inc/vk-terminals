@@ -8,6 +8,55 @@ const vm = require('node:vm');
 const { EventEmitter } = require('node:events');
 const { createInternalBrowser } = require('../utils/internalBrowser');
 
+test('タイトルバーから空状態を開くと表示後にURL欄へ移り、再表示とリンク起点は操作元を保つ', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
+  const setter = source.match(/function setInternalBrowserOpen\([\s\S]*?\n\}/)?.[0];
+  const focusHelper = source.match(/function focusInternalBrowserToolbar\([\s\S]*?\n\}/)?.[0];
+  const toggleHandler = source.match(/document\.getElementById\('internal-browser-toggle'\)\.addEventListener\('click',.*\);/)?.[0];
+  assert.ok(setter && focusHelper && toggleHandler);
+  const calls = [];
+  const document = { activeElement: null, getElementById: () => toggle };
+  const toggle = { focus() { document.activeElement = this; }, addEventListener(_type, handler) { this.click = handler; } };
+  const address = { value: '入力途中', selectionStart: 2, selectionEnd: 2,
+    focus() { assert.equal(sidebar.hidden, false); calls.push('address'); document.activeElement = this; },
+    closest() { return sidebar.hidden ? sidebar : null; } };
+  const notice = { hidden: true, textContent: '' };
+  const sidebar = { hidden: true, contains: element => element === address,
+    querySelector: selector => selector === '.internal-browser-url' ? address : notice };
+  const context = vm.createContext({ document, internalBrowserSidebar: sidebar,
+    internalBrowserOpen: false, internalBrowserHasPage: false,
+    syncInternalBrowserLayout() { sidebar.hidden = !context.internalBrowserOpen; calls.push('layout'); } });
+  vm.runInContext(`${setter}\n${focusHelper}\n${toggleHandler}`, context);
+  toggle.focus();
+  toggle.click();
+  assert.deepEqual(calls, ['layout', 'address']);
+  assert.equal(document.activeElement, address);
+  assert.equal(notice.hidden, false);
+  assert.equal(address.value, '入力途中');
+  assert.equal(address.selectionStart, 2);
+  assert.equal(address.selectionEnd, 2);
+  // 空状態の入力を残したまま閉じ、再び開いてもすぐ入力できる。
+  toggle.click();
+  assert.equal(document.activeElement, toggle);
+  toggle.click();
+  assert.equal(document.activeElement, address);
+  assert.equal(address.value, '入力途中');
+  // 表示済みページの再表示ではタイトルバーボタンを維持する。
+  toggle.click();
+  context.internalBrowserHasPage = true;
+  const focusCount = calls.filter(call => call === 'address').length;
+  toggle.click();
+  assert.equal(document.activeElement, toggle);
+  assert.equal(calls.filter(call => call === 'address').length, focusCount);
+  // terminal/stash のリンク起点は、選択メニューから復帰した操作元を維持する。
+  const origin = {};
+  document.activeElement = origin;
+  vm.runInContext("setInternalBrowserOpen(true, { focus: 'preserve' })", context);
+  assert.equal(document.activeElement, origin);
+  const choice = source.match(/function showInternalBrowserChoice\([\s\S]*?\n\}/)?.[0];
+  assert.match(choice, /closeInternalBrowserChoice\(\);[\s\S]*setInternalBrowserOpen\(true, \{ focus: 'preserve' \}\)/);
+});
+
 test('左サイドバーの開閉完了後にブラウザとトーストの配置を再同期する', () => {
   const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
   const setter = source.match(/function setSidebarOpen\(open, options = \{\}\) \{[\s\S]*?\n\}/)?.[0];

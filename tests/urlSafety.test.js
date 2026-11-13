@@ -44,6 +44,26 @@ test('アドレス欄は URL、ローカルホスト、検索語を安全な URL
   assert.equal(normalizeBrowserAddress('example'), 'https://www.google.com/search?q=example');
 });
 
+test('アドレス欄は IPv4 アドレスとポート番号付きの 1 語のホスト名を検索に送らない', () => {
+  // 社内・ローカルのアドレスは http:// を補った URL として開く。
+  assert.equal(normalizeBrowserAddress('192.168.1.10'), 'http://192.168.1.10');
+  assert.equal(normalizeBrowserAddress('192.168.1.10:3000/path'), 'http://192.168.1.10:3000/path');
+  assert.equal(normalizeBrowserAddress('10.0.0.255?q=1'), 'http://10.0.0.255?q=1');
+  assert.equal(normalizeBrowserAddress('myserver:3000'), 'http://myserver:3000');
+  assert.equal(normalizeBrowserAddress('myserver:3000/path'), 'http://myserver:3000/path');
+  assert.equal(normalizeBrowserAddress('dev-box:8080#top'), 'http://dev-box:8080#top');
+  // 既存の localhost とドメインの扱いは変えない。
+  assert.equal(normalizeBrowserAddress('localhost'), 'http://localhost');
+  assert.equal(normalizeBrowserAddress('127.0.0.1:8888/path'), 'http://127.0.0.1:8888/path');
+  assert.equal(normalizeBrowserAddress('github.com/vektor-inc'), 'https://github.com/vektor-inc');
+  // ポート番号の無い 1 語は検索語のまま、範囲外の数値は IPv4 アドレスとして扱わない。
+  assert.equal(normalizeBrowserAddress('myserver'), 'https://www.google.com/search?q=myserver');
+  assert.equal(normalizeBrowserAddress('256.1.1.1'), 'https://www.google.com/search?q=256.1.1.1');
+  assert.equal(normalizeBrowserAddress('192.168.1'), 'https://www.google.com/search?q=192.168.1');
+  assert.equal(normalizeBrowserAddress('myserver:99999'), null);
+  assert.equal(normalizeBrowserAddress('javascript:alert(1)'), `https://www.google.com/search?q=${encodeURIComponent('javascript:alert(1)')}`);
+});
+
 test('アドレス欄は危険なスキームを検索し、空欄と不正な URL は開かない', () => {
   for (const value of ['javascript:alert(1)', 'data:text/html,hello', 'file:///etc/passwd', 'ftp://example.com']) {
     assert.equal(normalizeBrowserAddress(value), `https://www.google.com/search?q=${encodeURIComponent(value)}`);

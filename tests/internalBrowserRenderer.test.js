@@ -305,6 +305,75 @@ test('アドレス欄は編集中の通知を保持し、Enter のみで正規�
   assert.equal(address.attributes['aria-describedby'], undefined);
 });
 
+test('main が Enter の送信を受け付けないときは読み込み中を解除し、入力を残して案内する', async () => {
+  const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
+  const addressHandlers = source.match(/const internalBrowserAddress = internalBrowserSidebar\.querySelector\('\.internal-browser-url'\);[\s\S]*?(?=document\.getElementById\('internal-browser-toggle'\))/)?.[0];
+  assert.ok(addressHandlers);
+  // アドレス欄まわりの要素と、送信ごとに結果を差し替えられる VKIpc.invoke を用意する。
+  const handlers = {};
+  const replies = [];
+  const error = { id: 'internal-browser-address-error', hidden: true, textContent: '' };
+  const external = { setAttribute() {} };
+  const target = { hidden: true, textContent: '' };
+  const navigationStatus = { textContent: '' };
+  const address = { value: '', attributes: {}, addEventListener: (type, handler) => { handlers[type] = handler; },
+    setAttribute(name, value) { this.attributes[name] = value; }, removeAttribute(name) { delete this.attributes[name]; } };
+  const context = vm.createContext({
+    internalBrowserSidebar: { querySelector: selector => ({ '.internal-browser-url': address, '.internal-browser-address-error': error,
+      '.internal-browser-toolbar [data-action="external"]': external, '.internal-browser-external-target': target, '.internal-browser-navigation-status': navigationStatus })[selector] },
+    resolveBrowserAddress: require('../renderer/urlSafety').resolveBrowserAddress,
+    VKIpc: { invoke: () => replies.shift() },
+    syncInternalBrowserLayout() {},
+    URL,
+  });
+  vm.runInContext(`let internalBrowserUrl = ''; let internalBrowserFailedUrl = ''; let internalBrowserDownloadUrl = ''; let internalBrowserPendingUrl = ''; let internalBrowserAddressHasDraft = false; let internalBrowserHasPage = false; ${addressHandlers}`, context);
+  const settle = () => new Promise(resolve => setImmediate(resolve));
+  const enter = value => {
+    address.value = value;
+    handlers.input();
+    handlers.keydown({ key: 'Enter', preventDefault() {} });
+  };
+
+  // main が false を返すと、Enter で立てた読み込み中の状態を解除し、入力した文字列とエラーを表示する。
+  replies.push(Promise.resolve(false));
+  enter('github.com/vektor-inc');
+  assert.equal(navigationStatus.textContent, 'ページを読み込み中');
+  await settle();
+  assert.equal(vm.runInContext('internalBrowserNavigationActive', context), false);
+  assert.equal(vm.runInContext('internalBrowserActiveRequestId', context), null);
+  assert.equal(vm.runInContext('internalBrowserPendingUrl', context), '');
+  assert.equal(vm.runInContext('internalBrowserHasPage', context), false);
+  assert.equal(vm.runInContext('internalBrowserAddressHasDraft', context), true);
+  assert.equal(navigationStatus.textContent, '');
+  assert.equal(address.value, 'github.com/vektor-inc');
+  assert.equal(error.hidden, false);
+  assert.match(error.textContent, /ページを開けませんでした/);
+  assert.equal(address.attributes['aria-invalid'], 'true');
+  assert.equal(address.attributes['aria-describedby'], error.id);
+
+  // IPC の例外も同じく扱う。
+  replies.push(Promise.reject(new Error('ipc failed')));
+  enter('example.com');
+  await settle();
+  assert.equal(vm.runInContext('internalBrowserNavigationActive', context), false);
+  assert.equal(address.value, 'example.com');
+  assert.match(error.textContent, /ページを開けませんでした/);
+
+  // 古い送信の拒否が後から届いても、後続の送信の読み込み中表示を巻き戻さない。
+  let rejectFirst;
+  replies.push(new Promise(resolve => { rejectFirst = resolve; }), Promise.resolve(true));
+  enter('first.example');
+  enter('second.example');
+  await settle();
+  rejectFirst(false);
+  await settle();
+  assert.equal(vm.runInContext('internalBrowserNavigationActive', context), true);
+  assert.equal(vm.runInContext('internalBrowserPendingUrl', context), 'https://second.example');
+  assert.equal(address.value, 'https://second.example');
+  assert.equal(navigationStatus.textContent, 'ページを読み込み中');
+  assert.equal(error.hidden, true);
+});
+
 test('開き先メニュー表示中は別リンクのツールチップを出さない', () => {
   const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
   const tooltip = source.match(/function showTermLinkTooltip\(event, url\) \{[\s\S]*?\n\}/)?.[0];

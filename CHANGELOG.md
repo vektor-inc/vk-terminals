@@ -1,7 +1,8 @@
 # Changelog
 
-- [ 機能追加 ] アプリ内ブラウザのアドレス欄から URL 入力と Google 検索でページを開けるように（[#600](https://github.com/vektor-inc/vk-terminals/issues/600)）
+- [ 機能追加 ] アプリ内ブラウザのアドレス欄から URL 入力と Google 検索でページを開く機能を追加（[#600](https://github.com/vektor-inc/vk-terminals/issues/600)）
 - [ 仕様変更 ] アプリ内ブラウザの URL 表示ボタンによるコピー操作を廃止（[#600](https://github.com/vektor-inc/vk-terminals/issues/600)）
+- [ 仕様変更 ] 画面が狭いときは、アプリ内ブラウザを画面全体に表示し、左サイドバーと同時に開かないように変更（[#600](https://github.com/vektor-inc/vk-terminals/issues/600)）
 - [ 不具合修正 ] Codex の作業中に、ペインのタイトルや PR ラベルをクリックしても開き先メニューが出ず、ツールチップも表示されず、PR ラベルが点滅する問題を修正（[#614](https://github.com/vektor-inc/vk-terminals/issues/614)）
 
 ## 1.102.0

@@ -37,6 +37,10 @@
     let url;
     if (/^https?:\/\//i.test(value)) url = value;
     else if (/^(?:localhost|127\.0\.0\.1)(?::\d{1,5})?(?:[/?#][^\s]*)?$/i.test(value)) url = `http://${value}`;
+    // 社内・ローカルのアドレスを外部の検索サービスへ送らないよう、IPv4 アドレスと
+    // ポート番号付きの 1 語のホスト名は http:// を補って開く。
+    else if (/^(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?::\d{1,5})?(?:[/?#][^\s]*)?$/.test(value)
+      || /^[a-z\d](?:[a-z\d-]*[a-z\d])?:\d{1,5}(?:[/?#][^\s]*)?$/i.test(value)) url = `http://${value}`;
     else if (!/\s/.test(value) && /^[^:/?#@]+(?::\d{1,5})?(?:[/?#].*)?$/.test(value)) {
       // URL パーサーの IDN 正規化後にホストを判定し、検索語をドメインと誤認しない。
       const authority = value.split(/[/?#]/, 1)[0];

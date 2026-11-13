@@ -395,6 +395,30 @@ function clearInternalBrowserAddressError() {
   internalBrowserAddress.removeAttribute('aria-describedby');
   if (wasVisible) syncInternalBrowserLayout();
 }
+function showInternalBrowserAddressError(message) {
+  internalBrowserAddressError.textContent = message;
+  internalBrowserAddressError.hidden = false;
+  internalBrowserAddress.setAttribute('aria-invalid', 'true');
+  internalBrowserAddress.setAttribute('aria-describedby', internalBrowserAddressError.id);
+  syncInternalBrowserLayout();
+}
+// main が Enter の送信を受け付けなかったとき、読み込み中の表示を解除して入力を直せる状態へ戻す。
+// 後続の送信や遷移が始まっていれば、その表示を巻き戻さない。
+function rejectInternalBrowserAddressRequest(requestId, { input, url, hadPage }) {
+  if (!internalBrowserNavigationActive || internalBrowserActiveRequestId !== requestId
+    || internalBrowserNextRequestId !== requestId) return;
+  internalBrowserNavigationActive = false;
+  internalBrowserActiveRequestId = null;
+  internalBrowserSubmittedUrl = '';
+  if (internalBrowserPendingUrl === url) internalBrowserPendingUrl = '';
+  internalBrowserHasPage = hadPage || Boolean(internalBrowserUrl || internalBrowserFailedUrl);
+  setInternalBrowserNavigationStatus('');
+  // 入力した文字列を残し、ページの状態通知で上書きさせない。
+  internalBrowserAddress.value = input;
+  internalBrowserAddressHasDraft = true;
+  syncInternalBrowserExternalTarget();
+  showInternalBrowserAddressError('ページを開けませんでした。入力を確認して、もう一度 Enter を押してください。');
+}
 internalBrowserAddress.addEventListener('input', () => {
   // フォーカスを移しても未送信の入力を保持し、ページ状態通知から守る。
   internalBrowserAddressHasDraft = true;
@@ -406,25 +430,20 @@ internalBrowserAddress.addEventListener('keydown', event => {
   event.preventDefault();
   const { url, error } = resolveBrowserAddress(internalBrowserAddress.value);
   if (!url) {
-    internalBrowserAddressError.textContent = error === 'empty'
-      ? 'URL または検索語を入力してください。'
-      : error === 'too-long' ? '入力が長すぎます。URL または検索語を短くしてください。'
-        : 'URL の形式を確認して修正してください。検索する場合は検索語を入力してください。';
-    internalBrowserAddressError.hidden = false;
-    internalBrowserAddress.setAttribute('aria-invalid', 'true');
-    internalBrowserAddress.setAttribute('aria-describedby', internalBrowserAddressError.id);
     internalBrowserAddressHasDraft = true;
     syncInternalBrowserExternalTarget();
-    syncInternalBrowserLayout();
+    showInternalBrowserAddressError(error === 'empty'
+      ? 'URL または検索語を入力してください。'
+      : error === 'too-long' ? '入力が長すぎます。URL または検索語を短くしてください。'
+        : 'URL の形式を確認して修正してください。検索する場合は検索語を入力してください。');
     return;
   }
   if (internalBrowserNextRequestId >= Number.MAX_SAFE_INTEGER) {
-    internalBrowserAddressError.textContent = 'これ以上ページを開けません。アプリを再起動してください。';
-    internalBrowserAddressError.hidden = false;
-    internalBrowserAddress.setAttribute('aria-invalid', 'true');
-    internalBrowserAddress.setAttribute('aria-describedby', internalBrowserAddressError.id);
+    showInternalBrowserAddressError('これ以上ページを開けません。アプリを再起動してください。');
     return;
   }
+  // main が受け付けなかったときに戻せるよう、送信前の入力とページの有無を控える。
+  const submission = { input: internalBrowserAddress.value, url, hadPage: internalBrowserHasPage };
   clearInternalBrowserAddressError();
   internalBrowserHasPage = true;
   internalBrowserAddressHasDraft = false;
@@ -435,7 +454,11 @@ internalBrowserAddress.addEventListener('keydown', event => {
   internalBrowserNavigationActive = true;
   setInternalBrowserNavigationStatus('ページを読み込み中');
   syncInternalBrowserExternalTarget();
-  VKIpc.invoke('internal-browser:open', url, internalBrowserActiveRequestId).catch(() => {});
+  const requestId = internalBrowserActiveRequestId;
+  VKIpc.invoke('internal-browser:open', url, requestId).then(
+    accepted => { if (accepted === false) rejectInternalBrowserAddressRequest(requestId, submission); },
+    () => rejectInternalBrowserAddressRequest(requestId, submission),
+  );
 });
 document.getElementById('internal-browser-toggle').addEventListener('click', () => setInternalBrowserOpen(!internalBrowserOpen));
 const internalBrowserResizer = internalBrowserSidebar.querySelector('.internal-browser-resizer');

@@ -83,6 +83,71 @@ test('空のWebContentsを初期化してから監視を有効化し、ローカ
   assert.equal(states.at(-1).pendingUrl, '');
 });
 
+for (const outcome of ['completed', 'replaced', 'failed', 'destroy', 'detach', 'destroyed']) {
+  test(`初期化待ちの複数 reload は元の要求を保持する: ${outcome}`, async () => {
+    let release;
+    let rejectBootstrap;
+    const { browser, contents, states } = setup({ bootstrap: (loadURL, url) => new Promise((resolve, reject) => {
+      release = () => resolve(loadURL(url));
+      rejectBootstrap = reject;
+    }) });
+    contents.reload = () => assert.fail('bootstrap must not be reloaded');
+    for (let i = 0; i < 3; i++) assert.equal(browser.action('reload'), false);
+    assert.equal(states.at(-1).pendingUrl, 'https://example.com/a');
+    assert.equal(states.at(-1).navigationRequestId, 1);
+    assert.equal(states.at(-1).navigationResult, null);
+    let target = 'https://example.com/a';
+    let requestId = 1;
+    if (outcome === 'replaced') {
+      target = 'https://example.com/replacement';
+      requestId = 2;
+      browser.navigate(target, false, requestId);
+      assert.equal(browser.action('reload'), false);
+      assert.ok(states.some(state => state.navigationRequestId === 1 && state.navigationResult === 'superseded'));
+    }
+    if (outcome === 'destroy') browser.destroy();
+    if (outcome === 'detach') contents.debugger.emit('detach');
+    if (outcome === 'destroyed') { contents.isDestroyed = () => true; contents.emit('destroyed'); }
+    if (outcome === 'failed') rejectBootstrap(new Error('bootstrap failed'));
+    else release();
+    await flushBrowserLoads();
+    emitLoaderEvents(contents, 'initial', 'about:blank');
+    contents.emit('did-navigate-in-page', {}, 'about:blank', true);
+    if (outcome === 'completed' || outcome === 'replaced') {
+      assert.deepEqual(contents.loads.map(load => load.url), [target]);
+      assert.equal(states.at(-1).pendingUrl, target);
+      assert.equal(states.at(-1).navigationResult, null);
+      await contents.complete(target);
+      assert.equal(states.at(-1).url, target);
+      assert.equal(states.at(-1).navigationRequestId, requestId);
+      assert.equal(states.at(-1).navigationResult, 'completed');
+    } else {
+      assert.equal(contents.loads.length, 0);
+      assert.deepEqual(contents.commands, []);
+      if (outcome !== 'destroy') {
+        assert.equal(states.at(-1).navigationResult, 'failed');
+        assert.equal(states.at(-1).failedUrl, target);
+      }
+    }
+    assert.ok(states.every(state => ![state.url, state.failedUrl, state.downloadUrl, state.pendingUrl].includes('about:blank')));
+  });
+}
+
+test('空文書の commit/load は一致する loader でも完了 URL にしない', async () => {
+  const { contents, states } = setup();
+  await flushBrowserLoads();
+  const load = contents.loads[0];
+  load.resolve({ frameId: load.frameId, loaderId: load.loaderId });
+  await flushBrowserLoads();
+  emitLoaderEvents(contents, load.loaderId, 'about:blank');
+  assert.equal(states.at(-1).url, '');
+  assert.equal(states.at(-1).navigationResult, null);
+  assert.equal(states.at(-1).pendingUrl, load.url);
+  await contents.complete(load.url);
+  assert.equal(states.at(-1).url, load.url);
+  assert.equal(states.at(-1).navigationResult, 'completed');
+});
+
 test('空文書の初期化失敗を要求の失敗として公開し、対象URLを開かない', async () => {
   const { contents, states } = setup({ bootstrap: () => Promise.reject(new Error('bootstrap failed')) });
   await flushBrowserLoads();

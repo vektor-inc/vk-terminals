@@ -335,6 +335,8 @@ function syncInternalBrowserExternalTarget() {
   const destination = showTarget ? formatInternalBrowserDestination(url) : '';
   const text = showTarget ? `外部で開く: ${kind} ${destination}` : '';
   if (status.textContent !== text) status.textContent = text;
+  status.title = showTarget ? label : '';
+  status.ariaLabel = showTarget ? label : '';
   if (status.hidden !== !showTarget) {
     status.hidden = !showTarget;
     syncInternalBrowserLayout();

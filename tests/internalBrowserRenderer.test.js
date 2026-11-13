@@ -118,6 +118,9 @@ test('外部ボタンの可視URLは同一ホストのパスと検索条件ま�
   assert.equal(format('invalid-url'), '');
   assert.match(css, /\.internal-browser-external-target\s*\{[^}]*overflow-wrap: anywhere/);
   assert.match(css, /\.internal-browser-error \[data-action="external"\]\s*\{[^}]*overflow-wrap: anywhere/);
+  assert.match(css, /\.internal-browser-external-target,\s*\.internal-browser-error \[data-action="external"\]\s*\{[^}]*display: -webkit-box;[^}]*-webkit-box-orient: vertical;[^}]*-webkit-line-clamp: 2;[^}]*overflow: hidden;/);
+  assert.match(css, /\.internal-browser-external-target\s*\{[^}]*max-height: 3\.2em/);
+  assert.match(css, /\.internal-browser-error \[data-action="external"\]\s*\{[^}]*max-height: calc\(3em \+ 10px\)/);
   const targetTag = source.match(/<p class="internal-browser-external-target"[^>]*>/)[0];
   assert.doesNotMatch(targetTag, /role=|aria-live=/);
   assert.match(source, /internal-browser-navigation-status" role="status" aria-live="polite"/);
@@ -406,6 +409,26 @@ test('失敗表示は失敗 URL、操作列は確定 URL を安全な外部オ�
   click(true);
   click(false);
   assert.deepEqual(opened.slice(-2), [failed, confirmed]);
+  // CSS で可視文を2行に制限しても、長い失敗先・download 先の全情報と操作対象は残す。
+  const longUrl = 'https://example.com/' + 'path'.repeat(350) + '?q=' + 'query'.repeat(100) + '#fragment';
+  assert.ok(longUrl.length < 2048);
+  state(longUrl, '', false, confirmed);
+  assert.ok(failedExternal.title.endsWith(longUrl));
+  assert.ok(failedExternal['aria-label'].includes(longUrl));
+  assert.equal(failedExternal.disabled, false);
+  click(true);
+  assert.equal(opened.at(-1), longUrl);
+  handlers['internal-browser:state']({ url: confirmed, failedUrl: '', downloadUrl: longUrl });
+  assert.equal(target.hidden, false);
+  assert.ok(target.title.endsWith(longUrl));
+  assert.equal(target.ariaLabel, target.title);
+  assert.ok(external['aria-label'].endsWith(longUrl));
+  assert.equal(external.disabled, false);
+  click(false);
+  assert.equal(opened.at(-1), longUrl);
+  handlers['internal-browser:state']({ url: '', failedUrl: '', downloadUrl: '' });
+  assert.equal(target.title, '');
+  assert.equal(target.ariaLabel, '');
 });
 
 test('main の遷移結果を順に受け、失敗・成功・中止・置換・ダウンロード阻止を通知する', async () => {

@@ -198,6 +198,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
           load.responses.get(params.loaderId).set(params.frameId, params.response);
           load.updateGithub404();
         } else if (method === 'Page.frameNavigated' && !params.frame.parentId) {
+          if (!isNavigationUrl(params.frame.url)) return;
           if (load.native && !load.loaderId && params.type === 'BackForwardCacheRestore') {
             load.loaderId = params.frame.loaderId;
             load.frameId = params.frame.id;
@@ -338,6 +339,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
     };
     load.finish = (error, committedUrl) => {
       if (activeLoad !== load || load.done) return;
+      if (!error && !isNavigationUrl(committedUrl)) error = new Error('Navigation URL unavailable');
       load.done = true;
       downloadCandidates.delete(load);
       pendingUrl = '';
@@ -404,7 +406,10 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
       beginLoad(currentUrl, true, undefined, { native: true, stopPrevious: true });
       history.goForward();
     } else if (name === 'reload') {
+      // 初期化待ちの要求を native reload で置換すると Page.navigate が失われる。
+      // HTTP(S) 文書がまだない間は元の URL と Enter の requestId を保持して拒否する。
       if (failedUrl) return navigate(failedUrl, true);
+      if (!isNavigationUrl(currentUrl)) return false;
       beginLoad(currentUrl, true, undefined, { native: true, stopPrevious: true });
       view.webContents.reload();
     } else return false;

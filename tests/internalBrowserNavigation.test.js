@@ -719,6 +719,41 @@ test('ページ起点のB開始後に旧Aの停止が届いてもBをAとして�
   assert.equal(states.at(-1).url, destination);
 });
 
+for (const action of ['back', 'forward']) {
+  for (const mode of ['redirect', 'replaceState']) {
+    test(`${action} の履歴先が ${mode} で変わっても相関した実URLを完了する`, async () => {
+      const { browser, contents, states } = setup();
+      await contents.complete('https://example.com/current');
+      const target = `https://example.com/${action}-target`;
+      const actual = `https://example.com/${action}-${mode}`;
+      const current = { url: 'https://example.com/current' };
+      const destination = { url: target };
+      contents.navigationHistory.getAllEntries = () => action === 'back'
+        ? [destination, current] : [current, destination];
+      contents.navigationHistory.getActiveIndex = () => action === 'back' ? 1 : 0;
+      contents.navigationHistory[`canGo${action === 'back' ? 'Back' : 'Forward'}`] = () => true;
+      contents.navigationHistory[`go${action === 'back' ? 'Back' : 'Forward'}`] = () => {
+        const loaderId = `loader-${action}-${mode}`;
+        if (mode === 'redirect') {
+          contents.startNative(target, loaderId);
+          contents.commitDocument(actual, loaderId);
+          contents.loadDocument(loaderId);
+        } else {
+          contents.debugger.emit('message', {}, 'Page.frameStartedNavigating', {
+            frameId: 'main', loaderId, url: target, navigationType: 'historySameDocument',
+          });
+          contents.setDocumentUrl(actual);
+          contents.emit('did-navigate-in-page', {}, actual, true);
+        }
+      };
+
+      assert.equal(browser.action(action), true);
+      assert.equal(states.at(-1).navigationResult, 'completed');
+      assert.equal(states.at(-1).url, actual);
+    });
+  }
+}
+
 for (const failCommand of ['Page.enable', 'Page.setLifecycleEventsEnabled', 'Network.enable', 'Page.getFrameTree']) {
   test(`${failCommand} の初期化失敗も操作を失敗として終了する`, async () => {
     const { browser, contents, states } = setup({ failCommand });

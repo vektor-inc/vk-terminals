@@ -411,7 +411,10 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
       return;
     }
     if (!debuggerAvailable || !load || !isNavigationUrl(url)) return;
-    if (load.native && !load.done && load.acceptsHistoryUrl(url) && (!load.loaderId || load.sameDocument)) {
+    if (load.native && !load.done && (!load.loaderId || load.sameDocument)) {
+      // loader を相関できない履歴補完だけは開始時の対象 URL と照合する。
+      // sameDocument の loader が一致する場合は replaceState 後の実 URL を採用する。
+      if (load.historyTarget && !load.loaderId && !load.acceptsHistoryUrl(url)) return;
       load.finish(null, url);
     } else if (load.done && url !== currentUrl) {
       // 終了結果とは独立して、残った現在文書の変更を新しい操作として公開する。
@@ -513,7 +516,6 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
       if (load.loaded.get(load.loaderId) === load.frameId) {
         // load 前の canonical/hash 更新を現在の文書から確定する。旧イベント URL は使わない。
         const actualUrl = contents.getURL();
-        if (!load.acceptsHistoryUrl(actualUrl)) return;
         load.finish(null, isNavigationUrl(actualUrl) ? actualUrl : commit.url);
       }
     };

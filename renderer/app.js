@@ -120,6 +120,7 @@ let internalBrowserDownloadUrl = '';
 let preferredInternalBrowserWidth = Number(localStorage.getItem('vk-terminals.internalBrowserWidth'));
 let displayedInternalBrowserWidth = 0;
 let previousInternalBrowserLayout = null;
+let internalBrowserOverlayFocusOrigin = null;
 let internalBrowserHasPage = false;
 let internalBrowserChoice = null;
 let unregisterInternalBrowserEscape = null;
@@ -166,10 +167,29 @@ function syncInternalBrowserLayout() {
     .map(element => element === setupPanelElement ? setupPanelMinimumWidth : element.getBoundingClientRect().width);
   const availableWidth = browserAvailableWidth(windowWidth, leftSidebar, otherWidths);
   const browserMustOverlay = internalBrowserOpen && shouldOverlayBrowser(windowWidth);
+  const browserWasOverlay = root.classList.contains('internal-browser-overlay');
   const maxWidth = browserMustOverlay ? windowWidth : browserWidthMax(availableWidth, columns, windowWidth, effectiveGridMinimumWidth);
   displayedInternalBrowserWidth = browserMustOverlay ? windowWidth
     : clampBrowserWidth(preferredInternalBrowserWidth || NaN, availableWidth, columns, windowWidth, effectiveGridMinimumWidth);
   root.classList.toggle('internal-browser-overlay', browserMustOverlay);
+  // 全面表示で覆われたペインをキーボード操作からも除外する。render() が root の
+  // 子を作り直した場合も、毎回現在の子へ inert を反映する。
+  for (const child of root.children) {
+    if (child !== internalBrowserSidebar) child.inert = browserMustOverlay;
+  }
+  if (browserMustOverlay && !browserWasOverlay) {
+    const active = document.activeElement;
+    internalBrowserOverlayFocusOrigin = active && !internalBrowserSidebar.contains(active) ? active : null;
+    requestAnimationFrame(() => {
+      if (root.classList.contains('internal-browser-overlay')) focusInternalBrowserToolbar();
+    });
+  } else if (!browserMustOverlay && browserWasOverlay) {
+    const focusOrigin = internalBrowserOverlayFocusOrigin;
+    internalBrowserOverlayFocusOrigin = null;
+    requestAnimationFrame(() => {
+      if (focusOrigin?.isConnected) focusOrigin.focus();
+    });
+  }
   root.classList.toggle('toast-phrase-wrap', shouldWrapToastPhrase(windowWidth, displayedInternalBrowserWidth));
   internalBrowserSidebar.style.width = `${displayedInternalBrowserWidth}px`;
   internalBrowserSidebar.querySelector('.internal-browser-url').placeholder = displayedInternalBrowserWidth < 360 ? 'URL / 検索' : 'URL または検索語';

@@ -100,20 +100,26 @@ test('狭幅の同期は左を閉じてから再計算し、手動で左を開�
   const attributes = {};
   const toggle = { setAttribute(key, value) { attributes[key] = value; } };
   const resizer = { setAttribute() {} };
-  const address = {};
+  let focused = '';
+  const address = { focus() { focused = 'address'; }, getClientRects: () => [{}] };
   const browser = { style: {}, querySelector: selector => selector === '.internal-browser-url' ? address : selector === '.internal-browser-resizer' ? resizer : null };
+  browser.contains = element => element === address;
+  const terminal = { inert: false, isConnected: true, contains: () => true, closest: () => null, focus() { focused = 'terminal'; } };
+  root.children = [terminal, browser];
   const frames = [];
   const calls = [];
   const context = vm.createContext({
-    document: { activeElement: { closest: () => ({}) }, getElementById: id => id === 'root' ? root : id === 'sidebar' ? { getBoundingClientRect: () => ({ width: 300 }) } : toggle,
+    document: { activeElement: terminal, getElementById: id => id === 'root' ? root : id === 'sidebar' ? { getBoundingClientRect: () => ({ width: 300 }) } : toggle,
       body: { style: { setProperty() {} }, classList: { contains: () => false } } },
     window: { VKInternalBrowserLayout: require('../utils/internalBrowserLayout') },
     internalBrowserOpen: true, sidebarOpen: true, internalBrowserSidebar: browser,
     preferredInternalBrowserWidth: 520, displayedInternalBrowserWidth: 0, previousInternalBrowserLayout: null,
+    internalBrowserOverlayFocusOrigin: null,
     setupPanel: null, sidebarTransitionCleanup: null,
     gridDims: () => ({ cols: 1 }), getSidebarWidth: () => 300,
     ensureSidebar: () => null, isReducedMotion: () => true, fitAll() {},
     focusFirstSidebarItem() {}, requestAnimationFrame: callback => frames.push(callback),
+    focusInternalBrowserToolbar() { address.focus(); },
     VKIpc: { send() {} },
     setInternalBrowserOpen(open) { calls.push(open); context.internalBrowserOpen = open; },
   });
@@ -135,6 +141,9 @@ test('狭幅の同期は左を閉じてから再計算し、手動で左を開�
   vm.runInContext('syncInternalBrowserLayout()', context);
   assert.equal(context.displayedInternalBrowserWidth, 390);
   assert.equal(classes.has('internal-browser-overlay'), true);
+  assert.equal(terminal.inert, true);
+  frames.splice(0).forEach(callback => callback());
+  assert.equal(focused, 'address');
   // 幅を戻すだけでは、保存幅を上書きしたりブラウザを再び開いたりしない。
   root.clientWidth = 1280;
   context.sidebarOpen = true;
@@ -145,6 +154,9 @@ test('狭幅の同期は左を閉じてから再計算し、手動で左を開�
   assert.equal(context.preferredInternalBrowserWidth, 520);
   assert.equal(address.placeholder, 'URL または検索語');
   assert.equal(classes.has('internal-browser-overlay'), false);
+  assert.equal(terminal.inert, false);
+  frames.splice(0).forEach(callback => callback());
+  assert.equal(focused, 'terminal');
 });
 
 test('初期化時は操作列の閉じるだけを無効化せず、失敗表示にも触れない', () => {

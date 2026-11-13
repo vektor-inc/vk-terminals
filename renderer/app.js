@@ -473,13 +473,16 @@ VKIpc.on('internal-browser:state', state => {
   internalBrowserSidebar.querySelector('[data-action="back"]').disabled = !state.canGoBack;
   internalBrowserSidebar.querySelector('[data-action="forward"]').disabled = !state.canGoForward;
   internalBrowserSidebar.querySelector('.internal-browser-progress').hidden = !state.loading;
-  // Enter で始めた遷移だけを通知し、同じ状態の再通知では読み上げを増やさない。
-  if (internalBrowserNavigationActive && internalBrowserFailedUrl) {
+  // main が確定した結果だけを通知する。pendingUrl の消去は中止でも起こる。
+  const navigationMessages = {
+    completed: 'ページの読み込みが完了しました',
+    failed: 'ページの読み込みに失敗しました',
+    cancelled: 'ページの移動を中止しました',
+    'download-blocked': 'ダウンロードは外部ブラウザで行ってください',
+  };
+  if (internalBrowserNavigationActive && Object.hasOwn(navigationMessages, state.navigationResult)) {
     internalBrowserNavigationActive = false;
-    setInternalBrowserNavigationStatus('ページの読み込みに失敗しました');
-  } else if (internalBrowserNavigationActive && !state.loading && !internalBrowserPendingUrl) {
-    internalBrowserNavigationActive = false;
-    setInternalBrowserNavigationStatus('ページの読み込みが完了しました');
+    setInternalBrowserNavigationStatus(navigationMessages[state.navigationResult]);
   }
   syncInternalBrowserLayout();
 });

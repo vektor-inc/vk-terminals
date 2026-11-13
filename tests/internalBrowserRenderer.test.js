@@ -356,7 +356,7 @@ test('失敗表示は失敗 URL、操作列は確定 URL を安全な外部オ�
   assert.deepEqual(opened.slice(-2), [failed, confirmed]);
 });
 
-test('main の送信から失敗までの状態順でアドレスを保持し、修正して再入力できる', () => {
+test('main の遷移結果を順に受け、失敗・成功・中止・ダウンロード阻止を通知する', () => {
   const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
   const addressHandlers = source.match(/const internalBrowserAddress = internalBrowserSidebar\.querySelector\('\.internal-browser-url'\);[\s\S]*?(?=document\.getElementById\('internal-browser-toggle'\))/)?.[0];
   const stateHandler = source.match(/VKIpc\.on\('internal-browser:state', state => \{[\s\S]*?\n\}\);/)?.[0];
@@ -369,6 +369,7 @@ test('main の送信から失敗までの状態順でアドレスを保持し、
   ]) {
     const handlers = {};
     const messages = [];
+    const channels = [];
     const addressError = { id: 'internal-browser-address-error', hidden: true, textContent: '' };
     const address = { value: '', addEventListener(type, handler) { handlers[type] = handler; },
       setAttribute() {}, removeAttribute() {} };
@@ -427,11 +428,13 @@ test('main の送信から失敗までの状態順でアドレスを保持し、
     browser = createInternalBrowser({
       isDestroyed: () => false,
       webContents: { send(channel, state) {
+        channels.push(channel);
         if (channel !== 'internal-browser:state') return;
         messages.push({ ...state });
         handlers[channel](state);
       } },
-    }, { WebContentsView: FakeView, session: { fromPartition: () => browserSession } });
+    }, { WebContentsView: FakeView, session: { fromPartition: () => browserSession },
+      dialog: { showMessageBoxSync: () => 1 } });
 
     if (confirmedUrl) {
       browser.navigate(confirmedUrl);
@@ -445,7 +448,9 @@ test('main の送信から失敗までの状態順でアドレスを保持し、
     assert.equal(navigationStatus.textContent, 'ページを読み込み中');
     assert.equal(navigationWrites, 1);
     assert.equal(messages.at(-1).pendingUrl, failedUrl);
+    assert.equal(messages.at(-1).navigationResult, null);
     contents.emit('did-fail-load', {}, failureCode, 'load failed', failedUrl, true);
+    assert.equal(messages.at(-1).navigationResult, 'failed');
     assert.equal(navigationStatus.textContent, 'ページの読み込みに失敗しました');
     assert.equal(navigationWrites, 2);
     contents.emit('did-stop-loading');
@@ -477,10 +482,49 @@ test('main の送信から失敗までの状態順でアドレスを保持し、
     assert.equal(messages.at(-1).pendingUrl, 'https://example.org/retry');
     assert.equal(address.value, 'https://example.org/retry');
     contents.emit('did-navigate', {}, 'https://example.org/retry');
+    assert.equal(messages.at(-1).navigationResult, 'completed');
     assert.equal(address.value, 'https://example.org/retry');
     assert.equal(navigationStatus.textContent, 'ページの読み込みが完了しました');
     assert.equal(navigationWrites, 4);
     contents.emit('did-stop-loading');
     assert.equal(navigationWrites, 4);
+
+    // beforeunload でとどまる場合は pendingUrl が消えても完了にはしない。
+    address.value = 'https://example.org/cancelled';
+    handlers.input();
+    handlers.keydown({ key: 'Enter', preventDefault() {} });
+    assert.equal(messages.at(-1).navigationResult, null);
+    contents.emit('will-prevent-unload', { preventDefault() { throw new Error('unexpected leave'); } });
+    assert.equal(messages.at(-1).navigationResult, 'cancelled');
+    assert.equal(messages.at(-1).pendingUrl, '');
+    assert.equal(navigationStatus.textContent, 'ページの移動を中止しました');
+    assert.equal(navigationWrites, 6);
+    contents.emit('did-stop-loading');
+    assert.equal(navigationWrites, 6);
+
+    // ダウンロード阻止も専用結果で終え、既存トースト用 IPC は維持する。
+    address.value = 'https://example.org/download';
+    handlers.input();
+    handlers.keydown({ key: 'Enter', preventDefault() {} });
+    assert.equal(messages.at(-1).navigationResult, null);
+    let blockedToast = 0;
+    browserSession.emit('will-download', { preventDefault() { blockedToast++; } },
+      { getURLChain: () => ['https://example.org/download'] });
+    assert.equal(blockedToast, 1);
+    assert.equal(channels.at(-1), 'internal-browser:download-blocked');
+    assert.equal(messages.at(-1).navigationResult, 'download-blocked');
+    assert.equal(messages.at(-1).pendingUrl, '');
+    assert.equal(navigationStatus.textContent, 'ダウンロードは外部ブラウザで行ってください');
+    assert.equal(navigationWrites, 8);
+    contents.emit('did-stop-loading');
+    assert.equal(navigationWrites, 8);
+
+    // Enter で追跡していない再読み込みやページ内移動では通知を増やさない。
+    contents.reload = () => contents.emit('did-start-navigation', {}, 'https://example.org/retry', false, true);
+    browser.action('reload');
+    assert.equal(messages.at(-1).navigationResult, null);
+    contents.emit('did-navigate-in-page', {}, 'https://example.org/retry#part', true);
+    assert.equal(messages.at(-1).navigationResult, 'completed');
+    assert.equal(navigationWrites, 8);
   }
 });

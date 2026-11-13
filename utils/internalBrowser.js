@@ -20,6 +20,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
   let downloadUrl = '';
   let failedUrl = '';
   let github404Url = '';
+  let navigationResult = null;
   const cancelDownload = (event, item) => {
     event.preventDefault();
     // 保留中の遷移と異なるダウンロードへ古い URL を渡さない。
@@ -30,6 +31,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
     } catch {}
     downloadUrl = matchesPendingUrl ? pendingUrl : '';
     pendingUrl = '';
+    navigationResult = 'download-blocked';
     publish();
     if (!win.isDestroyed()) win.webContents.send('internal-browser:download-blocked');
   };
@@ -42,6 +44,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
       downloadUrl,
       failedUrl,
       github404Url,
+      navigationResult,
       loading: !!view && view.webContents.isLoading(),
       canGoBack: !!view && view.webContents.navigationHistory.canGoBack(),
       canGoForward: !!view && view.webContents.navigationHistory.canGoForward(),
@@ -78,7 +81,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
       contents.on('will-prevent-unload', event => {
         const choice = dialog.showMessageBoxSync(win, { type: 'warning', title: 'このページを離れますか？', message: 'このページを離れますか？', detail: '入力中の内容は保存されない可能性があります。', buttons: ['移動する', 'このページにとどまる'], defaultId: 1, cancelId: 1 });
         if (choice === 0) event.preventDefault();
-        else { pendingUrl = ''; publish(); }
+        else { pendingUrl = ''; navigationResult = 'cancelled'; publish(); }
       });
       contents.setWindowOpenHandler(({ url: destination }) => {
         if (isNavigationUrl(destination)) navigate(destination, true);
@@ -86,7 +89,9 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
       });
       contents.on('did-start-loading', publish);
       contents.on('did-start-navigation', (_event, url, isInPlace, isMainFrame) => {
-        if (!isMainFrame || isInPlace) return;
+        if (!isMainFrame) return;
+        navigationResult = null;
+        if (isInPlace) { publish(); return; }
         failedUrl = '';
         github404Url = '';
         downloadUrl = '';
@@ -97,14 +102,18 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
         currentUrl = url;
         pendingUrl = '';
         failedUrl = '';
+        navigationResult = 'completed';
         if (url !== github404Url) github404Url = '';
         publish();
       });
-      contents.on('did-navigate-in-page', (_event, url, isMainFrame) => { if (isMainFrame) { currentUrl = url; publish(); } });
+      contents.on('did-navigate-in-page', (_event, url, isMainFrame) => {
+        if (isMainFrame) { currentUrl = url; pendingUrl = ''; navigationResult = 'completed'; publish(); }
+      });
       contents.on('did-fail-load', (_event, code, _description, destination, isMainFrame) => {
         if (isMainFrame && code !== -3) {
           pendingUrl = '';
           failedUrl = destination;
+          navigationResult = 'failed';
           publish();
         }
       });
@@ -121,6 +130,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
     github404Url = '';
     downloadUrl = '';
     pendingUrl = fromPage ? '' : url;
+    navigationResult = null;
     view.webContents.loadURL(url).catch(() => {});
     syncBounds();
     publish();
@@ -130,11 +140,12 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
   function action(name) {
     if (!view) return false;
     const history = view.webContents.navigationHistory;
-    if (name === 'back' && history.canGoBack()) history.goBack();
-    else if (name === 'forward' && history.canGoForward()) history.goForward();
+    if (name === 'back' && history.canGoBack()) { navigationResult = null; history.goBack(); }
+    else if (name === 'forward' && history.canGoForward()) { navigationResult = null; history.goForward(); }
     else if (name === 'reload') {
       if (failedUrl) return navigate(failedUrl, true);
       github404Url = '';
+      navigationResult = null;
       view.webContents.reload();
       publish();
     }

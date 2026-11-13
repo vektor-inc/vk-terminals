@@ -160,8 +160,10 @@ test('専用ビューの遷移と権限、ダウンロード、確定 URL を制
   browserSession.request({ resourceType: 'mainFrame', url: 'https://example.com' }, result => assert.deepEqual(result, { cancel: false }));
   assert.equal(browser.navigate('https://example.com/first'), true);
   assert.equal(sent.at(-1)[1].url, '');
+  assert.equal(sent.at(-1)[1].navigationResult, null);
   contents.emit('did-navigate', {}, 'https://example.com/first');
   assert.equal(sent.at(-1)[1].url, 'https://example.com/first');
+  assert.equal(sent.at(-1)[1].navigationResult, 'completed');
   contents.emit('did-navigate-in-page', {}, 'https://evil.example/', false);
   assert.equal(sent.at(-1)[1].url, 'https://example.com/first');
   contents.emit('did-navigate-in-page', {}, 'https://example.com/first#part', true);
@@ -177,6 +179,7 @@ test('専用ビューの遷移と権限、ダウンロード、確定 URL を制
   assert.equal(sent.at(-1)[1].url, 'https://example.com/first#part');
   contents.emit('did-fail-load', {}, -105, 'failed', 'https://example.com/failed', true);
   assert.equal(sent.at(-1)[1].failedUrl, 'https://example.com/failed');
+  assert.equal(sent.at(-1)[1].navigationResult, 'failed');
   assert.equal(browser.action('reload'), true);
   assert.equal(contents.requestedUrl, 'https://example.com/failed');
   contents.emit('did-fail-load', {}, -105, 'failed', 'https://example.com/failed', true);
@@ -184,6 +187,7 @@ test('専用ビューの遷移と権限、ダウンロード、確定 URL を制
   assert.equal(sent.at(-1)[1].failedUrl, 'https://example.com/failed');
   contents.emit('did-start-navigation', {}, 'https://example.com/failed', false, true);
   assert.equal(sent.at(-1)[1].failedUrl, '');
+  assert.equal(sent.at(-1)[1].navigationResult, null);
   contents.emit('did-navigate', {}, 'https://example.com/failed');
   assert.equal(sent.at(-1)[1].url, 'https://example.com/failed');
   assert.equal(sent.at(-1)[1].failedUrl, '');
@@ -200,6 +204,7 @@ test('専用ビューの遷移と権限、ダウンロード、確定 URL を制
   let allowed = false;
   contents.emit('will-prevent-unload', { preventDefault() { allowed = true; } });
   assert.equal(allowed, false);
+  assert.equal(sent.at(-1)[1].navigationResult, 'cancelled');
   dialogChoice = 0;
   contents.emit('will-prevent-unload', { preventDefault() { allowed = true; } });
   assert.equal(allowed, true);
@@ -208,6 +213,7 @@ test('専用ビューの遷移と権限、ダウンロード、確定 URL を制
   assert.equal(canceled, true);
   assert.equal(sent.at(-1)[0], 'internal-browser:download-blocked');
   assert.equal(sent.at(-2)[1].downloadUrl, '');
+  assert.equal(sent.at(-2)[1].navigationResult, 'download-blocked');
   browser.navigate('https://example.com/download');
   browserSession.emit('will-download', { preventDefault() {} }, { getURLChain: () => ['https://example.com/download'] });
   assert.equal(sent.at(-2)[1].downloadUrl, 'https://example.com/download');

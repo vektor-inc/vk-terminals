@@ -7496,17 +7496,25 @@ async function initApp() {
 // サイドバーは root の flex 子として常駐させるため、初回 render 前に配線する。
 setupSidebarMenu();
 
+const NEW_PANE_STARTUP_WAIT_MS = 12000; // main の追加要求は 15 秒で打ち切るため、その前に必ず返信する。
 const initAppSettled = initApp().then(() => {
   // 起動完了を main プロセスに通知（main 側で additionalPanes を順次作成する）
   VKIpc.send('terminal:renderer-ready');
 }).catch((error) => {
   console.error('initApp failed', error);
   // 初期化例外後も空画面へ移り、後続のペイン要求を受けられるようにする。
-  if (!tree) tree = { type: 'grid', order: [], colFr: null, rowFr: null, stashOrder: [], sidebarWidth: DEFAULT_SIDEBAR_WIDTH };
-  tree.order = [];
-  render();
-  initialRenderDone = true;
-  VKIpc.send('terminal:renderer-ready');
+  try {
+    if (!tree) tree = { type: 'grid', order: [], colFr: null, rowFr: null, stashOrder: [], sidebarWidth: DEFAULT_SIDEBAR_WIDTH };
+    // 作成済みの端末を画面から消さず、復元失敗時と同じく存在する端末だけを残す。
+    tree.order = tree.order.filter(id => terminals[id]);
+    tree.stashOrder = tree.stashOrder.filter(id => terminals[id]);
+    focusedPaneId = tree.order[0] || tree.stashOrder[0] || null;
+    render();
+    initialRenderDone = true;
+    VKIpc.send('terminal:renderer-ready');
+  } catch (recoveryError) {
+    console.error('initApp recovery failed', recoveryError);
+  }
 });
 
 // 設定モーダルの歯車ボタンを配線する（設定のみ。使用量はサイドバー上部へ常時表示）。
@@ -7609,14 +7617,25 @@ VKIpc.on('terminal:agentroom', (termId, agents, replace) => {
 VKIpc.on('terminal:request-new-pane', async (payload = {}) => {
   const { requestId, cwd, noClaude, engine, stashed, useDefaults, model, approvalPolicy, sandboxMode, codexPolicy, claudeSettingsPreset } = payload;
   const reply = (result) => VKIpc.send('terminal:new-pane-created', { requestId, ...result });
-  // 初期化中に受けた要求は、レイアウトが確定するまで端末を作らず待つ。
-  if (!initialRenderDone) await initAppSettled;
-  if (!initialRenderDone) {
-    reply({ error: '起動中のため追加できませんでした。少し待ってからもう一度お試しください' });
-    return;
-  }
-  const targetPaneId = findLargestVisiblePaneId() || focusedPaneId || (tree ? getAllLeafIds(tree)[0] : null);
+  const receivedAt = Date.now();
   try {
+    // 初期化が長引いても main の 15 秒より先に失敗を返し、後から端末を作らない。
+    if (!initialRenderDone) {
+      let timeoutId;
+      try {
+        await Promise.race([
+          initAppSettled,
+          new Promise(resolve => { timeoutId = setTimeout(resolve, NEW_PANE_STARTUP_WAIT_MS); }),
+        ]);
+      } finally {
+        clearTimeout(timeoutId);
+      }
+    }
+    if (!initialRenderDone || Date.now() - receivedAt >= NEW_PANE_STARTUP_WAIT_MS) {
+      reply({ error: '起動中のため追加できませんでした。少し待ってからもう一度お試しください' });
+      return;
+    }
+    const targetPaneId = findLargestVisiblePaneId() || focusedPaneId || (tree ? getAllLeafIds(tree)[0] : null);
     // 表示面積が最大のペインを長辺方向に分割し、全体の空きが大きい場所へ追加する
     const rect = getPaneRect(targetPaneId);
     const direction = (rect && rect.height > rect.width) ? 'v' : 'h';

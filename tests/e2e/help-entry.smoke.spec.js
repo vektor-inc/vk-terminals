@@ -184,7 +184,8 @@ test('使い方・ヘルプ: 確認失敗の再確認、未保存キャンセル
     await win.locator('.internal-browser-toolbar [data-action="back"]').click();
     await expect(win.locator('.internal-browser-url')).toHaveValue(/\#section/);
     await win.locator('.internal-browser-toolbar [data-action="back"]').click();
-    await expect(win.locator('.internal-browser-url')).toHaveValue(/guide/);
+    // #section も /guide/ に一致するため、基底URLへの履歴移動完了を完全一致で待つ。
+    await expect(win.locator('.internal-browser-url')).toHaveValue('vk-terminals-help://guide/');
     await win.locator('.internal-browser-toolbar [data-action="back"]').click();
     await expect(win.locator('.internal-browser-url')).toHaveValue(/\/previous/);
     await win.locator('.internal-browser-toolbar [data-action="forward"]').click();

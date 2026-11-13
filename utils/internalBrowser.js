@@ -241,14 +241,15 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
         const url = contents.getURL();
         // カスタムスキームを含む履歴復帰では did-navigate と CDP lifecycleEvent の
         // どちらも欠ける場合がある。停止時の実文書 URL を最後の確定経路にする。
-        if (load?.native && !load.done && isNavigationUrl(url)) load.finish(null, url);
+        if (load?.native && !load.done && load.acceptsHistoryUrl(url) && isNavigationUrl(url)) load.finish(null, url);
       });
       contents.on('did-navigate', (_event, url) => {
         if (activeLoad?.help && isHelpUrl(url) && contents.getURL() === url) {
           currentUrl = url;
           failedUrl = '';
           publish();
-        } else if (activeLoad?.native && !activeLoad.done && isNavigationUrl(url) && contents.getURL() === url) {
+        } else if (activeLoad?.native && !activeLoad.done && activeLoad.acceptsHistoryUrl(url)
+          && isNavigationUrl(url) && contents.getURL() === url) {
           // 履歴復帰では CDP の lifecycleEvent が届かないことがあるため、Electron が
           // メイン文書の commit を通知した時点で操作とアドレスを確定する。
           activeLoad.finish(null, url);
@@ -409,7 +410,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
       return;
     }
     if (!debuggerAvailable || !load || !isNavigationUrl(url)) return;
-    if (load.native && !load.done && (!load.loaderId || load.sameDocument)) {
+    if (load.native && !load.done && load.acceptsHistoryUrl(url) && (!load.loaderId || load.sameDocument)) {
       load.finish(null, url);
     } else if (load.done && url !== currentUrl) {
       // 終了結果とは独立して、残った現在文書の変更を新しい操作として公開する。
@@ -419,7 +420,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
     }
   }
 
-  function beginLoad(url, fromPage, requestId, { native = false, stopPrevious = !native, help = false } = {}) {
+  function beginLoad(url, fromPage, requestId, { native = false, stopPrevious = !native, help = false, historyTarget = '' } = {}) {
     const previous = supersedeNavigation(url);
     // アプリが次の遷移を開始する場合だけ、旧ロードを事前に止める。
     if (stopPrevious && previous?.started && !previous.done) view.webContents.stop?.();
@@ -429,7 +430,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
     navigationOperationId++;
     const contents = view.webContents;
     const load = {
-      url, downloadSourceUrl: url, native, help, done: false, started: native, downloadResponsePending: !native && !help,
+      url, downloadSourceUrl: url, native, help, historyTarget, done: false, started: native, downloadResponsePending: !native && !help,
       downloadAmbiguous: !!previous && normalizeDownloadUrl(previous.downloadSourceUrl) === normalizeDownloadUrl(url)
         && previous.started && !previous.noticeReceived
         && (previous.downloadResponsePending || previous.downloadConfirmed),
@@ -437,6 +438,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
       requests: new Map(), responses: new Map(),
     };
     load.canOpenDownloadFromToolbar = !fromPage && requestId !== undefined && !load.downloadAmbiguous;
+    load.acceptsHistoryUrl = candidate => !load.historyTarget || candidate === load.historyTarget;
     activeLoad = load;
     load.flushDownloadNotice = canOpenFromToolbar => {
       if (!load.pendingDownloadNotice) return;
@@ -510,6 +512,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
       if (load.loaded.get(load.loaderId) === load.frameId) {
         // load 前の canonical/hash 更新を現在の文書から確定する。旧イベント URL は使わない。
         const actualUrl = contents.getURL();
+        if (!load.acceptsHistoryUrl(actualUrl)) return;
         load.finish(null, isNavigationUrl(actualUrl) ? actualUrl : commit.url);
       }
     };
@@ -522,10 +525,12 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
     if (!view || view.webContents.isDestroyed?.()) return false;
     const history = view.webContents.navigationHistory;
     if (name === 'back' && history.canGoBack()) {
-      beginLoad(currentUrl, true, undefined, { native: true, stopPrevious: true });
+      const historyTarget = getHistoryTarget(history, -1);
+      beginLoad(historyTarget || currentUrl, true, undefined, { native: true, stopPrevious: true, historyTarget });
       history.goBack();
     } else if (name === 'forward' && history.canGoForward()) {
-      beginLoad(currentUrl, true, undefined, { native: true, stopPrevious: true });
+      const historyTarget = getHistoryTarget(history, 1);
+      beginLoad(historyTarget || currentUrl, true, undefined, { native: true, stopPrevious: true, historyTarget });
       history.goForward();
     } else if (name === 'reload') {
       // 初期化待ちの要求を native reload で置換すると Page.navigate が失われる。
@@ -541,6 +546,17 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
       view.webContents.reload();
     } else return false;
     return true;
+  }
+
+  function getHistoryTarget(history, offset) {
+    try {
+      const entries = history.getAllEntries?.();
+      const index = history.getActiveIndex?.();
+      const target = Number.isInteger(index) && Array.isArray(entries) ? entries[index + offset]?.url : '';
+      return isNavigationUrl(target) ? target : '';
+    } catch (_error) {
+      return '';
+    }
   }
 
   function destroy() {

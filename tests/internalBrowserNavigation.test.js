@@ -677,13 +677,22 @@ test('履歴復帰でCDPのloadイベントが欠けてもdid-navigateで操作�
 test('案内からの履歴復帰でdid-navigateも欠けた場合はdid-stop-loadingで完了する', async () => {
   const { browser, contents, states } = setup();
   await contents.complete('https://example.com/a');
+  let staleStopResult;
   contents.navigationHistory.canGoBack = () => true;
+  contents.navigationHistory.getActiveIndex = () => 1;
+  contents.navigationHistory.getAllEntries = () => [
+    { url: 'https://example.com/previous' },
+    { url: 'vk-terminals-help://guide/' },
+  ];
   contents.navigationHistory.goBack = () => {
+    contents.emit('did-stop-loading');
+    staleStopResult = states.at(-1).navigationResult;
     contents.setDocumentUrl('https://example.com/previous');
     contents.emit('did-stop-loading');
   };
 
   assert.equal(browser.action('back'), true);
+  assert.equal(staleStopResult, null);
   assert.equal(states.at(-1).navigationResult, 'completed');
   assert.equal(states.at(-1).url, 'https://example.com/previous');
 });

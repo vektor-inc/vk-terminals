@@ -128,7 +128,9 @@ async function hoverAtOffset(win, pos, colOffset) {
   const cellH = pos.rect.height / pos.rows;
   const x = pos.rect.x + (pos.col + colOffset) * cellW;
   const y = pos.rect.y + (pos.row + 0.5) * cellH;
-  await win.mouse.move(x, y);
+  // xterm.js の Linkifier は最後に解決したセルをキャッシュする。実マウスと同じく
+  // 中間セルを通って移動し、要素外から同一セルへ瞬間移動するテスト固有の欠落を避ける。
+  await win.mouse.move(x, y, { steps: 30 });
   // xterm.js 側のホバー判定（Linkifier._handleMouseMove）が走るのを待つ。
   await new Promise((resolve) => setTimeout(resolve, 250));
 }

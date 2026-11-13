@@ -677,6 +677,7 @@ test('main の遷移結果を順に受け、失敗・成功・中止・ダウン
 
     // redirect の開始イベントだけでは同一 Enter 要求を置き換えない。
     requestId = startPending('redirect-source');
+    contents.emit('did-start-navigation', {}, 'https://example.org/redirect-source', false, true);
     contents.emit('will-redirect', { url: 'https://example.org/redirect-target', preventDefault() { throw new Error('unexpected block'); } });
     contents.emit('did-start-navigation', {}, 'https://example.org/redirect-target', false, true);
     assert.equal(messages.at(-1).navigationRequestId, requestId);
@@ -689,5 +690,30 @@ test('main の遷移結果を順に受け、失敗・成功・中止・ダウン
     browser.action('reload');
     assert.equal(messages.at(-1).navigationRequestId, null);
     assert.equal(messages.at(-1).navigationResult, null);
+
+    // main 受理前に古い結果や保留状態が再送されても、B の送信値を保持して再 Enter する。
+    for (const [name, staleState] of [
+      ['failed', { failedUrl: 'https://old.example/failed', navigationResult: 'failed' }],
+      ['completed', { url: 'https://old.example/done', navigationResult: 'completed' }],
+      ['pending', { pendingUrl: 'https://old.example/pending', navigationResult: null }],
+    ]) {
+      const nextUrl = `https://new.example/${name}`;
+      address.value = nextUrl;
+      handlers.input();
+      deferNextOpen = true;
+      handlers.keydown({ key: 'Enter', preventDefault() {} });
+      const firstId = vm.runInContext('internalBrowserActiveRequestId', context);
+      handlers['internal-browser:state']({ url: 'https://old.example/', pendingUrl: '', failedUrl: '',
+        downloadUrl: '', navigationRequestId: firstId - 1, loading: false, canGoBack: false, canGoForward: false,
+        ...staleState });
+      assert.equal(address.value, nextUrl);
+      assert.equal(navigationStatus.textContent, 'ページを読み込み中');
+      assert.equal(vm.runInContext('internalBrowserActiveRequestId', context), firstId);
+      handlers.keydown({ key: 'Enter', preventDefault() {} });
+      assert.equal(messages.at(-1).pendingUrl, nextUrl);
+      assert.equal(messages.at(-1).navigationRequestId, firstId + 1);
+      contents.emit('did-navigate', {}, nextUrl);
+      assert.equal(navigationStatus.textContent, 'ページの読み込みが完了しました');
+    }
   }
 });

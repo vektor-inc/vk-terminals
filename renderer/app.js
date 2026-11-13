@@ -298,6 +298,7 @@ const internalBrowserAddressError = internalBrowserSidebar.querySelector('.inter
 let internalBrowserNavigationActive = false;
 let internalBrowserNextRequestId = 0;
 let internalBrowserActiveRequestId = null;
+let internalBrowserSubmittedUrl = '';
 function setInternalBrowserNavigationStatus(message) {
   const status = internalBrowserSidebar.querySelector('.internal-browser-navigation-status');
   if (status.textContent !== message) status.textContent = message;
@@ -377,6 +378,7 @@ internalBrowserAddress.addEventListener('keydown', event => {
   internalBrowserPendingUrl = url;
   internalBrowserAddress.value = url;
   internalBrowserActiveRequestId = ++internalBrowserNextRequestId;
+  internalBrowserSubmittedUrl = url;
   internalBrowserNavigationActive = true;
   setInternalBrowserNavigationStatus('ページを読み込み中');
   syncInternalBrowserExternalTarget();
@@ -478,7 +480,11 @@ VKIpc.on('internal-browser:state', state => {
   if (!github404Url) hideInternalBrowserContent(notice);
   else if (notice.dataset.url === github404Url && !notice.dataset.dismissed) notice.hidden = false;
   // 失敗時は確定 URL に戻さず、送信した URL をアドレス欄に残して修正できるようにする。
-  if (!internalBrowserAddressHasDraft) internalBrowserAddress.value = internalBrowserPendingUrl || internalBrowserFailedUrl || internalBrowserUrl;
+  if (!internalBrowserAddressHasDraft) {
+    // main 受理前の旧 state は、新しく送信した URL を上書きできない。
+    internalBrowserAddress.value = internalBrowserNavigationActive && state.navigationRequestId !== internalBrowserActiveRequestId
+      ? internalBrowserSubmittedUrl : internalBrowserPendingUrl || internalBrowserFailedUrl || internalBrowserUrl;
+  }
   syncInternalBrowserExternalTarget();
   internalBrowserSidebar.querySelector('[data-action="back"]').disabled = !state.canGoBack;
   internalBrowserSidebar.querySelector('[data-action="forward"]').disabled = !state.canGoForward;
@@ -498,6 +504,7 @@ VKIpc.on('internal-browser:state', state => {
     && Object.hasOwn(navigationMessages, state.navigationResult)) {
     internalBrowserNavigationActive = false;
     internalBrowserActiveRequestId = null;
+    internalBrowserSubmittedUrl = '';
     setInternalBrowserNavigationStatus(navigationMessages[state.navigationResult]);
   }
   syncInternalBrowserLayout();

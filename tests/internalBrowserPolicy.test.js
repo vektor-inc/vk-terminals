@@ -268,6 +268,7 @@ test('専用ビューの遷移と権限、ダウンロード、確定 URL を制
   assert.equal(sent.length, beforeInvalidOpen);
   browser.navigate('https://example.com/redirect', false, 8);
   contents.emit('did-start-navigation', {}, 'https://example.com/redirect', false, true);
+  contents.emit('will-redirect', { url: 'https://example.com/redirected', preventDefault() { throw new Error('unexpected block'); } });
   contents.emit('did-start-navigation', {}, 'https://example.com/redirected', false, true);
   assert.equal(sent.at(-1)[1].navigationRequestId, 8);
   contents.emit('did-navigate', {}, 'https://example.com/redirected');
@@ -275,6 +276,50 @@ test('専用ビューの遷移と権限、ダウンロード、確定 URL を制
   assert.equal(sent.at(-1)[1].navigationResult, 'completed');
   contents.emit('did-start-navigation', {}, 'https://example.com/page-link', false, true);
   assert.equal(sent.at(-1)[1].navigationRequestId, null);
+
+  // B の保留中に届いた A の終了イベントは、B の結果へ流用しない。
+  contents.emit('did-navigate', {}, 'https://old.example/page');
+  browser.navigate('https://bücher.example:443/next?q=1#part', false, 10);
+  const pendingB = sent.at(-1)[1].pendingUrl;
+  contents.emit('did-navigate-in-page', {}, 'https://old.example/page#changed', true);
+  assert.equal(sent.at(-1)[1].url, 'https://old.example/page#changed');
+  assert.equal(sent.at(-1)[1].pendingUrl, pendingB);
+  assert.equal(sent.at(-1)[1].navigationRequestId, 10);
+  assert.equal(sent.at(-1)[1].navigationResult, null);
+  contents.emit('did-fail-load', {}, -105, 'old failure', 'https://old.example/page', true);
+  assert.equal(sent.at(-1)[1].pendingUrl, pendingB);
+  assert.equal(sent.at(-1)[1].failedUrl, '');
+  contents.emit('did-navigate', {}, 'https://old.example/page');
+  assert.equal(sent.at(-1)[1].navigationResult, null);
+  assert.equal(sent.at(-1)[1].navigationRequestId, 10);
+  contents.emit('did-fail-load', {}, -105, 'bad url', 'invalid', true);
+  assert.equal(sent.at(-1)[1].pendingUrl, pendingB);
+  contents.emit('did-start-navigation', {}, 'https://xn--bcher-kva.example/next?q=1#part', false, true);
+  contents.emit('did-navigate-in-page', {}, 'https://xn--bcher-kva.example/next?q=1#part', true);
+  assert.equal(sent.at(-1)[1].navigationResult, 'completed');
+  assert.equal(sent.at(-1)[1].navigationRequestId, 10);
+
+  browser.navigate('https://example.com/source', false, 11);
+  contents.emit('will-redirect', { url: 'https://old.example/redirect', isMainFrame: true, preventDefault() { throw new Error('unexpected block'); } });
+  contents.emit('did-navigate', {}, 'https://old.example/redirect');
+  assert.equal(sent.at(-1)[1].pendingUrl, 'https://example.com/source');
+  assert.equal(sent.at(-1)[1].navigationResult, null);
+  contents.emit('did-start-navigation', {}, 'https://example.com/source', false, true);
+  contents.emit('will-redirect', { url: 'https://example.com/subframe', isMainFrame: false, preventDefault() { throw new Error('unexpected block'); } });
+  contents.emit('did-navigate', {}, 'https://example.com/subframe');
+  assert.equal(sent.at(-1)[1].navigationResult, null);
+  contents.emit('will-redirect', { url: 'https://example.com/target?x=1', preventDefault() { throw new Error('unexpected block'); } });
+  contents.emit('did-fail-load', {}, -105, 'old failure', 'https://old.example/page', true);
+  assert.equal(sent.at(-1)[1].navigationResult, null);
+  contents.emit('did-navigate', {}, 'https://example.com/target?x=1');
+  assert.equal(sent.at(-1)[1].navigationResult, 'completed');
+  assert.equal(sent.at(-1)[1].navigationRequestId, 11);
+  browser.navigate('https://example.com/failing?q=2', false, 12);
+  contents.emit('did-fail-load', {}, -105, 'old failure', 'https://old.example/page', true);
+  assert.equal(sent.at(-1)[1].navigationResult, null);
+  contents.emit('did-fail-load', {}, -105, 'current failure', 'HTTPS://EXAMPLE.COM:443/failing?q=2', true);
+  assert.equal(sent.at(-1)[1].navigationResult, 'failed');
+  assert.equal(sent.at(-1)[1].navigationRequestId, 12);
 });
 
 test('ブラウザ IPC はメインウィンドウのメインフレームだけを受け付ける', () => {

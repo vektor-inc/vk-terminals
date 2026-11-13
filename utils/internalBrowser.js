@@ -22,6 +22,18 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
   let github404Url = '';
   let navigationResult = null;
   let navigationRequestId = null;
+  let requestUrls = new Set();
+  let requestNavigationStarted = false;
+  function canonicalUrl(url) {
+    try {
+      const parsed = new URL(url);
+      return isNavigationUrl(parsed.href) ? parsed.href : null;
+    } catch { return null; }
+  }
+  function matchesRequest(url) {
+    const canonical = canonicalUrl(url);
+    return canonical !== null && requestUrls.has(canonical);
+  }
   const cancelDownload = (event, item) => {
     event.preventDefault();
     // 保留中の遷移と異なるダウンロードへ古い URL を渡さない。
@@ -66,6 +78,8 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
     navigationRequestId = null;
     navigationResult = null;
     pendingUrl = '';
+    requestUrls = new Set();
+    requestNavigationStarted = false;
   }
 
   function syncBounds() {
@@ -100,7 +114,14 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
         publish();
       });
       contents.on('will-frame-navigate', event => { if (!isNavigationUrl(event.url)) event.preventDefault(); });
-      contents.on('will-redirect', event => { if (!isNavigationUrl(event.url)) event.preventDefault(); });
+      contents.on('will-redirect', event => {
+        if (!isNavigationUrl(event.url)) { event.preventDefault(); return; }
+        // 対応する開始イベントを確認した要求の redirect だけを同じ ID に結び付ける。
+        if (event.isMainFrame !== false && navigationRequestId !== null && pendingUrl && requestNavigationStarted) {
+          const redirectedUrl = canonicalUrl(event.url);
+          if (redirectedUrl) requestUrls.add(redirectedUrl);
+        }
+      });
       contents.on('will-prevent-unload', event => {
         const choice = dialog.showMessageBoxSync(win, { type: 'warning', title: 'このページを離れますか？', message: 'このページを離れますか？', detail: '入力中の内容は保存されない可能性があります。', buttons: ['移動する', 'このページにとどまる'], defaultId: 1, cancelId: 1 });
         if (choice === 0) event.preventDefault();
@@ -113,6 +134,11 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
       contents.on('did-start-loading', publish);
       contents.on('did-start-navigation', (_event, url, isInPlace, isMainFrame) => {
         if (!isMainFrame) return;
+        // 古いページの遅延イベントは、現在の Enter 要求を変更しない。
+        if (navigationRequestId !== null && pendingUrl) {
+          if (!matchesRequest(url)) return;
+          requestNavigationStarted = true;
+        }
         // Enter の保留中だけ ID を引き継ぎ、ページ起点の新しい遷移では切り離す。
         if (!pendingUrl) navigationRequestId = null;
         navigationResult = null;
@@ -125,6 +151,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
       contents.on('did-stop-loading', publish);
       contents.on('did-navigate', (_event, url) => {
         currentUrl = url;
+        if (navigationRequestId !== null && pendingUrl && !matchesRequest(url)) { publish(); return; }
         pendingUrl = '';
         failedUrl = '';
         navigationResult = 'completed';
@@ -132,10 +159,15 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
         publish();
       });
       contents.on('did-navigate-in-page', (_event, url, isMainFrame) => {
-        if (isMainFrame) { currentUrl = url; pendingUrl = ''; navigationResult = 'completed'; publish(); }
+        if (isMainFrame) {
+          currentUrl = url;
+          if (navigationRequestId !== null && pendingUrl && !matchesRequest(url)) { publish(); return; }
+          pendingUrl = ''; navigationResult = 'completed'; publish();
+        }
       });
       contents.on('did-fail-load', (_event, code, _description, destination, isMainFrame) => {
         if (isMainFrame && code !== -3) {
+          if (navigationRequestId !== null && pendingUrl && !matchesRequest(destination)) return;
           pendingUrl = '';
           failedUrl = destination;
           navigationResult = 'failed';
@@ -158,6 +190,8 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
     pendingUrl = fromPage ? '' : url;
     navigationRequestId = fromPage ? null : requestId ?? null;
     navigationResult = null;
+    requestUrls = navigationRequestId === null ? new Set() : new Set([canonicalUrl(url)].filter(Boolean));
+    requestNavigationStarted = false;
     view.webContents.loadURL(url).catch(() => {});
     syncBounds();
     publish();

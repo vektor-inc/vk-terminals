@@ -464,6 +464,7 @@ test('main の遷移結果を順に受け、失敗・成功・中止・置換・
       await contents.complete(confirmedUrl);
       assert.equal(address.value, confirmedUrl);
     }
+    navigationWrites = 0;
     const failedUrl = 'https://unreachable.example/path';
     address.value = failedUrl;
     handlers.input();
@@ -581,10 +582,10 @@ test('main の遷移結果を順に受け、失敗・成功・中止・置換・
       { getURLChain: () => ['https://example.org/download'] });
     await contents.download();
     assert.equal(blockedToast, 1);
-    assert.equal(channels.at(-1), 'internal-browser:download-blocked');
-    assert.equal(channels.at(-2), 'internal-browser:state');
-    assert.deepEqual(downloadEvents.at(-1), { canOpenFromToolbar: true });
-    assert.equal(toastMessages.at(-1), 'ダウンロードはできません。操作列の「外部ブラウザで開く」から行ってください。');
+    assert.equal(channels.at(-1), 'internal-browser:state');
+    assert.equal(channels.at(-2), 'internal-browser:download-blocked');
+    assert.deepEqual(downloadEvents.at(-1), { canOpenFromToolbar: false });
+    assert.equal(toastMessages.at(-1), 'ダウンロードはできません。外部ブラウザでダウンロードしてください。');
     assert.equal(toastMessages.length, 2);
     assert.equal(target.textContent, '外部で開く: ダウンロード先 example.org/download');
     assert.equal(messages.at(-1).navigationResult, 'download-blocked');
@@ -605,18 +606,18 @@ test('main の遷移結果を順に受け、失敗・成功・中止・置換・
     assert.equal(target.textContent, '外部で開く: ダウンロード先 example.org/download');
     assert.equal(navigationWrites, 8);
 
-    // Enter で追跡していない再読み込みやページ内移動では通知を増やさない。
-    contents.reload = () => contents.emit('did-start-navigation', {}, 'https://example.org/retry', false, true);
+    // 再読み込みも独立した世代で開始と完了を通知する。
+    contents.reload = () => contents.startNative('https://example.org/retry', 'reload-initial');
     browser.action('reload');
-    assert.equal(messages.at(-1).navigationResult, null);
-    contents.emit('did-navigate-in-page', {}, 'https://example.org/retry#part', true);
-    assert.equal(messages.at(-1).navigationResult, 'completed');
+    assert.equal(navigationStatus.textContent, 'ページを読み込み中');
+    contents.commitDocument('https://example.org/retry', 'reload-initial');
+    contents.loadDocument('reload-initial');
     assert.equal(messages.at(-1).navigationRequestId, null);
-    assert.equal(navigationWrites, 8);
-    contents.emit('did-fail-load', {}, -105, 'reload failed', 'https://example.org/retry#part', true);
-    assert.equal(errorView.hidden, false);
-    assert.equal(message.textContent, 'ページを表示できませんでした（example.org）');
-    assert.equal(navigationWrites, 8);
+    assert.equal(navigationStatus.textContent, 'ページの読み込みが完了しました');
+    assert.equal(navigationWrites, 10);
+    // 相関のない旧失敗を現在の文書へ流用しない。
+    contents.emit('did-fail-load', {}, -105, 'reload failed', 'https://example.org/retry', true);
+    assert.equal(errorView.hidden, true);
     // Enter で始めたページ内遷移も、pending を残さず完了する。
     address.value = 'https://example.org/retry#next';
     handlers.input();
@@ -627,7 +628,7 @@ test('main の遷移結果を順に受け、失敗・成功・中止・置換・
     assert.equal(messages.at(-1).navigationResult, 'completed');
     assert.equal(messages.at(-1).navigationRequestId, 5);
     assert.equal(navigationStatus.textContent, 'ページの読み込みが完了しました');
-    assert.equal(navigationWrites, 10);
+    assert.equal(navigationWrites, 12);
     // 完了 state の再送も、次の Enter の結果としては消費しない。
     address.value = 'https://example.org/last';
     handlers.input();
@@ -665,7 +666,7 @@ test('main の遷移結果を順に受け、失敗・成功・中止・置換・
     await contents.complete('https://example.org/second-again');
     assert.equal(navigationStatus.textContent, 'ページの読み込みが完了しました');
 
-    // 各操作は旧要求の ID で終了を通知し、専用 live status に置換結果を残す。
+    // 各操作は旧要求を終了し、新しい世代の開始と結果を単一 live 経路へ送る。
     const startPending = suffix => {
       address.value = `https://example.org/${suffix}`;
       handlers.input();
@@ -675,11 +676,11 @@ test('main の遷移結果を順に受け、失敗・成功・中止・置換・
     };
     const assertSuperseded = requestId => {
       assert.ok(messages.some(state => state.navigationRequestId === requestId && state.navigationResult === 'superseded'));
-      assert.equal(navigationStatus.textContent, '別の操作で読み込みが置き換えられました');
+      assert.equal(navigationStatus.textContent, 'ページを読み込み中');
       assert.equal(vm.runInContext('internalBrowserActiveRequestId', context), null);
       const writesAfterSupersede = navigationWrites;
       browser.publish();
-      assert.equal(navigationStatus.textContent, '別の操作で読み込みが置き換えられました');
+      assert.equal(navigationStatus.textContent, 'ページを読み込み中');
       assert.equal(navigationWrites, writesAfterSupersede);
     };
     for (const action of ['back', 'forward', 'reload']) {
@@ -699,21 +700,72 @@ test('main の遷移結果を順に受け、失敗・成功・中止・置換・
     assertSuperseded(requestId);
     contents.emit('did-start-navigation', {}, 'https://example.org/page-link', false, true);
     assert.equal(messages.at(-1).navigationRequestId, null);
-    assert.equal(navigationStatus.textContent, '別の操作で読み込みが置き換えられました');
+    assert.equal(navigationStatus.textContent, 'ページを読み込み中');
 
     requestId = startPending('pending-window-open');
     contents.openHandler({ url: 'https://example.org/from-page' });
     assertSuperseded(requestId);
     assert.equal(messages.at(-1).navigationRequestId, null);
     await contents.complete('https://example.org/from-page');
-    assert.equal(navigationStatus.textContent, '別の操作で読み込みが置き換えられました');
+    assert.equal(navigationStatus.textContent, 'ページの読み込みが完了しました');
 
     requestId = startPending('pending-url-only');
     browser.navigate('https://example.org/url-only');
     assertSuperseded(requestId);
     assert.equal(messages.at(-1).navigationRequestId, null);
     await contents.complete('https://example.org/url-only');
-    assert.equal(navigationStatus.textContent, '別の操作で読み込みが置き換えられました');
+    assert.equal(navigationStatus.textContent, 'ページの読み込みが完了しました');
+
+    // 戻る・進む・再読み込み・ページ起点・URL-onlyの開始と全終了結果を renderer まで検証する。
+    for (const action of ['back', 'forward', 'reload', 'page', 'url-only']) {
+      for (const result of ['completed', 'cancelled', 'failed']) {
+        const requestId = startPending(`matrix-${action}-${result}`);
+        await flushBrowserLoads();
+        const writesBeforeReplacement = navigationWrites;
+        const previousState = { ...messages.at(-1) };
+        const targetUrl = `https://matrix.example/${action}/${result}`;
+        if (action === 'url-only') browser.navigate(targetUrl);
+        else if (action === 'page') contents.emit('will-navigate', { url: targetUrl });
+        else browser.action(action);
+        assert.ok(messages.some(state => state.navigationRequestId === requestId && state.navigationResult === 'superseded'));
+        assert.equal(navigationStatus.textContent, 'ページを読み込み中');
+        assert.equal(navigationWrites, writesBeforeReplacement + 2);
+        const operation = messages.at(-1).navigationOperationId;
+        assert.equal(messages.at(-1).navigationRequestId, null);
+        if (action === 'url-only') {
+          if (result === 'completed') await contents.complete(targetUrl);
+          else await contents.fail(result === 'cancelled' ? -3 : -105, targetUrl);
+        } else {
+          contents.startNative(targetUrl, `matrix-${action}-${result}`);
+          if (result === 'completed') {
+            contents.commitDocument(targetUrl, `matrix-${action}-${result}`);
+            contents.loadDocument(`matrix-${action}-${result}`);
+          } else contents.debugger.emit('message', {}, 'Network.loadingFailed', {
+            requestId: `request-matrix-${action}-${result}`, type: 'Document', canceled: result === 'cancelled', errorText: 'net::ERR_NAME_NOT_RESOLVED',
+          });
+        }
+        assert.equal(messages.at(-1).navigationOperationId, operation);
+        assert.equal(messages.at(-1).navigationResult, result);
+        const expectedMessage = result === 'completed' ? 'ページの読み込みが完了しました'
+          : result === 'cancelled' ? 'ページの移動を中止しました' : '';
+        assert.equal(navigationStatus.textContent, expectedMessage);
+        assert.equal(navigationWrites, writesBeforeReplacement + 3);
+        if (result === 'failed') {
+          assert.equal(errorView.hidden, false);
+          assert.equal(message.textContent, 'ページを表示できませんでした（matrix.example）');
+        }
+        // 完了後の旧世代通知と同じ世代の再送は読み上げを増やさない。
+        const writesAfterResult = navigationWrites;
+        const errorWritesAfterResult = errorWrites;
+        const finalAddress = address.value;
+        handlers['internal-browser:state']({ ...previousState, navigationResult: 'failed', failedUrl: 'https://stale.example/failed' });
+        browser.publish();
+        assert.equal(navigationWrites, writesAfterResult);
+        assert.equal(errorWrites, errorWritesAfterResult);
+        assert.equal(address.value, finalAddress);
+        assert.equal(navigationStatus.textContent, expectedMessage);
+      }
+    }
 
     // redirect の開始イベントだけでは同一 Enter 要求を置き換えない。
     requestId = startPending('redirect-source');

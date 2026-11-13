@@ -5,7 +5,7 @@ const { EventEmitter } = require('node:events');
 const { createInternalBrowser } = require('../utils/internalBrowser');
 const { installBrowserLoad, flushBrowserLoads } = require('./helpers/browserLoad');
 
-function setup() {
+function setup({ failCommand, failAttach = false } = {}) {
   const states = [];
   const session = new EventEmitter();
   session.setPermissionRequestHandler = () => {};
@@ -16,9 +16,13 @@ function setup() {
     constructor() {
       contents = new EventEmitter();
       installBrowserLoad(contents);
+      const sendCommand = contents.debugger.sendCommand;
+      contents.debugger.sendCommand = (method, params) => method === failCommand
+        ? Promise.reject(new Error('initialization failed')) : sendCommand(method, params);
+      if (failAttach) contents.debugger.attach = () => { throw new Error('attach failed'); };
       contents.isLoading = () => false;
       contents.navigationHistory = { canGoBack: () => false, canGoForward: () => false };
-      contents.setWindowOpenHandler = () => {};
+      contents.setWindowOpenHandler = handler => { contents.openHandler = handler; };
       contents.close = () => {};
       this.webContents = contents;
     }
@@ -194,7 +198,7 @@ test('ダウンロード応答と debugger の切断を明示的に処理する'
   await flushBrowserLoads();
   contents.loads[0].resolve({ frameId: 'main', isDownload: true });
   await flushBrowserLoads();
-  assert.equal(states.at(-1).navigationResult, null);
+  assert.equal(states.at(-1).navigationResult, 'download-blocked');
   session.emit('will-download', { preventDefault() {} }, { getURLChain: () => ['https://example.com/a'] });
   assert.equal(states.at(-1).navigationResult, 'download-blocked');
   browser.navigate('https://example.com/b', false, 2);
@@ -215,4 +219,237 @@ test('同一 URL の旧 download は現在のコマンドが download を返す�
   await contents.complete('https://example.com/a');
   assert.equal(states.at(-1).navigationResult, 'completed');
   assert.equal(states.at(-1).navigationRequestId, 2);
+});
+
+for (const trigger of ['link', 'location.replace']) {
+  test(`${trigger} による置換で新しい実遷移を stop せず完了する`, async () => {
+    const { browser, contents, states } = setup();
+    await flushBrowserLoads();
+    let stopped = 0;
+    contents.stop = () => { stopped++; };
+    const old = contents.loads[0];
+    contents.emit('will-navigate', { url: 'https://example.com/page' });
+    const operation = states.at(-1).navigationOperationId;
+    assert.equal(stopped, 0);
+    assert.equal(states.at(-1).navigationRequestId, null);
+    assert.ok(states.some(state => state.navigationRequestId === 1 && state.navigationResult === 'superseded'));
+    contents.startNative('https://example.com/page', 'native-page');
+    emitLoaderEvents(contents, old.loaderId, old.url);
+    contents.respond(old.loaderId, 'https://github.com/old', 404);
+    assert.equal(states.at(-1).navigationResult, null);
+    contents.commitDocument('https://example.com/page', 'native-page');
+    contents.loadDocument('native-page');
+    assert.equal(states.at(-1).navigationResult, 'completed');
+    assert.equal(states.at(-1).url, 'https://example.com/page');
+    assert.equal(states.at(-1).github404Url, '');
+    assert.equal(states.at(-1).navigationOperationId, operation);
+    browser.publish();
+    assert.equal(stopped, 0);
+  });
+}
+
+for (const canonical of ['https://example.com/canonical', 'https://example.com/a#hash']) {
+  for (const responseFirst of [true, false]) {
+    test(`load 前の canonical 更新を確定する: ${canonical}, 応答先行=${responseFirst}`, async () => {
+      const { contents, states } = setup();
+      await flushBrowserLoads();
+      const load = contents.loads[0];
+      if (responseFirst) {
+        load.resolve({ loaderId: load.loaderId, frameId: 'main' });
+        await flushBrowserLoads();
+      }
+      contents.commitDocument(load.url, load.loaderId);
+      contents.commitInPage(canonical);
+      // 旧 URL の Electron / CDP 同一文書通知は現在 URL を巻き戻さない。
+      contents.emit('did-navigate-in-page', {}, 'https://example.com/old', true);
+      contents.debugger.emit('message', {}, 'Page.navigatedWithinDocument', { frameId: 'main', url: load.url });
+      assert.equal(states.at(-1).navigationResult, null);
+      contents.loadDocument(load.loaderId);
+      load.resolve({ loaderId: load.loaderId, frameId: 'main' });
+      await flushBrowserLoads();
+      assert.equal(states.at(-1).navigationResult, 'completed');
+      assert.equal(states.at(-1).url, canonical);
+    });
+  }
+}
+
+for (const via of ['window.open', 'target=_blank']) {
+  for (const noticeFirst of [true, false]) {
+    test(`${via} download は isDownload と通知の到着順によらず終了: 通知先行=${noticeFirst}`, async () => {
+      const { contents, session, states } = setup();
+      await flushBrowserLoads();
+      contents.openHandler({ url: 'https://example.com/download' });
+      const operation = states.at(-1).navigationOperationId;
+      assert.equal(states.at(-1).pendingUrl, '');
+      await flushBrowserLoads();
+      const notice = () => session.emit('will-download', { preventDefault() {} }, { getURLChain: () => ['https://example.com/download'] });
+      if (noticeFirst) notice();
+      await contents.download();
+      if (!noticeFirst) notice();
+      assert.equal(states.at(-1).navigationResult, 'download-blocked');
+      assert.equal(states.at(-1).downloadUrl, 'https://example.com/download');
+      assert.equal(states.at(-1).navigationOperationId, operation);
+      assert.equal(states.at(-1).navigationRequestId, null);
+    });
+  }
+}
+
+test('同一URLの旧download通知・旧isDownload応答は新しい世代を終了しない', async () => {
+  const { contents, states, session } = setup();
+  await flushBrowserLoads();
+  const old = contents.loads[0];
+  contents.stop = () => {};
+  contents.openHandler({ url: old.url });
+  await flushBrowserLoads();
+  const operation = states.at(-1).navigationOperationId;
+  session.emit('will-download', { preventDefault() {} }, { getURLChain: () => [old.url] });
+  old.resolve({ frameId: 'main', isDownload: true });
+  await flushBrowserLoads();
+  assert.equal(states.at(-1).navigationResult, null);
+  assert.equal(states.at(-1).downloadUrl, '');
+  await contents.complete(old.url);
+  assert.equal(states.at(-1).navigationOperationId, operation);
+  assert.equal(states.at(-1).navigationResult, 'completed');
+});
+
+for (const responseFirst of [true, false]) {
+  test(`同一URLの連続要求で404を文書loaderへ限定する: 応答先行=${responseFirst}`, async () => {
+    const { browser, contents, states } = setup();
+    browser.navigate('https://github.com/missing', false, 2);
+    await flushBrowserLoads();
+    const old = contents.loads.at(-1);
+    await contents.complete(old.url);
+    browser.navigate(old.url, false, 3);
+    await flushBrowserLoads();
+    const next = contents.loads.at(-1);
+    next.resolve({ frameId: 'main', loaderId: next.loaderId });
+    await flushBrowserLoads();
+    contents.respond(old.loaderId, old.url, 404);
+    assert.equal(states.at(-1).github404Url, '');
+    if (responseFirst) contents.respond(next.loaderId, next.url, 404);
+    contents.commitDocument(next.url, next.loaderId);
+    contents.loadDocument(next.loaderId);
+    if (!responseFirst) contents.respond(next.loaderId, next.url, 404);
+    assert.equal(states.at(-1).github404Url, next.url);
+    contents.respond(old.loaderId, old.url, 200);
+    contents.respond(next.loaderId, 'https://github.com/subframe', 404, 'subframe');
+    assert.equal(states.at(-1).github404Url, next.url);
+    browser.navigate(next.url, false, 4);
+    await contents.complete(next.url);
+    contents.respond(old.loaderId, old.url, 404);
+    contents.respond(next.loaderId, next.url, 404);
+    assert.equal(states.at(-1).github404Url, '');
+  });
+}
+
+for (const action of ['back', 'forward', 'reload', 'page', 'url-only']) {
+  for (const result of ['completed', 'cancelled', 'failed']) {
+    test(`${action} の新世代は開始と ${result} を公開する`, async () => {
+      const { browser, contents, states } = setup();
+      await contents.complete('https://example.com/a');
+      const previous = states.at(-1).navigationOperationId;
+      const target = 'https://example.com/next';
+      if (action === 'url-only') browser.navigate(target);
+      else if (action === 'page') contents.emit('will-navigate', { url: target });
+      else {
+        contents.navigationHistory.canGoBack = contents.navigationHistory.canGoForward = () => true;
+        contents.navigationHistory.goBack = contents.navigationHistory.goForward = () => {};
+        contents.reload = () => {};
+        browser.action(action);
+      }
+      const operation = states.at(-1).navigationOperationId;
+      assert.ok(operation > previous);
+      assert.equal(states.at(-1).navigationRequestId, null);
+      assert.equal(states.at(-1).navigationResult, null);
+      if (action === 'url-only') {
+        if (result === 'completed') await contents.complete(target);
+        else await contents.fail(result === 'cancelled' ? -3 : -105, target);
+      } else {
+        contents.startNative(target, 'native-result');
+        if (result === 'completed') {
+          contents.commitDocument(target, 'native-result');
+          contents.loadDocument('native-result');
+        } else contents.debugger.emit('message', {}, 'Network.loadingFailed', {
+          requestId: 'request-native-result', type: 'Document', canceled: result === 'cancelled', errorText: 'net::ERR_NAME_NOT_RESOLVED',
+        });
+      }
+      assert.equal(states.at(-1).navigationOperationId, operation);
+      assert.equal(states.at(-1).navigationResult, result);
+      if (result === 'failed') assert.equal(states.at(-1).failedUrl, target);
+    });
+  }
+}
+
+test('同一文書の戻る操作とBFCache復元も操作世代を終了する', async () => {
+  const { browser, contents, states } = setup();
+  await contents.complete('https://example.com/a');
+  const document = contents.loads[0];
+  contents.navigationHistory.canGoBack = () => true;
+  contents.navigationHistory.goBack = () => {};
+  browser.action('back');
+  contents.debugger.emit('message', {}, 'Page.frameStartedNavigating', {
+    frameId: 'main', loaderId: document.loaderId, url: 'https://example.com/a#back', navigationType: 'historySameDocument',
+  });
+  contents.commitInPage('https://example.com/a#back');
+  assert.equal(states.at(-1).navigationResult, 'completed');
+  browser.action('back');
+  contents.startNative(document.url, document.loaderId);
+  contents.commitDocument(document.url, document.loaderId, 'BackForwardCacheRestore');
+  assert.equal(states.at(-1).navigationResult, 'completed');
+  assert.equal(states.at(-1).url, document.url);
+});
+
+for (const failCommand of ['Page.enable', 'Page.setLifecycleEventsEnabled', 'Network.enable', 'Page.getFrameTree']) {
+  test(`${failCommand} の初期化失敗も操作を失敗として終了する`, async () => {
+    const { browser, contents, states } = setup({ failCommand });
+    await flushBrowserLoads();
+    assert.equal(states.at(-1).navigationResult, 'failed');
+    assert.equal(contents.loads.length, 0);
+    browser.navigate('https://example.com/retry', false, 2);
+    await flushBrowserLoads();
+    assert.equal(states.at(-1).navigationResult, 'failed');
+  });
+}
+
+test('attach失敗・destroy・detach後の操作を未完了のままにしない', async () => {
+  const failed = setup({ failAttach: true });
+  await flushBrowserLoads();
+  assert.equal(failed.states.at(-1).navigationResult, 'failed');
+  const { browser, contents, states } = setup();
+  await flushBrowserLoads();
+  contents.debugger.emit('detach');
+  browser.navigate('https://example.com/retry', false, 2);
+  await flushBrowserLoads();
+  assert.equal(states.at(-1).navigationResult, 'failed');
+  const live = setup();
+  live.browser.destroy();
+  await flushBrowserLoads();
+  assert.equal(live.contents.loads.length, 0);
+});
+
+test('GitHub 404の現在文書はhash更新後も維持し、subframeの応答を採用しない', async () => {
+  const { browser, contents, states } = setup();
+  browser.navigate('https://github.com/missing');
+  await flushBrowserLoads();
+  const load = contents.loads.at(-1);
+  contents.respond(load.loaderId, load.url, 404);
+  contents.respond(load.loaderId, 'https://github.com/subframe', 200, 'subframe');
+  await contents.complete(load.url);
+  assert.equal(states.at(-1).github404Url, load.url);
+  contents.commitInPage(`${load.url}#hash`);
+  assert.equal(states.at(-1).github404Url, load.url);
+  contents.respond('old-loader', load.url, 404);
+  assert.equal(states.at(-1).url, `${load.url}#hash`);
+  assert.equal(states.at(-1).github404Url, load.url);
+});
+
+test('WebContents破棄時は破棄済みAPIを呼ばず失敗結果を公開する', async () => {
+  const { browser, contents, states } = setup();
+  await flushBrowserLoads();
+  contents.isDestroyed = () => true;
+  contents.isLoading = () => { throw new Error('Object has been destroyed'); };
+  contents.emit('destroyed');
+  assert.equal(states.at(-1).navigationResult, 'failed');
+  assert.equal(states.at(-1).loading, false);
+  assert.equal(browser.action('reload'), false);
 });

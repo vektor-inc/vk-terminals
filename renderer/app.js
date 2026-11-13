@@ -297,6 +297,8 @@ const internalBrowserAddress = internalBrowserSidebar.querySelector('.internal-b
 const internalBrowserAddressError = internalBrowserSidebar.querySelector('.internal-browser-address-error');
 let internalBrowserNavigationActive = false;
 let internalBrowserNextRequestId = 0;
+let internalBrowserOperationId = 0;
+let internalBrowserFinishedOperationId = 0;
 let internalBrowserActiveRequestId = null;
 let internalBrowserSubmittedUrl = '';
 function setInternalBrowserNavigationStatus(message) {
@@ -419,6 +421,21 @@ internalBrowserResizer.addEventListener('keydown', event => {
 });
 window.addEventListener('resize', syncInternalBrowserLayout);
 VKIpc.on('internal-browser:state', state => {
+  // Enter の受理前と旧操作の再配送では、表示も live 通知も巻き戻さない。
+  const operationId = state.navigationOperationId;
+  if (Number.isSafeInteger(operationId)) {
+    if (operationId < internalBrowserOperationId) return;
+    if (internalBrowserNavigationActive && internalBrowserActiveRequestId !== null
+      && state.navigationRequestId !== internalBrowserActiveRequestId) return;
+    if (operationId > internalBrowserOperationId) {
+      internalBrowserOperationId = operationId;
+      if (state.navigationResult === null) {
+        internalBrowserNavigationActive = true;
+        internalBrowserActiveRequestId = state.navigationRequestId;
+        setInternalBrowserNavigationStatus('ページを読み込み中');
+      }
+    }
+  }
   internalBrowserUrl = state.url || '';
   internalBrowserPendingUrl = state.pendingUrl || '';
   internalBrowserFailedUrl = state.failedUrl || '';
@@ -501,7 +518,9 @@ VKIpc.on('internal-browser:state', state => {
     superseded: '別の操作で読み込みが置き換えられました',
   };
   if (internalBrowserNavigationActive && state.navigationRequestId === internalBrowserActiveRequestId
+    && (!Number.isSafeInteger(operationId) || operationId > internalBrowserFinishedOperationId)
     && Object.hasOwn(navigationMessages, state.navigationResult)) {
+    if (Number.isSafeInteger(operationId)) internalBrowserFinishedOperationId = operationId;
     internalBrowserNavigationActive = false;
     internalBrowserActiveRequestId = null;
     internalBrowserSubmittedUrl = '';

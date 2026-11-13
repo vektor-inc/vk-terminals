@@ -3325,6 +3325,8 @@ function holderPaneCreationMessage(reason) {
 }
 
 async function addPane(overrideCwd = null, options = {}) {
+  // 初期化中の端末生成は後続のレイアウト初期化で失われるため、生成前に止める。
+  if (!initialRenderDone) throw new Error('renderer not initialized');
   const newPaneId = newId();
   try { await createTerminal(newPaneId, overrideCwd || null, options); }
   catch (error) {
@@ -7599,6 +7601,10 @@ VKIpc.on('terminal:agentroom', (termId, agents, replace) => {
 VKIpc.on('terminal:request-new-pane', async (payload = {}) => {
   const { requestId, cwd, noClaude, engine, stashed, useDefaults, model, approvalPolicy, sandboxMode, codexPolicy, claudeSettingsPreset } = payload;
   const reply = (result) => VKIpc.send('terminal:new-pane-created', { requestId, ...result });
+  if (!initialRenderDone) {
+    reply({ error: 'renderer not initialized' });
+    return;
+  }
   const targetPaneId = findLargestVisiblePaneId() || focusedPaneId || (tree ? getAllLeafIds(tree)[0] : null);
   try {
     // 表示面積が最大のペインを長辺方向に分割し、全体の空きが大きい場所へ追加する

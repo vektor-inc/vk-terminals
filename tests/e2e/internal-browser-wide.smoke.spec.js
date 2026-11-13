@@ -1,5 +1,12 @@
 const { test, expect } = require('@playwright/test');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { spawnSync } = require('child_process');
 const { closeApp, getFreePort, launchAppAndWait } = require('./helpers/electron-app');
+
+const holderLauncherPath = path.resolve(__dirname, '..', 'fixtures', 'embeddedHolderLauncher.js');
+const setupLauncherPath = path.resolve(__dirname, '..', 'fixtures', 'embeddedSetupLauncher.js');
 
 // HTTP API へ JSON を送る（API・自動処理からのペイン追加を再現する）。
 async function post(port, pathname, payload) {
@@ -10,9 +17,9 @@ async function post(port, pathname, payload) {
 }
 
 // 1400px のウィンドウで、ペインを開かずに起動する。
-async function start(prefix) {
+async function start(prefix, options = {}) {
   const port = await getFreePort();
-  const launched = await launchAppAndWait({ port, prefix, config: { confirmClose: 'never', openInitialPane: false } });
+  const launched = await launchAppAndWait({ port, prefix, config: { confirmClose: 'never', openInitialPane: false }, ...options });
   await launched.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(1400, 800));
   await expect.poll(() => launched.win.evaluate(() => innerWidth)).toBe(1400);
   return { ...launched, port };
@@ -63,11 +70,17 @@ test('広く表示でペインを全部格納し、もう一度押すと元の�
     await expect.poll(() => browserWidth(win)).toBe(expected);
     expect(expected).toBeGreaterThan(normalWidth);
     await expect(win.locator('.internal-browser-resizer')).toBeHidden();
-    // @check ボタンの文言が「元の表示に戻す」に変わり、押した状態の背景色が付く
+    // @check ボタンの文言が「元の表示に戻す」に変わり、押した状態の背景色が付き、ホバーすると一段明るくなる
     await expect(wideButton(win)).toHaveAttribute('aria-label', '元の表示に戻す');
     await expect(wideButton(win)).toHaveAttribute('title', '元の表示に戻す');
     await expect(wideButton(win)).toBeFocused();
-    expect(await wideButton(win).evaluate(button => getComputedStyle(button).backgroundColor)).toBe('rgb(33, 38, 45)');
+    const background = () => wideButton(win).evaluate(button => getComputedStyle(button).backgroundColor);
+    // 押した直後はポインターが重なっているため、ホバー時の一段明るい色になる。
+    await wideButton(win).hover();
+    await expect.poll(background).toBe('rgb(48, 54, 61)');
+    // ポインターを外すと、押した状態の背景色が残る。
+    await win.mouse.move(5, 400);
+    await expect.poll(background).toBe('rgb(33, 38, 45)');
 
     // @step 「元の表示に戻す」を押す
     await wideButton(win).click();
@@ -188,5 +201,157 @@ test('左サイドバーを閉じた広く表示ではトースト用に左 96px
     await expect.poll(() => browserWidth(win)).toBe(rootWidth - 96);
   } finally {
     await closeApp(launched);
+  }
+});
+
+// @title ペインを 1 枚だけ広く表示した状態から、ブラウザの広く表示へ切り替える
+test('先頭以外のペインを単独表示した状態からブラウザを広く表示しても、元の並びに戻る', async () => {
+  const launched = await start('vk-terminals-e2e-browser-wide-focus-');
+  const { win } = launched;
+  try {
+    // @step ペインを 3 枚開き、3 枚目だけを「このペインを広く表示」にする
+    const ids = await win.evaluate(async () => {
+      const a = (await addPane(null, { noClaude: true })).paneId;
+      const b = (await addPane(null, { noClaude: true })).paneId;
+      const c = (await addPane(null, { noClaude: true })).paneId;
+      return { a, b, c };
+    });
+    await win.locator(`.pane[data-id="${ids.c}"] .btn-focus-mode`).click();
+    await expect(win.locator('.pane')).toHaveCount(1);
+
+    // @step アプリ内ブラウザを開いて「ブラウザを広く表示」を押し、続けて「元の表示に戻す」を押す
+    await openBrowser(win, { sidebar: true });
+    await wideButton(win).click();
+    await expect(win.locator('.pane')).toHaveCount(0);
+    await wideButton(win).click();
+    // @check 3 枚が単独表示の前と同じ順でグリッドに戻る
+    await expect(win.locator('.pane')).toHaveCount(3);
+    expect(await gridOrder(win)).toEqual([ids.a, ids.b, ids.c]);
+    expect(await win.evaluate(() => paneFocusMode)).toBeNull();
+  } finally {
+    await closeApp(launched);
+  }
+});
+
+// @title 広く表示中に使い方ガイドを開く
+test('広く表示中に使い方ガイドを開くと、解除して元のペインの後ろにガイドを出す', async () => {
+  const launched = await start('vk-terminals-e2e-browser-wide-guide-');
+  const { win } = launched;
+  try {
+    // @step ペインを 2 枚開き、アプリ内ブラウザを広く表示にする
+    const ids = await win.evaluate(async () => {
+      const a = (await addPane(null, { noClaude: true })).paneId;
+      const b = (await addPane(null, { noClaude: true })).paneId;
+      return { a, b };
+    });
+    await openBrowser(win, { sidebar: true });
+    await wideButton(win).click();
+    await expect(win.locator('.pane')).toHaveCount(0);
+
+    // @step 使い方ガイドを開く（ガイドの起動処理は通常のペインで代用する）
+    const guideId = await win.evaluate(async () => {
+      const original = VKIpc.invoke.bind(VKIpc);
+      VKIpc.invoke = async (channel, ...args) => (channel === 'help:open-guide'
+        ? original('terminal:create', null, { noClaude: true })
+        : original(channel, ...args));
+      return openHelpGuide();
+    });
+    // @check 広く表示が解除され、元のペインの後ろにガイドのペインが並び、ガイドにフォーカスが移る
+    await expect(win.locator('#root')).not.toHaveClass(/\binternal-browser-wide\b/);
+    expect(await gridOrder(win)).toEqual([ids.a, ids.b, guideId]);
+    await expect(win.locator(`.pane[data-id="${guideId}"]`)).toHaveClass(/\bfocused\b/);
+    expect(await win.evaluate(() => tree.stashOrder)).toEqual([]);
+  } finally {
+    await closeApp(launched);
+  }
+});
+
+// @title 広く表示を解除するとセットアップ状況の一覧が再表示される
+test('広く表示中はセットアップ状況の一覧を隠し、解除すると再表示する', async () => {
+  const statusDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-browser-wide-setup-'));
+  const statusFile = path.join(statusDir, 'status.json');
+  const setupCwd = path.join(statusDir, 'setup-cwd');
+  fs.mkdirSync(setupCwd);
+  // 必須項目が 1 件足りない状態にし、セットアップ状況の一覧を出す。
+  fs.writeFileSync(statusFile, JSON.stringify({
+    requirements: [{ id: 'gh-auth', group: 'tools', label: 'GitHub CLI のログイン', required: true, ok: false, hint: 'gh auth login', target: 'external' }],
+    summary: { total: 1, okCount: 0, requiredCount: 1, requiredOkCount: 0, missingRequired: ['gh-auth'], allRequiredOk: false },
+  }));
+  let launched;
+  try {
+    launched = await start('vk-terminals-e2e-browser-wide-setup-', {
+      entry: setupLauncherPath, env: { VK_TEST_SETUP_STATUS_FILE: statusFile, VK_TEST_SETUP_CWD: setupCwd },
+    });
+    const { win } = launched;
+    // @step セットアップ状況の一覧が出ている状態で、アプリ内ブラウザを開いて広く表示にする
+    const panel = win.locator('.setup-panel');
+    await expect(panel).toBeVisible({ timeout: 20_000 });
+    await openBrowser(win, { sidebar: true });
+    await expect(panel).toBeVisible();
+    await wideButton(win).click();
+    // @check 広く表示中は一覧が隠れる
+    await expect(panel).toBeHidden();
+    // @step 「元の表示に戻す」を押す
+    await wideButton(win).click();
+    // @check 一覧が再表示される
+    await expect(panel).toBeVisible();
+  } finally {
+    if (launched) await closeApp(launched);
+    fs.rmSync(statusDir, { recursive: true, force: true });
+  }
+});
+
+// @title 広く表示中に終了しても、再起動後は広く表示前の並びで復元する
+test('保持役を使うとき、広く表示中に終了しても再起動後は広く表示前の並びで復元する', async () => {
+  const tmux = (process.env.PATH || '').split(path.delimiter).map(dir => path.join(dir, 'tmux'))
+    .find(file => { try { fs.accessSync(file, fs.constants.X_OK); return true; } catch (_) { return false; } });
+  test.skip(!tmux, 'tmux is unavailable');
+  // ソケットのパス長の上限に収まるよう、短い実パスのフォルダを保持役の置き場にする。
+  const runDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'vkw-')));
+  const env = { VK_TERMINALS_HOLDER_RUN_DIR: runDir };
+  const readSaved = () => {
+    try { return JSON.parse(fs.readFileSync(path.join(runDir, 'panes.json'), 'utf8')); } catch (_) { return null; }
+  };
+  let launched;
+  try {
+    launched = await start('vk-terminals-e2e-browser-wide-holder-', { entry: holderLauncherPath, env });
+    let { win } = launched;
+    // @step ペインを 3 枚開いて 1 枚を手動で格納し、2 枚目にフォーカスしてから、アプリ内ブラウザを広く表示にする
+    const ids = await win.evaluate(async () => {
+      const a = (await addPane(null, { noClaude: true })).paneId;
+      const b = (await addPane(null, { noClaude: true })).paneId;
+      const c = (await addPane(null, { noClaude: true })).paneId;
+      const m = (await addPane(null, { noClaude: true })).paneId;
+      stashPane(m);
+      return { a, b, c, m };
+    });
+    // ペイン追加後のフォーカス移動（次の描画フレーム）が済んでから、2 枚目へフォーカスする。
+    await win.evaluate((id) => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => { focusPane(id); resolve(); }))), ids.b);
+    await openBrowser(win, { sidebar: true });
+    await wideButton(win).click();
+    await expect(win.locator('.pane')).toHaveCount(0);
+
+    // @check 保存された並びは広く表示にする前のもの（グリッドに 3 枚、格納に手動の 1 枚、フォーカスは 2 枚目）
+    await expect.poll(() => {
+      const saved = readSaved();
+      return saved && { order: saved.order, stashOrder: saved.stashOrder, focusedPaneId: saved.focusedPaneId };
+    }).toEqual({ order: [ids.a, ids.b, ids.c], stashOrder: [ids.m], focusedPaneId: ids.b });
+
+    // @step 広く表示のままアプリを終了し、もう一度起動する
+    await closeApp(launched);
+    launched = null;
+    launched = await start('vk-terminals-e2e-browser-wide-holder-restart-', { entry: holderLauncherPath, env });
+    ({ win } = launched);
+    // @check ペインが広く表示前の並びで復元され、広く表示は引き継がれない
+    await expect.poll(() => win.evaluate(() => tree && { order: tree.order, stashOrder: tree.stashOrder }))
+      .toEqual({ order: [ids.a, ids.b, ids.c], stashOrder: [ids.m] });
+    expect(await win.evaluate(() => focusedPaneId)).toBe(ids.b);
+    expect(await win.evaluate(() => internalBrowserWide)).toBeNull();
+    await expect(win.locator('#root')).not.toHaveClass(/\binternal-browser-open\b/);
+  } finally {
+    if (launched) await closeApp(launched);
+    // 保持役の tmux サーバーを止め、置き場を片付ける。
+    spawnSync(tmux, ['-S', path.join(runDir, 'tmux.sock'), 'kill-server'], { stdio: 'ignore' });
+    fs.rmSync(runDir, { recursive: true, force: true });
   }
 });

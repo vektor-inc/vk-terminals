@@ -77,7 +77,7 @@ const { getPrBadgePresentation } = window.VKPrBadge;
 // タイトル行を前回と同じ値で作り直さないための判定（issue #614）。前回値は要素ごとに持つ。
 const taskTitleRenderTracker = window.VKTaskTitleRenderState.createTaskTitleRenderTracker();
 const { getPaneIdBadgeLabel } = window.VKPaneIdBadge;
-const { panesToStash, panesToRestore, shouldOpenSidebarForPane } = window.VKPaneFocusMode;
+const { panesToStash, panesToRestore, shouldOpenSidebarForPane, orderBeforeFocusMode } = window.VKPaneFocusMode;
 const { createWideState, planWideRestore, layoutBeforeWide, forgetWidePane } = window.VKInternalBrowserWideMode;
 const { resolveQueueIssuesListUrl } = window.VKTaskQueueLink;
 const { isPatternValid } = window.VKSettingsValidation;
@@ -272,10 +272,13 @@ function enterInternalBrowserWide() {
   if (internalBrowserWide || !internalBrowserOpen || !tree) return;
   // ペインの広く表示が使われていれば、先に解除して格納前の並びへ戻す。
   // togglePaneFocusMode はペインへフォーカスを移すため、描画と移動を伴わない形で解除する。
+  // 戻したペインは末尾に付くため、単独表示を始めたときの並びに組み直してから記録する。
   if (paneFocusMode) {
+    const { originalOrder } = paneFocusMode;
     const restoreIds = panesToRestore(paneFocusMode.stashedIds, tree.stashOrder || [], terminals);
     paneFocusMode = null;
     for (const id of restoreIds) unstashPane(id, { renderNow: false });
+    tree.order = orderBeforeFocusMode(originalOrder, tree.order);
   }
   internalBrowserWide = createWideState(tree.order, tree.colFr, tree.rowFr, focusedPaneId);
   for (const id of internalBrowserWide.originalOrder) stashPane(id, { renderNow: false });
@@ -3575,6 +3578,24 @@ function withInheritedEngine(options, paneId) {
     : options;
 }
 
+// 新しく作ったペインを配置する。新規ペインは必ずここを通し、tree.order へ直接追加しない。
+// ブラウザの広く表示中は格納しておき、解除時にグリッドへ出す（issue #613）。
+// グリッドへ置いたときは true を返す。
+function placeNewPane(paneId) {
+  if (internalBrowserWide) {
+    tree.stashOrder = Array.isArray(tree.stashOrder) ? tree.stashOrder : [];
+    tree.stashOrder.push(paneId);
+    if (terminals[paneId]) terminals[paneId].stashXtermOpen = false;
+    internalBrowserWide.stashedIds.push(paneId);
+    return false;
+  }
+  if (!Array.isArray(tree.order)) tree.order = [];
+  tree.order.push(paneId);
+  // ペイン数が変わりグリッド寸法が変化するため、手動リサイズ比率は均等にリセットする。
+  resetGridSizing();
+  return true;
+}
+
 async function openHelpGuide() {
   if (helpGuideOpening) return helpGuideOpening;
   helpGuideOpening = (async () => {
@@ -3586,9 +3607,7 @@ async function openHelpGuide() {
       try {
         await createTerminal(paneId, null, {}, result);
         terminals[paneId].apiTitle = '使い方ガイド';
-        if (!Array.isArray(tree.order)) tree.order = [];
-        tree.order.push(paneId);
-        resetGridSizing();
+        placeNewPane(paneId);
         render();
       } catch (error) {
         if (paneExists(paneId)) closePane(paneId, { force: true });
@@ -3639,25 +3658,14 @@ async function addPane(overrideCwd = null, options = {}) {
     return null;
   }
 
-  if (!Array.isArray(tree.order)) tree.order = [];
-  // ブラウザの広く表示中は、API・自動処理で増えたペインを格納しておき、解除時にグリッドへ出す。
-  if (internalBrowserWide) {
-    tree.stashOrder = Array.isArray(tree.stashOrder) ? tree.stashOrder : [];
-    tree.stashOrder.push(newPaneId);
-    if (terminals[newPaneId]) terminals[newPaneId].stashXtermOpen = false;
-    internalBrowserWide.stashedIds.push(newPaneId);
-    render();
-    return { paneId: newPaneId, termId: terminals[newPaneId]?.termId };
-  }
-  tree.order.push(newPaneId);
-  // ペイン数が変わりグリッド寸法が変化するため、手動リサイズ比率は均等にリセットする。
-  resetGridSizing();
-
+  const placedInGrid = placeNewPane(newPaneId);
   render();
-  requestAnimationFrame(() => {
-    fitAll();
-    focusPane(newPaneId);
-  });
+  if (placedInGrid) {
+    requestAnimationFrame(() => {
+      fitAll();
+      focusPane(newPaneId);
+    });
+  }
 
   // 新ペインの情報を返す（focusedPaneId の更新を待たずに確定値を返す）
   return { paneId: newPaneId, termId: terminals[newPaneId]?.termId };
@@ -4021,7 +4029,7 @@ function togglePaneFocusMode(paneId) {
   if (!tree?.order?.includes(paneId)) return;
   // 閉鎖保護ペインを除く他の可視ペインを記録して格納する。
   const stashedIds = panesToStash(tree.order, paneId, terminals);
-  paneFocusMode = { selectedId: paneId, stashedIds };
+  paneFocusMode = { selectedId: paneId, stashedIds, originalOrder: tree.order.slice() };
   for (const id of stashedIds) stashPane(id, { renderNow: false });
   render();
   setSidebarOpen(shouldOpenSidebarForPane(window.innerWidth, getSidebarWidth()), { focusFirst: false });

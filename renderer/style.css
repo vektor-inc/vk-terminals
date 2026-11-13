@@ -4056,6 +4056,8 @@ body.pane-dragging * {
    ========================================================================== */
 .internal-browser-wide .internal-browser-resizer { display: none; }
 .internal-browser-wide .internal-browser-wide-toggle { background: #21262d; }
+/* 押した状態でもホバーが分かるよう、背景を一段明るくする。 */
+.internal-browser-wide .internal-browser-wide-toggle:hover { background: #30363d; }
 .internal-browser-resizer {
   position: absolute;
   left: -5px;

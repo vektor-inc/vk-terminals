@@ -357,7 +357,7 @@ test('失敗表示は失敗 URL、操作列は確定 URL を安全な外部オ�
   assert.deepEqual(opened.slice(-2), [failed, confirmed]);
 });
 
-test('main の遷移結果を順に受け、失敗・成功・中止・ダウンロード阻止を通知する', async () => {
+test('main の遷移結果を順に受け、失敗・成功・中止・置換・ダウンロード阻止を通知する', async () => {
   const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
   const addressHandlers = source.match(/const internalBrowserAddress = internalBrowserSidebar\.querySelector\('\.internal-browser-url'\);[\s\S]*?(?=document\.getElementById\('internal-browser-toggle'\))/)?.[0];
   const stateHandler = source.match(/VKIpc\.on\('internal-browser:state', state => \{[\s\S]*?\n\}\);/)?.[0];
@@ -647,17 +647,25 @@ test('main の遷移結果を順に受け、失敗・成功・中止・ダウン
     handlers.input();
     handlers.keydown({ key: 'Enter', preventDefault() {} });
     const firstRequestId = vm.runInContext('internalBrowserActiveRequestId', context);
+    const writesBeforeSecondEnter = navigationWrites;
     address.value = 'https://example.org/second-again';
     handlers.input();
     handlers.keydown({ key: 'Enter', preventDefault() {} });
     assert.equal(vm.runInContext('internalBrowserActiveRequestId', context), firstRequestId + 1);
     assert.ok(messages.some(state => state.navigationRequestId === firstRequestId && state.navigationResult === 'superseded'));
     assert.equal(navigationStatus.textContent, 'ページを読み込み中');
+    assert.equal(navigationWrites, writesBeforeSecondEnter);
     assert.equal(messages.at(-1).navigationRequestId, firstRequestId + 1);
+    // 旧要求の置換結果が遅れて再送されても、後続要求の読み込み通知を保持する。
+    const supersededState = messages.find(state => state.navigationRequestId === firstRequestId && state.navigationResult === 'superseded');
+    handlers['internal-browser:state'](supersededState);
+    assert.equal(navigationStatus.textContent, 'ページを読み込み中');
+    assert.equal(navigationWrites, writesBeforeSecondEnter);
+    assert.equal(vm.runInContext('internalBrowserActiveRequestId', context), firstRequestId + 1);
     await contents.complete('https://example.org/second-again');
     assert.equal(navigationStatus.textContent, 'ページの読み込みが完了しました');
 
-    // 各操作は旧要求の ID で終了を通知し、専用 live status を空にする。
+    // 各操作は旧要求の ID で終了を通知し、専用 live status に置換結果を残す。
     const startPending = suffix => {
       address.value = `https://example.org/${suffix}`;
       handlers.input();
@@ -667,11 +675,11 @@ test('main の遷移結果を順に受け、失敗・成功・中止・ダウン
     };
     const assertSuperseded = requestId => {
       assert.ok(messages.some(state => state.navigationRequestId === requestId && state.navigationResult === 'superseded'));
-      assert.equal(navigationStatus.textContent, '');
+      assert.equal(navigationStatus.textContent, '別の操作で読み込みが置き換えられました');
       assert.equal(vm.runInContext('internalBrowserActiveRequestId', context), null);
       const writesAfterSupersede = navigationWrites;
       browser.publish();
-      assert.equal(navigationStatus.textContent, '');
+      assert.equal(navigationStatus.textContent, '別の操作で読み込みが置き換えられました');
       assert.equal(navigationWrites, writesAfterSupersede);
     };
     for (const action of ['back', 'forward', 'reload']) {
@@ -691,16 +699,21 @@ test('main の遷移結果を順に受け、失敗・成功・中止・ダウン
     assertSuperseded(requestId);
     contents.emit('did-start-navigation', {}, 'https://example.org/page-link', false, true);
     assert.equal(messages.at(-1).navigationRequestId, null);
+    assert.equal(navigationStatus.textContent, '別の操作で読み込みが置き換えられました');
 
     requestId = startPending('pending-window-open');
     contents.openHandler({ url: 'https://example.org/from-page' });
     assertSuperseded(requestId);
     assert.equal(messages.at(-1).navigationRequestId, null);
+    await contents.complete('https://example.org/from-page');
+    assert.equal(navigationStatus.textContent, '別の操作で読み込みが置き換えられました');
 
     requestId = startPending('pending-url-only');
     browser.navigate('https://example.org/url-only');
     assertSuperseded(requestId);
     assert.equal(messages.at(-1).navigationRequestId, null);
+    await contents.complete('https://example.org/url-only');
+    assert.equal(navigationStatus.textContent, '別の操作で読み込みが置き換えられました');
 
     // redirect の開始イベントだけでは同一 Enter 要求を置き換えない。
     requestId = startPending('redirect-source');
@@ -723,6 +736,7 @@ test('main の遷移結果を順に受け、失敗・成功・中止・ダウン
     for (const [name, staleState] of [
       ['failed', { failedUrl: 'https://old.example/failed', navigationResult: 'failed' }],
       ['completed', { url: 'https://old.example/done', navigationResult: 'completed' }],
+      ['superseded', { url: 'https://old.example/replaced', navigationResult: 'superseded' }],
       ['pending', { pendingUrl: 'https://old.example/pending', navigationResult: null }],
     ]) {
       const nextUrl = `https://new.example/${name}`;

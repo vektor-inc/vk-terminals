@@ -840,6 +840,37 @@ test('カスタム文書復帰直後は遅れているactive indexより実文�
   assert.equal(moved, true);
 });
 
+test('案内基底へ戻った後は遅れたactive indexの案内内履歴を飛ばして前文書へ戻る', async () => {
+  const { HELP_URL } = require('../utils/internalBrowserPolicy');
+  const { browser, contents, states } = setup();
+  const previous = 'https://example.com/previous';
+  await contents.complete(previous);
+  contents.loadURL = () => Promise.resolve();
+  const guide = browser.openHelp();
+  contents.setDocumentUrl(HELP_URL);
+  contents.emit('did-finish-load');
+  await guide;
+  contents.navigationHistory.getAllEntries = () => [
+    { url: previous },
+    { url: HELP_URL },
+    { url: `${HELP_URL}#section` },
+    { url: 'https://example.com/from-guide' },
+  ];
+  contents.navigationHistory.getActiveIndex = () => 3;
+  contents.navigationHistory.canGoBack = () => true;
+  contents.navigationHistory.goBack = () => assert.fail('stale adjacent guide entry must be skipped');
+  contents.navigationHistory.goToIndex = index => {
+    assert.equal(index, 0);
+    contents.setDocumentUrl(previous);
+    contents.emit('did-stop-loading');
+  };
+
+  browser.publish();
+  assert.equal(states.at(-1).canGoBack, true);
+  assert.equal(browser.action('back'), true);
+  assert.equal(states.at(-1).url, previous);
+});
+
 test('案内前の文書がElectron履歴に無い場合も戻る・進むで復元する', async () => {
   const { HELP_URL } = require('../utils/internalBrowserPolicy');
   const { browser, contents, states } = setup();
@@ -891,9 +922,9 @@ test('案内のsynthetic forwardはページ起点の通常遷移で消える', 
   assert.equal(browser.action('forward'), false);
 });
 
-test('案内のsynthetic forwardはBack完了後の同一URL履歴更新でも消える', async () => {
+test('案内のsynthetic forwardはBack完了後の同一URL履歴更新でも消えて通知される', async () => {
   const { HELP_URL } = require('../utils/internalBrowserPolicy');
-  const { browser, contents } = setup();
+  const { browser, contents, states } = setup();
   const previous = 'https://example.com/previous';
   await contents.complete(previous);
   contents.loadURL = () => Promise.resolve();
@@ -907,7 +938,10 @@ test('案内のsynthetic forwardはBack完了後の同一URL履歴更新でも�
   await flushBrowserLoads();
   await contents.complete(previous);
 
+  const stateCount = states.length;
   contents.emit('did-navigate-in-page', {}, previous, true);
+  assert.equal(states.length, stateCount + 1);
+  assert.equal(states.at(-1).canGoForward, false);
   assert.equal(browser.action('forward'), false);
 });
 

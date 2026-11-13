@@ -429,12 +429,17 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
     if (contents.isDestroyed?.()) return;
     const load = activeLoad;
     const url = contents.getURL();
-    if (helpForwardUrl && !(load?.syntheticHelpBack && !load.done)) helpForwardUrl = '';
+    const clearedHelpForward = !!helpForwardUrl && !(load?.syntheticHelpBack && !load.done);
+    if (clearedHelpForward) helpForwardUrl = '';
     if (load?.help) {
       if (isHelpUrl(url) && load.done) { currentUrl = url; publish(); }
+      else if (clearedHelpForward) publish();
       return;
     }
-    if (!debuggerAvailable || !load || !isNavigationUrl(url)) return;
+    if (!debuggerAvailable || !load || !isNavigationUrl(url)) {
+      if (clearedHelpForward) publish();
+      return;
+    }
     if (load.native && !load.done && (!load.loaderId || load.sameDocument)) {
       // loader を相関できない履歴補完だけは開始時の対象 URL と照合する。
       // sameDocument の loader が一致する場合は replaceState 後の実 URL を採用する。
@@ -445,7 +450,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
       // 両イベントの二重配送は、確定済み URL との比較で抑止する。
       beginLoad(url, true, undefined, { native: true });
       activeLoad.finish(null, url);
-    }
+    } else if (clearedHelpForward) publish();
   }
 
   function beginLoad(url, fromPage, requestId, {
@@ -623,7 +628,12 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
       const referenceUrl = isNavigationUrl(documentUrl) ? documentUrl : activeUrl;
       let index = activeIndex + offset;
       if (!entries[index]) return undefined;
-      while (entries[index]?.url === referenceUrl) index += offset;
+      // Electron may leave the active index several same-document guide entries
+      // ahead of the document after repeated back operations. At the guide base,
+      // skip those stale hash entries so Back reaches the page that opened it.
+      const skipGuideEntries = referenceUrl === HELP_URL && canUseHelpReturn();
+      while (entries[index] && (entries[index].url === referenceUrl
+        || (skipGuideEntries && isHelpUrl(entries[index].url)))) index += offset;
       const url = entries[index]?.url;
       return isNavigationUrl(url) ? { url, index, adjacentIndex: activeIndex + offset } : undefined;
     } catch (_error) {

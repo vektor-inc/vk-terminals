@@ -41,8 +41,8 @@ function nonEmptyString(value) {
 /**
  * 組み込み用の入口に渡されたオプションを検証して正規化する。
  * 不明なキーは捨てる。型が違うものは黙って無視せず例外にする（呼び出し側の設定ミスを早く知らせるため）。
- * @param {object} [raw] { appTitle, resourceRoot, selfUpdate, settingsDescriptorPath, singleInstance, getSetupStatus, setupPane, help, getHelpStatus }
- * @returns {{ appTitle: string|null, resourceRoot: string|null, selfUpdate: boolean|null, settingsDescriptorPath: string|null, singleInstance: boolean, help: object|null, getHelpStatus: Function|null, getSetupStatus: Function|null, setupPane: { cwd: string, prompt: string }|null }}
+ * @param {object} [raw] { appTitle, resourceRoot, selfUpdate, settingsDescriptorPath, singleInstance, getSetupStatus, setupPane, setupShell, help, getHelpStatus }
+ * @returns {{ appTitle: string|null, resourceRoot: string|null, selfUpdate: boolean|null, settingsDescriptorPath: string|null, singleInstance: boolean, help: object|null, getHelpStatus: Function|null, getSetupStatus: Function|null, setupPane: { cwd: string, prompt: string }|null, setupShell: { command: string, cwd: string|null }|null }}
  */
 function normalizeEmbeddedOptions(raw) {
   const options = raw == null ? {} : raw;
@@ -117,6 +117,16 @@ function normalizeEmbeddedOptions(raw) {
   if ((options.getSetupStatus != null) !== (setupPane !== null)) {
     throw new TypeError('embedded options: getSetupStatus and setupPane must be given together');
   }
+  let setupShell = null;
+  if (options.setupShell !== undefined) {
+    const shell = options.setupShell;
+    if (!shell || typeof shell !== 'object' || Array.isArray(shell)) throw new TypeError('embedded options: setupShell must be an object');
+    if (typeof shell.command !== 'string' || !shell.command.trim() || shell.command.length > 1000 || /[\x00-\x08\x0a-\x1f\x7f]/.test(shell.command)) {
+      throw new TypeError('embedded options: setupShell.command must be a non-empty single-line command of at most 1000 characters');
+    }
+    if (shell.cwd !== undefined && !isExistingAbsoluteDirectory(shell.cwd)) throw new TypeError('embedded options: setupShell.cwd must be an existing absolute directory');
+    setupShell = { command: shell.command, cwd: shell.cwd || null };
+  }
 
   const { normalizeHelpFeature } = require('./helpFeature');
   const help = normalizeHelpFeature(options.help, options.getHelpStatus);
@@ -132,6 +142,7 @@ function normalizeEmbeddedOptions(raw) {
     singleInstance: options.singleInstance !== false,
     getSetupStatus: options.getSetupStatus != null ? options.getSetupStatus : null,
     setupPane,
+    setupShell,
     paneHolder: options.paneHolder || null,
     tmuxPath: options.tmuxPath || null,
     verifyPaneHolder: options.verifyPaneHolder || null,

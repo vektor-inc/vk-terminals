@@ -93,6 +93,7 @@ const {
   runGitHubReachabilityGate,
 } = require('./utils/githubReachability');
 const { scheduleLaunchCommand } = require('./utils/delayedLaunch');
+const { createSetupShellInput } = require('./utils/setupShellInput');
 const { observePowerShellReady } = require('./utils/powerShellReady');
 const shellStartupReadiness = new WeakMap();
 const {
@@ -408,6 +409,7 @@ const { USER_CONFIG_MAX_BYTES, normalizeLiveConfig, changedLiveKeys, normalizeRe
 const { createRestartApplication } = require('./utils/restartApplication');
 // 組み込み用の入口（embedded.js）から起動されたときだけ値が入る。electron . では null。
 const EMBEDDED_OPTIONS = getEmbeddedOptions();
+const SETUP_SHELL = EMBEDDED_OPTIONS?.setupShell || null;
 const PANE_HOLDER = resolvePaneHolder({ argv: process.argv, embedded: EMBEDDED_OPTIONS, warn: message => console.warn(`[vk-terminals] ${message}`) });
 const HOLDER_TMUX = EMBEDDED_OPTIONS?.tmuxPath || 'tmux';
 const HOLDER_ENV = { ...process.env, ...EMBEDDED_OPTIONS?.tmuxEnv };
@@ -445,7 +447,7 @@ const GUIDE_LAUNCH = Symbol('guide launch');
 
 // セットアップ状況の一覧を出すための部品（issue #456）。組み込みのオプションに無ければ null で、
 // その場合は IPC も画面の要素も作らず、従来と同じ画面のままにする（electron . ・zip 版）。
-const SETUP_FEATURE = resolveSetupFeature({ embedded: EMBEDDED_OPTIONS });
+const SETUP_FEATURE = SETUP_SHELL ? null : resolveSetupFeature({ embedded: EMBEDDED_OPTIONS });
 // 確認は上限 20 秒・同時 1 本。startupSetupCheck は起動時に始めた確認（最初のペインの判断で待つ）。
 const SETUP_INITIAL_WAIT_MS = 5000;
 const setupStatusChecker = SETUP_FEATURE
@@ -1802,7 +1804,7 @@ app.whenReady().then(async () => {
   await applyLoginShellPath();
   appendUserLocalBin();
   // セットアップ状況の確認は、ウィンドウの用意と並行して先に始めておく（最初のペインの判断で待つため）。
-  if (setupStatusChecker) startupSetupCheck = setupStatusChecker.check();
+  if (setupStatusChecker && !SETUP_SHELL) startupSetupCheck = setupStatusChecker.check();
   createWindow();
   startWidgetWatcher();
   // issue #546: 更新確認の通信中も起動直後から HTTP API を受け付ける。
@@ -1934,6 +1936,7 @@ ipcMain.handle('app:get-config', () => {
     // 一覧を出す部品があるときだけキーを足す（無いときは従来と同じ応答のまま）。
     ...(HELP_FEATURE ? { helpEntryEnabled: true } : {}),
     ...(SETUP_FEATURE ? { setupPanelEnabled: true } : {}),
+    ...(SETUP_SHELL ? { setupShellStartup: true } : {}),
   };
 });
 
@@ -2598,6 +2601,7 @@ function hasRecentHolderMetadata(socket) {
 let restoreAttempted = false;
 let restoredPaneCount = 0;
 ipcMain.handle('terminal:restore', async () => {
+  if (EMBEDDED_OPTIONS?.setupShell) return { panes: [], order: [], stashOrder: [], missing: 0 };
   if (restoreAttempted) return { panes: [], order: [], stashOrder: [], missing: 0 };
   restoreAttempted = true;
   if (PANE_HOLDER !== 'tmux' || tmuxUnavailable) {
@@ -2724,6 +2728,8 @@ function createTerminalPane(cwd, options = {}, guide = null) {
   if (setupLaunch && !SETUP_FEATURE) {
     throw new Error('Setup pane is not available.');
   }
+  const setupShellLaunch = SETUP_SHELL && options.setupShell === true;
+  if (options.setupShell !== undefined && !setupShellLaunch) throw new Error('Setup shell is not available.');
   let userInfo = null;
   if (process.platform !== 'darwin' && process.platform !== 'win32') {
     try {
@@ -2747,7 +2753,7 @@ function createTerminalPane(cwd, options = {}, guide = null) {
     },
   });
   const id = String(nextId++);
-  let resolvedCwd = guideLaunch ? HELP_FEATURE.cwd : setupLaunch
+  let resolvedCwd = setupShellLaunch ? (SETUP_SHELL.cwd || process.env.HOME || os.tmpdir()) : guideLaunch ? HELP_FEATURE.cwd : setupLaunch
     ? SETUP_FEATURE.setupPane.cwd
     : (cwd || process.env.HOME || process.env.USERPROFILE || os.tmpdir());
   let cwdUsable = false;
@@ -2759,13 +2765,13 @@ function createTerminalPane(cwd, options = {}, guide = null) {
   if (!cwdUsable) {
     // セットアップ・ガイド用ペインは、作業フォルダが消えていてもホームへ切り替えず失敗として返す
     // （別のフォルダで AI を起動して、意図しない場所で作業が始まらないようにするため）。
-    if (setupLaunch || guideLaunch) throw new Error('Pane directory does not exist.');
+    if (setupLaunch || setupShellLaunch || guideLaunch) throw new Error('Pane directory does not exist.');
     resolvedCwd = process.env.HOME || process.env.USERPROFILE || os.tmpdir();
   }
 
   // `options.noClaude` が明示指定されていればそれを優先、未指定なら CLI フラグの値を継承。
   // `noClaude` が true の場合、claude を自動起動せず素のシェルとして開く。
-  const noClaude = guideLaunch ? false : typeof options.noClaude === 'boolean' ? options.noClaude : globalPlainMode;
+  const noClaude = setupShellLaunch ? true : guideLaunch ? false : typeof options.noClaude === 'boolean' ? options.noClaude : globalPlainMode;
 
   // `options.engine` の再検証（issue #367）。HTTP 受け口（/api/new-pane）でも検証済みだが、
   // ここでも isValidEngine が再検証する（model と同じ二重化構造・#310 の前例）。
@@ -2820,6 +2826,7 @@ function createTerminalPane(cwd, options = {}, guide = null) {
 
   let ptyProcess;
   try {
+    if (!setupShellLaunch) {
     if (holderPaneCreationBlocked) throw holderPaneCreationBlockedError();
     if (tmuxHolder && !tmuxHolder.active) tmuxHolder = null;
     if (PANE_HOLDER === 'tmux' && !tmuxHolder && !tmuxUnavailable) {
@@ -2839,7 +2846,8 @@ function createTerminalPane(cwd, options = {}, guide = null) {
         if (!tmuxHolder.active) tmuxHolder = null;
       }
     }
-    if (!ptyProcess) ptyProcess = pty.spawn(shell, [], {
+    }
+    if (!ptyProcess) ptyProcess = pty.spawn(shell, setupShellLaunch && process.platform !== 'win32' ? ['-l'] : [], {
       name: 'xterm-256color',
       cols: 80,
       rows: 24,
@@ -2867,7 +2875,7 @@ function createTerminalPane(cwd, options = {}, guide = null) {
 
   // initialCommand は最初の 1 ターミナルのみ送信
   // セットアップ用ペインは「最初のターミナル」に数えない（次の通常のペインに initialCommand を送るため）。
-  const isFirstTerminal = !firstTerminalCreated && !setupLaunch && !guideLaunch;
+  const isFirstTerminal = !firstTerminalCreated && !setupLaunch && !setupShellLaunch && !guideLaunch;
   if (isFirstTerminal) firstTerminalCreated = true;
 
   let promptWatcher = null;
@@ -3082,10 +3090,18 @@ function createTerminalPane(cwd, options = {}, guide = null) {
     paneCreationTrustWatchers.set(id, () => { trustGate.markTrustHandled(); });
   }
 
+  let setupInput = null;
   const initialLaunchToken = registerTerminalProcess(id, ptyProcess, shell, { hasAgent: !noClaude, generation: 1, getPromptWatcher: () => promptWatcher, stopPromptWatcher: () => {
     if (promptWatcherTimeoutId) clearTimeout(promptWatcherTimeoutId);
     promptWatcherTimeoutId = null;
-  }, shellStartup });
+  }, shellStartup: { onInput(data) { shellStartup?.onInput(data); setupInput?.onInput(data); } } });
+  if (setupShellLaunch) {
+    setupInput = createSetupShellInput(SETUP_SHELL.command, (data) => {
+      if (ptys.get(id) === ptyProcess) ptyProcess.write(data);
+    });
+    const outputSubscription = ptyProcess.onData((data) => setupInput.onData(data));
+    ptyProcess.onExit(() => { setupInput.dispose(); outputSubscription.dispose(); });
+  }
   if (!noClaude && resolvedEngine === 'claude' && !backgroundWork.has(id)) backgroundWork.begin(id, 1);
   bindHolderBackgroundWork(id, ptyProcess, agentGenerations.get(id));
 
@@ -3280,6 +3296,7 @@ let additionalPanesCreated = false;
 ipcMain.on('terminal:renderer-ready', async () => {
   pushMenuUpdate();
   pushWidgetUpdate();
+  if (SETUP_SHELL) return;
   if (restoredPaneCount) { additionalPanesCreated = true; return; }
   if (additionalPanesCreated) return; // closePane で最後のペインを閉じて再 initApp された場合は再生成しない
   additionalPanesCreated = true;

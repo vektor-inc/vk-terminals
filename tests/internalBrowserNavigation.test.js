@@ -979,6 +979,30 @@ test('履歴復帰の遅延will-navigateが案内を開いた元ページを上�
   assert.equal(states.at(-1).url, previous);
 });
 
+test('管理URLが遅れていても案内を開く瞬間の実文書を戻り先にする', async () => {
+  const { HELP_URL } = require('../utils/internalBrowserPolicy');
+  const { browser, contents, states } = setup();
+  const stale = 'https://example.com/stale';
+  const previous = 'https://example.com/previous';
+  await contents.complete(stale);
+  contents.setDocumentUrl(previous);
+  useLoadURLForHelpReturn(contents);
+
+  const guide = browser.openHelp();
+  contents.setDocumentUrl(HELP_URL);
+  contents.emit('did-finish-load');
+  await guide;
+  contents.navigationHistory.getAllEntries = () => [{ url: previous }, { url: HELP_URL }];
+  contents.navigationHistory.goToIndex = index => {
+    assert.equal(index, 0);
+    contents.setDocumentUrl(previous);
+    contents.emit('did-navigate', {}, previous);
+  };
+
+  assert.equal(browser.action('back'), true);
+  assert.equal(states.at(-1).url, previous);
+});
+
 test('案内前の文書がElectron履歴に無い場合も戻る・進むで復元する', async () => {
   const { HELP_URL } = require('../utils/internalBrowserPolicy');
   const { browser, contents, states } = setup();

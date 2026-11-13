@@ -387,7 +387,11 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
     if (!isHelpUrl(url)) return false;
     // 明示的に案内を開いたときだけ戻り先を更新する。履歴復帰で遅れて届く
     // will-navigate が loadHelp() を再実行しても、元のページを上書きしない。
-    if (captureReturn && isNavigationUrl(currentUrl) && !isHelpUrl(currentUrl)) helpReturnUrl = currentUrl;
+    if (captureReturn) {
+      const documentUrl = view?.webContents.getURL?.();
+      const returnUrl = isNavigationUrl(documentUrl) && !isHelpUrl(documentUrl) ? documentUrl : currentUrl;
+      if (isNavigationUrl(returnUrl) && !isHelpUrl(returnUrl)) helpReturnUrl = returnUrl;
+    }
     helpForwardUrl = '';
     ensureView();
     const load = beginLoad(url, false, undefined, { help: true });

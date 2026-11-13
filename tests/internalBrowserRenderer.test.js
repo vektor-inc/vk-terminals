@@ -362,6 +362,8 @@ test('main の遷移結果を順に受け、失敗・成功・中止・ダウン
   const stateHandler = source.match(/VKIpc\.on\('internal-browser:state', state => \{[\s\S]*?\n\}\);/)?.[0];
   assert.ok(addressHandlers);
   assert.ok(stateHandler);
+  assert.match(source, /class="internal-browser-error" role="status"/);
+  assert.match(source, /class="internal-browser-navigation-status" role="status"/);
 
   for (const [confirmedUrl, failureCode] of [
     ['', -105], ['https://example.com/confirmed', -105],
@@ -373,7 +375,9 @@ test('main の遷移結果を順に受け、失敗・成功・中止・ダウン
     const addressError = { id: 'internal-browser-address-error', hidden: true, textContent: '' };
     const address = { value: '', addEventListener(type, handler) { handlers[type] = handler; },
       setAttribute() {}, removeAttribute() {} };
-    const message = { textContent: '' };
+    let errorWrites = 0;
+    const message = { value: '', get textContent() { return this.value; },
+      set textContent(value) { this.value = value; errorWrites++; } };
     const failedExternal = { getAttribute() {}, setAttribute() {} };
     const errorView = { hidden: true, querySelector: selector => selector === '[data-action="external"]' ? failedExternal : message, querySelectorAll: () => [] };
     const notice = { hidden: true, dataset: {}, replaceChildren() {}, contains: () => false };
@@ -451,10 +455,17 @@ test('main の遷移結果を順に受け、失敗・成功・中止・ダウン
     assert.equal(messages.at(-1).navigationResult, null);
     contents.emit('did-fail-load', {}, failureCode, 'load failed', failedUrl, true);
     assert.equal(messages.at(-1).navigationResult, 'failed');
-    assert.equal(navigationStatus.textContent, 'ページの読み込みに失敗しました');
+    assert.equal(navigationStatus.textContent, '');
     assert.equal(navigationWrites, 2);
+    assert.equal(errorView.hidden, false);
+    assert.equal(message.textContent, 'ページを表示できませんでした（unreachable.example）');
+    assert.equal(errorWrites, 1);
+    browser.publish();
+    assert.equal(navigationWrites, 2);
+    assert.equal(errorWrites, 1);
     contents.emit('did-stop-loading');
     assert.equal(navigationWrites, 2);
+    assert.equal(errorWrites, 1);
     assert.equal(messages.at(-1).pendingUrl, '');
     assert.equal(messages.at(-1).failedUrl, failedUrl);
     assert.equal(messages.at(-1).url, confirmedUrl);
@@ -507,6 +518,12 @@ test('main の遷移結果を順に受け、失敗・成功・中止・ダウン
     handlers.input();
     handlers.keydown({ key: 'Enter', preventDefault() {} });
     assert.equal(messages.at(-1).navigationResult, null);
+    // 無関係なダウンロードは pending URL と読み込み中の案内を残す。
+    browserSession.emit('will-download', { preventDefault() {} },
+      { getURLChain: () => ['https://example.org/other'] });
+    assert.equal(messages.at(-1).pendingUrl, 'https://example.org/download');
+    assert.equal(messages.at(-1).navigationResult, null);
+    assert.equal(navigationStatus.textContent, 'ページを読み込み中');
     let blockedToast = 0;
     browserSession.emit('will-download', { preventDefault() { blockedToast++; } },
       { getURLChain: () => ['https://example.org/download'] });
@@ -526,5 +543,19 @@ test('main の遷移結果を順に受け、失敗・成功・中止・ダウン
     contents.emit('did-navigate-in-page', {}, 'https://example.org/retry#part', true);
     assert.equal(messages.at(-1).navigationResult, 'completed');
     assert.equal(navigationWrites, 8);
+    contents.emit('did-fail-load', {}, -105, 'reload failed', 'https://example.org/retry#part', true);
+    assert.equal(errorView.hidden, false);
+    assert.equal(message.textContent, 'ページを表示できませんでした（example.org）');
+    assert.equal(navigationWrites, 8);
+    // Enter で始めたページ内遷移も、pending を残さず完了する。
+    address.value = 'https://example.org/retry#next';
+    handlers.input();
+    handlers.keydown({ key: 'Enter', preventDefault() {} });
+    assert.equal(messages.at(-1).pendingUrl, 'https://example.org/retry#next');
+    contents.emit('did-navigate-in-page', {}, 'https://example.org/retry#next', true);
+    assert.equal(messages.at(-1).pendingUrl, '');
+    assert.equal(messages.at(-1).navigationResult, 'completed');
+    assert.equal(navigationStatus.textContent, 'ページの読み込みが完了しました');
+    assert.equal(navigationWrites, 10);
   }
 });

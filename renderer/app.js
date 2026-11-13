@@ -476,7 +476,8 @@ VKIpc.on('internal-browser:state', state => {
   // main が確定した結果だけを通知する。pendingUrl の消去は中止でも起こる。
   const navigationMessages = {
     completed: 'ページの読み込みが完了しました',
-    failed: 'ページの読み込みに失敗しました',
+    // 失敗は既存の error role=status が具体的な対象とともに通知する。
+    failed: '',
     cancelled: 'ページの移動を中止しました',
     'download-blocked': 'ダウンロードは外部ブラウザで行ってください',
   };

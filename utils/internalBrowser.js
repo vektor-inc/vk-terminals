@@ -29,10 +29,13 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
       const originalUrl = item.getURLChain?.()[0] || item.getURL?.();
       matchesPendingUrl = isBrowserUrl(pendingUrl) && new URL(originalUrl).href === new URL(pendingUrl).href;
     } catch {}
-    downloadUrl = matchesPendingUrl ? pendingUrl : '';
-    pendingUrl = '';
-    navigationResult = 'download-blocked';
-    publish();
+    // 別のダウンロードは進行中の Enter 遷移を終わらせない。
+    if (matchesPendingUrl) {
+      downloadUrl = pendingUrl;
+      pendingUrl = '';
+      navigationResult = 'download-blocked';
+      publish();
+    }
     if (!win.isDestroyed()) win.webContents.send('internal-browser:download-blocked');
   };
   browserSession.on('will-download', cancelDownload);

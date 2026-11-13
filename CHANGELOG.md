@@ -1,5 +1,7 @@
 # Changelog
 
+## 1.102.0
+
 - [ 機能追加 ] アプリ内ブラウザのアドレス欄から URL 入力と Google 検索でページを開けるように（[#600](https://github.com/vektor-inc/vk-terminals/issues/600)）
 - [ 仕様変更 ] アプリ内ブラウザの URL 表示ボタンによるコピー操作を廃止（[#600](https://github.com/vektor-inc/vk-terminals/issues/600)）
 - [ 機能追加 ] 起動時に最初のペインを開く設定を追加（[#605](https://github.com/vektor-inc/vk-terminals/issues/605)）

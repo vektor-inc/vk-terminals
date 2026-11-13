@@ -4,20 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { PARTITION, HELP_URL, isHelpUrl, clampBrowserWidth, validateBrowserBounds, isBrowserUrl, isNavigationUrl } = require('../utils/internalBrowserPolicy');
 const { createInternalBrowser } = require('../utils/internalBrowser');
-const { browserAvailableWidth, shouldFoldSetupPanel, browserWidthMax, shouldWrapToastPhrase } = require('../utils/internalBrowserLayout');
-const { shouldSeparateSidebars, MIN_TERMINAL_WIDTH } = require('../utils/internalBrowserLayout');
-
-test('狭幅では左右を分離し、ブラウザの保存幅によらず中央320pxを残す', () => {
-  assert.equal(shouldSeparateSidebars(600, 300), true);
-  assert.equal(shouldSeparateSidebars(979, 300), true);
-  assert.equal(shouldSeparateSidebars(980, 300), false);
-  assert.equal(shouldSeparateSidebars(1280, 330), false);
-  for (const preferred of [NaN, 360, 720]) {
-    const browser = clampBrowserWidth(preferred, 600, 1, 600, MIN_TERMINAL_WIDTH);
-    assert.equal(browser, 280);
-    assert.equal(600 - browser, 320);
-  }
-});
+const { browserAvailableWidth, shouldFoldSetupPanel, browserWidthMax, shouldWrapToastPhrase, shouldSeparateSidebars, MIN_TERMINAL_WIDTH } = require('../utils/internalBrowserLayout');
 
 test('案内のハッシュを外部 URL に引き継ぎ、読み込み失敗は拒否する', async () => {
   const { EventEmitter } = require('node:events');
@@ -231,7 +218,7 @@ test('ウィンドウ全体からトースト用の 96px を残す', () => {
   assert.equal(clampBrowserWidth(750, 370, 1, 450), 354);
   assert.equal(browserWidthMax(455, 1, 455), 359);
   assert.equal(browserWidthMax(456, 1, 456), 360);
-  assert.equal(browserWidthMax(360, 1, 600, 12), 348);
+  assert.equal(browserWidthMax(360, 1, 600, MIN_TERMINAL_WIDTH), 40);
 });
 
 test('トーストを置ける幅が 200px 未満のときだけ語句を折り返す', () => {
@@ -253,26 +240,52 @@ test('パネルの最小幅とペイン幅を一度だけ確保する', () => {
   assert.equal(shouldFoldSetupPanel(1920, 0, 320, 240, 1, true), false);
   assert.equal(shouldFoldSetupPanel(999, 0, 320, 240, 1, false), true);
   assert.equal(shouldFoldSetupPanel(1000, 0, 320, 240, 1, false), false);
-  assert.equal(clampBrowserWidth(NaN, browserAvailableWidth(1000, 330), 1, 1000, 12), 360);
-  assert.equal(clampBrowserWidth(NaN, browserAvailableWidth(600, 0), 1, 600, 12), 360);
-  assert.equal(clampBrowserWidth(NaN, browserAvailableWidth(600, 330), 1, 600, 12), 258);
-  assert.equal(clampBrowserWidth(NaN, browserAvailableWidth(1400, 0), 1, 1400, 12), 630);
-  assert.equal(browserWidthMax(browserAvailableWidth(1400, 0), 1, 1400, 12), 1080);
 });
 
-test('ブラウザの開閉順と帯への切替後も同じ配置・幅に収束する', () => {
-  const layout = (rootWidth, sidebarWidth, browserOpen, hasPanel, columns = 1) => {
-    const fold = hasPanel && shouldFoldSetupPanel(rootWidth, sidebarWidth, 320, 240, columns, browserOpen);
-    const available = browserAvailableWidth(rootWidth, sidebarWidth, fold || !hasPanel ? [] : [240]);
-    return { fold, width: clampBrowserWidth(NaN, available, columns, rootWidth, fold ? 12 : 320) };
+test('左右の排他処理後にセットアップの配置とブラウザ幅を決め、中央320pxを残す', () => {
+  // app.js と同じ順序で、左右排他 → 帯判定 → 横並び幅の控除 → 表示幅を計算する。
+  // 左を手動で開いたときの右の閉鎖・保存幅の維持は renderer テストでも検証する。
+  const layout = ({ root, left = 300, browserOpen = true, panel = true, overlay = false, columns = 1, preferred = NaN }) => {
+    const sidebarWidth = browserOpen && shouldSeparateSidebars(root, left) ? 0 : left;
+    const fold = panel && shouldFoldSetupPanel(root, sidebarWidth, MIN_TERMINAL_WIDTH, 240, columns, browserOpen);
+    const mode = !panel ? 'none' : fold ? (overlay ? 'overlay' : 'band') : 'side';
+    const available = browserAvailableWidth(root, sidebarWidth, mode === 'side' ? [240] : []);
+    const width = browserOpen ? clampBrowserWidth(preferred, available, columns, root, MIN_TERMINAL_WIDTH) : 0;
+    return { sidebarWidth, mode, width, terminalWidth: available - width };
   };
-  assert.deepEqual(layout(1000, 330, true, true), { fold: true, width: 360 });
-  assert.deepEqual(layout(1000, 330, true, true), layout(1000, 330, true, true));
-  assert.deepEqual(layout(600, 330, true, true), { fold: true, width: 258 });
-  assert.deepEqual(layout(1400, 0, true, true), { fold: false, width: 522 });
-  assert.equal(layout(1400, 0, false, true).fold, false);
-  assert.equal(layout(999, 0, false, true).fold, true);
-  assert.deepEqual(layout(1400, 0, true, false), { fold: false, width: 630 });
+  const cases = [
+    // 旧モデルの「左330pxとブラウザ258pxの併存」にはならない。
+    [{ root: 600, left: 330 }, { sidebarWidth: 0, mode: 'band', width: 280, terminalWidth: 320 }],
+    [{ root: 600, overlay: true }, { sidebarWidth: 0, mode: 'overlay', width: 280, terminalWidth: 320 }],
+    [{ root: 600, panel: false }, { sidebarWidth: 0, mode: 'none', width: 280, terminalWidth: 320 }],
+    // 左300pxでは980pxが左右併存の境界。パネルの帯判定とは一致しない。
+    [{ root: 979 }, { sidebarWidth: 0, mode: 'side', width: 419, terminalWidth: 320 }],
+    [{ root: 980 }, { sidebarWidth: 300, mode: 'band', width: 360, terminalWidth: 320 }],
+    [{ root: 1000, left: 330 }, { sidebarWidth: 0, mode: 'side', width: 440, terminalWidth: 320 }],
+    // 左300px・1列のパネル横並び境界は1220px、2列なら1444px。
+    [{ root: 1219 }, { sidebarWidth: 300, mode: 'band', width: 480, terminalWidth: 439 }],
+    [{ root: 1220 }, { sidebarWidth: 300, mode: 'side', width: 360, terminalWidth: 320 }],
+    [{ root: 1443, columns: 2 }, { sidebarWidth: 300, mode: 'band', width: 514, terminalWidth: 629 }],
+    [{ root: 1444, columns: 2 }, { sidebarWidth: 300, mode: 'side', width: 360, terminalWidth: 544 }],
+    [{ root: 1400, left: 0 }, { sidebarWidth: 0, mode: 'side', width: 522, terminalWidth: 638 }],
+    [{ root: 1400, left: 0, panel: false }, { sidebarWidth: 0, mode: 'none', width: 630, terminalWidth: 770 }],
+    // ブラウザを閉じると左右排他を行わず、root幅1000pxで帯を判定する。
+    [{ root: 999, browserOpen: false }, { sidebarWidth: 300, mode: 'band', width: 0, terminalWidth: 699 }],
+    [{ root: 999, browserOpen: false, overlay: true }, { sidebarWidth: 300, mode: 'overlay', width: 0, terminalWidth: 699 }],
+    [{ root: 1000, browserOpen: false }, { sidebarWidth: 300, mode: 'side', width: 0, terminalWidth: 460 }],
+    [{ root: 1000, browserOpen: false, panel: false }, { sidebarWidth: 300, mode: 'none', width: 0, terminalWidth: 700 }],
+  ];
+  for (const [input, expected] of cases) {
+    const actual = layout(input);
+    assert.deepEqual(actual, expected, JSON.stringify(input));
+    assert.ok(actual.terminalWidth >= MIN_TERMINAL_WIDTH, JSON.stringify(input));
+  }
+  // 保存幅を変えても排他・帯判定は変わらず、狭幅では中央の幅を優先する。
+  for (const preferred of [NaN, 360, 720]) {
+    assert.deepEqual(layout({ root: 600, preferred }), cases[0][1]);
+    assert.deepEqual(layout({ root: 980, preferred }), cases[4][1]);
+    assert.equal(layout({ root: 1220, preferred }).mode, 'side');
+  }
 });
 
 test('WebContentsView の座標は有限なウィンドウ内の矩形だけを受け入れる', () => {

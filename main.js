@@ -94,6 +94,7 @@ const {
 } = require('./utils/githubReachability');
 const { scheduleLaunchCommand } = require('./utils/delayedLaunch');
 const { createSetupShellInput } = require('./utils/setupShellInput');
+const { resolvePaneNoClaude } = require('./utils/setupShellPane');
 const { observePowerShellReady } = require('./utils/powerShellReady');
 const shellStartupReadiness = new WeakMap();
 const {
@@ -2730,7 +2731,9 @@ function createTerminalPane(cwd, options = {}, guide = null) {
     throw new Error('Setup pane is not available.');
   }
   const setupShellLaunch = SETUP_SHELL && options.setupShell === true && ptys.size === 0 && !setupShellInputUsed;
-  if (options.setupShell !== undefined && !setupShellLaunch) throw new Error('Setup shell is not available.');
+  if (options.setupShell !== undefined && !setupShellLaunch && !(SETUP_SHELL && setupShellInputUsed && options.setupShell === true)) {
+    throw new Error('Setup shell is not available.');
+  }
   let userInfo = null;
   if (process.platform !== 'darwin' && process.platform !== 'win32') {
     try {
@@ -2770,9 +2773,9 @@ function createTerminalPane(cwd, options = {}, guide = null) {
     resolvedCwd = process.env.HOME || process.env.USERPROFILE || os.tmpdir();
   }
 
-  // `options.noClaude` が明示指定されていればそれを優先、未指定なら CLI フラグの値を継承。
-  // `noClaude` が true の場合、claude を自動起動せず素のシェルとして開く。
-  const noClaude = SETUP_SHELL ? true : guideLaunch ? false : typeof options.noClaude === 'boolean' ? options.noClaude : globalPlainMode;
+  // 使い方ガイドは専用セッション中でもエージェント付きで起動する。
+  // 通常起動では明示された `options.noClaude` を優先し、未指定なら CLI フラグを継承する。
+  const noClaude = resolvePaneNoClaude({ guideLaunch, setupShell: SETUP_SHELL, noClaude: options.noClaude, globalPlainMode });
 
   // `options.engine` の再検証（issue #367）。HTTP 受け口（/api/new-pane）でも検証済みだが、
   // ここでも isValidEngine が再検証する（model と同じ二重化構造・#310 の前例）。

@@ -6,6 +6,14 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { normalizeEmbeddedOptions } = require('../utils/runtimeOptions');
 const { createSetupShellInput } = require('../utils/setupShellInput');
+const { resolvePaneNoClaude } = require('../utils/setupShellPane');
+
+test('使い方ガイドは専用シェルのセッション中もエージェント付きで開く', () => {
+  assert.equal(resolvePaneNoClaude({ guideLaunch: true, setupShell: {}, noClaude: true, globalPlainMode: true }), false);
+  assert.equal(resolvePaneNoClaude({ guideLaunch: false, setupShell: {}, noClaude: false, globalPlainMode: false }), true);
+  assert.equal(resolvePaneNoClaude({ guideLaunch: false, setupShell: null, noClaude: false, globalPlainMode: true }), false);
+  assert.equal(resolvePaneNoClaude({ guideLaunch: false, setupShell: null, noClaude: undefined, globalPlainMode: true }), true);
+});
 
 test('setupShell はコマンドと任意の作業フォルダを受け付ける', () => {
   const command = 'curl -fsSL https://claude.ai/install.sh | bash';
@@ -52,8 +60,9 @@ test('貼り付けモードの分割・解除と右側プロンプトを扱う',
   callbacks.at(-1)();
   assert.deepEqual(writes, ['\x1b[200~echo hello\x1b[201~']);
   const disabled = createSetupShellInput('echo hello', value => writes.push(value), timer);
+  const timerCount = callbacks.length;
   disabled.onData('\x1b[?2004h\x1b[?2004l➜  ~ ');
-  callbacks.at(-1)();
+  assert.equal(callbacks.length, timerCount);
   assert.equal(writes.length, 1);
   const fallback = createSetupShellInput('echo hello', value => writes.push(value), timer);
   fallback.onData('➜  ~ \x1b[10G');
@@ -94,6 +103,7 @@ test('専用セッションの起動条件と追加ペインの安全側の既�
   const renderer = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
   assert.match(main, /SETUP_SHELL \? null : resolvePaneHolder/);
   assert.match(main, /options\.setupShell === true && ptys\.size === 0 && !setupShellInputUsed/);
-  assert.match(main, /const noClaude = SETUP_SHELL \? true/);
+  assert.match(main, /const noClaude = resolvePaneNoClaude\(\{ guideLaunch, setupShell: SETUP_SHELL/);
+  assert.match(main, /SETUP_SHELL && setupShellInputUsed && options\.setupShell === true/);
   assert.match(renderer, /setupShellInputUsed \? \{ noClaude: true \} : \{ setupShell: true \}/);
 });

@@ -169,6 +169,9 @@ test('幅キーは表示中の幅を起点にし、開き先メニューはツ�
 
 test('失敗表示は失敗 URL、操作列は確定 URL を安全な外部オープン経路へ渡す', () => {
   const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
+  const style = fs.readFileSync(path.join(__dirname, '../renderer/style.css'), 'utf8');
+  assert.match(source, /class="internal-browser-error"[^>]*>[\s\S]*?<button type="button" data-action="external">/);
+  assert.match(style, /\.internal-browser-error \[data-action="external"\][^}]*max-width:[^;]+;[^}]*white-space: normal;[^}]*overflow-wrap: anywhere;/);
   const clickHandler = source.match(/internalBrowserSidebar\.addEventListener\('click', event => \{[\s\S]*?\n\}\);/)?.[0];
   const stateHandler = source.match(/VKIpc\.on\('internal-browser:state', state => \{[\s\S]*?\n\}\);/)?.[0];
   const focusHelpers = source.match(/function focusInternalBrowserToolbar\(\) \{[\s\S]*?\n\}\n\nfunction hideInternalBrowserContent\(element\) \{[\s\S]*?\n\}/)?.[0];
@@ -188,8 +191,12 @@ test('失敗表示は失敗 URL、操作列は確定 URL を安全な外部オ�
   let activeElement = null;
   const focus = element => { activeElement = element; };
   const errorReload = {};
-  const errorButtons = [{ disabled: true }, { disabled: true }];
-  const errorView = { hidden: true, contains: element => element === errorReload, querySelector: () => message, querySelectorAll: () => errorButtons };
+  const errorButtons = [{ disabled: true }, { disabled: true, textContent: '外部ブラウザで開く',
+    getAttribute(name) { return this[name]; }, setAttribute(name, value) { this[name] = value; } }];
+  const failedExternal = errorButtons[1];
+  const errorView = { hidden: true, contains: element => element === errorReload,
+    querySelector: selector => selector === '[data-action="external"]' ? failedExternal : message,
+    querySelectorAll: () => errorButtons };
   const notice = { hidden: true, dataset: {}, contains: element => buttons.includes(element), replaceChildren() {}, append() {} };
   const display = { value: '', closest: () => null, focus() { focus(this); } };
   const controls = { disabled: false };
@@ -225,6 +232,9 @@ test('失敗表示は失敗 URL、操作列は確定 URL を安全な外部オ�
   assert.equal(external.title, '確定済みの URL を外部ブラウザで開く: https://example.com/confirmed');
   assert.equal(target.textContent, '外部で開く: 表示中のページ example.com');
   assert.equal(target.hidden, false);
+  assert.equal(failedExternal.textContent, '失敗したページを外部で開く: example.com');
+  assert.equal(failedExternal.title, '失敗したページを外部で開く: https://example.com/failed');
+  assert.equal(failedExternal['aria-label'], failedExternal.title);
   handlers['internal-browser:state']({ url: 'https://example.com/confirmed', pendingUrl: 'https://pending.example/loading', failedUrl: '' });
   assert.equal(display.value, 'https://pending.example/loading');
   assert.equal(target.textContent, '外部で開く: 表示中のページ example.com');
@@ -252,14 +262,19 @@ test('失敗表示は失敗 URL、操作列は確定 URL を安全な外部オ�
   assert.equal(activeElement, display);
   assert.equal(message.textContent, '');
   assert.equal(errorView.hidden, true);
+  assert.equal(failedExternal.textContent, '外部ブラウザで開く');
+  assert.equal(failedExternal.title, '');
   assert.equal(messageWrites, 6);
-  state('https://example.com/failed', '', false);
-  assert.equal(message.textContent, 'ページを表示できませんでした（example.com）');
+  state('https://failed.example/failed', '', false);
+  assert.equal(target.textContent, '外部で開く: 表示中のページ example.com');
+  assert.equal(failedExternal.textContent, '失敗したページを外部で開く: failed.example');
+  assert.equal(failedExternal.title, '失敗したページを外部で開く: https://failed.example/failed');
+  assert.equal(message.textContent, 'ページを表示できませんでした（failed.example）');
   assert.equal(messageWrites, 7);
   state('invalid-url', '', false);
   assert.equal(message.textContent, 'ページを表示できませんでした');
   assert.equal(messageWrites, 8);
-  state('https://example.com/failed', '', false);
+  state('https://failed.example/failed', '', false);
   const click = inError => handlers.click({ target: {
     closest: selector => selector === '[data-action]' ? { dataset: { action: 'external' } } : selector === '.internal-browser-error' && inError ? errorView : null,
   } });
@@ -279,7 +294,7 @@ test('失敗表示は失敗 URL、操作列は確定 URL を安全な外部オ�
   assert.equal(external.disabled, true);
   assert.equal(external.title, '外部ブラウザで開く（確定済みの URL なし）');
   assert.equal(target.hidden, true);
-  assert.deepEqual(opened, ['https://example.com/failed', 'https://example.com/confirmed', 'https://download.example/file']);
+  assert.deepEqual(opened, ['https://failed.example/failed', 'https://example.com/confirmed', 'https://download.example/file']);
   activeElement = controls;
   state('');
   assert.equal(activeElement, controls);
@@ -323,7 +338,8 @@ test('main の送信から失敗までの状態順でアドレスを保持し、
     const address = { value: '', addEventListener(type, handler) { handlers[type] = handler; },
       setAttribute() {}, removeAttribute() {} };
     const message = { textContent: '' };
-    const errorView = { hidden: true, querySelector: () => message, querySelectorAll: () => [] };
+    const failedExternal = { getAttribute() {}, setAttribute() {} };
+    const errorView = { hidden: true, querySelector: selector => selector === '[data-action="external"]' ? failedExternal : message, querySelectorAll: () => [] };
     const notice = { hidden: true, dataset: {}, replaceChildren() {}, contains: () => false };
     const external = { setAttribute() {} };
     const target = { hidden: true, textContent: '' };

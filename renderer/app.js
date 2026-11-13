@@ -408,9 +408,19 @@ VKIpc.on('internal-browser:state', state => {
   else hideInternalBrowserContent(errorView);
   let failedHost = '';
   if (internalBrowserFailedUrl) {
-    try { failedHost = new URL(internalBrowserFailedUrl).hostname; } catch {}
+    try { failedHost = new URL(internalBrowserFailedUrl).host; } catch {}
   }
   const errorMessage = errorView.querySelector('.internal-browser-error-message');
+  const failedExternalButton = errorView.querySelector('[data-action="external"]');
+  // 失敗画面のボタンは操作列とは別の URL を開くため、実際の開き先をボタン上に示す。
+  const failedExternalText = failedHost
+    ? `失敗したページを外部で開く: ${failedHost}` : '失敗したページを外部で開く';
+  const visibleFailedExternalText = internalBrowserFailedUrl ? failedExternalText : '外部ブラウザで開く';
+  const fullFailedExternalText = internalBrowserFailedUrl ? `失敗したページを外部で開く: ${internalBrowserFailedUrl}` : '';
+  if (failedExternalButton.textContent !== visibleFailedExternalText) failedExternalButton.textContent = visibleFailedExternalText;
+  if (failedExternalButton.title !== fullFailedExternalText) failedExternalButton.title = fullFailedExternalText;
+  const failedExternalLabel = fullFailedExternalText || visibleFailedExternalText;
+  if (failedExternalButton.getAttribute('aria-label') !== failedExternalLabel) failedExternalButton.setAttribute('aria-label', failedExternalLabel);
   // 失敗解除時に文も消し、同じホストで再び失敗した際の読み上げを促す。
   const errorText = !internalBrowserFailedUrl ? '' : failedHost
     ? `ページを表示できませんでした（${failedHost}）` : 'ページを表示できませんでした';

@@ -66,6 +66,7 @@ test('使い方・ヘルプ: 確認失敗の再確認、未保存キャンセル
     await checkCardEdges(win, '#sidebar-help', '.settings-help-entry');
     await win.locator('#sidebar-help button').click();
     await expect(win.getByRole('tab', { name: '使い方・ヘルプ' })).toBeVisible();
+    expect(await win.locator('.settings-help-entry [role=status]').evaluate((element) => getComputedStyle(element).wordBreak)).toBe('auto-phrase');
     await expect(win.locator('.settings-help-entry')).toContainText('確認できませんでした');
     await expect(win.getByRole('button', { name: 'AI に相談', exact: true })).toBeHidden();
     fs.writeFileSync(statusFile, JSON.stringify({ engine: null, engines: ['claude', 'codex'].map((engine) => ({ engine, state: 'unavailable', reason: '<b>認証が必要</b>', preparation: 'ログインしてください' })) }));
@@ -93,9 +94,9 @@ test('使い方・ヘルプ: 確認失敗の再確認、未保存キャンセル
     await win.getByRole('button', { name: 'ドキュメント', exact: true }).click();
     await expect(win.locator('.settings-help-entry [role=status]')).toHaveText('ドキュメントを読み込んでいます…');
     await win.evaluate(() => window.releaseDocument());
+    await expect(win.locator('.internal-browser-url')).toContainText('guide');
     await expect(win.locator('.settings-modal')).toHaveCount(0);
     await expect(win.locator('#internal-browser-sidebar')).toBeVisible();
-    await expect(win.locator('.internal-browser-url')).toContainText('guide');
     // 読み込み済みの操作列へフォーカスし、無関係な初期案内を残さない。
     await expect(win.locator('.internal-browser-url')).toBeFocused();
     await expect(win.locator('.internal-browser-toolbar [data-action="reload"]')).toBeEnabled();
@@ -257,6 +258,27 @@ test('使い方・ヘルプ: 確認失敗の再確認、未保存キャンセル
         await win.getByRole('tab', { name: '使い方・ヘルプ' }).click();
       }
     }
+    // ドキュメント側も保存理由の再試行案内を重ねない。
+    await win.evaluate(() => { window.saveMode = 'fail'; });
+    await win.getByRole('button', { name: 'ドキュメント', exact: true }).click();
+    await win.getByRole('group', { name: '未保存の変更があります。保存してからドキュメントを開きますか？' }).getByRole('button', { name: '保存して開く' }).click();
+    await expect(win.locator('.settings-help-entry [role=status]')).toContainText('内容を確認して再試行してください。');
+    await expect(win.locator('.settings-help-entry [role=status]')).not.toContainText('もう一度押してください。');
+    // 最小幅で「ください」が行をまたがないことを文字の位置で確かめる。
+    const viewport = await win.evaluate(() => ({ width: innerWidth, height: innerHeight }));
+    await win.setViewportSize({ width: 600, height: viewport.height });
+    const wordLines = await win.locator('.settings-help-entry [role=status]').evaluate((element) => {
+      const text = element.firstChild;
+      const start = text.textContent.lastIndexOf('ください');
+      return Array.from({ length: 4 }, (_, offset) => {
+        const range = document.createRange();
+        range.setStart(text, start + offset);
+        range.setEnd(text, start + offset + 1);
+        return range.getBoundingClientRect().top;
+      });
+    });
+    expect(new Set(wordLines).size).toBe(1);
+    await win.setViewportSize(viewport);
     await win.evaluate(() => { window.saveMode = null; });
     // 後の通常保存にも起動予約が残っていない。
     await win.getByRole('tab', { name: '基本' }).click();

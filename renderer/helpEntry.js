@@ -63,8 +63,11 @@
           () => { status.textContent = '未保存の変更を保存するか選んでください。'; },
         );
         if (opened === false) status.textContent = 'ドキュメントを開く操作をキャンセルしました。';
-      } catch (error) { status.textContent = `${error?.message?.includes('再試行してください') ? error.message : 'ドキュメントを開けませんでした。'} もう一度押してください。`;  }
-      finally {
+      } catch (error) {
+        status.textContent = error?.message?.includes('再試行してください')
+          ? error.message
+          : 'ドキュメントを開けませんでした。もう一度押してください。';
+      } finally {
         busy = false; documentButton.disabled = false; ai.disabled = false; retry.disabled = false;
         if (container.isConnected) documentButton.focus();
       }

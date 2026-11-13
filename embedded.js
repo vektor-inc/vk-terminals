@@ -30,6 +30,8 @@
 //   setupPane              セットアップ用ペインの { cwd, prompt }。cwd は実在する絶対パス、
 //                          prompt は /^\/[a-z0-9-]+$/ に一致するスキル名（例 '/vk-orchestrator-setup'）。
 //                          getSetupStatus と必ず対で渡す。どちらも渡さなければ一覧は出ない。
+//   setupShell             初回に素のシェルだけを開く { command, cwd? }。command は入力済みにするだけで実行しない。
+//                          cwd は実在する絶対パス。setupPane と異なり getSetupStatus は不要。
 //
 //   help                   { documentPath, cwd, prompts: { claude, codex } }（docs/specification-help-entry.md）。
 //   getHelpStatus          ガイド用エンジンの利用状況を返す関数。help と必ず対で渡す。

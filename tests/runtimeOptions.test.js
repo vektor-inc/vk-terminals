@@ -41,6 +41,7 @@ test('normalizeEmbeddedOptions: 未指定は既定値（自己更新は未指定
     getHelpStatus: null,
     getSetupStatus: null,
     setupPane: null,
+    setupShell: null,
     paneHolder: null,
     tmuxPath: null,
     verifyPaneHolder: null,

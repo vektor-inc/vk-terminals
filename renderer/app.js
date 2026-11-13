@@ -925,6 +925,17 @@ async function createTerminal(paneId, cwd, options = {}, createdResult = null) {
   const result = createdResult || await VKIpc.invoke('terminal:create', cwd || null, options);
   const { id: termId, cwd: initialCwd, engine: resolvedEngine } = result;
 
+  // OSC 8 リンクも通常の URL と同じクリック判定と開き先メニューへ渡す。
+  // Codex の出力に含まれる OSC 8 は xterm.js 内蔵プロバイダが優先して扱うため、
+  // 独自 LinkProvider だけでは選択メニューを通らない。
+  const terminalLinkHandlers = createTerminalLinkHandlers({
+    openUrl: openTerminalLinkUrl,
+    showTooltip: showTermLinkTooltip,
+    hideTooltip: hideTermLinkTooltip,
+    isMac: IS_MAC_PLATFORM,
+    getClickMode: () => terminalLinkClickModePref,
+    wasDragged: () => lastClickWasDrag,
+  });
   const term = new Terminal({
     fontFamily: 'Menlo, Monaco, "Courier New", monospace',
     fontSize: 13,
@@ -934,6 +945,7 @@ async function createTerminal(paneId, cwd, options = {}, createdResult = null) {
     scrollback: 10000,
     allowTransparency: false,
     macOptionIsMeta: true,
+    linkHandler: terminalLinkHandlers,
   });
 
   const fitAddon = new FitAddon();
@@ -948,17 +960,11 @@ async function createTerminal(paneId, cwd, options = {}, createdResult = null) {
   // 使っており、「実際に見ている修飾キー」と「表示している修飾キー」の判定元が
   // 2 箇所に分かれてしまう。値は実行中変わらないため実害は無いが、出所を 1 本化する。
   // リンクは直接開かず openTerminalLinkUrl の選択メニューへ渡す。
+  // OSC 8 と通常 URL は同じハンドラを共有する。
   // getClickMode は実行時に terminalLinkClickModePref（生きたグローバル変数）を読む関数で
   // 渡す。ツールチップ文言（termLinkTooltipMessage）も同じ変数を実行時に読んでおり、
   // 参照経路を1本化するため、生成時点の固定値スナップショットは渡さない。
-  term.registerLinkProvider(createTerminalLinkProvider(term, createTerminalLinkHandlers({
-    openUrl: openTerminalLinkUrl,
-    showTooltip: showTermLinkTooltip,
-    hideTooltip: hideTermLinkTooltip,
-    isMac: IS_MAC_PLATFORM,
-    getClickMode: () => terminalLinkClickModePref,
-    wasDragged: () => lastClickWasDrag,
-  })));
+  term.registerLinkProvider(createTerminalLinkProvider(term, terminalLinkHandlers));
 
   // OSC 0 / OSC 2 のタイトル変更を購読してペイン上部のタスクタイトル行に反映する。
   // 例: `printf '\033]0;ビルド中\007'` をシェルで実行すると "ビルド中" がここに表示される。
@@ -3008,8 +3014,7 @@ function setupSidebarMenu() {
 //   - URL 無し: テキストノードのみ（従来通り、見た目は完全互換）
 //   - URL 有り: <a role="link" href="#"> + <span>title</span> + <span aria-hidden>↗</span>
 // href には URL を直接入れない（Electron の <a target="_blank"> が新 BrowserWindow を
-// 開く危険挙動を回避するため）。クリック時は preventDefault → shell.openExternal で
-// OS の既定ブラウザを開く。
+// 開く危険挙動を回避するため）。クリック時は preventDefault → 開き先メニューへ渡す。
 // 第4引数 prUrl（issue #44）: 非空のとき、タイトル右側に独立した PR ボタン（<a class="pane-task-title-pr">）を追加する。
 //   apiTitle / taskTitle のいずれが表示中でも、prUrl があれば常時表示する（採用: 案A）。
 // 第5引数 prMerged: true のとき、PR ボタンをマージ済み表示（紫 + 非色アイコン）にする。
@@ -3058,7 +3063,7 @@ function renderTaskTitleContent(el, title, url, prUrl, prMerged = false, waiting
     link.appendChild(iconSpan);
 
     // クリック: ペインのアクティブ化（mousedown 経路）は止めない。click のみ抑止し
-    // shell.openExternal でブラウザを開く。
+    // 開き先メニューを表示する。
     link.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();

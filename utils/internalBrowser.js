@@ -144,8 +144,14 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
         return contents.debugger.sendCommand(method, params);
       };
       try {
-        contents.debugger.attach('1.3');
-        navigationReady = initializeCommand('Page.enable')
+        // 新規 WebContentsView にはまだ renderer がない。先にローカルの空文書を
+        // 作らないと renderer 側の CDP 初期化応答を待ったまま Page.navigate に進めない。
+        // 対象 URL は全ドメインの監視準備後にだけ開き、Network の先着イベントも拾う。
+        navigationReady = contents.loadURL('about:blank').then(() => {
+          if (!debuggerAvailable || contents.isDestroyed?.()) throw new Error('Navigation debugger unavailable');
+          contents.debugger.attach('1.3');
+          return initializeCommand('Page.enable');
+        })
           .then(() => initializeCommand('Page.setLifecycleEventsEnabled', { enabled: true }))
           .then(() => initializeCommand('Network.enable'))
           .then(() => initializeCommand('Page.getFrameTree'))

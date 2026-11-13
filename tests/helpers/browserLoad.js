@@ -30,8 +30,16 @@ function installBrowserLoad(contents) {
   const debuggerConnection = new EventEmitter();
   debuggerConnection.attach = () => {};
   contents.commands = [];
+  let rendererReady = false;
+  contents.loadURL = async url => {
+    if (url !== 'about:blank') throw new Error('Target navigation must use CDP');
+    currentUrl = url;
+    rendererReady = true;
+  };
   debuggerConnection.sendCommand = (method, { url } = {}) => {
     contents.commands.push(method);
+    // 新規実 WebContents は loadURL で renderer を作るまで CDP 応答を待つ。
+    if (!rendererReady) return new Promise(() => {});
     if (method === 'Page.getFrameTree') return Promise.resolve({ frameTree: { frame: { id: 'main', loaderId: 'initial', url: 'about:blank' } } });
     if (method !== 'Page.navigate') return Promise.resolve({});
     contents.requestedUrl = url;

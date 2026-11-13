@@ -5,7 +5,7 @@ const { EventEmitter } = require('node:events');
 const { createInternalBrowser } = require('../utils/internalBrowser');
 const { installBrowserLoad, flushBrowserLoads } = require('./helpers/browserLoad');
 
-function setup({ failCommand, failAttach = false, createBrowser = createInternalBrowser } = {}) {
+function setup({ failCommand, failAttach = false, bootstrap, createBrowser = createInternalBrowser } = {}) {
   const states = [];
   const messages = [];
   const session = new EventEmitter();
@@ -17,6 +17,10 @@ function setup({ failCommand, failAttach = false, createBrowser = createInternal
     constructor() {
       contents = new EventEmitter();
       installBrowserLoad(contents);
+      if (bootstrap) {
+        const loadURL = contents.loadURL;
+        contents.loadURL = url => bootstrap(loadURL, url);
+      }
       const sendCommand = contents.debugger.sendCommand;
       contents.debugger.sendCommand = (method, params) => method === failCommand
         ? Promise.reject(new Error('initialization failed')) : sendCommand(method, params);
@@ -47,6 +51,61 @@ function emitOldEvents(contents, url) {
   contents.emit('did-fail-load', {}, -105, 'old failure', url, true, 12, 34);
   contents.emit('did-navigate', {}, url);
   contents.emit('did-navigate-in-page', {}, `${url}#old`, true, 12, 34);
+}
+
+test('空のWebContentsを初期化してから監視を有効化し、ローカルHTTPも実文書のloadで完了する', async () => {
+  let release;
+  const { browser, contents, states } = setup({ bootstrap: (loadURL, url) => new Promise(resolve => {
+    assert.equal(url, 'about:blank');
+    release = () => resolve(loadURL(url));
+  }) });
+  await flushBrowserLoads();
+  assert.equal(contents.getURL(), '');
+  assert.deepEqual(contents.commands, []);
+  browser.navigate('http://127.0.0.1:12345/source', false, 2);
+  release();
+  await flushBrowserLoads();
+  assert.deepEqual(contents.commands, ['Page.enable', 'Page.setLifecycleEventsEnabled', 'Network.enable', 'Page.getFrameTree', 'Page.navigate']);
+  assert.equal(contents.loads.length, 1);
+  const load = contents.loads[0];
+  emitLoaderEvents(contents, 'initial', 'about:blank');
+  contents.debugger.emit('message', {}, 'Page.loadEventFired', { timestamp: 1 });
+  contents.debugger.emit('message', {}, 'Page.frameStoppedLoading', { frameId: 'main' });
+  assert.equal(states.at(-1).navigationResult, null);
+  load.resolve({ frameId: load.frameId, loaderId: load.loaderId });
+  await flushBrowserLoads();
+  assert.equal(states.at(-1).navigationResult, null);
+  await contents.complete(load.url);
+  assert.equal(contents.getURL(), load.url);
+  assert.equal(states.at(-1).url, load.url);
+  assert.equal(states.at(-1).navigationResult, 'completed');
+  assert.equal(states.at(-1).navigationRequestId, 2);
+  assert.equal(states.at(-1).pendingUrl, '');
+});
+
+test('空文書の初期化失敗を要求の失敗として公開し、対象URLを開かない', async () => {
+  const { contents, states } = setup({ bootstrap: () => Promise.reject(new Error('bootstrap failed')) });
+  await flushBrowserLoads();
+  assert.equal(states.at(-1).navigationResult, 'failed');
+  assert.equal(states.at(-1).failedUrl, 'https://example.com/a');
+  assert.deepEqual(contents.commands, []);
+});
+
+for (const end of ['destroy', 'detach', 'destroyed']) {
+  test(`空文書の応答待ち中の${end}後はCDPを開始しない`, async () => {
+    let release;
+    const { browser, contents, states } = setup({ bootstrap: (loadURL, url) => new Promise(resolve => {
+      release = () => resolve(loadURL(url));
+    }) });
+    if (end === 'destroy') browser.destroy();
+    else if (end === 'detach') contents.debugger.emit('detach');
+    else { contents.isDestroyed = () => true; contents.emit('destroyed'); }
+    release();
+    await flushBrowserLoads();
+    assert.deepEqual(contents.commands, []);
+    assert.equal(contents.loads.length, 0);
+    if (end !== 'destroy') assert.equal(states.at(-1).navigationResult, 'failed');
+  });
 }
 
 for (const result of ['completed', 'cancelled', 'download-blocked', 'failed']) {

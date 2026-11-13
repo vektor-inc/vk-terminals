@@ -322,7 +322,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
   function navigate(url, fromPage = false, requestId, { syntheticHelpBack = false } = {}) {
     if (!(fromPage ? isNavigationUrl(url) : isBrowserUrl(url))) return false;
     if (requestId !== undefined && (!Number.isSafeInteger(requestId) || requestId <= 0)) return false;
-    if (isHelpUrl(url)) { loadHelp(url).catch(() => {}); return true; }
+    if (isHelpUrl(url)) { loadHelp(url, { captureReturn: true }).catch(() => {}); return true; }
     if (!syntheticHelpBack) helpForwardUrl = '';
     ensureView();
     initializeNavigation();
@@ -381,11 +381,13 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
     return true;
   }
 
-  function openHelp() { return loadHelp(HELP_URL); }
+  function openHelp() { return loadHelp(HELP_URL, { captureReturn: true }); }
 
-  function loadHelp(url) {
+  function loadHelp(url, { captureReturn = false } = {}) {
     if (!isHelpUrl(url)) return false;
-    if (isNavigationUrl(currentUrl) && !isHelpUrl(currentUrl)) helpReturnUrl = currentUrl;
+    // 明示的に案内を開いたときだけ戻り先を更新する。履歴復帰で遅れて届く
+    // will-navigate が loadHelp() を再実行しても、元のページを上書きしない。
+    if (captureReturn && isNavigationUrl(currentUrl) && !isHelpUrl(currentUrl)) helpReturnUrl = currentUrl;
     helpForwardUrl = '';
     ensureView();
     const load = beginLoad(url, false, undefined, { help: true });

@@ -949,6 +949,32 @@ test('案内内hashへの履歴復帰イベントが基底URLでも元の戻り�
   assert.equal(states.at(-1).url, previous);
 });
 
+test('履歴復帰の遅延will-navigateが案内を開いた元ページを上書きしない', async () => {
+  const { HELP_URL } = require('../utils/internalBrowserPolicy');
+  const { browser, contents, states } = setup();
+  const previous = 'https://example.com/previous';
+  const external = 'https://example.com/from-guide';
+  await contents.complete(previous);
+  useLoadURLForHelpReturn(contents);
+  const guide = browser.openHelp();
+  contents.setDocumentUrl(HELP_URL);
+  contents.emit('did-finish-load');
+  await guide;
+
+  browser.navigate(external, true);
+  await flushBrowserLoads();
+  await contents.complete(external);
+  // native操作との相関が切れた後に案内のwill-navigateが遅れて届く場合を再現する。
+  contents.emit('will-navigate', { url: HELP_URL, preventDefault() {} });
+  contents.setDocumentUrl(HELP_URL);
+  contents.emit('did-finish-load');
+  await flushBrowserLoads();
+
+  assert.equal(browser.action('back'), true);
+  await flushBrowserLoads();
+  assert.equal(states.at(-1).url, previous);
+});
+
 test('案内前の文書がElectron履歴に無い場合も戻る・進むで復元する', async () => {
   const { HELP_URL } = require('../utils/internalBrowserPolicy');
   const { browser, contents, states } = setup();

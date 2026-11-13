@@ -112,6 +112,7 @@ function inspectLifecycle(snapshot, processes) {
       trackedGroups.set(process.pgid, identities);
       if (!belongedToPrimaryGroup) descendantGroupPgids.add(process.pgid);
     }
+    if (belongedToPrimaryGroup) descendantGroupPgids.delete(process.pgid);
     identities.set(process.pid, process.lstart);
   }
 
@@ -134,7 +135,7 @@ function inspectLifecycle(snapshot, processes) {
     aliveKnown.set(process.pid, process);
   }
 
-  // 親より長生きした未観測の孤児は、後継 AI の取得を妨げないよう追跡対象から外す。
+  // 既知が全終了した子孫 group は追跡から外す。残った孤児で生存中の AI 本体の記録を打ち切らず、後継の取得も妨げない。
   for (const pgid of descendantGroupPgids) {
     if (trackedGroups.get(pgid)?.size === 0) {
       trackedGroups.delete(pgid);
@@ -354,6 +355,10 @@ function createAgentLifecycleStore(options = {}) {
         if (!trackedGroups.has(process.pgid)) trackedGroups.set(process.pgid, new Map());
         trackedGroups.get(process.pgid).set(process.pid, process.lstart);
       }
+      // シェル直下の AI 本体が確認できるときだけ、他のグループを子孫由来として復元する。
+      const primaryPgids = new Set(members.filter((process) => process.ppid === shell.pid).map((process) => process.pgid));
+      const descendantGroupPgids = primaryPgids.size > 0
+        ? new Set([...trackedGroups.keys()].filter((pgid) => !primaryPgids.has(pgid))) : new Set();
       const baselineIdentities = new Map();
       const baselinePgids = new Set();
       for (const process of processes.values()) {
@@ -361,7 +366,7 @@ function createAgentLifecycleStore(options = {}) {
         baselinePgids.add(process.pgid);
         baselineIdentities.set(process.pid, process.lstart);
       }
-      Object.assign(entry, { shellPid, shellLstart: shell.lstart, trackedGroups, descendantGroupPgids: new Set(), baselinePgids, baselineIdentities, marker: null, markerBuffer: '', completionReceived: true, acquisitionOpen: false, acquisitionTimer: null, readyResolve: null, readyTimer: null, activated: true, state: 'running' });
+      Object.assign(entry, { shellPid, shellLstart: shell.lstart, trackedGroups, descendantGroupPgids, baselinePgids, baselineIdentities, marker: null, markerBuffer: '', completionReceived: true, acquisitionOpen: false, acquisitionTimer: null, readyResolve: null, readyTimer: null, activated: true, state: 'running' });
       schedule(id, entry);
       return true;
     },

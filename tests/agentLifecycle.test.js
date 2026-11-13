@@ -188,6 +188,31 @@ test('AI本体が生存中は子孫groupの既知プロセス終了後に孤児�
   assert.equal(orphaned.trackedGroups.has(30), false);
 });
 
+test('子孫groupが先に移動先を作ってもAI本体のgroupとして扱う', () => {
+  const snapshot = {
+    ...tracking(30, [[30, START]]),
+    trackedGroups: new Map([[30, new Map([[30, START]])], [20, new Map([[20, START]])]]),
+    descendantGroupPgids: new Set([30]),
+  };
+  const result = inspectLifecycle(snapshot, table(
+    row(10, 1, 10, 50), row(30, 20, 50, 50), row(20, 10, 50, 50),
+  ));
+  assert.equal(result.state, 'running');
+  assert.equal(result.descendantGroupPgids.has(50), false);
+});
+
+test('保存したAI本体と子孫groupを復元後も区別し孤児で記録を打ち切らない', async () => {
+  let processes = table(row(10, 1, 10, 20), row(20, 10, 20, 20), row(30, 20, 30, 20));
+  const timers = [];
+  const store = createAgentLifecycleStore({ listProcesses: async () => processes, setTimer: fn => { timers.push(fn); return fn; }, clearTimer: () => {} });
+  store.initialize('pane', 1);
+  assert.equal(store.restore('pane', 1, 10, processes, [[20, START], [30, START]]), true);
+  processes = table(row(10, 1, 10, 20), row(20, 10, 20, 20), row(31, 1, 30, 20));
+  await timers.pop()();
+  assert.equal(store.get('pane', 1), 'running');
+  await store.close();
+});
+
 test('子孫groupに孤児が残ってもAI本体の終了後に後継groupを取得する', () => {
   const snapshot = tracking(20, [[20, START]]);
   const withCommand = inspectLifecycle(snapshot, table(
@@ -316,6 +341,12 @@ test('readyと前景group切替後に両世代の裏作業を検知し終了時�
     processes = table(row(10, 1, 10, 20), row(20, 10, 20, 20), row(30, 20, 30, 0));
     await timers[2].callback();
     assert.equal(store.get('pane', generation), 'running');
+    await background.poll();
+    await background.poll();
+    assert.equal(background.isRunning('pane'), true);
+    processes = table(row(10, 1, 10, 20), row(20, 10, 20, 20), row(31, 1, 30, 0), row(32, 20, 32, 0));
+    const orphanPoll = timers.find(timer => !timer.cleared && timer.delay === 100);
+    await orphanPoll.callback();
     await background.poll();
     await background.poll();
     assert.equal(background.isRunning('pane'), true);

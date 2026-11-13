@@ -125,17 +125,26 @@ test('狭幅の同期は左を閉じてから再計算し、手動で左を開�
   assert.equal(address.placeholder, 'URL / 検索');
   assert.equal(attributes['aria-expanded'], 'false');
   assert.match(css, /#root\.internal-browser-open \.sidebar\s*\{[^}]*transition: none;/);
+  assert.match(css, /#root\.internal-browser-overlay \.internal-browser-sidebar\s*\{[^}]*position: absolute;/);
   vm.runInContext('setSidebarOpen(true)', context);
   assert.deepEqual(calls, [false]);
   assert.equal(context.sidebarOpen, true);
+  root.clientWidth = 390;
+  context.sidebarOpen = false;
+  context.internalBrowserOpen = true;
+  vm.runInContext('syncInternalBrowserLayout()', context);
+  assert.equal(context.displayedInternalBrowserWidth, 390);
+  assert.equal(classes.has('internal-browser-overlay'), true);
   // 幅を戻すだけでは、保存幅を上書きしたりブラウザを再び開いたりしない。
   root.clientWidth = 1280;
+  context.sidebarOpen = true;
   context.internalBrowserOpen = true;
   vm.runInContext('syncInternalBrowserLayout()', context);
   assert.equal(context.sidebarOpen, true);
   assert.equal(context.displayedInternalBrowserWidth, 520);
   assert.equal(context.preferredInternalBrowserWidth, 520);
   assert.equal(address.placeholder, 'URL または検索語');
+  assert.equal(classes.has('internal-browser-overlay'), false);
 });
 
 test('初期化時は操作列の閉じるだけを無効化せず、失敗表示にも触れない', () => {

@@ -4044,6 +4044,13 @@ body.pane-dragging * {
   z-index: 901;
 }
 .internal-browser-sidebar[hidden] { display: none; }
+#root.internal-browser-overlay .internal-browser-sidebar {
+  position: absolute;
+  inset: 0;
+  width: 100% !important;
+  border-left: 0;
+}
+#root.internal-browser-overlay .internal-browser-resizer { display: none; }
 .internal-browser-resizer {
   position: absolute;
   left: -5px;

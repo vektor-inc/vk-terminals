@@ -867,11 +867,7 @@ test('案内基底の戻るは遅れたactive indexに依存せず案内を開�
   contents.navigationHistory.getActiveIndex = () => 3;
   contents.navigationHistory.canGoBack = () => true;
   contents.navigationHistory.goBack = () => assert.fail('guide base uses the captured return page');
-  contents.navigationHistory.goToIndex = index => {
-    assert.equal(index, 0);
-    contents.setDocumentUrl(previous);
-    contents.emit('did-navigate', {}, previous);
-  };
+  contents.navigationHistory.goToIndex = () => assert.fail('guide base uses the captured return page');
 
   browser.publish();
   assert.equal(states.at(-1).canGoBack, true);
@@ -950,56 +946,6 @@ test('案内内hashへの履歴復帰イベントが基底URLでも元の戻り�
   contents.navigationHistory.canGoBack = () => false;
   assert.equal(browser.action('back'), true);
   await flushBrowserLoads();
-  assert.equal(states.at(-1).url, previous);
-});
-
-test('履歴復帰の遅延will-navigateが案内を開いた元ページを上書きしない', async () => {
-  const { HELP_URL } = require('../utils/internalBrowserPolicy');
-  const { browser, contents, states } = setup();
-  const previous = 'https://example.com/previous';
-  const external = 'https://example.com/from-guide';
-  await contents.complete(previous);
-  useLoadURLForHelpReturn(contents);
-  const guide = browser.openHelp();
-  contents.setDocumentUrl(HELP_URL);
-  contents.emit('did-finish-load');
-  await guide;
-
-  browser.navigate(external, true);
-  await flushBrowserLoads();
-  await contents.complete(external);
-  // native操作との相関が切れた後に案内のwill-navigateが遅れて届く場合を再現する。
-  contents.emit('will-navigate', { url: HELP_URL, preventDefault() {} });
-  contents.setDocumentUrl(HELP_URL);
-  contents.emit('did-finish-load');
-  await flushBrowserLoads();
-
-  assert.equal(browser.action('back'), true);
-  await flushBrowserLoads();
-  assert.equal(states.at(-1).url, previous);
-});
-
-test('管理URLが遅れていても案内を開く瞬間の実文書を戻り先にする', async () => {
-  const { HELP_URL } = require('../utils/internalBrowserPolicy');
-  const { browser, contents, states } = setup();
-  const stale = 'https://example.com/stale';
-  const previous = 'https://example.com/previous';
-  await contents.complete(stale);
-  contents.setDocumentUrl(previous);
-  useLoadURLForHelpReturn(contents);
-
-  const guide = browser.openHelp();
-  contents.setDocumentUrl(HELP_URL);
-  contents.emit('did-finish-load');
-  await guide;
-  contents.navigationHistory.getAllEntries = () => [{ url: previous }, { url: HELP_URL }];
-  contents.navigationHistory.goToIndex = index => {
-    assert.equal(index, 0);
-    contents.setDocumentUrl(previous);
-    contents.emit('did-navigate', {}, previous);
-  };
-
-  assert.equal(browser.action('back'), true);
   assert.equal(states.at(-1).url, previous);
 });
 

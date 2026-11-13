@@ -322,7 +322,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
   function navigate(url, fromPage = false, requestId, { syntheticHelpBack = false } = {}) {
     if (!(fromPage ? isNavigationUrl(url) : isBrowserUrl(url))) return false;
     if (requestId !== undefined && (!Number.isSafeInteger(requestId) || requestId <= 0)) return false;
-    if (isHelpUrl(url)) { loadHelp(url, { captureReturn: true }).catch(() => {}); return true; }
+    if (isHelpUrl(url)) { loadHelp(url).catch(() => {}); return true; }
     if (!syntheticHelpBack) helpForwardUrl = '';
     ensureView();
     initializeNavigation();
@@ -381,17 +381,11 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
     return true;
   }
 
-  function openHelp() { return loadHelp(HELP_URL, { captureReturn: true }); }
+  function openHelp() { return loadHelp(HELP_URL); }
 
-  function loadHelp(url, { captureReturn = false } = {}) {
+  function loadHelp(url) {
     if (!isHelpUrl(url)) return false;
-    // 明示的に案内を開いたときだけ戻り先を更新する。履歴復帰で遅れて届く
-    // will-navigate が loadHelp() を再実行しても、元のページを上書きしない。
-    if (captureReturn) {
-      const documentUrl = view?.webContents.getURL?.();
-      const returnUrl = isNavigationUrl(documentUrl) && !isHelpUrl(documentUrl) ? documentUrl : currentUrl;
-      if (isNavigationUrl(returnUrl) && !isHelpUrl(returnUrl)) helpReturnUrl = returnUrl;
-    }
+    if (isNavigationUrl(currentUrl) && !isHelpUrl(currentUrl)) helpReturnUrl = currentUrl;
     helpForwardUrl = '';
     ensureView();
     const load = beginLoad(url, false, undefined, { help: true });
@@ -600,17 +594,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
       if (canUseHelpReturn()) {
         const forwardUrl = currentUrl;
         helpForwardUrl = forwardUrl;
-        const returnIndex = findHistoryIndex(history, helpReturnUrl);
-        let started;
-        if (returnIndex >= 0 && typeof history.goToIndex === 'function') {
-          beginLoad(helpReturnUrl, true, undefined, {
-            native: true, stopPrevious: true, historyTarget: helpReturnUrl, syntheticHelpBack: true,
-          });
-          history.goToIndex(returnIndex);
-          started = true;
-        } else {
-          started = navigateFromHelp(helpReturnUrl);
-        }
+        const started = navigateFromHelp(helpReturnUrl);
         if (!started) helpForwardUrl = '';
         return started;
       }
@@ -679,19 +663,6 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
     } catch (_error) {
       return undefined;
     }
-  }
-
-  function findHistoryIndex(history, url) {
-    try {
-      const entries = history.getAllEntries?.();
-      if (!Array.isArray(entries)) return -1;
-      // active index は custom scheme の復帰後に遅れることがあるため使わず、
-      // 明示的に保存した戻り先と一致する最新の履歴を選ぶ。
-      for (let index = entries.length - 1; index >= 0; index--) {
-        if (entries[index]?.url === url) return index;
-      }
-    } catch (_error) {}
-    return -1;
   }
 
   function canMoveHistory(history, offset, fallbackMethod) {

@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { PARTITION, HELP_URL, isHelpUrl, clampBrowserWidth, validateBrowserBounds, isBrowserUrl, isNavigationUrl } = require('../utils/internalBrowserPolicy');
 const { createInternalBrowser } = require('../utils/internalBrowser');
-const { browserAvailableWidth, shouldFoldSetupPanel, browserWidthMax, shouldWrapToastPhrase, shouldSeparateSidebars, MIN_TERMINAL_WIDTH } = require('../utils/internalBrowserLayout');
+const { browserAvailableWidth, shouldFoldSetupPanel, browserWidthMax, shouldWrapToastPhrase, shouldSeparateSidebars, shouldOverlayBrowser, MIN_TERMINAL_WIDTH } = require('../utils/internalBrowserLayout');
 
 test('案内のハッシュを外部 URL に引き継ぎ、読み込み失敗は拒否する', async () => {
   const { EventEmitter } = require('node:events');
@@ -226,6 +226,11 @@ test('トーストを置ける幅が 200px 未満のときだけ語句を折り�
   assert.equal(shouldWrapToastPhrase(600, 369), true);
   assert.equal(shouldWrapToastPhrase(450, clampBrowserWidth(750, 370, 1, 450)), true);
   assert.equal(shouldWrapToastPhrase(1400, clampBrowserWidth(750, 1400)), false);
+});
+
+test('ブラウザ操作幅と中央ペインを横並びにできない極狭幅では全面表示する', () => {
+  assert.equal(shouldOverlayBrowser(559), true);
+  assert.equal(shouldOverlayBrowser(560), false);
 });
 
 test('パネルの最小幅とペイン幅を一度だけ確保する', () => {

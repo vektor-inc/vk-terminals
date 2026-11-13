@@ -129,7 +129,7 @@ for (const button of internalBrowserSidebar.querySelectorAll('.internal-browser-
 function syncInternalBrowserLayout() {
   const root = document.getElementById('root');
   if (!root) return;
-  const { browserAvailableWidth, shouldFoldSetupPanel, clampBrowserWidth, browserWidthMax, shouldWrapToastPhrase, shouldSeparateSidebars, MIN_TERMINAL_WIDTH } = window.VKInternalBrowserLayout;
+  const { browserAvailableWidth, shouldFoldSetupPanel, clampBrowserWidth, browserWidthMax, shouldWrapToastPhrase, shouldSeparateSidebars, shouldOverlayBrowser, MIN_TERMINAL_WIDTH } = window.VKInternalBrowserLayout;
   const columns = gridDims().cols;
   const windowWidth = root.clientWidth;
   // 開き途中の実幅ではなく設定幅で判定し、左右の開閉が往復しないようにする。
@@ -165,8 +165,11 @@ function syncInternalBrowserLayout() {
     .filter(element => { const style = getComputedStyle(element); return style.display !== 'none' && style.position !== 'absolute'; })
     .map(element => element === setupPanelElement ? setupPanelMinimumWidth : element.getBoundingClientRect().width);
   const availableWidth = browserAvailableWidth(windowWidth, leftSidebar, otherWidths);
-  const maxWidth = browserWidthMax(availableWidth, columns, windowWidth, effectiveGridMinimumWidth);
-  displayedInternalBrowserWidth = clampBrowserWidth(preferredInternalBrowserWidth || NaN, availableWidth, columns, windowWidth, effectiveGridMinimumWidth);
+  const browserMustOverlay = internalBrowserOpen && shouldOverlayBrowser(windowWidth);
+  const maxWidth = browserMustOverlay ? windowWidth : browserWidthMax(availableWidth, columns, windowWidth, effectiveGridMinimumWidth);
+  displayedInternalBrowserWidth = browserMustOverlay ? windowWidth
+    : clampBrowserWidth(preferredInternalBrowserWidth || NaN, availableWidth, columns, windowWidth, effectiveGridMinimumWidth);
+  root.classList.toggle('internal-browser-overlay', browserMustOverlay);
   root.classList.toggle('toast-phrase-wrap', shouldWrapToastPhrase(windowWidth, displayedInternalBrowserWidth));
   internalBrowserSidebar.style.width = `${displayedInternalBrowserWidth}px`;
   internalBrowserSidebar.querySelector('.internal-browser-url').placeholder = displayedInternalBrowserWidth < 360 ? 'URL / 検索' : 'URL または検索語';

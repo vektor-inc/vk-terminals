@@ -72,6 +72,7 @@ const INVOKE_CHANNELS = new Set([
   'setup:initial-pane',
   'internal-browser:open',
   'internal-browser:action',
+  'internal-browser:external',
 ]);
 
 // renderer → main（応答なし）

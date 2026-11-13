@@ -2,6 +2,7 @@ const { test, expect } = require('@playwright/test');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const http = require('http');
 const { closeApp, getFreePort, launchAppAndWait } = require('./helpers/electron-app');
 const { focusByKeyboard, readOutline } = require('./helpers/focus-ring');
 
@@ -40,10 +41,63 @@ test('単体起動: 設定カードの上下端とキーボードで設定を開
   }
 });
 
+test('前ページの画像読み込み中でも案内を開いて設定を閉じる', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-help-pending-e2e-'));
+  fs.mkdirSync(path.join(root, 'guide'));
+  fs.writeFileSync(path.join(root, 'help.html'), '<html><body>Help guide</body></html>');
+  fs.writeFileSync(path.join(root, 'status.json'), '{}');
+  let pendingImage;
+  const imageRequested = new Promise((resolve) => { pendingImage = resolve; });
+  let imageResponse;
+  let pageResponse;
+  const previousPage = http.createServer((request, response) => {
+    if (request.url === '/pending.png') {
+      imageResponse = response;
+      response.writeHead(200, { 'Content-Type': 'image/png', 'Content-Length': '100000' });
+      response.write(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+      pendingImage();
+      return;
+    }
+    response.writeHead(200, { 'Content-Type': 'text/html' });
+    pageResponse = response;
+    response.write('<html><body>Previous<img src="/pending.png">');
+  });
+  await new Promise((resolve) => previousPage.listen(0, '127.0.0.1', resolve));
+  let launched;
+  try {
+    launched = await launchAppAndWait({ port: await getFreePort(), prefix: 'vk-help-pending-', entry: path.resolve(__dirname, '../fixtures/embeddedHelpLauncher.js'), env: { VK_TEST_HELP_ROOT: root } });
+    const { win } = launched;
+    // 前ページの本文表示後も画像応答を保留し、読み込み中に案内へ切り替える。
+    await win.locator('#internal-browser-toggle').click();
+    await win.evaluate((url) => VKIpc.invoke('internal-browser:open', url), `http://127.0.0.1:${previousPage.address().port}/previous`);
+    await imageRequested;
+    await expect(win.locator('.internal-browser-url')).toContainText('/previous');
+    await expect(win.locator('.internal-browser-progress')).toBeVisible();
+    await win.locator('#sidebar-help button').click();
+    await win.getByRole('button', { name: 'ドキュメント', exact: true }).click();
+    await expect(win.locator('.settings-modal')).toHaveCount(0);
+    await expect(win.locator('.internal-browser-url')).toHaveAttribute('title', 'vk-terminals-help://guide/');
+    await expect(win.locator('body')).not.toContainText('ドキュメントを開けませんでした');
+  } finally {
+    if (imageResponse && !imageResponse.destroyed) imageResponse.end();
+    if (pageResponse && !pageResponse.destroyed) pageResponse.end('</body></html>');
+    if (launched) await closeApp(launched);
+    await new Promise((resolve) => previousPage.close(resolve));
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('使い方・ヘルプ: 確認失敗の再確認、未保存キャンセル、連打と格納復帰', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-help-e2e-'));
   fs.mkdirSync(path.join(root, 'guide'));
-  fs.writeFileSync(path.join(root, 'help.html'), '<html>Help</html>');
+  const linkedPage = http.createServer((request, response) => {
+    response.writeHead(200, { 'Content-Type': 'text/html' });
+    response.end(`<html><body>${request.url}<a href="/next">Next</a></body></html>`);
+  });
+  await new Promise((resolve) => linkedPage.listen(0, '127.0.0.1', resolve));
+  const linkedUrl = `http://127.0.0.1:${linkedPage.address().port}/`;
+  const previousUrl = `${linkedUrl}previous`;
+  fs.writeFileSync(path.join(root, 'help.html'), `<html><body>Help<a href="#section">Section</a><h2 id="section">Section</h2><a href="${linkedUrl}">External</a></body></html>`);
   const statusFile = path.join(root, 'status.json');
   fs.writeFileSync(statusFile, '{}');
   let launched;
@@ -59,6 +113,7 @@ test('使い方・ヘルプ: 確認失敗の再確認、未保存キャンセル
     await checkCardEdges(win, '#sidebar-help', '.settings-help-entry');
     await win.locator('#sidebar-help button').click();
     await expect(win.getByRole('tab', { name: '使い方・ヘルプ' })).toBeVisible();
+    expect(await win.locator('.settings-help-entry [role=status]').evaluate((element) => getComputedStyle(element).wordBreak)).toBe('auto-phrase');
     await expect(win.locator('.settings-help-entry')).toContainText('確認できませんでした');
     await expect(win.getByRole('button', { name: 'AI に相談', exact: true })).toBeHidden();
     fs.writeFileSync(statusFile, JSON.stringify({ engine: null, engines: ['claude', 'codex'].map((engine) => ({ engine, state: 'unavailable', reason: '<b>認証が必要</b>', preparation: 'ログインしてください' })) }));
@@ -72,8 +127,77 @@ test('使い方・ヘルプ: 確認失敗の再確認、未保存キャンセル
       await docButton.focus();
       await expect(docButton).toBeFocused();
     }
+    // 案内より前のページをローカルで読み込み、完了後に通常の履歴へ残す。
+    await win.evaluate((url) => VKIpc.invoke('internal-browser:open', url), previousUrl);
+    await expect(win.locator('.internal-browser-url')).toContainText('/previous');
+    await expect(win.locator('.internal-browser-progress')).toBeHidden();
+    await expect(win.locator('.internal-browser-error')).toBeHidden();
+    // IPC を保留し、未保存変更が無い場合の読み込み中表示を観察する。
+    await win.evaluate(() => {
+      const original = VKIpc.invoke;
+      window.releaseDocument = null;
+      VKIpc.invoke = (channel, ...args) => channel === 'help:document'
+        ? new Promise((resolve, reject) => { window.releaseDocument = () => { VKIpc.invoke = original; original(channel, ...args).then(resolve, reject); }; })
+        : original(channel, ...args);
+    });
     await win.getByRole('button', { name: 'ドキュメント', exact: true }).click();
-    expect(await app.evaluate(() => global.helpDocumentUrls)).toEqual([require('url').pathToFileURL(fs.realpathSync(path.join(root, 'help.html'))).href]);
+    await expect(win.locator('.settings-help-entry [role=status]')).toHaveText('ドキュメントを読み込んでいます…');
+    await win.evaluate(() => window.releaseDocument());
+    await expect(win.locator('.internal-browser-url')).toContainText('guide');
+    await expect(win.locator('.settings-modal')).toHaveCount(0);
+    await expect(win.locator('#internal-browser-sidebar')).toBeVisible();
+    // 読み込み済みの操作列へフォーカスし、無関係な初期案内を残さない。
+    await expect(win.locator('.internal-browser-url')).toBeFocused();
+    await expect(win.locator('.internal-browser-toolbar [data-action="reload"]')).toBeEnabled();
+    await expect(win.locator('.internal-browser-notice')).toBeHidden();
+    expect(await win.evaluate(() => internalBrowserHasPage)).toBe(true);
+    // 専用スキームの別パスと file: はナビゲーション入口で拒否する。
+    const refusedNavigation = await win.evaluate(async () => ({
+      path: await VKIpc.invoke('internal-browser:open', 'vk-terminals-help://guide/other'),
+      file: await VKIpc.invoke('internal-browser:open', 'file:///tmp/help.html'),
+    }));
+    expect(refusedNavigation).toEqual({ path: false, file: false });
+    // 同じ案内内の見出しリンクは URL のハッシュだけを更新する。
+    await app.evaluate(async ({ webContents }) => {
+      const guide = webContents.getAllWebContents().find((contents) => contents.getURL().startsWith('vk-terminals-help://guide/'));
+      await guide.executeJavaScript("document.querySelector('a[href=\"#section\"]').click()", true);
+    });
+    await expect(win.locator('.internal-browser-url')).toContainText('#section');
+    // 案内内の外部リンクをクリックし、履歴の「戻る」で案内へ復帰する。
+    await app.evaluate(async ({ webContents }) => {
+      const guide = webContents.getAllWebContents().find((contents) => contents.getURL().startsWith('vk-terminals-help://guide/'));
+      await guide.executeJavaScript("document.querySelector('a[href^=\"http:\"]').click()", true);
+    });
+    await expect(win.locator('.internal-browser-url')).toContainText('127.0.0.1');
+    await win.locator('.internal-browser-toolbar [data-action="back"]').click();
+    await expect(win.locator('.internal-browser-url')).toContainText('#section');
+    await win.locator('.internal-browser-toolbar [data-action="forward"]').click();
+    await expect(win.locator('.internal-browser-url')).toContainText('127.0.0.1');
+    // B からは A を経由し、案内とその前のローカルページまで順に戻る。
+    await app.evaluate(async ({ webContents }) => {
+      const page = webContents.getAllWebContents().find((contents) => contents.getURL().startsWith('http://127.0.0.1:'));
+      await page.executeJavaScript("document.querySelector('a').click()", true);
+    });
+    await expect(win.locator('.internal-browser-url')).toContainText('/next');
+    await win.locator('.internal-browser-toolbar [data-action="back"]').click();
+    await expect(win.locator('.internal-browser-url')).toHaveText(linkedUrl);
+    await win.locator('.internal-browser-toolbar [data-action="back"]').click();
+    await expect(win.locator('.internal-browser-url')).toContainText('#section');
+    await win.locator('.internal-browser-toolbar [data-action="back"]').click();
+    await expect(win.locator('.internal-browser-url')).toContainText('guide');
+    await win.locator('.internal-browser-toolbar [data-action="back"]').click();
+    await expect(win.locator('.internal-browser-url')).toContainText('/previous');
+    await win.locator('.internal-browser-toolbar [data-action="forward"]').click();
+    await expect(win.locator('.internal-browser-url')).toContainText('guide');
+    await win.getByRole('button', { name: '外部ブラウザで開く', exact: true }).first().click();
+    await expect.poll(() => app.evaluate(() => global.helpDocumentUrls)).toEqual([require('url').pathToFileURL(fs.realpathSync(path.join(root, 'help.html'))).href]);
+    // 同梱 HTML が消えた場合は設定を閉じず、再試行の案内を残す。
+    fs.unlinkSync(path.join(root, 'help.html'));
+    await win.evaluate(() => openSettingsModal(VKHelpEntry.TAB_ID));
+    await win.getByRole('button', { name: 'ドキュメント', exact: true }).click();
+    await expect(win.locator('.settings-help-entry [role=status]')).toContainText('もう一度押してください');
+    await expect(win.locator('.settings-modal')).toBeVisible();
+    await win.locator('.settings-close').click();
     // 利用可否が正常でも作業フォルダ消失時は、画面側の代替指定を使わず失敗する。
     fs.writeFileSync(statusFile, JSON.stringify({ engine: 'codex', engines: [
       { engine: 'claude', state: 'unknown' }, { engine: 'codex', state: 'available' },
@@ -86,7 +210,6 @@ test('使い方・ヘルプ: 確認失敗の再確認、未保存キャンセル
     });
     expect(refused).toBe(true);
     await expect(win.locator('.pane')).toHaveCount(countBeforeInvalidCwd);
-    await win.locator('.settings-close').click();
     // AI 自体は起動せず、画面のライフサイクルを隔離した通常ペインで確かめる。
     await win.evaluate(() => {
       const original = VKIpc.invoke;
@@ -119,6 +242,28 @@ test('使い方・ヘルプ: 確認失敗の再確認、未保存キャンセル
     await win.getByLabel('名前', { exact: true }).fill('new');
     await win.getByRole('tab', { name: '使い方・ヘルプ' }).click();
     expect(await win.evaluate(() => window.helpChecks)).toBe(1);
+    // ドキュメントも未保存の確認を経由し、キャンセルでは設定を残す。
+    await win.getByRole('button', { name: 'ドキュメント', exact: true }).click();
+    const documentChoices = win.getByRole('group', { name: '未保存の変更があります。保存してからドキュメントを開きますか？' });
+    await expect(documentChoices).toBeVisible();
+    await expect(win.locator('.settings-help-entry [role=status]')).toHaveText('未保存の変更を保存するか選んでください。');
+    await documentChoices.getByRole('button', { name: 'キャンセル' }).click();
+    await expect(win.locator('.settings-help-entry [role=status]')).toHaveText('ドキュメントを開く操作をキャンセルしました。');
+    await expect(win.locator('.settings-modal')).toBeVisible();
+    await expect(win.getByRole('button', { name: 'ドキュメント', exact: true })).toBeFocused();
+    await win.evaluate(() => {
+      const original = VKIpc.invoke;
+      VKIpc.invoke = (channel, ...args) => channel === 'help:document'
+        ? new Promise((resolve, reject) => {
+          window.releaseDocument = () => { VKIpc.invoke = original; original(channel, ...args).then(resolve, reject); };
+        }) : original(channel, ...args);
+    });
+    await win.getByRole('button', { name: 'ドキュメント', exact: true }).click();
+    await documentChoices.getByRole('button', { name: '破棄して開く' }).click();
+    await expect(win.locator('.settings-help-entry [role=status]')).toHaveText('ドキュメントを読み込んでいます…');
+    await expect(documentChoices).toHaveCount(0);
+    await win.evaluate(() => window.releaseDocument());
+    await expect(win.locator('.settings-help-entry [role=status]')).toContainText('もう一度押してください');
     await win.getByRole('button', { name: 'AI に相談', exact: true }).click();
     await expect(win.locator('.settings-help-entry [role=status]')).toBeEmpty();
     const unsavedGroup = win.getByRole('group', { name: '未保存の変更があります。保存してからガイドを開きますか？' });
@@ -152,6 +297,8 @@ test('使い方・ヘルプ: 確認失敗の再確認、未保存キャンセル
       await expect(win.getByRole('button', { name: 'AI に相談', exact: true, includeHidden: true })).toBeEnabled();
       await expect(win.getByRole('button', { name: '保存して開く' })).toHaveCount(0);
       expect(await win.evaluate(() => window.helpCalls)).toBe(0);
+      await expect(win.locator('.settings-help-entry [role=status]')).toContainText('内容を確認して再試行してください。');
+      await expect(win.locator('.settings-help-entry [role=status]')).not.toContainText('ガイドを起動できませんでした');
       if (mode === 'read') {
         // 保存済みでも読み込み失敗なら起動しない。再編集して次の選択へ進む。
         await win.getByRole('tab', { name: '基本' }).click();
@@ -159,6 +306,27 @@ test('使い方・ヘルプ: 確認失敗の再確認、未保存キャンセル
         await win.getByRole('tab', { name: '使い方・ヘルプ' }).click();
       }
     }
+    // ドキュメント側も保存理由の再試行案内を重ねない。
+    await win.evaluate(() => { window.saveMode = 'fail'; });
+    await win.getByRole('button', { name: 'ドキュメント', exact: true }).click();
+    await win.getByRole('group', { name: '未保存の変更があります。保存してからドキュメントを開きますか？' }).getByRole('button', { name: '保存して開く' }).click();
+    await expect(win.locator('.settings-help-entry [role=status]')).toContainText('内容を確認して再試行してください。');
+    await expect(win.locator('.settings-help-entry [role=status]')).not.toContainText('もう一度押してください。');
+    // 最小幅で「ください」が行をまたがないことを文字の位置で確かめる。
+    const viewport = await win.evaluate(() => ({ width: innerWidth, height: innerHeight }));
+    await win.setViewportSize({ width: 600, height: viewport.height });
+    const wordLines = await win.locator('.settings-help-entry [role=status]').evaluate((element) => {
+      const text = element.firstChild;
+      const start = text.textContent.lastIndexOf('ください');
+      return Array.from({ length: 4 }, (_, offset) => {
+        const range = document.createRange();
+        range.setStart(text, start + offset);
+        range.setEnd(text, start + offset + 1);
+        return range.getBoundingClientRect().top;
+      });
+    });
+    expect(new Set(wordLines).size).toBe(1);
+    await win.setViewportSize(viewport);
     await win.evaluate(() => { window.saveMode = null; });
     // 後の通常保存にも起動予約が残っていない。
     await win.getByRole('tab', { name: '基本' }).click();
@@ -193,6 +361,7 @@ test('使い方・ヘルプ: 確認失敗の再確認、未保存キャンセル
   } finally {
     if (launched) await closeApp(launched);
     fs.rmSync(root, { recursive: true, force: true });
+    await new Promise((resolve) => linkedPage.close(resolve));
   }
 });
 

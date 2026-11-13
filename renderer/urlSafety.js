@@ -29,10 +29,10 @@
   }
 
   // アドレス欄の入力を URL または検索先に変換し、開けない入力は渡さない。
-  function normalizeBrowserAddress(input) {
-    if (typeof input !== 'string') return null;
+  function resolveBrowserAddress(input) {
+    if (typeof input !== 'string') return { url: null, error: 'empty' };
     const value = input.trim();
-    if (!value) return null;
+    if (!value) return { url: null, error: 'empty' };
 
     let url;
     if (/^https?:\/\//i.test(value)) url = value;
@@ -51,13 +51,22 @@
     }
     else url = `https://www.google.com/search?q=${encodeURIComponent(value)}`;
 
-    return isSafeHttpUrl(url) ? url : null;
+    // URL 候補は候補そのものを、検索語はエンコード後の検索 URL を検査する。
+    // 形式が不正な URL を、検索 URL の長さだけで長すぎると案内しない。
+    if (!isHttpUrl(url)) return { url: null, error: 'invalid' };
+    if (url.length > MAX_SAFE_HTTP_URL_LENGTH) return { url: null, error: 'too-long' };
+    return { url, error: null };
+  }
+
+  function normalizeBrowserAddress(input) {
+    return resolveBrowserAddress(input).url;
   }
 
   return {
     MAX_SAFE_HTTP_URL_LENGTH,
     isHttpUrl,
     isSafeHttpUrl,
+    resolveBrowserAddress,
     normalizeBrowserAddress,
   };
 });

@@ -3,7 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { MAX_SAFE_HTTP_URL_LENGTH, isSafeHttpUrl, normalizeBrowserAddress } = require('../renderer/urlSafety');
+const { MAX_SAFE_HTTP_URL_LENGTH, isSafeHttpUrl, normalizeBrowserAddress, resolveBrowserAddress } = require('../renderer/urlSafety');
 const mobilePreview = require('../renderer/mobilePreviewText');
 
 test('isSafeHttpUrl: http/https のみ許可する', () => {
@@ -51,4 +51,12 @@ test('アドレス欄は危険なスキームを検索し、空欄と不正な U
   for (const value of ['https://', ' ', null]) assert.equal(normalizeBrowserAddress(value), null);
   assert.equal(normalizeBrowserAddress('example.com:99999/path'), null);
   assert.equal(normalizeBrowserAddress('a'.repeat(MAX_SAFE_HTTP_URL_LENGTH)), null);
+});
+
+test('アドレス欄の失敗理由は候補 URL と検索 URL を分けて判定する', () => {
+  assert.equal(resolveBrowserAddress(' ').error, 'empty');
+  assert.equal(resolveBrowserAddress(`https://example.com:99999/${'あ'.repeat(300)}`).error, 'invalid');
+  assert.equal(resolveBrowserAddress(`https://example.com/${'a'.repeat(MAX_SAFE_HTTP_URL_LENGTH)}`).error, 'too-long');
+  assert.equal(resolveBrowserAddress('あ'.repeat(700)).error, 'too-long');
+  assert.equal(resolveBrowserAddress('example.com').error, null);
 });

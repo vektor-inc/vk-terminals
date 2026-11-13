@@ -33,7 +33,7 @@ const { normalizeConfirmClose, shouldConfirmClose } = window.VKCloseConfirm;
 // 認証要否の実判定（shouldRequireAuth）に使う isLoopbackHost 自体には 'localhost' を
 // 足していないので、ここでは案内専用の関数だけを使う（PR #315 安藤のレビュー指摘）。
 const { isLoopbackDisplayValue } = window.VKLoopbackHost;
-const { MAX_SAFE_HTTP_URL_LENGTH, isSafeHttpUrl, normalizeBrowserAddress } = window.VKUrlSafety;
+const { isSafeHttpUrl, resolveBrowserAddress } = window.VKUrlSafety;
 // ペイン内 URL の Cmd/Ctrl+クリック対応（issue #349）。折り返し行をまたぐ URL の検出・
 // バッファ位置への変換は renderer/terminalLinkProvider.js（xterm.js の
 // registerLinkProvider を自前実装）が担う。詳しい採用理由は同ファイル冒頭のコメント参照。
@@ -108,7 +108,7 @@ const internalBrowserSidebar = document.createElement('aside');
 internalBrowserSidebar.id = 'internal-browser-sidebar';
 internalBrowserSidebar.className = 'internal-browser-sidebar';
 internalBrowserSidebar.setAttribute('aria-label', 'アプリ内ブラウザ');
-internalBrowserSidebar.innerHTML = `<div class="internal-browser-resizer" role="separator" tabindex="0" aria-label="アプリ内ブラウザの幅を変更" aria-orientation="vertical" aria-valuemin="360" aria-valuemax="720" aria-valuenow="480"></div><div class="internal-browser-toolbar"><button type="button" data-action="back" title="戻る" aria-label="戻る"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#arrow-left"></use></svg></button><button type="button" data-action="forward" title="進む" aria-label="進む"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#arrow-right"></use></svg></button><button type="button" data-action="reload" title="再読み込み" aria-label="再読み込み"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#rotate-cw"></use></svg></button><input type="text" class="internal-browser-url" aria-label="URL または検索語を入力" placeholder="URL または検索語" autocomplete="off" spellcheck="false"><button type="button" data-action="external" title="外部ブラウザで開く" aria-label="外部ブラウザで開く"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#external-link"></use></svg></button><button type="button" data-action="close" title="閉じる" aria-label="閉じる"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#x"></use></svg></button></div><p id="internal-browser-address-error" class="internal-browser-address-error" role="alert" hidden></p><div class="internal-browser-progress" hidden></div><div class="internal-browser-notice" role="status" hidden></div><div class="internal-browser-error" role="status" hidden><p class="internal-browser-error-message">ページを表示できませんでした</p><button type="button" data-action="reload">再読み込み</button><button type="button" data-action="external">外部ブラウザで開く</button></div><div class="internal-browser-page"></div>`;
+internalBrowserSidebar.innerHTML = `<div class="internal-browser-resizer" role="separator" tabindex="0" aria-label="アプリ内ブラウザの幅を変更" aria-orientation="vertical" aria-valuemin="360" aria-valuemax="720" aria-valuenow="480"></div><div class="internal-browser-toolbar"><button type="button" data-action="back" title="戻る" aria-label="戻る"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#arrow-left"></use></svg></button><button type="button" data-action="forward" title="進む" aria-label="進む"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#arrow-right"></use></svg></button><button type="button" data-action="reload" title="再読み込み" aria-label="再読み込み"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#rotate-cw"></use></svg></button><input type="text" class="internal-browser-url" aria-label="URL または検索語を入力" placeholder="URL または検索語" autocomplete="off" spellcheck="false"><button type="button" data-action="external" title="外部ブラウザで開く" aria-label="外部ブラウザで開く"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#external-link"></use></svg></button><button type="button" data-action="close" title="閉じる" aria-label="閉じる"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#x"></use></svg></button></div><p class="internal-browser-external-target" role="status" hidden></p><p id="internal-browser-address-error" class="internal-browser-address-error" role="alert" hidden></p><div class="internal-browser-progress" hidden></div><div class="internal-browser-notice" role="status" hidden></div><div class="internal-browser-error" role="status" hidden><p class="internal-browser-error-message">ページを表示できませんでした</p><button type="button" data-action="reload">再読み込み</button><button type="button" data-action="external">外部ブラウザで開く</button></div><div class="internal-browser-page"></div>`;
 let internalBrowserOpen = false;
 let internalBrowserUrl = '';
 let internalBrowserPendingUrl = '';
@@ -287,7 +287,7 @@ internalBrowserSidebar.addEventListener('click', event => {
   const action = event.target.closest('[data-action]')?.dataset.action;
   if (action === 'close') { setInternalBrowserOpen(false); document.getElementById('internal-browser-toggle')?.focus(); }
   else if (action === 'external') {
-    const url = event.target.closest('.internal-browser-error') ? internalBrowserFailedUrl : (internalBrowserDownloadUrl || internalBrowserUrl);
+    const url = event.target.closest('.internal-browser-error') ? internalBrowserFailedUrl : getInternalBrowserExternalTarget().url;
     if (url) openExternalUrlSafe(url);
   }
   else if (action) VKIpc.invoke('internal-browser:action', action).catch(() => {});
@@ -295,6 +295,31 @@ internalBrowserSidebar.addEventListener('click', event => {
 // 未送信の文字列はページの状態通知で上書きしない。
 const internalBrowserAddress = internalBrowserSidebar.querySelector('.internal-browser-url');
 const internalBrowserAddressError = internalBrowserSidebar.querySelector('.internal-browser-address-error');
+function getInternalBrowserExternalTarget() {
+  return internalBrowserDownloadUrl
+    ? { url: internalBrowserDownloadUrl, kind: 'ダウンロード先' }
+    : { url: internalBrowserUrl, kind: '表示中のページ' };
+}
+function syncInternalBrowserExternalTarget() {
+  const { url, kind } = getInternalBrowserExternalTarget();
+  const button = internalBrowserSidebar.querySelector('.internal-browser-toolbar [data-action="external"]');
+  const status = internalBrowserSidebar.querySelector('.internal-browser-external-target');
+  const label = !url ? '外部ブラウザで開く（確定済みの URL なし）'
+    : kind === 'ダウンロード先' ? `ダウンロード先を外部ブラウザで開く: ${url}`
+      : `確定済みの URL を外部ブラウザで開く: ${url}`;
+  button.title = label;
+  button.setAttribute('aria-label', label);
+  button.disabled = !url;
+  // 入力欄と開き先が異なるときだけ、実際の操作対象を画面にも示す。
+  const showTarget = Boolean(url) && (kind === 'ダウンロード先' || internalBrowserAddress.value !== url);
+  const host = showTarget ? new URL(url).host : '';
+  const text = showTarget ? `外部で開く: ${kind} ${host}` : '';
+  if (status.textContent !== text) status.textContent = text;
+  if (status.hidden !== !showTarget) {
+    status.hidden = !showTarget;
+    syncInternalBrowserLayout();
+  }
+}
 function clearInternalBrowserAddressError() {
   const wasVisible = !internalBrowserAddressError.hidden;
   internalBrowserAddressError.textContent = '';
@@ -307,23 +332,22 @@ internalBrowserAddress.addEventListener('input', () => {
   // フォーカスを移しても未送信の入力を保持し、ページ状態通知から守る。
   internalBrowserAddressHasDraft = true;
   clearInternalBrowserAddressError();
+  syncInternalBrowserExternalTarget();
 });
 internalBrowserAddress.addEventListener('keydown', event => {
   if (event.key !== 'Enter' || event.isComposing) return;
   event.preventDefault();
-  const url = normalizeBrowserAddress(internalBrowserAddress.value);
+  const { url, error } = resolveBrowserAddress(internalBrowserAddress.value);
   if (!url) {
-    const value = internalBrowserAddress.value.trim();
-    const tooLong = value.length > MAX_SAFE_HTTP_URL_LENGTH
-      || `https://www.google.com/search?q=${encodeURIComponent(value)}`.length > MAX_SAFE_HTTP_URL_LENGTH;
-    internalBrowserAddressError.textContent = !value
+    internalBrowserAddressError.textContent = error === 'empty'
       ? 'URL または検索語を入力してください。'
-      : tooLong ? '入力が長すぎます。URL または検索語を短くしてください。'
+      : error === 'too-long' ? '入力が長すぎます。URL または検索語を短くしてください。'
         : 'URL の形式を確認して修正してください。検索する場合は検索語を入力してください。';
     internalBrowserAddressError.hidden = false;
     internalBrowserAddress.setAttribute('aria-invalid', 'true');
     internalBrowserAddress.setAttribute('aria-describedby', internalBrowserAddressError.id);
     internalBrowserAddressHasDraft = true;
+    syncInternalBrowserExternalTarget();
     syncInternalBrowserLayout();
     return;
   }
@@ -332,6 +356,7 @@ internalBrowserAddress.addEventListener('keydown', event => {
   internalBrowserAddressHasDraft = false;
   internalBrowserPendingUrl = url;
   internalBrowserAddress.value = url;
+  syncInternalBrowserExternalTarget();
   VKIpc.invoke('internal-browser:open', url).catch(() => {});
 });
 document.getElementById('internal-browser-toggle').addEventListener('click', () => setInternalBrowserOpen(!internalBrowserOpen));
@@ -419,15 +444,7 @@ VKIpc.on('internal-browser:state', state => {
   else if (notice.dataset.url === github404Url && !notice.dataset.dismissed) notice.hidden = false;
   // 失敗時は確定 URL に戻さず、送信した URL をアドレス欄に残して修正できるようにする。
   if (!internalBrowserAddressHasDraft) internalBrowserAddress.value = internalBrowserPendingUrl || internalBrowserFailedUrl || internalBrowserUrl;
-  const externalButton = internalBrowserSidebar.querySelector('.internal-browser-toolbar [data-action="external"]');
-  const externalUrl = internalBrowserDownloadUrl || internalBrowserUrl;
-  const externalLabel = internalBrowserDownloadUrl
-    ? `ダウンロード先を外部ブラウザで開く: ${externalUrl}`
-    : externalUrl ? `確定済みの URL を外部ブラウザで開く: ${externalUrl}`
-      : '外部ブラウザで開く（確定済みの URL なし）';
-  externalButton.title = externalLabel;
-  externalButton.setAttribute('aria-label', externalLabel);
-  externalButton.disabled = !externalUrl;
+  syncInternalBrowserExternalTarget();
   internalBrowserSidebar.querySelector('[data-action="back"]').disabled = !state.canGoBack;
   internalBrowserSidebar.querySelector('[data-action="forward"]').disabled = !state.canGoForward;
   internalBrowserSidebar.querySelector('.internal-browser-progress').hidden = !state.loading;

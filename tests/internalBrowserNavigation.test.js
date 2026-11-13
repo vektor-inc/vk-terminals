@@ -783,7 +783,7 @@ for (const action of ['back', 'forward']) {
     assert.equal(states.at(-1).url, target.url);
   });
 
-  test(`${action} は現在URLと同じ履歴しか残らない場合に無効になる`, async () => {
+  test(`${action} は同じURLだけの不完全な履歴一覧でもnative可用性を信頼する`, async () => {
     const { browser, contents, states } = setup();
     await contents.complete('https://example.com/current');
     const current = { url: 'https://example.com/current' };
@@ -791,13 +791,13 @@ for (const action of ['back', 'forward']) {
     contents.navigationHistory.getAllEntries = () => [current, current];
     contents.navigationHistory.getActiveIndex = () => isBack ? 1 : 0;
     contents.navigationHistory[`canGo${isBack ? 'Back' : 'Forward'}`] = () => true;
-    contents.navigationHistory[`go${isBack ? 'Back' : 'Forward'}`] = () => assert.fail('空振りの履歴移動は実行しない');
+    let moved = false;
+    contents.navigationHistory[`go${isBack ? 'Back' : 'Forward'}`] = () => { moved = true; };
 
     browser.publish();
-    assert.equal(states.at(-1)[isBack ? 'canGoBack' : 'canGoForward'], false);
-    assert.equal(browser.action(action), false);
-    assert.equal(states.at(-1).navigationResult, 'completed');
-    assert.equal(states.at(-1).url, current.url);
+    assert.equal(states.at(-1)[isBack ? 'canGoBack' : 'canGoForward'], true);
+    assert.equal(browser.action(action), true);
+    assert.equal(moved, true);
   });
 
   test(`${action} は次文書の読み込み中も履歴のactive URLを基準に移動先を選ぶ`, async () => {
@@ -888,6 +888,26 @@ test('案内のsynthetic forwardはページ起点の通常遷移で消える', 
   contents.emit('will-navigate', { url: 'https://example.com/page-link', preventDefault() {} });
   contents.setDocumentUrl('https://example.com/page-link');
   contents.emit('did-navigate-in-page', {}, contents.getURL(), true);
+  assert.equal(browser.action('forward'), false);
+});
+
+test('案内のsynthetic forwardはBack完了後の同一URL履歴更新でも消える', async () => {
+  const { HELP_URL } = require('../utils/internalBrowserPolicy');
+  const { browser, contents } = setup();
+  const previous = 'https://example.com/previous';
+  await contents.complete(previous);
+  contents.loadURL = () => Promise.resolve();
+  const guide = browser.openHelp();
+  contents.setDocumentUrl(HELP_URL);
+  contents.emit('did-finish-load');
+  await guide;
+  contents.navigationHistory.canGoBack = () => false;
+  contents.navigationHistory.canGoForward = () => false;
+  assert.equal(browser.action('back'), true);
+  await flushBrowserLoads();
+  await contents.complete(previous);
+
+  contents.emit('did-navigate-in-page', {}, previous, true);
   assert.equal(browser.action('forward'), false);
 });
 

@@ -429,7 +429,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
     if (contents.isDestroyed?.()) return;
     const load = activeLoad;
     const url = contents.getURL();
-    if (helpForwardUrl && url !== currentUrl && !load?.syntheticHelpBack) helpForwardUrl = '';
+    if (helpForwardUrl && !(load?.syntheticHelpBack && !load.done)) helpForwardUrl = '';
     if (load?.help) {
       if (isHelpUrl(url) && load.done) { currentUrl = url; publish(); }
       return;
@@ -625,7 +625,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
       if (!entries[index]) return undefined;
       while (entries[index]?.url === referenceUrl) index += offset;
       const url = entries[index]?.url;
-      return isNavigationUrl(url) ? { url, index, adjacentIndex: activeIndex + offset } : null;
+      return isNavigationUrl(url) ? { url, index, adjacentIndex: activeIndex + offset } : undefined;
     } catch (_error) {
       return undefined;
     }

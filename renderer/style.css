@@ -2510,8 +2510,10 @@ button.sidebar-section-header:hover {
   justify-content: center;
 }
 .grid-empty-box {
+  box-sizing: border-box;
+  width: 100%;
   max-width: 420px;
-  padding: 24px;
+  padding: 24px 8px;
   text-align: center;
   color: #c9d1d9;
 }
@@ -2537,14 +2539,16 @@ button.sidebar-section-header:hover {
   flex-wrap: wrap;
 }
 .grid-empty-btn {
-  padding: 8px 16px;
+  padding: 8px;
   border: 1px solid #2ea043;
   border-radius: 6px;
   background: #238636;
   color: #ffffff;
   font: inherit;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
+  /* 狭いペインでも操作名の途中で折り返さない。 */
+  white-space: nowrap;
   cursor: pointer;
   transition: background 0.12s, border-color 0.12s;
 }

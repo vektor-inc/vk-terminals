@@ -48,6 +48,44 @@ async function post(port, pathname, payload) {
   return { status: response.status, body: await response.json() };
 }
 
+async function expectEmptyButtonsFit(win) {
+  const measurements = await win.locator('.grid-empty-btn').evaluateAll(buttons => buttons.map(button => {
+    const grid = button.closest('.grid');
+    const buttonRect = button.getBoundingClientRect();
+    const gridRect = grid.getBoundingClientRect();
+    const style = getComputedStyle(button);
+    return {
+      height: buttonRect.height,
+      fontSize: parseFloat(style.fontSize),
+      verticalSpace: parseFloat(style.paddingTop) + parseFloat(style.paddingBottom) + parseFloat(style.borderTopWidth) + parseFloat(style.borderBottomWidth),
+      whiteSpace: style.whiteSpace,
+      left: buttonRect.left - gridRect.left,
+      right: gridRect.right - buttonRect.right,
+    };
+  }));
+  expect(measurements.length).toBeGreaterThan(0);
+  for (const button of measurements) {
+    expect(button.whiteSpace).toBe('nowrap');
+    expect(button.height).toBeLessThanOrEqual(button.fontSize * 1.6 + button.verticalSpace + 1);
+    expect(button.left).toBeGreaterThanOrEqual(0);
+    expect(button.right).toBeGreaterThanOrEqual(0);
+  }
+}
+
+test('狭いペイン領域でも空画面のボタンは折り返さず収まる', async () => {
+  const launched = await start();
+  try {
+    await launched.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(512, 640));
+    await expect(launched.win.locator('.grid-empty-btn')).toBeVisible();
+    await expectEmptyButtonsFit(launched.win);
+
+    const created = await post(launched.port, '/api/new-pane', { noClaude: true, stashed: true });
+    expect(created.status).toBe(200);
+    await expect(launched.win.locator('.grid-empty-btn-secondary')).toBeVisible();
+    await expectEmptyButtonsFit(launched.win);
+  } finally { await closeApp(launched); }
+});
+
 test('既定では空画面からボタンで最初のペインを追加できる', async () => {
   const launched = await start();
   try {

@@ -192,6 +192,8 @@ test('使い方・ヘルプ: 確認失敗の再確認、未保存キャンセル
     await expect(win.locator('.internal-browser-url')).toHaveValue(previousUrl);
     await win.locator('.internal-browser-toolbar [data-action="forward"]').click();
     await expect(win.locator('.internal-browser-url')).toHaveValue(/guide/);
+    await expect.poll(() => app.evaluate(({ webContents }) =>
+      webContents.getAllWebContents().some((contents) => contents.getURL() === 'vk-terminals-help://guide/'))).toBe(true);
     await win.locator('.internal-browser-toolbar [data-action="external"]').click();
     await expect.poll(() => app.evaluate(() => global.helpDocumentUrls)).toEqual([require('url').pathToFileURL(fs.realpathSync(path.join(root, 'help.html'))).href]);
     // 同梱 HTML が消えた場合は設定を閉じず、再試行の案内を残す。

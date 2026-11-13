@@ -186,8 +186,6 @@ async function modifierClickAtOffset(win, pos, colOffset, mac) {
   await win.mouse.up();
   await win.keyboard.up(key);
   await new Promise((resolve) => setTimeout(resolve, 250));
-  const external = win.getByRole('menuitem', { name: '外部ブラウザで開く ↗', exact: true });
-  if (await external.count()) await external.click();
 }
 
 // 修飾キー無しでそのままクリックする（pos.col + colOffset のセル）。
@@ -201,8 +199,13 @@ async function plainClickAtOffset(win, pos, colOffset) {
   await win.mouse.down();
   await win.mouse.up();
   await new Promise((resolve) => setTimeout(resolve, 250));
+}
+
+async function chooseExternalBrowser(win, app) {
   const external = win.getByRole('menuitem', { name: '外部ブラウザで開く ↗', exact: true });
-  if (await external.count()) await external.click();
+  await expect(external).toBeVisible();
+  expect(await getOpenExternalCalls(app)).toEqual([]);
+  await external.click();
 }
 
 // 右クリック（button: 2）で pos.col + colOffset のセルをクリックする（issue #385
@@ -326,6 +329,7 @@ test.describe.serial('ペイン内 URL の Cmd/Ctrl+クリック（issue #349 / 
     const pos = await findTextPosition(win, url);
     expect(pos).not.toBeNull();
     await plainClickAtOffset(win, pos, 3);
+    await chooseExternalBrowser(win, app);
 
     expect(await getOpenExternalCalls(app)).toEqual([url]);
 
@@ -355,6 +359,7 @@ test.describe.serial('ペイン内 URL の Cmd/Ctrl+クリック（issue #349 / 
     const pos = await findTextPosition(win, url);
     expect(pos).not.toBeNull();
     await modifierClickAtOffset(win, pos, 3, mac);
+    await chooseExternalBrowser(win, app);
 
     expect(await getOpenExternalCalls(app)).toEqual([url]);
   });
@@ -370,6 +375,7 @@ test.describe.serial('ペイン内 URL の Cmd/Ctrl+クリック（issue #349 / 
     const pos = await findTextPosition(win, url);
     expect(pos).not.toBeNull();
     await modifierClickAtOffset(win, pos, 3, mac);
+    await chooseExternalBrowser(win, app);
 
     // 「。」を含まない、trimTrailingPunctuation() 適用後の URL だけが渡る。
     expect(await getOpenExternalCalls(app)).toEqual([url]);
@@ -384,6 +390,7 @@ test.describe.serial('ペイン内 URL の Cmd/Ctrl+クリック（issue #349 / 
     const localPos = await findTextPosition(win, localUrl);
     expect(localPos).not.toBeNull();
     await modifierClickAtOffset(win, localPos, 3, mac);
+    await chooseExternalBrowser(win, app);
     expect(await getOpenExternalCalls(app)).toEqual([localUrl]);
 
     await moveMouseAway(win);
@@ -392,6 +399,7 @@ test.describe.serial('ペイン内 URL の Cmd/Ctrl+クリック（issue #349 / 
     const loopbackPos = await findTextPosition(win, loopbackUrl);
     expect(loopbackPos).not.toBeNull();
     await modifierClickAtOffset(win, loopbackPos, 3, mac);
+    await chooseExternalBrowser(win, app);
     expect(await getOpenExternalCalls(app)).toEqual([loopbackUrl]);
   });
 
@@ -409,6 +417,7 @@ test.describe.serial('ペイン内 URL の Cmd/Ctrl+クリック（issue #349 / 
 
     // 修飾キー付きクリックをしても openExternal は一切呼ばれない。
     await modifierClickAtOffset(win, pos, 3, mac);
+    await expect(win.locator('.internal-browser-choice')).toHaveCount(0);
     expect(await getOpenExternalCalls(app)).toEqual([]);
   });
 
@@ -517,6 +526,7 @@ test.describe.serial('ペイン内 URL の Cmd/Ctrl+クリック（issue #349 / 
       expect(tooltip.text).toContain('github.com');
 
       await modifierClickAtOffset(win, pos, 1, mac);
+      await chooseExternalBrowser(win, app);
       // 分断されていない完全な URL が渡る。
       expect(await getOpenExternalCalls(app)).toEqual([url]);
     } finally {
@@ -691,6 +701,7 @@ test.describe.serial('ペイン内 URL クリック: terminalLinkClickMode が m
     expect(pos).not.toBeNull();
     await plainClickAtOffset(win, pos, 3);
 
+    await expect(win.locator('.internal-browser-choice')).toHaveCount(0);
     expect(await getOpenExternalCalls(app)).toEqual([]);
   });
 
@@ -702,6 +713,7 @@ test.describe.serial('ペイン内 URL クリック: terminalLinkClickMode が m
     const pos = await findTextPosition(win, url);
     expect(pos).not.toBeNull();
     await modifierClickAtOffset(win, pos, 3, mac);
+    await chooseExternalBrowser(win, app);
 
     expect(await getOpenExternalCalls(app)).toEqual([url]);
   });
@@ -761,6 +773,7 @@ test.describe.serial('ペイン内 URL クリック: フォーカスされてい
     // 1回目のクリック: フォーカス移動だけに使われ、リンクは開かない
     // （修正前の MEDIUM-1/HIGH-2 とは別の穴・issue #385 本来のガード）。
     await plainClickAtOffset(win, pos, 3);
+    await expect(win.locator('.internal-browser-choice')).toHaveCount(0);
     expect(await getOpenExternalCalls(app)).toEqual([]);
     await expect(win.locator('.pane[data-id="pane-1"]')).toHaveClass(/\bfocused\b/);
 
@@ -806,6 +819,7 @@ test.describe.serial('ペイン内 URL クリック: フォーカスされてい
     // 4 へ意図的にずらしている（上のコメント参照。同じセルに戻すと xterm.js の
     // キャッシュに引っかかって開かなくなる）。
     await plainClickAtOffset(win, pos, 4);
+    await chooseExternalBrowser(win, app);
     expect(await getOpenExternalCalls(app)).toEqual([url]);
   });
 
@@ -871,6 +885,7 @@ test.describe.serial('ペイン内 URL クリック: フォーカスされてい
     // recordPaneFocusBeforeMousedown() を呼んでおらず、格納前の「フォーカス済み」の
     // 記録が残ったままだったためここで誤って開いてしまっていた。
     await plainClickAtOffset(win, pos, 3);
+    await expect(win.locator('.internal-browser-choice')).toHaveCount(0);
     expect(await getOpenExternalCalls(app)).toEqual([]);
     await expect(stashItem).toHaveClass(/\bfocused\b/);
 
@@ -886,6 +901,7 @@ test.describe.serial('ペイン内 URL クリック: フォーカスされてい
     // 詳細は上のグリッドのテストのコメント参照）。url を短くした（原因A対処）ため、
     // colOffset 4 でも url の文字範囲（24文字）に収まる。
     await plainClickAtOffset(win, pos, 4);
+    await chooseExternalBrowser(win, app);
     expect(await getOpenExternalCalls(app)).toEqual([url]);
   });
 });
@@ -977,6 +993,7 @@ test.describe.serial('ペイン内 URL クリック: 計測側（右クリック
     // 1回目のクリック: 「ウィンドウを前面に出すためのクリック」扱いになり、
     // フォーカス移動だけに使われて開かない。
     await plainClickAtOffset(win, pos, 3);
+    await expect(win.locator('.internal-browser-choice')).toHaveCount(0);
     expect(await getOpenExternalCalls(app)).toEqual([]);
 
     // MEDIUM-A: 連続クリックがダブルクリック扱いにならないよう間隔を空ける
@@ -991,6 +1008,7 @@ test.describe.serial('ペイン内 URL クリック: 計測側（右クリック
     // colOffset を 1回目（3）から 4 へずらす（同じセルに戻すと xterm.js のキャッシュに
     // 引っかかって開かなくなるため。詳細は上記「グリッド」テストのコメント参照）。
     await plainClickAtOffset(win, pos, 4);
+    await chooseExternalBrowser(win, app);
     expect(await getOpenExternalCalls(app)).toEqual([url]);
   });
 });

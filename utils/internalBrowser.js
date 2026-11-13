@@ -1,9 +1,12 @@
 'use strict';
 
 const electron = require('electron');
-const { PARTITION, validateBrowserBounds, isBrowserUrl, isNavigationUrl } = require('./internalBrowserPolicy');
+const fs = require('node:fs');
+const { pathToFileURL } = require('node:url');
+const { isHelpDocument } = require('./helpFeature');
+const { PARTITION, HELP_URL, isHelpUrl, validateBrowserBounds, isBrowserUrl, isNavigationUrl } = require('./internalBrowserPolicy');
 
-function createInternalBrowser(win, { WebContentsView, session, dialog } = electron) {
+function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocumentPath = null } = electron) {
   const browserSession = session.fromPartition(PARTITION);
   browserSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
   browserSession.setPermissionCheckHandler(() => false);
@@ -64,7 +67,9 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
     if (!attached) { win.contentView.addChildView(view); attached = true; }
   }
 
-  function navigate(url, fromPage = false) {
+  function openHelp() { return navigate(HELP_URL, true, true); }
+
+  function navigate(url, fromPage = false, waitForLoad = false) {
     if (!(fromPage ? isNavigationUrl(url) : isBrowserUrl(url))) return false;
     if (!view) {
       view = new WebContentsView({ webPreferences: {
@@ -121,10 +126,11 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
     github404Url = '';
     downloadUrl = '';
     pendingUrl = fromPage ? '' : url;
-    view.webContents.loadURL(url).catch(() => {});
+    const loading = view.webContents.loadURL(url);
+    if (!waitForLoad) loading.catch(() => {});
     syncBounds();
     publish();
-    return true;
+    return waitForLoad ? loading.then(() => true) : true;
   }
 
   function action(name) {
@@ -152,7 +158,15 @@ function createInternalBrowser(win, { WebContentsView, session, dialog } = elect
   }
 
   return {
-    navigate, action, destroy,
+    navigate, openHelp, action, destroy,
+    externalUrl(source) {
+      if (source !== 'current' && source !== 'failed') return null;
+      const url = source === 'failed' ? failedUrl : (downloadUrl || currentUrl);
+      if (!isHelpUrl(url)) return null;
+      if (!helpDocumentPath || !isHelpDocument(helpDocumentPath)) return null;
+      try { if (fs.lstatSync(helpDocumentPath).isSymbolicLink()) return null; } catch { return null; }
+      return pathToFileURL(helpDocumentPath).href + new URL(url).hash;
+    },
     setBounds(rect) { bounds = validateBrowserBounds(rect, win.getContentBounds()); syncBounds(); return !!bounds; },
     setVisible(value) { visible = value === true; syncBounds(); },
     setModalCount(value) { if (!Number.isInteger(value) || value < 0) return; modalCount = value; syncBounds(); },

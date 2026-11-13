@@ -286,7 +286,10 @@ internalBrowserSidebar.addEventListener('click', event => {
   if (action === 'close') { setInternalBrowserOpen(false); document.getElementById('internal-browser-toggle')?.focus(); }
   else if (action === 'external') {
     const url = event.target.closest('.internal-browser-error') ? internalBrowserFailedUrl : (internalBrowserDownloadUrl || internalBrowserUrl);
-    if (url) openExternalUrlSafe(url);
+    if (url) {
+      if (url.startsWith('vk-terminals-help://')) VKIpc.invoke('internal-browser:external', event.target.closest('.internal-browser-error') ? 'failed' : 'current').catch(() => {});
+      else openExternalUrlSafe(url);
+    }
   }
   else if (action) VKIpc.invoke('internal-browser:action', action).catch(() => {});
   else if (event.target.closest('.internal-browser-url') && internalBrowserUrl) VKClipboard.writeText(internalBrowserUrl).then(ok => { if (ok) showGenericToast('URL をコピーしました'); });
@@ -5995,46 +5998,55 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
     fitAll();
     focusPane(result);
   };
+  const launchHelpDocument = async () => {
+    const opened = await VKIpc.invoke('help:document');
+    if (!opened) throw new Error('Help document is unavailable.');
+    close();
+    setInternalBrowserOpen(true);
+    return true;
+  };
   const helpContainer = modal.querySelector('.settings-help-entry');
+  const confirmUnsavedHelp = (launch, onLaunching, target) => {
+    const dirty = modal.querySelector('.settings-tab.is-dirty');
+    if (!dirty) return launch(onLaunching);
+    // 保存・破棄・キャンセルは同じ確認画面で選ぶ。
+    return new Promise((resolve, reject) => {
+      const choices = document.createElement('div');
+      choices.className = 'settings-help-entry';
+      const text = document.createElement('p');
+      text.id = 'help-unsaved-label';
+      choices.setAttribute('role', 'group');
+      choices.setAttribute('aria-labelledby', text.id);
+      text.textContent = `未保存の変更があります。保存してから${target}を開きますか？`;
+      choices.appendChild(text);
+      const finish = async () => {
+        choices.remove();
+        try { resolve(await launch(onLaunching)); } catch (error) { reject(error); }
+      };
+      for (const [label, action] of [
+        ['保存して開く', async () => {
+          choices.querySelectorAll('button').forEach((button) => { button.disabled = true; });
+          if (await saveSettings({ keepOpen: true })) await finish();
+          else { choices.remove(); resolve(false); }
+        }],
+        ['破棄して開く', finish],
+        ['キャンセル', () => { choices.remove(); resolve(false); }],
+      ]) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'settings-secondary-button';
+        button.textContent = label;
+        button.addEventListener('click', action);
+        choices.appendChild(button);
+      }
+      helpContainer.appendChild(choices);
+      choices.querySelector('button').focus();
+    });
+  };
   const helpView = helpContainer ? VKHelpEntry.mount(helpContainer, {
     invoke: (channel) => VKIpc.invoke(channel),
-    openGuide: async (onLaunching) => {
-      const dirty = modal.querySelector('.settings-tab.is-dirty');
-      if (!dirty) return launchHelpGuide(onLaunching);
-      // 保存・破棄・キャンセルは明示的に選び、保存失敗時は起動しない。
-      return new Promise((resolve, reject) => {
-        const choices = document.createElement('div');
-        choices.className = 'settings-help-entry';
-        const text = document.createElement('p');
-        text.id = 'help-unsaved-label';
-        choices.setAttribute('role', 'group');
-        choices.setAttribute('aria-labelledby', text.id);
-        text.textContent = '未保存の変更があります。保存してからガイドを開きますか？';
-        choices.appendChild(text);
-        const finish = async () => {
-          choices.remove();
-          try { resolve(await launchHelpGuide(onLaunching)); } catch (error) { reject(error); }
-        };
-        for (const [label, action] of [
-          ['保存して開く', async () => {
-            choices.querySelectorAll('button').forEach((button) => { button.disabled = true; });
-            if (await saveSettings({ keepOpen: true })) await finish();
-            else { choices.remove(); resolve(false); }
-          }],
-          ['破棄して開く', finish],
-          ['キャンセル', () => { choices.remove(); resolve(false); }],
-        ]) {
-          const button = document.createElement('button');
-          button.type = 'button';
-          button.className = 'settings-secondary-button';
-          button.textContent = label;
-          button.addEventListener('click', action);
-          choices.appendChild(button);
-        }
-        helpContainer.appendChild(choices);
-        choices.querySelector('button').focus();
-      });
-    },
+    openGuide: (onLaunching) => confirmUnsavedHelp(launchHelpGuide, onLaunching, 'ガイド'),
+    openDocument: () => confirmUnsavedHelp(launchHelpDocument, () => {}, 'ドキュメント'),
   }) : null;
   const showHelp = () => {
     if (helpContainer && !helpContainer.closest('[role=tabpanel]').hidden) helpView.show();

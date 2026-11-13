@@ -43,7 +43,7 @@ test('単体起動: 設定カードの上下端とキーボードで設定を開
 test('使い方・ヘルプ: 確認失敗の再確認、未保存キャンセル、連打と格納復帰', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-help-e2e-'));
   fs.mkdirSync(path.join(root, 'guide'));
-  fs.writeFileSync(path.join(root, 'help.html'), '<html>Help</html>');
+  fs.writeFileSync(path.join(root, 'help.html'), '<html><body>Help<a href="#section">Section</a><h2 id="section">Section</h2><a href="https://example.com/">External</a></body></html>');
   const statusFile = path.join(root, 'status.json');
   fs.writeFileSync(statusFile, '{}');
   let launched;
@@ -73,7 +73,24 @@ test('使い方・ヘルプ: 確認失敗の再確認、未保存キャンセル
       await expect(docButton).toBeFocused();
     }
     await win.getByRole('button', { name: 'ドキュメント', exact: true }).click();
-    expect(await app.evaluate(() => global.helpDocumentUrls)).toEqual([require('url').pathToFileURL(fs.realpathSync(path.join(root, 'help.html'))).href]);
+    await expect(win.locator('.settings-modal')).toHaveCount(0);
+    await expect(win.locator('#internal-browser-sidebar')).toBeVisible();
+    await expect(win.locator('.internal-browser-url')).toContainText('guide');
+    // 同じ案内内の見出しリンクは URL のハッシュだけを更新する。
+    await app.evaluate(async ({ webContents }) => {
+      const guide = webContents.getAllWebContents().find((contents) => contents.getURL().startsWith('vk-terminals-help://guide/'));
+      await guide.executeJavaScript("document.querySelector('a[href=\"#section\"]').click()");
+    });
+    await expect(win.locator('.internal-browser-url')).toContainText('#section');
+    await win.getByRole('button', { name: '外部ブラウザで開く', exact: true }).first().click();
+    await expect.poll(() => app.evaluate(() => global.helpDocumentUrls)).toEqual([require('url').pathToFileURL(fs.realpathSync(path.join(root, 'help.html'))).href + '#section']);
+    // 同梱 HTML が消えた場合は設定を閉じず、再試行の案内を残す。
+    fs.unlinkSync(path.join(root, 'help.html'));
+    await win.evaluate(() => openSettingsModal(VKHelpEntry.TAB_ID));
+    await win.getByRole('button', { name: 'ドキュメント', exact: true }).click();
+    await expect(win.locator('.settings-help-entry [role=status]')).toContainText('もう一度押してください');
+    await expect(win.locator('.settings-modal')).toBeVisible();
+    await win.locator('.settings-close').click();
     // 利用可否が正常でも作業フォルダ消失時は、画面側の代替指定を使わず失敗する。
     fs.writeFileSync(statusFile, JSON.stringify({ engine: 'codex', engines: [
       { engine: 'claude', state: 'unknown' }, { engine: 'codex', state: 'available' },
@@ -86,7 +103,6 @@ test('使い方・ヘルプ: 確認失敗の再確認、未保存キャンセル
     });
     expect(refused).toBe(true);
     await expect(win.locator('.pane')).toHaveCount(countBeforeInvalidCwd);
-    await win.locator('.settings-close').click();
     // AI 自体は起動せず、画面のライフサイクルを隔離した通常ペインで確かめる。
     await win.evaluate(() => {
       const original = VKIpc.invoke;
@@ -119,6 +135,13 @@ test('使い方・ヘルプ: 確認失敗の再確認、未保存キャンセル
     await win.getByLabel('名前', { exact: true }).fill('new');
     await win.getByRole('tab', { name: '使い方・ヘルプ' }).click();
     expect(await win.evaluate(() => window.helpChecks)).toBe(1);
+    // ドキュメントも未保存の確認を経由し、キャンセルでは設定を残す。
+    await win.getByRole('button', { name: 'ドキュメント', exact: true }).click();
+    const documentChoices = win.getByRole('group', { name: '未保存の変更があります。保存してからドキュメントを開きますか？' });
+    await expect(documentChoices).toBeVisible();
+    await documentChoices.getByRole('button', { name: 'キャンセル' }).click();
+    await expect(win.locator('.settings-modal')).toBeVisible();
+    await expect(win.getByRole('button', { name: 'ドキュメント', exact: true })).toBeFocused();
     await win.getByRole('button', { name: 'AI に相談', exact: true }).click();
     await expect(win.locator('.settings-help-entry [role=status]')).toBeEmpty();
     const unsavedGroup = win.getByRole('group', { name: '未保存の変更があります。保存してからガイドを開きますか？' });

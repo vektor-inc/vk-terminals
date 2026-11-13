@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { PARTITION, clampBrowserWidth, validateBrowserBounds, isBrowserUrl, isNavigationUrl } = require('../utils/internalBrowserPolicy');
+const { PARTITION, HELP_URL, isHelpUrl, clampBrowserWidth, validateBrowserBounds, isBrowserUrl, isNavigationUrl } = require('../utils/internalBrowserPolicy');
 const { createInternalBrowser } = require('../utils/internalBrowser');
 const { browserAvailableWidth, shouldFoldSetupPanel, browserWidthMax, shouldWrapToastPhrase } = require('../utils/internalBrowserLayout');
 
@@ -11,6 +11,16 @@ test('専用 persist パーティションと HTTP(S) URL の制限', () => {
   assert.equal(isBrowserUrl('http://example.com'), true);
   assert.equal(isBrowserUrl('file:///etc/passwd'), false);
   assert.equal(isBrowserUrl('javascript:alert(1)'), false);
+});
+
+test('固定案内 URL のみページ遷移で受け付ける', () => {
+  assert.equal(isBrowserUrl(HELP_URL), false);
+  assert.equal(isNavigationUrl(HELP_URL), true);
+  assert.equal(isHelpUrl(HELP_URL + '#section'), true);
+  for (const url of [HELP_URL + '?x=1', HELP_URL + 'other', 'vk-terminals-help://other/', 'vk-terminals-help://guide/../', 'file:///tmp/help.html']) {
+    assert.equal(isHelpUrl(url), false);
+    assert.equal(isNavigationUrl(url), false);
+  }
 });
 
 test('アプリから開く URL だけ長さを制限する', () => {

@@ -11,7 +11,7 @@
     result.splice(about < 0 ? result.length : about, 0, { id: TAB_ID, label: '使い方・ヘルプ' });
     return result;
   }
-  function mount(container, { invoke, openGuide }) {
+  function mount(container, { invoke, openGuide, openDocument }) {
     const button = (label, action) => {
       const element = document.createElement('button');
       element.type = 'button';
@@ -47,8 +47,15 @@
     const retry = button('再確認', check);
     retry.hidden = true;
     const documentButton = button('ドキュメント', async () => {
-      try { await invoke('help:document'); }
-      catch (_) { status.textContent = 'ドキュメントを開けませんでした。もう一度押してください。'; }
+      if (busy) return;
+      busy = true;
+      documentButton.disabled = true;
+      try {
+        status.textContent = '';
+        const opened = await openDocument();
+        if (opened === false) status.textContent = 'ドキュメントを開く操作をキャンセルしました。';
+      } catch (_) { status.textContent = 'ドキュメントを開けませんでした。もう一度押してください。'; }
+      finally { busy = false; documentButton.disabled = false; documentButton.focus(); }
     });
     container.append(documentButton, ai, status, retry);
     // 初回表示と再確認で同じ結果表示を使う。起動直前の状態変化もここへ返す。

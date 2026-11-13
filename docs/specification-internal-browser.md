@@ -18,7 +18,7 @@ Claude Code と Codex のペイン内 URL は、文字列から検出したリ�
 
 ## 保存領域と安全性
 
-WebContentsView は `persist:vk-terminals-internal-browser` を使用し、ターミナル側と Cookie を分ける。単体版と同梱版の保存場所も分かれる。`sandbox: true`、`nodeIntegration: false`、`contextIsolation: true`、`webSecurity: true`、`allowRunningInsecureContent: false`。preload は渡さない。開く URL、ページ遷移、リダイレクト、新規ウィンドウ要求は HTTP(S) のみ。新規ウィンドウは作らず同じサイドバーに開く。専用セッションの権限要求は全て拒否する。証明書エラーの回避は設けない。IPC の送信元と座標を検証する。終了と再起動で WebContentsView を破棄する。
+WebContentsView は `persist:vk-terminals-internal-browser` を使用し、ターミナル側と Cookie を分ける。単体版と同梱版の保存場所も分かれる。`sandbox: true`、`nodeIntegration: false`、`contextIsolation: true`、`webSecurity: true`、`allowRunningInsecureContent: false`。preload は渡さない。通常の開く URL は HTTP(S) のみ。組み込みの案内ページだけ `vk-terminals-help://guide/` をページ遷移・リダイレクト・新規ウィンドウ要求の例外として受け付ける。クエリ・別パス・別ファイル・`file:` は拒否し、ハッシュだけを許可する。専用プロトコルは登録済み `help.documentPath` の HTML のみを返す。案内ページ内の HTTPS リンクは同じサイドバーへ移動し、戻る操作で案内へ戻る。案内ページで外部ブラウザを選ぶと main 側が登録済み HTML の file URL と現在のハッシュを組み立てる。新規ウィンドウは作らず同じサイドバーに開く。専用セッションの権限要求は全て拒否する。証明書エラーの回避は設けない。IPC の送信元と座標を検証する。終了と再起動で WebContentsView を破棄する。
 
 ログイン状態は再起動後も保持するが、外部ブラウザのログインは引き継がない。ログアウトは GitHub 上で行う。パスワードと認証アプリのコード、GitHub Mobile 承認、パスキー、企業 SSO の実機確認結果は未確認（PR で記録）。
 

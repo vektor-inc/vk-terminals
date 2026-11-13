@@ -621,6 +621,38 @@ test('字下げ URL: 箇条書きと地の文を復元する', () => {
   }
 });
 
+test('字下げ URL: 独立した URL 行はそれぞれ別のリンクになる', () => {
+  const urls = [
+    'https://github.com/vektor-inc/vk-terminals/pull/600',
+    'https://github.com/vektor-inc/vk-terminals/pull/601',
+  ];
+  const lines = ['⏺ PR を作成しました。', ...urls.map((url) => '  ' + url)];
+  for (const lineNumber of [2, 3]) {
+    const links = detailLinks(lines, 70, lineNumber);
+    assert.deepEqual(links.map((link) => link.text), [urls[lineNumber - 2]]);
+  }
+});
+
+test('字下げ URL: 自動折り返しのコマンド引数は URL に連結しない', () => {
+  const url = 'https://example.com/path';
+  const first = 'curl ' + url;
+  const links = detailLinks([first, { text: ' -v', isWrapped: true }], first.length, 1);
+  assert.equal(links[0].text, url);
+});
+
+test('字下げ URL: 無効な連結候補でも元のホストへのリンクを残す', () => {
+  const url = 'https://github.com';
+  const links = detailLinks(['- ' + url, '  foo'], 40, 1);
+  assert.deepEqual(links.map((link) => link.text), [url]);
+});
+
+test('字下げ URL: ちょうど 8 行の URL は連結する', () => {
+  const lines = ['- https://example.com/a', ...Array(7).fill('  b')];
+  for (const lineNumber of [1, 8]) {
+    assert.equal(detailLinks(lines, 40, lineNumber)[0].text, 'https://example.com/a' + 'b'.repeat(7));
+  }
+});
+
 test('字下げ URL: 説明文・URL 後の文字・上限超過・表は連結しない', () => {
   const url = 'https://example.com/part';
   for (const continuation of ['  rest of-url', '  続き']) {

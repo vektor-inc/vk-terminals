@@ -223,6 +223,16 @@
   const MAX_DETAIL_URL_CHARS = MAX_WINDOW_CHARS;
   const DETAIL_URL_CHARS = /^[A-Za-z0-9\-._~:/?#[\]@!$&*+,;=%()]+$/;
 
+  // 独立した URL と端末の自動折り返しは、実改行の続きとして扱わない。
+  function getIndentedContinuation(line) {
+    if (!line || line.isWrapped) return null;
+    const text = line.translateToString(false).trimEnd();
+    if (scanTableBorders(text).count >= 2) return null;
+    const continuation = /^( +)(\S+)$/.exec(text);
+    if (!continuation || !DETAIL_URL_CHARS.test(continuation[2]) || /^https?:\/\//i.test(continuation[2])) return null;
+    return continuation;
+  }
+
   // 実改行された URL は、行末の URL と字下げされた URL 文字だけの行をつなぐ。
   // 英数字 1 語だけの説明行は続きと区別できず、連結される既知の限界がある。
   function getIndentedUrlRows(buffer, lineIndex0) {
@@ -240,21 +250,16 @@
       let exceeded = false;
       for (let index = startIndex + 1; index < startIndex + MAX_DETAIL_URL_ROWS; index += 1) {
         const line = buffer.getLine(index);
-        if (!line) break;
-        const text = line.translateToString(false).trimEnd();
-        if (scanTableBorders(text).count >= 2) break;
-        const continuation = /^( +)(\S+)$/.exec(text);
-        if (!continuation || !DETAIL_URL_CHARS.test(continuation[2])) break;
+        const continuation = getIndentedContinuation(line);
+        if (!continuation) break;
         length += continuation[2].length;
         if (length > MAX_DETAIL_URL_CHARS) { exceeded = true; break; }
         rows.push({ index, text: continuation[2], prefixLength: continuation[1].length, forcedMerge: true });
       }
       if (exceeded || rows.length < 2) continue;
       // 9 行目が同じ URL の続きなら、8 行だけの不完全な URL を返さない。
-      const nextLine = buffer.getLine(startIndex + MAX_DETAIL_URL_ROWS);
-      if (rows.length === MAX_DETAIL_URL_ROWS && nextLine &&
-          /^( +)(\S+)$/.test(nextLine.translateToString(false).trimEnd()) &&
-          DETAIL_URL_CHARS.test(nextLine.translateToString(false).trimEnd().trimStart())) continue;
+      if (rows.length === MAX_DETAIL_URL_ROWS &&
+          getIndentedContinuation(buffer.getLine(startIndex + MAX_DETAIL_URL_ROWS))) continue;
       if (rows.some((row) => row.index === lineIndex0)) return rows;
     }
     return null;
@@ -354,8 +359,17 @@
   function computeLinksForLine(terminal, bufferLineNumber, handlers) {
     const buffer = terminal.buffer.active;
     const lineIndex0 = bufferLineNumber - 1;
-    const detailRows = getDetailUrlRows(buffer, lineIndex0);
-    const rows = detailRows || getIndentedUrlRows(buffer, lineIndex0) || getWrappedLineWindow(buffer, lineIndex0);
+    // 専用連結で URL が無効になった場合は、元の折り返し窓で再計算する。
+    for (const getRows of [getDetailUrlRows, getIndentedUrlRows, getWrappedLineWindow]) {
+      const rows = getRows(buffer, lineIndex0);
+      if (!rows) continue;
+      const links = computeLinksForRows(buffer, rows, handlers);
+      if (links.length) return links;
+    }
+    return [];
+  }
+
+  function computeLinksForRows(buffer, rows, handlers) {
     if (!rows || rows.length === 0) return [];
 
     let merged = '';

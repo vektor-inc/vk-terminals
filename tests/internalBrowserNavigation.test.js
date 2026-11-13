@@ -683,6 +683,7 @@ test('案内からの履歴復帰でdid-navigateも欠けた場合はdid-stop-lo
   const { browser, contents, states } = setup();
   await contents.complete('https://example.com/a');
   let staleStopResult;
+  const operationId = states.at(-1).navigationOperationId;
   contents.navigationHistory.canGoBack = () => true;
   contents.navigationHistory.getActiveIndex = () => 1;
   contents.navigationHistory.getAllEntries = () => [
@@ -692,6 +693,10 @@ test('案内からの履歴復帰でdid-navigateも欠けた場合はdid-stop-lo
   contents.navigationHistory.goBack = () => {
     contents.emit('did-stop-loading');
     staleStopResult = states.at(-1).navigationResult;
+    contents.emit('will-navigate', {
+      url: 'https://example.com/previous',
+      preventDefault() { assert.fail('履歴先のHTTP URLは許可される'); },
+    });
     contents.setDocumentUrl('https://example.com/previous');
     contents.emit('did-stop-loading');
   };
@@ -700,6 +705,7 @@ test('案内からの履歴復帰でdid-navigateも欠けた場合はdid-stop-lo
   assert.equal(staleStopResult, null);
   assert.equal(states.at(-1).navigationResult, 'completed');
   assert.equal(states.at(-1).url, 'https://example.com/previous');
+  assert.equal(states.at(-1).navigationOperationId, operationId + 1);
 });
 
 test('ページ起点のB開始後に旧Aの停止が届いてもBをAとして完了しない', async () => {

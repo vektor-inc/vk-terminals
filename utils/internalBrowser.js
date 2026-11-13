@@ -216,6 +216,10 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
 
       contents.on('will-navigate', event => {
         if (!isNavigationUrl(event.url)) { event.preventDefault(); return; }
+        // back/forward が起こす will-navigate は action() で開始済みの操作に属する。
+        // ここで置き換えると custom scheme から戻る際の did-stop 補完が失われる。
+        if (activeLoad?.native && !activeLoad.done && activeLoad.historyTarget
+          && activeLoad.acceptsHistoryUrl(event.url)) return;
         if (isHelpUrl(event.url)) {
           event.preventDefault();
           loadHelp(event.url).catch(() => {});

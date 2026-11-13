@@ -61,6 +61,9 @@ test('アドレス欄は IPv4 アドレスとポート番号付きの 1 語の�
   assert.equal(normalizeBrowserAddress('256.1.1.1'), 'https://www.google.com/search?q=256.1.1.1');
   assert.equal(normalizeBrowserAddress('192.168.1'), 'https://www.google.com/search?q=192.168.1');
   assert.equal(normalizeBrowserAddress('myserver:99999'), null);
+  // 数字だけの「16:9」「10:30」は比率や時刻の検索語として扱い、ホスト名と誤認しない。
+  assert.equal(normalizeBrowserAddress('16:9'), `https://www.google.com/search?q=${encodeURIComponent('16:9')}`);
+  assert.equal(normalizeBrowserAddress('10:30'), `https://www.google.com/search?q=${encodeURIComponent('10:30')}`);
   assert.equal(normalizeBrowserAddress('javascript:alert(1)'), `https://www.google.com/search?q=${encodeURIComponent('javascript:alert(1)')}`);
 });
 

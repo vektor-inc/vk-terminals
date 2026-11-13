@@ -413,11 +413,12 @@ function rejectInternalBrowserAddressRequest(requestId, { input, url, hadPage })
   if (internalBrowserPendingUrl === url) internalBrowserPendingUrl = '';
   internalBrowserHasPage = hadPage || Boolean(internalBrowserUrl || internalBrowserFailedUrl);
   setInternalBrowserNavigationStatus('');
-  // 入力した文字列を残し、ページの状態通知で上書きさせない。
-  internalBrowserAddress.value = input;
+  // 送信後に編集していなければ入力した文字列へ戻す。応答を待つ間に打ち直した文字列は残す。
+  // どちらの場合も、ページの状態通知で上書きさせない。
+  if (!internalBrowserAddressHasDraft) internalBrowserAddress.value = input;
   internalBrowserAddressHasDraft = true;
   syncInternalBrowserExternalTarget();
-  showInternalBrowserAddressError('ページを開けませんでした。入力を確認して、もう一度 Enter を押してください。');
+  showInternalBrowserAddressError('ページを開けませんでした。もう一度 Enter を押してください。続けて開けない場合は、アプリを再起動してください。');
 }
 internalBrowserAddress.addEventListener('input', () => {
   // フォーカスを移しても未送信の入力を保持し、ページ状態通知から守る。

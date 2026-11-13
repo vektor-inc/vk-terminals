@@ -347,7 +347,7 @@ test('main が Enter の送信を受け付けないときは読み込み中を�
   assert.equal(navigationStatus.textContent, '');
   assert.equal(address.value, 'github.com/vektor-inc');
   assert.equal(error.hidden, false);
-  assert.match(error.textContent, /ページを開けませんでした/);
+  assert.equal(error.textContent, 'ページを開けませんでした。もう一度 Enter を押してください。続けて開けない場合は、アプリを再起動してください。');
   assert.equal(address.attributes['aria-invalid'], 'true');
   assert.equal(address.attributes['aria-describedby'], error.id);
 
@@ -357,7 +357,7 @@ test('main が Enter の送信を受け付けないときは読み込み中を�
   await settle();
   assert.equal(vm.runInContext('internalBrowserNavigationActive', context), false);
   assert.equal(address.value, 'example.com');
-  assert.match(error.textContent, /ページを開けませんでした/);
+  assert.equal(error.textContent, 'ページを開けませんでした。もう一度 Enter を押してください。続けて開けない場合は、アプリを再起動してください。');
 
   // 古い送信の拒否が後から届いても、後続の送信の読み込み中表示を巻き戻さない。
   let rejectFirst;
@@ -372,6 +372,53 @@ test('main が Enter の送信を受け付けないときは読み込み中を�
   assert.equal(address.value, 'https://second.example');
   assert.equal(navigationStatus.textContent, 'ページを読み込み中');
   assert.equal(error.hidden, true);
+});
+
+test('main の拒否を待つ間にアドレス欄を編集したときは、拒否が届いても編集した文字列を残す', async () => {
+  const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
+  const addressHandlers = source.match(/const internalBrowserAddress = internalBrowserSidebar\.querySelector\('\.internal-browser-url'\);[\s\S]*?(?=document\.getElementById\('internal-browser-toggle'\))/)?.[0];
+  assert.ok(addressHandlers);
+  const handlers = {};
+  const error = { id: 'internal-browser-address-error', hidden: true, textContent: '' };
+  const navigationStatus = { textContent: '' };
+  const address = { value: '', attributes: {}, addEventListener: (type, handler) => { handlers[type] = handler; },
+    setAttribute(name, value) { this.attributes[name] = value; }, removeAttribute(name) { delete this.attributes[name]; } };
+  let reply;
+  const context = vm.createContext({
+    internalBrowserSidebar: { querySelector: selector => ({ '.internal-browser-url': address, '.internal-browser-address-error': error,
+      '.internal-browser-toolbar [data-action="external"]': { setAttribute() {} }, '.internal-browser-external-target': { hidden: true, textContent: '' },
+      '.internal-browser-navigation-status': navigationStatus })[selector] },
+    resolveBrowserAddress: require('../renderer/urlSafety').resolveBrowserAddress,
+    VKIpc: { invoke: () => reply },
+    syncInternalBrowserLayout() {},
+    URL,
+  });
+  vm.runInContext(`let internalBrowserUrl = ''; let internalBrowserFailedUrl = ''; let internalBrowserDownloadUrl = ''; let internalBrowserPendingUrl = ''; let internalBrowserAddressHasDraft = false; let internalBrowserHasPage = false; ${addressHandlers}`, context);
+  const settle = () => new Promise(resolve => setImmediate(resolve));
+  const type = value => {
+    address.value = value;
+    handlers.input();
+  };
+
+  // false の応答と例外のどちらでも、応答前に打ち直した文字列を送信時の入力へ戻さない。
+  for (const [label, settleReply] of [['false', resolve => resolve(false)], ['例外', (_resolve, reject) => reject(new Error('ipc failed'))]]) {
+    let resolveReply;
+    let rejectReply;
+    reply = new Promise((resolve, reject) => { resolveReply = resolve; rejectReply = reject; });
+    type('first.example');
+    handlers.keydown({ key: 'Enter', preventDefault() {} });
+    assert.equal(address.value, 'https://first.example', label);
+    type('second.example/edit');
+    settleReply(resolveReply, rejectReply);
+    await settle();
+    // 読み込み中の状態は解除し、エラーで案内する。
+    assert.equal(vm.runInContext('internalBrowserNavigationActive', context), false, label);
+    assert.equal(navigationStatus.textContent, '', label);
+    assert.equal(vm.runInContext('internalBrowserAddressHasDraft', context), true, label);
+    assert.equal(address.value, 'second.example/edit', label);
+    assert.equal(error.hidden, false, label);
+    assert.equal(error.textContent, 'ページを開けませんでした。もう一度 Enter を押してください。続けて開けない場合は、アプリを再起動してください。', label);
+  }
 });
 
 test('開き先メニュー表示中は別リンクのツールチップを出さない', () => {

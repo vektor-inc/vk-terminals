@@ -842,9 +842,9 @@ const TASK_PENDING_TIMEOUT_MS = 30000;
 const TASK_REFRESH_TIMEOUT_MS = 60000;
 const TASK_REFRESH_LABEL = 'タスクを今すぐ再取得';
 const TASK_REFRESH_BUSY_LABEL = 'タスクを再取得しています';
-// 再取得ボタンを押した時刻（ms）。null のときは取得中ではない。
-let taskRefreshRequestedAt = null;
-let taskRefreshTimer = null;
+const TASK_REFRESH_FAILED_TEXT = 'タスクの再取得を依頼できませんでした';
+// 再取得ボタンの取得中状態。ボタン生成時に作る（createTaskRefreshButton）。
+let taskRefreshState = null;
 // dual-write 期間: 新 tasks-widget.json が無く旧 tasks-view.json だけがある場合の後方互換注記。
 const WIDGET_LEGACY_NOTICE_TEXT = 'orchestrator の更新が必要な可能性があります';
 
@@ -2654,65 +2654,63 @@ function createTaskRefreshButton() {
   use.setAttribute('href', 'icons/ui.svg#rotate-cw');
   icon.appendChild(use);
   button.appendChild(icon);
-  button.addEventListener('click', () => { requestTaskRefresh(button); });
+  taskRefreshState = window.VKTaskRefreshState.createTaskRefreshState({
+    timeoutMs: TASK_REFRESH_TIMEOUT_MS,
+    onChange: (busy) => setTaskRefreshBusy(button, busy),
+  });
+  button.addEventListener('click', () => { requestTaskRefresh(); });
   return button;
 }
 
-// 取得中の表示（回転・aria-busy・押せない状態・ツールチップ）を切り替える。
+// 取得中の表示（回転・aria-busy・押せない状態・読み上げ名・ツールチップ）を切り替える。
 function setTaskRefreshBusy(button, busy) {
+  const label = busy ? TASK_REFRESH_BUSY_LABEL : TASK_REFRESH_LABEL;
   button.classList.toggle('is-busy', busy);
   button.setAttribute('aria-busy', busy ? 'true' : 'false');
   if (busy) button.setAttribute('aria-disabled', 'true');
   else button.removeAttribute('aria-disabled');
-  button.title = busy ? TASK_REFRESH_BUSY_LABEL : TASK_REFRESH_LABEL;
-}
-
-function endTaskRefresh(button) {
-  if (taskRefreshTimer) clearTimeout(taskRefreshTimer);
-  taskRefreshTimer = null;
-  taskRefreshRequestedAt = null;
-  if (button) setTaskRefreshBusy(button, false);
+  button.setAttribute('aria-label', label);
+  button.title = label;
 }
 
 // 宣言の refreshCommand 断片を main へ渡し、commands.jsonl へ 1 行追記してもらう。
 // 新しい一覧（押した時刻より新しい updatedAt）が届くか、一定時間たつまで取得中にする。
-async function requestTaskRefresh(button) {
-  if (taskRefreshRequestedAt !== null) return;
+async function requestTaskRefresh() {
+  if (!taskRefreshState || taskRefreshState.isBusy()) return;
   const widget = lastWidgetPayload && lastWidgetPayload.widget;
   const fragment = widget && widget.refreshCommand;
   if (!fragment || !lastWidgetPayload.commandsConfigured) return;
 
-  taskRefreshRequestedAt = Date.now();
-  setTaskRefreshBusy(button, true);
-  taskRefreshTimer = setTimeout(() => endTaskRefresh(button), TASK_REFRESH_TIMEOUT_MS);
+  const token = taskRefreshState.start();
+  if (token === null) return;
+  let failure = null;
   try {
     const res = await VKIpc.invoke('widgets:command', fragment);
-    if (!res || !res.ok) {
-      console.warn('タスクの再取得の依頼に失敗しました', res && res.error);
-      endTaskRefresh(button);
-    }
+    if (!res || !res.ok) failure = res && res.error;
   } catch (e) {
-    console.warn('タスクの再取得の依頼に失敗しました', e);
-    endTaskRefresh(button);
+    failure = e;
   }
+  if (failure === null) return;
+  console.warn('タスクの再取得の依頼に失敗しました', failure);
+  // 今の依頼の失敗のときだけ解除して知らせる。押し直した後に古い依頼の失敗が遅れて届いても、
+  // 取得中の依頼が失敗したように見せない。
+  if (taskRefreshState.finish(token)) showGenericToast(TASK_REFRESH_FAILED_TEXT);
 }
 
 // 描画のたびに、再取得ボタンの表示と取得中の解除を判定する。
 // 宣言に refreshCommand が無い版のオーケストレーター、または commands.jsonl が未設定のときは出さない。
 function updateTaskRefreshButton(section, payload) {
   const button = section.querySelector('.task-list-refresh');
-  if (!button) return;
+  if (!button || !taskRefreshState) return;
   const widget = payload && payload.widget;
   const configured = !!(payload && payload.commandsConfigured);
   const available = !!(widget && widget.refreshCommand) && configured;
   if (button.hidden !== !available) button.hidden = !available;
   if (!available) {
-    if (taskRefreshRequestedAt !== null) endTaskRefresh(button);
+    taskRefreshState.cancel();
     return;
   }
-  if (taskRefreshRequestedAt === null) return;
-  const updatedAtMs = Date.parse(widget.updatedAt || '');
-  if (Number.isFinite(updatedAtMs) && updatedAtMs > taskRefreshRequestedAt) endTaskRefresh(button);
+  taskRefreshState.finishIfNewer(Date.parse(widget.updatedAt || ''));
 }
 
 // 格納ペインを収めるセクション（見出し＋リスト）。中身は renderPaneStash が更新する。

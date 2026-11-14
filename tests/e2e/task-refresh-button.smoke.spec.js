@@ -157,6 +157,13 @@ test.describe.serial('タスク一覧の再取得ボタン（issue #617）', () 
     await expect(button).toHaveAttribute('title', 'タスクを今すぐ再取得');
     await expect(button).toHaveAttribute('type', 'button');
     // DOM 上でプルダウンの直前にあり、見た目でも左に並ぶ。
+    // 再取得ボタンが出ているときだけ、担当者プルダウンの最大幅からその分を差し引く。
+    const filterMaxWidth = () => filter.evaluate((el) => getComputedStyle(el).maxWidth);
+    const withButton = await filterMaxWidth();
+    await button.evaluate((el) => { el.hidden = true; });
+    const withoutButton = await filterMaxWidth();
+    await button.evaluate((el) => { el.hidden = false; });
+    expect(withButton).not.toBe(withoutButton);
     const nextIsFilter = await button.evaluate((el) => el.nextElementSibling?.classList.contains('task-list-assignee-filter'));
     expect(nextIsFilter).toBe(true);
     const buttonBox = await button.boundingBox();
@@ -222,9 +229,18 @@ test.describe.serial('タスク一覧の再取得ボタン（issue #617）', () 
     await button.click();
     await expect(button).toHaveAttribute('aria-busy', 'true');
     await expect(button).toHaveAttribute('aria-disabled', 'true');
+    // 取得中は読み上げ名とツールチップを同じ文言に切り替える。
+    await expect(button).toHaveAccessibleName('タスクを再取得しています');
     await expect(button).toHaveAttribute('title', 'タスクを再取得しています');
     // 押した直後もフォーカスはボタンに残る（disabled にしていない）。
     await expect(button).toBeFocused();
+    // 押せない間はホバーしても明るくならない。
+    await button.hover({ force: true });
+    const hoverStyle = await button.evaluate((el) => {
+      const style = getComputedStyle(el);
+      return { matches: el.matches(':hover'), background: style.backgroundColor, color: style.color };
+    });
+    expect(hoverStyle).toEqual({ matches: true, background: 'rgba(0, 0, 0, 0)', color: 'rgb(139, 148, 158)' });
 
     await expect.poll(() => readCommands(commandsPath).length).toBe(1);
     const [line] = readCommands(commandsPath);
@@ -254,13 +270,31 @@ test.describe.serial('タスク一覧の再取得ボタン（issue #617）', () 
     await waitWidgetReflected(port, widgetFile, buildGithubWidget({ refreshCommand: { action: 'refresh-tasks' }, updatedAt: freshDate() }));
     await expect(button).toHaveAttribute('aria-busy', 'false', { timeout: 10_000 });
     await expect(button).not.toHaveAttribute('aria-disabled', 'true');
+    await expect(button).toHaveAccessibleName('タスクを今すぐ再取得');
     await expect(button).toHaveAttribute('title', 'タスクを今すぐ再取得');
+    // 送信は成功しているので失敗のトーストは出ない。
+    await expect(win.locator('.vk-toast:not([hidden]) .vk-toast-message', { hasText: 'タスクの再取得を依頼できませんでした' })).toHaveCount(0);
 
     // 解除後はもう一度押せる。
     await button.click();
     await expect.poll(() => readCommands(commandsPath).length).toBe(2);
     const ids = readCommands(commandsPath).map((c) => c.id);
     expect(new Set(ids).size).toBe(2);
+  });
+
+  test('押しても commands.jsonl に書けないときは、すぐ取得中を解除してトーストで知らせる', async () => {
+    await setupWidget(win, port, widgetFile, buildGithubWidget({ refreshCommand: { action: 'refresh-tasks' } }), commandsPath);
+    // 追記先をディレクトリにして、追記を失敗させる。
+    fs.mkdirSync(commandsPath, { recursive: true });
+    try {
+      const button = win.locator('#task-list button.task-list-refresh');
+      await button.click();
+      await expect(win.locator('.vk-toast .vk-toast-message')).toHaveText('タスクの再取得を依頼できませんでした');
+      await expect(button).toHaveAttribute('aria-busy', 'false');
+      await expect(button).toHaveAccessibleName('タスクを今すぐ再取得');
+    } finally {
+      fs.rmSync(commandsPath, { recursive: true, force: true });
+    }
   });
 
   test('取得中に refreshCommand が無い一覧へ変わるとボタンを隠す', async () => {

@@ -2007,8 +2007,8 @@ button.sidebar-section-header:hover {
 .task-list-assignee-filter {
   width: 120px;
   min-width: 0;
-  /* 同じ行の再取得ボタンと開閉ボタン（各 24px + gap 4px）の分を差し引く。ボタンの幅を変えたら合わせること。 */
-  max-width: calc(100% - 56px);
+  /* 同じ行の開閉ボタン（24px + gap 4px）の分を差し引く。ボタンの幅を変えたら合わせること。 */
+  max-width: calc(100% - 28px);
   height: 24px;
   padding: 2px 6px;
   /* 面が #1c2128 へ明るくなった分、#30363d では境界が 1.34:1 まで落ちるため、
@@ -2027,6 +2027,10 @@ button.sidebar-section-header:hover {
 }
 .task-list-assignee-filter[hidden] {
   display: none;
+}
+/* 再取得ボタンが出ているときは、その分（24px + gap 4px）も差し引く。 */
+.sidebar-section-controls:has(.task-list-refresh:where(:not([hidden]))) .task-list-assignee-filter {
+  max-width: calc(100% - 56px);
 }
 
 /* タスク一覧の再取得ボタン（issue #617）
@@ -2050,6 +2054,11 @@ button.sidebar-section-header:hover {
 }
 .btn.task-list-refresh[aria-disabled="true"] {
   cursor: progress;
+}
+/* 押せない間はホバーで明るくせず、押せそうに見せない。 */
+.btn.task-list-refresh[aria-disabled="true"]:hover {
+  background: transparent;
+  color: #8b949e;
 }
 .task-list-refresh-icon {
   display: block;

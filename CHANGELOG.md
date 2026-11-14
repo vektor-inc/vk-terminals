@@ -2,6 +2,7 @@
 
 - [ 機能追加 ] アプリ内ブラウザのアドレス欄から URL 入力と Google 検索でページを開く機能を追加（[#600](https://github.com/vektor-inc/vk-terminals/issues/600)）
 - [ 機能追加 ] アプリ内ブラウザの操作列に、ペインを格納してブラウザをメインエリアの全幅で表示する「広く表示」ボタンを追加（[#613](https://github.com/vektor-inc/vk-terminals/issues/613)）
+- [ 機能追加 ] サイドバーのタスク一覧の見出し行に、オーケストレーターへ最新のタスクの取り直しを依頼する再取得ボタンを追加（[#617](https://github.com/vektor-inc/vk-terminals/issues/617)）
 - [ 仕様変更 ] アプリ内ブラウザの URL 表示ボタンによるコピー操作を廃止（[#600](https://github.com/vektor-inc/vk-terminals/issues/600)）
 - [ 仕様変更 ] ウィンドウの幅が狭いときは、アプリ内ブラウザと左サイドバーを同時に開かず、後から開いた方を表示するように変更（[#600](https://github.com/vektor-inc/vk-terminals/issues/600)）
 - [ 仕様変更 ] 表示を拡大してウィンドウがさらに狭いときは、アプリ内ブラウザをウィンドウ全体に重ねて表示するように変更（[#600](https://github.com/vektor-inc/vk-terminals/issues/600)）

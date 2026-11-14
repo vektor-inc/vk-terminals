@@ -2007,6 +2007,7 @@ button.sidebar-section-header:hover {
 .task-list-assignee-filter {
   width: 120px;
   min-width: 0;
+  /* 同じ行の開閉ボタン（24px + gap 4px）の分を差し引く。ボタンの幅を変えたら合わせること。 */
   max-width: calc(100% - 28px);
   height: 24px;
   padding: 2px 6px;
@@ -2026,6 +2027,67 @@ button.sidebar-section-header:hover {
 }
 .task-list-assignee-filter[hidden] {
   display: none;
+}
+/* 再取得ボタンが出ているときは、その分（24px + gap 4px）も差し引く。
+ * さらにプルダウンの幅を見出し行の幅に合わせて縮め、サイドバーの下限幅（240px）でも
+ * 見出し行を 1 行に収める。幅 120px のままだと、ラベルの最小幅 4em（48px）+ gap 6px +
+ * 操作 176px が見出し行（サイドバー幅 − 35px）を超え、240〜265px で 2 段に折り返していた。
+ * 差し引く 112px = ラベル 48px + 余裕 2px + gap 6px + 再取得ボタン 28px + 開閉ボタン 28px。
+ * 下限 80px は「自分のみ」が欠けずに読める幅（文字 44px + 左右 padding 12px + 矢印）。 */
+.task-list > .sidebar-section-header {
+  container-type: inline-size;
+}
+.sidebar-section-controls:has(.task-list-refresh:where(:not([hidden]))) .task-list-assignee-filter {
+  width: clamp(80px, calc(100cqi - 112px), 120px);
+  max-width: calc(100% - 56px);
+}
+
+/* タスク一覧の再取得ボタン（issue #617）
+   ========================================================================== */
+.btn.task-list-refresh {
+  flex: 0 0 24px;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--vktm--color--border-interactive);
+  border-radius: var(--vktm--border-radius--sm);
+  background: transparent;
+  color: #8b949e;
+}
+/* .btn の display: flex が hidden 属性より優先されるため、明示的に隠す。 */
+.btn.task-list-refresh[hidden] {
+  display: none;
+}
+.btn.task-list-refresh:focus-visible {
+  outline: var(--vktm--outline--focus-ring);
+  outline-offset: var(--vktm--outline-offset--focus-ring);
+}
+.btn.task-list-refresh[aria-disabled="true"] {
+  cursor: progress;
+}
+/* 押せない間はホバーで明るくせず、押せそうに見せない。 */
+.btn.task-list-refresh[aria-disabled="true"]:hover {
+  background: transparent;
+  color: #8b949e;
+}
+.task-list-refresh-icon {
+  display: block;
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+}
+.task-list-refresh.is-busy .task-list-refresh-icon {
+  animation: task-list-refresh-spin 1s linear infinite;
+}
+@keyframes task-list-refresh-spin {
+  to { transform: rotate(360deg); }
+}
+/* 回転を止めても取得中と分かるよう、アイコンを薄くして状態を残す。 */
+@media (prefers-reduced-motion: reduce) {
+  .task-list-refresh.is-busy .task-list-refresh-icon {
+    animation: none;
+    opacity: 0.5;
+  }
 }
 .task-list-assignee-filter:focus-visible {
   outline: var(--vktm--outline--focus-ring);

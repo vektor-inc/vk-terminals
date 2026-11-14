@@ -966,7 +966,7 @@ async function appendTaskCommand(command, commandsFile = normalizeCommandsFile(l
   return { ok: true, id: command.id };
 }
 
-// 宣言のコマンド断片（単項目または apply-batch）を受け取り、契約 allowlist で検証してから
+// 宣言のコマンド断片（単項目・apply-batch・再取得の依頼 refresh-tasks）を受け取り、契約 allowlist で検証してから
 // 一意 id と requestedAt を付与し commands.jsonl へ追記する。ビューア（VK Terminals）が id と
 // requestedAt を付与する契約なので、ここで crypto.randomUUID と ISO8601 を採番する。
 async function submitWidgetCommand(fragment) {
@@ -975,13 +975,16 @@ async function submitWidgetCommand(fragment) {
     if (!commandsFile) {
       return { ok: false, error: 'commands-file-not-configured' };
     }
+    const action = fragment && fragment.action;
+    // 再取得の依頼はタスクに紐づかないため、id に refresh- を付けて見分けやすくする。
     const meta = {
-      id: crypto.randomUUID(),
+      id: action === widgetContract.REFRESH_ACTION ? `refresh-${crypto.randomUUID()}` : crypto.randomUUID(),
       requestedAt: new Date().toISOString(),
     };
-    const command = (fragment && fragment.action === 'apply-batch')
-      ? widgetContract.buildBatchCommandLine(fragment, meta)
-      : widgetContract.buildCommandLine(fragment, meta);
+    let command;
+    if (action === 'apply-batch') command = widgetContract.buildBatchCommandLine(fragment, meta);
+    else if (action === widgetContract.REFRESH_ACTION) command = widgetContract.buildRefreshCommandLine(fragment, meta);
+    else command = widgetContract.buildCommandLine(fragment, meta);
     if (!command) {
       return { ok: false, error: 'invalid-command' };
     }

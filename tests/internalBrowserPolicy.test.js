@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { PARTITION, HELP_URL, isHelpUrl, clampBrowserWidth, validateBrowserBounds, isBrowserUrl, isNavigationUrl } = require('../utils/internalBrowserPolicy');
 const { createInternalBrowser } = require('../utils/internalBrowser');
-const { browserAvailableWidth, shouldFoldSetupPanel, browserWidthMax, shouldWrapToastPhrase, shouldSeparateSidebars, shouldOverlayBrowser, MIN_TERMINAL_WIDTH } = require('../utils/internalBrowserLayout');
+const { browserAvailableWidth, shouldFoldSetupPanel, browserWidthMax, wideBrowserWidth, shouldWrapToastPhrase, shouldSeparateSidebars, shouldOverlayBrowser, MIN_TERMINAL_WIDTH } = require('../utils/internalBrowserLayout');
 
 test('案内のハッシュを外部 URL に引き継ぎ、読み込み失敗は拒否する', async () => {
   const { EventEmitter } = require('node:events');
@@ -219,6 +219,18 @@ test('ウィンドウ全体からトースト用の 96px を残す', () => {
   assert.equal(browserWidthMax(455, 1, 455), 359);
   assert.equal(browserWidthMax(456, 1, 456), 360);
   assert.equal(browserWidthMax(360, 1, 600, MIN_TERMINAL_WIDTH), 40);
+});
+
+test('広く表示はペイン用の幅もトースト用の 96px も残さず、使用可能幅をそのまま使う', () => {
+  // 左サイドバーを開いているときは、サイドバーを除いた使用可能幅をそのまま使う。
+  assert.equal(wideBrowserWidth(1100), 1100);
+  // 左サイドバーを閉じているときも 96px を残さない（トーストは右下に出してページを詰める。issue #613）。
+  assert.equal(wideBrowserWidth(1400), 1400);
+  // ペインを何列並べていても、通常時の上限（列数 × 272px の予約）より広い。
+  assert.ok(wideBrowserWidth(1400) > browserWidthMax(1400, 3, 1400));
+  // 小数と負の値は丸めて 0 未満にしない。
+  assert.equal(wideBrowserWidth(1100.7), 1100);
+  assert.equal(wideBrowserWidth(-5), 0);
 });
 
 test('トーストを置ける幅が 200px 未満のときだけ語句を折り返す', () => {

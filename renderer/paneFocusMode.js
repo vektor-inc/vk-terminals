@@ -21,5 +21,12 @@
     return stashedIds.filter(id => stashOrder.includes(id) && terminals[id] && terminals[id].lock?.close !== false);
   }
 
-  return { panesToStash, panesToRestore, shouldOpenSidebarForPane };
+  // 単独表示の開始時の並び（originalOrder）の順に組み直す。開始後に増えたペインは末尾に残す。
+  function orderBeforeFocusMode(originalOrder, order) {
+    const known = order.filter(id => originalOrder.includes(id))
+      .sort((a, b) => originalOrder.indexOf(a) - originalOrder.indexOf(b));
+    return [...known, ...order.filter(id => !originalOrder.includes(id))];
+  }
+
+  return { panesToStash, panesToRestore, shouldOpenSidebarForPane, orderBeforeFocusMode };
 });

@@ -77,7 +77,8 @@ const { getPrBadgePresentation } = window.VKPrBadge;
 // タイトル行を前回と同じ値で作り直さないための判定（issue #614）。前回値は要素ごとに持つ。
 const taskTitleRenderTracker = window.VKTaskTitleRenderState.createTaskTitleRenderTracker();
 const { getPaneIdBadgeLabel } = window.VKPaneIdBadge;
-const { panesToStash, panesToRestore, shouldOpenSidebarForPane } = window.VKPaneFocusMode;
+const { panesToStash, panesToRestore, shouldOpenSidebarForPane, orderBeforeFocusMode } = window.VKPaneFocusMode;
+const { createWideState, planWideRestore, layoutBeforeWide, forgetWidePane } = window.VKInternalBrowserWideMode;
 const { resolveQueueIssuesListUrl } = window.VKTaskQueueLink;
 const { isPatternValid } = window.VKSettingsValidation;
 const { comboOptions, comboDisplayValue, comboStoredValue } = window.VKSettingsComboField;
@@ -110,8 +111,10 @@ const internalBrowserSidebar = document.createElement('aside');
 internalBrowserSidebar.id = 'internal-browser-sidebar';
 internalBrowserSidebar.className = 'internal-browser-sidebar';
 internalBrowserSidebar.setAttribute('aria-label', 'アプリ内ブラウザ');
-internalBrowserSidebar.innerHTML = `<div class="internal-browser-resizer" role="separator" tabindex="0" aria-label="アプリ内ブラウザの幅を変更" aria-orientation="vertical" aria-valuemin="360" aria-valuemax="720" aria-valuenow="480"></div><div class="internal-browser-toolbar"><button type="button" data-action="back" title="戻る" aria-label="戻る"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#arrow-left"></use></svg></button><button type="button" data-action="forward" title="進む" aria-label="進む"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#arrow-right"></use></svg></button><button type="button" data-action="reload" title="再読み込み" aria-label="再読み込み"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#rotate-cw"></use></svg></button><input type="text" class="internal-browser-url" aria-label="URL または検索語を入力" placeholder="URL または検索語" autocomplete="off" spellcheck="false"><button type="button" data-action="external" title="外部ブラウザで開く" aria-label="外部ブラウザで開く"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#external-link"></use></svg></button><button type="button" data-action="close" title="閉じる" aria-label="閉じる"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#x"></use></svg></button></div><p id="internal-browser-address-error" class="internal-browser-address-error" role="alert" hidden></p><p class="internal-browser-external-target" hidden></p><div class="internal-browser-progress" hidden></div><p class="internal-browser-navigation-status" role="status" aria-live="polite"></p><div class="internal-browser-notice" role="status" hidden></div><div class="internal-browser-error" role="status" hidden><p class="internal-browser-error-message">ページを表示できませんでした</p><button type="button" data-action="reload">再読み込み</button><button type="button" data-action="external">外部ブラウザで開く</button></div><div class="internal-browser-page"></div>`;
+internalBrowserSidebar.innerHTML = `<div class="internal-browser-resizer" role="separator" tabindex="0" aria-label="アプリ内ブラウザの幅を変更" aria-orientation="vertical" aria-valuemin="360" aria-valuemax="720" aria-valuenow="480"></div><div class="internal-browser-toolbar"><button type="button" data-action="back" title="戻る" aria-label="戻る"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#arrow-left"></use></svg></button><button type="button" data-action="forward" title="進む" aria-label="進む"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#arrow-right"></use></svg></button><button type="button" data-action="reload" title="再読み込み" aria-label="再読み込み"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#rotate-cw"></use></svg></button><input type="text" class="internal-browser-url" aria-label="URL または検索語を入力" placeholder="URL または検索語" autocomplete="off" spellcheck="false"><button type="button" class="internal-browser-wide-toggle" data-action="wide" title="ブラウザを広く表示" aria-label="ブラウザを広く表示"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#maximize"></use></svg></button><button type="button" data-action="external" title="外部ブラウザで開く" aria-label="外部ブラウザで開く"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#external-link"></use></svg></button><button type="button" data-action="close" title="閉じる" aria-label="閉じる"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#x"></use></svg></button></div><p id="internal-browser-address-error" class="internal-browser-address-error" role="alert" hidden></p><p class="internal-browser-external-target" hidden></p><div class="internal-browser-progress" hidden></div><p class="internal-browser-navigation-status" role="status" aria-live="polite"></p><div class="internal-browser-notice" role="status" hidden></div><div class="internal-browser-error" role="status" hidden><p class="internal-browser-error-message">ページを表示できませんでした</p><button type="button" data-action="reload">再読み込み</button><button type="button" data-action="external">外部ブラウザで開く</button></div><div class="internal-browser-page"></div>`;
 let internalBrowserOpen = false;
+// 広く表示中だけ値を持つ（createWideState の戻り値）。
+let internalBrowserWide = null;
 let internalBrowserUrl = '';
 let internalBrowserPendingUrl = '';
 let internalBrowserAddressHasDraft = false;
@@ -124,8 +127,8 @@ let internalBrowserOverlayFocusOrigin = null;
 let internalBrowserHasPage = false;
 let internalBrowserChoice = null;
 let unregisterInternalBrowserEscape = null;
-// ページ未表示でも操作列から閉じられるよう、閉じるボタンは無効化しない。
-for (const button of internalBrowserSidebar.querySelectorAll('.internal-browser-toolbar button:not([data-action="close"])')) button.disabled = true;
+// ページ未表示でも操作列から閉じる・広く表示できるよう、この 2 つは無効化しない。
+for (const button of internalBrowserSidebar.querySelectorAll('.internal-browser-toolbar button:not([data-action="close"]):not([data-action="wide"])')) button.disabled = true;
 
 function syncInternalBrowserLayout() {
   const root = document.getElementById('root');
@@ -141,6 +144,17 @@ function syncInternalBrowserLayout() {
   }
   const leftSidebar = root.classList.contains('sidebar-open') ? document.getElementById('sidebar')?.getBoundingClientRect().width || 0 : 0;
   root.style.setProperty('--vktm-left-sidebar-width', `${leftSidebar}px`);
+  // 広く表示ではグリッドとセットアップ状況パネルを隠すため、横並び要素の幅を測る前に反映する。
+  const browserWide = internalBrowserOpen && !!internalBrowserWide;
+  root.classList.toggle('internal-browser-wide', browserWide);
+  // .grid.grid-empty などの display 指定に負けないよう、クラスではなく要素の style で隠す。
+  // render() は毎回グリッドを作り直すため、ここで現在の子へ反映し直す。
+  for (const child of root.children) {
+    if (child === internalBrowserSidebar || child.id === 'sidebar') continue;
+    if (browserWide) { child.style.display = 'none'; child.dataset.wideHidden = 'true'; }
+    else if (child.dataset?.wideHidden) { child.style.display = ''; delete child.dataset.wideHidden; }
+  }
+  syncInternalBrowserWideToggle(browserWide);
   const grid = root.querySelector('.grid');
   const gridStyle = grid ? getComputedStyle(grid) : null;
   const gridMinimumWidth = gridStyle ? Math.max(
@@ -168,9 +182,13 @@ function syncInternalBrowserLayout() {
   const availableWidth = browserAvailableWidth(windowWidth, leftSidebar, otherWidths);
   const browserMustOverlay = internalBrowserOpen && shouldOverlayBrowser(windowWidth);
   const browserWasOverlay = root.classList.contains('internal-browser-overlay');
-  const maxWidth = browserMustOverlay ? windowWidth : browserWidthMax(availableWidth, columns, windowWidth, effectiveGridMinimumWidth);
+  // 広く表示の幅は保存幅（preferredInternalBrowserWidth）と別に計算し、保存幅は上書きしない。
+  const wideWidth = browserWide ? window.VKInternalBrowserLayout.wideBrowserWidth(availableWidth) : 0;
+  const maxWidth = browserMustOverlay ? windowWidth
+    : browserWide ? wideWidth : browserWidthMax(availableWidth, columns, windowWidth, effectiveGridMinimumWidth);
   displayedInternalBrowserWidth = browserMustOverlay ? windowWidth
-    : clampBrowserWidth(preferredInternalBrowserWidth || NaN, availableWidth, columns, windowWidth, effectiveGridMinimumWidth);
+    : browserWide ? wideWidth
+      : clampBrowserWidth(preferredInternalBrowserWidth || NaN, availableWidth, columns, windowWidth, effectiveGridMinimumWidth);
   // inert を付けるとブラウザが背後の activeElement を body へ移すため、
   // 全面表示へ入る前の復帰先は inert の適用より先に保存する。
   if (browserMustOverlay && !browserWasOverlay) {
@@ -194,8 +212,12 @@ function syncInternalBrowserLayout() {
       if (focusOrigin?.isConnected) focusOrigin.focus();
     });
   }
-  // 全面表示ではトーストをブラウザの左ではなく画面全体の幅で出すため、ブラウザ幅を差し引かない。
-  root.classList.toggle('toast-phrase-wrap', shouldWrapToastPhrase(windowWidth, browserMustOverlay ? 0 : displayedInternalBrowserWidth));
+  // 全面表示と、左サイドバーを閉じた広く表示では、ブラウザの左にトーストの置き場所が無い。
+  // トーストを通常の右下に出し、表示中だけページ領域の下端を詰める（issue #613）。
+  const toastAtCorner = browserMustOverlay || (browserWide && leftSidebar === 0);
+  root.classList.toggle('internal-browser-toast-corner', toastAtCorner);
+  // 右下に出すときは画面全体の幅を使えるため、ブラウザ幅を差し引かない。
+  root.classList.toggle('toast-phrase-wrap', shouldWrapToastPhrase(windowWidth, toastAtCorner ? 0 : displayedInternalBrowserWidth));
   internalBrowserSidebar.style.width = `${displayedInternalBrowserWidth}px`;
   internalBrowserSidebar.querySelector('.internal-browser-url').placeholder = displayedInternalBrowserWidth < 360 ? 'URL / 検索' : 'URL または検索語';
   document.body.style.setProperty('--vktm-internal-browser-width', `${displayedInternalBrowserWidth}px`);
@@ -207,7 +229,7 @@ function syncInternalBrowserLayout() {
   root.classList.toggle('internal-browser-open', internalBrowserOpen);
   document.getElementById('internal-browser-toggle')?.setAttribute('aria-pressed', String(internalBrowserOpen));
   // トーストの位置は上のクラス・幅の反映後に決まるため、ページ領域を測る直前に空ける。
-  internalBrowserSidebar.style.paddingBottom = `${internalBrowserToastReserve(browserMustOverlay)}px`;
+  internalBrowserSidebar.style.paddingBottom = `${internalBrowserToastReserve(toastAtCorner)}px`;
   const page = internalBrowserSidebar.querySelector('.internal-browser-page');
   if (page) {
     const rect = page.getBoundingClientRect();
@@ -215,7 +237,7 @@ function syncInternalBrowserLayout() {
     VKIpc.send('internal-browser:bounds', { x: rect.x * zoom, y: rect.y * zoom, width: rect.width * zoom, height: rect.height * zoom });
   }
   VKIpc.send('internal-browser:visible', internalBrowserOpen && !document.body.classList.contains('resizing-internal-browser'));
-  const layout = `${internalBrowserOpen}:${displayedInternalBrowserWidth}:${columns}:${leftSidebar}`;
+  const layout = `${internalBrowserOpen}:${browserWide}:${displayedInternalBrowserWidth}:${columns}:${leftSidebar}`;
   if (layout !== previousInternalBrowserLayout) {
     previousInternalBrowserLayout = layout;
     if (document.body.classList.contains('resizing-internal-browser') || document.body.classList.contains('resizing-sidebar')) debouncedFitAll();
@@ -224,6 +246,8 @@ function syncInternalBrowserLayout() {
 }
 
 function setInternalBrowserOpen(value, { focus = internalBrowserHasPage ? 'preserve' : 'address' } = {}) {
+  // ブラウザを閉じるときは広く表示を解除し、格納したペインをグリッドへ戻す。
+  if (!value && internalBrowserWide) exitInternalBrowserWide();
   internalBrowserOpen = value;
   if (!value && internalBrowserSidebar.contains(document.activeElement)) document.getElementById('internal-browser-toggle')?.focus();
   if (value && !internalBrowserHasPage) {
@@ -235,6 +259,59 @@ function setInternalBrowserOpen(value, { focus = internalBrowserHasPage ? 'prese
   // 空状態はレイアウト反映後に入力可能にする。再表示は操作元にフォーカスを残す。
   // 値や選択範囲には触れず、閉じている間の入力も保持する。
   if (value && focus === 'address') focusInternalBrowserToolbar();
+}
+
+// 広く表示ボタンのアイコン・文言を状態に合わせる。押下状態は文言で伝え、aria-pressed は付けない。
+function syncInternalBrowserWideToggle(wide) {
+  const button = internalBrowserSidebar.querySelector('.internal-browser-wide-toggle');
+  const label = wide ? '元の表示に戻す' : 'ブラウザを広く表示';
+  if (button.getAttribute('aria-label') === label) return;
+  button.title = label;
+  button.setAttribute('aria-label', label);
+  button.querySelector('use').setAttribute('href', `icons/ui.svg#${wide ? 'minimize' : 'maximize'}`);
+}
+
+// グリッドのペインを全部格納し、ブラウザをメインエリアの全幅で表示する（issue #613）。
+function enterInternalBrowserWide() {
+  if (internalBrowserWide || !internalBrowserOpen || !tree) return;
+  // ペインの広く表示が使われていれば、先に解除して格納前の並びへ戻す。
+  // togglePaneFocusMode はペインへフォーカスを移すため、描画と移動を伴わない形で解除する。
+  // 戻したペインは末尾に付くため、単独表示を始めたときの並びに組み直してから記録する。
+  if (paneFocusMode) {
+    const { originalOrder } = paneFocusMode;
+    const restoreIds = panesToRestore(paneFocusMode.stashedIds, tree.stashOrder || [], terminals);
+    paneFocusMode = null;
+    for (const id of restoreIds) unstashPane(id, { renderNow: false });
+    tree.order = orderBeforeFocusMode(originalOrder, tree.order);
+  }
+  internalBrowserWide = createWideState(tree.order, tree.colFr, tree.rowFr, focusedPaneId);
+  for (const id of internalBrowserWide.originalOrder) stashPane(id, { renderNow: false });
+  render();
+}
+
+// 広く表示を解除し、広く表示中に格納したペインを元の順でグリッドへ戻す。
+function exitInternalBrowserWide({ focusPaneId = null } = {}) {
+  const wide = internalBrowserWide;
+  if (!wide) return;
+  const { restoreIds, sizing } = planWideRestore(wide, tree?.stashOrder || [], terminals);
+  // 先に状態を消し、unstashPane から解除処理へ再び入らないようにする。
+  internalBrowserWide = null;
+  for (const id of restoreIds) unstashPane(id, { renderNow: false });
+  if (sizing) { tree.colFr = sizing.colFr; tree.rowFr = sizing.rowFr; }
+  const target = [focusPaneId, wide.focusedPaneId].find(id => id && tree.order.includes(id)) || tree.order[0] || null;
+  if (target) focusedPaneId = target;
+  render();
+  requestAnimationFrame(() => {
+    fitAll();
+    if (focusPaneId && paneExists(focusPaneId)) focusPane(focusPaneId);
+  });
+}
+
+function toggleInternalBrowserWide() {
+  if (internalBrowserWide) exitInternalBrowserWide();
+  else enterInternalBrowserWide();
+  // render() で操作列が付け直されてもボタンにフォーカスを残し、続けて戻せるようにする。
+  internalBrowserSidebar.querySelector('.internal-browser-wide-toggle')?.focus();
 }
 
 function focusInternalBrowserToolbar() {
@@ -329,6 +406,7 @@ document.addEventListener('wheel', event => { if (internalBrowserChoice && event
 internalBrowserSidebar.addEventListener('click', event => {
   const action = event.target.closest('[data-action]')?.dataset.action;
   if (action === 'close') { setInternalBrowserOpen(false); document.getElementById('internal-browser-toggle')?.focus(); }
+  else if (action === 'wide') toggleInternalBrowserWide();
   else if (action === 'external') {
     const url = event.target.closest('.internal-browser-error') ? internalBrowserFailedUrl : getInternalBrowserExternalTarget().url;
     if (url) {
@@ -465,6 +543,8 @@ document.getElementById('internal-browser-toggle').addEventListener('click', () 
 const internalBrowserResizer = internalBrowserSidebar.querySelector('.internal-browser-resizer');
 internalBrowserResizer.addEventListener('pointerdown', event => {
   event.preventDefault();
+  // 広く表示中は境界を隠しており、保存幅も上書きしない。
+  if (internalBrowserWide) return;
   internalBrowserResizer.setPointerCapture(event.pointerId);
   document.body.classList.add('resizing-internal-browser');
   VKIpc.send('internal-browser:visible', false);
@@ -489,6 +569,7 @@ internalBrowserResizer.addEventListener('lostpointercapture', finishInternalBrow
 internalBrowserResizer.addEventListener('keydown', event => {
   if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
   event.preventDefault();
+  if (internalBrowserWide) return;
   preferredInternalBrowserWidth = displayedInternalBrowserWidth + (event.key === 'ArrowLeft' ? 16 : -16);
   syncInternalBrowserLayout();
   preferredInternalBrowserWidth = displayedInternalBrowserWidth;
@@ -1557,12 +1638,12 @@ const EXTERNAL_URL_TOAST_COPY_LABEL = 'URLをコピー';
 // settingsCopyButtonLabel() と同じ考え方。
 const EXTERNAL_URL_TOAST_COPY_ARIA_LABEL = '開けなかったURLをコピー';
 
-// 全面表示のアプリ内ブラウザでは、ページ（WebContentsView）が HTML より前面に描かれ、
-// トーストを逃がせる余白も画面に残らない。トーストは body 直下から動かさず（理由は
-// 上のコメント参照）、表示中だけページ領域の下端を詰めて置き場所を空ける。
-// 返すのは詰める高さ（px）。トーストの上に、右・下と同じ 16px の間隔を残す。
-function internalBrowserToastReserve(browserMustOverlay) {
-  if (!browserMustOverlay || !externalUrlToastEl || externalUrlToastEl.hidden) return 0;
+// 全面表示と、左サイドバーを閉じた広く表示（issue #613）のアプリ内ブラウザでは、
+// ページ（WebContentsView）が HTML より前面に描かれ、トーストを逃がせる余白も画面に残らない。
+// トーストは body 直下から動かさず（理由は上のコメント参照）、表示中だけページ領域の下端を
+// 詰めて置き場所を空ける。返すのは詰める高さ（px）。トーストの上に、右・下と同じ 16px の間隔を残す。
+function internalBrowserToastReserve(toastAtCorner) {
+  if (!toastAtCorner || !externalUrlToastEl || externalUrlToastEl.hidden) return 0;
   const toastTop = externalUrlToastEl.getBoundingClientRect().top;
   const sidebarBottom = internalBrowserSidebar.getBoundingClientRect().bottom;
   return Math.max(0, Math.ceil(sidebarBottom - toastTop) + 16);
@@ -1704,10 +1785,11 @@ function ensureExternalUrlToast() {
 
   externalUrlToastLayerEl = layer;
   externalUrlToastEl = toast;
-  // 表示・本文の差し替え・消去のどれでも箱の大きさが変わる。全面表示ではその都度
-  // ページ領域を詰め直す必要があるため、経路ごとに呼ばず大きさの変化で同期する。
+  // 表示・本文の差し替え・消去のどれでも箱の大きさが変わる。トーストを右下に出す状態
+  // （全面表示・左サイドバーを閉じた広く表示）ではその都度ページ領域を詰め直す必要があるため、
+  // 経路ごとに呼ばず大きさの変化で同期する。
   new ResizeObserver(() => {
-    if (document.getElementById('root')?.classList.contains('internal-browser-overlay')) syncInternalBrowserLayout();
+    if (document.getElementById('root')?.classList.contains('internal-browser-toast-corner')) syncInternalBrowserLayout();
   }).observe(toast);
   return toast;
 }
@@ -3501,6 +3583,24 @@ function withInheritedEngine(options, paneId) {
     : options;
 }
 
+// 新しく作ったペインを配置する。新規ペインは必ずここを通し、tree.order へ直接追加しない。
+// ブラウザの広く表示中は格納しておき、解除時にグリッドへ出す（issue #613）。
+// グリッドへ置いたときは true を返す。
+function placeNewPane(paneId) {
+  if (internalBrowserWide) {
+    tree.stashOrder = Array.isArray(tree.stashOrder) ? tree.stashOrder : [];
+    tree.stashOrder.push(paneId);
+    if (terminals[paneId]) terminals[paneId].stashXtermOpen = false;
+    internalBrowserWide.stashedIds.push(paneId);
+    return false;
+  }
+  if (!Array.isArray(tree.order)) tree.order = [];
+  tree.order.push(paneId);
+  // ペイン数が変わりグリッド寸法が変化するため、手動リサイズ比率は均等にリセットする。
+  resetGridSizing();
+  return true;
+}
+
 async function openHelpGuide() {
   if (helpGuideOpening) return helpGuideOpening;
   helpGuideOpening = (async () => {
@@ -3512,9 +3612,7 @@ async function openHelpGuide() {
       try {
         await createTerminal(paneId, null, {}, result);
         terminals[paneId].apiTitle = '使い方ガイド';
-        if (!Array.isArray(tree.order)) tree.order = [];
-        tree.order.push(paneId);
-        resetGridSizing();
+        placeNewPane(paneId);
         render();
       } catch (error) {
         if (paneExists(paneId)) closePane(paneId, { force: true });
@@ -3565,16 +3663,14 @@ async function addPane(overrideCwd = null, options = {}) {
     return null;
   }
 
-  if (!Array.isArray(tree.order)) tree.order = [];
-  tree.order.push(newPaneId);
-  // ペイン数が変わりグリッド寸法が変化するため、手動リサイズ比率は均等にリセットする。
-  resetGridSizing();
-
+  const placedInGrid = placeNewPane(newPaneId);
   render();
-  requestAnimationFrame(() => {
-    fitAll();
-    focusPane(newPaneId);
-  });
+  if (placedInGrid) {
+    requestAnimationFrame(() => {
+      fitAll();
+      focusPane(newPaneId);
+    });
+  }
 
   // 新ペインの情報を返す（focusedPaneId の更新を待たずに確定値を返す）
   return { paneId: newPaneId, termId: terminals[newPaneId]?.termId };
@@ -3628,6 +3724,7 @@ function closePane(paneId, { force = false, skipConfirm = false } = {}) {
   if (paneFocusMode) {
     paneFocusMode.stashedIds = paneFocusMode.stashedIds.filter(id => id !== paneId);
   }
+  forgetWidePane(internalBrowserWide, paneId);
   tree.order = tree.order.filter(id => id !== paneId);
   tree.stashOrder = (Array.isArray(tree.stashOrder) ? tree.stashOrder : []).filter(id => id !== paneId);
   if (tree.order.length === 0 && tree.stashOrder.length === 0) {
@@ -3937,7 +4034,7 @@ function togglePaneFocusMode(paneId) {
   if (!tree?.order?.includes(paneId)) return;
   // 閉鎖保護ペインを除く他の可視ペインを記録して格納する。
   const stashedIds = panesToStash(tree.order, paneId, terminals);
-  paneFocusMode = { selectedId: paneId, stashedIds };
+  paneFocusMode = { selectedId: paneId, stashedIds, originalOrder: tree.order.slice() };
   for (const id of stashedIds) stashPane(id, { renderNow: false });
   render();
   setSidebarOpen(shouldOpenSidebarForPane(window.innerWidth, getSidebarWidth()), { focusFirst: false });
@@ -3975,6 +4072,11 @@ function stashPane(paneId, { renderNow = true } = {}) {
 // 格納中のペインをグリッドへ戻す。
 function unstashPane(paneId, { renderNow = true } = {}) {
   if (!tree) return;
+  // ブラウザの広く表示中にペインをグリッドへ出したら、解除して格納したペインを全部戻す。
+  if (internalBrowserWide) {
+    exitInternalBrowserWide({ focusPaneId: paneId });
+    if (!Array.isArray(tree.stashOrder) || !tree.stashOrder.includes(paneId)) return;
+  }
   tree.stashOrder = Array.isArray(tree.stashOrder) ? tree.stashOrder : [];
   const i = tree.stashOrder.indexOf(paneId);
   if (i < 0) return;
@@ -4232,7 +4334,9 @@ function savePaneLayout() {
     apiPrUrl: t.apiPrUrl, apiPrMerged: t.apiPrMerged,
     apiWaitingMerge: t.apiWaitingMerge, apiPaneNote: t.apiPaneNote,
   }));
-  VKIpc.send('terminal:save-layout', { order: tree.order, stashOrder: tree.stashOrder || [], focusedPaneId, panes });
+  // 広く表示中に終了しても、次の起動で全ペインが格納されたままにならないよう前の並びを保存する。
+  const layout = layoutBeforeWide(tree.order, tree.stashOrder || [], focusedPaneId, internalBrowserWide);
+  VKIpc.send('terminal:save-layout', { order: layout.order, stashOrder: layout.stashOrder, focusedPaneId: layout.focusedPaneId, panes });
 }
 function schedulePaneLayoutSave() {
   if (paneLayoutSaveTimer) clearTimeout(paneLayoutSaveTimer);
@@ -7580,6 +7684,7 @@ async function initApp() {
     if (restored?.panes?.length) {
       terminals = {};
       paneFocusMode = null;
+      internalBrowserWide = null;
       focusedPaneId = null;
       const validPanes = restored.panes.filter(p => /^pane-\d+$/.test(p.paneId) && /^\d+$/.test(String(p.id)));
       const ids = new Set(validPanes.map(p => p.paneId));
@@ -7655,6 +7760,7 @@ async function initApp() {
   }
   terminals = {};
   paneFocusMode = null;
+  internalBrowserWide = null;
   focusedPaneId = null;
 
   // stashOrder: サイドバー格納ペインの並び（issue #89）。sidebarWidth: セッション内の可変幅。
@@ -7925,6 +8031,8 @@ VKIpc.on('terminal:request-new-pane', async (payload = {}) => {
       return;
     }
     if (stashed === true) {
+      // 格納の指定は広く表示の解除後も保つ。
+      forgetWidePane(internalBrowserWide, result.paneId);
       stashPane(result.paneId);
     }
     reply({ termId: result.termId });

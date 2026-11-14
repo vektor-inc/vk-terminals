@@ -24,7 +24,7 @@ test('タイトルバーから空状態を開くと表示後にURL欄へ移り�
   const sidebar = { hidden: true, contains: element => element === address,
     querySelector: selector => selector === '.internal-browser-url' ? address : notice };
   const context = vm.createContext({ document, internalBrowserSidebar: sidebar,
-    internalBrowserOpen: false, internalBrowserHasPage: false,
+    internalBrowserOpen: false, internalBrowserHasPage: false, internalBrowserWide: null,
     syncInternalBrowserLayout() { sidebar.hidden = !context.internalBrowserOpen; calls.push('layout'); } });
   vm.runInContext(`${setter}\n${focusHelper}\n${toggleHandler}`, context);
   toggle.focus();
@@ -127,7 +127,7 @@ test('狭幅の同期は左を閉じてから再計算し、手動で左を開�
     window: { VKInternalBrowserLayout: require('../utils/internalBrowserLayout') },
     internalBrowserOpen: true, sidebarOpen: true, internalBrowserSidebar: browser,
     preferredInternalBrowserWidth: 520, displayedInternalBrowserWidth: 0, previousInternalBrowserLayout: null,
-    internalBrowserOverlayFocusOrigin: null,
+    internalBrowserOverlayFocusOrigin: null, internalBrowserWide: null, syncInternalBrowserWideToggle() {},
     setupPanel: null, sidebarTransitionCleanup: null,
     gridDims: () => ({ cols: 1 }), getSidebarWidth: () => 300,
     ensureSidebar: () => null, isReducedMotion: () => true, fitAll() {},
@@ -194,21 +194,22 @@ test('全面表示中だけ、表示中のトーストに重なる高さをペ�
   assert.equal(vm.runInContext('internalBrowserToastReserve(true)', context), 0);
 });
 
-test('初期化時は操作列の閉じるだけを無効化せず、失敗表示にも触れない', () => {
+test('初期化時は操作列の閉じると広く表示だけを無効化せず、失敗表示にも触れない', () => {
   const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
   const initialization = source.match(/for \(const button of internalBrowserSidebar\.querySelectorAll\('[^']+'\)\) button\.disabled = true;/)?.[0];
   assert.ok(initialization);
-  const toolbarButtons = ['back', 'forward', 'reload', 'external', 'close']
+  // ページ未表示でも閉じる・広く表示は押せるよう、この 2 つは対象外にする。
+  const toolbarButtons = ['back', 'forward', 'reload', 'wide', 'external', 'close']
     .map(action => ({ action, disabled: false }));
   const errorButtons = [{ disabled: false }, { disabled: false }];
   const sidebar = {
     querySelectorAll(selector) {
-      assert.equal(selector, '.internal-browser-toolbar button:not([data-action="close"])');
-      return toolbarButtons.filter(button => button.action !== 'close');
+      assert.equal(selector, '.internal-browser-toolbar button:not([data-action="close"]):not([data-action="wide"])');
+      return toolbarButtons.filter(button => button.action !== 'close' && button.action !== 'wide');
     },
   };
   vm.runInNewContext(initialization, { internalBrowserSidebar: sidebar });
-  assert.deepEqual(toolbarButtons.map(button => button.disabled), [true, true, true, true, false]);
+  assert.deepEqual(toolbarButtons.map(button => button.disabled), [true, true, true, false, true, false]);
   assert.deepEqual(errorButtons.map(button => button.disabled), [false, false]);
 });
 
@@ -448,13 +449,18 @@ test('幅キーは表示中の幅を起点にし、開き先メニューはツ�
   const handlers = {};
   const saved = [];
   const context = { internalBrowserResizer: { addEventListener: (_event, handler) => { handlers.keydown = handler; } },
-    preferredInternalBrowserWidth: 0, displayedInternalBrowserWidth: 482,
+    preferredInternalBrowserWidth: 0, displayedInternalBrowserWidth: 482, internalBrowserWide: null,
     syncInternalBrowserLayout() { context.displayedInternalBrowserWidth = context.preferredInternalBrowserWidth; },
     localStorage: { setItem: (_key, value) => saved.push(value) } };
   vm.runInNewContext(keyHandler, context);
   handlers.keydown({ key: 'ArrowLeft', preventDefault() {} });
   assert.equal(context.preferredInternalBrowserWidth, 498);
   handlers.keydown({ key: 'ArrowRight', preventDefault() {} });
+  assert.equal(context.preferredInternalBrowserWidth, 482);
+  assert.deepEqual(saved, ['498', '482']);
+  // 広く表示中は境界を隠しており、キー操作でも保存幅を書き換えない。
+  context.internalBrowserWide = { stashedIds: [] };
+  handlers.keydown({ key: 'ArrowLeft', preventDefault() {} });
   assert.equal(context.preferredInternalBrowserWidth, 482);
   assert.deepEqual(saved, ['498', '482']);
   const choice = source.match(/function showInternalBrowserChoice\([\s\S]*?\n\}/)?.[0];

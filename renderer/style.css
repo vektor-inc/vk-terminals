@@ -4051,6 +4051,13 @@ body.pane-dragging * {
   border-left: 0;
 }
 #root.internal-browser-overlay .internal-browser-resizer { display: none; }
+
+/* 広く表示（issue #613）
+   ========================================================================== */
+.internal-browser-wide .internal-browser-resizer { display: none; }
+.internal-browser-wide .internal-browser-wide-toggle { background: #21262d; }
+/* 押した状態でもホバーが分かるよう、背景を一段明るくする。 */
+.internal-browser-wide .internal-browser-wide-toggle:hover { background: #30363d; }
 .internal-browser-resizer {
   position: absolute;
   left: -5px;
@@ -4062,9 +4069,14 @@ body.pane-dragging * {
 }
 .internal-browser-resizer:hover { background: rgba(88, 166, 255, 0.35); }
 .internal-browser-toolbar { display: flex; align-items: center; gap: 2px; height: 40px; padding: 4px 7px; border-bottom: 1px solid #30363d; }
-.internal-browser-toolbar button { flex: 0 0 28px; width: 28px; height: 28px; border: 1px solid transparent; border-radius: 5px; background: transparent; color: #e6edf3; cursor: pointer; }
+.internal-browser-toolbar button { flex: 0 0 26px; width: 26px; height: 28px; border: 1px solid transparent; border-radius: 5px; background: transparent; color: #e6edf3; cursor: pointer; }
 .internal-browser-toolbar button:hover { background: #21262d; }
 .internal-browser-toolbar button:disabled { color: #6e7681; cursor: default; }
+/* 操作列は「表示内容の操作（戻る・進む・再読み込み・URL 欄）」と「表示の操作（広く表示・外部ブラウザで開く・閉じる）」の
+ * 2 グループ（issue #613）。見えている端どうしで、グループの間（URL 欄の枠 → 押した状態の広く表示の背景、2px + 20px = 22px）を、
+ * グループの中で最も広い間隔（隣どうしのアイコンの線の間、約 17px）より広くする。
+ * ボタンの幅を 26px にして、ブラウザが最も狭い 280px のときも URL 欄に「URL / 検索」が収まる幅を残す。 */
+.internal-browser-toolbar .internal-browser-wide-toggle { margin-left: 20px; }
 .internal-browser-toolbar .internal-browser-url { flex: 1 1 auto; min-width: 0; height: 28px; box-sizing: border-box; padding: 0 7px; border: 1px solid var(--vktm--color--border-interactive); border-radius: 5px; background: #161b22; color: #e6edf3; font: inherit; font-size: 12px; }
 .internal-browser-toolbar .internal-browser-url::placeholder { color: #8b949e; }
 .internal-browser-toolbar .internal-browser-url[aria-invalid="true"] { border-color: #f85149; }
@@ -4100,16 +4112,17 @@ body.pane-dragging * {
 .internal-browser-choice [role="menuitem"] { display: block; width: 100%; padding: 7px 8px; text-align: left; border: 0; border-radius: 4px; background: transparent; color: inherit; cursor: pointer; }
 .internal-browser-choice [role="menuitem"]:hover, .internal-browser-choice [role="menuitem"]:focus-visible { background: #30363d; }
 /* WebContentsView は HTML より前面に描かれるため、トーストをブラウザ領域へ重ねない。
- * 全面表示ではブラウザの左側に置き場所が無いので、この左寄せは横並びのときだけ使う。 */
-body:has(#root.internal-browser-open:where(:not(.internal-browser-overlay))):not(:has(.settings-overlay, .confirm-overlay)) .vk-toast-layer {
+ * 全面表示と、左サイドバーを閉じた広く表示（.internal-browser-toast-corner）ではブラウザの左側に
+ * 置き場所が無いので、この左寄せは使わない。 */
+body:has(#root.internal-browser-open:where(:not(.internal-browser-toast-corner))):not(:has(.settings-overlay, .confirm-overlay)) .vk-toast-layer {
   right: calc(var(--vktm-internal-browser-width, 480px) + 16px);
   width: max-content;
   /* 32px は utils/internalBrowserLayout.js の shouldWrapToastPhrase と揃える。 */
   max-width: min(320px, calc(100vw - var(--vktm-internal-browser-width, 480px) - 32px));
 }
-body:has(#root.internal-browser-open:where(:not(.internal-browser-overlay))):not(:has(.settings-overlay, .confirm-overlay)) .vk-toast { max-width: min(320px, 100%); }
+body:has(#root.internal-browser-open:where(:not(.internal-browser-toast-corner))):not(:has(.settings-overlay, .confirm-overlay)) .vk-toast { max-width: min(320px, 100%); }
 /* トーストを置ける幅が 200px 未満のときは案内の語句を折り返す。 */
 body:has(#root.internal-browser-open.toast-phrase-wrap):not(:has(.settings-overlay, .confirm-overlay)) .vk-toast-phrase { white-space: normal; }
-/* 全面表示ではトーストを通常の右下に置く。重なる分のページ領域は renderer/app.js の
- * internalBrowserToastReserve が詰める。32px は左右の余白 16px × 2。 */
-body:has(#root.internal-browser-overlay) .vk-toast { max-width: min(320px, calc(100vw - 32px)); }
+/* 全面表示と、左サイドバーを閉じた広く表示ではトーストを通常の右下に置く。重なる分のページ領域は
+ * renderer/app.js の internalBrowserToastReserve が詰める。32px は左右の余白 16px × 2。 */
+body:has(#root.internal-browser-toast-corner) .vk-toast { max-width: min(320px, calc(100vw - 32px)); }

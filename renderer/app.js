@@ -4663,6 +4663,12 @@ function refreshAgentRoomIfChanged(paneId) {
   updateAgentRoom(paneId);
 }
 
+// ペインヘッダーのアイコンボタン用 SVG（Lucide スプライト renderer/icons/ui.svg を参照。issue #618）。
+// name は固定の symbol id のみを渡す（外部入力は入れない）。読み上げは親ボタンの aria-label に任せる。
+function paneIconSvg(name) {
+  return `<svg class="btn-icon" aria-hidden="true"><use href="icons/ui.svg#${name}"></use></svg>`;
+}
+
 function renderLeaf(node) {
   const t = terminals[node.id];
   const cwd = t?.cwd || '~';
@@ -4747,13 +4753,13 @@ function renderLeaf(node) {
     <span class="pane-cwd" title="${escAttr(cwd)}">${escText(cwd)}</span>
     <div class="pane-actions">
       <span class="pane-badge auto-input-badge" hidden></span>
-      <button class="btn btn-focus-mode" title="${focusModeLabel}" aria-label="${focusModeLabel}" aria-pressed="${paneFocusMode ? 'true' : 'false'}">${paneFocusMode ? '▣' : '⛶'}</button>
-      <button class="btn btn-stash" title="サイドバーに格納" aria-label="サイドバーに格納">←</button>
+      <button class="btn btn-focus-mode" title="${focusModeLabel}" aria-label="${focusModeLabel}" aria-pressed="${paneFocusMode ? 'true' : 'false'}">${paneIconSvg(paneFocusMode ? 'minimize' : 'maximize')}</button>
+      <button class="btn btn-stash" title="サイドバーに格納" aria-label="サイドバーに格納">${paneIconSvg('panel-left-close')}</button>
       <span class="pane-actions-sep" aria-hidden="true"></span>
-      <button class="btn btn-move btn-move-left" title="左へ移動" aria-label="左へ移動">◀</button>
-      <button class="btn btn-move btn-move-right" title="右へ移動" aria-label="右へ移動">▶</button>
-      <button class="btn btn-split" title="ペインを追加" aria-label="ペインを追加">＋</button>
-      <button class="btn btn-close${closeLocked ? ' is-locked' : ''}" title="${escAttr(closeLabel)}" aria-label="${escAttr(closeLabel)}"${closeLocked ? ' aria-disabled="true"' : ''}>✕</button>
+      <button class="btn btn-move btn-move-left" title="左へ移動" aria-label="左へ移動">${paneIconSvg('chevron-left')}</button>
+      <button class="btn btn-move btn-move-right" title="右へ移動" aria-label="右へ移動">${paneIconSvg('chevron-right')}</button>
+      <button class="btn btn-split" title="ペインを追加" aria-label="ペインを追加">${paneIconSvg('plus')}</button>
+      <button class="btn btn-close${closeLocked ? ' is-locked' : ''}" title="${escAttr(closeLabel)}" aria-label="${escAttr(closeLabel)}"${closeLocked ? ' aria-disabled="true"' : ''}>${paneIconSvg('x')}</button>
     </div>
   `;
   // ドラッグ中に複数ファイルのヒントを表示

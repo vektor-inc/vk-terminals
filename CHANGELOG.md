@@ -6,6 +6,7 @@
 - [ 仕様変更 ] アプリ内ブラウザの URL 表示ボタンによるコピー操作を廃止（[#600](https://github.com/vektor-inc/vk-terminals/issues/600)）
 - [ 仕様変更 ] ウィンドウの幅が狭いときは、アプリ内ブラウザと左サイドバーを同時に開かず、後から開いた方を表示するように変更（[#600](https://github.com/vektor-inc/vk-terminals/issues/600)）
 - [ 仕様変更 ] 表示を拡大してウィンドウがさらに狭いときは、アプリ内ブラウザをウィンドウ全体に重ねて表示するように変更（[#600](https://github.com/vektor-inc/vk-terminals/issues/600)）
+- [ 仕様変更 ] ペインヘッダーの操作ボタンを、記号の文字からアイコンの表示に変更（[#618](https://github.com/vektor-inc/vk-terminals/issues/618)）
 - [ 不具合修正 ] Codex の作業中に、ペインのタイトルや PR ラベルをクリックしても開き先メニューが出ず、ツールチップも表示されず、PR ラベルが点滅する問題を修正（[#614](https://github.com/vektor-inc/vk-terminals/issues/614)）
 
 ## 1.102.0

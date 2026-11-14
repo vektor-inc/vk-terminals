@@ -2069,7 +2069,8 @@ button.sidebar-section-header:hover {
   background: transparent;
   color: #8b949e;
 }
-.task-list-refresh-icon {
+.task-list-refresh-icon,
+.btn-icon {
   display: block;
   width: 14px;
   height: 14px;

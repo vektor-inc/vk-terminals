@@ -18,7 +18,7 @@ test('タイトルバーの操作ボタンは Lucide スプライトを読み上
 
 test('Lucide スプライトはタイトルバーとアプリ内ブラウザのアイコンを currentColor で収録する', () => {
   const symbolIds = [...iconSprite.matchAll(/<symbol id="([^"]+)"/g)].map((match) => match[1]);
-  assert.deepEqual(symbolIds, ['menu', 'settings', 'panel-right', 'arrow-left', 'arrow-right', 'rotate-cw', 'maximize', 'minimize', 'external-link', 'x']);
+  assert.deepEqual(symbolIds, ['menu', 'settings', 'panel-right', 'arrow-left', 'arrow-right', 'rotate-cw', 'maximize', 'minimize', 'external-link', 'x', 'panel-left-close', 'chevron-left', 'chevron-right', 'plus']);
   assert.equal((iconSprite.match(/stroke="currentColor"/g) || []).length, symbolIds.length);
 });
 
@@ -33,4 +33,16 @@ test('Lucide のライセンス全文を同梱し README から案内する', ()
   assert.match(license, /^ISC License/);
   assert.match(license, /The MIT License \(MIT\)/);
   assert.match(readme, /renderer\/icons\/LICENSE-lucide/);
+});
+
+test('ペインヘッダーの操作ボタンは文字記号ではなく Lucide アイコンを読み上げ対象外で参照する (#618)', () => {
+  const app = fs.readFileSync(path.join(repoRoot, 'renderer', 'app.js'), 'utf8');
+  const start = app.indexOf('<div class="pane-actions">');
+  const actions = app.slice(start, app.indexOf('</div>', start));
+  for (const ch of ['⛶', '▣', '←', '◀', '▶', '＋', '✕']) assert.ok(!actions.includes(ch), `${ch} が残っている`);
+  for (const cls of ['btn-focus-mode', 'btn-stash', 'btn-move-left', 'btn-move-right', 'btn-split', 'btn-close']) {
+    assert.match(actions, new RegExp(`class="btn[^"]*${cls}[^"]*"[^>]*aria-label=[^>]*>\\$\\{paneIconSvg\\(`));
+  }
+  assert.match(app, /function paneIconSvg\(name\) \{\n  return `<svg class="btn-icon" aria-hidden="true"><use href="icons\/ui\.svg#\$\{name\}">/);
+  assert.match(style, /\.task-list-refresh-icon,\n\.btn-icon \{\n  display: block;\n  width: 14px;/);
 });

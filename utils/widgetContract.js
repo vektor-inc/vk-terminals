@@ -45,6 +45,10 @@
   const COMMAND_ACTIONS = Object.freeze(['set-status', 'set-priority', 'set-sequential', 'set-automerge', 'set-review-ux', 'set-review-security', 'set-review-e2e', 'set-review-coderabbit', 'set-review-code-review', 'set-spec-model', 'set-main-engine']);
   const COMMAND_ACTION_SET = new Set(COMMAND_ACTIONS);
 
+  // 再取得の依頼（refreshCommand。vk-orchestrator#952）の action。タスクに紐づかないため
+  // 上の COMMAND_ACTIONS（必ず taskId を持つ）とは別に扱う。
+  const REFRESH_ACTION = 'refresh-tasks';
+
   // コントロールの field は 11 種、type は select のみ。
   const CONTROL_FIELDS = Object.freeze(['status', 'priority', 'sequential', 'automerge', 'reviewUx', 'reviewSecurity', 'reviewE2e', 'reviewCoderabbit', 'reviewCodeReview', 'specModel', 'mainEngine']);
   const CONTROL_FIELD_SET = new Set(CONTROL_FIELDS);
@@ -119,6 +123,15 @@
   }
 
   // ── サニタイズ（生成側 JSON → 描画に安全な正規化オブジェクト）──────────────
+  // トップレベルの refreshCommand（再取得の依頼を受け付ける版であることの宣言）を検証する。
+  // action が refresh-tasks のときだけ断片を返し、それ以外は null（ボタンを出さない）。
+  // taskId / to / expected は持たない契約のため、付いていても落とす。
+  function sanitizeRefreshCommand(raw) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+    if (raw.action !== REFRESH_ACTION) return null;
+    return { action: REFRESH_ACTION };
+  }
+
   function sanitizeCommand(raw) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
     if (!COMMAND_ACTION_SET.has(raw.action)) return null; // 未知 action は無視
@@ -346,7 +359,7 @@
       const group = sanitizeGroup(g, index);
       if (group) groups.push(group);
     });
-    return {
+    const widget = {
       schemaVersion: Number.isInteger(raw.schemaVersion) ? raw.schemaVersion : 1,
       kind: WIDGET_KIND,
       lang: clampStr(typeof raw.lang === 'string' ? raw.lang : 'ja', LIMITS.lang) || 'ja',
@@ -356,6 +369,10 @@
       emptyText: clampStr(typeof raw.emptyText === 'string' ? raw.emptyText : '', LIMITS.text),
       groups,
     };
+    // 宣言が有効なときだけキーを付ける（無い版のオーケストレーターではボタンを出さない）。
+    const refreshCommand = sanitizeRefreshCommand(raw.refreshCommand);
+    if (refreshCommand) widget.refreshCommand = refreshCommand;
+    return widget;
   }
 
   // ── staleness（毎描画で再計算）────────────────────────────────────────────
@@ -477,12 +494,30 @@
     };
   }
 
+  /**
+   * 再取得の依頼断片 { action:'refresh-tasks' } に一意 id と requestedAt を付与し、
+   * commands.jsonl の 1 行 { id, action, requestedAt } を組み立てる（taskId は付けない）。
+   * @param {object} fragment
+   * @param {{ id: string, requestedAt: string }} meta
+   * @returns {object|null}
+   */
+  function buildRefreshCommandLine(fragment, meta) {
+    const command = sanitizeRefreshCommand(fragment);
+    if (!command) return null;
+    return {
+      id: meta.id,
+      action: command.action,
+      requestedAt: meta.requestedAt,
+    };
+  }
+
   return {
     WIDGET_TONES,
     WIDGET_TONE_SET,
     DEFAULT_TONE,
     COMMAND_ACTIONS,
     COMMAND_ACTION_SET,
+    REFRESH_ACTION,
     CONTROL_FIELDS,
     CONTROL_TYPES,
     LINK_RELS,
@@ -495,6 +530,7 @@
     toneOrDefault,
     sanitizeCommand,
     sanitizeBatchCommand,
+    sanitizeRefreshCommand,
     sanitizeWidget,
     isWidgetStale,
     flatItems,
@@ -504,5 +540,6 @@
     applyAssigneeFilter,
     buildCommandLine,
     buildBatchCommandLine,
+    buildRefreshCommandLine,
   };
 });

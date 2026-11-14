@@ -748,3 +748,23 @@ test('sanitizeWidget: parentId は数値も文字列として保持し、不正�
   assert.equal(widget.groups[0].items[1].parentId, '12');
   for (const item of widget.groups[0].items.slice(2)) assert.equal(Object.hasOwn(item, 'parentId'), false);
 });
+
+// ── 再取得の依頼（refreshCommand / refresh-tasks。issue #617）───────────────
+test('sanitizeWidget: refreshCommand が refresh-tasks のときだけ断片を残す', () => {
+  const w = contract.sanitizeWidget(baseRawWidget({ refreshCommand: { action: 'refresh-tasks', taskId: 'X' } }));
+  assert.deepEqual(w.refreshCommand, { action: 'refresh-tasks' });
+  // 無い・未知 action・配列・文字列のときはキーを付けない（ボタンを出さない）。
+  for (const value of [undefined, { action: 'set-status' }, [], 'refresh-tasks', null]) {
+    const other = contract.sanitizeWidget(baseRawWidget({ refreshCommand: value }));
+    assert.equal(Object.prototype.hasOwnProperty.call(other, 'refreshCommand'), false);
+  }
+});
+
+test('buildRefreshCommandLine: id / action / requestedAt だけの 1 行を組み立て、taskId 等は付けない', () => {
+  const line = contract.buildRefreshCommandLine(
+    { action: 'refresh-tasks', taskId: 'IGNORED', to: 'x', expected: 'y' },
+    { id: 'refresh-abc', requestedAt: '2026-11-14T00:00:00.000Z' },
+  );
+  assert.deepEqual(line, { id: 'refresh-abc', action: 'refresh-tasks', requestedAt: '2026-11-14T00:00:00.000Z' });
+  assert.equal(contract.buildRefreshCommandLine({ action: 'set-status' }, { id: 'a', requestedAt: 'b' }), null);
+});

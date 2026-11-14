@@ -837,6 +837,14 @@ const TASKS_ELAPSED_TICK_MS = 30000;
 // 側の pendingTimeoutMs へ渡す）。エラー扱いにして再試行できるようにするのは2段目
 // （pendingErrorTimeoutMs、共有レンダラの既定は5分）に達したとき。
 const TASK_PENDING_TIMEOUT_MS = 30000;
+// タスク一覧の再取得ボタン（issue #617）で、新しい一覧が届かないまま「取得中」を解除するまでの時間（ms）。
+// オーケストレーターは依頼起点の取得を前回開始から 30 秒空けてまとめるため、それより長くとる。
+const TASK_REFRESH_TIMEOUT_MS = 60000;
+const TASK_REFRESH_LABEL = 'タスクを今すぐ再取得';
+const TASK_REFRESH_BUSY_LABEL = 'タスクを再取得しています';
+// 再取得ボタンを押した時刻（ms）。null のときは取得中ではない。
+let taskRefreshRequestedAt = null;
+let taskRefreshTimer = null;
 // dual-write 期間: 新 tasks-widget.json が無く旧 tasks-view.json だけがある場合の後方互換注記。
 const WIDGET_LEGACY_NOTICE_TEXT = 'orchestrator の更新が必要な可能性があります';
 
@@ -2591,6 +2599,9 @@ function createTaskListContainer() {
     writeTaskAssigneeFilter(filter.value);
     renderWidget();
   });
+
+  // 再取得の依頼ボタン（issue #617）。宣言に refreshCommand があるときだけ updateTaskRefreshButton が表示する。
+  const refreshButton = createTaskRefreshButton();
   const body = document.createElement('div');
   body.id = 'task-list-body';
   body.className = 'task-list-body sidebar-section-body';
@@ -2618,12 +2629,90 @@ function createTaskListContainer() {
     labelText: 'タスク',
     toggleLabelText: 'タスク一覧',
     body,
-    controls: [filter],
+    controls: [refreshButton, filter],
     labelClassName: 'task-list-title-text',
   });
   section.appendChild(header);
   section.appendChild(body);
   return section;
+}
+
+// タスク一覧の再取得ボタン（issue #617）を作る。取得中は disabled にせず aria-disabled で押せなくし、
+// キーボードで押した直後にフォーカスが外れないようにする。
+function createTaskRefreshButton() {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'btn task-list-refresh';
+  button.setAttribute('aria-label', TASK_REFRESH_LABEL);
+  button.title = TASK_REFRESH_LABEL;
+  button.setAttribute('aria-busy', 'false');
+  button.hidden = true;
+  const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  icon.setAttribute('class', 'task-list-refresh-icon');
+  icon.setAttribute('aria-hidden', 'true');
+  const use = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+  use.setAttribute('href', 'icons/ui.svg#rotate-cw');
+  icon.appendChild(use);
+  button.appendChild(icon);
+  button.addEventListener('click', () => { requestTaskRefresh(button); });
+  return button;
+}
+
+// 取得中の表示（回転・aria-busy・押せない状態・ツールチップ）を切り替える。
+function setTaskRefreshBusy(button, busy) {
+  button.classList.toggle('is-busy', busy);
+  button.setAttribute('aria-busy', busy ? 'true' : 'false');
+  if (busy) button.setAttribute('aria-disabled', 'true');
+  else button.removeAttribute('aria-disabled');
+  button.title = busy ? TASK_REFRESH_BUSY_LABEL : TASK_REFRESH_LABEL;
+}
+
+function endTaskRefresh(button) {
+  if (taskRefreshTimer) clearTimeout(taskRefreshTimer);
+  taskRefreshTimer = null;
+  taskRefreshRequestedAt = null;
+  if (button) setTaskRefreshBusy(button, false);
+}
+
+// 宣言の refreshCommand 断片を main へ渡し、commands.jsonl へ 1 行追記してもらう。
+// 新しい一覧（押した時刻より新しい updatedAt）が届くか、一定時間たつまで取得中にする。
+async function requestTaskRefresh(button) {
+  if (taskRefreshRequestedAt !== null) return;
+  const widget = lastWidgetPayload && lastWidgetPayload.widget;
+  const fragment = widget && widget.refreshCommand;
+  if (!fragment || !lastWidgetPayload.commandsConfigured) return;
+
+  taskRefreshRequestedAt = Date.now();
+  setTaskRefreshBusy(button, true);
+  taskRefreshTimer = setTimeout(() => endTaskRefresh(button), TASK_REFRESH_TIMEOUT_MS);
+  try {
+    const res = await VKIpc.invoke('widgets:command', fragment);
+    if (!res || !res.ok) {
+      console.warn('タスクの再取得の依頼に失敗しました', res && res.error);
+      endTaskRefresh(button);
+    }
+  } catch (e) {
+    console.warn('タスクの再取得の依頼に失敗しました', e);
+    endTaskRefresh(button);
+  }
+}
+
+// 描画のたびに、再取得ボタンの表示と取得中の解除を判定する。
+// 宣言に refreshCommand が無い版のオーケストレーター、または commands.jsonl が未設定のときは出さない。
+function updateTaskRefreshButton(section, payload) {
+  const button = section.querySelector('.task-list-refresh');
+  if (!button) return;
+  const widget = payload && payload.widget;
+  const configured = !!(payload && payload.commandsConfigured);
+  const available = !!(widget && widget.refreshCommand) && configured;
+  if (button.hidden !== !available) button.hidden = !available;
+  if (!available) {
+    if (taskRefreshRequestedAt !== null) endTaskRefresh(button);
+    return;
+  }
+  if (taskRefreshRequestedAt === null) return;
+  const updatedAtMs = Date.parse(widget.updatedAt || '');
+  if (Number.isFinite(updatedAtMs) && updatedAtMs > taskRefreshRequestedAt) endTaskRefresh(button);
 }
 
 // 格納ペインを収めるセクション（見出し＋リスト）。中身は renderPaneStash が更新する。
@@ -2960,6 +3049,9 @@ function renderWidget(fromUpdate) {
   const staleNotice = section.querySelector('.task-list-stale');
   const groupsEl = section.querySelector('.task-list-groups');
   if (!groupsEl) return;
+
+  // 再取得ボタンは見出し側にあり一覧の再描画と独立しているため、編集中で再描画を見送るときも更新する。
+  updateTaskRefreshButton(section, lastWidgetPayload);
 
   // ネイティブ select ピッカー操作中、または編集パネルで下書き編集中は widgets:update 起因の
   // 再描画をスキップする（データは lastWidgetPayload に保持済み。閉じた後の次描画で最新化）。

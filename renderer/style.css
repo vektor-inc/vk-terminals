@@ -2007,7 +2007,8 @@ button.sidebar-section-header:hover {
 .task-list-assignee-filter {
   width: 120px;
   min-width: 0;
-  max-width: calc(100% - 28px);
+  /* 同じ行の再取得ボタンと開閉ボタン（各 24px + gap 4px）の分を差し引く。ボタンの幅を変えたら合わせること。 */
+  max-width: calc(100% - 56px);
   height: 24px;
   padding: 2px 6px;
   /* 面が #1c2128 へ明るくなった分、#30363d では境界が 1.34:1 まで落ちるため、
@@ -2026,6 +2027,49 @@ button.sidebar-section-header:hover {
 }
 .task-list-assignee-filter[hidden] {
   display: none;
+}
+
+/* タスク一覧の再取得ボタン（issue #617）
+   ========================================================================== */
+.btn.task-list-refresh {
+  flex: 0 0 24px;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--vktm--color--border-interactive);
+  border-radius: var(--vktm--border-radius--sm);
+  background: transparent;
+  color: #8b949e;
+}
+/* .btn の display: flex が hidden 属性より優先されるため、明示的に隠す。 */
+.btn.task-list-refresh[hidden] {
+  display: none;
+}
+.btn.task-list-refresh:focus-visible {
+  outline: var(--vktm--outline--focus-ring);
+  outline-offset: var(--vktm--outline-offset--focus-ring);
+}
+.btn.task-list-refresh[aria-disabled="true"] {
+  cursor: progress;
+}
+.task-list-refresh-icon {
+  display: block;
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+}
+.task-list-refresh.is-busy .task-list-refresh-icon {
+  animation: task-list-refresh-spin 1s linear infinite;
+}
+@keyframes task-list-refresh-spin {
+  to { transform: rotate(360deg); }
+}
+/* 回転を止めても取得中と分かるよう、アイコンを薄くして状態を残す。 */
+@media (prefers-reduced-motion: reduce) {
+  .task-list-refresh.is-busy .task-list-refresh-icon {
+    animation: none;
+    opacity: 0.5;
+  }
 }
 .task-list-assignee-filter:focus-visible {
   outline: var(--vktm--outline--focus-ring);

@@ -8,7 +8,7 @@ test.beforeEach(async ({ page }) => {
   const source = fs.readFileSync(path.resolve(__dirname, '../../renderer/app.js'), 'utf8');
   const toolbar = source.match(/internalBrowserSidebar.innerHTML = `([^`]+)`;/)[1];
   const functions = [
-    'syncInternalBrowserLayout', 'setInternalBrowserOpen', 'focusInternalBrowserToolbar', 'setSidebarOpen',
+    'syncInternalBrowserLayout', 'syncInternalBrowserWideToggle', 'setInternalBrowserOpen', 'focusInternalBrowserToolbar', 'setSidebarOpen',
     // トーストは実装と実 CSS のまま載せ、全面表示でのページ領域との関係を確かめる。
     'internalBrowserToastReserve', 'ensureExternalUrlToast', 'showExternalUrlOpenFailedToast', 'hideExternalUrlToast',
     'clearExternalUrlToastTimer', 'externalUrlToastShouldHoldOpen', 'reconsiderExternalUrlToastTimer',
@@ -25,6 +25,8 @@ test.beforeEach(async ({ page }) => {
   await page.addScriptTag({ content: `
     const internalBrowserSidebar = document.getElementById('internal-browser-sidebar');
     let internalBrowserOpen = false, internalBrowserHasPage = false, sidebarOpen = false;
+    // 広く表示（issue #613）はこの spec では使わない。
+    let internalBrowserWide = null;
     let sidebarTransitionCleanup = null, previousInternalBrowserLayout = null;
     let preferredInternalBrowserWidth = 520, displayedInternalBrowserWidth = 0;
     let internalBrowserOverlayFocusOrigin = null;

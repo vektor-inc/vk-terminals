@@ -183,7 +183,7 @@ function syncInternalBrowserLayout() {
   const browserMustOverlay = internalBrowserOpen && shouldOverlayBrowser(windowWidth);
   const browserWasOverlay = root.classList.contains('internal-browser-overlay');
   // 広く表示の幅は保存幅（preferredInternalBrowserWidth）と別に計算し、保存幅は上書きしない。
-  const wideWidth = browserWide ? window.VKInternalBrowserLayout.wideBrowserWidth(availableWidth, windowWidth, leftSidebar) : 0;
+  const wideWidth = browserWide ? window.VKInternalBrowserLayout.wideBrowserWidth(availableWidth) : 0;
   const maxWidth = browserMustOverlay ? windowWidth
     : browserWide ? wideWidth : browserWidthMax(availableWidth, columns, windowWidth, effectiveGridMinimumWidth);
   displayedInternalBrowserWidth = browserMustOverlay ? windowWidth
@@ -212,8 +212,12 @@ function syncInternalBrowserLayout() {
       if (focusOrigin?.isConnected) focusOrigin.focus();
     });
   }
-  // 全面表示ではトーストをブラウザの左ではなく画面全体の幅で出すため、ブラウザ幅を差し引かない。
-  root.classList.toggle('toast-phrase-wrap', shouldWrapToastPhrase(windowWidth, browserMustOverlay ? 0 : displayedInternalBrowserWidth));
+  // 全面表示と、左サイドバーを閉じた広く表示では、ブラウザの左にトーストの置き場所が無い。
+  // トーストを通常の右下に出し、表示中だけページ領域の下端を詰める（issue #613）。
+  const toastAtCorner = browserMustOverlay || (browserWide && leftSidebar === 0);
+  root.classList.toggle('internal-browser-toast-corner', toastAtCorner);
+  // 右下に出すときは画面全体の幅を使えるため、ブラウザ幅を差し引かない。
+  root.classList.toggle('toast-phrase-wrap', shouldWrapToastPhrase(windowWidth, toastAtCorner ? 0 : displayedInternalBrowserWidth));
   internalBrowserSidebar.style.width = `${displayedInternalBrowserWidth}px`;
   internalBrowserSidebar.querySelector('.internal-browser-url').placeholder = displayedInternalBrowserWidth < 360 ? 'URL / 検索' : 'URL または検索語';
   document.body.style.setProperty('--vktm-internal-browser-width', `${displayedInternalBrowserWidth}px`);
@@ -225,7 +229,7 @@ function syncInternalBrowserLayout() {
   root.classList.toggle('internal-browser-open', internalBrowserOpen);
   document.getElementById('internal-browser-toggle')?.setAttribute('aria-pressed', String(internalBrowserOpen));
   // トーストの位置は上のクラス・幅の反映後に決まるため、ページ領域を測る直前に空ける。
-  internalBrowserSidebar.style.paddingBottom = `${internalBrowserToastReserve(browserMustOverlay)}px`;
+  internalBrowserSidebar.style.paddingBottom = `${internalBrowserToastReserve(toastAtCorner)}px`;
   const page = internalBrowserSidebar.querySelector('.internal-browser-page');
   if (page) {
     const rect = page.getBoundingClientRect();
@@ -1634,12 +1638,12 @@ const EXTERNAL_URL_TOAST_COPY_LABEL = 'URLをコピー';
 // settingsCopyButtonLabel() と同じ考え方。
 const EXTERNAL_URL_TOAST_COPY_ARIA_LABEL = '開けなかったURLをコピー';
 
-// 全面表示のアプリ内ブラウザでは、ページ（WebContentsView）が HTML より前面に描かれ、
-// トーストを逃がせる余白も画面に残らない。トーストは body 直下から動かさず（理由は
-// 上のコメント参照）、表示中だけページ領域の下端を詰めて置き場所を空ける。
-// 返すのは詰める高さ（px）。トーストの上に、右・下と同じ 16px の間隔を残す。
-function internalBrowserToastReserve(browserMustOverlay) {
-  if (!browserMustOverlay || !externalUrlToastEl || externalUrlToastEl.hidden) return 0;
+// 全面表示と、左サイドバーを閉じた広く表示（issue #613）のアプリ内ブラウザでは、
+// ページ（WebContentsView）が HTML より前面に描かれ、トーストを逃がせる余白も画面に残らない。
+// トーストは body 直下から動かさず（理由は上のコメント参照）、表示中だけページ領域の下端を
+// 詰めて置き場所を空ける。返すのは詰める高さ（px）。トーストの上に、右・下と同じ 16px の間隔を残す。
+function internalBrowserToastReserve(toastAtCorner) {
+  if (!toastAtCorner || !externalUrlToastEl || externalUrlToastEl.hidden) return 0;
   const toastTop = externalUrlToastEl.getBoundingClientRect().top;
   const sidebarBottom = internalBrowserSidebar.getBoundingClientRect().bottom;
   return Math.max(0, Math.ceil(sidebarBottom - toastTop) + 16);
@@ -1781,10 +1785,11 @@ function ensureExternalUrlToast() {
 
   externalUrlToastLayerEl = layer;
   externalUrlToastEl = toast;
-  // 表示・本文の差し替え・消去のどれでも箱の大きさが変わる。全面表示ではその都度
-  // ページ領域を詰め直す必要があるため、経路ごとに呼ばず大きさの変化で同期する。
+  // 表示・本文の差し替え・消去のどれでも箱の大きさが変わる。トーストを右下に出す状態
+  // （全面表示・左サイドバーを閉じた広く表示）ではその都度ページ領域を詰め直す必要があるため、
+  // 経路ごとに呼ばず大きさの変化で同期する。
   new ResizeObserver(() => {
-    if (document.getElementById('root')?.classList.contains('internal-browser-overlay')) syncInternalBrowserLayout();
+    if (document.getElementById('root')?.classList.contains('internal-browser-toast-corner')) syncInternalBrowserLayout();
   }).observe(toast);
   return toast;
 }

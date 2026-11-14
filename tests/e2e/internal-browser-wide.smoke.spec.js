@@ -187,8 +187,8 @@ test('格納ペインを戻す操作やブラウザを閉じる操作で広く�
   }
 });
 
-// @title 左サイドバーを閉じているときは通知用に左 96px を残す
-test('左サイドバーを閉じた広く表示ではトースト用に左 96px を残す', async () => {
+// @title 左サイドバーを閉じているときはブラウザを全幅にし、通知は右下に出してページを詰める
+test('左サイドバーを閉じた広く表示ではブラウザを全幅にし、通知の表示中だけページの下端を詰める', async () => {
   const launched = await start('vk-terminals-e2e-browser-wide-closed-sidebar-');
   const { win } = launched;
   try {
@@ -196,9 +196,97 @@ test('左サイドバーを閉じた広く表示ではトースト用に左 96px
     await win.evaluate(async () => { await addPane(null, { noClaude: true }); });
     await openBrowser(win, { sidebar: false });
     await wideButton(win).click();
-    // @check ブラウザ幅がウィンドウ幅から 96px を引いた幅になる
+    // @check ブラウザが root の全幅になり、左右に帯を残さない
     const rootWidth = await win.evaluate(() => document.getElementById('root').clientWidth);
-    await expect.poll(() => browserWidth(win)).toBe(rootWidth - 96);
+    await expect.poll(() => browserWidth(win)).toBe(rootWidth);
+    expect(await win.locator('#internal-browser-sidebar').evaluate(element => Math.round(element.getBoundingClientRect().left))).toBe(0);
+
+    // ページ領域（WebContentsView を置く範囲）の下端。通知が出ていないときの値を覚えておく。
+    const pageArea = win.locator('.internal-browser-page');
+    const pageBottom = async () => {
+      const box = await pageArea.boundingBox();
+      return box.y + box.height;
+    };
+    const fullBottom = await pageBottom();
+
+    // @step 短い通知（トースト）を出す
+    await win.evaluate(() => showGenericToast('ペインを閉じました'));
+    const toast = win.locator('.vk-toast');
+    await expect(toast).toBeVisible();
+    // @check 通知は 1 行で表示される（語句の途中で折り返さない）
+    const lines = await win.locator('.vk-toast-message').evaluate((element) => {
+      const lineHeight = parseFloat(getComputedStyle(element).lineHeight);
+      return Math.round(element.getBoundingClientRect().height / lineHeight);
+    });
+    expect(lines).toBe(1);
+    // @check 通知は画面の右下にあり、ページ領域の下端は通知の上端から 16px 以上空く（重ならない）
+    const toastBox = await toast.boundingBox();
+    expect(Math.round(toastBox.x + toastBox.width)).toBe(rootWidth - 16);
+    await expect.poll(pageBottom).toBeLessThanOrEqual(toastBox.y - 16);
+
+    // @step 通知を消す
+    await win.evaluate(() => hideExternalUrlToast());
+    await expect(toast).toBeHidden();
+    // @check ページ領域の下端が元に戻る
+    await expect.poll(pageBottom).toBe(fullBottom);
+  } finally {
+    await closeApp(launched);
+  }
+});
+
+// @title 操作列のグループの間が、グループの中の間隔より広い
+test('操作列は表示内容の操作と表示の操作の間を、グループ内のどの間隔より広く空ける', async () => {
+  const launched = await start('vk-terminals-e2e-browser-wide-toolbar-gap-');
+  const { win } = launched;
+  try {
+    // @step アプリ内ブラウザを開き、狭い幅（360px）と広く表示の両方で操作列の間隔を測る
+    await openBrowser(win, { sidebar: true });
+    // 見えている端を返す。ボタンはホバー・押した状態で背景（ボタンの箱）が見え、
+    // 通常はアイコンの線だけが見える。アイコンは線の太さ（viewBox 単位で 2、半分の 1 が外側）を含める。
+    const measure = () => win.evaluate(() => {
+      const toolbar = document.querySelector('.internal-browser-toolbar');
+      const iconEdges = (button) => {
+        const svg = button.querySelector('svg');
+        const use = svg.querySelector('use');
+        const rect = svg.getBoundingClientRect();
+        const scale = rect.width / 24;
+        const box = use.getBBox();
+        return { left: rect.left + (box.x - 1) * scale, right: rect.left + (box.x + box.width + 1) * scale };
+      };
+      const items = [...toolbar.children].map((element) => {
+        const rect = element.getBoundingClientRect();
+        const box = { left: rect.left, right: rect.right };
+        // 入力欄は枠線が常に見える。ボタンは「アイコンだけ見える」と「背景が見える」の 2 通り。
+        // 広く表示の押した状態は背景が常に見えるため、アイコンではなくボタンの箱が見えている端になる。
+        if (element.tagName === 'INPUT') return { action: 'url', icon: box, box };
+        const pressed = element.classList.contains('internal-browser-wide-toggle')
+          && document.getElementById('root').classList.contains('internal-browser-wide');
+        return { action: element.dataset.action, icon: pressed ? box : iconEdges(element), box };
+      });
+      return items;
+    });
+    const groups = [['back', 'forward', 'reload', 'url'], ['wide', 'external', 'close']];
+    const check = async () => {
+      const items = await measure();
+      const byAction = Object.fromEntries(items.map(item => [item.action, item]));
+      expect(items.map(item => item.action)).toEqual(groups.flat());
+      // グループ内で最も広く見える間隔は、隣どうしがどちらもアイコンだけ見えているとき。
+      const within = groups.flatMap(group => group.slice(1).map((action, index) => byAction[action].icon.left - byAction[group[index]].icon.right));
+      // グループ間で最も狭く見える間隔は、右のグループの先頭（広く表示）の背景が見えているとき。
+      const between = byAction.wide.box.left - byAction.url.box.right;
+      return { within: Math.max(...within), between };
+    };
+
+    await win.evaluate(() => { preferredInternalBrowserWidth = 360; syncInternalBrowserLayout(); });
+    await expect.poll(() => browserWidth(win)).toBe(360);
+    // @check どの状態（通常・ホバー・押した状態）でも、グループ間 > グループ内の最大
+    const narrow = await check();
+    expect(narrow.between).toBeGreaterThan(narrow.within);
+
+    await wideButton(win).click();
+    await expect(win.locator('#root')).toHaveClass(/\binternal-browser-wide\b/);
+    const wide = await check();
+    expect(wide.between).toBeGreaterThan(wide.within);
   } finally {
     await closeApp(launched);
   }

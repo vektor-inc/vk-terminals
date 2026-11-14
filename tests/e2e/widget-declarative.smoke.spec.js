@@ -633,6 +633,10 @@ test.describe.serial('widgetFile 系タスク一覧の描画・操作（issue #2
       await sidebar.evaluate((element) => {
         element.style.setProperty('--vktm-sidebar-width', '200px');
       });
+      // 幅は flex-basis のトランジションで追従するため、実際に 200px になってから測る（PR #619）。
+      await expect
+        .poll(() => sidebar.evaluate((element) => Math.round(element.getBoundingClientRect().width)))
+        .toBe(200);
 
       const label = section.locator('.sidebar-section-label');
       const filter = section.locator('.task-list-assignee-filter');

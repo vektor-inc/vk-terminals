@@ -3,6 +3,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { getFreePort, launchApp, closeApp } = require('./helpers/electron-app');
+const { setSidebarWidth } = require('./helpers/sidebar-width');
 
 // issue #617: サイドバーのタスク一覧の見出し行に置いた再取得ボタンの end-to-end 確認。
 // tasks-widget.json の最上位に refreshCommand があるときだけボタンを出し、押すと
@@ -117,6 +118,61 @@ async function setupWidget(win, port, widgetFile, widget, commandsPath) {
   await expect(win.locator('#task-list')).toBeVisible({ timeout: 10_000 });
 }
 
+// 見出し行の各要素の位置と、ラベル・プルダウンの文字が欠けていないかの材料を読む。
+async function readHeaderLayout(win) {
+  return win.locator('#task-list .sidebar-section-header').evaluate((header) => {
+    const menu = document.querySelector('.sidebar-menu').getBoundingClientRect().toJSON();
+    const labelEl = header.querySelector('.sidebar-section-label');
+    const filterEl = header.querySelector('.task-list-assignee-filter');
+    const controls = {};
+    for (const sel of ['.task-list-refresh', '.task-list-assignee-filter', '.sidebar-section-toggle']) {
+      const el = header.querySelector(sel);
+      if (el && !el.hidden) controls[sel] = el.getBoundingClientRect().toJSON();
+    }
+    let filter = null;
+    if (filterEl && !filterEl.hidden) {
+      const style = getComputedStyle(filterEl);
+      const ctx = document.createElement('canvas').getContext('2d');
+      ctx.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+      const selected = filterEl.options[filterEl.selectedIndex];
+      filter = {
+        width: filterEl.getBoundingClientRect().width,
+        padding: parseFloat(style.paddingLeft) + parseFloat(style.paddingRight),
+        selectedText: selected ? selected.textContent : '',
+        selectedTextWidth: selected ? ctx.measureText(selected.textContent).width : 0,
+      };
+    }
+    return {
+      menu,
+      label: labelEl.getBoundingClientRect().toJSON(),
+      labelOverflow: labelEl.scrollWidth > labelEl.clientWidth,
+      controls,
+      filter,
+    };
+  });
+}
+
+// ラベルと指定した操作がすべて同じ行（縦の中心が 1px 以内）に並び、サイドバー内に収まる。
+function expectHeaderInOneRow(layout, selectors) {
+  expect(Object.keys(layout.controls).sort()).toEqual([...selectors].sort());
+  expect(layout.labelOverflow).toBe(false);
+  const labelCenter = layout.label.top + layout.label.height / 2;
+  for (const r of [layout.label, ...selectors.map((sel) => layout.controls[sel])]) {
+    expect(r.left).toBeGreaterThanOrEqual(layout.menu.left);
+    expect(r.right).toBeLessThanOrEqual(layout.menu.right);
+    expect(Math.abs((r.top + r.height / 2) - labelCenter)).toBeLessThanOrEqual(1);
+  }
+}
+
+// 縮めたプルダウンでも選択中の値（既定は「自分のみ」）が欠けずに読める幅がある。
+// 右端の開閉矢印の領域は 20px とみなす（Chromium の select の矢印は約 16px）。
+function expectFilterReadable(layout) {
+  expect(layout.filter).not.toBeNull();
+  expect(layout.filter.selectedText).toBe('自分のみ');
+  expect(layout.filter.width).toBeGreaterThanOrEqual(80);
+  expect(layout.filter.width - layout.filter.padding - 20).toBeGreaterThanOrEqual(layout.filter.selectedTextWidth);
+}
+
 test.describe.serial('タスク一覧の再取得ボタン（issue #617）', () => {
   let app;
   let win;
@@ -172,35 +228,61 @@ test.describe.serial('タスク一覧の再取得ボタン（issue #617）', () 
     expect(Math.abs((buttonBox.y + buttonBox.height / 2) - (filterBox.y + filterBox.height / 2))).toBeLessThanOrEqual(1);
   });
 
-  test('200px 幅でも見出し・再取得ボタン・プルダウン・開閉ボタンが 1 行でサイドバー内に収まる', async () => {
-    await setupWidget(win, port, widgetFile, buildGithubWidget({ refreshCommand: { action: 'refresh-tasks' } }), commandsPath);
-    const sidebar = win.locator('#sidebar');
-    const header = win.locator('#task-list .sidebar-section-header');
-    const original = await sidebar.evaluate((el) => el.style.getPropertyValue('--vktm-sidebar-width'));
-    try {
-      await sidebar.evaluate((el) => el.style.setProperty('--vktm-sidebar-width', '200px'));
-      await expect(header.locator('button.task-list-refresh')).toBeVisible();
-      const rects = await header.evaluate((el) => {
-        const menu = document.querySelector('.sidebar-menu').getBoundingClientRect();
-        const pick = (sel) => el.querySelector(sel).getBoundingClientRect().toJSON();
-        return {
-          menu: menu.toJSON(),
-          label: pick('.sidebar-section-label'),
-          controls: ['.task-list-refresh', '.task-list-assignee-filter', '.sidebar-section-toggle'].map(pick),
-        };
-      });
-      expect(rects.label.width).toBeGreaterThanOrEqual(48);
-      for (const r of [rects.label, ...rects.controls]) {
-        expect(r.left).toBeGreaterThanOrEqual(rects.menu.left);
-        expect(r.right).toBeLessThanOrEqual(rects.menu.right);
-        // 折り返さず、見出しラベルと同じ行に並ぶ。
-        expect(Math.abs((r.top + r.height / 2) - (rects.label.top + rects.label.height / 2))).toBeLessThanOrEqual(1);
+  // サイドバーの下限幅（SIDEBAR_MIN_WIDTH = 240px。ドラッグで到達できる最小）から、
+  // 修正前に 2 段へ折り返していた境目（265px 以下）と、プルダウンが 120px に戻る幅までを確かめる。
+  // 200px はドラッグで到達できない幅のため対象にしない。
+  for (const widthPx of [240, 241, 265, 266, 267]) {
+    test(`サイドバー幅 ${widthPx}px でも見出し・再取得ボタン・プルダウン・開閉ボタンが 1 行に収まる`, async () => {
+      await setupWidget(win, port, widgetFile, buildGithubWidget({ refreshCommand: { action: 'refresh-tasks' } }), commandsPath);
+      const restore = await setSidebarWidth(win.locator('#sidebar'), widthPx);
+      try {
+        await expect(win.locator('#task-list .sidebar-section-header button.task-list-refresh')).toBeVisible();
+        const layout = await readHeaderLayout(win);
+        expectHeaderInOneRow(layout, ['.task-list-refresh', '.task-list-assignee-filter', '.sidebar-section-toggle']);
+        expectFilterReadable(layout);
+        if (widthPx >= 267) expect(layout.filter.width).toBe(120);
+      } finally {
+        await restore();
       }
+    });
+  }
+
+  test('サイドバー幅 240px で取得中・プルダウンなしのときも 1 行に収まり、ボタンが無いときの並びは変えない', async () => {
+    const sidebar = win.locator('#sidebar');
+
+    // 取得中（回転中）でも外形は変わらず 1 行のまま。
+    await setupWidget(win, port, widgetFile, buildGithubWidget({ refreshCommand: { action: 'refresh-tasks' } }), commandsPath);
+    let restore = await setSidebarWidth(sidebar, 240);
+    try {
+      const button = win.locator('#task-list button.task-list-refresh');
+      await button.click();
+      await expect(button).toHaveAttribute('aria-busy', 'true');
+      const layout = await readHeaderLayout(win);
+      expectHeaderInOneRow(layout, ['.task-list-refresh', '.task-list-assignee-filter', '.sidebar-section-toggle']);
+      expectFilterReadable(layout);
     } finally {
-      await sidebar.evaluate((el, value) => {
-        if (value) el.style.setProperty('--vktm-sidebar-width', value);
-        else el.style.removeProperty('--vktm-sidebar-width');
-      }, original);
+      await restore();
+    }
+
+    // 担当者プルダウンが出ないローカル運用。
+    await setupWidget(win, port, widgetFile, buildLocalWidget({ refreshCommand: { action: 'refresh-tasks' } }), commandsPath);
+    restore = await setSidebarWidth(sidebar, 240);
+    try {
+      const layout = await readHeaderLayout(win);
+      expectHeaderInOneRow(layout, ['.task-list-refresh', '.sidebar-section-toggle']);
+    } finally {
+      await restore();
+    }
+
+    // 再取得ボタンが無いときは、プルダウンを縮めず main と同じ 120px のまま 1 行に並ぶ。
+    await setupWidget(win, port, widgetFile, buildGithubWidget(), commandsPath);
+    restore = await setSidebarWidth(sidebar, 240);
+    try {
+      const layout = await readHeaderLayout(win);
+      expectHeaderInOneRow(layout, ['.task-list-assignee-filter', '.sidebar-section-toggle']);
+      expect(layout.filter.width).toBe(120);
+    } finally {
+      await restore();
     }
   });
 

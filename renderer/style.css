@@ -2028,8 +2028,17 @@ button.sidebar-section-header:hover {
 .task-list-assignee-filter[hidden] {
   display: none;
 }
-/* 再取得ボタンが出ているときは、その分（24px + gap 4px）も差し引く。 */
+/* 再取得ボタンが出ているときは、その分（24px + gap 4px）も差し引く。
+ * さらにプルダウンの幅を見出し行の幅に合わせて縮め、サイドバーの下限幅（240px）でも
+ * 見出し行を 1 行に収める。幅 120px のままだと、ラベルの最小幅 4em（48px）+ gap 6px +
+ * 操作 176px が見出し行（サイドバー幅 − 35px）を超え、240〜265px で 2 段に折り返していた。
+ * 差し引く 112px = ラベル 48px + 余裕 2px + gap 6px + 再取得ボタン 28px + 開閉ボタン 28px。
+ * 下限 80px は「自分のみ」が欠けずに読める幅（文字 44px + 左右 padding 12px + 矢印）。 */
+.task-list > .sidebar-section-header {
+  container-type: inline-size;
+}
 .sidebar-section-controls:has(.task-list-refresh:where(:not([hidden]))) .task-list-assignee-filter {
+  width: clamp(80px, calc(100cqi - 112px), 120px);
   max-width: calc(100% - 56px);
 }
 

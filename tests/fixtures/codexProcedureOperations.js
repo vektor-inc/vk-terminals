@@ -22,7 +22,7 @@
 //   alternative: 代替になりうる固定入口の操作（無ければ null）
 
 // 写した時点の vk-agents のコミット（手元の clone の HEAD）。
-const SNAPSHOT_VK_AGENTS_COMMIT = '0d2c032bbd3e60dc0f1ebc157cb922ac8c70cf23';
+const SNAPSHOT_VK_AGENTS_COMMIT = '3b71c1a97303b9c533b2d3cb6d41a390f857ceca';
 
 const SHA_A = 'abc1234def5678abc1234def5678abc1234def56';
 const SHA_B = '0123456789abcdef0123456789abcdef01234567';
@@ -55,9 +55,9 @@ const requiredOperations = [
 
   // ── レビュー ──
   { procedureOperation: 'gh-read.sh pr-view', source: 'codex/vk-kore/step-8-2b-split-review.md:21', argv: ['gh', 'pr', 'view', '529', '--json', 'baseRefName'], expected: { bin: 'gh', args: ['pr', 'view', '529', '--json', 'baseRefName'] }, explicitRepo: true },
-  { procedureOperation: 'gh-read.sh pr-view', source: 'codex/vk-kore/step-8-review-gate.md:107', argv: ['gh', 'pr', 'view', '529', '--json', 'headRefOid'], expected: { bin: 'gh', args: ['pr', 'view', '529', '--json', 'headRefOid'] }, explicitRepo: true },
-  { procedureOperation: 'gh-read.sh pr-diff', procedureNames: ['gh pr diff'], source: 'codex/vk-kore/step-8-review-gate.md:71', argv: ['gh', 'pr', 'diff', '529', '--name-only'], expected: { bin: 'gh', args: ['pr', 'diff', '529', '--name-only'] }, explicitRepo: true },
-  { procedureOperation: 'gh-read.sh pr-diff', source: 'codex/vk-kore/step-8-review-gate.md:107', argv: ['gh', 'pr', 'diff', '529', '--patch'], expected: { bin: 'gh', args: ['pr', 'diff', '529', '--patch'] }, explicitRepo: true },
+  { procedureOperation: 'gh-read.sh pr-view', source: 'codex/vk-kore/step-8-review-gate.md:109', argv: ['gh', 'pr', 'view', '529', '--json', 'headRefOid'], expected: { bin: 'gh', args: ['pr', 'view', '529', '--json', 'headRefOid'] }, explicitRepo: true },
+  { procedureOperation: 'gh-read.sh pr-diff', procedureNames: ['gh pr diff'], source: 'codex/vk-kore/step-8-review-gate.md:73', argv: ['gh', 'pr', 'diff', '529', '--name-only'], expected: { bin: 'gh', args: ['pr', 'diff', '529', '--name-only'] }, explicitRepo: true },
+  { procedureOperation: 'gh-read.sh pr-diff', source: 'codex/vk-kore/step-8-review-gate.md:109', argv: ['gh', 'pr', 'diff', '529', '--patch'], expected: { bin: 'gh', args: ['pr', 'diff', '529', '--patch'] }, explicitRepo: true },
   { procedureOperation: 'gh-read.sh compare-merge-base', source: 'codex/vk-kore/step-8-2b-split-review.md:35', argv: ['git', 'merge-base', 'origin/main', SHA_A], expected: { bin: 'git', gitSubcommand: 'merge-base' }, explicitRepo: false, note: '手順は GitHub のコンペア API でマージベースを取る。固定入口には無いため、ローカルの git merge-base に読み替えた（先に git fetch が要る）。' },
   { procedureOperation: 'git fetch', source: 'codex/vk-kore/step-8-2b-split-review.md:60', argv: ['git', 'fetch'], expected: { operation: 'fetch-default-branch' }, explicitRepo: false, note: '手順は git fetch origin <ベースブランチ名> と引数つき。固定入口の git fetch は引数なしで既定ブランチだけを取るため読み替えた。ベースが既定ブランチ以外の PR では同じ働きにならない。' },
   { procedureOperation: 'git diff', source: 'codex/vk-kore/step-8-2b-split-review.md:70', argv: ['git', 'diff', '--no-renames', '--name-only', SHA_B, SHA_A], expected: { bin: 'git', gitSubcommand: 'diff' }, explicitRepo: false, note: '手順は git -C <dir> -c core.quotePath=false diff … > <ファイル> と書く。-C は作業フォルダの指定、リダイレクトは入口が受けないため外して読み替えた。-c core.quotePath=false を外した件は knownGaps に別項目で登録している。' },
@@ -193,7 +193,7 @@ const knownGaps = [
   },
   {
     procedureOperation: 'run-member-agent.sh --engine claude',
-    source: 'codex/vk-kore/step-8-review-execution.md:68',
+    source: 'codex/vk-kore/step-8-review-execution.md:69',
     argv: ['member', 'start', '--engine', 'claude', '--prompt', 'review-prompt.txt', '--schema', 'review-schema.json', '--out', 'review-result.json'],
     expectedError: /engine not supported: "claude"/,
     reason: 'レビュアーを Claude Code で起動する経路。固定入口の `member start` は `--engine codex` だけに対応している（Claude Code は別対応）。',

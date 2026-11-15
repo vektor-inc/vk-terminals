@@ -2196,12 +2196,14 @@ button.sidebar-section-header:hover {
 
 /* アイテムのバッジ（ステータス / 優先度 / 直列・並列）
    ========================================================================== */
+/* 背景のある箱なので、上下の内側の余白は箱の中の最大の間隔以上にする。操作が次の行へ送られたとき、
+   上の行の担当者の字面は行の中央に置かれて下に 4.5px ほど空くため、行の間（row-gap）は小さく取る。 */
 .task-item-head {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
-  padding: 5px 6px;
+  gap: 3px 6px;
+  padding: 8px 6px;
   background: #161b22;
 }
 /* カードの操作（開始・編集）。折り返すときは 2 つまとめて次の行の右端へ送る。 */
@@ -2606,8 +2608,11 @@ button.sidebar-section-header:hover {
   border: 1px solid rgba(248, 81, 73, 0.3);
   background: rgba(248, 81, 73, 0.12);
   color: #ffa198;
-  /* 次の操作まで書いた長い文言がサイドバーからはみ出さないよう、折り返させる。 */
+  /* 次の操作まで書いた長い文言がサイドバーからはみ出さないよう、折り返させる。
+     長音が行頭に来たり語句の途中で割れたりしないよう、行頭禁則と文節単位の改行をブラウザに任せる。 */
   white-space: normal;
+  line-break: strict;
+  word-break: auto-phrase;
 }
 
 /* 空状態
@@ -3689,6 +3694,16 @@ body.pane-dragging * {
   font-weight: 600;
 }
 .confirm-start-task:hover { background: #2ea043; }
+/* 開始の確認ダイアログだけ内側の余白を広げ、本文とボタンの間（字面から約 22px）以上にする。
+   既存の確認ダイアログ（閉じる・トークン再発行・表の一括切り替え）の見た目は変えない。 */
+.confirm-start-task-modal {
+  padding: 20px 24px 24px;
+}
+/* 本文はオーケストレーターが宣言した文言をそのまま出すため、語句の途中（「マー／ジ」など）で割れないようにする。 */
+.confirm-start-task-modal .confirm-message {
+  line-break: strict;
+  word-break: auto-phrase;
+}
 
 
 /* ==========================================================================

@@ -746,6 +746,9 @@ button.k.kill.is-locked:active { background: #6b3f3f; border-color: #7c4a4a; }
   border: 1px solid rgba(248, 81, 73, 0.32);
   background: rgba(248, 81, 73, 0.12);
   color: #ffa198;
+  /* PC 版と同じく、長音の行頭や語句の途中での改行を避ける。 */
+  line-break: strict;
+  word-break: auto-phrase;
 }
 
 /* ─── 編集パネル（ステータス / 優先度 / 実行方式の select）─────────────── */

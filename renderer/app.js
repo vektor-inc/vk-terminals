@@ -4125,7 +4125,8 @@ function openStartTaskConfirmDialog(confirm) {
     const overlay = document.createElement('div');
     overlay.className = 'confirm-overlay';
     const modal = document.createElement('div');
-    modal.className = 'confirm-modal';
+    // 内側の余白だけ開始の確認ダイアログ専用に広げる（既存の確認ダイアログは変えない）
+    modal.className = 'confirm-modal confirm-start-task-modal';
     modal.setAttribute('role', 'alertdialog');
     modal.setAttribute('aria-modal', 'true');
 

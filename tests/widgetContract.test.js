@@ -768,3 +768,119 @@ test('buildRefreshCommandLine: id / action / requestedAt だけの 1 行を組�
   assert.deepEqual(line, { id: 'refresh-abc', action: 'refresh-tasks', requestedAt: '2026-11-14T00:00:00.000Z' });
   assert.equal(contract.buildRefreshCommandLine({ action: 'set-status' }, { id: 'a', requestedAt: 'b' }), null);
 });
+
+// ── 開始の依頼（startCommand / start-task。vk-orchestrator#979・issue #622）──────────
+
+function rawStartCommand(overrides) {
+  return Object.assign({
+    label: '開始',
+    ariaLabel: '「#322 サイドバーの…」を開始',
+    title: '承認して、すぐに実行を始めます（自動マージ: オン）',
+    command: { action: 'start-task', taskId: '139', expected: 'awaiting-approval' },
+    confirm: {
+      title: 'このタスクを開始しますか？',
+      body: '自動マージがオンのため、レビューを通過すると PR のマージまで自動で進みます。',
+      confirmLabel: '開始する',
+    },
+  }, overrides || {});
+}
+
+function itemWithStart(startCommand, itemOverrides) {
+  const w = contract.sanitizeWidget(baseRawWidget({
+    groups: [{ id: 'awaiting-approval', label: '承認待ち', tone: 'attention', items: [
+      Object.assign({ id: '139', title: '#322 サイドバーの…', editable: true, controls: [], startCommand }, itemOverrides || {}),
+    ] }],
+  }));
+  return w.groups[0].items[0];
+}
+
+test('sanitizeWidget: startCommand を宣言の完成文のまま保持し、confirmLabel も残す', () => {
+  const item = itemWithStart(rawStartCommand());
+  assert.deepEqual(item.startCommand, {
+    label: '開始',
+    ariaLabel: '「#322 サイドバーの…」を開始',
+    title: '承認して、すぐに実行を始めます（自動マージ: オン）',
+    command: { action: 'start-task', taskId: '139', expected: 'awaiting-approval' },
+    confirm: {
+      title: 'このタスクを開始しますか？',
+      body: '自動マージがオンのため、レビューを通過すると PR のマージまで自動で進みます。',
+      confirmLabel: '開始する',
+    },
+  });
+});
+
+test('sanitizeWidget: confirm の無い startCommand は confirm キーを持たない', () => {
+  const item = itemWithStart(rawStartCommand({ confirm: undefined }));
+  assert.equal(Object.prototype.hasOwnProperty.call(item.startCommand, 'confirm'), false);
+  assert.equal(item.startCommand.label, '開始');
+});
+
+test('sanitizeWidget: 不正な startCommand は落とす（ボタンを出さない）', () => {
+  const invalids = [
+    undefined,
+    null,
+    'start',
+    [],
+    rawStartCommand({ label: '' }),
+    rawStartCommand({ label: '   ' }),
+    rawStartCommand({ label: 7 }),
+    rawStartCommand({ command: undefined }),
+    rawStartCommand({ command: { action: 'set-status', taskId: '139', to: 'ready', expected: 'awaiting-approval' } }),
+    rawStartCommand({ command: { action: 'apply-batch', taskId: '139', ops: [] } }),
+    rawStartCommand({ command: { action: 'start-task', taskId: '', expected: 'awaiting-approval' } }),
+    rawStartCommand({ command: { action: 'start-task', taskId: '139' } }),
+    rawStartCommand({ command: { action: 'start-task', taskId: '139', expected: '' } }),
+    // 別のカードを指す依頼は発行させない。
+    rawStartCommand({ command: { action: 'start-task', taskId: '999', expected: 'awaiting-approval' } }),
+  ];
+  for (const value of invalids) {
+    const item = itemWithStart(value);
+    assert.equal(Object.prototype.hasOwnProperty.call(item, 'startCommand'), false, JSON.stringify(value));
+  }
+});
+
+test('sanitizeWidget: startCommand の文言は上限で切り詰め、to や未知のキーは落とす', () => {
+  const long = 'あ'.repeat(contract.LIMITS.text + 10);
+  const item = itemWithStart(rawStartCommand({
+    label: long,
+    ariaLabel: long,
+    title: long,
+    extra: 'drop',
+    command: { action: 'start-task', taskId: '139', expected: 'awaiting-approval', to: 'ready', id: 'x', requestedAt: 'y' },
+    confirm: { title: 'あ'.repeat(contract.LIMITS.confirmTitle + 1), body: 'い'.repeat(contract.LIMITS.confirmBody + 1), confirmLabel: long },
+  }));
+  const sc = item.startCommand;
+  assert.equal(sc.label.length, contract.LIMITS.text);
+  assert.equal(sc.ariaLabel.length, contract.LIMITS.text);
+  assert.equal(sc.title.length, contract.LIMITS.text);
+  assert.equal(sc.confirm.title.length, contract.LIMITS.confirmTitle);
+  assert.equal(sc.confirm.body.length, contract.LIMITS.confirmBody);
+  assert.equal(sc.confirm.confirmLabel.length, contract.LIMITS.text);
+  assert.equal(Object.prototype.hasOwnProperty.call(sc, 'extra'), false);
+  assert.deepEqual(sc.command, { action: 'start-task', taskId: '139', expected: 'awaiting-approval' });
+});
+
+test('sanitizeBatchCommand: start-task は一括確定の ops に入れられない', () => {
+  assert.equal(contract.sanitizeBatchCommand({
+    action: 'apply-batch',
+    taskId: '139',
+    ops: [{ action: 'start-task', to: 'ready', expected: 'awaiting-approval' }],
+  }), null);
+  assert.equal(contract.sanitizeCommand({ action: 'start-task', taskId: '139', to: 'ready', expected: 'awaiting-approval' }), null);
+});
+
+test('buildStartCommandLine: id / action / taskId / expected / requestedAt の 1 行を組み立て、to は付けない', () => {
+  const line = contract.buildStartCommandLine(
+    { action: 'start-task', taskId: '139', expected: 'awaiting-approval', to: 'IGNORED', id: 'IGNORED' },
+    { id: 'start-abc', requestedAt: '2026-11-15T00:00:00.000Z' },
+  );
+  assert.deepEqual(line, {
+    id: 'start-abc',
+    action: 'start-task',
+    taskId: '139',
+    expected: 'awaiting-approval',
+    requestedAt: '2026-11-15T00:00:00.000Z',
+  });
+  assert.equal(contract.buildStartCommandLine({ action: 'set-status', taskId: '139', to: 'ready', expected: 'x' }, { id: 'a', requestedAt: 'b' }), null);
+  assert.equal(contract.buildStartCommandLine({ action: 'start-task', taskId: '139' }, { id: 'a', requestedAt: 'b' }), null);
+});

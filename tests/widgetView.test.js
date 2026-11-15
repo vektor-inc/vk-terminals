@@ -148,6 +148,8 @@ function makeDoc() {
   // DOM から外れたときは null へ落ちる（実ブラウザの「body が無ければ null」相当）。
   const doc = { activeElement: null, body: null };
   doc.createElement = (tag) => new FakeElement(tag, doc);
+  // アイコン（svg / use）用。名前空間は記録だけして、通常の要素と同じスタブで扱う。
+  doc.createElementNS = (ns, tag) => { const node = new FakeElement(tag, doc); node.namespaceURI = ns; return node; };
   return doc;
 }
 
@@ -405,7 +407,13 @@ test('render: editable アイテムは既定で select を畳み、編集ボタ�
   assert.equal(groupsEl.querySelectorAll((el) => el.classList.contains('task-edit-panel')).length, 0);
   const editButton = groupsEl.querySelectorAll((el) => el.classList.contains('task-item-edit'))[0];
   assert.equal(editButton.tagName, 'BUTTON');
-  assert.equal(editButton.textContent, '編集');
+  // 編集ボタンは歯車アイコンだけ（文字は持たない）。移行の手がかりにツールチップへ「編集」を出す（issue #622）。
+  assert.equal(editButton.textContent, '');
+  assert.equal(editButton.title, '編集');
+  const icon = editButton.children[0];
+  assert.equal(icon.tagName, 'SVG');
+  assert.equal(icon.getAttribute('aria-hidden'), 'true');
+  assert.equal(icon.children[0].getAttribute('href'), 'icons/ui.svg#settings');
   assert.equal(editButton.getAttribute('aria-expanded'), 'false');
   assert.equal(editButton.getAttribute('aria-label'), '「T」を編集');
 });
@@ -1920,4 +1928,312 @@ test('render: 対象issue番号と一致する親バッジだけ除き、照合�
   assert.ok(cards[1].textContent.includes('親 #99'));
   assert.ok(cards[2].textContent.includes('親 other#1'));
   assert.ok(cards[4].textContent.includes('親 #1'));
+});
+
+// ── 開始ボタン（startCommand。issue #622）──────────────────────────────────────
+
+const START_NOW = { now: Date.parse('2026-07-21T00:00:10.000Z') };
+
+function startCommandFor(taskId, extra) {
+  return Object.assign({
+    label: '開始',
+    ariaLabel: '「T」を開始',
+    title: '承認して、すぐに実行を始めます',
+    command: { action: 'start-task', taskId, expected: 'awaiting-approval' },
+  }, extra || {});
+}
+
+function startableWidget(extra) {
+  return editableWidgetWithControls(Object.assign({ startCommand: startCommandFor('10') }, extra || {}));
+}
+
+function findByClass(groupsEl, cls) {
+  return groupsEl.querySelectorAll((el) => el.classList.contains(cls))[0] || null;
+}
+
+test('開始ボタン: startCommand があるときだけ、歯車の左に宣言の文言で描き、2 つを 1 つのまとまりに入れる', () => {
+  const { groupsEl, view } = makeView();
+  view.render(startableWidget(), START_NOW);
+
+  const actions = findByClass(groupsEl, 'task-item-actions');
+  assert.ok(actions);
+  assert.deepEqual(actions.children.map((child) => child.className), ['task-item-start', 'task-item-edit']);
+  const start = actions.children[0];
+  assert.equal(start.tagName, 'BUTTON');
+  assert.equal(start.type, 'button');
+  assert.equal(start.textContent, '開始');
+  assert.equal(start.getAttribute('aria-label'), '「T」を開始');
+  assert.equal(start.title, '承認して、すぐに実行を始めます');
+  assert.equal(start.getAttribute('aria-disabled'), null);
+  assert.equal(start.getAttribute('aria-busy'), 'false');
+  assert.equal(start.children[0].children[0].getAttribute('href'), 'icons/ui.svg#play');
+
+  // 宣言が無いタスクには出さない（歯車だけ）。
+  const plain = makeView();
+  plain.view.render(editableWidgetWithControls(), START_NOW);
+  assert.equal(findByClass(plain.groupsEl, 'task-item-start'), null);
+  assert.ok(findByClass(plain.groupsEl, 'task-item-edit'));
+});
+
+test('開始ボタン: 依頼ファイルが未設定（canSendCommands が false）なら出さない', () => {
+  const { groupsEl, view } = makeView({ canSendCommands: () => false });
+  view.render(startableWidget(), START_NOW);
+  assert.equal(findByClass(groupsEl, 'task-item-start'), null);
+  assert.ok(findByClass(groupsEl, 'task-item-edit'));
+});
+
+test('開始ボタン: 宣言の文言は textContent で描き、HTML として解釈しない', () => {
+  const evil = '<img src=x onerror=alert(1)>';
+  const { groupsEl, view } = makeView();
+  view.render(startableWidget({ startCommand: startCommandFor('10', { label: evil }) }), START_NOW);
+  const label = findByClass(groupsEl, 'task-item-start-label');
+  assert.equal(label.textContent, evil);
+  assert.equal(label.children[0].tagName, '#text');
+});
+
+test('開始ボタン: confirm が無ければ押した時点で start-task を送り、開始中…にして開始と歯車を押せなくする', async () => {
+  const sent = [];
+  const confirmCalls = [];
+  const { groupsEl, view } = makeView({
+    sendCommand: async (cmd) => { sent.push(cmd); return { ok: true }; },
+    confirmStart: (c) => { confirmCalls.push(c); return true; },
+    startTimeoutMs: 1000,
+  });
+  view.render(startableWidget(), START_NOW);
+  findByClass(groupsEl, 'task-item-start').dispatch('click');
+  await Promise.resolve();
+
+  assert.equal(confirmCalls.length, 0);
+  assert.deepEqual(sent, [{ action: 'start-task', taskId: '10', expected: 'awaiting-approval' }]);
+  assert.equal(view.hasStarting(), true);
+
+  // 次の一覧でもまだ startCommand が残っていれば開始中のまま。
+  view.render(startableWidget(), START_NOW);
+  const start = findByClass(groupsEl, 'task-item-start');
+  assert.equal(start.textContent, '開始中…');
+  assert.equal(start.getAttribute('aria-busy'), 'true');
+  assert.equal(start.getAttribute('aria-disabled'), 'true');
+  assert.equal(start.dataset.state, 'starting');
+  assert.equal(start.getAttribute('aria-label'), '「T」を開始（開始中…）');
+  const edit = findByClass(groupsEl, 'task-item-edit');
+  assert.equal(edit.getAttribute('aria-disabled'), 'true');
+  assert.equal(edit.getAttribute('aria-label'), '「T」を編集（開始中のため操作できません）');
+  assert.equal(edit.title, '編集（開始中のため操作できません）');
+
+  // 開始中は押し直しても二重に送らず、歯車も開かない。
+  start.dispatch('click');
+  edit.dispatch('click');
+  await Promise.resolve();
+  assert.equal(sent.length, 1);
+  assert.equal(view.hasOpenEditor(), false);
+
+  // startCommand が消えた一覧で開始中を終える（タイマーも片付く）。
+  view.render(startableWidget({ startCommand: undefined }), START_NOW);
+  assert.equal(view.hasStarting(), false);
+  assert.equal(findByClass(groupsEl, 'task-item-start'), null);
+  assert.equal(findByClass(groupsEl, 'task-item-edit').getAttribute('aria-disabled'), null);
+});
+
+test('開始ボタン: 開始ボタンにフォーカスがあったまま成功したら、同じカードの歯車へフォーカスを移す', async () => {
+  const { groupsEl, view, doc } = makeView({ startTimeoutMs: 1000 });
+  view.render(startableWidget(), START_NOW);
+  const start = findByClass(groupsEl, 'task-item-start');
+  start.focus();
+  start.dispatch('click');
+  await Promise.resolve();
+  view.render(startableWidget(), START_NOW);
+  // 開始中の描き直しでも、フォーカスは開始ボタンに残る。
+  assert.equal(doc.activeElement, findByClass(groupsEl, 'task-item-start'));
+
+  view.render(startableWidget({ startCommand: undefined }), START_NOW);
+  assert.equal(doc.activeElement, findByClass(groupsEl, 'task-item-edit'));
+});
+
+test('開始ボタン: 状態の名前ではなく startCommand の有無で終える（タスクが一覧から消えても終える）', async () => {
+  const { groupsEl, view } = makeView({ startTimeoutMs: 1000 });
+  view.render(startableWidget(), START_NOW);
+  findByClass(groupsEl, 'task-item-start').dispatch('click');
+  await Promise.resolve();
+  // 状態コントロールの current が変わっても、startCommand が残る間は開始中のまま。
+  const changedStatus = startableWidget();
+  changedStatus.groups[0].items[0].controls[0].current = 'in-progress';
+  view.render(changedStatus, START_NOW);
+  assert.equal(view.hasStarting(), true);
+  // タスクごと消えたら終える。
+  view.render(sanitized([{ id: 'ready', label: '実行待ち', tone: 'info', items: [] }]), START_NOW);
+  assert.equal(view.hasStarting(), false);
+});
+
+test('開始ボタン: confirm があるときだけ確認し、キャンセルなら送らない。確定なら送る', async () => {
+  const sent = [];
+  const confirmCalls = [];
+  let answer = false;
+  const confirm = { title: 'このタスクを開始しますか？', body: '自動マージがオンです。', confirmLabel: '開始する' };
+  const { groupsEl, view } = makeView({
+    sendCommand: async (cmd) => { sent.push(cmd); return { ok: true }; },
+    confirmStart: async (c) => { confirmCalls.push(c); return answer; },
+    startTimeoutMs: 1000,
+  });
+  const widget = startableWidget({ startCommand: startCommandFor('10', { confirm }) });
+  view.render(widget, START_NOW);
+
+  findByClass(groupsEl, 'task-item-start').dispatch('click');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(confirmCalls, [confirm]);
+  assert.equal(sent.length, 0);
+  assert.equal(view.hasStarting(), false);
+
+  answer = true;
+  findByClass(groupsEl, 'task-item-start').dispatch('click');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(confirmCalls.length, 2);
+  assert.equal(sent.length, 1);
+  assert.equal(view.hasStarting(), true);
+  view.render(startableWidget({ startCommand: undefined }), START_NOW);
+});
+
+test('開始ボタン: confirmStart を渡さなければ confirm（window.confirm 相当）へ見出しと本文だけを渡す', async () => {
+  const texts = [];
+  const sent = [];
+  const { groupsEl, view } = makeView({
+    confirm: (text) => { texts.push(text); return false; },
+    sendCommand: async (cmd) => { sent.push(cmd); return { ok: true }; },
+  });
+  const confirm = { title: 'このタスクを開始しますか？', body: '自動マージがオンです。', confirmLabel: '開始する' };
+  view.render(startableWidget({ startCommand: startCommandFor('10', { confirm }) }), START_NOW);
+  findByClass(groupsEl, 'task-item-start').dispatch('click');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(texts, ['このタスクを開始しますか？\n\n自動マージがオンです。']);
+  assert.equal(sent.length, 0);
+});
+
+test('開始ボタン: 追記に失敗したら即座に元に戻し、カードの下に role=alert で知らせる', async () => {
+  let rerenders = 0;
+  const { groupsEl, view } = makeView({
+    sendCommand: async () => ({ ok: false, error: 'commands-file-not-configured' }),
+    requestRerender: () => { rerenders += 1; },
+    startTimeoutMs: 1000,
+  });
+  view.render(startableWidget(), START_NOW);
+  findByClass(groupsEl, 'task-item-start').dispatch('click');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(view.hasStarting(), false);
+  assert.ok(rerenders >= 2);
+  view.render(startableWidget(), START_NOW);
+  const start = findByClass(groupsEl, 'task-item-start');
+  assert.equal(start.textContent, '開始');
+  assert.equal(start.getAttribute('aria-disabled'), null);
+  const alert = groupsEl.querySelectorAll((el) => el.getAttribute('role') === 'alert')[0];
+  assert.equal(alert.textContent, DEFAULT_STRINGS.startSendError);
+
+  // 押し直したら失敗表示を消す。
+  findByClass(groupsEl, 'task-item-start').dispatch('click');
+  view.render(startableWidget(), START_NOW);
+  assert.equal(groupsEl.querySelectorAll((el) => el.getAttribute('role') === 'alert').length, 0);
+  await new Promise((resolve) => setImmediate(resolve));
+});
+
+test('開始ボタン: 期限までに startCommand が消えなければ元に戻し、オーケストレーターの確認を促す', async () => {
+  const { groupsEl, view } = makeView({ startTimeoutMs: 20 });
+  view.render(startableWidget(), START_NOW);
+  findByClass(groupsEl, 'task-item-start').dispatch('click');
+  await Promise.resolve();
+  assert.equal(view.hasStarting(), true);
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.equal(view.hasStarting(), false);
+  view.render(startableWidget(), START_NOW);
+  assert.equal(findByClass(groupsEl, 'task-item-start').textContent, '開始');
+  const alert = groupsEl.querySelectorAll((el) => el.getAttribute('role') === 'alert')[0];
+  assert.equal(alert.textContent, DEFAULT_STRINGS.startTimeoutError);
+  // その後 startCommand が消えたら（別経路で開始された等）失敗表示も片付ける。
+  view.render(startableWidget({ startCommand: undefined }), START_NOW);
+  assert.equal(groupsEl.querySelectorAll((el) => el.getAttribute('role') === 'alert').length, 0);
+});
+
+test('開始ボタン: 保存中は押せなくし、読み上げ名に理由を添える', async () => {
+  const sent = [];
+  const { groupsEl, view } = makeView({
+    sendCommand: async (cmd) => { sent.push(cmd); return { ok: true }; },
+    pendingTimeoutMs: 1000,
+    pendingErrorTimeoutMs: 1000,
+  });
+  const widget = startableWidget();
+  view.render(widget, START_NOW);
+  findByClass(groupsEl, 'task-item-edit').dispatch('click');
+  view.render(widget, START_NOW);
+  const status = groupsEl.querySelectorAll((el) => el.tagName === 'SELECT').find((el) => el.dataset.field === 'priority');
+  status.value = 'high';
+  status.dispatch('change');
+  findByClass(groupsEl, 'task-edit-save').dispatch('click');
+  await Promise.resolve();
+  view.render(widget, START_NOW);
+
+  const start = findByClass(groupsEl, 'task-item-start');
+  assert.equal(start.getAttribute('aria-disabled'), 'true');
+  assert.equal(start.getAttribute('aria-label'), '「T」を開始（保存中のため開始できません）');
+  assert.equal(start.title, '承認して、すぐに実行を始めます（保存中のため開始できません）');
+  start.dispatch('click');
+  await Promise.resolve();
+  assert.equal(sent.length, 1); // 保存の apply-batch だけ
+  assert.equal(view.hasStarting(), false);
+
+  // 反映を確認して保存中を終わらせ、タイマーを片付ける。
+  const reflected = startableWidget();
+  reflected.groups[0].items[0].controls[1].current = 'high';
+  view.render(reflected, START_NOW);
+  assert.equal(view.hasPending(), false);
+});
+
+test('開始ボタン: 編集パネルに未保存の変更がある間は押せなくし、変更が無ければ押したときにパネルを閉じる', async () => {
+  const sent = [];
+  const { groupsEl, view } = makeView({
+    sendCommand: async (cmd) => { sent.push(cmd); return { ok: true }; },
+    startTimeoutMs: 1000,
+  });
+  const widget = startableWidget();
+  view.render(widget, START_NOW);
+  findByClass(groupsEl, 'task-item-edit').dispatch('click');
+  view.render(widget, START_NOW);
+  const start = findByClass(groupsEl, 'task-item-start');
+  assert.equal(start.getAttribute('aria-disabled'), null);
+
+  // 下書きを変えると、描き直さなくても押せない状態に切り替わる。
+  const priority = groupsEl.querySelectorAll((el) => el.tagName === 'SELECT').find((el) => el.dataset.field === 'priority');
+  priority.value = 'high';
+  priority.dispatch('change');
+  assert.equal(start.getAttribute('aria-disabled'), 'true');
+  assert.equal(start.getAttribute('aria-label'), '「T」を開始（編集中の変更を保存してから開始できます）');
+  assert.equal(start.title, '承認して、すぐに実行を始めます（編集中の変更を保存してから開始できます）');
+  start.dispatch('click');
+  await Promise.resolve();
+  assert.equal(sent.length, 0);
+
+  // 元の値に戻すと押せる。押すとパネルを閉じて送る。
+  priority.value = 'medium';
+  priority.dispatch('change');
+  assert.equal(start.getAttribute('aria-disabled'), null);
+  assert.equal(start.title, '承認して、すぐに実行を始めます');
+  start.dispatch('click');
+  await Promise.resolve();
+  assert.equal(view.hasOpenEditor(), false);
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].action, 'start-task');
+  view.render(startableWidget({ startCommand: undefined }), START_NOW);
+});
+
+test('開始ボタン: isStartingSettledBy は、渡した一覧で開始中のタスクが終わるときだけ true（書き直しを見送る前の判定）', async () => {
+  const { groupsEl, view } = makeView({ startTimeoutMs: 1000 });
+  view.render(startableWidget(), START_NOW);
+  // 開始中が無ければ常に false。
+  assert.equal(view.isStartingSettledBy(startableWidget({ startCommand: undefined })), false);
+  findByClass(groupsEl, 'task-item-start').dispatch('click');
+  await Promise.resolve();
+  assert.equal(view.isStartingSettledBy(startableWidget()), false);
+  assert.equal(view.isStartingSettledBy(startableWidget({ startCommand: undefined })), true);
+  assert.equal(view.isStartingSettledBy(sanitized([{ id: 'ready', label: '実行待ち', tone: 'info', items: [] }])), true);
+  assert.equal(view.isStartingSettledBy(null), true);
+  // 判定だけで状態は変えない。
+  assert.equal(view.hasStarting(), true);
+  view.render(startableWidget({ startCommand: undefined }), START_NOW);
+  assert.equal(view.hasStarting(), false);
 });

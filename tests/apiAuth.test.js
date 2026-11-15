@@ -281,7 +281,7 @@ test('isAuthExemptPath: ページ本体を構成する静的ファイルは true
 // 必要」という壊れ方をして開発中に必ず気づけた。正を1か所（STATIC_FILES）にまとめた
 // ことで、今度は表に1行足すだけで静かに認証免除が広がる形に変わった。上のテストは
 // 「表のパスが免除されること」しか見ておらず、表が増えても落ちない。
-// このテストは免除パスの集合が、ここに明示列挙した 19 パスと完全一致することを固定し、
+// このテストは免除パスの集合が、ここに明示列挙した 20 パスと完全一致することを固定し、
 // STATIC_FILES が増減したときに必ずここを通らせる（authExempt フラグ方式は正を1か所に
 // 保つ方針を崩すため採らない）。
 const EXPECTED_AUTH_EXEMPT_GET_PATHS = [
@@ -304,13 +304,14 @@ const EXPECTED_AUTH_EXEMPT_GET_PATHS = [
   '/manifest.webmanifest',
   '/icons/icon-192.png',
   '/icons/icon-512.png',
+  '/icons/ui.svg',
 ];
 
-test('AUTH_EXEMPT_GET_PATHS: 免除パスの集合は明示列挙した19パスと完全一致する（安藤のセキュリティレビュー再指摘・A-4。新しい静的ファイルを STATIC_FILES に足したら、このテストを更新する意思決定を必ず一度通す）', () => {
+test('AUTH_EXEMPT_GET_PATHS: 免除パスの集合は明示列挙した20パスと完全一致する（安藤のセキュリティレビュー再指摘・A-4。新しい静的ファイルを STATIC_FILES に足したら、このテストを更新する意思決定を必ず一度通す）', () => {
   const actual = [...AUTH_EXEMPT_GET_PATHS].sort();
   const expected = [...EXPECTED_AUTH_EXEMPT_GET_PATHS].sort();
   assert.deepEqual(actual, expected);
-  assert.equal(AUTH_EXEMPT_GET_PATHS.size, EXPECTED_AUTH_EXEMPT_GET_PATHS.length, '重複無しで19件であること');
+  assert.equal(AUTH_EXEMPT_GET_PATHS.size, EXPECTED_AUTH_EXEMPT_GET_PATHS.length, '重複無しで20件であること');
 });
 
 test('isAuthExemptPath: データを返す /api/* はすべて false（唯一の例外は /api/health）', () => {

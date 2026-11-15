@@ -522,15 +522,30 @@ button.k.kill.is-locked:active { background: #6b3f3f; border-color: #7c4a4a; }
   gap: 7px;
   padding: 5px 8px 8px;
 }
-.task-item-edit {
+/* カードの操作（開始・編集）。折り返すときは 2 つまとめて次の行の右端へ送る。 */
+.task-item-actions {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 7px;
   margin-left: auto;
-  min-width: 52px;
+  white-space: nowrap;
+}
+.task-item-icon {
+  display: block;
+  flex: none;
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+}
+.task-item-edit,
+.task-item-start {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   min-height: 44px;
-  padding: 8px 12px;
-  border: 1px solid #30363d;
   border-radius: 8px;
-  background: #21262d;
-  color: #c9d1d9;
   font: inherit;
   font-size: 13px;
   font-weight: 700;
@@ -538,17 +553,59 @@ button.k.kill.is-locked:active { background: #6b3f3f; border-color: #7c4a4a; }
   cursor: pointer;
   white-space: nowrap;
 }
-.task-item-edit:active:not([aria-disabled="true"]) {
-  background: #30363d;
-}
-.task-item-edit:focus-visible {
+.task-item-edit:focus-visible,
+.task-item-start:focus-visible {
   outline: 2px solid #58a6ff;
   outline-offset: 2px;
+}
+.task-item-edit {
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 1px solid #30363d;
+  background: #21262d;
+  color: #c9d1d9;
+}
+.task-item-edit:active:where(:not([aria-disabled="true"])) {
+  background: #30363d;
 }
 .task-item-edit:disabled,
 .task-item-edit[aria-disabled="true"] {
   opacity: 0.6;
   cursor: default;
+}
+/* 塗りの緑は「保存」などの確定ボタンに取っておき、一覧に並ぶ開始は枠線と文字だけにする。
+   「開始中…」に変わっても歯車の位置が動かないよう、最小幅は長い方の文言に合わせる。 */
+.task-item-start {
+  gap: 6px;
+  min-width: 100px;
+  padding: 8px 12px;
+  border: 1px solid #2ea043;
+  background: transparent;
+  color: #3fb950;
+}
+.task-item-start .task-item-icon {
+  width: 14px;
+  height: 14px;
+}
+/* 宣言の文言が長くても、カードからはみ出さないよう省略する。 */
+.task-item-start-label {
+  min-width: 0;
+  max-width: 8em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.task-item-start:active:where(:not([aria-disabled="true"])) {
+  background: rgba(46, 160, 67, 0.15);
+}
+.task-item-start[aria-disabled="true"] {
+  opacity: 0.6;
+  cursor: default;
+}
+/* 開始中は押せない状態だが、文言を読ませたいので薄くしない。 */
+.task-item-start[data-state="starting"] {
+  opacity: 1;
+  cursor: progress;
 }
 .widget-badge {
   display: inline-flex;
@@ -689,6 +746,9 @@ button.k.kill.is-locked:active { background: #6b3f3f; border-color: #7c4a4a; }
   border: 1px solid rgba(248, 81, 73, 0.32);
   background: rgba(248, 81, 73, 0.12);
   color: #ffa198;
+  /* 長音が行頭に来たり語句の途中で割れたりしないよう、行頭禁則と文節単位の改行をブラウザに任せる。 */
+  line-break: strict;
+  word-break: auto-phrase;
 }
 
 /* ─── 編集パネル（ステータス / 優先度 / 実行方式の select）─────────────── */

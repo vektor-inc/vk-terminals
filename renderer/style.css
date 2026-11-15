@@ -2169,7 +2169,7 @@ button.sidebar-section-header:hover {
 }
 .task-item-title {
   display: block;
-  padding: 8px 8px 6px;
+  padding: 8px 10px 6px;
   color: #c9d1d9;
   font-size: 11px;
   font-weight: 600;
@@ -2196,23 +2196,43 @@ button.sidebar-section-header:hover {
 
 /* アイテムのバッジ（ステータス / 優先度 / 直列・並列）
    ========================================================================== */
+/* 背景のある箱なので、上下左右の内側の余白は、折り返したときの段の間（担当者の字面は段の中央に置かれるため、
+   字面までの間隔は row-gap より広く見える）以上にする。gap や操作の高さを変えるときは合わせて見直す。
+   左右の余白を変えるときは、左端をそろえている題名・リンク・編集パネル・失敗の文言の箱も合わせる。 */
 .task-item-head {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
-  padding: 5px 6px;
+  gap: 3px 6px;
+  padding: 10px;
   background: #161b22;
 }
-.task-item-edit {
+/* カードの操作（開始・編集）。折り返すときは 2 つまとめて次の行の右端へ送る。
+   狭いサイドバーや子カードで 1 行に収まらないときは、開始の文言を省略して縮め、箱からはみ出さないようにする。 */
+.task-item-actions {
+  display: inline-flex;
+  flex: 0 1 auto;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
   margin-left: auto;
-  min-width: 44px;
+  white-space: nowrap;
+}
+.task-item-icon {
+  display: block;
+  flex: none;
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+}
+.task-item-edit,
+.task-item-start {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   min-height: 24px;
-  padding: 3px 8px;
-  border: 1px solid #30363d;
   border-radius: var(--vktm--border-radius--sm);
-  background: #21262d;
-  color: #c9d1d9;
   font: inherit;
   font-size: 11px;
   font-weight: 600;
@@ -2221,17 +2241,63 @@ button.sidebar-section-header:hover {
   white-space: nowrap;
   -webkit-app-region: no-drag;
 }
-.task-item-edit:hover {
-  background: #30363d;
-}
-.task-item-edit:focus-visible {
+.task-item-edit:focus-visible,
+.task-item-start:focus-visible {
   outline: var(--vktm--outline--focus-ring);
   outline-offset: var(--vktm--outline-offset--focus-ring);
+}
+.task-item-edit {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid #30363d;
+  background: #21262d;
+  color: #c9d1d9;
+}
+.task-item-edit:hover {
+  background: #30363d;
 }
 .task-item-edit:disabled,
 .task-item-edit[aria-disabled="true"] {
   opacity: 0.55;
   cursor: default;
+}
+/* 塗りの緑は「保存」「開始する」などの確定ボタンに取っておき、一覧に並ぶ開始は枠線と文字だけにする。
+   「開始中…」に変わっても歯車の位置が動かないよう、最小幅は長い方の文言に合わせる。 */
+.task-item-start {
+  gap: 4px;
+  min-width: 80px;
+  padding: 3px 8px;
+  border: 1px solid #2ea043;
+  background: transparent;
+  color: #3fb950;
+}
+.task-item-start .task-item-icon {
+  width: 12px;
+  height: 12px;
+}
+/* 宣言の文言が長くても、サイドバーからはみ出さないよう省略する。 */
+.task-item-start-label {
+  min-width: 0;
+  max-width: 8em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.task-item-start:hover {
+  background: rgba(46, 160, 67, 0.15);
+}
+.task-item-start[aria-disabled="true"] {
+  opacity: 0.55;
+  cursor: default;
+}
+.task-item-start[aria-disabled="true"]:hover {
+  background: transparent;
+}
+/* 開始中は押せない状態だが、文言を読ませたいので薄くしない。 */
+.task-item-start[data-state="starting"] {
+  opacity: 1;
+  cursor: progress;
 }
 .widget-badge {
   display: inline-flex;
@@ -2284,12 +2350,13 @@ button.sidebar-section-header:hover {
 
 /* アイテムの外部リンク（queue / pr）
    ========================================================================== */
+/* PR リンクは題名と同じくタスク全体に付く情報なので、見出し行の箱には入れず、カードの地色の側に置く。 */
 .task-item-links {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  padding: 0 6px 6px;
-  background: #161b22;
+  gap: 4px 6px;
+  padding: 8px 10px;
+  background: #0d1117;
 }
 .widget-link {
   display: inline-flex;
@@ -2357,7 +2424,7 @@ button.sidebar-section-header:hover {
 .task-edit-panel {
   display: grid;
   gap: 9px;
-  padding: 8px 6px 9px;
+  padding: 8px 10px 9px;
   border-top: 1px solid #21262d;
   background: #0d1117;
 }
@@ -2516,7 +2583,7 @@ button.sidebar-section-header:hover {
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
-  padding: 5px 6px;
+  padding: 5px 10px;
   border-top: 1px solid #21262d;
   background: #0d1117;
 }
@@ -2546,6 +2613,11 @@ button.sidebar-section-header:hover {
   border: 1px solid rgba(248, 81, 73, 0.3);
   background: rgba(248, 81, 73, 0.12);
   color: #ffa198;
+  /* 次の操作まで書いた長い文言がサイドバーからはみ出さないよう、折り返させる。
+     長音が行頭に来たり語句の途中で割れたりしないよう、行頭禁則と文節単位の改行をブラウザに任せる。 */
+  white-space: normal;
+  line-break: strict;
+  word-break: auto-phrase;
 }
 
 /* 空状態
@@ -3566,6 +3638,12 @@ body.pane-dragging * {
   font-size: 13px;
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
 }
+.confirm-title {
+  margin: 0 0 8px;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.4;
+}
 .confirm-message {
   margin: 0 0 16px;
   line-height: 1.6;
@@ -3613,6 +3691,23 @@ body.pane-dragging * {
   font-weight: 600;
 }
 .confirm-apply-content-table:hover { background: #f85149; }
+/* タスクの開始（issue #622）は進める操作のため、保存と同じ緑の塗りにする（危険色は使わない）。 */
+.confirm-start-task {
+  background: #238636;
+  border-color: #2ea043;
+  color: #fff;
+  font-weight: 600;
+}
+.confirm-start-task:hover { background: #2ea043; }
+/* 内側の余白は、本文とボタンの間以上にする（本文の margin を広げるときは合わせて見直す）。 */
+.confirm-start-task-modal {
+  padding: 20px 24px 24px;
+}
+/* 本文はオーケストレーターが宣言した文言をそのまま出すため、語句の途中（「マー／ジ」など）で割れないようにする。 */
+.confirm-start-task-modal .confirm-message {
+  line-break: strict;
+  word-break: auto-phrase;
+}
 
 
 /* ==========================================================================

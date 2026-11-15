@@ -1,5 +1,8 @@
 # Changelog
 
+- [ 機能追加 ] サイドバーとスマートフォン版のタスクカードに、承認待ちのタスクをすぐに実行へ進める「開始」ボタンを追加（[#622](https://github.com/vektor-inc/vk-terminals/issues/622)）
+- [ 仕様変更 ] タスクカードの「編集」ボタンを歯車アイコンに変更（位置は右端のまま。ツールチップに「編集」と表示）（[#622](https://github.com/vektor-inc/vk-terminals/issues/622)）
+
 ## 1.103.0
 
 - [ 機能追加 ] アプリ内ブラウザのアドレス欄から URL 入力と Google 検索でページを開く機能を追加（[#600](https://github.com/vektor-inc/vk-terminals/issues/600)）

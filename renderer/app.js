@@ -840,6 +840,9 @@ const TASK_PENDING_TIMEOUT_MS = 30000;
 // タスク一覧の再取得ボタン（issue #617）で、新しい一覧が届かないまま「取得中」を解除するまでの時間（ms）。
 // オーケストレーターは依頼起点の取得を前回開始から 30 秒空けてまとめるため、それより長くとる。
 const TASK_REFRESH_TIMEOUT_MS = 60000;
+// タスクの開始ボタン（issue #622）で、startCommand が消えないまま「開始中…」を元に戻すまでの時間（ms）。
+// 再取得ボタンと同じ待ち時間にそろえる。
+const TASK_START_TIMEOUT_MS = 60000;
 const TASK_REFRESH_LABEL = 'タスクを今すぐ再取得';
 const TASK_REFRESH_BUSY_LABEL = 'タスクを再取得しています';
 const TASK_REFRESH_FAILED_TEXT = 'タスクの再取得を依頼できませんでした';
@@ -2936,6 +2939,9 @@ function ensureWidgetViewController(groupsEl) {
     getFilterMode: () => readTaskAssigneeFilter(),
     requestRerender: () => renderWidget(),
     pendingTimeoutMs: TASK_PENDING_TIMEOUT_MS,
+    confirmStart: (confirm) => openStartTaskConfirmDialog(confirm),
+    canSendCommands: () => commandsConfigured,
+    startTimeoutMs: TASK_START_TIMEOUT_MS,
   });
   return widgetViewController;
 }
@@ -3053,12 +3059,25 @@ function renderWidget(fromUpdate) {
 
   // ネイティブ select ピッカー操作中、または編集パネルで下書き編集中は widgets:update 起因の
   // 再描画をスキップする（データは lastWidgetPayload に保持済み。閉じた後の次描画で最新化）。
-  // 保存中は pending の反映検知が必要なため、更新描画を通して syncPending に渡す。
+  // 保存中・開始中は反映の検知が必要なため、更新描画を通して syncPending / syncStarting に渡す。
+  // プルダウン操作中でも、届いた一覧で開始中のタスクが終わるときは書き直す（見送ると「開始中…」が
+  // 期限まで残るため）。書き直しはその 1 回だけで、フォーカスは描画側がプルダウンへ戻す。
+  const settlesStart = !!(
+    widgetViewController
+    && lastWidgetPayload
+    && widgetViewController.isStartingSettledBy(lastWidgetPayload.widget || null)
+  );
   if (
     fromUpdate
+    && !settlesStart
     && (
       isEditingWidgetControl(groupsEl)
-      || (widgetViewController && widgetViewController.hasOpenEditor() && !widgetViewController.hasPending())
+      || (
+        widgetViewController
+        && widgetViewController.hasOpenEditor()
+        && !widgetViewController.hasPending()
+        && !widgetViewController.hasStarting()
+      )
     )
   ) return;
 
@@ -4086,6 +4105,96 @@ function openApplyContentTableConfirmDialog(message, onConfirm) {
 
   // 既定フォーカスは安全側（キャンセル）。Enter 誤爆で上書きしてしまわないようにする。
   releaseFocusTrap = focusTraps.activate(modal, { initialFocus: cancelBtn });
+}
+
+// ─── タスクの開始の確認（issue #622）──────────────────────────────────────────
+// openCloseConfirmDialog と同じ作り（アプリ内モーダル・role="alertdialog"・フォーカストラップ・
+// Escape レイヤー・復帰フォーカス）。Electron の window.confirm は「OK」が既定の選択になり、
+// 宣言の取り決め「キャンセルを既定にする（Enter で確定しない）」を満たせないため新設した。
+// 文言はすべて宣言（startCommand.confirm）の完成文で、textContent で描く。
+// 確定なら true、キャンセル・Escape・背景クリックなら false で解決する。
+let startTaskConfirmOpen = false;
+
+function openStartTaskConfirmDialog(confirm) {
+  if (startTaskConfirmOpen) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    const restoreFocusElement = document.activeElement;
+    startTaskConfirmOpen = true;
+
+    // 見出し・本文・ボタン（左にキャンセル、右に確定）を組み立てる
+    const overlay = document.createElement('div');
+    overlay.className = 'confirm-overlay';
+    const modal = document.createElement('div');
+    modal.className = 'confirm-modal confirm-start-task-modal';
+    modal.setAttribute('role', 'alertdialog');
+    modal.setAttribute('aria-modal', 'true');
+
+    const titleText = (confirm && confirm.title) || '';
+    const bodyText = (confirm && confirm.body) || '';
+    if (titleText) {
+      const titleEl = document.createElement('p');
+      titleEl.id = 'start-task-confirm-title';
+      titleEl.className = 'confirm-title';
+      titleEl.textContent = titleText;
+      modal.appendChild(titleEl);
+      modal.setAttribute('aria-labelledby', titleEl.id);
+    } else {
+      modal.setAttribute('aria-label', 'タスクの開始の確認');
+    }
+    if (bodyText) {
+      const msgEl = document.createElement('p');
+      msgEl.id = 'start-task-confirm-body';
+      msgEl.className = 'confirm-message';
+      msgEl.textContent = bodyText;
+      modal.appendChild(msgEl);
+      modal.setAttribute('aria-describedby', msgEl.id);
+    }
+
+    const actions = document.createElement('div');
+    actions.className = 'confirm-actions';
+    const cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.className = 'confirm-cancel';
+    cancelBtn.textContent = 'キャンセル';
+    const confirmBtn = document.createElement('button');
+    confirmBtn.type = 'button';
+    confirmBtn.className = 'confirm-start-task';
+    confirmBtn.textContent = (confirm && confirm.confirmLabel) || '開始する';
+    actions.appendChild(cancelBtn);
+    actions.appendChild(confirmBtn);
+    modal.appendChild(actions);
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
+
+    // 閉じるときはフォーカスを戻してから結果を返す（戻し先の判断は openCloseConfirmDialog と同じ）
+    let unregisterEscapeLayer = () => {};
+    let releaseFocusTrap = () => {};
+    let settled = false;
+    const close = (result) => {
+      if (settled) return;
+      settled = true;
+      unregisterEscapeLayer();
+      releaseFocusTrap();
+      const active = document.activeElement;
+      const shouldRestore = !active || active === document.body || overlay.contains(active);
+      overlay.remove();
+      startTaskConfirmOpen = false;
+      if (shouldRestore && canRestoreModalFocus(restoreFocusElement)) restoreFocusElement.focus();
+      resolve(result);
+    };
+    unregisterEscapeLayer = escapeLayers.register(() => close(false));
+
+    overlay.addEventListener('mousedown', (e) => {
+      if (e.target !== overlay) return;
+      e.preventDefault();
+      close(false);
+    });
+    cancelBtn.addEventListener('click', () => close(false));
+    confirmBtn.addEventListener('click', () => close(true));
+
+    // 既定フォーカスは安全側（キャンセル）。Enter 誤爆で開始してしまわないようにする。
+    releaseFocusTrap = focusTraps.activate(modal, { initialFocus: cancelBtn });
+  });
 }
 
 // ペインをグリッド上で左右の隣と入れ替える。端で隣が無ければ何もしない。

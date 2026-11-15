@@ -48,6 +48,7 @@
   });
 
   let relationshipSequence = 0;
+  const SVG_NS = 'http://www.w3.org/2000/svg';
   const SPOKEN_TEXT_STRIP_RE = /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
 
   const DEFAULT_STRINGS = Object.freeze({
@@ -60,6 +61,15 @@
     // 「待てばよい」ことと「パネルを閉じてもよい」ことを明示する（植草 UX レビュー指摘）。
     pendingSlow: '反映に時間がかかっています。このままお待ちください',
     savingPendingSlow: '反映に時間がかかっています。このままお待ちください（パネルは閉じてもかまいません）',
+    // 開始ボタン（startCommand。issue #622）の状態の文言。ボタン自体の文言は宣言の完成文を使う。
+    starting: '開始中…',
+    startSendError: '開始を依頼できませんでした。もう一度押してください',
+    startTimeoutError: '開始を確認できませんでした。オーケストレーターが動いているか確かめて、もう一度押してください',
+    startBlockedSaving: '（保存中のため開始できません）',
+    startBlockedDirty: '（編集中の変更を保存してから開始できます）',
+    editBlockedSaving: '（保存中のため操作できません）',
+    editBlockedStarting: '（開始中のため操作できません）',
+    editTooltip: '編集',
     empty: 'タスクはありません',
     emptySelf: '自分に割り当てられたタスクはありません',
     emptyFiltered: '該当するタスクはありません',
@@ -94,6 +104,10 @@
    * @param {object} [deps.contract]
    * @param {number} [deps.pendingTimeoutMs]  1段目（警告）のタイムアウト。既定 30000ms。
    * @param {number} [deps.pendingErrorTimeoutMs]  2段目（エラー）のタイムアウト。既定 300000ms（5分）。
+   * @param {(confirm:{title:string,body:string,confirmLabel:string})=>(boolean|Promise<boolean>)} [deps.confirmStart]
+   *   開始の確認ダイアログ。既定は confirm（window.confirm）へ見出しと本文だけを渡す。
+   * @param {()=>boolean} [deps.canSendCommands]  依頼ファイル（commands.jsonl）が設定済みか。false なら開始ボタンを出さない。
+   * @param {number} [deps.startTimeoutMs]  開始中の表示を諦めて元に戻すまでの時間。既定 60000ms。
    */
   function createTaskWidgetView(deps) {
     const contract = resolveContract(deps.contract);
@@ -112,6 +126,10 @@
     // 即エラーにはせず「時間がかかっています」表示へ切り替えるだけに留め、pending / savingTasks は
     // 2段目のこのタイムアウトまで保持し続ける（保存・編集ボタンは無効のままで二重送信を防ぐ）。
     const pendingErrorTimeoutMs = Number.isFinite(deps.pendingErrorTimeoutMs) ? deps.pendingErrorTimeoutMs : 300000;
+    const confirmStart = deps.confirmStart || ((confirm) => confirmFn(joinConfirm(confirm)));
+    const canSendCommands = deps.canSendCommands || (() => true);
+    // 再取得ボタンの待ち時間と同じ 60 秒。二重に押しても VK Orchestrator 側の照合で捨てられるため長く待たせない。
+    const startTimeoutMs = Number.isFinite(deps.startTimeoutMs) ? deps.startTimeoutMs : 60000;
 
     // pending: taskId -> { fields: [{ field, expected }], warnTimeoutId, errorTimeoutId, slow }
     const pending = new Map();
@@ -122,6 +140,10 @@
     // 安藤 LOW）。drafts を消す箇所では必ず一緒に消す（保存記録だけが取り残されるのを防ぐ）。
     const savedFields = new Map();
     const savingTasks = new Set();
+    // 開始中のタスク: taskId -> { timeoutId }。startErrors は開始の失敗表示（編集の errors とは別に持つ）。
+    const startingTasks = new Map();
+    const startErrors = new Map();
+    const renderedStartButtons = new Map();
     const renderedEditButtons = new Map();
     const renderedPanels = new Map();
     // focusKey -> 今回の render で作った要素。render() は毎回 groupsEl.replaceChildren() で
@@ -192,6 +214,151 @@
       return Array.isArray(item.controls) ? item.controls : [];
     }
 
+    function findItem(taskId) {
+      return contract.flatItems(lastWidget).find((candidate) => candidate.id === taskId) || null;
+    }
+
+    function clearStarting(taskId) {
+      const entry = startingTasks.get(taskId);
+      if (entry && entry.timeoutId) clearTimeout(entry.timeoutId);
+      startingTasks.delete(taskId);
+    }
+
+    // 期限までに startCommand が消えなければ元に戻して知らせる。押し直し後の新しいタイマーとは
+    // id で見分け、古いタイマーが新しい開始中を解除しないようにする。
+    function scheduleStartTimeout(taskId) {
+      const timeoutId = setTimeout(() => {
+        const entry = startingTasks.get(taskId);
+        if (!entry || entry.timeoutId !== timeoutId) return;
+        startingTasks.delete(taskId);
+        startErrors.set(taskId, strings.startTimeoutError);
+        requestRerender();
+      }, startTimeoutMs);
+      return timeoutId;
+    }
+
+    // 開始を押せない理由。保存中、または開いている編集パネルに未保存の変更があるとき。
+    function getStartBlockedReason(item) {
+      if (savingTasks.has(item.id)) return 'saving';
+      if (editingTaskId === item.id && isItemDirty(item)) return 'dirty';
+      return null;
+    }
+
+    // 開始ボタンの文言・読み上げ名・押せない状態を、開始中／保存中／未保存の変更に合わせて切り替える。
+    // 編集パネルで下書きを変えたときは再描画せずに呼ばれる（updateEditPanelState）。
+    function applyStartButtonState(button, item) {
+      const startCommand = item.startCommand;
+      const starting = startingTasks.has(item.id);
+      const reason = starting ? null : getStartBlockedReason(item);
+      const baseLabel = startCommand.ariaLabel || startCommand.label;
+      let ariaLabel = baseLabel;
+      if (starting) ariaLabel = `${baseLabel}（${strings.starting}）`;
+      else if (reason === 'saving') ariaLabel = `${baseLabel}${strings.startBlockedSaving}`;
+      else if (reason === 'dirty') ariaLabel = `${baseLabel}${strings.startBlockedDirty}`;
+      button.setAttribute('aria-label', ariaLabel);
+      // 押せない理由はツールチップにも出す（マウス利用者にも読み上げと同じ理由を伝える）。
+      let title = startCommand.title || '';
+      if (reason === 'saving') title = `${title}${strings.startBlockedSaving}`;
+      else if (reason === 'dirty') title = `${title}${strings.startBlockedDirty}`;
+      if (title) button.title = title;
+      else button.removeAttribute('title');
+      button.setAttribute('aria-busy', starting ? 'true' : 'false');
+      if (starting || reason) button.setAttribute('aria-disabled', 'true');
+      else button.removeAttribute('aria-disabled');
+      if (starting) button.dataset.state = 'starting';
+      else delete button.dataset.state;
+      if (button.labelEl) button.labelEl.textContent = starting ? strings.starting : startCommand.label;
+    }
+
+    // 開始の依頼を commands.jsonl へ 1 行追記してもらう。受け付けの結果は返らないため、
+    // 次に届いた一覧で startCommand が消えるまで「開始中…」にして押せなくする。
+    async function startTask(taskId) {
+      let item = findItem(taskId);
+      if (!item || !item.startCommand || !canSendCommands()) return;
+      if (startingTasks.has(taskId) || getStartBlockedReason(item)) return;
+
+      // 宣言に confirm があるときだけ確認する
+      if (item.startCommand.confirm) {
+        let confirmed = false;
+        try {
+          confirmed = await confirmStart(item.startCommand.confirm);
+        } catch (_e) {
+          confirmed = false;
+        }
+        // ダイアログを開いている間に一覧が描き直されると、元のボタンが消えてフォーカスの戻り先を失う。
+        const focusLost = !doc.activeElement || doc.activeElement === doc.body;
+        if (!confirmed) {
+          if (focusLost) safeFocus(renderedStartButtons.get(taskId));
+          return;
+        }
+        // 確認の間に状態が変わっていないか、最新の一覧で判定し直す
+        item = findItem(taskId);
+        if (!item || !item.startCommand || !canSendCommands()) return;
+        if (startingTasks.has(taskId) || getStartBlockedReason(item)) return;
+        if (focusLost) pendingFocus = { type: 'start-button', taskId };
+      }
+
+      // 変更の無い編集パネルは閉じ、閉じている間に残っていた下書き・編集の失敗表示も片付ける
+      if (editingTaskId === taskId) {
+        const keepFocus = pendingFocus;
+        closeEditor(taskId);
+        pendingFocus = keepFocus;
+      }
+      drafts.delete(taskId);
+      savedFields.delete(taskId);
+      errors.delete(taskId);
+      startErrors.delete(taskId);
+
+      const timeoutId = scheduleStartTimeout(taskId);
+      startingTasks.set(taskId, { timeoutId });
+      requestRerender();
+
+      // 送信に失敗したら、今の開始中のときだけ元に戻して知らせる
+      let res;
+      try {
+        res = await sendCommand(Object.assign({}, item.startCommand.command));
+      } catch (_e) {
+        res = { ok: false };
+      }
+      if (res && res.ok) return;
+      const entry = startingTasks.get(taskId);
+      if (!entry || entry.timeoutId !== timeoutId) return;
+      clearStarting(taskId);
+      startErrors.set(taskId, strings.startSendError);
+      requestRerender();
+    }
+
+    // 渡した一覧で、開始中のタスクのどれかが終わる（startCommand が消える・タスクが消える）か。
+    // 呼び出し側が、プルダウン操作中などで書き直しを見送る前に、反映を見落とさないための判定に使う。
+    function isStartingSettledBy(widget) {
+      if (startingTasks.size === 0) return false;
+      const byId = new Map(contract.flatItems(widget).map((item) => [item.id, item]));
+      for (const taskId of startingTasks.keys()) {
+        const item = byId.get(taskId);
+        if (!item || !item.startCommand) return true;
+      }
+      return false;
+    }
+
+    // 届いた一覧で、開始中のタスクの startCommand が消えた（またはタスクが消えた）ら開始中を終える。
+    // 状態の名前からは判断しない（どの状態で開始できるかを画面側で持たない取り決め）。
+    // 開始ボタンにフォーカスがあったまま成功したら、同じカードの歯車へフォーカスを移す。
+    function syncStarting(widget, capturedFocusKey) {
+      const byId = new Map(contract.flatItems(widget).map((item) => [item.id, item]));
+      for (const taskId of Array.from(startingTasks.keys())) {
+        const item = byId.get(taskId);
+        if (item && item.startCommand) continue;
+        clearStarting(taskId);
+        if (item && !pendingFocus && capturedFocusKey === focusKeyForStartButton(taskId)) {
+          pendingFocus = { type: 'edit-button', taskId };
+        }
+      }
+      for (const taskId of Array.from(startErrors.keys())) {
+        const item = byId.get(taskId);
+        if (!item || !item.startCommand) startErrors.delete(taskId);
+      }
+    }
+
     function buildDraftFromItem(item) {
       const draft = {};
       for (const control of getControls(item)) draft[control.field] = control.current;
@@ -252,6 +419,8 @@
       const canSave = canSaveItem(item);
       if (panel.dirtyDot) panel.dirtyDot.hidden = !dirty;
       if (panel.saveButton) panel.saveButton.disabled = !canSave || savingTasks.has(item.id);
+      const startButton = renderedStartButtons.get(item.id);
+      if (startButton && item.startCommand) applyStartButtonState(startButton, item);
     }
 
     function closeEditor(taskId, options = {}) {
@@ -283,6 +452,8 @@
       // 編集ボタンは保存中でも aria-disabled のみでフォーカス可能なため、クリックが素通りしても
       // ここで確実に止める（issue #406 差し戻し: 安藤 LOW）。
       if (savingTasks.has(item.id)) return;
+      // 開始中は状態が切り替わる途中のため、編集を始めさせない。
+      if (startingTasks.has(item.id)) return;
       if (editingTaskId === item.id) return;
       if (editingTaskId) {
         if (savingTasks.has(editingTaskId)) {
@@ -388,6 +559,10 @@
         safeFocus(renderedEditButtons.get(focus.taskId));
         return;
       }
+      if (focus.type === 'start-button') {
+        safeFocus(renderedStartButtons.get(focus.taskId));
+        return;
+      }
       const panel = renderedPanels.get(focus.taskId);
       if (panel && panel.firstControl) safeFocus(panel.firstControl);
       else if (panel && panel.node) safeFocus(panel.node);
@@ -397,6 +572,7 @@
     // タスク ID + 要素の種類でキーを作る。同じ種類・同じタスクの要素が再構築後も
     // 同じキーを持つことを利用して、フォーカスを戻す先を突き止める。
     function focusKeyForEditButton(taskId) { return `edit-button:${taskId}`; }
+    function focusKeyForStartButton(taskId) { return `start-button:${taskId}`; }
     function focusKeyForPanel(taskId) { return `panel:${taskId}`; }
     function focusKeyForField(taskId, field) { return `field:${taskId}:${field}`; }
     function focusKeyForSave(taskId) { return `save-button:${taskId}`; }
@@ -499,6 +675,19 @@
     }
 
     // ── DOM ヘルパー（すべて textContent。innerHTML 禁止）────────────────────
+    // アイコン集（renderer/icons/ui.svg）の記号を読み上げ対象外で描く。
+    function buildIcon(name) {
+      if (typeof doc.createElementNS !== 'function') return null;
+      const svg = doc.createElementNS(SVG_NS, 'svg');
+      svg.setAttribute('class', `task-item-icon task-item-icon-${name}`);
+      svg.setAttribute('aria-hidden', 'true');
+      svg.setAttribute('focusable', 'false');
+      const use = doc.createElementNS(SVG_NS, 'use');
+      use.setAttribute('href', `icons/ui.svg#${name}`);
+      svg.appendChild(use);
+      return svg;
+    }
+
     function el(tag, className) {
       const node = doc.createElement(tag);
       if (className) node.className = className;
@@ -788,19 +977,44 @@
       const editable = item.editable && Array.isArray(item.controls) && item.controls.length;
       const isEditing = editable && editingTaskId === item.id;
       const panelId = panelIdForItem(item);
+      const showStart = !!item.startCommand && canSendCommands();
+      // 開始と歯車は 1 つのまとまりとして右端に置き、折り返すときも一緒に次の行へ送る。
+      const actions = (showStart || editable) ? el('span', 'task-item-actions') : null;
+      if (showStart) {
+        const startButton = el('button', 'task-item-start');
+        startButton.type = 'button';
+        const playIcon = buildIcon('play');
+        if (playIcon) startButton.appendChild(playIcon);
+        const labelEl = el('span', 'task-item-start-label');
+        startButton.appendChild(labelEl);
+        startButton.labelEl = labelEl;
+        applyStartButtonState(startButton, item);
+        const startButtonFocusKey = focusKeyForStartButton(item.id);
+        startButton.dataset.focusKey = startButtonFocusKey;
+        focusTargets.set(startButtonFocusKey, startButton);
+        // 押せない間も aria-disabled のみでフォーカスは受けるため、操作は startTask の先頭で止める。
+        startButton.addEventListener('click', () => { startTask(item.id); });
+        actions.appendChild(startButton);
+        renderedStartButtons.set(item.id, startButton);
+      }
       if (editable) {
         const savingSelf = savingTasks.has(item.id);
+        const startingSelf = startingTasks.has(item.id);
         const editButton = el('button', 'task-item-edit');
         editButton.type = 'button';
         editButton.setAttribute('aria-expanded', isEditing ? 'true' : 'false');
         editButton.setAttribute('aria-controls', panelId);
         // 保存中は「押せない」ことを aria-label にも明示する（見た目の aria-disabled だけだと
-        // スクリーンリーダー利用者に伝わらない。issue #406 差し戻し: 植草 低）。
-        editButton.setAttribute('aria-label', savingSelf
-          ? `「${item.title}」を編集（保存中のため操作できません）`
-          : `「${item.title}」を編集`);
-        editButton.textContent = '編集';
-        // 無効化するのは「自分自身が保存中（反映待ち）」のときだけにする。別タスクが保存中でも
+        // スクリーンリーダー利用者に伝わらない。issue #406 差し戻し: 植草 低）。開始中も同様。
+        let editBlockedSuffix = '';
+        if (savingSelf) editBlockedSuffix = strings.editBlockedSaving;
+        else if (startingSelf) editBlockedSuffix = strings.editBlockedStarting;
+        editButton.setAttribute('aria-label', `「${item.title}」を編集${editBlockedSuffix}`);
+        // 押せない理由はツールチップにも出す（開始ボタンと同じ扱い）。
+        editButton.title = `${strings.editTooltip}${editBlockedSuffix}`;
+        const settingsIcon = buildIcon('settings');
+        if (settingsIcon) editButton.appendChild(settingsIcon);
+        // 無効化するのは「自分自身が保存中（反映待ち）・開始中」のときだけにする。別タスクが保存中でも
         // 編集ボタンは押せる（openEditor 側で、保存中の別パネルは確認なしで閉じてから新しいパネルを
         // 開く。issue #406 植草 UX レビュー指摘: 他タスクまで巻き添えで固まって見えるのを解消）。
         //
@@ -809,21 +1023,22 @@
         // focus() が効かず body へ落ちてしまう（issue #406 差し戻し: 植草 FAIL／安藤 MEDIUM）。
         // aria-disabled でフォーカス可能なまま見た目だけ無効化し、操作はクリックハンドラの
         // 先頭で止める（openEditor 自体も同条件で二重に止める。安藤 LOW）。
-        if (savingSelf) editButton.setAttribute('aria-disabled', 'true');
+        if (savingSelf || startingSelf) editButton.setAttribute('aria-disabled', 'true');
         const editButtonFocusKey = focusKeyForEditButton(item.id);
         editButton.dataset.focusKey = editButtonFocusKey;
         focusTargets.set(editButtonFocusKey, editButton);
         editButton.addEventListener('click', () => {
-          if (savingTasks.has(item.id)) return;
+          if (savingTasks.has(item.id) || startingTasks.has(item.id)) return;
           if (isEditing) {
             cancelEditor(item);
           } else {
             openEditor(item);
           }
         });
-        head.appendChild(editButton);
+        actions.appendChild(editButton);
         renderedEditButtons.set(item.id, editButton);
       }
+      if (actions) head.appendChild(actions);
       if (head.childNodes.length) li.appendChild(head);
 
       const visibleLinks = (item.links || []).filter((link) => link.rel !== 'queue' && isSafeExternalUrl(link.url));
@@ -839,7 +1054,8 @@
       }
 
       const errorMessage = errors.get(item.id);
-      if (isPending || errorMessage) {
+      const startErrorMessage = startErrors.get(item.id);
+      if (isPending || errorMessage || startErrorMessage) {
         const feedback = el('div', 'task-item-feedback');
         if (isPending) {
           const p = el('span', 'task-item-pending');
@@ -859,6 +1075,12 @@
           const err = el('span', 'task-item-action-error');
           err.setAttribute('role', 'alert');
           err.textContent = errorMessage;
+          feedback.appendChild(err);
+        }
+        if (startErrorMessage) {
+          const err = el('span', 'task-item-action-error');
+          err.setAttribute('role', 'alert');
+          err.textContent = startErrorMessage;
           feedback.appendChild(err);
         }
         li.appendChild(feedback);
@@ -911,6 +1133,8 @@
       cleanupEditorForWidget(lastWidget);
       syncPending(lastWidget);
       cleanupEditorForWidget(lastWidget);
+      syncStarting(lastWidget, capturedFocusKey);
+      renderedStartButtons.clear();
       renderedEditButtons.clear();
       renderedPanels.clear();
       focusTargets.clear();
@@ -1015,6 +1239,8 @@
       render,
       getLastWidget: () => lastWidget,
       hasPending: () => pending.size > 0,
+      hasStarting: () => startingTasks.size > 0,
+      isStartingSettledBy,
       hasOpenEditor: () => editingTaskId !== null,
     };
   }

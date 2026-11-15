@@ -49,6 +49,10 @@
   // 上の COMMAND_ACTIONS（必ず taskId を持つ）とは別に扱う。
   const REFRESH_ACTION = 'refresh-tasks';
 
+  // 開始の依頼（startCommand。vk-orchestrator#979）の action。to を持たず、一括確定（apply-batch）の
+  // ops にも入れない契約のため、COMMAND_ACTIONS とは別に扱う（混ぜると ops へ紛れ込める形になる）。
+  const START_ACTION = 'start-task';
+
   // コントロールの field は 11 種、type は select のみ。
   const CONTROL_FIELDS = Object.freeze(['status', 'priority', 'sequential', 'automerge', 'reviewUx', 'reviewSecurity', 'reviewE2e', 'reviewCoderabbit', 'reviewCodeReview', 'specModel', 'mainEngine']);
   const CONTROL_FIELD_SET = new Set(CONTROL_FIELDS);
@@ -130,6 +134,43 @@
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
     if (raw.action !== REFRESH_ACTION) return null;
     return { action: REFRESH_ACTION };
+  }
+
+  // 開始の依頼の断片 { action:'start-task', taskId, expected } を検証する。to は持たない契約のため落とす。
+  function sanitizeStartTaskCommand(raw) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+    if (raw.action !== START_ACTION) return null;
+    const taskId = coerceCommandValue(raw.taskId);
+    const expected = coerceCommandValue(raw.expected);
+    if (taskId === null || !taskId || expected === null || !expected) return null;
+    return {
+      action: START_ACTION,
+      taskId: clampStr(taskId, LIMITS.id),
+      expected: clampStr(expected, LIMITS.text),
+    };
+  }
+
+  // 開始ボタンの宣言 startCommand を検証する。文言はオーケストレーターの完成文をそのまま使う。
+  // ボタンの表示文言（label）か依頼の断片が無いときは null（ボタンを出さない）。
+  function sanitizeStartCommand(raw) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+    const label = typeof raw.label === 'string' ? clampStr(raw.label.trim(), LIMITS.text) : '';
+    if (!label) return null;
+    const command = sanitizeStartTaskCommand(raw.command);
+    if (!command) return null;
+    const startCommand = {
+      label,
+      ariaLabel: clampStr(typeof raw.ariaLabel === 'string' ? raw.ariaLabel : '', LIMITS.text),
+      title: clampStr(typeof raw.title === 'string' ? raw.title : '', LIMITS.text),
+      command,
+    };
+    const confirm = sanitizeConfirm(raw.confirm);
+    if (confirm) {
+      // confirmLabel を持つのは startCommand.confirm だけ（option.confirm は { title, body } のまま）。
+      confirm.confirmLabel = clampStr(typeof raw.confirm.confirmLabel === 'string' ? raw.confirm.confirmLabel : '', LIMITS.text);
+      startCommand.confirm = confirm;
+    }
+    return startCommand;
   }
 
   function sanitizeCommand(raw) {
@@ -303,6 +344,9 @@
         if (control) item.controls.push(control);
       }
     }
+    // 別のカードを指す依頼は発行させない（taskId がカード ID と一致するときだけ残す）。
+    const startCommand = sanitizeStartCommand(raw.startCommand);
+    if (startCommand && startCommand.command.taskId === item.id) item.startCommand = startCommand;
     // emphasis は意味属性（色ではない）。契約上は attention のみ。未知値は無視。
     if (raw.emphasis === EMPHASIS_ATTENTION) item.emphasis = EMPHASIS_ATTENTION;
     // statusTone は tone の allowlist に完全一致するときだけ残す（語彙外・非文字列は捨てる）。
@@ -511,6 +555,25 @@
     };
   }
 
+  /**
+   * 開始の依頼断片 { action:'start-task', taskId, expected } に一意 id と requestedAt を付与し、
+   * commands.jsonl の 1 行 { id, action, taskId, expected, requestedAt } を組み立てる（to は付けない）。
+   * @param {object} fragment
+   * @param {{ id: string, requestedAt: string }} meta
+   * @returns {object|null}
+   */
+  function buildStartCommandLine(fragment, meta) {
+    const command = sanitizeStartTaskCommand(fragment);
+    if (!command) return null;
+    return {
+      id: meta.id,
+      action: command.action,
+      taskId: command.taskId,
+      expected: command.expected,
+      requestedAt: meta.requestedAt,
+    };
+  }
+
   return {
     WIDGET_TONES,
     WIDGET_TONE_SET,
@@ -518,6 +581,7 @@
     COMMAND_ACTIONS,
     COMMAND_ACTION_SET,
     REFRESH_ACTION,
+    START_ACTION,
     CONTROL_FIELDS,
     CONTROL_TYPES,
     LINK_RELS,
@@ -531,6 +595,8 @@
     sanitizeCommand,
     sanitizeBatchCommand,
     sanitizeRefreshCommand,
+    sanitizeStartTaskCommand,
+    sanitizeStartCommand,
     sanitizeWidget,
     isWidgetStale,
     flatItems,
@@ -541,5 +607,6 @@
     buildCommandLine,
     buildBatchCommandLine,
     buildRefreshCommandLine,
+    buildStartCommandLine,
   };
 });

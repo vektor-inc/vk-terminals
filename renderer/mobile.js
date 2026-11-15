@@ -542,8 +542,16 @@ function renderWidget(fromPoll) {
 
   // ネイティブ select ピッカー操作中、または編集パネルで下書き編集中は poll 再描画をスキップする
   // （データは保持し、閉じた後の次回描画で最新化）。保存中・開始中は反映検知のため更新を通す。
+  // ピッカー操作中でも、届いた一覧で開始中のタスクが終わるときは書き直す（見送ると「開始中…」が
+  // 期限まで残るため）。2 秒ごとの poll で毎回書き直さないよう、終わるときの 1 回だけに絞る。
+  var settlesStart = !!(
+    widgetViewController
+    && lastWidgetPayload
+    && widgetViewController.isStartingSettledBy(lastWidgetPayload.widget || null)
+  );
   if (
     fromPoll
+    && !settlesStart
     && (
       isEditingWidgetControl()
       || (

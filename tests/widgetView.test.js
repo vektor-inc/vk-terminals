@@ -2018,6 +2018,7 @@ test('開始ボタン: confirm が無ければ押した時点で start-task を�
   const edit = findByClass(groupsEl, 'task-item-edit');
   assert.equal(edit.getAttribute('aria-disabled'), 'true');
   assert.equal(edit.getAttribute('aria-label'), '「T」を編集（開始中のため操作できません）');
+  assert.equal(edit.title, '編集（開始中のため操作できません）');
 
   // 開始中は押し直しても二重に送らず、歯車も開かない。
   start.dispatch('click');
@@ -2170,6 +2171,7 @@ test('開始ボタン: 保存中は押せなくし、読み上げ名に理由を
   const start = findByClass(groupsEl, 'task-item-start');
   assert.equal(start.getAttribute('aria-disabled'), 'true');
   assert.equal(start.getAttribute('aria-label'), '「T」を開始（保存中のため開始できません）');
+  assert.equal(start.title, '承認して、すぐに実行を始めます（保存中のため開始できません）');
   start.dispatch('click');
   await Promise.resolve();
   assert.equal(sent.length, 1); // 保存の apply-batch だけ
@@ -2201,6 +2203,7 @@ test('開始ボタン: 編集パネルに未保存の変更がある間は押せ
   priority.dispatch('change');
   assert.equal(start.getAttribute('aria-disabled'), 'true');
   assert.equal(start.getAttribute('aria-label'), '「T」を開始（編集中の変更を保存してから開始できます）');
+  assert.equal(start.title, '承認して、すぐに実行を始めます（編集中の変更を保存してから開始できます）');
   start.dispatch('click');
   await Promise.resolve();
   assert.equal(sent.length, 0);
@@ -2209,10 +2212,28 @@ test('開始ボタン: 編集パネルに未保存の変更がある間は押せ
   priority.value = 'medium';
   priority.dispatch('change');
   assert.equal(start.getAttribute('aria-disabled'), null);
+  assert.equal(start.title, '承認して、すぐに実行を始めます');
   start.dispatch('click');
   await Promise.resolve();
   assert.equal(view.hasOpenEditor(), false);
   assert.equal(sent.length, 1);
   assert.equal(sent[0].action, 'start-task');
   view.render(startableWidget({ startCommand: undefined }), START_NOW);
+});
+
+test('開始ボタン: isStartingSettledBy は、渡した一覧で開始中のタスクが終わるときだけ true（書き直しを見送る前の判定）', async () => {
+  const { groupsEl, view } = makeView({ startTimeoutMs: 1000 });
+  view.render(startableWidget(), START_NOW);
+  // 開始中が無ければ常に false。
+  assert.equal(view.isStartingSettledBy(startableWidget({ startCommand: undefined })), false);
+  findByClass(groupsEl, 'task-item-start').dispatch('click');
+  await Promise.resolve();
+  assert.equal(view.isStartingSettledBy(startableWidget()), false);
+  assert.equal(view.isStartingSettledBy(startableWidget({ startCommand: undefined })), true);
+  assert.equal(view.isStartingSettledBy(sanitized([{ id: 'ready', label: '実行待ち', tone: 'info', items: [] }])), true);
+  assert.equal(view.isStartingSettledBy(null), true);
+  // 判定だけで状態は変えない。
+  assert.equal(view.hasStarting(), true);
+  view.render(startableWidget({ startCommand: undefined }), START_NOW);
+  assert.equal(view.hasStarting(), false);
 });

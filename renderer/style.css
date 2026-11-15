@@ -2271,6 +2271,13 @@ button.sidebar-section-header:hover {
   width: 12px;
   height: 12px;
 }
+/* 宣言の文言が長くても、サイドバーからはみ出さないよう省略する。 */
+.task-item-start-label {
+  min-width: 0;
+  max-width: 8em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .task-item-start:hover {
   background: rgba(46, 160, 67, 0.15);
 }

@@ -147,6 +147,27 @@ function buildStartWidget({ confirm, withStart = true } = {}) {
   return widget;
 }
 
+// 開始できるタスク（301）に、編集だけできる別の実行中タスク（303）を足した宣言。
+function buildStartWidgetWithOtherTask(options) {
+  const widget = buildStartWidget(options);
+  const other = { ...buildWidget().groups[0].items[0], id: '303', title: '別の実行中タスク', links: [
+    { rel: 'queue', url: 'https://github.com/vektor-inc/vk-orchestrator/issues/303', label: 'issue #303' },
+  ] };
+  other.controls = [{ ...other.controls[0], options: other.controls[0].options.map((o) => (
+    o.command ? { ...o, command: { ...o.command, taskId: '303' } } : o
+  )) }];
+  widget.groups.push({ id: 'in-progress', label: '実行中', tone: 'progress', order: 1, items: [other] });
+  return widget;
+}
+
+// 開始が受け付けられた（301 の startCommand が消えた）宣言。updatedAt を進めて変化として届ける。
+function withoutStartCommand(widget) {
+  const reflected = JSON.parse(JSON.stringify(widget));
+  delete reflected.groups[0].items[0].startCommand;
+  reflected.updatedAt = freshDate(1000);
+  return reflected;
+}
+
 const START_CONFIRM = {
   title: 'このタスクを開始しますか？',
   body: '自動マージがオンのため、レビューを通過すると PR のマージまで自動で進みます。',
@@ -500,20 +521,8 @@ test.describe.serial('widgetFile 系タスク一覧の描画・操作（issue #2
     expect(nativeDialogs).toBe(0);
   });
 
-  test('サイドバー: confirm の無い開始は確認なしで追記し、別タスクの編集パネルを開いていても反映を見落とさない', async () => {
-    const widget = buildStartWidget();
-    widget.groups.push({
-      id: 'in-progress',
-      label: '実行中',
-      tone: 'progress',
-      order: 1,
-      items: [{ ...buildWidget().groups[0].items[0], id: '303', title: '別の実行中タスク', links: [
-        { rel: 'queue', url: 'https://github.com/vektor-inc/vk-orchestrator/issues/303', label: 'issue #303' },
-      ] }],
-    });
-    widget.groups[1].items[0].controls = [{ ...widget.groups[1].items[0].controls[0], options: widget.groups[1].items[0].controls[0].options.map((o) => (
-      o.command ? { ...o, command: { ...o.command, taskId: '303' } } : o
-    )) }];
+  test('サイドバー: confirm の無い開始は確認なしで追記し、別タスクのプルダウンにフォーカスがあっても反映を見落とさない', async () => {
+    const widget = buildStartWidgetWithOtherTask();
     await setupWidget(win, port, widgetFile, widget, { commandsPath });
     const section = win.locator('#task-list');
     await expect(section).toBeVisible({ timeout: 10_000 });
@@ -526,18 +535,18 @@ test.describe.serial('widgetFile 系タスク一覧の描画・操作（issue #2
     await expect(win.locator('.confirm-modal')).toHaveCount(0);
     await expect(startButton).toHaveText('開始中…');
 
-    // 別タスクの編集パネルを開いた状態（下書き編集中は一覧の書き直しを見送る）でも、開始中なら書き直す。
+    // 別タスクの編集パネルを開くと、初期フォーカスがプルダウンへ移る（プルダウン操作中は一覧の書き直しを
+    // 見送る作り）。このフォーカスを保ったままでも、開始が反映された一覧は受け取る（安藤レビュー MEDIUM）。
     const otherEdit = section.locator('.task-item[data-id="303"] button.task-item-edit');
     await otherEdit.click();
     await expect(section.locator('.task-item[data-id="303"] .task-edit-panel')).toBeVisible();
-    // プルダウン操作中の見送りとは切り分けるため、フォーカスをパネル本体へ移しておく。
-    await section.locator('.task-item[data-id="303"] .task-edit-panel-title').click();
-    const reflected = JSON.parse(JSON.stringify(widget));
-    delete reflected.groups[0].items[0].startCommand;
-    reflected.updatedAt = freshDate(1000);
-    writeJson(widgetFile, reflected);
+    const otherSelect = section.locator('.task-item[data-id="303"] select[data-field="status"]');
+    await expect(otherSelect).toBeFocused();
+    writeJson(widgetFile, withoutStartCommand(widget));
+    // 期限（60 秒）より十分短い時間で反映され、プルダウンのフォーカスと編集パネルは保たれる。
     await expect(startButton).toHaveCount(0, { timeout: 10_000 });
     await expect(section.locator('.task-item[data-id="303"] .task-edit-panel')).toBeVisible();
+    await expect(otherSelect).toBeFocused();
   });
 
   // ─── 4: サイドバー: 担当者フィルタ（GitHub モード）で自分のみ／全員を切り替えられる ───
@@ -648,8 +657,9 @@ test.describe.serial('widgetFile 系タスク一覧の描画・操作（issue #2
   });
 
   // ─── 5-2: モバイル: 開始ボタン（issue #622）。window.confirm で見出しと本文だけを出し、POST で中継する ───
-  test('モバイル: 開始ボタンは window.confirm の承認後に POST /api/widgets/command で start-task を追記する', async ({ page }) => {
-    await setupWidget(win, port, widgetFile, buildStartWidget({ confirm: START_CONFIRM }), { commandsPath });
+  test('モバイル: 開始ボタンは window.confirm の承認後に POST /api/widgets/command で start-task を追記し、ピッカー操作中も反映を受け取る', async ({ page }) => {
+    const widget = buildStartWidgetWithOtherTask({ confirm: START_CONFIRM });
+    await setupWidget(win, port, widgetFile, widget, { commandsPath });
     const base = `http://127.0.0.1:${port}`;
     await page.goto(`${base}/`);
     const item = page.locator('.task-item[data-id="301"]');
@@ -673,6 +683,15 @@ test.describe.serial('widgetFile 系タスク一覧の描画・操作（issue #2
     await expect.poll(() => readCommands(commandsPath), { timeout: 5000 }).toHaveLength(1);
     expectStartTaskCommand(readCommands(commandsPath)[0]);
     await expect(startButton).toHaveText('開始中…');
+
+    // 別タスクの編集を開いて初期フォーカスのプルダウンを保ったまま、開始が反映された一覧を受け取る。
+    await page.locator('.task-item[data-id="303"] button.task-item-edit').click();
+    const otherSelect = page.locator('.task-item[data-id="303"] select[data-field="status"]');
+    await expect(otherSelect).toBeFocused();
+    writeJson(widgetFile, withoutStartCommand(widget));
+    await expect(startButton).toHaveCount(0, { timeout: 10_000 });
+    await expect(page.locator('.task-item[data-id="303"] .task-edit-panel')).toBeVisible();
+    await expect(otherSelect).toBeFocused();
   });
 
   // ─── 6: ローカルモード: 担当者フィルタ非表示・見出しはプレーンテキスト（旧 sidebar-task-list-title-link 相当） ───

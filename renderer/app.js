@@ -3060,8 +3060,16 @@ function renderWidget(fromUpdate) {
   // ネイティブ select ピッカー操作中、または編集パネルで下書き編集中は widgets:update 起因の
   // 再描画をスキップする（データは lastWidgetPayload に保持済み。閉じた後の次描画で最新化）。
   // 保存中・開始中は反映の検知が必要なため、更新描画を通して syncPending / syncStarting に渡す。
+  // プルダウン操作中でも、届いた一覧で開始中のタスクが終わるときは書き直す（見送ると「開始中…」が
+  // 期限まで残るため）。書き直しはその 1 回だけで、フォーカスは描画側がプルダウンへ戻す。
+  const settlesStart = !!(
+    widgetViewController
+    && lastWidgetPayload
+    && widgetViewController.isStartingSettledBy(lastWidgetPayload.widget || null)
+  );
   if (
     fromUpdate
+    && !settlesStart
     && (
       isEditingWidgetControl(groupsEl)
       || (

@@ -256,6 +256,12 @@
       else if (reason === 'saving') ariaLabel = `${baseLabel}${strings.startBlockedSaving}`;
       else if (reason === 'dirty') ariaLabel = `${baseLabel}${strings.startBlockedDirty}`;
       button.setAttribute('aria-label', ariaLabel);
+      // 押せない理由はツールチップにも出す（マウス利用者にも読み上げと同じ理由を伝える）。
+      let title = startCommand.title || '';
+      if (reason === 'saving') title = `${title}${strings.startBlockedSaving}`;
+      else if (reason === 'dirty') title = `${title}${strings.startBlockedDirty}`;
+      if (title) button.title = title;
+      else button.removeAttribute('title');
       button.setAttribute('aria-busy', starting ? 'true' : 'false');
       if (starting || reason) button.setAttribute('aria-disabled', 'true');
       else button.removeAttribute('aria-disabled');
@@ -320,6 +326,18 @@
       clearStarting(taskId);
       startErrors.set(taskId, strings.startSendError);
       requestRerender();
+    }
+
+    // 渡した一覧で、開始中のタスクのどれかが終わる（startCommand が消える・タスクが消える）か。
+    // 呼び出し側が、プルダウン操作中などで書き直しを見送る前に、反映を見落とさないための判定に使う。
+    function isStartingSettledBy(widget) {
+      if (startingTasks.size === 0) return false;
+      const byId = new Map(contract.flatItems(widget).map((item) => [item.id, item]));
+      for (const taskId of startingTasks.keys()) {
+        const item = byId.get(taskId);
+        if (!item || !item.startCommand) return true;
+      }
+      return false;
     }
 
     // 届いた一覧で、開始中のタスクの startCommand が消えた（またはタスクが消えた）ら開始中を終える。
@@ -965,7 +983,6 @@
       if (showStart) {
         const startButton = el('button', 'task-item-start');
         startButton.type = 'button';
-        if (item.startCommand.title) startButton.title = item.startCommand.title;
         const playIcon = buildIcon('play');
         if (playIcon) startButton.appendChild(playIcon);
         const labelEl = el('span', 'task-item-start-label');
@@ -993,7 +1010,8 @@
         if (savingSelf) editBlockedSuffix = strings.editBlockedSaving;
         else if (startingSelf) editBlockedSuffix = strings.editBlockedStarting;
         editButton.setAttribute('aria-label', `「${item.title}」を編集${editBlockedSuffix}`);
-        editButton.title = strings.editTooltip;
+        // 押せない理由はツールチップにも出す（開始ボタンと同じ扱い）。
+        editButton.title = `${strings.editTooltip}${editBlockedSuffix}`;
         const settingsIcon = buildIcon('settings');
         if (settingsIcon) editButton.appendChild(settingsIcon);
         // 無効化するのは「自分自身が保存中（反映待ち）・開始中」のときだけにする。別タスクが保存中でも
@@ -1222,6 +1240,7 @@
       getLastWidget: () => lastWidget,
       hasPending: () => pending.size > 0,
       hasStarting: () => startingTasks.size > 0,
+      isStartingSettledBy,
       hasOpenEditor: () => editingTaskId !== null,
     };
   }

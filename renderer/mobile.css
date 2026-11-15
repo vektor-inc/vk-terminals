@@ -588,6 +588,13 @@ button.k.kill.is-locked:active { background: #6b3f3f; border-color: #7c4a4a; }
   width: 14px;
   height: 14px;
 }
+/* 宣言の文言が長くても、カードからはみ出さないよう省略する。 */
+.task-item-start-label {
+  min-width: 0;
+  max-width: 8em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .task-item-start:active:where(:not([aria-disabled="true"])) {
   background: rgba(46, 160, 67, 0.15);
 }

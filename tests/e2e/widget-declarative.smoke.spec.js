@@ -126,6 +126,41 @@ function buildWidget(overrides = {}) {
   };
 }
 
+// 承認待ちで開始できるタスク（startCommand。issue #622）を載せた宣言。confirm を渡すと確認ダイアログ付きになる。
+function buildStartWidget({ confirm, withStart = true } = {}) {
+  const widget = buildWidget();
+  const item = widget.groups[0].items[0];
+  widget.groups[0] = { ...widget.groups[0], id: 'awaiting-approval', label: '承認待ち', tone: 'attention' };
+  item.controls[0] = { ...item.controls[0], current: 'awaiting-approval', options: [
+    { value: 'awaiting-approval', label: '承認待ち' },
+    { value: 'ready', label: '実行待ち', command: { action: 'set-status', taskId: '301', to: 'ready', expected: 'awaiting-approval' } },
+  ] };
+  if (withStart) {
+    item.startCommand = {
+      label: '開始',
+      ariaLabel: '「宣言ウィジェットの実行中タスク」を開始',
+      title: '承認して、すぐに実行を始めます（自動マージ: オン）',
+      command: { action: 'start-task', taskId: '301', expected: 'awaiting-approval' },
+      ...(confirm ? { confirm } : {}),
+    };
+  }
+  return widget;
+}
+
+const START_CONFIRM = {
+  title: 'このタスクを開始しますか？',
+  body: '自動マージがオンのため、レビューを通過すると PR のマージまで自動で進みます。',
+  confirmLabel: '開始する',
+};
+
+function expectStartTaskCommand(command) {
+  expect(command).toMatchObject({ action: 'start-task', taskId: '301', expected: 'awaiting-approval' });
+  expect(command).not.toHaveProperty('to');
+  expect(command).not.toHaveProperty('ops');
+  expect(command.id).toMatch(/^start-[0-9a-f-]{36}$/);
+  expect(Number.isNaN(Date.parse(command.requestedAt))).toBe(false);
+}
+
 // ローカルモード用の宣言（rel:"queue" リンク無し＝GitHub モードでない、viewer 不明）。
 function buildLocalWidget(overrides = {}) {
   return {
@@ -230,6 +265,7 @@ test.describe.serial('widgetFile 系タスク一覧の描画・操作（issue #2
   let widgetFile;
   let commandsPath;
 
+
   test.beforeAll(async () => {
     port = await getFreePort();
     dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-widget-decl-shared-'));
@@ -291,9 +327,14 @@ test.describe.serial('widgetFile 系タスク一覧の描画・操作（issue #2
     await expect(section.locator('.task-list-stale')).toBeHidden();
 
     // editable なタスクは既定では select を畳み、編集ボタンだけを表示する。
+    // 編集ボタンは歯車アイコンだけで、ツールチップに「編集」を出す（issue #622）。
     const editButton = item.locator('button.task-item-edit');
     await expect(editButton).toBeVisible();
-    await expect(editButton).toHaveText('編集');
+    await expect(editButton).toHaveText('');
+    await expect(editButton).toHaveAttribute('title', '編集');
+    await expect(editButton.locator('svg use')).toHaveAttribute('href', 'icons/ui.svg#settings');
+    // startCommand の無いタスクには開始ボタンを出さない。
+    await expect(item.locator('button.task-item-start')).toHaveCount(0);
     await expect(editButton).toHaveAttribute('aria-expanded', 'false');
     await expect(editButton).toHaveAttribute('aria-controls', 'task-edit-panel-301');
     await expect(editButton).toHaveAttribute('aria-label', '「宣言ウィジェットの実行中タスク」を編集');
@@ -396,6 +437,107 @@ test.describe.serial('widgetFile 系タスク一覧の描画・操作（issue #2
     await expect(editButton).toHaveAttribute('aria-expanded', 'false');
     await expect(item.locator('.task-item-pending')).toHaveCount(0);
     expect(readCommands(commandsPath)).toHaveLength(0);
+  });
+
+  // ─── 3-2: サイドバー: 開始ボタン（issue #622）。確認ダイアログ→commands.jsonl に start-task を 1 行追記 ───
+  test('サイドバー: 開始ボタンはアプリ内の確認ダイアログを経て commands.jsonl に start-task を 1 行追記し、反映まで開始中…にする', async () => {
+    await setupWidget(win, port, widgetFile, buildStartWidget({ confirm: START_CONFIRM }), { commandsPath });
+    const section = win.locator('#task-list');
+    await expect(section).toBeVisible({ timeout: 10_000 });
+    const item = section.locator('.task-item[data-id="301"]');
+
+    // 開始と歯車は 1 つのまとまりに、左に開始・右に歯車の順で並ぶ。
+    const actions = item.locator('.task-item-actions');
+    await expect(actions.locator('button')).toHaveCount(2);
+    await expect(actions.locator('button').nth(0)).toHaveClass(/task-item-start/);
+    await expect(actions.locator('button').nth(1)).toHaveClass(/task-item-edit/);
+    const startButton = item.locator('button.task-item-start');
+    const editButton = item.locator('button.task-item-edit');
+    await expect(startButton).toHaveText('開始');
+    await expect(startButton).toHaveAttribute('aria-label', '「宣言ウィジェットの実行中タスク」を開始');
+    await expect(startButton).toHaveAttribute('title', '承認して、すぐに実行を始めます（自動マージ: オン）');
+    await expect(startButton.locator('svg use')).toHaveAttribute('href', 'icons/ui.svg#play');
+
+    // PC 版は window.confirm を使わない（OK が既定の選択になるため）。
+    let nativeDialogs = 0;
+    const nativeDialogHandler = async (dialog) => { nativeDialogs += 1; await dialog.dismiss(); };
+    win.on('dialog', nativeDialogHandler);
+
+    // 確認ダイアログはキャンセルが初期フォーカス。Enter ではなく Escape でもキャンセルでき、追記しない。
+    await startButton.click();
+    const dialog = win.locator('.confirm-modal[role="alertdialog"]');
+    await expect(dialog).toBeVisible();
+    await expect(dialog.locator('.confirm-title')).toHaveText(START_CONFIRM.title);
+    await expect(dialog.locator('.confirm-message')).toHaveText(START_CONFIRM.body);
+    await expect(dialog.locator('.confirm-actions button')).toHaveText(['キャンセル', '開始する']);
+    await expect(dialog.locator('button.confirm-cancel')).toBeFocused();
+    await win.keyboard.press('Escape');
+    await expect(dialog).toHaveCount(0);
+    await expect(startButton).toBeFocused();
+    expect(readCommands(commandsPath)).toHaveLength(0);
+
+    // 確定すると start-task を 1 行だけ追記し、開始中…にして開始と歯車を押せなくする。
+    await startButton.click();
+    await dialog.locator('button.confirm-start-task').click();
+    await expect(dialog).toHaveCount(0);
+    await expect.poll(() => readCommands(commandsPath), { timeout: 5000 }).toHaveLength(1);
+    expectStartTaskCommand(readCommands(commandsPath)[0]);
+    await expect(startButton).toHaveText('開始中…');
+    await expect(startButton).toHaveAttribute('aria-busy', 'true');
+    await expect(startButton).toHaveAttribute('aria-disabled', 'true');
+    await expect(editButton).toHaveAttribute('aria-disabled', 'true');
+    await expect(editButton).toHaveAttribute('aria-label', '「宣言ウィジェットの実行中タスク」を編集（開始中のため操作できません）');
+    // aria-disabled は Playwright の click が待ち続けるため、クリックイベントを直接送って押し直しを再現する。
+    await startButton.dispatchEvent('click');
+    await win.waitForTimeout(300);
+    expect(readCommands(commandsPath)).toHaveLength(1);
+
+    // オーケストレーターが受け付けて startCommand が消えた一覧が届くと、開始ボタンが消え歯車が戻る。
+    writeJson(widgetFile, buildStartWidget({ withStart: false }));
+    await expect(startButton).toHaveCount(0, { timeout: 10_000 });
+    await expect(editButton).not.toHaveAttribute('aria-disabled', 'true');
+    win.off('dialog', nativeDialogHandler);
+    expect(nativeDialogs).toBe(0);
+  });
+
+  test('サイドバー: confirm の無い開始は確認なしで追記し、別タスクの編集パネルを開いていても反映を見落とさない', async () => {
+    const widget = buildStartWidget();
+    widget.groups.push({
+      id: 'in-progress',
+      label: '実行中',
+      tone: 'progress',
+      order: 1,
+      items: [{ ...buildWidget().groups[0].items[0], id: '303', title: '別の実行中タスク', links: [
+        { rel: 'queue', url: 'https://github.com/vektor-inc/vk-orchestrator/issues/303', label: 'issue #303' },
+      ] }],
+    });
+    widget.groups[1].items[0].controls = [{ ...widget.groups[1].items[0].controls[0], options: widget.groups[1].items[0].controls[0].options.map((o) => (
+      o.command ? { ...o, command: { ...o.command, taskId: '303' } } : o
+    )) }];
+    await setupWidget(win, port, widgetFile, widget, { commandsPath });
+    const section = win.locator('#task-list');
+    await expect(section).toBeVisible({ timeout: 10_000 });
+    const item = section.locator('.task-item[data-id="301"]');
+    const startButton = item.locator('button.task-item-start');
+
+    await startButton.click();
+    await expect.poll(() => readCommands(commandsPath), { timeout: 5000 }).toHaveLength(1);
+    expectStartTaskCommand(readCommands(commandsPath)[0]);
+    await expect(win.locator('.confirm-modal')).toHaveCount(0);
+    await expect(startButton).toHaveText('開始中…');
+
+    // 別タスクの編集パネルを開いた状態（下書き編集中は一覧の書き直しを見送る）でも、開始中なら書き直す。
+    const otherEdit = section.locator('.task-item[data-id="303"] button.task-item-edit');
+    await otherEdit.click();
+    await expect(section.locator('.task-item[data-id="303"] .task-edit-panel')).toBeVisible();
+    // プルダウン操作中の見送りとは切り分けるため、フォーカスをパネル本体へ移しておく。
+    await section.locator('.task-item[data-id="303"] .task-edit-panel-title').click();
+    const reflected = JSON.parse(JSON.stringify(widget));
+    delete reflected.groups[0].items[0].startCommand;
+    reflected.updatedAt = freshDate(1000);
+    writeJson(widgetFile, reflected);
+    await expect(startButton).toHaveCount(0, { timeout: 10_000 });
+    await expect(section.locator('.task-item[data-id="303"] .task-edit-panel')).toBeVisible();
   });
 
   // ─── 4: サイドバー: 担当者フィルタ（GitHub モード）で自分のみ／全員を切り替えられる ───
@@ -503,6 +645,34 @@ test.describe.serial('widgetFile 系タスク一覧の描画・操作（issue #2
       body: JSON.stringify({ action: 'set-status', taskId: '301', to: 'awaiting-approval', expected: 'in-progress' }),
     });
     expect(csrf.status).toBe(403);
+  });
+
+  // ─── 5-2: モバイル: 開始ボタン（issue #622）。window.confirm で見出しと本文だけを出し、POST で中継する ───
+  test('モバイル: 開始ボタンは window.confirm の承認後に POST /api/widgets/command で start-task を追記する', async ({ page }) => {
+    await setupWidget(win, port, widgetFile, buildStartWidget({ confirm: START_CONFIRM }), { commandsPath });
+    const base = `http://127.0.0.1:${port}`;
+    await page.goto(`${base}/`);
+    const item = page.locator('.task-item[data-id="301"]');
+    await expect(item).toBeVisible({ timeout: 10_000 });
+    const startButton = item.locator('button.task-item-start');
+    await expect(startButton).toHaveText('開始');
+    // スマートフォン版でもアイコン集が配信される。
+    const sprite = await fetch(`${base}/icons/ui.svg`);
+    expect(sprite.status).toBe(200);
+    expect(sprite.headers.get('content-type')).toContain('image/svg+xml');
+    expect(await sprite.text()).toContain('<symbol id="play"');
+
+    let dialogMessage = '';
+    page.once('dialog', async (dialog) => { dialogMessage = dialog.message(); await dialog.dismiss(); });
+    await startButton.click();
+    await expect.poll(() => dialogMessage).toBe(`${START_CONFIRM.title}\n\n${START_CONFIRM.body}`);
+    expect(readCommands(commandsPath)).toHaveLength(0);
+
+    page.once('dialog', async (dialog) => { await dialog.accept(); });
+    await startButton.click();
+    await expect.poll(() => readCommands(commandsPath), { timeout: 5000 }).toHaveLength(1);
+    expectStartTaskCommand(readCommands(commandsPath)[0]);
+    await expect(startButton).toHaveText('開始中…');
   });
 
   // ─── 6: ローカルモード: 担当者フィルタ非表示・見出しはプレーンテキスト（旧 sidebar-task-list-title-link 相当） ───

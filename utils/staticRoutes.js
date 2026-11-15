@@ -88,6 +88,12 @@ const STATIC_FILES = {
     contentType: 'image/png',
     cacheControl: 'public, max-age=604800',
   },
+  // タスクカードの開始・編集ボタンのアイコン（issue #622）。アプリの更新で記号が増えるため、
+  // PNG のアイコンと違って長期キャッシュはさせない。
+  '/icons/ui.svg': {
+    relPath: ['renderer', 'icons', 'ui.svg'],
+    contentType: 'image/svg+xml; charset=utf-8',
+  },
 };
 
 // GET / と /index.html は STATIC_FILES に含めないが、認証不要な点は共通のため列挙する。

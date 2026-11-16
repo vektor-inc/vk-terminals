@@ -209,12 +209,13 @@ function renderAgentsGuide(launcherPath, memberIoDir = null, paneEnabled = false
  * リポジトリ側から広げられない。記録が無いと起動時に「信頼して続行」が選べ、Enter 1 回で信頼済みになってしまう。
  * @param {string} handoffDir 会話整理の引き継ぎ先（唯一の追加書き込み先）
  * @param {string[]} untrustedProjectPaths 信頼しないプロジェクトとして記録する実パス
- * @param {{extraWritableRoots?: string[], approvalPolicy?: string}} [options] extraWritableRoots はメンバー起動の入出力フォルダと、必要な場合の `.codex/worktrees`。
+ * @param {{extraWritableRoots?: string[], approvalPolicy?: string, collapseTurnDetails?: boolean}} [options] extraWritableRoots はメンバー起動の入出力フォルダと、必要な場合の `.codex/worktrees`。
  *   approvalPolicy は子の Codex だけ "never"（承認を求める相手がいないため、承認が要る操作は実行せず失敗させる）
+ *   collapseTurnDetails は画面でコマンド実行の表示を畳むか（`[tui] collapse_turn_details`。false を明示したときだけ畳まない。issue #627）
  * @returns {string}
  */
 function renderConfigToml(handoffDir, untrustedProjectPaths, options = {}) {
-  const { extraWritableRoots = [], approvalPolicy = 'on-request' } = options;
+  const { extraWritableRoots = [], approvalPolicy = 'on-request', collapseTurnDetails = true } = options;
   return [
     '# VK Terminals が生成。起動のたびに作り直される。',
     `approval_policy = ${JSON.stringify(approvalPolicy)}`,
@@ -232,8 +233,24 @@ function renderConfigToml(handoffDir, untrustedProjectPaths, options = {}) {
     'network_access = false',
     `writable_roots = [${[handoffDir, ...extraWritableRoots].map((root) => JSON.stringify(root)).join(', ')}]`,
     ...untrustedProjectPaths.flatMap((projectPath) => ['', `[projects.${JSON.stringify(projectPath)}]`, 'trust_level = "untrusted"']),
+    // [tui] はこの 1 か所だけで書く。Codex は起動後に screen_reader_detection_done などを既存の [tui] の下へ追記し、
+    // 見出しを重ねて足さないことを Codex CLI 0.169.0 で確認済み（見出しが 2 回あると TOML として読めず起動しない）。
+    // 値は真偽値で書く（文字列だと Codex が起動しない）。
+    '',
+    '[tui]',
+    `collapse_turn_details = ${collapseTurnDetails !== false}`,
     '',
   ].join('\n');
+}
+
+/**
+ * config.json の codexCollapseTurnDetails から、自動処理の Codex でコマンド実行の表示を畳むかを決める（issue #627）。
+ * キーが無い既存の利用者も畳む。false を明示したときだけ畳まない。
+ * @param {object} [config] config.json の内容
+ * @returns {boolean}
+ */
+function resolveCollapseTurnDetails(config) {
+  return !(config && config.codexCollapseTurnDetails === false);
 }
 
 // 値を TOML / gitconfig の二重引用符つき文字列として書く（検証済みの制御文字なしの値だけが来る）。
@@ -758,6 +775,7 @@ function buildCodexPolicyContext({ preset, sandboxMode, tmpdir, cwd, handoffDir,
  * @param {string} params.homeDir 利用者のホーム（実行環境の HOME に固定する。gh の認証情報の共有元もここから決める）
  * @param {boolean} [params.dryRun] 専用 CODEX_HOME を作らず事前確認だけ行う
  * @param {string} [params.sandboxMode] 親の Codex の sandbox（read-only / workspace-write。省略時は workspace-write）。メンバー起動の子の上限になる
+ * @param {boolean} [params.collapseTurnDetails] 親と子の Codex の画面でコマンド実行の表示を畳むか（false を明示したときだけ畳まない。issue #627）
  * @param {object} [params.fs] テスト用の fs 差し替え
  * @param {number} [params.uid] テスト用の所有者 ID 差し替え
  * @param {Function} [params.spawnSync] テスト用のプロセス実行差し替え
@@ -769,6 +787,7 @@ function buildCodexPolicyContext({ preset, sandboxMode, tmpdir, cwd, handoffDir,
  */
 function prepareCodexTaskPolicyHome(params) {
   const { preset, dataDir, handoffDir, personalCodexHome, cwd, homeDir, dryRun = false, fs: fsImpl = nodeFs } = params;
+  const collapseTurnDetails = params.collapseTurnDetails !== false;
   const spawnSync = params.spawnSync || childProcess.spawnSync;
   if (typeof preset !== 'string' || !Object.prototype.hasOwnProperty.call(CODEX_TASK_POLICY_PRESETS, preset)) {
     return { ok: false, error: 'codex task policy unavailable: unknown preset' };
@@ -943,7 +962,7 @@ function prepareCodexTaskPolicyHome(params) {
       };
       return {
         files: {
-          'config.toml': { content: template.renderConfigToml(handoff.realPath, untrustedProjectPaths, { extraWritableRoots: [...(memberIoDir === null ? [] : [memberIoDir]), ...(codexWorktreesWritableRoot === null ? [] : [codexWorktreesWritableRoot])], approvalPolicy: child ? 'never' : 'on-request' }), mode: 0o600 },
+          'config.toml': { content: template.renderConfigToml(handoff.realPath, untrustedProjectPaths, { extraWritableRoots: [...(memberIoDir === null ? [] : [memberIoDir]), ...(codexWorktreesWritableRoot === null ? [] : [codexWorktreesWritableRoot])], approvalPolicy: child ? 'never' : 'on-request', collapseTurnDetails }), mode: 0o600 },
           'AGENTS.md': { content: template.renderAgentsGuide(launcherPath, memberEnabled ? memberIoDir : null, !!binding.paneSend), mode: 0o600 },
           [GIT_CONFIG_NAME]: { content: template.renderGitConfig(identity), mode: 0o600 },
           [OPS_SCRIPT_NAME]: { content: fsImpl.readFileSync(OPS_SOURCE_PATH, 'utf8'), mode: 0o400 },
@@ -988,7 +1007,7 @@ const NOT_CREATED = () => false;
  * 返された discard() は、専用 CODEX_HOME を作ったのに Codex の起動に使わなかったとき（停止失敗・PTY 作成失敗など）に呼ぶ。
  * @param {string} engine 解決済みのエンジン名
  * @param {object} options approvalPolicy / sandboxMode / codexPolicy を含みうる起動オプション
- * @param {object} deps validateCodexLaunchOptions と、prepareCodexTaskPolicyHome へ渡す dataDir / handoffDir / personalCodexHome / cwd / homeDir / fs
+ * @param {object} deps validateCodexLaunchOptions と、prepareCodexTaskPolicyHome へ渡す dataDir / handoffDir / personalCodexHome / cwd / homeDir / fs / collapseTurnDetails
  * @returns {{ok: true, options: object, discard: () => boolean} | {ok: false, error: string}}
  */
 function resolveCodexTaskPolicyLaunchOptions(engine, options, deps) {
@@ -1046,5 +1065,6 @@ module.exports = {
   prepareCodexTaskPolicyHome,
   verifyPolicyHome,
   resolveCodexTaskPolicyLaunchOptions,
+  resolveCollapseTurnDetails,
   listToolSearchDirs,
 };

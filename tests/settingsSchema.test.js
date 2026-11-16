@@ -89,10 +89,25 @@ test('buildBuiltinSettingsDescriptor: JSON から targetPath 付きの組み込�
     'menuItems',
     'additionalPanes',
     'apiRequireAuthAlways',
+    'codexCollapseTurnDetails',
     'openInitialPane',
     'initialEngine',
     'initialCodexModel',
   ]);
+
+  // codexCollapseTurnDetails（issue #627）は既定オンの真偽値。対象が自動処理の作業ペインだけであることを冒頭で示し、途中の発言も畳まれること・オフの表示内容・次に起動する作業ペインから反映されることを示す。
+  // 常に表示する項目のため、条件付きで表示する initialCodexModel より上（openInitialPane の直前）に置く。
+  const collapseField = fields.find((field) => field.key === 'codexCollapseTurnDetails');
+  assert.equal(collapseField.type, 'boolean');
+  assert.equal(collapseField.default, true);
+  assert.equal(collapseField.label, '自動処理の Codex で途中経過の表示を畳む');
+  assert.match(collapseField.help, /^VK Orchestrator の自動処理で開く Codex の作業ペインだけが対象です/);
+  assert.match(collapseField.help, /作業途中の Codex の発言も一緒に畳まれ/);
+  assert.match(collapseField.help, /最終回答だけが残ります/);
+  assert.match(collapseField.help, /次に起動する作業ペインから反映/);
+  assert.match(collapseField.help, /手動で開いた Codex のペインの表示は変わりません/);
+  assert.match(collapseField.help, /オフにすると、実行したコマンドとその出力、作業途中の発言をすべて表示します/);
+  assert.equal(collapseField.help.includes('これまでどおり'), false);
 
   // 追加・分割ペインの AI 自動起動は Claude Code / Codex 共通のため、ラベルとヘルプで両方を示す。
   const autoLaunchField = fields.find((field) => field.key === 'newPaneAutoLaunchClaude');

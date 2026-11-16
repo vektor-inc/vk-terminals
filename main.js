@@ -89,7 +89,7 @@ const {
   validateCodexLaunchOptions,
 } = require('./renderer/claudeModel');
 // 自動処理用 Codex のタスク用ポリシー（専用 CODEX_HOME の生成。issue #428）。
-const { resolveCodexTaskPolicyLaunchOptions, resolveCodexPolicyContext } = require('./utils/codexTaskPolicy');
+const { resolveCodexTaskPolicyLaunchOptions, resolveCodexPolicyContext, resolveCollapseTurnDetails } = require('./utils/codexTaskPolicy');
 const { getProtectedSyncCapabilitiesAsync, PROTECTED_SYNC_TARGETS } = require('./utils/codexTaskOps');
 const {
   HOOK_UNAVAILABLE,
@@ -576,6 +576,8 @@ function createCodexPolicyDeps(overrides = {}) {
     dataDir: DATA_DIR,
     handoffDir: CODEX_TASK_POLICY_HANDOFF_DIR,
     personalCodexHome: process.env.CODEX_HOME || path.join(os.homedir(), '.codex'),
+    // 設定パネルの「コマンド実行の表示を畳む」（issue #627）。起動のたびに config.json を読み、次に起動する作業ペインから反映する。
+    collapseTurnDetails: resolveCollapseTurnDetails(loadUserConfig()),
     ...overrides,
   };
 }

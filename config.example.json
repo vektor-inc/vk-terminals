@@ -10,6 +10,8 @@
   "initialEngine": "claude",
   "_initialCodexModelNote": "initialEngine が codex のときに起動時の最初のペインと、ペインが 0 枚のときに「新規ペインを追加」ボタンから作るペインへ渡すモデル名。空なら Codex の既定モデルで起動します。",
   "initialCodexModel": "",
+  "_codexCollapseTurnDetailsNote": "true にすると、自動処理で開く Codex の作業ペインで、Codex が実行したコマンドとその出力を 1 行に畳んで表示します（作業途中の Codex の発言も畳まれ、最終回答だけが残ります）。省略時は true。false にするとこれまでどおりすべて表示します。次に起動する作業ペインから反映され、手動で開いた Codex のペインには影響しません。",
+  "codexCollapseTurnDetails": true,
   "confirmClose": "busy",
   "terminalLinkClickMode": "click",
   "gpu": "off",

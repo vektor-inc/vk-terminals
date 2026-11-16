@@ -17,6 +17,7 @@ const {
   prepareCodexTaskPolicyHome,
   verifyPolicyHome,
   resolveCodexTaskPolicyLaunchOptions,
+  resolveCollapseTurnDetails,
   listToolSearchDirs,
 } = require('../utils/codexTaskPolicy');
 const { ACCEPTED_GH_OPERATIONS, ISSUE_LIST_JSON_FIELDS, REPO_VIEW_JSON_FIELDS, parseTaskCommand } = require('../utils/codexTaskOps');
@@ -222,6 +223,80 @@ const launcherEnv = (extra = {}) => {
   delete env.CODEX_SANDBOX;
   return env;
 };
+
+// ─── コマンド実行の表示を畳む（issue #627） ─────────────────────────────
+// 親と子の config.toml から [tui] の見出しと collapse_turn_details の行を取り出す。
+const tuiLinesOf = (config) => ({
+  headers: (config.match(/^\[tui\]$/gm) || []).length,
+  collapse: (config.match(/^collapse_turn_details = .*$/gm) || []),
+});
+const readParentAndChildConfig = (home) => [home, path.join(home, 'member')].map((dir) => fs.readFileSync(path.join(dir, 'config.toml'), 'utf8'));
+
+test('表示を畳む設定: config.json にキーが無い既存の利用者も畳む。false を明示したときだけ畳まない', () => {
+  assert.equal(resolveCollapseTurnDetails({}), true);
+  assert.equal(resolveCollapseTurnDetails(undefined), true);
+  assert.equal(resolveCollapseTurnDetails(null), true);
+  assert.equal(resolveCollapseTurnDetails({ codexCollapseTurnDetails: true }), true);
+  assert.equal(resolveCollapseTurnDetails({ codexCollapseTurnDetails: false }), false);
+  // 真偽値以外が入っていても既定どおり畳む（文字列を Codex へ渡すと起動しないため、値は必ず真偽値へ寄せる）。
+  for (const value of ['false', 0, null, 'abc']) assert.equal(resolveCollapseTurnDetails({ codexCollapseTurnDetails: value }), true, String(value));
+});
+
+test('表示を畳む設定: 指定が無ければ親と子の両方の config.toml に [tui] collapse_turn_details = true を 1 回だけ書く', () => {
+  const sandbox = createSandbox();
+  try {
+    const result = prepare(sandbox);
+    assert.equal(result.ok, true, result.error);
+    for (const config of readParentAndChildConfig(result.home)) {
+      const tui = tuiLinesOf(config);
+      assert.equal(tui.headers, 1);
+      // 文字列ではなく真偽値で書く（"true" だと Codex が起動しない）。
+      assert.deepEqual(tui.collapse, ['collapse_turn_details = true']);
+      assert.match(config, /^\[tui\]\ncollapse_turn_details = true$/m);
+    }
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('表示を畳む設定: オフなら親と子の両方の config.toml に collapse_turn_details = false を書き、[tui] は 1 回だけ', () => {
+  const sandbox = createSandbox();
+  try {
+    const result = prepare(sandbox, { collapseTurnDetails: false });
+    assert.equal(result.ok, true, result.error);
+    const [parentConfig, childConfig] = readParentAndChildConfig(result.home);
+    for (const config of [parentConfig, childConfig]) {
+      const tui = tuiLinesOf(config);
+      assert.equal(tui.headers, 1);
+      assert.deepEqual(tui.collapse, ['collapse_turn_details = false']);
+    }
+    // 親と子の違いは承認だけのまま（表示の設定は同じ値になる）。
+    assert.equal(childConfig.replace('approval_policy = "never"', 'approval_policy = "on-request"'), parentConfig);
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('表示を畳む設定: 起動オプションの解決から渡した値が、その起動の config.toml に反映される（起動のたびに読む）', () => {
+  const sandbox = createSandbox();
+  try {
+    const options = { approvalPolicy: 'never', codexPolicy: { preset: 'orchestrated-task' } };
+    const collapseOf = (resolved) => tuiLinesOf(fs.readFileSync(path.join(resolved.options.codexPolicyHome, 'config.toml'), 'utf8')).collapse;
+    const on = resolveCodexTaskPolicyLaunchOptions('codex', options, { ...sandbox.deps, collapseTurnDetails: true });
+    assert.equal(on.ok, true, on.error);
+    assert.deepEqual(collapseOf(on), ['collapse_turn_details = true']);
+    // 設定を切り替えた後の起動では、新しい値で作り直される。
+    const off = resolveCodexTaskPolicyLaunchOptions('codex', options, { ...sandbox.deps, collapseTurnDetails: false });
+    assert.equal(off.ok, true, off.error);
+    assert.deepEqual(collapseOf(off), ['collapse_turn_details = false']);
+    // 起動オプション（呼び出し元から来る値）に混ぜても採用しない。設定は main 側の依存値からだけ受け取る。
+    const viaRequest = resolveCodexTaskPolicyLaunchOptions('codex', { ...options, collapseTurnDetails: false }, sandbox.deps);
+    assert.equal(viaRequest.ok, true, viaRequest.error);
+    assert.deepEqual(collapseOf(viaRequest), ['collapse_turn_details = true']);
+  } finally {
+    sandbox.cleanup();
+  }
+});
 
 test('生成: 個人設定が広くても継承せず、個人の config.toml は変更しない', () => {
   const broadPersonalConfig = [

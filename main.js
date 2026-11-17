@@ -177,7 +177,7 @@ const {
   evaluateTokenRegistration,
 } = require('./utils/apiAuth');
 const { isAllowedApiHost } = require('./utils/apiHostAllowlist');
-const { containsUserTerminalInput, isTerminalQueryReplyOnly, isTerminalFocusNotificationOnly } = require('./utils/terminalUserInput');
+const { containsUserTerminalInput, isTerminalQueryReplyOnly, isTerminalFocusNotificationOnly, createUserInputRevisions } = require('./utils/terminalUserInput');
 const {
   createConditionalTerminalInputGuard,
   mergeConditionalScreenIdentifiers,
@@ -381,6 +381,8 @@ const conditionalTerminalInput = createConditionalTerminalInputGuard();
 // 識別値を採り直す。通常入力後は可視出力まで抑止し、古い lastLines での Enter を防ぐ。
 // Codex の起動直後は、フォーカス・マウス通知を PTY へ流さない（issue #621）。
 const launchInputQuiet = createLaunchInputQuietWindow();
+// 利用者・API の入力の番号。Codex を自動で起動し直す前に、その間の入力が無いかを照合する（issue #621）。
+const userInputRevisions = createUserInputRevisions();
 // Codex が起動直後に終了したとみなす時間。これより後の終了では起動し直さない（issue #621）。
 const CODEX_EARLY_EXIT_WINDOW_MS = 5000;
 const silentWriteRefresher = createSilentWriteRefresher({
@@ -2551,7 +2553,7 @@ function registerTerminalProcess(id, ptyProcess, shell, { hasAgent, generation =
     agentLifecycles.delete(id); clearPaneBackgroundWork(id);
     conditionalTerminalInput.delete(id); silentWriteRefresher.delete(id);
     reportedScreenSnapshots.delete(id); restartAgentOperations.delete(id);
-    launchInputQuiet.delete(id);
+    launchInputQuiet.delete(id); userInputRevisions.delete(id);
     const responder = restartTrustResponders.get(id);
     if (responder) responder.dispose();
     restartTrustResponders.delete(id); paneCreationTrustWatchers.delete(id);
@@ -2741,7 +2743,7 @@ ipcMain.on('terminal:restore-abandon', (_event, ids) => {
     agentLifecycles.delete(id); clearPaneBackgroundWork(id, { keepFiles: true });
     conditionalTerminalInput.delete(id); silentWriteRefresher.delete(id);
     reportedScreenSnapshots.delete(id); restartAgentOperations.delete(id);
-    launchInputQuiet.delete(id);
+    launchInputQuiet.delete(id); userInputRevisions.delete(id);
     tmuxHolder?.panes.delete(pane.paneId);
   }
   restoredPaneCount = [...ptys.values()].filter(pane => pane.isTmuxPane).length;
@@ -3186,6 +3188,7 @@ function createTerminalPane(cwd, options = {}, guide = null) {
         ? () => agentLifecycles.waitForEarlyExit(id, 1, initialLaunchToken, CODEX_EARLY_EXIT_WINDOW_MS)
         : null,
       onLaunchWritten: () => { if (resolvedEngine === 'codex') launchInputQuiet.begin(id); },
+      getUserInputRevision: () => userInputRevisions.get(id),
       log: (message) => console.error(`${LOG_PREFIX} ${message}`),
     });
   }
@@ -3232,6 +3235,7 @@ ipcMain.on('terminal:input', (event, id, data) => {
     // 端末の自動応答・通知では監視を維持し、実際の入力後だけ過去の表示を根拠とする
     // 信頼関連の自動 Enter を止める。
     disarmTrustAutomationForUserInput(id, data);
+    userInputRevisions.note(id, data);
     // Codex の起動直後は、端末が自発的に返すフォーカス・マウス通知を流さない（issue #621）。
     if (launchInputQuiet.shouldDrop(id, data)) return;
     p.write(data);
@@ -3265,7 +3269,7 @@ ipcMain.on('terminal:kill', (event, id) => {
     silentWriteRefresher.delete(id);
     reportedScreenSnapshots.delete(id);
     restartAgentOperations.delete(id);
-    launchInputQuiet.delete(id);
+    launchInputQuiet.delete(id); userInputRevisions.delete(id);
     // ptyProcess.onExit 側でも同じ後始末をするが、ここで管理している Map と食い違わない
     // よう、削除する Map を揃えておく（安藤の指摘・LOW-F）。
     const restartTrustResponder = restartTrustResponders.get(id);
@@ -3983,6 +3987,7 @@ function startHttpApi() {
               }));
               return;
             }
+            userInputRevisions.note(termId, '\r');
             if (win && !win.isDestroyed()) {
               win.webContents.send('terminal:auto-input', termId);
             }
@@ -4000,6 +4005,7 @@ function startHttpApi() {
           // 「本文 + 末尾 Enter」を 1 リクエストで受け取った場合は、本文と Enter を
           // 別々の write に分割して送る（まとめて送ると Claude Code が末尾 \r を
           // ペーストの改行として吸収し Enter 確定にならないため。SEND_ENTER_SPLIT_DELAY_MS 参照）。
+          userInputRevisions.note(termId, input);
           const trailingNewline = input.match(/[\r\n]+$/);
           const hasBodyBeforeNewline = trailingNewline && input.length > trailingNewline[0].length;
           if (hasBodyBeforeNewline) {

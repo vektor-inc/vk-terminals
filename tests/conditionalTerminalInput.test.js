@@ -250,6 +250,7 @@ function terminalInputHarness() {
     disarmTrustAutomationForUserInput: () => {},
     // Codex の起動直後の抑制（issue #621）は始めていないため、入力は落とさない。
     launchInputQuiet: require('../utils/launchInputQuiet').createLaunchInputQuietWindow(),
+    userInputRevisions: require('../utils/terminalUserInput').createUserInputRevisions(),
     silentWriteRefresher: context.refresher,
     isTerminalQueryReplyOnly,
     isTerminalFocusNotificationOnly,

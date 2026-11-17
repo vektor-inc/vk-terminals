@@ -23,11 +23,12 @@ const DEFAULT_RELAUNCH_DELAY_MS = 500;
  * @param {() => void} [params.onLaunchWritten] 起動コマンドを書き込むたびの通知先（起動し直しを含む）
  * @param {() => Promise<boolean>} [params.waitForEarlyExit] 起動直後に AI が終了したら true を返す待ち（issue #621）
  * @param {number} [params.relaunchDelayMs] 終了を検知してから起動し直すまでの待ち時間
+ * @param {() => number} [params.getUserInputRevision] 利用者入力の番号（入力があるたびに進む）
  * @param {(message: string) => void} [params.log] 失敗の記録先
  * @param {Function} [params.setTimer] テスト用の setTimeout 差し替え
  * @returns {unknown} タイマーのハンドル
  */
-function scheduleLaunchCommand({ ptys, id, ptyProcess, command, prepareCommand = (value) => ({ status: 'passthrough', command: value }), activateCommand = () => true, isLaunchCurrent = () => true, discard, delayMs, shellReady = null, onWriteSuccess = () => {}, onLaunchWritten = () => {}, waitForEarlyExit = null, relaunchDelayMs = DEFAULT_RELAUNCH_DELAY_MS, log = () => {}, setTimer = setTimeout }) {
+function scheduleLaunchCommand({ ptys, id, ptyProcess, command, prepareCommand = (value) => ({ status: 'passthrough', command: value }), activateCommand = () => true, isLaunchCurrent = () => true, discard, delayMs, shellReady = null, onWriteSuccess = () => {}, onLaunchWritten = () => {}, waitForEarlyExit = null, relaunchDelayMs = DEFAULT_RELAUNCH_DELAY_MS, getUserInputRevision = () => 0, log = () => {}, setTimer = setTimeout }) {
   const discardSafely = () => {
     try {
       discard();
@@ -38,7 +39,12 @@ function scheduleLaunchCommand({ ptys, id, ptyProcess, command, prepareCommand =
   // 起動し直しでは、1 度 Codex が使った専用フォルダを回収しない。
   let relaunching = false;
   const abandon = () => { if (!relaunching) discardSafely(); };
-  const isStillCurrent = () => ptys.get(id) === ptyProcess && isLaunchCurrent();
+  // 起動後に利用者が入力していたら、起動し直しの書き込み（Ctrl+U・準備・起動コマンド）をしない。
+  // 入力中の文字列を消したり、利用者が起動した別のプログラムへ書き込んだりしないため。
+  let launchedUserInputRevision = null;
+  const hasNoUserInputSinceLaunch = () => !relaunching || getUserInputRevision() === launchedUserInputRevision;
+  const isLaunchValid = () => isLaunchCurrent() && hasNoUserInputSinceLaunch();
+  const isStillCurrent = () => ptys.get(id) === ptyProcess && isLaunchValid();
   return setTimer(() => {
     // 待っている間にペインが閉じた・同じ ID が別の PTY になった場合は、書き込まず回収する。
     if (ptys.get(id) !== ptyProcess) {
@@ -51,7 +57,7 @@ function scheduleLaunchCommand({ ptys, id, ptyProcess, command, prepareCommand =
       if (!waitForEarlyExit) return;
       let exited = false;
       try { exited = await waitForEarlyExit(); } catch (_error) { exited = false; }
-      if (!exited || !isStillCurrent()) return;
+      if (!exited || ptys.get(id) !== ptyProcess || !isLaunchCurrent() || getUserInputRevision() !== launchedUserInputRevision) return;
       log(`agent exited right after launch in terminal ${id}; relaunching once`);
       relaunching = true;
       // 終了直後の入力とシェルの再描画が落ち着いてから書き込む。
@@ -84,7 +90,7 @@ function scheduleLaunchCommand({ ptys, id, ptyProcess, command, prepareCommand =
         abandon();
         return;
       }
-      if (ptys.get(id) !== ptyProcess || !isLaunchCurrent()) {
+      if (!isStillCurrent()) {
         abandon();
         return;
       }
@@ -96,7 +102,7 @@ function scheduleLaunchCommand({ ptys, id, ptyProcess, command, prepareCommand =
           setupWritten = true;
           const hookReady = await result.ready;
           // hook の出力待ちの間にも PTY identity・世代を再確認する。失敗時も元行は無加工で送る。
-          if (ptys.get(id) !== ptyProcess || !isLaunchCurrent()) {
+          if (!isStillCurrent()) {
             cleanupPromptHook();
             abandon();
             return;
@@ -106,19 +112,20 @@ function scheduleLaunchCommand({ ptys, id, ptyProcess, command, prepareCommand =
             log(`prompt hook setup failed for terminal ${id}; lifecycle state is unknown`);
           }
           if (hookReady) await activateCommand();
-          if (ptys.get(id) !== ptyProcess || !isLaunchCurrent()) {
+          if (!isStillCurrent()) {
             cleanupPromptHook();
             abandon();
             return;
           }
         }
-        if (ptys.get(id) !== ptyProcess || !isLaunchCurrent()) {
+        if (!isStillCurrent()) {
           abandon();
           return;
         }
         ptyProcess.write(`${result.command}\r`);
         onLaunchWritten();
         if (relaunching) return;
+        launchedUserInputRevision = getUserInputRevision();
         onWriteSuccess();
         scheduleRelaunchOnEarlyExit();
       } catch (error) {

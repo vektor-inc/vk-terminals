@@ -62,4 +62,29 @@ function isTerminalFocusNotificationOnly(input) {
     && /^(?:\x1b\[[IO])+$/.test(input);
 }
 
-module.exports = { containsUserTerminalInput, isTerminalQueryReplyOnly, isTerminalFocusNotificationOnly };
+/**
+ * ペインごとに、利用者（または API）の入力があった回数を数える（issue #621）。
+ * 端末の問い合わせへの応答やフォーカス・マウス通知では数を進めない。
+ * 自動で起動し直す前に、待っている間に利用者が入力していないかを照合するために使う。
+ *
+ * @returns {{note: (id: string, data: *) => void, get: (id: string) => number, delete: (id: string) => void}}
+ */
+function createUserInputRevisions() {
+  const revisions = new Map();
+  return {
+    // 利用者の入力を含む書き込みのときだけ番号を進める。
+    note(id, data) {
+      if (typeof data === 'string' && data.length > 0 && containsUserTerminalInput(data)) {
+        revisions.set(String(id), (revisions.get(String(id)) || 0) + 1);
+      }
+    },
+    get(id) {
+      return revisions.get(String(id)) || 0;
+    },
+    delete(id) {
+      revisions.delete(String(id));
+    },
+  };
+}
+
+module.exports = { containsUserTerminalInput, isTerminalQueryReplyOnly, isTerminalFocusNotificationOnly, createUserInputRevisions };

@@ -215,3 +215,87 @@ test('main.js: Codex の起動だけが起動し直しと入力の抑制を使�
   // 再起動 API で Codex を起動するときも、書き込み直後から抑制する。
   assert.match(source, /ptyProcess\.write\(`\$\{prepared\.command\}\\r`\);\s*if \(request\.engine === 'codex'\) launchInputQuiet\.begin\(request\.termId\);/);
 });
+
+// 起動し直しを待っている間に利用者が入力したら、行を消したり別のプログラムへ書き込んだりしない。
+function scheduleWithUserInput({ prepareCommand } = {}) {
+  const timers = createTimers();
+  const written = [];
+  const ptyProcess = { write: (data) => written.push(data) };
+  let revision = 0;
+  let resolveExit;
+  scheduleLaunchCommand({
+    ptys: new Map([['1', ptyProcess]]), id: '1', ptyProcess, command: 'codex', delayMs: 200, discard: () => {},
+    setTimer: timers.setTimer, prepareCommand,
+    getUserInputRevision: () => revision,
+    waitForEarlyExit: () => new Promise((resolve) => { resolveExit = resolve; }),
+  });
+  return { timers, written, input: () => { revision += 1; }, exit: () => resolveExit(true) };
+}
+
+test('終了を検知する前に利用者が入力していたら起動し直さない', async () => {
+  const pane = scheduleWithUserInput();
+  await pane.timers.fireNext();
+  await flush();
+  pane.input();
+  pane.exit();
+  await flush();
+  assert.equal(pane.timers.pending.filter((item) => !item.cleared).length, 0);
+  assert.deepEqual(pane.written, ['codex\r']);
+});
+
+test('起動し直すまで待っている間に利用者が入力したら、Ctrl+U も起動コマンドも送らない', async () => {
+  const pane = scheduleWithUserInput();
+  await pane.timers.fireNext();
+  await flush();
+  pane.exit();
+  await flush();
+  pane.input();
+  await pane.timers.fireNext();
+  await flush();
+  assert.deepEqual(pane.written, ['codex\r']);
+});
+
+test('起動し直しの準備（prepare）を待っている間に利用者が入力したら、何も送らない', async () => {
+  let calls = 0;
+  let resolveSecond;
+  const pane = scheduleWithUserInput({
+    prepareCommand: (command) => {
+      calls += 1;
+      if (calls === 1) return { status: 'ready', setupCommand: 'setup-hook', command, ready: Promise.resolve(true) };
+      return new Promise((resolve) => { resolveSecond = () => resolve({ status: 'ready', setupCommand: 'setup-hook', command, ready: Promise.resolve(true) }); });
+    },
+  });
+  await pane.timers.fireNext();
+  await flush();
+  pane.exit();
+  await flush();
+  await pane.timers.fireNext();
+  await flush();
+  assert.equal(calls, 2, '起動し直しの準備に入っている');
+  pane.input();
+  resolveSecond();
+  await flush();
+  assert.deepEqual(pane.written, ['setup-hook\r', 'codex\r']);
+});
+
+test('利用者入力の番号は、利用者の入力だけで進み、端末の応答・通知では進まない', () => {
+  const { createUserInputRevisions } = require('../utils/terminalUserInput');
+  const revisions = createUserInputRevisions();
+  assert.equal(revisions.get('1'), 0);
+  for (const auto of ['\x1b[?1;2c', '\x1b[12;1R', '\x1b]11;rgb:0000/0000/0000\x1b\\', '\x1b[I', '\x1b[<35;1;1M', '']) revisions.note('1', auto);
+  assert.equal(revisions.get('1'), 0);
+  revisions.note('1', 'a');
+  revisions.note('1', '\r');
+  assert.equal(revisions.get('1'), 2);
+  assert.equal(revisions.get('2'), 0);
+  revisions.delete('1');
+  assert.equal(revisions.get('1'), 0);
+});
+
+test('main.js: terminal:input と API の入力で利用者入力の番号を進め、起動し直しの照合に渡す', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+  assert.match(source, /ipcMain\.on\('terminal:input', \(event, id, data\) => \{[\s\S]*?userInputRevisions\.note\(id, data\);[\s\S]*?p\.write\(data\);/);
+  assert.match(source, /const result = conditionalTerminalInput\.writeEnter\([\s\S]*?userInputRevisions\.note\(termId, '\\r'\);/);
+  assert.match(source, /userInputRevisions\.note\(termId, input\);\s*const trailingNewline = input\.match/);
+  assert.match(source, /scheduleLaunchCommand\(\{[\s\S]*?getUserInputRevision: \(\) => userInputRevisions\.get\(id\),[\s\S]*?\}\);/);
+});

@@ -182,6 +182,13 @@ function endLayoutTransition(record) {
   }
 }
 
+// まだ反映していない遷移の状態変更があれば、いま反映する（遷移そのものは止めない）。
+// ペインの並びを変える処理の入口で呼び、保留中の状態変更が後から走って新しい操作を巻き戻さないようにする。
+// 状態変更の中から呼ばれた場合は反映済みの扱いになり、何もしない。
+function flushPendingLayoutUpdate() {
+  layoutTransition?.runUpdate();
+}
+
 // 進行中の遷移を打ち切り、まだ反映していない状態変更があれば先に反映する。
 // startViewTransition の更新処理は非同期に呼ばれるため、ここで同期的に済ませて順序を守る。
 function cancelLayoutTransition() {
@@ -223,11 +230,8 @@ function animateLayoutChange(update, { direction = 'enter', shouldAnimate = () =
   try {
     record.transition = document.startViewTransition(runUpdate);
   } catch {
-    layoutTransition = null;
-    html.classList.remove('vktm-layout-transition', 'vktm-layout-transition-exit');
-    clearLayoutTransitionNames();
-    runUpdate();
-    syncInternalBrowserLayout();
+    // 遷移を始められなかったときは即時に反映し、付けた名前を外してページ表示と再フィットを戻す。
+    try { runUpdate(); } finally { endLayoutTransition(record); }
     return;
   }
   // 打ち切り時に ready が reject されるため、未処理の reject として扱わせない。
@@ -3522,15 +3526,26 @@ function setSidebarOpen(open, options = {}) {
   syncInternalBrowserLayout();
   btn?.setAttribute('aria-expanded', sidebarOpen ? 'true' : 'false');
 
-  const afterLayout = () => {
-    syncInternalBrowserLayout();
-    fitAll();
+  const focusAfterLayout = () => {
     if (sidebarOpen && options.focusFirst !== false) {
       focusFirstSidebarItem();
     } else if (!sidebarOpen && options.focusToggle) {
       btn?.focus();
     }
   };
+  const afterLayout = () => {
+    syncInternalBrowserLayout();
+    fitAll();
+    focusAfterLayout();
+  };
+
+  // レイアウト切り替えの遷移の中では、左サイドバー自身のトランジションを止めているため完了を待たない。
+  // 配置の同期と再フィットは遷移の終わり（endLayoutTransition）の 1 回にまとめ、PTY のリサイズを重ねない（issue #629）。
+  if (layoutTransition) {
+    layoutTransitionFitPending = true;
+    requestAnimationFrame(focusAfterLayout);
+    return;
+  }
 
   if (!aside || isReducedMotion()) {
     requestAnimationFrame(afterLayout);
@@ -3564,11 +3579,13 @@ function setupSidebarMenu() {
   if (root) ensureSidebar(root);
   const btn = document.getElementById('menu-btn');
   if (btn) {
-    btn.addEventListener('click', () => setSidebarOpen(!sidebarOpen, { focusFirst: true }));
+    // 保留中のレイアウト切り替えが後から走ってサイドバーの操作を巻き戻さないよう、先に打ち切る（issue #629）。
+    btn.addEventListener('click', () => { cancelLayoutTransition(); setSidebarOpen(!sidebarOpen, { focusFirst: true }); });
   }
   document.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape' || !sidebarOpen) return;
     event.preventDefault();
+    cancelLayoutTransition();
     setSidebarOpen(false, { focusToggle: true });
   });
   VKIpc.on('menu:update', (sections) => {
@@ -3916,6 +3933,7 @@ function holderPaneCreationMessage(reason) {
 }
 
 async function addPane(overrideCwd = null, options = {}) {
+  flushPendingLayoutUpdate();
   // 初期化中の端末生成は後続のレイアウト初期化で失われるため、生成前に止める。
   if (!initialRenderDone) throw new Error('renderer not initialized');
   const newPaneId = newId();
@@ -3950,6 +3968,7 @@ async function splitPane(paneId, direction, overrideCwd, options = {}) {
 }
 
 function closePane(paneId, { force = false, skipConfirm = false } = {}) {
+  flushPendingLayoutUpdate();
   if (!paneExists(paneId)) return;
   const _t = terminals[paneId];
   if (!force && _t?.lock?.close === false) return;
@@ -4355,6 +4374,7 @@ function openStartTaskConfirmDialog(confirm) {
 
 // ペインをグリッド上で左右の隣と入れ替える。端で隣が無ければ何もしない。
 function movePane(paneId, dir) {
+  flushPendingLayoutUpdate();
   const order = tree.order;
   const i = order.indexOf(paneId);
   if (i < 0) return;
@@ -4398,6 +4418,7 @@ function togglePaneFocusMode(paneId) {
 
 // グリッドのペインをサイドバーへ格納する。
 function stashPane(paneId, { renderNow = true } = {}) {
+  flushPendingLayoutUpdate();
   if (!tree || !Array.isArray(tree.order)) return;
   const i = tree.order.indexOf(paneId);
   if (i < 0) return;
@@ -4426,6 +4447,7 @@ function stashPane(paneId, { renderNow = true } = {}) {
 
 // 格納中のペインをグリッドへ戻す。
 function unstashPane(paneId, { renderNow = true } = {}) {
+  flushPendingLayoutUpdate();
   if (!tree) return;
   // ブラウザの広く表示中にペインをグリッドへ出したら、解除して格納したペインを全部戻す。
   if (internalBrowserWide) {
@@ -4450,6 +4472,7 @@ function unstashPane(paneId, { renderNow = true } = {}) {
 
 // 格納エリア内でペインを上下に入れ替える（stashOrder の index swap）。
 function moveStashPane(paneId, dir) {
+  flushPendingLayoutUpdate();
   const arr = tree && tree.stashOrder;
   if (!Array.isArray(arr)) return;
   const i = arr.indexOf(paneId);
@@ -4797,7 +4820,7 @@ function renderEmptyGrid() {
   openBtn.className = 'grid-empty-btn grid-empty-btn-secondary';
   openBtn.textContent = 'サイドバーを開いて戻す';
   openBtn.setAttribute('aria-label', 'サイドバーを開いて格納したペインを戻す');
-  openBtn.addEventListener('click', () => setSidebarOpen(true, { focusFirst: true }));
+  openBtn.addEventListener('click', () => { cancelLayoutTransition(); setSidebarOpen(true, { focusFirst: true }); });
 
   if (!holderPaneCreationWarning) actions.appendChild(addBtn);
   if (!holderPaneCreationWarning && hasStashedPanes) actions.appendChild(openBtn);

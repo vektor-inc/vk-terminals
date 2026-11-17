@@ -79,6 +79,8 @@ test('左サイドバーの開閉完了後にブラウザとトーストの配�
     isReducedMotion() { return false; },
     setTimeout() { return 1; }, clearTimeout() {},
     focusFirstSidebarItem() {}, sidebarOpen: false, sidebarTransitionCleanup: null, internalBrowserOpen: false,
+    // 切り替えのアニメーション（issue #629）の遷移中ではない状態を再現する。
+    layoutTransition: null,
   };
   vm.runInNewContext(`${setter}\nsetSidebarOpen(true, { focusFirst: false })`, context);
   assert.deepEqual(calls, ['sync']);
@@ -88,6 +90,20 @@ test('左サイドバーの開閉完了後にブラウザとトーストの配�
   transitionEnd({ target: aside, propertyName: 'transform' });
   assert.deepEqual(calls.slice(-3), ['sync', 'sync', 'fit']);
   assert.equal(classes.has('sidebar-open'), false);
+  // レイアウト切り替えの遷移中は開閉完了を待たず、再フィットを遷移の終わりへ預ける（issue #629）。
+  const frames = [];
+  let timers = 0;
+  Object.assign(context, {
+    layoutTransition: {}, layoutTransitionFitPending: false,
+    requestAnimationFrame(callback) { frames.push(callback); },
+    setTimeout() { timers += 1; return 1; },
+  });
+  const before = calls.length;
+  vm.runInNewContext('setSidebarOpen(true, { focusFirst: false })', context);
+  frames.forEach(callback => callback());
+  assert.deepEqual(calls.slice(before), ['sync']);
+  assert.equal(timers, 0);
+  assert.equal(context.layoutTransitionFitPending, true);
 });
 
 test('狭幅の同期は左を閉じてから再計算し、手動で左を開くとブラウザを閉じる', () => {

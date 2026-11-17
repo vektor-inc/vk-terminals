@@ -160,6 +160,105 @@ test('遷移の途中で次の操作をすると、前の遷移を打ち切っ�
   }
 });
 
+// 再フィットの実行回数（遷移の外で実際に合わせた回数）と、PTY へのリサイズ通知の回数を記録する。
+async function startFitCounting(win) {
+  await win.evaluate(() => {
+    window.__fitCount = { fits: 0, resizes: 0 };
+    const fit = window.fitAll;
+    window.fitAll = (...args) => { if (!layoutTransition) window.__fitCount.fits += 1; return fit(...args); };
+    const send = VKIpc.send;
+    VKIpc.send = (channel, ...args) => {
+      if (channel === 'terminal:resize') window.__fitCount.resizes += 1;
+      return send(channel, ...args);
+    };
+  });
+}
+
+// @title 左サイドバーが一緒に開閉する遷移でも、再フィットは遷移の終わりの 1 回だけにする
+test('左サイドバーが一緒に開閉する遷移でも、再フィットは遷移の終わりの 1 回だけにする', async () => {
+  const launched = await start('vk-terminals-e2e-layout-transition-fit-once-');
+  const { app, win } = launched;
+  try {
+    // @step ペインを 2 枚開き、左サイドバーを閉じておく
+    const ids = await win.evaluate(async () => [
+      (await addPane(null, { noClaude: true })).paneId,
+      (await addPane(null, { noClaude: true })).paneId,
+    ]);
+    await win.evaluate(() => setSidebarOpen(false, { focusFirst: false }));
+    await expect(win.locator('#root')).not.toHaveClass(/\bsidebar-open\b/);
+    await win.waitForTimeout(400);
+    await startFitCounting(win);
+
+    // @step 1 枚目の「このペインを広く表示」を押す（左サイドバーが自動で開く）
+    await win.locator(`.pane[data-id="${ids[0]}"] .btn-focus-mode`).click();
+    await expect(win.locator('#root')).toHaveClass(/\bsidebar-open\b/);
+    await expect.poll(() => transitionActive(win)).toBe(false);
+    // 左サイドバーの開閉完了待ち（220ms）より後まで待ってから数える。
+    await win.waitForTimeout(500);
+    // @check 再フィットは遷移の終わりの 1 回だけで、PTY へのリサイズ通知もグリッドのペイン 1 枚分を超えない
+    let counts = await win.evaluate(() => window.__fitCount);
+    expect(counts.fits).toBe(1);
+    expect(counts.resizes).toBeLessThanOrEqual(1);
+
+    // @step ウィンドウを狭くしてペインの広く表示を解除し、アプリ内ブラウザを開く（左サイドバーが自動で閉じる）
+    await win.locator(`.pane[data-id="${ids[0]}"] .btn-focus-mode`).click();
+    await expect(win.locator('.pane')).toHaveCount(2);
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(900, 800));
+    await expect.poll(() => win.evaluate(() => innerWidth)).toBe(900);
+    await expect.poll(() => transitionActive(win)).toBe(false);
+    await win.waitForTimeout(400);
+    await win.evaluate(() => { window.__fitCount.fits = 0; window.__fitCount.resizes = 0; });
+    await win.locator('#internal-browser-toggle').click();
+    await expect(win.locator('#root')).toHaveClass(/\binternal-browser-open\b/);
+    await expect(win.locator('#root')).not.toHaveClass(/\bsidebar-open\b/);
+    await expect.poll(() => transitionActive(win)).toBe(false);
+    await win.waitForTimeout(500);
+    // @check こちらも再フィットは遷移の終わりの 1 回だけで、リサイズ通知はグリッドのペイン 2 枚分を超えない
+    counts = await win.evaluate(() => window.__fitCount);
+    expect(counts.fits).toBe(1);
+    expect(counts.resizes).toBeLessThanOrEqual(2);
+  } finally {
+    await closeApp(launched);
+  }
+});
+
+// @title 遷移の状態変更が反映される前に左サイドバーを操作しても、後からブラウザの開閉が巻き戻らない
+test('遷移の状態変更が反映される前に左サイドバーを操作しても、後からブラウザの開閉が巻き戻らない', async () => {
+  const launched = await start('vk-terminals-e2e-layout-transition-sidebar-');
+  const { app, win } = launched;
+  try {
+    // @step 左右のサイドバーを同時に開けない 900px にし、ペインを 1 枚開いてアプリ内ブラウザを開く
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(900, 800));
+    await expect.poll(() => win.evaluate(() => innerWidth)).toBe(900);
+    await win.evaluate(async () => { await addPane(null, { noClaude: true }); });
+    await win.locator('#internal-browser-toggle').click();
+    await expect(win.locator('#root')).toHaveClass(/\binternal-browser-open\b/);
+    await expect.poll(() => transitionActive(win)).toBe(false);
+
+    // @step 同じタスクの中で、タイトルバーのボタンでブラウザを閉じ、すぐにハンバーガーボタンで左サイドバーを開く
+    await win.evaluate(() => {
+      document.getElementById('internal-browser-toggle').click();
+      document.getElementById('menu-btn').click();
+    });
+    await win.waitForTimeout(500);
+    // @check ブラウザは閉じたまま再び開かず、左サイドバーは開いたまま
+    await expect(win.locator('#root')).not.toHaveClass(/\binternal-browser-open\b/);
+    await expect(win.locator('#root')).toHaveClass(/\bsidebar-open\b/);
+    expect(await win.evaluate(() => ({ browser: internalBrowserOpen, sidebar: sidebarOpen }))).toEqual({ browser: false, sidebar: true });
+
+    // @step 同じタスクの中で、ブラウザを開き、すぐに Escape キーで左サイドバーを閉じる
+    await win.evaluate(() => {
+      document.getElementById('internal-browser-toggle').click();
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    await win.waitForTimeout(500);
+    // @check ブラウザは開いたまま、左サイドバーは閉じたまま
+    expect(await win.evaluate(() => ({ browser: internalBrowserOpen, sidebar: sidebarOpen }))).toEqual({ browser: true, sidebar: false });
+  } finally {
+    await closeApp(launched);
+  }
+});
+
 // @title 視差効果を減らす設定では、遷移もページ表示を隠す処理も行わず即時に切り替える
 test('視差効果を減らす設定では、遷移もページ表示を隠す処理も行わず即時に切り替える', async () => {
   const launched = await start('vk-terminals-e2e-layout-transition-reduced-');

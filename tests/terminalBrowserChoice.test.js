@@ -98,6 +98,8 @@ test('共通メニューの選択肢がアプリ内ブラウザと OS のブラ�
     internalBrowserChoice: null, internalBrowserOpen: false, internalBrowserSidebar: sidebar,
     lastClickWasDrag: false, escapeLayers: { register: () => () => {} },
     hideInternalBrowserContent() {}, setInternalBrowserOpen: value => calls.push(['sidebar', value]),
+    // 切り替えのアニメーション（issue #629）は即時に反映する形で置き換える。
+    animateLayoutChange: update => update(),
     VKIpc: { invoke: (...args) => { calls.push(args); return Promise.resolve(); } },
     openExternalUrlSafe: (url, options) => { calls.push(['external', url]); options?.onSuccess?.(); },
     showTerminalLinkOpenedToast: url => calls.push(['toast', url]),

@@ -131,7 +131,8 @@ test('広く表示中に API で増えたペインは格納のまま残し、閉
     await win.evaluate((id) => closePane(id, { force: true }), ids.b);
     await wideButton(win).click();
     // @check 閉じたペインは戻らず、API で追加したペインは末尾に戻り、格納指定のペインは格納のまま残る
-    expect(await gridOrder(win)).toEqual([ids.a, apiIds.created]);
+    // 解除はアニメーションの開始後に反映されるため（issue #629）、反映を待ってから確かめる。
+    await expect.poll(() => gridOrder(win)).toEqual([ids.a, apiIds.created]);
     await expect(win.locator(`.stash-item[data-id="${apiIds.stashed}"]`)).toHaveCount(1);
     // @check ペインの数が変わったため、比率は均等のまま戻る
     expect(await win.evaluate(() => [tree.colFr, tree.rowFr])).toEqual([null, null]);
@@ -180,8 +181,10 @@ test('格納ペインを戻す操作やブラウザを閉じる操作で広く�
     await expect(win.locator('.pane')).toHaveCount(0);
     await win.locator('#internal-browser-toggle').click();
     // @check ペインの広く表示は先に解除されており、閉じた後は 3 枚とも元の順でグリッドに戻る
+    // 閉じる操作はアニメーションの開始後に反映されるため（issue #629）、反映を待ってから確かめる。
+    await expect(win.locator('#root')).not.toHaveClass(/\binternal-browser-open\b/);
     expect(await win.evaluate(() => paneFocusMode)).toBeNull();
-    expect(await gridOrder(win)).toEqual([ids.a, ids.b, ids.c]);
+    await expect.poll(() => gridOrder(win)).toEqual([ids.a, ids.b, ids.c]);
   } finally {
     await closeApp(launched);
   }

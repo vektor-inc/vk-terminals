@@ -467,6 +467,19 @@ test.describe.serial('ペイン内 URL の Cmd/Ctrl+クリック（issue #349 / 
         const t = terminals['pane-1'];
         return t && t.term.cols < 60;
       }, null, { timeout: 15_000 });
+      // cols < 60 は途中の値で満たされることがある。ウィンドウを狭めると左サイドバーの幅も
+      // 上限まで縮み、その flex-basis のトランジションが終わった後にもう一度再フィットが走る
+      // （例: 39 → 41 cols）。途中の cols で出力を探して座標を測ると、後の再フィットで
+      // 折り返しがずれてホバー位置にリンクが無くなるため、サイドバーの動きが止まり
+      // cols が落ち着くまで待つ。
+      await win.waitForFunction(() => document.getElementById('sidebar')?.getAnimations().length === 0, null, { timeout: 15_000 });
+      let previousCols = -1;
+      await expect.poll(async () => {
+        const cols = await win.evaluate(() => terminals['pane-1'].term.cols);
+        const stable = cols === previousCols;
+        previousCols = cols;
+        return stable;
+      }, { intervals: [200], timeout: 15_000 }).toBe(true);
 
       const url = 'https://github.com/vektor-inc/vk-terminals/issues?q=is%3Aissue+is%3Aopen+sort%3Aupdated-desc';
       await postSend(port, `echo "${url}"\r`);
@@ -493,7 +506,8 @@ test.describe.serial('ペイン内 URL の Cmd/Ctrl+クリック（issue #349 / 
           // 末尾断片が含まれていれば、この行を「末尾を含む折り返し継続行」とみなす。
           const prevText = (i > 0 && lines[i - 1]) ? lines[i - 1].text : '';
           const merged = prevText + lines[i].text;
-          if (merged.includes(u.slice(-10)) && lines[i].text.length > 0) {
+          // 入力行の echo（末尾が "）を出力行と取り違えないよう、閉じ引用符が続く行は除く。
+          if (merged.includes(u.slice(-10)) && !merged.includes(`${u.slice(-10)}"`) && lines[i].text.length > 0) {
             return { row: i, text: lines[i].text };
           }
         }

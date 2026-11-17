@@ -107,7 +107,11 @@ const escapeLayers = createEscapeLayerStack(document);
 // ただし openSettingsModal() は settings:describe の応答を待つため、⚙ を押してから
 // パネルが生成されるまでの数 ms はまだ何も inert ではない。この隙間にペインの ✕ を
 // 押せれば逆転しうる（手動では踏めず、二重オープンも各ガードで防がれているため未対応）。
-const focusTraps = createFocusTrapStack(document, count => VKIpc.send('internal-browser:modal-count', count));
+const focusTraps = createFocusTrapStack(document, count => {
+  // モーダルを出すときは、レイアウト切り替えの遷移を打ち切ってから重ねる（issue #629）。
+  if (count > 0) cancelLayoutTransition();
+  VKIpc.send('internal-browser:modal-count', count);
+});
 
 // ページ本体は main の WebContentsView。こちらは枠と操作列だけを描く。
 const internalBrowserSidebar = document.createElement('aside');
@@ -132,6 +136,144 @@ let internalBrowserChoice = null;
 let unregisterInternalBrowserEscape = null;
 // ページ未表示でも操作列から閉じる・広く表示できるよう、この 2 つは無効化しない。
 for (const button of internalBrowserSidebar.querySelectorAll('.internal-browser-toolbar button:not([data-action="close"]):not([data-action="wide"])')) button.disabled = true;
+
+// ─── レイアウト切り替えのアニメーション（issue #629）─────────────────────────
+// 利用者の操作による「ペインの広く表示」「アプリ内ブラウザの開閉」「ブラウザの広く表示」だけを
+// View Transitions API で動かす。自動処理・API による配置変化は呼び出し元で即時のまま切り替える。
+// 動かし方は renderer/style.css の「レイアウト切り替えのアニメーション」節に置く。
+let layoutTransition = null; // 進行中の遷移 { transition, runUpdate }
+let layoutTransitionFitPending = false;
+const LAYOUT_TRANSITION_PANE_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
+
+// 遷移の前後で同じ要素を対応づける名前を付ける。render() はペインを作り直すため、
+// 切り替え後の DOM にも付け直す。
+function applyLayoutTransitionNames() {
+  const root = document.getElementById('root');
+  if (!root) return;
+  const name = (element, value, className) => {
+    element.style.setProperty('view-transition-name', value);
+    element.style.setProperty('view-transition-class', className);
+  };
+  for (const pane of root.querySelectorAll('.pane[data-id]')) {
+    if (LAYOUT_TRANSITION_PANE_ID_PATTERN.test(pane.dataset.id)) name(pane, `vktm-pane-${pane.dataset.id}`, 'vktm-pane');
+  }
+  const sidebar = root.querySelector('#sidebar');
+  if (sidebar) name(sidebar, 'vktm-sidebar', 'vktm-sidebar');
+  name(internalBrowserSidebar, 'vktm-internal-browser', 'vktm-internal-browser');
+}
+
+function clearLayoutTransitionNames() {
+  for (const element of document.querySelectorAll('#root .pane[data-id], #sidebar, #internal-browser-sidebar')) {
+    element.style.removeProperty('view-transition-name');
+    element.style.removeProperty('view-transition-class');
+  }
+  document.getElementById('vktm-layout-transition-images')?.remove();
+}
+
+// 名前を付けた要素の大きさ（表示されているものだけ）を名前ごとに測る。
+function measureLayoutTransitionNames() {
+  const sizes = new Map();
+  for (const element of document.querySelectorAll('#root .pane[data-id], #sidebar, #internal-browser-sidebar')) {
+    const name = element.style.getPropertyValue('view-transition-name');
+    if (!name || element.getClientRects().length === 0) continue;
+    const rect = element.getBoundingClientRect();
+    sizes.set(name, rect.width * rect.height);
+  }
+  return sizes;
+}
+
+// 切り替えの前後どちらにもある要素は、既定のクロスフェードだと前後の姿が二重に写り、
+// 小さいほうの姿が覆わない部分が薄く透ける。大きいほうの姿だけを不透明で出し、枠の伸縮で見せる。
+// 広がる要素は切り替え後、縮む要素は切り替え前の姿になる。片方にしか無い要素（現れる・消える）は対象外。
+function applyLayoutTransitionImageChoice(sizesBefore) {
+  const rules = [];
+  for (const [name, after] of measureLayoutTransitionNames()) {
+    if (!sizesBefore.has(name)) continue;
+    const [shown, hidden] = after >= sizesBefore.get(name) ? ['new', 'old'] : ['old', 'new'];
+    rules.push(`::view-transition-${shown}(${name}) { animation-name: none; opacity: 1; }`);
+    rules.push(`::view-transition-${hidden}(${name}) { animation-name: none; opacity: 0; }`);
+  }
+  let style = document.getElementById('vktm-layout-transition-images');
+  if (!style) {
+    style = document.createElement('style');
+    style.id = 'vktm-layout-transition-images';
+    document.head.appendChild(style);
+  }
+  style.textContent = rules.join('\n');
+}
+
+// 遷移を片付け、ページ表示を最終の位置で出し直し、止めていた再フィットを 1 回だけ行う。
+function endLayoutTransition(record) {
+  if (layoutTransition !== record) return;
+  layoutTransition = null;
+  document.documentElement.classList.remove('vktm-layout-transition', 'vktm-layout-transition-exit');
+  clearLayoutTransitionNames();
+  syncInternalBrowserLayout();
+  if (layoutTransitionFitPending) {
+    layoutTransitionFitPending = false;
+    fitAll();
+  }
+}
+
+// まだ反映していない遷移の状態変更があれば、いま反映する（遷移そのものは止めない）。
+// ペインの並びを変える処理の入口で呼び、保留中の状態変更が後から走って新しい操作を巻き戻さないようにする。
+// 状態変更の中から呼ばれた場合は反映済みの扱いになり、何もしない。
+function flushPendingLayoutUpdate() {
+  layoutTransition?.runUpdate();
+}
+
+// 進行中の遷移を打ち切り、まだ反映していない状態変更があれば先に反映する。
+// startViewTransition の更新処理は非同期に呼ばれるため、ここで同期的に済ませて順序を守る。
+function cancelLayoutTransition() {
+  const record = layoutTransition;
+  if (!record) return;
+  record.runUpdate();
+  try { record.transition.skipTransition(); } catch {}
+  endLayoutTransition(record);
+}
+
+// 状態変更（update）をアニメーション付きで反映する。direction は広げる・開くが 'enter'、
+// 解除・閉じるが 'exit'。使えない環境・視差効果を減らす設定・遷移中の次の操作では即時に切り替える。
+function animateLayoutChange(update, { direction = 'enter', shouldAnimate = () => true } = {}) {
+  if (layoutTransition) {
+    // 最後の操作を優先し、前の遷移を打ち切ってから即時に切り替える。
+    cancelLayoutTransition();
+    update();
+    return;
+  }
+  if (typeof document.startViewTransition !== 'function' || isReducedMotion() || !shouldAnimate()) {
+    update();
+    return;
+  }
+  let updated = false;
+  let sizesBefore = new Map();
+  const runUpdate = () => {
+    if (updated) return;
+    updated = true;
+    update();
+    applyLayoutTransitionNames();
+    applyLayoutTransitionImageChoice(sizesBefore);
+  };
+  const html = document.documentElement;
+  html.classList.add('vktm-layout-transition');
+  html.classList.toggle('vktm-layout-transition-exit', direction === 'exit');
+  // ページ表示（WebContentsView）は DOM の上に重なって動きに追従しないため、遷移中は隠して背景色で代用する。
+  VKIpc.send('internal-browser:visible', false);
+  applyLayoutTransitionNames();
+  sizesBefore = measureLayoutTransitionNames();
+  const record = { transition: null, runUpdate };
+  layoutTransition = record;
+  try {
+    record.transition = document.startViewTransition(runUpdate);
+  } catch {
+    // 遷移を始められなかったときは即時に反映し、付けた名前を外してページ表示と再フィットを戻す。
+    try { runUpdate(); } finally { endLayoutTransition(record); }
+    return;
+  }
+  // 打ち切り時に ready が reject されるため、未処理の reject として扱わせない。
+  record.transition.ready.catch(() => {});
+  record.transition.finished.then(() => endLayoutTransition(record), () => endLayoutTransition(record));
+}
 
 function syncInternalBrowserLayout() {
   const root = document.getElementById('root');
@@ -239,7 +381,7 @@ function syncInternalBrowserLayout() {
     const zoom = window.VKWebFrame?.getZoomFactor?.() || 1;
     VKIpc.send('internal-browser:bounds', { x: rect.x * zoom, y: rect.y * zoom, width: rect.width * zoom, height: rect.height * zoom });
   }
-  VKIpc.send('internal-browser:visible', internalBrowserOpen && !document.body.classList.contains('resizing-internal-browser'));
+  VKIpc.send('internal-browser:visible', internalBrowserOpen && !document.body.classList.contains('resizing-internal-browser') && !layoutTransition);
   const layout = `${internalBrowserOpen}:${browserWide}:${displayedInternalBrowserWidth}:${columns}:${leftSidebar}`;
   if (layout !== previousInternalBrowserLayout) {
     previousInternalBrowserLayout = layout;
@@ -367,8 +509,8 @@ function showInternalBrowserChoice(url, event, origin) {
         internalBrowserHasPage = true;
         hideInternalBrowserContent(internalBrowserSidebar.querySelector('.internal-browser-notice'));
         hideInternalBrowserContent(internalBrowserSidebar.querySelector('.internal-browser-error'));
-        // リンクの開き先選択を閉じた際に復帰した操作元を維持する。
-        setInternalBrowserOpen(true, { focus: 'preserve' });
+        // リンクの開き先選択を閉じた際に復帰した操作元を維持する。閉じているときだけ開く動きを付ける。
+        animateLayoutChange(() => setInternalBrowserOpen(true, { focus: 'preserve' }), { shouldAnimate: () => !internalBrowserOpen });
         VKIpc.invoke('internal-browser:open', url).catch(() => {});
       } else openExternalUrlSafe(url, origin ? undefined : { onSuccess: () => showTerminalLinkOpenedToast(url) });
     });
@@ -408,8 +550,10 @@ document.addEventListener('wheel', event => { if (internalBrowserChoice && event
 
 internalBrowserSidebar.addEventListener('click', event => {
   const action = event.target.closest('[data-action]')?.dataset.action;
-  if (action === 'close') { setInternalBrowserOpen(false); document.getElementById('internal-browser-toggle')?.focus(); }
-  else if (action === 'wide') toggleInternalBrowserWide();
+  if (action === 'close') {
+    animateLayoutChange(() => { setInternalBrowserOpen(false); document.getElementById('internal-browser-toggle')?.focus(); }, { direction: 'exit' });
+  }
+  else if (action === 'wide') animateLayoutChange(toggleInternalBrowserWide, { direction: internalBrowserWide ? 'exit' : 'enter' });
   else if (action === 'external') {
     const url = event.target.closest('.internal-browser-error') ? internalBrowserFailedUrl : getInternalBrowserExternalTarget().url;
     if (url) {
@@ -542,10 +686,11 @@ internalBrowserAddress.addEventListener('keydown', event => {
     () => rejectInternalBrowserAddressRequest(requestId, submission),
   );
 });
-document.getElementById('internal-browser-toggle').addEventListener('click', () => setInternalBrowserOpen(!internalBrowserOpen));
+document.getElementById('internal-browser-toggle').addEventListener('click', () => animateLayoutChange(() => setInternalBrowserOpen(!internalBrowserOpen), { direction: internalBrowserOpen ? 'exit' : 'enter' }));
 const internalBrowserResizer = internalBrowserSidebar.querySelector('.internal-browser-resizer');
 internalBrowserResizer.addEventListener('pointerdown', event => {
   event.preventDefault();
+  cancelLayoutTransition();
   // 広く表示中は境界を隠しており、保存幅も上書きしない。
   if (internalBrowserWide) return;
   internalBrowserResizer.setPointerCapture(event.pointerId);
@@ -578,6 +723,8 @@ internalBrowserResizer.addEventListener('keydown', event => {
   preferredInternalBrowserWidth = displayedInternalBrowserWidth;
   localStorage.setItem('vk-terminals.internalBrowserWidth', String(preferredInternalBrowserWidth));
 });
+// 遷移中に寸法が変わると切り替え後の位置が古くなるため、先に打ち切ってから測り直す。
+window.addEventListener('resize', cancelLayoutTransition);
 window.addEventListener('resize', syncInternalBrowserLayout);
 VKIpc.on('internal-browser:state', state => {
   // Enter の受理前と旧操作の再配送では、表示も live 通知も巻き戻さない。
@@ -2852,6 +2999,7 @@ function setSidebarWidth(w) {
 function startSidebarResize(e) {
   e.preventDefault();
   e.stopPropagation();
+  cancelLayoutTransition();
   sidebarResizeState = { startX: e.clientX, startWidth: getSidebarWidth() };
   document.body.classList.add('resizing-sidebar');
 }
@@ -3414,15 +3562,26 @@ function setSidebarOpen(open, options = {}) {
   syncInternalBrowserLayout();
   btn?.setAttribute('aria-expanded', sidebarOpen ? 'true' : 'false');
 
-  const afterLayout = () => {
-    syncInternalBrowserLayout();
-    fitAll();
+  const focusAfterLayout = () => {
     if (sidebarOpen && options.focusFirst !== false) {
       focusFirstSidebarItem();
     } else if (!sidebarOpen && options.focusToggle) {
       btn?.focus();
     }
   };
+  const afterLayout = () => {
+    syncInternalBrowserLayout();
+    fitAll();
+    focusAfterLayout();
+  };
+
+  // レイアウト切り替えの遷移の中では、左サイドバー自身のトランジションを止めているため完了を待たない。
+  // 配置の同期と再フィットは遷移の終わり（endLayoutTransition）の 1 回にまとめ、PTY のリサイズを重ねない（issue #629）。
+  if (layoutTransition) {
+    layoutTransitionFitPending = true;
+    requestAnimationFrame(focusAfterLayout);
+    return;
+  }
 
   if (!aside || isReducedMotion()) {
     requestAnimationFrame(afterLayout);
@@ -3448,7 +3607,10 @@ function setSidebarOpen(open, options = {}) {
   };
   sidebarTransitionCleanup = cleanup;
   aside.addEventListener('transitionend', onEnd);
-  timeoutId = setTimeout(finish, 220);
+  // transitionend が来ない場合の保険。時間は開閉の向きで変わるため、今効いている CSS の値（秒単位の computed 値）から求める。
+  const transitionMs = Math.max(0, ...String(getComputedStyle(aside).transitionDuration || '')
+    .split(',').map((value) => parseFloat(value) * 1000).filter(Number.isFinite));
+  timeoutId = setTimeout(finish, transitionMs + 40);
 }
 
 function setupSidebarMenu() {
@@ -3456,11 +3618,13 @@ function setupSidebarMenu() {
   if (root) ensureSidebar(root);
   const btn = document.getElementById('menu-btn');
   if (btn) {
-    btn.addEventListener('click', () => setSidebarOpen(!sidebarOpen, { focusFirst: true }));
+    // 保留中のレイアウト切り替えが後から走ってサイドバーの操作を巻き戻さないよう、先に打ち切る（issue #629）。
+    btn.addEventListener('click', () => { cancelLayoutTransition(); setSidebarOpen(!sidebarOpen, { focusFirst: true }); });
   }
   document.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape' || !sidebarOpen) return;
     event.preventDefault();
+    cancelLayoutTransition();
     setSidebarOpen(false, { focusToggle: true });
   });
   VKIpc.on('menu:update', (sections) => {
@@ -3808,6 +3972,7 @@ function holderPaneCreationMessage(reason) {
 }
 
 async function addPane(overrideCwd = null, options = {}) {
+  flushPendingLayoutUpdate();
   // 初期化中の端末生成は後続のレイアウト初期化で失われるため、生成前に止める。
   if (!initialRenderDone) throw new Error('renderer not initialized');
   const newPaneId = newId();
@@ -3842,6 +4007,7 @@ async function splitPane(paneId, direction, overrideCwd, options = {}) {
 }
 
 function closePane(paneId, { force = false, skipConfirm = false } = {}) {
+  flushPendingLayoutUpdate();
   if (!paneExists(paneId)) return;
   const _t = terminals[paneId];
   if (!force && _t?.lock?.close === false) return;
@@ -4247,6 +4413,7 @@ function openStartTaskConfirmDialog(confirm) {
 
 // ペインをグリッド上で左右の隣と入れ替える。端で隣が無ければ何もしない。
 function movePane(paneId, dir) {
+  flushPendingLayoutUpdate();
   const order = tree.order;
   const i = order.indexOf(paneId);
   if (i < 0) return;
@@ -4290,6 +4457,7 @@ function togglePaneFocusMode(paneId) {
 
 // グリッドのペインをサイドバーへ格納する。
 function stashPane(paneId, { renderNow = true } = {}) {
+  flushPendingLayoutUpdate();
   if (!tree || !Array.isArray(tree.order)) return;
   const i = tree.order.indexOf(paneId);
   if (i < 0) return;
@@ -4318,6 +4486,7 @@ function stashPane(paneId, { renderNow = true } = {}) {
 
 // 格納中のペインをグリッドへ戻す。
 function unstashPane(paneId, { renderNow = true } = {}) {
+  flushPendingLayoutUpdate();
   if (!tree) return;
   // ブラウザの広く表示中にペインをグリッドへ出したら、解除して格納したペインを全部戻す。
   if (internalBrowserWide) {
@@ -4342,6 +4511,7 @@ function unstashPane(paneId, { renderNow = true } = {}) {
 
 // 格納エリア内でペインを上下に入れ替える（stashOrder の index swap）。
 function moveStashPane(paneId, dir) {
+  flushPendingLayoutUpdate();
   const arr = tree && tree.stashOrder;
   if (!Array.isArray(arr)) return;
   const i = arr.indexOf(paneId);
@@ -4566,6 +4736,11 @@ function fitTerminal(paneId) {
 }
 
 function fitAll() {
+  // レイアウト切り替えの遷移中は PTY のリサイズを重ねず、終わってから 1 回だけ合わせる。
+  if (layoutTransition) {
+    layoutTransitionFitPending = true;
+    return;
+  }
   getAllLeafIds(tree).forEach(fitTerminal);
 }
 
@@ -4684,7 +4859,7 @@ function renderEmptyGrid() {
   openBtn.className = 'grid-empty-btn grid-empty-btn-secondary';
   openBtn.textContent = 'サイドバーを開いて戻す';
   openBtn.setAttribute('aria-label', 'サイドバーを開いて格納したペインを戻す');
-  openBtn.addEventListener('click', () => setSidebarOpen(true, { focusFirst: true }));
+  openBtn.addEventListener('click', () => { cancelLayoutTransition(); setSidebarOpen(true, { focusFirst: true }); });
 
   if (!holderPaneCreationWarning) actions.appendChild(addBtn);
   if (!holderPaneCreationWarning && hasStashedPanes) actions.appendChild(openBtn);
@@ -4958,7 +5133,7 @@ function renderLeaf(node) {
 
   header.querySelector('.btn-focus-mode').addEventListener('click', e => {
     e.stopPropagation();
-    togglePaneFocusMode(node.id);
+    animateLayoutChange(() => togglePaneFocusMode(node.id), { direction: paneFocusMode ? 'exit' : 'enter' });
   });
   header.querySelector('.btn-stash').addEventListener('click', e => {
     e.stopPropagation();
@@ -5099,6 +5274,7 @@ function renderLeaf(node) {
 function startGridResize(e, grid, axis, index, cols, rows) {
   e.preventDefault();
   e.stopPropagation();
+  cancelLayoutTransition();
   const rect = grid.getBoundingClientRect();
   const size = axis === 'col' ? rect.width : rect.height;
   const cur = axis === 'col'
@@ -6578,8 +6754,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
     if (!opened) throw new Error('Help document is unavailable.');
     internalBrowserHasPage = true;
     close();
-    setInternalBrowserOpen(true);
-    focusInternalBrowserToolbar();
+    animateLayoutChange(() => { setInternalBrowserOpen(true); focusInternalBrowserToolbar(); }, { shouldAnimate: () => !internalBrowserOpen });
     return true;
   };
   const helpContainer = modal.querySelector('.settings-help-entry');

@@ -13,6 +13,12 @@
      #6a737d（#21262d 上 3.16:1）が下限。#30363d のような暗い値にはしないこと
      （#21262d 上 1.25:1 で、枠線が面に埋もれて部品の範囲が読み取れなくなる）。 */
   --vktm--color--border-interactive: #6e7681;
+  /* 画面の配置を切り替える動きの時間とイージング。広げる・開くは enter、解除・閉じるは exit。
+     左サイドバーの開閉と、レイアウト切り替えのアニメーション（issue #629）で共有する。 */
+  --vktm--motion--enter-duration: 120ms;
+  --vktm--motion--enter-easing: cubic-bezier(0.2, 0, 0, 1);
+  --vktm--motion--exit-duration: 100ms;
+  --vktm--motion--exit-easing: cubic-bezier(0.4, 0, 1, 1);
 }
 
 /* フォーカスリングの変数（--vktm--color--focus-ring / --vktm--outline--focus-ring /
@@ -1585,7 +1591,12 @@ body:has(.confirm-overlay) .vk-toast-layer {
   display: flex;
   flex-direction: column;
   transform: translateX(-100%);
-  transition: flex-basis 0.18s ease, transform 0.18s ease;
+  /* 開閉の時間とイージングは向きで切り替える。遷移先の状態の値が使われるため、閉じた状態に exit、
+   * 開いた状態（#root.sidebar-open）に enter を入れる。transition 本体は 1 か所に置き、下の transition: none の上書きを効かせる。 */
+  --vktm--sidebar-motion-duration: var(--vktm--motion--exit-duration);
+  --vktm--sidebar-motion-easing: var(--vktm--motion--exit-easing);
+  transition: flex-basis var(--vktm--sidebar-motion-duration) var(--vktm--sidebar-motion-easing),
+    transform var(--vktm--sidebar-motion-duration) var(--vktm--sidebar-motion-easing);
   z-index: 900;
   background: #0d1117;
   color: #e6edf3;
@@ -1596,6 +1607,8 @@ body:has(.confirm-overlay) .vk-toast-layer {
 /* 閉時（実幅 0）は境界線・リサイズハンドルが画面左端に残って見えるため、
  * どちらも開いているときだけ有効化する（CodeRabbit 指摘）。 */
 #root.sidebar-open .sidebar {
+  --vktm--sidebar-motion-duration: var(--vktm--motion--enter-duration);
+  --vktm--sidebar-motion-easing: var(--vktm--motion--enter-easing);
   flex-basis: var(--vktm-sidebar-width, 330px);
   transform: translateX(0);
   border-right: 1px solid #21262d;
@@ -4289,3 +4302,129 @@ body:has(#root.internal-browser-open.toast-phrase-wrap):not(:has(.settings-overl
 /* 全面表示と、左サイドバーを閉じた広く表示ではトーストを通常の右下に置く。重なる分のページ領域は
  * renderer/app.js の internalBrowserToastReserve が詰める。32px は左右の余白 16px × 2。 */
 body:has(#root.internal-browser-toast-corner) .vk-toast { max-width: min(320px, calc(100vw - 32px)); }
+
+/* ==========================================================================
+   レイアウト切り替えのアニメーション（issue #629）
+   ペインの広く表示・アプリ内ブラウザの開閉・ブラウザの広く表示を、renderer/app.js の
+   animateLayoutChange が View Transitions API で動かす。名前は同ファイルの
+   applyLayoutTransitionNames が付ける。
+   ========================================================================== */
+
+/* 遷移の向きごとの時間とイージング
+   ========================================================================== */
+:root {
+  --vktm--motion--layout-duration: var(--vktm--motion--enter-duration);
+  --vktm--motion--layout-easing: var(--vktm--motion--enter-easing);
+}
+:root.vktm-layout-transition-exit {
+  --vktm--motion--layout-duration: var(--vktm--motion--exit-duration);
+  --vktm--motion--layout-easing: var(--vktm--motion--exit-easing);
+}
+/* 左サイドバーは遷移の中で一緒に動かすため、要素自身のトランジションは止める。
+   止めないと、切り替え後の位置を測った時点のペインと、開き途中のサイドバーがずれる。 */
+.vktm-layout-transition .sidebar {
+  transition: none;
+}
+
+/* 遷移の重ね（::view-transition）
+   ========================================================================== */
+/* 重ねが操作を吸わないよう、クリックは下の実際の要素へ通す。 */
+::view-transition {
+  pointer-events: none;
+}
+/* 名前を付けていない部分は切り替え後の姿をそのまま出し、二重に透けて見えないようにする。 */
+::view-transition-old(root) {
+  animation: none;
+  opacity: 0;
+}
+/* 既定の 250ms のままだと、遷移の終わり（ページ表示の再表示と再フィット）が他より遅れる。 */
+::view-transition-group(root),
+::view-transition-new(root) {
+  animation: none;
+}
+::view-transition-group(.vktm-pane),
+::view-transition-group(.vktm-sidebar),
+::view-transition-group(.vktm-internal-browser),
+::view-transition-old(.vktm-pane),
+::view-transition-new(.vktm-pane),
+::view-transition-old(.vktm-sidebar),
+::view-transition-new(.vktm-sidebar),
+::view-transition-old(.vktm-internal-browser),
+::view-transition-new(.vktm-internal-browser) {
+  animation-duration: var(--vktm--motion--layout-duration);
+  animation-timing-function: var(--vktm--motion--layout-easing);
+}
+/* 中身は伸縮させず、枠の広がりに合わせて見える範囲を変える（文字が引き伸ばされないようにする）。
+   前後どちらにもある要素は、クロスフェードで二重に写らないよう、大きいほうの姿だけを出す。
+   要素ごとに大きさを比べるため、その規則は renderer/app.js の applyLayoutTransitionImageChoice が足す。 */
+::view-transition-group(.vktm-pane),
+::view-transition-group(.vktm-sidebar),
+::view-transition-group(.vktm-internal-browser) {
+  overflow: clip;
+}
+::view-transition-old(.vktm-pane),
+::view-transition-new(.vktm-pane),
+::view-transition-old(.vktm-sidebar),
+::view-transition-new(.vktm-sidebar),
+::view-transition-old(.vktm-internal-browser),
+::view-transition-new(.vktm-internal-browser) {
+  width: 100%;
+  height: 100%;
+  object-fit: none;
+  object-position: left top;
+}
+
+/* ペイン
+   ========================================================================== */
+/* 格納されるペインは薄くなりながら左へずれて消え、戻るペインは逆に現れる。 */
+::view-transition-old(.vktm-pane):only-child {
+  animation-name: vktm-layout-pane-leave;
+  animation-fill-mode: both;
+}
+::view-transition-new(.vktm-pane):only-child {
+  animation-name: vktm-layout-pane-arrive;
+  animation-fill-mode: both;
+}
+@keyframes vktm-layout-pane-leave {
+  to { opacity: 0; transform: translateX(-16px); }
+}
+@keyframes vktm-layout-pane-arrive {
+  from { opacity: 0; transform: translateX(-16px); }
+}
+
+/* 左サイドバーとアプリ内ブラウザ
+   ========================================================================== */
+/* 右端を基準に見せる。左サイドバーは枠の幅が変わると左から滑り込む・左へ抜けるように見え、
+   ブラウザの広く表示では左端だけが伸び縮みして見える。 */
+::view-transition-old(.vktm-sidebar),
+::view-transition-new(.vktm-sidebar),
+::view-transition-old(.vktm-internal-browser),
+::view-transition-new(.vktm-internal-browser) {
+  object-position: right top;
+}
+/* ブラウザを開くときは右端から滑り込み、閉じるときは右へ抜ける。 */
+::view-transition-new(.vktm-internal-browser):only-child {
+  animation-name: vktm-layout-browser-open;
+  animation-fill-mode: both;
+}
+::view-transition-old(.vktm-internal-browser):only-child {
+  animation-name: vktm-layout-browser-close;
+  animation-fill-mode: both;
+}
+@keyframes vktm-layout-browser-open {
+  from { transform: translateX(100%); }
+}
+@keyframes vktm-layout-browser-close {
+  to { transform: translateX(100%); }
+}
+
+/* 視差効果を減らす設定
+   ========================================================================== */
+/* animateLayoutChange はこの設定で遷移を始めないが、始まった遷移が残っても動かさない。 */
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation: none;
+  }
+}

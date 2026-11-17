@@ -2,6 +2,7 @@
 
 - [ 機能追加 ] ペインの「このペインを広く表示」、アプリ内ブラウザの開閉と「広く表示」の切り替えにアニメーションを追加（[#629](https://github.com/vektor-inc/vk-terminals/issues/629)）
 - [ 不具合修正 ] 入力待ちのペインに入力した後、アプリが画面を描き直さないと、画面に残っている確認画面が外部から見えなくなる問題を修正（[#623](https://github.com/vektor-inc/vk-terminals/issues/623)）
+- [ 不具合修正 ] Codex のタスクで作業ペインを開くと、Codex が起動直後にエラーで終了し、ペインがプロンプトのまま止まることがある問題を修正（起動直後に終了したときは 1 回だけ起動し直す）（[#621](https://github.com/vektor-inc/vk-terminals/issues/621)）
 
 ## 1.105.0
 

@@ -106,6 +106,7 @@ const {
   runGitHubReachabilityGate,
 } = require('./utils/githubReachability');
 const { scheduleLaunchCommand } = require('./utils/delayedLaunch');
+const { createLaunchInputQuietWindow } = require('./utils/launchInputQuiet');
 const { createSetupShellInput } = require('./utils/setupShellInput');
 const { resolvePaneNoClaude } = require('./utils/setupShellPane');
 const { observePowerShellReady } = require('./utils/powerShellReady');
@@ -378,6 +379,10 @@ async function restoreHolderBackgroundWork(targets, livePanes) {
 const conditionalTerminalInput = createConditionalTerminalInputGuard();
 // 出力を伴わない書き込み（端末問い合わせへの自動応答・フォーカス通知・リサイズ）の後、静止時間が過ぎたら
 // 識別値を採り直す。通常入力後は可視出力まで抑止し、古い lastLines での Enter を防ぐ。
+// Codex の起動直後は、フォーカス・マウス通知を PTY へ流さない（issue #621）。
+const launchInputQuiet = createLaunchInputQuietWindow();
+// Codex が起動直後に終了したとみなす時間。これより後の終了では起動し直さない（issue #621）。
+const CODEX_EARLY_EXIT_WINDOW_MS = 5000;
 const silentWriteRefresher = createSilentWriteRefresher({
   guard: conditionalTerminalInput,
   getGeneration: (termId) => agentGenerations.get(termId),
@@ -2546,6 +2551,7 @@ function registerTerminalProcess(id, ptyProcess, shell, { hasAgent, generation =
     agentLifecycles.delete(id); clearPaneBackgroundWork(id);
     conditionalTerminalInput.delete(id); silentWriteRefresher.delete(id);
     reportedScreenSnapshots.delete(id); restartAgentOperations.delete(id);
+    launchInputQuiet.delete(id);
     const responder = restartTrustResponders.get(id);
     if (responder) responder.dispose();
     restartTrustResponders.delete(id); paneCreationTrustWatchers.delete(id);
@@ -2735,6 +2741,7 @@ ipcMain.on('terminal:restore-abandon', (_event, ids) => {
     agentLifecycles.delete(id); clearPaneBackgroundWork(id, { keepFiles: true });
     conditionalTerminalInput.delete(id); silentWriteRefresher.delete(id);
     reportedScreenSnapshots.delete(id); restartAgentOperations.delete(id);
+    launchInputQuiet.delete(id);
     tmuxHolder?.panes.delete(pane.paneId);
   }
   restoredPaneCount = [...ptys.values()].filter(pane => pane.isTmuxPane).length;
@@ -3174,6 +3181,11 @@ function createTerminalPane(cwd, options = {}, guide = null) {
       delayMs: 200,
       shellReady,
       onWriteSuccess: guideLaunchSucceeded,
+      // Codex だけ、起動直後に終了したら 1 回だけ起動し直し、起動直後の通知入力を抑える（issue #621）。
+      waitForEarlyExit: resolvedEngine === 'codex'
+        ? () => agentLifecycles.waitForEarlyExit(id, 1, initialLaunchToken, CODEX_EARLY_EXIT_WINDOW_MS)
+        : null,
+      onLaunchWritten: () => { if (resolvedEngine === 'codex') launchInputQuiet.begin(id); },
       log: (message) => console.error(`${LOG_PREFIX} ${message}`),
     });
   }
@@ -3220,6 +3232,8 @@ ipcMain.on('terminal:input', (event, id, data) => {
     // 端末の自動応答・通知では監視を維持し、実際の入力後だけ過去の表示を根拠とする
     // 信頼関連の自動 Enter を止める。
     disarmTrustAutomationForUserInput(id, data);
+    // Codex の起動直後は、端末が自発的に返すフォーカス・マウス通知を流さない（issue #621）。
+    if (launchInputQuiet.shouldDrop(id, data)) return;
     p.write(data);
     // フォーカス通知だけでも画面出力が無ければ識別値が stale のままになる。
     // 通常入力後の出力待ち中は予約できない。マウス通知や通常の入力は予約しない。
@@ -3251,6 +3265,7 @@ ipcMain.on('terminal:kill', (event, id) => {
     silentWriteRefresher.delete(id);
     reportedScreenSnapshots.delete(id);
     restartAgentOperations.delete(id);
+    launchInputQuiet.delete(id);
     // ptyProcess.onExit 側でも同じ後始末をするが、ここで管理している Map と食い違わない
     // よう、削除する Map を揃えておく（安藤の指摘・LOW-F）。
     const restartTrustResponder = restartTrustResponders.get(id);
@@ -3505,6 +3520,7 @@ async function restartAgentInTerminal(ptyProcess, request, launchOptions, lifecy
   }
   if (!lifecycleLaunch.isCurrent(launch) || ptys.get(request.termId) !== ptyProcess) return false;
   ptyProcess.write(`${prepared.command}\r`);
+  if (request.engine === 'codex') launchInputQuiet.begin(request.termId);
 
   // 既知の未対応事項（issue #392・安藤の指摘・LOW-G）: responder は cd の書き込みより前に
   // 取り付けているため、シェルがエコーバックする `cd` 行（cwd のディレクトリ名を含む）が

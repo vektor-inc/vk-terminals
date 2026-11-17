@@ -3,6 +3,9 @@
 // PTY 作成から書き込みまでの待ち時間中に PTY が消える・書き込みが例外になることがある。
 // どちらも Codex が起動しないので、専用 CODEX_HOME（discard）を回収する。例外はタイマーの外へ漏らさない。
 
+// 起動直後の終了を検知してから起動し直すまでの待ち時間（issue #621）。
+const DEFAULT_RELAUNCH_DELAY_MS = 500;
+
 /**
  * 起動コマンドの書き込みを予約する。
  * @param {object} params
@@ -17,11 +20,14 @@
  * @param {number} params.delayMs 書き込むまでの待ち時間
  * @param {Promise<{status: string, userInput: boolean}>|null} [params.shellReady] シェルの初期化待ち
  * @param {() => void} [params.onWriteSuccess] 書き込み成功時の通知先
+ * @param {() => void} [params.onLaunchWritten] 起動コマンドを書き込むたびの通知先（起動し直しを含む）
+ * @param {() => Promise<boolean>} [params.waitForEarlyExit] 起動直後に AI が終了したら true を返す待ち（issue #621）
+ * @param {number} [params.relaunchDelayMs] 終了を検知してから起動し直すまでの待ち時間
  * @param {(message: string) => void} [params.log] 失敗の記録先
  * @param {Function} [params.setTimer] テスト用の setTimeout 差し替え
  * @returns {unknown} タイマーのハンドル
  */
-function scheduleLaunchCommand({ ptys, id, ptyProcess, command, prepareCommand = (value) => ({ status: 'passthrough', command: value }), activateCommand = () => true, isLaunchCurrent = () => true, discard, delayMs, shellReady = null, onWriteSuccess = () => {}, log = () => {}, setTimer = setTimeout }) {
+function scheduleLaunchCommand({ ptys, id, ptyProcess, command, prepareCommand = (value) => ({ status: 'passthrough', command: value }), activateCommand = () => true, isLaunchCurrent = () => true, discard, delayMs, shellReady = null, onWriteSuccess = () => {}, onLaunchWritten = () => {}, waitForEarlyExit = null, relaunchDelayMs = DEFAULT_RELAUNCH_DELAY_MS, log = () => {}, setTimer = setTimeout }) {
   const discardSafely = () => {
     try {
       discard();
@@ -29,19 +35,38 @@ function scheduleLaunchCommand({ ptys, id, ptyProcess, command, prepareCommand =
       log(`failed to discard launch home: ${error && error.message ? error.message : error}`);
     }
   };
+  // 起動し直しでは、1 度 Codex が使った専用フォルダを回収しない。
+  let relaunching = false;
+  const abandon = () => { if (!relaunching) discardSafely(); };
+  const isStillCurrent = () => ptys.get(id) === ptyProcess && isLaunchCurrent();
   return setTimer(() => {
     // 待っている間にペインが閉じた・同じ ID が別の PTY になった場合は、書き込まず回収する。
     if (ptys.get(id) !== ptyProcess) {
       discardSafely();
       return;
     }
+    // 起動直後に AI が終了したら、同じ起動コマンドで 1 回だけ起動し直す（issue #621）。
+    // 起動し直した後は終了を確認しないため、何度も起動し直すことはない。
+    const scheduleRelaunchOnEarlyExit = async () => {
+      if (!waitForEarlyExit) return;
+      let exited = false;
+      try { exited = await waitForEarlyExit(); } catch (_error) { exited = false; }
+      if (!exited || !isStillCurrent()) return;
+      log(`agent exited right after launch in terminal ${id}; relaunching once`);
+      relaunching = true;
+      // 終了直後の入力とシェルの再描画が落ち着いてから書き込む。
+      setTimer(() => {
+        if (!isStillCurrent()) return;
+        runPrepare();
+      }, relaunchDelayMs);
+    };
     const writePreparedCommand = async (result) => {
       if (shellReady) {
         const readiness = await shellReady;
         // 時間切れまでに利用者が別プログラムを起動した場合は盲打ちしない。
         if (readiness?.status === 'timeout' && readiness.userInput) {
           log(`launch cancelled for terminal ${id}: shell readiness timed out after user input`);
-          discardSafely();
+          abandon();
           return;
         }
       }
@@ -51,19 +76,21 @@ function scheduleLaunchCommand({ ptys, id, ptyProcess, command, prepareCommand =
         try { ptyProcess.write(`${result.cleanupCommand}\r`); } catch (_error) {}
       };
       if (result?.status === 'cancelled') {
-        discardSafely();
+        abandon();
         return;
       }
       if (!result || (result.status !== 'ready' && result.status !== 'passthrough')) {
         log(`failed to prepare launch command for terminal ${id}: invalid result`);
-        discardSafely();
+        abandon();
         return;
       }
       if (ptys.get(id) !== ptyProcess || !isLaunchCurrent()) {
-        discardSafely();
+        abandon();
         return;
       }
       try {
+        // 終了した Codex が残した入力がシェルの行に混ざらないよう、先に行を消す（Ctrl+U）。
+        if (relaunching) ptyProcess.write('\x15');
         if (result.status === 'ready') {
           ptyProcess.write(`${result.setupCommand}\r`);
           setupWritten = true;
@@ -71,7 +98,7 @@ function scheduleLaunchCommand({ ptys, id, ptyProcess, command, prepareCommand =
           // hook の出力待ちの間にも PTY identity・世代を再確認する。失敗時も元行は無加工で送る。
           if (ptys.get(id) !== ptyProcess || !isLaunchCurrent()) {
             cleanupPromptHook();
-            discardSafely();
+            abandon();
             return;
           }
           if (!hookReady) {
@@ -81,36 +108,42 @@ function scheduleLaunchCommand({ ptys, id, ptyProcess, command, prepareCommand =
           if (hookReady) await activateCommand();
           if (ptys.get(id) !== ptyProcess || !isLaunchCurrent()) {
             cleanupPromptHook();
-            discardSafely();
+            abandon();
             return;
           }
         }
         if (ptys.get(id) !== ptyProcess || !isLaunchCurrent()) {
-          discardSafely();
+          abandon();
           return;
         }
         ptyProcess.write(`${result.command}\r`);
+        onLaunchWritten();
+        if (relaunching) return;
         onWriteSuccess();
+        scheduleRelaunchOnEarlyExit();
       } catch (error) {
         log(`failed to write launch command to terminal ${id}: ${error && error.message ? error.message : error}`);
-        discardSafely();
+        abandon();
       }
     };
-    try {
-      const preparedCommand = prepareCommand(command);
-      if (preparedCommand && typeof preparedCommand.then === 'function') {
-        preparedCommand.then(writePreparedCommand, (error) => {
-          log(`failed to prepare launch command for terminal ${id}: ${error && error.message ? error.message : error}`);
-          discardSafely();
-        });
-      } else {
-        writePreparedCommand(preparedCommand);
+    function runPrepare() {
+      try {
+        const preparedCommand = prepareCommand(command);
+        if (preparedCommand && typeof preparedCommand.then === 'function') {
+          preparedCommand.then(writePreparedCommand, (error) => {
+            log(`failed to prepare launch command for terminal ${id}: ${error && error.message ? error.message : error}`);
+            abandon();
+          });
+        } else {
+          writePreparedCommand(preparedCommand);
+        }
+      } catch (error) {
+        log(`failed to prepare launch command for terminal ${id}: ${error && error.message ? error.message : error}`);
+        abandon();
       }
-    } catch (error) {
-      log(`failed to prepare launch command for terminal ${id}: ${error && error.message ? error.message : error}`);
-      discardSafely();
     }
+    runPrepare();
   }, delayMs);
 }
 
-module.exports = { scheduleLaunchCommand };
+module.exports = { scheduleLaunchCommand, DEFAULT_RELAUNCH_DELAY_MS };

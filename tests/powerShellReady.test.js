@@ -124,7 +124,7 @@ test('main の監視生成と WeakMap 登録、遅延起動への引き渡し', 
       assert.equal(shell, context.shell);
       return { ready: Promise.resolve() };
     },
-    ptys: new Map(), id: '1', launchCommand: 'claude', initialLaunchToken: {},
+    ptys: new Map(), id: '1', launchCommand: 'claude', resolvedEngine: 'claude', initialLaunchToken: {},
     agentLifecycles: {}, discardFailedLaunch() {}, guideLaunchSucceeded() {},
     scheduleLaunchCommand: (options) => {
       assert.ok(options.shellReady instanceof Promise);

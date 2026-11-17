@@ -27,6 +27,8 @@ test.beforeEach(async ({ page }) => {
     let internalBrowserOpen = false, internalBrowserHasPage = false, sidebarOpen = false;
     // 広く表示（issue #613）はこの spec では使わない。
     let internalBrowserWide = null;
+    // レイアウト切り替えのアニメーション（issue #629）はこの spec では使わない。
+    let layoutTransition = null;
     let sidebarTransitionCleanup = null, previousInternalBrowserLayout = null;
     let preferredInternalBrowserWidth = 520, displayedInternalBrowserWidth = 0;
     let internalBrowserOverlayFocusOrigin = null;

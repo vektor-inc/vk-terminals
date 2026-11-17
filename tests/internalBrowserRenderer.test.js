@@ -25,6 +25,8 @@ test('タイトルバーから空状態を開くと表示後にURL欄へ移り�
     querySelector: selector => selector === '.internal-browser-url' ? address : notice };
   const context = vm.createContext({ document, internalBrowserSidebar: sidebar,
     internalBrowserOpen: false, internalBrowserHasPage: false, internalBrowserWide: null,
+    // 切り替えのアニメーション（issue #629）は即時に反映する形で置き換える。
+    animateLayoutChange: update => update(),
     syncInternalBrowserLayout() { sidebar.hidden = !context.internalBrowserOpen; calls.push('layout'); } });
   vm.runInContext(`${setter}\n${focusHelper}\n${toggleHandler}`, context);
   toggle.focus();
@@ -128,6 +130,7 @@ test('狭幅の同期は左を閉じてから再計算し、手動で左を開�
     internalBrowserOpen: true, sidebarOpen: true, internalBrowserSidebar: browser,
     preferredInternalBrowserWidth: 520, displayedInternalBrowserWidth: 0, previousInternalBrowserLayout: null,
     internalBrowserOverlayFocusOrigin: null, internalBrowserWide: null, syncInternalBrowserWideToggle() {},
+    layoutTransition: null,
     setupPanel: null, sidebarTransitionCleanup: null,
     gridDims: () => ({ cols: 1 }), getSidebarWidth: () => 300,
     ensureSidebar: () => null, isReducedMotion: () => true, fitAll() {},

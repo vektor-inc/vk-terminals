@@ -193,7 +193,7 @@ test('左サイドバーが一緒に開閉する遷移でも、再フィット�
     await win.locator(`.pane[data-id="${ids[0]}"] .btn-focus-mode`).click();
     await expect(win.locator('#root')).toHaveClass(/\bsidebar-open\b/);
     await expect.poll(() => transitionActive(win)).toBe(false);
-    // 左サイドバーの開閉完了待ち（220ms）より後まで待ってから数える。
+    // 左サイドバーの開閉完了待ち（トランジションの時間 + 40ms の保険）より後まで待ってから数える。
     await win.waitForTimeout(500);
     // @check 再フィットは遷移の終わりの 1 回だけで、PTY へのリサイズ通知もグリッドのペイン 1 枚分を超えない
     let counts = await win.evaluate(() => window.__fitCount);

@@ -1,7 +1,7 @@
 const { expect } = require('@playwright/test');
 
 // サイドバーの幅（--vktm-sidebar-width）を変え、実際の幅がその値になるまで待つ。
-// .sidebar の幅は flex-basis のトランジション（0.18s）で追従するため、値を書いた直後に
+// .sidebar の幅は flex-basis のトランジション（開いた状態では enter の 0.12s）で追従するため、値を書いた直後に
 // 測ると変更前の幅のまま判定してしまう（PR #619 の麗美の指摘）。
 // 戻り値は元の指定（値と priority）に戻す関数。
 async function setSidebarWidth(sidebar, widthPx) {

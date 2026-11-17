@@ -15,9 +15,9 @@
   --vktm--color--border-interactive: #6e7681;
   /* 画面の配置を切り替える動きの時間とイージング。広げる・開くは enter、解除・閉じるは exit。
      左サイドバーの開閉と、レイアウト切り替えのアニメーション（issue #629）で共有する。 */
-  --vktm--motion--enter-duration: 180ms;
+  --vktm--motion--enter-duration: 120ms;
   --vktm--motion--enter-easing: cubic-bezier(0.2, 0, 0, 1);
-  --vktm--motion--exit-duration: 140ms;
+  --vktm--motion--exit-duration: 100ms;
   --vktm--motion--exit-easing: cubic-bezier(0.4, 0, 1, 1);
 }
 
@@ -1591,8 +1591,12 @@ body:has(.confirm-overlay) .vk-toast-layer {
   display: flex;
   flex-direction: column;
   transform: translateX(-100%);
-  transition: flex-basis var(--vktm--motion--enter-duration) var(--vktm--motion--enter-easing),
-    transform var(--vktm--motion--enter-duration) var(--vktm--motion--enter-easing);
+  /* 開閉の時間とイージングは向きで切り替える。遷移先の状態の値が使われるため、閉じた状態に exit、
+   * 開いた状態（#root.sidebar-open）に enter を入れる。transition 本体は 1 か所に置き、下の transition: none の上書きを効かせる。 */
+  --vktm--sidebar-motion-duration: var(--vktm--motion--exit-duration);
+  --vktm--sidebar-motion-easing: var(--vktm--motion--exit-easing);
+  transition: flex-basis var(--vktm--sidebar-motion-duration) var(--vktm--sidebar-motion-easing),
+    transform var(--vktm--sidebar-motion-duration) var(--vktm--sidebar-motion-easing);
   z-index: 900;
   background: #0d1117;
   color: #e6edf3;
@@ -1603,6 +1607,8 @@ body:has(.confirm-overlay) .vk-toast-layer {
 /* 閉時（実幅 0）は境界線・リサイズハンドルが画面左端に残って見えるため、
  * どちらも開いているときだけ有効化する（CodeRabbit 指摘）。 */
 #root.sidebar-open .sidebar {
+  --vktm--sidebar-motion-duration: var(--vktm--motion--enter-duration);
+  --vktm--sidebar-motion-easing: var(--vktm--motion--enter-easing);
   flex-basis: var(--vktm-sidebar-width, 330px);
   transform: translateX(0);
   border-right: 1px solid #21262d;

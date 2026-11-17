@@ -66,6 +66,7 @@ test('左サイドバーの開閉完了後にブラウザとトーストの配�
   const calls = [];
   const classes = new Set();
   let transitionEnd;
+  const timerDelays = [];
   const aside = {
     addEventListener(_type, handler) { transitionEnd = handler; },
     removeEventListener() {},
@@ -77,7 +78,9 @@ test('左サイドバーの開閉完了後にブラウザとトーストの配�
     syncInternalBrowserLayout() { calls.push('sync'); },
     fitAll() { calls.push('fit'); },
     isReducedMotion() { return false; },
-    setTimeout() { return 1; }, clearTimeout() {},
+    // 保険のタイマーは、今効いているトランジションの時間（開く 0.12s・閉じる 0.1s）+ 40ms で張る。
+    getComputedStyle() { return { transitionDuration: classes.has('sidebar-open') ? '0.12s, 0.12s' : '0.1s, 0.1s' }; },
+    setTimeout(_callback, delay) { timerDelays.push(delay); return 1; }, clearTimeout() {},
     focusFirstSidebarItem() {}, sidebarOpen: false, sidebarTransitionCleanup: null, internalBrowserOpen: false,
     // 切り替えのアニメーション（issue #629）の遷移中ではない状態を再現する。
     layoutTransition: null,
@@ -90,6 +93,7 @@ test('左サイドバーの開閉完了後にブラウザとトーストの配�
   transitionEnd({ target: aside, propertyName: 'transform' });
   assert.deepEqual(calls.slice(-3), ['sync', 'sync', 'fit']);
   assert.equal(classes.has('sidebar-open'), false);
+  assert.deepEqual(timerDelays.map(Math.round), [160, 140]);
   // レイアウト切り替えの遷移中は開閉完了を待たず、再フィットを遷移の終わりへ預ける（issue #629）。
   const frames = [];
   let timers = 0;

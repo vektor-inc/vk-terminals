@@ -3571,7 +3571,10 @@ function setSidebarOpen(open, options = {}) {
   };
   sidebarTransitionCleanup = cleanup;
   aside.addEventListener('transitionend', onEnd);
-  timeoutId = setTimeout(finish, 220);
+  // transitionend が来ない場合の保険。時間は開閉の向きで変わるため、今効いている CSS の値（秒単位の computed 値）から求める。
+  const transitionMs = Math.max(0, ...String(getComputedStyle(aside).transitionDuration || '')
+    .split(',').map((value) => parseFloat(value) * 1000).filter(Number.isFinite));
+  timeoutId = setTimeout(finish, transitionMs + 40);
 }
 
 function setupSidebarMenu() {

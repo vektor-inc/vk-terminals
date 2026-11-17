@@ -77,8 +77,10 @@ function scheduleLaunchCommand({ ptys, id, ptyProcess, command, prepareCommand =
         }
       }
       let setupWritten = false;
+      // 起動し直しの途中で利用者が入力していたら、cleanup も書き込まない。入力中の行や利用者が起動した別のプログラムへ
+      // 混ざるため。残った bash の prompt hook は次のプロンプト表示で自分を外す（issue #621）。
       const cleanupPromptHook = () => {
-        if (!setupWritten || !result?.cleanupCommand || ptys.get(id) !== ptyProcess) return;
+        if (!setupWritten || !result?.cleanupCommand || ptys.get(id) !== ptyProcess || !hasNoUserInputSinceLaunch()) return;
         try { ptyProcess.write(`${result.cleanupCommand}\r`); } catch (_error) {}
       };
       if (result?.status === 'cancelled') {

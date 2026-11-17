@@ -217,7 +217,7 @@ test('main.js: Codex の起動だけが起動し直しと入力の抑制を使�
 });
 
 // 起動し直しを待っている間に利用者が入力したら、行を消したり別のプログラムへ書き込んだりしない。
-function scheduleWithUserInput({ prepareCommand } = {}) {
+function scheduleWithUserInput({ prepareCommand, activateCommand } = {}) {
   const timers = createTimers();
   const written = [];
   const ptyProcess = { write: (data) => written.push(data) };
@@ -225,7 +225,7 @@ function scheduleWithUserInput({ prepareCommand } = {}) {
   let resolveExit;
   scheduleLaunchCommand({
     ptys: new Map([['1', ptyProcess]]), id: '1', ptyProcess, command: 'codex', delayMs: 200, discard: () => {},
-    setTimer: timers.setTimer, prepareCommand,
+    setTimer: timers.setTimer, prepareCommand, activateCommand,
     getUserInputRevision: () => revision,
     waitForEarlyExit: () => new Promise((resolve) => { resolveExit = resolve; }),
   });
@@ -298,4 +298,52 @@ test('main.js: terminal:input と API の入力で利用者入力の番号を進
   assert.match(source, /const result = conditionalTerminalInput\.writeEnter\([\s\S]*?userInputRevisions\.note\(termId, '\\r'\);/);
   assert.match(source, /userInputRevisions\.note\(termId, input\);\s*const trailingNewline = input\.match/);
   assert.match(source, /scheduleLaunchCommand\(\{[\s\S]*?getUserInputRevision: \(\) => userInputRevisions\.get\(id\),[\s\S]*?\}\);/);
+});
+
+// 起動し直しの hook 準備（ready）・取得開始（activateCommand）を待っている間に利用者が入力したら、
+// 中止しても cleanup を書き込まない。入力中の行や別のプログラムへ混ざるため。
+for (const { label, hookReady, waitIn } of [
+  { label: 'ready を待っている間（hook 準備成功）', hookReady: true, waitIn: 'ready' },
+  { label: 'ready を待っている間（hook 準備失敗）', hookReady: false, waitIn: 'ready' },
+  { label: 'activateCommand を待っている間', hookReady: true, waitIn: 'activate' },
+]) {
+  test(`起動し直しで ${label} に利用者が入力したら、cleanup も起動コマンドも送らない`, async () => {
+    let calls = 0;
+    let resolveReady;
+    let resolveActivate;
+    const pane = scheduleWithUserInput({
+      prepareCommand: (command) => {
+        calls += 1;
+        const result = { status: 'ready', setupCommand: 'setup-hook', cleanupCommand: 'cleanup-hook', command };
+        if (calls === 1 || waitIn !== 'ready') return { ...result, ready: Promise.resolve(hookReady) };
+        return { ...result, ready: new Promise((resolve) => { resolveReady = () => resolve(hookReady); }) };
+      },
+      activateCommand: () => {
+        if (calls === 1 || waitIn !== 'activate') return true;
+        return new Promise((resolve) => { resolveActivate = () => resolve(true); });
+      },
+    });
+    // 初回起動 → 終了検知 → 起動し直しの準備まで進める。
+    await pane.timers.fireNext();
+    await flush();
+    pane.exit();
+    await flush();
+    await pane.timers.fireNext();
+    await flush();
+    assert.equal(calls, 2, '起動し直しの準備に入っている');
+    const writtenBeforeInput = pane.written.length;
+    pane.input();
+    if (waitIn === 'ready') resolveReady(); else resolveActivate();
+    await flush();
+    assert.deepEqual(pane.written.slice(writtenBeforeInput), [], '利用者入力の後は PTY へ何も書き込まない');
+  });
+}
+
+test('初回起動では、hook 準備に失敗したら従来どおり cleanup を書き込んでから起動コマンドを送る', async () => {
+  const pane = scheduleWithUserInput({
+    prepareCommand: (command) => ({ status: 'ready', setupCommand: 'setup-hook', cleanupCommand: 'cleanup-hook', command, ready: Promise.resolve(false) }),
+  });
+  await pane.timers.fireNext();
+  await flush();
+  assert.deepEqual(pane.written, ['setup-hook\r', 'cleanup-hook\r', 'codex\r']);
 });

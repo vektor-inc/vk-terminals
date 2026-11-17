@@ -467,6 +467,43 @@ function selectWaitingBuffer({ quiescent, fullBuffer, recentBuffer }) {
   return (quiescent ? fullBuffer : recentBuffer) || '';
 }
 
+// 入力待ちへの入力で判定用の lastLines を空にしたあと、/api/states に返す画面を決める（issue #623）。
+//   判定用の lastLines は入力時に空にする（古い確認画面で入力待ちが再点灯しないように）。
+//   一方、入力を受けたアプリが画面を描き直さないと、画面には確認画面が残ったまま lastLines は
+//   空のままになり、外部から確認画面が見えなくなる。そのため、新しい出力で lastLines に文字が
+//   入るまでは、入力の直前に保持しておいた内容（linesBeforeInput）を返す。
+//   保持した内容を返す間は条件付き入力の識別値を返さない。識別値は入力後の出力に対応する値で、
+//   古い画面と組にすると、古い確認画面を見て送る条件付き Enter が照合を通ってしまうため。
+function selectReportedScreen({ lastLines, linesBeforeInput, screenIdentifier = null, screenIdentifierGeneration = null }) {
+  if (hasVisibleText(lastLines) || !linesBeforeInput) {
+    return { lastLines: lastLines || '', screenIdentifier, screenIdentifierGeneration };
+  }
+  return { lastLines: linesBeforeInput, screenIdentifier: null, screenIdentifierGeneration: null };
+}
+
+// 画面の文字を消す制御列。行・画面の消去（ESC[nK / ESC[nJ / ESC[nX）、端末の初期化（ESC c）、
+// 代替画面の切り替え（ESC[?1049h 等）。カーソルの表示切り替え（ESC[?25l）や移動は含めない。
+const SCREEN_ERASE_PATTERN = /\x1b\[\??[0-9;]*[JKX]|\x1bc|\x1b\[\?(?:1049|1047|47)[hl]/;
+// チャンク境界で消去の制御列が分かれても拾えるよう、前のチャンクの末尾をこの文字数だけつなげて調べる。
+const SCREEN_ERASE_TAIL_CHARS = 16;
+
+// 出力が届いたとき、入力前に保持した内容（linesBeforeInput）を返し続けてよいかを決める（issue #623）。
+//   次のいずれかで画面が入力前と変わったとみなし、保持をやめる（空文字を返す）。
+//   - アプリが新しい文字を描いた（lastLines に空白以外の文字が入った）
+//   - 画面の文字を消す制御列が届いた（output は前のチャンクの末尾をつなげたもの）
+//   - 同じペインでエージェントが起動し直した（generationChanged）
+//   カーソルの表示切り替えなど、画面の文字を変えない出力では保持を続ける。
+function nextLinesBeforeInput({ linesBeforeInput, lastLines, output, generationChanged = false }) {
+  if (!linesBeforeInput) return '';
+  if (generationChanged || hasVisibleText(lastLines) || SCREEN_ERASE_PATTERN.test(output || '')) return '';
+  return linesBeforeInput;
+}
+
+// 空白以外の文字を含むか。lastLines はエスケープ列を処理済みの文字列なので、そのまま調べる。
+function hasVisibleText(text) {
+  return /\S/.test(text || '');
+}
+
 // waiting 判定（issue vektor-inc/vk-orchestrator#212 / vektor-inc/vk-terminals#352）。
 //
 //   静止して呼ばれた評価（quiescent = true / 相手は止まっている）
@@ -944,6 +981,7 @@ return {
   // テストからは detectBackgroundAgents 経由でのみ振る舞いを検証する。
   CLAUDE_CODE_FOOTER_PATTERN,
   MAX_BACKGROUND_AGENTS,
+  SCREEN_ERASE_TAIL_CHARS,
   WAITING_BEEP_COOLDOWN_MS,
   WAITING_BEEP_REPEAT_SUPPRESS_MS,
   WAITING_MAX_EVAL_INTERVAL_MS,
@@ -959,10 +997,12 @@ return {
   isOutputQuiescent,
   isWaitingCwdExcluded,
   matchesWaiting,
+  nextLinesBeforeInput,
   nextWaitingOnset,
   nextWaitingState,
   normalizeWaitingExcludeCwdPatterns,
   sameIgnoringWhitespace,
+  selectReportedScreen,
   selectWaitingBuffer,
   shouldBeepForWaiting,
   stripVolatileForKey,

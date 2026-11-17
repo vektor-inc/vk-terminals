@@ -62,13 +62,16 @@ const {
   findWaitingMatch,
   isOutputQuiescent,
   isWaitingCwdExcluded,
+  nextLinesBeforeInput,
   nextWaitingOnset,
   nextWaitingState,
   normalizeWaitingExcludeCwdPatterns,
+  selectReportedScreen,
   selectWaitingBuffer,
   shouldBeepForWaiting,
   stripVolatileForKey,
   waitingCheckDelayMs,
+  SCREEN_ERASE_TAIL_CHARS,
 } = window.VKWaitingState;
 const { deriveDisplayWaiting, deriveStatus, deriveDisplayStatus, shouldBeepForPaneWaiting } = window.VKStatusState;
 const { getStatusPresentation, resolvePaneNote, BACKGROUND_WORK_REASON, getCloseConfirmation } = window.VKStatusPresentation;
@@ -1122,6 +1125,11 @@ function markPaneInput(paneId) {
   if (t.waiting) {
     t.waiting = false;
     t.structuralWaiting = false;
+    // 判定用の lastLines は空にするが、アプリが画面を描き直さないと API から確認画面が
+    // 見えなくなるため、次に文字の出力が届くまで API へ返す分を保持する（issue #623）。
+    t.linesBeforeInput = selectReportedScreen({ lastLines: t.lastLines, linesBeforeInput: t.linesBeforeInput }).lastLines;
+    t.linesBeforeInputGeneration = t.screenIdentifierGeneration;
+    t.outputTailSinceInput = '';
     t.lastLines = '';
     t.lastScreen.reset();
     t.recentLines = '';
@@ -1130,6 +1138,32 @@ function markPaneInput(paneId) {
     t.waitingOnsetKey = null;
   }
   recomputeStatus(paneId);
+}
+
+// /api/states に返す画面の文字列と条件付き入力用の識別値を組で決める（issue #623）。
+// 入力前に保持した画面を返す間は識別値を返さない（理由は selectReportedScreen 参照）。
+function buildReportedScreen(t) {
+  return selectReportedScreen({
+    lastLines: t.lastLines,
+    linesBeforeInput: t.linesBeforeInput,
+    screenIdentifier: t.screenIdentifier,
+    screenIdentifierGeneration: t.screenIdentifierGeneration,
+  });
+}
+
+// 出力・エージェントの起動し直しで画面が入力前と変わったら、保持した入力前の画面を捨てる（issue #623）。
+function updateLinesBeforeInput(t, { output = '', generation = null, restarted = false } = {}) {
+  if (!t.linesBeforeInput) return;
+  const generationChanged = restarted || (Number.isSafeInteger(generation)
+    && Number.isSafeInteger(t.linesBeforeInputGeneration) && generation !== t.linesBeforeInputGeneration);
+  const seen = t.outputTailSinceInput + output;
+  t.linesBeforeInput = nextLinesBeforeInput({
+    linesBeforeInput: t.linesBeforeInput,
+    lastLines: t.lastLines,
+    output: seen,
+    generationChanged,
+  });
+  t.outputTailSinceInput = t.linesBeforeInput ? seen.slice(-SCREEN_ERASE_TAIL_CHARS) : '';
 }
 
 function clearRunningIdleTimer(t) {
@@ -1396,6 +1430,15 @@ async function createTerminal(paneId, cwd, options = {}, createdResult = null) {
     waitingOnsetKey: null,
     lastBeepedOnsetKey: null,
     lastLines: '',
+    // linesBeforeInput: 入力待ちへの入力で lastLines を空にしたとき、その直前の lastLines を
+    //   保持する（issue #623）。/api/states は新しい出力で lastLines に文字が入るまでこちらを返す
+    //   （selectReportedScreen 参照）。入力待ちの判定には使わない。
+    //   画面の文字の消去・エージェントの起動し直しでも捨てる（updateLinesBeforeInput 参照）。
+    linesBeforeInput: '',
+    // linesBeforeInputGeneration: linesBeforeInput を保持したときのエージェントの世代。
+    linesBeforeInputGeneration: null,
+    // outputTailSinceInput: linesBeforeInput の保持中に届いた出力の末尾（チャンク境界で分かれた消去の制御列を拾う）。
+    outputTailSinceInput: '',
     // main が terminal:data と同時に渡す、現在の lastLines に対応した条件付き入力用の識別値。
     screenIdentifier: null,
     screenIdentifierGeneration: null,
@@ -1540,6 +1583,11 @@ VKIpc.on('terminal:data', (id, data, screenSnapshot) => {
 
   // Accumulate last lines for waiting detection
   t.lastLines = appendWaitingBuffer(t.lastScreen, data);
+  // アプリが入力後の画面を描き始めたら・画面を消したら、入力前に保持した内容は返さない（issue #623）。
+  updateLinesBeforeInput(t, {
+    output: data,
+    generation: Number.isSafeInteger(screenSnapshot?.agentGeneration) ? screenSnapshot.agentGeneration : null,
+  });
   if (screenSnapshot && typeof screenSnapshot.screenIdentifier === 'string'
     && Number.isSafeInteger(screenSnapshot.agentGeneration)) {
     t.screenIdentifier = screenSnapshot.screenIdentifier;
@@ -8088,6 +8136,7 @@ setInterval(() => {
     // エージェントルーム（issue #58）: API 失効後の取り残しを防ぐため、ここで TTL を含めて
     // 定期再評価する（updatePaneStatus / API 受信以外の契機を補う）。変化時のみ再描画。
     if (agentRoomEnabled) refreshAgentRoomIfChanged(paneId);
+    const reportedScreen = buildReportedScreen(t);
     states[paneId] = {
       termId: t.termId,
       cwd: t.cwdFull || '',
@@ -8108,10 +8157,12 @@ setInterval(() => {
       status: t.status || 'idle',
       lastOutputTime: t.lastOutputTime,
       lastInputTime: t.lastInputTime,
-      lastLines: t.lastLines,
+      // 入力待ちへの入力直後でアプリが画面を描き直していない間は、入力前の画面を返し、
+      // 識別値は返さない（issue #623）。
+      lastLines: reportedScreen.lastLines,
       // lastLines と同じ terminal:data で受け取った値を main へ返し、API 応答で再結合する。
-      screenIdentifier: t.screenIdentifier,
-      screenIdentifierGeneration: t.screenIdentifierGeneration,
+      screenIdentifier: reportedScreen.screenIdentifier,
+      screenIdentifierGeneration: reportedScreen.screenIdentifierGeneration,
       // backgroundAgents（issue #340）: バックグラウンドで動く Claude Code サブ
       // エージェント数。整数（0 以上）または不明を表す null。既存フィールドの
       // 意味・値には影響しない追加のみのフィールド。
@@ -8338,6 +8389,8 @@ VKIpc.on('terminal:engine-changed', (termId, engine) => {
   const t = terminals[paneId];
   if (!t || typeof engine !== 'string') return;
   t.engine = engine;
+  // 同じペインでエージェントが起動し直したので、入力前に保持した画面は返さない（issue #623）。
+  updateLinesBeforeInput(t, { restarted: true });
 });
 
 // ─── Status update from main (HTTP API POST /api/set-status) ────────────────

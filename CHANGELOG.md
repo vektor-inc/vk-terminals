@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 不具合修正 ] 入力待ちのペインに入力した後、アプリが画面を描き直さないと、画面に残っている確認画面が外部から見えなくなる問題を修正（[#623](https://github.com/vektor-inc/vk-terminals/issues/623)）
+
 ## 1.105.0
 
 - [ 機能追加 ] 自動処理で開く Codex の作業ペインで、実行したコマンドとその出力を 1 行に畳んで表示する設定を設定パネルに追加（既定はオン）（[#627](https://github.com/vektor-inc/vk-terminals/issues/627)）

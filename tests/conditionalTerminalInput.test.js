@@ -158,7 +158,13 @@ test('main は PTY 入出力を識別値へ反映し、条件付き Enter を専
   assert.match(sendRoute, /result\.reason === 'pane-not-found' \? 404/);
   assert.match(source, /mergeConditionalScreenIdentifiers\([\s\S]*reportedScreenSnapshots/);
   assert.match(rendererSource, /VKIpc\.on\('terminal:data', \(id, data, screenSnapshot\)/);
-  assert.match(rendererSource, /lastLines: t\.lastLines,[\s\S]*screenIdentifier: t\.screenIdentifier/);
+  // 状態報告オブジェクトの範囲に限って照合する（markPaneInput 等の同名の記述に当てない）。
+  const statesStart = rendererSource.indexOf('states[paneId] = {');
+  const reportedState = rendererSource.slice(statesStart, rendererSource.indexOf('backgroundAgents: readBackgroundAgents(t)', statesStart));
+  assert.ok(statesStart >= 0 && reportedState.length > 0, '状態報告オブジェクトが見つからない');
+  // 画面の文字列と識別値は同じ組（buildReportedScreen）から返す（issue #623）。
+  assert.match(reportedState, /\n\s+lastLines: reportedScreen\.lastLines,\n[\s\S]*?\n\s+screenIdentifier: reportedScreen\.screenIdentifier,\n\s+screenIdentifierGeneration: reportedScreen\.screenIdentifierGeneration,/);
+  assert.match(rendererSource, /const reportedScreen = buildReportedScreen\(t\);\n\s+states\[paneId\] = \{/);
 });
 
 test('issue #517: 画面出力の無い PTY 書き込みの後、states の識別値は「最新ではない」と分かる形で返す', () => {

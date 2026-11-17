@@ -4354,7 +4354,9 @@ body:has(#root.internal-browser-toast-corner) .vk-toast { max-width: min(320px, 
   animation-duration: var(--vktm--motion--layout-duration);
   animation-timing-function: var(--vktm--motion--layout-easing);
 }
-/* 中身は伸縮させず、枠の広がりに合わせて見える範囲を変える（文字が引き伸ばされないようにする）。 */
+/* 中身は伸縮させず、枠の広がりに合わせて見える範囲を変える（文字が引き伸ばされないようにする）。
+   前後どちらにもある要素は、クロスフェードで二重に写らないよう、大きいほうの姿だけを出す。
+   要素ごとに大きさを比べるため、その規則は renderer/app.js の applyLayoutTransitionImageChoice が足す。 */
 ::view-transition-group(.vktm-pane),
 ::view-transition-group(.vktm-sidebar),
 ::view-transition-group(.vktm-internal-browser) {

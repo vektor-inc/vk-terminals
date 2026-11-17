@@ -297,3 +297,102 @@ test('視差効果を減らす設定では、遷移もページ表示を隠す�
     await closeApp(launched);
   }
 });
+
+// 次に始まる遷移の ready 時点で、名前ごとに切り替え前（old）・後（new）の姿の不透明度とアニメーション名を記録する。
+async function captureImageChoice(win, names) {
+  await win.evaluate((targetNames) => {
+    window.__imageChoice = null;
+    const original = document.startViewTransition.bind(document);
+    document.startViewTransition = (...args) => {
+      document.startViewTransition = original;
+      const transition = original(...args);
+      transition.ready.then(() => {
+        const read = (pseudo) => {
+          const style = getComputedStyle(document.documentElement, pseudo);
+          return { opacity: style.opacity, animation: style.animationName };
+        };
+        window.__imageChoice = Object.fromEntries(targetNames.map(name => [name, {
+          old: read(`::view-transition-old(${name})`),
+          new: read(`::view-transition-new(${name})`),
+        }]));
+      }, () => {});
+      return transition;
+    };
+  }, names);
+}
+
+// 記録を待って読み、どちらの姿だけを出しているか（old / new / both）を添える。
+// 既定のクロスフェードも始まりの瞬間は old だけが不透明なため、両方のアニメーションが止まっていることも条件にする。
+async function readImageChoice(win) {
+  await expect.poll(() => win.evaluate(() => window.__imageChoice !== null)).toBe(true);
+  const choice = await win.evaluate(() => window.__imageChoice);
+  return Object.fromEntries(Object.entries(choice).map(([name, { old: before, new: after }]) => {
+    let side = 'both';
+    if (before.animation !== 'none' || after.animation !== 'none') return [name, { old: before, new: after, side }];
+    if (before.opacity === '1' && after.opacity === '0') side = 'old';
+    if (after.opacity === '1' && before.opacity === '0') side = 'new';
+    return [name, { old: before, new: after, side }];
+  }));
+}
+
+// @title 切り替えの前後どちらにもあるペイン・ブラウザは、大きいほうの姿だけを出して二重に写さない
+test('切り替えの前後どちらにもあるペイン・ブラウザは、大きいほうの姿だけを出して二重に写さない', async () => {
+  const launched = await start('vk-terminals-e2e-layout-transition-image-');
+  const { win } = launched;
+  try {
+    // @step ペインを 2 枚開く
+    const ids = await win.evaluate(async () => [
+      (await addPane(null, { noClaude: true })).paneId,
+      (await addPane(null, { noClaude: true })).paneId,
+    ]);
+    const paneName = `vktm-pane-${ids[0]}`;
+
+    // @step 1 枚目の「このペインを広く表示」を押す
+    await captureImageChoice(win, [paneName]);
+    await win.locator(`.pane[data-id="${ids[0]}"] .btn-focus-mode`).click();
+    // @check 広がるペインは切り替え後の姿だけを不透明で出し、クロスフェードしない
+    let choice = await readImageChoice(win);
+    expect(choice[paneName].side).toBe('new');
+    await expect.poll(() => transitionActive(win)).toBe(false);
+
+    // @step もう一度押して解除する
+    await captureImageChoice(win, [paneName]);
+    await win.locator(`.pane[data-id="${ids[0]}"] .btn-focus-mode`).click();
+    // @check 縮むペインは切り替え前の姿だけを出す
+    choice = await readImageChoice(win);
+    expect(choice[paneName].side).toBe('old');
+    await expect.poll(() => transitionActive(win)).toBe(false);
+
+    // @step アプリ内ブラウザを開く
+    await captureImageChoice(win, [paneName]);
+    await win.locator('#internal-browser-toggle').click();
+    // @check ブラウザに押されて縮むペインは切り替え前の姿だけを出す
+    choice = await readImageChoice(win);
+    expect(choice[paneName].side).toBe('old');
+    await expect.poll(() => transitionActive(win)).toBe(false);
+
+    // @step 「ブラウザを広く表示」を押してから解除する
+    await captureImageChoice(win, ['vktm-internal-browser']);
+    await win.locator('#internal-browser-sidebar .internal-browser-wide-toggle').click();
+    // @check 全幅へ伸びるブラウザは切り替え後の姿だけを出す
+    choice = await readImageChoice(win);
+    expect(choice['vktm-internal-browser'].side).toBe('new');
+    await expect.poll(() => transitionActive(win)).toBe(false);
+    await captureImageChoice(win, ['vktm-internal-browser']);
+    await win.locator('#internal-browser-sidebar .internal-browser-wide-toggle').click();
+    // @check 元の幅へ戻るブラウザは切り替え前の姿だけを出す
+    choice = await readImageChoice(win);
+    expect(choice['vktm-internal-browser'].side).toBe('old');
+    await expect.poll(() => transitionActive(win)).toBe(false);
+
+    // @step ブラウザを閉じる
+    await captureImageChoice(win, [paneName]);
+    await win.locator('#internal-browser-toggle').click();
+    // @check ブラウザが閉じて広がるペインは切り替え後の姿だけを出す
+    choice = await readImageChoice(win);
+    expect(choice[paneName].side).toBe('new');
+    await expect.poll(() => transitionActive(win)).toBe(false);
+  } finally {
+    await closeApp(launched);
+  }
+});

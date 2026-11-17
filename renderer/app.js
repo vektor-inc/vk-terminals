@@ -167,6 +167,39 @@ function clearLayoutTransitionNames() {
     element.style.removeProperty('view-transition-name');
     element.style.removeProperty('view-transition-class');
   }
+  document.getElementById('vktm-layout-transition-images')?.remove();
+}
+
+// 名前を付けた要素の大きさ（表示されているものだけ）を名前ごとに測る。
+function measureLayoutTransitionNames() {
+  const sizes = new Map();
+  for (const element of document.querySelectorAll('#root .pane[data-id], #sidebar, #internal-browser-sidebar')) {
+    const name = element.style.getPropertyValue('view-transition-name');
+    if (!name || element.getClientRects().length === 0) continue;
+    const rect = element.getBoundingClientRect();
+    sizes.set(name, rect.width * rect.height);
+  }
+  return sizes;
+}
+
+// 切り替えの前後どちらにもある要素は、既定のクロスフェードだと前後の姿が二重に写り、
+// 小さいほうの姿が覆わない部分が薄く透ける。大きいほうの姿だけを不透明で出し、枠の伸縮で見せる。
+// 広がる要素は切り替え後、縮む要素は切り替え前の姿になる。片方にしか無い要素（現れる・消える）は対象外。
+function applyLayoutTransitionImageChoice(sizesBefore) {
+  const rules = [];
+  for (const [name, after] of measureLayoutTransitionNames()) {
+    if (!sizesBefore.has(name)) continue;
+    const [shown, hidden] = after >= sizesBefore.get(name) ? ['new', 'old'] : ['old', 'new'];
+    rules.push(`::view-transition-${shown}(${name}) { animation-name: none; opacity: 1; }`);
+    rules.push(`::view-transition-${hidden}(${name}) { animation-name: none; opacity: 0; }`);
+  }
+  let style = document.getElementById('vktm-layout-transition-images');
+  if (!style) {
+    style = document.createElement('style');
+    style.id = 'vktm-layout-transition-images';
+    document.head.appendChild(style);
+  }
+  style.textContent = rules.join('\n');
 }
 
 // 遷移を片付け、ページ表示を最終の位置で出し直し、止めていた再フィットを 1 回だけ行う。
@@ -213,11 +246,13 @@ function animateLayoutChange(update, { direction = 'enter', shouldAnimate = () =
     return;
   }
   let updated = false;
+  let sizesBefore = new Map();
   const runUpdate = () => {
     if (updated) return;
     updated = true;
     update();
     applyLayoutTransitionNames();
+    applyLayoutTransitionImageChoice(sizesBefore);
   };
   const html = document.documentElement;
   html.classList.add('vktm-layout-transition');
@@ -225,6 +260,7 @@ function animateLayoutChange(update, { direction = 'enter', shouldAnimate = () =
   // ページ表示（WebContentsView）は DOM の上に重なって動きに追従しないため、遷移中は隠して背景色で代用する。
   VKIpc.send('internal-browser:visible', false);
   applyLayoutTransitionNames();
+  sizesBefore = measureLayoutTransitionNames();
   const record = { transition: null, runUpdate };
   layoutTransition = record;
   try {

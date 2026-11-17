@@ -467,6 +467,22 @@ function selectWaitingBuffer({ quiescent, fullBuffer, recentBuffer }) {
   return (quiescent ? fullBuffer : recentBuffer) || '';
 }
 
+// 入力待ちへの入力で判定用の lastLines を空にしたあと、/api/states に返す画面の文字列を決める（issue #623）。
+//   判定用の lastLines は入力時に空にする（古い確認画面で入力待ちが再点灯しないように）。
+//   一方、入力を受けたアプリが画面を描き直さないと、画面には確認画面が残ったまま lastLines は
+//   空のままになり、外部から確認画面が見えなくなる。そのため、新しい出力で lastLines に文字が
+//   入るまでは、入力の直前に保持しておいた内容（linesBeforeInput）を返す。
+//   空白だけの出力（カーソル移動・行消去など）では切り替えない。
+function selectReportedLastLines({ lastLines, linesBeforeInput }) {
+  if (hasVisibleText(lastLines) || !linesBeforeInput) return lastLines || '';
+  return linesBeforeInput;
+}
+
+// 空白以外の文字を含むか。lastLines はエスケープ列を処理済みの文字列なので、そのまま調べる。
+function hasVisibleText(text) {
+  return /\S/.test(text || '');
+}
+
 // waiting 判定（issue vektor-inc/vk-orchestrator#212 / vektor-inc/vk-terminals#352）。
 //
 //   静止して呼ばれた評価（quiescent = true / 相手は止まっている）
@@ -956,6 +972,7 @@ return {
   extractScreenLines,
   findWaitingMatch,
   findStructuralWaitingMatch,
+  hasVisibleText,
   isOutputQuiescent,
   isWaitingCwdExcluded,
   matchesWaiting,
@@ -963,6 +980,7 @@ return {
   nextWaitingState,
   normalizeWaitingExcludeCwdPatterns,
   sameIgnoringWhitespace,
+  selectReportedLastLines,
   selectWaitingBuffer,
   shouldBeepForWaiting,
   stripVolatileForKey,

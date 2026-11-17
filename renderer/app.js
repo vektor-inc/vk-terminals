@@ -60,11 +60,13 @@ const {
   extractScreenLines,
   findStructuralWaitingMatch,
   findWaitingMatch,
+  hasVisibleText,
   isOutputQuiescent,
   isWaitingCwdExcluded,
   nextWaitingOnset,
   nextWaitingState,
   normalizeWaitingExcludeCwdPatterns,
+  selectReportedLastLines,
   selectWaitingBuffer,
   shouldBeepForWaiting,
   stripVolatileForKey,
@@ -1122,6 +1124,9 @@ function markPaneInput(paneId) {
   if (t.waiting) {
     t.waiting = false;
     t.structuralWaiting = false;
+    // 判定用の lastLines は空にするが、アプリが画面を描き直さないと API から確認画面が
+    // 見えなくなるため、次に文字の出力が届くまで API へ返す分を保持する（issue #623）。
+    t.linesBeforeInput = selectReportedLastLines({ lastLines: t.lastLines, linesBeforeInput: t.linesBeforeInput });
     t.lastLines = '';
     t.lastScreen.reset();
     t.recentLines = '';
@@ -1396,6 +1401,10 @@ async function createTerminal(paneId, cwd, options = {}, createdResult = null) {
     waitingOnsetKey: null,
     lastBeepedOnsetKey: null,
     lastLines: '',
+    // linesBeforeInput: 入力待ちへの入力で lastLines を空にしたとき、その直前の lastLines を
+    //   保持する（issue #623）。/api/states は新しい出力で lastLines に文字が入るまでこちらを返す
+    //   （selectReportedLastLines 参照）。入力待ちの判定には使わない。
+    linesBeforeInput: '',
     // main が terminal:data と同時に渡す、現在の lastLines に対応した条件付き入力用の識別値。
     screenIdentifier: null,
     screenIdentifierGeneration: null,
@@ -1540,6 +1549,8 @@ VKIpc.on('terminal:data', (id, data, screenSnapshot) => {
 
   // Accumulate last lines for waiting detection
   t.lastLines = appendWaitingBuffer(t.lastScreen, data);
+  // アプリが入力後の画面を描き始めたら、入力前に保持した内容は返さない（issue #623）。
+  if (t.linesBeforeInput && hasVisibleText(t.lastLines)) t.linesBeforeInput = '';
   if (screenSnapshot && typeof screenSnapshot.screenIdentifier === 'string'
     && Number.isSafeInteger(screenSnapshot.agentGeneration)) {
     t.screenIdentifier = screenSnapshot.screenIdentifier;
@@ -8108,7 +8119,8 @@ setInterval(() => {
       status: t.status || 'idle',
       lastOutputTime: t.lastOutputTime,
       lastInputTime: t.lastInputTime,
-      lastLines: t.lastLines,
+      // 入力待ちへの入力直後でアプリが画面を描き直していない間は、入力前の画面を返す（issue #623）。
+      lastLines: selectReportedLastLines({ lastLines: t.lastLines, linesBeforeInput: t.linesBeforeInput }),
       // lastLines と同じ terminal:data で受け取った値を main へ返し、API 応答で再結合する。
       screenIdentifier: t.screenIdentifier,
       screenIdentifierGeneration: t.screenIdentifierGeneration,

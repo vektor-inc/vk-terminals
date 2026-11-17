@@ -4,6 +4,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { closeApp, getFreePort, launchAppAndWait } = require('./helpers/electron-app');
+const { fakeEngineStayAliveSource } = require('./helpers/fake-engine');
 
 // issue #419: config.json の initialEngine / initialCodexModel で、起動時の最初のペインの
 // AI エンジン・モデルを選べることを実 Electron で確認する。実バイナリや認証状態に依存しないよう、
@@ -17,7 +18,7 @@ function createFakeExecutable(root, binName, captureEnvVar) {
   fs.writeFileSync(path.join(binDir, binName), `#!/usr/bin/env node
 const fs = require('fs');
 fs.appendFileSync(process.env.${captureEnvVar}, JSON.stringify(process.argv.slice(2)) + '\\n');
-`, { mode: 0o755 });
+${fakeEngineStayAliveSource(binName)}`, { mode: 0o755 });
   return { binDir, capturePath };
 }
 

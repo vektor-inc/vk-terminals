@@ -542,6 +542,56 @@ test('閉じた後に案内を再表示し、ホームに残っているフォ�
   }
 });
 
+test('ホーム操作の false 応答と IPC 拒否を再試行案内として通知し、未設定と区別する', async () => {
+  const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
+  const clickHandler = source.match(/internalBrowserSidebar\.addEventListener\('click', event => \{[\s\S]*?\n\}\);/)?.[0];
+  assert.ok(clickHandler);
+  const failureMessage = 'ホームページを開けませんでした。もう一度お試しください。';
+  for (const [reply, toastAvailable, expectedNotice] of [
+    [() => false, true, null],
+    [() => Promise.reject(new Error('IPC failed')), false, null],
+    [() => 'home-unset', true, true],
+    [() => 'https://example.com/', true, false],
+  ]) {
+    const notices = [];
+    const toasts = [];
+    const navigationStatus = { textContent: '' };
+    let click;
+    let currentReply = reply;
+    const sidebar = {
+      addEventListener(type, handler) { assert.equal(type, 'click'); click = handler; },
+      querySelector(selector) {
+        assert.equal(selector, '.internal-browser-navigation-status');
+        return navigationStatus;
+      },
+    };
+    vm.runInNewContext(clickHandler, {
+      internalBrowserSidebar: sidebar,
+      internalBrowserOpen: true,
+      VKIpc: { invoke(channel, action) {
+        assert.equal(channel, 'internal-browser:action');
+        assert.equal(action, 'home');
+        return Promise.resolve(currentReply());
+      } },
+      setInternalBrowserHomeNotice: value => notices.push(value),
+      showGenericToast(message) { toasts.push(message); return toastAvailable; },
+      setInternalBrowserNavigationStatus(message) { navigationStatus.textContent = message; },
+    });
+    click({ target: { closest: () => ({ dataset: { action: 'home' } }) } });
+    await new Promise(setImmediate);
+    assert.deepEqual(toasts, expectedNotice === null ? [failureMessage] : []);
+    assert.deepEqual(notices, expectedNotice === null ? [] : [expectedNotice]);
+    assert.equal(navigationStatus.textContent, expectedNotice === null && !toastAvailable ? failureMessage : '');
+    if (!toastAvailable) {
+      currentReply = () => 'https://example.com/';
+      click({ target: { closest: () => ({ dataset: { action: 'home' } }) } });
+      await new Promise(setImmediate);
+      assert.deepEqual(notices, [false]);
+      assert.equal(navigationStatus.textContent, '');
+    }
+  }
+});
+
 test('外部保存の部分成功後は失敗キーだけを再送し、成功先への別プロセスの変更を保持する', async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-settings-save-retry-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));

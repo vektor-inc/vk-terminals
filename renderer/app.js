@@ -566,9 +566,17 @@ internalBrowserSidebar.addEventListener('click', event => {
   }
   else if (action === 'wide') animateLayoutChange(toggleInternalBrowserWide, { direction: internalBrowserWide ? 'exit' : 'enter' });
   else if (action === 'home') {
+    const failureMessage = 'ホームページを開けませんでした。もう一度お試しください。';
+    const showHomeFailure = () => {
+      if (!showGenericToast(failureMessage)) setInternalBrowserNavigationStatus(failureMessage);
+    };
     VKIpc.invoke('internal-browser:action', action).then(result => {
+      if (result === false) { showHomeFailure(); return; }
       if (internalBrowserOpen) setInternalBrowserHomeNotice(result === 'home-unset');
-    }).catch(() => {});
+      if (internalBrowserSidebar.querySelector('.internal-browser-navigation-status').textContent === failureMessage) {
+        setInternalBrowserNavigationStatus('');
+      }
+    }).catch(showHomeFailure);
   }
   else if (action === 'home-settings') openSettingsModal(null, INTERNAL_BROWSER_HOME_KEY);
   else if (action === 'dismiss-home-notice') setInternalBrowserHomeNotice(false);

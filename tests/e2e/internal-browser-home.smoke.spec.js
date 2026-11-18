@@ -169,7 +169,7 @@ test('外部設定で起動してもホーム URL は VK Terminals に保存し�
     const settingsButton = win.locator('#settings-btn');
     const settings = win.getByRole('dialog', { name: /VK Orchestrator 設定/ });
     const browserTab = settings.getByRole('tab', { name: 'アプリ内ブラウザ' });
-    const githubTab = settings.getByRole('tab', { name: 'GitHub', exact: true });
+    const githubTab = settings.getByRole('tab', { name: /^GitHub(?:（未保存の変更あり）)?$/ });
     const ownerInput = settings.getByRole('textbox', { name: '作業対象リポジトリのオーナー' });
     const input = settings.getByRole('textbox', { name: 'ホームページ URL', exact: true });
     const save = settings.getByRole('button', { name: '保存', exact: true });
@@ -253,7 +253,11 @@ test('外部設定で起動してもホーム URL は VK Terminals に保存し�
     await ownerInput.fill('retry-owner');
     await save.click();
     const message = settings.locator('.settings-msg');
-    await expect(message).toHaveText(/^エラー: 保存に失敗/);
+    const partialMessage = '「ホームページ URL」を保存しました。「作業対象リポジトリのオーナー」は再保存してください。';
+    await expect(message).toHaveText(partialMessage);
+    await expect(message).toHaveAttribute('role', 'status');
+    await expect(browserTab).not.toHaveClass(/is-dirty/);
+    await expect(githubTab).toHaveClass(/is-dirty/);
     expect(JSON.parse(fs.readFileSync(ownConfigPath, 'utf8')).internalBrowserHomeUrl).toBe(normalizedUrl);
     expect(fs.readFileSync(externalConfigPath, 'utf8')).toBe('{');
     await expect(status).toBeEmpty();
@@ -261,16 +265,16 @@ test('外部設定で起動してもホーム URL は VK Terminals に保存し�
     await browserTab.click();
     await input.fill('');
     await save.click();
-    await expect(message).toHaveText(/^エラー: 保存に失敗/);
+    await expect(message).toHaveText(partialMessage);
+    await expect(status).toHaveText('ホームページが設定されていません。');
     expect(JSON.parse(fs.readFileSync(ownConfigPath, 'utf8')).internalBrowserHomeUrl).toBe('');
     expect(fs.readFileSync(externalConfigPath, 'utf8')).toBe('{');
     await win.keyboard.press('Escape');
     await expect(settings).toBeHidden();
-    await expect(home).toBeFocused();
+    await expect(configure).toBeFocused();
 
     // 案内から設定を開き、専用 URL を空欄のまま owner だけ保存する。
     fs.writeFileSync(externalConfigPath, '{}');
-    await home.press('Enter');
     await expect(status).toHaveText('ホームページが設定されていません。');
     await configure.press('Enter');
     await expect(input).toBeFocused();

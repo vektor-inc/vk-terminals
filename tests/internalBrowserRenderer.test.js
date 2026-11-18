@@ -3,63 +3,73 @@ const { installBrowserLoad, flushBrowserLoads } = require('./helpers/browserLoad
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const vm = require('node:vm');
 const { EventEmitter } = require('node:events');
 const { createInternalBrowser } = require('../utils/internalBrowser');
 const { INTERNAL_BROWSER_HOME_KEY } = require('../utils/internalBrowserHome');
+const { saveSettingsToTargets } = require('../settingsTargets');
 
-function createSettingsSaveHarness(initialValues, replies) {
+function createSettingsSaveHarness(initialValues, save, labels = {}) {
   const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
-  const save = source.match(/  async function saveSettings\([\s\S]*?\n  \}/)?.[0];
-  assert.ok(save);
+  const saveFunctions = source.match(/  const getChangedSettingValues = [\s\S]*?(?=\n  modal.querySelector\('\.settings-save'\)\.addEventListener)/)?.[0];
+  assert.ok(saveFunctions);
   const savedFieldValues = { ...initialValues };
   const values = { ...savedFieldValues };
   const payloads = [];
   const notices = [];
   const refreshes = [];
+  const msg = { classList: { add() {} } };
+  const autoCloses = [];
   const context = vm.createContext({
     INTERNAL_BROWSER_HOME_KEY, savedFieldValues,
-    getCurrentSettingValues: () => values,
+    internalBrowserOpen: true, focusFieldKey: INTERNAL_BROWSER_HOME_KEY,
+    settingsInteractionRevision: 0,
+    entries: Object.keys(values).map(key => ({ field: { key, label: labels[key] } })),
+    getCurrentSettingValues: () => ({ ...values }),
     validatable: [], configFailedFiles: [],
-    msg: { classList: { add() {} } },
-    autoClose: { cancel() {} },
+    msg,
+    autoClose: { cancel() {}, arm() { autoCloses.push(true); } },
     VKIpc: { async invoke(channel, payload) {
       assert.equal(channel, 'settings:save');
       payloads.push({ ...payload });
-      return replies.shift();
+      return save(payload);
     } },
     setInternalBrowserHomeNotice: visible => notices.push(visible),
-    lockSettingsFooter() {}, clearDirtyTabs() {},
+    lockSettingsFooter() {}, syncDirtyTabs() {},
     refreshSettingsContentSavedValues() { refreshes.push('saved-values'); },
     refreshConfigReflection() { refreshes.push('reflection'); },
   });
-  const saveSettings = vm.runInContext(`${save}\n() => saveSettings({ keepOpen: true })`, context);
-  return { saveSettings, savedFieldValues, values, payloads, notices, refreshes };
+  const saveSettings = vm.runInContext(`${saveFunctions}\nsaveSettings`, context);
+  return { saveSettings, savedFieldValues, values, payloads, notices, refreshes, msg, autoCloses };
 }
 
 test('ホームだけの保存と変更のない再保存では外部設定を送信しない', async () => {
   const legacyOwners = '\n  \nfirst-owner\nsecond-owner';
   const homeOnly = { ok: true, writtenKeys: [INTERNAL_BROWSER_HOME_KEY], hasInternalBrowserHome: true };
-  const { saveSettings, values, payloads, notices } = createSettingsSaveHarness(
+  const replies = [
+    { ok: false, writtenKeys: [], hasInternalBrowserHome: false, error: '保存に失敗しました' },
+    homeOnly,
+    { ok: true, writtenKeys: [], hasInternalBrowserHome: true },
+    homeOnly,
+    { ok: true, writtenKeys: ['github.owner'], hasInternalBrowserHome: true },
+    { ok: true, writtenKeys: ['github.owner', INTERNAL_BROWSER_HOME_KEY], hasInternalBrowserHome: true },
+  ];
+  const { saveSettings, values, payloads, notices, msg } = createSettingsSaveHarness(
     { [INTERNAL_BROWSER_HOME_KEY]: '', 'github.owner': legacyOwners },
-    [
-      { ok: false, writtenKeys: [], hasInternalBrowserHome: false },
-      homeOnly,
-      { ok: true, writtenKeys: [], hasInternalBrowserHome: true },
-      homeOnly,
-      { ok: true, writtenKeys: ['github.owner'], hasInternalBrowserHome: true },
-      { ok: true, writtenKeys: ['github.owner', INTERNAL_BROWSER_HOME_KEY], hasInternalBrowserHome: true },
-    ],
+    () => replies.shift(),
   );
 
   // 保存失敗では案内を残し、再試行で成功したら消す。
   const url = 'https://example.com/home';
   values[INTERNAL_BROWSER_HOME_KEY] = url;
   assert.equal(await saveSettings(), false);
-  assert.deepEqual(notices, []);
+  assert.deepEqual(notices, [true]);
+  assert.equal(msg.textContent, 'エラー: 保存に失敗しました');
   assert.equal(await saveSettings(), true);
-  assert.deepEqual(notices, [false]);
+  assert.deepEqual(notices, [true, false]);
+  assert.equal(msg.textContent, '保存しました。反映状況は設定の案内をご確認ください。');
   assert.equal(await saveSettings(), true);
 
   // 空欄へ戻すときも外部を送らず、外部を編集したときは従来の保存経路を使う。
@@ -78,18 +88,20 @@ test('ホームだけの保存と変更のない再保存では外部設定を�
     { 'github.owner': 'external-only' },
     { 'github.owner': 'both', [INTERNAL_BROWSER_HOME_KEY]: url },
   ]);
-  assert.deepEqual(notices, [false, false, false, false, false]);
+  assert.deepEqual(notices, [true, false, false, false, false, false]);
 });
 
 test('ホームだけが部分成功したとき、元の空欄を保存し直して外部の失敗分も再試行できる', async () => {
   const homeKey = INTERNAL_BROWSER_HOME_KEY;
-  const { saveSettings, savedFieldValues, values, payloads, notices, refreshes } = createSettingsSaveHarness(
+  const replies = [
+    { ok: false, writtenKeys: [homeKey], hasInternalBrowserHome: true },
+    { ok: false, writtenKeys: [homeKey], hasInternalBrowserHome: false },
+    { ok: true, writtenKeys: ['github.owner'], hasInternalBrowserHome: true },
+  ];
+  const { saveSettings, savedFieldValues, values, payloads, notices, refreshes, msg } = createSettingsSaveHarness(
     { [homeKey]: '', 'github.owner': '' },
-    [
-      { ok: false, writtenKeys: [homeKey], hasInternalBrowserHome: true },
-      { ok: false, writtenKeys: [homeKey], hasInternalBrowserHome: false },
-      { ok: true, writtenKeys: ['github.owner'], hasInternalBrowserHome: true },
-    ],
+    () => replies.shift(),
+    { [homeKey]: 'ホームページ URL', 'github.owner': '作業対象リポジトリのオーナー' },
   );
 
   const url = 'https://example.com/';
@@ -99,6 +111,7 @@ test('ホームだけが部分成功したとき、元の空欄を保存し直�
   assert.deepEqual(savedFieldValues, { [homeKey]: url, 'github.owner': '' });
   assert.deepEqual(notices, [false]);
   assert.deepEqual(refreshes, ['saved-values', 'reflection']);
+  assert.equal(msg.textContent, '「ホームページ URL」を保存しました。「作業対象リポジトリのオーナー」は再保存してください。');
 
   values[homeKey] = '';
   assert.equal(await saveSettings(), false);
@@ -109,7 +122,70 @@ test('ホームだけが部分成功したとき、元の空欄を保存し直�
     { [homeKey]: '', 'github.owner': 'first-owner' },
     { 'github.owner': 'first-owner' },
   ]);
-  assert.deepEqual(notices, [false, false]);
+  assert.deepEqual(notices, [false, true, false]);
+});
+
+test('応答待ちの間にホームを空欄に戻して保存すると、先行保存の後で空欄がディスクに残る', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-settings-save-queue-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const targetPath = path.join(dir, 'config.json');
+  const key = INTERNAL_BROWSER_HOME_KEY;
+  const descriptor = { targetPath, groups: [{ fields: [{ key, type: 'http-url' }] }] };
+  const firstWrite = Promise.withResolvers();
+  const releaseReply = Promise.withResolvers();
+  const { saveSettings, values, payloads, autoCloses } = createSettingsSaveHarness({ [key]: '' }, async payload => {
+    const result = saveSettingsToTargets(descriptor, payload);
+    if (payload[key]) {
+      firstWrite.resolve();
+      await releaseReply.promise;
+    }
+    return result;
+  });
+
+  values[key] = 'https://example.com/';
+  const firstSave = saveSettings();
+  await firstWrite.promise;
+  assert.equal(JSON.parse(fs.readFileSync(targetPath))[key], values[key]);
+  values[key] = '';
+  const secondSave = saveSettings();
+  await Promise.resolve();
+  assert.deepEqual(payloads, [{ [key]: 'https://example.com/' }]);
+  releaseReply.resolve();
+  assert.deepEqual(await Promise.all([firstSave, secondSave]), [true, true]);
+  assert.deepEqual(payloads, [{ [key]: 'https://example.com/' }, { [key]: '' }]);
+  assert.equal(JSON.parse(fs.readFileSync(targetPath))[key], '');
+  assert.equal(autoCloses.length, 1);
+});
+
+test('外部保存の部分成功後は失敗キーだけを再送し、成功先への別プロセスの変更を保持する', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-settings-save-retry-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const firstPath = path.join(dir, 'first.json');
+  const secondPath = path.join(dir, 'second.json');
+  const descriptor = { groups: [
+    { targetPath: firstPath, fields: [{ key: 'first' }] },
+    { targetPath: secondPath, fields: [{ key: 'second' }, { key: 'untouched' }] },
+  ] };
+  fs.writeFileSync(secondPath, '{');
+  const { saveSettings, values, payloads } = createSettingsSaveHarness(
+    { first: '', second: '', untouched: 'old' },
+    payload => saveSettingsToTargets(descriptor, payload),
+  );
+  values.first = 'saved first';
+  values.second = 'retry second';
+  assert.equal(await saveSettings(), false);
+  assert.equal(JSON.parse(fs.readFileSync(firstPath)).first, 'saved first');
+
+  // 再試行前に別のプロセスが成功先を更新し、失敗先を修復する。
+  const updated = '{"first":"updated outside the app"}';
+  fs.writeFileSync(firstPath, updated);
+  fs.writeFileSync(secondPath, '{"untouched":"repaired outside the app"}');
+  assert.equal(await saveSettings(), true);
+  assert.deepEqual(payloads, [{ first: 'saved first', second: 'retry second' }, { second: 'retry second' }]);
+  assert.equal(fs.readFileSync(firstPath, 'utf8'), updated);
+  assert.deepEqual(JSON.parse(fs.readFileSync(secondPath)), {
+    second: 'retry second', untouched: 'repaired outside the app',
+  });
 });
 
 test('タイトルバーから空状態を開くと表示後にURL欄へ移り、再表示とリンク起点は操作元を保つ', () => {

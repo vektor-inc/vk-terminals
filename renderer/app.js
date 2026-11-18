@@ -6722,6 +6722,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
   // 二重オープンの抑止を壊す。寿命の判断は renderer/autoClose.js に集約してあり、
   // ここは「いつ武装し、いつ取り消すか」だけを決める。
   const autoClose = createAutoCloseController({ onFire: () => { if (!configFailedFiles.length) close(); } });
+  let settingsInteractionRevision = 0;
   let unregisterEscapeLayer = () => {};
   let releaseFocusTrap = () => {};
   const close = () => {
@@ -6751,7 +6752,8 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
       const homeButton = focusFieldKey === INTERNAL_BROWSER_HOME_KEY
         ? internalBrowserSidebar.querySelector('[data-action="home"]') : null;
       const sidebarSettingsButton = sidebarOpen ? document.querySelector('#sidebar-settings button') : null;
-      [restoreFocusElement, homeButton, sidebarSettingsButton, document.getElementById('settings-btn')]
+      const homeSettingsButton = homeButton && internalBrowserSidebar.querySelector('[data-action="home-settings"]');
+      [homeSettingsButton ?? restoreFocusElement, homeButton, sidebarSettingsButton, document.getElementById('settings-btn')]
         .find(canRestoreModalFocus)?.focus();
     }
   };
@@ -6959,7 +6961,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
   };
 
   let switchToFieldTab = () => {};
-  let clearDirtyTabs = () => {};
+  let syncDirtyTabs = () => {};
   let lockSettingsFooter = () => {};
   let unlockSettingsFooter = () => {};
   // 表ブロック・一括切り替えボタン（issue #380）。table / applyButton は
@@ -7057,6 +7059,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
         // 正式に許した以上、移動先を読んでいる最中にパネルごと消えるのは矛盾する。
         // 「保存しました」の表示は残したまま、閉じるタイミングはユーザーに委ねる。
         autoClose.cancel();
+        settingsInteractionRevision++;
         onSettingsTabChangedCallbacks.forEach((cb) => cb());
       }
       updateSettingsFooter();
@@ -7118,10 +7121,15 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
       input.addEventListener('input', markDirty);
       input.addEventListener('change', markDirty);
     }
-    clearDirtyTabs = () => {
-      tabButtons.forEach((button) => {
-        button.classList.remove('is-dirty');
-        button.removeAttribute('aria-label');
+    syncDirtyTabs = (changedValues) => {
+      const dirtyTabIndices = new Set(entries
+        .filter(({ field }) => Object.hasOwn(changedValues, field.key))
+        .map(({ tabIndex }) => tabIndex));
+      tabButtons.forEach((button, index) => {
+        const dirty = dirtyTabIndices.has(index);
+        button.classList.toggle('is-dirty', dirty);
+        if (dirty) button.setAttribute('aria-label', `${settingsTabs[index].label}（未保存の変更あり）`);
+        else button.removeAttribute('aria-label');
       });
       updateSettingsFooter();
     };
@@ -7888,6 +7896,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
   // 全モードで動くこのループに寄せる。
   const onEntryEdited = () => {
     autoClose.cancel();
+    settingsInteractionRevision++;
     // 保存直後のフッター固定は、編集を始めた時点で理由（押した直後にボタンが
     // 並び替わるのを防ぐ）が消える。
     unlockSettingsFooter();
@@ -7992,15 +8001,29 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
   }
 
   const savedFieldValues = getCurrentSettingValues();
+  const getChangedSettingValues = () => Object.fromEntries(Object.entries(getCurrentSettingValues())
+    .filter(([key, value]) => value !== savedFieldValues[key]));
+  let settingsSaveQueue = Promise.resolve();
 
-  async function saveSettings({ keepOpen = false } = {}) {
-    const { [INTERNAL_BROWSER_HOME_KEY]: homeValue, ...otherValues } = getCurrentSettingValues();
-    const homeEdited = homeValue !== savedFieldValues[INTERNAL_BROWSER_HOME_KEY];
-    const otherFieldsEdited = Object.keys(otherValues).some((key) => otherValues[key] !== savedFieldValues[key]);
-    // 外部の欄に差分がある場合だけ、従来どおり外部の項目を一括保存する。
-    const out = otherFieldsEdited ? otherValues : {};
-    if (homeEdited) out[INTERNAL_BROWSER_HOME_KEY] = homeValue;
+  function saveSettings({ keepOpen = false } = {}) {
     autoClose.cancel();
+    const interactionRevision = settingsInteractionRevision;
+    // 先行応答で保存済みの値を反映してから、現在の入力を検証し、差分だけ送る。
+    const pending = settingsSaveQueue.then(() => persistSettingsChanges({
+      keepOpen,
+      canAutoClose: () => settingsSaveQueue === pending && settingsInteractionRevision === interactionRevision,
+    })).catch(error => {
+      msg.textContent = 'エラー: ' + error.message;
+      msg.className = 'settings-msg err';
+      return false;
+    });
+    settingsSaveQueue = pending;
+    return pending;
+  }
+
+  async function persistSettingsChanges({ keepOpen, canAutoClose }) {
+    if (autoClose.isClosed) return false;
+    const out = getChangedSettingValues();
 
     // 保存前の検証ゲート: 全エラー表示を一旦クリアしてから対象を一括再判定する。
     for (const { field, id } of validatable) clearFieldValidity(field, id);
@@ -8026,37 +8049,43 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
 
     msg.textContent = '保存中...';
     msg.className = 'settings-msg';
-    try {
-      const res = await VKIpc.invoke('settings:save', out);
-      // 部分成功でも、実際に保存した欄だけを次の保存時の比較元にする。
-      const writtenKeys = (res?.writtenKeys ?? []).filter((key) => Object.hasOwn(out, key));
-      for (const key of writtenKeys) savedFieldValues[key] = out[key];
-      if (res?.hasInternalBrowserHome) setInternalBrowserHomeNotice(false);
-      if (writtenKeys.length > 0) {
-        refreshSettingsContentSavedValues();
-      }
-      if (res?.ok) {
-        // dirty 解除でフッターの構成が変わらないよう、先に固定してから解除する。
-        lockSettingsFooter();
-        clearDirtyTabs();
-        msg.textContent = '保存しました。反映状況は設定の案内をご確認ください。';
-        msg.classList.add('ok');
-        await refreshConfigReflection({ throwOnError: keepOpen });
-        if (configFailedFiles.length) {
-          msg.textContent = '保存しましたが、設定を読み込めませんでした。対象ファイルを確認してください。';
-          msg.className = 'settings-msg err';
-          autoClose.cancel();
-          return false;
-        } else if (!keepOpen) autoClose.arm();
-        return true;
-      } else {
-        msg.textContent = 'エラー: ' + (res && res.error ? res.error : '不明なエラー');
-        msg.classList.add('err');
-        if (writtenKeys.length > 0) await refreshConfigReflection();
-      }
-    } catch (e) {
-      msg.textContent = 'エラー: ' + e.message;
-      msg.classList.add('err');
+    const res = await VKIpc.invoke('settings:save', out);
+    // 部分成功でも、実際に保存した欄だけを次の保存時の比較元にする。
+    const writtenKeys = (res?.writtenKeys ?? []).filter((key) => Object.hasOwn(out, key));
+    for (const key of writtenKeys) savedFieldValues[key] = out[key];
+    if (internalBrowserOpen && (res?.hasInternalBrowserHome === true
+      || (focusFieldKey === INTERNAL_BROWSER_HOME_KEY && res?.hasInternalBrowserHome === false))) {
+      setInternalBrowserHomeNotice(!res.hasInternalBrowserHome);
+    }
+    if (autoClose.isClosed) return false;
+    if (writtenKeys.length > 0) refreshSettingsContentSavedValues();
+    if (res?.ok) {
+      // dirty 解除でフッターの構成が変わらないよう、先に固定してから解除する。
+      lockSettingsFooter();
+      syncDirtyTabs(getChangedSettingValues());
+      msg.textContent = '保存しました。反映状況は設定の案内をご確認ください。';
+      msg.classList.add('ok');
+      await refreshConfigReflection({ throwOnError: keepOpen });
+      if (configFailedFiles.length) {
+        msg.textContent = '保存しましたが、設定を読み込めませんでした。対象ファイルを確認してください。';
+        msg.className = 'settings-msg err';
+        autoClose.cancel();
+        return false;
+      } else if (!keepOpen && canAutoClose()) autoClose.arm();
+      return true;
+    }
+    msg.classList.add('err');
+    if (writtenKeys.length > 0) {
+      const written = new Set(writtenKeys);
+      const labels = (isWritten) => entries
+        .filter(({ field }) => Object.hasOwn(out, field.key) && written.has(field.key) === isWritten)
+        .map(({ field }) => field.label || 'ラベルのない項目')
+        .join('、');
+      msg.textContent = `「${labels(true)}」を保存しました。「${labels(false)}」は再保存してください。`;
+      syncDirtyTabs(getChangedSettingValues());
+      await refreshConfigReflection();
+    } else {
+      msg.textContent = 'エラー: ' + (res?.error || '不明なエラー');
     }
     return false;
   }

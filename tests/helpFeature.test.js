@@ -8,7 +8,6 @@ const { execFileSync } = require('node:child_process');
 const { normalizeEmbeddedOptions } = require('../utils/runtimeOptions');
 const { isHelpEngine, normalizeHelpStatus, buildHelpLaunchCommand, createHelpStatusChecker, createGuideOpener, handleHelpRequest, isSafeHelpDocument } = require('../utils/helpFeature');
 const { insertTab, TAB_ID } = require('../renderer/helpEntry');
-const { INTERNAL_BROWSER_HOME_KEY } = require('../utils/internalBrowserHome');
 const status = (engine = 'codex') => ({ engine, engines: ['claude', 'codex'].map((name) => ({ engine: name, state: name === engine ? 'available' : 'unavailable', reason: '認証が必要です', preparation: 'ログインしてください' })) });
 
 test('ヘルプ契約は対で必須、実在 HTML・cwd・厳密なエンジン別プロンプトのみを許可', (t) => {
@@ -110,7 +109,7 @@ test('単体の通常保存では反映確認の例外後も成功表示で自�
   const vm = require('node:vm');
   const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
   const refresh = source.slice(source.indexOf('async function refreshConfigReflection('), source.indexOf('function updateConfigReflection('));
-  const save = source.slice(source.indexOf('async function saveSettings('), source.indexOf("  modal.querySelector('.settings-save').addEventListener"));
+  const save = source.slice(source.indexOf('  const getChangedSettingValues ='), source.indexOf("  modal.querySelector('.settings-save').addEventListener"));
   let fireClose;
   let closed = false;
   const { createAutoCloseController } = require('../renderer/autoClose');
@@ -123,11 +122,12 @@ test('単体の通常保存では反映確認の例外後も成功表示で自�
   const msg = { textContent: '', className: '', classList: { add() {} } };
   const context = {
     validatable: [], msg, configFailedFiles: [],
-    INTERNAL_BROWSER_HOME_KEY, savedFieldValues: {}, getCurrentSettingValues: () => ({}),
-    lockSettingsFooter() {}, clearDirtyTabs() {}, refreshSettingsContentSavedValues() {},
+    internalBrowserOpen: false, settingsInteractionRevision: 0,
+    savedFieldValues: {}, getCurrentSettingValues: () => ({}),
+    lockSettingsFooter() {}, syncDirtyTabs() {}, refreshSettingsContentSavedValues() {},
     autoClose,
     VKIpc: { async invoke(channel) {
-      if (channel === 'settings:save') { saved = true; return { ok: true }; }
+      if (channel === 'settings:save') { saved = true; return { ok: true, writtenKeys: [] }; }
       throw new Error('反映確認に失敗');
     } },
   };

@@ -76,6 +76,7 @@ test('保存 IPC とホーム操作は部分成功後も同じ保存済み移動
   const getHome = source.match(/function getSavedInternalBrowserHomeUrl\(\) \{[\s\S]*?\n\}/)[0];
   const handlers = new Map();
   let reloads = 0;
+  let reflectedConfig;
   vm.runInNewContext(getHome + '\n' + ['settings:save', 'internal-browser:action'].map(channel =>
     source.slice(source.indexOf(`ipcMain.handle('${channel}'`)).split('\n});', 1)[0] + '\n});'
   ).join('\n'), {
@@ -88,7 +89,10 @@ test('保存 IPC とホーム操作は部分成功後も同じ保存済み移動
     loadSettingsDescriptor: ({ includeBrowserHome = true } = {}) => ({
       groups: includeBrowserHome ? [ownerGroup, homeGroup] : [ownerGroup],
     }),
-    reloadConfigReflection() { reloads++; },
+    reloadConfigReflection() {
+      reloads++;
+      reflectedConfig = fs.readFileSync(ownPath, 'utf8');
+    },
   });
   const sender = { trusted: true };
   const save = values => handlers.get('settings:save')(sender, values);
@@ -105,11 +109,20 @@ test('保存 IPC とホーム操作は部分成功後も同じ保存済み移動
   assert.equal(save({ [INTERNAL_BROWSER_HOME_KEY]: '' }).hasInternalBrowserHome, false);
   assert.equal(navigateHome(), 'home-unset');
 
-  // owner だけを保存しても移動でき、差分のない再保存では再読込も発生しない。
+  // owner だけの保存でも移動できる。
   fs.writeFileSync(ownerPath, '{}');
   assert.equal(save({ 'github.owner': 'first-owner\nsecond-owner' }).hasInternalBrowserHome, true);
   assert.equal(navigateHome(), 'https://github.com/first-owner');
-  assert.equal(save({}).hasInternalBrowserHome, true);
   assert.equal(reloads, 3);
+
+  // 手動修正後の変更なし保存で、ディスクを書き換えず設定反映を読み直す。
+  const repairedConfig = '{"internalBrowserHomeUrl":"","confirmClose":"always"}';
+  fs.writeFileSync(ownPath, repairedConfig);
+  const noChanges = save({});
+  assert.equal(noChanges.hasInternalBrowserHome, true);
+  assert.deepEqual(noChanges.writtenKeys, []);
+  assert.equal(reloads, 4);
+  assert.equal(reflectedConfig, repairedConfig);
+  assert.equal(fs.readFileSync(ownPath, 'utf8'), repairedConfig);
   assert.equal(handlers.get('settings:save')({}, {}).hasInternalBrowserHome, undefined);
 });

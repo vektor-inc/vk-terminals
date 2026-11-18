@@ -2371,7 +2371,8 @@ ipcMain.handle('settings:save', (event, incoming) => {
   if (!descriptor) return { ok: false, error: '設定ディスクリプタが見つかりません' };
 
   const result = saveSettingsToTargets(descriptor, incoming);
-  if (result.writtenKeys.length > 0) reloadConfigReflection();
+  // 変更なしでも、手動で修正された設定ファイルを読み直して案内を更新する。
+  if (result.ok || result.writtenKeys.length > 0) reloadConfigReflection();
   return { ...result, hasInternalBrowserHome: Boolean(getSavedInternalBrowserHomeUrl()) };
 });
 

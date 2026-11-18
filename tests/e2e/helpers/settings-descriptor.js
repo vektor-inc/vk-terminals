@@ -73,7 +73,7 @@ async function installInvokeStub(win, options) {
       if (channel === 'settings:save') {
         // 保存は実ファイルへ書かせない（一時 HOME の設定ファイルを書き換えないため）。
         if (opts.recordSavePayloads) window.__savedPayloads.push(args[0]);
-        const response = { ok: true };
+        const response = { ok: true, writtenKeys: Object.keys(args[0]) };
         if (opts.saveDelayMs === undefined) return Promise.resolve(response);
         return new Promise((resolve) => setTimeout(() => resolve(response), opts.saveDelayMs));
       }

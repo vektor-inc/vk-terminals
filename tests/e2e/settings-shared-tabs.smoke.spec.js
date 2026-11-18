@@ -98,7 +98,7 @@ test.describe.serial('設定パネル: タブ・保存先表示系（issue #348 
           if (channel === 'settings:describe') return Promise.resolve(desc);
           if (channel === 'settings:save') {
             window.__savedPayloads.push(payload);
-            return Promise.resolve({ ok: true });
+            return Promise.resolve({ ok: true, writtenKeys: Object.keys(payload) });
           }
           return Promise.resolve(null);
         };
@@ -840,7 +840,7 @@ test.describe.serial('設定パネル: タブ・保存先表示系（issue #348 
       await expect(win.locator(TAB(1))).toHaveClass(/is-dirty/);
       await win.locator('.settings-save').click();
       await expect(win.locator('.settings-msg')).toHaveClass(/ok/);
-      expect(await lastSavedPayload(win)).toMatchObject({ host: 'b', port: '2', secure: false });
+      expect(await lastSavedPayload(win)).toEqual({ host: 'b', port: '2' });
     });
 
     test('組み込みスキーマでは案内メッセージが出ず、設定項目が従来どおり表示される', async () => {

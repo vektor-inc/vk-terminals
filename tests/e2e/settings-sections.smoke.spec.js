@@ -120,8 +120,7 @@ test.describe.serial('設定パネル: 項目の区分（section）の描画（i
     await win.locator('.settings-save').click();
     await expect(win.locator('.settings-msg')).toHaveClass(/ok/);
     const payload = await lastSavedPayload(win);
-    expect(payload.engine).toBe('claude');
-    expect(payload.model).toBe('m2');
+    expect(payload).toEqual({ model: 'm2' });
   });
 
   test('section の無い項目は従来どおり内側 fieldset を作らない', async () => {

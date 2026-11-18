@@ -4291,6 +4291,8 @@ body.pane-dragging * {
 .internal-browser-notice-actions { display: flex; flex-wrap: nowrap; gap: 6px; margin-top: 6px; }
 .internal-browser-notice-actions[hidden] { display: none; }
 .internal-browser-notice-actions button { margin: 0; white-space: nowrap; }
+.internal-browser-home-notice .internal-browser-notice-actions { flex-direction: column; margin-top: 8px; }
+.internal-browser-home-notice .internal-browser-notice-actions button { min-width: 0; line-height: 1.4; white-space: normal; overflow-wrap: anywhere; }
 .internal-browser-choice { position: fixed; z-index: 2100; min-width: 210px; padding: 5px; border: 1px solid var(--vktm--color--border-interactive); border-radius: 6px; background: #161b22; color: #e6edf3; box-shadow: 0 8px 24px #0008; }
 .internal-browser-choice-heading { padding: 5px 8px; color: #8b949e; font-size: 11px; }
 .internal-browser-choice [role="menuitem"] { display: block; width: 100%; padding: 7px 8px; text-align: left; border: 0; border-radius: 4px; background: transparent; color: inherit; cursor: pointer; }

@@ -8,6 +8,7 @@ const { execFileSync } = require('node:child_process');
 const { normalizeEmbeddedOptions } = require('../utils/runtimeOptions');
 const { isHelpEngine, normalizeHelpStatus, buildHelpLaunchCommand, createHelpStatusChecker, createGuideOpener, handleHelpRequest, isSafeHelpDocument } = require('../utils/helpFeature');
 const { insertTab, TAB_ID } = require('../renderer/helpEntry');
+const { INTERNAL_BROWSER_HOME_KEY } = require('../utils/internalBrowserHome');
 const status = (engine = 'codex') => ({ engine, engines: ['claude', 'codex'].map((name) => ({ engine: name, state: name === engine ? 'available' : 'unavailable', reason: '認証が必要です', preparation: 'ログインしてください' })) });
 
 test('ヘルプ契約は対で必須、実在 HTML・cwd・厳密なエンジン別プロンプトのみを許可', (t) => {
@@ -121,7 +122,8 @@ test('単体の通常保存では反映確認の例外後も成功表示で自�
   let saved = false;
   const msg = { textContent: '', className: '', classList: { add() {} } };
   const context = {
-    validatable: [], entries: [], msg, configFailedFiles: [],
+    validatable: [], msg, configFailedFiles: [],
+    INTERNAL_BROWSER_HOME_KEY, savedFieldValues: {}, getCurrentSettingValues: () => ({}),
     lockSettingsFooter() {}, clearDirtyTabs() {}, refreshSettingsContentSavedValues() {},
     autoClose,
     VKIpc: { async invoke(channel) {

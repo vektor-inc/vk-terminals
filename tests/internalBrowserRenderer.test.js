@@ -7,6 +7,60 @@ const path = require('node:path');
 const vm = require('node:vm');
 const { EventEmitter } = require('node:events');
 const { createInternalBrowser } = require('../utils/internalBrowser');
+const { INTERNAL_BROWSER_HOME_KEY } = require('../utils/internalBrowserHome');
+const { normalizeOptionalHttpUrl } = require('../renderer/urlSafety');
+
+test('ホームだけの保存は外部設定を送信せず、保存できた有効なホーム URL で案内を消す', async () => {
+  const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
+  const save = source.match(/  async function saveSettings\([\s\S]*?\n  \}/)?.[0];
+  assert.ok(save);
+  const legacyOwners = '\n  \nfirst-owner\nsecond-owner';
+  const savedFieldValues = { [INTERNAL_BROWSER_HOME_KEY]: '', 'github.owner': legacyOwners };
+  const values = { ...savedFieldValues };
+  const payloads = [];
+  const notices = [];
+  let saveSucceeds = false;
+  const context = vm.createContext({
+    INTERNAL_BROWSER_HOME_KEY, savedFieldValues, normalizeOptionalHttpUrl,
+    getCurrentSettingValues: () => values,
+    validatable: [], configFailedFiles: [],
+    msg: { classList: { add() {} } },
+    VKIpc: { async invoke(channel, payload) {
+      assert.equal(channel, 'settings:save');
+      payloads.push({ ...payload });
+      return { ok: saveSucceeds };
+    } },
+    setInternalBrowserHomeNotice: visible => notices.push(visible),
+    lockSettingsFooter() {}, clearDirtyTabs() {}, refreshSettingsContentSavedValues() {}, refreshConfigReflection() {},
+  });
+  const saveSettings = vm.runInContext(`${save}\n() => saveSettings({ keepOpen: true })`, context);
+
+  // 保存失敗では案内を残し、再試行で成功したら消す。
+  const url = 'https://example.com/home';
+  values[INTERNAL_BROWSER_HOME_KEY] = url;
+  assert.equal(await saveSettings(), false);
+  assert.deepEqual(notices, []);
+  saveSucceeds = true;
+  assert.equal(await saveSettings(), true);
+  assert.deepEqual(notices, [false]);
+
+  // 空欄へ戻すときも外部を送らず、外部を編集したときは従来の保存経路を使う。
+  values[INTERNAL_BROWSER_HOME_KEY] = '';
+  assert.equal(await saveSettings(), true);
+  values['github.owner'] = 'external-only';
+  assert.equal(await saveSettings(), true);
+  values['github.owner'] = 'both';
+  values[INTERNAL_BROWSER_HOME_KEY] = url;
+  assert.equal(await saveSettings(), true);
+  assert.deepEqual(payloads, [
+    { [INTERNAL_BROWSER_HOME_KEY]: url },
+    { [INTERNAL_BROWSER_HOME_KEY]: url },
+    { [INTERNAL_BROWSER_HOME_KEY]: '' },
+    { 'github.owner': 'external-only' },
+    { 'github.owner': 'both', [INTERNAL_BROWSER_HOME_KEY]: url },
+  ]);
+  assert.deepEqual(notices, [false, false]);
+});
 
 test('タイトルバーから空状態を開くと表示後にURL欄へ移り、再表示とリンク起点は操作元を保つ', () => {
   const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');

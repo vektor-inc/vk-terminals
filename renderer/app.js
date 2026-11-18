@@ -6747,8 +6747,11 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
     overlay.remove();
     release();
     if (shouldRestore) {
+      // ホーム設定の保存で案内が消えた場合は、ツールバーのホームへ戻す。
+      const homeButton = focusFieldKey === INTERNAL_BROWSER_HOME_KEY
+        ? internalBrowserSidebar.querySelector('[data-action="home"]') : null;
       const sidebarSettingsButton = sidebarOpen ? document.querySelector('#sidebar-settings button') : null;
-      [restoreFocusElement, sidebarSettingsButton, document.getElementById('settings-btn')]
+      [restoreFocusElement, homeButton, sidebarSettingsButton, document.getElementById('settings-btn')]
         .find(canRestoreModalFocus)?.focus();
     }
   };
@@ -7988,24 +7991,15 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
     if (!useTabbedSettings) input?.focus();
   }
 
-  const browserHomeEntry = entries.find(({ field }) => field.key === INTERNAL_BROWSER_HOME_KEY);
-  let browserHomeEdited = false;
-  if (browserHomeEntry) {
-    getEntryInput(browserHomeEntry.id)?.addEventListener('input', () => {
-      browserHomeEdited = true;
-    }, { once: true });
-  }
+  const savedFieldValues = getCurrentSettingValues();
 
   async function saveSettings({ keepOpen = false } = {}) {
-    const out = {};
-    for (const { field, id } of entries) {
-      const input = getEntryInput(id);
-      if (!input) continue;
-      const value = getEntryStoredValue(field, input);
-      // 外部設定だけの保存で VK Terminals 側の検証や書き込みを発生させない。
-      if (field.key === INTERNAL_BROWSER_HOME_KEY && !browserHomeEdited) continue;
-      out[field.key] = value;
-    }
+    const { [INTERNAL_BROWSER_HOME_KEY]: homeValue, ...otherValues } = getCurrentSettingValues();
+    const homeEdited = homeValue !== savedFieldValues[INTERNAL_BROWSER_HOME_KEY];
+    const otherFieldsEdited = Object.keys(otherValues).some((key) => otherValues[key] !== savedFieldValues[key]);
+    // ホームだけの編集で外部ファイルを書き直さない。その他の項目の保存は従来どおり一括で行う。
+    const out = homeEdited && !otherFieldsEdited ? {} : otherValues;
+    if (homeEdited) out[INTERNAL_BROWSER_HOME_KEY] = homeValue;
 
     // 保存前の検証ゲート: 全エラー表示を一旦クリアしてから対象を一括再判定する。
     for (const { field, id } of validatable) clearFieldValidity(field, id);
@@ -8034,6 +8028,9 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
     try {
       const res = await VKIpc.invoke('settings:save', out);
       if (res && res.ok) {
+        Object.assign(savedFieldValues, out);
+        // 新しい移動先が保存できた時点で、ホーム未設定の案内を消す。
+        if (homeEdited && normalizeOptionalHttpUrl(homeValue)) setInternalBrowserHomeNotice(false);
         // dirty 解除でフッターの構成が変わらないよう、先に固定してから解除する。
         lockSettingsFooter();
         clearDirtyTabs();

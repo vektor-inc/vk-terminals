@@ -68,10 +68,16 @@ test('ホームは専用 URL、先頭オーナーの順に開き、設定が無�
     await expect(configure).toBeFocused();
     await expect(address).toHaveValue(currentUrl);
 
-    fs.mkdirSync(path.dirname(ownerConfig), { recursive: true });
-    fs.writeFileSync(ownerConfig, JSON.stringify({ github: { owner: ['first-owner', 'second-owner'] } }));
+    await configure.press('Enter');
+    await expect(input).toBeFocused();
+    await input.fill('https://example.com/discarded');
+    await settings.getByRole('button', { name: 'キャンセル', exact: true }).click();
+    await expect(settings).toBeHidden();
+    await expect(configure).toBeFocused();
+    await expect(homeStatus).toHaveText('ホームページが設定されていません。');
 
-    await win.locator('#settings-btn').click();
+    await configure.press('Enter');
+    await expect(input).toHaveValue('');
     const save = settings.getByRole('button', { name: '保存', exact: true });
     await input.fill('file:///tmp/example');
     await save.click();
@@ -90,14 +96,16 @@ test('ホームは専用 URL、先頭オーナーの順に開き、設定が無�
     await save.click();
     await expect(settings).toBeHidden();
     expect(JSON.parse(fs.readFileSync(configPath, 'utf8')).internalBrowserHomeUrl).toBe(expectedUrl);
-    await address.focus();
-    await win.keyboard.press('Shift+Tab');
+    await expect(homeStatus).toBeEmpty();
+    await expect(configure).toBeHidden();
     await expect(home).toBeFocused();
+    await expect(address).toHaveValue(currentUrl);
     await win.keyboard.press('Enter');
     await expect(address).toHaveValue(expectedUrl);
     await expect(reload).toBeEnabled();
-    await expect(configure).toBeHidden();
 
+    fs.mkdirSync(path.dirname(ownerConfig), { recursive: true });
+    fs.writeFileSync(ownerConfig, JSON.stringify({ github: { owner: ['first-owner', 'second-owner'] } }));
     await win.locator('#settings-btn').click();
     await input.fill('');
     await save.click();
@@ -118,13 +126,15 @@ test('外部設定で起動してもホーム URL は VK Terminals に保存し�
   const descriptorDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-external-home-'));
   const descriptorPath = path.join(descriptorDir, 'descriptor.json');
   const externalConfigPath = path.join(descriptorDir, 'orchestrator.json');
+  const legacyOwners = '  \n\nexternal-first\nexternal-second';
   const externalConfig = {
-    github: { owner: ['external-first', 'external-second'] },
+    github: { owner: legacyOwners },
     internalBrowserHomeUrl: 'https://example.com/external-value',
   };
+  const externalConfigBytes = Buffer.from(JSON.stringify(externalConfig));
   let launched;
   try {
-    fs.writeFileSync(externalConfigPath, JSON.stringify(externalConfig));
+    fs.writeFileSync(externalConfigPath, externalConfigBytes);
     fs.writeFileSync(descriptorPath, JSON.stringify({
       title: 'VK Orchestrator 設定',
       tabs: [{ id: 'github', label: 'GitHub' }],
@@ -159,10 +169,12 @@ test('外部設定で起動してもホーム URL は VK Terminals に保存し�
     const settingsButton = win.locator('#settings-btn');
     const settings = win.getByRole('dialog', { name: /VK Orchestrator 設定/ });
     const browserTab = settings.getByRole('tab', { name: 'アプリ内ブラウザ' });
+    const githubTab = settings.getByRole('tab', { name: 'GitHub', exact: true });
+    const ownerInput = settings.getByRole('textbox', { name: '作業対象リポジトリのオーナー' });
     const input = settings.getByRole('textbox', { name: 'ホームページ URL', exact: true });
     const save = settings.getByRole('button', { name: '保存', exact: true });
     await settingsButton.click();
-    await expect(settings.getByRole('textbox', { name: '作業対象リポジトリのオーナー' })).toHaveValue('external-first\nexternal-second');
+    await expect(ownerInput).toHaveValue(legacyOwners);
     await expect(settings.getByText('外部のホーム URL', { exact: true })).toHaveCount(0);
     await browserTab.click();
     await expect(input).toHaveValue('');
@@ -171,7 +183,7 @@ test('外部設定で起動してもホーム URL は VK Terminals に保存し�
     await save.click();
     await expect(settings).toBeHidden();
     expect(JSON.parse(fs.readFileSync(ownConfigPath, 'utf8')).internalBrowserHomeUrl).toBe(normalizedUrl);
-    expect(JSON.parse(fs.readFileSync(externalConfigPath, 'utf8'))).toEqual(externalConfig);
+    expect(fs.readFileSync(externalConfigPath)).toEqual(externalConfigBytes);
 
     await win.locator('#internal-browser-toggle').click();
     const toolbar = win.locator('.internal-browser-toolbar');
@@ -189,10 +201,30 @@ test('外部設定で起動してもホーム URL は VK Terminals に保存し�
     await save.click();
     await expect(settings).toBeHidden();
     expect(JSON.parse(fs.readFileSync(ownConfigPath, 'utf8')).internalBrowserHomeUrl).toBe('');
-    expect(JSON.parse(fs.readFileSync(externalConfigPath, 'utf8'))).toEqual(externalConfig);
+    expect(fs.readFileSync(externalConfigPath)).toEqual(externalConfigBytes);
     await home.click();
     await expect(address).toHaveValue('https://github.com/external-first');
     await expect(toolbar.getByRole('button', { name: '戻る', exact: true })).toBeEnabled();
+
+    // 外部だけの編集と、外部とホームの同時編集も保存できる。
+    const ownConfigBytes = fs.readFileSync(ownConfigPath);
+    await settingsButton.click();
+    await githubTab.click();
+    await ownerInput.fill('external-edited');
+    await save.click();
+    await expect(settings).toBeHidden();
+    expect(JSON.parse(fs.readFileSync(externalConfigPath, 'utf8')).github.owner).toEqual(['external-edited']);
+    expect(fs.readFileSync(ownConfigPath)).toEqual(ownConfigBytes);
+
+    await settingsButton.click();
+    await githubTab.click();
+    await ownerInput.fill('external-edited-again');
+    await browserTab.click();
+    await input.fill(normalizedUrl);
+    await save.click();
+    await expect(settings).toBeHidden();
+    expect(JSON.parse(fs.readFileSync(externalConfigPath, 'utf8')).github.owner).toEqual(['external-edited-again']);
+    expect(JSON.parse(fs.readFileSync(ownConfigPath, 'utf8')).internalBrowserHomeUrl).toBe(normalizedUrl);
   } finally {
     if (launched) await closeApp(launched);
     fs.rmSync(descriptorDir, { recursive: true, force: true });

@@ -9,6 +9,7 @@ test.beforeEach(async ({ page }) => {
   const toolbar = source.match(/internalBrowserSidebar.innerHTML = `([^`]+)`;/)[1];
   const functions = [
     'syncInternalBrowserLayout', 'syncInternalBrowserWideToggle', 'setInternalBrowserOpen', 'focusInternalBrowserToolbar', 'setSidebarOpen',
+    'setInternalBrowserHomeNotice',
     // トーストは実装と実 CSS のまま載せ、全面表示でのページ領域との関係を確かめる。
     'internalBrowserToastReserve', 'ensureExternalUrlToast', 'showExternalUrlOpenFailedToast', 'hideExternalUrlToast',
     'clearExternalUrlToastTimer', 'externalUrlToastShouldHoldOpen', 'reconsiderExternalUrlToastTimer',
@@ -19,6 +20,7 @@ test.beforeEach(async ({ page }) => {
     <div id="root"><aside id="sidebar" class="sidebar" style="--vktm-sidebar-width:300px"><button id="left-item">項目</button></aside>
     <main class="grid"><button id="terminal">ターミナル</button></main>
     <aside id="internal-browser-sidebar" class="internal-browser-sidebar" hidden>${toolbar}</aside></div>`);
+  await page.addStyleTag({ path: path.resolve(__dirname, '../../renderer/shared.css') });
   await page.addStyleTag({ path: path.resolve(__dirname, '../../renderer/style.css') });
   await page.addScriptTag({ path: path.resolve(__dirname, '../../utils/internalBrowserLayout.js') });
   await page.addScriptTag({ path: path.resolve(__dirname, '../../renderer/focusTrap.js') });
@@ -112,6 +114,48 @@ test('ブラウザ幅240pxでホームとアドレス欄が操作列に収まる
   await page.keyboard.press('Shift+Tab');
   await expect(home).toBeFocused();
 });
+
+// 対象: 最小幅で案内の文言・ボタン・キーボードフォーカスが案内領域に収まる。
+test('ブラウザ幅240pxでホーム未設定案内のボタンが同じ幅で縦に収まる', async ({ page }) => {
+  await page.setViewportSize({ width: 560, height: 800 });
+  await page.evaluate(() => { setInternalBrowserOpen(true); setInternalBrowserHomeNotice(true); });
+  await expect(page.locator('#internal-browser-sidebar')).toHaveCSS('width', '240px');
+  const notice = page.locator('.internal-browser-home-notice');
+  await expect(notice.getByRole('status')).toHaveText('ホームページが設定されていません。');
+  const configure = notice.getByRole('button', { name: 'ホームページ URL を設定' });
+  const dismiss = notice.getByRole('button', { name: '案内を閉じる' });
+  const first = await configure.boundingBox();
+  const second = await dismiss.boundingBox();
+  expect(second.x).toBe(first.x);
+  expect(second.width).toBe(first.width);
+  expect(second.y).toBeGreaterThan(first.y + first.height);
+
+  // 実 CSS のリングを出し、文字と外向きのリングを含めて境界を測る。
+  await configure.focus();
+  await page.keyboard.press('Tab');
+  await expect(dismiss).toBeFocused();
+  await expectNoticeButtonFits(dismiss);
+  await page.keyboard.press('Shift+Tab');
+  await expect(configure).toBeFocused();
+  await expectNoticeButtonFits(configure);
+});
+
+async function expectNoticeButtonFits(button) {
+  expect(await button.evaluate((el) => {
+    const style = getComputedStyle(el);
+    const ring = parseFloat(style.outlineWidth) + parseFloat(style.outlineOffset);
+    const box = el.getBoundingClientRect();
+    const notice = el.closest('.internal-browser-home-notice').getBoundingClientRect();
+    const text = document.createRange();
+    text.selectNodeContents(el);
+    const label = text.getBoundingClientRect();
+    return style.outlineStyle !== 'none' && ring > 0
+      && box.left - ring >= notice.left && box.right + ring <= notice.right
+      && box.top - ring >= notice.top && box.bottom + ring <= notice.bottom
+      && label.left >= box.left && label.right <= box.right
+      && label.top >= box.top && label.bottom <= box.bottom;
+  })).toBe(true);
+}
 
 test('1280pxの横並びと保存幅を維持し、縮小時は左側を閉じてフォーカスを戻す', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });

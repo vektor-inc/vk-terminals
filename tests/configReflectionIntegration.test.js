@@ -232,7 +232,7 @@ test('起動時と定期読込は64KB超の本体設定を採用し、状態フ�
     fs.writeFileSync(file, JSON.stringify(config));
     const source = fs.readFileSync(path.join(__dirname, '../main.js'), 'utf8');
     const start = source.indexOf('function loadUserConfig()');
-    const end = source.indexOf('\n}', start) + 2;
+    const end = source.indexOf('\n}', source.indexOf('function readUserConfig()', start)) + 2;
     const context = vm.createContext({ fs, USER_CONFIG_MAX_BYTES: policy.USER_CONFIG_MAX_BYTES, normalizeLiveConfig: policy.normalizeLiveConfig, LOG_PREFIX: "test", readSmallJson: policy.readSmallJson, userConfigCandidatePaths: () => [file], console });
     vm.runInContext(source.slice(start, end), context);
     assert.equal(context.loadUserConfig().port, 12345);

@@ -601,11 +601,11 @@ test.describe.serial('設定パネル: 基本フィールド系（issue #348 で
       await expect(win.locator(REPO_ID)).not.toHaveAttribute('aria-invalid', 'true');
       await expect(win.locator(REPO_ERR)).toBeHidden();
 
-      // 保存が通る。
+      // 保存が通り、変更していない空欄は送信しない。
       await win.locator('.settings-save').click();
       await expect(win.locator('.settings-msg')).toHaveText('保存しました。反映状況は設定の案内をご確認ください。');
       const payload = await win.evaluate(() => window.__savedPayloads[window.__savedPayloads.length - 1]);
-      expect(payload.repo).toBe('');
+      expect(payload).toEqual({});
     });
 
     test('5: pattern を持たない従来フィールドは無検証（後方互換）', async () => {
@@ -877,7 +877,8 @@ test.describe.serial('設定パネル: 基本フィールド系（issue #348 で
       });
       await expect(model).toHaveValue('保存済み value');
 
-      // pattern 違反の保存済み値でも無効状態なら検証対象外。ただし値は保存対象に残す。
+      // 別の項目を編集して一括保存する。無効状態の欄は検証をスキップして保存済み値を保持する。
+      await win.locator(INITIAL_ID).fill('echo test');
       await win.locator('.settings-save').click();
       await expect(win.locator('.settings-msg')).toHaveText('保存しました。反映状況は設定の案内をご確認ください。');
       const payload = await win.evaluate(() => window.__savedPayloads[0]);

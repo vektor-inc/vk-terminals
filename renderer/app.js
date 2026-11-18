@@ -7997,9 +7997,10 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
     const { [INTERNAL_BROWSER_HOME_KEY]: homeValue, ...otherValues } = getCurrentSettingValues();
     const homeEdited = homeValue !== savedFieldValues[INTERNAL_BROWSER_HOME_KEY];
     const otherFieldsEdited = Object.keys(otherValues).some((key) => otherValues[key] !== savedFieldValues[key]);
-    // ホームだけの編集で外部ファイルを書き直さない。その他の項目の保存は従来どおり一括で行う。
-    const out = homeEdited && !otherFieldsEdited ? {} : otherValues;
+    // 外部の欄に差分がある場合だけ、従来どおり外部の項目を一括保存する。
+    const out = otherFieldsEdited ? otherValues : {};
     if (homeEdited) out[INTERNAL_BROWSER_HOME_KEY] = homeValue;
+    autoClose.cancel();
 
     // 保存前の検証ゲート: 全エラー表示を一旦クリアしてから対象を一括再判定する。
     for (const { field, id } of validatable) clearFieldValidity(field, id);
@@ -8027,17 +8028,17 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
     msg.className = 'settings-msg';
     try {
       const res = await VKIpc.invoke('settings:save', out);
-      if (res && res.ok) {
-        Object.assign(savedFieldValues, out);
-        // 新しい移動先が保存できた時点で、ホーム未設定の案内を消す。
-        if (homeEdited && normalizeOptionalHttpUrl(homeValue)) setInternalBrowserHomeNotice(false);
+      // 部分成功でも、実際に保存した欄だけを次の保存時の比較元にする。
+      const writtenKeys = (res?.writtenKeys ?? []).filter((key) => Object.hasOwn(out, key));
+      for (const key of writtenKeys) savedFieldValues[key] = out[key];
+      if (res?.hasInternalBrowserHome) setInternalBrowserHomeNotice(false);
+      if (writtenKeys.length > 0) {
+        refreshSettingsContentSavedValues();
+      }
+      if (res?.ok) {
         // dirty 解除でフッターの構成が変わらないよう、先に固定してから解除する。
         lockSettingsFooter();
         clearDirtyTabs();
-        // 保存でファイルの中身が変わったので、savedValue セル（＝保存済みの値）を
-        // 取り直す。取り直さないと、保存後も編集を続けた場合に古い値が残り続ける
-        // （安藤のレビュー指摘・issue #380）。
-        refreshSettingsContentSavedValues();
         msg.textContent = '保存しました。反映状況は設定の案内をご確認ください。';
         msg.classList.add('ok');
         await refreshConfigReflection({ throwOnError: keepOpen });
@@ -8051,6 +8052,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
       } else {
         msg.textContent = 'エラー: ' + (res && res.error ? res.error : '不明なエラー');
         msg.classList.add('err');
+        if (writtenKeys.length > 0) await refreshConfigReflection();
       }
     } catch (e) {
       msg.textContent = 'エラー: ' + e.message;

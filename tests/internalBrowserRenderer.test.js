@@ -8,41 +8,59 @@ const vm = require('node:vm');
 const { EventEmitter } = require('node:events');
 const { createInternalBrowser } = require('../utils/internalBrowser');
 const { INTERNAL_BROWSER_HOME_KEY } = require('../utils/internalBrowserHome');
-const { normalizeOptionalHttpUrl } = require('../renderer/urlSafety');
 
-test('ホームだけの保存は外部設定を送信せず、保存できた有効なホーム URL で案内を消す', async () => {
+function createSettingsSaveHarness(initialValues, replies) {
   const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
   const save = source.match(/  async function saveSettings\([\s\S]*?\n  \}/)?.[0];
   assert.ok(save);
-  const legacyOwners = '\n  \nfirst-owner\nsecond-owner';
-  const savedFieldValues = { [INTERNAL_BROWSER_HOME_KEY]: '', 'github.owner': legacyOwners };
+  const savedFieldValues = { ...initialValues };
   const values = { ...savedFieldValues };
   const payloads = [];
   const notices = [];
-  let saveSucceeds = false;
+  const refreshes = [];
   const context = vm.createContext({
-    INTERNAL_BROWSER_HOME_KEY, savedFieldValues, normalizeOptionalHttpUrl,
+    INTERNAL_BROWSER_HOME_KEY, savedFieldValues,
     getCurrentSettingValues: () => values,
     validatable: [], configFailedFiles: [],
     msg: { classList: { add() {} } },
+    autoClose: { cancel() {} },
     VKIpc: { async invoke(channel, payload) {
       assert.equal(channel, 'settings:save');
       payloads.push({ ...payload });
-      return { ok: saveSucceeds };
+      return replies.shift();
     } },
     setInternalBrowserHomeNotice: visible => notices.push(visible),
-    lockSettingsFooter() {}, clearDirtyTabs() {}, refreshSettingsContentSavedValues() {}, refreshConfigReflection() {},
+    lockSettingsFooter() {}, clearDirtyTabs() {},
+    refreshSettingsContentSavedValues() { refreshes.push('saved-values'); },
+    refreshConfigReflection() { refreshes.push('reflection'); },
   });
   const saveSettings = vm.runInContext(`${save}\n() => saveSettings({ keepOpen: true })`, context);
+  return { saveSettings, savedFieldValues, values, payloads, notices, refreshes };
+}
+
+test('ホームだけの保存と変更のない再保存では外部設定を送信しない', async () => {
+  const legacyOwners = '\n  \nfirst-owner\nsecond-owner';
+  const homeOnly = { ok: true, writtenKeys: [INTERNAL_BROWSER_HOME_KEY], hasInternalBrowserHome: true };
+  const { saveSettings, values, payloads, notices } = createSettingsSaveHarness(
+    { [INTERNAL_BROWSER_HOME_KEY]: '', 'github.owner': legacyOwners },
+    [
+      { ok: false, writtenKeys: [], hasInternalBrowserHome: false },
+      homeOnly,
+      { ok: true, writtenKeys: [], hasInternalBrowserHome: true },
+      homeOnly,
+      { ok: true, writtenKeys: ['github.owner'], hasInternalBrowserHome: true },
+      { ok: true, writtenKeys: ['github.owner', INTERNAL_BROWSER_HOME_KEY], hasInternalBrowserHome: true },
+    ],
+  );
 
   // 保存失敗では案内を残し、再試行で成功したら消す。
   const url = 'https://example.com/home';
   values[INTERNAL_BROWSER_HOME_KEY] = url;
   assert.equal(await saveSettings(), false);
   assert.deepEqual(notices, []);
-  saveSucceeds = true;
   assert.equal(await saveSettings(), true);
   assert.deepEqual(notices, [false]);
+  assert.equal(await saveSettings(), true);
 
   // 空欄へ戻すときも外部を送らず、外部を編集したときは従来の保存経路を使う。
   values[INTERNAL_BROWSER_HOME_KEY] = '';
@@ -55,9 +73,41 @@ test('ホームだけの保存は外部設定を送信せず、保存できた�
   assert.deepEqual(payloads, [
     { [INTERNAL_BROWSER_HOME_KEY]: url },
     { [INTERNAL_BROWSER_HOME_KEY]: url },
+    {},
     { [INTERNAL_BROWSER_HOME_KEY]: '' },
     { 'github.owner': 'external-only' },
     { 'github.owner': 'both', [INTERNAL_BROWSER_HOME_KEY]: url },
+  ]);
+  assert.deepEqual(notices, [false, false, false, false, false]);
+});
+
+test('ホームだけが部分成功したとき、元の空欄を保存し直して外部の失敗分も再試行できる', async () => {
+  const homeKey = INTERNAL_BROWSER_HOME_KEY;
+  const { saveSettings, savedFieldValues, values, payloads, notices, refreshes } = createSettingsSaveHarness(
+    { [homeKey]: '', 'github.owner': '' },
+    [
+      { ok: false, writtenKeys: [homeKey], hasInternalBrowserHome: true },
+      { ok: false, writtenKeys: [homeKey], hasInternalBrowserHome: false },
+      { ok: true, writtenKeys: ['github.owner'], hasInternalBrowserHome: true },
+    ],
+  );
+
+  const url = 'https://example.com/';
+  values[homeKey] = url;
+  values['github.owner'] = 'first-owner';
+  assert.equal(await saveSettings(), false);
+  assert.deepEqual(savedFieldValues, { [homeKey]: url, 'github.owner': '' });
+  assert.deepEqual(notices, [false]);
+  assert.deepEqual(refreshes, ['saved-values', 'reflection']);
+
+  values[homeKey] = '';
+  assert.equal(await saveSettings(), false);
+  assert.deepEqual(savedFieldValues, { [homeKey]: '', 'github.owner': '' });
+  assert.equal(await saveSettings(), true);
+  assert.deepEqual(payloads, [
+    { [homeKey]: url, 'github.owner': 'first-owner' },
+    { [homeKey]: '', 'github.owner': 'first-owner' },
+    { 'github.owner': 'first-owner' },
   ]);
   assert.deepEqual(notices, [false, false]);
 });

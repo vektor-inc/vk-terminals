@@ -185,6 +185,14 @@ test('外部設定で起動してもホーム URL は VK Terminals に保存し�
     expect(JSON.parse(fs.readFileSync(ownConfigPath, 'utf8')).internalBrowserHomeUrl).toBe(normalizedUrl);
     expect(fs.readFileSync(externalConfigPath)).toEqual(externalConfigBytes);
 
+    // 直後に変更せず保存しても、旧形式の owner やファイルの書式が変わらない。
+    const savedOwnConfigBytes = fs.readFileSync(ownConfigPath);
+    await settingsButton.click();
+    await save.click();
+    await expect(settings).toBeHidden();
+    expect(fs.readFileSync(externalConfigPath)).toEqual(externalConfigBytes);
+    expect(fs.readFileSync(ownConfigPath)).toEqual(savedOwnConfigBytes);
+
     await win.locator('#internal-browser-toggle').click();
     const toolbar = win.locator('.internal-browser-toolbar');
     const home = toolbar.getByRole('button', { name: 'ホーム', exact: true });
@@ -225,6 +233,59 @@ test('外部設定で起動してもホーム URL は VK Terminals に保存し�
     await expect(settings).toBeHidden();
     expect(JSON.parse(fs.readFileSync(externalConfigPath, 'utf8')).github.owner).toEqual(['external-edited-again']);
     expect(JSON.parse(fs.readFileSync(ownConfigPath, 'utf8')).internalBrowserHomeUrl).toBe(normalizedUrl);
+
+    // 外部ファイルが保存できない状態でも、ホームに成功した分は次回の比較元になる。
+    await settingsButton.click();
+    await browserTab.click();
+    await input.fill('');
+    await save.click();
+    await expect(settings).toBeHidden();
+    fs.writeFileSync(externalConfigPath, '{');
+    await home.press('Enter');
+    const notice = win.locator('.internal-browser-home-notice');
+    const status = notice.locator('[role="status"]');
+    const configure = notice.getByRole('button', { name: 'ホームページ URL を設定' });
+    await expect(status).toHaveText('ホームページが設定されていません。');
+    await configure.press('Enter');
+    await expect(input).toBeFocused();
+    await input.fill(normalizedUrl);
+    await githubTab.click();
+    await ownerInput.fill('retry-owner');
+    await save.click();
+    const message = settings.locator('.settings-msg');
+    await expect(message).toHaveText(/^エラー: 保存に失敗/);
+    expect(JSON.parse(fs.readFileSync(ownConfigPath, 'utf8')).internalBrowserHomeUrl).toBe(normalizedUrl);
+    expect(fs.readFileSync(externalConfigPath, 'utf8')).toBe('{');
+    await expect(status).toBeEmpty();
+
+    await browserTab.click();
+    await input.fill('');
+    await save.click();
+    await expect(message).toHaveText(/^エラー: 保存に失敗/);
+    expect(JSON.parse(fs.readFileSync(ownConfigPath, 'utf8')).internalBrowserHomeUrl).toBe('');
+    expect(fs.readFileSync(externalConfigPath, 'utf8')).toBe('{');
+    await win.keyboard.press('Escape');
+    await expect(settings).toBeHidden();
+    await expect(home).toBeFocused();
+
+    // 案内から設定を開き、専用 URL を空欄のまま owner だけ保存する。
+    fs.writeFileSync(externalConfigPath, '{}');
+    await home.press('Enter');
+    await expect(status).toHaveText('ホームページが設定されていません。');
+    await configure.press('Enter');
+    await expect(input).toBeFocused();
+    await expect(input).toHaveValue('');
+    await githubTab.click();
+    await ownerInput.fill('owner-only\nsecond-owner');
+    await save.click();
+    await expect(settings).toBeHidden();
+    await expect(status).toBeEmpty();
+    await expect(configure).toBeHidden();
+    await expect(home).toBeFocused();
+    expect(JSON.parse(fs.readFileSync(ownConfigPath, 'utf8')).internalBrowserHomeUrl).toBe('');
+    expect(JSON.parse(fs.readFileSync(externalConfigPath, 'utf8')).github.owner).toEqual(['owner-only', 'second-owner']);
+    await home.press('Enter');
+    await expect(address).toHaveValue('https://github.com/owner-only');
   } finally {
     if (launched) await closeApp(launched);
     fs.rmSync(descriptorDir, { recursive: true, force: true });

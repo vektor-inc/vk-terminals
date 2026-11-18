@@ -27,8 +27,7 @@ ipcMain.handle('internal-browser:action', (event, action) => {
   if (action !== 'home') return internalBrowser.action(action);
 
   // 押すたびに保存済みの設定を読み、既存の HTTP(S) 遷移に渡す。
-  const url = resolveInternalBrowserHomeUrl(loadUserConfig()[INTERNAL_BROWSER_HOME_KEY],
-    () => readOrchestratorOwners(loadSettingsDescriptor({ includeBrowserHome: false }), os.homedir()));
+  const url = getSavedInternalBrowserHomeUrl();
   return url ? internalBrowser.navigate(url) : 'home-unset';
 });
 ipcMain.on('internal-browser:bounds', (event, rect) => { if (isInternalBrowserSender(event)) internalBrowser?.setBounds(rect); });
@@ -2359,6 +2358,11 @@ ipcMain.handle('app:restart', async (event) => {
   }
 });
 
+function getSavedInternalBrowserHomeUrl() {
+  return resolveInternalBrowserHomeUrl(loadUserConfig()[INTERNAL_BROWSER_HOME_KEY],
+    () => readOrchestratorOwners(loadSettingsDescriptor({ includeBrowserHome: false }), os.homedir()));
+}
+
 // renderer からの保存。ディスクリプタに載っているキーだけを型変換して書き戻す
 // （未知のキーは既存 config から保持する。書き込み先は field/group/descriptor の targetPath）。
 ipcMain.handle('settings:save', (event, incoming) => {
@@ -2367,8 +2371,8 @@ ipcMain.handle('settings:save', (event, incoming) => {
   if (!descriptor) return { ok: false, error: '設定ディスクリプタが見つかりません' };
 
   const result = saveSettingsToTargets(descriptor, incoming);
-  if (result.ok) reloadConfigReflection();
-  return result;
+  if (result.writtenKeys.length > 0) reloadConfigReflection();
+  return { ...result, hasInternalBrowserHome: Boolean(getSavedInternalBrowserHomeUrl()) };
 });
 
 // 設定コンテンツテーブルの savedValue セル（issue #380）用。キーの配列を 1 回で受け、

@@ -5,8 +5,9 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { readOrchestratorOwners, resolveInternalBrowserHomeUrl } = require('../utils/internalBrowserHome');
-const { coerceFieldValue } = require('../settingsTargets');
+const vm = require('node:vm');
+const { INTERNAL_BROWSER_HOME_KEY, readOrchestratorOwners, resolveInternalBrowserHomeUrl } = require('../utils/internalBrowserHome');
+const { coerceFieldValue, saveSettingsToTargets } = require('../settingsTargets');
 
 test('専用 URL は保存時と遷移時に同じ形式に正規化し、空欄と不正値を区別する', () => {
   const field = { key: 'internalBrowserHomeUrl', type: 'http-url' };
@@ -59,4 +60,56 @@ test('GitHub オーナーは設定パネルの保存先を優先し、指定が�
   assert.deepEqual(readOrchestratorOwners(descriptor, homeDir), ['custom-owner']);
   fs.writeFileSync(ownerPath, '{');
   assert.equal(readOrchestratorOwners(descriptor, homeDir), undefined);
+});
+
+test('保存 IPC とホーム操作は部分成功後も同じ保存済み移動先を使う', t => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-browser-home-save-'));
+  t.after(() => fs.rmSync(homeDir, { recursive: true, force: true }));
+  const ownPath = path.join(homeDir, 'terminals.json');
+  const ownerPath = path.join(homeDir, 'orchestrator.json');
+  fs.writeFileSync(ownPath, '{}');
+  fs.writeFileSync(ownerPath, '{');
+  const ownerGroup = { targetPath: ownerPath, fields: [{ key: 'github.owner', type: 'lines' }] };
+  const homeGroup = { targetPath: ownPath, fields: [{ key: INTERNAL_BROWSER_HOME_KEY, type: 'http-url' }] };
+
+  const source = fs.readFileSync(path.join(__dirname, '../main.js'), 'utf8');
+  const getHome = source.match(/function getSavedInternalBrowserHomeUrl\(\) \{[\s\S]*?\n\}/)[0];
+  const handlers = new Map();
+  let reloads = 0;
+  vm.runInNewContext(getHome + '\n' + ['settings:save', 'internal-browser:action'].map(channel =>
+    source.slice(source.indexOf(`ipcMain.handle('${channel}'`)).split('\n});', 1)[0] + '\n});'
+  ).join('\n'), {
+    INTERNAL_BROWSER_HOME_KEY, readOrchestratorOwners, resolveInternalBrowserHomeUrl, saveSettingsToTargets,
+    ipcMain: { handle: (channel, handler) => handlers.set(channel, handler) },
+    isInternalBrowserSender: event => event.trusted === true,
+    internalBrowser: { navigate: url => url },
+    os: { homedir: () => homeDir },
+    loadUserConfig: () => JSON.parse(fs.readFileSync(ownPath, 'utf8')),
+    loadSettingsDescriptor: ({ includeBrowserHome = true } = {}) => ({
+      groups: includeBrowserHome ? [ownerGroup, homeGroup] : [ownerGroup],
+    }),
+    reloadConfigReflection() { reloads++; },
+  });
+  const sender = { trusted: true };
+  const save = values => handlers.get('settings:save')(sender, values);
+  const navigateHome = () => handlers.get('internal-browser:action')(sender, 'home');
+
+  // 部分成功でホームだけ反映され、空欄へ戻せば移動先もなくなる。
+  const url = 'https://example.com/';
+  const partial = save({ [INTERNAL_BROWSER_HOME_KEY]: url, 'github.owner': 'first-owner' });
+  assert.equal(partial.ok, false);
+  assert.deepEqual(partial.writtenKeys, [INTERNAL_BROWSER_HOME_KEY]);
+  assert.equal(partial.hasInternalBrowserHome, true);
+  assert.equal(navigateHome(), url);
+  assert.equal(reloads, 1);
+  assert.equal(save({ [INTERNAL_BROWSER_HOME_KEY]: '' }).hasInternalBrowserHome, false);
+  assert.equal(navigateHome(), 'home-unset');
+
+  // owner だけを保存しても移動でき、差分のない再保存では再読込も発生しない。
+  fs.writeFileSync(ownerPath, '{}');
+  assert.equal(save({ 'github.owner': 'first-owner\nsecond-owner' }).hasInternalBrowserHome, true);
+  assert.equal(navigateHome(), 'https://github.com/first-owner');
+  assert.equal(save({}).hasInternalBrowserHome, true);
+  assert.equal(reloads, 3);
+  assert.equal(handlers.get('settings:save')({}, {}).hasInternalBrowserHome, undefined);
 });

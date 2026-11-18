@@ -335,9 +335,10 @@ function atomicWriteJsonFile(targetPath, config) {
 
 function saveSettingsToTargets(descriptor, incoming) {
   const groupedResult = groupFieldsByTargetPath(descriptor, incoming);
-  if (!groupedResult.ok) return { ok: false, error: groupedResult.error };
+  if (!groupedResult.ok) return { ok: false, error: groupedResult.error, writtenKeys: [] };
 
   const writtenPaths = [];
+  const writtenKeys = [];
   const failedPaths = [];
   let firstError = null;
 
@@ -350,6 +351,8 @@ function saveSettingsToTargets(descriptor, incoming) {
       }
       atomicWriteJsonFile(targetPath, config);
       writtenPaths.push(targetPath);
+      // 書き込みが確定したファイルのキーだけを返す。
+      for (const { field } of updates) writtenKeys.push(field.key);
     } catch (error) {
       failedPaths.push(targetPath);
       if (!firstError) firstError = error;
@@ -363,11 +366,12 @@ function saveSettingsToTargets(descriptor, incoming) {
       error: `保存に失敗: ${firstError ? describeConfigError(firstError) : '不明なエラー'}`,
       targetPath,
       writtenPaths,
+      writtenKeys,
       failedPaths,
     };
   }
 
-  return { ok: true, targetPath, writtenPaths };
+  return { ok: true, targetPath, writtenPaths, writtenKeys };
 }
 
 function describeTargetPaths(descriptor) {

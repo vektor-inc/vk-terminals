@@ -6787,27 +6787,57 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
   // 設定項目が無い環境ではフォーム関連の配線は不要（閉じるだけ）。
   if (!settingsAvailable) return;
 
-  const launchHelpGuide = async (onLaunching) => {
+  const launchHelpGuide = async (onLaunching, canCloseSettings) => {
     onLaunching();
     const result = await openHelpGuide();
     if (result && result.helpStatus) return result;
+    if (!canCloseSettings()) return false;
     close();
     fitAll();
     focusPane(result);
   };
-  const launchHelpDocument = async (onLaunching) => {
+  const launchHelpDocument = async (onLaunching, canCloseSettings) => {
     onLaunching();
     const opened = await VKIpc.invoke('help:document');
     if (!opened) throw new Error('Help document is unavailable.');
     internalBrowserHasPage = true;
+    if (!canCloseSettings()) return true;
     close();
     animateLayoutChange(() => { setInternalBrowserOpen(true); focusInternalBrowserToolbar(); }, { shouldAnimate: () => !internalBrowserOpen });
     return true;
   };
   const helpContainer = modal.querySelector('.settings-help-entry');
-  const confirmUnsavedHelp = (launch, onLaunching, onConfirming, target) => {
-    const dirty = modal.querySelector('.settings-tab.is-dirty');
-    if (!dirty) return launch(onLaunching);
+  const confirmUnsavedHelp = async (launch, onLaunching, onConfirming, target) => {
+    autoClose.cancel();
+    settingsInteractionRevision++;
+    const queueSucceeded = pendingSettingsSaves === 0 || await waitForSettingsSaves();
+    autoClose.cancel();
+    if (autoClose.isClosed) return false;
+
+    const start = async ({ discard = false } = {}) => {
+      const launchChanges = discard ? getChangedSettingValues() : {};
+      helpLaunchPending = true;
+      try {
+        return await launch(onLaunching, () => {
+          if (autoClose.isClosed) return false;
+          // 破棄の同意は、起動時点で未保存だった入力にだけ適用する。
+          const hasNewChanges = Object.entries(getChangedSettingValues()).some(
+            ([key, value]) => !Object.hasOwn(launchChanges, key) || launchChanges[key] !== value,
+          );
+          if (pendingSettingsSaves === 0 && !hasNewChanges) return true;
+          settingsInteractionRevision++;
+          showUnsavedHelpMessage();
+          return false;
+        });
+      } finally {
+        helpLaunchPending = false;
+      }
+    };
+
+    if (Object.keys(getChangedSettingValues()).length === 0) {
+      if (!queueSucceeded || !validateSettingsSnapshot(getCurrentSettingValues(), validatable.filter(isInvalidVisibleEntry))) return false;
+      return start();
+    }
     onConfirming?.();
     // 保存・破棄・キャンセルは同じ確認画面で選ぶ。
     return new Promise((resolve, reject) => {
@@ -6819,9 +6849,9 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
       choices.setAttribute('aria-labelledby', text.id);
       text.textContent = `未保存の変更があります。保存してから${target}を開きますか？`;
       choices.appendChild(text);
-      const finish = async () => {
+      const finish = async (options) => {
         choices.remove();
-        try { resolve(await launch(onLaunching)); } catch (error) { reject(error); }
+        try { resolve(autoClose.isClosed ? false : await start(options)); } catch (error) { reject(error); }
       };
       for (const [label, action] of [
         ['保存して開く', async () => {
@@ -6833,7 +6863,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
             reject(new Error(`${reason} 内容を確認して再試行してください。`));
           }
         }],
-        ['破棄して開く', finish],
+        ['破棄して開く', () => finish({ discard: true })],
         ['キャンセル', () => { choices.remove(); resolve(false); }],
       ]) {
         const button = document.createElement('button');
@@ -8001,6 +8031,8 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
   const getChangedSettingValues = (values = getCurrentSettingValues()) => Object.fromEntries(Object.entries(values)
     .filter(([key, value]) => value !== savedFieldValues[key]));
   let settingsSaveQueue = Promise.resolve();
+  let pendingSettingsSaves = 0;
+  let helpLaunchPending = false;
   let settingsSaveMessage = { text: '', kind: '' };
   let settingsValidationMessage = '';
 
@@ -8016,34 +8048,56 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
     renderSettingsMessages();
   }
 
-  function saveSettings({ keepOpen = false } = {}) {
+  async function waitForSettingsSaves() {
+    // 応答待ち中に追加された予約も、最後の応答が反映されるまで待つ。
+    let succeeded = true;
+    while (pendingSettingsSaves > 0) succeeded = await settingsSaveQueue;
+    return succeeded;
+  }
+
+  function showUnsavedHelpMessage() {
+    settingsValidationMessage = '追加の編集が保存されていません。もう一度保存してください。';
+    if (settingsSaveMessage.kind === 'partial') renderSettingsMessages();
+    else showSettingsSaveMessage('');
+  }
+
+  async function saveSettings({ keepOpen = false } = {}) {
     autoClose.cancel();
     const values = getCurrentSettingValues();
     const invalidEntries = validatable.filter(isInvalidVisibleEntry);
     const interactionRevision = settingsInteractionRevision;
+    pendingSettingsSaves++;
     // 押下時の入力と検証結果を保持し、先行応答を反映した比較元から差分を出す。
     const pending = settingsSaveQueue.then(() => persistSettingsChanges({
       keepOpen, values, invalidEntries,
-      isLatestSave: () => settingsSaveQueue === pending,
-      canAutoClose: () => settingsSaveQueue === pending && settingsInteractionRevision === interactionRevision,
+      canAutoClose: () => settingsSaveQueue === pending && !helpLaunchPending && settingsInteractionRevision === interactionRevision,
     })).catch(error => {
       if (!autoClose.isClosed) showSettingsSaveMessage('エラー: ' + error.message, 'err');
       return false;
+    }).finally(() => {
+      pendingSettingsSaves--;
     });
     settingsSaveQueue = pending;
-    return pending;
+    if (!keepOpen) return pending;
+
+    const saved = await pending;
+    const queueSucceeded = await waitForSettingsSaves();
+    autoClose.cancel();
+    if (autoClose.isClosed || !saved || !queueSucceeded) return false;
+    if (Object.keys(getChangedSettingValues()).length > 0) {
+      showUnsavedHelpMessage();
+      return false;
+    }
+    return true;
   }
 
-  async function persistSettingsChanges({ keepOpen, values, invalidEntries, isLatestSave, canAutoClose }) {
-    if (autoClose.isClosed) return false;
-    const out = getChangedSettingValues(values);
-    const invalidChanges = invalidEntries.filter(({ field }) => Object.hasOwn(out, field.key));
-    if (invalidChanges.length > 0) {
+  function validateSettingsSnapshot(values, invalidEntries) {
+    if (invalidEntries.length > 0) {
       const currentValues = getCurrentSettingValues();
       let firstInvalid = null;
       // 予約後に編集された欄に、古い入力のエラーやフォーカスを戻さない。
-      for (const { field, id } of invalidChanges) {
-        if (currentValues[field.key] !== out[field.key] || applyFieldValidity(field, id)) continue;
+      for (const { field, id } of invalidEntries) {
+        if (currentValues[field.key] !== values[field.key] || applyFieldValidity(field, id)) continue;
         firstInvalid ??= getEntryInput(id);
       }
       settingsValidationMessage = firstInvalid ? '入力内容に問題があります'
@@ -8057,7 +8111,12 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
       }
       return false;
     }
+    return true;
+  }
 
+  async function persistSettingsChanges({ keepOpen, values, invalidEntries, canAutoClose }) {
+    if (autoClose.isClosed || !validateSettingsSnapshot(values, invalidEntries)) return false;
+    const out = getChangedSettingValues(values);
     settingsValidationMessage = '';
     if (settingsSaveMessage.kind === 'partial') renderSettingsMessages();
     else showSettingsSaveMessage('保存中...');
@@ -8090,10 +8149,6 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
         return false;
       }
       const hasUnsavedChanges = Object.keys(getChangedSettingValues()).length > 0;
-      if (keepOpen && (hasUnsavedChanges || !isLatestSave())) {
-        showSettingsSaveMessage('追加の編集が保存されていません。もう一度保存してください。', 'err');
-        return false;
-      }
       if (!keepOpen && !hasUnsavedChanges && canAutoClose()) autoClose.arm();
       return true;
     }

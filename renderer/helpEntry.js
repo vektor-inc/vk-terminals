@@ -44,8 +44,8 @@
         ai.disabled = false;
         retry.disabled = false;
         documentButton.disabled = false;
-        // 非表示になる操作から、次に使える操作へフォーカスを引き継ぐ。
-        if (container.isConnected) (ai.hidden ? retry : ai).focus();
+        // 検証で案内した入力欄や、待機中に移った操作先のフォーカスを保つ。
+        if (canRestoreHelpFocus()) (ai.hidden ? retry : ai).focus();
       }
     });
     let busy = false;
@@ -63,16 +63,21 @@
           () => { status.textContent = '未保存の変更を保存するか選んでください。'; },
         );
         if (opened === false) status.textContent = 'ドキュメントを開く操作をキャンセルしました。';
+        else if (opened === true) status.textContent = '';
       } catch (error) {
         status.textContent = error?.message?.includes('再試行してください')
           ? error.message
           : 'ドキュメントを開けませんでした。もう一度押してください。';
       } finally {
         busy = false; documentButton.disabled = false; ai.disabled = false; retry.disabled = false;
-        if (container.isConnected) documentButton.focus();
+        if (canRestoreHelpFocus()) documentButton.focus();
       }
     });
     container.append(documentButton, ai, status, retry);
+    function canRestoreHelpFocus() {
+      const active = document.activeElement;
+      return container.isConnected && (active === document.body || container.contains(active));
+    }
     // 初回表示と再確認で同じ結果表示を使う。起動直前の状態変化もここへ返す。
     function renderStatus(result) {
       ai.hidden = !result.engine;

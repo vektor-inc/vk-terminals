@@ -233,6 +233,104 @@ test('保存して開くは応答待ちの追加編集を保存するまで進�
   assert.equal(autoCloses.length, 0);
 });
 
+test('保存して開くは先行応答で dirty が消えても後続予約を待って現在値を再判定する', async () => {
+  const requests = [Promise.withResolvers(), Promise.withResolvers()];
+  const replies = [Promise.withResolvers(), Promise.withResolvers()];
+  let index = 0;
+  const { saveSettings, edit, payloads, dirtyValues, msg, autoCloses } = createSettingsSaveHarness(
+    { label: 'old' }, async payload => {
+      const current = index++;
+      requests[current].resolve();
+      await replies[current].promise;
+      return { ok: true, writtenKeys: Object.keys(payload) };
+    },
+  );
+
+  edit('label', 'a');
+  let helpReady = false;
+  const first = saveSettings({ keepOpen: true }).then(result => { helpReady = true; return result; });
+  await requests[0].promise;
+  edit('label', 'b');
+  const second = saveSettings();
+  edit('label', 'a');
+  replies[0].resolve();
+  await requests[1].promise;
+  assert.deepEqual(dirtyValues, {});
+  assert.equal(helpReady, false);
+
+  replies[1].resolve();
+  assert.deepEqual(await Promise.all([first, second]), [false, true]);
+  assert.deepEqual(payloads, [{ label: 'a' }, { label: 'b' }]);
+  assert.deepEqual(dirtyValues, { label: 'a' });
+  assert.match(msg.textContent, /追加の編集が保存されていません/);
+  assert.equal(autoCloses.length, 0);
+});
+
+test('設定切替で表示された不正な既存値も差分なしで検証する', async () => {
+  const focused = [];
+  const { saveSettings, edit, payloads, msg, context } = createSettingsSaveHarness(
+    { initialEngine: 'claude', initialCodexModel: 'invalid model' },
+    payload => ({ ok: true, writtenKeys: Object.keys(payload) }),
+  );
+  context.isInvalidVisibleEntry = ({ field }) => field.key === 'initialCodexModel'
+    && context.values.initialEngine === 'codex' && context.values.initialCodexModel === 'invalid model';
+  context.applyFieldValidity = field => !context.isInvalidVisibleEntry({ field });
+  context.getEntryInput = id => ({ focus() { focused.push(id); } });
+
+  edit('initialEngine', 'codex');
+  assert.equal(await saveSettings({ keepOpen: true }), false);
+  assert.deepEqual(focused, ['initialCodexModel']);
+  assert.deepEqual(payloads, []);
+  assert.equal(msg.textContent, '入力内容に問題があります');
+
+  // 非表示に戻せば、不正なモデルを再送せずに保存できる。
+  edit('initialEngine', 'claude');
+  assert.equal(await saveSettings(), true);
+  assert.deepEqual(payloads, [{}]);
+});
+
+test('ガイドとドキュメントは起動が完了しても応答待ち中に編集された設定を閉じない', async () => {
+  const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
+  const helpLaunch = source.match(/  const launchHelpGuide = [\s\S]*?(?=\n  const helpView =)/)?.[0];
+  assert.ok(helpLaunch);
+
+  for (const target of ['Guide', 'Document']) {
+    const launched = Promise.withResolvers();
+    const response = Promise.withResolvers();
+    const { edit, saveSettings, values, context, msg, autoCloses } = createSettingsSaveHarness(
+      { label: 'old' }, payload => ({ ok: true, writtenKeys: Object.keys(payload) }),
+    );
+    let closed = 0;
+    const launch = () => {
+      launched.resolve();
+      return response.promise;
+    };
+    const invoke = context.VKIpc.invoke;
+    Object.assign(context, {
+      modal: { querySelector() { return null; } },
+      close() { closed++; },
+      internalBrowserHasPage: false,
+      openHelpGuide: launch,
+    });
+    context.VKIpc.invoke = (channel, payload) => channel === 'help:document' ? launch() : invoke(channel, payload);
+    const { launchHelpGuide, launchHelpDocument, confirmUnsavedHelp } = vm.runInContext(
+      `${helpLaunch}\n({ launchHelpGuide, launchHelpDocument, confirmUnsavedHelp })`, context,
+    );
+    edit('label', 'saved');
+    assert.equal(await saveSettings({ keepOpen: true }), true);
+
+    const opening = confirmUnsavedHelp(target === 'Guide' ? launchHelpGuide : launchHelpDocument, () => {});
+    await launched.promise;
+    edit('label', 'extra');
+    response.resolve(target === 'Guide' ? 'pane-1' : true);
+    await opening;
+    assert.equal(closed, 0);
+    assert.equal(values.label, 'extra');
+    assert.equal(autoCloses.length, 0);
+    assert.match(msg.textContent, /追加の編集が保存されていません/);
+  }
+});
+
 test('部分成功の通知は編集・形式エラー・応答待ちを経ても残り、後続の保存結果で更新する', async () => {
   const retryStarted = Promise.withResolvers();
   const retryResult = Promise.withResolvers();

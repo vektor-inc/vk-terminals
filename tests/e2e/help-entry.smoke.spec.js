@@ -87,6 +87,117 @@ test('前ページの画像読み込み中でも案内を開いて設定を閉�
   }
 });
 
+test('ヘルプは保存予約と条件付き入力を確認し、起動応答待ちの追加編集も残す', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-help-save-queue-'));
+  fs.mkdirSync(path.join(root, 'guide'));
+  fs.writeFileSync(path.join(root, 'help.html'), '<h1>Help</h1>');
+  fs.writeFileSync(path.join(root, 'status.json'), '{}');
+  let launched;
+  try {
+    launched = await launchAppAndWait({ port: await getFreePort(), prefix: 'vk-help-save-queue-', entry: path.resolve(__dirname, '../fixtures/embeddedHelpLauncher.js'), env: { VK_TEST_HELP_ROOT: root } });
+    const { win } = launched;
+    const config = require('../../settings-schema.json');
+    const engineFields = config.groups.flatMap(group => group.fields || [])
+      .filter(field => ['initialEngine', 'initialCodexModel'].includes(field.key));
+    expect(engineFields).toHaveLength(2);
+    await win.evaluate(({ engineFields }) => {
+      const original = VKIpc.invoke;
+      window.saveRequests = [];
+      window.releaseSaves = [];
+      window.documentRequests = 0;
+      window.deferSaves = true;
+      VKIpc.invoke = async (channel, ...args) => {
+        if (channel === 'settings:describe') return {
+          available: true,
+          values: { label: 'old', initialEngine: 'claude', initialCodexModel: 'invalid model' },
+          groups: [{ tab: 'general', label: '基本', fields: [{ key: 'label', label: '名前', type: 'text' }, ...engineFields] }],
+          tabs: [{ id: 'general', label: '基本' }],
+        };
+        if (channel === 'settings:save') {
+          const [payload] = args;
+          window.saveRequests.push(payload);
+          if (window.deferSaves) await new Promise(resolve => { window.releaseSaves.push(resolve); });
+          return { ok: true, writtenKeys: Object.keys(payload) };
+        }
+        if (channel === 'app:config-reflection') return { revision: Date.now(), failedFiles: [] };
+        if (channel === 'help:check') return { engine: 'codex', engines: [] };
+        if (channel === 'help:document') {
+          window.documentRequests++;
+          return new Promise(resolve => { window.releaseDocument = () => resolve(true); });
+        }
+        return original(channel, ...args);
+      };
+      return openSettingsModal();
+    }, { engineFields });
+    const basicTab = win.getByRole('tab', { name: /^基本/ });
+    const helpTab = win.getByRole('tab', { name: '使い方・ヘルプ' });
+    const name = win.getByLabel('名前', { exact: true });
+    const engine = win.getByLabel('最初のペインの AI エンジン');
+    const model = win.getByLabel('最初のペインの Codex モデル');
+    const documentButton = win.getByRole('button', { name: 'ドキュメント', exact: true });
+    const saveButton = win.getByRole('button', { name: '保存', exact: true });
+    const saveAndOpen = win.getByRole('button', { name: '保存して開く' });
+    const footer = win.locator('.settings-msg');
+
+    // A の応答によって一時的に dirty が消えても、予約された B の結果まで待つ。
+    await name.fill('a');
+    await saveButton.click();
+    await win.waitForFunction(() => window.releaseSaves.length === 1);
+    await name.fill('b');
+    await saveButton.click();
+    await name.fill('a');
+    await helpTab.click();
+    await win.evaluate(() => window.releaseSaves[0]());
+    await win.waitForFunction(() => window.releaseSaves.length === 2);
+    await expect(basicTab).not.toHaveClass(/is-dirty/);
+    await documentButton.click();
+    await expect(documentButton).toBeDisabled();
+    await expect(saveAndOpen).toHaveCount(0);
+    expect(await win.evaluate(() => window.documentRequests)).toBe(0);
+    await win.evaluate(() => {
+      window.deferSaves = false;
+      window.releaseSaves[1]();
+    });
+    await expect(saveAndOpen).toBeVisible();
+    expect(await win.evaluate(() => window.saveRequests)).toEqual([{ label: 'a' }, { label: 'b' }]);
+    expect(await win.evaluate(() => window.documentRequests)).toBe(0);
+    await win.getByRole('group', { name: /未保存の変更/ }).getByRole('button', { name: 'キャンセル' }).click();
+
+    // 条件を切り替えて表示された不正値は、欄自体を編集していなくても保存と起動を止める。
+    await basicTab.click();
+    await engine.selectOption('codex');
+    await helpTab.click();
+    await documentButton.click();
+    await saveAndOpen.click();
+    await expect(model).toHaveValue('invalid model');
+    await expect(model).toHaveAttribute('aria-invalid', 'true');
+    await expect(model).toBeFocused();
+    expect(await win.evaluate(() => window.saveRequests)).toHaveLength(2);
+    expect(await win.evaluate(() => window.documentRequests)).toBe(0);
+
+    // 保存に成功して起動 IPC を送った後でも、追加編集とフォーカスを保持する。
+    await model.fill('gpt-5');
+    await helpTab.click();
+    await documentButton.click();
+    await saveAndOpen.click();
+    await win.waitForFunction(() => window.documentRequests === 1);
+    await basicTab.click();
+    await name.fill('extra');
+    await win.evaluate(() => window.releaseDocument());
+    await expect(footer).toHaveText('追加の編集が保存されていません。もう一度保存してください。');
+    await expect(win.locator('.settings-modal')).toBeVisible();
+    await expect(name).toHaveValue('extra');
+    await expect(name).toBeFocused();
+    await expect(basicTab).toHaveClass(/is-dirty/);
+    expect(await win.evaluate(() => window.saveRequests)).toEqual([
+      { label: 'a' }, { label: 'b' }, { label: 'a', initialEngine: 'codex', initialCodexModel: 'gpt-5' },
+    ]);
+  } finally {
+    if (launched) await closeApp(launched);
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('使い方・ヘルプ: 確認失敗の再確認、未保存キャンセル、連打と格納復帰', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-help-e2e-'));
   fs.mkdirSync(path.join(root, 'guide'));

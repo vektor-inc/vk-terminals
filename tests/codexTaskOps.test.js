@@ -377,6 +377,10 @@ test('拒否: gh issue create の必須欠落・許可外オプション・不�
     [...base, '--assignee', 'a b'],
     [...base, '--assignee', ''],
     [...base, '--assignee', 'a'.repeat(40)],
+    [...base, '--assignee', 'a-'],
+    [...base, '--assignee', 'a--b'],
+    [...base, '--assignee=a-'],
+    [...base, '-a', 'a--b'],
     [...base, '--assignee'],
     [...base, '--label', ''],
     [...base, '--label', ' '],
@@ -399,6 +403,57 @@ test('拒否: gh issue create の必須欠落・許可外オプション・不�
     const result = parseTaskCommand(command);
     assert.equal(result.ok, false, JSON.stringify(command));
     assert.match(result.error, /^task command rejected/);
+  }
+});
+
+test('担当者名: GitHub のアカウント名の規則に合う名前だけを受け、末尾・連続のハイフンや 40 文字以上は issue create / issue edit（起動元・明示先）で同じく拒否する（issue #636）', () => {
+  const accepts = (name) => [
+    parseTaskCommand(['gh', 'issue', 'create', '--title', 't', '--body', 'b', '--assignee', name]),
+    parseTaskCommand(['gh', 'issue', 'edit', '5', '--add-assignee', name]),
+    parseTaskCommand(['gh', 'vektor-inc/other', 'issue', 'edit', '5', '--add-assignee', name]),
+  ].map((result) => result.ok);
+  for (const name of ['a', 'A1', 'a-b', 'a-b-c', 'kurudrive', 'a'.repeat(39), `${'a'.repeat(19)}-${'b'.repeat(19)}`]) {
+    assert.deepEqual(accepts(name), [true, true, true], name);
+  }
+  for (const name of ['a-', 'a--b', '-a', '-', '--', 'a-b-', 'a---b', '@me', 'a_b', 'a.b', 'a'.repeat(40), `${'a'.repeat(20)}-${'b'.repeat(19)}`]) {
+    assert.deepEqual(accepts(name), [false, false, false], name);
+  }
+});
+
+test('実行: 無効な担当者名（末尾・連続のハイフン）の issue create / issue edit は、起動元・明示先とも gh を一度も呼ばない（issue #636）', () => {
+  const fixture = createFixture();
+  try {
+    const plain = path.join(fixture.root, 'plain-invalid-assignee');
+    fs.mkdirSync(plain);
+    for (const name of ['a-', 'a--b']) {
+      for (const [command, cwd] of [
+        [['gh', 'issue', 'create', '--title', 't', '--body', 'b', '--assignee', name], undefined],
+        [['gh', 'issue', 'edit', '5', '--add-assignee', name], undefined],
+        [['gh', 'issue', 'edit', '5', '--add-assignee', 'kurudrive', '--add-assignee', name, '--add-label', 'bug'], undefined],
+        [['gh', 'VEKTOR-INC/other', 'issue', 'edit', '5', '--add-assignee', name], plain],
+        [['gh', 'VEKTOR-INC/other', 'issue', 'edit', '5', '--add-label', 'task-queue', '--add-assignee', name], plain],
+      ]) {
+        const harness = issueEditHarness(fixture, { applied: issueState([name], ['bug', 'task-queue']) });
+        const result = run(fixture, command, { spawnSync: harness.spawnSync, ...(cwd === undefined ? {} : { cwd }) });
+        assert.equal(result.code, 2, JSON.stringify(command));
+        assert.match(result.messages.join(''), /invalid --(add-)?assignee/, JSON.stringify(command));
+        assert.equal(harness.calls.length, 0, JSON.stringify(command));
+      }
+    }
+    assert.equal(fixture.readCalls().length, 0);
+
+    // 正常な a-b は起動元・明示先とも通り、読み戻しで確認できれば成功する。
+    for (const [command, cwd, repo] of [
+      [['gh', 'issue', 'edit', '5', '--add-assignee', 'a-b'], undefined, 'vektor-inc/vk-terminals'],
+      [['gh', 'VEKTOR-INC/other', 'issue', 'edit', '5', '--add-assignee', 'a-b'], plain, 'VEKTOR-INC/other'],
+    ]) {
+      const harness = issueEditHarness(fixture, { applied: issueState(['a-b'], []) });
+      const result = run(fixture, command, { spawnSync: harness.spawnSync, writeOut: () => {}, ...(cwd === undefined ? {} : { cwd }) });
+      assert.equal(result.code, 0, result.messages.join(''));
+      assert.deepEqual(harness.calls[0], ['issue', 'edit', '5', '--add-assignee', 'a-b', '--repo', repo]);
+    }
+  } finally {
+    fixture.cleanup();
   }
 });
 
@@ -479,6 +534,10 @@ test('拒否: 明示先の issue edit は本文更新・削除系・無効な担
     ['--add-assignee', 'a b'],
     ['--add-assignee', 'outsider/other'],
     ['--add-assignee', 'a'.repeat(40)],
+    ['--add-assignee', 'a-'],
+    ['--add-assignee', 'a--b'],
+    ['--add-assignee=a-'],
+    ['--add-assignee', 'kurudrive', '--add-assignee', 'a--b'],
     ['--add-assignee', ''],
     ['--add-assignee'],
     ['--add-label', 'bug', '--repo', 'vektor-inc/other'],
@@ -514,6 +573,9 @@ test('拒否: gh issue edit は別リポジトリでの追加以外の更新・�
     [...base, '--add-assignee', '@me'],
     [...base, '--add-assignee', '-evil'],
     [...base, '--add-assignee', 'a,b'],
+    [...base, '--add-assignee', 'a-'],
+    [...base, '--add-assignee', 'a--b'],
+    [...base, '--add-assignee=a-'],
     [...base, '--add-assignee'],
     [...base, '--add-label', ''],
     [...base, '--add-label', ' x'],

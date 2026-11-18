@@ -52,7 +52,7 @@ const REVISION_PATTERN = /^[A-Za-z0-9_][A-Za-z0-9._/@^~{}-]*$/;
 const BRANCH_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
 const JSON_FIELDS_PATTERN = /^[A-Za-z]+(,[A-Za-z]+)*$/;
 const DIGITS_PATTERN = /^[0-9]{1,9}$/;
-// issue 作成の担当者は GitHub のアカウント名だけ（@me は通さない。utils/codexTaskPolicy.js の GH_USER_PATTERN と同じ形）。
+// issue 作成の担当者は GitHub のアカウント名だけ（@me は通さない。設定ファイルのユーザー名判定に使う utils/codexTaskPolicy.js の GH_USER_PATTERN より厳しい）。
 // GitHub のアカウント名の規則: 英数字とハイフンだけの 1〜39 文字で、先頭・末尾のハイフンと連続するハイフンは不可（`@me` も先頭で弾く）。
 // gh issue create --assignee と gh issue edit --add-assignee（起動元・明示先の両方）がこの 1 つを共有する（issue #636）。
 const ASSIGNEE_PATTERN = /^(?=.{1,39}$)[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$/;

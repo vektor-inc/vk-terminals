@@ -412,7 +412,8 @@ test('summarizeSessionTokenCounts: 同一セッションの累積 token_count �
 });
 
 test('createCodexUsageTracker: ファイル単位の最大累積値を差分読みで更新する', async () => {
-  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-codex-usage-'));
+  // 読み取り層はリンクを含まない実パスだけを読むため、macOS の /var → /private/var も実パスに直して渡す。
+  const tmpRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-codex-usage-')));
   try {
     const file = path.join(tmpRoot, 'rollout-test.jsonl');
     fs.writeFileSync(file, [

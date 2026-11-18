@@ -70,6 +70,7 @@ const { createUsageTracker, createTtlMemo } = require('./usageTracker');
 const { createOauthUsageProvider } = require('./oauthUsage');
 const { createCodexUsageProvider } = require('./codexUsage');
 const { createCodexUsageTracker } = require('./codexUsageTracker');
+const { createCodexSessionDirsResolver, resolvePersonalCodexHome } = require('./utils/codexSessionDirs');
 // GUI(Electron) の GPU 起動モード。WSLg 等の Linux では Chromium の GPU 初期化が
 // 失敗して起動時にエラーが多発するため、既定で GPU を無効化する。モードは
 // VK_TERMINALS_GPU（環境変数）または config.json の gpu で off/default を
@@ -1508,8 +1509,14 @@ function getUsageForDisplay() {
 // いずれのプロバイダも、session / weekly の resetAtMs を過ぎた値は TTL 内でも
 // キャッシュを使わず取り直す（issue #399: リセット後も古い値が出続ける不具合の対応）。
 const oauthUsage = createOauthUsageProvider();
-const codexUsage = createCodexUsageProvider();
-const codexUsageTracker = createCodexUsageTracker();
+// Codex 使用量は個人の CODEX_HOME とタスク専用 CODEX_HOME（~/.vk-terminals/codex-task-policy/ 配下）の
+// sessions を集計する（issue #638）。列挙結果は両方のプロバイダで共有し、走査の重複を避ける。
+const codexSessionDirs = createCodexSessionDirsResolver({
+  getPersonalCodexHome: () => resolvePersonalCodexHome(process.env),
+  dataDir: DATA_DIR,
+});
+const codexUsage = createCodexUsageProvider({ getSessionDirs: codexSessionDirs });
+const codexUsageTracker = createCodexUsageTracker({ getDirs: codexSessionDirs });
 
 // 使用状況の統一構造を返す（issue #73）。
 //   - 公式 usage API（source: 'oauth'、session / weekly の % とリセット時刻）を主とする。

@@ -11,24 +11,30 @@ const { createInternalBrowser } = require('../utils/internalBrowser');
 const { INTERNAL_BROWSER_HOME_KEY } = require('../utils/internalBrowserHome');
 const { saveSettingsToTargets } = require('../settingsTargets');
 
-function createSettingsSaveHarness(initialValues, save, labels = {}) {
+function createSettingsSaveHarness(initialValues, save, labels = {}, isInvalid = () => false) {
   const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
   const saveFunctions = source.match(/  const getChangedSettingValues = [\s\S]*?(?=\n  modal.querySelector\('\.settings-save'\)\.addEventListener)/)?.[0];
-  assert.ok(saveFunctions);
+  const clearStaleMessage = source.match(/  const clearStaleSettingsMessage = [\s\S]*?\n  };/)?.[0];
+  assert.ok(saveFunctions && clearStaleMessage);
   const savedFieldValues = { ...initialValues };
   const values = { ...savedFieldValues };
   const payloads = [];
   const notices = [];
   const refreshes = [];
-  const msg = { classList: { add() {} } };
+  const msg = {};
   const autoCloses = [];
+  const dirtyValues = {};
+  const entries = Object.keys(values).map(key => ({ field: { key, label: labels[key] }, id: key }));
   const context = vm.createContext({
-    INTERNAL_BROWSER_HOME_KEY, savedFieldValues,
+    INTERNAL_BROWSER_HOME_KEY, savedFieldValues, values,
     internalBrowserOpen: true, focusFieldKey: INTERNAL_BROWSER_HOME_KEY,
     settingsInteractionRevision: 0,
-    entries: Object.keys(values).map(key => ({ field: { key, label: labels[key] } })),
+    entries,
     getCurrentSettingValues: () => ({ ...values }),
-    validatable: [], configFailedFiles: [],
+    validatable: entries, isInvalidVisibleEntry: ({ field }) => isInvalid(field.key, values[field.key]),
+    applyFieldValidity: field => !isInvalid(field.key, values[field.key]),
+    getEntryInput: () => ({ focus() {} }), switchToFieldTab() {},
+    configFailedFiles: [], restoredHomeButton: null,
     msg,
     autoClose: { cancel() {}, arm() { autoCloses.push(true); } },
     VKIpc: { async invoke(channel, payload) {
@@ -37,12 +43,24 @@ function createSettingsSaveHarness(initialValues, save, labels = {}) {
       return save(payload);
     } },
     setInternalBrowserHomeNotice: visible => notices.push(visible),
-    lockSettingsFooter() {}, syncDirtyTabs() {},
+    lockSettingsFooter() {},
+    syncDirtyTabs(changes) {
+      for (const key of Object.keys(dirtyValues)) delete dirtyValues[key];
+      Object.assign(dirtyValues, changes);
+    },
     refreshSettingsContentSavedValues() { refreshes.push('saved-values'); },
     refreshConfigReflection() { refreshes.push('reflection'); },
   });
-  const saveSettings = vm.runInContext(`${saveFunctions}\nsaveSettings`, context);
-  return { saveSettings, savedFieldValues, values, payloads, notices, refreshes, msg, autoCloses };
+  const { saveSettings, edit } = vm.runInContext(`
+    ${saveFunctions}
+    ${clearStaleMessage}
+    ({ saveSettings, edit(key, value) {
+      values[key] = value;
+      settingsInteractionRevision++;
+      clearStaleSettingsMessage();
+    } })
+  `, context);
+  return { saveSettings, edit, savedFieldValues, values, payloads, notices, refreshes, msg, autoCloses, dirtyValues, context };
 }
 
 test('ホームだけの保存と変更のない再保存では外部設定を送信しない', async () => {
@@ -155,6 +173,160 @@ test('応答待ちの間にホームを空欄に戻して保存すると、先�
   assert.deepEqual(payloads, [{ [key]: 'https://example.com/' }, { [key]: '' }]);
   assert.equal(JSON.parse(fs.readFileSync(targetPath))[key], '');
   assert.equal(autoCloses.length, 1);
+});
+
+test('A の応答待ちに B を保存してから C へ編集すると、B を保存し C は未保存で残す', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-settings-save-snapshot-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const targetPath = path.join(dir, 'config.json');
+  const key = INTERNAL_BROWSER_HOME_KEY;
+  const descriptor = { targetPath, groups: [{ fields: [{ key, type: 'http-url' }] }] };
+  const [a, b, c] = ['a', 'b', 'c'].map(value => `https://example.com/${value}`);
+  const firstWrite = Promise.withResolvers();
+  const releaseReply = Promise.withResolvers();
+  const { saveSettings, edit, values, dirtyValues, payloads, autoCloses } = createSettingsSaveHarness(
+    { [key]: '' }, async payload => {
+      const result = saveSettingsToTargets(descriptor, payload);
+      if (payload[key] === a) {
+        firstWrite.resolve();
+        await releaseReply.promise;
+      }
+      return result;
+    },
+  );
+
+  edit(key, a);
+  const first = saveSettings();
+  await firstWrite.promise;
+  edit(key, b);
+  const second = saveSettings();
+  edit(key, c);
+  releaseReply.resolve();
+  assert.deepEqual(await Promise.all([first, second]), [true, true]);
+  assert.deepEqual(payloads, [{ [key]: a }, { [key]: b }]);
+  assert.equal(JSON.parse(fs.readFileSync(targetPath))[key], b);
+  assert.equal(values[key], c);
+  assert.deepEqual(dirtyValues, { [key]: c });
+  assert.equal(autoCloses.length, 0);
+});
+
+test('保存して開くは応答待ちの追加編集を保存するまで進めない', async () => {
+  const requested = Promise.withResolvers();
+  const response = Promise.withResolvers();
+  const { saveSettings, edit, dirtyValues, msg, autoCloses } = createSettingsSaveHarness(
+    { label: 'old' }, async payload => {
+      requested.resolve();
+      await response.promise;
+      return { ok: true, writtenKeys: Object.keys(payload) };
+    },
+  );
+  edit('label', 'booked');
+  const first = saveSettings({ keepOpen: true });
+  await requested.promise;
+  edit('label', 'extra');
+  response.resolve();
+  assert.equal(await first, false);
+  assert.match(msg.textContent, /追加の編集が保存されていません。もう一度保存してください。/);
+  assert.deepEqual(dirtyValues, { label: 'extra' });
+  assert.equal(await saveSettings({ keepOpen: true }), true);
+  assert.deepEqual(dirtyValues, {});
+  assert.equal(autoCloses.length, 0);
+});
+
+test('部分成功の通知は編集・形式エラー・応答待ちを経ても残り、後続の保存結果で更新する', async () => {
+  const retryStarted = Promise.withResolvers();
+  const retryResult = Promise.withResolvers();
+  const replies = [
+    { ok: false, writtenKeys: ['first'] },
+    retryResult.promise,
+    { ok: false, writtenKeys: [], error: '書き込めません' },
+    { ok: false, writtenKeys: ['second'] },
+    { ok: true, writtenKeys: ['first'] },
+  ];
+  const { saveSettings, edit, msg, payloads } = createSettingsSaveHarness(
+    { first: '', second: '', third: '' },
+    () => {
+      const reply = replies.shift();
+      if (reply === retryResult.promise) retryStarted.resolve();
+      return reply;
+    },
+    { first: '最初の項目', second: '2番目の項目', third: '3番目の項目' },
+    (_key, value) => value === 'invalid',
+  );
+
+  edit('first', 'a');
+  edit('second', 'b');
+  edit('third', 'c');
+  assert.equal(await saveSettings(), false);
+  const firstPartial = '「最初の項目」を保存しました。「2番目の項目、3番目の項目」は再保存してください。';
+  assert.equal(msg.textContent, firstPartial);
+  edit('second', 'invalid');
+  assert.equal(msg.textContent, firstPartial);
+  assert.equal(await saveSettings(), false);
+  assert.equal(payloads.length, 1);
+  assert.equal(msg.textContent, firstPartial + ' 入力内容に問題があります');
+  edit('second', 'valid');
+  assert.equal(msg.textContent, firstPartial);
+
+  const retry = saveSettings();
+  await retryStarted.promise;
+  assert.equal(msg.textContent, firstPartial);
+  retryResult.resolve({ ok: false, writtenKeys: ['third'] });
+  assert.equal(await retry, false);
+  assert.equal(msg.textContent, '「3番目の項目」を保存しました。「2番目の項目」は再保存してください。');
+  assert.equal(await saveSettings(), false);
+  assert.equal(msg.textContent, 'エラー: 書き込めません');
+  edit('first', 'updated');
+  assert.equal(await saveSettings(), false);
+  assert.match(msg.textContent, /「2番目の項目」を保存しました/);
+  assert.equal(await saveSettings(), true);
+  assert.match(msg.textContent, /^保存しました。/);
+});
+
+test('変更なしの保存成功でも表の保存済み値と設定反映状態を取り直す', async () => {
+  const { saveSettings, payloads, refreshes } = createSettingsSaveHarness(
+    { first: 'original' }, () => ({ ok: true, writtenKeys: [] }),
+  );
+  assert.equal(await saveSettings(), true);
+  assert.deepEqual(payloads, [{}]);
+  assert.deepEqual(refreshes, ['saved-values', 'reflection']);
+});
+
+test('閉じた後に案内を再表示し、ホームに残っているフォーカスだけを案内へ移す', async () => {
+  const key = INTERNAL_BROWSER_HOME_KEY;
+  for (const moveFocus of [false, true]) {
+    const requested = Promise.withResolvers();
+    const response = Promise.withResolvers();
+    const { saveSettings, values, notices, context } = createSettingsSaveHarness(
+      { [key]: 'https://example.com/', owner: '' }, () => {
+        requested.resolve();
+        return response.promise;
+      },
+    );
+    const home = {};
+    const address = {};
+    const document = { activeElement: home };
+    const configure = { focus() { document.activeElement = this; } };
+    context.document = document;
+    context.internalBrowserSidebar = { querySelector(selector) {
+      assert.equal(selector, '[data-action="home-settings"]');
+      return configure;
+    } };
+    context.canRestoreModalFocus = button => button === configure && notices.at(-1) === true;
+
+    values[key] = '';
+    values.owner = 'retry-owner';
+    const saving = saveSettings();
+    await requested.promise;
+    // モーダルが閉じてホームへ戻った時点を作り、別の操作先へ移った場合も確認する。
+    context.autoClose.isClosed = true;
+    context.restoredHomeButton = home;
+    if (moveFocus) document.activeElement = address;
+    response.resolve({ ok: false, writtenKeys: [key], hasInternalBrowserHome: false });
+    assert.equal(await saving, false);
+    assert.deepEqual(notices, [true]);
+    assert.equal(document.activeElement, moveFocus ? address : configure);
+  }
 });
 
 test('外部保存の部分成功後は失敗キーだけを再送し、成功先への別プロセスの変更を保持する', async t => {

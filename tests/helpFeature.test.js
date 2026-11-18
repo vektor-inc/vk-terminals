@@ -121,7 +121,7 @@ test('単体の通常保存では反映確認の例外後も成功表示で自�
   let saved = false;
   const msg = { textContent: '', className: '', classList: { add() {} } };
   const context = {
-    validatable: [], msg, configFailedFiles: [],
+    validatable: [], isInvalidVisibleEntry: () => false, msg, configFailedFiles: [],
     internalBrowserOpen: false, settingsInteractionRevision: 0,
     savedFieldValues: {}, getCurrentSettingValues: () => ({}),
     lockSettingsFooter() {}, syncDirtyTabs() {}, refreshSettingsContentSavedValues() {},

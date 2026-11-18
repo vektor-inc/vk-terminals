@@ -273,6 +273,43 @@ test('外部設定で起動してもホーム URL は VK Terminals に保存し�
     await expect(settings).toBeHidden();
     await expect(configure).toBeFocused();
 
+    // 空欄の保存応答より先に閉じたときは、ホームにとどまる場合だけ案内へフォーカスを移す。
+    for (const moveFocus of [false, true]) {
+      await configure.press('Enter');
+      await input.fill(normalizedUrl);
+      await githubTab.click();
+      await ownerInput.fill('retry-owner');
+      await save.click();
+      await expect(status).toBeEmpty();
+      await expect(message).toHaveText(partialMessage);
+      await browserTab.click();
+      await input.fill('');
+      await expect(message).toHaveText(partialMessage);
+      await win.evaluate(() => {
+        const original = VKIpc.invoke;
+        VKIpc.invoke = async (channel, ...args) => {
+          const result = await original(channel, ...args);
+          if (channel !== 'settings:save') return result;
+          VKIpc.invoke = original;
+          return new Promise(resolve => { window.releaseEmptyHomeSave = () => resolve(result); });
+        };
+      });
+      await save.click();
+      await win.waitForFunction(() => typeof window.releaseEmptyHomeSave === 'function');
+      expect(JSON.parse(fs.readFileSync(ownConfigPath, 'utf8')).internalBrowserHomeUrl).toBe('');
+      if (moveFocus) await settings.getByRole('button', { name: 'キャンセル' }).click();
+      else await win.keyboard.press('Escape');
+      await expect(settings).toBeHidden();
+      await expect(home).toBeFocused();
+      if (moveFocus) await address.focus();
+      await win.evaluate(() => {
+        window.releaseEmptyHomeSave();
+        delete window.releaseEmptyHomeSave;
+      });
+      await expect(status).toHaveText('ホームページが設定されていません。');
+      await expect(moveFocus ? address : configure).toBeFocused();
+    }
+
     // 案内から設定を開き、専用 URL を空欄のまま owner だけ保存する。
     fs.writeFileSync(externalConfigPath, '{}');
     await expect(status).toHaveText('ホームページが設定されていません。');

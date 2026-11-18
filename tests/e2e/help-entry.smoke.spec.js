@@ -227,7 +227,10 @@ test('使い方・ヘルプ: 確認失敗の再確認、未保存キャンセル
         if (channel === 'settings:save') {
           if (window.saveMode === 'throw') throw new Error('保存できません');
           if (window.saveMode === 'fail') return { ok: false, error: '保存できません' };
-          return { ok: true };
+          if (window.saveMode === 'delay') {
+            await new Promise(resolve => { window.releaseHelpSave = resolve; });
+          }
+          return { ok: true, writtenKeys: Object.keys(args[0]) };
         }
         if (channel === 'app:config-reflection' && window.saveMode === 'readThrow') throw new Error('読み込みできません');
         if (channel === 'app:config-reflection') return { revision: Date.now(), failedFiles: window.saveMode === 'read' ? ['config.json'] : [] };
@@ -347,6 +350,27 @@ test('使い方・ヘルプ: 確認失敗の再確認、未保存キャンセル
     await expect(win.locator('.settings-help-entry')).toContainText('ガイドを起動できませんでした');
     await expect(win.locator('.pane')).toHaveCount(beforeFailure);
     await win.evaluate(() => { window.helpFail = false; });
+
+    // 「保存して開く」の応答を待つ間に追加入力すると、ガイドを開かず設定を保持する。
+    await win.evaluate(() => { window.saveMode = 'delay'; });
+    await win.getByRole('button', { name: 'AI に相談', exact: true }).click();
+    await win.getByRole('button', { name: '保存して開く' }).click();
+    await win.waitForFunction(() => typeof window.releaseHelpSave === 'function');
+    const basicTab = win.getByRole('tab', { name: /^基本/ });
+    await basicTab.click();
+    await win.getByLabel('名前', { exact: true }).fill('extra');
+    await win.evaluate(() => {
+      window.saveMode = null;
+      window.releaseHelpSave();
+      delete window.releaseHelpSave;
+    });
+    await expect(win.locator('.settings-msg')).toHaveText('追加の編集が保存されていません。もう一度保存してください。');
+    await expect(win.locator('.settings-modal')).toBeVisible();
+    await expect(win.getByLabel('名前', { exact: true })).toHaveValue('extra');
+    await expect(basicTab).toHaveClass(/is-dirty/);
+    expect(await win.evaluate(() => window.helpCalls)).toBe(1);
+
+    await win.getByRole('tab', { name: '使い方・ヘルプ' }).click();
     await win.getByRole('button', { name: 'AI に相談', exact: true }).click();
     await win.getByRole('button', { name: '保存して開く' }).click();
     await expect(win.getByRole('button', { name: 'AI に相談', exact: true })).toBeDisabled();

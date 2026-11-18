@@ -6723,6 +6723,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
   // ここは「いつ武装し、いつ取り消すか」だけを決める。
   const autoClose = createAutoCloseController({ onFire: () => { if (!configFailedFiles.length) close(); } });
   let settingsInteractionRevision = 0;
+  let restoredHomeButton = null;
   let unregisterEscapeLayer = () => {};
   let releaseFocusTrap = () => {};
   const close = () => {
@@ -6753,8 +6754,10 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
         ? internalBrowserSidebar.querySelector('[data-action="home"]') : null;
       const sidebarSettingsButton = sidebarOpen ? document.querySelector('#sidebar-settings button') : null;
       const homeSettingsButton = homeButton && internalBrowserSidebar.querySelector('[data-action="home-settings"]');
-      [homeSettingsButton ?? restoreFocusElement, homeButton, sidebarSettingsButton, document.getElementById('settings-btn')]
-        .find(canRestoreModalFocus)?.focus();
+      const target = [homeSettingsButton ?? restoreFocusElement, homeButton, sidebarSettingsButton, document.getElementById('settings-btn')]
+        .find(canRestoreModalFocus);
+      target?.focus();
+      if (target === homeButton && document.activeElement === homeButton) restoredHomeButton = homeButton;
     }
   };
   // ここから後の例外では、close に overlay・キー操作・各タイマーをまとめて片付けさせる。
@@ -7868,25 +7871,19 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
   // 各欄の再検証リスナはこの下で登録されており、同じ input イベントでは onEntryEdited の
   // 方が先に走るため、この時点の aria-invalid は 1 打鍵ぶん古い。値を見れば登録順に
   // 依存しない。非表示・無効の欄は applyFieldValidity 同様に検証対象から外す。
-  const hasInvalidVisibleEntry = () => validatable.some(({ field, id }) => {
+  const isInvalidVisibleEntry = ({ field, id }) => {
     const input = getEntryInput(id);
     if (!input || !isEntryVisible(id) || isEntryDisabled(id)) return false;
     return !isFieldValueValid(field, input);
-  });
+  };
 
-  // フッターの総括メッセージは「表示が実態と食い違った時点」で消す。
-  //  - 「保存しました」(ok): 編集を再開した時点で食い違う（未保存の変更を抱えている）
-  //  - 「入力内容に問題があります」(err): 不正な欄がゼロになった時点で食い違う
-  // err を打鍵のたびに消さないのは、直している最中に何を指摘されたのかを見失わせない
-  // ため。1 つでも不正が残っていれば出したままにする。逆に直しきったあとも残すと、
-  // 問題が無いのに「まだどこかにある」と言い続けることになり、存在しない不正欄を
-  // 探させてしまう。
+  // 部分成功の内訳は次の保存結果まで保持し、形式エラーは修正に合わせて消す。
   const clearStaleSettingsMessage = () => {
-    const stale = msg.classList.contains('ok')
-      || (msg.classList.contains('err') && !hasInvalidVisibleEntry());
-    if (!stale) return;
-    msg.textContent = '';
-    msg.className = 'settings-msg';
+    if (!validatable.some(isInvalidVisibleEntry)) settingsValidationMessage = '';
+    if (settingsSaveMessage.kind === 'ok' || settingsSaveMessage.kind === 'err') {
+      settingsSaveMessage = { text: '', kind: '' };
+    }
+    renderSettingsMessages();
   };
 
   // 保存後にユーザーが操作を続けているならパネルを勝手に閉じない、という原則は
@@ -8001,54 +7998,69 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
   }
 
   const savedFieldValues = getCurrentSettingValues();
-  const getChangedSettingValues = () => Object.fromEntries(Object.entries(getCurrentSettingValues())
+  const getChangedSettingValues = (values = getCurrentSettingValues()) => Object.fromEntries(Object.entries(values)
     .filter(([key, value]) => value !== savedFieldValues[key]));
   let settingsSaveQueue = Promise.resolve();
+  let settingsSaveMessage = { text: '', kind: '' };
+  let settingsValidationMessage = '';
+
+  function renderSettingsMessages() {
+    const text = [settingsSaveMessage.text, settingsValidationMessage].filter(Boolean).join(' ');
+    const tone = (settingsValidationMessage || settingsSaveMessage.kind === 'partial') ? 'err' : settingsSaveMessage.kind;
+    if (msg.textContent !== text) msg.textContent = text;
+    msg.className = tone ? 'settings-msg ' + tone : 'settings-msg';
+  }
+
+  function showSettingsSaveMessage(text, kind = '') {
+    settingsSaveMessage = { text, kind };
+    renderSettingsMessages();
+  }
 
   function saveSettings({ keepOpen = false } = {}) {
     autoClose.cancel();
+    const values = getCurrentSettingValues();
+    const invalidEntries = validatable.filter(isInvalidVisibleEntry);
     const interactionRevision = settingsInteractionRevision;
-    // 先行応答で保存済みの値を反映してから、現在の入力を検証し、差分だけ送る。
+    // 押下時の入力と検証結果を保持し、先行応答を反映した比較元から差分を出す。
     const pending = settingsSaveQueue.then(() => persistSettingsChanges({
-      keepOpen,
+      keepOpen, values, invalidEntries,
+      isLatestSave: () => settingsSaveQueue === pending,
       canAutoClose: () => settingsSaveQueue === pending && settingsInteractionRevision === interactionRevision,
     })).catch(error => {
-      msg.textContent = 'エラー: ' + error.message;
-      msg.className = 'settings-msg err';
+      if (!autoClose.isClosed) showSettingsSaveMessage('エラー: ' + error.message, 'err');
       return false;
     });
     settingsSaveQueue = pending;
     return pending;
   }
 
-  async function persistSettingsChanges({ keepOpen, canAutoClose }) {
+  async function persistSettingsChanges({ keepOpen, values, invalidEntries, isLatestSave, canAutoClose }) {
     if (autoClose.isClosed) return false;
-    const out = getChangedSettingValues();
-
-    // 保存前の検証ゲート: 全エラー表示を一旦クリアしてから対象を一括再判定する。
-    for (const { field, id } of validatable) clearFieldValidity(field, id);
-    let firstInvalid = null;
-    for (const { field, id } of validatable) {
-      if (!Object.hasOwn(out, field.key)) continue;
-      const valid = applyFieldValidity(field, id);
-      if (!valid && !firstInvalid) firstInvalid = modal.querySelector('#' + id);
-    }
-    // 1 つでも不一致なら settings:save を呼ばず中断し、最初の不正欄へフォーカスする。
-    if (firstInvalid) {
-      msg.textContent = '入力内容に問題があります';
-      msg.className = 'settings-msg err';
-      // タブ表示のときは switchToFieldTab が着地まで済ませている（二重に呼んでも冪等）。
-      // タブ無しモードでは何もしないので、ここで中央寄せとフォーカスを行う。
-      switchToFieldTab(firstInvalid);
-      if (typeof firstInvalid.scrollIntoView === 'function') {
-        firstInvalid.scrollIntoView({ block: 'center' });
+    const out = getChangedSettingValues(values);
+    const invalidChanges = invalidEntries.filter(({ field }) => Object.hasOwn(out, field.key));
+    if (invalidChanges.length > 0) {
+      const currentValues = getCurrentSettingValues();
+      let firstInvalid = null;
+      // 予約後に編集された欄に、古い入力のエラーやフォーカスを戻さない。
+      for (const { field, id } of invalidChanges) {
+        if (currentValues[field.key] !== out[field.key] || applyFieldValidity(field, id)) continue;
+        firstInvalid ??= getEntryInput(id);
       }
-      firstInvalid.focus({ preventScroll: true });
+      settingsValidationMessage = firstInvalid ? '入力内容に問題があります'
+        : '保存時の入力内容に問題がありました。現在の内容を確認して保存してください。';
+      if (settingsSaveMessage.kind === 'partial') renderSettingsMessages();
+      else showSettingsSaveMessage('');
+      if (firstInvalid) {
+        switchToFieldTab(firstInvalid);
+        firstInvalid.scrollIntoView?.({ block: 'center' });
+        firstInvalid.focus({ preventScroll: true });
+      }
       return false;
     }
 
-    msg.textContent = '保存中...';
-    msg.className = 'settings-msg';
+    settingsValidationMessage = '';
+    if (settingsSaveMessage.kind === 'partial') renderSettingsMessages();
+    else showSettingsSaveMessage('保存中...');
     const res = await VKIpc.invoke('settings:save', out);
     // 部分成功でも、実際に保存した欄だけを次の保存時の比較元にする。
     const writtenKeys = (res?.writtenKeys ?? []).filter((key) => Object.hasOwn(out, key));
@@ -8056,36 +8068,46 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
     if (internalBrowserOpen && (res?.hasInternalBrowserHome === true
       || (focusFieldKey === INTERNAL_BROWSER_HOME_KEY && res?.hasInternalBrowserHome === false))) {
       setInternalBrowserHomeNotice(!res.hasInternalBrowserHome);
+      // 閉じた直後の復帰先にまだいる場合だけ、再表示した案内へ移す。
+      if (!res.hasInternalBrowserHome && restoredHomeButton && document.activeElement === restoredHomeButton) {
+        const configureButton = internalBrowserSidebar.querySelector('[data-action="home-settings"]');
+        if (canRestoreModalFocus(configureButton)) configureButton.focus();
+      }
+      restoredHomeButton = null;
     }
     if (autoClose.isClosed) return false;
-    if (writtenKeys.length > 0) refreshSettingsContentSavedValues();
+    if (res?.ok || writtenKeys.length > 0) refreshSettingsContentSavedValues();
     if (res?.ok) {
       // dirty 解除でフッターの構成が変わらないよう、先に固定してから解除する。
       lockSettingsFooter();
       syncDirtyTabs(getChangedSettingValues());
-      msg.textContent = '保存しました。反映状況は設定の案内をご確認ください。';
-      msg.classList.add('ok');
+      showSettingsSaveMessage('保存しました。反映状況は設定の案内をご確認ください。', 'ok');
       await refreshConfigReflection({ throwOnError: keepOpen });
+      if (autoClose.isClosed) return false;
       if (configFailedFiles.length) {
-        msg.textContent = '保存しましたが、設定を読み込めませんでした。対象ファイルを確認してください。';
-        msg.className = 'settings-msg err';
+        showSettingsSaveMessage('保存しましたが、設定を読み込めませんでした。対象ファイルを確認してください。', 'err');
         autoClose.cancel();
         return false;
-      } else if (!keepOpen && canAutoClose()) autoClose.arm();
+      }
+      const hasUnsavedChanges = Object.keys(getChangedSettingValues()).length > 0;
+      if (keepOpen && (hasUnsavedChanges || !isLatestSave())) {
+        showSettingsSaveMessage('追加の編集が保存されていません。もう一度保存してください。', 'err');
+        return false;
+      }
+      if (!keepOpen && !hasUnsavedChanges && canAutoClose()) autoClose.arm();
       return true;
     }
-    msg.classList.add('err');
     if (writtenKeys.length > 0) {
       const written = new Set(writtenKeys);
       const labels = (isWritten) => entries
         .filter(({ field }) => Object.hasOwn(out, field.key) && written.has(field.key) === isWritten)
         .map(({ field }) => field.label || 'ラベルのない項目')
         .join('、');
-      msg.textContent = `「${labels(true)}」を保存しました。「${labels(false)}」は再保存してください。`;
+      showSettingsSaveMessage(`「${labels(true)}」を保存しました。「${labels(false)}」は再保存してください。`, 'partial');
       syncDirtyTabs(getChangedSettingValues());
       await refreshConfigReflection();
     } else {
-      msg.textContent = 'エラー: ' + (res?.error || '不明なエラー');
+      showSettingsSaveMessage('エラー: ' + (res?.error || '不明なエラー'), 'err');
     }
     return false;
   }

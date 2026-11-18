@@ -130,6 +130,7 @@ internalBrowserSidebar.innerHTML = `<div class="internal-browser-resizer" role="
   </div>
   <div class="internal-browser-notice" role="status" hidden></div><div class="internal-browser-error" role="status" hidden><p class="internal-browser-error-message">ページを表示できませんでした</p><button type="button" data-action="reload">再読み込み</button><button type="button" data-action="external">外部ブラウザで開く</button></div><div class="internal-browser-page"></div>`;
 let internalBrowserOpen = false;
+let internalBrowserHomeRequestGeneration = 0;
 // 広く表示中だけ値を持つ（createWideState の戻り値）。
 let internalBrowserWide = null;
 let internalBrowserUrl = '';
@@ -405,6 +406,10 @@ function setInternalBrowserOpen(value, { focus = internalBrowserHasPage ? 'prese
   // ブラウザを閉じるときは広く表示を解除し、格納したペインをグリッドへ戻す。
   if (!value && internalBrowserWide) exitInternalBrowserWide();
   internalBrowserOpen = value;
+  if (!value) {
+    internalBrowserHomeRequestGeneration++;
+    internalBrowserSidebar.querySelector('.internal-browser-home-error').textContent = '';
+  }
   if (!value && internalBrowserSidebar.contains(document.activeElement)) document.getElementById('internal-browser-toggle')?.focus();
   if (!value) setInternalBrowserHomeNotice(false);
   if (value && !internalBrowserHasPage) {
@@ -567,8 +572,10 @@ internalBrowserSidebar.addEventListener('click', event => {
   }
   else if (action === 'wide') animateLayoutChange(toggleInternalBrowserWide, { direction: internalBrowserWide ? 'exit' : 'enter' });
   else if (action === 'home') {
+    const requestGeneration = internalBrowserHomeRequestGeneration;
     const failureMessage = 'ホームページを開けませんでした。もう一度お試しください。';
     const showHomeFailure = () => {
+      if (!internalBrowserOpen || requestGeneration !== internalBrowserHomeRequestGeneration) return;
       if (showGenericToast(failureMessage)) {
         internalBrowserSidebar.querySelector('.internal-browser-home-error').textContent = '';
         externalUrlToastEl.dataset.homeFailure = 'true';
@@ -578,6 +585,7 @@ internalBrowserSidebar.addEventListener('click', event => {
       if (internalBrowserOpen) syncInternalBrowserLayout();
     };
     VKIpc.invoke('internal-browser:action', action).then(result => {
+      if (requestGeneration !== internalBrowserHomeRequestGeneration) return;
       if (result === false) { showHomeFailure(); return; }
       if (internalBrowserOpen) setInternalBrowserHomeNotice(result === 'home-unset');
       internalBrowserSidebar.querySelector('.internal-browser-home-error').textContent = '';

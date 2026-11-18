@@ -569,6 +569,7 @@ test('ホーム操作の false 応答と IPC 拒否を再試行案内として�
     const context = vm.createContext({
       internalBrowserSidebar: sidebar,
       internalBrowserOpen: true,
+      internalBrowserHomeRequestGeneration: 0,
       externalUrlToastEl: toast,
       VKIpc: { invoke(channel, action) {
         assert.equal(channel, 'internal-browser:action');
@@ -612,7 +613,7 @@ test('ホーム操作の false 応答と IPC 拒否を再試行案内として�
   let click;
   vm.runInNewContext(clickHandler, {
     internalBrowserSidebar: { addEventListener(_type, handler) { click = handler; }, querySelector: () => homeError },
-    internalBrowserOpen: true, externalUrlToastEl: null,
+    internalBrowserOpen: true, internalBrowserHomeRequestGeneration: 0, externalUrlToastEl: null,
     VKIpc: { invoke: async () => 'home-unset' },
     setInternalBrowserHomeNotice: value => notices.push(value),
     syncInternalBrowserLayout() {},
@@ -620,6 +621,61 @@ test('ホーム操作の false 応答と IPC 拒否を再試行案内として�
   click({ target: { closest: () => ({ dataset: { action: 'home' } }) } });
   await new Promise(setImmediate);
   assert.deepEqual(notices, [true]);
+});
+
+test('ホーム失敗は閉じると消え、閉じた後の遅延した失敗も再表示しない', async () => {
+  const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
+  const setOpen = source.match(/function setInternalBrowserOpen\([^]*?\n\}/)?.[0];
+  const clickHandler = source.match(/internalBrowserSidebar\.addEventListener\('click', event => \{[^]*?\n\}\);/)?.[0];
+  assert.ok(setOpen && clickHandler);
+
+  for (const replyKind of ['false', 'reject']) for (const closeBeforeReply of [false, true]) {
+    const pending = Promise.withResolvers();
+    const homeError = { textContent: '' };
+    const toasts = [];
+    const notices = [];
+    let click;
+    const sidebar = {
+      contains: () => false,
+      addEventListener(_type, handler) { click = handler; },
+      querySelector(selector) {
+        assert.equal(selector, '.internal-browser-home-error');
+        return homeError;
+      },
+    };
+    const context = vm.createContext({
+      internalBrowserOpen: true, internalBrowserHasPage: true,
+      internalBrowserHomeRequestGeneration: 0, internalBrowserWide: null,
+      internalBrowserSidebar: sidebar,
+      externalUrlToastEl: { dataset: { persistent: 'true' }, hidden: false },
+      document: { activeElement: null, getElementById: () => ({ focus() {} }) },
+      VKIpc: { invoke: () => pending.promise },
+      setInternalBrowserHomeNotice: value => notices.push(value),
+      syncInternalBrowserLayout() {},
+      showGenericToast: message => { toasts.push(message); return false; },
+    });
+    const { setInternalBrowserOpen } = vm.runInContext(`${setOpen}\n${clickHandler}\n({ setInternalBrowserOpen })`, context);
+    click({ target: { closest: () => ({ dataset: { action: 'home' } }) } });
+    if (!closeBeforeReply) {
+      if (replyKind === 'false') pending.resolve(false);
+      else pending.reject(new Error('IPC failed'));
+      await new Promise(setImmediate);
+      assert.match(homeError.textContent, /ホームページを開けませんでした/);
+      assert.equal(toasts.length, 1);
+    }
+    setInternalBrowserOpen(false);
+    assert.equal(homeError.textContent, '');
+    if (closeBeforeReply) {
+      if (replyKind === 'false') pending.resolve(false);
+      else pending.reject(new Error('IPC failed'));
+      await new Promise(setImmediate);
+      assert.equal(homeError.textContent, '');
+      assert.deepEqual(toasts, []);
+    }
+    setInternalBrowserOpen(true);
+    assert.equal(homeError.textContent, '');
+    assert.deepEqual(notices, [false]);
+  }
 });
 
 test('ホーム失敗の印は別の汎用・外部URLトーストへの差し替えと消去で外れる', () => {
@@ -711,9 +767,11 @@ test('タイトルバーから空状態を開くと表示後にURL欄へ移り�
       '.internal-browser-url': address,
       '.internal-browser-notice': notice,
       '.internal-browser-home-notice': homeNotice,
+      '.internal-browser-home-error': { textContent: '' },
     })[selector] };
   const context = vm.createContext({ document, internalBrowserSidebar: sidebar,
     internalBrowserOpen: false, internalBrowserHasPage: false, internalBrowserWide: null,
+    internalBrowserHomeRequestGeneration: 0,
     // 切り替えのアニメーション（issue #629）は即時に反映する形で置き換える。
     animateLayoutChange: update => update(),
     syncInternalBrowserLayout() { sidebar.hidden = !context.internalBrowserOpen; calls.push('layout'); } });

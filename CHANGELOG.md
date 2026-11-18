@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 不具合修正 ] アプリ内ブラウザで GitHub などのコピーボタンを押しても、クリップボードにコピーされない問題を修正（[#641](https://github.com/vektor-inc/vk-terminals/issues/641)）
+
 ## 1.107.0
 
 - [ 機能追加 ] Codex の固定入口から、許可された別リポジトリの issue に担当者を追加できるように（[#636](https://github.com/vektor-inc/vk-terminals/issues/636)）

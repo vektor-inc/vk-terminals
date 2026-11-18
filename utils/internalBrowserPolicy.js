@@ -22,7 +22,12 @@ function validateBrowserBounds(rect, windowBounds) {
   return { x, y, width: Math.max(0, Math.min(width, windowBounds.width - x)), height: Math.max(0, Math.min(height, windowBounds.height - y)) };
 }
 
+// ページのコピーボタン（navigator.clipboard.writeText）が使う書き込み権限だけを許可する。
+// 読み取り（clipboard-read）・カメラ・通知などは従来どおりすべて拒否する。
+const ALLOWED_BROWSER_PERMISSIONS = new Set(['clipboard-sanitized-write']);
+function isAllowedBrowserPermission(permission) { return ALLOWED_BROWSER_PERMISSIONS.has(permission); }
+
 function isBrowserUrl(url) { return isSafeHttpUrl(url); }
 function isNavigationUrl(url) { return isHttpUrl(url) || isHelpUrl(url); }
 
-module.exports = { HELP_URL, isHelpUrl, PARTITION, clampBrowserWidth, validateBrowserBounds, isBrowserUrl, isNavigationUrl };
+module.exports = { HELP_URL, isHelpUrl, PARTITION, clampBrowserWidth, validateBrowserBounds, isBrowserUrl, isNavigationUrl, isAllowedBrowserPermission };

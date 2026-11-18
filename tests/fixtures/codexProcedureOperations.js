@@ -22,7 +22,7 @@
 //   alternative: 代替になりうる固定入口の操作（無ければ null）
 
 // 写した時点の vk-agents のコミット（手元の clone の HEAD）。
-const SNAPSHOT_VK_AGENTS_COMMIT = '3b71c1a97303b9c533b2d3cb6d41a390f857ceca';
+const SNAPSHOT_VK_AGENTS_COMMIT = '605f828f46c9ef088e93d4f5f63655b6f98f3052';
 
 const SHA_A = 'abc1234def5678abc1234def5678abc1234def56';
 const SHA_B = '0123456789abcdef0123456789abcdef01234567';
@@ -133,6 +133,14 @@ const knownGaps = [
     argv: ['gh', 'auth', 'status'],
     expectedError: /gh "auth" "status" is not allowed/,
     reason: '手順の最初に `gh auth status` で認証を確認するが、固定入口に `gh auth` は無い。入口は専用の gh 設定で認証済みの前提で動く。',
+    alternative: null,
+  },
+  {
+    procedureOperation: 'gh-write.sh asset-upload',
+    source: 'codex/vk-kore/step-1-2.md:16',
+    argv: ['gh', 'asset-upload', 'vektor-inc/review-assets', 'vk-terminals', 'issue-523', 'mock-1.png'],
+    expectedError: /gh "asset-upload" "vektor-inc\/review-assets" is not allowed/,
+    reason: '仕様の質問に添えるモック画像を画像置き場のリポジトリへ上げ、`ASSET_URL=` を本文に埋め込む操作。固定入口に画像のアップロードは無い。',
     alternative: null,
   },
   {

@@ -1,5 +1,7 @@
 # Changelog
 
+## 1.107.0
+
 - [ 機能追加 ] Codex の固定入口から、許可された別リポジトリの issue に担当者を追加できるように（[#636](https://github.com/vektor-inc/vk-terminals/issues/636)）
 - [ 不具合修正 ] 自動処理の作業ペインで Codex を使っても、サイドバーとスマートフォン版の Codex 使用量に反映されない問題を修正（[#638](https://github.com/vektor-inc/vk-terminals/issues/638)）
 

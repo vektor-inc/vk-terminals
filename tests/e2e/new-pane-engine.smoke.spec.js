@@ -6,6 +6,7 @@ const os = require('os');
 const path = require('path');
 // 起動〜初期描画待ちは共通ヘルパーへ集約している（issue #263 / #269）。
 const { closeApp, getFreePort, launchAppAndWait } = require('./helpers/electron-app');
+const { fakeEngineStayAliveSource } = require('./helpers/fake-engine');
 
 // issue #367: POST /api/new-pane の engine 指定を実 Electron で統合確認する。
 // HTTP の入力検証だけでなく、renderer への引き渡し、PTY へ書かれたコマンドまで通す。
@@ -57,7 +58,7 @@ const fs = require('fs');
 fs.appendFileSync(process.env.${captureEnvVar}, JSON.stringify(process.argv.slice(2)) + '\\n');
 // タスク用ポリシー（issue #428）の確認用に、起動時の CODEX_HOME も別ファイルへ残す。
 fs.appendFileSync(process.env.${captureEnvVar} + '.codex-home', JSON.stringify(process.env.CODEX_HOME || null) + '\\n');
-`, { mode: 0o755 });
+${fakeEngineStayAliveSource(binName)}`, { mode: 0o755 });
   return { binDir, capturePath };
 }
 

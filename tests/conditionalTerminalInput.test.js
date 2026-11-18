@@ -248,6 +248,9 @@ function terminalInputHarness() {
     ipcMain: { on: (name, callback) => handlers.set(name, callback) },
     ptys: new Map([['1', ptyProcess]]),
     disarmTrustAutomationForUserInput: () => {},
+    // Codex の起動直後の抑制（issue #621）は始めていないため、入力は落とさない。
+    launchInputQuiet: require('../utils/launchInputQuiet').createLaunchInputQuietWindow(),
+    userInputRevisions: require('../utils/terminalUserInput').createUserInputRevisions(),
     silentWriteRefresher: context.refresher,
     isTerminalQueryReplyOnly,
     isTerminalFocusNotificationOnly,

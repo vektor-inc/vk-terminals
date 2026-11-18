@@ -235,6 +235,15 @@ function createAgentLifecycleStore(options = {}) {
     entry.timer = null;
     entry.acquisitionTimer = null;
     entry.readyTimer = null;
+    settleExitWaiter(entry, false);
+  };
+  // 起動直後の終了待ち（waitForEarlyExit）を 1 度だけ解決する。
+  const settleExitWaiter = (entry, exited) => {
+    const waiter = entry.exitWaiter;
+    if (!waiter) return;
+    entry.exitWaiter = null;
+    clearTimer(waiter.timer);
+    waiter.resolve(exited);
   };
   const schedule = (id, entry) => {
     if (!entry.cancelled && !closed && states.get(id) === entry) entry.timer = setTimer(() => poll(id, entry), pollIntervalMs);
@@ -262,6 +271,7 @@ function createAgentLifecycleStore(options = {}) {
       entry.acquisitionTimer = setTimer(() => finishAcquisition(entry), acquisitionTimeoutMs);
     }
     entry.polling = false;
+    if (result.state === 'exited') settleExitWaiter(entry, true);
     if (result.terminal) stop(entry); else schedule(id, entry);
   };
   const finishAcquisition = (entry) => {
@@ -280,7 +290,9 @@ function createAgentLifecycleStore(options = {}) {
       const entry = states.get(id);
       const isCurrent = () => states.get(id) === entry && entry?.generation === generation && entry?.launchToken === launchToken && !closed;
       if (!isCurrent()) return { status: 'cancelled' };
-      Object.assign(entry, { shellPid, shellLstart: null, trackedGroups: new Map(), descendantGroupPgids: new Set(), baselinePgids: new Set(), baselineIdentities: new Map(), marker: null, markerBuffer: '', completionReceived: false, acquisitionOpen: false, acquisitionTimer: null, readyResolve: null, readyTimer: null, activated: false });
+      // 起動直後に終了した AI を同じ世代で起動し直す場合（issue #621）も、追跡を最初からやり直す。
+      if (entry.timer) clearTimer(entry.timer);
+      Object.assign(entry, { cancelled: false, timer: null, state: null, shellPid, shellLstart: null, trackedGroups: new Map(), descendantGroupPgids: new Set(), baselinePgids: new Set(), baselineIdentities: new Map(), marker: null, markerBuffer: '', completionReceived: false, acquisitionOpen: false, acquisitionTimer: null, readyResolve: null, readyTimer: null, activated: false });
       // プロンプトフックに未対応のシェルでは、そのまま起動コマンドを送る。
       if (!Object.hasOwn(PROMPT_HOOK_SHELLS, pathBasename(shellPath)) || platform === 'win32' || !Number.isSafeInteger(shellPid) || shellPid <= 0) return { status: 'passthrough', command };
       let processes;
@@ -325,6 +337,24 @@ function createAgentLifecycleStore(options = {}) {
       entry.acquisitionTimer = setTimer(() => finishAcquisition(entry), acquisitionTimeoutMs);
       schedule(id, entry);
       return true;
+    },
+    // 起動直後に AI が終了したかを、timeoutMs まで待って返す（issue #621）。
+    // 終了（exited）を確認したら true、時間切れ・追跡の打ち切り・世代違いなら false。
+    waitForEarlyExit(termId, generation, launchToken, timeoutMs) {
+      const id = String(termId);
+      const entry = states.get(id);
+      if (!entry || closed || entry.generation !== generation || entry.launchToken !== launchToken || entry.cancelled || !entry.activated) {
+        return Promise.resolve(false);
+      }
+      settleExitWaiter(entry, false);
+      return new Promise((resolve) => {
+        const waiter = { resolve, timer: null };
+        waiter.timer = setTimer(() => {
+          if (entry.exitWaiter === waiter) entry.exitWaiter = null;
+          resolve(false);
+        }, timeoutMs);
+        entry.exitWaiter = waiter;
+      });
     },
     // アプリの再起動後に、保持役のペインのシェル（#{pane_pid}）から AI 本体の生死の記録を作り直す。
     // 保存した PID と起動時刻が残っていればそれだけを、無ければシェルの前面のプロセスグループを採る。

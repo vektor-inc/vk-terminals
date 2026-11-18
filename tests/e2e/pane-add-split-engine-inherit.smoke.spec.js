@@ -4,6 +4,7 @@ const os = require('os');
 const path = require('path');
 // 起動〜初期描画待ちは共通ヘルパーへ集約している（issue #263 / #269）。
 const { closeApp, getFreePort, launchAppAndWait } = require('./helpers/electron-app');
+const { fakeEngineStayAliveSource } = require('./helpers/fake-engine');
 
 // issue #394: 「Codex のペインから追加・分割すると、新しいペインが Claude Code で
 // 起動してしまう」不具合の e2e。desktop の ＋ / 分割ボタン、空グリッドの
@@ -110,7 +111,7 @@ function createFakeExecutable(root, binName, captureEnvVar) {
   fs.writeFileSync(executablePath, `#!/usr/bin/env node
 const fs = require('fs');
 fs.appendFileSync(process.env.${captureEnvVar}, JSON.stringify(process.argv.slice(2)) + '\\n');
-`, { mode: 0o755 });
+${fakeEngineStayAliveSource(binName)}`, { mode: 0o755 });
   return { binDir, capturePath };
 }
 

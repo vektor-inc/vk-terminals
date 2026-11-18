@@ -8,11 +8,13 @@ const path = require('path');
 
 const {
   SETTINGS_SCHEMA_PATH,
+  addBrowserHomeSettings,
   buildBuiltinSettingsDescriptor,
   loadSettingsSchema,
   validateSettingsSchema,
 } = require('../settingsSchema');
 const { SETTINGS_CONTENT_BLOCK_TYPES } = require('../renderer/settingsTabs');
+const { isValidSettingsDescriptor, resolveFieldTargetPath } = require('../settingsTargets');
 
 function makeTempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-schema-'));
@@ -22,6 +24,33 @@ function writeJson(filePath, value) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, JSON.stringify(value, null, 2) + '\n');
 }
+
+test('外部設定のホームキーを組み込みの定義と保存先で置き換える', () => {
+  const builtin = buildBuiltinSettingsDescriptor({ targetPath: '/app/config.json' });
+  const external = {
+    targetPath: '/external/config.json',
+    tabs: [{ id: 'vk-terminals-browser', label: '外部設定' }],
+    groups: [{
+      tab: 'vk-terminals-browser',
+      fields: [
+        { key: 'github.owner', type: 'lines' },
+        { key: 'internalBrowserHomeUrl', type: 'text', targetPath: '/wrong/config.json' },
+        { key: 'internalBrowserHomeUrl.extra', type: 'text' },
+        null,
+      ],
+    }],
+  };
+  const combined = addBrowserHomeSettings(external, builtin);
+  assert.equal(isValidSettingsDescriptor(combined), true);
+  assert.deepEqual(combined.groups[0].fields, [external.groups[0].fields[0], null]);
+  const homeGroup = combined.groups[1];
+  assert.equal(combined.tabs[0], external.tabs[0]);
+  assert.notEqual(homeGroup.tab, combined.tabs[0].id);
+  assert.equal(homeGroup.tab, combined.tabs[1].id);
+  assert.deepEqual(homeGroup.fields, [{ ...builtin.groups[1].fields[0], targetPath: builtin.targetPath }]);
+  assert.equal(resolveFieldTargetPath(combined, homeGroup, homeGroup.fields[0]), builtin.targetPath);
+  assert.equal(external.groups[0].fields.length, 4);
+});
 
 test('settings-schema.json: valid JSON で必須構造を持つ', () => {
   const schema = JSON.parse(fs.readFileSync(SETTINGS_SCHEMA_PATH, 'utf8'));

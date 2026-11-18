@@ -4,6 +4,7 @@ const path = require('node:path');
 const { descriptorFieldTargetEntries } = require('../settingsTargets');
 const { normalizeOptionalHttpUrl } = require('../renderer/urlSafety');
 const { readSmallJson, USER_CONFIG_MAX_BYTES } = require('./configLiveReload');
+const INTERNAL_BROWSER_HOME_KEY = 'internalBrowserHomeUrl';
 
 function readOrchestratorOwners(descriptor, homeDir) {
   // 設定パネルと同じ保存先を優先し、単体起動では利用者の標準設定先を読む。
@@ -23,9 +24,10 @@ function resolveInternalBrowserHomeUrl(configuredUrl, readOwners) {
 
   // 空行は設定パネルと同じく無視し、旧形式の文字列も先頭の値として受け付ける。
   const owners = readOwners();
-  const first = Array.isArray(owners) ? owners.find(owner => typeof owner !== 'string' || owner.trim()) : owners;
+  const lines = typeof owners === 'string' ? owners.split(/\r\n?|\n/) : owners;
+  const first = Array.isArray(lines) ? lines.find(owner => typeof owner !== 'string' || owner.trim()) : undefined;
   const owner = typeof first === 'string' ? first.trim() : '';
   return /^[a-z\d](?:[a-z\d-]{0,37}[a-z\d])?$/i.test(owner) ? `https://github.com/${owner}` : '';
 }
 
-module.exports = { readOrchestratorOwners, resolveInternalBrowserHomeUrl };
+module.exports = { INTERNAL_BROWSER_HOME_KEY, readOrchestratorOwners, resolveInternalBrowserHomeUrl };

@@ -2,6 +2,7 @@
 
 const { test, expect } = require('@playwright/test');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { closeApp, getFreePort, launchAppAndWait } = require('./helpers/electron-app');
 const { PARTITION } = require('../../utils/internalBrowserPolicy');
@@ -39,12 +40,38 @@ test('ホームは専用 URL、先頭オーナーの順に開き、設定が無�
     await expect(address).toHaveValue('');
     await expect(reload).toBeDisabled();
 
+    // 設定が空のまま別のページを表示し、ホームで移動せずに設定へ進めることを確認する。
+    const currentUrl = 'https://example.com/current';
+    await address.fill(currentUrl);
+    await address.press('Enter');
+    await expect(reload).toBeEnabled();
+    await home.press('Enter');
+    const homeNotice = win.locator('.internal-browser-home-notice');
+    const homeStatus = homeNotice.getByRole('status');
+    const configure = homeNotice.getByRole('button', { name: 'ホームページ URL を設定' });
+    await expect(homeStatus).toHaveText('ホームページが設定されていません。');
+    await expect(homeStatus).toHaveAttribute('aria-live', 'polite');
+    await home.focus();
+    await win.keyboard.press('Tab');
+    await expect(address).toBeFocused();
+    await expect(address).toHaveValue(currentUrl);
+    await expect(toolbar.getByRole('button', { name: '戻る', exact: true })).toBeDisabled();
+
+    await configure.press('Enter');
+    const settings = win.locator('.settings-modal');
+    const input = settings.getByRole('textbox', { name: 'ホームページ URL', exact: true });
+    await expect(settings).toHaveAttribute('aria-modal', 'true');
+    await expect(input).toBeFocused();
+    await expect.poll(() => toolbar.evaluate(el => Boolean(el.closest('[inert]')))).toBe(true);
+    await win.keyboard.press('Escape');
+    await expect(settings).toBeHidden();
+    await expect(configure).toBeFocused();
+    await expect(address).toHaveValue(currentUrl);
+
     fs.mkdirSync(path.dirname(ownerConfig), { recursive: true });
     fs.writeFileSync(ownerConfig, JSON.stringify({ github: { owner: ['first-owner', 'second-owner'] } }));
 
     await win.locator('#settings-btn').click();
-    const settings = win.locator('.settings-modal');
-    const input = settings.getByRole('textbox', { name: 'ホームページ URL', exact: true });
     const save = settings.getByRole('button', { name: '保存', exact: true });
     await input.fill('file:///tmp/example');
     await save.click();
@@ -69,6 +96,7 @@ test('ホームは専用 URL、先頭オーナーの順に開き、設定が無�
     await win.keyboard.press('Enter');
     await expect(address).toHaveValue(expectedUrl);
     await expect(reload).toBeEnabled();
+    await expect(configure).toBeHidden();
 
     await win.locator('#settings-btn').click();
     await input.fill('');
@@ -82,5 +110,91 @@ test('ホームは専用 URL、先頭オーナーの順に開き、設定が無�
     await expect(address).toHaveValue(expectedUrl);
   } finally {
     await closeApp({ app, tmpRoot });
+  }
+});
+
+// 対象: 外部ディスクリプタで起動し、組み込みの保存先と外部オーナーへのフォールバックを確認する。
+test('外部設定で起動してもホーム URL は VK Terminals に保存し、空欄なら外部の先頭オーナーを開く', async () => {
+  const descriptorDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-terminals-e2e-external-home-'));
+  const descriptorPath = path.join(descriptorDir, 'descriptor.json');
+  const externalConfigPath = path.join(descriptorDir, 'orchestrator.json');
+  const externalConfig = {
+    github: { owner: ['external-first', 'external-second'] },
+    internalBrowserHomeUrl: 'https://example.com/external-value',
+  };
+  let launched;
+  try {
+    fs.writeFileSync(externalConfigPath, JSON.stringify(externalConfig));
+    fs.writeFileSync(descriptorPath, JSON.stringify({
+      title: 'VK Orchestrator 設定',
+      tabs: [{ id: 'github', label: 'GitHub' }],
+      targetPath: externalConfigPath,
+      groups: [{
+        tab: 'github',
+        fields: [
+          { key: 'github.owner', type: 'lines', label: '作業対象リポジトリのオーナー' },
+          { key: 'internalBrowserHomeUrl', type: 'text', label: '外部のホーム URL' },
+        ],
+      }],
+    }));
+    launched = await launchAppAndWait({
+      port: await getFreePort(),
+      prefix: 'vk-terminals-e2e-external-home-',
+      config: { openInitialPane: false },
+      env: { VK_TERMINALS_SETTINGS: descriptorPath },
+      seedHome({ tmpHome }) {
+        const dir = path.join(tmpHome, '.vk-orchestrator');
+        fs.mkdirSync(dir);
+        fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ github: { owner: ['default-owner'] } }));
+      },
+    });
+    const { app, win, tmpRoot } = launched;
+    const ownConfigPath = path.join(tmpRoot, 'home', '.vk-terminals', 'config.json');
+    await app.evaluate(({ session }, partition) => {
+      session.fromPartition(partition).protocol.handle('https', () => new Response('browser home', {
+        headers: { 'Content-Type': 'text/html' },
+      }));
+    }, PARTITION);
+
+    const settingsButton = win.locator('#settings-btn');
+    const settings = win.getByRole('dialog', { name: /VK Orchestrator 設定/ });
+    const browserTab = settings.getByRole('tab', { name: 'アプリ内ブラウザ' });
+    const input = settings.getByRole('textbox', { name: 'ホームページ URL', exact: true });
+    const save = settings.getByRole('button', { name: '保存', exact: true });
+    await settingsButton.click();
+    await expect(settings.getByRole('textbox', { name: '作業対象リポジトリのオーナー' })).toHaveValue('external-first\nexternal-second');
+    await expect(settings.getByText('外部のホーム URL', { exact: true })).toHaveCount(0);
+    await browserTab.click();
+    await expect(input).toHaveValue('');
+    const normalizedUrl = 'https://example.com/home';
+    await input.fill('  HTTPS://EXAMPLE.COM:443/home  ');
+    await save.click();
+    await expect(settings).toBeHidden();
+    expect(JSON.parse(fs.readFileSync(ownConfigPath, 'utf8')).internalBrowserHomeUrl).toBe(normalizedUrl);
+    expect(JSON.parse(fs.readFileSync(externalConfigPath, 'utf8'))).toEqual(externalConfig);
+
+    await win.locator('#internal-browser-toggle').click();
+    const toolbar = win.locator('.internal-browser-toolbar');
+    const home = toolbar.getByRole('button', { name: 'ホーム', exact: true });
+    const address = toolbar.getByRole('textbox', { name: 'URL または検索語を入力' });
+    const reload = toolbar.getByRole('button', { name: '再読み込み', exact: true });
+    await home.click();
+    await expect(address).toHaveValue(normalizedUrl);
+    await expect(reload).toBeEnabled();
+
+    await settingsButton.click();
+    await browserTab.click();
+    await expect(input).toHaveValue(normalizedUrl);
+    await input.fill('');
+    await save.click();
+    await expect(settings).toBeHidden();
+    expect(JSON.parse(fs.readFileSync(ownConfigPath, 'utf8')).internalBrowserHomeUrl).toBe('');
+    expect(JSON.parse(fs.readFileSync(externalConfigPath, 'utf8'))).toEqual(externalConfig);
+    await home.click();
+    await expect(address).toHaveValue('https://github.com/external-first');
+    await expect(toolbar.getByRole('button', { name: '戻る', exact: true })).toBeEnabled();
+  } finally {
+    if (launched) await closeApp(launched);
+    fs.rmSync(descriptorDir, { recursive: true, force: true });
   }
 });

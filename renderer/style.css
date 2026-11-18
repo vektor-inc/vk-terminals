@@ -1209,6 +1209,7 @@ h4.settings-content-heading {
   background: #161b22;
   color: #c9d1d9;
   font-size: 12px;
+  line-height: 1.6;
   /* help 文中の \n を改行として表示する（menuItems の説明文＋例の 2 行表記など） */
   white-space: pre-line;
 }
@@ -1238,6 +1239,7 @@ h4.settings-content-heading {
 .settings-error {
   color: #f85149;
   font-size: 12px;
+  line-height: 1.6;
 }
 /* 空のエラー行は余白を作らないよう非表示にする（flex gap の影響も避ける）。 */
 .settings-error:empty {
@@ -4269,9 +4271,10 @@ body.pane-dragging * {
 @keyframes internal-browser-loading { from { transform: translateX(0); } to { transform: translateX(100%); } }
 @media (prefers-reduced-motion: reduce) { .internal-browser-progress { animation: none; } }
 .internal-browser-page { flex: 1 1 auto; min-height: 0; }
-.internal-browser-notice, .internal-browser-error { padding: 12px; font-size: 12px; line-height: 1.5; background: #161b22; }
+.internal-browser-home-notice, .internal-browser-notice, .internal-browser-error { padding: 12px; font-size: 12px; line-height: 1.5; background: #161b22; }
 .internal-browser-notice[hidden], .internal-browser-error[hidden], .internal-browser-progress[hidden] { display: none; }
-.internal-browser-notice button, .internal-browser-error button { margin: 6px 6px 0 0; padding: 4px 8px; border: 1px solid var(--vktm--color--border-interactive); border-radius: 4px; background: #21262d; color: #e6edf3; cursor: pointer; }
+.internal-browser-home-notice:has(> p:empty) { padding: 0; }
+.internal-browser-home-notice button, .internal-browser-notice button, .internal-browser-error button { margin: 6px 6px 0 0; padding: 4px 8px; border: 1px solid var(--vktm--color--border-interactive); border-radius: 4px; background: #21262d; color: #e6edf3; cursor: pointer; }
 .internal-browser-error [data-action="external"] { max-width: calc(100% - 6px); text-align: left; }
 /* 完全な遷移先を確認でき、長い URL でも回復操作とページの領域を保つ。 */
 .internal-browser-external-target,
@@ -4284,8 +4287,9 @@ body.pane-dragging * {
 .internal-browser-external-target { flex-shrink: 0; }
 .internal-browser-error [data-action="external"] { line-height: 1.5; }
 /* 案内文と操作を分け、狭い幅でもボタンを一組で揃える。 */
-.internal-browser-notice p { margin: 0; }
+.internal-browser-home-notice p, .internal-browser-notice p { margin: 0; }
 .internal-browser-notice-actions { display: flex; flex-wrap: nowrap; gap: 6px; margin-top: 6px; }
+.internal-browser-notice-actions[hidden] { display: none; }
 .internal-browser-notice-actions button { margin: 0; white-space: nowrap; }
 .internal-browser-choice { position: fixed; z-index: 2100; min-width: 210px; padding: 5px; border: 1px solid var(--vktm--color--border-interactive); border-radius: 6px; background: #161b22; color: #e6edf3; box-shadow: 0 8px 24px #0008; }
 .internal-browser-choice-heading { padding: 5px 8px; color: #8b949e; font-size: 11px; }

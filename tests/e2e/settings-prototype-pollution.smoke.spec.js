@@ -137,7 +137,7 @@ test('安全な外部ディスクリプタは拒否せず、その項目を表�
 
     await openSettings(launched.win);
     await expect(launched.win.locator('.settings-modal h2')).toContainText('安全な外部設定');
-    await expect(launched.win.locator('.settings-row')).toHaveCount(1);
+    await expect(launched.win.getByLabel('ホームページ URL', { exact: true })).toBeVisible();
     await expect(launched.win.getByLabel('危険なキー', { exact: true })).toHaveCount(0);
     const safeInput = launched.win.getByLabel('安全なキー', { exact: true });
     await safeInput.fill('保存できました');
@@ -146,6 +146,8 @@ test('安全な外部ディスクリプタは拒否せず、その項目を表�
       .toHaveText('保存しました。反映状況は設定の案内をご確認ください。');
     await expect.poll(() => JSON.parse(fs.readFileSync(targetPath, 'utf8')).safe.nested)
       .toBe('保存できました');
+    const ownConfig = JSON.parse(fs.readFileSync(path.join(launched.tmpRoot, 'home', '.vk-terminals', 'config.json'), 'utf8'));
+    expect(ownConfig.internalBrowserHomeUrl).toBeUndefined();
   } finally {
     if (launched) await closeApp(launched);
     fs.rmSync(descriptorRoot, { recursive: true, force: true });

@@ -40,6 +40,11 @@ test('専用 URL が空のときだけ先頭オーナーの GitHub ページを�
   }
 });
 
+test('改行区切りの旧形式では先頭の空でない行を使う', () => {
+  assert.equal(resolveInternalBrowserHomeUrl('', () => '\r\n  \r\n  Legacy-Org \r\nother'), 'https://github.com/Legacy-Org');
+  assert.equal(resolveInternalBrowserHomeUrl('', () => '\n  \ninvalid/org\nvalid-org'), '');
+});
+
 test('GitHub オーナーは設定パネルの保存先を優先し、指定が無ければホームの設定から読む', t => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-browser-home-'));
   t.after(() => fs.rmSync(homeDir, { recursive: true, force: true }));

@@ -1,6 +1,6 @@
 # Changelog
 
-- [ 機能追加 ] アプリ内ブラウザに、設定したページへ移動するホームボタンを追加（[#634](https://github.com/vektor-inc/vk-terminals/issues/634)）
+- [ 機能追加 ] アプリ内ブラウザにホームボタンを追加。設定したページを開き、移動先が未設定なら設定欄を案内（[#634](https://github.com/vektor-inc/vk-terminals/issues/634)）
 
 ## 1.106.0
 

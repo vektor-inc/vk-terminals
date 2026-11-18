@@ -12,8 +12,9 @@ test('タイトルバーから空状態を開くと表示後にURL欄へ移り�
   const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
   const setter = source.match(/function setInternalBrowserOpen\([\s\S]*?\n\}/)?.[0];
   const focusHelper = source.match(/function focusInternalBrowserToolbar\([\s\S]*?\n\}/)?.[0];
+  const homeNoticeHelper = source.match(/function setInternalBrowserHomeNotice\([\s\S]*?\n\}/)?.[0];
   const toggleHandler = source.match(/document\.getElementById\('internal-browser-toggle'\)\.addEventListener\('click',.*\);/)?.[0];
-  assert.ok(setter && focusHelper && toggleHandler);
+  assert.ok(setter && focusHelper && homeNoticeHelper && toggleHandler);
   const calls = [];
   const document = { activeElement: null, getElementById: () => toggle };
   const toggle = { focus() { document.activeElement = this; }, addEventListener(_type, handler) { this.click = handler; } };
@@ -21,14 +22,22 @@ test('タイトルバーから空状態を開くと表示後にURL欄へ移り�
     focus() { assert.equal(sidebar.hidden, false); calls.push('address'); document.activeElement = this; },
     closest() { return sidebar.hidden ? sidebar : null; } };
   const notice = { hidden: true, textContent: '' };
+  const homeNoticeActions = { hidden: true };
+  const homeNoticeStatus = { textContent: '' };
+  const homeNotice = { querySelector: selector => selector === '[role="status"]' ? homeNoticeStatus : homeNoticeActions,
+    contains: () => false };
   const sidebar = { hidden: true, contains: element => element === address,
-    querySelector: selector => selector === '.internal-browser-url' ? address : notice };
+    querySelector: selector => ({
+      '.internal-browser-url': address,
+      '.internal-browser-notice': notice,
+      '.internal-browser-home-notice': homeNotice,
+    })[selector] };
   const context = vm.createContext({ document, internalBrowserSidebar: sidebar,
     internalBrowserOpen: false, internalBrowserHasPage: false, internalBrowserWide: null,
     // 切り替えのアニメーション（issue #629）は即時に反映する形で置き換える。
     animateLayoutChange: update => update(),
     syncInternalBrowserLayout() { sidebar.hidden = !context.internalBrowserOpen; calls.push('layout'); } });
-  vm.runInContext(`${setter}\n${focusHelper}\n${toggleHandler}`, context);
+  vm.runInContext(`${setter}\n${focusHelper}\n${homeNoticeHelper}\n${toggleHandler}`, context);
   toggle.focus();
   toggle.click();
   assert.deepEqual(calls, ['layout', 'address']);
@@ -37,8 +46,13 @@ test('タイトルバーから空状態を開くと表示後にURL欄へ移り�
   assert.equal(address.value, '入力途中');
   assert.equal(address.selectionStart, 2);
   assert.equal(address.selectionEnd, 2);
+  vm.runInContext('setInternalBrowserHomeNotice(true)', context);
+  assert.equal(homeNoticeActions.hidden, false);
+  assert.equal(homeNoticeStatus.textContent, 'ホームページが設定されていません。');
   // 空状態の入力を残したまま閉じ、再び開いてもすぐ入力できる。
   toggle.click();
+  assert.equal(homeNoticeActions.hidden, true);
+  assert.equal(homeNoticeStatus.textContent, '');
   assert.equal(document.activeElement, toggle);
   toggle.click();
   assert.equal(document.activeElement, address);

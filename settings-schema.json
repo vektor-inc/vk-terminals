@@ -396,7 +396,7 @@
           "default": "",
           "placeholder": "https://example.com/",
           "invalidMessage": "有効な HTTP または HTTPS の URL を入力してください。",
-          "help": "ホームボタンで開く URL です。空欄の場合は、VK Orchestrator の「作業対象リポジトリのオーナー」の先頭に指定された GitHub ユーザーまたは組織のページを開きます。オーナーも未設定なら移動しません。"
+          "help": "http:// または https:// で始まる URL を入力して「保存」を押します。次にホームボタンを押すと、保存した URL が開きます。\n空欄で保存すると、VK Orchestrator の「作業対象リポジトリのオーナー」の先頭に指定された GitHub ページを開きます。オーナーも未設定の場合は、現在のページを表示したまま設定方法を案内します。"
         }
       ]
     }

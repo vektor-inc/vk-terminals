@@ -36,7 +36,7 @@ test('設定項目の説明を初期状態では隠し、ボタンで開閉し�
               { value: 'two', label: '2' },
             ],
           },
-          { key: 'apiHost', label: 'API ホスト', type: 'text', help: 'テキスト欄の説明' },
+          { key: 'apiHost', label: 'API ホスト', type: 'text', help: 'テキスト欄の説明', pattern: '^[0-9.]+$', invalidMessage: '数字とドットで入力してください。' },
           { key: 'count', label: '件数', type: 'number', help: '数値欄の説明' },
           {
             key: 'model',
@@ -73,6 +73,14 @@ test('設定項目の説明を初期状態では隠し、ボタンで開閉し�
     await expect(win.locator('.settings-help')).toHaveCount(8);
     for (const help of await win.locator('.settings-help').all()) {
       await expect(help).toBeHidden();
+    }
+    for (const row of await win.locator('.settings-row').filter({ has: win.locator('.settings-help-toggle') }).all()) {
+      await expect(row.locator('.settings-label-row .settings-help-toggle')).toHaveCount(1);
+      const helpFollowsInput = await row.evaluate(el => (
+        Boolean(el.querySelector('input, textarea, select').compareDocumentPosition(el.querySelector('.settings-help'))
+          & Node.DOCUMENT_POSITION_FOLLOWING)
+      ));
+      expect(helpFollowsInput).toBe(true);
     }
 
     // help が無い項目はラベル用ラッパーもトグルも増やさず、従来の DOM を保つ。
@@ -125,8 +133,17 @@ test('設定項目の説明を初期状態では隠し、ボタンで開閉し�
     await expect(toggle).toBeFocused();
     await expect(input).toHaveAttribute(
       'aria-describedby',
-      'set-field-5-help set-field-5-error set-field-5-notice'
+      'set-field-5-error set-field-5-help set-field-5-notice'
     );
+    await input.fill('invalid');
+    await toggle.focus();
+    const error = win.locator('#set-field-5-error');
+    await expect(error).toBeVisible();
+    await expect(help).toBeVisible();
+    await expect(input).toHaveAttribute('aria-invalid', 'true');
+    expect((await input.boundingBox()).y).toBeLessThan((await error.boundingBox()).y);
+    expect((await error.boundingBox()).y).toBeLessThan((await help.boundingBox()).y);
+    await input.fill('127.0.0.1');
 
     await toggle.click();
     await expect(help).toBeHidden();
@@ -136,11 +153,11 @@ test('設定項目の説明を初期状態では隠し、ボタンで開閉し�
       'set-field-5-error set-field-5-notice'
     );
 
-    // 開き直しても help が末尾へ回らず、固定した読み上げ順へ戻る。
+    // 開き直してもエラー、補足文の読み上げ順を維持する。
     await toggle.click();
     await expect(input).toHaveAttribute(
       'aria-describedby',
-      'set-field-5-help set-field-5-error set-field-5-notice'
+      'set-field-5-error set-field-5-help set-field-5-notice'
     );
 
     // applyFieldState が無効理由を外すために再構築しても、開いている help は落とさない。
@@ -149,12 +166,12 @@ test('設定項目の説明を初期状態では隠し、ボタンで開閉し�
     await modelToggle.click();
     await expect(model).toHaveAttribute(
       'aria-describedby',
-      'set-field-7-help set-field-7-error set-field-7-disabled-reason'
+      'set-field-7-error set-field-7-help set-field-7-disabled-reason'
     );
     await win.getByLabel('選択', { exact: true }).selectOption('two');
     await expect(model).toHaveAttribute(
       'aria-describedby',
-      'set-field-7-help set-field-7-error'
+      'set-field-7-error set-field-7-help'
     );
     await expect(win.locator('#set-field-7-help')).toBeVisible();
   } finally {

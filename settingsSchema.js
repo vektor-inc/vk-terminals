@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const { hasUnsafeKeySegment } = require('./settingsTargets');
+const { INTERNAL_BROWSER_HOME_KEY } = require('./utils/internalBrowserHome');
 
 const SETTINGS_SCHEMA_PATH = path.join(__dirname, 'settings-schema.json');
 const DEFAULT_SCHEMA_TITLE = 'VK Terminals 設定';
@@ -82,8 +83,39 @@ function buildBuiltinSettingsDescriptor(options = {}) {
   };
 }
 
+function addBrowserHomeSettings(descriptor, builtin) {
+  // 外部定義からホームのキーとその配下を外し、組み込み定義の型と保存先を使う。
+  const groups = descriptor.groups.flatMap((group) => {
+    if (!Array.isArray(group?.fields)) return [group];
+    const fields = group.fields.filter(field => {
+      const key = field?.key;
+      return typeof key !== 'string' || (key !== INTERNAL_BROWSER_HOME_KEY && !key.startsWith(INTERNAL_BROWSER_HOME_KEY + '.'));
+    });
+    return fields.length || !group.fields.length ? [{ ...group, fields }] : [];
+  });
+  const homeGroup = builtin.groups.find(group => group.fields.some(field => field.key === INTERNAL_BROWSER_HOME_KEY));
+  if (!homeGroup) return { ...descriptor, groups };
+  const homeField = homeGroup.fields.find(field => field.key === INTERNAL_BROWSER_HOME_KEY);
+  const tabs = Array.isArray(descriptor.tabs) ? descriptor.tabs : [];
+  const tabIds = new Set(tabs.map(tab => tab?.id));
+  const hasTabs = tabs.some(tab => typeof tab?.id === 'string' && tab.id.trim());
+  let tabId = 'vk-terminals-browser';
+  while (tabIds.has(tabId)) tabId += '-';
+  groups.push({
+    label: homeGroup.label,
+    tab: hasTabs ? tabId : undefined,
+    fields: [{ ...homeField, targetPath: builtin.targetPath }],
+  });
+  return {
+    ...descriptor,
+    groups,
+    tabs: hasTabs ? [...tabs, { id: tabId, label: homeGroup.label }] : tabs,
+  };
+}
+
 module.exports = {
   SETTINGS_SCHEMA_PATH,
+  addBrowserHomeSettings,
   buildBuiltinSettingsDescriptor,
   loadSettingsSchema,
   validateSettingsSchema,

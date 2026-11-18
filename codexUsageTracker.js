@@ -207,11 +207,18 @@ function createCodexUsageTracker(options = {}) {
       alive.add(key);
       let cached = fileCache.get(key);
       if (!cached || cached.offset > f.size) {
-        cached = { offset: 0, summary: null, sessionId: undefined };
+        cached = { offset: 0, summary: null, sessionId: null, metaSettled: false, metaTriedSize: -1 };
         fileCache.set(key, cached);
       }
-      if (cached.sessionId === undefined) {
-        cached.sessionId = parseSessionMetaId(await readFirstLineCanonical(f.path, SESSION_META_READ_BYTES));
+      // session_meta は 1 行目が書き終わってから確定させる。空・書き込み途中・一時的に読めなかった場合は確定させず、
+      // ファイルサイズが前回試したときから変わっていれば読み直す（初回の走査が書き込み前に当たっても、後で ID を拾う）。
+      if (!cached.metaSettled && cached.metaTriedSize !== f.size) {
+        cached.metaTriedSize = f.size;
+        const first = await readFirstLineCanonical(f.path, SESSION_META_READ_BYTES);
+        if (first.settled) {
+          cached.metaSettled = true;
+          cached.sessionId = parseSessionMetaId(first.line);
+        }
       }
       if (f.size > cached.offset) {
         try {

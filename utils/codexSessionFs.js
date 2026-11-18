@@ -142,23 +142,28 @@ async function readTailCanonical(filePath, maxBytes) {
 }
 
 /**
- * ファイル先頭の 1 行目（maxBytes 以内に改行があるもの）を返す。無ければ null。
- * @returns {Promise<string|null>}
+ * ファイル先頭の 1 行目を読む。
+ *   - settled: true  … 1 行目が書き終わっている（maxBytes 以内に改行がある）。line はその行。
+ *                      maxBytes まで読んでも改行が無い場合も、この先読める見込みが無いため line: null で settled にする。
+ *   - settled: false … 空・書き込み途中（改行がまだ無い）・開けない・実体が確かめられない。後で読み直す余地がある。
+ * @returns {Promise<{ line: string|null, settled: boolean }>}
  */
 async function readFirstLineCanonical(filePath, maxBytes) {
+  const pending = { line: null, settled: false };
   const opened = await openCanonicalFile(filePath);
-  if (!opened) return null;
+  if (!opened) return pending;
   const { fh, stat } = opened;
   try {
     const len = Math.min(stat.size, maxBytes);
-    if (len <= 0) return null;
+    if (len <= 0) return pending;
     const buf = Buffer.alloc(len);
     const { bytesRead } = await fh.read(buf, 0, len, 0);
     const chunk = buf.subarray(0, bytesRead);
     const nl = chunk.indexOf(0x0a);
-    return nl >= 0 ? chunk.subarray(0, nl).toString('utf8') : null;
+    if (nl >= 0) return { line: chunk.subarray(0, nl).toString('utf8'), settled: true };
+    return bytesRead >= maxBytes ? { line: null, settled: true } : pending;
   } catch (_e) {
-    return null;
+    return pending;
   } finally {
     await fh.close().catch(() => {});
   }

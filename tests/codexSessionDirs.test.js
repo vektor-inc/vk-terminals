@@ -12,6 +12,7 @@ const path = require('node:path');
 const {
   listTaskCodexSessionDirs,
   listCodexSessionDirs,
+  dedupeExistingDirs,
   createCodexSessionDirsResolver,
 } = require('../utils/codexSessionDirs');
 const {
@@ -335,6 +336,88 @@ test('列挙の後にフォルダ・ファイルがリンクへ差し替えら�
   ({ limits, tokens } = await loadBoth(async () => dirs));
   assert.equal(limits, null);
   assert.equal(tokens, null);
+}));
+
+test('列挙で確かめた後にタスク側の sessions がリンクへ差し替えられても、重複除外で実パスに置き換えず除外する', withTmp(async ({ root, personalHome, dataDir }) => {
+  const outsideHome = path.join(root, 'outside-home');
+  const outside = path.join(outsideHome, 'sessions');
+  writeRollout(outside, 'outside', [tokenCountLine({ timestamp: '2026-07-06T02:50:00.000Z', sessionPercent: 77, totalTokens: 9999 })]);
+  // 個人側はリンクでも実パスに置き換えて使う（従来どおり）。
+  const personalReal = path.join(root, 'personal-real', 'sessions');
+  writeRollout(personalReal, 'personal', [tokenCountLine({ timestamp: '2026-07-06T02:00:00.000Z', sessionPercent: 5, totalTokens: 100 })]);
+  fs.symlinkSync(personalReal, path.join(personalHome, 'sessions'));
+
+  // 親の sessions・member/sessions・member フォルダ自体の 3 経路を、それぞれ別の起動フォルダで差し替える。
+  const parentSessions = path.join(taskHome(dataDir, 1), 'sessions');
+  const memberSessions = path.join(taskHome(dataDir, 2), 'member', 'sessions');
+  const memberDir = path.join(taskHome(dataDir, 3), 'member');
+  for (const dir of [parentSessions, memberSessions, path.join(memberDir, 'sessions')]) {
+    writeRollout(dir, 'task', [tokenCountLine({ timestamp: '2026-07-06T02:00:00.000Z', totalTokens: 1 })]);
+  }
+  const swapToLink = (target, linkTo) => {
+    fs.renameSync(target, `${target}-moved`);
+    fs.symlinkSync(linkTo, target);
+  };
+
+  let enumerated = null;
+  const dirs = await listCodexSessionDirs({
+    personalCodexHome: personalHome,
+    dataDir,
+    listTaskDirs: async (d, o) => {
+      enumerated = await listTaskCodexSessionDirs(d, o);
+      // 列挙の確認を通った後（重複除外の前）に差し替える。
+      swapToLink(parentSessions, outside);
+      swapToLink(memberSessions, outside);
+      swapToLink(memberDir, outsideHome);
+      return enumerated;
+    },
+  });
+  assert.deepEqual([...enumerated].sort(), [parentSessions, memberSessions, path.join(memberDir, 'sessions')].sort(),
+    '差し替え前の列挙では 3 経路とも実体のフォルダとして確かめられている');
+  assert.deepEqual(dirs, [personalReal], 'タスク側の差し替えられた経路は、外の実パスに置き換えず除外する');
+
+  // 重複除外を直接呼んだ場合も、タスク側（由来の指定なしを含む）は実パスと一致しないものを除外する。
+  assert.deepEqual(await dedupeExistingDirs([
+    { dir: parentSessions, origin: 'task' },
+    memberSessions,
+    { dir: path.join(memberDir, 'sessions'), origin: 'task' },
+  ]), []);
+  assert.deepEqual(await dedupeExistingDirs([{ dir: parentSessions, origin: 'personal' }]), [outside]);
+
+  // 列挙結果を使い回す resolver 経由でも、外のログは集計しない。
+  const { limits, tokens } = await loadBoth(async () => dirs);
+  assert.equal(limits.session.percent, 5);
+  assert.equal(tokens.todayTokens, 100);
+}));
+
+test('session_meta を読めなかったファイルは、書き終わった後に読み直して同じセッションの複製とまとめる', withTmp(async ({ personalHome, dataDir }) => {
+  // 複製元（別の実体）: 同じセッション ID で累積 300。
+  writeRollout(path.join(taskHome(dataDir, 1), 'sessions'), 'copy', [
+    sessionMetaLine('session-dup'),
+    tokenCountLine({ timestamp: '2026-07-06T01:00:00.000Z', totalTokens: 300 }),
+  ]);
+  // 新しいファイルは空のまま初回の走査に当たる。
+  const dayDir = path.join(personalHome, 'sessions', '2026', '07', '06');
+  fs.mkdirSync(dayDir, { recursive: true });
+  const growing = path.join(dayDir, 'rollout-growing.jsonl');
+  fs.writeFileSync(growing, '', 'utf8');
+
+  const tracker = createCodexUsageTracker({ getDirs: resolverFor(personalHome, dataDir), clock: () => NOW, skewMs: 0 });
+  let tokens = await tracker.refresh();
+  assert.equal(tokens.todayTokens, 300);
+
+  // 先頭行が書き込み途中（改行がまだ無い）の走査を挟む。
+  const meta = sessionMetaLine('session-dup');
+  fs.appendFileSync(growing, meta.slice(0, 20), 'utf8');
+  tokens = await tracker.refresh();
+  assert.equal(tokens.todayTokens, 300);
+
+  // session_meta を書き終え、累積 400 まで進んだら、複製（300）とまとめて 400 にする（700 にしない）。
+  fs.appendFileSync(growing, `${meta.slice(20)}\n${tokenCountLine({ timestamp: '2026-07-06T02:00:00.000Z', totalTokens: 400 })}\n`, 'utf8');
+  tokens = await tracker.refresh();
+  assert.equal(tokens.todayTokens, 400);
+  tokens = await tracker.refresh();
+  assert.equal(tokens.todayTokens, 400);
 }));
 
 test('同じ sessions の中で、更新時刻と記録時刻の順序が逆の 2 ファイルは記録時刻で選ぶ', withTmp(async ({ personalHome, dataDir }) => {

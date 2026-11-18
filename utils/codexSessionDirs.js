@@ -9,7 +9,9 @@
 //   - 列挙は固定ルートの走査で行う（起動時に作ったパスをメモリに記録する方式は使わない）。
 //     アプリの再起動前に起動したタスクや、別のアプリプロセスが起動したタスクの Codex も集計に含めるため。
 //   - タスク側はシンボリックリンクを辿らない。<preset>/<名前>/member/sessions の各段を lstat で確かめ、実体のフォルダだけを返す。
-//     返すパスはすべて実パスにそろえる。列挙の後の差し替えへの備え（読む直前の再確認）は読み取り層 utils/codexSessionFs.js が行う。
+//     返すパスはすべて実パスにそろえる。ただし実パスへの置き換えは個人側だけに許し、タスク側は重複除外の段でも
+//     「実パスがパス自身と一致する」ものだけを残す（列挙の後にリンクへ差し替えられても、外の実パスを探索対象にしない）。
+//     読む直前の再確認は読み取り層 utils/codexSessionFs.js が行う。
 //   - 専用フォルダは自動では消されず溜まり続けるため、更新時刻の新しい MAX_TASK_CODEX_HOMES 件だけを対象にする。
 //   - 同じ実体のフォルダが複数の経路で見える場合（CODEX_HOME がタスク専用フォルダを指すなど）は dev / ino で 1 つにする。
 //   - 削除済み・権限エラーのフォルダは黙って除外し、全体を失敗させない。
@@ -117,27 +119,39 @@ async function listTaskCodexSessionDirs(dataDir, opts = {}) {
   return out;
 }
 
+// 保存先の由来。個人側だけ実パスへの置き換えを許し、タスク側はパスが実パスと一致するものだけを残す。
+const DIR_ORIGIN_PERSONAL = 'personal';
+const DIR_ORIGIN_TASK = 'task';
+
 /**
- * フォルダの一覧を実パスに直し、存在しないもの・フォルダでないもの・同じ実体（dev / ino が同じ）の重複を除く。
- * 読み取り層（utils/codexSessionFs.js）は実パスと一致するパスだけを読むため、ここで実パスにそろえる。
+ * 保存先の一覧から、存在しないもの・フォルダでないもの・同じ実体（dev / ino が同じ）の重複を除く。
+ * 読み取り層（utils/codexSessionFs.js）は実パスと一致するパスだけを読むため、返すパスは実パスにそろえる。
+ *   - 個人側（origin: 'personal'）: 利用者が決める場所のため、リンクでも実パスに置き換えて使う。
+ *   - タスク側（origin: 'task'。文字列だけ渡されたものもこちら）: 実パスがパス自身と一致しなければ除外する。
+ *     列挙で確かめた後にリンクへ差し替えられた場合に、管理対象の外の実パスを正式な探索対象にしないため。
  * 順序は最初に現れた位置を保つ。
- * @param {string[]} dirs
+ * @param {Array<string|{ dir: string, origin?: string }>} entries
  * @returns {Promise<string[]>}
  */
-async function dedupeExistingDirs(dirs) {
+async function dedupeExistingDirs(entries) {
   const seen = new Set();
   const out = [];
-  for (const dir of dirs) {
+  for (const entry of Array.isArray(entries) ? entries : []) {
+    const dir = typeof entry === 'string' ? entry : (entry && entry.dir);
+    const origin = entry && typeof entry === 'object' && entry.origin === DIR_ORIGIN_PERSONAL
+      ? DIR_ORIGIN_PERSONAL
+      : DIR_ORIGIN_TASK;
     if (typeof dir !== 'string' || dir === '') continue;
     let real;
     let st;
     try {
       real = await fsp.realpath(dir);
+      if (origin === DIR_ORIGIN_TASK && real !== dir) continue;
       st = await fsp.lstat(real);
     } catch (_e) {
       continue;
     }
-    if (!st.isDirectory()) continue;
+    if (!st.isDirectory() || st.isSymbolicLink()) continue;
     const key = `${st.dev}:${st.ino}`;
     if (seen.has(key)) continue;
     seen.add(key);
@@ -149,20 +163,26 @@ async function dedupeExistingDirs(dirs) {
 /**
  * 個人の CODEX_HOME とタスク専用 CODEX_HOME の sessions フォルダを返す（存在するもの・重複なし）。
  * 個人側は利用者が自分で決める場所のため、シンボリックリンクでも実パスに解決して使う（従来の ~/.codex/sessions と同じ扱い）。
- * @param {{ personalCodexHome?: string, dataDir?: string, maxHomes?: number }} [opts]
+ * タスク側はリンクを辿らない（重複除外の処理まで由来を持ち回して、実パスへの置き換えをさせない）。
+ * @param {{ personalCodexHome?: string, dataDir?: string, maxHomes?: number, listTaskDirs?: Function }} [opts]
+ *   listTaskDirs はテスト用（列挙の直後に差し替える競合を再現するため）。省略時は listTaskCodexSessionDirs。
  * @returns {Promise<string[]>}
  */
 async function listCodexSessionDirs(opts = {}) {
   const personalCodexHome = opts.personalCodexHome || resolvePersonalCodexHome();
   const dataDir = opts.dataDir || path.join(os.homedir(), '.vk-terminals');
+  const listTaskDirs = typeof opts.listTaskDirs === 'function' ? opts.listTaskDirs : listTaskCodexSessionDirs;
   const personal = path.join(personalCodexHome, SESSIONS_DIR_NAME);
   let tasks = [];
   try {
-    tasks = await listTaskCodexSessionDirs(dataDir, { maxHomes: opts.maxHomes });
+    tasks = await listTaskDirs(dataDir, { maxHomes: opts.maxHomes });
   } catch (_e) {
     tasks = [];
   }
-  return dedupeExistingDirs([personal, ...tasks]);
+  return dedupeExistingDirs([
+    { dir: personal, origin: DIR_ORIGIN_PERSONAL },
+    ...(Array.isArray(tasks) ? tasks : []).map((dir) => ({ dir, origin: DIR_ORIGIN_TASK })),
+  ]);
 }
 
 /**

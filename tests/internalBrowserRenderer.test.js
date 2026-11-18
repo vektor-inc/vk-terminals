@@ -28,7 +28,8 @@ function createSettingsSaveHarness(initialValues, save, labels = {}, isInvalid =
   const context = vm.createContext({
     INTERNAL_BROWSER_HOME_KEY, savedFieldValues, values,
     internalBrowserOpen: true, focusFieldKey: INTERNAL_BROWSER_HOME_KEY,
-    settingsInteractionRevision: 0,
+    settingsInteractionRevision: 0, settingsChangesRevision: 0, latestSettingsSave: null,
+    isHelpTabHidden: () => false,
     entries,
     getCurrentSettingValues: () => ({ ...values }),
     validatable: entries, isInvalidVisibleEntry: ({ field }) => isInvalid(field.key, values[field.key]),
@@ -57,6 +58,7 @@ function createSettingsSaveHarness(initialValues, save, labels = {}, isInvalid =
     ({ saveSettings, edit(key, value) {
       values[key] = value;
       settingsInteractionRevision++;
+      settingsChangesRevision++;
       clearStaleSettingsMessage();
     } })
   `, context);
@@ -143,37 +145,41 @@ test('ホームだけが部分成功したとき、元の空欄を保存し直�
   assert.deepEqual(notices, [false, true, false]);
 });
 
-test('応答待ちの間にホームを空欄に戻して保存すると、先行保存の後で空欄がディスクに残る', async t => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-settings-save-queue-'));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  const targetPath = path.join(dir, 'config.json');
-  const key = INTERNAL_BROWSER_HOME_KEY;
-  const descriptor = { targetPath, groups: [{ fields: [{ key, type: 'http-url' }] }] };
-  const firstWrite = Promise.withResolvers();
-  const releaseReply = Promise.withResolvers();
-  const { saveSettings, values, payloads, autoCloses } = createSettingsSaveHarness({ [key]: '' }, async payload => {
-    const result = saveSettingsToTargets(descriptor, payload);
-    if (payload[key]) {
-      firstWrite.resolve();
-      await releaseReply.promise;
-    }
-    return result;
-  });
+for (const closeWhileWaiting of [false, true]) {
+  test(`応答待ちに空欄の保存を予約すると、先行保存後に空欄がディスクに残る（${closeWhileWaiting ? '閉じる' : '開いたまま'}）`, async t => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-settings-save-queue-'));
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const targetPath = path.join(dir, 'config.json');
+    const key = INTERNAL_BROWSER_HOME_KEY;
+    const descriptor = { targetPath, groups: [{ fields: [{ key, type: 'http-url' }] }] };
+    const firstWrite = Promise.withResolvers();
+    const releaseReply = Promise.withResolvers();
+    const { saveSettings, values, payloads, autoCloses, context, msg } = createSettingsSaveHarness({ [key]: '' }, async payload => {
+      const result = saveSettingsToTargets(descriptor, payload);
+      if (payload[key]) {
+        firstWrite.resolve();
+        await releaseReply.promise;
+      }
+      return result;
+    });
 
-  values[key] = 'https://example.com/';
-  const firstSave = saveSettings();
-  await firstWrite.promise;
-  assert.equal(JSON.parse(fs.readFileSync(targetPath))[key], values[key]);
-  values[key] = '';
-  const secondSave = saveSettings();
-  await Promise.resolve();
-  assert.deepEqual(payloads, [{ [key]: 'https://example.com/' }]);
-  releaseReply.resolve();
-  assert.deepEqual(await Promise.all([firstSave, secondSave]), [true, true]);
-  assert.deepEqual(payloads, [{ [key]: 'https://example.com/' }, { [key]: '' }]);
-  assert.equal(JSON.parse(fs.readFileSync(targetPath))[key], '');
-  assert.equal(autoCloses.length, 1);
-});
+    values[key] = 'https://example.com/';
+    const firstSave = saveSettings();
+    await firstWrite.promise;
+    assert.equal(JSON.parse(fs.readFileSync(targetPath))[key], values[key]);
+    values[key] = '';
+    const secondSave = saveSettings();
+    await Promise.resolve();
+    assert.deepEqual(payloads, [{ [key]: 'https://example.com/' }]);
+    if (closeWhileWaiting) context.autoClose.isClosed = true;
+    releaseReply.resolve();
+    assert.deepEqual(await Promise.all([firstSave, secondSave]), [true, true]);
+    assert.deepEqual(payloads, [{ [key]: 'https://example.com/' }, { [key]: '' }]);
+    assert.equal(JSON.parse(fs.readFileSync(targetPath))[key], '');
+    assert.equal(autoCloses.length, closeWhileWaiting ? 0 : 1);
+    if (closeWhileWaiting) assert.equal(msg.textContent, '保存中...');
+  });
+}
 
 test('A の応答待ちに B を保存してから C へ編集すると、B を保存し C は未保存で残す', async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-settings-save-snapshot-'));
@@ -225,7 +231,7 @@ test('保存して開くは応答待ちの追加編集を保存するまで進�
   await requested.promise;
   edit('label', 'extra');
   response.resolve();
-  assert.equal(await first, false);
+  assert.equal(await first, 'interrupted');
   assert.match(msg.textContent, /追加の編集が保存されていません。もう一度保存してください。/);
   assert.deepEqual(dirtyValues, { label: 'extra' });
   assert.equal(await saveSettings({ keepOpen: true }), true);
@@ -259,7 +265,7 @@ test('保存して開くは先行応答で dirty が消えても後続予約を�
   assert.equal(helpReady, false);
 
   replies[1].resolve();
-  assert.deepEqual(await Promise.all([first, second]), [false, true]);
+  assert.deepEqual(await Promise.all([first, second]), ['interrupted', true]);
   assert.deepEqual(payloads, [{ label: 'a' }, { label: 'b' }]);
   assert.deepEqual(dirtyValues, { label: 'a' });
   assert.match(msg.textContent, /追加の編集が保存されていません/);
@@ -278,7 +284,7 @@ test('設定切替で表示された不正な既存値も差分なしで検証�
   context.getEntryInput = id => ({ focus() { focused.push(id); } });
 
   edit('initialEngine', 'codex');
-  assert.equal(await saveSettings({ keepOpen: true }), false);
+  assert.equal(await saveSettings({ keepOpen: true }), 'invalid');
   assert.deepEqual(focused, ['initialCodexModel']);
   assert.deepEqual(payloads, []);
   assert.equal(msg.textContent, '入力内容に問題があります');
@@ -289,11 +295,15 @@ test('設定切替で表示された不正な既存値も差分なしで検証�
   assert.deepEqual(payloads, [{}]);
 });
 
-test('ガイドとドキュメントは起動が完了しても応答待ち中に編集された設定を閉じない', async () => {
+function loadHelpFlow(context, container) {
   const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
   const helpLaunch = source.match(/  const launchHelpGuide = [\s\S]*?(?=\n  const helpView =)/)?.[0];
   assert.ok(helpLaunch);
+  context.modal = { querySelector: () => container };
+  return vm.runInContext(`${helpLaunch}\n({ launchHelpGuide, launchHelpDocument, confirmUnsavedHelp })`, context);
+}
 
+test('ガイドとドキュメントは起動が完了しても応答待ち中に編集された設定を閉じない', async () => {
   for (const target of ['Guide', 'Document']) {
     const launched = Promise.withResolvers();
     const response = Promise.withResolvers();
@@ -307,14 +317,13 @@ test('ガイドとドキュメントは起動が完了しても応答待ち中�
     };
     const invoke = context.VKIpc.invoke;
     Object.assign(context, {
-      modal: { querySelector() { return null; } },
       close() { closed++; },
       internalBrowserHasPage: false,
       openHelpGuide: launch,
     });
     context.VKIpc.invoke = (channel, payload) => channel === 'help:document' ? launch() : invoke(channel, payload);
-    const { launchHelpGuide, launchHelpDocument, confirmUnsavedHelp } = vm.runInContext(
-      `${helpLaunch}\n({ launchHelpGuide, launchHelpDocument, confirmUnsavedHelp })`, context,
+    const { launchHelpGuide, launchHelpDocument, confirmUnsavedHelp } = loadHelpFlow(
+      context, { closest: () => ({ hidden: false }) },
     );
     edit('label', 'saved');
     assert.equal(await saveSettings({ keepOpen: true }), true);
@@ -329,6 +338,112 @@ test('ガイドとドキュメントは起動が完了しても応答待ち中�
     assert.equal(autoCloses.length, 0);
     assert.match(msg.textContent, /追加の編集が保存されていません/);
   }
+});
+
+function loadHelpConfirmation(context) {
+  let confirmation;
+  context.document = { createElement() {
+    return {
+      children: [],
+      appendChild(child) { this.children.push(child); },
+      querySelector() { return this.children.find(child => child.type === 'button'); },
+      addEventListener(_event, action) { this.click = action; },
+      setAttribute() {}, focus() {}, remove() {},
+    };
+  } };
+  const flow = loadHelpFlow(context, {
+    closest: () => ({ hidden: false }),
+    appendChild(group) { confirmation = group; },
+  });
+  return { ...flow, discard: () => confirmation.children.find(child => child.textContent === '破棄して開く').click() };
+}
+
+test('破棄同意の後で B を保存して A に戻した場合は設定を閉じない', async () => {
+  const launched = Promise.withResolvers();
+  const response = Promise.withResolvers();
+  const { context, edit, saveSettings, savedFieldValues, values, msg } = createSettingsSaveHarness(
+    { label: 'old' }, payload => ({ ok: true, writtenKeys: Object.keys(payload) }),
+  );
+  const { confirmUnsavedHelp, discard } = loadHelpConfirmation(context);
+  const launch = async (_onLaunching, canCloseSettings) => {
+    launched.resolve();
+    await response.promise;
+    return canCloseSettings();
+  };
+
+  edit('label', 'a');
+  const opening = confirmUnsavedHelp(launch, () => {});
+  discard();
+  await launched.promise;
+  edit('label', 'b');
+  assert.equal(await saveSettings(), true);
+  edit('label', 'a');
+  response.resolve();
+  assert.equal(await opening, false);
+  assert.equal(savedFieldValues.label, 'b');
+  assert.equal(values.label, 'a');
+  assert.match(msg.textContent, /追加の編集が保存されていません/);
+});
+
+test('破棄を選んでもフッターの全保存を待ち、比較元の更新後に残った変更を保持する', async () => {
+  const requests = [Promise.withResolvers(), Promise.withResolvers()];
+  const replies = [Promise.withResolvers(), Promise.withResolvers()];
+  let requestCount = 0;
+  const { context, edit, saveSettings, savedFieldValues, msg } = createSettingsSaveHarness(
+    { label: 'old' }, async payload => {
+      const index = requestCount++;
+      requests[index].resolve();
+      await replies[index].promise;
+      return { ok: true, writtenKeys: Object.keys(payload) };
+    },
+  );
+  const { confirmUnsavedHelp, discard } = loadHelpConfirmation(context);
+  edit('label', 'a');
+  let finished = false;
+  const opening = confirmUnsavedHelp(() => assert.fail('再確認前にヘルプを起動した'), () => {})
+    .then(result => { finished = true; return result; });
+  const first = saveSettings();
+  await requests[0].promise;
+  edit('label', 'b');
+  const second = saveSettings();
+  edit('label', 'a');
+  discard();
+  replies[0].resolve();
+  await requests[1].promise;
+  assert.equal(savedFieldValues.label, 'a');
+  assert.equal(finished, false);
+  replies[1].resolve();
+  assert.deepEqual(await Promise.all([first, second, opening]), [true, true, 'interrupted']);
+  assert.equal(savedFieldValues.label, 'b');
+  assert.match(msg.textContent, /追加の編集が保存されていません/);
+});
+
+test('ヘルプの保存待ちに別タブへ移った場合はフッターで開き直しを案内する', async () => {
+  const requested = Promise.withResolvers();
+  const reply = Promise.withResolvers();
+  const { context, edit, saveSettings, values, msg } = createSettingsSaveHarness(
+    { label: 'old' }, async payload => {
+      requested.resolve();
+      await reply.promise;
+      return { ok: true, writtenKeys: Object.keys(payload) };
+    },
+  );
+  const panel = { hidden: false };
+  const { confirmUnsavedHelp } = loadHelpFlow(context, {
+    closest: () => panel,
+    appendChild() { assert.fail('非表示のタブに確認を追加した'); },
+  });
+  edit('label', 'a');
+  const saving = saveSettings();
+  await requested.promise;
+  const opening = confirmUnsavedHelp(() => assert.fail('保存待ちのヘルプを起動した'), () => {});
+  panel.hidden = true;
+  edit('label', 'b');
+  reply.resolve();
+  assert.equal(await saving, true);
+  assert.equal(await opening, 'interrupted');
+  assert.equal(values.label, 'b');
+  assert.equal(msg.textContent, '設定を保存してから、使い方・ヘルプで開き直してください。');
 });
 
 test('部分成功の通知は編集・形式エラー・応答待ちを経ても残り、後続の保存結果で更新する', async () => {

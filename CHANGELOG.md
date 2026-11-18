@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 不具合修正 ] 設定画面を閉じても予約済みの保存を完了し、ヘルプを開く途中の追加編集を保持（[#634](https://github.com/vektor-inc/vk-terminals/issues/634)）
+
 ## 1.107.0
 
 - [ 機能追加 ] アプリ内ブラウザにホームボタンを追加。設定したページを開き、移動先が未設定なら設定欄を案内（[#634](https://github.com/vektor-inc/vk-terminals/issues/634)）

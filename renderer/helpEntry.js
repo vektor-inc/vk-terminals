@@ -11,6 +11,7 @@
     result.splice(about < 0 ? result.length : about, 0, { id: TAB_ID, label: '使い方・ヘルプ' });
     return result;
   }
+  // openGuide / openDocument は、明示キャンセルを 'cancelled'、検証などの中断を 'interrupted' で返す。
   function mount(container, { invoke, openGuide, openDocument }) {
     const button = (label, action) => {
       const element = document.createElement('button');
@@ -32,9 +33,11 @@
       status.textContent = '';
       try {
         const opened = await openGuide(() => { status.textContent = 'ガイドを起動しています…'; });
+        if (!container.isConnected) return;
         if (opened && opened.helpStatus) renderStatus(opened.helpStatus);
-        if (opened === false) status.textContent = '';
+        if (opened === 'interrupted' || opened === 'cancelled') status.textContent = '';
       } catch (error) {
+        if (!container.isConnected) return;
         // 保存失敗の理由は起動失敗の案内で隠さない。
         status.textContent = error?.message?.includes('再試行してください')
           ? error.message
@@ -57,14 +60,16 @@
       documentButton.disabled = true;
       ai.disabled = true;
       retry.disabled = true;
+      status.textContent = '';
       try {
         const opened = await openDocument(
           () => { status.textContent = 'ドキュメントを読み込んでいます…'; },
           () => { status.textContent = '未保存の変更を保存するか選んでください。'; },
         );
-        if (opened === false) status.textContent = 'ドキュメントを開く操作をキャンセルしました。';
-        else if (opened === true) status.textContent = '';
+        if (!container.isConnected) return;
+        status.textContent = opened === 'cancelled' ? 'ドキュメントを開く操作をキャンセルしました。' : '';
       } catch (error) {
+        if (!container.isConnected) return;
         status.textContent = error?.message?.includes('再試行してください')
           ? error.message
           : 'ドキュメントを開けませんでした。もう一度押してください。';
@@ -76,7 +81,8 @@
     container.append(documentButton, ai, status, retry);
     function canRestoreHelpFocus() {
       const active = document.activeElement;
-      return container.isConnected && (active === document.body || container.contains(active));
+      return container.isConnected && !container.closest('[hidden]')
+        && (active === document.body || container.contains(active));
     }
     // 初回表示と再確認で同じ結果表示を使う。起動直前の状態変化もここへ返す。
     function renderStatus(result) {
@@ -95,8 +101,9 @@
       status.textContent = '利用状況を確認しています…';
       try {
         const result = await invoke('help:check');
-        renderStatus(result);
+        if (container.isConnected) renderStatus(result);
       } catch (_) {
+        if (!container.isConnected) return;
         ai.hidden = true;
         retry.hidden = false;
         status.textContent = '利用状況を確認できませんでした。「再確認」を押してください。';
@@ -105,7 +112,7 @@
         ai.disabled = false;
         retry.disabled = false;
         documentButton.disabled = false;
-        if (restoreFocus) (ai.hidden ? retry : ai).focus();
+        if (restoreFocus && canRestoreHelpFocus()) (ai.hidden ? retry : ai).focus();
       }
     }
     // 非表示のタブを組み立てただけではホストへ問い合わせない。

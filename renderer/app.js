@@ -6015,7 +6015,10 @@ function renderSettingsField(f, value, id) {
     </div>`;
   }
 
-  const displayValue = comboDisplayValue(f, value);
+  // 単行入力が改行を削って不正な URL を有効に見せないよう、空白で残す。
+  const displayValue = f.type === 'http-url'
+    ? String(value ?? '').replace(/[\r\n]+/g, ' ')
+    : comboDisplayValue(f, value);
   const strVal = value === null || value === undefined
     ? ''
     : (f.type === 'json'
@@ -6447,6 +6450,7 @@ function renderSettingsTabContent(blocks, tabIndexById, runtimeStatus = {}, entr
 // DOM に無いため、要素の有無だけでは二重生成されうる。生成前にロックを取得し、閉じた時は
 // buildSettingsModal の close、生成に失敗した時は protect の例外処理が必ず解放する。
 const settingsModalGuard = createSingleOpenGuard();
+let latestSettingsSave = Promise.resolve();
 
 async function openSettingsModal(restartTabId = null, focusFieldKey = null) {
   // URL にホバーしたままマウスを動かさず Tab で ⚙ まで来て Enter で確定する経路では
@@ -6468,6 +6472,8 @@ async function openSettingsModal(restartTabId = null, focusFieldKey = null) {
 }
 
 async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElement, restartTabId, focusFieldKey }) {
+  // 閉じた画面の保存予約が完了してから、開き直した画面の比較元を読み込む。
+  await latestSettingsSave;
   // 設定ディスクリプタが無い環境でも空の設定モーダルとして開く（使用量はサイドバー上部）。
   let desc = null;
   try {
@@ -6723,6 +6729,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
   // ここは「いつ武装し、いつ取り消すか」だけを決める。
   const autoClose = createAutoCloseController({ onFire: () => { if (!configFailedFiles.length) close(); } });
   let settingsInteractionRevision = 0;
+  let settingsChangesRevision = 0;
   let restoredHomeButton = null;
   let unregisterEscapeLayer = () => {};
   let releaseFocusTrap = () => {};
@@ -6791,7 +6798,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
     onLaunching();
     const result = await openHelpGuide();
     if (result && result.helpStatus) return result;
-    if (!canCloseSettings()) return false;
+    if (!canCloseSettings()) return 'interrupted';
     close();
     fitAll();
     focusPane(result);
@@ -6801,41 +6808,55 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
     const opened = await VKIpc.invoke('help:document');
     if (!opened) throw new Error('Help document is unavailable.');
     internalBrowserHasPage = true;
-    if (!canCloseSettings()) return true;
+    if (!canCloseSettings()) return 'interrupted';
     close();
     animateLayoutChange(() => { setInternalBrowserOpen(true); focusInternalBrowserToolbar(); }, { shouldAnimate: () => !internalBrowserOpen });
     return true;
   };
   const helpContainer = modal.querySelector('.settings-help-entry');
+  const isHelpTabHidden = () => helpContainer.closest('[role=tabpanel]').hidden;
   const confirmUnsavedHelp = async (launch, onLaunching, onConfirming, target) => {
     autoClose.cancel();
     settingsInteractionRevision++;
-    const queueSucceeded = pendingSettingsSaves === 0 || await waitForSettingsSaves();
-    autoClose.cancel();
-    if (autoClose.isClosed) return false;
+    helpFlowPending = true;
+    try {
+      return await runHelpFlow(launch, onLaunching, onConfirming, target);
+    } finally {
+      helpFlowPending = false;
+    }
+  };
+  const runHelpFlow = async (launch, onLaunching, onConfirming, target) => {
+    const saveResult = pendingSettingsSaves === 0 || await waitForSettingsSaves();
+    if (autoClose.isClosed) return 'interrupted';
+    if (saveResult === 'invalid') return 'interrupted';
+    if (isHelpTabHidden()) {
+      showHelpRetryMessage();
+      return 'interrupted';
+    }
 
-    const start = async ({ discard = false } = {}) => {
-      const launchChanges = discard ? getChangedSettingValues() : {};
-      helpLaunchPending = true;
-      try {
-        return await launch(onLaunching, () => {
-          if (autoClose.isClosed) return false;
-          // 破棄の同意は、起動時点で未保存だった入力にだけ適用する。
-          const hasNewChanges = Object.entries(getChangedSettingValues()).some(
-            ([key, value]) => !Object.hasOwn(launchChanges, key) || launchChanges[key] !== value,
-          );
-          if (pendingSettingsSaves === 0 && !hasNewChanges) return true;
-          settingsInteractionRevision++;
-          showUnsavedHelpMessage();
-          return false;
-        });
-      } finally {
-        helpLaunchPending = false;
+    const hasUnapprovedChanges = (discardRevision) => settingsChangesRevision !== discardRevision
+      && Object.keys(getChangedSettingValues()).length > 0;
+    const start = (discardRevision) => {
+      if (autoClose.isClosed) return 'interrupted';
+      if (isHelpTabHidden()) {
+        showHelpRetryMessage();
+        return 'interrupted';
       }
+      if (hasUnapprovedChanges(discardRevision)) {
+        showUnsavedHelpMessage();
+        return 'interrupted';
+      }
+      return launch(onLaunching, () => {
+        if (autoClose.isClosed) return false;
+        // 編集や保存で比較元が変われば、同じ文字列に戻っても以前の同意は使わない。
+        if (pendingSettingsSaves === 0 && !hasUnapprovedChanges(discardRevision)) return true;
+        showUnsavedHelpMessage();
+        return false;
+      });
     };
 
     if (Object.keys(getChangedSettingValues()).length === 0) {
-      if (!queueSucceeded || !validateSettingsSnapshot(getCurrentSettingValues(), validatable.filter(isInvalidVisibleEntry))) return false;
+      if (saveResult !== true || !validateSettingsSnapshot(getCurrentSettingValues(), validatable.filter(isInvalidVisibleEntry))) return 'interrupted';
       return start();
     }
     onConfirming?.();
@@ -6849,22 +6870,32 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
       choices.setAttribute('aria-labelledby', text.id);
       text.textContent = `未保存の変更があります。保存してから${target}を開きますか？`;
       choices.appendChild(text);
-      const finish = async (options) => {
+      const finish = async (open) => {
         choices.remove();
-        try { resolve(autoClose.isClosed ? false : await start(options)); } catch (error) { reject(error); }
+        try { resolve(await open()); } catch (error) { reject(error); }
       };
       for (const [label, action] of [
         ['保存して開く', async () => {
           choices.querySelectorAll('button').forEach((button) => { button.disabled = true; });
-          if (await saveSettings({ keepOpen: true })) await finish();
-          else {
+          const result = await saveSettings({ keepOpen: true });
+          if (result === true) await finish(() => start());
+          else if (result === 'invalid' || result === 'interrupted') {
+            choices.remove();
+            resolve('interrupted');
+          } else {
             const reason = modal.querySelector('.settings-msg')?.textContent || '設定を保存できませんでした。';
             choices.remove();
             reject(new Error(`${reason} 内容を確認して再試行してください。`));
           }
         }],
-        ['破棄して開く', () => finish({ discard: true })],
-        ['キャンセル', () => { choices.remove(); resolve(false); }],
+        ['破棄して開く', () => {
+          const discardRevision = settingsChangesRevision;
+          return finish(async () => {
+            if (pendingSettingsSaves > 0) await waitForSettingsSaves();
+            return start(discardRevision);
+          });
+        }],
+        ['キャンセル', () => { choices.remove(); resolve('cancelled'); }],
       ]) {
         const button = document.createElement('button');
         button.type = 'button';
@@ -7924,6 +7955,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
   const onEntryEdited = () => {
     autoClose.cancel();
     settingsInteractionRevision++;
+    settingsChangesRevision++;
     // 保存直後のフッター固定は、編集を始めた時点で理由（押した直後にボタンが
     // 並び替わるのを防ぐ）が消える。
     unlockSettingsFooter();
@@ -8032,7 +8064,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
     .filter(([key, value]) => value !== savedFieldValues[key]));
   let settingsSaveQueue = Promise.resolve();
   let pendingSettingsSaves = 0;
-  let helpLaunchPending = false;
+  let helpFlowPending = false;
   let settingsSaveMessage = { text: '', kind: '' };
   let settingsValidationMessage = '';
 
@@ -8050,15 +8082,19 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
 
   async function waitForSettingsSaves() {
     // 応答待ち中に追加された予約も、最後の応答が反映されるまで待つ。
-    let succeeded = true;
-    while (pendingSettingsSaves > 0) succeeded = await settingsSaveQueue;
-    return succeeded;
+    let result = true;
+    while (pendingSettingsSaves > 0) result = await settingsSaveQueue;
+    return result;
   }
 
-  function showUnsavedHelpMessage() {
-    settingsValidationMessage = '追加の編集が保存されていません。もう一度保存してください。';
+  function showUnsavedHelpMessage(text = '追加の編集が保存されていません。もう一度保存してください。') {
+    settingsValidationMessage = text;
     if (settingsSaveMessage.kind === 'partial') renderSettingsMessages();
     else showSettingsSaveMessage('');
+  }
+
+  function showHelpRetryMessage() {
+    showUnsavedHelpMessage('設定を保存してから、使い方・ヘルプで開き直してください。');
   }
 
   async function saveSettings({ keepOpen = false } = {}) {
@@ -8070,23 +8106,26 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
     // 押下時の入力と検証結果を保持し、先行応答を反映した比較元から差分を出す。
     const pending = settingsSaveQueue.then(() => persistSettingsChanges({
       keepOpen, values, invalidEntries,
-      canAutoClose: () => settingsSaveQueue === pending && !helpLaunchPending && settingsInteractionRevision === interactionRevision,
+      canAutoClose: () => settingsSaveQueue === pending && !helpFlowPending && settingsInteractionRevision === interactionRevision,
     })).catch(error => {
       if (!autoClose.isClosed) showSettingsSaveMessage('エラー: ' + error.message, 'err');
       return false;
     }).finally(() => {
       pendingSettingsSaves--;
     });
-    settingsSaveQueue = pending;
-    if (!keepOpen) return pending;
+    latestSettingsSave = settingsSaveQueue = pending;
+    if (!keepOpen) return (await pending) === true;
 
     const saved = await pending;
-    const queueSucceeded = await waitForSettingsSaves();
+    const queueResult = await waitForSettingsSaves();
     autoClose.cancel();
-    if (autoClose.isClosed || !saved || !queueSucceeded) return false;
+    if (autoClose.isClosed) return 'interrupted';
+    if (saved === 'invalid' || queueResult === 'invalid') return 'invalid';
+    if (!saved || !queueResult) return false;
     if (Object.keys(getChangedSettingValues()).length > 0) {
-      showUnsavedHelpMessage();
-      return false;
+      if (isHelpTabHidden()) showHelpRetryMessage();
+      else showUnsavedHelpMessage();
+      return 'interrupted';
     }
     return true;
   }
@@ -8104,7 +8143,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
         : '保存時の入力内容に問題がありました。現在の内容を確認して保存してください。';
       if (settingsSaveMessage.kind === 'partial') renderSettingsMessages();
       else showSettingsSaveMessage('');
-      if (firstInvalid) {
+      if (firstInvalid && !(helpFlowPending && isHelpTabHidden())) {
         switchToFieldTab(firstInvalid);
         firstInvalid.scrollIntoView?.({ block: 'center' });
         firstInvalid.focus({ preventScroll: true });
@@ -8115,15 +8154,21 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
   }
 
   async function persistSettingsChanges({ keepOpen, values, invalidEntries, canAutoClose }) {
-    if (autoClose.isClosed || !validateSettingsSnapshot(values, invalidEntries)) return false;
+    if (invalidEntries.length > 0) {
+      if (!autoClose.isClosed) validateSettingsSnapshot(values, invalidEntries);
+      return 'invalid';
+    }
     const out = getChangedSettingValues(values);
-    settingsValidationMessage = '';
-    if (settingsSaveMessage.kind === 'partial') renderSettingsMessages();
-    else showSettingsSaveMessage('保存中...');
+    if (!autoClose.isClosed) {
+      settingsValidationMessage = '';
+      if (settingsSaveMessage.kind === 'partial') renderSettingsMessages();
+      else showSettingsSaveMessage('保存中...');
+    }
     const res = await VKIpc.invoke('settings:save', out);
     // 部分成功でも、実際に保存した欄だけを次の保存時の比較元にする。
     const writtenKeys = (res?.writtenKeys ?? []).filter((key) => Object.hasOwn(out, key));
     for (const key of writtenKeys) savedFieldValues[key] = out[key];
+    if (writtenKeys.length > 0) settingsChangesRevision++;
     if (internalBrowserOpen && (res?.hasInternalBrowserHome === true
       || (focusFieldKey === INTERNAL_BROWSER_HOME_KEY && res?.hasInternalBrowserHome === false))) {
       setInternalBrowserHomeNotice(!res.hasInternalBrowserHome);
@@ -8134,7 +8179,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
       }
       restoredHomeButton = null;
     }
-    if (autoClose.isClosed) return false;
+    if (autoClose.isClosed) return !!res?.ok;
     if (res?.ok || writtenKeys.length > 0) refreshSettingsContentSavedValues();
     if (res?.ok) {
       // dirty 解除でフッターの構成が変わらないよう、先に固定してから解除する。
@@ -8142,7 +8187,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
       syncDirtyTabs(getChangedSettingValues());
       showSettingsSaveMessage('保存しました。反映状況は設定の案内をご確認ください。', 'ok');
       await refreshConfigReflection({ throwOnError: keepOpen });
-      if (autoClose.isClosed) return false;
+      if (autoClose.isClosed) return true;
       if (configFailedFiles.length) {
         showSettingsSaveMessage('保存しましたが、設定を読み込めませんでした。対象ファイルを確認してください。', 'err');
         autoClose.cancel();

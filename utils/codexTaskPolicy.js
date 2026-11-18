@@ -1059,6 +1059,10 @@ async function resolveCodexPolicyContext(options, deps) {
 
 module.exports = {
   CODEX_TASK_POLICY_PRESETS,
+  // Codex 使用量の集計（utils/codexSessionDirs.js。issue #638）が専用 CODEX_HOME の置き場所を同じ値で探すために使う。
+  POLICY_DIR_NAME,
+  MEMBER_HOME_NAME,
+  LAUNCH_HOME_NAME_PATTERN,
   ORCHESTRATED_TASK_OPERATIONS,
   buildCodexPolicyContext,
   resolveCodexPolicyContext,

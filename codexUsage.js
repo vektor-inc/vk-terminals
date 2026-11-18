@@ -3,7 +3,11 @@
 //
 // 設計方針:
 //   - oauthUsage.js と同じく、JSONL 1 行の正規化などの純粋関数コアと、
-//     ~/.codex/sessions の探索・末尾読み取りの IO 層を分離する。
+//     sessions フォルダの探索・末尾読み取りの IO 層を分離する。
+//   - 探索する sessions フォルダは、個人の CODEX_HOME とタスク専用 CODEX_HOME の両方（issue #638。
+//     列挙は utils/codexSessionDirs.js）。各フォルダの最新 rollout の末尾 token_count を比べ、
+//     レコードの timestamp（無ければファイルの更新時刻）が新しいものを区分ごとに採用する。
+//   - 解析するのは token_count レコードだけで、会話本文・保存先のパスは返す値に含めない。
 //   - 認証情報や sqlite には触れない。state_5.sqlite は native/CLI 依存が必要なため使わない。
 //   - 使用率は payload.rate_limits.{primary,secondary}.used_percent を 0..100 にクランプし、
 //     window_minutes で session / weekly を分類する。primary 固定の推測はしない。
@@ -16,6 +20,7 @@ const path = require('path');
 const os = require('os');
 const { normalizePercent } = require('./oauthUsage');
 const { createTtlMemo, hasExpiredResetCategory } = require('./usageTracker');
+const { createCodexSessionDirsResolver } = require('./utils/codexSessionDirs');
 
 const CODEX_SESSIONS_DIR = path.join(os.homedir(), '.codex', 'sessions');
 const LATEST_READ_BYTES = 256 * 1024;
@@ -114,16 +119,80 @@ function parseTokenCountLine(line, nowMs = Date.now()) {
   };
 }
 
-function extractLastTokenCount(text, nowMs = Date.now()) {
+/**
+ * JSONL 1 行のレコードの timestamp（ISO 文字列）を epoch ms で返す。無い・壊れている場合は null。
+ * @param {object} obj
+ * @returns {number|null}
+ */
+function parseRecordTimestampMs(obj) {
+  if (!obj || typeof obj !== 'object') return null;
+  const raw = typeof obj.timestamp === 'string'
+    ? obj.timestamp
+    : (obj.payload && typeof obj.payload.timestamp === 'string' ? obj.payload.timestamp : null);
+  if (!raw) return null;
+  const ts = Date.parse(raw);
+  return Number.isFinite(ts) ? ts : null;
+}
+
+/**
+ * 複数行から最後の有効な token_count を探し、解析結果とそのレコードの timestamp を返す（純粋）。
+ * @param {string} text
+ * @param {number} [nowMs]
+ * @returns {null | { snapshot: object, recordedAtMs: number|null }}
+ */
+function findLastTokenCountRecord(text, nowMs = Date.now()) {
   if (!text) return null;
   const lines = String(text).split('\n');
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i].trim();
     if (!line) continue;
-    const parsed = parseTokenCountLine(line, nowMs);
-    if (parsed) return parsed;
+    let obj;
+    try {
+      obj = JSON.parse(line);
+    } catch (_e) {
+      continue;
+    }
+    const snapshot = parseTokenCountLine(obj, nowMs);
+    if (snapshot) return { snapshot, recordedAtMs: parseRecordTimestampMs(obj) };
   }
   return null;
+}
+
+function extractLastTokenCount(text, nowMs = Date.now()) {
+  const found = findLastTokenCountRecord(text, nowMs);
+  return found ? found.snapshot : null;
+}
+
+/**
+ * 複数の保存先から読んだ token_count のうち、session / weekly ごとに最も新しい値を選ぶ（純粋）。
+ * 新しさは recordedAtMs（レコードの timestamp。無ければ呼び出し側がファイルの更新時刻を入れる）で比べる。
+ * tokens は全体で最も新しい候補の値を使う。
+ * @param {Array<{ snapshot: object, recordedAtMs: number|null }>} candidates
+ * @param {number} [nowMs]
+ * @returns {null | object} parseTokenCountLine と同じ形
+ */
+function selectLatestRateLimits(candidates, nowMs = Date.now()) {
+  if (!Array.isArray(candidates)) return null;
+  const valid = candidates.filter((c) => c && c.snapshot && typeof c.snapshot === 'object');
+  if (valid.length === 0) return null;
+  const tsOf = (c) => (Number.isFinite(c.recordedAtMs) ? c.recordedAtMs : -Infinity);
+  // 同じ時刻なら先に渡された候補（個人の CODEX_HOME が先頭）を優先するため、安定ソートで新しい順に並べる。
+  const sorted = valid.slice().sort((a, b) => tsOf(b) - tsOf(a));
+  const pick = (kind) => {
+    const hit = sorted.find((c) => c.snapshot[kind]);
+    return hit ? hit.snapshot[kind] : null;
+  };
+  const session = pick('session');
+  const weekly = pick('weekly');
+  if (!session && !weekly) return null;
+  const newest = sorted[0].snapshot;
+  return {
+    source: 'codex',
+    session,
+    weekly,
+    tokens: Number.isFinite(newest.tokens) ? newest.tokens : null,
+    fetchedAtMs: nowMs,
+  };
 }
 
 function isStickyUsable(snapshot, nowMs, maxMs) {
@@ -237,9 +306,19 @@ async function readTail(filePath, maxBytes = LATEST_READ_BYTES) {
   }
 }
 
-async function loadCodexUsageSnapshot(options = {}) {
+let defaultSessionDirsResolver = null;
+
+function defaultGetSessionDirs() {
+  if (!defaultSessionDirsResolver) defaultSessionDirsResolver = createCodexSessionDirsResolver();
+  return defaultSessionDirsResolver();
+}
+
+/**
+ * 1 つの sessions フォルダの最新 rollout から、最後の token_count とその新しさを読む。失敗は null。
+ * @returns {Promise<null | { snapshot: object, recordedAtMs: number|null }>}
+ */
+async function loadLatestRecordFromDir(baseDir, options, nowMs) {
   try {
-    const baseDir = options.baseDir || CODEX_SESSIONS_DIR;
     const filePath = typeof options.findLatestSessionFile === 'function'
       ? await options.findLatestSessionFile(baseDir)
       : await findLatestSessionFile(baseDir);
@@ -247,7 +326,43 @@ async function loadCodexUsageSnapshot(options = {}) {
     const text = typeof options.readTail === 'function'
       ? await options.readTail(filePath, LATEST_READ_BYTES)
       : await readTail(filePath, LATEST_READ_BYTES);
-    return extractLastTokenCount(text, Date.now());
+    const found = findLastTokenCountRecord(text, nowMs);
+    if (!found) return null;
+    if (Number.isFinite(found.recordedAtMs)) return found;
+    // timestamp の無い旧形式のレコードは、ファイルの更新時刻で新しさを比べる。
+    let mtimeMs = null;
+    try {
+      mtimeMs = (await fsp.stat(filePath)).mtimeMs;
+    } catch (_e) {
+      mtimeMs = null;
+    }
+    return { snapshot: found.snapshot, recordedAtMs: mtimeMs };
+  } catch (_e) {
+    return null;
+  }
+}
+
+/**
+ * sessions フォルダを列挙し、各フォルダの最新 token_count から session / weekly の最新値を選んで返す。
+ * options.baseDir があればそのフォルダだけ、options.getSessionDirs があればその結果、
+ * どちらも無ければ個人とタスク専用の CODEX_HOME（utils/codexSessionDirs.js）を対象にする。
+ * 1 つのフォルダの失敗（削除済み・権限エラー）は他のフォルダの結果に影響させない。
+ * @returns {Promise<null | object>}
+ */
+async function loadCodexUsageSnapshot(options = {}) {
+  try {
+    let dirs;
+    if (options.baseDir) {
+      dirs = [options.baseDir];
+    } else if (typeof options.getSessionDirs === 'function') {
+      dirs = await options.getSessionDirs();
+    } else {
+      dirs = await defaultGetSessionDirs();
+    }
+    if (!Array.isArray(dirs) || dirs.length === 0) return null;
+    const nowMs = Date.now();
+    const candidates = await Promise.all(dirs.map((dir) => loadLatestRecordFromDir(dir, options, nowMs)));
+    return selectLatestRateLimits(candidates, nowMs);
   } catch (_e) {
     return null;
   }
@@ -269,7 +384,9 @@ function createCodexUsageProvider(options = {}) {
   const ttlMs = options.ttlMs != null ? options.ttlMs : CODEX_USAGE_TTL_MS;
   const stickyMaxMs = options.stickyMaxMs != null ? options.stickyMaxMs : CODEX_STICKY_MAX_MS;
   const clock = options.clock || Date.now;
-  const load = typeof options.load === 'function' ? options.load : loadCodexUsageSnapshot;
+  const load = typeof options.load === 'function'
+    ? options.load
+    : () => loadCodexUsageSnapshot({ getSessionDirs: options.getSessionDirs });
   let lastGood = null;
   let lastBypassAt = -Infinity;
   const memo = createTtlMemo(() => Promise.resolve(load()).catch(() => null), ttlMs, clock);
@@ -301,6 +418,9 @@ module.exports = {
   tokenCountPayload,
   parseTokenCountLine,
   extractLastTokenCount,
+  parseRecordTimestampMs,
+  findLastTokenCountRecord,
+  selectLatestRateLimits,
   isStickyUsable,
   markExpiredCategories,
   findLatestSessionFile,

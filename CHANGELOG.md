@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 不具合修正 ] 自動処理の作業ペインで Codex を使っても、サイドバーとスマートフォン版の Codex 使用量に反映されない問題を修正（[#638](https://github.com/vektor-inc/vk-terminals/issues/638)）
+
 ## 1.106.0
 
 - [ 機能追加 ] ペインの「このペインを広く表示」、アプリ内ブラウザの開閉と「広く表示」の切り替えにアニメーションを追加（[#629](https://github.com/vektor-inc/vk-terminals/issues/629)）

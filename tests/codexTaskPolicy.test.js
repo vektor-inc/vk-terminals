@@ -622,8 +622,8 @@ test('生成: rules は信頼済みランチャーの実行だけを許可し、
     assert.match(guide, /--assignee/);
     assert.match(guide, /`gh issue edit <issue番号>` は作成済み issue に担当者・既存ラベルを足すだけ/);
     assert.match(guide, /--add-assignee/);
-    assert.match(guide, /`gh <owner\/repo> issue edit <issue番号> --add-label <ラベル名>`/);
-    assert.match(guide, /明示先ではラベル追加だけを許可/);
+    assert.match(guide, /`gh <owner\/repo> issue edit <issue番号> --add-assignee <GitHub アカウント名> --add-label <ラベル名>`/);
+    assert.match(guide, /明示先では担当者追加とラベル追加だけを許可し、`--body-file`・`--remove-label` は拒否する/);
     assert.match(guide, /--add-label/);
     assert.match(guide, /`gh <owner\/repo> issue edit <issue番号> --remove-label <ラベル名>` は使えない/);
     assert.match(guide, /`gh issue edit <issue番号> --body-file <ファイル名>` は起動時のリポジトリの issue 本文の更新/);

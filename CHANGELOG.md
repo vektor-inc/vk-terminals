@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 機能追加 ] Codex の固定入口から、許可された別リポジトリの issue に担当者を追加できるように（[#636](https://github.com/vektor-inc/vk-terminals/issues/636)）
+
 ## 1.106.0
 
 - [ 機能追加 ] ペインの「このペインを広く表示」、アプリ内ブラウザの開閉と「広く表示」の切り替えにアニメーションを追加（[#629](https://github.com/vektor-inc/vk-terminals/issues/629)）

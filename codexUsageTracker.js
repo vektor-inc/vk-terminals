@@ -1,19 +1,21 @@
 'use strict';
 // Codex CLI の token_count JSONL から、今日/今週のトークン数を集計する（issue #215）。
 //
-// usageTracker.js と同じ IO ヘルパ（listRecentFiles / readSliceComplete / formatTokens）を使い、
-// sessions/**/*.jsonl を byte offset 差分読みする。state_5.sqlite は使わない。
+// sessions/**/*.jsonl を byte offset 差分読みする（読み取りは utils/codexSessionFs.js。リンクは辿らない）。
+// state_5.sqlite は使わない。
 // 対象の sessions フォルダは個人の CODEX_HOME とタスク専用 CODEX_HOME の両方（issue #638。列挙は utils/codexSessionDirs.js）。
 // 同じ実体のファイルが複数の経路で見えても 1 回だけ数えるよう、ファイルは dev / ino で識別する。
+// さらに rollout 先頭の session_meta のセッション ID で、同じセッションの複製（別の実体）を 1 つにまとめる。
 
 const path = require('path');
-const {
-  listRecentFiles,
-  readSliceComplete,
-  formatTokens,
-} = require('./usageTracker');
+const { formatTokens } = require('./usageTracker');
 const { tokenCountFromTotalUsage, tokenCountPayload } = require('./codexUsage');
 const { createCodexSessionDirsResolver, resolvePersonalCodexHome } = require('./utils/codexSessionDirs');
+const { listRecentJsonlFiles, readSliceCanonical, readFirstLineCanonical } = require('./utils/codexSessionFs');
+
+// session_meta（rollout の 1 行目）は指示文などを含んで大きくなることがあるため、先頭をこの量まで読む。
+const SESSION_META_READ_BYTES = 256 * 1024;
+const MAX_SESSION_ID_LENGTH = 200;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const CODEX_WEEKLY_WINDOW_MS = 7 * DAY_MS;
@@ -103,23 +105,40 @@ function fileIdentityKey(f) {
 }
 
 /**
- * 同じ記録（timestamp と累積トークン数が同じ）のセッション集計を 1 つにする（純粋）。
- * 同じ rollout が別のファイルとして複製されている場合に二重に数えないため。
- * @param {Array<{ ts: number, tokens: number }>} summaries
+ * rollout の 1 行目が session_meta なら、そのセッション ID を返す（純粋）。それ以外は null。
+ * ID は集計の内部だけで使い、返す値には含めない。
+ * @param {string|null} line
+ * @returns {string|null}
+ */
+function parseSessionMetaId(line) {
+  if (typeof line !== 'string' || !line.trim()) return null;
+  let obj;
+  try {
+    obj = JSON.parse(line);
+  } catch (_e) {
+    return null;
+  }
+  if (!obj || typeof obj !== 'object' || obj.type !== 'session_meta') return null;
+  const id = obj.payload && typeof obj.payload === 'object' ? obj.payload.id : null;
+  return typeof id === 'string' && id !== '' && id.length <= MAX_SESSION_ID_LENGTH ? id : null;
+}
+
+/**
+ * ファイルごとのセッション集計を、セッション単位にまとめる（純粋）。
+ * 同じセッション ID のもの（同じセッションの複製）は累積値の大きい方を採り、別のセッションは別々に残す。
+ * セッション ID が分からないファイルは、ファイル単位で 1 セッションとして扱う。
+ * @param {Array<{ sessionId: string|null, fileKey: string, summary: { ts: number, tokens: number }|null }>} items
  * @returns {Array<{ ts: number, tokens: number }>}
  */
-function dedupeSessionSummaries(summaries) {
-  if (!Array.isArray(summaries)) return [];
-  const seen = new Set();
-  const out = [];
-  for (const s of summaries) {
-    if (!s || !Number.isFinite(s.ts) || !Number.isFinite(s.tokens)) continue;
-    const key = `${s.ts}:${s.tokens}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(s);
+function mergeSessionSummaries(items) {
+  if (!Array.isArray(items)) return [];
+  const merged = new Map();
+  for (const item of items) {
+    if (!item || !item.summary) continue;
+    const key = item.sessionId ? `session:${item.sessionId}` : `file:${item.fileKey}`;
+    merged.set(key, updateSessionTokenSummary(merged.get(key) || null, item.summary));
   }
-  return out;
+  return Array.from(merged.values()).filter(Boolean);
 }
 
 function aggregateTokenCounts(sessionSummaries, nowMs, opts = {}) {
@@ -177,9 +196,9 @@ function createCodexUsageTracker(options = {}) {
     }
     if (!Array.isArray(dirs)) dirs = [];
 
-    const files = await listRecentFiles(dirs, now, windowMs);
+    const files = await listRecentJsonlFiles(dirs, now, windowMs);
     const alive = new Set();
-    const sessionSummaries = [];
+    const items = [];
 
     for (const f of files) {
       // 同じ実体のファイルが複数の経路で見えた場合は、最初の 1 つだけ読む。
@@ -188,12 +207,15 @@ function createCodexUsageTracker(options = {}) {
       alive.add(key);
       let cached = fileCache.get(key);
       if (!cached || cached.offset > f.size) {
-        cached = { offset: 0, summary: null };
+        cached = { offset: 0, summary: null, sessionId: undefined };
         fileCache.set(key, cached);
+      }
+      if (cached.sessionId === undefined) {
+        cached.sessionId = parseSessionMetaId(await readFirstLineCanonical(f.path, SESSION_META_READ_BYTES));
       }
       if (f.size > cached.offset) {
         try {
-          const { text, consumed } = await readSliceComplete(f.path, cached.offset, f.size);
+          const { text, consumed } = await readSliceCanonical(f.path, cached.offset, f.size);
           if (text) {
             const newEntries = parseCodexJsonl(text, f.mtimeMs);
             for (const entry of newEntries) {
@@ -205,14 +227,14 @@ function createCodexUsageTracker(options = {}) {
           // 読み取り失敗はこのファイルだけスキップ（次回再試行）
         }
       }
-      if (cached.summary) sessionSummaries.push(cached.summary);
+      if (cached.summary) items.push({ sessionId: cached.sessionId, fileKey: key, summary: cached.summary });
     }
 
     for (const key of fileCache.keys()) {
       if (!alive.has(key)) fileCache.delete(key);
     }
 
-    lastSnapshot = aggregateTokenCounts(dedupeSessionSummaries(sessionSummaries), now, { skewMs, weeklyWindowMs: windowMs });
+    lastSnapshot = aggregateTokenCounts(mergeSessionSummaries(items), now, { skewMs, weeklyWindowMs: windowMs });
     lastSnapshotAt = now;
     return lastSnapshot;
   }
@@ -257,7 +279,8 @@ module.exports = {
   startOfLocalDay,
   aggregateTokenCounts,
   fileIdentityKey,
-  dedupeSessionSummaries,
+  parseSessionMetaId,
+  mergeSessionSummaries,
   createCodexUsageTracker,
   defaultCodexSessionDirs,
   CODEX_WEEKLY_WINDOW_MS,

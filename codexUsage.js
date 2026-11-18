@@ -3,10 +3,11 @@
 //
 // 設計方針:
 //   - oauthUsage.js と同じく、JSONL 1 行の正規化などの純粋関数コアと、
-//     sessions フォルダの探索・末尾読み取りの IO 層を分離する。
+//     sessions フォルダの探索・末尾読み取りの IO 層を分離する。読み取りは utils/codexSessionFs.js 経由で、
+//     読む直前に途中のリンクの有無を確かめ、ファイルはリンク非追跡で開く。
 //   - 探索する sessions フォルダは、個人の CODEX_HOME とタスク専用 CODEX_HOME の両方（issue #638。
-//     列挙は utils/codexSessionDirs.js）。各フォルダの最新 rollout の末尾 token_count を比べ、
-//     レコードの timestamp（無ければファイルの更新時刻）が新しいものを区分ごとに採用する。
+//     列挙は utils/codexSessionDirs.js）。各フォルダの更新時刻が新しい上位数件の rollout の末尾から
+//     区分ごとの token_count を集め、レコードの timestamp（無ければファイルの更新時刻）が新しいものを区分ごとに採用する。
 //   - 解析するのは token_count レコードだけで、会話本文・保存先のパスは返す値に含めない。
 //   - 認証情報や sqlite には触れない。state_5.sqlite は native/CLI 依存が必要なため使わない。
 //   - 使用率は payload.rate_limits.{primary,secondary}.used_percent を 0..100 にクランプし、
@@ -14,16 +15,18 @@
 //   - resets_at は epoch 秒なので 1000 倍して epoch ms にする。
 //   - 失敗・欠落・壊れた JSONL は静かに null を返し、アプリ本体に影響させない。
 
-const fs = require('fs');
-const fsp = fs.promises;
 const path = require('path');
 const os = require('os');
 const { normalizePercent } = require('./oauthUsage');
 const { createTtlMemo, hasExpiredResetCategory } = require('./usageTracker');
 const { createCodexSessionDirsResolver } = require('./utils/codexSessionDirs');
+const { readdirCanonical, lstatCanonicalFile, readTailCanonical } = require('./utils/codexSessionFs');
 
 const CODEX_SESSIONS_DIR = path.join(os.homedir(), '.codex', 'sessions');
 const LATEST_READ_BYTES = 256 * 1024;
+// 1 つの sessions フォルダで末尾を読む rollout の数と、探す日フォルダの数の上限（issue #638）。
+const MAX_FILES_PER_DIR = 5;
+const MAX_DAY_DIRS_PER_DIR = 7;
 const CODEX_USAGE_TTL_MS = 60 * 1000;
 const CODEX_STICKY_MAX_MS = 15 * 60 * 1000;
 const WEEKLY_WINDOW_MINUTES = 7 * 24 * 60;
@@ -134,16 +137,30 @@ function parseRecordTimestampMs(obj) {
   return Number.isFinite(ts) ? ts : null;
 }
 
-/**
- * 複数行から最後の有効な token_count を探し、解析結果とそのレコードの timestamp を返す（純粋）。
- * @param {string} text
- * @param {number} [nowMs]
- * @returns {null | { snapshot: object, recordedAtMs: number|null }}
- */
-function findLastTokenCountRecord(text, nowMs = Date.now()) {
+function extractLastTokenCount(text, nowMs = Date.now()) {
   if (!text) return null;
   const lines = String(text).split('\n');
   for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    const parsed = parseTokenCountLine(line, nowMs);
+    if (parsed) return parsed;
+  }
+  return null;
+}
+
+/**
+ * 複数行を末尾から読み、session / weekly / tokens ごとに最も後ろの値とそのレコードの timestamp を集める（純粋）。
+ * 末尾のレコードが片方の区分しか持たない場合も、直前のレコードからもう片方を拾う。両方そろった時点で止める。
+ * @param {string} text
+ * @param {number} [nowMs]
+ * @returns {null | { session: Cat|null, weekly: Cat|null, tokens: Cat|null }} Cat は { value, recordedAtMs: number|null }
+ */
+function collectLatestCategories(text, nowMs = Date.now()) {
+  if (!text) return null;
+  const found = { session: null, weekly: null, tokens: null };
+  const lines = String(text).split('\n');
+  for (let i = lines.length - 1; i >= 0 && !(found.session && found.weekly); i--) {
     const line = lines[i].trim();
     if (!line) continue;
     let obj;
@@ -153,44 +170,44 @@ function findLastTokenCountRecord(text, nowMs = Date.now()) {
       continue;
     }
     const snapshot = parseTokenCountLine(obj, nowMs);
-    if (snapshot) return { snapshot, recordedAtMs: parseRecordTimestampMs(obj) };
+    if (!snapshot) continue;
+    const recordedAtMs = parseRecordTimestampMs(obj);
+    if (!found.session && snapshot.session) found.session = { value: snapshot.session, recordedAtMs };
+    if (!found.weekly && snapshot.weekly) found.weekly = { value: snapshot.weekly, recordedAtMs };
+    if (!found.tokens) found.tokens = { value: snapshot.tokens, recordedAtMs };
   }
-  return null;
-}
-
-function extractLastTokenCount(text, nowMs = Date.now()) {
-  const found = findLastTokenCountRecord(text, nowMs);
-  return found ? found.snapshot : null;
+  return found.session || found.weekly ? found : null;
 }
 
 /**
- * 複数の保存先から読んだ token_count のうち、session / weekly ごとに最も新しい値を選ぶ（純粋）。
- * 新しさは recordedAtMs（レコードの timestamp。無ければ呼び出し側がファイルの更新時刻を入れる）で比べる。
- * tokens は全体で最も新しい候補の値を使う。
- * @param {Array<{ snapshot: object, recordedAtMs: number|null }>} candidates
+ * 複数のファイル・保存先から集めた区分ごとの値のうち、session / weekly / tokens ごとに最も新しいものを選ぶ（純粋）。
+ * 新しさは recordedAtMs（レコードの timestamp。無ければ呼び出し側がファイルの更新時刻を入れる）で比べ、
+ * 同じ時刻なら先に渡された候補（個人の CODEX_HOME が先頭）を優先する。
+ * @param {Array<null | { session: Cat|null, weekly: Cat|null, tokens: Cat|null }>} candidates collectLatestCategories の結果
  * @param {number} [nowMs]
  * @returns {null | object} parseTokenCountLine と同じ形
  */
 function selectLatestRateLimits(candidates, nowMs = Date.now()) {
   if (!Array.isArray(candidates)) return null;
-  const valid = candidates.filter((c) => c && c.snapshot && typeof c.snapshot === 'object');
-  if (valid.length === 0) return null;
-  const tsOf = (c) => (Number.isFinite(c.recordedAtMs) ? c.recordedAtMs : -Infinity);
-  // 同じ時刻なら先に渡された候補（個人の CODEX_HOME が先頭）を優先するため、安定ソートで新しい順に並べる。
-  const sorted = valid.slice().sort((a, b) => tsOf(b) - tsOf(a));
+  const tsOf = (cat) => (Number.isFinite(cat.recordedAtMs) ? cat.recordedAtMs : -Infinity);
   const pick = (kind) => {
-    const hit = sorted.find((c) => c.snapshot[kind]);
-    return hit ? hit.snapshot[kind] : null;
+    let best = null;
+    for (const c of candidates) {
+      const cat = c && typeof c === 'object' ? c[kind] : null;
+      if (!cat || typeof cat !== 'object') continue;
+      if (!best || tsOf(cat) > tsOf(best)) best = cat;
+    }
+    return best;
   };
   const session = pick('session');
   const weekly = pick('weekly');
   if (!session && !weekly) return null;
-  const newest = sorted[0].snapshot;
+  const tokens = pick('tokens');
   return {
     source: 'codex',
-    session,
-    weekly,
-    tokens: Number.isFinite(newest.tokens) ? newest.tokens : null,
+    session: session ? session.value : null,
+    weekly: weekly ? weekly.value : null,
+    tokens: tokens && Number.isFinite(tokens.value) ? tokens.value : null,
     fetchedAtMs: nowMs,
   };
 }
@@ -230,80 +247,55 @@ function sortDesc(a, b) {
   return String(b).localeCompare(String(a), undefined, { numeric: true });
 }
 
-async function safeReaddir(dir, opts = {}) {
-  try {
-    return await fsp.readdir(dir, opts);
-  } catch (_e) {
-    return [];
-  }
-}
-
-async function latestRolloutFileInDay(dayDir) {
-  const entries = await safeReaddir(dayDir, { withFileTypes: true });
-  const files = [];
-  for (const ent of entries) {
-    if (!ent.isFile() || !/^rollout-.*\.jsonl$/.test(ent.name)) continue;
-    const full = path.join(dayDir, ent.name);
-    try {
-      const st = await fsp.stat(full);
-      files.push({ path: full, mtimeMs: st.mtimeMs, name: ent.name });
-    } catch (_e) {
-      // stat 失敗は無視
-    }
-  }
-  files.sort((a, b) => (b.mtimeMs - a.mtimeMs) || sortDesc(a.name, b.name));
-  return files.length ? files[0].path : null;
-}
-
-async function findLatestSessionFile(baseDir = CODEX_SESSIONS_DIR) {
-  const years = (await safeReaddir(baseDir, { withFileTypes: true }))
-    .filter((ent) => ent.isDirectory() && /^\d{4}$/.test(ent.name))
+async function listNumberedDirs(parentDir, pattern) {
+  return (await readdirCanonical(parentDir))
+    .filter((ent) => ent.isDirectory() && pattern.test(ent.name))
     .map((ent) => ent.name)
     .sort(sortDesc);
-  for (const y of years) {
+}
+
+/**
+ * sessions フォルダから、更新時刻が新しい rollout ファイルを最大 maxFiles 件返す（新しい順）。
+ * rollout はセッション開始日のフォルダに置かれ、長いセッションは古い日のフォルダで更新され続けるため、
+ * 日付の新しい maxDays 個の日フォルダをまとめて見てから更新時刻で並べる。リンクは辿らない。
+ * @param {string} baseDir 実パスの sessions フォルダ
+ * @param {{ maxFiles?: number, maxDays?: number }} [opts]
+ * @returns {Promise<Array<{ path: string, mtimeMs: number }>>}
+ */
+async function findRecentSessionFiles(baseDir = CODEX_SESSIONS_DIR, opts = {}) {
+  const maxFiles = opts.maxFiles || MAX_FILES_PER_DIR;
+  const maxDays = opts.maxDays || MAX_DAY_DIRS_PER_DIR;
+  const files = [];
+  let daysSeen = 0;
+  outer:
+  for (const y of await listNumberedDirs(baseDir, /^\d{4}$/)) {
     const yearDir = path.join(baseDir, y);
-    const months = (await safeReaddir(yearDir, { withFileTypes: true }))
-      .filter((ent) => ent.isDirectory() && /^\d{1,2}$/.test(ent.name))
-      .map((ent) => ent.name)
-      .sort(sortDesc);
-    for (const m of months) {
+    for (const m of await listNumberedDirs(yearDir, /^\d{1,2}$/)) {
       const monthDir = path.join(yearDir, m);
-      const days = (await safeReaddir(monthDir, { withFileTypes: true }))
-        .filter((ent) => ent.isDirectory() && /^\d{1,2}$/.test(ent.name))
-        .map((ent) => ent.name)
-        .sort(sortDesc);
-      for (const d of days) {
-        const latest = await latestRolloutFileInDay(path.join(monthDir, d));
-        if (latest) return latest;
+      for (const d of await listNumberedDirs(monthDir, /^\d{1,2}$/)) {
+        if (daysSeen >= maxDays) break outer;
+        daysSeen += 1;
+        const dayDir = path.join(monthDir, d);
+        for (const ent of await readdirCanonical(dayDir)) {
+          if (!ent.isFile() || !/^rollout-.*\.jsonl$/.test(ent.name)) continue;
+          const full = path.join(dayDir, ent.name);
+          const st = await lstatCanonicalFile(full);
+          if (st) files.push({ path: full, mtimeMs: st.mtimeMs, name: ent.name });
+        }
       }
     }
   }
-  return null;
+  files.sort((a, b) => (b.mtimeMs - a.mtimeMs) || sortDesc(a.name, b.name));
+  return files.slice(0, maxFiles).map(({ path: p, mtimeMs }) => ({ path: p, mtimeMs }));
+}
+
+async function findLatestSessionFile(baseDir = CODEX_SESSIONS_DIR) {
+  const files = await findRecentSessionFiles(baseDir, { maxFiles: 1 });
+  return files.length ? files[0].path : null;
 }
 
 async function readTail(filePath, maxBytes = LATEST_READ_BYTES) {
-  let st;
-  try {
-    st = await fsp.stat(filePath);
-  } catch (_e) {
-    return '';
-  }
-  const start = Math.max(0, st.size - maxBytes);
-  const len = st.size - start;
-  if (len <= 0) return '';
-  const fh = await fsp.open(filePath, 'r');
-  try {
-    const buf = Buffer.alloc(len);
-    const { bytesRead } = await fh.read(buf, 0, len, start);
-    let text = buf.subarray(0, bytesRead).toString('utf8');
-    if (start > 0) {
-      const firstNl = text.indexOf('\n');
-      text = firstNl >= 0 ? text.slice(firstNl + 1) : '';
-    }
-    return text;
-  } finally {
-    await fh.close();
-  }
+  return readTailCanonical(filePath, maxBytes);
 }
 
 let defaultSessionDirsResolver = null;
@@ -314,32 +306,32 @@ function defaultGetSessionDirs() {
 }
 
 /**
- * 1 つの sessions フォルダの最新 rollout から、最後の token_count とその新しさを読む。失敗は null。
- * @returns {Promise<null | { snapshot: object, recordedAtMs: number|null }>}
+ * 1 つの sessions フォルダの、更新時刻が新しい上位数件の rollout から、区分ごとの最新値を読む。
+ * timestamp の無い旧形式のレコードは、そのファイルの更新時刻で新しさを比べる。失敗したファイルは除く。
+ * @returns {Promise<Array<{ session, weekly, tokens }>>} collectLatestCategories の結果の配列
  */
-async function loadLatestRecordFromDir(baseDir, options, nowMs) {
+async function loadLatestRecordsFromDir(baseDir, nowMs) {
+  const out = [];
+  let files;
   try {
-    const filePath = typeof options.findLatestSessionFile === 'function'
-      ? await options.findLatestSessionFile(baseDir)
-      : await findLatestSessionFile(baseDir);
-    if (!filePath) return null;
-    const text = typeof options.readTail === 'function'
-      ? await options.readTail(filePath, LATEST_READ_BYTES)
-      : await readTail(filePath, LATEST_READ_BYTES);
-    const found = findLastTokenCountRecord(text, nowMs);
-    if (!found) return null;
-    if (Number.isFinite(found.recordedAtMs)) return found;
-    // timestamp の無い旧形式のレコードは、ファイルの更新時刻で新しさを比べる。
-    let mtimeMs = null;
-    try {
-      mtimeMs = (await fsp.stat(filePath)).mtimeMs;
-    } catch (_e) {
-      mtimeMs = null;
-    }
-    return { snapshot: found.snapshot, recordedAtMs: mtimeMs };
+    files = await findRecentSessionFiles(baseDir);
   } catch (_e) {
-    return null;
+    return out;
   }
+  for (const file of files) {
+    try {
+      const found = collectLatestCategories(await readTail(file.path, LATEST_READ_BYTES), nowMs);
+      if (!found) continue;
+      for (const kind of ['session', 'weekly', 'tokens']) {
+        const cat = found[kind];
+        if (cat && !Number.isFinite(cat.recordedAtMs)) found[kind] = { ...cat, recordedAtMs: file.mtimeMs };
+      }
+      out.push(found);
+    } catch (_e) {
+      // 読めないファイルは除く
+    }
+  }
+  return out;
 }
 
 /**
@@ -361,8 +353,8 @@ async function loadCodexUsageSnapshot(options = {}) {
     }
     if (!Array.isArray(dirs) || dirs.length === 0) return null;
     const nowMs = Date.now();
-    const candidates = await Promise.all(dirs.map((dir) => loadLatestRecordFromDir(dir, options, nowMs)));
-    return selectLatestRateLimits(candidates, nowMs);
+    const perDir = await Promise.all(dirs.map((dir) => loadLatestRecordsFromDir(dir, nowMs)));
+    return selectLatestRateLimits(perDir.flat(), nowMs);
   } catch (_e) {
     return null;
   }
@@ -419,16 +411,19 @@ module.exports = {
   parseTokenCountLine,
   extractLastTokenCount,
   parseRecordTimestampMs,
-  findLastTokenCountRecord,
+  collectLatestCategories,
   selectLatestRateLimits,
   isStickyUsable,
   markExpiredCategories,
+  findRecentSessionFiles,
   findLatestSessionFile,
   readTail,
   loadCodexUsageSnapshot,
   createCodexUsageProvider,
   CODEX_SESSIONS_DIR,
   LATEST_READ_BYTES,
+  MAX_FILES_PER_DIR,
+  MAX_DAY_DIRS_PER_DIR,
   CODEX_USAGE_TTL_MS,
   CODEX_STICKY_MAX_MS,
   WEEKLY_WINDOW_MINUTES,

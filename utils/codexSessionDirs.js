@@ -9,7 +9,7 @@
 //   - 列挙は固定ルートの走査で行う（起動時に作ったパスをメモリに記録する方式は使わない）。
 //     アプリの再起動前に起動したタスクや、別のアプリプロセスが起動したタスクの Codex も集計に含めるため。
 //   - タスク側はシンボリックリンクを辿らない。<preset>/<名前>/member/sessions の各段を lstat で確かめ、実体のフォルダだけを返す。
-//     sessions より下の走査（codexUsage.js / usageTracker.js）も Dirent の種別で判定し、リンクは辿らない。
+//     返すパスはすべて実パスにそろえる。列挙の後の差し替えへの備え（読む直前の再確認）は読み取り層 utils/codexSessionFs.js が行う。
 //   - 専用フォルダは自動では消されず溜まり続けるため、更新時刻の新しい MAX_TASK_CODEX_HOMES 件だけを対象にする。
 //   - 同じ実体のフォルダが複数の経路で見える場合（CODEX_HOME がタスク専用フォルダを指すなど）は dev / ino で 1 つにする。
 //   - 削除済み・権限エラーのフォルダは黙って除外し、全体を失敗させない。
@@ -25,6 +25,7 @@ const {
   MEMBER_HOME_NAME,
   LAUNCH_HOME_NAME_PATTERN,
 } = require('./codexTaskPolicy');
+const { isCanonicalPath } = require('./codexSessionFs');
 
 const SESSIONS_DIR_NAME = 'sessions';
 // 古いタスク専用フォルダが大量に溜まっても重くならないよう、走査する起動フォルダの数を絞る。
@@ -104,19 +105,22 @@ async function listTaskCodexSessionDirs(dataDir, opts = {}) {
   homes.sort((a, b) => (b.mtimeMs - a.mtimeMs) || (a.home < b.home ? -1 : 1));
   const out = [];
   for (const { home } of homes.slice(0, maxHomes)) {
+    // 各段の lstat の後に途中の階層が差し替えられた場合に備え、返す直前に途中にリンクが無いことを確かめ直す。
     const parentSessions = path.join(home, SESSIONS_DIR_NAME);
-    if (await lstatRealDirectory(parentSessions)) out.push(parentSessions);
+    if (await lstatRealDirectory(parentSessions) && await isCanonicalPath(parentSessions)) out.push(parentSessions);
     const member = path.join(home, MEMBER_HOME_NAME);
     if (await lstatRealDirectory(member)) {
       const memberSessions = path.join(member, SESSIONS_DIR_NAME);
-      if (await lstatRealDirectory(memberSessions)) out.push(memberSessions);
+      if (await lstatRealDirectory(memberSessions) && await isCanonicalPath(memberSessions)) out.push(memberSessions);
     }
   }
   return out;
 }
 
 /**
- * フォルダの一覧から、存在しないもの・同じ実体（dev / ino が同じ）の重複を除く。順序は最初に現れた位置を保つ。
+ * フォルダの一覧を実パスに直し、存在しないもの・フォルダでないもの・同じ実体（dev / ino が同じ）の重複を除く。
+ * 読み取り層（utils/codexSessionFs.js）は実パスと一致するパスだけを読むため、ここで実パスにそろえる。
+ * 順序は最初に現れた位置を保つ。
  * @param {string[]} dirs
  * @returns {Promise<string[]>}
  */
@@ -125,9 +129,11 @@ async function dedupeExistingDirs(dirs) {
   const out = [];
   for (const dir of dirs) {
     if (typeof dir !== 'string' || dir === '') continue;
+    let real;
     let st;
     try {
-      st = await fsp.stat(dir);
+      real = await fsp.realpath(dir);
+      st = await fsp.lstat(real);
     } catch (_e) {
       continue;
     }
@@ -135,14 +141,14 @@ async function dedupeExistingDirs(dirs) {
     const key = `${st.dev}:${st.ino}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    out.push(dir);
+    out.push(real);
   }
   return out;
 }
 
 /**
  * 個人の CODEX_HOME とタスク専用 CODEX_HOME の sessions フォルダを返す（存在するもの・重複なし）。
- * 個人側は利用者が自分で決める場所のため、シンボリックリンクでもそのまま使う（従来の ~/.codex/sessions と同じ扱い）。
+ * 個人側は利用者が自分で決める場所のため、シンボリックリンクでも実パスに解決して使う（従来の ~/.codex/sessions と同じ扱い）。
  * @param {{ personalCodexHome?: string, dataDir?: string, maxHomes?: number }} [opts]
  * @returns {Promise<string[]>}
  */

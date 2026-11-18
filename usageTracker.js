@@ -371,7 +371,7 @@ async function listRecentFiles(dirs, nowMs, windowMs) {
         try {
           const st = await fsp.stat(full);
           if (st.mtimeMs >= threshold) {
-            results.push({ path: full, size: st.size, mtimeMs: st.mtimeMs, dev: st.dev, ino: st.ino });
+            results.push({ path: full, size: st.size, mtimeMs: st.mtimeMs });
           }
         } catch (_e) {
           // stat 失敗は無視

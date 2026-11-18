@@ -442,20 +442,62 @@ test('許可: gh issue edit は番号と --add-assignee / --add-label だけを�
   assert.deepEqual(both.labels, ['good first issue', '不具合']);
 });
 
-test('許可: 明示先の issue edit はラベル追加だけを受け、対象を保持する', () => {
+test('許可: 明示先の issue edit は担当者追加・ラベル追加だけを受け、対象を保持する（issue #575 / #636）', () => {
   assert.deepEqual(parseTaskCommand(['gh', 'VEKTOR-INC/other', 'issue', 'edit', '5', '--add-label', 'bug', '--add-label=task-queue']), {
     ok: true, bin: 'gh', operation: 'issue-edit', number: '5', assignees: [], labels: ['bug', 'task-queue'], needsGitHub: true, targetRepo: 'VEKTOR-INC/other',
   });
-  for (const args of [[], ['--add-assignee', 'kurudrive'], ['--body-file', 'body.md'], ['--remove-label', 'bug'], ['--add-label', 'bug', '--add-assignee', 'kurudrive'], ['--add-label', 'bug', '--repo', 'vektor-inc/other'], ['--add-label', 'bug', '--title', 'title']]) {
-    assert.equal(parseTaskCommand(['gh', 'vektor-inc/other', 'issue', 'edit', '5', ...args]).ok, false, JSON.stringify(args));
-  }
+  assert.deepEqual(parseTaskCommand(['gh', 'VEKTOR-INC/other', 'issue', 'edit', '5', '--add-assignee', 'kurudrive', '--add-assignee=a-b']), {
+    ok: true, bin: 'gh', operation: 'issue-edit', number: '5', assignees: ['kurudrive', 'a-b'], labels: [], needsGitHub: true, targetRepo: 'VEKTOR-INC/other',
+  });
+  // 担当者とラベルの併用は、起動時のリポジトリと同じく 1 回の呼び出しで受ける（task-queue と担当者を揃えるため）。
+  assert.deepEqual(parseTaskCommand(['gh', 'vektor-inc/other', 'issue', 'edit', '5', '--add-label', 'task-queue', '--add-assignee', 'kurudrive']), {
+    ok: true, bin: 'gh', operation: 'issue-edit', number: '5', assignees: ['kurudrive'], labels: ['task-queue'], needsGitHub: true, targetRepo: 'vektor-inc/other',
+  });
 });
 
-test('拒否: gh issue edit は別リポジトリ指定・対象を変える引数・削除系・不正な値・必須欠落をすべて拒否する', () => {
+test('拒否: 明示先の issue edit は本文更新・削除系・無効な担当者・未許可オプションを、追加と混ぜても拒否する（issue #636）', () => {
+  for (const args of [
+    [],
+    ['--body-file', 'body.md'],
+    ['--remove-label', 'bug'],
+    ['--remove-assignee', 'kurudrive'],
+    ['--add-assignee', 'kurudrive', '--body-file', 'body.md'],
+    ['--add-assignee', 'kurudrive', '--remove-label', 'bug'],
+    ['--add-assignee', 'kurudrive', '--remove-assignee', 'other'],
+    ['--add-assignee', 'kurudrive', '--add-label', 'bug', '--remove-label', 'task-queue'],
+    ['--add-assignee', 'kurudrive', '--repo', 'vektor-inc/other'],
+    ['--add-assignee', 'kurudrive', '-R', 'outsider/other'],
+    ['--add-assignee', 'kurudrive', '--title', 'title'],
+    ['--add-assignee', 'kurudrive', '--body', 'b'],
+    ['--add-assignee', 'kurudrive', '--milestone', 'm'],
+    ['--add-assignee', 'kurudrive', '--add-project', 'p'],
+    ['--add-assignee', '@me'],
+    ['--add-assignee=@me'],
+    ['--add-assignee', 'me@example.com'],
+    ['--add-assignee', '-evil'],
+    ['--add-assignee', 'a,b'],
+    ['--add-assignee', 'a b'],
+    ['--add-assignee', 'outsider/other'],
+    ['--add-assignee', 'a'.repeat(40)],
+    ['--add-assignee', ''],
+    ['--add-assignee'],
+    ['--add-label', 'bug', '--repo', 'vektor-inc/other'],
+    ['--add-label', 'bug', '--title', 'title'],
+  ]) {
+    const result = parseTaskCommand(['gh', 'vektor-inc/other', 'issue', 'edit', '5', ...args]);
+    assert.equal(result.ok, false, JSON.stringify(args));
+    assert.match(result.error, /^task command rejected/, JSON.stringify(args));
+  }
+  // owner/repo の二重指定・不正な明示形式も受けない。
+  assert.equal(parseTaskCommand(['gh', 'vektor-inc/other', 'vektor-inc/second', 'issue', 'edit', '5', '--add-assignee', 'kurudrive']).ok, false);
+  assert.equal(parseTaskCommand(['gh', 'vektor-inc', 'issue', 'edit', '5', '--add-assignee', 'kurudrive']).ok, false);
+});
+
+test('拒否: gh issue edit は別リポジトリでの追加以外の更新・対象を変える引数・削除系・不正な値・必須欠落をすべて拒否する', () => {
   const base = ['gh', 'issue', 'edit', '5', '--add-assignee', 'kurudrive'];
   const rejected = [
-    ['gh', 'vektor-inc/other', 'issue', 'edit', '5', '--add-assignee', 'kurudrive'],
-    ['gh', 'VEKTOR-INC/vk-terminals', 'issue', 'edit', '5', '--add-label', 'bug', '--add-assignee', 'kurudrive'],
+    ['gh', 'vektor-inc/other', 'issue', 'edit', '5', '--add-assignee', 'kurudrive', '--body-file', 'body.md'],
+    ['gh', 'VEKTOR-INC/vk-terminals', 'issue', 'edit', '5', '--add-label', 'bug', '--remove-label', 'task-queue'],
     ['gh', 'issue', 'edit'],
     ['gh', 'issue', 'edit', '5'],
     ['gh', 'issue', 'edit', '--add-assignee', 'kurudrive'],
@@ -584,6 +626,67 @@ test('実行: 明示先のラベル存在確認・追加・読み戻しは同じ
   }
 });
 
+test('実行: 明示先の担当者追加は更新・読み戻しを明示先に対して行い、担当者が付いたときだけ成功し、再追加も成功する（issue #636）', () => {
+  const fixture = createFixture();
+  try {
+    const plain = path.join(fixture.root, 'plain-assignee-add');
+    fs.mkdirSync(plain);
+    const command = ['gh', 'VEKTOR-INC/other', 'issue', 'edit', '5', '--add-assignee', 'kurudrive'];
+    // 担当者だけのときはラベル一覧を取らない。既に付いている担当者の再指定も、読み戻せれば成功する（大文字小文字は区別しない）。
+    for (const applied of [issueState(['kurudrive'], []), issueState(['Kurudrive', 'other'], ['bug'])]) {
+      const stdout = [];
+      const harness = issueEditHarness(fixture, { applied });
+      const result = run(fixture, command, { spawnSync: harness.spawnSync, cwd: plain, writeOut: (m) => stdout.push(m) });
+      assert.equal(result.code, 0, result.messages.join(''));
+      assert.deepEqual(harness.calls, [
+        ['issue', 'edit', '5', '--add-assignee', 'kurudrive', '--repo', 'VEKTOR-INC/other'],
+        ['issue', 'view', '5', '--json', 'assignees,labels', '--repo', 'VEKTOR-INC/other'],
+      ]);
+      assert.match(stdout.join(''), /updated issue #5/);
+    }
+
+    // 担当者と task-queue を 1 回で揃える。ラベル確認・更新・読み戻しはすべて明示先に対して行う。
+    const both = issueEditHarness(fixture, { applied: issueState(['kurudrive'], ['task-queue']) });
+    const bothResult = run(fixture, ['gh', 'VEKTOR-INC/other', 'issue', 'edit', '5', '--add-assignee', 'kurudrive', '--add-label', 'task-queue'], { spawnSync: both.spawnSync, cwd: plain, writeOut: () => {} });
+    assert.equal(bothResult.code, 0, bothResult.messages.join(''));
+    assert.deepEqual(both.calls, [
+      ['api', '--paginate', 'repos/VEKTOR-INC/other/labels?per_page=100', '--jq', '.[].name'],
+      ['issue', 'edit', '5', '--add-assignee', 'kurudrive', '--add-label', 'task-queue', '--repo', 'VEKTOR-INC/other'],
+      ['issue', 'view', '5', '--json', 'assignees,labels', '--repo', 'VEKTOR-INC/other'],
+    ]);
+
+    // 読み戻しで担当者が付いていない（権限不足で何もしない gh を想定）・確認できないときは成功を返さない。
+    for (const { options, message } of [
+      { options: { applied: issueState([], []) }, message: /"kurudrive" is not on issue #5/ },
+      { options: { applied: issueState(['someone-else'], []) }, message: /"kurudrive" is not on issue #5/ },
+      { options: { applied: issueState(['kurudrive-x'], []) }, message: /"kurudrive" is not on issue #5/ },
+      { options: { applied: issueState(['kurudrive'], []), editStatus: 1 }, message: /gh issue edit failed/ },
+      { options: { applied: issueState(['kurudrive'], []), viewStatus: 1 }, message: /could not verify/ },
+      { options: { viewStdout: 'invalid json' }, message: /could not verify/ },
+    ]) {
+      const stdout = [];
+      const harness = issueEditHarness(fixture, options);
+      const result = run(fixture, command, { spawnSync: harness.spawnSync, cwd: plain, writeOut: (m) => stdout.push(m) });
+      assert.notEqual(result.code, 0, JSON.stringify(options));
+      assert.match(result.messages.join(''), message, JSON.stringify(options));
+      assert.equal(stdout.join(''), '', JSON.stringify(options));
+      assert.ok(harness.calls.length > 0 && harness.calls.every((args) => args.at(-2) === '--repo' && args.at(-1) === 'VEKTOR-INC/other'), JSON.stringify(harness.calls));
+    }
+
+    // 許可一覧との比較は owner 全体で行い、接頭辞・接尾辞の一致を許さない。許可外は gh を一度も呼ばない。
+    for (const owner of ['outsider', 'vektor', 'vektor-inc-extra', 'xvektor-inc']) {
+      const harness = issueEditHarness(fixture, { applied: issueState(['kurudrive'], []) });
+      const result = run(fixture, ['gh', `${owner}/other`, ...command.slice(2)], { spawnSync: harness.spawnSync, cwd: plain });
+      assert.equal(result.code, 2);
+      assert.match(result.messages.join(''), /owner .* is not allowed/);
+      assert.equal(harness.calls.length, 0);
+    }
+    assert.equal(fixture.readCalls().length, 0);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
 test('実行: gh issue edit はラベルが存在しない・更新や確認に失敗・読み戻しで値が無いとき、成功を返さない（存在しないラベルでは更新もしない）', () => {
   const fixture = createFixture();
   try {
@@ -622,7 +725,9 @@ test('実行: 拒否された gh issue edit は gh を一度も呼ばない（�
     const plain = path.join(fixture.root, 'plain');
     fs.mkdirSync(plain);
     for (const command of [
-      ['gh', 'vektor-inc/other-repo', 'issue', 'edit', '5', '--add-assignee', 'kurudrive'],
+      ['gh', 'vektor-inc/other-repo', 'issue', 'edit', '5', '--add-assignee', '@me'],
+      ['gh', 'vektor-inc/other-repo', 'issue', 'edit', '5', '--add-assignee', 'kurudrive', '--remove-assignee', 'other'],
+      ['gh', 'vektor-inc/other-repo', 'issue', 'edit', '5', '--add-assignee', 'kurudrive', '--body-file', 'body.md'],
       ['gh', 'vektor-inc/other-repo', 'issue', 'edit', '5', '--add-label', 'bug', '--repo', 'vektor-inc/other'],
       ['gh', 'vektor-inc/other-repo', 'issue', 'edit', '5', '--add-label', 'bug', '--milestone', 'm'],
       ['gh', 'vektor-inc/other-repo', 'issue', 'edit', '5', '--add-label', 'bug', '--body-file', 'body.md'],

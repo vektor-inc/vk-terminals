@@ -717,6 +717,7 @@ function parseReviewLabelCommand(operation, tokens, { withNumber }) {
 
 // 作成済み issue の更新は次の 3 通りの形だけ（issue #472 / #522）。互いに併用はできず、混ぜると拒否する（読み戻しの照合を操作ごとに独立させるため）。
 //   1. `gh issue edit <番号> --add-assignee <名前> --add-label <ラベル>`（どちらも複数可、少なくとも 1 つ必須）→ operation: issue-edit
+//      許可 owner の明示先（`gh <owner/repo> issue edit …`）で受けるのはこの形だけ（issue #575 / #636）。
 //   2. `gh issue edit <番号> --body-file <名前>`（本文の更新。入出力フォルダ直下のファイル名 1 つ）→ operation: issue-edit-body
 //   3. `gh issue edit <番号> --remove-label <ラベル>`（複数可）→ operation: issue-remove-label
 // 題名・--body・--milestone・--repo などは許可リストに無いので拒否される。実行は入口が「更新 → 読み戻し」の順で行う（1 はラベルの存在確認も先に行う）。
@@ -760,8 +761,8 @@ function parseGhIssueEdit(tokens, targetRepo) {
   const kinds = [assignees.length > 0 || labels.length > 0, bodyFile !== undefined, removeLabels.length > 0].filter(Boolean).length;
   if (kinds === 0) return fail('--add-assignee, --add-label, --body-file or --remove-label is required');
   if (kinds > 1) return fail('--add-assignee / --add-label, --body-file and --remove-label cannot be combined');
-  // 明示先への更新はラベル追加だけに絞り、ほかの更新権限を広げない。
-  if (targetRepo !== undefined && (assignees.length > 0 || bodyFile !== undefined || removeLabels.length > 0)) return fail('explicit repository only supports --add-label');
+  // 明示先への更新は担当者・既存ラベルの追加だけに絞り（issue #575 / #636）、本文の更新・ラベルの削除へ権限を広げない。
+  if (targetRepo !== undefined && (bodyFile !== undefined || removeLabels.length > 0)) return fail('explicit repository only supports --add-assignee and --add-label');
   if (bodyFile !== undefined) return { ok: true, bin: 'gh', operation: 'issue-edit-body', number, textFiles: { body: bodyFile }, needsGitHub: true };
   if (removeLabels.length > 0) return { ok: true, bin: 'gh', operation: 'issue-remove-label', number, removeLabels, needsGitHub: true };
   return { ok: true, bin: 'gh', operation: 'issue-edit', number, assignees, labels, needsGitHub: true, ...(targetRepo === undefined ? {} : { targetRepo }) };
@@ -2083,7 +2084,7 @@ function executeReviewLabel({ parsed, binding, explicitGitHubTarget, spawnSync, 
 }
 
 /**
- * `gh issue edit <番号> --add-assignee … --add-label …`。起動時のリポジトリには担当者と既存ラベルを、許可 owner の明示先には既存ラベルだけを足す。
+ * `gh issue edit <番号> --add-assignee … --add-label …`。起動時のリポジトリと許可 owner の明示先に、担当者と既存ラベルを足す（明示先では存在確認・更新・読み戻しのすべてを明示先に対して行う）。
  * 1. 指定ラベルが対象リポジトリに完全一致で存在することを確かめる（無い名前で新しいラベルが作られないように、更新の前に止める。一覧はページ送りで全件取る）。
  * 2. gh issue edit を実行する。
  * 3. issue を読み戻し、依頼した担当者とラベルがすべて付いていることを確かめる。gh issue edit は権限不足でも終了コード 0 で何もしないことがあるため、成功の判定は 3 だけで行う。

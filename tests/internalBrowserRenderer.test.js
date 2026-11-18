@@ -546,50 +546,115 @@ test('ホーム操作の false 応答と IPC 拒否を再試行案内として�
   const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
   const clickHandler = source.match(/internalBrowserSidebar\.addEventListener\('click', event => \{[\s\S]*?\n\}\);/)?.[0];
   assert.ok(clickHandler);
+  assert.match(source, /class="internal-browser-home-error" role="status" aria-live="polite"/);
+  const css = fs.readFileSync(path.join(__dirname, '../renderer/style.css'), 'utf8');
+  assert.match(css, /\.internal-browser-home-error \{[^}]*color:[^}]*overflow-wrap: anywhere/);
+  assert.match(css, /\.internal-browser-home-notice:not\(:has\(> p:not\(:empty\)\)\) \{ padding: 0; \}/);
   const failureMessage = 'ホームページを開けませんでした。もう一度お試しください。';
-  for (const [reply, toastAvailable, expectedNotice] of [
-    [() => false, true, null],
-    [() => Promise.reject(new Error('IPC failed')), false, null],
-    [() => 'home-unset', true, true],
-    [() => 'https://example.com/', true, false],
-  ]) {
+  for (const reply of [() => false, () => Promise.reject(new Error('IPC failed'))]) for (const toastAvailable of [true, false]) {
     const notices = [];
     const toasts = [];
-    const navigationStatus = { textContent: '' };
+    const homeError = { textContent: '' };
+    const toast = { dataset: toastAvailable ? {} : { persistent: 'true' }, hidden: false };
+    let hides = 0;
     let click;
     let currentReply = reply;
     const sidebar = {
       addEventListener(type, handler) { assert.equal(type, 'click'); click = handler; },
       querySelector(selector) {
-        assert.equal(selector, '.internal-browser-navigation-status');
-        return navigationStatus;
+        assert.equal(selector, '.internal-browser-home-error');
+        return homeError;
       },
     };
-    vm.runInNewContext(clickHandler, {
+    const context = vm.createContext({
       internalBrowserSidebar: sidebar,
       internalBrowserOpen: true,
+      externalUrlToastEl: toast,
       VKIpc: { invoke(channel, action) {
         assert.equal(channel, 'internal-browser:action');
         assert.equal(action, 'home');
         return Promise.resolve(currentReply());
       } },
       setInternalBrowserHomeNotice: value => notices.push(value),
+      syncInternalBrowserLayout() {},
       showGenericToast(message) { toasts.push(message); return toastAvailable; },
-      setInternalBrowserNavigationStatus(message) { navigationStatus.textContent = message; },
+      hideExternalUrlToast() { hides++; toast.hidden = true; delete toast.dataset.homeFailure; },
     });
+    vm.runInContext(clickHandler, context);
     click({ target: { closest: () => ({ dataset: { action: 'home' } }) } });
     await new Promise(setImmediate);
-    assert.deepEqual(toasts, expectedNotice === null ? [failureMessage] : []);
-    assert.deepEqual(notices, expectedNotice === null ? [] : [expectedNotice]);
-    assert.equal(navigationStatus.textContent, expectedNotice === null && !toastAvailable ? failureMessage : '');
-    if (!toastAvailable) {
-      currentReply = () => 'https://example.com/';
-      click({ target: { closest: () => ({ dataset: { action: 'home' } }) } });
-      await new Promise(setImmediate);
-      assert.deepEqual(notices, [false]);
-      assert.equal(navigationStatus.textContent, '');
-    }
+    assert.deepEqual(toasts, [failureMessage]);
+    assert.deepEqual(notices, []);
+    assert.equal(homeError.textContent, toastAvailable ? '' : failureMessage);
+    assert.equal(toast.dataset.homeFailure, toastAvailable ? 'true' : undefined);
+    assert.equal(toast.dataset.persistent, toastAvailable ? undefined : 'true');
+    assert.equal(hides, 0);
+
+    currentReply = () => 'https://example.com/';
+    click({ target: { closest: () => ({ dataset: { action: 'home' } }) } });
+    await new Promise(setImmediate);
+    assert.deepEqual(notices, [false]);
+    assert.equal(homeError.textContent, '');
+    assert.equal(hides, toastAvailable ? 1 : 0);
+    assert.equal(toast.dataset.persistent, toastAvailable ? undefined : 'true');
+
+    // 別の通知に置き換わったトーストは、次の成功でも消さない。
+    toast.hidden = false;
+    delete toast.dataset.homeFailure;
+    click({ target: { closest: () => ({ dataset: { action: 'home' } }) } });
+    await new Promise(setImmediate);
+    assert.equal(hides, toastAvailable ? 1 : 0);
   }
+
+  // ホーム未設定は失敗扱いにせず、既存の設定案内を出す。
+  const notices = [];
+  const homeError = { textContent: '' };
+  let click;
+  vm.runInNewContext(clickHandler, {
+    internalBrowserSidebar: { addEventListener(_type, handler) { click = handler; }, querySelector: () => homeError },
+    internalBrowserOpen: true, externalUrlToastEl: null,
+    VKIpc: { invoke: async () => 'home-unset' },
+    setInternalBrowserHomeNotice: value => notices.push(value),
+    syncInternalBrowserLayout() {},
+  });
+  click({ target: { closest: () => ({ dataset: { action: 'home' } }) } });
+  await new Promise(setImmediate);
+  assert.deepEqual(notices, [true]);
+});
+
+test('ホーム失敗の印は別の汎用・外部URLトーストへの差し替えと消去で外れる', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
+  const functions = ['hideExternalUrlToast', 'showExternalUrlOpenFailedToast', 'showGenericToast']
+    .map(name => source.match(new RegExp(`function ${name}\\([^]*?\\n\\}`))?.[0]);
+  assert.ok(functions.every(Boolean));
+  const toast = {
+    dataset: { homeFailure: 'true' }, hidden: false,
+    classList: { remove() {}, toggle() {} },
+    querySelector() { return { hidden: true }; },
+  };
+  const context = vm.createContext({
+    externalUrlToastEl: toast, externalUrlToastCopyUrl: '',
+    externalUrlToastHovered: false, externalUrlToastFocusWithin: false,
+    ensureExternalUrlToast: () => toast, clearExternalUrlToastTimer() {},
+    reconsiderExternalUrlToastTimer() {}, setExternalUrlToastInteractive() {},
+    setExternalUrlToastMessage() {}, EXTERNAL_URL_TOAST_FAILED_MESSAGE: 'URL failure',
+  });
+  const { hideExternalUrlToast, showGenericToast, showExternalUrlOpenFailedToast } = vm.runInContext(
+    `${functions.join('\n')}\n({ hideExternalUrlToast, showGenericToast, showExternalUrlOpenFailedToast })`, context,
+  );
+  assert.equal(showGenericToast('別の通知'), true);
+  assert.equal(toast.dataset.homeFailure, undefined);
+  toast.dataset.persistent = 'true';
+  assert.equal(showGenericToast('ホーム失敗'), false);
+  assert.equal(toast.dataset.persistent, 'true');
+  delete toast.dataset.persistent;
+  toast.dataset.homeFailure = 'true';
+  showExternalUrlOpenFailedToast('https://example.com/');
+  assert.equal(toast.dataset.homeFailure, undefined);
+  toast.dataset.homeFailure = 'true';
+  hideExternalUrlToast();
+  assert.equal(toast.dataset.homeFailure, undefined);
+  assert.equal(toast.hidden, true);
 });
 
 test('外部保存の部分成功後は失敗キーだけを再送し、成功先への別プロセスの変更を保持する', async t => {

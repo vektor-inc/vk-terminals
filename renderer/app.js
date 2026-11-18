@@ -122,6 +122,7 @@ internalBrowserSidebar.setAttribute('aria-label', 'アプリ内ブラウザ');
 internalBrowserSidebar.innerHTML = `<div class="internal-browser-resizer" role="separator" tabindex="0" aria-label="アプリ内ブラウザの幅を変更" aria-orientation="vertical" aria-valuemin="360" aria-valuemax="720" aria-valuenow="480"></div><div class="internal-browser-toolbar"><button type="button" data-action="back" title="戻る" aria-label="戻る"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#arrow-left"></use></svg></button><button type="button" data-action="forward" title="進む" aria-label="進む"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#arrow-right"></use></svg></button><button type="button" data-action="reload" title="再読み込み" aria-label="再読み込み"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#rotate-cw"></use></svg></button><button type="button" data-action="home" title="ホーム" aria-label="ホーム"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#house"></use></svg></button><input type="text" class="internal-browser-url" aria-label="URL または検索語を入力" placeholder="URL または検索語" autocomplete="off" spellcheck="false"><button type="button" class="internal-browser-wide-toggle" data-action="wide" title="ブラウザを広く表示" aria-label="ブラウザを広く表示"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#maximize"></use></svg></button><button type="button" data-action="external" title="外部ブラウザで開く" aria-label="外部ブラウザで開く"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#external-link"></use></svg></button><button type="button" data-action="close" title="閉じる" aria-label="閉じる"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#x"></use></svg></button></div><p id="internal-browser-address-error" class="internal-browser-address-error" role="alert" hidden></p><p class="internal-browser-external-target" hidden></p><div class="internal-browser-progress" hidden></div><p class="internal-browser-navigation-status" role="status" aria-live="polite"></p>
   <div class="internal-browser-home-notice">
     <p role="status" aria-live="polite"></p>
+    <p class="internal-browser-home-error" role="status" aria-live="polite"></p>
     <div class="internal-browser-notice-actions" hidden>
       <button type="button" data-action="home-settings">ホームページ URL を設定</button>
       <button type="button" data-action="dismiss-home-notice">案内を閉じる</button>
@@ -568,14 +569,20 @@ internalBrowserSidebar.addEventListener('click', event => {
   else if (action === 'home') {
     const failureMessage = 'ホームページを開けませんでした。もう一度お試しください。';
     const showHomeFailure = () => {
-      if (!showGenericToast(failureMessage)) setInternalBrowserNavigationStatus(failureMessage);
+      if (showGenericToast(failureMessage)) {
+        internalBrowserSidebar.querySelector('.internal-browser-home-error').textContent = '';
+        externalUrlToastEl.dataset.homeFailure = 'true';
+      } else {
+        internalBrowserSidebar.querySelector('.internal-browser-home-error').textContent = failureMessage;
+      }
+      if (internalBrowserOpen) syncInternalBrowserLayout();
     };
     VKIpc.invoke('internal-browser:action', action).then(result => {
       if (result === false) { showHomeFailure(); return; }
       if (internalBrowserOpen) setInternalBrowserHomeNotice(result === 'home-unset');
-      if (internalBrowserSidebar.querySelector('.internal-browser-navigation-status').textContent === failureMessage) {
-        setInternalBrowserNavigationStatus('');
-      }
+      internalBrowserSidebar.querySelector('.internal-browser-home-error').textContent = '';
+      if (internalBrowserOpen) syncInternalBrowserLayout();
+      if (externalUrlToastEl?.dataset.homeFailure === 'true' && !externalUrlToastEl.hidden) hideExternalUrlToast();
     }).catch(showHomeFailure);
   }
   else if (action === 'home-settings') openSettingsModal(null, INTERNAL_BROWSER_HOME_KEY);
@@ -1920,7 +1927,7 @@ function reconsiderExternalUrlToastTimer() {
 
 function hideExternalUrlToast() {
   clearExternalUrlToastTimer();
-  if (externalUrlToastEl) { externalUrlToastEl.hidden = true; delete externalUrlToastEl.dataset.persistent; }
+  if (externalUrlToastEl) { externalUrlToastEl.hidden = true; delete externalUrlToastEl.dataset.persistent; delete externalUrlToastEl.dataset.homeFailure; }
   externalUrlToastCopyUrl = '';
   // 非表示にする瞬間、ポインタがまだ乗っている／フォーカスが中にある状態でも
   // mouseleave / focusout が必ず飛んでくるとは限らない（display:none 化や、成功時に
@@ -2074,6 +2081,7 @@ function showExternalUrlOpenFailedToast(url) {
   const closeButton = toast.querySelector('.vk-toast-close');
   if (closeButton) closeButton.hidden = true;
   delete toast.dataset.persistent;
+  delete toast.dataset.homeFailure;
   // コピーボタンを持つため、クリックを透過させない（上の setExternalUrlToastInteractive
   // のコメント参照）。
   setExternalUrlToastInteractive(toast, true);
@@ -2091,6 +2099,7 @@ function showExternalUrlOpenFailedToast(url) {
 function showGenericToast(message, variant = 'default', { persistent = false } = {}) {
   const toast = ensureExternalUrlToast();
   if (!toast || (!persistent && toast.dataset.persistent === 'true' && !toast.hidden)) return false;
+  delete toast.dataset.homeFailure;
   toast.classList.toggle('vk-toast--success', variant === 'success');
   const copyButton = toast.querySelector('.vk-toast-copy');
   if (copyButton) copyButton.hidden = true;

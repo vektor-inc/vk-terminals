@@ -1,6 +1,7 @@
 'use strict';
 
 const { describeConfigError } = require('./utils/errorKind');
+const { normalizeOptionalHttpUrl } = require('./renderer/urlSafety');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -227,6 +228,11 @@ function resolveSavedFieldValues(descriptor, keys) {
 function coerceFieldValue(field, raw) {
   const label = field.label || field.key;
   switch (field.type) {
+    case 'http-url': {
+      const value = normalizeOptionalHttpUrl(raw);
+      if (value === null) return { ok: false, error: `${label}: 有効な HTTP または HTTPS の URL を入力してください` };
+      return { ok: true, value };
+    }
     case 'number': {
       if (raw === '' || raw === null || raw === undefined) return { ok: true, value: null };
       const numberValue = Number(raw);

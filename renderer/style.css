@@ -4209,6 +4209,7 @@ body.pane-dragging * {
 .internal-browser-toggle { right: 44px; font-size: 18px; }
 .internal-browser-sidebar {
   position: relative;
+  container: internal-browser / inline-size;
   flex: 0 0 auto;
   height: 100%;
   min-width: 0;
@@ -4248,12 +4249,15 @@ body.pane-dragging * {
 .internal-browser-toolbar button { flex: 0 0 26px; width: 26px; height: 28px; border: 1px solid transparent; border-radius: 5px; background: transparent; color: #e6edf3; cursor: pointer; }
 .internal-browser-toolbar button:hover { background: #21262d; }
 .internal-browser-toolbar button:disabled { color: #6e7681; cursor: default; }
-/* 操作列は「表示内容の操作（戻る・進む・再読み込み・URL 欄）」と「表示の操作（広く表示・外部ブラウザで開く・閉じる）」の
- * 2 グループ（issue #613）。見えている端どうしで、グループの間（URL 欄の枠 → 押した状態の広く表示の背景、2px + 20px = 22px）を、
- * グループの中で最も広い間隔（隣どうしのアイコンの線の間、約 17px）より広くする。
- * ボタンの幅を 26px にして、ブラウザが最も狭い 280px のときも URL 欄に「URL / 検索」が収まる幅を残す。 */
+/* ページ移動（戻る・進む・再読み込み・ホーム・URL 欄）と表示操作の間隔は、アイコン同士の間隔より広く取る。 */
 .internal-browser-toolbar .internal-browser-wide-toggle { margin-left: 20px; }
 .internal-browser-toolbar .internal-browser-url { flex: 1 1 auto; min-width: 0; height: 28px; box-sizing: border-box; padding: 0 7px; border: 1px solid var(--vktm--color--border-interactive); border-radius: 5px; background: #161b22; color: #e6edf3; font: inherit; font-size: 12px; }
+@container internal-browser (width < 320px) {
+  /* 最小幅でもアドレス欄の文字が見え、各ボタンに 24px の押せる幅が残るようにする。 */
+  .internal-browser-toolbar { padding-inline: 3px; }
+  .internal-browser-toolbar button { flex-basis: 24px; width: 24px; padding-inline: 1px; }
+  .internal-browser-toolbar .internal-browser-url { padding-inline: 2px; }
+}
 .internal-browser-toolbar .internal-browser-url::placeholder { color: #8b949e; }
 .internal-browser-toolbar .internal-browser-url[aria-invalid="true"] { border-color: #f85149; }
 .internal-browser-external-target { margin: 6px 8px 4px; color: #c9d1d9; font-size: 12px; line-height: 1.6; line-break: strict; overflow-wrap: anywhere; }

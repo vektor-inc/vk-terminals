@@ -28,6 +28,18 @@
     return typeof url === 'string' && url.length <= MAX_SAFE_HTTP_URL_LENGTH && isHttpUrl(url);
   }
 
+  // 保存する URL は HTTP(S) の絶対 URL に限定し、空欄と不正入力を区別する。
+  function normalizeOptionalHttpUrl(input) {
+    if (input == null) return '';
+    if (typeof input !== 'string') return null;
+    const value = input.trim();
+    if (!value) return '';
+    if (!/^https?:\/\/[^/?#]/i.test(value) || /[\\\u0000-\u0020\u007f]/.test(value) || !isSafeHttpUrl(value)) return null;
+    const parsed = new URL(value);
+    if (parsed.username || parsed.password || !isSafeHttpUrl(parsed.href)) return null;
+    return parsed.href;
+  }
+
   // アドレス欄の入力を URL または検索先に変換し、開けない入力は渡さない。
   function resolveBrowserAddress(input) {
     if (typeof input !== 'string') return { url: null, error: 'empty' };
@@ -71,6 +83,7 @@
     MAX_SAFE_HTTP_URL_LENGTH,
     isHttpUrl,
     isSafeHttpUrl,
+    normalizeOptionalHttpUrl,
     resolveBrowserAddress,
     normalizeBrowserAddress,
   };

@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 機能追加 ] アプリ内ブラウザに、設定したページへ移動するホームボタンを追加（[#634](https://github.com/vektor-inc/vk-terminals/issues/634)）
+
 ## 1.106.0
 
 - [ 機能追加 ] ペインの「このペインを広く表示」、アプリ内ブラウザの開閉と「広く表示」の切り替えにアニメーションを追加（[#629](https://github.com/vektor-inc/vk-terminals/issues/629)）

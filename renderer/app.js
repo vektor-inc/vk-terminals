@@ -33,7 +33,7 @@ const { normalizeConfirmClose, shouldConfirmClose } = window.VKCloseConfirm;
 // 認証要否の実判定（shouldRequireAuth）に使う isLoopbackHost 自体には 'localhost' を
 // 足していないので、ここでは案内専用の関数だけを使う（PR #315 安藤のレビュー指摘）。
 const { isLoopbackDisplayValue } = window.VKLoopbackHost;
-const { isSafeHttpUrl, resolveBrowserAddress } = window.VKUrlSafety;
+const { isSafeHttpUrl, normalizeOptionalHttpUrl, resolveBrowserAddress } = window.VKUrlSafety;
 // ペイン内 URL の Cmd/Ctrl+クリック対応（issue #349）。折り返し行をまたぐ URL の検出・
 // バッファ位置への変換は renderer/terminalLinkProvider.js（xterm.js の
 // registerLinkProvider を自前実装）が担う。詳しい採用理由は同ファイル冒頭のコメント参照。
@@ -118,7 +118,7 @@ const internalBrowserSidebar = document.createElement('aside');
 internalBrowserSidebar.id = 'internal-browser-sidebar';
 internalBrowserSidebar.className = 'internal-browser-sidebar';
 internalBrowserSidebar.setAttribute('aria-label', 'アプリ内ブラウザ');
-internalBrowserSidebar.innerHTML = `<div class="internal-browser-resizer" role="separator" tabindex="0" aria-label="アプリ内ブラウザの幅を変更" aria-orientation="vertical" aria-valuemin="360" aria-valuemax="720" aria-valuenow="480"></div><div class="internal-browser-toolbar"><button type="button" data-action="back" title="戻る" aria-label="戻る"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#arrow-left"></use></svg></button><button type="button" data-action="forward" title="進む" aria-label="進む"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#arrow-right"></use></svg></button><button type="button" data-action="reload" title="再読み込み" aria-label="再読み込み"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#rotate-cw"></use></svg></button><input type="text" class="internal-browser-url" aria-label="URL または検索語を入力" placeholder="URL または検索語" autocomplete="off" spellcheck="false"><button type="button" class="internal-browser-wide-toggle" data-action="wide" title="ブラウザを広く表示" aria-label="ブラウザを広く表示"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#maximize"></use></svg></button><button type="button" data-action="external" title="外部ブラウザで開く" aria-label="外部ブラウザで開く"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#external-link"></use></svg></button><button type="button" data-action="close" title="閉じる" aria-label="閉じる"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#x"></use></svg></button></div><p id="internal-browser-address-error" class="internal-browser-address-error" role="alert" hidden></p><p class="internal-browser-external-target" hidden></p><div class="internal-browser-progress" hidden></div><p class="internal-browser-navigation-status" role="status" aria-live="polite"></p><div class="internal-browser-notice" role="status" hidden></div><div class="internal-browser-error" role="status" hidden><p class="internal-browser-error-message">ページを表示できませんでした</p><button type="button" data-action="reload">再読み込み</button><button type="button" data-action="external">外部ブラウザで開く</button></div><div class="internal-browser-page"></div>`;
+internalBrowserSidebar.innerHTML = `<div class="internal-browser-resizer" role="separator" tabindex="0" aria-label="アプリ内ブラウザの幅を変更" aria-orientation="vertical" aria-valuemin="360" aria-valuemax="720" aria-valuenow="480"></div><div class="internal-browser-toolbar"><button type="button" data-action="back" title="戻る" aria-label="戻る"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#arrow-left"></use></svg></button><button type="button" data-action="forward" title="進む" aria-label="進む"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#arrow-right"></use></svg></button><button type="button" data-action="reload" title="再読み込み" aria-label="再読み込み"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#rotate-cw"></use></svg></button><button type="button" data-action="home" title="ホーム" aria-label="ホーム"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#house"></use></svg></button><input type="text" class="internal-browser-url" aria-label="URL または検索語を入力" placeholder="URL または検索語" autocomplete="off" spellcheck="false"><button type="button" class="internal-browser-wide-toggle" data-action="wide" title="ブラウザを広く表示" aria-label="ブラウザを広く表示"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#maximize"></use></svg></button><button type="button" data-action="external" title="外部ブラウザで開く" aria-label="外部ブラウザで開く"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#external-link"></use></svg></button><button type="button" data-action="close" title="閉じる" aria-label="閉じる"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#x"></use></svg></button></div><p id="internal-browser-address-error" class="internal-browser-address-error" role="alert" hidden></p><p class="internal-browser-external-target" hidden></p><div class="internal-browser-progress" hidden></div><p class="internal-browser-navigation-status" role="status" aria-live="polite"></p><div class="internal-browser-notice" role="status" hidden></div><div class="internal-browser-error" role="status" hidden><p class="internal-browser-error-message">ページを表示できませんでした</p><button type="button" data-action="reload">再読み込み</button><button type="button" data-action="external">外部ブラウザで開く</button></div><div class="internal-browser-page"></div>`;
 let internalBrowserOpen = false;
 // 広く表示中だけ値を持つ（createWideState の戻り値）。
 let internalBrowserWide = null;
@@ -135,7 +135,7 @@ let internalBrowserHasPage = false;
 let internalBrowserChoice = null;
 let unregisterInternalBrowserEscape = null;
 // ページ未表示でも操作列から閉じる・広く表示できるよう、この 2 つは無効化しない。
-for (const button of internalBrowserSidebar.querySelectorAll('.internal-browser-toolbar button:not([data-action="close"]):not([data-action="wide"])')) button.disabled = true;
+for (const button of internalBrowserSidebar.querySelectorAll('.internal-browser-toolbar button:not([data-action="close"]):not([data-action="wide"]):not([data-action="home"])')) button.disabled = true;
 
 // ─── レイアウト切り替えのアニメーション（issue #629）─────────────────────────
 // 利用者の操作による「ペインの広く表示」「アプリ内ブラウザの開閉」「ブラウザの広く表示」だけを
@@ -364,7 +364,8 @@ function syncInternalBrowserLayout() {
   // 右下に出すときは画面全体の幅を使えるため、ブラウザ幅を差し引かない。
   root.classList.toggle('toast-phrase-wrap', shouldWrapToastPhrase(windowWidth, toastAtCorner ? 0 : displayedInternalBrowserWidth));
   internalBrowserSidebar.style.width = `${displayedInternalBrowserWidth}px`;
-  internalBrowserSidebar.querySelector('.internal-browser-url').placeholder = displayedInternalBrowserWidth < 360 ? 'URL / 検索' : 'URL または検索語';
+  const address = internalBrowserSidebar.querySelector('.internal-browser-url');
+  address.placeholder = displayedInternalBrowserWidth < 280 ? 'URL' : displayedInternalBrowserWidth < 360 ? 'URL / 検索' : 'URL または検索語';
   document.body.style.setProperty('--vktm-internal-browser-width', `${displayedInternalBrowserWidth}px`);
   const resizer = internalBrowserSidebar.querySelector('.internal-browser-resizer');
   resizer.setAttribute('aria-valuemin', String(Math.min(360, maxWidth)));
@@ -7711,12 +7712,15 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
     });
   });
 
-  // ─── pattern 検証（issue #140） ──────────────────────────────────────────────
-  // 検証対象は field.pattern（正規表現文字列）を持つフィールドのみ。type ではなく
-  // pattern の有無で判定することで、text/number など type を問わず汎用的に扱う。
+  // フィールド形式とディスクリプタの pattern を保存前に検証する。
   const validatable = entries.filter(
-    ({ field }) => typeof field.pattern === 'string' && field.pattern !== ''
+    ({ field }) => field.type === 'http-url' || (typeof field.pattern === 'string' && field.pattern !== '')
   );
+  const isFieldValueValid = (field, input) => {
+    const value = getEntryStoredValue(field, input);
+    return (field.type !== 'http-url' || normalizeOptionalHttpUrl(value) !== null)
+      && isPatternValid(field.pattern, value);
+  };
 
   // 1 フィールドの検証結果を DOM に反映する。valid かどうかを返す。
   // - valid: aria-invalid を外し、エラー文をクリア（赤枠も CSS 側で解除される）。
@@ -7736,7 +7740,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
       if (errEl) errEl.textContent = '';
       return true;
     }
-    const valid = isPatternValid(field.pattern, getEntryStoredValue(field, input));
+    const valid = isFieldValueValid(field, input);
     if (valid) {
       clearInvalidMark(input);
       if (errEl) errEl.textContent = '';
@@ -7817,7 +7821,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
   const hasInvalidVisibleEntry = () => validatable.some(({ field, id }) => {
     const input = getEntryInput(id);
     if (!input || !isEntryVisible(id) || isEntryDisabled(id)) return false;
-    return !isPatternValid(field.pattern, getEntryStoredValue(field, input));
+    return !isFieldValueValid(field, input);
   });
 
   // フッターの総括メッセージは「表示が実態と食い違った時点」で消す。

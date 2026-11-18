@@ -95,6 +95,24 @@ test('600pxで左右を切り替えても中央320pxとURL・検索の伝達性�
   await expect(page.locator('#terminal')).toBeFocused();
 });
 
+// 対象: ホーム追加後も、横並びの下限でナビゲーション操作とアドレス欄を使える。
+test('ブラウザ幅240pxでホームとアドレス欄が操作列に収まる', async ({ page }) => {
+  await page.setViewportSize({ width: 560, height: 800 });
+  await page.evaluate(() => setInternalBrowserOpen(true));
+  const toolbar = page.locator('.internal-browser-toolbar');
+  const home = toolbar.getByRole('button', { name: 'ホーム', exact: true });
+  const address = toolbar.getByRole('textbox', { name: 'URL または検索語を入力' });
+  const close = toolbar.getByRole('button', { name: '閉じる', exact: true });
+  await expect(home).toHaveAttribute('title', 'ホーム');
+  await expect(address).toHaveAttribute('placeholder', 'URL');
+  const addressBox = await address.boundingBox();
+  expect(addressBox.width).toBeGreaterThanOrEqual(24);
+  const closeBox = await close.boundingBox();
+  expect(closeBox.x + closeBox.width).toBeLessThanOrEqual(560);
+  await page.keyboard.press('Shift+Tab');
+  await expect(home).toBeFocused();
+});
+
 test('1280pxの横並びと保存幅を維持し、縮小時は左側を閉じてフォーカスを戻す', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.evaluate(() => { setSidebarOpen(true); setInternalBrowserOpen(true, { focus: 'preserve' }); });

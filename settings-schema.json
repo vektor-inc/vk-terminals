@@ -384,6 +384,21 @@
           "visibleWhen": { "key": "initialEngine", "value": "codex" }
         }
       ]
+    },
+    {
+      "label": "アプリ内ブラウザ",
+      "tab": "general",
+      "fields": [
+        {
+          "key": "internalBrowserHomeUrl",
+          "label": "ホームページ URL",
+          "type": "http-url",
+          "default": "",
+          "placeholder": "https://example.com/",
+          "invalidMessage": "有効な HTTP または HTTPS の URL を入力してください。",
+          "help": "ホームボタンで開く URL です。空欄の場合は、VK Orchestrator の「作業対象リポジトリのオーナー」の先頭に指定された GitHub ユーザーまたは組織のページを開きます。オーナーも未設定なら移動しません。"
+        }
+      ]
     }
   ]
 }

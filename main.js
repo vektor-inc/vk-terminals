@@ -4,6 +4,7 @@ const { app, BrowserWindow, WebContentsView, ipcMain, screen, dialog, shell: ele
 const { createInternalBrowser } = require('./utils/internalBrowser');
 const { handleHelpRequest } = require('./utils/helpFeature');
 const { PARTITION } = require('./utils/internalBrowserPolicy');
+const { readOrchestratorOwners, resolveInternalBrowserHomeUrl } = require('./utils/internalBrowserHome');
 let internalBrowser = null;
 
 const { isInternalBrowserSender: isAllowedBrowserSender } = require('./utils/internalBrowserSender');
@@ -21,7 +22,15 @@ ipcMain.handle('internal-browser:external', async (event, source) => {
   await electronShell.openExternal(url);
   return true;
 });
-ipcMain.handle('internal-browser:action', (event, action) => isInternalBrowserSender(event) && !!internalBrowser?.action(action));
+ipcMain.handle('internal-browser:action', (event, action) => {
+  if (!isInternalBrowserSender(event) || !internalBrowser) return false;
+  if (action !== 'home') return internalBrowser.action(action);
+
+  // 押すたびに保存済みの設定を読み、既存の HTTP(S) 遷移に渡す。
+  const url = resolveInternalBrowserHomeUrl(loadUserConfig().internalBrowserHomeUrl,
+    () => readOrchestratorOwners(loadSettingsDescriptor(), os.homedir()));
+  return !!url && internalBrowser.navigate(url);
+});
 ipcMain.on('internal-browser:bounds', (event, rect) => { if (isInternalBrowserSender(event)) internalBrowser?.setBounds(rect); });
 ipcMain.on('internal-browser:visible', (event, visible) => { if (isInternalBrowserSender(event)) internalBrowser?.setVisible(visible); });
 ipcMain.on('internal-browser:modal-count', (event, count) => { if (isInternalBrowserSender(event)) internalBrowser?.setModalCount(count); });
@@ -2364,6 +2373,7 @@ ipcMain.handle('app:restart', async (event) => {
 // renderer からの保存。ディスクリプタに載っているキーだけを型変換して書き戻す
 // （未知のキーは既存 config から保持する。書き込み先は field/group/descriptor の targetPath）。
 ipcMain.handle('settings:save', (event, incoming) => {
+  if (!isInternalBrowserSender(event)) return { ok: false, error: '設定を保存できない画面です' };
   const descriptor = loadSettingsDescriptor();
   if (!descriptor) return { ok: false, error: '設定ディスクリプタが見つかりません' };
 

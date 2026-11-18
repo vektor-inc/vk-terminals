@@ -217,22 +217,22 @@ test('全面表示中だけ、表示中のトーストに重なる高さをペ�
   assert.equal(vm.runInContext('internalBrowserToastReserve(true)', context), 0);
 });
 
-test('初期化時は操作列の閉じると広く表示だけを無効化せず、失敗表示にも触れない', () => {
+test('初期化時もホーム・広く表示・閉じるは使え、失敗表示には触れない', () => {
   const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
   const initialization = source.match(/for \(const button of internalBrowserSidebar\.querySelectorAll\('[^']+'\)\) button\.disabled = true;/)?.[0];
   assert.ok(initialization);
-  // ページ未表示でも閉じる・広く表示は押せるよう、この 2 つは対象外にする。
-  const toolbarButtons = ['back', 'forward', 'reload', 'wide', 'external', 'close']
+  // ページ未表示でも、ホームの読み込みとブラウザの表示操作ができる。
+  const toolbarButtons = ['back', 'forward', 'reload', 'home', 'wide', 'external', 'close']
     .map(action => ({ action, disabled: false }));
   const errorButtons = [{ disabled: false }, { disabled: false }];
   const sidebar = {
     querySelectorAll(selector) {
-      assert.equal(selector, '.internal-browser-toolbar button:not([data-action="close"]):not([data-action="wide"])');
-      return toolbarButtons.filter(button => button.action !== 'close' && button.action !== 'wide');
+      assert.equal(selector, '.internal-browser-toolbar button:not([data-action="close"]):not([data-action="wide"]):not([data-action="home"])');
+      return toolbarButtons.filter(button => !['close', 'wide', 'home'].includes(button.action));
     },
   };
   vm.runInNewContext(initialization, { internalBrowserSidebar: sidebar });
-  assert.deepEqual(toolbarButtons.map(button => button.disabled), [true, true, true, false, true, false]);
+  assert.deepEqual(toolbarButtons.map(button => button.disabled), [true, true, true, false, false, true, false]);
   assert.deepEqual(errorButtons.map(button => button.disabled), [false, false]);
 });
 

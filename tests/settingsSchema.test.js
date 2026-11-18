@@ -30,8 +30,7 @@ test('settings-schema.json: valid JSON で必須構造を持つ', () => {
   assert.equal(schema.title, 'VK Terminals 設定');
   assert.equal(schema.note, '保存後、すぐに反映される設定と、次回の起動から反映される設定があります。反映の状況は、保存後に表示される案内で確認できます。');
   assert.ok(Array.isArray(schema.groups));
-  assert.equal(schema.groups.length, 1);
-  assert.equal(schema.groups[0].label, '基本');
+  assert.deepEqual(schema.groups.map(group => group.label), ['基本', 'アプリ内ブラウザ']);
 
   for (const group of schema.groups) {
     assert.ok(Array.isArray(group.fields));
@@ -67,7 +66,7 @@ test('buildBuiltinSettingsDescriptor: JSON から targetPath 付きの組み込�
   assert.equal(descriptor.title, 'VK Terminals 設定');
   assert.equal(descriptor.note, '保存後、すぐに反映される設定と、次回の起動から反映される設定があります。反映の状況は、保存後に表示される案内で確認できます。');
   assert.equal(descriptor.targetPath, targetPath);
-  assert.deepEqual(descriptor.groups.map((group) => group.label), ['基本']);
+  assert.deepEqual(descriptor.groups.map((group) => group.label), ['基本', 'アプリ内ブラウザ']);
 
   const fields = descriptor.groups.flatMap((group) => group.fields);
   // apiRequireAuthAlways は末尾に置く（issue #313 レビュー対応）。apiHost の直後に
@@ -93,7 +92,11 @@ test('buildBuiltinSettingsDescriptor: JSON から targetPath 付きの組み込�
     'openInitialPane',
     'initialEngine',
     'initialCodexModel',
+    'internalBrowserHomeUrl',
   ]);
+  const [homeUrl] = descriptor.groups[1].fields;
+  assert.equal(homeUrl.type, 'http-url');
+  assert.equal(homeUrl.default, '');
 
   // codexCollapseTurnDetails（issue #627）は既定オンの真偽値。対象が自動処理の作業ペインだけであることを冒頭で示し、途中の発言も畳まれること・オフの表示内容・次に起動する作業ペインから反映されることを示す。
   // 常に表示する項目のため、条件付きで表示する initialCodexModel より上（openInitialPane の直前）に置く。

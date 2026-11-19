@@ -384,6 +384,21 @@
           "visibleWhen": { "key": "initialEngine", "value": "codex" }
         }
       ]
+    },
+    {
+      "label": "アプリ内ブラウザ",
+      "tab": "general",
+      "fields": [
+        {
+          "key": "internalBrowserHomeUrl",
+          "label": "ホームページ URL",
+          "type": "http-url",
+          "default": "",
+          "placeholder": "https://example.com/",
+          "invalidMessage": "有効な HTTP または HTTPS の URL を入力してください。",
+          "help": "http:// または https:// で始まる URL を入力して「保存」を押します。次にホームボタンを押すと、保存した URL が開きます。\n空欄で保存すると、VK Orchestrator の「作業対象リポジトリのオーナー」の先頭に指定された GitHub ページを開きます。オーナーも未設定の場合は、現在のページを表示したまま設定方法を案内します。"
+        }
+      ]
     }
   ]
 }

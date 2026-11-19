@@ -87,6 +87,228 @@ test('前ページの画像読み込み中でも案内を開いて設定を閉�
   }
 });
 
+test('ヘルプは保存予約と条件付き入力を確認し、起動応答待ちの追加編集も残す', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-help-save-queue-'));
+  fs.mkdirSync(path.join(root, 'guide'));
+  fs.writeFileSync(path.join(root, 'help.html'), '<h1>Help</h1>');
+  fs.writeFileSync(path.join(root, 'status.json'), '{}');
+  let launched;
+  try {
+    launched = await launchAppAndWait({ port: await getFreePort(), prefix: 'vk-help-save-queue-', entry: path.resolve(__dirname, '../fixtures/embeddedHelpLauncher.js'), env: { VK_TEST_HELP_ROOT: root } });
+    const { win } = launched;
+    const config = require('../../settings-schema.json');
+    const engineFields = config.groups.flatMap(group => group.fields || [])
+      .filter(field => ['initialEngine', 'initialCodexModel'].includes(field.key));
+    expect(engineFields).toHaveLength(2);
+    await win.evaluate(({ engineFields }) => {
+      const original = VKIpc.invoke;
+      window.saveRequests = [];
+      window.releaseSaves = [];
+      window.savedValues = { label: 'old', initialEngine: 'claude', initialCodexModel: 'invalid model' };
+      window.documentRequests = 0;
+      window.deferSaves = true;
+      VKIpc.invoke = async (channel, ...args) => {
+        if (channel === 'settings:describe') return {
+          available: true,
+          values: { ...window.savedValues },
+          groups: [{ tab: 'general', label: '基本', fields: [
+            { key: 'label', label: '名前', type: 'text' }, ...engineFields,
+            { key: 'internalBrowserHomeUrl', label: 'ホームページ URL', type: 'http-url' },
+          ] }],
+          tabs: [{ id: 'general', label: '基本' }],
+        };
+        if (channel === 'settings:save') {
+          const [payload] = args;
+          window.saveRequests.push(payload);
+          if (window.deferSaves) await new Promise(resolve => { window.releaseSaves.push(resolve); });
+          Object.assign(window.savedValues, payload);
+          return { ok: true, writtenKeys: Object.keys(payload) };
+        }
+        if (channel === 'app:config-reflection') return { revision: Date.now(), failedFiles: [] };
+        if (channel === 'help:check') return { engine: 'codex', engines: [] };
+        if (channel === 'help:document') {
+          window.documentRequests++;
+          return new Promise(resolve => { window.releaseDocument = () => resolve(true); });
+        }
+        return original(channel, ...args);
+      };
+      return openSettingsModal();
+    }, { engineFields });
+    const basicTab = win.getByRole('tab', { name: /^基本/ });
+    const helpTab = win.getByRole('tab', { name: '使い方・ヘルプ' });
+    const name = win.getByLabel('名前', { exact: true });
+    const engine = win.getByLabel('最初のペインの AI エンジン');
+    const model = win.getByLabel('最初のペインの Codex モデル');
+    const documentButton = win.getByRole('button', { name: 'ドキュメント', exact: true });
+    const saveButton = win.getByRole('button', { name: '保存', exact: true });
+    const saveAndOpen = win.getByRole('button', { name: '保存して開く' });
+    const footer = win.locator('.settings-msg');
+
+    // A の応答によって一時的に dirty が消えても、予約された B の結果まで待つ。
+    await name.fill('a');
+    await saveButton.click();
+    await win.waitForFunction(() => window.releaseSaves.length === 1);
+    await name.fill('b');
+    await saveButton.click();
+    await name.fill('a');
+    await helpTab.click();
+    await win.evaluate(() => window.releaseSaves[0]());
+    await win.waitForFunction(() => window.releaseSaves.length === 2);
+    await expect(basicTab).not.toHaveClass(/is-dirty/);
+    await documentButton.click();
+    await expect(documentButton).toBeDisabled();
+    await expect(saveAndOpen).toHaveCount(0);
+    expect(await win.evaluate(() => window.documentRequests)).toBe(0);
+    await win.evaluate(() => {
+      window.deferSaves = false;
+      window.releaseSaves[1]();
+    });
+    await expect(saveAndOpen).toBeVisible();
+    expect(await win.evaluate(() => window.saveRequests)).toEqual([{ label: 'a' }, { label: 'b' }]);
+    expect(await win.evaluate(() => window.documentRequests)).toBe(0);
+    await win.getByRole('group', { name: /未保存の変更/ }).getByRole('button', { name: 'キャンセル' }).click();
+    const helpStatus = win.locator('.settings-help-entry [role=status]');
+    await expect(helpStatus).toHaveText('ドキュメントを開く操作をキャンセルしました。');
+
+    // 条件を切り替えて表示された不正値は、欄自体を編集していなくても保存と起動を止める。
+    await basicTab.click();
+    await engine.selectOption('codex');
+    await helpTab.click();
+    await documentButton.click();
+    await saveAndOpen.click();
+    await expect(model).toHaveValue('invalid model');
+    await expect(model).toHaveAttribute('aria-invalid', 'true');
+    await expect(model).toBeFocused();
+    await expect(helpStatus).toBeEmpty();
+    expect(await win.evaluate(() => window.saveRequests)).toHaveLength(2);
+    expect(await win.evaluate(() => window.documentRequests)).toBe(0);
+
+    // 保存に成功して起動 IPC を送った後でも、追加編集とフォーカスを保持する。
+    await model.fill('gpt-5');
+    await helpTab.click();
+    await documentButton.click();
+    await saveAndOpen.click();
+    await win.waitForFunction(() => window.documentRequests === 1);
+    await basicTab.click();
+    await name.fill('extra');
+    await win.evaluate(() => window.releaseDocument());
+    await expect(footer).toHaveText('追加の編集が保存されていません。もう一度保存してください。');
+    await expect(win.locator('.settings-modal')).toBeVisible();
+    await expect(name).toHaveValue('extra');
+    await expect(name).toBeFocused();
+    await expect(basicTab).toHaveClass(/is-dirty/);
+    expect(await win.evaluate(() => window.saveRequests)).toEqual([
+      { label: 'a' }, { label: 'b' }, { label: 'a', initialEngine: 'codex', initialCodexModel: 'gpt-5' },
+    ]);
+
+    // 確認を表示する前の保存待ちでタブを移り、キーボードで追加入力する。
+    await win.evaluate(() => { window.deferSaves = true; });
+    await saveButton.click();
+    await win.waitForFunction(() => window.releaseSaves.length === 3);
+    await helpTab.click();
+    await documentButton.press('Enter');
+    await expect(documentButton).toBeDisabled();
+    await helpTab.press('ArrowLeft');
+    await expect(basicTab).toBeFocused();
+    await win.keyboard.press('Tab');
+    await expect(name).toBeFocused();
+    await win.keyboard.press('End');
+    await win.keyboard.type('-edited');
+    await win.evaluate(() => {
+      window.deferSaves = false;
+      window.releaseSaves[2]();
+    });
+    await expect(footer).toHaveText('設定を保存してから、使い方・ヘルプで開き直してください。');
+    await expect(footer).toHaveAttribute('role', 'status');
+    await expect(footer).toBeVisible();
+    await expect(win.locator('.settings-help-entry [role=group]')).toHaveCount(0);
+    await expect(name).toHaveValue('extra-edited');
+    await expect(name).toBeFocused();
+    expect(await win.evaluate(() => window.documentRequests)).toBe(1);
+
+    // A の破棄に同意した後、起動応答待ちで B を保存して A に戻しても追加編集が残る。
+    const discard = win.getByRole('button', { name: '破棄して開く' });
+    await name.fill('discard-a');
+    await helpTab.click();
+    await documentButton.click();
+    await discard.click();
+    await win.waitForFunction(() => window.documentRequests === 2);
+    await basicTab.click();
+    await name.fill('save-b');
+    await saveButton.click();
+    await expect(footer).toContainText('保存しました');
+    await name.fill('discard-a');
+    await win.evaluate(() => window.releaseDocument());
+    await expect(footer).toHaveText('追加の編集が保存されていません。もう一度保存してください。');
+    await expect(name).toHaveValue('discard-a');
+    await expect(name).toBeFocused();
+    expect(await win.evaluate(() => window.savedValues.label)).toBe('save-b');
+
+    // 確認中のフッター保存がまだ応答待ちなら、破棄を押しても予約をすべて待つ。
+    await helpTab.click();
+    await documentButton.click();
+    await expect(discard).toBeVisible();
+    await win.evaluate(() => { window.deferSaves = true; });
+    await saveButton.click();
+    await win.waitForFunction(() => window.releaseSaves.length === 4);
+    await saveButton.click();
+    await discard.click();
+    expect(await win.evaluate(() => window.documentRequests)).toBe(2);
+    await win.evaluate(() => window.releaseSaves[3]());
+    await win.waitForFunction(() => window.releaseSaves.length === 5);
+    expect(await win.evaluate(() => window.documentRequests)).toBe(2);
+    await win.evaluate(() => window.releaseSaves[4]());
+    await win.waitForFunction(() => window.documentRequests === 3);
+    expect(await win.evaluate(() => window.savedValues.label)).toBe('discard-a');
+    await win.evaluate(() => window.releaseDocument());
+    await expect(win.locator('.settings-modal')).toHaveCount(0);
+
+    // Esc、フッターのキャンセル、ヘッダーの閉じるで A の待機中に閉じても B を保存する。
+    for (const closeMethod of ['escape', 'cancel', 'close']) {
+      await win.evaluate(() => openSettingsModal());
+      const offset = await win.evaluate(() => window.releaseSaves.length);
+      await name.fill(`first-${closeMethod}`);
+      await saveButton.click();
+      await win.waitForFunction(count => window.releaseSaves.length === count, offset + 1);
+      await name.fill(`queued-${closeMethod}`);
+      await saveButton.click();
+      if (closeMethod === 'escape') await win.keyboard.press('Escape');
+      else if (closeMethod === 'cancel') await win.locator('.settings-cancel').click();
+      else await win.locator('.settings-close').click();
+      await expect(win.locator('.settings-modal')).toHaveCount(0);
+      await win.evaluate(index => window.releaseSaves[index](), offset);
+      await win.waitForFunction(count => window.releaseSaves.length === count, offset + 2);
+      expect(await win.evaluate(() => window.saveRequests.slice(-2))).toEqual([
+        { label: `first-${closeMethod}` }, { label: `queued-${closeMethod}` },
+      ]);
+      await win.evaluate(index => window.releaseSaves[index](), offset + 1);
+      await win.waitForFunction(value => window.savedValues.label === value, `queued-${closeMethod}`);
+    }
+
+    // 未編集の不正 URL はヘルプを止める。単行表示で改行が消えて有効に見える場合も修正できる。
+    await win.evaluate(() => {
+      window.deferSaves = false;
+      window.savedValues.internalBrowserHomeUrl = 'https://example.com/bad\npath';
+      return openSettingsModal(VKHelpEntry.TAB_ID);
+    });
+    const homeUrl = win.getByLabel('ホームページ URL', { exact: true });
+    await documentButton.click();
+    await expect(homeUrl).toHaveValue('https://example.com/bad path');
+    await expect(homeUrl).toBeFocused();
+    await expect(homeUrl).toHaveAttribute('aria-invalid', 'true');
+    await expect(footer).toHaveText('入力内容に問題があります');
+    await expect(helpStatus).toBeEmpty();
+    expect(await win.evaluate(() => window.documentRequests)).toBe(3);
+    await homeUrl.fill('https://example.com/badpath');
+    await saveButton.click();
+    await expect(footer).toContainText('保存しました');
+    expect(await win.evaluate(() => window.savedValues.internalBrowserHomeUrl)).toBe('https://example.com/badpath');
+  } finally {
+    if (launched) await closeApp(launched);
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('使い方・ヘルプ: 確認失敗の再確認、未保存キャンセル、連打と格納復帰', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-help-e2e-'));
   fs.mkdirSync(path.join(root, 'guide'));
@@ -227,7 +449,10 @@ test('使い方・ヘルプ: 確認失敗の再確認、未保存キャンセル
         if (channel === 'settings:save') {
           if (window.saveMode === 'throw') throw new Error('保存できません');
           if (window.saveMode === 'fail') return { ok: false, error: '保存できません' };
-          return { ok: true };
+          if (window.saveMode === 'delay') {
+            await new Promise(resolve => { window.releaseHelpSave = resolve; });
+          }
+          return { ok: true, writtenKeys: Object.keys(args[0]) };
         }
         if (channel === 'app:config-reflection' && window.saveMode === 'readThrow') throw new Error('読み込みできません');
         if (channel === 'app:config-reflection') return { revision: Date.now(), failedFiles: window.saveMode === 'read' ? ['config.json'] : [] };
@@ -302,7 +527,13 @@ test('使い方・ヘルプ: 確認失敗の再確認、未保存キャンセル
       await expect(win.getByRole('button', { name: 'AI に相談', exact: true, includeHidden: true })).toBeEnabled();
       await expect(win.getByRole('button', { name: '保存して開く' })).toHaveCount(0);
       expect(await win.evaluate(() => window.helpCalls)).toBe(0);
-      await expect(win.locator('.settings-help-entry [role=status]')).toContainText('内容を確認して再試行してください。');
+      if (mode === 'invalid') {
+        await expect(win.getByLabel('名前', { exact: true })).toBeFocused();
+        await expect(win.locator('.settings-msg')).toHaveText('入力内容に問題があります');
+        await expect(win.locator('.settings-help-entry [role=status]')).toBeEmpty();
+      } else {
+        await expect(win.locator('.settings-help-entry [role=status]')).toContainText('内容を確認して再試行してください。');
+      }
       await expect(win.locator('.settings-help-entry [role=status]')).not.toContainText('ガイドを起動できませんでした');
       if (mode === 'read') {
         // 保存済みでも読み込み失敗なら起動しない。再編集して次の選択へ進む。
@@ -347,6 +578,27 @@ test('使い方・ヘルプ: 確認失敗の再確認、未保存キャンセル
     await expect(win.locator('.settings-help-entry')).toContainText('ガイドを起動できませんでした');
     await expect(win.locator('.pane')).toHaveCount(beforeFailure);
     await win.evaluate(() => { window.helpFail = false; });
+
+    // 「保存して開く」の応答を待つ間に追加入力すると、ガイドを開かず設定を保持する。
+    await win.evaluate(() => { window.saveMode = 'delay'; });
+    await win.getByRole('button', { name: 'AI に相談', exact: true }).click();
+    await win.getByRole('button', { name: '保存して開く' }).click();
+    await win.waitForFunction(() => typeof window.releaseHelpSave === 'function');
+    const basicTab = win.getByRole('tab', { name: /^基本/ });
+    await basicTab.click();
+    await win.getByLabel('名前', { exact: true }).fill('extra');
+    await win.evaluate(() => {
+      window.saveMode = null;
+      window.releaseHelpSave();
+      delete window.releaseHelpSave;
+    });
+    await expect(win.locator('.settings-msg')).toHaveText('設定を保存してから、使い方・ヘルプで開き直してください。');
+    await expect(win.locator('.settings-modal')).toBeVisible();
+    await expect(win.getByLabel('名前', { exact: true })).toHaveValue('extra');
+    await expect(basicTab).toHaveClass(/is-dirty/);
+    expect(await win.evaluate(() => window.helpCalls)).toBe(1);
+
+    await win.getByRole('tab', { name: '使い方・ヘルプ' }).click();
     await win.getByRole('button', { name: 'AI に相談', exact: true }).click();
     await win.getByRole('button', { name: '保存して開く' }).click();
     await expect(win.getByRole('button', { name: 'AI に相談', exact: true })).toBeDisabled();

@@ -109,7 +109,7 @@ test('単体の通常保存では反映確認の例外後も成功表示で自�
   const vm = require('node:vm');
   const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
   const refresh = source.slice(source.indexOf('async function refreshConfigReflection('), source.indexOf('function updateConfigReflection('));
-  const save = source.slice(source.indexOf('async function saveSettings('), source.indexOf("  modal.querySelector('.settings-save').addEventListener"));
+  const save = source.slice(source.indexOf('  const getChangedSettingValues ='), source.indexOf("  modal.querySelector('.settings-save').addEventListener"));
   let fireClose;
   let closed = false;
   const { createAutoCloseController } = require('../renderer/autoClose');
@@ -121,11 +121,13 @@ test('単体の通常保存では反映確認の例外後も成功表示で自�
   let saved = false;
   const msg = { textContent: '', className: '', classList: { add() {} } };
   const context = {
-    validatable: [], entries: [], msg, configFailedFiles: [],
-    lockSettingsFooter() {}, clearDirtyTabs() {}, refreshSettingsContentSavedValues() {},
+    validatable: [], isInvalidVisibleEntry: () => false, msg, configFailedFiles: [],
+    internalBrowserOpen: false, settingsInteractionRevision: 0,
+    savedFieldValues: {}, getCurrentSettingValues: () => ({}),
+    lockSettingsFooter() {}, syncDirtyTabs() {}, refreshSettingsContentSavedValues() {},
     autoClose,
     VKIpc: { async invoke(channel) {
-      if (channel === 'settings:save') { saved = true; return { ok: true }; }
+      if (channel === 'settings:save') { saved = true; return { ok: true, writtenKeys: [] }; }
       throw new Error('反映確認に失敗');
     } },
   };

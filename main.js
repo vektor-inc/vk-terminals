@@ -4,6 +4,7 @@ const { app, BrowserWindow, WebContentsView, ipcMain, screen, dialog, shell: ele
 const { createInternalBrowser } = require('./utils/internalBrowser');
 const { handleHelpRequest } = require('./utils/helpFeature');
 const { PARTITION } = require('./utils/internalBrowserPolicy');
+const { INTERNAL_BROWSER_HOME_KEY, readOrchestratorOwners, resolveInternalBrowserHomeUrl } = require('./utils/internalBrowserHome');
 let internalBrowser = null;
 
 const { isInternalBrowserSender: isAllowedBrowserSender } = require('./utils/internalBrowserSender');
@@ -21,7 +22,14 @@ ipcMain.handle('internal-browser:external', async (event, source) => {
   await electronShell.openExternal(url);
   return true;
 });
-ipcMain.handle('internal-browser:action', (event, action) => isInternalBrowserSender(event) && !!internalBrowser?.action(action));
+ipcMain.handle('internal-browser:action', (event, action) => {
+  if (!isInternalBrowserSender(event) || !internalBrowser) return false;
+  if (action !== 'home') return internalBrowser.action(action);
+
+  // 押すたびに保存済みの設定を読み、既存の HTTP(S) 遷移に渡す。
+  const url = getSavedInternalBrowserHomeUrl();
+  return url ? internalBrowser.navigate(url) : 'home-unset';
+});
 ipcMain.on('internal-browser:bounds', (event, rect) => { if (isInternalBrowserSender(event)) internalBrowser?.setBounds(rect); });
 ipcMain.on('internal-browser:visible', (event, visible) => { if (isInternalBrowserSender(event)) internalBrowser?.setVisible(visible); });
 ipcMain.on('internal-browser:modal-count', (event, count) => { if (isInternalBrowserSender(event)) internalBrowser?.setModalCount(count); });
@@ -159,12 +167,13 @@ const { isPortInUse, buildAlreadyRunningNotice } = require('./utils/alreadyRunni
 const {
   describeSettingsValues,
   describeTargetPaths,
+  descriptorFields,
   isValidSettingsDescriptor,
   resolveSavedFieldValues,
   saveSettingsToTargets,
   readJsonObject,
 } = require('./settingsTargets');
-const { buildBuiltinSettingsDescriptor } = require('./settingsSchema');
+const { addBrowserHomeSettings, buildBuiltinSettingsDescriptor } = require('./settingsSchema');
 // HTTP API のアクセストークン認証（issue #313）。トークン生成・timing-safe 比較・
 // 認証要否判定・Cookie 組み立ては utils/apiAuth.js に切り出し、単体テストしやすくしてある。
 const {
@@ -1105,6 +1114,10 @@ function userConfigCandidatePaths() {
  * @returns {{ initialCommand?: string, additionalPanes?: Array<{cwd: string}>, waitingExcludeCwdPatterns?: string[], tasksFile?: string }} 設定オブジェクト
  */
 function loadUserConfig() {
+  return readUserConfig().config;
+}
+
+function readUserConfig() {
   const candidates = userConfigCandidatePaths();
 
   for (const configPath of candidates) {
@@ -1112,14 +1125,14 @@ function loadUserConfig() {
       try {
         const raw = readSmallJson(configPath, USER_CONFIG_MAX_BYTES);
         normalizeLiveConfig(raw);
-        return raw;
+        return { config: raw, configPath };
       } catch (e) {
         console.error(`${LOG_PREFIX} Failed to parse config: ${configPath}`, describeErrorKind(e));
       }
     }
   }
 
-  return {};
+  return { config: {}, configPath: null };
 }
 
 // app が ready になる前に GPU スイッチを適用する（appendSwitch は ready 前に呼ぶ必要がある）。
@@ -2018,17 +2031,13 @@ ipcMain.handle('codex-usage:get', () => getCodexUsageUnified());
 // ─── 設定パネル（汎用）────────────────────────────────────────────────────────
 // 呼び出し側（例: vk-orchestrator）が環境変数 VK_TERMINALS_SETTINGS に「設定ディスク
 // リプタ JSON」のパスを渡すと、renderer の設定パネルからそのディスクリプタが指す
-// config ファイルを GUI 上で編集・保存できる。vk-terminals 自身は特定ツールの設定
-// 内容を知らず、ディスクリプタ（項目スキーマ + targetPath）に従って読み書きするだけの
-// 汎用実装にすることで、スタンドアロン利用時は影響を受けない（env 未指定なら
-// settings:describe が available:false を返し、ボタンごと非表示になる）。
+// config ファイルを GUI 上で編集・保存できる。ホーム URL は外部ディスクリプタが
+// 指定されている場合も VK Terminals 自身の設定ファイルに保存する。
 function settingsDescriptorPath() {
   return resolveSettingsDescriptorPath({ embedded: EMBEDDED_OPTIONS, env: process.env });
 }
 
-// 組み込みディスクリプタが編集する「vk-terminals 自身の config.json」のパスを解決する。
-// loadUserConfig() の読み込み順に合わせ、既存の候補があればそれを、無ければ appDir 直下
-// （README の `cp config.example.json config.json` の既定先）を対象にする。
+// 有効な設定ファイルが無い場合の、組み込みディスクリプタの保存先を決める。
 function resolveOwnConfigTargetPath() {
   return pickOwnConfigTargetPath({
     existsSync: fs.existsSync,
@@ -2047,20 +2056,6 @@ function resolveOwnConfigTargetPath() {
 //   - 中-2: どの候補も存在しない場合のフォールバックを {appDir}/config.json ではなく
 //     README の記述どおり DATA_DIR/config.json（~/.vk-terminals/config.json）にする。
 //     {appDir} が書き込めないパッケージ化環境で毎起動トークンが変わる事故も防ぐ。
-// 設定パネルの保存経路が使う resolveOwnConfigTargetPath() 自体は変更しない
-// （このトークン専用の解決とは独立させ、既存の保存挙動に影響させないため）。
-//
-// 【既知の残存リスク（PR #315 安藤のセキュリティレビュー指摘・コメントのみ対応）】
-// この 2 つの解決は候補リストが非対称（こちらは後方互換の
-// ~/.claude/terminals-config.json も候補に含むが、resolveOwnConfigTargetPath() は
-// 含まない）。そのため、レガシーファイルだけが存在する環境で設定パネルから保存すると
-// {appDir}/config.json が新規作成され、次回起動時の resolveTokenConfigPath() は
-// 優先順位（DATA_DIR → appDir → legacy）どおりその新しい {appDir}/config.json を
-// 選ぶ。そこには apiToken が無いため ensureApiToken() が新トークンを発行し、
-// 登録済みの端末が全部無効になる（個別無効化はできない仕様なので再登録が必要になる）。
-// 影響は可用性（再登録の手間）のみでトークン漏えい等のセキュリティ上の実害はなく、
-// レガシーパスだけが存在する状態自体がまれなため、今回は解決の対称化はスコープ外と
-// している（対称化すると resolveOwnConfigTargetPath() 側の既存の保存挙動を変えてしまう）。
 function resolveTokenConfigPath() {
   const candidates = userConfigCandidatePaths();
   for (const configPath of candidates) {
@@ -2193,8 +2188,9 @@ function savePushSubscriptions(list) {
 // env 未指定（スタンドアロン起動）時に使う組み込みディスクリプタ。静的な項目定義は
 // settings-schema.json に置き、実行時に決まる targetPath だけをここで合成する。
 function builtinSettingsDescriptor() {
+  // ホーム押下と同じ有効な設定ファイルを編集する。旧形式の設定ファイルもこの順で探す。
   return buildBuiltinSettingsDescriptor({
-    targetPath: resolveOwnConfigTargetPath(),
+    targetPath: readUserConfig().configPath || resolveOwnConfigTargetPath(),
     schemaPath: path.join(RESOURCE_ROOT, 'settings-schema.json'),
     onError: (error, schemaPath) => {
       console.error(`${LOG_PREFIX} Failed to load built-in settings schema: ${schemaPath}`, error);
@@ -2206,19 +2202,20 @@ function builtinSettingsDescriptor() {
 // あればそれを優先し（vk-orchestrator など呼び出し側の設定を編集）、無い／不正な場合は
 // 組み込みディスクリプタ（vk-terminals 自身の config.json を編集）にフォールバックする。
 // これにより単体起動でも常に設定パネルを表示できる。
-function loadSettingsDescriptor() {
+function loadSettingsDescriptor({ includeBrowserHome = true } = {}) {
   const p = settingsDescriptorPath();
   if (p && fs.existsSync(p)) {
     try {
       const d = JSON.parse(fs.readFileSync(p, 'utf8'));
       if (isValidSettingsDescriptor(d)) {
-        const builtInField = builtinSettingsDescriptor()?.groups.flatMap(group => group.fields || []).find(field => field.key === 'terminalLinkClickMode');
+        const builtin = builtinSettingsDescriptor();
+        const builtInField = descriptorFields(builtin).find(field => field.key === 'terminalLinkClickMode');
         if (builtInField) {
-          for (const field of d.groups.flatMap(group => group.fields || [])) {
+          for (const field of descriptorFields(d)) {
             if (field.key === 'terminalLinkClickMode') Object.assign(field, { label: builtInField.label, help: builtInField.help, options: builtInField.options });
           }
         }
-        return d;
+        return includeBrowserHome ? addBrowserHomeSettings(d, builtin) : d;
       }
       console.error(`${LOG_PREFIX} Invalid settings descriptor (unresolved targetPath / duplicate or unsafe key): ${p}`);
     } catch (e) {
@@ -2229,9 +2226,9 @@ function loadSettingsDescriptor() {
   return builtinSettingsDescriptor();
 }
 
-// renderer 用: ディスクリプタと targetPath の現在値を返す。VK_TERMINALS_SETTINGS が
-// 未設定なら available:false（renderer 側は設定ボタンを表示しない）。
-ipcMain.handle('settings:describe', () => {
+// renderer 用: ディスクリプタと各保存先の現在値を返す。
+ipcMain.handle('settings:describe', (event) => {
+  if (!isInternalBrowserSender(event)) return { available: false };
   const descriptor = loadSettingsDescriptor();
   if (!descriptor) return { available: false };
 
@@ -2278,7 +2275,7 @@ function getRestartTabIds() {
   }
   const key = descriptorPath ? JSON.stringify([descriptorPath, stamp]) : 'builtin';
   if (restartTabsCache.key !== key) {
-    const descriptor = loadSettingsDescriptor();
+    const descriptor = loadSettingsDescriptor({ includeBrowserHome: false });
     restartTabsCache = { key, ids: Array.isArray(descriptor?.tabs) ? descriptor.tabs.map((t) => t?.id).filter((id) => typeof id === 'string') : [] };
   }
   return restartTabsCache.ids;
@@ -2368,15 +2365,22 @@ ipcMain.handle('app:restart', async (event) => {
   }
 });
 
+function getSavedInternalBrowserHomeUrl() {
+  return resolveInternalBrowserHomeUrl(loadUserConfig()[INTERNAL_BROWSER_HOME_KEY],
+    () => readOrchestratorOwners(loadSettingsDescriptor({ includeBrowserHome: false }), os.homedir()));
+}
+
 // renderer からの保存。ディスクリプタに載っているキーだけを型変換して書き戻す
 // （未知のキーは既存 config から保持する。書き込み先は field/group/descriptor の targetPath）。
 ipcMain.handle('settings:save', (event, incoming) => {
+  if (!isInternalBrowserSender(event)) return { ok: false, error: '設定を保存できない画面です' };
   const descriptor = loadSettingsDescriptor();
   if (!descriptor) return { ok: false, error: '設定ディスクリプタが見つかりません' };
 
   const result = saveSettingsToTargets(descriptor, incoming);
-  if (result.ok) reloadConfigReflection();
-  return result;
+  // 変更なしでも、手動で修正された設定ファイルを読み直して案内を更新する。
+  if (result.ok || result.writtenKeys.length > 0) reloadConfigReflection();
+  return { ...result, hasInternalBrowserHome: Boolean(getSavedInternalBrowserHomeUrl()) };
 });
 
 // 設定コンテンツテーブルの savedValue セル（issue #380）用。キーの配列を 1 回で受け、
@@ -2389,7 +2393,7 @@ ipcMain.handle('settings:save', (event, incoming) => {
 // （settingsTargets.js）に集約してある（VK_TERMINALS_SETTINGS は外部から差し替えられる
 // 信頼できない入力のため、任意のキー・任意のパスを読み出せる窓口にしないための必須要件）。
 ipcMain.handle('settings:content-table-saved-value', (_event, keys) => {
-  const descriptor = loadSettingsDescriptor();
+  const descriptor = loadSettingsDescriptor({ includeBrowserHome: false });
   if (!descriptor) {
     const error = '設定ディスクリプタが見つかりません';
     const result = Object.create(null);

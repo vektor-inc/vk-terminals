@@ -222,6 +222,7 @@ test('ログ分類: settings:describe の読み込み失敗', () => {
     const errors = [];
     vm.runInNewContext(`${mainSource.slice(start, end)}\n});`, {
       ipcMain: { handle: (_name, callback) => callback() },
+      isInternalBrowserSender: () => true,
       loadSettingsDescriptor: () => ({}),
       describeSettingsValues: (_descriptor, options) => options.onReadError('/temporary/config.json', error),
       describeErrorKind, LOG_PREFIX: '[test]', console: { error: (...args) => errors.push(args) },

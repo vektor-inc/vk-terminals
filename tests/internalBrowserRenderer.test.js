@@ -3,17 +3,758 @@ const { installBrowserLoad, flushBrowserLoads } = require('./helpers/browserLoad
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const vm = require('node:vm');
 const { EventEmitter } = require('node:events');
 const { createInternalBrowser } = require('../utils/internalBrowser');
+const { INTERNAL_BROWSER_HOME_KEY } = require('../utils/internalBrowserHome');
+const { saveSettingsToTargets } = require('../settingsTargets');
+
+function createSettingsSaveHarness(initialValues, save, labels = {}, isInvalid = () => false) {
+  const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
+  const saveFunctions = source.match(/  const getChangedSettingValues = [\s\S]*?(?=\n  modal.querySelector\('\.settings-save'\)\.addEventListener)/)?.[0];
+  const clearStaleMessage = source.match(/  const clearStaleSettingsMessage = [\s\S]*?\n  };/)?.[0];
+  assert.ok(saveFunctions && clearStaleMessage);
+  const savedFieldValues = { ...initialValues };
+  const values = { ...savedFieldValues };
+  const payloads = [];
+  const notices = [];
+  const refreshes = [];
+  const msg = {};
+  const autoCloses = [];
+  const dirtyValues = {};
+  const entries = Object.keys(values).map(key => ({ field: { key, label: labels[key] }, id: key }));
+  const context = vm.createContext({
+    INTERNAL_BROWSER_HOME_KEY, savedFieldValues, values,
+    internalBrowserOpen: true, focusFieldKey: INTERNAL_BROWSER_HOME_KEY,
+    settingsInteractionRevision: 0, settingsChangesRevision: 0, latestSettingsSave: null,
+    isHelpTabHidden: () => false,
+    entries,
+    getCurrentSettingValues: () => ({ ...values }),
+    validatable: entries, isInvalidVisibleEntry: ({ field }) => isInvalid(field.key, values[field.key]),
+    applyFieldValidity: field => !isInvalid(field.key, values[field.key]),
+    getEntryInput: () => ({ focus() {} }), switchToFieldTab() {},
+    configFailedFiles: [], restoredHomeButton: null,
+    msg,
+    autoClose: { cancel() {}, arm() { autoCloses.push(true); } },
+    VKIpc: { async invoke(channel, payload) {
+      assert.equal(channel, 'settings:save');
+      payloads.push({ ...payload });
+      return save(payload);
+    } },
+    setInternalBrowserHomeNotice: visible => notices.push(visible),
+    lockSettingsFooter() {},
+    syncDirtyTabs(changes) {
+      for (const key of Object.keys(dirtyValues)) delete dirtyValues[key];
+      Object.assign(dirtyValues, changes);
+    },
+    refreshSettingsContentSavedValues() { refreshes.push('saved-values'); },
+    refreshConfigReflection() { refreshes.push('reflection'); },
+  });
+  const { saveSettings, edit } = vm.runInContext(`
+    ${saveFunctions}
+    ${clearStaleMessage}
+    ({ saveSettings, edit(key, value) {
+      values[key] = value;
+      settingsInteractionRevision++;
+      settingsChangesRevision++;
+      clearStaleSettingsMessage();
+    } })
+  `, context);
+  return { saveSettings, edit, savedFieldValues, values, payloads, notices, refreshes, msg, autoCloses, dirtyValues, context };
+}
+
+test('ホームだけの保存と変更のない再保存では外部設定を送信しない', async () => {
+  const legacyOwners = '\n  \nfirst-owner\nsecond-owner';
+  const homeOnly = { ok: true, writtenKeys: [INTERNAL_BROWSER_HOME_KEY], hasInternalBrowserHome: true };
+  const replies = [
+    { ok: false, writtenKeys: [], hasInternalBrowserHome: false, error: '保存に失敗しました' },
+    homeOnly,
+    { ok: true, writtenKeys: [], hasInternalBrowserHome: true },
+    homeOnly,
+    { ok: true, writtenKeys: ['github.owner'], hasInternalBrowserHome: true },
+    { ok: true, writtenKeys: ['github.owner', INTERNAL_BROWSER_HOME_KEY], hasInternalBrowserHome: true },
+  ];
+  const { saveSettings, values, payloads, notices, msg } = createSettingsSaveHarness(
+    { [INTERNAL_BROWSER_HOME_KEY]: '', 'github.owner': legacyOwners },
+    () => replies.shift(),
+  );
+
+  // 保存失敗では案内を残し、再試行で成功したら消す。
+  const url = 'https://example.com/home';
+  values[INTERNAL_BROWSER_HOME_KEY] = url;
+  assert.equal(await saveSettings(), false);
+  assert.deepEqual(notices, [true]);
+  assert.equal(msg.textContent, 'エラー: 保存に失敗しました');
+  assert.equal(await saveSettings(), true);
+  assert.deepEqual(notices, [true, false]);
+  assert.equal(msg.textContent, '保存しました。反映状況は設定の案内をご確認ください。');
+  assert.equal(await saveSettings(), true);
+
+  // 空欄へ戻すときも外部を送らず、外部を編集したときは従来の保存経路を使う。
+  values[INTERNAL_BROWSER_HOME_KEY] = '';
+  assert.equal(await saveSettings(), true);
+  values['github.owner'] = 'external-only';
+  assert.equal(await saveSettings(), true);
+  values['github.owner'] = 'both';
+  values[INTERNAL_BROWSER_HOME_KEY] = url;
+  assert.equal(await saveSettings(), true);
+  assert.deepEqual(payloads, [
+    { [INTERNAL_BROWSER_HOME_KEY]: url },
+    { [INTERNAL_BROWSER_HOME_KEY]: url },
+    {},
+    { [INTERNAL_BROWSER_HOME_KEY]: '' },
+    { 'github.owner': 'external-only' },
+    { 'github.owner': 'both', [INTERNAL_BROWSER_HOME_KEY]: url },
+  ]);
+  assert.deepEqual(notices, [true, false, false, false, false, false]);
+});
+
+test('ホームだけが部分成功したとき、元の空欄を保存し直して外部の失敗分も再試行できる', async () => {
+  const homeKey = INTERNAL_BROWSER_HOME_KEY;
+  const replies = [
+    { ok: false, writtenKeys: [homeKey], hasInternalBrowserHome: true },
+    { ok: false, writtenKeys: [homeKey], hasInternalBrowserHome: false },
+    { ok: true, writtenKeys: ['github.owner'], hasInternalBrowserHome: true },
+  ];
+  const { saveSettings, savedFieldValues, values, payloads, notices, refreshes, msg } = createSettingsSaveHarness(
+    { [homeKey]: '', 'github.owner': '' },
+    () => replies.shift(),
+    { [homeKey]: 'ホームページ URL', 'github.owner': '作業対象リポジトリのオーナー' },
+  );
+
+  const url = 'https://example.com/';
+  values[homeKey] = url;
+  values['github.owner'] = 'first-owner';
+  assert.equal(await saveSettings(), false);
+  assert.deepEqual(savedFieldValues, { [homeKey]: url, 'github.owner': '' });
+  assert.deepEqual(notices, [false]);
+  assert.deepEqual(refreshes, ['saved-values', 'reflection']);
+  assert.equal(msg.textContent, '「ホームページ URL」を保存しました。「作業対象リポジトリのオーナー」は再保存してください。');
+
+  values[homeKey] = '';
+  assert.equal(await saveSettings(), false);
+  assert.deepEqual(savedFieldValues, { [homeKey]: '', 'github.owner': '' });
+  assert.equal(await saveSettings(), true);
+  assert.deepEqual(payloads, [
+    { [homeKey]: url, 'github.owner': 'first-owner' },
+    { [homeKey]: '', 'github.owner': 'first-owner' },
+    { 'github.owner': 'first-owner' },
+  ]);
+  assert.deepEqual(notices, [false, true, false]);
+});
+
+for (const closeWhileWaiting of [false, true]) {
+  test(`応答待ちに空欄の保存を予約すると、先行保存後に空欄がディスクに残る（${closeWhileWaiting ? '閉じる' : '開いたまま'}）`, async t => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-settings-save-queue-'));
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const targetPath = path.join(dir, 'config.json');
+    const key = INTERNAL_BROWSER_HOME_KEY;
+    const descriptor = { targetPath, groups: [{ fields: [{ key, type: 'http-url' }] }] };
+    const firstWrite = Promise.withResolvers();
+    const releaseReply = Promise.withResolvers();
+    const { saveSettings, values, payloads, autoCloses, context, msg } = createSettingsSaveHarness({ [key]: '' }, async payload => {
+      const result = saveSettingsToTargets(descriptor, payload);
+      if (payload[key]) {
+        firstWrite.resolve();
+        await releaseReply.promise;
+      }
+      return result;
+    });
+
+    values[key] = 'https://example.com/';
+    const firstSave = saveSettings();
+    await firstWrite.promise;
+    assert.equal(JSON.parse(fs.readFileSync(targetPath))[key], values[key]);
+    values[key] = '';
+    const secondSave = saveSettings();
+    await Promise.resolve();
+    assert.deepEqual(payloads, [{ [key]: 'https://example.com/' }]);
+    if (closeWhileWaiting) context.autoClose.isClosed = true;
+    releaseReply.resolve();
+    assert.deepEqual(await Promise.all([firstSave, secondSave]), [true, true]);
+    assert.deepEqual(payloads, [{ [key]: 'https://example.com/' }, { [key]: '' }]);
+    assert.equal(JSON.parse(fs.readFileSync(targetPath))[key], '');
+    assert.equal(autoCloses.length, closeWhileWaiting ? 0 : 1);
+    if (closeWhileWaiting) assert.equal(msg.textContent, '保存中...');
+  });
+}
+
+test('A の応答待ちに B を保存してから C へ編集すると、B を保存し C は未保存で残す', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-settings-save-snapshot-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const targetPath = path.join(dir, 'config.json');
+  const key = INTERNAL_BROWSER_HOME_KEY;
+  const descriptor = { targetPath, groups: [{ fields: [{ key, type: 'http-url' }] }] };
+  const [a, b, c] = ['a', 'b', 'c'].map(value => `https://example.com/${value}`);
+  const firstWrite = Promise.withResolvers();
+  const releaseReply = Promise.withResolvers();
+  const { saveSettings, edit, values, dirtyValues, payloads, autoCloses } = createSettingsSaveHarness(
+    { [key]: '' }, async payload => {
+      const result = saveSettingsToTargets(descriptor, payload);
+      if (payload[key] === a) {
+        firstWrite.resolve();
+        await releaseReply.promise;
+      }
+      return result;
+    },
+  );
+
+  edit(key, a);
+  const first = saveSettings();
+  await firstWrite.promise;
+  edit(key, b);
+  const second = saveSettings();
+  edit(key, c);
+  releaseReply.resolve();
+  assert.deepEqual(await Promise.all([first, second]), [true, true]);
+  assert.deepEqual(payloads, [{ [key]: a }, { [key]: b }]);
+  assert.equal(JSON.parse(fs.readFileSync(targetPath))[key], b);
+  assert.equal(values[key], c);
+  assert.deepEqual(dirtyValues, { [key]: c });
+  assert.equal(autoCloses.length, 0);
+});
+
+test('保存して開くは応答待ちの追加編集を保存するまで進めない', async () => {
+  const requested = Promise.withResolvers();
+  const response = Promise.withResolvers();
+  const { saveSettings, edit, dirtyValues, msg, autoCloses } = createSettingsSaveHarness(
+    { label: 'old' }, async payload => {
+      requested.resolve();
+      await response.promise;
+      return { ok: true, writtenKeys: Object.keys(payload) };
+    },
+  );
+  edit('label', 'booked');
+  const first = saveSettings({ keepOpen: true });
+  await requested.promise;
+  edit('label', 'extra');
+  response.resolve();
+  assert.equal(await first, 'interrupted');
+  assert.match(msg.textContent, /追加の編集が保存されていません。もう一度保存してください。/);
+  assert.deepEqual(dirtyValues, { label: 'extra' });
+  assert.equal(await saveSettings({ keepOpen: true }), true);
+  assert.deepEqual(dirtyValues, {});
+  assert.equal(autoCloses.length, 0);
+});
+
+test('保存して開くは先行応答で dirty が消えても後続予約を待って現在値を再判定する', async () => {
+  const requests = [Promise.withResolvers(), Promise.withResolvers()];
+  const replies = [Promise.withResolvers(), Promise.withResolvers()];
+  let index = 0;
+  const { saveSettings, edit, payloads, dirtyValues, msg, autoCloses } = createSettingsSaveHarness(
+    { label: 'old' }, async payload => {
+      const current = index++;
+      requests[current].resolve();
+      await replies[current].promise;
+      return { ok: true, writtenKeys: Object.keys(payload) };
+    },
+  );
+
+  edit('label', 'a');
+  let helpReady = false;
+  const first = saveSettings({ keepOpen: true }).then(result => { helpReady = true; return result; });
+  await requests[0].promise;
+  edit('label', 'b');
+  const second = saveSettings();
+  edit('label', 'a');
+  replies[0].resolve();
+  await requests[1].promise;
+  assert.deepEqual(dirtyValues, {});
+  assert.equal(helpReady, false);
+
+  replies[1].resolve();
+  assert.deepEqual(await Promise.all([first, second]), ['interrupted', true]);
+  assert.deepEqual(payloads, [{ label: 'a' }, { label: 'b' }]);
+  assert.deepEqual(dirtyValues, { label: 'a' });
+  assert.match(msg.textContent, /追加の編集が保存されていません/);
+  assert.equal(autoCloses.length, 0);
+});
+
+test('設定切替で表示された不正な既存値も差分なしで検証する', async () => {
+  const focused = [];
+  const { saveSettings, edit, payloads, msg, context } = createSettingsSaveHarness(
+    { initialEngine: 'claude', initialCodexModel: 'invalid model' },
+    payload => ({ ok: true, writtenKeys: Object.keys(payload) }),
+  );
+  context.isInvalidVisibleEntry = ({ field }) => field.key === 'initialCodexModel'
+    && context.values.initialEngine === 'codex' && context.values.initialCodexModel === 'invalid model';
+  context.applyFieldValidity = field => !context.isInvalidVisibleEntry({ field });
+  context.getEntryInput = id => ({ focus() { focused.push(id); } });
+
+  edit('initialEngine', 'codex');
+  assert.equal(await saveSettings({ keepOpen: true }), 'invalid');
+  assert.deepEqual(focused, ['initialCodexModel']);
+  assert.deepEqual(payloads, []);
+  assert.equal(msg.textContent, '入力内容に問題があります');
+
+  // 非表示に戻せば、不正なモデルを再送せずに保存できる。
+  edit('initialEngine', 'claude');
+  assert.equal(await saveSettings(), true);
+  assert.deepEqual(payloads, [{}]);
+});
+
+function loadHelpFlow(context, container) {
+  const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
+  const helpLaunch = source.match(/  const launchHelpGuide = [\s\S]*?(?=\n  const helpView =)/)?.[0];
+  assert.ok(helpLaunch);
+  context.modal = { querySelector: () => container };
+  return vm.runInContext(`${helpLaunch}\n({ launchHelpGuide, launchHelpDocument, confirmUnsavedHelp })`, context);
+}
+
+test('ガイドとドキュメントは起動が完了しても応答待ち中に編集された設定を閉じない', async () => {
+  for (const target of ['Guide', 'Document']) {
+    const launched = Promise.withResolvers();
+    const response = Promise.withResolvers();
+    const { edit, saveSettings, values, context, msg, autoCloses } = createSettingsSaveHarness(
+      { label: 'old' }, payload => ({ ok: true, writtenKeys: Object.keys(payload) }),
+    );
+    let closed = 0;
+    const launch = () => {
+      launched.resolve();
+      return response.promise;
+    };
+    const invoke = context.VKIpc.invoke;
+    Object.assign(context, {
+      close() { closed++; },
+      internalBrowserHasPage: false,
+      openHelpGuide: launch,
+    });
+    context.VKIpc.invoke = (channel, payload) => channel === 'help:document' ? launch() : invoke(channel, payload);
+    const { launchHelpGuide, launchHelpDocument, confirmUnsavedHelp } = loadHelpFlow(
+      context, { closest: () => ({ hidden: false }) },
+    );
+    edit('label', 'saved');
+    assert.equal(await saveSettings({ keepOpen: true }), true);
+
+    const opening = confirmUnsavedHelp(target === 'Guide' ? launchHelpGuide : launchHelpDocument, () => {});
+    await launched.promise;
+    edit('label', 'extra');
+    response.resolve(target === 'Guide' ? 'pane-1' : true);
+    await opening;
+    assert.equal(closed, 0);
+    assert.equal(values.label, 'extra');
+    assert.equal(autoCloses.length, 0);
+    assert.match(msg.textContent, /追加の編集が保存されていません/);
+  }
+});
+
+function loadHelpConfirmation(context) {
+  let confirmation;
+  context.document = { createElement() {
+    return {
+      children: [],
+      appendChild(child) { this.children.push(child); },
+      querySelector() { return this.children.find(child => child.type === 'button'); },
+      addEventListener(_event, action) { this.click = action; },
+      setAttribute() {}, focus() {}, remove() {},
+    };
+  } };
+  const flow = loadHelpFlow(context, {
+    closest: () => ({ hidden: false }),
+    appendChild(group) { confirmation = group; },
+  });
+  return { ...flow, discard: () => confirmation.children.find(child => child.textContent === '破棄して開く').click() };
+}
+
+test('破棄同意の後で B を保存して A に戻した場合は設定を閉じない', async () => {
+  const launched = Promise.withResolvers();
+  const response = Promise.withResolvers();
+  const { context, edit, saveSettings, savedFieldValues, values, msg } = createSettingsSaveHarness(
+    { label: 'old' }, payload => ({ ok: true, writtenKeys: Object.keys(payload) }),
+  );
+  const { confirmUnsavedHelp, discard } = loadHelpConfirmation(context);
+  const launch = async (_onLaunching, canCloseSettings) => {
+    launched.resolve();
+    await response.promise;
+    return canCloseSettings();
+  };
+
+  edit('label', 'a');
+  const opening = confirmUnsavedHelp(launch, () => {});
+  discard();
+  await launched.promise;
+  edit('label', 'b');
+  assert.equal(await saveSettings(), true);
+  edit('label', 'a');
+  response.resolve();
+  assert.equal(await opening, false);
+  assert.equal(savedFieldValues.label, 'b');
+  assert.equal(values.label, 'a');
+  assert.match(msg.textContent, /追加の編集が保存されていません/);
+});
+
+test('破棄を選んでもフッターの全保存を待ち、比較元の更新後に残った変更を保持する', async () => {
+  const requests = [Promise.withResolvers(), Promise.withResolvers()];
+  const replies = [Promise.withResolvers(), Promise.withResolvers()];
+  let requestCount = 0;
+  const { context, edit, saveSettings, savedFieldValues, msg } = createSettingsSaveHarness(
+    { label: 'old' }, async payload => {
+      const index = requestCount++;
+      requests[index].resolve();
+      await replies[index].promise;
+      return { ok: true, writtenKeys: Object.keys(payload) };
+    },
+  );
+  const { confirmUnsavedHelp, discard } = loadHelpConfirmation(context);
+  edit('label', 'a');
+  let finished = false;
+  const opening = confirmUnsavedHelp(() => assert.fail('再確認前にヘルプを起動した'), () => {})
+    .then(result => { finished = true; return result; });
+  const first = saveSettings();
+  await requests[0].promise;
+  edit('label', 'b');
+  const second = saveSettings();
+  edit('label', 'a');
+  discard();
+  replies[0].resolve();
+  await requests[1].promise;
+  assert.equal(savedFieldValues.label, 'a');
+  assert.equal(finished, false);
+  replies[1].resolve();
+  assert.deepEqual(await Promise.all([first, second, opening]), [true, true, 'interrupted']);
+  assert.equal(savedFieldValues.label, 'b');
+  assert.match(msg.textContent, /追加の編集が保存されていません/);
+});
+
+test('ヘルプの保存待ちに別タブへ移った場合はフッターで開き直しを案内する', async () => {
+  const requested = Promise.withResolvers();
+  const reply = Promise.withResolvers();
+  const { context, edit, saveSettings, values, msg } = createSettingsSaveHarness(
+    { label: 'old' }, async payload => {
+      requested.resolve();
+      await reply.promise;
+      return { ok: true, writtenKeys: Object.keys(payload) };
+    },
+  );
+  const panel = { hidden: false };
+  const { confirmUnsavedHelp } = loadHelpFlow(context, {
+    closest: () => panel,
+    appendChild() { assert.fail('非表示のタブに確認を追加した'); },
+  });
+  edit('label', 'a');
+  const saving = saveSettings();
+  await requested.promise;
+  const opening = confirmUnsavedHelp(() => assert.fail('保存待ちのヘルプを起動した'), () => {});
+  panel.hidden = true;
+  edit('label', 'b');
+  reply.resolve();
+  assert.equal(await saving, true);
+  assert.equal(await opening, 'interrupted');
+  assert.equal(values.label, 'b');
+  assert.equal(msg.textContent, '設定を保存してから、使い方・ヘルプで開き直してください。');
+});
+
+test('部分成功の通知は編集・形式エラー・応答待ちを経ても残り、後続の保存結果で更新する', async () => {
+  const retryStarted = Promise.withResolvers();
+  const retryResult = Promise.withResolvers();
+  const replies = [
+    { ok: false, writtenKeys: ['first'] },
+    retryResult.promise,
+    { ok: false, writtenKeys: [], error: '書き込めません' },
+    { ok: false, writtenKeys: ['second'] },
+    { ok: true, writtenKeys: ['first'] },
+  ];
+  const { saveSettings, edit, msg, payloads } = createSettingsSaveHarness(
+    { first: '', second: '', third: '' },
+    () => {
+      const reply = replies.shift();
+      if (reply === retryResult.promise) retryStarted.resolve();
+      return reply;
+    },
+    { first: '最初の項目', second: '2番目の項目', third: '3番目の項目' },
+    (_key, value) => value === 'invalid',
+  );
+
+  edit('first', 'a');
+  edit('second', 'b');
+  edit('third', 'c');
+  assert.equal(await saveSettings(), false);
+  const firstPartial = '「最初の項目」を保存しました。「2番目の項目、3番目の項目」は再保存してください。';
+  assert.equal(msg.textContent, firstPartial);
+  edit('second', 'invalid');
+  assert.equal(msg.textContent, firstPartial);
+  assert.equal(await saveSettings(), false);
+  assert.equal(payloads.length, 1);
+  assert.equal(msg.textContent, firstPartial + ' 入力内容に問題があります');
+  edit('second', 'valid');
+  assert.equal(msg.textContent, firstPartial);
+
+  const retry = saveSettings();
+  await retryStarted.promise;
+  assert.equal(msg.textContent, firstPartial);
+  retryResult.resolve({ ok: false, writtenKeys: ['third'] });
+  assert.equal(await retry, false);
+  assert.equal(msg.textContent, '「3番目の項目」を保存しました。「2番目の項目」は再保存してください。');
+  assert.equal(await saveSettings(), false);
+  assert.equal(msg.textContent, 'エラー: 書き込めません');
+  edit('first', 'updated');
+  assert.equal(await saveSettings(), false);
+  assert.match(msg.textContent, /「2番目の項目」を保存しました/);
+  assert.equal(await saveSettings(), true);
+  assert.match(msg.textContent, /^保存しました。/);
+});
+
+test('変更なしの保存成功でも表の保存済み値と設定反映状態を取り直す', async () => {
+  const { saveSettings, payloads, refreshes } = createSettingsSaveHarness(
+    { first: 'original' }, () => ({ ok: true, writtenKeys: [] }),
+  );
+  assert.equal(await saveSettings(), true);
+  assert.deepEqual(payloads, [{}]);
+  assert.deepEqual(refreshes, ['saved-values', 'reflection']);
+});
+
+test('閉じた後に案内を再表示し、ホームに残っているフォーカスだけを案内へ移す', async () => {
+  const key = INTERNAL_BROWSER_HOME_KEY;
+  for (const moveFocus of [false, true]) {
+    const requested = Promise.withResolvers();
+    const response = Promise.withResolvers();
+    const { saveSettings, values, notices, context } = createSettingsSaveHarness(
+      { [key]: 'https://example.com/', owner: '' }, () => {
+        requested.resolve();
+        return response.promise;
+      },
+    );
+    const home = {};
+    const address = {};
+    const document = { activeElement: home };
+    const configure = { focus() { document.activeElement = this; } };
+    context.document = document;
+    context.internalBrowserSidebar = { querySelector(selector) {
+      assert.equal(selector, '[data-action="home-settings"]');
+      return configure;
+    } };
+    context.canRestoreModalFocus = button => button === configure && notices.at(-1) === true;
+
+    values[key] = '';
+    values.owner = 'retry-owner';
+    const saving = saveSettings();
+    await requested.promise;
+    // モーダルが閉じてホームへ戻った時点を作り、別の操作先へ移った場合も確認する。
+    context.autoClose.isClosed = true;
+    context.restoredHomeButton = home;
+    if (moveFocus) document.activeElement = address;
+    response.resolve({ ok: false, writtenKeys: [key], hasInternalBrowserHome: false });
+    assert.equal(await saving, false);
+    assert.deepEqual(notices, [true]);
+    assert.equal(document.activeElement, moveFocus ? address : configure);
+  }
+});
+
+test('ホーム操作の false 応答と IPC 拒否を再試行案内として通知し、未設定と区別する', async () => {
+  const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
+  const clickHandler = source.match(/internalBrowserSidebar\.addEventListener\('click', event => \{[\s\S]*?\n\}\);/)?.[0];
+  assert.ok(clickHandler);
+  const homeNoticeMarkup = source.match(/<div class="internal-browser-home-notice">[\s\S]*?<\/div>/)?.[0];
+  assert.ok(homeNoticeMarkup);
+  assert.equal((homeNoticeMarkup.match(/role="status"/g) || []).length, 1);
+  assert.match(homeNoticeMarkup, /<p role="status" aria-live="polite"><\/p>/);
+  assert.match(homeNoticeMarkup, /class="internal-browser-home-error" role="alert" aria-live="assertive"/);
+  const css = fs.readFileSync(path.join(__dirname, '../renderer/style.css'), 'utf8');
+  assert.match(css, /\.internal-browser-home-error \{[^}]*color:[^}]*overflow-wrap: anywhere/);
+  assert.match(css, /\.internal-browser-home-notice:not\(:has\(> p:not\(:empty\)\)\) \{ padding: 0; \}/);
+  const failureMessage = 'ホームページを開けませんでした。もう一度お試しください。';
+  for (const reply of [() => false, () => Promise.reject(new Error('IPC failed'))]) for (const toastAvailable of [true, false]) {
+    const notices = [];
+    const toasts = [];
+    const homeError = { textContent: '' };
+    const toast = { dataset: toastAvailable ? {} : { persistent: 'true' }, hidden: false };
+    let hides = 0;
+    let click;
+    let currentReply = reply;
+    const sidebar = {
+      addEventListener(type, handler) { assert.equal(type, 'click'); click = handler; },
+      querySelector(selector) {
+        assert.equal(selector, '.internal-browser-home-error');
+        return homeError;
+      },
+    };
+    const context = vm.createContext({
+      internalBrowserSidebar: sidebar,
+      internalBrowserOpen: true,
+      internalBrowserHomeRequestGeneration: 0,
+      externalUrlToastEl: toast,
+      VKIpc: { invoke(channel, action) {
+        assert.equal(channel, 'internal-browser:action');
+        assert.equal(action, 'home');
+        return Promise.resolve(currentReply());
+      } },
+      setInternalBrowserHomeNotice: value => notices.push(value),
+      syncInternalBrowserLayout() {},
+      showGenericToast(message) { toasts.push(message); return toastAvailable; },
+      hideExternalUrlToast() { hides++; toast.hidden = true; delete toast.dataset.homeFailure; },
+    });
+    vm.runInContext(clickHandler, context);
+    click({ target: { closest: () => ({ dataset: { action: 'home' } }) } });
+    await new Promise(setImmediate);
+    assert.deepEqual(toasts, [failureMessage]);
+    assert.deepEqual(notices, []);
+    assert.equal(homeError.textContent, toastAvailable ? '' : failureMessage);
+    assert.equal(toast.dataset.homeFailure, toastAvailable ? 'true' : undefined);
+    assert.equal(toast.dataset.persistent, toastAvailable ? undefined : 'true');
+    assert.equal(hides, 0);
+
+    currentReply = () => 'https://example.com/';
+    click({ target: { closest: () => ({ dataset: { action: 'home' } }) } });
+    await new Promise(setImmediate);
+    assert.deepEqual(notices, [false]);
+    assert.equal(homeError.textContent, '');
+    assert.equal(hides, toastAvailable ? 1 : 0);
+    assert.equal(toast.dataset.persistent, toastAvailable ? undefined : 'true');
+
+    // 別の通知に置き換わったトーストは、次の成功でも消さない。
+    toast.hidden = false;
+    delete toast.dataset.homeFailure;
+    click({ target: { closest: () => ({ dataset: { action: 'home' } }) } });
+    await new Promise(setImmediate);
+    assert.equal(hides, toastAvailable ? 1 : 0);
+  }
+
+  // ホーム未設定は失敗扱いにせず、既存の設定案内を出す。
+  const notices = [];
+  const homeError = { textContent: '' };
+  let click;
+  vm.runInNewContext(clickHandler, {
+    internalBrowserSidebar: { addEventListener(_type, handler) { click = handler; }, querySelector: () => homeError },
+    internalBrowserOpen: true, internalBrowserHomeRequestGeneration: 0, externalUrlToastEl: null,
+    VKIpc: { invoke: async () => 'home-unset' },
+    setInternalBrowserHomeNotice: value => notices.push(value),
+    syncInternalBrowserLayout() {},
+  });
+  click({ target: { closest: () => ({ dataset: { action: 'home' } }) } });
+  await new Promise(setImmediate);
+  assert.deepEqual(notices, [true]);
+});
+
+test('ホーム失敗は閉じると消え、閉じた後の遅延した失敗も再表示しない', async () => {
+  const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
+  const setOpen = source.match(/function setInternalBrowserOpen\([^]*?\n\}/)?.[0];
+  const clickHandler = source.match(/internalBrowserSidebar\.addEventListener\('click', event => \{[^]*?\n\}\);/)?.[0];
+  assert.ok(setOpen && clickHandler);
+
+  for (const replyKind of ['false', 'reject']) for (const closeBeforeReply of [false, true]) {
+    const pending = Promise.withResolvers();
+    const homeError = { textContent: '' };
+    const toasts = [];
+    const notices = [];
+    let click;
+    const sidebar = {
+      contains: () => false,
+      addEventListener(_type, handler) { click = handler; },
+      querySelector(selector) {
+        assert.equal(selector, '.internal-browser-home-error');
+        return homeError;
+      },
+    };
+    const context = vm.createContext({
+      internalBrowserOpen: true, internalBrowserHasPage: true,
+      internalBrowserHomeRequestGeneration: 0, internalBrowserWide: null,
+      internalBrowserSidebar: sidebar,
+      externalUrlToastEl: { dataset: { persistent: 'true' }, hidden: false },
+      document: { activeElement: null, getElementById: () => ({ focus() {} }) },
+      VKIpc: { invoke: () => pending.promise },
+      setInternalBrowserHomeNotice: value => notices.push(value),
+      syncInternalBrowserLayout() {},
+      showGenericToast: message => { toasts.push(message); return false; },
+    });
+    const { setInternalBrowserOpen } = vm.runInContext(`${setOpen}\n${clickHandler}\n({ setInternalBrowserOpen })`, context);
+    click({ target: { closest: () => ({ dataset: { action: 'home' } }) } });
+    if (!closeBeforeReply) {
+      if (replyKind === 'false') pending.resolve(false);
+      else pending.reject(new Error('IPC failed'));
+      await new Promise(setImmediate);
+      assert.match(homeError.textContent, /ホームページを開けませんでした/);
+      assert.equal(toasts.length, 1);
+    }
+    setInternalBrowserOpen(false);
+    assert.equal(homeError.textContent, '');
+    if (closeBeforeReply) {
+      if (replyKind === 'false') pending.resolve(false);
+      else pending.reject(new Error('IPC failed'));
+      await new Promise(setImmediate);
+      assert.equal(homeError.textContent, '');
+      assert.deepEqual(toasts, []);
+    }
+    setInternalBrowserOpen(true);
+    assert.equal(homeError.textContent, '');
+    assert.deepEqual(notices, [false]);
+  }
+});
+
+test('ホーム失敗の印は別の汎用・外部URLトーストへの差し替えと消去で外れる', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
+  const functions = ['hideExternalUrlToast', 'showExternalUrlOpenFailedToast', 'showGenericToast']
+    .map(name => source.match(new RegExp(`function ${name}\\([^]*?\\n\\}`))?.[0]);
+  assert.ok(functions.every(Boolean));
+  const toast = {
+    dataset: { homeFailure: 'true' }, hidden: false,
+    classList: { remove() {}, toggle() {} },
+    querySelector() { return { hidden: true }; },
+  };
+  const context = vm.createContext({
+    externalUrlToastEl: toast, externalUrlToastCopyUrl: '',
+    externalUrlToastHovered: false, externalUrlToastFocusWithin: false,
+    ensureExternalUrlToast: () => toast, clearExternalUrlToastTimer() {},
+    reconsiderExternalUrlToastTimer() {}, setExternalUrlToastInteractive() {},
+    setExternalUrlToastMessage() {}, EXTERNAL_URL_TOAST_FAILED_MESSAGE: 'URL failure',
+  });
+  const { hideExternalUrlToast, showGenericToast, showExternalUrlOpenFailedToast } = vm.runInContext(
+    `${functions.join('\n')}\n({ hideExternalUrlToast, showGenericToast, showExternalUrlOpenFailedToast })`, context,
+  );
+  assert.equal(showGenericToast('別の通知'), true);
+  assert.equal(toast.dataset.homeFailure, undefined);
+  toast.dataset.persistent = 'true';
+  assert.equal(showGenericToast('ホーム失敗'), false);
+  assert.equal(toast.dataset.persistent, 'true');
+  delete toast.dataset.persistent;
+  toast.dataset.homeFailure = 'true';
+  showExternalUrlOpenFailedToast('https://example.com/');
+  assert.equal(toast.dataset.homeFailure, undefined);
+  toast.dataset.homeFailure = 'true';
+  hideExternalUrlToast();
+  assert.equal(toast.dataset.homeFailure, undefined);
+  assert.equal(toast.hidden, true);
+});
+
+test('外部保存の部分成功後は失敗キーだけを再送し、成功先への別プロセスの変更を保持する', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vk-settings-save-retry-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const firstPath = path.join(dir, 'first.json');
+  const secondPath = path.join(dir, 'second.json');
+  const descriptor = { groups: [
+    { targetPath: firstPath, fields: [{ key: 'first' }] },
+    { targetPath: secondPath, fields: [{ key: 'second' }, { key: 'untouched' }] },
+  ] };
+  fs.writeFileSync(secondPath, '{');
+  const { saveSettings, values, payloads } = createSettingsSaveHarness(
+    { first: '', second: '', untouched: 'old' },
+    payload => saveSettingsToTargets(descriptor, payload),
+  );
+  values.first = 'saved first';
+  values.second = 'retry second';
+  assert.equal(await saveSettings(), false);
+  assert.equal(JSON.parse(fs.readFileSync(firstPath)).first, 'saved first');
+
+  // 再試行前に別のプロセスが成功先を更新し、失敗先を修復する。
+  const updated = '{"first":"updated outside the app"}';
+  fs.writeFileSync(firstPath, updated);
+  fs.writeFileSync(secondPath, '{"untouched":"repaired outside the app"}');
+  assert.equal(await saveSettings(), true);
+  assert.deepEqual(payloads, [{ first: 'saved first', second: 'retry second' }, { second: 'retry second' }]);
+  assert.equal(fs.readFileSync(firstPath, 'utf8'), updated);
+  assert.deepEqual(JSON.parse(fs.readFileSync(secondPath)), {
+    second: 'retry second', untouched: 'repaired outside the app',
+  });
+});
 
 test('タイトルバーから空状態を開くと表示後にURL欄へ移り、再表示とリンク起点は操作元を保つ', () => {
   const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
   const setter = source.match(/function setInternalBrowserOpen\([\s\S]*?\n\}/)?.[0];
   const focusHelper = source.match(/function focusInternalBrowserToolbar\([\s\S]*?\n\}/)?.[0];
+  const homeNoticeHelper = source.match(/function setInternalBrowserHomeNotice\([\s\S]*?\n\}/)?.[0];
   const toggleHandler = source.match(/document\.getElementById\('internal-browser-toggle'\)\.addEventListener\('click',.*\);/)?.[0];
-  assert.ok(setter && focusHelper && toggleHandler);
+  assert.ok(setter && focusHelper && homeNoticeHelper && toggleHandler);
   const calls = [];
   const document = { activeElement: null, getElementById: () => toggle };
   const toggle = { focus() { document.activeElement = this; }, addEventListener(_type, handler) { this.click = handler; } };
@@ -21,14 +762,24 @@ test('タイトルバーから空状態を開くと表示後にURL欄へ移り�
     focus() { assert.equal(sidebar.hidden, false); calls.push('address'); document.activeElement = this; },
     closest() { return sidebar.hidden ? sidebar : null; } };
   const notice = { hidden: true, textContent: '' };
+  const homeNoticeActions = { hidden: true };
+  const homeNoticeStatus = { textContent: '' };
+  const homeNotice = { querySelector: selector => selector === '[role="status"]' ? homeNoticeStatus : homeNoticeActions,
+    contains: () => false };
   const sidebar = { hidden: true, contains: element => element === address,
-    querySelector: selector => selector === '.internal-browser-url' ? address : notice };
+    querySelector: selector => ({
+      '.internal-browser-url': address,
+      '.internal-browser-notice': notice,
+      '.internal-browser-home-notice': homeNotice,
+      '.internal-browser-home-error': { textContent: '' },
+    })[selector] };
   const context = vm.createContext({ document, internalBrowserSidebar: sidebar,
     internalBrowserOpen: false, internalBrowserHasPage: false, internalBrowserWide: null,
+    internalBrowserHomeRequestGeneration: 0,
     // 切り替えのアニメーション（issue #629）は即時に反映する形で置き換える。
     animateLayoutChange: update => update(),
     syncInternalBrowserLayout() { sidebar.hidden = !context.internalBrowserOpen; calls.push('layout'); } });
-  vm.runInContext(`${setter}\n${focusHelper}\n${toggleHandler}`, context);
+  vm.runInContext(`${setter}\n${focusHelper}\n${homeNoticeHelper}\n${toggleHandler}`, context);
   toggle.focus();
   toggle.click();
   assert.deepEqual(calls, ['layout', 'address']);
@@ -37,8 +788,13 @@ test('タイトルバーから空状態を開くと表示後にURL欄へ移り�
   assert.equal(address.value, '入力途中');
   assert.equal(address.selectionStart, 2);
   assert.equal(address.selectionEnd, 2);
+  vm.runInContext('setInternalBrowserHomeNotice(true)', context);
+  assert.equal(homeNoticeActions.hidden, false);
+  assert.equal(homeNoticeStatus.textContent, 'ホームページが設定されていません。');
   // 空状態の入力を残したまま閉じ、再び開いてもすぐ入力できる。
   toggle.click();
+  assert.equal(homeNoticeActions.hidden, true);
+  assert.equal(homeNoticeStatus.textContent, '');
   assert.equal(document.activeElement, toggle);
   toggle.click();
   assert.equal(document.activeElement, address);
@@ -217,22 +973,22 @@ test('全面表示中だけ、表示中のトーストに重なる高さをペ�
   assert.equal(vm.runInContext('internalBrowserToastReserve(true)', context), 0);
 });
 
-test('初期化時は操作列の閉じると広く表示だけを無効化せず、失敗表示にも触れない', () => {
+test('初期化時もホーム・広く表示・閉じるは使え、失敗表示には触れない', () => {
   const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
   const initialization = source.match(/for \(const button of internalBrowserSidebar\.querySelectorAll\('[^']+'\)\) button\.disabled = true;/)?.[0];
   assert.ok(initialization);
-  // ページ未表示でも閉じる・広く表示は押せるよう、この 2 つは対象外にする。
-  const toolbarButtons = ['back', 'forward', 'reload', 'wide', 'external', 'close']
+  // ページ未表示でも、ホームの読み込みとブラウザの表示操作ができる。
+  const toolbarButtons = ['back', 'forward', 'reload', 'home', 'wide', 'external', 'close']
     .map(action => ({ action, disabled: false }));
   const errorButtons = [{ disabled: false }, { disabled: false }];
   const sidebar = {
     querySelectorAll(selector) {
-      assert.equal(selector, '.internal-browser-toolbar button:not([data-action="close"]):not([data-action="wide"])');
-      return toolbarButtons.filter(button => button.action !== 'close' && button.action !== 'wide');
+      assert.equal(selector, '.internal-browser-toolbar button:not([data-action="close"]):not([data-action="wide"]):not([data-action="home"])');
+      return toolbarButtons.filter(button => !['close', 'wide', 'home'].includes(button.action));
     },
   };
   vm.runInNewContext(initialization, { internalBrowserSidebar: sidebar });
-  assert.deepEqual(toolbarButtons.map(button => button.disabled), [true, true, true, false, true, false]);
+  assert.deepEqual(toolbarButtons.map(button => button.disabled), [true, true, true, false, false, true, false]);
   assert.deepEqual(errorButtons.map(button => button.disabled), [false, false]);
 });
 

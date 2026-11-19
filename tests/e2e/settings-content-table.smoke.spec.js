@@ -287,6 +287,14 @@ test.describe.serial('設定パネル: コンテンツテーブル（issue #380,
     // 実ファイルにも書かれている。
     const saved = JSON.parse(fs.readFileSync(targetPath, 'utf8'));
     expect(saved.engine).toBe('codex');
+
+    // 変更なしで再保存してもディスク上の外部更新を表に反映し、編集欄の値は維持する。
+    const externalContents = JSON.stringify({ ...saved, engine: 'claude' });
+    fs.writeFileSync(targetPath, externalContents);
+    await win.locator('.settings-save').click();
+    await expect(engineSavedCell).toHaveText('claude');
+    await expect(win.locator('[data-fieldvalue-key="engine"]')).toHaveText('Codex');
+    expect(fs.readFileSync(targetPath, 'utf8')).toBe(externalContents);
   });
 
   test('横スクロール領域はキーボードで到達でき、矢印キー・Home/End で実際にスクロールできる', async () => {

@@ -100,7 +100,7 @@ test.describe.serial('設定パネル: 基本フィールド系（issue #348 で
           if (channel === 'settings:describe') return Promise.resolve(desc);
           if (channel === 'settings:save') {
             window.__savedPayloads.push(payload);
-            return Promise.resolve({ ok: true });
+            return Promise.resolve({ ok: true, writtenKeys: Object.keys(payload) });
           }
           return Promise.resolve(null);
         };
@@ -414,27 +414,22 @@ test.describe.serial('設定パネル: 基本フィールド系（issue #348 で
       await expect(win.locator(STRING_PATHS_ID)).toHaveValue('/a\n/b');
     });
 
-    test('文字列の値をそのまま保存しても、textarea に表示された内容がそのまま送信され値が消えない', async () => {
-      // renderer は textarea.value（生の文字列）をそのまま settings:save の payload に載せ、
-      // 改行区切りの配列への変換は main プロセス側（settingsTargets.js の coerceFieldValue。
-      // 単体テストは tests/settingsTargets.test.js）が担う。この spec が実 IPC へ届く手前で
-      // 記録している payload は、その変換前の生の文字列そのまま。
-      // 修正前は textarea が空欄のまま描画されていたため、ここで手を触れずに保存すると
-      // payload.stringPaths が '' になり、値が消えていた。修正後は表示どおりの内容が届く。
+    test('未編集で保存しても旧形式の文字列を送信しない', async () => {
       await win.locator('.settings-save').click();
       await expect(win.locator('.settings-msg')).toHaveClass(/ok/);
 
       const payload = await lastSavedPayload(win);
-      expect(payload.stringPaths).toBe('/a\n/b');
+      expect(payload).toEqual({});
     });
 
-    test('配列で保存された値の表示・保存は変わらない（回帰確認）', async () => {
+    test('配列で保存された値を表示し、編集した欄だけを改行区切りで送信する', async () => {
       await expect(win.locator(ARRAY_PATHS_ID)).toHaveValue('/x\n/y');
+      await win.locator(ARRAY_PATHS_ID).fill('/x\n/y\n/z');
 
       await win.locator('.settings-save').click();
       await expect(win.locator('.settings-msg')).toHaveClass(/ok/);
       const payload = await lastSavedPayload(win);
-      expect(payload.arrayPaths).toBe('/x\n/y');
+      expect(payload).toEqual({ arrayPaths: '/x\n/y\n/z' });
     });
 
     test('値に </textarea> を含んでいてもエスケープされ、textarea を閉じずそのまま表示される', async () => {
@@ -503,7 +498,7 @@ test.describe.serial('設定パネル: 基本フィールド系（issue #348 で
           if (channel === 'settings:describe') return Promise.resolve(desc);
           if (channel === 'settings:save') {
             window.__savedPayloads.push(payload);
-            return Promise.resolve({ ok: true });
+            return Promise.resolve({ ok: true, writtenKeys: Object.keys(payload) });
           }
           return Promise.resolve(null);
         };
@@ -601,11 +596,11 @@ test.describe.serial('設定パネル: 基本フィールド系（issue #348 で
       await expect(win.locator(REPO_ID)).not.toHaveAttribute('aria-invalid', 'true');
       await expect(win.locator(REPO_ERR)).toBeHidden();
 
-      // 保存が通る。
+      // 保存が通り、変更していない空欄は送信しない。
       await win.locator('.settings-save').click();
       await expect(win.locator('.settings-msg')).toHaveText('保存しました。反映状況は設定の案内をご確認ください。');
       const payload = await win.evaluate(() => window.__savedPayloads[window.__savedPayloads.length - 1]);
-      expect(payload.repo).toBe('');
+      expect(payload).toEqual({});
     });
 
     test('5: pattern を持たない従来フィールドは無検証（後方互換）', async () => {
@@ -750,7 +745,7 @@ test.describe.serial('設定パネル: 基本フィールド系（issue #348 で
           if (channel === 'settings:save') {
             window.__savedPayloads.push(payload);
             Object.assign(desc.values, payload);
-            return Promise.resolve({ ok: true });
+            return Promise.resolve({ ok: true, writtenKeys: Object.keys(payload) });
           }
           return Promise.resolve(null);
         };
@@ -877,11 +872,12 @@ test.describe.serial('設定パネル: 基本フィールド系（issue #348 で
       });
       await expect(model).toHaveValue('保存済み value');
 
-      // pattern 違反の保存済み値でも無効状態なら検証対象外。ただし値は保存対象に残す。
+      // 別の項目を保存し、無効状態の欄は送信せず保存済み値を保持する。
+      await win.locator(INITIAL_ID).fill('echo test');
       await win.locator('.settings-save').click();
       await expect(win.locator('.settings-msg')).toHaveText('保存しました。反映状況は設定の案内をご確認ください。');
       const payload = await win.evaluate(() => window.__savedPayloads[0]);
-      expect(payload.model).toBe('保存済み value');
+      expect(payload).toEqual({ initialCommand: 'echo test' });
     });
 
     test('7: combo は候補を提示しつつ一覧に無い値も直接入力できる', async () => {

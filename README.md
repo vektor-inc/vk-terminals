@@ -400,11 +400,11 @@ cp config.example.json ~/.vk-terminals/config.json
 タイトルバー右端の ⚙ ボタンから、設定を GUI 上で編集・保存できます。単体起動でも常に表示されます。
 
 - **単体起動時**（`VK_TERMINALS_SETTINGS` 未指定）：vk-terminals 自身の `config.json`（`apiHost` / `apiRequireAuthAlways` / `initialCommand` / `confirmClose` / `showUsage` / `gpu` / `menuItems` / `additionalPanes`）を編集します。編集対象は `loadUserConfig()` と同じ探索順で、既存の `config.json` があればそれ、無ければリポジトリ直下 `config.json` を作成します。`apiToken`（アクセストークン）はこの汎用フィールド経由では編集できません。「モバイルから確認」タブの専用パネル（初回登録用 URL の表示・コピーと、トークンの再発行）でのみ扱います（誤って伏せ字のまま保存してトークンを壊す事故を避けるため）。
-- **呼び出し側から渡された場合**（`VK_TERMINALS_SETTINGS` に「設定ディスクリプタ JSON」のパスを指定）：そのディスクリプタが指す任意の config ファイルを編集します（vk-orchestrator が自身の統合 `config.json` を編集させる用途など）。vk-terminals 自身は編集対象の設定内容を知らず、ディスクリプタ（編集対象パス + 項目スキーマ）に従って読み書きするだけの汎用実装です。
+- **呼び出し側から渡された場合**（`VK_TERMINALS_SETTINGS` に「設定ディスクリプタ JSON」のパスを指定）：そのディスクリプタが指す config ファイルを編集します（VK Orchestrator の統合 `config.json` など）。「アプリ内ブラウザ」のホームページ URL は組み込みの項目として表示し、VK Terminals 自身の設定ファイルに保存します。
 
 `waitingExcludeCwdPatterns` は設定 GUI では編集できず、config.json の直編集専用です。
 
-いずれの場合も、保存後の反映には再起動が必要です（設定は起動時に読み込むため）。
+設定によっては、保存後の反映に再起動が必要です。ホームページ URL は次にホームボタンを押したときに反映されます。
 
 ディスクリプタの形式:
 
@@ -617,7 +617,7 @@ cp config.example.json ~/.vk-terminals/config.json
 
 呼び出し側（例: vk-orchestrator）は、この JSON を読み込んで表示したい `key` だけを選んだり、`title` / `note` / `label` / `help` などの文言を上書きしたりできます。
 
-組み込みスキーマは「設定」（全設定項目）と「モバイルから確認」（Tailscale 経由でスマートフォンから見る手順の案内。入力欄は無く読み取り専用）の 2 タブ構成です。`VK_TERMINALS_SETTINGS` で外部ディスクリプタを指定している場合は組み込みスキーマを読まないため、これらのタブは表示されません（設定パネルの内容は外部ディスクリプタが持つ、という既存の仕様どおりです）。
+組み込みスキーマは「設定」（全設定項目）と「モバイルから確認」（Tailscale 経由でスマートフォンから見る手順の案内）の 2 タブ構成です。外部ディスクリプタを指定した場合は、外部の設定項目と「アプリ内ブラウザ」を表示します。外部設定にタブがある場合は「アプリ内ブラウザ」を独立したタブに表示します。
 
 組み込みスキーマの運用メモ:
 

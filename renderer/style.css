@@ -1209,6 +1209,7 @@ h4.settings-content-heading {
   background: #161b22;
   color: #c9d1d9;
   font-size: 12px;
+  line-height: 1.6;
   /* help 文中の \n を改行として表示する（menuItems の説明文＋例の 2 行表記など） */
   white-space: pre-line;
 }
@@ -1238,6 +1239,7 @@ h4.settings-content-heading {
 .settings-error {
   color: #f85149;
   font-size: 12px;
+  line-height: 1.6;
 }
 /* 空のエラー行は余白を作らないよう非表示にする（flex gap の影響も避ける）。 */
 .settings-error:empty {
@@ -4209,6 +4211,7 @@ body.pane-dragging * {
 .internal-browser-toggle { right: 44px; font-size: 18px; }
 .internal-browser-sidebar {
   position: relative;
+  container: internal-browser / inline-size;
   flex: 0 0 auto;
   height: 100%;
   min-width: 0;
@@ -4248,12 +4251,15 @@ body.pane-dragging * {
 .internal-browser-toolbar button { flex: 0 0 26px; width: 26px; height: 28px; border: 1px solid transparent; border-radius: 5px; background: transparent; color: #e6edf3; cursor: pointer; }
 .internal-browser-toolbar button:hover { background: #21262d; }
 .internal-browser-toolbar button:disabled { color: #6e7681; cursor: default; }
-/* 操作列は「表示内容の操作（戻る・進む・再読み込み・URL 欄）」と「表示の操作（広く表示・外部ブラウザで開く・閉じる）」の
- * 2 グループ（issue #613）。見えている端どうしで、グループの間（URL 欄の枠 → 押した状態の広く表示の背景、2px + 20px = 22px）を、
- * グループの中で最も広い間隔（隣どうしのアイコンの線の間、約 17px）より広くする。
- * ボタンの幅を 26px にして、ブラウザが最も狭い 280px のときも URL 欄に「URL / 検索」が収まる幅を残す。 */
+/* ページ移動（戻る・進む・再読み込み・ホーム・URL 欄）と表示操作の間隔は、アイコン同士の間隔より広く取る。 */
 .internal-browser-toolbar .internal-browser-wide-toggle { margin-left: 20px; }
 .internal-browser-toolbar .internal-browser-url { flex: 1 1 auto; min-width: 0; height: 28px; box-sizing: border-box; padding: 0 7px; border: 1px solid var(--vktm--color--border-interactive); border-radius: 5px; background: #161b22; color: #e6edf3; font: inherit; font-size: 12px; }
+@container internal-browser (width < 320px) {
+  /* 最小幅でもアドレス欄の文字が見え、各ボタンに 24px の押せる幅が残るようにする。 */
+  .internal-browser-toolbar { padding-inline: 3px; }
+  .internal-browser-toolbar button { flex-basis: 24px; width: 24px; padding-inline: 1px; }
+  .internal-browser-toolbar .internal-browser-url { padding-inline: 2px; }
+}
 .internal-browser-toolbar .internal-browser-url::placeholder { color: #8b949e; }
 .internal-browser-toolbar .internal-browser-url[aria-invalid="true"] { border-color: #f85149; }
 .internal-browser-external-target { margin: 6px 8px 4px; color: #c9d1d9; font-size: 12px; line-height: 1.6; line-break: strict; overflow-wrap: anywhere; }
@@ -4265,9 +4271,10 @@ body.pane-dragging * {
 @keyframes internal-browser-loading { from { transform: translateX(0); } to { transform: translateX(100%); } }
 @media (prefers-reduced-motion: reduce) { .internal-browser-progress { animation: none; } }
 .internal-browser-page { flex: 1 1 auto; min-height: 0; }
-.internal-browser-notice, .internal-browser-error { padding: 12px; font-size: 12px; line-height: 1.5; background: #161b22; }
+.internal-browser-home-notice, .internal-browser-notice, .internal-browser-error { padding: 12px; font-size: 12px; line-height: 1.5; background: #161b22; }
 .internal-browser-notice[hidden], .internal-browser-error[hidden], .internal-browser-progress[hidden] { display: none; }
-.internal-browser-notice button, .internal-browser-error button { margin: 6px 6px 0 0; padding: 4px 8px; border: 1px solid var(--vktm--color--border-interactive); border-radius: 4px; background: #21262d; color: #e6edf3; cursor: pointer; }
+.internal-browser-home-notice:not(:has(> p:not(:empty))) { padding: 0; }
+.internal-browser-home-notice button, .internal-browser-notice button, .internal-browser-error button { margin: 6px 6px 0 0; padding: 4px 8px; border: 1px solid var(--vktm--color--border-interactive); border-radius: 4px; background: #21262d; color: #e6edf3; cursor: pointer; }
 .internal-browser-error [data-action="external"] { max-width: calc(100% - 6px); text-align: left; }
 /* 完全な遷移先を確認でき、長い URL でも回復操作とページの領域を保つ。 */
 .internal-browser-external-target,
@@ -4280,9 +4287,13 @@ body.pane-dragging * {
 .internal-browser-external-target { flex-shrink: 0; }
 .internal-browser-error [data-action="external"] { line-height: 1.5; }
 /* 案内文と操作を分け、狭い幅でもボタンを一組で揃える。 */
-.internal-browser-notice p { margin: 0; }
+.internal-browser-home-notice p, .internal-browser-notice p { margin: 0; }
+.internal-browser-home-error { color: #f85149; overflow-wrap: anywhere; }
 .internal-browser-notice-actions { display: flex; flex-wrap: nowrap; gap: 6px; margin-top: 6px; }
+.internal-browser-notice-actions[hidden] { display: none; }
 .internal-browser-notice-actions button { margin: 0; white-space: nowrap; }
+.internal-browser-home-notice .internal-browser-notice-actions { flex-direction: column; margin-top: 8px; }
+.internal-browser-home-notice .internal-browser-notice-actions button { min-width: 0; line-height: 1.4; white-space: normal; overflow-wrap: anywhere; }
 .internal-browser-choice { position: fixed; z-index: 2100; min-width: 210px; padding: 5px; border: 1px solid var(--vktm--color--border-interactive); border-radius: 6px; background: #161b22; color: #e6edf3; box-shadow: 0 8px 24px #0008; }
 .internal-browser-choice-heading { padding: 5px 8px; color: #8b949e; font-size: 11px; }
 .internal-browser-choice [role="menuitem"] { display: block; width: 100%; padding: 7px 8px; text-align: left; border: 0; border-radius: 4px; background: transparent; color: inherit; cursor: pointer; }

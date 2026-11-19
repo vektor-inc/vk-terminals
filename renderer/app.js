@@ -33,7 +33,7 @@ const { normalizeConfirmClose, shouldConfirmClose } = window.VKCloseConfirm;
 // 認証要否の実判定（shouldRequireAuth）に使う isLoopbackHost 自体には 'localhost' を
 // 足していないので、ここでは案内専用の関数だけを使う（PR #315 安藤のレビュー指摘）。
 const { isLoopbackDisplayValue } = window.VKLoopbackHost;
-const { isSafeHttpUrl, resolveBrowserAddress } = window.VKUrlSafety;
+const { isSafeHttpUrl, normalizeOptionalHttpUrl, resolveBrowserAddress } = window.VKUrlSafety;
 // ペイン内 URL の Cmd/Ctrl+クリック対応（issue #349）。折り返し行をまたぐ URL の検出・
 // バッファ位置への変換は renderer/terminalLinkProvider.js（xterm.js の
 // registerLinkProvider を自前実装）が担う。詳しい採用理由は同ファイル冒頭のコメント参照。
@@ -114,12 +114,23 @@ const focusTraps = createFocusTrapStack(document, count => {
 });
 
 // ページ本体は main の WebContentsView。こちらは枠と操作列だけを描く。
+const INTERNAL_BROWSER_HOME_KEY = 'internalBrowserHomeUrl';
 const internalBrowserSidebar = document.createElement('aside');
 internalBrowserSidebar.id = 'internal-browser-sidebar';
 internalBrowserSidebar.className = 'internal-browser-sidebar';
 internalBrowserSidebar.setAttribute('aria-label', 'アプリ内ブラウザ');
-internalBrowserSidebar.innerHTML = `<div class="internal-browser-resizer" role="separator" tabindex="0" aria-label="アプリ内ブラウザの幅を変更" aria-orientation="vertical" aria-valuemin="360" aria-valuemax="720" aria-valuenow="480"></div><div class="internal-browser-toolbar"><button type="button" data-action="back" title="戻る" aria-label="戻る"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#arrow-left"></use></svg></button><button type="button" data-action="forward" title="進む" aria-label="進む"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#arrow-right"></use></svg></button><button type="button" data-action="reload" title="再読み込み" aria-label="再読み込み"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#rotate-cw"></use></svg></button><input type="text" class="internal-browser-url" aria-label="URL または検索語を入力" placeholder="URL または検索語" autocomplete="off" spellcheck="false"><button type="button" class="internal-browser-wide-toggle" data-action="wide" title="ブラウザを広く表示" aria-label="ブラウザを広く表示"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#maximize"></use></svg></button><button type="button" data-action="external" title="外部ブラウザで開く" aria-label="外部ブラウザで開く"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#external-link"></use></svg></button><button type="button" data-action="close" title="閉じる" aria-label="閉じる"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#x"></use></svg></button></div><p id="internal-browser-address-error" class="internal-browser-address-error" role="alert" hidden></p><p class="internal-browser-external-target" hidden></p><div class="internal-browser-progress" hidden></div><p class="internal-browser-navigation-status" role="status" aria-live="polite"></p><div class="internal-browser-notice" role="status" hidden></div><div class="internal-browser-error" role="status" hidden><p class="internal-browser-error-message">ページを表示できませんでした</p><button type="button" data-action="reload">再読み込み</button><button type="button" data-action="external">外部ブラウザで開く</button></div><div class="internal-browser-page"></div>`;
+internalBrowserSidebar.innerHTML = `<div class="internal-browser-resizer" role="separator" tabindex="0" aria-label="アプリ内ブラウザの幅を変更" aria-orientation="vertical" aria-valuemin="360" aria-valuemax="720" aria-valuenow="480"></div><div class="internal-browser-toolbar"><button type="button" data-action="back" title="戻る" aria-label="戻る"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#arrow-left"></use></svg></button><button type="button" data-action="forward" title="進む" aria-label="進む"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#arrow-right"></use></svg></button><button type="button" data-action="reload" title="再読み込み" aria-label="再読み込み"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#rotate-cw"></use></svg></button><button type="button" data-action="home" title="ホーム" aria-label="ホーム"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#house"></use></svg></button><input type="text" class="internal-browser-url" aria-label="URL または検索語を入力" placeholder="URL または検索語" autocomplete="off" spellcheck="false"><button type="button" class="internal-browser-wide-toggle" data-action="wide" title="ブラウザを広く表示" aria-label="ブラウザを広く表示"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#maximize"></use></svg></button><button type="button" data-action="external" title="外部ブラウザで開く" aria-label="外部ブラウザで開く"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#external-link"></use></svg></button><button type="button" data-action="close" title="閉じる" aria-label="閉じる"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#x"></use></svg></button></div><p id="internal-browser-address-error" class="internal-browser-address-error" role="alert" hidden></p><p class="internal-browser-external-target" hidden></p><div class="internal-browser-progress" hidden></div><p class="internal-browser-navigation-status" role="status" aria-live="polite"></p>
+  <div class="internal-browser-home-notice">
+    <p role="status" aria-live="polite"></p>
+    <p class="internal-browser-home-error" role="alert" aria-live="assertive"></p>
+    <div class="internal-browser-notice-actions" hidden>
+      <button type="button" data-action="home-settings">ホームページ URL を設定</button>
+      <button type="button" data-action="dismiss-home-notice">案内を閉じる</button>
+    </div>
+  </div>
+  <div class="internal-browser-notice" role="status" hidden></div><div class="internal-browser-error" role="status" hidden><p class="internal-browser-error-message">ページを表示できませんでした</p><button type="button" data-action="reload">再読み込み</button><button type="button" data-action="external">外部ブラウザで開く</button></div><div class="internal-browser-page"></div>`;
 let internalBrowserOpen = false;
+let internalBrowserHomeRequestGeneration = 0;
 // 広く表示中だけ値を持つ（createWideState の戻り値）。
 let internalBrowserWide = null;
 let internalBrowserUrl = '';
@@ -134,8 +145,8 @@ let internalBrowserOverlayFocusOrigin = null;
 let internalBrowserHasPage = false;
 let internalBrowserChoice = null;
 let unregisterInternalBrowserEscape = null;
-// ページ未表示でも操作列から閉じる・広く表示できるよう、この 2 つは無効化しない。
-for (const button of internalBrowserSidebar.querySelectorAll('.internal-browser-toolbar button:not([data-action="close"]):not([data-action="wide"])')) button.disabled = true;
+// ページ未表示でもホームへの移動・広く表示・閉じる操作は使える。
+for (const button of internalBrowserSidebar.querySelectorAll('.internal-browser-toolbar button:not([data-action="close"]):not([data-action="wide"]):not([data-action="home"])')) button.disabled = true;
 
 // ─── レイアウト切り替えのアニメーション（issue #629）─────────────────────────
 // 利用者の操作による「ペインの広く表示」「アプリ内ブラウザの開閉」「ブラウザの広く表示」だけを
@@ -364,7 +375,8 @@ function syncInternalBrowserLayout() {
   // 右下に出すときは画面全体の幅を使えるため、ブラウザ幅を差し引かない。
   root.classList.toggle('toast-phrase-wrap', shouldWrapToastPhrase(windowWidth, toastAtCorner ? 0 : displayedInternalBrowserWidth));
   internalBrowserSidebar.style.width = `${displayedInternalBrowserWidth}px`;
-  internalBrowserSidebar.querySelector('.internal-browser-url').placeholder = displayedInternalBrowserWidth < 360 ? 'URL / 検索' : 'URL または検索語';
+  const address = internalBrowserSidebar.querySelector('.internal-browser-url');
+  address.placeholder = displayedInternalBrowserWidth < 280 ? 'URL' : displayedInternalBrowserWidth < 360 ? 'URL / 検索' : 'URL または検索語';
   document.body.style.setProperty('--vktm-internal-browser-width', `${displayedInternalBrowserWidth}px`);
   const resizer = internalBrowserSidebar.querySelector('.internal-browser-resizer');
   resizer.setAttribute('aria-valuemin', String(Math.min(360, maxWidth)));
@@ -394,7 +406,12 @@ function setInternalBrowserOpen(value, { focus = internalBrowserHasPage ? 'prese
   // ブラウザを閉じるときは広く表示を解除し、格納したペインをグリッドへ戻す。
   if (!value && internalBrowserWide) exitInternalBrowserWide();
   internalBrowserOpen = value;
+  if (!value) {
+    internalBrowserHomeRequestGeneration++;
+    internalBrowserSidebar.querySelector('.internal-browser-home-error').textContent = '';
+  }
   if (!value && internalBrowserSidebar.contains(document.activeElement)) document.getElementById('internal-browser-toggle')?.focus();
+  if (!value) setInternalBrowserHomeNotice(false);
   if (value && !internalBrowserHasPage) {
     const notice = internalBrowserSidebar.querySelector('.internal-browser-notice');
     notice.textContent = '上の入力欄に URL または検索語を入力して Enter を押すと、ここに表示されます。';
@@ -554,6 +571,30 @@ internalBrowserSidebar.addEventListener('click', event => {
     animateLayoutChange(() => { setInternalBrowserOpen(false); document.getElementById('internal-browser-toggle')?.focus(); }, { direction: 'exit' });
   }
   else if (action === 'wide') animateLayoutChange(toggleInternalBrowserWide, { direction: internalBrowserWide ? 'exit' : 'enter' });
+  else if (action === 'home') {
+    const requestGeneration = internalBrowserHomeRequestGeneration;
+    const failureMessage = 'ホームページを開けませんでした。もう一度お試しください。';
+    const showHomeFailure = () => {
+      if (!internalBrowserOpen || requestGeneration !== internalBrowserHomeRequestGeneration) return;
+      if (showGenericToast(failureMessage)) {
+        internalBrowserSidebar.querySelector('.internal-browser-home-error').textContent = '';
+        externalUrlToastEl.dataset.homeFailure = 'true';
+      } else {
+        internalBrowserSidebar.querySelector('.internal-browser-home-error').textContent = failureMessage;
+      }
+      if (internalBrowserOpen) syncInternalBrowserLayout();
+    };
+    VKIpc.invoke('internal-browser:action', action).then(result => {
+      if (requestGeneration !== internalBrowserHomeRequestGeneration) return;
+      if (result === false) { showHomeFailure(); return; }
+      if (internalBrowserOpen) setInternalBrowserHomeNotice(result === 'home-unset');
+      internalBrowserSidebar.querySelector('.internal-browser-home-error').textContent = '';
+      if (internalBrowserOpen) syncInternalBrowserLayout();
+      if (externalUrlToastEl?.dataset.homeFailure === 'true' && !externalUrlToastEl.hidden) hideExternalUrlToast();
+    }).catch(showHomeFailure);
+  }
+  else if (action === 'home-settings') openSettingsModal(null, INTERNAL_BROWSER_HOME_KEY);
+  else if (action === 'dismiss-home-notice') setInternalBrowserHomeNotice(false);
   else if (action === 'external') {
     const url = event.target.closest('.internal-browser-error') ? internalBrowserFailedUrl : getInternalBrowserExternalTarget().url;
     if (url) {
@@ -565,6 +606,20 @@ internalBrowserSidebar.addEventListener('click', event => {
   }
   else if (action) VKIpc.invoke('internal-browser:action', action).catch(() => {});
 });
+
+function setInternalBrowserHomeNotice(visible) {
+  const notice = internalBrowserSidebar.querySelector('.internal-browser-home-notice');
+  const actions = notice.querySelector('.internal-browser-notice-actions');
+  if (actions.hidden === !visible) return;
+  if (!visible && notice.contains(document.activeElement)) {
+    internalBrowserSidebar.querySelector('[data-action="home"]').focus();
+  }
+  actions.hidden = !visible;
+  // ライブリージョンは常駐させ、案内文だけを読み上げる。
+  notice.querySelector('[role="status"]').textContent = visible ? 'ホームページが設定されていません。' : '';
+  if (internalBrowserOpen) syncInternalBrowserLayout();
+}
+
 // 未送信の文字列はページの状態通知で上書きしない。
 const internalBrowserAddress = internalBrowserSidebar.querySelector('.internal-browser-url');
 const internalBrowserAddressError = internalBrowserSidebar.querySelector('.internal-browser-address-error');
@@ -1880,7 +1935,7 @@ function reconsiderExternalUrlToastTimer() {
 
 function hideExternalUrlToast() {
   clearExternalUrlToastTimer();
-  if (externalUrlToastEl) { externalUrlToastEl.hidden = true; delete externalUrlToastEl.dataset.persistent; }
+  if (externalUrlToastEl) { externalUrlToastEl.hidden = true; delete externalUrlToastEl.dataset.persistent; delete externalUrlToastEl.dataset.homeFailure; }
   externalUrlToastCopyUrl = '';
   // 非表示にする瞬間、ポインタがまだ乗っている／フォーカスが中にある状態でも
   // mouseleave / focusout が必ず飛んでくるとは限らない（display:none 化や、成功時に
@@ -2034,6 +2089,7 @@ function showExternalUrlOpenFailedToast(url) {
   const closeButton = toast.querySelector('.vk-toast-close');
   if (closeButton) closeButton.hidden = true;
   delete toast.dataset.persistent;
+  delete toast.dataset.homeFailure;
   // コピーボタンを持つため、クリックを透過させない（上の setExternalUrlToastInteractive
   // のコメント参照）。
   setExternalUrlToastInteractive(toast, true);
@@ -2051,6 +2107,7 @@ function showExternalUrlOpenFailedToast(url) {
 function showGenericToast(message, variant = 'default', { persistent = false } = {}) {
   const toast = ensureExternalUrlToast();
   if (!toast || (!persistent && toast.dataset.persistent === 'true' && !toast.hidden)) return false;
+  delete toast.dataset.homeFailure;
   toast.classList.toggle('vk-toast--success', variant === 'success');
   const copyButton = toast.querySelector('.vk-toast-copy');
   if (copyButton) copyButton.hidden = true;
@@ -5983,7 +6040,10 @@ function renderSettingsField(f, value, id) {
     </div>`;
   }
 
-  const displayValue = comboDisplayValue(f, value);
+  // 単行入力が改行を削って不正な URL を有効に見せないよう、空白で残す。
+  const displayValue = f.type === 'http-url'
+    ? String(value ?? '').replace(/[\r\n]+/g, ' ')
+    : comboDisplayValue(f, value);
   const strVal = value === null || value === undefined
     ? ''
     : (f.type === 'json'
@@ -5994,8 +6054,8 @@ function renderSettingsField(f, value, id) {
     // textarea の中身は要素内容なので escText 側でよいが、値は文字列前提なので escAttr で統一。
     const body = value === null || value === undefined ? '' : escText(JSON.stringify(value, null, 2));
     return `<div class="settings-row">
-      ${labelRow}${help}${disabledReason}
-      <textarea id="${id}" rows="4" spellcheck="false"${requiredAttributes}>${body}</textarea>${requiredNotice}
+      ${labelRow}
+      <textarea id="${id}" rows="4" spellcheck="false"${requiredAttributes}>${body}</textarea>${requiredNotice}${help}${disabledReason}
     </div>`;
   }
 
@@ -6003,18 +6063,18 @@ function renderSettingsField(f, value, id) {
     // 判定は renderer/settingsLinesField.js の linesFieldDisplayText を参照（issue #339）。
     const body = escText(linesFieldDisplayText(value));
     return `<div class="settings-row">
-      ${labelRow}${help}${disabledReason}
-      <textarea id="${id}" rows="4" spellcheck="false"${requiredAttributes}>${body}</textarea>${requiredNotice}
+      ${labelRow}
+      <textarea id="${id}" rows="4" spellcheck="false"${requiredAttributes}>${body}</textarea>${requiredNotice}${help}${disabledReason}
     </div>`;
   }
 
   if (f.type === 'password') {
     return `<div class="settings-row">
-      ${labelRow}${help}${disabledReason}
+      ${labelRow}
       <div class="settings-pwd">
         <input type="password" id="${id}" value="${strVal}" autocomplete="off" spellcheck="false"${requiredAttributes}>
         <button type="button" class="settings-reveal" data-target="${id}" title="表示切替">👁</button>
-      </div>${requiredNotice}
+      </div>${requiredNotice}${help}${disabledReason}
     </div>`;
   }
 
@@ -6030,8 +6090,8 @@ function renderSettingsField(f, value, id) {
       })
       .join('');
     return `<div class="settings-row">
-      ${labelRow}${help}${disabledReason}
-      <select id="${id}"${requiredAttributes}>${opts}</select>${requiredNotice}
+      ${labelRow}
+      <select id="${id}"${requiredAttributes}>${opts}</select>${requiredNotice}${help}${disabledReason}
     </div>`;
   }
 
@@ -6045,7 +6105,7 @@ function renderSettingsField(f, value, id) {
         return `<option value="${optionDisplayValue}"></option>`;
       }).join('')}</datalist>`
     : '';
-  // pattern 検証のエラー行と aria 関連付け。help は開いた間だけイベント側で先頭へ足す。
+  // 検証のエラー行と aria 関連付け。help は開いた間だけイベント側で加える。
   const errorId = escAttr(id + '-error');
   // apiHost だけ、保存・再起動を待たずその場で認証要否の案内を出すための空の通知欄を
   // 併設する（issue #313）。中身は buildSettingsModal 側で入力イベントに応じて書き換える。
@@ -6055,12 +6115,14 @@ function renderSettingsField(f, value, id) {
     : '';
   const describedBy = escAttr(`${id}-error${f.key === 'apiHost' ? ` ${id}-notice` : ''}`);
   return `<div class="settings-row">
-    ${labelRow}${help}${disabledReason}
+    ${labelRow}
     <input type="${inputType}" id="${id}" value="${strVal}"${ph}${comboListAttr} spellcheck="false" aria-describedby="${describedBy}"${requiredAttributes}>
     ${comboOptionsHtml}
     <span class="settings-error" id="${errorId}" role="alert"></span>
     ${requiredNotice}
+    ${help}
     ${inlineNoticeHtml}
+    ${disabledReason}
   </div>`;
 }
 
@@ -6413,8 +6475,9 @@ function renderSettingsTabContent(blocks, tabIndexById, runtimeStatus = {}, entr
 // DOM に無いため、要素の有無だけでは二重生成されうる。生成前にロックを取得し、閉じた時は
 // buildSettingsModal の close、生成に失敗した時は protect の例外処理が必ず解放する。
 const settingsModalGuard = createSingleOpenGuard();
+let latestSettingsSave = Promise.resolve();
 
-async function openSettingsModal(restartTabId = null) {
+async function openSettingsModal(restartTabId = null, focusFieldKey = null) {
   // URL にホバーしたままマウスを動かさず Tab で ⚙ まで来て Enter で確定する経路では
   // xterm 側の leave が発火しない。設定モーダル（z-index 2000）の手前にツールチップ
   // （2300）が浮いたまま残るのを防ぐ（Claude Code レビュー指摘・LOW）。
@@ -6426,20 +6489,27 @@ async function openSettingsModal(restartTabId = null) {
   if (restartTabId && restartTabId !== VKHelpEntry.TAB_ID && !restartRequiredState.tabs.includes(restartTabId)) restartTabId = null;
   try {
     await settingsModalGuard.protect(({ release, setFailureCleanup }) => (
-      buildSettingsModal({ release, setFailureCleanup, restoreFocusElement, restartTabId })
+      buildSettingsModal({ release, setFailureCleanup, restoreFocusElement, restartTabId, focusFieldKey })
     ));
   } catch (e) {
     console.error('設定パネルの生成に失敗しました', e);
   }
 }
 
-async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElement, restartTabId }) {
+async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElement, restartTabId, focusFieldKey }) {
+  // 閉じた画面の保存予約が完了してから、開き直した画面の比較元を読み込む。
+  await latestSettingsSave;
   // 設定ディスクリプタが無い環境でも空の設定モーダルとして開く（使用量はサイドバー上部）。
   let desc = null;
   try {
     desc = await VKIpc.invoke('settings:describe');
   } catch (_e) {
     desc = null;
+  }
+  // 読み込みを待つ間にブラウザが閉じたり、別のモーダルが開いたりした場合は開かない。
+  if (focusFieldKey && (!internalBrowserOpen || internalBrowserSidebar.closest('[inert]'))) {
+    release();
+    return;
   }
   if (helpEntryEnabled && !(desc && desc.available)) desc = { available: true, groups: [], values: {}, tabs: [] };
   const settingsAvailable = !!(desc && desc.available);
@@ -6511,11 +6581,9 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
       omitLegend: groups.length === 1 && Array.isArray(group.fields) && group.fields.length > 0,
     })).join(''))
     : [];
-  // password 型の欄を参照する fieldValue / savedValue セルをマスクするための key 集合
-  // （安藤のセキュリティレビュー指摘・issue #380）。tabGroupsHtml の組み立てで entries が
-  // 出揃った直後に 1 回だけ求め、以降のタブ・content / contentAfter で使い回す。
-  const settingsContentTablePasswordFieldKeys = new Set(
-    entries.filter(({ field }) => field.type === 'password').map(({ field }) => field.key)
+  // 外部の説明コンテンツには、パスワードと組み込みのホーム URL を表示しない。
+  const settingsContentTableMaskedFieldKeys = new Set(
+    entries.filter(({ field }) => field.type === 'password' || field.key === INTERNAL_BROWSER_HOME_KEY).map(({ field }) => field.key)
   );
   const settingsTabsHtml = useTabbedSettings ? `<div class="settings-tabs" role="tablist" aria-label="設定カテゴリ">
     ${settingsTabs.map((tab, index) => {
@@ -6538,7 +6606,9 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
             : '';
           // desc.note（保存後の反映に関する注記）は保存対象があるタブにだけ
           // 継承する。説明だけのタブに出すと保存できるかのような誤誘導になるため。
-          const tabNote = (tab && tab.note) ? tab.note : (tabHasFields[tabIndex] ? desc.note : '');
+          const isBrowserHomeTab = groups.length === 1 && groups[0].fields?.length === 1
+            && groups[0].fields[0].key === INTERNAL_BROWSER_HOME_KEY;
+          const tabNote = tab.note || (tabHasFields[tabIndex] && !isBrowserHomeTab ? desc.note : '');
           const noteHtml = tabNote ? `<p class="settings-note settings-tab-note">${escText(tabNote)}</p>` : '';
           const runtimeStatus = {
             apiServer: desc.apiServerStatus,
@@ -6546,7 +6616,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
             // table ブロックの fieldValue セルが初期表示に使う「今の入力値」。開いた直後は
             // 保存済みの値そのものなので、entries の初期値と同じ desc.values を渡す。
             fieldValues: desc.values,
-            passwordFieldKeys: settingsContentTablePasswordFieldKeys,
+            passwordFieldKeys: settingsContentTableMaskedFieldKeys,
           };
           const contentHtml = renderSettingsTabContent(tab && tab.content, tabIndexById, runtimeStatus, entries, '', settingsContentTableIdState);
           // 入力欄グループの後ろに描く説明ブロック。content と同じ種別・同じ描画処理で、
@@ -6580,7 +6650,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
     ? `<span class="settings-version">${escText(settingsVersionLabel)}</span>`
     : '';
   const targetPathLabel = settingsAvailable
-    ? (desc.targetPath || (Array.isArray(desc.targetPaths) ? desc.targetPaths[0] : '') || '')
+    ? ((Array.isArray(desc.targetPaths) ? desc.targetPaths[0] : '') || desc.targetPath || '')
     : '';
   const settingsTargetHtml = settingsAvailable
     ? (useTabbedSettings
@@ -6683,6 +6753,9 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
   // 二重オープンの抑止を壊す。寿命の判断は renderer/autoClose.js に集約してあり、
   // ここは「いつ武装し、いつ取り消すか」だけを決める。
   const autoClose = createAutoCloseController({ onFire: () => { if (!configFailedFiles.length) close(); } });
+  let settingsInteractionRevision = 0;
+  let settingsChangesRevision = 0;
+  let restoredHomeButton = null;
   let unregisterEscapeLayer = () => {};
   let releaseFocusTrap = () => {};
   const close = () => {
@@ -6708,9 +6781,15 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
     overlay.remove();
     release();
     if (shouldRestore) {
+      // ホーム設定の保存で案内が消えた場合は、ツールバーのホームへ戻す。
+      const homeButton = focusFieldKey === INTERNAL_BROWSER_HOME_KEY
+        ? internalBrowserSidebar.querySelector('[data-action="home"]') : null;
       const sidebarSettingsButton = sidebarOpen ? document.querySelector('#sidebar-settings button') : null;
-      [restoreFocusElement, sidebarSettingsButton, document.getElementById('settings-btn')]
-        .find(canRestoreModalFocus)?.focus();
+      const homeSettingsButton = homeButton && internalBrowserSidebar.querySelector('[data-action="home-settings"]');
+      const target = [homeSettingsButton ?? restoreFocusElement, homeButton, sidebarSettingsButton, document.getElementById('settings-btn')]
+        .find(canRestoreModalFocus);
+      target?.focus();
+      if (target === homeButton && document.activeElement === homeButton) restoredHomeButton = homeButton;
     }
   };
   // ここから後の例外では、close に overlay・キー操作・各タイマーをまとめて片付けさせる。
@@ -6740,27 +6819,71 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
   // 設定項目が無い環境ではフォーム関連の配線は不要（閉じるだけ）。
   if (!settingsAvailable) return;
 
-  const launchHelpGuide = async (onLaunching) => {
+  const launchHelpGuide = async (onLaunching, canCloseSettings) => {
     onLaunching();
     const result = await openHelpGuide();
     if (result && result.helpStatus) return result;
+    if (!canCloseSettings()) return 'interrupted';
     close();
     fitAll();
     focusPane(result);
   };
-  const launchHelpDocument = async (onLaunching) => {
+  const launchHelpDocument = async (onLaunching, canCloseSettings) => {
     onLaunching();
     const opened = await VKIpc.invoke('help:document');
     if (!opened) throw new Error('Help document is unavailable.');
     internalBrowserHasPage = true;
+    if (!canCloseSettings()) return 'interrupted';
     close();
     animateLayoutChange(() => { setInternalBrowserOpen(true); focusInternalBrowserToolbar(); }, { shouldAnimate: () => !internalBrowserOpen });
     return true;
   };
   const helpContainer = modal.querySelector('.settings-help-entry');
-  const confirmUnsavedHelp = (launch, onLaunching, onConfirming, target) => {
-    const dirty = modal.querySelector('.settings-tab.is-dirty');
-    if (!dirty) return launch(onLaunching);
+  const isHelpTabHidden = () => helpContainer.closest('[role=tabpanel]').hidden;
+  const confirmUnsavedHelp = async (launch, onLaunching, onConfirming, target) => {
+    autoClose.cancel();
+    settingsInteractionRevision++;
+    helpFlowPending = true;
+    try {
+      return await runHelpFlow(launch, onLaunching, onConfirming, target);
+    } finally {
+      helpFlowPending = false;
+    }
+  };
+  const runHelpFlow = async (launch, onLaunching, onConfirming, target) => {
+    const saveResult = pendingSettingsSaves === 0 || await waitForSettingsSaves();
+    if (autoClose.isClosed) return 'interrupted';
+    if (saveResult === 'invalid') return 'interrupted';
+    if (isHelpTabHidden()) {
+      showHelpRetryMessage();
+      return 'interrupted';
+    }
+
+    const hasUnapprovedChanges = (discardRevision) => settingsChangesRevision !== discardRevision
+      && Object.keys(getChangedSettingValues()).length > 0;
+    const start = (discardRevision) => {
+      if (autoClose.isClosed) return 'interrupted';
+      if (isHelpTabHidden()) {
+        showHelpRetryMessage();
+        return 'interrupted';
+      }
+      if (hasUnapprovedChanges(discardRevision)) {
+        showUnsavedHelpMessage();
+        return 'interrupted';
+      }
+      return launch(onLaunching, () => {
+        if (autoClose.isClosed) return false;
+        // 編集や保存で比較元が変われば、同じ文字列に戻っても以前の同意は使わない。
+        if (pendingSettingsSaves === 0 && !hasUnapprovedChanges(discardRevision)) return true;
+        showUnsavedHelpMessage();
+        return false;
+      });
+    };
+
+    if (Object.keys(getChangedSettingValues()).length === 0) {
+      if (saveResult !== true || !validateSettingsSnapshot(getCurrentSettingValues(), validatable.filter(isInvalidVisibleEntry))) return 'interrupted';
+      return start();
+    }
     onConfirming?.();
     // 保存・破棄・キャンセルは同じ確認画面で選ぶ。
     return new Promise((resolve, reject) => {
@@ -6772,22 +6895,32 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
       choices.setAttribute('aria-labelledby', text.id);
       text.textContent = `未保存の変更があります。保存してから${target}を開きますか？`;
       choices.appendChild(text);
-      const finish = async () => {
+      const finish = async (open) => {
         choices.remove();
-        try { resolve(await launch(onLaunching)); } catch (error) { reject(error); }
+        try { resolve(await open()); } catch (error) { reject(error); }
       };
       for (const [label, action] of [
         ['保存して開く', async () => {
           choices.querySelectorAll('button').forEach((button) => { button.disabled = true; });
-          if (await saveSettings({ keepOpen: true })) await finish();
-          else {
+          const result = await saveSettings({ keepOpen: true });
+          if (result === true) await finish(() => start());
+          else if (result === 'invalid' || result === 'interrupted') {
+            choices.remove();
+            resolve('interrupted');
+          } else {
             const reason = modal.querySelector('.settings-msg')?.textContent || '設定を保存できませんでした。';
             choices.remove();
             reject(new Error(`${reason} 内容を確認して再試行してください。`));
           }
         }],
-        ['破棄して開く', finish],
-        ['キャンセル', () => { choices.remove(); resolve(false); }],
+        ['破棄して開く', () => {
+          const discardRevision = settingsChangesRevision;
+          return finish(async () => {
+            if (pendingSettingsSaves > 0) await waitForSettingsSaves();
+            return start(discardRevision);
+          });
+        }],
+        ['キャンセル', () => { choices.remove(); resolve('cancelled'); }],
       ]) {
         const button = document.createElement('button');
         button.type = 'button';
@@ -6853,10 +6986,10 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
     const reason = modal.querySelector('#' + id + '-disabled-reason');
     const required = modal.querySelector('#' + id + '-required');
     const describedBy = [
-      help && !help.hidden ? help.id : '',
       error ? error.id : '',
-      notice ? notice.id : '',
       required && !required.hidden ? required.id : '',
+      help && !help.hidden ? help.id : '',
+      notice ? notice.id : '',
       reason && !reason.hidden ? reason.id : '',
     ].filter(Boolean);
     if (describedBy.length > 0) input.setAttribute('aria-describedby', describedBy.join(' '));
@@ -6917,7 +7050,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
   };
 
   let switchToFieldTab = () => {};
-  let clearDirtyTabs = () => {};
+  let syncDirtyTabs = () => {};
   let lockSettingsFooter = () => {};
   let unlockSettingsFooter = () => {};
   // 表ブロック・一括切り替えボタン（issue #380）。table / applyButton は
@@ -7015,6 +7148,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
         // 正式に許した以上、移動先を読んでいる最中にパネルごと消えるのは矛盾する。
         // 「保存しました」の表示は残したまま、閉じるタイミングはユーザーに委ねる。
         autoClose.cancel();
+        settingsInteractionRevision++;
         onSettingsTabChangedCallbacks.forEach((cb) => cb());
       }
       updateSettingsFooter();
@@ -7076,10 +7210,15 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
       input.addEventListener('input', markDirty);
       input.addEventListener('change', markDirty);
     }
-    clearDirtyTabs = () => {
-      tabButtons.forEach((button) => {
-        button.classList.remove('is-dirty');
-        button.removeAttribute('aria-label');
+    syncDirtyTabs = (changedValues) => {
+      const dirtyTabIndices = new Set(entries
+        .filter(({ field }) => Object.hasOwn(changedValues, field.key))
+        .map(({ tabIndex }) => tabIndex));
+      tabButtons.forEach((button, index) => {
+        const dirty = dirtyTabIndices.has(index);
+        button.classList.toggle('is-dirty', dirty);
+        if (dirty) button.setAttribute('aria-label', `${settingsTabs[index].label}（未保存の変更あり）`);
+        else button.removeAttribute('aria-label');
       });
       updateSettingsFooter();
     };
@@ -7391,6 +7530,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
     const isApplyTarget = (entry) => (
       !!entry
       && entry.field.type !== 'password'
+      && entry.field.key !== INTERNAL_BROWSER_HOME_KEY
       && isEntryVisible(entry.id)
       && !isEntryDisabled(entry.id)
     );
@@ -7711,12 +7851,15 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
     });
   });
 
-  // ─── pattern 検証（issue #140） ──────────────────────────────────────────────
-  // 検証対象は field.pattern（正規表現文字列）を持つフィールドのみ。type ではなく
-  // pattern の有無で判定することで、text/number など type を問わず汎用的に扱う。
+  // フィールド形式とディスクリプタの pattern を保存前に検証する。
   const validatable = entries.filter(
-    ({ field }) => typeof field.pattern === 'string' && field.pattern !== ''
+    ({ field }) => field.type === 'http-url' || (typeof field.pattern === 'string' && field.pattern !== '')
   );
+  const isFieldValueValid = (field, input) => {
+    const value = getEntryStoredValue(field, input);
+    return (field.type !== 'http-url' || normalizeOptionalHttpUrl(value) !== null)
+      && isPatternValid(field.pattern, value);
+  };
 
   // 1 フィールドの検証結果を DOM に反映する。valid かどうかを返す。
   // - valid: aria-invalid を外し、エラー文をクリア（赤枠も CSS 側で解除される）。
@@ -7736,7 +7879,7 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
       if (errEl) errEl.textContent = '';
       return true;
     }
-    const valid = isPatternValid(field.pattern, getEntryStoredValue(field, input));
+    const valid = isFieldValueValid(field, input);
     if (valid) {
       clearInvalidMark(input);
       if (errEl) errEl.textContent = '';
@@ -7814,25 +7957,19 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
   // 各欄の再検証リスナはこの下で登録されており、同じ input イベントでは onEntryEdited の
   // 方が先に走るため、この時点の aria-invalid は 1 打鍵ぶん古い。値を見れば登録順に
   // 依存しない。非表示・無効の欄は applyFieldValidity 同様に検証対象から外す。
-  const hasInvalidVisibleEntry = () => validatable.some(({ field, id }) => {
+  const isInvalidVisibleEntry = ({ field, id }) => {
     const input = getEntryInput(id);
     if (!input || !isEntryVisible(id) || isEntryDisabled(id)) return false;
-    return !isPatternValid(field.pattern, getEntryStoredValue(field, input));
-  });
+    return !isFieldValueValid(field, input);
+  };
 
-  // フッターの総括メッセージは「表示が実態と食い違った時点」で消す。
-  //  - 「保存しました」(ok): 編集を再開した時点で食い違う（未保存の変更を抱えている）
-  //  - 「入力内容に問題があります」(err): 不正な欄がゼロになった時点で食い違う
-  // err を打鍵のたびに消さないのは、直している最中に何を指摘されたのかを見失わせない
-  // ため。1 つでも不正が残っていれば出したままにする。逆に直しきったあとも残すと、
-  // 問題が無いのに「まだどこかにある」と言い続けることになり、存在しない不正欄を
-  // 探させてしまう。
+  // 部分成功の内訳は次の保存結果まで保持し、形式エラーは修正に合わせて消す。
   const clearStaleSettingsMessage = () => {
-    const stale = msg.classList.contains('ok')
-      || (msg.classList.contains('err') && !hasInvalidVisibleEntry());
-    if (!stale) return;
-    msg.textContent = '';
-    msg.className = 'settings-msg';
+    if (!validatable.some(isInvalidVisibleEntry)) settingsValidationMessage = '';
+    if (settingsSaveMessage.kind === 'ok' || settingsSaveMessage.kind === 'err') {
+      settingsSaveMessage = { text: '', kind: '' };
+    }
+    renderSettingsMessages();
   };
 
   // 保存後にユーザーが操作を続けているならパネルを勝手に閉じない、という原則は
@@ -7842,6 +7979,8 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
   // 全モードで動くこのループに寄せる。
   const onEntryEdited = () => {
     autoClose.cancel();
+    settingsInteractionRevision++;
+    settingsChangesRevision++;
     // 保存直後のフッター固定は、編集を始めた時点で理由（押した直後にボタンが
     // 並び替わるのを防ぐ）が消える。
     unlockSettingsFooter();
@@ -7938,63 +8077,162 @@ async function buildSettingsModal({ release, setFailureCleanup, restoreFocusElem
   }
 
   showHelp();
+  const focusEntry = entries.find(({ field }) => field.key === focusFieldKey);
+  if (focusEntry && isEntryVisible(focusEntry.id)) {
+    const input = getEntryInput(focusEntry.id);
+    switchToFieldTab(input);
+    if (!useTabbedSettings) input?.focus();
+  }
+
+  const savedFieldValues = getCurrentSettingValues();
+  const getChangedSettingValues = (values = getCurrentSettingValues()) => Object.fromEntries(Object.entries(values)
+    .filter(([key, value]) => value !== savedFieldValues[key]));
+  let settingsSaveQueue = Promise.resolve();
+  let pendingSettingsSaves = 0;
+  let helpFlowPending = false;
+  let settingsSaveMessage = { text: '', kind: '' };
+  let settingsValidationMessage = '';
+
+  function renderSettingsMessages() {
+    const text = [settingsSaveMessage.text, settingsValidationMessage].filter(Boolean).join(' ');
+    const tone = (settingsValidationMessage || settingsSaveMessage.kind === 'partial') ? 'err' : settingsSaveMessage.kind;
+    if (msg.textContent !== text) msg.textContent = text;
+    msg.className = tone ? 'settings-msg ' + tone : 'settings-msg';
+  }
+
+  function showSettingsSaveMessage(text, kind = '') {
+    settingsSaveMessage = { text, kind };
+    renderSettingsMessages();
+  }
+
+  async function waitForSettingsSaves() {
+    // 応答待ち中に追加された予約も、最後の応答が反映されるまで待つ。
+    let result = true;
+    while (pendingSettingsSaves > 0) result = await settingsSaveQueue;
+    return result;
+  }
+
+  function showUnsavedHelpMessage(text = '追加の編集が保存されていません。もう一度保存してください。') {
+    settingsValidationMessage = text;
+    if (settingsSaveMessage.kind === 'partial') renderSettingsMessages();
+    else showSettingsSaveMessage('');
+  }
+
+  function showHelpRetryMessage() {
+    showUnsavedHelpMessage('設定を保存してから、使い方・ヘルプで開き直してください。');
+  }
+
   async function saveSettings({ keepOpen = false } = {}) {
-    // 保存前の検証ゲート: 全エラー表示を一旦クリアしてから対象を一括再判定する。
-    for (const { field, id } of validatable) clearFieldValidity(field, id);
-    let firstInvalid = null;
-    for (const { field, id } of validatable) {
-      const valid = applyFieldValidity(field, id);
-      if (!valid && !firstInvalid) firstInvalid = modal.querySelector('#' + id);
+    autoClose.cancel();
+    const values = getCurrentSettingValues();
+    const invalidEntries = validatable.filter(isInvalidVisibleEntry);
+    const interactionRevision = settingsInteractionRevision;
+    pendingSettingsSaves++;
+    // 押下時の入力と検証結果を保持し、先行応答を反映した比較元から差分を出す。
+    const pending = settingsSaveQueue.then(() => persistSettingsChanges({
+      keepOpen, values, invalidEntries,
+      canAutoClose: () => settingsSaveQueue === pending && !helpFlowPending && settingsInteractionRevision === interactionRevision,
+    })).catch(error => {
+      if (!autoClose.isClosed) showSettingsSaveMessage('エラー: ' + error.message, 'err');
+      return false;
+    }).finally(() => {
+      pendingSettingsSaves--;
+    });
+    latestSettingsSave = settingsSaveQueue = pending;
+    if (!keepOpen) return (await pending) === true;
+
+    const saved = await pending;
+    const queueResult = await waitForSettingsSaves();
+    autoClose.cancel();
+    if (autoClose.isClosed) return 'interrupted';
+    if (saved === 'invalid' || queueResult === 'invalid') return 'invalid';
+    if (!saved || !queueResult) return false;
+    if (Object.keys(getChangedSettingValues()).length > 0) {
+      if (isHelpTabHidden()) showHelpRetryMessage();
+      else showUnsavedHelpMessage();
+      return 'interrupted';
     }
-    // 1 つでも不一致なら settings:save を呼ばず中断し、最初の不正欄へフォーカスする。
-    if (firstInvalid) {
-      msg.textContent = '入力内容に問題があります';
-      msg.className = 'settings-msg err';
-      // タブ表示のときは switchToFieldTab が着地まで済ませている（二重に呼んでも冪等）。
-      // タブ無しモードでは何もしないので、ここで中央寄せとフォーカスを行う。
-      switchToFieldTab(firstInvalid);
-      if (typeof firstInvalid.scrollIntoView === 'function') {
-        firstInvalid.scrollIntoView({ block: 'center' });
+    return true;
+  }
+
+  function validateSettingsSnapshot(values, invalidEntries) {
+    if (invalidEntries.length > 0) {
+      const currentValues = getCurrentSettingValues();
+      let firstInvalid = null;
+      // 予約後に編集された欄に、古い入力のエラーやフォーカスを戻さない。
+      for (const { field, id } of invalidEntries) {
+        if (currentValues[field.key] !== values[field.key] || applyFieldValidity(field, id)) continue;
+        firstInvalid ??= getEntryInput(id);
       }
-      firstInvalid.focus({ preventScroll: true });
+      settingsValidationMessage = firstInvalid ? '入力内容に問題があります'
+        : '保存時の入力内容に問題がありました。現在の内容を確認して保存してください。';
+      if (settingsSaveMessage.kind === 'partial') renderSettingsMessages();
+      else showSettingsSaveMessage('');
+      if (firstInvalid && !(helpFlowPending && isHelpTabHidden())) {
+        switchToFieldTab(firstInvalid);
+        firstInvalid.scrollIntoView?.({ block: 'center' });
+        firstInvalid.focus({ preventScroll: true });
+      }
       return false;
     }
+    return true;
+  }
 
-    const out = {};
-    for (const { field, id } of entries) {
-      const input = getEntryInput(id);
-      if (!input) continue;
-      out[field.key] = getEntryStoredValue(field, input);
+  async function persistSettingsChanges({ keepOpen, values, invalidEntries, canAutoClose }) {
+    if (invalidEntries.length > 0) {
+      if (!autoClose.isClosed) validateSettingsSnapshot(values, invalidEntries);
+      return 'invalid';
     }
-    msg.textContent = '保存中...';
-    msg.className = 'settings-msg';
-    try {
-      const res = await VKIpc.invoke('settings:save', out);
-      if (res && res.ok) {
-        // dirty 解除でフッターの構成が変わらないよう、先に固定してから解除する。
-        lockSettingsFooter();
-        clearDirtyTabs();
-        // 保存でファイルの中身が変わったので、savedValue セル（＝保存済みの値）を
-        // 取り直す。取り直さないと、保存後も編集を続けた場合に古い値が残り続ける
-        // （安藤のレビュー指摘・issue #380）。
-        refreshSettingsContentSavedValues();
-        msg.textContent = '保存しました。反映状況は設定の案内をご確認ください。';
-        msg.classList.add('ok');
-        await refreshConfigReflection({ throwOnError: keepOpen });
-        if (configFailedFiles.length) {
-          msg.textContent = '保存しましたが、設定を読み込めませんでした。対象ファイルを確認してください。';
-          msg.className = 'settings-msg err';
-          autoClose.cancel();
-          return false;
-        } else if (!keepOpen) autoClose.arm();
-        return true;
-      } else {
-        msg.textContent = 'エラー: ' + (res && res.error ? res.error : '不明なエラー');
-        msg.classList.add('err');
+    const out = getChangedSettingValues(values);
+    if (!autoClose.isClosed) {
+      settingsValidationMessage = '';
+      if (settingsSaveMessage.kind === 'partial') renderSettingsMessages();
+      else showSettingsSaveMessage('保存中...');
+    }
+    const res = await VKIpc.invoke('settings:save', out);
+    // 部分成功でも、実際に保存した欄だけを次の保存時の比較元にする。
+    const writtenKeys = (res?.writtenKeys ?? []).filter((key) => Object.hasOwn(out, key));
+    for (const key of writtenKeys) savedFieldValues[key] = out[key];
+    if (writtenKeys.length > 0) settingsChangesRevision++;
+    if (internalBrowserOpen && (res?.hasInternalBrowserHome === true
+      || (focusFieldKey === INTERNAL_BROWSER_HOME_KEY && res?.hasInternalBrowserHome === false))) {
+      setInternalBrowserHomeNotice(!res.hasInternalBrowserHome);
+      // 閉じた直後の復帰先にまだいる場合だけ、再表示した案内へ移す。
+      if (!res.hasInternalBrowserHome && restoredHomeButton && document.activeElement === restoredHomeButton) {
+        const configureButton = internalBrowserSidebar.querySelector('[data-action="home-settings"]');
+        if (canRestoreModalFocus(configureButton)) configureButton.focus();
       }
-    } catch (e) {
-      msg.textContent = 'エラー: ' + e.message;
-      msg.classList.add('err');
+      restoredHomeButton = null;
+    }
+    if (autoClose.isClosed) return !!res?.ok;
+    if (res?.ok || writtenKeys.length > 0) refreshSettingsContentSavedValues();
+    if (res?.ok) {
+      // dirty 解除でフッターの構成が変わらないよう、先に固定してから解除する。
+      lockSettingsFooter();
+      syncDirtyTabs(getChangedSettingValues());
+      showSettingsSaveMessage('保存しました。反映状況は設定の案内をご確認ください。', 'ok');
+      await refreshConfigReflection({ throwOnError: keepOpen });
+      if (autoClose.isClosed) return true;
+      if (configFailedFiles.length) {
+        showSettingsSaveMessage('保存しましたが、設定を読み込めませんでした。対象ファイルを確認してください。', 'err');
+        autoClose.cancel();
+        return false;
+      }
+      const hasUnsavedChanges = Object.keys(getChangedSettingValues()).length > 0;
+      if (!keepOpen && !hasUnsavedChanges && canAutoClose()) autoClose.arm();
+      return true;
+    }
+    if (writtenKeys.length > 0) {
+      const written = new Set(writtenKeys);
+      const labels = (isWritten) => entries
+        .filter(({ field }) => Object.hasOwn(out, field.key) && written.has(field.key) === isWritten)
+        .map(({ field }) => field.label || 'ラベルのない項目')
+        .join('、');
+      showSettingsSaveMessage(`「${labels(true)}」を保存しました。「${labels(false)}」は再保存してください。`, 'partial');
+      syncDirtyTabs(getChangedSettingValues());
+      await refreshConfigReflection();
+    } else {
+      showSettingsSaveMessage('エラー: ' + (res?.error || '不明なエラー'), 'err');
     }
     return false;
   }

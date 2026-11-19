@@ -345,6 +345,7 @@ test('saveSettingsToTargets: group ごとに別ファイルへ保存し未知キ
 
   assert.equal(result.ok, true);
   assert.deepEqual(result.writtenPaths.sort(), [firstPath, secondPath].sort());
+  assert.deepEqual(result.writtenKeys, ['name', 'nested.count', 'enabled', 'items']);
   assert.deepEqual(readJson(firstPath), {
     keep: 'first',
     name: 'vk',
@@ -355,6 +356,37 @@ test('saveSettingsToTargets: group ごとに別ファイルへ保存し未知キ
     enabled: false,
     items: [{ id: 1 }],
   });
+});
+
+test('saveSettingsToTargets: 部分成功では実際に書き込んだファイルのキーだけを返す', () => {
+  const dir = makeTempDir();
+  const externalPath = path.join(dir, 'external.json');
+  const ownPath = path.join(dir, 'terminals.json');
+  fs.writeFileSync(externalPath, '{');
+  const descriptor = {
+    groups: [
+      { targetPath: externalPath, fields: [{ key: 'github.owner', type: 'lines' }] },
+      { targetPath: ownPath, fields: [{ key: 'internalBrowserHomeUrl', type: 'http-url' }] },
+    ],
+  };
+
+  const result = saveSettingsToTargets(descriptor, {
+    'github.owner': 'first-owner',
+    internalBrowserHomeUrl: 'https://example.com/',
+    unknown: 'ignored',
+  });
+
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.failedPaths, [externalPath]);
+  assert.deepEqual(result.writtenPaths, [ownPath]);
+  assert.deepEqual(result.writtenKeys, ['internalBrowserHomeUrl']);
+  assert.deepEqual(readJson(ownPath), { internalBrowserHomeUrl: 'https://example.com/' });
+  assert.equal(fs.readFileSync(externalPath, 'utf8'), '{');
+
+  const noChanges = saveSettingsToTargets(descriptor, {});
+  assert.equal(noChanges.ok, true);
+  assert.deepEqual(noChanges.writtenKeys, []);
+  assert.deepEqual(noChanges.writtenPaths, []);
 });
 
 test('groupFieldsByTargetPath: incoming にない Object.prototype 由来のキーを保存対象に含めない', () => {
@@ -527,6 +559,7 @@ test('saveSettingsToTargets: 型変換バリデーションエラー時はどの
 
   assert.equal(result.ok, false);
   assert.match(result.error, /数値として不正/);
+  assert.deepEqual(result.writtenKeys, []);
   assert.deepEqual(readJson(firstPath), { name: 'before' });
   assert.deepEqual(readJson(secondPath), { count: 1 });
 });

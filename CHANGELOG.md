@@ -1,5 +1,7 @@
 # Changelog
 
+## 1.107.1
+
 - [ 不具合修正 ] アプリ内ブラウザで GitHub などのコピーボタンを押しても、クリップボードにコピーされない問題を修正（[#641](https://github.com/vektor-inc/vk-terminals/issues/641)）
 
 ## 1.107.0

@@ -829,15 +829,30 @@ VKIpc.on('internal-browser:state', state => {
   if (state.active === false) return;
   // Enter の受理前と旧操作の再配送では、表示も live 通知も巻き戻さない。
   const operationId = state.navigationOperationId;
+  const navigationMessages = {
+    completed: 'ページの読み込みが完了しました',
+    // 失敗は既存の error role=status が具体的な対象とともに通知する。
+    failed: '',
+    cancelled: 'ページの移動を中止しました',
+    // ダウンロード阻止は既存のトーストだけで結果と操作を通知する。
+    'download-blocked': '',
+    // 読み込み案内が消えるだけにならないよう、別操作による置換も通知する。
+    superseded: '別の操作で読み込みが置き換えられました',
+  };
   // タブを選んだときに main が送り直す状態は、そのタブの正とする（issue #644）。後ろにいる間に読み込みが
   // 終わった・置き換わった場合も、退避しておいた読み込み中の記録で捨てずに、遷移の記録をこの状態に合わせる。
   // URL 欄の未送信の入力（internalBrowserAddressHasDraft）はこの記録と別に持つため、ここでは触れない。
   if (state.selected === true && Number.isSafeInteger(operationId)) {
     const inProgress = state.navigationResult === null && operationId > 0;
+    // 後ろにいる間に結果が出て、このタブでまだ通知していない操作。記録を合わせたうえで、下の結果の通知に 1 回だけ通す
+    // （通知した時点で internalBrowserFinishedOperationId が進むため、同じ状態を送り直されても繰り返さない）。
+    const unreadResult = !inProgress && Object.hasOwn(navigationMessages, state.navigationResult)
+      && operationId > internalBrowserFinishedOperationId;
     internalBrowserOperationId = operationId;
-    internalBrowserFinishedOperationId = inProgress ? Math.min(internalBrowserFinishedOperationId, operationId - 1) : operationId;
-    internalBrowserNavigationActive = inProgress;
-    internalBrowserActiveRequestId = inProgress ? state.navigationRequestId ?? null : null;
+    if (inProgress) internalBrowserFinishedOperationId = Math.min(internalBrowserFinishedOperationId, operationId - 1);
+    else if (!unreadResult) internalBrowserFinishedOperationId = Math.max(internalBrowserFinishedOperationId, operationId);
+    internalBrowserNavigationActive = inProgress || unreadResult;
+    internalBrowserActiveRequestId = inProgress || unreadResult ? state.navigationRequestId ?? null : null;
     internalBrowserSubmittedUrl = '';
     setInternalBrowserNavigationStatus(inProgress ? 'ページを読み込み中' : '');
   }
@@ -927,17 +942,7 @@ VKIpc.on('internal-browser:state', state => {
   internalBrowserSidebar.querySelector('[data-action="back"]').disabled = !state.canGoBack;
   internalBrowserSidebar.querySelector('[data-action="forward"]').disabled = !state.canGoForward;
   internalBrowserSidebar.querySelector('.internal-browser-progress').hidden = !state.loading;
-  // main が確定した結果だけを通知する。pendingUrl の消去は中止でも起こる。
-  const navigationMessages = {
-    completed: 'ページの読み込みが完了しました',
-    // 失敗は既存の error role=status が具体的な対象とともに通知する。
-    failed: '',
-    cancelled: 'ページの移動を中止しました',
-    // ダウンロード阻止は既存のトーストだけで結果と操作を通知する。
-    'download-blocked': '',
-    // 読み込み案内が消えるだけにならないよう、別操作による置換も通知する。
-    superseded: '別の操作で読み込みが置き換えられました',
-  };
+  // main が確定した結果だけを通知する（navigationMessages は上で定義）。pendingUrl の消去は中止でも起こる。
   if (internalBrowserNavigationActive && state.navigationRequestId === internalBrowserActiveRequestId
     && (!Number.isSafeInteger(operationId) || operationId > internalBrowserFinishedOperationId)
     && Object.hasOwn(navigationMessages, state.navigationResult)) {
@@ -946,6 +951,12 @@ VKIpc.on('internal-browser:state', state => {
     internalBrowserActiveRequestId = null;
     internalBrowserSubmittedUrl = '';
     setInternalBrowserNavigationStatus(navigationMessages[state.navigationResult]);
+  }
+  // 表示している間に結果まで届いた操作は、通知したかによらず見たものとして記録する。タブを選び直したときに、
+  // 表示中に済んだ結果を後ろで起きた結果と取り違えて読み上げないため（issue #644）。
+  if (Number.isSafeInteger(operationId) && !internalBrowserNavigationActive
+    && Object.hasOwn(navigationMessages, state.navigationResult) && operationId > internalBrowserFinishedOperationId) {
+    internalBrowserFinishedOperationId = operationId;
   }
   syncInternalBrowserLayout();
 });

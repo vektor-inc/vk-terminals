@@ -1958,7 +1958,7 @@ test('main の遷移結果を順に受け、失敗・成功・中止・置換・
 });
 
 // タブを選んだときに main が送り直す状態（selected）は、退避しておいた読み込み中の記録で捨てずに、そのタブの正とする（issue #644）。
-test('後ろにいる間に読み込みが終わった・置き換わった・失敗したタブを選ぶと、送り直された状態で操作列を揃える', () => {
+test('後ろにいる間に読み込みが終わった・中止した・置き換わった・失敗したタブを選ぶと、送り直された状態で操作列を揃え、結果を 1 回だけ通知する', () => {
   const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
   const addressHandlers = source.match(/const internalBrowserAddress = internalBrowserSidebar\.querySelector\('\.internal-browser-url'\);[\s\S]*?(?=document\.getElementById\('internal-browser-toggle'\))/)?.[0];
   const stateHandler = source.match(/VKIpc\.on\('internal-browser:state', state => \{[\s\S]*?\n\}\);/)?.[0];
@@ -1966,6 +1966,13 @@ test('後ろにいる間に読み込みが終わった・置き換わった・�
   const make = () => {
     const handlers = {};
     const message = { textContent: '' };
+    // 読み上げ領域に書き込まれた文を順に記録する（空文字は通知に数えない）。
+    const announcements = [];
+    let statusText = '';
+    const status = {
+      get textContent() { return statusText; },
+      set textContent(value) { statusText = value; if (value) announcements.push(value); },
+    };
     const failedExternal = { getAttribute() {}, setAttribute() {} };
     const elements = {
       '.internal-browser-url': { value: '', addEventListener() {}, setAttribute() {}, removeAttribute() {} },
@@ -1974,7 +1981,7 @@ test('後ろにいる間に読み込みが終わった・置き換わった・�
       '.internal-browser-notice': { hidden: true, dataset: {}, replaceChildren() {}, contains: () => false },
       '.internal-browser-toolbar [data-action="external"]': { setAttribute() {} },
       '.internal-browser-external-target': { hidden: true, textContent: '' },
-      '.internal-browser-navigation-status': { textContent: '' },
+      '.internal-browser-navigation-status': status,
       '.internal-browser-toolbar [data-action="reload"]': {},
       '[data-action="back"]': {}, '[data-action="forward"]': {},
       '.internal-browser-progress': {},
@@ -1992,7 +1999,9 @@ test('後ろにいる間に読み込みが終わった・置き換わった・�
     vm.runInContext(`internalBrowserNavigationActive = true; internalBrowserActiveRequestId = 5; internalBrowserOperationId = 1;
       internalBrowserSubmittedUrl = 'https://example.com/b'; internalBrowserAddress.value = 'https://example.com/b';`, context);
     const read = expression => vm.runInContext(expression, context);
-    return { handlers, elements, read };
+    // 同じ状態をもう一度受けたときに通知し直すかを見分けられるよう、読み上げ領域を空に戻す。
+    const clearStatus = () => { statusText = ''; };
+    return { handlers, elements, read, announcements, clearStatus };
   };
   const base = { pendingUrl: '', downloadUrl: '', failedUrl: '', github404Url: '', loading: false, canGoBack: true, canGoForward: false, tabId: 2, active: true };
 
@@ -2002,21 +2011,61 @@ test('後ろにいる間に読み込みが終わった・置き換わった・�
   assert.equal(completed.elements['.internal-browser-url'].value, 'https://example.com/c');
   assert.equal(completed.read('internalBrowserNavigationActive'), false);
   assert.equal(completed.read('internalBrowserActiveRequestId'), null);
-  assert.equal(completed.elements['.internal-browser-navigation-status'].textContent, '');
-  // 選んだあとの通常の通知も捨てずに受け取る
+  assert.equal(completed.read('internalBrowserFinishedOperationId'), 2);
+  assert.deepEqual(completed.announcements, ['ページの読み込みが完了しました']);
+  // 選んだあとの通常の通知も捨てずに受け取り、同じ結果は通知し直さない
+  completed.clearStatus();
   completed.handlers['internal-browser:state']({ ...base, url: 'https://example.com/c', navigationResult: 'completed', navigationRequestId: null, navigationOperationId: 2, loading: true });
   assert.equal(completed.elements['.internal-browser-progress'].hidden, false);
+  // 他のタブへ移って戻ったときの送り直し（選んだときの状態）でも繰り返さない
+  completed.handlers['internal-browser:state']({ ...base, url: 'https://example.com/c', navigationResult: 'completed', navigationRequestId: null, navigationOperationId: 2, selected: true });
+  assert.deepEqual(completed.announcements, ['ページの読み込みが完了しました']);
 
-  // ページ側の遷移に置き換わり、まだ読み込み中（操作番号 3・要求番号なし）
+  // Enter で開いた読み込み（要求 5）を後ろで中止していた（操作番号 1 のまま）
+  const cancelled = make();
+  cancelled.handlers['internal-browser:state']({ ...base, url: 'https://example.com/a', navigationResult: 'cancelled', navigationRequestId: 5, navigationOperationId: 1, selected: true });
+  assert.equal(cancelled.read('internalBrowserNavigationActive'), false);
+  assert.equal(cancelled.read('internalBrowserActiveRequestId'), null);
+  assert.equal(cancelled.read('internalBrowserFinishedOperationId'), 1);
+  assert.deepEqual(cancelled.announcements, ['ページの移動を中止しました']);
+  cancelled.clearStatus();
+  cancelled.handlers['internal-browser:state']({ ...base, url: 'https://example.com/a', navigationResult: 'cancelled', navigationRequestId: 5, navigationOperationId: 1, selected: true });
+  assert.deepEqual(cancelled.announcements, ['ページの移動を中止しました']);
+
+  // 選んだときの状態が置き換えの結果だった場合も 1 回だけ通知する
+  const replaced = make();
+  replaced.handlers['internal-browser:state']({ ...base, url: 'https://example.com/a', navigationResult: 'superseded', navigationRequestId: 5, navigationOperationId: 1, selected: true });
+  assert.deepEqual(replaced.announcements, ['別の操作で読み込みが置き換えられました']);
+  replaced.clearStatus();
+  replaced.handlers['internal-browser:state']({ ...base, url: 'https://example.com/a', navigationResult: 'superseded', navigationRequestId: 5, navigationOperationId: 1 });
+  assert.deepEqual(replaced.announcements, ['別の操作で読み込みが置き換えられました']);
+
+  // ページ側の遷移に置き換わり、まだ読み込み中（操作番号 3・要求番号なし）。結果はまだ無いので読み込み中だけを示す
   const superseded = make();
   superseded.handlers['internal-browser:state']({ ...base, url: 'https://example.com/a', navigationResult: null, navigationRequestId: null, navigationOperationId: 3, loading: true, selected: true });
   assert.equal(superseded.read('internalBrowserNavigationActive'), true);
   assert.equal(superseded.read('internalBrowserActiveRequestId'), null);
-  assert.equal(superseded.elements['.internal-browser-navigation-status'].textContent, 'ページを読み込み中');
-  // その遷移の完了は読み上げる
+  assert.deepEqual(superseded.announcements, ['ページを読み込み中']);
+  // その遷移の完了は 1 回だけ読み上げる
   superseded.handlers['internal-browser:state']({ ...base, url: 'https://example.com/d', navigationResult: 'completed', navigationRequestId: null, navigationOperationId: 3 });
   assert.equal(superseded.elements['.internal-browser-url'].value, 'https://example.com/d');
-  assert.equal(superseded.elements['.internal-browser-navigation-status'].textContent, 'ページの読み込みが完了しました');
+  superseded.clearStatus();
+  superseded.handlers['internal-browser:state']({ ...base, url: 'https://example.com/d', navigationResult: 'completed', navigationRequestId: null, navigationOperationId: 3, selected: true });
+  assert.deepEqual(superseded.announcements, ['ページを読み込み中', 'ページの読み込みが完了しました']);
+
+  // 置き換えたページ側の遷移も後ろで完了していた（操作番号 3）。最後の結果を 1 回だけ通知する
+  const supersededDone = make();
+  supersededDone.handlers['internal-browser:state']({ ...base, url: 'https://example.com/d', navigationResult: 'completed', navigationRequestId: null, navigationOperationId: 3, selected: true });
+  supersededDone.clearStatus();
+  supersededDone.handlers['internal-browser:state']({ ...base, url: 'https://example.com/d', navigationResult: 'completed', navigationRequestId: null, navigationOperationId: 3 });
+  assert.deepEqual(supersededDone.announcements, ['ページの読み込みが完了しました']);
+
+  // 表示している間に済んだ結果（通知の条件に入らなかったものを含む）は、選び直しても後ろの結果として読み上げない
+  const seen = make();
+  seen.read('internalBrowserNavigationActive = false; internalBrowserActiveRequestId = null;');
+  seen.handlers['internal-browser:state']({ ...base, url: 'https://example.com/e', navigationResult: 'completed', navigationRequestId: null, navigationOperationId: 4 });
+  seen.handlers['internal-browser:state']({ ...base, url: 'https://example.com/e', navigationResult: 'completed', navigationRequestId: null, navigationOperationId: 4, selected: true });
+  assert.deepEqual(seen.announcements, []);
 
   // 後ろで失敗していた（操作番号 2・要求番号 5）
   const failed = make();
@@ -2024,6 +2073,7 @@ test('後ろにいる間に読み込みが終わった・置き換わった・�
   assert.equal(failed.elements['.internal-browser-error'].hidden, false);
   assert.equal(failed.elements['.internal-browser-url'].value, 'https://example.com/b');
   assert.equal(failed.read('internalBrowserNavigationActive'), false);
+  assert.equal(failed.read('internalBrowserFinishedOperationId'), 2);
 
   // 未送信の入力は、選んだときの送り直しでも上書きしない
   const draft = make();

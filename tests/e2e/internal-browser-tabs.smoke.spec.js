@@ -1,11 +1,12 @@
 'use strict';
 
+const http = require('node:http');
 const { test, expect } = require('@playwright/test');
 const { closeApp, getFreePort, launchAppAndWait } = require('./helpers/electron-app');
 const { PARTITION } = require('../../utils/internalBrowserPolicy');
 
 // アプリ内ブラウザのタブ（issue #644）を、実アプリの画面・IPC・WebContentsView で確かめる。
-// ページは専用セッションの https をアプリ内で応答して用意し、外部の通信には頼らない。
+// ページは手元の HTTP サーバー、または専用セッションの https をアプリ内で応答して用意し、外部の通信には頼らない。
 
 // 1x1 の PNG（ファビコン）。
 const FAVICON_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
@@ -15,22 +16,41 @@ async function start(prefix) {
   const launched = await launchAppAndWait({ port, prefix, config: { confirmClose: 'never', openInitialPane: false } });
   await launched.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(1400, 800));
   await expect.poll(() => launched.win.evaluate(() => innerWidth)).toBe(1400);
-  // 専用セッションの https をアプリ内で応答する。/a は別タブで開くリンクとファビコンを持つ。
-  await launched.app.evaluate(({ session }, { partition, favicon }) => {
-    globalThis.faviconRequests = 0;
+  // 専用セッションの https をアプリ内で応答する。/a は別タブで開くリンクを持つ。
+  await launched.app.evaluate(({ session }, { partition }) => {
     session.fromPartition(partition).protocol.handle('https', request => {
       const { pathname } = new URL(request.url);
-      if (pathname === '/icon.png') {
-        globalThis.faviconRequests++;
-        return new Response(Buffer.from(favicon, 'base64'), { headers: { 'Content-Type': 'image/png' } });
-      }
       const titles = { '/a': 'ページ A', '/b': 'ページ B', '/c': 'ページ C' };
-      const body = `<!doctype html><title>${titles[pathname] || 'その他'}</title><link rel="icon" href="/icon.png">`
+      const body = `<!doctype html><title>${titles[pathname] || 'その他'}</title>`
         + '<a id="blank" href="/b" target="_blank">別タブで開く</a>';
       return new Response(body, { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
     });
-  }, { partition: PARTITION, favicon: FAVICON_BASE64 });
+  }, { partition: PARTITION });
   return launched;
+}
+
+// 手元の HTTP サーバーでページとファビコンを応答する（localhost で待ち受ける）。ファビコンは main がセッションを使わずに
+// 名前解決して取りに来るため、セッションの応答の差し替えでは届かない。ローカルのページが自分のホストのアイコンを取る形にする。
+async function startPageServer(favicon) {
+  const server = http.createServer((req, res) => {
+    const { pathname } = new URL(req.url, 'http://localhost');
+    if (pathname === '/icon.png') {
+      server.faviconRequests++;
+      res.writeHead(200, { 'content-type': 'image/png' });
+      res.end(Buffer.from(favicon, 'base64'));
+      return;
+    }
+    const titles = { '/a': 'ページ A', '/b': 'ページ B', '/c': 'ページ C' };
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+    res.end(`<!doctype html><title>${titles[pathname] || 'その他'}</title><link rel="icon" href="/icon.png">`
+      + '<a id="blank" href="/b" target="_blank">別タブで開く</a>');
+  });
+  server.faviconRequests = 0;
+  // IPv4 と IPv6 の両方の localhost で受ける。
+  await new Promise(resolve => server.listen(0, '::', resolve));
+  server.origin = `http://localhost:${server.address().port}`;
+  server.stop = () => new Promise(resolve => { server.closeAllConnections?.(); server.close(resolve); });
+  return server;
 }
 
 const tabs = win => win.getByRole('tablist', { name: 'アプリ内ブラウザのタブ' }).getByRole('tab');
@@ -43,6 +63,8 @@ async function openAddress(win, url) {
 
 // @title タブを足して切り替え、閉じる。最後のタブを閉じるとサイドバーごと閉じる
 test('タブを足して切り替え、閉じる。最後のタブを閉じるとサイドバーごと閉じる', async () => {
+  const pages = await startPageServer(FAVICON_BASE64);
+  const origin = pages.origin;
   const launched = await start('vk-terminals-e2e-browser-tabs-');
   const { win } = launched;
   try {
@@ -63,7 +85,7 @@ test('タブを足して切り替え、閉じる。最後のタブを閉じる�
     expect(tabbar.y + tabbar.height).toBeLessThanOrEqual(toolbar.y + 0.5);
 
     // @step URL 欄に 1 つめのページを入れて開く
-    await openAddress(win, 'https://tabs.test/a');
+    await openAddress(win, `${origin}/a`);
     // @check タブにページタイトルとファビコン（画像データ）が出て、入力の案内が消える
     await expect(tabs(win).first()).toHaveAccessibleName('ページ A');
     await expect(tabs(win).first().locator('img')).toHaveAttribute('src', /^data:image\/png;base64,/);
@@ -77,46 +99,46 @@ test('タブを足して切り替え、閉じる。最後のタブを閉じる�
     await expect(address(win)).toBeFocused();
     await expect(address(win)).toHaveValue('');
     await expect(win.locator('.internal-browser-tab-status')).toHaveText('新しいタブを開きました');
-    await openAddress(win, 'https://tabs.test/c');
+    await openAddress(win, `${origin}/c`);
     await expect(tabs(win).nth(1)).toHaveAccessibleName('ページ C');
 
     // @step 1 つめのタブを押す
     await tabs(win).first().click();
     // @check URL 欄と戻る / 進むが 1 つめのタブのものに入れ替わる
     await expect(tabs(win).first()).toHaveAttribute('aria-selected', 'true');
-    await expect(address(win)).toHaveValue('https://tabs.test/a');
+    await expect(address(win)).toHaveValue(`${origin}/a`);
     // @check Tab キーで止まるのは選んでいるタブだけ
     await expect(tabs(win).first()).toHaveAttribute('tabindex', '0');
     await expect(tabs(win).nth(1)).toHaveAttribute('tabindex', '-1');
 
     // @step ページ内の「新しいタブで開く」リンクを押す
-    await launched.app.evaluate(({ webContents }) => webContents.getAllWebContents()
-      .find(contents => contents.getURL() === 'https://tabs.test/a')
-      .executeJavaScript("document.getElementById('blank').click()", true));
+    await launched.app.evaluate(({ webContents }, url) => webContents.getAllWebContents()
+      .find(contents => contents.getURL() === url)
+      .executeJavaScript("document.getElementById('blank').click()", true), `${origin}/a`);
     // @check 押したタブのすぐ右に新しいタブが開いて前に出る
     await expect(tabs(win)).toHaveCount(3);
     await expect(tabs(win).nth(1)).toHaveAttribute('aria-selected', 'true');
     await expect(tabs(win).nth(1)).toHaveAccessibleName('ページ B');
     await expect(tabs(win).nth(2)).toHaveAccessibleName('ページ C');
-    await expect(address(win)).toHaveValue('https://tabs.test/b');
+    await expect(address(win)).toHaveValue(`${origin}/b`);
     // @check 同じファビコンは取得し直さない
-    expect(await launched.app.evaluate(() => globalThis.faviconRequests)).toBe(1);
+    expect(pages.faviconRequests).toBe(1);
 
     // @step 選んでいるタブにフォーカスを置き、→ と Enter で右のタブへ切り替える
     await tabs(win).nth(1).focus();
     await win.keyboard.press('ArrowRight');
     await expect(tabs(win).nth(2)).toBeFocused();
     // @step フォーカスを右のタブに置いたまま、後ろのタブのページタイトルを変える
-    await launched.app.evaluate(({ webContents }) => webContents.getAllWebContents()
-      .find(contents => contents.getURL() === 'https://tabs.test/a')
-      .executeJavaScript("document.title = 'ページ A（更新）'"));
+    await launched.app.evaluate(({ webContents }, url) => webContents.getAllWebContents()
+      .find(contents => contents.getURL() === url)
+      .executeJavaScript("document.title = 'ページ A（更新）'"), `${origin}/a`);
     // @check タブの名前が変わっても、キーボードのフォーカスは右のタブに残る
     await expect(tabs(win).first()).toHaveAccessibleName('ページ A（更新）');
     await expect(tabs(win).nth(2)).toBeFocused();
     await win.keyboard.press('Enter');
     // @check 右のタブが選ばれ、URL 欄がそのタブのものになる
     await expect(tabs(win).nth(2)).toHaveAttribute('aria-selected', 'true');
-    await expect(address(win)).toHaveValue('https://tabs.test/c');
+    await expect(address(win)).toHaveValue(`${origin}/c`);
     // @step Home で先頭のタブへ移り、Delete で閉じる
     await win.keyboard.press('Home');
     await expect(tabs(win).first()).toBeFocused();
@@ -155,6 +177,7 @@ test('タブを足して切り替え、閉じる。最後のタブを閉じる�
     await expect(address(win)).toBeFocused();
   } finally {
     await closeApp(launched);
+    await pages.stop();
   }
 });
 

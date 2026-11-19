@@ -820,9 +820,8 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
   // 同じアイコンを読み直さないよう、取得結果を少数だけ覚えておく（古いものから捨てる）。
   const faviconCache = new Map();
   const FAVICON_CACHE_LIMIT = 64;
-  const loadFavicon = fetchFavicon || ((url, pageUrl) => fetchFaviconDataUrl(url, {
-    pageUrl, fetch: (target, options) => browserSession.fetch(target, options),
-  }));
+  // 名前解決した後のアドレスを確かめ、そのアドレスに固定して接続するため、セッションの fetch ではなく専用の取得処理を使う。
+  const loadFavicon = fetchFavicon || ((url, pageUrl) => fetchFaviconDataUrl(url, { pageUrl }));
 
   const host = {
     win, WebContentsView, dialog, helpDocumentPath,

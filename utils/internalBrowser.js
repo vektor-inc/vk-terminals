@@ -4,6 +4,8 @@ const electron = require('electron');
 const { pathToFileURL } = require('node:url');
 const { isSafeHelpDocument } = require('./helpFeature');
 const { PARTITION, HELP_URL, isHelpUrl, validateBrowserBounds, isBrowserUrl, isNavigationUrl, isAllowedBrowserPermission } = require('./internalBrowserPolicy');
+const { MAX_TABS, toTabMatchKey, pickTabAfterClose, shouldForegroundOpenedTab } = require('./internalBrowserTabPolicy');
+const { pickFaviconUrl, fetchFaviconDataUrl, isAllowedFaviconTarget } = require('./internalBrowserFavicon');
 
 const normalizeDownloadUrl = url => {
   try { return new URL(url).href; } catch { return ''; }
@@ -36,6 +38,9 @@ const isSameDocumentUrl = (left, right) => {
  * @param {Function} host.sendDownloadNotice (tab, canOpenFromToolbar) ダウンロード停止案内を画面へ送る
  * @param {Function} host.syncBounds 選んでいるタブのページを表示位置へ付け外しする
  * @param {Function} host.releaseView (view) 画面に付いていれば外す
+ * @param {Function} host.openFromPage (tab, url, disposition) ページの新しいタブ要求を開く
+ * @param {Function} host.sendTabs タブの一覧（タイトル・ファビコンなど）を画面へ送る
+ * @param {Function} host.fetchFavicon (url, pageUrl) ファビコンを data URL にして返す
  * @returns {object} タブの操作
  */
 function createBrowserTab(id, host) {
@@ -54,6 +59,10 @@ function createBrowserTab(id, host) {
   let document404Url = '';
   let helpReturnUrl = '';
   let helpForwardUrl = '';
+  // タブの行に出すページタイトルとファビコン（data URL）。文書が替わったら消す。
+  let title = '';
+  let favicon = '';
+  let faviconSourceUrl = '';
   const retiredLoaders = new Set();
   let debuggerAvailable = true;
   // Electron 44.3 の loadURL Promise も ID のないイベントを監視するため、
@@ -107,7 +116,13 @@ function createBrowserTab(id, host) {
     host.syncBounds();
   }
 
-  function publish() {
+  /**
+   * 状態を画面へ送る。selected はタブを選んだときの送り直しで、画面はこの通知をそのタブの正として扱う。
+   *
+   * @param {object} [options]
+   * @param {boolean} [options.selected] タブを選んだときの送り直しか
+   */
+  function publish({ selected = false } = {}) {
     const contents = view?.webContents;
     const available = contents && !contents.isDestroyed?.();
     const history = available ? contents.navigationHistory : null;
@@ -123,6 +138,7 @@ function createBrowserTab(id, host) {
       loading: !!available && contents.isLoading(),
       canGoBack: !!available && (canUseHelpReturn() || canMoveHistory(history, -1, 'canGoBack')),
       canGoForward: !!available && (canUseHelpForward() || canMoveHistory(history, 1, 'canGoForward')),
+      ...(selected === true ? { selected: true } : {}),
     });
   }
 
@@ -250,11 +266,25 @@ function createBrowserTab(id, host) {
           activeLoad?.finish(new Error('ERR_ABORTED'));
         }
       });
-      contents.setWindowOpenHandler(({ url: destination }) => {
-        if (isNavigationUrl(destination)) navigate(destination, true);
+      // target="_blank" と window.open は新しいウィンドウを作らず、新しいタブで開く（issue #644）。
+      contents.setWindowOpenHandler(({ url: destination, disposition }) => {
+        if (isNavigationUrl(destination)) host.openFromPage(tab, destination, disposition);
         return { action: 'deny' };
       });
-      contents.on('did-start-loading', publish);
+      contents.on('page-title-updated', (_event, nextTitle) => {
+        const value = typeof nextTitle === 'string' ? nextTitle.slice(0, 300) : '';
+        if (value === title) return;
+        title = value;
+        host.sendTabs();
+      });
+      contents.on('page-favicon-updated', (_event, favicons) => updateFavicon(pickFaviconUrl(favicons)));
+      // 別の文書へ移ったら、前のページのタイトルとファビコンを残さない。
+      contents.on('did-navigate', () => {
+        if (!title && !favicon && !faviconSourceUrl) return;
+        title = '';
+        updateFavicon('');
+      });
+      contents.on('did-start-loading', () => publish());
       contents.on('did-stop-loading', () => {
         publish();
         const load = activeLoad;
@@ -280,6 +310,20 @@ function createBrowserTab(id, host) {
         if (isMainFrame) syncCurrentDocumentUrl(contents);
       });
     }
+  }
+
+  // 取得中に別のアイコンへ替わった場合は、古い取得結果を使わない。
+  function updateFavicon(url) {
+    if (url === faviconSourceUrl) { host.sendTabs(); return; }
+    faviconSourceUrl = url;
+    favicon = '';
+    host.sendTabs();
+    if (!url) return;
+    Promise.resolve(host.fetchFavicon(url, currentUrl)).then(dataUrl => {
+      if (faviconSourceUrl !== url || !view) return;
+      favicon = typeof dataUrl === 'string' ? dataUrl : '';
+      host.sendTabs();
+    }, () => {});
   }
 
   function initializeNavigation() {
@@ -678,7 +722,17 @@ function createBrowserTab(id, host) {
     }
   }
 
+  // タブを代表する URL。読み込み中なら読み込み先、失敗なら失敗先、それ以外は表示中の URL。
+  function getTabUrl() {
+    return pendingUrl || failedUrl || currentUrl;
+  }
+
+  function isEmpty() {
+    return !currentUrl && !pendingUrl && !failedUrl && !downloadUrl && !(activeLoad && !activeLoad.done);
+  }
+
   function destroy() {
+    faviconSourceUrl = '';
     activeLoad?.cancelHelp?.();
     activeLoad?.flushDownloadNotice(false);
     downloadCandidates.clear();
@@ -701,6 +755,32 @@ function createBrowserTab(id, host) {
       return pathToFileURL(helpDocumentPath).href + new URL(url).hash;
     },
     getView() { return view; },
+    /**
+     * タブの行に出す情報。url はタブを代表する URL（getTabUrl）。
+     *
+     * @returns {object} { id, title, url, favicon, loading, empty }
+     */
+    getSummary() {
+      const contents = view?.webContents;
+      const available = contents && !contents.isDestroyed?.();
+      return {
+        id, title, favicon,
+        url: getTabUrl(),
+        loading: !!available && contents.isLoading(),
+        empty: isEmpty(),
+      };
+    },
+    // 一度も開いていない新規タブか（読み込み中・失敗・ダウンロードの停止を含めて何も起きていない）。
+    isEmpty,
+    /**
+     * 「アプリ内で開く」の対象と、タブを代表する URL（getTabUrl）が同じページか。
+     *
+     * @param {string} key toTabMatchKey で作った比較用の文字列
+     * @returns {boolean} 同じページか
+     */
+    matchesUrl(key) {
+      return !!key && toTabMatchKey(getTabUrl()) === key;
+    },
     ownsContents(contents) { return !!contents && contents === view?.webContents; },
     hasDownloadCandidate(urls) { return findDownloadCandidates(urls).length > 0; },
   };
@@ -708,15 +788,17 @@ function createBrowserTab(id, host) {
 }
 
 /**
- * アプリ内ブラウザ全体（タブの一覧・選んでいるタブ・表示位置・表示可否・モーダル数）を管理する。
+ * アプリ内ブラウザ全体（タブの一覧と並び・選んでいるタブ・表示位置・表示可否・モーダル数）を管理する。
  * セッション単位の検査（権限・リクエスト・ダウンロード）はここで 1 回だけ設定する。
  * 作成時にタブを 1 つ作って選んだ状態にする。tabId を省略した操作は選んでいるタブが対象になる。
+ * タブは常に 1 つ以上あり、最後のタブを閉じると空の新しいタブ 1 つに置き換える。
  *
  * @param {object} win 親の BrowserWindow
- * @param {object} deps Electron の依存（WebContentsView・session・dialog）と案内ファイルのパス
+ * @param {object} deps Electron の依存（WebContentsView・session・dialog）と案内ファイルのパス。
+ *   fetchFavicon はファビコンの取得（省略時はアプリ内ブラウザのセッションで取得する）
  * @returns {object} アプリ内ブラウザの操作
  */
-function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocumentPath = null } = electron) {
+function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocumentPath = null, fetchFavicon = null } = electron) {
   const browserSession = session.fromPartition(PARTITION);
   browserSession.setPermissionRequestHandler((_contents, permission, callback) => callback(isAllowedBrowserPermission(permission)));
   browserSession.setPermissionCheckHandler((_contents, permission) => isAllowedBrowserPermission(permission));
@@ -724,6 +806,8 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
     callback({ cancel: details.resourceType === 'mainFrame' && !isNavigationUrl(details.url) });
   });
   const tabs = new Map();
+  // 画面のタブの行と同じ並び（左から）。
+  const tabOrder = [];
   let activeTab = null;
   let nextTabId = 1;
   let navigationOperationId = 0;
@@ -731,11 +815,20 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
   let bounds = null;
   let visible = false;
   let modalCount = 0;
+  let lastTabsPayload = '';
+  let destroyed = false;
+  // 同じアイコンを読み直さないよう、取得結果を少数だけ覚えておく（古いものから捨てる）。
+  const faviconCache = new Map();
+  const FAVICON_CACHE_LIMIT = 64;
+  // 名前解決した後のアドレスを確かめ、そのアドレスに固定して接続するため、セッションの fetch ではなく専用の取得処理を使う。
+  const loadFavicon = fetchFavicon || ((url, pageUrl) => fetchFaviconDataUrl(url, { pageUrl }));
 
   const host = {
     win, WebContentsView, dialog, helpDocumentPath,
     nextOperationId: () => ++navigationOperationId,
+    // 画面はタブの一覧の通知で表示するタブを切り替えるため、一覧を状態より先に送る。
     sendState(tab, state) {
+      sendTabs();
       if (!win.isDestroyed()) win.webContents.send('internal-browser:state', { ...state, tabId: tab.id, active: tab === activeTab });
     },
     sendDownloadNotice(tab, canOpenFromToolbar) {
@@ -746,6 +839,19 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
       if (attachedView !== view) return;
       win.contentView.removeChildView(view);
       attachedView = null;
+    },
+    openFromPage,
+    sendTabs,
+    fetchFavicon(url, pageUrl) {
+      // 取得してよいかは、覚えた結果を使う場合も含めて毎回ページとの関係で確かめる。
+      if (!isAllowedFaviconTarget(url, pageUrl)) return Promise.resolve('');
+      if (faviconCache.has(url)) return faviconCache.get(url);
+      const request = Promise.resolve(loadFavicon(url, pageUrl)).catch(() => '');
+      faviconCache.set(url, request);
+      if (faviconCache.size > FAVICON_CACHE_LIMIT) faviconCache.delete(faviconCache.keys().next().value);
+      // 取得に失敗したアイコンは覚えず、次に知らされたときに取り直す。
+      request.then(dataUrl => { if (!dataUrl && faviconCache.get(url) === request) faviconCache.delete(url); });
+      return request;
     },
   };
 
@@ -771,6 +877,27 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
     if (!attachedView) { win.contentView.addChildView(view); attachedView = view; }
   }
 
+  /**
+   * タブの一覧（並び順・タイトル・ファビコン・読み込み中）と選んでいるタブを画面へ送る。
+   * 前回と同じ内容なら送らない。
+   */
+  function getTabsState() {
+    return {
+      tabs: tabOrder.map(id => tabs.get(id).getSummary()),
+      activeTabId: activeTab?.id ?? null,
+      maxTabs: MAX_TABS,
+    };
+  }
+
+  function sendTabs() {
+    if (destroyed || win.isDestroyed()) return;
+    const payload = getTabsState();
+    const serialized = JSON.stringify(payload);
+    if (serialized === lastTabsPayload) return;
+    lastTabsPayload = serialized;
+    win.webContents.send('internal-browser:tabs', payload);
+  }
+
   // ダウンロードはセッション単位でしか検査できないため、配送元のページからタブを特定して渡す。
   const seenDownloadItems = new WeakSet();
   const cancelDownload = (event, item, contents) => {
@@ -794,18 +921,26 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
   browserSession.on('will-download', cancelDownload);
 
   /**
-   * タブを 1 つ作って一覧の末尾に足す（選びはしない）。
+   * タブを 1 つ作って一覧に足す（選びはしない）。上限に達しているときは作らない。
+   * タブの一覧は、このあと選ぶ・開く処理の中で送る（前に出すタブが後ろに開いたように一瞬見える通知を送らない）。
    *
-   * @returns {number} 作ったタブの番号
+   * @param {object} [options]
+   * @param {number} [options.afterTabId] このタブのすぐ右に置く（省略時は末尾）
+   * @returns {number|null} 作ったタブの番号（上限のときは null）
    */
-  function addTab() {
+  function addTab({ afterTabId } = {}) {
+    if (tabs.size >= MAX_TABS) return null;
     const id = nextTabId++;
     tabs.set(id, createBrowserTab(id, host));
+    const index = afterTabId === undefined ? -1 : tabOrder.indexOf(afterTabId);
+    if (index < 0) tabOrder.push(id);
+    else tabOrder.splice(index + 1, 0, id);
     return id;
   }
 
   /**
-   * 指定したタブを選び、そのタブのページを画面に付け替えて状態を送り直す。
+   * 指定したタブを選び、そのタブのページを画面に付け替えて、タブの一覧と状態を送り直す。
+   * 画面はタブの一覧の通知で表示するタブを切り替えるため、一覧を状態より先に送る。
    *
    * @param {number} tabId タブ番号
    * @returns {boolean} 選べたか
@@ -816,8 +951,93 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
     if (tab === activeTab) return true;
     activeTab = tab;
     syncBounds();
-    tab.publish();
+    sendTabs();
+    tab.publish({ selected: true });
     return true;
+  }
+
+  /**
+   * 空の新しいタブを末尾に作って選ぶ（タブの行の「＋」）。
+   *
+   * @returns {number|null} 作ったタブの番号（上限のときは null）
+   */
+  function newTab() {
+    const id = addTab();
+    if (id !== null) selectTab(id);
+    return id;
+  }
+
+  /**
+   * タブを閉じる。選んでいるタブを閉じたときは右隣（無ければ左隣）を選ぶ。
+   * 最後の 1 つを閉じたときは、空の新しいタブ 1 つに置き換えて closedLast を返す（画面はサイドバーごと閉じる）。
+   *
+   * @param {number} tabId タブ番号
+   * @returns {object|false} { closedLast } または閉じられなかったとき false
+   */
+  function closeTab(tabId) {
+    if (tabId === undefined) return false;
+    const tab = resolveTab(tabId);
+    if (!tab) return false;
+    const nextId = pickTabAfterClose(tabOrder, tab.id);
+    tabs.delete(tab.id);
+    tabOrder.splice(tabOrder.indexOf(tab.id), 1);
+    const wasActive = tab === activeTab;
+    if (wasActive) activeTab = null;
+    tab.destroy();
+    if (nextId === null) {
+      selectTab(addTab());
+      return { closedLast: true };
+    }
+    if (wasActive) selectTab(nextId);
+    else sendTabs();
+    return { closedLast: false };
+  }
+
+  /**
+   * ペインの URL・issue タイトル・PR ボタンの「アプリ内で開く」。
+   * 同じページのタブがあればそのタブを選ぶだけにし（読み込み直さない）、選んでいるタブが空の新規タブならそこに開き、
+   * それ以外は新しいタブを末尾に開いて選ぶ。上限に達しているときは開かない。
+   *
+   * @param {string} url 開く URL（HTTP(S) のみ）
+   * @returns {object|false} { result: 'switched' | 'opened' | 'limit', tabId } または受け付けないとき false
+   */
+  function openUrl(url) {
+    if (!isBrowserUrl(url)) return false;
+    const key = toTabMatchKey(url);
+    const candidates = tabOrder.map(id => tabs.get(id)).filter(tab => tab.matchesUrl(key));
+    const matched = candidates.includes(activeTab) ? activeTab : candidates[0];
+    if (matched) {
+      selectTab(matched.id);
+      return { result: 'switched', tabId: matched.id };
+    }
+    if (activeTab?.isEmpty()) {
+      return activeTab.navigate(url) ? { result: 'opened', tabId: activeTab.id } : false;
+    }
+    const id = addTab();
+    if (id === null) return { result: 'limit', tabId: activeTab?.id ?? null };
+    selectTab(id);
+    tabs.get(id).navigate(url);
+    return { result: 'opened', tabId: id };
+  }
+
+  /**
+   * ページの target="_blank"・window.open の要求を、要求したタブのすぐ右の新しいタブで開く。
+   * 上限のときは開かず、要求したタブに上限の案内を送る。
+   *
+   * @param {object} sourceTab 要求したタブ
+   * @param {string} url 開く URL
+   * @param {string} disposition Electron の disposition（background-tab なら後ろに開く）
+   */
+  function openFromPage(sourceTab, url, disposition) {
+    if (destroyed || tabs.get(sourceTab.id) !== sourceTab) return;
+    const id = addTab({ afterTabId: sourceTab.id });
+    if (id === null) {
+      if (!win.isDestroyed()) win.webContents.send('internal-browser:tab-limit', { tabId: sourceTab.id, url, active: sourceTab === activeTab });
+      return;
+    }
+    if (shouldForegroundOpenedTab(disposition)) selectTab(id);
+    // HTTP(S) は読み込み先を URL 欄に出す通常の開き方、組み込みの案内ページはページ起点の開き方にする。
+    tabs.get(id).navigate(url, !isBrowserUrl(url));
   }
 
   /**
@@ -833,6 +1053,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
   }
 
   function destroy() {
+    destroyed = true;
     browserSession.removeListener('will-download', cancelDownload);
     for (const tab of tabs.values()) tab.destroy();
   }
@@ -857,9 +1078,18 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
       return tab ? tab.externalUrl(source) : null;
     },
     publish({ tabId } = {}) { resolveTab(tabId)?.publish(); },
-    addTab,
+    addTab(options) {
+      const id = addTab(options);
+      if (id !== null) sendTabs();
+      return id;
+    },
     selectTab,
-    getTabIds() { return [...tabs.keys()]; },
+    newTab,
+    closeTab,
+    openUrl,
+    // 画面の起動時に、その時点のタブの一覧を渡す（作成時の通知は画面の読み込み前で届かないため）。
+    getTabsState,
+    getTabIds() { return [...tabOrder]; },
     getActiveTabId() { return activeTab?.id ?? null; },
     destroy,
     setBounds(rect) { bounds = validateBrowserBounds(rect, win.getContentBounds()); syncBounds(); return !!bounds; },

@@ -119,13 +119,26 @@ const internalBrowserSidebar = document.createElement('aside');
 internalBrowserSidebar.id = 'internal-browser-sidebar';
 internalBrowserSidebar.className = 'internal-browser-sidebar';
 internalBrowserSidebar.setAttribute('aria-label', 'アプリ内ブラウザ');
-internalBrowserSidebar.innerHTML = `<div class="internal-browser-resizer" role="separator" tabindex="0" aria-label="アプリ内ブラウザの幅を変更" aria-orientation="vertical" aria-valuemin="360" aria-valuemax="720" aria-valuenow="480"></div><div class="internal-browser-toolbar"><button type="button" data-action="back" title="戻る" aria-label="戻る"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#arrow-left"></use></svg></button><button type="button" data-action="forward" title="進む" aria-label="進む"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#arrow-right"></use></svg></button><button type="button" data-action="reload" title="再読み込み" aria-label="再読み込み"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#rotate-cw"></use></svg></button><button type="button" data-action="home" title="ホーム" aria-label="ホーム"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#house"></use></svg></button><input type="text" class="internal-browser-url" aria-label="URL または検索語を入力" placeholder="URL または検索語" autocomplete="off" spellcheck="false"><button type="button" class="internal-browser-wide-toggle" data-action="wide" title="ブラウザを広く表示" aria-label="ブラウザを広く表示"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#maximize"></use></svg></button><button type="button" data-action="external" title="外部ブラウザで開く" aria-label="外部ブラウザで開く"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#external-link"></use></svg></button><button type="button" data-action="close" title="閉じる" aria-label="閉じる"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#x"></use></svg></button></div><p id="internal-browser-address-error" class="internal-browser-address-error" role="alert" hidden></p><p class="internal-browser-external-target" hidden></p><div class="internal-browser-progress" hidden></div><p class="internal-browser-navigation-status" role="status" aria-live="polite"></p>
+internalBrowserSidebar.innerHTML = `<div class="internal-browser-resizer" role="separator" tabindex="0" aria-label="アプリ内ブラウザの幅を変更" aria-orientation="vertical" aria-valuemin="360" aria-valuemax="720" aria-valuenow="480"></div><div class="internal-browser-tabbar"><div class="internal-browser-tablist" role="tablist" aria-label="アプリ内ブラウザのタブ"></div><button type="button" class="internal-browser-tab-new" data-action="tab-new" title="新しいタブ" aria-label="新しいタブ"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#plus"></use></svg></button></div><p class="internal-browser-tab-status" role="status" aria-live="polite"></p><div class="internal-browser-toolbar"><button type="button" data-action="back" title="戻る" aria-label="戻る"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#arrow-left"></use></svg></button><button type="button" data-action="forward" title="進む" aria-label="進む"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#arrow-right"></use></svg></button><button type="button" data-action="reload" title="再読み込み" aria-label="再読み込み"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#rotate-cw"></use></svg></button><button type="button" data-action="home" title="ホーム" aria-label="ホーム"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#house"></use></svg></button><input type="text" class="internal-browser-url" aria-label="URL または検索語を入力" placeholder="URL または検索語" autocomplete="off" spellcheck="false"><button type="button" class="internal-browser-wide-toggle" data-action="wide" title="ブラウザを広く表示" aria-label="ブラウザを広く表示"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#maximize"></use></svg></button><button type="button" data-action="external" title="外部ブラウザで開く" aria-label="外部ブラウザで開く"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#external-link"></use></svg></button><button type="button" data-action="close" title="アプリ内ブラウザを閉じる" aria-label="アプリ内ブラウザを閉じる"><svg class="titlebar-icon" aria-hidden="true"><use href="icons/ui.svg#x"></use></svg></button></div><p id="internal-browser-address-error" class="internal-browser-address-error" role="alert" hidden></p><p class="internal-browser-external-target" hidden></p><div class="internal-browser-progress" hidden></div><p class="internal-browser-navigation-status" role="status" aria-live="polite"></p>
   <div class="internal-browser-home-notice">
     <p role="status" aria-live="polite"></p>
     <p class="internal-browser-home-error" role="alert" aria-live="assertive"></p>
     <div class="internal-browser-notice-actions" hidden>
       <button type="button" data-action="home-settings">ホームページ URL を設定</button>
       <button type="button" data-action="dismiss-home-notice">案内を閉じる</button>
+    </div>
+  </div>
+  <div class="internal-browser-tab-limit" hidden>
+    <p>タブは 10 個まで開けます。使わないタブを閉じてから、もう一度開いてください。</p>
+    <div class="internal-browser-notice-actions">
+      <button type="button" data-action="tab-limit-external">外部ブラウザで開く</button>
+      <button type="button" data-action="dismiss-tab-limit">案内を閉じる</button>
+    </div>
+  </div>
+  <div class="internal-browser-empty" hidden>
+    <p>上の入力欄に URL または検索語を入力して Enter を押すと、ここに表示されます。</p>
+    <div class="internal-browser-notice-actions" hidden>
+      <button type="button" data-action="home">ホームを開く</button>
     </div>
   </div>
   <div class="internal-browser-notice" role="status" hidden></div><div class="internal-browser-error" role="status" hidden><p class="internal-browser-error-message">ページを表示できませんでした</p><button type="button" data-action="reload">再読み込み</button><button type="button" data-action="external">外部ブラウザで開く</button></div><div class="internal-browser-page"></div>`;
@@ -412,15 +425,32 @@ function setInternalBrowserOpen(value, { focus = internalBrowserHasPage ? 'prese
   }
   if (!value && internalBrowserSidebar.contains(document.activeElement)) document.getElementById('internal-browser-toggle')?.focus();
   if (!value) setInternalBrowserHomeNotice(false);
-  if (value && !internalBrowserHasPage) {
-    const notice = internalBrowserSidebar.querySelector('.internal-browser-notice');
-    notice.textContent = '上の入力欄に URL または検索語を入力して Enter を押すと、ここに表示されます。';
-    notice.hidden = false;
-  }
+  syncInternalBrowserEmptyView();
   syncInternalBrowserLayout();
   // 空状態はレイアウト反映後に入力可能にする。再表示は操作元にフォーカスを残す。
   // 値や選択範囲には触れず、閉じている間の入力も保持する。
   if (value && focus === 'address') focusInternalBrowserToolbar();
+}
+
+// 表示しているタブが空の新規タブのときだけ入力の案内を出す。「ホームを開く」は、押したときに開くページが
+// あるとき（ホームページ URL か GitHub のオーナーを設定しているとき）だけ出す。出すたびに設定を確かめ直す。
+let internalBrowserEmptyHomeGeneration = 0;
+function syncInternalBrowserEmptyView() {
+  const empty = internalBrowserSidebar.querySelector('.internal-browser-empty');
+  if (!internalBrowserOpen || internalBrowserHasPage || internalBrowserPendingUrl) {
+    if (!empty.hidden) hideInternalBrowserContent(empty);
+    return;
+  }
+  if (!empty.hidden) return;
+  empty.hidden = false;
+  const actions = empty.querySelector('.internal-browser-notice-actions');
+  const generation = ++internalBrowserEmptyHomeGeneration;
+  VKIpc.invoke('internal-browser:home-available').then(available => {
+    if (generation !== internalBrowserEmptyHomeGeneration || actions.hidden === (available !== true)) return;
+    if (available !== true && actions.contains(document.activeElement)) focusInternalBrowserToolbar();
+    actions.hidden = available !== true;
+    if (internalBrowserOpen) syncInternalBrowserLayout();
+  }).catch(() => {});
 }
 
 // 広く表示ボタンのアイコン・文言を状態に合わせる。押下状態は文言で伝え、aria-pressed は付けない。
@@ -523,12 +553,18 @@ function showInternalBrowserChoice(url, event, origin) {
       if (clickEvent.detail > 1) return;
       closeInternalBrowserChoice();
       if (target === 'internal') {
-        internalBrowserHasPage = true;
-        hideInternalBrowserContent(internalBrowserSidebar.querySelector('.internal-browser-notice'));
-        hideInternalBrowserContent(internalBrowserSidebar.querySelector('.internal-browser-error'));
         // リンクの開き先選択を閉じた際に復帰した操作元を維持する。閉じているときだけ開く動きを付ける。
         animateLayoutChange(() => setInternalBrowserOpen(true, { focus: 'preserve' }), { shouldAnimate: () => !internalBrowserOpen });
-        VKIpc.invoke('internal-browser:open', url).catch(() => {});
+        // 同じページのタブがあれば切り替え、無ければ新しいタブに開く（issue #644）。上限のときは案内を出す。
+        // 表示中のタブの案内・エラーとページの有無は、結果を待たずに書き換えない。切り替え（switched）・上限（limit）では
+        // 表示中のタブのページが置き換わらないため。案内・エラーは、タブ一覧と状態の通知がタブごとに出し分ける。
+        VKIpc.invoke('internal-browser:open-tab', url).then(result => {
+          if (result?.result === 'limit') setInternalBrowserTabLimit(result.tabId, url);
+          else if (result?.result === 'opened' && result.tabId === internalBrowserDisplayedTabId) {
+            internalBrowserHasPage = true;
+            syncInternalBrowserEmptyView();
+          }
+        }).catch(() => {});
       } else openExternalUrlSafe(url, origin ? undefined : { onSuccess: () => showTerminalLinkOpenedToast(url) });
     });
     menu.appendChild(item);
@@ -584,7 +620,7 @@ internalBrowserSidebar.addEventListener('click', event => {
       }
       if (internalBrowserOpen) syncInternalBrowserLayout();
     };
-    VKIpc.invoke('internal-browser:action', action).then(result => {
+    VKIpc.invoke('internal-browser:action', action, internalBrowserDisplayedTabId).then(result => {
       if (requestGeneration !== internalBrowserHomeRequestGeneration) return;
       if (result === false) { showHomeFailure(); return; }
       if (internalBrowserOpen) setInternalBrowserHomeNotice(result === 'home-unset');
@@ -593,18 +629,24 @@ internalBrowserSidebar.addEventListener('click', event => {
       if (externalUrlToastEl?.dataset.homeFailure === 'true' && !externalUrlToastEl.hidden) hideExternalUrlToast();
     }).catch(showHomeFailure);
   }
+  else if (action === 'tab-new') openNewInternalBrowserTab();
+  else if (action === 'tab-limit-external') {
+    const url = getInternalBrowserTabRecord(internalBrowserDisplayedTabId).limitUrl;
+    if (url) openExternalUrlSafe(url);
+  }
+  else if (action === 'dismiss-tab-limit') setInternalBrowserTabLimit(internalBrowserDisplayedTabId, '');
   else if (action === 'home-settings') openSettingsModal(null, INTERNAL_BROWSER_HOME_KEY);
   else if (action === 'dismiss-home-notice') setInternalBrowserHomeNotice(false);
   else if (action === 'external') {
     const url = event.target.closest('.internal-browser-error') ? internalBrowserFailedUrl : getInternalBrowserExternalTarget().url;
     if (url) {
-      if (/^vk-terminals-help:\/\//i.test(url)) VKIpc.invoke('internal-browser:external', event.target.closest('.internal-browser-error') ? 'failed' : 'current')
+      if (/^vk-terminals-help:\/\//i.test(url)) VKIpc.invoke('internal-browser:external', event.target.closest('.internal-browser-error') ? 'failed' : 'current', internalBrowserDisplayedTabId)
         .then((opened) => { if (!opened) showGenericToast('外部ブラウザで開けませんでした。もう一度お試しください。'); })
         .catch(() => showGenericToast('外部ブラウザで開けませんでした。もう一度お試しください。'));
       else openExternalUrlSafe(url);
     }
   }
-  else if (action) VKIpc.invoke('internal-browser:action', action).catch(() => {});
+  else if (action) VKIpc.invoke('internal-browser:action', action, internalBrowserDisplayedTabId).catch(() => {});
 });
 
 function setInternalBrowserHomeNotice(visible) {
@@ -629,6 +671,8 @@ let internalBrowserOperationId = 0;
 let internalBrowserFinishedOperationId = 0;
 let internalBrowserActiveRequestId = null;
 let internalBrowserSubmittedUrl = '';
+// 操作列・お知らせが映しているタブの番号（issue #644）。main からタブの一覧が届くまでは undefined（選んでいるタブ）。
+let internalBrowserDisplayedTabId;
 function setInternalBrowserNavigationStatus(message) {
   const status = internalBrowserSidebar.querySelector('.internal-browser-navigation-status');
   if (status.textContent !== message) status.textContent = message;
@@ -697,6 +741,7 @@ function rejectInternalBrowserAddressRequest(requestId, { input, url, hadPage })
   // どちらの場合も、ページの状態通知で上書きさせない。
   if (!internalBrowserAddressHasDraft) internalBrowserAddress.value = input;
   internalBrowserAddressHasDraft = true;
+  syncInternalBrowserEmptyView();
   syncInternalBrowserExternalTarget();
   showInternalBrowserAddressError('ページを開けませんでした。もう一度 Enter を押してください。続けて開けない場合は、アプリを再起動してください。');
 }
@@ -734,9 +779,10 @@ internalBrowserAddress.addEventListener('keydown', event => {
   internalBrowserSubmittedUrl = url;
   internalBrowserNavigationActive = true;
   setInternalBrowserNavigationStatus('ページを読み込み中');
+  syncInternalBrowserEmptyView();
   syncInternalBrowserExternalTarget();
   const requestId = internalBrowserActiveRequestId;
-  VKIpc.invoke('internal-browser:open', url, requestId).then(
+  VKIpc.invoke('internal-browser:open', url, requestId, internalBrowserDisplayedTabId).then(
     accepted => { if (accepted === false) rejectInternalBrowserAddressRequest(requestId, submission); },
     () => rejectInternalBrowserAddressRequest(requestId, submission),
   );
@@ -786,6 +832,33 @@ VKIpc.on('internal-browser:state', state => {
   if (state.active === false) return;
   // Enter の受理前と旧操作の再配送では、表示も live 通知も巻き戻さない。
   const operationId = state.navigationOperationId;
+  const navigationMessages = {
+    completed: 'ページの読み込みが完了しました',
+    // 失敗は既存の error role=status が具体的な対象とともに通知する。
+    failed: '',
+    cancelled: 'ページの移動を中止しました',
+    // ダウンロード阻止は既存のトーストだけで結果と操作を通知する。
+    'download-blocked': '',
+    // 読み込み案内が消えるだけにならないよう、別操作による置換も通知する。
+    superseded: '別の操作で読み込みが置き換えられました',
+  };
+  // タブを選んだときに main が送り直す状態は、そのタブの正とする（issue #644）。後ろにいる間に読み込みが
+  // 終わった・置き換わった場合も、退避しておいた読み込み中の記録で捨てずに、遷移の記録をこの状態に合わせる。
+  // URL 欄の未送信の入力（internalBrowserAddressHasDraft）はこの記録と別に持つため、ここでは触れない。
+  if (state.selected === true && Number.isSafeInteger(operationId)) {
+    const inProgress = state.navigationResult === null && operationId > 0;
+    // 後ろにいる間に結果が出て、このタブでまだ通知していない操作。記録を合わせたうえで、下の結果の通知に 1 回だけ通す
+    // （通知した時点で internalBrowserFinishedOperationId が進むため、同じ状態を送り直されても繰り返さない）。
+    const unreadResult = !inProgress && Object.hasOwn(navigationMessages, state.navigationResult)
+      && operationId > internalBrowserFinishedOperationId;
+    internalBrowserOperationId = operationId;
+    if (inProgress) internalBrowserFinishedOperationId = Math.min(internalBrowserFinishedOperationId, operationId - 1);
+    else if (!unreadResult) internalBrowserFinishedOperationId = Math.max(internalBrowserFinishedOperationId, operationId);
+    internalBrowserNavigationActive = inProgress || unreadResult;
+    internalBrowserActiveRequestId = inProgress || unreadResult ? state.navigationRequestId ?? null : null;
+    internalBrowserSubmittedUrl = '';
+    setInternalBrowserNavigationStatus(inProgress ? 'ページを読み込み中' : '');
+  }
   if (Number.isSafeInteger(operationId)) {
     if (operationId < internalBrowserOperationId) return;
     if (internalBrowserNavigationActive && internalBrowserActiveRequestId !== null
@@ -802,6 +875,7 @@ VKIpc.on('internal-browser:state', state => {
   internalBrowserUrl = state.url || '';
   internalBrowserPendingUrl = state.pendingUrl || '';
   if (internalBrowserUrl || state.failedUrl) internalBrowserHasPage = true;
+  syncInternalBrowserEmptyView();
   internalBrowserFailedUrl = state.failedUrl || '';
   internalBrowserDownloadUrl = state.downloadUrl || '';
   // 消える案内から移る前に、次の URL と再読み込みの可用性を反映する。
@@ -838,7 +912,8 @@ VKIpc.on('internal-browser:state', state => {
   if (notice.dataset.url !== github404Url) {
     if (notice.contains(document.activeElement)) focusInternalBrowserToolbar();
     notice.dataset.url = github404Url;
-    notice.dataset.dismissed = '';
+    // タブを切り替えて戻ったときも、そのタブで閉じた案内は出し直さない（issue #644）。
+    notice.dataset.dismissed = github404Url && notice.dataset.dismissedUrl === github404Url ? 'true' : '';
     notice.replaceChildren();
     if (github404Url) {
       const description = document.createElement('p');
@@ -870,17 +945,7 @@ VKIpc.on('internal-browser:state', state => {
   internalBrowserSidebar.querySelector('[data-action="back"]').disabled = !state.canGoBack;
   internalBrowserSidebar.querySelector('[data-action="forward"]').disabled = !state.canGoForward;
   internalBrowserSidebar.querySelector('.internal-browser-progress').hidden = !state.loading;
-  // main が確定した結果だけを通知する。pendingUrl の消去は中止でも起こる。
-  const navigationMessages = {
-    completed: 'ページの読み込みが完了しました',
-    // 失敗は既存の error role=status が具体的な対象とともに通知する。
-    failed: '',
-    cancelled: 'ページの移動を中止しました',
-    // ダウンロード阻止は既存のトーストだけで結果と操作を通知する。
-    'download-blocked': '',
-    // 読み込み案内が消えるだけにならないよう、別操作による置換も通知する。
-    superseded: '別の操作で読み込みが置き換えられました',
-  };
+  // main が確定した結果だけを通知する（navigationMessages は上で定義）。pendingUrl の消去は中止でも起こる。
   if (internalBrowserNavigationActive && state.navigationRequestId === internalBrowserActiveRequestId
     && (!Number.isSafeInteger(operationId) || operationId > internalBrowserFinishedOperationId)
     && Object.hasOwn(navigationMessages, state.navigationResult)) {
@@ -890,11 +955,23 @@ VKIpc.on('internal-browser:state', state => {
     internalBrowserSubmittedUrl = '';
     setInternalBrowserNavigationStatus(navigationMessages[state.navigationResult]);
   }
+  // 表示している間に結果まで届いた操作は、通知したかによらず見たものとして記録する。タブを選び直したときに、
+  // 表示中に済んだ結果を後ろで起きた結果と取り違えて読み上げないため（issue #644）。
+  if (Number.isSafeInteger(operationId) && !internalBrowserNavigationActive
+    && Object.hasOwn(navigationMessages, state.navigationResult) && operationId > internalBrowserFinishedOperationId) {
+    internalBrowserFinishedOperationId = operationId;
+  }
   syncInternalBrowserLayout();
 });
-VKIpc.on('internal-browser:download-blocked', ({ canOpenFromToolbar, active } = {}) => {
-  // 選んでいないタブで止めたダウンロードの案内は出さない。
-  if (active === false) return;
+VKIpc.on('internal-browser:download-blocked', ({ canOpenFromToolbar, active, tabId } = {}) => {
+  // 選んでいないタブで止めたダウンロードの案内は、そのタブを選んだときに出す。
+  if (active === false) {
+    if (Number.isSafeInteger(tabId)) getInternalBrowserTabRecord(tabId).downloadNotice = !!canOpenFromToolbar;
+    return;
+  }
+  showInternalBrowserDownloadNotice(canOpenFromToolbar);
+});
+function showInternalBrowserDownloadNotice(canOpenFromToolbar) {
   const toastMessage = canOpenFromToolbar
     ? 'ダウンロードはできません。操作列の「外部ブラウザで開く」から行ってください。'
     : 'ダウンロードはできません。外部ブラウザでダウンロードしてください。';
@@ -912,7 +989,325 @@ VKIpc.on('internal-browser:download-blocked', ({ canOpenFromToolbar, active } = 
     action.textContent = '「外部ブラウザで開く」';
     message.append(action, afterAction);
   }
+}
+
+// ─── タブ（issue #644）─────────────────────────────────────────────────────
+// タブの一覧と選んでいるタブは main が持ち、画面は internal-browser:tabs の通知で表示するタブを切り替える。
+// 操作列・お知らせの状態は表示しているタブの分だけを上の変数で持ち、切り替えるときにタブごとの記録へ退避・復元する。
+let internalBrowserTabs = [];
+let internalBrowserMaxTabs = 10;
+// タブ番号 → { view: 退避した操作列・お知らせの状態, downloadNotice: 後ろで止めたダウンロードの案内, limitUrl: 上限で開けなかった URL }
+const internalBrowserTabRecords = new Map();
+const internalBrowserTabList = internalBrowserSidebar.querySelector('.internal-browser-tablist');
+const internalBrowserTabStatus = internalBrowserSidebar.querySelector('.internal-browser-tab-status');
+
+function getInternalBrowserTabRecord(tabId) {
+  if (!internalBrowserTabRecords.has(tabId)) internalBrowserTabRecords.set(tabId, { view: null, downloadNotice: null, limitUrl: '' });
+  return internalBrowserTabRecords.get(tabId);
+}
+
+// タブの開閉・上限を読み上げる。同じ文が続いても読み上げられるよう、一度空にしてから入れる。
+function announceInternalBrowserTabs(message) {
+  internalBrowserTabStatus.textContent = '';
+  requestAnimationFrame(() => { internalBrowserTabStatus.textContent = message; });
+}
+
+// 表示しているタブの操作列・お知らせの状態を取り出す。
+function captureInternalBrowserTabView() {
+  const notice = internalBrowserSidebar.querySelector('.internal-browser-notice');
+  return {
+    url: internalBrowserUrl, pendingUrl: internalBrowserPendingUrl, failedUrl: internalBrowserFailedUrl,
+    downloadUrl: internalBrowserDownloadUrl, hasPage: internalBrowserHasPage,
+    addressValue: internalBrowserAddress.value, addressHasDraft: internalBrowserAddressHasDraft,
+    addressError: internalBrowserAddressError.hidden ? '' : internalBrowserAddressError.textContent,
+    navigationActive: internalBrowserNavigationActive, activeRequestId: internalBrowserActiveRequestId,
+    submittedUrl: internalBrowserSubmittedUrl, operationId: internalBrowserOperationId,
+    finishedOperationId: internalBrowserFinishedOperationId,
+    homeNotice: !internalBrowserSidebar.querySelector('.internal-browser-home-notice .internal-browser-notice-actions').hidden,
+    dismissed404Url: notice.dataset.dismissed === 'true' ? notice.dataset.url || '' : '',
+  };
+}
+
+/**
+ * 退避しておいた操作列・お知らせの状態を戻す。初めて表示するタブは、main のタブ一覧の情報から作る。
+ * 戻る / 進む・読み込み中・エラーなどページの状態は、このあと main が送り直す状態の通知で揃う。
+ *
+ * @param {object|null} view captureInternalBrowserTabView の戻り値
+ * @param {object|undefined} summary main から届いたタブの情報
+ */
+function restoreInternalBrowserTabView(view, summary) {
+  const saved = view || {
+    url: '', pendingUrl: '', failedUrl: '', downloadUrl: '', hasPage: !!summary && !summary.empty,
+    addressValue: summary?.url || '', addressHasDraft: false, addressError: '',
+    navigationActive: false, activeRequestId: null, submittedUrl: '', operationId: 0, finishedOperationId: 0,
+    homeNotice: false, dismissed404Url: '',
+  };
+  internalBrowserUrl = saved.url;
+  internalBrowserPendingUrl = saved.pendingUrl;
+  internalBrowserFailedUrl = saved.failedUrl;
+  internalBrowserDownloadUrl = saved.downloadUrl;
+  internalBrowserHasPage = saved.hasPage;
+  internalBrowserAddress.value = saved.addressValue;
+  internalBrowserAddressHasDraft = saved.addressHasDraft;
+  internalBrowserNavigationActive = saved.navigationActive;
+  internalBrowserActiveRequestId = saved.activeRequestId;
+  internalBrowserSubmittedUrl = saved.submittedUrl;
+  internalBrowserOperationId = saved.operationId;
+  internalBrowserFinishedOperationId = saved.finishedOperationId;
+  // 前のタブの読み上げを、切り替えた先のタブの結果として残さない。
+  setInternalBrowserNavigationStatus('');
+  if (saved.addressError) showInternalBrowserAddressError(saved.addressError);
+  else clearInternalBrowserAddressError();
+  setInternalBrowserHomeNotice(saved.homeNotice);
+  // GitHub の 404 案内は次の状態の通知で作り直す。閉じた案内だけは閉じたまま残す。
+  const notice = internalBrowserSidebar.querySelector('.internal-browser-notice');
+  notice.dataset.url = '';
+  notice.dataset.dismissed = '';
+  notice.dataset.dismissedUrl = saved.dismissed404Url;
+  notice.replaceChildren();
+  hideInternalBrowserContent(notice);
+  hideInternalBrowserContent(internalBrowserSidebar.querySelector('.internal-browser-error'));
+  internalBrowserSidebar.querySelector('.internal-browser-progress').hidden = true;
+  syncInternalBrowserEmptyView();
+  syncInternalBrowserExternalTarget();
+}
+
+/**
+ * main から届いたタブの一覧を反映する。選んでいるタブが替わったら、操作列・お知らせをそのタブのものに入れ替え、
+ * 後ろで起きたダウンロードの案内を出す。開いた・閉じたタブを読み上げる。
+ *
+ * @param {object} payload { tabs, activeTabId, maxTabs }
+ */
+function applyInternalBrowserTabs(payload) {
+  if (!payload || !Array.isArray(payload.tabs) || !Number.isSafeInteger(payload.activeTabId)) return;
+  const previousIds = new Set(internalBrowserTabs.map(tab => tab.id));
+  const known = internalBrowserTabs.length > 0;
+  internalBrowserTabs = payload.tabs.filter(tab => Number.isSafeInteger(tab?.id));
+  if (Number.isSafeInteger(payload.maxTabs) && payload.maxTabs > 0) internalBrowserMaxTabs = payload.maxTabs;
+  const currentIds = new Set(internalBrowserTabs.map(tab => tab.id));
+  for (const id of internalBrowserTabRecords.keys()) if (!currentIds.has(id)) internalBrowserTabRecords.delete(id);
+  // 上限の案内は、タブを閉じて開ける状態に戻ったら消す。
+  if (internalBrowserTabs.length < internalBrowserMaxTabs) {
+    for (const record of internalBrowserTabRecords.values()) record.limitUrl = '';
+  }
+  const switched = payload.activeTabId !== internalBrowserDisplayedTabId;
+  if (switched) {
+    if (internalBrowserDisplayedTabId !== undefined && currentIds.has(internalBrowserDisplayedTabId)) {
+      getInternalBrowserTabRecord(internalBrowserDisplayedTabId).view = captureInternalBrowserTabView();
+    }
+    internalBrowserDisplayedTabId = payload.activeTabId;
+    const record = getInternalBrowserTabRecord(payload.activeTabId);
+    restoreInternalBrowserTabView(record.view, internalBrowserTabs.find(tab => tab.id === payload.activeTabId));
+    record.view = null;
+    if (record.downloadNotice !== null) {
+      showInternalBrowserDownloadNotice(record.downloadNotice);
+      record.downloadNotice = null;
+    }
+  }
+  syncInternalBrowserTabLimitNotice();
+  renderInternalBrowserTabs({ scrollToSelected: switched });
+  if (known) {
+    const opened = internalBrowserTabs.filter(tab => !previousIds.has(tab.id));
+    const closedCount = [...previousIds].filter(id => !currentIds.has(id)).length;
+    if (opened.length > 0 && closedCount === 0) {
+      const message = opened.some(tab => tab.id === payload.activeTabId) ? '新しいタブを開きました' : '新しいタブを後ろに開きました';
+      // 上限に達すると「＋」は押せなくなり Tab キーでも止まらないため、上限に達したことも合わせて読み上げる。
+      const atLimit = internalBrowserTabs.length >= internalBrowserMaxTabs;
+      announceInternalBrowserTabs(atLimit ? `${message}。タブは ${internalBrowserMaxTabs} 個まで開けます。` : message);
+    } else if (closedCount > 0 && opened.length === 0) announceInternalBrowserTabs('タブを閉じました');
+  }
+  if (internalBrowserOpen) syncInternalBrowserLayout();
+}
+
+// タブの見出し。ページタイトルが無ければホスト名、空の新規タブは「新しいタブ」にする。
+function getInternalBrowserTabLabel(tab) {
+  if (tab.title) return tab.title;
+  if (tab.empty || !tab.url) return '新しいタブ';
+  if (/^vk-terminals-help:\/\//i.test(tab.url)) return '使い方ガイド';
+  try { return new URL(tab.url).host || tab.url; } catch { return tab.url; }
+}
+
+/**
+ * タブの行を描き直す。同じタブの要素は使い回し、フォーカスと横スクロールの位置を保つ。
+ * Tab キーで止まるのは選んでいるタブだけにする（それ以外は tabindex="-1"）。
+ *
+ * @param {object} [options]
+ * @param {boolean} [options.scrollToSelected] 選んでいるタブが見える位置まで横スクロールする
+ */
+function renderInternalBrowserTabs({ scrollToSelected = false } = {}) {
+  const hadFocus = internalBrowserTabList.contains(document.activeElement);
+  const existing = new Map([...internalBrowserTabList.children].map(element => [Number(element.dataset.tabId), element]));
+  // 並びが変わった要素だけを差し込む。付け直すとフォーカスが外れ、読み上げも同じタブを読み直すため。
+  let cursor = internalBrowserTabList.firstElementChild;
+  for (const tab of internalBrowserTabs) {
+    let element = existing.get(tab.id);
+    existing.delete(tab.id);
+    if (!element) {
+      element = document.createElement('div');
+      element.className = 'internal-browser-tab';
+      element.setAttribute('role', 'tab');
+      element.id = `internal-browser-tab-${tab.id}`;
+      element.dataset.tabId = String(tab.id);
+      element.setAttribute('aria-keyshortcuts', 'Delete');
+      element.innerHTML = '<span class="internal-browser-tab-icon" aria-hidden="true"></span><span class="internal-browser-tab-title"></span><span class="internal-browser-tab-close" aria-hidden="true" title="タブを閉じる"><svg class="titlebar-icon"><use href="icons/ui.svg#x"></use></svg></span>';
+    }
+    const selected = tab.id === internalBrowserDisplayedTabId;
+    const label = getInternalBrowserTabLabel(tab);
+    // 変わっていない属性は書き直さない（読み上げソフトに同じタブを読み直させない）。
+    const setAttribute = (name, value) => { if (element.getAttribute(name) !== value) element.setAttribute(name, value); };
+    setAttribute('aria-selected', String(selected));
+    setAttribute('tabindex', selected ? '0' : '-1');
+    setAttribute('title', label);
+    setAttribute('aria-label', tab.loading ? `${label}（読み込み中）` : label);
+    const title = element.querySelector('.internal-browser-tab-title');
+    if (title.textContent !== label) title.textContent = label;
+    syncInternalBrowserTabIcon(element.querySelector('.internal-browser-tab-icon'), tab);
+    if (element === cursor) cursor = cursor.nextElementSibling;
+    else internalBrowserTabList.insertBefore(element, cursor);
+  }
+  for (const element of existing.values()) element.remove();
+  const selectedElement = internalBrowserTabList.querySelector('[aria-selected="true"]');
+  // 閉じたタブにフォーカスがあった場合は、次に選んだタブへ移す。
+  if (hadFocus && !internalBrowserTabList.contains(document.activeElement)) selectedElement?.focus();
+  if (scrollToSelected) selectedElement?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  const newTab = internalBrowserSidebar.querySelector('.internal-browser-tab-new');
+  const atLimit = internalBrowserTabs.length >= internalBrowserMaxTabs;
+  if (atLimit && newTab === document.activeElement) selectedElement?.focus();
+  newTab.disabled = atLimit;
+  const newTabLabel = atLimit ? `新しいタブ（タブは ${internalBrowserMaxTabs} 個まで開けます）` : '新しいタブ';
+  if (newTab.title !== newTabLabel) newTab.title = newTabLabel;
+  if (newTab.getAttribute('aria-label') !== newTabLabel) newTab.setAttribute('aria-label', newTabLabel);
+}
+
+// ファビコンの位置に、読み込み中は回転する印、取得済みならファビコン、無ければ地球のアイコンを出す。
+function syncInternalBrowserTabIcon(icon, tab) {
+  // ファビコンは main が画像データ（data URL）に変えたものだけを表示する。
+  const favicon = typeof tab.favicon === 'string' && /^data:image\//.test(tab.favicon) ? tab.favicon : '';
+  const kind = tab.loading ? 'loading' : favicon ? 'favicon' : 'default';
+  if (icon.dataset.kind === kind && (kind !== 'favicon' || icon.firstElementChild?.getAttribute('src') === favicon)) return;
+  icon.dataset.kind = kind;
+  if (kind === 'loading') icon.innerHTML = '<span class="internal-browser-tab-spinner"></span>';
+  else if (kind === 'favicon') {
+    const image = document.createElement('img');
+    image.alt = '';
+    image.src = favicon;
+    icon.replaceChildren(image);
+  } else icon.innerHTML = '<svg class="titlebar-icon"><use href="icons/ui.svg#globe"></use></svg>';
+}
+
+// 選んでいるタブを main に切り替えてもらう。表示の入れ替えは main からのタブ一覧の通知で行う。
+function selectInternalBrowserTab(tabId) {
+  if (tabId === internalBrowserDisplayedTabId) return;
+  VKIpc.invoke('internal-browser:tab-select', tabId).catch(() => {});
+}
+
+// タブを閉じる。最後の 1 つを閉じたときは、サイドバーごと閉じてツールバーの切り替えボタンへフォーカスを戻す。
+function closeInternalBrowserTab(tabId) {
+  VKIpc.invoke('internal-browser:tab-close', tabId).then(result => {
+    if (!result?.closedLast || !internalBrowserOpen) return;
+    animateLayoutChange(() => {
+      setInternalBrowserOpen(false);
+      document.getElementById('internal-browser-toggle')?.focus();
+    }, { direction: 'exit' });
+  }).catch(() => {});
+}
+
+// 空の新しいタブを開き、URL 欄へフォーカスを置く。
+function openNewInternalBrowserTab() {
+  VKIpc.invoke('internal-browser:tab-new').then(tabId => {
+    if (tabId === false) {
+      announceInternalBrowserTabs(`タブは ${internalBrowserMaxTabs} 個まで開けます。使わないタブを閉じてから、もう一度開いてください。`);
+      return;
+    }
+    if (tabId === internalBrowserDisplayedTabId) focusInternalBrowserToolbar();
+  }).catch(() => {});
+}
+
+/**
+ * 上限で新しいタブを開けなかったことを、そのタブのお知らせ欄に出す（url が空なら消す）。
+ * 表示しているタブなら読み上げる。後ろのタブなら、そのタブを選んだときに出す。
+ *
+ * @param {number} tabId 案内を出すタブ
+ * @param {string} url 開けなかった URL（外部ブラウザで開く対象）
+ */
+function setInternalBrowserTabLimit(tabId, url) {
+  if (!Number.isSafeInteger(tabId)) return;
+  getInternalBrowserTabRecord(tabId).limitUrl = typeof url === 'string' ? url : '';
+  if (tabId !== internalBrowserDisplayedTabId) return;
+  syncInternalBrowserTabLimitNotice();
+  if (url) announceInternalBrowserTabs(`タブは ${internalBrowserMaxTabs} 個まで開けます。使わないタブを閉じてから、もう一度開いてください。`);
+  if (internalBrowserOpen) syncInternalBrowserLayout();
+}
+
+function syncInternalBrowserTabLimitNotice() {
+  const notice = internalBrowserSidebar.querySelector('.internal-browser-tab-limit');
+  const url = internalBrowserDisplayedTabId === undefined ? '' : getInternalBrowserTabRecord(internalBrowserDisplayedTabId).limitUrl;
+  // 外部ブラウザで開けるのは HTTP(S) の URL だけ。
+  notice.querySelector('[data-action="tab-limit-external"]').hidden = !isSafeHttpUrl(url);
+  if (url) notice.hidden = false;
+  else if (!notice.hidden) hideInternalBrowserContent(notice);
+}
+
+VKIpc.on('internal-browser:tabs', applyInternalBrowserTabs);
+VKIpc.on('internal-browser:tab-limit', ({ tabId, url } = {}) => setInternalBrowserTabLimit(tabId, url));
+// 起動時のタブ一覧は通知では届かない（画面の読み込み前に送られる）ため、取りに行く。
+VKIpc.invoke('internal-browser:get-tabs').then(payload => { if (internalBrowserDisplayedTabId === undefined) applyInternalBrowserTabs(payload); }).catch(() => {});
+
+internalBrowserTabList.addEventListener('click', event => {
+  const element = event.target.closest('.internal-browser-tab');
+  if (!element) return;
+  const tabId = Number(element.dataset.tabId);
+  if (event.target.closest('.internal-browser-tab-close')) closeInternalBrowserTab(tabId);
+  else selectInternalBrowserTab(tabId);
 });
+// 中クリックで閉じる。押した時点の既定動作（自動スクロール）は止める。
+internalBrowserTabList.addEventListener('mousedown', event => { if (event.button === 1 && event.target.closest('.internal-browser-tab')) event.preventDefault(); });
+internalBrowserTabList.addEventListener('auxclick', event => {
+  const element = event.target.closest('.internal-browser-tab');
+  if (event.button !== 1 || !element) return;
+  event.preventDefault();
+  closeInternalBrowserTab(Number(element.dataset.tabId));
+});
+// ← → でタブ同士を移り（端では反対の端へ）、Home / End で先頭・末尾へ。Enter / Space で切り替え、Delete で閉じる。
+internalBrowserTabList.addEventListener('keydown', event => {
+  const element = event.target.closest('.internal-browser-tab');
+  if (!element || event.isComposing || event.altKey || event.ctrlKey || event.metaKey) return;
+  const elements = [...internalBrowserTabList.querySelectorAll('.internal-browser-tab')];
+  const index = elements.indexOf(element);
+  let next = null;
+  if (event.key === 'ArrowRight') next = elements[(index + 1) % elements.length];
+  else if (event.key === 'ArrowLeft') next = elements[(index - 1 + elements.length) % elements.length];
+  else if (event.key === 'Home') next = elements[0];
+  else if (event.key === 'End') next = elements.at(-1);
+  else if (event.key === 'Enter' || event.key === ' ') {
+    event.preventDefault();
+    selectInternalBrowserTab(Number(element.dataset.tabId));
+    return;
+  } else if (event.key === 'Delete') {
+    event.preventDefault();
+    closeInternalBrowserTab(Number(element.dataset.tabId));
+    return;
+  } else return;
+  event.preventDefault();
+  next.focus();
+  next.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+});
+// 縦方向のホイールでも、はみ出したタブの行を横にスクロールできるようにする。
+internalBrowserTabList.addEventListener('wheel', event => {
+  if (internalBrowserTabList.scrollWidth <= internalBrowserTabList.clientWidth || Math.abs(event.deltaX) >= Math.abs(event.deltaY)) return;
+  event.preventDefault();
+  internalBrowserTabList.scrollLeft += event.deltaY;
+}, { passive: false });
+// サイドバーの幅が変わったとき、選んでいるタブがタブの行の表示範囲の外に残らないよう見える位置へ戻す。
+// 幅を変える経路（つまみ・広く表示・ウィンドウの幅・全面表示）ごとに呼ばず、タブの行の幅の変化で拾う。
+let internalBrowserTabListWidth = 0;
+new ResizeObserver(() => {
+  const width = internalBrowserTabList.clientWidth;
+  // 閉じて幅が 0 になったときは何もしない（開き直したときの幅の変化で戻す）。
+  if (!width || width === internalBrowserTabListWidth) return;
+  internalBrowserTabListWidth = width;
+  internalBrowserTabList.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+}).observe(internalBrowserTabList);
 
 // ─── State ────────────────────────────────────────────────────────────────────
 let tree = null;       // Layout tree root

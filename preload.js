@@ -73,6 +73,12 @@ const INVOKE_CHANNELS = new Set([
   'internal-browser:open',
   'internal-browser:action',
   'internal-browser:external',
+  'internal-browser:get-tabs',
+  'internal-browser:tab-new',
+  'internal-browser:tab-select',
+  'internal-browser:tab-close',
+  'internal-browser:open-tab',
+  'internal-browser:home-available',
 ]);
 
 // renderer → main（応答なし）
@@ -115,6 +121,8 @@ const ON_CHANNELS = new Set([
   'terminal:background-work',
   'internal-browser:state',
   'internal-browser:download-blocked',
+  'internal-browser:tabs',
+  'internal-browser:tab-limit',
 ]);
 
 // clipboard へ渡してよい文字列の上限（issue #325）。定義は utils/clipboardLimits.js の

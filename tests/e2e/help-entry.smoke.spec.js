@@ -467,7 +467,8 @@ test('使い方・ヘルプ: 確認失敗の再確認、未保存キャンセル
       };
     });
     await win.evaluate(() => openSettingsModal());
-    await expect(win.getByRole('tab')).toHaveText(['基本', '使い方・ヘルプ', 'バージョン情報']);
+    // アプリ内ブラウザのタブ（issue #644）と区別するため、設定画面の中のタブだけを数える。
+    await expect(win.locator('.settings-modal').getByRole('tab')).toHaveText(['基本', '使い方・ヘルプ', 'バージョン情報']);
     expect(await win.evaluate(() => window.helpChecks)).toBe(0);
     await win.getByLabel('名前', { exact: true }).fill('new');
     await win.getByRole('tab', { name: '使い方・ヘルプ' }).click();

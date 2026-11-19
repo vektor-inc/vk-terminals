@@ -402,7 +402,8 @@ test('専用ビューの遷移と権限、ダウンロード、確定 URL を制
   contents.emit('will-redirect', blocked);
   assert.equal(blocked.blocked, true);
   assert.deepEqual(contents.openHandler({ url: 'file:///tmp/a' }), { action: 'deny' });
-  assert.deepEqual(contents.openHandler({ url: 'https://example.com/failed' }), { action: 'deny' });
+  // ページ起点の遷移を同じタブで続ける（新しいタブの要求は tests/internalBrowserTabs.test.js で確かめる）。
+  browser.navigate('https://example.com/failed', true);
   await flushBrowserLoads();
   assert.equal(contents.requestedUrl, 'https://example.com/failed');
   assert.equal(sent.at(-1)[1].url, 'https://example.com/first#part');

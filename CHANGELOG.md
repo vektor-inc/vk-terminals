@@ -2,8 +2,12 @@
 
 - [ 不具合修正 ] 設定画面を閉じても予約済みの保存を完了し、ヘルプを開く途中の追加編集を保持（[#634](https://github.com/vektor-inc/vk-terminals/issues/634)）
 - [ 機能追加 ] アプリ内ブラウザにホームボタンを追加。設定したページを開き、移動先が未設定なら設定欄を案内（[#634](https://github.com/vektor-inc/vk-terminals/issues/634)）
+- [ 機能追加 ] アプリ内ブラウザにタブを追加。タブの追加・切り替え・閉じる操作ができ、ページ内の「新しいタブで開く」リンクは新しいタブで開く（最大 10 個。アプリの再起動時はタブを復元しない）（[#644](https://github.com/vektor-inc/vk-terminals/issues/644)）
+- [ 仕様変更 ] ペインから「アプリ内で開く」を選んだとき、表示中のページを置き換えず、同じページのタブがあればそのタブへ切り替え、無ければ新しいタブで開くように変更（[#644](https://github.com/vektor-inc/vk-terminals/issues/644)）
+- [ 仕様変更 ] アプリ内ブラウザの操作列の ✕ の名前を「閉じる」から「アプリ内ブラウザを閉じる」に変更（タブを閉じる × と区別するため）（[#644](https://github.com/vektor-inc/vk-terminals/issues/644)）
 - [ 不具合修正 ] 設定の連続保存や一部失敗後の再保存で、保存ボタンを押したときの値が正しく保存されない問題を修正（[#634](https://github.com/vektor-inc/vk-terminals/issues/634)）
 - [ 不具合修正 ] 設定の保存中やヘルプの起動中に追加編集すると、設定画面が閉じて入力が失われる問題を修正（[#634](https://github.com/vektor-inc/vk-terminals/issues/634)）
+- [ デザイン不具合修正 ] アプリ内ブラウザの幅が狭いとき、GitHub のプライベートリポジトリのページで出る案内のボタンが右端で切れる問題を修正（[#644](https://github.com/vektor-inc/vk-terminals/issues/644)）
 - [ その他 ] アプリ内ブラウザのタブ対応に向けて、ページ表示の内部の作りをタブ単位に分割（表示・動作上の変化なし）（[#643](https://github.com/vektor-inc/vk-terminals/issues/643)）
 
 ## 1.107.1

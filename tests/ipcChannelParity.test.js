@@ -115,3 +115,23 @@ test('設定反映の push 通知は renderer が購読できる', () => {
   assert.ok([...match[1].matchAll(/'([^']+)'/g)].some((entry) => entry[1] === 'app:config-reflection-updated'));
   assert.match(mainSource, /webContents\.send\('app:config-reflection-updated'/);
 });
+
+// アプリ内ブラウザのタブ（issue #644）の操作と通知が、preload の許可リスト・main・画面で対応している。
+test('アプリ内ブラウザのタブの操作と通知は preload の許可リストを通る', () => {
+  const invokeChannels = extractInvokeChannels(preloadSource);
+  const handled = extractHandleChannels(mainSource);
+  for (const channel of ['internal-browser:get-tabs', 'internal-browser:tab-new', 'internal-browser:tab-select',
+    'internal-browser:tab-close', 'internal-browser:open-tab', 'internal-browser:home-available']) {
+    assert.ok(invokeChannels.includes(channel), `${channel} が INVOKE_CHANNELS に無い`);
+    assert.ok(handled.includes(channel), `${channel} を main.js が受けていない`);
+    assert.match(rendererSource, new RegExp(`VKIpc\\.invoke\\('${channel}'`));
+  }
+  const onMatch = preloadSource.match(/const ON_CHANNELS = new Set\(\[([\s\S]*?)\]\)/);
+  const onChannels = [...onMatch[1].matchAll(/'([^']+)'/g)].map(entry => entry[1]);
+  const browserSource = fs.readFileSync(path.join(__dirname, '..', 'utils', 'internalBrowser.js'), 'utf8');
+  for (const channel of ['internal-browser:tabs', 'internal-browser:tab-limit']) {
+    assert.ok(onChannels.includes(channel), `${channel} が ON_CHANNELS に無い`);
+    assert.match(browserSource, new RegExp(`webContents\\.send\\('${channel}'`));
+    assert.match(rendererSource, new RegExp(`VKIpc\\.on\\('${channel}'`));
+  }
+});

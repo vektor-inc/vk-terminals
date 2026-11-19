@@ -3,12 +3,12 @@
 const electron = require('electron');
 const { pathToFileURL } = require('node:url');
 const { isSafeHelpDocument } = require('./helpFeature');
-const { PARTITION, HELP_URL, isHelpUrl, validateBrowserBounds, isBrowserUrl, isNavigationUrl } = require('./internalBrowserPolicy');
+const { PARTITION, HELP_URL, isHelpUrl, validateBrowserBounds, isBrowserUrl, isNavigationUrl, isAllowedBrowserPermission } = require('./internalBrowserPolicy');
 
 function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocumentPath = null } = electron) {
   const browserSession = session.fromPartition(PARTITION);
-  browserSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
-  browserSession.setPermissionCheckHandler(() => false);
+  browserSession.setPermissionRequestHandler((_contents, permission, callback) => callback(isAllowedBrowserPermission(permission)));
+  browserSession.setPermissionCheckHandler((_contents, permission) => isAllowedBrowserPermission(permission));
   browserSession.webRequest.onBeforeRequest((details, callback) => {
     callback({ cancel: details.resourceType === 'mainFrame' && !isNavigationUrl(details.url) });
   });

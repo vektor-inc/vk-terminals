@@ -553,14 +553,17 @@ function showInternalBrowserChoice(url, event, origin) {
       if (clickEvent.detail > 1) return;
       closeInternalBrowserChoice();
       if (target === 'internal') {
-        internalBrowserHasPage = true;
-        hideInternalBrowserContent(internalBrowserSidebar.querySelector('.internal-browser-notice'));
-        hideInternalBrowserContent(internalBrowserSidebar.querySelector('.internal-browser-error'));
         // リンクの開き先選択を閉じた際に復帰した操作元を維持する。閉じているときだけ開く動きを付ける。
         animateLayoutChange(() => setInternalBrowserOpen(true, { focus: 'preserve' }), { shouldAnimate: () => !internalBrowserOpen });
         // 同じページのタブがあれば切り替え、無ければ新しいタブに開く（issue #644）。上限のときは案内を出す。
+        // 表示中のタブの案内・エラーとページの有無は、結果を待たずに書き換えない。切り替え（switched）・上限（limit）では
+        // 表示中のタブのページが置き換わらないため。案内・エラーは、タブ一覧と状態の通知がタブごとに出し分ける。
         VKIpc.invoke('internal-browser:open-tab', url).then(result => {
           if (result?.result === 'limit') setInternalBrowserTabLimit(result.tabId, url);
+          else if (result?.result === 'opened' && result.tabId === internalBrowserDisplayedTabId) {
+            internalBrowserHasPage = true;
+            syncInternalBrowserEmptyView();
+          }
         }).catch(() => {});
       } else openExternalUrlSafe(url, origin ? undefined : { onSuccess: () => showTerminalLinkOpenedToast(url) });
     });

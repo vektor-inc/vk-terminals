@@ -120,3 +120,74 @@ test('共通メニューの選択肢がアプリ内ブラウザと OS のブラ�
   buttons.filter(button => button.textContent === '外部ブラウザで開く ↗').at(-1).click({ detail: 1 });
   assert.deepEqual(calls, [['external', url]]);
 });
+
+test('「アプリ内で開く」は結果が出るまで表示中タブの案内・エラーとページの有無を書き換えない（issue #644）', async () => {
+  const showChoice = source.slice(source.indexOf('function showInternalBrowserChoice('), source.indexOf("document.addEventListener('keydown', event => {"));
+  // 表示中のタブ（番号 1）にページがあり、読み込み失敗のエラーと GitHub の 404 案内が出ている状態を作る。
+  const notice = { hidden: false, contains: () => false };
+  const errorView = { hidden: false, contains: () => false };
+  const sidebar = {
+    querySelector: selector => ({ '.internal-browser-notice': notice, '.internal-browser-error': errorView }[selector] || { contains: () => false, hidden: true }),
+    getBoundingClientRect: () => ({ left: 800 }),
+  };
+  const buttons = [];
+  const makeElement = () => ({
+    children: [], style: {}, offsetWidth: 200, offsetHeight: 90,
+    setAttribute() {},
+    addEventListener(type, handler) { if (type === 'click') this.click = handler; },
+    appendChild(child) { this.children.push(child); },
+    querySelector() { return this.children.find(child => child.click); },
+    focus() {},
+  });
+  const limits = [];
+  let emptySyncs = 0;
+  let nextResult;
+  const context = {
+    URL,
+    isSafeHttpUrl: () => true,
+    window: { innerWidth: 1200, innerHeight: 800, VKInternalBrowserChoicePolicy: { shouldShowBrowserChoice: () => true } },
+    document: { createElement() { const element = makeElement(); buttons.push(element); return element; }, body: { appendChild() {} } },
+    closeInternalBrowserChoice() {}, hideTermLinkTooltip() {},
+    internalBrowserChoice: null, internalBrowserOpen: true, internalBrowserSidebar: sidebar,
+    lastClickWasDrag: false, escapeLayers: { register: () => () => {} },
+    hideInternalBrowserContent(element) { element.hidden = true; },
+    setInternalBrowserOpen() {},
+    animateLayoutChange: update => update(),
+    internalBrowserDisplayedTabId: 1, internalBrowserHasPage: true,
+    setInternalBrowserTabLimit: (tabId, url) => limits.push([tabId, url]),
+    syncInternalBrowserEmptyView() { emptySyncs++; },
+    VKIpc: { invoke: () => Promise.resolve(nextResult) },
+    openExternalUrlSafe() {}, showTerminalLinkOpenedToast() {},
+  };
+  vm.runInNewContext(showChoice, context);
+  const chooseInternal = async (url, result) => {
+    nextResult = result;
+    vm.runInNewContext(`showInternalBrowserChoice('${url}', { clientX: 20, clientY: 20 })`, context);
+    buttons.filter(button => button.textContent === 'アプリ内で開く').at(-1).click({ detail: 1 });
+    // invoke の結果を受けた後の処理まで進める。
+    await new Promise(resolve => setImmediate(resolve));
+  };
+
+  // シナリオ A: エラー表示中のタブと同じ URL を開き、main が既存タブへの切り替え（switched）を返す。
+  await chooseInternal('https://example.com/failed', { result: 'switched', tabId: 1 });
+  assert.equal(errorView.hidden, false);
+  assert.equal(notice.hidden, false);
+  assert.equal(context.internalBrowserHasPage, true);
+
+  // シナリオ B: タブが上限で、別の URL を開いても何も開かない（limit）。案内・エラーは残し、上限の案内だけ出す。
+  await chooseInternal('https://example.com/other', { result: 'limit', tabId: 1 });
+  assert.equal(errorView.hidden, false);
+  assert.equal(notice.hidden, false);
+  assert.deepEqual(limits, [[1, 'https://example.com/other']]);
+  assert.equal(emptySyncs, 0);
+
+  // 空のタブから別のタブへ切り替わる場合も、空のタブを「ページあり」に変えない（戻ったときに入力の案内を出すため）。
+  context.internalBrowserHasPage = false;
+  await chooseInternal('https://example.com/existing', { result: 'switched', tabId: 2 });
+  assert.equal(context.internalBrowserHasPage, false);
+
+  // 表示中の空のタブにそのまま開いた（opened）ときだけ、ページありにして入力の案内を隠す。
+  await chooseInternal('https://example.com/new', { result: 'opened', tabId: 1 });
+  assert.equal(context.internalBrowserHasPage, true);
+  assert.equal(emptySyncs, 1);
+});

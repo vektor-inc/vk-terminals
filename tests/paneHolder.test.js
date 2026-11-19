@@ -653,7 +653,7 @@ test('持続通知は通常の通知と URL 失敗通知で上書きされない
   assert.equal(vm.runInNewContext("showGenericToast('ordinary')", context), false);
   assert.equal(toast.dataset.persistent, 'true');
   assert.equal(toast.hidden, false);
-  const downloadBlocked = renderer.slice(renderer.indexOf("VKIpc.on('internal-browser:download-blocked'"), renderer.indexOf('// ─── State', renderer.indexOf("VKIpc.on('internal-browser:download-blocked'")));
+  const downloadBlocked = renderer.slice(renderer.indexOf("VKIpc.on('internal-browser:download-blocked'"), renderer.indexOf('// ─── タブ（issue #644）', renderer.indexOf("VKIpc.on('internal-browser:download-blocked'")));
   let downloadHandler;
   context.VKIpc = { on(_channel, handler) { downloadHandler = handler; } };
   const fallbackMessages = [];
@@ -676,7 +676,7 @@ test('持続通知は通常の通知と URL 失敗通知で上書きされない
 
 test('ダウンロード案内の括弧と操作名を同じ改行禁止要素に入れる', () => {
   const renderer = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'app.js'), 'utf8');
-  const downloadBlocked = renderer.slice(renderer.indexOf("VKIpc.on('internal-browser:download-blocked'"), renderer.indexOf('// ─── State', renderer.indexOf("VKIpc.on('internal-browser:download-blocked'")));
+  const downloadBlocked = renderer.slice(renderer.indexOf("VKIpc.on('internal-browser:download-blocked'"), renderer.indexOf('// ─── タブ（issue #644）', renderer.indexOf("VKIpc.on('internal-browser:download-blocked'")));
   let downloadHandler;
   const children = [];
   const message = {

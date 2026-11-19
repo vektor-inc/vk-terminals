@@ -10,6 +10,8 @@ test.beforeEach(async ({ page }) => {
   const functions = [
     'syncInternalBrowserLayout', 'syncInternalBrowserWideToggle', 'setInternalBrowserOpen', 'focusInternalBrowserToolbar', 'setSidebarOpen',
     'setInternalBrowserHomeNotice',
+    // 空の新規タブの案内（issue #644）。
+    'syncInternalBrowserEmptyView', 'hideInternalBrowserContent',
     // トーストは実装と実 CSS のまま載せ、全面表示でのページ領域との関係を確かめる。
     'internalBrowserToastReserve', 'ensureExternalUrlToast', 'showExternalUrlOpenFailedToast', 'hideExternalUrlToast',
     'clearExternalUrlToastTimer', 'externalUrlToastShouldHoldOpen', 'reconsiderExternalUrlToastTimer',
@@ -27,6 +29,7 @@ test.beforeEach(async ({ page }) => {
   await page.addScriptTag({ content: `
     const internalBrowserSidebar = document.getElementById('internal-browser-sidebar');
     let internalBrowserOpen = false, internalBrowserHasPage = false, sidebarOpen = false;
+    let internalBrowserPendingUrl = '', internalBrowserEmptyHomeGeneration = 0, internalBrowserHomeRequestGeneration = 0;
     // 広く表示（issue #613）はこの spec では使わない。
     let internalBrowserWide = null;
     // レイアウト切り替えのアニメーション（issue #629）はこの spec では使わない。
@@ -52,7 +55,11 @@ test.beforeEach(async ({ page }) => {
     const isReducedMotion = () => false;
     // main へ送ったページ領域を記録し、実際の配置と突き合わせる。
     const sentBounds = [];
-    const VKIpc = { send(channel, payload) { if (channel === 'internal-browser:bounds') sentBounds.push(payload); } };
+    const VKIpc = {
+      send(channel, payload) { if (channel === 'internal-browser:bounds') sentBounds.push(payload); },
+      // 空の新規タブの「ホームを開く」は、ホームが無い扱いにする。
+      invoke: async () => false,
+    };
     const focusTraps = VKFocusTrap.createFocusTrapStack(document);
     ${functions}
     document.getElementById('menu-btn').onclick = () => setSidebarOpen(!sidebarOpen);
@@ -104,7 +111,7 @@ test('ブラウザ幅240pxでホームとアドレス欄が操作列に収まる
   const toolbar = page.locator('.internal-browser-toolbar');
   const home = toolbar.getByRole('button', { name: 'ホーム', exact: true });
   const address = toolbar.getByRole('textbox', { name: 'URL または検索語を入力' });
-  const close = toolbar.getByRole('button', { name: '閉じる', exact: true });
+  const close = toolbar.getByRole('button', { name: 'アプリ内ブラウザを閉じる', exact: true });
   await expect(home).toHaveAttribute('title', 'ホーム');
   await expect(address).toHaveAttribute('placeholder', 'URL');
   const addressBox = await address.boundingBox();

@@ -4260,6 +4260,53 @@ body.pane-dragging * {
   .internal-browser-toolbar button { flex-basis: 24px; width: 24px; padding-inline: 1px; }
   .internal-browser-toolbar .internal-browser-url { padding-inline: 2px; }
 }
+/* タブの行（issue #644）
+   ========================================================================== */
+/* 選んでいるタブは操作列と同じ地（#0d1117）にし、上端の青い線・明るい文字と合わせて操作列とつなげる。 */
+.internal-browser-tabbar { display: flex; flex: 0 0 auto; align-items: center; height: 32px; padding: 0 7px 0 0; background: #010409; }
+.internal-browser-tablist { display: flex; flex: 1 1 auto; min-width: 0; height: 100%; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
+.internal-browser-tab {
+  container-type: inline-size;
+  position: relative;
+  display: flex;
+  flex: 1 1 180px;
+  align-items: center;
+  gap: 6px;
+  min-width: 36px;
+  max-width: 180px;
+  height: 100%;
+  box-sizing: border-box;
+  padding: 0 10px;
+  border-top: 2px solid transparent;
+  color: #8b949e;
+  font-size: 12px;
+  line-height: 1.2;
+  cursor: default;
+  user-select: none;
+}
+.internal-browser-tab:hover { background: #161b22; color: #c9d1d9; }
+.internal-browser-tab[aria-selected="true"] { min-width: 60px; background: #0d1117; border-top-color: #58a6ff; color: #e6edf3; }
+/* タブの行は横スクロールで端が切れるため、フォーカスの枠をタブの内側に描く。 */
+.internal-browser-tab:focus-visible { outline-offset: -2px; }
+.internal-browser-tab-icon { display: grid; flex: 0 0 16px; place-items: center; width: 16px; height: 16px; }
+.internal-browser-tab-icon img { display: block; width: 16px; height: 16px; object-fit: contain; }
+.internal-browser-tab-icon .titlebar-icon { width: 14px; height: 14px; }
+.internal-browser-tab-title { flex: 1 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.internal-browser-tab-close { display: grid; flex: 0 0 16px; place-items: center; width: 16px; height: 16px; border-radius: 3px; color: inherit; cursor: pointer; }
+.internal-browser-tab-close:hover { background: #30363d; color: #e6edf3; }
+.internal-browser-tab-close .titlebar-icon { width: 12px; height: 12px; }
+.internal-browser-tab-spinner { width: 12px; height: 12px; box-sizing: border-box; border: 2px solid #30363d; border-top-color: #58a6ff; border-radius: 50%; animation: internal-browser-tab-spin 0.8s linear infinite; }
+@keyframes internal-browser-tab-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .internal-browser-tab-spinner { animation: none; } }
+/* 縮んだタブは文字を隠し、選んでいないタブはファビコンだけにする。 */
+@container (width < 72px) {
+  .internal-browser-tab-title { display: none; }
+  .internal-browser-tab:where(:not([aria-selected="true"])) .internal-browser-tab-close { display: none; }
+  .internal-browser-tab:where(:not([aria-selected="true"])) .internal-browser-tab-icon { margin-inline: auto; }
+}
+.internal-browser-tab-new { flex: 0 0 26px; width: 26px; height: 28px; margin-left: 4px; border: 1px solid transparent; border-radius: 5px; background: transparent; color: #e6edf3; cursor: pointer; }
+.internal-browser-tab-new:hover { background: #21262d; }
+.internal-browser-tab-new:disabled { color: #6e7681; background: transparent; cursor: default; }
 .internal-browser-toolbar .internal-browser-url::placeholder { color: #8b949e; }
 .internal-browser-toolbar .internal-browser-url[aria-invalid="true"] { border-color: #f85149; }
 .internal-browser-external-target { margin: 6px 8px 4px; color: #c9d1d9; font-size: 12px; line-height: 1.6; line-break: strict; overflow-wrap: anywhere; }
@@ -4267,14 +4314,14 @@ body.pane-dragging * {
 .internal-browser-address-error { margin: 5px 8px 8px; color: #f85149; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
 .internal-browser-address-error[hidden] { display: none; }
 .internal-browser-progress { height: 2px; width: 50%; background: #58a6ff; animation: internal-browser-loading 1.4s ease-in-out infinite alternate; }
-.internal-browser-navigation-status { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+.internal-browser-navigation-status, .internal-browser-tab-status { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 @keyframes internal-browser-loading { from { transform: translateX(0); } to { transform: translateX(100%); } }
 @media (prefers-reduced-motion: reduce) { .internal-browser-progress { animation: none; } }
 .internal-browser-page { flex: 1 1 auto; min-height: 0; }
-.internal-browser-home-notice, .internal-browser-notice, .internal-browser-error { padding: 12px; font-size: 12px; line-height: 1.5; background: #161b22; }
-.internal-browser-notice[hidden], .internal-browser-error[hidden], .internal-browser-progress[hidden] { display: none; }
+.internal-browser-home-notice, .internal-browser-notice, .internal-browser-error, .internal-browser-empty, .internal-browser-tab-limit { padding: 12px; font-size: 12px; line-height: 1.5; background: #161b22; }
+.internal-browser-notice[hidden], .internal-browser-error[hidden], .internal-browser-progress[hidden], .internal-browser-empty[hidden], .internal-browser-tab-limit[hidden] { display: none; }
 .internal-browser-home-notice:not(:has(> p:not(:empty))) { padding: 0; }
-.internal-browser-home-notice button, .internal-browser-notice button, .internal-browser-error button { margin: 6px 6px 0 0; padding: 4px 8px; border: 1px solid var(--vktm--color--border-interactive); border-radius: 4px; background: #21262d; color: #e6edf3; cursor: pointer; }
+.internal-browser-home-notice button, .internal-browser-notice button, .internal-browser-error button, .internal-browser-empty button, .internal-browser-tab-limit button { margin: 6px 6px 0 0; padding: 4px 8px; border: 1px solid var(--vktm--color--border-interactive); border-radius: 4px; background: #21262d; color: #e6edf3; cursor: pointer; }
 .internal-browser-error [data-action="external"] { max-width: calc(100% - 6px); text-align: left; }
 /* 完全な遷移先を確認でき、長い URL でも回復操作とページの領域を保つ。 */
 .internal-browser-external-target,
@@ -4287,7 +4334,7 @@ body.pane-dragging * {
 .internal-browser-external-target { flex-shrink: 0; }
 .internal-browser-error [data-action="external"] { line-height: 1.5; }
 /* 案内文と操作を分け、狭い幅でもボタンを一組で揃える。 */
-.internal-browser-home-notice p, .internal-browser-notice p { margin: 0; }
+.internal-browser-home-notice p, .internal-browser-notice p, .internal-browser-empty p, .internal-browser-tab-limit p { margin: 0; }
 .internal-browser-home-error { color: #f85149; overflow-wrap: anywhere; }
 .internal-browser-notice-actions { display: flex; flex-wrap: nowrap; gap: 6px; margin-top: 6px; }
 .internal-browser-notice-actions[hidden] { display: none; }

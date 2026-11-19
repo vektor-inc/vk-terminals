@@ -31,6 +31,33 @@ ipcMain.handle('internal-browser:action', (event, action, tabId) => {
   const url = getSavedInternalBrowserHomeUrl();
   return url ? internalBrowser.navigate(url, false, undefined, { tabId }) : 'home-unset';
 });
+// タブの操作（issue #644）。タブ番号の検証は internalBrowser 側で行う。
+ipcMain.handle('internal-browser:get-tabs', (event) => {
+  if (!isInternalBrowserSender(event) || !internalBrowser) return null;
+  return internalBrowser.getTabsState();
+});
+ipcMain.handle('internal-browser:tab-new', (event) => {
+  if (!isInternalBrowserSender(event) || !internalBrowser) return false;
+  return internalBrowser.newTab() ?? false;
+});
+ipcMain.handle('internal-browser:tab-select', (event, tabId) => {
+  if (!isInternalBrowserSender(event) || !internalBrowser || tabId === undefined) return false;
+  return internalBrowser.selectTab(tabId);
+});
+ipcMain.handle('internal-browser:tab-close', (event, tabId) => {
+  if (!isInternalBrowserSender(event) || !internalBrowser) return false;
+  return internalBrowser.closeTab(tabId);
+});
+// ペインの URL・issue タイトル・PR ボタンの「アプリ内で開く」。同じページのタブがあればそこへ切り替える。
+ipcMain.handle('internal-browser:open-tab', (event, url) => {
+  if (!isInternalBrowserSender(event) || !internalBrowser) return false;
+  return internalBrowser.openUrl(url);
+});
+// 新しいタブに「ホームを開く」を出すかどうか。押したときに開くページがあるかで決める。
+ipcMain.handle('internal-browser:home-available', (event) => {
+  if (!isInternalBrowserSender(event)) return false;
+  return Boolean(getSavedInternalBrowserHomeUrl());
+});
 ipcMain.on('internal-browser:bounds', (event, rect) => { if (isInternalBrowserSender(event)) internalBrowser?.setBounds(rect); });
 ipcMain.on('internal-browser:visible', (event, visible) => { if (isInternalBrowserSender(event)) internalBrowser?.setVisible(visible); });
 ipcMain.on('internal-browser:modal-count', (event, count) => { if (isInternalBrowserSender(event)) internalBrowser?.setModalCount(count); });

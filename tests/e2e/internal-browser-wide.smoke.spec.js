@@ -268,7 +268,7 @@ test('操作列は表示内容の操作と表示の操作の間を、グルー�
       });
       return items;
     });
-    const groups = [['back', 'forward', 'reload', 'url'], ['wide', 'external', 'close']];
+    const groups = [['back', 'forward', 'reload', 'home', 'url'], ['wide', 'external', 'close']];
     const check = async () => {
       const items = await measure();
       const byAction = Object.fromEntries(items.map(item => [item.action, item]));

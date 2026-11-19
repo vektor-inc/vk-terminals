@@ -108,7 +108,7 @@ test('共通メニューの選択肢がアプリ内ブラウザと OS のブラ�
   const url = 'https://example.com/issue';
   vm.runInNewContext(`showInternalBrowserChoice('${url}', { clientX: 20, clientY: 20 })`, context);
   buttons.find(button => button.textContent === 'アプリ内で開く').click({ detail: 1 });
-  assert.deepEqual(calls, [['sidebar', true], ['internal-browser:open', url]]);
+  assert.deepEqual(calls, [['sidebar', true], ['internal-browser:open-tab', url]]);
   calls.length = 0;
   vm.runInNewContext(`showInternalBrowserChoice('${url}', { clientX: 20, clientY: 20 })`, context);
   buttons.filter(button => button.textContent === '外部ブラウザで開く ↗').at(-1).click({ detail: 1 });

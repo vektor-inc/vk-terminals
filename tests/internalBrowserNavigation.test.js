@@ -14,9 +14,12 @@ function setup({ failCommand, failAttach = false, bootstrap, createBrowser = cre
   session.setPermissionCheckHandler = () => {};
   session.webRequest = { onBeforeRequest() {}, onCompleted() {} };
   let contents;
+  // ページから新しいタブを開いた場合のページも含め、作った順に並べる（issue #644）。
+  const views = [];
   class View {
     constructor() {
       contents = new EventEmitter();
+      views.push(this);
       installBrowserLoad(contents);
       if (bootstrap) {
         const loadURL = contents.loadURL;
@@ -38,7 +41,7 @@ function setup({ failCommand, failAttach = false, bootstrap, createBrowser = cre
     webContents: { send(channel, state) { messages.push({ channel, state }); if (channel === 'internal-browser:state') states.push(state); } },
   }, { WebContentsView: View, session: { fromPartition: () => session }, dialog: { showMessageBoxSync: () => 1 } });
   browser.navigate('https://example.com/a', false, 1);
-  return { browser, contents, session, states, messages };
+  return { browser, contents, session, states, messages, views };
 }
 
 function emitLoaderEvents(contents, loaderId, url, frameId = 'main') {
@@ -538,36 +541,45 @@ for (const canonical of ['https://example.com/canonical', 'https://example.com/a
   }
 }
 
-for (const via of ['window.open', 'target=_blank']) {
+// window.open と target="_blank" は、どちらも要求したタブのすぐ右の新しいタブで開く（issue #644）。
+for (const [via, disposition] of [['window.open', 'new-window'], ['target=_blank', 'foreground-tab']]) {
   for (const noticeFirst of [true, false]) {
-    test(`${via} download は isDownload と通知の到着順によらず終了: 通知先行=${noticeFirst}`, async () => {
-      const { contents, session, states, messages } = setup();
+    test(`${via} download は新しいタブで isDownload と通知の到着順によらず終了: 通知先行=${noticeFirst}`, async () => {
+      const { browser, contents, session, states, messages, views } = setup();
       await contents.complete('https://example.com/a');
       await flushBrowserLoads();
-      contents.openHandler({ url: 'https://example.com/download' });
+      contents.openHandler({ url: 'https://example.com/download', disposition });
+      // 新しいタブを前に出し、元のタブのページはそのまま残す
+      assert.deepEqual(browser.getTabIds(), [1, 2]);
+      assert.equal(browser.getActiveTabId(), 2);
+      const opened = views[1].webContents;
       const operation = states.at(-1).navigationOperationId;
-      assert.equal(states.at(-1).pendingUrl, '');
+      assert.deepEqual([states.at(-1).tabId, states.at(-1).pendingUrl], [2, 'https://example.com/download']);
       await flushBrowserLoads();
       const notice = () => session.emit('will-download', { preventDefault() {} }, { getURLChain: () => ['https://example.com/download'] });
       if (noticeFirst) notice();
-      await contents.download();
+      await opened.download();
       if (!noticeFirst) notice();
       assert.equal(states.at(-1).navigationResult, 'download-blocked');
       assert.equal(states.at(-1).downloadUrl, '');
-      assert.equal(states.at(-1).url, 'https://example.com/a');
-      assert.deepEqual(notices(messages).map(message => message.state), [{ canOpenFromToolbar: false, tabId: 1, active: true }]);
+      assert.equal(states.at(-1).url, '');
+      assert.deepEqual(notices(messages).map(message => message.state), [{ canOpenFromToolbar: false, tabId: 2, active: true }]);
       assert.equal(states.at(-1).navigationOperationId, operation);
       assert.equal(states.at(-1).navigationRequestId, null);
+      // 元のタブの確定 URL は変わらない
+      browser.publish({ tabId: 1 });
+      assert.deepEqual([states.at(-1).tabId, states.at(-1).url], [1, 'https://example.com/a']);
     });
   }
 }
 
 test('同一URLの旧download通知・旧isDownload応答は新しい世代を終了しない', async () => {
-  const { contents, states, session } = setup();
+  const { browser, contents, states, session } = setup();
   await flushBrowserLoads();
   const old = contents.loads[0];
   contents.stop = () => {};
-  contents.openHandler({ url: old.url });
+  // ページ起点の同じ URL への遷移（以前の window.open と同じ開き方）で、新しい世代を始める。
+  browser.navigate(old.url, true);
   await flushBrowserLoads();
   const operation = states.at(-1).navigationOperationId;
   session.emit('will-download', { preventDefault() {} }, { getURLChain: () => [old.url] });

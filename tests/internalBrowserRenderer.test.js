@@ -574,10 +574,13 @@ test('ホーム操作の false 応答と IPC 拒否を再試行案内として�
       internalBrowserSidebar: sidebar,
       internalBrowserOpen: true,
       internalBrowserHomeRequestGeneration: 0,
+      // 操作列の操作は、表示しているタブの番号を添えて送る（issue #644）。
+      internalBrowserDisplayedTabId: 3,
       externalUrlToastEl: toast,
-      VKIpc: { invoke(channel, action) {
+      VKIpc: { invoke(channel, action, tabId) {
         assert.equal(channel, 'internal-browser:action');
         assert.equal(action, 'home');
+        assert.equal(tabId, 3);
         return Promise.resolve(currentReply());
       } },
       setInternalBrowserHomeNotice: value => notices.push(value),
@@ -618,6 +621,7 @@ test('ホーム操作の false 応答と IPC 拒否を再試行案内として�
   vm.runInNewContext(clickHandler, {
     internalBrowserSidebar: { addEventListener(_type, handler) { click = handler; }, querySelector: () => homeError },
     internalBrowserOpen: true, internalBrowserHomeRequestGeneration: 0, externalUrlToastEl: null,
+    internalBrowserDisplayedTabId: 1,
     VKIpc: { invoke: async () => 'home-unset' },
     setInternalBrowserHomeNotice: value => notices.push(value),
     syncInternalBrowserLayout() {},
@@ -650,7 +654,9 @@ test('ホーム失敗は閉じると消え、閉じた後の遅延した失敗�
     const context = vm.createContext({
       internalBrowserOpen: true, internalBrowserHasPage: true,
       internalBrowserHomeRequestGeneration: 0, internalBrowserWide: null,
+      internalBrowserDisplayedTabId: 1,
       internalBrowserSidebar: sidebar,
+      syncInternalBrowserEmptyView() {},
       externalUrlToastEl: { dataset: { persistent: 'true' }, hidden: false },
       document: { activeElement: null, getElementById: () => ({ focus() {} }) },
       VKIpc: { invoke: () => pending.promise },
@@ -748,20 +754,23 @@ test('外部保存の部分成功後は失敗キーだけを再送し、成功�
   });
 });
 
-test('タイトルバーから空状態を開くと表示後にURL欄へ移り、再表示とリンク起点は操作元を保つ', () => {
+test('タイトルバーから空状態を開くと表示後にURL欄へ移り、再表示とリンク起点は操作元を保つ', async () => {
   const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
   const setter = source.match(/function setInternalBrowserOpen\([\s\S]*?\n\}/)?.[0];
   const focusHelper = source.match(/function focusInternalBrowserToolbar\([\s\S]*?\n\}/)?.[0];
   const homeNoticeHelper = source.match(/function setInternalBrowserHomeNotice\([\s\S]*?\n\}/)?.[0];
+  const emptyViewHelper = source.match(/function syncInternalBrowserEmptyView\([\s\S]*?\n\}/)?.[0];
   const toggleHandler = source.match(/document\.getElementById\('internal-browser-toggle'\)\.addEventListener\('click',.*\);/)?.[0];
-  assert.ok(setter && focusHelper && homeNoticeHelper && toggleHandler);
+  assert.ok(setter && focusHelper && homeNoticeHelper && emptyViewHelper && toggleHandler);
   const calls = [];
   const document = { activeElement: null, getElementById: () => toggle };
   const toggle = { focus() { document.activeElement = this; }, addEventListener(_type, handler) { this.click = handler; } };
   const address = { value: '入力途中', selectionStart: 2, selectionEnd: 2,
     focus() { assert.equal(sidebar.hidden, false); calls.push('address'); document.activeElement = this; },
     closest() { return sidebar.hidden ? sidebar : null; } };
-  const notice = { hidden: true, textContent: '' };
+  // 空の新規タブの案内（issue #644）。「ホームを開く」は main が開けるページがあると答えたときだけ出す。
+  const emptyActions = { hidden: true, contains: () => false };
+  const empty = { hidden: true, querySelector: () => emptyActions, contains: () => false };
   const homeNoticeActions = { hidden: true };
   const homeNoticeStatus = { textContent: '' };
   const homeNotice = { querySelector: selector => selector === '[role="status"]' ? homeNoticeStatus : homeNoticeActions,
@@ -769,22 +778,26 @@ test('タイトルバーから空状態を開くと表示後にURL欄へ移り�
   const sidebar = { hidden: true, contains: element => element === address,
     querySelector: selector => ({
       '.internal-browser-url': address,
-      '.internal-browser-notice': notice,
+      '.internal-browser-empty': empty,
       '.internal-browser-home-notice': homeNotice,
       '.internal-browser-home-error': { textContent: '' },
     })[selector] };
   const context = vm.createContext({ document, internalBrowserSidebar: sidebar,
     internalBrowserOpen: false, internalBrowserHasPage: false, internalBrowserWide: null,
-    internalBrowserHomeRequestGeneration: 0,
+    internalBrowserHomeRequestGeneration: 0, internalBrowserPendingUrl: '',
+    VKIpc: { invoke: async channel => { calls.push(channel); return true; } },
+    hideInternalBrowserContent: element => { element.hidden = true; },
     // 切り替えのアニメーション（issue #629）は即時に反映する形で置き換える。
     animateLayoutChange: update => update(),
     syncInternalBrowserLayout() { sidebar.hidden = !context.internalBrowserOpen; calls.push('layout'); } });
-  vm.runInContext(`${setter}\n${focusHelper}\n${homeNoticeHelper}\n${toggleHandler}`, context);
+  vm.runInContext(`let internalBrowserEmptyHomeGeneration = 0;\n${setter}\n${focusHelper}\n${homeNoticeHelper}\n${emptyViewHelper}\n${toggleHandler}`, context);
   toggle.focus();
   toggle.click();
-  assert.deepEqual(calls, ['layout', 'address']);
+  assert.deepEqual(calls, ['internal-browser:home-available', 'layout', 'address']);
   assert.equal(document.activeElement, address);
-  assert.equal(notice.hidden, false);
+  assert.equal(empty.hidden, false);
+  await new Promise(setImmediate);
+  assert.equal(emptyActions.hidden, false);
   assert.equal(address.value, '入力途中');
   assert.equal(address.selectionStart, 2);
   assert.equal(address.selectionEnd, 2);
@@ -799,7 +812,7 @@ test('タイトルバーから空状態を開くと表示後にURL欄へ移り�
   toggle.click();
   assert.equal(document.activeElement, address);
   assert.equal(address.value, '入力途中');
-  // 表示済みページの再表示ではタイトルバーボタンを維持する。
+  // 表示済みページの再表示ではタイトルバーボタンを維持し、空の新規タブの案内も隠す。
   toggle.click();
   context.internalBrowserHasPage = true;
   const focusCount = calls.filter(call => call === 'address').length;
@@ -1032,6 +1045,7 @@ test('アドレス欄は編集中の通知を保持し、Enter のみで正規�
     resolveBrowserAddress: require('../renderer/urlSafety').resolveBrowserAddress,
     VKIpc: { invoke: (_channel, url) => { opened.push(url); return Promise.resolve(); } },
     syncInternalBrowserLayout() {},
+    syncInternalBrowserEmptyView() {},
     URL,
   });
   vm.runInContext(`let internalBrowserUrl = 'https://old.example'; let internalBrowserDownloadUrl = ''; let internalBrowserPendingUrl = ''; let internalBrowserAddressHasDraft = false; let internalBrowserHasPage = false; ${addressHandlers}`, context);
@@ -1104,6 +1118,7 @@ test('main が Enter の送信を受け付けないときは読み込み中を�
     resolveBrowserAddress: require('../renderer/urlSafety').resolveBrowserAddress,
     VKIpc: { invoke: () => replies.shift() },
     syncInternalBrowserLayout() {},
+    syncInternalBrowserEmptyView() {},
     URL,
   });
   vm.runInContext(`let internalBrowserUrl = ''; let internalBrowserFailedUrl = ''; let internalBrowserDownloadUrl = ''; let internalBrowserPendingUrl = ''; let internalBrowserAddressHasDraft = false; let internalBrowserHasPage = false; ${addressHandlers}`, context);
@@ -1171,6 +1186,7 @@ test('main の拒否を待つ間にアドレス欄を編集したときは、拒
     resolveBrowserAddress: require('../renderer/urlSafety').resolveBrowserAddress,
     VKIpc: { invoke: () => reply },
     syncInternalBrowserLayout() {},
+    syncInternalBrowserEmptyView() {},
     URL,
   });
   vm.runInContext(`let internalBrowserUrl = ''; let internalBrowserFailedUrl = ''; let internalBrowserDownloadUrl = ''; let internalBrowserPendingUrl = ''; let internalBrowserAddressHasDraft = false; let internalBrowserHasPage = false; ${addressHandlers}`, context);
@@ -1297,6 +1313,8 @@ test('失敗表示は失敗 URL、操作列は確定 URL を安全な外部オ�
     VKIpc: { on: (name, handler) => { handlers[name] = handler; }, invoke: (channel, source) => { helpOpened.push([channel, source]); return Promise.resolve(true); } },
     openExternalUrlSafe: url => opened.push(url),
     syncInternalBrowserLayout() { layoutSyncs++; },
+    internalBrowserDisplayedTabId: 1,
+    syncInternalBrowserEmptyView() {},
     URL,
     document: { get activeElement() { return activeElement; }, createElement: () => {
       const button = { textContent: '', append() {}, addEventListener(_type, handler) { this.click = handler; } };
@@ -1450,7 +1468,8 @@ test('main の遷移結果を順に受け、失敗・成功・中止・置換・
   const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
   const addressHandlers = source.match(/const internalBrowserAddress = internalBrowserSidebar\.querySelector\('\.internal-browser-url'\);[\s\S]*?(?=document\.getElementById\('internal-browser-toggle'\))/)?.[0];
   const stateHandler = source.match(/VKIpc\.on\('internal-browser:state', state => \{[\s\S]*?\n\}\);/)?.[0];
-  const downloadHandler = source.match(/VKIpc\.on\('internal-browser:download-blocked',[\s\S]*?\n\}\);/)?.[0];
+  // 案内の表示は、後ろのタブの案内をそのタブを選んだときに出し直せるよう関数に分けてある（issue #644）。
+  const downloadHandler = source.match(/VKIpc\.on\('internal-browser:download-blocked',[\s\S]*?\nfunction showInternalBrowserDownloadNotice\([\s\S]*?\n\}/)?.[0];
   assert.ok(addressHandlers);
   assert.ok(stateHandler);
   assert.ok(downloadHandler);
@@ -1512,6 +1531,7 @@ test('main の遷移結果を順に受け、失敗・成功・中止・置換・
       externalUrlToastEl: { querySelector: () => toastBody },
       hideInternalBrowserContent: element => { element.hidden = true; },
       syncInternalBrowserLayout() {},
+      syncInternalBrowserEmptyView() {},
       document: { activeElement: null, createElement: () => ({}) }, URL,
     });
     vm.runInContext(`let internalBrowserUrl = ''; let internalBrowserPendingUrl = ''; let internalBrowserFailedUrl = ''; let internalBrowserDownloadUrl = ''; let internalBrowserAddressHasDraft = false; let internalBrowserHasPage = false; ${addressHandlers} ${stateHandler} ${downloadHandler}`, context);
@@ -1810,8 +1830,9 @@ test('main の遷移結果を順に受け、失敗・成功・中止・置換・
     assert.equal(messages.at(-1).navigationRequestId, null);
     assert.equal(navigationStatus.textContent, 'ページを読み込み中');
 
-    requestId = startPending('pending-window-open');
-    contents.openHandler({ url: 'https://example.org/from-page' });
+    // ページ起点で同じタブに開く遷移（window.open は新しいタブで開くため、同じタブの遷移は navigate で起こす）。
+    requestId = startPending('pending-page-open');
+    browser.navigate('https://example.org/from-page', true);
     assertSuperseded(requestId);
     assert.equal(messages.at(-1).navigationRequestId, null);
     await contents.complete('https://example.org/from-page');

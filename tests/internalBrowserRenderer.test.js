@@ -546,7 +546,11 @@ test('ホーム操作の false 応答と IPC 拒否を再試行案内として�
   const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
   const clickHandler = source.match(/internalBrowserSidebar\.addEventListener\('click', event => \{[\s\S]*?\n\}\);/)?.[0];
   assert.ok(clickHandler);
-  assert.match(source, /class="internal-browser-home-error" role="status" aria-live="polite"/);
+  const homeNoticeMarkup = source.match(/<div class="internal-browser-home-notice">[\s\S]*?<\/div>/)?.[0];
+  assert.ok(homeNoticeMarkup);
+  assert.equal((homeNoticeMarkup.match(/role="status"/g) || []).length, 1);
+  assert.match(homeNoticeMarkup, /<p role="status" aria-live="polite"><\/p>/);
+  assert.match(homeNoticeMarkup, /class="internal-browser-home-error" role="alert" aria-live="assertive"/);
   const css = fs.readFileSync(path.join(__dirname, '../renderer/style.css'), 'utf8');
   assert.match(css, /\.internal-browser-home-error \{[^}]*color:[^}]*overflow-wrap: anywhere/);
   assert.match(css, /\.internal-browser-home-notice:not\(:has\(> p:not\(:empty\)\)\) \{ padding: 0; \}/);

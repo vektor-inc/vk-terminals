@@ -122,6 +122,9 @@ test('ブラウザ幅240pxでホーム未設定案内のボタンが同じ幅で
   await expect(page.locator('#internal-browser-sidebar')).toHaveCSS('width', '240px');
   const notice = page.locator('.internal-browser-home-notice');
   await expect(notice.getByRole('status')).toHaveText('ホームページが設定されていません。');
+  const homeError = notice.getByRole('alert');
+  await expect(homeError).toHaveAttribute('aria-live', 'assertive');
+  await expect(homeError).toBeEmpty();
   const configure = notice.getByRole('button', { name: 'ホームページ URL を設定' });
   const dismiss = notice.getByRole('button', { name: '案内を閉じる' });
   const first = await configure.boundingBox();

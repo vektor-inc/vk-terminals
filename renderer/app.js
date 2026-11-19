@@ -1298,6 +1298,16 @@ internalBrowserTabList.addEventListener('wheel', event => {
   event.preventDefault();
   internalBrowserTabList.scrollLeft += event.deltaY;
 }, { passive: false });
+// サイドバーの幅が変わったとき、選んでいるタブがタブの行の表示範囲の外に残らないよう見える位置へ戻す。
+// 幅を変える経路（つまみ・広く表示・ウィンドウの幅・全面表示）ごとに呼ばず、タブの行の幅の変化で拾う。
+let internalBrowserTabListWidth = 0;
+new ResizeObserver(() => {
+  const width = internalBrowserTabList.clientWidth;
+  // 閉じて幅が 0 になったときは何もしない（開き直したときの幅の変化で戻す）。
+  if (!width || width === internalBrowserTabListWidth) return;
+  internalBrowserTabListWidth = width;
+  internalBrowserTabList.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+}).observe(internalBrowserTabList);
 
 // ─── State ────────────────────────────────────────────────────────────────────
 let tree = null;       // Layout tree root

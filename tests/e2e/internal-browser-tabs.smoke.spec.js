@@ -239,11 +239,75 @@ test('「アプリ内で開く」は同じページのタブへ切り替え、�
       expect(width).toBeLessThanOrEqual(180);
     }
 
+    // @step サイドバーを 240px まで狭める（狭いウィンドウの全面表示に近い幅）
+    await win.evaluate(() => { internalBrowserSidebar.style.width = '240px'; });
+    // @check 上限の案内のボタンは縦に積まれて同じ幅にそろい、案内の箱からはみ出さない
+    const narrow = await limit.evaluate(box => {
+      const boxRect = box.getBoundingClientRect();
+      const buttons = [...box.querySelectorAll('.internal-browser-notice-actions button')].map(button => button.getBoundingClientRect());
+      return { boxLeft: boxRect.left, boxRight: boxRect.right, buttons: buttons.map(({ left, right, top, bottom, width }) => ({ left, right, top, bottom, width })) };
+    });
+    expect(narrow.buttons).toHaveLength(2);
+    const [externalButton, dismissButton] = narrow.buttons;
+    expect(dismissButton.top).toBeGreaterThanOrEqual(externalButton.bottom);
+    expect(Math.abs(dismissButton.width - externalButton.width)).toBeLessThan(0.5);
+    for (const button of narrow.buttons) {
+      expect(button.left).toBeGreaterThanOrEqual(narrow.boxLeft);
+      expect(button.right).toBeLessThanOrEqual(narrow.boxRight);
+    }
+    // @check 案内の文は語の途中（「タ／ブ」「くだ／さい」「閉／じて」）で改行されない
+    const splitWords = await limit.locator('p').evaluate(paragraph => {
+      const text = paragraph.firstChild;
+      const top = index => { const range = document.createRange(); range.setStart(text, index); range.setEnd(text, index + 1); return range.getBoundingClientRect().top; };
+      return ['タブを', '閉じてから', 'ください'].filter(word => {
+        const start = text.data.lastIndexOf(word);
+        return Math.abs(top(start) - top(start + word.length - 1)) > 1;
+      });
+    });
+    expect(splitWords).toEqual([]);
+    // @check 上限の案内の下に読み込みエラーが続くと、間に区切り線（#30363d・1px）が入る。上限の案内の上には入らない
+    const borders = await win.evaluate(() => {
+      const error = internalBrowserSidebar.querySelector('.internal-browser-error');
+      error.hidden = false;
+      const style = getComputedStyle(error);
+      const result = {
+        error: `${style.borderTopWidth} ${style.borderTopStyle} ${style.borderTopColor}`,
+        limit: getComputedStyle(internalBrowserSidebar.querySelector('.internal-browser-tab-limit')).borderTopWidth,
+      };
+      error.hidden = true;
+      return result;
+    });
+    expect(borders.error).toBe('1px solid rgb(48, 54, 61)');
+    expect(borders.limit).toBe('0px');
+    await win.evaluate(() => syncInternalBrowserLayout());
+
     // @step タブを 1 つ閉じる
     await tabs(win).nth(9).click({ button: 'middle' });
     // @check 上限の案内が消え、「＋」を押せるようになる
     await expect(limit).toBeHidden();
     await expect(newTab).toBeEnabled();
+
+    // @step 幅の変更つまみの ← キーでサイドバーを 480px 以上に広げ、最後のタブを選ぶ
+    const tabList = win.locator('.internal-browser-tablist');
+    const resizer = win.locator('.internal-browser-resizer');
+    const browserWidth = async () => Number(await resizer.getAttribute('aria-valuenow'));
+    await resizer.focus();
+    while (await browserWidth() < 480) await resizer.press('ArrowLeft');
+    await tabs(win).nth(8).click();
+    // @check 広い幅では 9 個のタブが行に収まり、横スクロールしていない
+    await expect.poll(() => tabList.evaluate(list => list.scrollWidth <= list.clientWidth && list.scrollLeft === 0)).toBe(true);
+    // @step つまみの → キーで 360px まで狭める
+    await resizer.focus();
+    while (await browserWidth() > 360) await resizer.press('ArrowRight');
+    expect(await browserWidth()).toBe(360);
+    // @check 狭めるとタブの行からはみ出す
+    expect(await tabList.evaluate(list => list.scrollWidth > list.clientWidth)).toBe(true);
+    // @check 選んでいるタブがタブの行の表示範囲に戻ってくる
+    await expect.poll(() => tabList.evaluate(list => {
+      const selected = list.querySelector('[aria-selected="true"]').getBoundingClientRect();
+      const visible = list.getBoundingClientRect();
+      return selected.left >= visible.left - 0.5 && selected.right <= visible.right + 0.5;
+    })).toBe(true);
   } finally {
     await closeApp(launched);
   }

@@ -4318,7 +4318,11 @@ body.pane-dragging * {
 @keyframes internal-browser-loading { from { transform: translateX(0); } to { transform: translateX(100%); } }
 @media (prefers-reduced-motion: reduce) { .internal-browser-progress { animation: none; } }
 .internal-browser-page { flex: 1 1 auto; min-height: 0; }
-.internal-browser-home-notice, .internal-browser-notice, .internal-browser-error, .internal-browser-empty, .internal-browser-tab-limit { padding: 12px; font-size: 12px; line-height: 1.5; background: #161b22; }
+/* 案内の文は狭い幅でも語句の区切りで折り返す。 */
+.internal-browser-home-notice, .internal-browser-notice, .internal-browser-error, .internal-browser-empty, .internal-browser-tab-limit { padding: 12px; font-size: 12px; line-height: 1.5; background: #161b22; line-break: strict; word-break: auto-phrase; }
+/* 続けて並ぶ案内の箱は地色が同じで 1 つの箱に見えるため、間に区切り線を引いて別の箱にする。
+   箱の DOM の並び（ホームの案内 → タブの上限 → 入力の案内 → GitHub の案内 → 読み込みエラー）に依存する。並びを変えたら両方の一覧を直すこと。 */
+:where(.internal-browser-home-notice:has(> p:not(:empty)), .internal-browser-tab-limit, .internal-browser-empty, .internal-browser-notice):where(:not([hidden])) ~ :where(.internal-browser-tab-limit, .internal-browser-empty, .internal-browser-notice, .internal-browser-error) { border-top: 1px solid #30363d; }
 .internal-browser-notice[hidden], .internal-browser-error[hidden], .internal-browser-progress[hidden], .internal-browser-empty[hidden], .internal-browser-tab-limit[hidden] { display: none; }
 .internal-browser-home-notice:not(:has(> p:not(:empty))) { padding: 0; }
 .internal-browser-home-notice button, .internal-browser-notice button, .internal-browser-error button, .internal-browser-empty button, .internal-browser-tab-limit button { margin: 6px 6px 0 0; padding: 4px 8px; border: 1px solid var(--vktm--color--border-interactive); border-radius: 4px; background: #21262d; color: #e6edf3; cursor: pointer; }
@@ -4333,14 +4337,13 @@ body.pane-dragging * {
 }
 .internal-browser-external-target { flex-shrink: 0; }
 .internal-browser-error [data-action="external"] { line-height: 1.5; }
-/* 案内文と操作を分け、狭い幅でもボタンを一組で揃える。 */
+/* 案内文と操作を分ける。ボタンは狭い幅で 1 行に収まらないため、どの幅でも縦に積み、いちばん広いボタンの幅にそろえる。 */
 .internal-browser-home-notice p, .internal-browser-notice p, .internal-browser-empty p, .internal-browser-tab-limit p { margin: 0; }
 .internal-browser-home-error { color: #f85149; overflow-wrap: anywhere; }
-.internal-browser-notice-actions { display: flex; flex-wrap: nowrap; gap: 6px; margin-top: 6px; }
+.internal-browser-notice-actions { display: grid; grid-template-columns: minmax(0, max-content); justify-content: start; gap: 6px; margin-top: 6px; }
 .internal-browser-notice-actions[hidden] { display: none; }
-.internal-browser-notice-actions button { margin: 0; white-space: nowrap; }
-.internal-browser-home-notice .internal-browser-notice-actions { flex-direction: column; margin-top: 8px; }
-.internal-browser-home-notice .internal-browser-notice-actions button { min-width: 0; line-height: 1.4; white-space: normal; overflow-wrap: anywhere; }
+.internal-browser-notice-actions button { min-width: 0; margin: 0; line-height: 1.4; white-space: normal; overflow-wrap: anywhere; }
+.internal-browser-home-notice .internal-browser-notice-actions { grid-template-columns: minmax(0, 1fr); margin-top: 8px; }
 .internal-browser-choice { position: fixed; z-index: 2100; min-width: 210px; padding: 5px; border: 1px solid var(--vktm--color--border-interactive); border-radius: 6px; background: #161b22; color: #e6edf3; box-shadow: 0 8px 24px #0008; }
 .internal-browser-choice-heading { padding: 5px 8px; color: #8b949e; font-size: 11px; }
 .internal-browser-choice [role="menuitem"] { display: block; width: 100%; padding: 7px 8px; text-align: left; border: 0; border-radius: 4px; background: transparent; color: inherit; cursor: pointer; }

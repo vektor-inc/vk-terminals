@@ -1,6 +1,9 @@
 # Changelog
 
 - [ 不具合修正 ] 設定画面を閉じても予約済みの保存を完了し、ヘルプを開く途中の追加編集を保持（[#634](https://github.com/vektor-inc/vk-terminals/issues/634)）
+- [ 機能追加 ] アプリ内ブラウザにホームボタンを追加。設定したページを開き、移動先が未設定なら設定欄を案内（[#634](https://github.com/vektor-inc/vk-terminals/issues/634)）
+- [ 不具合修正 ] 設定の連続保存や一部失敗後の再保存で、保存ボタンを押したときの値が正しく保存されない問題を修正（[#634](https://github.com/vektor-inc/vk-terminals/issues/634)）
+- [ 不具合修正 ] 設定の保存中やヘルプの起動中に追加編集すると、設定画面が閉じて入力が失われる問題を修正（[#634](https://github.com/vektor-inc/vk-terminals/issues/634)）
 
 ## 1.107.1
 
@@ -8,9 +11,6 @@
 
 ## 1.107.0
 
-- [ 機能追加 ] アプリ内ブラウザにホームボタンを追加。設定したページを開き、移動先が未設定なら設定欄を案内（[#634](https://github.com/vektor-inc/vk-terminals/issues/634)）
-- [ 不具合修正 ] 設定の連続保存や一部失敗後の再保存で、保存ボタンを押したときの値が正しく保存されない問題を修正（[#634](https://github.com/vektor-inc/vk-terminals/issues/634)）
-- [ 不具合修正 ] 設定の保存中やヘルプの起動中に追加編集すると、設定画面が閉じて入力が失われる問題を修正（[#634](https://github.com/vektor-inc/vk-terminals/issues/634)）
 - [ 機能追加 ] Codex の固定入口から、許可された別リポジトリの issue に担当者を追加できるように（[#636](https://github.com/vektor-inc/vk-terminals/issues/636)）
 - [ 不具合修正 ] 自動処理の作業ペインで Codex を使っても、サイドバーとスマートフォン版の Codex 使用量に反映されない問題を修正（[#638](https://github.com/vektor-inc/vk-terminals/issues/638)）
 

@@ -5,7 +5,7 @@ const { pathToFileURL } = require('node:url');
 const { isSafeHelpDocument } = require('./helpFeature');
 const { PARTITION, HELP_URL, isHelpUrl, validateBrowserBounds, isBrowserUrl, isNavigationUrl, isAllowedBrowserPermission } = require('./internalBrowserPolicy');
 const { MAX_TABS, toTabMatchKey, pickTabAfterClose, shouldForegroundOpenedTab } = require('./internalBrowserTabPolicy');
-const { pickFaviconUrl, fetchFaviconDataUrl } = require('./internalBrowserFavicon');
+const { pickFaviconUrl, fetchFaviconDataUrl, isAllowedFaviconTarget } = require('./internalBrowserFavicon');
 
 const normalizeDownloadUrl = url => {
   try { return new URL(url).href; } catch { return ''; }
@@ -40,7 +40,7 @@ const isSameDocumentUrl = (left, right) => {
  * @param {Function} host.releaseView (view) 画面に付いていれば外す
  * @param {Function} host.openFromPage (tab, url, disposition) ページの新しいタブ要求を開く
  * @param {Function} host.sendTabs タブの一覧（タイトル・ファビコンなど）を画面へ送る
- * @param {Function} host.fetchFavicon (url) ファビコンを data URL にして返す
+ * @param {Function} host.fetchFavicon (url, pageUrl) ファビコンを data URL にして返す
  * @returns {object} タブの操作
  */
 function createBrowserTab(id, host) {
@@ -116,7 +116,13 @@ function createBrowserTab(id, host) {
     host.syncBounds();
   }
 
-  function publish() {
+  /**
+   * 状態を画面へ送る。selected はタブを選んだときの送り直しで、画面はこの通知をそのタブの正として扱う。
+   *
+   * @param {object} [options]
+   * @param {boolean} [options.selected] タブを選んだときの送り直しか
+   */
+  function publish({ selected = false } = {}) {
     const contents = view?.webContents;
     const available = contents && !contents.isDestroyed?.();
     const history = available ? contents.navigationHistory : null;
@@ -132,6 +138,7 @@ function createBrowserTab(id, host) {
       loading: !!available && contents.isLoading(),
       canGoBack: !!available && (canUseHelpReturn() || canMoveHistory(history, -1, 'canGoBack')),
       canGoForward: !!available && (canUseHelpForward() || canMoveHistory(history, 1, 'canGoForward')),
+      ...(selected === true ? { selected: true } : {}),
     });
   }
 
@@ -277,7 +284,7 @@ function createBrowserTab(id, host) {
         title = '';
         updateFavicon('');
       });
-      contents.on('did-start-loading', publish);
+      contents.on('did-start-loading', () => publish());
       contents.on('did-stop-loading', () => {
         publish();
         const load = activeLoad;
@@ -312,7 +319,7 @@ function createBrowserTab(id, host) {
     favicon = '';
     host.sendTabs();
     if (!url) return;
-    Promise.resolve(host.fetchFavicon(url)).then(dataUrl => {
+    Promise.resolve(host.fetchFavicon(url, currentUrl)).then(dataUrl => {
       if (faviconSourceUrl !== url || !view) return;
       favicon = typeof dataUrl === 'string' ? dataUrl : '';
       host.sendTabs();
@@ -715,6 +722,11 @@ function createBrowserTab(id, host) {
     }
   }
 
+  // タブを代表する URL。読み込み中なら読み込み先、失敗なら失敗先、それ以外は表示中の URL。
+  function getTabUrl() {
+    return pendingUrl || failedUrl || currentUrl;
+  }
+
   function isEmpty() {
     return !currentUrl && !pendingUrl && !failedUrl && !downloadUrl && !(activeLoad && !activeLoad.done);
   }
@@ -744,7 +756,7 @@ function createBrowserTab(id, host) {
     },
     getView() { return view; },
     /**
-     * タブの行に出す情報。url は読み込み中なら読み込み先、失敗なら失敗先、それ以外は表示中の URL。
+     * タブの行に出す情報。url はタブを代表する URL（getTabUrl）。
      *
      * @returns {object} { id, title, url, favicon, loading, empty }
      */
@@ -753,7 +765,7 @@ function createBrowserTab(id, host) {
       const available = contents && !contents.isDestroyed?.();
       return {
         id, title, favicon,
-        url: pendingUrl || failedUrl || currentUrl,
+        url: getTabUrl(),
         loading: !!available && contents.isLoading(),
         empty: isEmpty(),
       };
@@ -761,13 +773,13 @@ function createBrowserTab(id, host) {
     // 一度も開いていない新規タブか（読み込み中・失敗・ダウンロードの停止を含めて何も起きていない）。
     isEmpty,
     /**
-     * 「アプリ内で開く」の対象と同じページを表示（または読み込み）しているか。
+     * 「アプリ内で開く」の対象と、タブを代表する URL（getTabUrl）が同じページか。
      *
      * @param {string} key toTabMatchKey で作った比較用の文字列
      * @returns {boolean} 同じページか
      */
     matchesUrl(key) {
-      return !!key && [currentUrl, pendingUrl, failedUrl].some(url => toTabMatchKey(url) === key);
+      return !!key && toTabMatchKey(getTabUrl()) === key;
     },
     ownsContents(contents) { return !!contents && contents === view?.webContents; },
     hasDownloadCandidate(urls) { return findDownloadCandidates(urls).length > 0; },
@@ -808,8 +820,8 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
   // 同じアイコンを読み直さないよう、取得結果を少数だけ覚えておく（古いものから捨てる）。
   const faviconCache = new Map();
   const FAVICON_CACHE_LIMIT = 64;
-  const loadFavicon = fetchFavicon || (url => fetchFaviconDataUrl(url, {
-    fetch: (target, options) => browserSession.fetch(target, options),
+  const loadFavicon = fetchFavicon || ((url, pageUrl) => fetchFaviconDataUrl(url, {
+    pageUrl, fetch: (target, options) => browserSession.fetch(target, options),
   }));
 
   const host = {
@@ -831,9 +843,11 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
     },
     openFromPage,
     sendTabs,
-    fetchFavicon(url) {
+    fetchFavicon(url, pageUrl) {
+      // 取得してよいかは、覚えた結果を使う場合も含めて毎回ページとの関係で確かめる。
+      if (!isAllowedFaviconTarget(url, pageUrl)) return Promise.resolve('');
       if (faviconCache.has(url)) return faviconCache.get(url);
-      const request = Promise.resolve(loadFavicon(url)).catch(() => '');
+      const request = Promise.resolve(loadFavicon(url, pageUrl)).catch(() => '');
       faviconCache.set(url, request);
       if (faviconCache.size > FAVICON_CACHE_LIMIT) faviconCache.delete(faviconCache.keys().next().value);
       // 取得に失敗したアイコンは覚えず、次に知らされたときに取り直す。
@@ -939,7 +953,7 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
     activeTab = tab;
     syncBounds();
     sendTabs();
-    tab.publish();
+    tab.publish({ selected: true });
     return true;
   }
 

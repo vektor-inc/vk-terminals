@@ -54,25 +54,75 @@ function detectFaviconType(bytes, declaredType) {
   return '';
 }
 
+const MAX_REDIRECTS = 5;
+
+/**
+ * 自分の端末や社内ネットワークを指すホスト名か（ループバック・プライベート・リンクローカルの IP アドレス、
+ * localhost や .local などの名前、ドットを含まない 1 語のホスト名）。
+ *
+ * @param {string} hostname URL の hostname（IPv6 は角括弧付きでもよい）
+ * @returns {boolean} 端末・社内側の宛先か
+ */
+function isLocalHostname(hostname) {
+  const host = String(hostname || '').toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '');
+  if (!host) return true;
+  if (/(^|\.)(localhost|local|internal|lan|home\.arpa)$/.test(host)) return true;
+  const v4 = host.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+  if (v4) {
+    const [a, b] = v4.slice(1, 3).map(Number);
+    return a === 0 || a === 10 || a === 127 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31)
+      || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127);
+  }
+  if (host.includes(':')) return host === '::' || host === '::1' || /^f[cd]/.test(host) || /^fe[89ab]/.test(host) || host.startsWith('::ffff:');
+  return !host.includes('.');
+}
+
+/**
+ * 表示中のページから、このファビコンを取りに行ってよいか。
+ * 端末・社内側の宛先は、ページ自身が同じホストにあるときだけ許す（外部のページから内側へは取りに行かない）。
+ *
+ * @param {string} url 取得する URL
+ * @param {string} pageUrl ファビコンを知らせたページの URL
+ * @returns {boolean} 取得してよいか
+ */
+function isAllowedFaviconTarget(url, pageUrl) {
+  if (!isFaviconUrl(url)) return false;
+  const { hostname } = new URL(url);
+  if (!isLocalHostname(hostname)) return true;
+  if (!isFaviconUrl(pageUrl)) return false;
+  return new URL(pageUrl).hostname === hostname;
+}
+
 /**
  * ファビコンを取得して data URL に変える。取得先・大きさ・待ち時間を制限し、失敗したときは空文字を返す（例外は投げない）。
+ * リダイレクトは自分でたどり、送る前に毎回取得先を確かめる。終わり方によらず、残った通信は打ち切る。
  *
  * @param {string} url 取得する URL
  * @param {object} options
  * @param {Function} options.fetch fetch 互換の関数（アプリ内ブラウザのセッションの fetch）
+ * @param {string} [options.pageUrl] ファビコンを知らせたページの URL（isAllowedFaviconTarget を参照）
  * @param {number} [options.timeoutMs] 待ち時間の上限（ミリ秒）
  * @param {number} [options.maxBytes] 本文の大きさの上限（バイト）
  * @returns {Promise<string>} data URL（失敗時は空文字）
  */
-async function fetchFaviconDataUrl(url, { fetch, timeoutMs = FAVICON_TIMEOUT_MS, maxBytes = FAVICON_MAX_BYTES } = {}) {
-  if (!isFaviconUrl(url) || typeof fetch !== 'function') return '';
+async function fetchFaviconDataUrl(url, { fetch, pageUrl = '', timeoutMs = FAVICON_TIMEOUT_MS, maxBytes = FAVICON_MAX_BYTES } = {}) {
+  if (typeof fetch !== 'function') return '';
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    // Cookie などの認証情報は送らない（ページの表示には使わない取得のため）。
-    const response = await fetch(url, { signal: controller.signal, credentials: 'omit', redirect: 'follow' });
-    // リダイレクトで HTTP(S) 以外へ移った応答は使わない。
-    if (!response?.ok || (response.url && !isFaviconUrl(response.url))) return '';
+    let target = url;
+    let response;
+    for (let hop = 0; ; hop++) {
+      if (!isAllowedFaviconTarget(target, pageUrl)) return '';
+      // Cookie などの認証情報は送らない（ページの表示には使わない取得のため）。
+      response = await fetch(target, { signal: controller.signal, credentials: 'omit', redirect: 'manual' });
+      if (!response || response.status < 300 || response.status >= 400) break;
+      const location = response.headers?.get?.('location');
+      if (!location || hop >= MAX_REDIRECTS) return '';
+      response.body?.cancel?.().catch(() => {});
+      target = new URL(location, target).href;
+    }
+    if (!response?.ok) return '';
     const declaredType = String(response.headers?.get?.('content-type') || '').split(';')[0].trim().toLowerCase();
     if (declaredType && !declaredType.startsWith('image/') && declaredType !== 'application/octet-stream') return '';
     const declaredLength = Number(response.headers?.get?.('content-length'));
@@ -85,6 +135,8 @@ async function fetchFaviconDataUrl(url, { fetch, timeoutMs = FAVICON_TIMEOUT_MS,
   } catch {
     return '';
   } finally {
+    // 途中で断った応答の本文も読み続けさせない。
+    controller.abort();
     clearTimeout(timer);
   }
 }
@@ -112,4 +164,4 @@ async function readLimited(response, maxBytes, controller) {
   return Buffer.concat(chunks);
 }
 
-module.exports = { FAVICON_MAX_BYTES, FAVICON_TIMEOUT_MS, isFaviconUrl, pickFaviconUrl, detectFaviconType, fetchFaviconDataUrl };
+module.exports = { FAVICON_MAX_BYTES, FAVICON_TIMEOUT_MS, isFaviconUrl, isLocalHostname, isAllowedFaviconTarget, pickFaviconUrl, detectFaviconType, fetchFaviconDataUrl };

@@ -365,3 +365,48 @@ test('取得に失敗したファビコンは覚えず、次に知らされた�
   assert.deepEqual(requested, ['https://example.com/a.ico', 'https://example.com/a.ico']);
   assert.equal(tabLists().at(-1).tabs[0].favicon, '');
 });
+
+// ─── レビュー指摘への対応（issue #644）──────────────────────────────────────
+
+test('「アプリ内で開く」はタブを代表する URL だけで同じページか比べる（移動中のタブの移動元では一致させない）', async () => {
+  const { browser, views } = setup();
+  browser.navigate('https://example.com/a', false, 1);
+  await flushBrowserLoads();
+  await views[0].webContents.complete('https://example.com/a');
+  // A から B へ移動中
+  browser.navigate('https://example.com/b', false, 2);
+  browser.newTab();
+  browser.navigate('https://example.com/c', false, 3);
+  const opened = browser.openUrl('https://example.com/a');
+  assert.equal(opened.result, 'opened');
+  assert.equal(opened.tabId, 3);
+  // 移動先の B なら切り替える
+  assert.deepEqual(browser.openUrl('https://example.com/b'), { result: 'switched', tabId: 1 });
+});
+
+test('タブを選んだときの送り直しにだけ selected を付ける', () => {
+  const { browser, states } = setup();
+  browser.navigate('https://example.com/a', false, 1);
+  assert.equal(states().at(-1).selected, undefined);
+  browser.newTab();
+  assert.equal(states().at(-1).selected, true);
+  browser.navigate('https://example.com/b', false, 2);
+  assert.equal(states().at(-1).selected, undefined);
+  browser.selectTab(1);
+  assert.deepEqual([states().at(-1).tabId, states().at(-1).selected], [1, true]);
+  browser.publish();
+  assert.equal(states().at(-1).selected, undefined);
+});
+
+test('ファビコンの取得にはページの URL を渡し、外部のページから端末・社内側のアイコンは取りに行かない', async () => {
+  const requested = [];
+  const { browser, views } = setup({ fetchFavicon: async (url, pageUrl) => { requested.push([url, pageUrl]); return ''; } });
+  browser.navigate('https://example.com/a', false, 1);
+  await flushBrowserLoads();
+  await views[0].webContents.complete('https://example.com/a');
+  const contents = views[0].webContents;
+  contents.emit('page-favicon-updated', {}, ['http://127.0.0.1:8080/icon.png']);
+  contents.emit('page-favicon-updated', {}, ['https://example.com/icon.png']);
+  await flushBrowserLoads();
+  assert.deepEqual(requested, [['https://example.com/icon.png', 'https://example.com/a']]);
+});

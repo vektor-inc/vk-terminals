@@ -106,6 +106,13 @@ test('タブを足して切り替え、閉じる。最後のタブを閉じる�
     await tabs(win).nth(1).focus();
     await win.keyboard.press('ArrowRight');
     await expect(tabs(win).nth(2)).toBeFocused();
+    // @step フォーカスを右のタブに置いたまま、後ろのタブのページタイトルを変える
+    await launched.app.evaluate(({ webContents }) => webContents.getAllWebContents()
+      .find(contents => contents.getURL() === 'https://tabs.test/a')
+      .executeJavaScript("document.title = 'ページ A（更新）'"));
+    // @check タブの名前が変わっても、キーボードのフォーカスは右のタブに残る
+    await expect(tabs(win).first()).toHaveAccessibleName('ページ A（更新）');
+    await expect(tabs(win).nth(2)).toBeFocused();
     await win.keyboard.press('Enter');
     // @check 右のタブが選ばれ、URL 欄がそのタブのものになる
     await expect(tabs(win).nth(2)).toHaveAttribute('aria-selected', 'true');
@@ -186,6 +193,8 @@ test('「アプリ内で開く」は同じページのタブへ切り替え、�
       await newTab.click();
       await expect(tabs(win)).toHaveCount(count);
     }
+    // @check 10 個目を開いたときは、上限に達したことも読み上げる
+    await expect(win.locator('.internal-browser-tab-status')).toHaveText('新しいタブを開きました。タブは 10 個まで開けます。');
     // @check 10 個では「＋」を押せない
     await expect(newTab).toBeDisabled();
     await expect(newTab).toHaveAttribute('title', '新しいタブ（タブは 10 個まで開けます）');

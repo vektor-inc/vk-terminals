@@ -1956,3 +1956,79 @@ test('main の遷移結果を順に受け、失敗・成功・中止・置換・
     }
   }
 });
+
+// タブを選んだときに main が送り直す状態（selected）は、退避しておいた読み込み中の記録で捨てずに、そのタブの正とする（issue #644）。
+test('後ろにいる間に読み込みが終わった・置き換わった・失敗したタブを選ぶと、送り直された状態で操作列を揃える', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8');
+  const addressHandlers = source.match(/const internalBrowserAddress = internalBrowserSidebar\.querySelector\('\.internal-browser-url'\);[\s\S]*?(?=document\.getElementById\('internal-browser-toggle'\))/)?.[0];
+  const stateHandler = source.match(/VKIpc\.on\('internal-browser:state', state => \{[\s\S]*?\n\}\);/)?.[0];
+  assert.ok(addressHandlers && stateHandler);
+  const make = () => {
+    const handlers = {};
+    const message = { textContent: '' };
+    const failedExternal = { getAttribute() {}, setAttribute() {} };
+    const elements = {
+      '.internal-browser-url': { value: '', addEventListener() {}, setAttribute() {}, removeAttribute() {} },
+      '.internal-browser-address-error': { id: 'internal-browser-address-error', hidden: true, textContent: '' },
+      '.internal-browser-error': { hidden: true, querySelector: selector => selector === '[data-action="external"]' ? failedExternal : message, querySelectorAll: () => [] },
+      '.internal-browser-notice': { hidden: true, dataset: {}, replaceChildren() {}, contains: () => false },
+      '.internal-browser-toolbar [data-action="external"]': { setAttribute() {} },
+      '.internal-browser-external-target': { hidden: true, textContent: '' },
+      '.internal-browser-navigation-status': { textContent: '' },
+      '.internal-browser-toolbar [data-action="reload"]': {},
+      '[data-action="back"]': {}, '[data-action="forward"]': {},
+      '.internal-browser-progress': {},
+    };
+    const context = vm.createContext({
+      internalBrowserSidebar: { querySelector: selector => elements[selector] },
+      resolveBrowserAddress: require('../renderer/urlSafety').resolveBrowserAddress,
+      VKIpc: { on: (channel, handler) => { handlers[channel] = handler; }, invoke: () => Promise.resolve() },
+      hideInternalBrowserContent: element => { element.hidden = true; },
+      syncInternalBrowserLayout() {}, syncInternalBrowserEmptyView() {},
+      document: { activeElement: null, createElement: () => ({}) }, URL,
+    });
+    vm.runInContext(`let internalBrowserUrl = 'https://example.com/a'; let internalBrowserPendingUrl = ''; let internalBrowserFailedUrl = ''; let internalBrowserDownloadUrl = ''; let internalBrowserAddressHasDraft = false; let internalBrowserHasPage = true; ${addressHandlers} ${stateHandler}`, context);
+    // 離れる前に退避した記録: Enter で開いた要求 5 の読み込み中（操作番号 1）
+    vm.runInContext(`internalBrowserNavigationActive = true; internalBrowserActiveRequestId = 5; internalBrowserOperationId = 1;
+      internalBrowserSubmittedUrl = 'https://example.com/b'; internalBrowserAddress.value = 'https://example.com/b';`, context);
+    const read = expression => vm.runInContext(expression, context);
+    return { handlers, elements, read };
+  };
+  const base = { pendingUrl: '', downloadUrl: '', failedUrl: '', github404Url: '', loading: false, canGoBack: true, canGoForward: false, tabId: 2, active: true };
+
+  // 後ろで読み込みが終わり、さらにページ側から別の遷移をして完了していた（操作番号 2・要求番号なし）
+  const completed = make();
+  completed.handlers['internal-browser:state']({ ...base, url: 'https://example.com/c', navigationResult: 'completed', navigationRequestId: null, navigationOperationId: 2, selected: true });
+  assert.equal(completed.elements['.internal-browser-url'].value, 'https://example.com/c');
+  assert.equal(completed.read('internalBrowserNavigationActive'), false);
+  assert.equal(completed.read('internalBrowserActiveRequestId'), null);
+  assert.equal(completed.elements['.internal-browser-navigation-status'].textContent, '');
+  // 選んだあとの通常の通知も捨てずに受け取る
+  completed.handlers['internal-browser:state']({ ...base, url: 'https://example.com/c', navigationResult: 'completed', navigationRequestId: null, navigationOperationId: 2, loading: true });
+  assert.equal(completed.elements['.internal-browser-progress'].hidden, false);
+
+  // ページ側の遷移に置き換わり、まだ読み込み中（操作番号 3・要求番号なし）
+  const superseded = make();
+  superseded.handlers['internal-browser:state']({ ...base, url: 'https://example.com/a', navigationResult: null, navigationRequestId: null, navigationOperationId: 3, loading: true, selected: true });
+  assert.equal(superseded.read('internalBrowserNavigationActive'), true);
+  assert.equal(superseded.read('internalBrowserActiveRequestId'), null);
+  assert.equal(superseded.elements['.internal-browser-navigation-status'].textContent, 'ページを読み込み中');
+  // その遷移の完了は読み上げる
+  superseded.handlers['internal-browser:state']({ ...base, url: 'https://example.com/d', navigationResult: 'completed', navigationRequestId: null, navigationOperationId: 3 });
+  assert.equal(superseded.elements['.internal-browser-url'].value, 'https://example.com/d');
+  assert.equal(superseded.elements['.internal-browser-navigation-status'].textContent, 'ページの読み込みが完了しました');
+
+  // 後ろで失敗していた（操作番号 2・要求番号 5）
+  const failed = make();
+  failed.handlers['internal-browser:state']({ ...base, url: 'https://example.com/a', failedUrl: 'https://example.com/b', navigationResult: 'failed', navigationRequestId: 5, navigationOperationId: 2, selected: true });
+  assert.equal(failed.elements['.internal-browser-error'].hidden, false);
+  assert.equal(failed.elements['.internal-browser-url'].value, 'https://example.com/b');
+  assert.equal(failed.read('internalBrowserNavigationActive'), false);
+
+  // 未送信の入力は、選んだときの送り直しでも上書きしない
+  const draft = make();
+  draft.read("internalBrowserAddressHasDraft = true; internalBrowserAddress.value = '書きかけ'");
+  draft.handlers['internal-browser:state']({ ...base, url: 'https://example.com/c', navigationResult: 'completed', navigationRequestId: null, navigationOperationId: 2, selected: true });
+  assert.equal(draft.elements['.internal-browser-url'].value, '書きかけ');
+  assert.equal(draft.read('internalBrowserUrl'), 'https://example.com/c');
+});

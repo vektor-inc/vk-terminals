@@ -829,6 +829,18 @@ VKIpc.on('internal-browser:state', state => {
   if (state.active === false) return;
   // Enter の受理前と旧操作の再配送では、表示も live 通知も巻き戻さない。
   const operationId = state.navigationOperationId;
+  // タブを選んだときに main が送り直す状態は、そのタブの正とする（issue #644）。後ろにいる間に読み込みが
+  // 終わった・置き換わった場合も、退避しておいた読み込み中の記録で捨てずに、遷移の記録をこの状態に合わせる。
+  // URL 欄の未送信の入力（internalBrowserAddressHasDraft）はこの記録と別に持つため、ここでは触れない。
+  if (state.selected === true && Number.isSafeInteger(operationId)) {
+    const inProgress = state.navigationResult === null && operationId > 0;
+    internalBrowserOperationId = operationId;
+    internalBrowserFinishedOperationId = inProgress ? Math.min(internalBrowserFinishedOperationId, operationId - 1) : operationId;
+    internalBrowserNavigationActive = inProgress;
+    internalBrowserActiveRequestId = inProgress ? state.navigationRequestId ?? null : null;
+    internalBrowserSubmittedUrl = '';
+    setInternalBrowserNavigationStatus(inProgress ? 'ページを読み込み中' : '');
+  }
   if (Number.isSafeInteger(operationId)) {
     if (operationId < internalBrowserOperationId) return;
     if (internalBrowserNavigationActive && internalBrowserActiveRequestId !== null
@@ -1084,7 +1096,10 @@ function applyInternalBrowserTabs(payload) {
     const opened = internalBrowserTabs.filter(tab => !previousIds.has(tab.id));
     const closedCount = [...previousIds].filter(id => !currentIds.has(id)).length;
     if (opened.length > 0 && closedCount === 0) {
-      announceInternalBrowserTabs(opened.some(tab => tab.id === payload.activeTabId) ? '新しいタブを開きました' : '新しいタブを後ろに開きました');
+      const message = opened.some(tab => tab.id === payload.activeTabId) ? '新しいタブを開きました' : '新しいタブを後ろに開きました';
+      // 上限に達すると「＋」は押せなくなり Tab キーでも止まらないため、上限に達したことも合わせて読み上げる。
+      const atLimit = internalBrowserTabs.length >= internalBrowserMaxTabs;
+      announceInternalBrowserTabs(atLimit ? `${message}。タブは ${internalBrowserMaxTabs} 個まで開けます。` : message);
     } else if (closedCount > 0 && opened.length === 0) announceInternalBrowserTabs('タブを閉じました');
   }
   if (internalBrowserOpen) syncInternalBrowserLayout();
@@ -1108,6 +1123,8 @@ function getInternalBrowserTabLabel(tab) {
 function renderInternalBrowserTabs({ scrollToSelected = false } = {}) {
   const hadFocus = internalBrowserTabList.contains(document.activeElement);
   const existing = new Map([...internalBrowserTabList.children].map(element => [Number(element.dataset.tabId), element]));
+  // 並びが変わった要素だけを差し込む。付け直すとフォーカスが外れ、読み上げも同じタブを読み直すため。
+  let cursor = internalBrowserTabList.firstElementChild;
   for (const tab of internalBrowserTabs) {
     let element = existing.get(tab.id);
     existing.delete(tab.id);
@@ -1122,14 +1139,17 @@ function renderInternalBrowserTabs({ scrollToSelected = false } = {}) {
     }
     const selected = tab.id === internalBrowserDisplayedTabId;
     const label = getInternalBrowserTabLabel(tab);
-    element.setAttribute('aria-selected', String(selected));
-    element.tabIndex = selected ? 0 : -1;
-    element.title = label;
-    element.setAttribute('aria-label', tab.loading ? `${label}（読み込み中）` : label);
+    // 変わっていない属性は書き直さない（読み上げソフトに同じタブを読み直させない）。
+    const setAttribute = (name, value) => { if (element.getAttribute(name) !== value) element.setAttribute(name, value); };
+    setAttribute('aria-selected', String(selected));
+    setAttribute('tabindex', selected ? '0' : '-1');
+    setAttribute('title', label);
+    setAttribute('aria-label', tab.loading ? `${label}（読み込み中）` : label);
     const title = element.querySelector('.internal-browser-tab-title');
     if (title.textContent !== label) title.textContent = label;
     syncInternalBrowserTabIcon(element.querySelector('.internal-browser-tab-icon'), tab);
-    internalBrowserTabList.appendChild(element);
+    if (element === cursor) cursor = cursor.nextElementSibling;
+    else internalBrowserTabList.insertBefore(element, cursor);
   }
   for (const element of existing.values()) element.remove();
   const selectedElement = internalBrowserTabList.querySelector('[aria-selected="true"]');
@@ -1141,8 +1161,8 @@ function renderInternalBrowserTabs({ scrollToSelected = false } = {}) {
   if (atLimit && newTab === document.activeElement) selectedElement?.focus();
   newTab.disabled = atLimit;
   const newTabLabel = atLimit ? `新しいタブ（タブは ${internalBrowserMaxTabs} 個まで開けます）` : '新しいタブ';
-  newTab.title = newTabLabel;
-  newTab.setAttribute('aria-label', newTabLabel);
+  if (newTab.title !== newTabLabel) newTab.title = newTabLabel;
+  if (newTab.getAttribute('aria-label') !== newTabLabel) newTab.setAttribute('aria-label', newTabLabel);
 }
 
 // ファビコンの位置に、読み込み中は回転する印、取得済みならファビコン、無ければ地球のアイコンを出す。

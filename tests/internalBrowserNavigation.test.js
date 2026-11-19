@@ -555,7 +555,7 @@ for (const via of ['window.open', 'target=_blank']) {
       assert.equal(states.at(-1).navigationResult, 'download-blocked');
       assert.equal(states.at(-1).downloadUrl, '');
       assert.equal(states.at(-1).url, 'https://example.com/a');
-      assert.deepEqual(notices(messages).map(message => message.state), [{ canOpenFromToolbar: false }]);
+      assert.deepEqual(notices(messages).map(message => message.state), [{ canOpenFromToolbar: false, tabId: 1, active: true }]);
       assert.equal(states.at(-1).navigationOperationId, operation);
       assert.equal(states.at(-1).navigationRequestId, null);
     });
@@ -1149,7 +1149,7 @@ for (const noticeFirst of [true, false]) {
     }
     await contents.download();
     if (!noticeFirst) repeat = downloadNotice(session, 'https://example.com/a', contents);
-    assert.deepEqual(notices(messages).map(message => message.state), [{ canOpenFromToolbar: true }]);
+    assert.deepEqual(notices(messages).map(message => message.state), [{ canOpenFromToolbar: true, tabId: 1, active: true }]);
     const toastIndex = messages.findIndex(message => message.channel === 'internal-browser:download-blocked');
     assert.equal(messages[toastIndex - 1].state.navigationResult, 'download-blocked');
     assert.equal(messages[toastIndex - 1].state.downloadUrl, 'https://example.com/a');
@@ -1172,7 +1172,7 @@ for (const result of ['superseded', 'completed', 'failed', 'cancelled', 'detache
     else if (result === 'detached') contents.debugger.emit('detach');
     else browser.destroy();
     repeat();
-    assert.deepEqual(notices(messages).map(message => message.state), [{ canOpenFromToolbar: false }]);
+    assert.deepEqual(notices(messages).map(message => message.state), [{ canOpenFromToolbar: false, tabId: 1, active: true }]);
   });
 }
 
@@ -1195,7 +1195,7 @@ for (const oldResponseFirst of [true, false]) {
     }
     assert.equal(states.at(-1).downloadUrl, '');
     assert.equal(states.at(-1).navigationResult, null);
-    assert.deepEqual(notices(messages).map(message => message.state), [{ canOpenFromToolbar: false }]);
+    assert.deepEqual(notices(messages).map(message => message.state), [{ canOpenFromToolbar: false, tabId: 1, active: true }]);
     await contents.complete(old.url);
     assert.equal(states.at(-1).navigationResult, 'completed');
     assert.equal(notices(messages).length, 1);
@@ -1211,7 +1211,7 @@ test('無関係・別contents・完了後のdownloadはfalseで操作を変更�
   assert.equal(states.at(-1).navigationResult, null);
   await contents.complete('https://example.com/a');
   downloadNotice(session, 'https://example.com/a', contents);
-  assert.deepEqual(notices(messages).map(message => message.state), Array(3).fill({ canOpenFromToolbar: false }));
+  assert.deepEqual(notices(messages).map(message => message.state), Array(3).fill({ canOpenFromToolbar: false, tabId: 1, active: true }));
 });
 
 test('nativeのdownloadWillBeginだけではloader世代を確定せず一般案内を送る', async () => {
@@ -1229,7 +1229,7 @@ test('nativeのdownloadWillBeginだけではloader世代を確定せず一般案
     requestId: 'request-native-download', canceled: true, errorText: 'net::ERR_ABORTED',
   });
   assert.equal(states.at(-1).navigationResult, 'cancelled');
-  assert.deepEqual(notices(messages).map(message => message.state), [{ canOpenFromToolbar: false }]);
+  assert.deepEqual(notices(messages).map(message => message.state), [{ canOpenFromToolbar: false, tabId: 1, active: true }]);
 });
 
 test('配送済みdownloadの後に同一URLを再要求しても新しい通知を相関できる', async () => {
@@ -1241,7 +1241,7 @@ test('配送済みdownloadの後に同一URLを再要求しても新しい通知
   await flushBrowserLoads();
   await contents.download();
   downloadNotice(session, 'https://example.com/a', contents);
-  assert.deepEqual(notices(messages).map(message => message.state), Array(2).fill({ canOpenFromToolbar: true }));
+  assert.deepEqual(notices(messages).map(message => message.state), Array(2).fill({ canOpenFromToolbar: true, tabId: 1, active: true }));
 });
 
 // 終了した要求と現在文書を分離し、二つのイベント順序も両方確認する。
@@ -1292,7 +1292,7 @@ for (const oldResponseFirst of [false, true]) {
     const operationId = states.at(-1).navigationOperationId;
     downloadNotice(session, old.url, contents);
     downloadNotice(session, old.url, contents);
-    assert.deepEqual(notices(messages).map(message => message.state), Array(2).fill({ canOpenFromToolbar: false }));
+    assert.deepEqual(notices(messages).map(message => message.state), Array(2).fill({ canOpenFromToolbar: false, tabId: 1, active: true }));
     assert.equal(states.at(-1).navigationOperationId, operationId);
     browser.navigate(old.url, false, 3);
     await flushBrowserLoads();
@@ -1403,7 +1403,7 @@ for (const fromPage of [false, true]) {
       assert.equal(states.at(-1).downloadUrl, '');
       assert.equal(states.at(-1).url, 'https://example.com/a');
       assert.equal(states.at(-1).navigationResult, 'download-blocked');
-      assert.deepEqual(notices(messages).map(message => message.state), [{ canOpenFromToolbar: false }]);
+      assert.deepEqual(notices(messages).map(message => message.state), [{ canOpenFromToolbar: false, tabId: 1, active: true }]);
     });
   }
 }
@@ -1419,7 +1419,7 @@ test('リダイレクト先追跡はdownloadの送信元照合を変更しない
   session.emit('will-download', { preventDefault() {} }, { getURLChain: () => [load.url, 'https://cdn.example/file'] }, contents);
   await contents.download();
   assert.equal(states.at(-1).downloadUrl, load.url);
-  assert.deepEqual(notices(messages).map(message => message.state), [{ canOpenFromToolbar: true }]);
+  assert.deepEqual(notices(messages).map(message => message.state), [{ canOpenFromToolbar: true, tabId: 1, active: true }]);
 });
 
 test('download応答前のNetwork中止を失敗として確定しない', async () => {
@@ -1434,7 +1434,7 @@ test('download応答前のNetwork中止を失敗として確定しない', async
   await contents.download();
   assert.equal(states.at(-1).navigationResult, 'download-blocked');
   assert.equal(states.at(-1).downloadUrl, load.url);
-  assert.deepEqual(notices(messages).map(message => message.state), [{ canOpenFromToolbar: true }]);
+  assert.deepEqual(notices(messages).map(message => message.state), [{ canOpenFromToolbar: true, tabId: 1, active: true }]);
 });
 
 test('HTTP操作から案内へ切り替え、失敗・再読込・HTTP復帰を別操作として追跡する', async () => {

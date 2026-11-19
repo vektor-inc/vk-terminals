@@ -10,25 +10,26 @@ let internalBrowser = null;
 const { isInternalBrowserSender: isAllowedBrowserSender } = require('./utils/internalBrowserSender');
 const isInternalBrowserSender = event => isAllowedBrowserSender(event, win);
 
-ipcMain.handle('internal-browser:open', (event, url, requestId) => {
+// 末尾の tabId は省略可能で、省略時は選んでいるタブが対象になる（番号の検証は internalBrowser 側で行う）。
+ipcMain.handle('internal-browser:open', (event, url, requestId, tabId) => {
   if (!isInternalBrowserSender(event)) return false;
   if (requestId !== undefined && (!Number.isSafeInteger(requestId) || requestId <= 0)) return false;
-  return !!internalBrowser?.navigate(url, false, requestId);
+  return !!internalBrowser?.navigate(url, false, requestId, { tabId });
 });
-ipcMain.handle('internal-browser:external', async (event, source) => {
+ipcMain.handle('internal-browser:external', async (event, source, tabId) => {
   if (!isInternalBrowserSender(event)) return false;
-  const url = internalBrowser?.externalUrl(source);
+  const url = internalBrowser?.externalUrl(source, { tabId });
   if (!url) return false;
   await electronShell.openExternal(url);
   return true;
 });
-ipcMain.handle('internal-browser:action', (event, action) => {
+ipcMain.handle('internal-browser:action', (event, action, tabId) => {
   if (!isInternalBrowserSender(event) || !internalBrowser) return false;
-  if (action !== 'home') return internalBrowser.action(action);
+  if (action !== 'home') return internalBrowser.action(action, { tabId });
 
   // 押すたびに保存済みの設定を読み、既存の HTTP(S) 遷移に渡す。
   const url = getSavedInternalBrowserHomeUrl();
-  return url ? internalBrowser.navigate(url) : 'home-unset';
+  return url ? internalBrowser.navigate(url, false, undefined, { tabId }) : 'home-unset';
 });
 ipcMain.on('internal-browser:bounds', (event, rect) => { if (isInternalBrowserSender(event)) internalBrowser?.setBounds(rect); });
 ipcMain.on('internal-browser:visible', (event, visible) => { if (isInternalBrowserSender(event)) internalBrowser?.setVisible(visible); });

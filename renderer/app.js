@@ -782,6 +782,8 @@ internalBrowserResizer.addEventListener('keydown', event => {
 window.addEventListener('resize', cancelLayoutTransition);
 window.addEventListener('resize', syncInternalBrowserLayout);
 VKIpc.on('internal-browser:state', state => {
+  // 操作列は選んでいるタブの状態だけを映す。選んだときに main が状態を送り直す。
+  if (state.active === false) return;
   // Enter の受理前と旧操作の再配送では、表示も live 通知も巻き戻さない。
   const operationId = state.navigationOperationId;
   if (Number.isSafeInteger(operationId)) {
@@ -890,7 +892,9 @@ VKIpc.on('internal-browser:state', state => {
   }
   syncInternalBrowserLayout();
 });
-VKIpc.on('internal-browser:download-blocked', ({ canOpenFromToolbar } = {}) => {
+VKIpc.on('internal-browser:download-blocked', ({ canOpenFromToolbar, active } = {}) => {
+  // 選んでいないタブで止めたダウンロードの案内は出さない。
+  if (active === false) return;
   const toastMessage = canOpenFromToolbar
     ? 'ダウンロードはできません。操作列の「外部ブラウザで開く」から行ってください。'
     : 'ダウンロードはできません。外部ブラウザでダウンロードしてください。';

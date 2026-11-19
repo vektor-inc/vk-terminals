@@ -1677,7 +1677,7 @@ test('main の遷移結果を順に受け、失敗・成功・中止・置換・
     await flushBrowserLoads();
     browserSession.emit('will-download', { preventDefault() {} },
       { getURLChain: () => ['https://example.org/other'] });
-    assert.deepEqual(downloadEvents.at(-1), { canOpenFromToolbar: false });
+    assert.deepEqual(downloadEvents.at(-1), { canOpenFromToolbar: false, tabId: 1, active: true });
     assert.equal(toastMessages.at(-1), 'ダウンロードはできません。外部ブラウザでダウンロードしてください。');
     assert.equal(target.textContent.includes('ダウンロード先'), false);
     assert.equal(messages.at(-1).pendingUrl, 'https://example.org/download');
@@ -1691,7 +1691,7 @@ test('main の遷移結果を順に受け、失敗・成功・中止・置換・
     assert.equal(blockedToast, 1);
     assert.equal(channels.at(-2), 'internal-browser:state');
     assert.equal(channels.at(-1), 'internal-browser:download-blocked');
-    assert.deepEqual(downloadEvents.at(-1), { canOpenFromToolbar: true });
+    assert.deepEqual(downloadEvents.at(-1), { canOpenFromToolbar: true, tabId: 1, active: true });
     assert.equal(toastMessages.at(-1), 'ダウンロードはできません。操作列の「外部ブラウザで開く」から行ってください。');
     assert.equal(toastMessages.length, 2);
     assert.equal(target.textContent, '外部で開く: ダウンロード先 https://example.org/download');

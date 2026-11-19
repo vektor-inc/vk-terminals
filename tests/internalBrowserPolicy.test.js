@@ -449,7 +449,7 @@ test('専用ビューの遷移と権限、ダウンロード、確定 URL を制
   browserSession.emit('will-download', { preventDefault() { canceled = true; } }, { cancel() { throw new Error('item.cancel should not be called'); } });
   assert.equal(canceled, true);
   assert.equal(sent.at(-1)[0], 'internal-browser:download-blocked');
-  assert.deepEqual(sent.at(-1)[1], { canOpenFromToolbar: false });
+  assert.deepEqual(sent.at(-1)[1], { canOpenFromToolbar: false, tabId: 1, active: true });
   assert.equal(sent.at(-2)[1].downloadUrl, '');
   assert.equal(sent.at(-2)[1].navigationResult, 'cancelled');
   browser.navigate('https://example.com/download', false, 7);
@@ -461,7 +461,7 @@ test('専用ビューの遷移と権限、ダウンロード、確定 URL を制
   assert.equal(sent.at(-2)[1].downloadUrl, 'https://example.com/download');
   assert.equal(sent.at(-2)[1].navigationRequestId, 7);
   assert.equal(sent.at(-1)[0], 'internal-browser:download-blocked');
-  assert.deepEqual(sent.at(-1)[1], { canOpenFromToolbar: true });
+  assert.deepEqual(sent.at(-1)[1], { canOpenFromToolbar: true, tabId: 1, active: true });
   contents.emit('did-start-loading');
   assert.equal(sent.at(-1)[1].downloadUrl, 'https://example.com/download');
   contents.emit('did-start-navigation', {}, 'https://example.com/frame', false, false);
@@ -475,7 +475,7 @@ test('専用ビューの遷移と権限、ダウンロード、確定 URL を制
   browserSession.emit('will-download', { preventDefault() {} }, { getURLChain: () => ['https://example.com/other'] });
   assert.equal(sent.length, beforeUnrelatedDownload + 1);
   assert.equal(sent.at(-1)[0], 'internal-browser:download-blocked');
-  assert.deepEqual(sent.at(-1)[1], { canOpenFromToolbar: false });
+  assert.deepEqual(sent.at(-1)[1], { canOpenFromToolbar: false, tabId: 1, active: true });
   assert.equal(sent.at(-2)[1].pendingUrl, 'https://example.com/stale');
   assert.equal(sent.at(-2)[1].navigationResult, null);
   browser.navigate('https://example.com/normalized', false, 8);
@@ -483,7 +483,7 @@ test('専用ビューの遷移と権限、ダウンロード、確定 URL を制
   browserSession.emit('will-download', { preventDefault() {} }, { getURLChain: () => ['HTTPS://EXAMPLE.COM/normalized'] });
   await contents.download();
   assert.equal(sent.at(-2)[1].downloadUrl, 'https://example.com/normalized');
-  assert.deepEqual(sent.at(-1)[1], { canOpenFromToolbar: true });
+  assert.deepEqual(sent.at(-1)[1], { canOpenFromToolbar: true, tabId: 1, active: true });
   browser.navigate('https://example.com/bad');
   await flushBrowserLoads();
   browserSession.emit('will-download', { preventDefault() {} }, { getURLChain: () => ['invalid'] });
@@ -600,10 +600,14 @@ test('open IPC は sender と正の安全な request ID を検証し、URL-only 
   assert.equal(handler({ allowed: true }, 'https://example.com'), true);
   assert.equal(handler({ allowed: true }, 'https://example.com', 1), true);
   assert.equal(handler({ allowed: true }, 'https://example.com', Number.MAX_SAFE_INTEGER), true);
-  assert.deepEqual(calls, [
-    ['https://example.com', false, undefined],
-    ['https://example.com', false, 1],
-    ['https://example.com', false, Number.MAX_SAFE_INTEGER],
+  // tabId は省略時も含めてそのまま internalBrowser へ渡し、番号の検証は internalBrowser 側で行う。
+  assert.equal(handler({ allowed: true }, 'https://example.com', 1, 2), true);
+  // vm の中で作った引数オブジェクトは別 realm のため、比較できる形に直してから比べる。
+  assert.deepEqual(calls.map(([url, fromPage, requestId, options]) => [url, fromPage, requestId, { ...options }]), [
+    ['https://example.com', false, undefined, { tabId: undefined }],
+    ['https://example.com', false, 1, { tabId: undefined }],
+    ['https://example.com', false, Number.MAX_SAFE_INTEGER, { tabId: undefined }],
+    ['https://example.com', false, 1, { tabId: 2 }],
   ]);
 });
 

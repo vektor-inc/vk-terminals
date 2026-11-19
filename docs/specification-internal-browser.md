@@ -83,6 +83,15 @@ WebContentsView は `persist:vk-terminals-internal-browser` を使用し、タ�
 
 モバイル表示、開閉ショートカットは対象外。
 
+## 内部の作り（issue #643）
+
+タブ対応（issue #601）の準備として、`utils/internalBrowser.js` を 2 層に分ける。画面に見えるタブは常に 1 つで、見た目と動きは変えない。
+
+- タブ 1 つ分（`createBrowserTab`）: WebContentsView 1 つと、URL・戻る / 進むの可否・読み込み中・エラー・GitHub の 404 案内・ダウンロード停止案内などの状態、CDP による遷移の追跡を持つ。
+- タブ全体（`createInternalBrowser`）: タブの一覧・選んでいるタブ・表示位置・表示可否・モーダル数を持つ。画面に付けるのは選んでいるタブの WebContentsView だけ。セッション単位の権限・リクエスト・ダウンロードの検査はここで 1 回だけ設定する。ダウンロードは配送元のページからタブを特定し、分からないときは URL が一致する操作を持つタブ（1 つに絞れなければ選んでいるタブ）へ振り分ける。
+- IPC: `internal-browser:open` / `internal-browser:action` / `internal-browser:external` は末尾に省略可能な `tabId` を受け、省略時は選んでいるタブを対象にする。不正・未知の番号は受け付けない。`internal-browser:state` と `internal-browser:download-blocked` には `tabId` と、選んでいるタブかどうか（`active`）を載せ、画面は `active: false` の通知を表示に使わない。
+- 古い通知を捨てる判定に使う `navigationOperationId` は、タブ全体で 1 つの通し番号にする。
+
 ## レビュー後の決定
 
 ページが離脱を阻止したときは、メインウィンドウを親に、メッセージ「このページを離れますか？」の確認を出す（Windows・Linux のタイトルも同じ）。詳細文は「入力中の内容は保存されない可能性があります。」、操作は「移動する」「このページにとどまる」とし、既定・キャンセルは「とどまる」。移動を選んだときだけ離脱を許す。

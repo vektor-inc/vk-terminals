@@ -5,18 +5,42 @@ const { pathToFileURL } = require('node:url');
 const { isSafeHelpDocument } = require('./helpFeature');
 const { PARTITION, HELP_URL, isHelpUrl, validateBrowserBounds, isBrowserUrl, isNavigationUrl, isAllowedBrowserPermission } = require('./internalBrowserPolicy');
 
-function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocumentPath = null } = electron) {
-  const browserSession = session.fromPartition(PARTITION);
-  browserSession.setPermissionRequestHandler((_contents, permission, callback) => callback(isAllowedBrowserPermission(permission)));
-  browserSession.setPermissionCheckHandler((_contents, permission) => isAllowedBrowserPermission(permission));
-  browserSession.webRequest.onBeforeRequest((details, callback) => {
-    callback({ cancel: details.resourceType === 'mainFrame' && !isNavigationUrl(details.url) });
-  });
+const normalizeDownloadUrl = url => {
+  try { return new URL(url).href; } catch { return ''; }
+};
+
+const isSameDocumentUrl = (left, right) => {
+  try {
+    const a = new URL(left);
+    const b = new URL(right);
+    a.hash = '';
+    b.hash = '';
+    return a.href === b.href;
+  } catch (_error) {
+    return false;
+  }
+};
+
+/**
+ * タブ 1 つ分のページ（WebContentsView 1 つ）と、その表示状態・遷移の追跡を作る。
+ * 表示位置・表示可否・セッション単位の検査はタブ全体の管理層（createInternalBrowser）が持つ。
+ *
+ * @param {number} id タブ番号
+ * @param {object} host 管理層から渡す依存
+ * @param {object} host.win 親の BrowserWindow
+ * @param {Function} host.WebContentsView Electron の WebContentsView
+ * @param {object} host.dialog Electron の dialog
+ * @param {string|null} host.helpDocumentPath 外部ブラウザで開く案内ファイルのパス
+ * @param {Function} host.nextOperationId タブ全体で通しの操作番号を払い出す
+ * @param {Function} host.sendState (tab, state) 状態を画面へ送る
+ * @param {Function} host.sendDownloadNotice (tab, canOpenFromToolbar) ダウンロード停止案内を画面へ送る
+ * @param {Function} host.syncBounds 選んでいるタブのページを表示位置へ付け外しする
+ * @param {Function} host.releaseView (view) 画面に付いていれば外す
+ * @returns {object} タブの操作
+ */
+function createBrowserTab(id, host) {
+  const { win, WebContentsView, dialog, helpDocumentPath = null } = host;
   let view = null;
-  let attached = false;
-  let bounds = null;
-  let visible = false;
-  let modalCount = 0;
   let currentUrl = '';
   let pendingUrl = '';
   let downloadUrl = '';
@@ -39,39 +63,27 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
   let navigationInitialized = false;
   // 応答待ちの現在操作だけを保持し、終了・置換時に解放する。
   const downloadCandidates = new Set();
-  const seenDownloadItems = new WeakSet();
-  const normalizeDownloadUrl = url => {
-    try { return new URL(url).href; } catch { return ''; }
-  };
-  const isSameDocumentUrl = (left, right) => {
-    try {
-      const a = new URL(left);
-      const b = new URL(right);
-      a.hash = '';
-      b.hash = '';
-      return a.href === b.href;
-    } catch (_error) {
-      return false;
-    }
-  };
-  const cancelDownload = (event, item, contents) => {
-    event.preventDefault();
-    // 同じ DownloadItem の再配送で live 通知を重ねない。
-    if (item && seenDownloadItems.has(item)) return;
-    if (item) seenDownloadItems.add(item);
-    const chain = item?.getURLChain?.() || [];
-    const urls = chain.map(normalizeDownloadUrl).filter(Boolean);
-    // native の Page.downloadWillBegin は frameId/guid だけで loaderId がなく、
-    // 世代を特定できないため Page.navigate 応答のある操作だけを候補にする。
-    // 終了済み候補は保持せず、現在の結果待ち／確定済み download だけを見る。
-    const candidates = [...downloadCandidates, ...(activeLoad?.done && activeLoad.downloadConfirmed ? [activeLoad] : [])]
-      .filter(load => urls.includes(normalizeDownloadUrl(load.downloadSourceUrl)));
+  // native の Page.downloadWillBegin は frameId/guid だけで loaderId がなく、
+  // 世代を特定できないため Page.navigate 応答のある操作だけを候補にする。
+  // 終了済み候補は保持せず、現在の結果待ち／確定済み download だけを見る。
+  const findDownloadCandidates = urls => [
+    ...downloadCandidates, ...(activeLoad?.done && activeLoad.downloadConfirmed ? [activeLoad] : []),
+  ].filter(load => urls.includes(normalizeDownloadUrl(load.downloadSourceUrl)));
+
+  /**
+   * 管理層がこのタブへ振り分けたダウンロードを、遷移操作と突き合わせて案内を出す。
+   *
+   * @param {string[]} urls 正規化済みのダウンロード URL の経路
+   * @param {boolean} fromOtherContents どのタブのページにも属さない配送か
+   */
+  function handleDownload(urls, fromOtherContents) {
+    const candidates = findDownloadCandidates(urls);
     const load = candidates.length === 1 ? candidates[0] : null;
-    if ((contents && contents !== view?.webContents) || !load || load !== activeLoad
+    if (fromOtherContents || !load || load !== activeLoad
       || load.noticeReceived || load.downloadAmbiguous) {
       // 同一 URL の旧通知と区別できない配送は一般案内として消費する。
       // 現在候補も消費し、次の要求へ曖昧さを持ち越さない。
-      if (!contents || contents === view?.webContents) {
+      if (!fromOtherContents) {
         for (const candidate of candidates) {
           candidate.noticeReceived = true;
           candidate.flushDownloadNotice(false);
@@ -85,18 +97,21 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
     downloadCandidates.delete(load);
     if (load.downloadConfirmed) sendDownloadNotice(load.canOpenDownloadFromToolbar);
     else load.pendingDownloadNotice = true;
-  };
-  browserSession.on('will-download', cancelDownload);
+  }
 
   function sendDownloadNotice(canOpenFromToolbar) {
-    if (!win.isDestroyed()) win.webContents.send('internal-browser:download-blocked', { canOpenFromToolbar });
+    host.sendDownloadNotice(tab, canOpenFromToolbar);
+  }
+
+  function syncBounds() {
+    host.syncBounds();
   }
 
   function publish() {
     const contents = view?.webContents;
     const available = contents && !contents.isDestroyed?.();
     const history = available ? contents.navigationHistory : null;
-    if (!win.isDestroyed()) win.webContents.send('internal-browser:state', {
+    host.sendState(tab, {
       url: currentUrl,
       pendingUrl,
       downloadUrl,
@@ -129,22 +144,6 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
     for (const request of previous?.requests.values() || []) retiredLoaders.add(request.loaderId);
     activeLoad = null;
     return previous;
-  }
-
-  function syncBounds() {
-    if (!view || view.webContents.isDestroyed?.()) return;
-    // 0 サイズでも描画が残るため、非表示時は親ビューから外す。
-    if (!visible || modalCount > 0 || !bounds) {
-      if (attached) {
-        const restoreFocus = view.webContents.isFocused();
-        win.contentView.removeChildView(view);
-        attached = false;
-        if (restoreFocus && win.isFocused()) win.webContents.focus();
-      }
-      return;
-    }
-    view.setBounds(bounds);
-    if (!attached) { win.contentView.addChildView(view); attached = true; }
   }
 
   function ensureView() {
@@ -485,7 +484,8 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
     failedUrl = ''; github404Url = ''; downloadUrl = '';
     pendingUrl = fromPage ? '' : url;
     navigationRequestId = fromPage ? null : requestId ?? null;
-    navigationOperationId++;
+    // 画面が古い通知を捨てる判定に使うため、番号はタブ全体で通しにする。
+    navigationOperationId = host.nextOperationId();
     const contents = view.webContents;
     const load = {
       url, sourceUrl: currentUrl, downloadSourceUrl: url, native, help, historyTarget, syntheticHelpBack,
@@ -683,17 +683,16 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
     activeLoad?.flushDownloadNotice(false);
     downloadCandidates.clear();
     activeLoad = null;
-    browserSession.removeListener('will-download', cancelDownload);
     if (!view) return;
     debuggerAvailable = false;
-    if (attached) win.contentView.removeChildView(view);
-    attached = false;
+    host.releaseView(view);
     if (!view.webContents.isDestroyed?.()) view.webContents.close({ waitForBeforeUnload: false });
     view = null;
   }
 
-  return {
-    navigate, openHelp, action, destroy,
+  const tab = {
+    id,
+    navigate, openHelp, action, destroy, publish, handleDownload,
     externalUrl(source) {
       if (source !== 'current' && source !== 'failed') return null;
       const url = source === 'failed' ? failedUrl : (downloadUrl || currentUrl);
@@ -701,11 +700,172 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
       if (!isSafeHelpDocument(helpDocumentPath)) return null;
       return pathToFileURL(helpDocumentPath).href + new URL(url).hash;
     },
+    getView() { return view; },
+    ownsContents(contents) { return !!contents && contents === view?.webContents; },
+    hasDownloadCandidate(urls) { return findDownloadCandidates(urls).length > 0; },
+  };
+  return tab;
+}
+
+/**
+ * アプリ内ブラウザ全体（タブの一覧・選んでいるタブ・表示位置・表示可否・モーダル数）を管理する。
+ * セッション単位の検査（権限・リクエスト・ダウンロード）はここで 1 回だけ設定する。
+ * 作成時にタブを 1 つ作って選んだ状態にする。tabId を省略した操作は選んでいるタブが対象になる。
+ *
+ * @param {object} win 親の BrowserWindow
+ * @param {object} deps Electron の依存（WebContentsView・session・dialog）と案内ファイルのパス
+ * @returns {object} アプリ内ブラウザの操作
+ */
+function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocumentPath = null } = electron) {
+  const browserSession = session.fromPartition(PARTITION);
+  browserSession.setPermissionRequestHandler((_contents, permission, callback) => callback(isAllowedBrowserPermission(permission)));
+  browserSession.setPermissionCheckHandler((_contents, permission) => isAllowedBrowserPermission(permission));
+  browserSession.webRequest.onBeforeRequest((details, callback) => {
+    callback({ cancel: details.resourceType === 'mainFrame' && !isNavigationUrl(details.url) });
+  });
+  const tabs = new Map();
+  let activeTab = null;
+  let nextTabId = 1;
+  let navigationOperationId = 0;
+  let attachedView = null;
+  let bounds = null;
+  let visible = false;
+  let modalCount = 0;
+
+  const host = {
+    win, WebContentsView, dialog, helpDocumentPath,
+    nextOperationId: () => ++navigationOperationId,
+    sendState(tab, state) {
+      if (!win.isDestroyed()) win.webContents.send('internal-browser:state', { ...state, tabId: tab.id, active: tab === activeTab });
+    },
+    sendDownloadNotice(tab, canOpenFromToolbar) {
+      if (!win.isDestroyed()) win.webContents.send('internal-browser:download-blocked', { canOpenFromToolbar, tabId: tab.id, active: tab === activeTab });
+    },
+    syncBounds,
+    releaseView(view) {
+      if (attachedView !== view) return;
+      win.contentView.removeChildView(view);
+      attachedView = null;
+    },
+  };
+
+  function detachView() {
+    const view = attachedView;
+    const restoreFocus = !view.webContents.isDestroyed?.() && view.webContents.isFocused();
+    win.contentView.removeChildView(view);
+    attachedView = null;
+    if (restoreFocus && win.isFocused()) win.webContents.focus();
+  }
+
+  function syncBounds() {
+    const view = activeTab?.getView();
+    // 選んでいないタブのページは画面に付けない。
+    if (attachedView && attachedView !== view) detachView();
+    if (!view || view.webContents.isDestroyed?.()) return;
+    // 0 サイズでも描画が残るため、非表示時は親ビューから外す。
+    if (!visible || modalCount > 0 || !bounds) {
+      if (attachedView) detachView();
+      return;
+    }
+    view.setBounds(bounds);
+    if (!attachedView) { win.contentView.addChildView(view); attachedView = view; }
+  }
+
+  // ダウンロードはセッション単位でしか検査できないため、配送元のページからタブを特定して渡す。
+  const seenDownloadItems = new WeakSet();
+  const cancelDownload = (event, item, contents) => {
+    event.preventDefault();
+    // 同じ DownloadItem の再配送で live 通知を重ねない。
+    if (item && seenDownloadItems.has(item)) return;
+    if (item) seenDownloadItems.add(item);
+    const chain = item?.getURLChain?.() || [];
+    const urls = chain.map(normalizeDownloadUrl).filter(Boolean);
+    let owner = null;
+    if (contents) owner = [...tabs.values()].find(tab => tab.ownsContents(contents)) || null;
+    else {
+      // 配送元のページが分からないときは、URL が一致する操作を持つタブが 1 つだけならそのタブとする。
+      const matched = [...tabs.values()].filter(tab => tab.hasDownloadCandidate(urls));
+      if (matched.length === 1) owner = matched[0];
+    }
+    const target = owner || activeTab;
+    if (!target) return;
+    target.handleDownload(urls, !!contents && !owner);
+  };
+  browserSession.on('will-download', cancelDownload);
+
+  /**
+   * タブを 1 つ作って一覧の末尾に足す（選びはしない）。
+   *
+   * @returns {number} 作ったタブの番号
+   */
+  function addTab() {
+    const id = nextTabId++;
+    tabs.set(id, createBrowserTab(id, host));
+    return id;
+  }
+
+  /**
+   * 指定したタブを選び、そのタブのページを画面に付け替えて状態を送り直す。
+   *
+   * @param {number} tabId タブ番号
+   * @returns {boolean} 選べたか
+   */
+  function selectTab(tabId) {
+    const tab = resolveTab(tabId);
+    if (!tab) return false;
+    if (tab === activeTab) return true;
+    activeTab = tab;
+    syncBounds();
+    tab.publish();
+    return true;
+  }
+
+  /**
+   * tabId から対象のタブを引く。省略時は選んでいるタブ、不正・未知の番号は null。
+   *
+   * @param {number|undefined} tabId タブ番号
+   * @returns {object|null} タブ
+   */
+  function resolveTab(tabId) {
+    if (tabId === undefined) return activeTab;
+    if (!Number.isSafeInteger(tabId) || tabId <= 0) return null;
+    return tabs.get(tabId) || null;
+  }
+
+  function destroy() {
+    browserSession.removeListener('will-download', cancelDownload);
+    for (const tab of tabs.values()) tab.destroy();
+  }
+
+  activeTab = tabs.get(addTab());
+
+  return {
+    navigate(url, fromPage = false, requestId, { tabId } = {}) {
+      const tab = resolveTab(tabId);
+      return tab ? tab.navigate(url, fromPage, requestId) : false;
+    },
+    openHelp({ tabId } = {}) {
+      const tab = resolveTab(tabId);
+      return tab ? tab.openHelp() : false;
+    },
+    action(name, { tabId } = {}) {
+      const tab = resolveTab(tabId);
+      return tab ? tab.action(name) : false;
+    },
+    externalUrl(source, { tabId } = {}) {
+      const tab = resolveTab(tabId);
+      return tab ? tab.externalUrl(source) : null;
+    },
+    publish({ tabId } = {}) { resolveTab(tabId)?.publish(); },
+    addTab,
+    selectTab,
+    getTabIds() { return [...tabs.keys()]; },
+    getActiveTabId() { return activeTab?.id ?? null; },
+    destroy,
     setBounds(rect) { bounds = validateBrowserBounds(rect, win.getContentBounds()); syncBounds(); return !!bounds; },
     setVisible(value) { visible = value === true; syncBounds(); },
     setModalCount(value) { if (!Number.isInteger(value) || value < 0) return; modalCount = value; syncBounds(); },
-    publish,
   };
 }
 
-module.exports = { createInternalBrowser };
+module.exports = { createInternalBrowser, createBrowserTab };

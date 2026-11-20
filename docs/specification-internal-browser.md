@@ -129,12 +129,14 @@ WebContentsView は `persist:vk-terminals-internal-browser` を使用し、タ�
 - タブの × は、そのタブのページを捨てる。選んでいるタブを閉じたときは右隣、右が無ければ左隣を選ぶ。
 - 最後の 1 タブを閉じたら、サイドバーごと閉じ、フォーカスをツールバーのアプリ内ブラウザ切り替えボタンに戻す。次に開いたときは空の新しいタブ 1 つから始まる。
 - 操作列の ✕ は「アプリ内ブラウザを閉じる」（タブの × と区別する）。隠すだけでタブは残す。
+- macOS の ⌘ + W（issue #649）は、ページを操作しているときはそのタブを、タブの行・操作列などサイドバーの中にフォーカスがあるときは表示中のタブを閉じる。閉じ方（次に選ぶタブ・最後の 1 タブでサイドバーごと閉じる）はタブの × と同じ。最後の 1 タブでもウィンドウは閉じない。ページで押して閉じたときは、続けて押せるよう次に選んだタブのページへフォーカスを移す。作業ペインなどサイドバーの外では何もしない。押し続けたときの繰り返し入力では閉じない。
+- ⌘ + W はウィンドウと各タブのページの `before-input-event` で止める（`preventDefault`）。メニューのアクセラレータより先に届く段階のため、組み込み元のメニューに「ウィンドウを閉じる」（⌘ + W）が残っていてもウィンドウは閉じない。画面へは main から `app:close-shortcut`（`{ tabId }`。ページで押したときはそのタブの番号、それ以外は `null`）で知らせ、閉じる処理は画面がタブの × と同じ経路（`internal-browser:tab-close`）で行う。Windows・Linux の Ctrl + W はターミナルの「直前の単語を消す」入力と重なるため扱わない。
 - 「広く表示」と「アプリ内ブラウザを閉じる」は操作列の右端に残す。design-rules の「情報のまとまり」では、サイドバー全体の表示操作が選んでいるタブの操作列に混ざる点が違反になるが、既存のボタンの位置を動かさずに済み、タブを並べられる幅も減らないため、承認済みの例外とする（https://github.com/vektor-inc/vk-terminals/issues/601#issuecomment-7017570477 の質問 4、案1）。
 
 ### アクセシビリティ
 
 - タブの行は `role="tablist"`（「アプリ内ブラウザのタブ」）、各タブは `role="tab"` と `aria-selected`。読み込み中はタブの名前に「（読み込み中）」を添える。
-- Tab キーで止まるのは選んでいるタブだけ（他は `tabindex="-1"`）。タブ同士は ← → で移り（端では反対の端へ）、Home / End で先頭・末尾へ移る。Enter / Space で切り替える（フォーカスの移動だけでは切り替えない）。フォーカスのあるタブで Delete キーを押すと閉じる（`aria-keyshortcuts="Delete"`）。タブの × はマウス操作用で、読み上げ対象とキーボードのフォーカス対象から外す。
+- Tab キーで止まるのは選んでいるタブだけ（他は `tabindex="-1"`）。タブ同士は ← → で移り（端では反対の端へ）、Home / End で先頭・末尾へ移る。Enter / Space で切り替える（フォーカスの移動だけでは切り替えない）。フォーカスのあるタブで Delete キーを押すと閉じる（`aria-keyshortcuts="Delete"`。macOS では ⌘ + W でも閉じるため `"Delete Meta+W"`）。タブの × はマウス操作用で、読み上げ対象とキーボードのフォーカス対象から外す。
 - 開いた（「新しいタブを開きました」「新しいタブを後ろに開きました」）・閉じた（「タブを閉じました」）・上限に達したことを、タブの行の下の読み上げ専用の領域で読み上げる。開いてタブの数が上限に達したときは「新しいタブを開きました。タブは 10 個まで開けます。」のように続けて読み上げる（「＋」が押せなくなり Tab キーでも止まらなくなるため）。
 - タブの行を描き直すときは、並びが変わった要素だけを差し込み、変わっていない属性は書き直さない（フォーカスを保ち、同じタブを読み直させない）。
 - 閉じたタブにフォーカスがあったときは、次に選んだタブへフォーカスを移す。
@@ -157,7 +159,7 @@ GitHub のログイン（github.com/login からのフォーム送信と、ロ�
 
 ### 入れないもの
 
-- キーボードのショートカット（Cmd+T / Cmd+W / Ctrl+Tab）。メニューを設定していないため Cmd+W が「ウィンドウを閉じる」に割り当たっており、Windows では Ctrl+W・Ctrl+T がターミナルの入力と重なるため。
+- キーボードのショートカット（Cmd+T / Ctrl+Tab と、Windows・Linux の Ctrl+W）。Windows では Ctrl+W・Ctrl+T がターミナルの入力と重なるため。macOS の Cmd+W は「閉じる」に書いたとおりタブを閉じる（issue #649）。
 - アプリ再起動時のタブの復元。
 - 表示していないタブを休ませる仕組み。
 - ドラッグでの並べ替え。
@@ -165,7 +167,7 @@ GitHub のログイン（github.com/login からのフォーム送信と、ロ�
 ### IPC
 
 - renderer → main（応答あり）: `internal-browser:get-tabs`（起動時のタブ一覧）、`internal-browser:tab-new`、`internal-browser:tab-select`、`internal-browser:tab-close`（最後の 1 つなら `{ closedLast: true }`）、`internal-browser:open-tab`（「アプリ内で開く」。`{ result: 'switched' | 'opened' | 'limit', tabId }`）、`internal-browser:home-available`。タブ番号の検証は `utils/internalBrowser.js` で行い、不正・未知の番号は受け付けない。
-- main → renderer: `internal-browser:tabs`（`{ tabs, activeTabId, maxTabs }`。前回と同じ内容なら送らない）、`internal-browser:tab-limit`（ページの新しいタブ要求が上限に当たったタブと URL）。
+- main → renderer: `internal-browser:tabs`（`{ tabs, activeTabId, maxTabs }`。前回と同じ内容なら送らない）、`internal-browser:tab-limit`（ページの新しいタブ要求が上限に当たったタブと URL）、`app:close-shortcut`（⌘ + W。上の「閉じる」）。
 
 ## レビュー後の決定
 

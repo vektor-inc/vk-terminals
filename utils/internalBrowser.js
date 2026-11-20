@@ -6,6 +6,7 @@ const { isSafeHelpDocument } = require('./helpFeature');
 const { PARTITION, HELP_URL, isHelpUrl, validateBrowserBounds, isBrowserUrl, isNavigationUrl, isAllowedBrowserPermission } = require('./internalBrowserPolicy');
 const { MAX_TABS, toTabMatchKey, pickTabAfterClose, shouldForegroundOpenedTab } = require('./internalBrowserTabPolicy');
 const { pickFaviconUrl, fetchFaviconDataUrl, isAllowedFaviconTarget } = require('./internalBrowserFavicon');
+const { isCloseShortcut } = require('./windowLifecycle');
 
 const normalizeDownloadUrl = url => {
   try { return new URL(url).href; } catch { return ''; }
@@ -41,6 +42,7 @@ const isSameDocumentUrl = (left, right) => {
  * @param {Function} host.openFromPage (tab, url, disposition) ページの新しいタブ要求を開く
  * @param {Function} host.sendTabs タブの一覧（タイトル・ファビコンなど）を画面へ送る
  * @param {Function} host.fetchFavicon (url, pageUrl) ファビコンを data URL にして返す
+ * @param {Function} host.requestCloseShortcut (tab) ページで押した ⌘ + W を画面へ知らせる
  * @returns {object} タブの操作
  */
 function createBrowserTab(id, host) {
@@ -270,6 +272,13 @@ function createBrowserTab(id, host) {
       contents.setWindowOpenHandler(({ url: destination, disposition }) => {
         if (isNavigationUrl(destination)) host.openFromPage(tab, destination, disposition);
         return { action: 'deny' };
+      });
+      // ページで押した ⌘ + W は、ウィンドウを閉じずにこのタブを閉じる（issue #649）。
+      // メニューのアクセラレータより先に届くこの段階で止めるため、組み込み元のメニューに ⌘ + W があっても閉じない。
+      contents.on('before-input-event', (event, input) => {
+        if (!isCloseShortcut(input)) return;
+        event.preventDefault();
+        if (!input.isAutoRepeat) host.requestCloseShortcut(tab);
       });
       contents.on('page-title-updated', (_event, nextTitle) => {
         const value = typeof nextTitle === 'string' ? nextTitle.slice(0, 300) : '';
@@ -842,6 +851,11 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
     },
     openFromPage,
     sendTabs,
+    // 最後のタブを閉じたときのサイドバーの閉じ方をタブの × と揃えるため、閉じる処理は画面に任せる。
+    requestCloseShortcut(tab) {
+      if (destroyed || win.isDestroyed() || tabs.get(tab.id) !== tab) return;
+      win.webContents.send('app:close-shortcut', { tabId: tab.id });
+    },
     fetchFavicon(url, pageUrl) {
       // 取得してよいかは、覚えた結果を使う場合も含めて毎回ページとの関係で確かめる。
       if (!isAllowedFaviconTarget(url, pageUrl)) return Promise.resolve('');
@@ -982,6 +996,9 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
     tabs.delete(tab.id);
     tabOrder.splice(tabOrder.indexOf(tab.id), 1);
     const wasActive = tab === activeTab;
+    // ページで ⌘ + W を押して閉じたとき（issue #649）は、続けて押せるよう次に選んだタブのページへフォーカスを移す。
+    const closedView = tab.getView();
+    const pageHadFocus = !!closedView && !closedView.webContents.isDestroyed?.() && closedView.webContents.isFocused?.() === true;
     if (wasActive) activeTab = null;
     tab.destroy();
     if (nextId === null) {
@@ -990,6 +1007,8 @@ function createInternalBrowser(win, { WebContentsView, session, dialog, helpDocu
     }
     if (wasActive) selectTab(nextId);
     else sendTabs();
+    const nextView = activeTab?.getView();
+    if (pageHadFocus && nextView && attachedView === nextView) nextView.webContents.focus();
     return { closedLast: false };
   }
 

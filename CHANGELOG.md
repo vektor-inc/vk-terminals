@@ -1,5 +1,8 @@
 # Changelog
 
+- [ 仕様変更 ] macOS の ⌘ + W でウィンドウを閉じないように変更。アプリ内ブラウザの操作中はタブを 1 つ閉じ、作業ペインの操作中は何もしない（[#649](https://github.com/vektor-inc/vk-terminals/issues/649)）
+- [ 不具合修正 ] macOS でウィンドウを閉じると作業ペインが止まり、開き直しても前回のペインへ戻れない問題を修正（閉じてもペインは動き続け、Dock のアイコンで同じペインを表示）（[#649](https://github.com/vektor-inc/vk-terminals/issues/649)）
+
 ## 1.108.0
 
 - [ 機能追加 ] アプリ内ブラウザにホームボタンを追加。設定したページを開き、移動先が未設定なら設定欄を案内（[#634](https://github.com/vektor-inc/vk-terminals/issues/634)）

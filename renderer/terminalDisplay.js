@@ -296,8 +296,42 @@
     return screen.text();
   }
 
+  // シェルの作業フォルダの通知（OSC 7: ESC ] 7 ; file://ホスト/パス BEL または ESC \）を読む（issue #649）。
+  // 1 回の出力に複数の通知があれば最後のものを現在の作業フォルダとする。ウィンドウを作り直したときは
+  // 覚えておいた出力をまとめて 1 回で流すため、最初の通知を採ると古いフォルダに戻ってしまう。
+  // チャンクの境界で途切れた通知は、次の出力と合わせて読む。
+  function createCwdReportReader() {
+    const START = '\x1b]7;';
+    const MAX_PENDING = 4096;
+    const REPORT = /\x1b\]7;file:\/\/[^/\x07\x1b]*([^\x07\x1b]*)[\x07\x1b]/g;
+    let pending = '';
+    return {
+      feed(data) {
+        if (typeof data !== 'string' || !data) return null;
+        const text = pending + data;
+        pending = '';
+        let latest = null;
+        for (const match of text.matchAll(REPORT)) {
+          if (!match[1]) continue;
+          try { latest = decodeURIComponent(match[1]); } catch (_) { /* 壊れた通知は使わない */ }
+        }
+        // 終端の無い通知の始まり（または始まりの途中）が末尾にあれば、次の出力まで持ち越す。
+        const start = text.lastIndexOf(START);
+        if (start >= 0 && !/[\x07\x1b]/.test(text.slice(start + START.length))) {
+          if (text.length - start <= MAX_PENDING) pending = text.slice(start);
+        } else {
+          for (let length = START.length - 1; length > 0; length -= 1) {
+            if (text.endsWith(START.slice(0, length))) { pending = START.slice(0, length); break; }
+          }
+        }
+        return latest;
+      },
+    };
+  }
+
   return {
     applyDisplayControls,
+    createCwdReportReader,
     createDisplayScreen,
   };
 });

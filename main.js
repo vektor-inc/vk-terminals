@@ -5,7 +5,7 @@ const { createInternalBrowser } = require('./utils/internalBrowser');
 const { handleHelpRequest } = require('./utils/helpFeature');
 const { PARTITION } = require('./utils/internalBrowserPolicy');
 const { INTERNAL_BROWSER_HOME_KEY, readOrchestratorOwners, resolveInternalBrowserHomeUrl } = require('./utils/internalBrowserHome');
-const { isCloseShortcut, planLivePaneReattach, applyTitleUpdateToLayout, applyEngineChangeToLayout, applyPaneStateToLayout, createOutputReplayBuffer } = require('./utils/windowLifecycle');
+const { isCloseShortcut, planLivePaneReattach, applyTitleUpdateToLayout, applyEngineChangeToLayout, applyPaneStateToLayout, createOutputReplayBuffer, releasePendingPaneRestores } = require('./utils/windowLifecycle');
 const { resolvePaneNote } = require('./renderer/statusPresentation');
 let internalBrowser = null;
 
@@ -1856,6 +1856,9 @@ function createWindow() {
     win = null;
     // 作業ペインは止めずに残す。次に作るウィンドウの画面は、起動時の復元の代わりに生きているペインへつなぎ直す。
     reattachLivePanes = true;
+    // 画面の準備完了を待っている復元は、もう届かない準備完了を待たずにここで終える。
+    // 終えないと、次のウィンドウで復元が終わるまで保持役のペインへの入力が送られない（issue #649）。
+    releasePendingPaneRestores(ptys, outputReplay);
   });
 
   // ⌘ + W はウィンドウを閉じずに止める（issue #649）。メニューのアクセラレータより先に届くこの段階で
@@ -2736,10 +2739,9 @@ function finishOutputReplay(id, ptyProcess, ready) {
 ipcMain.on('terminal:restore-ready', async (event, readyPanes) => {
   // 閉じたウィンドウの画面から遅れて届いた準備完了は、新しい画面の復元に混ぜない（issue #649）。
   if (event.sender !== win?.webContents) return;
-  // 履歴の取得を待つ間にウィンドウを作り直したら、この画面から始めた処理は以後どのペインにも触れない。
-  // 作り直した画面の復元は、その画面の準備完了が進める。閉じただけで作り直していないあいだは、
-  // 新しい復元は始まらないため、画面の無いまま今の復元を終え、入力の保留を解く。
-  const ownsScreen = () => !win || event.sender === win.webContents;
+  // 履歴の取得を待つ間にウィンドウを閉じたら、この画面から始めた処理は以後どのペインにも触れない。
+  // 閉じた時点で復元待ちはウィンドウの closed で終えてあり、作り直した画面の復元はその画面の準備完了が進める。
+  const ownsScreen = () => event.sender === win?.webContents;
   for (const ready of Array.isArray(readyPanes) ? readyPanes : []) {
     // 前のペインの取得を待つ間に作り直していたら、残りのペインは新しい画面の分として扱わない。
     if (!ownsScreen()) return;

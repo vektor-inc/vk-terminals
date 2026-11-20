@@ -7,6 +7,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const {
   isCloseShortcut,
+  releasePendingPaneRestores,
   planLivePaneReattach,
   applyTitleUpdateToLayout,
   applyEngineChangeToLayout,
@@ -348,14 +349,16 @@ function loadRestoreReadyHandler() {
     isTmuxPane: true, paneId, windowId, replay: null, pendingReplay: null, finished: [],
     beginReplay() { this.replay = { phase: 'capturing' }; },
     endCapture() {},
-    finishReplay(history) { this.finished.push(history); this.replay = null; },
+    // 本物と同じく、復元中でなければ何もしない
+    finishReplay(history) { if (!this.replay) return; this.finished.push(history); this.replay = null; },
   });
   const panes = { '1': makeTmuxPane('%1', '@1'), '2': makeTmuxPane('%2', '@2'), '3': { isTmuxPane: false } };
   let handler;
+  const outputReplay = { isHeld: id => held.has(id), release: id => { held.delete(id); } };
   const context = {
     ipcMain: { on: (_name, callback) => { handler = callback; } },
     ptys: new Map(Object.entries(panes)), tmuxHolder, win: null,
-    outputReplay: { isHeld: id => held.has(id) },
+    outputReplay,
     finishOutputReplay(id, _pane, ready) { held.delete(id); finishedOutput.push(`${id} ${ready.cols}x${ready.rows}`); },
     buildInputModeSequence: () => '', MODE_FORMAT: '', LOG_PREFIX: 'test', console: { warn() {} },
     lastPaneLayout: null, saveHolderLayout() {},
@@ -366,7 +369,13 @@ function loadRestoreReadyHandler() {
     for (const pane of [panes['1'], panes['2']]) { pane.beginReplay(); pane.pendingReplay = pane.replay; }
     held.add('3');
   };
-  return { handler, context, panes, captures, commands, finishedOutput, beginRestore };
+  // main.js のウィンドウの closed と同じく、win を外してから復元待ちを終える
+  const closeWindow = () => {
+    context.win = null;
+    releasePendingPaneRestores(context.ptys, outputReplay);
+  };
+  const isHeld = id => held.has(id);
+  return { handler, context, panes, captures, commands, finishedOutput, beginRestore, closeWindow, isHeld };
 }
 
 const readyAt = (cols, rows) => ['1', '2', '3'].map(id => ({ id, cols, rows }));
@@ -439,21 +448,93 @@ test('作り直した画面がまだ復元を始めていなくても、古い�
   assert.deepEqual(finishedOutput, []);
 });
 
-test('復元中にウィンドウを閉じただけなら、画面の無いまま残りのペインの復元を終えて入力の保留を解く', async () => {
-  const { handler, context, panes, captures, finishedOutput, beginRestore } = loadRestoreReadyHandler();
-  const firstWindow = { webContents: { id: 'first' } };
-  context.win = firstWindow;
+test('ウィンドウを閉じたら、復元待ちを終えて入力の保留を解く（ペインは管理対象に残す）', () => {
+  const finished = [];
+  const tmuxPane = {
+    isTmuxPane: true, replay: { phase: 'capturing' }, pendingReplay: null, ended: null,
+    endCapture(replay) { this.ended = replay; },
+    finishReplay(history, modes) { finished.push([history, modes]); this.replay = null; },
+  };
+  tmuxPane.pendingReplay = tmuxPane.replay;
+  const capturing = tmuxPane.replay;
+  const idleTmuxPane = { isTmuxPane: true, replay: null, pendingReplay: null, finishReplay() { throw new Error('復元中でないペインは触らない'); } };
+  const released = [];
+  const panes = new Map([['1', tmuxPane], ['2', idleTmuxPane], ['3', { isTmuxPane: false }]]);
+  releasePendingPaneRestores(panes, { release: id => released.push(id) });
+  assert.equal(tmuxPane.ended, capturing);
+  assert.deepEqual(finished, [['', '']]);
+  assert.equal(tmuxPane.pendingReplay, null);
+  assert.deepEqual(released, ['3']);
+  assert.deepEqual([...panes.keys()], ['1', '2', '3']);
+  // main.js のウィンドウの closed では、閉じたのが今のウィンドウのときだけ、win を外してから 1 度だけ終える
+  // （作り直した後に古いウィンドウの closed が届いても、新しいウィンドウの復元を終わらせない）
+  const source = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+  const start = source.indexOf("win.on('closed', () => {");
+  const body = source.slice(start, source.indexOf('\n  });', start));
+  assert.ok(start !== -1);
+  assert.equal(body.split('releasePendingPaneRestores(').length - 1, 1);
+  assert.ok(body.indexOf('if (win !== createdWindow) return;') < body.indexOf('win = null;'));
+  assert.ok(body.indexOf('win = null;') < body.indexOf('releasePendingPaneRestores(ptys, outputReplay);'));
+});
+
+for (const reattach of [false, true]) {
+  test(`画面の準備完了が届く前にウィンドウを閉じても、入力の保留が残らない（${reattach ? '作り直した画面の復元' : '起動時の復元'}）`, async () => {
+    const { handler, context, panes, captures, beginRestore, closeWindow, isHeld } = loadRestoreReadyHandler();
+    const window = { webContents: { id: 'first' } };
+    context.win = window;
+    if (reattach) {
+      // 1 枚目のウィンドウの復元を途中で打ち切って作り直し、新しい画面も準備完了の前に閉じる
+      beginRestore();
+      const oldReady = handler({ sender: window.webContents }, readyAt(80, 24));
+      context.win = { webContents: { id: 'second' } };
+      beginRestore();
+      closeWindow();
+      captures[0].done('old 1');
+      assert.ok(await settles(oldReady), '古い画面の処理が終わっていない');
+    } else {
+      beginRestore();
+      closeWindow();
+    }
+    // 履歴を流さずに復元を終え（二重には終えない）、目印と出力の保留も外す
+    assert.deepEqual(panes['1'].finished, ['']);
+    assert.deepEqual(panes['2'].finished, ['']);
+    assert.equal(panes['1'].replay, null);
+    assert.equal(panes['2'].replay, null);
+    assert.equal(panes['1'].pendingReplay, null);
+    assert.equal(panes['2'].pendingReplay, null);
+    assert.equal(isHeld('3'), false);
+    // 閉じた画面から遅れて届いた準備完了は何もしない
+    await handler({ sender: window.webContents }, readyAt(80, 24));
+    assert.equal(captures.length, reattach ? 1 : 0);
+  });
+}
+
+test('履歴の取得中にウィンドウを閉じたら、取得の結果は流さず、残りのペインにも触れない', async () => {
+  const { handler, context, panes, captures, commands, finishedOutput, beginRestore, closeWindow, isHeld } = loadRestoreReadyHandler();
+  const window = { webContents: { id: 'first' } };
+  context.win = window;
   beginRestore();
-  const firstReady = handler({ sender: firstWindow.webContents }, readyAt(80, 24));
-  context.win = null;
+  const ready = handler({ sender: window.webContents }, readyAt(80, 24));
+  closeWindow();
   captures[0].done('old 1');
+  assert.ok(await settles(ready), '古い画面の処理が 2 枚目の取得を待っている');
+  assert.deepEqual(panes['1'].finished, ['']);
+  assert.deepEqual(panes['2'].finished, ['']);
+  assert.equal(captures.length, 1);
+  assert.deepEqual(commands, ['resize-window -t @1 -x 80 -y 24']);
+  assert.deepEqual(finishedOutput, []);
+  assert.equal(isHeld('3'), false);
+
+  // 次のウィンドウの復元はふつうに終わる
+  const next = { webContents: { id: 'second' } };
+  context.win = next;
+  beginRestore();
+  const nextReady = handler({ sender: next.webContents }, readyAt(100, 30));
+  captures[1].done('new 1');
   await flush();
-  assert.deepEqual(captures.map(capture => capture.paneId), ['%1', '%2']);
-  captures[1].done('old 2');
-  await firstReady;
-  assert.deepEqual(panes['1'].finished, ['old 1']);
-  assert.deepEqual(panes['2'].finished, ['old 2']);
-  assert.deepEqual(finishedOutput, ['3 80x24']);
-  assert.equal(panes['1'].pendingReplay, null);
-  assert.equal(panes['2'].pendingReplay, null);
+  captures[2].done('new 2');
+  await nextReady;
+  assert.deepEqual(panes['1'].finished, ['', 'new 1']);
+  assert.deepEqual(panes['2'].finished, ['', 'new 2']);
+  assert.deepEqual(finishedOutput, ['3 100x30']);
 });

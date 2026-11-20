@@ -183,7 +183,32 @@ function createOutputReplayBuffer({ maxChars = 1_000_000 } = {}) {
   };
 }
 
+/**
+ * ウィンドウを閉じたときに、画面の準備完了を待っている復元をすべて終える（issue #649）。
+ * 閉じた画面からは準備完了が届かないため、終えないと保持役のペインへの入力が保留されたままになる。
+ * 保持役のペインは履歴を流さずに復元を終えて保留していた入力を送り、復元の目印を外す
+ * （履歴の取得中の処理は目印が変わったことで結果を捨てる）。保持役を使わないペインは出力の保留を解く。
+ * ペイン自体は管理対象に残す。次のウィンドウでは改めて復元を始める。
+ *
+ * @param {Map<string, object>} panes ペイン番号からペインへの Map
+ * @param {object} outputReplay createOutputReplayBuffer の戻り値
+ */
+function releasePendingPaneRestores(panes, outputReplay) {
+  for (const [id, pane] of panes) {
+    if (!pane?.isTmuxPane) {
+      outputReplay.release(id);
+      continue;
+    }
+    if (pane.replay) {
+      pane.endCapture(pane.replay);
+      pane.finishReplay('', '');
+    }
+    pane.pendingReplay = null;
+  }
+}
+
 module.exports = {
+  releasePendingPaneRestores,
   isCloseShortcut,
   planLivePaneReattach,
   applyTitleUpdateToLayout,

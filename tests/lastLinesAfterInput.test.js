@@ -14,6 +14,7 @@ const vm = require('node:vm');
 const waitingState = require('../renderer/waitingState');
 const { shouldBeepForPaneWaiting } = require('../renderer/statusState');
 const { createDisplayScreen, stripAnsiForDisplay } = require('../utils/stripAnsi');
+const { createCwdReportReader } = require('../renderer/terminalDisplay');
 const {
   createConditionalTerminalInputGuard,
   mergeConditionalScreenIdentifiers,
@@ -120,6 +121,7 @@ function createHarness() {
     clearWaitingCheckTimer: (t) => { t.waitingCheckTimer = null; },
     formatCwd: (p) => p,
     updatePaneCwd: () => {},
+    createCwdReportReader,
     bumpRunning: () => {},
   };
   vm.createContext(context);

@@ -24,6 +24,7 @@ const FitAddon = window.FitAddon.FitAddon;
 
 // 3. アプリ内の共有モジュール（index.html の <script> 順で読み込み済み）
 const { createDisplayScreen, stripAnsiForDisplay } = window.VKStripAnsi;
+const { createCwdReportReader } = window.VKTerminalDisplay;
 const { normalizeConfirmClose, shouldConfirmClose } = window.VKCloseConfirm;
 // apiHost の即時案内（getApiHostAuthNotice）と utils/apiAuth.js の認証要否判定
 // （shouldRequireAuth）が同じループバック定義を参照するための共有モジュール
@@ -2185,7 +2186,7 @@ VKIpc.on('terminal:data', (id, data, screenSnapshot) => {
   t.term.write(data);
 
   // シェルの作業フォルダの通知（OSC 7）。複数あれば最後のもの、チャンクの境界で切れたものも読む（issue #649）。
-  if (!t.cwdReportReader) t.cwdReportReader = window.VKTerminalDisplay.createCwdReportReader();
+  if (!t.cwdReportReader) t.cwdReportReader = createCwdReportReader();
   const fullPath = t.cwdReportReader.feed(data);
   if (fullPath) {
     t.cwdFull = fullPath;

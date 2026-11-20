@@ -191,7 +191,9 @@ class PaneAdapter {
   }
   beginReplay() {
     // 画面の準備前に履歴を流すと出力が失われるため、準備完了か描画放棄まで待つ。
-    this.replay = { phase: 'capturing', outputs: [], inputs: [] };
+    // 前の復元が終わらないうちに作り直した場合も、保留していた入力は捨てずに引き継ぐ（issue #649）。
+    // 出力は新しい復元の履歴の採取に含まれるため引き継がない。
+    this.replay = { phase: 'capturing', outputs: [], inputs: this.replay?.inputs ?? [] };
   }
   // replay を渡したときは、その復元が今も続いているときだけ進める（作り直した後の新しい復元に触れない）。
   endCapture(replay = this.replay) { if (this.replay && this.replay === replay) this.replay.phase = 'buffering'; }

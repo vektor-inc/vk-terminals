@@ -2736,7 +2736,13 @@ function finishOutputReplay(id, ptyProcess, ready) {
 ipcMain.on('terminal:restore-ready', async (event, readyPanes) => {
   // 閉じたウィンドウの画面から遅れて届いた準備完了は、新しい画面の復元に混ぜない（issue #649）。
   if (event.sender !== win?.webContents) return;
+  // 履歴の取得を待つ間にウィンドウを作り直したら、この画面から始めた処理は以後どのペインにも触れない。
+  // 作り直した画面の復元は、その画面の準備完了が進める。閉じただけで作り直していないあいだは、
+  // 新しい復元は始まらないため、画面の無いまま今の復元を終え、入力の保留を解く。
+  const ownsScreen = () => !win || event.sender === win.webContents;
   for (const ready of Array.isArray(readyPanes) ? readyPanes : []) {
+    // 前のペインの取得を待つ間に作り直していたら、残りのペインは新しい画面の分として扱わない。
+    if (!ownsScreen()) return;
     const id = typeof ready === 'object' && ready !== null ? ready.id : ready;
     const pane = ptys.get(String(id));
     if (pane && !pane.isTmuxPane && outputReplay.isHeld(String(id))) {
@@ -2746,7 +2752,7 @@ ipcMain.on('terminal:restore-ready', async (event, readyPanes) => {
     if (!pane?.pendingReplay) continue;
     // 取得を待つ間に別の復元へ切り替わったら（ウィンドウの作り直し）、この取得の結果は捨てる。
     const replayToken = pane.pendingReplay;
-    const isCurrentReplay = () => pane.pendingReplay === replayToken;
+    const isCurrentReplay = () => ownsScreen() && pane.pendingReplay === replayToken;
     try {
       if (Number.isInteger(ready.cols) && Number.isInteger(ready.rows) && ready.cols >= 2 && ready.rows >= 2) {
         // 履歴とカーソルは画面側と同じ行列数になってから採取する。

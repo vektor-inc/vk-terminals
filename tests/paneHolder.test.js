@@ -180,6 +180,29 @@ test('作り直す前の履歴取得が終わっても、新しい復元の取�
   assert.deepEqual(output, []);
 });
 
+test('前の復元が終わらないうちに作り直しても、保留していた入力は新しい復元へ引き継ぐ（issue #649）', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'utils', 'paneHolder.js'), 'utf8');
+  const start = source.indexOf('class PaneAdapter {');
+  const end = source.indexOf('class TmuxHolder {', start);
+  const context = { EventEmitter: require('node:events').EventEmitter, TextDecoder, encodeKeys, isTerminalQueryReplyOnly: () => false };
+  const PaneAdapter = vm.runInNewContext(source.slice(start, end) + '\nPaneAdapter', context);
+  const keys = [];
+  const pane = new PaneAdapter({ queueKeys: args => keys.push(args) }, '%1', 1, '@1');
+  pane.beginReplay();
+  pane.endCapture();
+  pane.output(Buffer.from('old live'));
+  pane.write('a');
+  // 古い復元を終えないまま、作り直した画面の復元を始める
+  pane.beginReplay();
+  assert.equal(pane.replay.phase, 'capturing');
+  assert.equal(pane.replay.outputs.length, 0);
+  pane.write('b');
+  pane.endCapture();
+  pane.finishReplay('history', '');
+  // vm の中で作った配列のため、中身で比べる
+  assert.equal(JSON.stringify(keys), JSON.stringify([['send-keys', '-t', '%1', '-H', ...encodeKeys('a')], ['send-keys', '-t', '%1', '-H', ...encodeKeys('b')]]));
+});
+
 test('画面の準備前は時間が経っても履歴と出力を流さず、入力も保留する', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'utils', 'paneHolder.js'), 'utf8');
   const start = source.indexOf('class PaneAdapter {');

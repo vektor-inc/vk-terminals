@@ -323,3 +323,137 @@ test('履歴の取得待ちの途中でウィンドウを作り直しても、�
   assert.deepEqual(finished, ['new history']);
   assert.equal(pane.pendingReplay, null);
 });
+
+/**
+ * main.js の terminal:restore-ready の処理だけを取り出し、tmux とウィンドウを代役にして動かす。
+ * 履歴の取得はペインごとに外から完了させられる。
+ */
+function loadRestoreReadyHandler() {
+  const vm = require('node:vm');
+  const source = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+  const start = source.indexOf("ipcMain.on('terminal:restore-ready',");
+  const end = source.indexOf("ipcMain.on('terminal:save-layout',", start);
+  assert.ok(start !== -1 && end > start);
+  const captures = [];
+  const commands = [];
+  const finishedOutput = [];
+  const held = new Set();
+  const tmuxHolder = {
+    command(args) { commands.push(args.join(' ')); },
+    capturePaneWithMode(paneId) {
+      return new Promise(resolve => captures.push({ paneId, done: history => resolve({ history, modeOutput: '' }) }));
+    },
+  };
+  const makeTmuxPane = (paneId, windowId) => ({
+    isTmuxPane: true, paneId, windowId, replay: null, pendingReplay: null, finished: [],
+    beginReplay() { this.replay = { phase: 'capturing' }; },
+    endCapture() {},
+    finishReplay(history) { this.finished.push(history); this.replay = null; },
+  });
+  const panes = { '1': makeTmuxPane('%1', '@1'), '2': makeTmuxPane('%2', '@2'), '3': { isTmuxPane: false } };
+  let handler;
+  const context = {
+    ipcMain: { on: (_name, callback) => { handler = callback; } },
+    ptys: new Map(Object.entries(panes)), tmuxHolder, win: null,
+    outputReplay: { isHeld: id => held.has(id) },
+    finishOutputReplay(id, _pane, ready) { held.delete(id); finishedOutput.push(`${id} ${ready.cols}x${ready.rows}`); },
+    buildInputModeSequence: () => '', MODE_FORMAT: '', LOG_PREFIX: 'test', console: { warn() {} },
+    lastPaneLayout: null, saveHolderLayout() {},
+  };
+  vm.runInNewContext(source.slice(start, end), context);
+  // reattachLiveTerminalPanes と同じく、保持役のペインは復元の目印を、それ以外は出力の保留を置く
+  const beginRestore = () => {
+    for (const pane of [panes['1'], panes['2']]) { pane.beginReplay(); pane.pendingReplay = pane.replay; }
+    held.add('3');
+  };
+  return { handler, context, panes, captures, commands, finishedOutput, beginRestore };
+}
+
+const readyAt = (cols, rows) => ['1', '2', '3'].map(id => ({ id, cols, rows }));
+const flush = () => new Promise(resolve => setImmediate(resolve));
+// 古い画面の処理が別のペインの取得を待ち続けても（修正が戻った場合）、テストが止まらずに落ちるよう、
+// 少し待って終わったかを返す
+const settles = promise => Promise.race([promise.then(() => true), flush().then(flush).then(() => false)]);
+
+for (const oldFirst of [true, false]) {
+  test(`複数ペインの復元中に作り直すと、古い画面の処理は残りのペインに触れない（古い取得の完了が${oldFirst ? '先' : '後'}）`, async () => {
+    const { handler, context, panes, captures, commands, finishedOutput, beginRestore } = loadRestoreReadyHandler();
+    const firstWindow = { webContents: { id: 'first' } };
+    const secondWindow = { webContents: { id: 'second' } };
+    context.win = firstWindow;
+    beginRestore();
+    const firstReady = handler({ sender: firstWindow.webContents }, readyAt(80, 24));
+    // 1 枚目の履歴の取得を待っている間にウィンドウを作り直し、新しい画面の復元を始める
+    context.win = secondWindow;
+    beginRestore();
+    const secondReplays = [panes['1'].pendingReplay, panes['2'].pendingReplay];
+    const secondReady = handler({ sender: secondWindow.webContents }, readyAt(100, 30));
+    assert.deepEqual(captures.map(capture => capture.paneId), ['%1', '%1']);
+    const [oldCapture, newCapture] = captures;
+
+    if (oldFirst) {
+      oldCapture.done('old 1');
+      assert.ok(await settles(firstReady), '古い画面の処理が 2 枚目の取得を待っている');
+      // 古い画面の処理は、2 枚目を古い画面の大きさにせず、取得も始めず、3 枚目の保留も解かない
+      assert.deepEqual(commands, ['resize-window -t @1 -x 80 -y 24', 'resize-window -t @1 -x 100 -y 30']);
+      assert.equal(captures.length, 2);
+      assert.deepEqual(finishedOutput, []);
+      assert.deepEqual([panes['1'].pendingReplay, panes['2'].pendingReplay], secondReplays);
+      newCapture.done('new 1');
+    } else {
+      newCapture.done('new 1');
+      await flush();
+      oldCapture.done('old 1');
+      assert.ok(await settles(firstReady), '古い画面の処理が 2 枚目の取得を待っている');
+    }
+    await flush();
+    // 新しい画面の処理だけが 2 枚目へ進む
+    assert.deepEqual(captures.map(capture => capture.paneId), ['%1', '%1', '%2']);
+    captures[2].done('new 2');
+    await secondReady;
+    assert.deepEqual(commands, ['resize-window -t @1 -x 80 -y 24', 'resize-window -t @1 -x 100 -y 30', 'resize-window -t @2 -x 100 -y 30']);
+    assert.deepEqual(panes['1'].finished, ['new 1']);
+    assert.deepEqual(panes['2'].finished, ['new 2']);
+    assert.deepEqual(finishedOutput, ['3 100x30']);
+    assert.equal(panes['1'].pendingReplay, null);
+    assert.equal(panes['2'].pendingReplay, null);
+  });
+}
+
+test('作り直した画面がまだ復元を始めていなくても、古い画面の取得の結果は流さない', async () => {
+  const { handler, context, panes, captures, commands, finishedOutput, beginRestore } = loadRestoreReadyHandler();
+  const firstWindow = { webContents: { id: 'first' } };
+  context.win = firstWindow;
+  beginRestore();
+  const oldReplay = panes['1'].pendingReplay;
+  const firstReady = handler({ sender: firstWindow.webContents }, readyAt(80, 24));
+  // ウィンドウを作り直したが、新しい画面はまだ terminal:restore を問い合わせていない
+  context.win = { webContents: { id: 'second' } };
+  captures[0].done('old 1');
+  assert.ok(await settles(firstReady), '古い画面の処理が 2 枚目の取得を待っている');
+  // 古い画面の履歴は新しい画面へ流さず、復元の続き（新しい画面の問い合わせ）に任せる
+  assert.deepEqual(panes['1'].finished, []);
+  assert.equal(panes['1'].pendingReplay, oldReplay);
+  assert.equal(captures.length, 1);
+  assert.deepEqual(commands, ['resize-window -t @1 -x 80 -y 24']);
+  assert.deepEqual(finishedOutput, []);
+});
+
+test('復元中にウィンドウを閉じただけなら、画面の無いまま残りのペインの復元を終えて入力の保留を解く', async () => {
+  const { handler, context, panes, captures, finishedOutput, beginRestore } = loadRestoreReadyHandler();
+  const firstWindow = { webContents: { id: 'first' } };
+  context.win = firstWindow;
+  beginRestore();
+  const firstReady = handler({ sender: firstWindow.webContents }, readyAt(80, 24));
+  context.win = null;
+  captures[0].done('old 1');
+  await flush();
+  assert.deepEqual(captures.map(capture => capture.paneId), ['%1', '%2']);
+  captures[1].done('old 2');
+  await firstReady;
+  assert.deepEqual(panes['1'].finished, ['old 1']);
+  assert.deepEqual(panes['2'].finished, ['old 2']);
+  assert.deepEqual(finishedOutput, ['3 80x24']);
+  assert.equal(panes['1'].pendingReplay, null);
+  assert.equal(panes['2'].pendingReplay, null);
+});

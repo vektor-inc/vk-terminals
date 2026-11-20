@@ -66,7 +66,9 @@ test('オプション無しの格納を維持し、メタデータへ触れな�
   const renderer = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'app.js'), 'utf8');
   const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
   assert.match(renderer, /function stashPane\([^]*?if \(!tree \|\| !Array\.isArray\(tree\.order\)\) return;/);
-  assert.match(renderer, /function savePaneLayout\([^]*?if \(!paneHolderEnabled/);
+  // 並びは保持役の有無によらず main へ送り（ウィンドウの作り直し用・issue #649）、メタデータへの保存は main 側で保持役のときだけ行う。
+  assert.match(renderer, /function savePaneLayout\(\) \{\s*if \(!tree \|\| !Array\.isArray\(tree\.order\)\) return;/);
+  assert.match(main, /function saveHolderLayout\(layout\) \{\s*if \(PANE_HOLDER !== 'tmux' \|\|/);
   assert.doesNotMatch(main, /if \(PANE_HOLDER !== 'tmux'\) clearPreviousPaneMetadata\(\)/);
 });
 
@@ -123,14 +125,14 @@ test('保持役の初期化失敗後は次のペインで再試行せず、接�
 
 test('復元で保持役を生成できない場合だけ、次の生成を止める', async () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
-  const start = source.indexOf("ipcMain.handle('terminal:restore', async () => {");
+  const start = source.indexOf("ipcMain.handle('terminal:restore', async (event) => {");
   const end = source.indexOf('  const live = new Map(', start);
   assert.ok(start !== -1 && end > start);
   for (const failure of ['constructor', 'metadata']) {
     let handler;
     const context = {
       ipcMain: { handle: (_name, callback) => { handler = callback; } },
-      restoreAttempted: false, PANE_HOLDER: 'tmux', SETUP_SHELL: null, tmuxUnavailable: false,
+      reattachLivePanes: false, restoreAttempted: false, PANE_HOLDER: 'tmux', SETUP_SHELL: null, tmuxUnavailable: false,
       tmuxHolder: null, RESOURCE_ROOT: '/tmp', path, os, process: { env: {} },
       TmuxHolder: class {
         constructor() {

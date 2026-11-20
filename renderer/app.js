@@ -1249,6 +1249,16 @@ function syncInternalBrowserTabLimitNotice() {
 }
 
 VKIpc.on('internal-browser:tabs', applyInternalBrowserTabs);
+// ⌘ + W（issue #649）。main はウィンドウを閉じずに止めてここへ知らせる。ページで押したときはそのタブを、
+// タブの行・操作列で押したときは表示中のタブを閉じる。作業ペインなど、それ以外の場所では何もしない。
+VKIpc.on('app:close-shortcut', ({ tabId } = {}) => {
+  if (Number.isSafeInteger(tabId)) {
+    closeInternalBrowserTab(tabId);
+    return;
+  }
+  if (!internalBrowserOpen || !internalBrowserSidebar.contains(document.activeElement)) return;
+  if (internalBrowserDisplayedTabId !== undefined) closeInternalBrowserTab(internalBrowserDisplayedTabId);
+});
 VKIpc.on('internal-browser:tab-limit', ({ tabId, url } = {}) => setInternalBrowserTabLimit(tabId, url));
 // 起動時のタブ一覧は通知では届かない（画面の読み込み前に送られる）ため、取りに行く。
 VKIpc.invoke('internal-browser:get-tabs').then(payload => { if (internalBrowserDisplayedTabId === undefined) applyInternalBrowserTabs(payload); }).catch(() => {});
@@ -5200,12 +5210,12 @@ function fitAll() {
   getAllLeafIds(tree).forEach(fitTerminal);
 }
 
-// 画面の並びと表示情報は、保持役の専用メタデータへまとめて保存する。
+// 画面の並びと表示情報を main へ送る。main は保持役の専用メタデータへ保存し（保持役を使うときだけ）、
+// ウィンドウを閉じて作り直したときにも同じ並びで戻す（issue #649）。
 let paneLayoutSaveTimer = null;
-let paneHolderEnabled = false;
 let initialRestorePending = true;
 function savePaneLayout() {
-  if (!paneHolderEnabled || !tree || !Array.isArray(tree.order)) return;
+  if (!tree || !Array.isArray(tree.order)) return;
   const panes = Object.entries(terminals).map(([paneId, t]) => ({
     paneId, termId: t.termId, cwd: t.cwdFull, engine: t.engine,
     taskTitle: t.taskTitle, apiTitle: t.apiTitle, apiUrl: t.apiUrl,
@@ -8713,7 +8723,6 @@ async function initApp() {
   try {
     const cfg = await VKIpc.invoke('app:get-config');
     agentRoomEnabled = !!(cfg && cfg.agentroom);
-    paneHolderEnabled = !!(cfg && cfg.paneHolderEnabled);
     configuredPaneHolderWarning = cfg?.paneHolderWarning || '';
     newPaneStartupDir = (cfg && typeof cfg.newPaneStartupDir === 'string') ? cfg.newPaneStartupDir : '';
     newPaneAutoLaunchClaude = !!(cfg && cfg.newPaneAutoLaunchClaude);

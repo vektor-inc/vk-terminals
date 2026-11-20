@@ -123,6 +123,7 @@ const ON_CHANNELS = new Set([
   'internal-browser:download-blocked',
   'internal-browser:tabs',
   'internal-browser:tab-limit',
+  'app:close-shortcut',
 ]);
 
 // clipboard へ渡してよい文字列の上限（issue #325）。定義は utils/clipboardLimits.js の

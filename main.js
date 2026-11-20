@@ -5,6 +5,8 @@ const { createInternalBrowser } = require('./utils/internalBrowser');
 const { handleHelpRequest } = require('./utils/helpFeature');
 const { PARTITION } = require('./utils/internalBrowserPolicy');
 const { INTERNAL_BROWSER_HOME_KEY, readOrchestratorOwners, resolveInternalBrowserHomeUrl } = require('./utils/internalBrowserHome');
+const { isCloseShortcut, planLivePaneReattach, applyTitleUpdateToLayout, applyEngineChangeToLayout, createOutputReplayBuffer } = require('./utils/windowLifecycle');
+const { resolvePaneNote } = require('./renderer/statusPresentation');
 let internalBrowser = null;
 
 const { isInternalBrowserSender: isAllowedBrowserSender } = require('./utils/internalBrowserSender');
@@ -551,6 +553,8 @@ if (GUARD_ALREADY_RUNNING) {
   } else {
     // 先に動いている側は、後から開かれたら前面に出す。
     app.on('second-instance', () => {
+      // ウィンドウを閉じて Dock に残っている間に開かれたときは、ウィンドウを作り直す（issue #649）。
+      if (reopenWindowIfClosed()) return;
       const [existingWindow] = BrowserWindow.getAllWindows();
       if (!existingWindow) return;
       if (existingWindow.isMinimized()) existingWindow.restore();
@@ -1842,8 +1846,26 @@ function createWindow() {
     title: APP_TITLE,
   });
   internalBrowser = createInternalBrowser(win, { WebContentsView, session, dialog, helpDocumentPath: HELP_FEATURE?.documentPath });
-  win.on('close', () => internalBrowser?.destroy());
-  win.on('closed', () => { internalBrowser = null; });
+  // 閉じたウィンドウの通知が作り直した後に届いても、新しいウィンドウを外さないよう、このウィンドウの分だけを片付ける。
+  const createdWindow = win;
+  const createdBrowser = internalBrowser;
+  win.on('close', () => createdBrowser.destroy());
+  win.on('closed', () => {
+    if (internalBrowser === createdBrowser) internalBrowser = null;
+    if (win !== createdWindow) return;
+    win = null;
+    // 作業ペインは止めずに残す。次に作るウィンドウの画面は、起動時の復元の代わりに生きているペインへつなぎ直す。
+    reattachLivePanes = true;
+  });
+
+  // ⌘ + W はウィンドウを閉じずに止める（issue #649）。メニューのアクセラレータより先に届くこの段階で
+  // preventDefault すると、メニューに「ウィンドウを閉じる」（⌘ + W）がある組み込み元でも閉じない。
+  // 画面側は、アプリ内ブラウザを操作しているときだけタブを 1 つ閉じる。
+  win.webContents.on('before-input-event', (event, input) => {
+    if (!isCloseShortcut(input)) return;
+    event.preventDefault();
+    if (!input.isAutoRepeat && !createdWindow.isDestroyed()) createdWindow.webContents.send('app:close-shortcut', { tabId: null });
+  });
 
   // ─── ナビゲーション封鎖（issue #268） ──────────────────────────────────────
   // preload は BrowserWindow ではなく webContents の属性なので、この webContents が
@@ -1868,6 +1890,25 @@ function createWindow() {
   // win.webContents.openDevTools(); // uncomment to debug
 }
 
+// 起動時の最初のウィンドウを作り始めたか。activate は起動直後にも届くため、それより前は作り直さない。
+let initialWindowCreated = false;
+// 閉じたウィンドウの後に作るウィンドウの画面を、生きているペインへつなぎ直すか。
+let reattachLivePanes = false;
+
+/**
+ * ウィンドウを閉じて Dock に残っている状態なら、ウィンドウを作り直す。
+ * 起動の途中・アプリの終了処理中・ウィンドウがある間は何もしない。
+ *
+ * @returns {boolean} ウィンドウを作り直したか
+ */
+function reopenWindowIfClosed() {
+  if (blockedByAlreadyRunning || !initialWindowCreated || !app.isReady()) return false;
+  if (win && !win.isDestroyed()) return false;
+  if (ptyShutdownGate.state !== 'idle') return false;
+  createWindow();
+  return true;
+}
+
 app.whenReady().then(async () => {
   if (blockedByAlreadyRunning) return;
   if (GUARD_ALREADY_RUNNING) {
@@ -1889,6 +1930,7 @@ app.whenReady().then(async () => {
   if (HELP_FEATURE) {
     session.fromPartition(PARTITION).protocol.handle('vk-terminals-help', (request) => handleHelpRequest(request, HELP_FEATURE.documentPath));
   }
+  initialWindowCreated = true;
   createWindow();
   startWidgetWatcher();
   // issue #546: 更新確認の通信中も起動直後から HTTP API を受け付ける。
@@ -1903,14 +1945,10 @@ app.whenReady().then(async () => {
 // 終了を待つのは、アプリを本当に終了させる before-quit 側に一本化する。
 app.on('window-all-closed', () => {
   if (process.platform === 'darwin') {
-    // macOS ではウィンドウを閉じてもアプリは終了せず Dock に残る＝Node 環境の破棄
-    // （FreeEnvironment）は起きないため、issue #409 の競合（それと onExit 通知の競合）は
-    // ここでは発生しない。待つ理由が無いので、従来どおり各 pty へ kill を送るだけに
-    // 留める（終了通知は待たない）。ユーザーが本当にアプリを終了する（Cmd+Q 等）ときは
-    // before-quit が ptys を見て改めて終了を待つため、後始末が抜けることもない。
-    for (const p of ptys.values()) {
-      try { p.kill(); } catch (_e) { /* 既に終了している等は無視 */ }
-    }
+    // macOS ではウィンドウを閉じてもアプリは Dock に残る。作業ペインは止めずに動かし続け、
+    // Dock のアイコンで作り直したウィンドウへつなぎ直す（issue #649）。
+    // 以前は各 pty へ kill を送っており、保持役（tmux）のペインには kill-pane が届いて
+    // 作業ペインが消えていた。アプリを終了するときの後始末は before-quit が行う。
     return;
   }
   // macOS 以外は最後のウィンドウを閉じるとアプリごと終了する。ここで cleanupPtys() を
@@ -1920,6 +1958,9 @@ app.on('window-all-closed', () => {
   // before-quit に任せる。
   app.quit();
 });
+
+// Dock のアイコンを押したとき、ウィンドウを閉じていれば作り直す（issue #649）。
+app.on('activate', () => { reopenWindowIfClosed(); });
 
 // before-quit 到達時に生きている pty があれば、終了を待つ間だけ quit を止める（issue #409）。
 // 状態（idle/pending/done）の判断は utils/ptyShutdownGate.js の状態機械に委譲している
@@ -2016,7 +2057,6 @@ ipcMain.handle('app:get-config', () => {
     // tasksFile（旧 tasks-view.json）は dual-write 期間の後方互換注記判定に残す。
     tasksFile,
     commandsFile,
-    paneHolderEnabled: PANE_HOLDER === 'tmux',
     paneHolderWarning: EMBEDDED_OPTIONS?.paneHolderWarning || null,
     // 一覧を出す部品があるときだけキーを足す（無いときは従来と同じ応答のまま）。
     ...(HELP_FEATURE ? { helpEntryEnabled: true } : {}),
@@ -2583,11 +2623,15 @@ function registerTerminalProcess(id, ptyProcess, shell, { hasAgent, generation =
       screenSnapshot = conditionalTerminalInput.capture(id, agentGenerations.get(id));
     }
     getPromptWatcher()?.(data);
+    if (visibleData && !ptyProcess.isTmuxPane) outputReplay.append(id, visibleData);
+    // 作り直したウィンドウへ覚えた出力を流し終えるまでは送らない（流す内容に含まれるため）。
+    if (visibleData && outputReplay.isHeld(id)) return;
     // 出力とその時点の画面識別値を同じイベントで届け、renderer での取り違えを防ぐ。
     if (visibleData && win && !win.isDestroyed()) win.webContents.send('terminal:data', id, visibleData, screenSnapshot);
   });
   ptyProcess.onExit(() => {
     stopPromptWatcher();
+    outputReplay.delete(id);
     ptys.delete(id); ptyShellExecutables.delete(id); agentGenerations.delete(id);
     agentLifecycles.delete(id); clearPaneBackgroundWork(id);
     conditionalTerminalInput.delete(id); silentWriteRefresher.delete(id);
@@ -2642,10 +2686,57 @@ function saveHolderLayout(layout) {
   writePaneMetadata(tmuxHolder.socket, next);
   lastSavedHolderLayout = serialized;
 }
+// 保持役を使わないペインの出力を、ウィンドウを作り直したときに流し直すために覚えておく（issue #649）。
+const outputReplay = createOutputReplayBuffer();
+
+/**
+ * 作り直したウィンドウの画面へ、main で生きているペインを戻す一覧を返す（issue #649）。
+ * 保持役のペインは起動時の復元と同じく tmux の履歴を、それ以外は覚えておいた出力を、
+ * 画面の準備ができた（terminal:restore-ready）あとに流す。それまでは新しい出力を画面へ送らない。
+ *
+ * @returns {object} terminal:restore と同じ形の応答
+ */
+function reattachLiveTerminalPanes() {
+  const plan = planLivePaneReattach({ liveIds: [...ptys.keys()], layout: lastPaneLayout, defaultCwd: os.homedir() });
+  for (const pane of plan.panes) {
+    const ptyProcess = ptys.get(pane.id);
+    if (ptyProcess.isTmuxPane) {
+      ptyProcess.beginReplay();
+      ptyProcess.pendingReplay = true;
+    } else {
+      outputReplay.hold(pane.id);
+    }
+  }
+  restoredPaneCount = plan.panes.length;
+  return { ...plan, missing: 0 };
+}
+
+/**
+ * 保持役を使わないペインの、覚えておいた出力を新しい画面へ流し、以後の出力を画面へ送る状態へ戻す。
+ * 流したあとに画面の行列数へ合わせ、AI の画面を描き直させる。
+ *
+ * @param {string} id ペイン番号
+ * @param {object} ptyProcess node-pty のプロセス
+ * @param {object} ready 画面が送った { id, cols, rows }
+ */
+function finishOutputReplay(id, ptyProcess, ready) {
+  const history = outputReplay.read(id);
+  outputReplay.release(id);
+  if (history && win && !win.isDestroyed()) win.webContents.send('terminal:data', id, history, null);
+  if (Number.isInteger(ready?.cols) && Number.isInteger(ready?.rows) && ready.cols >= 2 && ready.rows >= 2) {
+    try { ptyProcess.resize(ready.cols, ready.rows); }
+    catch (error) { console.warn(`${LOG_PREFIX} pane resize after reattach failed:`, error.message); }
+  }
+}
+
 ipcMain.on('terminal:restore-ready', async (_event, readyPanes) => {
   for (const ready of Array.isArray(readyPanes) ? readyPanes : []) {
     const id = typeof ready === 'object' && ready !== null ? ready.id : ready;
     const pane = ptys.get(String(id));
+    if (pane && !pane.isTmuxPane && outputReplay.isHeld(String(id))) {
+      finishOutputReplay(String(id), pane, ready);
+      continue;
+    }
     if (!pane?.pendingReplay) continue;
     try {
       if (Number.isInteger(ready.cols) && Number.isInteger(ready.rows) && ready.cols >= 2 && ready.rows >= 2) {
@@ -2677,8 +2768,12 @@ function hasRecentHolderMetadata(socket) {
 // 起動時だけ既存シェルを登録する。新規ペイン作成時の起動コマンドは通さない。
 let restoreAttempted = false;
 let restoredPaneCount = 0;
-ipcMain.handle('terminal:restore', async () => {
+ipcMain.handle('terminal:restore', async (event) => {
   if (SETUP_SHELL) return { panes: [], order: [], stashOrder: [], missing: 0 };
+  if (reattachLivePanes && event.sender === win?.webContents) {
+    reattachLivePanes = false;
+    return reattachLiveTerminalPanes();
+  }
   if (restoreAttempted) return { panes: [], order: [], stashOrder: [], missing: 0 };
   restoreAttempted = true;
   if (PANE_HOLDER !== 'tmux' || tmuxUnavailable) {
@@ -2774,6 +2869,10 @@ ipcMain.handle('terminal:restore', async () => {
 ipcMain.on('terminal:restore-abandon', (_event, ids) => {
   // 描画できなかったペインを管理対象から外す。保持役のシェルは次回起動まで残す。
   const abandonedIds = new Set(Array.isArray(ids) ? ids.map(String) : []);
+  // 保持役を使わないペインは画面へ戻せなくても止めず、新しい出力を画面へ送る状態へ戻す。
+  for (const [id, pane] of ptys) {
+    if (!pane.isTmuxPane && (!Array.isArray(ids) || abandonedIds.has(id))) outputReplay.release(id);
+  }
   for (const [id, pane] of ptys) {
     if (!pane.isTmuxPane || !pane.pendingReplay || (Array.isArray(ids) && !abandonedIds.has(id))) continue;
     pane.replay = null;
@@ -4207,6 +4306,11 @@ function startHttpApi() {
 
           if (win && !win.isDestroyed()) {
             win.webContents.send('terminal:title', termId, title, urlValue, prUrlValue, prMergedValue, waitingMergeValue, paneNoteUpdate);
+          } else {
+            // ウィンドウを閉じている間の更新は、作り直したウィンドウへ戻す並びの記録へ反映する（issue #649）。
+            lastPaneLayout = applyTitleUpdateToLayout(lastPaneLayout, termId, {
+              title, url: urlValue, prUrl: prUrlValue, prMerged: prMergedValue, waitingMerge: waitingMergeValue, paneNoteUpdate,
+            }, resolvePaneNote);
           }
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({
@@ -4931,6 +5035,8 @@ function startHttpApi() {
               // 解決済み（省略時は 'claude'）の値なので、そのまま渡してよい。
               if (win && !win.isDestroyed()) {
                 win.webContents.send('terminal:engine-changed', request.termId, request.engine);
+              } else {
+                lastPaneLayout = applyEngineChangeToLayout(lastPaneLayout, request.termId, request.engine);
               }
               res.writeHead(200, { 'Content-Type': 'application/json' });
               res.end(JSON.stringify({

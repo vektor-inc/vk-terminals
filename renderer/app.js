@@ -1148,7 +1148,8 @@ function renderInternalBrowserTabs({ scrollToSelected = false } = {}) {
       element.setAttribute('role', 'tab');
       element.id = `internal-browser-tab-${tab.id}`;
       element.dataset.tabId = String(tab.id);
-      element.setAttribute('aria-keyshortcuts', 'Delete');
+      // macOS では ⌘ + W でも閉じる（issue #649）。
+      element.setAttribute('aria-keyshortcuts', IS_MAC_PLATFORM ? 'Delete Meta+W' : 'Delete');
       element.innerHTML = '<span class="internal-browser-tab-icon" aria-hidden="true"></span><span class="internal-browser-tab-title"></span><span class="internal-browser-tab-close" aria-hidden="true" title="タブを閉じる"><svg class="titlebar-icon"><use href="icons/ui.svg#x"></use></svg></span>';
     }
     const selected = tab.id === internalBrowserDisplayedTabId;
@@ -2183,10 +2184,10 @@ VKIpc.on('terminal:data', (id, data, screenSnapshot) => {
   const t = terminals[paneId];
   t.term.write(data);
 
-  // Parse OSC 7 (shell cwd report: \e]7;file://host/path\a)
-  const osc7 = data.match(/\x1b\]7;file:\/\/[^/]*([^\x07\x1b]+)[\x07\x1b]/);
-  if (osc7) {
-    const fullPath = decodeURIComponent(osc7[1]);
+  // シェルの作業フォルダの通知（OSC 7）。複数あれば最後のもの、チャンクの境界で切れたものも読む（issue #649）。
+  if (!t.cwdReportReader) t.cwdReportReader = window.VKTerminalDisplay.createCwdReportReader();
+  const fullPath = t.cwdReportReader.feed(data);
+  if (fullPath) {
     t.cwdFull = fullPath;
     t.cwd = formatCwd(fullPath);
     updatePaneCwd(paneId, t.cwd);
@@ -5221,6 +5222,8 @@ function savePaneLayout() {
     taskTitle: t.taskTitle, apiTitle: t.apiTitle, apiUrl: t.apiUrl,
     apiPrUrl: t.apiPrUrl, apiPrMerged: t.apiPrMerged,
     apiWaitingMerge: t.apiWaitingMerge, apiPaneNote: t.apiPaneNote,
+    // 閉じる保護と外部からの入力待ちは、ウィンドウを作り直したときに戻すために送る（ファイルには保存しない）。
+    lock: t.lock || null, externalWaiting: t.externalWaiting === true,
   }));
   // 広く表示中に終了しても、次の起動で全ペインが格納されたままにならないよう前の並びを保存する。
   const layout = layoutBeforeWide(tree.order, tree.stashOrder || [], focusedPaneId, internalBrowserWide);
@@ -8751,7 +8754,9 @@ async function initApp() {
   } catch (_e) { /* 取得失敗時は無効のまま */ }
 
   // 保持役の既存ペインを先に問い合わせ、新規シェルを作らず同じ番号と並びへ戻す。
-  if (!setupShellStartup && initialRestorePending && Object.keys(terminals).length === 0) {
+  // セットアップ用シェルの起動でも問い合わせる。起動時の復元は main が断り、ウィンドウを作り直したときだけ
+  // 動いているペインが返る（issue #649）。
+  if (initialRestorePending && Object.keys(terminals).length === 0) {
     initialRestorePending = false;
     let restored = null;
     try { restored = await VKIpc.invoke('terminal:restore'); } catch (error) { console.warn('pane restore failed', error); }
@@ -8773,15 +8778,21 @@ async function initApp() {
         if (!tree.order.includes(saved.paneId) && !tree.stashOrder.includes(saved.paneId)) tree.order.push(saved.paneId);
         await createTerminal(saved.paneId, saved.cwd, {}, { id: saved.id, cwd: saved.cwd, engine: saved.engine });
         const t = terminals[saved.paneId];
-        for (const key of ['taskTitle', 'apiTitle', 'apiUrl', 'apiPrUrl', 'apiPrMerged', 'apiWaitingMerge', 'apiPaneNote']) {
+        for (const key of ['taskTitle', 'apiTitle', 'apiUrl', 'apiPrUrl', 'apiPrMerged', 'apiWaitingMerge', 'apiPaneNote', 'externalWaiting', 'backgroundWorkRunning']) {
           if (Object.hasOwn(saved, key)) t[key] = saved[key];
         }
+        if (Object.hasOwn(saved, 'lock')) t.lock = (saved.lock && typeof saved.lock.close === 'boolean') ? { close: saved.lock.close } : null;
         if (!isSafeExternalUrl(t.apiUrl)) t.apiUrl = '';
         if (!isSafeExternalUrl(t.apiPrUrl)) t.apiPrUrl = '';
         _idCounter = Math.max(_idCounter, Number(saved.paneId.slice(5)));
       }
       focusedPaneId = ids.has(restored.focusedPaneId) ? restored.focusedPaneId : (tree.order[0] || tree.stashOrder[0]);
       render();
+      // 戻した閉じる保護・入力待ち・裏の作業の状態を表示へ反映する。
+      for (const saved of validPanes) {
+        updatePaneCloseLock(saved.paneId);
+        recomputeStatus(saved.paneId);
+      }
       terminals[focusedPaneId]?.term.focus();
       initialRenderDone = true;
       requestAnimationFrame(() => {
@@ -9223,6 +9234,7 @@ VKIpc.on('terminal:set-status', (termId, waiting) => {
   if (!t) return;
   t.externalWaiting = !!waiting;
   recomputeStatus(paneId);
+  schedulePaneLayoutSave();
 });
 
 // ─── Lock update from main (HTTP API POST /api/set-lock) ────────────────────
@@ -9234,6 +9246,7 @@ VKIpc.on('terminal:set-lock', (termId, lock) => {
   if (!t) return;
   t.lock = (lock && typeof lock.close === 'boolean') ? { close: lock.close } : null;
   updatePaneCloseLock(paneId);
+  schedulePaneLayoutSave();
 });
 
 // ─── Auto-input notification from main (HTTP API経由の入力時) ─────────────────

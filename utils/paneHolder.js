@@ -193,7 +193,8 @@ class PaneAdapter {
     // 画面の準備前に履歴を流すと出力が失われるため、準備完了か描画放棄まで待つ。
     this.replay = { phase: 'capturing', outputs: [], inputs: [] };
   }
-  endCapture() { if (this.replay) this.replay.phase = 'buffering'; }
+  // replay を渡したときは、その復元が今も続いているときだけ進める（作り直した後の新しい復元に触れない）。
+  endCapture(replay = this.replay) { if (this.replay && this.replay === replay) this.replay.phase = 'buffering'; }
   finishReplay(history, modes) {
     if (!this.replay) return;
     // 代替画面では先に切り替えないと、復元した画面が切替時に消える。
@@ -398,7 +399,8 @@ class TmuxHolder {
     if (!this.active) return Promise.reject(new Error('tmux control client stopped'));
     if (!this.panes.has(paneId)) return Promise.reject(new Error('pane missing'));
     return new Promise((resolve, reject) => {
-      const request = { paneId, resolve, reject, lines: [] };
+      // 取得を始めた時点の復元だけを、取得の完了（%end）で次の段階へ進める（issue #649）。
+      const request = { paneId, replay: this.panes.get(paneId).replay ?? null, resolve, reject, lines: [] };
       request.timer = setTimeout(() => {
         request.reject(new Error('tmux capture timed out'));
         request.reject = null;
@@ -441,7 +443,7 @@ class TmuxHolder {
           if (request) this.controlRequests.shift();
           if (request) clearTimeout(request.timer);
           if (request?.paneId) {
-            this.panes.get(request.paneId)?.endCapture();
+            this.panes.get(request.paneId)?.endCapture(request.replay);
             if (ending[1] === 'error') request.reject?.(new Error('tmux capture failed'));
             else request.resolve(Buffer.from(block.lines.join('\r\n'), 'latin1').toString('utf8'));
           } else if (request?.resolve) {

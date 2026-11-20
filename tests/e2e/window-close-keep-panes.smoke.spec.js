@@ -194,6 +194,85 @@ test('ウィンドウを閉じても作業ペインは動き続け、Dock から
   }
 });
 
+async function postJson(port, pathname, payload) {
+  const res = await fetch(`http://127.0.0.1:${port}${pathname}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+  });
+  return { status: res.status, body: await res.json().catch(() => null) };
+}
+
+const setupShellLauncherPath = path.resolve(__dirname, '..', 'fixtures', 'embeddedSetupShellLauncher.js');
+
+// @title セットアップ用シェルの組み込み起動でも、Dock から開くと新しいシェルを作らず同じペインへつながる
+test('セットアップ用シェルの組み込み起動でも、Dock から開くと新しいシェルを作らず同じペインへつながる', async () => {
+  let launched;
+  try {
+    launched = await start('vk-terminals-e2e-window-reopen-setup-shell-', { entry: setupShellLauncherPath });
+    const { app } = launched;
+    let { win } = launched;
+    const first = await waitForFirstPane(win);
+    await printMarker(win, first.paneId, 'SETUP_SHELL_649');
+    // @step ウィンドウを閉じて、Dock のアイコンを押す
+    await closeWindow(app);
+    win = await reopenFromDock(app);
+    // @check 同じ番号のペイン 1 枚だけにつながり、新しいシェルは作られない
+    const reopened = await waitForFirstPane(win);
+    expect(reopened.termId).toBe(first.termId);
+    await waitForMarker(win, reopened.paneId, 'SETUP_SHELL_649');
+    await new Promise(resolve => setTimeout(resolve, 500));
+    expect(await win.evaluate(() => Object.values(terminals).map(t => t.termId))).toEqual([first.termId]);
+  } finally {
+    if (launched) await closeApp(launched);
+  }
+});
+
+// @title 閉じる保護・入力待ち・作業フォルダは、ウィンドウを作り直しても戻る
+test('閉じる保護・入力待ち・作業フォルダは、ウィンドウを作り直しても戻る', async () => {
+  let launched;
+  try {
+    launched = await start('vk-terminals-e2e-window-reopen-state-');
+    const { app, port, tmpHome } = launched;
+    let { win } = launched;
+    const first = await waitForFirstPane(win);
+    const second = await win.evaluate(async () => {
+      const { paneId } = await addPane(null, { noClaude: true });
+      return { paneId, termId: terminals[paneId].termId };
+    });
+    // @step 1 枚目は閉じられないよう保護し、作業フォルダの通知を /a → /b の順に出す
+    expect((await postJson(port, '/api/set-lock', { termId: first.termId, lock: { close: false } })).status).toBe(200);
+    await expect(win.locator(`.pane[data-id="${first.paneId}"] .btn-close`)).toHaveAttribute('aria-disabled', 'true');
+    const dirA = path.join(tmpHome, 'a');
+    const dirB = path.join(tmpHome, 'b');
+    await win.evaluate(({ id, a, b }) => terminals[id].term.input(`printf '\\033]7;file://h%s\\007\\033]7;file://h%s\\007' ${a} ${b}\r`), { id: first.paneId, a: dirA, b: dirB });
+    await expect.poll(() => win.evaluate(id => terminals[id].cwdFull, first.paneId)).toBe(dirB);
+    // 並びの記録が main へ届くのを待つ（保存は 100ms まとめてから送る）
+    await new Promise(resolve => setTimeout(resolve, 500));
+
+    // @step ウィンドウを閉じている間に、2 枚目を保護し、1 枚目を入力待ちにする
+    await closeWindow(app);
+    expect((await postJson(port, '/api/set-lock', { termId: second.termId, lock: { close: false } })).status).toBe(200);
+    expect((await postJson(port, '/api/set-status', { termId: first.termId, waiting: true })).status).toBe(200);
+
+    // @step Dock のアイコンを押す
+    win = await reopenFromDock(app);
+    await expect.poll(() => win.evaluate(() => Object.keys(terminals).length)).toBe(2);
+    const paneIdOf = termId => win.evaluate(id => Object.keys(terminals).find(key => terminals[key].termId === id), termId);
+    const firstPaneId = await paneIdOf(first.termId);
+    const secondPaneId = await paneIdOf(second.termId);
+    // @check 閉じる前と閉じている間の保護が残り、閉じる操作をしてもペインは閉じない
+    for (const paneId of [firstPaneId, secondPaneId]) {
+      await expect(win.locator(`.pane[data-id="${paneId}"] .btn-close`)).toHaveAttribute('aria-disabled', 'true');
+      await win.locator(`.pane[data-id="${paneId}"] .btn-close`).click({ force: true });
+    }
+    expect(await win.evaluate(() => Object.keys(terminals).length)).toBe(2);
+    // @check 入力待ちと、最後に通知された作業フォルダ（/b）が戻る
+    expect(await win.evaluate(id => terminals[id].externalWaiting, firstPaneId)).toBe(true);
+    await expect.poll(() => win.evaluate(id => terminals[id].cwdFull, firstPaneId)).toBe(dirB);
+  } finally {
+    if (launched) await closeApp(launched);
+  }
+});
+
 // @title 保持役を使うとき、ウィンドウを閉じても tmux のペインを止めず、Dock から開くと同じペインへつながる
 test('保持役を使うとき、ウィンドウを閉じても tmux のペインを止めず、Dock から開くと同じペインへつながる', async () => {
   const tmux = (process.env.PATH || '').split(path.delimiter).map(dir => path.join(dir, 'tmux'))

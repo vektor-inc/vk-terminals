@@ -153,6 +153,33 @@ test('復元で保持役を生成できない場合だけ、次の生成を止�
   }
 });
 
+test('作り直す前の履歴取得が終わっても、新しい復元の取得中の状態を進めない（issue #649）', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'utils', 'paneHolder.js'), 'utf8');
+  const start = source.indexOf('class PaneAdapter {');
+  const end = source.indexOf('class TmuxHolder {', start);
+  const context = { EventEmitter: require('node:events').EventEmitter, TextDecoder, encodeKeys, isTerminalQueryReplyOnly: () => false };
+  const PaneAdapter = vm.runInNewContext(source.slice(start, end) + '\nPaneAdapter', context);
+  const pane = new PaneAdapter({ queueKeys() {} }, '%1', 1, '@1');
+  const output = [];
+  pane.onData(data => output.push(data));
+  pane.beginReplay();
+  const oldReplay = pane.replay;
+  // ウィンドウを作り直し、新しい復元を始めてから古い取得の %end が届く
+  pane.beginReplay();
+  pane.endCapture(oldReplay);
+  assert.equal(pane.replay.phase, 'capturing');
+  // 取得中の出力は新しい取得の履歴に含まれるため、ここでは貯めない
+  pane.output(Buffer.from('live'));
+  assert.equal(pane.replay.outputs.length, 0);
+  // 新しい取得の %end で次の段階へ進む
+  pane.endCapture(pane.replay);
+  assert.equal(pane.replay.phase, 'buffering');
+  // 取得の要求は、始めた時点の復元を覚える
+  assert.match(source, /const request = \{ paneId, replay: this\.panes\.get\(paneId\)\.replay \?\? null,/);
+  assert.match(source, /this\.panes\.get\(request\.paneId\)\?\.endCapture\(request\.replay\)/);
+  assert.deepEqual(output, []);
+});
+
 test('画面の準備前は時間が経っても履歴と出力を流さず、入力も保留する', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'utils', 'paneHolder.js'), 'utf8');
   const start = source.indexOf('class PaneAdapter {');

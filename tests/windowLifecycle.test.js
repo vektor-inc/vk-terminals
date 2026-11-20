@@ -10,6 +10,7 @@ const {
   planLivePaneReattach,
   applyTitleUpdateToLayout,
   applyEngineChangeToLayout,
+  applyPaneStateToLayout,
   createOutputReplayBuffer,
 } = require('../utils/windowLifecycle');
 const { resolvePaneNote } = require('../renderer/statusPresentation');
@@ -210,4 +211,115 @@ test('ページで ⌘ + W を押してタブを閉じたときだけ、次に�
   browser.closeTab(second);
   assert.equal(browser.getActiveTabId(), 1);
   assert.equal(viewA.webContents.focusCalls, 0);
+});
+
+test('閉じる保護と外部からの入力待ちも、作り直したウィンドウへ戻す', () => {
+  const layout = {
+    order: ['pane-1', 'pane-2', 'pane-3'],
+    panes: [
+      { paneId: 'pane-1', termId: '1', lock: { close: false }, externalWaiting: true },
+      { paneId: 'pane-2', termId: '2', lock: { close: 'no', extra: 1 }, externalWaiting: 'yes' },
+      { paneId: 'pane-3', termId: '3', lock: null },
+    ],
+  };
+  const plan = planLivePaneReattach({ liveIds: ['1', '2', '3'], layout, defaultCwd: '/home' });
+  assert.deepEqual(plan.panes[0].lock, { close: false });
+  assert.equal(plan.panes[0].externalWaiting, true);
+  // 形の合わない値は保護なし・項目なしにする
+  assert.equal(plan.panes[1].lock, null);
+  assert.equal(Object.hasOwn(plan.panes[1], 'externalWaiting'), false);
+  assert.equal(plan.panes[2].lock, null);
+});
+
+test('ウィンドウが無い間の閉じる保護・入力待ちの更新を並びの記録へ反映する', () => {
+  const layout = { panes: [{ paneId: 'pane-1', termId: '4', lock: null }] };
+  const locked = applyPaneStateToLayout(layout, '4', { lock: { close: false } });
+  assert.deepEqual(locked.panes[0].lock, { close: false });
+  const waiting = applyPaneStateToLayout(locked, '4', { externalWaiting: true });
+  assert.deepEqual(waiting.panes[0], { paneId: 'pane-1', termId: '4', lock: { close: false }, externalWaiting: true });
+  assert.equal(applyPaneStateToLayout(layout, '9', { lock: null }), layout);
+});
+
+test('作業フォルダの通知は最後のものを採り、チャンクの境界で切れた通知も読む', () => {
+  const { createCwdReportReader } = require('../renderer/terminalDisplay');
+  const report = dir => `\x1b]7;file://host${dir}\x07`;
+  // 覚えておいた出力をまとめて流したとき（/a から /b へ移動した履歴）は /b
+  assert.equal(createCwdReportReader().feed(`$ ${report('/a')}cd b\r\n${report('/b')}$ `), '/b');
+  // ESC \ で終わる通知・URL エンコードされたパス
+  assert.equal(createCwdReportReader().feed('\x1b]7;file://h/tmp/%E4%BD%9C%E6%A5%AD\x1b\\'), '/tmp/作業');
+  // 通知が無い・壊れた通知は null
+  assert.equal(createCwdReportReader().feed('plain output'), null);
+  assert.equal(createCwdReportReader().feed('\x1b]7;file://h/%E0%A4%A\x07'), null);
+  // 境界で切れた通知（始まりの途中・本文の途中）は次の出力と合わせて読む
+  const whole = `out${report('/work/c')}after`;
+  for (const cut of [4, 5, 6, 7, 15, 21]) {
+    const reader = createCwdReportReader();
+    assert.equal(reader.feed(whole.slice(0, cut)), null, `cut ${cut}`);
+    assert.equal(reader.feed(whole.slice(cut)), '/work/c', `cut ${cut}`);
+  }
+  // 持ち越した後に完結した通知を読んだら、持ち越しは消える
+  const reader = createCwdReportReader();
+  assert.equal(reader.feed('\x1b]7;file://h/x'), null);
+  assert.equal(reader.feed('\x07'), '/x');
+  assert.equal(reader.feed('next'), null);
+});
+
+test('履歴の取得待ちの途中でウィンドウを作り直しても、古い取得の完了で新しい復元を終わらせない', async () => {
+  const vm = require('node:vm');
+  const source = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+  const start = source.indexOf("ipcMain.on('terminal:restore-ready',");
+  const end = source.indexOf("ipcMain.on('terminal:save-layout',", start);
+  assert.ok(start !== -1 && end > start);
+  // 取得の完了を外から決められる tmux の代役
+  const captures = [];
+  const tmuxHolder = {
+    command() {},
+    capturePaneWithMode() {
+      return new Promise(resolve => captures.push(history => resolve({ history, modeOutput: '' })));
+    },
+  };
+  const finished = [];
+  const pane = {
+    isTmuxPane: true, paneId: '%1', windowId: '@1', replay: null, pendingReplay: null,
+    beginReplay() { this.replay = { phase: 'capturing' }; },
+    endCapture() {},
+    finishReplay(history) { finished.push(history); this.replay = null; },
+  };
+  const firstWindow = { isDestroyed: () => false, webContents: { id: 'first' } };
+  const secondWindow = { isDestroyed: () => false, webContents: { id: 'second' } };
+  let handler;
+  const context = {
+    ipcMain: { on: (_name, callback) => { handler = callback; } },
+    ptys: new Map([['1', pane]]), tmuxHolder, win: firstWindow,
+    outputReplay: { isHeld: () => false }, finishOutputReplay() {},
+    buildInputModeSequence: () => '', MODE_FORMAT: '', LOG_PREFIX: 'test', console: { warn() {} },
+    lastPaneLayout: null, saveHolderLayout() {},
+  };
+  vm.runInNewContext(source.slice(start, end), context);
+
+  // 1 枚目のウィンドウの復元を始め、履歴の取得を待っている間にウィンドウを作り直す
+  pane.beginReplay();
+  pane.pendingReplay = pane.replay;
+  const firstReady = handler({ sender: firstWindow.webContents }, [{ id: '1', cols: 80, rows: 24 }]);
+  context.win = secondWindow;
+  pane.beginReplay();
+  pane.pendingReplay = pane.replay;
+  const secondReplay = pane.replay;
+  const secondReady = handler({ sender: secondWindow.webContents }, [{ id: '1', cols: 100, rows: 30 }]);
+  // 閉じたウィンドウから遅れて届いた準備完了は受け付けない
+  await handler({ sender: firstWindow.webContents }, [{ id: '1', cols: 80, rows: 24 }]);
+  assert.equal(captures.length, 2);
+
+  // 古い取得が先に終わっても、新しい復元は続いたまま（入力の保留も解けない）
+  captures[0]('old history');
+  await firstReady;
+  assert.deepEqual(finished, []);
+  assert.equal(pane.pendingReplay, secondReplay);
+  assert.equal(pane.replay, secondReplay);
+
+  // 新しい取得が終わったときだけ、履歴を流して復元を終える
+  captures[1]('new history');
+  await secondReady;
+  assert.deepEqual(finished, ['new history']);
+  assert.equal(pane.pendingReplay, null);
 });

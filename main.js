@@ -5,7 +5,7 @@ const { createInternalBrowser } = require('./utils/internalBrowser');
 const { handleHelpRequest } = require('./utils/helpFeature');
 const { PARTITION } = require('./utils/internalBrowserPolicy');
 const { INTERNAL_BROWSER_HOME_KEY, readOrchestratorOwners, resolveInternalBrowserHomeUrl } = require('./utils/internalBrowserHome');
-const { isCloseShortcut, planLivePaneReattach, applyTitleUpdateToLayout, applyEngineChangeToLayout, createOutputReplayBuffer } = require('./utils/windowLifecycle');
+const { isCloseShortcut, planLivePaneReattach, applyTitleUpdateToLayout, applyEngineChangeToLayout, applyPaneStateToLayout, createOutputReplayBuffer } = require('./utils/windowLifecycle');
 const { resolvePaneNote } = require('./renderer/statusPresentation');
 let internalBrowser = null;
 
@@ -2700,9 +2700,13 @@ function reattachLiveTerminalPanes() {
   const plan = planLivePaneReattach({ liveIds: [...ptys.keys()], layout: lastPaneLayout, defaultCwd: os.homedir() });
   for (const pane of plan.panes) {
     const ptyProcess = ptys.get(pane.id);
+    // 裏の作業の実行中かは main が持つ値を正として画面へ渡す。
+    pane.backgroundWorkRunning = backgroundWork.isRunning(pane.id);
     if (ptyProcess.isTmuxPane) {
       ptyProcess.beginReplay();
-      ptyProcess.pendingReplay = true;
+      // 履歴の取得待ちの途中でウィンドウを作り直しても、古い取得の完了で新しい復元を終わらせないよう、
+      // 今回の復元の目印（replay そのもの）を持たせる。
+      ptyProcess.pendingReplay = ptyProcess.replay;
     } else {
       outputReplay.hold(pane.id);
     }
@@ -2729,7 +2733,9 @@ function finishOutputReplay(id, ptyProcess, ready) {
   }
 }
 
-ipcMain.on('terminal:restore-ready', async (_event, readyPanes) => {
+ipcMain.on('terminal:restore-ready', async (event, readyPanes) => {
+  // 閉じたウィンドウの画面から遅れて届いた準備完了は、新しい画面の復元に混ぜない（issue #649）。
+  if (event.sender !== win?.webContents) return;
   for (const ready of Array.isArray(readyPanes) ? readyPanes : []) {
     const id = typeof ready === 'object' && ready !== null ? ready.id : ready;
     const pane = ptys.get(String(id));
@@ -2738,21 +2744,27 @@ ipcMain.on('terminal:restore-ready', async (_event, readyPanes) => {
       continue;
     }
     if (!pane?.pendingReplay) continue;
+    // 取得を待つ間に別の復元へ切り替わったら（ウィンドウの作り直し）、この取得の結果は捨てる。
+    const replayToken = pane.pendingReplay;
+    const isCurrentReplay = () => pane.pendingReplay === replayToken;
     try {
       if (Number.isInteger(ready.cols) && Number.isInteger(ready.rows) && ready.cols >= 2 && ready.rows >= 2) {
         // 履歴とカーソルは画面側と同じ行列数になってから採取する。
         tmuxHolder.command(['resize-window', '-t', pane.windowId, '-x', String(ready.cols), '-y', String(ready.rows)]);
       }
       const { history, modeOutput } = await tmuxHolder.capturePaneWithMode(pane.paneId, MODE_FORMAT);
+      if (!isCurrentReplay()) continue;
       let modes = '';
       try { modes = buildInputModeSequence(modeOutput); }
       catch (error) { console.warn(`${LOG_PREFIX} holder mode restore failed:`, error); }
       pane.finishReplay(history, modes);
     } catch (error) {
       console.warn(`${LOG_PREFIX} holder pane replay failed:`, error);
-      pane.endCapture();
-      pane.finishReplay('', '');
-    } finally { pane.pendingReplay = null; }
+      if (isCurrentReplay()) {
+        pane.endCapture(pane.replay);
+        pane.finishReplay('', '');
+      }
+    } finally { if (isCurrentReplay()) pane.pendingReplay = null; }
   }
   try { if (lastPaneLayout) saveHolderLayout(lastPaneLayout); }
   catch (error) { console.warn(`${LOG_PREFIX} holder metadata save failed:`, error); }
@@ -2769,11 +2781,13 @@ function hasRecentHolderMetadata(socket) {
 let restoreAttempted = false;
 let restoredPaneCount = 0;
 ipcMain.handle('terminal:restore', async (event) => {
-  if (SETUP_SHELL) return { panes: [], order: [], stashOrder: [], missing: 0 };
+  // ウィンドウを作り直したときのつなぎ直しは、同じプロセスで動いているペインに戻すだけなので、
+  // セットアップ用シェルの起動でも行う（起動時の復元とは分けて、SETUP_SHELL の判定より先に置く）。
   if (reattachLivePanes && event.sender === win?.webContents) {
     reattachLivePanes = false;
     return reattachLiveTerminalPanes();
   }
+  if (SETUP_SHELL) return { panes: [], order: [], stashOrder: [], missing: 0 };
   if (restoreAttempted) return { panes: [], order: [], stashOrder: [], missing: 0 };
   restoreAttempted = true;
   if (PANE_HOLDER !== 'tmux' || tmuxUnavailable) {
@@ -2860,13 +2874,14 @@ ipcMain.handle('terminal:restore', async (event) => {
     identity, generation: panes.find(pane => pane.tmuxPaneId === identity.paneId)?.generation ?? null,
   })));
   // 画面側の行列数が決まるまで採取を待つ。採取前のライブ出力は履歴に含める。
-  for (const saved of panes) ptys.get(saved.id).pendingReplay = true;
+  for (const saved of panes) { const pane = ptys.get(saved.id); pane.pendingReplay = pane.replay; }
   restoredPaneCount = panes.length;
   if (panes.length) firstTerminalCreated = true;
   const ids = new Set(panes.map(pane => pane.paneId));
   return { panes, order: (Array.isArray(metadata.order) ? metadata.order : []).filter(id => ids.has(id)), stashOrder: (Array.isArray(metadata.stashOrder) ? metadata.stashOrder : []).filter(id => ids.has(id)), focusedPaneId: ids.has(metadata.focusedPaneId) ? metadata.focusedPaneId : null, missing: metadataRejected && !panes.length ? -1 : missingSavedPaneCount(metadata.panes.length, matchedSavedCount), metadataLost: metadataRejected, holderWarning: holderWarning ? EMBEDDED_OPTIONS?.paneHolderWarning : null };
 });
-ipcMain.on('terminal:restore-abandon', (_event, ids) => {
+ipcMain.on('terminal:restore-abandon', (event, ids) => {
+  if (event.sender !== win?.webContents) return;
   // 描画できなかったペインを管理対象から外す。保持役のシェルは次回起動まで残す。
   const abandonedIds = new Set(Array.isArray(ids) ? ids.map(String) : []);
   // 保持役を使わないペインは画面へ戻せなくても止めず、新しい出力を画面へ送る状態へ戻す。
@@ -4360,6 +4375,9 @@ function startHttpApi() {
           const waiting = parsed.waiting;
           if (win && !win.isDestroyed()) {
             win.webContents.send('terminal:set-status', termId, waiting);
+          } else {
+            // ウィンドウを閉じている間は、作り直したウィンドウへ戻す並びの記録へ反映する（issue #649）。
+            lastPaneLayout = applyPaneStateToLayout(lastPaneLayout, termId, { externalWaiting: waiting });
           }
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ ok: true, termId, waiting }));
@@ -4381,11 +4399,7 @@ function startHttpApi() {
         res.end(JSON.stringify({ error: 'forbidden origin' }));
         return;
       }
-      if (!win || win.isDestroyed()) {
-        res.writeHead(503, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'window not available' }));
-        return;
-      }
+      // ウィンドウを閉じている間も受け付け、作り直したウィンドウへ戻す並びの記録へ反映する（issue #649）。
       readJsonBody(req, res, 10 * 1024, (body) => {
         try {
           const parsed = JSON.parse(body);
@@ -4414,7 +4428,8 @@ function startHttpApi() {
             return;
           }
 
-          win.webContents.send('terminal:set-lock', termId, lock);
+          if (win && !win.isDestroyed()) win.webContents.send('terminal:set-lock', termId, lock);
+          else lastPaneLayout = applyPaneStateToLayout(lastPaneLayout, termId, { lock });
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ ok: true }));
         } catch (e) {

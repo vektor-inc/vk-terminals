@@ -5,7 +5,7 @@
 
 const TEXT_LIMIT = 4096;
 const TEXT_KEYS = ['taskTitle', 'apiTitle', 'apiUrl', 'apiPrUrl', 'apiPaneNote'];
-const BOOLEAN_KEYS = ['apiPrMerged', 'apiWaitingMerge'];
+const BOOLEAN_KEYS = ['apiPrMerged', 'apiWaitingMerge', 'externalWaiting'];
 
 /**
  * ⌘ + W（ウィンドウを閉じるショートカット）の押下かを判定する。
@@ -81,6 +81,8 @@ function normalizePane(saved, id, paneId, defaultCwd) {
   };
   for (const key of TEXT_KEYS) if (typeof saved[key] === 'string') pane[key] = saved[key].slice(0, TEXT_LIMIT);
   for (const key of BOOLEAN_KEYS) if (typeof saved[key] === 'boolean') pane[key] = saved[key];
+  // 閉じる保護（POST /api/set-lock）は画面と同じ形にそろえる。
+  if (Object.hasOwn(saved, 'lock')) pane.lock = saved.lock && typeof saved.lock.close === 'boolean' ? { close: saved.lock.close } : null;
   return pane;
 }
 
@@ -116,6 +118,18 @@ function applyTitleUpdateToLayout(layout, termId, update, resolvePaneNote) {
  */
 function applyEngineChangeToLayout(layout, termId, engine) {
   return updateLayoutPane(layout, termId, pane => ({ ...pane, engine }));
+}
+
+/**
+ * ウィンドウが無い間に届いたペインの状態（閉じる保護・外部からの入力待ち）を、並びの記録へ反映した記録を返す。
+ *
+ * @param {object|null} layout 画面が最後に保存した並び
+ * @param {string} termId 対象のペイン番号
+ * @param {object} patch 上書きする項目（{ lock } や { externalWaiting }）
+ * @returns {object|null} 反映後の記録
+ */
+function applyPaneStateToLayout(layout, termId, patch) {
+  return updateLayoutPane(layout, termId, pane => ({ ...pane, ...patch }));
 }
 
 function updateLayoutPane(layout, termId, change) {
@@ -174,5 +188,6 @@ module.exports = {
   planLivePaneReattach,
   applyTitleUpdateToLayout,
   applyEngineChangeToLayout,
+  applyPaneStateToLayout,
   createOutputReplayBuffer,
 };

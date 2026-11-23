@@ -138,7 +138,7 @@ test('ヘルプは保存予約と条件付き入力を確認し、起動応答�
     const helpTab = win.getByRole('tab', { name: '使い方・ヘルプ' });
     const name = win.getByLabel('名前', { exact: true });
     const engine = win.getByLabel('通常ペインの既定 AI エンジン');
-    const model = win.getByLabel('起動時・空画面・自動処理用ペインからの追加・分割用 Codex モデル');
+    const model = win.getByLabel('Codex モデル', { exact: true });
     const documentButton = win.getByRole('button', { name: 'ドキュメント', exact: true });
     const saveButton = win.getByRole('button', { name: '保存', exact: true });
     const saveAndOpen = win.getByRole('button', { name: '保存して開く' });

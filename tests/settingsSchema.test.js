@@ -159,7 +159,7 @@ test('buildBuiltinSettingsDescriptor: JSON から targetPath 付きの組み込�
 
   // Codex モデルは通常ペインからの追加・分割には適用しないことを文言で示す。
   const codexModelField = fields.find((field) => field.key === 'initialCodexModel');
-  assert.equal(codexModelField.label, '起動時・空画面・自動処理用ペインからの追加・分割用 Codex モデル');
+  assert.equal(codexModelField.label, 'Codex モデル');
   assert.match(codexModelField.help, /起動時の最初のペイン/);
   assert.match(codexModelField.help, /ペインが 0 枚のときに追加するペイン/);
   assert.match(codexModelField.help, /自動処理用ペインから手動で追加・分割する通常ペイン/);

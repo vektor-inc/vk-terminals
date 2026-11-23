@@ -12,6 +12,6 @@ for (const [initialEngine, automatedEngine] of [['claude', 'codex'], ['codex', '
 }
 
 test('通常の手動ペインからは追加・分割でエンジンを引き継ぐ', () => {
-  assert.deepEqual(withInheritedEngine({ noClaude: true }, { engine: 'codex', createdByAutomation: false }, 'claude', ''), { noClaude: true, engine: 'codex' });
+  assert.deepEqual(withInheritedEngine({ noClaude: true }, { engine: 'codex', model: 'o3', createdByAutomation: false }, 'codex', 'gpt-5.5'), { noClaude: true, engine: 'codex' });
   assert.deepEqual(withInheritedEngine({}, { engine: 'claude' }, 'codex', 'gpt-5.5'), { engine: 'claude' });
 });

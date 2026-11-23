@@ -10,7 +10,7 @@
   "_openInitialPaneNote": "既定では起動時に新しいペインを開きません。前回のペインを復元できた場合は追加せず、初回セットアップで必要な場合は設定に関係なく開きます。",
   "openInitialPane": false,
   "initialEngine": "claude",
-  "_initialCodexModelNote": "initialEngine が codex のときに、起動時の最初のペイン、ペインが 0 枚のときに追加するペイン、自動処理用ペインから手動で追加・分割する通常ペインへ渡すモデル名。通常ペインから追加・分割するときは元のペインの AI を引き継ぎます。空なら Codex の既定モデルで起動します。",
+  "_initialCodexModelNote": "initialEngine が codex のときに、起動時の最初のペイン、ペインが 0 枚のときに追加するペイン、自動処理用ペインから手動で追加・分割する通常ペインへ渡すモデル名。通常ペインから追加・分割するときは元のペインの AI エンジンだけを引き継ぎ、モデルは引き継がず、この設定も適用しません。空なら Codex の既定モデルで起動します。",
   "initialCodexModel": "",
   "confirmClose": "busy",
   "terminalLinkClickMode": "click",

@@ -1,6 +1,7 @@
 # Changelog
 
 - [ 機能追加 ] Codex の固定入口から、作成済みの issue を親 issue のサブ issue としてリンクできるように（許可された別リポジトリの子にも対応）（[#654](https://github.com/vektor-inc/vk-terminals/issues/654)）
+- [ 不具合修正 ] 自動処理用ペインから通常ペインを追加すると、設定した既定エンジンと異なるエンジンが起動する問題を修正（[#653](https://github.com/vektor-inc/vk-terminals/issues/653)）
 
 ## 1.108.1
 

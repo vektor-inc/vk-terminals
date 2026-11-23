@@ -2658,6 +2658,7 @@ function normalizeHolderPane(pane, tmuxPaneId) {
   return {
     paneId: safeText(pane.paneId).slice(0, 64), termId, tmuxPaneId,
     cwd: safeText(pane.cwd), engine: pane.engine === 'codex' ? 'codex' : 'claude',
+    createdByAutomation: pane.createdByAutomation === true,
     hasAgent: pane.hasAgent === true || (pane.hasAgent === undefined && agentGenerations.get(termId) > 0),
     generation: Number.isSafeInteger(pane.generation) && pane.generation >= 0 ? pane.generation : agentGenerations.get(termId),
     taskTitle: safeText(pane.taskTitle), apiTitle: safeText(pane.apiTitle),
@@ -4764,6 +4765,8 @@ function startHttpApi() {
           if (typeof requestedEngine === 'string') payload.engine = requestedEngine;
           if (typeof requestedStashed === 'boolean') payload.stashed = requestedStashed;
           if (requestedUseDefaults === true) payload.useDefaults = true;
+          // 外部 API が作る自動処理用ペインと、モバイルの手動追加を区別する。
+          if (requestedUseDefaults !== true) payload.createdByAutomation = true;
           if (typeof requestedModel === 'string') payload.model = requestedModel;
           if (typeof requestedApprovalPolicy === 'string') payload.approvalPolicy = requestedApprovalPolicy;
           if (typeof requestedSandboxMode === 'string') payload.sandboxMode = requestedSandboxMode;

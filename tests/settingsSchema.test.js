@@ -146,18 +146,24 @@ test('buildBuiltinSettingsDescriptor: JSON から targetPath 付きの組み込�
   assert.equal(autoLaunchField.label, 'AI（Claude Code / Codex）を自動的に起動する');
   assert.match(autoLaunchField.help, /Codex/);
 
-  // initialEngine は「自動起動がオンの場合だけ追加・分割ペインが同じ AI」「additionalPanes は対象外」「再起動後に反映」を示す。
+  // 自動処理用ペインから手動追加する場合は既定 AI、通常ペインからは元の AI を使うことを設定文言でも示す。
   const engineField = fields.find((field) => field.key === 'initialEngine');
-  assert.equal(engineField.label, '最初のペインの AI エンジン');
-  assert.match(engineField.help, /ペインが 0 枚のときに「新規ペインを追加」ボタンから作るペイン/);
+  assert.equal(engineField.label, '通常ペインの既定 AI エンジン');
+  assert.match(engineField.help, /起動時の最初のペイン/);
+  assert.match(engineField.help, /ペインが 0 枚のときに追加するペイン/);
+  assert.match(engineField.help, /自動処理用ペインから手動で追加・分割する通常ペイン/);
+  assert.match(engineField.help, /通常ペインから追加・分割するときは元のペインの AI を引き継ぎます/);
   assert.match(engineField.help, /再起動後に反映/);
   assert.match(engineField.help, /自動的に起動する」がオンの場合だけ/);
   assert.match(engineField.help, /additionalPanes.*対象外/);
 
-  // initialCodexModel は再起動後反映を示し、許可文字の pattern 検証を持つ（renderer/claudeModel.js と同じ規則）。
+  // Codex モデルは通常ペインからの追加・分割には適用しないことを文言で示す。
   const codexModelField = fields.find((field) => field.key === 'initialCodexModel');
-  assert.equal(codexModelField.label, '最初のペインの Codex モデル');
-  assert.match(codexModelField.help, /ペインが 0 枚のときに「新規ペインを追加」ボタンから作るペイン/);
+  assert.equal(codexModelField.label, 'Codex モデル');
+  assert.match(codexModelField.help, /起動時の最初のペイン/);
+  assert.match(codexModelField.help, /ペインが 0 枚のときに追加するペイン/);
+  assert.match(codexModelField.help, /自動処理用ペインから手動で追加・分割する通常ペイン/);
+  assert.match(codexModelField.help, /通常ペインから追加・分割するときは元のペインの AI エンジンだけを引き継ぎ、モデルは引き継がず、この設定も適用しません/);
   assert.match(codexModelField.help, /再起動後に反映/);
   assert.equal(typeof codexModelField.invalidMessage, 'string');
   const codexModelRe = new RegExp(codexModelField.pattern);

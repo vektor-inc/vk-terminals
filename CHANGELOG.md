@@ -1,13 +1,15 @@
 # Changelog
 
+## 1.109.0
+
 - [ 機能追加 ] Codex の固定入口から、作成済みの issue を親 issue のサブ issue としてリンクできるように（許可された別リポジトリの子にも対応）（[#654](https://github.com/vektor-inc/vk-terminals/issues/654)）
 - [ 不具合修正 ] 自動処理用ペインから通常ペインを追加すると、設定した既定エンジンと異なるエンジンが起動する問題を修正（[#653](https://github.com/vektor-inc/vk-terminals/issues/653)）
+- [ 不具合修正 ] タスクカードのタイトルを押すと外部ブラウザが直接開き、アプリ内ブラウザを選べない問題を修正（[#651](https://github.com/vektor-inc/vk-terminals/issues/651)）
 
 ## 1.108.1
 
 - [ 仕様変更 ] macOS の ⌘ + W でウィンドウを閉じないように変更。アプリ内ブラウザの操作中はタブを 1 つ閉じ、作業ペインの操作中は何もしない（[#649](https://github.com/vektor-inc/vk-terminals/issues/649)）
 - [ 不具合修正 ] macOS でウィンドウを閉じると作業ペインが止まり、開き直しても前回のペインへ戻れない問題を修正（閉じてもペインは動き続け、Dock のアイコンで同じペインを表示）（[#649](https://github.com/vektor-inc/vk-terminals/issues/649)）
-- [ 不具合修正 ] タスクカードのタイトルを押すと外部ブラウザが直接開き、アプリ内ブラウザを選べない問題を修正（[#651](https://github.com/vektor-inc/vk-terminals/issues/651)）
 
 ## 1.108.0
 

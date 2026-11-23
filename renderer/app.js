@@ -3590,6 +3590,7 @@ function ensureWidgetViewController(groupsEl) {
     groupsEl,
     isSafeExternalUrl,
     openUrl: openExternalUrlSafe,
+    openTitleUrl: showInternalBrowserChoice,
     sendCommand: async (command) => {
       if (!commandsConfigured) return { ok: false, error: 'commands-file-not-configured' };
       try {

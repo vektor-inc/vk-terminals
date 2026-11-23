@@ -316,8 +316,14 @@ test.describe.serial('widgetFile 系タスク一覧の描画・操作（issue #2
     const itemTitleLink = item.locator('a.task-item-title');
     await expect(itemTitleLink.locator('.task-item-title-text')).toHaveText('宣言ウィジェットの実行中タスク');
     await expect(itemTitleLink).toHaveAttribute('role', 'link');
-    await expect(itemTitleLink).toHaveAttribute('aria-label', '宣言ウィジェットの実行中タスク（外部ブラウザで開く）');
+    await expect(itemTitleLink).toHaveAttribute('aria-label', '宣言ウィジェットの実行中タスク（開き先を選ぶ）');
     await expect(itemTitleLink).toHaveAttribute('title', /https:\/\/github\.com\/vektor-inc\/vk-orchestrator\/issues\/301/m);
+    // タイトルから共通の開き先メニューを表示し、両方の選択肢を確認する。
+    await itemTitleLink.click();
+    const browserChoice = win.getByRole('menu', { name: 'github.com の開き先' });
+    await expect(browserChoice.getByRole('menuitem', { name: 'アプリ内で開く' })).toBeVisible();
+    await expect(browserChoice.getByRole('menuitem', { name: '外部ブラウザで開く ↗' })).toBeVisible();
+    await win.keyboard.press('Escape');
     // emphasis は意味属性として data-emphasis に載る。
     await expect(item).toHaveAttribute('data-emphasis', 'attention');
 

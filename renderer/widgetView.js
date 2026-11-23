@@ -96,6 +96,7 @@
    * @param {HTMLElement} deps.groupsEl  グループを描画するコンテナ（.task-list-groups 相当）
    * @param {(url:string)=>boolean} deps.isSafeExternalUrl
    * @param {(url:string)=>void} deps.openUrl  外部リンクを開く
+   * @param {(url:string,event:MouseEvent,origin:HTMLElement)=>void} [deps.openTitleUrl]  タイトルの開き先を選ぶ
    * @param {(command:object)=>Promise<{ok:boolean,error?:string}>} deps.sendCommand
    * @param {(text:string)=>boolean} [deps.confirm]  確認ダイアログ（既定 window.confirm）
    * @param {()=>string} [deps.getFilterMode]  担当者フィルタの現在モード
@@ -117,6 +118,7 @@
     const strings = Object.assign({}, DEFAULT_STRINGS, deps.strings || {});
     const isSafeExternalUrl = deps.isSafeExternalUrl || (() => false);
     const openUrl = deps.openUrl || (() => {});
+    const openTitleUrl = deps.openTitleUrl || ((url) => openUrl(url));
     const sendCommand = deps.sendCommand || (async () => ({ ok: false, error: 'no-transport' }));
     const confirmFn = deps.confirm || ((text) => (typeof window !== 'undefined' ? window.confirm(text) : true));
     const getFilterMode = deps.getFilterMode || (() => 'all');
@@ -701,16 +703,16 @@
       text.appendChild(icon);
     }
 
-    function wireExternalLink(anchor, label, url) {
+    function wireExternalLink(anchor, label, url, openLink = (linkUrl) => openUrl(linkUrl), ariaSuffix = strings.openExternal) {
       anchor.href = '#';
       anchor.setAttribute('role', 'link');
       anchor.draggable = false;
       anchor.title = `${label}\n${url}`;
-      anchor.setAttribute('aria-label', `${label}${strings.openExternal}`);
+      anchor.setAttribute('aria-label', `${label}${ariaSuffix}`);
       anchor.addEventListener('click', (e) => {
         e.preventDefault();
         e.stopPropagation();
-        if (isSafeExternalUrl(url)) openUrl(url);
+        if (isSafeExternalUrl(url)) openLink(url, e, anchor);
       });
     }
 
@@ -760,7 +762,9 @@
       }
 
       const a = el('a', 'task-item-title task-item-title-link');
-      wireExternalLink(a, item.title, queueLink.url);
+      // タイトルだけを開き先選択へ渡し、他のウィジェットリンクの動作は維持する。
+      wireExternalLink(a, item.title, queueLink.url, openTitleUrl,
+        deps.openTitleUrl ? '（開き先を選ぶ）' : strings.openExternal);
       const text = el('span', 'task-item-title-text');
       text.textContent = item.title;
       a.appendChild(text);

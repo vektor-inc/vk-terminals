@@ -294,9 +294,10 @@ test('render: rel="queue" のリンクチップは非表示にし、rel="pr" は
   assert.equal(links[0].textContent, 'PR⁠↗');
 });
 
-test('render: queue URL があるタイトルは外部リンク化し、クリックで queue URL を openUrl へ渡す', () => {
+test('render: queue URL があるタイトルは開き先選択へ渡し、PR リンクは外部ブラウザのまま', () => {
   const queueUrl = 'https://github.com/vektor-inc/vk-orchestrator/issues/301';
   const opened = [];
+  const titleChoices = [];
   const safeChecked = [];
   const widget = sanitized([
     { id: 'in-progress', label: '実行中', tone: 'progress', items: [{ id: '301', title: '宣言ウィジェットの実行中タスク', editable: false, links: [
@@ -307,19 +308,27 @@ test('render: queue URL があるタイトルは外部リンク化し、クリ�
   const { groupsEl, view } = makeView({
     isSafeExternalUrl: (url) => { safeChecked.push(url); return true; },
     openUrl: (url) => { opened.push(url); },
+    openTitleUrl: (url, event, origin) => { titleChoices.push({ url, event, origin }); },
   });
   view.render(widget, { now: Date.parse('2026-07-21T00:00:10.000Z') });
 
   const title = groupsEl.querySelectorAll((el) => el.classList.contains('task-item-title'))[0];
   assert.equal(title.tagName, 'A');
   assert.equal(title.getAttribute('role'), 'link');
-  assert.equal(title.getAttribute('aria-label'), '宣言ウィジェットの実行中タスク（外部ブラウザで開く）');
+  assert.equal(title.getAttribute('aria-label'), '宣言ウィジェットの実行中タスク（開き先を選ぶ）');
   assert.equal(title.title, `宣言ウィジェットの実行中タスク\n${queueUrl}`);
   assert.equal(title.textContent, '宣言ウィジェットの実行中タスク⁠↗');
 
-  title.dispatch('click');
+  const click = { clientX: 20, clientY: 30 };
+  title.dispatch('click', click);
+  const prLink = groupsEl.querySelectorAll((el) => el.classList.contains('widget-link'))[0];
+  prLink.dispatch('click');
   assert.equal(opened.length, 1);
-  assert.equal(opened[0], queueUrl);
+  assert.equal(opened[0], 'https://github.com/vektor-inc/vk-orchestrator/pull/301');
+  assert.equal(titleChoices.length, 1);
+  assert.equal(titleChoices[0].url, queueUrl);
+  assert.equal(titleChoices[0].origin, title);
+  assert.equal(titleChoices[0].event.clientX, 20);
   assert.ok(safeChecked.includes(queueUrl));
 });
 

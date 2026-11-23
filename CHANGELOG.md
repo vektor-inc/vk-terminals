@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 機能追加 ] Codex の固定入口から、作成済みの issue を親 issue のサブ issue としてリンクできるように（許可された別リポジトリの子にも対応）（[#654](https://github.com/vektor-inc/vk-terminals/issues/654)）
+
 ## 1.108.1
 
 - [ 仕様変更 ] macOS の ⌘ + W でウィンドウを閉じないように変更。アプリ内ブラウザの操作中はタブを 1 つ閉じ、作業ペインの操作中は何もしない（[#649](https://github.com/vektor-inc/vk-terminals/issues/649)）

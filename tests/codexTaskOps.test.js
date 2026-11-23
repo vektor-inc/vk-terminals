@@ -16,6 +16,7 @@ const {
   buildChildEnvironment,
   buildMemberCodexArgs,
   isWithinDirectory,
+  LINK_SUB_ISSUE_JQ,
   superviseMemberRun,
   inspectGitConfigListing,
   isSupportedGitVersion,
@@ -804,6 +805,253 @@ test('実行: 拒否された gh issue edit は gh を一度も呼ばない（�
       assert.equal(calls.length, 0, JSON.stringify(command));
     }
     assert.equal(fixture.readCalls().length, 0);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+// ─── サブ issue のリンク（issue #654） ─────────────────────────────────────
+
+test('許可: gh issue link-sub は親番号・（子の owner/repo）・子番号の固定形だけを受け、明示先は親の対象として保持する（issue #654）', () => {
+  assert.deepEqual(parseTaskCommand(['gh', 'issue', 'link-sub', '1050', '654']), {
+    ok: true, bin: 'gh', operation: 'issue-link-sub', parentNumber: '1050', childNumber: '654', needsGitHub: true,
+  });
+  assert.deepEqual(parseTaskCommand(['gh', 'issue', 'link-sub', '1050', 'vektor-inc/vk-orchestrator', '654']), {
+    ok: true, bin: 'gh', operation: 'issue-link-sub', parentNumber: '1050', childNumber: '654', needsGitHub: true, childRepo: 'vektor-inc/vk-orchestrator',
+  });
+  assert.deepEqual(parseTaskCommand(['gh', 'vektor-inc/vk-orchestrator', 'issue', 'link-sub', '1050', 'vektor-inc/vk-terminals', '654']), {
+    ok: true, bin: 'gh', operation: 'issue-link-sub', parentNumber: '1050', childNumber: '654', needsGitHub: true, childRepo: 'vektor-inc/vk-terminals', targetRepo: 'vektor-inc/vk-orchestrator',
+  });
+  // 親の明示先と子の別リポジトリは、番号が同じでも別の issue なので受ける。
+  assert.equal(parseTaskCommand(['gh', 'vektor-inc/a', 'issue', 'link-sub', '5', 'vektor-inc/b', '5']).ok, true);
+});
+
+test('拒否: gh issue link-sub は不正な番号・owner/repo・#つき・フラグ・自己参照・引数の過不足を拒否する（issue #654）', () => {
+  for (const tokens of [
+    [], ['5'], ['5', '6', '7'], ['5', 'o/r', '6', '7'],
+    ['0', '6'], ['05', '6'], ['5', '06'], ['x', '6'], ['5', '-6'], ['1234567890', '6'],
+    ['5', 'vektor-inc/vk-terminals#6'], ['5', 'vektor-inc/vk-terminals', '#6'], ['5', 'a/b/c', '6'], ['5', '../x', '6'], ['5', '-o/r', '6'],
+    ['5', '6', '--repo', 'o/r'], ['--replace-parent', '5', '6'], ['5', '--json', '6'],
+    ['5', '5'], ['5', 'bad repo', '6'], ['5', '6\n'],
+  ]) {
+    const result = parseTaskCommand(['gh', 'issue', 'link-sub', ...tokens]);
+    assert.equal(result.ok, false, JSON.stringify(tokens));
+    assert.match(result.error, /^task command rejected/, JSON.stringify(tokens));
+  }
+  // 親の明示先と子が同じリポジトリ（大文字小文字違いを含む）で同じ番号なら自己参照。
+  assert.equal(parseTaskCommand(['gh', 'vektor-inc/a', 'issue', 'link-sub', '5', 'VEKTOR-INC/A', '5']).ok, false);
+  assert.equal(parseTaskCommand(['gh', 'vektor-inc/a', 'issue', 'link-sub', '5', '5']).ok, false);
+});
+
+// gh api だけを差し替える spawnSync。issues は 'owner/repo#番号' → issue（無いキーは 404）、subIssues は同じキー → 子の id 一覧。
+// POST が成功すると、applyPost が true のときだけ一覧へ子の id を足す（読み戻し不一致の再現用に false を渡す）。
+function linkSubHarness(fixture, { issues = {}, subIssues = {}, postStatus = 0, applyPost = true, listStatus = 0 } = {}) {
+  const calls = [];
+  const keyOf = (owner, repo, number) => `${owner}/${repo}#${number}`.toLowerCase();
+  const lists = Object.fromEntries(Object.entries(subIssues).map(([key, ids]) => [key.toLowerCase(), [...ids]]));
+  const issueTable = Object.fromEntries(Object.entries(issues).map(([key, value]) => [key.toLowerCase(), value]));
+  const spawnSync = (bin, args, options) => {
+    if (bin !== fixture.env.VK_TASK_GH) return childProcess.spawnSync(bin, args, { ...options, stdio: 'pipe' });
+    calls.push({ args, cwd: options.cwd });
+    if (args[0] !== 'api') return { status: 1, stdout: '', stderr: 'unexpected\n' };
+    const endpoint = args.find((arg) => arg.startsWith('repos/'));
+    const list = /^repos\/([^/]+)\/([^/]+)\/issues\/([0-9]+)\/sub_issues(\?per_page=100)?$/.exec(endpoint);
+    if (list && args.includes('POST')) {
+      if (postStatus !== 0) return { status: postStatus, stdout: '', stderr: 'gh: Validation Failed (HTTP 422)\n' };
+      const id = Number(args[args.indexOf('-F') + 1].replace('sub_issue_id=', ''));
+      const key = keyOf(list[1], list[2], list[3]);
+      if (applyPost) lists[key] = [...(lists[key] || []), id];
+      return { status: 0, stdout: '{}', stderr: '' };
+    }
+    if (list) {
+      if (listStatus !== 0) return { status: listStatus, stdout: '', stderr: 'list failed\n' };
+      return { status: 0, stdout: (lists[keyOf(list[1], list[2], list[3])] || []).map((id) => `${id}\n`).join(''), stderr: '' };
+    }
+    const single = /^repos\/([^/]+)\/([^/]+)\/issues\/([0-9]+)$/.exec(endpoint);
+    if (single) {
+      const issue = issueTable[keyOf(single[1], single[2], single[3])];
+      if (!issue) return { status: 1, stdout: '{"message":"Not Found","status":"404"}', stderr: 'gh: Not Found (HTTP 404)\n' };
+      return { status: 0, stdout: JSON.stringify({ number: Number(single[3]), isPullRequest: false, parentIssueUrl: null, ...issue }), stderr: '' };
+    }
+    return { status: 1, stdout: '', stderr: 'unexpected\n' };
+  };
+  return { calls, spawnSync };
+}
+
+const BOUND_REPO = 'vektor-inc/vk-terminals';
+const issueApiUrl = (repo, number) => `https://api.github.com/repos/${repo}/issues/${number}`;
+// 成功時の gh 呼び出し: 親の取得 → 子の取得 → 追加 → 一覧の読み戻し。
+const linkSubSuccessCalls = (parentRepo, parentNumber, childRepo, childNumber, childId) => [
+  ['api', '--jq', LINK_SUB_ISSUE_JQ, `repos/${parentRepo}/issues/${parentNumber}`],
+  ['api', '--jq', LINK_SUB_ISSUE_JQ, `repos/${childRepo}/issues/${childNumber}`],
+  ['api', '--method', 'POST', `repos/${parentRepo}/issues/${parentNumber}/sub_issues`, '-F', `sub_issue_id=${childId}`],
+  ['api', '--paginate', '--jq', '.[].id', `repos/${parentRepo}/issues/${parentNumber}/sub_issues?per_page=100`],
+];
+
+test('実行: 同じリポジトリの子は、親と子の確認 → 固定エンドポイントへの追加 → 一覧の読み戻しの順で動き、読み戻せたときだけ SUB_ISSUE_LINKED を返す（issue #654）', () => {
+  const fixture = createFixture();
+  try {
+    const stdout = [];
+    const harness = linkSubHarness(fixture, { issues: { [`${BOUND_REPO}#10`]: { id: 1000 }, [`${BOUND_REPO}#11`]: { id: 1101 } }, subIssues: { [`${BOUND_REPO}#10`]: [999] } });
+    const result = run(fixture, ['gh', 'issue', 'link-sub', '10', '11'], { spawnSync: harness.spawnSync, writeOut: (m) => stdout.push(m) });
+    assert.equal(result.code, 0, result.messages.join(''));
+    assert.deepEqual(harness.calls.map((call) => call.args), linkSubSuccessCalls(BOUND_REPO, 10, BOUND_REPO, 11, 1101));
+    // 起動時のリポジトリが親のときは、拘束を確かめた呼び出し元の作業フォルダから実行する。
+    assert.ok(harness.calls.every((call) => call.cwd === fixture.repo));
+    assert.equal(stdout.join(''), `SUB_ISSUE_LINKED ${BOUND_REPO}#10 ${BOUND_REPO}#11\n`);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('実行: 許可 owner 内の別リポジトリの子と、明示先の親は、それぞれのリポジトリのエンドポイントを使い、明示先は固定 HOME から動く（issue #654）', () => {
+  const fixture = createFixture();
+  try {
+    const plain = path.join(fixture.root, 'plain-link-sub');
+    fs.mkdirSync(plain);
+    // 起動時のリポジトリの親に、別リポジトリ（大文字小文字違いの許可 owner）の子を付ける。
+    const crossChild = linkSubHarness(fixture, { issues: { [`${BOUND_REPO}#10`]: { id: 1000 }, 'Another-Owner/tool#3': { id: 3003 } } });
+    const stdout = [];
+    const first = run(fixture, ['gh', 'issue', 'link-sub', '10', 'Another-Owner/tool', '3'], { spawnSync: crossChild.spawnSync, writeOut: (m) => stdout.push(m) });
+    assert.equal(first.code, 0, first.messages.join(''));
+    assert.deepEqual(crossChild.calls.map((call) => call.args), linkSubSuccessCalls(BOUND_REPO, 10, 'Another-Owner/tool', 3, 3003));
+    assert.equal(stdout.join(''), `SUB_ISSUE_LINKED ${BOUND_REPO}#10 Another-Owner/tool#3\n`);
+
+    // 明示先の親（vk-orchestrator）に起動時のリポジトリの子を付ける。Git 管理外の cwd からでも、実行は固定 HOME で行う。
+    const explicitParent = linkSubHarness(fixture, { issues: { 'vektor-inc/vk-orchestrator#1050': { id: 1050 }, [`${BOUND_REPO}#654`]: { id: 6540 } } });
+    const second = run(fixture, ['gh', 'vektor-inc/vk-orchestrator', 'issue', 'link-sub', '1050', BOUND_REPO, '654'], { spawnSync: explicitParent.spawnSync, cwd: plain, writeOut: () => {} });
+    assert.equal(second.code, 0, second.messages.join(''));
+    assert.deepEqual(explicitParent.calls.map((call) => call.args), linkSubSuccessCalls('vektor-inc/vk-orchestrator', 1050, BOUND_REPO, 654, 6540));
+    assert.ok(explicitParent.calls.every((call) => call.cwd === fixture.home));
+
+    // 子の owner/repo を省くと、子は親（明示先）と同じリポジトリになる。
+    const sameAsExplicit = linkSubHarness(fixture, { issues: { 'vektor-inc/vk-orchestrator#1050': { id: 1050 }, 'vektor-inc/vk-orchestrator#1052': { id: 1052 } } });
+    assert.equal(run(fixture, ['gh', 'vektor-inc/vk-orchestrator', 'issue', 'link-sub', '1050', '1052'], { spawnSync: sameAsExplicit.spawnSync, cwd: plain, writeOut: () => {} }).code, 0);
+    assert.deepEqual(sameAsExplicit.calls.map((call) => call.args), linkSubSuccessCalls('vektor-inc/vk-orchestrator', 1050, 'vektor-inc/vk-orchestrator', 1052, 1052));
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('実行: 既に同じ親に付いている子は追加せずに読み戻して SUB_ISSUE_ALREADY_LINKED を返し、追加の失敗も先に同じリンクがあれば成功にする（issue #654）', () => {
+  const fixture = createFixture();
+  try {
+    // 子の parent_issue_url が同じ親（大文字小文字違い）を指しているときは POST しない。
+    const linked = linkSubHarness(fixture, {
+      issues: { [`${BOUND_REPO}#10`]: { id: 1000 }, 'vektor-inc/other#4': { id: 4004, parentIssueUrl: issueApiUrl('Vektor-Inc/VK-Terminals', 10) } },
+      subIssues: { [`${BOUND_REPO}#10`]: [4004] },
+    });
+    const stdout = [];
+    const first = run(fixture, ['gh', 'issue', 'link-sub', '10', 'vektor-inc/other', '4'], { spawnSync: linked.spawnSync, writeOut: (m) => stdout.push(m) });
+    assert.equal(first.code, 0, first.messages.join(''));
+    assert.equal(linked.calls.some((call) => call.args.includes('POST')), false);
+    assert.equal(linked.calls.at(-1).args.at(-1), `repos/${BOUND_REPO}/issues/10/sub_issues?per_page=100`);
+    assert.equal(stdout.join(''), `SUB_ISSUE_ALREADY_LINKED ${BOUND_REPO}#10 vektor-inc/other#4\n`);
+
+    // 子は親を指しているのに親の一覧に無いときは、成功にしない。
+    const inconsistent = linkSubHarness(fixture, {
+      issues: { [`${BOUND_REPO}#10`]: { id: 1000 }, [`${BOUND_REPO}#11`]: { id: 1101, parentIssueUrl: issueApiUrl(BOUND_REPO, 10) } },
+    });
+    const inconsistentOut = [];
+    const second = run(fixture, ['gh', 'issue', 'link-sub', '10', '11'], { spawnSync: inconsistent.spawnSync, writeOut: (m) => inconsistentOut.push(m) });
+    assert.equal(second.code, 2);
+    assert.match(second.messages.join(''), /not in the sub-issue list/);
+    assert.deepEqual(inconsistentOut, []);
+
+    // 確認の後に別処理が同じリンクを作り、POST が 422 になっても、読み戻しで一覧にあれば成功にする。
+    const race = linkSubHarness(fixture, {
+      issues: { [`${BOUND_REPO}#10`]: { id: 1000 }, [`${BOUND_REPO}#11`]: { id: 1101 } },
+      subIssues: { [`${BOUND_REPO}#10`]: [1101] },
+      postStatus: 1,
+    });
+    const raceOut = [];
+    const third = run(fixture, ['gh', 'issue', 'link-sub', '10', '11'], { spawnSync: race.spawnSync, writeOut: (m) => raceOut.push(m) });
+    assert.equal(third.code, 0, third.messages.join(''));
+    assert.equal(raceOut.join(''), `SUB_ISSUE_ALREADY_LINKED ${BOUND_REPO}#10 ${BOUND_REPO}#11\n`);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('実行: 別の親が付いている子は付け替えず、POST せずに拒否する（issue #654）', () => {
+  const fixture = createFixture();
+  try {
+    const harness = linkSubHarness(fixture, {
+      issues: { [`${BOUND_REPO}#10`]: { id: 1000 }, [`${BOUND_REPO}#11`]: { id: 1101, parentIssueUrl: issueApiUrl('vektor-inc/vk-orchestrator', 7) } },
+    });
+    const stdout = [];
+    const result = run(fixture, ['gh', 'issue', 'link-sub', '10', '11'], { spawnSync: harness.spawnSync, writeOut: (m) => stdout.push(m) });
+    assert.equal(result.code, 2);
+    assert.match(result.messages.join(''), /already has another parent issue \(vektor-inc\/vk-orchestrator#7\); replacing the parent is not allowed/);
+    assert.equal(harness.calls.some((call) => call.args.includes('POST')), false);
+    assert.deepEqual(stdout, []);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('実行: 許可外の owner（親・子）と、起動時のリポジトリを子に書いた自己参照は gh を一度も呼ばずに拒否する（issue #654）', () => {
+  const fixture = createFixture();
+  try {
+    const plain = path.join(fixture.root, 'plain-link-sub-reject');
+    fs.mkdirSync(plain);
+    for (const [command, pattern] of [
+      [['gh', 'issue', 'link-sub', '10', 'evil-owner/repo', '3'], /owner "evil-owner" is not allowed/],
+      [['gh', 'issue', 'link-sub', '10', 'vektor-inc-evil/vk-terminals', '3'], /owner "vektor-inc-evil" is not allowed/],
+      [['gh', 'evil-owner/repo', 'issue', 'link-sub', '10', BOUND_REPO, '3'], /owner "evil-owner" is not allowed/],
+      [['gh', 'issue', 'link-sub', '10', 'VEKTOR-INC/vk-terminals', '10'], /cannot be linked to itself/],
+    ]) {
+      const harness = linkSubHarness(fixture, { issues: { [`${BOUND_REPO}#10`]: { id: 1000 }, 'evil-owner/repo#3': { id: 3 }, 'evil-owner/repo#10': { id: 10 } } });
+      const result = run(fixture, command, { spawnSync: harness.spawnSync, cwd: command[1].includes('/') ? plain : fixture.repo });
+      assert.equal(result.code, 2, JSON.stringify(command));
+      assert.match(result.messages.join(''), pattern, JSON.stringify(command));
+      assert.equal(harness.calls.length, 0, JSON.stringify(command));
+    }
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('実行: 存在しない issue・PR の番号・読めない応答は、追加せずに失敗する（issue #654）', () => {
+  const fixture = createFixture();
+  try {
+    for (const [issues, pattern] of [
+      [{ [`${BOUND_REPO}#11`]: { id: 1101 } }, /could not read parent issue vektor-inc\/vk-terminals#10: gh: Not Found \(HTTP 404\)/],
+      [{ [`${BOUND_REPO}#10`]: { id: 1000 } }, /could not read child issue vektor-inc\/vk-terminals#11: gh: Not Found \(HTTP 404\)/],
+      [{ [`${BOUND_REPO}#10`]: { id: 1000, isPullRequest: true }, [`${BOUND_REPO}#11`]: { id: 1101 } }, /#10 is a pull request/],
+      [{ [`${BOUND_REPO}#10`]: { id: 1000 }, [`${BOUND_REPO}#11`]: { id: 1101, isPullRequest: true } }, /#11 is a pull request/],
+      [{ [`${BOUND_REPO}#10`]: { id: 1000 }, [`${BOUND_REPO}#11`]: { id: '1101; rm' } }, /could not read child issue .*unreadable response/],
+      [{ [`${BOUND_REPO}#10`]: { id: 1000 }, [`${BOUND_REPO}#11`]: { id: 1101, number: 12 } }, /could not read child issue .*unreadable response/],
+    ]) {
+      const harness = linkSubHarness(fixture, { issues });
+      const stdout = [];
+      const result = run(fixture, ['gh', 'issue', 'link-sub', '10', '11'], { spawnSync: harness.spawnSync, writeOut: (m) => stdout.push(m) });
+      assert.equal(result.code, 2, pattern.source);
+      assert.match(result.messages.join(''), pattern);
+      assert.equal(harness.calls.some((call) => call.args.includes('POST')), false, pattern.source);
+      assert.deepEqual(stdout, []);
+    }
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('実行: 追加が終了コード 0 でも読み戻しで子が一覧に無いとき、一覧を読めないとき、追加が失敗して一覧にも無いときは成功にしない（issue #654）', () => {
+  const fixture = createFixture();
+  try {
+    const issues = { [`${BOUND_REPO}#10`]: { id: 1000 }, [`${BOUND_REPO}#11`]: { id: 1101 } };
+    for (const [options, pattern] of [
+      [{ applyPost: false }, /the link was not applied: vektor-inc\/vk-terminals#11 is not in the sub-issues of vektor-inc\/vk-terminals#10/],
+      [{ listStatus: 1 }, /could not verify the link/],
+      [{ postStatus: 1 }, /could not add vektor-inc\/vk-terminals#11 to vektor-inc\/vk-terminals#10: gh: Validation Failed \(HTTP 422\)/],
+    ]) {
+      const harness = linkSubHarness(fixture, { issues, ...options });
+      const stdout = [];
+      const result = run(fixture, ['gh', 'issue', 'link-sub', '10', '11'], { spawnSync: harness.spawnSync, writeOut: (m) => stdout.push(m) });
+      assert.equal(result.code, 2, pattern.source);
+      assert.match(result.messages.join(''), pattern);
+      assert.deepEqual(stdout, [], pattern.source);
+    }
   } finally {
     fixture.cleanup();
   }

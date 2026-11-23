@@ -555,7 +555,7 @@ test('操作一覧の gh 操作は入口の受理集合と一致する', () => {
     'gh issue view': ['5'], 'gh issue list': [], 'gh repo view': ['--json', 'visibility'],
     'gh issue save-image': ['https://github.com/user-attachments/assets/12345678-1234-1234-1234-123456789abc', '--out', 'a.png'],
     'gh issue comment': ['5', '--body', 'ok'], 'gh issue create': ['--title', 't', '--body', 'b'],
-    'gh issue edit': ['5', '--add-label', 'bug'], 'gh issue close': ['5'],
+    'gh issue edit': ['5', '--add-label', 'bug'], 'gh issue close': ['5'], 'gh issue link-sub': ['5', '6'],
     'gh pr view': ['5'], 'gh pr checks': ['5'], 'gh pr comment': ['5', '--body', 'ok'],
     'gh pr create': ['--head', 'issue/556-x', '--title', 't', '--body', 'b'],
     'gh pr edit': ['5', '--title', 't'], 'gh pr merge': ['5'], 'gh pr diff': ['5'],

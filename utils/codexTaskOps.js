@@ -42,7 +42,8 @@
 //     担当者・ラベルの追加（--add-*）、本文更新、ラベル削除は 1 回の gh issue edit に併用させず、それぞれ別の操作として実行する（読み戻しの照合を操作ごとに独立させるため）。
 //     成功の判定はどれも読み戻し（本文の一致・state が CLOSED・ラベルが外れたこと）で行い、gh の終了コードだけでは成功としない。
 //   - 作成済み issue を親 issue のサブ issue にする `gh [<親 owner/repo>] issue link-sub <親番号> [<子 owner/repo>] <子番号>` を持つ（issue #654）。
-//     親・子とも owner を許可一覧で照合し、gh api の固定エンドポイント（issue の取得・サブ issue の追加と一覧）だけを入口が組み立てる。
+//     親・子とも owner を許可一覧で照合し（親を省略して起動時のリポジトリを使うときも照合する）、応答の所属（repository_url）が要求先と一致することも確かめる。
+//     gh api の固定エンドポイント（issue の取得・サブ issue の追加と一覧）だけを入口が組み立てる。
 //     既存の同じリンクは成功、別の親が付いている子は付け替えずに拒否し、成功の判定は親のサブ issue 一覧の読み戻しで行う。
 const nodeFs = require('fs');
 const crypto = require('crypto');
@@ -2256,16 +2257,25 @@ function executeIssueClose({ parsed, binding, cwd, env, spawnSync, reject, write
 }
 
 // issue を固定エンドポイントで読むときに取り出す項目（サブ issue の追加には number ではなく数値の id が要る）。
-const LINK_SUB_ISSUE_JQ = '{id: .id, number: .number, isPullRequest: (.pull_request != null), parentIssueUrl: .parent_issue_url}';
+// repository_url は所属の確認に使う。移管されたリポジトリは旧 URL から転送されるため、要求した owner/repo と応答の所属が食い違いうる。
+const LINK_SUB_ISSUE_JQ = '{id: .id, number: .number, repositoryUrl: .repository_url, isPullRequest: (.pull_request != null), parentIssueUrl: .parent_issue_url}';
+const LINK_SUB_ISSUE_LIST_JQ = '.[] | {id: .id, repositoryUrl: .repository_url}';
 const ISSUE_API_URL_PATTERN = /^https:\/\/api\.github\.com\/repos\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/issues\/([1-9][0-9]*)$/;
+const REPOSITORY_API_URL_PATTERN = /^https:\/\/api\.github\.com\/repos\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)$/;
+
+// GitHub API の repository_url が、指定した owner/repo（大文字小文字は区別しない）を指すか。
+function isRepositoryApiUrlOf(value, repo) {
+  const matched = typeof value === 'string' ? REPOSITORY_API_URL_PATTERN.exec(value) : null;
+  return matched !== null && matched[1].toLowerCase() === repo.toLowerCase();
+}
 
 /**
  * `gh [<親 owner/repo>] issue link-sub <親番号> [<子 owner/repo>] <子番号>`（issue #654）。作成済みの issue を親 issue のサブ issue にする。
- * 1. 子の owner を許可一覧と照合し、自己参照を拒否する（ここまでは GitHub を呼ばない）。
- * 2. 親と子を repos/<repo>/issues/<番号> で読み、どちらも存在する issue（PR ではない）で、子の数値 id が取れることを確かめる。
+ * 1. 親と子の owner を許可一覧と照合し、自己参照を拒否する（ここまでは GitHub を呼ばない）。
+ * 2. 親と子を repos/<repo>/issues/<番号> で読み、どちらも存在する issue（PR ではない）で、所属が要求した owner/repo と一致し、子の数値 id が取れることを確かめる。
  * 3. 子に既に親がある場合、同じ親なら追加せず読み戻しへ進み（冪等）、別の親なら置き換えずに拒否する。
  * 4. repos/<親>/issues/<親番号>/sub_issues へ sub_issue_id を POST する。
- * 5. 親のサブ issue 一覧を読み戻し、子の id があるときだけ成功とする（POST が失敗しても、別処理が先に同じリンクを作っていれば成功）。
+ * 5. 読み戻す（readBack）。子が親の一覧にあるときだけ成功とする（POST が失敗しても、別処理が先に同じリンクを作っていれば成功）。
  * 標準出力は成功時だけ `SUB_ISSUE_LINKED <親>#<番号> <子>#<番号>`（新規）か `SUB_ISSUE_ALREADY_LINKED …`（既存）の 1 行。失敗は標準エラーと終了コード 2。
  */
 function executeIssueLinkSub({ parsed, binding, cwd, env, spawnSync, reject, writeOut }) {
@@ -2274,10 +2284,13 @@ function executeIssueLinkSub({ parsed, binding, cwd, env, spawnSync, reject, wri
   const parentLabel = `${parentRepo}#${parsed.parentNumber}`;
   const childLabel = `${childRepo}#${parsed.childNumber}`;
 
-  // 1. 書き込み先（親）の owner は runTaskCommand が照合済み。子の owner も同じ規則で照合する。
-  const childOwner = childRepo.split('/')[0];
-  if (!binding.allowedOwners.some((allowedOwner) => allowedOwner.toLowerCase() === childOwner.toLowerCase())) {
-    return reject(`task command rejected: owner ${JSON.stringify(childOwner)} is not allowed`);
+  // 1. 親を省略したとき（起動時のリポジトリ）は runTaskCommand の owner 照合を通らないため、親も子もここで照合する。
+  // 起動時のリポジトリの owner を含まない許可一覧もありうるので、親の照合は省かない。
+  for (const repo of [parentRepo, childRepo]) {
+    const owner = repo.split('/')[0];
+    if (!binding.allowedOwners.some((allowedOwner) => allowedOwner.toLowerCase() === owner.toLowerCase())) {
+      return reject(`task command rejected: owner ${JSON.stringify(owner)} is not allowed`);
+    }
   }
   if (childRepo.toLowerCase() === parentRepo.toLowerCase() && parsed.childNumber === parsed.parentNumber) {
     return reject('task command rejected: an issue cannot be linked to itself');
@@ -2288,6 +2301,7 @@ function executeIssueLinkSub({ parsed, binding, cwd, env, spawnSync, reject, wri
   const runGh = (args) => spawnSync(binding.gh, args, { cwd: executionCwd, env, encoding: 'utf8' });
   const failed = (result) => Boolean(result.error) || result.status !== 0;
   const detail = (result) => String(result.stderr || '').trim().split('\n')[0] || (result.error && result.error.code) || `exit ${result.status}`;
+  // issue を読み、形と所属を確かめる。所属が要求先と違う（移管で転送された）ときは moved を返す。
   const readIssue = (repo, number) => {
     const result = runGh(['api', '--jq', LINK_SUB_ISSUE_JQ, `repos/${repo}/issues/${number}`]);
     if (failed(result)) return { error: detail(result) };
@@ -2298,24 +2312,51 @@ function executeIssueLinkSub({ parsed, binding, cwd, env, spawnSync, reject, wri
       return { error: 'unreadable response' };
     }
     const valid = issue && Number.isSafeInteger(issue.id) && issue.id > 0 && String(issue.number) === number
+      && typeof issue.repositoryUrl === 'string'
       && typeof issue.isPullRequest === 'boolean' && (issue.parentIssueUrl === null || typeof issue.parentIssueUrl === 'string');
-    return valid ? { issue } : { error: 'unreadable response' };
+    if (!valid) return { error: 'unreadable response' };
+    if (!isRepositoryApiUrlOf(issue.repositoryUrl, repo)) return { moved: true };
+    return { issue };
   };
-  const readSubIssueIds = () => {
-    const result = runGh(['api', '--paginate', '--jq', '.[].id', `repos/${parentRepo}/issues/${parsed.parentNumber}/sub_issues?per_page=100`]);
+  // 親のサブ issue 一覧を、id → 所属の対応で読む。形が崩れていれば null。
+  const readSubIssues = () => {
+    const result = runGh(['api', '--paginate', '--jq', LINK_SUB_ISSUE_LIST_JQ, `repos/${parentRepo}/issues/${parsed.parentNumber}/sub_issues?per_page=100`]);
     if (failed(result)) return null;
-    const lines = String(result.stdout).split('\n').map((line) => line.replace(/\r$/, '')).filter((line) => line !== '');
-    return lines.every((line) => /^[1-9][0-9]*$/.test(line)) ? new Set(lines) : null;
+    const entries = new Map();
+    for (const line of String(result.stdout).split('\n').map((text) => text.replace(/\r$/, '')).filter((text) => text !== '')) {
+      let entry;
+      try {
+        entry = JSON.parse(line);
+      } catch (error) {
+        return null;
+      }
+      if (!(entry && Number.isSafeInteger(entry.id) && entry.id > 0 && typeof entry.repositoryUrl === 'string')) return null;
+      entries.set(String(entry.id), entry.repositoryUrl);
+    }
+    return entries;
   };
 
-  // 2. 親と子が存在する issue であることを確かめる。
+  // 2. 親と子が、要求したリポジトリに属する issue であることを確かめる。
   const parent = readIssue(parentRepo, parsed.parentNumber);
   if (parent.error) return reject(`task command failed: could not read parent issue ${parentLabel}: ${parent.error}`);
+  if (parent.moved) return reject(`task command rejected: parent issue ${parentLabel} belongs to another repository (it may have been transferred)`);
   if (parent.issue.isPullRequest) return reject(`task command rejected: ${parentLabel} is a pull request, not an issue`);
   const child = readIssue(childRepo, parsed.childNumber);
   if (child.error) return reject(`task command failed: could not read child issue ${childLabel}: ${child.error}`);
+  if (child.moved) return reject(`task command rejected: child issue ${childLabel} belongs to another repository (it may have been transferred)`);
   if (child.issue.isPullRequest) return reject(`task command rejected: ${childLabel} is a pull request, not an issue`);
   const childId = String(child.issue.id);
+
+  // 5. の読み戻し。親の一覧に子の id があり、その所属が子のリポジトリで、親の所属も変わっていないこと。
+  // 結果は 'linked' / 'missing'、読めないときは失敗の理由の文字列。
+  const readBack = () => {
+    const entries = readSubIssues();
+    if (entries === null) return `could not read sub-issues of ${parentLabel}`;
+    const rereadParent = readIssue(parentRepo, parsed.parentNumber);
+    if (rereadParent.error) return `could not read parent issue ${parentLabel}: ${rereadParent.error}`;
+    if (rereadParent.moved) return `parent issue ${parentLabel} belongs to another repository`;
+    return entries.has(childId) && isRepositoryApiUrlOf(entries.get(childId), childRepo) ? 'linked' : 'missing';
+  };
 
   // 3. 子の現在の親を確かめる。別の親からの付け替えはしない（他の分割の親子関係を壊さないため）。
   if (child.issue.parentIssueUrl !== null) {
@@ -2325,25 +2366,25 @@ function executeIssueLinkSub({ parsed, binding, cwd, env, spawnSync, reject, wri
       const current = matched === null ? 'unknown' : `${matched[1]}/${matched[2]}#${matched[3]}`;
       return reject(`task command rejected: ${childLabel} already has another parent issue (${current}); replacing the parent is not allowed`);
     }
-    const ids = readSubIssueIds();
-    if (ids === null) return reject(`task command failed: could not read sub-issues of ${parentLabel}`);
-    if (!ids.has(childId)) return reject(`task command failed: ${childLabel} reports ${parentLabel} as its parent, but it is not in the sub-issue list`);
+    const state = readBack();
+    if (state === 'missing') return reject(`task command failed: ${childLabel} reports ${parentLabel} as its parent, but it is not in the sub-issue list`);
+    if (state !== 'linked') return reject(`task command failed: could not verify the link: ${state}`);
     writeOut(`SUB_ISSUE_ALREADY_LINKED ${parentLabel} ${childLabel}\n`);
     return 0;
   }
 
-  // 4. 追加する。5. 成否は終了コードではなく、親のサブ issue 一覧の読み戻しで決める。
+  // 4. 追加する。5. 成否は終了コードではなく、読み戻しで決める。
   const added = runGh(['api', '--method', 'POST', `repos/${parentRepo}/issues/${parsed.parentNumber}/sub_issues`, '-F', `sub_issue_id=${childId}`]);
-  const ids = readSubIssueIds();
-  if (ids === null) return reject(`task command failed: could not verify the link: could not read sub-issues of ${parentLabel}`);
+  const state = readBack();
+  if (state !== 'linked' && state !== 'missing') return reject(`task command failed: could not verify the link: ${state}`);
   if (failed(added)) {
-    if (ids.has(childId)) {
+    if (state === 'linked') {
       writeOut(`SUB_ISSUE_ALREADY_LINKED ${parentLabel} ${childLabel}\n`);
       return 0;
     }
     return reject(`task command failed: could not add ${childLabel} to ${parentLabel}: ${detail(added)}`);
   }
-  if (!ids.has(childId)) return reject(`task command failed: the link was not applied: ${childLabel} is not in the sub-issues of ${parentLabel}`);
+  if (state !== 'linked') return reject(`task command failed: the link was not applied: ${childLabel} is not in the sub-issues of ${parentLabel}`);
   writeOut(`SUB_ISSUE_LINKED ${parentLabel} ${childLabel}\n`);
   return 0;
 }
@@ -3879,6 +3920,7 @@ module.exports = {
   parseTaskCommand,
   ACCEPTED_GH_OPERATIONS,
   LINK_SUB_ISSUE_JQ,
+  LINK_SUB_ISSUE_LIST_JQ,
   ISSUE_LIST_JSON_FIELDS,
   REPO_VIEW_JSON_FIELDS,
   runTaskCommand,

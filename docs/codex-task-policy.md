@@ -187,11 +187,12 @@ issue の分割（vk-kore）で作ったサブ issue を、親 issue の GitHub 
 
 - 形: `gh issue link-sub <親番号> <子番号>`（子は親と同じリポジトリ）、`gh issue link-sub <親番号> <子owner/repo> <子番号>`（子は許可 owner 内の別リポジトリ）。親が起動時のリポジトリ以外にあるときは、既存の明示先と同じ位置で `gh <親owner/repo> issue link-sub …` と書く。番号は 1 以上の数字だけで、フラグは受けない
   - `owner/repo#番号` の 1 語にしなかったのは、`#` がシェルの特殊文字で、Codex が許可ルールに一致しないと判断し入口が終了コード 78 で止まるため（issue #578 と同じ理由）
-- 検証（GitHub を変更する前）: 親の owner は既存の明示先と同じく runTaskCommand で、子の owner は実行段階の最初に、どちらも `VK_TASK_ALLOWED_OWNERS` と大文字小文字を区別しない完全一致で照合する。許可外の owner・同じ issue 同士・不正な番号は GitHub を呼ばずに拒否する。続けて親と子を `repos/<repo>/issues/<番号>` で読み、存在しない番号・PR の番号は書き込まずに拒否する
-- 実行: 入口が組み立てる固定エンドポイントは `GET repos/<repo>/issues/<番号>`（子の数値 id と現在の親 `parent_issue_url` を取る。REST の追加は issue 番号ではなく id を `sub_issue_id` で渡すため）、`POST repos/<親>/issues/<親番号>/sub_issues`（`-F sub_issue_id=<id>` だけ）、`GET repos/<親>/issues/<親番号>/sub_issues`（読み戻し。ページ送りで全件）の 3 つだけ。`gh api` の任意のエンドポイントや GraphQL は受けない
+- 検証（GitHub を変更する前）: 実行段階の最初に、親と子の両方の owner を `VK_TASK_ALLOWED_OWNERS` と大文字小文字を区別しない完全一致で照合する（明示先の親は runTaskCommand でも照合される）。親を省略したときも、起動時のリポジトリの owner を照合から外さない。起動時のリポジトリの owner を含まない許可一覧も作れるため、外すと許可 owner の子を明示するだけで許可外の親へ書き込めてしまう。許可外の owner・同じ issue 同士・不正な番号は GitHub を呼ばずに拒否する。続けて親と子を `repos/<repo>/issues/<番号>` で読み、存在しない番号・PR の番号は書き込まずに拒否する
+- 所属の確認: 取得した親と子の `repository_url` が、要求した owner/repo（大文字小文字は区別しない）を指すことを POST の前に確かめ、違えば拒否する。移管されたリポジトリは旧 URL から転送されるため、番号と id だけでは、許可外の owner へ移った issue の id を送ってしまうおそれがあるため。読み戻しでも、一覧の子の `repository_url` が子のリポジトリと一致すること、親を読み直して所属が変わっていないことを確かめる
+- 実行: 入口が組み立てる固定エンドポイントは `GET repos/<repo>/issues/<番号>`（子の数値 id・所属 `repository_url`・現在の親 `parent_issue_url` を取る。REST の追加は issue 番号ではなく id を `sub_issue_id` で渡すため）、`POST repos/<親>/issues/<親番号>/sub_issues`（`-F sub_issue_id=<id>` だけ）、`GET repos/<親>/issues/<親番号>/sub_issues`（読み戻し。ページ送りで全件。各要素の id と `repository_url`）の 3 つだけ。`gh api` の任意のエンドポイントや GraphQL は受けない
 - 冪等: 子の `parent_issue_url` が同じ親を指していれば追加せず、読み戻しで一覧にあることを確かめて `SUB_ISSUE_ALREADY_LINKED <親>#<番号> <子>#<番号>`（終了 0）。POST が失敗しても、読み戻しで子が一覧にあれば（別処理が先に同じリンクを作った場合）同じく成功とする
 - 別の親が付いている子: 付け替え（`replace_parent`）はせず拒否する。別の分割で作られた親子関係を自動処理が黙って壊さないため。付け替えが必要なら利用者が判断する
-- 成功の判定: 追加後に親のサブ issue 一覧を読み戻し、子の id があるときだけ `SUB_ISSUE_LINKED <親>#<番号> <子>#<番号>`（終了 0）。読み戻せない・一覧に無いときは失敗（終了 2）で、標準出力には何も出さない
+- 成功の判定: 追加後に親のサブ issue 一覧を読み戻し、子の id が子のリポジトリの所属で載っていて、親を読み直しても所属が変わっていないときだけ `SUB_ISSUE_LINKED <親>#<番号> <子>#<番号>`（終了 0）。読み戻せない・一覧に無いときは失敗（終了 2）で、標準出力には何も出さない
 - 親を「現在のタスクの issue」に限定するかの判断: 限定しない。起動時の束縛（`VK_TASK_*`）はリポジトリと許可 owner だけを持ち、タスクの issue 番号を持たない（`prepare worktree` の issue 番号も呼び出しごとの引数）。番号を束縛へ加えるにはランチャーと起動元（オーケストレーター）の変更が要るため、この操作では親の範囲を書き込み先の owner の照合までとする
 
 ## 固定できないときは止める

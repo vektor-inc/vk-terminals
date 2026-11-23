@@ -41,7 +41,7 @@ test('保存した並びのとおりに、生きているペインを名前・�
   const layout = {
     order: ['pane-2', 'pane-1'], stashOrder: ['pane-3'], focusedPaneId: 'pane-1',
     panes: [
-      { paneId: 'pane-1', termId: '1', cwd: '/work/a', engine: 'codex', apiTitle: '#12 表記', apiPrUrl: 'https://github.com/o/r/pull/1', apiPrMerged: true, apiPaneNote: 'watching' },
+      { paneId: 'pane-1', termId: '1', cwd: '/work/a', engine: 'codex', createdByAutomation: true, apiTitle: '#12 表記', apiPrUrl: 'https://github.com/o/r/pull/1', apiPrMerged: true, apiPaneNote: 'watching' },
       { paneId: 'pane-2', termId: '2', cwd: '/work/b', engine: 'claude', taskTitle: 'タスク' },
       { paneId: 'pane-3', termId: '3', cwd: '', engine: 'other' },
     ],
@@ -51,7 +51,7 @@ test('保存した並びのとおりに、生きているペインを名前・�
   assert.deepEqual(plan.stashOrder, ['pane-3']);
   assert.equal(plan.focusedPaneId, 'pane-1');
   assert.deepEqual(plan.panes, [
-    { id: '1', paneId: 'pane-1', cwd: '/work/a', engine: 'codex', apiTitle: '#12 表記', apiPrUrl: 'https://github.com/o/r/pull/1', apiPaneNote: 'watching', apiPrMerged: true },
+    { id: '1', paneId: 'pane-1', cwd: '/work/a', engine: 'codex', apiTitle: '#12 表記', apiPrUrl: 'https://github.com/o/r/pull/1', apiPaneNote: 'watching', apiPrMerged: true, createdByAutomation: true },
     { id: '2', paneId: 'pane-2', cwd: '/work/b', engine: 'claude', taskTitle: 'タスク' },
     // 作業フォルダが空なら既定のフォルダ、不明なエンジンは Claude Code にする
     { id: '3', paneId: 'pane-3', cwd: '/home', engine: 'claude' },

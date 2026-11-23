@@ -5,7 +5,7 @@
 
 const TEXT_LIMIT = 4096;
 const TEXT_KEYS = ['taskTitle', 'apiTitle', 'apiUrl', 'apiPrUrl', 'apiPaneNote'];
-const BOOLEAN_KEYS = ['apiPrMerged', 'apiWaitingMerge', 'externalWaiting'];
+const BOOLEAN_KEYS = ['apiPrMerged', 'apiWaitingMerge', 'externalWaiting', 'createdByAutomation'];
 
 /**
  * ⌘ + W（ウィンドウを閉じるショートカット）の押下かを判定する。

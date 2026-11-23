@@ -158,6 +158,49 @@ function setupFakeEngines() {
   };
 }
 
+for (const [initialEngine, automatedEngine] of [['claude', 'codex'], ['codex', 'claude']]) {
+  test(`desktop: 既定 ${initialEngine}・自動 ${automatedEngine} のペインから追加しても既定エンジンを使う`, async () => {
+    const port = await getFreePort();
+    const { fixtureRoot, fakeClaude, fakeCodex, env } = setupFakeEngines();
+    const captures = { claude: fakeClaude.capturePath, codex: fakeCodex.capturePath };
+    let launched = null;
+
+    try {
+      launched = await launchAppAndWait({
+        port,
+        prefix: 'vk-terminals-e2e-pane-engine-automation-',
+        env,
+        config: { openInitialPane: true, initialEngine, newPaneAutoLaunchClaude: true },
+      });
+      const { win } = launched;
+      await waitForTermId(port, '1', true);
+
+      // 外部 API で作ったペインを選び、そのペインの分割ボタンから通常ペインを追加する。
+      const created = await postJson(port, '/api/new-pane', { engine: automatedEngine, noClaude: false });
+      expect(created.status).toBe(200);
+      const automatedTermId = String(created.body.termId);
+      await waitForTermId(port, automatedTermId, true);
+      await waitForCallCount(captures[automatedEngine], 1);
+      const paneId = await waitForPaneIdForTermId(port, automatedTermId);
+      const closed = await postJson(port, '/api/close-pane', { termId: '1' });
+      expect(closed.status).toBe(200);
+      await waitForTermId(port, '1', false);
+      await win.locator(`.pane[data-id="${paneId}"] .btn-split`).click();
+      await waitForCallCount(captures[initialEngine], 1);
+      expect(readCalls(captures[automatedEngine])).toHaveLength(1);
+
+      // 自動ペインを選んだモバイルの手動追加経路にも初期設定を適用する。
+      const mobileCreated = await postJson(port, '/api/new-pane', { useDefaults: true });
+      expect(mobileCreated.status).toBe(200);
+      await waitForCallCount(captures[initialEngine], 2);
+      expect(readCalls(captures[automatedEngine])).toHaveLength(1);
+    } finally {
+      if (launched) await closeApp(launched);
+      fs.rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+}
+
 test('desktop: ペイン単位の「＋」（分割）ボタンは操作元ペインの engine を新ペインへ引き継ぐ', async () => {
   const port = await getFreePort();
   const { fixtureRoot, fakeClaude, fakeCodex, env } = setupFakeEngines();
@@ -178,7 +221,7 @@ test('desktop: ペイン単位の「＋」（分割）ボタンは操作元ペ�
     await waitForTermId(port, '1', true);
 
     // Codex のペインを 1 枚 API 経由で作る（engine を明示）。
-    const codexCreated = await postJson(port, '/api/new-pane', { engine: 'codex', noClaude: false });
+    const codexCreated = await postJson(port, '/api/new-pane', { engine: 'codex', noClaude: false, useDefaults: true });
     expect(codexCreated.status).toBe(200);
     const codexTermId = String(codexCreated.body.termId);
     await waitForTermId(port, codexTermId, true);
@@ -202,8 +245,8 @@ test('desktop: ペイン単位の「＋」（分割）ボタンは操作元ペ�
     await waitForCallCount(fakeCodex.capturePath, 2);
     expect(readCalls(fakeClaude.capturePath).length).toBe(0);
 
-    // Claude Code のペインを 1 枚 API 経由で作る（engine 省略＝従来どおり claude）。
-    const claudeCreated = await postJson(port, '/api/new-pane', { noClaude: false });
+    // Claude Code の手動ペインを 1 枚作る。
+    const claudeCreated = await postJson(port, '/api/new-pane', { engine: 'claude', noClaude: false, useDefaults: true });
     expect(claudeCreated.status).toBe(200);
     const claudeTermId = String(claudeCreated.body.termId);
     await waitForTermId(port, claudeTermId, true);
@@ -251,7 +294,7 @@ test('desktop: 空グリッドの「新規ペインを追加」は直前まで�
 
     // Codex のペインを 1 枚作る。addPane() 内の focusPane() により、このペインが
     // 「現在選択中のペイン」になる。
-    const codexCreated = await postJson(port, '/api/new-pane', { engine: 'codex', noClaude: false });
+    const codexCreated = await postJson(port, '/api/new-pane', { engine: 'codex', noClaude: false, useDefaults: true });
     expect(codexCreated.status).toBe(200);
     const codexTermId = String(codexCreated.body.termId);
     await waitForTermId(port, codexTermId, true);
@@ -310,7 +353,7 @@ test('desktop: AI を自動起動しない設定（noClaude）は engine 引き�
     await waitForTermId(port, '1', true);
 
     // Codex のペインを 1 枚 API 経由で作る（明示的に noClaude: false で起動させる）。
-    const codexCreated = await postJson(port, '/api/new-pane', { engine: 'codex', noClaude: false });
+    const codexCreated = await postJson(port, '/api/new-pane', { engine: 'codex', noClaude: false, useDefaults: true });
     expect(codexCreated.status).toBe(200);
     const codexTermId = String(codexCreated.body.termId);
     await waitForTermId(port, codexTermId, true);
@@ -360,7 +403,7 @@ test('HTTP API: useDefaults:true（モバイルの「ペインを追加」ボタ
     // Codex のペインを 1 枚作り、初期ペイン（"1"）は閉じて、Codex ペインだけを残す。
     // これにより「表示面積が最大のペイン」（terminal:request-new-pane の targetPaneId）
     // が一意に Codex ペインへ定まる。
-    const codexCreated = await postJson(port, '/api/new-pane', { engine: 'codex', noClaude: false });
+    const codexCreated = await postJson(port, '/api/new-pane', { engine: 'codex', noClaude: false, useDefaults: true });
     expect(codexCreated.status).toBe(200);
     const codexTermId = String(codexCreated.body.termId);
     await waitForTermId(port, codexTermId, true);
@@ -419,7 +462,7 @@ test('restart-agent: engine を切り替えると terminals[paneId].engine が�
     await waitForTermId(port, '1', true);
 
     // Codex のペインを作る。
-    const codexCreated = await postJson(port, '/api/new-pane', { engine: 'codex', noClaude: false });
+    const codexCreated = await postJson(port, '/api/new-pane', { engine: 'codex', noClaude: false, useDefaults: true });
     expect(codexCreated.status).toBe(200);
     const termId = String(codexCreated.body.termId);
     await waitForTermId(port, termId, true);
@@ -479,7 +522,7 @@ test('desktop: ✕ で最後の可視ペインを閉じてグリッドが空に�
 
     // Codex のペインを作り、サイドバーへ格納する（＝空グリッドになったときの唯一の
     // 候補ペインにする）。
-    const codexCreated = await postJson(port, '/api/new-pane', { engine: 'codex', noClaude: false });
+    const codexCreated = await postJson(port, '/api/new-pane', { engine: 'codex', noClaude: false, useDefaults: true });
     expect(codexCreated.status).toBe(200);
     const codexTermId = String(codexCreated.body.termId);
     await waitForTermId(port, codexTermId, true);

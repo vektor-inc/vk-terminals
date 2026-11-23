@@ -1990,6 +1990,7 @@ async function createTerminal(paneId, cwd, options = {}, createdResult = null) {
     // ブラウザ側で renderer/claudeModel.js を script 読み込みしておらず、それだけの
     // ために読み込みを追加するほどの重複ではないと判断し、現状のリテラル維持とした。
     engine: resolvedEngine || 'claude',
+    createdByAutomation: options.createdByAutomation === true,
     waiting: false,
     structuralWaiting: false,
     // externalWaiting: オーケストレーター等が POST /api/set-status で明示 push する外部権威の入力待ちフラグ。
@@ -4363,14 +4364,10 @@ function findLargestVisiblePaneId() {
 // （グリッドレイアウト化により折り畳み機能は撤去。行の高さは同一行の全ペインで共有されるため、
 //   単一ペインだけを縦に畳む操作がグリッドでは成立しないため。）
 
-// 引き継ぎ元があればそのエンジンを使い、0 枚なら初期設定を使う。
-// Codex のモデルは最初のペインを作る場合だけ初期設定から渡す。
+// 手動ペインが引き継ぎ元ならそのエンジンを使い、自動処理用ペインなら初期設定を使う。
+// 初期設定へ戻る場合は Codex のモデル設定も使う。
 function withInheritedEngine(options, paneId) {
-  const inheritedEngine = terminals[paneId]?.engine;
-  if (inheritedEngine) return { ...options, engine: inheritedEngine };
-  return initialPaneEngine === 'codex'
-    ? { ...options, engine: 'codex', ...(initialPaneCodexModel ? { model: initialPaneCodexModel } : {}) }
-    : options;
+  return VKPaneEnginePolicy.withInheritedEngine(options, terminals[paneId], initialPaneEngine, initialPaneCodexModel);
 }
 
 // 新しく作ったペインを配置する。新規ペインは必ずここを通し、tree.order へ直接追加しない。
@@ -5221,6 +5218,7 @@ function savePaneLayout() {
   if (!tree || !Array.isArray(tree.order)) return;
   const panes = Object.entries(terminals).map(([paneId, t]) => ({
     paneId, termId: t.termId, cwd: t.cwdFull, engine: t.engine,
+    createdByAutomation: t.createdByAutomation === true,
     taskTitle: t.taskTitle, apiTitle: t.apiTitle, apiUrl: t.apiUrl,
     apiPrUrl: t.apiPrUrl, apiPrMerged: t.apiPrMerged,
     apiWaitingMerge: t.apiWaitingMerge, apiPaneNote: t.apiPaneNote,
@@ -8778,7 +8776,7 @@ async function initApp() {
       try {
       for (const saved of validPanes) {
         if (!tree.order.includes(saved.paneId) && !tree.stashOrder.includes(saved.paneId)) tree.order.push(saved.paneId);
-        await createTerminal(saved.paneId, saved.cwd, {}, { id: saved.id, cwd: saved.cwd, engine: saved.engine });
+        await createTerminal(saved.paneId, saved.cwd, { createdByAutomation: saved.createdByAutomation === true }, { id: saved.id, cwd: saved.cwd, engine: saved.engine });
         const t = terminals[saved.paneId];
         for (const key of ['taskTitle', 'apiTitle', 'apiUrl', 'apiPrUrl', 'apiPrMerged', 'apiWaitingMerge', 'apiPaneNote', 'externalWaiting', 'backgroundWorkRunning']) {
           if (Object.hasOwn(saved, key)) t[key] = saved[key];
@@ -9056,7 +9054,7 @@ VKIpc.on('terminal:agentroom', (termId, agents, replace) => {
 
 // ─── New pane request from HTTP API ──────────────────────────────────────────
 VKIpc.on('terminal:request-new-pane', async (payload = {}) => {
-  const { requestId, cwd, noClaude, engine, stashed, useDefaults, model, approvalPolicy, sandboxMode, codexPolicy, claudeSettingsPreset } = payload;
+  const { requestId, cwd, noClaude, engine, stashed, useDefaults, createdByAutomation, model, approvalPolicy, sandboxMode, codexPolicy, claudeSettingsPreset } = payload;
   const reply = (result) => VKIpc.send('terminal:new-pane-created', { requestId, ...result });
   const receivedAt = Date.now();
   try {
@@ -9113,6 +9111,7 @@ VKIpc.on('terminal:request-new-pane', async (payload = {}) => {
     if (typeof approvalPolicy === 'string') splitOptions = { ...splitOptions, approvalPolicy };
     if (typeof sandboxMode === 'string') splitOptions = { ...splitOptions, sandboxMode };
     if (codexPolicy && typeof codexPolicy === 'object') splitOptions = { ...splitOptions, codexPolicy };
+    if (createdByAutomation === true) splitOptions = { ...splitOptions, createdByAutomation: true };
     const result = targetPaneId
       ? await splitPane(targetPaneId, direction, effectiveCwd, splitOptions)
       : await addPane(effectiveCwd, splitOptions);

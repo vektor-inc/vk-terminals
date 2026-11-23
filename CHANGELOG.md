@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 不具合修正 ] 自動処理用ペインから通常ペインを追加すると、設定した既定エンジンと異なるエンジンが起動する問題を修正（[#653](https://github.com/vektor-inc/vk-terminals/issues/653)）
+
 ## 1.108.1
 
 - [ 仕様変更 ] macOS の ⌘ + W でウィンドウを閉じないように変更。アプリ内ブラウザの操作中はタブを 1 つ閉じ、作業ペインの操作中は何もしない（[#649](https://github.com/vektor-inc/vk-terminals/issues/649)）

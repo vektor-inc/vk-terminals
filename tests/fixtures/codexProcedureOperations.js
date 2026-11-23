@@ -251,6 +251,7 @@ const notApplicable = [
 // 後続の手順更新に先立って実装した操作。手順が採用した時点で出典付きの requiredOperations へ移す。
 const launcherOnlyOperations = [
   { procedureOperation: 'protected-sync', source: null, argv: ['protected-sync', '.agents/skills/vk-orchestrator-helper/SKILL.md'], expected: { operation: 'protected-sync' }, note: 'issue #557 で追加。vk-orchestrator 側の利用手順更新に先行するため、手順の出典は未登録。' },
+  { procedureOperation: 'issue-link-sub', source: null, argv: ['gh', 'issue', 'link-sub', '1050', 'vektor-inc/vk-terminals', '654'], expected: { operation: 'issue-link-sub' }, note: 'issue #654 で追加。Codex 版 vk-kore の分割手順への接続（vektor-inc/vk-orchestrator#1052）に先行するため、手順の出典は未登録。' },
 ];
 
 module.exports = {

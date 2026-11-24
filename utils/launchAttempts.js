@@ -278,8 +278,13 @@ function checkCodexHomeReceipt(codexHome, promptDigest, fsImpl = fs) {
   return unrecognized ? { status: 'unrecognized' } : { status: 'pending' };
 }
 
+// Date で扱える時刻の上限（ECMAScript の時刻値の範囲 ±8.64e15 ミリ秒）。これを超えると toISOString が RangeError になる。
+const MAX_TIME_MS = 8.64e15;
+const isTime = (value) => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= MAX_TIME_MS;
+
 function toIso(ms) {
-  return typeof ms === 'number' && Number.isFinite(ms) ? new Date(ms).toISOString() : null;
+  // 範囲外の値で例外にせず null にする（保存済みの記録は検証で弾くが、応答を作る側でも落とさない）。
+  return isTime(ms) ? new Date(ms).toISOString() : null;
 }
 
 // 帳簿のルートの親フォルダ（~/.vk-terminals）が、本人所有の実フォルダで、他人が書き込めないか。
@@ -297,7 +302,6 @@ const DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
 // toString を持たないオブジェクトで TypeError になったりする。）
 const isDigest = (value) => typeof value === 'string' && DIGEST_PATTERN.test(value);
 const isKnownErrorCode = (value) => typeof value === 'string' && Object.prototype.hasOwnProperty.call(ERRORS, value);
-const isTime = (value) => typeof value === 'number' && Number.isFinite(value) && value >= 0;
 const isOptionalTime = (value) => value === null || isTime(value);
 const isPlainObject = (value) => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 const hasOnlyKeys = (value, allowed) => Object.keys(value).every((key) => allowed.includes(key));

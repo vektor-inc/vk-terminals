@@ -557,6 +557,59 @@ test('AND-657-06: 文字列のはずの項目に配列やオブジェクトが�
   assert.equal(Array.isArray(broken[0].record.promptDigest) && /^sha256:[0-9a-f]{64}$/.test(broken[0].record.promptDigest), true);
 });
 
+test('AND-657-07: Date で扱えない範囲の時刻を持つ記録だけを unknown（RECORD_UNREADABLE）にし、正常な記録は照会できる', (t) => {
+  const base = tmpBase(t);
+  la.createLaunchAttemptLedger({ baseDir: base });
+  const at = 1_700_000_000_000;
+  const digest = la.computePromptDigest('p');
+  const receivedBase = (id) => storedAwaiting(id, {
+    phase: 'received', launchIntentAt: at + 5, binding: { termId: '3', paneGeneration: 1, sessionId: 's-1' },
+    milestones: { requestAccepted: at, launchWritten: at + 10, receiptConfirmed: at + 30 }, finalAt: at + 30,
+  });
+  const unknownBase = (id) => storedAwaiting(id, {
+    phase: 'unknown', launchIntentAt: at + 5, earlyExitAt: at + 20, binding: { termId: '3', paneGeneration: 1, sessionId: null },
+    milestones: { requestAccepted: at, launchWritten: at + 10, receiptConfirmed: null }, error: la.makeError('AGENT_EXITED_EARLY'), finalAt: at + 30,
+  });
+  const tombstoneBase = (id) => ({ version: 1, attemptId: id, tombstone: true, promptDigest: digest, expiresAt: at + 10 * 86_400_000 });
+  // isTime を使う時刻の項目すべて。
+  const fields = [
+    ['milestones.requestAccepted', receivedBase, (r, v) => { r.milestones.requestAccepted = v; r.requestAcceptedAt = v; }],
+    ['milestones.launchWritten', receivedBase, (r, v) => { r.milestones.launchWritten = v; }],
+    ['milestones.receiptConfirmed', receivedBase, (r, v) => { r.milestones.receiptConfirmed = v; }],
+    ['launchIntentAt', receivedBase, (r, v) => { r.launchIntentAt = v; }],
+    ['earlyExitAt', unknownBase, (r, v) => { r.earlyExitAt = v; }],
+    ['updatedAt', receivedBase, (r, v) => { r.updatedAt = v; }],
+    ['finalAt', receivedBase, (r, v) => { r.finalAt = v; }],
+    ['tombstone.expiresAt', tombstoneBase, (r, v) => { r.expiresAt = v; }],
+  ];
+  const broken = [];
+  for (const [field, make, mutate] of fields) {
+    for (const value of [1e20, 8.64e15 + 1]) {
+      const record = make(crypto.randomUUID());
+      mutate(record, value);
+      writeStoredRecord(base, record.attemptId, record);
+      broken.push({ name: `${field}:${value}`, record });
+    }
+  }
+  const healthy = { received: receivedBase(crypto.randomUUID()), unknown: unknownBase(crypto.randomUUID()), tombstone: tombstoneBase(crypto.randomUUID()) };
+  // Date で扱える上限ちょうどの時刻は正常な値として読める。
+  const atLimit = receivedBase(crypto.randomUUID());
+  atLimit.milestones.receiptConfirmed = 8.64e15;
+  for (const record of [...Object.values(healthy), atLimit]) writeStoredRecord(base, record.attemptId, record);
+  const reloaded = la.createLaunchAttemptLedger({ baseDir: base, now: () => at + 60_000 });
+  for (const { name, record } of broken) {
+    const response = reloaded.toResponse(reloaded.refresh(record.attemptId, { paneState: alive }));
+    assert.equal(response.phase, 'unknown', name);
+    assert.deepEqual([response.error.code, response.error.retry], ['RECORD_UNREADABLE', 'forbidden'], name);
+  }
+  const received = reloaded.toResponse(reloaded.refresh(healthy.received.attemptId, { paneState: alive }));
+  assert.equal(received.phase, 'received');
+  assert.equal(received.milestones.launchWritten, new Date(at + 10).toISOString());
+  assert.equal(reloaded.toResponse(reloaded.refresh(healthy.unknown.attemptId, { paneState: alive })).error.code, 'AGENT_EXITED_EARLY');
+  assert.equal(reloaded.match({ attemptId: healthy.tombstone.attemptId, promptDigest: digest, fingerprint: digest }).status, 'expired');
+  assert.equal(reloaded.toResponse(reloaded.refresh(atLimit.attemptId, { paneState: alive })).milestones.receiptConfirmed, new Date(8.64e15).toISOString());
+});
+
 test('AND-657-01: 正しく保存された各状態の記録は、復帰時にそのまま読める', (t) => {
   const c = clock();
   const base = tmpBase(t);

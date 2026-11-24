@@ -145,6 +145,7 @@ const {
   runGitHubReachabilityGate,
 } = require('./utils/githubReachability');
 const { scheduleLaunchCommand } = require('./utils/delayedLaunch');
+const launchAttempts = require('./utils/launchAttempts');
 const { createLaunchInputQuietWindow } = require('./utils/launchInputQuiet');
 const { createSetupShellInput } = require('./utils/setupShellInput');
 const { resolvePaneNoClaude } = require('./utils/setupShellPane');
@@ -570,6 +571,30 @@ const APP_ORIGINAL_PATH = typeof process.env.PATH === 'string' ? process.env.PAT
 const STATE_FILE = path.join(DATA_DIR, 'states.json');
 // 自動処理用 Codex に許す唯一の追加書き込み先（会話整理の引き継ぎ先。issue #428）。
 const CODEX_TASK_POLICY_HANDOFF_DIR = path.join(os.homedir(), '.claude', 'handoff');
+
+// 起動試行（attemptId）の帳簿（issue #657。仕様は docs/specification-launch-attempts.md）。
+// 最初に使うときに作る。作れなければ null のままにし、次の要求でまた試す（API は LEDGER_UNAVAILABLE で拒否する）。
+const LAUNCH_ATTEMPTS_DIR = path.join(DATA_DIR, 'launch-attempts');
+let launchAttemptLedger = null;
+function getLaunchAttemptLedger() {
+  if (launchAttemptLedger) return launchAttemptLedger;
+  try {
+    fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
+    launchAttemptLedger = launchAttempts.createLaunchAttemptLedger({
+      baseDir: LAUNCH_ATTEMPTS_DIR,
+      log: (message) => console.error(`[vk-terminals] ${message}`),
+    });
+  } catch (error) {
+    console.error(`[vk-terminals] launch attempt ledger unavailable: ${error.message}`);
+    launchAttemptLedger = null;
+  }
+  return launchAttemptLedger;
+}
+// 起動試行が結び付いたペインの今の状態。受領の前に閉じた・入れ替わったものを判定する。
+function launchAttemptPaneState(termId, generation) {
+  if (!ptys.has(termId)) return 'closed';
+  return agentGenerations.get(termId) === generation ? 'alive' : 'replaced';
+}
 
 // Codex の起動オプションを検証し、タスク用ポリシーがあれば専用 CODEX_HOME を用意する。
 // 新規ペイン作成（HTTP 受け口・terminal:create）と再起動（restart-agent）が全てここを通る。
@@ -2911,28 +2936,23 @@ ipcMain.on('terminal:restore-abandon', (event, ids) => {
   restoredPaneCount = [...ptys.values()].filter(pane => pane.isTmuxPane).length;
   if (!restoredPaneCount) firstTerminalCreated = false;
 });
-ipcMain.handle('terminal:create', (_event, cwd, options = {}) => createTerminalPane(cwd, options));
+ipcMain.handle('terminal:create', (_event, cwd, options = {}) => {
+  // 起動試行（issue #657）のペインは、受け付け済みで未作成の attemptId だけを 1 回作る。
+  // 時間切れの後に画面側が遅れて作ろうとした場合・同じ attemptId の 2 枚目はここで弾く。
+  if (!options || options.launchAttemptId === undefined) return createTerminalPane(cwd, options);
+  const ledger = getLaunchAttemptLedger();
+  if (!ledger || typeof options.launchAttemptId !== 'string') throw new Error('Launch attempt is not pending.');
+  const claim = ledger.claimPane(options.launchAttemptId);
+  try {
+    return createTerminalPane(cwd, options, null, { ledger, claim });
+  } catch (error) {
+    ledger.markNotLaunched(claim.attemptId, 'PANE_CREATION_FAILED', claim);
+    throw error;
+  }
+});
 
-function createTerminalPane(cwd, options = {}, guide = null) {
-  if (options.guidePane !== undefined) throw new Error('Guide launch requires dedicated IPC.');
-  const guideLaunch = guide && guide.token === GUIDE_LAUNCH;
-  // アプリ終了処理（before-quit）が pty の終了を待っている最中・待ち終えたあとは、
-  // 新しいペインを作らせない（issue #409 レビュー対応・MEDIUM-2）。ここで作った pty は
-  // cleanupPtys() の待ち対象に含まれないまま終了処理に巻き込まれ、#409 と同じ競合に
-  // なりうる。詳細・却下した代替案は utils/ptyShutdownGate.js のコメントを参照。
-  if (ptyShutdownGate.isPaneCreationBlocked()) {
-    throw new Error('App is shutting down; new panes cannot be created.');
-  }
-  // セットアップ用ペイン（issue #456）。作業フォルダとプロンプトは renderer から受け取らず、
-  // 組み込みのオプションで検証済みの setupPane だけを使う。部品が無いのに要求されたら作らない。
-  const setupLaunch = options.setupPane === true;
-  if (setupLaunch && !SETUP_FEATURE) {
-    throw new Error('Setup pane is not available.');
-  }
-  const setupShellLaunch = SETUP_SHELL && options.setupShell === true && ptys.size === 0 && !setupShellInputUsed;
-  if (options.setupShell !== undefined && !setupShellLaunch && !(SETUP_SHELL && setupShellInputUsed && options.setupShell === true)) {
-    throw new Error('Setup shell is not available.');
-  }
+// 新規ペインで起動するシェル。HTTP 受け口（起動試行のシェル確認）とペイン作成で同じ判定を使う。
+function resolvePaneShell() {
   let userInfo = null;
   if (process.platform !== 'darwin' && process.platform !== 'win32') {
     try {
@@ -2955,6 +2975,39 @@ function createTerminalPane(cwd, options = {}, guide = null) {
       }
     },
   });
+  return shell;
+}
+
+// launchAttempt は terminal:create が claimPane を通したときだけ渡す（{ ledger, claim }。issue #657）。
+function createTerminalPane(cwd, options = {}, guide = null, launchAttempt = null) {
+  if (options.guidePane !== undefined) throw new Error('Guide launch requires dedicated IPC.');
+  const guideLaunch = guide && guide.token === GUIDE_LAUNCH;
+  // アプリ終了処理（before-quit）が pty の終了を待っている最中・待ち終えたあとは、
+  // 新しいペインを作らせない（issue #409 レビュー対応・MEDIUM-2）。ここで作った pty は
+  // cleanupPtys() の待ち対象に含まれないまま終了処理に巻き込まれ、#409 と同じ競合に
+  // なりうる。詳細・却下した代替案は utils/ptyShutdownGate.js のコメントを参照。
+  if (ptyShutdownGate.isPaneCreationBlocked()) {
+    throw new Error('App is shutting down; new panes cannot be created.');
+  }
+  // セットアップ用ペイン（issue #456）。作業フォルダとプロンプトは renderer から受け取らず、
+  // 組み込みのオプションで検証済みの setupPane だけを使う。部品が無いのに要求されたら作らない。
+  const setupLaunch = options.setupPane === true;
+  if (setupLaunch && !SETUP_FEATURE) {
+    throw new Error('Setup pane is not available.');
+  }
+  const setupShellLaunch = SETUP_SHELL && options.setupShell === true && ptys.size === 0 && !setupShellInputUsed;
+  if (options.setupShell !== undefined && !setupShellLaunch && !(SETUP_SHELL && setupShellInputUsed && options.setupShell === true)) {
+    throw new Error('Setup shell is not available.');
+  }
+  const shell = resolvePaneShell();
+  // 起動試行（issue #657）は、HTTP 受け口で claimPane を通したものだけを受け付ける。
+  if (options.launchAttemptId !== undefined && !launchAttempt) throw new Error('Launch attempt requires a claimed pane.');
+  if (launchAttempt) {
+    if (!isValidEngine(options.engine) || options.engine !== 'codex' || options.noClaude === true || options.codexPolicy === undefined) {
+      throw new Error('Launch attempt requires a Codex task policy launch.');
+    }
+    if (!launchAttempts.isSupportedLaunchShell(shell)) throw new Error('Launch attempt requires sh, bash or zsh.');
+  }
   const id = String(nextId++);
   let resolvedCwd = setupShellLaunch ? (SETUP_SHELL.cwd || process.env.HOME || process.env.USERPROFILE || os.tmpdir()) : guideLaunch ? HELP_FEATURE.cwd : setupLaunch
     ? SETUP_FEATURE.setupPane.cwd
@@ -2968,13 +3021,14 @@ function createTerminalPane(cwd, options = {}, guide = null) {
   if (!cwdUsable) {
     // セットアップ・ガイド用ペインは、作業フォルダが消えていてもホームへ切り替えず失敗として返す
     // （別のフォルダで AI を起動して、意図しない場所で作業が始まらないようにするため）。
-    if (setupLaunch || setupShellLaunch || guideLaunch) throw new Error('Pane directory does not exist.');
+    if (setupLaunch || setupShellLaunch || guideLaunch || launchAttempt) throw new Error('Pane directory does not exist.');
     resolvedCwd = process.env.HOME || process.env.USERPROFILE || os.tmpdir();
   }
 
   // 使い方ガイドは専用セッション中でもエージェント付きで起動する。
   // 通常起動では明示された `options.noClaude` を優先し、未指定なら CLI フラグを継承する。
   const noClaude = resolvePaneNoClaude({ guideLaunch, setupShell: SETUP_SHELL, noClaude: options.noClaude, globalPlainMode });
+  if (launchAttempt && noClaude) throw new Error('Launch attempt requires an agent launch.');
 
   // `options.engine` の再検証（issue #367）。HTTP 受け口（/api/new-pane）でも検証済みだが、
   // ここでも isValidEngine が再検証する（model と同じ二重化構造・#310 の前例）。
@@ -2992,6 +3046,8 @@ function createTerminalPane(cwd, options = {}, guide = null) {
   let activatePaneSend = () => {};
   // タスク用ポリシー（専用 CODEX_HOME）で起動する Codex か。信頼確認の自動応答の判定に使う（issue #448）。
   let taskPolicyLaunch = false;
+  // 起動試行の受領判定に使う専用 CODEX_HOME（issue #657）。
+  let launchAttemptCodexHome = null;
   if (guideLaunch) {
     launchCommand = buildHelpLaunchCommand(guide.engine, HELP_FEATURE.prompts[guide.engine]);
   } else if (!noClaude && setupLaunch) {
@@ -3016,6 +3072,12 @@ function createTerminalPane(cwd, options = {}, guide = null) {
         console.warn(`${LOG_PREFIX} model is ignored for engine '${resolvedEngine}'`);
       }
       launchCommand = built.command;
+      // 起動試行は、初期指示を本文ファイルから起動引数として一体で渡す（issue #657）。
+      if (launchAttempt) {
+        launchAttemptCodexHome = launchResolution.options.codexPolicyHome;
+        if (typeof launchAttemptCodexHome !== 'string') throw new Error('Launch attempt requires a prepared policy home.');
+        launchCommand = `${launchCommand} ${launchAttempts.buildPromptArgument(launchAttempt.claim.promptPath)}`;
+      }
     } catch (error) {
       discardLaunchHome();
       clearPaneBackgroundWork(id);
@@ -3332,6 +3394,24 @@ function createTerminalPane(cwd, options = {}, guide = null) {
     if (ptyProcess.isTmuxPane && (resolvedEngine === 'claude' || resolvedEngine === 'codex')) {
       launchCommand = `env -u TMUX -u TMUX_PANE ${launchCommand}`;
     }
+    // 起動試行（issue #657）: ペインを結び付け、書く直前に意図を記録し、書いた後に launchWritten を記録する。
+    // 起動直後の終了では起動し直さない（初期指示が二重に渡るため）。書く前に止まったら rejected にする。
+    let launchAttemptHooks = {};
+    if (launchAttempt) {
+      const { ledger, claim } = launchAttempt;
+      ledger.bindPane(claim, { termId: id, paneGeneration: agentGenerations.get(id), codexHome: launchAttemptCodexHome });
+      const discardBeforeLaunch = discardFailedLaunch;
+      discardFailedLaunch = () => {
+        ledger.markNotLaunched(claim.attemptId, 'LAUNCH_CANCELLED', claim);
+        return discardBeforeLaunch();
+      };
+      launchAttemptHooks = {
+        beforeLaunchWrite: () => ledger.noteLaunchIntent(claim),
+        onLaunchWriteFailed: () => ledger.markLaunchWriteFailed(claim),
+        onEarlyExit: () => ledger.markEarlyExit(claim),
+        onWriteSuccess: () => ledger.markLaunchWritten(claim),
+      };
+    }
     // 待っている間に PTY が消えた・書き込みが例外になった場合は、使われない専用 CODEX_HOME を回収する。
     scheduleLaunchCommand({
       ptys,
@@ -3352,6 +3432,8 @@ function createTerminalPane(cwd, options = {}, guide = null) {
       onLaunchWritten: () => { if (resolvedEngine === 'codex') launchInputQuiet.begin(id); },
       getUserInputRevision: () => userInputRevisions.get(id),
       log: (message) => console.error(`${LOG_PREFIX} ${message}`),
+      // 起動試行のときだけ上書きする（ガイド用ペインとは同時に使わない）。
+      ...launchAttemptHooks,
     });
   }
 
@@ -3761,6 +3843,159 @@ function startHttpApi() {
     });
   };
 
+  // ─── 起動試行（issue #657。仕様は docs/specification-launch-attempts.md） ───────────────
+  const LAUNCH_ATTEMPT_MAX_BODY = 1024 * 1024;
+  // 「起動コマンドを書いた」か「失敗が確定した」まで応答を待つ上限。過ぎたら 202 を返す。
+  const LAUNCH_ATTEMPT_RESPONSE_WAIT_MS = 10_000;
+  const sendLaunchAttemptJson = (res, status, body) => {
+    if (res.headersSent) return;
+    res.writeHead(status, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(body));
+  };
+  // 処理前の拒否（HTTP エラー）。帳簿には残らないため、同じ attemptId で送り直しても安全。
+  const rejectLaunchAttempt = (res, status, code, { attemptId, message, extra } = {}) => {
+    sendLaunchAttemptJson(res, status, {
+      ...(attemptId ? { attemptId } : {}),
+      ...(launchAttemptLedger ? { ledgerId: launchAttemptLedger.ledgerId } : {}),
+      phase: launchAttempts.PHASES.REJECTED,
+      error: launchAttempts.makeError(code, message),
+      ...(extra || {}),
+    });
+  };
+  // 受け付け済みの試行の状態を返す（照会のたびに受領の記録を 1 回だけ確認する）。
+  // 起動コマンドを書いた・最終状態なら 200、まだなら 202。帳簿に無ければ 200 で attempt-not-found。
+  const sendLaunchAttemptStatus = (res, ledger, attemptId) => {
+    const record = ledger.refresh(attemptId, { paneState: launchAttemptPaneState });
+    if (!record) {
+      sendLaunchAttemptJson(res, 200, ledger.notFoundResponse(attemptId));
+      return;
+    }
+    const settled = ledger.isFinal(attemptId) || ledger.isLaunchWritten(attemptId);
+    sendLaunchAttemptJson(res, settled ? 200 : 202, ledger.toResponse(record));
+  };
+  const readLaunchAttemptBody = (req, res, onBody) => {
+    const chunks = [];
+    let size = 0;
+    let aborted = false;
+    req.on('data', (chunk) => {
+      if (aborted) return;
+      size += chunk.length;
+      if (size > LAUNCH_ATTEMPT_MAX_BODY) {
+        aborted = true;
+        rejectLaunchAttempt(res, 413, 'PAYLOAD_TOO_LARGE');
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => {
+      if (aborted) return;
+      Promise.resolve(onBody(Buffer.concat(chunks).toString('utf8'))).catch((error) => {
+        console.error(`${LOG_PREFIX} launch attempt request failed:`, error?.message || error);
+        // 受け付けた後かどうか分からないため unknown（自動で送り直さない）にする。
+        sendLaunchAttemptJson(res, 500, { phase: launchAttempts.PHASES.UNKNOWN, error: launchAttempts.makeError('INTERNAL_ERROR', 'internal server error') });
+      });
+    });
+  };
+  const handleLaunchAttemptRequest = (req, res, url) => {
+    if (req.method === 'GET' && url.pathname.startsWith('/api/launch-attempts/')) {
+      const attemptId = url.pathname.slice('/api/launch-attempts/'.length);
+      if (!launchAttempts.isValidAttemptId(attemptId)) { rejectLaunchAttempt(res, 400, 'INVALID_ATTEMPT_ID'); return; }
+      const ledger = getLaunchAttemptLedger();
+      if (!ledger) { rejectLaunchAttempt(res, 503, 'LEDGER_UNAVAILABLE', { attemptId }); return; }
+      sendLaunchAttemptStatus(res, ledger, attemptId);
+      return;
+    }
+    if (req.method !== 'POST' || url.pathname !== '/api/launch-attempts') {
+      sendLaunchAttemptJson(res, 405, { error: 'method not allowed' });
+      return;
+    }
+    if (isForbiddenOrigin(req)) { rejectLaunchAttempt(res, 403, 'FORBIDDEN_ORIGIN'); return; }
+    readLaunchAttemptBody(req, res, async (body) => {
+      let parsed;
+      try { parsed = JSON.parse(body); } catch (_) { rejectLaunchAttempt(res, 400, 'INVALID_JSON'); return; }
+      const validated = launchAttempts.validateLaunchAttemptRequest(parsed, {
+        validateCodexLaunchOptions,
+        isValidModelForEngine,
+        isDirectory: (dir) => { try { return fs.statSync(dir).isDirectory(); } catch (_) { return false; } },
+      });
+      if (!validated.ok) {
+        rejectLaunchAttempt(res, 400, validated.error.code, { attemptId: validated.attemptId, message: validated.error.message });
+        return;
+      }
+      const { request } = validated;
+      const { attemptId } = request;
+      const ledger = getLaunchAttemptLedger();
+      if (!ledger) { rejectLaunchAttempt(res, 503, 'LEDGER_UNAVAILABLE', { attemptId }); return; }
+      // 同じ attemptId の送り直しは、ペインを作らず今の状態を返す。本文や起動オプションが違えば 409。
+      const respondToExisting = (matched) => {
+        if (matched.status === 'existing') { sendLaunchAttemptStatus(res, ledger, attemptId); return true; }
+        if (matched.status === 'conflict') { rejectLaunchAttempt(res, 409, 'ATTEMPT_CONFLICT', { attemptId }); return true; }
+        if (matched.status === 'expired') { rejectLaunchAttempt(res, 409, 'ATTEMPT_EXPIRED', { attemptId }); return true; }
+        return false;
+      };
+      if (respondToExisting(ledger.match(request))) return;
+      const blockedReason = () => {
+        if (ptyShutdownGate.isPaneCreationBlocked()) return 'APP_SHUTTING_DOWN';
+        if (!win || win.isDestroyed()) return 'WINDOW_UNAVAILABLE';
+        return null;
+      };
+      if (blockedReason()) { rejectLaunchAttempt(res, 503, blockedReason(), { attemptId }); return; }
+      if (!launchAttempts.isSupportedLaunchShell(resolvePaneShell())) { rejectLaunchAttempt(res, 400, 'UNSUPPORTED_SHELL', { attemptId }); return; }
+      const policyCheck = resolveCodexLaunchOptions('codex', {
+        approvalPolicy: request.options.approvalPolicy,
+        sandboxMode: request.options.sandboxMode,
+        codexPolicy: request.options.codexPolicy,
+      }, { dryRun: true, cwd: request.options.cwd });
+      if (!policyCheck.ok) { rejectLaunchAttempt(res, 503, 'CODEX_POLICY_UNAVAILABLE', { attemptId, message: policyCheck.error }); return; }
+      const gate = await runGitHubReachabilityGate(policyCheck, { check: githubReachabilityCheck, proceed: async () => ({ ok: true }) });
+      if (!gate.ok) {
+        rejectLaunchAttempt(res, 503, 'GITHUB_UNREACHABLE', { attemptId, extra: gate.githubReachability ? { githubReachability: gate.githubReachability } : {} });
+        return;
+      }
+      // 到達確認を待つ間に、終了処理が始まった・同じ attemptId が受け付け済みになった場合に備えて確かめ直す。
+      if (blockedReason()) { rejectLaunchAttempt(res, 503, blockedReason(), { attemptId }); return; }
+      // 1〜2. メモリ上の帳簿で照合・登録し、受け付けの記録を保存する（同期処理で、間に await を挟まない）。
+      const accepted = ledger.accept(request);
+      if (respondToExisting(accepted)) return;
+      if (accepted.status === 'full') { rejectLaunchAttempt(res, 503, 'LEDGER_FULL', { attemptId }); return; }
+      if (accepted.status !== 'accepted') { rejectLaunchAttempt(res, 503, 'LEDGER_UNAVAILABLE', { attemptId }); return; }
+      // 3. ペインを作る（画面側の新規ペイン作成と同じ経路）。作成の失敗は rejected として帳簿に残す。
+      const requestId = String(nextNewPaneRequestId++);
+      const callbackTimer = setTimeout(() => {
+        pendingNewPaneCallbacks.delete(requestId);
+        ledger.markNotLaunched(attemptId, 'PANE_CREATION_TIMEOUT');
+      }, launchAttempts.PANE_CREATION_TIMEOUT_MS);
+      pendingNewPaneCallbacks.set(requestId, (result) => {
+        clearTimeout(callbackTimer);
+        // terminal:create まで届かずに失敗した（画面側の起動待ちなど）ものは、ここで rejected にする。
+        if (result.error) ledger.markNotLaunched(attemptId, 'PANE_CREATION_FAILED');
+      });
+      const payload = {
+        requestId,
+        cwd: request.options.cwd,
+        noClaude: false,
+        engine: 'codex',
+        createdByAutomation: true,
+        codexPolicy: request.options.codexPolicy,
+        launchAttemptId: attemptId,
+      };
+      if (typeof request.options.approvalPolicy === 'string') payload.approvalPolicy = request.options.approvalPolicy;
+      if (typeof request.options.sandboxMode === 'string') payload.sandboxMode = request.options.sandboxMode;
+      if (typeof request.options.model === 'string') payload.model = request.options.model;
+      if (typeof request.options.stashed === 'boolean') payload.stashed = request.options.stashed;
+      try {
+        win.webContents.send('terminal:request-new-pane', payload);
+      } catch (_error) {
+        clearTimeout(callbackTimer);
+        pendingNewPaneCallbacks.delete(requestId);
+        ledger.markNotLaunched(attemptId, 'PANE_CREATION_FAILED');
+      }
+      await ledger.waitForLaunchOutcome(attemptId, LAUNCH_ATTEMPT_RESPONSE_WAIT_MS);
+      sendLaunchAttemptStatus(res, ledger, attemptId);
+    });
+  };
+
   httpServer = http.createServer((req, res) => {
     const url = new URL(req.url, `http://127.0.0.1:${API_PORT}`);
     const authRequired = shouldRequireAuth({
@@ -3857,13 +4092,14 @@ function startHttpApi() {
     if (req.method === 'GET' && url.pathname === '/api/codex-task-capabilities') {
       getProtectedSyncCapabilitiesAsync().then((protectedSync) => {
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ capabilities: { protectedSync } }));
+        // launchAttempts: 起動試行の API（issue #657）の契約の版・受け付けるエージェント・本文の上限・受領判定の方式・帳簿の識別子。
+        res.end(JSON.stringify({ capabilities: { protectedSync, launchAttempts: launchAttempts.describeLaunchAttemptCapability(getLaunchAttemptLedger()) } }));
       }).catch(() => {
         // 例外メッセージにはパスが含まれうるため、固定の理由だけを返す。
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ capabilities: { protectedSync: {
           available: false, reason: 'write-restricted execution is not available', targets: PROTECTED_SYNC_TARGETS,
-        } } }));
+        }, launchAttempts: launchAttempts.describeLaunchAttemptCapability(getLaunchAttemptLedger()) } }));
       });
       return;
     }
@@ -4789,6 +5025,13 @@ function startHttpApi() {
           res.end(JSON.stringify(response));
         }
       });
+      return;
+    }
+
+    // POST /api/launch-attempts / GET /api/launch-attempts/<attemptId> — 起動試行（issue #657）。
+    //   仕様は docs/specification-launch-attempts.md を正とする。既存の /api/new-pane の動作は変えない。
+    if (url.pathname === '/api/launch-attempts' || url.pathname.startsWith('/api/launch-attempts/')) {
+      handleLaunchAttemptRequest(req, res, url);
       return;
     }
 

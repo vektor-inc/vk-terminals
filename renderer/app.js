@@ -9054,7 +9054,7 @@ VKIpc.on('terminal:agentroom', (termId, agents, replace) => {
 
 // ─── New pane request from HTTP API ──────────────────────────────────────────
 VKIpc.on('terminal:request-new-pane', async (payload = {}) => {
-  const { requestId, cwd, noClaude, engine, stashed, useDefaults, createdByAutomation, model, approvalPolicy, sandboxMode, codexPolicy, claudeSettingsPreset } = payload;
+  const { requestId, cwd, noClaude, engine, stashed, useDefaults, createdByAutomation, model, approvalPolicy, sandboxMode, codexPolicy, launchAttemptId, claudeSettingsPreset } = payload;
   const reply = (result) => VKIpc.send('terminal:new-pane-created', { requestId, ...result });
   const receivedAt = Date.now();
   try {
@@ -9112,6 +9112,8 @@ VKIpc.on('terminal:request-new-pane', async (payload = {}) => {
     if (typeof sandboxMode === 'string') splitOptions = { ...splitOptions, sandboxMode };
     if (codexPolicy && typeof codexPolicy === 'object') splitOptions = { ...splitOptions, codexPolicy };
     if (createdByAutomation === true) splitOptions = { ...splitOptions, createdByAutomation: true };
+    // 起動試行（issue #657）の attemptId。main 側の terminal:create が帳簿と照合し、1 回だけペインを作る。
+    if (typeof launchAttemptId === 'string') splitOptions = { ...splitOptions, launchAttemptId };
     const result = targetPaneId
       ? await splitPane(targetPaneId, direction, effectiveCwd, splitOptions)
       : await addPane(effectiveCwd, splitOptions);

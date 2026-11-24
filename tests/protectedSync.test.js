@@ -213,15 +213,18 @@ test('能力 API は非同期で照会し既存の認証規則を使う', async 
   const end = source.indexOf('    // GET /api/health', start);
   const gate = source.indexOf('    if (!isAuthExemptPath(req.method, url.pathname) && authRequired)', source.indexOf('function startHttpApi()'));
   assert.ok(gate !== -1 && start > gate);
-  const route = new Function('req', 'url', 'res', 'getProtectedSyncCapabilitiesAsync', 'PROTECTED_SYNC_TARGETS', source.slice(start, end));
+  // 起動試行（issue #657）の告知は帳簿から作る。ここでは帳簿を持たない状態（available: false）で照会する。
+  const launchAttempts = require('../utils/launchAttempts');
+  const route = new Function('req', 'url', 'res', 'getProtectedSyncCapabilitiesAsync', 'PROTECTED_SYNC_TARGETS', 'launchAttempts', 'getLaunchAttemptLedger', source.slice(start, end));
   let body;
-  route({ method: 'GET' }, { pathname: '/api/codex-task-capabilities' }, { writeHead: (code) => assert.equal(code, 200), end: (text) => { body = JSON.parse(text); } }, async () => ({ available: false }));
+  route({ method: 'GET' }, { pathname: '/api/codex-task-capabilities' }, { writeHead: (code) => assert.equal(code, 200), end: (text) => { body = JSON.parse(text); } }, async () => ({ available: false }), undefined, launchAttempts, () => null);
   assert.equal(body, undefined);
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(body.capabilities.protectedSync.available, false);
+  assert.equal(body.capabilities.launchAttempts.available, false);
   // 想定外の拒否でも接続を完了し、例外内のパスを公開しない。
   body = undefined;
-  route({ method: 'GET' }, { pathname: '/api/codex-task-capabilities' }, { writeHead: (code) => assert.equal(code, 200), end: (text) => { body = JSON.parse(text); } }, async () => { throw new Error('/private/secret'); }, PROTECTED_SYNC_TARGETS);
+  route({ method: 'GET' }, { pathname: '/api/codex-task-capabilities' }, { writeHead: (code) => assert.equal(code, 200), end: (text) => { body = JSON.parse(text); } }, async () => { throw new Error('/private/secret'); }, PROTECTED_SYNC_TARGETS, launchAttempts, () => null);
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(body.capabilities.protectedSync, {
     available: false, reason: 'write-restricted execution is not available', targets: PROTECTED_SYNC_TARGETS,

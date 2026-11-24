@@ -1,5 +1,7 @@
 # Changelog
 
+## 1.110.0
+
 - [ 機能追加 ] 自動処理用の Codex を、初期指示と一体で起動して受領まで追跡できる API（`/api/launch-attempts`）を追加。同じ起動試行を送り直しても Codex は 1 つだけ起動（[#657](https://github.com/vektor-inc/vk-terminals/issues/657)）
 
 ## 1.109.0

@@ -104,13 +104,22 @@ function seedInterruptedAttempt(tmpHome, attemptId) {
   fs.chmodSync(attemptDir, 0o700);
   const acceptedAt = Date.now() - 60_000;
   const record = {
-    version: 1, attemptId, agent: 'codex', promptDigest: sha256('interrupted'), fingerprint: 'sha256:0', phase: 'awaiting-receipt',
+    version: 1, attemptId, agent: 'codex', promptDigest: sha256('interrupted'), fingerprint: sha256('fingerprint'), phase: 'awaiting-receipt',
     milestones: { requestAccepted: acceptedAt, launchWritten: null, receiptConfirmed: null },
     binding: { termId: null, paneGeneration: null, sessionId: null },
     requestAcceptedAt: acceptedAt, launchIntentAt: null, earlyExitAt: null, codexHome: null, error: null, updatedAt: acceptedAt,
   };
   fs.writeFileSync(path.join(attemptDir, 'record.json'), JSON.stringify(record), { mode: 0o600 });
   fs.writeFileSync(path.join(attemptDir, 'prompt.txt'), 'interrupted', { mode: 0o600 });
+}
+
+// 保持期間（7 日）を過ぎて要約値だけになった記録を、起動前の HOME に置く。
+function seedExpiredAttempt(tmpHome, attemptId, prompt) {
+  const attemptDir = path.join(tmpHome, '.vk-terminals', 'launch-attempts', attemptId);
+  fs.mkdirSync(attemptDir, { recursive: true, mode: 0o700 });
+  fs.chmodSync(attemptDir, 0o700);
+  const record = { version: 1, attemptId, tombstone: true, promptDigest: sha256(prompt), expiresAt: Date.now() + 24 * 60 * 60 * 1000 };
+  fs.writeFileSync(path.join(attemptDir, 'record.json'), JSON.stringify(record), { mode: 0o600 });
 }
 
 function findTmux() {
@@ -133,6 +142,7 @@ for (const mode of ['node-pty', 'tmux']) {
     const runDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'vk-la-')));
     const markerPath = path.join(fixtureRoot, 'shell-expanded-marker');
     const interruptedId = crypto.randomUUID();
+    const expiredId = crypto.randomUUID();
     let launched = null;
     let tmpHome = null;
     const body = (overrides = {}) => ({ attemptId: crypto.randomUUID(), agent: 'codex', cwd: repoDir, prompt: 'hello', codexPolicy: CODEX_POLICY, approvalPolicy: 'never', ...overrides });
@@ -143,7 +153,7 @@ for (const mode of ['node-pty', 'tmux']) {
         port,
         prefix: `vk-terminals-e2e-launch-attempts-${mode}-`,
         ...(mode === 'tmux' ? { entry: holderLauncherPath } : {}),
-        seedHome: ({ tmpHome: home }) => { tmpHome = home; seedInterruptedAttempt(home, interruptedId); },
+        seedHome: ({ tmpHome: home }) => { tmpHome = home; seedInterruptedAttempt(home, interruptedId); seedExpiredAttempt(home, expiredId, 'expired'); },
         env: {
           PATH: `${fake.binDir}${path.delimiter}${process.env.PATH || ''}`,
           VK_TERMINALS_E2E_CODEX_CAPTURE: fake.capturePath,
@@ -177,6 +187,15 @@ for (const mode of ['node-pty', 'tmux']) {
       const interrupted = await requestJson(port, 'GET', `/api/launch-attempts/${interruptedId}`);
       expect(interrupted.status).toBe(200);
       expect(interrupted.body).toMatchObject({ phase: 'rejected', error: { code: 'APP_RESTARTED_BEFORE_LAUNCH', retry: 'not-useful' } });
+
+      // @check 期限切れの attemptId は、照会では unknown・forbidden、送り直しは 409 ATTEMPT_EXPIRED（not-useful）
+      const expiredGet = await requestJson(port, 'GET', `/api/launch-attempts/${expiredId}`);
+      expect(expiredGet.status).toBe(200);
+      expect(expiredGet.body).toMatchObject({ phase: 'unknown', reason: 'attempt-expired', error: { code: 'ATTEMPT_EXPIRED', retry: 'forbidden' } });
+      const expiredPost = await requestJson(port, 'POST', '/api/launch-attempts', body({ attemptId: expiredId, prompt: 'expired' }));
+      expect(expiredPost.status).toBe(409);
+      expect(expiredPost.body).toMatchObject({ phase: 'rejected', error: { code: 'ATTEMPT_EXPIRED', retry: 'not-useful' } });
+      expect(await getPaneCount(port)).toBe(panes);
 
       // @check 知らない項目は 400 UNKNOWN_FIELD で拒否し、帳簿に無い attemptId の照会は 200 の attempt-not-found
       const unknownField = await requestJson(port, 'POST', '/api/launch-attempts', body({ noClaude: false }));

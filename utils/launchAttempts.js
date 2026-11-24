@@ -282,6 +282,78 @@ function toIso(ms) {
   return typeof ms === 'number' && Number.isFinite(ms) ? new Date(ms).toISOString() : null;
 }
 
+// 帳簿のルートの親フォルダ（~/.vk-terminals）が、本人所有の実フォルダで、他人が書き込めないか。
+// 他人が書き込めると、ルートを消して差し替えられる。
+function isSafeParentDirectory(directory, uid) {
+  try {
+    const stat = fs.lstatSync(directory);
+    return !stat.isSymbolicLink() && stat.isDirectory() && (uid === undefined || stat.uid === uid) && (stat.mode & 0o022) === 0;
+  } catch (_) { return false; }
+}
+
+const DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
+const isTime = (value) => typeof value === 'number' && Number.isFinite(value) && value >= 0;
+const isOptionalTime = (value) => value === null || isTime(value);
+const isPlainObject = (value) => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+const hasOnlyKeys = (value, allowed) => Object.keys(value).every((key) => allowed.includes(key));
+const RECORD_KEYS = Object.freeze(['version', 'attemptId', 'agent', 'promptDigest', 'fingerprint', 'phase', 'milestones', 'binding', 'requestAcceptedAt', 'launchIntentAt', 'earlyExitAt', 'codexHome', 'error', 'updatedAt', 'finalAt', 'recovered']);
+const TOMBSTONE_KEYS = Object.freeze(['version', 'attemptId', 'tombstone', 'promptDigest', 'expiresAt']);
+const RETRY_BY_PHASE = Object.freeze({ [PHASES.REJECTED]: ['allowed', 'not-useful'], [PHASES.UNKNOWN]: ['forbidden'] });
+
+/**
+ * 保存済みの記録（通常の記録・要約値だけの記録）が、必須項目・型・状態どうしの整合を満たすか。
+ * 満たさない記録は、起動したかどうかを判断できないものとして扱う（呼び出し側が RECORD_UNREADABLE にする）。
+ * @param {unknown} record
+ * @param {string} attemptId フォルダ名
+ * @returns {boolean}
+ */
+function isValidStoredRecord(record, attemptId) {
+  if (!isPlainObject(record) || record.version !== RECORD_VERSION || record.attemptId !== attemptId) return false;
+  if (record.tombstone !== undefined) {
+    return record.tombstone === true && hasOnlyKeys(record, TOMBSTONE_KEYS) &&
+      (record.promptDigest === null || DIGEST_PATTERN.test(record.promptDigest)) && isTime(record.expiresAt);
+  }
+  if (!hasOnlyKeys(record, RECORD_KEYS)) return false;
+  if (!SUPPORTED_AGENTS.includes(record.agent) || !DIGEST_PATTERN.test(record.promptDigest) || !DIGEST_PATTERN.test(record.fingerprint)) return false;
+  if (!Object.values(PHASES).includes(record.phase)) return false;
+  const { milestones, binding, error } = record;
+  if (!isPlainObject(milestones) || !hasOnlyKeys(milestones, ['requestAccepted', 'launchWritten', 'receiptConfirmed'])) return false;
+  if (!isTime(milestones.requestAccepted) || !isOptionalTime(milestones.launchWritten) || !isOptionalTime(milestones.receiptConfirmed)) return false;
+  if (!isPlainObject(binding) || !hasOnlyKeys(binding, ['termId', 'paneGeneration', 'sessionId'])) return false;
+  if (!(binding.termId === null || (typeof binding.termId === 'string' && binding.termId !== ''))) return false;
+  if (!(binding.paneGeneration === null || (Number.isSafeInteger(binding.paneGeneration) && binding.paneGeneration >= 0))) return false;
+  if (!(binding.sessionId === null || (typeof binding.sessionId === 'string' && binding.sessionId !== ''))) return false;
+  if (record.requestAcceptedAt !== milestones.requestAccepted || !isTime(record.updatedAt)) return false;
+  if (!isOptionalTime(record.launchIntentAt) || !isOptionalTime(record.earlyExitAt)) return false;
+  if (record.finalAt !== undefined && !isTime(record.finalAt)) return false;
+  if (record.recovered !== undefined && typeof record.recovered !== 'boolean') return false;
+  if (!(record.codexHome === null || (typeof record.codexHome === 'string' && path.isAbsolute(record.codexHome)))) return false;
+  if (error !== null) {
+    if (!isPlainObject(error) || !hasOnlyKeys(error, ['code', 'retry', 'message']) || !ERRORS[error.code] || typeof error.message !== 'string') return false;
+    if (error.retry !== ERRORS[error.code].retry) return false;
+  }
+  // 状態どうしの整合。起動コマンドを書いた記録には、書く意図とペインの結び付けが必ずある。
+  const intent = record.launchIntentAt !== null;
+  if (milestones.launchWritten !== null && !intent) return false;
+  if (intent && (binding.termId === null || binding.paneGeneration === null)) return false;
+  if (record.earlyExitAt !== null && milestones.launchWritten === null) return false;
+  if ((milestones.receiptConfirmed !== null) !== (record.phase === PHASES.RECEIVED)) return false;
+  if ((binding.sessionId !== null) !== (record.phase === PHASES.RECEIVED)) return false;
+  switch (record.phase) {
+    case PHASES.AWAITING:
+      return error === null && record.finalAt === undefined;
+    case PHASES.RECEIVED:
+      return error === null && intent && isTime(record.finalAt);
+    case PHASES.REJECTED:
+      // 記録済みの rejected は Codex を起動していないものだけ（書く意図の記録より前に止まった）。
+      return error !== null && RETRY_BY_PHASE[PHASES.REJECTED].includes(error.retry) && !intent && milestones.launchWritten === null && isTime(record.finalAt);
+    case PHASES.UNKNOWN:
+      return error !== null && RETRY_BY_PHASE[PHASES.UNKNOWN].includes(error.retry) && intent && isTime(record.finalAt);
+    default:
+      return false;
+  }
+}
+
 /**
  * 起動試行の帳簿を作る。保存先は baseDir/<attemptId>/record.json（本文は同じフォルダの prompt.txt）。
  * 初期化に失敗したら例外にする（呼び出し側は LEDGER_UNAVAILABLE で拒否する）。
@@ -297,17 +369,38 @@ function createLaunchAttemptLedger({ baseDir, now = Date.now, randomUUID = crypt
   const uid = resolveUid();
   if (!path.isAbsolute(baseDir) || /['\x00-\x1f\x7f]/.test(baseDir)) throw new Error('unsafe ledger directory');
   try { fs.mkdirSync(baseDir, { mode: 0o700 }); } catch (error) { if (error.code !== 'EEXIST') throw error; }
-  if (!isPrivateDirectory(baseDir, uid)) throw new Error('ledger directory must be a private (0700) directory');
+  if (!isPrivateDirectory(baseDir, uid) || !isSafeParentDirectory(path.dirname(baseDir), uid)) {
+    throw new Error('ledger directory must be a private (0700) directory');
+  }
+  // 初期化時の帳簿のルートの実体。受付・保存（起動直前の意図の記録を含む）のたびに、同じ実体で、
+  // まだ本人だけのフォルダかを確かめる（初期化の後に権限を変えられた・差し替えられた場合に書き込みと起動を止める）。
+  const rootStat = fs.lstatSync(baseDir);
+  const assertLedgerRoot = () => {
+    let stat;
+    try { stat = fs.lstatSync(baseDir); } catch (_) { throw new Error('ledger directory changed'); }
+    if (stat.dev !== rootStat.dev || stat.ino !== rootStat.ino || !isPrivateDirectory(baseDir, uid) || !isSafeParentDirectory(path.dirname(baseDir), uid)) {
+      throw new Error('ledger directory changed');
+    }
+  };
+  // ledger.json が無いときだけ識別子を作る。あるのに読めない・識別子が欠けている・null・UUID でない場合は、
+  // 作り直さずに利用不可にする（作り直すと ledgerId が変わり、照会側が帳簿の作り直しと取り違える）。
   let ledgerId;
+  let identity;
+  let identityMissing = false;
   try {
-    ledgerId = readPrivateJson(baseDir, 'ledger.json', uid).ledgerId;
+    identity = readPrivateJson(baseDir, 'ledger.json', uid);
   } catch (error) {
     if (error.code !== 'ENOENT') throw error;
+    identityMissing = true;
   }
-  if (typeof ledgerId !== 'string' || !isValidAttemptId(ledgerId)) {
-    if (ledgerId !== undefined) throw new Error('ledger identity is unreadable');
+  if (identityMissing) {
     ledgerId = randomUUID();
     writePrivateJson(baseDir, 'ledger.json', { ledgerId, createdAt: toIso(now()) }, uid);
+  } else {
+    if (!identity || typeof identity !== 'object' || Array.isArray(identity) || !isValidAttemptId(identity.ledgerId)) {
+      throw new Error('ledger identity is unreadable');
+    }
+    ledgerId = identity.ledgerId;
   }
 
   // attemptId → { record, claimToken, listeners: Set<Function>, current: boolean }
@@ -317,6 +410,7 @@ function createLaunchAttemptLedger({ baseDir, now = Date.now, randomUUID = crypt
 
   const persist = (record) => {
     if (hooks.failPersist && hooks.failPersist(record)) throw new Error('simulated persist failure');
+    assertLedgerRoot();
     writePrivateJson(attemptDir(record.attemptId), 'record.json', record, uid);
   };
   const persistQuietly = (record) => {
@@ -354,8 +448,10 @@ function createLaunchAttemptLedger({ baseDir, now = Date.now, randomUUID = crypt
       if (!isValidAttemptId(name)) continue;
       let record;
       try { record = readPrivateJson(attemptDir(name), 'record.json', uid); } catch (_) { record = null; }
-      if (!record || record.attemptId !== name || record.version !== RECORD_VERSION) {
-        // 読めない記録も attemptId は使用済みとして扱い、二重起動を防ぐ。
+      if (!isValidStoredRecord(record, name)) {
+        // 読めない・壊れた・状態どうしが食い違う記録は、起動したかどうかを判断できない。
+        // 「未起動・再依頼してよい」と誤って伝えないよう unknown（RECORD_UNREADABLE・forbidden）にし、
+        // attemptId は使用済みとして扱って二重起動を防ぐ。
         entries.set(name, { record: { version: RECORD_VERSION, attemptId: name, agent: 'codex', phase: PHASES.UNKNOWN, unreadable: true, milestones: {}, binding: {}, error: makeError('RECORD_UNREADABLE'), requestAcceptedAt: now(), updatedAt: now(), finalAt: now() }, claimToken: null, listeners: new Set(), current: false });
         continue;
       }
@@ -422,7 +518,8 @@ function createLaunchAttemptLedger({ baseDir, now = Date.now, randomUUID = crypt
   function toResponse(record) {
     if (!record) return null;
     if (record.tombstone) {
-      return { attemptId: record.attemptId, ledgerId, phase: PHASES.UNKNOWN, reason: 'attempt-expired', error: makeError('ATTEMPT_EXPIRED') };
+      // 照会では phase が unknown なので retry は forbidden（POST の 409 ATTEMPT_EXPIRED は処理前の拒否なので not-useful のまま）。
+      return { attemptId: record.attemptId, ledgerId, phase: PHASES.UNKNOWN, reason: 'attempt-expired', error: { ...makeError('ATTEMPT_EXPIRED'), retry: 'forbidden' } };
     }
     const milestones = record.milestones || {};
     const binding = record.binding || {};
@@ -457,6 +554,8 @@ function createLaunchAttemptLedger({ baseDir, now = Date.now, randomUUID = crypt
    * @returns {{status: 'none'} | {status: 'existing', record: object} | {status: 'conflict'} | {status: 'expired'}}
    */
   function match(request) {
+    // 同じ attemptId の送り直ししか来なくても保持期間を適用するため、照合の前に整理する。
+    prune();
     const entry = entries.get(request.attemptId);
     if (!entry) return { status: 'none' };
     const { record } = entry;
@@ -472,8 +571,12 @@ function createLaunchAttemptLedger({ baseDir, now = Date.now, randomUUID = crypt
   function accept(request) {
     const matched = match(request);
     if (matched.status !== 'none') return matched;
-    prune();
     if (liveCount() >= MAX_LIVE_RECORDS) return { status: 'full' };
+    // 初期化の後に帳簿のルートの権限が変わった・差し替えられた場合は受け付けない（LEDGER_UNAVAILABLE）。
+    try { assertLedgerRoot(); } catch (error) {
+      log(`launch attempt ${request.attemptId}: ledger directory is not safe (${error.message})`);
+      return { status: 'unavailable' };
+    }
     const acceptedAt = now();
     const record = {
       version: RECORD_VERSION,
@@ -597,6 +700,8 @@ function createLaunchAttemptLedger({ baseDir, now = Date.now, randomUUID = crypt
    * @returns {object|null} 記録（無ければ null）
    */
   function refresh(attemptId, { paneState }) {
+    // 照会しか来なくても保持期間を適用するため、検索の前に整理する。
+    prune();
     const entry = entries.get(attemptId);
     if (!entry) return null;
     const { record } = entry;

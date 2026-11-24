@@ -432,3 +432,186 @@ test('遅延起動: 起動コマンドの書き込みが例外になったら on
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(events, ['write-failed', 'discard']);
 });
+
+// ─── レビュー指摘（AND-657-01〜05）への対応の確認 ───────────────────────────────
+
+// 記録フォルダに record.json を 0600 で直接置く（壊れた記録・食い違う記録の再現用）。
+function writeStoredRecord(base, attemptId, record) {
+  const dir = path.join(base, attemptId);
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  fs.chmodSync(dir, 0o700);
+  const file = path.join(dir, 'record.json');
+  fs.rmSync(file, { force: true });
+  fs.writeFileSync(file, JSON.stringify(record), { mode: 0o600 });
+}
+
+function storedAwaiting(attemptId, overrides = {}) {
+  const at = 1_700_000_000_000;
+  return {
+    version: 1, attemptId, agent: 'codex', promptDigest: la.computePromptDigest('p'), fingerprint: la.computePromptDigest('f'), phase: 'awaiting-receipt',
+    milestones: { requestAccepted: at, launchWritten: null, receiptConfirmed: null },
+    binding: { termId: null, paneGeneration: null, sessionId: null },
+    requestAcceptedAt: at, launchIntentAt: null, earlyExitAt: null, codexHome: null, error: null, updatedAt: at,
+    ...overrides,
+  };
+}
+
+test('AND-657-01: 必須項目・型・状態どうしが食い違う記録は、復帰時に unknown（RECORD_UNREADABLE・forbidden）にする', (t) => {
+  const base = tmpBase(t);
+  la.createLaunchAttemptLedger({ baseDir: base });
+  const at = 1_700_000_000_000;
+  const written = { milestones: { requestAccepted: at, launchWritten: at + 10, receiptConfirmed: null } };
+  const bound = { binding: { termId: '3', paneGeneration: 1, sessionId: null } };
+  const broken = {
+    // 起動コマンドを書いたのに、書く意図の記録が無い（指摘の例）。
+    writtenWithoutIntent: storedAwaiting(crypto.randomUUID(), { ...written, ...bound }),
+    intentWithoutBinding: storedAwaiting(crypto.randomUUID(), { launchIntentAt: at + 5 }),
+    awaitingWithError: storedAwaiting(crypto.randomUUID(), { error: la.makeError('RECEIPT_TIMEOUT') }),
+    rejectedAfterIntent: storedAwaiting(crypto.randomUUID(), { ...bound, phase: 'rejected', launchIntentAt: at + 5, error: la.makeError('PANE_CREATION_FAILED'), finalAt: at + 20 }),
+    rejectedForbidden: storedAwaiting(crypto.randomUUID(), { phase: 'rejected', error: { ...la.makeError('PANE_CREATION_FAILED'), retry: 'forbidden' }, finalAt: at + 20 }),
+    receivedWithoutSession: storedAwaiting(crypto.randomUUID(), { ...bound, ...written, launchIntentAt: at + 5, phase: 'received', milestones: { requestAccepted: at, launchWritten: at + 10, receiptConfirmed: at + 30 }, finalAt: at + 30 }),
+    unknownWithoutError: storedAwaiting(crypto.randomUUID(), { ...bound, ...written, launchIntentAt: at + 5, phase: 'unknown', finalAt: at + 30 }),
+    unknownPhase: storedAwaiting(crypto.randomUUID(), { phase: 'launched' }),
+    wrongType: storedAwaiting(crypto.randomUUID(), { launchIntentAt: '2026-11-24' }),
+    missingMilestones: (() => { const r = storedAwaiting(crypto.randomUUID()); delete r.milestones; return r; })(),
+    extraKey: storedAwaiting(crypto.randomUUID(), { prompt: 'leak' }),
+    badDigest: storedAwaiting(crypto.randomUUID(), { promptDigest: 'sha256:xyz' }),
+    earlyExitWithoutLaunch: storedAwaiting(crypto.randomUUID(), { earlyExitAt: at + 1 }),
+    tombstoneBadExpiry: { version: 1, attemptId: crypto.randomUUID(), tombstone: true, promptDigest: null, expiresAt: 'soon' },
+    tombstoneExtraKey: { version: 1, attemptId: crypto.randomUUID(), tombstone: true, promptDigest: null, expiresAt: at, phase: 'received' },
+    tombstoneNotTrue: { version: 1, attemptId: crypto.randomUUID(), tombstone: 'yes', promptDigest: null, expiresAt: at },
+  };
+  for (const record of Object.values(broken)) writeStoredRecord(base, record.attemptId, record);
+  const reloaded = la.createLaunchAttemptLedger({ baseDir: base, now: () => at + 60_000 });
+  for (const [name, record] of Object.entries(broken)) {
+    const response = reloaded.toResponse(reloaded.refresh(record.attemptId, { paneState: alive }));
+    assert.equal(response.phase, 'unknown', name);
+    assert.deepEqual([response.error.code, response.error.retry], ['RECORD_UNREADABLE', 'forbidden'], name);
+    // 送り直しでは第二のペインを作らない（照合は衝突）。
+    assert.equal(reloaded.match({ attemptId: record.attemptId, promptDigest: record.promptDigest, fingerprint: record.fingerprint }).status, 'conflict', name);
+  }
+});
+
+test('AND-657-01: 正しく保存された各状態の記録は、復帰時にそのまま読める', (t) => {
+  const c = clock();
+  const base = tmpBase(t);
+  const ledger = la.createLaunchAttemptLedger({ baseDir: base, now: c.now });
+  const home = path.join(path.dirname(base), 'home-roundtrip');
+  const received = makeRequest(t);
+  launch(ledger, received, { codexHome: home });
+  writeRollout(home, [meta('s-rt'), newUserItem(PROMPT)]);
+  ledger.refresh(received.attemptId, { paneState: alive });
+  const rejected = makeRequest(t);
+  ledger.accept(rejected);
+  ledger.markNotLaunched(rejected.attemptId, 'PANE_CREATION_FAILED');
+  const unknown = makeRequest(t);
+  launch(ledger, unknown, { codexHome: path.join(path.dirname(base), 'home-none') });
+  ledger.refresh(unknown.attemptId, { paneState: () => 'closed' });
+  const awaiting = makeRequest(t);
+  launch(ledger, awaiting, { codexHome: path.join(path.dirname(base), 'home-wait') });
+  const writeFailed = makeRequest(t);
+  ledger.accept(writeFailed);
+  const claim = ledger.claimPane(writeFailed.attemptId);
+  ledger.bindPane(claim, { termId: '9', paneGeneration: 1, codexHome: home });
+  ledger.noteLaunchIntent(claim);
+  ledger.markLaunchWriteFailed(claim);
+  const reloaded = la.createLaunchAttemptLedger({ baseDir: base, now: c.now });
+  assert.equal(reloaded.get(received.attemptId).phase, 'received');
+  assert.equal(reloaded.get(rejected.attemptId).error.code, 'PANE_CREATION_FAILED');
+  assert.equal(reloaded.get(unknown.attemptId).error.code, 'PANE_CLOSED');
+  assert.equal(reloaded.get(writeFailed.attemptId).error.code, 'LAUNCH_WRITE_FAILED');
+  assert.equal(reloaded.get(awaiting.attemptId).phase, 'awaiting-receipt');
+  assert.equal(reloaded.get(awaiting.attemptId).recovered, true);
+  // 要約値だけの記録も読める。
+  c.advance(la.RECORD_RETENTION_MS);
+  reloaded.refresh(received.attemptId, { paneState: alive });
+  const again = la.createLaunchAttemptLedger({ baseDir: base, now: c.now });
+  assert.equal(again.get(received.attemptId).tombstone, true);
+});
+
+test('AND-657-02: 初期化の後に帳簿のルートの権限が変わる・差し替えられると、受け付けと起動直前の記録を止める', (t) => {
+  const base = tmpBase(t);
+  const ledger = la.createLaunchAttemptLedger({ baseDir: base });
+  const pending = makeRequest(t);
+  ledger.accept(pending);
+  const claim = ledger.claimPane(pending.attemptId);
+
+  // 権限を広げると、受け付けない（LEDGER_UNAVAILABLE の元）。起動直前の意図も記録せず、書かない。
+  fs.chmodSync(base, 0o755);
+  assert.equal(ledger.accept(makeRequest(t)).status, 'unavailable');
+  assert.equal(ledger.noteLaunchIntent(claim), false);
+  assert.equal(ledger.get(pending.attemptId).error.code, 'LEDGER_WRITE_FAILED');
+  fs.chmodSync(base, 0o700);
+  assert.equal(ledger.accept(makeRequest(t)).status, 'accepted');
+
+  // 親フォルダを他人が書き込めるようにしても止める。
+  const parent = path.dirname(base);
+  const parentMode = fs.statSync(parent).mode & 0o777;
+  fs.chmodSync(parent, 0o777);
+  assert.equal(ledger.accept(makeRequest(t)).status, 'unavailable');
+  fs.chmodSync(parent, parentMode);
+
+  // 同じ権限の別のフォルダへ差し替えた（dev/ino が違う）場合も止める。
+  fs.renameSync(base, `${base}-moved`);
+  fs.mkdirSync(base, { mode: 0o700 });
+  fs.chmodSync(base, 0o700);
+  t.after(() => fs.rmSync(`${base}-moved`, { recursive: true, force: true }));
+  assert.equal(ledger.accept(makeRequest(t)).status, 'unavailable');
+});
+
+test('AND-657-03: 期限切れの照会は unknown・forbidden、送り直し（POST）は expired（409 の not-useful）', (t) => {
+  const c = clock();
+  const ledger = la.createLaunchAttemptLedger({ baseDir: tmpBase(t), now: c.now });
+  const request = makeRequest(t);
+  ledger.accept(request);
+  ledger.markNotLaunched(request.attemptId, 'PANE_CREATION_FAILED');
+  c.advance(la.RECORD_RETENTION_MS);
+  const response = ledger.toResponse(ledger.refresh(request.attemptId, { paneState: alive }));
+  assert.deepEqual([response.phase, response.reason, response.error.code, response.error.retry], ['unknown', 'attempt-expired', 'ATTEMPT_EXPIRED', 'forbidden']);
+  assert.equal(ledger.accept(request).status, 'expired');
+  // HTTP の 409 は makeError('ATTEMPT_EXPIRED') をそのまま使う（処理前の拒否なので not-useful）。
+  assert.equal(la.makeError('ATTEMPT_EXPIRED').retry, 'not-useful');
+});
+
+test('AND-657-04: 同じ attemptId の送り直し・照会だけでも、7 日で要約値だけになり 30 日で消える', (t) => {
+  const c = clock();
+  const base = tmpBase(t);
+  const ledger = la.createLaunchAttemptLedger({ baseDir: base, now: c.now });
+  // 照会だけの経路。
+  const viaGet = makeRequest(t);
+  ledger.accept(viaGet);
+  ledger.markNotLaunched(viaGet.attemptId, 'PANE_CREATION_FAILED');
+  // 送り直しだけの経路。
+  const viaPost = makeRequest(t);
+  ledger.accept(viaPost);
+  ledger.markNotLaunched(viaPost.attemptId, 'PANE_CREATION_FAILED');
+  c.advance(la.RECORD_RETENTION_MS - 1);
+  assert.equal(ledger.refresh(viaGet.attemptId, { paneState: alive }).phase, 'rejected');
+  assert.equal(ledger.accept(viaPost).status, 'existing');
+  c.advance(1);
+  assert.equal(ledger.refresh(viaGet.attemptId, { paneState: alive }).tombstone, true);
+  assert.equal(ledger.accept(viaPost).status, 'expired');
+  const stored = JSON.parse(fs.readFileSync(path.join(base, viaPost.attemptId, 'record.json'), 'utf8'));
+  assert.equal(stored.tombstone, true);
+  c.advance(la.TOMBSTONE_RETENTION_MS);
+  assert.equal(ledger.refresh(viaGet.attemptId, { paneState: alive }), null);
+  assert.equal(fs.existsSync(path.join(base, viaGet.attemptId)), false);
+  assert.equal(ledger.match(viaPost).status, 'none');
+  assert.equal(fs.existsSync(path.join(base, viaPost.attemptId)), false);
+});
+
+test('AND-657-05: ledger.json があるのに識別子が欠落・null・UUID でない場合は、作り直さず利用不可にする', (t) => {
+  for (const content of [{}, { ledgerId: null }, { ledgerId: 'not-a-uuid' }, { ledgerId: crypto.randomUUID().toUpperCase() }, [], null]) {
+    const base = tmpBase(t);
+    fs.mkdirSync(base, { mode: 0o700 });
+    fs.chmodSync(base, 0o700);
+    const file = path.join(base, 'ledger.json');
+    fs.writeFileSync(file, JSON.stringify(content), { mode: 0o600 });
+    assert.throws(() => la.createLaunchAttemptLedger({ baseDir: base }), /ledger identity is unreadable/, JSON.stringify(content));
+    assert.equal(fs.readFileSync(file, 'utf8'), JSON.stringify(content));
+  }
+  // ファイルが無いときだけ作る。
+  const fresh = tmpBase(t);
+  const ledger = la.createLaunchAttemptLedger({ baseDir: fresh });
+  assert.equal(JSON.parse(fs.readFileSync(path.join(fresh, 'ledger.json'), 'utf8')).ledgerId, ledger.ledgerId);
+});

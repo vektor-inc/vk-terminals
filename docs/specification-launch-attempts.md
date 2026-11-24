@@ -67,7 +67,7 @@
 - 本文・ファイルパス・会話の中身は返さない。
 - 照会のたびに受領の記録を 1 回だけ確認し、状態を進める。待ち合わせ（繰り返しの照会）は VK Orchestrator 側で行う。
 - 帳簿に無い `attemptId` は `200` で `{ "phase": "unknown", "reason": "attempt-not-found", "error": { "code": "ATTEMPT_NOT_FOUND", "retry": "forbidden" } }`。404 は「未対応の旧版」の意味に使うため、記録なしには使わない。記録なしで `ledgerId` が送信前に見た値と同じなら、要求は受け付けられていないので、同じ `attemptId` で送り直してよい。
-- 保持期間を過ぎた `attemptId` は `200` で `phase: unknown`、`reason: attempt-expired`。
+- 保持期間を過ぎた `attemptId` は `200` で `phase: unknown`、`reason: attempt-expired`、`error.retry: forbidden`（照会では unknown なので forbidden。送り直しの `409 ATTEMPT_EXPIRED` は処理前の拒否なので not-useful）。
 
 応答の形:
 
@@ -167,9 +167,9 @@ unknown（`phase: unknown`、`retry: forbidden`）:
 | `LAUNCH_WRITE_FAILED` | 起動コマンドの書き込みが例外になった |
 | `ROLLOUT_UNREADABLE` | 受領の記録を読めない |
 | `ROLLOUT_UNRECOGNIZED` | 受領の記録の形式を判別できない |
-| `RECORD_UNREADABLE` | 帳簿の記録を読めない |
+| `RECORD_UNREADABLE` | 帳簿の記録を読めない、または必須項目・型・状態どうしの整合を満たさない（例: `launchWritten` があるのに `launchIntentAt` が無い） |
 | `ATTEMPT_NOT_FOUND` | 帳簿に無い（照会のみ。`reason: attempt-not-found`） |
-| `ATTEMPT_EXPIRED` | 保持期間を過ぎた（照会のみ。`reason: attempt-expired`） |
+| `ATTEMPT_EXPIRED` | 保持期間を過ぎた（照会のみ。`reason: attempt-expired`。POST の 409 とは retry が違う） |
 
 ## 3. 初期指示を起動時に一体で渡す方法
 
@@ -217,8 +217,12 @@ codex-cli 0.171.0 で、専用 CODEX_HOME（`trust_level = "untrusted"` を記�
 - 保持期間:
   - 記録は最終状態になってから 7 日間残す
   - その後は `attemptId` と要約値だけを、受け付けから 30 日まで残す。期限切れの `attemptId` がまた届いたら拒否する（`ATTEMPT_EXPIRED`）
+  - 期限の整理は、受け付け・送り直しの照合・状態照会のたびに、検索の前に行う（同じ `attemptId` の送り直しと照会しか来なくても期限が進む）
   - 要約値だけでない記録の件数の上限は 1000 件（`LEDGER_FULL`）。要約値だけの記録は 10000 件を超えたら古い順に消す
-- 帳簿のフォルダが本人だけの 0700 でない・識別子を読めないときは帳簿を作らず、`LEDGER_UNAVAILABLE` で拒否する（`ledgerId` は作り直さない）。
+- 帳簿のフォルダが本人だけの 0700 でない・親フォルダを他人が書き込める・識別子を読めないときは帳簿を作らず、`LEDGER_UNAVAILABLE` で拒否する。
+- `ledger.json` が無いときだけ識別子を作る。あるのに読めない・`ledgerId` が欠落・null・UUID でない場合は作り直さない（`ledgerId` が変わると、照会側が帳簿の作り直しと取り違えるため）。
+- 初期化の後も、受け付けと保存（起動コマンドを書く直前の意図の記録を含む）のたびに、帳簿のフォルダが初期化時と同じ実体（dev/ino）で、本人だけの 0700 のままで、親フォルダを他人が書き込めないことを確かめる。違えば受け付けは `LEDGER_UNAVAILABLE`、起動直前なら書かずに `LEDGER_WRITE_FAILED` で止める。
+- 復帰時は、通常の記録と要約値だけの記録の両方で、必須項目・型・状態どうしの整合（例: 書いた記録には書く意図とペインの結び付けがある、`rejected` は書く意図が無く retry が allowed / not-useful、`unknown` は retry が forbidden、`received` はセッション ID と受領時刻がある）を検証する。満たさない記録は「未起動」とはみなさず `unknown`（`RECORD_UNREADABLE`・`forbidden`）にし、同じ `attemptId` では第二のペインを作らない。
 
 ## 6. 変えないもの
 

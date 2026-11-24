@@ -292,6 +292,11 @@ function isSafeParentDirectory(directory, uid) {
 }
 
 const DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
+// 保存済みの記録は外から書き換えられうるため、正規表現や添字に渡す前に型を確かめる。
+// （RegExp#test や ERRORS[code] は値を暗黙に文字列へ変換するため、配列が素通りしたり、
+// toString を持たないオブジェクトで TypeError になったりする。）
+const isDigest = (value) => typeof value === 'string' && DIGEST_PATTERN.test(value);
+const isKnownErrorCode = (value) => typeof value === 'string' && Object.prototype.hasOwnProperty.call(ERRORS, value);
 const isTime = (value) => typeof value === 'number' && Number.isFinite(value) && value >= 0;
 const isOptionalTime = (value) => value === null || isTime(value);
 const isPlainObject = (value) => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -311,10 +316,10 @@ function isValidStoredRecord(record, attemptId) {
   if (!isPlainObject(record) || record.version !== RECORD_VERSION || record.attemptId !== attemptId) return false;
   if (record.tombstone !== undefined) {
     return record.tombstone === true && hasOnlyKeys(record, TOMBSTONE_KEYS) &&
-      (record.promptDigest === null || DIGEST_PATTERN.test(record.promptDigest)) && isTime(record.expiresAt);
+      (record.promptDigest === null || isDigest(record.promptDigest)) && isTime(record.expiresAt);
   }
   if (!hasOnlyKeys(record, RECORD_KEYS)) return false;
-  if (!SUPPORTED_AGENTS.includes(record.agent) || !DIGEST_PATTERN.test(record.promptDigest) || !DIGEST_PATTERN.test(record.fingerprint)) return false;
+  if (!SUPPORTED_AGENTS.includes(record.agent) || !isDigest(record.promptDigest) || !isDigest(record.fingerprint)) return false;
   if (!Object.values(PHASES).includes(record.phase)) return false;
   const { milestones, binding, error } = record;
   if (!isPlainObject(milestones) || !hasOnlyKeys(milestones, ['requestAccepted', 'launchWritten', 'receiptConfirmed'])) return false;
@@ -329,7 +334,7 @@ function isValidStoredRecord(record, attemptId) {
   if (record.recovered !== undefined && typeof record.recovered !== 'boolean') return false;
   if (!(record.codexHome === null || (typeof record.codexHome === 'string' && path.isAbsolute(record.codexHome)))) return false;
   if (error !== null) {
-    if (!isPlainObject(error) || !hasOnlyKeys(error, ['code', 'retry', 'message']) || !ERRORS[error.code] || typeof error.message !== 'string') return false;
+    if (!isPlainObject(error) || !hasOnlyKeys(error, ['code', 'retry', 'message']) || !isKnownErrorCode(error.code) || typeof error.message !== 'string') return false;
     if (error.retry !== ERRORS[error.code].retry) return false;
   }
   // 状態どうしの整合。起動コマンドを書いた記録には、書く意図とペインの結び付けが必ずある。
@@ -446,9 +451,14 @@ function createLaunchAttemptLedger({ baseDir, now = Date.now, randomUUID = crypt
     try { names = fs.readdirSync(baseDir); } catch (_) { names = []; }
     for (const name of names) {
       if (!isValidAttemptId(name)) continue;
-      let record;
-      try { record = readPrivateJson(attemptDir(name), 'record.json', uid); } catch (_) { record = null; }
-      if (!isValidStoredRecord(record, name)) {
+      // 読み取りと検証を同じ try に置く。検証の途中で例外が出ても、その 1 件だけを隔離する。
+      let record = null;
+      let valid = false;
+      try {
+        record = readPrivateJson(attemptDir(name), 'record.json', uid);
+        valid = isValidStoredRecord(record, name);
+      } catch (_) { valid = false; }
+      if (!valid) {
         // 読めない・壊れた・状態どうしが食い違う記録は、起動したかどうかを判断できない。
         // 「未起動・再依頼してよい」と誤って伝えないよう unknown（RECORD_UNREADABLE・forbidden）にし、
         // attemptId は使用済みとして扱って二重起動を防ぐ。

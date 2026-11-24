@@ -492,6 +492,71 @@ test('AND-657-01: 必須項目・型・状態どうしが食い違う記録は�
   }
 });
 
+test('AND-657-06: 文字列のはずの項目に配列やオブジェクトが入った記録は、その 1 件だけを unknown（RECORD_UNREADABLE）にする', (t) => {
+  const base = tmpBase(t);
+  la.createLaunchAttemptLedger({ baseDir: base });
+  const at = 1_700_000_000_000;
+  const digest = la.computePromptDigest('p');
+  const unknownBase = (id) => storedAwaiting(id, {
+    phase: 'unknown', launchIntentAt: at + 5, binding: { termId: '3', paneGeneration: 1, sessionId: null },
+    milestones: { requestAccepted: at, launchWritten: at + 10, receiptConfirmed: null }, error: la.makeError('RECEIPT_TIMEOUT'), finalAt: at + 30,
+  });
+  const receivedBase = (id) => storedAwaiting(id, {
+    phase: 'received', launchIntentAt: at + 5, binding: { termId: '3', paneGeneration: 1, sessionId: 's-1' },
+    milestones: { requestAccepted: at, launchWritten: at + 10, receiptConfirmed: at + 30 }, finalAt: at + 30,
+  });
+  const tombstoneBase = (id) => ({ version: 1, attemptId: id, tombstone: true, promptDigest: digest, expiresAt: at + 10 * 86_400_000 });
+  // 項目ごとに「正常な値 1 つを入れた配列」と「toString を持たないオブジェクト」を入れる。
+  const fields = [
+    ['promptDigest', storedAwaiting, (r, v) => { r.promptDigest = v(r.promptDigest); }],
+    ['fingerprint', storedAwaiting, (r, v) => { r.fingerprint = v(r.fingerprint); }],
+    ['tombstone.promptDigest', tombstoneBase, (r, v) => { r.promptDigest = v(r.promptDigest); }],
+    ['agent', storedAwaiting, (r, v) => { r.agent = v(r.agent); }],
+    ['phase', storedAwaiting, (r, v) => { r.phase = v(r.phase); }],
+    ['error.code', unknownBase, (r, v) => { r.error.code = v(r.error.code); }],
+    ['error.retry', unknownBase, (r, v) => { r.error.retry = v(r.error.retry); }],
+    ['error.message', unknownBase, (r, v) => { r.error.message = v(r.error.message); }],
+    ['binding.termId', unknownBase, (r, v) => { r.binding.termId = v(r.binding.termId); }],
+    ['binding.sessionId', receivedBase, (r, v) => { r.binding.sessionId = v(r.binding.sessionId); }],
+    ['codexHome', storedAwaiting, (r, v) => { r.codexHome = v('/tmp/codex-home'); }],
+  ];
+  const variants = { array: (value) => [value], noToString: () => ({ toString: null }) };
+  const broken = [];
+  for (const [field, make, mutate] of fields) {
+    for (const [kind, wrap] of Object.entries(variants)) {
+      const record = make(crypto.randomUUID());
+      mutate(record, wrap);
+      writeStoredRecord(base, record.attemptId, record);
+      broken.push({ name: `${field}:${kind}`, record });
+    }
+  }
+  // 記録の外側（prototype 上の名前）を ERRORS の添字にしても通らない。
+  for (const code of ['toString', 'constructor', '__proto__']) {
+    const record = unknownBase(crypto.randomUUID());
+    record.error = { code, message: 'x' };
+    writeStoredRecord(base, record.attemptId, record);
+    broken.push({ name: `error.code:${code}`, record });
+  }
+  // 壊れた記録と並べた正常な記録は、そのまま読める（帳簿全体は使える）。
+  // 各項目の土台にした記録そのものは正常であることも確かめる（土台が壊れていると検査が素通りする）。
+  const healthy = unknownBase(crypto.randomUUID());
+  const healthyBases = { awaiting: storedAwaiting(crypto.randomUUID()), received: receivedBase(crypto.randomUUID()), tombstone: tombstoneBase(crypto.randomUUID()) };
+  for (const record of [healthy, ...Object.values(healthyBases)]) writeStoredRecord(base, record.attemptId, record);
+  const reloaded = la.createLaunchAttemptLedger({ baseDir: base, now: () => at + 60_000 });
+  for (const { name, record } of broken) {
+    const response = reloaded.toResponse(reloaded.refresh(record.attemptId, { paneState: alive }));
+    assert.equal(response.phase, 'unknown', name);
+    assert.deepEqual([response.error.code, response.error.retry], ['RECORD_UNREADABLE', 'forbidden'], name);
+  }
+  const ok = reloaded.toResponse(reloaded.refresh(healthy.attemptId, { paneState: alive }));
+  assert.deepEqual([ok.phase, ok.error.code], ['unknown', 'RECEIPT_TIMEOUT']);
+  assert.deepEqual([reloaded.toResponse(reloaded.refresh(healthyBases.awaiting.attemptId, { paneState: alive })).error.code], ['APP_RESTARTED_BEFORE_LAUNCH']);
+  assert.equal(reloaded.toResponse(reloaded.refresh(healthyBases.received.attemptId, { paneState: alive })).phase, 'received');
+  assert.equal(reloaded.match({ attemptId: healthyBases.tombstone.attemptId, promptDigest: digest, fingerprint: digest }).status, 'expired');
+  // 正常な値の配列は、検証を直す前なら素通りしていた（値そのものは正しい形）。
+  assert.equal(Array.isArray(broken[0].record.promptDigest) && /^sha256:[0-9a-f]{64}$/.test(broken[0].record.promptDigest), true);
+});
+
 test('AND-657-01: 正しく保存された各状態の記録は、復帰時にそのまま読める', (t) => {
   const c = clock();
   const base = tmpBase(t);

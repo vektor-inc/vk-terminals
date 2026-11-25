@@ -39,6 +39,7 @@ const { isSafeHttpUrl, normalizeOptionalHttpUrl, resolveBrowserAddress } = windo
 // バッファ位置への変換は renderer/terminalLinkProvider.js（xterm.js の
 // registerLinkProvider を自前実装）が担う。詳しい採用理由は同ファイル冒頭のコメント参照。
 const { createTerminalLinkProvider } = window.VKTerminalLinkProvider;
+const { bindAltScreenClass } = window.VKAltScreenState;
 // ツールチップに表示する「解決後の遷移先ホスト」の取得に使う（安藤レビュー指摘・MEDIUM）。
 const { getUrlHost } = window.VKUrlLinkify;
 const {
@@ -1945,12 +1946,16 @@ async function createTerminal(paneId, cwd, options = {}, createdResult = null) {
   element.className = 'term-viewport';
   // NOTE: term.open(element) is called later, after element is attached to DOM
 
+  // 代替画面のあいだだけ縦スクロールバーを隠すための目印を、バッファの切り替えに追従させる（issue #659）。
+  bindAltScreenClass(term, element);
+
   // IME 合成開始時にビューポートを最下部（入力行）へスクロールし、カーソルを可視領域に入れる。
   // xterm の updateCompositionElements() は isCursorInViewport（ybase+y-ydisp が可視範囲内）が
   // 真のときだけ .xterm-helper-textarea をカーソル位置へ動かすため、通常バッファのシェルで
   // スクロールアップしたまま日本語入力を始めると textarea が画面外の既定位置に残り、変換候補
-  // ウィンドウが入力行から離れた場所に出てしまう。これを防ぐ防御的措置（claude 等の代替バッファ
-  // アプリでは ydisp=0 で常に可視のため no-op）。祖先要素の capture フェーズで拾うことで xterm
+  // ウィンドウが入力行から離れた場所に出てしまう。これを防ぐ防御的措置（代替バッファで描くアプリ
+  // （Claude Code の全画面表示など）では ydisp=0 で常に可視のため no-op。Claude Code の従来の表示は
+  // 通常バッファで描くため対象になる）。祖先要素の capture フェーズで拾うことで xterm
   // 自身の textarea ハンドラより先にスクロールを確定させる。
   // ※「変換候補がペイン左上に出る」不具合の本因は xterm.css の読み込み失敗（ファイル冒頭の
   //   「xterm.css の注入」コメント参照）であり、このリスナはその修正ではない。

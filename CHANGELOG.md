@@ -1,6 +1,6 @@
 # Changelog
 
-- [ 仕様変更 ] Claude Code の全画面表示など、ペインの画面全体を描き替えている間は、動かせない縦スクロールバーを隠すように変更（会話は Claude Code 自身のスクロールで遡れる）（[#659](https://github.com/vektor-inc/vk-terminals/issues/659)）
+- [ 仕様変更 ] Claude Code の全画面表示や vim など、代替画面（画面全体を描き替える表示方式）を使っている間は、動かせない縦スクロールバーを隠すように変更（会話は Claude Code 自身のスクロールで遡れる）（[#659](https://github.com/vektor-inc/vk-terminals/issues/659)）
 
 ## 1.110.0
 

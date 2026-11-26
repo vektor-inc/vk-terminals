@@ -113,7 +113,41 @@ function addBrowserHomeSettings(descriptor, builtin) {
   };
 }
 
+// 「自動」の選択肢に、今回の起動で解決した結果を添える文言。受け取れない場合は JSON の文言のまま。
+const GPU_AUTO_LABELS = {
+  on: '自動（この環境では GPU を使う）',
+  off: '自動（この環境では GPU を使わない）',
+  'wsl-unknown': '自動（WSL の版を確認できないため GPU を使わない）',
+  switch: '自動（起動元の指定に従う）',
+};
+
+/**
+ * descriptor の GPU 起動モード（key: gpu）の空（自動）の選択肢の文言を、起動時の解決結果で差し替える。
+ * 元の descriptor は変更せず、差し替えた複製を返す。
+ * @param {object} descriptor 設定パネルの定義
+ * @param {string|null|undefined} autoState 'on' / 'off' / 'wsl-unknown' / 'switch'。それ以外は差し替えない
+ * @returns {object}
+ */
+function applyGpuAutoLabel(descriptor, autoState) {
+  const label = GPU_AUTO_LABELS[autoState];
+  if (!label || !descriptor || !Array.isArray(descriptor.groups)) return descriptor;
+  const replaceField = (field) => {
+    if (field?.key !== 'gpu' || !Array.isArray(field.options)) return field;
+    return {
+      ...field,
+      options: field.options.map((option) => (option?.value === '' ? { ...option, label } : option)),
+    };
+  };
+  return {
+    ...descriptor,
+    groups: descriptor.groups.map((group) => (
+      Array.isArray(group?.fields) ? { ...group, fields: group.fields.map(replaceField) } : group
+    )),
+  };
+}
+
 module.exports = {
+  applyGpuAutoLabel,
   SETTINGS_SCHEMA_PATH,
   addBrowserHomeSettings,
   buildBuiltinSettingsDescriptor,

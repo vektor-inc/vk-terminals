@@ -109,12 +109,12 @@ const { createOauthUsageProvider } = require('./oauthUsage');
 const { createCodexUsageProvider } = require('./codexUsage');
 const { createCodexUsageTracker } = require('./codexUsageTracker');
 const { createCodexSessionDirsResolver, resolvePersonalCodexHome } = require('./utils/codexSessionDirs');
-// GUI(Electron) の GPU 起動モード。WSLg 等の Linux では Chromium の GPU 初期化が
-// 失敗して起動時にエラーが多発するため、既定で GPU を無効化する。モードは
+// GUI(Electron) の GPU 起動モード。WSL 2 以前の WSLg 等の Linux では Chromium の GPU 初期化が
+// 失敗して起動時にエラーが多発するため、既定で GPU を無効化する（macOS・WSL 3 以降は GPU を使う）。モードは
 // VK_TERMINALS_GPU（環境変数）または config.json の gpu で off/default を
-// 選べる（優先順位は env > config > プラットフォーム既定）。呼び出し側（VK Orchestrator
+// 選べる（優先順位は env > config > 自動＝環境ごとの既定）。呼び出し側（VK Orchestrator
 // 等）が argv で GPU スイッチを明示している場合は介入しない。詳細は utils/gpu.js を参照。
-const { applyGpuMode } = require('./utils/gpu');
+const { applyGpuMode, getGpuStartup } = require('./utils/gpu');
 // 外部ブラウザで開いてよい URL の判定（renderer と共有）。renderer 側にも同じ判定が
 // あるが、最終防衛線はこのプロセス側（issue #268）。
 const { isSafeHttpUrl } = require('./renderer/urlSafety');
@@ -204,7 +204,7 @@ const {
   saveSettingsToTargets,
   readJsonObject,
 } = require('./settingsTargets');
-const { addBrowserHomeSettings, buildBuiltinSettingsDescriptor } = require('./settingsSchema');
+const { addBrowserHomeSettings, applyGpuAutoLabel, buildBuiltinSettingsDescriptor } = require('./settingsSchema');
 // HTTP API のアクセストークン認証（issue #313）。トークン生成・timing-safe 比較・
 // 認証要否判定・Cookie 組み立ては utils/apiAuth.js に切り出し、単体テストしやすくしてある。
 const {
@@ -1195,7 +1195,8 @@ function readUserConfig() {
 // app が ready になる前に GPU スイッチを適用する（appendSwitch は ready 前に呼ぶ必要がある）。
 // config.json の gpu も見るため loadUserConfig 定義後に実行する（env 未指定時に config を採用）。
 const appliedGpuMode = applyGpuMode(app, { configMode: loadUserConfig().gpu });
-if (appliedGpuMode) console.log(`${LOG_PREFIX} GPU mode: ${appliedGpuMode}`);
+const gpuStartup = getGpuStartup();
+if (appliedGpuMode) console.log(`${LOG_PREFIX} GPU mode: ${appliedGpuMode} (${gpuStartup.reason})`);
 
 // テストや並列起動時は環境変数で上書きし、未指定時は config.json の port を採用する。
 // loadUserConfig() は DATA_DIR を参照するため、DATA_DIR / loadUserConfig 定義後に算出する。
@@ -2298,7 +2299,12 @@ function builtinSettingsDescriptor() {
 // あればそれを優先し（vk-orchestrator など呼び出し側の設定を編集）、無い／不正な場合は
 // 組み込みディスクリプタ（vk-terminals 自身の config.json を編集）にフォールバックする。
 // これにより単体起動でも常に設定パネルを表示できる。
-function loadSettingsDescriptor({ includeBrowserHome = true } = {}) {
+function loadSettingsDescriptor(options = {}) {
+  // GPU 起動モードの「自動」の文言は、起動時に解決した結果で差し替える（wsl.exe は呼び直さない）。
+  return applyGpuAutoLabel(resolveSettingsDescriptor(options), getGpuStartup()?.autoState);
+}
+
+function resolveSettingsDescriptor({ includeBrowserHome = true } = {}) {
   const p = settingsDescriptorPath();
   if (p && fs.existsSync(p)) {
     try {

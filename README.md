@@ -50,15 +50,42 @@ HTTP API（`POST /api/new-pane`）でも `noClaude: true` を指定可能です�
 
 ### GPU 起動モード（`VK_TERMINALS_GPU`）
 
-VK Terminals は Electron アプリのため、macOS 以外（WSLg などの Linux）では Chromium の GPU 初期化が失敗し、起動時に `Exiting GPU process` / `kTransientFailure` などのエラーログが大量に出ます（利用可能な Vulkan ICD がソフトウェア実装のみで SwiftShader へフォールバックするため）。環境変数 `VK_TERMINALS_GPU` で挙動を選べます。
+VK Terminals は Electron アプリのため、WSL 2 以前の WSLg などでは Chromium の GPU 初期化が失敗し、起動時に `Exiting GPU process` / `kTransientFailure` などのエラーログが大量に出ます（利用可能な Vulkan ICD がソフトウェア実装のみで SwiftShader へフォールバックするため）。WSL 3 以降は GPU を使えるため、自動のときは WSL の版を確認して既定を決めます。環境変数 `VK_TERMINALS_GPU` で挙動を選べます。
 
 | 値 | 挙動 |
 |---|---|
-| 未設定（自動） | macOS は通常起動、それ以外は `off` 相当 |
+| 未設定（自動） | 環境ごとの既定（下表）に従う |
 | `off` | GPU を無効化してエラーログを抑制（描画はソフトウェア。ターミナル用途で実害なし） |
-| `default` | フラグを足さず Chromium 任せ（元の挙動。macOS 以外では GPU 初期化エラーが出る場合あり） |
+| `default` | フラグを足さず GPU を使う（WSL 2 以前では GPU 初期化エラーが出る場合あり） |
 
-> WSLg での HW アクセラ（HW OpenGL / Vulkan）は対応しません。Vulkan は HW ICD（dzn 等）が WSLg に無く、OpenGL も体感差が無いうえ Mesa/Dawn 由来の警告が出るためです。
+自動のときの既定値は環境ごとに次のとおりです。
+
+| 環境 | 自動のときの既定 |
+|---|---|
+| macOS | `default`（GPU を使う） |
+| WSL 3 以降（`/dev/dxg` がある） | `default`（GPU を使う） |
+| WSL 2 以前、`/dev/dxg` が無い WSL（WSL 1 のディストリを含む）、WSL の版を確認できない場合 | `off`（GPU を使わない） |
+| ネイティブ Windows、WSL 以外の Linux | `off`（GPU を使わない） |
+
+WSL の版は、`VK_TERMINALS_GPU` も `config.json` の `gpu` も未指定で、GPU 関連スイッチも付いていない起動のときだけ、起動のたびに `wsl.exe --version` で確認します（結果は設定ファイルへ書きません）。自分の WSL の版は、Windows 側で `wsl --version` を実行すると確認できます。設定パネルの「GPU 起動モード」では、「自動」の選択肢に今回の起動での結果が表示されます。
+
+> WSL 2 の WSLg での HW アクセラ（HW OpenGL / Vulkan）は対応しません。Vulkan は HW ICD（dzn 等）が WSL 2 の WSLg に無く、OpenGL も体感差が無いうえ Mesa/Dawn 由来の警告が出るためです。
+
+```bash
+VK_TERMINALS_GPU=off npm start
+```
+
+`config.json` の `gpu` キーでも同じ値を指定できます（永続設定向け）。
+
+```json
+{ "gpu": "off" }
+```
+
+設定パネル（歯車 → 「設定」タブ → 「GPU 起動モード」）からも選択できます（保存後の再起動で反映）。
+
+モードの優先順位は **環境変数 `VK_TERMINALS_GPU` > `config.json` の `gpu`（＝設定パネル） > 環境ごとの既定** です（環境変数がその場の上書きとして config を上回ります）。
+
+> `electron . --disable-gpu` のように GPU 関連スイッチを直接指定して起動した場合は、そちらを尊重して `VK_TERMINALS_GPU` / `config.json` の自動適用は行いません（呼び出し側の指定を優先。VK Orchestrator 経由の起動もこの経路）。
 
 #### WSLg で出る `vkCreateInstance` / `libEGL.so` 警告について（無害）
 
@@ -80,22 +107,6 @@ Warning: Failed to load libEGL.so
 - **OpenGL**: Dawn が `libEGL.so`（バージョン無し）を `dlopen` するが、WSLg には `libEGL.so.1` しか無く symlink が無いため失敗する。
 
 このアプリは WebGPU を使わないため実害はありません。`VK_TERMINALS_GPU`・`config.json`・設定パネルのどのモードでも、また `--disable-features=Vulkan,WebGPU` 等の Chromium フラグでもこのバックグラウンド探索は止められない（この Electron/Chromium バージョンの挙動）ため、**この警告は無視して問題ありません**。
-
-```bash
-VK_TERMINALS_GPU=off npm start
-```
-
-`config.json` の `gpu` キーでも同じ値を指定できます（永続設定向け）。
-
-```json
-{ "gpu": "off" }
-```
-
-設定パネル（歯車 → 「設定」タブ → 「GPU 起動モード」）からも選択できます（保存後の再起動で反映）。
-
-モードの優先順位は **環境変数 `VK_TERMINALS_GPU` > `config.json` の `gpu`（＝設定パネル） > プラットフォーム既定** です（環境変数がその場の上書きとして config を上回ります）。
-
-> `electron . --disable-gpu` のように GPU 関連スイッチを直接指定して起動した場合は、そちらを尊重して `VK_TERMINALS_GPU` / `config.json` の自動適用は行いません（呼び出し側の指定を優先。VK Orchestrator 経由の起動もこの経路）。
 
 ## WSLg での起動
 
@@ -126,7 +137,7 @@ npm install -g @anthropic-ai/claude-code
 npm start
 ```
 
-既定（`VK_TERMINALS_GPU` 未設定）では GPU を無効化して起動するため、`Exiting GPU process` / `kTransientFailure` / `VK_ERROR_INCOMPATIBLE_DRIVER` などのエラーログは出ません（詳細は[GPU 起動モード](#gpu-起動モードvk_terminals_gpu)を参照）。
+WSL 2 以前では、既定（`VK_TERMINALS_GPU` 未設定）で GPU を無効化して起動するため、`Exiting GPU process` / `kTransientFailure` / `VK_ERROR_INCOMPATIBLE_DRIVER` などのエラーログは出ません（詳細は[GPU 起動モード](#gpu-起動モードvk_terminals_gpu)を参照）。
 
 起動後、ログに `[vk-terminals] API server listening on http://127.0.0.1:13847` が出ていれば正常です。以下で疎通確認できます。
 
@@ -623,7 +634,7 @@ cp config.example.json ~/.vk-terminals/config.json
 
 - `confirmClose` は既定 `busy`（実行中・入力待ちのみ確認）です。ペインの ✕ ボタンで閉じる操作にだけ適用され、HTTP API 経由（force）の自動クローズには適用されません。
 - `showUsage` は opt-out（既定 ON）です。`default: true` により、未設定の boolean が設定保存時に誤って `false` になることを避けています。
-- `gpu` は環境変数 `VK_TERMINALS_GPU` が最優先で、未指定時に `config.json` の `gpu`（設定パネル保存値）を使います。空値はプラットフォーム既定です。
+- `gpu` は環境変数 `VK_TERMINALS_GPU` が最優先で、未指定時に `config.json` の `gpu`（設定パネル保存値）を使います。空値（自動）は環境ごとの既定です。
 - `agentroom` は issue #70 で β 機能を一旦無効化しているため、`settings-schema.json` には含めていません。設定パネルへ復帰する場合は任意の group の `fields` に `{ "key": "agentroom", "label": "エージェントルーム（β）表示", "type": "boolean" }` を追加し、`app:get-config` の `agentroom` 返却値を `config.agentroom === true` に戻してください。
 
 ## HTTP API（外部連携用）

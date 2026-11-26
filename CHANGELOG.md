@@ -1,5 +1,7 @@
 # Changelog
 
+- [ 仕様変更 ] WSL 3 以降では、GPU 起動モードが自動のとき GPU を使うように変更（WSL 2 以前・WSL の版を確認できない場合は従来どおり GPU を使わない）。設定パネルの「自動」には、今回の起動での結果を表示（[#661](https://github.com/vektor-inc/vk-terminals/issues/661)）
+
 ## 1.110.0
 
 - [ 機能追加 ] 自動処理用の Codex を、初期指示と一体で起動して受領まで追跡できる API（`/api/launch-attempts`）を追加。同じ起動試行を送り直しても Codex は 1 つだけ起動（[#657](https://github.com/vektor-inc/vk-terminals/issues/657)）

@@ -313,19 +313,19 @@
           "type": "select",
           "emptyToNull": true,
           "default": "",
-          "help": "GUI(Electron) の GPU 初期化方法。WSLg 等ではエラー抑制のため既定で無効化されます。環境変数 VK_TERMINALS_GPU 指定時はそちらが優先されます。",
+          "help": "画面の描画に GPU（グラフィック処理用の部品）を使うかを選びます。自動のときは、macOS と WSL 3 以降では GPU を使い、それ以外（WSL 2 以前、版を確認できない WSL、Windows、Linux）では使いません。起動時にエラーが多く出る、または表示が乱れるときは「GPU を使わない」を選び、アプリを再起動してください。環境変数 VK_TERMINALS_GPU を指定している場合は、そちらが優先されます。起動元が GPU のスイッチを指定している場合は、ここでの選択は使われません。",
           "options": [
             {
               "value": "",
-              "label": "自動（プラットフォーム既定）"
+              "label": "自動（おすすめ）"
             },
             {
               "value": "off",
-              "label": "GPU 無効（エラー抑制・推奨）"
+              "label": "GPU を使わない（起動時にエラーが多く出るとき）"
             },
             {
               "value": "default",
-              "label": "Chromium 任せ"
+              "label": "GPU を使う"
             }
           ]
         },

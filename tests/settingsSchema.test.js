@@ -9,6 +9,7 @@ const path = require('path');
 const {
   SETTINGS_SCHEMA_PATH,
   addBrowserHomeSettings,
+  applyGpuAutoLabel,
   buildBuiltinSettingsDescriptor,
   loadSettingsSchema,
   validateSettingsSchema,
@@ -214,11 +215,11 @@ test('buildBuiltinSettingsDescriptor: JSON から targetPath 付きの組み込�
     type: 'select',
     emptyToNull: true,
     default: '',
-    help: 'GUI(Electron) の GPU 初期化方法。WSLg 等ではエラー抑制のため既定で無効化されます。環境変数 VK_TERMINALS_GPU 指定時はそちらが優先されます。',
+    help: '画面の描画に GPU（グラフィック処理用の部品）を使うかを選びます。自動のときは、macOS と WSL 3 以降では GPU を使い、それ以外（WSL 2 以前、版を確認できない WSL、Windows、Linux）では使いません。起動時にエラーが多く出る、または表示が乱れるときは「GPU を使わない」を選び、アプリを再起動してください。環境変数 VK_TERMINALS_GPU を指定している場合は、そちらが優先されます。起動元が GPU のスイッチを指定している場合は、ここでの選択は使われません。',
     options: [
-      { value: '', label: '自動（プラットフォーム既定）' },
-      { value: 'off', label: 'GPU 無効（エラー抑制・推奨）' },
-      { value: 'default', label: 'Chromium 任せ' },
+      { value: '', label: '自動（おすすめ）' },
+      { value: 'off', label: 'GPU を使わない（起動時にエラーが多く出るとき）' },
+      { value: 'default', label: 'GPU を使う' },
     ],
   });
   assert.equal(fields.some((field) => field.key === 'agentroom'), false);
@@ -357,4 +358,38 @@ test('loadSettingsSchema: 読み込み失敗時は起動を落とさない fallb
   assert.deepEqual(schema.groups, []);
   assert.equal(errors.length, 1);
   assert.match(errors[0].schemaPath, /missing\.json$/);
+});
+
+test('applyGpuAutoLabel: 起動時の結果に応じて、自動の選択肢の文言だけを差し替える', () => {
+  const descriptor = buildBuiltinSettingsDescriptor({ targetPath: '/app/config.json' });
+  const gpuOptions = (d) => d.groups.flatMap((g) => g.fields).find((f) => f.key === 'gpu').options;
+  const expected = {
+    on: '自動（この環境では GPU を使う）',
+    off: '自動（この環境では GPU を使わない）',
+    'wsl-unknown': '自動（WSL の版を確認できないため GPU を使わない）',
+    switch: '自動（起動元の指定に従う）',
+  };
+  for (const [state, label] of Object.entries(expected)) {
+    const options = gpuOptions(applyGpuAutoLabel(descriptor, state));
+    assert.deepEqual(options.map((o) => o.value), ['', 'off', 'default']);
+    assert.equal(options[0].label, label);
+    assert.equal(options[1].label, 'GPU を使わない（起動時にエラーが多く出るとき）');
+    assert.equal(options[2].label, 'GPU を使う');
+  }
+});
+
+test('applyGpuAutoLabel: 結果を受け取れない場合は「自動（おすすめ）」のまま・元の descriptor は変えない', () => {
+  const descriptor = buildBuiltinSettingsDescriptor({ targetPath: '/app/config.json' });
+  const labelOf = (d) => d.groups.flatMap((g) => g.fields).find((f) => f.key === 'gpu').options[0].label;
+  assert.equal(labelOf(applyGpuAutoLabel(descriptor, null)), '自動（おすすめ）');
+  assert.equal(labelOf(applyGpuAutoLabel(descriptor, undefined)), '自動（おすすめ）');
+  applyGpuAutoLabel(descriptor, 'on');
+  assert.equal(labelOf(descriptor), '自動（おすすめ）');
+});
+
+test('applyGpuAutoLabel: 自分の項目以外のキー（constructor など）では差し替えない', () => {
+  const descriptor = buildBuiltinSettingsDescriptor({ targetPath: '/app/config.json' });
+  for (const state of ['constructor', 'toString', '__proto__', 'hasOwnProperty']) {
+    assert.equal(applyGpuAutoLabel(descriptor, state), descriptor);
+  }
 });

@@ -129,7 +129,7 @@ const GPU_AUTO_LABELS = {
  * @returns {object}
  */
 function applyGpuAutoLabel(descriptor, autoState) {
-  const label = GPU_AUTO_LABELS[autoState];
+  const label = Object.hasOwn(GPU_AUTO_LABELS, autoState) ? GPU_AUTO_LABELS[autoState] : null;
   if (!label || !descriptor || !Array.isArray(descriptor.groups)) return descriptor;
   const replaceField = (field) => {
     if (field?.key !== 'gpu' || !Array.isArray(field.options)) return field;

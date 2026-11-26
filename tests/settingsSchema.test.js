@@ -215,7 +215,7 @@ test('buildBuiltinSettingsDescriptor: JSON から targetPath 付きの組み込�
     type: 'select',
     emptyToNull: true,
     default: '',
-    help: '画面の描画に GPU（グラフィック処理用の部品）を使うかを選びます。自動のときは、macOS と WSL 3 以降では GPU を使い、それ以外（WSL 2 以前、版を確認できない WSL、Windows、Linux）では使いません。起動時にエラーが多く出る、または表示が乱れるときは「GPU を使わない」を選び、アプリを再起動してください。環境変数 VK_TERMINALS_GPU を指定している場合は、そちらが優先されます。',
+    help: '画面の描画に GPU（グラフィック処理用の部品）を使うかを選びます。自動のときは、macOS と WSL 3 以降では GPU を使い、それ以外（WSL 2 以前、版を確認できない WSL、Windows、Linux）では使いません。起動時にエラーが多く出る、または表示が乱れるときは「GPU を使わない」を選び、アプリを再起動してください。環境変数 VK_TERMINALS_GPU を指定している場合は、そちらが優先されます。起動元が GPU のスイッチを指定している場合は、ここでの選択は使われません。',
     options: [
       { value: '', label: '自動（おすすめ）' },
       { value: 'off', label: 'GPU を使わない（起動時にエラーが多く出るとき）' },
@@ -385,4 +385,11 @@ test('applyGpuAutoLabel: 結果を受け取れない場合は「自動（おす�
   assert.equal(labelOf(applyGpuAutoLabel(descriptor, undefined)), '自動（おすすめ）');
   applyGpuAutoLabel(descriptor, 'on');
   assert.equal(labelOf(descriptor), '自動（おすすめ）');
+});
+
+test('applyGpuAutoLabel: 自分の項目以外のキー（constructor など）では差し替えない', () => {
+  const descriptor = buildBuiltinSettingsDescriptor({ targetPath: '/app/config.json' });
+  for (const state of ['constructor', 'toString', '__proto__', 'hasOwnProperty']) {
+    assert.equal(applyGpuAutoLabel(descriptor, state), descriptor);
+  }
 });

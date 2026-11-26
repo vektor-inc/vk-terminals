@@ -177,13 +177,25 @@ test('readWslVersion: PATH に無ければ /mnt/c/Windows/System32/wsl.exe を�
   assert.deepEqual(cmds, ['wsl.exe', '/mnt/c/Windows/System32/wsl.exe']);
 });
 
-test('readWslVersion: どちらも見つからない・終了コード 0 以外・読み取れない出力は「分からない」', () => {
+test('readWslVersion: どちらも見つからなければ「見つからない」', () => {
   const enoent = () => ({ error: Object.assign(new Error('x'), { code: 'ENOENT' }) });
   assert.deepEqual(readWslVersion({ spawnSync: enoent }), { ok: false, reason: 'wsl.exe not found' });
-  assert.match(readWslVersion({ spawnSync: () => ({ status: 1, stdout: Buffer.alloc(0) }) }).reason, /exit code 1/);
-  assert.equal(readWslVersion({ spawnSync: () => okResult(Buffer.from('usage\n')) }).ok, false);
-  // 終了コード 0 でも出力が空なら分からない
-  assert.equal(readWslVersion({ spawnSync: () => okResult(Buffer.alloc(0)) }).ok, false);
+});
+
+test('readWslVersion: 見つからない以外の失敗は次の候補を試さず「分からない」', () => {
+  const failures = {
+    'ENOENT 以外のエラー': () => ({ error: Object.assign(new Error('x'), { code: 'EACCES' }) }),
+    '終了コード 0 以外': () => ({ status: 1, stdout: Buffer.alloc(0) }),
+    '読み取れない出力': () => okResult(Buffer.from('usage\n')),
+    '空の出力': () => okResult(Buffer.alloc(0)),
+  };
+  for (const [name, result] of Object.entries(failures)) {
+    let count = 0;
+    const r = readWslVersion({ spawnSync: () => { count += 1; return result(); } });
+    assert.equal(r.ok, false, name);
+    assert.equal(count, 1, `${name}: 代わりの候補を呼ばない`);
+  }
+  assert.match(readWslVersion({ spawnSync: failures['終了コード 0 以外'] }).reason, /exit code 1/);
 });
 
 test('readWslVersion: 時間切れは「timeout」とし、次の候補は試さない', () => {

@@ -66,7 +66,7 @@ function isWsl({ platform = process.platform, env = process.env, readFileSync = 
  * @returns {string}
  */
 function decodeWslOutput(output) {
-  if (typeof output === 'string') return output.replace(/^﻿/, '');
+  if (typeof output === 'string') return output.replace(/^\uFEFF/, '');
   let bytes = Buffer.from(output);
   let utf16 = false;
   if (bytes[0] === 0xff && bytes[1] === 0xfe) {
@@ -76,7 +76,7 @@ function decodeWslOutput(output) {
     bytes = bytes.subarray(3);
   }
   if (bytes.includes(0)) utf16 = true;
-  return bytes.toString(utf16 ? 'utf16le' : 'utf8').replace(/^﻿/, '');
+  return bytes.toString(utf16 ? 'utf16le' : 'utf8').replace(/^\uFEFF/, '');
 }
 
 /**
@@ -100,14 +100,13 @@ function parseWslVersionOutput(output) {
 
 /**
  * wsl.exe --version を同期的に呼び、WSL の版を返す（失敗はすべて「分からない」）。
- * PATH 上の wsl.exe、失敗したら /mnt/c/Windows/System32/wsl.exe の順に試す。
- * 時間切れのときは待ち時間が延びないよう、次の候補は試さない。
+ * PATH 上の wsl.exe、見つからなければ /mnt/c/Windows/System32/wsl.exe の順に試す。
+ * 見つからない以外の失敗（時間切れ・終了コード 0 以外・読めない出力）は、次の候補を試さず「分からない」とする。
  * @param {object} [deps]
  * @param {Function} [deps.spawnSync] child_process.spawnSync 互換
  * @returns {{ ok: true, version: string, major: number } | { ok: false, reason: string }}
  */
 function readWslVersion({ spawnSync = childProcess.spawnSync } = {}) {
-  let failure = { ok: false, reason: 'wsl.exe not found' };
   for (const command of ['wsl.exe', WSL_EXE_FALLBACK_PATH]) {
     const result = spawnSync(command, ['--version'], {
       timeout: WSL_VERSION_TIMEOUT_MS,
@@ -115,21 +114,17 @@ function readWslVersion({ spawnSync = childProcess.spawnSync } = {}) {
       encoding: 'buffer',
     });
     if (result?.error) {
+      // 次の候補へ進むのは「見つからない」ときだけ。それ以外はその場で「分からない」とする。
+      if (result.error.code === 'ENOENT') continue;
       if (result.error.code === 'ETIMEDOUT') return { ok: false, reason: 'timeout' };
-      if (result.error.code !== 'ENOENT') {
-        failure = { ok: false, reason: `wsl.exe failed: ${result.error.code || result.error.message}` };
-      }
-      continue;
+      return { ok: false, reason: `wsl.exe failed: ${result.error.code || result.error.message}` };
     }
     if (result?.status !== 0) {
-      failure = { ok: false, reason: `wsl.exe exit code ${result?.status ?? result?.signal}` };
-      continue;
+      return { ok: false, reason: `wsl.exe exit code ${result?.status ?? result?.signal}` };
     }
-    const parsed = parseWslVersionOutput(result.stdout ?? Buffer.alloc(0));
-    if (parsed.ok) return parsed;
-    failure = parsed;
+    return parseWslVersionOutput(result.stdout ?? Buffer.alloc(0));
   }
-  return failure;
+  return { ok: false, reason: 'wsl.exe not found' };
 }
 
 /**

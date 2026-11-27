@@ -22,7 +22,7 @@
 //   alternative: 代替になりうる固定入口の操作（無ければ null）
 
 // 写した時点の vk-agents のコミット（手元の clone の HEAD）。
-const SNAPSHOT_VK_AGENTS_COMMIT = '605f828f46c9ef088e93d4f5f63655b6f98f3052';
+const SNAPSHOT_VK_AGENTS_COMMIT = '9eb63bb3439778ebf2f9298253ee3f749c745985';
 
 const SHA_A = 'abc1234def5678abc1234def5678abc1234def56';
 const SHA_B = '0123456789abcdef0123456789abcdef01234567';
@@ -80,7 +80,7 @@ const requiredOperations = [
   { procedureOperation: 'gh-read.sh pr-view', source: 'codex/vk-kore/step-10-1-merge-on-instruction.md:11', argv: ['gh', 'pr', 'view', '529', '--json', 'state'], expected: { bin: 'gh', args: ['pr', 'view', '529', '--json', 'state'] }, explicitRepo: true },
   { procedureOperation: 'gh-write.sh label-remove', source: 'codex/vk-kore/step-10-1-merge-on-instruction.md:12', argv: ['gh', 'issue', 'edit', '523', '--remove-label', 'working'], expected: { operation: 'issue-remove-label' }, explicitRepo: false },
   { procedureOperation: 'gh issue close', source: 'codex/vk-kore/step-10-1-merge-on-instruction.md:12', argv: ['gh', 'issue', 'close', '523'], expected: { operation: 'issue-close' }, explicitRepo: false },
-  { procedureOperation: 'prepare reattach-branch', source: 'codex/vk-kore/step-8-7-e2e.md:41', sourceNeedle: '作業ブランチへの復帰', argv: ['prepare', 'reattach-branch', '544', 'feature/544-reattach-branch', 'codex-544'], expected: { operation: 'prepare-reattach-branch' }, explicitRepo: false, note: '手順は vk-agents の docs/codex-prepared-worktree.md「作業ブランチへの復帰（正本）」を指し、正本が起動元の案内にある prepare reattach-branch を使うと定めている（vk-agents#732）。' },
+  { procedureOperation: 'prepare reattach-branch', source: 'codex/vk-kore/step-8-7-e2e.md:43', sourceNeedle: '作業ブランチへの復帰', argv: ['prepare', 'reattach-branch', '544', 'feature/544-reattach-branch', 'codex-544'], expected: { operation: 'prepare-reattach-branch' }, explicitRepo: false, note: '手順は vk-agents の docs/codex-prepared-worktree.md「作業ブランチへの復帰（正本）」を指し、正本が起動元の案内にある prepare reattach-branch を使うと定めている（vk-agents#732）。' },
 ];
 
 // 手順が要求するのに、固定入口が受理しない操作（既知の不足）。除外リストとして扱い、受理されるようになったらテストが失敗して
